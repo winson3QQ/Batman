@@ -117,9 +117,38 @@ healthy one: stock red is solid, and solid red is our "everything is fine". The
 section, which is missing too when nothing was installed. The contradiction is
 what catches it.
 
-You can also catch it by watching a boot: an equipped node goes solid → dip →
-solid, while a bare one never changes. That works only if you are present when it
-powers up; the impossible-combination check works any time.
+## Power-on self test
+
+Watching a boot does **not** work as a way of telling an equipped node from a bare
+one, which is worth stating because it sounds like it should. Measured on a real
+boot:
+
+```
+14:54:31  /etc/rc.d/S96led: setting up led PWR unmanaged
+14:54:32  meshled: OK RF_DEAD
+```
+
+`UNMANAGED` exists for about **one second** before the daemon overrides it, and
+the pattern is lit 98 % of that time. The odds of the 100 ms dip landing inside
+that window are roughly one in five, and it is a single brief flicker even then.
+From the outside, red is simply solid from power-on to ready — indistinguishable
+from a node with nothing installed.
+
+So `meshled` does a deliberate self test on startup instead, the way a car
+dashboard lights every warning lamp for a moment:
+
+```
+1 s   red off,   green off      <- red fully dark is impossible in any live state
+1 s   red solid, green solid
+      -> live state
+```
+
+Red going dark and coming back is unambiguous: none of the five live red states is
+"off", so a node that does this has `meshled` running. It also verifies both LEDs
+still work. Measured cost is about 2.2 s of delayed indication, once, at boot.
+
+`sleep` in this busybox takes whole seconds only, which is why the phases are 1 s
+each rather than something tighter.
 
 ## What "system OK" actually checks
 

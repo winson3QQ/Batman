@@ -212,10 +212,21 @@ restore() {
 	exit 0
 }
 
+# Power-on self test. Red fully dark cannot occur in any live state, so a red
+# LED that goes out and comes back is unambiguous proof that meshled started -
+# which the UNMANAGED pattern cannot provide, because /etc/init.d/led sets it
+# barely a second before this daemon overrides it, and it is lit 98% of the time.
+# Doubles as a bulb check. busybox `sleep` takes whole seconds only, hence 1+1.
+lamp_test() {
+	p_off   "$LED_RED"; p_off   "$LED_GRN"; sleep 1
+	p_solid "$LED_RED"; p_solid "$LED_GRN"; sleep 1
+}
+
 # ------------------------------------------------------------------- modes
 
 do_run() {
 	trap restore INT TERM
+	lamp_test
 	_last=""
 	while :; do
 		_s=$(evaluate)
