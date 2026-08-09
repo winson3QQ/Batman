@@ -78,15 +78,25 @@ See [`docs/openmanet.md`](docs/openmanet.md).
 | [`docs/root-cause.md`](docs/root-cause.md) | Symptom → diagnosis → root cause, in full |
 | [`docs/building-the-driver.md`](docs/building-the-driver.md) | Build instructions and the gotchas |
 | [`docs/openmanet.md`](docs/openmanet.md) | The OpenMANET route |
+| [`docs/flashing-and-recovery.md`](docs/flashing-and-recovery.md) | **Why `dd`-flashing an OpenWrt image leaves the old config intact**, and how to tell |
 | [`patches/`](patches/) | The `SPI_NO_CS` patch |
 | [`tools/`](tools/) | Python SPI diagnostic scripts (via `spidev`) |
+
+## Also worth reading
+
+If you flash OpenWrt to SD cards with `dd`, [`docs/flashing-and-recovery.md`](docs/flashing-and-recovery.md)
+is the most generally useful thing here. The image covers only the boot partition and
+the squashfs — the `rootfs_data` overlay after it is never written, so the device boots
+with its entire previous configuration restored while every verification you would
+normally run comes back green.
 
 ## Status
 
 - ✅ Driver probes, firmware + BCF load, netdev appears
 - ✅ Root cause understood and patched
-- ✅ OpenMANET 1.7.0 `rpi4-mm6108-spi` image flashed and byte-verified on SD
-- ⏳ Not yet booted into OpenMANET
+- ✅ OpenMANET 1.7.0 `rpi4-mm6108-spi` flashed, overlay wiped, **booted and verified**
+- ✅ HaLow radio up under OpenMANET: `RPI RPI4-MM6108 (SPI)`, `wlan0`, 923 MHz @ 2 MHz BW, 27 dBm
+- ⏳ Mesh not yet configured (setup wizard pending)
 - ⏳ TX path not yet verified end-to-end
 - ⏳ Two-node mesh not yet brought up
 
