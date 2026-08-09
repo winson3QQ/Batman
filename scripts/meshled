@@ -1,0 +1,276 @@
+#!/bin/sh
+#
+# meshled - two-LED status indicator for an OpenMANET / Wi-Fi HaLow node
+#
+#   RED   (PWR/ACT) = system layer   : boot, health, configuration, power
+#   GREEN (ACT)     = HaLow layer    : radio, peering, batman, link quality
+#
+# One rule:  solid = good, faster blink = worse.
+# Green stays dark until the system layer is OK, so the layers read bottom-up.
+#
+# Patterns are driven by the kernel "timer" LED trigger, so the daemon only
+# writes sysfs when the state actually changes - CPU cost is ~0.
+#
+# Usage: meshled [run|status|test|clear]
+#
+
+LED_RED=/sys/class/leds/PWR
+LED_GRN=/sys/class/leds/ACT
+
+POLL=5                  # seconds between state evaluations
+BOOT_GRACE=90           # below this uptime, failing checks mean "still booting"
+OVERLAY_FULL_PCT=90     # overlay usage above this = system fault
+
+# Link-quality threshold, Mbit/s, from `batctl n` speed column.
+# PLACEHOLDER - calibrate once a second node is on the air. S1G at 2 MHz BW
+# realistically lands somewhere in the 1-5 Mbit/s range.
+TPUT_WEAK=2.0
+
+STATE_FILE=/tmp/meshled.state
+UV_LATCH=/tmp/meshled.undervolt   # sticky undervoltage, cleared by `meshled clear`
+
+# ---------------------------------------------------------------- LED driving
+
+# led_pattern <leddir> <on_ms> <off_ms>
+#   off_ms == 0  -> solid on
+#   on_ms  == 0  -> off
+led_pattern() {
+	_d=$1; _on=$2; _off=$3
+	[ -d "$_d" ] || return 0
+	_max=$(cat "$_d/max_brightness" 2>/dev/null); [ -n "$_max" ] || _max=1
+	_cur=$(sed -n 's/.*\[\([a-z0-9-]*\)\].*/\1/p' "$_d/trigger" 2>/dev/null)
+
+	if [ "$_on" = 0 ]; then
+		[ "$_cur" = none ] || echo none > "$_d/trigger"
+		echo 0 > "$_d/brightness"
+	elif [ "$_off" = 0 ]; then
+		[ "$_cur" = none ] || echo none > "$_d/trigger"
+		echo "$_max" > "$_d/brightness"
+	else
+		# only touch trigger when it is not already timer, otherwise the
+		# LED visibly glitches on every poll
+		[ "$_cur" = timer ] || echo timer > "$_d/trigger"
+		[ "$(cat "$_d/delay_on" 2>/dev/null)" = "$_on" ] || echo "$_on" > "$_d/delay_on"
+		[ "$(cat "$_d/delay_off" 2>/dev/null)" = "$_off" ] || echo "$_off" > "$_d/delay_off"
+	fi
+}
+
+# Named patterns. Frequency encodes severity.
+p_off()     { led_pattern "$1" 0 0; }
+p_solid()   { led_pattern "$1" 1 0; }
+p_wink()    { led_pattern "$1" 4900 100; }   # UNMANAGED: solid with a 100 ms dip every 5 s
+p_1hz()     { led_pattern "$1" 500 500; }
+p_2hz5()    { led_pattern "$1" 200 200; }
+p_5hz()     { led_pattern "$1" 100 100; }
+p_pulse()   { led_pattern "$1" 100 1900; }   # a short wink every 2 s
+
+# ------------------------------------------------------------ system checks
+# Each check echoes nothing on success, or a short tag on failure.
+
+FAILED=""
+fail() { FAILED="$FAILED $1"; }
+
+check_system() {
+	FAILED=""
+
+	# --- health -------------------------------------------------------
+	mount | grep -q "on / type overlay (rw" || fail rootfs-ro
+	if [ -d /overlay ]; then
+		_use=$(df /overlay 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
+		[ -n "$_use" ] && [ "$_use" -ge "$OVERLAY_FULL_PCT" ] && fail overlay-full
+	else
+		fail no-overlay
+	fi
+	_yr=$(date +%Y)
+	[ "$_yr" -ge 2020 ] || fail clock
+
+	# --- network ------------------------------------------------------
+	ip -4 addr show br-ahwlan 2>/dev/null | grep -q "inet " || fail no-ip
+
+	# --- HaLow driver probed (NOT a module-name check: OpenMANET builds
+	#     SPI support into the single `morse` module, there is no morse_spi)
+	[ -d /sys/class/net/wlan0 ] || fail no-wlan0
+	grep -q "^batman_adv " /proc/modules || fail no-batman
+	[ -d /sys/class/net/bat0 ] || fail no-bat0
+
+	# --- services -----------------------------------------------------
+	for _p in openmanetd netifd dropbear wpad; do
+		pgrep -x "$_p" >/dev/null 2>&1 || pgrep -f "$_p" >/dev/null 2>&1 || fail "svc:$_p"
+	done
+
+	# --- configuration = the setup wizard has been through ------------
+	_mid=$(uci -q get wireless.default_radio3.mesh_id)
+	[ -n "$_mid" ] || fail no-mesh-id
+	[ "$(uci -q get wireless.radio3.disabled)" = "1" ] && fail radio-disabled
+	_hn=$(uci -q get system.@system[0].hostname)
+	case "$_hn" in
+		""|OpenWrt|openwrt|OpenMANET|openmanet|OpenManet) fail default-hostname ;;
+	esac
+
+	[ -z "$FAILED" ]
+}
+
+# Undervoltage. bit0 = right now, bit16 = has happened since boot.
+# The sticky bit is latched to a file so a transient brown-out during TX is
+# still visible minutes later; `meshled clear` resets it.
+check_undervolt() {
+	_t=$(vcgencmd get_throttled 2>/dev/null | sed 's/.*=//')
+	[ -n "$_t" ] || return 1
+	_v=$(printf '%d' "$_t" 2>/dev/null) || return 1
+	if [ $((_v & 1)) -ne 0 ] || [ $((_v & 65536)) -ne 0 ]; then
+		echo "$_t" > "$UV_LATCH"
+	fi
+	[ -f "$UV_LATCH" ]
+}
+
+# ------------------------------------------------------------- HaLow checks
+
+halow_peers() {   # 802.11s peering count
+	iw dev wlan0 station dump 2>/dev/null | grep -c '^Station'
+}
+
+halow_neighbours() {  # batman-adv direct neighbours (2 header lines)
+	_n=$(batctl n 2>/dev/null | sed '1,2d' | grep -c '[0-9a-f]:[0-9a-f]')
+	echo "${_n:-0}"
+}
+
+halow_best_tput() {   # Mbit/s to the best direct neighbour, "" if unknown
+	batctl n 2>/dev/null | sed '1,2d' | awk '
+		{ for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+\.?[0-9]*(Mbit)?$/) {
+			gsub("Mbit","",$i); if ($i+0 > m) m = $i+0 } }
+		END { if (m > 0) print m }'
+}
+
+radio_up() {
+	[ -d /sys/class/net/wlan0 ] || return 1
+	[ "$(cat /sys/class/net/wlan0/operstate 2>/dev/null)" = up ] || return 1
+	iw dev wlan0 info >/dev/null 2>&1
+}
+
+# ------------------------------------------------------------ state machine
+
+# echoes:  <red-state> <green-state> [failed checks...]
+evaluate() {
+	_red=""; _grn=""
+
+	if check_undervolt; then
+		_red=UNDERVOLT
+	elif check_system; then
+		_red=OK
+	elif [ "$(cut -d. -f1 /proc/uptime)" -lt "$BOOT_GRACE" ]; then
+		_red=BOOTING
+	else
+		_red=FAULT
+	fi
+
+	if [ "$_red" != OK ]; then
+		_grn=DARK                       # system layer not clean -> green says nothing
+	elif ! radio_up; then
+		_grn=RF_DEAD
+	else
+		_p=$(halow_peers); _n=$(halow_neighbours)
+		if [ "${_p:-0}" -eq 0 ]; then
+			_grn=ALONE
+		elif [ "${_n:-0}" -eq 0 ]; then
+			_grn=NO_BATMAN
+		else
+			_t=$(halow_best_tput)
+			if [ -n "$_t" ] && [ "$(awk -v a="$_t" -v b="$TPUT_WEAK" 'BEGIN{print (a<b)?1:0}')" = 1 ]; then
+				_grn=WEAK
+			else
+				_grn=LINKED
+			fi
+		fi
+	fi
+
+	echo "$_red $_grn$FAILED"
+}
+
+apply() {
+	case "$1" in
+		UNDERVOLT) p_5hz   "$LED_RED" ;;
+		FAULT)     p_2hz5  "$LED_RED" ;;
+		BOOTING)   p_1hz   "$LED_RED" ;;
+		OK)        p_solid "$LED_RED" ;;
+	esac
+	case "$2" in
+		DARK)      p_off   "$LED_GRN" ;;
+		RF_DEAD)   p_5hz   "$LED_GRN" ;;
+		ALONE)     p_2hz5  "$LED_GRN" ;;
+		NO_BATMAN) p_1hz   "$LED_GRN" ;;
+		WEAK)      p_pulse "$LED_GRN" ;;
+		LINKED)    p_solid "$LED_GRN" ;;
+	esac
+}
+
+# On exit, hand the red LED back to the "unmanaged" pattern rather than to the
+# stock default-on, so that a stopped/crashed daemon never looks like a healthy
+# system. Solid red means, and only means, "meshled says everything is OK".
+restore() {
+	p_wink "$LED_RED"
+	p_off "$LED_GRN"
+	exit 0
+}
+
+# ------------------------------------------------------------------- modes
+
+do_run() {
+	trap restore INT TERM
+	_last=""
+	while :; do
+		_s=$(evaluate)
+		set -- $_s
+		apply "$1" "$2"
+		if [ "$_s" != "$_last" ]; then
+			echo "$_s" > "$STATE_FILE"
+			logger -t meshled "$_s"
+			_last="$_s"
+		fi
+		sleep "$POLL"
+	done
+}
+
+do_status() {
+	_s=$(evaluate); set -- $_s
+	echo "red   : $1"
+	echo "green : $2"
+	shift 2
+	[ -n "$*" ] && echo "failed: $*"
+	echo
+	echo "uptime      : $(uptime | sed 's/.*up //;s/,.*load.*//')"
+	echo "throttled   : $(vcgencmd get_throttled 2>/dev/null)"
+	[ -f "$UV_LATCH" ] && echo "undervolt   : LATCHED ($(cat $UV_LATCH)) - clear with 'meshled clear'"
+	echo "overlay     : $(df -h /overlay 2>/dev/null | awk 'NR==2{print $5" used, "$4" free"}')"
+	echo "br-ahwlan   : $(ip -4 -o addr show br-ahwlan 2>/dev/null | awk '{print $4}')"
+	echo "wlan0       : $(cat /sys/class/net/wlan0/operstate 2>/dev/null || echo ABSENT)"
+	echo "11s peers   : $(halow_peers)"
+	echo "bat neigh   : $(halow_neighbours)"
+	echo "best tput   : $(halow_best_tput) Mbit/s (weak below $TPUT_WEAK)"
+}
+
+# Walk every pattern so the meaning of each one can be learned by eye.
+do_test() {
+	echo "each state is held for 12 s - watch the board"
+	for _c in "UNDERVOLT DARK|red 5Hz   = undervoltage" \
+	          "FAULT DARK|red 2.5Hz = system fault" \
+	          "BOOTING DARK|red 1Hz   = booting" \
+	          "OK RF_DEAD|red winking + green 5Hz   = radio dead" \
+	          "OK ALONE|red winking + green 2.5Hz = alone, searching" \
+	          "OK NO_BATMAN|red winking + green 1Hz   = paired but no batman" \
+	          "OK WEAK|red winking + green pulse  = linked, weak" \
+	          "OK LINKED|red winking + green solid  = all good"; do
+		_st=${_c%%|*}; _txt=${_c#*|}
+		echo "  $_txt"
+		apply ${_st}
+		sleep 12
+	done
+	echo "done - returning to live state"
+}
+
+case "${1:-run}" in
+	run)    do_run ;;
+	status) do_status ;;
+	test)   do_test ;;
+	clear)  rm -f "$UV_LATCH"; echo "undervoltage latch cleared" ;;
+	*)      echo "usage: meshled [run|status|test|clear]"; exit 1 ;;
+esac

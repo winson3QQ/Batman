@@ -79,7 +79,9 @@ See [`docs/openmanet.md`](docs/openmanet.md).
 | [`docs/building-the-driver.md`](docs/building-the-driver.md) | Build instructions and the gotchas |
 | [`docs/openmanet.md`](docs/openmanet.md) | The OpenMANET route |
 | [`docs/flashing-and-recovery.md`](docs/flashing-and-recovery.md) | **Why `dd`-flashing an OpenWrt image leaves the old config intact**, and how to tell |
+| [`docs/led-indicator.md`](docs/led-indicator.md) | Two-LED field status indicator — what each pattern means and why |
 | [`patches/`](patches/) | The `SPI_NO_CS` patch |
+| [`scripts/`](scripts/) | `meshled`, the daemon behind the LED indicator |
 | [`tools/`](tools/) | Python SPI diagnostic scripts (via `spidev`) |
 
 ## Also worth reading
@@ -96,9 +98,10 @@ normally run comes back green.
 - ✅ Root cause understood and patched
 - ✅ OpenMANET 1.7.0 `rpi4-mm6108-spi` flashed, overlay wiped, **booted and verified**
 - ✅ HaLow radio up under OpenMANET: `RPI RPI4-MM6108 (SPI)`, `wlan0`, 923 MHz @ 2 MHz BW, 27 dBm
-- ⏳ Mesh not yet configured (setup wizard pending)
-- ⏳ TX path not yet verified end-to-end
-- ⏳ Two-node mesh not yet brought up
+- ✅ Node 1 configured: 802.11s mesh + SAE, BATMAN_V, hostname `manet01`, 2.4 GHz off
+- ✅ Two-LED field status indicator installed and verified — [`docs/led-indicator.md`](docs/led-indicator.md)
+- ⏳ TX path not yet verified end-to-end (needs a second node or a spectrum analyser)
+- ⏳ Two-node mesh not yet brought up — second Pi 4 and SD card not ready
 
 ## License
 
