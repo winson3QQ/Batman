@@ -1,0 +1,35 @@
+diff --git a/spi.c b/spi.c
+index e5facbd..08c7d40 100644
+--- a/spi.c
++++ b/spi.c
+@@ -288,20 +288,25 @@ static void morse_spi_initsequence(struct morse_spi *mspi)
+ {
+ 	struct spi_device *spi = mspi->spi;
+ 
+-	spi->mode |= SPI_CS_HIGH;
++	/* LOCAL PATCH: on stock kernels >= 6.1 the SPI core sets SPI_CS_HIGH itself for
++	 * GPIO-descriptor chip-selects, which makes the original CS_HIGH trick a no-op and
++	 * runs the training clocks with CS *asserted*. Use SPI_NO_CS instead so the core
++	 * skips CS toggling entirely and the pin stays deasserted (high) during training.
++	 */
++	spi->mode |= SPI_NO_CS;
+ 	if (spi_setup(spi) != 0) {
+ 		/* Just warn; most cards work without it. */
+-		dev_warn(&spi->dev, "can't change chip-select polarity\n");
+-		spi->mode &= ~SPI_CS_HIGH;
++		dev_warn(&spi->dev, "can't disable chip-select for training\n");
++		spi->mode &= ~SPI_NO_CS;
+ 	} else {
+ 		/* We will send only 0xFF for training */
+ 		memset(mspi->data, 0xFF, MM610X_BUF_SIZE);
+ 		morse_spi_xfer(mspi, 18);
+ 
+-		spi->mode &= ~SPI_CS_HIGH;
++		spi->mode &= ~SPI_NO_CS;
+ 		if (spi_setup(spi) != 0) {
+ 			/* Wot, we can't get the same setup we had before? */
+-			dev_err(&spi->dev, "can't restore chip-select polarity\n");
++			dev_err(&spi->dev, "can't restore chip-select\n");
+ 		}
+ 	}
+ }

@@ -1,0 +1,9 @@
+*.img
+*.img.gz
+*.raw
+*.ko
+*.ko.xz
+*.o
+*.dtbo
+__pycache__/
+*.pyc
