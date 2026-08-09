@@ -218,8 +218,10 @@ restore() {
 # barely a second before this daemon overrides it, and it is lit 98% of the time.
 # Doubles as a bulb check. busybox `sleep` takes whole seconds only, hence 1+1.
 lamp_test() {
+	logger -t meshled "lamp test start (pid $$, uptime $(cut -d. -f1 /proc/uptime)s)"
 	p_off   "$LED_RED"; p_off   "$LED_GRN"; sleep 1
 	p_solid "$LED_RED"; p_solid "$LED_GRN"; sleep 1
+	logger -t meshled "lamp test end (uptime $(cut -d. -f1 /proc/uptime)s)"
 }
 
 # ------------------------------------------------------------------- modes

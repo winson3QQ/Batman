@@ -138,3 +138,10 @@ Two mistakes of my own worth recording:
   no longer matches its image byte-for-byte after you look at it.
 - **Verify read-back with `iflag=direct`** so you are reading the card and not the page
   cache.
+- **`sync` after writing to a running node, before cutting power.** Copying a file in
+  over SSH (`cat > /usr/bin/thing`) returns as soon as the data is in the page cache.
+  The overlay here is f2fs mounted `fsync_mode=posix`, so pulling the plug seconds
+  later can commit the inode without the data: the file comes back the right size and
+  the right mode, full of NULs. `wc -l` reports 0 while `ls -l` looks perfectly
+  normal, and `sh -n` even passes, because an empty script is valid. Anything started
+  from it exits immediately and procd respawns it in a loop.

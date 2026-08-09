@@ -150,6 +150,33 @@ still work. Measured cost is about 2.2 s of delayed indication, once, at boot.
 `sleep` in this busybox takes whole seconds only, which is why the phases are 1 s
 each rather than something tighter.
 
+### The first ~16 seconds are not yours
+
+Nothing in this document applies until Linux takes over the LEDs. Measured on a
+cold boot of a Pi 4 running OpenMANET:
+
+| uptime | who is driving | what you see |
+|---|---|---|
+| 0–16 s | firmware and bootloader | red per firmware, green flickering on SD access |
+| ~16 s | `/etc/rc.d/S96led` | red `UNMANAGED` (looks solid — it is lit 98 % of the time) |
+| 17–18 s | `meshled` lamp test | **both dark** |
+| 18–19 s | `meshled` lamp test | **both solid** |
+| 19 s on | `meshled` | the live state |
+
+`meshled` runs at `S99`, so anything you see before the both-dark phase belongs to
+the boot ROM, the bootloader or the kernel, and is not a status indication. This is
+worth stating because those early patterns are easy to misread as meaning
+something — the red LED in particular is under firmware control for the whole
+first stage.
+
+The one deterministic marker is the both-dark second. Everything after it is
+`meshled`; everything before it is not.
+
+Each lamp test writes `lamp test start` and `lamp test end` to syslog with a pid
+and an uptime, so `logread | grep -c 'lamp test start'` answers "how many times did
+this daemon start" directly. More than one per boot means procd respawned it —
+worth investigating, since the daemon should never exit on its own.
+
 ## What "system OK" actually checks
 
 | Group | Check | Failure tag |
