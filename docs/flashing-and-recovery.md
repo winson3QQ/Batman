@@ -38,8 +38,16 @@ bypasses that logic entirely — including the part that would have wiped the ov
 
 ## Fix
 
-After writing the image, zero the region from the end of the squashfs to the end of
-the rootfs partition.
+[`scripts/flash-card.sh`](../scripts/flash-card.sh) does all of the below —
+download, write, compute the offsets from the card itself, wipe, and verify the
+squashfs still mounts:
+
+```sh
+./scripts/flash-card.sh /dev/mmcblk0
+```
+
+By hand: after writing the image, zero the region from the end of the squashfs to
+the end of the rootfs partition.
 
 ```sh
 # 1. end of squashfs = p2 start + squashfs bytes_used

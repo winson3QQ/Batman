@@ -82,7 +82,7 @@ See [`docs/openmanet.md`](docs/openmanet.md).
 | [`docs/led-indicator.md`](docs/led-indicator.md) | Two-LED field status indicator — what each pattern means and why |
 | [`docs/cloning-a-node.md`](docs/cloning-a-node.md) | **Building the second node by copying the first**, and the seven values that must not be copied |
 | [`patches/`](patches/) | The `SPI_NO_CS` patch |
-| [`scripts/`](scripts/) | `meshled` (LED daemon), `meshtest` (mesh health report), the uci cloning tools |
+| [`scripts/`](scripts/) | `flash-card.sh` (write + actually clear a card), `meshled` (LED daemon), `meshtest` (mesh health report), the uci cloning tools |
 | [`tools/`](tools/) | Python SPI diagnostic scripts (via `spidev`) |
 
 ## Also worth reading
