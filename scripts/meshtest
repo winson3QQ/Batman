@@ -1,0 +1,127 @@
+#!/bin/sh
+#
+# meshtest - one-shot health report for a two-or-more node HaLow mesh.
+#
+# Walks the layers bottom-up and stops being useful exactly where the mesh
+# stops working, so the last section that printed data tells you which layer
+# failed. Run it on either node; it discovers peers by itself.
+#
+#   usage: meshtest [-q]      -q skips the throughput test (which takes ~10 s
+#                             per peer and briefly saturates the link)
+#
+
+QUICK=0
+[ "$1" = "-q" ] && QUICK=1
+
+say() { echo; echo "── $* ────────────────────────────────"; }
+val() { printf "  %-22s %s\n" "$1" "$2"; }
+
+# ---------------------------------------------------------------- 0. identity
+say "0. 本機"
+val hostname   "$(cat /proc/sys/kernel/hostname)"
+val uptime     "$(cut -d. -f1 /proc/uptime)s"
+val br-ahwlan  "$(ip -4 -o addr show br-ahwlan 2>/dev/null | awk '{print $4}')"
+val wlan0-mac  "$(cat /sys/class/net/wlan0/address 2>/dev/null)"
+val bat0-mac   "$(cat /sys/class/net/bat0/address 2>/dev/null)"
+val 電源       "$(vcgencmd get_throttled 2>/dev/null)"
+val 溫度       "$(vcgencmd measure_temp 2>/dev/null)"
+
+# ------------------------------------------------------------------- 1. radio
+say "1. 射頻（L1）"
+if [ ! -d /sys/class/net/wlan0 ]; then
+	echo "  ❌ wlan0 不存在 — 驅動沒起來。看 dmesg | grep morse"
+	exit 1
+fi
+val operstate "$(cat /sys/class/net/wlan0/operstate)"
+val type      "$(iw dev wlan0 info 2>/dev/null | awk '/type/{print $2}')"
+val txpower   "$(iw dev wlan0 info 2>/dev/null | awk '/txpower/{print $2, $3}')"
+morse_cli -i wlan0 channel 2>/dev/null | sed -n '2,5p' | sed 's/^\s*/  /'
+[ "$(cat /sys/class/net/wlan0/operstate)" = up ] || {
+	echo "  ❌ wlan0 存在但沒 up"; exit 1; }
+
+# ------------------------------------------------------------- 2. 11s peering
+say "2. 802.11s 配對（L2）"
+PEERS=$(iw dev wlan0 station dump 2>/dev/null | grep -c '^Station')
+val peers "$PEERS"
+if [ "$PEERS" -eq 0 ]; then
+	cat <<'EOF'
+  ❌ 沒有配對到任何節點。依序懷疑：
+     1. 對方沒開機 / 不在射程內
+     2. 距離太近（<2 m），接收前端被灌爆 → 拉開到 3-5 m 再試
+     3. 本機 TX 沒真的射出去（VDD_FEM 供電）
+     4. 參數不合：mesh_id / 頻率 / 頻寬 / encryption / key
+        兩台都跑：uci get wireless.default_radio3.mesh_id
+                   morse_cli -i wlan0 channel
+EOF
+	exit 1
+fi
+iw dev wlan0 station dump 2>/dev/null | awk '
+	/^Station/       {mac=$2; printf "\n  peer %s\n", mac}
+	/signal:/        {printf "    %-18s %s %s\n", "signal", $2, $3}
+	/tx bitrate:/    {printf "    %-18s %s %s\n", "tx bitrate", $3, $4}
+	/rx bitrate:/    {printf "    %-18s %s %s\n", "rx bitrate", $3, $4}
+	/mesh plink:/    {printf "    %-18s %s\n", "plink", $3}
+	/inactive time:/ {printf "    %-18s %s ms\n", "inactive", $3}'
+
+# ----------------------------------------------------------------- 3. batman
+say "3. batman-adv 路由（L3）"
+NEIGH=$(batctl n 2>/dev/null | sed '1,2d' | grep -c ':')
+ORIG=$(batctl o 2>/dev/null | sed '1,2d' | grep -c ':')
+val 鄰居 "$NEIGH"
+val originators "$ORIG"
+val routing_algo "$(cat /sys/module/batman_adv/parameters/routing_algo 2>/dev/null)"
+val bat0-ifaces "$(batctl if 2>/dev/null | tr '\n' ' ')"
+if [ "$NEIGH" -eq 0 ]; then
+	cat <<'EOF'
+  ❌ 配對成功但 batman 看不到鄰居 —— 這是 NO_BATMAN。
+     移動位置完全沒用，問題在設定。兩台比對：
+       cat /sys/module/batman_adv/parameters/routing_algo   # 必須都是 BATMAN_V
+       batctl if                                            # wlan0 要 active
+       uci get mesh11sd.mesh_params.mesh_fwding             # 必須都是 0
+     群播被擋掉也會這樣（batman 的 OGM 走群播）。
+EOF
+	exit 1
+fi
+batctl n 2>/dev/null | sed '1,2d' | sed 's/^/  /'
+echo "  --- originators ---"
+batctl o 2>/dev/null | sed '1,2d' | sed 's/^/  /'
+
+# ------------------------------------------------------- 4. does data move?
+say "4. 實際連通性 ★"
+# batctl ping talks to the other bat0 directly, so it proves the mesh itself
+# carries frames without involving IP, bridging or the firewall.
+for mac in $(batctl n 2>/dev/null | sed '1,2d' | awk '{print $1}' | grep ':'); do
+	echo "  batctl ping $mac"
+	batctl ping -c 5 "$mac" 2>&1 | tail -3 | sed 's/^/    /'
+done
+echo "  --- 跨節點的 client（DAT）---"
+batctl dc 2>/dev/null | sed '1,3d' | head -8 | sed 's/^/    /'
+
+# ------------------------------------------------------------ 5. throughput
+if [ "$QUICK" -eq 0 ]; then
+	say "5. 吞吐量（校準 TPUT_WEAK 用）"
+	for mac in $(batctl n 2>/dev/null | sed '1,2d' | awk '{print $1}' | grep ':'); do
+		echo "  batctl tp $mac"
+		batctl tp "$mac" 2>&1 | sed 's/^/    /'
+	done
+	echo
+	echo "  → 把上面的實測值記下來，TPUT_WEAK 設在約一半的位置："
+	echo "    sed -i 's/^TPUT_WEAK=.*/TPUT_WEAK=<值>/' /usr/bin/meshled"
+	echo "    /etc/init.d/meshled restart"
+else
+	say "5. 吞吐量 — 已跳過（-q）"
+fi
+
+# ----------------------------------------------------------------- 6. LED
+say "6. LED 指示器"
+val state    "$(cat /tmp/meshled.state 2>/dev/null || echo '（meshled 沒在跑）')"
+val 實例     "$(ps w | grep -c '[m]eshled run')"
+val PWR      "$(sed -n 's/.*\[\(.*\)\].*/\1/p' /sys/class/leds/PWR/trigger) bright=$(cat /sys/class/leds/PWR/brightness)"
+val ACT      "$(sed -n 's/.*\[\(.*\)\].*/\1/p' /sys/class/leds/ACT/trigger) on=$(cat /sys/class/leds/ACT/delay_on 2>/dev/null)/off=$(cat /sys/class/leds/ACT/delay_off 2>/dev/null)"
+
+say "結論"
+if [ "$NEIGH" -gt 0 ]; then
+	echo "  ✅ 組網成功：$PEERS 個 11s peer、$NEIGH 個 batman 鄰居、$ORIG 個 originator"
+	echo "     HaLow TX 確認可以發射（batman 鄰居的存在就是雙向通訊的證明）"
+fi
+echo

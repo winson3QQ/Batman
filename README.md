@@ -80,8 +80,9 @@ See [`docs/openmanet.md`](docs/openmanet.md).
 | [`docs/openmanet.md`](docs/openmanet.md) | The OpenMANET route |
 | [`docs/flashing-and-recovery.md`](docs/flashing-and-recovery.md) | **Why `dd`-flashing an OpenWrt image leaves the old config intact**, and how to tell |
 | [`docs/led-indicator.md`](docs/led-indicator.md) | Two-LED field status indicator — what each pattern means and why |
+| [`docs/cloning-a-node.md`](docs/cloning-a-node.md) | **Building the second node by copying the first**, and the seven values that must not be copied |
 | [`patches/`](patches/) | The `SPI_NO_CS` patch |
-| [`scripts/`](scripts/) | `meshled`, the daemon behind the LED indicator |
+| [`scripts/`](scripts/) | `meshled` (LED daemon), `meshtest` (mesh health report), the uci cloning tools |
 | [`tools/`](tools/) | Python SPI diagnostic scripts (via `spidev`) |
 
 ## Also worth reading
@@ -100,8 +101,11 @@ normally run comes back green.
 - ✅ HaLow radio up under OpenMANET: `RPI RPI4-MM6108 (SPI)`, `wlan0`, 923 MHz @ 2 MHz BW, 27 dBm
 - ✅ Node 1 configured: 802.11s mesh + SAE, BATMAN_V, hostname `manet01`, 2.4 GHz off
 - ✅ Two-LED field status indicator installed and verified — [`docs/led-indicator.md`](docs/led-indicator.md)
-- ⏳ TX path not yet verified end-to-end (needs a second node or a spectrum analyser)
-- ⏳ Two-node mesh not yet brought up — second Pi 4 and SD card not ready
+- ✅ Node 2 built by **cloning node 1's uci config**, no wizard — [`docs/cloning-a-node.md`](docs/cloning-a-node.md)
+- ✅ Second MM6108 set probes and loads firmware, radio up at 923 MHz / 2 MHz
+- ⏳ Two nodes not yet powered simultaneously, so the mesh has not been formed
+- ⏳ TX still not proven to radiate — the first `batctl n` neighbour will settle it
+- ⏳ `meshtest` written but not yet run against a real peer
 
 ## License
 
