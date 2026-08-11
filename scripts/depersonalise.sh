@@ -25,9 +25,12 @@ DEF_COUNTRY='US'                 # regdomain - installer MUST set their region
 echo "==> root password -> EMPTY (factory style; user MUST set one on first login)"
 sed -i 's|^root:[^:]*:|root::|' /etc/shadow
 
-echo "==> removing maintainer SSH keys and host keys"
+echo "==> removing maintainer authorized_keys (host keys: see first-boot hook)"
 rm -f /etc/dropbear/authorized_keys /root/.ssh/authorized_keys
-rm -f /etc/dropbear/dropbear_*_host_key      # dropbear regenerates per-device
+# NOTE: do NOT delete the SSH host keys here. On a live node being imaged over
+# the network that instantly kills dropbear (new connections reset at kex) and
+# locks you out mid-dd. The first-boot hook below drops them so each flashed
+# card still regenerates its own unique host keys.
 # self-signed TLS certs regenerate on first service start if absent
 rm -f /etc/uhttpd.crt /etc/uhttpd.key 2>/dev/null || true
 
@@ -59,11 +62,12 @@ logread -c 2>/dev/null || true
 echo "==> installing first-boot identity hook"
 cat > /etc/uci-defaults/99-halow-identity <<'FIRSTBOOT'
 #!/bin/sh
-# Runs once on the end user's first boot, then OpenWrt deletes it. Gives the
-# node a unique hostname from its HaLow MAC so many cards off one image don't
-# collide (halow-c6d3, halow-45d7, ...).
-mac=$(cat /sys/class/net/wlan0/address 2>/dev/null)
-[ -n "$mac" ] || mac=$(cat /sys/class/net/eth0/address 2>/dev/null)
+# Runs once on the end user's first boot, then OpenWrt deletes it. Personalises
+# the card so many nodes off one image do not collide.
+# 1. unique hostname from eth0's MAC (eth0 is up this early in boot; wlan0/SPI
+#    is not, so prefer eth0) e.g. halow-47ee
+mac=$(cat /sys/class/net/eth0/address 2>/dev/null)
+[ -n "$mac" ] || mac=$(cat /sys/class/net/wlan0/address 2>/dev/null)
 sfx=$(echo "$mac" | sed 's/://g' | cut -c 9-12)
 [ -n "$sfx" ] || sfx=$(cut -c1-4 /proc/sys/kernel/random/uuid)
 host="halow-$sfx"
@@ -71,6 +75,9 @@ uci set system.@system[0].hostname="$host"
 uci commit system
 echo "$host" > /proc/sys/kernel/hostname 2>/dev/null || true
 /etc/init.d/avahi-daemon restart 2>/dev/null || true
+# 2. unique SSH host keys: drop the master's now; dropbear regenerates fresh
+#    ones when it starts, which is later in boot than this uci-defaults hook.
+rm -f /etc/dropbear/dropbear_*_host_key
 exit 0
 FIRSTBOOT
 chmod +x /etc/uci-defaults/99-halow-identity
