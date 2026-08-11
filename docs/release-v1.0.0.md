@@ -66,8 +66,11 @@ The image ships with **no authorized SSH keys** — add your own after first log
 
 1. Download `halow-node-v1.0.0.img.gz` from this release and verify it:
    ```
-   sha256sum halow-node-v1.0.0.img.gz   # compare to the value in this release
+   sha256sum halow-node-v1.0.0.img.gz
+   # expect: 6d04f4d8a4a49dcf4dbd6113e1d202eb4ec0565e40baaa0557fdf74c7a98150b
    ```
+   (57 MB download; expands to a 4.37 GB image = boot + 4 GB root/overlay. Flash
+   to any card ≥ 8 GB — the extra space is left unused, the overlay is fixed 4 GB.)
 2. Write it to the card:
    - **Raspberry Pi Imager** → *Choose OS* → *Use custom* → select the `.img.gz` → *Write*, **or**
    - **balenaEtcher** (select the `.gz` directly), **or** command line:
