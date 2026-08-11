@@ -49,7 +49,7 @@ Use a solid 5 V/3 A mains supply for bring-up.
 
 | Setting | Default | Change to |
 |---|---|---|
-| root password | `halowmesh` | your own (`passwd`) |
+| root password | **(empty)** | **set one immediately** (`passwd`) |
 | mesh id | `halow-mesh` | your own — **identical on every node** |
 | mesh SAE key | `halow-changeme` | your own — **identical on every node** |
 | 5 GHz onboarding AP SSID | `halow-setup` | optional |
@@ -87,7 +87,7 @@ settle into the live state.
 Reach the node either way:
 
 - **Wi-Fi:** join `halow-setup` / `halow-changeme`, then
-  `ssh root@halow-XXXX.local` (password `halowmesh`).
+  `ssh root@halow-XXXX.local` — **the root password is empty, just press Enter**.
   The `XXXX` is the last 4 of the HaLow MAC; if unsure, `ping halow-*.local`
   won't wildcard — instead connect Ethernet (below) or check your phone's AP list.
 - **Ethernet:** patch eth0 to your laptop; the node runs DHCP and hands you a
@@ -180,8 +180,11 @@ sed -i 's/^SNR_WEAK=.*/SNR_WEAK=<dB>/' /usr/bin/meshled && /etc/init.d/meshled r
 ## 9. Known limitations
 
 - **Hardware-locked** to the BOM in §1.
-- **Defaults are shared** — every unflashed image has the same root password and
-  mesh key. Change them (§4) before any real deployment.
+- **Ships open** — the root password is **empty** and no SSH keys are baked in
+  (OpenMANET factory style), and the mesh key is a shared default. Until you set
+  a password (§4 step 1) and your own mesh key, anyone on the network can root a
+  freshly-booted node. Do it immediately; treat first boot as a provisioning
+  step on a trusted network.
 - **`SNR_WEAK` is an uncalibrated placeholder** (20 dB) — fine to run, calibrate
   per antenna set for accurate WEAK warnings.
 - **Regulatory:** channel 42 / country `US` is a default, not advice. Setting the

@@ -8,13 +8,13 @@
 #
 # After it finishes: power off (do NOT reboot this node) and image the card.
 #
-#   WARNING: this rewrites root password / mesh key / AP key to defaults and
-#   removes authorized_keys. Only run it on the copy you intend to publish.
+#   WARNING: this empties the root password and rewrites mesh key / AP key to
+#   defaults, and removes authorized_keys. Only run it on the copy you publish.
 #
 set -e
 
 # ---- documented defaults (keep in sync with docs/release-v1.0.0.md) --------
-DEF_ROOT_PW='halowmesh'          # console/SSH root password
+# root password ships EMPTY (OpenMANET factory style) - no baked credentials.
 DEF_MESH_ID='halow-mesh'         # 802.11s mesh id (same on every node)
 DEF_MESH_KEY='halow-changeme'    # SAE mesh key   (same on every node, >=8 ch)
 DEF_AP_SSID='halow-setup'        # 5 GHz onboarding AP
@@ -22,9 +22,8 @@ DEF_AP_KEY='halow-changeme'      # 5 GHz AP key
 DEF_CHANNEL='42'                 # S1G ch 42 = 923 MHz @ 2 MHz
 DEF_COUNTRY='US'                 # regdomain - installer MUST set their region
 
-echo "==> resetting credentials to defaults"
-printf '%s\n%s\n' "$DEF_ROOT_PW" "$DEF_ROOT_PW" | passwd root >/dev/null 2>&1 \
-	&& echo "    root password -> '$DEF_ROOT_PW'"
+echo "==> root password -> EMPTY (factory style; user MUST set one on first login)"
+sed -i 's|^root:[^:]*:|root::|' /etc/shadow
 
 echo "==> removing maintainer SSH keys and host keys"
 rm -f /etc/dropbear/authorized_keys /root/.ssh/authorized_keys
