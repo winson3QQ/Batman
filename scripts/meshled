@@ -129,15 +129,22 @@ halow_peers() {   # 802.11s peering count
 	iw dev wlan0 station dump 2>/dev/null | grep -c '^Station'
 }
 
-halow_neighbours() {  # batman-adv direct neighbours (2 header lines)
-	_n=$(batctl n 2>/dev/null | sed '1,2d' | grep -c '[0-9a-f]:[0-9a-f]')
+halow_neighbours() {  # batman-adv direct neighbours
+	# Count neighbour rows by their last-seen field (e.g. "0.370s"). This is
+	# robust to /etc/bat-hosts name resolution: alfred-bat-hosts rewrites the
+	# neighbour MAC to a name like "manet02_wlan0", so matching a MAC pattern
+	# (xx:xx) miscounts to 0 and falsely reports NO_BATMAN. It also no longer
+	# depends on the header being exactly 2 lines.
+	_n=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
 	echo "${_n:-0}"
 }
 
 halow_best_tput() {   # Mbit/s to the best direct neighbour, "" if unknown
-	batctl n 2>/dev/null | sed '1,2d' | awk '
-		{ for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+\.?[0-9]*(Mbit)?$/) {
-			gsub("Mbit","",$i); if ($i+0 > m) m = $i+0 } }
+	# BATMAN_V prints the speed in parentheses, e.g. "(        7.1)", so split
+	# on parens and read the number inside. Works whether the neighbour shows
+	# as a MAC or a bat-hosts name.
+	batctl n 2>/dev/null | grep -E '[0-9]+\.[0-9]+s' | awk -F'[()]' '
+		{ v = $2 + 0; if (v > m) m = v }
 		END { if (m > 0) print m }'
 }
 
