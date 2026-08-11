@@ -62,11 +62,18 @@ iw dev wlan0 station dump 2>/dev/null | awk '
 	/rx bitrate:/    {printf "    %-18s %s %s\n", "rx bitrate", $3, $4}
 	/mesh plink:/    {printf "    %-18s %s\n", "plink", $3}
 	/inactive time:/ {printf "    %-18s %s ms\n", "inactive", $3}'
+# SNR = strongest per-peer signal minus the radio noise floor. This is what
+# meshled now uses for the WEAK/LINKED split; watch it during a walk-test.
+_sig=$(iw dev wlan0 station dump 2>/dev/null | awk '/signal avg:/{v=$3+0; if(!s||v>m){m=v;s=1}} END{if(s)print m}')
+_noise=$(morse_cli -i wlan0 stats 2>/dev/null | awk -F: '/^Noise \(dBm\)/{gsub(/ /,"",$2);print $2;exit}')
+[ -n "$_sig" ] && [ -n "$_noise" ] && val SNR "$(( _sig - _noise )) dB (signal $_sig / noise $_noise dBm)"
 
 # ----------------------------------------------------------------- 3. batman
 say "3. batman-adv 路由（L3）"
-NEIGH=$(batctl n 2>/dev/null | sed '1,2d' | grep -c ':')
-ORIG=$(batctl o 2>/dev/null | sed '1,2d' | grep -c ':')
+# Count rows by the always-present last-seen field (e.g. "0.370s"): robust to
+# /etc/bat-hosts, which shows neighbours as names (manet02_wlan0) not MACs.
+NEIGH=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
+ORIG=$(batctl o 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
 val 鄰居 "$NEIGH"
 val originators "$ORIG"
 val routing_algo "$(cat /sys/module/batman_adv/parameters/routing_algo 2>/dev/null)"
@@ -90,7 +97,7 @@ batctl o 2>/dev/null | sed '1,2d' | sed 's/^/  /'
 say "4. 實際連通性 ★"
 # batctl ping talks to the other bat0 directly, so it proves the mesh itself
 # carries frames without involving IP, bridging or the firewall.
-for mac in $(batctl n 2>/dev/null | sed '1,2d' | awk '{print $1}' | grep ':'); do
+for mac in $(batctl n 2>/dev/null | grep -E '[0-9]+\.[0-9]+s' | awk '{print $1}'); do
 	echo "  batctl ping $mac"
 	batctl ping -c 5 "$mac" 2>&1 | tail -3 | sed 's/^/    /'
 done
@@ -100,13 +107,15 @@ batctl dc 2>/dev/null | sed '1,3d' | head -8 | sed 's/^/    /'
 # ------------------------------------------------------------ 5. throughput
 if [ "$QUICK" -eq 0 ]; then
 	say "5. 吞吐量（校準 TPUT_WEAK 用）"
-	for mac in $(batctl n 2>/dev/null | sed '1,2d' | awk '{print $1}' | grep ':'); do
+	for mac in $(batctl n 2>/dev/null | grep -E '[0-9]+\.[0-9]+s' | awk '{print $1}'); do
 		echo "  batctl tp $mac"
 		batctl tp "$mac" 2>&1 | sed 's/^/    /'
 	done
 	echo
-	echo "  → 把上面的實測值記下來，TPUT_WEAK 設在約一半的位置："
-	echo "    sed -i 's/^TPUT_WEAK=.*/TPUT_WEAK=<值>/' /usr/bin/meshled"
+	echo "  註：meshled 的 WEAK/LINKED 已改用 SNR，不是這個吞吐值 —— 吞吐"
+	echo "  在此僅供參考。要校準綠燈，走測時記下第 2 段的 SNR 在綠燈由恆亮"
+	echo "  轉眨眼時的值，設 SNR_WEAK（約在該值再高 2-3 dB 當門檻）："
+	echo "    sed -i 's/^SNR_WEAK=.*/SNR_WEAK=<dB>/' /usr/bin/meshled"
 	echo "    /etc/init.d/meshled restart"
 else
 	say "5. 吞吐量 — 已跳過（-q）"
