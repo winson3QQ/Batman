@@ -21,10 +21,18 @@ POLL=5                  # seconds between state evaluations
 BOOT_GRACE=90           # below this uptime, failing checks mean "still booting"
 OVERLAY_FULL_PCT=90     # overlay usage above this = system fault
 
-# Link-quality threshold, Mbit/s, from `batctl n` speed column.
-# PLACEHOLDER - calibrate once a second node is on the air. S1G at 2 MHz BW
-# realistically lands somewhere in the 1-5 Mbit/s range.
-TPUT_WEAK=2.0
+# Link-quality thresholds for the LINKED/WEAK split. Driven by SNR (dB), not
+# throughput: SNR tracks antenna aim in real time and carries far fewer
+# confounds than a throughput estimate (load, contention, half-duplex, the
+# discrete MCS steps rate-control walks through). The peer/batman gates above
+# WEAK are untouched, so "solid green" still means a peer is linked and routed.
+# PLACEHOLDER values - calibrate with a walk-test: carry the second node out
+# and note the SNR where the link starts to hurt. MCS7 @ 2 MHz needs ~25 dB.
+SNR_WEAK=20        # dB: LINKED at/above, WEAK below
+SNR_HYST=3         # dB: extra margin to climb back to LINKED (anti-flicker)
+NOISE_DEFAULT=-90  # dBm: assumed noise floor if the radio won't report one
+RETRY_WEAK_PCT=30  # secondary gate: an interval retransmitting more than this
+RETRY_MIN_PKTS=200 # % over >= this many tx packets is WEAK despite good SNR
 
 STATE_FILE=/tmp/meshled.state
 UV_LATCH=/tmp/meshled.undervolt   # sticky undervoltage, cleared by `meshled clear`
@@ -139,13 +147,57 @@ halow_neighbours() {  # batman-adv direct neighbours
 	echo "${_n:-0}"
 }
 
-halow_best_tput() {   # Mbit/s to the best direct neighbour, "" if unknown
-	# BATMAN_V prints the speed in parentheses, e.g. "(        7.1)", so split
-	# on parens and read the number inside. Works whether the neighbour shows
-	# as a MAC or a bat-hosts name.
-	batctl n 2>/dev/null | grep -E '[0-9]+\.[0-9]+s' | awk -F'[()]' '
-		{ v = $2 + 0; if (v > m) m = v }
-		END { if (m > 0) print m }'
+halow_signal() {  # best per-peer signal average, dBm (neg int), "" if none
+	# Per-peer "signal avg" only exists while a station is actually peered, so
+	# it can never fake a link from ambient noise. Pick the strongest (least
+	# negative) across peers - that is the link we would route over.
+	iw dev wlan0 station dump 2>/dev/null | awk '
+		/signal avg:/ { v = $3 + 0; if (!seen || v > m) { m = v; seen = 1 } }
+		END { if (seen) print m }'
+}
+
+halow_noise() {   # radio noise floor, dBm (neg int), "" if unknown
+	morse_cli -i wlan0 stats 2>/dev/null | awk -F: '
+		/^Noise \(dBm\)/ { gsub(/ /, "", $2); print $2; exit }'
+}
+
+halow_snr() {     # dB, "" if no peer signal to measure
+	_sig=$(halow_signal); [ -n "$_sig" ] || return
+	_noise=$(halow_noise); [ -n "$_noise" ] || _noise=$NOISE_DEFAULT
+	echo $(( _sig - _noise ))
+}
+
+halow_retry_pct() {  # tx retransmit % over the last poll interval, "" if idle
+	# Real-time rate from the delta of cumulative counters between polls; a
+	# lifetime average would never react. Silent on idle intervals so a quiet
+	# link is never called WEAK for lack of traffic.
+	_now=$(iw dev wlan0 station dump 2>/dev/null | awk '
+		/tx packets:/ { p += $3 } /tx retries:/ { r += $3 }
+		END { if (p) print p" "r }')
+	[ -n "$_now" ] || return
+	_prev=$(cat /tmp/meshled.txstat 2>/dev/null)
+	echo "$_now" > /tmp/meshled.txstat
+	[ -n "$_prev" ] || return
+	set -- $_now;  _p=$1; _r=$2
+	set -- $_prev; _pp=$1; _pr=$2
+	_dp=$(( _p - _pp )); _dr=$(( _r - _pr ))
+	[ "$_dp" -ge "$RETRY_MIN_PKTS" ] || return   # idle interval -> no opinion
+	echo $(( _dr * 100 / _dp ))
+}
+
+# LINKED vs WEAK for an already-peered, already-routed link. SNR is primary
+# and immediate; a busy high-retransmit interval downgrades to WEAK even on
+# paper-good SNR (signal there but frames not landing). Hysteresis via the
+# previous green state stops boundary flicker.
+link_quality() {
+	_snr=$(halow_snr)
+	[ -n "$_snr" ] || { echo LINKED; return; }   # no reading -> don't cry wolf
+	_thr=$SNR_WEAK
+	[ "$(cut -d' ' -f2 "$STATE_FILE" 2>/dev/null)" = WEAK ] && _thr=$(( SNR_WEAK + SNR_HYST ))
+	[ "$_snr" -lt "$_thr" ] && { echo WEAK; return; }
+	_rp=$(halow_retry_pct)
+	[ -n "$_rp" ] && [ "$_rp" -ge "$RETRY_WEAK_PCT" ] && { echo WEAK; return; }
+	echo LINKED
 }
 
 radio_up() {
@@ -181,12 +233,7 @@ evaluate() {
 		elif [ "${_n:-0}" -eq 0 ]; then
 			_grn=NO_BATMAN
 		else
-			_t=$(halow_best_tput)
-			if [ -n "$_t" ] && [ "$(awk -v a="$_t" -v b="$TPUT_WEAK" 'BEGIN{print (a<b)?1:0}')" = 1 ]; then
-				_grn=WEAK
-			else
-				_grn=LINKED
-			fi
+			_grn=$(link_quality)     # SNR-driven; gates above are unchanged
 		fi
 	fi
 
@@ -265,7 +312,9 @@ do_status() {
 	echo "wlan0       : $(cat /sys/class/net/wlan0/operstate 2>/dev/null || echo ABSENT)"
 	echo "11s peers   : $(halow_peers)"
 	echo "bat neigh   : $(halow_neighbours)"
-	echo "best tput   : $(halow_best_tput) Mbit/s (weak below $TPUT_WEAK)"
+	echo "signal      : $(halow_signal) dBm   noise: $(halow_noise) dBm"
+	echo "SNR         : $(halow_snr) dB (weak below $SNR_WEAK, hyst $SNR_HYST)"
+	echo "tx retry    : $(iw dev wlan0 station dump 2>/dev/null | awk '/tx packets:/{p+=$3}/tx retries:/{r+=$3}END{if(p)printf "%d%% lifetime", r*100/p}')  (weak >= $RETRY_WEAK_PCT% when busy)"
 }
 
 # Walk every pattern so the meaning of each one can be learned by eye.
