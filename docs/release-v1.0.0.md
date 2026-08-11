@@ -51,9 +51,9 @@ Use a solid 5 V/3 A mains supply for bring-up.
 |---|---|---|
 | root password | **(empty)** | **set one immediately** (`passwd`) |
 | mesh id | `halow-mesh` | your own — **identical on every node** |
-| mesh SAE key | `halow-changeme` | your own — **identical on every node** |
+| mesh SAE key | `CHANGE-ME-NOW` | your own — **identical on every node** |
 | 5 GHz onboarding AP SSID | `halow-setup` | optional |
-| 5 GHz AP key | `halow-changeme` | your own |
+| 5 GHz AP key | `CHANGE-ME-NOW` | your own |
 | regdomain / channel | `US` / ch 42 (923 MHz) | **your country — legal requirement** |
 | hostname | `halow-<mac4>` (auto) | optional |
 | `meshled` `SNR_WEAK` | `20` dB (placeholder) | calibrate by walk-test (§6) |
@@ -84,9 +84,20 @@ settle into the live state.
 
 ## 4. First login & get on your mesh
 
+**Addresses — there is no fixed IP.** `openmanetd` assigns the node a dynamic
+address inside `10.41.0.0/16` on every boot (factory-fresh it starts at
+`10.41.254.1`, then moves). Don't memorise the IP — use the mDNS name
+`halow-XXXX.local`. Management URLs:
+
+| URL | what |
+|---|---|
+| `http://halow-XXXX.local:8080` | openmanetd — dashboard, topology, mesh peers, link quality |
+| `https://halow-XXXX.local:8081` | browser push-to-talk (needs microphone) |
+| `https://halow-XXXX.local` | LuCI — advanced OpenWrt settings (self-signed cert warning) |
+
 Reach the node either way:
 
-- **Wi-Fi:** join `halow-setup` / `halow-changeme`, then
+- **Wi-Fi:** join `halow-setup` / `CHANGE-ME-NOW`, then
   `ssh root@halow-XXXX.local` — **the root password is empty, just press Enter**.
   The `XXXX` is the last 4 of the HaLow MAC; if unsure, `ping halow-*.local`
   won't wildcard — instead connect Ethernet (below) or check your phone's AP list.

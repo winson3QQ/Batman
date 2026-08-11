@@ -16,9 +16,9 @@ set -e
 # ---- documented defaults (keep in sync with docs/release-v1.0.0.md) --------
 # root password ships EMPTY (OpenMANET factory style) - no baked credentials.
 DEF_MESH_ID='halow-mesh'         # 802.11s mesh id (same on every node)
-DEF_MESH_KEY='halow-changeme'    # SAE mesh key   (same on every node, >=8 ch)
+DEF_MESH_KEY='CHANGE-ME-NOW'    # SAE mesh key   (same on every node, >=8 ch)
 DEF_AP_SSID='halow-setup'        # 5 GHz onboarding AP
-DEF_AP_KEY='halow-changeme'      # 5 GHz AP key
+DEF_AP_KEY='CHANGE-ME-NOW'      # 5 GHz AP key
 DEF_CHANNEL='42'                 # S1G ch 42 = 923 MHz @ 2 MHz
 DEF_COUNTRY='US'                 # regdomain - installer MUST set their region
 
