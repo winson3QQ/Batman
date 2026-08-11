@@ -65,8 +65,10 @@ iw dev wlan0 station dump 2>/dev/null | awk '
 
 # ----------------------------------------------------------------- 3. batman
 say "3. batman-adv 路由（L3）"
-NEIGH=$(batctl n 2>/dev/null | sed '1,2d' | grep -c ':')
-ORIG=$(batctl o 2>/dev/null | sed '1,2d' | grep -c ':')
+# Count rows by the always-present last-seen field (e.g. "0.370s"): robust to
+# /etc/bat-hosts, which shows neighbours as names (manet02_wlan0) not MACs.
+NEIGH=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
+ORIG=$(batctl o 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
 val 鄰居 "$NEIGH"
 val originators "$ORIG"
 val routing_algo "$(cat /sys/module/batman_adv/parameters/routing_algo 2>/dev/null)"
@@ -90,7 +92,7 @@ batctl o 2>/dev/null | sed '1,2d' | sed 's/^/  /'
 say "4. 實際連通性 ★"
 # batctl ping talks to the other bat0 directly, so it proves the mesh itself
 # carries frames without involving IP, bridging or the firewall.
-for mac in $(batctl n 2>/dev/null | sed '1,2d' | awk '{print $1}' | grep ':'); do
+for mac in $(batctl n 2>/dev/null | grep -E '[0-9]+\.[0-9]+s' | awk '{print $1}'); do
 	echo "  batctl ping $mac"
 	batctl ping -c 5 "$mac" 2>&1 | tail -3 | sed 's/^/    /'
 done
@@ -100,7 +102,7 @@ batctl dc 2>/dev/null | sed '1,3d' | head -8 | sed 's/^/    /'
 # ------------------------------------------------------------ 5. throughput
 if [ "$QUICK" -eq 0 ]; then
 	say "5. 吞吐量（校準 TPUT_WEAK 用）"
-	for mac in $(batctl n 2>/dev/null | sed '1,2d' | awk '{print $1}' | grep ':'); do
+	for mac in $(batctl n 2>/dev/null | grep -E '[0-9]+\.[0-9]+s' | awk '{print $1}'); do
 		echo "  batctl tp $mac"
 		batctl tp "$mac" 2>&1 | sed 's/^/    /'
 	done
