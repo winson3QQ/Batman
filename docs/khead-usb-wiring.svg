@@ -1,0 +1,71 @@
+<svg viewBox="0 0 980 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="ti de">
+<title id="ti">托咪 K頭 → USB 音效卡 與 Pi GPIO 接線圖</title>
+<desc id="de">托咪的 K 公頭插進 K 母座，母座拉出四條線：喇叭(綠)與麥克風(橘)各經一個免焊 3.5mm 公頭插進 USB 音效卡的耳機孔與 Mic 孔，音效卡不用拆不用焊；PTT(紅)拉到 Pi 的 GPIO6，地(灰)共用；音效卡以 USB 接上 Pi 4。</desc>
+<style>
+  :root{ --box:#f4f4f5; --stroke:#c9c9cf; --text:#18181b; --muted:#6b7280; --card:#eaf0ff; --pi:#fdeaea; }
+  @media (prefers-color-scheme: dark){ :root{ --box:#27272a; --stroke:#3f3f46; --text:#f4f4f5; --muted:#a1a1aa; --card:#1e2a44; --pi:#3a2020; } }
+  text{ font-family:"Segoe UI",system-ui,"Microsoft JhengHei",sans-serif; }
+  .box{ fill:var(--box); stroke:var(--stroke); stroke-width:1.5; }
+  .card{ fill:var(--card); stroke:#3b82f6; }
+  .pi{ fill:var(--pi); stroke:#ef4444; }
+  .ti{ fill:var(--text); font-size:15px; font-weight:700; }
+  .sub{ fill:var(--muted); font-size:11px; }
+  .lbl{ font-size:12.5px; font-weight:700; }
+  .hole{ fill:var(--box); stroke:var(--stroke); stroke-width:1.5; }
+  .w{ fill:none; stroke-width:3; }
+</style>
+<defs>
+  <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="var(--muted)"/></marker>
+</defs>
+<rect x="0" y="0" width="980" height="500" fill="#ffffff"/>
+<g transform="translate(24,20)">
+  <line class="w" x1="0" y1="0" x2="26" y2="0" stroke="#16a34a"/><text class="sub" x="32" y="4">喇叭 Spk（出）</text>
+  <line class="w" x1="150" y1="0" x2="176" y2="0" stroke="#d97706"/><text class="sub" x="182" y="4">麥克風 Mic（入）</text>
+  <line class="w" x1="320" y1="0" x2="346" y2="0" stroke="#dc2626"/><text class="sub" x="352" y="4">PTT</text>
+  <line class="w" x1="410" y1="0" x2="436" y2="0" stroke="#6b7280"/><text class="sub" x="442" y="4">地 Gnd（共用）</text>
+  <line class="w" x1="560" y1="0" x2="586" y2="0" stroke="#3b82f6"/><text class="sub" x="592" y="4">USB</text>
+</g>
+<rect class="box" x="20" y="205" width="112" height="76" rx="9"/>
+<text class="ti" x="76" y="238" text-anchor="middle">托咪 / 耳麥</text>
+<text class="sub" x="76" y="258" text-anchor="middle">K頭（公）</text>
+<line class="w" x1="132" y1="243" x2="168" y2="243" stroke="var(--muted)" marker-end="url(#ar)"/>
+<text class="sub" x="150" y="234" text-anchor="middle">插入</text>
+<rect class="box" x="170" y="205" width="126" height="76" rx="9"/>
+<text class="ti" x="233" y="238" text-anchor="middle">K母座</text>
+<text class="sub" x="233" y="258" text-anchor="middle">延伸線剪一半</text>
+<path class="w" stroke="#16a34a" d="M296,220 H330 V92 H358" marker-end="url(#ar)"/>
+<text class="lbl" fill="#16a34a" x="316" y="128">Spk</text>
+<path class="w" stroke="#d97706" d="M296,232 H344 V158 H358" marker-end="url(#ar)"/>
+<text class="lbl" fill="#d97706" x="322" y="188">Mic+</text>
+<path class="w" stroke="#dc2626" d="M296,250 H430 V312 H548" marker-end="url(#ar)"/>
+<text class="lbl" fill="#dc2626" x="392" y="304">PTT</text>
+<path class="w" stroke="#6b7280" d="M296,262 H410 V372 H548" marker-end="url(#ar)"/>
+<text class="lbl" fill="#6b7280" x="372" y="364">Gnd</text>
+<rect class="box" x="358" y="70" width="132" height="46" rx="8"/>
+<text class="ti" x="424" y="90" text-anchor="middle" font-size="13">免焊 3.5mm 公頭</text>
+<text class="sub" x="424" y="107" text-anchor="middle">螺絲鎖線</text>
+<rect class="box" x="358" y="136" width="132" height="46" rx="8"/>
+<text class="ti" x="424" y="156" text-anchor="middle" font-size="13">免焊 3.5mm 公頭</text>
+<text class="sub" x="424" y="173" text-anchor="middle">螺絲鎖線</text>
+<path class="w" stroke="#16a34a" d="M490,93 H548" marker-end="url(#ar)"/>
+<path class="w" stroke="#d97706" d="M490,159 H548" marker-end="url(#ar)"/>
+<rect class="box card" x="548" y="60" width="182" height="150" rx="10"/>
+<text class="ti" x="639" y="86" text-anchor="middle">USB 音效卡</text>
+<text class="sub" x="639" y="104" text-anchor="middle">不用拆、不用焊</text>
+<circle class="hole" cx="560" cy="123" r="6"/><text class="sub" x="574" y="127">耳機孔（插公頭A）</text>
+<circle class="hole" cx="560" cy="159" r="6"/><text class="sub" x="574" y="163">Mic 孔（插公頭B）</text>
+<rect class="box" x="600" y="184" width="80" height="20" rx="4"/><text class="sub" x="640" y="198" text-anchor="middle">USB 接頭</text>
+<path class="w" stroke="#3b82f6" d="M640,210 V250 H560" marker-end="url(#ar)"/>
+<rect class="box pi" x="548" y="255" width="182" height="195" rx="10"/>
+<text class="ti" x="639" y="284" text-anchor="middle">Raspberry Pi 4</text>
+<text class="sub" x="639" y="302" text-anchor="middle">跑 mesh PTT 腳本</text>
+<circle class="hole" cx="560" cy="270" r="6"/><text class="sub" x="574" y="274">USB 埠</text>
+<circle class="hole" cx="560" cy="312" r="6" stroke="#dc2626"/><text class="sub" x="574" y="316">GPIO6 ← PTT</text>
+<circle class="hole" cx="560" cy="372" r="6" stroke="#6b7280"/><text class="sub" x="574" y="376">GND ← 地</text>
+<rect x="748" y="70" width="216" height="120" rx="10" fill="none" stroke="var(--stroke)" stroke-dasharray="5 4"/>
+<text class="ti" x="856" y="98" text-anchor="middle" font-size="13">重點</text>
+<text class="sub" x="762" y="122">• 音訊線先接「免焊公頭」</text>
+<text class="sub" x="762" y="142">• 公頭「插進」音效卡的孔</text>
+<text class="sub" x="762" y="162">• 音效卡本身不拆、不焊</text>
+<text class="sub" x="762" y="182">• PTT 單獨一條拉到 GPIO</text>
+</svg>
