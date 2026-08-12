@@ -52,33 +52,29 @@ Pi 4 無類比音訊輸入，故：
 - **麥克風**：2.5mm 側，**電容麥，由無線電供 bias（phantom power）** → USB 音效卡 mic 輸入本來就供 bias，相容（電壓對得上即可）。
 - **PTT**：**「接地即發射」（ground to transmit）**，按下把線接地 → 接 GPIO（內部上拉），按下 = 低電位。
 
-### ⚠️ 唯一要實測：那條「接地」的 PTT 是獨立線還是跟 MIC 共線
-- **獨立 PTT 線（2.5mm 的 Ring）** → 直接進 GPIO，**免電晶體**（最理想）。
-- **跟 MIC 共線**（按下把 MIC 線接地）→ 需一顆電晶體/光耦把「MIC 被接地」轉成乾淨 GPIO，MIC 音訊另經耦合電容進音效卡。
+### ✅ 已由照片確認（2026-08-12）：PTT 獨立線，免電晶體
+配件 K 公頭照片顯示 **3.5mm 那顆是 3 導體（2 條黑圈，TRS）** → 內含 **MIC 與 PTT 兩條獨立訊號 + 地**；2.5mm 那顆是喇叭。所以 **PTT 是獨立導線，直接進 GPIO，不需電晶體** —— 最省事的版本。（若換到只有 2 導體 3.5mm 的配件才是共線型、才需電晶體，判別法見下。）
 
 ### 要加的硬體
 | # | 東西 | 作用 |
 |---|---|---|
 | 1 | USB 音效卡（CM108） | mic 輸入 + 喇叭輸出 |
 | 2 | **K頭母座** | 接受配件的 K 公頭。最省事：買「K 公轉母延長線」剪下母頭端當母座取 4 線；或蝦皮「K頭母座」 |
-| 3 | **PTT 分離電路**（1 電晶體/光耦 + 幾顆電阻） | 偵測 MIC 接地 → GPIO；MIC 音訊經耦合電容進音效卡 |
-| 4 | **磁環（ferrite）** | 套音訊線，防 HaLow TX 干擾（ham 圈常見雷） |
+| ~~3~~ | ~~PTT 分離電路（電晶體）~~ **本例不需要** | PTT 是獨立線 → 直接進 GPIO（省掉電晶體） |
+| 3 | **夾式磁環（clip-on ferrite）** | 套音訊線，防 HaLow TX 干擾（ham 圈常見雷） |
 
 ### 接線
 | K頭訊號 | → | Pi |
 |---|---|---|
 | 喇叭（3.5mm） | → | 音效卡耳機輸出 |
 | MIC（2.5mm tip） | → | 耦合電容 → 音效卡 mic 輸入 |
-| PTT（接地即發射） | → | 獨立線：直接進 GPIO；共線型：電晶體偵測接地 → GPIO（如 GPIO6） |
+| PTT（接地即發射，獨立線） | → | 直接進 **GPIO（如 GPIO6）**，內部上拉，按下 = 低電位 |
 | GND | → | 共地 |
 
-### 🔧 三用電表 30 秒量法（在托咪的 2.5mm 插頭上，決定要不要電晶體）
-1. 找出 Tip / Ring / Sleeve 三段。**Sleeve** 對 3.5mm 的 Sleeve 有通 = GND。
-2. **不按 PTT**：量 Tip↔Sleeve → 電容麥約幾百 Ω~kΩ（不是 0、不是斷路）。
-3. **按住 PTT**，看哪裡多出接近 0Ω 的短路：
-   - **Ring↔Sleeve 變 0Ω**（Tip 的 mic 阻值不變）→ **獨立 PTT 線**，PTT→GPIO 直接接，免電晶體 🎉
-   - **Tip(mic)↔Sleeve 掉到 ~0Ω** → **共線型**，需電晶體。
-> ADI AQ-50 線上無詳細接腳文件（冷門/台灣品牌），以**實測配件**為準。
+### 判別方法（換不同配件時參考）
+- **數 3.5mm 插頭的黑圈**：**2 圈（3 導體）= 有獨立 PTT**（本例，免電晶體）；1 圈（2 導體）= PTT 跟 MIC 共線，才需電晶體。免電表、用看的即可。
+- 3.5mm 上「哪條是 MIC、哪條是 PTT」不用猜：接上後 **有聲音那條 = MIC**、**按下把 GPIO 拉低那條 = PTT**；接反了對調兩條線即可，不會燒。
+> ADI AQ-50 線上無詳細接腳文件（冷門/台灣品牌），以實測配件/照片為準。
 
 ---
 
@@ -99,13 +95,12 @@ Pi 4 無類比音訊輸入，故：
 - 設定教學：TeelSys `https://teelsys.com/vk-172-usb-gps-on-the-raspberry-pi/`
 - NEO-M8N USB + SMA 外接天線（野外）：GNSS Store `https://gnss.store/products/elt0084`
 
-**PTT 音訊**
-- CM108 USB 音效卡：Amazon `https://www.amazon.com/Adapter-External-Portable-Speaker-Earphone/dp/B0CNRZY6Y2` ／ Adafruit 教學 `https://learn.adafruit.com/usb-audio-cards-with-a-raspberry-pi/cm108-type`
-
-**K頭 / PTT 介面**
-- K 公轉母延長線（剪母頭端）：CommGear `https://www.commgearsupply.com/products/kenwood-male-to-kenwood-female-adapter`
-- K頭 2-pin 接腳定義：Wildtalk `https://www.wildtalk.com/knowledge-base/kenwood-2-pin-wiring-data/`
-- PTT 分離電路實例（Baofeng↔Pi）：APRS-Box `http://elafargue.github.io/aprs-box/hardware/` ／ Sunny He `https://sunnyhe.org/projects-baofenginterface.html` ／ gist `https://gist.github.com/tymarbut/d802e43ab306b4b9f2ba`
+**PTT（本例確認要買的三樣 —— PTT 獨立線、免電晶體）**
+- ① **USB 音效卡 CM108**（mic in + 喇叭 out）：Amazon `https://www.amazon.com/Adapter-External-Portable-Speaker-Earphone/dp/B0CNRZY6Y2`（蝦皮「CM108 USB 音效卡」）
+- ② **K頭母座**（買 K 公轉母延長線、剪母頭端）：CommGear `https://www.commgearsupply.com/products/kenwood-male-to-kenwood-female-adapter`（蝦皮「K頭 公轉母」/「K頭母座」）
+- ③ **夾式磁環**（clip-on ferrite，3.5mm 孔徑）：Amazon `https://www.amazon.com/uxcell-Ferrite-Cores-Suppression-Filter/dp/B07YJYGGP3`（蝦皮「夾式磁環」）
+- 參考：CM108 教學 Adafruit `https://learn.adafruit.com/usb-audio-cards-with-a-raspberry-pi/cm108-type`；K頭接腳 Wildtalk `https://www.wildtalk.com/knowledge-base/kenwood-2-pin-wiring-data/`
+- （**共線型配件才需要**的 PTT 電晶體電路，本例免；留作參考：APRS-Box `http://elafargue.github.io/aprs-box/hardware/`、Sunny He `https://sunnyhe.org/projects-baofenginterface.html`、gist `https://gist.github.com/tymarbut/d802e43ab306b4b9f2ba`）
 
 ---
 
