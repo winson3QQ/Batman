@@ -1,0 +1,46 @@
+#!/usr/sbin/nft -f
+#
+# mcast-filter.nft - STAGED broadcast/multicast noise filter for the mesh bridge.
+#
+# ** NOT auto-loaded. ** Enable this only after `bcast-audit` shows chatty
+# multicast (>= ~20 pps on br-ahwlan). On a quiet mesh it buys nothing and only
+# risks discovery traffic, so leave it off until measurement says otherwise.
+#
+# It drops well-known Windows/UPnP *discovery* chatter that would otherwise be
+# flooded across the whole air-limited mesh (batman multicast_mode is off, so
+# every multicast frame hits every node). It EXPLICITLY preserves the traffic
+# the system depends on:
+#   - mDNS / avahi  (.local resolution; also the basis of decentralised mgmt #14)
+#   - DHCP          (client addressing)
+#   - ARP/IGMP/MLD/batman (not UDP -> fall through to policy accept)
+#   - 239.192.41.0/24 OpenMANET comms/PTT multicast (VERIFIED: node joins
+#     239.192.41.1 with all talkgroups when comms is enabled)
+#
+#   enable now:   nft -f /usr/bin/mcast-filter.nft   (or wherever you place it)
+#   check only:   nft -c -f mcast-filter.nft         (syntax, no apply)
+#   disable:      nft delete table bridge mcast_gov
+#   persist:      add the `nft -f ...` line to /etc/rc.local (or a hotplug hook)
+#
+# Verify effect: run `bcast-audit` before and after; the dropped protocols
+# should disappear from a client-side capture and mcast pps should fall.
+
+# idempotent reload
+table bridge mcast_gov
+delete table bridge mcast_gov
+
+table bridge mcast_gov {
+	chain forward {
+		type filter hook forward priority -200; policy accept;
+
+		# --- PRESERVE (explicit, so intent is unmistakable) ---
+		udp dport 5353 accept          # mDNS / avahi  (do NOT drop: .local + #14)
+		udp dport { 67, 68 } accept    # DHCP
+		ip daddr 239.192.41.0/24 accept  # OpenMANET comms/PTT (verified 239.192.41.1)
+
+		# --- DROP known chatty discovery (pure airtime waste on a tactical mesh) ---
+		udp dport 1900 drop            # SSDP (UPnP discovery)
+		udp dport 3702 drop            # WS-Discovery
+		udp dport 5355 drop            # LLMNR
+		udp dport { 137, 138 } drop    # NetBIOS name / datagram
+	}
+}
