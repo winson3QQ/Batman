@@ -13,7 +13,8 @@
 #   - mDNS / avahi  (.local resolution; also the basis of decentralised mgmt #14)
 #   - DHCP          (client addressing)
 #   - ARP/IGMP/MLD/batman (not UDP -> fall through to policy accept)
-#   - 239.41.0.0/16 reserved for the future PTT L2 multicast (expansion-gps-ptt)
+#   - 239.192.41.0/24 OpenMANET comms/PTT multicast (VERIFIED: node joins
+#     239.192.41.1 with all talkgroups when comms is enabled)
 #
 #   enable now:   nft -f /usr/bin/mcast-filter.nft   (or wherever you place it)
 #   check only:   nft -c -f mcast-filter.nft         (syntax, no apply)
@@ -34,7 +35,7 @@ table bridge mcast_gov {
 		# --- PRESERVE (explicit, so intent is unmistakable) ---
 		udp dport 5353 accept          # mDNS / avahi  (do NOT drop: .local + #14)
 		udp dport { 67, 68 } accept    # DHCP
-		ip daddr 239.41.0.0/16 accept  # reserved: future PTT L2 multicast
+		ip daddr 239.192.41.0/24 accept  # OpenMANET comms/PTT (verified 239.192.41.1)
 
 		# --- DROP known chatty discovery (pure airtime waste on a tactical mesh) ---
 		udp dport 1900 drop            # SSDP (UPnP discovery)
