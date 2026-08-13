@@ -11,7 +11,7 @@
 
 **內建 comms 規格**（`/etc/openmanetd/config.yml` 的 `comms` 段，現為 `enable: false`）：
 - 編碼 **Opus 48kHz 單聲道 32kbps / 20ms 幀 / adaptive FEC**
-- 傳輸 **RTP over 多播 UDP，MTU 1400**（對上 WireGuard 的 MTU=1400、#12 保留的 `239.41.0.0/16`）
+- 傳輸 **RTP over 多播 UDP，MTU 1400**（對上 WireGuard 的 MTU=1400；實測 comms 多播群組 = **`239.192.41.1`**，5 個 talkgroup 共用，#12 過濾器要保留 `239.192.41.0/24`）
 - **talk group**（每組一多播位址/埠）、**每組半雙工**（按下講、放開聽）
 - **控制源 `controlSource`**：`web`（瀏覽器）/ `openvlm`（USB HID dongle）/ `nanoptt` / 另有 `PttBluetoothInputDevice`（藍牙 PTT 鍵配對到**節點**）
 - **API**：`/api/ptt`（PTTEvent）、`/ws/opus`、`/webrtc/ws/opus`、Protobuf；另有 `/api/whisper/*`（STT）
@@ -42,8 +42,8 @@
 - **DIY**：拿 [OpenVLM repo](https://github.com/OpenMANET/OpenVLM) 的 gerber 去 JLCPCB/PCBWay 打板貼片。想現在就有走這條。
 
 ### 驗證計畫（免花錢先做）
-在節點開 **comms（web 模式）** + 設一個多播 talk group（用保留的 `239.41.x`）→ 手機瀏覽器連 5GHz AP 實測整條「手機→節點→mesh」語音通不通、延遲可不可接受，再決定買/打板。
-> 連動守則：PTT 上線後，#12 的多播過濾器**絕不能**擋到 `239.41.0.0/16`，且 `multicast_mode` 維持泛洪。
+**✅ 2026-08-13 已實測通過。** 在 manet01+manet02 兩台把 `comms.enable=true`+`controlSource=web` 打開重啟 openmanetd（board gate 沒擋、5 個 talkgroup 就緒）→ 兩支手機分別連 `openManet01_5G`(`https://10.41.1.1:8081`) / `openManet02_5G`(`https://10.41.202.2:8081`)、進 Comms 頁選同頻道開 RX/TX、按 PTT → **雙向都聽得到**。證明 Path A（手機端、免加硬體）整條語音鏈路可行。麥克風需 HTTPS(:8081)。
+> 連動守則：PTT 用的多播是 **`239.192.41.1`**，#12 的過濾器**絕不能**擋到 `239.192.41.0/24`，且 `multicast_mode` 維持泛洪。
 
 ---
 
