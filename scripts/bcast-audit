@@ -1,0 +1,63 @@
+#!/bin/sh
+#
+# bcast-audit - measure broadcast/multicast load on the mesh over a window.
+#
+# Why counters, not tcpdump: on this build tcpdump cannot tap br-ahwlan (the
+# bridge fast-path / offload hides frames from AF_PACKET -- verified 2026-08-13:
+# kernel counters saw 20 pkts while tcpdump saw 0). The kernel statistics are
+# the source of truth for VOLUME. Protocol classification (which offender) needs
+# a capture on a client or a working iface and is only worth doing once volume
+# is actually high -- this tool tells you WHEN that is.
+#
+# Multicast on an air-limited mesh is flooded to every node (batman
+# multicast_mode is off), so a chatty client (Windows SSDP/NetBIOS/LLMNR, IoT
+# mDNS) costs airtime network-wide. Run this to decide if the staged filter
+# (scripts/mcast-filter.nft) is worth enabling. Baseline on a quiet 2-node mesh
+# is ~0 mcast pps.
+#
+#   usage: bcast-audit [seconds]     default 20
+#
+WIN=${1:-20}
+IFACES="br-ahwlan bat0 wlan0"
+WARN_PPS=20          # br-ahwlan mcast pps above this = worth investigating
+
+read_stat() { cat "/sys/class/net/$1/statistics/$2" 2>/dev/null || echo 0; }
+
+key() { echo "$1" | tr -c 'a-zA-Z0-9' '_'; }   # var-name-safe (br-ahwlan -> br_ahwlan)
+
+# snapshot
+for i in $IFACES; do
+	k=$(key "$i")
+	eval "m0_$k=$(read_stat $i multicast)"
+	eval "rx0_$k=$(read_stat $i rx_packets)"
+	eval "tx0_$k=$(read_stat $i tx_packets)"
+done
+echo "sampling ${WIN}s..."
+sleep "$WIN"
+for i in $IFACES; do
+	k=$(key "$i")
+	eval "m1_$k=$(read_stat $i multicast)"
+	eval "rx1_$k=$(read_stat $i rx_packets)"
+	eval "tx1_$k=$(read_stat $i tx_packets)"
+done
+
+printf "\n  %-11s %10s %10s %10s\n" iface "mcast/s" "rx pkt/s" "tx pkt/s"
+warn=0
+for i in $IFACES; do
+	k=$(key "$i")
+	eval "dm=\$(( m1_$k - m0_$k ))"
+	eval "drx=\$(( rx1_$k - rx0_$k ))"
+	eval "dtx=\$(( tx1_$k - tx0_$k ))"
+	mps=$(( dm  / WIN )); rps=$(( drx / WIN )); tps=$(( dtx / WIN ))
+	printf "  %-11s %10s %10s %10s\n" "$i" "$mps" "$rps" "$tps"
+	[ "$i" = "br-ahwlan" ] && [ "$mps" -ge "$WARN_PPS" ] && warn=1
+done
+
+echo
+if [ "$warn" -eq 1 ]; then
+	echo "  VERDICT: chatty multicast (>= ${WARN_PPS} pps on br-ahwlan)."
+	echo "  -> classify offenders, then consider enabling scripts/mcast-filter.nft"
+else
+	echo "  VERDICT: quiet. No broadcast/multicast pressure -- do NOT enable filtering"
+	echo "  (it would only risk mDNS/PTT for no gain). Re-run when clients join."
+fi
