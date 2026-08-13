@@ -1,0 +1,46 @@
+#!/bin/sh
+#
+# ip-conflict-check - best-effort duplicate-address detector for the node's
+# management IP (network.ahwlan.ipaddr).
+#
+# The IP is derived deterministically from the MAC at first boot (see the
+# 99-halow-identity hook in depersonalise.sh), so a genuine clash needs two
+# NICs that share the last TWO octets of their MAC -- astronomically rare. This
+# runs once after the mesh is up and, IF it sees our IP answered by a DIFFERENT
+# MAC, logs a loud warning and drops a flag file. It does NOT auto-reassign:
+# silently flapping the address of a live mesh node is worse than a logged alarm
+# a human can act on.
+#
+# Detection uses ping + `ip neigh` (arping is not installed and the nodes have
+# no internet to opkg it).
+#
+#   usage: ip-conflict-check          run the check once (init.d runs this)
+#          ip-conflict-check status   print last result
+#
+FLAG=/tmp/ip-conflict
+IFACE=br-ahwlan
+
+if [ "$1" = "status" ]; then
+	[ -f "$FLAG" ] && cat "$FLAG" || echo "ok (no conflict recorded)"
+	exit 0
+fi
+
+IP=$(uci get network.ahwlan.ipaddr 2>/dev/null)
+MYMAC=$(cat "/sys/class/net/$IFACE/address" 2>/dev/null)
+[ -n "$IP" ] && [ -n "$MYMAC" ] || { echo "no IP/iface yet"; exit 0; }
+
+# Prime the ARP cache for our own IP, then see who answers it.
+ping -c 1 -W 1 "$IP" >/dev/null 2>&1
+OTHER=$(ip neigh show "$IP" dev "$IFACE" 2>/dev/null | grep -o 'lladdr [0-9a-f:]*' | awk '{print $2}')
+
+rm -f "$FLAG"
+if [ -n "$OTHER" ] && [ "$OTHER" != "$MYMAC" ]; then
+	MSG="CONFLICT: $IP also claimed by $OTHER (we are $MYMAC) -- pick a new IP by hand or reflash"
+	echo "$MSG" > "$FLAG"
+	logger -t ip-conflict-check "$MSG"
+	echo "$MSG"
+	exit 1
+fi
+logger -t ip-conflict-check "ok: $IP unique on $IFACE"
+echo "ok: $IP unique on $IFACE"
+exit 0
