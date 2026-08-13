@@ -1,0 +1,44 @@
+#!/bin/sh
+#
+# apower - set the 5 GHz AP (radio1) TX power + channel width by scenario.
+#
+# The 5 GHz AP is only for phones/clients near a node; it does NOT carry the
+# mesh (that's HaLow radio3, which this script never touches). High power +
+# wide channels waste battery, so default to a low indoor profile and bump it
+# only when you actually need range.
+#
+#   apower                show current
+#   apower indoor         21 dBm, 20 MHz   (default: low power, room range)
+#   apower field          30 dBm, 20 MHz   (max power+range for a nearby phone)
+#   apower <dBm> [MHz]    custom; MHz = 20 | 40 | 80
+#
+# Applies via uci + `wifi reload radio1` (persists across reboot; per-radio so
+# the mesh link is not dropped).
+#
+RADIO=radio1
+IFACE=phy1-ap0
+
+htmode_for() { case "$1" in 20) echo VHT20;; 40) echo VHT40;; 80) echo VHT80;; *) echo "";; esac; }
+
+show() {
+	echo "uci:   txpower=$(uci -q get wireless.$RADIO.txpower) dBm  htmode=$(uci -q get wireless.$RADIO.htmode)  disabled=$(uci -q get wireless.$RADIO.disabled)"
+	iw dev "$IFACE" info 2>/dev/null | grep -iE 'txpower|channel|width' | sed 's/^/  live: /'
+}
+
+set_ap() {  # $1=dBm  $2=MHz
+	ht=$(htmode_for "$2")
+	[ -n "$ht" ] || { echo "width must be 20, 40 or 80 (got '$2')"; exit 1; }
+	case "$1" in ''|*[!0-9]*) echo "dBm must be a number (got '$1')"; exit 1;; esac
+	uci set wireless.$RADIO.txpower="$1"
+	uci set wireless.$RADIO.htmode="$ht"
+	uci commit wireless
+	wifi reload $RADIO
+	echo "5G AP -> ${1} dBm / ${2} MHz   (mesh radio3 untouched)"
+}
+
+case "$1" in
+	''|show)  show ;;
+	indoor)   set_ap 21 20 ;;
+	field)    set_ap 30 20 ;;
+	*)        set_ap "$1" "${2:-20}" ;;
+esac
