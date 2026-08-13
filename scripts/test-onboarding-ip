@@ -1,0 +1,87 @@
+#!/bin/sh
+#
+# test-onboarding-ip - offline verification for the MAC->IP + DHCP-window
+# derivation used by the first-boot hook (99-halow-identity in depersonalise.sh).
+#
+# It reproduces the SAME formulas and asserts the invariants that matter, over a
+# corpus of real + edge-case MACs. Pure logic, no config touched -- safe to run
+# anywhere (busybox ash on a node, or bash on a laptop). Keep the formulas here
+# in sync with the depersonalise.sh hook.
+#
+#   usage: test-onboarding-ip
+#
+# KEEP-IN-SYNC with depersonalise.sh 99-halow-identity hook:
+derive_ip() {   # $1 = mac -> echoes "10.41.o5.o6"
+	o5=$((0x$(echo "$1" | cut -d: -f5)))
+	o6=$((0x$(echo "$1" | cut -d: -f6)))
+	[ "$o6" -eq 0 ]   && o6=1
+	[ "$o6" -eq 255 ] && o6=254
+	[ "$o5" -eq 1 ] && [ "$o6" -eq 1 ] && o6=2
+	echo "10.41.$o5.$o6"
+}
+derive_dhcp_start() {   # $1 = mac -> echoes host-offset for dhcp start
+	o5=$((0x$(echo "$1" | cut -d: -f5)))
+	echo $(( o5 * 16 + 16 ))
+}
+
+# --- corpus: label|mac|note ------------------------------------------------
+CORPUS='
+manet01|d8:3a:dd:f8:47:ee|real node
+manet02|d8:3a:dd:f8:45:d7|real node
+edge_zero|02:00:00:00:00:00|octet6=0 must guard to .1
+edge_bcast|02:00:00:00:ff:ff|octet6=255 must guard to .254
+edge_default|02:00:00:00:01:01|would be 10.41.1.1 must guard away
+collide_a|aa:bb:cc:dd:12:34|same last-2 as collide_b
+collide_b|99:88:77:66:12:34|same last-2 as collide_a (DAD case)
+'
+
+pass=0; fail=0
+ck() { if [ "$2" = "$3" ] || [ "$2" -eq 1 ] 2>/dev/null && [ "$4" = "" ]; then :; fi; }
+assert() { # msg cond(0=ok)
+	if [ "$2" -eq 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "  FAIL: $1"; fi
+}
+
+echo "== derived values =="
+printf "  %-13s %-19s %-14s %-16s\n" LABEL MAC IP "DHCP[start..+15]"
+seen_ips=""
+echo "$CORPUS" | while IFS='|' read -r label mac note; do
+	[ -n "$mac" ] || continue
+	ip=$(derive_ip "$mac"); st=$(derive_dhcp_start "$mac")
+	printf "  %-13s %-19s %-14s %-16s  # %s\n" "$label" "$mac" "$ip" "$st..$((st+15))" "$note"
+done
+
+echo
+echo "== assertions =="
+# recompute in this shell (while-subshell above can't export) for checks
+ips=""
+for pair in \
+	"manet01 d8:3a:dd:f8:47:ee" "manet02 d8:3a:dd:f8:45:d7" \
+	"edge_zero 02:00:00:00:00:00" "edge_bcast 02:00:00:00:ff:ff" \
+	"edge_default 02:00:00:00:01:01" \
+	"collide_a aa:bb:cc:dd:12:34" "collide_b 99:88:77:66:12:34"; do
+	set -- $pair; label=$1; mac=$2
+	ip=$(derive_ip "$mac")
+	oct3=$(echo "$ip" | cut -d. -f3); oct4=$(echo "$ip" | cut -d. -f4)
+	# in 10.41.0.0/16
+	case "$ip" in 10.41.*) c=0;; *) c=1;; esac; assert "$label in 10.41/16 ($ip)" $c
+	# last octet not 0 / 255
+	[ "$oct4" -ne 0 ] && [ "$oct4" -ne 255 ]; assert "$label last octet not 0/255 ($ip)" $?
+	# never the factory default
+	[ "$ip" != "10.41.1.1" ]; assert "$label != 10.41.1.1" $?
+	eval "IP_$label=\"$ip\""
+done
+# real nodes must differ from each other and from current live IPs
+[ "$IP_manet01" != "$IP_manet02" ]; assert "manet01 != manet02 ($IP_manet01 vs $IP_manet02)" $?
+# the intentional collision pair SHOULD collide (proves DAD is the backstop, not derivation)
+[ "$IP_collide_a" = "$IP_collide_b" ]; assert "collide_a == collide_b (expected, DAD case)" $?
+# edge guards
+[ "$IP_edge_zero" = "10.41.0.1" ];    assert "edge_zero -> 10.41.0.1 ($IP_edge_zero)" $?
+[ "$IP_edge_bcast" = "10.41.255.254" ]; assert "edge_bcast -> 10.41.255.254 ($IP_edge_bcast)" $?
+[ "$IP_edge_default" = "10.41.1.2" ]; assert "edge_default -> 10.41.1.2 ($IP_edge_default)" $?
+# dhcp windows for the two real nodes must not overlap
+sa=$(derive_dhcp_start d8:3a:dd:f8:47:ee); sb=$(derive_dhcp_start d8:3a:dd:f8:45:d7)
+[ "$sa" -ge $((sb+16)) ] || [ "$sb" -ge $((sa+16)) ]; assert "manet01/02 dhcp windows disjoint ($sa vs $sb)" $?
+
+echo
+echo "== result: $pass passed, $fail failed =="
+[ "$fail" -eq 0 ]

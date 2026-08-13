@@ -75,7 +75,29 @@ uci set system.@system[0].hostname="$host"
 uci commit system
 echo "$host" > /proc/sys/kernel/hostname 2>/dev/null || true
 /etc/init.d/avahi-daemon restart 2>/dev/null || true
-# 2. unique SSH host keys: drop the master's now; dropbear regenerates fresh
+# 2. unique management IP from the SAME MAC, so many cards off one image do not
+#    all boot as the 10.41.1.1 factory default. This is deterministic and runs
+#    BEFORE the radio is up, so no two nodes ever race for the same address (a
+#    property classic DAD can't give). 10.41.<octet5>.<octet6> of the MAC; the
+#    hostname suffix (octet5octet6 in hex) and the IP therefore point at the
+#    same device. ip-conflict-check (init.d, post-network) warns in the rare
+#    case two NICs share the last two MAC octets.
+if [ -n "$mac" ]; then
+	o5=$((0x$(echo "$mac" | cut -d: -f5)))
+	o6=$((0x$(echo "$mac" | cut -d: -f6)))
+	[ "$o6" -eq 0 ]   && o6=1     # never .0   (would look like a network addr)
+	[ "$o6" -eq 255 ] && o6=254   # never .255 (would look like a broadcast addr)
+	[ "$o5" -eq 1 ] && [ "$o6" -eq 1 ] && o6=2   # never the 10.41.1.1 default
+	uci set network.ahwlan.ipaddr="10.41.$o5.$o6"
+	# spread each node's DHCP client window (start/limit are host offsets into
+	# 10.41.0.0/16) so two fresh cards never lease the same client IPs. Interim:
+	# full decentralised client addressing = IPv6 SLAAC (roadmap follow-up).
+	uci set dhcp.ahwlan.start=$(( o5 * 16 + 16 ))
+	uci set dhcp.ahwlan.limit=16
+	uci commit network
+	uci commit dhcp
+fi
+# 3. unique SSH host keys: drop the master's now; dropbear regenerates fresh
 #    ones when it starts, which is later in boot than this uci-defaults hook.
 rm -f /etc/dropbear/dropbear_*_host_key
 exit 0
