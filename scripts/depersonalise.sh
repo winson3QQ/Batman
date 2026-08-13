@@ -49,6 +49,24 @@ for s in $(uci show wireless | sed -n "s/^wireless\.\([^.=]*\)\.mode='ap'\$/\1/p
 	echo "    $s -> ssid '$DEF_AP_SSID'"
 done
 
+echo "==> comms (PTT) -> enabled, web control source"
+# openmanetd voice comms ON by default in web mode: browser/phone PTT over the
+# mesh, no extra audio hardware needed (verified this board initialises comms in
+# web mode, 2026-08-13; multicast group 239.192.41.1). Users who add an OpenVLM
+# VLM-KW or nanoPTT dongle can switch controlSource later. config.yml is
+# openmanetd's own config, not uci -- edit only the enable/controlSource lines
+# inside the comms: block.
+OMCFG=/etc/openmanetd/config.yml
+if [ -f "$OMCFG" ]; then
+	awk '
+	/^[A-Za-z]/ { sec=$1 }
+	{ if (sec=="comms:" && $1=="enable:")        { print "  enable: true"; next }
+	  if (sec=="comms:" && $1=="controlSource:") { print "  controlSource: web"; next }
+	  print }
+	' "$OMCFG" > "$OMCFG.tmp" && mv "$OMCFG.tmp" "$OMCFG"
+	echo "    comms enabled (web); PTT at https://<node>:8081"
+fi
+
 echo "==> hostname -> sentinel (first boot derives a unique one)"
 uci set system.@system[0].hostname='halow-node'
 uci commit
