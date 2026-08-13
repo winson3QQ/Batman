@@ -5,6 +5,52 @@
 
 ---
 
+## ⭐ 2026-08-13 更新：PTT 別自己造，OpenMANET 已內建 comms
+
+實機挖 `openmanetd`（Go app，:8080/8081/8087）確認：**OpenMANET 本身就有完整 PTT 語音子系統**，下面原本的 DIY CM108 計畫其實有官方成品化版（OpenVLM），保留當參考。
+
+**內建 comms 規格**（`/etc/openmanetd/config.yml` 的 `comms` 段，現為 `enable: false`）：
+- 編碼 **Opus 48kHz 單聲道 32kbps / 20ms 幀 / adaptive FEC**
+- 傳輸 **RTP over 多播 UDP，MTU 1400**（對上 WireGuard 的 MTU=1400、#12 保留的 `239.41.0.0/16`）
+- **talk group**（每組一多播位址/埠）、**每組半雙工**（按下講、放開聽）
+- **控制源 `controlSource`**：`web`（瀏覽器）/ `openvlm`（USB HID dongle）/ `nanoptt` / 另有 `PttBluetoothInputDevice`（藍牙 PTT 鍵配對到**節點**）
+- **API**：`/api/ptt`（PTTEvent）、`/ws/opus`、`/webrtc/ws/opus`、Protobuf；另有 `/api/whisper/*`（STT）
+
+### 兩條實現路線
+- **Path A（手機端）**：手機連節點 5GHz AP（`halow-setup`）→ 打 `web`/WebRTC comms API。手機≈web client，甚至可能不用寫 app（瀏覽器開 comms 頁就有 PTT）。要硬體鍵再包薄 app。
+- **Path B（節點端硬體，推薦）**：USB 音訊+HID PTT 插節點，`controlSource=openvlm`，零 app、沿用 K頭。
+
+### ⭐ OpenVLM VLM-KW = 「K頭 → USB」（本文原 CM108 DIY 的成品化版）
+- 基於 **CM108B USB 音效 + 93C46 EEPROM + GPIO1 strap**（讓 openmanetd 認出「這是 OpenVLM」）；**GPIO3 = K頭 PTT**，走 USB-HID。
+- 一端 USB 插節點、一端 **K頭母座（Kenwood 2-pin）** → **你現有 K頭托咪/耳麥直接插**。
+- 開源硬體（CERN OHL），repo `PCB/` 有 gerber + Fusion360（批次 `VLMKW0100` 省了音量鍵 + ESD）。
+
+### 兩個 use case → 都收斂到 VLM-KW
+| Case | 首選 | 可靠度 |
+|---|---|---|
+| **#1 一般人 PTT 托咪** | VLM-KW + K頭 speaker-mic → 節點 | ★★★ 有線、無電池、免配對 |
+| **#2 戰術小隊 耳麥+PTT** | 每人一節點 + VLM-KW + K頭隱蔽耳機 + 指環 PTT | ★★★ 無 BT/無 WiFi 跳/無手機依賴 |
+
+- 可靠度序：**有線到節點(VLM-KW) > 有線到手機(USB-C PoC，如 RAM RSM-A07) > 藍牙**。
+- 藍牙 gotcha：耳麥雙向走 **HFP**（單聲道 ~8–16kHz + 切換破音 + 延遲），比 mesh 的 Opus 48k 差 → 只建議休閒。
+- ⚠️ VLM-PT1 外殼官方註明「**非軍規** K頭多數可用」；軍規頭（Nexus/U-174）不能直插，走 Disco32。
+
+### 哪裡買（2026-08-13 現況：都缺貨）
+- **VLM-KW 板**：[buildsbyshane.com](https://www.buildsbyshane.com/) $40，**sold out**（限量批），**唯一零售商**。
+- **VLM-PT1 外殼**：[sunkworkstec.com/products/sw-vlm-pt1](https://sunkworkstec.com/products/sw-vlm-pt1) $55，**sold out**（僅外殼，不含板/PTT）。
+- 其他通路（Tindie/Etsy/eBay）：**無**。
+- **DIY**：拿 [OpenVLM repo](https://github.com/OpenMANET/OpenVLM) 的 gerber 去 JLCPCB/PCBWay 打板貼片。想現在就有走這條。
+
+### 驗證計畫（免花錢先做）
+在節點開 **comms（web 模式）** + 設一個多播 talk group（用保留的 `239.41.x`）→ 手機瀏覽器連 5GHz AP 實測整條「手機→節點→mesh」語音通不通、延遲可不可接受，再決定買/打板。
+> 連動守則：PTT 上線後，#12 的多播過濾器**絕不能**擋到 `239.41.0.0/16`，且 `multicast_mode` 維持泛洪。
+
+---
+
+### （以下為原始 DIY 規劃，保留作參考——OpenVLM 已是其成品化版）
+
+---
+
 ## 0. 現況（已在 manet01 查證，軟體大多就緒）
 
 - **GPS**：`gpsd 3.25` 已裝、有 `/etc/config/gpsd`、kernel 有 USB GPS 驅動（dmesg 見 garmin/novatel usbserial 已註冊）。openmanetd 的 GPS 頁直接吃 gpsd。**只差一個 GPS 接收器。**
