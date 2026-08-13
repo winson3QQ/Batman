@@ -49,6 +49,12 @@ for s in $(uci show wireless | sed -n "s/^wireless\.\([^.=]*\)\.mode='ap'\$/\1/p
 	echo "    $s -> ssid '$DEF_AP_SSID'"
 done
 
+echo "==> 5 GHz AP -> low indoor default (21 dBm / 20 MHz)"
+# The 5 GHz AP is only for nearby phones/clients (not the mesh). Ship a low,
+# battery-friendly indoor profile; deployers run 'apower field' for range.
+uci set wireless.radio1.txpower='21'
+uci set wireless.radio1.htmode='VHT20'
+
 echo "==> comms (PTT) -> enabled, web control source"
 # openmanetd voice comms ON by default in web mode: browser/phone PTT over the
 # mesh, no extra audio hardware needed (verified this board initialises comms in
