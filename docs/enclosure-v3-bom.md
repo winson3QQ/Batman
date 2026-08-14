@@ -76,3 +76,47 @@ V3 是「Raspberry Pi 4 + WM1302 HAT + Wio-WM6108」量身版 = **對應本專�
 
 ## 對本專案的意義
 V3 的電源鏈（**2S2P Samsung 45T 45A cell + 2S BMS + 5V/4A buck + 16–18AWG 絞線 + 銅箔遮蔽**）正是為了扛 HaLow TX 峰值電流而設計 —— 直接對應本專案的 **TX 欠壓/掉電**問題。照此電源方案做，欠壓大概率可解。GPS 用 ZOE-M8Q（u-blox M8）或 USB u-blox 或手機 GPS 皆可，插上即餵 openmanetd → CoT/ATAK。
+
+---
+
+## 採購來源比較（台灣視角）
+
+原表是 EU 來源（nkon.nl / tinytronics.nl / AliExpress），對台灣不是最優。分成三站買最省運費也最快：
+
+| 零件 | 🇹🇼 台灣本地 | 🏭 原廠/專賣 | 🅰️ Amazon | **建議** |
+|---|---|---|---|---|
+| Raspberry Pi 4B | ✅ iCShop/機器人王國/蝦皮 | — | ✅ | **🇹🇼 本地** |
+| Wio-WM6108（HaLow） | 偶有蝦皮 | ✅ Seeed 官網 | ✅ B0H1LVXPJQ | **Seeed 或 Amazon** |
+| WM1302 Pi HAT | 偶有 | ✅ Seeed | ✅ B096XND41Q | **Seeed 或 Amazon** |
+| RAK WisMesh 1W（LoRa） | ❌ | ✅ **RAK 官網** | ❌ | **RAK 官網**（唯一） |
+| GPS | ✅ USB u-blox VK-172/M8N | RAK12500 | ✅ | **🇹🇼 USB u-blox** 或手機 |
+| Samsung 21700-45T ×4 | ✅ 蝦皮/露天 | — | ⚠️ 無法國際寄 | **🇹🇼 本地（必須）** |
+| 2S 10A BMS | ✅ 蝦皮 | — | ✅ | **🇹🇼 本地** |
+| Buck 5V/4A | ✅ 蝦皮/iCShop | — | ✅ | **🇹🇼 本地** |
+| 銅散熱片 70×70×3 | ✅ 蝦皮 | — | ✅ | **🇹🇼 本地** |
+| Pi 散熱片組 | ✅ 蝦皮/iCShop | — | ✅ | **🇹🇼 本地** |
+| 915MHz N-male 天線 ×2 | ✅ 蝦皮/露天 | — | ✅ | **🇹🇼 本地** |
+| UFL→SMA / UFL→N pigtail | ✅ 蝦皮/iCShop | — | ✅ | **🇹🇼 本地** |
+| 防水 8pin→RJ45 | ✅ 蝦皮 | — | 部分 | **🇹🇼 本地** 或 AliExpress |
+| 線材(16-18AWG)/螺絲/O-ring/PLA/TPU | ✅ 本地 | — | — | **🇹🇼 本地** |
+
+### 👉 一律台灣本地買（別繞 Amazon/EU）
+1. **Samsung 21700-45T ×4** — 鋰電無法國際寄，只能本地（蝦皮搜「21700 45T」）
+2. **2S BMS、Buck 5V/4A**（蝦皮搜「2S BMS 10A」「DC-DC 5V 4A buck」）
+3. **銅散熱片 70×70×3、Pi 散熱片組**
+4. **915MHz N-male 天線、UFL→SMA/N pigtail**（蝦皮搜「915 天線 N公」「U.FL SMA pigtail」）
+5. **防水 8pin→RJ45 航空頭**
+6. **線材（16-18AWG）、M3/M4 螺絲、2mm O-ring、PLA/TPU 線材**
+7. **Raspberry Pi 4B**（本地 Pi 通路現貨）
+8. **GPS 用 USB u-blox**（VK-172 / NEO-M8N，取代 RAK12500）
+
+### 不在台灣本地的兩類
+- **HaLow 模組**（Wio-WM6108 + WM1302 HAT）→ Seeed 官網 或 Amazon（[WM6108](https://www.amazon.com/Wio-WM6108-Wi-Fi-HaLow-mini-PCIe-Module-p-6394.html/dp/B0H1LVXPJQ) / [WM1302 HAT](https://www.amazon.com/NGW-1pc-WM1302-Pi-HAT-Raspberry/dp/B096XND41Q)）
+- **LoRa**（RAK WisMesh 1W）→ RAK 官網（唯一來源）
+
+### 三站購物法
+1. **🇹🇼 台灣本地（蝦皮/iCShop/露天）**：電池 + 所有通用件 + Pi 4B + USB GPS
+2. **🏭 Seeed 官網（或 Amazon）**：WM6108 + WM1302 HAT
+3. **🏭 RAK 官網**：WisMesh 1W LoRa kit
+
+> ⚠️ Amazon US 的 21700 鋰電幾乎無法寄台灣（hazmat）；HaLow 模組是 902–928MHz，台灣 ISM 為 920–925MHz，天線與 regdomain 要對得上。
