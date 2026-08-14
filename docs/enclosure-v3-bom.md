@@ -120,3 +120,32 @@ V3 的電源鏈（**2S2P Samsung 45T 45A cell + 2S BMS + 5V/4A buck + 16–18AWG
 3. **🏭 RAK 官網**：WisMesh 1W LoRa kit
 
 > ⚠️ Amazon US 的 21700 鋰電幾乎無法寄台灣（hazmat）；HaLow 模組是 902–928MHz，台灣 ISM 為 920–925MHz，天線與 regdomain 要對得上。
+
+### 為什麼不建議 Amazon 一站（成本試算）
+蝦皮「每店 NT$60 運費」看似會累加，但實算下來 Amazon 仍不划算：
+- **通用件蝦皮本來就便宜約 NT$1,500**（比運費差距大）。
+- **Amazon 一大單會被課 ~10% 進口稅**（訂單>NT$2000，Amazon 預收 ~NT$450），吃掉合併運費的優勢。
+- **電池反正只能蝦皮買**，那筆 NT$60 躲不掉。
+
+| 通用件那叢（到手估價） | 蝦皮 | Amazon |
+|---|---|---|
+| 併 2–3 家 | **~NT$2,820** | ~NT$5,230 |
+| 散買 8 家 | ~NT$3,150 | ~NT$5,230 |
+
+→ 結論：**減少蝦皮店家數**（併店）才是正解，不是換 Amazon。
+
+### 台灣蝦皮併店採購法（3–4 家買齊本地件）
+**主叢集（挑一家包大部分）**：Pi 4B、Pi 散熱組、銅散熱片、2S BMS、Buck 5V/4A、USB GPS、pigtail
+- **iCShop**（[icshop.com.tw](https://www.icshop.com.tw/)，電子件最全，首選）／莓亞科技（[meiyagroup.com.tw](https://www.meiyagroup.com.tw/)）／機器人王國（[shop.playrobot.com](https://shop.playrobot.com/)）／TaiwanIOT（[taiwaniot.com.tw](https://www.taiwaniot.com.tw/)）——都有官網+蝦皮賣場（搜店名）
+
+**另外三樣單獨的店**：
+| 東西 | 蝦皮搜尋關鍵字 |
+|---|---|
+| Samsung 21700-45T ×4 | 「21700 45T」「INR21700 動力」 |
+| 915MHz N-male 天線 ×2 | 「915 天線 N公 玻纖」「LoRa 天線」 |
+| 防水 8pin→RJ45 | 「防水網路頭 航空 RJ45」（或 AliExpress） |
+
+**併店結果**：iCShop(通用件+GPS+pigtail) + 電池1家 + 天線1家 + RJ45(1家/AliExpress) ≈ **3–4 家、運費 ~NT$180–240**。
+下單前確認：**Buck 是 5V/≥4A**、天線 **915MHz/N公**、pigtail 接頭 **U.FL↔SMA** 對得上。
+
+> 蝦皮賣場請搜店名進去；庫存每天變，本清單只給方向不保證即時有貨。
