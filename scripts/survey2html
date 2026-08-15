@@ -1,0 +1,108 @@
+#!/bin/sh
+#
+# survey2html - turn a sigsurvey CSV into a self-contained interactive coverage map.
+#
+# Produces ONE .html file that opens in any browser and shows the survey points on
+# a street map (Leaflet + OpenStreetMap tiles). Click a point for signal/SNR/loss;
+# a faint blue line joins the points in time order (the walk path).
+#
+# Points are coloured by SNR, same thresholds as survey2kml:
+#   green  SNR >= 25   reliable        yellow SNR 12..24  marginal
+#   red    SNR < 12    unusable        (100% packet loss is forced red too)
+#
+#   usage: survey2html <csv> [leaflet_base]
+#     leaflet_base : where to load leaflet.css/js from. Default = unpkg CDN
+#                    (needs internet). Pass "/" to load them from THIS host's web
+#                    root (e.g. served by the node's uhttpd, works offline).
+#                    Pass "" to load from the same directory as the .html file.
+#
+# NOTE: the Leaflet LIBRARY can be served locally (offline-ok), but the map TILES
+# still need internet. Offline you get the coloured points + path on a blank map;
+# reopen with internet and the streets fill in.
+#
+CSV=${1:-/root/survey.csv}
+BASE=${2-https://unpkg.com/leaflet@1.9.4/dist}
+
+case "$BASE" in
+	"") CSS="leaflet.css";          JS="leaflet.js" ;;
+	*/) CSS="${BASE}leaflet.css";   JS="${BASE}leaflet.js" ;;
+	*)  CSS="$BASE/leaflet.css";    JS="$BASE/leaflet.js" ;;
+esac
+
+cat <<HDR
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HaLow coverage survey</title>
+<link rel="stylesheet" href="$CSS"/>
+<script src="$JS"></script>
+HDR
+
+cat <<'HDR2'
+<style>
+  html,body{margin:0;height:100%}
+  #map{height:100%;width:100%;background:#e8e8e8}
+  .legend{background:#fff;padding:8px 11px;border-radius:6px;color:#222;
+          font:13px system-ui,sans-serif;line-height:1.7;box-shadow:0 1px 5px rgba(0,0,0,.35)}
+  .legend b{display:block;margin-bottom:4px}
+  .dot{display:inline-block;width:11px;height:11px;border-radius:50%;
+       margin-right:6px;vertical-align:middle;border:1px solid #333}
+</style></head><body><div id="map"></div>
+<script>
+var PTS = [
+HDR2
+
+awk -F, 'NR>1 { sub(/\r$/,"") }
+  NR>1 && $2!="" && $3!="" {
+    printf "  [%s,%s,\"%s\",%s,%s],\n", $2, $3, $4, $6, $7;
+  }' "$CSV"
+
+cat <<'FTR'
+];
+function col(snr, loss){
+  if (snr < 12 || loss >= 100) return "#dc2626";  // red   - unusable
+  if (snr < 25)                return "#d97706";  // amber - marginal
+  return "#16a34a";                               // green - reliable
+}
+var BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+var map = L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom:19, errorTileUrl:BLANK,
+  attribution:'&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+var latlngs = [];
+for (var i = 0; i < PTS.length; i++){
+  var lat=PTS[i][0], lon=PTS[i][1], sig=PTS[i][2], snr=PTS[i][3], loss=PTS[i][4];
+  latlngs.push([lat, lon]);
+  L.circleMarker([lat, lon], {
+      radius:7, color:'#333', weight:1,
+      fillColor:col(snr, loss), fillOpacity:0.9
+  }).addTo(map).bindPopup('SNR ' + snr + ' dB<br>signal ' + sig + ' dBm<br>loss ' + loss + '%');
+}
+if (latlngs.length > 1)
+  L.polyline(latlngs, { color:'#3b82f6', weight:2, opacity:0.5 }).addTo(map);
+
+if (latlngs.length){
+  var b = L.latLngBounds(latlngs);
+  if (b.getNorth() == b.getSouth() && b.getEast() == b.getWest())
+    map.setView(latlngs[0], 17);          // all points identical (stationary)
+  else
+    map.fitBounds(b, { padding:[40,40] });
+} else {
+  map.setView([0,0], 2);
+}
+
+var lg = L.control({ position:'bottomright' });
+lg.onAdd = function(){
+  var d = L.DomUtil.create('div', 'legend');
+  d.innerHTML =
+    '<b>SNR 覆蓋 (' + PTS.length + ' 點)</b>' +
+    '<span class="dot" style="background:#16a34a"></span>≥25 可靠<br>' +
+    '<span class="dot" style="background:#d97706"></span>12–24 勉強<br>' +
+    '<span class="dot" style="background:#dc2626"></span>&lt;12 / 100% 死區';
+  return d;
+};
+lg.addTo(map);
+</script></body></html>
+FTR
