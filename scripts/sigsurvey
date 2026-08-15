@@ -37,8 +37,11 @@ echo "sigsurvey: GPS=$IP:$PORT  peer=$PEER  -> $OUT   (Ctrl-C to stop)"
 FEED=$!
 trap 'kill $FEED 2>/dev/null; echo; echo "stopped. logged $(( $(wc -l < "$OUT") - 1 )) points -> $OUT"; exit 0' INT TERM
 
-echo "ts,lat,lon,signal_dbm,noise_dbm,snr_db,loss_pct" > "$OUT"
+# append mode: keep the header only once, so a respawn / reboot continues the
+# same survey instead of wiping it (start a fresh survey by deleting the file).
+[ -s "$OUT" ] || echo "ts,lat,lon,signal_dbm,noise_dbm,snr_db,loss_pct" > "$OUT"
 while :; do
+  touch /tmp/sigsurvey.alive   # heartbeat: survey-web uses this to show RECORDING
   pos=$(grep '\$GPRMC' "$NMEA" 2>/dev/null | tail -1 | awk -F, '$3=="A"{
     la=$4; ns=$5; lo=$6; ew=$7;
     d=int(la/100); lat=d+(la-d*100)/60; if(ns=="S")lat=-lat;

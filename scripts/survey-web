@@ -1,0 +1,77 @@
+#!/bin/sh
+#
+# survey-web - tiny CGI field-control page: shows node01 RSSI/SNR (as seen by
+# THIS node) and starts/stops sigsurvey with a tap. Deploy to the node's uhttpd
+# CGI dir and open it from a phone on the node's AP:
+#
+#   scp survey-web root@<node>:/www/cgi-bin/survey ; chmod +x it
+#   phone -> http://<node-ip>/cgi-bin/survey
+#
+# Uses a pidfile (via start-stop-daemon) for start/stop/status -- NOT ps|grep,
+# which is unreliable when the caller's own command line contains "sigsurvey".
+#
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+echo "Content-type: text/html; charset=utf-8"
+echo ""
+
+# start/stop the procd-managed service (reliable from CGI; uhttpd can't reap it).
+act=$(echo "$QUERY_STRING" | sed -n 's/.*action=\([a-z]*\).*/\1/p')
+msg=""
+if [ "$act" = "start" ]; then
+	/etc/init.d/sigsurvey start >/dev/null 2>&1
+	msg="recording (survey continues / appends)"
+elif [ "$act" = "stop" ]; then
+	/etc/init.d/sigsurvey stop >/dev/null 2>&1
+	msg="stopped"
+elif [ "$act" = "new" ]; then
+	/etc/init.d/sigsurvey stop >/dev/null 2>&1; rm -f /root/survey.csv /tmp/survey.nmea
+	/etc/init.d/sigsurvey start >/dev/null 2>&1
+	msg="NEW survey started (old CSV cleared)"
+fi
+
+sig=$(iw dev wlan0 station dump 2>/dev/null | awk '/signal avg:/{print $3; exit}')
+noise=$(morse_cli -i wlan0 stats 2>/dev/null | awk -F: '/^Noise \(dBm\)/{gsub(/ /,"",$2);print $2}')
+snr=""; [ -n "$sig" ] && [ -n "$noise" ] && snr=$((sig - noise))
+# RECORDING = the procd service is up (authoritative + immediate; the heartbeat
+# file's coarse 1-min find window lagged the STOPPED state).
+run=0; /etc/init.d/sigsurvey running >/dev/null 2>&1 && run=1
+pts=$(( $(wc -l < /root/survey.csv 2>/dev/null) - 1 )); [ "$pts" -lt 0 ] && pts=0
+
+status="STOPPED"; scol="#888"
+[ "$run" -eq 1 ] && { status="● RECORDING"; scol="#2a7"; }
+sc="#888"
+if [ -n "$snr" ]; then
+	if   [ "$snr" -ge 25 ]; then sc="#2a7"
+	elif [ "$snr" -ge 12 ]; then sc="#da0"
+	else sc="#d33"; fi
+fi
+
+cat <<EOF
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta http-equiv="refresh" content="2; url=survey">
+<title>HaLow survey</title>
+<style>
+body{background:#111;color:#eee;font-family:-apple-system,system-ui,sans-serif;text-align:center;margin:0;padding:20px}
+.lbl{color:#888;font-size:15px}
+.rssi{font-size:68px;font-weight:800;margin:6px 0}
+.snr{font-size:44px;font-weight:800;color:$sc;margin:6px 0}
+.status{font-size:22px;font-weight:800;color:$scol;margin:20px 0}
+.pts{font-size:18px;margin:6px 0}
+a.btn{display:block;padding:22px;margin:12px 4px;border-radius:14px;font-size:26px;font-weight:800;text-decoration:none;color:#fff}
+.start{background:#2a7}.stop{background:#c33}
+.msg{color:#8ab;font-size:14px;min-height:18px;margin-top:14px}
+</style></head><body>
+<div class="lbl">node01 訊號 RSSI</div>
+<div class="rssi">${sig:-—}<span style="font-size:26px"> dBm</span></div>
+<div class="lbl">SNR</div>
+<div class="snr">${snr:-—}<span style="font-size:22px"> dB</span></div>
+<div class="status">$status</div>
+<div class="pts">已記錄 <b>$pts</b> 點</div>
+<a class="btn start" href="?action=start">▶ 開始 / 繼續記錄</a>
+<a class="btn stop"  href="?action=stop">■ 停止</a>
+<a class="btn" style="background:#557" href="?action=new">✦ 新測（清空舊資料）</a>
+<div class="msg">$msg</div>
+</body></html>
+EOF
