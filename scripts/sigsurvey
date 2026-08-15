@@ -18,8 +18,8 @@
 IP=${1:-10.41.0.131}
 PORT=${2:-11123}
 PEER=${3:-10.41.1.1}
-NMEA=/tmp/survey.nmea
-OUT=/tmp/survey.csv
+NMEA=/tmp/survey.nmea        # volatile buffer (fine to lose on reboot)
+OUT=/root/survey.csv         # persistent: survives a reboot / battery brownout
 
 echo "sigsurvey: GPS=$IP:$PORT  peer=$PEER  -> $OUT   (Ctrl-C to stop)"
 : > "$NMEA"
