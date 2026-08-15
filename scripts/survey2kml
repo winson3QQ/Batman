@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# survey2kml - turn a sigsurvey CSV into a colour-coded KML coverage map.
+#
+# Points are coloured by SNR using the field-tested thresholds:
+#   green  SNR >= 25   reliable / usable
+#   yellow SNR 12..24  marginal (lossy)
+#   red    SNR < 12    unusable
+# A point with 100% packet loss is forced red regardless of SNR.
+#
+# Open the KML in Google Earth, or import into ATAK as an overlay.
+#
+#   usage: survey2kml survey.csv > coverage.kml
+#
+CSV=${1:-/tmp/survey.csv}
+
+cat <<'HDR'
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+<name>HaLow coverage survey</name>
+<Style id="g"><IconStyle><color>ff00ff00</color><scale>0.8</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href></Icon></IconStyle></Style>
+<Style id="y"><IconStyle><color>ff00ffff</color><scale>0.8</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href></Icon></IconStyle></Style>
+<Style id="r"><IconStyle><color>ff0000ff</color><scale>0.8</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href></Icon></IconStyle></Style>
+HDR
+
+awk -F, 'NR>1 && $2!="" && $3!="" {
+  lat=$2; lon=$3; sig=$4; snr=$6; loss=$7;
+  s="g";
+  if (snr<12 || loss>=100) s="r";
+  else if (snr<25) s="y";
+  printf "<Placemark><styleUrl>#%s</styleUrl><name>SNR %s</name>", s, snr;
+  printf "<description>sig=%sdBm SNR=%sdB loss=%s%%</description>", sig, snr, loss;
+  printf "<Point><coordinates>%s,%s</coordinates></Point></Placemark>\n", lon, lat;
+}' "$CSV"
+
+echo '</Document></kml>'
