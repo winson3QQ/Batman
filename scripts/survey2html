@@ -60,9 +60,16 @@ awk -F, 'NR>1 { sub(/\r$/,"") }
 cat <<'FTR'
 ];
 function col(snr, loss){
-  if (snr < 12 || loss >= 100) return "#dc2626";  // red   - unusable
-  if (snr < 25)                return "#d97706";  // amber - marginal
-  return "#16a34a";                               // green - reliable
+  var s = (snr === "" || snr == null) ? NaN : Number(snr);
+  // no SNR reading = out of range (dead zone); force red so gaps don't read green
+  if (isNaN(s) || s < 12 || loss >= 100) return "#dc2626";  // red   - dead/unusable
+  if (s < 25)                            return "#d97706";  // amber - marginal
+  return "#16a34a";                                         // green - reliable
+}
+function popupText(sig, snr, loss){
+  if (snr === "" || snr == null)
+    return '⚠ 無訊號（死區）<br>loss ' + loss + '%';
+  return 'SNR ' + snr + ' dB<br>signal ' + sig + ' dBm<br>loss ' + loss + '%';
 }
 var BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
 var map = L.map('map');
@@ -92,7 +99,7 @@ for (var i = 0; i < PTS.length; i++){
       iconSize:[38,38], iconAnchor:[19,19],
       html:'<span style="display:block;width:38px;height:38px;border-radius:50%;'+
            'background:radial-gradient(circle,'+c+'cc 0%,'+c+'66 40%,'+c+'00 72%)"></span>'
-  })}).addTo(map).bindPopup('SNR '+snr+' dB<br>signal '+sig+' dBm<br>loss '+loss+'%');
+  })}).addTo(map).bindPopup(popupText(sig, snr, loss));
 }
 
 if (latlngs.length){
