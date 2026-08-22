@@ -72,16 +72,28 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 var latlngs = [];
-for (var i = 0; i < PTS.length; i++){
-  var lat=PTS[i][0], lon=PTS[i][1], sig=PTS[i][2], snr=PTS[i][3], loss=PTS[i][4];
-  latlngs.push([lat, lon]);
-  L.circleMarker([lat, lon], {
-      radius:7, color:'#333', weight:1,
-      fillColor:col(snr, loss), fillOpacity:0.9
-  }).addTo(map).bindPopup('SNR ' + snr + ' dB<br>signal ' + sig + ' dBm<br>loss ' + loss + '%');
+for (var i = 0; i < PTS.length; i++) latlngs.push([PTS[i][0], PTS[i][1]]);
+
+// Continuous colour-graded ribbon: one segment per hop, coloured by that hop's
+// SNR/loss. Keeps the route readable as one band even when driving spreads the
+// samples tens of metres apart.
+for (var i = 1; i < PTS.length; i++){
+  L.polyline([latlngs[i-1], latlngs[i]], {
+      color: col(PTS[i][3], PTS[i][4]), weight:6, opacity:0.55, lineCap:'round'
+  }).addTo(map);
 }
-if (latlngs.length > 1)
-  L.polyline(latlngs, { color:'#3b82f6', weight:2, opacity:0.5 }).addTo(map);
+
+// Soft gradient "glow" points (no hard outline) so adjacent/overlapping samples
+// blend into a continuous field instead of separate ringed dots.
+for (var i = 0; i < PTS.length; i++){
+  var sig=PTS[i][2], snr=PTS[i][3], loss=PTS[i][4], c=col(snr, loss);
+  L.marker(latlngs[i], { icon: L.divIcon({
+      className:'',
+      iconSize:[38,38], iconAnchor:[19,19],
+      html:'<span style="display:block;width:38px;height:38px;border-radius:50%;'+
+           'background:radial-gradient(circle,'+c+'cc 0%,'+c+'66 40%,'+c+'00 72%)"></span>'
+  })}).addTo(map).bindPopup('SNR '+snr+' dB<br>signal '+sig+' dBm<br>loss '+loss+'%');
+}
 
 if (latlngs.length){
   var b = L.latLngBounds(latlngs);
