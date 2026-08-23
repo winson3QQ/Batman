@@ -96,9 +96,9 @@ for (var i = 0; i < PTS.length; i++){
   var sig=PTS[i][2], snr=PTS[i][3], loss=PTS[i][4], c=col(snr, loss);
   L.marker(latlngs[i], { icon: L.divIcon({
       className:'',
-      iconSize:[38,38], iconAnchor:[19,19],
-      html:'<span style="display:block;width:38px;height:38px;border-radius:50%;'+
-           'background:radial-gradient(circle,'+c+'cc 0%,'+c+'66 40%,'+c+'00 72%)"></span>'
+      iconSize:[12,12], iconAnchor:[6,6],
+      html:'<span style="display:block;width:12px;height:12px;border-radius:50%;'+
+           'background:radial-gradient(circle,'+c+'ee 0%,'+c+'cc 60%,'+c+'66 100%)"></span>'
   })}).addTo(map).bindPopup(popupText(sig, snr, loss));
 }
 
