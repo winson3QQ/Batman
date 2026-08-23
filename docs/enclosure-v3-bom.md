@@ -9,6 +9,34 @@ V3 是「Raspberry Pi 4 + WM1302 HAT + Wio-WM6108」量身版 = **對應本專�
 
 ---
 
+## 外觀 / 組裝視圖
+
+> 圖片轉存自上游 [ties1887/Mesh-radio-Halow-LoRa](https://github.com/ties1887/Mesh-radio-Halow-LoRa) `V3_18-6-2026/images`（MIT 授權）。上游未提供標準爆炸圖；以下為 AI render 總覽與 SolidWorks 實體視角，殼件逐件分解檔見上游 `STEP/`、`Solidworks 2023/2025/`。
+
+**AI render 成品總覽**（頂部 4 天線孔、側面銅散熱片、底部防水航空接頭）
+![V3 AI render 總覽](./images/v3-assembly-overview.png)
+
+**SolidWorks 三視角**
+![V3 SolidWorks 視角 1](./images/v3-solidworks-screenshot-1.png)
+![V3 SolidWorks 視角 2](./images/v3-solidworks-screenshot-2.png)
+![V3 SolidWorks 視角 3](./images/v3-solidworks-screenshot-3.png)
+
+### 殼件分解（一件一檔，等同零件表）
+| 殼件檔 | 對應部位 |
+|---|---|
+| `Top new` | 頂蓋（4 天線孔那面） |
+| `middel part` | 中段主體 |
+| `base` / `batcase` | 底座 / 電池艙 |
+| `PCB frame` | PCB 固定框 |
+| `pi4withall` | Pi 4 + HAT 定位件 |
+| `buck converter` | 降壓板座 |
+| `cooling` | 散熱片座（視覺參考，實際買金屬版） |
+| `wing part` | 側翼 / 握把 |
+| `Twist lock battery part V3` / `Twist lock radio part V3` | 旋鎖式電池⟷電台快拆結構 |
+| `3MF/Assem2.3MF` | 全部殼件的**免支撐列印總成**檔 |
+
+---
+
 ## HaLow（運算 + 無線）
 | 零件 | 數量 | 單價 | 連結 |
 |---|---|---|---|
