@@ -1,0 +1,51 @@
+Pi 5 / Pi 500 (RP1, spi-dw) ONLY -- applies on top of
+0001-spi-use-SPI_NO_CS-for-training-sequence.patch.
+
+Not needed on Pi 4 (spi-bcm2835), where 0001 alone is enough and is what is
+actually deployed. The change is believed to be safe on Pi 4 as well, but the
+Pi 4 node has not been re-tested with it, so keep the two driver trees separate.
+
+diff --git a/spi.c b/spi.c
+index 08c7d40..0000000 100644
+--- a/spi.c
++++ b/spi.c
+@@ -292,23 +292,25 @@ static void morse_spi_initsequence(struct morse_spi *mspi)
+ 	 * GPIO-descriptor chip-selects, which makes the original CS_HIGH trick a no-op and
+ 	 * runs the training clocks with CS *asserted*. Use SPI_NO_CS instead so the core
+ 	 * skips CS toggling entirely and the pin stays deasserted (high) during training.
++	 *
++	 * Do NOT route this through spi_setup(): SPI_NO_CS is validated there against the
++	 * controller's mode_bits, and spi-dw (the RP1 controller on Pi 5 / Pi 500) does not
++	 * advertise it -- spi_setup() then fails with "unsupported mode bits 40" and the
++	 * training clocks are skipped entirely (CMD63 -> -ENODATA). No controller support is
++	 * actually required: with a GPIO chip-select the flag is only read by the core's
++	 * spi_set_cs(), which simply leaves the line alone. Setting it directly therefore
++	 * works on both spi-bcm2835 (Pi 4) and spi-dw (Pi 5).
+ 	 */
++	if (!spi_is_csgpiod(spi))
++		dev_warn(&spi->dev, "native chip-select: training clocks will run with CS asserted\n");
++
+ 	spi->mode |= SPI_NO_CS;
+-	if (spi_setup(spi) != 0) {
+-		/* Just warn; most cards work without it. */
+-		dev_warn(&spi->dev, "can't disable chip-select for training\n");
+-		spi->mode &= ~SPI_NO_CS;
+-	} else {
+-		/* We will send only 0xFF for training */
+-		memset(mspi->data, 0xFF, MM610X_BUF_SIZE);
+-		morse_spi_xfer(mspi, 18);
+ 
+-		spi->mode &= ~SPI_NO_CS;
+-		if (spi_setup(spi) != 0) {
+-			/* Wot, we can't get the same setup we had before? */
+-			dev_err(&spi->dev, "can't restore chip-select\n");
+-		}
+-	}
++	/* We will send only 0xFF for training */
++	memset(mspi->data, 0xFF, MM610X_BUF_SIZE);
++	morse_spi_xfer(mspi, 18);
++
++	spi->mode &= ~SPI_NO_CS;
+ }
+ 
+ static void morse_spi_xfer_init(struct morse_spi *mspi)

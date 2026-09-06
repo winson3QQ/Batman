@@ -1,0 +1,66 @@
+/dts-v1/;
+/plugin/;
+
+/* Wio-WM6108 (MM6108) over SPI0 -- Raspberry Pi 5 / Pi 500 (BCM2712 + RP1).
+ *
+ * The BCM2711 version of this overlay re-uses the base DTB's `spi0_pins` node and
+ * only overrides `brcm,pull`.  On BCM2712 that node does not exist, so the overlay
+ * *creates* it with a pull setting and no `brcm,pins`/`brcm,function` -- the result
+ * is a pinctrl map that mentions no pins at all and GPIO9/10/11 are never muxed to
+ * SPI0 (verified with `pinctrl get 9-11`: "none").  MISO then floats and every
+ * transfer reads 0xFF, which the driver reports as CMD53 -EPROTO / CMD63 -ENODATA.
+ *
+ * Here we point pinctrl-0 at RP1's own `rp1_spi0_gpio9` node instead.  GPIO8 stays a
+ * plain GPIO chip-select (cs-gpios), so it is NOT included in the SPI0 function group.
+ */
+
+/ {
+	compatible = "brcm,bcm2712";
+
+	fragment@0 {
+		target = <&spi0>;
+
+		__overlay__ {
+			pinctrl-names = "default";
+			pinctrl-0 = <&rp1_spi0_gpio9 &mm_spi0_cs_pins>;
+			cs-gpios = <&gpio 8 1>;  /* GPIO8, active low */
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			mm6108@0 {
+				compatible = "morse,mm610x-spi";
+				reg = <0>;
+				reset-gpios = <&gpio 17 0>;     /* GPIO17, active high */
+				power-gpios = <&gpio 23 0       /* GPIO23 wakeup, active high */
+				               &gpio 24 0>;     /* GPIO24 busy, active high */
+				spi-irq-gpios = <&gpio 5 0>;    /* GPIO5, active high */
+				spi-max-frequency = <20000000>; /* 20 MHz */
+				status = "okay";
+			};
+
+			spidev@0 {
+				reg = <0>;
+				status = "disabled";
+			};
+
+			spidev@1 {
+				reg = <1>;
+				status = "disabled";
+			};
+		};
+	};
+
+	fragment@1 {
+		target = <&gpio>;
+
+		__overlay__ {
+			mm_spi0_cs_pins: mm_spi0_cs_pins {
+				pins = "gpio8";
+				function = "gpio";
+				bias-pull-up;
+				output-high;    /* chip-select deasserted */
+			};
+		};
+	};
+};
