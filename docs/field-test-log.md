@@ -53,3 +53,40 @@
 - 把 node02 往少遮蔽處挪，找**綠燈恆亮(LINKED)+0% 丟包**的可用 NLOS 邊界。
 - LOS 拉遠（20–100m）測自由空間射程。
 - 電池吞吐問題 → V3 電源（2S2P Samsung 45T 高電流）應可解，屆時重測點 3。
+
+---
+
+# Bench 測試：Pi500 ↔ manet01 mesh throughput（2026-09-07）
+
+⚠️ **這是桌上 bench，不是野測。條件與前面野測不同（工具、距離、對端硬體），數字不可直接類比。方法論待商榷，僅記錄原始觀察。**
+
+## 設備（硬體分版本）
+
+| 角色 | 硬體 | 系統 | S1G 使用者空間 | morse 韌體 |
+|---|---|---|---|---|
+| 一端 | **Pi 500 = BCM2712（Pi5 級）+ RP1** | Debian 13 | 自建 `wpa_supplicant_s1g`（MorseMicro/hostap mm6108-2.0.1） | rel_mm6108_2_0_1 |
+| 另一端 | **manet01 = BCM2711（Pi4）** | OpenMANET 24.10 1.8.0 | OpenWrt 內建 | rel_mm6108_2_0_1 |
+
+兩端 Wio-WM6108（MM6108），mesh_id `openmanet1`、SAE、BATMAN_V。量測工具：`batctl meshif bat0 tp`（batman throughput meter，over 802.11s+batman）。
+
+## 2 MHz（S1G ch42 = 923 MHz，op_class 69）
+
+| RSSI (node→Pi500) | throughput (batctl tp) | 備註 |
+|---|---|---|
+| -40 dBm | 1.05–1.39 Mbps | Pi500 txpower 當時 5 dBm |
+| -54~-58 dBm | ~0.65 Mbps | |
+| -61~-65 dBm | 0.36–0.87 Mbps | 兩端 27 dBm；tx retries 85–118% |
+
+- 觀察：throughput 與 RSSI 未見清楚單調關係；**tx retries 偏高（85–118%）**；RSSI 在單次量測內跳動（±10 dB）。
+- 對照前面野測（兩台 OpenMANET 節點）LOS 5m 為 **2.9 Mbps** —— 本 bench 明顯偏低。可能因素（未定論）：近場、Pi500 txpower 受 morse 驅動限制、batctl tp 量測特性、量測方向與 RSSI 讀取方向相反。
+
+## 4 MHz（S1G ch40 = 922 MHz，op_class 70）
+
+- ⭐ **Pi500 的 `wpa_supplicant_s1g` 與 manet01 的 OpenWrt 在 4 MHz mesh 下無法 peer。** 已試 `s1g_prim_1mhz_chan_index` 0/1/2/3 皆不成（2 MHz 同設定可正常 peer）。
+- 推測 primary-1MHz 通道協商或 S1G 4MHz 處理在 wpa_supplicant ↔ OpenWrt 之間不一致，待查。
+- ⚠️ 操作教訓：改頻寬會斷 mesh；用 `nohup` 排自動還原**沒撐過 SSH 斷線**，manet01 一度失聯，最後靠 `/boot/sysupgrade.tgz` 注入 `channel=42` 救回。以後改頻道用 cron/at 或更可靠的還原機制。
+
+## 待辦
+
+- 真正的 tput-vs-RSSI 曲線：兩台**同韌體 OpenMANET 節點**（都 27 dBm）、固定位置、野外拉開距離、用 iperf。
+- 4 MHz peering：先在兩台 OpenMANET 節點間確認可行（同 OpenWrt 端），再看 Pi500 端。
