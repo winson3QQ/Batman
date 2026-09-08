@@ -1,0 +1,21 @@
+[Unit]
+Description=batman-adv (BATMAN_V) over HaLow mesh — bat0
+After=halow-mesh.service
+Requires=halow-mesh.service
+ConditionPathExists=/sys/class/net/wlan1
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 等 wlan1 進 mesh point（wpa 設定完），最多 ~15s
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do /usr/sbin/iw dev wlan1 info | grep -q "type mesh point" && exit 0; sleep 0.5; done; exit 0'
+ExecStart=/usr/sbin/modprobe batman-adv
+ExecStart=/usr/sbin/batctl routing_algo BATMAN_V
+ExecStart=/usr/sbin/batctl meshif bat0 interface add wlan1
+ExecStart=/usr/sbin/ip link set bat0 up
+ExecStart=-/usr/sbin/ip addr add 10.41.250.1/16 dev bat0
+ExecStop=-/usr/sbin/ip link set bat0 down
+ExecStop=-/usr/sbin/batctl meshif bat0 interface del wlan1
+
+[Install]
+WantedBy=multi-user.target

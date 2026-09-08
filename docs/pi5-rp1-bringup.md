@@ -168,3 +168,46 @@ sleep 2; sudo dmesg | grep -iE 'morse|dot11'; ip -br link
   `hostapd` or `morse_cli`, so `wlan1` cannot join a mesh yet. The Pi 500 is the
   management and debug reference; the field mesh is still manet01 / manet02 running
   OpenMANET.
+
+  **Resolved 2026-09-06** — S1G `wpa_supplicant` / `hostapd` / `morse_cli` were built for
+  Debian 13 and the Pi 500 now peers with manet01. See the mesh section below.
+
+## Mesh bring-up — everything needed to rebuild this box
+
+Four files. Copies live in `scripts/` so the setup is reproducible if the card dies.
+
+| install to | copy from |
+|---|---|
+| `/etc/modprobe.d/morse.conf` | `scripts/pi500-morse-modprobe.conf` |
+| `/etc/halow/mesh-wlan1.conf` (mode 600, contains the PSK) | `scripts/pi500-mesh-wlan1.conf` |
+| `/etc/systemd/system/halow-mesh.service` | `scripts/pi500-halow-mesh.service` |
+| `/etc/systemd/system/halow-batman.service` | `scripts/pi500-halow-batman.service` |
+
+```bash
+sudo systemctl enable --now halow-mesh.service halow-batman.service
+```
+
+`halow-batman` has `Requires=halow-mesh`, so it follows the mesh unit up and down. Both are
+`enabled`, so a cold boot restores the whole path: driver -> `wlan1` mesh point -> `bat0` at
+`10.41.250.1/16`.
+
+## Verifying after a reboot
+
+```bash
+sudo ./scripts/pi500-halow-healthcheck.sh        # add -t to push traffic first
+```
+
+Checks the driver params, both units, peering, batman, and — the one that matters —
+**PMF and A-MPDU aggregation**. Exits non-zero on any failure.
+
+That last check exists because of #33. The mesh can look completely healthy — peer `ESTAB`,
+data flowing, `batctl ping` at 0% loss — while aggregation is silently dead and throughput
+is stuck at a third of what the link can do. The two symptoms to look for:
+
+```
+MFP:  no                                    <- ieee80211w=2 missing from mesh-wlan1.conf
+AGG A-MPDUs : 1175375 0 0 0 0 0 0 ...       <- every A-MPDU carries exactly one MPDU
+TX BlockAck : 0
+```
+
+Nothing else in `iw`, `batctl` or `ping` will tell you. See `docs/field-test-log.md`.
