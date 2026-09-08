@@ -147,3 +147,22 @@ US 4MHz 頻道（morse regdb，op_class 70）：s1g_chan 8/16/24/32/40/48 = 906/
 
 切換順序（無 console/有線時的安全做法）：先改節點 channel+commit+reboot，再改 Pi500 對齊；
 失敗（節點在 4MHz 起不來/配不上）則插 eth0 從有線 revert `channel=42`。兩端皆已 commit/存檔，冷開機保留。
+
+## 60秒時序：4MHz 下行 Tput/RSSI/MCS（2026-09-08，天線重裝後）
+
+Pi500→manet01 下行，純 mesh（eth0 down），channel 40 / 922 MHz、每秒採樣 60 秒。
+
+![mesh 4MHz 1min](images/mesh-4mhz-1min-pi500-manet01.png)
+
+原始數據：[`data/mesh-4mhz-1min-pi500-manet01.csv`](data/mesh-4mhz-1min-pi500-manet01.csv)
+
+| 指標 | 值 |
+|---|---|
+| 吞吐 | 平均 3.45 Mbps（1.54–6.29 波動）|
+| RSSI | -30 dBm（±1，極穩）|
+| TX MCS | 眾數 7，週期性掉到 4–5 |
+
+- 天線重裝後 TX MCS 眾數從 MCS5（裝之前）回到 **MCS7**、峰值 6.29 Mbps，有改善。
+- **但 RSSI 穩定 -30 dBm 下 MCS 仍週期性掉到 4–5**，吞吐谷底跟著掉 → 非訊號問題，是
+  **Pi500 morse rate-control 抖動**（驅動層），天線改善絕對水準但解不掉抖動。
+- 印證瓶頸在 Pi500 發射側。4MHz 真實實力仍待 manet01↔manet02 兩台正規節點對打量測。
