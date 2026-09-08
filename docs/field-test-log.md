@@ -166,3 +166,101 @@ Pi500→manet01 下行，純 mesh（eth0 down），channel 40 / 922 MHz、每秒
 - **但 RSSI 穩定 -30 dBm 下 MCS 仍週期性掉到 4–5**，吞吐谷底跟著掉 → 非訊號問題，是
   **Pi500 morse rate-control 抖動**（驅動層），天線改善絕對水準但解不掉抖動。
 - 印證瓶頸在 Pi500 發射側。4MHz 真實實力仍待 manet01↔manet02 兩台正規節點對打量測。
+
+## ★ issue #33 根因與修復：PMF(MFP) 不對稱 → A-MPDU 完全不聚合（2026-09-09）
+
+**結論先講：吞吐低跟 rate-control 沒關係，是 Pi500 側 `wpa_supplicant` 沒開 PMF，
+導致 ADDBA 交握永遠失敗、整條 mesh 從頭到尾都沒有 A-MPDU 聚合，每包都單發。**
+
+修法是一行設定，不用改驅動：`/etc/halow/mesh-wlan1.conf` 的 `network={}` 內加
+
+```
+    ieee80211w=2      # PMF required；不加則 ADDBA/DELBA 明文送出，被節點丟棄
+```
+
+### 怎麼查出來的
+
+1. **看晶片統計，不是看 MCS。** `morse_cli -i wlan1 stats`：
+
+   ```
+   AGG A-MPDUs : 1175375 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+   TX BlockAck : 0
+   ```
+   A-MPDU 長度直方圖 **全部落在第 0 格**＝每個 A-MPDU 只有 1 個 MPDU，`TX BlockAck` 是 0。
+   也就是說聚合根本沒在運作。MCS7 在 4MHz 只有 16.65 Mbps PHY，扣掉每包的
+   preamble/SIFS/ACK/backoff，不聚合的天花板就是 3～4 Mbps —— 跟實測 3.45 完全對得上。
+
+2. **看 BA session 有沒有建起來。** 打開驅動 log（`echo 7 > /sys/kernel/debug/ieee80211/phy2/morse/logging/{default,mesh,mgmtfrm}`）後 dmesg：
+
+   ```
+   A-MPDU TX start        <- 起 BA
+   A-MPDU TX flush        <- 1 秒後被砍（ADDBA Response 逾時）
+   A-MPDU TX start        <- 重試，永遠等不到 oper
+   ```
+   從來沒有 `A-MPDU TX oper`。節點端 `agg_status` 也是全 0、`next dialog_token: 0xfa`（試了 250 次）。
+
+3. **ftrace 定位是哪一半掉的。**
+
+   ```bash
+   printf 'ieee80211_process_addba_resp\nieee80211_process_addba_request\nsta_addba_resp_timer_expired\n' \
+     > /sys/kernel/tracing/set_ftrace_filter
+   echo function > /sys/kernel/tracing/current_tracer; echo 1 > /sys/kernel/tracing/tracing_on
+   ```
+   結果：`process_addba_request` 4 次（**收得到**對方的 ADDBA Request）、
+   `process_addba_resp` **0 次**、`sta_addba_resp_timer_expired` 4 次。
+   節點端 dmesg 則連一次 `A-MPDU RX start` 都沒有 → **Pi500 送出去的 BACK 類 action frame
+   對方完全沒收到**。單向壞，方向是 Pi500 → 節點。
+
+4. **比對兩端的 STA flag，找到不對稱：**
+
+   | | Pi500 看對方 | manet01 看 Pi500 |
+   |---|---|---|
+   | `MFP` | **no** | **yes** |
+
+   機制（mac80211）：
+   - BlockAck（category 3）**屬於 robust management frame**（`_ieee80211_is_robust_mgmt_frame()`
+     的排除清單只有 Public / HT / UNPROT_DMG / SELF_PROTECTED / VENDOR_SPECIFIC）。
+   - 送端 `ieee80211_tx_h_select_key()`：mgmt frame 若 `ieee80211_use_mfp()` 為 false 就
+     `tx->key = NULL` → **明文送出**。而 `use_mfp()` 的第一個條件就是
+     `test_sta_flag(sta, WLAN_STA_MFP)`。Pi500 沒設 → ADDBA 明文。
+   - 收端 `ieee80211_drop_unencrypted_mgmt()`：對方 STA 有 MFP 且 robust mgmt frame 沒加密 → **靜默丟棄**。
+
+   MPM peering frame 是 category 15（SELF_PROTECTED，非 robust），所以**配對照樣成功**；
+   data frame 走 pairwise key 也照樣通。只有 ADDBA/DELBA 這種 robust action frame 被吃掉，
+   所以症狀才會是「什麼都好，就是慢」。
+
+   節點端（OpenWrt `encryption='sae'`）預設就帶 `ieee80211w=2`；Pi500 這邊手寫的
+   `mesh-wlan1.conf` 漏了，兩端不對稱。
+
+### 修復後（同位置，60 秒每秒採樣）
+
+![mesh 4MHz 1min PMF](images/mesh-4mhz-1min-pi500-manet01-pmf.png)
+
+原始數據：[`data/mesh-4mhz-1min-pi500-manet01-pmf.csv`](data/mesh-4mhz-1min-pi500-manet01-pmf.csv)
+完整可用設定檔：[`../scripts/pi500-mesh-wlan1.conf`](../scripts/pi500-mesh-wlan1.conf)
+
+| 指標 | 修復前 | 修復後 |
+|---|---|---|
+| 下行 TCP（60s 平均）| 3.45 Mbps | **10.28 Mbps**（中位數 10.40，4.65–19.70）|
+| 上行 TCP | 2.57 Mbps | **8.76 Mbps** |
+| A-MPDU 長度分佈 | 全部 = 1 MPDU | 峰值 **13–17 MPDU** |
+| `TX BlockAck` | 0 | 2165 / 60s |
+| TX MCS 分佈 | MCS7 只佔 48%，週期掉到 4–5 | **MCS7 佔 96%**，60 秒採樣 60/61 是 7 |
+| `tx failed` | 434 | **0** |
+| RSSI | -30 dBm | -34 dBm（更差，增益不是來自訊號）|
+
+RSSI 反而比修復前差 4 dB，吞吐仍 ~3 倍 → 確認增益來自聚合，不是 RF。
+
+### 校正 issue #33 的原始判斷
+
+原本記錄的「Pi500 morse rate-control 抖動」是**果不是因**：不聚合 → 每包單發、
+碰撞/ACK 逾時比例高 → MMRC 讀到丟包就降 MCS。聚合修好後 MCS 自己就穩在 7 了。
+`mmrc_table` 裡「低 MCS 成功率反而更低」（MCS0 4MHz SGI 是 0/285＝0%，MCS7 卻有 92%）
+這個違反物理的訊號，當時就該提示問題不在 SNR / rate-control。
+
+### 順帶記錄：仍待處理的次要項目
+
+- Pi500 rate table 上限是 **MCS7**（無 MCS8/9）—— 對端 VHT MCS map 回報 `SUPPORT_0_8`，
+  依 `morse_rc_sta_add_vht_sta_caps()` 的 VHT→S1G 對應（9→9, 8→7, 7→2）只展開到 S1G MCS7。
+- `AGG crosses TBTT` 每 60 秒約 330 次（beacon_int=1000 TU），還有壓縮空間。
+- `max_rate_tries=1`（驅動預設），retry chain 是 MCS7→6→5→0 各一次。
