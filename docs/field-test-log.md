@@ -264,3 +264,81 @@ RSSI 反而比修復前差 4 dB，吞吐仍 ~3 倍 → 確認增益來自聚合�
   依 `morse_rc_sta_add_vht_sta_caps()` 的 VHT→S1G 對應（9→9, 8→7, 7→2）只展開到 S1G MCS7。
 - `AGG crosses TBTT` 每 60 秒約 330 次（beacon_int=1000 TU），還有壓縮空間。
 - `max_rate_tries=1`（驅動預設），retry chain 是 MCS7→6→5→0 各一次。
+
+## PMF 修好之後的完整基準：UDP 天花板、上下行不對稱、抖動來源（2026-09-09）
+
+承上節。`ieee80211w=2` 修好聚合之後重新做的完整量測，同位置、eth0 down 純 mesh、
+4MHz ch40/922 MHz、RSSI -30～-34 dBm。
+
+### UDP 天花板（`iperf -u -l 1400`）
+
+| 方向 | 餵 8M | 餵 10M | 餵 12–14M | 餵 20M | 遺失 |
+|---|---|---|---|---|---|
+| 下行 Pi500→manet01 | — | 10.5 | **11.0** | 10.9 Mbps | **0%** |
+| 上行 manet01→Pi500 | 8.39 | — | 9.34 | **9.42** Mbps | **0%**（jitter 2.32 ms）|
+
+**天花板：下行 11.0 Mbps、上行 9.4 Mbps。**
+
+**0% 遺失是重點** —— 餵到 20M 也不掉包，代表不是佇列爆掉，是 **mac80211 內建 TXQ 的
+fq_codel 在做 backpressure**（`tc qdisc show dev wlan1` 顯示 `noqueue`，佇列在 mac80211 裡，
+不在 netdev qdisc）。發送端被擋住，不是封包被丟掉。
+
+TCP 拿到 9.88 / 8.42 Mbps = UDP 天花板的 **90%**，這個效率是正常的。
+
+### 上下行不對稱：兩個成因，都在「節點發、Pi500 收」這條鏈
+
+30 秒單向 TCP，兩端同時 diff `morse_cli stats`：
+
+**(a) RTS/CTS —— 佔 6.6%**（→ issue #35）
+
+```
+manet01  RTS threshold: 1000    ← 資料 frame ~1448B，每個 A-MPDU 都觸發
+Pi500    RTS threshold: (未設)
+```
+
+計數器完全對得上：上行時 manet01 `TX RTS: +2542`、A-MPDU 共 ~2449 個，`TX MCS` 直方圖
+**MCS2 = 2542**（RTS 走 basic rate）；Pi500 這端 `RX RTS: +2359`、`TX CTS: +2359`。
+下行同樣時間 Pi500 只送 **7** 個 RTS。
+
+實測（`iw phy phy0 set rts off`，量完已還原 1000）：UDP 上行 9.38 → **10.0 Mbps**、
+TCP 上行 8.42 → 8.64、節點 MCS7 佔比 37% → 50%。
+
+**(b) Pi500 接收品質差 7.6 倍 —— 佔 ~8%**（→ issue #34）
+
+同樣 RSSI 下：
+
+| 接收端 | MPDU FCS fail | invalid delimiters |
+|---|---|---|
+| manet01 收（下行）| 220 / 29434 = **0.75%** | 2.4% |
+| **Pi500 收（上行）** | 1537 / 27185 = **5.7%** | 6.5% |
+
+A-MPDU 內個別 MPDU 壞掉不會算成 ACK timeout（節點 ACK timeout 只有 1.9%），但 BlockAck
+bitmap 會回報缺漏 → MMRC 判定丟包 → 降速。所以節點只有 **37% 用 MCS7**，Pi500 反向是 **94%**。
+
+### 抖動來源：是量測假象，不是鏈路，也不是 OS scheduling
+
+同一次 40 秒 TCP 下行，**兩端同時**每 0.5 秒取樣：
+
+| | min–max | CoV |
+|---|---|---|
+| 發送端（Pi500 iperf client）| 5.18 – **27.20** Mbps | **27.2%** |
+| 接收端（manet01，真正上空的量）| 8.63 – 10.90 Mbps | **5.3%** |
+
+**發送端出現 27.2 Mbps，但這條鏈的 UDP 硬上限是 11.0 Mbps** —— 物理上不可能。iperf client
+數的是「寫進 socket 的 bytes」：mac80211 TXQ 排空時 `write()` 立刻返回就記一個爆量，
+被 backpressure 擋住就記一個谷底。**上一節 issue #33 原圖畫的 1.54–6.29 波動，同樣是發送端假象。**
+
+再把 TCP 擁塞控制也拿掉，用 UDP 餵 8 Mbps（低於天花板）看接收端：
+
+```
+UDP@8M 接收端：n=68   8.06 – 8.74 Mbps   CoV = 1.3%
+```
+
+排除的假設：
+
+- **不是 OS scheduling。** 同時段 4 核平均 7%、單次取樣最高 26%，93% 閒置。而且真是排程問題的話，
+  等速率的 UDP 也會抖，它沒有（CoV 1.3%）。
+- **不是週期性干擾。** 自相關全部 |r| < 0.15，沒有鎖在 1.024 s（`beacon_int=1000` TU）的 TBTT 週期。
+- 接收端 TCP 殘留的 5.3% 是 TCP cwnd × fq_codel AQM × rate-control retry 的正常互動。
+
+> **量測守則：無線鏈路要看接收端的數字。發送端的 iperf interval 量的是 socket 緩衝，不是空中速率。**
