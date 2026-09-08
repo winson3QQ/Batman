@@ -119,3 +119,31 @@
 - 下行 3 Mbps ≈ 節點↔節點 LOS 5m 的 2.9 Mbps → **HaLow 2MHz 上限**。
 - 甜蜜區約 **-30 ~ -55 dBm**：更近（-3 dBm）飽和→單播全丟；更遠（-88）WEAK→不能用。
 - 印證前一格偏低主因是位置/訊號，非 mesh 故障。
+
+## 2MHz vs 4MHz 對比（2026-09-08，Pi500 ↔ manet01，同位置 ~-31 dBm）
+
+純 HaLow 量測（eth0 down，否則流量會抄有線捷徑 → 上行假性 74 Mbps）：
+
+| 指標 | 2MHz (ch42/op69) | 4MHz (ch40/op70) | 變化 |
+|---|---|---|---|
+| 下行 TCP | 3.0 Mbps | 3.83 Mbps | +28% |
+| 上行 TCP | 1.6 Mbps | 2.57 Mbps | +60% |
+| tx retry | 24% | 11% | 減半 |
+
+4MHz 有實質提升（上行尤佳、retry 減半），但非理論翻倍 —— TCP over 半雙工 mesh 損耗 + Pi500 morse txpower 受限。**決定：留用 4MHz。**
+
+### ★ 4MHz 切換的關鍵：primary 1MHz channel index
+
+切 4MHz 不是只改 channel + op_class。**primary 1MHz sub-channel 兩端必須一致**，否則
+SAE-AUTH-FAILURE、plink 卡 LISTEN、看得到訊號但配不上對。
+
+- 節點：`uci set wireless.radio1.channel=40; uci commit wireless`（morse 從 regdb 自動推 op_class=70、
+  bw=4、**primary index=1**）。channel 號本身在 regdb 唯一對應一個頻寬（42=2MHz、40=4MHz）。
+- Pi500 (`/etc/halow/mesh-wlan1.conf`)：`channel=40`、`op_class=70`、**`s1g_prim_1mhz_chan_index=1`**
+  （2MHz 時是 0；4MHz 節點算出來是 1，Pi500 要跟著改 1 才 peer）。
+
+US 4MHz 頻道（morse regdb，op_class 70）：s1g_chan 8/16/24/32/40/48 = 906/910/914/918/922/926 MHz。
+選 40（922 MHz）因與原 2MHz ch42（923 MHz）最接近。
+
+切換順序（無 console/有線時的安全做法）：先改節點 channel+commit+reboot，再改 Pi500 對齊；
+失敗（節點在 4MHz 起不來/配不上）則插 eth0 從有線 revert `channel=42`。兩端皆已 commit/存檔，冷開機保留。
