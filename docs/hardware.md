@@ -177,3 +177,65 @@ development tooling. It is a debug station, not a node.
   1 GB. Cross-compile, or build on a bigger box — see `docs/building-the-driver.md`.
 - **Page cache on a small board.** Less RAM means less cache and more SD reads. Irrelevant
   for forwarding, relevant if the node logs heavily.
+
+## Can a smaller board do it? Measured, by underclocking a real node
+
+The RAM figures above already say yes on memory. The open question was CPU, so rather than
+guess at a Pi 3, manet01 (a real Pi 4B node) was **underclocked** and re-measured. An A72 at
+600 MHz is roughly an A53 at 1.4 GHz, i.e. a Pi 3B+.
+
+```
+  freq       throughput        node CPU (4-core avg)
+  1500 MHz   7.83 Mbits/sec    15.7%
+   900 MHz   8.73 Mbits/sec    17.2%
+   600 MHz   8.72 Mbits/sec    18.8%
+```
+
+**Throughput is unaffected by a 2.5x cut in clock speed** — the spread is inside this link's
+normal +/-1 Mbps run-to-run noise. CPU rose only from 15.7% to 18.8%.
+
+That small rise is the interesting part. If the 15.7% were real computation, a 2.5x slower
+clock would push it to ~39%. Solving
+
+```
+  X + Y   = 15.7     (1500 MHz)
+  2.5X + Y = 18.8    (600 MHz)
+  ->  X ~ 2%,  Y ~ 13.6%
+```
+
+**Only about 2% is clock-dependent work; the other ~13.6% is waiting** — SPI transfers,
+interrupt latency, softirq. This workload is not CPU-bound, so CPU headroom is not the
+constraint when choosing a board.
+
+### Board comparison
+
+| | RAM used | CPU | HAT fits | SPI controller | image exists |
+|---|---|---|---|---|---|
+| Pi 4B (manet01, today) | 109 MB / 1-8 GB | 15.7% | yes | bcm2835 | **yes** |
+| Pi 5 / Pi 500 | as above | 7% | yes | RP1 — needed a bring-up, see `pi5-rp1-bringup.md` | built by hand |
+| Pi 3B+ | fits (11% of 1 GB) | ~19% equivalent | yes, same 40-pin | **bcm2835, same as Pi 4** | **no — must be built** |
+| Pi Zero 2 W | 21% of 512 MB | ~20% estimated | yes | bcm2835 | no, and unverified |
+
+Pi 3 is architecturally the *easier* target than Pi 5: it uses the same bcm2835 SPI
+controller as the Pi 4 that already works, so none of the RP1 bring-up work applies.
+
+### What a Pi 3 port actually costs
+
+Not capability — integration time:
+
+1. Build an OpenWrt/OpenMANET image for `bcm27xx/bcm2710`. The target exists upstream;
+   OpenMANET only publishes `rpi4-mm6108-spi`.
+2. Rebuild the morse driver against that kernel.
+3. Port the overlays. GPIO numbering is unchanged on the 40-pin header, so this is mostly
+   mechanical.
+
+### One thing to verify before committing, not just schedule
+
+On BCM283x the SPI clock is derived from `core_freq`, and on a Pi 3 `core_freq` scales
+dynamically with load (down to `core_freq_min`, default 250 MHz against a 400 MHz default
+core). A drifting core clock means a drifting SPI clock.
+
+This is probably survivable rather than fatal — the SPI sweep in issue #34 ran this link at
+16.67 MHz and it still worked, so a clock wandering between roughly 12.5 and 20 MHz would
+degrade margin rather than break the link. But pin `core_freq_min = core_freq` in
+`config.txt` and confirm the achieved SPI rate before building anything on top of it.
