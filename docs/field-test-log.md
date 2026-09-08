@@ -342,3 +342,49 @@ UDP@8M 接收端：n=68   8.06 – 8.74 Mbps   CoV = 1.3%
 - 接收端 TCP 殘留的 5.3% 是 TCP cwnd × fq_codel AQM × rate-control retry 的正常互動。
 
 > **量測守則：無線鏈路要看接收端的數字。發送端的 iperf interval 量的是 socket 緩衝，不是空中速率。**
+
+## MCS7 是硬體天花板，不是 bug（2026-09-09，issue #36 結案）
+
+4MHz 速率表只到 MCS7、沒有 MCS8/9，一度以為是能力協商漏掉、還有 ~20% 可撈。**不是。**
+
+**證據一：晶片自己回報的。** `debug_mask=1` 重載驅動，看
+`morse_mac_config_vht_base_cap()` 從韌體能力推出來的值：
+
+```
+morse_mac_config_vht_base_cap: vht rx_mcs_map 0xfffd
+```
+
+`0xfffd` 每 2 bits 一個 spatial stream：1SS = `1` = `IEEE80211_VHT_MCS_SUPPORT_0_8`，
+2SS–4SS = `3` = 不支援。走到 `else` 分支代表韌體**同時**沒回報 `MORSE_CAPS_MCS8` 和
+`MORSE_CAPS_MCS9`：
+
+```c
+if (MORSE_CAPAB_SUPPORTED(s1g_caps, MCS9) || MORSE_CAPAB_SUPPORTED(s1g_caps, MCS8))
+        mcs_map |= IEEE80211_VHT_MCS_SUPPORT_0_9 ...
+else
+        mcs_map |= IEEE80211_VHT_MCS_SUPPORT_0_8 ...
+```
+
+再經 shim 的 VHT→S1G 對應（9→9, 8→7, 7→2）得到 **S1G MCS0–7 + MCS10**，
+正是 `MMRC rates: 0x4ff` 和 `mmrc_table` 的內容。**能力沒有在翻譯層掉，是晶片從來沒宣告過。**
+
+**證據二：Morse Micro 官方文件。** MM6108 支援 **MCS0–7 與 MCS10**；256-QAM（MCS8/9）
+是新一代 **MM8108** 的功能。我們速率表裡那兩行 1MHz 的 MCS10 也正好吻合這個描述。
+
+→ **4MHz MCS7 SGI = 16.65 Mbps PHY 就是這條鏈路的真天花板。**
+實測 UDP 11.0 Mbps = **PHY 的 66%**，以半雙工 + BlockAck + beacon 來說是健康的。
+
+### 真正的空間在頻寬，不在調變（→ issue #39）
+
+同一份 init log 顯示這顆晶片的 US 規範表**有 8 MHz 頻道**：
+
+```
+Deconstructing ch 12 (908000 kHz, 8 MHz) into primaries
+Deconstructing ch 28 (916000 kHz, 8 MHz) into primaries
+Deconstructing ch 44 (924000 kHz, 8 MHz) into primaries
+```
+
+8MHz MCS7 SGI ≈ **33.3 Mbps PHY，是現在 4MHz 的兩倍**，也對得上 Morse 標稱 MM6108
+最高 ~32.5 Mbps。但**先別急**：頻寬加倍等於功率譜密度砍半（約 3 dB 鏈路預算），
+MANET 要的是距離不是峰值；而且 #34 沒解之前 Pi500 會讓 8MHz 看起來比實際差。
+順序見 #39。
