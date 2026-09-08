@@ -90,3 +90,19 @@
 
 - 真正的 tput-vs-RSSI 曲線：兩台**同韌體 OpenMANET 節點**（都 27 dBm）、固定位置、野外拉開距離、用 iperf。
 - 4 MHz peering：先在兩台 OpenMANET 節點間確認可行（同 OpenWrt 端），再看 Pi500 端。
+
+## Pi500 ↔ manet01 mesh iperf（2026-09-08，mesh_nolearn 修好後）
+
+第一次用真 iperf（前次是 batctl tp）。條件：LOS 桌面、-55 dBm、兩端 27 dBm、2MHz ch42、市電。
+
+| 方向 | 工具 | 吞吐 |
+|---|---|---|
+| 下行 Pi500→manet01 | iperf TCP | 1.2–1.5 Mbps |
+| 上行 manet01→Pi500 | iperf TCP -R | 0.77 Mbps |
+| 下行 | iperf UDP @10M offered | 僅 183 Kbps 落地（供過於求，鏈路撐不住 10M）|
+
+加壓時 tx retry **25%**（vs 2026-09-07 batctl tp 的 85–118%，明顯改善）。
+
+- 數字與 2026-09-07 batctl tp 基準一致（-54~-58 dBm ≈ 0.65 Mbps），仍**低於 節點↔節點 LOS 5m 的 2.9 Mbps**。
+- 已知因素（未定論）：Pi500 morse 驅動 txpower 受限、近場、半雙工 + TCP RTT 敏感。
+- 重點：這是 **mesh_nolearn=1 修復後**首次量到「單播能持續傳資料」（修復前 batctl ping 100% 全丟）。功能已通，吞吐調校是另一條線。
