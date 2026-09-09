@@ -1,22 +1,36 @@
 #!/bin/sh
 #
 # survey-web - tiny CGI field-control page: shows node01 RSSI/SNR (as seen by
-# THIS node) and starts/stops sigsurvey with a tap. Deploy to the node's uhttpd
-# CGI dir and open it from a phone on the node's AP:
+# THIS node), the current GPS fix, and starts/stops sigsurvey with a tap. It can
+# also render the coverage map in-browser with one tap (no SSH, no commands).
+# Deploy to the node's uhttpd CGI dir and open it from a phone on the node's AP:
 #
 #   scp survey-web root@<node>:/www/cgi-bin/survey ; chmod +x it
 #   phone -> http://<node-ip>/cgi-bin/survey
 #
-# Uses a pidfile (via start-stop-daemon) for start/stop/status -- NOT ps|grep,
-# which is unreliable when the caller's own command line contains "sigsurvey".
+# The "出地圖" button calls ?action=map, which pipes /root/survey.csv through
+# survey2html (Leaflet served from THIS host's /leaflet.js, so it works offline;
+# street tiles fill in when the phone next has internet).
 #
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+act=$(echo "$QUERY_STRING" | sed -n 's/.*action=\([a-z]*\).*/\1/p')
+
+# --- map: emit the coverage map itself and stop (its own <html>) --------------
+if [ "$act" = "map" ]; then
+	echo "Content-type: text/html; charset=utf-8"; echo ""
+	if [ ! -s /root/survey.csv ] || [ "$(wc -l < /root/survey.csv)" -le 1 ]; then
+		echo "<!doctype html><meta charset=utf-8><body style='font:20px system-ui;padding:40px;text-align:center'>還沒有任何 GPS 點。<br>先按「開始記錄」並讓 GPS2IP 送座標。<br><br><a href='survey'>← 回控制頁</a></body>"
+	else
+		survey2html /root/survey.csv /
+	fi
+	exit 0
+fi
 
 echo "Content-type: text/html; charset=utf-8"
 echo ""
 
 # start/stop the procd-managed service (reliable from CGI; uhttpd can't reap it).
-act=$(echo "$QUERY_STRING" | sed -n 's/.*action=\([a-z]*\).*/\1/p')
 msg=""
 if [ "$act" = "start" ]; then
 	/etc/init.d/sigsurvey start >/dev/null 2>&1
@@ -37,6 +51,8 @@ snr=""; [ -n "$sig" ] && [ -n "$noise" ] && snr=$((sig - noise))
 # file's coarse 1-min find window lagged the STOPPED state).
 run=0; /etc/init.d/sigsurvey running >/dev/null 2>&1 && run=1
 pts=$(( $(wc -l < /root/survey.csv 2>/dev/null) - 1 )); [ "$pts" -lt 0 ] && pts=0
+# last GPS fix (so the operator can confirm coordinates are actually arriving)
+gps=$(tail -1 /root/survey.csv 2>/dev/null | awk -F, '$2!="" && $2!="lat"{printf "%.5f, %.5f", $2, $3}')
 
 status="STOPPED"; scol="#888"
 [ "$run" -eq 1 ] && { status="● RECORDING"; scol="#2a7"; }
@@ -59,6 +75,7 @@ body{background:#111;color:#eee;font-family:-apple-system,system-ui,sans-serif;t
 .snr{font-size:44px;font-weight:800;color:$sc;margin:6px 0}
 .status{font-size:22px;font-weight:800;color:$scol;margin:20px 0}
 .pts{font-size:18px;margin:6px 0}
+.gps{color:#7a9;font-size:14px;margin:4px 0 0}
 a.btn{display:block;padding:22px;margin:12px 4px;border-radius:14px;font-size:26px;font-weight:800;text-decoration:none;color:#fff}
 .start{background:#2a7}.stop{background:#c33}
 .msg{color:#8ab;font-size:14px;min-height:18px;margin-top:14px}
@@ -69,8 +86,10 @@ a.btn{display:block;padding:22px;margin:12px 4px;border-radius:14px;font-size:26
 <div class="snr">${snr:-—}<span style="font-size:22px"> dB</span></div>
 <div class="status">$status</div>
 <div class="pts">已記錄 <b>$pts</b> 點</div>
+<div class="gps">📍 ${gps:-等待 GPS…}</div>
 <a class="btn start" href="?action=start">▶ 開始 / 繼續記錄</a>
 <a class="btn stop"  href="?action=stop">■ 停止</a>
+<a class="btn" style="background:#385" href="?action=map" target="_blank">🗺 出地圖</a>
 <a class="btn" style="background:#557" href="?action=new">✦ 新測（清空舊資料）</a>
 <div class="msg">$msg</div>
 </body></html>
