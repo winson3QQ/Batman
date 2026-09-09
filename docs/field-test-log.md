@@ -567,3 +567,67 @@ n=12、殘差 1.24 pp，所以取一個區間而不是點估計。但**兩種擬
 - `data/soak-12h-cpu.csv` —— 每 10 s 一列的 CPU/RAM 取樣（含結束後的閒置基線）
 - `data/soak-12h-final-state.txt` —— 拔卡前的最後狀態快照
 - 重畫圖：`./scripts/soak-plot.py`
+
+## manet01 ↔ manet02 兩台正規節點 4MHz 對打 + 30 分鐘 soak（2026-09-09）
+
+前面的 4MHz 數據都是 **Pi500 ↔ manet01**，一直缺「兩台正規節點對打」的基準（Pi500 發射側弱、
+5.7% FCS fail，是瓶頸）。這次補上：兩台都是 OpenMANET 1.8.0 節點（8GB 版），4MHz ch40/922 MHz，
+近距桌面、RSSI −27~−30 dBm，iperf classic（非 iperf3）。**空中速率一律看接收端（server）讀數。**
+
+### 單次基準：TCP / UDP / RTS
+
+| 測法 | 方向 | 吞吐 | 備註 |
+|---|---|---|---|
+| TCP 20s | manet02→manet01 | **9.22 Mbps** | server-rx；client 讀數幾乎同值＝無發送端假象 |
+| TCP 20s | manet01→manet02 | **9.27 Mbps** | 對稱 |
+| UDP（feed 14M, `-l 1400`）| manet02→manet01 | **10.7 Mbps** | jitter 2.05 ms、loss 0.007% |
+| UDP（feed 14M, `-l 1400`）| manet01→manet02 | **10.1 Mbps** | jitter 2.16 ms、loss 0% |
+
+- **UDP 天花板 ~10–10.7 Mbps、0% loss；TCP 9.2–9.3 = UDP 的 ~89%**（半雙工 + mac80211 fq_codel
+  backpressure 的正常效率，與前面 PMF 段「TCP≈UDP 90%」一致）。
+- **兩台對稱**（各方向都 ~9.3），不像 Pi500 那次的 10.28/8.76 —— 因為 Pi500 端沒有 RTS、
+  收訊也弱，才會不對稱。
+- **RTS-off 對兩台正規節點幾乎無差**：`iw phy phy0 set rts off` 後 TCP 9.22→9.26、9.27→9.33
+  （誤差內），量完還原 rts=1000。這與前面 issue #35 的 Pi500 案不同——那是**單向**觸發 RTS 的
+  不對稱才有 9.38→10.0 可撈；兩端對稱時 RTS 不是瓶頸。**真天花板是 4MHz MCS7 半雙工的空中時間**
+  （PHY 16.65M → UDP ~10.5M → TCP ~9.3M），節點對節點**維持 rts=1000 即可**，關掉沒好處還少了
+  碰撞保護。
+
+### 30 分鐘 soak：穩定度
+
+manet02→manet01 單向 TCP 全程飽和，每 10 s 取樣一次、共 180 樣本、31 分鐘。
+
+![30min soak 4MHz manet01-manet02](images/soak-30min-4mhz-manet01-manet02.png)
+
+| 指標 | 平均 | σ | CoV | 範圍 |
+|---|---|---|---|---|
+| 吞吐 | 9.30 Mbps | 0.47 | **5.1%** | 7.9–11.3 |
+| CPU manet02（送＋測試控制器）| 15.6% | 3.3 | 21% | 1–24 |
+| CPU manet01（收）| 4.0% | 2.7 | 69% | 0–12 |
+| RAM manet02 | 200.6 MB | 2.1 | **1.1%** | 195–206 |
+| RAM manet01 | 183.3 MB | 1.4 | **0.8%** | 180–187 |
+| RSSI（both）| −29 / −28 dBm | 1.2 | — | −34~−24 |
+| TX MCS（both）| 6.98 / 6.97 | 0.13 | 1.8% | 6–7 |
+
+**結論：鏈路不會累。** 吞吐無下滑趨勢、RAM 30 分鐘幾乎不動（<1.1%，無洩漏）、CPU 無爬升、
+MCS 幾乎釘在 7。吞吐 CoV 5.1% 與前面「接收端 TCP 殘留 5.3%」吻合，是 TCP cwnd × fq_codel ×
+rate-control 的正常互動，不是鏈路不穩。
+
+### 為什麼 manet02 的 CPU/RAM 較高（不是硬體差異）
+
+- **CPU**：這輪 manet02 身兼**發送端＋測試控制器**（每 10 s spawn 一次 ssh 到 manet01、awk 讀
+  /proc、iw station dump），manet01 純接收、閒著。發送側本來就比接收重（rate-control/聚合/TXQ），
+  再疊上取樣 harness 的開銷全算在 manet02。換邊測就會反過來。
+- **RAM ~12 MB 差是固有基準（idle 也在）**：manet02 是**有線上行那台**（跑 DHCP server 發管理端
+  lease、扛管理 SSH、conntrack），且**仍插著 2.4G USB dongle**（manet01 的已實體拔除）——USB 網卡
+  即使 radio 停用，驅動仍常駐吃 RAM。與 iperf 無關。
+
+### RF 代表性提醒
+近距桌面、RSSI −27~−30 dBm 是**很強**的訊號（越接近 0 越強），代表這組數字是**這條鏈路的
+理想天花板**，非野外表現（野外常 −50~−70 dBm）。過強甚至有 RX overload 隱憂（見 `hardware.md`
+的 RX overload），偶爾掉 MCS6 一部分可能與此有關。對 soak（看系統穩定度）而言，強又穩的 RSSI
+反而把 RF 波動變因拿掉，更能單獨驗證系統。
+
+### 原始資料
+- `data/soak-30min-4mhz-manet01-manet02.csv` —— 每 10 s 一列：ts, tput, 兩台各 cpu/ram/rssi/mcs
+- 重畫圖：`./scripts/mesh-soak-plot.py <csv> <out.png>`（5 面板：tput / CPU / RAM / RSSI / MCS）
