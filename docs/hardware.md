@@ -239,3 +239,32 @@ This is probably survivable rather than fatal — the SPI sweep in issue #34 ran
 16.67 MHz and it still worked, so a clock wandering between roughly 12.5 and 20 MHz would
 degrade margin rather than break the link. But pin `core_freq_min = core_freq` in
 `config.txt` and confirm the achieved SPI rate before building anything on top of it.
+
+
+## Power chain
+
+![4S power wiring](images/power-wiring.svg)
+
+Battery pack and radio body are separate enclosures joined by a twist-lock pogo connector.
+Three decisions in that diagram are not obvious:
+
+- **All protection lives in the battery pack**, downstream of the BMS. Put it in the body and
+  the connector and the pack's own wiring are unprotected, and a detached pack has bare
+  contacts fed by cells that can each source 45 A.
+- **The switch drives the regulator's `EN` pin, not the main current path.** The Judco
+  40-4325-00 is rated 14 V DC and a full 4S pack is 16.8 V. On `EN` it carries microamps and
+  the rating stops mattering. It is a push-push latching type, so it holds the state without
+  extra circuitry.
+- **Fuses are sized to the load, not to the battery.** Worst case is charging while running,
+  about 1.33 A. The original 5 A PTC plus 7.5 A blade left everything between 0.3 A and 5 A
+  unprotected — which is exactly the range a chafed wire or a partly failed regulator sits in,
+  and 4x 45T cells will feed that indefinitely.
+
+`INA226` sits on the high side between the connector and the regulator, so it measures pack
+current including regulator losses. It stays in the **body**: I2C must not cross a pogo
+connector, where contact bounce on insertion can hang the bus. The same part later provides
+the low-battery detection that #41 needs for a graceful shutdown.
+
+Balance taps connect to the **junctions between cells**, not to individual terminals. Measure
+B− to each tap before connecting the BMS and confirm the voltages increase; getting this wrong
+destroys the BMS or overcharges a cell.
