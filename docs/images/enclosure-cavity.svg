@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1620 1010" width="1620" height="1010" font-family="'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif">
+  <rect width="1620" height="1010" fill="#ffffff"/>
+  <defs>
+    <pattern id="hatch" width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="0" x2="0" y2="7" stroke="#94a3b8" stroke-width="2.5"/>
+    </pattern>
+  </defs>
+
+  <text x="34" y="42" font-size="24" font-weight="700" fill="#111">V3 本體內腔剖面 — VLM-KW 放得下嗎</text>
+  <text x="34" y="66" font-size="13" fill="#666">Y–Z 剖面（深度 × 高度）．尺寸來自上游 3MF 組裝檔實測．內腔 65 × 35 × 100 mm（已扣 2.5 mm 壁厚）</text>
+
+  <!-- legend -->
+  <g font-size="13" fill="#334155">
+    <rect x="1090" y="30" width="20" height="14" fill="#cbd5e1" stroke="#64748b"/><text x="1118" y="42">殼壁</text>
+    <rect x="1180" y="30" width="20" height="14" fill="#bfdbfe" stroke="#1d4ed8"/><text x="1208" y="42">Pi 疊層</text>
+    <rect x="1290" y="30" width="20" height="14" fill="#fdba74" stroke="#c2410c"/><text x="1318" y="42">銅散熱片</text>
+    <rect x="1440" y="30" width="20" height="14" fill="#bbf7d0" stroke="#15803d"/><text x="1468" y="42">VLM-KW</text>
+  </g>
+
+  <!-- ══════════ PANEL A : Pi 4 ══════════ -->
+  <g transform="translate(150,150)">
+    <text x="87" y="-42" font-size="19" font-weight="700" text-anchor="middle" fill="#0f172a">現況：Raspberry Pi 4</text>
+    <text x="87" y="-22" font-size="13" text-anchor="middle" fill="#64748b">疊層 56.9 × 20.0 × 88.0 mm（實測）</text>
+
+    <!-- cavity -->
+    <rect x="0" y="0" width="175" height="500" fill="#f8fafc" stroke="#334155" stroke-width="2.5"/>
+    <!-- Y- side: buck + brackets + finned grip cover (NOT the heatsink) -->
+    <rect x="0" y="0" width="35" height="500" fill="url(#hatch)"/>
+    <rect x="0" y="0" width="35" height="500" fill="#e2e8f0" fill-opacity="0.6" stroke="#64748b" stroke-width="1.5"/>
+    <text x="17" y="250" font-size="12" fill="#334155" text-anchor="middle" transform="rotate(-90,17,250)">buck + 支架（鰭片蓋側）</text>
+    <!-- Y+ side: the real 70x70 copper heatsink, outside the cavity -->
+    <rect x="182" y="113" width="20" height="350" fill="#fdba74" stroke="#c2410c" stroke-width="2"/>
+    <text x="192" y="288" font-size="12" font-weight="700" fill="#7c2d12" text-anchor="middle" transform="rotate(-90,192,288)">銅散熱片 70×70</text>
+    <path d="M170 200 L182 200" stroke="#c2410c" stroke-width="2.5"/>
+    <text x="176" y="192" font-size="10" fill="#7c2d12" text-anchor="middle">2.5</text>
+    <!-- Pi stack -->
+    <rect x="70" y="57" width="100" height="440" fill="#bfdbfe" stroke="#1d4ed8" stroke-width="2"/>
+    <text x="120" y="270" font-size="15" font-weight="700" fill="#1e3a8a" text-anchor="middle" transform="rotate(-90,120,270)">Pi 4 + HAT + mPCIe</text>
+    <text x="120" y="292" font-size="12" fill="#1e40af" text-anchor="middle" transform="rotate(-90,120,292)">20.0 mm 厚 × 88.0 mm 長</text>
+    <text x="163" y="440" font-size="11" font-weight="700" fill="#c2410c" text-anchor="middle" transform="rotate(-90,163,440)">▲ mPCIe / HaLow 面</text>
+    <!-- VLM in top gap -->
+    <rect x="39" y="1" width="131" height="55" fill="#bbf7d0" stroke="#15803d" stroke-width="2.5"/>
+    <text x="104" y="24" font-size="13" font-weight="700" fill="#14532d" text-anchor="middle">VLM-KW</text>
+    <text x="104" y="42" font-size="11" fill="#166534" text-anchor="middle">26 × 53 mm，需 4.5 mm</text>
+    <!-- gap behind Pi -->
+    <rect x="35" y="330" width="35" height="167" fill="#bbf7d0" fill-opacity="0.5" stroke="#15803d" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text x="52" y="415" font-size="11" fill="#166534" text-anchor="middle" transform="rotate(-90,52,415)">另一個位置 6.5 mm</text>
+
+    <!-- dims -->
+    <g stroke="#dc2626" stroke-width="1.6" fill="#dc2626" font-size="13">
+      <line x1="192" y1="1" x2="192" y2="56"/><line x1="186" y1="1" x2="198" y2="1"/><line x1="186" y1="56" x2="198" y2="56"/>
+      <text x="204" y="34" font-weight="700">11.5 mm</text>
+      <text x="204" y="52" font-size="11" fill="#7f1d1d">Pi 上方空隙</text>
+    </g>
+    <g stroke="#64748b" stroke-width="1.4" fill="#475569" font-size="12">
+      <line x1="0" y1="520" x2="175" y2="520"/><line x1="0" y1="514" x2="0" y2="526"/><line x1="175" y1="514" x2="175" y2="526"/>
+      <text x="87" y="540" text-anchor="middle">內腔深度 35 mm</text>
+      <line x1="-22" y1="0" x2="-22" y2="500"/><line x1="-28" y1="0" x2="-16" y2="0"/><line x1="-28" y1="500" x2="-16" y2="500"/>
+      <text x="-34" y="250" text-anchor="middle" transform="rotate(-90,-34,250)">內腔高度 100 mm</text>
+    </g>
+    <text x="87" y="574" font-size="13" font-weight="700" fill="#166534" text-anchor="middle">✅ 放得下（11.5 &gt; 4.5），但幾乎沒有餘裕</text>
+  </g>
+
+  <!-- ══════════ PANEL B : Pi Zero 2 W ══════════ -->
+  <g transform="translate(860,150)">
+    <text x="87" y="-42" font-size="19" font-weight="700" text-anchor="middle" fill="#0f172a">改用：Raspberry Pi Zero 2 W</text>
+    <text x="87" y="-22" font-size="13" text-anchor="middle" fill="#64748b">疊層約 56.5 × 18 × 68 mm（HAT 決定外形，估計）</text>
+
+    <rect x="0" y="0" width="175" height="500" fill="#f8fafc" stroke="#334155" stroke-width="2.5"/>
+    <rect x="0" y="0" width="35" height="500" fill="url(#hatch)"/>
+    <rect x="0" y="0" width="35" height="500" fill="#e2e8f0" fill-opacity="0.6" stroke="#64748b" stroke-width="1.5"/>
+    <text x="17" y="250" font-size="12" fill="#334155" text-anchor="middle" transform="rotate(-90,17,250)">buck + 支架（鰭片蓋側）</text>
+    <rect x="182" y="113" width="20" height="350" fill="#fdba74" stroke="#c2410c" stroke-width="2"/>
+    <text x="192" y="288" font-size="12" font-weight="700" fill="#7c2d12" text-anchor="middle" transform="rotate(-90,192,288)">銅散熱片 70×70</text>
+
+    <rect x="70" y="157" width="90" height="340" fill="#bfdbfe" stroke="#1d4ed8" stroke-width="2"/>
+    <text x="115" y="320" font-size="15" font-weight="700" fill="#1e3a8a" text-anchor="middle" transform="rotate(-90,115,320)">Zero 2 W + HAT + mPCIe</text>
+    <text x="115" y="342" font-size="12" fill="#1e40af" text-anchor="middle" transform="rotate(-90,115,342)">18 mm 厚 × 68 mm 長</text>
+    <text x="153" y="430" font-size="11" font-weight="700" fill="#c2410c" text-anchor="middle" transform="rotate(-90,153,430)">▲ mPCIe / HaLow 面</text>
+
+    <rect x="39" y="60" width="131" height="55" fill="#bbf7d0" stroke="#15803d" stroke-width="2.5"/>
+    <text x="104" y="83" font-size="13" font-weight="700" fill="#14532d" text-anchor="middle">VLM-KW</text>
+    <text x="104" y="101" font-size="11" fill="#166534" text-anchor="middle">26 × 53 mm，需 4.5 mm</text>
+
+    <rect x="39" y="1" width="131" height="55" fill="#f0fdf4" stroke="#86efac" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="104" y="32" font-size="12" fill="#15803d" text-anchor="middle">還空著 ~19 mm</text>
+
+    <g stroke="#dc2626" stroke-width="1.6" fill="#dc2626" font-size="13">
+      <line x1="192" y1="1" x2="192" y2="156"/><line x1="186" y1="1" x2="198" y2="1"/><line x1="186" y1="156" x2="198" y2="156"/>
+      <text x="204" y="74" font-weight="700">31.5 mm</text>
+      <text x="204" y="92" font-size="11" fill="#7f1d1d">Pi 上方空隙</text>
+      <text x="204" y="112" font-size="11" fill="#7f1d1d">（+20 mm）</text>
+    </g>
+    <g stroke="#64748b" stroke-width="1.4" fill="#475569" font-size="12">
+      <line x1="0" y1="520" x2="175" y2="520"/><line x1="0" y1="514" x2="0" y2="526"/><line x1="175" y1="514" x2="175" y2="526"/>
+      <text x="87" y="540" text-anchor="middle">內腔深度 35 mm</text>
+    </g>
+    <text x="87" y="574" font-size="13" font-weight="700" fill="#166534" text-anchor="middle">✅ 綽綽有餘，還能再塞一塊板</text>
+  </g>
+
+  <!-- notes -->
+  <rect x="34" y="790" width="760" height="192" rx="8" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+  <text x="52" y="818" font-size="15" font-weight="700" fill="#0f172a">量測到的實際數字</text>
+  <g font-size="13" fill="#334155">
+    <text x="52" y="844">內腔　　　　X −52.1~12.9　Y −30.9~4.1　Z −37.8~62.2　(65 × 35 × 100 mm)</text>
+    <text x="52" y="868">Pi 4 疊層　　56.9 × 20.0 × 88.0 mm，填充率 84%（實心塊）</text>
+    <text x="52" y="892">VLM-KW　　　53.0 × 26.5 mm，單面貼裝，背面全平</text>
+    <text x="52" y="916">　　　　　　　內部輪廓約 4.5 mm（母座穿牆）／含 3.5mm 母座 6.6 mm</text>
+    <text x="52" y="946" font-size="12" fill="#64748b">3.5mm 母座高度 5.0 mm 來自 CUI SJ-352X-SMT 機構圖；JST SH 約 2.9 mm</text>
+    <text x="52" y="968" font-size="12" fill="#64748b">佔用以包圍盒近似，真正自由體積需布林運算 — 但 11.5 vs 4.5 的餘裕夠大，結論不變</text>
+  </g>
+
+  <rect x="820" y="790" width="766" height="192" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
+  <text x="838" y="818" font-size="15" font-weight="700" fill="#7f1d1d">⚠ 更正我先前的說法</text>
+  <g font-size="13" fill="#334155">
+    <text x="838" y="844">我之前說「換 Zero 2 W 可以省 5–6 mm 厚度」—— <tspan font-weight="700">那是錯的</tspan>。</text>
+    <text x="838" y="870">疊層厚度由 <tspan font-weight="700">HAT 的 11 mm 排針</tspan>主導，不是 Pi 4 的 USB/RJ45</text>
+    <text x="838" y="892">（那些連接器藏在 HAT 底下）。換 Zero 2 W <tspan font-weight="700">只省約 2 mm 厚度</tspan>。</text>
+    <text x="838" y="922" font-weight="700" fill="#7f1d1d">真正的差別在長度：85 mm → 65 mm，上方空隙 11.5 → 31.5 mm</text>
+    <text x="838" y="948" font-size="12" fill="#64748b">Zero 疊層尺寸為估算（HAT 65 mm 決定外形），非實測 — 拿到板子要複量</text>
+    <text x="838" y="970" font-size="12" fill="#7f1d1d">另更正：銅散熱片在 <tspan font-weight="700">Y+ 側</tspan>（貼 HaLow 那面），先前圖上標在 Y− 側是錯的</text>
+  </g>
+</svg>
