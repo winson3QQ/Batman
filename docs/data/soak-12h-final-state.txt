@@ -1,0 +1,59 @@
+# snapshot 2026-09-09 19:09:16
+## uname
+Linux Pi500-1 6.18.39+rpt-rpi-2712 #1 SMP PREEMPT Debian 1:6.18.39-1+rpt1 (2026-07-29) aarch64 GNU/Linux
+## morse module
+0-rel_mm6108_2_0_1_2026_Jun_11
+59D00D7C8FC7E1DC6D2804B
+## station dump
+Station a8:dd:9f:4d:c6:d3 (on wlan1)
+	tx retries:	1067798
+	tx failed:	361
+	signal:  	-33 dBm
+	tx bitrate:	325.0 MBit/s VHT-MCS 7 80MHz short GI VHT-NSS 1
+	rx bitrate:	292.6 MBit/s VHT-MCS 6 80MHz short GI VHT-NSS 1
+	mesh llid:	0
+	mesh plid:	0
+	mesh plink:	ESTAB
+	mesh airtime link metric: 547
+	mesh connected to gate:	no
+	mesh connected to auth server:	no
+	mesh local PS mode:	ACTIVE
+	mesh peer PS mode:	ACTIVE
+	mesh non-peer PS mode:	ACTIVE
+	authorized:	yes
+	MFP:		yes
+## morse stats
+System uptime (usec)                            : 60196751843
+Retry table
+    Retry    Count    Avg Time
+    =====    =====    ========
+    0        33943112 4048
+    1        804114   5405
+    2        112168   9820
+    3        10603    22524
+    4        1123     53910
+    5        126      112847
+    6        29       183804
+    7        13       28514
+    8        0        0
+    9        0        0
+    10       0        0
+    11       0        0
+    12       362      29560
+Commands received                               : 3088
+Command responses                               : 3087
+Commands repeated                               : 0
+Commands failed                                 : 0
+Command responses failed                        : 0
+Commands pending                                : 0
+Commands late                                   : 0
+Last host ID                                    : 49408
+Total From Host page IRQs                       : 34801616
+Total From Host pages                           : 34857164
+Total To Host page IRQs                         : 13094214
+Total To Host pages                             : 35207856
+Aon clock long calibration                      : 0
+## batman
+[B.A.T.M.A.N. adv 2025.4, MainIF/MAC: wlan1/a8:dd:9f:4d:c7:60 (bat0/02:d7:46:62:c2:a1 BATMAN_V)]
+         Neighbor   last-seen      speed           IF
+a8:dd:9f:4d:c6:d3    0.420s (       14.9) [     wlan1]

@@ -1,0 +1,18 @@
+[Unit]
+Description=HaLow S1G 802.11s mesh (wlan1) — 對齊 manet01/manet02 (openmanet1)
+Documentation=file:/home/qqq/halow-pi500-resume.md
+After=sys-subsystem-net-devices-wlan1.device
+# wlan1 不存在（HaLow 模組移掉）時整個 service 被跳過：不啟動、不失敗、不 restart
+ConditionPathExists=/sys/class/net/wlan1
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/sbin/rfkill unblock all
+ExecStartPre=/usr/sbin/ip link set wlan1 down
+ExecStartPre=/usr/sbin/ip link set wlan1 mtu 1532
+ExecStart=/usr/local/bin/wpa_supplicant_s1g -i wlan1 -c /etc/halow/mesh-wlan1.conf -D nl80211
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

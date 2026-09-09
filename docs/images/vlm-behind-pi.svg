@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 880" width="1500" height="880" font-family="'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif">
+  <rect width="1500" height="880" fill="#ffffff"/>
+  <defs>
+    <pattern id="h2" width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="0" x2="0" y2="7" stroke="#cbd5e1" stroke-width="2.5"/>
+    </pattern>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#c2410c"/>
+    </marker>
+  </defs>
+
+  <text x="34" y="40" font-size="23" font-weight="700" fill="#111">方案：VLM-KW 鎖在 Pi 背面（Y− 側）</text>
+  <text x="34" y="64" font-size="13" fill="#666">該層 Y −23.4 ~ −16.9（6.5 mm）掃描結果為 <tspan font-weight="700" fill="#15803d">100% 自由</tspan> — buck 與支架都在更外側（Y &lt; −23.4）</text>
+
+  <!-- ══ LEFT: Y-Z cross-section ══ -->
+  <g transform="translate(120,150)">
+    <text x="87" y="-26" font-size="17" font-weight="700" text-anchor="middle" fill="#0f172a">側剖面（Y–Z）</text>
+    <rect x="0" y="0" width="175" height="450" fill="#f8fafc" stroke="#334155" stroke-width="2.5"/>
+    <rect x="0" y="0" width="32" height="450" fill="url(#h2)"/>
+    <rect x="0" y="0" width="32" height="450" fill="#e2e8f0" fill-opacity="0.6" stroke="#64748b" stroke-width="1.4"/>
+    <text x="16" y="225" font-size="11" fill="#334155" text-anchor="middle" transform="rotate(-90,16,225)">buck + 支架</text>
+
+    <!-- VLM layer -->
+    <rect x="32" y="90" width="33" height="120" fill="#bbf7d0" stroke="#15803d" stroke-width="2.5"/>
+    <text x="48" y="150" font-size="12" font-weight="700" fill="#14532d" text-anchor="middle" transform="rotate(-90,48,150)">VLM-KW</text>
+
+    <!-- Pi stack -->
+    <rect x="65" y="51" width="90" height="396" fill="#bfdbfe" stroke="#1d4ed8" stroke-width="2"/>
+    <text x="110" y="250" font-size="14" font-weight="700" fill="#1e3a8a" text-anchor="middle" transform="rotate(-90,110,250)">Pi + HAT + mPCIe</text>
+    <text x="148" y="380" font-size="10.5" font-weight="700" fill="#c2410c" text-anchor="middle" transform="rotate(-90,148,380)">▲ HaLow 面</text>
+
+    <!-- heatsink -->
+    <rect x="182" y="101" width="18" height="315" fill="#fdba74" stroke="#c2410c" stroke-width="2"/>
+    <text x="191" y="258" font-size="11" font-weight="700" fill="#7c2d12" text-anchor="middle" transform="rotate(-90,191,258)">銅散熱片</text>
+
+    <g stroke="#dc2626" stroke-width="1.5" fill="#dc2626" font-size="12">
+      <line x1="32" y1="228" x2="65" y2="228"/><line x1="32" y1="222" x2="32" y2="234"/><line x1="65" y1="222" x2="65" y2="234"/>
+      <text x="48" y="248" text-anchor="middle" font-weight="700">6.5</text>
+    </g>
+    <text x="87" y="486" font-size="12" fill="#475569" text-anchor="middle">內腔深度 35 mm</text>
+    <text x="87" y="508" font-size="12" font-weight="700" fill="#166534" text-anchor="middle">VLM 在最冷的一側（隔著整個 Pi 疊層）</text>
+  </g>
+
+  <!-- ══ RIGHT: X-Z plan of the free layer ══ -->
+  <g transform="translate(560,150)">
+    <text x="146" y="-26" font-size="17" font-weight="700" text-anchor="middle" fill="#0f172a">該層平面（X–Z，從 Y− 面看進去）</text>
+    <rect x="0" y="0" width="292" height="450" fill="#f0fdf4" stroke="#334155" stroke-width="2.5"/>
+    <text x="146" y="26" font-size="12" fill="#15803d" text-anchor="middle">整層 65 × 100 mm 全空</text>
+
+    <!-- board: 53 along X, 26.5 along Z, against X- wall -->
+    <rect x="0" y="150" width="238" height="119" fill="#bbf7d0" stroke="#15803d" stroke-width="2.5"/>
+    <text x="119" y="196" font-size="15" font-weight="700" fill="#14532d" text-anchor="middle">VLM-KW  53 × 26.5</text>
+    <text x="119" y="218" font-size="11.5" fill="#166534" text-anchor="middle">長邊沿 X，貼 X− 牆</text>
+    <text x="119" y="240" font-size="11.5" fill="#166534" text-anchor="middle">Z 位置可自由選（−37.8 ~ 35.7 起）</text>
+
+    <!-- jacks exiting -->
+    <rect x="-16" y="176" width="16" height="30" fill="#fdba74" stroke="#c2410c" stroke-width="2"/>
+    <line x1="-30" y1="191" x2="-60" y2="191" stroke="#c2410c" stroke-width="3" marker-end="url(#ar)"/>
+    <text x="-70" y="186" font-size="13" font-weight="700" fill="#7c2d12" text-anchor="end">3.5 / 2.5 mm 母座</text>
+    <text x="-70" y="204" font-size="11.5" fill="#9a3412" text-anchor="end">穿出 X− 窄側面</text>
+    <text x="-70" y="222" font-size="11.5" fill="#9a3412" text-anchor="end">（40 × 105 mm 那一面）</text>
+
+    <!-- USB end -->
+    <rect x="238" y="200" width="14" height="20" fill="#94a3b8" stroke="#475569" stroke-width="1.5"/>
+    <text x="262" y="207" font-size="11.5" fill="#334155">USB</text>
+    <text x="262" y="223" font-size="11" fill="#64748b">內部短線接 Pi</text>
+
+    <g stroke="#64748b" stroke-width="1.3" fill="#475569" font-size="12">
+      <line x1="0" y1="470" x2="292" y2="470"/><line x1="0" y1="464" x2="0" y2="476"/><line x1="292" y1="464" x2="292" y2="476"/>
+      <text x="146" y="490" text-anchor="middle">X 方向 65 mm</text>
+      <line x1="312" y1="0" x2="312" y2="450"/><line x1="306" y1="0" x2="318" y2="0"/><line x1="306" y1="450" x2="318" y2="450"/>
+      <text x="330" y="225" text-anchor="middle" transform="rotate(-90,330,225)">Z 方向 100 mm</text>
+    </g>
+    <text x="146" y="512" font-size="12" fill="#64748b" text-anchor="middle">頂 ↑ Z+62.2　　底 ↓ Z−37.8（旋鎖電池那端）</text>
+  </g>
+
+  <!-- notes -->
+  <rect x="34" y="700" width="700" height="150" rx="8" fill="#f0fdf4" stroke="#15803d" stroke-width="2"/>
+  <text x="52" y="728" font-size="15" font-weight="700" fill="#14532d">為什麼這個位置比「Pi 上方」好</text>
+  <g font-size="13" fill="#334155">
+    <text x="52" y="754">• <tspan font-weight="700">母座有牆可以穿</tspan> — 長邊沿 X 貼 X− 牆，從 40×105 的窄側面出線</text>
+    <text x="52" y="778">• <tspan font-weight="700">最冷的位置</tspan> — 隔著整個 Pi 疊層，遠離 HaLow 與銅散熱片</text>
+    <text x="52" y="802">• <tspan font-weight="700">Z 位置可自由選</tspan> — 整層全空，可依走線與人因調高低</text>
+    <text x="52" y="826">• 可鎖在鰭片蓋內側（那是可拆件）→ 組裝時先裝板再合蓋</text>
+  </g>
+
+  <rect x="760" y="700" width="706" height="150" rx="8" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+  <text x="778" y="728" font-size="15" font-weight="700" fill="#92400e">要注意的三件事</text>
+  <g font-size="13" fill="#334155">
+    <text x="778" y="754">• 厚度 <tspan font-weight="700">6.5 mm</tspan> vs VLM 內部輪廓 <tspan font-weight="700">4.5 mm</tspan> — 餘裕僅 2 mm，含螺柱要再確認</text>
+    <text x="778" y="778">• USB 端在板子另一頭（X+ 側），要拉<tspan font-weight="700">內部短線繞回 Pi</tspan></text>
+    <text x="778" y="802">• X− 側面若已有握把/鰭片造型，開孔位置要避開</text>
+    <text x="778" y="826" font-size="12" fill="#78350f">佔用以包圍盒近似；6.5 vs 4.5 餘裕較小，建議在 CAD 內實際試放確認</text>
+  </g>
+</svg>

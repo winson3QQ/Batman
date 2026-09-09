@@ -1,0 +1,77 @@
+/dts-v1/;
+/plugin/;
+
+/* MM6108 power-sequencing pin states -- Raspberry Pi 5 / Pi 500 (RP1 pinctrl).
+ *
+ * Same as the BCM2711 version except the pinmux function name: RP1's pinctrl driver
+ * has no "gpio_in"/"gpio_out" functions (only "gpio" plus alt0..alt8 and the
+ * peripheral names), so the original overlay produces
+ *   pinctrl-rp1 1f000d0000.gpio: invalid function gpio_in in map table
+ * three times at boot and none of the three pin states are applied.
+ * Direction comes from output-high / the absence of it, not from the function name.
+ */
+
+/ {
+	compatible = "brcm,bcm2712";
+
+	fragment@0 {
+		target = <&gpio>;
+
+		__overlay__ {
+			status = "okay";
+
+			gpio_mm_ps_pi5: gpio_mm_ps_pi5 {
+				/* GPIO23 - wakeup pin, drive high */
+				mm-async-wakeup23-high {
+					pins = "gpio23";
+					function = "gpio";
+					bias-pull-down;
+					output-high;
+				};
+			};
+
+			gpio_mm_reset_pi5: gpio_mm_reset_pi5 {
+				/* GPIO17 - reset, released by an internal pull-up.
+				 *
+				 * ROOT CAUSE of the Pi 500 bring-up failure.  morse_hw_reset()
+				 * releases reset by *floating* the pin (gpio_direction_input),
+				 * deliberately avoiding a driven 3.3V high.  The BCM2711 pad
+				 * floats high, so the BCM2711 overlay gets away with
+				 * `bias-disable`; on RP1 the pin floats LOW, which left the
+				 * MM6108 permanently in reset.  The chip then never drove MISO
+				 * and every transfer read back as all-0x00 (or all-0xFF once a
+				 * pull-up was placed on GPIO9), which the driver mis-reported as
+				 * CMD53 -EPROTO / CMD63 -ENODATA.
+				 *
+				 * bias-pull-up makes "float" mean "released" on RP1 too.  The
+				 * driver still drives the pin low to assert reset; the pull-up
+				 * only decides the level once the pin goes back to input.
+				 */
+				mm-reset17-float {
+					pins = "gpio17";
+					function = "gpio";
+					bias-pull-up;
+					output-high;
+				};
+			};
+
+			gpio_mm_irq_pi5: gpio_mm_irq_pi5 {
+				/* GPIO5 - SPI IRQ pin, input */
+				mm-irq5-input {
+					pins = "gpio5";
+					function = "gpio";
+					bias-pull-down;
+				};
+			};
+		};
+	};
+
+	fragment@1 {
+		target = <&leds>;
+
+		__overlay__ {
+			pinctrl-names = "default";
+			pinctrl-0 = <&gpio_mm_ps_pi5 &gpio_mm_reset_pi5 &gpio_mm_irq_pi5>;
+		};
+	};
+};
