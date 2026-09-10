@@ -17,7 +17,7 @@
 #
 set -euo pipefail
 
-VERSION="1.7.0"
+VERSION="1.8.0"
 ASSET="openmanet-${VERSION}-rpi4-mm6108-spi-squashfs-sysupgrade.img.gz"
 REPO="OpenMANET/firmware"
 
