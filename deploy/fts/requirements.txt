@@ -3,6 +3,8 @@
 # OSV) can scan FTS's real transitive deps. See docs/soak / #44 / #45.
 # NOTE: several pins are old and carry known CVEs (e.g. cryptography 36.0.2 — 9 HIGH;
 # eventlet 0.33.1 — HTTP smuggling). FTS 2.2.1 pins them; bumping needs FTS-compat work.
+# pillow bumped 9.3.0 -> 12.3.0 (#45): clears CVE-2023-4863 (CISA KEV) + 2024 pillow CVEs.
+# See deploy/fts/Dockerfile (post-FTS-install bump) and docs/fts-cve-triage.md.
 FreeTAKServer==2.2.1
 Flask==3.0.2
 Flask-Cors==4.0.0
@@ -42,7 +44,7 @@ opentelemetry-sdk==1.44.0
 opentelemetry-semantic-conventions==0.65b0
 pathlib2==2.3.7.post1
 pbr==7.0.3
-pillow==9.3.0
+pillow==12.3.0
 protobuf==3.18.3
 psutil==5.9.4
 pyOpenSSL==22.0.0
