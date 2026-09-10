@@ -25,9 +25,10 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
             | sh -s -- -b "$RUNNER_TEMP/bin"
-      - name: Grype CVE scan (informational first — flip to blocking via --fail-on)
+      - name: Grype CVE scan (gate on critical; backlog VEX-suppressed in .grype.yaml)
         run: |
-          "$RUNNER_TEMP/bin/grype" dir:. --by-cve -o table | tee grype.txt || true
+          set -o pipefail
+          "$RUNNER_TEMP/bin/grype" dir:. --by-cve -o table | tee grype.txt
       - name: Upload grype report
         if: always()
         uses: actions/upload-artifact@v4
