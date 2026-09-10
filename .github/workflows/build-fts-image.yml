@@ -1,0 +1,82 @@
+name: build-fts-image
+# Build the FreeTAKServer container image OFF-node (#85). The field node's ~3.9 GB overlay
+# can't hold a non-trivial on-device build — an `apt upgrade` layer once filled it and forced
+# docker's btrfs loop read-only mid-build (see docs/fts-cve-triage.md). So build arm64 here
+# (QEMU/buildx), scan the real image (catches base-OS CVEs the requirements.txt gate can't),
+# and publish a `docker load`-able tarball the operator pulls to the node while "借網".
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'deploy/fts/**'
+      - '.github/workflows/build-fts-image.yml'
+permissions:
+  contents: read
+jobs:
+  build-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (arm64 emulation for the Pi target)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build fts:2.2.1 for linux/arm64 -> loadable tar
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/fts
+          platforms: linux/arm64
+          tags: fts:2.2.1
+          # type=docker emits a `docker load`-able archive (single platform).
+          outputs: type=docker,dest=${{ runner.temp }}/fts-arm64.tar
+          provenance: false
+
+      - name: Compress image tarball
+        run: |
+          gzip -c "${{ runner.temp }}/fts-arm64.tar" > "${{ runner.temp }}/fts-2.2.1-arm64.tar.gz"
+          ls -lh "${{ runner.temp }}/fts-2.2.1-arm64.tar.gz"
+
+      - name: Publish loadable image (docker load on the node)
+        uses: actions/upload-artifact@v4
+        with:
+          name: fts-2.2.1-arm64-image
+          path: ${{ runner.temp }}/fts-2.2.1-arm64.tar.gz
+
+      - name: Install grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+            | sh -s -- -b "$RUNNER_TEMP/bin"
+
+      # Authoritative image scan — sees base-OS packages too. NOT a hard gate yet: the
+      # Debian base carries a known Critical backlog (#83) that a slim/distroless rebase
+      # drives down. The python-dep gate stays in ci.yml (requirements.txt). Flip
+      # `continue-on-error` off once #83 lands and the image is Critical-clean.
+      - name: Grype scan of the built image (informational; backlog #83)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/bin/grype" "docker-archive:${{ runner.temp }}/fts-arm64.tar" \
+            --by-cve -o table | tee image-grype.txt
+          echo "## FTS image CVE scan (grype)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          { grep -E 'Critical|High' image-grype.txt || echo 'no Critical/High'; } | head -40 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload image grype report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fts-image-grype-report
+          path: image-grype.txt
+
+      - name: Image SBOM (CycloneDX, Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: docker-archive:${{ runner.temp }}/fts-arm64.tar
+          format: cyclonedx-json
+          artifact-name: fts-image-sbom.cdx.json
