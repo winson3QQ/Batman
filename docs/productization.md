@@ -33,6 +33,10 @@ Architectural consequences:
 
 ## Standards map (record only — certification later)
 
+> The per-use-case mapping — which standard governs each *subject × action* in the
+> CONOPS matrix, i.e. the implementation reference spec — is in
+> [`standards-crosswalk.md`](standards-crosswalk.md).
+
 Four separate things people lump under "compliance":
 
 ### (a) Interoperability — so FEMA/NATO will actually use it
