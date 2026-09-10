@@ -1,0 +1,9 @@
+# grype config — CI gate. See docs/fts-cve-triage.md (#45).
+# fail the build on Critical; the current backlog is tracked in the triage doc, and the
+# one current Critical is VEX-suppressed below (reasoned not_affected) so only NEW
+# criticals block. High/KEV items are tracked for the patched-pin FTS rebuild.
+fail-on-severity: critical
+ignore:
+  # pillow PIL.ImageMath.eval RCE — not_affected: FTS doesn't call ImageMath.eval on
+  # untrusted input (uses pillow via qrcode + image save). Re-confirm on next FTS bump.
+  - vulnerability: CVE-2023-50447
