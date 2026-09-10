@@ -62,25 +62,30 @@ else
 fi
 docker exec "$CN" openssl x509 -in /opt/fts/certs/ca.pem -noout -subject -dates 2>&1 | sed 's/^/  ca: /' || true
 
+# NOTE: heredoc probes MUST use `docker exec -i` — without -i, docker does not attach stdin,
+# python reads EOF, runs nothing and exits 0 -> a HOLLOW pass. Each probe below prints a
+# sentinel token; run_probe requires that token in the output, so a no-op can't pass.
+run_probe() {   # run_probe <label> <required-token>  (probe code on stdin)
+  out=$(docker exec -i "$CN" python - 2>&1); rc=$?
+  echo "$out" | sed 's/^/  /'
+  if [ "$rc" = 0 ] && echo "$out" | grep -q "$2"; then ok "$1"; else bad "$1 (rc=$rc, missing '$2' — probe may not have run)"; fi
+}
+
 echo "=== [3] INDEPENDENT stdlib-ssl client: mTLS handshake to FTS SSL CoT :8089 ==="
-docker exec "$CN" python - <<'PY' || FAIL=1
+run_probe "mTLS handshake with valid client cert" "HANDSHAKE_OK" <<'PY'
 import ssl, socket
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 ctx.load_verify_locations("/opt/fts/certs/ca.pem")
 ctx.load_cert_chain("/opt/fts/certs/Client.pem", "/opt/fts/certs/Client.key")
 ctx.check_hostname = False
-try:
-    with socket.create_connection(("127.0.0.1", 8089), timeout=15) as s:
-        with ctx.wrap_socket(s, server_side=False) as ts:
-            print("PASS: mTLS handshake OK — cipher", ts.cipher()[0], "| peer CN present:",
-                  bool(ts.getpeercert()))
-except Exception as e:
-    print("FAIL: mTLS handshake with a valid client cert failed:", repr(e))
-    raise SystemExit(1)
+with socket.create_connection(("127.0.0.1", 8089), timeout=15) as s:
+    with ctx.wrap_socket(s, server_side=False) as ts:
+        print("cipher", ts.cipher()[0], "| peer cert present:", bool(ts.getpeercert()))
+        print("HANDSHAKE_OK")
 PY
 
 echo "=== [4] NEGATIVE CONTROL: no client cert -> must be REJECTED (proves CERT_REQUIRED runs) ==="
-docker exec "$CN" python - <<'PY' || FAIL=1
+run_probe "certless client rejected (negative control)" "REJECTED_OK" <<'PY'
 import ssl, socket
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 ctx.load_verify_locations("/opt/fts/certs/ca.pem")
@@ -89,31 +94,37 @@ try:
     with socket.create_connection(("127.0.0.1", 8089), timeout=15) as s:
         with ctx.wrap_socket(s, server_side=False) as ts:
             ts.recv(1)
-    print("FAIL: server accepted a client with NO cert — CERT_REQUIRED path NOT exercised")
-    raise SystemExit(1)
-except SystemExit:
-    raise
+    print("server ACCEPTED a certless client — CERT_REQUIRED not enforced")
 except Exception as e:
-    print("PASS: server rejected the certless client as required:", type(e).__name__)
+    print("rejected as required:", type(e).__name__)
+    print("REJECTED_OK")
 PY
 
-echo "=== [5] spec-valid CoT round-trips through plaintext CoT :18087 ==="
-docker exec "$CN" python - <<'PY' || FAIL=1
-import socket, time
+echo "=== [5] spec-valid CoT ingested via plaintext CoT :18087 (RestAPI is the oracle) ==="
+run_probe "CoT event ingested (independent RestAPI confirms the uid)" "INGEST_OK" <<'PY'
+import socket, time, json, urllib.request
+uid = "CRYPTO-VERIFY-001"
 ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 stale = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time()+3600))
 cot = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-       '<event version="2.0" uid="CRYPTO-VERIFY-001" type="a-f-G-U-C" how="m-g" '
+       f'<event version="2.0" uid="{uid}" type="a-f-G-U-C" how="m-g" '
        f'time="{ts}" start="{ts}" stale="{stale}">'
        '<point lat="25.0330" lon="121.5654" hae="10.0" ce="5.0" le="5.0"/>'
-       '<detail><contact callsign="CRYPTO-VERIFY-001"/><__group name="Cyan" role="Team Member"/>'
+       f'<detail><contact callsign="{uid}"/><__group name="Cyan" role="Team Member"/>'
        '</detail></event>')
-try:
-    s = socket.create_connection(("127.0.0.1", 18087), timeout=10)
-    s.sendall(cot.encode()); time.sleep(2); s.close()
-    print("PASS: CoT event accepted by :18087 (socket write clean)")
-except Exception as e:
-    print("FAIL: CoT send failed:", repr(e)); raise SystemExit(1)
+s = socket.create_connection(("127.0.0.1", 18087), timeout=10)
+s.sendall(cot.encode()); time.sleep(3); s.close()
+# independent oracle: ask the RestAPI whether FTS actually registered the presence
+found = False
+for ep in ("http://127.0.0.1:19023/ManagePresence/getPresenceList",
+           "http://127.0.0.1:19023/APIObjectEndpoint"):
+    try:
+        body = urllib.request.urlopen(ep, timeout=8).read().decode(errors="ignore")
+        if uid in body: found = True; break
+    except Exception as e:
+        print("  (query", ep, "->", type(e).__name__, ")")
+print("presence-registered:", found)
+if found: print("INGEST_OK")
 PY
 
 echo "=== runtime error scan in FTS log ==="
