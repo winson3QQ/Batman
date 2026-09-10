@@ -78,6 +78,42 @@
 
 ---
 
+## Roadmap v2 — 商品化與安全強化（2026-09-10）
+
+> v1 聚焦「韌性/去中心化」的初盤。v2 疊上**商品化**視角(安全地基、資料保護、
+> 供應鏈、CI)並依**依賴關係**重排。安全架構詳見 [`threat-model.md`](threat-model.md),
+> 標準/商品化地圖見 [`productization.md`](productization.md)。
+
+### 這次收斂
+- ✅ **#10 BLA** 已確認開啟(v1 的「最急引信」拆彈)。
+- ✅ 關閉 **#38**(4MHz 節點對節點上限已量測:TCP 9.2–9.3 / UDP 10.0–10.7 Mbps 雙向)、
+  **#35**(RTS 維持 1000)、**#34**(Pi500 RX 缺陷,Pi500 已退場故 obsolete)。
+- 🅿️ **#46**(HW 去紅化 / NDAA-Quectel 替代模組)**擱置**——無美國市場計畫前不動。
+
+### 依賴排序待辦
+
+| Tier | Issue | 依賴 / 備註 |
+|---|---|---|
+| **0 現在做** | **#45** SBOM + CVE CI | 無依賴;掃出 FTS 舊依賴 CVE。建議第一個 |
+| 0 進行中 | (soak CPU 剖析報告) | 收工後產出 → 餵 RF 調校三張 |
+| **1 地基** | **#13** per-device PKI(根 CA 同簽節點+TAK client) | **keystone**,解鎖 #48/#16/#11/#47/#49。建議第二個 |
+| 1 | **#47** 資料加密(LUKS+dm-verity+secure element+USB-C/M12 fill) | 軟體面可先架;SE 選型待硬體 |
+| **2 建於 #13** | **#48** TAK mTLS(8089,停用明文 CoT) | 需 #13;關聯 #44 |
+| 2 | **#11** zero-touch provisioning + PKI 入網 | 需 #13(v1 的 MAC→IP 是 stage 1) |
+| 2 | **#16** WireGuard(標 FIPS) | 需 #13 |
+| 2 | **#41** immutable rootfs + A/B OTA + health-gated rollback | 與 #47 分割佈局重疊;野外升級關鍵 |
+| **3 監控/韌性** | **#14** 去中心化健檢 console(alfred) | 是 #49 的基礎 |
+| 3 | **#49** 節點行為偵測 + quarantine | 需 #14;吃 morse_cli/batctl |
+| 3 | **#15** 頻率捷變 | 唯一 PHY 反 jamming(從長期提前) |
+| 3 | **#12** 廣播治理 | 觀察項,client 變多再啟用 |
+| **RF 調校** | **#40** beacon_int / **#37** A-MPDU / **#39** 8MHz | 等本次 soak 數據;#38 已完成可接 #39 |
+| **產品完成度** | **#44** TAK server on manet02 | 留著,待修 DataPackage 8080 撞埠 |
+
+**Critical path:** `#45 → #13 →(分叉)#48 / #11 / #16`,`#41` 平行;`#14→#49`、`#15` 隨後;
+RF 三張等 soak 報告。
+
+---
+
 ## 名詞速查
 
 | 術語 | 白話 |
