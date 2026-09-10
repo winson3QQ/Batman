@@ -36,6 +36,19 @@ jobs:
           outputs: type=docker,dest=${{ runner.temp }}/fts-arm64.tar
           provenance: false
 
+      - name: Load the built image into the runner's docker
+        run: docker load -i "${{ runner.temp }}/fts-arm64.tar"
+
+      # Runtime + functional gate (#45): a build/import pass does NOT prove FTS still works
+      # after a dependency bump (cryptography/TLS run only at runtime). Run the image under
+      # QEMU and exercise the changed paths with independent oracles (openssl-verified cert
+      # gen, stdlib-ssl mTLS handshake + a no-cert negative control, CoT round-trip). Hard
+      # gate — a broken crypto bump fails HERE, not on the field node.
+      - name: Functional test (forced paths, independent oracles)
+        run: |
+          chmod +x deploy/fts/functional-test.sh
+          deploy/fts/functional-test.sh fts:2.2.1
+
       - name: Compress image tarball
         run: |
           gzip -c "${{ runner.temp }}/fts-arm64.tar" > "${{ runner.temp }}/fts-2.2.1-arm64.tar.gz"
