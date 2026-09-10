@@ -26,12 +26,39 @@ OpenWrt logd is a RAM ring buffer by default (lost on reboot). manet02 is config
 to **p5** (storage-architecture.md / #88). Buffered writes still lose the tail on hard
 power-off.
 
-### 2. pstore / ramoops (missing — enable)
+### 2. pstore / ramoops — ROOT CAUSE FOUND: malformed DT node
 A reserved RAM region the kernel writes its **last output** to on panic; the pstore filesystem
-exposes it after reboot. **Gap:** `/proc/cmdline` has **no ramoops** → panics aren't captured;
-`/sys/fs/pstore` is empty. **Fix:** reserve a `ramoops` region (kernel cmdline / DT
-`reserved-memory`), size it (a few 100 KB), and reserve the region in the #88 p5/RAM layout.
-After a panic, the trace lands in pstore and can be flushed to the persistent log on next boot.
+exposes it after reboot.
+
+**Why manet02's pstore was always empty** (the mystery from the stress-reboot investigation):
+the kernel HAS the support (`CONFIG_PSTORE=m`, `CONFIG_PSTORE_RAM=m`) and the OpenMANET DT even
+declares a `reserved-memory/ramoops@b000000` node — **but that node's `reg` is malformed**, so
+the kernel skips it at boot:
+```
+OF: fdt: Reserved memory: invalid reg property in 'ramoops@b000000', skipping node.
+```
+The parent `reserved-memory` declares `#address-cells = <2>`, `#size-cells = <1>` → a `reg`
+must be **3 cells / 12 bytes**. The ramoops node's `reg` is only **8 bytes**
+(`0b000000 00010000`) — written as if `#address-cells = <1>` (addr `0x0b000000`, size `0x10000`
+= 64 KB). Cell-count mismatch → invalid → **ramoops never initialises → pstore never populates.**
+
+**Fix (one line, in the image's DT):** make the `reg` match the parent's 2 address cells:
+```dts
+reserved-memory {                 /* #address-cells = <2>; #size-cells = <1>; */
+    ramoops@b000000 {
+        compatible = "ramoops";
+        reg = <0x0 0x0b000000 0x10000>;   /* was <0x0b000000 0x10000> (8 bytes) → now 12 */
+        record-size  = <0x4000>;          /* 16 KB dmesg records */
+        console-size = <0x8000>;          /* capture console too */
+        ecc = <1>;
+    };
+};
+```
+Bake into the OpenMANET image (patch the base DTB or ship a dtoverlay). Then load `pstore_ram`
++ mount pstore at boot, and add a hook to **flush `/sys/fs/pstore` to the persistent log on next
+boot** (so a captured panic is saved off the volatile region before it's reused). A runtime-only
+workaround (`ramoops.mem_address=/mem_size=` module params) is **unsafe** here — the region was
+never reserved, so it may be in use; fix the DT reservation instead.
 
 ### 3. Kernel hung-task / softlockup detectors (missing — build)
 The stock kernel lacks `CONFIG_DETECT_HUNG_TASK` / `CONFIG_SOFTLOCKUP_DETECTOR`, so a pure
