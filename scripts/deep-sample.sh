@@ -43,8 +43,8 @@ exec awk -v OUT="$OUT" -v IVL="$IVL" -v HZ="$HZ" 'BEGIN{
 
   havePrev=0
   while(1){
-    # STOP file?
-    if((getline _ < (OUT"/STOP"))>0){ close(OUT"/STOP"); print "stopped"; exit }
+    # STOP file? (>=0 so an EMPTY `touch`ed STOP also stops; getline is 0 on empty, -1 if absent)
+    if((getline _ < (OUT"/STOP"))>=0){ close(OUT"/STOP"); print "stopped"; exit }
     close(OUT"/STOP")
 
     ts=strftime("%Y-%m-%d %H:%M:%S")
