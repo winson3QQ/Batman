@@ -131,6 +131,43 @@ The scheme above is the target; these must be resolved before it's buildable. �
 8. **"Config survives rollback" is hard.** Forward-migrate on upgrade + backward-tolerate on
    rollback (schema-versioned config) is non-trivial and high-risk; needs its own design.
 
+## Blocker resolutions (design, grounded on manet02 facts 2026-09-10)
+
+### B1 — GPT (resolved)
+Pi-4 bootloader is `2023/01/11` → supports GPT. **Decision: GPT** (5 partitions exceed MBR's
+4 primaries). Boot partition stays FAT for the Pi firmware. Verify the signed-boot chain (#74)
+reads GPT on the target bootloader before locking it in.
+
+### B2 — verity vs overlay: the real problem is *what's in the overlay*
+Reframed by the facts: OpenWrt **already** runs a read-only squashfs (`/rom`, 52.8 MB) + a
+writable f2fs **overlay** unified by overlayfs. So verity doesn't break a "writable rootfs" —
+it protects the squashfs. **The real issue:** the squashfs is only 52.8 MB, while the overlay
+is 3.9 GB — **docker, kmods, the whole container/FTS infrastructure live in the writable
+overlay, not the signed base.** dm-verity on the squashfs would protect ~52 MB and leave
+everything that matters mutable → the "only signed code runs" guarantee (#74) is hollow.
+
+**Resolution:** repackage the image so **all code ships inside the verity-protected rootfs**
+(docker, kmods, container runtimes baked into the signed A/B slot), leaving the overlay for
+**config + data only**. Move that overlay off the A/B slot to **p4** (persistent, survives
+swap). In prod, the overlay carries **no trusted executable code** — anything runnable is in
+the signed slot or a signed+admitted container (#97). This is a real change to how OpenMANET
+is built (a bigger, signed rootfs) — owned jointly with #74.
+
+### B3 — LUKS key on an unattended node: no SE/TPM present → it's a CONOPS choice
+Grounded: **Pi 4 has no TPM**, and manet02 has **no crypto secure element** (i2c shows only
+non-crypto devices at 0x2d/0x43). So "seal the key to platform state" is not available today.
+Honest options, a **threat-model decision (#69) + future hardware (#47):**
+- **(a) Auto-unlock** — key in a *future* soldered SE, released to a signed-boot initramfs.
+  Unattended (no operator), but only protects against a **stolen SD card** (the key isn't on
+  the card); a captured *board* boots itself and unlocks. Needs the SE hardware (#47).
+- **(b) Operator key-fill at deploy** — operator loads the key (USB-C/M12 key-fill, #47),
+  held in RAM, **zeroized on tamper/power-off**. Protects against **board capture**, but the
+  node can't cold-boot unattended (needs a re-fill). 
+- The choice is per node class / mission (#69): a relay left in the field vs. an operator-
+  carried node. **Until an SE is on the board, at-rest encryption's guarantee is limited to
+  card-theft (b gives more but costs unattended boot).** Documented so we don't claim more
+  than the hardware delivers.
+
 ## Validation (spare card — plan)
 
 Flash the image + firstboot hook onto a **spare SD card**, boot it on **manet01's Pi** (its
