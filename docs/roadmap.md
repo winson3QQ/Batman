@@ -112,6 +112,25 @@
 **Critical path:** `#45 → #13 →(分叉)#48 / #11 / #16`,`#41` 平行;`#14→#49`、`#15` 隨後;
 RF 三張等 soak 報告。
 
+### 兩條並行 track(工作分組)
+
+兩組性質不同、可並行。**目前順序:先 M1(mesh resilience & RF),後 M2。**
+
+**M1 · Mesh resilience & RF** — 讓 mesh 健康 / 被防禦 / 被調校(**先做**)
+- #14 去中心化健檢 console(alfred)
+- #49 節點行為偵測 + quarantine
+- #15 頻率捷變(反 jamming)
+- #12 廣播治理
+- #40 / #37 / #39 RF 調校(等本次 soak 報告)
+
+**M2 · Secure node + TAK** — 讓節點可信 / 可交付 / 安全
+- #13 per-device PKI(keystone)
+- #48 TAK mTLS · #44 TAK server · #11 provisioning · #16 WireGuard/FIPS
+- #47 資料加密(LUKS+dm-verity+SE)· #41 immutable+A/B · #45 SBOM/CVE CI
+
+唯一軟連結:**#49 的撤銷(revoke)要用 M2 的 #13 PKI**;但 #49 的偵測靠 #14 可先做
+→ M1 除 #49 收尾外可獨立推進,不必等 M2。
+
 ---
 
 ## 名詞速查
