@@ -78,6 +78,25 @@ Crash-debug capture is now in place (persistent syslog to `/root`, live log stre
 the desktop). The kernel lacks hung-task/softlockup detectors, so a **serial console**
 is the definitive next step — see the upgrade-recommendation issue.
 
+## manet02 — the cost of running FreeTAKServer on a node
+
+![FTS overhead manet01 vs manet02](images/soak-fts-overhead.png)
+
+manet02 ran the same soak **plus FreeTAKServer + docker**, so it shows the standing
+cost of putting a TAK server on a field node: **~+7 % system busy at idle** vs the
+clean node, driven by a roughly **constant FTS python load of ≈22–24 % of one core**
+whether idle or loaded. This is the quantitative side of the "should FTS live on a
+field node" question the reboot raises.
+
+> ⚠️ **Data-handling note (honest):** manet02's *full* per-phase dataset was **lost**.
+> After the reboot cleared its tmpfs, the recovery snapshots **overwrote** the earlier
+> (good) manet02 capture because snapshots were written to a fixed path rather than
+> versioned by time — only two phases (idle, udp_1400) were characterised beforehand,
+> shown above. Two process fixes came out of this: (1) **version snapshots** by
+> timestamp, and (2) a **`deep-sample.sh` STOP bug** — an empty `touch`ed STOP file
+> didn't stop the sampler (`getline>0` is false on an empty file); fixed to `>=0`.
+> A clean manet02 dataset needs a re-run.
+
 ## Artifacts
 
 `scripts/deep-sample.sh`, `scripts/soak-mixed.sh`, `scripts/deep-cpu-sample.py` (python
