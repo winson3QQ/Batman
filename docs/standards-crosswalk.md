@@ -62,6 +62,24 @@ framework to build to. Certification is deferred (see
 | **Supply chain** | **NDAA §889** / FCC Covered List (see #46) |
 | **EMC** | FCC Part 15 Class B / CISPR |
 
+## By container / workload trust — the "app 上載台" layer (#68, #97, #98)
+
+The payload platform runs third-party apps in containers; trust is mutual (node↔payload↔payload) and layered.
+
+| Layer | Concern | Standard / spec to implement to |
+|---|---|---|
+| **Supply chain** (#45/#83) | image inventory | **SPDX** (ISO/IEC 5962) / **CycloneDX** (Ecma-424); **VEX** |
+| | build provenance | **SLSA** (OpenSSF); **in-toto** |
+| | artifact signing | **Sigstore/cosign**; **TUF** / **Notation** (Notary v2) |
+| **Admission + identity** (#97) | signed-image admission | policy gate: **OPA/Gatekeeper**, **Kyverno**, Sigstore **policy-controller** |
+| | workload identity | **SPIFFE/SPIRE** (X.509/JWT-SVID) |
+| | app↔app zero trust | **NIST SP 800-207**; authZ via **ABAC (SP 800-162)** |
+| **Attestation** (#97, app→node) | node proves integrity | **IETF RATS** (RFC 9334) + **EAT**; **TCG/TPM**; Confidential Computing |
+| **Runtime hardening** (#98) | container security guide | **NIST SP 800-190** (authoritative) |
+| | hardening checklist | **CIS Docker / Kubernetes Benchmark**; K8s **Pod Security Standards** |
+| | container spec | **OCI** image + runtime; kernel: seccomp, **AppArmor/SELinux**, capabilities |
+| **Defense-hardened** | DoD container posture | **DISA STIG — Container Platform SRG**; **DoD Enterprise DevSecOps** / Platform One **Iron Bank** |
+
 ## How to use this
 
 1. Take a row of the #69 matrix (e.g. *drone → node+camera → publish FMV*).
