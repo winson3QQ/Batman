@@ -83,6 +83,20 @@ rm -f /etc/config/network.ula 2>/dev/null || true   # ULA regenerates
 : > /etc/config/dhcp.leases 2>/dev/null || true
 logread -c 2>/dev/null || true
 
+echo "==> installing first-boot storage provisioning hook (#88)"
+# The productionised storage provisioning (deploy/provisioning/uci-defaults/95-batman-storage):
+# on each flashed card's first boot it carves the SD free space into an expand-to-fill data
+# partition (LUKS if the image has dm-crypt, else plain) and installs the persistent mount.
+# Source of truth is the repo file; install it from a repo checkout relative to this script.
+STORAGE_SRC="$(dirname "$0")/../deploy/provisioning/uci-defaults/95-batman-storage"
+if [ -f "$STORAGE_SRC" ]; then
+	install -m 0755 "$STORAGE_SRC" /etc/uci-defaults/95-batman-storage
+	echo "    installed /etc/uci-defaults/95-batman-storage"
+else
+	echo "    WARN: $STORAGE_SRC not found — stage the repo on the node, or copy it into"
+	echo "          /etc/uci-defaults/95-batman-storage manually before imaging (#88)."
+fi
+
 echo "==> installing first-boot identity hook"
 cat > /etc/uci-defaults/99-halow-identity <<'FIRSTBOOT'
 #!/bin/sh

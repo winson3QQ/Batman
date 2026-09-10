@@ -1,0 +1,91 @@
+#!/bin/sh
+# 95-batman-storage — OpenWrt first-boot storage provisioning (#88).
+#
+# Runs ONCE on the end user's first boot (OpenWrt runs /etc/uci-defaults/* then deletes each
+# on exit 0), BEFORE services need the data area. Baked into the golden image by
+# depersonalise.sh, so every flashed card provisions itself — no operator, no manual scripts.
+# This is the productionised form of deploy/provisioning/firstboot-provision.sh (validated on
+# hardware): carve the SD free space into an (optionally LUKS) expand-to-fill data partition,
+# ext4, and install a persistent boot mount. Runs number 95, before 99-halow-identity.
+#
+# Ordering vs the #88 target scheme: this is the DATA partition (the real §B1 GPT p1..p5 layout
+# is a later image-build change). dm-verity (#74/B2) and SE-sealed keys (#47/B3) are separate.
+# If dm-crypt is unavailable it provisions UNENCRYPTED (loud syslog warning) — the image must
+# add CONFIG_DM_CRYPT for encryption (#47).
+#
+# Idempotent + safe: only ever creates its own partition in the FREE SPACE (never p1/p2); a
+# non-zero exit makes OpenWrt re-run it next boot (used when the kernel needs a reboot to see
+# a freshly-created partition).
+
+DISK=/dev/mmcblk0
+PART_NUM=3
+PART=${DISK}p${PART_NUM}
+LABEL=batdata
+MAPPER=batdata_crypt
+MOUNT=/opt/batdata
+KEYFILE=/etc/batman-provision.key   # PLACEHOLDER (LUKS mode). Real key = secure element (#47/B3).
+INIT=/etc/init.d/batdata-mount
+
+lg(){ logger -t batman-storage "$*"; echo "batman-storage: $*"; }
+
+# already provisioned + mounted? (a re-run after success, or the init already did it) -> done
+if mount | grep -q " $MOUNT "; then lg "already mounted — nothing to do"; exit 0; fi
+
+command -v parted   >/dev/null 2>&1 || { lg "parted missing — skip (add to image)"; exit 0; }
+command -v mkfs.ext4 >/dev/null 2>&1 || { lg "mkfs.ext4 missing — skip"; exit 0; }
+
+# LUKS capability
+LUKS=0
+if command -v cryptsetup >/dev/null 2>&1; then modprobe dm-crypt 2>/dev/null; [ -e /dev/mapper/control ] && LUKS=1; fi
+[ "$LUKS" = 1 ] && DEV="/dev/mapper/$MAPPER" || { DEV="$PART"; lg "!!! dm-crypt unavailable — provisioning UNENCRYPTED (image needs CONFIG_DM_CRYPT, #47) !!!"; }
+
+# 1. create the data partition in the free space (idempotent, free space only)
+if [ ! -b "$PART" ]; then
+	PARTCOUNT=$(parted -sm "$DISK" print 2>/dev/null | grep -cE '^[0-9]+:')
+	[ "$PARTCOUNT" -eq 2 ] || { lg "expected p1+p2+free, found $PARTCOUNT partitions — refusing (safety)"; exit 0; }
+	START=$(parted -sm "$DISK" unit s print free 2>/dev/null | awk -F: '/free;?$/{sz=$4; gsub("s","",sz); if(sz+0>best){best=sz+0; bs=$2}} END{gsub("s","",bs); print bs}')
+	[ -n "$START" ] && [ "$START" -gt 0 ] 2>/dev/null || { lg "no free space — skip"; exit 0; }
+	lg "creating $PART ${START}s..100% (expand-to-fill)"
+	parted -s "$DISK" mkpart primary ext4 "${START}s" 100% || { lg "mkpart failed"; exit 0; }
+	sync; sleep 1; [ -b "$PART" ] || partprobe "$DISK" 2>/dev/null || true; sleep 1
+	# if the kernel still can't see it, ask OpenWrt to re-run us next boot (non-zero exit)
+	[ -b "$PART" ] || { lg "$PART not visible yet — will retry next boot"; exit 1; }
+fi
+
+# 2. LUKS (if capable, idempotent)
+if [ "$LUKS" = 1 ]; then
+	[ -f "$KEYFILE" ] || { head -c 512 /dev/urandom > "$KEYFILE"; chmod 600 "$KEYFILE"; }
+	cryptsetup isLuks "$PART" 2>/dev/null || cryptsetup luksFormat --type luks2 --batch-mode --key-file "$KEYFILE" "$PART"
+	cryptsetup status "$MAPPER" >/dev/null 2>&1 || cryptsetup open --key-file "$KEYFILE" "$PART" "$MAPPER"
+fi
+
+# 3. ext4 (idempotent — skip if already a filesystem)
+if ! (dumpe2fs -h "$DEV" >/dev/null 2>&1); then lg "mkfs.ext4 $DEV"; mkfs.ext4 -F -L "$LABEL" -m 0 "$DEV" >/dev/null 2>&1; fi
+
+# 4. install the persistent mount service (mounts on every boot)
+cat > "$INIT" <<EOF
+#!/bin/sh /etc/rc.common
+# batdata-mount (#88): mount the data partition on boot. LUKS mode uses a PLACEHOLDER key on
+# rootfs — replace with SE-sealed release (#47/B3) before production encryption is claimed.
+START=78
+STOP=10
+boot() {
+	[ -b "$PART" ] || return 0
+	[ "$LUKS" = 1 ] && { cryptsetup status "$MAPPER" >/dev/null 2>&1 || cryptsetup open --key-file "$KEYFILE" "$PART" "$MAPPER" 2>/dev/null; }
+	mkdir -p "$MOUNT"
+	mount | grep -q " $MOUNT " || mount "$DEV" "$MOUNT" 2>/dev/null
+	logger -t batdata-mount "mounted $DEV on $MOUNT"
+}
+start() { boot; }
+stop() {
+	mount | grep -q " $MOUNT " && umount "$MOUNT" 2>/dev/null
+	[ "$LUKS" = 1 ] && cryptsetup status "$MAPPER" >/dev/null 2>&1 && cryptsetup close "$MAPPER" 2>/dev/null
+	true
+}
+EOF
+chmod +x "$INIT"; "$INIT" enable 2>/dev/null
+
+# 5. mount now for this first boot
+mkdir -p "$MOUNT"; mount | grep -q " $MOUNT " || mount "$DEV" "$MOUNT" 2>/dev/null
+lg "provisioned ($([ "$LUKS" = 1 ] && echo LUKS || echo plain)); data at $MOUNT"
+exit 0

@@ -45,3 +45,41 @@ sh firstboot-provision.sh --yes         # expect: all steps "skipping (idempoten
 The script refuses to run unless the disk has exactly 2 partitions (p1/p2) + free space,
 only ever creates/removes its own partition in the free space, and is idempotent. Worst case
 it damages the **disposable spare card**, never manet02.
+
+---
+
+# Production integration (golden-master, **no rebuild**)
+
+The interactive `firstboot-provision.sh` above is for *validating* the mechanics. Production
+bakes the same logic into the image the OpenWrt way — **no OpenWrt source build**, just files
+captured into the golden image (the same model Batman already uses for meshled/meshtest):
+
+- **`uci-defaults/95-batman-storage`** — the productionised first-boot hook (OpenWrt runs
+  `/etc/uci-defaults/*` once on first boot, then deletes each on success). It carves the data
+  partition, expands to fill, ext4, and installs the persistent `batdata-mount` init — with no
+  operator. `depersonalise.sh` installs it into `/etc/uci-defaults/` on the golden node,
+  alongside the existing `99-halow-identity` hook, so every flashed card self-provisions.
+- **`../../overlays/ramoops-fix-overlay.dts`** (#61) — fixes the malformed ramoops
+  reserved-memory `reg` so kernel panics get captured. Enabled with a `dtoverlay=ramoops-fix`
+  line in the boot partition's config (config.txt / distroconfig.txt) — a boot-partition file,
+  **no kernel rebuild**.
+
+## What golden-master files can and cannot do
+
+| Change | Mechanism | Rebuild? |
+|---|---|---|
+| First-boot storage provisioning (#88) | `uci-defaults` file in the image | **No** |
+| ramoops DT fix (#61) | `dtoverlay=` + .dtbo on the boot partition | **No** |
+| **LUKS at-rest encryption (#47)** | **`CONFIG_DM_CRYPT` — a kernel feature** | **Yes** — kernel/image rebuild (or OpenMANET upstream). Until then the first-boot hook provisions **unencrypted** (loud syslog warning). |
+
+## Golden-master flow
+1. Configure a reference node; stage this repo on it.
+2. Run `scripts/depersonalise.sh` — installs the identity + storage first-boot hooks, strips
+   secrets, resets defaults.
+3. Add `dtoverlay=ramoops-fix` to the boot config; drop the compiled `ramoops-fix.dtbo`.
+4. Power off (don't reboot), `dd` the card, `pishrink` → the release image.
+5. Every card flashed from it self-provisions storage + captures panics on first boot.
+
+> Still validated only as mechanism (not end-to-end on a golden image): the uci-defaults
+> first-boot run, the ramoops overlay on a reflash, and — gated on a dm-crypt image — the LUKS
+> path. These are the remaining productization steps for #88/#61/#47.
