@@ -24,11 +24,20 @@ filled it and forced docker's btrfs loop read-only mid-build). So build in CI an
 4. Restart the container onto the new image:
    `docker rm -f fts; docker run -d --name fts --restart unless-stopped --network host -v /opt/fts-data:/opt/fts -e FTS_FIRST_START=false fts:2.2.1`
 
-## On-node build (emergency micro-patches only)
+## On-node build
 
-Only for tiny deltas that reuse cached layers (e.g. the pillow bump). `docker build
---network=host -t fts:2.2.1 .` — needs internet + `--network=host` (OpenWrt firewall blocks
-the docker0 bridge). Watch overlay free space; a heavy build **will** fill it.
+`docker build --network=host -t fts:2.2.1-crypto .` — needs internet (借網) + `--network=host`
+(OpenWrt firewall blocks the docker0 bridge). This is now safe: since 2026-09-10 the node's
+docker data-root lives on a **27.5 GB ext4 partition (`mmcblk0p3`, LABEL=dockerdata)** with
+~23 GB free (#85), not the old 2.4 GB btrfs loop on the cramped 4 GB overlay that used to hit
+ENOSPC → btrfs-readonly on any non-trivial build/load. Prefer on-node build over `docker load`
+of a CI tar — `load` can abort on a shared-layer `rename: file exists`, while a cached build
+just adds the changed layer. The off-node CI build (build-fts-image) is still the canonical,
+scanned artifact.
+
+Node data-root layout (for reference): `/etc/init.d/dockermount` mounts p3 at `/opt/docker`
+(the old `/opt/docker.img` loop is kept as a commented fallback); the MBR partition-table
+backup is off-node.
 
 ⚠️ Remaining CVEs: 12 python High (crypto cluster — version-coupled) + 15 Debian base-OS
 Critical (#83). Clear them via the off-node build above; do not attempt on-node. See #45.
