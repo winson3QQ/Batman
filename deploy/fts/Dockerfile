@@ -24,8 +24,14 @@ RUN pip install "pillow>=10.3.0"
 # CVE-2025-4565 (federation-parse DoS) deferred. (b) dnspython — the frozen eventlet 0.33.1
 # monkey-patches dns and breaks on dnspython>=2.8 (greendns import). Both tracked in
 # docs/fts-cve-triage.md; moving them needs eventlet/protobuf-codegen work.
+# pyOpenSSL is capped at <24: FTS's certificate_generation.py calls OpenSSL.crypto.CRL,
+# which pyOpenSSL 24.0 REMOVED (deprecated in 23.x). pyOpenSSL 24 imports fine but crashes
+# at runtime when FTS generates the CRL ("module 'OpenSSL.crypto' has no attribute 'CRL'")
+# — caught by the functional gate, not the import gate. 23.x keeps CRL and pairs with
+# cryptography 42.x (which still fixes the cryptography High CVEs). cryptography<43 stays
+# inside pyOpenSSL 23.3's supported range.
 RUN pip install -U \
-      "cryptography>=42.0.8,<44" "pyOpenSSL>=24.0.0,<25" \
+      "cryptography>=42.0.8,<43" "pyOpenSSL>=23.2.0,<24" \
       "werkzeug>=3.0.6,<3.1" "jinja2>=3.1.4,<3.2" "flask-cors>=4.0.1,<5"
 # digitalpy imports pkg_resources, removed in setuptools>=81 -> pin back
 RUN pip install "setuptools<81"
