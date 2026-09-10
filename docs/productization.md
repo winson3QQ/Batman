@@ -6,6 +6,31 @@ Recorded now so the **capabilities** get built into the architecture early; form
 
 Security architecture lives in [`threat-model.md`](threat-model.md).
 
+## Platform positioning — a transport fabric for people *and* things
+
+Think of Batman not as a single product (a tactical radio for people) but as a
+**载台 / carrier platform**: a resilient HaLow + batman-adv **data-transport fabric**
+with **pluggable payload services**.
+
+- **This phase — for people:** HaLow + PTT + TAK. TAK/FreeTAKServer is **one payload
+  service** (situational awareness for humans).
+- **Next phase — for things:** drones, cameras, SDR, other sensors. **Machines generate
+  data** (imagery, SDR captures, sensor logs), not just CoT position blips — so **bulk /
+  file / stream transport is a baseline requirement, not an add-on.**
+
+Architectural consequences:
+
+1. **The edge node is a generic payload host** — which is the strategic reason for
+   Docker on the node. FTS is the first tenant; a video relay, an SDR service, or an
+   MQTT sensor broker are future tenants in their own containers.
+2. **The mesh may carry non-TAK machine data** (RTP video, SDR IQ, MQTT telemetry)
+   alongside TAK. The transport must not assume TAK.
+3. **Edge partition-survival is Tier A + B** (live CoT **and** data packages / bulk
+   transfer), decided on this platform basis — see the ICS_COMMAND epic. Heavy
+   collaborative state (missions) stays at the command echelon.
+4. **The node must not fall over under multi-tenant data load** — see the carrier-grade
+   node & EMS epic and the load/stability work (#61, #63).
+
 ## Standards map (record only — certification later)
 
 Four separate things people lump under "compliance":
