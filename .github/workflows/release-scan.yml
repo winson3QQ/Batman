@@ -1,0 +1,49 @@
+name: release-scan
+# NVD-authoritative CVE scan + release SBOM. Heavier than the per-PR ci.yml, so it runs
+# on release tags and on manual dispatch — not every push. See #73 / #45.
+# Requires a repo secret NVD_API_KEY (free from nvd.nist.gov/developers/request-an-api-key).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  nvd-dependency-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache NVD data (avoid re-downloading the whole NVD each run)
+        uses: actions/cache@v4
+        with:
+          path: ~/.dependency-check
+          key: dc-nvd-${{ github.run_id }}
+          restore-keys: dc-nvd-
+      - name: OWASP Dependency-Check (NVD-authoritative, CVE + CVSS)
+        uses: dependency-check/Dependency-Check_Action@main
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        with:
+          project: batman
+          path: '.'
+          format: 'ALL'            # HTML + JSON + SARIF + XML
+          args: >-
+            --nvdApiKey ${{ secrets.NVD_API_KEY }}
+            --failOnCVSS 11
+      - name: Upload Dependency-Check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports
+
+  release-sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: CycloneDX SBOM (Syft) — accepted release format
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          artifact-name: batman-release-sbom.cdx.json
+      # next: VEX triage + cosign signing (see verified-boot #74)
