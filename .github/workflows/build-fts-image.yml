@@ -12,6 +12,7 @@ on:
       - '.github/workflows/build-fts-image.yml'
 permissions:
   contents: read
+  id-token: write   # cosign keyless (Sigstore OIDC) — #73/#13 signing, no key to custody
 jobs:
   build-scan:
     runs-on: ubuntu-latest
@@ -54,11 +55,34 @@ jobs:
           gzip -c "${{ runner.temp }}/fts-arm64.tar" > "${{ runner.temp }}/fts-2.2.1-arm64.tar.gz"
           ls -lh "${{ runner.temp }}/fts-2.2.1-arm64.tar.gz"
 
-      - name: Publish loadable image (docker load on the node)
+      # Sign the image artifact — keyless (Sigstore/Fulcio via GitHub OIDC), so there is NO
+      # signing key to custody or rotate; the signer identity is this workflow's OIDC token,
+      # and the signature + cert are logged to the Rekor transparency log (#73 gate 9 / #13).
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Sign image tarball (cosign keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          IMG="${{ runner.temp }}/fts-2.2.1-arm64.tar.gz"
+          sha256sum "$IMG" | awk '{print $1}' > "$IMG.sha256"
+          cosign sign-blob --yes \
+            --output-signature "$IMG.sig" \
+            --output-certificate "$IMG.pem" \
+            "$IMG"
+          echo "## Image signature (cosign keyless)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Signed \`$(basename "$IMG")\` sha256 \`$(cat "$IMG.sha256")\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Verify: \`cosign verify-blob --signature fts-2.2.1-arm64.tar.gz.sig --certificate fts-2.2.1-arm64.tar.gz.pem --certificate-identity-regexp 'https://github.com/${{ github.repository }}/.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com fts-2.2.1-arm64.tar.gz\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish loadable image + signature (docker load on the node)
         uses: actions/upload-artifact@v4
         with:
           name: fts-2.2.1-arm64-image
-          path: ${{ runner.temp }}/fts-2.2.1-arm64.tar.gz
+          path: |
+            ${{ runner.temp }}/fts-2.2.1-arm64.tar.gz
+            ${{ runner.temp }}/fts-2.2.1-arm64.tar.gz.sig
+            ${{ runner.temp }}/fts-2.2.1-arm64.tar.gz.pem
+            ${{ runner.temp }}/fts-2.2.1-arm64.tar.gz.sha256
 
       - name: Install grype
         run: |
