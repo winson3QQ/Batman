@@ -1,0 +1,35 @@
+// ramoops-fix-overlay.dts — fix the malformed ramoops reserved-memory node (#61).
+//
+// The OpenMANET base DTB declares /reserved-memory/ramoops@b000000 but its `reg` is 8 bytes
+// (written for #address-cells=1) while the parent reserved-memory declares #address-cells=<2>,
+// so the kernel logs "invalid reg property in 'ramoops@b000000', skipping node" and ramoops
+// never initialises -> pstore is always empty (root-caused in docs/crash-debug.md). This
+// overlay rewrites the node's `reg` with the correct 3-cell (addr-hi, addr-lo, size) form.
+//
+// No kernel rebuild: applied by the Pi firmware (config.txt / distroconfig.txt:
+//   dtoverlay=ramoops-fix
+// ) so the merged FDT the kernel parses at boot has a valid ramoops region. The kernel already
+// ships CONFIG_PSTORE=m / CONFIG_PSTORE_RAM=m; pair this with loading pstore_ram + mounting
+// pstore + flushing it to the persistent log on boot (see docs/crash-debug.md).
+//
+// STATUS: designed, NOT yet validated on a reflash (needs the golden image rebuilt with this
+// overlay + a reboot to confirm /sys/fs/pstore populates and a test panic is captured).
+// If an overlay override of a reserved-memory node proves unreliable on this firmware, the
+// fallback is a DTB patch at imaging time (dtc decompile -> fix reg -> recompile the boot DTB).
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/reserved-memory/ramoops@b000000";
+		__overlay__ {
+			// #address-cells=<2>, #size-cells=<1> => <addr_hi addr_lo size>
+			// addr = 0x0b000000 (176 MiB), size = 0x10000 (64 KiB)
+			reg = <0x0 0x0b000000 0x10000>;
+			record-size  = <0x4000>;   // 16 KiB dmesg records
+			console-size = <0x8000>;   // capture kernel console too
+			ecc = <1>;
+		};
+	};
+};
