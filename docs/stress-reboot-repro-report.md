@@ -50,7 +50,49 @@ that heavy collaborative TAK belongs at the command echelon, not the edge.
 hardirq stays ~0 (cheap handlers); the packet cost is in the driver workqueues + softirq,
 consistent with the soak report.
 
-## Debug capture — proven ready, unused this time
+## The other half — a free clean-node control (manet01, no FTS)
+
+manet01 (the load partner) had its 12 h-soak sampler still running the whole time, so it
+gives a **controlled counterpart**: identical Morse driver + batman-adv + iperf load, the
+one difference being that it runs **no FTS**. Same window, both nodes:
+
+![clean vs FTS — CPU over time](images/clean-vs-fts-timeseries.png)
+
+| | manet01 (no FTS) | manet02 (FTS) | delta |
+|---|---|---|---|
+| busy (% of 4-core) | **16.0** | 21.5 | **+5.4** |
+
+The **+5.4-point gap is entirely FTS**: FTS measured directly as 23.2 %/core = **5.8 %**
+of the 4-core total — it lands right on the busy delta. The two nodes' packet-path
+families are otherwise near-identical (Morse NetWorkQ 14.8 vs 14.4, ChipIf 11.8 vs 11.8,
+ksoftirqd 10.1 vs 9.3, batman 7.5 vs 7.3, iperf 2.8 vs 3.2), confirming the load itself was
+the same on both.
+
+![clean vs FTS — attribution](images/clean-vs-fts-attribution.png)
+
+This upgrades the FTS-cost finding from a single-node attribution to a **controlled
+measurement**: on this hardware, hosting FreeTAKServer costs about **one-quarter of a
+core** on top of the mesh baseline, sustained, even with no CoT clients connected. That is
+the budget a field node must reserve for it (#67/#68), and the argument for keeping heavy
+collaborative TAK at the command echelon.
+
+## Caveats — two confounds in this run
+
+Two things narrow how far "not reproduced" generalizes:
+
+- **Periodic `killall iperf` may flush accumulating state.** The 15-min monitoring ticks
+  restart the load, so any driver/socket state that builds up between packets gets a
+  regular reset. This *could* mask a slow-accumulation hang. Evidence argues against it,
+  though: the run that *did* reboot (the mixed soak) had *more* frequent teardowns (a fresh
+  iperf every 5-min phase) and still fell over — so periodic flushing is not clearly
+  protective. killall's real effect here was preventing `iperf -t` **process** pile-up
+  (ps 30→64), a RAM/process-count issue, not the driver path (free stayed >6 GB, no OOM).
+  To remove the confound entirely, a future run should use clean self-terminating `-t`
+  loads and **no periodic killall**.
+- **Narrower traffic than the mixed soak.** This run was sustained bidirectional UDP
+  (1400 B + 64 B). The soak that rebooted also carried multicast / voice / video / TCP /
+  mixed phases. If the earlier fault was traffic-shape-specific rather than
+  intensity-specific, this run would not surface it.
 
 No hang → no death cause to capture. But the capture chain is validated and ready for a
 recurrence: btime-versioned snapshots (no data lost this run), persistent syslog to
@@ -63,5 +105,7 @@ definitively diagnosable (the kernel lacks hung-task/softlockup detectors):
 
 ## Artifacts
 
-`scripts/soak-stress.sh`, `scripts/deep-sample.sh`, `scripts/stress-plot.py`; raw CSVs
-in `soak-data/manet02-stress/boot-1789010950/` (~5 h, versioned by boot).
+`scripts/soak-stress.sh`, `scripts/deep-sample.sh`, `scripts/stress-plot.py`,
+`scripts/clean-vs-fts-plot.py`; raw CSVs in `soak-data/manet02-stress/boot-1789010950/`
+(FTS node, ~5 h, versioned by boot) and `soak-data/manet01-full/` (clean node, ~9 h
+continuous — its soak sampler never stopped, which is how we got the control).
