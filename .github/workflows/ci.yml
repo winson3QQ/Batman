@@ -1,0 +1,35 @@
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck (errors block; warnings informational)
+        uses: ludeeus/action-shellcheck@master
+        with:
+          severity: error
+      - name: line-endings must be LF
+        run: |
+          if grep -rlIP '\r$' --include='*.sh' --include='*.py' .; then
+            echo "::error::CRLF found in a script (breaks shebangs on the nodes)"; exit 1
+          fi
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan (repo — vuln + secret + misconfig)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: '0'          # informational first; flip to '1' to gate (#73)
+      - name: SBOM (CycloneDX, Syft) — published as an artifact
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          artifact-name: batman-sbom.cdx.json
