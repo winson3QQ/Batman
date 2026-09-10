@@ -100,7 +100,43 @@ no per-node surgery:
 **Versioned + migratable:** the scheme has a version; when it changes between releases, a
 defined migration runs (the reactive p3 move + DB bind-mount is the manual precursor to this).
 
-## Validation (needs a spare card — hardware-gated)
+## Open design decisions (from design review 2026-09-10)
+
+The scheme above is the target; these must be resolved before it's buildable. 🔴 = blocker.
+
+1. **🔴 GPT, not MBR.** The card ships `msdos` (MBR), which allows only **4 primary
+   partitions** — the scheme has 5 (p1–p5). Switch to **GPT** (or an extended partition).
+   Confirm the Pi 4 bootloader boots GPT with the signed-boot chain (#74). *Decision: GPT.*
+2. **🔴 dm-verity read-only rootfs vs the OpenWrt writable overlay.** OpenWrt keeps its config
+   + installed packages in a **writable overlay on the rootfs**; dm-verity makes rootfs
+   read-only → the overlay model breaks. The overlay/UCI must be relocated to p4, and the
+   OpenWrt boot must be taught to mount config from p4 instead of a rootfs overlay. This is a
+   real change to how the platform boots. **Owned jointly with #74** (verity is #74's mechanism).
+3. **🔴 LUKS key on an unattended node.** p4/p5 are LUKS-encrypted, but a field node
+   auto-boots with no operator to enter a passphrase → the key must be available at boot. **If
+   the key sits on the same card, a stolen card unlocks trivially → encryption at rest is
+   theatre.** Value requires the key **sealed to the secure element / TPM and released only on
+   a good measured-boot attestation** (#74/#47/#97). **Owned by #47** (this is its crux).
+4. **Minimum card size.** A/B doubles the rootfs (~8 GB) + boot + p4 + p5 → state a supported
+   minimum (e.g. ≥16 GB) and the A/B slot size.
+5. **Expand-to-fill vs. future partitions.** If p5 consumes all free space on first boot,
+   there's no room to add a p6 in a later scheme version → either reserve headroom or accept
+   that a layout change is a repartition-migration (versioned; the reactive p3 move is the
+   precursor).
+6. **Recovery/rescue slot.** No rescue partition — if both A/B slots are bad, field recovery
+   means re-flash. Consider a small rescue image slot.
+7. **p5 co-tenancy.** docker + FTS DBs + logs + bulk payload share p5; a payload filling it
+   affects the DBs/logs. Per-tenant quotas mitigate; consider DBs/identity-critical state on a
+   protected partition separate from bulk payload.
+8. **"Config survives rollback" is hard.** Forward-migrate on upgrade + backward-tolerate on
+   rollback (schema-versioned config) is non-trivial and high-risk; needs its own design.
+
+## Validation (spare card — plan)
+
+Flash the image + firstboot hook onto a **spare SD card**, boot it on **manet01's Pi** (its
+own card set aside, swapped back after — manet01 is idle), and verify: correct GPT layout,
+LUKS unlock via the sealed key, p5 expand-to-fill, data/DB/log on p5, config/identity on p4,
+and an A/B slot flip + rollback leaving p4/p5 intact. No third Pi and no risk to manet02.
 
 Prove the firstboot provisioning on a **fresh flash of a spare card / spare Pi** (manet02 is
 already hand-carved and can't re-test first boot). Check: correct layout, LUKS unlock, p5
