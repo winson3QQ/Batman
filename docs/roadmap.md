@@ -99,7 +99,7 @@
 | **1 地基** | **#13** per-device PKI(根 CA 同簽節點+TAK client) | **keystone**,解鎖 #48/#16/#11/#47/#49。建議第二個 |
 | 1 | **#47** 資料加密(LUKS+dm-verity+secure element+USB-C/M12 fill) | 軟體面可先架;SE 選型待硬體 |
 | **2 建於 #13** | **#48** TAK mTLS(8089,停用明文 CoT) | 需 #13;關聯 #44 |
-| 2 | **#11** zero-touch provisioning + PKI 入網 | 需 #13(v1 的 MAC→IP 是 stage 1) |
+| 0/1 | **#11** 自動入網(MAC→IP + DAD + 自動參數) | **base 無依賴 → M1 排第一**;PKI 入網片留 M2(需 #13) |
 | 2 | **#16** WireGuard(標 FIPS) | 需 #13 |
 | 2 | **#41** immutable rootfs + A/B OTA + health-gated rollback | 與 #47 分割佈局重疊;野外升級關鍵 |
 | **3 監控/韌性** | **#14** 去中心化健檢 console(alfred) | 是 #49 的基礎 |
@@ -112,24 +112,32 @@
 **Critical path:** `#45 → #13 →(分叉)#48 / #11 / #16`,`#41` 平行;`#14→#49`、`#15` 隨後;
 RF 三張等 soak 報告。
 
-### 兩條並行 track(工作分組)
+### Milestone = 可燒錄的 image 版本(release-DoD)
 
-兩組性質不同、可並行。**目前順序:先 M1(mesh resilience & RF),後 M2。**
+把 milestone 當「**燒了會怎樣**」的 image release,每版有明確 DoD——這樣「在哪個 release
+有什麼具體進度」一目了然。角色/RBAC 詳見 [`personas-and-roles.md`](personas-and-roles.md)。
+**順序:先 M1,後 M2。**
 
-**M1 · Mesh resilience & RF** — 讓 mesh 健康 / 被防禦 / 被調校(**先做**)
-- #14 去中心化健檢 console(alfred)
-- #49 節點行為偵測 + quarantine
-- #15 頻率捷變(反 jamming)
-- #12 廣播治理
-- #40 / #37 / #39 RF 調校(等本次 soak 報告)
+**M1 image — 自組 / 可觀察 / 可防禦的 mesh**(先做)
+> 燒 N 張卡 → 開機 → 每台自動入網(唯一 IP、mesh 參數、加入,零手動)→ 登入任一台/筆電
+> 看到全網健康 → mesh 能撐/應對干擾與惡意節點 → 廣播受治理 → RF 調校過。免逐台手動設定。
 
-**M2 · Secure node + TAK** — 讓節點可信 / 可交付 / 安全
-- #13 per-device PKI(keystone)
-- #48 TAK mTLS · #44 TAK server · #11 provisioning · #16 WireGuard/FIPS
-- #47 資料加密(LUKS+dm-verity+SE)· #41 immutable+A/B · #45 SBOM/CVE CI
+- **#11 自動入網**(MAC→IP + DAD + 自動參數)← 頭號能力,排第一(flashable 的地基)
+- **#14 健檢 console**(需 #11 可定址;alfred CLI 片可先原型)→ **#49 偵測 + quarantine**
+- **#15 頻率捷變** · **#12 廣播治理**(平行)
+- **#40 / #37 / #39 RF 調校**(等本次 soak 報告)
+- **#52 RBAC/ABAC 架構** + role-aware 視圖 · **#53 操作員狀態燈** · **#45 SBOM/CVE build 閘**
 
-唯一軟連結:**#49 的撤銷(revoke)要用 M2 的 #13 PKI**;但 #49 的偵測靠 #14 可先做
-→ M1 除 #49 收尾外可獨立推進,不必等 M2。
+**M2 image — 可信 / 安全 / 可 OTA 的節點**
+> M1 再加:每台可信身份 → TAK client 走 mTLS → 通訊 + 資料落地加密 → OTA 可回滾 → build 附 SBOM。
+
+- **#13 per-device PKI**(keystone)→ **#48 TAK mTLS · #44 TAK server · #16 WireGuard/FIPS**
+- **#47 資料加密** · **#41 immutable + A/B OTA**(= 下一版怎麼送到野外的 release 機制)
+- **#54 現場 enrolment 工具** · #11 在此升級成「帶 PKI 身份入網」· RBAC 密碼學強制執行
+
+**角色對映**:M1 服務網管(#14)+ 佈署者(#11),操作員已由 ATAK(#44)服務;M2 深化佈署者
+(enrolment/zeroize)+ 網管(撤銷)。**唯一跨版軟連結**:#49 撤銷用 M2 的 #13 PKI,但 #49 偵測
+靠 #14 可先做 → M1 除 #49 收尾外自足。
 
 ---
 
