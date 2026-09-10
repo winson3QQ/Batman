@@ -1,9 +1,10 @@
 # grype config — CI gate. See docs/fts-cve-triage.md (#45).
-# fail the build on Critical; the current backlog is tracked in the triage doc, and the
-# one current Critical is VEX-suppressed below (reasoned not_affected) so only NEW
-# criticals block. High/KEV items are tracked for the patched-pin FTS rebuild.
+# fail the build on Critical. The requirements.txt scan is currently Critical-clean on the
+# merits (0 critical) after the pillow bump — no VEX suppression needed; the gate passes on
+# real remediation, not on ignores. So NEW criticals block.
+#
+# History: CVE-2023-50447 (pillow ImageMath.eval RCE) was previously VEX-suppressed here.
+# It is now genuinely fixed — pillow was bumped 9.3.0 -> 12.3.0 (#45), which also cleared
+# the CISA-KEV CVE-2023-4863. The suppression was removed once the fix landed.
 fail-on-severity: critical
-ignore:
-  # pillow PIL.ImageMath.eval RCE — not_affected: FTS doesn't call ImageMath.eval on
-  # untrusted input (uses pillow via qrcode + image save). Re-confirm on next FTS bump.
-  - vulnerability: CVE-2023-50447
+ignore: []
