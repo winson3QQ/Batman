@@ -19,7 +19,7 @@
 #   batpower run | status | once
 
 STATE=/tmp/batpower.state
-MARK=/tmp/batpower.shutdown
+MARK=/tmp/shutdown.reason   # read by batdata-mount stop(): names this shutdown in boot-reasons.log
 MOCK=/tmp/batpower.mock
 
 cfg(){ uci -q get "batpower.main.$1" || echo "$2"; }
@@ -74,7 +74,7 @@ tick(){
 	esac
 	if [ "$below_crit" -ge "$CONFIRM" ] && [ "$state" != CRIT ]; then
 		state=CRIT
-		echo "low-battery Vbat=${v}mV I=${i}mA source=${SOURCE} action=${ACTION}" > "$MARK"
+		[ -f "$MARK" ] || echo "low-battery Vbat=${v}mV I=${i}mA source=${SOURCE} action=${ACTION}" > "$MARK"   # first writer wins
 		note crit "CRITICAL BATTERY: ${v} mV <= ${V_CRIT} mV — graceful ${ACTION} now"
 		echo "$state $v $i $(date +%s)" > "$STATE"; sync
 		sleep 2

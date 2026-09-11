@@ -1,0 +1,60 @@
+#!/bin/sh
+# halow-status — the one-page "incident report" for a node (#127 / field-resilience.md N1).
+# Plain text, no secrets (keys shown as SET/PLACEHOLDER), read-only. Used by the CLI, by
+# /www/cgi-bin/status (HTML + JSON) and by the bundle. Zero SD writes.
+# No RTC/NTP: everything here counts boots (by boot id), never hours.
+#   halow-status            text
+#   halow-status json       JSON object
+mode=$1   # saved first: the boot-count parser below uses `set --`
+BAT=/opt/batdata; JL=$BAT/log/join.log; BR=$BAT/log/boot-reasons.log
+host=$(cat /proc/sys/kernel/hostname); bid=$(cut -c1-8 /proc/sys/kernel/random/boot_id)
+u=$(cut -d. -f1 /proc/uptime); upfmt=$(printf '%dd %02d:%02d' $((u/86400)) $((u%86400/3600)) $((u%3600/60)))
+ver="OpenMANET $(cat /etc/openwrt_version 2>/dev/null)"; [ -f /etc/BENCH-IMAGE ] && ver="$ver (BENCH image)"
+last=$(tail -1 "$BR" 2>/dev/null | sed 's/^[^ ]* boot_id=[^ ]* prev=//')
+join=$(joinwatch status 2>/dev/null); jstate=${join%% *}
+jdiag=$(tail -1 "$JL" 2>/dev/null)
+bat=$( [ -f /tmp/batpower.state ] && cut -d' ' -f1-2 /tmp/batpower.state | tr ' ' '/' || echo "-")
+thr=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2); temp=$(awk '{print int($1/1000)}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+# the morse radio, found the same way joinwatch/meshpoint-1.8.0.sh find it (never hardcode radio1)
+radio=$(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)\.type='morse'$/\1/p" | head -1)
+mesh=$(uci -q get "wireless.default_$radio.mesh_id"); ch=$(uci -q get "wireless.$radio.channel"); cc=$(uci -q get "wireless.$radio.country")
+k=$(uci -q get "wireless.default_$radio.key"); case "$k" in "") key=NONE;; CHANGE-ME-NOW) key=PLACEHOLDER;; *) key=SET;; esac
+ip=$(uci -q get network.ahwlan.ipaddr); case "$(uci -q get openmanetd.config.dhcpconfigured)" in 1) addr=reserved;; *) addr=bootstrap;; esac
+plink=$(iw dev wlh0 station dump 2>/dev/null | grep -c "plink:.*ESTAB"); nb=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
+peers=$(awk -v me="${host}_wlh0" '$2 ~ /_wlh0$/ && $2 != me {sub(/_wlh0$/,"",$2); printf "%s ", $2}' /tmp/bat-hosts 2>/dev/null)
+# boots since the last JOINED line (boot-id order in boot-reasons.log) and how many of those
+# were power losses — the "user keeps power-cycling" signature; both logs may be absent
+cyc=0; pl=0; cycdesc="no join episode recorded"
+if [ -f "$JL" ]; then
+	lastj=$(awk '$4=="JOINED"{split($2,a,"="); b=a[2]} END{print b}' "$JL")
+	if [ -n "$lastj" ] && [ -f "$BR" ]; then
+		# shellcheck disable=SC2046  # two numbers, split on purpose
+		set -- $(awk -v b="$lastj" '{split($2,a,"="); if(a[2]==b){f=1; n=0; p=0; next} if(f){n++; if($0 ~ /power loss/) p++}} END{print n+0, p+0}' "$BR")
+		cyc=$1; pl=$2; cycdesc="$cyc boot(s) since last join ($pl power loss)"
+	elif [ -z "$lastj" ]; then
+		cyc=$(awk '$4=="SHORT"||$4=="FULL"{s[$2]=1} END{print length(s)+0}' "$JL"); cycdesc="$cyc boot(s) diagnosed, never joined"
+	fi
+fi
+ncrash=$(find "$BAT/crash" -type f 2>/dev/null | wc -l); njoin=0; [ -f "$JL" ] && njoin=$(wc -l < "$JL")
+last3=$(tail -3 "$BR" 2>/dev/null | sed 's/^[^ ]* boot_id=[^ ]* prev=//' | cut -c1-70 | sed 's/^/    /')
+fts=""; [ -S /var/run/docker.sock ] && fts=$(docker ps --format '{{.Names}}:{{.Status}}' 2>/dev/null | tr '\n' ' ')
+
+if [ "$mode" = json ]; then
+	j(){ printf '%s' "$1" | tr -d '\000-\010\013-\037' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'; }
+	printf '{"node":"%s","image":"%s","boot_id":"%s","uptime_s":%s,"last_boot_reason":"%s","join":{"state":"%s","detail":"%s","mesh_id":"%s","channel":"%s","country":"%s","key":"%s","plinks":%s,"batman_neighbours":%s,"peers":"%s","address":"%s","ip":"%s"},"last_join_diagnosis":"%s","battery":"%s","throttled":"%s","temp_c":"%s","boots_since_join":%s,"power_loss_since_join":%s,"evidence":{"crash_files":%s,"join_log_lines":%s},"tenants":"%s","time":"%s"}\n' \
+		"$(j "$host")" "$(j "$ver")" "$bid" "$u" "$(j "$last")" "$jstate" "$(j "${join#* }")" "$(j "$mesh")" "$ch" "$cc" "$key" "$plink" "$nb" "$(j "$peers")" "$addr" "$ip" "$(j "$jdiag")" "$bat" "$thr" "$temp" "$cyc" "$pl" "$ncrash" "$njoin" "$(j "$fts")" "$(date +%Y-%m-%dT%H:%M:%S)"
+	exit 0
+fi
+cat <<EOF
+NODE      $host   boot $bid   up $upfmt   $(date +%Y-%m-%d\ %H:%M:%S) (no RTC: clock is decoration)
+IMAGE     $ver
+LAST BOOT $last
+JOIN      $join
+          mesh=$mesh ch=$ch cc=$cc key=$key | plinks=$plink batman=$nb peers=[${peers% }] | addr=$addr ip=$ip
+DIAGNOSIS ${jdiag:-none recorded (never failed to join)}
+POWER     battery=$bat throttled=$thr temp=${temp}C   $cycdesc
+TENANTS   ${fts:-none}
+LAST 3 BOOTS
+$last3
+EVIDENCE  crash/ $ncrash files · join.log $njoin lines · report bundle: /cgi-bin/bundle
+EOF

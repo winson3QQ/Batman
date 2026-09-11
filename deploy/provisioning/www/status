@@ -1,0 +1,26 @@
+#!/bin/sh
+# /www/cgi-bin/status — the incident report over HTTP (#127). Reachable through the onboarding
+# AP (SSID = hostname) or the M12/Ethernet port: http://<hostname>.lan/cgi-bin/status
+#   ?json  -> application/json (same data, for #14 / EMS / a future PWA or ATAK plugin)
+# Read-only, no secrets, generated on request (no background cost, no SD writes).
+case "$QUERY_STRING" in
+	*json*)
+		printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
+		/usr/bin/halow-status json;;
+	*)
+		printf 'Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n\r\n'
+		host=$(sed 's/&/\&amp;/g; s/</\&lt;/g' /proc/sys/kernel/hostname)
+		st=$(joinwatch status 2>/dev/null | cut -d' ' -f1)
+		case "$st" in JOINED) col="#2e7d32";; NOT_JOINED) col="#c62828";; *) col="#f9a825";; esac
+		cat <<EOF
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="30"><title>$host status</title>
+<style>body{margin:0;background:#111;color:#eee;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace}
+h1{margin:0;padding:12px 14px;background:$col;color:#fff;font-size:18px}pre{white-space:pre-wrap;word-break:break-word;padding:12px 14px;margin:0}
+a{color:#8ab4f8}.f{padding:10px 14px;border-top:1px solid #333;font-size:12px;color:#aaa}</style></head><body>
+<h1>$host — ${st:-UNKNOWN}</h1><pre>$(/usr/bin/halow-status | sed 's/&/\&amp;/g; s/</\&lt;/g')</pre>
+<div class="f"><a href="/cgi-bin/bundle">Download report bundle</a> · <a href="/cgi-bin/status?json">JSON</a> · refreshes every 30 s</div>
+</body></html>
+EOF
+		;;
+esac

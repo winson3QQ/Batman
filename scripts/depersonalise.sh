@@ -41,7 +41,7 @@ done
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 PROV="$HERE/../deploy/provisioning"
-for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey batpower batpower.init flightrec flightrec.init uci-defaults/95-batman-storage; do
+for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey batpower batpower.init flightrec flightrec.init joinwatch joinwatch.init halow-status www/status www/bundle uci-defaults/95-batman-storage; do
 	[ -f "$PROV/$f" ] || { echo "missing $PROV/$f — stage the repo on the node (scripts/ + deploy/)"; exit 1; }
 done
 [ -f "$HERE/meshled.1.8.0" ] && [ -f "$HERE/meshled.init" ] || { echo "missing scripts/meshled.1.8.0 or meshled.init"; exit 1; }
@@ -150,7 +150,15 @@ cp "$PROV/batpower.init" /etc/init.d/batpower && chmod 0755 /etc/init.d/batpower
 rm -f /etc/config/batpower   # the init writes defaults on first start (source=mock until the INA226 is fitted)
 cp "$PROV/flightrec" /usr/bin/flightrec && chmod 0755 /usr/bin/flightrec
 cp "$PROV/flightrec.init" /etc/init.d/flightrec && chmod 0755 /etc/init.d/flightrec && /etc/init.d/flightrec enable
+cp "$PROV/joinwatch" /usr/bin/joinwatch && chmod 0755 /usr/bin/joinwatch
+cp "$PROV/joinwatch.init" /etc/init.d/joinwatch && chmod 0755 /etc/init.d/joinwatch && /etc/init.d/joinwatch enable
+rm -f /etc/config/joinwatch   # the init writes defaults on first start
+cp "$PROV/halow-status" /usr/bin/halow-status && chmod 0755 /usr/bin/halow-status
+mkdir -p /www/cgi-bin
+cp "$PROV/www/status" /www/cgi-bin/status && chmod 0755 /www/cgi-bin/status
+cp "$PROV/www/bundle" /www/cgi-bin/bundle && chmod 0755 /www/cgi-bin/bundle
 echo "    halow-keyguard (S18, #103) · halow-setkey · meshled (1.8.0) · batpower (S95, #122) · flightrec (S99, #105)"
+echo "    joinwatch (S98, #127) · halow-status · /cgi-bin/status + /cgi-bin/bundle (phone via the AP: http://<hostname>.lan/cgi-bin/status)"
 
 echo "==> 10. no steady-state SD writes (#104): openmanetd DB -> tmpfs; ramoops console capture on"
 # openmanetd's SQLite (peer gossip rows, rebuilt from alfred after boot) was the only steady

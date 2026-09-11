@@ -93,6 +93,40 @@ captured into the golden image (the same model Batman already uses for meshled/m
   software stand-in for the USB-UART serial console. Zero SD writes in steady state.
 - **No steady-state SD writes (#104):** `depersonalise.sh` sets openmanetd's `dbFile:` to
   `/tmp/openmanetd.db` — its SQLite WAL was the only steady writer on the rootfs overlay.
+- **`joinwatch` + `joinwatch.init`** (#127, S98) — "a node that cannot join must say why".
+  Polls the join layers (radio up / mesh mode / key SET-PLACEHOLDER-NONE / keyguard / plinks /
+  stations heard / batman neighbours / mesh11sd / address stage) and, only while NOT joined,
+  writes a one-line diagnosis with a human verdict (e.g. *radio meshing, NO PEER HEARD* or
+  *peers seen but no plink — key/mesh_id mismatch likely*) to `/opt/batdata/log/join.log`
+  `t_short` (60 s — before an impatient user power-cycles) and `t_full` (5 min) **into an
+  unjoined episode** (measured from the first unjoined poll, so a node that drops after hours
+  of service is diagnosed the same way; at most 3 episodes per boot), then a `JOINED` line
+  closing the episode — also when the episode was left open by an earlier boot the user
+  power-cycled out of. Never touches the radio config. Automatic reboot: only after
+  `t_reboot` (60 min) into the episode, **only when the verdict is something a reboot can
+  fix** (a placeholder key, a disabled radio/mesh11sd, or a lone node that hears nobody are
+  not — the first node switched on at a site is not a fault), **never when ≥
+  `unjoined_boots_max` (3) consecutive boots did not join** (a human is already
+  power-cycling), and at least `reboot_gap_boots` (5) boots after the previous automatic one
+  (found by its `AUTOREBOOT` boot id in `boot-reasons.log`). **No RTC / no NTP in the field →
+  every decision is made on boot ids/counts and uptime deltas, never on wall-clock time**
+  (timestamps in the logs are decoration). Writes only when `/opt/batdata` is mounted
+  (otherwise syslog/kmsg only — never the rootfs overlay). uci `joinwatch.main.*`;
+  `joinwatch status|diag`. **Already-provisioned nodes:** the shutdown-reason reader lives in
+  the *generated* `batdata-mount` init, so after updating the hook run
+  `umount /opt/batdata && sh /etc/uci-defaults/95-batman-storage` once (fresh cards get it
+  on first boot).
+- **`halow-status`** — the one-page incident report (node, image, boot id, last boot reason,
+  JOIN state + last diagnosis, battery/throttle/temp, boots since the last join (and how
+  many of them were power loss — the "user keeps power-cycling" signature), last 3 boot
+  reasons, evidence counts). No secrets (keys shown as SET/PLACEHOLDER). `halow-status json`.
+- **`www/status`, `www/bundle`** → `/www/cgi-bin/status`, `/www/cgi-bin/bundle` — the same
+  report over HTTP for a **phone on the onboarding AP** (SSID = hostname) or a laptop on the
+  M12/Ethernet port: `http://<hostname>.lan/cgi-bin/status` (mobile page, 15 s refresh,
+  `?json` for #14/EMS/a future PWA or ATAK plugin) and `/cgi-bin/bundle` (tar.gz with
+  status, boot-reasons, join.log, last crash records, last shutdown dumps, dmesg, logread —
+  the attachment for a field report). Read-only, generated on request, no SD writes; write
+  actions stay behind SSH/Ethernet until #52 RBAC.
 
 ## What golden-master files can and cannot do
 
