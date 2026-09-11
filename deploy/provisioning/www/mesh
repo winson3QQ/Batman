@@ -8,7 +8,10 @@
 #   env: MESH_FETCH_T (per-node timeout s, default 3)
 T=${MESH_FETCH_T:-3}
 self=$(cat /proc/sys/kernel/hostname)
-nodes=$(awk '$2 ~ /_wlh0$/{sub(/_wlh0$/,"",$2); print $2}' /tmp/bat-hosts 2>/dev/null | sort -u)
+# bat-hosts is written by alfred from mesh gossip — a hostname is attacker-influenceable, so
+# restrict it to a safe charset at the source: kills a '|' that would shift our ROWS columns,
+# and the glob/word-split of the unquoted `for n in $nodes` below.
+nodes=$(awk '$2 ~ /_wlh0$/{sub(/_wlh0$/,"",$2); print $2}' /tmp/bat-hosts 2>/dev/null | tr -cd 'A-Za-z0-9._\n-' | sort -u)
 [ -n "$nodes" ] || nodes=$self
 
 # fetch one node's status json -> stdout ("" on failure). self is local (no network).
@@ -78,11 +81,12 @@ a{color:#8ab4f8}.f{padding:10px 14px;border-top:1px solid #333;font-size:12px;co
 EOF
 printf '%s' "$ROWS" | while IFS='|' read -r n lvl vd sn pr tp bt us; do
 	[ -n "$n" ] || continue
+	case "$lvl" in CRIT|WARN|OK|UNKNOWN) :;; *) lvl=UNKNOWN;; esac   # re-normalise after the ROWS round-trip
 	case "$lvl" in CRIT) d='#c62828';; WARN|UNKNOWN) d='#f9a825';; OK) d='#2e7d32';; *) d='#888';; esac
 	updesc=""; [ -n "$us" ] && updesc="$((us/3600))h$(((us%3600)/60))m"
-	sne=$(printf '%s' "$sn" | esc)   # snr is peer-controlled -> escape before it enters HTML
+	# every field below came from a peer / bat-hosts — escape each one before it enters HTML
 	printf '<tr><td><b>%s</b></td><td><span class="dot" style="background:%s"></span>%s<br><span style="color:#aaa;font-size:12px">%s</span></td><td>%s</td><td>%s</td></tr>\n' \
-		"$(printf '%s' "$n" | esc)" "$d" "$lvl" "$(printf '%s' "$vd" | esc)" "${sne:+${sne}dB}" "$updesc"
+		"$(printf '%s' "$n" | esc)" "$d" "$(printf '%s' "$lvl" | esc)" "$(printf '%s' "$vd" | esc)" "$(sn=$(printf '%s' "$sn" | esc); printf '%s' "${sn:+${sn}dB}")" "$updesc"
 done
 cat <<EOF
 </table>
