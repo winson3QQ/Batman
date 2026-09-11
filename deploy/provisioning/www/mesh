@@ -1,0 +1,82 @@
+#!/bin/sh
+# /www/cgi-bin/mesh — #14 L1 "any-node aggregation console". Log in to ANY node and see the
+# whole mesh at a glance: it enumerates every node from batman's mesh-wide bat-hosts, resolves
+# each by mDNS (<hostname>.local), and fetches its /cgi-bin/status?json (bounded wget). A node
+# that does not answer is shown UNKNOWN — it never blocks the page. Pure read, no NOC, no SD
+# writes: if this console dies the mesh keeps forwarding (control plane must not gate the data
+# plane). Reachable on the onboarding AP / Ethernet: http://<ip>/cgi-bin/mesh  (?json for EMS).
+#   env: MESH_FETCH_T (per-node timeout s, default 3)
+T=${MESH_FETCH_T:-3}
+self=$(cat /proc/sys/kernel/hostname)
+nodes=$(awk '$2 ~ /_wlh0$/{sub(/_wlh0$/,"",$2); print $2}' /tmp/bat-hosts 2>/dev/null | sort -u)
+[ -n "$nodes" ] || nodes=$self
+
+# fetch one node's status json -> stdout ("" on failure). self is local (no network).
+fetch(){
+	if [ "$1" = "$self" ]; then halow-status json; return; fi
+	ip=$(avahi-resolve -n "$1.local" 2>/dev/null | awk '{print $2; exit}')
+	[ -n "$ip" ] || return
+	case "$ip" in *:*) ip="[$ip]";; esac
+	wget -q -T "$T" -O - "http://$ip/cgi-bin/status?json" 2>/dev/null
+}
+jf(){ printf '%s' "$1" | jsonfilter -e "$2" 2>/dev/null; }
+
+# gather (one blob per node), compute mesh roll-up
+rank(){ case "$1" in CRIT) echo 3;; WARN) echo 2;; UNKNOWN) echo 2;; OK) echo 0;; *) echo 1;; esac; }
+worst=OK; up_n=0; tot_n=0; ROWS=""
+for n in $nodes; do
+	tot_n=$((tot_n+1)); b=$(fetch "$n")
+	if [ -z "$b" ]; then
+		lvl=UNKNOWN; verdict="unreachable (no answer)"; snr=""; peers=""; temp=""; batt=""; ups=""
+	else
+		up_n=$((up_n+1))
+		lvl=$(jf "$b" '@.health.level'); [ -n "$lvl" ] || lvl=UNKNOWN
+		verdict=$(jf "$b" '@.health.verdict'); snr=$(jf "$b" '@.join.snr_db'); peers=$(jf "$b" '@.join.peers')
+		temp=$(jf "$b" '@.temp_c'); batt=$(jf "$b" '@.battery'); ups=$(jf "$b" '@.uptime_s')
+	fi
+	[ "$(rank "$lvl")" -gt "$(rank "$worst")" ] && worst=$lvl
+	ROWS="$ROWS$n|$lvl|$verdict|${snr}|${peers}|${temp}|${batt}|${ups}
+"
+done
+
+if [ "$QUERY_STRING" != "${QUERY_STRING#*json}" ]; then
+	printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
+	j(){ printf '%s' "$1" | tr -d '\000-\010\013-\037' | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+	printf '{"mesh":{"seen_from":"%s","nodes":%s,"reachable":%s,"worst":"%s"},"nodes":[' "$(j "$self")" "$tot_n" "$up_n" "$worst"
+	i=0; printf '%s' "$ROWS" | while IFS='|' read -r n lvl vd sn pr tp bt us; do
+		[ -n "$n" ] || continue; [ "$i" = 0 ] || printf ','; i=1
+		printf '{"node":"%s","level":"%s","verdict":"%s","snr_db":"%s","peers":"%s","temp_c":"%s","battery":"%s","uptime_s":"%s"}' \
+			"$(j "$n")" "$lvl" "$(j "$vd")" "$sn" "$(j "$pr")" "$tp" "$(j "$bt")" "$us"
+	done
+	printf ']}\n'
+	exit 0
+fi
+
+printf 'Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n\r\n'
+case "$worst" in CRIT) col='#c62828'; msg="A NODE IS DOWN";; WARN|UNKNOWN) col='#f9a825'; msg="MESH DEGRADED";; *) col='#2e7d32'; msg="MESH OK";; esac
+esc(){ sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+cat <<EOF
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="30"><title>$(printf '%s' "$self" | esc) mesh</title>
+<style>body{margin:0;background:#111;color:#eee;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace}
+h1{margin:0;padding:12px 14px;background:$col;color:#fff;font-size:18px}
+.s{padding:6px 14px;color:#aaa;font-size:12px}
+table{border-collapse:collapse;width:100%}td,th{padding:8px 10px;border-top:1px solid #333;text-align:left;vertical-align:top}
+th{color:#aaa;font-weight:normal;font-size:12px}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+a{color:#8ab4f8}.f{padding:10px 14px;border-top:1px solid #333;font-size:12px;color:#aaa}</style></head><body>
+<h1>$msg — $up_n/$tot_n nodes reachable</h1>
+<div class="s">seen from $(printf '%s' "$self" | esc) · no central controller · refreshes every 30 s</div>
+<table><tr><th>node</th><th>status</th><th>SNR</th><th>up</th></tr>
+EOF
+printf '%s' "$ROWS" | while IFS='|' read -r n lvl vd sn pr tp bt us; do
+	[ -n "$n" ] || continue
+	case "$lvl" in CRIT) d='#c62828';; WARN|UNKNOWN) d='#f9a825';; OK) d='#2e7d32';; *) d='#888';; esac
+	updesc=""; [ -n "$us" ] && updesc="$((us/3600))h$(((us%3600)/60))m"
+	printf '<tr><td><b>%s</b></td><td><span class="dot" style="background:%s"></span>%s<br><span style="color:#aaa;font-size:12px">%s</span></td><td>%s</td><td>%s</td></tr>\n' \
+		"$(printf '%s' "$n" | esc)" "$d" "$lvl" "$(printf '%s' "$vd" | esc)" "${sn:+${sn}dB}" "$updesc"
+done
+cat <<EOF
+</table>
+<div class="f"><a href="/cgi-bin/status">this node only</a> · <a href="/cgi-bin/mesh?json">JSON</a> · <a href="/cgi-bin/bundle">bundle</a></div>
+</body></html>
+EOF

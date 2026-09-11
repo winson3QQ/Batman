@@ -1,10 +1,15 @@
 #!/bin/sh
-# halow-status — the one-page "incident report" for a node (#127 / field-resilience.md N1).
-# Plain text, no secrets (keys shown as SET/PLACEHOLDER), read-only. Used by the CLI, by
-# /www/cgi-bin/status (HTML + JSON) and by the bundle. Zero SD writes.
-# No RTC/NTP: everything here counts boots (by boot id), never hours.
-#   halow-status            text
-#   halow-status json       JSON object
+# halow-status — the one-page "incident report" + health roll-up for a node (#127/#14/#130,
+# field-resilience.md N1). No secrets (keys shown as SET/PLACEHOLDER), read-only, zero SD
+# writes. Used by the CLI, /www/cgi-bin/status (phone HTML + JSON) and /www/cgi-bin/mesh
+# (the #14 L1 all-nodes console fetches this ?json from every peer).
+# No RTC/NTP: everything counts boots (by boot id), never wall-clock hours.
+#
+# Health model — four categories, each check yields a level; the node roll-up is the worst:
+#   CRIT (red)   = cannot do its job   (not joined / undervolt / battery critical / core svc down)
+#   WARN (amber) = degraded but working (weak SNR / hot / reboot-looping / a tenant down)
+#   OK   (green) = fine    INFO = note (shown, never worsens the roll-up)
+#   halow-status | halow-status json
 mode=$1   # saved first: the boot-count parser below uses `set --`
 BAT=/opt/batdata; JL=$BAT/log/join.log; BR=$BAT/log/boot-reasons.log
 host=$(cat /proc/sys/kernel/hostname); bid=$(cut -c1-8 /proc/sys/kernel/random/boot_id)
@@ -12,18 +17,25 @@ u=$(cut -d. -f1 /proc/uptime); upfmt=$(printf '%dd %02d:%02d' $((u/86400)) $((u%
 ver="OpenMANET $(cat /etc/openwrt_version 2>/dev/null)"; [ -f /etc/BENCH-IMAGE ] && ver="$ver (BENCH image)"
 last=$(tail -1 "$BR" 2>/dev/null | sed 's/^[^ ]* boot_id=[^ ]* prev=//')
 join=$(joinwatch status 2>/dev/null); jstate=${join%% *}
-jdiag=$(tail -1 "$JL" 2>/dev/null)
+jdiag=$(tail -1 "$JL" 2>/dev/null); jverdict=$(echo "$join" | cut -d' ' -f3-)
 bat=$( [ -f /tmp/batpower.state ] && cut -d' ' -f1-2 /tmp/batpower.state | tr ' ' '/' || echo "-")
+batstate=$( [ -f /tmp/batpower.state ] && cut -d' ' -f1 /tmp/batpower.state || echo "-")
 thr=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2); temp=$(awk '{print int($1/1000)}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
 # the morse radio, found the same way joinwatch/meshpoint-1.8.0.sh find it (never hardcode radio1)
 radio=$(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)\.type='morse'$/\1/p" | head -1)
 mesh=$(uci -q get "wireless.default_$radio.mesh_id"); ch=$(uci -q get "wireless.$radio.channel"); cc=$(uci -q get "wireless.$radio.country")
 k=$(uci -q get "wireless.default_$radio.key"); case "$k" in "") key=NONE;; CHANGE-ME-NOW) key=PLACEHOLDER;; *) key=SET;; esac
+guard=none; [ -f /etc/halow-keyguard.blocked ] && guard=$(tr -s ' ' < /etc/halow-keyguard.blocked | sed 's/^ //'); [ -n "$guard" ] || guard=none
 ip=$(uci -q get network.ahwlan.ipaddr); case "$(uci -q get openmanetd.config.dhcpconfigured)" in 1) addr=reserved;; *) addr=bootstrap;; esac
-plink=$(iw dev wlh0 station dump 2>/dev/null | grep -c "plink:.*ESTAB"); nb=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
+dump=$(iw dev wlh0 station dump 2>/dev/null)
+plink=$(printf '%s\n' "$dump" | grep -c "plink:.*ESTAB"); nb=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
 peers=$(awk -v me="${host}_wlh0" '$2 ~ /_wlh0$/ && $2 != me {sub(/_wlh0$/,"",$2); printf "%s ", $2}' /tmp/bat-hosts 2>/dev/null)
-# boots since the last JOINED line (boot-id order in boot-reasons.log) and how many of those
-# were power losses — the "user keeps power-cycling" signature; both logs may be absent
+# RF quality (same sources as meshled): peer signal avg (dBm) vs morse noise floor -> SNR (dB)
+sig=$(printf '%s\n' "$dump" | awk '/signal avg:/{v=$3+0; if(!s||v>m){m=v;s=1}} END{if(s)print m}')
+noise=$(morse_cli -i wlh0 stats 2>/dev/null | awk -F: '/^Noise \(dBm\)/{gsub(/ /,"",$2);print $2;exit}')
+snr=""; [ -n "$sig" ] && snr=$(( sig - ${noise:--90} ))
+retry=$(printf '%s\n' "$dump" | awk '/tx packets:/{p+=$3}/tx retries:/{r+=$3}END{if(p)printf "%d",r*100/p}')
+# boots since the last JOINED line (boot-id order) + how many were power losses; logs may be absent
 cyc=0; pl=0; cycdesc="no join episode recorded"
 if [ -f "$JL" ]; then
 	lastj=$(awk '$4=="JOINED"{split($2,a,"="); b=a[2]} END{print b}' "$JL")
@@ -36,24 +48,66 @@ if [ -f "$JL" ]; then
 	fi
 fi
 ncrash=$(find "$BAT/crash" -type f 2>/dev/null | wc -l); njoin=0; [ -f "$JL" ] && njoin=$(wc -l < "$JL")
+sdfull=$(df /opt/batdata 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5+0}')
 last3=$(tail -3 "$BR" 2>/dev/null | sed 's/^[^ ]* boot_id=[^ ]* prev=//' | cut -c1-70 | sed 's/^/    /')
 fts=""; [ -S /var/run/docker.sock ] && fts=$(docker ps --format '{{.Names}}:{{.Status}}' 2>/dev/null | tr '\n' ' ')
 
+# ---- health checks: hc LEVEL id "message"; roll-up = worst level ----------------------------
+WORST=OK; SUMMARY=""; CHECKS=""
+rank(){ case "$1" in CRIT) echo 3;; WARN) echo 2;; INFO) echo 1;; *) echo 0;; esac; }
+hc(){ CHECKS="$CHECKS$1|$2|$3
+"; case "$1" in WARN|CRIT) [ "$(rank "$1")" -gt "$(rank "$WORST")" ] && { WORST=$1; SUMMARY=$3; };; esac; }
+running(){ pgrep -f "$1" >/dev/null 2>&1 || pidof "$1" >/dev/null 2>&1; }
+thrbit(){ printf '%d' $(( ${thr:-0} & $1 )) 2>/dev/null || echo 0; }
+
+# (4) mesh — can it carry traffic
+if [ "$guard" != none ]; then hc CRIT mesh "on-air blocked by keyguard — set the mesh/AP key (run halow-setkey)"
+elif [ "$key" != SET ]; then hc CRIT mesh "mesh key $key — set it (run halow-setkey)"
+elif [ "${plink:-0}" -ge 1 ] && [ "${nb:-0}" -ge 1 ]; then hc OK mesh "joined — $nb neighbour(s), $plink plink(s)"
+elif [ "${plink:-0}" -ge 1 ]; then hc WARN mesh "802.11s linked but no batman neighbour"
+else hc CRIT mesh "not joined: ${jverdict:-no peer}"
+fi
+# (3) RF — signal quality of an established link
+if [ -n "$snr" ] && [ "${plink:-0}" -ge 1 ]; then
+	if [ "$snr" -lt 20 ]; then hc WARN rf "weak signal (SNR ${snr} dB, noise ${noise:-?} dBm)"; else hc OK rf "SNR ${snr} dB"; fi
+	[ -n "$retry" ] && [ "$retry" -ge 30 ] && hc WARN rf_retry "high tx retransmit (${retry}%)"
+fi
+# (1) power / thermal / hardware
+if [ "$(thrbit 1)" != 0 ]; then hc CRIT power "UNDERVOLTAGE now — check power/battery/cable"
+elif [ "$(thrbit 65536)" != 0 ]; then hc INFO power "undervoltage happened earlier this boot"; fi
+[ "$(thrbit 4)" != 0 ] && hc WARN thermal "CPU throttled now"
+case "$batstate" in CRIT) hc CRIT battery "battery critical ($bat)";; WARN) hc WARN battery "battery low ($bat)";; esac
+if [ -n "$temp" ]; then [ "$temp" -ge 80 ] && hc CRIT thermal "SoC ${temp}C (critical)"; [ "$temp" -ge 70 ] && [ "$temp" -lt 80 ] && hc WARN thermal "SoC ${temp}C (hot)"; fi
+[ -n "$sdfull" ] && [ "$sdfull" -ge 90 ] && hc WARN storage "data partition ${sdfull}% full"
+# (2) software / boot
+for s in mesh11sd openmanetd wpad; do running "$s" || hc CRIT svc "$s not running"; done
+running dnsmasq || hc WARN svc "dnsmasq not running"
+if [ -S /var/run/docker.sock ] && [ -n "$fts" ]; then echo "$fts" | grep -q "Exited\|Restarting\|Created" && hc WARN tenant "a tenant container is not Up ($fts)"; fi
+[ "$jstate" != JOINED ] && [ "${cyc:-0}" -ge 3 ] && hc WARN bootloop "$cyc boot(s) without joining — power-cycling won't help"
+echo "$last" | grep -q "^PANIC" && hc INFO boot "last boot recovered from a kernel panic"
+[ "$addr" = bootstrap ] && [ "$u" -ge 300 ] && hc INFO addr "still on bootstrap address (openmanetd reservation pending)"
+
+case "$WORST" in CRIT) verdict="NOT WORKING — ${SUMMARY}";; WARN) verdict="DEGRADED — ${SUMMARY}";; *) verdict="OK — joined, $nb neighbour(s)${snr:+, SNR ${snr}dB}";; esac
+
 if [ "$mode" = json ]; then
 	j(){ printf '%s' "$1" | tr -d '\000-\010\013-\037' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'; }
-	printf '{"node":"%s","image":"%s","boot_id":"%s","uptime_s":%s,"last_boot_reason":"%s","join":{"state":"%s","detail":"%s","mesh_id":"%s","channel":"%s","country":"%s","key":"%s","plinks":%s,"batman_neighbours":%s,"peers":"%s","address":"%s","ip":"%s"},"last_join_diagnosis":"%s","battery":"%s","throttled":"%s","temp_c":"%s","boots_since_join":%s,"power_loss_since_join":%s,"evidence":{"crash_files":%s,"join_log_lines":%s},"tenants":"%s","time":"%s"}\n' \
-		"$(j "$host")" "$(j "$ver")" "$bid" "$u" "$(j "$last")" "$jstate" "$(j "${join#* }")" "$(j "$mesh")" "$ch" "$cc" "$key" "$plink" "$nb" "$(j "$peers")" "$addr" "$ip" "$(j "$jdiag")" "$bat" "$thr" "$temp" "$cyc" "$pl" "$ncrash" "$njoin" "$(j "$fts")" "$(date +%Y-%m-%dT%H:%M:%S)"
+	chk=$(printf '%s' "$CHECKS" | awk -F'|' 'NF==3{if(n++)printf ",";gsub(/\\/,"\\\\",$3);gsub(/"/,"\\\"",$3);printf "{\"level\":\"%s\",\"id\":\"%s\",\"msg\":\"%s\"}",$1,$2,$3}')
+	printf '{"node":"%s","image":"%s","boot_id":"%s","uptime_s":%s,"health":{"level":"%s","verdict":"%s","checks":[%s]},"last_boot_reason":"%s","join":{"state":"%s","detail":"%s","mesh_id":"%s","channel":"%s","country":"%s","key":"%s","plinks":%s,"batman_neighbours":%s,"peers":"%s","snr_db":"%s","noise_dbm":"%s","tx_retry_pct":"%s","address":"%s","ip":"%s"},"last_join_diagnosis":"%s","battery":"%s","throttled":"%s","temp_c":"%s","boots_since_join":%s,"power_loss_since_join":%s,"evidence":{"crash_files":%s,"join_log_lines":%s},"tenants":"%s","time":"%s"}\n' \
+		"$(j "$host")" "$(j "$ver")" "$bid" "$u" "$WORST" "$(j "$verdict")" "$chk" "$(j "$last")" "$jstate" "$(j "${join#* }")" "$(j "$mesh")" "$ch" "$cc" "$key" "$plink" "$nb" "$(j "$peers")" "${snr:-}" "${noise:-}" "${retry:-}" "$addr" "$ip" "$(j "$jdiag")" "$bat" "$thr" "$temp" "$cyc" "$pl" "$ncrash" "$njoin" "$(j "$fts")" "$(date +%Y-%m-%dT%H:%M:%S)"
 	exit 0
 fi
 cat <<EOF
+HEALTH    [$WORST] $verdict
 NODE      $host   boot $bid   up $upfmt   $(date +%Y-%m-%d\ %H:%M:%S) (no RTC: clock is decoration)
 IMAGE     $ver
 LAST BOOT $last
 JOIN      $join
-          mesh=$mesh ch=$ch cc=$cc key=$key | plinks=$plink batman=$nb peers=[${peers% }] | addr=$addr ip=$ip
+          mesh=$mesh ch=$ch cc=$cc key=$key | plinks=$plink batman=$nb peers=[${peers% }] | snr=${snr:-?}dB retry=${retry:-?}% | addr=$addr ip=$ip
 DIAGNOSIS ${jdiag:-none recorded (never failed to join)}
 POWER     battery=$bat throttled=$thr temp=${temp}C   $cycdesc
 TENANTS   ${fts:-none}
+CHECKS
+$(printf '%s' "$CHECKS" | awk -F'|' 'NF==3{printf "    [%s] %s: %s\n",$1,$2,$3}')
 LAST 3 BOOTS
 $last3
 EVIDENCE  crash/ $ncrash files · join.log $njoin lines · report bundle: /cgi-bin/bundle
