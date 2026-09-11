@@ -26,10 +26,12 @@ hole dies here, #74); config/identity + data = LUKS secrecy. **A/B updates touch
 inactive rootfs slot — p4/p5 (config, identity, data, DBs, logs) are never wiped by an
 update or rollback.**
 
-> Current reactive state (2026-09-10): only the data-root move is done — a single hand-made
-> `mmcblk0p3` (27.5 GB ext4) holds docker + (bind-mounted) FTS data. That is the **migration
-> precursor**, not this scheme; it must be replaced by the provisioned layout below. dm-verity
-> rootfs + LUKS + A/B are **not yet** in place.
+> Current state (2026-09-11): the golden image now **self-provisions a single data partition**
+> (`mmcblk0p3`, expand-to-fill, ext4, mounted at `/opt/batdata`) on first boot — validated on a
+> fresh flash. manet02 still runs its earlier hand-made p3 (docker + bind-mounted FTS data).
+> Both are the **interim one-data-partition** form of this scheme, not the A/B layout:
+> dm-verity rootfs + LUKS + A/B slots are **not yet** in place (they need the one-time kernel
+> rebuild: `DM_VERITY`/`DM_CRYPT`).
 
 ## What lives where (and the survives-upgrade invariants)
 
@@ -67,10 +69,25 @@ than raw space:
 
 ## Logs & crash (ties to #61)
 
-- Persistent syslog + EMS spool + crash artifacts on **p5**, off the rootfs overlay (today
-  the syslog is on `/root` = rootfs → wiped by A/B; must move).
-- Reserve a **ramoops/pstore region** so a kernel panic's last output survives a reboot
-  (today `/proc/cmdline` has no ramoops → a pure hang leaves no backtrace). See #61.
+**p5 sub-layout v1 (in the golden since 2026-09-11, `95-batman-storage`):** the data partition
+is mounted at `/opt/batdata` by the `batdata-mount` init (**S11**, before logd S12, so every
+consumer finds it mounted) with two fixed directories:
+
+| Dir | Written when | Content |
+|---|---|---|
+| `crash/` | boot, only if pstore has records | kernel-panic dmesg moved off the volatile ramoops region (`<ts>_<bootid>_dmesg-ramoops-N`) |
+| `log/` | boot (one line) + clean shutdown | `boot-reasons.log` — one line per boot saying why the previous life ended (**PANIC / CLEAN: trigger / UNCLEAN** = power loss or hw watchdog); `shutdown_<ts>_<bootid>.log` — the syslog ring dumped at clean shutdown (last 10 kept) |
+
+**SD-write policy (#41):** zero steady-state writes — the SD is touched only at boot (if a panic
+was captured) and at clean shutdown. **Continuous log persistence is deliberately NOT done
+here**; that is the EMS collector's store-and-forward job (#65). Hard power-off loses the
+unflushed tail by definition (documented in crash-debug.md).
+
+- ramoops/pstore region: reserved and working (the malformed DT `reg` is fixed in the golden's
+  `ramoops.dtbo`; see crash-debug.md / `fix-ramoops-dtbo.sh`).
+- **Open (not yet reviewed):** where the FTS data/DBs and the docker data-root live under
+  `/opt/batdata` in the provisioned layout (today manet02 has them bind-mounted on its hand-made
+  p3). Decide before the next tenant is added (#85/#44/#68).
 
 ## Capacity / quota / retention (measured)
 

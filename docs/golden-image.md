@@ -9,7 +9,10 @@ identity) is a separate decision (#13/#54) — see "Production" below.
 ## What the golden contains
 - OpenMANET **1.8.0** base.
 - `/etc/uci-defaults/95-batman-storage` — first-boot storage provisioning (carves the SD free
-  space into an expand-to-fill data partition + mount; #88). Runs once, self-deletes.
+  space into an expand-to-fill data partition + mount; #88). Runs once, self-deletes. It installs
+  the `batdata-mount` init (S11), which also does the crash/reboot capture (#61): pstore records
+  → `/opt/batdata/crash/`, a reason line for every boot + the syslog ring at every clean
+  shutdown → `/opt/batdata/log/`.
 - Fixed `/boot/overlays/ramoops.dtbo` — kernel-panic capture to pstore (#61).
 - `parted` (+ deps) — needed by the storage hook.
 
@@ -70,11 +73,14 @@ ssh root@<node> '
   grep -c mmcblk0p3 /proc/partitions          # 1 = data partition auto-created
   mount | grep /opt/batdata                    # auto-mounted, expand-to-fill
   dmesg | grep "Registered ramoops"            # crash capture active
+  cat /opt/batdata/log/boot-reasons.log        # one line per boot: PANIC / CLEAN / UNCLEAN
 '
 ```
 Expected: hook ran+self-deleted, p3 created, `/opt/batdata` mounted (card-sized), ramoops
-registered, and SSH works via the baked credential. That is "flash a blank card → boot → zero
-config → auto-provision + connect."
+registered, a boot-reason line written, and SSH works via the baked credential. That is "flash
+a blank card → boot → zero config → auto-provision + connect." Optional deeper check: `reboot`
+→ the next line says `CLEAN: … trigger=reboot/halt command …` and `log/shutdown_*.log` holds
+the pre-reboot syslog; `echo c > /proc/sysrq-trigger` → `PANIC`, record under `crash/`.
 
 ## Production notes (beyond this validation)
 - This validation baked a **maintainer SSH key** as a stand-in credential. A real per-deployment

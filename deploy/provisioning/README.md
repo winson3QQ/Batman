@@ -56,13 +56,16 @@ captured into the golden image (the same model Batman already uses for meshled/m
 
 - **`uci-defaults/95-batman-storage`** — the productionised first-boot hook (OpenWrt runs
   `/etc/uci-defaults/*` once on first boot, then deletes each on success). It carves the data
-  partition, expands to fill, ext4, and installs the persistent `batdata-mount` init — with no
-  operator. `depersonalise.sh` installs it into `/etc/uci-defaults/` on the golden node,
-  alongside the existing `99-halow-identity` hook, so every flashed card self-provisions.
-- **`../../overlays/ramoops-fix-overlay.dts`** (#61) — fixes the malformed ramoops
-  reserved-memory `reg` so kernel panics get captured. Enabled with a `dtoverlay=ramoops-fix`
-  line in the boot partition's config (config.txt / distroconfig.txt) — a boot-partition file,
-  **no kernel rebuild**.
+  partition, expands to fill, ext4 (never reformats an existing filesystem), and installs the
+  persistent **`batdata-mount`** init (S11, before logd) — with no operator. That init also
+  carries the crash/reboot capture (#61): pstore records → `/opt/batdata/crash/`, a per-boot
+  reason line + clean-shutdown syslog dump → `/opt/batdata/log/` (see
+  docs/storage-architecture.md "Logs & crash"). `depersonalise.sh` installs the hook into
+  `/etc/uci-defaults/` on the golden node, alongside the existing `99-halow-identity` hook, so
+  every flashed card self-provisions.
+- **`fix-ramoops-dtbo.sh`** (#61) — fixes the malformed ramoops reserved-memory `reg` in the
+  image's `/boot/overlays/ramoops.dtbo` so kernel panics get captured (needs `dtc` while
+  running; remove it afterwards). A boot-partition file edit, **no kernel rebuild**.
 
 ## What golden-master files can and cannot do
 
@@ -76,10 +79,12 @@ captured into the golden image (the same model Batman already uses for meshled/m
 1. Configure a reference node; stage this repo on it.
 2. Run `scripts/depersonalise.sh` — installs the identity + storage first-boot hooks, strips
    secrets, resets defaults.
-3. Add `dtoverlay=ramoops-fix` to the boot config; drop the compiled `ramoops-fix.dtbo`.
-4. Power off (don't reboot), `dd` the card, `pishrink` → the release image.
-5. Every card flashed from it self-provisions storage + captures panics on first boot.
+3. Run `fix-ramoops-dtbo.sh` (fixes `/boot/overlays/ramoops.dtbo` in place).
+4. Power off (don't reboot), `dd` the card, `pishrink` → the release image. (Full SOP incl. the
+   no-card-reader flash trick: docs/golden-image.md.)
+5. Every card flashed from it self-provisions storage + captures panics + logs a reason for
+   every reboot, from first boot.
 
-> Still validated only as mechanism (not end-to-end on a golden image): the uci-defaults
-> first-boot run, the ramoops overlay on a reflash, and — gated on a dm-crypt image — the LUKS
-> path. These are the remaining productization steps for #88/#61/#47.
+> Validated end-to-end on a fresh flash of a golden image (OpenMANET 1.8.0 / Pi 4, 2026-09-11):
+> the uci-defaults first-boot run, ramoops on the reflashed card, pstore flush, clean-shutdown
+> dump + boot reason. Still gated on a dm-crypt image: the **LUKS** path (#47).
