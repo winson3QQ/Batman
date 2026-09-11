@@ -9,22 +9,47 @@ overlay full → btrfs read-only → node down. This spec fixes that by design.
 Related: #74 (verified boot / A/B), #47 (encryption), #41 (read-only rootfs), #89 (OTA),
 #70 (lifecycle), #68/#81 (payload storage + budget), #61 (crash log), #94 (scale sizing).
 
-## Partition scheme (target)
+## Partition scheme v2 (target, #106 — decided 2026-09-11)
 
-MBR/GPT on the SD; **A/B** so an update writes the inactive slot and can roll back.
+GPT on the SD (Pi 4 EEPROM supports GPT/hybrid MBR since 2020-09; the bench EEPROM is
+2026-08-generation). **A/B** so an update writes the inactive slot and can roll back. Because
+the Pi 4 bootloader's `tryboot_a_b` switches the **boot partition**, every slot owns its own
+boot partition (v1 of this table had a single boot — superseded).
 
-| Part | Role | FS | Encryption | Notes |
-|---|---|---|---|---|
-| p1 | boot / firmware | fat | none | signed boot artifacts (#74); OTP/secure-boot chain |
-| p2 | **rootfs A** | squashfs/ext4 | **dm-verity** (integrity, read-only) | signed image slot |
-| p3 | **rootfs B** | squashfs/ext4 | **dm-verity** | second slot; A/B flip on update |
-| p4 | **config + identity** | ext4 | **LUKS** | node identity, keys/certs, UCI config — secrecy |
-| p5 | **data + payload** | ext4 | **LUKS** | docker data-root, FTS DBs, logs, payload tenants — **expand-to-fill** on first boot |
+| Part | Role | Size | FS | Encryption | Notes |
+|---|---|---|---|---|---|
+| p1 | **boot A** | 64 MB | fat | none | kernel + dtb + overlays + cmdline of slot A; `autoboot.txt` lives here (first FAT partition); EEPROM updates **only** here, never on p3 (rpi-eeprom #499) |
+| p2 | **rootfs A** | 1.5 GB | squashfs | **dm-verity** (integrity, read-only) | signed image slot; docker/kmods/runtimes baked in (B2) |
+| p3 | **boot B** | 64 MB | fat | none | slot B kernel set |
+| p4 | **rootfs B** | 1.5 GB | squashfs | **dm-verity** | second slot |
+| p5 | **config + identity** | 512 MB | ext4 | **LUKS** (Secure tiers) | OpenWrt overlay (UCI, packages state), node identity, mesh key, SSH host keys, #13 certs — secrecy; survives every update/rollback |
+| p6 | **data + payload** | expand-to-fill | ext4 | **LUKS** (Secure tiers) | `crash/ log/ docker/ apps/<tenant>/` (sub-layout v1 below); a full p6 fails tenants, never the OS |
+| (reserved) | rescue slot | 300 MB | — | — | left unallocated after p4 for a mesh+SSH-only rescue image (field-resilience.md decision 3); allocated only on evidence |
+
+Fixed part ≈ 4 GB → **minimum supported card 16 GB**; default 32 GB high-endurance; FTS-heavy
+or recording tenants 64 GB+ or an external SSD (productization.md sizing).
+
+**Zero 2 W profile:** no EEPROM bootloader → one boot partition (p1) holding both kernel sets
+under `os_prefix=A/` and `B/` switched by `tryboot.txt`; p2/p3 = rootfs A/B; p4 config; p5
+data; no verity-with-signed-boot guarantee and no LUKS (Base tier). The boot partition is its
+single unrecoverable point — written only for the few-byte `os_prefix` switch.
+
+**Migration from v1.1 (p1 boot / p2 root+overlay / p3 data):** a v2 image is a repartition —
+it cannot be applied in place by the A/B updater. Path: back up p3 tenant state (`apps/`,
+`crash/`, `log/`) and p2's overlay config over the mesh or to a spare card → flash the v2
+golden → first boot restores config identity from the backup into p5 and tenant state into p6.
+That one-time migration is the last "reflash" a fleet node should ever need; from v2 on,
+updates are slot writes.
 
 Rationale: boot plaintext; rootfs verity = integrity not secrecy (the "scp a file and run"
 hole dies here, #74); config/identity + data = LUKS secrecy. **A/B updates touch only the
-inactive rootfs slot — p4/p5 (config, identity, data, DBs, logs) are never wiped by an
-update or rollback.**
+inactive slot pair — p5/p6 (config, identity, data, DBs, logs) are never wiped by an update
+or rollback.** Slot policy, boot-loop handling and the recovery-image decision:
+[field-resilience.md](field-resilience.md).
+
+### v1 of this table (2026-09-10, superseded)
+p1 boot · p2 rootfs A · p3 rootfs B · p4 config · p5 data — one boot partition. Kept for the
+record; the tryboot_a_b fact and the Zero 2 W profile made it obsolete.
 
 > Current state (2026-09-11): the golden image now **self-provisions a single data partition**
 > (`mmcblk0p3`, expand-to-fill, ext4, mounted at `/opt/batdata`) on first boot — validated on a
@@ -69,9 +94,10 @@ than raw space:
 
 ## Logs & crash (ties to #61)
 
-**p5 sub-layout v1 (in the golden since 2026-09-11, `95-batman-storage`):** the data partition
-is mounted at `/opt/batdata` by the `batdata-mount` init (**S11**, before logd S12, so every
-consumer finds it mounted) with two fixed directories:
+**Data-partition sub-layout v1 (in the golden since 2026-09-11, `95-batman-storage`; the
+partition is p3 on the v1.1 interim layout and p6 in scheme v2):** it is mounted at
+`/opt/batdata` by the `batdata-mount` init (**S11**, before logd S12, so every consumer finds
+it mounted) with these fixed directories:
 
 | Dir | Written when | Content |
 |---|---|---|
@@ -160,10 +186,12 @@ The scheme above is the target; these must be resolved before it's buildable. �
 
 ## Blocker resolutions (design, grounded on manet02 facts 2026-09-10)
 
-### B1 — GPT (resolved)
-Pi-4 bootloader is `2023/01/11` → supports GPT. **Decision: GPT** (5 partitions exceed MBR's
-4 primaries). Boot partition stays FAT for the Pi firmware. Verify the signed-boot chain (#74)
-reads GPT on the target bootloader before locking it in.
+### B1 — GPT (resolved; re-verified 2026-09-11)
+The Pi 4 EEPROM release notes list GPT + hybrid-MBR support since **2020-09-14** (flagged
+"experimental" there); the bench nodes run a 2026-08-generation EEPROM. **Decision: GPT** (six
+partitions exceed MBR's 4 primaries). Boot partitions stay FAT for the Pi firmware. Still to
+verify on the bench before v2.0: a GPT card boots with `autoboot.txt` partition switching, and
+later with the signed-boot chain (#74).
 
 ### B2 — verity vs overlay: the real problem is *what's in the overlay*
 Reframed by the facts: OpenWrt **already** runs a read-only squashfs (`/rom`, 52.8 MB) + a
