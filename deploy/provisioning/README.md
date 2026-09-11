@@ -77,6 +77,13 @@ captured into the golden image (the same model Batman already uses for meshled/m
   the keys, releases exactly what the guard disabled, reloads wifi. Batch keys are normally baked
   at image time (`depersonalise.sh --mesh-key/--ap-key`); the guard only catches "public image
   flashed, no key set".
+- **`batpower` + `batpower.init`** (#122, S95) — battery watchdog: reads pack voltage/current
+  (`hwmon` via the kernel ina2xx driver, raw `i2c`, or `mock` for the bench), per-cell WARN /
+  CRIT thresholds with confirm count + hysteresis; WARN → syslog/kmsg/`/tmp/batpower.state`,
+  CRIT → shutdown marker (so `boot-reasons.log` says `low-battery Vbat=…`) then `halt`
+  (`crit_action=reboot` on the bench). No steady-state SD writes. uci `batpower.main.*`;
+  `batpower status`. Ships with `source=mock` until the INA226 is fitted — then set `source`
+  to `hwmon` (+ `kmod-hwmon-ina2xx`, `dtoverlay=i2c-sensor,ina226`) or `i2c`.
 
 ## What golden-master files can and cannot do
 

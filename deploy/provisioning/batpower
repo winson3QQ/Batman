@@ -1,0 +1,96 @@
+#!/bin/sh
+# batpower — battery voltage/current watchdog: graceful shutdown before the BMS cuts power.
+# First line of defence against SD corruption on a hard-power-off node (#41); #104 (no
+# steady-state writes) is the second. Parent #91.
+#
+# Sources (uci batpower.main.source):
+#   hwmon  kernel ina2xx driver (kmod-hwmon-ina2xx + dtoverlay=i2c-sensor,<ina226|ina219>):
+#          /sys/class/hwmon/hwmonN/{in1_input (mV bus), curr1_input (mA)}
+#   i2c    raw register reads with i2c-tools (INA226/INA219 bus-voltage register 0x02)
+#   mock   /tmp/batpower.mock holds the pack voltage in mV (bench tests, no hardware)
+# Policy (all in mV, integer maths): per-cell thresholds x cells; N consecutive readings
+# (confirm) below a threshold change state; hysteresis on the way back up.
+#   WARN  -> syslog + kmsg + /tmp/batpower.state (meshled / EMS pick it up)
+#   CRIT  -> write the shutdown-trigger marker (boot-reasons.log will say low-battery), sync,
+#            then crit_action: halt (production) | reboot (bench)
+# Writes nothing to the SD in steady state: the last reading lives in /tmp; only the marker
+# is consumed by batdata-mount's shutdown dump.
+#
+#   batpower run | status | once
+
+STATE=/tmp/batpower.state
+MARK=/tmp/batpower.shutdown
+MOCK=/tmp/batpower.mock
+
+cfg(){ uci -q get "batpower.main.$1" || echo "$2"; }
+note(){ logger -t batpower -p "daemon.$1" "$2" 2>/dev/null; echo "batpower: $2" > /dev/kmsg 2>/dev/null; }
+
+load_cfg(){
+	SOURCE=$(cfg source mock)
+	CELLS=$(cfg cells 2)
+	V_WARN=$(( $(cfg v_warn_cell_mv 3500) * CELLS ))
+	V_CRIT=$(( $(cfg v_crit_cell_mv 3300) * CELLS ))
+	HYST=$(cfg hyst_mv 100)
+	INTERVAL=$(cfg interval 10)
+	CONFIRM=$(cfg confirm 3)
+	ACTION=$(cfg crit_action halt)
+	I2C_BUS=$(cfg i2c_bus 1)
+	I2C_ADDR=$(cfg i2c_addr 0x40)
+	CHIP=$(cfg chip ina226)
+}
+
+# ---- sources: print "<bus_mV> <current_mA>" (current may be "-") or nothing if unavailable
+read_hwmon(){
+	for h in /sys/class/hwmon/hwmon*; do
+		case "$(cat "$h/name" 2>/dev/null)" in ina2*)
+			v=$(cat "$h/in1_input" 2>/dev/null); i=$(cat "$h/curr1_input" 2>/dev/null)
+			[ -n "$v" ] && { echo "$v ${i:--}"; return 0; };;
+		esac
+	done
+	return 1
+}
+read_i2c(){
+	# register 0x02 = bus voltage, big-endian; i2cget -w returns it byte-swapped
+	raw=$(i2cget -y "$I2C_BUS" "$I2C_ADDR" 0x02 w 2>/dev/null) || return 1
+	raw=$((raw)); be=$(( ((raw & 0xff) << 8) | ((raw >> 8) & 0xff) ))
+	case "$CHIP" in
+		ina219) echo "$(( (be >> 3) * 4 )) -";;          # 13-bit, LSB 4 mV
+		*)      echo "$(( be * 125 / 100 )) -";;          # INA226: LSB 1.25 mV
+	esac
+}
+read_mock(){ [ -f "$MOCK" ] && read -r v < "$MOCK" && [ -n "$v" ] && echo "$v -"; }
+read_v(){ case "$SOURCE" in hwmon) read_hwmon;; i2c) read_i2c;; *) read_mock;; esac; }
+
+# ---- state machine
+state=OK; below_warn=0; below_crit=0
+tick(){
+	r=$(read_v) || { echo "UNKNOWN - - $(date +%s)" > "$STATE"; return 0; }
+	v=${r%% *}; i=${r#* }
+	if [ "$v" -le "$V_CRIT" ]; then below_crit=$((below_crit+1)); else below_crit=0; fi
+	if [ "$v" -le "$V_WARN" ]; then below_warn=$((below_warn+1)); else below_warn=0; fi
+	case "$state" in
+		OK)   [ "$below_warn" -ge "$CONFIRM" ] && { state=WARN; note warn "LOW BATTERY: ${v} mV (warn <= ${V_WARN} mV) — shutdown at ${V_CRIT} mV"; };;
+		WARN) [ "$v" -ge $((V_WARN + HYST)) ] && { state=OK; note notice "battery recovered: ${v} mV"; };;
+	esac
+	if [ "$below_crit" -ge "$CONFIRM" ] && [ "$state" != CRIT ]; then
+		state=CRIT
+		echo "low-battery Vbat=${v}mV I=${i}mA source=${SOURCE} action=${ACTION}" > "$MARK"
+		note crit "CRITICAL BATTERY: ${v} mV <= ${V_CRIT} mV — graceful ${ACTION} now"
+		echo "$state $v $i $(date +%s)" > "$STATE"; sync
+		sleep 2
+		if [ "$ACTION" = reboot ]; then reboot; else halt; fi
+		return 0
+	fi
+	echo "$state $v $i $(date +%s)" > "$STATE"
+}
+
+load_cfg
+case "$1" in
+	once)   tick; cat "$STATE";;
+	status) [ -f "$STATE" ] && read -r s v i t < "$STATE" && printf 'state=%s vbat=%smV i=%smA age=%ss source=%s warn<=%s crit<=%s cells=%s action=%s\n' \
+			"$s" "$v" "$i" "$(( $(date +%s) - t ))" "$SOURCE" "$V_WARN" "$V_CRIT" "$CELLS" "$ACTION" || echo "no reading yet";;
+	run)    [ "$(cfg enabled 1)" = 1 ] || { note notice "disabled by uci"; exit 0; }
+	        note notice "started source=${SOURCE} cells=${CELLS} warn<=${V_WARN}mV crit<=${V_CRIT}mV confirm=${CONFIRM} action=${ACTION}"
+	        while :; do tick; sleep "$INTERVAL"; done;;
+	*)      echo "usage: batpower run|status|once"; exit 2;;
+esac
