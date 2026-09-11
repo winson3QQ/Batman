@@ -103,6 +103,10 @@ reboot_trigger(){
 	if [ -e /tmp/sysupgrade.tgz ] || { command -v pgrep >/dev/null 2>&1 && pgrep -f sysupgrade >/dev/null 2>&1; }; then
 		echo "sysupgrade"; return
 	fi
+	# openmanetd's two-stage addressing reboots once after reserving the mesh IP (by design)
+	if logread 2>/dev/null | tail -50 | grep -q "Rebooting system to apply new network settings"; then
+		echo "openmanetd address reservation (expected once after provisioning)"; return
+	fi
 	who=$(logread 2>/dev/null | grep "dropbear.*Auth succeeded" | tail -1 | sed -n 's/.*from \([0-9a-fA-F.:]*\):.*/\1/p')
 	[ -n "$who" ] && echo "reboot/halt command (last ssh login from $who)" || echo "reboot/halt command (no ssh login in log)"
 }
@@ -114,6 +118,9 @@ boot(){
 	mount | grep -q " $MOUNT " || mount "$DEV" "$MOUNT" 2>/dev/null || { note "mount $DEV on $MOUNT FAILED"; return 0; }
 	mkdir -p "$CRASH" "$LOG"
 	note "mounted $DEV on $MOUNT"
+	# once per boot: the first-boot hook calls `boot` itself and the S11 link may run it again
+	[ -f /tmp/batdata-mount.booted ] && return 0
+	: > /tmp/batdata-mount.booted
 
 	# crash capture (#61): move pstore records (kernel panic dmesg) off the volatile ramoops
 	# region so the next panic has a clean region and the record can't be lost
