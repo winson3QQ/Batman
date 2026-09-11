@@ -303,6 +303,54 @@ since that node's serial console drops characters); eth0 then came up in `br-lan
 the filesystem size, which is why the build script now reads `SQUASH_BYTES` from `unsquashfs -s`
 instead of hard-coding it.
 
+**Failure-case matrix (bench-run 2026-09-11, #133).** The happy path above is not the
+interesting part; these are. Every row was induced on the real card and observed on the node.
+
+| case | as shipped | after the cmdline fix |
+|---|---|---|
+| bootB missing `start4.elf` (firmware cannot boot the slot) | 52 s auto-return to A, `tryboot`=1 | — |
+| bootB missing `kernel8.img` (fails *after* `start4.elf` loads) | 52 s auto-return to A, **`tryboot`=0** | — |
+| rootfs absent (`root=` points at nothing) | **dead hang >5 min, needs a power cycle** | **77 s auto-recovery** |
+| rootB squashfs corrupted | **dead hang** | **62 s auto-recovery** |
+| `autoboot.txt` truncated mid-write (power cut during commit) | boots partition 1 — **the commit is silently lost** | — |
+| `autoboot.txt` absent | boots partition 1; setting the tryboot flag does nothing at all | — |
+| committed slot B unbootable *at firmware level* | 52 s auto-return to A, but `autoboot.txt` is **not** rewritten | — |
+| committed slot B broken *at kernel level* | **permanent boot loop, physical access only** | unchanged — see below |
+
+**The `rootwait` trap — the single most dangerous line in the layout.** A bare `rootwait`
+waits for the root device *forever*. When a slot's rootfs is missing or corrupt the kernel
+therefore never gives up, procd never starts, `/dev/watchdog` is never opened, and nothing
+resets the board. The result is not a boot loop — it is a **silent dead node**, and the
+firmware's tryboot fallback does not apply because the firmware already handed off to the
+kernel successfully. `rootwait=20 panic=10` bounds the wait and turns the failure into an
+automatic return to the other slot. Do **not** simply drop `rootwait`: mmc probes
+asynchronously, so a *healthy* slot then races the device and panics too (this was tried and
+caught by regression — the "fix" recovered only because it broke every slot equally).
+Kernel 6.6.138 accepts the `rootwait=N` form.
+
+**Three ways the mechanism can lie to userspace.** Each of these makes a failed update look
+like a successful one, and #89 has to defend against all three:
+
+1. **`chosen/bootloader/tryboot` is not a reliable "the trial failed" signal.** If the
+   firmware got as far as loading `start4.elf` from the trial slot, the flag is already
+   consumed; the recovery boot is then indistinguishable from an ordinary boot. The apply
+   flow must record "I asked for a trial boot" in its own persistent storage (the config
+   partition) rather than inferring it.
+2. **Commit is not atomic.** `boot_partition` lives in a text file on a FAT partition. A power
+   cut mid-rewrite leaves no `boot_partition`, the firmware defaults to partition 1, and the
+   node quietly runs the *old* image while the fleet believes it took the update.
+3. **Firmware fallback does not repair `autoboot.txt`.** After falling back, the file still
+   names the broken slot, so every subsequent boot burns a failed attempt first, and declared
+   state and actual state stay diverged. Every boot should compare
+   `chosen/bootloader/partition` against the file and reconcile.
+
+**What still has no automatic recovery:** a slot that was *committed* and then fails at kernel
+level. The firmware is satisfied (it handed off), so it will not fall back; with `panic=N` the
+node simply loops. There is no boot counter anywhere in the Pi boot chain to break the loop,
+and the good slot's userspace never gets to run. This is the structural reason #89 must own a
+boot-attempt counter itself, and why commit must never happen before the trial slot has proven
+itself healthy.
+
 ### B2 — verity vs overlay: the real problem is *what's in the overlay*
 Reframed by the facts: OpenWrt **already** runs a read-only squashfs (`/rom`, 52.8 MB) + a
 writable f2fs **overlay** unified by overlayfs. So verity doesn't break a "writable rootfs" —

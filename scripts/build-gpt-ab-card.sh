@@ -71,8 +71,17 @@ sudo mount "${DEV}p1" "$T/a"; sudo mount "${DEV}p3" "$T/b"
 sudo tar --no-same-owner -C "$T/a" -xf "$BOOTTAR"
 sudo tar --no-same-owner -C "$T/b" -xf "$BOOTTAR"
 
-echo "console=serial0 console=ttyUSB0,115200 console=tty1 root=PARTUUID=$G2 rootfstype=squashfs,ext4 rootwait batman_slot=A" | sudo tee "$T/a/cmdline.txt" >/dev/null
-echo "console=serial0 console=ttyUSB0,115200 console=tty1 root=PARTUUID=$G4 rootfstype=squashfs,ext4 rootwait batman_slot=B" | sudo tee "$T/b/cmdline.txt" >/dev/null
+# rootwait=20 panic=10, NOT a bare `rootwait`. Bare rootwait waits for the root device
+# *forever*: a slot whose rootfs is missing or corrupt then hangs before procd starts, so
+# /dev/watchdog is never opened and nothing ever resets the board — a silent dead node, not
+# a boot loop. The firmware's tryboot fallback does not help here; it already handed off to
+# the kernel successfully. Bounded wait + panic turns that into an automatic return to the
+# other slot. Do NOT drop rootwait entirely: mmc probes asynchronously and a healthy slot
+# then races and panics too. Bench-verified on 6.6.138 (#133): corrupt rootfs 62 s to
+# recover, absent root device 77 s, healthy slot unaffected.
+CMDLINE_COMMON="console=serial0 console=ttyUSB0,115200 console=tty1 rootfstype=squashfs,ext4 rootwait=20 panic=10"
+echo "$CMDLINE_COMMON root=PARTUUID=$G2 batman_slot=A" | sudo tee "$T/a/cmdline.txt" >/dev/null
+echo "$CMDLINE_COMMON root=PARTUUID=$G4 batman_slot=B" | sudo tee "$T/b/cmdline.txt" >/dev/null
 
 # autoboot.txt lives on the FIRST FAT partition (bootA) and is read for every boot.
 # rpi-eeprom #499: never put EEPROM updates on an A/B boot partition.
