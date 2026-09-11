@@ -315,7 +315,7 @@ interesting part; these are. Every row was induced on the real card and observed
 | `autoboot.txt` truncated mid-write (power cut during commit) | boots partition 1 — **the commit is silently lost** | — |
 | `autoboot.txt` absent | boots partition 1; setting the tryboot flag does nothing at all | — |
 | committed slot B unbootable *at firmware level* | 52 s auto-return to A, but `autoboot.txt` is **not** rewritten | — |
-| committed slot B broken *at kernel level* | **permanent boot loop, physical access only** | unchanged — see below |
+| committed slot B broken *at kernel level* | **not directly observed** — reasoned below | unchanged — see below |
 
 **The `rootwait` trap — the single most dangerous line in the layout.** A bare `rootwait`
 waits for the root device *forever*. When a slot's rootfs is missing or corrupt the kernel
@@ -345,8 +345,11 @@ like a successful one, and #89 has to defend against all three:
    `chosen/bootloader/partition` against the file and reconcile.
 
 **What still has no automatic recovery:** a slot that was *committed* and then fails at kernel
-level. The firmware is satisfied (it handed off), so it will not fall back; with `panic=N` the
-node simply loops. There is no boot counter anywhere in the Pi boot chain to break the loop,
+level. This row is **inferred, not measured** — the case was set up on the card (committed to B,
+rootB destroyed) but the run was aborted and the card pulled before the loop could be observed,
+so treat it accordingly. The inference rests on rows that *were* measured: the firmware only
+falls back when it cannot boot the slot itself, and once it hands off it is satisfied; a
+kernel-level failure therefore never reaches the fallback path. There is no boot counter anywhere in the Pi boot chain to break the loop,
 and the good slot's userspace never gets to run. This is the structural reason #89 must own a
 boot-attempt counter itself, and why commit must never happen before the trial slot has proven
 itself healthy.
