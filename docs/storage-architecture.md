@@ -238,9 +238,9 @@ explicitly**, on the first FAT partition, or A/B is inert.
 provisioning needs them added, or the card is built offline. Full GPT six-partition A/B boot +
 slot-switch must be **built and boot-tested on a spare card offline** (no USB card reader on
 site), not by repartitioning the only remote node. Signed-boot chain (#74) verification rides
-on that card. Card build: **done** (below); boot test: still open (#133).
+on that card. Card build: **done** (below); boot test: **done, passed** (2026-09-11, below).
 
-**The offline card — built 2026-09-11 (#133), not yet boot-tested.** Built on the Pi 500 card
+**The offline card — built and boot-tested 2026-09-11 (#133).** Built on the Pi 500 card
 reader by `scripts/build-gpt-ab-card.sh` from the bench card (backed up first), GPT, 29.7 GiB:
 
 | # | Name | Start (s) | Size | FS | Label | PARTUUID suffix |
@@ -262,9 +262,46 @@ in. PARTUUIDs are deterministic (`3276af79-0000-4000-8000-00000000000N`, prefix 
 former MBR id) — readable in logs, but **bench-only**: two such cards in one machine would
 collide, so a production build must mint random GUIDs.
 
-**The boot test cannot run on the Pi 500** (BCM2712; the card carries only `bcm2711-*.dtb`).
-It needs a Pi 4 node: boot slot A, `vcmailbox 0x00038064 4 4 1` + `reboot`, then confirm
-`chosen/bootloader/partition` = 3 and `batman_slot=B` in `/proc/cmdline`.
+The boot test cannot run on the Pi 500 (BCM2712; the card carries only `bcm2711-*.dtb`), so it
+was run on the manet01 Pi 4 (EEPROM `build-timestamp` **2026-01-09**, `capabilities=0x7f`).
+
+**Result — the A/B mechanism works end to end (2026-09-11, #133).** Every line below is a
+reading off `/proc/device-tree/chosen/bootloader/` and `/proc/cmdline` on that node:
+
+| step | trigger | `batman_slot` | `…/partition` | `…/tryboot` |
+|---|---|---|---|---|
+| boot slot A | power-on | `A` | 1 | 0 |
+| trial-boot B | `vcmailbox 0x00038064 4 4 1` + `reboot` | **`B`** | **2** | **1** |
+| trial is one-shot | plain `reboot` | `A` | 1 | 0 |
+| commit B | `[all] boot_partition=2`, plain `reboot` | **`B`** | 2 | 0 |
+| back to A | `[all] boot_partition=1`, plain `reboot` | `A` | 1 | 0 |
+
+Also confirmed on the way: `root=PARTUUID=` in **full GPT-GUID form** resolves (the kernel has
+`CONFIG_EFI_PARTITION=y`), fstools builds its f2fs overlay happily in the 1.5 GiB root slot
+(1.4 GiB free), and the reboot flag set by `vcmailbox` **auto-clears** after the firmware
+consumes it (read back 0x1 before the reboot, 0x0 after).
+
+**`boot_partition` is the firmware's partition number, NOT the GPT index.** This is the trap,
+and the v2 design had it wrong. The firmware counts only the partitions it can boot from — the
+FAT ones — so with bootA=gpt1, rootA=gpt2, bootB=gpt3, **bootB is `boot_partition=2`, not 3**;
+the squashfs slots are not counted. The first attempt used `boot_partition=3`, which points at
+nothing the firmware will boot, and it **cleanly failed over to partition 1** — tryboot mode was
+entered (`tryboot`=1) but the slot never switched. That failure mode is silent and looks like
+success from userspace unless you read `…/partition`, so **#89's apply flow must verify the slot
+it actually landed on, never assume the switch took**. `scripts/build-gpt-ab-card.sh` now writes
+`[tryboot] boot_partition=2`.
+
+This also re-confirms the fallback safety floor from the bench work above, this time on a real
+A/B card: a `boot_partition` the firmware cannot boot costs one wasted reboot, not a brick.
+
+**The rootfs needed ETHFIX to be reachable.** The card's squashfs came from a stock 1.8.0 image,
+whose `etc/board.d/03_openmanet_eth` case list has no `bcm2711,*` entry — so on a Pi 4 eth0 is
+left out of every network interface and the node boots fine with no wired L3 at all. Both root
+slots were re-squashed with `patches/03_openmanet_eth.1.8.0-ethfix` (and an `authorized_keys`,
+since that node's serial console drops characters); eth0 then came up in `br-lan` at
+`10.41.254.1`. See the correction in [`golden-image.md`](golden-image.md). Re-squashing changes
+the filesystem size, which is why the build script now reads `SQUASH_BYTES` from `unsquashfs -s`
+instead of hard-coding it.
 
 ### B2 — verity vs overlay: the real problem is *what's in the overlay*
 Reframed by the facts: OpenWrt **already** runs a read-only squashfs (`/rom`, 52.8 MB) + a

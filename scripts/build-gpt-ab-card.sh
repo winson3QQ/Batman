@@ -11,7 +11,9 @@ DEV=${DEV:-/dev/mmcblk0}
 SRC=${SRC:?set SRC to the backup dir (see docs/storage-architecture.md B1)}
 EXPECT_SECTORS=${EXPECT_SECTORS:-62333952}
 SQUASH_SRC="$SRC/p2-rootfs-squashfs.img"   # dump of the v1.1 p2; squashfs sits at offset 0
-SQUASH_BYTES=${SQUASH_BYTES:-55290510}     # from `unsquashfs -s`
+# Size of the squashfs at offset 0 of SQUASH_SRC; read it rather than hard-coding,
+# so a re-squashed rootfs (e.g. after the ETHFIX patch) still copies in full.
+SQUASH_BYTES=${SQUASH_BYTES:-$(unsquashfs -s "$SRC/p2-rootfs-squashfs.img" 2>/dev/null | awk '/Filesystem size/{print $3}')}
 BOOTTAR="$SRC/p1-bootA/bootA.tar"
 DATA_SRC="$SRC/p3-batdata"                 # restored onto the new data partition
 
@@ -74,7 +76,13 @@ echo "console=serial0 console=ttyUSB0,115200 console=tty1 root=PARTUUID=$G4 root
 
 # autoboot.txt lives on the FIRST FAT partition (bootA) and is read for every boot.
 # rpi-eeprom #499: never put EEPROM updates on an A/B boot partition.
-printf '%s\n' '[all]' 'tryboot_a_b=1' 'boot_partition=1' '' '[tryboot]' 'boot_partition=3' | sudo tee "$T/a/autoboot.txt" >/dev/null
+#
+# boot_partition is the FIRMWARE's partition number, NOT the GPT index. The firmware
+# counts only the partitions it can boot from (the FAT ones), so with the v2 layout
+# (bootA=gpt1, rootA=gpt2, bootB=gpt3, ...) bootA is 1 and bootB is *2*, not 3.
+# Bench-verified on EEPROM 2026-01-09 (#133): boot_partition=3 pointed at nothing,
+# and the firmware cleanly failed over to partition 1 instead of switching slots.
+printf '%s\n' '[all]' 'tryboot_a_b=1' 'boot_partition=1' '' '[tryboot]' 'boot_partition=2' | sudo tee "$T/a/autoboot.txt" >/dev/null
 
 sudo sync; sudo umount "$T/a" "$T/b"; sudo rmdir "$T/a" "$T/b" "$T"
 
