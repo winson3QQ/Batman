@@ -125,6 +125,27 @@ ssh root@<hostname>.local '
 With `--mesh-key/--ap-key` baked, the guard never triggers: the card joins the mesh on its
 first boot and only the reservation reboot remains.
 
+**Two golden cards, over the mesh (validated 2026-09-11):** the same image (keys baked, MBR
+stripped of p3 — see below) was pushed by scp *through the running mesh* to manet02 and
+applied with `sysupgrade -F -n` from RAM (no Ethernet, no card reader); the golden node was then
+rebooted into its own first boot. Both came up zero-touch: `BCM2711-47ee` → 10.41.37.130 (DHCP
+window 100/16) and `BCM2711-45d7` → 10.41.196.21 (116/16), 802.11s ESTAB within a minute, each
+naming the reservation reboot in `boot-reasons.log`, ping 0 % loss. That is a remote fleet
+re-image with no hands on the hardware (the manual precursor of #89).
+
+## 5. Publishing: strip p3 from the image's partition table
+The golden node's own card has p3 (its data partition); a published image must carry only
+p1+p2 so a target with a *different* p3 is never overwritten (`sysupgrade` rewrites the whole
+disk when the partition maps differ). Capture raw, zero the third MBR entry **in the image
+file**, then compress:
+```sh
+dd if=/dev/mmcblk0 of=/opt/batdata/golden/v11.img bs=4M count=1042
+dd if=/dev/zero of=/opt/batdata/golden/v11.img bs=1 seek=478 count=16 conv=notrunc   # MBR entry 3 @ 0x1DE
+parted -sm /opt/batdata/golden/v11.img unit s print | grep -E '^[0-9]+:'               # expect 1: and 2: only
+gzip -1 -c /opt/batdata/golden/v11.img > /tmp/golden-v11.img.gz
+```
+The golden node's own partition table is not touched.
+
 ## Production notes (beyond this validation)
 - This validation baked a **maintainer SSH key** as a stand-in credential. A real per-deployment
   golden replaces it: `depersonalise.sh` strips secrets + installs the identity first-boot hook
