@@ -111,3 +111,54 @@ Layer 3
 Note: the V3 enclosure already plans an **M12 8-pin panel connector** (⌀15.5 mm flange).
 USB or UART console/key-fill can ride the M12 pins — more waterproof than a bare USB-C
 hole. A dedicated USB-C is only needed for the attended "dongle-to-unlock" model.
+
+### Hardware tiers × security models (decision 2026-09-11)
+
+The fleet has two boards — **Pi 4 / CM4** and **Pi Zero 2 W** (on order) — and they do **not**
+support the same security chain. Neither has a secure element on board: Pi 4's OTP can hold a
+signed-boot key *hash* but is readable by root (`vcgencmd otp_dump`) — it is not a key vault.
+A real SE (ATECC608 on I2C-1, or a TPM on a spare SPI CS — SPI0 is the HaLow radio) is an
+**add-on on both boards**. What each board can honestly reach:
+
+| Capability | Pi 4 / CM4 (`bcm2711`) | Zero 2 W (`bcm2710`) | Why |
+|---|---|---|---|
+| LUKS data partition (#47) | ✅ | ✅ | kernel feature; neither has ARMv8 crypto ext (software AES), SD is the bottleneck anyway |
+| dm-verity rootfs (#41/#74) | ✅ tamper-evident | ⚠️ corruption-proof only | root hash lives in cmdline on the FAT boot partition; without signed boot anyone with the card rewrites it |
+| **Signed boot** (#74 link 1) | ✅ EEPROM bootloader + OTP | ❌ **impossible** | Zero's bootloader is ROM + `bootcode.bin` on SD — no EEPROM, no root of trust |
+| A/B OTA (#89) | ✅ full: `tryboot_a_b`, **boot partition is A/B too** | ⚠️ `tryboot.txt`-level only | basic tryboot exists on all models; switching the *boot partition* needs the Pi 4+ bootloader. A bad boot-partition write on Zero is unrecoverable in the field |
+| hung-task / ramoops / serial console (#61) | ✅ | ✅ | kernel + UART (verify the bcm2710 DT carries the ramoops node) |
+| SE-held key, released only to a trusted OS | ✅ with add-on SE | ⚠️ SE without signed boot: a swapped kernel can ask the SE for the key | measured boot (TPM PCR) does not exist on Pi bootloaders at all — the reachable form is *signed boot + SE authenticates the node* |
+| FTS / docker payload host | ✅ | ❌ 512 MB RAM | relay-class node |
+
+**Mapping to the models above:**
+- **Base** → Zero 2 W's natural level. Cheap, light, expendable **relay**: carries no
+  certificates, is not a payload host; losing one loses a board, not the network.
+- **Secure — attended** → the **highest honest level for Zero 2 W**: LUKS key on the operator's
+  dongle, never on the board, so the missing root of trust does not matter.
+- **Secure — unattended** → **Pi 4 / CM4 (and up) only**. The only tier that may be left
+  unattended holding identity (#13), TAK certs (#48) or a payload.
+
+Consequence for CONOPS (#69): the two boards are **two roles, not two sizes of the same role**.
+Zero 2 W = relay / expendable; Pi 4 = identity-bearing node. Pi 5 would be stronger (crypto
+ext, signed boot) but the HaLow SPI bring-up on RP1 is unresolved (`pi5-rp1-bringup.md`).
+
+### Image strategy — one recipe, N builds, runtime profile (decision 2026-09-11)
+
+OpenWrt (and therefore OpenMANET) builds Pi 4 and Zero 2 W as **separate subtargets** —
+`bcm2711` (cortex-a72) and `bcm2710` (cortex-a53) — each with its own kernel config and package
+architecture. A single binary image for both would mean a custom unified target diverging from
+upstream; **not worth the maintenance**. Instead:
+
+1. **One recipe** — the same package list, the same provisioning files (`95-batman-storage`,
+   identity hook, ramoops fix), the same golden SOP, built for both subtargets from one branch.
+   The kernel config diff for the security chain (`DM_CRYPT`/`DM_VERITY`/`DETECT_HUNG_TASK`…)
+   is applied to **both** boards' configs.
+2. **Runtime profile by board**: the first-boot hooks read `/proc/device-tree/model` (or
+   `compatible`) and select the profile — security model ceiling (above), A/B mode
+   (`tryboot_a_b` vs `tryboot.txt`), payload tenants on/off, resource budgets (#81).
+3. **Board-specific only where physics forces it**: boot-partition layout for A/B (#88: two boot
+   partitions on Pi 4, one on Zero), signed-boot artifacts (Pi 4 only), the DT overlays.
+
+So "does one image fit all hardware?" — **one *source of truth* fits all; one *artifact* per
+subtarget.** Release = the set of per-board images built from the same commit, sharing one
+SBOM lineage and one signature identity (#73).
