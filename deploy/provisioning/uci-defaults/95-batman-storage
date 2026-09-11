@@ -100,6 +100,8 @@ note(){ logger -t batdata-mount "$*" 2>/dev/null; echo "batdata-mount: $*" > /de
 
 # best-effort "who triggered this shutdown" for the marker
 reboot_trigger(){
+	# batpower asked for this shutdown (graceful low-battery halt/reboot, #91)
+	if [ -f /tmp/batpower.shutdown ]; then read -r m < /tmp/batpower.shutdown; echo "$m"; return; fi
 	if [ -e /tmp/sysupgrade.tgz ] || { command -v pgrep >/dev/null 2>&1 && pgrep -f sysupgrade >/dev/null 2>&1; }; then
 		echo "sysupgrade"; return
 	fi

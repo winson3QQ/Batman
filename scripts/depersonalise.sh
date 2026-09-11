@@ -41,7 +41,7 @@ done
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 PROV="$HERE/../deploy/provisioning"
-for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey uci-defaults/95-batman-storage; do
+for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey batpower batpower.init uci-defaults/95-batman-storage; do
 	[ -f "$PROV/$f" ] || { echo "missing $PROV/$f — stage the repo on the node (scripts/ + deploy/)"; exit 1; }
 done
 [ -f "$HERE/meshled.1.8.0" ] && [ -f "$HERE/meshled.init" ] || { echo "missing scripts/meshled.1.8.0 or meshled.init"; exit 1; }
@@ -145,7 +145,10 @@ cp "$PROV/halow-keyguard.init" /etc/init.d/halow-keyguard && chmod 0755 /etc/ini
 cp "$PROV/halow-setkey" /usr/bin/halow-setkey && chmod 0755 /usr/bin/halow-setkey
 cp "$HERE/meshled.1.8.0" /usr/bin/meshled && chmod 0755 /usr/bin/meshled
 cp "$HERE/meshled.init" /etc/init.d/meshled && chmod 0755 /etc/init.d/meshled && /etc/init.d/meshled enable
-echo "    halow-keyguard (S18, #103) · halow-setkey · meshled (1.8.0)"
+cp "$PROV/batpower" /usr/bin/batpower && chmod 0755 /usr/bin/batpower
+cp "$PROV/batpower.init" /etc/init.d/batpower && chmod 0755 /etc/init.d/batpower && /etc/init.d/batpower enable
+rm -f /etc/config/batpower   # the init writes defaults on first start (source=mock until the INA226 is fitted)
+echo "    halow-keyguard (S18, #103) · halow-setkey · meshled (1.8.0) · batpower (S95, #122)"
 
 sync
 echo
