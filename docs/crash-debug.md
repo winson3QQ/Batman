@@ -97,6 +97,18 @@ hang never becomes a panic → nothing to capture. **Fix:** enable them in the k
 a hang **converts to a captured panic** (which then lands in ramoops #2). This needs a kernel
 rebuild (ties to the driver/image build, docs/building-the-driver.md).
 
+### 3b. Software stand-in for a pure hang: ramoops console capture + flight recorder (#105)
+Until the USB-UART is on hand, the last minutes before a hang are still recoverable:
+`dtoverlay=ramoops,console-size=0x8000` mirrors the kernel log into the ramoops region
+(survives the watchdog's warm reset), and `flightrec` (S99) writes a heartbeat line to
+`/dev/kmsg` every 30 s (load, memory, peers, plinks, morse SPI timeouts, battery, throttle,
+temperature). After the hardware watchdog fires, the next boot moves `console-ramoops-0` to
+`/opt/batdata/crash/` and `boot-reasons.log` classifies it as *UNCLEAN — likely hardware
+watchdog after a hang*; a `dmesg-ramoops-*` record still means PANIC; neither means power
+loss. Validated on the bench by stopping procd's watchdog feed (`ubus call system watchdog
+'{"stop":true}'`). What it cannot see: a hang so early or so hard that the kernel stops
+logging before it dies — that is what the serial console (§4) is for.
+
 ### 4. Serial console (needs hardware — USB-UART)
 A USB-UART on the Pi's UART pins captures the **last kernel output of a hard hang** live, even
 when nothing reaches disk or the network — the determinative method. **Hardware-gated:** needs

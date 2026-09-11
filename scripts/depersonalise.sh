@@ -41,7 +41,7 @@ done
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 PROV="$HERE/../deploy/provisioning"
-for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey batpower batpower.init uci-defaults/95-batman-storage; do
+for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey batpower batpower.init flightrec flightrec.init uci-defaults/95-batman-storage; do
 	[ -f "$PROV/$f" ] || { echo "missing $PROV/$f — stage the repo on the node (scripts/ + deploy/)"; exit 1; }
 done
 [ -f "$HERE/meshled.1.8.0" ] && [ -f "$HERE/meshled.init" ] || { echo "missing scripts/meshled.1.8.0 or meshled.init"; exit 1; }
@@ -148,7 +148,18 @@ cp "$HERE/meshled.init" /etc/init.d/meshled && chmod 0755 /etc/init.d/meshled &&
 cp "$PROV/batpower" /usr/bin/batpower && chmod 0755 /usr/bin/batpower
 cp "$PROV/batpower.init" /etc/init.d/batpower && chmod 0755 /etc/init.d/batpower && /etc/init.d/batpower enable
 rm -f /etc/config/batpower   # the init writes defaults on first start (source=mock until the INA226 is fitted)
-echo "    halow-keyguard (S18, #103) · halow-setkey · meshled (1.8.0) · batpower (S95, #122)"
+cp "$PROV/flightrec" /usr/bin/flightrec && chmod 0755 /usr/bin/flightrec
+cp "$PROV/flightrec.init" /etc/init.d/flightrec && chmod 0755 /etc/init.d/flightrec && /etc/init.d/flightrec enable
+echo "    halow-keyguard (S18, #103) · halow-setkey · meshled (1.8.0) · batpower (S95, #122) · flightrec (S99, #105)"
+
+echo "==> 10. no steady-state SD writes (#104): openmanetd DB -> tmpfs; ramoops console capture on"
+# openmanetd's SQLite (peer gossip rows, rebuilt from alfred after boot) was the only steady
+# writer on the rootfs overlay (~1.8-37 MiB/h). Its dbFile is configurable: keep it in RAM.
+grep -q "^dbFile:" "$OMCFG" 2>/dev/null || printf 'dbFile: /tmp/openmanetd.db\n' >> "$OMCFG"
+rm -f /etc/openmanetd/openmanetd.db-wal /etc/openmanetd/openmanetd.db-shm
+# rolling kernel console into the ramoops region (survives a watchdog reset) — overlay param
+sed -i 's/^dtoverlay=ramoops$/dtoverlay=ramoops,console-size=0x8000/' /boot/distroconfig.txt
+echo "    $(grep -E '^dbFile' "$OMCFG") · $(grep -E '^dtoverlay=ramoops' /boot/distroconfig.txt)"
 
 sync
 echo

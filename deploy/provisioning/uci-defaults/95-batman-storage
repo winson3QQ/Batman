@@ -126,19 +126,24 @@ boot(){
 
 	# crash capture (#61): move pstore records (kernel panic dmesg) off the volatile ramoops
 	# region so the next panic has a clean region and the record can't be lost
-	n=0
+	n=0; ncon=0
 	for f in /sys/fs/pstore/*; do
 		[ -f "$f" ] || continue
-		cp "$f" "$CRASH/$(ts)_$(bid)_$(basename "$f")" && rm -f "$f" && n=$((n+1))
+		case "$(basename "$f")" in console-*) ncon=$((ncon+1));; *) n=$((n+1));; esac
+		cp "$f" "$CRASH/$(ts)_$(bid)_$(basename "$f")" && rm -f "$f"
 	done
 
 	# boot reason: why did the previous life end? (every reboot must say who/what triggered it)
+	# dmesg-ramoops = the kernel panicked; console-ramoops alone = the kernel never panicked but
+	# its rolling console survived the reset -> a pure hang cut by the hardware watchdog (#105)
 	if [ "$n" -gt 0 ]; then
 		reason="PANIC ($n pstore record(s) saved under $CRASH)"
 	elif [ -f "$LOG/shutdown.marker" ]; then
 		reason="CLEAN: $(cat "$LOG/shutdown.marker")"
+	elif [ "$ncon" -gt 0 ]; then
+		reason="UNCLEAN — likely hardware watchdog after a hang (no panic; last console log saved under $CRASH)"
 	else
-		reason="UNCLEAN (power loss or hardware watchdog: no shutdown marker, no panic record)"
+		reason="UNCLEAN (power loss: no shutdown marker, no panic, no console record)"
 	fi
 	bs=$(cat /sys/class/watchdog/watchdog0/bootstatus 2>/dev/null)
 	[ -n "$bs" ] && [ "$bs" != 0 ] && reason="$reason [watchdog bootstatus=$bs]"

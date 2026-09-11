@@ -43,6 +43,9 @@ The golden does not carry docker yet (#110 board profile decides). On a Pi 4 pay
    mounted". Docker runs fine on procd's cgroup2.
 4. `sh deploy/fts/run.sh` (after `docker load` of the image, or with the images already in
    `docker/`).
+5. Restart policy is `unless-stopped`: containers come back after a reboot or a dockerd
+   restart, **but not after a manual `docker stop`** — use `docker restart`, or `docker start
+   fts fts-ui` after maintenance that stopped them.
 
 Validated 2026-09-11 on the ex-manet02 golden node: after the v1.1 reflash the p3 data
 (images + FTS DBs/certs) was migrated in place into the layout above, docker reinstalled

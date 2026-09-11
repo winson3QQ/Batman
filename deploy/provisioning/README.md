@@ -84,6 +84,17 @@ captured into the golden image (the same model Batman already uses for meshled/m
   (`crit_action=reboot` on the bench). No steady-state SD writes. uci `batpower.main.*`;
   `batpower status`. Ships with `source=mock` until the INA226 is fitted — then set `source`
   to `hwmon` (+ `kmod-hwmon-ina2xx`, `dtoverlay=i2c-sensor,ina226`) or `i2c`.
+- **`flightrec` + `flightrec.init`** (#105, S99) — flight recorder: one heartbeat line every
+  30 s into `/dev/kmsg` (load, free memory, batman peers, 802.11s plinks, morse SPI timeouts,
+  battery state, throttle flags, SoC temperature). Paired with ramoops **console capture**
+  (`dtoverlay=ramoops,console-size=0x8000`, set by `fix-ramoops-dtbo.sh`/`depersonalise.sh`)
+  the kernel log — heartbeats included — is mirrored into reserved RAM that survives a warm
+  reset, so after a pure hang cut by the hardware watchdog the next boot finds
+  `console-ramoops-0` in pstore, saves it under `crash/`, and `boot-reasons.log` says
+  *UNCLEAN — likely hardware watchdog after a hang*. The software stand-in for the USB-UART
+  serial console until that hardware arrives. Zero SD writes.
+- **No steady-state SD writes (#104):** `depersonalise.sh` sets openmanetd's `dbFile:` to
+  `/tmp/openmanetd.db` — its SQLite WAL was the only steady writer on the rootfs overlay.
 
 ## What golden-master files can and cannot do
 

@@ -1,0 +1,26 @@
+#!/bin/sh
+# flightrec — flight recorder: one heartbeat line per interval into the kernel log (/dev/kmsg).
+# With ramoops console capture on (fix-ramoops-dtbo.sh: console-size 0x8000) the kernel log is
+# mirrored into reserved RAM that survives a warm reset, so after a pure hang cut by the
+# hardware watchdog the pstore console record shows what the node was doing in its last
+# minutes: load, memory, mesh peers, HaLow SPI errors, battery state. Zero SD writes. (#105/#61)
+#
+#   flightrec run | once
+INTERVAL=$(uci -q get flightrec.main.interval || echo 30)
+
+line(){
+	load=$(cut -d' ' -f1-3 /proc/loadavg)
+	memfree=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
+	peers=$(batctl n 2>/dev/null | tail -n +3 | grep -c .)
+	plink=$(iw dev wlh0 station dump 2>/dev/null | grep -c "plink:.*ESTAB")
+	spi=$(dmesg 2>/dev/null | grep -c "morse_spi.*timed out")
+	bat=$( [ -f /tmp/batpower.state ] && cut -d' ' -f1-2 /tmp/batpower.state | tr ' ' '/' || echo "-")
+	thr=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
+	temp=$(awk '{print int($1/1000)}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+	echo "flightrec: load=$load memfree=${memfree}M peers=$peers plink=$plink spi_timeouts=$spi bat=$bat thr=$thr temp=${temp}C up=$(cut -d. -f1 /proc/uptime)"
+}
+case "$1" in
+	once) line;;
+	run)  while :; do line > /dev/kmsg 2>/dev/null; sleep "$INTERVAL"; done;;
+	*)    echo "usage: flightrec run|once"; exit 2;;
+esac

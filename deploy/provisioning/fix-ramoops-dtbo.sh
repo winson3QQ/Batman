@@ -18,17 +18,28 @@
 # Idempotent. Needs dtc (opkg install dtc, or install the .ipk offline).
 set -e
 DTBO=/boot/overlays/ramoops.dtbo
-command -v dtc >/dev/null 2>&1 || { echo "need dtc (opkg install dtc)"; exit 1; }
 [ -f "$DTBO" ] || { echo "$DTBO not found (is dtoverlay=ramoops in distroconfig.txt?)"; exit 1; }
 
+# 1. Rolling CONSOLE capture (#105/#61): the overlay exposes a `console-size` override, so no
+# binary edit is needed — pass it on the dtoverlay line. The kernel log is then mirrored into
+# the reserved RAM continuously; after a pure hang -> hardware-watchdog reset (no panic, no
+# clean shutdown) pstore still holds the last 32 KB as console-ramoops-0. Region 64 KB =
+# 2 x 16 KB dmesg records (panic) + 32 KB console. Zero SD writes.
+CFG=/boot/distroconfig.txt
+if grep -qE '^dtoverlay=ramoops(,|$)' "$CFG" && ! grep -qE '^dtoverlay=ramoops.*console-size=' "$CFG"; then
+  sed -i 's/^dtoverlay=ramoops$/dtoverlay=ramoops,console-size=0x8000/; s/^dtoverlay=ramoops,\(.*\)$/dtoverlay=ramoops,console-size=0x8000,\1/' "$CFG"
+  echo "enabled ramoops console capture: $(grep -E '^dtoverlay=ramoops' "$CFG")"
+fi
+
+# 2. The malformed reg (needs dtc)
+command -v dtc >/dev/null 2>&1 || { echo "need dtc (opkg install dtc) for the reg fix"; exit 1; }
 if dtc -I dtb -O dts "$DTBO" 2>/dev/null | grep -q "reg = <0x0\?0 0xb000000"; then
   echo "ramoops.dtbo already fixed (reg has the high address cell)"; exit 0
 fi
-
 cp "$DTBO" "$DTBO.orig-badreg"
 dtc -I dtb -O dts "$DTBO" -o /tmp/ramoops.dts 2>/dev/null
 sed -i 's/reg = <0xb000000 0x10000>/reg = <0x0 0xb000000 0x10000>/' /tmp/ramoops.dts
 grep -q "reg = <0x0 0xb000000 0x10000>" /tmp/ramoops.dts || { echo "reg line not matched — image differs, inspect /tmp/ramoops.dts"; exit 1; }
 dtc -I dts -O dtb /tmp/ramoops.dts -o "$DTBO" 2>/dev/null
 echo "fixed $DTBO -> reg = <0x0 0xb000000 0x10000> (backup at $DTBO.orig-badreg)"
-echo "reboot, then confirm: dmesg | grep 'Registered ramoops'  and  ls /sys/fs/pstore"
+echo "reboot, then confirm: dmesg | grep 'Registered ramoops'; cat /sys/module/ramoops/parameters/console_size  (32768)"
