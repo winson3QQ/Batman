@@ -41,7 +41,7 @@ done
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 PROV="$HERE/../deploy/provisioning"
-for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey batpower batpower.init flightrec flightrec.init joinwatch joinwatch.init halow-status www/status www/bundle uci-defaults/95-batman-storage; do
+for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey batpower batpower.init flightrec flightrec.init joinwatch joinwatch.init halow-status www/status www/bundle www/mesh www/index.html uci-defaults/95-batman-storage; do
 	[ -f "$PROV/$f" ] || { echo "missing $PROV/$f — stage the repo on the node (scripts/ + deploy/)"; exit 1; }
 done
 [ -f "$HERE/meshled.1.8.0" ] && [ -f "$HERE/meshled.init" ] || { echo "missing scripts/meshled.1.8.0 or meshled.init"; exit 1; }
@@ -157,8 +157,10 @@ cp "$PROV/halow-status" /usr/bin/halow-status && chmod 0755 /usr/bin/halow-statu
 mkdir -p /www/cgi-bin
 cp "$PROV/www/status" /www/cgi-bin/status && chmod 0755 /www/cgi-bin/status
 cp "$PROV/www/bundle" /www/cgi-bin/bundle && chmod 0755 /www/cgi-bin/bundle
+cp "$PROV/www/mesh" /www/cgi-bin/mesh && chmod 0755 /www/cgi-bin/mesh          # #14 L1 all-nodes console
+cp "$PROV/www/index.html" /www/index.html                                     # root landing: status / mesh / LuCI
 echo "    halow-keyguard (S18, #103) · halow-setkey · meshled (1.8.0) · batpower (S95, #122) · flightrec (S99, #105)"
-echo "    joinwatch (S98, #127) · halow-status · /cgi-bin/status + /cgi-bin/bundle (phone via the AP: http://<hostname>.lan/cgi-bin/status)"
+echo "    joinwatch (S98, #127) · halow-status (health roll-up) · verdict-first /cgi-bin/status · #14 /cgi-bin/mesh · root landing (phone on the AP -> http://<node-ip>/)"
 
 echo "==> 10. no steady-state SD writes (#104): openmanetd DB -> tmpfs; ramoops console capture on"
 # openmanetd's SQLite (peer gossip rows, rebuilt from alfred after boot) was the only steady

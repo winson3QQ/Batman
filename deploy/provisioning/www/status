@@ -1,26 +1,54 @@
 #!/bin/sh
-# /www/cgi-bin/status — the incident report over HTTP (#127). Reachable through the onboarding
-# AP (SSID = hostname) or the M12/Ethernet port: http://<hostname>.lan/cgi-bin/status
-#   ?json  -> application/json (same data, for #14 / EMS / a future PWA or ATAK plugin)
-# Read-only, no secrets, generated on request (no background cost, no SD writes).
+# /www/cgi-bin/status — verdict-first field status of THIS node (#127/#130). Leads with a plain
+# banner (green/amber/red) + one "what to do" line; the engineer detail is collapsed. Reachable
+# on the onboarding AP (SSID = hostname) or the M12/Ethernet port. Read-only, no secrets, no SD
+# writes. ?json -> application/json (same data, for #14/EMS/ATAK). Root http://<ip> lands here.
 case "$QUERY_STRING" in
-	*json*)
-		printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
-		/usr/bin/halow-status json;;
-	*)
-		printf 'Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n\r\n'
-		host=$(sed 's/&/\&amp;/g; s/</\&lt;/g' /proc/sys/kernel/hostname)
-		st=$(joinwatch status 2>/dev/null | cut -d' ' -f1)
-		case "$st" in JOINED) col="#2e7d32";; NOT_JOINED) col="#c62828";; *) col="#f9a825";; esac
-		cat <<EOF
+	*json*) printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'; /usr/bin/halow-status json; exit 0;;
+esac
+printf 'Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n\r\n'
+host=$(cat /proc/sys/kernel/hostname)
+# one halow-status run; parse the roll-up from its HEALTH line, reuse the same text for detail
+txt=$(/usr/bin/halow-status); h1=$(printf '%s\n' "$txt" | sed -n '1p')
+lvl=$(printf '%s' "$h1" | sed -n 's/^HEALTH *\[\([A-Z]*\)\].*/\1/p'); [ -n "$lvl" ] || lvl=UNKNOWN
+verdict=$(printf '%s' "$h1" | sed 's/^HEALTH *\[[A-Z]*\] *//')
+case "$lvl" in
+	OK)   col='#2e7d32'; big='OK';;
+	WARN) col='#f9a825'; big='NEEDS ATTENTION';;
+	CRIT) col='#c62828'; big='NOT WORKING';;
+	*)    col='#616161'; big='UNKNOWN';;
+esac
+# one plain "what to do" line, matched from the verdict a person would read
+case "$verdict" in
+	*"key"*)            todo="Set the mesh/AP key over the M12/Ethernet port: run halow-setkey. It cannot go on air until then.";;
+	*"no peer"*|*"NO PEER"*|*"not joined"*) todo="No other node is in range. This node itself is fine — check the OTHER nodes, or move one closer.";;
+	*"weak"*)           todo="Linked, but the signal is weak. Aim/adjust the antenna, or move the nodes closer / higher.";;
+	*"batman"*)         todo="Radio linked but not routing yet — give it a minute; if it stays, reboot this node.";;
+	*"power-cycling"*)  todo="Repeated reboots aren't helping — stop power-cycling and check the other nodes / the key.";;
+	*"UNDERVOLT"*|*"battery"*|*"power"*) todo="Power problem. Check the battery charge, the cable, and the supply.";;
+	*"hot"*|*"SoC"*)    todo="Running hot. Improve airflow / move out of direct sun.";;
+	*"tenant"*)         todo="A service (e.g. FreeTAKServer) is down. Reboot, or restart it over SSH.";;
+	OK*)                todo="Nothing to do — this node is healthy.";;
+	*)                  todo="See the details below.";;
+esac
+esc(){ sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+he=$(printf '%s' "$host" | esc)
+cat <<EOF
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="30"><title>$host status</title>
-<style>body{margin:0;background:#111;color:#eee;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace}
-h1{margin:0;padding:12px 14px;background:$col;color:#fff;font-size:18px}pre{white-space:pre-wrap;word-break:break-word;padding:12px 14px;margin:0}
-a{color:#8ab4f8}.f{padding:10px 14px;border-top:1px solid #333;font-size:12px;color:#aaa}</style></head><body>
-<h1>$host — ${st:-UNKNOWN}</h1><pre>$(/usr/bin/halow-status | sed 's/&/\&amp;/g; s/</\&lt;/g')</pre>
-<div class="f"><a href="/cgi-bin/bundle">Download report bundle</a> · <a href="/cgi-bin/status?json">JSON</a> · refreshes every 30 s</div>
+<meta http-equiv="refresh" content="30"><title>$he status</title>
+<style>body{margin:0;background:#111;color:#eee;font:15px/1.5 ui-monospace,Menlo,Consolas,monospace}
+h1{margin:0;padding:16px 16px 6px;background:$col;color:#fff;font-size:30px;letter-spacing:1px}
+.v{padding:0 16px 14px;background:$col;color:#fff;font-size:15px;opacity:.95}
+.todo{padding:14px 16px;background:#1c1c1c;border-bottom:1px solid #333;font-size:16px}
+.node{padding:10px 16px;color:#bbb;font-size:13px}
+details{padding:8px 16px 16px}summary{cursor:pointer;color:#8ab4f8;padding:8px 0}
+pre{white-space:pre-wrap;word-break:break-word;background:#000;padding:12px;border-radius:6px;margin:0;font-size:12px}
+.f{padding:12px 16px;border-top:1px solid #333;font-size:13px}.f a{color:#8ab4f8;margin-right:14px}</style></head><body>
+<h1>$big</h1><div class="v">$(printf '%s' "$verdict" | esc)</div>
+<div class="todo"><b>What to do:</b> $todo</div>
+<div class="node">$he · refreshes every 30 s · <a href="/cgi-bin/mesh" style="color:#8ab4f8">see the whole mesh →</a></div>
+<details><summary>Show technical detail</summary>
+<pre>$(printf '%s' "$txt" | esc)</pre></details>
+<div class="f"><a href="/cgi-bin/mesh">Whole mesh</a><a href="/cgi-bin/bundle">Download report</a><a href="/cgi-bin/status?json">JSON</a></div>
 </body></html>
 EOF
-		;;
-esac

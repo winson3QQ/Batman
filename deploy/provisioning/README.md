@@ -116,17 +116,31 @@ captured into the golden image (the same model Batman already uses for meshled/m
   the *generated* `batdata-mount` init, so after updating the hook run
   `umount /opt/batdata && sh /etc/uci-defaults/95-batman-storage` once (fresh cards get it
   on first boot).
-- **`halow-status`** — the one-page incident report (node, image, boot id, last boot reason,
-  JOIN state + last diagnosis, battery/throttle/temp, boots since the last join (and how
-  many of them were power loss — the "user keeps power-cycling" signature), last 3 boot
-  reasons, evidence counts). No secrets (keys shown as SET/PLACEHOLDER). `halow-status json`.
-- **`www/status`, `www/bundle`** → `/www/cgi-bin/status`, `/www/cgi-bin/bundle` — the same
-  report over HTTP for a **phone on the onboarding AP** (SSID = hostname) or a laptop on the
-  M12/Ethernet port: `http://<hostname>.lan/cgi-bin/status` (mobile page, 15 s refresh,
-  `?json` for #14/EMS/a future PWA or ATAK plugin) and `/cgi-bin/bundle` (tar.gz with
-  status, boot-reasons, join.log, last crash records, last shutdown dumps, dmesg, logread —
-  the attachment for a field report). Read-only, generated on request, no SD writes; write
-  actions stay behind SSH/Ethernet until #52 RBAC.
+- **`halow-status`** — the one-page incident report + **health roll-up** (#127/#14/#130). Runs
+  four categories of checks — **mesh** (joined / key / no-peer), **RF** (SNR from morse noise
+  floor, tx retry), **power/thermal/HW** (undervoltage & throttle from `get_throttled`, battery
+  from batpower, SoC temp, SD full), **software/boot** (core daemons up, tenant containers,
+  reboot-loop, last-boot PANIC) — and collapses them to a node verdict: **CRIT** (red, can't do
+  its job) / **WARN** (amber, degraded) / **OK** (green), with INFO notes that never worsen the
+  roll-up. Plus boots-since-join (power-cycling signature), evidence counts, no secrets (keys
+  SET/PLACEHOLDER). `halow-status json` emits `health.{level,verdict,checks[]}` for the pages
+  and #14/EMS.
+- **`www/status` → `/www/cgi-bin/status`** (#130) — **verdict-first** field page for a phone on
+  the onboarding AP (SSID = hostname) or a laptop on the M12/Ethernet port: a big green/amber/red
+  banner (from `health.level`) + the plain verdict + one **"what to do"** line, engineer detail
+  collapsed; 30 s refresh; `?json` for #14/EMS/ATAK.
+- **`www/index.html` → `/www/index.html`** — root landing so `http://<node-ip>/` is enough (no
+  path to type): three buttons — this node / whole mesh / LuCI admin. (`<hostname>.lan` does
+  **not** resolve on the node dnsmasq; the name that resolves is mDNS `<hostname>.local` → IPv6.)
+- **`www/mesh` → `/www/cgi-bin/mesh`** (#14 L1 any-node console) — log in to **any** node and
+  see the **whole mesh**: enumerates every node from batman's mesh-wide `bat-hosts`, resolves
+  each by mDNS `<hostname>.local`, fetches its `/cgi-bin/status?json` (bounded `wget -T`), and
+  renders a per-node roll-up table (a node that doesn't answer shows UNKNOWN — never blocks the
+  page). No central controller; pure read — **the control plane never gates the data plane** (if
+  this console dies the mesh keeps forwarding). `?json` for EMS.
+- **`www/bundle` → `/www/cgi-bin/bundle`** — tar.gz attachment (status, boot-reasons, join.log,
+  last crash records, last shutdown dumps, dmesg, logread) for a field report. Read-only,
+  generated on request, no SD writes; write actions stay behind SSH/Ethernet until #52 RBAC.
 
 ## What golden-master files can and cannot do
 
