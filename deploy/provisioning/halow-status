@@ -33,7 +33,8 @@ peers=$(awk -v me="${host}_wlh0" '$2 ~ /_wlh0$/ && $2 != me {sub(/_wlh0$/,"",$2)
 # RF quality (same sources as meshled): peer signal avg (dBm) vs morse noise floor -> SNR (dB)
 sig=$(printf '%s\n' "$dump" | awk '/signal avg:/{v=$3+0; if(!s||v>m){m=v;s=1}} END{if(s)print m}')
 noise=$(morse_cli -i wlh0 stats 2>/dev/null | awk -F: '/^Noise \(dBm\)/{gsub(/ /,"",$2);print $2;exit}')
-snr=""; [ -n "$sig" ] && snr=$(( sig - ${noise:--90} ))
+case "$noise" in ''|*[!0-9-]*) noise=-90;; esac; case "$sig" in *[!0-9-]*) sig="";; esac  # keep the arithmetic safe
+snr=""; [ -n "$sig" ] && snr=$(( sig - noise ))
 retry=$(printf '%s\n' "$dump" | awk '/tx packets:/{p+=$3}/tx retries:/{r+=$3}END{if(p)printf "%d",r*100/p}')
 # boots since the last JOINED line (boot-id order) + how many were power losses; logs may be absent
 cyc=0; pl=0; cycdesc="no join episode recorded"

@@ -8,9 +8,10 @@ case "$QUERY_STRING" in
 esac
 printf 'Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n\r\n'
 host=$(cat /proc/sys/kernel/hostname)
-J=$(/usr/bin/halow-status json)
-lvl=$(printf '%s' "$J" | jsonfilter -e '@.health.level' 2>/dev/null); [ -n "$lvl" ] || lvl=UNKNOWN
-verdict=$(printf '%s' "$J" | jsonfilter -e '@.health.verdict' 2>/dev/null)
+# one halow-status run; parse the roll-up from its HEALTH line, reuse the same text for detail
+txt=$(/usr/bin/halow-status); h1=$(printf '%s\n' "$txt" | sed -n '1p')
+lvl=$(printf '%s' "$h1" | sed -n 's/^HEALTH *\[\([A-Z]*\)\].*/\1/p'); [ -n "$lvl" ] || lvl=UNKNOWN
+verdict=$(printf '%s' "$h1" | sed 's/^HEALTH *\[[A-Z]*\] *//')
 case "$lvl" in
 	OK)   col='#2e7d32'; big='OK';;
 	WARN) col='#f9a825'; big='NEEDS ATTENTION';;
@@ -47,7 +48,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:#000;padding:12px;bord
 <div class="todo"><b>What to do:</b> $todo</div>
 <div class="node">$he · refreshes every 30 s · <a href="/cgi-bin/mesh" style="color:#8ab4f8">see the whole mesh →</a></div>
 <details><summary>Show technical detail</summary>
-<pre>$(/usr/bin/halow-status | esc)</pre></details>
+<pre>$(printf '%s' "$txt" | esc)</pre></details>
 <div class="f"><a href="/cgi-bin/mesh">Whole mesh</a><a href="/cgi-bin/bundle">Download report</a><a href="/cgi-bin/status?json">JSON</a></div>
 </body></html>
 EOF

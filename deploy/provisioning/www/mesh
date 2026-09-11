@@ -21,23 +21,30 @@ fetch(){
 }
 jf(){ printf '%s' "$1" | jsonfilter -e "$2" 2>/dev/null; }
 
+# fetch every node in parallel (tmpfs, no SD write) so total latency is ~one timeout, not N of them
+TMP=$(mktemp -d 2>/dev/null || { d=/tmp/mesh.$$; mkdir -p "$d"; printf '%s' "$d"; })
+i=0; for n in $nodes; do i=$((i+1)); fetch "$n" > "$TMP/$i" 2>/dev/null & done
+wait
+
 # gather (one blob per node), compute mesh roll-up
 rank(){ case "$1" in CRIT) echo 3;; WARN) echo 2;; UNKNOWN) echo 2;; OK) echo 0;; *) echo 1;; esac; }
-worst=OK; up_n=0; tot_n=0; ROWS=""
+worst=OK; up_n=0; tot_n=0; ROWS=""; i=0
 for n in $nodes; do
-	tot_n=$((tot_n+1)); b=$(fetch "$n")
+	i=$((i+1)); tot_n=$((tot_n+1)); b=$(cat "$TMP/$i" 2>/dev/null)
 	if [ -z "$b" ]; then
 		lvl=UNKNOWN; verdict="unreachable (no answer)"; snr=""; peers=""; temp=""; batt=""; ups=""
 	else
 		up_n=$((up_n+1))
-		lvl=$(jf "$b" '@.health.level'); [ -n "$lvl" ] || lvl=UNKNOWN
+		lvl=$(jf "$b" '@.health.level'); case "$lvl" in CRIT|WARN|OK|UNKNOWN) :;; *) lvl=UNKNOWN;; esac
 		verdict=$(jf "$b" '@.health.verdict'); snr=$(jf "$b" '@.join.snr_db'); peers=$(jf "$b" '@.join.peers')
 		temp=$(jf "$b" '@.temp_c'); batt=$(jf "$b" '@.battery'); ups=$(jf "$b" '@.uptime_s')
+		case "$ups" in ''|*[!0-9]*) ups="";; esac   # uptime feeds arithmetic; peer-controlled -> must be a number
 	fi
 	[ "$(rank "$lvl")" -gt "$(rank "$worst")" ] && worst=$lvl
 	ROWS="$ROWS$n|$lvl|$verdict|${snr}|${peers}|${temp}|${batt}|${ups}
 "
 done
+rm -rf "$TMP"
 
 if [ "$QUERY_STRING" != "${QUERY_STRING#*json}" ]; then
 	printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
@@ -45,8 +52,9 @@ if [ "$QUERY_STRING" != "${QUERY_STRING#*json}" ]; then
 	printf '{"mesh":{"seen_from":"%s","nodes":%s,"reachable":%s,"worst":"%s"},"nodes":[' "$(j "$self")" "$tot_n" "$up_n" "$worst"
 	i=0; printf '%s' "$ROWS" | while IFS='|' read -r n lvl vd sn pr tp bt us; do
 		[ -n "$n" ] || continue; [ "$i" = 0 ] || printf ','; i=1
+		# every field here came from a peer over the network — escape ALL of them, not just some
 		printf '{"node":"%s","level":"%s","verdict":"%s","snr_db":"%s","peers":"%s","temp_c":"%s","battery":"%s","uptime_s":"%s"}' \
-			"$(j "$n")" "$lvl" "$(j "$vd")" "$sn" "$(j "$pr")" "$tp" "$(j "$bt")" "$us"
+			"$(j "$n")" "$(j "$lvl")" "$(j "$vd")" "$(j "$sn")" "$(j "$pr")" "$(j "$tp")" "$(j "$bt")" "$(j "$us")"
 	done
 	printf ']}\n'
 	exit 0
@@ -72,8 +80,9 @@ printf '%s' "$ROWS" | while IFS='|' read -r n lvl vd sn pr tp bt us; do
 	[ -n "$n" ] || continue
 	case "$lvl" in CRIT) d='#c62828';; WARN|UNKNOWN) d='#f9a825';; OK) d='#2e7d32';; *) d='#888';; esac
 	updesc=""; [ -n "$us" ] && updesc="$((us/3600))h$(((us%3600)/60))m"
+	sne=$(printf '%s' "$sn" | esc)   # snr is peer-controlled -> escape before it enters HTML
 	printf '<tr><td><b>%s</b></td><td><span class="dot" style="background:%s"></span>%s<br><span style="color:#aaa;font-size:12px">%s</span></td><td>%s</td><td>%s</td></tr>\n' \
-		"$(printf '%s' "$n" | esc)" "$d" "$lvl" "$(printf '%s' "$vd" | esc)" "${sn:+${sn}dB}" "$updesc"
+		"$(printf '%s' "$n" | esc)" "$d" "$lvl" "$(printf '%s' "$vd" | esc)" "${sne:+${sne}dB}" "$updesc"
 done
 cat <<EOF
 </table>
