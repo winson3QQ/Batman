@@ -124,21 +124,51 @@ boot(){
 	[ -f /tmp/batdata-mount.booted ] && return 0
 	: > /tmp/batdata-mount.booted
 
-	# crash capture (#61): move pstore records (kernel panic dmesg) off the volatile ramoops
-	# region so the next panic has a clean region and the record can't be lost
-	n=0
+	# crash capture (#61): move pstore records off the volatile ramoops region so the next event
+	# has a clean region and the record can't be lost. With console capture on (#105) a
+	# console-ramoops record exists after EVERY warm reboot; it is only worth keeping when the
+	# boot was not clean, so on a clean boot it is discarded without touching the SD.
+	clean=0; [ -f "$LOG/shutdown.marker" ] && clean=1
+	n=0; ncon=0; confile=""
 	for f in /sys/fs/pstore/*; do
 		[ -f "$f" ] || continue
-		cp "$f" "$CRASH/$(ts)_$(bid)_$(basename "$f")" && rm -f "$f" && n=$((n+1))
+		b=${f##*/}
+		case "$b" in
+			console-*)
+				if [ "$clean" = 1 ]; then rm -f "$f"; continue; fi
+				confile="$CRASH/$(ts)_$(bid)_$b"
+				cp "$f" "$confile" && rm -f "$f" && ncon=$((ncon+1));;
+			*)	cp "$f" "$CRASH/$(ts)_$(bid)_$b" && rm -f "$f" && n=$((n+1));;
+		esac
 	done
+	# keep the last 5 console records (they only accumulate on unclean boots; names sort by time)
+	k=0; for f in "$CRASH"/*_console-ramoops-*; do [ -f "$f" ] && k=$((k+1)); done
+	for f in "$CRASH"/*_console-ramoops-*; do [ "$k" -gt 5 ] || break; [ -f "$f" ] && rm -f "$f" && k=$((k-1)); done
 
 	# boot reason: why did the previous life end? (every reboot must say who/what triggered it)
+	#   dmesg-ramoops        -> the kernel panicked
+	#   shutdown marker      -> clean (stop() ran: reboot/halt/sysupgrade/low-battery/openmanetd)
+	#   console record only  -> no shutdown ran: a hang cut by the hardware watchdog, reboot -f,
+	#                           sysrq or a reflash. The record tail is the evidence; hints are
+	#                           appended when it contains something recognisable (a procd reboot
+	#                           did not always leave "reboot: Restarting system" in the zone on
+	#                           the bench, so the absence of a hint must not be read as "hang").
+	#   nothing              -> power loss (or a hang, when console capture is not active)
 	if [ "$n" -gt 0 ]; then
 		reason="PANIC ($n pstore record(s) saved under $CRASH)"
-	elif [ -f "$LOG/shutdown.marker" ]; then
+	elif [ "$clean" = 1 ]; then
 		reason="CLEAN: $(cat "$LOG/shutdown.marker")"
+	elif [ "$ncon" -gt 0 ]; then
+		hint=""
+		grep -q "sysrq: " "$confile" 2>/dev/null && hint="$hint sysrq"
+		grep -qE "reboot: (Restarting system|Power down)" "$confile" 2>/dev/null && hint="$hint kernel-reboot"
+		grep -q "watchdog did not stop" "$confile" 2>/dev/null && hint="$hint watchdog-dev-closed"
+		grep -qE "Out of memory|oom-kill" "$confile" 2>/dev/null && hint="$hint oom"
+		reason="UNCLEAN — no shutdown ran (hang→hardware watchdog, reboot -f, sysrq or reflash); last console log saved under $CRASH${hint:+; hints:$hint}"
+	elif [ "$(cat /sys/module/ramoops/parameters/console_size 2>/dev/null || echo 0)" -gt 0 ]; then
+		reason="UNCLEAN (power loss: no shutdown marker, no panic, no console record)"
 	else
-		reason="UNCLEAN (power loss or hardware watchdog: no shutdown marker, no panic record)"
+		reason="UNCLEAN (power loss or hardware watchdog: no shutdown marker, no panic; console capture not active)"
 	fi
 	bs=$(cat /sys/class/watchdog/watchdog0/bootstatus 2>/dev/null)
 	[ -n "$bs" ] && [ "$bs" != 0 ] && reason="$reason [watchdog bootstatus=$bs]"

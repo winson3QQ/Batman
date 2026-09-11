@@ -1,0 +1,31 @@
+#!/bin/sh
+# flightrec — flight recorder: one heartbeat line per interval into the kernel log (/dev/kmsg).
+# With ramoops console capture on (fix-ramoops-dtbo.sh step 1) the kernel log is mirrored into
+# reserved RAM that survives a warm reset, so after a pure hang cut by the hardware watchdog the
+# saved console record shows what the node was doing in its last hours. Zero SD writes. (#105/#61)
+#
+# Cost model: every line also lands in logd's syslog ring and in the 32 KB console zone, so the
+# interval is a trade-off between resolution and how far back the record reaches (60 s ≈ 3 h of
+# console window). Kernel-side events (morse SPI timeouts, oom, …) are already in the same ring,
+# so the heartbeat only adds what the kernel does not log itself.
+#
+#   flightrec run | once            interval: uci flightrec.main.interval (default 60 s)
+INTERVAL=$(uci -q get flightrec.main.interval || echo 60)
+
+line(){
+	# one awk over the three numeric sources instead of a fork per field (word-split on purpose)
+	# shellcheck disable=SC2046
+	set -- $(awk 'FILENAME=="/proc/loadavg"{l=$1" "$2" "$3} FILENAME=="/proc/meminfo"&&/MemAvailable/{m=int($2/1024)} FILENAME ~ /temp/{t=int($1/1000)} END{print l, m, t}' /proc/loadavg /proc/meminfo /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+	load="$1 $2 $3"; memfree=$4; temp=$5
+	# neighbour count the way meshled does it (independent of the batctl header length)
+	peers=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
+	plink=$(iw dev wlh0 station dump 2>/dev/null | grep -c "plink:.*ESTAB")
+	bat=$( [ -f /tmp/batpower.state ] && cut -d' ' -f1-2 /tmp/batpower.state | tr ' ' '/' || echo "-")
+	thr=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
+	echo "flightrec: load=$load memfree=${memfree}M peers=$peers plink=$plink bat=$bat thr=$thr temp=${temp}C"
+}
+case "$1" in
+	once) line;;
+	run)  while :; do line > /dev/kmsg 2>/dev/null; sleep "$INTERVAL"; done;;
+	*)    echo "usage: flightrec run|once"; exit 2;;
+esac

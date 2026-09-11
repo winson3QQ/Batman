@@ -29,6 +29,10 @@ identity) is a separate decision (#13/#54) — see "Production" below.
 - `/etc/uci-defaults/99-halow-identity` — per-card hostname (OpenMANET's own `BCM2711-xxxx`
   scheme), AP SSID = hostname, random bootstrap IP, fresh SSH host keys.
 - `meshled` (1.8.0 variant) — two-colour status LED; `halow-setkey` — the key door.
+- `batpower` (S95, #122) — battery watchdog, `source=mock` until the INA226 is fitted;
+  `flightrec` (S99, #105) — 60 s heartbeat into the kernel log for the ramoops console record.
+- openmanetd `dbFile: /tmp/openmanetd.db` (#104) — its SQLite WAL was the only steady writer on
+  the rootfs overlay; `dtoverlay=ramoops,console-size=0x8000` (#105) — rolling console capture.
 - Fixed `/boot/overlays/ramoops.dtbo` — kernel-panic capture to pstore (#61).
 - `parted` (+ deps) — needed by the storage hook.
 

@@ -75,7 +75,7 @@ consumer finds it mounted) with two fixed directories:
 
 | Dir | Written when | Content |
 |---|---|---|
-| `crash/` | boot, only if pstore has records | kernel-panic dmesg moved off the volatile ramoops region (`<ts>_<bootid>_dmesg-ramoops-N`) |
+| `crash/` | boot, only after an unclean end | kernel-panic dmesg (`<ts>_<bootid>_dmesg-ramoops-N`) and, on unclean boots only, the last kernel console (`…_console-ramoops-0`, 32 KB, last 5 kept) moved off the volatile ramoops region; a clean boot discards its console record without writing |
 | `log/` | boot (one line) + clean shutdown | `boot-reasons.log` — one line per boot saying why the previous life ended (**PANIC / CLEAN: trigger / UNCLEAN** = power loss or hw watchdog); `shutdown_<ts>_<bootid>.log` — the syslog ring dumped at clean shutdown (last 10 kept) |
 | `docker/` | payload hosts only | docker data-root (`dockerd.globals.data_root`): all container **images**, shared and layer-deduplicated; rebuildable, replaced by OTA — holds no tenant state |
 | `apps/<tenant>/` | by the tenant | **one directory per tenant** (`fts/`, `fts-ui/`, later `video-relay/`, `sdr/`, `mqtt/`…): everything that tenant must keep — mounted straight into its container (`-v /opt/batdata/apps/fts:/opt/fts`), never bind-mounted back to legacy paths |
