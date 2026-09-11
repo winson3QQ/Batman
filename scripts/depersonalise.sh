@@ -1,67 +1,74 @@
 #!/bin/sh
 #
-# depersonalise.sh - turn a fully-provisioned node into a redistributable
-# "golden" image. Run this ON the node, once, immediately before you power it
-# off and read its SD card. It strips per-device identity and the maintainer's
-# secrets, resets everything to the documented DEFAULTS, and installs a
-# first-boot hook so every card flashed from the image comes up unique.
+# depersonalise.sh - turn a fully-provisioned OpenMANET 1.8.0 node into a redistributable
+# "golden" image. Run this ON the golden node, once, immediately before you power it off and
+# read its SD card (docs/golden-image.md). It bakes the mesh baseline, strips per-device
+# identity and the maintainer's secrets, and installs the first-boot hooks + runtime services
+# so every card flashed from the image comes up unique and self-provisioned.
+#
+#   depersonalise.sh [--mesh-key K] [--ap-key K] [--mesh-id ID] [--channel N] [--country CC] [--bench]
+#
+# 1.8.0 layout: HaLow = the `morse` wifi-device (radio1 on a Pi 4), LAN = the `ahwlan` bridge
+# (eth + bat0 + onboarding APs). Older releases (radio3 / setup-node2.sh) are not supported.
+#
+# Keys are a management-plane asset (#13): give the deployment's batch key with --mesh-key/--ap-key
+# so the cards come up on the air; without them the public placeholder CHANGE-ME-NOW is baked and
+# halow-keyguard (#103) keeps the radios DOWN until `halow-setkey` is run over Ethernet.
+#
+# Addressing is OpenMANET's two-stage scheme (#11 decision): the image carries only a bootstrap
+# 10.41.254.x; each card's openmanetd reserves a mesh-unique IP on first boot and reboots once.
+# Find nodes by <hostname>.local, never by IP.
+#
+# --bench keeps the maintainer's authorized_keys and SSH enabled so a test flash stays reachable.
+#   It stamps /etc/BENCH-IMAGE; never publish such an image.
 #
 # After it finishes: power off (do NOT reboot this node) and image the card.
-#
-#   WARNING: this empties the root password and rewrites mesh key / AP key to
-#   defaults, and removes authorized_keys. Only run it on the copy you publish.
-#
 set -e
 
-# ---- documented defaults (keep in sync with docs/release-v1.0.0.md) --------
-# root password ships EMPTY (OpenMANET factory style) - no baked credentials.
-DEF_MESH_ID='halow-mesh'         # 802.11s mesh id (same on every node)
-DEF_MESH_KEY='CHANGE-ME-NOW'    # SAE mesh key   (same on every node, >=8 ch)
-DEF_AP_SSID='halow-setup'        # 5 GHz onboarding AP
-DEF_AP_KEY='CHANGE-ME-NOW'      # 5 GHz AP key
-DEF_CHANNEL='42'                 # S1G ch 42 = 923 MHz @ 2 MHz
-DEF_COUNTRY='US'                 # regdomain - installer MUST set their region
-
-echo "==> root password -> EMPTY (factory style; user MUST set one on first login)"
-sed -i 's|^root:[^:]*:|root::|' /etc/shadow
-
-echo "==> removing maintainer authorized_keys (host keys: see first-boot hook)"
-rm -f /etc/dropbear/authorized_keys /root/.ssh/authorized_keys
-# NOTE: do NOT delete the SSH host keys here. On a live node being imaged over
-# the network that instantly kills dropbear (new connections reset at kex) and
-# locks you out mid-dd. The first-boot hook below drops them so each flashed
-# card still regenerates its own unique host keys.
-# self-signed TLS certs regenerate on first service start if absent
-rm -f /etc/uhttpd.crt /etc/uhttpd.key 2>/dev/null || true
-
-echo "==> mesh + radio -> defaults"
-uci set wireless.radio3.channel="$DEF_CHANNEL"
-uci set wireless.radio3.country="$DEF_COUNTRY"
-uci set wireless.default_radio3.mesh_id="$DEF_MESH_ID"
-uci set wireless.default_radio3.encryption='sae'
-uci set wireless.default_radio3.key="$DEF_MESH_KEY"
-
-echo "==> reset every AP interface (5 GHz onboarding) to defaults"
-for s in $(uci show wireless | sed -n "s/^wireless\.\([^.=]*\)\.mode='ap'\$/\1/p"); do
-	uci set wireless.$s.ssid="$DEF_AP_SSID"
-	uci set wireless.$s.encryption='psk2'
-	uci set wireless.$s.key="$DEF_AP_KEY"
-	echo "    $s -> ssid '$DEF_AP_SSID'"
+MESH_KEY='CHANGE-ME-NOW'      # SAE mesh key   (same on every node of a deployment, >= 8 ch)
+AP_KEY='CHANGE-ME-NOW'        # onboarding AP PSK
+MESH_ID='openmanet1'          # 802.11s mesh id (same on every node)
+CHANNEL='40'                  # S1G ch 40 = 922 MHz @ 4 MHz (42 = 2 MHz)
+COUNTRY='US'                  # regdomain - installer MUST set their region (#92)
+BENCH=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--mesh-key) MESH_KEY=$2; shift 2;; --ap-key) AP_KEY=$2; shift 2;; --mesh-id) MESH_ID=$2; shift 2;;
+		--channel) CHANNEL=$2; shift 2;; --country) COUNTRY=$2; shift 2;; --bench) BENCH=1; shift;;
+		*) echo "unknown arg $1"; exit 2;;
+	esac
 done
 
-echo "==> 5 GHz AP -> low indoor default (21 dBm / 20 MHz)"
-# The 5 GHz AP is only for nearby phones/clients (not the mesh). Ship a low,
-# battery-friendly indoor profile; deployers run 'apower field' for range.
-uci set wireless.radio1.txpower='21'
-uci set wireless.radio1.htmode='VHT20'
+HERE=$(cd "$(dirname "$0")" && pwd)
+PROV="$HERE/../deploy/provisioning"
+for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey uci-defaults/95-batman-storage; do
+	[ -f "$PROV/$f" ] || { echo "missing $PROV/$f — stage the repo on the node (scripts/ + deploy/)"; exit 1; }
+done
+[ -f "$HERE/meshled.1.8.0" ] && [ -f "$HERE/meshled.init" ] || { echo "missing scripts/meshled.1.8.0 or meshled.init"; exit 1; }
 
-echo "==> comms (PTT) -> enabled, web control source"
-# openmanetd voice comms ON by default in web mode: browser/phone PTT over the
-# mesh, no extra audio hardware needed (verified this board initialises comms in
-# web mode, 2026-08-13; multicast group 239.192.41.1). Users who add an OpenVLM
-# VLM-KW or nanoPTT dongle can switch controlSource later. config.yml is
-# openmanetd's own config, not uci -- edit only the enable/controlSource lines
-# inside the comms: block.
+echo "==> 1. mesh baseline (Mesh Point, bridge, ${CHANNEL} ${COUNTRY}, mesh_id ${MESH_ID})"
+sh "$PROV/meshpoint-1.8.0.sh" -i "$MESH_ID" -k "$MESH_KEY" -c "$CHANNEL" -C "$COUNTRY"
+# every card must reserve its own address: re-arm stage 2 and reset the bootstrap
+uci set openmanetd.config.dhcpconfigured='0'
+uci set network.ahwlan.ipaddr='10.41.254.1'      # first-boot hook randomises this
+uci set dhcp.ahwlan.start='100'; uci set dhcp.ahwlan.limit='150'; uci -q delete dhcp.ahwlan.force
+
+echo "==> 2. onboarding APs -> deployment key (placeholder unless --ap-key), low indoor 5 GHz profile"
+for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='ap'$/\1/p"); do
+	uci set "wireless.$s.key=$AP_KEY"
+	uci set "wireless.$s.ssid=halow-setup"     # first-boot hook renames to the card's hostname
+	echo "    $s -> key $([ "$AP_KEY" = CHANGE-ME-NOW ] && echo PLACEHOLDER || echo set)"
+done
+# The 5 GHz AP only serves nearby phones (not the mesh): battery-friendly indoor profile;
+# deployers run 'apower field' for range.
+for r in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.band='5g'$/\1/p"); do
+	uci set "wireless.$r.txpower=21"; uci set "wireless.$r.htmode=VHT20"
+done
+
+echo "==> 3. comms (PTT) -> enabled, web control source"
+# openmanetd voice comms ON by default in web mode: browser/phone PTT over the mesh, no extra
+# audio hardware needed (multicast 239.192.41.1). Edit only the enable/controlSource lines
+# inside the comms: block of openmanetd's own config.
 OMCFG=/etc/openmanetd/config.yml
 if [ -f "$OMCFG" ]; then
 	awk '
@@ -73,77 +80,76 @@ if [ -f "$OMCFG" ]; then
 	echo "    comms enabled (web); PTT at https://<node>:8081"
 fi
 
-echo "==> hostname -> sentinel (first boot derives a unique one)"
+echo "==> 4. root password -> EMPTY (factory style; user MUST set one on first login)"
+sed -i 's|^root:[^:]*:|root::|' /etc/shadow
+
+if [ "$BENCH" = 1 ]; then
+	echo "==> 5. --bench: keeping authorized_keys + SSH enabled (NOT for release)"
+	uci set dropbear.main.enable='1'
+	echo "bench image built $(date) — do not publish" > /etc/BENCH-IMAGE
+else
+	echo "==> 5. removing maintainer authorized_keys"
+	rm -f /etc/dropbear/authorized_keys /root/.ssh/authorized_keys /etc/BENCH-IMAGE
+fi
+# Do NOT delete the SSH host keys here: on a live node being imaged over the network that kills
+# dropbear mid-dd. The first-boot hook drops them so each card regenerates its own.
+rm -f /etc/uhttpd.crt /etc/uhttpd.key 2>/dev/null || true   # self-signed TLS regenerates
+
+echo "==> 6. hostname -> sentinel (first boot derives a unique one)"
 uci set system.@system[0].hostname='halow-node'
 uci commit
 
-echo "==> clearing per-device state"
-rm -f /tmp/meshled.* /tmp/bat-hosts /root/.ash_history
+echo "==> 7. clearing per-device state"
+rm -f /tmp/meshled.* /tmp/bat-hosts /root/.ash_history /etc/halow-keyguard.blocked
 rm -f /etc/config/network.ula 2>/dev/null || true   # ULA regenerates
-: > /etc/config/dhcp.leases 2>/dev/null || true
 logread -c 2>/dev/null || true
+# openmanetd's peer/reservation DB must not be inherited by the cards (stale peers, stale IP rows)
+/etc/init.d/openmanetd stop 2>/dev/null || true
+rm -f /etc/openmanetd/openmanetd.db /etc/openmanetd/openmanetd.db-wal /etc/openmanetd/openmanetd.db-shm
 
-echo "==> installing first-boot storage provisioning hook (#88)"
-# The productionised storage provisioning (deploy/provisioning/uci-defaults/95-batman-storage):
-# on each flashed card's first boot it carves the SD free space into an expand-to-fill data
-# partition (LUKS if the image has dm-crypt, else plain) and installs the persistent mount.
-# Source of truth is the repo file; install it from a repo checkout relative to this script.
-STORAGE_SRC="$(dirname "$0")/../deploy/provisioning/uci-defaults/95-batman-storage"
-if [ -f "$STORAGE_SRC" ]; then
-	install -m 0755 "$STORAGE_SRC" /etc/uci-defaults/95-batman-storage
-	echo "    installed /etc/uci-defaults/95-batman-storage"
-else
-	echo "    WARN: $STORAGE_SRC not found — stage the repo on the node, or copy it into"
-	echo "          /etc/uci-defaults/95-batman-storage manually before imaging (#88)."
-fi
-
-echo "==> installing first-boot identity hook"
+echo "==> 8. installing first-boot hooks"
+cp "$PROV/uci-defaults/95-batman-storage" /etc/uci-defaults/95-batman-storage && chmod 0755 /etc/uci-defaults/95-batman-storage
+echo "    /etc/uci-defaults/95-batman-storage (#88/#61)"
 cat > /etc/uci-defaults/99-halow-identity <<'FIRSTBOOT'
 #!/bin/sh
-# Runs once on the end user's first boot, then OpenWrt deletes it. Personalises
-# the card so many nodes off one image do not collide.
-# 1. unique hostname from eth0's MAC (eth0 is up this early in boot; wlan0/SPI
-#    is not, so prefer eth0) e.g. halow-47ee
-mac=$(cat /sys/class/net/eth0/address 2>/dev/null)
-[ -n "$mac" ] || mac=$(cat /sys/class/net/wlan0/address 2>/dev/null)
-sfx=$(echo "$mac" | sed 's/://g' | cut -c 9-12)
-[ -n "$sfx" ] || sfx=$(cut -c1-4 /proc/sys/kernel/random/uuid)
-host="halow-$sfx"
-uci set system.@system[0].hostname="$host"
-uci commit system
-echo "$host" > /proc/sys/kernel/hostname 2>/dev/null || true
-/etc/init.d/avahi-daemon restart 2>/dev/null || true
-# 2. unique management IP from the SAME MAC, so many cards off one image do not
-#    all boot as the 10.41.1.1 factory default. This is deterministic and runs
-#    BEFORE the radio is up, so no two nodes ever race for the same address (a
-#    property classic DAD can't give). 10.41.<octet5>.<octet6> of the MAC; the
-#    hostname suffix (octet5octet6 in hex) and the IP therefore point at the
-#    same device. ip-conflict-check (init.d, post-network) warns in the rare
-#    case two NICs share the last two MAC octets.
-if [ -n "$mac" ]; then
-	o5=$((0x$(echo "$mac" | cut -d: -f5)))
-	o6=$((0x$(echo "$mac" | cut -d: -f6)))
-	[ "$o6" -eq 0 ]   && o6=1     # never .0   (would look like a network addr)
-	[ "$o6" -eq 255 ] && o6=254   # never .255 (would look like a broadcast addr)
-	[ "$o5" -eq 1 ] && [ "$o6" -eq 1 ] && o6=2   # never the 10.41.1.1 default
-	uci set network.ahwlan.ipaddr="10.41.$o5.$o6"
-	# spread each node's DHCP client window (start/limit are host offsets into
-	# 10.41.0.0/16) so two fresh cards never lease the same client IPs. Interim:
-	# full decentralised client addressing = IPv6 SLAAC (roadmap follow-up).
-	uci set dhcp.ahwlan.start=$(( o5 * 16 + 16 ))
-	uci set dhcp.ahwlan.limit=16
-	uci commit network
-	uci commit dhcp
+# 99-halow-identity — runs once on the card's first boot, then OpenWrt deletes it.
+# Personalises the card so many nodes off one image do not collide.
+# 1. unique hostname with OpenMANET's own scheme (e.g. BCM2711-47ee from the MAC label / eth0)
+. /lib/functions/morse.sh 2>/dev/null
+host=$(morse_generate_default_hostname 2>/dev/null)
+if [ -z "$host" ]; then
+	mac=$(cat /sys/class/net/eth0/address 2>/dev/null)
+	sfx=$(echo "$mac" | sed 's/://g' | cut -c 9-12); [ -n "$sfx" ] || sfx=$(cut -c1-4 /proc/sys/kernel/random/uuid)
+	host="halow-$sfx"
 fi
-# 3. unique SSH host keys: drop the master's now; dropbear regenerates fresh
-#    ones when it starts, which is later in boot than this uci-defaults hook.
+uci set system.@system[0].hostname="$host"
+echo "$host" > /proc/sys/kernel/hostname 2>/dev/null || true
+# 2. onboarding AP SSID = hostname (stock behaviour), so a phone can tell nodes apart
+for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='ap'$/\1/p"); do
+	uci set "wireless.$s.ssid=$host"
+done
+# 3. addressing: bootstrap only. openmanetd reserves the real IP after boot and reboots once (#11).
+b=$(hexdump -n1 -e '1/1 "%u"' /dev/urandom 2>/dev/null || echo 7)
+uci set network.ahwlan.ipaddr="10.41.254.$(( b % 253 + 2 ))"
+uci set openmanetd.config.dhcpconfigured='0'
+uci commit
+# 4. unique SSH host keys: drop the master's; dropbear regenerates fresh ones when it starts
 rm -f /etc/dropbear/dropbear_*_host_key
 exit 0
 FIRSTBOOT
 chmod +x /etc/uci-defaults/99-halow-identity
+echo "    /etc/uci-defaults/99-halow-identity (hostname, AP ssid, bootstrap IP, host keys)"
+
+echo "==> 9. installing runtime services"
+cp "$PROV/halow-keyguard.init" /etc/init.d/halow-keyguard && chmod 0755 /etc/init.d/halow-keyguard && /etc/init.d/halow-keyguard enable
+cp "$PROV/halow-setkey" /usr/bin/halow-setkey && chmod 0755 /usr/bin/halow-setkey
+cp "$HERE/meshled.1.8.0" /usr/bin/meshled && chmod 0755 /usr/bin/meshled
+cp "$HERE/meshled.init" /etc/init.d/meshled && chmod 0755 /etc/init.d/meshled && /etc/init.d/meshled enable
+echo "    halow-keyguard (S18, #103) · halow-setkey · meshled (1.8.0)"
 
 sync
 echo
-echo "DONE. Power this node OFF now (do NOT reboot) and image its card:"
-echo "  sudo dd if=/dev/mmcblk0 of=halow-node.img bs=4M status=progress"
-echo "  sudo pishrink.sh -z halow-node.img"
+echo "DONE. Power this node OFF now (do NOT reboot) and image its card — docs/golden-image.md §2."
+[ "$BENCH" = 1 ] && echo "BENCH image: maintainer SSH key kept. Do not publish."
+[ "$MESH_KEY" = CHANGE-ME-NOW ] && echo "NOTE: mesh key is the placeholder — cards will boot with radios DOWN until halow-setkey."
+exit 0

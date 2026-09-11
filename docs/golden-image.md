@@ -8,11 +8,27 @@ identity) is a separate decision (#13/#54) — see "Production" below.
 
 ## What the golden contains
 - OpenMANET **1.8.0** base.
+- **Mesh baseline** (`deploy/provisioning/meshpoint-1.8.0.sh`, run by `depersonalise.sh`): the
+  post-wizard Mesh Point + bridge config without the LuCI wizard — HaLow `radio1` in 802.11s mesh
+  (default **ch 40 = 4 MHz**, US), batman-adv `bat0` (BATMAN_V, BLA) with hardif `batmesh0`,
+  `br-ahwlan` = eth0 + bat0 + onboarding AP, mesh11sd `enabled=1 / mesh_fwding=0 / mesh_nolearn=1`
+  (the wizard's `nolearn` typo fixed). Reproduced from the wizard's JS; validated against manet02.
+- **Addressing = OpenMANET two-stage** (#11 decision): the image carries only a bootstrap
+  `10.41.254.x` + `openmanetd.config.dhcpconfigured=0`; on first boot openmanetd reserves a
+  mesh-unique IP + 16-lease DHCP window via alfred gossip and **reboots once**. Address nodes by
+  `<hostname>.local`, never by IP.
+- **Keys**: the deployment batch key is baked with `depersonalise.sh --mesh-key/--ap-key`. Without
+  it the public placeholder `CHANGE-ME-NOW` is baked and **`halow-keyguard`** (S18, #103) keeps the
+  HaLow radio and the onboarding AP **down** (meshled red) until `halow-setkey --mesh <key> [--ap
+  <key>]` is run over Ethernet (the M12 → RJ45 port on the V3 enclosure). Ethernet is never touched.
 - `/etc/uci-defaults/95-batman-storage` — first-boot storage provisioning (carves the SD free
   space into an expand-to-fill data partition + mount; #88). Runs once, self-deletes. It installs
   the `batdata-mount` init (S11), which also does the crash/reboot capture (#61): pstore records
   → `/opt/batdata/crash/`, a reason line for every boot + the syslog ring at every clean
-  shutdown → `/opt/batdata/log/`.
+  shutdown → `/opt/batdata/log/` (openmanetd's addressing reboot is named as such).
+- `/etc/uci-defaults/99-halow-identity` — per-card hostname (OpenMANET's own `BCM2711-xxxx`
+  scheme), AP SSID = hostname, random bootstrap IP, fresh SSH host keys.
+- `meshled` (1.8.0 variant) — two-colour status LED; `halow-setkey` — the key door.
 - Fixed `/boot/overlays/ramoops.dtbo` — kernel-panic capture to pstore (#61).
 - `parted` (+ deps) — needed by the storage hook.
 
@@ -34,14 +50,21 @@ Then on the node:
 1. Install `parted` (the storage hook needs it). opkg over 借網 often fails (IPv6/feed) — the
    reliable path is: download the `.ipk`s on a machine with internet and `opkg install ./*.ipk`.
 2. Fix ramoops: `deploy/provisioning/fix-ramoops-dtbo.sh` (needs `dtc`; same offline-ipk trick).
-3. Install the storage hook: `install -m0755 deploy/provisioning/uci-defaults/95-batman-storage
-   /etc/uci-defaults/95-batman-storage`. (Or run `scripts/depersonalise.sh`, which installs it +
-   the identity hook + strips secrets — do this for a distributable golden.)
+3. Stage the repo on the node (`scripts/` + `deploy/provisioning/`, LF line endings — convert
+   with `sed 's/\r$//'` if copying from Windows) and run **`sh scripts/depersonalise.sh`**:
+   `--mesh-key K --ap-key K` for a deployment batch (cards come up on the air),
+   `--mesh-id`, `--channel` (40 = 4 MHz, 42 = 2 MHz), `--country` as needed, and **`--bench`** for
+   a test image only (keeps the maintainer SSH key + SSH enabled, stamps `/etc/BENCH-IMAGE` —
+   never publish one). It bakes the mesh baseline, resets addressing to bootstrap, strips
+   secrets/identity/openmanetd's peer DB, and installs the hooks + services listed above.
+   (busybox has no `install(1)`; the scripts use `cp`+`chmod`.)
 4. **Clean build cruft** before imaging: remove any `/etc/hosts` 借網 entries, `dtc`/`libfdt`
-   (build-only), `*.orig` backups, and the borrowed-net default route. **Keep `parted`.**
+   (build-only), `*.orig` backups, `/root/batman` staging, and the borrowed-net default route.
+   **Keep `parted`.**
 5. Make it look blank for the customer's first boot: no `/opt/batdata` mount, no `mmcblk0p3`
    (`umount /opt/batdata; /etc/init.d/batdata-mount disable; rm /etc/init.d/batdata-mount;
-   parted -s /dev/mmcblk0 rm 3`), storage hook **staged** in `/etc/uci-defaults/`.
+   parted -s /dev/mmcblk0 rm 3`), storage hook **staged** in `/etc/uci-defaults/`. (On the bench
+   you may keep p3: the hook keeps an existing filesystem and only regenerates the init.)
 
 ## 2. Capture the golden image
 The card's data is only p1+p2 (~4.2 GB); the rest is unpartitioned free space. dd just p1+p2 and
@@ -81,6 +104,26 @@ registered, a boot-reason line written, and SSH works via the baked credential. 
 a blank card → boot → zero config → auto-provision + connect." Optional deeper check: `reboot`
 → the next line says `CLEAN: … trigger=reboot/halt command …` and `log/shutdown_*.log` holds
 the pre-reboot syslog; `echo c > /proc/sysrq-trigger` → `PANIC`, record under `crash/`.
+(A reflash itself shows as `UNCLEAN` on the next boot — sysupgrade runs no clean shutdown.)
+
+Then the mesh/identity chain (validated end-to-end 2026-09-11 on the Pi 4 bench node against
+manet02, image built with `depersonalise.sh --bench` and **no** batch key):
+```sh
+ssh root@<node> '
+  cat /proc/sys/kernel/hostname; uci get wireless.default_radio0.ssid   # BCM2711-xxxx, same
+  uci get network.ahwlan.ipaddr; uci get openmanetd.config.dhcpconfigured   # 10.41.254.x, 0
+  halow-setkey --status; meshled status | head -3    # PLACEHOLDER, radios disabled, red
+  halow-setkey --mesh <batch-key> --ap <ap-key>      # the door (skip if keys were baked)
+'
+# ~2.5 min later openmanetd has reserved the final IP and rebooted once; reach the node by name:
+ssh root@<hostname>.local '
+  tail -1 /opt/batdata/log/boot-reasons.log   # CLEAN: … trigger=openmanetd address reservation
+  uci get network.ahwlan.ipaddr; uci get openmanetd.config.dhcpconfigured   # 10.41.x.y (not 254), 1
+  batctl n; meshled status | head -3          # peer(s) listed; red OK / green LINKED
+'
+```
+With `--mesh-key/--ap-key` baked, the guard never triggers: the card joins the mesh on its
+first boot and only the reservation reboot remains.
 
 ## Production notes (beyond this validation)
 - This validation baked a **maintainer SSH key** as a stand-in credential. A real per-deployment

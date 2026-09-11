@@ -66,6 +66,17 @@ captured into the golden image (the same model Batman already uses for meshled/m
 - **`fix-ramoops-dtbo.sh`** (#61) — fixes the malformed ramoops reserved-memory `reg` in the
   image's `/boot/overlays/ramoops.dtbo` so kernel panics get captured (needs `dtc` while
   running; remove it afterwards). A boot-partition file edit, **no kernel rebuild**.
+- **`meshpoint-1.8.0.sh`** — the post-wizard **Mesh Point + bridge** baseline for OpenMANET 1.8.0
+  without the LuCI wizard (HaLow mesh on `radio1`, batman-adv `bat0`/`batmesh0`, `br-ahwlan`,
+  mesh11sd trio, firewall zone, dnsmasq). Parameters: mesh id, key, channel (40 = 4 MHz), country.
+  Addressing stays OpenMANET's two-stage scheme (bootstrap 10.41.254.x, openmanetd reserves the
+  real IP on first boot and reboots once) — #11 decision; nodes are found by `<hostname>.local`.
+- **`halow-keyguard.init`** (#103) — S18 guard: while the mesh SAE key or an onboarding-AP key is
+  still the public placeholder `CHANGE-ME-NOW`, that radio/AP is kept disabled (committed) and
+  meshled shows red; Ethernet is never touched. **`halow-setkey`** is the one door: sets/rotates
+  the keys, releases exactly what the guard disabled, reloads wifi. Batch keys are normally baked
+  at image time (`depersonalise.sh --mesh-key/--ap-key`); the guard only catches "public image
+  flashed, no key set".
 
 ## What golden-master files can and cannot do
 
