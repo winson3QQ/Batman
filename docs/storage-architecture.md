@@ -186,12 +186,34 @@ The scheme above is the target; these must be resolved before it's buildable. �
 
 ## Blocker resolutions (design, grounded on manet02 facts 2026-09-10)
 
-### B1 — GPT (resolved; re-verified 2026-09-11)
-The Pi 4 EEPROM release notes list GPT + hybrid-MBR support since **2020-09-14** (flagged
-"experimental" there); the bench nodes run a 2026-08-generation EEPROM. **Decision: GPT** (six
-partitions exceed MBR's 4 primaries). Boot partitions stay FAT for the Pi firmware. Still to
-verify on the bench before v2.0: a GPT card boots with `autoboot.txt` partition switching, and
-later with the signed-boot chain (#74).
+### B1 — GPT + the tryboot mechanism (bench-verified 2026-09-11, #106)
+The Pi 4 EEPROM release notes list GPT + hybrid-MBR support since **2020-09-14**; the bench
+node's EEPROM is **2026-01-09** (`chosen/bootloader/capabilities = 0x7f`). **Decision: GPT**
+(six partitions exceed MBR's 4 primaries). Boot partitions stay FAT for the Pi firmware.
+
+**What was proven on the dev node (Pi 4B):**
+- **tryboot trigger:** busybox `reboot` does **not** accept the `"0 tryboot"` restart string
+  (and there's no gcc/python/perl in the image). Use `vcmailbox 0x00038064 4 4 1` (set reboot
+  flags bit0 = tryboot) then a normal `reboot`. `vcmailbox` **is** in the image. → the #89
+  apply flow must ship a vcmailbox-based trigger; don't rely on `reboot`.
+- **observable / one-shot:** `/proc/device-tree/chosen/bootloader/tryboot` reads 1 after a
+  tryboot boot (big-endian), 0 otherwise; `…/partition` reports the booted partition; the
+  firmware reboot flag auto-clears after consumption. So a node always knows if it is in a
+  trial boot — the hook for health-gated commit / fallback (#89).
+- **fallback safety (the key result):** a bootB the firmware **cannot** boot → **automatic,
+  clean fall-back to bootA, no brick, no watchdog event** (the fallback is pre-Linux). Held on
+  the only remotely-reachable node with no way to power-cycle. This is the safety floor the
+  whole A/B design (#89) stands on.
+
+**What is NOT yet proven, and the lesson:** actually *booting* a second boot partition was not
+achieved on the bench — a `dd if=bootA of=bootB` copy carries bootA's FAT **BPB
+`hidden_sectors` (= bootA's start LBA)**, so bootB's geometry is internally wrong and the
+firmware's FAT reader rejects it → fall-back to A (Linux `mount` is unaffected, which masks it).
+**bootB must be built properly (`mkfs.vfat`, correct BPB), never `dd`-copied.** `mkfs.vfat`
+(dosfstools) and `resize2fs` are **not in the image** — so in-place A/B provisioning needs them
+added, or the card is built offline. Full GPT six-partition A/B boot + slot-switch must be
+**built and boot-tested on a spare card offline** (no USB card reader on site), not by
+repartitioning the only remote node. Signed-boot chain (#74) verification rides on that card.
 
 ### B2 — verity vs overlay: the real problem is *what's in the overlay*
 Reframed by the facts: OpenWrt **already** runs a read-only squashfs (`/rom`, 52.8 MB) + a
