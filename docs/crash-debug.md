@@ -60,6 +60,17 @@ boot** (so a captured panic is saved off the volatile region before it's reused)
 workaround (`ramoops.mem_address=/mem_size=` module params) is **unsafe** here — the region was
 never reserved, so it may be in use; fix the DT reservation instead.
 
+**✅ FIXED + VALIDATED end-to-end (OpenMANET 1.8.0 / Pi 4, 2026-09-11).** The image ships
+`dtoverlay=ramoops` → `/boot/overlays/ramoops.dtbo`, whose node has `reg = <0xb000000 0x10000>`.
+The fix is a **boot-partition dtbo edit** (no kernel rebuild): decompile → set
+`reg = <0x0 0xb000000 0x10000>` → recompile in place, scripted in
+[`deploy/provisioning/fix-ramoops-dtbo.sh`](../deploy/provisioning/fix-ramoops-dtbo.sh) (run on
+the golden node during image prep). After the fix + reboot: `pstore: Registered ramoops as
+persistent store backend`, and a test panic (`echo c > /proc/sysrq-trigger`) was **captured to
+`/sys/fs/pstore/dmesg-ramoops-0` (27 KB, "Panic#1") and survived the reboot** — the empty-pstore
+mystery is closed. (The earlier `overlays/ramoops-fix-overlay.dts` override was superseded by
+this proven direct edit.) Still to add: a boot hook to **flush pstore to the persistent log**.
+
 ### 3. Kernel hung-task / softlockup detectors (missing — build)
 The stock kernel lacks `CONFIG_DETECT_HUNG_TASK` / `CONFIG_SOFTLOCKUP_DETECTOR`, so a pure
 hang never becomes a panic → nothing to capture. **Fix:** enable them in the kernel config so
