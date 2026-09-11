@@ -58,13 +58,29 @@ admin changes policy but every policy change is **signed** and attributable.
 The point (consistent with productization.md): **design the RBAC/ABAC capability into
 the architecture now**; the formal accreditation (RMF/ATO, NATO) is deferred.
 
-## Maps to milestones
+## Maps to image versions (the milestones — see #75)
 
-- **M1** (self-forming, observable): serves **admin** (#14 console) + **deployer**
-  (#11 auto-onboard); **operator** already served by ATAK (#44). Adds: RBAC
-  architecture + role-aware console views, and the operator status light.
-- **M2** (trusted, secure): deepens **deployer** (#13/#48 enrolment, #47 zeroize) +
-  **admin** (revocation); cryptographic RBAC **enforcement** hardens here with #13.
+- **v1.1 DEV golden** (self-forming, observable): serves **admin** (#14 console) +
+  **deployer** (#11 auto-onboard, #103 first-boot key guard); **operator** already served
+  by ATAK (#44). Adds: RBAC architecture (#52) + role-aware console views, and the
+  operator status light (#53).
+- **v2.0 Build gate**: no persona-facing change — the image is now built by us
+  (**developer** ④ gains CI-built, signed, per-board artifacts).
+- **v3.0 PROD** (trusted, OTA, lockable): deepens **deployer** (#13/#48 enrolment via the
+  #54 tool, #47 zeroize) + **admin** (revocation, OTA rollout #89); cryptographic RBAC
+  **enforcement** hardens here with #13.
+- **v4.0 Fleet**: **admin** gets the EMS (#67: collector, alarms, quarantine #49).
+
+## Which persona needs an "app"?
+
+Nothing new is built as a product-level app for now. Control plane must never become a
+dependency of the data plane, and each persona already has a surface: operator = ATAK +
+the status light (no app); admin = #14 console built on alfred — **CLI/TUI first**, a
+static page served by any node's uhttpd when a screen is wanted (LuCI already exists),
+never a central server; **deployer = the one tool that must exist** (#54): once PROD nodes
+are locked there is no scp, so enrolment / key-fill / zeroize need a front door — a laptop
+**CLI first** (scriptable, testable), a GUI only if a non-technical deployer must drive it;
+developer = SSH + CI. Project management itself stays on GitHub issues/milestones (#75).
 
 New scope this raises: **RBAC/ABAC architecture** (cross-cutting), a **field enrolment
 tool** (deployer), and an **operator connectivity status indicator** (meshled

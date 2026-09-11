@@ -114,6 +114,9 @@ RF 三張等 soak 報告。
 
 ### Milestone = 可燒錄的 image 版本(release-DoD)
 
+> ⚠️ 本小節的 **M1 / M2 命名已由 Roadmap v3 取代**(M1 → `v1.1 DEV golden`,M2 → `v3.0 PROD`,
+> 中間插入 `v2.0 Build gate`)。保留作為當時的推理紀錄;現行分類見下方 v3 段落與 #75。
+
 把 milestone 當「**燒了會怎樣**」的 image release,每版有明確 DoD——這樣「在哪個 release
 有什麼具體進度」一目了然。角色/RBAC 詳見 [`personas-and-roles.md`](personas-and-roles.md)。
 **順序:先 M1,後 M2。**
@@ -138,6 +141,27 @@ RF 三張等 soak 報告。
 **角色對映**:M1 服務網管(#14)+ 佈署者(#11),操作員已由 ATAK(#44)服務;M2 深化佈署者
 (enrolment/zeroize)+ 網管(撤銷)。**唯一跨版軟連結**:#49 撤銷用 M2 的 #13 PKI,但 #49 偵測
 靠 #14 可先做 → M1 除 #49 收尾外自足。
+
+---
+
+## Roadmap v3 — 版本/閘門制(2026-09-11,取代 M1/M2 與 wave-N)
+
+> **GitHub 上的 SoT 是根母單 #75**;這段只講分類原則。v2 的 M1/M2 已改名為 v1.1 / v3.0,
+> 「wave-1」的內容全部落在 v1.1 裡(PR #99 #100 #101)。
+
+**一個觀點定順序:** DEV / PROD 不是兩個時期,是**同一個 image 的兩種模式**(#74)。真正的分水嶺
+是「用 OpenMANET 現成 image 貼檔案(golden-master)」→「**自己編 image**」。所以:
+
+- **milestone = 可燒的 image 版本**(燒了會怎樣):
+  `v1.1 DEV golden`(免重編,現在做)→ `v2.0 Build gate`(自編兩塊板的 image,DEV→PROD 樞紐)
+  → `v3.0 PROD`(verity + A/B OTA + PKI + 可鎖,第一個能交給別人的版本)→ `v4.0 Fleet & HW security`
+- **label = 卡在什麼閘門**:`dev-now`(貼檔案就能做)/ `build-gated`(要自編)/ `hw-gated`(等硬體或硬體決定)
+  / `prod-lock`(只在 PROD 模式有意義)/ `lane:infra`(建置環境、CI 閘、HIL 測試台、治具)
+- **大單拆半**:#47 #61 #74 #89 #41 各拆成「現在能做的半張」(v1.1)和「閘門後的半張」(v2.0+),不再整張卡住。
+- **開發基礎建設是一條橫跨所有版本的線**(`lane:infra`,母單 #73):v2.0 = 重現 1.8.0 build(#108)+ HIL smoke
+  test 台(#113);v3.0 = 硬拔電治具(#114);測試台 = Pi 4 dev node + Zero 2 W,manet01/02 不動。
+- **硬體分級**(productization.md):Pi 4/CM4 = 唯一能到 Secure-unattended;Zero 2 W = Base / attended,中繼消耗型。
+  一份配方、每個 subtarget 一個 artifact、首開讀板子選 profile(#110)。
 
 ---
 
