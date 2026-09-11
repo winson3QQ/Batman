@@ -205,15 +205,66 @@ node's EEPROM is **2026-01-09** (`chosen/bootloader/capabilities = 0x7f`). **Dec
   the only remotely-reachable node with no way to power-cycle. This is the safety floor the
   whole A/B design (#89) stands on.
 
-**What is NOT yet proven, and the lesson:** actually *booting* a second boot partition was not
-achieved on the bench — a `dd if=bootA of=bootB` copy carries bootA's FAT **BPB
-`hidden_sectors` (= bootA's start LBA)**, so bootB's geometry is internally wrong and the
-firmware's FAT reader rejects it → fall-back to A (Linux `mount` is unaffected, which masks it).
-**bootB must be built properly (`mkfs.vfat`, correct BPB), never `dd`-copied.** `mkfs.vfat`
-(dosfstools) and `resize2fs` are **not in the image** — so in-place A/B provisioning needs them
-added, or the card is built offline. Full GPT six-partition A/B boot + slot-switch must be
-**built and boot-tested on a spare card offline** (no USB card reader on site), not by
-repartitioning the only remote node. Signed-boot chain (#74) verification rides on that card.
+**What is NOT yet proven:** actually *booting* a second boot partition. The bench card was
+later read off-node on a card reader (Pi 500, 2026-09-11) and the BPB explanation first
+recorded here **did not survive measurement** — corrected below.
+
+> **Correction (2026-09-11).** This section originally said the `dd if=bootA of=bootB` copy
+> carried bootA's start LBA in the FAT **BPB `hidden_sectors`**, and that the firmware's FAT
+> reader rejected bootB for it. Measured on the bench card itself (p1 start LBA 8192, p4 start
+> LBA 62025728):
+>
+> ```
+> p1 (bootA)  OEM='mkfs.fat'  hidden_sectors=0  total_sectors32=131072
+> p4 (bootB)  OEM='mkfs.fat'  hidden_sectors=0  total_sectors32=131072
+> ```
+>
+> **Both are 0**, and bootA boots fine with 0 — so `hidden_sectors` cannot be what separated
+> them. What the `dd` copy *did* produce: an identical FAT volume id (`6859-BBC4`) and label
+> (`boot`) on both partitions, and a `total_sectors32` of 131072 (64 MiB) inside a 307200-sector
+> (150 MiB) partition. More decisive: **neither boot partition contained `autoboot.txt` (nor
+> `tryboot.txt`)**. Without `tryboot_a_b=1` + `boot_partition=`, the firmware does no
+> boot-partition switching at all — so the trial boot simply used the normal partition. "The
+> firmware rejected bootB" was never demonstrated; **boot-partition switching had not been
+> configured**, which is a sufficient explanation for the observed behaviour on its own.
+
+**The lesson still holds, for a better-grounded reason:** build each boot slot with
+**`mkfs.vfat` on its own partition, never `dd`-copy one** — a fresh mkfs gets `hidden_sectors`,
+the volume size and a *distinct* volume id right for free, while a `dd` clone duplicates the
+volume id/label and describes the source partition's size. And **`autoboot.txt` must be written
+explicitly**, on the first FAT partition, or A/B is inert.
+
+`mkfs.vfat` (dosfstools) and `resize2fs` are **not in the image** — so in-place A/B
+provisioning needs them added, or the card is built offline. Full GPT six-partition A/B boot +
+slot-switch must be **built and boot-tested on a spare card offline** (no USB card reader on
+site), not by repartitioning the only remote node. Signed-boot chain (#74) verification rides
+on that card. Card build: **done** (below); boot test: still open (#133).
+
+**The offline card — built 2026-09-11 (#133), not yet boot-tested.** Built on the Pi 500 card
+reader by `scripts/build-gpt-ab-card.sh` from the bench card (backed up first), GPT, 29.7 GiB:
+
+| # | Name | Start (s) | Size | FS | Label | PARTUUID suffix |
+|---|---|---|---|---|---|---|
+| 1 | bootA | 8192 | 64 MiB | fat16 | `BOOTA` | `…-0001` |
+| 2 | rootA | 139264 | 1.5 GiB | squashfs | — | `…-0002` |
+| 3 | bootB | 3284992 | 64 MiB | fat16 | `BOOTB` | `…-0003` |
+| 4 | rootB | 3416064 | 1.5 GiB | squashfs | — | `…-0004` |
+| — | *(rescue reserve)* | 6561792 | 300 MiB | *unallocated* | — | — |
+| 5 | config | 7176192 | 512 MiB | ext4 | `batconfig` | `…-0005` |
+| 6 | data | 8224768 | 25.8 GiB | ext4 | `batdata` | `…-0006` |
+
+Verified after the build: `hidden_sectors` = 8192 (p1) and 3284992 (p3), each matching its own
+start LBA; volume ids distinct (`BA71-0001` / `BA71-0003`); `autoboot.txt` present on **bootA
+only** (`[all] tryboot_a_b=1, boot_partition=1` / `[tryboot] boot_partition=3`); each slot's
+`cmdline.txt` points at its own rootfs PARTUUID and carries a `batman_slot=A|B` marker; both
+rootfs slots hold a valid 52.7 MB squashfs with a zeroed tail for fstools to build the overlay
+in. PARTUUIDs are deterministic (`3276af79-0000-4000-8000-00000000000N`, prefix = the card's
+former MBR id) — readable in logs, but **bench-only**: two such cards in one machine would
+collide, so a production build must mint random GUIDs.
+
+**The boot test cannot run on the Pi 500** (BCM2712; the card carries only `bcm2711-*.dtb`).
+It needs a Pi 4 node: boot slot A, `vcmailbox 0x00038064 4 4 1` + `reboot`, then confirm
+`chosen/bootloader/partition` = 3 and `batman_slot=B` in `/proc/cmdline`.
 
 ### B2 — verity vs overlay: the real problem is *what's in the overlay*
 Reframed by the facts: OpenWrt **already** runs a read-only squashfs (`/rom`, 52.8 MB) + a
@@ -239,7 +290,7 @@ Honest options, a **threat-model decision (#69) + future hardware (#47):**
   the card); a captured *board* boots itself and unlocks. Needs the SE hardware (#47).
 - **(b) Operator key-fill at deploy** — operator loads the key (USB-C/M12 key-fill, #47),
   held in RAM, **zeroized on tamper/power-off**. Protects against **board capture**, but the
-  node can't cold-boot unattended (needs a re-fill). 
+  node can't cold-boot unattended (needs a re-fill).
 - The choice is per node class / mission (#69): a relay left in the field vs. an operator-
   carried node. **Until an SE is on the board, at-rest encryption's guarantee is limited to
   card-theft (b gives more but costs unattended boot).** Documented so we don't claim more
