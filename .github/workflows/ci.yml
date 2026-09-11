@@ -17,6 +17,15 @@ jobs:
             echo "::error::CRLF found in a script (breaks shebangs on the nodes)"; exit 1
           fi
 
+  ab-card:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gdisk dosfstools squashfs-tools parted rsync
+      - name: A/B card invariants (#133) — builds a real card on a loop device
+        run: ./tests/ab-card-invariants.sh
+
   security:
     runs-on: ubuntu-latest
     steps:

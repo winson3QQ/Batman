@@ -354,6 +354,43 @@ and the good slot's userspace never gets to run. This is the structural reason #
 boot-attempt counter itself, and why commit must never happen before the trial slot has proven
 itself healthy.
 
+### Keeping this true — the three guards
+
+Everything above was established by hand on one afternoon. Nothing in the repo stopped
+somebody putting a bare `rootwait` back, and the failure mode of doing so is a node that boots
+fine today and is unrecoverable in the field a year later. Three guards now hold it:
+
+**1. `tests/ab-card-invariants.sh` — every PR, no hardware.** Builds a real card on a loop
+device by running `scripts/build-gpt-ab-card.sh` unmodified, then asserts the invariants
+against the *artifact*, not the source: autoboot.txt on bootA only, `boot_partition` equal to
+the firmware's FAT-partition index rather than the GPT index, a bounded `rootwait=N` plus
+`panic=N` and never a bare `rootwait`, distinct FAT volume ids, `hidden_sectors` matching each
+start LBA, both root slots identical. Wired into `ci.yml` as the `ab-card` job. It was
+mutation-tested when written — reintroducing the bare `rootwait` trips six assertions,
+hard-coding the GPT index trips two, and hard-coding a value that happens to be *correct for
+today's layout* trips the one source-level assertion that exists for exactly that case.
+
+**2. `scripts/build-gpt-ab-card.sh` derives `boot_partition`.** It counts FAT partitions in
+GPT order instead of writing a literal. A hard-coded number survives a layout change silently,
+and the symptom — the node boots the *old* slot and reports itself healthy — is invisible to
+any health check.
+
+**3. `scripts/ab-selftest.sh <node> [--inspect-only|--destructive]` — the hardware guard.**
+The CI job cannot prove the firmware behaves; only a Pi can. Three modes:
+
+| mode | what it does | when |
+|---|---|---|
+| `--inspect-only` | static invariants over SSH, **no reboots** | scheduled / whenever a bench node is up |
+| *(default)* | the above plus tryboot switch + one-shot check, 2 reboots, ~2 min | after touching the layout or the build script |
+| `--destructive` | plus both failure classes, 4 reboots, ~6 min | before tagging a release |
+
+`--destructive` breaks the *inactive* slot only, saves what it breaks **on the test host** (the
+node's `/tmp` is tmpfs and every case under test reboots it), restores it, and verifies the
+restore. It refuses to run against anything whose `/proc/cmdline` lacks a `batman_slot` marker,
+and refuses the destructive cases unless the node is currently committed to slot A.
+
+Last full run: 16/16 on the bench card, 2026-09-11.
+
 ### B2 — verity vs overlay: the real problem is *what's in the overlay*
 Reframed by the facts: OpenWrt **already** runs a read-only squashfs (`/rom`, 52.8 MB) + a
 writable f2fs **overlay** unified by overlayfs. So verity doesn't break a "writable rootfs" —

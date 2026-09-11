@@ -91,7 +91,23 @@ echo "$CMDLINE_COMMON root=PARTUUID=$G4 batman_slot=B" | sudo tee "$T/b/cmdline.
 # (bootA=gpt1, rootA=gpt2, bootB=gpt3, ...) bootA is 1 and bootB is *2*, not 3.
 # Bench-verified on EEPROM 2026-01-09 (#133): boot_partition=3 pointed at nothing,
 # and the firmware cleanly failed over to partition 1 instead of switching slots.
-printf '%s\n' '[all]' 'tryboot_a_b=1' 'boot_partition=1' '' '[tryboot]' 'boot_partition=2' | sudo tee "$T/a/autoboot.txt" >/dev/null
+# Derived, never hard-coded: hard-coding it means any future change to the partition
+# order silently mis-aims the tryboot switch, and the failure mode is "the node comes
+# back healthy on the old slot", which no health check would flag.
+fw_boot_partition() {            # $1 = GPT index -> the firmware's boot_partition number
+  local target=$1 n=0 i
+  for i in $(sudo sgdisk -p "$DEV" | awk '/^ *[0-9]+ +[0-9]+/{print $1}' | sort -n); do
+    [ "$(sudo blkid -p -s TYPE -o value "${DEV}p${i}" 2>/dev/null)" = vfat ] || continue
+    n=$((n + 1))
+    [ "$i" = "$target" ] && { echo "$n"; return 0; }
+  done
+  echo "fw_boot_partition: GPT $target is not a FAT partition" >&2; return 1
+}
+FW_A=$(fw_boot_partition 1)
+FW_B=$(fw_boot_partition 3)
+echo "firmware numbering: bootA(gpt1)=$FW_A  bootB(gpt3)=$FW_B"
+printf '%s\n' '[all]' 'tryboot_a_b=1' "boot_partition=$FW_A" '' '[tryboot]' "boot_partition=$FW_B" \
+  | sudo tee "$T/a/autoboot.txt" >/dev/null
 
 sudo sync; sudo umount "$T/a" "$T/b"; sudo rmdir "$T/a" "$T/b" "$T"
 
