@@ -1,0 +1,47 @@
+# Payload-host packages for OpenMANET 1.8.0 (bcm2711, aarch64_cortex-a72) — docker engine (#119)
+# Installed offline on 2026-09-11 from the OpenWrt 24.10-SNAPSHOT feeds (packages/base) + the OpenMANET kmod feed;
+# every .ipk SHA256-verified against the feed index before install. NOT covered by the FTS image SBOM (#45) — see #98.
+# package version feed sha256-check
+ca-certificates 20260601-r1 base SHA256_OK
+libmount1 2.40.2-r1 base SHA256_OK
+liblzo2 2.10-r4 packages SHA256_OK
+kmod-lib-zlib-inflate 6.6.138-r1 kmod SHA256_OK
+kmod-lib-zlib-deflate 6.6.138-r1 kmod SHA256_OK
+kmod-lib-raid6 6.6.138-r1 kmod SHA256_OK
+kmod-lib-xor 6.6.138-r1 kmod SHA256_OK
+kmod-lib-xxhash 6.6.138-r1 kmod SHA256_OK
+kmod-lib-zstd 6.6.138-r1 kmod SHA256_OK
+kmod-crypto-blake2b 6.6.138-r1 kmod SHA256_OK
+kmod-crypto-xxhash 6.6.138-r1 kmod SHA256_OK
+kmod-fs-btrfs 6.6.138-r1 kmod SHA256_OK
+btrfs-progs 6.11-r1 packages SHA256_OK
+libseccomp 2.5.5-r1 packages SHA256_OK
+runc 1.1.14-r1 packages SHA256_OK
+containerd 1.7.22-r1 packages SHA256_OK
+kmod-nf-ipt 6.6.138-r1 kmod SHA256_OK
+kmod-ipt-core 6.6.138-r1 kmod SHA256_OK
+libxtables12 1.8.10-r1 kmod SHA256_OK
+libiptext0 1.8.10-r1 kmod SHA256_OK
+libiptext6-0 1.8.10-r1 kmod SHA256_OK
+libiptext-nft0 1.8.10-r1 kmod SHA256_OK
+kmod-nft-compat 6.6.138-r1 kmod SHA256_OK
+xtables-nft 1.8.10-r1 kmod SHA256_OK
+iptables-nft 1.8.10-r1 kmod SHA256_OK
+kmod-ipt-extra 6.6.138-r1 kmod SHA256_OK
+iptables-mod-extra 1.8.10-r1 kmod SHA256_OK
+kmod-nf-ipt6 6.6.138-r1 kmod SHA256_OK
+kmod-ip6tables 6.6.138-r1 kmod SHA256_OK
+ip6tables-nft 1.8.10-r1 kmod SHA256_OK
+kmod-nf-nat6 6.6.138-r1 kmod SHA256_OK
+kmod-ipt-conntrack 6.6.138-r1 kmod SHA256_OK
+kmod-ipt-nat 6.6.138-r1 kmod SHA256_OK
+kmod-ipt-nat6 6.6.138-r1 kmod SHA256_OK
+kmod-br-netfilter 6.6.138-r1 kmod SHA256_OK
+kmod-ipt-physdev 6.6.138-r1 kmod SHA256_OK
+kmod-nf-ipvs 6.6.138-r1 kmod SHA256_OK
+kmod-veth 6.6.138-r1 kmod SHA256_OK
+tini 0.19.0-r2 packages SHA256_OK
+dockerd 27.3.1-r3 packages SHA256_OK
+docker 27.3.1-r1 packages SHA256_OK
+mount-utils 2.40.2-r1 base SHA256_OK
+cgroupfs-mount 2020.06.26~05494281-r2 packages SHA256_OK  # installed but its init MUST stay disabled (kernel lacks CONFIG_CGROUP_DEVICE; docker uses cgroup v2)
