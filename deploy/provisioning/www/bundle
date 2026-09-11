@@ -1,0 +1,16 @@
+#!/bin/sh
+# /www/cgi-bin/bundle — the report attachment: boot reasons, join diagnosis, last crash records,
+# last two shutdown dumps, current status. Streams a .tar.gz; nothing is written to the SD.
+BAT=/opt/batdata
+host=$(cat /proc/sys/kernel/hostname); ts=$(date +%Y%m%d-%H%M%S)
+printf 'Content-Type: application/gzip\r\nContent-Disposition: attachment; filename="%s-report-%s.tar.gz"\r\nCache-Control: no-store\r\n\r\n' "$host" "$ts"
+name="$host-report-$ts"; d="/tmp/$name"; rm -rf "$d"; mkdir -p "$d"
+/usr/bin/halow-status > "$d/status.txt" 2>/dev/null
+/usr/bin/halow-status json > "$d/status.json" 2>/dev/null
+cp "$BAT/log/boot-reasons.log" "$BAT/log/join.log" "$d/" 2>/dev/null
+# our own timestamp-named files: ls -t is safe here
+# shellcheck disable=SC2012
+for f in $(ls -t "$BAT"/crash/* 2>/dev/null | head -5) $(ls -t "$BAT"/log/shutdown_*.log 2>/dev/null | head -2); do cp "$f" "$d/" 2>/dev/null; done
+dmesg > "$d/dmesg.txt" 2>/dev/null; logread > "$d/logread.txt" 2>/dev/null
+tar -C /tmp -czf - "$name"
+rm -rf "$d"
