@@ -77,6 +77,16 @@ consumer finds it mounted) with two fixed directories:
 |---|---|---|
 | `crash/` | boot, only if pstore has records | kernel-panic dmesg moved off the volatile ramoops region (`<ts>_<bootid>_dmesg-ramoops-N`) |
 | `log/` | boot (one line) + clean shutdown | `boot-reasons.log` — one line per boot saying why the previous life ended (**PANIC / CLEAN: trigger / UNCLEAN** = power loss or hw watchdog); `shutdown_<ts>_<bootid>.log` — the syslog ring dumped at clean shutdown (last 10 kept) |
+| `docker/` | payload hosts only | docker data-root (`dockerd.globals.data_root`): all container **images**, shared and layer-deduplicated; rebuildable, replaced by OTA — holds no tenant state |
+| `apps/<tenant>/` | by the tenant | **one directory per tenant** (`fts/`, `fts-ui/`, later `video-relay/`, `sdr/`, `mqtt/`…): everything that tenant must keep — mounted straight into its container (`-v /opt/batdata/apps/fts:/opt/fts`), never bind-mounted back to legacy paths |
+
+**Tenant rules (decided 2026-09-11, #119):** images shared, state isolated — backup, wipe,
+migrate and quota are all done per `apps/<name>/`; every tenant has one declaration in the
+repo (`deploy/<name>/`: Dockerfile + `run.sh` + functional test) and nothing is hand-typed on
+the node; quota/retention are tenant attributes (#68/#81 — GB/hour tenants ring-buffer
+themselves, hard limits via ext4 project quota or per-tenant subvolume later); a full p3 only
+fails that tenant's writes, the OS on the rootfs is unaffected; tenant logs go to the EMS
+(#65) or the tenant's own directory, never to the platform `log/`.
 
 **SD-write policy (#41):** zero steady-state writes — the SD is touched only at boot (if a panic
 was captured) and at clean shutdown. **Continuous log persistence is deliberately NOT done
@@ -85,9 +95,9 @@ unflushed tail by definition (documented in crash-debug.md).
 
 - ramoops/pstore region: reserved and working (the malformed DT `reg` is fixed in the golden's
   `ramoops.dtbo`; see crash-debug.md / `fix-ramoops-dtbo.sh`).
-- **Open (not yet reviewed):** where the FTS data/DBs and the docker data-root live under
-  `/opt/batdata` in the provisioned layout (today manet02 has them bind-mounted on its hand-made
-  p3). Decide before the next tenant is added (#85/#44/#68).
+- **Decided (#119):** FTS data/DBs live in `apps/fts/` and `apps/fts-ui/`, the docker data-root
+  in `docker/` (table above). The ex-manet02 p3 was migrated in place (same filesystem `mv`)
+  and FTS redeployed on it with `deploy/fts/run.sh`.
 
 ## Capacity / quota / retention (measured)
 
