@@ -26,6 +26,17 @@ setup. The [SoT root issue is **#75**](https://github.com/winson3QQ/Batman/issue
 | 9 | **Signed artifacts + provenance** | sign image + SBOM (cosign/Sigstore); SLSA provenance — see §Signing (#13) + verified-boot #74 | ❌ pending |
 | 10 | **Supply-chain red line** | no China-origin deps (#46); build off-node from pinned lock | ✅ |
 | 11 | **Version discipline** | image versioning (milestone = image release), changelog, rollback tag kept | ✅ |
+| 12 | **Pre-PR review + evidence** | before opening the PR: `/code-review high` on the branch diff (correctness/simplification), plus `/security-review` when the change touches keys, auth, provisioning, network or the boot chain; findings and what was done about them go in the PR's **Review** section. The PR body carries the **test results** (what was run, on which node, outputs/numbers, what was simulated, what was not done). No "done" without dogfood when hardware is available | ✅ since #124 |
+
+## Evidence rules (decided 2026-09-11)
+
+- **Reality check first:** every task starts by checking the actual state on the hardware /
+  in the source (layout, paths, what already exists), against the architecture docs, and a
+  short plan; a premise that turns out wrong is reported before the direction changes.
+- **PR = test results:** every PR body has a validated section with raw outputs / numbers,
+  clearly separating ✅ verified on hardware, ⚠️ simulated or partial, ❌ not done.
+- **No overclaiming:** an issue is closed only when its checklist is met; hardware- or
+  build-gated halves stay open and labelled.
 
 ## Signing & provenance identity (#13, gate 9)
 
