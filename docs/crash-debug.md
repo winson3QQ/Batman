@@ -30,9 +30,14 @@ write pattern #41 forbids — battery nodes hard-power-off, SD wear), the `batda
   settings", expected once after provisioning; or the reboot command + the last SSH login
   source).
 - **boot()**: classifies why the previous life ended and appends one line to
-  `/opt/batdata/log/boot-reasons.log` (+ syslog): **PANIC** (pstore had records — see §2),
-  **CLEAN: <marker>**, or **UNCLEAN** (no marker, no panic = power loss or hardware watchdog).
-  So *every* reboot leaves a reason on disk — the field requirement.
+  `/opt/batdata/log/boot-reasons.log` (+ syslog): **PANIC** (pstore had a dmesg record — §2),
+  **CLEAN: <marker>**, **UNCLEAN — no shutdown ran** (no marker, but the last kernel console
+  survived: a hang cut by the hardware watchdog, `reboot -f`, sysrq or a reflash — the saved
+  record is the evidence; recognisable lines are appended as hints: `sysrq`, `kernel-reboot`,
+  `watchdog-dev-closed`, `oom`; `reboot -f` did leave `reboot: Restarting system` on the bench
+  but a procd reboot's record did not, so no hint ≠ hang), or **UNCLEAN (power loss)** (nothing at all;
+  reads "power loss or hardware watchdog" when console capture is not active). So *every*
+  reboot leaves a reason on disk — the field requirement.
 
 Still lost by design: the tail after the last flush on a **hard power-off** (no shutdown ran).
 Continuous log persistence / store-and-forward is #65's (EMS collector), not this layer's.
@@ -103,11 +108,13 @@ Until the USB-UART is on hand, the last minutes before a hang are still recovera
 (survives the watchdog's warm reset), and `flightrec` (S99) writes a heartbeat line to
 `/dev/kmsg` every 30 s (load, memory, peers, plinks, morse SPI timeouts, battery, throttle,
 temperature). After the hardware watchdog fires, the next boot moves `console-ramoops-0` to
-`/opt/batdata/crash/` and `boot-reasons.log` classifies it as *UNCLEAN — likely hardware
-watchdog after a hang*; a `dmesg-ramoops-*` record still means PANIC; neither means power
-loss. Validated on the bench by stopping procd's watchdog feed (`ubus call system watchdog
-'{"stop":true}'`). What it cannot see: a hang so early or so hard that the kernel stops
-logging before it dies — that is what the serial console (§4) is for.
+`/opt/batdata/crash/` (last 5 kept; a clean boot discards its record without writing) and
+`boot-reasons.log` classifies it as *UNCLEAN — no shutdown ran (hang→hardware watchdog,
+reboot -f, sysrq or reflash)* with hints from the record; a `dmesg-ramoops-*` record still
+means PANIC; neither means power loss. The 32 KB zone holds roughly the last 1–3 h at the
+60 s heartbeat. Validated on the bench by stopping procd's watchdog feed (`ubus call system
+watchdog '{"stop":true}'`). What it cannot see: a hang so early or so hard that the kernel
+stops logging before it dies — that is what the serial console (§4) is for.
 
 ### 4. Serial console (needs hardware — USB-UART)
 A USB-UART on the Pi's UART pins captures the **last kernel output of a hard hang** live, even

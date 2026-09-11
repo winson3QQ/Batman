@@ -154,12 +154,17 @@ echo "    halow-keyguard (S18, #103) · halow-setkey · meshled (1.8.0) · batpo
 
 echo "==> 10. no steady-state SD writes (#104): openmanetd DB -> tmpfs; ramoops console capture on"
 # openmanetd's SQLite (peer gossip rows, rebuilt from alfred after boot) was the only steady
-# writer on the rootfs overlay (~1.8-37 MiB/h). Its dbFile is configurable: keep it in RAM.
-grep -q "^dbFile:" "$OMCFG" 2>/dev/null || printf 'dbFile: /tmp/openmanetd.db\n' >> "$OMCFG"
-rm -f /etc/openmanetd/openmanetd.db-wal /etc/openmanetd/openmanetd.db-shm
-# rolling kernel console into the ramoops region (survives a watchdog reset) — overlay param
-sed -i 's/^dtoverlay=ramoops$/dtoverlay=ramoops,console-size=0x8000/' /boot/distroconfig.txt
-echo "    $(grep -E '^dbFile' "$OMCFG") · $(grep -E '^dtoverlay=ramoops' /boot/distroconfig.txt)"
+# writer on the rootfs overlay (~1.8-37 MiB/h). Its top-level `dbFile:` is configurable: keep
+# it in RAM. Rewrite-or-insert (an existing on-overlay dbFile is replaced, not kept).
+if [ -f "$OMCFG" ]; then
+	awk 'BEGIN{v="dbFile: /tmp/openmanetd.db"} /^dbFile:/{print v; f=1; next} {print} END{if(!f) print v}' "$OMCFG" > "$OMCFG.tmp" && mv "$OMCFG.tmp" "$OMCFG"
+	echo "    $(grep -E '^dbFile' "$OMCFG")"
+else
+	echo "    WARN: $OMCFG missing — openmanetd DB stays wherever the daemon defaults to"
+fi
+# rolling kernel console into the ramoops region (survives a watchdog reset): single owner of
+# that edit is fix-ramoops-dtbo.sh (step 1 needs no dtc)
+sh "$PROV/fix-ramoops-dtbo.sh" --console-only | sed 's/^/    /'
 
 sync
 echo
