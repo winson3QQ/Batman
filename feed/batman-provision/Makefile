@@ -58,6 +58,7 @@ define Package/batman-provision/install
 	# first-boot hooks (0755)
 	$(INSTALL_BIN) ./files/etc/uci-defaults/95-batman-storage        $(1)/etc/uci-defaults/95-batman-storage
 	$(INSTALL_BIN) ./files/etc/uci-defaults/96-batman-config-migrate $(1)/etc/uci-defaults/96-batman-config-migrate
+	$(INSTALL_BIN) ./files/etc/uci-defaults/97-batman-landing        $(1)/etc/uci-defaults/97-batman-landing
 	$(INSTALL_BIN) ./files/etc/uci-defaults/99-halow-identity        $(1)/etc/uci-defaults/99-halow-identity
 	# services
 	$(INSTALL_BIN) ./files/etc/init.d/halow-keyguard $(1)/etc/init.d/halow-keyguard
@@ -78,7 +79,9 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/www/cgi-bin/status $(1)/www/cgi-bin/status
 	$(INSTALL_BIN) ./files/www/cgi-bin/bundle $(1)/www/cgi-bin/bundle
 	$(INSTALL_BIN) ./files/www/cgi-bin/mesh   $(1)/www/cgi-bin/mesh
-	$(INSTALL_DATA) ./files/www/index.html    $(1)/www/index.html
+	# NOT /www/index.html — luci-base owns that path (build-time file clash); ship it under a
+	# distinct name and let 97-batman-landing copy it over /www/index.html on first boot.
+	$(INSTALL_DATA) ./files/www/index-batman.html $(1)/www/index-batman.html
 endef
 
 # Enable the runtime services in the built image. On a squashfs image build this runs with

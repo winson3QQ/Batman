@@ -1,0 +1,10 @@
+#!/bin/sh
+# 97-batman-landing — install the Batman root landing page over luci's default.
+# The page ships as /www/index-batman.html, NOT /www/index.html: a package cannot own
+# /www/index.html because luci-base already does (installing both is a build-time
+# check_data_file_clashes that fails the image). Here, on first boot of each fresh slot
+# overlay, we copy it to /www/index.html — which lands in the writable overlay and shadows
+# luci's read-only /rom copy, so http://<node>/ shows the Batman status/mesh/LuCI landing.
+# uci-defaults run once per fresh overlay (i.e. per A/B slot flash), then self-delete.
+[ -f /www/index-batman.html ] && cp /www/index-batman.html /www/index.html
+exit 0
