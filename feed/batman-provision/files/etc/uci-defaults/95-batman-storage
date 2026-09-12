@@ -1,0 +1,222 @@
+#!/bin/sh
+# 95-batman-storage — OpenWrt first-boot storage provisioning (#88) + crash/reboot capture (#61).
+#
+# Runs ONCE on the end user's first boot (OpenWrt runs /etc/uci-defaults/* then deletes each
+# on exit 0), BEFORE services need the data area. Baked into the golden image by
+# depersonalise.sh, so every flashed card provisions itself — no operator, no manual scripts.
+# This is the productionised form of deploy/provisioning/firstboot-provision.sh (validated on
+# hardware): carve the SD free space into an (optionally LUKS) expand-to-fill data partition,
+# ext4, and install the persistent `batdata-mount` init.
+#
+# The init it installs is the p5 "data partition" service (docs/storage-architecture.md):
+#   START=11  mount before logd (S12) so anything wanting the data area finds it mounted
+#   boot      mount; move /sys/fs/pstore records (kernel panics) to $MOUNT/crash; classify why
+#             the previous life ended (PANIC / CLEAN / UNCLEAN) -> $MOUNT/log/boot-reasons.log
+#   stop      clean shutdown/reboot: dump the syslog ring + a marker saying what triggered it
+# Zero steady-state SD writes (#41): the SD is written only at boot (if a panic was captured)
+# and at clean shutdown. Continuous log persistence is the EMS collector's job (#65).
+#
+# Ordering vs the #88 target scheme: this is the DATA partition (the real §B1 GPT p1..p5 layout
+# is a later image-build change). dm-verity (#74/B2) and SE-sealed keys (#47/B3) are separate.
+# If dm-crypt is unavailable it provisions UNENCRYPTED (loud syslog warning) — the image must
+# add CONFIG_DM_CRYPT for encryption (#47).
+#
+# Idempotent + safe: only ever creates its own partition in the FREE SPACE (never p1/p2); never
+# reformats a partition that already carries a filesystem; a non-zero exit makes OpenWrt re-run
+# it next boot (used when the kernel needs a reboot to see a freshly-created partition).
+
+DISK=/dev/mmcblk0
+# layout-aware: the v2 GPT A/B card ships data as a pre-made p6 (bootA/rootA/bootB/rootB/config/
+# data, #88); the interim/MBR card carves data into free space as p3. Detect p6 and use it — the
+# "create partition in free space" step (guarded by `[ ! -b $PART ]`) then naturally skips.
+if [ -b "${DISK}p6" ]; then PART_NUM=6; else PART_NUM=3; fi
+PART=${DISK}p${PART_NUM}
+LABEL=batdata
+MAPPER=batdata_crypt
+MOUNT=/opt/batdata
+KEYFILE=/etc/batman-provision.key   # PLACEHOLDER (LUKS mode). Real key = secure element (#47/B3).
+INIT=/etc/init.d/batdata-mount
+
+lg(){ logger -t batman-storage "$*"; echo "batman-storage: $*"; }
+# ext4 superblock magic (0xEF53 LE at byte 1080) — no dumpe2fs/blkid needed (not in the image)
+has_fs(){ [ "$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$1" 2>/dev/null)" = "53ef" ]; }
+
+# already provisioned + mounted? (a re-run after success, or the init already did it) -> done
+if mount | grep -q " $MOUNT "; then lg "already mounted — nothing to do"; exit 0; fi
+
+# tool guards live where the tool is used: parted only to CREATE p3 (below), mkfs.ext4 only to
+# format an empty partition. A pre-made p6 (v2 card) needs neither to just be mounted (N-R5).
+
+# LUKS capability
+LUKS=0
+if command -v cryptsetup >/dev/null 2>&1; then modprobe dm-crypt 2>/dev/null; [ -e /dev/mapper/control ] && LUKS=1; fi
+if [ "$LUKS" = 1 ]; then
+	DEV="/dev/mapper/$MAPPER"
+else
+	DEV="$PART"; lg "!!! dm-crypt unavailable — provisioning UNENCRYPTED (image needs CONFIG_DM_CRYPT, #47) !!!"
+fi
+
+# 1. create the data partition in the free space (idempotent, free space only)
+if [ ! -b "$PART" ]; then
+	command -v parted >/dev/null 2>&1 || { lg "parted missing — cannot create data partition, skip"; exit 0; }
+	PARTCOUNT=$(parted -sm "$DISK" print 2>/dev/null | grep -cE '^[0-9]+:')
+	[ "$PARTCOUNT" -eq 2 ] || { lg "expected p1+p2+free, found $PARTCOUNT partitions — refusing (safety)"; exit 0; }
+	START=$(parted -sm "$DISK" unit s print free 2>/dev/null | awk -F: '/free;?$/{sz=$4; gsub("s","",sz); if(sz+0>best){best=sz+0; bs=$2}} END{gsub("s","",bs); print bs}')
+	[ -n "$START" ] && [ "$START" -gt 0 ] 2>/dev/null || { lg "no free space — skip"; exit 0; }
+	lg "creating $PART ${START}s..100% (expand-to-fill)"
+	parted -s "$DISK" mkpart primary ext4 "${START}s" 100% || { lg "mkpart failed"; exit 0; }
+	sync; sleep 1; [ -b "$PART" ] || partprobe "$DISK" 2>/dev/null || true; sleep 1
+	# if the kernel still can't see it, ask OpenWrt to re-run us next boot (non-zero exit)
+	[ -b "$PART" ] || { lg "$PART not visible yet — will retry next boot"; exit 1; }
+fi
+
+# 2. LUKS (if capable, idempotent)
+if [ "$LUKS" = 1 ]; then
+	[ -f "$KEYFILE" ] || { head -c 512 /dev/urandom > "$KEYFILE"; chmod 600 "$KEYFILE"; }
+	# never luksFormat a partition that already carries a filesystem (a pre-made plain-ext4 p6
+	# would otherwise be wiped when a dm-crypt-capable image meets an unencrypted card — N-R4)
+	if ! cryptsetup isLuks "$PART" 2>/dev/null; then
+		has_fs "$PART" && { lg "refusing luksFormat: $PART already has a filesystem"; exit 0; }
+		cryptsetup luksFormat --type luks2 --batch-mode --key-file "$KEYFILE" "$PART"
+	fi
+	cryptsetup status "$MAPPER" >/dev/null 2>&1 || cryptsetup open --key-file "$KEYFILE" "$PART" "$MAPPER"
+fi
+
+# 3. ext4 (idempotent — never touch a partition that already has a filesystem)
+if has_fs "$DEV"; then
+	lg "$DEV already has a filesystem — keeping it"
+elif command -v mkfs.ext4 >/dev/null 2>&1; then
+	lg "mkfs.ext4 $DEV"; mkfs.ext4 -F -L "$LABEL" -m 0 "$DEV" >/dev/null 2>&1
+else
+	lg "mkfs.ext4 missing and $DEV unformatted — skip"; exit 0
+fi
+
+# 4. install the persistent data-partition service (runs on every boot + clean shutdown).
+#    Node-specific values are baked into the header; the body is verbatim (quoted heredoc).
+#    Upgrade path: an older init (START=78) must be disabled first or its rc.d links linger.
+[ -x "$INIT" ] && "$INIT" disable 2>/dev/null
+{
+	printf '#!/bin/sh /etc/rc.common\n'
+	printf '# batdata-mount — data partition (p5) service, generated by 95-batman-storage (#88/#61).\n'
+	printf '# LUKS mode uses a PLACEHOLDER key on rootfs — replace with SE-sealed release (#47/B3).\n'
+	printf 'PART=%s\nDEV=%s\nLUKS=%s\nMAPPER=%s\nKEYFILE=%s\nMOUNT=%s\n' "$PART" "$DEV" "$LUKS" "$MAPPER" "$KEYFILE" "$MOUNT"
+	cat <<'INITBODY'
+START=11   # before logd (S12): anything that wants the data area finds it mounted
+STOP=10    # clean shutdown/reboot: capture the log ring + trigger before unmounting
+CRASH=$MOUNT/crash   # kernel-panic records moved off pstore (#61)
+LOG=$MOUNT/log       # boot-reasons.log + shutdown dumps; continuous logs are #65's job
+KEEP_SHUTDOWN_LOGS=10
+
+ts(){ date +%Y%m%d-%H%M%S; }                              # no RTC: may be pre-NTP, boot_id keeps names unique
+bid(){ cut -c1-8 /proc/sys/kernel/random/boot_id; }
+# S11 runs before logd (S12): a plain `logger` here is lost. Also write the kernel ring, which
+# logd picks up when it starts -> visible in both dmesg and logread.
+note(){ logger -t batdata-mount "$*" 2>/dev/null; echo "batdata-mount: $*" > /dev/kmsg 2>/dev/null; }
+
+# best-effort "who triggered this shutdown" for the marker
+reboot_trigger(){
+	# a daemon asked for this shutdown and said why (batpower low-battery #122, joinwatch #127)
+	if [ -f /tmp/shutdown.reason ]; then read -r m < /tmp/shutdown.reason; echo "$m"; return; fi
+	if [ -e /tmp/sysupgrade.tgz ] || { command -v pgrep >/dev/null 2>&1 && pgrep -f sysupgrade >/dev/null 2>&1; }; then
+		echo "sysupgrade"; return
+	fi
+	# openmanetd's two-stage addressing reboots once after reserving the mesh IP (by design)
+	if logread 2>/dev/null | tail -50 | grep -q "Rebooting system to apply new network settings"; then
+		echo "openmanetd address reservation (expected once after provisioning)"; return
+	fi
+	who=$(logread 2>/dev/null | grep "dropbear.*Auth succeeded" | tail -1 | sed -n 's/.*from \([0-9a-fA-F.:]*\):.*/\1/p')
+	[ -n "$who" ] && echo "reboot/halt command (last ssh login from $who)" || echo "reboot/halt command (no ssh login in log)"
+}
+
+boot(){
+	[ -b "$PART" ] || return 0
+	[ "$LUKS" = 1 ] && { cryptsetup status "$MAPPER" >/dev/null 2>&1 || cryptsetup open --key-file "$KEYFILE" "$PART" "$MAPPER" 2>/dev/null; }
+	mkdir -p "$MOUNT"
+	mount | grep -q " $MOUNT " || mount "$DEV" "$MOUNT" 2>/dev/null || { note "mount $DEV on $MOUNT FAILED"; return 0; }
+	mkdir -p "$CRASH" "$LOG"
+	note "mounted $DEV on $MOUNT"
+	# once per boot: the first-boot hook calls `boot` itself and the S11 link may run it again
+	[ -f /tmp/batdata-mount.booted ] && return 0
+	: > /tmp/batdata-mount.booted
+
+	# crash capture (#61): move pstore records off the volatile ramoops region so the next event
+	# has a clean region and the record can't be lost. With console capture on (#105) a
+	# console-ramoops record exists after EVERY warm reboot; it is only worth keeping when the
+	# boot was not clean, so on a clean boot it is discarded without touching the SD.
+	clean=0; [ -f "$LOG/shutdown.marker" ] && clean=1
+	n=0; ncon=0; confile=""
+	for f in /sys/fs/pstore/*; do
+		[ -f "$f" ] || continue
+		b=${f##*/}
+		case "$b" in
+			console-*)
+				if [ "$clean" = 1 ]; then rm -f "$f"; continue; fi
+				confile="$CRASH/$(ts)_$(bid)_$b"
+				cp "$f" "$confile" && rm -f "$f" && ncon=$((ncon+1));;
+			*)	cp "$f" "$CRASH/$(ts)_$(bid)_$b" && rm -f "$f" && n=$((n+1));;
+		esac
+	done
+	# keep the last 5 console records (they only accumulate on unclean boots; names sort by time)
+	k=0; for f in "$CRASH"/*_console-ramoops-*; do [ -f "$f" ] && k=$((k+1)); done
+	for f in "$CRASH"/*_console-ramoops-*; do [ "$k" -gt 5 ] || break; [ -f "$f" ] && rm -f "$f" && k=$((k-1)); done
+
+	# boot reason: why did the previous life end? (every reboot must say who/what triggered it)
+	#   dmesg-ramoops        -> the kernel panicked
+	#   shutdown marker      -> clean (stop() ran: reboot/halt/sysupgrade/low-battery/openmanetd)
+	#   console record only  -> no shutdown ran: a hang cut by the hardware watchdog, reboot -f,
+	#                           sysrq or a reflash. The record tail is the evidence; hints are
+	#                           appended when it contains something recognisable (a procd reboot
+	#                           did not always leave "reboot: Restarting system" in the zone on
+	#                           the bench, so the absence of a hint must not be read as "hang").
+	#   nothing              -> power loss (or a hang, when console capture is not active)
+	if [ "$n" -gt 0 ]; then
+		reason="PANIC ($n pstore record(s) saved under $CRASH)"
+	elif [ "$clean" = 1 ]; then
+		reason="CLEAN: $(cat "$LOG/shutdown.marker")"
+	elif [ "$ncon" -gt 0 ]; then
+		hint=""
+		grep -q "sysrq: " "$confile" 2>/dev/null && hint="$hint sysrq"
+		grep -qE "reboot: (Restarting system|Power down)" "$confile" 2>/dev/null && hint="$hint kernel-reboot"
+		grep -q "watchdog did not stop" "$confile" 2>/dev/null && hint="$hint watchdog-dev-closed"
+		grep -qE "Out of memory|oom-kill" "$confile" 2>/dev/null && hint="$hint oom"
+		reason="UNCLEAN — no shutdown ran (hang→hardware watchdog, reboot -f, sysrq or reflash); last console log saved under $CRASH${hint:+; hints:$hint}"
+	elif [ "$(cat /sys/module/ramoops/parameters/console_size 2>/dev/null || echo 0)" -gt 0 ]; then
+		reason="UNCLEAN (power loss: no shutdown marker, no panic, no console record)"
+	else
+		reason="UNCLEAN (power loss or hardware watchdog: no shutdown marker, no panic; console capture not active)"
+	fi
+	bs=$(cat /sys/class/watchdog/watchdog0/bootstatus 2>/dev/null)
+	[ -n "$bs" ] && [ "$bs" != 0 ] && reason="$reason [watchdog bootstatus=$bs]"
+	rm -f "$LOG/shutdown.marker"
+	echo "$(ts) boot_id=$(bid) prev=$reason" >> "$LOG/boot-reasons.log"
+	note "previous shutdown: $reason"
+	sync
+}
+start(){ boot; }
+stop(){
+	# clean shutdown/reboot: keep the syslog ring + what triggered it. Only SD write in steady state.
+	if mount | grep -q " $MOUNT "; then
+		mkdir -p "$LOG"
+		t=$(ts)
+		logread > "$LOG/shutdown_${t}_$(bid).log" 2>/dev/null
+		echo "$t uptime=$(cut -d' ' -f1 /proc/uptime)s trigger=$(reboot_trigger)" > "$LOG/shutdown.marker"
+		# retention: names sort chronologically (timestamp prefix), so drop the oldest beyond KEEP
+		n=0; for f in "$LOG"/shutdown_*.log; do [ -f "$f" ] && n=$((n+1)); done
+		for f in "$LOG"/shutdown_*.log; do
+			[ "$n" -gt "$KEEP_SHUTDOWN_LOGS" ] || break
+			[ -f "$f" ] && rm -f "$f" && n=$((n-1))
+		done
+		sync
+		umount "$MOUNT" 2>/dev/null
+	fi
+	[ "$LUKS" = 1 ] && cryptsetup status "$MAPPER" >/dev/null 2>&1 && cryptsetup close "$MAPPER" 2>/dev/null
+	true
+}
+INITBODY
+} > "$INIT"
+chmod +x "$INIT"; "$INIT" enable 2>/dev/null
+
+# 5. bring it up now for this first boot (the S11 link was created after rcS enumerated it)
+"$INIT" boot
+lg "provisioned ($([ "$LUKS" = 1 ] && echo LUKS || echo plain)); data at $MOUNT (crash/, log/)"
+exit 0

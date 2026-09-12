@@ -1,0 +1,161 @@
+#!/bin/sh
+# joinwatch — a node that cannot join the mesh must say why (#127, nightmare N1 in
+# docs/field-resilience.md). Runs every POLL seconds after network is up.
+#
+# Users who cannot connect power-cycle the node again and again, so the diagnosis must be
+# written EARLY (T_SHORT into an unjoined episode) to storage that survives power loss, and
+# the node must never make things worse: it never touches the radio config, it reboots itself
+# only when the verdict is something a reboot can fix, at most once per episode, and never
+# while a human is already power-cycling it.
+#
+#   joinwatch run              daemon (procd)
+#   joinwatch status           current join state (one line)
+#   joinwatch diag [SHORT|FULL] print the diagnosis line without writing it
+#
+# No RTC, no NTP in the field: wall-clock timestamps are decoration only. Every decision here
+# is made on BOOT IDS / boot counts (boot-reasons.log lines, boot ids in join.log) and on
+# uptime deltas, never on time of day.
+#
+# uci joinwatch.main.{poll,t_short,t_full,t_reboot,reboot_gap_boots,unjoined_boots_max}
+#   poll 15  t_short 60  t_full 300  t_reboot 3600  reboot_gap_boots 5  unjoined_boots_max 3
+# Writes: /opt/batdata/log/join.log (only while NOT joined, plus one JOINED line closing a
+# diagnosed episode — even one from an earlier boot), /tmp/joinwatch.state (live, tmpfs).
+# Zero writes on a node that joins normally. Nothing is written unless /opt/batdata is
+# mounted (a diagnosis on the rootfs overlay would be an SD write AND be hidden later).
+
+LOG=/opt/batdata/log/join.log
+STATE=/tmp/joinwatch.state
+BR=/opt/batdata/log/boot-reasons.log
+cfg(){ uci -q get "joinwatch.main.$1" || echo "$2"; }
+POLL=$(cfg poll 15); T_SHORT=$(cfg t_short 60); T_FULL=$(cfg t_full 300)
+T_REBOOT=$(cfg t_reboot 3600); GAP_BOOTS=$(cfg reboot_gap_boots 5); UNJOINED_MAX=$(cfg unjoined_boots_max 3)
+note(){ logger -t joinwatch -p "daemon.$1" "$2" 2>/dev/null; echo "joinwatch: $2" > /dev/kmsg 2>/dev/null; }
+up(){ cut -d. -f1 /proc/uptime; }
+bid(){ cut -c1-8 /proc/sys/kernel/random/boot_id; }
+ts(){ date +%Y%m%d-%H%M%S; }
+mounted(){ grep -q " /opt/batdata " /proc/mounts 2>/dev/null; }
+
+# ---- observe -------------------------------------------------------------------------------
+live(){ # the two things that change from tick to tick: 802.11s plinks and batman neighbours
+	dump=$(iw dev wlh0 station dump 2>/dev/null)
+	PLINK=$(printf '%s\n' "$dump" | grep -c "plink:.*ESTAB"); STA=$(printf '%s\n' "$dump" | grep -c "^Station")
+	BAT=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
+}
+radio(){ # config + driver state, only read when a diagnosis is composed
+	RADIO=$(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)\.type='morse'$/\1/p" | head -1)
+	IFACE="default_$RADIO"
+	CH=$(uci -q get "wireless.$RADIO.channel"); CC=$(uci -q get "wireless.$RADIO.country")
+	MID=$(uci -q get "wireless.$IFACE.mesh_id"); K=$(uci -q get "wireless.$IFACE.key")
+	case "$K" in "") KEY=NONE;; CHANGE-ME-NOW) KEY=PLACEHOLDER;; *) KEY=SET;; esac
+	[ "$(uci -q get "wireless.$RADIO.disabled")" = 1 ] && RDIS=1 || RDIS=0
+	info=$(iw dev wlh0 info 2>/dev/null)
+	if [ -n "$info" ]; then RUP=up; RTYPE=$(printf '%s\n' "$info" | sed -n 's/^\s*type \(.*\)$/\1/p'); else RUP=down; RTYPE=none; fi
+	M11=$(uci -q get mesh11sd.setup.enabled); FWD=$(iw dev wlh0 get mesh_param mesh_fwding 2>/dev/null); NOL=$(iw dev wlh0 get mesh_param mesh_nolearn 2>/dev/null)
+	GUARD=$(tr -s ' ' < /etc/halow-keyguard.blocked 2>/dev/null | sed 's/^ //'); [ -n "$GUARD" ] || GUARD=none
+	IP=$(uci -q get network.ahwlan.ipaddr); case "$(uci -q get openmanetd.config.dhcpconfigured)" in 1) ADDR=reserved;; *) ADDR=bootstrap;; esac
+	PREV=$(tail -1 "$BR" 2>/dev/null | sed 's/^[^ ]* boot_id=[^ ]* prev=//' | cut -c1-60)
+	live
+}
+joined(){ [ "$PLINK" -ge 1 ] && [ "$BAT" -ge 1 ]; }
+verdict(){ # one human phrase, the thing a person would report (needs radio)
+	if [ "$GUARD" != none ]; then echo "KEY PLACEHOLDER — radio kept down by keyguard (run halow-setkey)"
+	elif [ "$KEY" != SET ]; then echo "mesh key $KEY"
+	elif [ "$RDIS" = 1 ]; then echo "radio disabled in config"
+	elif [ "$RUP" = down ]; then echo "HaLow radio not up (driver/firmware/hardware)"
+	elif [ "$RTYPE" != "mesh point" ]; then echo "radio up but not in mesh mode ($RTYPE)"
+	elif [ "$M11" != 1 ]; then echo "mesh11sd disabled"
+	elif [ "$PLINK" -eq 0 ] && [ "$STA" -eq 0 ]; then echo "radio meshing, NO PEER HEARD (nobody on ch$CH/$MID in range, or their key differs)"
+	elif [ "$PLINK" -eq 0 ]; then echo "peers seen ($STA) but no plink established (key/mesh_id mismatch likely)"
+	elif [ "$BAT" -eq 0 ]; then echo "802.11s linked but batman has no neighbour (fwding=$FWD nolearn=$NOL)"
+	else echo "joined"; fi
+}
+reboot_helps(){ # a reboot can only fix a stuck driver/stack, never a missing key, a config
+	# choice or an empty site (a lone node — the first one switched on — is NOT a fault)
+	[ "$GUARD" = none ] && [ "$KEY" = SET ] && [ "$RDIS" = 0 ] && [ "$M11" = 1 ] && { [ "$PLINK" -ge 1 ] || [ "$STA" -ge 1 ] || [ "$RUP" = down ] || [ "$RTYPE" != "mesh point" ]; }
+}
+diagline(){ # $1 = SHORT|FULL|JOINED; caller has run radio
+	printf '%s boot=%s up=%ss %s | %s | radio=%s type=%s ch=%s cc=%s mesh=%s key=%s guard=%s plinks=%s sta=%s batman=%s mesh11sd=%s addr=%s ip=%s prev=[%s]\n' \
+		"$(ts)" "$(bid)" "$(up)" "$1" "$(verdict)" "$RUP" "$RTYPE" "$CH" "$CC" "$MID" "$KEY" "$GUARD" "$PLINK" "$STA" "$BAT" "$M11" "$ADDR" "$IP" "$PREV"
+}
+write(){ # to join.log only when the data partition is really there; always to syslog + kmsg
+	note warn "$1"
+	mounted || { note warn "batdata not mounted — diagnosis kept in syslog/kmsg only"; return 0; }
+	mkdir -p "$(dirname "$LOG")"; echo "$1" >> "$LOG"; sync
+}
+# ---- boot ledger (time-free) ---------------------------------------------------------------
+# open episode = the newest SHORT/FULL boot id in join.log has no JOINED after it
+open_episode(){ awk '$4=="JOINED"{o=0} $4=="SHORT"||$4=="FULL"{o=1} END{exit !o}' "$LOG" 2>/dev/null; }
+# consecutive boots (newest first, per boot-reasons.log) whose join.log shows SHORT/FULL and no JOINED
+unjoined_boots(){
+	[ -f "$LOG" ] && [ -f "$BR" ] || { echo 0; return; }
+	# a JOINED line (whatever boot wrote it) resolves every episode before it
+	awk 'FILENAME==ARGV[1]{ split($2,a,"="); if($4=="SHORT"||$4=="FULL") s[a[2]]=1; else if($4=="JOINED") delete s; next }
+	     { split($2,b,"="); id[++n]=b[2] }
+	     END{ c=0; for(i=n;i>=1;i--){ if(id[i] in s) c++; else break }; print c+0 }' "$LOG" "$BR"
+}
+# boots since the last AUTOREBOOT line (by boot id in boot-reasons.log); huge when there is none
+boots_since_autoreboot(){
+	last=$(awk '$4=="AUTOREBOOT"{split($2,a,"="); b=a[2]} END{print b}' "$LOG" 2>/dev/null)
+	[ -n "$last" ] || { echo 999999; return; }
+	awk -v b="$last" '{split($2,a,"="); if(a[2]==b){f=1; n=0; next} if(f) n++} END{print (f ? n : 999999)}' "$BR" 2>/dev/null || echo 999999
+}
+
+# ---- daemon --------------------------------------------------------------------------------
+run(){
+	since=""; short=0; full=0; decided=0; episodes=0; MAX_EPISODES=3; checked=0
+	# a procd respawn must not re-diagnose an episode this boot already diagnosed and has not
+	# closed (a closed one — SHORT then JOINED — must not block the diagnosis of a later drop)
+	me=$(bid)
+	if [ -f "$LOG" ]; then
+		# shellcheck disable=SC2046  # "short full episodes decided", split on purpose
+		set -- $(awk -v b="boot=$me" '$2==b{ if($4=="SHORT"){s=1;e++} else if($4=="FULL")f=1; else if($4=="JOINED"){s=0;f=0} else if($4=="NOREBOOT"||$4=="AUTOREBOOT")d=1 } END{print s+0, f+0, e+0, d+0}' "$LOG")
+		short=$1; full=$2; episodes=$3; decided=$4
+		[ "$short" = 1 ] && since=$(up)
+	fi
+	note notice "started t_short=${T_SHORT}s t_full=${T_FULL}s t_reboot=${T_REBOOT}s unjoined_boots_max=$UNJOINED_MAX reboot_gap_boots=$GAP_BOOTS"
+	while :; do
+		live
+		if joined; then
+			echo "JOINED $(up) plinks=$PLINK batman=$BAT" > "$STATE"
+			# close a diagnosed episode — this boot's, or one left open by an earlier boot that
+			# the user power-cycled out of (otherwise "consecutive unjoined boots" never resets)
+			if [ "$short" = 1 ] || { [ "$checked" = 0 ] && open_episode; }; then radio; write "$(diagline JOINED)"; fi
+			checked=1; since=""; short=0; full=0
+			# save-on-healthy (#88/#89): once this boot has actually joined, persist the config +
+			# identity to the shared p5 so it survives an A/B slot switch. Once per boot (tmpfs guard).
+			# Skip cheaply on cards with no p5 (no fork loop, N5r4); the saver retries while WARN (N5r2).
+			[ -f /tmp/config-saved ] || [ ! -b /dev/mmcblk0p5 ] || { command -v batman-config-save >/dev/null 2>&1 && batman-config-save --if-healthy >/dev/null 2>&1 && : > /tmp/config-saved; }
+		else
+			u=$(up); [ -n "$since" ] || since=$u; d=$((u - since))
+			radio
+			echo "NOT_JOINED $u $(verdict)" > "$STATE"
+			if [ "$short" = 0 ] && [ "$d" -ge "$T_SHORT" ] && [ "$episodes" -lt "$MAX_EPISODES" ]; then write "$(diagline SHORT)"; short=1; episodes=$((episodes+1)); fi
+			if [ "$full" = 0 ] && [ "$d" -ge "$T_FULL" ] && [ "$short" = 1 ]; then write "$(diagline FULL)"; full=1; fi
+			if [ "$d" -ge "$T_REBOOT" ] && [ "$decided" = 0 ]; then
+				decided=1   # one decision per boot
+				ub=$(unjoined_boots); gap=$(boots_since_autoreboot)
+				if ! reboot_helps; then
+					write "$(ts) boot=$(bid) up=${u}s NOREBOOT | a reboot cannot fix: $(verdict)"
+				elif [ "$ub" -ge "$UNJOINED_MAX" ]; then
+					write "$(ts) boot=$(bid) up=${u}s NOREBOOT | $ub consecutive boots without joining (someone is power-cycling, or a reboot cannot help) — not adding an automatic reboot"
+				elif [ "$gap" -lt "$GAP_BOOTS" ]; then
+					write "$(ts) boot=$(bid) up=${u}s NOREBOOT | automatic reboot already used $gap boot(s) ago (min gap $GAP_BOOTS boots)"
+				elif ! mounted; then
+					write "$(ts) boot=$(bid) up=${u}s NOREBOOT | batdata not mounted — cannot record the reboot, so not taking it"
+				else
+					write "$(ts) boot=$(bid) up=${u}s AUTOREBOOT | not joined for ${d}s — one controlled reboot (the next one only after $GAP_BOOTS more boots)"
+					[ -f /tmp/shutdown.reason ] || echo "joinwatch: not joined for ${d}s — automatic reboot" > /tmp/shutdown.reason 2>/dev/null
+					sleep 2; reboot
+				fi
+			fi
+		fi
+		sleep "$POLL"
+	done
+}
+
+case "$1" in
+	run)    [ "$(cfg enabled 1)" = 1 ] || { note notice "disabled by uci"; exit 0; }; run;;
+	status) if [ -f "$STATE" ]; then cat "$STATE"; else radio; echo "NOT_RUNNING $(up) $(verdict)"; fi;;
+	diag)   radio; diagline "${2:-FULL}";;
+	*)      echo "usage: joinwatch run|status|diag [SHORT|FULL]"; exit 2;;
+esac
