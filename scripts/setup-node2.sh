@@ -3,6 +3,10 @@
 # 前置：已燒錄映像 + 清 overlay + 開機 + 裝好 SSH 公鑰。
 set -e
 
+# LAB-ONLY: supply the SAE mesh key at runtime; never commit a real key.
+# Must match manet01 exactly (both nodes share one key), >= 8 chars.
+: "${MESH_KEY:?set MESH_KEY (SAE mesh key, >=8 chars) — do not hardcode a real key}"
+
 # ── HaLow radio（必須與 manet01 完全相同）──
 uci set wireless.radio3.channel='42'          # 923 MHz @ 2 MHz
 uci set wireless.radio3.country='US'
@@ -17,7 +21,7 @@ uci set wireless.radio3.enable_mcast_rate_control='1'
 uci set wireless.default_radio3.mode='mesh'
 uci set wireless.default_radio3.mesh_id='openmanet1'
 uci set wireless.default_radio3.encryption='sae'
-uci set wireless.default_radio3.key='12345678'      # ← 若已更換，兩台一起改
+uci set wireless.default_radio3.key="$MESH_KEY"     # LAB key from $MESH_KEY env; never commit a real key
 uci set wireless.default_radio3.beacon_int='1000'
 uci set wireless.default_radio3.wds='1'
 uci set wireless.default_radio3.network='batmesh0'
