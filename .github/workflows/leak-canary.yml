@@ -1,0 +1,42 @@
+name: leak-canary
+# Blocks content that belongs in the PRIVATE Batman-P repo from landing in this
+# public repo (security review follow-up). Two gates:
+#   1. sentinel  — any tracked file containing PRIVATE-DO-NOT-PUBLISH fails.
+#   2. deny-list — literal recipes/credentials in .github/leak-denylist.txt fail.
+# gitleaks (separate workflow) catches key/token *formats*; this catches our own
+# operational content, which gitleaks cannot recognise. Policy: if something can't
+# be safely partial-redacted, move the whole file to Batman-P.
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: private-content canary
+        shell: bash
+        run: |
+          set -u
+          EXCL=(':!.github/workflows/leak-canary.yml' ':!.github/leak-denylist.txt')
+          fail=0
+
+          # 1) sentinel — nothing tagged private-only may live in the public repo
+          if git grep -nI -- 'PRIVATE-DO-NOT-PUBLISH' -- "${EXCL[@]}"; then
+            echo "::error::PRIVATE-DO-NOT-PUBLISH sentinel found — move that file to the private Batman-P repo."
+            fail=1
+          fi
+
+          # 2) deny-list — literal recipes/credentials that must never be public
+          grep -vE '^[[:space:]]*#|^[[:space:]]*$' .github/leak-denylist.txt > /tmp/pats || true
+          if [ -s /tmp/pats ]; then
+            if git grep -nIE -f /tmp/pats -- "${EXCL[@]}"; then
+              echo "::error::A denylisted string appears above (see .github/leak-denylist.txt) — redact it or move the file to Batman-P."
+              fail=1
+            fi
+          fi
+
+          if [ "$fail" -eq 0 ]; then echo "leak-canary: clean"; fi
+          exit "$fail"
