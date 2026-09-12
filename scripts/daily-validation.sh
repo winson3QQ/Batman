@@ -7,17 +7,28 @@
 # Env:
 #   BENCH_NODE   A/B bench card node       (default 10.41.254.1)
 #   MESH_NODE    a live mesh node          (default 10.41.239.205)
-#   AB_MODE      --destructive | --inspect-only | --skip   (default --destructive)
+#   AB_MODE      --inspect-only | --destructive | --skip   (default --inspect-only)
+#   ALLOW_SKIP   set to 1 to let a run with skipped suites still exit 0  (default 0)
 #
-# Every suite is one of PASS / FAIL / SKIP, and SKIP is reported as loudly as FAIL. A run that
-# quietly skipped everything because no hardware answered must not look like a green run.
+# Every suite is one of PASS / FAIL / SKIP, and SKIP is reported as loudly as FAIL — including
+# in the EXIT STATUS. A run that quietly skipped everything because no hardware answered must
+# not look like a green run, and cron only ever sees the exit status.
+#
+# AB_MODE defaults to --inspect-only, not --destructive. This is the scheduled runner:
+# ab-selftest.sh --destructive reboots the bench node four times, renames bootB/start4.elf and
+# zeroes the head of rootB, and a run that dies between the break and the restore (host reboot,
+# network drop, ssh timeout) leaves slot B broken until somebody reads the log. That belongs to
+# a release, not to 06:30 every day; docs/storage-architecture.md assigns --inspect-only to
+# "scheduled" and --destructive to "before tagging a release". Pass AB_MODE explicitly for the
+# release run.
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:-$HOME/batman-validation}
 BENCH_NODE=${BENCH_NODE:-10.41.254.1}
 MESH_NODE=${MESH_NODE:-10.41.239.205}
-AB_MODE=${AB_MODE:---destructive}
+AB_MODE=${AB_MODE:---inspect-only}
+ALLOW_SKIP=${ALLOW_SKIP:-0}
 
 STAMP=$(date +%Y%m%d-%H%M%S)
 DIR="$OUT/$STAMP"; mkdir -p "$DIR"
@@ -90,4 +101,16 @@ fi
 ln -sfn "$DIR" "$OUT/latest"
 echo
 cat "$REPORT"
-[ $NFAIL -eq 0 ]
+
+# A skip has to reach the exit status too. The bold warning above only exists inside report.md,
+# which nobody opens on a green run — and the realistic failure mode of a scheduled hardware
+# test is that the hardware was not plugged in. With both nodes unreachable every hardware
+# suite SKIPs, NFAIL stays 0, and `[ $NFAIL -eq 0 ]` would hand cron a silent success for a run
+# that verified nothing. Set ALLOW_SKIP=1 to opt out deliberately.
+if [ $NFAIL -ne 0 ]; then
+  exit 1
+elif [ $NSKIP -ne 0 ] && [ "$ALLOW_SKIP" != 1 ]; then
+  echo "EXIT 1: $NSKIP suite(s) skipped — nothing verified them. Set ALLOW_SKIP=1 if that is intended."
+  exit 1
+fi
+exit 0

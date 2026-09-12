@@ -119,19 +119,42 @@ done
 
 echo
 echo "=== E. both root slots hold the same image ==="
-SB=$(unsquashfs -s "$WORK/src/p2-rootfs-squashfs.img" | awk '/Filesystem size/{print $3}')
+# bytes_used from the squashfs 4.0 superblock (little-endian u64 at offset 40), with
+# `unsquashfs -s` as the fallback. Not `unsquashfs -s | awk '{print $3}'`: only squashfs-tools
+# >= 4.6 prints "Filesystem size <N> bytes", 4.5 prints "<N.NN> Kbytes", so column 3 is a
+# non-integer on an older host and this suite FAILs for a reason that has nothing to do with
+# the card. Same helper as scripts/build-gpt-ab-card.sh, deliberately.
+# `|| SB=""` because a bare SB=$(...) assignment under set -e + pipefail aborts the whole
+# script when the pipeline fails, so the guard below would never get to run.
+squashfs_bytes() {                   # $1 = file with a squashfs at offset 0
+  local magic
+  magic=$(od -An -tx4 -N4 "$1" 2>/dev/null | tr -d ' \n')
+  [ "$magic" = 73717368 ] || return 1
+  od -An -tu8 -j40 -N8 "$1" 2>/dev/null | tr -d ' \n'
+}
+SB=$(squashfs_bytes "$WORK/src/p2-rootfs-squashfs.img" \
+     || unsquashfs -s "$WORK/src/p2-rootfs-squashfs.img" 2>/dev/null \
+        | awk '/Filesystem size/{for(i=1;i<=NF;i++) if($i=="bytes") print $(i-1)}') || SB=""
 if [[ $SB =~ ^[0-9]+$ ]] && [ "$SB" -gt 0 ]; then
   ok "squashfs size parsed ($SB bytes)"
+  # count derived from SB, not a fixed 64 MiB: a rootfs past the cap would return short here
+  # while SRC_MD5 covers all $SB bytes, so the digests could never match and the failure would
+  # point at the card build instead of at this line. Real image is ~53 MB (storage-architecture).
+  MB=$(( (SB + 1048575) / 1048576 ))
+  # head -c closes the pipe early, so dd takes SIGPIPE; pipefail would abort the script.
+  slot_md5() { ( set +o pipefail; sudo dd if="$1" bs=1M count=$MB 2>/dev/null | head -c "$SB" | md5sum | cut -d' ' -f1 ); }
+  # Compare each slot against the SOURCE, not against each other: two slots that were both
+  # written with dd count=0 are "identical" and would pass a slot-to-slot check.
+  SRC_MD5=$( set +o pipefail; head -c "$SB" "$WORK/src/p2-rootfs-squashfs.img" | md5sum | cut -d' ' -f1 )
+  check "rootA matches the source squashfs" "$(slot_md5 "${LOOP}p2")" "$SRC_MD5"
+  check "rootB matches the source squashfs" "$(slot_md5 "${LOOP}p4")" "$SRC_MD5"
 else
-  bad "could not parse the squashfs size — every digest below would compare empty input and pass vacuously"; SB=0
+  # Skipped, not run with SB=0. With SB=0 both sides are `head -c 0`, both digests are
+  # d41d8cd98f00b204e9800998ecf8427e, and the two checks below printed `ok` for a comparison
+  # that never happened — in a log that gets committed under docs/data/ as evidence.
+  bad "could not read the squashfs size (got '$SB') — skipping the root-slot digests rather than comparing empty input"
+  echo "  ---- rootA/rootB digest comparison NOT RUN ----"
 fi
-# head -c closes the pipe early, so dd takes SIGPIPE; pipefail would abort the script.
-slot_md5() { ( set +o pipefail; sudo dd if="$1" bs=1M count=64 2>/dev/null | head -c "$SB" | md5sum | cut -d' ' -f1 ); }
-# Compare each slot against the SOURCE, not against each other: two slots that were both
-# written with dd count=0 are "identical" and would pass a slot-to-slot check.
-SRC_MD5=$( set +o pipefail; head -c "$SB" "$WORK/src/p2-rootfs-squashfs.img" | md5sum | cut -d' ' -f1 )
-check "rootA matches the source squashfs" "$(slot_md5 "${LOOP}p2")" "$SRC_MD5"
-check "rootB matches the source squashfs" "$(slot_md5 "${LOOP}p4")" "$SRC_MD5"
 
 echo
 echo "================ $PASS passed, $FAIL failed ================"

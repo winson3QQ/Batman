@@ -161,7 +161,21 @@ if [ "$MODE" != --destructive ]; then
   [ "$FAIL" -eq 0 ]; exit
 fi
 
+# The interlock has to test the slot the node is on RIGHT NOW, not the one it booted with.
+# Nothing above aborts — every failure path calls `bad`, which only counts — so a tryboot that
+# got stuck, or a plain-reboot timeout, leaves the node RUNNING slot B while $SLOT0 still says
+# A. Both destructive cases below address bootB/rootB by fixed path (p3/p4), so clearing this
+# guard on a stale value means destroying the slot the node is currently running from, in a
+# script whose banner promises it only touches the inactive one. Re-read before each case.
+require_inactive_B() {                # $1 = which case, for the message
+  local cur
+  cur=$(slot)
+  is_slot "$cur" || { echo; echo "FATAL: cannot read the node's current slot (got '${cur:0:40}') — refusing to touch p3/p4 ($1)."; exit 2; }
+  [ "$cur" = A ] || { echo; echo "FATAL: destructive cases break the INACTIVE slot and expect a fallback to slot A."; echo "The node is running slot $cur right now, so p3/p4 are the ACTIVE slot. Refusing ($1)."; echo "Commit back to slot A first."; exit 2; }
+}
+
 [ "$SLOT0" = A ] || { echo; echo "FATAL: destructive cases break the INACTIVE slot and expect a fallback to slot A."; echo "Commit back to slot A first. Refusing."; exit 2; }
+require_inactive_B "destructive 1/2"
 
 echo
 echo "--- destructive 1/2: inactive slot unbootable by the firmware ---"
@@ -176,15 +190,20 @@ else
     bad "node did not come back — the firmware-level fallback did not happen ($T)"
   fi
   bootb_rw 'mv /mnt/_ab/start4.selftest /mnt/_ab/start4.elf' >/dev/null
-fi
-if [ -n "$(bootb_rw 'ls /mnt/_ab/start4.elf' | grep -w start4.elf)" ]; then
-  ok "restored bootB/start4.elf"
-else
-  bad "bootB/start4.elf NOT restored — slot B is left unbootable by the firmware, fix it before using this card"
+  # Inside the staged branch on purpose. When staging failed, start4.elf was never renamed, so
+  # this `ls` succeeds and would print a green "restored" line for a restore that never ran.
+  if [ -n "$(bootb_rw 'ls /mnt/_ab/start4.elf' | grep -w start4.elf)" ]; then
+    ok "restored bootB/start4.elf"
+  else
+    bad "bootB/start4.elf NOT restored — slot B is left unbootable by the firmware, fix it before using this card"
+  fi
 fi
 
 echo
 echo "--- destructive 2/2: inactive slot boots but its rootfs is unusable ---"
+# Case 1/2 can itself leave the node on B (a fallback that did not happen), and its failure
+# path only counted a FAIL. Re-check before zeroing p4.
+require_inactive_B "destructive 2/2"
 # The saved block lives HERE, not on the node: the node's /tmp is tmpfs and every case under
 # test reboots it, so a backup left there is gone exactly when it is needed.
 sshraw 'dd if=/dev/mmcblk0p4 bs=1M count=1 2>/dev/null' > "$HEADFILE"

@@ -11,9 +11,23 @@ DEV=${DEV:-/dev/mmcblk0}
 SRC=${SRC:?set SRC to the backup dir (see docs/storage-architecture.md B1)}
 EXPECT_SECTORS=${EXPECT_SECTORS:-62333952}
 SQUASH_SRC="$SRC/p2-rootfs-squashfs.img"   # dump of the v1.1 p2; squashfs sits at offset 0
-# Size of the squashfs at offset 0 of SQUASH_SRC; read it rather than hard-coding,
-# so a re-squashed rootfs (e.g. after the ETHFIX patch) still copies in full.
-SQUASH_BYTES=${SQUASH_BYTES:-$(unsquashfs -s "$SRC/p2-rootfs-squashfs.img" 2>/dev/null | awk '/Filesystem size/{print $3}')}
+
+# Size of the squashfs at offset 0 of SQUASH_SRC; read it rather than hard-coding, so a
+# re-squashed rootfs (e.g. after the ETHFIX patch) still copies in full.
+#
+# Read from the superblock, NOT from `unsquashfs -s | awk '{print $3}'`. Only squashfs-tools
+# >= 4.6 prints "Filesystem size <N> bytes"; 4.5 and earlier print "Filesystem size <N.NN>
+# Kbytes", so column 3 is a non-integer there and the guard below refuses with a message that
+# blames the wrong thing. The squashfs 4.0 superblock has bytes_used as a little-endian u64 at
+# offset 40, which is exact and version-independent. unsquashfs stays as the fallback.
+squashfs_bytes() {                         # $1 = file with a squashfs at offset 0
+  local magic
+  magic=$(od -An -tx4 -N4 "$1" 2>/dev/null | tr -d ' \n')
+  [ "$magic" = 73717368 ] || return 1      # 'hsqs' little-endian
+  od -An -tu8 -j40 -N8 "$1" 2>/dev/null | tr -d ' \n'
+}
+SQUASH_BYTES=${SQUASH_BYTES:-$(squashfs_bytes "$SQUASH_SRC" \
+  || unsquashfs -s "$SQUASH_SRC" 2>/dev/null | awk '/Filesystem size/{for(i=1;i<=NF;i++) if($i=="bytes") print $(i-1)}')}
 BOOTTAR="$SRC/p1-bootA/bootA.tar"
 DATA_SRC="$SRC/p3-batdata"                 # restored onto the new data partition
 
@@ -28,13 +42,18 @@ G6=3276af79-0000-4000-8000-000000000006   # data
 say(){ echo; echo "=== $* ==="; }
 
 [[ -b $DEV ]] || { echo "no such device $DEV"; exit 1; }
+# mmcblk0/loop0 partitions are mmcblk0p1; sda partitions are sda1. docs/storage-architecture.md
+# records this card being built on the Pi 500's USB reader, which enumerates as /dev/sda — with
+# a hard-coded "p" every reference below becomes /dev/sdap1 and the first failure lands AFTER
+# wipefs and sgdisk have already destroyed the partition table.
+[[ $DEV =~ [0-9]$ ]] && P=p || P=""
 [[ -f $SQUASH_SRC && -f $BOOTTAR ]] || { echo "backup missing"; exit 1; }
 [[ -d $DATA_SRC ]] || { echo "no data source dir $DATA_SRC - refusing (it is needed AFTER the repartition)"; exit 1; }
-# An empty or non-numeric SQUASH_BYTES makes `count=$(( (SQUASH_BYTES+1048575)/1048576 ))`
-# evaluate to 0, so dd writes NOTHING into either root slot and the script still reports
-# BUILD DONE. Validate before the card is repartitioned, not after.
+# An empty or non-numeric SQUASH_BYTES makes every `count=` below evaluate to 0, so dd writes
+# NOTHING into either root slot and the script still reports BUILD DONE — a card with no
+# rootfs, built silently. Validate before the card is repartitioned, not after.
 [[ $SQUASH_BYTES =~ ^[0-9]+$ ]] && (( SQUASH_BYTES > 0 )) \
-  || { echo "SQUASH_BYTES='$SQUASH_BYTES' is not a positive integer (unsquashfs -s output changed?) - refusing"; exit 1; }
+  || { echo "SQUASH_BYTES='$SQUASH_BYTES' is not a positive integer - refusing"; echo "(no squashfs superblock at offset 0 of $SQUASH_SRC, and unsquashfs -s gave nothing usable)"; exit 1; }
 SZ=$(sudo blockdev --getsz "$DEV")
 [[ $SZ -eq $EXPECT_SECTORS ]] || { echo "unexpected device size $SZ sectors (want $EXPECT_SECTORS) - refusing"; exit 1; }
 
@@ -55,10 +74,13 @@ sudo sgdisk -a 2048 \
   -n 6:4016M:0      -t 6:8300 -c 6:data   -u 6:$G6 \
   "$DEV"
 sudo partprobe "$DEV"; sleep 2
+for i in 1 2 3 4 5 6; do
+  [[ -b ${DEV}${P}${i} ]] || { echo "expected partition ${DEV}${P}${i} does not exist after partprobe - refusing"; exit 1; }
+done
 
 say "boot slots: mkfs.vfat (NOT dd) with distinct labels + volume ids"
-sudo mkfs.vfat -F 16 -n BOOTA -i 0xBA710001 "${DEV}p1"
-sudo mkfs.vfat -F 16 -n BOOTB -i 0xBA710003 "${DEV}p3"
+sudo mkfs.vfat -F 16 -n BOOTA -i 0xBA710001 "${DEV}${P}1"
+sudo mkfs.vfat -F 16 -n BOOTB -i 0xBA710003 "${DEV}${P}3"
 
 # Zero past the end of the new squashfs, not a fixed 96 MiB: fstools looks for the overlay
 # immediately behind the squashfs, so if a re-squashed rootfs grows past the zeroed window a
@@ -66,19 +88,24 @@ sudo mkfs.vfat -F 16 -n BOOTB -i 0xBA710003 "${DEV}p3"
 # "new squashfs + old settings" (docs/upgrade-1.8.0.md: the classic 'reflash didn't take').
 SQUASH_MB=$(( (SQUASH_BYTES + 1048575) / 1048576 ))
 ZERO_MB=$(( SQUASH_MB + 64 ))
-say "rootfs slots: zero the first $ZERO_MB MiB, then write the $SQUASH_MB MiB squashfs to each"
+# Copy EXACTLY SQUASH_BYTES, not the MiB-rounded count. SQUASH_SRC is a dump of the whole old
+# p2 — squashfs at offset 0 followed by that card's previous f2fs overlay — so a rounded-up
+# copy drags up to 1 MiB of the OLD overlay back over the zeros just written, and fstools looks
+# for the overlay at ceil(SQUASH_BYTES/64KiB)*64KiB, which is inside that overshoot. That is
+# exactly the "new squashfs + old settings" case the zeroing above exists to prevent.
+say "rootfs slots: zero the first $ZERO_MB MiB, then write the $SQUASH_BYTES-byte squashfs to each"
 for p in 2 4; do
-  sudo dd if=/dev/zero of="${DEV}p${p}" bs=1M count=$ZERO_MB status=none conv=fsync
-  sudo dd if="$SQUASH_SRC" of="${DEV}p${p}" bs=1M count=$SQUASH_MB status=none conv=fsync
+  sudo dd if=/dev/zero of="${DEV}${P}${p}" bs=1M count=$ZERO_MB status=none conv=fsync
+  sudo dd if="$SQUASH_SRC" of="${DEV}${P}${p}" bs=1M count=$SQUASH_BYTES iflag=count_bytes status=none conv=fsync
 done
 
 say "config + data: ext4"
-sudo mkfs.ext4 -q -F -L batconfig "${DEV}p5"
-sudo mkfs.ext4 -q -F -L batdata   "${DEV}p6"
+sudo mkfs.ext4 -q -F -L batconfig "${DEV}${P}5"
+sudo mkfs.ext4 -q -F -L batdata   "${DEV}${P}6"
 
 say "populate boot slots"
 T=$(mktemp -d); sudo mkdir -p "$T/a" "$T/b"
-sudo mount "${DEV}p1" "$T/a"; sudo mount "${DEV}p3" "$T/b"
+sudo mount "${DEV}${P}1" "$T/a"; sudo mount "${DEV}${P}3" "$T/b"
 # vfat has no ownership: --no-same-owner, else tar exits 2 on chown and set -e kills us
 sudo tar --no-same-owner -C "$T/a" -xf "$BOOTTAR"
 sudo tar --no-same-owner -C "$T/b" -xf "$BOOTTAR"
@@ -109,7 +136,7 @@ echo "$CMDLINE_COMMON root=PARTUUID=$G4 batman_slot=B" | sudo tee "$T/b/cmdline.
 fw_boot_partition() {            # $1 = GPT index -> the firmware's boot_partition number
   local target=$1 n=0 i
   for i in $(sudo sgdisk -p "$DEV" | awk '/^ *[0-9]+ +[0-9]+/{print $1}' | sort -n); do
-    [ "$(sudo blkid -p -s TYPE -o value "${DEV}p${i}" 2>/dev/null)" = vfat ] || continue
+    [ "$(sudo blkid -p -s TYPE -o value "${DEV}${P}${i}" 2>/dev/null)" = vfat ] || continue
     n=$((n + 1))
     [ "$i" = "$target" ] && { echo "$n"; return 0; }
   done
@@ -126,12 +153,12 @@ sudo sync; sudo umount "$T/a" "$T/b"; sudo rmdir "$T/a" "$T/b" "$T"
 say "restore data partition"
 # mktemp, not a fixed /mnt/newdata: a run that dies mid-way leaves the fixed path mounted and
 # every later run then fails on it.
-D=$(mktemp -d); sudo mount "${DEV}p6" "$D"
+D=$(mktemp -d); sudo mount "${DEV}${P}6" "$D"
 sudo rsync -aHAX "$DATA_SRC/" "$D/"
 sudo sync; sudo umount "$D"; rmdir "$D"
 
 say "final layout"
 sudo sgdisk -p "$DEV"
-sudo blkid "${DEV}p1" "${DEV}p2" "${DEV}p3" "${DEV}p4" "${DEV}p5" "${DEV}p6"
+sudo blkid "${DEV}${P}1" "${DEV}${P}2" "${DEV}${P}3" "${DEV}${P}4" "${DEV}${P}5" "${DEV}${P}6"
 echo
 echo "BUILD DONE"

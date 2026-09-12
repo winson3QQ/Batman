@@ -356,11 +356,11 @@ and the good slot's userspace never gets to run. This is the structural reason #
 boot-attempt counter itself, and why commit must never happen before the trial slot has proven
 itself healthy.
 
-### Keeping this true — the three guards
+### Keeping this true — the four guards
 
 Everything above was established by hand on one afternoon. Nothing in the repo stopped
 somebody putting a bare `rootwait` back, and the failure mode of doing so is a node that boots
-fine today and is unrecoverable in the field a year later. Three guards now hold it:
+fine today and is unrecoverable in the field a year later. Four guards now hold it:
 
 **1. `tests/ab-card-invariants.sh` — every PR, no hardware.** Builds a real card on a loop
 device by running `scripts/build-gpt-ab-card.sh` unmodified, then asserts the invariants
@@ -389,18 +389,31 @@ The CI job cannot prove the firmware behaves; only a Pi can. Three modes:
 `--destructive` breaks the *inactive* slot only, saves what it breaks **on the test host** (the
 node's `/tmp` is tmpfs and every case under test reboots it), restores it, and verifies the
 restore. It refuses to run against anything whose `/proc/cmdline` lacks a `batman_slot` marker,
-and refuses the destructive cases unless the node is currently committed to slot A.
+and refuses the destructive cases unless the node is on slot A.
+
+That last check re-reads the running slot immediately before **each** destructive case, rather
+than trusting the slot read at startup. Nothing in the live section aborts — every failure path
+only counts a `FAIL` — so a tryboot that got stuck, or a plain reboot that timed out, leaves the
+node running slot **B** while the startup value still says A. Both destructive cases address
+bootB/rootB by fixed path (`p3`/`p4`), so clearing the interlock on a stale value would rename
+`start4.elf` on the *running* boot partition and zero the head of the *running*, mounted rootfs
+— an unrecoverable bench node, from the script that promises it only touches the inactive slot.
 
 **4. `scripts/daily-validation.sh` — the scheduled aggregate.** Runs the suites that are cheap
 and safe to repeat and writes a dated report to `~/batman-validation/<stamp>/report.md`:
 `ab-card-invariants` (no hardware), `test-onboarding-ip` (pure logic), `ab-selftest` against the
 bench card, and `meshtest` against a live mesh node. Installed on the Pi 500 at **06:30 daily**.
 
-A suite is PASS / FAIL / **SKIP**, and the report states the skip count in bold with a warning,
-because the failure mode of a scheduled hardware test is that the hardware was not plugged in
-and everybody reads the green summary anyway. `ab-selftest` refuses any target that does not
-report a `batman_slot`, so pointing the schedule at a production node is a no-op rather than
-four reboots.
+The scheduled `ab-selftest` run is **`--inspect-only`** (`AB_MODE` overrides it), matching the
+table above. A nightly `--destructive` run would reboot the bench node four times every morning
+and leave slot B broken whenever a run died between the break and the restore; that cost belongs
+to a release, not to a schedule.
+
+A suite is PASS / FAIL / **SKIP**, and the skip count reaches the **exit status**, not only the
+report — because the failure mode of a scheduled hardware test is that the hardware was not
+plugged in, and cron only ever sees the exit status. A run where every hardware suite skipped
+exits 1; `ALLOW_SKIP=1` opts out deliberately. `ab-selftest` also refuses any target that does
+not report a `batman_slot`, so pointing the schedule at a production node is a no-op.
 
 Last full runs, 2026-09-12: 22/22 CI invariants, 18/18 hardware destructive, and the four
 mutation runs confirming the guards fail when the defects are reintroduced. Raw logs in
