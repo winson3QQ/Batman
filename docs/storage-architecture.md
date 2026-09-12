@@ -391,7 +391,20 @@ node's `/tmp` is tmpfs and every case under test reboots it), restores it, and v
 restore. It refuses to run against anything whose `/proc/cmdline` lacks a `batman_slot` marker,
 and refuses the destructive cases unless the node is currently committed to slot A.
 
-Last full run: 16/16 on the bench card, 2026-09-11.
+**4. `scripts/daily-validation.sh` — the scheduled aggregate.** Runs the suites that are cheap
+and safe to repeat and writes a dated report to `~/batman-validation/<stamp>/report.md`:
+`ab-card-invariants` (no hardware), `test-onboarding-ip` (pure logic), `ab-selftest` against the
+bench card, and `meshtest` against a live mesh node. Installed on the Pi 500 at **06:30 daily**.
+
+A suite is PASS / FAIL / **SKIP**, and the report states the skip count in bold with a warning,
+because the failure mode of a scheduled hardware test is that the hardware was not plugged in
+and everybody reads the green summary anyway. `ab-selftest` refuses any target that does not
+report a `batman_slot`, so pointing the schedule at a production node is a no-op rather than
+four reboots.
+
+Last full runs, 2026-09-12: 22/22 CI invariants, 18/18 hardware destructive, and the four
+mutation runs confirming the guards fail when the defects are reintroduced. Raw logs in
+[`docs/data/ab-boot-20260912/`](data/ab-boot-20260912/).
 
 ### B2 — verity vs overlay: the real problem is *what's in the overlay*
 Reframed by the facts: OpenWrt **already** runs a read-only squashfs (`/rom`, 52.8 MB) + a
