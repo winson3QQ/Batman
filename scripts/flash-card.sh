@@ -123,9 +123,9 @@ cat <<'EOF'
 
 Done. Next, in this order:
 
-  1. boot the node, then SSH in at 10.41.254.1 with no password
-  2. install your SSH key BEFORE the wizard - it sets a password, and a typo
-     there means another flash
+  1. boot the node, then install your SSH key BEFORE the wizard - it sets a
+     password, and a typo there means another flash
+     (bootstrap-access steps: ops/flashing-and-recovery.md in Batman-P)
   3. configure it: run the wizard, or clone an existing node
      (see docs/cloning-a-node.md)
   4. sync before cutting power

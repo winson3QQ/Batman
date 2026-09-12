@@ -141,11 +141,7 @@ rather than method.
 The SSH key goes in first, before anything can set a password:
 
 ```sh
-# 1. fresh boot, root has no password
-cat ~/.ssh/id_ed25519.pub | ssh root@10.41.254.1 \
- 'mkdir -p /etc/dropbear /root/.ssh
-  tee -a /etc/dropbear/authorized_keys >> /root/.ssh/authorized_keys
-  chmod 600 /etc/dropbear/authorized_keys /root/.ssh/authorized_keys'
+# 1. install your SSH key first (bootstrap access — see ops/cloning-a-node.md in Batman-P)
 
 # 2. stage the config and check it
 scp out/* root@10.41.254.1:/tmp/verify/

@@ -100,20 +100,10 @@ grep '^10.41.254.1 ' ~/.ssh/known_hosts   # finds nothing, even when present
 
 ## Install your SSH key before running the setup wizard
 
-On a fresh flash root has no password, so the key goes in with no authentication at
-all. Do this *first* — the wizard sets a password, and if you mistype or forget it
-your only way back in is another flash.
-
-```sh
-cat ~/.ssh/id_ed25519.pub | ssh root@10.41.254.1 \
- 'mkdir -p /etc/dropbear /root/.ssh
-  tee -a /etc/dropbear/authorized_keys >> /root/.ssh/authorized_keys
-  chmod 600 /etc/dropbear/authorized_keys /root/.ssh/authorized_keys'
-```
-
-Both paths are written because OpenWrt's dropbear reads `/etc/dropbear/authorized_keys`
-while some builds use `~/.ssh/authorized_keys`. `ssh-copy-id` only writes the latter,
-which is why it often appears to do nothing on OpenWrt.
+Do this *first* — the setup wizard sets a root password, and if you mistype or forget it
+your only way back in is another flash. The exact bootstrap-access commands (and why both
+dropbear key paths are written) live in `ops/flashing-and-recovery.md` in the private
+**Batman-P** repo.
 
 ## Hypotheses that were wrong
 
