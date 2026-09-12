@@ -1,0 +1,31 @@
+# 2026-09-12T08:38:56+08:00  mutation: the reboot command is replaced with a no-op, timeout shortened to 40s
+=== A/B self-test against 10.41.254.1 ===
+running slot=A firmware partition=1
+
+--- static invariants ---
+  ok   tryboot_a_b=1 present
+  ok   [tryboot] section present
+  ok   autoboot.txt [all]=1 agrees with the slot actually booted (1)
+  ok   [tryboot] boot_partition=2 is a plausible firmware index
+  ok   slot A cmdline.txt read and carries batman_slot=A
+  ok   slot A rootwait is bounded
+  ok   slot A has no bare rootwait
+  ok   slot A has panic=N
+  ok   slot B cmdline.txt read and carries batman_slot=B
+  ok   slot B rootwait is bounded
+  ok   slot B has no bare rootwait
+  ok   slot B has panic=N
+
+--- live: tryboot switches slots, and the trial is one-shot ---
+  FAIL node did not come back after tryboot (TIMEOUT)
+  FAIL node did not come back after a plain reboot (TIMEOUT)
+
+--- destructive 1/2: inactive slot unbootable by the firmware ---
+  FAIL node did not come back — the firmware-level fallback did not happen (TIMEOUT)
+  ok   restored bootB/start4.elf
+
+--- destructive 2/2: inactive slot boots but its rootfs is unusable ---
+  FAIL node never came back — this is the bare-rootwait dead hang; cmdline needs rootwait=N panic=N (#133) (TIMEOUT)
+  ok   restored rootB (squashfs magic back)
+
+================ 14 passed, 4 failed ================

@@ -176,6 +176,50 @@ channel bandwidth** — must match exactly or the mesh will not form.
 The docs are explicit about one thing: **do not use 8 MHz bandwidth, and do not use
 auto channel.**
 
+## How to modify OpenMANET (and how not to)
+
+Verified against `OpenMANET/firmware` @ `1.8.0` and the `openmanet` feed @ its pinned commit
+`4736e447`, 2026-09-12. Picking the wrong mechanism is how a fork stops being maintainable, so
+match the layer to what is actually changing:
+
+| changing what | mechanism | where upstream does it |
+|---|---|---|
+| which packages / kernel options | **config fragment**, not a patch | `boards/ekh-bcm2711/*_diffconfig` (13 files), `boards/common/*_diffconfig` |
+| a file in the rootfs | **ship the file** | `OpenMANET/packages` → `boards/bsp-*/files/…` |
+| someone else's package source | **quilt patch** | `patches/ekh-bcm2711/` — 4 files (videoparser, collectd, iperf3, golang/GCC-15) |
+| the Linux kernel | **quilt patch** | `target/linux/bcm27xx/patches-6.6/` |
+| our own code | **our own package in a feed** | the whole `OpenMANET/packages` feed |
+
+The four board patches upstream carries are all "fix someone else's source". That is what a
+patch is for. Everything else is config or files.
+
+**Worked example — ETHFIX.** With no build environment it had to be done as surgery on a
+binary: unsquash the rootfs, edit one file, re-squash, `dd` back into both root slots (that is
+what `docs/upgrade-1.8.0.md` describes, and what was done to the #133 card). The same change at
+source level is four lines added to a `case` list in
+
+```
+OpenMANET/packages → boards/bsp-bcm271x/files/board.d/03_openmanet_eth
+```
+
+a plain file in a BSP package — no patch involved — and it is reproducible by anyone who clones
+the tree, which the SD-card version never was.
+
+**It also looks like an upstream bug.** That case list already carries `raspberrypi,4-model-b`,
+`raspberrypi,400` and `raspberrypi,4-compute-module`, which would be correct for a stock Pi 4.
+But OpenMANET's own `distroconfig.txt` ships
+
+```
+dtoverlay=sysinfo,board-name="bcm2711,mm6108-spi",model="RPI RPI4-MM6108 (SPI)"
+```
+
+so `board_name()` returns `bcm2711,mm6108-spi` and none of the `raspberrypi,*` arms can match —
+the board-name override defeats the case list. The `bcm2712,*` (Pi 5) arms are present and do
+match, which is exactly why a Pi 4 comes up with no wired L3 and a Pi 5 does not. Reporting it
+upstream is preferable to carrying it: fixed there, we maintain zero lines for it.
+
+See #108 for the build-reproduction work this depends on.
+
 ## Caveats
 
 - **`sysupgrade` wipes the overlay** unless configuration is preserved. Anything

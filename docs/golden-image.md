@@ -47,8 +47,16 @@ Start from a node running **stock OpenMANET 1.8.0** (fresh flash, or `sysupgrade
   **not** survive — the node comes up stock (IP `10.41.254.1`, SSH off). Regain access via LuCI
   (`http://10.41.254.1`) or ubus (root has an empty password): write your key with
   `ubus … file write /etc/dropbear/authorized_keys`.
-- **ETHFIX (bug #1) is NOT needed on 1.8.0** — eth0 comes up in `br-lan` fine (verified), despite
-  `03_openmanet_eth`'s case list still missing `bcm2711,mm6108-spi`.
+- **ETHFIX (bug #1) IS needed on 1.8.0.** *(Corrected 2026-09-11 — this bullet previously claimed
+  the opposite.)* Stock `03_openmanet_eth` still has no `bcm2711,*` in its case list, so on a Pi 4
+  `ucidef_set_interface_lan "eth0"` is never called and the wired port has no L3 — the node boots
+  normally and is simply unreachable. The earlier "verified" observation was made on manet01,
+  whose rootfs had **already** been patched (`03_openmanet_eth` 932 → 1022 bytes, md5
+  `9e2c0dcb…`), so what was verified was the patched behaviour, not stock. Confirmed 2026-09-11
+  on the #133 card: stock squashfs → no eth0; after applying
+  `patches/03_openmanet_eth.1.8.0-ethfix` to the same image, eth0 came up in `br-lan` at
+  `10.41.254.1` immediately. Identify which one you have by that md5 — stock is
+  `c32e6357…`.
 
 Then on the node:
 1. Install `parted` (the storage hook needs it). opkg over 借網 often fails (IPv6/feed) — the

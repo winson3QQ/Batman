@@ -205,15 +205,219 @@ node's EEPROM is **2026-01-09** (`chosen/bootloader/capabilities = 0x7f`). **Dec
   the only remotely-reachable node with no way to power-cycle. This is the safety floor the
   whole A/B design (#89) stands on.
 
-**What is NOT yet proven, and the lesson:** actually *booting* a second boot partition was not
-achieved on the bench — a `dd if=bootA of=bootB` copy carries bootA's FAT **BPB
-`hidden_sectors` (= bootA's start LBA)**, so bootB's geometry is internally wrong and the
-firmware's FAT reader rejects it → fall-back to A (Linux `mount` is unaffected, which masks it).
-**bootB must be built properly (`mkfs.vfat`, correct BPB), never `dd`-copied.** `mkfs.vfat`
-(dosfstools) and `resize2fs` are **not in the image** — so in-place A/B provisioning needs them
-added, or the card is built offline. Full GPT six-partition A/B boot + slot-switch must be
-**built and boot-tested on a spare card offline** (no USB card reader on site), not by
-repartitioning the only remote node. Signed-boot chain (#74) verification rides on that card.
+**What is NOT yet proven:** actually *booting* a second boot partition. The bench card was
+later read off-node on a card reader (Pi 500, 2026-09-11) and the BPB explanation first
+recorded here **did not survive measurement** — corrected below.
+
+> **Correction (2026-09-11).** This section originally said the `dd if=bootA of=bootB` copy
+> carried bootA's start LBA in the FAT **BPB `hidden_sectors`**, and that the firmware's FAT
+> reader rejected bootB for it. Measured on the bench card itself (p1 start LBA 8192, p4 start
+> LBA 62025728):
+>
+> ```
+> p1 (bootA)  OEM='mkfs.fat'  hidden_sectors=0  total_sectors32=131072
+> p4 (bootB)  OEM='mkfs.fat'  hidden_sectors=0  total_sectors32=131072
+> ```
+>
+> **Both are 0**, and bootA boots fine with 0 — so `hidden_sectors` cannot be what separated
+> them. What the `dd` copy *did* produce: an identical FAT volume id (`6859-BBC4`) and label
+> (`boot`) on both partitions, and a `total_sectors32` of 131072 (64 MiB) inside a 307200-sector
+> (150 MiB) partition. More decisive: **neither boot partition contained `autoboot.txt` (nor
+> `tryboot.txt`)**. Without `tryboot_a_b=1` + `boot_partition=`, the firmware does no
+> boot-partition switching at all — so the trial boot simply used the normal partition. "The
+> firmware rejected bootB" was never demonstrated; **boot-partition switching had not been
+> configured**, which is a sufficient explanation for the observed behaviour on its own.
+
+**The lesson still holds, for a better-grounded reason:** build each boot slot with
+**`mkfs.vfat` on its own partition, never `dd`-copy one** — a fresh mkfs gets `hidden_sectors`,
+the volume size and a *distinct* volume id right for free, while a `dd` clone duplicates the
+volume id/label and describes the source partition's size. And **`autoboot.txt` must be written
+explicitly**, on the first FAT partition, or A/B is inert.
+
+`mkfs.vfat` (dosfstools) and `resize2fs` are **not in the image** — so in-place A/B
+provisioning needs them added, or the card is built offline. Full GPT six-partition A/B boot +
+slot-switch must be **built and boot-tested on a spare card offline** (no USB card reader on
+site), not by repartitioning the only remote node. Signed-boot chain (#74) verification rides
+on that card. Card build: **done** (below); boot test: **done, passed** (2026-09-11, below).
+
+**The offline card — built and boot-tested 2026-09-11 (#133).** Built on the Pi 500 card
+reader by `scripts/build-gpt-ab-card.sh` from the bench card (backed up first), GPT, 29.7 GiB:
+
+| # | Name | Start (s) | Size | FS | Label | PARTUUID suffix |
+|---|---|---|---|---|---|---|
+| 1 | bootA | 8192 | 64 MiB | fat16 | `BOOTA` | `…-0001` |
+| 2 | rootA | 139264 | 1.5 GiB | squashfs | — | `…-0002` |
+| 3 | bootB | 3284992 | 64 MiB | fat16 | `BOOTB` | `…-0003` |
+| 4 | rootB | 3416064 | 1.5 GiB | squashfs | — | `…-0004` |
+| — | *(rescue reserve)* | 6561792 | 300 MiB | *unallocated* | — | — |
+| 5 | config | 7176192 | 512 MiB | ext4 | `batconfig` | `…-0005` |
+| 6 | data | 8224768 | 25.8 GiB | ext4 | `batdata` | `…-0006` |
+
+Verified after the build: `hidden_sectors` = 8192 (p1) and 3284992 (p3), each matching its own
+start LBA; volume ids distinct (`BA71-0001` / `BA71-0003`); `autoboot.txt` present on **bootA
+only** (as built: `[all] tryboot_a_b=1, boot_partition=1` / `[tryboot] boot_partition=3` — that
+`3` is the GPT index and is **wrong**, see the boot-test result below; the script now derives
+it and writes `2`); each slot's
+`cmdline.txt` points at its own rootfs PARTUUID and carries a `batman_slot=A|B` marker; both
+rootfs slots hold a valid 52.7 MB squashfs with a zeroed tail for fstools to build the overlay
+in. PARTUUIDs are deterministic (`3276af79-0000-4000-8000-00000000000N`, prefix = the card's
+former MBR id) — readable in logs, but **bench-only**: two such cards in one machine would
+collide, so a production build must mint random GUIDs.
+
+The boot test cannot run on the Pi 500 (BCM2712; the card carries only `bcm2711-*.dtb`), so it
+was run on the manet01 Pi 4 (EEPROM `build-timestamp` **2026-01-09**, `capabilities=0x7f`).
+
+**Result — the A/B mechanism works end to end (2026-09-11, #133).** Every line below is a
+reading off `/proc/device-tree/chosen/bootloader/` and `/proc/cmdline` on that node:
+
+| step | trigger | `batman_slot` | `…/partition` | `…/tryboot` |
+|---|---|---|---|---|
+| boot slot A | power-on | `A` | 1 | 0 |
+| trial-boot B | `vcmailbox 0x00038064 4 4 1` + `reboot` | **`B`** | **2** | **1** |
+| trial is one-shot | plain `reboot` | `A` | 1 | 0 |
+| commit B | `[all] boot_partition=2`, plain `reboot` | **`B`** | 2 | 0 |
+| back to A | `[all] boot_partition=1`, plain `reboot` | `A` | 1 | 0 |
+
+Also confirmed on the way: `root=PARTUUID=` in **full GPT-GUID form** resolves (the kernel has
+`CONFIG_EFI_PARTITION=y`), fstools builds its f2fs overlay happily in the 1.5 GiB root slot
+(1.4 GiB free), and the reboot flag set by `vcmailbox` **auto-clears** after the firmware
+consumes it (read back 0x1 before the reboot, 0x0 after).
+
+**`boot_partition` is the firmware's partition number, NOT the GPT index.** This is the trap,
+and the v2 design had it wrong. The firmware counts only the partitions it can boot from — the
+FAT ones — so with bootA=gpt1, rootA=gpt2, bootB=gpt3, **bootB is `boot_partition=2`, not 3**;
+the squashfs slots are not counted. The first attempt used `boot_partition=3`, which points at
+nothing the firmware will boot, and it **cleanly failed over to partition 1** — tryboot mode was
+entered (`tryboot`=1) but the slot never switched. That failure mode is silent and looks like
+success from userspace unless you read `…/partition`, so **#89's apply flow must verify the slot
+it actually landed on, never assume the switch took**. `scripts/build-gpt-ab-card.sh` now writes
+`[tryboot] boot_partition=2`.
+
+This also re-confirms the fallback safety floor from the bench work above, this time on a real
+A/B card: a `boot_partition` the firmware cannot boot costs one wasted reboot, not a brick.
+
+**The rootfs needed ETHFIX to be reachable.** The card's squashfs came from a stock 1.8.0 image,
+whose `etc/board.d/03_openmanet_eth` case list has no `bcm2711,*` entry — so on a Pi 4 eth0 is
+left out of every network interface and the node boots fine with no wired L3 at all. Both root
+slots were re-squashed with `patches/03_openmanet_eth.1.8.0-ethfix` (and an `authorized_keys`,
+since that node's serial console drops characters); eth0 then came up in `br-lan` at
+`10.41.254.1`. See the correction in [`golden-image.md`](golden-image.md). Re-squashing changes
+the filesystem size, which is why the build script now reads `SQUASH_BYTES` from `unsquashfs -s`
+instead of hard-coding it.
+
+**Failure-case matrix (bench-run 2026-09-11, #133).** The happy path above is not the
+interesting part; these are. Every row was induced on the real card and observed on the node.
+
+| case | as shipped | after the cmdline fix |
+|---|---|---|
+| bootB missing `start4.elf` (firmware cannot boot the slot) | 52 s auto-return to A, `tryboot`=1 | — |
+| bootB missing `kernel8.img` (fails *after* `start4.elf` loads) | 52 s auto-return to A, **`tryboot`=0** | — |
+| rootfs absent (`root=` points at nothing) | **dead hang >5 min, needs a power cycle** | **77 s auto-recovery** |
+| rootB squashfs corrupted | **dead hang** | **62 s auto-recovery** |
+| `autoboot.txt` truncated mid-write (power cut during commit) | boots partition 1 — **the commit is silently lost** | — |
+| `autoboot.txt` absent | boots partition 1; setting the tryboot flag does nothing at all | — |
+| committed slot B unbootable *at firmware level* | 52 s auto-return to A, but `autoboot.txt` is **not** rewritten | — |
+| committed slot B broken *at kernel level* | **not directly observed** — reasoned below | unchanged — see below |
+
+**The `rootwait` trap — the single most dangerous line in the layout.** A bare `rootwait`
+waits for the root device *forever*. When a slot's rootfs is missing or corrupt the kernel
+therefore never gives up, procd never starts, `/dev/watchdog` is never opened, and nothing
+resets the board. The result is not a boot loop — it is a **silent dead node**, and the
+firmware's tryboot fallback does not apply because the firmware already handed off to the
+kernel successfully. `rootwait=20 panic=10` bounds the wait and turns the failure into an
+automatic return to the other slot. Do **not** simply drop `rootwait`: mmc probes
+asynchronously, so a *healthy* slot then races the device and panics too (this was tried and
+caught by regression — the "fix" recovered only because it broke every slot equally).
+Kernel 6.6.138 accepts the `rootwait=N` form.
+
+**Three ways the mechanism can lie to userspace.** Each of these makes a failed update look
+like a successful one, and #89 has to defend against all three:
+
+1. **`chosen/bootloader/tryboot` is not a reliable "the trial failed" signal.** If the
+   firmware got as far as loading `start4.elf` from the trial slot, the flag is already
+   consumed; the recovery boot is then indistinguishable from an ordinary boot. The apply
+   flow must record "I asked for a trial boot" in its own persistent storage (the config
+   partition) rather than inferring it.
+2. **Commit is not atomic.** `boot_partition` lives in a text file on a FAT partition. A power
+   cut mid-rewrite leaves no `boot_partition`, the firmware defaults to partition 1, and the
+   node quietly runs the *old* image while the fleet believes it took the update.
+3. **Firmware fallback does not repair `autoboot.txt`.** After falling back, the file still
+   names the broken slot, so every subsequent boot burns a failed attempt first, and declared
+   state and actual state stay diverged. Every boot should compare
+   `chosen/bootloader/partition` against the file and reconcile.
+
+**What still has no automatic recovery:** a slot that was *committed* and then fails at kernel
+level. This row is **inferred, not measured** — the case was set up on the card (committed to B,
+rootB destroyed) but the run was aborted and the card pulled before the loop could be observed,
+so treat it accordingly. The inference rests on rows that *were* measured: the firmware only
+falls back when it cannot boot the slot itself, and once it hands off it is satisfied; a
+kernel-level failure therefore never reaches the fallback path. There is no boot counter anywhere in the Pi boot chain to break the loop,
+and the good slot's userspace never gets to run. This is the structural reason #89 must own a
+boot-attempt counter itself, and why commit must never happen before the trial slot has proven
+itself healthy.
+
+### Keeping this true — the four guards
+
+Everything above was established by hand on one afternoon. Nothing in the repo stopped
+somebody putting a bare `rootwait` back, and the failure mode of doing so is a node that boots
+fine today and is unrecoverable in the field a year later. Four guards now hold it:
+
+**1. `tests/ab-card-invariants.sh` — every PR, no hardware.** Builds a real card on a loop
+device by running `scripts/build-gpt-ab-card.sh` unmodified, then asserts the invariants
+against the *artifact*, not the source: autoboot.txt on bootA only, `boot_partition` equal to
+the firmware's FAT-partition index rather than the GPT index, a bounded `rootwait=N` plus
+`panic=N` and never a bare `rootwait`, distinct FAT volume ids, `hidden_sectors` matching each
+start LBA, both root slots identical. Wired into `ci.yml` as the `ab-card` job. It was
+mutation-tested when written — reintroducing the bare `rootwait` trips six assertions,
+hard-coding the GPT index trips two, and hard-coding a value that happens to be *correct for
+today's layout* trips the one source-level assertion that exists for exactly that case.
+
+**2. `scripts/build-gpt-ab-card.sh` derives `boot_partition`.** It counts FAT partitions in
+GPT order instead of writing a literal. A hard-coded number survives a layout change silently,
+and the symptom — the node boots the *old* slot and reports itself healthy — is invisible to
+any health check.
+
+**3. `scripts/ab-selftest.sh <node> [--inspect-only|--destructive]` — the hardware guard.**
+The CI job cannot prove the firmware behaves; only a Pi can. Three modes:
+
+| mode | what it does | when |
+|---|---|---|
+| `--inspect-only` | static invariants over SSH, **no reboots** | scheduled / whenever a bench node is up |
+| *(default)* | the above plus tryboot switch + one-shot check, 2 reboots, ~2 min | after touching the layout or the build script |
+| `--destructive` | plus both failure classes, 4 reboots, ~6 min | before tagging a release |
+
+`--destructive` breaks the *inactive* slot only, saves what it breaks **on the test host** (the
+node's `/tmp` is tmpfs and every case under test reboots it), restores it, and verifies the
+restore. It refuses to run against anything whose `/proc/cmdline` lacks a `batman_slot` marker,
+and refuses the destructive cases unless the node is on slot A.
+
+That last check re-reads the running slot immediately before **each** destructive case, rather
+than trusting the slot read at startup. Nothing in the live section aborts — every failure path
+only counts a `FAIL` — so a tryboot that got stuck, or a plain reboot that timed out, leaves the
+node running slot **B** while the startup value still says A. Both destructive cases address
+bootB/rootB by fixed path (`p3`/`p4`), so clearing the interlock on a stale value would rename
+`start4.elf` on the *running* boot partition and zero the head of the *running*, mounted rootfs
+— an unrecoverable bench node, from the script that promises it only touches the inactive slot.
+
+**4. `scripts/daily-validation.sh` — the scheduled aggregate.** Runs the suites that are cheap
+and safe to repeat and writes a dated report to `~/batman-validation/<stamp>/report.md`:
+`ab-card-invariants` (no hardware), `test-onboarding-ip` (pure logic), `ab-selftest` against the
+bench card, and `meshtest` against a live mesh node. Installed on the Pi 500 at **06:30 daily**.
+
+The scheduled `ab-selftest` run is **`--inspect-only`** (`AB_MODE` overrides it), matching the
+table above. A nightly `--destructive` run would reboot the bench node four times every morning
+and leave slot B broken whenever a run died between the break and the restore; that cost belongs
+to a release, not to a schedule.
+
+A suite is PASS / FAIL / **SKIP**, and the skip count reaches the **exit status**, not only the
+report — because the failure mode of a scheduled hardware test is that the hardware was not
+plugged in, and cron only ever sees the exit status. A run where every hardware suite skipped
+exits 1; `ALLOW_SKIP=1` opts out deliberately. `ab-selftest` also refuses any target that does
+not report a `batman_slot`, so pointing the schedule at a production node is a no-op.
+
+Last full runs, 2026-09-12: 22/22 CI invariants, 18/18 hardware destructive, and the four
+mutation runs confirming the guards fail when the defects are reintroduced. Raw logs in
+[`docs/data/ab-boot-20260912/`](data/ab-boot-20260912/).
 
 ### B2 — verity vs overlay: the real problem is *what's in the overlay*
 Reframed by the facts: OpenWrt **already** runs a read-only squashfs (`/rom`, 52.8 MB) + a
@@ -239,7 +443,7 @@ Honest options, a **threat-model decision (#69) + future hardware (#47):**
   the card); a captured *board* boots itself and unlocks. Needs the SE hardware (#47).
 - **(b) Operator key-fill at deploy** — operator loads the key (USB-C/M12 key-fill, #47),
   held in RAM, **zeroized on tamper/power-off**. Protects against **board capture**, but the
-  node can't cold-boot unattended (needs a re-fill). 
+  node can't cold-boot unattended (needs a re-fill).
 - The choice is per node class / mission (#69): a relay left in the field vs. an operator-
   carried node. **Until an SE is on the board, at-rest encryption's guarantee is limited to
   card-theft (b gives more but costs unattended boot).** Documented so we don't claim more

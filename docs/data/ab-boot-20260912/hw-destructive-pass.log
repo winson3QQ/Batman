@@ -1,0 +1,31 @@
+# 2026-09-12T08:35:10+08:00  ./scripts/ab-selftest.sh 10.41.254.1 --destructive
+=== A/B self-test against 10.41.254.1 ===
+running slot=A firmware partition=1
+
+--- static invariants ---
+  ok   tryboot_a_b=1 present
+  ok   [tryboot] section present
+  ok   autoboot.txt [all]=1 agrees with the slot actually booted (1)
+  ok   [tryboot] boot_partition=2 is a plausible firmware index
+  ok   slot A cmdline.txt read and carries batman_slot=A
+  ok   slot A rootwait is bounded
+  ok   slot A has no bare rootwait
+  ok   slot A has panic=N
+  ok   slot B cmdline.txt read and carries batman_slot=B
+  ok   slot B rootwait is bounded
+  ok   slot B has no bare rootwait
+  ok   slot B has panic=N
+
+--- live: tryboot switches slots, and the trial is one-shot ---
+  ok   tryboot switched A -> B (partition=2, tryboot=1, 47s)
+  ok   plain reboot returned to the committed slot A (47s)
+
+--- destructive 1/2: inactive slot unbootable by the firmware ---
+  ok   firmware fell back to slot A (47s)
+  ok   restored bootB/start4.elf
+
+--- destructive 2/2: inactive slot boots but its rootfs is unusable ---
+  ok   kernel panicked and the node returned to slot A on its own (52s)
+  ok   restored rootB (squashfs magic back)
+
+================ 18 passed, 0 failed ================
