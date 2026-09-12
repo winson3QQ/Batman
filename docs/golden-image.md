@@ -44,9 +44,9 @@ Start from a node running **stock OpenMANET 1.8.0** (fresh flash, or `sysupgrade
   so the config-save loop (`for s in /etc/init.d/*; do $s enabled`) never returns. Move it aside
   first: `mv /etc/init.d/gpsboard.init /root/` (or use `-n` to skip config-save entirely).
 - **1.8.0 first-boot regenerates config** (board.d + a random wifi key), so `keep-config` does
-  **not** survive — the node comes up stock (IP `10.41.254.1`, SSH off). Regain access via LuCI
-  (`http://10.41.254.1`) or ubus (root has an empty password): write your key with
-  `ubus … file write /etc/dropbear/authorized_keys`.
+  **not** survive — the node comes up stock (IP `10.41.254.1`, SSH off). Regaining access on a
+  stock node is an operational step; the exact commands live in `ops/golden-image.md` in the
+  private **Batman-P** repo.
 - **ETHFIX (bug #1) IS needed on 1.8.0.** *(Corrected 2026-09-11 — this bullet previously claimed
   the opposite.)* Stock `03_openmanet_eth` still has no `bcm2711,*` in its case list, so on a Pi 4
   `ucidef_set_interface_lan "eth0"` is never called and the wired port has no L3 — the node boots
