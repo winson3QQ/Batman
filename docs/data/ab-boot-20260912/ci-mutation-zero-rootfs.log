@@ -1,0 +1,41 @@
+# 2026-09-12T08:34:54+08:00  ./tests/ab-card-invariants.sh
+=== build a synthetic source tree ===
+[===================================================================|] 1/1 100%
+=== attach a 5 GiB loop device ===
+loop=/dev/loop1 sectors=10485760
+=== run the real build script ===
+build ok
+
+=== A. autoboot.txt lives on bootA only ===
+  ok   bootA has autoboot.txt
+  ok   bootB has no autoboot.txt
+
+=== B. boot_partition is the FIRMWARE index, not the GPT index (#133) ===
+  ok   [all] boot_partition == firmware index of bootA (1)
+  ok   [tryboot] boot_partition == firmware index of bootB (2)
+  ok   [tryboot] is not the GPT index
+  ok   tryboot_a_b=1 present
+  ok   build script derives boot_partition from the layout
+
+=== C. cmdline: bounded rootwait + panic (#133) ===
+  ok   slot A has a bounded rootwait=N
+  ok   slot A has no bare rootwait
+  ok   slot A has panic=N
+  ok   slot A carries batman_slot=A
+  ok   slot B has a bounded rootwait=N
+  ok   slot B has no bare rootwait
+  ok   slot B has panic=N
+  ok   slot B carries batman_slot=B
+  ok   slots point at different rootfs (root=PARTUUID=3276af79-0000-4000-8000-000000000002 vs root=PARTUUID=3276af79-0000-4000-8000-000000000004)
+
+=== D. FAT built with mkfs, not dd (#106) ===
+  ok   boot slots have distinct volume ids (BA71-0001 / BA71-0003)
+  ok   p1 hidden_sectors matches its start LBA (8192)
+  ok   p3 hidden_sectors matches its start LBA (3284992)
+
+=== E. both root slots hold the same image ===
+  ok   squashfs size parsed (351 bytes)
+  FAIL rootA matches the source squashfs: got '08d4c7e304644e9b4ed461e24db02d90', want 'f32ed1eac39523957aa64701cc74ba62'
+  FAIL rootB matches the source squashfs: got '08d4c7e304644e9b4ed461e24db02d90', want 'f32ed1eac39523957aa64701cc74ba62'
+
+================ 20 passed, 2 failed ================
