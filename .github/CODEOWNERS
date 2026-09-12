@@ -1,0 +1,13 @@
+# Code owners — GitHub requests their review on PRs touching these paths.
+# Pairs with branch protection (require review) so changes to the golden image,
+# provisioning, CI and the security docs always get an owner's eyes.
+
+# Default owner for everything
+*                                   @winson3QQ
+
+# Security-sensitive surfaces (explicit for intent; owner already owns *)
+/scripts/depersonalise.sh           @winson3QQ
+/deploy/provisioning/               @winson3QQ
+/.github/                           @winson3QQ
+/docs/threat-model.md               @winson3QQ
+/docs/dev-process.md                @winson3QQ

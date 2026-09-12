@@ -1,0 +1,24 @@
+name: gitleaks
+# Secret-scan gate (security review finding F13). Catches credentials/keys before
+# they reach the repo. The one-time full-history audit (all refs + entropy) was done
+# manually 2026-09-12 and came back clean except the known lab key being phased out
+# (F14 / #13); this gate keeps NEW secrets from landing.
+#
+# gitleaks-action is free for public repos on personal accounts. If this repo ever
+# moves under an organization, a GITLEAKS_LICENSE secret is required.
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # let gitleaks diff the pushed/PR commit range
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
