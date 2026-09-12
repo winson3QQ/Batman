@@ -1,0 +1,126 @@
+#!/bin/sh
+# 96-batman-config-migrate — restore identity + apply the preserved uci overrides from the
+# shared config partition (p5) onto this freshly-flashed A/B slot, so config + identity survive
+# a rootfs slot switch (#88/#89). A uci-default: runs once per fresh slot overlay, in the
+# S10 boot / uci_apply_defaults phase — BEFORE dropbear (S19), wpad (S20) and network read config.
+# Ordered after 95-batman-storage so /opt/batdata (p6) is mounted for the persistent marker.
+#
+# Plain-ext4 p5 only (Base/interim tier); a LUKS p5 (Secure tier) needs an initramfs cryptsetup
+# stage (#47/#111) and is out of scope. Boot-safe: identity is restored first and unconditionally;
+# every failure leaves the slot on image defaults + a recorded marker. The console-free escape is
+# the cmdline flag batman_bypass=1 (edit autoboot.txt on the FAT boot partition) — it exits NON-zero
+# so uci_apply_defaults keeps the script armed (removing the flag re-arms migration). See
+# docs/design/p5-config-partition.md.
+
+DEV=/dev/mmcblk0p5
+MNT=/mnt/cfgpart
+LOG=/opt/batdata/log/config-migrate.log
+SUPPORTED_SCHEMA=1
+# only the packages batman-config-save actually writes (per-node delta). dhcp/firewall are NOT
+# here: they are regenerated per-image from the mesh baseline, and allowing them would let a
+# corrupt p5 brick a console-less node (V3-7 / N-R7).
+ALLOWED_PKGS="system wireless network openmanetd mesh11sd"
+
+log() {
+	mkdir -p "${LOG%/*}" 2>/dev/null
+	echo "$(cut -d. -f1 /proc/uptime)s $*" >> "$LOG" 2>/dev/null
+	echo "config-migrate: $*" > /dev/kmsg 2>/dev/null
+}
+
+# A Lane-B fragment is a list of uci batch commands. Reject anything that is not a plain,
+# scope-limited uci verb: no shell metacharacters (injection), only allow-listed packages, and
+# no coarse deletes (delete of a whole package/section could brick a console-less node — V3-7).
+valid_batch() {
+	awk -v allowed="$ALLOWED_PKGS" '
+		BEGIN { n = split(allowed, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+		NF == 0 || /^#/ { next }
+		$1 !~ /^(set|add_list|del_list|delete|reorder)$/ { bad = 1; next }
+		/[`$();|&<>]/ { bad = 1; next }
+		{
+			t = $2; sub(/=.*/, "", t)
+			nseg = split(t, seg, "."); pkg = seg[1]
+			if (!(pkg in ok)) bad = 1
+			if ($1 == "delete" && nseg < 3) bad = 1
+		}
+		END { exit bad ? 1 : 0 }
+	' "$1"
+}
+
+# schema transform map: mutate the fragment from its version up to the image's. Additive-only
+# versions need no transform (new-default-wins covers them). Add idempotent cases as it evolves.
+schema_migrate() {
+	_f=$1; _v=$2; _to=$3
+	while [ "$_v" -lt "$_to" ]; do
+		case "$_v" in
+			# 1) sed -i 's/wireless\.old/wireless.new/' "$_f" ;;   # example non-additive step
+			*) : ;;
+		esac
+		_v=$((_v + 1))
+	done
+}
+
+# 1) console-free bypass (F3/N6) — exit NON-zero so the script stays armed (V3-5)
+if grep -q 'batman_bypass=1' /proc/cmdline 2>/dev/null; then
+	log "bypassed (batman_bypass=1) — image defaults, still armed"; exit 1
+fi
+
+[ -b "$DEV" ] || { log "no p5 — image defaults"; exit 0; }
+
+# 2) plain-ext4 gate (N3): ext4 magic 0xEF53 at byte 1080 via busybox hexdump (blkid/od absent).
+magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)
+[ "$magic" = "53ef" ] || { log "p5 not plain-ext4 (magic=$magic) — image defaults"; exit 0; }
+
+mkdir -p "$MNT"
+# noload: best-effort read even if the ext4 journal needs replay (ro can't replay) — V3-8
+mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>/dev/null || { log "p5 mount failed — image defaults"; exit 0; }
+[ -f "$MNT/.seeded" ] || { log "p5 not seeded — image defaults"; umount "$MNT" 2>/dev/null; exit 0; }
+
+# 3) Lane A: identity restored FIRST and UNCONDITIONALLY (before dropbear, any schema) — V3-2/V3-3.
+if [ -d "$MNT/identity/dropbear" ]; then
+	mkdir -p /etc/dropbear
+	for f in dropbear_ed25519_host_key dropbear_rsa_host_key authorized_keys; do
+		[ -s "$MNT/identity/dropbear/$f" ] && cp -a "$MNT/identity/dropbear/$f" "/etc/dropbear/$f" 2>/dev/null
+	done
+	chmod 600 /etc/dropbear/* 2>/dev/null
+fi
+[ -s "$MNT/identity/openmanet/config.yml" ] && { mkdir -p /etc/openmanet; cp -a "$MNT/identity/openmanet/config.yml" /etc/openmanet/config.yml 2>/dev/null; }
+idfp=$(dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key 2>/dev/null | sed -n 's/^Fingerprint: *//p')
+# tell 99-halow-identity (runs after us) that identity came from p5 — it must NOT re-personalise
+# (delete host keys / reset hostname / IP / dhcpconfigured), or it undoes this restore (N-R2).
+# Only if a host key actually landed: otherwise let 99 personalise, so a p5 with no usable
+# identity does not leave the golden sentinel hostname + bootstrap IP colliding across nodes (N5r1).
+[ -n "$idfp" ] && : > /tmp/p5-restored
+
+# 4) Lane B: pick a fragment. overrides.uci only if its schema is supported (rollback: a too-new
+#    p5 falls back to lkg/, never discards the identity we already restored) — V3-3.
+schema=$(cat "$MNT/schema_version" 2>/dev/null)
+case "$schema" in ''|*[!0-9]*) schema=0 ;; esac
+FRAG=""; SRC=""
+if [ "$schema" -ge 1 ] && [ "$schema" -le "$SUPPORTED_SCHEMA" ] && valid_batch "$MNT/overrides.uci" 2>/dev/null; then
+	FRAG="$MNT/overrides.uci"; SRC="overrides.uci@$schema"
+elif valid_batch "$MNT/lkg/overrides.uci" 2>/dev/null; then
+	FRAG="$MNT/lkg/overrides.uci"; SRC="lkg"
+fi
+
+applied=skipped
+if [ -n "$FRAG" ]; then
+	TMP=/tmp/overrides.$$; cp "$FRAG" "$TMP" 2>/dev/null
+	[ "$SRC" = lkg ] || schema_migrate "$TMP" "$schema" "$SUPPORTED_SCHEMA"
+	if uci batch < "$TMP" 2>/dev/null; then
+		uci commit 2>/dev/null; applied=ok
+	else
+		# do not leave a partial batch staged for uci_apply_defaults' trailing commit (V3-6)
+		for p in $ALLOWED_PKGS; do uci revert "$p" 2>/dev/null; done
+		applied=errors-reverted
+	fi
+	rm -f "$TMP"
+fi
+
+# 5) persisted marker (F8) — detects a spurious healthy boot with wrong identity.
+# Warn if /opt/batdata (p6) is not mounted, since then the marker lands on the ephemeral overlay
+# and is lost on the next swap (N-R5). 95-batman-storage should have mounted it.
+mount | grep -q ' /opt/batdata ' || echo "config-migrate: WARN /opt/batdata not mounted — marker not persistent" > /dev/kmsg 2>/dev/null
+log "src=${SRC:-none} schema=$schema laneA=$( [ -n "$idfp" ] && echo restored || echo none ) laneB=$applied ed25519=$idfp"
+
+umount "$MNT" 2>/dev/null
+exit 0

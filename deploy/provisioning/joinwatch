@@ -121,6 +121,10 @@ run(){
 			# the user power-cycled out of (otherwise "consecutive unjoined boots" never resets)
 			if [ "$short" = 1 ] || { [ "$checked" = 0 ] && open_episode; }; then radio; write "$(diagline JOINED)"; fi
 			checked=1; since=""; short=0; full=0
+			# save-on-healthy (#88/#89): once this boot has actually joined, persist the config +
+			# identity to the shared p5 so it survives an A/B slot switch. Once per boot (tmpfs guard).
+			# Skip cheaply on cards with no p5 (no fork loop, N5r4); the saver retries while WARN (N5r2).
+			[ -f /tmp/config-saved ] || [ ! -b /dev/mmcblk0p5 ] || { command -v batman-config-save >/dev/null 2>&1 && batman-config-save --if-healthy >/dev/null 2>&1 && : > /tmp/config-saved; }
 		else
 			u=$(up); [ -n "$since" ] || since=$u; d=$((u - since))
 			radio
