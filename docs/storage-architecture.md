@@ -255,7 +255,9 @@ reader by `scripts/build-gpt-ab-card.sh` from the bench card (backed up first), 
 
 Verified after the build: `hidden_sectors` = 8192 (p1) and 3284992 (p3), each matching its own
 start LBA; volume ids distinct (`BA71-0001` / `BA71-0003`); `autoboot.txt` present on **bootA
-only** (`[all] tryboot_a_b=1, boot_partition=1` / `[tryboot] boot_partition=3`); each slot's
+only** (as built: `[all] tryboot_a_b=1, boot_partition=1` / `[tryboot] boot_partition=3` — that
+`3` is the GPT index and is **wrong**, see the boot-test result below; the script now derives
+it and writes `2`); each slot's
 `cmdline.txt` points at its own rootfs PARTUUID and carries a `batman_slot=A|B` marker; both
 rootfs slots hold a valid 52.7 MB squashfs with a zeroed tail for fstools to build the overlay
 in. PARTUUIDs are deterministic (`3276af79-0000-4000-8000-00000000000N`, prefix = the card's

@@ -17,8 +17,11 @@ LOOP=""
 PASS=0; FAIL=0
 
 cleanup() {
-  [ -n "$LOOP" ] && { sudo umount "${LOOP}p"* 2>/dev/null || true; sudo losetup -d "$LOOP" 2>/dev/null || true; }
-  sudo rm -rf "$WORK"
+  if [ -n "$LOOP" ]; then
+    sudo umount "${LOOP}p"* 2>/dev/null || true
+    sudo losetup -d "$LOOP" 2>/dev/null || true
+  fi
+  sudo rm -rf "$WORK"          # must run even when LOOP is empty, or the 5 GiB image leaks
 }
 trap cleanup EXIT
 
@@ -117,11 +120,18 @@ done
 echo
 echo "=== E. both root slots hold the same image ==="
 SB=$(unsquashfs -s "$WORK/src/p2-rootfs-squashfs.img" | awk '/Filesystem size/{print $3}')
+if [[ $SB =~ ^[0-9]+$ ]] && [ "$SB" -gt 0 ]; then
+  ok "squashfs size parsed ($SB bytes)"
+else
+  bad "could not parse the squashfs size — every digest below would compare empty input and pass vacuously"; SB=0
+fi
 # head -c closes the pipe early, so dd takes SIGPIPE; pipefail would abort the script.
 slot_md5() { ( set +o pipefail; sudo dd if="$1" bs=1M count=64 2>/dev/null | head -c "$SB" | md5sum | cut -d' ' -f1 ); }
-MA=$(slot_md5 "${LOOP}p2")
-MB=$(slot_md5 "${LOOP}p4")
-check "rootA and rootB are byte-identical" "$MA" "$MB"
+# Compare each slot against the SOURCE, not against each other: two slots that were both
+# written with dd count=0 are "identical" and would pass a slot-to-slot check.
+SRC_MD5=$( set +o pipefail; head -c "$SB" "$WORK/src/p2-rootfs-squashfs.img" | md5sum | cut -d' ' -f1 )
+check "rootA matches the source squashfs" "$(slot_md5 "${LOOP}p2")" "$SRC_MD5"
+check "rootB matches the source squashfs" "$(slot_md5 "${LOOP}p4")" "$SRC_MD5"
 
 echo
 echo "================ $PASS passed, $FAIL failed ================"

@@ -29,6 +29,12 @@ say(){ echo; echo "=== $* ==="; }
 
 [[ -b $DEV ]] || { echo "no such device $DEV"; exit 1; }
 [[ -f $SQUASH_SRC && -f $BOOTTAR ]] || { echo "backup missing"; exit 1; }
+[[ -d $DATA_SRC ]] || { echo "no data source dir $DATA_SRC - refusing (it is needed AFTER the repartition)"; exit 1; }
+# An empty or non-numeric SQUASH_BYTES makes `count=$(( (SQUASH_BYTES+1048575)/1048576 ))`
+# evaluate to 0, so dd writes NOTHING into either root slot and the script still reports
+# BUILD DONE. Validate before the card is repartitioned, not after.
+[[ $SQUASH_BYTES =~ ^[0-9]+$ ]] && (( SQUASH_BYTES > 0 )) \
+  || { echo "SQUASH_BYTES='$SQUASH_BYTES' is not a positive integer (unsquashfs -s output changed?) - refusing"; exit 1; }
 SZ=$(sudo blockdev --getsz "$DEV")
 [[ $SZ -eq $EXPECT_SECTORS ]] || { echo "unexpected device size $SZ sectors (want $EXPECT_SECTORS) - refusing"; exit 1; }
 
@@ -54,10 +60,16 @@ say "boot slots: mkfs.vfat (NOT dd) with distinct labels + volume ids"
 sudo mkfs.vfat -F 16 -n BOOTA -i 0xBA710001 "${DEV}p1"
 sudo mkfs.vfat -F 16 -n BOOTB -i 0xBA710003 "${DEV}p3"
 
-say "rootfs slots: zero head, then write the 52.7 MB squashfs to each"
+# Zero past the end of the new squashfs, not a fixed 96 MiB: fstools looks for the overlay
+# immediately behind the squashfs, so if a re-squashed rootfs grows past the zeroed window a
+# stale f2fs overlay from the card's previous life is re-mounted and the node comes up as
+# "new squashfs + old settings" (docs/upgrade-1.8.0.md: the classic 'reflash didn't take').
+SQUASH_MB=$(( (SQUASH_BYTES + 1048575) / 1048576 ))
+ZERO_MB=$(( SQUASH_MB + 64 ))
+say "rootfs slots: zero the first $ZERO_MB MiB, then write the $SQUASH_MB MiB squashfs to each"
 for p in 2 4; do
-  sudo dd if=/dev/zero of="${DEV}p${p}" bs=1M count=96 status=none conv=fsync
-  sudo dd if="$SQUASH_SRC" of="${DEV}p${p}" bs=1M count=$(( (SQUASH_BYTES + 1048575) / 1048576 )) status=none conv=fsync
+  sudo dd if=/dev/zero of="${DEV}p${p}" bs=1M count=$ZERO_MB status=none conv=fsync
+  sudo dd if="$SQUASH_SRC" of="${DEV}p${p}" bs=1M count=$SQUASH_MB status=none conv=fsync
 done
 
 say "config + data: ext4"
@@ -112,9 +124,11 @@ printf '%s\n' '[all]' 'tryboot_a_b=1' "boot_partition=$FW_A" '' '[tryboot]' "boo
 sudo sync; sudo umount "$T/a" "$T/b"; sudo rmdir "$T/a" "$T/b" "$T"
 
 say "restore data partition"
-sudo mkdir -p /mnt/newdata && sudo mount "${DEV}p6" /mnt/newdata
-sudo rsync -aHAX "$DATA_SRC/" /mnt/newdata/
-sudo sync; sudo umount /mnt/newdata; sudo rmdir /mnt/newdata
+# mktemp, not a fixed /mnt/newdata: a run that dies mid-way leaves the fixed path mounted and
+# every later run then fails on it.
+D=$(mktemp -d); sudo mount "${DEV}p6" "$D"
+sudo rsync -aHAX "$DATA_SRC/" "$D/"
+sudo sync; sudo umount "$D"; rmdir "$D"
 
 say "final layout"
 sudo sgdisk -p "$DEV"
