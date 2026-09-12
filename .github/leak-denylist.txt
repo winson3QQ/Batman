@@ -1,0 +1,20 @@
+# Leak canary deny-list — strings that must NEVER appear in this PUBLIC repo.
+#
+# One POSIX extended-regex (ERE) per line; lines starting with # and blank lines
+# are ignored. A match fails CI (see .github/workflows/leak-canary.yml). The fix
+# is NOT to weaken this list — it is to redact the string, or move the whole file
+# to the private Batman-P repo (policy: if it can't be safely partial-redacted,
+# the whole file goes private).
+#
+# This file and the canary workflow are excluded from the scan, so the patterns
+# below do not match themselves.
+#
+# For prose/judgement calls that no literal can capture, tag the snippet with the
+# sentinel  PRIVATE-DO-NOT-PUBLISH  — the canary blocks any tracked file that
+# contains it.
+#
+# --- lab credentials (never field; enforcement = first-boot keyguard #103 / #13) ---
+12345678
+# --- turnkey bootstrap-access recipes (redacted in #136; full copies in Batman-P/ops) ---
+ubus.*file *write.*authorized_keys
+tee +-a +/etc/dropbear/authorized_keys

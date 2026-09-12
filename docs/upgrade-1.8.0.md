@@ -87,7 +87,7 @@ nodes exactly:
 |-------------|--------------|
 | mesh id     | `openmanet1` |
 | encryption  | SAE          |
-| key         | `12345678`   |
+| key         | `CHANGE-ME` — set your own; lab value not published |
 | channel     | 42           |
 | bandwidth   | 2 MHz        |
 | country     | US           |
