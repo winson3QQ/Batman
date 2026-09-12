@@ -41,7 +41,7 @@ done
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 PROV="$HERE/../deploy/provisioning"
-for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey batpower batpower.init flightrec flightrec.init joinwatch joinwatch.init halow-status www/status www/bundle www/mesh www/index.html uci-defaults/95-batman-storage; do
+for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey batpower batpower.init flightrec flightrec.init joinwatch joinwatch.init halow-status www/status www/bundle www/mesh www/index.html uci-defaults/95-batman-storage uci-defaults/96-batman-config-migrate batman-config-save; do
 	[ -f "$PROV/$f" ] || { echo "missing $PROV/$f — stage the repo on the node (scripts/ + deploy/)"; exit 1; }
 done
 [ -f "$HERE/meshled.1.8.0" ] && [ -f "$HERE/meshled.init" ] || { echo "missing scripts/meshled.1.8.0 or meshled.init"; exit 1; }
@@ -110,10 +110,18 @@ rm -f /etc/openmanetd/openmanetd.db /etc/openmanetd/openmanetd.db-wal /etc/openm
 echo "==> 8. installing first-boot hooks"
 cp "$PROV/uci-defaults/95-batman-storage" /etc/uci-defaults/95-batman-storage && chmod 0755 /etc/uci-defaults/95-batman-storage
 echo "    /etc/uci-defaults/95-batman-storage (#88/#61)"
+cp "$PROV/uci-defaults/96-batman-config-migrate" /etc/uci-defaults/96-batman-config-migrate && chmod 0755 /etc/uci-defaults/96-batman-config-migrate
+cp "$PROV/batman-config-save" /usr/bin/batman-config-save && chmod 0755 /usr/bin/batman-config-save
+echo "    /etc/uci-defaults/96-batman-config-migrate + /usr/bin/batman-config-save (#88/#89 config survival)"
+echo "    NOTE: p5 is seeded per-card at deployment (batman-config-save --seed), not baked into the image (needs the card's p5)"
 cat > /etc/uci-defaults/99-halow-identity <<'FIRSTBOOT'
 #!/bin/sh
 # 99-halow-identity — runs once on the card's first boot, then OpenWrt deletes it.
 # Personalises the card so many nodes off one image do not collide.
+# If 96-batman-config-migrate restored this slot's identity from a seeded p5 (an A/B slot switch,
+# not a fresh card), do NOT re-personalise: deleting the host keys / resetting hostname, IP and
+# dhcpconfigured below would undo the restore and change identity across the switch (#88/#89).
+[ -f /tmp/p5-restored ] && { echo "99-halow-identity: identity restored from p5 — skipping personalisation"; exit 0; }
 # 1. unique hostname with OpenMANET's own scheme (e.g. BCM2711-47ee from the MAC label / eth0)
 . /lib/functions/morse.sh 2>/dev/null
 host=$(morse_generate_default_hostname 2>/dev/null)
