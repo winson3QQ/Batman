@@ -19,11 +19,14 @@
 # shellcheck disable=SC2034  # read by the sysupgrade harness, not by this file
 REQUIRE_IMAGE_METADATA=0
 # sysupgrade pivots to a ramfs and unmounts the squashfs rootfs BEFORE calling platform_do_upgrade,
-# so every non-busybox binary we invoke there must be staged into that ramfs. batman-slot + vcmailbox
-# + hexdump are ours/separate; dd/mount/awk/grep/sed/wc/cp/printf/tr/tar are busybox applets already
-# copied. (If a bench run reports 'batman-slot: not found' or a missing tool, add it here.)
+# so every binary we invoke there must be staged into that ramfs. batman-slot + vcmailbox + hexdump
+# are ours/separate. dd/mount/awk/grep/sed/wc/cp/printf/tar ARE in the stock sysupgrade ramfs, but
+# `tr` is NOT (stock sysupgrade never uses it) — batman-slot's `wc -c | tr -dc 0-9` size sanitise
+# then dies "empty squashfs" with `tr: not found`, aborting apply before any write. So stage tr too.
+# (#89 bench: confirmed via a stage2 log on p6 — tr was the sole MISSING tool of the set apply uses.
+#  If a future bench run reports another missing tool, add its path here.)
 # shellcheck disable=SC2034
-RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/bin/vcmailbox /usr/bin/hexdump'
+RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr'
 
 platform_check_image() {
 	[ "$#" -gt 1 ] && return 1
