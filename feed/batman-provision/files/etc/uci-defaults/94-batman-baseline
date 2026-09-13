@@ -17,5 +17,27 @@
 #
 # Not run with --apply: config is committed here, but interfaces are not restarted (the reboot
 # that follows uci_apply_defaults, plus the normal boot's own network bring-up, applies it).
-[ -x /usr/bin/meshpoint-1.8.0 ] && /usr/bin/meshpoint-1.8.0
+#
+# 2026-09-13 hardware finding: a trial (uncommitted tryboot) boot of a fresh slot B running this
+# hook HUNG — no kernel panic, nothing in pstore/ramoops (so not a kernel-level crash), and no
+# automatic recovery (rootwait=20 panic=10 only guards early root-device detection, not a
+# userspace hang after root is already mounted — a hung trial boot needs a MANUAL power cycle;
+# there is no automatic fallback for this case, unlike a committed-slot kernel failure which is
+# also unrecovered-until-#89, or a firmware-level boot failure which #133 proved falls back
+# automatically). Root cause not pinned down (no crash log to read), but the leading suspect is
+# meshpoint-1.8.0.sh's unconditional `lg "committed: ..."` call (line ~159, runs even without
+# --apply) — `logger` writes to the syslog socket, which may not be up yet this early in boot()
+# (config_generate / wifi config / uci_apply_defaults all run before syslog in the S-numbering).
+# Defensive fix regardless of root cause: ANY uci-default that can block hangs the ENTIRE
+# uci_apply_defaults loop (and thus all of boot()) forever, since it's a plain sequential
+# `( . "./$file" )` with no per-script timeout. So every first-boot hook that calls into
+# less-trivial logic should be timeout-wrapped — this one now is. `timeout -k 5 15` gives 15s to
+# run, then SIGTERM, then SIGKILL 5s later if that didn't work; failure is logged to kmsg (not
+# logger, to avoid the same suspected hang class) and the hook self-deletes either way so a
+# genuinely stuck baseline never blocks the slot from booting again on retry.
+if [ -x /usr/bin/meshpoint-1.8.0 ]; then
+	if ! timeout -k 5 15 /usr/bin/meshpoint-1.8.0; then
+		echo "94-batman-baseline: meshpoint-1.8.0 timed out or failed — baseline skipped this boot" > /dev/kmsg 2>/dev/null
+	fi
+fi
 exit 0
