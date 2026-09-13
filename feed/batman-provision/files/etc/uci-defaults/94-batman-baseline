@@ -30,11 +30,12 @@
 # wlh0 came up as a mesh point. The overlay was corrupt because the slot had been written by dd
 # without clearing the old overlay's superblock — a card-prep / #89 OTA-apply gap, NOT a code bug.
 # It was never a hang: batpower/joinwatch/flightrec/halow-status all start (they run after boot()).
-# The `timeout -k 5 15` wrapper below is kept only as generic defence-in-depth (a uci-default that
-# ever blocks would stall the sequential `( . ./$file )` loop); it is not the fix for anything seen.
+# A former `timeout -k 5 15` wrapper here was REMOVED (2026-09-14): busybox in the golden image has
+# no `timeout` applet, so the wrapper failed with "timeout: not found" on EVERY boot — meshpoint was
+# never run and the slot came up with no mesh baseline (bench-confirmed on a fresh slot-A Build #4:
+# dmesg "meshpoint-1.8.0 timed out or failed — baseline skipped", ahwlan absent, wlh0 stuck in AP).
+# The overlay-corruption "hang" it was meant to guard was never real, so meshpoint runs directly.
 if [ -x /usr/bin/meshpoint-1.8.0 ]; then
-	if ! timeout -k 5 15 /usr/bin/meshpoint-1.8.0; then
-		echo "94-batman-baseline: meshpoint-1.8.0 timed out or failed — baseline skipped this boot" > /dev/kmsg 2>/dev/null
-	fi
+	/usr/bin/meshpoint-1.8.0 || echo "94-batman-baseline: meshpoint-1.8.0 exited non-zero" > /dev/kmsg 2>/dev/null
 fi
 exit 0
