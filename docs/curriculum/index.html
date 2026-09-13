@@ -1,0 +1,779 @@
+<title>Batman 八週地圖</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@500;700;900&family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
+<style>
+  :root{
+    --ground:#FFF9F0; --surface:#FFFFFF; --sun:#FFF1D2; --sun-2:#FFE6B0;
+    --ink:#2A2622; --muted:#7A6F63; --line:#EBDFCB; --line-2:#D9C9AE;
+    --amber:#F2A900; --amber-ink:#B8660A; --teal:#1E9AA8; --teal-soft:#DDF3F5;
+    --ok:#3E9E5C; --ok-soft:#E1F3E6; --warn:#E9A23B; --crit:#E2553A; --crit-soft:#FBE3DC;
+    --radius:18px; --shadow:0 10px 30px rgba(184,102,10,.08);
+    --display:"Nunito","Noto Sans TC",system-ui,sans-serif;
+    --body:"Noto Sans TC","Nunito",system-ui,"PingFang TC","Microsoft JhengHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{color-scheme:light}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.75;padding-inline:20px;padding-block:0 80px}
+  a{color:var(--amber-ink)}
+  .wrap{max-width:920px;margin:0 auto}
+  h1,h2,h3{font-family:var(--display);line-height:1.2;text-wrap:balance;margin:0}
+  h1{font-size:clamp(34px,6vw,56px);font-weight:900;letter-spacing:-.01em}
+  h2{font-size:clamp(26px,4vw,34px);font-weight:900}
+  h3{font-size:20px;font-weight:700;margin-top:34px}
+  p{margin:.6em 0;max-width:68ch}
+  .eyebrow{font-family:var(--display);font-weight:800;font-size:12.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber-ink)}
+  .num{font-variant-numeric:tabular-nums}
+
+  /* header */
+  header.hero{padding-block:56px 28px;display:grid;gap:18px}
+  .hero .thesis{font-size:19px;max-width:60ch;background:var(--sun);border-radius:var(--radius);padding:18px 22px;border-left:6px solid var(--amber)}
+  .hero .meta{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{display:inline-block;border-radius:999px;padding:4px 12px;font-size:13px;font-weight:700;background:var(--surface);border:1.5px solid var(--line-2);color:var(--muted)}
+  .chip.amber{background:var(--sun-2);border-color:var(--sun-2);color:var(--amber-ink)}
+  .chip.teal{background:var(--teal-soft);border-color:var(--teal-soft);color:var(--teal)}
+
+  /* nav */
+  nav.weeks{position:sticky;top:0;z-index:5;background:rgba(255,249,240,.92);backdrop-filter:blur(8px);border-bottom:1.5px solid var(--line);margin-inline:-20px;padding:10px 20px}
+  nav.weeks ul{list-style:none;margin:0 auto;padding:0;max-width:920px;display:flex;gap:8px;overflow-x:auto;scrollbar-width:none}
+  nav.weeks a{display:block;white-space:nowrap;font-family:var(--display);font-weight:800;font-size:14px;text-decoration:none;color:var(--ink);padding:6px 12px;border-radius:999px;border:1.5px solid transparent}
+  nav.weeks a:hover,nav.weeks a:focus-visible{background:var(--sun);border-color:var(--sun-2);outline:none}
+  nav.weeks a.todo{color:var(--muted);border-style:dashed;border-color:var(--line-2)}
+
+  /* sections */
+  section.week{padding-block:56px 12px;border-top:1.5px solid var(--line)}
+  section.week:first-of-type{border-top:0}
+  .week-head{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:start}
+  .week-no{font-family:var(--display);font-weight:900;font-size:64px;line-height:1;color:var(--amber);min-width:70px}
+  .question{font-size:18px;font-weight:500;background:var(--surface);border:1.5px solid var(--line);border-radius:var(--radius);padding:14px 18px;margin-top:14px;max-width:70ch}
+  .question b{color:var(--amber-ink)}
+
+  figure{margin:26px 0;background:var(--surface);border:1.5px solid var(--line);border-radius:var(--radius);padding:18px 18px 12px;box-shadow:var(--shadow)}
+  figure svg{display:block;width:100%;height:auto;max-width:100%;font-family:var(--body)}
+  figcaption{font-size:14px;color:var(--muted);margin-top:10px;max-width:70ch}
+  figcaption b{color:var(--ink)}
+  .svg-ink{fill:var(--ink)} .svg-muted{fill:var(--muted)} .svg-line{stroke:var(--line-2)}
+
+  table{border-collapse:collapse;width:100%;font-size:14.5px;background:var(--surface);border-radius:14px;overflow:hidden;border:1.5px solid var(--line)}
+  th,td{padding:9px 12px;vertical-align:top;text-align:left;border-bottom:1px solid var(--line)}
+  th{background:var(--sun);font-weight:700;font-size:13.5px}
+  tr:last-child td{border-bottom:0}
+  .tbl{overflow-x:auto;margin:18px 0}
+  .yes{color:var(--ok);font-weight:900} .no{color:var(--crit);font-weight:900} .cn{color:var(--crit);font-weight:700}
+  .tag{display:inline-block;font-size:11.5px;font-weight:800;padding:1px 8px;border-radius:999px;vertical-align:middle;letter-spacing:.04em}
+  .tag.fact{background:var(--ok-soft);color:var(--ok)} .tag.infer{background:var(--sun-2);color:var(--amber-ink)} .tag.check{background:var(--crit-soft);color:var(--crit)}
+
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media (max-width:700px){.two{grid-template-columns:1fr}.week-head{grid-template-columns:1fr}.week-no{font-size:48px}}
+
+  /* callouts */
+  .note{background:var(--sun);border-radius:14px;padding:12px 16px;margin:16px 0;max-width:72ch}
+  .note.teal{background:var(--teal-soft)}
+
+  /* assignment card */
+  .hw{margin:30px 0 8px;background:var(--surface);border:2px dashed var(--amber);border-radius:var(--radius);padding:20px 22px}
+  .hw h3{margin-top:0;display:flex;align-items:center;gap:10px}
+  .hw ol{padding-left:22px;margin:10px 0}
+  .hw li{margin:6px 0}
+  .hw .why{font-size:14px;color:var(--muted);border-top:1.5px solid var(--line);padding-top:10px;margin-top:12px}
+  details{margin:12px 0;background:var(--surface);border:1.5px solid var(--line);border-radius:14px;padding:10px 16px}
+  summary{cursor:pointer;font-weight:700;font-family:var(--display)}
+  details ul{margin:8px 0 4px;padding-left:20px}
+  .think{background:var(--teal-soft);border-radius:14px;padding:12px 16px;margin:14px 0}
+  .think ol{margin:6px 0 0;padding-left:20px}
+
+  /* matrix tool */
+  .matrix input{width:52px;font:inherit;font-family:var(--display);font-weight:700;text-align:center;border:1.5px solid var(--line-2);border-radius:8px;padding:4px 2px;background:#fff;color:var(--ink)}
+  .matrix input:focus-visible{outline:3px solid var(--sun-2);border-color:var(--amber)}
+  .matrix .w input{background:var(--sun)}
+  .matrix tfoot td{font-family:var(--display);font-weight:900;font-size:17px;background:var(--sun)}
+  .matrix .lead{background:var(--ok-soft)}
+  .matrix .crit-name{min-width:9em}
+  .btnrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+  button{font:inherit;font-family:var(--display);font-weight:800;border:0;border-radius:999px;padding:8px 16px;background:var(--amber);color:#3a2a00;cursor:pointer}
+  button.ghost{background:var(--surface);border:1.5px solid var(--line-2);color:var(--ink)}
+  button:focus-visible{outline:3px solid var(--sun-2)}
+
+  /* cards grid */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:18px 0}
+  .card{background:var(--surface);border:1.5px solid var(--line);border-radius:16px;padding:14px 16px;display:grid;gap:6px;align-content:start}
+  .card .k{font-family:var(--display);font-weight:900;font-size:17px}
+  .card .l{font-size:12px;font-weight:800;color:var(--amber-ink);letter-spacing:.06em}
+  .card p{margin:0;font-size:14px}
+  .card.cost{border-color:var(--amber);background:var(--sun)}
+
+  .cols3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}
+  .cols3 div{border-radius:14px;padding:12px 14px;font-size:14px}
+  .cols3 .now{background:var(--ok-soft)} .cols3 .gate{background:var(--sun)} .cols3 .later{background:#F1EDE6}
+  .cols3 b{display:block;font-family:var(--display);margin-bottom:4px}
+  @media (max-width:640px){.cols3{grid-template-columns:1fr}}
+
+  .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin:16px 0}
+  .fields div{background:var(--surface);border:1.5px solid var(--line);border-radius:14px;padding:12px 14px;font-size:14px}
+  .fields b{display:block;font-family:var(--display);font-size:15px}
+  .fields .must{border-color:var(--amber);background:var(--sun)}
+
+  .majors{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin:16px 0}
+  .majors div{background:var(--surface);border:1.5px solid var(--line);border-radius:14px;padding:10px 14px;font-size:14px}
+  .majors b{font-family:var(--display)}
+  footer{margin-top:60px;font-size:13.5px;color:var(--muted);border-top:1.5px solid var(--line);padding-top:20px}
+  footer ul{padding-left:18px}
+  @media (prefers-reduced-motion:no-preference){nav.weeks a{transition:background .15s}}
+</style>
+
+<div class="wrap">
+<header class="hero">
+  <div class="eyebrow">給高中生的專案導覽 · 每週 30 分鐘 · 先做前四週</div>
+  <h1>Batman 八週地圖</h1>
+  <div class="thesis">當手機基地台倒了、山裡沒訊號，一群背著「長距離 Wi-Fi」的小電腦（哨站）自己接力傳話，不靠任何中央。這份地圖用四週把「為什麼做、做到哪裡算做完、要哪些學問」講清楚，再用四週開始幫忙。</div>
+  <div class="meta">
+    <span class="chip amber">圖為主、字為輔</span>
+    <span class="chip">事實 / 推論 分開標</span>
+    <span class="chip">零件產地有標示</span>
+    <span class="chip teal">作業抄不了，但 AI 隨你用</span>
+  </div>
+</header>
+
+<nav class="weeks" aria-label="週次">
+  <ul>
+    <li><a href="#map">地圖</a></li>
+    <li><a href="#w1">1 為什麼還不夠</a></li>
+    <li><a href="#w2">2 使用場景→規格</a></li>
+    <li><a href="#w3">3 系統與元件</a></li>
+    <li><a href="#w4">4 學門與成本</a></li>
+    <li><a href="#w5" class="todo">5 數據對規格</a></li>
+    <li><a href="#w5" class="todo">6 資安與供應鏈</a></li>
+    <li><a href="#w5" class="todo">7 韌性與產品化</a></li>
+    <li><a href="#w5" class="todo">8 收成</a></li>
+    <li><a href="#hwfile">作業檔</a></li>
+    <li><a href="#majors">學門</a></li>
+  </ul>
+</nav>
+
+<!-- ===================== MAP ===================== -->
+<section class="week" id="map">
+  <div class="eyebrow">八週地圖</div>
+  <h2>第一個月看懂整個計畫，第二個月開始幫忙</h2>
+  <figure>
+    <svg viewBox="0 0 900 250" role="img" aria-label="八週流程：第一個月四週從選型、規格、系統到學門，第二個月四週從數據、資安、韌性到收成，每週產出接著上週用">
+      <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#B8660A"/></marker>
+      <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1E9AA8"/></marker></defs>
+      <rect x="10" y="14" width="880" height="105" rx="16" fill="#FFF1D2"/>
+      <text x="26" y="36" font-size="12" font-weight="800" fill="#B8660A">第一個月 · 看懂整個計畫</text>
+      <g font-size="13" fill="#2A2622" text-anchor="middle">
+        <rect x="30" y="48" width="190" height="56" rx="12" fill="#fff" stroke="#F2A900" stroke-width="2"/>
+        <text x="125" y="70" font-weight="800">1 為什麼還不夠？</text><text x="125" y="90" fill="#7A6F63" font-size="12">技術選型 · 決策矩陣</text>
+        <rect x="250" y="48" width="190" height="56" rx="12" fill="#fff" stroke="#F2A900" stroke-width="2"/>
+        <text x="345" y="70" font-weight="800">2 問題沒有邊界</text><text x="345" y="90" fill="#7A6F63" font-size="12">使用場景 → 規格</text>
+        <rect x="470" y="48" width="190" height="56" rx="12" fill="#fff" stroke="#F2A900" stroke-width="2"/>
+        <text x="565" y="70" font-weight="800">3 系統與元件</text><text x="565" y="90" fill="#7A6F63" font-size="12">介面 · 規格→元件</text>
+        <rect x="690" y="48" width="190" height="56" rx="12" fill="#fff" stroke="#F2A900" stroke-width="2"/>
+        <text x="785" y="70" font-weight="800">4 學門與成本</text><text x="785" y="90" fill="#7A6F63" font-size="12">八張卡 · 目標市場</text>
+      </g>
+      <g stroke="#B8660A" stroke-width="2" fill="none" marker-end="url(#arr)">
+        <line x1="222" y1="76" x2="246" y2="76"/><line x1="442" y1="76" x2="466" y2="76"/><line x1="662" y1="76" x2="686" y2="76"/>
+      </g>
+      <g font-size="11" fill="#B8660A" text-anchor="middle"><text x="234" y="66">缺口</text><text x="454" y="66">規格</text><text x="674" y="66">元件</text></g>
+      <rect x="10" y="134" width="880" height="105" rx="16" fill="#DDF3F5"/>
+      <text x="26" y="156" font-size="12" font-weight="800" fill="#1E9AA8">第二個月 · 開始幫忙（待寫）</text>
+      <g font-size="13" fill="#2A2622" text-anchor="middle">
+        <rect x="30" y="168" width="190" height="56" rx="12" fill="#fff" stroke="#1E9AA8" stroke-width="2" stroke-dasharray="6 4"/>
+        <text x="125" y="190" font-weight="800">5 用規格檢驗數據</text><text x="125" y="210" fill="#7A6F63" font-size="12">無線電與接力</text>
+        <rect x="250" y="168" width="190" height="56" rx="12" fill="#fff" stroke="#1E9AA8" stroke-width="2" stroke-dasharray="6 4"/>
+        <text x="345" y="190" font-weight="800">6 誰可以進來？</text><text x="345" y="210" fill="#7A6F63" font-size="12">資安與供應鏈</text>
+        <rect x="470" y="168" width="190" height="56" rx="12" fill="#fff" stroke="#1E9AA8" stroke-width="2" stroke-dasharray="6 4"/>
+        <text x="565" y="190" font-weight="800">7 野外不變磚</text><text x="565" y="210" fill="#7A6F63" font-size="12">韌性與產品化</text>
+        <rect x="690" y="168" width="190" height="56" rx="12" fill="#fff" stroke="#1E9AA8" stroke-width="2" stroke-dasharray="6 4"/>
+        <text x="785" y="190" font-weight="800">8 收成</text><text x="785" y="210" fill="#7A6F63" font-size="12">作品集 · 選系對照</text>
+      </g>
+      <path d="M785 106 C785 128 125 112 125 166" stroke="#1E9AA8" stroke-width="2" fill="none" marker-end="url(#arr2)"/>
+      <text x="455" y="128" font-size="11" fill="#1E9AA8" text-anchor="middle">學門卡 → 第二個月的協助任務</text>
+    </svg>
+    <figcaption><b>每週的產出是下週的原料。</b>第 1 週找出缺口，第 2 週把缺口開成規格，第 3 週把規格連到元件，第 4 週把元件分到學門與成本；第二個月拿真實數據和任務回頭檢驗。</figcaption>
+  </figure>
+
+  <figure>
+    <svg viewBox="0 0 900 96" role="img" aria-label="每週 30 分鐘的分配：5 分鐘回顧與情境、12 分鐘圖加白話、8 分鐘作業起頭、5 分鐘寫下 AI 之前的想法">
+      <g font-size="13" text-anchor="middle" fill="#2A2622">
+        <rect x="10" y="20" width="146" height="40" rx="10" fill="#FFE6B0"/><text x="83" y="45" font-weight="800">5 分鐘</text>
+        <rect x="162" y="20" width="352" height="40" rx="10" fill="#F2A900"/><text x="338" y="45" font-weight="800">12 分鐘</text>
+        <rect x="520" y="20" width="234" height="40" rx="10" fill="#DDF3F5"/><text x="637" y="45" font-weight="800">8 分鐘</text>
+        <rect x="760" y="20" width="130" height="40" rx="10" fill="#E1F3E6"/><text x="825" y="45" font-weight="800">5 分鐘</text>
+      </g>
+      <g font-size="12" fill="#7A6F63" text-anchor="middle">
+        <text x="83" y="82">回顧 + 今天的情境</text><text x="338" y="82">圖 + 白話（爸爸講，學生打斷）</text><text x="637" y="82">作業起頭（課後不限時）</text><text x="825" y="82">AI 之前，我先想</text>
+      </g>
+    </svg>
+    <figcaption>每次固定 30 分鐘、四段。作業課後不限時，但要寫成一份<a href="#hwfile">作業檔</a>。</figcaption>
+  </figure>
+</section>
+
+<!-- ===================== WEEK 1 ===================== -->
+<section class="week" id="w1">
+  <div class="week-head">
+    <div class="week-no num">1</div>
+    <div>
+      <div class="eyebrow">方法論：加權決策矩陣</div>
+      <h2>有了無線電、有了 Meshtastic，為什麼還不夠？</h2>
+      <div class="question">核心問題：<b>別人為什麼發明 HaLow？台灣民防圈已經在用 mesh 了，缺什麼？民用技術選型會被什麼綁住？</b></div>
+    </div>
+  </div>
+
+  <h3>情境：台灣已經有兩萬人在用 mesh</h3>
+  <p>「臺灣鏈網 Meshtastic Taiwan Community」2024 年 2 月成立，報導稱近兩萬人、超過一千台裝置在運作；黑熊學院把它列為災難時的通訊備援選項。<span class="tag fact">事實</span> 問學生：<b>這麼多人在用了，爸爸為什麼還要花一年做另一套？</b></p>
+
+  <h3>問題一：HaLow 原本是為了什麼發明的？</h3>
+  <figure>
+    <svg viewBox="0 0 900 150" role="img" aria-label="技術再利用的四步：802.11ah 為物聯網制定，Wi-Fi 聯盟取名 HaLow，國外開源社群 OpenMANET 拿來做不靠基地台的行動網路，本專案再做成台灣能用、能量產、會自救的節點">
+      <defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#B8660A"/></marker></defs>
+      <g font-size="12.5" text-anchor="middle" fill="#2A2622">
+        <rect x="10" y="26" width="200" height="82" rx="14" fill="#fff" stroke="#D9C9AE" stroke-width="1.5"/>
+        <text x="110" y="52" font-weight="800">IEEE 802.11ah · 2016</text><text x="110" y="72" fill="#7A6F63">目的：物聯網</text><text x="110" y="90" fill="#7A6F63">幾千個感測器、省電、傳得遠</text>
+        <rect x="240" y="26" width="200" height="82" rx="14" fill="#fff" stroke="#D9C9AE" stroke-width="1.5"/>
+        <text x="340" y="52" font-weight="800">Wi-Fi 聯盟取名 HaLow</text><text x="340" y="72" fill="#7A6F63">900 MHz、頻道窄到 1 MHz</text><text x="340" y="90" fill="#7A6F63">遠、省電、慢</text>
+        <rect x="470" y="26" width="200" height="82" rx="14" fill="#FFF1D2" stroke="#F2A900" stroke-width="2"/>
+        <text x="570" y="52" font-weight="800">OpenMANET（國外開源）</text><text x="570" y="72" fill="#7A6F63">拿來做不靠基地台的行動網路</text><text x="570" y="90" fill="#7A6F63">搜救、災害應變、生存遊戲</text>
+        <rect x="700" y="26" width="190" height="82" rx="14" fill="#FFF1D2" stroke="#F2A900" stroke-width="2"/>
+        <text x="795" y="52" font-weight="800">本專案 Batman</text><text x="795" y="72" fill="#7A6F63">台灣能用、能量產</text><text x="795" y="90" fill="#7A6F63">壞了會自救的節點</text>
+      </g>
+      <g stroke="#B8660A" stroke-width="2" fill="none" marker-end="url(#a1)"><line x1="212" y1="67" x2="236" y2="67"/><line x1="442" y1="67" x2="466" y2="67"/><line x1="672" y1="67" x2="696" y2="67"/></g>
+      <text x="450" y="136" font-size="12" fill="#B8660A" text-anchor="middle" font-weight="800">技術再利用：為了 A 發明的東西，被拿去做 B（GPS、網際網路都是這樣來的）</text>
+    </svg>
+    <figcaption>HaLow 不是為救災發明的 <span class="tag fact">事實</span>；把它拿來做民防網路是「再利用」。</figcaption>
+  </figure>
+
+  <h3>問題二：有無線電、有 Meshtastic，缺什麼？</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>方案</th><th>能傳什麼</th><th>靠不靠基地台</th><th>分得出誰在講？</th><th>卡在哪</th></tr></thead>
+    <tbody>
+      <tr><td><b>對講機</b></td><td>聲音</td><td><span class="yes">不靠</span></td><td>靠耳朵認人</td><td>沒有位置、文字、照片；要考照、要中繼台</td></tr>
+      <tr><td><b>手機</b></td><td>什麼都能</td><td><span class="no">靠</span></td><td>分得出</td><td>基地台停電、倒塌、塞爆就全掛</td></tr>
+      <tr><td><b>Meshtastic</b>（LoRa）</td><td>短文字、位置</td><td><span class="yes">不靠</span></td><td><span class="no">分不出</span></td><td>太慢，傳不了語音與檔案；全網共用一把鑰匙</td></tr>
+      <tr><td><b>HaLow mesh</b>（本專案）</td><td>位置、語音、檔案、小影像</td><td><span class="yes">不靠</span></td><td>目標：每台一張身分證</td><td>貴、耗電、還在開發、法規待確認</td></tr>
+    </tbody></table></div>
+  <p>Meshtastic 官方文件自己寫：頻道用預共享金鑰加密、<b>沒有身分驗證</b>，拿到金鑰的人能冒充別人發訊息。<span class="tag fact">事實</span></p>
+  <div class="note">缺口一句話：<b>位置＋語音＋檔案、不靠基地台、分得出誰是誰、踢得掉一台。</b> 這句在第 2 週會變成規格。</div>
+
+  <h3>問題三：民用選型會被什麼綁住？</h3>
+  <div class="two">
+  <figure>
+    <svg viewBox="0 0 440 300" role="img" aria-label="民用選型的五個限制：法規、錢、零件從哪來、電、人，圍繞著要選的方案">
+      <g stroke="#D9C9AE" stroke-width="1.5"><line x1="220" y1="150" x2="220" y2="48"/><line x1="220" y1="150" x2="330" y2="90"/><line x1="220" y1="150" x2="330" y2="230"/><line x1="220" y1="150" x2="110" y2="230"/><line x1="220" y1="150" x2="110" y2="90"/></g>
+      <circle cx="220" cy="150" r="46" fill="#F2A900"/>
+      <text x="220" y="146" font-size="13" font-weight="900" text-anchor="middle" fill="#3a2a00">選哪個</text><text x="220" y="163" font-size="13" font-weight="900" text-anchor="middle" fill="#3a2a00">方案？</text>
+      <g font-size="12" text-anchor="middle" fill="#2A2622">
+        <rect x="160" y="14" width="120" height="44" rx="12" fill="#FFF1D2"/><text x="220" y="32" font-weight="800">法規</text><text x="220" y="49" fill="#7A6F63" font-size="11">頻率、功率、考照</text>
+        <rect x="300" y="66" width="130" height="44" rx="12" fill="#FFF1D2"/><text x="365" y="84" font-weight="800">錢</text><text x="365" y="101" fill="#7A6F63" font-size="11">一台多少、幾台才夠</text>
+        <rect x="300" y="210" width="130" height="44" rx="12" fill="#FFF1D2"/><text x="365" y="228" font-weight="800">電</text><text x="365" y="245" fill="#7A6F63" font-size="11">撐多久、發射多兇</text>
+        <rect x="40" y="210" width="140" height="44" rx="12" fill="#FFF1D2"/><text x="110" y="228" font-weight="800">人</text><text x="110" y="245" fill="#7A6F63" font-size="11">誰會裝、誰會修</text>
+        <rect x="30" y="66" width="150" height="44" rx="12" fill="#FBE3DC"/><text x="105" y="84" font-weight="800">零件從哪來</text><text x="105" y="101" fill="#7A6F63" font-size="11">中國零件、缺貨、停產</text>
+      </g>
+    </svg>
+    <figcaption>五個限制，每一個都會改變答案。「零件從哪來」在第 4 週會真的發生。</figcaption>
+  </figure>
+  <div>
+    <div class="tbl"><table>
+      <thead><tr><th>零件</th><th>公司</th><th>國家</th></tr></thead>
+      <tbody>
+        <tr><td>無線電模組 FGH100M</td><td>Quectel 移遠</td><td><span class="cn">中國</span>（上海）</td></tr>
+        <tr><td>無線電晶片 MM6108</td><td>Morse Micro</td><td>澳洲</td></tr>
+        <tr><td>轉接板、無線電卡</td><td>Seeed 矽遞</td><td><span class="cn">中國</span>（深圳）</td></tr>
+        <tr><td>小電腦 Pi 4</td><td>Raspberry Pi</td><td>英國</td></tr>
+        <tr><td>Meshtastic 常見硬體</td><td>Heltec、LILYGO</td><td><span class="cn">中國</span></td></tr>
+      </tbody></table></div>
+    <p style="font-size:14px">專案文件指出 Quectel 可能因美國 NDAA 法案而擋在美國政府市場之外。<span class="tag fact">事實</span> 對台灣民防是否構成問題，取決於採購規定。<span class="tag infer">推論</span></p>
+  </div>
+  </div>
+
+  <h3>方法論：加權決策矩陣（可以直接在這裡填）</h3>
+  <p>工程師選方案不是憑感覺：先訂「評什麼」與「多重要」，再打分。權重與分數都填 1 到 5，總分自動算。這只是練習本，作業要寫進作業檔。</p>
+  <div class="tbl"><table class="matrix" id="matrix">
+    <thead><tr><th class="crit-name">準則</th><th class="w">權重</th><th>對講機</th><th>Meshtastic</th><th>HaLow mesh</th><th>衛星</th></tr></thead>
+    <tbody id="mbody"></tbody>
+    <tfoot><tr><td>加權總分</td><td></td><td id="t0" class="num">0</td><td id="t1" class="num">0</td><td id="t2" class="num">0</td><td id="t3" class="num">0</td></tr></tfoot>
+  </table></div>
+  <div class="btnrow"><button type="button" id="addrow">＋ 加一個我自己的準則</button><button type="button" class="ghost" id="reset">清空</button></div>
+  <p style="font-size:13.5px;color:var(--muted)">填的內容只存在你這台瀏覽器裡。</p>
+
+  <div class="hw" id="hw1">
+    <h3>作業檔《W1 我的選型報告》</h3>
+    <ol>
+      <li><b>AI 之前，我先想</b>：寫下一個你或家人<b>親身經歷</b>的沒訊號場景。這是整份報告的基準。</li>
+      <li><b>矩陣</b>：自己補 2 個準則、自己填權重，<b>每個權重旁邊一句理由，理由要連回那個場景</b>。</li>
+      <li><b>AI 對照組</b>：同一場景同一準則給 AI 也填一張，並排找出<b>權重差最大的三項</b>，各寫一段「為什麼我們不同」。</li>
+      <li><b>AI 反對派</b>：請 AI 替你沒選的方案辯護，記錄它最強的理由，以及你被說服還是沒被說服。</li>
+      <li><b>結論</b>一段：我選／不選 HaLow，因為。</li>
+    </ol>
+    <div class="why">為什麼抄不了：親身場景只有你有；權重理由要連回它；跟 AI 的差異分析是你和它之間的事。</div>
+  </div>
+  <details><summary>AI 延伸學習（選做）</summary><ul>
+    <li><b>AI 扮 Meshtastic 老手</b>替 Meshtastic 辯護，一次一個理由；你逐一反駁或承認，寫下最後站哪邊。</li>
+    <li><b>AI 當模擬器</b>描述三個台灣真實災害現場的通訊狀況（附來源）；你把四種方案放進去判斷誰撐得住。</li>
+  </ul></details>
+  <div class="think"><b>延伸思考</b><ol><li>如果台灣合法功率只有美國的一半，射程縮短，矩陣會翻盤嗎？「夠遠」是多遠？</li><li>Meshtastic 便宜、兩萬人在用；HaLow 貴、只有兩台。有限的錢投哪邊？「先用起來」和「用對的」怎麼取捨？</li></ol></div>
+</section>
+
+<!-- ===================== WEEK 2 ===================== -->
+<section class="week" id="w2">
+  <div class="week-head">
+    <div class="week-no num">2</div>
+    <div>
+      <div class="eyebrow">方法論：使用場景 → 邊界 → 開規格</div>
+      <h2>問題沒有邊界：用使用場景收斂，再用規格開始解</h2>
+      <div class="question">核心問題：<b>上週說「要解這個問題」。可是問題一開始沒有邊界，工程師要從哪裡下手？</b></div>
+    </div>
+  </div>
+
+  <h3>把上週那句話交給工程師，他會反問你</h3>
+  <figure>
+    <svg viewBox="0 0 900 330" role="img" aria-label="沒有邊界的問題：中心是「不靠基地台也要能聯絡」，周圍九個問號：多遠、幾個人、在哪、什麼天氣、誰在用、多久、多快、壞了怎麼辦、多少錢">
+      <g stroke="#EBDFCB" stroke-width="1.5">
+        <line x1="450" y1="165" x2="120" y2="60"/><line x1="450" y1="165" x2="450" y2="46"/><line x1="450" y1="165" x2="780" y2="60"/>
+        <line x1="450" y1="165" x2="90" y2="165"/><line x1="450" y1="165" x2="810" y2="165"/>
+        <line x1="450" y1="165" x2="120" y2="272"/><line x1="450" y1="165" x2="450" y2="290"/><line x1="450" y1="165" x2="780" y2="272"/>
+        <line x1="450" y1="165" x2="285" y2="290"/>
+      </g>
+      <g font-size="12.5" text-anchor="middle" fill="#2A2622">
+        <rect x="50" y="36" width="140" height="48" rx="24" fill="#fff" stroke="#D9C9AE"/><text x="120" y="56" font-weight="800">多遠？</text><text x="120" y="74" fill="#7A6F63" font-size="11">1 公里？跨縣市？</text>
+        <rect x="380" y="22" width="140" height="48" rx="24" fill="#fff" stroke="#D9C9AE"/><text x="450" y="42" font-weight="800">幾個人？</text><text x="450" y="60" fill="#7A6F63" font-size="11">一隊 5 人？一個鄉？</text>
+        <rect x="710" y="36" width="140" height="48" rx="24" fill="#fff" stroke="#D9C9AE"/><text x="780" y="56" font-weight="800">在哪？</text><text x="780" y="74" fill="#7A6F63" font-size="11">山裡？市區？室內？</text>
+        <rect x="20" y="141" width="140" height="48" rx="24" fill="#fff" stroke="#D9C9AE"/><text x="90" y="161" font-weight="800">什麼天氣？</text><text x="90" y="179" fill="#7A6F63" font-size="11">下雨？夜間？颱風？</text>
+        <rect x="740" y="141" width="140" height="48" rx="24" fill="#fff" stroke="#D9C9AE"/><text x="810" y="161" font-weight="800">誰在用？</text><text x="810" y="179" fill="#7A6F63" font-size="11">受過訓的？老人？</text>
+        <rect x="50" y="248" width="140" height="48" rx="24" fill="#fff" stroke="#D9C9AE"/><text x="120" y="268" font-weight="800">多久？</text><text x="120" y="286" fill="#7A6F63" font-size="11">撐一天？一週？</text>
+        <rect x="215" y="266" width="140" height="48" rx="24" fill="#fff" stroke="#D9C9AE"/><text x="285" y="286" font-weight="800">多快？</text><text x="285" y="304" fill="#7A6F63" font-size="11">每秒？每分鐘？</text>
+        <rect x="380" y="266" width="140" height="48" rx="24" fill="#fff" stroke="#D9C9AE"/><text x="450" y="286" font-weight="800">壞了怎麼辦？</text><text x="450" y="304" fill="#7A6F63" font-size="11">誰修？有備品？</text>
+        <rect x="710" y="248" width="140" height="48" rx="24" fill="#fff" stroke="#D9C9AE"/><text x="780" y="268" font-weight="800">多少錢？</text><text x="780" y="286" fill="#7A6F63" font-size="11">一千？一萬？</text>
+      </g>
+      <circle cx="450" cy="165" r="58" fill="#E2553A"/>
+      <text x="450" y="160" font-size="13" font-weight="900" fill="#fff" text-anchor="middle">不靠基地台</text><text x="450" y="178" font-size="13" font-weight="900" fill="#fff" text-anchor="middle">也要能聯絡</text>
+    </svg>
+    <figcaption><b>沒有邊界的問題：</b>不是不知道怎麼解，是不知道要解到哪裡。工程做不了沒有邊界的事。問學生：只能先回答三個，選哪三個？</figcaption>
+  </figure>
+
+  <h3>第一步收斂：使用場景（use case）</h3>
+  <p>一個很具體的畫面：<b>誰、在哪、要完成什麼事、成功長什麼樣、失敗會怎樣。</b> 拿「山區搜救」切一次：</p>
+  <figure>
+    <svg viewBox="0 0 900 250" role="img" aria-label="使用場景圖：搜救隊員與登山口指揮站兩個角色，連到四個使用場景：位置持續出現在地圖上、按鍵語音回報、機器快不行看一眼就知道、某隊失聯指揮站馬上知道">
+      <rect x="230" y="14" width="440" height="222" rx="18" fill="#FFF1D2"/>
+      <text x="450" y="38" font-size="12" font-weight="800" fill="#B8660A" text-anchor="middle">要做的東西</text>
+      <g font-size="12.5" text-anchor="middle" fill="#2A2622">
+        <ellipse cx="450" cy="72" rx="190" ry="20" fill="#fff" stroke="#F2A900" stroke-width="1.5"/><text x="450" y="76"><tspan font-weight="800">UC1</tspan> 隊員的位置持續出現在指揮站地圖上</text>
+        <ellipse cx="450" cy="118" rx="190" ry="20" fill="#fff" stroke="#F2A900" stroke-width="1.5"/><text x="450" y="122"><tspan font-weight="800">UC2</tspan> 隊員按下按鍵，用聲音回報</text>
+        <ellipse cx="450" cy="164" rx="190" ry="20" fill="#fff" stroke="#F2A900" stroke-width="1.5"/><text x="450" y="168"><tspan font-weight="800">UC3</tspan> 機器快不行了，隊員看一眼就知道</text>
+        <ellipse cx="450" cy="210" rx="190" ry="20" fill="#fff" stroke="#F2A900" stroke-width="1.5"/><text x="450" y="214"><tspan font-weight="800">UC4</tspan> 某一隊失聯，指揮站馬上知道是哪隊</text>
+      </g>
+      <g stroke="#D9C9AE" stroke-width="1.5">
+        <line x1="150" y1="118" x2="260" y2="72"/><line x1="150" y1="118" x2="260" y2="118"/><line x1="150" y1="118" x2="260" y2="164"/>
+        <line x1="750" y1="140" x2="640" y2="72"/><line x1="750" y1="140" x2="640" y2="118"/><line x1="750" y1="140" x2="640" y2="210"/>
+      </g>
+      <g fill="#1E9AA8"><circle cx="110" cy="92" r="14"/><rect x="96" y="110" width="28" height="34" rx="8"/></g>
+      <text x="110" y="166" font-size="12.5" font-weight="800" text-anchor="middle" fill="#2A2622">搜救隊員</text>
+      <g fill="#1E9AA8"><rect x="758" y="96" width="64" height="52" rx="8"/><rect x="770" y="84" width="40" height="14" rx="4"/></g>
+      <text x="790" y="170" font-size="12.5" font-weight="800" text-anchor="middle" fill="#2A2622">登山口指揮站</text>
+    </svg>
+    <figcaption>切出使用場景後，九個問號有一半自動有了答案：誰在用＝受過訓的隊員、在哪＝山區、幾個人＝三隊。<b>收斂不是回答每個問題，是決定先看哪幾個畫面。</b></figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>使用場景</th><th>成功的畫面</th><th>失敗會怎樣</th></tr></thead>
+    <tbody>
+      <tr><td><b>UC1</b> 位置</td><td>A 隊走到溪谷，指揮站地圖上的點還在動</td><td>點不動＝分不清失聯還是靜止，得派人去找</td></tr>
+      <tr><td><b>UC2</b> 語音</td><td>找到人，按下按鍵，指揮站聽得清楚</td><td>聽不清楚＝位置報錯，救援跑錯地方</td></tr>
+      <tr><td><b>UC3</b> 機器狀態</td><td>隊員看一眼燈，知道該換電池</td><td>不知道＝機器默默死掉，整隊消失</td></tr>
+      <tr><td><b>UC4</b> 失聯偵測</td><td>指揮站畫面上 B 隊變紅色</td><td>不知道誰失聯＝全部召回重數人頭</td></tr>
+    </tbody></table></div>
+
+  <h3>第二步收斂：邊界，然後才需要規格</h3>
+  <figure>
+    <svg viewBox="0 0 900 190" role="img" aria-label="收斂漏斗：沒有邊界的問題切成畫面成為使用場景與不做的清單，再翻成有數字能驗的規格，才能開始工程">
+      <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#B8660A"/></marker></defs>
+      <g font-size="12.5" text-anchor="middle" fill="#2A2622">
+        <path d="M10 30 L200 30 L200 160 L10 160 Z" fill="#FBE3DC" rx="14"/>
+        <text x="105" y="70" font-weight="800">沒有邊界的問題</text><text x="105" y="92" fill="#7A6F63" font-size="11.5">「沒訊號也要能聯絡」</text><text x="105" y="110" fill="#7A6F63" font-size="11.5">九個問號</text>
+        <path d="M245 44 L435 44 L435 146 L245 146 Z" fill="#FFF1D2"/>
+        <text x="340" y="80" font-weight="800">使用場景 + 不做的</text><text x="340" y="102" fill="#7A6F63" font-size="11.5">UC1～UC4</text><text x="340" y="120" fill="#7A6F63" font-size="11.5">不傳影片、不跨縣市</text>
+        <path d="M480 58 L670 58 L670 132 L480 132 Z" fill="#E1F3E6"/>
+        <text x="575" y="88" font-weight="800">規格</text><text x="575" y="108" fill="#7A6F63" font-size="11.5">1 公里、每 10 秒、中斷 ≤ 1 次</text>
+        <path d="M715 72 L890 72 L890 118 L715 118 Z" fill="#DDF3F5"/>
+        <text x="802" y="100" font-weight="800">工程（第 3 週起）</text>
+      </g>
+      <g stroke="#B8660A" stroke-width="2" fill="none" marker-end="url(#a2)"><line x1="204" y1="95" x2="240" y2="95"/><line x1="439" y1="95" x2="475" y2="95"/><line x1="674" y1="95" x2="710" y2="95"/></g>
+      <g font-size="11" fill="#B8660A" text-anchor="middle"><text x="222" y="84">切成畫面</text><text x="457" y="84">加數字、加驗法</text><text x="692" y="84">才能開始</text></g>
+    </svg>
+    <figcaption>使用場景列出來，會自然冒出「這次不做」的清單。<b>「不做什麼」是規格的第一行。</b> 但工程師還會問：做到什麼「程度」算做到？那個程度就是規格。</figcaption>
+  </figure>
+  <div class="two">
+    <div class="tbl"><table>
+      <thead><tr><th>這次不做</th><th>為什麼先不做</th></tr></thead>
+      <tbody><tr><td>不傳影片</td><td>四個場景都不需要；要做的話電池、速度全部要翻倍</td></tr><tr><td>不跨縣市</td><td>場景是一座山、一個登山口</td></tr><tr><td>不給沒受訓的人用</td><td>使用者是隊員，可以要求上一堂課</td></tr></tbody></table></div>
+    <div class="tbl"><table>
+      <thead><tr><th>規格的作用</th><th>沒有它會怎樣</th></tr></thead>
+      <tbody><tr><td><b>契約</b>：做到這些＝做完了</td><td>永遠有人說「還不夠」</td></tr><tr><td><b>驗收</b>：拿著它去測</td><td>用感覺判斷，吵不完</td></tr><tr><td><b>溝通</b>：做天線、寫軟體、做外殼的看同一張紙</td><td>各做各的，拼起來對不上</td></tr><tr><td><b>取捨的紀錄</b>：為什麼是 1 公里不是 5</td><td>三個月後沒人記得</td></tr></tbody></table></div>
+  </div>
+
+  <h3>開規格：從使用場景到句子</h3>
+  <figure>
+    <svg viewBox="0 0 900 110" role="img" aria-label="開規格四步：使用場景的成功畫面，圈出一定要成立的事，翻成系統要做到加數字，加上驗法：誰、用什麼、多少算過">
+      <g font-size="12.5" text-anchor="middle" fill="#2A2622">
+        <path d="M10 20 L200 20 L222 55 L200 90 L10 90 Z" fill="#FFF1D2"/><text x="108" y="50" font-weight="800">① 使用場景</text><text x="108" y="70" fill="#7A6F63" font-size="11.5">成功的畫面</text>
+        <path d="M212 20 L420 20 L442 55 L420 90 L212 90 L234 55 Z" fill="#FFE6B0"/><text x="327" y="50" font-weight="800">② 圈出一定要成立的事</text><text x="327" y="70" fill="#7A6F63" font-size="11.5">「如果…就完了」</text>
+        <path d="M432 20 L650 20 L672 55 L650 90 L432 90 L454 55 Z" fill="#F2A900"/><text x="552" y="50" font-weight="800">③ 翻成「系統要做到…」</text><text x="552" y="70" font-size="11.5" fill="#3a2a00">加上數字</text>
+        <path d="M662 20 L890 20 L890 90 L662 90 L684 55 Z" fill="#E1F3E6"/><text x="780" y="50" font-weight="800">④ 加上驗法</text><text x="780" y="70" fill="#7A6F63" font-size="11.5">誰、用什麼、多少算過</text>
+      </g>
+    </svg>
+    <figcaption>兩件事要講清楚：<b>數字是「訂」出來的，不是量出來的</b>，理由要寫下；<b>想不出怎麼驗的規格，是壞規格。</b></figcaption>
+  </figure>
+  <div class="two">
+    <div class="tbl"><table>
+      <thead><tr><th colspan="2">UC1 位置</th></tr></thead>
+      <tbody><tr><td>成功的畫面</td><td>A 隊在 1 公里外的溪谷，地圖上的點還在動</td></tr><tr><td>一定要成立</td><td>點要一直在動；不動就等於失蹤</td></tr><tr><td>系統要做到＋數字</td><td>相隔 1 公里、有視線時，位置每 10 秒更新；10 分鐘內中斷 ≤ 1 次、每次 ≤ 30 秒</td></tr><tr><td>怎麼驗</td><td>兩台拉開 1 公里，走 10 分鐘，錄下地圖畫面，數中斷次數</td></tr></tbody></table></div>
+    <div class="tbl"><table>
+      <thead><tr><th colspan="2">UC3 機器狀態</th></tr></thead>
+      <tbody><tr><td>成功的畫面</td><td>隊員看一眼機器，知道該換電池</td></tr><tr><td>一定要成立</td><td>不用懂技術、不用說明書</td></tr><tr><td>系統要做到＋數字</td><td>三種狀態用燈區分；沒看過機器的人 10 秒內說得出是哪一種</td></tr><tr><td>怎麼驗</td><td>找 5 個沒看過機器的人各看 3 種燈號，答對率 100%</td></tr></tbody></table></div>
+  </div>
+  <div class="note">專案真實的例子 <span class="tag fact">事實</span>：野外韌性文件先寫兩個操作員看得到的畫面 — N1「開機了卻一直沒加入網路，沒人知道為什麼」、N2「加入後不明原因掉線，之後再也回不來」— 才翻成「60 秒沒加入就寫下一行診斷」這種可驗的句子。</div>
+
+  <div class="hw" id="hw2">
+    <h3>作業檔《W2 我開的規格》</h3>
+    <ol>
+      <li><b>AI 之前，我先想</b>：用第 1 週你的場景，憑直覺寫「一定要成立的三件事」。</li>
+      <li><b>收斂</b>：切出 4 個使用場景（畫圖），各寫成功畫面與失敗後果；列 3 條「這次不做」。</li>
+      <li><b>開規格</b>：挑 2 個場景，開 5 條規格，每條有數字、有驗法；分一定要／最好有。</li>
+      <li><b>AI 對照組</b>：把你的 4 個使用場景給 AI 也開 5 條，<b>逐條比：哪條 AI 開得比你好、哪條你比它好、為什麼</b>。</li>
+      <li><b>AI 驗收工程師</b>：請 AI 對每條只問三個問題（怎麼量、在哪量、多少算過）；被問倒的那條記錄原文、修改、理由。</li>
+      <li><b>最終版</b>5 條規格 + 一段「開規格最難的是什麼」。</li>
+    </ol>
+    <div class="why">為什麼抄不了：使用場景來自你的經歷；「AI 哪條開得比我好」只有你能判斷；被問倒後的修改紀錄是你的思考軌跡。</div>
+  </div>
+  <details><summary>AI 延伸學習（選做）</summary><ul>
+    <li><b>AI 當模擬器</b>：給你三個變化（夜間、下大雨、多來一隊沒受訓的志工），只描述畫面；你自己判斷哪些使用場景、哪些規格會變。</li>
+    <li><b>AI 扮另一個團體</b>：城市社區的防災志工隊隊長，寫出他們最需要的三個使用場景；你比較兩邊差在哪。第 4 週目標市場會用到。</li>
+  </ul></details>
+  <div class="think"><b>延伸思考</b><ol><li>「管理系統掛掉，網路還要能傳」是使用場景、邊界、還是規格？能改成一條有數字、有驗法的句子嗎？</li><li>邊界誰定？搜救隊員說「我們也要傳影片」，工程師該答應嗎？誰有資格說「這次不做」？</li></ol></div>
+</section>
+
+<!-- ===================== WEEK 3 ===================== -->
+<section class="week" id="w3">
+  <div class="week-head">
+    <div class="week-no num">3</div>
+    <div>
+      <div class="eyebrow">方法論：黑箱／白箱 · 介面清單 · 規格→元件連線</div>
+      <h2>什麼是系統、什麼是元件：為什麼一個科系解決不了</h2>
+      <div class="question">核心問題：<b>上週開的規格，是「誰」做到的？天線？電池？軟體？答案是「一起」，而這正是麻煩的開始。</b></div>
+    </div>
+  </div>
+
+  <h3>先用腳踏車</h3>
+  <figure>
+    <svg viewBox="0 0 900 300" role="img" aria-label="腳踏車當作系統：輪子、車架、鏈條、齒輪、踏板、煞車是元件；鏈條與齒輪的咬合、煞車皮與輪框是介面；騎的人與路面天氣在邊界外是環境">
+      <rect x="120" y="30" width="560" height="240" rx="22" fill="#FFF1D2"/>
+      <text x="140" y="56" font-size="12" font-weight="800" fill="#B8660A">系統：腳踏車（邊界）</text>
+      <g fill="none" stroke="#2A2622" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="240" cy="200" r="52"/><circle cx="560" cy="200" r="52"/>
+        <path d="M240 200 L330 110 L470 110 L560 200 M330 110 L400 200 L240 200 M400 200 L470 110 M400 200 L400 190"/>
+        <path d="M330 110 L318 82 M300 82 L340 82"/>
+        <path d="M470 110 L478 84 L500 84"/>
+      </g>
+      <circle cx="400" cy="200" r="16" fill="#F2A900" stroke="#2A2622" stroke-width="3"/>
+      <path d="M416 200 C470 170 520 176 560 200" fill="none" stroke="#E2553A" stroke-width="4" stroke-dasharray="6 5"/>
+      <g font-size="12" fill="#2A2622" text-anchor="middle">
+        <text x="240" y="268" font-weight="800">輪子</text><text x="560" y="268" font-weight="800">輪子</text>
+        <text x="400" y="236" font-weight="800">齒輪 · 踏板</text>
+        <text x="480" y="160" fill="#E2553A" font-weight="800">鏈條 ↔ 齒輪：要咬得住（介面）</text>
+        <text x="300" y="72" font-weight="800">煞車 ↔ 輪框</text>
+        <text x="500" y="72" font-weight="800">車架</text>
+      </g>
+      <g font-size="12.5" fill="#7A6F63" text-anchor="middle">
+        <rect x="10" y="120" width="96" height="60" rx="12" fill="#fff" stroke="#D9C9AE" stroke-dasharray="4 3"/><text x="58" y="146" font-weight="800">騎的人</text><text x="58" y="164" font-size="11">環境</text>
+        <rect x="700" y="120" width="190" height="60" rx="12" fill="#fff" stroke="#D9C9AE" stroke-dasharray="4 3"/><text x="795" y="146" font-weight="800">路面 · 天氣</text><text x="795" y="164" font-size="11">環境</text>
+      </g>
+      <g stroke="#D9C9AE" stroke-width="1.5" stroke-dasharray="4 3"><line x1="106" y1="150" x2="120" y2="150"/><line x1="680" y1="150" x2="700" y2="150"/></g>
+    </svg>
+    <figcaption><b>系統</b>＝一群東西為同一個目的湊在一起；<b>元件</b>＝可以拆下來的一塊；<b>介面</b>＝兩個元件碰在一起的地方；<b>邊界</b>＝系統到哪裡為止。「好騎」「安全」是整台才有的性質，不屬於任何一個零件。鏈條掉了：鏈條沒壞、齒輪沒壞，是兩個「對不上」。</figcaption>
+  </figure>
+
+  <h3>套到哨站：先黑箱、再白箱</h3>
+  <div class="two">
+  <figure>
+    <svg viewBox="0 0 440 300" role="img" aria-label="黑箱：站在外面只看到天線、電源孔、一顆燈、一個網路孔，以及無線連到隊員手機和另一台哨站">
+      <rect x="150" y="90" width="140" height="120" rx="20" fill="#2A2622"/>
+      <text x="220" y="156" font-size="15" font-weight="900" fill="#fff" text-anchor="middle">哨站</text>
+      <line x1="220" y1="90" x2="220" y2="30" stroke="#2A2622" stroke-width="4"/><circle cx="220" cy="26" r="6" fill="#F2A900"/>
+      <text x="245" y="44" font-size="12.5" fill="#2A2622" font-weight="800">一根天線</text>
+      <rect x="120" y="140" width="30" height="16" rx="4" fill="#F2A900"/><text x="112" y="130" font-size="12.5" fill="#2A2622" font-weight="800" text-anchor="end">電源孔</text>
+      <circle cx="270" cy="110" r="8" fill="#3E9E5C"/><text x="300" y="114" font-size="12.5" fill="#2A2622" font-weight="800">一顆燈</text>
+      <rect x="290" y="176" width="30" height="16" rx="4" fill="#1E9AA8"/><text x="330" y="188" font-size="12.5" fill="#2A2622" font-weight="800">網路孔</text>
+      <g stroke="#1E9AA8" stroke-width="2" stroke-dasharray="5 4" fill="none"><path d="M150 200 C100 220 80 250 60 270"/><path d="M290 200 C340 220 360 250 380 270"/></g>
+      <text x="60" y="290" font-size="12.5" fill="#1E9AA8" font-weight="800" text-anchor="middle">隊員的手機</text><text x="380" y="290" font-size="12.5" fill="#1E9AA8" font-weight="800" text-anchor="middle">另一台哨站</text>
+    </svg>
+    <figcaption><b>黑箱：</b>站在外面只看到這些。</figcaption>
+  </figure>
+  <figure>
+    <svg viewBox="0 0 440 300" role="img" aria-label="白箱：天線接無線電卡（聽與說），經轉接板接小電腦（想），小電腦連記憶卡、軟體、燈；電池供電給小電腦與無線電卡；外殼包住全部">
+      <rect x="20" y="14" width="400" height="272" rx="20" fill="none" stroke="#D9C9AE" stroke-width="2" stroke-dasharray="6 4"/>
+      <text x="36" y="36" font-size="11.5" fill="#7A6F63" font-weight="800">外殼（包住全部）</text>
+      <g font-size="12.5" text-anchor="middle" fill="#2A2622">
+        <rect x="150" y="44" width="140" height="36" rx="10" fill="#FFF1D2" stroke="#F2A900"/><text x="220" y="67" font-weight="800">無線電卡 · 聽與說</text>
+        <rect x="150" y="98" width="140" height="30" rx="10" fill="#fff" stroke="#D9C9AE"/><text x="220" y="118">轉接板</text>
+        <rect x="150" y="146" width="140" height="36" rx="10" fill="#FFF1D2" stroke="#F2A900"/><text x="220" y="169" font-weight="800">小電腦 · 想</text>
+        <rect x="40" y="206" width="110" height="34" rx="10" fill="#fff" stroke="#D9C9AE"/><text x="95" y="228">記憶卡</text>
+        <rect x="165" y="206" width="110" height="34" rx="10" fill="#FFE6B0" stroke="#F2A900"/><text x="220" y="228" font-weight="800">軟體</text>
+        <rect x="290" y="206" width="110" height="34" rx="10" fill="#fff" stroke="#D9C9AE"/><text x="345" y="228">燈</text>
+        <rect x="320" y="98" width="90" height="84" rx="10" fill="#E1F3E6" stroke="#3E9E5C"/><text x="365" y="134" font-weight="800">電池</text><text x="365" y="152" font-size="11" fill="#7A6F63">電源</text>
+      </g>
+      <g stroke="#D9C9AE" stroke-width="2"><line x1="220" y1="80" x2="220" y2="98"/><line x1="220" y1="128" x2="220" y2="146"/><line x1="220" y1="182" x2="220" y2="206"/><line x1="150" y1="182" x2="95" y2="206"/><line x1="290" y1="182" x2="345" y2="206"/></g>
+      <g stroke="#3E9E5C" stroke-width="2"><line x1="320" y1="164" x2="290" y2="164"/><line x1="365" y1="98" x2="365" y2="62" /><line x1="365" y1="62" x2="290" y2="62"/></g>
+      <text x="220" y="262" font-size="11" fill="#7A6F63" text-anchor="middle">接力規則 · 身分 · 燈號 · 自我診斷</text>
+    </svg>
+    <figcaption><b>白箱：</b>打開來。綠線是電，黃框是這個專案最花力氣的兩塊。</figcaption>
+  </figure>
+  </div>
+
+  <h3>本專案三個真實的「介面故障」</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>兩個元件</th><th>發生什麼</th><th>記載</th></tr></thead>
+    <tbody>
+      <tr><td>無線電卡 ↔ 小電腦</td><td>兩邊「握手」時，有一根線該放開卻一直握著，無線電卡從此聽錯每一句話，裝不起來。花了很久才找到。</td><td>README 開頭 <span class="tag fact">事實</span></td></tr>
+      <tr><td>電池 ↔ 無線電卡</td><td>平常電夠，但無線電「說話」那一瞬間電壓被拉低，速度掉 3 到 4 倍；小電腦的欠壓警告抓不到。</td><td>走測紀錄 <span class="tag fact">事實</span></td></tr>
+      <tr><td>外殼 ↔ 燈</td><td>燈在小電腦上，裝進外殼就看不到；上週規格「看一眼就知道」因此失效。</td><td>任務單 #128 <span class="tag fact">事實</span></td></tr>
+    </tbody></table></div>
+  <div class="note">三件事都不是某個零件壞掉，是<b>兩個零件對不上</b>。跟鏈條掉了一模一樣。</div>
+
+  <h3>從上游串回來：一條規格牽到多少元件</h3>
+  <figure>
+    <svg viewBox="0 0 900 260" role="img" aria-label="規格「1 公里外位置持續傳回」連線到六樣東西：天線、無線電卡、軟體接力、電池，以及箱子外的站點視線與法規功率；每一樣背後是不同學門">
+      <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#B8660A"/></marker></defs>
+      <rect x="20" y="96" width="200" height="68" rx="16" fill="#F2A900"/>
+      <text x="120" y="124" font-size="13" font-weight="900" fill="#3a2a00" text-anchor="middle">規格：1 公里外</text><text x="120" y="144" font-size="13" font-weight="900" fill="#3a2a00" text-anchor="middle">位置持續傳回</text>
+      <g stroke="#B8660A" stroke-width="2" fill="none" marker-end="url(#a3)">
+        <path d="M222 130 C300 130 300 38 380 38"/><path d="M222 130 C300 130 300 78 380 78"/><path d="M222 130 C300 130 300 118 380 118"/>
+        <path d="M222 130 C300 130 300 158 380 158"/><path d="M222 130 C300 130 300 198 380 198"/><path d="M222 130 C300 130 300 238 380 238"/>
+      </g>
+      <g font-size="12.5" fill="#2A2622">
+        <rect x="384" y="22" width="220" height="32" rx="10" fill="#FFF1D2"/><text x="396" y="43"><tspan font-weight="800">天線</tspan>：夠不夠強</text>
+        <rect x="384" y="62" width="220" height="32" rx="10" fill="#FFF1D2"/><text x="396" y="83"><tspan font-weight="800">無線電卡</tspan>：聽不聽得到</text>
+        <rect x="384" y="102" width="220" height="32" rx="10" fill="#FFF1D2"/><text x="396" y="123"><tspan font-weight="800">軟體</tspan>：多台怎麼接力</text>
+        <rect x="384" y="142" width="220" height="32" rx="10" fill="#FFF1D2"/><text x="396" y="163"><tspan font-weight="800">電池</tspan>：發射時撐不撐得住</text>
+        <rect x="384" y="182" width="220" height="32" rx="10" fill="#F1EDE6" stroke="#D9C9AE" stroke-dasharray="4 3"/><text x="396" y="203"><tspan font-weight="800">站點</tspan>：有沒有視線（箱子外）</text>
+        <rect x="384" y="222" width="220" height="32" rx="10" fill="#F1EDE6" stroke="#D9C9AE" stroke-dasharray="4 3"/><text x="396" y="243"><tspan font-weight="800">法規</tspan>：功率合不合法（箱子外）</text>
+      </g>
+      <g font-size="12.5" fill="#1E9AA8" font-weight="800">
+        <text x="630" y="43">→ 通訊工程</text><text x="630" y="83">→ 通訊工程</text><text x="630" y="123">→ 資訊工程（網路）</text><text x="630" y="163">→ 電機工程</text><text x="630" y="203">→ 地理</text><text x="630" y="243">→ 法律與公共政策</text>
+      </g>
+    </svg>
+    <figcaption><b>一條規格牽到六樣東西，兩樣在箱子外面，每一樣背後是不同學問。</b> 這就是「為什麼一個科系解決不了」：不是題目太難，是一條規格天生就跨過好幾個元件。</figcaption>
+  </figure>
+
+  <div class="hw" id="hw3">
+    <h3>作業檔《W3 我的系統圖》</h3>
+    <ol>
+      <li><b>AI 之前，我先想</b>：不看教材，憑直覺列「一台哨站裡面有哪些東西」。</li>
+      <li><b>哨站的圖</b>：用你第 2 週的規格畫黑箱與白箱；<b>介面清單至少 6 條</b>，格式「A ↔ B：要對得上什麼」。</li>
+      <li><b>你自己的系統</b>：從生活中自選一個（不能是腳踏車），畫同一套圖，寫一段跟哨站哪裡像、哪裡不像。</li>
+      <li><b>AI 補漏</b>：請 AI 指出你漏掉的介面；逐條判「真的漏了／不算」，<b>至少一條判「不算」並說得出為什麼</b>。</li>
+      <li><b>AI 比喻檢查</b>：請 AI 用你選的系統比喻哨站；找出比喻不成立的地方至少一處。</li>
+      <li><b>連線圖</b>：挑一條規格畫「規格 → 元件」，數出幾個元件、幾個學門。</li>
+    </ol>
+    <div class="why">為什麼抄不了：你選的生活系統是個人的；「真的漏了／不算」與「比喻哪裡不成立」都要對照你自己畫的圖。</div>
+  </div>
+  <details><summary>AI 延伸學習（選做）</summary><ul>
+    <li><b>AI 當模擬器</b>：把電池換成太陽能板加小電池，只描述 24 小時會發生什麼；你回答哪些介面要重寫、哪些規格會變。</li>
+    <li><b>AI 扮腳踏車技師</b>：只指出你哪個比喻不成立，一次一個；你決定改比喻還是改理解。</li>
+  </ul></details>
+  <div class="think"><b>延伸思考</b><ol><li>經費只能砍掉一個學門，砍哪個系統最不會死？哪個學門一失敗整個系統作廢？</li><li>「站點」「法規」在箱子外面，工程師管不到。它們算不算系統的一部分？如果不算，為什麼規格會被它們卡住？</li></ol></div>
+</section>
+
+<!-- ===================== WEEK 4 ===================== -->
+<section class="week" id="w4">
+  <div class="week-head">
+    <div class="week-no num">4</div>
+    <div>
+      <div class="eyebrow">方法論：學門卡 · 現在／閘門／延後 · 成本與目標市場</div>
+      <h2>各學門在這案子裡要解什麼，以及：多少錢、賣給誰</h2>
+      <div class="question">核心問題：<b>找七個不同科系的朋友來幫忙，你要跟每個人說「你負責解什麼」。講完之後還有一個人走進來問：「一台多少錢？賣給誰？」</b></div>
+    </div>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 900 80" role="img" aria-label="學門卡的固定格式：第 2 週的規格，第 3 週的元件，目前卡在哪（專案證據），這門學問怎麼解，大學科系，高中生現在能碰的一小塊">
+      <g font-size="12" text-anchor="middle" fill="#2A2622">
+        <path d="M6 16 L140 16 L156 40 L140 64 L6 64 Z" fill="#FFF1D2"/><text x="76" y="44" font-weight="800">第 2 週的規格</text>
+        <path d="M150 16 L290 16 L306 40 L290 64 L150 64 L166 40 Z" fill="#FFF1D2"/><text x="228" y="44" font-weight="800">第 3 週的元件</text>
+        <path d="M300 16 L450 16 L466 40 L450 64 L300 64 L316 40 Z" fill="#F2A900"/><text x="383" y="38" font-weight="800">目前卡在哪</text><text x="383" y="54" font-size="11" fill="#3a2a00">專案裡的證據</text>
+        <path d="M460 16 L600 16 L616 40 L600 64 L460 64 L476 40 Z" fill="#FFF1D2"/><text x="538" y="44" font-weight="800">這門學問怎麼解</text>
+        <path d="M610 16 L740 16 L756 40 L740 64 L610 64 L626 40 Z" fill="#DDF3F5"/><text x="683" y="44" font-weight="800">大學科系</text>
+        <path d="M750 16 L894 16 L894 64 L750 64 L766 40 Z" fill="#E1F3E6"/><text x="822" y="38" font-weight="800">現在能碰的</text><text x="822" y="54" font-size="11" fill="#7A6F63">一小塊</text>
+      </g>
+    </svg>
+    <figcaption>八張卡都用同一個格式，說法沿用前兩週的「規格」「元件」「介面」。</figcaption>
+  </figure>
+
+  <div class="cards">
+    <div class="card"><div class="l">卡 1 · 通訊工程</div><div class="k">傳得遠</div><p><b>規格</b> UC1 一公里外位置持續傳回</p><p><b>卡在哪</b> 800 公尺被建築包住的點比 1 公里開闊的點還差（丟包 90% 對 70%）。視線決定成敗，不是距離。<span class="tag fact">事實</span></p><p><b>科系</b> 電機、通訊、電信</p></div>
+    <div class="card"><div class="l">卡 2 · 資訊工程（網路）</div><div class="k">多台不打架</div><p><b>規格</b> UC4 任何一台壞了其他照傳</p><p><b>卡在哪</b> 沒有總機，每台每秒喊「我在這裡」；一個範圍約 50 台就被喊話塞滿一半時間，最貴的是喊話不是資料。<span class="tag fact">事實</span></p><p><b>科系</b> 資工、資科</p></div>
+    <div class="card"><div class="l">卡 3 · 資訊安全</div><div class="k">分得出誰是誰</div><p><b>規格</b> 分得出誰在講、踢得掉一台</p><p><b>卡在哪</b> 全網同一把預設鑰匙，像全班共用一把教室鑰匙；而且密碼擋不住有人在同一頻率上吵。<span class="tag fact">事實</span></p><p><b>科系</b> 資工資安組、資管</p></div>
+    <div class="card"><div class="l">卡 4 · 電機（電源）</div><div class="k">撐得久、發射不掉速</div><p><b>規格</b> 電池撐一天、發射不掉速、快沒電先說</p><p><b>卡在哪</b> 電池「連得上、不當機、但跑不快」，速度掉 3 到 4 倍；正在加量電晶片。<span class="tag fact">事實</span></p><p><b>科系</b> 電機、電子</p></div>
+    <div class="card"><div class="l">卡 5 · 機械與工設</div><div class="k">撐戶外、看得到燈</div><p><b>規格</b> 淋雨不壞、看一眼燈就知道</p><p><b>卡在哪</b> 開源 V3 外殼裝進去燈就看不到；導光柱或面板燈二選一。<span class="tag fact">事實</span></p><p><b>科系</b> 機械、工設、產品設計</p></div>
+    <div class="card"><div class="l">卡 6 · 法律與公共政策</div><div class="k">合法、零件從哪來</div><p><b>規格</b> 在台灣可以合法開機</p><p><b>卡在哪</b> 美國頻段卡、功率約 27 dBm 可能超標；台灣 920–925 MHz 上限<span class="tag check">待查證</span>；模組是中國公司產品。<span class="tag fact">事實</span></p><p><b>科系</b> 法律、公行、科管</p></div>
+    <div class="card"><div class="l">卡 7 · 工程管理</div><div class="k">做得出來、管得住</div><p><b>規格</b> 燒一張卡就能用、每次改動有證據</p><p><b>卡在哪</b> 60 幾張任務單、一棵任務樹；改完要附在哪台機器測了什麼才能合併。<span class="tag fact">事實</span></p><p><b>科系</b> 工管、資管、專案管理</p></div>
+    <div class="card cost"><div class="l">卡 8 · 成本與目標市場</div><div class="k">多少錢、賣給誰</div><p>這張卡不屬於某個工程科系，但<b>每張工程卡的答案都會被它改寫</b>。往下看。</p><p><b>科系</b> 經濟、企管、工管、科管</p></div>
+  </div>
+
+  <h3>一台多少錢？</h3>
+  <div class="two">
+  <figure>
+    <svg viewBox="0 0 440 320" role="img" aria-label="一台 V3 全配節點約 232 歐元的成本分布：小電腦 58、HaLow 無線電卡加轉接板 35、天線與接線 53、LoRa 節點 39、電池與電源 20、散熱 16、防水網路接頭 11">
+      <g transform="translate(150 150) rotate(-90)" fill="none" stroke-width="44">
+        <circle r="70" stroke="#F2A900" stroke-dasharray="109.96 439.82" stroke-dashoffset="0"/>
+        <circle r="70" stroke="#FFC94D" stroke-dasharray="66.35 439.82" stroke-dashoffset="-109.96"/>
+        <circle r="70" stroke="#1E9AA8" stroke-dasharray="100.48 439.82" stroke-dashoffset="-176.31"/>
+        <circle r="70" stroke="#8FD1DA" stroke-dasharray="73.94 439.82" stroke-dashoffset="-276.79"/>
+        <circle r="70" stroke="#3E9E5C" stroke-dasharray="37.92 439.82" stroke-dashoffset="-350.73"/>
+        <circle r="70" stroke="#9FD3AE" stroke-dasharray="30.33 439.82" stroke-dashoffset="-388.65"/>
+        <circle r="70" stroke="#C9B89A" stroke-dasharray="20.86 439.82" stroke-dashoffset="-418.98"/>
+      </g>
+      <text x="150" y="146" font-size="13" fill="#7A6F63" text-anchor="middle">全配約</text><text x="150" y="172" font-size="22" font-weight="900" fill="#2A2622" text-anchor="middle" font-family="Nunito, sans-serif">€232</text>
+      <g font-size="12.5" fill="#2A2622">
+        <rect x="270" y="40" width="12" height="12" rx="3" fill="#F2A900"/><text x="290" y="51">小電腦 Pi 4 · €58</text>
+        <rect x="270" y="66" width="12" height="12" rx="3" fill="#FFC94D"/><text x="290" y="77">無線電卡＋轉接板 · €35</text>
+        <rect x="270" y="92" width="12" height="12" rx="3" fill="#1E9AA8"/><text x="290" y="103">天線 ×2 ＋接線 · €53</text>
+        <rect x="270" y="118" width="12" height="12" rx="3" fill="#8FD1DA"/><text x="290" y="129">LoRa 節點（全配）· €39</text>
+        <rect x="270" y="144" width="12" height="12" rx="3" fill="#3E9E5C"/><text x="290" y="155">電池＋保護＋降壓 · €20</text>
+        <rect x="270" y="170" width="12" height="12" rx="3" fill="#9FD3AE"/><text x="290" y="181">純銅散熱片 · €16</text>
+        <rect x="270" y="196" width="12" height="12" rx="3" fill="#C9B89A"/><text x="290" y="207">防水網路接頭 · €11</text>
+      </g>
+      <text x="150" y="262" font-size="11.5" fill="#7A6F63" text-anchor="middle">2026-07 歐洲參考價 · 不含 GPS 與外殼列印材料</text>
+    </svg>
+    <figcaption><b>「腦」加「無線電」約 €93，只佔四成；天線比無線電卡貴。</b> 這跟直覺相反，也是為什麼機械與電源那兩張卡不能省。<span class="tag fact">事實</span></figcaption>
+  </figure>
+  <div>
+    <div class="tbl"><table>
+      <thead><tr><th></th><th>Pi 4 2GB</th><th>Pi Zero 2 W</th></tr></thead>
+      <tbody>
+        <tr><td>官方定價</td><td class="num">約 US$45</td><td class="num">US$15</td></tr>
+        <tr><td>專案的評估 <span class="tag fact">事實</span></td><td>可當「帶身分證的節點」：有安全開機的根、能加密、能跑額外服務</td><td><b>只能當便宜、可拋棄的中繼</b>：沒有安全開機的根、記憶體一半、不能跑額外服務</td></tr>
+        <tr><td colspan="3"><b>結論</b>：省下 US$30，換掉一整層安全。「兩種板子是兩種角色，不是同一角色的大小版。」卡 3（身分）在 Zero 2 W 上做不到，便宜版只能當中繼。</td></tr>
+      </tbody></table></div>
+    <div class="tbl"><table>
+      <thead><tr><th>方案</th><th>一台大約</th><th>產地</th></tr></thead>
+      <tbody>
+        <tr><td>對講機 UV-5R</td><td class="num">約 NT$950</td><td>寶鋒，<span class="cn">中國</span></td></tr>
+        <tr><td>Meshtastic Heltec V3</td><td class="num">約 NT$700–1,200</td><td>Heltec，<span class="cn">中國</span></td></tr>
+        <tr><td>本專案 HaLow 全配</td><td class="num">約 NT$8,000 <span class="tag infer">推論</span></td><td>模組與卡 <span class="cn">中國</span>；小電腦英國；晶片澳洲</td></tr>
+      </tbody></table></div>
+    <p style="font-size:14px">供應鏈事實：本專案用的無線電卡 Wio-WM6108，英國零售商 Pi Hut 已標示<b>停產</b>。<span class="tag fact">事實</span> 第 1 週「零件從哪來」的限制真的發生了。</p>
+  </div>
+  </div>
+
+  <h3>賣給誰？民防界長什麼樣</h3>
+  <figure>
+    <svg viewBox="0 0 900 250" role="img" aria-label="民防界三層：底層個人志工自費價格敏感一台一千元是天花板；中層團體如搜救協會、義消、自訓團小預算幾台到幾十台要位置與語音；頂層政府預算大但要採購程序、可能有產地限制與型式認證。本專案目標市場落在團體層">
+      <g font-size="13" text-anchor="middle" fill="#2A2622">
+        <path d="M330 20 L570 20 L620 90 L280 90 Z" fill="#F1EDE6"/><text x="450" y="48" font-weight="800">政府層：消防、全民防衛動員</text><text x="450" y="70" font-size="11.5" fill="#7A6F63">預算大、要採購程序、可能有產地限制與型式認證</text>
+        <path d="M280 96 L620 96 L690 166 L210 166 Z" fill="#FFE6B0" stroke="#F2A900" stroke-width="2.5"/><text x="450" y="124" font-weight="900">團體層：搜救協會、義消、自訓團</text><text x="450" y="146" font-size="11.5" fill="#7A6F63">小預算、幾台到幾十台、要位置＋語音、要好操作</text>
+        <path d="M210 172 L690 172 L760 242 L140 242 Z" fill="#DDF3F5"/><text x="450" y="200" font-weight="800">個人層：志工、受訓民眾</text><text x="450" y="222" font-size="11.5" fill="#7A6F63">自費、價格敏感、一台一千元是天花板 → Meshtastic 兩萬人社群在這裡</text>
+      </g>
+      <g font-size="12" fill="#B8660A" font-weight="800"><text x="705" y="135">← 本專案的目標市場</text><text x="705" y="153" font-size="11" fill="#7A6F63">（推論）</text></g>
+    </svg>
+    <figcaption>黑熊學院自稱培訓逾 10 萬人、民團協會兩年播種 19 個自訓團 <span class="tag fact">事實</span>。一台八千、要 3 到 10 台才成網：個人層買不起、政府層卡產地與認證，落在團體層。<span class="tag infer">推論</span></figcaption>
+  </figure>
+  <div class="note"><b>目標市場</b>的意思：你的規格與價格，是為哪一層人開的。回頭看第 1 週的矩陣：個人層「價格」權重 5、「分得出誰是誰」權重 1，Meshtastic 贏；團體層反過來，HaLow 才有機會。<b>同一張矩陣、換一層市場，答案就翻盤。</b> 成本也不只買價：電池、備品、維修、訓練、燒卡設定的人力都算，專案花大力氣做「燒一張卡就能用」「壞了自己說為什麼」省的就是這部分。</div>
+
+  <h3>分堆：現在不解就死、可以延後</h3>
+  <div class="cols3">
+    <div class="now"><b>現在就要解</b>卡 2 接力：已能用 · 卡 4 電源：軟體先做、晶片在路上 · 卡 7 流程：已建立 · 卡 8 成本：BOM 已列、Zero 2 W 評估中</div>
+    <div class="gate"><b>等一個閘門</b>卡 3 身分：要等自己編系統 · 卡 5 燈：要等硬體決定 · 卡 1 功率：等法規查清</div>
+    <div class="later"><b>可以延後</b>卡 6 美國市場：沒有計畫前不動</div>
+  </div>
+  <p>判斷規則跟第 2 週的「一定要／最好有」是同一件事，只是多了一個問題：<b>它現在做得了嗎？</b> 專案的任務單就是用這三種標籤在分。<span class="tag fact">事實</span></p>
+
+  <div class="hw" id="hw4">
+    <h3>作業檔《W4 我的學門卡與市場判斷》</h3>
+    <ol>
+      <li><b>AI 之前，我先想</b>：不看教材，寫「如果我只能讀一個系，現在會選哪個，為什麼」。</li>
+      <li><b>兩張自己的卡</b>：挑兩張最有感的，不看教材重寫「卡在哪」「怎麼解」，加一欄該放哪一堆與理由。</li>
+      <li><b>批改 AI</b>：請 AI 寫一版同一張卡，你當老師改它：(a) 跟專案文件不符的（寫出對照了哪份）、(b) 沒有證據的斷言、(c) 比你寫得好的地方。三種各至少一項。</li>
+      <li><b>教授三問</b>：請 AI 扮該系教授只問三個問題；記錄問題、你的回答、答不出的寫進「還不懂」。</li>
+      <li><b>市場判斷</b>：第 1 週矩陣換成團體層權重重算；寫一段答案變了沒、哪個準則翻盤、該瞄準哪一層。</li>
+      <li><b>回頭看第 1 點</b>：現在的答案，變或沒變的原因。</li>
+    </ol>
+    <div class="why">為什麼抄不了：批改 AI 要對照專案文件；「哪堆」的判斷是你的；市場層的權重是你的；「讀哪個系」只有你能答。</div>
+  </div>
+  <details><summary>AI 延伸學習（選做）</summary><ul>
+    <li><b>AI 扮採購人員</b>：搜救協會、預算 5 萬、12 個人；它只問問題，問到能決定為止。答不出來的就是你的成本表沒寫清楚的地方。</li>
+    <li><b>AI 當模擬器</b>：無線電卡停產、下一批貴 30%，描述對一個 10 台節點團體的影響；你回答哪張卡受影響、目標市場會不會移動。</li>
+  </ul></details>
+  <div class="think"><b>延伸思考</b><ol><li>八張卡裡哪兩張的交界最危險？（提示：第 3 週三個介面故障各落在哪兩張之間；成本卡改寫了哪張。）</li><li>只能讀一個系你選哪個？然後要找哪些系的人合作？</li><li>一台八千、十台才成網的東西，民防團體會不會買？不會的話，是規格開錯、市場選錯，還是時間未到？</li></ol></div>
+</section>
+
+<!-- ===================== W5-8 placeholder ===================== -->
+<section class="week" id="w5">
+  <div class="eyebrow">第二個月 · 待寫</div>
+  <h2>第 5 到 8 週：用規格檢驗數據、資安與供應鏈、野外不變磚、收成</h2>
+  <p>第一個月的產出（缺口、規格、系統圖、學門卡）在第二個月會被拿來對照真實走測數據、威脅模型、韌性設計與產品化流程，並開始做對應真實任務單的協助任務。</p>
+</section>
+
+<!-- ===================== HW FILE ===================== -->
+<section class="week" id="hwfile">
+  <div class="eyebrow">每週一份 · 最後整理成學習歷程</div>
+  <h2>作業檔：八個欄位</h2>
+  <p>不限制怎麼用 AI，但題目設計成 AI 的答案交不出去。作業沒有時間上限，產出要文件化；四份作業檔最後整理成可上傳的學習歷程。黃色欄位是大學審查會看的東西。</p>
+  <div class="fields">
+    <div><b>1 題目與日期</b>用了哪些 AI</div>
+    <div class="must"><b>2 AI 之前，我先想</b>3 到 5 行第一直覺，之後不能改</div>
+    <div><b>3 產出物</b>圖、表、規格、卡片</div>
+    <div class="must"><b>4 與 AI 的互動紀錄</b>我問什麼 · AI 答什麼 · 採納／修改／不採納 · 理由</div>
+    <div class="must"><b>5 我不同意 AI 的地方</b>至少一條，寫怎麼發現的</div>
+    <div class="must"><b>6 這週的發現</b>最有趣、最無聊、想再挖、最有感的學門</div>
+    <div><b>7 還不懂的問題</b>累積四週就是讀書清單</div>
+    <div><b>8 給大學審查的一句話</b>這週學會的一種能力</div>
+  </div>
+  <div class="note teal">抄不了的五個機關：<b>要有「AI 之前」</b>、<b>要跟 AI 比對</b>、<b>要不同意 AI 一次</b>、<b>要有個人條件</b>、<b>要站隊</b>。上傳前記得拿掉節點名稱、IP、密碼、家裡位置。</div>
+</section>
+
+<!-- ===================== MAJORS ===================== -->
+<section class="week" id="majors">
+  <div class="eyebrow">選系參考的骨架 · 第 8 週會有完整對照表</div>
+  <h2>這個計畫牽涉的學門</h2>
+  <div class="majors">
+    <div><b>電機／通訊工程</b><br>900 MHz 無線電、天線、訊噪比；電源、電池、欠壓</div>
+    <div><b>資訊工程</b><br>作業系統驅動、網路接力與路由、嵌入式系統、自動測試</div>
+    <div><b>資訊安全</b><br>每台一張身分證、威脅分層、干擾、供應鏈、安全開機</div>
+    <div><b>機械／工業設計</b><br>外殼、3D 列印、散熱、防水、燈看不看得到</div>
+    <div><b>數學／統計</b><br>空中時間模型、走測數據、丟包率</div>
+    <div><b>法律／公共政策</b><br>頻譜法規（NCC、FCC）、NDAA 供應鏈禁令</div>
+    <div><b>地理／災防</b><br>站點選址、視線、高點；災害應變流程</div>
+    <div><b>管理／經濟</b><br>成本與目標市場、路線圖、任務單流程</div>
+  </div>
+</section>
+
+<footer>
+  <p>資料來源與事實標示的依據：本專案文件（走測紀錄、韌性設計、產品化、外殼 BOM、任務樹 #75）；OpenMANET 官方文件；802.11ah 學術綜述；中央廣播電臺、報導者、ETtoday、自由評論網關於台灣民防與 Meshtastic 社群的報導；Meshtastic 官方加密限制說明；Raspberry Pi 官方定價；Pi Hut、PChome、露天商品頁。完整連結在 Markdown 版每週末尾。</p>
+  <p>標示說明：<span class="tag fact">事實</span> repo 裡量到或文件寫到、或有報導來源；<span class="tag infer">推論</span> 合理推估、待驗證；<span class="tag check">待查證</span> 只有二手資料。零件與品牌的中國產地以紅字標示。</p>
+</footer>
+</div>
+
+<script>
+(function(){
+  var crits=["不靠基地台","能傳位置","能傳語音","分得出誰是誰","一台的價格","電池撐多久","台灣合法","誰都會用"];
+  var body=document.getElementById('mbody');
+  var KEY='batman8w-matrix';
+  function load(){try{var s=localStorage.getItem(KEY);return s?JSON.parse(s):null}catch(e){return null}}
+  function save(){try{localStorage.setItem(KEY,JSON.stringify(read()))}catch(e){}}
+  function row(name,w,s,custom){
+    var tr=document.createElement('tr');
+    var td=document.createElement('td');
+    if(custom){var i=document.createElement('input');i.type='text';i.value=name||'';i.placeholder='我的準則';i.style.width='9em';i.style.textAlign='left';i.setAttribute('aria-label','自訂準則名稱');td.appendChild(i);}else{td.textContent=name;}
+    tr.appendChild(td);
+    var tw=document.createElement('td');tw.className='w';tw.appendChild(num(w,'權重 '+name));tr.appendChild(tw);
+    for(var k=0;k<4;k++){var tc=document.createElement('td');tc.appendChild(num(s&&s[k],name+' 第'+(k+1)+'欄分數'));tr.appendChild(tc);}
+    return tr;
+  }
+  function num(v,label){var i=document.createElement('input');i.type='number';i.min=1;i.max=5;i.inputMode='numeric';i.value=(v==null||v==='')?'':v;i.setAttribute('aria-label',label);return i;}
+  function read(){var rows=[];body.querySelectorAll('tr').forEach(function(tr){var ins=tr.querySelectorAll('input');var custom=ins.length===6;var name=custom?ins[0].value:tr.firstChild.textContent;var off=custom?1:0;rows.push({name:name,custom:custom,w:ins[off].value,s:[ins[off+1].value,ins[off+2].value,ins[off+3].value,ins[off+4].value]})});return rows;}
+  function calc(){var rows=read();var tot=[0,0,0,0];rows.forEach(function(r){var w=+r.w||0;r.s.forEach(function(v,k){tot[k]+=w*(+v||0)})});var max=Math.max.apply(null,tot);for(var k=0;k<4;k++){var c=document.getElementById('t'+k);c.textContent=tot[k];c.classList.toggle('lead',max>0&&tot[k]===max)}save();}
+  function build(data){body.innerHTML='';(data||crits.map(function(c){return{name:c,custom:false}})).forEach(function(r){body.appendChild(row(r.name,r.w,r.s,r.custom))});calc();}
+  build(load());
+  body.addEventListener('input',calc);
+  document.getElementById('addrow').addEventListener('click',function(){body.appendChild(row('',null,null,true));calc();});
+  document.getElementById('reset').addEventListener('click',function(){try{localStorage.removeItem(KEY)}catch(e){}build(null);});
+})();
+</script>

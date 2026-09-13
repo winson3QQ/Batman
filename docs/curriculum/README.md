@@ -144,5 +144,6 @@ mindmap
 | `week1.md` … `week8.md` | 每週教材（圖 + 白話 + 題目） |
 | `notes-template.md` | 每週作業檔模板（含 AI 互動紀錄）+ 學習歷程整理格式 |
 | `month2-tasks.md` | 第二個月協助任務卡（對應真實 issue） |
+| `index.html` | 網頁版（圖為主、字為輔，明亮溫暖）；瀏覽器直接開，或發布成可分享的頁面 |
 
 > 圖用 Mermaid 畫，GitHub 網頁直接看得到；本機看不到圖的話用 VS Code 裝 Mermaid 外掛，或開網頁版說明檔。
