@@ -28,7 +28,10 @@ RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/bin/vcmailbox /usr/bin/hexdump'
 platform_check_image() {
 	[ "$#" -gt 1 ] && return 1
 	local list=/tmp/ab-check.$$
-	get_image "$@" | tar -tzf - >"$list" 2>/dev/null || { echo "not a batman A/B image (not a gzip tar)"; rm -f "$list"; return 1; }
+	# NB: tar is NOT `-z` here. get_image already transparently decompresses a gzip source (it sniffs
+	# the 1f8b magic and pipes through `busybox zcat`), so it hands us a PLAIN tar stream; `tar -tzf`
+	# would then try to gunzip an already-gunzipped stream and fail with "not a gzip tar". (#89 bench)
+	get_image "$@" | tar -tf - >"$list" 2>/dev/null || { echo "not a batman A/B image (not a gzip tar)"; rm -f "$list"; return 1; }
 	grep -qx 'root.squashfs' "$list" || { echo "A/B image missing root.squashfs"; rm -f "$list"; return 1; }
 	grep -qx 'metadata' "$list"      || { echo "A/B image missing metadata"; rm -f "$list"; return 1; }
 	rm -f "$list"
@@ -38,7 +41,7 @@ platform_check_image() {
 platform_do_upgrade() {
 	local dir=/tmp/ab-payload
 	rm -rf "$dir"; mkdir -p "$dir"
-	get_image "$@" | tar -xzf - -C "$dir" || { echo "A/B image unpack failed"; return 1; }
+	get_image "$@" | tar -xf - -C "$dir" || { echo "A/B image unpack failed"; return 1; }  # -x not -xz: get_image already un-gzips (see platform_check_image)
 	[ -f "$dir/root.squashfs" ] || { echo "no root.squashfs in image"; return 1; }
 
 	# board sanity: refuse a grossly-wrong image (best-effort — warn, don't false-refuse on a string
