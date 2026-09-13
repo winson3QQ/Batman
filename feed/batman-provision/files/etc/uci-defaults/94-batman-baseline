@@ -18,23 +18,20 @@
 # Not run with --apply: config is committed here, but interfaces are not restarted (the reboot
 # that follows uci_apply_defaults, plus the normal boot's own network bring-up, applies it).
 #
-# 2026-09-13 root-cause CORRECTION (an earlier note here blamed a hang in this hook's logger
-# call — that was WRONG, and disproven by console evidence). A fresh slot-B boot (Build #2) was
-# unreachable, first mis-read as a "hang". HDMI console shows the opposite: batpower, joinwatch,
-# flightrec and halow-status all start (they run AFTER boot()/uci_apply_defaults), so boot()
-# COMPLETED — the loop did not hang, and meshpoint did not block it. The real trigger:
-#   - the morse/HaLow SPI cold-start intermittently fails on a fresh cold boot (#132). When it
-#     does, `wifi config` produces no morse wifi-device, so meshpoint exits early ("no morse
-#     radio", line ~42) and this baseline correctly no-ops — it is NOT the culprit.
-#   - joinwatch's own diag proves it: `radio=down type=none ch= cc= mesh= key=NONE` (empty
-#     ch/cc/mesh = no morse radio in /etc/config/wireless), plus "SPI transfer timed out" and
-#     "HaLow not configured" on the console.
-#   - the node then boots fully but is UNREACHABLE over eth0 link-local with no auto-recovery
-#     (mgmt reachability rides the mesh bridge; joinwatch will not auto-reboot when KEY=NONE).
-#     Reachability mechanism + the co-occurring p5/p6 mount transient are tracked separately.
-# The `timeout -k 5 15` wrapper below is kept anyway as generic defence-in-depth (a uci-default
-# that ever blocks would hang the whole sequential `( . ./$file )` loop), but it is NOT the fix
-# for the observed failure, which was never a hang.
+# 2026-09-13 root-cause CONFIRMED (two earlier notes here were wrong: first "this hook's logger
+# hangs the boot", then "morse SPI cold-start #132" — neither was the root). Bench work traced the
+# Build #2 slot-B failure to a corrupt f2fs OVERLAY: the slot's rootfs_data (loop0) had a stale/
+# damaged f2fs superblock, so mount_root fell back to a tmpfs overlay ("F2FS-fs (loop0): Failed to
+# read root inode", kernel ~8.3s) and the whole boot ran degraded. Everything downstream failed
+# because of that: p5/p6 would not mount, config was not restored, eth0/mgmt was unreachable, and
+# even morse/`wifi config` misbehaved (so the radio looked absent and this baseline no-op'd). Proof:
+# after zeroing the stale overlay region (just above the squashfs, at round_up(squashfs,64KiB)) the
+# SAME image booted clean — overlay mounts, config restored (laneA=restored), eth0 up, reachable,
+# wlh0 came up as a mesh point. The overlay was corrupt because the slot had been written by dd
+# without clearing the old overlay's superblock — a card-prep / #89 OTA-apply gap, NOT a code bug.
+# It was never a hang: batpower/joinwatch/flightrec/halow-status all start (they run after boot()).
+# The `timeout -k 5 15` wrapper below is kept only as generic defence-in-depth (a uci-default that
+# ever blocks would stall the sequential `( . ./$file )` loop); it is not the fix for anything seen.
 if [ -x /usr/bin/meshpoint-1.8.0 ]; then
 	if ! timeout -k 5 15 /usr/bin/meshpoint-1.8.0; then
 		echo "94-batman-baseline: meshpoint-1.8.0 timed out or failed — baseline skipped this boot" > /dev/kmsg 2>/dev/null

@@ -73,27 +73,21 @@ magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)
 mkdir -p "$MNT"
 # noload: best-effort read even if the ext4 journal needs replay (ro can't replay) — V3-8
 #
-# 2026-09-13 hardware finding + bench root-cause work: this mount FAILED on two fresh slot-B
-# boots (Build #2, ~24s into boot), yet the same command succeeds from an already-booted shell
-# and e2fsck finds p5 undamaged. Evidence gathered on the bench narrows it to a transient in
-# the fresh-slot first boot, and RULES OUT the earlier guesses:
-#   - device present: `mmcblk0: p1..p6` enumerates at ~2.4s; this hook runs at ~24s, so the
-#     partition node exists long before we touch it (kills "not enumerated yet").
-#   - no auto-mount contention: /etc/config/fstab is empty and no block-mount auto_mount runs,
-#     so nothing else claims p5 (kills the fstab "busy" theory).
-#   - fs intact: ext4 magic present; mounts cleanly (with ro orphan-cleanup) later the SAME boot.
-# So the residual is a short early-boot mmc/mount transient that clears within seconds. The
-# evidence-indicated fix (NOT a blind loop — the scary causes are excluded above) is a short
-# bounded settle-retry. If it STILL fails after that, keep the diagnostic that tells the last
-# sub-cases apart (real errno, and whether anything holds the device) instead of silently
-# falling back — so a genuinely-new failure mode is captured on the next occurrence.
-merr=""; mounted_p5=0
-for _try in 1 2 3 4 5; do
-	merr=$(mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>&1) && { mounted_p5=1; break; }
-	sleep 2
-done
-if [ "$mounted_p5" != 1 ]; then
-	log "p5 mount failed after 5 retries — image defaults | dev_exists=$([ -b "$DEV" ] && echo yes || echo no) | mount_err=$merr | existing_mounts=$(mount | grep -F "$DEV" | tr '\n' ';')"
+# 2026-09-13 ROOT CAUSE (confirmed on the bench): earlier notes here blamed a fresh-slot "mmc
+# mount transient" and this hook briefly grew a settle-retry — BOTH were wrong. The real cause of
+# the Build #2 slot-B "p5 mount failed" was that the WHOLE boot was degraded: the slot's f2fs
+# overlay (rootfs_data on loop0) was corrupt, so mount_root fell back to a tmpfs overlay
+# ("F2FS-fs (loop0): Failed to read root inode" at kernel ~8.3s), and p5/p6 mounts, config
+# restore and eth0 all failed downstream of that. The overlay was corrupt because the slot was
+# written by dd without clearing the OLD overlay's f2fs superblock (which sits just above the
+# squashfs, at round_up(squashfs_size,64KiB)) — a card-prep / OTA-apply gap, not a code bug here
+# and not a mount race. Proof: after zeroing that region, the SAME image booted clean on the
+# fresh slot — overlay mounts, p5/p6 mount first try, laneA=restored. So this is a plain single
+# mount again; the diagnostic (real errno + whether anything holds the device) is retained so a
+# genuinely-new failure is still captured, but there is no retry — a corrupt overlay is not
+# something a retry can fix, and a healthy slot mounts on the first try.
+if ! merr=$(mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>&1); then
+	log "p5 mount failed — image defaults | dev_exists=$([ -b "$DEV" ] && echo yes || echo no) | mount_err=$merr | existing_mounts=$(mount | grep -F "$DEV" | tr '\n' ';')"
 	exit 0
 fi
 [ -f "$MNT/.seeded" ] || { log "p5 not seeded — image defaults"; umount "$MNT" 2>/dev/null; exit 0; }

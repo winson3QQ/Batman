@@ -56,12 +56,13 @@ define Build/Compile
 endef
 
 define Package/batman-provision/install
-	$(INSTALL_DIR) $(1)/etc/uci-defaults $(1)/etc/init.d $(1)/usr/bin $(1)/www/cgi-bin
+	$(INSTALL_DIR) $(1)/etc/uci-defaults $(1)/etc/init.d $(1)/usr/bin $(1)/usr/sbin $(1)/usr/lib/batman $(1)/www/cgi-bin
 	# first-boot hooks (0755)
 	$(INSTALL_BIN) ./files/etc/uci-defaults/94-batman-baseline        $(1)/etc/uci-defaults/94-batman-baseline
 	$(INSTALL_BIN) ./files/etc/uci-defaults/95-batman-storage        $(1)/etc/uci-defaults/95-batman-storage
 	$(INSTALL_BIN) ./files/etc/uci-defaults/96-batman-config-migrate $(1)/etc/uci-defaults/96-batman-config-migrate
 	$(INSTALL_BIN) ./files/etc/uci-defaults/97-batman-landing        $(1)/etc/uci-defaults/97-batman-landing
+	$(INSTALL_BIN) ./files/etc/uci-defaults/98-batman-sysupgrade      $(1)/etc/uci-defaults/98-batman-sysupgrade
 	$(INSTALL_BIN) ./files/etc/uci-defaults/99-halow-identity        $(1)/etc/uci-defaults/99-halow-identity
 	# services
 	$(INSTALL_BIN) ./files/etc/init.d/halow-keyguard $(1)/etc/init.d/halow-keyguard
@@ -78,6 +79,12 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/usr/bin/flightrec          $(1)/usr/bin/flightrec
 	$(INSTALL_BIN) ./files/usr/bin/meshled            $(1)/usr/bin/meshled
 	$(INSTALL_BIN) ./files/usr/bin/meshpoint-1.8.0    $(1)/usr/bin/meshpoint-1.8.0
+	# A/B slot operator (#89): the one audited place for slot apply/commit/rollback, shared with
+	# scripts/ab-selftest.sh and /lib/upgrade/platform.sh. See docs/design/ab-sysupgrade-platform.md.
+	$(INSTALL_BIN) ./files/usr/sbin/batman-slot       $(1)/usr/sbin/batman-slot
+	# A/B platform.sh override (installed over /lib/upgrade/platform.sh by 98-batman-sysupgrade,
+	# first boot; the feed cannot ship /lib/upgrade/platform.sh directly — base file clash).
+	$(INSTALL_BIN) ./files/usr/lib/batman/platform-ab.sh $(1)/usr/lib/batman/platform-ab.sh
 	# web
 	$(INSTALL_BIN) ./files/www/cgi-bin/status $(1)/www/cgi-bin/status
 	$(INSTALL_BIN) ./files/www/cgi-bin/bundle $(1)/www/cgi-bin/bundle

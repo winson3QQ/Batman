@@ -132,13 +132,12 @@ boot(){
 	[ -b "$PART" ] || return 0
 	[ "$LUKS" = 1 ] && { cryptsetup status "$MAPPER" >/dev/null 2>&1 || cryptsetup open --key-file "$KEYFILE" "$PART" "$MAPPER" 2>/dev/null; }
 	mkdir -p "$MOUNT"
-	# p6 (data) mount hits the same fresh-slot early-boot transient as p5 (see
-	# 96-batman-config-migrate): device present at ~2.4s, fs intact, clears within seconds.
-	# Bounded settle-retry, then capture the real error to kmsg (logd is not up at S11) if it sticks.
+	# p6 (data) mount: a single try, with the real error captured to kmsg (logd is not up at S11)
+	# on failure. An earlier retry loop here was based on a wrong "mount transient" diagnosis; the
+	# real Build #2 slot-B failure was a corrupt f2fs overlay degrading the whole boot (see
+	# 96-batman-config-migrate) — a card-prep gap a retry cannot fix. A healthy slot mounts p6 first try.
 	if ! mount | grep -q " $MOUNT "; then
-		merr=""; ok=0
-		for _t in 1 2 3 4 5; do merr=$(mount "$DEV" "$MOUNT" 2>&1) && { ok=1; break; }; sleep 2; done
-		[ "$ok" = 1 ] || { note "mount $DEV on $MOUNT FAILED after 5 retries: $merr"; return 0; }
+		merr=$(mount "$DEV" "$MOUNT" 2>&1) || { note "mount $DEV on $MOUNT FAILED: $merr"; return 0; }
 	fi
 	mkdir -p "$CRASH" "$LOG"
 	note "mounted $DEV on $MOUNT"
