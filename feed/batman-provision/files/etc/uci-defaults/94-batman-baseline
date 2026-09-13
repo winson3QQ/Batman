@@ -18,23 +18,23 @@
 # Not run with --apply: config is committed here, but interfaces are not restarted (the reboot
 # that follows uci_apply_defaults, plus the normal boot's own network bring-up, applies it).
 #
-# 2026-09-13 hardware finding: a trial (uncommitted tryboot) boot of a fresh slot B running this
-# hook HUNG — no kernel panic, nothing in pstore/ramoops (so not a kernel-level crash), and no
-# automatic recovery (rootwait=20 panic=10 only guards early root-device detection, not a
-# userspace hang after root is already mounted — a hung trial boot needs a MANUAL power cycle;
-# there is no automatic fallback for this case, unlike a committed-slot kernel failure which is
-# also unrecovered-until-#89, or a firmware-level boot failure which #133 proved falls back
-# automatically). Root cause not pinned down (no crash log to read), but the leading suspect is
-# meshpoint-1.8.0.sh's unconditional `lg "committed: ..."` call (line ~159, runs even without
-# --apply) — `logger` writes to the syslog socket, which may not be up yet this early in boot()
-# (config_generate / wifi config / uci_apply_defaults all run before syslog in the S-numbering).
-# Defensive fix regardless of root cause: ANY uci-default that can block hangs the ENTIRE
-# uci_apply_defaults loop (and thus all of boot()) forever, since it's a plain sequential
-# `( . "./$file" )` with no per-script timeout. So every first-boot hook that calls into
-# less-trivial logic should be timeout-wrapped — this one now is. `timeout -k 5 15` gives 15s to
-# run, then SIGTERM, then SIGKILL 5s later if that didn't work; failure is logged to kmsg (not
-# logger, to avoid the same suspected hang class) and the hook self-deletes either way so a
-# genuinely stuck baseline never blocks the slot from booting again on retry.
+# 2026-09-13 root-cause CORRECTION (an earlier note here blamed a hang in this hook's logger
+# call — that was WRONG, and disproven by console evidence). A fresh slot-B boot (Build #2) was
+# unreachable, first mis-read as a "hang". HDMI console shows the opposite: batpower, joinwatch,
+# flightrec and halow-status all start (they run AFTER boot()/uci_apply_defaults), so boot()
+# COMPLETED — the loop did not hang, and meshpoint did not block it. The real trigger:
+#   - the morse/HaLow SPI cold-start intermittently fails on a fresh cold boot (#132). When it
+#     does, `wifi config` produces no morse wifi-device, so meshpoint exits early ("no morse
+#     radio", line ~42) and this baseline correctly no-ops — it is NOT the culprit.
+#   - joinwatch's own diag proves it: `radio=down type=none ch= cc= mesh= key=NONE` (empty
+#     ch/cc/mesh = no morse radio in /etc/config/wireless), plus "SPI transfer timed out" and
+#     "HaLow not configured" on the console.
+#   - the node then boots fully but is UNREACHABLE over eth0 link-local with no auto-recovery
+#     (mgmt reachability rides the mesh bridge; joinwatch will not auto-reboot when KEY=NONE).
+#     Reachability mechanism + the co-occurring p5/p6 mount transient are tracked separately.
+# The `timeout -k 5 15` wrapper below is kept anyway as generic defence-in-depth (a uci-default
+# that ever blocks would hang the whole sequential `( . ./$file )` loop), but it is NOT the fix
+# for the observed failure, which was never a hang.
 if [ -x /usr/bin/meshpoint-1.8.0 ]; then
 	if ! timeout -k 5 15 /usr/bin/meshpoint-1.8.0; then
 		echo "94-batman-baseline: meshpoint-1.8.0 timed out or failed — baseline skipped this boot" > /dev/kmsg 2>/dev/null
