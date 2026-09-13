@@ -4,18 +4,20 @@
 #
 # Selected into an image with a diffconfig entry (CONFIG_PACKAGE_batman-provision=y) on
 # boards/ekh-bcm2711 and boards/ekh-bcm2710. Lands in the read-only squashfs /rom, so the
-# first-boot hooks (95/96/99) re-run once per fresh overlay — i.e. once per A/B slot flash,
-# which is exactly what config-survival (#88/#89) needs and the deploy-time model cannot give.
+# first-boot hooks (94/95/96/97/99) re-run once per fresh overlay — i.e. once per A/B slot
+# flash, which is exactly what config-survival (#88/#89) needs and the deploy-time model
+# cannot give.
 #
-# OPEN (3b, needs the OpenMANET firmware source + a build to settle): the mesh BASELINE
-# (deploy/provisioning/meshpoint-1.8.0.sh, shipped here as /usr/bin/meshpoint-1.8.0) is NOT yet
-# wired as a baked default. Two candidate mechanisms, decide against the built image:
-#   (a) a uci-default (numbered 94, BEFORE 96 so 96's restored per-node delta wins) that runs
-#       meshpoint-1.8.0 without --apply; depends on the `morse` wifi-device already existing in
-#       /etc/config/wireless at S10 uci_apply_defaults time (hardware-detected, unverified timing);
-#   (b) shipping the post-wizard /etc/config/{network,wireless,mesh11sd,firewall,dhcp} as static
-#       files in /rom (idiomatic, but may collide with OpenMANET's board wireless generation).
-# Until 3b lands, an image built from this package boots with stock networking.
+# 3b RESOLVED (2026-09-13, verified on real hardware — Build #1 booted on a fresh A/B slot on
+# manet01): the mesh BASELINE (deploy/provisioning/meshpoint-1.8.0.sh, shipped here as
+# /usr/bin/meshpoint-1.8.0) IS baked as 94-batman-baseline, a uci-default numbered BEFORE 96 so
+# 96's restored per-node delta overrides this baseline's placeholder values on a slot switch.
+# The earlier open question ("does uci_apply_defaults run before wifi-device detection?") was
+# answered by reading /etc/init.d/boot's actual source: `/sbin/wifi config` (hardware-detects
+# the morse wifi-device into /etc/config/wireless) runs BEFORE `uci_apply_defaults` in the same
+# boot() call — so wireless.$RADIO already exists when 94-batman-baseline runs. Confirmed by
+# booting Build #1 (this package, pre-94) on manet01's A/B card slot B and reading the real
+# init script; 94 itself is untested end-to-end pending Build #2.
 
 include $(TOPDIR)/rules.mk
 
@@ -56,6 +58,7 @@ endef
 define Package/batman-provision/install
 	$(INSTALL_DIR) $(1)/etc/uci-defaults $(1)/etc/init.d $(1)/usr/bin $(1)/www/cgi-bin
 	# first-boot hooks (0755)
+	$(INSTALL_BIN) ./files/etc/uci-defaults/94-batman-baseline        $(1)/etc/uci-defaults/94-batman-baseline
 	$(INSTALL_BIN) ./files/etc/uci-defaults/95-batman-storage        $(1)/etc/uci-defaults/95-batman-storage
 	$(INSTALL_BIN) ./files/etc/uci-defaults/96-batman-config-migrate $(1)/etc/uci-defaults/96-batman-config-migrate
 	$(INSTALL_BIN) ./files/etc/uci-defaults/97-batman-landing        $(1)/etc/uci-defaults/97-batman-landing

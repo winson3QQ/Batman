@@ -1,0 +1,21 @@
+#!/bin/sh
+# 94-batman-baseline — bake the mesh baseline (802.11s Mesh Point, ahwlan bridge, mesh11sd,
+# batman-adv) as a first-boot default, instead of a manual post-wizard step (#75/#88/#89 v2.0).
+#
+# Numbered BEFORE 96-batman-config-migrate (95 < 96 < 97 < 99) so the per-node delta 96 restores
+# from p5 (mesh_id, key, channel, country, reserved IP) OVERRIDES this baseline's placeholder
+# values on a slot switch — see docs/design/p5-config-partition.md Lane B. On a genuinely fresh
+# card (no seeded p5), this baseline is what the node boots with (placeholder key; halow-keyguard
+# #103 keeps the radio DOWN until halow-setkey sets a real one).
+#
+# Timing (verified against /etc/init.d/boot on real hardware, 2026-09-13): boot() runs
+# config_generate, then `/sbin/wifi config` (hardware-detects the morse wifi-device into
+# /etc/config/wireless), THEN uci_apply_defaults (this script). So wireless.$RADIO (type=morse)
+# is already populated by the time we run — the earlier assumption that a uci-default runs too
+# early to see the detected radio was wrong; this was confirmed by reading the actual init script
+# and by baking this hook into a real image (Build #1) and booting it on a fresh A/B slot.
+#
+# Not run with --apply: config is committed here, but interfaces are not restarted (the reboot
+# that follows uci_apply_defaults, plus the normal boot's own network bring-up, applies it).
+[ -x /usr/bin/meshpoint-1.8.0 ] && /usr/bin/meshpoint-1.8.0
+exit 0
