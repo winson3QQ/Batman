@@ -1,0 +1,67 @@
+#!/bin/sh
+# halow-setkey — the one supported door for setting / rotating the node's radio keys (#103/#13).
+#
+#   halow-setkey --mesh <sae-key> [--ap <psk>] [--mesh-id <id>]
+#   halow-setkey --status
+#
+# Sets the HaLow mesh SAE key (and optionally the onboarding-AP PSK / mesh id), releases whatever
+# halow-keyguard disabled because a key was still the public placeholder, commits and reloads wifi.
+# Keys are a management-plane asset: normally baked per batch at image time; run this only to
+# bootstrap a card flashed from the public image, or to rotate on demand (#13 rotation/revocation
+# will drive it fleet-wide over signed config, #14). Needs >= 8 characters (SAE/WPA2 minimum).
+MARK=/etc/halow-keyguard.blocked
+PLACEHOLDER=CHANGE-ME-NOW
+MESH=""; AP=""; MESHID=""; STATUS=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--mesh) MESH=$2; shift 2;; --ap) AP=$2; shift 2;; --mesh-id) MESHID=$2; shift 2;;
+		--status) STATUS=1; shift;; *) echo "usage: halow-setkey --mesh <key> [--ap <key>] [--mesh-id <id>] | --status"; exit 2;;
+	esac
+done
+
+mesh_ifaces(){ uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='mesh'$/\1/p"; }
+ap_ifaces(){ uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='ap'$/\1/p"; }
+
+if [ "$STATUS" = 1 ]; then
+	for s in $(mesh_ifaces); do k=$(uci -q get "wireless.$s.key"); r=$(uci -q get "wireless.$s.device")
+		printf 'mesh %-16s id=%s key=%s radio=%s disabled=%s\n' "$s" "$(uci -q get "wireless.$s.mesh_id")" \
+			"$([ "$k" = "$PLACEHOLDER" ] && echo PLACEHOLDER || echo set)" "$r" "$(uci -q get "wireless.$r.disabled" || echo 0)"; done
+	for s in $(ap_ifaces); do k=$(uci -q get "wireless.$s.key")
+		printf 'ap   %-16s ssid=%s key=%s disabled=%s\n' "$s" "$(uci -q get "wireless.$s.ssid")" \
+			"$([ "$k" = "$PLACEHOLDER" ] && echo PLACEHOLDER || echo set)" "$(uci -q get "wireless.$s.disabled" || echo 0)"; done
+	[ -f "$MARK" ] && echo "keyguard blocked:$(cat "$MARK")" || echo "keyguard: nothing blocked"
+	exit 0
+fi
+
+[ -n "$MESH" ] || [ -n "$AP" ] || { echo "nothing to set (use --mesh/--ap or --status)"; exit 2; }
+for k in "$MESH" "$AP"; do [ -z "$k" ] || [ ${#k} -ge 8 ] || { echo "key must be >= 8 characters"; exit 2; }; done
+for k in "$MESH" "$AP"; do [ "$k" != "$PLACEHOLDER" ] || { echo "refusing the placeholder as a key"; exit 2; }; done
+
+changed=""
+for s in $(mesh_ifaces); do
+	[ -n "$MESH" ] && { uci -q set "wireless.$s.key=$MESH"; uci -q set "wireless.$s.encryption=sae"; changed="$changed $s"; }
+	[ -n "$MESHID" ] && uci -q set "wireless.$s.mesh_id=$MESHID"
+done
+for s in $(ap_ifaces); do
+	[ -n "$AP" ] && { uci -q set "wireless.$s.key=$AP"; changed="$changed $s"; }
+done
+# release what the guard disabled, but only where the key is no longer the placeholder
+if [ -f "$MARK" ]; then
+	rest=""; read -r prev < "$MARK"
+	for s in $prev; do
+		# entry is either a radio (blocked for a placeholder mesh key) or an AP iface
+		if uci -q get "wireless.$s.type" >/dev/null; then   # radio
+			ok=1; for m in $(mesh_ifaces); do [ "$(uci -q get "wireless.$m.device")" = "$s" ] && [ "$(uci -q get "wireless.$m.key")" = "$PLACEHOLDER" ] && ok=0; done
+		else
+			ok=1; [ "$(uci -q get "wireless.$s.key")" = "$PLACEHOLDER" ] && ok=0
+		fi
+		if [ "$ok" = 1 ]; then uci -q delete "wireless.$s.disabled"; else rest="$rest $s"; fi
+	done
+	if [ -n "$rest" ]; then echo "$rest" > "$MARK"; else rm -f "$MARK"; fi
+fi
+uci commit wireless
+logger -t halow-setkey "keys updated on:$changed; reloading wifi"
+wifi reload >/dev/null 2>&1 || wifi
+echo "keys updated on:$changed"
+[ -f "$MARK" ] && echo "still blocked (placeholder key remains):$(cat "$MARK")"
+exit 0

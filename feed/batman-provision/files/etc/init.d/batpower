@@ -1,0 +1,29 @@
+#!/bin/sh /etc/rc.common
+# batpower — battery watchdog (graceful shutdown before the BMS trips). See deploy/provisioning/batpower.
+USE_PROCD=1
+START=95
+STOP=05
+
+start_service() {
+	[ -f /etc/config/batpower ] || cat > /etc/config/batpower <<'EOF'
+config batpower 'main'
+	option enabled '1'
+	option source 'mock'          # hwmon | i2c | mock  (mock until the INA226 is fitted)
+	option cells '2'              # 2S pack (V3 power chain)
+	option v_warn_cell_mv '3500'  # per cell
+	option v_crit_cell_mv '3300'  # per cell — above the BMS cutoff on purpose
+	option hyst_mv '100'
+	option interval '10'
+	option confirm '3'            # consecutive readings before a state change
+	option crit_action 'halt'     # halt (production) | reboot (bench)
+	option chip 'ina226'          # ina226 | ina219 (i2c source)
+	option i2c_bus '1'
+	option i2c_addr '0x40'
+EOF
+	procd_open_instance
+	procd_set_param command /usr/bin/batpower run
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}

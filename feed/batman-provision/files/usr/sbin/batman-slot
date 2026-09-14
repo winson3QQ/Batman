@@ -1,0 +1,189 @@
+#!/bin/sh
+# batman-slot — the one audited place for A/B slot operations on the GPT card (#89).
+# Shared by /lib/upgrade/platform.sh (sysupgrade) and scripts/ab-selftest.sh, unit-tested by
+# tests/ab-card-invariants.sh. See docs/design/ab-sysupgrade-platform.md.
+#
+#   batman-slot active                 -> A|B  (slot booted now, from /proc/cmdline)
+#   batman-slot target                 -> A|B  (the inactive slot = upgrade target)
+#   batman-slot fw-part A|B            -> firmware FAT boot index (derived on-node, no sgdisk/blkid)
+#   batman-slot apply <payload-dir>    -> write the INACTIVE slot (overlay-clear + squashfs + boot
+#                                         payload + per-slot cmdline) and arm one-shot tryboot.
+#                                         NEVER touches the running slot or autoboot.txt.
+#   batman-slot commit                 -> make the RUNNING slot the default (atomic autoboot.txt).
+#   batman-slot rollback               -> make the OTHER slot the default (atomic autoboot.txt).
+#
+# Layout (build-gpt-ab-card.sh): bootA=p1 rootA=p2 bootB=p3 rootB=p4 config=p5 data=p6.
+# GUIDs: rootA 3276af79-0000-4000-8000-000000000002, rootB ...004. autoboot.txt lives ONLY on bootA.
+set -u
+DISK=/dev/mmcblk0
+GUID_A=3276af79-0000-4000-8000-000000000002
+GUID_B=3276af79-0000-4000-8000-000000000004
+BOOTMNT=/boot                       # bootA/p1 is mounted here (holds autoboot.txt + ab.good)
+CMDLINE_COMMON="console=serial0 console=ttyUSB0,115200 console=tty1 rootfstype=squashfs,ext4 rootwait=20 panic=10"
+
+die() { echo "batman-slot: $*" >&2; exit 1; }
+
+active_slot() { sed -n 's/.*batman_slot=\([AB]\).*/\1/p' /proc/cmdline; }
+other_slot()  { [ "$1" = A ] && echo B || echo A; }
+
+# per-slot devices/ids
+slot_rootdev() { [ "$1" = A ] && echo ${DISK}p2 || echo ${DISK}p4; }
+slot_bootdev() { [ "$1" = A ] && echo ${DISK}p1 || echo ${DISK}p3; }
+slot_rootguid(){ [ "$1" = A ] && echo "$GUID_A" || echo "$GUID_B"; }
+slot_gptidx()  { [ "$1" = A ] && echo 1 || echo 3; }   # GPT index of that slot's BOOT partition
+
+# fs type of a partition by magic only (busybox: no blkid/od; matches 95/96's hexdump approach)
+part_fstype() {
+	d=$1
+	[ "$(hexdump -n4 -e '4/1 "%c"' "$d" 2>/dev/null)" = hsqs ] && { echo squashfs; return; }
+	[ "$(hexdump -s 1080 -n2 -e '2/1 "%02x"' "$d" 2>/dev/null)" = 53ef ] && { echo ext4; return; }
+	[ "$(hexdump -s 510 -n2 -e '2/1 "%02x"' "$d" 2>/dev/null)" = 55aa ] && { echo fat; return; }
+	echo unknown
+}
+
+# firmware boot index = count of FAT partitions (in GPT order) up to and including the target GPT
+# index. Derived, never hard-coded (build-gpt-ab-card.sh:128-144 rationale). Cross-checked below.
+fw_part() {
+	want=$(slot_gptidx "$1"); n=0
+	# GPT order = partition-number order; the card has p1..p6 (single digit), so the glob is in order.
+	for d in "${DISK}"p[0-9]; do
+		[ -b "$d" ] || continue
+		idx=${d##*p}
+		[ "$(part_fstype "$d")" = fat ] || continue
+		n=$((n + 1))
+		[ "$idx" = "$want" ] && { echo "$n"; return 0; }
+	done
+	die "fw_part: GPT index $want for slot $1 is not a FAT partition"
+}
+
+# count of FAT partitions on the disk (the card must have exactly two: bootA + bootB).
+count_fats() {
+	n=0
+	for d in "${DISK}"p[0-9]; do
+		[ -b "$d" ] && [ "$(part_fstype "$d")" = fat ] && n=$((n + 1))
+	done
+	echo "$n"
+}
+
+# sanity before any slot op: exactly two FAT boot partitions must be present (else fw_part's count
+# is meaningless — a blank/corrupt boot FAT would silently mis-index, aiming tryboot at the wrong
+# slot), and the firmware's own boot partition must match fw_part(active). The DT property is a
+# big-endian u32; parse 4 bytes as hex. Only a PLAUSIBLE small index (1|2 for a 2-FAT card) that
+# mismatches is fatal — a large/garbage value means a different encoding and just skips the check,
+# never a false refusal.
+assert_fw_sane() {
+	a=$(active_slot); [ -n "$a" ] || die "no batman_slot in /proc/cmdline"
+	nf=$(count_fats); [ "$nf" = 2 ] || die "expected exactly 2 FAT boot partitions, found $nf — refusing (corrupt/blank boot slot?)"
+	dt=/proc/device-tree/chosen/bootloader/partition
+	[ -f "$dt" ] || return 0
+	booted=$(printf '%d' "0x$(hexdump -n4 -e '4/1 "%02x"' "$dt" 2>/dev/null)" 2>/dev/null) || booted=""
+	exp=$(fw_part "$a")
+	case "$booted" in
+		1|2) [ "$booted" = "$exp" ] || die "firmware booted FAT part $booted but fw_part($a)=$exp — stale autoboot/fallback (#133), refusing" ;;
+		*)   : ;;  # empty / garbage / implausible-for-a-2-FAT-card -> encoding mismatch, skip
+	esac
+}
+
+# atomic autoboot.txt write: stage on the same FAT dir, sync, rename, sync. Never edit in place.
+# $1 = [all] fw index, $2 = [tryboot] fw index
+write_autoboot() {
+	all=$1; try=$2
+	[ -w "$BOOTMNT" ] || die "$BOOTMNT not writable (bootA not mounted rw?)"
+	tmp="$BOOTMNT/.autoboot.$$"
+	printf '[all]\ntryboot_a_b=1\nboot_partition=%s\n\n[tryboot]\nboot_partition=%s\n' "$all" "$try" > "$tmp" \
+		|| die "staging autoboot failed"
+	sync
+	mv -f "$tmp" "$BOOTMNT/autoboot.txt" || { rm -f "$tmp"; die "rename autoboot failed"; }
+	sync
+	# refresh the known-good anchor AFTER a good swap (recovery source for a corrupt autoboot.txt)
+	cp -f "$BOOTMNT/autoboot.txt" "$BOOTMNT/ab.good" 2>/dev/null; sync
+}
+
+cmd_apply() {
+	PAYLOAD=$1; [ -d "$PAYLOAD" ] || die "payload dir '$PAYLOAD' not found"
+	SQ="$PAYLOAD/root.squashfs"; [ -f "$SQ" ] || die "no $SQ"
+	[ -d "$PAYLOAD/boot" ] || die "no $PAYLOAD/boot"
+	[ "$(hexdump -n4 -e '4/1 "%c"' "$SQ" 2>/dev/null)" = hsqs ] || die "payload rootfs is not a squashfs"
+
+	assert_fw_sane
+	A=$(active_slot); T=$(other_slot "$A")
+	TROOT=$(slot_rootdev "$T"); TBOOT=$(slot_bootdev "$T"); TGUID=$(slot_rootguid "$T")
+	# hard guard: never write the running slot
+	[ "$TROOT" = "$(slot_rootdev "$A")" ] && die "refusing: target root == active root"
+	grep -q "^$TROOT " /proc/mounts && die "refusing: target root $TROOT is mounted"
+
+	# The payload's root.squashfs is a STANDALONE squashfs file, so its size == bytes_used and a
+	# plain `dd bs=1M` copies it whole and stops at EOF (no count / no count_bytes needed — that is
+	# only required when the source is a dump with an old overlay behind it, build-gpt-ab-card:91-95).
+	SQ_BYTES=$(wc -c < "$SQ" | tr -dc '0-9'); [ "${SQ_BYTES:-0}" -gt 0 ] 2>/dev/null || die "empty squashfs"
+	SQ_MB=$(( (SQ_BYTES + 1048575) / 1048576 )); ZERO_MB=$(( SQ_MB + 64 ))
+	# target root must hold the squashfs + overlay margin (size is in 512B sectors)
+	TSIZE_KB=$(( $(cat "/sys/class/block/${TROOT##*/}/size" 2>/dev/null || echo 0) / 2 ))
+	[ "$TSIZE_KB" -gt "$(( ZERO_MB * 1024 ))" ] 2>/dev/null || die "squashfs+overlay ($ZERO_MB MiB) does not fit target ($TSIZE_KB KiB)"
+
+	echo "batman-slot: apply -> slot $T root=$TROOT boot=$TBOOT (squashfs $SQ_BYTES B, clear $ZERO_MB MiB)"
+	# 1) clear the overlay window (kills any stale f2fs superblock at round_up(squashfs,64KiB)),
+	#    then copy the whole squashfs file over the front of it.
+	dd if=/dev/zero of="$TROOT" bs=1M count="$ZERO_MB" conv=fsync 2>/dev/null || die "overlay clear failed"
+	dd if="$SQ" of="$TROOT" bs=1M conv=fsync 2>/dev/null || die "squashfs write failed"
+	sync
+
+	# 2) boot payload -> target boot FAT. Copy ONLY kernel/dtb/overlays/firmware; NEVER autoboot.txt.
+	# When target=A its boot FAT is p1 = the live /boot mount, so reuse that mount: a second rw vfat
+	# mount is EBUSY and would risk cache-incoherent writes. Only unmount what we mounted ourselves.
+	BM=$(awk -v d="$TBOOT" '$1==d{print $2; exit}' /proc/mounts)
+	if [ -n "$BM" ]; then
+		MOUNTED_HERE=0
+	else
+		BM=/mnt/slotboot.$$; mkdir -p "$BM"
+		mount -t vfat -o rw "$TBOOT" "$BM" || die "mount $TBOOT failed"
+		MOUNTED_HERE=1
+	fi
+	for f in kernel8.img start4.elf start4cd.elf start4x.elf fixup4.dat fixup4cd.dat fixup4x.dat; do
+		[ -f "$PAYLOAD/boot/$f" ] && cp -f "$PAYLOAD/boot/$f" "$BM/$f"
+	done
+	cp -f "$PAYLOAD/boot/"*.dtb "$BM/" 2>/dev/null
+	[ -d "$PAYLOAD/boot/overlays" ] && { mkdir -p "$BM/overlays"; cp -f "$PAYLOAD/boot/overlays/"* "$BM/overlays/" 2>/dev/null; }
+	# per-slot cmdline (proven fallback string; never import the stock single-slot cmdline.txt)
+	printf '%s root=PARTUUID=%s batman_slot=%s\n' "$CMDLINE_COMMON" "$TGUID" "$T" > "$BM/cmdline.txt"
+	sync
+	[ "$MOUNTED_HERE" = 1 ] && { umount "$BM"; rmdir "$BM" 2>/dev/null; }
+
+	# 3) don't pollute boot-reasons with a spurious UNCLEAN on the trial's first boot
+	[ -f /tmp/shutdown.reason ] || echo "sysupgrade-trial (slot $T)" > /tmp/shutdown.reason 2>/dev/null
+	# 4) arm one-shot tryboot. [tryboot] must already aim at the target (=$T); verify it (assert_fw_sane
+	#    only checks [all]) rather than boot the wrong slot. apply must NOT edit autoboot.txt.
+	ab_try=$(awk '/^\[tryboot\]/{s=1;next}/^\[/{s=0}s&&/^boot_partition=/{sub(/.*=/,"");print;exit}' "$BOOTMNT/autoboot.txt" 2>/dev/null)
+	[ "$ab_try" = "$(fw_part "$T")" ] || die "autoboot.txt [tryboot]=$ab_try but target slot $T is fw_part $(fw_part "$T") — refusing to arm a mis-aimed tryboot"
+	sync
+	command -v vcmailbox >/dev/null 2>&1 && vcmailbox 0x00038064 4 4 1 >/dev/null 2>&1 || true
+	echo "batman-slot: slot $T armed as one-shot tryboot; reboot to trial it (autoboot.txt untouched)"
+}
+
+cmd_commit() {
+	assert_fw_sane
+	A=$(active_slot); T=$(other_slot "$A")
+	FA=$(fw_part "$A"); FT=$(fw_part "$T")
+	# make the RUNNING (trial) slot the default; tryboot points back at the other for the next cycle
+	write_autoboot "$FA" "$FT"
+	echo "batman-slot: committed slot $A as default ([all]=$FA, [tryboot]=$FT)"
+}
+
+cmd_rollback() {
+	assert_fw_sane
+	A=$(active_slot); T=$(other_slot "$A")
+	FA=$(fw_part "$A"); FT=$(fw_part "$T")
+	# make the OTHER slot the default (abandon the running slot); operator reboots into it
+	write_autoboot "$FT" "$FA"
+	echo "batman-slot: rolled back — default is now slot $T ([all]=$FT); reboot to enter it"
+}
+
+case "${1:-}" in
+	active)   active_slot ;;
+	target)   a=$(active_slot); if [ -n "$a" ]; then other_slot "$a"; else die "no batman_slot"; fi ;;
+	fw-part)  [ "${2:-}" = A ] || [ "${2:-}" = B ] || die "usage: fw-part A|B"; fw_part "$2" ;;
+	apply)    [ -n "${2:-}" ] || die "usage: apply <payload-dir>"; cmd_apply "$2" ;;
+	commit)   cmd_commit ;;
+	rollback) cmd_rollback ;;
+	*) echo "usage: batman-slot active|target|fw-part A|B|apply <dir>|commit|rollback" >&2; exit 2 ;;
+esac

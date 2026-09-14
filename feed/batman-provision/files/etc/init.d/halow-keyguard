@@ -1,0 +1,49 @@
+#!/bin/sh /etc/rc.common
+# halow-keyguard — first-boot / every-boot guard (#103, the golden-master half of #13).
+#
+# The public golden image ships the placeholder key CHANGE-ME-NOW for the HaLow mesh (SAE) and
+# for the onboarding APs. Anyone who downloads the image knows it, so a card that is flashed and
+# never given a real key must NOT put those radios on the air. This runs before wpad (S19) and
+# network (S20): while a key is still the placeholder it keeps the offending radio/interface
+# disabled (committed, so netifd never starts it), logs loudly and lets meshled show red
+# (radio-disabled). Ethernet is never touched — it is the door: `halow-setkey` sets the real keys,
+# clears what this guard disabled, and reloads wifi. Normal deployments never hit this: the batch
+# key is baked at image time (depersonalise.sh --mesh-key/--ap-key).
+START=18
+STOP=00
+PLACEHOLDER=CHANGE-ME-NOW
+MARK=/etc/halow-keyguard.blocked   # what we disabled, so setkey re-enables exactly that
+
+note(){ logger -t halow-keyguard -p daemon.warn "$*" 2>/dev/null; echo "halow-keyguard: $*" > /dev/kmsg 2>/dev/null; }
+
+start() {
+	blocked=""
+	# HaLow mesh: the morse radio's interfaces in mesh mode
+	for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='mesh'$/\1/p"); do
+		if [ "$(uci -q get "wireless.$s.key")" = "$PLACEHOLDER" ]; then
+			r=$(uci -q get "wireless.$s.device")
+			uci -q set "wireless.$r.disabled=1"; blocked="$blocked $r"
+			note "mesh key on $s is still the public placeholder — radio $r stays DOWN until halow-setkey"
+		fi
+	done
+	# onboarding APs (2.4/5 GHz): a public AP key is a door into the node's LAN
+	for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='ap'$/\1/p"); do
+		if [ "$(uci -q get "wireless.$s.key")" = "$PLACEHOLDER" ]; then
+			uci -q set "wireless.$s.disabled=1"; blocked="$blocked $s"
+			note "AP key on $s is still the public placeholder — AP stays DOWN until halow-setkey"
+		fi
+	done
+	if [ -n "$blocked" ]; then
+		echo "$blocked" > "$MARK"
+		uci commit wireless
+		note "BLOCKED:$blocked — plug Ethernet, run: halow-setkey --mesh <key> [--ap <key>]"
+	elif [ -f "$MARK" ]; then
+		# keys were set by hand (not via halow-setkey): release what we had disabled
+		read -r prev < "$MARK"
+		for s in $prev; do uci -q delete "wireless.$s.disabled"; done
+		rm -f "$MARK"; uci commit wireless
+		note "keys set — released previously blocked radios"
+	fi
+	return 0
+}
+stop() { return 0; }

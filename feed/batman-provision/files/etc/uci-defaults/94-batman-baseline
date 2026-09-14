@@ -1,0 +1,41 @@
+#!/bin/sh
+# 94-batman-baseline — bake the mesh baseline (802.11s Mesh Point, ahwlan bridge, mesh11sd,
+# batman-adv) as a first-boot default, instead of a manual post-wizard step (#75/#88/#89 v2.0).
+#
+# Numbered BEFORE 96-batman-config-migrate (95 < 96 < 97 < 99) so the per-node delta 96 restores
+# from p5 (mesh_id, key, channel, country, reserved IP) OVERRIDES this baseline's placeholder
+# values on a slot switch — see docs/design/p5-config-partition.md Lane B. On a genuinely fresh
+# card (no seeded p5), this baseline is what the node boots with (placeholder key; halow-keyguard
+# #103 keeps the radio DOWN until halow-setkey sets a real one).
+#
+# Timing (verified against /etc/init.d/boot on real hardware, 2026-09-13): boot() runs
+# config_generate, then `/sbin/wifi config` (hardware-detects the morse wifi-device into
+# /etc/config/wireless), THEN uci_apply_defaults (this script). So wireless.$RADIO (type=morse)
+# is already populated by the time we run — the earlier assumption that a uci-default runs too
+# early to see the detected radio was wrong; this was confirmed by reading the actual init script
+# and by baking this hook into a real image (Build #1) and booting it on a fresh A/B slot.
+#
+# Not run with --apply: config is committed here, but interfaces are not restarted (the reboot
+# that follows uci_apply_defaults, plus the normal boot's own network bring-up, applies it).
+#
+# 2026-09-13 root-cause CONFIRMED (two earlier notes here were wrong: first "this hook's logger
+# hangs the boot", then "morse SPI cold-start #132" — neither was the root). Bench work traced the
+# Build #2 slot-B failure to a corrupt f2fs OVERLAY: the slot's rootfs_data (loop0) had a stale/
+# damaged f2fs superblock, so mount_root fell back to a tmpfs overlay ("F2FS-fs (loop0): Failed to
+# read root inode", kernel ~8.3s) and the whole boot ran degraded. Everything downstream failed
+# because of that: p5/p6 would not mount, config was not restored, eth0/mgmt was unreachable, and
+# even morse/`wifi config` misbehaved (so the radio looked absent and this baseline no-op'd). Proof:
+# after zeroing the stale overlay region (just above the squashfs, at round_up(squashfs,64KiB)) the
+# SAME image booted clean — overlay mounts, config restored (laneA=restored), eth0 up, reachable,
+# wlh0 came up as a mesh point. The overlay was corrupt because the slot had been written by dd
+# without clearing the old overlay's superblock — a card-prep / #89 OTA-apply gap, NOT a code bug.
+# It was never a hang: batpower/joinwatch/flightrec/halow-status all start (they run after boot()).
+# A former `timeout -k 5 15` wrapper here was REMOVED (2026-09-14): busybox in the golden image has
+# no `timeout` applet, so the wrapper failed with "timeout: not found" on EVERY boot — meshpoint was
+# never run and the slot came up with no mesh baseline (bench-confirmed on a fresh slot-A Build #4:
+# dmesg "meshpoint-1.8.0 timed out or failed — baseline skipped", ahwlan absent, wlh0 stuck in AP).
+# The overlay-corruption "hang" it was meant to guard was never real, so meshpoint runs directly.
+if [ -x /usr/bin/meshpoint-1.8.0 ]; then
+	/usr/bin/meshpoint-1.8.0 || echo "94-batman-baseline: meshpoint-1.8.0 exited non-zero" > /dev/kmsg 2>/dev/null
+fi
+exit 0

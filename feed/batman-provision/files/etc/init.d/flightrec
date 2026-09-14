@@ -1,0 +1,12 @@
+#!/bin/sh /etc/rc.common
+# flightrec — heartbeat into the kernel log for the ramoops console record (#105/#61).
+USE_PROCD=1
+START=99
+STOP=05
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /usr/bin/flightrec run
+	procd_set_param respawn 3600 5 0
+	procd_close_instance
+}

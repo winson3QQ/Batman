@@ -1,0 +1,53 @@
+#!/bin/sh
+# 99-batman-chanfix — late reassert of the p5-restored HaLow channel (#88/#89).
+#
+# Why this exists (bench #89, fresh Build#5/#6 A/B slot): 96-batman-config-migrate correctly restores
+# the p5 channel (e.g. 40) into uci during uci_apply_defaults (~18s), but the morse radio is brought
+# up LATER (~50s) and, that early, regdomain/channelization is not settled — so morse falls back to
+# its hardware-default channel (42) AND writes 42 back into uci. A `wifi reload` from 96 (too early)
+# does not help: morse re-keys on 42 again. The manual recovery `uci set channel=40; wifi reload`
+# ALWAYS works once the system is fully up (regdomain settled), so the fix is to reassert LATE.
+#
+# This runs on the FRESH slot's first boot only (uci-defaults self-delete). It is sufficient to run
+# once: after it makes ch40 stick in the overlay, every later boot of this slot already has ch40 in
+# uci before wifi comes up, and morse then keys on 40 directly (bench-proven by a plain reboot).
+#
+# It backgrounds a bounded settle-and-reassert so it never blocks boot: wait for wlh0, then repeatedly
+# (a few times, spaced) set the p5 channel + `wifi reload` until uci actually holds it, then exit.
+# The target channel is read from p5 (overrides.uci), NOT from uci — uci may already hold morse's 42.
+
+DEV=/dev/mmcblk0p5
+[ -b "$DEV" ] || exit 0
+
+(
+	MNT=/tmp/p5-chanfix.$$
+	mkdir -p "$MNT"
+	mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>/dev/null || exit 0
+	# match:  set wireless.radio1.channel='40'   (quotes optional)
+	CH=$(sed -n "s/.*wireless\.radio1\.channel=[\"']\{0,1\}\([0-9]\{1,\}\)[\"']\{0,1\}.*/\1/p" "$MNT/overrides.uci" 2>/dev/null | head -1)
+	umount "$MNT" 2>/dev/null; rmdir "$MNT" 2>/dev/null
+	[ -n "$CH" ] || exit 0
+
+	# wait for the morse radio to exist (bounded ~80s)
+	i=0
+	while [ "$i" -lt 40 ] && ! iw dev wlh0 info >/dev/null 2>&1; do sleep 2; i=$((i + 1)); done
+
+	# reassert until it sticks (bounded ~6 tries); no-op fast path when already correct
+	a=0
+	while [ "$a" -lt 6 ]; do
+		sleep 8
+		cur=$(uci -q get wireless.radio1.channel)
+		if [ "$cur" = "$CH" ]; then
+			[ "$a" = 0 ] || logger -t batman-chanfix "radio1 channel is $CH (settled after $a reassert)"
+			exit 0
+		fi
+		uci set wireless.radio1.channel="$CH"
+		uci commit wireless
+		wifi reload
+		logger -t batman-chanfix "reassert radio1 channel $cur -> $CH from p5 (try $a) + wifi reload"
+		a=$((a + 1))
+	done
+	logger -t batman-chanfix "gave up reasserting radio1 channel to $CH after $a tries (still $(uci -q get wireless.radio1.channel))"
+) &
+
+exit 0

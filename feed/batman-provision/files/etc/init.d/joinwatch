@@ -1,0 +1,22 @@
+#!/bin/sh /etc/rc.common
+# joinwatch — join diagnosis + conservative auto-reboot (#127). After network (S20) and wpad.
+USE_PROCD=1
+START=98
+STOP=05
+
+start_service() {
+	[ -f /etc/config/joinwatch ] || cat > /etc/config/joinwatch <<'EOF'
+config joinwatch 'main'
+	option enabled '1'
+	option poll '15'
+	option t_short '60'          # first diagnosis line if not joined (seconds after boot)
+	option t_full '300'          # full diagnosis line
+	option t_reboot '3600'       # not joined this long -> one automatic reboot (see gates below)
+	option reboot_gap_boots '5'  # after an automatic reboot, at least this many boots before the next one (no RTC: counts, not time)
+	option unjoined_boots_max '3' # >= this many consecutive boots without joining -> no automatic reboot (a human is cycling, or it cannot help)
+EOF
+	procd_open_instance
+	procd_set_param command /usr/bin/joinwatch run
+	procd_set_param respawn 3600 5 0
+	procd_close_instance
+}

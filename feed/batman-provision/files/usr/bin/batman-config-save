@@ -1,0 +1,93 @@
+#!/bin/sh
+# batman-config-save — write the per-node config delta + identity to the shared config
+# partition (p5) so 96-batman-config-migrate can restore it onto a fresh A/B slot (#88/#89).
+#
+# Design: the golden image bakes the mesh STRUCTURE (batman/bridge/firewall/mesh11sd, all
+# identical across nodes); p5 holds only the per-node DELTA — hostname, mesh id/key, channel/
+# country, the reserved IP, openmanetd flags — plus identity files (SSH host keys). Everything
+# not listed here takes the new image's default on upgrade (new-default-wins). Because the
+# preserve set is per-node scalars, the fragment is a small list of `uci set` commands.
+#
+#   batman-config-save --seed        first write at provisioning
+#   batman-config-save --save        rewrite now (operator)
+#   batman-config-save --if-healthy  rewrite only if joinwatch health is OK (#127) — the
+#                                    save-on-healthy hook; call from joinwatch on an OK verdict
+#
+# Writes p5 rw briefly and atomically (stage + rename + sync), keeps two copies (primary + lkg)
+# so bit-rot of one is recoverable. Not a boot-path or per-commit action (avoids #104).
+
+DEV=/dev/mmcblk0p5
+MNT=/mnt/cfgsave
+SCHEMA=1
+PRESERVE="
+system.@system[0].hostname
+wireless.default_radio1.mesh_id
+wireless.default_radio1.key
+wireless.radio1.channel
+wireless.radio1.country
+network.ahwlan.ipaddr
+network.ahwlan.proto
+openmanetd.config.dhcpconfigured
+openmanetd.config.roipconfigured
+"
+
+die() { echo "batman-config-save: $*" >&2; exit 1; }
+
+mode=$1
+case "$mode" in --seed|--save|--if-healthy) ;; *) die "usage: --seed | --save | --if-healthy" ;; esac
+
+[ -b "$DEV" ] || die "no $DEV"
+magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)
+if [ "$magic" != "53ef" ]; then
+	# only --seed may format p5 (the one-time deployment step); never on --save/--if-healthy (DR-1)
+	[ "$mode" = "--seed" ] || die "p5 is not plain ext4 (magic=$magic) — run --seed first"
+	command -v mkfs.ext4 >/dev/null 2>&1 || die "mkfs.ext4 missing"
+	echo "batman-config-save: formatting $DEV (ext4, label batman-cfg)"
+	mkfs.ext4 -F -q -L batman-cfg -m 0 "$DEV" >/dev/null 2>&1 || die "mkfs.ext4 failed"
+fi
+
+if [ "$mode" = "--if-healthy" ]; then
+	verdict=$(halow-status 2>/dev/null | sed -n 's/^HEALTH[[:space:]]*\[\([A-Z]*\)\].*/\1/p')
+	# exit NON-zero on a not-OK skip so joinwatch's `&& :>/tmp/config-saved` guard does NOT latch —
+	# a persistently-WARN node must keep retrying, or it would never seed p5 (N5r2).
+	case "$verdict" in OK) ;; *) echo "batman-config-save: health=$verdict (not OK) — skip"; exit 3 ;; esac
+fi
+
+mkdir -p "$MNT"
+mount -t ext4 "$DEV" "$MNT" 2>/dev/null || die "mount rw failed"
+
+STAGE="$MNT/.stage.$$"
+rm -rf "$STAGE"; mkdir -p "$STAGE/identity/dropbear"
+
+# identity (verbatim)
+for f in dropbear_ed25519_host_key dropbear_rsa_host_key authorized_keys; do
+	[ -s "/etc/dropbear/$f" ] && cp -a "/etc/dropbear/$f" "$STAGE/identity/dropbear/$f"
+done
+if [ -s /etc/openmanet/config.yml ]; then
+	mkdir -p "$STAGE/identity/openmanet"; cp -a /etc/openmanet/config.yml "$STAGE/identity/openmanet/config.yml"
+fi
+
+# per-node delta -> uci batch (scalars only). Single-quote values so spaces survive the round
+# trip (N-R6); refuse shell metacharacters and embedded single-quotes rather than try to escape.
+: > "$STAGE/overrides.uci"
+for t in $PRESERVE; do
+	val=$(uci -q get "$t") || continue
+	[ -n "$val" ] || continue        # empty preserved key -> image default wins (documented)
+	case "$val" in *[\`\$\(\)\;\|\&\<\>\']*) echo "batman-config-save: refusing unsafe value in $t" >&2; continue ;; esac
+	printf "set %s='%s'\n" "$t" "$val" >> "$STAGE/overrides.uci"
+done
+echo "$SCHEMA" > "$STAGE/schema_version"
+
+# publish atomically. lkg = last config that was PROVEN good: rotate it only on --seed (the
+# baseline) and --if-healthy (this boot joined); --save (operator, unproven) must NOT clobber the
+# last proven lkg (N-R8).
+mkdir -p "$MNT/identity" "$MNT/lkg"
+cp -a "$STAGE/identity/." "$MNT/identity/" 2>/dev/null
+mv "$STAGE/overrides.uci" "$MNT/overrides.uci"
+case "$mode" in --seed|--if-healthy) cp -a "$MNT/overrides.uci" "$MNT/lkg/overrides.uci" ;; esac
+mv "$STAGE/schema_version" "$MNT/schema_version"
+rm -rf "$STAGE"
+: > "$MNT/.seeded"        # sentinel written LAST (DR-2)
+sync
+umount "$MNT" 2>/dev/null
+echo "batman-config-save: saved ($mode) schema=$SCHEMA -> $DEV"

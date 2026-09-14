@@ -1,0 +1,29 @@
+#!/bin/sh
+# 99-halow-identity — runs once on the card's first boot, then OpenWrt deletes it.
+# Personalises the card so many nodes off one image do not collide.
+# If 96-batman-config-migrate restored this slot's identity from a seeded p5 (an A/B slot switch,
+# not a fresh card), do NOT re-personalise: deleting the host keys / resetting hostname, IP and
+# dhcpconfigured below would undo the restore and change identity across the switch (#88/#89).
+[ -f /tmp/p5-restored ] && { echo "99-halow-identity: identity restored from p5 — skipping personalisation"; exit 0; }
+# 1. unique hostname with OpenMANET's own scheme (e.g. BCM2711-47ee from the MAC label / eth0)
+. /lib/functions/morse.sh 2>/dev/null
+host=$(morse_generate_default_hostname 2>/dev/null)
+if [ -z "$host" ]; then
+	mac=$(cat /sys/class/net/eth0/address 2>/dev/null)
+	sfx=$(echo "$mac" | sed 's/://g' | cut -c 9-12); [ -n "$sfx" ] || sfx=$(cut -c1-4 /proc/sys/kernel/random/uuid)
+	host="halow-$sfx"
+fi
+uci set system.@system[0].hostname="$host"
+echo "$host" > /proc/sys/kernel/hostname 2>/dev/null || true
+# 2. onboarding AP SSID = hostname (stock behaviour), so a phone can tell nodes apart
+for s in $(uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='ap'$/\1/p"); do
+	uci set "wireless.$s.ssid=$host"
+done
+# 3. addressing: bootstrap only. openmanetd reserves the real IP after boot and reboots once (#11).
+b=$(hexdump -n1 -e '1/1 "%u"' /dev/urandom 2>/dev/null || echo 7)
+uci set network.ahwlan.ipaddr="10.41.254.$(( b % 253 + 2 ))"
+uci set openmanetd.config.dhcpconfigured='0'
+uci commit
+# 4. unique SSH host keys: drop the master's; dropbear regenerates fresh ones when it starts
+rm -f /etc/dropbear/dropbear_*_host_key
+exit 0

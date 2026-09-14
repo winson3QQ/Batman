@@ -1,0 +1,12 @@
+#!/bin/sh
+# 98-batman-sysupgrade — install the A/B platform.sh over the stock bcm27xx one on the first boot of
+# each fresh slot overlay. The feed can't ship /lib/upgrade/platform.sh directly (build-time file
+# clash with the base image, same as /www/index.html -> 97-batman-landing). The overlay copy shadows
+# the read-only /rom version, so `sysupgrade` uses our A/B platform_do_upgrade. See
+# docs/design/ab-sysupgrade-platform.md and /usr/sbin/batman-slot.
+SRC=/usr/lib/batman/platform-ab.sh
+DST=/lib/upgrade/platform.sh
+[ -f "$SRC" ] || exit 0
+cp -f "$SRC" "$DST" 2>/dev/null
+chmod 0644 "$DST" 2>/dev/null
+exit 0
