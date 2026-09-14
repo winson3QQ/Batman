@@ -125,6 +125,13 @@ if [ -n "$FRAG" ]; then
 	[ "$SRC" = lkg ] || schema_migrate "$TMP" "$schema" "$SUPPORTED_SCHEMA"
 	if uci batch < "$TMP" 2>/dev/null; then
 		uci commit 2>/dev/null; applied=ok
+		# A restored wireless override (channel/country/mesh_id/key) is in uci but NOT in netifd's
+		# running radio until a reload. uci_apply_defaults runs AFTER boot()'s `/sbin/wifi config`, so
+		# on a FRESH slot the morse radio was already brought up on its hardware-default channel before
+		# this hook ran; without a reload it stays there and the p5 channel never keys — bench #89: a
+		# fresh Build#5 slot came up on ch42 (hw default) not the p5 ch40, so it never met the lab mesh
+		# and formed no peers, until a manual `wifi reload`. Reload only if wireless was in the delta.
+		grep -q 'wireless\.' "$TMP" 2>/dev/null && { wifi reload >/dev/null 2>&1 || /sbin/wifi reload >/dev/null 2>&1; }
 	else
 		# do not leave a partial batch staged for uci_apply_defaults' trailing commit (V3-6)
 		for p in $ALLOWED_PKGS; do uci revert "$p" 2>/dev/null; done
