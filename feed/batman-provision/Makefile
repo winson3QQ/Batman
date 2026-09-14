@@ -64,6 +64,7 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/etc/uci-defaults/97-batman-landing        $(1)/etc/uci-defaults/97-batman-landing
 	$(INSTALL_BIN) ./files/etc/uci-defaults/98-batman-sysupgrade      $(1)/etc/uci-defaults/98-batman-sysupgrade
 	$(INSTALL_BIN) ./files/etc/uci-defaults/99-halow-identity        $(1)/etc/uci-defaults/99-halow-identity
+	$(INSTALL_BIN) ./files/etc/uci-defaults/99-batman-chanfix        $(1)/etc/uci-defaults/99-batman-chanfix
 	# services
 	$(INSTALL_BIN) ./files/etc/init.d/halow-keyguard $(1)/etc/init.d/halow-keyguard
 	$(INSTALL_BIN) ./files/etc/init.d/batpower       $(1)/etc/init.d/batpower
