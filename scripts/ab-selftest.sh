@@ -72,7 +72,10 @@ reboot_wait() {                      # $1 = tryboot|plain ; $2 = max seconds
   sshn '(sleep 1; reboot) >/dev/null 2>&1 &' >/dev/null
   sleep 12
   for ((i=12; i<max; i+=5)); do
-    if timeout 2 ping -c1 -W1 "$NODE" >/dev/null 2>&1; then
+    # Liveness by ssh, not ping: `ping -c1 -W1` is Linux-only (Windows/Git-Bash ping.exe rejects the
+    # flags), and an IPv6 link-local bench node ("fe80::…%if") is reached over ssh anyway. ssh-up also
+    # means sshd is ready, which is what the boot_id read below needs. (#133 portability)
+    if timeout 6 ssh "${SSHOPTS[@]}" "root@$NODE" true >/dev/null 2>&1; then
       ssh-keygen -f "$KH" -R "$NODE" >/dev/null 2>&1
       after=$(boot_id)
       # A node that never rebooted answers instantly with the SAME boot_id. Accepting that
