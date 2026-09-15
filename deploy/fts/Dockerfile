@@ -9,7 +9,9 @@
 # FTS still works after the slim-down.
 
 # ---------- builder: full toolchain, install + patch FTS ----------
-FROM python:3.11-slim-bookworm AS builder
+# Base is Debian trixie (#83): trixie carries the security fixes bookworm marked won't-fix/no-dsa
+# for glibc (CVE-2026-5450), sqlite3 (CVE-2025-7458) and openssl (CVE-2026-75803).
+FROM python:3.11-slim-trixie AS builder
 ENV PIP_NO_CACHE_DIR=1 DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
       gcc libffi-dev libssl-dev libxml2-dev libxslt1-dev make \
@@ -38,14 +40,16 @@ COPY patch_fts.py /tmp/patch_fts.py
 RUN python /tmp/patch_fts.py
 
 # ---------- runtime: slim, no toolchain, upgraded base ----------
-FROM python:3.11-slim-bookworm AS runtime
+FROM python:3.11-slim-trixie AS runtime
 ENV PIP_NO_CACHE_DIR=1 DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
-# Refresh the Debian base (security point releases) and install ONLY the runtime shared libs
-# FTS's C-extension wheels dlopen (TLS, XML/XSLT, sqlite, ffi) — NO gcc / make / *-dev.
-# This is what drops the #83 base Criticals that came from the build toolchain.
+# Refresh the base + install ONLY the runtime shared libs FTS's C-extension wheels dlopen from
+# the SYSTEM: libssl3 (python stdlib `ssl`), libsqlite3-0 (stdlib `sqlite3`), libffi8 (cffi).
+# NOT libxml2 / libxslt1.1 (#83): lxml's manylinux wheel statically bundles its own libxml2
+# (2.14.6, verified on manet02) + libxslt, so the system deb packages were unused by FTS and
+# only dragged in their base Criticals (e.g. libxml2 CVE-2026-6653) — dropped here. NO gcc/*-dev.
 RUN apt-get update && apt-get -y upgrade \
     && apt-get install -y --no-install-recommends \
-      libssl3 libxml2 libxslt1.1 libsqlite3-0 libffi8 \
+      libssl3 libsqlite3-0 libffi8 \
     && rm -rf /var/lib/apt/lists/*
 # Bring the installed + patched Python environment from the builder.
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
