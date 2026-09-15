@@ -27,7 +27,7 @@ setup. The [SoT root issue is **#75**](https://github.com/winson3QQ/Batman/issue
 | 10 | **Supply-chain red line** | no China-origin deps (#46); build off-node from pinned lock | ✅ |
 | 11 | **Version discipline** | image versioning (milestone = image release), changelog, rollback tag kept | ✅ |
 | 12 | **Pre-PR review + evidence** | before opening the PR: `/code-review high` on the branch diff (correctness/simplification), plus `/security-review` when the change touches keys, auth, provisioning, network or the boot chain; findings and what was done about them go in the PR's **Review** section. The PR body carries the **test results** (what was run, on which node, outputs/numbers, what was simulated, what was not done). No "done" without dogfood when hardware is available | ✅ since #124 |
-| 13 | **Storage placement** | any new app/daemon classifies its writes per the **write-placement contract** (`storage-architecture.md`): volatile→tmpfs, must-persist→data partition, **nothing new writing state to the rootfs overlay** (a hard power-off corrupts it, #41). Guarded by `scripts/flash-write-guard.sh` (in `daily-validation.sh`) | ✅ #104 |
+| 13 | **Storage placement** | any new app/daemon classifies its writes per the **write-placement contract** (`storage-architecture.md`): volatile→tmpfs, must-persist→data partition, **nothing new writing state to the rootfs overlay** (a hard power-off corrupts it, #41). Guarded by `scripts/flash-write-guard.sh` — which catches state **DBs** on the overlay (the common case); other state files are caught in review against the contract | ✅ #104 |
 
 ## Evidence rules (decided 2026-09-11)
 

@@ -15,8 +15,10 @@ SSHOPT="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/
 ACCEPT_PREFIX='/overlay/upper/etc/openmanetd/'   # openmanetd DB — accepted #104 exception
 
 # shellcheck disable=SC2086  # SSHOPT is a deliberate multi-option word list
+# `[ -d ] && find || true` so a node without an overlay yields an empty (PASS) result rather
+# than a non-zero exit that the check below would misreport as an SSH failure.
 found=$(timeout 15 ssh $SSHOPT "root@$NODE" \
-  'find /overlay/upper -type f \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "*.sqlite" -o -name "*.sqlite3" \) 2>/dev/null') \
+  '[ -d /overlay/upper ] && find /overlay/upper -type f \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "*.sqlite" -o -name "*.sqlite3" \) 2>/dev/null || true') \
   || { echo "flash-write-guard: SSH to $NODE failed"; exit 2; }
 
 echo "state DBs on the rootfs overlay of $NODE:"
