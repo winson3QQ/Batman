@@ -82,6 +82,15 @@ else
   suite meshtest "six-layer mesh health — MESH_NODE $MESH_NODE did not answer" ""
 fi
 
+# 5. Hardware: write-placement contract — no unexpected app/daemon state DB on the rootfs overlay (#104).
+if up "$BENCH_NODE"; then
+  suite flash-write-guard \
+    "no new state DB on the rootfs overlay — write-placement contract (#104/#41)" \
+    "sh $REPO/scripts/flash-write-guard.sh $BENCH_NODE"
+else
+  suite flash-write-guard "write-placement contract (#104) — BENCH_NODE $BENCH_NODE did not answer" ""
+fi
+
 {
   echo "# Batman daily validation — $(date -Is)"
   echo
