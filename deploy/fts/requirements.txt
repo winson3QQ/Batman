@@ -45,7 +45,7 @@ opentelemetry-semantic-conventions==0.65b0
 pathlib2==2.3.7.post1
 pbr==7.0.3
 pillow==12.3.0
-protobuf==3.18.3
+protobuf==7.36.1
 psutil==5.9.4
 pyOpenSSL==26.4.0
 pycparser==3.0

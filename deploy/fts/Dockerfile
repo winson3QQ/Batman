@@ -32,7 +32,7 @@ RUN pip install "pillow>=10.3.0"
 # (cryptography also needed for #16 FIPS.) protobuf (old-protoc fig_pb2 breaks on >=4) +
 # dnspython (frozen eventlet) stay frozen — separate #148 follow-up / risk-accepted.
 RUN pip install -U \
-      "cryptography>=42" "pyOpenSSL>=26" \
+      "cryptography>=42" "pyOpenSSL>=26" "protobuf>=7" \
       "werkzeug>=3.0.6,<3.1" "jinja2>=3.1.4,<3.2" "flask-cors>=4.0.1,<5"
 # digitalpy imports pkg_resources, removed in setuptools>=81 -> pin back
 RUN pip install "setuptools<81"
@@ -45,6 +45,13 @@ RUN python /tmp/patch_fts.py
 # (opentel_tracing_provider.py, MainConfig.py) so there is no collision on this file.
 COPY certificate_generation.py /usr/local/lib/python3.11/site-packages/FreeTAKServer/core/util/certificate_generation.py
 RUN python -c "import ast; ast.parse(open('/usr/local/lib/python3.11/site-packages/FreeTAKServer/core/util/certificate_generation.py').read()); print('cert_gen patch syntax OK')"
+# #148 follow-up: replace the protobuf-3.x-codegen *_pb2.py with protobuf-7-regenerated versions
+# (clears protobuf CVE-2025-4565). Regen recipe (run once, output vendored in deploy/fts/protobufModel/):
+#   python -m grpc_tools.protoc -I <proto> --python_out=<protobufModel> <proto>/*.proto
+#   then sed the flat `import X_pb2` -> `import FreeTAKServer.model.protobufModel.X_pb2` (FTS's layout).
+# Runtime protobuf must be >= the protoc that generated these (7.x) — pinned above (`protobuf>=7`).
+COPY protobufModel/ /usr/local/lib/python3.11/site-packages/FreeTAKServer/model/protobufModel/
+RUN python -c "import FreeTAKServer.model.protobufModel.takmessage_pb2, FreeTAKServer.model.protobufModel.fig_pb2; print('protobuf regen import OK')"
 
 # ---------- runtime: slim, no toolchain, upgraded base ----------
 FROM python:3.11-slim-trixie AS runtime
