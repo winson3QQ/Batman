@@ -1,0 +1,42 @@
+# Security profile for the fts-ui tenant — see docs/security-profiles.md (#153)
+# Self-assessed posture, NOT certified (#93).
+tenant: fts-ui
+archetype: network-service
+co_scheduled_with: [fts]               # reaches FTS API at 127.0.0.1:19023 over the shared host netns (R7):
+                                        # a bridged-network move must treat fts+fts-ui as one unit or the UI->API path breaks
+
+values:
+  network:  {mode: host}               # UI :5000, >1024
+  user:     {run_as: ftsui}            # non-root; chown apps/fts-ui volume (F7)
+  no_new_privileges: true
+  caps:     {drop: [ALL], add: []}
+  rootfs:   {read_only: true, tmpfs: [/tmp]}   # HIGH RISK: cwd is /usr/local/.../FreeTAKServer-UI inside rootfs;
+                                        # Flask may write instance/session/temp relative to cwd -> MUST test read-only,
+                                        # add tmpfs mounts for whatever it writes, or move writable dirs onto the volume (F7)
+  resources:{cpus: 0.25, memory: 256MiB, pids: 128}   # initial; #81
+  devices:  []
+  seccomp:  {profile: default}
+  privileged: false
+  docker_socket_mounted: false
+  secrets:                              # F5 — do NOT under-rate: a full FTS API token is admin-equivalent to FTS
+    - {name: fts-api-token, delivery: env, exposure: "passed as -e FTS_API_KEY=Bearer …; visible in /proc/<pid>/environ and docker inspect — prefer file/secret-store over env"}
+
+assessment:
+  network:            {control: "NIST SP 800-190 §4.4.2", status: "planned:bridged-eval", evidence: "host-net today"}
+  user:               {control: "CIS Docker 4.1 / PSS runAsNonRoot", status: planned, evidence: "root today; #98 + volume chown"}
+  no_new_privileges:  {control: "CIS Docker 5.25 / PSS", status: planned, evidence: "SecurityOpt empty today"}
+  caps:               {control: "CIS Docker 5.3 / PSS Restricted", status: planned, evidence: "default caps today; add:[] test-gated"}
+  rootfs:             {control: "CIS Docker 5.12", status: "planned (feasibility at risk — cwd in rootfs, F7)", evidence: "ReadonlyRootfs=false today"}
+  resources:          {control: "CIS Docker 5.10/5.11/5.28 · NIST §4.4.2", status: planned, evidence: "no limits today"}
+  seccomp:            {control: "CIS Docker 5.21", status: implemented, evidence: "default profile — pending §5 assert (R6)"}
+  privileged:         {control: "CIS Docker 5.4 / PSS Baseline", status: implemented, evidence: "Privileged=false — pending §5 assert"}
+  docker_socket:      {control: "CIS Docker 5.31", status: implemented, evidence: "socket not mounted — pending §5 assert"}
+  secrets:            {control: "NIST SP 800-190 §4.3.4", status: planned, evidence: "token via env — move off env; admin-equivalent, high value (F5)"}
+
+exceptions:
+  - axis: network
+    reason: "--network host; and the UI->API loopback path depends on sharing FTS's netns (R7)"
+    compensating_control: "host nftables restricting :5000 to the operator/onboarding net; keep fts+fts-ui co-scheduled"
+    status: planned
+
+target: {level: PSS-Restricted, note: "web attack surface (:5000) makes read-only + non-root high-value; rollup = N/M axes"}

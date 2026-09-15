@@ -1,0 +1,40 @@
+# Security profile for the FTS tenant — see docs/security-profiles.md (#153)
+# Self-assessed posture, NOT certified (#93). Values drive #98/run.sh + #151 admission;
+# assessment drives the compliance rollup. Nothing is `implemented` until the §5 drift-check passes.
+tenant: fts
+archetype: network-service
+co_scheduled_with: [fts-ui]            # shared --network host; fts-ui reaches FTS over 127.0.0.1 (R7)
+
+values:
+  network:  {mode: host}               # ports 18087/8089/8443/19023, all >1024 (no NET_BIND)
+  user:     {run_as: fts}              # non-root; needs one-time chown of apps/fts volume (F7)
+  no_new_privileges: true
+  caps:     {drop: [ALL], add: []}     # add:[] plausible (>1024 ports, python/sqlite/lxml/cert-gen) — TEST-GATED (R8)
+  rootfs:   {read_only: true, tmpfs: [/tmp]}   # enumerate any other writable path during #98 test (F7)
+  resources:{cpus: 0.75, memory: 512MiB, pids: 256}   # initial; #81 finalizes from measured ~¼ core idle
+  devices:  []
+  seccomp:  {profile: default}
+  privileged: false
+  docker_socket_mounted: false
+  secrets:                              # F5
+    - {name: tak-mtls-key, delivery: file, exposure: "in apps/fts volume; protect at rest (#13/#47)"}
+
+assessment:
+  network:            {control: "NIST SP 800-190 §4.4.2", status: "planned:bridged-eval", evidence: "host-net today; see exceptions"}
+  user:               {control: "CIS Docker 4.1 / PSS runAsNonRoot", status: planned, evidence: "root today (docker inspect User=[]); #98 + volume chown"}
+  no_new_privileges:  {control: "CIS Docker 5.25 / PSS allowPrivilegeEscalation=false", status: planned, evidence: "SecurityOpt empty today"}
+  caps:               {control: "CIS Docker 5.3 / PSS Restricted", status: planned, evidence: "default caps CapEff=0xa80425fb today; add:[] to be proven by functional-test"}
+  rootfs:             {control: "CIS Docker 5.12", status: planned, evidence: "ReadonlyRootfs=false today"}
+  resources:          {control: "CIS Docker 5.10/5.11/5.28 · NIST §4.4.2", status: "planned (cpus/pids/memory all enforceable in v1.1; memory needs golden cmdline drop cgroup_disable=memory)", evidence: "NanoCpus=0 Memory=0 PidsLimit=<none> today"}
+  seccomp:            {control: "CIS Docker 5.21", status: implemented, evidence: "SecurityOpt has no seccomp=unconfined; default profile applied — pending §5 assert to keep honest (R6)"}
+  privileged:         {control: "CIS Docker 5.4 / PSS Baseline", status: implemented, evidence: "Privileged=false (docker inspect) — pending §5 assert"}
+  docker_socket:      {control: "CIS Docker 5.31", status: implemented, evidence: "socket not mounted — pending §5 assert"}
+  secrets:            {control: "NIST SP 800-190 §4.3.4", status: planned, evidence: "mTLS key on volume; at-rest protection gated on #47/#13"}
+
+exceptions:
+  - axis: network
+    reason: "--network host for mesh port binding on the node's mesh address"
+    compensating_control: "host nftables restricting the mesh-facing FTS ports to the mesh/onboarding nets"
+    status: planned            # the firewall rule set does not exist yet — do not claim implemented (R3)
+
+target: {level: PSS-Restricted, note: "rollup = N/M axes implemented-with-evidence; host-net fails Baseline on that axis (F9)"}
