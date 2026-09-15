@@ -1,0 +1,22 @@
+name: hardening-env-sync
+# #98 C1 — HARD gate: each committed deploy/<app>/<app>.hardening.env must equal what
+# scripts/profile-to-flags.py regenerates from deploy/<app>/profile.yaml. A stale env would let the
+# node run flags that don't match the profile SoT while verify-profile.sh still passes (hidden drift).
+on:
+  pull_request:
+    paths: ['deploy/**/profile.yaml', 'deploy/**/*.hardening.env', 'scripts/profile-to-flags.py', 'scripts/check-hardening-env.sh']
+  push:
+    branches: [main]
+    paths: ['deploy/**/profile.yaml', 'deploy/**/*.hardening.env', 'scripts/profile-to-flags.py']
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install --quiet pyyaml
+      - name: profile.yaml files must be valid YAML
+        run: python -c "import yaml,glob,sys; [yaml.safe_load(open(f,encoding='utf-8')) for f in glob.glob('deploy/*/profile.yaml')]; print('all profiles parse')"
+      - name: hardening.env must match profile SoT
+        run: PYTHON=python3 sh scripts/check-hardening-env.sh

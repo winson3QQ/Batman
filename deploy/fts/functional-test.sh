@@ -16,8 +16,17 @@
 # Runs entirely inside a throwaway container (no host ports, no external deps) so it works
 # in CI under QEMU and on a node without touching production.
 #
-#   ./functional-test.sh <image-tag>   (default fts:2.2.1)
+#   ./functional-test.sh [--hardened] <image-tag>   (default fts:2.2.1)
+# --hardened: launch the throwaway with the SAME confinement flags production runs (sourced from
+# deploy/fts/fts.hardening.env, #98/C8) so cap-drop/read-only/limits are exercised, not just the image.
 set -e
+HARDEN=""
+if [ "$1" = "--hardened" ]; then
+	ENVF="$(cd "$(dirname "$0")" && pwd)/fts.hardening.env"
+	# shellcheck disable=SC1090
+	[ -f "$ENVF" ] && . "$ENVF" && HARDEN="$HARDEN_FLAGS" || { echo "no $ENVF"; exit 2; }
+	echo "== HARDENED test: $HARDEN =="; shift
+fi
 IMG="${1:-fts:2.2.1}"
 CN="ftstest_$$"
 DATA="/tmp/${CN}-data"
@@ -31,7 +40,8 @@ trap cleanup EXIT
 rm -rf "$DATA"; mkdir -p "$DATA"
 
 echo "=== start $IMG with a FRESH volume (forces cert generation) ==="
-docker run -d --name "$CN" -e FTS_FIRST_START=false -v "$DATA":/opt/fts "$IMG" >/dev/null
+# shellcheck disable=SC2086
+docker run -d --name "$CN" $HARDEN -e FTS_FIRST_START=false -v "$DATA":/opt/fts "$IMG" >/dev/null
 # wait for the CoT service to come up (QEMU-emulated startup is slow)
 up=0
 i=0
