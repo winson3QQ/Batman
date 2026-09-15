@@ -78,10 +78,46 @@ record; the tryboot_a_b fact and the Zero 2 W profile made it obsolete.
    key release gated on a good attestation (#47/#97).
 4. Factory-reset/zeroize (#70) deliberately wipes p4/p5; a normal update never does.
 
+## Write-placement contract (every app and daemon follows this)
+
+The rule that keeps the rootfs write-free — the **no-rebuild half of #41**, audited in **#104**.
+It is **frequency-agnostic**: classify by whether the data must survive, never by how often it
+is written — so it holds for any future app/tenant **without re-measuring each one**.
+
+| data class | placement | why |
+|---|---|---|
+| volatile / rebuildable (logs, caches, live telemetry, runtime state) | **tmpfs (RAM)** | the **only** tier that cuts NAND writes; lost-on-reboot is fine |
+| must-persist (identity, config, address reservations, tenant/app data & DBs) | **the data partition (p5; interim p6)** — never the rootfs overlay | survives A/B swap + rollback; a failure-domain + capacity boundary — **not** a wear saving |
+| rootfs `/overlay` | **no app/daemon state** | so a hard power-off can't corrupt it, and it can become read-only (#41 → verified boot #74) |
+
+**Corrected premise (audit #104):** the data partition and the overlay are the *same* NAND; the
+card's FTL wear-levels across the whole device, so moving writes overlay→data-partition does
+**not** reduce card wear. **Only tmpfs does.** The data partition is chosen for durability /
+failure-domain / capacity, not to save the card.
+
+**Why the rootfs must stay write-free:** these are field radios — hard-powered-off, **no RTC, no
+graceful shutdown**. Anything writing the rootfs when power drops can corrupt it → a dead node.
+Wear is secondary (measured overlay idle ≈ **1.9 MB/h ≈ 16.6 GB/yr**, negligible for any card);
+**power-loss corruption is the real driver.**
+
+**Enforcement, not prose** (or the contract drifts): placement is regression-guarded —
+`scripts/flash-write-guard.sh` flags any app/daemon that writes a state DB to the rootfs overlay
+(wired into `daily-validation.sh`), and every new tenant/daemon classifies its writes per this
+table at onboarding (see `dev-process.md`).
+
+**Known current violator (#104, interim v1.1 golden):** `openmanetd`'s own SQLite DB lives on the
+rootfs overlay and its periodic workers (`MeshNeighborsWorker` @ 15 s, etc.) + GNSS churn it at
+**~1.9 MB/h (≈89% of overlay writes, A/B-confirmed)**. The DB mixes must-persist address
+reservations with volatile telemetry. No clean local fix (tmpfs drops the reservations; the data
+partition is the same NAND; disabling GNSS loses a feature) → the correct fix is **upstream**
+(OpenMANET/openmanetd: split volatile from persistent, or make the DB path/intervals
+configurable). Wear impact is negligible, so it does not block; tracked as an upstream dependency.
+
 ## Databases (distinct from files)
 
-FTS uses SQLite (FTSDataBase, CoTManagement, Mission, ExCheck + the UI DB). They need more
-than raw space:
+FTS uses SQLite (FTSDataBase, CoTManagement, Mission, ExCheck + the UI DB). System daemons count
+too — see the write-placement contract above (`openmanetd`'s DB currently violates it, #104). They
+need more than raw space:
 - **On p5**, never on the rootfs overlay (done reactively via bind-mount 2026-09-10; the
   provisioned layout makes it native).
 - **WAL journal mode + tuned `synchronous`** — the shipped default is `delete`, the
