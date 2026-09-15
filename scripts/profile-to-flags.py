@@ -70,10 +70,10 @@ def main():
         f'HARDEN_FLAGS="{" ".join(flags)}"\n'
     )
     if check:
-        sys.stdout.write(body)
+        sys.stdout.buffer.write(body.encode("utf-8"))   # bytes: no CRLF translation (LF on every OS)
     else:
         out = REPO / "deploy" / app / f"{app}.hardening.env"
-        out.write_text(body, encoding="utf-8")
+        out.write_bytes(body.encode("utf-8"))            # force LF regardless of platform
         sys.stderr.write(f"wrote {out.relative_to(REPO)}\n")
 
 if __name__ == "__main__":

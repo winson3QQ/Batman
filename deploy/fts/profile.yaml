@@ -11,7 +11,7 @@ values:                                # machine-readable SoT — scripts/profil
   user:     {}                         # root NOW (Stage 0/2). Non-root is Stage 3 — then set run_as to a numeric uid (image has no 'fts' user; getpwuid risk Q2 + volume chown F7). Emits no --user until then.
   no_new_privileges: true
   caps:     {drop: [ALL], add: []}     # add:[] plausible (>1024 ports, python/sqlite/lxml/cert-gen) — TEST-GATED (R8)
-  rootfs:   {read_only: true, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # full tmpfs spec (C6); enumerate more paths during Stage 2 (F7)
+  rootfs:   {read_only: false, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # read_only=false: VALIDATED on manet01 2026-09-15 — FTS mkdir's logs/ across site-packages (core/logs, core/cot_management/logs, components/extended/mission/logs, …) → EROFS. Exception, needs upstream FTS log-path fix or ~15 tmpfs. See assessment.rootfs.
   resources: {cpus: 1.0, pids: 512}     # reconciled (#81: idle ~0.2 core; 1.0=~5x headroom, leaves 3 cores for batman/OS; 512 pids vs ~90 idle). memory OMITTED — deferred until measured under load (B3/Stage 5)
   devices:  []
   seccomp:  {profile: default}
@@ -22,11 +22,11 @@ values:                                # machine-readable SoT — scripts/profil
 
 assessment:
   network:            {control: "NIST SP 800-190 §4.4.2", status: "planned:bridged-eval", evidence: "host-net today; see exceptions"}
-  user:               {control: "CIS Docker 4.1 / PSS runAsNonRoot", status: planned, evidence: "root today (docker inspect User=[]); #98 + volume chown"}
-  no_new_privileges:  {control: "CIS Docker 5.25 / PSS allowPrivilegeEscalation=false", status: planned, evidence: "SecurityOpt empty today"}
-  caps:               {control: "CIS Docker 5.3 / PSS Restricted", status: planned, evidence: "default caps CapEff=0xa80425fb today; add:[] to be proven by functional-test"}
-  rootfs:             {control: "CIS Docker 5.12", status: planned, evidence: "ReadonlyRootfs=false today"}
-  resources:          {control: "CIS Docker 5.10/5.11/5.28 · NIST §4.4.2 (cpus=--cpus/CFS quota, not 5.11 cpu-shares)", status: "planned: --cpus + --pids-limit at Stage 2; --memory blocked:needs-load-measure (Stage 5 — memcg enabled Stage 1, cap set from memory.current under real load, not idle)", evidence: "NanoCpus=0 Memory=0 PidsLimit=<none> today; memcg off (cgroup_disable=memory)"}
+  user:               {control: "CIS Docker 4.1 / PSS runAsNonRoot", status: "exception: FTS-blocked — VALIDATED on manet01 2026-09-15: --user 1000 (chowned volume) → PermissionError on .../FreeTAKServer/core/logs (logs written into root-owned site-packages). Same root cause as rootfs. Root retained; a swapped/fixed payload (logs→volume) can go non-root.", evidence: "PermissionError [Errno 13] on core/logs as uid 1000"}
+  no_new_privileges:  {control: "CIS Docker 5.25 / PSS allowPrivilegeEscalation=false", status: "validated(manet01 2026-09-15); pending prod-apply + drift-check", evidence: "FTS starts with no-new-privileges (SecOpt=[no-new-privileges])"}
+  caps:               {control: "CIS Docker 5.3 / PSS Restricted", status: "validated(manet01 2026-09-15): cap-drop=ALL add:[] — FTS runs, CoT Service Started; pending prod-apply", evidence: "CapDrop=[ALL], FTS functional"}
+  rootfs:             {control: "CIS Docker 5.12", status: "exception: FTS-blocked — VALIDATED on manet01 2026-09-15: --read-only → EROFS on FreeTAKServer/**/logs (FTS mkdir's logs/ across its package dir). Needs upstream FTS log-root config or ~15 tmpfs. read_only=false; a payload that logs to a volume achieves this.", evidence: "OSError [Errno 30] Read-only file system on core/logs, core/cot_management/logs, components/extended/mission/logs"}
+  resources:          {control: "CIS Docker 5.10/5.11/5.28 · NIST §4.4.2 (cpus=--cpus/CFS quota, not 5.11 cpu-shares)", status: "validated(manet01 2026-09-15): --cpus 1.0 + --pids 512 + --memory 512m all ENFORCE (memory.max=536870912 inside+out); memcg enabled via DTB byte-patch. --memory CAP VALUE still deferred:needs-load-measure (B3) — mechanism proven, prod cap TBD from load", evidence: "NanoCpus=1e9, PidsLimit=512, Memory=536870912 enforced on manet01"}
   seccomp:            {control: "CIS Docker 5.21", status: implemented, evidence: "SecurityOpt has no seccomp=unconfined; default profile applied — pending §5 assert to keep honest (R6)"}
   privileged:         {control: "CIS Docker 5.4 / PSS Baseline", status: implemented, evidence: "Privileged=false (docker inspect) — pending §5 assert"}
   docker_socket:      {control: "CIS Docker 5.31", status: implemented, evidence: "socket not mounted — pending §5 assert"}
