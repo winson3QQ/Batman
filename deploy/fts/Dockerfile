@@ -24,16 +24,15 @@ RUN pip install FreeTAKServer==2.2.1
 # Security bump (#45): pillow 9.3.0 carries CVE-2023-4863 (libwebp WebP heap overflow) —
 # CISA KEV. Force a fixed pillow (FTS uses it via qrcode + image save).
 RUN pip install "pillow>=10.3.0"
-# Security bump (#45 P2): the High-severity crypto/web cluster FTS 2.2.1 pins old. Upper
-# bounds keep each within its compatible major. Frozen-upstream bind (both edges hit in CI):
-# FTS's certificate_generation.py calls OpenSSL.crypto.CRL (REMOVED in pyOpenSSL 24 → the
-# functional gate caught the runtime crash), so pyOpenSSL must stay <24; and pyOpenSSL 23.x
-# requires cryptography <42 → cryptography capped at 41.x. 41.0.7 clears CVE-2023-0286/-49083
-# + the 2023 set; CVE-2023-50782 / CVE-2024-0727 (42+-only) deferred (docs/fts-cve-triage.md).
-# protobuf (old-protoc fig_pb2 breaks on >=4) and dnspython (frozen eventlet breaks on >=2.8)
-# are left frozen. cryptography also needed for #16 FIPS.
+# Security bump (#45 P2 / #148): the old crypto/web cluster is now UNBLOCKED. FTS's
+# certificate_generation.py was the only thing forcing pyOpenSSL <24 (it used crypto.CRL/
+# Revoked/PKCS12/X509Extension, removed in pyOpenSSL 24/26). It is ported to `cryptography`
+# (the vendored certificate_generation.py COPY'd in below), so we run the maintained libs:
+#   cryptography >=42 clears CVE-2023-50782 + CVE-2024-0727; pyOpenSSL >=26 clears CVE-2026-27459.
+# (cryptography also needed for #16 FIPS.) protobuf (old-protoc fig_pb2 breaks on >=4) +
+# dnspython (frozen eventlet) stay frozen — separate #148 follow-up / risk-accepted.
 RUN pip install -U \
-      "cryptography>=41.0.7,<42" "pyOpenSSL>=23.3.0,<24" \
+      "cryptography>=42" "pyOpenSSL>=26" \
       "werkzeug>=3.0.6,<3.1" "jinja2>=3.1.4,<3.2" "flask-cors>=4.0.1,<5"
 # digitalpy imports pkg_resources, removed in setuptools>=81 -> pin back
 RUN pip install "setuptools<81"
@@ -41,6 +40,11 @@ RUN pip install "setuptools<81"
 # CoT 8087->18087 and HTTP API 8080->18080 (openmanetd owns 8087/8080 on the node)
 COPY patch_fts.py /tmp/patch_fts.py
 RUN python /tmp/patch_fts.py
+# #148: replace certificate_generation.py with the cryptography-ported version (off pyOpenSSL's
+# CRL/PKCS12/X509Extension, removed in 24/26). patch_fts.py above patches DIFFERENT files
+# (opentel_tracing_provider.py, MainConfig.py) so there is no collision on this file.
+COPY certificate_generation.py /usr/local/lib/python3.11/site-packages/FreeTAKServer/core/util/certificate_generation.py
+RUN python -c "import ast; ast.parse(open('/usr/local/lib/python3.11/site-packages/FreeTAKServer/core/util/certificate_generation.py').read()); print('cert_gen patch syntax OK')"
 
 # ---------- runtime: slim, no toolchain, upgraded base ----------
 FROM python:3.11-slim-trixie AS runtime
