@@ -28,9 +28,19 @@ command -v docker >/dev/null || { echo "docker not installed (deploy/fts/README.
 [ "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)" = "$BAT/docker" ] || echo "WARN: docker data-root is not $BAT/docker (uci dockerd.globals.data_root)"
 mkdir -p "$BAT/apps/fts" "$BAT/apps/fts-ui"
 
-echo "==> fts ($IMG)"
+# #98: confinement flags derived from each tenant's profile.yaml (scripts/profile-to-flags.py) and
+# committed as <app>.hardening.env. run.sh applies EXACTLY the profile SoT; verify-profile.sh checks it.
+# $HARDEN_FLAGS is intentionally word-split into separate docker args (do not quote).
+HERE=$(cd "$(dirname "$0")" && pwd)
+FTS_HARDEN=""; UI_HARDEN=""
+[ -f "$HERE/fts.hardening.env" ]          && { . "$HERE/fts.hardening.env";          FTS_HARDEN="$HARDEN_FLAGS"; }
+[ -f "$HERE/../fts-ui/fts-ui.hardening.env" ] && { . "$HERE/../fts-ui/fts-ui.hardening.env"; UI_HARDEN="$HARDEN_FLAGS"; }
+
+echo "==> fts ($IMG)  [harden: ${FTS_HARDEN:-none}]"
 docker rm -f fts >/dev/null 2>&1 || true
+# shellcheck disable=SC2086
 docker run -d --name fts --restart unless-stopped --network host \
+	$FTS_HARDEN \
 	-v "$BAT/apps/fts:/opt/fts" -e FTS_FIRST_START=false "$IMG" >/dev/null
 echo "    started; CoT :18087, SSL CoT :8089, REST :19023"
 
@@ -42,7 +52,10 @@ if [ "$UI" = 1 ]; then
 	TOKEN=$(head -1 "$KEYF" | tr -d '\r\n')
 	echo "==> fts-ui ($UI_IMG)"
 	docker rm -f fts-ui >/dev/null 2>&1 || true
+	echo "    [harden: ${UI_HARDEN:-none}]"
+	# shellcheck disable=SC2086
 	docker run -d --name fts-ui --restart unless-stopped --network host \
+		$UI_HARDEN \
 		-v "$BAT/apps/fts-ui:/opt/ftsui-data" \
 		-e FTS_UI_EXPOSED_IP=0.0.0.0 -e FTS_IP=127.0.0.1 -e FTS_API_PORT=19023 -e FTS_API_PROTO=http \
 		-e "FTS_API_KEY=Bearer $TOKEN" \

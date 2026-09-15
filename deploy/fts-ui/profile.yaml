@@ -5,15 +5,15 @@ archetype: network-service
 co_scheduled_with: [fts]               # reaches FTS API at 127.0.0.1:19023 over the shared host netns (R7):
                                         # a bridged-network move must treat fts+fts-ui as one unit or the UI->API path breaks
 
-values:
+values:                                # SoT — flags derived from THIS; `values` = what is actually applied now.
   network:  {mode: host}               # UI :5000, >1024
-  user:     {run_as: ftsui}            # non-root; chown apps/fts-ui volume (F7)
+  user:     {}                         # root NOW (Stage 0/2). Non-root is Stage 3 (numeric uid + volume chown, F7). Emits no --user until then.
   no_new_privileges: true
   caps:     {drop: [ALL], add: []}
-  rootfs:   {read_only: true, tmpfs: [/tmp]}   # HIGH RISK: cwd is /usr/local/.../FreeTAKServer-UI inside rootfs;
-                                        # Flask may write instance/session/temp relative to cwd -> MUST test read-only,
-                                        # add tmpfs mounts for whatever it writes, or move writable dirs onto the volume (F7)
-  resources:{cpus: 0.25, memory: 256MiB, pids: 128}   # initial; #81
+  rootfs:   {read_only: false, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # read_only DEFERRED to its own iteration (Stage 4): cwd is
+                                        # /usr/local/.../FreeTAKServer-UI inside rootfs; Flask writes instance/session/temp relative to cwd.
+                                        # Flip to true only after enumerating + tmpfs/redirecting those paths (M2/Q4). Kept false so values==applied.
+  resources: {cpus: 0.5, pids: 128}     # reconciled (#81: near-idle Flask). memory OMITTED — deferred (B3/Stage 5)
   devices:  []
   seccomp:  {profile: default}
   privileged: false
@@ -26,8 +26,8 @@ assessment:
   user:               {control: "CIS Docker 4.1 / PSS runAsNonRoot", status: planned, evidence: "root today; #98 + volume chown"}
   no_new_privileges:  {control: "CIS Docker 5.25 / PSS", status: planned, evidence: "SecurityOpt empty today"}
   caps:               {control: "CIS Docker 5.3 / PSS Restricted", status: planned, evidence: "default caps today; add:[] test-gated"}
-  rootfs:             {control: "CIS Docker 5.12", status: "planned (feasibility at risk — cwd in rootfs, F7)", evidence: "ReadonlyRootfs=false today"}
-  resources:          {control: "CIS Docker 5.10/5.11/5.28 · NIST §4.4.2", status: planned, evidence: "no limits today"}
+  rootfs:             {control: "CIS Docker 5.12", status: "deferred: read_only OFF (values.read_only=false) until cwd write-paths enumerated — own iteration Stage 4 (M2/Q4)", evidence: "ReadonlyRootfs=false today AND intended"}
+  resources:          {control: "CIS Docker 5.10/5.11/5.28 · NIST §4.4.2", status: "planned: --cpus/--pids Stage 2; --memory blocked:needs-load-measure (Stage 5)", evidence: "no limits today"}
   seccomp:            {control: "CIS Docker 5.21", status: implemented, evidence: "default profile — pending §5 assert (R6)"}
   privileged:         {control: "CIS Docker 5.4 / PSS Baseline", status: implemented, evidence: "Privileged=false — pending §5 assert"}
   docker_socket:      {control: "CIS Docker 5.31", status: implemented, evidence: "socket not mounted — pending §5 assert"}

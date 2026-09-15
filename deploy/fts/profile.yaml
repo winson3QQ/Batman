@@ -5,13 +5,14 @@ tenant: fts
 archetype: network-service
 co_scheduled_with: [fts-ui]            # shared --network host; fts-ui reaches FTS over 127.0.0.1 (R7)
 
-values:
+values:                                # machine-readable SoT — scripts/profile-to-flags.py derives docker flags from THIS.
+                                       # `values` = what is actually applied; `assessment` = distance to target + why (staging is operational, not here).
   network:  {mode: host}               # ports 18087/8089/8443/19023, all >1024 (no NET_BIND)
-  user:     {run_as: fts}              # non-root; needs one-time chown of apps/fts volume (F7)
+  user:     {}                         # root NOW (Stage 0/2). Non-root is Stage 3 — then set run_as to a numeric uid (image has no 'fts' user; getpwuid risk Q2 + volume chown F7). Emits no --user until then.
   no_new_privileges: true
   caps:     {drop: [ALL], add: []}     # add:[] plausible (>1024 ports, python/sqlite/lxml/cert-gen) — TEST-GATED (R8)
-  rootfs:   {read_only: true, tmpfs: [/tmp]}   # enumerate any other writable path during #98 test (F7)
-  resources:{cpus: 0.75, memory: 512MiB, pids: 256}   # initial; #81 finalizes from measured ~¼ core idle
+  rootfs:   {read_only: true, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # full tmpfs spec (C6); enumerate more paths during Stage 2 (F7)
+  resources: {cpus: 1.0, pids: 512}     # reconciled (#81: idle ~0.2 core; 1.0=~5x headroom, leaves 3 cores for batman/OS; 512 pids vs ~90 idle). memory OMITTED — deferred until measured under load (B3/Stage 5)
   devices:  []
   seccomp:  {profile: default}
   privileged: false
@@ -25,7 +26,7 @@ assessment:
   no_new_privileges:  {control: "CIS Docker 5.25 / PSS allowPrivilegeEscalation=false", status: planned, evidence: "SecurityOpt empty today"}
   caps:               {control: "CIS Docker 5.3 / PSS Restricted", status: planned, evidence: "default caps CapEff=0xa80425fb today; add:[] to be proven by functional-test"}
   rootfs:             {control: "CIS Docker 5.12", status: planned, evidence: "ReadonlyRootfs=false today"}
-  resources:          {control: "CIS Docker 5.10/5.11/5.28 · NIST §4.4.2", status: "planned (cpus/pids/memory all enforceable in v1.1; memory needs golden cmdline drop cgroup_disable=memory)", evidence: "NanoCpus=0 Memory=0 PidsLimit=<none> today"}
+  resources:          {control: "CIS Docker 5.10/5.11/5.28 · NIST §4.4.2 (cpus=--cpus/CFS quota, not 5.11 cpu-shares)", status: "planned: --cpus + --pids-limit at Stage 2; --memory blocked:needs-load-measure (Stage 5 — memcg enabled Stage 1, cap set from memory.current under real load, not idle)", evidence: "NanoCpus=0 Memory=0 PidsLimit=<none> today; memcg off (cgroup_disable=memory)"}
   seccomp:            {control: "CIS Docker 5.21", status: implemented, evidence: "SecurityOpt has no seccomp=unconfined; default profile applied — pending §5 assert to keep honest (R6)"}
   privileged:         {control: "CIS Docker 5.4 / PSS Baseline", status: implemented, evidence: "Privileged=false (docker inspect) — pending §5 assert"}
   docker_socket:      {control: "CIS Docker 5.31", status: implemented, evidence: "socket not mounted — pending §5 assert"}
