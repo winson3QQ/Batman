@@ -19,7 +19,7 @@ setup. The [SoT root issue is **#75**](https://github.com/winson3QQ/Batman/issue
 | 2 | **pre-commit** | shellcheck, **LF line-endings**, secrets (gitleaks), large-file guard | partial |
 | 3 | **CI lint** | `ci.yml` — shellcheck + LF check (blocking) | ✅ |
 | 4 | **SBOM + CVE (deps)** | `ci.yml` — **grype** on `requirements.txt` (`--fail-on critical`, `.grype.yaml` VEX) + CycloneDX SBOM (Syft); NVD-authoritative OWASP Dependency-Check on release tags (`release-scan.yml`) | ✅ #45 |
-| 5 | **Image build + scan** | `build-fts-image.yml` — off-node arm64 build (#85), **grype image scan** (sees base-OS, informational until #83 base swap), image SBOM | ✅ |
+| 5 | **Image build + scan** | `build-fts-image.yml` — off-node arm64 build (#85), **grype image scan blocking on Critical** (`--fail-on critical`; base swapped to trixie → 0 base Critical, #83), image SBOM | ✅ |
 | 6 | **Functional gate** | `deploy/fts/functional-test.sh` in CI — runs the image under QEMU, exercises the changed paths with **independent oracles** (forced cert-gen, openssl-verify, mTLS handshake, no-cert negative control, CoT); build-pass ≠ works | ✅ |
 | 7 | **Smoke test** | image change → flash → boot → mesh peers → key services up | manual |
 | 8 | **Dogfood** | runtime change → run on real hardware (manet01/manet02) before release | ✅ manual |
@@ -81,7 +81,7 @@ pre-commit run --all-files   # check everything now
   because a CRLF shebang once gave `sh: not found` on a node.
 - CI CVE scanning uses **grype** (not Trivy — the pin was unresolvable). The `requirements.txt`
   gate **blocks on Critical** and is now Critical-clean on the merits (`.grype.yaml` VEX empty).
-  The **image** grype scan (`build-fts-image.yml`) stays informational while the Debian base
-  Critical backlog (#83) is worked; flip it to blocking after the base swap.
+  The **image** grype scan (`build-fts-image.yml`) is **blocking on Critical** since #83 (base
+  swapped bookworm→trixie + dropped the lxml-bundled system libxml2/libxslt → 0 base Critical).
 - **Build off-node** (#85): the field node's storage can't hold a non-trivial build; images
   are built in CI (QEMU/buildx) and `docker load`ed onto the node. See `deploy/fts/README.md`.

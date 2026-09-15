@@ -89,20 +89,25 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
             | sh -s -- -b "$RUNNER_TEMP/bin"
 
-      # Authoritative image scan — sees base-OS packages too. NOT a hard gate yet: the
-      # Debian base carries a known Critical backlog (#83) that a slim/distroless rebase
-      # drives down. The python-dep gate stays in ci.yml (requirements.txt). Flip
-      # `continue-on-error` off once #83 lands and the image is Critical-clean.
-      - name: Grype scan of the built image (informational; backlog #83)
-        continue-on-error: true
+      # Authoritative image scan — sees base-OS packages too. BLOCKING on Critical since #83
+      # landed (bookworm -> trixie + dropping the lxml-bundled system libxml2/libxslt drove the
+      # base Criticals 15 -> 0). `--fail-on critical` fails the build on any NEW Critical; Highs
+      # (the frozen FTS python deps #45-P2, won't-fix base Highs) are tracked, not gated. The
+      # python-dep gate stays in ci.yml (requirements.txt). To defer a specific new Critical,
+      # add it to .grype.yaml `ignore` with a justification — never blanket-disable this gate.
+      - name: Grype scan of the built image (blocking on Critical; #83)
         run: |
           set -o pipefail
+          rc=0
           "$RUNNER_TEMP/bin/grype" "docker-archive:${{ runner.temp }}/fts-arm64.tar" \
-            --by-cve -o table | tee image-grype.txt
-          echo "## FTS image CVE scan (grype)" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          { grep -E 'Critical|High' image-grype.txt || echo 'no Critical/High'; } | head -40 >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+            --by-cve --fail-on critical -o table | tee image-grype.txt || rc=$?
+          {
+            echo "## FTS image CVE scan (grype)"
+            echo '```'
+            { grep -E 'Critical|High' image-grype.txt || echo 'no Critical/High'; } | head -40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc   # fails the build only on a Critical (--fail-on), after writing the summary
 
       - name: Upload image grype report
         if: always()
