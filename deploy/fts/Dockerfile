@@ -13,8 +13,11 @@
 # for glibc (CVE-2026-5450), sqlite3 (CVE-2025-7458) and openssl (CVE-2026-75803).
 FROM python:3.11-slim-trixie AS builder
 ENV PIP_NO_CACHE_DIR=1 DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
+# libc6-dev + linux-libc-dev are explicit here: on trixie `gcc` no longer pulls libc6-dev under
+# --no-install-recommends (it did on bookworm), so building the psutil sdist failed on
+# `stdlib.h`/`linux/ethtool.h`. Builder-only — none of this ships to the runtime stage.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      gcc libffi-dev libssl-dev libxml2-dev libxslt1-dev make \
+      gcc libc6-dev linux-libc-dev libffi-dev libssl-dev libxml2-dev libxslt1-dev make \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --upgrade pip
 RUN pip install FreeTAKServer==2.2.1
