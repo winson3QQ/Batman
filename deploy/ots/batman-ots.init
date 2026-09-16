@@ -1,0 +1,46 @@
+#!/bin/sh /etc/rc.common
+# batman-ots — procd runtime owner / guardian for the OTS payload (#156).
+#
+# On OpenWrt the runtime owner is a procd init script (NOT a systemd Quadlet — no systemd).
+# Its narrow DoD (#156) is guardianship / anti-bypass: on EVERY boot the OTS stack is (re)brought
+# up with the profile's hardened flags, so a hand-run `docker run` cannot leave a non-hardened
+# config in place. Intra-stack ordering + health-gating live in run.sh (the ordering-wrapper),
+# which this service invokes. START=99 so it runs after dockerd (START=99 too; ordered after by
+# rc order). Install: cp to /etc/init.d/batman-ots; `service batman-ots enable`.
+#
+# On-node deploy dir (scp'd or baked): DEPLOY holds run.sh + ots.fw4.uci + ots.hardening.env.
+START=99
+STOP=10
+USE_PROCD=1
+
+DEPLOY=/opt/batdata/deploy/ots
+
+boot() {
+	# at cold boot, wait briefly for dockerd's socket before bringing the stack up
+	i=0; while [ $i -lt 30 ]; do docker info >/dev/null 2>&1 && break; sleep 2; i=$((i+1)); done
+	start
+}
+
+start_service() {
+	[ -d "$DEPLOY" ] || { echo "batman-ots: $DEPLOY missing (deploy artifacts not installed)"; return 1; }
+	# 1) firewall (idempotent) — design B fw4 zone/DNAT for br-ots
+	[ -f "$DEPLOY/ots.fw4.uci" ] && sh "$DEPLOY/ots.fw4.uci"
+	# 2) (re)bring up the hardened stack via the ordering-wrapper
+	sh "$DEPLOY/run.sh"
+	# 3) drift alarm: assert the running containers still match the profile (#155/#98)
+	if [ -x "$DEPLOY/verify-profile.sh" ]; then
+		"$DEPLOY/verify-profile.sh" ots || echo "batman-ots: WARN profile drift — running config != ots.hardening.env"
+	fi
+	# procd tracks a tiny keepalive so `service batman-ots status` is meaningful; the containers
+	# themselves are supervised by docker (--restart on-failure). This guards config, not process life.
+	procd_open_instance
+	procd_set_param command /bin/sh -c "while docker inspect -f '{{.State.Running}}' opentakserver >/dev/null 2>&1; do sleep 30; done"
+	procd_set_param respawn 3600 5 0
+	procd_close_instance
+}
+
+stop_service() {
+	for c in ots_eud_handler_ssl ots_eud_handler ots_cot_parser opentakserver rabbitmq ots-db; do
+		docker rm -f "$c" >/dev/null 2>&1 || true
+	done
+}
