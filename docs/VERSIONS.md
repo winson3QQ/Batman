@@ -41,7 +41,7 @@ Existing GitHub release tags were named ad-hoc (by content/date) and do **not** 
 | 1.0.0 | HaLow mesh node (flash-and-go) | `v1.0.0` | OpenMANET 1.7.0 |
 | 1.1.0 | Self-provisioning golden (single-slot) | `v2.0.0` *(mis-numbered; is DEV-golden, not the Build gate)* | OpenMANET 1.8.0 |
 | 1.2.0 | A/B dual-image OTA payload | `v1.1.0-ab-ota` (pre-release) | OpenMANET 1.8.0 |
-| 1.3.0 | **docker-in-image A/B card (#159)** | *(WSL dev; stored in Batman-P release `batman-ab-docker-v2`, Batman-P#1)* | OpenMANET 1.8.0 |
+| 1.3.0 | **docker-in-image A/B card (#159)** | *(WSL dev; stored in Batman-P release `batman-1.3.0-wsl`, Batman-P#1)* | OpenMANET 1.8.0 |
 | 2.0.0 | *(reserved)* v2.0 Build-gate reached | — | — |
 
 Refs #75 (SoT), #160 (provenance), #73 (dev-infra).
