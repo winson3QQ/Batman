@@ -1,0 +1,30 @@
+#!/bin/sh
+# Batman payload-host: point dockerd's data-root at the persistent data partition and
+# enable the service (#159, review M1).
+#
+# WHY: dockerd ships data_root=/opt/docker/ (on the read-only squashfs / volatile overlay).
+# Containers and images must live on the persistent, failure-isolated data partition
+# (p6, mounted at /opt/batdata by 95-batman-storage), matching what was validated on
+# manet01 during #98. We only WRITE the uci config here; dockerd (START=99) starts long
+# after the p6 mount and creates the data-root itself on the mounted partition, so this
+# hook must NOT mkdir the path (at uci-defaults time p6 may not be mounted yet, and a
+# mkdir would land on the overlay instead of p6).
+#
+# Idempotent + persistent: the value is written into /etc/config/dockerd in the overlay,
+# so it survives reboots; returning 0 lets uci_apply_defaults delete this one-shot hook.
+
+DATA_ROOT="/opt/batdata/docker"
+
+# dockerd config ships with the package; if for any reason it is absent, retry next boot.
+[ -f /etc/config/dockerd ] || exit 1
+
+uci -q batch <<EOF
+set dockerd.globals=globals
+set dockerd.globals.data_root='${DATA_ROOT}'
+commit dockerd
+EOF
+
+# Enable the service so it starts on every boot (procd START=99, after the p6 mount).
+/etc/init.d/dockerd enable 2>/dev/null
+
+exit 0

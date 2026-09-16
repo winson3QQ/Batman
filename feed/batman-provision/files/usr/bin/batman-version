@@ -1,0 +1,22 @@
+#!/bin/sh
+# batman-version — report the Batman image build identity, stamped at build time into
+# /etc/batman-build (KEY=VALUE). Lets a running node self-report which build it is
+# (version, channel, milestone, base OS, source git commits) instead of guessing from a
+# release tag. See docs/VERSIONS.md, #160 (provenance), #159 (docker-in-image).
+#
+# Values are PARSED (sed), never sourced — a value may contain spaces/parens (e.g. the
+# milestone), which would break `. /etc/batman-build`.
+F=/etc/batman-build
+get() { sed -n "s/^$1=//p" "$F" 2>/dev/null | head -1; }
+if [ ! -f "$F" ]; then
+	echo "batman-version: no /etc/batman-build stamp (untagged build)"
+	echo "base: $(sed -n 's/^DISTRIB_DESCRIPTION=//p' /etc/openwrt_release 2>/dev/null | tr -d \"'\") $(sed -n 's/^DISTRIB_REVISION=//p' /etc/openwrt_release 2>/dev/null | tr -d \"'\")"
+	exit 0
+fi
+echo "Batman $(get BATMAN_VERSION) ($(get BATMAN_CHANNEL)) built $(get BATMAN_BUILD_DATE)"
+[ -n "$(get BATMAN_MILESTONE)" ] && echo "  milestone: $(get BATMAN_MILESTONE)"
+echo "  base:      $(get BATMAN_BASE)"
+echo "  feed:      winson3QQ/Batman@$(get BATMAN_FEED_COMMIT)"
+echo "  firmware:  winson3QQ/firmware@$(get BATMAN_FW_COMMIT) (feed pin $(get BATMAN_FW_FEED_PIN))"
+echo "  features:  $(get BATMAN_FEATURES)"
+[ -n "$(get BATMAN_NOTE)" ] && echo "  note:      $(get BATMAN_NOTE)"

@@ -72,6 +72,8 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/etc/init.d/joinwatch      $(1)/etc/init.d/joinwatch
 	$(INSTALL_BIN) ./files/etc/init.d/meshled        $(1)/etc/init.d/meshled
 	# tools
+	$(INSTALL_BIN) ./files/usr/bin/batman-version     $(1)/usr/bin/batman-version
+	$(INSTALL_BIN) ./files/etc/uci-defaults/93-batman-version-banner $(1)/etc/uci-defaults/93-batman-version-banner
 	$(INSTALL_BIN) ./files/usr/bin/batman-config-save $(1)/usr/bin/batman-config-save
 	$(INSTALL_BIN) ./files/usr/bin/halow-setkey       $(1)/usr/bin/halow-setkey
 	$(INSTALL_BIN) ./files/usr/bin/halow-status       $(1)/usr/bin/halow-status
