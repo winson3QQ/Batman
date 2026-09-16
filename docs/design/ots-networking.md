@@ -1,7 +1,8 @@
 # Design: OpenTAKServer deployment networking on the node
 
-Status: **PASS-WITH-CHANGES (review R2)** — design decided; implementation gated on the
-on-node evidence below (prototype on manet01) · Issue: #162 · relates: #98, #81
+Status: **VALIDATED on manet01 (2026-09-16)** — design B proven on-node; ready for
+deployment scripting (uci-default). One item (real ATAK from an ahwlan client) deferred
+until the node is on a mesh. See **Validation** at the end. · Issue: #162 · relates: #98, #81
 Date: 2026-09-16
 
 ## Context
@@ -131,3 +132,40 @@ Prototype on **manet01** (recoverable) before manet02.
    **after a full cold reboot** (not just `sysctl -w`) — proves survival of module-load order.
 5. Negative test: from inside a container, attempt openmanetd `:8081` and dropbear `:22` on
    the host gateway — must be refused by `input=DROP` (proves the blast-radius rule loads).
+
+## Validation (on manet01, Pi4, 2026-09-16) — design B proven
+
+Prototyped the full networking design on manet01 (docker 27.3.1, memcg, isolated).
+All five gate items cleared (evidence captured live):
+
+1. **Single auditable table ✅** — baseline `iptables=1` had **3** tables (`inet fw4` +
+   docker `ip nat` + `ip filter`); after `uci set dockerd.globals.iptables=0` + restart +
+   a one-time flush of docker's pre-existing tables → **only `inet fw4`**.
+2. **Publish path ✅** — fw4-native DNAT (`dnat to 172.20.0.10:8088/8089`) + the
+   `ahwlan→dockert dport {8088,8089,8443} accept` rule are present in nft; a container on
+   br-ots reached the published EUD listener. *(Real ATAK connect from an ahwlan client is
+   deferred until the node is on a mesh — the rule path and reachability are proven.)*
+3. **East-west ✅** — postgis/rabbitmq/eud_handler came up on br-ots and reached each
+   other (eud_handler listening on 8088, confirmed reachable). Needed the zone
+   `forward=ACCEPT` (intra-zone) with `bnf-call` left at 1 — the design's option (i); no
+   global sysctl flip.
+4. **Cold-reboot survival ✅** — `iptables=0`, `ip_forward=1`, the single `inet fw4` table,
+   the `dockert` zone and the DNAT rules all survived a full reboot. **Refinement:** the
+   R1/R2 reboot-ordering worry is milder than feared — fw4 emits `iifname "br-ots"`
+   (name match, late-binding), so the rules apply once docker creates br-ots **without a
+   post-docker `fw4 reload`.** Also, a clean boot under `iptables=0` never creates the
+   stale docker tables, so the one-time flush from item 1 is only needed when flipping a
+   *running* docker, not at boot.
+5. **Blast-radius ✅** — from inside a container, all host control-plane ports
+   (openmanetd 8081/8080/8087, dropbear 22) were **BLOCKED (timeout)** by the `dockert`
+   `input=DROP`, while the container still reached its own peers — **before and after**
+   the reboot.
+
+**Deferred / notes:** `eud_handler_ssl` crashed on missing SSL certs (a deploy-time cert
+step, not a networking issue); containers lack `ss`/`netstat` (use an external reach test).
+Node reverted to baseline after the prototype.
+
+**Net:** the deployment recipe is: `uci set dockerd.globals.iptables=0` (data_root
+preserved) + the `dockert` zone/DNAT as a uci-default (per `deploy/ots/fw4-ots.sh`) +
+`forward=ACCEPT`/`input=DROP` + run the stack on `ots-net` (br-ots) with volume-chown and
+rabbitmq `--user rabbitmq`. No post-docker fw4 reload required.
