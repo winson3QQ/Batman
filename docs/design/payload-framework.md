@@ -1,7 +1,7 @@
 # Design: Payload framework — declarative, app-agnostic payload deployment
 
-Status: **draft v2 — review R1 addressed (PASS-WITH-CHANGES); needs re-review** ·
-Parent epic: **#68** (generic payload host)
+Status: **PASS-WITH-CHANGES (review R2)** — design approved modulo the on-node proofs in
+*Implementation gate* (prove at first build on manet01). · Parent epic: **#68** (generic payload host)
 Relates: #97 (admission/trust), #98 (runtime hardening), #151 (safe app swap),
 #153 (per-tenant profile spec, CLOSED — mechanism merged as PR #155 + `docs/security-profiles.md`),
 #156 (runtime owner), #81 (resource budget), #116 (fleet OTA), #159 (docker-in-image),
@@ -78,8 +78,14 @@ volumes:
 
 **Invariant (admission-checked):** `network.bridge` present ⇒ `values.network.mode:
 bridged`. This prevents a profile that *claims* host-net while the operational section
-builds a bridge (resolves R1-Q2). `apiVersion: batman.payload/v1` is carried; the manager
-**rejects unknown apiVersion**, and fleet (#116) gates on a node min-version.
+builds a bridge (resolves R1-Q2). **Reverse branch (R2-N3):** `values.network.mode: host`
+with **no** top-level `network:` (the FTS-style case) means the manager (i) builds no zone,
+(ii) runs `--network host`, (iii) still registers that app's host ports with the arbiter
+(host-net apps collide with each other too). Note `profile-to-flags.py` does **not** read
+`values.network` at all — it emits no `--network`; `mode` is **declarative** (the
+orchestrator sets the netns), so changing `mode` alone does not change the actual network.
+`apiVersion: batman.payload/v1` is carried; the manager **rejects unknown apiVersion**, and
+fleet (#116) gates on a node min-version.
 
 ## The mechanism — an ASSEMBLY of existing tools, not a new daemon
 
@@ -111,23 +117,39 @@ now). The mechanism is the existing tools wired in a fixed order:
      `docker run` can't silently bypass the profile; `verify-profile.sh` is the drift alarm.
      procd does this well.
    - **Intra-stack ordering + health-gating** (`lifecycle.order`/`health`) is **beyond
-     procd** (it has START/STOP priority + respawn, no readiness gating). Use
-     **docker-compose (with `ports:` omitted — fw4 publishes) + healthchecks** run *under*
-     that single procd service, or a small ordering wrapper. procd guards; compose orders.
+     procd** (START/STOP priority + respawn only, no readiness gating). **Chosen: a small
+     ordering wrapper** run under the procd service — sequential `docker run` (keeping the
+     `$HARDEN_FLAGS` string and `--network br-ots`) + healthcheck polling between steps.
+     **docker-compose is rejected as the default** for two concrete reasons (R2):
+     - *(N1)* compose builds a project-scoped network whose kernel bridge is a random
+       `br-<hash>`, **not** `br-ots` → the fw4 `iifname "br-ots"` rules (publish, east-west,
+       blast-radius) would **silently match nothing** — no error, ATAK can't connect,
+       isolation off. Compose is only usable with an **external** network pinned via
+       `-o com.docker.network.bridge.name=br-ots`.
+     - *(N2)* the #155 emitter produces a **`docker run` flag string** (`$HARDEN_FLAGS`);
+       compose needs YAML keys (`cap_drop:`/`read_only:`/`user:`/`pids_limit:`…). Using
+       compose reopens the merged emitter contract (needs a new `values→compose` renderer)
+       or hardening silently doesn't apply. The wrapper consumes `$HARDEN_FLAGS` directly.
+     - **Restart caveat (N5):** neither procd, the wrapper, nor compose `depends_on` re-gate
+       dependents when rabbitmq/postgis *crash-restart* — the ots-networking restart-storm
+       question stays open; the wrapper must add crash-restart backoff/health re-gating.
 6. **Swap** (#151, unchanged scope = a hardened swap wrapper) — signed-image verify +
-   state-aware rollback, mirroring the A/B pattern (#89). **Atomicity fix (R1-F3):** the
-   commit-journal transaction boundary must cover **all** generated artifacts
-   (descriptor + images + fw4 uci-default + procd unit + `hardening.env` + tenant state),
-   not just image+state — otherwise a half-applied swap (new zone installed, old container
-   still up) cannot roll back.
+   state-aware rollback, mirroring the A/B pattern (#89). **Atomicity — mechanism, not just
+   requirement (R2-N4):** there is **no cross-subsystem 2PC** on this platform (docker
+   image store / uci-default / procd unit / tenant state are four separate subsystems).
+   Achievable model = **a single monotonic-epoch commit marker** as the one commit point +
+   **each artifact applied/rolled-back idempotently** + **boot-time replay** of the marker.
+   Intra-swap ordering matters (esp. if the bridge subnet changes vX→vY, so does the DNAT
+   target IP): **start new container → health-gate → re-point DNAT → retire old**. This
+   lands in #151 (its journal widened to cover all artifacts listed above), not a new daemon.
 
 Container↔container name resolution uses docker's embedded 127.0.0.11 resolver.
 
 ## Trust (#97) — we consume ONE of three directions
 
 #97 defines **mutual** trust in three directions. This framework **only consumes
-direction-1** (node→app admission). The other two are **out of scope here and currently
-unowned**:
+direction-1** (node→app admission). The other two stay **in #97's scope but are unscheduled
+and not consumed here** (R2-N6):
 - **direction-2** app→node remote attestation — not addressed.
 - **direction-3** app↔app workload identity / mTLS (SPIFFE-style) — not addressed, yet it
   is exactly the "two payloads distrust each other" case (#68 camera→TAK). The descriptor
@@ -207,3 +229,22 @@ Three scope clarifications are required:
    two-payload deployment, or is L3 + baked policy enough for the first "things" tenant?
 3. Where does the port/subnet/zone arbiter live — a uci config the manager reads, or
    derived deterministically from tenant name?
+
+## Implementation gate — prove on manet01 at first build (R2, approvable modulo these)
+
+The design is approved; these must be demonstrated when the framework is first implemented
+(all are small, recoverable on-node experiments):
+
+1. **Orchestrator × iptables=0 × fixed `br-ots`** — the chosen ordering-wrapper brings the
+   stack up on the **exact kernel bridge name `br-ots`** so the fw4 `iifname "br-ots"` rules
+   actually match (N1). (If compose is ever used: external fixed-name network + no `ports:`.)
+2. **Hardening actually applied** — `verify-profile.sh` passes: `$HARDEN_FLAGS`
+   (cap-drop/read-only/user/cpus/pids) is on every container under the wrapper (N2).
+3. **N=2 isolation** — two payloads, two bridges/zones, inter-zone DROP proven (A can't
+   reach B except via `peer_allow`), and `nft list table inet fw4` is still one auditable
+   table (F8 / #167).
+4. **Arbiter refusal** — two descriptors contending for host `:8443` (or a subnet/zone-name
+   clash): admission refuses the second (F7 / #167).
+5. **Swap atomicity + crash-safe** — force a failure at "new zone installed, container not
+   healthy": image+state+fw4+procd+descriptor all roll back per the epoch marker; power-cut
+   then boot-replay leaves the DB intact (N4 / F3 / #151).
