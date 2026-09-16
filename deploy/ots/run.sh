@@ -33,7 +33,7 @@ HARDEN=""; [ -f "$HERE/ots.hardening.env" ] && { . "$HERE/ots.hardening.env"; HA
 
 # volumes (persist on p6) + non-root ownership (spike: ots uid 1024, rabbitmq 999)
 for v in ots-appdata ots-pgdata ots-mqdata; do docker volume inspect "$v" >/dev/null 2>&1 || docker volume create "$v" >/dev/null; done
-docker run --rm --user 0 -v ots-appdata:/app/ots --entrypoint chown "$OTS" -R 1024:1024 /app/ots
+docker run --rm --user 0 -v ots-appdata:/app/ots --entrypoint chown "$OTS" -R 1000:1024 /app/ots   # ots = uid 1000 gid 1024
 docker run --rm --user 0 -v ots-mqdata:/var/lib/rabbitmq --entrypoint chown "$OTS" -R 999:999 /var/lib/rabbitmq 2>/dev/null || true
 
 CM="--network $NET --restart on-failure:5 \
