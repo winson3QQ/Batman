@@ -11,7 +11,7 @@ co_scheduled_with: [ots-db, rabbitmq, ots-cot-parser, ots-eud-handler, ots-eud-h
 
 values:                                # emitter reads ONLY this
   network:  {mode: bridged}            # br-ots; EUD 8088/8089 + web 8443, all >1024. VALIDATED (design B) on manet01.
-  user:     {run_as: 1024}             # OTS is non-root BY DESIGN (image USER ots uid 1024) — unlike FTS. Big win: no chown/getpwuid fight.
+  user:     {run_as: 1000, run_as_gid: 1024}   # OTS non-root BY DESIGN: image `USER ots` = uid 1000, gid 1024 (adduser auto-assigned 1000; gid pinned 1024). Must pass BOTH — /app is 0700 owned by 1000, so --user 1024 (wrong owner) EPERM. Verified on manet01.
   no_new_privileges: true
   caps:     {drop: [ALL], add: []}     # plausible (>1024 ports, python stack) — TEST-GATED (gate item 2, not yet applied to OTS containers)
   rootfs:   {read_only: false, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # start false; OTS writes to /app/ots (a VOLUME) not site-packages, so read_only IS plausible later once verified (unlike FTS which is EROFS-blocked). Improvement, not exception.
@@ -25,7 +25,7 @@ values:                                # emitter reads ONLY this
 
 assessment:
   network:            {control: "NIST SP 800-190 §4.4.2 / CIS Docker 5.29", status: "validated(manet01 2026-09-16): bridged (br-ots) + fw4-native DNAT publish + dockert zone input=DROP — 5/5 gate incl blast-radius + cold-reboot; see docs/design/ots-networking.md", evidence: "container->openmanetd/dropbear BLOCKED; DNAT 8088/8089 reachable; single inet fw4 table"}
-  user:               {control: "CIS Docker 4.1 / PSS runAsNonRoot", status: "validated-by-design(manet01 2026-09-16): OTS image runs as ots uid 1024; containers ran non-root in the spike. Pending explicit --user pin + drift-check.", evidence: "Dockerfile USER ots (1024); eud_handler ran non-root"}
+  user:               {control: "CIS Docker 4.1 / PSS runAsNonRoot", status: "validated(manet01 2026-09-16): --user 1000:1024 pinned = image's ots (uid 1000, gid 1024); API + workers run non-root. NOTE /app is 0700 owned by 1000 so BOTH uid+gid must match.", evidence: "id=uid=1000(ots) gid=1024(ots); API Up under --user 1000:1024"}
   no_new_privileges:  {control: "CIS Docker 5.25 / PSS", status: "planned: not yet applied to OTS containers (gate item 2)", evidence: ""}
   caps:               {control: "CIS Docker 5.3 / PSS Restricted", status: "planned: cap-drop=ALL add:[] not yet applied to OTS (gate item 2 — spike ran containers plain)", evidence: ""}
   rootfs:             {control: "CIS Docker 5.12", status: "planned: read_only not yet tested on OTS; plausible since OTS writes to /app/ots volume (not package dir like FTS)", evidence: ""}
@@ -66,6 +66,6 @@ lifecycle:
   restart: on-failure-backoff          # crash-restart re-gating still open (R2-N5)
 
 volumes:                               # under the tenant state root (#167); chowned to run_as
-  - {name: ots-appdata, path: /app/ots, chown: 1024}
+  - {name: ots-appdata, path: /app/ots, chown: 1000}   # ots uid 1000
   - {name: ots-pgdata,  path: /var/lib/postgresql}
   - {name: ots-mqdata,  path: /var/lib/rabbitmq, chown: 999}
