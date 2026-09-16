@@ -1,0 +1,71 @@
+# Payload descriptor for the OpenTAKServer (OTS) tenant — app #1 of the payload framework.
+# See docs/design/payload-framework.md (#68) + docs/security-profiles.md (#153).
+# `values` is the machine-readable SoT — scripts/profile-to-flags.py derives docker flags
+# from THIS block ONLY. The operational siblings (images/network/lifecycle/volumes) are
+# read by the payload manager (ordering-wrapper + fw4 generator), IGNORED by the emitter.
+# Self-assessed, NOT certified (#93). Nothing is `implemented` until the §5 drift-check passes.
+apiVersion: batman.payload/v1
+tenant: opentakserver
+archetype: network-service
+co_scheduled_with: [ots-db, rabbitmq, ots-cot-parser, ots-eud-handler, ots-eud-handler-ssl]
+
+values:                                # emitter reads ONLY this
+  network:  {mode: bridged}            # br-ots; EUD 8088/8089 + web 8443, all >1024. VALIDATED (design B) on manet01.
+  user:     {run_as: 1024}             # OTS is non-root BY DESIGN (image USER ots uid 1024) — unlike FTS. Big win: no chown/getpwuid fight.
+  no_new_privileges: true
+  caps:     {drop: [ALL], add: []}     # plausible (>1024 ports, python stack) — TEST-GATED (gate item 2, not yet applied to OTS containers)
+  rootfs:   {read_only: false, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # start false; OTS writes to /app/ots (a VOLUME) not site-packages, so read_only IS plausible later once verified (unlike FTS which is EROFS-blocked). Improvement, not exception.
+  resources: {cpus: 1.0, memory: 512m, pids: 512}   # idle measured ~116MiB/service on Pi4 (2026-09-16); 512m leaves headroom. memcg enabled (docker-in-image #159).
+  devices:  []
+  seccomp:  {profile: default}
+  privileged: false
+  docker_socket_mounted: false
+  secrets:                             # F5 — delivery mechanism owned by #167
+    - {name: eud-ssl-cert, delivery: file, exposure: "TLS cert for eud_handler --ssl; protect at rest (#13/#47)"}
+
+assessment:
+  network:            {control: "NIST SP 800-190 §4.4.2 / CIS Docker 5.29", status: "validated(manet01 2026-09-16): bridged (br-ots) + fw4-native DNAT publish + dockert zone input=DROP — 5/5 gate incl blast-radius + cold-reboot; see docs/design/ots-networking.md", evidence: "container->openmanetd/dropbear BLOCKED; DNAT 8088/8089 reachable; single inet fw4 table"}
+  user:               {control: "CIS Docker 4.1 / PSS runAsNonRoot", status: "validated-by-design(manet01 2026-09-16): OTS image runs as ots uid 1024; containers ran non-root in the spike. Pending explicit --user pin + drift-check.", evidence: "Dockerfile USER ots (1024); eud_handler ran non-root"}
+  no_new_privileges:  {control: "CIS Docker 5.25 / PSS", status: "planned: not yet applied to OTS containers (gate item 2)", evidence: ""}
+  caps:               {control: "CIS Docker 5.3 / PSS Restricted", status: "planned: cap-drop=ALL add:[] not yet applied to OTS (gate item 2 — spike ran containers plain)", evidence: ""}
+  rootfs:             {control: "CIS Docker 5.12", status: "planned: read_only not yet tested on OTS; plausible since OTS writes to /app/ots volume (not package dir like FTS)", evidence: ""}
+  resources:          {control: "CIS Docker 5.10/5.11/5.28 · NIST §4.4.2", status: "measured(manet01 2026-09-16): idle ~116MiB/service, postgis 43MiB, rabbitmq 112MiB. --cpus/--memory/--pids values set; ENFORCE not yet verified on OTS (gate item 2). memcg on (#159).", evidence: "docker stats idle, memcg enabled from image"}
+  seccomp:            {control: "CIS Docker 5.21", status: "planned: default profile (not yet asserted on OTS)", evidence: ""}
+  privileged:         {control: "CIS Docker 5.4 / PSS Baseline", status: "planned: privileged=false (not yet asserted on OTS)", evidence: ""}
+  docker_socket:      {control: "CIS Docker 5.31", status: "planned: socket not mounted (not yet asserted on OTS)", evidence: ""}
+  secrets:            {control: "NIST SP 800-190 §4.3.4", status: "planned: eud-ssl-cert delivery unowned until #167; eud_handler_ssl crashed w/o cert in spike", evidence: "spike: eud_handler_ssl exited on missing SSL cert"}
+
+exceptions: []                         # none yet — OTS's non-root+volume design avoids FTS's root/read-only exceptions
+
+target: {level: PSS-Restricted, note: "rollup = N/M axes implemented-with-evidence; bridged network (not host) means this can actually reach Restricted, unlike the FTS host-net exception"}
+
+# ---- operational siblings (payload-manager consumed; emitter-ignored) ----
+images:
+  - {ref: "batman/ots:1.7.13-arm64", roles: [api, cot_parser, eud_handler, eud_handler_ssl]}   # digest-pin before prod
+  - {ref: "imresamu/postgis:18-3.6", role: db}
+  - {ref: "rabbitmq:latest", role: broker, run_as: rabbitmq, env: {RABBITMQ_ERLANG_COOKIE: "<per-node>"}}   # --user rabbitmq (cookie eacces fix)
+
+network:                               # -> fw4-native uci-default (validated design B)
+  bridge: {name: br-ots, subnet: 172.20.0.0/24}   # subnet/zone from the node arbiter (#167)
+  zone:   dockert
+  publish:                             # each target is a DISTINCT container's static IP on br-ots
+    - {src_zone: ahwlan, host_port: 8088, to: "172.20.0.10:8088", proto: tcp}   # eud_handler (TCP CoT)
+    - {src_zone: ahwlan, host_port: 8089, to: "172.20.0.12:8089", proto: tcp}   # eud_handler_ssl (SSL CoT)
+    - {src_zone: ahwlan, host_port: 8443, to: "172.20.0.11:443",  proto: tcp}   # nginx web UI (optional; not in Milestone A core)
+  isolation: {input: DROP, forward: intra-zone, egress: none}   # blast-radius: container->host BLOCKED
+  peer_allow: []
+
+lifecycle:
+  order:  [ots-db, rabbitmq, ots, cot_parser, eud_handler, eud_handler_ssl]
+  health:
+    ots-db:   "pg_isready -q"
+    rabbitmq: "rabbitmq-diagnostics -q ping"
+    ots:      "curl -fsS http://localhost:8081/api/health"
+  init_once:                           # first-boot only; app self-inits schema/CA
+    - "opentakserver first-run creates CA + DB schema (no manual step needed)"
+  restart: on-failure-backoff          # crash-restart re-gating still open (R2-N5)
+
+volumes:                               # under the tenant state root (#167); chowned to run_as
+  - {name: ots-appdata, path: /app/ots, chown: 1024}
+  - {name: ots-pgdata,  path: /var/lib/postgresql}
+  - {name: ots-mqdata,  path: /var/lib/rabbitmq, chown: 999}
