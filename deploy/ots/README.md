@@ -62,9 +62,9 @@ production deploy:**
 1. **No arm64 upstream images** → self-build (handled by `build-arm64.sh`; ongoing
    maintenance = patch-and-own, like the vendored FTS cert_gen/protobuf).
 2. **Networking (the hard one):**
-   - Docker **bridge** networks are **default-rejected by the node fw3** → cross-container TCP refused.
+   - Docker **bridge** networks are **default-rejected by the node fw4 (nftables)** → cross-container TCP refused (mechanism: `br-netfilter` pushes intra-bridge frames through the fw4 FORWARD hook, and the docker bridge is in no fw4 zone).
    - **host-net collides** with node services: API 8081 vs **openmanetd (8081/8080/8087)**, web UI 80/443 vs **uhttpd**.
-   - → need **OTS port remap** and/or a **fw3 zone for the docker bridge**. (FTS worked only because it used host-net + few ports.)
+   - → need a **fw4 zone (or fw4-native rules) for the docker bridge** and to publish only external ports. (FTS ran on host-net *with remapped ports* — see `deploy/fts/run.sh`; that path loses per-service netns, so bridge is preferred for the hardening line. See `docs/design/ots-networking.md`.)
 3. **non-root + volume ownership** — `ots` uid 1024 can't write a root-owned volume
    (`/app/ots/uploads`); the volume must be chowned to 1024 (or no volume for ephemeral).
 4. **rabbitmq `.erlang.cookie` eacces** — run with `--user rabbitmq` + `RABBITMQ_ERLANG_COOKIE`.
