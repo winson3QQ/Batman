@@ -1,0 +1,19 @@
+#!/bin/sh
+# batman-version — report the Batman image build identity, stamped at build time into
+# /etc/batman-build (KEY=VALUE). Lets a running node self-report which build it is
+# (version, channel, base OS, source git commits) instead of guessing from a release tag.
+# See winson3QQ/Batman#160 (image provenance) and #159 (docker-in-image).
+F=/etc/batman-build
+if [ ! -f "$F" ]; then
+	echo "batman-version: no /etc/batman-build stamp (untagged build)"
+	echo "base: $(sed -n 's/^DISTRIB_DESCRIPTION=//p' /etc/openwrt_release 2>/dev/null | tr -d \"'\") $(sed -n 's/^DISTRIB_REVISION=//p' /etc/openwrt_release 2>/dev/null | tr -d \"'\")"
+	exit 0
+fi
+# shellcheck disable=SC1090
+. "$F"
+echo "Batman ${BATMAN_VERSION:-?} (${BATMAN_CHANNEL:-?}) built ${BATMAN_BUILD_DATE:-?}"
+echo "  base:     ${BATMAN_BASE:-?}"
+echo "  feed:     winson3QQ/Batman@${BATMAN_FEED_COMMIT:-?}"
+echo "  firmware: winson3QQ/firmware@${BATMAN_FW_COMMIT:-?}"
+echo "  features: ${BATMAN_FEATURES:-?}"
+[ -n "${BATMAN_NOTE:-}" ] && echo "  note:     ${BATMAN_NOTE}"

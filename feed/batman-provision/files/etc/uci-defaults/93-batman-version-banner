@@ -1,0 +1,15 @@
+#!/bin/sh
+# 93-batman-version-banner — make the build identity visible at login + log it at boot.
+# Appends `batman-version` output to /etc/banner (shown on every ssh/console login) and
+# logs it once to syslog so it lands in boot-reasons/logread. #159/#160 provenance.
+[ -x /usr/bin/batman-version ] || exit 0
+V=$(/usr/bin/batman-version 2>/dev/null)
+[ -n "$V" ] || exit 0
+# log to syslog (boot-visible via logread)
+logger -t batman-version "$V" 2>/dev/null
+echo "$V" > /dev/kmsg 2>/dev/null
+# append to the login banner once (idempotent: only if not already there)
+if [ -f /etc/banner ] && ! grep -q "^Batman .* built " /etc/banner 2>/dev/null; then
+	{ echo; echo "$V"; } >> /etc/banner
+fi
+exit 0
