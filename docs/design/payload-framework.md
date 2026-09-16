@@ -158,14 +158,14 @@ volume-chown / rabbitmq `--user` details, and `values.secrets` naming the EUD SS
 - **Generic N-tenant state layout + teardown.** #119 (tenant layout) is **CLOSED and
   FTS-specific**; #151 punts archive/zeroize to a "separate path." No open issue owns a
   generic `apps/<tenant>/` (or p6) layout, quota, and secure **removal/zeroize** for
-  arbitrary tenants. **Open a new issue.** (Also: unify the state-path convention — #151
+  arbitrary tenants. Owned by #167. (Also: unify the state-path convention — #151
   and the FTS profile use `apps/<tenant>/`; this design must pick one and not drift to
   bare `/opt/batdata`.)
 - **Secrets *delivery* mechanism.** `values.secrets` is *declared* in the merged schema,
   but how an air-gapped container actually receives its TLS cert / DB cred / rabbitmq
-  cookie has **no owner** (OTS `eud_handler_ssl` crashed for a missing cert). **Own it**
+  cookie has **no owner** (OTS `eud_handler_ssl` crashed for a missing cert). Owned by #167
   (ties #13/#47 at-rest), don't scatter it in `init_once`.
-- **The port/subnet/zone arbiter** (step 2) needs a home — likely the same new issue.
+- **The port/subnet/zone arbiter** (step 2) needs a home — #167.
 - **payload↔payload isolation at N>1** — per-app bridge+zone+inter-zone DROP gives **L3**
   isolation; this must be **tested at N=2 on manet01** (the "one auditable `nft table`"
   claim is only proven at N=1 and degrades as zones/DNAT sets grow).
@@ -197,7 +197,7 @@ Three scope clarifications are required:
   and 3 (app↔app identity) are unowned and matter for multi-tenant.
 - **#151** — keep its "hardened swap wrapper" scope (no monolithic daemon); widen its
   commit-journal to cover all generated artifacts.
-- **New issue** — own generic N-tenant state layout + teardown + the port/subnet/zone
+- **#167** — owns generic N-tenant state layout + teardown + the port/subnet/zone
   arbiter + secrets-delivery (the gaps above); #119 is closed/FTS-specific.
 
 ## Open questions for re-review
