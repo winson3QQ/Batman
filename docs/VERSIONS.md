@@ -45,3 +45,7 @@ Existing GitHub release tags were named ad-hoc (by content/date) and do **not** 
 | 2.0.0 | *(reserved)* v2.0 Build-gate reached | — | — |
 
 Refs #75 (SoT), #160 (provenance), #73 (dev-infra).
+
+## Retention (what goes to Batman-P)
+
+Not every build is promoted. WSL `bin/targets/` holds every build (transient, overwritten). A build is **promoted** to a Batman-P pre-release only when it is **validated** (on-node / `ab-selftest`) and worth keeping/flashing. Keep **one current good build per version line**; prune superseded ones (e.g. `batman-ab-docker-v2` was retired when `batman-1.3.0-wsl` landed). Each promoted release carries the full-card `.img.gz`, the OTA `ab-payload` tar, and the `<image>.manifest.txt`.
