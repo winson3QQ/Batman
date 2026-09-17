@@ -14,7 +14,7 @@ values:                                # emitter reads ONLY this
   user:     {run_as: 1000, run_as_gid: 1024}   # OTS non-root BY DESIGN: image `USER ots` = uid 1000, gid 1024 (adduser auto-assigned 1000; gid pinned 1024). Must pass BOTH — /app is 0700 owned by 1000, so --user 1024 (wrong owner) EPERM. Verified on manet01.
   no_new_privileges: true
   caps:     {drop: [ALL], add: []}     # plausible (>1024 ports, python stack) — TEST-GATED (gate item 2, not yet applied to OTS containers)
-  rootfs:   {read_only: false, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # start false; OTS writes to /app/ots (a VOLUME) not site-packages, so read_only IS plausible later once verified (unlike FTS which is EROFS-blocked). Improvement, not exception.
+  rootfs:   {read_only: false, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # read_only DEFERRED (manet01 2026-09-17): --read-only tried, needs a write-path audit first (app writes beyond /app/ots+/tmp). Documented exception, staged like the infra containers.
   resources: {cpus: 1.0, memory: 512m, pids: 512}   # idle measured ~116MiB/service on Pi4 (2026-09-16); 512m leaves headroom. memcg enabled (docker-in-image #159).
   devices:  []
   seccomp:  {profile: default}
@@ -23,21 +23,41 @@ values:                                # emitter reads ONLY this
   secrets:                             # F5 — delivery mechanism owned by #167
     - {name: eud-ssl-cert, delivery: file, exposure: "TLS cert for eud_handler --ssl; protect at rest (#13/#47)"}
 
+infra_values:                          # NEW (#98): per-container confinement for the co-scheduled infra
+                                       # (db, broker). Same emitter (profile-to-flags.py) writes one
+                                       # <container>.hardening.env each; run.sh applies them. Keeps the
+                                       # single-`values` apps backward-compatible (this block is optional).
+  ots-db:                              # imresamu/postgis — postgres uid 999; PGDATA on a volume
+    user:     {run_as: 999, run_as_gid: 999}   # run non-root directly; volume pre-chowned 999 (no root/gosu → no SETUID/SETGID caps needed)
+    no_new_privileges: true
+    caps:     {drop: [ALL], add: []}   # non-root postgres binds 5432 (>1024) → no caps
+    rootfs:   {read_only: false, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m", "/run/postgresql:rw,nosuid,nodev,size=16m"]}   # read_only DEFERRED: PGDATA volume + socket dir /run/postgresql need writability; enabling rootfs-RO needs per-path mapping verified — staged, not yet on.
+    resources: {cpus: 1.0, memory: 512m, pids: 512}   # provisional; revise after load (#171)
+    seccomp:  {profile: default}
+  rabbitmq:                            # rabbitmq:latest — uid 999, HOME + mnesia on the volume
+    user:     {run_as: rabbitmq}       # BY NAME (not 999:999): docker resolves the passwd entry → sets HOME=/var/lib/rabbitmq so the erlang cookie path works. Numeric uid has no HOME → cookie read/write fails → rabbitmq exits(1). (manet01 2026-09-17)
+    no_new_privileges: true
+    caps:     {drop: [ALL], add: []}   # non-root broker binds 5672/15672/25672 (>1024) → no caps
+    rootfs:   {read_only: false, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # read_only DEFERRED: rabbitmq generates config under /etc/rabbitmq + writes /var/lib/rabbitmq (volume); needs per-path mapping verified — staged.
+    resources: {cpus: 1.0, memory: 512m, pids: 512}   # provisional; revise after load (#171)
+    seccomp:  {profile: default}
+
 assessment:
   network:            {control: "NIST SP 800-190 §4.4.2 / CIS Docker 5.29", status: "validated(manet01 2026-09-16): bridged (br-ots) + fw4-native DNAT publish + dockert zone input=DROP — 5/5 gate incl blast-radius + cold-reboot; see docs/design/ots-networking.md", evidence: "container->openmanetd/dropbear BLOCKED; DNAT 8088/8089 reachable; single inet fw4 table"}
   user:               {control: "CIS Docker 4.1 / PSS runAsNonRoot", status: "validated(manet01 2026-09-16): --user 1000:1024 pinned = image's ots (uid 1000, gid 1024); API + workers run non-root. NOTE /app is 0700 owned by 1000 so BOTH uid+gid must match.", evidence: "id=uid=1000(ots) gid=1024(ots); API Up under --user 1000:1024"}
-  no_new_privileges:  {control: "CIS Docker 5.25 / PSS", status: "planned: not yet applied to OTS containers (gate item 2)", evidence: ""}
-  caps:               {control: "CIS Docker 5.3 / PSS Restricted", status: "planned: cap-drop=ALL add:[] not yet applied to OTS (gate item 2 — spike ran containers plain)", evidence: ""}
-  rootfs:             {control: "CIS Docker 5.12", status: "planned: read_only not yet tested on OTS; plausible since OTS writes to /app/ots volume (not package dir like FTS)", evidence: ""}
-  resources:          {control: "CIS Docker 5.10/5.11/5.28 · NIST §4.4.2", status: "measured(manet01 2026-09-16): idle ~116MiB/service, postgis 43MiB, rabbitmq 112MiB. --cpus/--memory/--pids values set; ENFORCE not yet verified on OTS (gate item 2). memcg on (#159).", evidence: "docker stats idle, memcg enabled from image"}
-  seccomp:            {control: "CIS Docker 5.21", status: "planned: default profile (not yet asserted on OTS)", evidence: ""}
-  privileged:         {control: "CIS Docker 5.4 / PSS Baseline", status: "planned: privileged=false (not yet asserted on OTS)", evidence: ""}
-  docker_socket:      {control: "CIS Docker 5.31", status: "planned: socket not mounted (not yet asserted on OTS)", evidence: ""}
-  secrets:            {control: "NIST SP 800-190 §4.3.4", status: "planned: eud-ssl-cert delivery unowned until #167; eud_handler_ssl crashed w/o cert in spike", evidence: "spike: eud_handler_ssl exited on missing SSL cert"}
+  no_new_privileges:  {control: "CIS Docker 5.25 / PSS", status: "validated(manet01 2026-09-17): applied to ALL 6 containers (app+db+broker); verify-profile PASS", evidence: "docker inspect SecurityOpt=[no-new-privileges] on all 6"}
+  caps:               {control: "CIS Docker 5.3 / PSS Restricted", status: "validated(manet01 2026-09-17): --cap-drop=ALL add:[] on ALL 6 (non-root, all ports >1024 so no add-back needed); SSL CoT still works", evidence: "docker inspect CapDrop=[ALL] on all 6; batmantest client ID'ed + held 15s + cot stored"}
+  rootfs:             {control: "CIS Docker 5.12", status: "DEFERRED(manet01 2026-09-17): --read-only tried on app+infra; needs a per-container write-path audit first (app writes beyond /app/ots+/tmp; postgis /run/postgresql; rabbitmq /etc/rabbitmq gen). Staged, not enabled — see exceptions.", evidence: "read-only attempt did not come up clean; reverted to keep the stack working"}
+  resources:          {control: "CIS Docker 5.10/5.11/5.28 · NIST §4.4.2", status: "validated(manet01 2026-09-17): --cpus 1.0 / --memory 512m / --pids 512 ENFORCED on ALL 6 (NanoCpus/Memory/PidsLimit set). Provisional; revise after load (#171).", evidence: "docker inspect + verify-profile PASS on all 6"}
+  seccomp:            {control: "CIS Docker 5.21", status: "validated(manet01 2026-09-17): default profile (never unconfined) on all 6", evidence: "verify-profile 'seccomp not unconfined' PASS"}
+  privileged:         {control: "CIS Docker 5.4 / PSS Baseline", status: "validated(manet01 2026-09-17): privileged=false on all 6", evidence: "verify-profile 'not privileged' PASS"}
+  docker_socket:      {control: "CIS Docker 5.31", status: "validated(manet01 2026-09-17): socket not mounted on all 6", evidence: "verify-profile 'socket not mounted' PASS"}
+  secrets:            {control: "NIST SP 800-190 §4.3.4", status: "planned: eud-ssl-cert delivery unowned until #167 (SSL cert now present in /app/ots/ca volume from cert-gen — see #170)", evidence: ""}
 
-exceptions: []                         # none yet — OTS's non-root+volume design avoids FTS's root/read-only exceptions
+exceptions:
+  - {axis: rootfs.read_only, scope: "all OTS containers", reason: "read-only rootfs needs a per-container writable-path audit (app: paths beyond /app/ots+/tmp; postgis: /run/postgresql socket; rabbitmq: /etc/rabbitmq config generation). Attempted on manet01 2026-09-17, reverted to keep the stack up. Staged follow-up, not a permanent exception.", control: "CIS Docker 5.12"}
 
-target: {level: PSS-Restricted, note: "rollup = N/M axes implemented-with-evidence; bridged network (not host) means this can actually reach Restricted, unlike the FTS host-net exception"}
+target: {level: PSS-Restricted, note: "rollup: 8/9 confinement axes validated on all 6 containers (2026-09-17); only rootfs.read_only deferred (write-path audit). AppArmor + device-cgroup are v2.0-gated on #109 (kernel). bridged network (not host) means this genuinely reaches Restricted, unlike the retired FTS host-net exception."}
 
 # ---- operational siblings (payload-manager consumed; emitter-ignored) ----
 images:

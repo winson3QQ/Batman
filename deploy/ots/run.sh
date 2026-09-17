@@ -26,32 +26,40 @@ docker network inspect "$NET" >/dev/null 2>&1 || \
 [ "$(docker network inspect "$NET" -f '{{index .Options "com.docker.network.bridge.name"}}')" = "$BR" ] \
   || { echo "FATAL: $NET kernel bridge is not $BR — fw4 iifname rules would miss (recreate the network)"; exit 1; }
 
-# #98 confinement flags from the OTS tenant profile (scripts/profile-to-flags.py) — applied to the
-# OTS APP containers only; postgis/rabbitmq are co-scheduled infra with their own minimal treatment.
+# #98 confinement flags from the OTS tenant profile (scripts/profile-to-flags.py). Multi-container:
+# ots.hardening.env = the 4 OTS app containers; ots-db/rabbitmq.hardening.env = per-infra (from the
+# profile's infra_values block). Each is sourced then captured (sourcing reuses $HARDEN_FLAGS).
 HERE=$(cd "$(dirname "$0")" && pwd)
 HARDEN=""; [ -f "$HERE/ots.hardening.env" ] && { . "$HERE/ots.hardening.env"; HARDEN="$HARDEN_FLAGS"; }
+HARDEN_DB=""; [ -f "$HERE/ots-db.hardening.env" ] && { . "$HERE/ots-db.hardening.env"; HARDEN_DB="$HARDEN_FLAGS"; }
+HARDEN_MQ=""; [ -f "$HERE/rabbitmq.hardening.env" ] && { . "$HERE/rabbitmq.hardening.env"; HARDEN_MQ="$HARDEN_FLAGS"; }
 
 # volumes (persist on p6) + non-root ownership (spike: ots uid 1024, rabbitmq 999)
 for v in ots-appdata ots-pgdata ots-mqdata; do docker volume inspect "$v" >/dev/null 2>&1 || docker volume create "$v" >/dev/null; done
 docker run --rm --user 0 -v ots-appdata:/app/ots --entrypoint chown "$OTS" -R 1000:1024 /app/ots   # ots = uid 1000 gid 1024
 docker run --rm --user 0 -v ots-mqdata:/var/lib/rabbitmq --entrypoint chown "$OTS" -R 999:999 /var/lib/rabbitmq 2>/dev/null || true
+docker run --rm --user 0 -v ots-pgdata:/var/lib/postgresql --entrypoint chown "$OTS" -R 999:999 /var/lib/postgresql 2>/dev/null || true   # postgis non-root (uid 999)
 
 CM="--network $NET --restart on-failure:5 \
  -e SQLALCHEMY_DATABASE_URI=postgresql+psycopg://ots:password@ots-db/ots \
  -e OTS_RABBITMQ_SERVER_ADDRESS=rabbitmq -e OTS_LISTENER_ADDRESS=0.0.0.0 -e OTS_FQDN=_ \
  -e OTS_MEDIAMTX_API_ADDRESS=http://localhost:9997 -v ots-appdata:/app/ots"
 
-echo "==> ots-db (postgis)"
+echo "==> ots-db (postgis)  [harden: ${HARDEN_DB:-none}]"
 docker rm -f ots-db >/dev/null 2>&1 || true
+# shellcheck disable=SC2086
 docker run -d --name ots-db --hostname ots-db --network "$NET" --ip 172.20.0.2 --restart on-failure:5 \
   -e POSTGRES_USER=ots -e POSTGRES_PASSWORD=password -e POSTGRES_DB=ots -e PGUSER=ots \
-  -v ots-pgdata:/var/lib/postgresql "$DB" >/dev/null
+  $HARDEN_DB -v ots-pgdata:/var/lib/postgresql "$DB" >/dev/null
 printf "    wait pg"; i=0; while [ $i -lt 60 ]; do docker exec ots-db pg_isready -q 2>/dev/null && { echo " ok"; break; }; printf .; sleep 2; i=$((i+1)); done
 
-echo "==> rabbitmq (--user rabbitmq + cookie)"
+echo "==> rabbitmq (cookie + harden)  [harden: ${HARDEN_MQ:-none}]"
 docker rm -f rabbitmq >/dev/null 2>&1 || true
+# shellcheck disable=SC2086
 docker run -d --name rabbitmq --hostname rabbitmq --network "$NET" --ip 172.20.0.3 --restart on-failure:5 \
-  --user rabbitmq -e RABBITMQ_ERLANG_COOKIE="$COOKIE" -v ots-mqdata:/var/lib/rabbitmq "$MQ" >/dev/null
+  -e RABBITMQ_ERLANG_COOKIE="$COOKIE" $HARDEN_MQ \
+  -v "$HERE/rabbitmq-extra.conf":/etc/rabbitmq/conf.d/99-batman.conf:ro \
+  -v ots-mqdata:/var/lib/rabbitmq "$MQ" >/dev/null
 printf "    wait mq"; i=0; while [ $i -lt 90 ]; do docker exec rabbitmq rabbitmq-diagnostics -q ping >/dev/null 2>&1 && { echo " ok"; break; }; printf .; sleep 2; i=$((i+1)); done
 
 echo "==> opentakserver API  [harden: ${HARDEN:-none}]"
