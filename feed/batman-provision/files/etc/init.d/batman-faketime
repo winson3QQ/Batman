@@ -1,0 +1,26 @@
+#!/bin/sh /etc/rc.common
+# batman-faketime — offline monotonic wall-clock persistence (#174).
+# START=12: right after batdata-mount (S11 mounts p6) and before logd (S12, alpha-first),
+#           dropbear/ntpd/crond/docker/OTS — so the clock is advanced before anything reads
+#           wall time or issues a cert.
+# STOP=09 : before batdata-mount (S10) unmounts p6, so the final save lands on p6.
+# Never blocks boot: every path in the tool returns 0; no `set -e` here.
+USE_PROCD=1
+START=12
+STOP=09
+BIN=/usr/sbin/batman-faketime
+
+start_service() {
+	# runs at boot (S12) and on manual start: advance the clock forward to the saved bound
+	"$BIN" restore
+	# periodic saver (procd-managed loop; no cron dependency)
+	procd_open_instance
+	procd_set_param command "$BIN" run
+	procd_set_param respawn 3600 5 0
+	procd_close_instance
+}
+
+stop_service() {
+	# clean shutdown/reboot: persist the bound while p6 is still mounted (before S10 unmount)
+	"$BIN" save
+}
