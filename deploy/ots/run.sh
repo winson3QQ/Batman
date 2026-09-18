@@ -9,13 +9,13 @@
 # Prereqs (node prep, one-time — see README):
 #   - dockerd iptables=0 (uci dockerd.globals.iptables=0)      [design B single-table]
 #   - fw4 rules applied: sh deploy/ots/ots.fw4.uci  (or installed as a uci-default)
-#   - images loaded: batman/ots:1.7.13-arm64, imresamu/postgis:18-3.6, rabbitmq:latest
+#   - images loaded: batman/ots:1.7.13-arm64, imresamu/postgis:18-3.6, rabbitmq:4.3.6
 #
 #   run.sh [--cookie <rabbitmq-erlang-cookie>]
 set -e
 BAT=/opt/batdata
 NET=ots-net ; BR=br-ots ; SUBNET=172.20.0.0/24
-OTS=batman/ots:1.7.13-arm64 ; DB=imresamu/postgis:18-3.6 ; MQ=rabbitmq:latest
+OTS=batman/ots:1.7.13-arm64 ; DB=imresamu/postgis:18-3.6 ; MQ=rabbitmq:4.3.6   # MQ pinned (was :latest) — 4.3.6 is the validated running version (#162); repin deliberately
 COOKIE=batman-ots-cookie
 while [ $# -gt 0 ]; do case "$1" in --cookie) COOKIE=$2; shift 2;; *) echo "usage: run.sh [--cookie C]"; exit 2;; esac; done
 
