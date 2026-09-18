@@ -4,7 +4,7 @@
 # actually applied, AND the container is Running with uptime > MIN_UPTIME (a crash-looping container
 # still reports its requested config in inspect, so State is checked too). Runs on the busybox node.
 # No YAML here — it consumes the generated env only. Only axes present in $HARDEN_FLAGS are checked
-# (values==applied); an axis intentionally deferred (e.g. fts-ui --read-only, --memory) emits no flag
+# (values==applied); an axis intentionally deferred (e.g. a tenant that cannot yet run --read-only) emits no flag
 # and is not asserted — its `planned/blocked/deferred` status lives in the profile's assessment block.
 set -e
 app="$1"; [ -n "$app" ] || { echo "usage: verify-profile.sh <app> [env-file]"; exit 2; }

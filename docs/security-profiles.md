@@ -31,7 +31,7 @@ target: {level: PSS-Baseline|PSS-Restricted, note: "rollup reports N/M axes, nev
 ```
 
 ## 2. Archetypes (a project grouping — each control still cites a real standard, the *grouping* is not itself a standard)
-- **network-service** (FTS, fts-ui, MQTT, TAK-bridge, EMS collector) → target **PSS Restricted**; `network=host` only as a documented, compensated exception.
+- **network-service** (OTS + rabbitmq + ots-db, MQTT, TAK-bridge, EMS collector) → target **PSS Restricted**; `network=host` only as a documented, compensated exception.
 - **hardware-payload** (SDR/camera/drone/sensor — #68 "things") → target **Restricted + a minimal `--device` grant**; cannot be pure-Restricted (must reach `/dev`). **Blocked on #109** — the current kernel has no `CONFIG_CGROUP_DEVICE`, so device-cgroup enforcement is not buildable. Template only; no on-node app yet.
 
 ## 3. Standards mapping (corrected citations)

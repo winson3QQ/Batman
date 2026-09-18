@@ -1,6 +1,6 @@
 #!/bin/sh
 # CI drift guard (#159, review M2): the batman-payload-host meta-package DEPENDS closure
-# and deploy/fts/payload-host-packages.txt describe the SAME set of packages but live in
+# and deploy/payload-host-packages.txt describe the SAME set of packages but live in
 # different places (a package Makefile vs a captured runtime manifest) and are consumed by
 # different repos (this feed vs the firmware fork's board seed). If they drift, the image
 # either omits a package the node needs or bakes in one nobody vetted. This asserts they
@@ -12,7 +12,7 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MK="$ROOT/feed/batman-payload-host/Makefile"
-TXT="$ROOT/deploy/fts/payload-host-packages.txt"
+TXT="$ROOT/deploy/payload-host-packages.txt"
 
 [ -f "$MK" ]  || { echo "FAIL: missing $MK"; exit 1; }
 [ -f "$TXT" ] || { echo "FAIL: missing $TXT"; exit 1; }

@@ -12,7 +12,7 @@ Think of Batman not as a single product (a tactical radio for people) but as a
 **载台 / carrier platform**: a resilient HaLow + batman-adv **data-transport fabric**
 with **pluggable payload services**.
 
-- **This phase — for people:** HaLow + PTT + TAK. TAK/FreeTAKServer is **one payload
+- **This phase — for people:** HaLow + PTT + TAK. TAK/OpenTAKServer is **one payload
   service** (situational awareness for humans).
 - **Next phase — for things:** drones, cameras, SDR, other sensors. **Machines generate
   data** (imagery, SDR captures, sensor logs), not just CoT position blips — so **bulk /
@@ -21,7 +21,7 @@ with **pluggable payload services**.
 Architectural consequences:
 
 1. **The edge node is a generic payload host** — which is the strategic reason for
-   Docker on the node. FTS is the first tenant; a video relay, an SDR service, or an
+   Docker on the node. OTS is the first tenant; a video relay, an SDR service, or an
    MQTT sensor broker are future tenants in their own containers.
 2. **The mesh may carry non-TAK machine data** (RTP video, SDR IQ, MQTT telemetry)
    alongside TAK. The transport must not assume TAK.
@@ -41,7 +41,7 @@ Four separate things people lump under "compliance":
 
 ### (a) Interoperability — so FEMA/NATO will actually use it
 - **TAK / Cursor-on-Target (CoT)** — the de-facto standard in this domain; DHS/FEMA
-  and NATO consume it. We have it (FreeTAKServer, #44). Next: TAK **federation**,
+  and NATO consume it. We have it (OpenTAKServer, #162). Next: TAK **federation**,
   NATO **NFFI / STANAG 4677**, MIP.
 - **P25 / FirstNet (Band 14)** — LMR/public-safety-LTE interop; not our RF, but buyers
   ask "how does it bridge to existing radios."
@@ -49,7 +49,7 @@ Four separate things people lump under "compliance":
 ### (b) Security accreditation — so it *can* be sold to government
 - **FIPS 140-2/140-3 validated crypto** — hard gate for US federal. All crypto
   (WireGuard #16, disk encryption, TLS) should be able to run on a **FIPS-validated
-  module**. ⚠️ FTS ships `cryptography 36.0.2` — not FIPS-validated and old.
+  module**. ⚠️ the OTS payload's Python `cryptography` stack is not FIPS-validated.
 - **NIST 800-171 / CMMC / RMF-ATO** — process accreditation for DoD supply chain.
 - **NATO Restricted+** — NATO-approved crypto (beyond FIPS); possibly **TEMPEST**.
 
@@ -71,7 +71,7 @@ Four separate things people lump under "compliance":
 ```
 Layer 0  (no dependencies — start now)
   ⓐ SBOM + CVE in CI            Syft→CycloneDX + Trivy/Grype/OSV; gate; publish SBOM.
-                                First scan of the FTS container will light up (old pins).
+                                First scan of the OTS container will light up (old pins).
   ⓑ Supply-chain / NDAA         Evaluate a non-Chinese HaLow module vs Quectel FGH100M.
 
 Layer 1  (security foundation)
@@ -128,7 +128,7 @@ A real SE (ATECC608 on I2C-1, or a TPM on a spare SPI CS — SPI0 is the HaLow r
 | A/B OTA (#89) | ✅ full: `tryboot_a_b`, **boot partition is A/B too** | ⚠️ `tryboot.txt`-level only | basic tryboot exists on all models; switching the *boot partition* needs the Pi 4+ bootloader. A bad boot-partition write on Zero is unrecoverable in the field |
 | hung-task / ramoops / serial console (#61) | ✅ | ✅ | kernel + UART (verify the bcm2710 DT carries the ramoops node) |
 | SE-held key, released only to a trusted OS | ✅ with add-on SE | ⚠️ SE without signed boot: a swapped kernel can ask the SE for the key | measured boot (TPM PCR) does not exist on Pi bootloaders at all — the reachable form is *signed boot + SE authenticates the node* |
-| FTS / docker payload host | ✅ | ❌ 512 MB RAM | relay-class node |
+| OTS / docker payload host | ✅ | ❌ 512 MB RAM | relay-class node |
 
 **Mapping to the models above:**
 - **Base** → Zero 2 W's natural level. Cheap, light, expendable **relay**: carries no

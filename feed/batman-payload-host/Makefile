@@ -9,7 +9,7 @@
 # closure forces every one of them into the image and gives a single audited toggle.
 #
 # The DEPENDS set is the runtime closure captured on manet01 and recorded in
-# deploy/fts/payload-host-packages.txt, MINUS two categories:
+# deploy/payload-host-packages.txt, MINUS two categories:
 #   1. cgroupfs-mount (see below, review B1).
 #   2. ABI-versioned auto-split libraries (libmount1, liblzo2, libxtables12,
 #      libiptext0, libiptext6-0, libiptext-nft0). These are NOT buildable package
