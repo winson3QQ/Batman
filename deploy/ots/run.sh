@@ -57,7 +57,8 @@ echo "==> rabbitmq (cookie + harden)  [harden: ${HARDEN_MQ:-none}]"
 docker rm -f rabbitmq >/dev/null 2>&1 || true
 # shellcheck disable=SC2086
 docker run -d --name rabbitmq --hostname rabbitmq --network "$NET" --ip 172.20.0.3 --restart on-failure:5 \
-  -e RABBITMQ_ERLANG_COOKIE="$COOKIE" $HARDEN_MQ \
+  -e RABBITMQ_ERLANG_COOKIE="$COOKIE" \
+  -e RABBITMQ_ENABLED_PLUGINS_FILE=/var/lib/rabbitmq/enabled_plugins $HARDEN_MQ \
   -v "$HERE/rabbitmq-extra.conf":/etc/rabbitmq/conf.d/99-batman.conf:ro \
   -v ots-mqdata:/var/lib/rabbitmq "$MQ" >/dev/null
 printf "    wait mq"; i=0; while [ $i -lt 90 ]; do docker exec rabbitmq rabbitmq-diagnostics -q ping >/dev/null 2>&1 && { echo " ok"; break; }; printf .; sleep 2; i=$((i+1)); done
