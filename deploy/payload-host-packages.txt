@@ -1,6 +1,6 @@
 # Payload-host packages for OpenMANET 1.8.0 (bcm2711, aarch64_cortex-a72) — docker engine (#119)
 # Installed offline on 2026-09-11 from the OpenWrt 24.10-SNAPSHOT feeds (packages/base) + the OpenMANET kmod feed;
-# every .ipk SHA256-verified against the feed index before install. NOT covered by the FTS image SBOM (#45) — see #98.
+# every .ipk SHA256-verified against the feed index before install. NOT covered by a payload container-image SBOM (#45) — see #98.
 # package version feed sha256-check
 ca-certificates 20260601-r1 base SHA256_OK
 libmount1 2.40.2-r1 base SHA256_OK

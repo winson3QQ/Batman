@@ -19,8 +19,8 @@ setup. The [SoT root issue is **#75**](https://github.com/winson3QQ/Batman/issue
 | 2 | **pre-commit** | shellcheck, **LF line-endings**, secrets (gitleaks), large-file guard | partial |
 | 3 | **CI lint** | `ci.yml` — shellcheck + LF check (blocking) | ✅ |
 | 4 | **SBOM + CVE (deps)** | `ci.yml` — **grype** on `requirements.txt` (`--fail-on critical`, `.grype.yaml` VEX) + CycloneDX SBOM (Syft); NVD-authoritative OWASP Dependency-Check on release tags (`release-scan.yml`) | ✅ #45 |
-| 5 | **Image build + scan** | `build-fts-image.yml` — off-node arm64 build (#85), **grype image scan blocking on Critical** (`--fail-on critical`; base swapped to trixie → 0 base Critical, #83), image SBOM | ✅ |
-| 6 | **Functional gate** | `deploy/fts/functional-test.sh` in CI — runs the image under QEMU, exercises the changed paths with **independent oracles** (forced cert-gen, openssl-verify, mTLS handshake, no-cert negative control, CoT); build-pass ≠ works | ✅ |
+| 5 | **Image build + scan** | *(FTS `build-fts-image.yml` retired with FTS, #162.)* The OTS arm64 image is built in WSL (native docker+buildx+qemu, #162) with grype scan; a CI image-build/scan gate is a follow-up | ⏳ #162 |
+| 6 | **Functional gate** | *(FTS `functional-test.sh` retired.)* OTS on-node validation = `deploy/ots/verify-profile-ots.sh` + full-chain CoT round-trip; a QEMU CI functional gate is a follow-up | ⏳ #162 |
 | 7 | **Smoke test** | image change → flash → boot → mesh peers → key services up | manual |
 | 8 | **Dogfood** | runtime change → run on real hardware (manet01/manet02) before release | ✅ manual |
 | 9 | **Signed artifacts + provenance** | sign image + SBOM (cosign/Sigstore); SLSA provenance — see §Signing (#13) + verified-boot #74 | ❌ pending |
@@ -43,7 +43,7 @@ setup. The [SoT root issue is **#75**](https://github.com/winson3QQ/Batman/issue
 
 The missing link that makes "only reviewed/signed code runs" (#74) real. Spec:
 
-- **What is signed:** the flashable image, the container images (FTS + payload), the SBOM,
+- **What is signed:** the flashable image, the container images (the OTS payload), the SBOM,
   and the OTA update bundles (#89). Signatures + SLSA provenance attached to each artifact.
 - **Signing identity:** a project signing key (or per-role keys — build/release). **Private
   key never on a node**; held in the CI/release environment's secret store or an HSM/secure
@@ -82,7 +82,7 @@ pre-commit run --all-files   # check everything now
   because a CRLF shebang once gave `sh: not found` on a node.
 - CI CVE scanning uses **grype** (not Trivy — the pin was unresolvable). The `requirements.txt`
   gate **blocks on Critical** and is now Critical-clean on the merits (`.grype.yaml` VEX empty).
-  The **image** grype scan (`build-fts-image.yml`) is **blocking on Critical** since #83 (base
-  swapped bookworm→trixie + dropped the lxml-bundled system libxml2/libxslt → 0 base Critical).
-- **Build off-node** (#85): the field node's storage can't hold a non-trivial build; images
-  are built in CI (QEMU/buildx) and `docker load`ed onto the node. See `deploy/fts/README.md`.
+  The image grype scan was FTS's `build-fts-image.yml` (retired with FTS, #162); the OTS image
+  scan is a follow-up CI gate.
+- **Build off-node** (#85): the field node's storage can't hold a non-trivial build; the OTS
+  arm64 image is built in WSL (QEMU/buildx, #162) and `docker load`ed onto the node. See `deploy/ots/README.md`.
