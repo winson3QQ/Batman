@@ -25,12 +25,26 @@ start_service() {
 	# It EXITS (non-zero) if docker isn't ready yet or the API isn't up -> procd respawns it.
 	procd_set_param command /bin/sh -c '
 		DEPLOY='"$DEPLOY"'
+		DRIFT_FILE=/tmp/batman-ots-drift.json
+		VERIFY_LOG=/tmp/batman-ots-verify.log
+		INTERVAL=30
 		docker info >/dev/null 2>&1 || { echo "batman-ots: waiting for dockerd"; exit 1; }
 		[ -f "$DEPLOY/ots.fw4.uci" ] && sh "$DEPLOY/ots.fw4.uci"
 		docker inspect -f "{{.State.Running}}" opentakserver 2>/dev/null | grep -q true || sh "$DEPLOY/run.sh"
-		[ -x "$DEPLOY/verify-profile.sh" ] && { "$DEPLOY/verify-profile.sh" ots "$DEPLOY/ots.hardening.env" >/dev/null 2>&1 || true; }
-		# keepalive: hold the instance while the API runs; exit -> procd respawn re-checks/re-applies
-		while docker inspect -f "{{.State.Running}}" opentakserver >/dev/null 2>&1; do sleep 30; done
+		# Reconcile loop — #156 Phase 1 = ALARM-ONLY. Each tick, check every OTS container against its
+		# profile (verify-profile-ots.sh: exit 0=OK, 1=DRIFT, unknowns skipped/not alarmed) and publish
+		# a verdict file + log on drift. There is deliberately NO destructive re-assert here: the
+		# corrective rm/recreate path is Phase 2, gated on a surgical single-container reconcile + the
+		# keepalive/respawn race fix + docker-update verification (see docs/design/156-runtime-owner.md).
+		# Because nothing is rm-ed, the two-supervisor race and the run.sh full-stack teardown do not fire.
+		while docker inspect -f "{{.State.Running}}" opentakserver >/dev/null 2>&1; do
+			if [ -x "$DEPLOY/verify-profile-ots.sh" ]; then
+				if "$DEPLOY/verify-profile-ots.sh" >"$VERIFY_LOG" 2>&1; then st=OK; else st=DRIFT; fi
+			else st=UNKNOWN; fi
+			printf "{\"status\":\"%s\",\"ts\":%s,\"detail\":\"see %s\"}\n" "$st" "$(date -u +%s)" "$VERIFY_LOG" > "$DRIFT_FILE" 2>/dev/null || true
+			[ "$st" = DRIFT ] && logger -t batman-ots "confinement DRIFT detected (see $VERIFY_LOG)"
+			sleep "$INTERVAL"
+		done
 		echo "batman-ots: opentakserver not running — exiting for respawn"; exit 1
 	'
 	procd_set_param respawn 30 15 0    # threshold 30s, respawn every 15s, unlimited retries
