@@ -1,0 +1,68 @@
+#!/bin/sh
+# batman-faketime — offline monotonic wall-clock persistence (#174).
+#
+# NOT a time source. With no RTC and no reachable NTP a node cannot know the real time nor
+# how long it was powered off. This keeps a forward-only, monotonic LOWER BOUND: it records
+# the last-known-good time to p6 (survives sysupgrade -n) and, on boot, drags the clock
+# forward to it — turning the "boots into the 2025 build date" failure (which made
+# OpenTAKServer sign already-expired certs) into a bounded lag. A correct time must still be
+# SEEDED once (operator at provisioning / brief NTP / GPS); real accuracy is an RTC/GPS job
+# (#174 B/C). faketime can be WRONG (stuck at an old time); it must never (a) sign bad certs
+# [that backstop is an independent year>=2026 gate in OTS cert-gen, F2], (b) get stuck in the
+# future [ceiling + `clear` + `save --force`], or (c) block boot [all paths return 0].
+
+FILE=/opt/batdata/.faketime
+DIR=/opt/batdata
+INTERVAL="${FAKETIME_INTERVAL:-1800}"      # periodic save cadence (s); 30 min (#104: one tiny file)
+FLOOR="${FAKETIME_FLOOR:-1735689600}"      # 2025-01-01 UTC: nothing sane predates the image build
+CEIL="${FAKETIME_CEIL:-2051222400}"        # 2035-01-01 UTC: reject absurd-future poison; `clear` if legit
+
+log(){ logger -t batman-faketime "$*"; }
+now(){ date +%s; }
+# strict: non-empty, all digits, 9-10 chars (1973..2286), within [FLOOR,CEIL]
+valid(){ case "$1" in ''|*[!0-9]*) return 1;; esac; [ "${#1}" -ge 9 ] && [ "${#1}" -le 10 ] && [ "$1" -ge "$FLOOR" ] && [ "$1" -le "$CEIL" ]; }
+mounted(){ mount 2>/dev/null | grep -q " $DIR "; }
+readfile(){ [ -f "$FILE" ] || return 1; read -r v < "$FILE" 2>/dev/null; echo "$v"; }
+
+save(){   # save [--force]  — persist the bound; forward-only unless --force (real-source override)
+	mounted || { log "save skipped: $DIR not mounted"; return 0; }
+	t=$(now); valid "$t" || { log "save skipped: current clock @$t out of sane range"; return 0; }
+	if [ "$1" != "--force" ]; then
+		prev=$(readfile); if valid "$prev" && [ "$t" -le "$prev" ]; then return 0; fi   # never regress the bound
+	fi
+	tmp="$FILE.tmp.$$"
+	{ echo "$t" > "$tmp"; } 2>/dev/null || { log "save failed: cannot write $tmp"; return 0; }
+	sync "$tmp" 2>/dev/null || sync
+	mv -f "$tmp" "$FILE" 2>/dev/null || { log "save failed: cannot rename into $FILE"; rm -f "$tmp"; return 0; }
+	sync "$DIR" 2>/dev/null || sync   # persist the directory entry (rename durability)
+}
+
+restore(){   # boot: advance the clock to the saved bound (forward-only). Never blocks boot.
+	if ! mounted; then log "ERROR restore: $DIR not mounted — clock stays at boot value ($(date -u '+%FT%TZ')); cert-gen must refuse if year<2026 (F2)"; return 0; fi
+	saved=$(readfile) || { log "no saved time yet (unseeded?) — clock stays at $(date -u '+%FT%TZ')"; return 0; }
+	valid "$saved" || { log "ERROR restore: ignoring invalid/torn saved value '$saved' — clock unchanged"; return 0; }
+	cur=$(now)
+	if [ "$saved" -gt "$cur" ]; then
+		if date -s "@$saved" >/dev/null 2>&1; then
+			log "advanced clock @$cur -> @$saved ($(date -u '+%FT%TZ')); monotonic lower bound only, NOT authoritative — off-time unknown, needs RTC/GPS/NTP"
+		else
+			log "ERROR restore: date -s @$saved failed — clock unchanged"
+		fi
+	fi
+}
+
+clear(){   # escape hatch: drop the bound (operator use if a future-poison value got persisted)
+	mounted || { log "clear skipped: $DIR not mounted"; return 0; }
+	rm -f "$FILE" && log "cleared saved bound (operator)" || true
+}
+
+run(){ while :; do sleep "$INTERVAL"; save; done; }
+
+case "$1" in
+	save)    save "$2";;
+	restore) restore;;
+	clear)   clear;;
+	run)     run;;
+	*) echo "usage: batman-faketime save [--force] | restore | clear | run" >&2; exit 1;;
+esac
+exit 0

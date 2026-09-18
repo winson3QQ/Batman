@@ -45,8 +45,9 @@ define Package/batman-provision/description
  config+identity restore, 99-halow-identity personalisation), config-survival saver
  (batman-config-save), and runtime observability services (joinwatch #127,
  halow-status health roll-up, meshled, batpower #122, flightrec #105) plus the
- verdict-first /cgi-bin/status, #14 /cgi-bin/mesh and root landing page.
- See docs/design/p5-config-partition.md and issues #88 #89 #127 #130 #14.
+ verdict-first /cgi-bin/status, #14 /cgi-bin/mesh and root landing page, plus
+ batman-faketime (#174): offline monotonic wall-clock persistence (no RTC/NTP).
+ See docs/design/p5-config-partition.md and issues #88 #89 #127 #130 #14 #174.
 endef
 
 # files-only: nothing to build
@@ -71,6 +72,7 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/etc/init.d/flightrec      $(1)/etc/init.d/flightrec
 	$(INSTALL_BIN) ./files/etc/init.d/joinwatch      $(1)/etc/init.d/joinwatch
 	$(INSTALL_BIN) ./files/etc/init.d/meshled        $(1)/etc/init.d/meshled
+	$(INSTALL_BIN) ./files/etc/init.d/batman-faketime $(1)/etc/init.d/batman-faketime
 	# tools
 	$(INSTALL_BIN) ./files/usr/bin/batman-version     $(1)/usr/bin/batman-version
 	$(INSTALL_BIN) ./files/etc/uci-defaults/93-batman-version-banner $(1)/etc/uci-defaults/93-batman-version-banner
@@ -82,6 +84,8 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/usr/bin/flightrec          $(1)/usr/bin/flightrec
 	$(INSTALL_BIN) ./files/usr/bin/meshled            $(1)/usr/bin/meshled
 	$(INSTALL_BIN) ./files/usr/bin/meshpoint-1.8.0    $(1)/usr/bin/meshpoint-1.8.0
+	# offline monotonic wall-clock (#174): restore@S12 (after batdata-mount S11), save@K09 + periodic
+	$(INSTALL_BIN) ./files/usr/sbin/batman-faketime   $(1)/usr/sbin/batman-faketime
 	# A/B slot operator (#89): the one audited place for slot apply/commit/rollback, shared with
 	# scripts/ab-selftest.sh and /lib/upgrade/platform.sh. See docs/design/ab-sysupgrade-platform.md.
 	$(INSTALL_BIN) ./files/usr/sbin/batman-slot       $(1)/usr/sbin/batman-slot
@@ -103,13 +107,13 @@ endef
 # flightrec/meshled S99). VERIFY in CI that the symlinks land in the image.
 define Package/batman-provision/postinst
 #!/bin/sh
-for s in halow-keyguard batpower flightrec joinwatch meshled; do
+for s in halow-keyguard batpower flightrec joinwatch meshled batman-faketime; do
 	if [ -x "$${IPKG_INSTROOT}/etc/init.d/$$s" ]; then
 		"$${IPKG_INSTROOT}/etc/init.d/$$s" enable 2>/dev/null
 	fi
 done
 [ -n "$${IPKG_INSTROOT}" ] || {
-	for s in halow-keyguard batpower flightrec joinwatch meshled; do
+	for s in halow-keyguard batpower flightrec joinwatch meshled batman-faketime; do
 		/etc/init.d/$$s start 2>/dev/null
 	done
 }
