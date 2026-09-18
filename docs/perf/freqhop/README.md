@@ -85,9 +85,15 @@ scp scripts/hop_single.sh root@<ahwlan-ip>:/tmp/ && ssh root@<ahwlan-ip> sh /tmp
 # dwell sweep (single node)
 scp scripts/dwell_sweep.sh root@<ahwlan-ip>:/tmp/ && ssh root@<ahwlan-ip> sh /tmp/dwell_sweep.sh
 
-# 2-node coordinated hop: stage on both, start iperf UDP server on m01, client on m02,
-# then launch hop2node.sh on both near-simultaneously (see git history of this PR for the orchestrator).
+# 2-node coordinated hop: orchestrator runs from the management host (drives m01 via
+# ahwlan out-of-band, m02 via mesh); stages hop2node.sh on both, runs the iperf UDP
+# stream, launches the hops near-simultaneously, collects loss.
+M01=<m01-ahwlan-ip> M02=<m02-mesh-ip> bash scripts/run_2node.sh
 ```
+
+The 2-node coordination here is deliberately crude (parallel SSH launch, no shared clock)
+— it emulates an imperfect schedule so the loss reveals the alignment skew. A production
+mechanism replaces this with a shared-clock schedule (see "Not tested", item 2).
 
 ## Not tested (honest gaps → next steps)
 
