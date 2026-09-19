@@ -79,7 +79,7 @@ fi
 if up "$MESH_NODE"; then
   suite meshtest \
     "six-layer mesh health on $MESH_NODE" \
-    "timeout 180 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 root@$MESH_NODE 'sh /root/meshtest -q 2>/dev/null || sh /rom/root/meshtest -q'"
+    "timeout 180 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 root@$MESH_NODE 'm=\$(command -v meshtest 2>/dev/null); [ -n \"\$m\" ] || m=/root/meshtest; [ -f \"\$m\" ] || m=/rom/root/meshtest; sh \"\$m\" -q'"
 else
   suite meshtest "six-layer mesh health — MESH_NODE $MESH_NODE did not answer" ""
 fi

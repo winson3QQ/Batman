@@ -84,6 +84,7 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/usr/bin/flightrec          $(1)/usr/bin/flightrec
 	$(INSTALL_BIN) ./files/usr/bin/meshled            $(1)/usr/bin/meshled
 	$(INSTALL_BIN) ./files/usr/bin/meshpoint-1.8.0    $(1)/usr/bin/meshpoint-1.8.0
+	$(INSTALL_BIN) ./files/usr/bin/meshtest           $(1)/usr/bin/meshtest
 	# offline monotonic wall-clock (#174): restore@S12 (after batdata-mount S11), save@K09 + periodic
 	$(INSTALL_BIN) ./files/usr/sbin/batman-faketime   $(1)/usr/sbin/batman-faketime
 	# A/B slot operator (#89): the one audited place for slot apply/commit/rollback, shared with
