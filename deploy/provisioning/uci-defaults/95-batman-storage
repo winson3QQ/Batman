@@ -132,7 +132,13 @@ boot(){
 	[ -b "$PART" ] || return 0
 	[ "$LUKS" = 1 ] && { cryptsetup status "$MAPPER" >/dev/null 2>&1 || cryptsetup open --key-file "$KEYFILE" "$PART" "$MAPPER" 2>/dev/null; }
 	mkdir -p "$MOUNT"
-	mount | grep -q " $MOUNT " || mount "$DEV" "$MOUNT" 2>/dev/null || { note "mount $DEV on $MOUNT FAILED"; return 0; }
+	# p6 (data) mount: a single try, with the real error captured to kmsg (logd is not up at S11)
+	# on failure. An earlier retry loop here was based on a wrong "mount transient" diagnosis; the
+	# real Build #2 slot-B failure was a corrupt f2fs overlay degrading the whole boot (see
+	# 96-batman-config-migrate) — a card-prep gap a retry cannot fix. A healthy slot mounts p6 first try.
+	if ! mount | grep -q " $MOUNT "; then
+		merr=$(mount "$DEV" "$MOUNT" 2>&1) || { note "mount $DEV on $MOUNT FAILED: $merr"; return 0; }
+	fi
 	mkdir -p "$CRASH" "$LOG"
 	note "mounted $DEV on $MOUNT"
 	# once per boot: the first-boot hook calls `boot` itself and the S11 link may run it again

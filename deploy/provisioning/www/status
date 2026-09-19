@@ -28,6 +28,7 @@ case "$verdict" in
 	*"UNDERVOLT"*|*"battery"*|*"power"*) todo="Power problem. Check the battery charge, the cable, and the supply.";;
 	*"hot"*|*"SoC"*)    todo="Running hot. Improve airflow / move out of direct sun.";;
 	*"tenant"*)         todo="A payload service (e.g. the TAK server) is down. Reboot, or restart it over SSH.";;
+	*"confinement"*)    todo="A payload container drifted from its hardened profile. Resource drift self-corrects; other drift needs a redeploy over SSH (check: logread | grep batman-ots).";;
 	OK*)                todo="Nothing to do — this node is healthy.";;
 	*)                  todo="See the details below.";;
 esac
