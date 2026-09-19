@@ -159,9 +159,11 @@ fi
 # re-locks into a keyless brick. Runs after Lane A (identity+shadow restored). See docs/design/137-*.
 LOCK=/opt/batdata/state/lock-status; mkdir -p "${LOCK%/*}" 2>/dev/null
 has_pw=0; case "$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)" in \$*) has_pw=1 ;; esac
+# a USABLE key line, not just a non-empty file (whitespace/comment-only would lock out with no key)
+has_key=0; grep -Eq '^[[:space:]]*(ssh-(ed25519|rsa|dss)|ecdsa-sha2-|sk-)' /etc/dropbear/authorized_keys 2>/dev/null && has_key=1
 if [ -f /etc/batman-dev-open ]; then
 	echo DEV-OPEN > "$LOCK" 2>/dev/null; log "lockdown: DEV-OPEN marker — node left open (dev, not for field)"
-elif [ -s /etc/dropbear/authorized_keys ] && [ "$has_pw" = 1 ]; then
+elif [ "$has_key" = 1 ] && [ "$has_pw" = 1 ]; then
 	uci set dropbear.@dropbear[0].PasswordAuth='off'
 	uci set dropbear.@dropbear[0].RootPasswordAuth='off'
 	uci set system.@system[0].ttylogin='1'
@@ -169,7 +171,7 @@ elif [ -s /etc/dropbear/authorized_keys ] && [ "$has_pw" = 1 ]; then
 	echo LOCKED > "$LOCK" 2>/dev/null; log "lockdown: LOCKED (network key-only, serial via per-node password)"
 else
 	echo UNPROVISIONED > "$LOCK" 2>/dev/null
-	log "lockdown: UNPROVISIONED (key=$( [ -s /etc/dropbear/authorized_keys ] && echo yes || echo NO ) pw=$( [ "$has_pw" = 1 ] && echo yes || echo NO )) — left open, recoverable"
+	log "lockdown: UNPROVISIONED (key=$( [ "$has_key" = 1 ] && echo yes || echo NO ) pw=$( [ "$has_pw" = 1 ] && echo yes || echo NO )) — left open, recoverable"
 fi
 
 # 5) persisted marker (F8) — detects a spurious healthy boot with wrong identity.

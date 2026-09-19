@@ -76,11 +76,12 @@ case "$rootline" in
 	*) [ "$mode" = --seed ] && echo "batman-config-save: WARN root has no password hash — the node will stay UNPROVISIONED (open) until one is set (#137)" >&2 ;;
 esac
 
-# #137: a seeded node whose lockdown will turn OFF network password-auth MUST have an operator key,
-# or it becomes unreachable. Refuse to seed without one (dev nodes just don't seed).
-if [ "$mode" = --seed ] && [ ! -s "$STAGE/identity/dropbear/authorized_keys" ]; then
+# #137: a seeded node whose lockdown will turn OFF network password-auth MUST have a USABLE operator
+# key (not just a non-empty file — a whitespace/comment-only authorized_keys would lock it out with no
+# key = network brick). Require a real public-key line; same predicate the lockdown gate uses (96).
+if [ "$mode" = --seed ] && ! grep -Eq '^[[:space:]]*(ssh-(ed25519|rsa|dss)|ecdsa-sha2-|sk-)' "$STAGE/identity/dropbear/authorized_keys" 2>/dev/null; then
 	rm -rf "$STAGE"; umount "$MNT" 2>/dev/null
-	die "refusing --seed without /etc/dropbear/authorized_keys — a locked node with no key is unreachable. Install the operator public key first (#137)."
+	die "refusing --seed without a usable public key in /etc/dropbear/authorized_keys — a locked node with no key is unreachable. Install the operator public key first (#137)."
 fi
 
 # per-node delta -> uci batch (scalars only). Single-quote values so spaces survive the round
