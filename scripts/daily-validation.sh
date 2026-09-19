@@ -36,7 +36,9 @@ REPORT="$DIR/report.md"
 NPASS=0; NFAIL=0; NSKIP=0
 ROWS=()
 
-up() { timeout 3 ping -c1 -W2 "$1" >/dev/null 2>&1; }
+# Liveness by ssh, not ping: `ping -c1 -W2` is Linux-only (Windows/Git-Bash ping.exe rejects the
+# flags), and the suites all need ssh anyway — an ssh-up node is what they actually require (#133).
+up() { timeout 8 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "root@$1" true >/dev/null 2>&1; }
 
 suite() {                       # $1 = name, $2 = why-it-matters, $3 = command ("" => skip)
   local name=$1 why=$2 cmd=$3 log="$DIR/$1.log" rc
@@ -89,6 +91,96 @@ if up "$BENCH_NODE"; then
     "sh $REPO/scripts/flash-write-guard.sh $BENCH_NODE"
 else
   suite flash-write-guard "write-placement contract (#104) — BENCH_NODE $BENCH_NODE did not answer" ""
+fi
+
+# ============================================================================
+# v1.1 FEATURE regression — the completed features, not just the A/B plumbing.
+# Two tiers, mirroring ab-selftest's inspect/destructive split:
+#   A (always, non-destructive): real black/white-box — drive the interface and
+#     assert the outcome, without disrupting live service. Safe on any node daily.
+#   B (FEATURE_MODE=--destructive): induces the actual failure each feature must
+#     survive (clock-back / reflash / slot-switch). Runs ONLY on DNODE, which
+#     MUST have ethernet — a broken run is recovered out-of-band over eth, never
+#     physical access. Release-time, not the cron.
+# Each check is validated: an empty/UNKNOWN string never satisfies an assertion.
+# ============================================================================
+OTS_NODE=${OTS_NODE:-$MESH_NODE}          # the node carrying the OTS payload
+FEATURE_MODE=${FEATURE_MODE:---daily}     # --daily | --destructive (adds tier B)
+DNODE=${DESTRUCTIVE_NODE:-$OTS_NODE}      # tier-B target — MUST have ethernet
+
+fssh() { timeout "${2:-60}" ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 "root@$1" "$3"; }
+
+# ---- tier A: non-destructive, real ----
+chk_98()  { fssh "$1" 60 'sh /opt/batdata/deploy/ots/verify-profile-ots.sh'; }           # inspects 9 axes ×6
+chk_162() { fssh "$1" 30 '
+  n=0; for c in opentakserver ots-db ots_cot_parser ots_eud_handler ots_eud_handler_ssl rabbitmq; do
+    [ "$(docker inspect -f "{{.State.Running}}" "$c" 2>/dev/null)" = true ] && n=$((n+1)); done
+  db=$(docker exec ots-db psql -U ots -d ots -tAc "select 1" 2>/dev/null | tr -d " ")
+  echo "running=$n/6 postgres=$db"; [ "$n" = 6 ] && [ "$db" = 1 ]'; }
+chk_156() { fssh "$1" 45 '
+  docker rm -f dv-decoy >/dev/null 2>&1
+  docker run -d --name dv-decoy --entrypoint sleep batman/ots:1.7.13-arm64 60 >/dev/null 2>&1 || { echo "decoy start failed"; exit 2; }
+  sleep 18   # clear verify-profile MIN_UPTIME=15 (else UNKNOWN, not DRIFT)
+  sh /opt/batdata/deploy/ots/verify-profile.sh dv-decoy /opt/batdata/deploy/ots/ots.hardening.env >/tmp/dv-vp 2>&1; rc=$?
+  docker rm -f dv-decoy >/dev/null 2>&1
+  echo "unhardened decoy -> verify-profile rc=$rc (want non-0 = DRIFT detected)"; [ "$rc" -ne 0 ]'; }
+chk_130() { fssh "$1" 20 '
+  st=$(/usr/bin/halow-status json 2>/dev/null | sed -n "s/.*\"join\":{\"state\":\"\([A-Za-z_]*\)\".*/\1/p" | head -1)
+  p=$(batctl n 2>/dev/null | grep -c wlh0)
+  echo "halow join.state=$st  batctl peers=$p"
+  [ -n "$st" ] || exit 1
+  if [ "$p" -gt 0 ]; then [ "$st" = JOINED ]; else [ "$st" != JOINED ]; fi'; }   # verdict must agree with radio truth
+chk_14()  { fssh "$1" 20 '
+  n=$(QUERY_STRING=json sh /www/cgi-bin/mesh 2>/dev/null | grep -o "\"nodes\":[0-9][0-9]*" | head -1 | grep -o "[0-9][0-9]*")
+  p=$(batctl n 2>/dev/null | grep -c wlh0)
+  echo "cgi mesh.nodes=$n  batctl peers=$p"
+  [ -n "$n" ] && [ "$n" -ge 1 ] && [ "$n" -le $((p+1)) ]'; }   # aggregate agrees with batctl (<= peers+self)
+
+if up "$OTS_NODE"; then
+  suite confinement-98   "OTS container confinement — 9 axes ×6 (#98)"                       "chk_98 $OTS_NODE"
+  suite ots-up-162       "OTS 6/6 running + postgres endpoint answers (#162)"                "chk_162 $OTS_NODE"
+  suite drift-detect-156 "reconciler flags an unhardened decoy as DRIFT (#156, white-box)"   "chk_156 $OTS_NODE"
+else
+  for s in confinement-98 ots-up-162 drift-detect-156; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
+fi
+if up "$MESH_NODE"; then
+  suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"
+  suite mesh-console-14  "/cgi-bin/mesh aggregate agrees with batctl (#14)"                   "chk_14 $MESH_NODE"
+else
+  for s in field-status-130 mesh-console-14; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
+fi
+
+# ---- tier B: destructive, induces the real failure — DNODE (eth) only, --destructive ----
+dwait() {   # $1 node, wait until ssh answers with a boot_id, up to $2 s
+  local n=$1 max=${2:-200} t=0
+  while [ "$t" -lt "$max" ]; do
+    fssh "$n" 8 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null | grep -q . && return 0
+    sleep 8; t=$((t+8))
+  done; return 1
+}
+bchk_174() {   # clock forward-only: reboot, assert faketime restored the clock forward (not back to 2025)
+  fssh "$1" 15 '[ -f /etc/init.d/batman-faketime ]' || { echo "faketime not installed"; return 1; }
+  fssh "$1" 15 'reboot' >/dev/null 2>&1; sleep 20; dwait "$1" 220 || return 1
+  local yr; yr=$(fssh "$1" 12 'date -u +%Y' | tr -d " ")
+  echo "post-reboot year=$yr (want >=2026 = faketime restored forward)"; [ -n "$yr" ] && [ "$yr" -ge 2026 ]; }
+bchk_192() {   # clear the guardian from the overlay (as an A/B flash does), reboot, assert it auto-returns
+  fssh "$1" 12 'ls /etc/init.d/batman-ots >/dev/null 2>&1' || { echo "no guardian to test"; return 2; }
+  fssh "$1" 15 'rm -f /etc/init.d/batman-ots /etc/rc.d/S*batman-ots' >/dev/null 2>&1
+  fssh "$1" 15 'reboot' >/dev/null 2>&1; sleep 20; dwait "$1" 240 || return 1
+  sleep 30   # batdata-mount restore + guardian start
+  local r; r=$(fssh "$1" 12 'ls /etc/init.d/batman-ots >/dev/null 2>&1 && pgrep -f batman-ots >/dev/null && echo yes || echo no' | tr -d " ")
+  echo "guardian auto-restored after overlay-clear+reboot: $r"; [ "$r" = yes ]; }
+
+if [ "$FEATURE_MODE" = --destructive ]; then
+  if fssh "$DNODE" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
+    suite faketime-174 "clock survives a reboot forward, not back to 2025 (#174, destructive)"        "bchk_174 $DNODE"
+    suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE"
+    # NOTE: #137 lock-cycle, config-survival-across-slot-switch, #103 key-clear and #127 join-break are
+    # logic-designed but intentionally NOT auto-run yet — each can lock the node out / down the radio and
+    # must be exercised supervised once (with eth recovery in reach) before joining the release run.
+  else
+    for s in faketime-174 guardian-192; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
+  fi
 fi
 
 {
