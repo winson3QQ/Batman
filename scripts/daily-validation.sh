@@ -170,59 +170,21 @@ bchk_192() {   # clear the guardian from the overlay (as an A/B flash does), reb
   sleep 30   # batdata-mount restore + guardian start
   local r; r=$(fssh "$1" 12 'ls /etc/init.d/batman-ots >/dev/null 2>&1 && pgrep -f batman-ots >/dev/null && echo yes || echo no' | tr -d " ")
   echo "guardian auto-restored after overlay-clear+reboot: $r"; [ "$r" = yes ]; }
-bchk_137() {   # seed a throwaway key+pw, reboot, assert LOCKED (network key-only), then restore open. Self-healing.
-  local n=$1 kd=/tmp/dv137key
-  rm -f "$kd" "$kd.pub"; ssh-keygen -t ed25519 -f "$kd" -N "" -C dv137 >/dev/null 2>&1 || return 1
-  scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 "$kd.pub" "root@$n:/tmp/dv137.pub" >/dev/null 2>&1 || return 1
-  fssh "$n" 25 '
-    mkdir -p /etc/dropbear
-    grep -qF "$(cat /tmp/dv137.pub)" /etc/dropbear/authorized_keys 2>/dev/null || cat /tmp/dv137.pub >> /etc/dropbear/authorized_keys
-    chmod 600 /etc/dropbear/authorized_keys
-    printf "DV137pw!\nDV137pw!\n" | passwd root >/dev/null 2>&1
-    batman-config-save --seed >/dev/null 2>&1' || return 1
-  fssh "$n" 15 'reboot' >/dev/null 2>&1; sleep 20; dwait "$n" 220 || return 1
-  sleep 5
-  local lock pa kw
-  lock=$(fssh "$n" 12 'cat /opt/batdata/state/lock-status 2>/dev/null' | tr -d " ")
-  pa=$(fssh "$n" 12 'uci -q get dropbear.@dropbear[0].PasswordAuth' | tr -d " ")
-  kw=$(ssh -i "$kd" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no "root@$n" 'echo keyok' 2>/dev/null | tr -d " ")
-  echo "post-seed reboot: lock-status=$lock dropbear.PasswordAuth=$pa key-login=$kw (want LOCKED/off/keyok)"
-  # RESTORE via the operator key — reopen access FIRST, then remove the test creds (never lock ourselves out)
-  ssh -i "$kd" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no "root@$n" '
-    uci set dropbear.@dropbear[0].PasswordAuth=on; uci set dropbear.@dropbear[0].RootPasswordAuth=on; uci set system.@system[0].ttylogin=0; uci commit
-    sed -i "s|^root:[^:]*:|root::|" /etc/shadow
-    /etc/init.d/dropbear reload 2>/dev/null || true
-    : > /etc/dropbear/authorized_keys
-    mkdir -p /tmp/p5x && mount -t ext4 /dev/mmcblk0p5 /tmp/p5x 2>/dev/null && { rm -f /tmp/p5x/identity/dropbear/authorized_keys /tmp/p5x/identity/shadow-root; sync; umount /tmp/p5x; }
-    echo UNPROVISIONED > /opt/batdata/state/lock-status' >/dev/null 2>&1
-  rm -f "$kd" "$kd.pub"
-  [ "$lock" = LOCKED ] && [ "$pa" = off ] && [ "$kw" = keyok ]; }
-bchk_103() {   # set the mesh key to the PUBLIC placeholder, reboot, assert keyguard held the radio DOWN, then restore.
-  local n=$1 line s r origkey
-  line=$(fssh "$n" 15 's=$(uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode=.mesh.$/\1/p" | head -1); r=$(uci -q get wireless.$s.device); k=$(uci -q get wireless.$s.key); printf "%s|%s|%s" "$s" "$r" "$k"')
-  s=${line%%|*}; r=$(printf '%s' "$line" | cut -d'|' -f2); origkey=${line##*|}
-  { [ -n "$s" ] && [ -n "$r" ] && [ -n "$origkey" ] && [ "$origkey" != CHANGE-ME-NOW ]; } || { echo "no real mesh key to cycle (s=$s r=$r)"; return 2; }
-  fssh "$n" 15 "uci set wireless.$s.key=CHANGE-ME-NOW; uci commit wireless" >/dev/null 2>&1
-  fssh "$n" 15 'reboot' >/dev/null 2>&1; sleep 20; dwait "$n" 220 || return 1
-  sleep 8
-  local disabled; disabled=$(fssh "$n" 12 "uci -q get wireless.$r.disabled" | tr -d " ")
-  echo "post-placeholder reboot: wireless.$r.disabled=$disabled (want 1 = keyguard held the radio DOWN)"
-  # RESTORE the real key via the documented door, then confirm the radio + mesh return
-  fssh "$n" 35 "halow-setkey --mesh '$origkey' >/dev/null 2>&1 || { uci set wireless.$s.key='$origkey'; uci -q set wireless.$r.disabled=0; uci commit wireless; wifi reload; }"
-  sleep 20
-  local back peers; back=$(fssh "$n" 12 'cat /sys/class/net/wlh0/operstate 2>/dev/null' | tr -d " "); peers=$(fssh "$n" 12 'batctl n 2>/dev/null | grep -c wlh0' | tr -d " ")
-  echo "after restore: wlh0=$back mesh-peers=$peers"
-  [ "$disabled" = 1 ]; }
 
 if [ "$FEATURE_MODE" = --destructive ]; then
   if fssh "$DNODE" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
     suite faketime-174 "clock survives a reboot forward, not back to 2025 (#174, destructive)"        "bchk_174 $DNODE"
     suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE"
-    suite lockdown-137 "seed key+pw -> reboot -> LOCKED (key-only), then self-restore open (#137, destructive)" "bchk_137 $DNODE"
-    suite keyguard-103 "placeholder mesh key -> reboot -> keyguard holds the radio DOWN, then restore (#103, destructive)" "bchk_103 $DNODE"
-    # NOTE: #127 joinwatch's stuck-node AUTO-REBOOT window is ~60 min, so it cannot be a timed test here;
-    # its local join DIAGNOSIS (why a node can't join) is covered by field-status-130. config-survival is
-    # asserted during the flash/burn (a fresh slot's firstboot restores mesh_id/key/channel from p5).
+    # NOT reboot-testable — validated by other means (a supervised run on manet01 proved this the hard way):
+    #  #137 LOCKED path: the lockdown gate lives in the 96-batman-config-migrate UCI-DEFAULT, which runs
+    #    ONLY on a FRESH SLOT firstboot, never on a plain reboot — so a reboot-based test cannot trigger it
+    #    (and setting a root password to seed it locks the empty-pw path out). #137 LOCKED is exercised on a
+    #    seeded A/B FLASH (Case B); the UNPROVISIONED fail-open path is exercised on every flash/burn.
+    #  #103 keyguard: keyguard DOES re-run every boot, but the test has to blank the live mesh key, which
+    #    drops the mesh and risks not reforming — too destructive for the unattended tier; validate supervised.
+    #  #127 joinwatch: the stuck-node AUTO-REBOOT window is ~60 min (not a timed test); its join DIAGNOSIS
+    #    is covered by field-status-130.
+    #  config-survival: asserted during the flash/burn (a fresh slot's firstboot restores mesh_id/key/channel).
   else
     for s in faketime-174 guardian-192; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
   fi
