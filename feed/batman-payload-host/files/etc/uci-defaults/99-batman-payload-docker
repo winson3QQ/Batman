@@ -18,9 +18,17 @@ DATA_ROOT="/opt/batdata/docker"
 # dockerd config ships with the package; if for any reason it is absent, retry next boot.
 [ -f /etc/config/dockerd ] || exit 1
 
+# #156 Way-2 item 2: daemon-wide hardening defaults (needs the batman dockerd.init generator
+# patch that adds these two globals — winson3QQ/firmware feeds/packages/utils/dockerd).
+#   no_new_privileges: every container gets no-new-privileges even if a launcher drops the flag
+#                      (defence-in-depth for the one axis; runtime prevention half of #98/#156).
+#   live_restore:      dockerd can restart WITHOUT killing running containers — a field-resilience
+#                      win (crash-recovery / config apply no longer bounces the payload).
 uci -q batch <<EOF
 set dockerd.globals=globals
 set dockerd.globals.data_root='${DATA_ROOT}'
+set dockerd.globals.no_new_privileges='1'
+set dockerd.globals.live_restore='1'
 commit dockerd
 EOF
 
