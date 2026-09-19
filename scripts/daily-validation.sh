@@ -170,11 +170,26 @@ bchk_192() {   # clear the guardian from the overlay (as an A/B flash does), reb
   sleep 30   # batdata-mount restore + guardian start
   local r; r=$(fssh "$1" 12 'ls /etc/init.d/batman-ots >/dev/null 2>&1 && pgrep -f batman-ots >/dev/null && echo yes || echo no' | tr -d " ")
   echo "guardian auto-restored after overlay-clear+reboot: $r"; [ "$r" = yes ]; }
+bchk_173() {   # controlled kernel panic; assert the ramoops black box actually CAPTURED it (#173)
+  local n=$1 pre post reason backend
+  pre=$(fssh "$n" 12 'cut -c1-8 /proc/sys/kernel/random/boot_id' | tr -d " ")
+  fssh "$n" 12 'echo 1 > /proc/sys/kernel/sysrq; setsid sh -c "sleep 2; echo c > /proc/sysrq-trigger" </dev/null >/dev/null 2>&1 &' >/dev/null 2>&1
+  sleep 25; dwait "$n" 220 || return 1
+  sleep 8
+  post=$(fssh "$n" 12 'cut -c1-8 /proc/sys/kernel/random/boot_id' | tr -d " ")
+  { [ -n "$post" ] && [ "$post" != "$pre" ]; } || { echo "node did not warm-reboot from the panic"; return 1; }
+  backend=$(fssh "$n" 12 'cat /sys/module/pstore/parameters/backend 2>/dev/null' | tr -d " ")
+  reason=$(fssh "$n" 12 'tail -1 /opt/batdata/log/boot-reasons.log 2>/dev/null')
+  echo "pstore backend=$backend  prev-boot reason: $reason"
+  # working black box: pstore registered the ramoops backend AND 95-storage classified the previous
+  # life as PANIC. A broken overlay (bad reg) leaves pstore empty and mis-reads it as 'power loss'.
+  [ "$backend" = ramoops ] && printf '%s' "$reason" | grep -q PANIC; }
 
 if [ "$FEATURE_MODE" = --destructive ]; then
   if fssh "$DNODE" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
     suite faketime-174 "clock survives a reboot forward, not back to 2025 (#174, destructive)"        "bchk_174 $DNODE"
     suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE"
+    suite crash-blackbox-173 "controlled panic is captured by ramoops -> boot-reason PANIC (#173, destructive)" "bchk_173 $DNODE"
     # NOT reboot-testable — validated by other means (a supervised run on manet01 proved this the hard way):
     #  #137 LOCKED path: the lockdown gate lives in the 96-batman-config-migrate UCI-DEFAULT, which runs
     #    ONLY on a FRESH SLOT firstboot, never on a plain reboot — so a reboot-based test cannot trigger it
@@ -186,7 +201,7 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     #    is covered by field-status-130.
     #  config-survival: asserted during the flash/burn (a fresh slot's firstboot restores mesh_id/key/channel).
   else
-    for s in faketime-174 guardian-192; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
+    for s in faketime-174 guardian-192 crash-blackbox-173; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
   fi
 fi
 
