@@ -1,0 +1,18 @@
+name: provisioning-sync
+# The provisioning files live in two trees that must stay byte-identical: deploy/provisioning/*
+# (used by scripts/depersonalise.sh for on-node golden prep) and feed/batman-provision/files/*
+# (baked into the firmware image, #159). A fix committed to only one tree silently fails to ship on
+# the other path. This gate asserts every pair matches. See scripts/check-provisioning-sync.sh.
+on:
+  pull_request:
+    paths: ['deploy/provisioning/**', 'feed/batman-provision/files/**', 'scripts/check-provisioning-sync.sh']
+  push:
+    branches: [main]
+    paths: ['deploy/provisioning/**', 'feed/batman-provision/files/**']
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deploy/ and feed/ provisioning copies must be byte-identical
+        run: sh scripts/check-provisioning-sync.sh

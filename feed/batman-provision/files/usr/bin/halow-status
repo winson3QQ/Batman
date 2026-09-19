@@ -84,6 +84,20 @@ if [ -n "$temp" ]; then [ "$temp" -ge 80 ] && hc CRIT thermal "SoC ${temp}C (cri
 for s in mesh11sd openmanetd wpad; do running "$s" || hc CRIT svc "$s not running"; done
 running dnsmasq || hc WARN svc "dnsmasq not running"
 if [ -S /var/run/docker.sock ] && [ -n "$fts" ]; then echo "$fts" | grep -q "Exited\|Restarting\|Created" && hc WARN tenant "a tenant container is not Up ($fts)"; fi
+# payload confinement drift (#156 reconciler writes this verdict; DRIFT = degraded-but-working = WARN)
+if [ -f /tmp/batman-ots-drift.json ]; then
+	cdrift=$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' /tmp/batman-ots-drift.json 2>/dev/null)
+	[ "$cdrift" = DRIFT ] && hc WARN confinement "payload confinement DRIFT — a container no longer matches its hardened profile (see: logread | grep batman-ots)"
+fi
+# #137 management-plane lockdown posture (96-batman-config-migrate writes this at provisioning).
+# NB: a NEVER-seeded node writes no marker (96 early-exits before the lockdown), and that node is the
+# WIDE-OPEN one — so "no marker" MUST warn (unless it's a build-time dev image).
+case "$(cat /opt/batdata/state/lock-status 2>/dev/null)" in
+	LOCKED)   : ;;
+	DEV-OPEN) hc INFO provision "DEV image — root left open by design (not for field)" ;;
+	*) if [ -f /etc/batman-dev-open ]; then hc INFO provision "DEV image — root left open by design (not for field)"
+	   else hc WARN provision "NOT locked down (UNPROVISIONED — no per-node key/password); anyone reaching this node may get root. Seed p5 identity + reboot (#137)."; fi ;;
+esac
 [ "$jstate" != JOINED ] && [ "${cyc:-0}" -ge 3 ] && hc WARN bootloop "$cyc boot(s) without joining — power-cycling won't help"
 echo "$last" | grep -q "^PANIC" && hc INFO boot "last boot recovered from a kernel panic"
 [ "$addr" = bootstrap ] && [ "$u" -ge 300 ] && hc INFO addr "still on bootstrap address (openmanetd reservation pending)"

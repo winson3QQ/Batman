@@ -72,7 +72,24 @@ magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)
 
 mkdir -p "$MNT"
 # noload: best-effort read even if the ext4 journal needs replay (ro can't replay) — V3-8
-mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>/dev/null || { log "p5 mount failed — image defaults"; exit 0; }
+#
+# 2026-09-13 ROOT CAUSE (confirmed on the bench): earlier notes here blamed a fresh-slot "mmc
+# mount transient" and this hook briefly grew a settle-retry — BOTH were wrong. The real cause of
+# the Build #2 slot-B "p5 mount failed" was that the WHOLE boot was degraded: the slot's f2fs
+# overlay (rootfs_data on loop0) was corrupt, so mount_root fell back to a tmpfs overlay
+# ("F2FS-fs (loop0): Failed to read root inode" at kernel ~8.3s), and p5/p6 mounts, config
+# restore and eth0 all failed downstream of that. The overlay was corrupt because the slot was
+# written by dd without clearing the OLD overlay's f2fs superblock (which sits just above the
+# squashfs, at round_up(squashfs_size,64KiB)) — a card-prep / OTA-apply gap, not a code bug here
+# and not a mount race. Proof: after zeroing that region, the SAME image booted clean on the
+# fresh slot — overlay mounts, p5/p6 mount first try, laneA=restored. So this is a plain single
+# mount again; the diagnostic (real errno + whether anything holds the device) is retained so a
+# genuinely-new failure is still captured, but there is no retry — a corrupt overlay is not
+# something a retry can fix, and a healthy slot mounts on the first try.
+if ! merr=$(mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>&1); then
+	log "p5 mount failed — image defaults | dev_exists=$([ -b "$DEV" ] && echo yes || echo no) | mount_err=$merr | existing_mounts=$(mount | grep -F "$DEV" | tr '\n' ';')"
+	exit 0
+fi
 [ -f "$MNT/.seeded" ] || { log "p5 not seeded — image defaults"; umount "$MNT" 2>/dev/null; exit 0; }
 
 # 3) Lane A: identity restored FIRST and UNCONDITIONALLY (before dropbear, any schema) — V3-2/V3-3.
@@ -84,6 +101,20 @@ if [ -d "$MNT/identity/dropbear" ]; then
 	chmod 600 /etc/dropbear/* 2>/dev/null
 fi
 [ -s "$MNT/identity/openmanet/config.yml" ] && { mkdir -p /etc/openmanet; cp -a "$MNT/identity/openmanet/config.yml" /etc/openmanet/config.yml 2>/dev/null; }
+# #137: restore the per-node root password line, SURGICALLY (replace ONLY root's line, keeping image
+# system accounts) and only if it validates as a real crypt hash — a bad/empty line would lock login
+# out (with ttylogin=1) or reopen the hole (empty). On any doubt, skip → root stays image-default.
+if [ -s "$MNT/identity/shadow-root" ]; then
+	newroot=$(head -1 "$MNT/identity/shadow-root")
+	case "$newroot" in
+		root:\$*)
+			if awk -v n="$newroot" '/^root:/{print n; next} {print}' /etc/shadow > /etc/shadow.137 2>/dev/null \
+			   && [ -s /etc/shadow.137 ] && grep -q '^root:' /etc/shadow.137; then
+				chmod 600 /etc/shadow.137 && mv /etc/shadow.137 /etc/shadow && log "root password restored from p5"
+			else rm -f /etc/shadow.137; log "shadow restore skipped (edit failed)"; fi ;;
+		*) log "shadow-root present but not a valid hash — skipped (root stays image default)" ;;
+	esac
+fi
 idfp=$(dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key 2>/dev/null | sed -n 's/^Fingerprint: *//p')
 # tell 99-halow-identity (runs after us) that identity came from p5 — it must NOT re-personalise
 # (delete host keys / reset hostname / IP / dhcpconfigured), or it undoes this restore (N-R2).
@@ -108,12 +139,39 @@ if [ -n "$FRAG" ]; then
 	[ "$SRC" = lkg ] || schema_migrate "$TMP" "$schema" "$SUPPORTED_SCHEMA"
 	if uci batch < "$TMP" 2>/dev/null; then
 		uci commit 2>/dev/null; applied=ok
+		# NB: the restored wireless channel does NOT reliably key into the morse radio here — a reload
+		# at this point is too early (regdomain/channelization is not settled yet, so morse falls back
+		# to its hw-default channel and writes it back). The reassert is done late by
+		# 99-batman-chanfix instead. See docs / bench #89.
 	else
 		# do not leave a partial batch staged for uci_apply_defaults' trailing commit (V3-6)
 		for p in $ALLOWED_PKGS; do uci revert "$p" 2>/dev/null; done
 		applied=errors-reverted
 	fi
 	rm -f "$TMP"
+fi
+
+# 4b) #137 lockdown — derive the network+serial lock from what THIS boot actually restored (LOCAL uci
+# only, never p5-sourced: a corrupt/hostile p5 cannot push dropbear settings). Gate: a usable operator
+# key AND a real root password must BOTH be present; else stay open + flag UNPROVISIONED (recoverable).
+# A build-time /etc/batman-dev-open keeps a node intentionally open (dev). The lock persists in the
+# committed uci config; a factory-reset (overlay wipe) re-runs this hook and re-derives — it never
+# re-locks into a keyless brick. Runs after Lane A (identity+shadow restored). See docs/design/137-*.
+LOCK=/opt/batdata/state/lock-status; mkdir -p "${LOCK%/*}" 2>/dev/null
+has_pw=0; case "$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)" in \$*) has_pw=1 ;; esac
+# a USABLE key line, not just a non-empty file (whitespace/comment-only would lock out with no key)
+has_key=0; grep -Eq '^[[:space:]]*(ssh-(ed25519|rsa|dss)|ecdsa-sha2-|sk-)' /etc/dropbear/authorized_keys 2>/dev/null && has_key=1
+if [ -f /etc/batman-dev-open ]; then
+	echo DEV-OPEN > "$LOCK" 2>/dev/null; log "lockdown: DEV-OPEN marker — node left open (dev, not for field)"
+elif [ "$has_key" = 1 ] && [ "$has_pw" = 1 ]; then
+	uci set dropbear.@dropbear[0].PasswordAuth='off'
+	uci set dropbear.@dropbear[0].RootPasswordAuth='off'
+	uci set system.@system[0].ttylogin='1'
+	uci commit dropbear; uci commit system
+	echo LOCKED > "$LOCK" 2>/dev/null; log "lockdown: LOCKED (network key-only, serial via per-node password)"
+else
+	echo UNPROVISIONED > "$LOCK" 2>/dev/null
+	log "lockdown: UNPROVISIONED (key=$( [ "$has_key" = 1 ] && echo yes || echo NO ) pw=$( [ "$has_pw" = 1 ] && echo yes || echo NO )) — left open, recoverable"
 fi
 
 # 5) persisted marker (F8) — detects a spurious healthy boot with wrong identity.
