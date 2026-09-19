@@ -38,6 +38,10 @@ start_service() {
 		# keepalive/respawn race fix + docker-update verification (see docs/design/156-runtime-owner.md).
 		# Because nothing is rm-ed, the two-supervisor race and the run.sh full-stack teardown do not fire.
 		while docker inspect -f "{{.State.Running}}" opentakserver >/dev/null 2>&1; do
+			# Way-2 pillar 2: correct the resource axes IN PLACE (docker update, non-destructive) BEFORE
+			# verifying, so a resource-only drift is fixed and the verdict reflects the corrected state.
+			# This is the ONLY correction #156 v1.1 does; security axes are prevention (#97), never rebuilt.
+			[ -x "$DEPLOY/reconcile-resources.sh" ] && sh "$DEPLOY/reconcile-resources.sh" >/tmp/batman-ots-resources.log 2>&1 || true
 			if [ -x "$DEPLOY/verify-profile-ots.sh" ]; then
 				if "$DEPLOY/verify-profile-ots.sh" >"$VERIFY_LOG" 2>&1; then st=OK; else st=DRIFT; fi
 			else st=UNKNOWN; fi
