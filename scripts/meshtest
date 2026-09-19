@@ -13,6 +13,9 @@
 QUICK=0
 [ "$1" = "-q" ] && QUICK=1
 
+# HaLow radio interface: wlh0 on OpenMANET 1.8.0, $IFACE on older images — auto-detect.
+IFACE=""; for _i in wlh0 wlan0; do [ -d /sys/class/net/$_i ] && { IFACE=$_i; break; }; done; IFACE=${IFACE:-wlh0}
+
 say() { echo; echo "── $* ────────────────────────────────"; }
 val() { printf "  %-22s %s\n" "$1" "$2"; }
 
@@ -21,27 +24,27 @@ say "0. 本機"
 val hostname   "$(cat /proc/sys/kernel/hostname)"
 val uptime     "$(cut -d. -f1 /proc/uptime)s"
 val br-ahwlan  "$(ip -4 -o addr show br-ahwlan 2>/dev/null | awk '{print $4}')"
-val wlan0-mac  "$(cat /sys/class/net/wlan0/address 2>/dev/null)"
+val $IFACE-mac  "$(cat /sys/class/net/$IFACE/address 2>/dev/null)"
 val bat0-mac   "$(cat /sys/class/net/bat0/address 2>/dev/null)"
 val 電源       "$(vcgencmd get_throttled 2>/dev/null)"
 val 溫度       "$(vcgencmd measure_temp 2>/dev/null)"
 
 # ------------------------------------------------------------------- 1. radio
 say "1. 射頻（L1）"
-if [ ! -d /sys/class/net/wlan0 ]; then
-	echo "  ❌ wlan0 不存在 — 驅動沒起來。看 dmesg | grep morse"
+if [ ! -d /sys/class/net/$IFACE ]; then
+	echo "  ❌ $IFACE 不存在 — 驅動沒起來。看 dmesg | grep morse"
 	exit 1
 fi
-val operstate "$(cat /sys/class/net/wlan0/operstate)"
-val type      "$(iw dev wlan0 info 2>/dev/null | awk '/type/{print $2}')"
-val txpower   "$(iw dev wlan0 info 2>/dev/null | awk '/txpower/{print $2, $3}')"
-morse_cli -i wlan0 channel 2>/dev/null | sed -n '2,5p' | sed 's/^\s*/  /'
-[ "$(cat /sys/class/net/wlan0/operstate)" = up ] || {
-	echo "  ❌ wlan0 存在但沒 up"; exit 1; }
+val operstate "$(cat /sys/class/net/$IFACE/operstate)"
+val type      "$(iw dev $IFACE info 2>/dev/null | awk '/type/{print $2}')"
+val txpower   "$(iw dev $IFACE info 2>/dev/null | awk '/txpower/{print $2, $3}')"
+morse_cli -i $IFACE channel 2>/dev/null | sed -n '2,5p' | sed 's/^\s*/  /'
+[ "$(cat /sys/class/net/$IFACE/operstate)" = up ] || {
+	echo "  ❌ $IFACE 存在但沒 up"; exit 1; }
 
 # ------------------------------------------------------------- 2. 11s peering
 say "2. 802.11s 配對（L2）"
-PEERS=$(iw dev wlan0 station dump 2>/dev/null | grep -c '^Station')
+PEERS=$(iw dev $IFACE station dump 2>/dev/null | grep -c '^Station')
 val peers "$PEERS"
 if [ "$PEERS" -eq 0 ]; then
 	cat <<'EOF'
@@ -51,11 +54,11 @@ if [ "$PEERS" -eq 0 ]; then
      3. 本機 TX 沒真的射出去（VDD_FEM 供電）
      4. 參數不合：mesh_id / 頻率 / 頻寬 / encryption / key
         兩台都跑：uci get wireless.default_radio3.mesh_id
-                   morse_cli -i wlan0 channel
+                   morse_cli -i $IFACE channel
 EOF
 	exit 1
 fi
-iw dev wlan0 station dump 2>/dev/null | awk '
+iw dev $IFACE station dump 2>/dev/null | awk '
 	/^Station/       {mac=$2; printf "\n  peer %s\n", mac}
 	/signal:/        {printf "    %-18s %s %s\n", "signal", $2, $3}
 	/tx bitrate:/    {printf "    %-18s %s %s\n", "tx bitrate", $3, $4}
@@ -64,14 +67,14 @@ iw dev wlan0 station dump 2>/dev/null | awk '
 	/inactive time:/ {printf "    %-18s %s ms\n", "inactive", $3}'
 # SNR = strongest per-peer signal minus the radio noise floor. This is what
 # meshled now uses for the WEAK/LINKED split; watch it during a walk-test.
-_sig=$(iw dev wlan0 station dump 2>/dev/null | awk '/signal avg:/{v=$3+0; if(!s||v>m){m=v;s=1}} END{if(s)print m}')
-_noise=$(morse_cli -i wlan0 stats 2>/dev/null | awk -F: '/^Noise \(dBm\)/{gsub(/ /,"",$2);print $2;exit}')
+_sig=$(iw dev $IFACE station dump 2>/dev/null | awk '/signal avg:/{v=$3+0; if(!s||v>m){m=v;s=1}} END{if(s)print m}')
+_noise=$(morse_cli -i $IFACE stats 2>/dev/null | awk -F: '/^Noise \(dBm\)/{gsub(/ /,"",$2);print $2;exit}')
 [ -n "$_sig" ] && [ -n "$_noise" ] && val SNR "$(( _sig - _noise )) dB (signal $_sig / noise $_noise dBm)"
 
 # ----------------------------------------------------------------- 3. batman
 say "3. batman-adv 路由（L3）"
 # Count rows by the always-present last-seen field (e.g. "0.370s"): robust to
-# /etc/bat-hosts, which shows neighbours as names (manet02_wlan0) not MACs.
+# /etc/bat-hosts, which shows neighbours as names (manet02_$IFACE) not MACs.
 NEIGH=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
 ORIG=$(batctl o 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
 val 鄰居 "$NEIGH"
@@ -83,7 +86,7 @@ if [ "$NEIGH" -eq 0 ]; then
   ❌ 配對成功但 batman 看不到鄰居 —— 這是 NO_BATMAN。
      移動位置完全沒用，問題在設定。兩台比對：
        cat /sys/module/batman_adv/parameters/routing_algo   # 必須都是 BATMAN_V
-       batctl if                                            # wlan0 要 active
+       batctl if                                            # $IFACE 要 active
        uci get mesh11sd.mesh_params.mesh_fwding             # 必須都是 0
      群播被擋掉也會這樣（batman 的 OGM 走群播）。
 EOF
