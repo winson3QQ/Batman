@@ -67,6 +67,22 @@ if [ -s /etc/openmanet/config.yml ]; then
 	mkdir -p "$STAGE/identity/openmanet"; cp -a /etc/openmanet/config.yml "$STAGE/identity/openmanet/config.yml"
 fi
 
+# per-node root password (#137): capture root's /etc/shadow line ONLY if it is a real crypt hash.
+# A dev node has root:: (empty) — seeding that would ship a passwordless "prod", so skip + warn.
+# 96-batman-config-migrate restores this before dropbear and only then arms the lockdown.
+rootline=$(grep '^root:' /etc/shadow 2>/dev/null)
+case "$rootline" in
+	root:\$*) printf '%s\n' "$rootline" > "$STAGE/identity/shadow-root"; chmod 600 "$STAGE/identity/shadow-root" ;;
+	*) [ "$mode" = --seed ] && echo "batman-config-save: WARN root has no password hash — the node will stay UNPROVISIONED (open) until one is set (#137)" >&2 ;;
+esac
+
+# #137: a seeded node whose lockdown will turn OFF network password-auth MUST have an operator key,
+# or it becomes unreachable. Refuse to seed without one (dev nodes just don't seed).
+if [ "$mode" = --seed ] && [ ! -s "$STAGE/identity/dropbear/authorized_keys" ]; then
+	rm -rf "$STAGE"; umount "$MNT" 2>/dev/null
+	die "refusing --seed without /etc/dropbear/authorized_keys — a locked node with no key is unreachable. Install the operator public key first (#137)."
+fi
+
 # per-node delta -> uci batch (scalars only). Single-quote values so spaces survive the round
 # trip (N-R6); refuse shell metacharacters and embedded single-quotes rather than try to escape.
 : > "$STAGE/overrides.uci"

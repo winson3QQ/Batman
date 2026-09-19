@@ -84,6 +84,20 @@ if [ -d "$MNT/identity/dropbear" ]; then
 	chmod 600 /etc/dropbear/* 2>/dev/null
 fi
 [ -s "$MNT/identity/openmanet/config.yml" ] && { mkdir -p /etc/openmanet; cp -a "$MNT/identity/openmanet/config.yml" /etc/openmanet/config.yml 2>/dev/null; }
+# #137: restore the per-node root password line, SURGICALLY (replace ONLY root's line, keeping image
+# system accounts) and only if it validates as a real crypt hash — a bad/empty line would lock login
+# out (with ttylogin=1) or reopen the hole (empty). On any doubt, skip → root stays image-default.
+if [ -s "$MNT/identity/shadow-root" ]; then
+	newroot=$(head -1 "$MNT/identity/shadow-root")
+	case "$newroot" in
+		root:\$*)
+			if awk -v n="$newroot" '/^root:/{print n; next} {print}' /etc/shadow > /etc/shadow.137 2>/dev/null \
+			   && [ -s /etc/shadow.137 ] && grep -q '^root:' /etc/shadow.137; then
+				chmod 600 /etc/shadow.137 && mv /etc/shadow.137 /etc/shadow && log "root password restored from p5"
+			else rm -f /etc/shadow.137; log "shadow restore skipped (edit failed)"; fi ;;
+		*) log "shadow-root present but not a valid hash — skipped (root stays image default)" ;;
+	esac
+fi
 idfp=$(dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key 2>/dev/null | sed -n 's/^Fingerprint: *//p')
 # tell 99-halow-identity (runs after us) that identity came from p5 — it must NOT re-personalise
 # (delete host keys / reset hostname / IP / dhcpconfigured), or it undoes this restore (N-R2).
@@ -114,6 +128,27 @@ if [ -n "$FRAG" ]; then
 		applied=errors-reverted
 	fi
 	rm -f "$TMP"
+fi
+
+# 4b) #137 lockdown — derive the network+serial lock from what THIS boot actually restored (LOCAL uci
+# only, never p5-sourced: a corrupt/hostile p5 cannot push dropbear settings). Gate: a usable operator
+# key AND a real root password must BOTH be present; else stay open + flag UNPROVISIONED (recoverable).
+# A build-time /etc/batman-dev-open keeps a node intentionally open (dev). The lock persists in the
+# committed uci config; a factory-reset (overlay wipe) re-runs this hook and re-derives — it never
+# re-locks into a keyless brick. Runs after Lane A (identity+shadow restored). See docs/design/137-*.
+LOCK=/opt/batdata/state/lock-status; mkdir -p "${LOCK%/*}" 2>/dev/null
+has_pw=0; case "$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)" in \$*) has_pw=1 ;; esac
+if [ -f /etc/batman-dev-open ]; then
+	echo DEV-OPEN > "$LOCK" 2>/dev/null; log "lockdown: DEV-OPEN marker — node left open (dev, not for field)"
+elif [ -s /etc/dropbear/authorized_keys ] && [ "$has_pw" = 1 ]; then
+	uci set dropbear.@dropbear[0].PasswordAuth='off'
+	uci set dropbear.@dropbear[0].RootPasswordAuth='off'
+	uci set system.@system[0].ttylogin='1'
+	uci commit dropbear; uci commit system
+	echo LOCKED > "$LOCK" 2>/dev/null; log "lockdown: LOCKED (network key-only, serial via per-node password)"
+else
+	echo UNPROVISIONED > "$LOCK" 2>/dev/null
+	log "lockdown: UNPROVISIONED (key=$( [ -s /etc/dropbear/authorized_keys ] && echo yes || echo NO ) pw=$( [ "$has_pw" = 1 ] && echo yes || echo NO )) — left open, recoverable"
 fi
 
 # 5) persisted marker (F8) — detects a spurious healthy boot with wrong identity.
