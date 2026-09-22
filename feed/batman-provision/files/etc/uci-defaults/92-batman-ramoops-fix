@@ -1,0 +1,41 @@
+#!/bin/sh
+# 92-batman-ramoops-fix (#173) — the A/B sysupgrade payload carries the slot's boot files
+# (kernel8.img/dtb/overlays/start4/fixup) but NOT distroconfig.txt, so a slot upgraded via
+# `sysupgrade` keeps its old stock bare `dtoverlay=ramoops` (a 2-cell reg — invalid on arm64
+# bcm2711, so pstore never registers a backend and kernel-panic/console crash capture is
+# silently lost). Point distroconfig at the correctly-reg'd `ramoops-pi4` overlay (3-cell),
+# which already ships in the slot's /overlays via the payload.
+#
+# IMPORTANT: fix the RUNNING slot's OWN boot FAT (bootA for slot A, bootB for slot B), located
+# by GPT PARTLABEL. Do NOT edit /boot: it is always bootA (mmcblk0p1) regardless of the running
+# slot, so on slot B editing /boot touches the wrong partition and the fix never takes. Runs
+# once per fresh slot overlay (uci-default self-deletes); effective from the NEXT boot (the
+# firmware reads distroconfig at boot). Idempotent — only rewrites the bare/broken form.
+slot=$(grep -o 'batman_slot=[AB]' /proc/cmdline | head -1 | cut -d= -f2)
+[ "$slot" = A ] || [ "$slot" = B ] || exit 0
+
+# find this slot's boot FAT by PARTLABEL (bootA/bootB), not by a hard-coded partition number
+dev=
+for p in /dev/mmcblk0p*; do
+	[ -b "$p" ] || continue
+	[ "$(blkid -o value -s PARTLABEL "$p" 2>/dev/null)" = "boot$slot" ] && { dev="$p"; break; }
+done
+[ -n "$dev" ] || exit 0
+
+# reuse an existing mountpoint if it is already mounted (bootA is at /boot); else mount it here
+mp=$(awk -v d="$dev" '$1==d{print $2; exit}' /proc/mounts)
+own=0
+if [ -z "$mp" ]; then
+	mp=$(mktemp -d) || exit 0
+	mount -t vfat "$dev" "$mp" 2>/dev/null || { rmdir "$mp" 2>/dev/null; exit 0; }
+	own=1
+fi
+
+CFG="$mp/distroconfig.txt"
+if [ -f "$CFG" ] && grep -qE '^dtoverlay=ramoops$' "$CFG"; then
+	sed -i 's/^dtoverlay=ramoops$/dtoverlay=ramoops-pi4,console-size=0x8000/' "$CFG" && sync
+	logger -t batman-ramoops-fix "boot$slot ($dev) distroconfig dtoverlay=ramoops -> ramoops-pi4 (#173); crash capture active from next boot"
+fi
+
+[ "$own" = 1 ] && { umount "$mp" 2>/dev/null; rmdir "$mp" 2>/dev/null; }
+exit 0

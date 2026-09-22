@@ -53,14 +53,16 @@ slot()    { sshn 'tr " " "\n" < /proc/cmdline | grep -o "batman_slot=."' | tr -d
 boot_id() { sshn 'cat /proc/sys/kernel/random/boot_id' | tr -d '\r'; }
 is_slot() { [[ ${1:-} =~ ^[AB]$ ]]; }
 
-# The running slot's boot partition is mounted at /boot; the other one has to be mounted.
-# autoboot.txt only ever exists on bootA, so "read /boot/autoboot.txt" is wrong whenever the
-# node is running slot B.
+# bootA is ALWAYS mounted at /boot (p1) regardless of the running slot; bootB (p3) is not
+# mounted. The read must key off the REQUESTED slot's fixed partition, NOT the running slot.
+# The old SLOT0-keyed form silently broke on a node running slot B: for want=A it tried to
+# mount the busy p1 (already at /boot) -> mount fails -> read nothing; for want=B it cat'd
+# /boot (which is bootA) -> wrong file. Every static invariant then FAILed although the card
+# was fine — caught on manet01 (running slot B) during #173 validation.
 boot_cat() {                         # $1 = A|B, $2 = filename
-  local want=$1 f=$2 part
-  if [ "$want" = "$SLOT0" ]; then sshn "cat /boot/$f"; return; fi
-  part=$([ "$want" = A ] && echo 1 || echo 3)
-  sshn "mkdir -p /mnt/_ab; mount -t vfat -o ro /dev/mmcblk0p$part /mnt/_ab >/dev/null 2>&1; cat /mnt/_ab/$f; umount /mnt/_ab"
+  local want=$1 f=$2
+  if [ "$want" = A ]; then sshn "cat /boot/$f"; return; fi
+  sshn "mkdir -p /mnt/_ab; mount -t vfat -o ro /dev/mmcblk0p3 /mnt/_ab >/dev/null 2>&1; cat /mnt/_ab/$f; umount /mnt/_ab"
 }
 bootb_rw() { sshn "mkdir -p /mnt/_ab; mount -t vfat /dev/mmcblk0p3 /mnt/_ab && { $1 ; }; sync; umount /mnt/_ab"; }
 
