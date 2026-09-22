@@ -170,11 +170,28 @@ bchk_192() {   # clear the guardian from the overlay (as an A/B flash does), reb
   sleep 30   # batdata-mount restore + guardian start
   local r; r=$(fssh "$1" 12 'ls /etc/init.d/batman-ots >/dev/null 2>&1 && pgrep -f batman-ots >/dev/null && echo yes || echo no' | tr -d " ")
   echo "guardian auto-restored after overlay-clear+reboot: $r"; [ "$r" = yes ]; }
+bchk_173() {   # force a real kernel panic; assert the ramoops backend captured it AND boot-reason classified PANIC (#173/#61)
+  # the backend must be the correctly-reg'd ramoops-pi4 (the #173 fix). With a bare `dtoverlay=ramoops` (2-cell
+  # reg, invalid on arm64 bcm2711) or on HW that cannot preserve the reserved region, pstore never registers a
+  # backend and the panic is silently lost — which is exactly the regression this guards. Precondition-checked so
+  # a node missing the fix FAILs loudly instead of the test passing on a node that captured nothing.
+  fssh "$1" 12 'dmesg | grep -q "Registered ramoops as persistent store backend"' \
+    || { echo "ramoops backend NOT registered — pstore capture inactive (#173 fix missing, or HW cannot preserve the region)"; return 1; }
+  local before; before=$(fssh "$1" 12 'ls /opt/batdata/crash/*_dmesg-ramoops-* 2>/dev/null | wc -l' | tr -d " ")
+  fssh "$1" 12 'echo 1 > /proc/sys/kernel/sysrq; sync; echo c > /proc/sysrq-trigger' >/dev/null 2>&1   # real kernel panic
+  sleep 20; dwait "$1" 240 || return 1
+  sleep 8   # 95-batman-storage moves pstore records -> crash/ and writes boot-reasons.log at first boot
+  local after reason
+  after=$(fssh "$1" 12 'ls /opt/batdata/crash/*_dmesg-ramoops-* 2>/dev/null | wc -l' | tr -d " ")
+  reason=$(fssh "$1" 12 'tail -1 /opt/batdata/log/boot-reasons.log 2>/dev/null')
+  echo "dmesg-ramoops records ${before:-?} -> ${after:-?}; last boot-reason: $reason"
+  [ -n "$after" ] && [ "${after:-0}" -gt "${before:-0}" ] && echo "$reason" | grep -q 'prev=PANIC'; }
 
 if [ "$FEATURE_MODE" = --destructive ]; then
   if fssh "$DNODE" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
     suite faketime-174 "clock survives a reboot forward, not back to 2025 (#174, destructive)"        "bchk_174 $DNODE"
     suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE"
+    suite ramoops-173  "kernel panic captured to pstore and classified PANIC (#173/#61, destructive)"  "bchk_173 $DNODE"
     # NOT reboot-testable — validated by other means (a supervised run on manet01 proved this the hard way):
     #  #137 LOCKED path: the lockdown gate lives in the 96-batman-config-migrate UCI-DEFAULT, which runs
     #    ONLY on a FRESH SLOT firstboot, never on a plain reboot — so a reboot-based test cannot trigger it
@@ -186,7 +203,7 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     #    is covered by field-status-130.
     #  config-survival: asserted during the flash/burn (a fresh slot's firstboot restores mesh_id/key/channel).
   else
-    for s in faketime-174 guardian-192; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
+    for s in faketime-174 guardian-192 ramoops-173; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
   fi
 fi
 

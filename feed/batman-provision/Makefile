@@ -60,6 +60,7 @@ define Package/batman-provision/install
 	$(INSTALL_DIR) $(1)/etc/uci-defaults $(1)/etc/init.d $(1)/usr/bin $(1)/usr/sbin $(1)/usr/lib/batman $(1)/www/cgi-bin
 	# first-boot hooks (0755)
 	$(INSTALL_BIN) ./files/etc/uci-defaults/94-batman-baseline        $(1)/etc/uci-defaults/94-batman-baseline
+	$(INSTALL_BIN) ./files/etc/uci-defaults/92-batman-ramoops-fix        $(1)/etc/uci-defaults/92-batman-ramoops-fix
 	$(INSTALL_BIN) ./files/etc/uci-defaults/95-batman-storage        $(1)/etc/uci-defaults/95-batman-storage
 	$(INSTALL_BIN) ./files/etc/uci-defaults/96-batman-config-migrate $(1)/etc/uci-defaults/96-batman-config-migrate
 	$(INSTALL_BIN) ./files/etc/uci-defaults/97-batman-landing        $(1)/etc/uci-defaults/97-batman-landing
