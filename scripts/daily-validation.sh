@@ -124,6 +124,23 @@ chk_156() { fssh "$1" 45 '
   sh /opt/batdata/deploy/ots/verify-profile.sh dv-decoy /opt/batdata/deploy/ots/ots.hardening.env >/tmp/dv-vp 2>&1; rc=$?
   docker rm -f dv-decoy >/dev/null 2>&1
   echo "unhardened decoy -> verify-profile rc=$rc (want non-0 = DRIFT detected)"; [ "$rc" -ne 0 ]'; }
+chk_167g() { fssh "$1" 20 '
+  # OTS runs on the GENERIC payload manager (#167), not the bespoke run.sh/batman-ots: the generic
+  # guardian owns it, the old guardian is gone (double-guardian regression), and drift reads OK.
+  command -v payload-run >/dev/null 2>&1 || { echo "payload-run not installed (pre-image-bake #159)"; exit 1; }
+  [ -x /etc/init.d/batman-payload-opentakserver ] || { echo "generic guardian init missing"; exit 1; }
+  [ -e /etc/init.d/batman-ots ] && { echo "old batman-ots still present -> double-guardian risk"; exit 1; }
+  st=$(sed -n "s/.*\"status\":\"\([A-Z]*\)\".*/\1/p" /tmp/batman-payload-opentakserver-drift.json 2>/dev/null | head -1)
+  echo "generic guardian drift=$st (old batman-ots absent)"; [ "$st" = OK ]'; }
+chk_167a() { fssh "$1" 20 '
+  # white-box: the port/zone arbiter REFUSES a colliding tenant (host-port clash) with exit 3.
+  command -v payload-arbiter >/dev/null 2>&1 || { echo "payload-arbiter not installed (pre-image-bake #159)"; exit 1; }
+  T=$(mktemp -d); mkdir -p "$T/ots" "$T/dup"
+  printf "TENANT=opentakserver\nPORTS=8088 8089 8443\nSUBNET=172.20.0.0/24\nZONE=dockert\nBRIDGE=br-ots\n" > "$T/ots/ots.net.alloc"
+  printf "TENANT=dup\nPORTS=8088\nSUBNET=172.20.9.0/24\nZONE=dupz\nBRIDGE=br-dup\n" > "$T/dup/dup.net.alloc"
+  payload-arbiter "$T/dup/dup.net.alloc" "$T" >/tmp/dv-arb 2>&1; rc=$?
+  rm -rf "$T"
+  echo "colliding tenant (:8088) -> arbiter rc=$rc (want 3=REFUSED)"; [ "$rc" = 3 ]'; }
 chk_130() { fssh "$1" 20 '
   st=$(/usr/bin/halow-status json 2>/dev/null | sed -n "s/.*\"join\":{\"state\":\"\([A-Za-z_]*\)\".*/\1/p" | head -1)
   p=$(batctl n 2>/dev/null | grep -c wlh0)
@@ -140,8 +157,10 @@ if up "$OTS_NODE"; then
   suite confinement-98   "OTS container confinement — 9 axes ×6 (#98)"                       "chk_98 $OTS_NODE"
   suite ots-up-162       "OTS 6/6 running + postgres endpoint answers (#162)"                "chk_162 $OTS_NODE"
   suite drift-detect-156 "reconciler flags an unhardened decoy as DRIFT (#156, white-box)"   "chk_156 $OTS_NODE"
+  suite payload-mgr-167  "OTS on the generic payload manager, old guardian gone (#167)"       "chk_167g $OTS_NODE"
+  suite arbiter-167      "port/zone arbiter REFUSES a colliding tenant (#167, white-box)"      "chk_167a $OTS_NODE"
 else
-  for s in confinement-98 ots-up-162 drift-detect-156; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"
