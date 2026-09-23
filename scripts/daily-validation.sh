@@ -54,10 +54,18 @@ suite() {                       # $1 = name, $2 = why-it-matters, $3 = command (
 
 echo "=== daily validation $STAMP ==="
 
-# 1. No hardware needed: the A/B card invariants, built on a loop device.
-suite ab-card-invariants \
-  "the A/B card layout and cmdline invariants (#133)" \
-  "$REPO/tests/ab-card-invariants.sh"
+# 1. No hardware needed, but needs Linux tooling: the A/B card invariants build a real card on a
+#    loop device. On a host without losetup/mksquashfs/sudo (e.g. a Windows/Git-Bash operator box
+#    driving the fleet over ssh) it cannot run — gate it to SKIP-with-note instead of a false FAIL;
+#    the test still runs for real in CI and can be run by hand under WSL/Linux.
+if command -v losetup >/dev/null 2>&1 && command -v mksquashfs >/dev/null 2>&1; then
+  suite ab-card-invariants \
+    "the A/B card layout and cmdline invariants (#133)" \
+    "$REPO/tests/ab-card-invariants.sh"
+else
+  suite ab-card-invariants \
+    "needs loop device + squashfs-tools + sudo — not available on this host; run in CI or WSL/Linux" ""
+fi
 
 # 2. No hardware needed: the MAC->IP derivation used by the first-boot hook.
 suite onboarding-ip \
@@ -164,11 +172,13 @@ bchk_174() {   # clock forward-only: reboot, assert faketime restored the clock 
   local yr; yr=$(fssh "$1" 12 'date -u +%Y' | tr -d " ")
   echo "post-reboot year=$yr (want >=2026 = faketime restored forward)"; [ -n "$yr" ] && [ "$yr" -ge 2026 ]; }
 bchk_192() {   # clear the guardian from the overlay (as an A/B flash does), reboot, assert it auto-returns
-  fssh "$1" 12 'ls /etc/init.d/batman-ots >/dev/null 2>&1' || { echo "no guardian to test"; return 2; }
-  fssh "$1" 15 'rm -f /etc/init.d/batman-ots /etc/rc.d/S*batman-ots' >/dev/null 2>&1
+  # #167 renamed the OTS guardian batman-ots -> batman-payload-opentakserver (generic payload manager);
+  # match any tenant guardian batman-payload-* so this stays tenant-agnostic.
+  fssh "$1" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1' || { echo "no guardian to test"; return 2; }
+  fssh "$1" 15 'rm -f /etc/init.d/batman-payload-* /etc/rc.d/S*batman-payload-*' >/dev/null 2>&1
   fssh "$1" 15 'reboot' >/dev/null 2>&1; sleep 20; dwait "$1" 240 || return 1
   sleep 30   # batdata-mount restore + guardian start
-  local r; r=$(fssh "$1" 12 'ls /etc/init.d/batman-ots >/dev/null 2>&1 && pgrep -f batman-ots >/dev/null && echo yes || echo no' | tr -d " ")
+  local r; r=$(fssh "$1" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1 && pgrep -f batman-payload >/dev/null && echo yes || echo no' | tr -d " ")
   echo "guardian auto-restored after overlay-clear+reboot: $r"; [ "$r" = yes ]; }
 bchk_173() {   # force a real kernel panic; assert the ramoops backend captured it AND boot-reason classified PANIC (#173/#61)
   # the backend must be the correctly-reg'd ramoops-pi4 (the #173 fix). With a bare `dtoverlay=ramoops` (2-cell

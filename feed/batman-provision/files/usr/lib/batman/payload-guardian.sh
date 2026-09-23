@@ -43,18 +43,34 @@ start_service() {
 		if [ -n "$NETALLOC" ] && command -v payload-arbiter >/dev/null 2>&1; then
 			payload-arbiter "$NETALLOC" "'"$APPS_DIR"'" || { echo "batman-payload[$T]: arbiter REFUSED bring-up"; exit 1; }
 		fi
-		# bring the stack up if the primary is not already running (payload-run applies fw4 too).
-		docker inspect -f "{{.State.Running}}" "$PRIMARY" 2>/dev/null | grep -q true || payload-run "$T"
+		# #206: a fresh A/B slot has a pristine /etc/config/firewall with no dockert zone, so cross-container
+		# east-west (postgres/rabbitmq) is silently dropped until the tenant fw4 rules are re-applied. Apply
+		# them idempotently every start (needs dockerd iptables=0, baked in 99-batman-payload-docker).
+		# Cost note: each *.fw4.uci does uci commit + fw4 reload (rebuilds the whole inet fw4 ruleset incl.
+		# mesh zones). This runs once per guardian (procd) start; during a persistently-failing bring-up procd
+		# respawns ~every 15s, so it reloads fw4 each cycle — acceptable (transient) but not free.
+		for f in "$DIR"/*.fw4.uci; do [ -f "$f" ] && sh "$f" >/dev/null 2>&1 || true; done
+		# #206: bring the stack up if ANY manifest container is not running, not just PRIMARY. PRIMARY is ots-db,
+		# which the restart policy revives on its own after a reboot — a PRIMARY-only check would see it running
+		# and never rebuild a dead opentakserver/parser (guardian blind-spot). payload-run applies fw4 + is idempotent.
+		_need=0; for c in $(awk "/^CONTAINER /{print \$2}" "$MANIFEST"); do
+			docker inspect -f "{{.State.Running}}" "$c" 2>/dev/null | grep -q true || _need=1; done
+		[ "$_need" = 1 ] && payload-run "$T"
 		# Reconcile loop — #156 Phase 1 = ALARM-ONLY (no destructive re-assert here; that is #97/#156
 		# Phase 2). Each tick: optional in-place resource correction, then verify, publish a verdict.
 		while docker inspect -f "{{.State.Running}}" "$PRIMARY" >/dev/null 2>&1; do
 			[ -x "$DIR/reconcile-resources.sh" ] && sh "$DIR/reconcile-resources.sh" >/tmp/batman-payload-$T-resources.log 2>&1 || true
-			st=OK
+			st=OK; : > "$VERIFY_LOG"   # truncate once per tick (entries below append)
+			# #206: liveness is part of the verdict — a manifest container being down (e.g. opentakserver
+			# crash-looping while PRIMARY ots-db stays up) must surface as DRIFT, not a silent OK.
+			for c in $(awk "/^CONTAINER /{print \$2}" "$MANIFEST"); do
+				docker inspect -f "{{.State.Running}}" "$c" 2>/dev/null | grep -q true || { st=DRIFT; echo "container $c NOT running" >>"$VERIFY_LOG"; }
+			done
 			# only the tenant ROLLUP scripts (verify-profile-<tenant>.sh, with the dash) — NOT the
 			# low-level helper verify-profile.sh (no dash; it needs an <app> arg and would false-alarm).
 			for vp in "$DIR"/verify-profile-*.sh; do
 				[ -x "$vp" ] || continue
-				if "$vp" >"$VERIFY_LOG" 2>&1; then st=OK; else st=DRIFT; fi
+				if "$vp" >>"$VERIFY_LOG" 2>&1; then :; else st=DRIFT; fi
 			done
 			printf "{\"status\":\"%s\",\"tenant\":\"%s\",\"ts\":%s,\"detail\":\"see %s\"}\n" "$st" "$T" "$(date -u +%s)" "$VERIFY_LOG" > "$DRIFT_FILE" 2>/dev/null || true
 			[ "$st" = DRIFT ] && logger -t "batman-payload-$T" "confinement DRIFT detected (see $VERIFY_LOG)"

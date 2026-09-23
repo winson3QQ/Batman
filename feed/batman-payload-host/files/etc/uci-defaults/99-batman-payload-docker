@@ -24,9 +24,17 @@ DATA_ROOT="/opt/batdata/docker"
 #                      (defence-in-depth for the one axis; runtime prevention half of #98/#156).
 #   live_restore:      dockerd can restart WITHOUT killing running containers — a field-resilience
 #                      win (crash-recovery / config apply no longer bounces the payload).
+# iptables=0 is the design-B invariant (docs/design/ots-networking.md): dockerd must NOT create its
+# own `ip nat`/`ip filter` nft tables, so the node's entire firewall is one auditable `inet fw4` and
+# a payload's fw4 zone (dockert) governs cross-container east-west. WHY BAKE IT: dockerd ships
+# iptables=1 (default); if this is not seeded into /etc/config/dockerd, every fresh A/B slot boots
+# with iptables=1 -> stale docker tables + fw4 drop-policy silently refuse ALL cross-container TCP
+# (postgres/rabbitmq unreachable), and the OTS stack crash-loops (#206). Baked here it survives every
+# reflash; a clean boot under iptables=0 never creates the stale tables (no one-time flush needed).
 uci -q batch <<EOF
 set dockerd.globals=globals
 set dockerd.globals.data_root='${DATA_ROOT}'
+set dockerd.globals.iptables='0'
 set dockerd.globals.no_new_privileges='1'
 set dockerd.globals.live_restore='1'
 commit dockerd

@@ -5,7 +5,7 @@ NETWORK_NAME ots-net
 BRIDGE br-ots
 SUBNET 172.20.0.0/24
 ZONE dockert
-RESTART on-failure:5
+RESTART unless-stopped
 
 CONTAINER ots-db
 IMAGE imresamu/postgis:18-3.6
