@@ -171,8 +171,8 @@ RF 三張等 soak 報告。
   / `prod-lock`(只在 PROD 模式有意義)/ `lane:infra`(建置環境、CI 閘、HIL 測試台、治具)
 - **大單拆半**:#47 #61 #74 #89 #41 各拆成「現在能做的半張」(v1.1)和「閘門後的半張」(v2.0+),不再整張卡住。
 - **開發基礎建設是一條橫跨所有版本的線**(`lane:infra`,母單 #73):v2.0 = 重現 1.8.0 build(#108)+ HIL smoke
-  test 台(#113);v3.0 = 硬拔電治具(#114);測試台 = Pi 4 dev node + Zero 2 W,manet01/02 不動。
-- **硬體分級**(productization.md):Pi 4/CM4 = 唯一能到 Secure-unattended;Zero 2 W = Base / attended,中繼消耗型。
+  test 台(#113);v3.0 = 硬拔電治具(#114);測試台 = Pi 4 dev node + Pi 3A+ (#203),manet01/02 不動。
+- **硬體分級**(productization.md):Pi 4/CM4 = 唯一能到 Secure-unattended;Pi 3A+ = Base / attended,中繼消耗型。
   一份配方、每個 subtarget 一個 artifact、首開讀板子選 profile(#110)。
 
 ---

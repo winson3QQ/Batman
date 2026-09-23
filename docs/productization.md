@@ -114,37 +114,38 @@ hole. A dedicated USB-C is only needed for the attended "dongle-to-unlock" model
 
 ### Hardware tiers × security models (decision 2026-09-11)
 
-The fleet has two boards — **Pi 4 / CM4** and **Pi Zero 2 W** (on order) — and they do **not**
+The fleet has two boards — **Pi 4 / CM4** and **Pi 3A+** (civil SKU; replaced the Zero 2 W when
+#102 was closed not-planned over the global shortage — decision in #195) — and they do **not**
 support the same security chain. Neither has a secure element on board: Pi 4's OTP can hold a
 signed-boot key *hash* but is readable by root (`vcgencmd otp_dump`) — it is not a key vault.
 A real SE (ATECC608 on I2C-1, or a TPM on a spare SPI CS — SPI0 is the HaLow radio) is an
 **add-on on both boards**. What each board can honestly reach:
 
-| Capability | Pi 4 / CM4 (`bcm2711`) | Zero 2 W (`bcm2710`) | Why |
+| Capability | Pi 4 / CM4 (`bcm2711`) | Pi 3A+ (`bcm2710`) | Why |
 |---|---|---|---|
 | LUKS data partition (#47) | ✅ | ✅ | kernel feature; neither has ARMv8 crypto ext (software AES), SD is the bottleneck anyway |
 | dm-verity rootfs (#41/#74) | ✅ tamper-evident | ⚠️ corruption-proof only | root hash lives in cmdline on the FAT boot partition; without signed boot anyone with the card rewrites it |
-| **Signed boot** (#74 link 1) | ✅ EEPROM bootloader + OTP | ❌ **impossible** | Zero's bootloader is ROM + `bootcode.bin` on SD — no EEPROM, no root of trust |
-| A/B OTA (#89) | ✅ full: `tryboot_a_b`, **boot partition is A/B too** | ⚠️ `tryboot.txt`-level only | basic tryboot exists on all models; switching the *boot partition* needs the Pi 4+ bootloader. A bad boot-partition write on Zero is unrecoverable in the field |
+| **Signed boot** (#74 link 1) | ✅ EEPROM bootloader + OTP | ❌ **impossible** | the Pi 3 family boots from SoC ROM + `bootcode.bin` on SD — no EEPROM, no root of trust. Unchanged by the board swap: the same reasoning carried over from the Zero 2 W |
+| A/B OTA (#89) | ✅ full: `tryboot_a_b`, **boot partition is A/B too** | ❓ **unverified on Pi 3A+** | switching the *boot partition* certainly needs the Pi 4+ bootloader. But the older claim that "basic tryboot exists on all models" is **not verified on the Pi 3 family** — `tryboot` is a Pi 4/5 bootloader feature and only `os_prefix` is known to be firmware-level. Resolve before promising A/B on this tier (#203 risk 5). A bad boot-partition write here is unrecoverable in the field |
 | hung-task / ramoops / serial console (#61) | ✅ | ✅ | kernel + UART (verify the bcm2710 DT carries the ramoops node) |
 | SE-held key, released only to a trusted OS | ✅ with add-on SE | ⚠️ SE without signed boot: a swapped kernel can ask the SE for the key | measured boot (TPM PCR) does not exist on Pi bootloaders at all — the reachable form is *signed boot + SE authenticates the node* |
-| OTS / docker payload host | ✅ | ❌ 512 MB RAM | relay-class node |
+| OTS / docker payload host | ✅ | ❌ 512 MB RAM | relay-class node. Enforced in code: `batman-payload-host` is gated `DEPENDS:=@TARGET_bcm27xx_bcm2711` |
 
 **Mapping to the models above:**
-- **Base** → Zero 2 W's natural level. Cheap, light, expendable **relay**: carries no
+- **Base** → the natural level of the Pi 3A+. Cheap, light, expendable **relay**: carries no
   certificates, is not a payload host; losing one loses a board, not the network.
-- **Secure — attended** → the **highest honest level for Zero 2 W**: LUKS key on the operator's
+- **Secure — attended** → the **highest honest level for the Pi 3A+**: LUKS key on the operator's
   dongle, never on the board, so the missing root of trust does not matter.
 - **Secure — unattended** → **Pi 4 / CM4 (and up) only**. The only tier that may be left
   unattended holding identity (#13), TAK certs (#48) or a payload.
 
 Consequence for CONOPS (#69): the two boards are **two roles, not two sizes of the same role**.
-Zero 2 W = relay / expendable; Pi 4 = identity-bearing node. Pi 5 would be stronger (crypto
+Pi 3A+ = relay / expendable; Pi 4 = identity-bearing node. Pi 5 would be stronger (crypto
 ext, signed boot) but the HaLow SPI bring-up on RP1 is unresolved (`pi5-rp1-bringup.md`).
 
 ### Image strategy — one recipe, N builds, runtime profile (decision 2026-09-11)
 
-OpenWrt (and therefore OpenMANET) builds Pi 4 and Zero 2 W as **separate subtargets** —
+OpenWrt (and therefore OpenMANET) builds Pi 4 and Pi 3A+ as **separate subtargets** —
 `bcm2711` (cortex-a72) and `bcm2710` (cortex-a53) — each with its own kernel config and package
 architecture. A single binary image for both would mean a custom unified target diverging from
 upstream; **not worth the maintenance**. Instead:
