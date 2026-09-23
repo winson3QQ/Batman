@@ -4,6 +4,18 @@
 > 每一項都對應一張 GitHub issue（見下表）。GPS/PTT 與供電擴充是**另一條**線，見
 > [`expansion-gps-ptt.md`](expansion-gps-ptt.md)。
 
+## 相關文檔（SoT 與治理）
+
+設計與實作的架構對映:
+
+| 文檔 | 內容 | 驅動 |
+|---|---|---|
+| [`threat-model.md`](threat-model.md) | 信任 + 密碼的界線:什麼 PKI 解決、什麼不能(行為偵測/隔離) | 安全下限 |
+| [`personas-and-roles.md`](personas-and-roles.md) | 四個通用角色(操作員/網管/佈署員/開發者)的職責概略 | 治理骨架 |
+| [`conops.md`](conops.md) | **CONOPS & access matrix** — 誰×硬體×任務→存取的具體矩陣 / 生命週期軸 / SoD 不變式 | [`#69`](https://github.com/winson3QQ/Batman/issues/69) |
+| [`productization.md`](productization.md) | 載台定位(人+物) + 硬體分級 + 標準 compliance 對映 | 商品化地圖 |
+| [`dev-process.md`](dev-process.md) | 開發循環:reality check → 短計畫 → review → ship | 流程原則 |
+
 ## 心智模型（先建立整個畫面）
 
 把網路想成**一群背著無線電、彼此接力傳話的哨站**。每台 Pi = 一個哨站。
