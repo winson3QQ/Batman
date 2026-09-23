@@ -1,0 +1,46 @@
+# Second throwaway tenant (#167 Increment 2). Proves TWO things the design owes:
+#   - N=2 isolation (gate 3): a distinct bridge/zone/subnet from dummy-nginx (tenant A); A must not
+#     reach B except via an explicit peer_allow, and `nft list table inet fw4` stays one table.
+#   - secrets delivery (§5): mounts a file secret (source: seed) read-only into the container,
+#     proving the air-gapped delivery path that OTS's eud-ssl-cert needs.
+apiVersion: batman.payload/v1
+tenant: dummy-nginx-b
+archetype: network-service
+co_scheduled_with: []
+
+values:
+  network:  {mode: bridged}
+  user:     {run_as: 101}
+  no_new_privileges: true
+  caps:     {drop: [ALL], add: []}
+  rootfs:
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=16m", "/var/cache/nginx:rw,nosuid,nodev,size=16m", "/var/run:rw,nosuid,nodev,size=1m"]
+  resources: {cpus: 0.5, memory: 64m, pids: 64}
+  devices:  []
+  seccomp:  {profile: default}
+  privileged: false
+  docker_socket_mounted: false
+  secrets:
+    - {name: test-token, source: seed, mount: /token, into: [dummy-web-b], exposure: "proof-of-delivery token (seed path, #137/#191); at-rest plaintext until #47"}
+
+images:
+  - ref: "nginxinc/nginx-unprivileged:1.27-alpine"
+    containers:
+      - {name: dummy-web-b, ip: 172.20.2.10, hostname: dummy-web-b}
+
+network:
+  bridge: {name: br-dummyb, subnet: 172.20.2.0/24}   # distinct from tenant A (172.20.1.0/24)
+  zone:   dummybz
+  publish:
+    - {src_zone: ahwlan, host_port: 8091, to: "172.20.2.10:8080", proto: tcp}
+  isolation: {input: DROP, forward: intra-zone, egress: none}   # no cross-zone forward = A cannot reach B
+  peer_allow: []
+
+lifecycle:
+  order:  [dummy-web-b]
+  health:
+    dummy-web-b: "wget -q -O /dev/null http://127.0.0.1:8080/"
+  restart: on-failure:5
+
+volumes: []

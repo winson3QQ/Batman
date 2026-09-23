@@ -59,13 +59,46 @@ exceptions: []   # rootfs.read_only resolved 2026-09-18 (all 6 containers --read
 target: {level: PSS-Restricted, note: "rollup: 9/9 confinement axes validated on all 6 containers (rootfs.read_only completed 2026-09-18 — all 6 --read-only). AppArmor + device-cgroup are v2.0-gated on #109 (kernel). bridged network (not host) means this genuinely reaches Restricted, unlike the retired FTS host-net exception."}
 
 # ---- operational siblings (payload-manager consumed; emitter-ignored) ----
+# #167 Increment 3: fully specifies what deploy/ots/run.sh hardcoded, so `payload-run opentakserver`
+# reproduces the SAME 6-container stack. env_common = run.sh's $CM (the 4 app containers only).
+env_common:
+  SQLALCHEMY_DATABASE_URI: "postgresql+psycopg://ots:password@ots-db/ots"   # internal-only cred (ots-db unpublished); per-node-random + at-rest → #47 (review m2)
+  OTS_RABBITMQ_SERVER_ADDRESS: rabbitmq
+  OTS_LISTENER_ADDRESS: 0.0.0.0
+  OTS_FQDN: _
+  OTS_MEDIAMTX_API_ADDRESS: "http://localhost:9997"
+
 images:
-  - {ref: "batman/ots:1.7.13-arm64", roles: [api, cot_parser, eud_handler, eud_handler_ssl]}   # digest-pin before prod
-  - {ref: "imresamu/postgis:18-3.6", role: db}
-  - {ref: "rabbitmq:latest", role: broker, run_as: rabbitmq, env: {RABBITMQ_ERLANG_COOKIE: "<per-node>"}}   # --user rabbitmq (cookie eacces fix)
+  - ref: "batman/ots:1.7.13-arm64"                    # digest-pin before prod
+    containers:
+      # chown-once: only opentakserver (first app container) chowns the shared ots-appdata volume;
+      # the other three just mount it. run.sh chowns it once upfront via the OTS image as vehicle.
+      - {name: opentakserver, ip: 172.20.0.5, hostname: opentakserver,
+         volumes: [{name: ots-appdata, path: /app/ots, chown: "1000:1024"}]}
+      - {name: ots_cot_parser, hostname: ots-cot_parser,
+         entrypoint: [python3, /app/venv/bin/cot_parser],
+         volumes: [{name: ots-appdata, path: /app/ots}]}
+      - {name: ots_eud_handler, ip: 172.20.0.10, hostname: ots_eud_handler,
+         entrypoint: [python3, /app/venv/bin/eud_handler],
+         volumes: [{name: ots-appdata, path: /app/ots}]}
+      - {name: ots_eud_handler_ssl, ip: 172.20.0.12, hostname: ots_eud_handler_ssl,
+         entrypoint: [python3, /app/venv/bin/eud_handler, --ssl],
+         volumes: [{name: ots-appdata, path: /app/ots}]}
+  - ref: "imresamu/postgis:18-3.6"
+    containers:
+      - {name: ots-db, ip: 172.20.0.2, hostname: ots-db,
+         env: {POSTGRES_USER: ots, POSTGRES_PASSWORD: password, POSTGRES_DB: ots, PGUSER: ots},
+         volumes: [{name: ots-pgdata, path: /var/lib/postgresql, chown: "999:999", chown_image: "batman/ots:1.7.13-arm64"}]}
+  - ref: "rabbitmq:4.3.6"                              # PINNED (validated running version), not :latest
+    containers:
+      - {name: rabbitmq, ip: 172.20.0.3, hostname: rabbitmq,
+         env: {RABBITMQ_ERLANG_COOKIE: batman-ots-cookie, RABBITMQ_ENABLED_PLUGINS_FILE: /var/lib/rabbitmq/enabled_plugins},
+         mounts: [{src: rabbitmq-extra.conf, dst: /etc/rabbitmq/conf.d/99-batman.conf, ro: true}],   # tenant-relative src (shipped in apps/opentakserver/)
+         volumes: [{name: ots-mqdata, path: /var/lib/rabbitmq, chown: "999:999", chown_image: "batman/ots:1.7.13-arm64"}]}
 
 network:                               # -> fw4-native uci-default (validated design B)
-  bridge: {name: br-ots, subnet: 172.20.0.0/24}   # subnet/zone from the node arbiter (#167)
+  docker_name: ots-net                 # REUSE the existing network name (run.sh's) so migration reuses the live br-ots network, no re-create
+  bridge: {name: br-ots, subnet: 172.20.0.0/24}
   zone:   dockert
   publish:                             # each target is a DISTINCT container's static IP on br-ots
     - {src_zone: ahwlan, host_port: 8088, to: "172.20.0.10:8088", proto: tcp}   # eud_handler (TCP CoT)
@@ -75,16 +108,11 @@ network:                               # -> fw4-native uci-default (validated de
   peer_allow: []
 
 lifecycle:
-  order:  [ots-db, rabbitmq, ots, cot_parser, eud_handler, eud_handler_ssl]
+  order:  [ots-db, rabbitmq, opentakserver, ots_cot_parser, ots_eud_handler, ots_eud_handler_ssl]
   health:
-    ots-db:   "pg_isready -q"
-    rabbitmq: "rabbitmq-diagnostics -q ping"
-    ots:      "curl -fsS http://localhost:8081/api/health"
+    ots-db:        "pg_isready -q"
+    rabbitmq:      "rabbitmq-diagnostics -q ping"
+    opentakserver: "curl -fsS http://localhost:8081/api/health"
   init_once:                           # first-boot only; app self-inits schema/CA
     - "opentakserver first-run creates CA + DB schema (no manual step needed)"
-  restart: on-failure-backoff          # crash-restart re-gating still open (R2-N5)
-
-volumes:                               # under the tenant state root (#167); chowned to run_as
-  - {name: ots-appdata, path: /app/ots, chown: 1000}   # ots uid 1000
-  - {name: ots-pgdata,  path: /var/lib/postgresql}
-  - {name: ots-mqdata,  path: /var/lib/rabbitmq, chown: 999}
+  restart: on-failure:5                # matches run.sh (crash-restart re-gating still open, R2-N5)

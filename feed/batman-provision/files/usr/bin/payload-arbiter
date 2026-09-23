@@ -1,0 +1,72 @@
+#!/bin/sh
+# payload-arbiter — node port/subnet/zone/bridge collision refusal for multi-tenant payloads (#167 §3).
+#
+# The "registry" is NOT a mutable stateful file — it is the UNION of every installed tenant's
+# net.alloc (apps/<tenant>/<tenant>.net.alloc, rendered on dev/CI by profile-to-manifest.py). This
+# checks a CANDIDATE's declared {PORTS, SUBNET, ZONE, BRIDGE} against every OTHER installed
+# tenant's record and REFUSES (non-zero, naming the clash) on any intersection — the network
+# analogue of #81's resource budget. Admission is serialized under flock so two concurrent installs
+# can't both pass the check and then collide (TOCTOU, review R1-M3).
+#
+# Usage:  payload-arbiter <candidate.net.alloc> [registry-dir]   (registry-dir default /opt/batdata/apps)
+# Exit:   0 = no collision (candidate may be installed) · 3 = collision · 2 = usage/parse error
+set -eu
+
+CAND="${1:-}"
+REG="${2:-/opt/batdata/apps}"
+[ -f "$CAND" ] || { echo "usage: payload-arbiter <candidate.net.alloc> [registry-dir]" >&2; exit 2; }
+
+# --- flat KEY=VALUE reader (no sourcing — never exec a data file) ---
+getval(){ sed -n "s/^$1=//p" "$2" 2>/dev/null | head -1; }
+
+CT=$(getval TENANT "$CAND")
+CPORTS=$(getval PORTS "$CAND")
+CSUBNET=$(getval SUBNET "$CAND")
+CZONE=$(getval ZONE "$CAND")
+CBRIDGE=$(getval BRIDGE "$CAND")
+[ -n "$CT" ] || { echo "payload-arbiter: candidate $CAND has no TENANT=" >&2; exit 2; }
+
+# --- run the whole check under an exclusive lock (serialize admission) ---
+LOCK="$REG/.arbiter.lock"
+mkdir -p "$REG" 2>/dev/null || true
+
+check(){
+	rc=0
+	for other in "$REG"/*/*.net.alloc; do
+		[ -f "$other" ] || continue
+		ot=$(getval TENANT "$other")
+		[ -n "$ot" ] || continue
+		[ "$ot" = "$CT" ] && continue           # a tenant never collides with its own record
+		# ports: any shared host port
+		oports=$(getval PORTS "$other")
+		for p in $CPORTS; do
+			for q in $oports; do
+				[ "$p" = "$q" ] && { echo "COLLISION: host port $p already claimed by tenant '$ot'"; rc=3; }
+			done
+		done
+		# subnet / zone / bridge: exact-string clashes (a /24 is either the same or disjoint here)
+		os=$(getval SUBNET "$other"); [ -n "$CSUBNET" ] && [ "$CSUBNET" = "$os" ] && { echo "COLLISION: subnet $CSUBNET already used by tenant '$ot'"; rc=3; }
+		oz=$(getval ZONE "$other");   [ -n "$CZONE" ]   && [ "$CZONE" = "$oz" ]   && { echo "COLLISION: fw4 zone '$CZONE' already used by tenant '$ot'"; rc=3; }
+		ob=$(getval BRIDGE "$other"); [ -n "$CBRIDGE" ] && [ "$CBRIDGE" = "$ob" ] && { echo "COLLISION: bridge '$CBRIDGE' already used by tenant '$ot'"; rc=3; }
+	done
+	return "$rc"
+}
+
+if command -v flock >/dev/null 2>&1; then
+	# subshell holds fd 9 under flock for the duration of check(). The `if` captures a non-zero
+	# collision rc WITHOUT tripping `set -e` (a bare `( … ); rc=$?` would exit before rc is read).
+	if ( flock 9; check ) 9>"$LOCK"; then rc=0; else rc=$?; fi
+else
+	# mkdir-based fallback lock (portable if busybox lacks flock)
+	while ! mkdir "$LOCK.d" 2>/dev/null; do sleep 1; done
+	trap 'rmdir "$LOCK.d" 2>/dev/null || true' EXIT INT TERM
+	if check; then rc=0; else rc=$?; fi
+	rmdir "$LOCK.d" 2>/dev/null || true; trap - EXIT INT TERM
+fi
+
+if [ "$rc" = 0 ]; then
+	echo "payload-arbiter: OK — tenant '$CT' ports [$CPORTS] subnet $CSUBNET zone $CZONE bridge $CBRIDGE, no collision"
+else
+	echo "payload-arbiter: REFUSED — tenant '$CT' collides (see above)" >&2
+fi
+exit "$rc"

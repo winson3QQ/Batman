@@ -1,0 +1,37 @@
+name: payload-manifest-sync
+# #167 — HARD gate: each committed payload artifact (fw4 rules via profile-to-fw4.py; and, for
+# tenants on the generic manager, the manifest / net.alloc / guardian-init via profile-to-manifest.py)
+# must equal what the emitters regenerate from deploy/<app>/profile.yaml, AND no two installed tenants
+# may collide on a host port / subnet / fw4 zone / bridge. A stale artifact = hidden drift; a
+# collision = a second tenant silently clobbering the first's DNAT. (Also closes the fw4-ungated gap.)
+on:
+  pull_request:
+    paths:
+      - 'deploy/**/profile.yaml'
+      - 'deploy/**/*.manifest'
+      - 'deploy/**/*.net.alloc'
+      - 'deploy/**/*.fw4.uci'
+      - 'deploy/**/batman-payload-*.init'
+      - 'scripts/profile-to-manifest.py'
+      - 'scripts/profile-to-fw4.py'
+      - 'scripts/check-payload-manifest.sh'
+      - 'feed/batman-provision/files/usr/bin/payload-arbiter'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/**/profile.yaml'
+      - 'deploy/**/*.manifest'
+      - 'deploy/**/*.net.alloc'
+      - 'deploy/**/*.fw4.uci'
+      - 'scripts/profile-to-manifest.py'
+      - 'scripts/profile-to-fw4.py'
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install --quiet pyyaml
+      - name: payload artifacts must match profile SoT + no tenant collisions
+        run: PYTHON=python3 sh scripts/check-payload-manifest.sh
