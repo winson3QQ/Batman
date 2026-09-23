@@ -29,10 +29,14 @@ boot partition (v1 of this table had a single boot — superseded).
 Fixed part ≈ 4 GB → **minimum supported card 16 GB**; default 32 GB high-endurance; FTS-heavy
 or recording tenants 64 GB+ or an external SSD (productization.md sizing).
 
-**Zero 2 W profile:** no EEPROM bootloader → one boot partition (p1) holding both kernel sets
+**Pi 3A+ profile (`bcm2710`):** no EEPROM bootloader → one boot partition (p1) holding both kernel sets
 under `os_prefix=A/` and `B/` switched by `tryboot.txt`; p2/p3 = rootfs A/B; p4 config; p5
 data; no verity-with-signed-boot guarantee and no LUKS (Base tier). The boot partition is its
 single unrecoverable point — written only for the few-byte `os_prefix` switch.
+**Inherited from the Zero 2 W and NOT re-verified on the Pi 3A+:** whether the file-level
+`tryboot.txt` switch works at all on the Pi 3 bootrom / `start.elf` is open (#203 risk 5); only
+`os_prefix` is known to be a firmware-level feature. Do not promise A/B on this tier until it is
+bench-verified.
 
 **Migration from v1.1 (p1 boot / p2 root+overlay / p3 data):** a v2 image is a repartition —
 it cannot be applied in place by the A/B updater. Path: back up p3 tenant state (`apps/`,
@@ -49,7 +53,7 @@ or rollback.** Slot policy, boot-loop handling and the recovery-image decision:
 
 ### v1 of this table (2026-09-10, superseded)
 p1 boot · p2 rootfs A · p3 rootfs B · p4 config · p5 data — one boot partition. Kept for the
-record; the tryboot_a_b fact and the Zero 2 W profile made it obsolete.
+record; the tryboot_a_b fact and the small-node profile (Zero 2 W, now Pi 3A+) made it obsolete.
 
 > Current state (2026-09-11): the golden image now **self-provisions a single data partition**
 > (`mmcblk0p3`, expand-to-fill, ext4, mounted at `/opt/batdata`) on first boot — validated on a

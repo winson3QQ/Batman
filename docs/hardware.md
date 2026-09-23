@@ -214,10 +214,16 @@ constraint when choosing a board.
 | Pi 4B (manet01, today) | 109 MB / 1-8 GB | 15.7% | yes | bcm2835 | **yes** |
 | Pi 5 / Pi 500 | as above | 7% | yes | RP1 — needed a bring-up, see `pi5-rp1-bringup.md` | built by hand |
 | Pi 3B+ | fits (11% of 1 GB) | ~19% equivalent | yes, same 40-pin | **bcm2835, same as Pi 4** | **no — must be built** |
-| Pi Zero 2 W | 21% of 512 MB | ~20% estimated | yes | bcm2835 | no, and unverified |
+| **Pi 3A+** (civil SKU, #195) | fits (est. 21% of 512 MB) | ~20% estimated | yes, same 40-pin | **bcm2835, same as Pi 4** | building now (#203) |
+| ~~Pi Zero 2 W~~ | 21% of 512 MB | ~20% estimated | yes | bcm2835 | **dropped** — global shortage, #102 closed not-planned |
 
 Pi 3 is architecturally the *easier* target than Pi 5: it uses the same bcm2835 SPI
 controller as the Pi 4 that already works, so none of the RP1 bring-up work applies.
+
+**The Pi 3A+ carries no Ethernet** — it omits the LAN9514 hub/NIC that the 3B+ has, which is
+also why it has a single USB-A. It is therefore the first board whose only stock entry points
+are the onboarding AP and the UART console; see the access ladder in #203, and the keyguard
+deadlock it exposes.
 
 ### What a Pi 3 port actually costs
 
@@ -225,9 +231,17 @@ Not capability — integration time:
 
 1. Build an OpenWrt/OpenMANET image for `bcm27xx/bcm2710`. The target exists upstream;
    OpenMANET only publishes `rpi4-mm6108-spi`.
-2. Rebuild the morse driver against that kernel.
+2. ~~Rebuild the morse driver against that kernel.~~ **Not needed (verified 2026-09-23).**
+   The build tree already carries a first-class bcm2710 path: `boards/ekh-bcm2710/target_diffconfig`,
+   and `target/linux/bcm27xx/image/Makefile` defines `Device/bcm2710_mm6108-spi` whose
+   `DEVICE_PACKAGES` pull `kmod-mm6108 netifd-morse mm6108-firmware` — the morse feed builds the
+   driver against whichever kernel the subtarget uses. The same Makefile lists `rpi-3-a-plus` /
+   `raspberrypi,3-model-a-plus` in `SUPPORTED_DEVICES`, and ships both 43430 **and 43455**
+   firmware+nvram, so the CYW43455 onboard Wi-Fi of the 3A+ (the onboarding AP) has firmware.
 3. Port the overlays. GPIO numbering is unchanged on the 40-pin header, so this is mostly
    mechanical.
+4. Verify which DTB the firmware loads for a 3A+ — `DEVICE_DTS` lists `3-b`, `3-b-plus` and
+   `zero-2-w`, but no 3A+-specific dtb (#203 risk 1).
 
 ### One thing to verify before committing, not just schedule
 
