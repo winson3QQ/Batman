@@ -106,6 +106,27 @@ cmd_apply() {
 	[ "$(hexdump -n4 -e '4/1 "%c"' "$SQ" 2>/dev/null)" = hsqs ] || die "payload rootfs is not a squashfs"
 
 	assert_fw_sane
+
+	# #202 interlock: refuse to write a slot if the config partition p5 is a plain-ext4 partition
+	# that has never been seeded — a fresh slot would then boot UNPROVISIONED (no mesh key), and on
+	# a mesh-only node (no ethernet) that strands it unrecoverably. Only checkable on a plain-ext4
+	# p5: a Secure-tier LUKS p5 (part_fstype != ext4) or an opaque one is SKIPPED, never blocked
+	# (its seed lives on the opened mapper, #111). Deliberate pre-provision reflash: override with
+	# BATMAN_ALLOW_UNSEEDED=1.
+	if [ "${BATMAN_ALLOW_UNSEEDED:-0}" != 1 ]; then
+		P5="${DISK}p5"
+		if [ -b "$P5" ] && [ "$(part_fstype "$P5")" = ext4 ]; then
+			m="/mnt/p5seed.$$"; mkdir -p "$m"
+			if mount -t ext4 -o ro "$P5" "$m" 2>/dev/null; then
+				seeded=1; [ -f "$m/.seeded" ] || seeded=0
+				umount "$m" 2>/dev/null; rmdir "$m" 2>/dev/null
+				[ "$seeded" = 1 ] || die "p5 (config) is not seeded — a reflash now would boot the fresh slot UNPROVISIONED and, on a mesh-only node, strand it. Seed p5 first (join the mesh so joinwatch saves it, or run 'batman-config-save --on-join'), or set BATMAN_ALLOW_UNSEEDED=1 to override."
+			else
+				rmdir "$m" 2>/dev/null   # cannot mount -> cannot verify -> do not block
+			fi
+		fi
+	fi
+
 	A=$(active_slot); T=$(other_slot "$A")
 	TROOT=$(slot_rootdev "$T"); TBOOT=$(slot_bootdev "$T"); TGUID=$(slot_rootguid "$T")
 	# hard guard: never write the running slot

@@ -34,13 +34,19 @@ openmanetd.config.roipconfigured
 die() { echo "batman-config-save: $*" >&2; exit 1; }
 
 mode=$1
-case "$mode" in --seed|--save|--if-healthy) ;; *) die "usage: --seed | --save | --if-healthy" ;; esac
+case "$mode" in --seed|--save|--if-healthy|--on-join) ;; *) die "usage: --seed | --save | --if-healthy | --on-join" ;; esac
 
 [ -b "$DEV" ] || die "no $DEV"
+# tier note (#202/#111): DEV is the plain p5 (civilian, no crypto chip). A Secure-tier (608B) node
+# encrypts p5 with LUKS; its plaintext ext4 lives on the cryptsetup mapper, which the LUKS software
+# path (#111) opens — batman-config-save must then resolve DEV to that mapper. Until #111 lands we
+# only ever see a plain-ext4 p5. The one hard rule that keeps this forward-safe: NEVER mkfs a
+# non-ext4 partition (that would silently reformat a LUKS p5 -> data loss + security downgrade,
+# review finding #1), so only --seed may format, and only a genuinely raw/plain p5.
 magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)
 if [ "$magic" != "53ef" ]; then
-	# only --seed may format p5 (the one-time deployment step); never on --save/--if-healthy (DR-1)
-	[ "$mode" = "--seed" ] || die "p5 is not plain ext4 (magic=$magic) — run --seed first"
+	# only --seed may format p5 (the one-time deployment step); never on --save/--if-healthy/--on-join
+	[ "$mode" = "--seed" ] || die "p5 is not plain ext4 (magic=$magic) — run --seed first (or, on a Secure-tier LUKS p5, open it via #111)"
 	command -v mkfs.ext4 >/dev/null 2>&1 || die "mkfs.ext4 missing"
 	echo "batman-config-save: formatting $DEV (ext4, label batman-cfg)"
 	mkfs.ext4 -F -q -L batman-cfg -m 0 "$DEV" >/dev/null 2>&1 || die "mkfs.ext4 failed"
@@ -70,10 +76,11 @@ fi
 # per-node root password (#137): capture root's /etc/shadow line ONLY if it is a real crypt hash.
 # A dev node has root:: (empty) — seeding that would ship a passwordless "prod", so skip + warn.
 # 96-batman-config-migrate restores this before dropbear and only then arms the lockdown.
+HAS_SHADOW=0
 rootline=$(grep '^root:' /etc/shadow 2>/dev/null)
 case "$rootline" in
-	root:\$*) printf '%s\n' "$rootline" > "$STAGE/identity/shadow-root"; chmod 600 "$STAGE/identity/shadow-root" ;;
-	*) [ "$mode" = --seed ] && echo "batman-config-save: WARN root has no password hash — the node will stay UNPROVISIONED (open) until one is set (#137)" >&2 ;;
+	root:\$*) printf '%s\n' "$rootline" > "$STAGE/identity/shadow-root"; chmod 600 "$STAGE/identity/shadow-root"; HAS_SHADOW=1 ;;
+	*) { [ "$mode" = --seed ] || [ "$mode" = --on-join ]; } && echo "batman-config-save: root has no password hash — persisting radio config only; node stays UNPROVISIONED (open) until a password is set (#137)" >&2 ;;
 esac
 
 # #137: a seeded node whose lockdown will turn OFF network password-auth MUST have a USABLE operator
@@ -95,16 +102,37 @@ for t in $PRESERVE; do
 done
 echo "$SCHEMA" > "$STAGE/schema_version"
 
-# publish atomically. lkg = last config that was PROVEN good: rotate it only on --seed (the
-# baseline) and --if-healthy (this boot joined); --save (operator, unproven) must NOT clobber the
+# idempotency for --on-join (bounds re-writes while a node stays open, #104): joinwatch calls this
+# every joined tick until it latches, and an open node never latches (see the exit below) — so skip
+# the write entirely when the delta AND the shadow-presence already match what is on p5.
+if [ "$mode" = --on-join ] && [ -f "$MNT/.seeded" ] && cmp -s "$STAGE/overrides.uci" "$MNT/overrides.uci" 2>/dev/null; then
+	# .seeded must already be present too: a write interrupted between overrides.uci and the
+	# .seeded sentinel (power loss, #41) leaves overrides matching but the node still "un-seeded";
+	# skipping then would never re-create the sentinel. Require it, so that case falls through and writes.
+	live_shadow=0; [ -s "$MNT/identity/shadow-root" ] && live_shadow=1
+	if [ "$live_shadow" = "$HAS_SHADOW" ]; then
+		rm -rf "$STAGE"; sync; umount "$MNT" 2>/dev/null
+		echo "batman-config-save: unchanged ($mode) — skip"
+		[ "$HAS_SHADOW" = 1 ] && exit 0 || exit 4
+	fi
+fi
+
+# publish atomically. lkg = last config that was PROVEN good: rotate it on --seed (the baseline),
+# --if-healthy (this boot joined) and --on-join (this boot joined — the mesh key demonstrably works,
+# so it is the rollback anchor #202/finding-C); --save (operator, unproven) must NOT clobber the
 # last proven lkg (N-R8).
 mkdir -p "$MNT/identity" "$MNT/lkg"
 cp -a "$STAGE/identity/." "$MNT/identity/" 2>/dev/null
 mv "$STAGE/overrides.uci" "$MNT/overrides.uci"
-case "$mode" in --seed|--if-healthy) cp -a "$MNT/overrides.uci" "$MNT/lkg/overrides.uci" ;; esac
+case "$mode" in --seed|--if-healthy|--on-join) cp -a "$MNT/overrides.uci" "$MNT/lkg/overrides.uci" ;; esac
 mv "$STAGE/schema_version" "$MNT/schema_version"
 rm -rf "$STAGE"
 : > "$MNT/.seeded"        # sentinel written LAST (DR-2)
 sync
 umount "$MNT" 2>/dev/null
 echo "batman-config-save: saved ($mode) schema=$SCHEMA -> $DEV"
+# --on-join persists the RADIO delta so a reflash survives, but signals joinwatch NOT to latch
+# (exit 4) while the node is still open (no password) — so a #137 lockdown performed later THIS boot
+# is re-persisted on the next tick instead of being silently lost on the next reflash (finding #2).
+[ "$mode" = --on-join ] && [ "$HAS_SHADOW" = 0 ] && exit 4
+exit 0

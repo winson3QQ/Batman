@@ -135,6 +135,15 @@ chk_14()  { fssh "$1" 20 '
   p=$(batctl n 2>/dev/null | grep -c wlh0)
   echo "cgi mesh.nodes=$n  batctl peers=$p"
   [ -n "$n" ] && [ "$n" -ge 1 ] && [ "$n" -le $((p+1)) ]'; }   # aggregate agrees with batctl (<= peers+self)
+chk_202() { fssh "$1" 20 '                                     # a JOINED node must have seeded p5 (#202)
+  [ -b /dev/mmcblk0p5 ] || { echo "no p5 — skip"; exit 0; }
+  m=/mnt/dv-p5; mkdir -p "$m"
+  mount -t ext4 -o ro /dev/mmcblk0p5 "$m" 2>/dev/null || { echo "p5 not plain-ext4 (LUKS/Secure? interlock skips it too) — skip"; exit 0; }
+  seeded=0; [ -f "$m/.seeded" ] && seeded=1
+  key=0; grep -q "wireless.default_radio1.key=" "$m/overrides.uci" 2>/dev/null && key=1
+  umount "$m" 2>/dev/null; rmdir "$m" 2>/dev/null
+  echo "p5 .seeded=$seeded  mesh-key-in-overrides.uci=$key (join must persist radio delta regardless of #137 lockdown)"
+  [ "$seeded" = 1 ] && [ "$key" = 1 ]'; }   # decoupled from lockdown-OK: a meshed-but-open node MUST still seed
 
 if up "$OTS_NODE"; then
   suite confinement-98   "OTS container confinement — 9 axes ×6 (#98)"                       "chk_98 $OTS_NODE"
@@ -146,8 +155,9 @@ fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"
   suite mesh-console-14  "/cgi-bin/mesh aggregate agrees with batctl (#14)"                   "chk_14 $MESH_NODE"
+  suite p5-seed-202      "a JOINED node auto-seeds p5 (radio delta), decoupled from lockdown (#202)" "chk_202 $MESH_NODE"
 else
-  for s in field-status-130 mesh-console-14; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
+  for s in field-status-130 mesh-console-14 p5-seed-202; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
 fi
 
 # ---- tier B: destructive, induces the real failure — DNODE (eth) only, --destructive ----
