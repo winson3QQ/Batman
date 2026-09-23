@@ -113,16 +113,17 @@ bid(){ cut -c1-8 /proc/sys/kernel/random/boot_id; }
 # logd picks up when it starts -> visible in both dmesg and logread.
 note(){ logger -t batdata-mount "$*" 2>/dev/null; echo "batdata-mount: $*" > /dev/kmsg 2>/dev/null; }
 
-# payload guardian restore (#192): an A/B flash clears the overlay, so a payload guardian init that
-# lives on the persistent data area (deploy/<payload>/<name>.init — NOT baked into the generic image)
-# is gone from /etc/init.d. Reinstate it EVERY boot, idempotently, after p6 is mounted, so OTS + its
-# #156 reconcile guardian return with no manual step. Done here (not a one-shot uci-default) so a boot
-# where the mount was not ready self-heals next boot instead of the hook deleting itself into a silent
-# no-guardian state (review #192). Guard: only root-owned inits are boot-exec'd (physical-capture is in
-# the threat model; this runs before the network is fully up). See docs/design/192-payload-guardian-restore.md.
+# payload guardian restore (#192, extended for #167): an A/B flash clears the overlay, so a payload
+# guardian init that lives on the persistent data area (deploy/<payload>/<name>.init or the generic
+# apps/<tenant>/<name>.init — NOT baked into the generic image) is gone from /etc/init.d. Reinstate it
+# EVERY boot, idempotently, after p6 is mounted, so OTS + its #156 reconcile guardian (and any generic
+# payload tenant) return with no manual step. Done here (not a one-shot uci-default) so a boot where the
+# mount was not ready self-heals next boot instead of the hook deleting itself into a silent no-guardian
+# state (review #192). Guard: only root-owned inits are boot-exec'd (physical-capture is in the threat
+# model; this runs before the network is fully up). See docs/design/192-payload-guardian-restore.md.
 restore_payload_guardians(){
-	[ -d "$MOUNT/deploy" ] || return 0
-	for src in "$MOUNT"/deploy/*/*.init; do
+	[ -d "$MOUNT/deploy" ] || [ -d "$MOUNT/apps" ] || return 0
+	for src in "$MOUNT"/deploy/*/*.init "$MOUNT"/apps/*/*.init; do
 		[ -f "$src" ] || continue
 		[ -O "$src" ] || { note "payload restore: $src not root-owned — skipped"; continue; }
 		name=${src##*/}; name=${name%.init}; dst="/etc/init.d/$name"

@@ -1,0 +1,80 @@
+#!/bin/sh
+# payload-teardown — retire (or swap out) a payload tenant (#167 §2.2). The operation #151 punted.
+#
+#   payload-teardown <tenant> [--zeroize]
+#
+# Default (swap/retire, keep state): stop+disable the guardian, remove the tenant's containers, its
+# fw4 objects, its docker network, and free its arbiter record — but KEEP the named volumes and the
+# tenant dir, so the tenant can be re-installed (swap != retire, per #151).
+#
+# --zeroize (permanent retire): additionally remove the docker volumes and the tenant dir, after a
+# best-effort overwrite of any secrets. HONESTY (#167 §2.3): on flash storage overwrite is
+# best-effort only (wear-levelling/FTL remap) — true cryptographic erase needs encryption at rest
+# (#47). This is LOGICAL removal + best-effort overwrite, not guaranteed secure erase.
+#
+# Env: APPS_DIR (default /opt/batdata/apps).
+set -eu
+
+TENANT="${1:-}"
+ZERO=0
+[ "${2:-}" = "--zeroize" ] && ZERO=1
+[ -n "$TENANT" ] || { echo "usage: payload-teardown <tenant> [--zeroize]" >&2; exit 2; }
+APPS_DIR="${APPS_DIR:-/opt/batdata/apps}"
+DIR="$APPS_DIR/$TENANT"
+log(){ echo "payload-teardown[$TENANT]: $*"; }
+
+# 1. guardian
+if [ -f "/etc/init.d/batman-payload-$TENANT" ]; then
+	/etc/init.d/batman-payload-"$TENANT" stop 2>/dev/null || true
+	/etc/init.d/batman-payload-"$TENANT" disable 2>/dev/null || true
+	rm -f "/etc/init.d/batman-payload-$TENANT"
+	log "guardian removed"
+fi
+
+# 2. containers (names from the manifest; rm in reverse lifecycle order)
+MANIFEST=""; for m in "$DIR"/*.manifest; do [ -f "$m" ] && { MANIFEST="$m"; break; }; done
+NAMES=""; NET=""
+if [ -n "$MANIFEST" ]; then
+	NAMES=$(awk '/^CONTAINER /{print $2}' "$MANIFEST")
+	NET=$(awk '/^NETWORK_NAME /{print $2; exit}' "$MANIFEST")
+fi
+rev=""; for n in $NAMES; do rev="$n $rev"; done
+for n in $rev; do docker rm -f "$n" >/dev/null 2>&1 || true; done
+[ -n "$NAMES" ] && log "containers removed"
+
+# 3. fw4 objects — section names read FROM the tenant's fw4.uci (avoids the app-dir vs tenant naming
+#    gap: sections are named by the deploy-dir slug, not $TENANT). Then `fw4 restart` (NOT reload —
+#    reload leaves the now-empty named chains behind, #167 §12 teardown lesson).
+for f in "$DIR"/*.fw4.uci; do
+	[ -f "$f" ] || continue
+	# shellcheck disable=SC2013  # uci section ids are single words (alnum+_), word-splitting is fine
+	for s in $(sed -n 's/^uci set firewall\.\([A-Za-z0-9_]*\)=.*/\1/p' "$f" | sort -u); do
+		uci -q delete firewall."$s" || true
+	done
+done
+uci commit firewall 2>/dev/null || true
+fw4 restart >/dev/null 2>&1 || true
+log "fw4 objects removed (fw4 restart)"
+
+# 4. docker network
+[ -n "$NET" ] && docker network rm "$NET" >/dev/null 2>&1 || true
+
+# 5/6. state
+if [ "$ZERO" = 1 ]; then
+	# remove named volumes (best-effort; a running container would block rm — already removed above)
+	# shellcheck disable=SC2013  # docker volume names are single words, word-splitting is fine
+	for v in $(awk -F'[ :]' '/^VOLUME /{print $2}' "$MANIFEST" 2>/dev/null | sort -u); do
+		docker volume rm "$v" >/dev/null 2>&1 || log "WARN: volume $v not removed (in use?)"
+	done
+	# best-effort overwrite of secrets, then drop the tenant dir
+	if [ -d "$DIR/secrets" ]; then
+		for s in "$DIR"/secrets/*; do [ -f "$s" ] && { dd if=/dev/zero of="$s" bs=1k count=1 conv=notrunc 2>/dev/null || true; }; done
+	fi
+	rm -rf "$DIR"
+	log "ZEROIZED — volumes + tenant dir removed (best-effort overwrite; true erase needs #47)"
+else
+	# keep volumes + tenant dir for re-install; just free the arbiter record so a re-add re-derives it
+	rm -f "$DIR"/*.net.alloc
+	log "state KEPT (volumes + $DIR); arbiter record freed. Re-install with payload-run $TENANT"
+fi
+log "done"

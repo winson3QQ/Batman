@@ -15,7 +15,7 @@ dockerd.globals.iptables (that is a one-time node prep, done by run.sh/README), 
 Usage:  profile-to-fw4.py <app>            # writes deploy/<app>/<app>.fw4.uci
         profile-to-fw4.py <app> --check    # print to stdout only (CI diff), write nothing
 """
-import sys, pathlib
+import re, sys, pathlib
 try:
     import yaml
 except ImportError:
@@ -25,7 +25,11 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
 def uci_from_network(app, net):
-    zone = net.get("zone", f"{app}z")
+    # uci SECTION identifiers must be alnum+underscore — a tenant slug with a hyphen (e.g.
+    # "dummy-nginx") makes `firewall.dummy-nginx_zone` an invalid uci name. Sanitize the id prefix;
+    # display `name='...'` values (below) keep the raw slug (hyphens are fine there).
+    sid = re.sub(r"[^A-Za-z0-9_]", "_", app)
+    zone = net.get("zone", f"{sid}z")
     br = net.get("bridge", {})
     dev = br.get("name")
     if not dev:
@@ -43,7 +47,7 @@ def uci_from_network(app, net):
     for p in pub:
         dip = p["to"].rsplit(":", 1)[0]
         allow.setdefault((p["src_zone"], dip, p.get("proto", "tcp")), set()).add(str(p["to"].rsplit(":", 1)[1]))
-    allow_names = [f"{app}_allow" if j == 0 else f"{app}_allow{j}" for j in range(len(allow))]
+    allow_names = [f"{sid}_allow" if j == 0 else f"{sid}_allow{j}" for j in range(len(allow))]
 
     L = []
     a = L.append
@@ -53,34 +57,34 @@ def uci_from_network(app, net):
     a("# Idempotent; install as a uci-default or source from run.sh. Requires dockerd iptables=0.")
     a("set -e")
     # clean prior (idempotent) — every section this script may create
-    names = [f"{app}_zone"] + allow_names + [f"{app}_dnat_{i}" for i in range(len(pub))] \
-            + [f"{app}_peer_{i}" for i in range(len(peers))]
+    names = [f"{sid}_zone"] + allow_names + [f"{sid}_dnat_{i}" for i in range(len(pub))] \
+            + [f"{sid}_peer_{i}" for i in range(len(peers))]
     a(f'for s in {" ".join(names)}; do uci -q delete firewall."$s" || true; done')
     # zone
-    a(f"uci set firewall.{app}_zone=zone")
-    a(f"uci set firewall.{app}_zone.name='{zone}'")
-    a(f"uci set firewall.{app}_zone.device='{dev}'")
-    a(f"uci set firewall.{app}_zone.input='{inp}'")
-    a(f"uci set firewall.{app}_zone.output='ACCEPT'")
-    a(f"uci set firewall.{app}_zone.forward='{fwd}'")
-    a(f"uci set firewall.{app}_zone.masq='0'")
+    a(f"uci set firewall.{sid}_zone=zone")
+    a(f"uci set firewall.{sid}_zone.name='{zone}'")
+    a(f"uci set firewall.{sid}_zone.device='{dev}'")
+    a(f"uci set firewall.{sid}_zone.input='{inp}'")
+    a(f"uci set firewall.{sid}_zone.output='ACCEPT'")
+    a(f"uci set firewall.{sid}_zone.forward='{fwd}'")
+    a(f"uci set firewall.{sid}_zone.masq='0'")
     # DNAT publish (allow grouping already computed above)
     for i, p in enumerate(pub):
         sz, hp, to, proto = p["src_zone"], p["host_port"], p["to"], p.get("proto", "tcp")
         dip, dport = to.rsplit(":", 1)
-        a(f"uci set firewall.{app}_dnat_{i}=redirect")
-        a(f"uci set firewall.{app}_dnat_{i}.name='{app}-pub-{hp}'")
-        a(f"uci set firewall.{app}_dnat_{i}.src='{sz}'")
-        a(f"uci set firewall.{app}_dnat_{i}.src_dport='{hp}'")
-        a(f"uci set firewall.{app}_dnat_{i}.dest='{zone}'")
-        a(f"uci set firewall.{app}_dnat_{i}.dest_ip='{dip}'")
-        a(f"uci set firewall.{app}_dnat_{i}.dest_port='{dport}'")
-        a(f"uci set firewall.{app}_dnat_{i}.proto='{proto}'")
-        a(f"uci set firewall.{app}_dnat_{i}.target='DNAT'")
+        a(f"uci set firewall.{sid}_dnat_{i}=redirect")
+        a(f"uci set firewall.{sid}_dnat_{i}.name='{app}-pub-{hp}'")
+        a(f"uci set firewall.{sid}_dnat_{i}.src='{sz}'")
+        a(f"uci set firewall.{sid}_dnat_{i}.src_dport='{hp}'")
+        a(f"uci set firewall.{sid}_dnat_{i}.dest='{zone}'")
+        a(f"uci set firewall.{sid}_dnat_{i}.dest_ip='{dip}'")
+        a(f"uci set firewall.{sid}_dnat_{i}.dest_port='{dport}'")
+        a(f"uci set firewall.{sid}_dnat_{i}.proto='{proto}'")
+        a(f"uci set firewall.{sid}_dnat_{i}.target='DNAT'")
     # one allow rule per (src_zone,dest_ip,proto) — zone forward policy may be DROP for cross-zone
     for j, ((sz, dip, proto), ports) in enumerate(sorted(allow.items())):
-        a(f"uci set firewall.{app}_allow=rule" if j == 0 else f"uci set firewall.{app}_allow{j}=rule")
-        pfx = f"{app}_allow" if j == 0 else f"{app}_allow{j}"
+        a(f"uci set firewall.{sid}_allow=rule" if j == 0 else f"uci set firewall.{sid}_allow{j}=rule")
+        pfx = f"{sid}_allow" if j == 0 else f"{sid}_allow{j}"
         a(f"uci set firewall.{pfx}.name='{app}-pub-allow'")
         a(f"uci set firewall.{pfx}.src='{sz}'")
         a(f"uci set firewall.{pfx}.dest='{zone}'")
@@ -90,13 +94,13 @@ def uci_from_network(app, net):
         a(f"uci set firewall.{pfx}.target='ACCEPT'")
     # explicit app<->app allows (default none) — cross-zone exceptions
     for i, pa in enumerate(peers):
-        a(f"uci set firewall.{app}_peer_{i}=rule")
-        a(f"uci set firewall.{app}_peer_{i}.name='{app}-peer-{i}'")
-        a(f"uci set firewall.{app}_peer_{i}.src='{pa['from_zone']}'")
-        a(f"uci set firewall.{app}_peer_{i}.dest='{zone}'")
-        a(f"uci set firewall.{app}_peer_{i}.proto='{pa.get('proto','tcp')}'")
-        a(f"uci set firewall.{app}_peer_{i}.dest_port='{pa['dest_port']}'")
-        a(f"uci set firewall.{app}_peer_{i}.target='ACCEPT'")
+        a(f"uci set firewall.{sid}_peer_{i}=rule")
+        a(f"uci set firewall.{sid}_peer_{i}.name='{app}-peer-{i}'")
+        a(f"uci set firewall.{sid}_peer_{i}.src='{pa['from_zone']}'")
+        a(f"uci set firewall.{sid}_peer_{i}.dest='{zone}'")
+        a(f"uci set firewall.{sid}_peer_{i}.proto='{pa.get('proto','tcp')}'")
+        a(f"uci set firewall.{sid}_peer_{i}.dest_port='{pa['dest_port']}'")
+        a(f"uci set firewall.{sid}_peer_{i}.target='ACCEPT'")
     a("uci commit firewall")
     a("fw4 reload >/dev/null 2>&1 || true")
     a(f'echo "fw4: {app} zone {zone} on {dev} applied"')

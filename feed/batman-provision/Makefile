@@ -86,6 +86,13 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/usr/bin/meshled            $(1)/usr/bin/meshled
 	$(INSTALL_BIN) ./files/usr/bin/meshpoint-1.8.0    $(1)/usr/bin/meshpoint-1.8.0
 	$(INSTALL_BIN) ./files/usr/bin/meshtest           $(1)/usr/bin/meshtest
+	# generic payload manager (#167): orchestrator + arbiter + shared guardian logic. Per-tenant
+	# state (manifest/net.alloc/hardening.env/fw4 + the 4-line guardian init) lives on p6 under
+	# apps/<tenant>/ and is restored after A/B flash by 95-batman-storage's #192 glob — NOT baked here.
+	$(INSTALL_BIN) ./files/usr/bin/payload-run        $(1)/usr/bin/payload-run
+	$(INSTALL_BIN) ./files/usr/bin/payload-arbiter    $(1)/usr/bin/payload-arbiter
+	$(INSTALL_BIN) ./files/usr/bin/payload-teardown   $(1)/usr/bin/payload-teardown
+	$(INSTALL_DATA) ./files/usr/lib/batman/payload-guardian.sh $(1)/usr/lib/batman/payload-guardian.sh
 	# offline monotonic wall-clock (#174): restore@S12 (after batdata-mount S11), save@K09 + periodic
 	$(INSTALL_BIN) ./files/usr/sbin/batman-faketime   $(1)/usr/sbin/batman-faketime
 	# A/B slot operator (#89): the one audited place for slot apply/commit/rollback, shared with

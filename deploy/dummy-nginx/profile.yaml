@@ -1,0 +1,49 @@
+# Payload descriptor for a MINIMAL throwaway network-service tenant — the generic payload
+# manager's proving ground (#167 Increment 1). NOT a shipped product; it exists to prove the
+# generic path (profile-to-manifest.py -> payload-run -> arbiter -> guardian) on a tenant with
+# NO baked-IP legacy, so OTS (the real tenant #1) can stay on its validated bespoke run.sh until
+# the generic path is proven (docs/design/167-payload-manager.md §9, Increment 1).
+#
+# Hardened `network-service`: nginx-unprivileged (uid 101, binds 8080 >1024) — cap-drop=ALL,
+# non-root, read-only rootfs friendly. Same emitter (profile-to-flags.py) reads ONLY `values:`.
+apiVersion: batman.payload/v1
+tenant: dummy-nginx
+archetype: network-service
+co_scheduled_with: []
+
+values:                                # emitter reads ONLY this (profile-to-flags.py)
+  network:  {mode: bridged}
+  user:     {run_as: 101}              # nginx-unprivileged image USER 101
+  no_new_privileges: true
+  caps:     {drop: [ALL], add: []}     # binds 8080 (>1024) → no add-back
+  rootfs:
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=16m", "/var/cache/nginx:rw,nosuid,nodev,size=16m", "/var/run:rw,nosuid,nodev,size=1m"]
+  resources: {cpus: 0.5, memory: 64m, pids: 64}
+  devices:  []
+  seccomp:  {profile: default}
+  privileged: false
+  docker_socket_mounted: false
+  secrets:  []
+
+# ---- operational siblings (payload-manager consumed; profile-to-flags.py IGNORES these) ----
+images:
+  - ref: "nginxinc/nginx-unprivileged:1.27-alpine"
+    containers:
+      - {name: dummy-web, ip: 172.20.1.10, hostname: dummy-web}   # published → needs a static IP for the DNAT target
+
+network:                               # -> profile-to-fw4.py (validated design B, per-tenant)
+  bridge: {name: br-dummy, subnet: 172.20.1.0/24}   # DECLARED (not OTS's 172.20.0.0/24) — proves arbiter isolation
+  zone:   dummyz
+  publish:
+    - {src_zone: ahwlan, host_port: 8090, to: "172.20.1.10:8080", proto: tcp}   # distinct host port from OTS (8088/8089/8443)
+  isolation: {input: DROP, forward: intra-zone, egress: none}
+  peer_allow: []
+
+lifecycle:
+  order:  [dummy-web]
+  health:
+    dummy-web: "wget -q -O /dev/null http://127.0.0.1:8080/"   # 127.0.0.1 not localhost (busybox wget → ::1, nginx is IPv4-only); alpine has wget not curl
+  restart: on-failure:5
+
+volumes: []
