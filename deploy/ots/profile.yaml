@@ -115,4 +115,8 @@ lifecycle:
     opentakserver: "curl -fsS http://localhost:8081/api/health"
   init_once:                           # first-boot only; app self-inits schema/CA
     - "opentakserver first-run creates CA + DB schema (no manual step needed)"
-  restart: on-failure:5                # matches run.sh (crash-restart re-gating still open, R2-N5)
+  restart: unless-stopped              # #206: on a fresh reflash boot the containers race their deps
+                                       # (opentakserver/cot_parser start before postgres/rabbitmq accept);
+                                       # on-failure:5 exhausted its retries and left the stack half-up.
+                                       # unless-stopped retries until deps are ready, then stays — and
+                                       # does NOT restart a container the operator deliberately stops.
