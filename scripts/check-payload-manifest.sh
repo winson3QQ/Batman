@@ -52,5 +52,22 @@ done
 rm -f deploy/.arbiter.lock 2>/dev/null || true
 rmdir deploy/.arbiter.lock.d 2>/dev/null || true
 
-[ "$rc" = 0 ] && echo "OK: payload artifacts in sync + no tenant collisions"
+# --- 3) payload config golden (docs/design/payload-config-golden.md): the batman-payload-host package
+#     bakes the OTS tenant's declarative config straight from deploy/ots AT BUILD (no committed 2nd copy),
+#     so the image config can't drift from the profile SoT. Assert (a) every deploy/ots source the Makefile
+#     references actually exists — else the image silently ships an empty/partial golden — and (b) no
+#     committed golden copy exists under the package (which would reintroduce the drift this design kills,
+#     review B1). ---
+MK=feed/batman-payload-host/Makefile
+if [ -f "$MK" ]; then
+	for src in $(grep -E '\$\(INSTALL_(BIN|DATA)\)' "$MK" | sed -n 's#.*[[:space:]]\(\.\./\.\./deploy/[A-Za-z0-9._/-]*\)[[:space:]].*#\1#p'); do
+		rel=${src#../../}
+		[ -f "$rel" ] || { echo "FAIL: payload-golden source missing — $MK installs $src but $rel does not exist"; rc=1; }
+	done
+	if [ -d feed/batman-payload-host/files/usr/share/batman/payload-golden ]; then
+		echo "FAIL: a committed payload-golden copy exists under $MK's files/ — the golden must be copied from deploy/ at build, not committed (review B1 drift)"; rc=1
+	fi
+fi
+
+[ "$rc" = 0 ] && echo "OK: payload artifacts in sync + no tenant collisions + golden source present"
 exit "$rc"

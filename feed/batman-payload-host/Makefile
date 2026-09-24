@@ -38,7 +38,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=batman-payload-host
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 PKG_MAINTAINER:=Batman <yellow.winson@gmail.com>
 PKG_LICENSE:=GPL-2.0-or-later
 
@@ -108,6 +108,25 @@ endef
 define Package/batman-payload-host/install
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./files/etc/uci-defaults/99-batman-payload-docker $(1)/etc/uci-defaults/99-batman-payload-docker
+	# payload config golden (docs/design/payload-config-golden.md): bake the OTS tenant's declarative,
+	# non-secret config as the read-only source of truth. batdata-mount refreshes p6 from this on every
+	# boot (refresh-existing-only), so an A/B reflash converges the p6 manifest to the image (unless-stopped)
+	# with zero intervention. Copied AT BUILD TIME from the single source deploy/ots (NOT a committed 2nd
+	# copy — review B1); cwd here is the package dir (same as ./files above), so ../../deploy/ots is the
+	# repo's deploy/ots (feed = full Batman repo). check-payload-manifest.sh cmp-gates the two in CI.
+	# Executable config (.sh/.init/.fw4.uci) installed 0755 so cp -p on-node preserves +x (review M1);
+	# the rest 0644. Images and secrets are NOT baked (they stay on p6).
+	$(INSTALL_DIR) $(1)/usr/share/batman/payload-golden/opentakserver
+	$(INSTALL_BIN)  ../../deploy/ots/batman-payload-opentakserver.init $(1)/usr/share/batman/payload-golden/opentakserver/batman-payload-opentakserver.init
+	$(INSTALL_BIN)  ../../deploy/ots/ots.fw4.uci                        $(1)/usr/share/batman/payload-golden/opentakserver/ots.fw4.uci
+	$(INSTALL_BIN)  ../../deploy/ots/reconcile-resources.sh             $(1)/usr/share/batman/payload-golden/opentakserver/reconcile-resources.sh
+	$(INSTALL_BIN)  ../../deploy/ots/verify-profile-ots.sh              $(1)/usr/share/batman/payload-golden/opentakserver/verify-profile-ots.sh
+	$(INSTALL_DATA) ../../deploy/ots/ots.manifest                       $(1)/usr/share/batman/payload-golden/opentakserver/ots.manifest
+	$(INSTALL_DATA) ../../deploy/ots/ots.net.alloc                      $(1)/usr/share/batman/payload-golden/opentakserver/ots.net.alloc
+	$(INSTALL_DATA) ../../deploy/ots/ots-db.hardening.env               $(1)/usr/share/batman/payload-golden/opentakserver/ots-db.hardening.env
+	$(INSTALL_DATA) ../../deploy/ots/ots.hardening.env                  $(1)/usr/share/batman/payload-golden/opentakserver/ots.hardening.env
+	$(INSTALL_DATA) ../../deploy/ots/rabbitmq.hardening.env             $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq.hardening.env
+	$(INSTALL_DATA) ../../deploy/ots/rabbitmq-extra.conf                $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq-extra.conf
 endef
 
 $(eval $(call BuildPackage,batman-payload-host))
