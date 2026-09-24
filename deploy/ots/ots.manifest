@@ -48,6 +48,7 @@ ENDCONTAINER
 
 CONTAINER ots_cot_parser
 IMAGE batman/ots:1.7.13-arm64
+IP 172.20.0.4
 HOSTNAME ots-cot_parser
 HARDEN ots.hardening.env
 ENV SQLALCHEMY_DATABASE_URI=postgresql+psycopg://ots:password@ots-db/ots

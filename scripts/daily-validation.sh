@@ -149,6 +149,29 @@ chk_167a() { fssh "$1" 20 '
   payload-arbiter "$T/dup/dup.net.alloc" "$T" >/tmp/dv-arb 2>&1; rc=$?
   rm -rf "$T"
   echo "colliding tenant (:8088) -> arbiter rc=$rc (want 3=REFUSED)"; [ "$rc" = 3 ]'; }
+chk_golden() { fssh "$1" 30 '                                  # payload-config-golden.md
+  # For each baked golden tenant that is PROVISIONED on this node: (1) p6 config == baked golden per
+  # file, (2) every live container has RestartPolicy unless-stopped (the real outcome the design drives;
+  # tautology-free unlike the cmp alone — review m2), (3) every IMAGE the manifest references is loaded
+  # (else a refreshed manifest would crash-loop the guardian — review M2). No golden / no tenant = PASS.
+  GD=/usr/share/batman/payload-golden
+  [ -d "$GD" ] || { echo "no golden baked (non-payloadhost image) — nothing to check"; exit 0; }
+  rc=0; checked=0
+  for g in "$GD"/*/ ; do
+    [ -d "$g" ] || continue
+    t=${g%/}; t=${t##*/}; dst=/opt/batdata/apps/$t
+    ls "$dst"/*.manifest >/dev/null 2>&1 || continue          # not provisioned here -> skip tenant
+    checked=1; man=$(ls "$dst"/*.manifest | head -1)
+    for f in "$g"*; do [ -f "$f" ] || continue; b=${f##*/}; [ "$b" = secrets ] && continue
+      cmp -s "$f" "$dst/$b" 2>/dev/null || { echo "DRIFT $t/$b: p6 != baked golden"; rc=1; }; done
+    for c in $(awk "/^CONTAINER /{print \$2}" "$man"); do
+      rp=$(docker inspect -f "{{.HostConfig.RestartPolicy.Name}}" "$c" 2>/dev/null)
+      [ "$rp" = unless-stopped ] || { echo "$t/$c restart=${rp:-MISSING} (want unless-stopped)"; rc=1; }; done
+    for img in $(awk "/^IMAGE /{print \$2}" "$man"); do
+      docker image inspect "$img" >/dev/null 2>&1 || { echo "$t manifest references image $img — NOT loaded on p6"; rc=1; }; done
+  done
+  [ "$checked" = 1 ] || echo "no provisioned tenant on this node — nothing to check"
+  echo "golden-config rc=$rc"; [ "$rc" = 0 ]'; }
 chk_130() { fssh "$1" 20 '
   st=$(/usr/bin/halow-status json 2>/dev/null | sed -n "s/.*\"join\":{\"state\":\"\([A-Za-z_]*\)\".*/\1/p" | head -1)
   p=$(batctl n 2>/dev/null | grep -c wlh0)
@@ -176,8 +199,9 @@ if up "$OTS_NODE"; then
   suite drift-detect-156 "reconciler flags an unhardened decoy as DRIFT (#156, white-box)"   "chk_156 $OTS_NODE"
   suite payload-mgr-167  "OTS on the generic payload manager, old guardian gone (#167)"       "chk_167g $OTS_NODE"
   suite arbiter-167      "port/zone arbiter REFUSES a colliding tenant (#167, white-box)"      "chk_167a $OTS_NODE"
+  suite payload-config-golden "p6 tenant config == baked golden + unless-stopped + images present (payload-config-golden.md)" "chk_golden $OTS_NODE"
 else
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"

@@ -121,6 +121,37 @@ note(){ logger -t batdata-mount "$*" 2>/dev/null; echo "batdata-mount: $*" > /de
 # mount was not ready self-heals next boot instead of the hook deleting itself into a silent no-guardian
 # state (review #192). Guard: only root-owned inits are boot-exec'd (physical-capture is in the threat
 # model; this runs before the network is fully up). See docs/design/192-payload-guardian-restore.md.
+# payload config golden refresh (docs/design/payload-config-golden.md): the tenant's declarative config
+# on p6 was, historically, a hand-installed artifact with no image/version-controlled source, so it drifts
+# (observed: p6 ots.manifest stuck at RESTART on-failure:5 while the image says unless-stopped). The image
+# now bakes the canonical config at /usr/share/batman/payload-golden/<tenant>/ (batman-payload-host, bcm2711
+# only). Refresh p6 FROM that golden every boot, idempotently, BEFORE restore_payload_guardians (which
+# reinstalls the possibly-refreshed .init). REFRESH-EXISTING-ONLY: gate on an existing *.manifest so a bare
+# node / manet02 (no tenant) and an empty/half dir are left untouched (review B2). No secrets, no images.
+refresh_payload_config(){
+	[ -d /usr/share/batman/payload-golden ] || return 0    # non-payloadhost image: nothing baked
+	for golden in /usr/share/batman/payload-golden/*/ ; do
+		[ -d "$golden" ] || continue                   # busybox ash: a no-match glob stays literal
+		tenant=${golden%/}; tenant=${tenant##*/}
+		dst="$MOUNT/apps/$tenant"
+		ls "$dst"/*.manifest >/dev/null 2>&1 || continue   # refresh only an already-provisioned tenant
+		for f in "$golden"* ; do
+			[ -f "$f" ] || continue
+			b=${f##*/}
+			[ "$b" = secrets ] && continue         # never touch p6 secrets/
+			cmp -s "$f" "$dst/$b" 2>/dev/null && continue   # idempotent: write only on change (#41)
+			# cp -p keeps the golden's mode (+x on .sh/.init/.fw4.uci, installed 0755); &&/|| so a failed
+			# cp is removed, never promoted to a truncated live file (review M1 + R2 atomicity).
+			tmp="$dst/.$b.tmp.$$"
+			if cp -p "$f" "$tmp" && mv -f "$tmp" "$dst/$b"; then
+				note "payload config refreshed from golden: $tenant/$b"
+			else
+				rm -f "$tmp" 2>/dev/null; note "payload config refresh FAILED: $tenant/$b (kept old)"
+			fi
+		done
+	done
+}
+
 restore_payload_guardians(){
 	[ -d "$MOUNT/deploy" ] || [ -d "$MOUNT/apps" ] || return 0
 	for src in "$MOUNT"/deploy/*/*.init "$MOUNT"/apps/*/*.init; do
@@ -170,6 +201,7 @@ boot(){
 	[ -f /tmp/batdata-mount.booted ] && return 0
 	: > /tmp/batdata-mount.booted
 
+	refresh_payload_config      # payload-config-golden: refresh p6 tenant config from the baked image
 	restore_payload_guardians   # #192: bring the payload guardian(s) back after an A/B flash
 
 	# crash capture (#61): move pstore records off the volatile ramoops region so the next event

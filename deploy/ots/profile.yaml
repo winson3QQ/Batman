@@ -75,9 +75,12 @@ images:
       # the other three just mount it. run.sh chowns it once upfront via the OTS image as vehicle.
       - {name: opentakserver, ip: 172.20.0.5, hostname: opentakserver,
          volumes: [{name: ots-appdata, path: /app/ots, chown: "1000:1024"}]}
-      - {name: ots_cot_parser, hostname: ots-cot_parser,
-         entrypoint: [python3, /app/venv/bin/cot_parser],
-         volumes: [{name: ots-appdata, path: /app/ots}]}
+      - {name: ots_cot_parser, ip: 172.20.0.4, hostname: ots-cot_parser,
+         entrypoint: [python3, /app/venv/bin/cot_parser],   # ip: was MISSING -> on boot docker auto-assigned
+         volumes: [{name: ots-appdata, path: /app/ots}]}     # the lowest-free 172.20.0.2 = ots-db's static IP,
+                                                             # so ots-db failed "address already in use" and got
+                                                             # stuck Created (intermittent OTS reboot flakiness).
+                                                             # Explicit static IP makes bring-up order-independent.
       - {name: ots_eud_handler, ip: 172.20.0.10, hostname: ots_eud_handler,
          entrypoint: [python3, /app/venv/bin/eud_handler],
          volumes: [{name: ots-appdata, path: /app/ots}]}

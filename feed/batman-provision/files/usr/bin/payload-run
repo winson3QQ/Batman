@@ -73,6 +73,15 @@ prechown(){   # $1 = spec, $2 = fallback image
 		|| log "WARN: prechown $pn ($pu:$pg) failed"
 }
 
+# ---- pre-pass: remove ALL manifest containers BEFORE (re)creating any. The bring-up runs
+# `docker rm -f`+`docker run` per container in manifest order; if a stale sibling is still running
+# on another container's static IP (e.g. one that came up with an auto-assigned IP that equals a
+# later container's static IP), the first `docker run` fails "address already in use" and `set -e`
+# aborts before the squatter is ever removed — a deadlock that leaves the stack half-up across every
+# boot. Removing every declared container up front frees all static IPs, so the in-order run cannot
+# collide with a sibling. Idempotent; the per-container rm in finish_block stays as a belt.
+for _c in $(awk '/^CONTAINER /{print $2}' "$MANIFEST"); do docker rm -f "$_c" >/dev/null 2>&1 || true; done
+
 # state for the current CONTAINER block
 NAME=""; IMG=""; IP=""; HOST=""; HARDEN=""; RESTART="$DEF_RESTART"
 EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""

@@ -16,6 +16,11 @@ on:
       - 'scripts/profile-to-fw4.py'
       - 'scripts/check-payload-manifest.sh'
       - 'feed/batman-provision/files/usr/bin/payload-arbiter'
+      - 'deploy/**/*.hardening.env'
+      - 'deploy/**/*.conf'
+      - 'deploy/**/verify-profile-*.sh'
+      - 'deploy/**/reconcile-resources.sh'
+      - 'feed/batman-payload-host/Makefile'
   push:
     branches: [main]
     paths:
