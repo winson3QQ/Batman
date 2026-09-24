@@ -174,3 +174,33 @@ size from sysfs of `$DEV`, which is the mapper under LUKS). This is fully idempo
 exit-1 retry path correct (a boot that grew the table but could not re-read it: next boot the table
 is already full so step 1b skips, and step 3b still completes the fs grow). LUKS: `cryptsetup resize`
 runs at the top of 3b (idempotent) before measuring, so the mapper reflects the grown partition.
+
+---
+
+## Hardware validation — PASSED (2026-09-25, manet04 = Pi4 8GB, 32 GB card)
+
+Built 1.4.11 + this fix (batman-provision r7 @ feed 092ef58); assembled a distributable A/B `.img`
+with `scripts/build-ab-image.sh` (small baked p6 = 200 MiB); flashed the 32 GB card flash-and-go.
+
+- **DoD 1 — first boot grows p6:** slot A booted 1.4.11, `df /opt/batdata` = **24.5 G** (23.2 G free),
+  `mmcblk0p6` = 27054575 → later 54109151 sectors (**86 % of the card**), up from the baked 204800
+  (200 MiB). ✅
+- **DoD 2 — slot flip stays full / idempotent:** `batman-slot rollback` → reboot → **slot B** booted
+  1.4.11, `df /opt/batdata` still **24.5 G** (p6 is shared; slot B's first-boot 95-batman-storage
+  saw it full → no-op, no shrink). ✅
+- **DoD 3 — both slots 1.4.11 and mountable on hardware:** rootA + rootB both boot; offline
+  `unsquashfs` extract of `/etc/batman-build` from p2 and p4 both = 1.4.11. ✅
+- **DoD 5 — regression:** `daily-validation.sh` suite `p6grow-201` (data ≥ 50 % of card) added and
+  dogfooded against manet04 = **PASS (86 %)**.
+
+### Build bug found and fixed during validation (why the first A/B image kernel-panicked)
+The first assembled image sourced the rootfs by `dd`-ing p2 out of a **gunzip'd release `.img`**.
+That `.img.gz` carries trailing non-gzip bytes; the decompressed image was 268 bytes short of 512
+alignment, truncating the squashfs tail → `VFS: Unable to mount root fs` panic. Fix: `build-ab-image.sh`
+now takes the **pristine `build_dir/.../root.squashfs`** (complete: file size == superblock
+bytes_used) via a `ROOTFS`/`BOOTDIR` override, and refuses a squashfs that does not fit its partition.
+
+### Unrelated observation
+`wlh0` (mm6108 HaLow SPI) failed to probe (`morse_spi ... ret:-12` ENOMEM) on this cold session →
+node fell back to br-lan, mesh not up. That is #132 (intermittent cold-boot SPI init), not this
+change; the node is also fresh/unkeyed so the radio would be keyguard-held anyway.
