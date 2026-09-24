@@ -181,6 +181,19 @@ cmd_apply() {
 	echo "batman-slot: slot $T armed as one-shot tryboot; reboot to trial it (autoboot.txt untouched)"
 }
 
+# committed default = the [all] boot_partition in autoboot.txt (the single authoritative parser).
+committed_fw() {
+	awk '/^\[all\]/{s=1;next}/^\[/{s=0}s&&/^boot_partition=/{sub(/.*=/,"");print;exit}' "$BOOTMNT/autoboot.txt" 2>/dev/null
+}
+# is-trial: exit 0 if the RUNNING slot is NOT the committed default (a sysupgrade trial, or a #133
+# stale fallback); exit 1 if the running slot IS committed; exit 2 if it can't tell. Used by
+# batman-autocommit (#211) so the autoboot parse lives in this one audited place, not re-implemented.
+is_trial() {
+	a=$(active_slot); [ -n "$a" ] || return 2
+	cf=$(committed_fw); [ -n "$cf" ] || return 2
+	[ "$cf" = "$(fw_part "$a")" ] && return 1 || return 0
+}
+
 cmd_commit() {
 	assert_fw_sane
 	A=$(active_slot); T=$(other_slot "$A")
@@ -206,5 +219,6 @@ case "${1:-}" in
 	apply)    [ -n "${2:-}" ] || die "usage: apply <payload-dir>"; cmd_apply "$2" ;;
 	commit)   cmd_commit ;;
 	rollback) cmd_rollback ;;
-	*) echo "usage: batman-slot active|target|fw-part A|B|apply <dir>|commit|rollback" >&2; exit 2 ;;
+	is-trial) is_trial; exit $? ;;
+	*) echo "usage: batman-slot active|target|fw-part A|B|apply <dir>|commit|rollback|is-trial" >&2; exit 2 ;;
 esac

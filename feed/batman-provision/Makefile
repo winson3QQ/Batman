@@ -23,7 +23,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=batman-provision
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=4
+PKG_RELEASE:=6
 PKG_MAINTAINER:=Batman <yellow.winson@gmail.com>
 PKG_LICENSE:=GPL-2.0-or-later
 
@@ -74,6 +74,7 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/etc/init.d/joinwatch      $(1)/etc/init.d/joinwatch
 	$(INSTALL_BIN) ./files/etc/init.d/meshled        $(1)/etc/init.d/meshled
 	$(INSTALL_BIN) ./files/etc/init.d/batman-faketime $(1)/etc/init.d/batman-faketime
+	$(INSTALL_BIN) ./files/etc/init.d/batman-autocommit $(1)/etc/init.d/batman-autocommit
 	# tools
 	$(INSTALL_BIN) ./files/usr/bin/batman-version     $(1)/usr/bin/batman-version
 	$(INSTALL_BIN) ./files/etc/uci-defaults/93-batman-version-banner $(1)/etc/uci-defaults/93-batman-version-banner
@@ -98,6 +99,8 @@ define Package/batman-provision/install
 	# A/B slot operator (#89): the one audited place for slot apply/commit/rollback, shared with
 	# scripts/ab-selftest.sh and /lib/upgrade/platform.sh. See docs/design/ab-sysupgrade-platform.md.
 	$(INSTALL_BIN) ./files/usr/sbin/batman-slot       $(1)/usr/sbin/batman-slot
+	# #211 health-gated auto-commit of an A/B trial slot (companion to batman-slot)
+	$(INSTALL_BIN) ./files/usr/bin/batman-autocommit  $(1)/usr/bin/batman-autocommit
 	# A/B platform.sh override (installed over /lib/upgrade/platform.sh by 98-batman-sysupgrade,
 	# first boot; the feed cannot ship /lib/upgrade/platform.sh directly — base file clash).
 	$(INSTALL_BIN) ./files/usr/lib/batman/platform-ab.sh $(1)/usr/lib/batman/platform-ab.sh
@@ -116,7 +119,7 @@ endef
 # flightrec/meshled S99). VERIFY in CI that the symlinks land in the image.
 define Package/batman-provision/postinst
 #!/bin/sh
-for s in halow-keyguard batpower flightrec joinwatch meshled batman-faketime; do
+for s in halow-keyguard batpower flightrec joinwatch meshled batman-faketime batman-autocommit; do
 	if [ -x "$${IPKG_INSTROOT}/etc/init.d/$$s" ]; then
 		"$${IPKG_INSTROOT}/etc/init.d/$$s" enable 2>/dev/null
 	fi
