@@ -7,6 +7,7 @@
 # Env:
 #   BENCH_NODE   A/B bench card node       (default 10.41.254.1)
 #   MESH_NODE    a live mesh node          (default 10.41.239.205)
+#   IPERF_PEER   the OTHER node reached OVER THE MESH, iperf sink for the TCP suite  (unset => SKIP)
 #   AB_MODE      --inspect-only | --destructive | --skip   (default --inspect-only)
 #   ALLOW_SKIP   set to 1 to let a run with skipped suites still exit 0  (default 0)
 #
@@ -27,6 +28,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:-$HOME/batman-validation}
 BENCH_NODE=${BENCH_NODE:-10.41.254.1}
 MESH_NODE=${MESH_NODE:-10.41.239.205}
+IPERF_PEER=${IPERF_PEER:-}                 # the other node reached over the mesh (iperf sink); unset => SKIP
 AB_MODE=${AB_MODE:---inspect-only}
 ALLOW_SKIP=${ALLOW_SKIP:-0}
 
@@ -191,6 +193,44 @@ chk_tput() { fssh "$1" 170 '                                   # sustained-ish m
   echo "tput to $mac: median=${med} min=${min} max=${max} Kbps over $n runs (baseline soak median ~9440 Kbps)"
   FLOOR=${TPUT_FLOOR_KBPS:-3000}
   [ "$med" -ge "$FLOOR" ]'; }
+# iperf TCP throughput — the REAL IP-layer payload over the mesh. batctl tp (chk_tput) is the
+# batman-adv internal meter and systematically under-reports ~15%; iperf is what an app actually
+# gets and it matches the soak baseline (~9.3-9.4 Mbps single-direction). Needs a sink on the peer,
+# so unlike the fssh-on-one-node checks this orchestrates BOTH nodes from the host.
+#
+# Path integrity (do NOT trust the caller to point at a mesh peer): a HaLow link physically cannot
+# exceed ~15 Mbps (4MHz soak max 11.3; 8MHz ~2x), whereas an eth/mgmt path is 100-1000 Mbps. So we
+# assert a BAND [floor..ceil]: a result ABOVE ceil means the traffic did not cross HaLow (wrong
+# IPERF_PEER / shared eth switch) and is a FAIL, not a fake mesh PASS. IPERF_PEER has no default so
+# the suite never silently measures the wrong node (unset => SKIP at the call site).
+# iperf2 auto-scales its unit (Kbits/Mbits/Gbits), so force Kbits/sec (-f k) and parse that — a
+# sub-1-Mbps degraded link would otherwise print "Kbits/sec", miss a Mbits grep, and mis-FAIL as
+# "no result". The sink is tracked by a pid-file (never pkill -f a pattern — it self-matches our own
+# shell, a trap that hung an earlier wait loop) and every kill is guarded by /proc/PID identity.
+# $1 = client (measured) node, $2 = peer/sink node reached over the mesh.
+chk_iperf() {
+  # Dedicated port, deliberately NOT iperf's 5001 (v2) / 5201 (v3) defaults: those collide with any
+  # ad-hoc `iperf -s` an operator runs (e.g. a soak) and leave the port in TIME_WAIT, which the bind
+  # check below would then (correctly) flag as a failure. 5399 is ours.
+  local cli=$1 srv=$2 port=${IPERF_PORT:-5399} dur=${IPERF_SECS:-10}
+  local floor=${IPERF_FLOOR_KBPS:-4000} ceil=${IPERF_CEIL_KBPS:-30000}
+  fssh "$cli" 8 'command -v iperf >/dev/null 2>&1' || { echo "iperf missing on client $cli"; return 1; }
+  fssh "$srv" 8 'command -v iperf >/dev/null 2>&1' || { echo "iperf missing on sink $srv";   return 1; }
+  # (re)start a dedicated sink; kill any prior one only if that pid is still an iperf (PID-reuse guard)
+  # detach with setsid, NOT nohup — busybox ash on the nodes has no nohup. The pid is captured INSIDE
+  # the new session (echo \$\$ then exec) so it is iperf's real pid whether or not busybox setsid forks.
+  fssh "$srv" 12 "p=\$(cat /tmp/dv-iperf-s.pid 2>/dev/null); [ -n \"\$p\" ] && grep -qs iperf \"/proc/\$p/cmdline\" && kill \"\$p\" 2>/dev/null; setsid sh -c 'echo \$\$ >/tmp/dv-iperf-s.pid; exec iperf -s -p $port -f k' >/tmp/dv-iperf-s.log 2>&1 </dev/null & sleep 1"
+  # confirm the sink actually bound — iperf -s exits immediately if the port is already in use
+  fssh "$srv" 8 "p=\$(cat /tmp/dv-iperf-s.pid 2>/dev/null); kill -0 \"\$p\" 2>/dev/null" \
+    || { echo "iperf sink failed to start on $srv (port $port busy?)"; fssh "$srv" 8 'rm -f /tmp/dv-iperf-s.pid /tmp/dv-iperf-s.log' 2>/dev/null; return 1; }
+  local kbps
+  kbps=$(fssh "$cli" $((dur+25)) "iperf -c $srv -p $port -f k -t $dur 2>/dev/null | awk '/Kbits\/sec/{v=\$(NF-1)} END{printf \"%d\", v}'")
+  fssh "$srv" 10 "p=\$(cat /tmp/dv-iperf-s.pid 2>/dev/null); [ -n \"\$p\" ] && grep -qs iperf \"/proc/\$p/cmdline\" && kill \"\$p\" 2>/dev/null; rm -f /tmp/dv-iperf-s.pid /tmp/dv-iperf-s.log"
+  [ -n "$kbps" ] && [ "$kbps" -gt 0 ] || { echo "no iperf result — sink/link down or connection refused"; return 1; }
+  echo "iperf TCP $cli -> $srv: ${kbps} Kbits/sec over ${dur}s [band ${floor}..${ceil} Kbps; mesh single-dir baseline ~9300]"
+  [ "$kbps" -le "$ceil" ] || { echo "ABOVE CEILING — traffic did NOT cross HaLow (wrong IPERF_PEER / eth path)"; return 1; }
+  [ "$kbps" -ge "$floor" ]
+}
 chk_autocommit() { fssh "$1" 12 '                              # ab-autocommit.md / #211
   # A completed reflash must not leave the node in an uncommitted trial (a reboot would then revert to
   # the old slot). batman-autocommit health-gates + commits; assert the node ended committed.
@@ -236,8 +276,13 @@ if up "$MESH_NODE"; then
   suite mesh-console-14  "/cgi-bin/mesh aggregate agrees with batctl (#14)"                   "chk_14 $MESH_NODE"
   suite p5-seed-202      "a JOINED node auto-seeds p5 (radio delta), decoupled from lockdown (#202)" "chk_202 $MESH_NODE"
   suite mesh-tput        "sustained mesh throughput to peer (median of N batctl tp; baseline soak median ~9.4 Mbps)" "chk_tput $MESH_NODE"
+  if [ "$IPERF_PEER" != "$MESH_NODE" ] && up "$IPERF_PEER"; then
+    suite mesh-tput-iperf "iperf TCP throughput MESH_NODE->peer (real IP payload; batctl tp under-reports ~15%; single-dir baseline ~9.3 Mbps)" "chk_iperf $MESH_NODE $IPERF_PEER"
+  else
+    suite mesh-tput-iperf "IPERF_PEER '$IPERF_PEER' unusable (unset / == MESH_NODE / down) — set IPERF_PEER to the other mesh node" ""
+  fi
 else
-  for s in field-status-130 mesh-console-14 p5-seed-202 mesh-tput; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
+  for s in field-status-130 mesh-console-14 p5-seed-202 mesh-tput mesh-tput-iperf; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
 fi
 
 # A/B commit hygiene (#211): a completed reflash must not leave the node an uncommitted trial (a reboot
