@@ -1,0 +1,84 @@
+#!/bin/sh
+# batman-autocommit (#211) — after a `sysupgrade -n` TRIAL boot, commit the new slot ONCE it proves the
+# new rootfs booted a functional userland; otherwise leave it a trial so a reboot reverts (rollback
+# safety). See docs/design/ab-autocommit.md. Started late by /etc/init.d/batman-autocommit (one-shot).
+#
+# Health gate (review B1/M1/M2): the signal is the CURRENT rootfs's own core services, NOT raw docker
+# container liveness (unless-stopped containers on the shared p6 docker-root come up under ANY rootfs,
+# so they don't prove the new rootfs is good). We tolerate not-joined / not-keyed (peer/key state, not
+# an image defect) so a lone or not-yet-keyed node still commits.
+
+TIMEOUT="${AUTOCOMMIT_TIMEOUT:-600}"   # wait this long for health, then give up (leave trial -> revert)
+POLL=10                                # seconds between polls
+NEED=3                                 # consecutive healthy polls before commit (dwell; review M2)
+
+log(){ logger -t batman-autocommit "$*" 2>/dev/null; echo "batman-autocommit: $*" > /dev/kmsg 2>/dev/null; }
+
+[ "${1:-}" = run ] || { echo "usage: batman-autocommit run" >&2; exit 2; }
+
+# 1) trial? batman-slot owns the authoritative autoboot parse (is-trial: 0=trial, 1=committed, 2=unknown)
+batman-slot is-trial
+case $? in
+	0) : ;;                                                   # trial -> proceed
+	1) log "running slot is already the committed default — nothing to do"; exit 0 ;;
+	*) log "cannot determine slot commit state — leaving as-is"; exit 0 ;;
+esac
+SLOT=$(batman-slot active)
+log "slot $SLOT is an uncommitted trial — waiting for health before commit (timeout ${TIMEOUT}s)"
+
+# Authoritative "is this service actually up" via procd (review m1): pgrep -f substring-matches a
+# stray process (e.g. `logread|grep openmanetd`) and could false-positive this COMMIT SAFETY gate when
+# the real daemon is dead. procd's own `running` can't be fooled and reliably matches the wrapped
+# daemons (mesh11sd runs as `sh /usr/sbin/mesh11sd`, wpad as a ujail'd hostapd — pgrep -x/pidof MISS
+# all three). Fall back to pgrep -f only when there is no init script.
+running(){
+	if [ -x "/etc/init.d/$1" ]; then /etc/init.d/"$1" running >/dev/null 2>&1; return $?; fi
+	pgrep -f "$1" >/dev/null 2>&1 || pidof "$1" >/dev/null 2>&1
+}
+
+# echo a reason + return 1 when unhealthy; silent + return 0 when healthy.
+health_ok(){
+	# core services = the new rootfs booted a functional userland (review B1). Same set halow-status
+	# treats as core (mesh11sd/openmanetd/wpad). NOT peer/key dependent.
+	for s in mesh11sd openmanetd wpad; do running "$s" || { echo "svc $s down"; return 1; }; done
+	# undervoltage NOW (bit0 of vcgencmd get_throttled) — not a stable state to commit on
+	thr=$(vcgencmd get_throttled 2>/dev/null | sed -n 's/.*=0x//p')
+	[ $(( 0x${thr:-0} & 1 )) -eq 0 ] || { echo "undervoltage now"; return 1; }
+	# trial rootfs stamp readable (defense-in-depth: we are on a sane rootfs)
+	[ -s /etc/batman-build ] || { echo "no /etc/batman-build"; return 1; }
+	# payload (if provisioned): the guardian on THIS boot reached drift=OK — i.e. it fully brought up +
+	# verified the stack on the new rootfs. /tmp is tmpfs (wiped each boot) so the file's presence means
+	# "this boot" (review B1/M2). Not raw container liveness.
+	for d in /opt/batdata/apps/*/; do
+		[ -d "$d" ] || continue
+		ls "$d"/*.manifest >/dev/null 2>&1 || continue
+		t=${d%/}; t=${t##*/}
+		df=/tmp/batman-payload-$t-drift.json
+		[ -f "$df" ] || { echo "payload $t: no this-boot drift verdict yet"; return 1; }
+		# freshness (review m2): the guardian reconciles every ~30s; require a verdict written in the
+		# last minute so a stale early-boot OK can't outlive a container that died since.
+		[ -n "$(find "$df" -mmin -1 2>/dev/null)" ] || { echo "payload $t: drift verdict stale (>1min)"; return 1; }
+		grep -q '"status":"OK"' "$df" || { echo "payload $t: drift not OK"; return 1; }
+	done
+	return 0
+}
+
+t=0; ok=0; why=""
+while [ "$t" -lt "$TIMEOUT" ]; do
+	if why=$(health_ok); then
+		ok=$((ok+1))
+		if [ "$ok" -ge "$NEED" ]; then
+			if batman-slot commit; then
+				log "slot $SLOT committed (healthy ${NEED}x${POLL}s)"; exit 0
+			else
+				rc=$?; log "slot $SLOT healthy but 'batman-slot commit' FAILED rc=$rc — left as trial"; exit 1
+			fi
+		fi
+	else
+		[ "$ok" -gt 0 ] && log "health regressed ($why) — resetting dwell"
+		ok=0
+	fi
+	sleep "$POLL"; t=$((t+POLL))
+done
+log "slot $SLOT NOT healthy after ${TIMEOUT}s — left as trial (reverts on reboot). last: ${why:-?}"
+exit 0

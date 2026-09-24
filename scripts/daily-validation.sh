@@ -100,6 +100,7 @@ if up "$BENCH_NODE"; then
 else
   suite flash-write-guard "write-placement contract (#104) — BENCH_NODE $BENCH_NODE did not answer" ""
 fi
+# autocommit-211 is asserted in the feature-regression section below (after chk_* are defined).
 
 # ============================================================================
 # v1.1 FEATURE regression — the completed features, not just the A/B plumbing.
@@ -172,6 +173,33 @@ chk_golden() { fssh "$1" 30 '                                  # payload-config-
   done
   [ "$checked" = 1 ] || echo "no provisioned tenant on this node — nothing to check"
   echo "golden-config rc=$rc"; [ "$rc" = 0 ]'; }
+chk_tput() { fssh "$1" 170 '                                   # sustained-ish mesh throughput
+  # A single batctl tp is jittery (seen 0.5-6 Mbps); take the MEDIAN of N runs so a real regression
+  # (dead link / MCS collapse) is caught without false-failing on jitter. Baseline = soak-30min-4mhz
+  # (docs/data): mean 9.30 / median 9.44 Mbps. Reports median/min/max for trend; PASS if median >= floor.
+  mac=$(batctl n 2>/dev/null | grep -E "[0-9]+\.[0-9]+s" | awk "{print \$1}" | head -1)
+  [ -n "$mac" ] || { echo "no mesh peer to measure throughput to"; exit 1; }
+  N=7; i=0; vals=""
+  while [ "$i" -lt "$N" ]; do
+    k=$(batctl tp "$mac" 2>/dev/null | sed -n "s/.*(\([0-9]*\)\.[0-9]* Kbps).*/\1/p" | head -1)
+    [ -n "$k" ] && vals="$vals $k"; i=$((i+1))
+  done
+  # shellcheck disable=SC2046,SC2086
+  set -- $(printf "%s\n" $vals | sort -n); n=$#
+  [ "$n" -ge 3 ] || { echo "only $n throughput samples (need >=3) — link flaky/down"; exit 1; }
+  eval med=\${$(( (n+1)/2 ))}; min=$1; eval max=\${$n}
+  echo "tput to $mac: median=${med} min=${min} max=${max} Kbps over $n runs (baseline soak median ~9440 Kbps)"
+  FLOOR=${TPUT_FLOOR_KBPS:-3000}
+  [ "$med" -ge "$FLOOR" ]'; }
+chk_autocommit() { fssh "$1" 12 '                              # ab-autocommit.md / #211
+  # A completed reflash must not leave the node in an uncommitted trial (a reboot would then revert to
+  # the old slot). batman-autocommit health-gates + commits; assert the node ended committed.
+  batman-slot is-trial; rc=$?
+  case $rc in
+    1) echo "committed (not a stuck trial)"; exit 0 ;;
+    0) echo "UNCOMMITTED TRIAL — autocommit did not commit (reboot would revert)"; exit 1 ;;
+    *) echo "cannot determine slot commit state (rc=$rc)"; exit 1 ;;
+  esac'; }
 chk_130() { fssh "$1" 20 '
   st=$(/usr/bin/halow-status json 2>/dev/null | sed -n "s/.*\"join\":{\"state\":\"\([A-Za-z_]*\)\".*/\1/p" | head -1)
   p=$(batctl n 2>/dev/null | grep -c wlh0)
@@ -207,8 +235,18 @@ if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"
   suite mesh-console-14  "/cgi-bin/mesh aggregate agrees with batctl (#14)"                   "chk_14 $MESH_NODE"
   suite p5-seed-202      "a JOINED node auto-seeds p5 (radio delta), decoupled from lockdown (#202)" "chk_202 $MESH_NODE"
+  suite mesh-tput        "sustained mesh throughput to peer (median of N batctl tp; baseline soak median ~9.4 Mbps)" "chk_tput $MESH_NODE"
 else
-  for s in field-status-130 mesh-console-14 p5-seed-202; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
+  for s in field-status-130 mesh-console-14 p5-seed-202 mesh-tput; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
+fi
+
+# A/B commit hygiene (#211): a completed reflash must not leave the node an uncommitted trial (a reboot
+# would revert). batman-autocommit health-gates + commits; assert the bench node ended committed.
+# Placed here (after chk_* are defined) — chk_autocommit is used, unlike the inline BENCH suites above.
+if up "$BENCH_NODE"; then
+  suite autocommit-211 "A/B node is committed, not left in an uncommitted trial (#211, ab-autocommit)" "chk_autocommit $BENCH_NODE"
+else
+  suite autocommit-211 "A/B commit state (#211) — BENCH_NODE $BENCH_NODE did not answer" ""
 fi
 
 # ---- tier B: destructive, induces the real failure — DNODE (eth) only, --destructive ----
