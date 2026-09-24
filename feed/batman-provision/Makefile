@@ -23,7 +23,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=batman-provision
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=6
+PKG_RELEASE:=7
 PKG_MAINTAINER:=Batman <yellow.winson@gmail.com>
 PKG_LICENSE:=GPL-2.0-or-later
 
@@ -34,9 +34,11 @@ define Package/batman-provision
   CATEGORY:=Utilities
   TITLE:=Batman mesh-node provisioning, config-survival & observability
   # parted + e2fsprogs: 95-batman-storage carves/mkfs the data partition.
+  # sgdisk + resize2fs: 95-batman-storage step 1b/3b grows a pre-made GPT p6 to fill the card (#201);
+  #   e2fsprogs alone does not ship resize2fs, and sgdisk (gdisk) is not in a minimal image.
   # block-mount: mount helpers. dropbear: dropbearkey used by 96 to fingerprint restored keys.
   # The mesh/observability tools (batctl, iw, uhttpd, logger, wget) are in the OpenMANET base.
-  DEPENDS:=+parted +e2fsprogs +block-mount +dropbear +uci +blkid
+  DEPENDS:=+parted +e2fsprogs +resize2fs +sgdisk +block-mount +dropbear +uci +blkid
   PKGARCH:=all
 endef
 
