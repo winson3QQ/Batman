@@ -85,6 +85,20 @@ else
   suite ab-selftest "A/B boot, switch, fallback and panic recovery (#133) — BENCH_NODE $BENCH_NODE did not answer" ""
 fi
 
+# 3b. DESTRUCTIVE flash-and-go fault-injection (#159/#216): F1 bad-tar quarantine, F2 offline recovery,
+# R2 first-load-latch non-gating, R1 docker-run-broken -> canary revert. Reboots/OTA-flashes the node,
+# so it runs ONLY under AB_MODE=--destructive (the release gate), like ab-selftest above. On the daily
+# --inspect-only run it is SKIPped (reported as loudly as a fail).
+if [ "$AB_MODE" != --destructive ]; then
+  suite fault-injection "flash-and-go fault-injection F1/F2/R2/R1 (#159/#216) — needs AB_MODE=--destructive" ""
+elif up "$OTS_NODE"; then
+  suite fault-injection \
+    "flash-and-go fault-injection F1/F2/R2/R1 (#159/#216, DESTRUCTIVE)" \
+    "$REPO/scripts/fault-injection.sh $OTS_NODE --case all"
+else
+  suite fault-injection "flash-and-go fault-injection (#159/#216) — OTS_NODE $OTS_NODE did not answer" ""
+fi
+
 # 4. Hardware: mesh health on a live node.
 if up "$MESH_NODE"; then
   suite meshtest \
@@ -275,6 +289,26 @@ chk_p6grow_201() { fssh "$1" 20 '                              # 201-firstboot-g
   # a p6 that failed to grow stays ~200MiB (<1% of a >=8G card); a grown one is the whole free tail (>50%)
   [ "$pct" -ge 50 ]'; }
 
+chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash-and-go payload integrity
+  d=/opt/batdata/apps/opentakserver
+  # (1) firstload service installed + enabled — catches the from-feed Makefile-install / overlay-shadow
+  #     regression that shipped an image WITHOUT the service (session found this the hard way).
+  [ -x /etc/init.d/batman-ots-firstload ] || { echo "firstload service missing"; exit 1; }
+  ls /etc/rc.d/S[0-9]*batman-ots-firstload >/dev/null 2>&1 || { echo "firstload not enabled (no S-link)"; exit 1; }
+  # (2) offline copies present (F2 mv-not-rm contract) + no stuck tars in the images root (load complete).
+  ls "$d"/images/loaded/*.tar >/dev/null 2>&1 || { echo "no offline copies in images/loaded"; exit 1; }
+  ls "$d"/images/*.tar >/dev/null 2>&1 && { echo "stuck tars in images root (load incomplete)"; exit 1; }
+  # (3) canary blob present AND actually runnable — the R1 gate dependency; proves this rootfs can run
+  #     containers (overlay/memcg/runc), the very thing docker-info alone does not.
+  c=/opt/batdata/canary.tar.gz; [ -f "$c" ] || c=/usr/share/batman/canary.tar.gz
+  [ -f "$c" ] || { echo "canary blob missing"; exit 1; }
+  docker image inspect batman-canary >/dev/null 2>&1 || docker load -i "$c" >/dev/null 2>&1
+  docker run --rm --network none batman-canary true >/dev/null 2>&1 || { echo "canary run failed (rootfs cannot run containers)"; exit 1; }
+  # (4) autocommit carries the docker-engine/canary gate and NOT the busybox-absent timeout applet.
+  grep -q "docker canary run failed" /usr/bin/batman-autocommit || { echo "autocommit missing docker-engine/canary gate"; exit 1; }
+  grep -q "timeout 15 docker" /usr/bin/batman-autocommit && { echo "autocommit uses busybox-absent timeout applet"; exit 1; }
+  echo "firstload enabled; offline copies present; canary runs; autocommit gate ok"'; }
+
 if up "$OTS_NODE"; then
   suite confinement-98   "OTS container confinement — 9 axes ×6 (#98)"                       "chk_98 $OTS_NODE"
   suite ots-up-162       "OTS 6/6 running + postgres endpoint answers (#162)"                "chk_162 $OTS_NODE"
@@ -282,6 +316,7 @@ if up "$OTS_NODE"; then
   suite payload-mgr-167  "OTS on the generic payload manager, old guardian gone (#167)"       "chk_167g $OTS_NODE"
   suite arbiter-167      "port/zone arbiter REFUSES a colliding tenant (#167, white-box)"      "chk_167a $OTS_NODE"
   suite payload-config-golden "p6 tenant config == baked golden + unless-stopped + images present (payload-config-golden.md)" "chk_golden $OTS_NODE"
+  suite flashgo-159      "flash-and-go integrity — firstload enabled, offline copies (F2), canary runs, autocommit gate (#159/#216)" "chk_flashgo $OTS_NODE"
 else
   for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
