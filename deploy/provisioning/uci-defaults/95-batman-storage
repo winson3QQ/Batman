@@ -268,8 +268,13 @@ boot(){
 	note "mounted $DEV on $MOUNT"
 	# #215: online-grow the ext4 to fill the partition (offline step 3b can no-op on first boot
 	# before the kernel re-reads the grown table; after mount the kernel sees the partition).
+	# #216 M5: grow the LUKS mapper first (symmetry with the offline step-3b) when encrypted.
+	# #216: log the resize2fs failure reason instead of swallowing it — an online resize refuses on a
+	# fs needing `e2fsck -f` (e.g. after an unclean shutdown) and would otherwise silently leave p6
+	# small (a soft recurrence of the #215 bug); grow-only + idempotent, self-heals once fsck'd.
 	if command -v resize2fs >/dev/null 2>&1; then
-		if resize2fs "$DEV" >/dev/null 2>&1; then note "p6 ext4 online-resized to fill partition"; fi
+		[ "$LUKS" = 1 ] && command -v cryptsetup >/dev/null 2>&1 && { cryptsetup resize "$MAPPER" >/dev/null 2>&1 && note "p6 luks mapper online-resized"; }
+		rerr=$(resize2fs "$DEV" 2>&1) && note "p6 ext4 online-resized to fill partition" || note "p6 ext4 online-resize skipped/failed: $rerr"
 	fi
 	# once per boot: the first-boot hook calls `boot` itself and the S11 link may run it again
 	[ -f /tmp/batdata-mount.booted ] && return 0
