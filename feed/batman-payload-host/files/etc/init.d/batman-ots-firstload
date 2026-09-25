@@ -1,42 +1,135 @@
 #!/bin/sh /etc/rc.common
-# batman-ots-firstload — first-boot OTS image bootstrap (#159 flash-and-go OTS).
+# batman-ots-firstload — first-boot payload image bootstrap (#159 flash-and-go, #216 rework).
 #
-# An OTS golden image ships the OTS docker image tars pre-baked in p6 (/opt/batdata/otsimg/).
-# Load them once dockerd is up, then bring the payload guardian up. Confirmed root cause of the
-# earlier failure (session-24): the payload guardian starts concurrently at boot and its
-# respawn/docker churn broke the slow (~2.5 min on a Pi4) batman/ots load -> only 1 of 3 images
-# loaded. So this service:
-#   - runs at START=95 (after dockerd, before the guardian at START=99), enabled via a baked rc.d link
-#   - SYNCHRONOUSLY stops+disables the guardian first (kills the race), returns fast
-#   - loads the tars in a FULLY DETACHED (setsid) subshell so it survives boot() returning and never
-#     blocks boot/network; removes each tar ONLY on a successful load
-#   - re-enables+starts the guardian only once EVERY tar is loaded; otherwise leaves them for the
-#     next boot (idempotent, self-healing across reboots — NOT a one-shot that consumes itself)
-#   - no tars (a plain image, or already loaded) -> no-op, does not touch the guardian
+# A flash-and-go golden image ships each payload tenant's docker image tars pre-baked in p6 at
+# /opt/batdata/apps/<tenant>/images/*.tar. This service loads them once the docker ENGINE is up,
+# then brings that tenant's payload guardian up. Generalized over tenants (#216 decision A): the
+# risky bootstrap orchestration is solved once here, every baked payload inherits it.
+#
+# Ordering: runs at START=95, i.e. BEFORE dockerd (also START=99, and batman-* sorts before dockerd
+# within S99). It does NOT rely on dockerd being up at boot() time — the detached loader WAITS on
+# `docker info`. (Do not "fix" the ordering by dropping the wait loop.)
+#
+# Per tenant with baked tars, this service:
+#   - sets a PER-BOOT latch /tmp/batman-firstload-<t>.latch SYNCHRONOUSLY in boot(), BEFORE stopping
+#     the guardian, so batman-autocommit (#211) can tolerate a still-bootstrapping tenant. The latch
+#     persists for the whole boot (tmpfs = per-boot scope); it is NEVER cleared here (#216 R2).
+#   - stops+disables that tenant's guardian (kills the boot race with the slow ~2.5min/Pi4 load)
+#   - in a FULLY DETACHED (setsid) master loader (survives boot() returning; never blocks boot/net):
+#       * verifies each tar's sha256 against images/manifest.sha256 if present (#216 M8); a mismatch
+#         is quarantined immediately (the ONLY defense against a wrong-arch/substituted tar, which
+#         `docker load` would otherwise accept)
+#       * `docker load` with a timeout so one hung/slow tar cannot starve another tenant (#216 G2)
+#       * on success MOVES the tar to images/loaded/ (never rm — keeps the only offline copy on an
+#         offline fleet, #216 F2); clears its fail counter
+#       * on failure (load non-zero, sha mismatch, or archive-mv failure) increments a per-tar fail
+#         counter and QUARANTINES the tar to images/failed/ after N attempts, so a bad tar cannot
+#         hold the guardian down forever (#216 F1); the guardian then runs whatever loaded
+#       * tenants are processed serially (bounded by the per-load timeout) so concurrent loads do not
+#         spike RAM/IO on a 2GB-floor Pi4 (#216 m-load-concurrency)
+#   - re-enables+starts the guardian once that tenant has no *.tar left (all loaded or quarantined),
+#     restoring the #192 "guardian always running" contract; otherwise leaves it down to retry next
+#     boot (self-healing across reboots)
+#   - docker engine never comes up: restores the guardian anyway (do not wedge it); the latch stays,
+#     so batman-autocommit's docker-liveness/canary core gate — not this service — decides commit vs
+#     revert for a docker-broken rootfs (#216 R1/B1)
+#   - a tenant with no baked tars is skipped (no-op, guardian untouched) — the plain-image path is
+#     unchanged.
 START=95
-GUARD=batman-payload-opentakserver
-OTSIMG=/opt/batdata/otsimg
+APPS=/opt/batdata/apps
+FAILCAP=3
+LOAD_TIMEOUT=600
 
 boot() {
-	ls "$OTSIMG"/*.tar >/dev/null 2>&1 || return 0
-	# stop the guardian NOW (synchronous, fast) so it cannot race the load; the loader re-enables it
-	[ -x "/etc/init.d/$GUARD" ] && { "/etc/init.d/$GUARD" stop >/dev/null 2>&1; "/etc/init.d/$GUARD" disable >/dev/null 2>&1; }
-	# FULLY DETACH the (slow) load so it outlives boot() and never blocks boot/network
+	any=0
+	for imgdir in "$APPS"/*/images; do
+		[ -d "$imgdir" ] || continue
+		ls "$imgdir"/*.tar >/dev/null 2>&1 || continue
+		t=${imgdir%/images}; t=${t##*/}
+		any=1
+		# per-boot latch, set BEFORE the guardian stop (#216 C2/R2)
+		: > "/tmp/batman-firstload-$t.latch" 2>/dev/null
+		g="batman-payload-$t"
+		[ -x "/etc/init.d/$g" ] && { "/etc/init.d/$g" stop >/dev/null 2>&1; "/etc/init.d/$g" disable >/dev/null 2>&1; }
+	done
+	[ "$any" = 1 ] || return 0
+
+	# FULLY DETACH the (slow) load so it outlives boot() and never blocks boot/network.
+	# Re-discovers tenants inside (self-contained; no reliance on outer $VARs surviving into sh -c).
 	setsid sh -c '
-		OTSIMG=/opt/batdata/otsimg
-		GUARD=batman-payload-opentakserver
-		LOG=/opt/batdata/log/ots-firstload.log
+		APPS=/opt/batdata/apps
+		LOG=/opt/batdata/log/firstload.log
+		FAILCAP='"$FAILCAP"'
+		LOAD_TIMEOUT='"$LOAD_TIMEOUT"'
 		mkdir -p "$(dirname "$LOG")"
-		echo "$(date) firstload start" >> "$LOG"
-		i=0; while ! docker info >/dev/null 2>&1; do i=$((i+1)); [ "$i" -gt 90 ] && { echo "$(date) dockerd never up" >> "$LOG"; exit 0; }; sleep 3; done
-		for t in "$OTSIMG"/*.tar; do
-			if docker load -i "$t" >> "$LOG" 2>&1; then rm -f "$t"; echo "$(date) loaded+removed $t" >> "$LOG"; else echo "$(date) load FAILED (kept) $t" >> "$LOG"; fi
+		# log rotation (#216 M7): keep one generation, cap ~256KiB
+		sz=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+		[ "${sz:-0}" -gt 262144 ] && mv -f "$LOG" "$LOG.1" 2>/dev/null
+		lg(){ echo "$(date) $*" >> "$LOG" 2>&1; }
+		lg "firstload start"
+
+		# wait for the docker ENGINE (this service is ordered before dockerd on purpose)
+		i=0; until docker info >/dev/null 2>&1; do i=$((i+1)); [ "$i" -gt 90 ] && break; sleep 3; done
+		up=0; docker info >/dev/null 2>&1 && up=1
+
+		for imgdir in "$APPS"/*/images; do
+			[ -d "$imgdir" ] || continue
+			ls "$imgdir"/*.tar >/dev/null 2>&1 || continue
+			t=${imgdir%/images}; t=${t##*/}
+			g="batman-payload-$t"
+			man="$imgdir/manifest.sha256"
+			mkdir -p "$imgdir/loaded" "$imgdir/failed"
+
+			if [ "$up" = 0 ]; then
+				lg "$t: docker engine never came up — cannot load; restoring guardian, latch stays (non-gating)"
+				[ -x "/etc/init.d/$g" ] && { "/etc/init.d/$g" enable >/dev/null 2>&1; "/etc/init.d/$g" start >/dev/null 2>&1; }
+				continue
+			fi
+
+			for tar in "$imgdir"/*.tar; do
+				[ -e "$tar" ] || continue
+				base=${tar##*/}
+				fc="$imgdir/.fail-$base"
+
+				# #216 M8: integrity check before load (catches truncation/wrong-arch/substitution)
+				if [ -f "$man" ]; then
+					want=$(awk -v f="$base" "\$2==f{print \$1}" "$man" 2>/dev/null | head -1)
+					if [ -n "$want" ]; then
+						got=$(sha256sum "$tar" 2>/dev/null | awk "{print \$1}")
+						if [ "$want" != "$got" ]; then
+							lg "$t: SHA MISMATCH $base (want $want got $got) — quarantine"
+							mv -f "$tar" "$imgdir/failed/" 2>/dev/null || lg "$t: quarantine mv FAILED $base"
+							continue
+						fi
+					else
+						lg "$t: no manifest entry for $base — loading UNVERIFIED"
+					fi
+				fi
+
+				if timeout "$LOAD_TIMEOUT" docker load -i "$tar" >> "$LOG" 2>&1; then
+					if mv -f "$tar" "$imgdir/loaded/" 2>/dev/null; then
+						rm -f "$fc"
+						lg "$t: loaded+archived $base"
+					else
+						c=$(cat "$fc" 2>/dev/null || echo 0); c=$((c+1)); echo "$c" > "$fc"
+						lg "$t: loaded but ARCHIVE mv FAILED $base (fail $c/$FAILCAP)"
+						[ "$c" -ge "$FAILCAP" ] && { mv -f "$tar" "$imgdir/failed/" 2>/dev/null; lg "$t: quarantine after mv-fail $base"; }
+					fi
+				else
+					rc=$?
+					c=$(cat "$fc" 2>/dev/null || echo 0); c=$((c+1)); echo "$c" > "$fc"
+					lg "$t: load FAILED $base rc=$rc (fail $c/$FAILCAP)"
+					[ "$c" -ge "$FAILCAP" ] && { mv -f "$tar" "$imgdir/failed/" 2>/dev/null; lg "$t: quarantine after $FAILCAP fails $base"; }
+				fi
+			done
+
+			if ls "$imgdir"/*.tar >/dev/null 2>&1; then
+				lg "$t: incomplete (tars remain) — retry next boot; guardian stays down"
+			else
+				[ -x "/etc/init.d/$g" ] && { "/etc/init.d/$g" enable >/dev/null 2>&1; "/etc/init.d/$g" start >/dev/null 2>&1; }
+				lg "$t: complete — guardian enabled+started (ran whatever loaded)"
+			fi
 		done
-		if ls "$OTSIMG"/*.tar >/dev/null 2>&1; then
-			echo "$(date) incomplete (tars remain) — retry next boot; leaving guardian down" >> "$LOG"
-		else
-			[ -x "/etc/init.d/$GUARD" ] && { "/etc/init.d/$GUARD" enable >/dev/null 2>&1; "/etc/init.d/$GUARD" start >/dev/null 2>&1; }
-			echo "$(date) done — all images loaded, guardian started" >> "$LOG"
-		fi
+		lg "firstload end"
 	' >/dev/null 2>&1 </dev/null &
 }

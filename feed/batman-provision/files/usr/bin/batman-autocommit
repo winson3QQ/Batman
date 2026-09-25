@@ -7,6 +7,12 @@
 # container liveness (unless-stopped containers on the shared p6 docker-root come up under ANY rootfs,
 # so they don't prove the new rootfs is good). We tolerate not-joined / not-keyed (peer/key state, not
 # an image defect) so a lone or not-yet-keyed node still commits.
+#
+# #216 layered health model: this gate = OS/infra health only. It ADDS a docker-ENGINE liveness +
+# canary-run check (can this rootfs actually run containers — overlay/memcg/runc), and it treats a
+# tenant that is still doing (or gave up) a first-load THIS boot as NON-GATING (a per-boot latch set
+# by batman-ots-firstload). App/payload health is an app-layer concern (guardian reconcile / in-field
+# swap), NOT an OS-commit criterion. Steady-state tenants (no latch) still gate on drift as before.
 
 TIMEOUT="${AUTOCOMMIT_TIMEOUT:-600}"   # wait this long for health, then give up (leave trial -> revert)
 POLL=10                                # seconds between polls
@@ -46,6 +52,30 @@ health_ok(){
 	[ $(( 0x${thr:-0} & 1 )) -eq 0 ] || { echo "undervoltage now"; return 1; }
 	# trial rootfs stamp readable (defense-in-depth: we are on a sane rootfs)
 	[ -s /etc/batman-build ] || { echo "no /etc/batman-build"; return 1; }
+	# #216 R1: OS-level "can this rootfs actually RUN our containers" — docker ENGINE liveness (+ the
+	# kernel features a diffconfig can silently drop + a canary run), NOT app health. A daemon that
+	# answers `docker info` but cannot `docker run` (dropped overlay/memcg, wrong-arch runc) would
+	# otherwise commit a slot that strands the payload with no rollback. This is a ROOTFS-health signal.
+	have_docker_tenant=0
+	for d in /opt/batdata/apps/*/; do [ -d "$d" ] && ls "$d"/*.manifest >/dev/null 2>&1 && { have_docker_tenant=1; break; }; done
+	if [ "$have_docker_tenant" = 1 ] && command -v docker >/dev/null 2>&1; then
+		docker info >/dev/null 2>&1 || { echo "docker engine not live"; return 1; }
+		grep -qw overlay /proc/filesystems 2>/dev/null || modprobe overlay 2>/dev/null
+		grep -qw overlay /proc/filesystems 2>/dev/null || { echo "no overlay filesystem"; return 1; }
+		if [ -e /sys/fs/cgroup/cgroup.controllers ]; then
+			grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null || { echo "no memcg controller"; return 1; }
+		fi
+		# canary run (authoritative): exercises create+runtime+cgroup+storage-mount in ~1-3s. Uses the
+		# baked image if available; degrades to the feature probes above if the blob is absent so a
+		# missing canary can never itself cause a false revert.
+		CANARY=/opt/batdata/canary.tar.gz; [ -f "$CANARY" ] || CANARY=/usr/share/batman/canary.tar.gz
+		if docker image inspect batman-canary >/dev/null 2>&1 || [ -f "$CANARY" ]; then
+			docker image inspect batman-canary >/dev/null 2>&1 || docker load -i "$CANARY" >/dev/null 2>&1
+			if docker image inspect batman-canary >/dev/null 2>&1; then
+				timeout 15 docker run --rm --network none batman-canary true >/dev/null 2>&1 || { echo "docker canary run failed"; return 1; }
+			fi
+		fi
+	fi
 	# payload (if provisioned): the guardian on THIS boot reached drift=OK — i.e. it fully brought up +
 	# verified the stack on the new rootfs. /tmp is tmpfs (wiped each boot) so the file's presence means
 	# "this boot" (review B1/M2). Not raw container liveness.
@@ -53,6 +83,13 @@ health_ok(){
 		[ -d "$d" ] || continue
 		ls "$d"/*.manifest >/dev/null 2>&1 || continue
 		t=${d%/}; t=${t##*/}
+		# #216 R2: a tenant still doing (or that gave up) a first-load THIS boot is NON-GATING — app
+		# bootstrap is an app-layer concern (guardian reconcile / in-field swap), not an OS-commit
+		# criterion. batman-ots-firstload sets this per-boot latch synchronously and never clears it
+		# for the boot, so a slow cold-start after load-done cannot re-arm drift-gating and false-revert
+		# a good slot. Steady-state (no latch — images already loaded) still gates on drift below, so a
+		# new rootfs that breaks a previously-working app still reverts (#211 preserved).
+		[ -f "/tmp/batman-firstload-$t.latch" ] && { echo "payload $t: first-load in progress (non-gating)" >/dev/null; continue; }
 		df=/tmp/batman-payload-$t-drift.json
 		[ -f "$df" ] || { echo "payload $t: no this-boot drift verdict yet"; return 1; }
 		# freshness (review m2): the guardian reconciles every ~30s; require a verdict written in the

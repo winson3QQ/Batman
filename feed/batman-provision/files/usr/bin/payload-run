@@ -18,6 +18,9 @@ set -eu
 TENANT="${1:-}"
 [ -n "$TENANT" ] || { echo "usage: payload-run <tenant>" >&2; exit 2; }
 APPS_DIR="${APPS_DIR:-/opt/batdata/apps}"
+# #216 M6: default to never-pull (offline fleet: images come from baked tars / the local store), but
+# let a future online tenant override. Was hardcoded --pull=never at both docker-run sites.
+PULL_POLICY="${PULL_POLICY:-never}"
 DIR="$APPS_DIR/$TENANT"
 # glob the manifest/fw4 by extension (one per tenant dir) so the on-node FILE name can keep the
 # emitter's deploy-dir name (e.g. ots.manifest) even when the tenant dir is apps/opentakserver/.
@@ -69,7 +72,7 @@ prechown(){   # $1 = spec, $2 = fallback image
 	pg=${pr%%:*}; pi=${pr#*:}
 	[ "$pg" = "$pi" ] && pi="$2"          # no explicit image field → use fallback
 	docker volume inspect "$pn" >/dev/null 2>&1 || docker volume create "$pn" >/dev/null
-	docker run --pull=never --rm --user 0 -v "$pn:$pp" --entrypoint chown "$pi" -R "$pu:$pg" "$pp" >/dev/null 2>&1 \
+	docker run --pull="$PULL_POLICY" --rm --user 0 -v "$pn:$pp" --entrypoint chown "$pi" -R "$pu:$pg" "$pp" >/dev/null 2>&1 \
 		|| log "WARN: prechown $pn ($pu:$pg) failed"
 }
 
@@ -105,7 +108,7 @@ finish_block(){
 	fi
 	docker rm -f "$NAME" >/dev/null 2>&1 || true
 	# shellcheck disable=SC2086  # EP_REST = trailing command args (may be empty) → split on purpose
-	docker run --pull=never -d "$@" "$IMG" $EP_REST >/dev/null
+	docker run --pull="$PULL_POLICY" -d "$@" "$IMG" $EP_REST >/dev/null
 	log "started $NAME (${HARDEN:-no-harden})"
 	if [ -n "$HEALTH" ]; then
 		printf 'payload-run[%s]: wait %s' "$TENANT" "$NAME"; i=0
