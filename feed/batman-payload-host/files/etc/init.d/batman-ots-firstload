@@ -66,6 +66,18 @@ boot() {
 		sz=$(wc -c < "$LOG" 2>/dev/null || echo 0)
 		[ "${sz:-0}" -gt 262144 ] && mv -f "$LOG" "$LOG.1" 2>/dev/null
 		lg(){ echo "$(date) $*" >> "$LOG" 2>&1; }
+		# portable bounded docker load (#216 G2): busybox here has NO `timeout` applet (hardware
+		# caught rc=127), so do not depend on it — run the load in the background and kill it if it
+		# overruns LOAD_TIMEOUT. Returns the load exit (137 if killed -> counted as a failure).
+		dl(){
+			docker load -i "$1" >> "$LOG" 2>&1 &
+			_dp=$!
+			( sleep "$LOAD_TIMEOUT"; kill -9 "$_dp" 2>/dev/null ) 2>/dev/null &
+			_wp=$!
+			wait "$_dp" 2>/dev/null; _rc=$?
+			kill "$_wp" 2>/dev/null; wait "$_wp" 2>/dev/null
+			return "$_rc"
+		}
 		lg "firstload start"
 
 		# wait for the docker ENGINE (this service is ordered before dockerd on purpose)
@@ -106,7 +118,7 @@ boot() {
 					fi
 				fi
 
-				if timeout "$LOAD_TIMEOUT" docker load -i "$tar" >> "$LOG" 2>&1; then
+				if dl "$tar"; then
 					if mv -f "$tar" "$imgdir/loaded/" 2>/dev/null; then
 						rm -f "$fc"
 						lg "$t: loaded+archived $base"

@@ -38,7 +38,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=batman-payload-host
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=5
+PKG_RELEASE:=6
 PKG_MAINTAINER:=Batman <yellow.winson@gmail.com>
 PKG_LICENSE:=GPL-2.0-or-later
 
