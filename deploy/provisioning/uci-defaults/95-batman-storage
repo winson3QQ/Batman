@@ -70,6 +70,60 @@ if [ ! -b "$PART" ]; then
 	[ -b "$PART" ] || { lg "$PART not visible yet — will retry next boot"; exit 1; }
 fi
 
+# 1b. grow a pre-made GPT last partition (v2 A/B p6) to fill the card (#201). Step 1 only expands
+#     partitions IT creates; a baked-small p6 (200 MiB in the distributable .img) would otherwise
+#     stay small forever, because A/B OTA never touches the partition table (one-way door). Table
+#     grow only here; the ext4 grow is step 3b. Geometry from sysfs (kernel truth — no blockdev);
+#     sgdisk only for the atomic table rewrite. Idempotent, grow-only, fail-open.
+#     See docs/design/201-firstboot-grow.md.
+if [ "$PART_NUM" = 6 ] && [ -b "$PART" ] && command -v sgdisk >/dev/null 2>&1; then
+	dsz=$(cat /sys/block/mmcblk0/size 2>/dev/null)
+	pst=$(cat /sys/class/block/mmcblk0p6/start 2>/dev/null)
+	psz=$(cat /sys/class/block/mmcblk0p6/size 2>/dev/null)
+	if [ -n "$dsz" ] && [ -n "$pst" ] && [ -n "$psz" ]; then
+		pend=$((pst + psz))
+		# p6 must be PHYSICALLY last: nothing may occupy a sector at/after our start (GPT entries
+		# can be out of order, so key off geometry not the number). Refuse otherwise (fail-open).
+		last=1
+		for d in /sys/class/block/mmcblk0p*; do
+			pn=${d##*mmcblk0p}; [ "$pn" = 6 ] && continue
+			s=$(cat "$d/start" 2>/dev/null); z=$(cat "$d/size" 2>/dev/null)
+			[ -n "$s" ] && [ -n "$z" ] || continue
+			[ $((s + z)) -le "$pst" ] || { last=0; lg "p$pn sits at/after p6 start — refusing grow"; break; }
+		done
+		# gate on the PHYSICAL device size (sysfs), NOT GPT last-usable — the latter is stale on a
+		# dd'd card until sgdisk -e runs, which would wrongly report "already full" (=#201 unfixed).
+		# 32768 sectors = 16 MiB slack so an already-full card / slot flip is a clean no-op.
+		if [ "$last" = 1 ] && [ $((dsz - pend)) -gt 32768 ]; then
+			guid=$(sgdisk -i 6 "$DISK" 2>/dev/null | sed -n 's/^Partition unique GUID: //p')
+			if [ -n "$guid" ]; then
+				lg "growing p6 to fill card: start=$pst old_end=$pend dev_end=$dsz (sectors)"
+				# ONE atomic sgdisk write: -e relocates the backup header to the true disk end,
+				# -a 1 pins alignment to 1 sector so the start CANNOT shift (a shifted start would
+				# strand the ext4), then delete+recreate p6 at the SAME start to disk end with the
+				# same GUID/type/name. Never a bare -d then -n (a crash between them orphans p6 with
+				# no rebuild path — the create branch above refuses when p1..p5 already exist).
+				if sgdisk -a 1 -e -d 6 -n "6:${pst}:0" -t 6:8300 -u "6:$guid" -c 6:data "$DISK" >/dev/null 2>&1; then
+					partprobe "$DISK" 2>/dev/null; sync; sleep 1
+					nsz=$(cat /sys/class/block/mmcblk0p6/size 2>/dev/null)
+					if [ -n "$nsz" ] && [ "$nsz" -gt "$psz" ]; then
+						lg "p6 partition grown ($psz -> $nsz sectors); ext4 grown in step 3b"
+					else
+						# one-shot uci-default: a plain continue deletes this hook, so the fs grow
+						# would never run. exit 1 to re-run next boot (1b then no-ops as already-full
+						# and 3b completes the fs grow against the now-visible partition).
+						lg "kernel did not re-read grown p6 — exit 1 to retry next boot"; exit 1
+					fi
+				else
+					lg "sgdisk grow failed — continuing on small p6 (fail-open)"
+				fi
+			else
+				lg "cannot read p6 GUID — skip grow (fail-open)"
+			fi
+		fi
+	fi
+fi
+
 # 2. LUKS (if capable, idempotent)
 if [ "$LUKS" = 1 ]; then
 	[ -f "$KEYFILE" ] || { head -c 512 /dev/urandom > "$KEYFILE"; chmod 600 "$KEYFILE"; }
@@ -89,6 +143,21 @@ elif command -v mkfs.ext4 >/dev/null 2>&1; then
 	lg "mkfs.ext4 $DEV"; mkfs.ext4 -F -L "$LABEL" -m 0 "$DEV" >/dev/null 2>&1
 else
 	lg "mkfs.ext4 missing and $DEV unformatted — skip"; exit 0
+fi
+
+# 3b. grow the ext4 to fill the (possibly enlarged by 1b) partition (#201). This is a one-shot
+#     uci-default so it runs once per slot first-boot, not every boot — resize2fs is a no-op when
+#     the fs already fills the device, so an already-full card / a fresh mkfs above just no-ops.
+#     Unmounted here (boot()/mount is step 5). LUKS: grow the mapper first. e2fsck exit 0/1 = OK
+#     (1 = errors fixed), >=4 = real failure -> skip resize, fail-open (small p6 degraded, not bricked).
+if [ "$PART_NUM" = 6 ] && has_fs "$DEV" && command -v resize2fs >/dev/null 2>&1; then
+	[ "$LUKS" = 1 ] && cryptsetup resize "$MAPPER" >/dev/null 2>&1 && lg "luks mapper resized to partition"
+	e2fsck -pf "$DEV" >/dev/null 2>&1; rc=$?
+	if [ "$rc" -le 1 ]; then
+		if resize2fs "$DEV" >/dev/null 2>&1; then lg "ext4 resized to fill $DEV"; else lg "resize2fs failed (fail-open)"; fi
+	else
+		lg "e2fsck rc=$rc on $DEV — skip resize (degraded, fail-open)"
+	fi
 fi
 
 # 4. install the persistent data-partition service (runs on every boot + clean shutdown).

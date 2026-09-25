@@ -261,6 +261,16 @@ chk_202() { fssh "$1" 20 '                                     # a JOINED node m
   echo "p5 .seeded=$seeded  mesh-key-in-overrides.uci=$key (join must persist radio delta regardless of #137 lockdown)"
   [ "$seeded" = 1 ] && [ "$key" = 1 ]'; }   # decoupled from lockdown-OK: a meshed-but-open node MUST still seed
 
+chk_p6grow_201() { fssh "$1" 20 '                              # 201-firstboot-grow.md: A/B .img ships p6
+  [ -b /dev/mmcblk0p6 ] || { echo "no p6 (single-slot/MBR card) — n/a"; exit 0; }   # only the v2 A/B card has p6
+  disk=$(cat /sys/block/mmcblk0/size 2>/dev/null)
+  p6=$(cat /sys/class/block/mmcblk0p6/size 2>/dev/null)
+  [ -n "$disk" ] && [ "$p6" -gt 0 ] 2>/dev/null || { echo "cannot read geometry"; exit 1; }
+  pct=$(( p6 * 100 / disk ))
+  echo "p6=$p6 sectors of disk=$disk ( data = ${pct}% of card ); baked A/B img ships p6 ~200MiB (<1%)"
+  # a p6 that failed to grow stays ~200MiB (<1% of a >=8G card); a grown one is the whole free tail (>50%)
+  [ "$pct" -ge 50 ]'; }
+
 if up "$OTS_NODE"; then
   suite confinement-98   "OTS container confinement — 9 axes ×6 (#98)"                       "chk_98 $OTS_NODE"
   suite ots-up-162       "OTS 6/6 running + postgres endpoint answers (#162)"                "chk_162 $OTS_NODE"
@@ -290,8 +300,10 @@ fi
 # Placed here (after chk_* are defined) — chk_autocommit is used, unlike the inline BENCH suites above.
 if up "$BENCH_NODE"; then
   suite autocommit-211 "A/B node is committed, not left in an uncommitted trial (#211, ab-autocommit)" "chk_autocommit $BENCH_NODE"
+  suite p6grow-201 "A/B card data partition (p6) grew to fill the card at first boot (#201, not stuck at the baked ~200MiB)" "chk_p6grow_201 $BENCH_NODE"
 else
   suite autocommit-211 "A/B commit state (#211) — BENCH_NODE $BENCH_NODE did not answer" ""
+  suite p6grow-201 "p6 grow-to-fill (#201) — BENCH_NODE $BENCH_NODE did not answer" ""
 fi
 
 # ---- tier B: destructive, induces the real failure — DNODE (eth) only, --destructive ----
