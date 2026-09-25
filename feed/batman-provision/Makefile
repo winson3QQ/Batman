@@ -23,7 +23,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=batman-provision
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=7
+PKG_RELEASE:=8
 PKG_MAINTAINER:=Batman <yellow.winson@gmail.com>
 PKG_LICENSE:=GPL-2.0-or-later
 

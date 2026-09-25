@@ -148,6 +148,13 @@ done
 say "mkfs.ext4 config + data (data ${P6_MB}M, first-boot grows to fill — #201)"
 mkfs.ext4 -q -F -L batconfig "${OLO}p5"
 mkfs.ext4 -q -F -L batdata   "${OLO}p6"
+if [ -n "${P6_PAYLOAD:-}" ]; then
+  [ -d "$P6_PAYLOAD" ] || { echo "P6_PAYLOAD not found: $P6_PAYLOAD"; exit 1; }
+  say "populate p6 from P6_PAYLOAD $P6_PAYLOAD"
+  MP6=$(mktemp -d); mount "${OLO}p6" "$MP6"; cp -a "$P6_PAYLOAD"/. "$MP6"/; sync
+  echo "p6 populated ($(du -sh "$MP6" | cut -f1))"
+  umount "$MP6"; rmdir "$MP6"
+fi
 
 sync
 say "final layout"
