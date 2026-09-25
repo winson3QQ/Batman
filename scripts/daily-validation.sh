@@ -122,17 +122,21 @@ DNODE=${DESTRUCTIVE_NODE:-$OTS_NODE}      # tier-B target — MUST have ethernet
 fssh() { timeout "${2:-60}" ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 "root@$1" "$3"; }
 
 # ---- tier A: non-destructive, real ----
-chk_98()  { fssh "$1" 60 'sh /opt/batdata/deploy/ots/verify-profile-ots.sh'; }           # inspects 9 axes ×6
+# #216: resolve the OTS tenant dir — flash-and-go / #167 uses /opt/batdata/apps/opentakserver;
+# manually-provisioned nodes used /opt/batdata/deploy/ots. Prefer apps/, fall back to deploy/ots.
+chk_98()  { fssh "$1" 60 'd=/opt/batdata/apps/opentakserver; [ -f "$d/verify-profile-ots.sh" ] || d=/opt/batdata/deploy/ots; sh "$d/verify-profile-ots.sh"'; }   # inspects 9 axes ×6
 chk_162() { fssh "$1" 30 '
   n=0; for c in opentakserver ots-db ots_cot_parser ots_eud_handler ots_eud_handler_ssl rabbitmq; do
     [ "$(docker inspect -f "{{.State.Running}}" "$c" 2>/dev/null)" = true ] && n=$((n+1)); done
   db=$(docker exec ots-db psql -U ots -d ots -tAc "select 1" 2>/dev/null | tr -d " ")
   echo "running=$n/6 postgres=$db"; [ "$n" = 6 ] && [ "$db" = 1 ]'; }
 chk_156() { fssh "$1" 45 '
+  d=/opt/batdata/apps/opentakserver; [ -f "$d/verify-profile.sh" ] || d=/opt/batdata/deploy/ots   # #216: apps/ (flash-and-go) or deploy/ots
+  [ -f "$d/verify-profile.sh" ] || { echo "verify-profile.sh not found in apps/ or deploy/ots"; exit 2; }   # do not let a missing file masquerade as DRIFT
   docker rm -f dv-decoy >/dev/null 2>&1
   docker run -d --name dv-decoy --entrypoint sleep batman/ots:1.7.13-arm64 60 >/dev/null 2>&1 || { echo "decoy start failed"; exit 2; }
   sleep 18   # clear verify-profile MIN_UPTIME=15 (else UNKNOWN, not DRIFT)
-  sh /opt/batdata/deploy/ots/verify-profile.sh dv-decoy /opt/batdata/deploy/ots/ots.hardening.env >/tmp/dv-vp 2>&1; rc=$?
+  sh "$d/verify-profile.sh" dv-decoy "$d/ots.hardening.env" >/tmp/dv-vp 2>&1; rc=$?
   docker rm -f dv-decoy >/dev/null 2>&1
   echo "unhardened decoy -> verify-profile rc=$rc (want non-0 = DRIFT detected)"; [ "$rc" -ne 0 ]'; }
 chk_167g() { fssh "$1" 20 '
