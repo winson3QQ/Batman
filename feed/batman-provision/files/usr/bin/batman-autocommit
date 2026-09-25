@@ -72,7 +72,7 @@ health_ok(){
 		if docker image inspect batman-canary >/dev/null 2>&1 || [ -f "$CANARY" ]; then
 			docker image inspect batman-canary >/dev/null 2>&1 || docker load -i "$CANARY" >/dev/null 2>&1
 			if docker image inspect batman-canary >/dev/null 2>&1; then
-				timeout 15 docker run --rm --network none batman-canary true >/dev/null 2>&1 || { echo "docker canary run failed"; return 1; }
+				docker run --rm --network none batman-canary true >/dev/null 2>&1 || { echo "docker canary run failed"; return 1; }
 			fi
 		fi
 	fi
