@@ -38,7 +38,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=batman-payload-host
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=3
+PKG_RELEASE:=6
 PKG_MAINTAINER:=Batman <yellow.winson@gmail.com>
 PKG_LICENSE:=GPL-2.0-or-later
 
@@ -108,6 +108,13 @@ endef
 define Package/batman-payload-host/install
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./files/etc/uci-defaults/99-batman-payload-docker $(1)/etc/uci-defaults/99-batman-payload-docker
+	# #159/#216 flash-and-go first-boot payload image bootstrap (generalized over tenants). Ship the
+	# init script (0755) AND its S95 rc.d link so the service is ENABLED in the built image — the PR
+	# added these under files/ but the install rule must copy them (a from-feed build omitted them
+	# otherwise; the firmware-fork overlay had masked the gap).
+	$(INSTALL_DIR) $(1)/etc/init.d $(1)/etc/rc.d
+	$(INSTALL_BIN) ./files/etc/init.d/batman-ots-firstload $(1)/etc/init.d/batman-ots-firstload
+	$(LN) ../init.d/batman-ots-firstload $(1)/etc/rc.d/S95batman-ots-firstload
 	# payload config golden (docs/design/payload-config-golden.md): bake the OTS tenant's declarative,
 	# non-secret config as the read-only source of truth. batdata-mount refreshes p6 from this on every
 	# boot (refresh-existing-only), so an A/B reflash converges the p6 manifest to the image (unless-stopped)

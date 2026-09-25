@@ -148,6 +148,20 @@ done
 say "mkfs.ext4 config + data (data ${P6_MB}M, first-boot grows to fill — #201)"
 mkfs.ext4 -q -F -L batconfig "${OLO}p5"
 mkfs.ext4 -q -F -L batdata   "${OLO}p6"
+if [ -n "${P6_PAYLOAD:-}" ]; then
+  [ -d "$P6_PAYLOAD" ] || { echo "P6_PAYLOAD not found: $P6_PAYLOAD"; exit 1; }
+  # #216 M9: fail loudly BEFORE mount/cp if the payload cannot fit p6 (else a late ENOSPC under set -e).
+  # Layout convention (#216 G3): P6_PAYLOAD mirrors p6 — baked docker image tars live at
+  # apps/<tenant>/images/*.tar with an images/manifest.sha256 (sha256sum format) beside them;
+  # batman-ots-firstload loads them first-boot. (build stays layout-agnostic; the caller stages this.)
+  need_kb=$(du -sk "$P6_PAYLOAD" | cut -f1)
+  cap_kb=$(( P6_MB * 1024 * 92 / 100 ))   # ~8% ext4 metadata/reserve margin
+  [ "$need_kb" -le "$cap_kb" ] || { echo "P6_PAYLOAD ${need_kb}KB exceeds p6 usable ~${cap_kb}KB (P6_MB=${P6_MB}); raise P6_MB"; exit 1; }
+  say "populate p6 from P6_PAYLOAD $P6_PAYLOAD (${need_kb}KB into ${P6_MB}M)"
+  MP6=$(mktemp -d); mount "${OLO}p6" "$MP6"; cp -a "$P6_PAYLOAD"/. "$MP6"/; sync
+  echo "p6 populated ($(du -sh "$MP6" | cut -f1))"
+  umount "$MP6"; rmdir "$MP6"
+fi
 
 sync
 say "final layout"

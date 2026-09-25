@@ -104,7 +104,7 @@ if [ "$PART_NUM" = 6 ] && [ -b "$PART" ] && command -v sgdisk >/dev/null 2>&1; t
 				# same GUID/type/name. Never a bare -d then -n (a crash between them orphans p6 with
 				# no rebuild path — the create branch above refuses when p1..p5 already exist).
 				if sgdisk -a 1 -e -d 6 -n "6:${pst}:0" -t 6:8300 -u "6:$guid" -c 6:data "$DISK" >/dev/null 2>&1; then
-					partprobe "$DISK" 2>/dev/null; sync; sleep 1
+					partx -u "$DISK" 2>/dev/null; partprobe "$DISK" 2>/dev/null; sync; sleep 1
 					nsz=$(cat /sys/class/block/mmcblk0p6/size 2>/dev/null)
 					if [ -n "$nsz" ] && [ "$nsz" -gt "$psz" ]; then
 						lg "p6 partition grown ($psz -> $nsz sectors); ext4 grown in step 3b"
@@ -266,6 +266,16 @@ boot(){
 	fi
 	mkdir -p "$CRASH" "$LOG"
 	note "mounted $DEV on $MOUNT"
+	# #215: online-grow the ext4 to fill the partition (offline step 3b can no-op on first boot
+	# before the kernel re-reads the grown table; after mount the kernel sees the partition).
+	# #216 M5: grow the LUKS mapper first (symmetry with the offline step-3b) when encrypted.
+	# #216: log the resize2fs failure reason instead of swallowing it — an online resize refuses on a
+	# fs needing `e2fsck -f` (e.g. after an unclean shutdown) and would otherwise silently leave p6
+	# small (a soft recurrence of the #215 bug); grow-only + idempotent, self-heals once fsck'd.
+	if command -v resize2fs >/dev/null 2>&1; then
+		[ "$LUKS" = 1 ] && command -v cryptsetup >/dev/null 2>&1 && { cryptsetup resize "$MAPPER" >/dev/null 2>&1 && note "p6 luks mapper online-resized"; }
+		rerr=$(resize2fs "$DEV" 2>&1) && note "p6 ext4 online-resized to fill partition" || note "p6 ext4 online-resize skipped/failed: $rerr"
+	fi
 	# once per boot: the first-boot hook calls `boot` itself and the S11 link may run it again
 	[ -f /tmp/batdata-mount.booted ] && return 0
 	: > /tmp/batdata-mount.booted
