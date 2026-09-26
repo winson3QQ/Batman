@@ -35,6 +35,19 @@
 **兩張網的機器/韌體都是我們的 → 不把 HaLow 當未知干擾被動閃,而是自己訂收發規矩。** 目標函數 = **在滿足語音(PTT)+ 數據體驗門檻下,調度 HaLow/LoRa 收發**。優先級:**①PTT 語音(即時,保護絕不讓路)→ ②互動/大數據(彈性,可被小讓)→ ③LoRa 生存流量(稀疏 PLI~30s + 可容忍延遲,窗口從閒置/大數據空檔切出)**。LoRa 節奏也我們控(PLI 間隔、限約定窗口發)→ 切時 = 排自己已知流量,非反應未知干擾 → **大幅降低對硬體共存線(切時變體 A)的需要**,純軟體策略調度(變體 B)即在排自己的東西。
 **殘留**:①切 HaLow 安靜窗口的機制(Linux 佇列層粗略可做;精準需 driver/韌體;TWT 在 mesh vif 死 #181)②連續語音期間 LoRa 多等(可容忍)③入站撞本機 HaLow TX 仍掉包,除非全隊窗口時間同步(#174/#177)——per-node 減輕不全消。
 
+## 0.4 兩網流量模型 + 可調旋鈕(排調度 / 算 airtime 的輸入)
+**HaLow idle 也不安靜(週期地板)**:beacon ~1/s + batman **OGM ~1/s** + ELP 次秒級;短、低佔用(~百分之幾 airtime)但**週期性**。加入時另有 auth/assoc/probe。資料層:TAK CoT、**PTT 語音(講話時連續)**、照片/影音。native 規則:CSMA/CA 聽了再發 + **WMM QoS(語音 AC_VO 可優先)**;OGM/ELP 是無 ACK 廣播、洪泛。
+**LoRa(本卡實測值)**:PLI `position_broadcast_secs=900`(移動 smart~30s)、NodeInfo 10800s(3h)、telemetry~關、文字零星;**每包 airtime ~0.5–1.5s**;**managed flooding**(hop=3、packet-id 去重、SNR 差者先轉發 → 放大)、發前 CAD、airtime 自限。`rebroadcastMode=ALL`。
+**關鍵**:HaLow **週期心跳(~1/s)** vs LoRa **長包(0.5–1.5s)** → **即使 idle、使用者沒傳任何東西,一次 LoRa 收包幾乎必 overlap 1–2 個 beacon/OGM**;會不會壞看被動層(切頻+濾波)能否讓 LoRa 對這些 off-freq 心跳免疫。
+**可調旋鈕(我們制定規矩的槓桿)**:
+| 旋鈕 | 網 | 作用 |
+|---|---|---|
+| `beacon_int` / `orig_interval`(OGM) | HaLow | 降週期心跳、拉長乾淨空檔(代價:收斂慢) |
+| **WMM AC_VO 保護語音** | HaLow | 語音永遠優先(調度核心) |
+| `position_broadcast_secs` / smart | LoRa | 控 LoRa 稀疏度(拉長=更好共存) |
+| `hopLimit` / `rebroadcastMode` | LoRa | 限洪泛放大;**gateway 可設不轉發,只收→上橋**(避免一邊 RX 遠方一邊忙轉發) |
+| airtime cap | LoRa | 封頂 LoRa 佔用 |
+
 ## 1. 架構原則
 1. Radio 分工:HaLow=主資料/PTT 語音;LoRa=遠距文字+PLI 生存層;TAK=CoT overlay 匯流。
 2. 橋接在 **L3/CoT**,不在 L2。
@@ -50,7 +63,7 @@
 
 **W1 — Meshtastic 控制基座 → 產品化**(基礎)。容器 CLI 已可控;**要變常駐 service**(非一次性 docker run)+ udev 穩定命名(ttyACM 重插會 re-enum)。依賴:無。
 
-**W10 — co-site 頻段共存 go/no-go**(最先、命門)。目的:量「同機 HaLow+LoRa」LoRa RX 被 HaLow TX 壓多少。**正確認知:HaLow 高工作週期 TX 是加害者,LoRa 敏感 RX 是受害者**(原 txEnabled tier-switch 方向錯)。**測的配置 = 切頻 + 切時,HaLow default 4MHz**(見 §0.2)。**被動層先**:HaLow 4MHz 壓一端 + LoRa 250kHz 放另一端(隔 ~1MHz)+ LoRa 前端濾波 + 天線隔離,量 HaLow 忙時 LoRa 剩餘靈敏度/距離。**主動層(若被動不夠)**:切時。**先試變體 B(純軟體粗略排程:Pi 定期短暫靜音 HaLow 給稀疏 LoRa 窗口,不改韌體)**;不夠再變體 A(硬體共存線 HaLow PA→RAK GPIO + 改韌體)。**CLI/serial 即時閘控不可行(太慢+寫 flash)**。量各 HaLow 負載下 LoRa 掉包率/延遲 + HaLow 被打斷的代價。可掃 HaLow 4/2MHz 看用主網頻寬換 LoRa 空間的取捨。**乾淨 2-radio 無 OTS 節點量(非三重身分 04);可控可重複 RF setup**;含 **airtime 預算分析**。**目標函數(見 §0.3)= 在真實 語音+數據+LoRa 混合負載下,量 PTT 語音延遲 / 數據吞吐 / LoRa 掉包率是否都在體驗門檻內**(不是只量被動共存)。依賴:W1 + 2nd RAK + region=TW。**managed 調度 + 四招疊加後 LoRa 仍不可用 → 回架構層。**
+**W10 — co-site 頻段共存 go/no-go**(最先、命門)。目的:量「同機 HaLow+LoRa」LoRa RX 被 HaLow TX 壓多少。**正確認知:HaLow 高工作週期 TX 是加害者,LoRa 敏感 RX 是受害者**(原 txEnabled tier-switch 方向錯)。**測的配置 = 切頻 + 切時,HaLow default 4MHz**(見 §0.2)。**被動層先**:HaLow 4MHz 壓一端 + LoRa 250kHz 放另一端(隔 ~1MHz)+ LoRa 前端濾波 + 天線隔離,量 HaLow 忙時 LoRa 剩餘靈敏度/距離。**主動層(若被動不夠)**:切時。**先試變體 B(純軟體粗略排程:Pi 定期短暫靜音 HaLow 給稀疏 LoRa 窗口,不改韌體)**;不夠再變體 A(硬體共存線 HaLow PA→RAK GPIO + 改韌體)。**CLI/serial 即時閘控不可行(太慢+寫 flash)**。量各 HaLow 負載下 LoRa 掉包率/延遲 + HaLow 被打斷的代價。可掃 HaLow 4/2MHz 看用主網頻寬換 LoRa 空間的取捨。**乾淨 2-radio 無 OTS 節點量(非三重身分 04);可控可重複 RF setup**;含 **airtime 預算分析**(輸入=§0.4 流量模型)。**由下而上基準測**:①**純 idle**(無使用者資料/語音,只有 HaLow beacon+OGM 週期心跳,量 LoRa 收包錯誤率 PER)——idle 就壞=被動層擋不住心跳=最壞信號;②加數據負載;③加 PTT 語音負載。**目標函數(見 §0.3)= 在真實 語音+數據+LoRa 混合負載下,量 PTT 語音延遲 / 數據吞吐 / LoRa 掉包率是否都在體驗門檻內**(不是只量被動共存)。依賴:W1 + 2nd RAK + region=TW。**managed 調度 + 四招疊加後 LoRa 仍不可用 → 回架構層。**
 
 **W4 — Tier 0 server-free 驗證**(獨立)。兩台 Meshtastic + 手機 ATAK+外掛,role TAK/TAK_TRACKER,CoT 手機↔手機。依賴:2nd RAK + region=TW。
 
