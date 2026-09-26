@@ -140,6 +140,11 @@ Phase5  W11 T0+LoRa 固定站(仍 co-site)
 - **loaded 預覽**(iperf 灌 HaLow ~7.6Mbps):LoRa SNR **≈+1**(比 idle 再掉 ~4dB)→ **負載下 co-site 明顯較重**(僅少量樣本,完整 loaded soak 因下述硬體事故中斷)。
 - **量測法**:sender 發自訂長度文字(`LLL:SSSSS:`+X padding,可驗內容+序號→真 PER 按序號去重);receiver 抽 `msg=`+`Lora RX len=`;HaLow 端 `iw station dump`(signal/MCS/retries/failed)+`morse_cli stats`(retry 表)+temp。
 - **⚠️ 硬體事故 + 教訓**:對 ttyACM0 上程序 **kill -9(打斷 USB 交易)會 wedge RAK 的 USB**(`can't set config, error -110`),host 端 authorized-toggle/unbind-rebind 都救不回 → **需實體重插/RST**。**教訓:控 RAK 的程序用溫和 kill(TERM)或設 timeout,勿 kill -9 於 USB I/O 中;長跑用內建定時而非外部強殺。**
+- **遠端救援不可行(本硬體實查)**:中繼 hub = **ganged power switching(不能分埠斷電)**、無 uhubctl / 無 per-port sysfs 斷電、Pi4 內建埠不支援分埠斷電;`authorized` toggle 只邏輯斷線(RAK 仍有電,清不掉僵局)→ **必實體重插/RST**。
+- **watchdog 缺口**:nRF52/Meshtastic 有 watchdog 但**只盯主迴圈**;此次主迴圈仍活(照收 LoRa/餵狗),**只 USB 子系統僵** → watchdog 不觸發。需韌體加 **USB-health watchdog**。
+
+### 設計要求(野外韌性,新增):RAK 需「可軟體復原」
+現成 kit 沒有;要「節點自我復原、不派人」須擇一/組合:①**支援 PPPS 的 USB hub**(host 可分埠 power-cycle RAK)②**GPIO 控 VBUS 負載開關**(斷 RAK 電重來)③**GPIO 接 RAK RST 腳**(pulse 重置 MCU)④**韌體 USB-health watchdog**。**最省 = GPIO→RST 或 GPIO→VBUS + 韌體 USB watchdog**。對接 V3 enclosure/BOM 與 #67 EMS 自癒。
 
 ## 5. 驗證方針
 - 每 workstream 黑箱/白箱,能上機就上機(乾淨節點,非三重身分 04),證據附原始輸出。
