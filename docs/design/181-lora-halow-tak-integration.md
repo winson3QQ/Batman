@@ -112,6 +112,14 @@ Phase5  W11 T0+LoRa 固定站(仍 co-site)
 5. **Tier-0 退回機制**具名(誰偵測 OTS 掛、怎麼重配 ATAK)。
 6. **trusted-time** 來源(fake-hwclock vs GPS vs RTC,對接 #174,戰術才有 RTC/SE)。
 
+## 附錄 A：W10 第一步 — idle 被動基準實驗(分頻)
+**問題**:分頻後,同機 idle HaLow 心跳(beacon+OGM)還會不會打壞 LoRa 收包?
+**判準**:比「HaLow 關」vs「HaLow 開但 idle」下 LoRa 的 PER/SNR;接近=分頻+濾波讓 LoRa 對心跳免疫(過);差很多=心跳就擋不住。
+**節點**:U=同機 HaLow+RAK(LoRa RX);L=**第二顆 RAK**(固定距離發序號封包,**硬前置,缺**);H=HaLow 對象(02 或 U 自身 beacon)。
+**分頻(TW 920–925)**:LoRa `region=TW` 放上緣(~924.x);HaLow TW 域放下緣;第一輪先窄 HaLow(1–2MHz)拉最大間隔(~2–3MHz)確認概念,再加寬到 4MHz(間隔~0.7MHz)看極限。HaLow 需從 US ch40 切 TW 域(動 mesh,在測試節點做)。
+**量測**:Meshtastic **Range Test 模組**(L 發序號、U 記收到序號+SNR/RSSI → PER)。A=HaLow down 參考、B=HaLow idle;Δ=idle co-site 傷害。過了再:縮間隔→加濾波→加數據→加語音。
+**單卡 proxy(等第二顆 RAK 前,只有一顆時)**:U 設 region=TW,量 RAK 背景 channelUtilization/噪音底,比 HaLow 關 vs idle;若 idle 抬高=blocking 早期證據。**限制:channelUtilization 是粗略 RX-busy proxy,非 PER;且現 HaLow 在 US ch40 未刻意對 TW 分頻,故只是粗略首探。**
+
 ## 5. 驗證方針
 - 每 workstream 黑箱/白箱,能上機就上機(乾淨節點,非三重身分 04),證據附原始輸出。
 - 可回歸的併 `daily-validation.sh`(gateway CoT round-trip、co-site tput delta〔需可控 RF〕、白名單拒絕未登記公鑰)。
