@@ -144,7 +144,7 @@ Phase5  W11 T0+LoRa 固定站(仍 co-site)
 - **watchdog 缺口**:nRF52/Meshtastic 有 watchdog 但**只盯主迴圈**;此次主迴圈仍活(照收 LoRa/餵狗),**只 USB 子系統僵** → watchdog 不觸發。需韌體加 **USB-health watchdog**。
 
 ### 設計要求(野外韌性,新增):RAK 需「可軟體復原」
-現成 kit 沒有;要「節點自我復原、不派人」須擇一/組合:①**支援 PPPS 的 USB hub**(host 可分埠 power-cycle RAK)②**GPIO 控 VBUS 負載開關**(斷 RAK 電重來)③**GPIO 接 RAK RST 腳**(pulse 重置 MCU)④**韌體 USB-health watchdog**。**最省 = GPIO→RST 或 GPIO→VBUS + 韌體 USB watchdog**。對接 V3 enclosure/BOM 與 #67 EMS 自癒。
+現成 kit 沒有;要「節點自我復原、不派人」須擇一/組合:①**支援 PPPS 的 USB hub**(host 可分埠 power-cycle RAK)②**GPIO 控 VBUS 負載開關**(斷 RAK 電重來)③**GPIO 接 RAK RST 腳**(pulse 重置 MCU)④**韌體 USB-health watchdog**。**⚠️ 實測(無電池):遠端軟體無法 power-cycle RAK**。此 hub 宣稱 ganged power switching 但 **kernel port disable 只做邏輯斷線、沒真的切 VBUS**(廉價 hub 通病:宣稱有電源開關卻沒實作)→ RAK 全程有電、韌體從沒重開 → USB-API 僵局清不掉。authorized-toggle / unbind-rebind / ganged 全埠 disable(含 30s)/ 1200bps-touch 全試過都救不回 → **需實體 RST 鍵或拔 USB**。**故野外自癒可靠手段 = GPIO→RST 腳(最直接),或用「真的會切 VBUS 的」電源開關/PPPS hub(本 hub 的軟體電源開關無效),再加韌體 USB-health watchdog。** 對接 V3 enclosure/BOM 與 #67 EMS 自癒。另:大量 serial 擷取**勿寫 /tmp(tmpfs/RAM,會撐爆害 docker 掛)**,要寫 p6 並過濾/rotate。
 
 ## 5. 驗證方針
 - 每 workstream 黑箱/白箱,能上機就上機(乾淨節點,非三重身分 04),證據附原始輸出。
