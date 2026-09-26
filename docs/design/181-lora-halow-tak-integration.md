@@ -120,6 +120,27 @@ Phase5  W11 T0+LoRa 固定站(仍 co-site)
 **量測**:Meshtastic **Range Test 模組**(L 發序號、U 記收到序號+SNR/RSSI → PER)。A=HaLow down 參考、B=HaLow idle;Δ=idle co-site 傷害。過了再:縮間隔→加濾波→加數據→加語音。
 **單卡 proxy(等第二顆 RAK 前,只有一顆時)**:U 設 region=TW,量 RAK 背景 channelUtilization/噪音底,比 HaLow 關 vs idle;若 idle 抬高=blocking 早期證據。**限制:channelUtilization 是粗略 RX-busy proxy,非 PER;且現 HaLow 在 US ch40 未刻意對 TW 分頻,故只是粗略首探。**
 
+## 附錄 B:進實際設計階段前的特性實驗清單 (P1–P7)
+思路 = 建 co-site 特性矩陣;每個實驗解鎖一個設計決策。矩陣維度:HaLow 狀態(off/idle/loaded)× 鏈路餘裕(強/邊緣)× 頻率分離 × HaLow BW × 緩解(切頻/濾波/切時)× 方向(HaLow→LoRa / LoRa→HaLow)。
+
+| # | 實驗 | 解鎖的決策 | 現有平台可跑? |
+|---|---|---|---|
+| **P1** | **邊緣鏈路 co-site**(降 TX 功率把 SNR 壓到接近門檻,量 off/idle/loaded PER) | **co-located 雙 radio 吃掉多少 LoRa 距離 = 真正的 go/no-go** | **✅ 可**(用降功率模擬邊緣鏈路的電性行為;唯**真實長距野外**需移動節點,現不行,但電性邊緣可模擬) |
+| **P2** | 頻率分離掃描 + 前端濾波(LoRa 近/遠 HaLow) | §0.2 切頻計畫 + 濾波器 BOM | ✅ |
+| **P3** | 切時排程原型(軟體 HaLow 靜音窗口) | §0.3 切時軟體夠不夠 vs 需硬體共存線 | ✅(純軟體) |
+| **P4** | HaLow BW 取捨(4/2/1MHz) | HaLow default BW | ✅ |
+| **P5** | 反向 LoRa TX→HaLow(量 HaLow tput/BLER) | 排程要不要雙向 gate | ✅ |
+| **P6** | 天線隔離(分離度/朝向) | V3 enclosure 實體佈局 | ⚠️ 需實體移天線 |
+| **P7** | 語音(PTT)在 co-site 下延遲 | §0.3 排程驗收門檻 | 需先有 PTT stack |
+
+**判斷「夠進設計」= P1+P2+P3(+P5)**;P4/P6/P7 為細化。**非實驗前置:W5 韌體統一或釘頻率**(否則重開/測試台不穩)。
+
+### 本 session 已取得(2026-09-26,manet04+02,10m,region=TW,override_freq 921.0)
+- **idle A/B**:LoRa SNR HaLow-off **+5.78** / idle-on **+4.93**(co-site 溫和,~1dB + 增變異)。
+- **loaded 預覽**(iperf 灌 HaLow ~7.6Mbps):LoRa SNR **≈+1**(比 idle 再掉 ~4dB)→ **負載下 co-site 明顯較重**(僅少量樣本,完整 loaded soak 因下述硬體事故中斷)。
+- **量測法**:sender 發自訂長度文字(`LLL:SSSSS:`+X padding,可驗內容+序號→真 PER 按序號去重);receiver 抽 `msg=`+`Lora RX len=`;HaLow 端 `iw station dump`(signal/MCS/retries/failed)+`morse_cli stats`(retry 表)+temp。
+- **⚠️ 硬體事故 + 教訓**:對 ttyACM0 上程序 **kill -9(打斷 USB 交易)會 wedge RAK 的 USB**(`can't set config, error -110`),host 端 authorized-toggle/unbind-rebind 都救不回 → **需實體重插/RST**。**教訓:控 RAK 的程序用溫和 kill(TERM)或設 timeout,勿 kill -9 於 USB I/O 中;長跑用內建定時而非外部強殺。**
+
 ## 5. 驗證方針
 - 每 workstream 黑箱/白箱,能上機就上機(乾淨節點,非三重身分 04),證據附原始輸出。
 - 可回歸的併 `daily-validation.sh`(gateway CoT round-trip、co-site tput delta〔需可控 RF〕、白名單拒絕未登記公鑰)。
