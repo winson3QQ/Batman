@@ -3,7 +3,7 @@ Refs,Qty,Value,Footprint,MPN,Manufacturer,Tier,LCSC,Assembly,Note
 "C2,C9,C24,C40",4,100n 50V X7R,C_0402_1005Metric,,,C,,JLCPCB,
 C3,1,22n 16V X7R,C_0402_1005Metric,,,C,,JLCPCB,2.27 V/ms soft start
 "C5,C12,C25,C30,C50,C63,C64,C70,C71,C72,C74,C75,C81",13,100n 16V,C_0402_1005Metric,,,C,,JLCPCB,
-"C6,C7,C8,C10,C22,C23",6,10u 50V X7R,C_1210_3225Metric,,,C,,JLCPCB,
+"C6,C7,C8,C10,C22,C23,C33",7,10u 50V X7R,C_1210_3225Metric,,,C,,JLCPCB,
 C11,1,220n 50V X7R,C_0603_1608Metric,,,C,,JLCPCB,hot-loop cap: closest to VIN/PGND
 "C13,C41,C73",3,1u 10V,C_0402_1005Metric,,,C,,JLCPCB,
 "C14,C15,C16,C19,C27,C28",6,22u 10V X5R,C_0805_2012Metric,,,C,,JLCPCB,
@@ -47,7 +47,7 @@ R15,1,102k 1%,R_0402_1005Metric,,,C,,JLCPCB,
 R16,1,24.3k 1%,R_0402_1005Metric,,,C,,JLCPCB,EN UVLO: 6.40 V on / 5.88 V off
 "R17,R24,R34,R64",4,100k,R_0402_1005Metric,,,C,,JLCPCB,
 R18,1,2.2k,R_0402_1005Metric,,,C,,JLCPCB,
-R19,1,1R,R_0805_2012Metric,,,C,,JLCPCB,RC damper: tames hot-plug ringing of the battery leads
+R19,1,0.47R,R_0805_2012Metric,,,C,,JLCPCB,RC damper for hot-plug ringing: 0.47R + 2x10uF keeps a 16.8 V plug-in below OVP (sim S1)
 R20,1,31.6k 1%,R_0402_1005Metric,,,C,,JLCPCB,
 R21,1,10.0k 1%,R_0402_1005Metric,,,C,,JLCPCB,Vout = 0.8 V x (1 + 31.6/10) = 3.33 V
 R22,1,20m 1% 0.5W,R_1206_3216Metric,,,C,,JLCPCB,"INA226 #2 shunt, upstream of every socket bulk cap"

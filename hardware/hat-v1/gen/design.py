@@ -118,8 +118,10 @@ part("D1", "TVS_BI", "SMBJ20CA", {1: "VBAT_RAW", 2: "GND"}, fp="Diode_SMD:D_SMB"
      mpn="SMBJ20CA", mfr="Littelfuse", note="bidirectional: survives reversed battery")
 C("C1", "1u 50V X7R", "VBAT_RAW", "GND", "0805")
 C("C2", "100n 50V X7R", "VBAT_RAW", "GND", "0402")
-R("R19", "1R", "VBAT_RAW", "VBAT_DAMP", "0805", note="RC damper: tames hot-plug ringing of the battery leads")
+R("R19", "0.47R", "VBAT_RAW", "VBAT_DAMP", "0805",
+  note="RC damper for hot-plug ringing: 0.47R + 2x10uF keeps a 16.8 V plug-in below OVP (sim S1)")
 C("C8", "10u 50V X7R", "VBAT_DAMP", "GND", "1210")
+C("C33", "10u 50V X7R", "VBAT_DAMP", "GND", "1210")
 NMOS_Q3("Q1", "EF_BGATE", "EF_IN", "VBAT_RAW", "CSD19537Q3", mpn="CSD19537Q3",
         note="reverse-polarity blocking FET (TPS2663 datasheet Fig 9-2)")
 NMOS_SOT23("Q2", "EF_DRV", "EF_BGATE", "VBAT_RAW",
