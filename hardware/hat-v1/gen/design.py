@@ -407,17 +407,17 @@ part("U14", "MAXM10S", "MAX-M10S-00B", {
     7: "3V3_GNSS", 8: "3V3_GNSS", 9: "GNSS_RST_N", 10: "GND", 11: "GNSS_RFIN", 12: "GND",
     13: None, 14: "GNSS_VCCRF", 15: "GNSS_VIOSEL", 16: None, 17: None, 18: "GNSS_SAFEBOOT_N"},
     fp="RF_GPS:ublox_MAX", mpn="MAX-M10S-00B", mfr="u-blox", tier="A",
-    note="pinout cross-checked with KiCad RF_GPS lib; VIO_SEL/V_BCKP to verify vs datasheet UBX-20035208")
+    note="UBX-20035208 R08: VIO_SEL open = 3.3 V I/O; V_BCKP 1.65-3.6 V; V_IO ramp >= 25 us/V; ext. gain <= 30 dB")
 part("R80", "R", "DNP 0R", {1: "GNSS_VIOSEL", 2: "GND"}, fp=_R_FP["0402"], dnp=True,
-     note="VIO_SEL option; open = default I/O level (verify)")
+     note="leave NOT fitted: VIO_SEL to GND would select 1.8 V I/O (datasheet Table 10)")
 C("C80", "10u 10V", "3V3_GNSS", "GND", "0603")
 C("C81", "100n 16V", "3V3_GNSS", "GND")
-R("R81", "47R", "GNSS_VCCRF", "GNSS_BIAS", "1206",
-  note="antenna short = 70 mA / 0.23 W (rated 0.25 W); 10 mA antenna sees ~2.9 V. Recheck vs integration manual")
+R("R81", "68R", "GNSS_VCCRF", "GNSS_BIAS", "1206",
+  note="VCC_RF max 50 mA operating / 250 mA abs (datasheet): short = 47 mA, 0.15 W. Antenna must run at >=2.5 V, <=10 mA")
 C("C82", "10n 16V", "GNSS_BIAS", "GND")
 part("L80", "L", "27nH", {1: "GNSS_BIAS", 2: "GNSS_ANT"}, fp="Inductor_SMD:L_0402_1005Metric",
      mpn="LQG15HS27NJ02D", mfr="Murata", note="RF choke for antenna DC bias")
-C("C83", "47p C0G", "GNSS_ANT", "GNSS_RFIN", note="DC block in front of RF_IN")
+C("C83", "47p C0G", "GNSS_ANT", "GNSS_RFIN", note="DC block (RF_IN itself tolerates +/-5.5 V DC); keeps bias off RF_IN")
 part("J4", "COAX", "U.FL", {1: "GNSS_ANT", 2: "GND"},
      fp="Connector_Coaxial:U.FL_Hirose_U.FL-R-SMT-1_Vertical", mpn="U.FL-R-SMT-1(10)", mfr="Hirose",
      note="active patch antenna with SAW pre-filter; 50 ohm CPWG trace")

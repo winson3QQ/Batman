@@ -17,7 +17,7 @@ C62,1,220u 6.3V polymer,CP_EIA-7343-20_Kemet-V,T520V227M006ATE015,KEMET,C,,JLCPC
 C76,1,CPH3225A 11mF,Seiko_CPH3225A,CPH3225A,Seiko Instruments,C,,JLCPCB,RTC backup; rated 3.3 V vs 3V3_SEC up to 3.4 V: confirm with Seiko limit
 C80,1,10u 10V,C_0603_1608Metric,,,C,,JLCPCB,
 C82,1,10n 16V,C_0402_1005Metric,,,C,,JLCPCB,
-C83,1,47p C0G,C_0402_1005Metric,,,C,,JLCPCB,DC block in front of RF_IN
+C83,1,47p C0G,C_0402_1005Metric,,,C,,JLCPCB,DC block (RF_IN itself tolerates +/-5.5 V DC); keeps bias off RF_IN
 D1,1,SMBJ20CA,D_SMB,SMBJ20CA,Littelfuse,C,,JLCPCB,bidirectional: survives reversed battery
 D2,1,RED,LED_0402_1005Metric,,,C,,JLCPCB,eFuse fault LED (on = fault)
 D3,1,GREEN,LED_0402_1005Metric,,,C,,JLCPCB,HAT 5 V buck running
@@ -56,8 +56,8 @@ R31,1,787k 1%,R_0402_1005Metric,,,C,,JLCPCB,AUTO-ON 7.10 V typ / 6.74 V min: abo
 "R40,R41,R42,R43,R44,R45,R46,R47",8,0R,R_0402_1005Metric,,,C,,JLCPCB,"R40-R47 debug links: fitted on dev boards, NOT fitted on production (HaLow keys cross SPI0)"
 R48,1,1k,R_0402_1005Metric,,,C,,JLCPCB,sense only: an adapter that drives VCC cannot back-feed the Pi
 "R51,R52",2,3.9k,R_0402_1005Metric,,,C,,JLCPCB,
-R80,1,DNP 0R,R_0402_1005Metric,,,C,,DNP,VIO_SEL option; open = default I/O level (verify)
-R81,1,47R,R_1206_3216Metric,,,C,,JLCPCB,antenna short = 70 mA / 0.23 W (rated 0.25 W); 10 mA antenna sees ~2.9 V. Recheck vs integration manual
+R80,1,DNP 0R,R_0402_1005Metric,,,C,,DNP,leave NOT fitted: VIO_SEL to GND would select 1.8 V I/O (datasheet Table 10)
+R81,1,68R,R_1206_3216Metric,,,C,,JLCPCB,"VCC_RF max 50 mA operating / 250 mA abs (datasheet): short = 47 mA, 0.15 W. Antenna must run at >=2.5 V, <=10 mA"
 SW1,1,on-board PWR,SW_SPST_EVQP7A,EVQ-P7A01P,Panasonic,C,,JLCPCB,low-profile side button for the bench
 TP1,1,VBAT 6-17V,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
 TP2,1,5V 5.10-5.25,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
@@ -73,4 +73,4 @@ U10,1,CAT24C32WI-GT3,SOIC-8_3.9x4.9mm_P1.27mm,CAT24C32WI-GT3,onsemi,A,,fit in Ta
 U11,1,SLB9672XU2.0,QFN-32-1EP_5x5mm_P0.5mm_EP3.6x3.6mm,SLB9672XU2.0 (orderable code: verify at M3),Infineon,A,,fit in Taiwan (Tier A),NC 6/29/30 must float; GPIO 3/4/7 have internal pull-ups; NO test points on TPM nets
 U12,1,ATECC608C-TFLXTLS,SOIC-8_3.9x4.9mm_P1.27mm,ATECC608C-TFLXTLS (SOIC-8 suffix: verify at M3),Microchip,A,,fit in Taiwan (Tier A),I2C 0x36 (TrustFLEX)
 U13,1,RV-3028-C7,MicroCrystal_RV-3028-C7,RV-3028-C7 32.768kHz 1ppm TA QC,Micro Crystal,A,,fit in Taiwan (Tier A),I2C 0x52; trickle charge enabled by the overlay (trickle-resistor-ohms)
-U14,1,MAX-M10S-00B,ublox_MAX,MAX-M10S-00B,u-blox,A,,fit in Taiwan (Tier A),pinout cross-checked with KiCad RF_GPS lib; VIO_SEL/V_BCKP to verify vs datasheet UBX-20035208
+U14,1,MAX-M10S-00B,ublox_MAX,MAX-M10S-00B,u-blox,A,,fit in Taiwan (Tier A),UBX-20035208 R08: VIO_SEL open = 3.3 V I/O; V_BCKP 1.65-3.6 V; V_IO ramp >= 25 us/V; ext. gain <= 30 dB
