@@ -1,9 +1,9 @@
 # Batman HAT v1:取代 Seeed WM1302 Pi HAT 的自製 HAT(規格草案)
 
-狀態:**DRAFT v1**(2026-09-27)。適用主機:**Raspberry Pi 4**(過渡版;CM4 自製底板是下一步)。
-相關單:#47(資料加密 / 安全元件)、#13(裝置 PKI)、#122(電池看門狗 / 安全關機)、#91(電源與散熱)、#92(TW 頻段)、#174(時間)、#181(HaLow+LoRa 共站)。
+狀態:**DRAFT v2**(2026-09-27;v1 經三份對抗式審查後修訂,修訂對照見 §13)。適用主機:**Raspberry Pi 4**(過渡版;CM4 自製底板是下一步)。
+相關單:#47(資料加密 / 安全元件)、#13(裝置 PKI)、#122(電池看門狗 / 安全關機)、#91(電源與散熱)、#92(TW 頻段)、#105 / #137(序列埠登入鎖)、#174(時間)、#181(HaLow+LoRa 共站)。
 
-> 標記慣例:**【事實】** = 本專案實測、原始碼或規格書可查證;**【推論】** = 由事實推出、尚未實測;**【決策】** = 本文提出、待 review 拍板。
+> 標記慣例:**【事實】** = 本專案實測、原始碼或規格書可查證;**【推論】** = 由事實推出、尚未實測;**【決策】** = 本文提出、待 review 拍板;**【待量測】** = 要實物量過才能定。
 
 ---
 
@@ -16,8 +16,8 @@
 | # | 問題 | 可信度 |
 |---|---|---|
 | P1 | Seeed WM1302 Pi HAT 電路圖上有 **ATECC608B-TNGLORAS-G(U3)**,但實際出貨的板子**沒有焊**(DNP)→ 現有節點上沒有任何安全元件 | 【事實】電路圖 `WM1302_Pi_Hat_v1.0.pdf` + 實板 |
-| P2 | 現有 HAT 上有中國料件:**Quectel L76KB**(GNSS)、**CJ3407 / CJ2302**(長電科技 JCET 的 MOSFET) | 【事實】電路圖料號 |
-| P3 | 該 HAT 是為 **SX1302 LoRa 網關**設計的,把 GPIO18、GPIO6、GPIO25、GPIO12、UART0 都接給了 LoRa / GPS,佔掉我們想用的腳 | 【事實】電路圖網路名稱 |
+| P2 | 現有 HAT 上有中國料件:**Quectel L76KB**(GNSS)、**CJ3407 / CJ2302**(長晶科技 JSCJ,長電 JCET 分拆) | 【事實】電路圖料號 |
+| P3 | 該 HAT 是為 **SX1302 LoRa 網關**設計的,把 GPIO18、GPIO6、GPIO25、GPIO12、UART0 都接給了 LoRa / GPS | 【事實】電路圖網路名稱 |
 | P4 | 沒有 RTC、沒有電量量測、沒有軟開關機 → #122 安全關機、#174 時間都缺硬體 | 【事實】 |
 | P5 | Wio-WM6108 目前**換不掉**(軟體、BCF、`SPI_NO_CS` 修正都綁在它身上) | 【決策】沿用 |
 
@@ -27,26 +27,28 @@
 |---|---|
 | mPCIe 插槽(Wio-WM6108,腳位照舊) | PTT 音訊(CM108B) |
 | **TPM 2.0:Infineon SLB9672** | LoRa |
-| **ATECC608B**(或同腳位 608C) | |
+| **ATECC608C-TFLXTLS**(與 608B 同腳位,見 §5.2) | |
 | RTC:Micro Crystal RV-3028-C7 | |
-| GNSS:u-blox MAX-M10S(天線用 u.FL 外拉) | |
-| 電源:電池輸入、eFuse、5 V 降壓、INA226、LTC2954 軟開關機 | |
-| HAT ID EEPROM | |
+| GNSS:u-blox MAX-M10S(主動式天線經 u.FL 外拉) | |
+| 電源:電池輸入、eFuse、兩顆降壓、兩顆 INA226、LTC2955 軟開關機 | |
+| HAT ID EEPROM(量產時寫入保護) | |
 
 ## 3. 方塊圖
 
 ```mermaid
 flowchart LR
-  BAT["電池 2S–4S<br/>6–17 V"] --> TVS["TVS<br/>SMBJ20A"] --> EF["eFuse TPS26631<br/>+ 反接保護 MOSFET"] --> INA["INA226<br/>+ 10 mΩ"]
-  INA --> BUCK5["5.1 V 降壓<br/>TPS62933"] --> IDD["安全二極體<br/>LM74700 + MOSFET"] --> PI5V["Pi 5V 腳 2/4"]
-  INA --> ORB["理想二極體<br/>LM74700"] --> NODE(("OR 點"))
-  PI5V -.->|開發時 USB-C 供電| ORP["理想二極體<br/>LM66100"] --> NODE
-  NODE --> BUCK33["3.3 V 降壓<br/>TPS62933"] --> MPCIE["mPCIe 插槽<br/>Wio-WM6108"]
-  JMP["BENCH 跳線"] -.->|強制 EN| BUCK33
-  INA -.->|ALERT → GPIO25| PI
-  BTN["電源鍵"] --> LTC["LTC2954-1<br/>軟開關機"] -->|EN| BUCK5
+  BAT["電池 2S–4S<br/>或 12 V 變壓器<br/>6–17 V"] --> TVS["TVS 雙向<br/>SMBJ20CA"] --> EF["eFuse TPS26631<br/>+ B-FET 反接保護"]
+  BAT -.->|BAT_PRESENT → GPIO4| PI
+  EF --> INA1["INA226 #1 (0x40)<br/>整台電流"]
+  INA1 --> BUCK5["5.15 V / 4 A 降壓<br/>LMR33640<br/>EN 帶硬體欠壓"] --> IDD["5 V 安全二極體<br/>LM74700 + N-FET"] --> PI5V["Pi 5V 腳 2/4"]
+  INA1 --> ORB["LM74700 + N-FET"] --> NODE(("OR 點"))
+  PI5V -.->|只插 USB-C 時| ORP["LM74700 + N-FET"] --> NODE
+  NODE --> PIF["π 濾波<br/>磁珠 + 電容"] --> INA2["INA226 #2 (0x41)<br/>HaLow 電流"] --> BUCK33
+  NODE --> BUCK33["3.3 V 降壓<br/>TPS62933F 強制 PWM"] --> MPCIE["mPCIe 插槽<br/>Wio-WM6108"]
+  BTN["電源鍵"] --> LTC["LTC2955-1<br/>軟開關機<br/>AUTO-ON 跳線"] -->|EN| BUCK5
   LTC -->|EN| BUCK33
-  LTC -->|INT → GPIO26<br/>KILL ← GPIO27| PI
+  LTC -->|INT → GPIO26| PI
+  PI -->|GPIO27 → N-FET 反相 → KILL| LTC
   subgraph PI["Raspberry Pi 4 (40-pin)"]
     SPI0["SPI0 + GPIO5/17/23/24"]
     SPI1["SPI1 (GPIO18–21)"]
@@ -55,29 +57,21 @@ flowchart LR
     UART5["UART5 (GPIO12/13)"]
   end
   SPI0 --- MPCIE
-  SPI1 --- TPM["TPM 2.0<br/>SLB9672"]
-  I2C1 --- ATECC["ATECC608B"]
-  I2C1 --- RTC["RV-3028-C7<br/>+ 超級電容"]
-  I2C1 --- INA
-  I2C0 --- EEP["HAT ID EEPROM"]
-  UART5 --- GNSS["MAX-M10S"] --- UFL["u.FL → 機殼頂部貼片天線"]
+  SPI1 --- TPM["TPM 2.0 SLB9672<br/>RST ← GPIO16"]
+  I2C1 --- ATECC["ATECC608C (0x36)"]
+  I2C1 --- RTC["RV-3028-C7 (0x52)<br/>+ 超級電容"]
+  I2C1 --- INA1
+  I2C1 --- INA2
+  I2C0 --- EEP["HAT ID EEPROM (0x50)<br/>WP 預設拉高"]
+  UART5 --- GNSS["MAX-M10S"] --- UFL["u.FL + 偏壓 → 主動式貼片天線"]
   GNSS -->|PPS → GPIO6| PI
 ```
+
+(圖中 3.3 V 路徑的 INA226 #2 與 π 濾波畫在 OR 點之後、降壓之前;實際位置以電路圖為準:INA226 #2 的分流電阻要在所有大電容**上游**,§5.5.2。)
 
 ## 4. GPIO 分配
 
 ### 4.1 HaLow 部分:照舊,一支都不動
-
-來源:本 repo `docs/hardware.md` 的裝置樹節點(= OpenMANET `mm610x-spi.dtbo`)【事實】,對照 Seeed HAT 電路圖的 mPCIe 接線【事實】。
-
-| 功能 | Pi GPIO | mPCIe 腳 | Seeed HAT 上的網路名稱 |
-|---|---|---|---|
-| SPI CS | GPIO8(CE0) | 51 | SX1302_CSN |
-| SPI MOSI / MISO / SCLK | GPIO10 / 9 / 11 | 49 / 47 / 45 | SPI_MOSI / MISO / SCK |
-| reset | GPIO17 | 22 | SX1302_RESET |
-| IRQ | GPIO5 | 10 | SX1262_RESET |
-| wake(power-gpios[0]) | GPIO23 | 33 | SX1262_IO1 |
-| busy(power-gpios[1]) | GPIO24 | 31 | SX1262_IO2 |
 
 **已用 Wio-WM6108 V30 電路圖(`Wi-Fi_Halow_FGH100M_MINI_PCIE` Rev 1.0,2024-11-07)逐腳確認**【事實】:
 
@@ -90,184 +84,182 @@ flowchart LR
 | 33 | MOD_WAKEUP_IN | **R10 = DNP,卡上沒接通**(WAKEUP_IN 由 R9 10 kΩ 上拉) | GPIO23(照接,相容驅動設定) |
 | 2 / 24 / 39 / 41 / 52 | VCC_3V3 / NC15 / VCC_3V3A/B/D | 全部接到 PCIE_3V3 | **全部接 3.3 V 降壓輸出** |
 | 8(Seeed 接 GPIO18) | UIM_PWR | **未連接(×)** | **不接 → GPIO18 給 TPM** ✅ |
-| 25(Seeed 接 GPIO6) | NC9/UART1_CTS | 未連接(×) | 不接 |
-| 19(Seeed 接 1PPS) | NC8 | 未連接(×) | 不接 |
-| 30 / 32(I2C) | UIM_CLK / UIM_RESET 區 | 未連接(×) | 不接 |
-| 36 / 38 | USB_D− / USB_D+ | 未連接(×) | 不接 |
+| 25 / 19 / 30 / 32 / 36 / 38 | NC / UIM / USB | 未連接(×) | 不接 |
 
-因此原本規劃的「各留一顆 0 Ω 跳線」**取消**,這些腳直接不拉線,省面積【決策】。
+**電源注意**:卡片上有一顆 TI TPS613222A 升壓,把 3.3 V 升到 5 V 給 FGH100M 的射頻前端(VDD_FEM)【事實】→ HaLow 發射時的峰值電流全部從 3.3 V 抽。
 
-**電源注意**:卡片上有一顆 TI TPS613222A 升壓,把 3.3 V 升到 5 V 給 FGH100M 的射頻前端(VDD_FEM)【事實】→ HaLow 發射時的峰值電流全部從 3.3 V 抽,所以 3.3 V 降壓維持 **3 A 等級**,並在插座旁放大電容【推論】。
+### 4.2 全部 GPIO 一覽(v2)
 
-### 4.2 新增功能
-
-| 功能 | Pi GPIO | 備註 |
+| GPIO | 用途 | 備註 |
 |---|---|---|
-| **TPM**:SPI1 CE0 / MISO / MOSI / SCLK | GPIO18 / 19 / 20 / 21 | **不與 HaLow 共用 SPI0**;只開 SPI1 的 CE0,GPIO17(SPI1 CE1)不開,避免撞 HaLow reset |
-| TPM RST | GPIO4 | GPIO4 原本是 EKH01 的 JTAG 腳,mPCIe 卡沒有接【事實】 |
-| TPM PIRQ | GPIO22 | 避開 GPIO24(LetsTrust 等現成 TPM 板會撞到 HaLow busy)【事實】 |
-| I2C1 SDA / SCL | GPIO2 / 3 | INA226 `0x40`、RV-3028 `0x52`、ATECC608B(位址依版本,見 §5.2) |
-| HAT ID EEPROM | GPIO0 / 1(I2C0) | HAT 規範保留腳,EEPROM `0x50` |
-| GNSS UART5 TX / RX | GPIO12 / 13 | **UART0(GPIO14/15)保留給序列除錯台**(#61) |
-| GNSS PPS | GPIO6 | 給 chrony / gpsd 校時(#174) |
-| LTC2954 INT(使用者按下關機) | GPIO26 | `gpio-shutdown` |
-| LTC2954 KILL(Linux 關好了、可斷電) | GPIO27 | `gpio-poweroff` |
-| INA226 ALERT(低電壓硬體告警) | GPIO25 | 對應 #122 |
-| **剩餘** | GPIO7、16 | 預留(面板 LED、按鍵) |
+| 0 / 1 | I2C0:HAT ID EEPROM | HAT 規範保留 |
+| 2 / 3 | I2C1:INA226 #1 `0x40`、INA226 #2 `0x41`、RV-3028 `0x52`、ATECC608C-TFLXTLS `0x36` | 位址不衝突【事實,審查者核對】 |
+| **4** | **BAT_PRESENT**(低 = 有電池 / 變壓器) | GPIO4 開機預設上拉,正好配開汲極偵測【事實,BCM2711 預設】 |
+| 5 | HaLow IRQ | 不動 |
+| 6 | GNSS PPS | |
+| 7 | **不可用**:底層裝置樹把它當 SPI0 CE1 佔住 | 【事實,`docs/hardware.md`】 |
+| 8–11 | HaLow SPI0 | 不動 |
+| 12 / 13 | UART5 → GNSS | |
+| 14 / 15 | UART0 序列除錯台 | 引到 Tag-Connect 焊墊,量產不裝(§5.6) |
+| **16** | **TPM RST** | GPIO16 開機預設**下拉** → 每次 SoC 重置都會把 TPM 一起按住重置,由 overlay 的 `gpio-hog` 釋放【決策,依審查】 |
+| 17 | HaLow reset | 不動 |
+| 18 / 19 / 20 / 21 | SPI1:TPM CS / MISO / MOSI / SCLK | CS 用 `cs-gpios`,見 §7 |
+| 22 | TPM PIRQ | 外加上拉;**先不開中斷,用輪詢**(§7) |
+| 23 / 24 | HaLow wake / busy | 不動 |
+| 25 | INA226 ALERT(兩顆共用,開汲極) | 外加上拉至 Pi 3.3 V |
+| 26 | LTC2955 INT(按鍵要求關機) | |
+| 27 | 軟關機:驅動 N-FET 把 LTC2955 KILL 拉低 | 見 §5.5.3 |
+| — | **沒有剩餘 GPIO** | 之後要加功能得改走 I2C 擴充 |
 
 ## 5. 各區塊設計要點
 
 ### 5.1 TPM 2.0 — Infineon SLB9672
-- 規格:TPM 2.0、SPI;**FIPS 140-2 Level 2、CC EAL4+**【事實,依 pi3g / Infineon 說明,搜尋結果】;與 SLB9670 腳位相容,SLB9672 第 6 腳為 NC【事實,同上】。
-- 用途:#47 LUKS 金鑰封存(`systemd-cryptenroll` / clevis)、#13 裝置金鑰不可匯出、PKCS#11(`tpm2-pkcs11`)。
-- 限制:Pi 沒有量測開機,**PCR 封存的保護有限**【事實,見 `docs/productization.md`】;要擋「換系統取金鑰」需搭配 Pi 4 簽章開機。
-- 電路:3.3 V、去耦依規格書;RST 接 GPIO4(另加上拉);PIRQ 接 GPIO22。
 
-### 5.2 ATECC608B
-- 用途:便宜的第二把身分金鑰(ECC P-256)、練 C 系列(沒有 TPM 的 SKU)的身分流程。
-- **型號**:選 **TrustFLEX(`-TFLXTLS`)**,設定可自訂;**不要 TNG(Trust&GO)系列**,出廠已鎖設定,只剩少數 slot 可寫【事實,ATECC608B-TNGLoRaWAN 規格書】。
-  - ATECC608C 同腳位、正在取代 B 版【推論,搜尋結果】;兩者擇一,電路不用改。
-- I2C 位址依版本不同(未設定出廠 `0x60`,TrustFLEX / TNG 各有預設值)→ **焊上後以 `i2cdetect -y 1` 實測為準**。
-- 封裝建議 **SOIC-8**(手工重工容易),不用 UDFN。
+- 規格:TPM 2.0、SPI;**FIPS 140-2 Level 2、CC EAL4+**【事實,依 pi3g / Infineon 說明,搜尋結果】;與 SLB9670 腳位相容。
+- 接 SPI1(GPIO18–21),**不與 HaLow 共用 SPI0**。這是為了避開 SPI0 CE1(GPIO7 已被佔)與 morse 驅動的 `SPI_NO_CS` 特殊時序,**不是資安措施**【決策】。
+- **RST 接 GPIO16**:開機預設下拉 → Pi 每次重置 TPM 都跟著重置,開機後由 `gpio-hog` 拉高釋放。Linux 的 `tpm_tis_spi` **不處理** `reset-gpios`【事實,審查者讀驅動原始碼】,所以不能靠它。
+- **資安限制(重要)**:TPM 在可拆的 HAT 上 → 攻擊者把 HAT 整片移到自己的 Pi 4,因為 Pi 沒有量測開機,PCR 值是固定的,**用 PCR 封存的 LUKS 金鑰照樣解得開**;#13 的「金鑰不可匯出」也只代表拿不走,**不代表綁定這台節點**【推論,標準攻擊手法】。對策:
+  1. LUKS 金鑰 = KDF(TPM 封存的秘密, **Pi 4 OTP 裡的裝置私鑰**);Pi 4 簽章開機鎖定後,只有簽過的映像檔讀得到 OTP 私鑰 → 只偷 HAT 或只偷 SD 卡都解不開【決策;Pi 4 OTP 私鑰功能依 Raspberry Pi 文件,待確認細節】。
+  2. unseal 一律用**加密 / salted session**(防 SPI 匯流排側錄)【決策】。
+  3. T 系列可再加 PIN(authValue)【決策】。
+  4. **TPM 的 SPI 與 RST 不放任何測試點**(§5.6)。
+
+### 5.2 ATECC608C-TFLXTLS
+
+- **改用 608C**:Microchip 建議新設計採用 ATECC608C,與 608B 外形、腳位、功能相容【事實,Microchip AN5078】;主選 ATECC608C-TFLXTLS(SOIC-8)。
+- **TrustFLEX 的限制(v1 寫錯,更正)**:設定區(configuration zone)出廠已固定、**不能改**,只有少數 slot 可選擇是否鎖定;它和 Trust&GO 的差別主要是**允許用自己的 PKI**(自己的 CA 簽裝置憑證)【事實,ATECC608B/C-TFLXTLS 規格書,審查者核對】。I2C 位址 `0x36`。
+- 若要練「自訂設定再鎖定」,另買**未設定版**(ATECC608B-MAHDA / -SSHDA,位址 `0x60`)或 Adafruit #4314 小板當消耗品練;**鎖定不可逆,鎖錯只能換晶片**【事實】。
 
 ### 5.3 RTC — RV-3028-C7
-- Micro Crystal(瑞士),3.2×1.5 mm,待機約 45 nA,內建備援切換與涓流充電【事實,規格書摘要】。
-- 備援電源用超級電容(Seiko CPH3225A,日本),**不用鈕扣電池**(空運與更換問題)【決策】。
-- CM4 本身沒有 RTC【事實】,這顆在 CM4 底板一樣會用到 → 現在就是驗證。
+
+- Micro Crystal(瑞士),待機約 45 nA【事實,規格書摘要】;備援電源用超級電容 Seiko CPH3225A(日本)。
+- **超級電容要靠 overlay 參數才會充電**:Linux 驅動只在設定 `trickle-resistor-ohms` 時才開啟涓流充電【事實,`rtc-rv3028.c`】→ §7 的 overlay 參數必加,否則斷電就掉時間。
+- CM4 本身沒有 RTC【事實】,這顆在 CM4 底板一樣會用到。
 
 ### 5.4 GNSS — u-blox MAX-M10S
-- 9.7×10.1×2.5 mm【搜尋結果】,UART5 + PPS。
-- 天線:**u.FL(Hirose,日本)外拉到機殼頂部的貼片天線**;HAT 在機殼內的方向不一定朝天,不在 HAT 上放貼片【決策】。
+
+- 9.7×10.1×2.5 mm;內建 LTE-B13 陷波、SAW 濾波與 LNA【事實,整合手冊,審查者核對】;UART5 + PPS。
+- **天線改用「主動式、LNA 前有 SAW 預濾波」的貼片天線**,HAT 上加天線偏壓電路(依整合手冊)【決策,依審查】。理由:HaLow 27 dBm(+ 若有 LoRa 30 dBm)的 900 MHz 訊號可能在天線間只隔 10–20 dB,會把 GNSS 前端推到飽和,發射時定位掉失【推論】。
+- 貼片天線與 900 MHz 天線在外殼上盡量拉開。
 - 取代 Quectel L76KB(中國)。
 
 ### 5.5 電源
 
-HAT 上的電源模組由下面 9 個部分組成(依電流流過的順序):
+#### 5.5.1 組成與選型(v2)
 
-| # | 部分 | 做什麼(白話) | 建議料件 |
-|---|---|---|---|
-| 1 | 電池輸入座 | 電池線插這裡;有防呆,插不反 | Molex Micro-Fit 3.0 2-pin(美國) |
-| 2 | TVS 突波保護 | 吸收插拔電池、靜電造成的瞬間高壓 | **Littelfuse SMBJ20A**(美國) |
-| 3+4 | **eFuse 電子保險絲 + 反接保護** | 短路 / 過流自動切斷、可恢復;電壓過低或過高切斷;**正負接反也不會燒** | **TI TPS26631RGE** + 外接 N-MOSFET(美國) |
-| 5 | 電量量測 | 量電池電壓和整台耗電 → 算剩餘電量;電壓過低時 ALERT 腳直接通知 Pi(#122) | **TI INA226** + **Vishay WSL2512 10 mΩ**(美國) |
-| 6 | 5 V 降壓 | 把 6–17 V 降成 5.1 V 給 Pi 4 | **TI TPS62933**(美國) |
-| 7 | 5 V 安全二極體 | Pi 的 USB-C 同時插電時,防止兩邊電源互灌 | **TI LM74700-Q1** + N-MOSFET(美國) |
-| 8 | 3.3 V 降壓 | 專給 HaLow 卡,不跟 Pi 搶電 | **TI TPS62933**(美國,與 #6 同一顆) |
-| 9 | 軟開關機 | 按電源鍵 → 先通知 Linux 關機 → 關好才斷電,避免 SD 卡損壞 | **ADI LTC2954-1**(美國) |
+| # | 部分 | 做什麼(白話) | 選定料件 | 可信度 |
+|---|---|---|---|---|
+| 1 | 電池輸入 | 電池線**直接焊在 HAT 的焊墊**上,加束線固定(最矮、最耐震);v1 的 Micro-Fit 立式接頭太高(約 9–10 mm)塞不進外殼 | 焊墊 + 束線孔 | 【決策,依審查】 |
+| 2 | TVS 突波保護 | 吸收插拔與靜電高壓;**改雙向**,正負接反時才不會變成短路 | **Littelfuse SMBJ20CA**(採購時指定非中國產線,見 §5.8) | 【事實】SMBJ20A 為單向;【決策】 |
+| 3 | eFuse + 反接保護 | 短路 / 過流自動限流;電壓過低、過高切斷;接反不燒 | **TI TPS26631RGE** + 外接 N-MOSFET(B-FET) | 【事實,TI】 |
+| 4 | 整台電流量測 | 量電池電壓和整台耗電 → 剩餘電量、低電量告警 | **TI INA226 #1(0x40)** + 10 mΩ | 【事實,既有決策】 |
+| 5 | 5 V 降壓(給 Pi) | 6–17 V → **5.15 V、4 A**;EN 腳串分壓電阻當**硬體欠壓保護**(約 6.0 V 以下自動關) | **TI LMR33640**(36 V、4 A) | 規格【推論,待規格書確認】;選型【決策,依審查】 |
+| 6 | 5 V 安全二極體 | 防止 Pi 的 USB-C 電源倒灌回 HAT | **TI LM74700-Q1** + N-MOSFET | 【事實,RPi HAT 設計指南要求】 |
+| 7 | 3.3 V 來源二選一 | 電池 / Pi 5 V 誰高誰供電(只插 USB-C 時 HaLow 也有電) | **LM74700-Q1 + N-MOSFET ×2**(v1 的 LM66100 會被電池電壓打爆,取消) | 【事實】LM66100 上限 5.5 V;【決策】 |
+| 8 | 3.3 V 降壓(給 HaLow) | 固定頻率、雜訊可預期 | **TI TPS62933F**(強制 PWM 版) | 【決策,依審查】 |
+| 9 | HaLow 電流量測 | 軟體直接讀 HaLow 耗電與發射尖峰,取代 v1 的電流跳線 | **TI INA226 #2(0x41)** + 10–20 mΩ | 【決策,依審查】 |
+| 10 | 軟開關機 | 按鍵開關機;**可設定「一上電就自動開機」**(無人中繼站斷電恢復後自己起來) | **ADI LTC2955-1**(帶 ON 腳自動開機) | 型號功能【推論,待規格書確認】;【決策,依審查】 |
+| 11 | 電池存在偵測 | 分辨「沒裝電池」與「電池沒電 / 故障」 | 分壓 + N-FET 開汲極 → GPIO4 | 【決策,依審查】 |
 
-#### 5.5.1 選型理由
-
-| 料件 | 關鍵規格 | 為什麼選它 | 可信度 |
-|---|---|---|---|
-| **TPS26631** eFuse | 4.5–60 V、6 A、內建 31 mΩ FET;可程式 UVLO / OVP / 過流;**帶 B-FET 驅動,外接一顆 N-MOSFET 即可做反接保護與逆流阻擋**;VQFN-24(RGE)| ① 60 V 耐壓 → 4S 滿電 16.8 V 加 TVS 箝位(約 32 V)都安全;② 一顆同時做保險絲 + 反接保護,**省掉原本規劃的輸入端 LM74700**;③ `-1` 版是「主動限流」(另有 `-0` 斷路器型、`-2/-3` 多了功率限制,本案用不到) | 規格【事實,TI 規格書摘要】;單價 ~4.8 美元起【搜尋結果】 |
-| **TPS62933** 降壓 ×2 | 3.8–30 V 輸入、3 A、0.8–22 V 輸出、SOT583(1.6×2.1 mm);**最大工作週期 98%,低壓時自動降頻撐住輸出** | ① **5 V 與 3.3 V 用同一顆**,BOM 只多一種料;② 98% 工作週期 → 2S 電池放到 6.0 V 時仍可輸出 5.1 V(6.0 × 0.98 ≈ 5.9 V,扣線路壓降仍有餘裕);③ 3 A 對 Pi 4 足夠(官方要求背灌電源 ≥ 2.5 A) | 規格【事實,TI 規格書摘要】;2S 低電壓餘裕【推論,待實測】 |
-| **LM74700-Q1** 安全二極體 | 3.2–65 V、搭配外接 N-MOSFET,順向壓降約 20 mV;SOT-23-6 | Pi 4 **沒有**內建 5 V 輸入理想二極體,**Raspberry Pi HAT 設計指南要求**背灌供電的 HAT 自己加安全二極體【事實】;原規劃的 LM66100 只能過 1.5 A,不夠【推論,依其規格】 | 規格【事實,TI】;單價約 0.7–1.3 美元【搜尋結果】 |
-| **INA226** | 16-bit、I2C、0–36 V 匯流排電壓;**ALERT 腳**可設低電壓門檻 | 本專案既有設計(`docs/hardware.md`、#122 軟體已寫好);ALERT 接 GPIO25 → 就算 Linux 忙,低電量也能硬體通知 | 【事實,既有決策】 |
-| **LTC2954-1** | 2.7–26.4 V、靜態電流 6 µA;`-1` 版 EN 為**高態有效**開汲極輸出 | `-1` 的 EN 可直接接 TPS62933 的 EN(高態致能);`-2` 是低態有效、用來推 P-MOSFET,本案用不到 | 【事實,ADI 規格書摘要】 |
+**不在 HAT 上**:電池充電、電芯保護板(BMS)、主保險絲 → 都在電池包裡【事實,`docs/hardware.md`】。
+⚠️ **電池包保險絲要跟著改**:HAT 在 2S 低電壓時輸入電流可達 3.5–4 A,`power-wiring.svg` 的 3 A 延遲保險絲(為 4S 設計)在 2S 包會誤熔【推論,依審查】→ 2S 包改 5 A 級,另開單更新 `hardware.md`。
 
 #### 5.5.2 設計細節
 
-- **兩顆 TPS62933 都從 INA226 之後的電池電壓取電**(不是 3.3 V 從 5 V 再降):5 V 那顆只負責 Pi,3 A 餘裕較大【決策】。
-- 3.3 V 那顆在 mPCIe 插座旁加大電容(≥ 2 × 47 µF 陶瓷 + 1 顆 220 µF 聚合物),吃 HaLow 卡內部升壓給功放時的電流尖峰(卡上 TI TPS613222A,§4.1)【推論,容值待依實測調整】。
-- 兩顆降壓的 EN 都接 LTC2954-1 的 EN → 按鍵關機時 HaLow 與 Pi 一起斷電。
-- INA226 ALERT → **GPIO25**(用掉一支預留腳),預設門檻 2S = 6.4 V(3.2 V/cell)、4S = 12.8 V,與 #122 軟體門檻一致後再定【決策,數值待定】。
-- TPS62933 有 `F`(強制 PWM)與 `O` / `P` 變體;先選基本款(輕載自動省電),若 HaLow 收訊受切換雜訊影響再換 `F` 版比較【推論】。
-- MOSFET(反接保護、安全二極體各一顆):30 V 以上、≤ 10 mΩ、小型功率封裝;廠商限 **onsemi / Vishay(美國)、Infineon(德國)**,**不用 Nexperia**(§5.8)。型號在畫電路圖時依電流與封裝定。
-- 電感與電容:電感用 Coilcraft XAL 系列(美國),陶瓷電容用 Murata / TDK(日本);值依 TI 規格書的設計公式計算。
-- **3.3 V 降壓的輸入是「電池」與「Pi 5 V」二選一(OR 接法)**:電池經 LM74700、Pi 5 V 經 LM66100(TI,1.5 A,本路約 1 A)各自進 OR 點,誰電壓高誰供電;LTC2954 的電源也接 OR 點。這樣只插 Pi 的 USB-C 時 HaLow 卡仍有電(見 §5.5.3)【決策】。
-- TPM、ATECC608B、RTC、GNSS 的 3.3 V 取自 **Pi 的 3.3 V**(合計約 80 mA)【推論】,不接 HaLow 的 3.3 V,避免發射時的雜訊干擾。
+- **eFuse TPS26631**:**v1 的變體說明寫錯,更正**:`-0`(TPS26630)在過流時直接限在 I_OL;`-1`(TPS26631)允許 **2 倍 I_OL 持續 25.5 ms** 再限流【事實,TI 規格書,審查者核對】→ `-1` 適合 HaLow 發射尖峰,維持選用。I_OL 設約 5 A;dV/dt 電容依大電容總量計算,避免啟動過熱;**兩顆降壓的 EN 都要等 eFuse PGOOD**。
+- **5 V 軌**:設定 **5.15 V**(補安全二極體與排針壓降;Pi 4 欠壓旗標在 4.63 V)【決策】。2S 低電量時的壓降預算(eFuse 31 mΩ + B-FET + 10 mΩ + 二極體 FET + 連線)約 0.25–0.3 V,**2S 在 TX 尖峰時只剩約 0.2 V 餘裕** → 2S 的軟體低電量門檻訂 6.4 V、硬體欠壓 6.0 V【推論,待實測】。
+- **3.3 V 軌**:TPS62933F 固定頻率;**π 濾波(磁珠 + 電容)**後才進 mPCIe 的大電容(≥ 2 × 47 µF 陶瓷 + 1 顆**低高度** 7343 聚合物電容,≤ 1.9 mm);INA226 #2 的分流電阻放在**所有大電容上游**,不讓量測元件卡在電容與插座之間【決策,依審查】。
+- **擺位**:兩顆降壓放在 mPCIe **插座端**的板邊,遠離卡片的射頻 / u.FL 端與 GNSS;SW 節點銅面最小化,第 2 層完整接地;預留**低高度屏蔽框焊墊**(上游 V3 當初就得貼銅箔遮降壓雜訊【事實】)。
+- **散熱**:HAT 上合計約 2–2.5 W【推論】;外層 2 oz 銅 + 散熱過孔,降壓靠板邊,必要時用導熱墊貼金屬散熱片;外殼**不能用 PLA**(約 55–60 °C 軟化),V3 外殼要改 PETG / ASA【推論,依審查】。
+- **EN 網路**:兩顆降壓各自一條 EN;上拉只接到**有箝位的低電壓軌**,不直接拉到 17 V 的 OR 點(待確認 LMR33640 / TPS62933 EN 耐壓)。
+- **BENCH 跳線**:只在**Pi 3.3 V 存在時**才能把 3.3 V 降壓打開(跳線的電源取自 Pi 3.3 V,經二極體 OR 進 EN)→ 避免 Pi 關機時 HaLow 卡經 MISO / IRQ 反向供電給 Pi 的 GPIO【決策,依審查】。
 
-**不在 HAT 上**:電池充電、電芯保護板(BMS)、主保險絲。這些都在**電池包裡**,拔下來的電池包本身也有保護【事實,`docs/hardware.md` Power chain 的既有決策】。
+#### 5.5.3 軟開關機時序(v1 的致命錯誤在這裡,已改)
 
-- **輸入 6–17 V**(2S 到 4S 都吃)【決策】:對上 V3 外殼的 2S2P、`power-wiring.svg` 的 4S、V4 外殼的 2S 18650。
-- 路徑:電池 → TVS → eFuse(含反接保護)→ INA226(高側,量整台電流含降壓損耗)→ 分成兩路:5.1 V 降壓 → 安全二極體 → Pi 5 V 腳;3.3 V 降壓 → mPCIe(細節見 §5.5.1–5.5.2)。
-  - mPCIe 的 3.3 V **不從 Pi 的 3.3 V 取電**(HaLow 發射峰值 + 本專案 TX 欠壓歷史)【決策】。
-- **LTC2954**:電源鍵按下 → INT 通知 Linux 關機 → Linux 關好後拉 KILL → 關掉降壓 EN。對上 #122(低電量安全關機)與 `power-wiring.svg` 的「開關走 EN、不走主電流」。
-- INA226 **放在 HAT(本體側)**,I2C 不穿過電池接頭【事實,`docs/hardware.md` Power chain 的既有決策】。
+v1 的接法會讓**每次按電源鍵,0.5 秒後就斷電,節點永遠開不了機**:LTC295x 要求開機後 512 ms 內 KILL 必須拉高,但 Pi 要好幾秒才會控制 GPIO27;而且 `gpio-poweroff` 預設是關機時拉**高**,極性相反【事實,ADI 規格書摘要 + Raspberry Pi overlay README,兩位審查者各自抓到】。
 
-#### 5.5.3 供電模式
+v2 接法:
+1. **KILL 用約 10 kΩ 上拉到「隨 5 V 降壓一起起來的 3.3 V」** → 一開機 KILL 就是高,不受 Pi 開機速度影響。
+2. **GPIO27 → N-MOSFET(閘極下拉)→ KILL**:Linux 關機(含 `halt`)時 `gpio-poweroff`(預設高態)把 FET 打開 → KILL 被拉低 → 斷電。
+3. **reboot 不會斷電**:重開機時 GPIO27 回到預設下拉,FET 關閉,KILL 維持高【推論,依 overlay README 行為】。
+4. **AUTO-ON 跳線**(LTC2955 的 ON 腳):插上 = 一有電就自動開機(C0 / T0 站台、桅桿中繼);拔掉 = 要按鍵(手持機)【決策】。
+5. **Linux 當機時**:長按電源鍵(時間由 PDT 電容決定)強制斷電;BENCH 跳線插著時強制斷電切不掉 HaLow 的 3.3 V,文件要註明【事實,規格書摘要;決策】。
 
-| 模式 | 怎麼接 | Pi | HaLow 卡 | TPM / RTC / GNSS | 軟開關機 | 用途 |
-|---|---|---|---|---|---|---|
-| **野外** | 電池 → HAT 電池座 | ✅ HAT 供電 | ✅ | ✅ | ✅ | 正式使用 |
-| **開發(建議)** | **12 V 變壓器 → HAT 電池座** | ✅ HAT 供電 | ✅ | ✅ | ✅ | 路徑與野外完全相同;接反有保護 |
-| 開發(備用) | 只插 Pi 的 USB-C | ✅ USB-C | ✅ 經 OR 點(需插 **BENCH 跳線**,或按電源鍵) | ✅ | ⚠️ 按鍵只能讓 Linux 關機,切不了 USB-C 的電 | 只帶一條線時 |
-| 兩者同時 | 電池 + USB-C | ✅ 兩邊電壓高者供電;安全二極體防互灌 | ✅ 由電池供電 | ✅ | ✅ | 充電 / 除錯時不小心都插上 |
+#### 5.5.4 供電模式
 
-注意:
-- 只插 USB-C 時,HaLow 發射電流也從 Pi 的 5 V / 3 A 裡分(Pi 4 不支援 USB-PD 升壓)【事實】→ **可能重現本專案既有的 TX 欠壓**【推論】;要測發射相關問題請用 12 V 變壓器模式。
-- **軟體必須認得「沒有電池」**:INA226 量到的電池電壓 < 1 V 時視為開發模式,不啟動 #122 的低電量關機,也不設定 ALERT 門檻【決策】。
-- 12 V 變壓器建議 ≥ 2 A,DC 頭轉 Micro-Fit 的線材自製一條;因為有反接保護,接錯極性不會燒板【推論】。
+| 模式 | 怎麼接 | Pi | HaLow 卡 | 用途 |
+|---|---|---|---|---|
+| **野外** | 電池 → HAT 焊墊 | ✅ HAT 供電 | ✅ | 正式使用 |
+| **開發(建議)** | **12 V 變壓器 → HAT 電池輸入** | ✅ HAT 供電 | ✅ | 路徑與野外相同;接反有保護 |
+| 開發(備用) | 只插 Pi 的 USB-C | ✅ USB-C | ✅ 經 OR 點(需 BENCH 跳線或按鍵) | 只帶一條線時;發射可能重現 TX 欠壓【推論】 |
+| ~~兩者同時~~ | 電池 / 變壓器 + USB-C | ⚠️ | ✅ | **不建議**:5 V 安全二極體只擋「USB-C → HAT」一個方向,HAT 的 5.15 V 仍可能經 Pi 倒灌進 USB-C 電源(Pi 4 的 USB-C 輸入沒有防逆二極體)【推論,兩位審查者各自指出】 |
 
-### 5.6 測試點與除錯設計(給非硬體背景的除錯者)
+- **電池種類要讓軟體知道**:12 V 變壓器會被當成 4S 的 3.0 V/cell 而觸發低電量;3S / 4S 電壓範圍也有重疊 → **電池種類(2S / 3S / 4S / 變壓器)做成軟體設定**(uci),不靠電壓猜【決策,依審查】。
+- **「沒有電池」改用硬體 BAT_PRESENT(GPIO4)判斷**,不用 v1 的「INA226 < 1 V」:0 V 也可能是 eFuse 跳脫、分流電阻或接線故障、驅動設定錯誤,把這些當成開發模式會默默關掉保護【推論,依審查】。INA226 讀取失敗一律當 UNKNOWN / WARN。
 
-原則:**不用拆板、不用焊線,拿三用電表和邏輯分析儀就能量**【決策】。所有測試點旁邊的絲印直接印名字與正常值範圍,例如 `5V (5.05–5.20)`。
+### 5.6 除錯設計(v2:零高度、正面、量產可關閉)
 
-**① 電源測試點 + 狀態燈**
+v1 的除錯設計有三個問題:排針太高塞不進外殼、訊號測試點放在拆了才碰得到的背面、UART0 排針重新露出無密碼 root shell(#137)【事實,審查】。v2:
 
-| 測試點 | 正常值 | 旁邊的燈 |
-|---|---|---|
-| `VBAT_IN`(電池進來、反接保護前) | 2S:6.0–8.4 V;4S:12.0–16.8 V | — |
-| `VBAT_PROT`(eFuse 之後) | 同上 | eFuse 異常:紅燈 |
-| `5V` | 5.05–5.20 V | 綠燈 |
-| `3V3_MPCIE`(HaLow 卡電源) | 3.25–3.40 V | 綠燈 |
-| `3V3_PI`(Pi 提供的 3.3 V) | 3.25–3.40 V | — |
-| `VRTC`(超級電容) | 約 2.5–3.3 V | — |
-| `GND` × 至少 4 個(各區各一個) | 0 V | — |
+| 項目 | v2 做法 | 開發板 | 量產板 |
+|---|---|---|---|
+| **電源測試點** | SMD 小型測試點(Keystone 5015 級,約 1–1.6 mm 高),**放正面**;絲印印名稱與正常值,例 `5V (5.10–5.25)`、`3V3_MPCIE (3.25–3.40)`、`VBAT_IN`、`VBAT_PROT`、`3V3_PI`、`VRTC`、`GND ×4` | 裝 | 裝(僅電源,無資安疑慮) |
+| **電流** | 由兩顆 INA226 軟體直接讀(整台、HaLow),**取消 v1 的電流跳線**(跳線本身的接觸電阻會重現 TX 欠壓);另留分流電阻兩端的 Kelvin 小焊墊,讀到的 mV × 100 = mA | — | — |
+| **序列除錯台 + HaLow SPI** | 一個 **Tag-Connect TC2050**(免排針、零高度的 10 腳焊墊;Tag-Connect,美國):UART0 TX/RX、GND、3V3 感測、SPI0 SCLK/MOSI/MISO/CS、HaLow IRQ、BUSY;接一條 Tag-Connect 線就能看開機訊息與 SPI 波形 | 焊墊 | 焊墊(沒有接頭;**上線前必須先完成 #137 的 `ttylogin=1` + 每台獨立密碼**,列為發行關卡) |
+| **TPM 訊號** | **不放任何測試點**(防 SPI 側錄 / 重置攻擊,§5.1) | — | — |
+| **其他訊號**(I2C、GNSS UART/PPS、INT/KILL/EN、BAT_PRESENT) | 正面小焊墊 | 有 | 有 |
+| **狀態燈** | 0402 LED ×2:5 V 正常(綠)、eFuse 異常(紅) | 裝 | 裝 |
+| **區塊隔離** | 各區電源改用**錫橋跳線焊墊**(預設接通,切斷一條細銅就斷開;要恢復再用烙鐵點錫) | 有 | 有 |
 
-- 電源測試點用**金屬環型測試點**(Keystone 5000 系列,美國),可以直接夾電表夾子。
-- 狀態燈每顆耗電約 1–2 mA,留一個跳線,野外使用時可以拔掉省電【推論】。
-
-**② 電流量測跳線**:在 `3V3_MPCIE`(HaLow 卡)和 `5V → Pi` 兩條線上,各串一個 **2-pin 排針 + 短路帽**。平常插著短路帽;要量電流時拔掉短路帽、串接電表,就能看到 HaLow 發射時的電流尖峰(對應本專案 TX 欠壓問題)。
-
-**③ 訊號測試點**(直徑 1.5 mm 圓形焊墊,可放背面):
-
-| 群組 | 測試點 |
-|---|---|
-| HaLow(SPI0) | SCLK、MOSI、MISO、CS、RESET(GPIO17)、IRQ(GPIO5)、WAKE(GPIO23)、BUSY(GPIO24) |
-| TPM(SPI1) | SCLK、MOSI、MISO、CS、RST(GPIO4)、PIRQ(GPIO22) |
-| I2C1 | SDA、SCL |
-| GNSS | TX、RX(UART5)、PPS |
-| 開關機 | LTC2954 的 INT、KILL、EN |
-
-**④ 除錯排針**(2.54 mm,插杜邦線就能用):
-- **序列除錯台 UART0**:3-pin(TX / RX / GND),3.3 V 電位。HAT 蓋住了 Pi 的排針,所以要在 HAT 上重新引出;接 USB 轉序列線就能看到開機訊息(#61)。
-- **邏輯分析儀排針**:2×5,放 HaLow SPI0 四條線 + IRQ + BUSY + GND。本專案當初 `SPI_NO_CS` 的根因就是靠看 SPI 波形找到的(`docs/root-cause.md`)。
-
-**⑤ 區塊隔離**:TPM、ATECC608B、GNSS、RTC 各自的電源串一顆 0 Ω 電阻。某一區懷疑有問題時,拆掉那顆電阻就能把它整個斷開,其他功能照常運作。
-
-**⑥ 除錯對照表**:板子做出來時一起附上「症狀 → 量哪個點 → 正常值 → 下一步」的對照表(另開文件),讓沒有硬體背景的人也能照著查。
+**外殼端(另開單)**:外殼加一個密封的維修埠(例:M8 4-pin,帶 UART0 + GND + 5 V 感測)與 IP67 面板按鍵;HAT 端透過排線接過去。
 
 ### 5.7 HAT ID EEPROM
-- onsemi CAT24C32(美國)。寫入 HAT 識別資料,讓韌體自動套用 overlay(Pi 原生機制);Seeed 版沒有放。
 
-### 5.8 拿掉的中國料件與替代
+- onsemi CAT24C32(美國),讓韌體自動套用 overlay。
+- **它也是裝置樹注入點**:誰改得了 EEPROM,就能關掉 TPM 節點、重開 spidev、改腳位【推論,依審查】→ **WP 腳預設拉高(寫入保護)**,只在燒錄時用錫橋或治具解除;量產的 `config.txt` 關閉自動讀取 HAT EEPROM 並明列 overlay(參數名稱待依 Raspberry Pi 文件確認)。
 
-| 原料件 | 廠商 | 替代 |
-|---|---|---|
-| L76KB GNSS | Quectel(中國) | u-blox MAX-M10S(瑞士) |
-| CJ3407 / CJ2302 MOSFET | 長電科技 JCET(中國) | onsemi / Vishay / Diodes Inc.(美國) |
-| MP2161 3.3 V 降壓 | MPS(總部美國,主要營運據點在中國成都)⚠️ | TI TPS62933(美國) |
+### 5.8 供應鏈與原產國
 
-> ⚠️ **不要用 Nexperia**:總部在荷蘭,但母公司是中國聞泰科技(Wingtech)【事實】。先前討論中曾建議 Nexperia,在此更正。
+**政策要先定義清楚(待決策)**:「不用中國」指的是 ① **公司所有權**(母公司是否中國),還是 ② **製造原產地**(晶片 / 封裝在哪裡做)?兩者差很多:
 
-## 6. 面積預算(HAT 65 × 56.5 mm)
+| 廠商 | 所有權 | 製造地(與本案相關的部分) | 本案處理 |
+|---|---|---|---|
+| TI | 美國 | 有成都晶圓 / 封測廠【推論】 | 採購時要求原產地證明(COO) |
+| ADI、Microchip、onsemi、Vishay | 美國 | onsemi 有樂山合資廠等【推論】 | 同上 |
+| Infineon | 德國 | 待查 | 同上 |
+| u-blox、Micro Crystal | 瑞士 | 待查 | 同上 |
+| Murata、TDK、Seiko、JST、Hirose | 日本 | 部分產線在中國【推論】 | 同上 |
+| Molex、Amphenol、Samtec、Coilcraft、Keystone、Tag-Connect | 美國 | 部分產線在中國【推論】 | 同上 |
+| TE Connectivity | **瑞士 / 愛爾蘭**(v1 誤寫為美國) | — | 更正 |
+| Littelfuse | 美國 | 標準料號可能出自無錫廠;**料號加 `-E` 後綴代表非中國產線**【審查者引用 Littelfuse PCN】 | 指定 `SMBJ20CA` 的非中國產線版本(採購時確認後綴) |
+| **Diodes Inc.** | 美國 | **上海兩座晶圓廠,上海 / 濟南 / 成都封測**【事實,Diodes 公司簡介】 | **從替代清單移除**(v1 誤列) |
+| **Nexperia** | **中國聞泰科技** | — | 不用【事實】 |
+| MPS(原 HAT 的 MP2161) | 美國 | 成都大型營運據點 | 已換掉 |
+| Seeed、Quectel(Wio-WM6108) | **中國** | 中國 | 暫時沿用(P5),見下 |
 
-| 項目 | 面積 mm² | 可信度 |
-|---|---|---|
-| HAT 總面積 | 3,672 | 【事實】 |
-| 扣 40-pin 排針帶、4 個固定孔、板邊間距 | −770 | 【推論】 |
-| mPCIe 插槽 + 卡片(51 × 30 平躺) | −1,700 | 【推論】 |
-| **正面剩餘** | **≈ 1,200** | 【推論】 |
-| TPM + ATECC608B | ~80 | 【推論】 |
-| RTC + 超級電容 | ~60 | 【推論】 |
-| GNSS + u.FL | ~225 | 【推論】 |
-| 電源區(輸入座、反接保護、eFuse、兩顆降壓、INA226、LTC2954、OR 接法兩顆理想二極體) | ~430 | 【推論】 |
-| ID EEPROM | ~20 | 【推論】 |
-| 除錯:電源測試點 ×10、狀態燈 ×3、電流跳線 ×2、UART / 邏輯分析儀排針(訊號測試點放背面) | ~200 | 【推論】 |
-| **合計** | **~1,015 → 餘約 185** | 【推論】 |
+- **Wio-WM6108 可能停產**(The Pi Hut 已標示停產,未跟 Seeed 確認)→ 做 HAT 之前,先**一次買齊整批節點 + 備品**的卡,或把 CM4 + AW-HM593 路線提前,免得 HAT 做好卻沒卡可插【決策,依審查】。
 
-背面(朝 Pi 的那面)可放高度 ≤ 4 mm 的矮零件作為備援空間【推論,Pi 與 HAT 間距 11 mm,扣 SoC 散熱片】。
+## 6. 尺寸、高度與面積(v2)
+
+### 6.1 高度限制【待量測】
+
+- V3 外殼內腔:Pi + HAT + mPCIe 疊層 20.0 mm,**卡片那一側只剩 1.0 mm、底部 0.5 mm**【事實,`docs/enclosure-v3-bom.md`】。
+- 所以 **HAT 正面任何零件都不能高於 WM6108 卡的最高點** → **請用游標卡尺量現有 Seeed HAT:HAT 板面 → 卡片最高點**,寫進這裡當硬限制。量到之前暫定**正面 ≤ 4.0 mm**【決策,暫定】。
+- 被排除的 v1 零件:2.54 mm 排針(8.5 mm)、Micro-Fit 立式座(9–10 mm)、徑向 220 µF 電容(5.8–7.7 mm)、Keystone 5000 環型測試點(4.6 mm)、XAL5030 以上的電感【事實,各規格;依審查】。
+- **背面**(朝 Pi):11 mm 銅柱間距扣掉 Pi 4 SoC + 散熱片(5–8 mm)後,SoC 上方只剩約 1–3 mm【推論】→ 背面只放 ≤ 1.0 mm 的零件,並依 Pi 4 機構圖畫出背面禁放區。
+
+### 6.2 面積
+
+v1 的「剩約 185 mm²」**不可信**:電源區以封裝 + 周邊零件計約 750 mm²(v1 估 430),除錯區 350–500(v1 估 200),還漏算大電容、佈線過孔(擺件密度通常只有 60–70%)【推論,依審查】。
+→ **下一步在 KiCad 用實際封裝的 courtyard(零件佔位框)重算**,結果若放不下,依序刪減:
+1. 除錯區再縮(LED 剩一顆、焊墊合併)
+2. 低高度零件(0402 / 0603 / SOT583)放進 mPCIe 卡下方(需插座與卡之間 ≥ 2.5 mm,且不放開關電源的 SW 節點)
+3. GNSS 移出 HAT(改用含接收器的主動式天線模組,走 UART 排線)
+4. 取消 USB-C 備用供電(拿掉 OR 點的一組 LM74700)
+
+### 6.3 Pi 4 Wi-Fi 天線禁佈區
+
+Pi 4 的 Wi-Fi 模組與 PCB 天線在 40-pin 排針旁的角落【事實,審查者引用】;HAT 的完整銅層蓋在 11 mm 上方會讓天線失調、遮蔽【推論】。OpenMANET 用 Pi 內建 Wi-Fi 當手機連線的設定熱點 → **HAT 在該角落所有層都不鋪銅、不放零件**,並計入面積;板子做好後量有 / 無 HAT 的 RSSI。
 
 ## 7. 軟體影響(草案,皆未驗證)
 
@@ -276,94 +268,178 @@ Raspberry Pi OS 先驗證,再移植到 OpenWrt / OpenMANET:
 ```ini
 # config.txt(新增部分;HaLow 原有的 morse-ps / morse-spi 不動)
 dtparam=i2c_arm=on
-dtoverlay=spi1-1cs            # SPI1 只開 CE0 = GPIO18
-dtoverlay=batman-hat-tpm      # 自製:把 slb9670 節點掛到 spi1(官方 tpm-slb9670 綁 spi0 CE1,不能直接用)
-dtoverlay=i2c-rtc,rv3028
-dtoverlay=uart5               # GPIO12/13
+dtoverlay=batman-hat-tpm          # 自製、自足(含 SPI1 腳位與 cs-gpios);不要再載 spi1-1cs
+dtoverlay=i2c-rtc,rv3028,trickle-resistor-ohms=3000,backup-switchover-mode=3
+dtoverlay=uart5                   # GPIO12/13;裝置名稱不要寫死,交給 gpsd 設定
 dtoverlay=pps-gpio,gpiopin=6
 dtoverlay=gpio-shutdown,gpio_pin=26
-dtoverlay=gpio-poweroff,gpiopin=27
+dtoverlay=gpio-poweroff,gpiopin=27   # 預設高態有效:關機時打開 N-FET → KILL 拉低
+core_freq_min=500                 # SPI1(aux)與 mini-UART 的時脈來自 core clock,固定下來(數值待定)
 ```
 
-自製 TPM overlay 草稿(**未編譯、未上機**):
+自製 TPM overlay 草稿 v2(**未編譯、未上機**;依審查修正:自帶 SPI1 腳位、`cs-gpios`、關掉 spidev、先不開中斷、用 `gpio-hog` 釋放 RST):
 
 ```dts
 /dts-v1/;
 /plugin/;
 / {
     compatible = "brcm,bcm2711";
-    fragment@0 {
+    fragment@0 {                       /* SPI1 腳位:19/20/21 = ALT4,18 = GPIO 輸出當 CS */
+        target = <&gpio>;
+        __overlay__ {
+            batman_spi1_pins: batman_spi1_pins {
+                brcm,pins = <19 20 21>;
+                brcm,function = <3>;
+            };
+            batman_spi1_cs: batman_spi1_cs {
+                brcm,pins = <18>;
+                brcm,function = <1>;
+            };
+            tpm_rst_hog: tpm_rst_hog {     /* GPIO16 開機預設下拉 = TPM 重置中;這裡釋放 */
+                gpio-hog;
+                gpios = <16 0>;
+                output-high;
+            };
+        };
+    };
+    fragment@1 {
+        target = <&aux>;
+        __overlay__ { status = "okay"; };
+    };
+    fragment@2 {
         target = <&spi1>;
         __overlay__ {
             #address-cells = <1>;
             #size-cells = <0>;
+            pinctrl-names = "default";
+            pinctrl-0 = <&batman_spi1_pins &batman_spi1_cs>;
+            cs-gpios = <&gpio 18 1>;       /* 一次 TPM 交易中 CS 必須保持(tpm_tis_spi 需要) */
             status = "okay";
             tpm@0 {
-                compatible = "infineon,slb9670";   /* SLB9672 沿用同一 compatible */
-                reg = <0>;                         /* spi1 CE0 = GPIO18 */
+                compatible = "infineon,slb9670";   /* SLB9672 沿用 */
+                reg = <0>;
                 spi-max-frequency = <32000000>;
-                interrupt-parent = <&gpio>;
-                interrupts = <22 8>;               /* PIRQ GPIO22, level low */
-                reset-gpios = <&gpio 4 1>;         /* RST GPIO4, active low */
+                /* 先不接中斷(輪詢);穩定後再試 interrupts = <22 8> */
             };
         };
     };
 };
 ```
 
-OpenWrt 端需要的核心模組 / 套件(**官方 feed 是否齊全待確認**):TPM SPI(`CONFIG_TCG_TIS_SPI`)、tpm2-tss / tpm2-tools(搜尋只找到第三方套件庫)、PPS GPIO、RV-3028 RTC、gpsd、chrony、cryptoauthlib。
+### 7.1 OpenWrt / OpenMANET 移植缺口(依審查查證)
+
+| 項目 | 現況 | 要做的 |
+|---|---|---|
+| TPM SPI 核心模組 | OpenWrt 23.05 的 `kmod-tpm-tis` 只給 x86,**沒有 `kmod-tpm-tis-spi`**【事實】 | 自製 KernelPackage(`CONFIG_TCG_TIS_SPI` + `TCG_TIS_CORE`) |
+| RV-3028 RTC | **沒有 `kmod-rtc-rv3028`**【事實】 | 自製 KernelPackage |
+| PPS GPIO | `kmod-pps-gpio` 已有【事實】 | 直接用 |
+| tpm2-tss / tpm2-tools | 官方 feed 查不到【事實,審查者查證】 | 自行打包 |
+| cryptoauthlib | 未打包【推論】 | 自行打包 |
+| LUKS 解鎖 | OpenWrt 沒有 systemd,**沒有 `systemd-cryptenroll`**【推論】 | 自寫開機早期解鎖腳本 |
+| 電源鍵 | `gpio-shutdown` 依賴 logind【事實,README】 | 改用 `gpio-button-hotplug` + `/etc/rc.button/power` |
+| gpsd / chrony | 已有【事實】 | 直接用 |
+
+### 7.2 必須先改的既有程式
+
+- **`deploy/provisioning/batpower`**:目前沒有「沒有電池」的判斷;只插 USB-C 時 INA226 讀到 0 V,**約 30 秒後就會觸發 CRIT 關機**(一旦 `source` 從 `mock` 改成 `hwmon` / `i2c`)【事實,審查者讀程式碼】→ 在任何 HAT 節點切換 `source` 之前,先加入 BAT_PRESENT(GPIO4)與電池種類設定,並把讀取失敗當 UNKNOWN。
+- **INA226 ALERT(GPIO25)目前沒有程式在讀**;`ina2xx` hwmon 驅動不處理 alert 中斷【推論】→ 用 gpio-keys 或常駐程式。
+- **`docs/led-indicator.md` 的「空閒 GPIO」清單已過時**(且一直誤列 GPIO17 = HaLow reset)→ 已於本次一併更正。
 
 ## 8. 不放上 HAT 的項目
 
 | 項目 | 理由 | 可信度 |
 |---|---|---|
 | **PTT 音訊** | Pi 4 的 USB 不在 40-pin 上 → CM108B 要一條 USB 線接回 Pi;改用 I2S 會撞 TPM 的 SPI1(GPIO18–21),且 openmanetd 只認 OpenVLM 的 USB-HID PTT | 【事實】腳位;【推論】取捨 |
-| **LoRa** | ① 面積約 800 mm² > 剩餘 470;② #181 實測 LoRa 發射讓本機 HaLow 吞吐掉 50–96%(兩板分開時),同板緊貼只會更糟;③ 已無空 UART | ①【推論】②【事實】③【事實】 |
-
-兩者都等 CM4 底板(面積較大、USB 可直接走線、可做屏蔽)再整合。
+| **LoRa** | ① 面積不夠;② #181 實測 LoRa 發射讓本機 HaLow 吞吐掉 50–96%(兩板分開時);③ 已無空 UART / GPIO | ①【推論】②③【事實】 |
 
 ## 9. 風險與待驗證
 
 | # | 項目 | 驗證方式 |
 |---|---|---|
-| V1 | ~~mPCIe 第 8/25/19/30/32/36/38 腳在 WM6108 上是否真的沒用到~~ | ✅ 已用 Wio-WM6108 V30 電路圖確認:全部未連接(§4.1) |
-| V2 | SPI1 上 TPM 與 SPI0 上 HaLow 同時運作無干擾 | 上機:HaLow iperf 滿載 + `tpm2_getrandom` 迴圈 |
-| V3 | 自製 TPM overlay 能被 `tpm_tis_spi` 綁定 | `ls /dev/tpm0`、`tpm2_getcap properties-fixed` |
-| V4 | ATECC608B I2C 位址與其他 I2C 裝置不衝突 | `i2cdetect -y 1` |
-| V5 | 5 V 降壓 + 理想二極體在 HaLow 27 dBm 發射時不欠壓 | `vcgencmd get_throttled` + INA226 記錄 |
-| V6 | 降壓晶片發熱對 HaLow 卡的影響 | 密閉機殼內熱像 / 溫度記錄(#91) |
-| V7 | GNSS 天線經 u.FL 外拉的收星效果 | `ubxtool` / gpsd 衛星數與 C/N0 |
-| V8 | OpenWrt 映像檔需要的核心模組與套件 | 在 OpenMANET build 裡開啟並打包 |
+| V1 | ~~mPCIe 未用腳~~ | ✅ 已用 Wio-WM6108 V30 電路圖確認(§4.1) |
+| V2 | SPI1 TPM 與 SPI0 HaLow 同時運作 | HaLow iperf 滿載 + `tpm2_getrandom` 迴圈 |
+| V3 | 自製 TPM overlay 綁定成功;reboot 後 `TPM2_Startup` 正常 | `/dev/tpm0`、`tpm2_getcap`;連續 reboot 50 次 |
+| V4 | I2C 裝置位址 | `i2cdetect -y 1` 應看到 0x36 / 0x40 / 0x41 / 0x52 |
+| V5 | 2S 低電量(6.0–6.4 V)+ HaLow 發射時 Pi 不欠壓 | 可調電源降壓掃描 + `vcgencmd get_throttled` + INA226 #1/#2 記錄 |
+| V6 | 密閉外殼熱測 | 40 °C 環境、Pi 滿載 + HaLow 連續發射,量降壓與卡片溫度(#91) |
+| V7 | GNSS 受 HaLow / LoRa 發射影響 | 比較 HaLow iperf 發射 on/off、LoRa 發射 on/off 時的 C/N0 與定位 |
+| V8 | OpenWrt 映像檔(§7.1 全部項目) | 在 OpenMANET build 打包並上機 |
+| V9 | 軟開關機:按鍵開機、`halt` 斷電、`reboot` 不斷電、AUTO-ON、長按強制斷電 | 各做 20 次 |
+| V10 | 熱插拔:運作中插拔電池 / 變壓器 / USB-C | 示波器看 5 V、3.3 V 軌 |
+| V11 | 降壓雜訊對 HaLow 接收 | 降壓滿載下量 HaLow 接收靈敏度 / 封包錯誤率 |
+| V12 | Pi Wi-Fi 設定熱點受 HAT 遮蔽 | 有 / 無 HAT 的 RSSI |
+| V13 | 高度與碰撞 | KiCad 3D + 外殼模型;實物試裝 |
 
 ## 10. 需要的外部資料(本環境網路代理擋住,需人工下載放進 repo)
 
-- ~~Wio-WM6108 V30 電路圖~~(已由使用者提供,§4.1 已對照)
-- Infineon SLB9672 規格書與參考電路
-- u-blox MAX-M10S 整合手冊(天線 / 偏壓設計)
-- Micro Crystal RV-3028-C7 規格書
-- Microchip ATECC608B-TFLXTLS(或 608C)規格書
-- ADI LTC2954、TI 各顆電源晶片規格書
+- ~~Wio-WM6108 V30 電路圖~~(已提供)
+- **Seeed HAT 疊層高度實測值**(板面 → 卡片最高點)
+- TI:LMR33640、TPS62933F、TPS2663、LM74700-Q1、INA226
+- ADI:LTC2955
+- Infineon SLB9672、Microchip ATECC608C-TFLXTLS、Micro Crystal RV-3028-C7
+- u-blox MAX-M10S 整合手冊(天線偏壓設計)
+- Raspberry Pi 4 機構圖(背面禁放區)、Pi 4 OTP 私鑰文件
+- 選定板廠的製程能力與 4 層板疊構(阻抗計算用)
 
 ## 11. BOM 粗估(每片,打樣 10 片量級,美元)
 
-| 區塊 | 料件 | 廠商(國家) | 數量 | 單價 | 可信度 |
-|---|---|---|---|---|---|
-| HaLow | mPCIe 52-pin 插槽 + 卡片固定柱 | TE / Amphenol(美國) | 1 | ~2 | 【推論】 |
-| HaLow | Wio-WM6108(沿用現有) | Seeed / Quectel(中國)⚠️ | — | 已有 | 【事實】 |
-| 安全 | Infineon SLB9672 | Infineon(德國) | 1 | ~4 | 【推論】 |
-| 安全 | ATECC608B-TFLXTLS(SOIC-8) | Microchip(美國) | 1 | ~1 | 【推論】 |
-| 時鐘 | RV-3028-C7 + CPH3225A 超級電容 | Micro Crystal(瑞士)/ Seiko(日本) | 1+1 | ~3.5 | 【推論】 |
-| GNSS | MAX-M10S | u-blox(瑞士) | 1 | 11.4 | 【搜尋結果,DigiKey】 |
-| GNSS | U.FL-R-SMT-1 | Hirose(日本) | 1 | ~0.5 | 【推論】 |
-| 電源 | TPS26631(~4.8)、TPS62933 ×2、LM74700-Q1 ×2、LM66100、INA226、WSL2512 10 mΩ、SMBJ20A、MOSFET ×3、電感 ×2、電容、BENCH 跳線 | TI / Vishay / Littelfuse / onsemi(美國)、Coilcraft(美國)、Murata(日本) | — | ~18 | 【推論;TPS26631 單價為搜尋結果】 |
-| 電源 | LTC2954 | ADI(美國) | 1 | ~3 | 【推論】 |
-| 電源 | 電池輸入座 Micro-Fit 2-pin、按鍵 / LED 座 JST-SH | Molex(美國)/ JST(日本) | 1+1 | ~1.5 | 【推論】 |
-| 其他 | CAT24C32 EEPROM、40-pin 母座、M2.5×11 銅柱 | onsemi / Samtec(美國) | — | ~3 | 【推論】 |
-| PCB | 4 層 65 × 56.5 mm,台灣板廠 | 台灣 | 1 | ~5 | 【推論】 |
-| **合計(不含 WM6108、貼片加工)** | | | | **≈ 50–60** | 【推論】 |
-
-打樣時的貼片加工費另計,小量每片可能 NT$ 數千(【推論】)。
+| 區塊 | 料件 | 單價 | 可信度 |
+|---|---|---|---|
+| HaLow | mPCIe 52-pin 插槽 + 卡片固定柱(料號待選,注意插座高度) | ~2 | 【推論】 |
+| 安全 | Infineon SLB9672 | ~4 | 【推論】 |
+| 安全 | ATECC608C-TFLXTLS(SOIC-8) | ~1 | 【推論】 |
+| 時鐘 | RV-3028-C7 + CPH3225A | ~3.5 | 【推論】 |
+| GNSS | MAX-M10S + U.FL + 天線偏壓 | ~13 | 【搜尋結果 + 推論】 |
+| 電源 | TPS26631、LMR33640、TPS62933F、LM74700-Q1 ×3、N-MOSFET ×4、INA226 ×2、分流電阻 ×2、SMBJ20CA、LTC2955、磁珠、電感 ×2、電容 | ~25 | 【推論】 |
+| 其他 | CAT24C32、40-pin 母座、M2.5×11 銅柱、SMD 測試點 | ~4 | 【推論】 |
+| PCB | 4 層、外層 2 oz,台灣板廠 | ~6 | 【推論】 |
+| **合計(不含 WM6108、貼片加工、Tag-Connect 線)** | | **≈ 60–70** | 【推論】 |
 
 ## 12. 與 CM4 底板的關係
 
-這塊 HAT 是 **CM4 自製底板的電路驗證板**:TPM、ATECC608B、RTC、GNSS、電源管理的電路與軟體,驗證後原封不動搬到 CM4 底板;只有 HaLow(之後換 AzureWave AW-HM593)、PTT、LoRa 是 CM4 底板才新增的區塊。
+這塊 HAT 是 **CM4 自製底板的電路驗證板**:TPM、ATECC608C、RTC、GNSS、電源管理的電路與軟體,驗證後原封不動搬到 CM4 底板;只有 HaLow(之後換 AzureWave AW-HM593)、PTT、LoRa 是 CM4 底板才新增的區塊。
+
+## 13. 對抗式審查修訂紀錄(v1 → v2)
+
+三位獨立審查者(電源 / 腳位軟體資安 / 機構射頻生產)共提出 8 個 BLOCKER、19 個 MAJOR、11 個 MINOR(重複者合併)。
+
+| # | 嚴重度 | 問題 | v2 處理 |
+|---|---|---|---|
+| 1 | BLOCKER | LM66100 在 OR 點承受電池電壓(>5.5 V)→ 燒毀短路 → 電池電壓灌進 Pi | 改 LM74700 + N-FET(§5.5.1 #7) |
+| 2 | BLOCKER ×2 | LTC2954 KILL 512 ms 內未拉高 → 永遠開不了機;`gpio-poweroff` 極性相反;reboot 會斷電 | KILL 硬體上拉 + GPIO27 驅動 N-FET 反相(§5.5.3) |
+| 3 | BLOCKER | SMBJ20A 單向,接反時成為短路 | 改雙向 SMBJ20CA |
+| 4 | BLOCKER | 正面零件高於 WM6108 卡,塞不進 V3 外殼 | 高度硬限制 + 換低高度零件(§6.1) |
+| 5 | BLOCKER | 面積預算少估 300–600 mm² | 改用 KiCad courtyard 重算 + 刪減順序(§6.2) |
+| 6 | BLOCKER | TPM overlay 與 `spi1-1cs` 的 spidev 搶同一個 CS;沒有自己的 `cs-gpios` | 自足 overlay(§7) |
+| 7 | BLOCKER | TPM 在可拆 HAT 上,PCR 封存擋不住「整片 HAT 移走」 | 金鑰綁 Pi 4 OTP + 加密 session + 無 TPM 測試點(§5.1) |
+| 8 | MAJOR | 5 V 用 3 A 的 TPS62933 在 2S 低電量無餘裕、過熱 | 改 LMR33640 4 A;5.15 V;硬體欠壓(§5.5.1–2) |
+| 9 | MAJOR ×2 | 5 V 安全二極體不擋 HAT → USB-C 電源的倒灌 | 文件改為單向說明;不建議同時插(§5.5.4) |
+| 10 | MAJOR ×2 | LTC2954 斷電恢復後不會自己開機(無人中繼站) | 改 LTC2955 + AUTO-ON 跳線(§5.5.3) |
+| 11 | MAJOR | BENCH 跳線與 LTC EN 打架;Pi 關機時 HaLow 反向供電 GPIO | EN 分開 + BENCH 取自 Pi 3.3 V(§5.5.2) |
+| 12 | MAJOR | 沒有硬體欠壓保護 | LMR33640 EN 分壓(§5.5.1 #5) |
+| 13 | MAJOR | 2S 包的 3 A 保險絲會誤熔 | 另開單改電池包保險絲(§5.5.1) |
+| 14 | MAJOR ×2 | 電流跳線在 3 A 路徑上,重現 TX 欠壓、會鬆脫 | 取消,改 INA226 #2(§5.6) |
+| 15 | MAJOR | 除錯設計要拆機、要焊接、要新開孔 | Tag-Connect + 正面焊墊 + 外殼維修埠(§5.6) |
+| 16 | MAJOR | GNSS 被 900 MHz 發射推到飽和 | 主動式預濾波天線 + 偏壓 + V7 測試(§5.4) |
+| 17 | MAJOR | HAT 蓋住 Pi 4 Wi-Fi 天線 | 全層禁佈區(§6.3) |
+| 18 | MAJOR | 降壓雜訊進 HaLow 接收 | TPS62933F 強制 PWM、π 濾波、擺位、屏蔽框(§5.5.2) |
+| 19 | MAJOR | 熱:2–2.5 W 集中在 SoC 與卡片之間;PLA 外殼 | 2 oz 銅、板邊擺位、外殼改 PETG / ASA(§5.5.2) |
+| 20 | MAJOR | 原產國標的是總部,不是產地;Diodes、TE 標錯 | 原產國表 + 採購要 COO + 政策待定義(§5.8) |
+| 21 | MAJOR | 整塊 HAT 綁死一張可能停產的卡 | 先一次買齊卡片或提前 CM4 路線(§5.8) |
+| 22 | MAJOR | 「INA226 < 1 V = 沒電池」不安全,且 batpower 會在 30 秒後關機 | 硬體 BAT_PRESENT + 電池種類設定 + 改 batpower(§5.5.4、§7.2) |
+| 23 | MAJOR | UART0 排針重新露出無密碼 root shell | Tag-Connect 焊墊 + #137 列為發行關卡(§5.6) |
+| 24 | MAJOR | HAT EEPROM 是裝置樹注入點 | WP 拉高 + 關閉自動讀取(§5.7) |
+| 25 | MAJOR | `reset-gpios` 被驅動忽略;GPIO4 預設上拉,reboot 不重置 TPM | RST 改 GPIO16(預設下拉)+ `gpio-hog`(§4.2、§7) |
+| 26 | MAJOR | TrustFLEX「可自訂設定」寫錯 | 更正;另備未設定版練習(§5.2) |
+| 27 | MAJOR | OpenWrt 移植缺口比 v1 寫的大 | 逐項列表(§7.1) |
+| 28 | MINOR | GPIO7 其實被 SPI0 CE1 佔住 | 標為不可用(§4.2) |
+| 29 | MINOR | ALERT / PIRQ 開汲極需外加上拉;TPM 先用輪詢 | 已加(§4.2、§7) |
+| 30 | MINOR | `led-indicator.md` 空閒 GPIO 清單過時 | 已更正 |
+| 31 | MINOR | RV-3028 超級電容沒有 overlay 參數就不會充電 | 加參數(§7) |
+| 32 | MINOR | 5 V 設定點在二極體之前,Pi 端電壓偏低 | 5.15 V(§5.5.2) |
+| 33 | MINOR | eFuse 啟動湧浪與上電順序未定 | dV/dt 計算 + EN 等 PGOOD(§5.5.2) |
+| 34 | MINOR | eFuse 變體說明寫錯 | 更正(§5.5.2) |
+| 35 | MINOR | 608B → 608C | 改 608C(§5.2) |
+| 36 | MINOR | 未定疊構與阻抗、多顆零件無法手工重工 | 列入 §10(板廠疊構);打樣走鋼板 + 台灣貼片 |
+| 37 | MINOR | UART 命名(mini-UART / PL011)、core clock 固定 | §7 註記 |
+| 38 | MINOR | 12 V 變壓器會觸發 4S 低電量 | 電池種類軟體設定(§5.5.4) |

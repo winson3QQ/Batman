@@ -244,8 +244,14 @@ reads `get_throttled` itself and re-encodes it as the 5 Hz pattern.
 
 If the LEDs are not visible once the node is in a case, everything above still
 holds — only the `LED_RED` / `LED_GRN` paths at the top of the script change.
-GPIO 6, 13, 16, 17, 19, 20, 21, 22, 23, 24, 26 and 27 are unused by the WM1302
-HAT and are available for panel LEDs.
+Which GPIOs are free for panel LEDs depends on the HAT. With the Seeed WM1302
+HAT, GPIO 17 (HaLow reset), 23/24 (wake/busy) and 5 (IRQ) are taken by the HaLow
+card, and GPIO 7 is claimed by the base device tree as SPI0 CE1; GPIO 13, 16,
+19, 20, 21, 22, 26 and 27 are free (GPIO 6 and 18 are routed on the HAT to mPCIe
+pins the WM6108 leaves unconnected, GPIO 12/25 to the HAT's GNSS). The planned
+Batman HAT v1 uses every remaining header GPIO (see
+[`design/hat-v1-spec.md`](design/hat-v1-spec.md) §4.2), so panel LEDs there go
+through I2C instead.
 
 ## Verify
 
