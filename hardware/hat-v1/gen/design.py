@@ -396,10 +396,12 @@ part("U13", "RV3028", "RV-3028-C7", {
     "backup mode LSM (BSM=11) because VBACKUP ~3.05 V is close to VDD (DSM not recommended, sec 4.2.2)")
 C("C75", "100n 16V", "3V3_SEC", "GND")
 R("R64", "100k", "RTC_EVI", "GND", note="EVI must not float: tie to VSS through a resistor (App Manual sec 7.1)")
-part("C76", "CP", "CPH3225A 11mF", {1: "VRTC", 2: "GND"},
-     fp="batman:Seiko_CPH3225A", mpn="CPH3225A", mfr="Seiko Instruments",
-     note="RTC backup: internal trickle path has a Schottky (0.25 V) -> charges to ~3.05 V, below the 3.3 V rating. "
-     "~2 days backup 3.05->2.0 V at ~60 nA (estimate)")
+R("R65", "1k", "VRTC", "VBAT_RTC",
+  note="App Manual sec 7.3: 100-1000 ohm in series with a lithium cell (limits current if pins short)")
+part("BT1", "BATT", "MS621FE 3V 5.5mAh", {1: "VBAT_RTC", 2: "GND"},
+     fp="Battery:BatteryHolder_Seiko_MS621F", mpn="MS621FE-FL11E", mfr="Seiko Instruments", tier="C",
+     note="rechargeable Li (MnSi), user choice 2026-09-27: years of RTC backup. Charged by the RTC trickle "
+     "charger (Schottky -> ~3.05 V). Pad polarity + charge current: verify vs Seiko MS621FE drawing")
 C("C77", "100n 16V", "VRTC", "GND", note="VBACKUP decoupling close to the RTC (App Manual sec 7.3)")
 
 # ---------------------------------------------------------------------------
@@ -410,19 +412,38 @@ SJ("JP6", "3V3_PI", "3V3_GNSS", True, "GNSS", note="cut to isolate the GNSS supp
 part("U14", "MAXM10S", "MAX-M10S-00B", {
     1: "GND", 2: "UART5_RX", 3: "UART5_TX", 4: "GNSS_PPS", 5: None, 6: "3V3_GNSS",
     7: "3V3_GNSS", 8: "3V3_GNSS", 9: "GNSS_RST_N", 10: "GND", 11: "GNSS_RFIN", 12: "GND",
-    13: None, 14: "GNSS_VCCRF", 15: "GNSS_VIOSEL", 16: None, 17: None, 18: "GNSS_SAFEBOOT_N"},
+    13: "GNSS_LNA_EN", 14: None, 15: "GNSS_VIOSEL", 16: "GNSS_ANT_DET", 17: "GNSS_ANT_SHORT_N",
+    18: "GNSS_SAFEBOOT_N"},
     fp="RF_GPS:ublox_MAX", mpn="MAX-M10S-00B", mfr="u-blox", tier="A",
-    note="UBX-20035208 R08: VIO_SEL open = 3.3 V I/O; V_BCKP 1.65-3.6 V; V_IO ramp >= 25 us/V; ext. gain <= 30 dB")
+    note="UBX-20035208 R08: VIO_SEL open = 3.3 V I/O; V_BCKP 1.65-3.6 V; ext. gain <= 30 dB. "
+    "SDA/SCL reused as ANT_DETECT/ANT_SHORT_N: CFG-I2C-ENABLED=0 (Integration manual Table 50)")
 part("R80", "R", "DNP 0R", {1: "GNSS_VIOSEL", 2: "GND"}, fp=_R_FP["0402"], dnp=True,
      note="leave NOT fitted: VIO_SEL to GND would select 1.8 V I/O (datasheet Table 10)")
 C("C80", "10u 10V", "3V3_GNSS", "GND", "0603")
 C("C81", "100n 16V", "3V3_GNSS", "GND")
-R("R81", "68R", "GNSS_VCCRF", "GNSS_BIAS", "1206",
-  note="VCC_RF max 50 mA operating / 250 mA abs (datasheet): short = 47 mA, 0.15 W. Antenna must run at >=2.5 V, <=10 mA")
-C("C82", "10n 16V", "GNSS_BIAS", "GND")
-part("L80", "L", "27nH", {1: "GNSS_BIAS", 2: "GNSS_ANT"}, fp="Inductor_SMD:L_0402_1005Metric",
-     mpn="LQG15HS27NJ02D", mfr="Murata", note="RF choke for antenna DC bias")
-C("C83", "47p C0G", "GNSS_ANT", "GNSS_RFIN", note="DC block (RF_IN itself tolerates +/-5.5 V DC); keeps bias off RF_IN")
+# 3-pin antenna supervisor, UBX-20053088 R05 Figure 38 + Tables 52-57. Antenna supply = 3V3_GNSS
+# (same level as V_IO, so the open-drain level-shift buffers U7/U8 of the reference are not needed).
+part("Q11", "PMOS", "Si2301CDS", {1: "GNSS_T1G", 2: "3V3_GNSS", 3: "GNSS_ANT_SUP"},
+     fp="Package_TO_SOT_SMD:SOT-23", mpn="SI2301CDS-T1-GE3", mfr="Vishay", tier="C",
+     note="T1: antenna supply switch (reference uses Vishay Si1016X; any small P-FET)")
+R("R84", "100k", "GNSS_T1G", "3V3_GNSS", note="R7: keeps T1 off unless LNA_EN is high")
+NMOS_SOT23("Q12", "GNSS_LNA_EN", "GNSS_T1G", "GND", note="T2: LNA_EN (ANT_OFF_N) high -> antenna powered")
+R("R81", "10R", "GNSS_ANT_SUP", "GNSS_ANT_FEED", "1206",
+  note="R8: current sense / short limiter 10 ohm 0.25 W (Table 53); ~18.5 mV per 1.85 mA")
+R("R82", "560R", "GNSS_ANT_SUP", "GNSS_ANT_VREF", note="R5 (Table 53)")
+R("R83", "100k", "GNSS_ANT_VREF", "GND", note="R6: VREF = 0.9944 x V_ANT -> 'antenna present' above ~1.85 mA")
+part("U15", "OPAMP5", "OPA333AIDBVR", {1: "GNSS_ANT_DET", 2: "GND", 3: "GNSS_ANT_VREF", 4: "GNSS_ANT_FEED",
+                                         5: "3V3_GNSS"},
+     fp="Package_TO_SOT_SMD:SOT-23-5", mpn="OPA333AIDBVR", mfr="TI", tier="B",
+     note="U6 comparator (reference: LT6000/LT6003); zero-drift RRIO, offset <= 10 uV vs an 18.5 mV threshold")
+C("C84", "100n 16V", "3V3_GNSS", "GND", note="U15 decoupling")
+R("R85", "1k", "GNSS_ANT_FEED", "GNSS_ANT_SHORT_N",
+  note="ANT_SHORT_N taken straight from the R8 low side (reference U7 buffer not needed at equal levels); "
+  "1k only limits current into the PIO")
+C("C82", "10n 16V X7R", "GNSS_ANT_FEED", "GND", note="C14: bias-T capacitor (Table 52)")
+part("L80", "L", "27nH", {1: "GNSS_ANT_FEED", 2: "GNSS_ANT"}, fp="Inductor_SMD:L_0402_1005Metric",
+     mpn="LQG15HS27NJ02D", mfr="Murata", note="L3: bias-T inductor, >500 ohm at L1, >=300 mA (Table 54)")
+C("C83", "47p C0G", "GNSS_ANT", "GNSS_RFIN", note="C18: DC block 47 pF 5 % C0G (Table 52)")
 part("J4", "COAX", "U.FL", {1: "GNSS_ANT", 2: "GND"},
      fp="Connector_Coaxial:U.FL_Hirose_U.FL-R-SMT-1_Vertical", mpn="U.FL-R-SMT-1(10)", mfr="Hirose",
      note="active patch antenna with SAW pre-filter; 50 ohm CPWG trace")
@@ -458,7 +479,7 @@ for i, (net, txt, big) in enumerate(POWER_TPS, start=1):
     TP(f"TP{i}", net, txt, big=big) if big else part(
         f"TP{i}", "TP", txt, {1: net}, fp="TestPoint:TestPoint_Pad_D1.5mm")
 SIGNAL_TPS = [  # only nets that are NOT on the 40-pin header
-    "GNSS_RST_N", "GNSS_SAFEBOOT_N", "PWR_BTN_N", "LTC_KILL_N", "LTC_ENB", "EN_5V", "EN_3V3",
+    "GNSS_RST_N", "GNSS_SAFEBOOT_N", "GNSS_ANT_DET", "GNSS_ANT_SHORT_N", "PWR_BTN_N", "LTC_KILL_N", "LTC_ENB", "EN_5V", "EN_3V3",
     "PG_5V", "EF_FLT_N", "EF_SHDN", "RTC_CLKOUT", "RTC_INT_N",
 ]
 n0 = len(POWER_TPS) + 1
@@ -475,7 +496,7 @@ HEADER_PROBE = ["I2C1_SDA", "I2C1_SCL", "ID_SD", "ID_SC", "UART5_TX", "UART5_RX"
 # Power flags: tell KiCad ERC which nets are supplies (no electrical content).
 POWER_NETS = ["GND", "VBAT_RAW", "EF_IN", "EF_OUT", "VSYS", "5V_BUCK", "5V_PI", "OR_NODE",
               "3V3_BUCK", "3V3_SH", "3V3_FILT", "3V3_MPCIE", "3V3_PI", "3V3_SEC", "3V3_GNSS",
-              "VRTC"]
+              "VRTC", "VBAT_RTC"]
 for i, net in enumerate(POWER_NETS, start=1):
     part(f"#FLG{i:02d}", "PWR_FLAG", "PWR_FLAG", {1: net})
 
@@ -506,6 +527,7 @@ NET_VMAX = {
     "G33": VBAT_MAX * 1000 / 1900, "BATP_G": 22.2 / 2, "BENCH_G": 3.4,
     "EF_UVLO": 22.2 * 100 / 483, "EF_OVP": 22.2 * 100 / 1530, "EF_PGTH": VBAT_MAX * 100 / 483,
     "LTC_ON": VBAT_MAX * 100 / 781,
+    "GNSS_LNA_EN": 3.4, "GNSS_T1G": 3.4,
 }
 # Nets that intentionally reach only one IC pin (+ a test point), with the reason.
 SINGLE_PIN_OK = {

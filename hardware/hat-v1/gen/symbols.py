@@ -65,6 +65,9 @@ IC = {
     "CONN2": dict(left=[("1", ["1"], "pas"), ("2", ["2"], "pas")], right=[]),
     "COAX": dict(left=[("SIG", ["1"], "pas"), ("SHIELD", ["2"], "pas")], right=[]),
     "NMOS": dict(left=[("G", ["1"], "in")], right=[("D", ["3"], "pas"), ("S", ["2"], "pas")]),
+    "PMOS": dict(left=[("G", ["1"], "in")], right=[("D", ["3"], "pas"), ("S", ["2"], "pas")]),
+    "OPAMP5": dict(left=[("+IN", ["3"], "in"), ("-IN", ["4"], "in"), ("V+", ["5"], "pwr"), ("V-", ["2"], "pwr")],
+                   right=[("OUT", ["1"], "out")]),
     "NMOS_SON8": dict(left=[("G", ["4"], "in")],
                       right=[("D", ["5"], "pas"), ("S", ["1", "2", "3"], "pas")]),
 }
@@ -100,10 +103,10 @@ IC["MPCIE52"] = dict(
     left=[(_MP[n], [str(n)], "pas") for n in range(1, 52, 2)] + [("MP", ["53"], "pas")],
     right=[(_MP[n], [str(n)], "pas") for n in range(2, 53, 2)] + [("MP", ["54"], "pas")])
 
-TWO = ["R", "C", "CP", "L", "FB", "LED", "TVS_BI", "TVS_UNI", "SJ", "SW_PUSH"]
+TWO = ["R", "C", "CP", "L", "FB", "LED", "TVS_BI", "TVS_UNI", "SJ", "SW_PUSH", "BATT"]
 ONE = ["TP", "MH", "PWR_FLAG"]
 REF_PREFIX = {"R": "R", "C": "C", "CP": "C", "L": "L", "FB": "FB", "LED": "D", "TVS_BI": "D",
-              "TVS_UNI": "D", "SJ": "JP", "SW_PUSH": "SW", "TP": "TP", "MH": "H",
+              "TVS_UNI": "D", "SJ": "JP", "BATT": "BT", "SW_PUSH": "SW", "TP": "TP", "MH": "H",
               "PWR_FLAG": "#FLG"}
 
 
@@ -113,7 +116,7 @@ def ic_geometry(name):
     lw = max([len(p[0]) for p in s["left"]] + [0])
     rw = max([len(p[0]) for p in s["right"]] + [0])
     w = max(4 * G, round(((lw + rw) * 1.3 + 6) / G) * G)
-    if name.startswith("NMOS"):
+    if name.startswith(("NMOS", "PMOS")):
         w = 4 * G
     h = (n + 1) * G
     top = (n - 1) / 2 * G  # y of the first pin (lib coords, y up)
@@ -185,6 +188,10 @@ def lib_symbol(sym):
                         body.append(f"(arc (start {_f(x0)} 0) (mid {_f(x0 + 0.635)} 0.635) (end {_f(x0 + 1.27)} 0) "
                                     f"(stroke (width 0.254) (type default)) (fill (type none)))")
                     body = [b for b in body if not b.startswith("(rectangle")]
+            elif sym == "BATT":  # pin 1 = + (left)
+                body += [_poly([(-2.54, 0), (-0.762, 0)]), _poly([(0.762, 0), (2.54, 0)]),
+                         _poly([(-0.762, 1.778), (-0.762, -1.778)], 0.254), _poly([(0.762, 1.016), (0.762, -1.016)], 0.508),
+                         _poly([(-2.032, 1.524), (-1.524, 1.524)]), _poly([(-1.778, 1.778), (-1.778, 1.27)])]
             elif sym in ("C", "CP"):
                 body += lead[:1] + lead[1:]
                 body.append(_poly([(-0.508, 2.032), (-0.508, -2.032)], 0.508))

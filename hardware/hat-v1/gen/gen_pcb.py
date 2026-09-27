@@ -74,7 +74,7 @@ def height(fp_name):
              (r"_0402_", 0.6), (r"SOT-23", 1.15), (r"TSOT-23", 1.0), (r"SOT-583", 0.6),
              (r"SOIC-8", 1.75), (r"VSSOP", 1.1), (r"HSOP", 1.7), (r"QFN", 1.0), (r"NexFET", 1.1),
              (r"7343-20", 1.9), (r"U\.FL", 1.25), (r"JST_SH", 2.95), (r"EVQP7A", 3.6),
-             (r"Keystone_5015", 1.6), (r"TestPoint_Pad", 0), (r"SolderJumper", 0),
+             (r"Keystone_5015", 1.6), (r"MS621F", 2.1), (r"TestPoint_Pad", 0), (r"SolderJumper", 0),
              (r"Tag-Connect", 0), (r"CPH3225A", 0.9), (r"RV-3028", 0.8), (r"BattPads", 0)]
     for pat, h in rules:
         if re.search(pat, fp_name):
@@ -299,7 +299,7 @@ def main():
         _, p, fp = t
         if p.ref in POWER_STAGE:
             k = 0
-        elif "Keystone" in p.fp:
+        elif "Keystone" in p.fp or p.ref == "BT1":
             k = 1                        # the clip-able pads the user asked to keep
         else:
             k = 2

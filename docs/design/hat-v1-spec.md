@@ -393,8 +393,11 @@ Raspberry Pi OS 先驗證,再移植到 OpenWrt / OpenMANET:
 dtparam=i2c_arm=on
 dtparam=i2c_arm_baudrate=100000   # 維持 100 kHz:400 kHz 時 ATECC608 的喚醒脈衝(寫位址 0x00)短於 60 µs 下限【推論,電路圖審查】
 dtoverlay=batman-hat-tpm          # 自製、自足(含 SPI1 腳位與 cs-gpios);不要再載 spi1-1cs
-dtoverlay=i2c-rtc,rv3028,trickle-resistor-ohms=3000,backup-switchover-mode=3   # 3 = LSM(BSM=11):超級電容經內部蕭特基只充到 ~3.05 V,與 VDD 3.3 V 太接近,
+dtoverlay=i2c-rtc,rv3028,trickle-resistor-ohms=15000,backup-switchover-mode=3   # 備援改用 Seiko MS 系列充電鈕扣電池(使用者決定);15 kΩ + 外部 1 kΩ 限制充電電流;
+                                   # 3 = LSM(BSM=11):App Manual §7.3 建議充電電池用 LSM;且電池經內部蕭特基只充到 ~3.05 V,與 VDD 3.3 V 太接近,
                                    # App Manual §4.2.2 明言此時不建議 DSM(會反覆切換)【事實】
+# MAX-M10S 三腳天線監控(Integration manual R05 表 50):CFG-I2C-ENABLED=0、CFG-HW-ANT_CFG_SHORTDET=1、
+#   CFG-HW-ANT_SUP_SHORT_PIN=3、CFG-HW-ANT_CFG_OPENDET=1、CFG-HW-ANT_SUP_OPEN_PIN=2、CFG-HW-ANT_CFG_PWRDOWN=1、CFG-HW-ANT_CFG_RECOVER=1
 # RV-3028 出廠預設 CLKOUT 輸出 32.768 kHz【事實,App Manual §4.4】→ 開機腳本寫 EEPROM 35h:FD=111 關閉
 dtoverlay=uart5                   # GPIO12/13;裝置名稱不要寫死,交給 gpsd 設定
 dtoverlay=pps-gpio,gpiopin=6
