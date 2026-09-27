@@ -66,7 +66,7 @@ IC = {
     "COAX": dict(left=[("SIG", ["1"], "pas"), ("SHIELD", ["2"], "pas")], right=[]),
     "NMOS": dict(left=[("G", ["1"], "in")], right=[("D", ["3"], "pas"), ("S", ["2"], "pas")]),
     "NMOS_SON8": dict(left=[("G", ["4"], "in")],
-                      right=[("D", ["5", "6", "7", "8", "9"], "pas"), ("S", ["1", "2", "3"], "pas")]),
+                      right=[("D", ["5"], "pas"), ("S", ["1", "2", "3"], "pas")]),
 }
 
 _PI = {1: "3V3", 2: "5V", 3: "GPIO2 SDA1", 4: "5V", 5: "GPIO3 SCL1", 6: "GND", 7: "GPIO4",

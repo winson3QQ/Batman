@@ -127,8 +127,10 @@ def symbol_instance(p, sx, sy, g, path):
         for n in nums:
             pins.append(f"    (pin {q(n)} (uuid {uid(p.ref, 'pin', n)}))")
     return (f'  (symbol (lib_id {q("batman:" + p.sym)}) (at {f(sx)} {f(sy)} 0) (unit 1) '
-            f'(in_bom {"no" if p.ref.startswith("#") else "yes"}) (on_board {"no" if p.ref.startswith("#") else "yes"}) '
-            f'(dnp {"yes" if p.dnp else "no"}) (uuid {uid(p.ref)})\n'
+            f'(in_bom {"no" if p.ref.startswith("#") or D.footprint_only(p) else "yes"}) '
+            f'(on_board {"no" if p.ref.startswith("#") else "yes"}) '
+            # Tier A = trust-chain parts: never assembled by JLC (spec 5.9) -> DNP in KiCad exports
+            f'(dnp {"yes" if p.dnp or p.tier == "A" else "no"}) (uuid {uid(p.ref)})\n'
             f"{props(p, sx, sy, g)}\n" + "\n".join(pins) +
             f'\n    (instances (project {q(D.PROJECT)} (path {q(path)} (reference {q(p.ref)}) (unit 1))))\n  )')
 

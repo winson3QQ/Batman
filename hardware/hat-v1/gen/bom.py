@@ -24,7 +24,7 @@ def refkey(r):
 def main():
     groups = OrderedDict()
     for p in sorted(D.PARTS, key=lambda p: refkey(p.ref)):
-        if p.ref.startswith("#") or p.sym in ("TP", "MH") and not p.mpn and p.fp.startswith(("TestPoint:TestPoint_Pad", "MountingHole")):
+        if p.ref.startswith("#") or D.footprint_only(p):
             continue
         k = (p.value, p.fp, p.mpn, p.dnp)
         g = groups.setdefault(k, dict(refs=[], p=p))
@@ -38,7 +38,7 @@ def main():
                          LCSC=p.lcsc, Assembly=assembly, Note=p.note))
     os.makedirs(OUT, exist_ok=True)
     with open(os.path.join(OUT, "bom-draft.csv"), "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        w = csv.DictWriter(fh, fieldnames=list(rows[0]), lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
     n = sum(r["Qty"] for r in rows)

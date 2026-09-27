@@ -83,10 +83,16 @@ def NMOS_SOT23(ref, g, d, s, value="BSS138", **kw):
 
 
 def NMOS_Q3(ref, g, d, s, value, **kw):
-    # TI NexFET SON 3.3x3.3: 1-3 = S, 4 = G, 5-8 + pad 9 = D
+    # TI NexFET SON 3.3x3.3: 1-3 = S, 4 = G, drain pins + pad merged into pad 5 (stock footprint)
     part(ref, "NMOS_SON8", value,
-         {1: s, 2: s, 3: s, 4: g, 5: d, 6: d, 7: d, 8: d, 9: d},
-         fp="batman:TI_VSON-CLIP-8_3.3x3.3mm", mfr="TI", tier="C", **kw)
+         {1: s, 2: s, 3: s, 4: g, 5: d},
+         fp="Package_SON:VSON-8_3.3x3.3mm_P0.65mm_NexFET", mfr="TI", tier="C", **kw)
+
+
+def footprint_only(p):
+    """Copper only, nothing to buy or place: excluded from BOM / JLC files."""
+    return ((p.sym in ("SJ", "MH", "PWR_FLAG") and not p.mpn) or p.ref in ("J1", "J5")
+            or p.fp.startswith("TestPoint:TestPoint_Pad"))
 
 
 def TP(ref, net, value, big=False, **kw):
@@ -112,6 +118,8 @@ part("D1", "TVS_BI", "SMBJ20CA", {1: "VBAT_RAW", 2: "GND"}, fp="Diode_SMD:D_SMB"
      mpn="SMBJ20CA", mfr="Littelfuse", note="bidirectional: survives reversed battery")
 C("C1", "1u 50V X7R", "VBAT_RAW", "GND", "0805")
 C("C2", "100n 50V X7R", "VBAT_RAW", "GND", "0402")
+R("R19", "1R", "VBAT_RAW", "VBAT_DAMP", "0805", note="RC damper: tames hot-plug ringing of the battery leads")
+C("C8", "10u 50V X7R", "VBAT_DAMP", "GND", "1210")
 NMOS_Q3("Q1", "EF_BGATE", "EF_IN", "VBAT_RAW", "CSD19537Q3", mpn="CSD19537Q3",
         note="reverse-polarity blocking FET (TPS2663 datasheet Fig 9-2)")
 NMOS_SOT23("Q2", "EF_DRV", "EF_BGATE", "VBAT_RAW",
@@ -126,15 +134,17 @@ part("U1", "TPS26631RGE", "TPS26631RGER", {
     note="MODE=GND auto-retry; SHDN floats (2.7 V open-circuit) = enabled; IMON unused")
 R("R1", "383k 1%", "VBAT_RAW", "EF_UVLO")
 R("R2", "100k 1%", "EF_UVLO", "GND")
-R("R3", "1.43M 1%", "VBAT_RAW", "EF_OVP")
+R("R3", "1.50M 1%", "VBAT_RAW", "EF_OVP",
+  note="OVP 19.2 V typ (18.8-19.6), release >=17.44 V: full 4S 16.8 V never latches off (review P3)")
 R("R4", "100k 1%", "EF_OVP", "GND")
 R("R5", "3.57k 1%", "EF_ILIM", "GND", note="I_OL = 18k/R = 5.0 A")
 C("C3", "22n 16V X7R", "EF_DVDT", "GND", note="2.27 V/ms soft start")
 R("R6", "383k 1%", "EF_OUT", "EF_PGTH")
 R("R7", "100k 1%", "EF_PGTH", "GND")
 C("C4", "1u 50V X7R", "EF_OUT", "GND", "0805")
+C("C9", "100n 50V X7R", "EF_IN", "GND", note="IN pins need >=0.1 uF (TPS2663 rec. operating)")
 R("R8", "4.7k", "EF_IN", "LED_FLT_A", "0603", note="LED fed from EF_IN: protected from reverse battery")
-part("D2", "LED", "RED", {1: "EF_FLT_N", 2: "LED_FLT_A"}, fp="LED_SMD:LED_0603_1608Metric",
+part("D2", "LED", "RED", {1: "EF_FLT_N", 2: "LED_FLT_A"}, fp="LED_SMD:LED_0402_1005Metric",
      note="eFuse fault LED (on = fault)")
 R("R9", "10m 1% 0.5W", "EF_OUT", "VSYS", "1206",
   note="INA226 #1 shunt; route IN+/IN- as Kelvin traces from the pads")
@@ -144,11 +154,11 @@ part("U2", "INA226", "INA226AIDGSR", {
     fp="Package_SO:VSSOP-10_3x3mm_P0.5mm", mpn="INA226AIDGSR", mfr="TI", tier="B",
     note="I2C 0x40 (A0=A1=GND): whole-node current + battery voltage")
 C("C5", "100n 16V", "3V3_PI", "GND")
-C("C6", "10u 35V X5R", "VSYS", "GND", "1206")
-C("C7", "10u 35V X5R", "VSYS", "GND", "1206")
+C("C6", "10u 50V X7R", "VSYS", "GND", "1210")
+C("C7", "10u 50V X7R", "VSYS", "GND", "1210")
 # battery present -> GPIO4 (low = battery / adapter connected)
-R("R10", "100k", "VBAT_RAW", "BATP_G")
-R("R11", "100k", "BATP_G", "GND")
+R("R10", "1M", "VBAT_RAW", "BATP_G", note="1M/1M: 9 uA standby drain")
+R("R11", "1M", "BATP_G", "GND")
 NMOS_SOT23("Q6", "BATP_G", "BAT_PRESENT_N", "GND")
 R("R12", "10k", "BAT_PRESENT_N", "3V3_PI")
 
@@ -161,18 +171,18 @@ part("U3", "LMR33640", "LMR33640DDDAR", {
     8: "SW_5V", 9: "GND"},
     fp="Package_SO:Texas_HSOP-8-1EP_3.9x4.9mm_P1.27mm_ThermalVias",
     mpn="LMR33640DDDAR", mfr="TI", tier="B", note="1 MHz, 4 A")
-C("C10", "10u 35V X5R", "VSYS", "GND", "1206")
+C("C10", "10u 50V X7R", "VSYS", "GND", "1210")
 C("C11", "220n 50V X7R", "VSYS", "GND", "0603", note="hot-loop cap: closest to VIN/PGND")
 C("C12", "100n 16V", "BOOT_5V", "SW_5V")
 C("C13", "1u 10V", "VCC_5V", "GND")
 part("L1", "L", "3.3uH Isat>=5.5A", {1: "SW_5V", 2: "5V_BUCK"},
-     fp="Inductor_SMD:L_Coilcraft_XGL4030", mpn="XGL4030-332MEC", mfr="Coilcraft",
+     fp="Inductor_SMD:L_Coilcraft_XxL4030", mpn="XGL4030-332MEC", mfr="Coilcraft",
      note="height <=3.1 mm; alternative: Wurth WE-XHMI 4030")
 C("C14", "22u 10V X5R", "5V_BUCK", "GND", "0805")
 C("C15", "22u 10V X5R", "5V_BUCK", "GND", "0805")
 C("C16", "22u 10V X5R", "5V_BUCK", "GND", "0805")
-R("R13", "100k 1%", "5V_BUCK", "FB_5V")
-R("R14", "24.0k 1%", "FB_5V", "GND", note="Vout = 1.0 V x (1 + 100/24) = 5.17 V")
+R("R13", "100k 0.5%", "5V_BUCK", "FB_5V")
+R("R14", "24.0k 0.5%", "FB_5V", "GND", note="Vout = 1.0 V x (1 + 100/24) = 5.17 V")
 C("C17", "DNP 22p", "5V_BUCK", "FB_5V", dnp=True, note="optional feed-forward (datasheet 9.2.2.8)")
 R("R15", "102k 1%", "VSYS", "EN_5V")
 R("R16", "24.3k 1%", "EN_5V", "GND", note="EN UVLO: 6.40 V on / 5.88 V off")
@@ -182,12 +192,12 @@ part("U4", "LM74700", "LM74700QDBVRQ1", {
     1: "VCAP_5V", 2: "GND", 3: "5V_BUCK", 4: "5V_PI", 5: "G_5VID", 6: "5V_BUCK"},
     fp="Package_TO_SOT_SMD:SOT-23-6", mpn="LM74700QDBVRQ1", mfr="TI", tier="B",
     note="HAT back-power rule: Pi USB-C cannot feed into the HAT 5 V buck")
-C("C18", "100n 16V", "VCAP_5V", "5V_BUCK")
+C("C18", "220n 25V X7R", "VCAP_5V", "5V_BUCK", "0603")
 NMOS_Q3("Q3", "G_5VID", "5V_PI", "5V_BUCK", "CSD17578Q3A", mpn="CSD17578Q3A",
         note="30 V, low Rds(on); ideal-diode FET")
 C("C19", "22u 10V X5R", "5V_PI", "GND", "0805")
 R("R18", "2.2k", "5V_BUCK", "LED_5V_A", "0402")
-part("D3", "LED", "GREEN", {1: "GND", 2: "LED_5V_A"}, fp="LED_SMD:LED_0603_1608Metric",
+part("D3", "LED", "GREEN", {1: "GND", 2: "LED_5V_A"}, fp="LED_SMD:LED_0402_1005Metric",
      note="HAT 5 V buck running")
 
 # ---------------------------------------------------------------------------
@@ -198,17 +208,17 @@ part("U5", "LM74700", "LM74700QDBVRQ1", {
     1: "VCAP_ORA", 2: "GND", 3: "VSYS", 4: "OR_NODE", 5: "G_ORA", 6: "VSYS"},
     fp="Package_TO_SOT_SMD:SOT-23-6", mpn="LM74700QDBVRQ1", mfr="TI", tier="B",
     note="OR-ing path A: battery / adapter")
-C("C20", "100n 16V", "VCAP_ORA", "VSYS")
+C("C20", "220n 25V X7R", "VCAP_ORA", "VSYS", "0603")
 NMOS_Q3("Q4", "G_ORA", "OR_NODE", "VSYS", "CSD17578Q3A", mpn="CSD17578Q3A")
 part("U6", "LM74700", "LM74700QDBVRQ1", {
     1: "VCAP_ORB", 2: "GND", 3: "5V_PI", 4: "OR_NODE", 5: "G_ORB", 6: "5V_PI"},
     fp="Package_TO_SOT_SMD:SOT-23-6", mpn="LM74700QDBVRQ1", mfr="TI", tier="B",
     note="OR-ing path B: Pi 5 V (USB-C only bench mode)")
-C("C21", "100n 16V", "VCAP_ORB", "5V_PI")
+C("C21", "220n 25V X7R", "VCAP_ORB", "5V_PI", "0603")
 NMOS_Q3("Q5", "G_ORB", "OR_NODE", "5V_PI", "CSD17578Q3A", mpn="CSD17578Q3A",
         note="sees up to 13 V Vds when battery path wins")
-C("C22", "10u 35V X5R", "OR_NODE", "GND", "1206")
-C("C23", "10u 35V X5R", "OR_NODE", "GND", "1206")
+C("C22", "10u 50V X7R", "OR_NODE", "GND", "1210")
+C("C23", "10u 50V X7R", "OR_NODE", "GND", "1210")
 C("C24", "100n 50V X7R", "OR_NODE", "GND", "0402", note="hot-loop cap: closest to VIN/GND")
 part("U7", "TPS62933F", "TPS62933FDRLR", {
     1: "GND", 2: "EN_3V3", 3: "OR_NODE", 4: "GND", 5: "SW_3V3", 6: "BST_3V3", 7: "SS_3V3",
@@ -218,7 +228,7 @@ part("U7", "TPS62933F", "TPS62933FDRLR", {
 C("C25", "100n 16V", "BST_3V3", "SW_3V3")
 C("C26", "22n 16V", "SS_3V3", "GND", note="soft start ~3.2 ms")
 part("L2", "L", "2.2uH Isat>=5.8A", {1: "SW_3V3", 2: "3V3_BUCK"},
-     fp="Inductor_SMD:L_Coilcraft_XGL4030", mpn="XGL4030-222MEC", mfr="Coilcraft")
+     fp="Inductor_SMD:L_Coilcraft_XxL4030", mpn="XGL4030-222MEC", mfr="Coilcraft")
 C("C27", "22u 10V X5R", "3V3_BUCK", "GND", "0805")
 C("C28", "22u 10V X5R", "3V3_BUCK", "GND", "0805")
 R("R20", "31.6k 1%", "3V3_BUCK", "FB_3V3")
@@ -240,9 +250,11 @@ SJ("JP1", "3V3_FILT", "3V3_MPCIE", True, "MPCIE",
    note="cut to isolate the HaLow card rail")
 # enable logic: 3.3 V on when LTC2955 is on OR LTC2955 unpowered (USB-C only) OR BENCH
 NMOS_SOT23("Q8", "G33", "EN_3V3", "GND", note="pulls TPS62933F EN low when LTC2955 is off")
-R("R23", "100k", "LTC_ENB", "G33")
+R("R23", "4.7M", "LTC_ENB", "G33",
+  note="high value: BENCH (Q9 on) must not load LTC_ENB, or Q7 cannot turn 5 V off (review P2)")
 NMOS_SOT23("Q9", "BENCH_G", "G33", "GND", note="BENCH override: keeps 3.3 V on")
 R("R24", "100k", "BENCH_G", "GND")
+C("C32", "2.2n 16V", "EN_3V3", "GND", note="EN has only a 0.7 uA pull-up: noise immunity")
 SJ("JP2", "3V3_PI", "BENCH_G", False, "BENCH",
    note="close: HaLow 3.3 V forced on while the Pi 3.3 V is present")
 
@@ -260,8 +272,9 @@ R("R30", "1M", "LTC_ENB", "GND", note="gate = 0.53 x VSYS when off (<=9.7 V)")
 C("C41", "1u 10V", "LTC_TMR", "GND", note="long-press force-off ~5.3 s")
 SJ("JP3", "VSYS", "AUTO_A", False, "AUTO-ON",
    note="close: power-on automatically when input appears (mast relay / C0 / T0)")
-R("R31", "681k 1%", "AUTO_A", "LTC_ON")
-R("R32", "100k 1%", "LTC_ON", "GND", note="ON 0.8 V -> auto-on at 6.25 V")
+R("R31", "787k 1%", "AUTO_A", "LTC_ON",
+  note="AUTO-ON 7.10 V typ / 6.74 V min: above the 5 V buck EN max 6.55 V (review P1)")
+R("R32", "100k 1%", "LTC_ON", "GND")
 R("R33", "10k", "3V3_PI", "LTC_KILL_N", note="KILL high as soon as the Pi 3.3 V is up")
 NMOS_SOT23("Q10", "KILL_REQ", "LTC_KILL_N", "GND", note="GPIO27 high (gpio-poweroff) -> power off")
 R("R34", "100k", "KILL_REQ", "GND", note="reboot: GPIO27 default pull-down keeps power on")
@@ -283,8 +296,8 @@ sheet("pi_header")
 PI_HEADER = {  # physical pin -> net (BCM numbers in the comments)
     1: "3V3_PI", 2: "5V_PI", 3: "I2C1_SDA", 4: "5V_PI", 5: "I2C1_SCL", 6: "GND",
     7: "BAT_PRESENT_N",          # GPIO4
-    8: "UART0_TX",               # GPIO14
-    9: "GND", 10: "UART0_RX",    # GPIO15
+    8: "CONSOLE_TX",               # GPIO14
+    9: "GND", 10: "CONSOLE_RX",    # GPIO15
     11: "HALOW_RESET_N",         # GPIO17
     12: "TPM_CS_N",              # GPIO18
     13: "KILL_REQ",              # GPIO27
@@ -352,13 +365,14 @@ part("H6", "MH", "M2 SMT standoff ~3.1mm", {1: "GND"}, fp="batman:SMT_Standoff_M
 # Sheet 7 -- security + RTC
 # ---------------------------------------------------------------------------
 sheet("security")
-SJ("JP5", "3V3_PI", "3V3_SEC", True, "SEC", note="cut to isolate TPM / ATECC / RTC supply")
-part("U11", "SLB9672", "SLB9672XU20FW1541XTMA1", {
+SJ("JP5", "3V3_PI", "3V3_SEC", True, "SEC",
+   note="cut to isolate TPM / ATECC / RTC supply; I2C/SPI1 still back-power them through ESD diodes")
+part("U11", "SLB9672", "SLB9672XU2.0", {
     1: "3V3_SEC", 14: "3V3_SEC", 22: "3V3_SEC", 8: "3V3_SEC",
     2: "GND", 9: "GND", 23: "GND", 32: "GND", 33: "GND", 16: "GND",
     10: "TPM_P10", 17: "TPM_RST_N", 18: "TPM_PIRQ_N", 19: "SPI1_SCLK", 20: "TPM_CS_N",
     21: "SPI1_MOSI", 24: "SPI1_MISO"},
-    fp="batman:Infineon_PG-UQFN-32-1_5x5mm", mpn="SLB9672XU2.0 (-40..85C)", mfr="Infineon", tier="A",
+    fp="Package_DFN_QFN:QFN-32-1EP_5x5mm_P0.5mm_EP3.6x3.6mm", mpn="SLB9672XU2.0 (orderable code: verify at M3)", mfr="Infineon", tier="A",
     note="NC 6/29/30 must float; GPIO 3/4/7 have internal pull-ups; NO test points on TPM nets")
 C("C70", "100n 16V", "3V3_SEC", "GND", note="pin 1")
 C("C71", "100n 16V", "3V3_SEC", "GND", note="pin 14")
@@ -369,7 +383,7 @@ R("R61", "10k", "TPM_CS_N", "3V3_SEC", note="datasheet Fig 7: GPIO18 boots pulle
 R("R62", "10k", "TPM_PIRQ_N", "3V3_SEC")
 R("R63", "10k", "TPM_RST_N", "GND", note="hold TPM in reset until the gpio-hog releases it")
 part("U12", "ATECC608", "ATECC608C-TFLXTLS", {4: "GND", 5: "I2C1_SDA", 6: "I2C1_SCL", 8: "3V3_SEC"},
-     fp="Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", mpn="ATECC608C-TFLXTLS-S", mfr="Microchip", tier="A",
+     fp="Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", mpn="ATECC608C-TFLXTLS (SOIC-8 suffix: verify at M3)", mfr="Microchip", tier="A",
      note="I2C 0x36 (TrustFLEX)")
 C("C74", "100n 16V", "3V3_SEC", "GND")
 part("U13", "RV3028", "RV-3028-C7", {
@@ -380,13 +394,14 @@ part("U13", "RV3028", "RV-3028-C7", {
 C("C75", "100n 16V", "3V3_SEC", "GND")
 R("R64", "100k", "RTC_EVI", "GND", note="EVI idle: verify against the RV-3028 Application Manual")
 part("C76", "CP", "CPH3225A 11mF", {1: "VRTC", 2: "GND"},
-     fp="batman:Seiko_CPH3225A", mpn="CPH3225A", mfr="Seiko Instruments", note="RTC backup")
+     fp="batman:Seiko_CPH3225A", mpn="CPH3225A", mfr="Seiko Instruments",
+     note="RTC backup; rated 3.3 V vs 3V3_SEC up to 3.4 V: confirm with Seiko limit")
 
 # ---------------------------------------------------------------------------
 # Sheet 8 -- GNSS
 # ---------------------------------------------------------------------------
 sheet("gnss")
-SJ("JP6", "3V3_PI", "3V3_GNSS", True, "GNSS", note="cut to isolate the GNSS supply")
+SJ("JP6", "3V3_PI", "3V3_GNSS", True, "GNSS", note="cut to isolate the GNSS supply (UART5_TX idle-high still back-feeds RXD)")
 part("U14", "MAXM10S", "MAX-M10S-00B", {
     1: "GND", 2: "UART5_RX", 3: "UART5_TX", 4: "GNSS_PPS", 5: None, 6: "3V3_GNSS",
     7: "3V3_GNSS", 8: "3V3_GNSS", 9: "GNSS_RST_N", 10: "GND", 11: "GNSS_RFIN", 12: "GND",
@@ -397,7 +412,8 @@ part("R80", "R", "DNP 0R", {1: "GNSS_VIOSEL", 2: "GND"}, fp=_R_FP["0402"], dnp=T
      note="VIO_SEL option; open = default I/O level (verify)")
 C("C80", "10u 10V", "3V3_GNSS", "GND", "0603")
 C("C81", "100n 16V", "3V3_GNSS", "GND")
-R("R81", "10R", "GNSS_VCCRF", "GNSS_BIAS", note="active antenna bias (integration manual)")
+R("R81", "47R", "GNSS_VCCRF", "GNSS_BIAS", "1206",
+  note="antenna short = 70 mA / 0.23 W (rated 0.25 W); 10 mA antenna sees ~2.9 V. Recheck vs integration manual")
 C("C82", "10n 16V", "GNSS_BIAS", "GND")
 part("L80", "L", "27nH", {1: "GNSS_BIAS", 2: "GNSS_ANT"}, fp="Inductor_SMD:L_0402_1005Metric",
      mpn="LQG15HS27NJ02D", mfr="Murata", note="RF choke for antenna DC bias")
@@ -411,10 +427,17 @@ part("J4", "COAX", "U.FL", {1: "GNSS_ANT", 2: "GND"},
 # ---------------------------------------------------------------------------
 sheet("debug")
 part("J5", "TC2050", "Tag-Connect TC2050", {
-    1: "3V3_PI", 2: "UART0_TX", 3: "GND", 4: "UART0_RX", 5: "SPI0_SCLK", 6: "SPI0_MOSI",
-    7: "SPI0_MISO", 8: "SPI0_CE0", 9: "HALOW_IRQ", 10: "HALOW_BUSY"},
+    1: "TC_3V3", 2: "TC_TX", 3: "GND", 4: "TC_RX", 5: "TC_SCLK", 6: "TC_MOSI",
+    7: "TC_MISO", 8: "TC_CS", 9: "TC_IRQ", 10: "TC_BUSY"},
     fp="Connector:Tag-Connect_TC2050-IDC-NL_2x05_P1.27mm_Vertical", mfr="Tag-Connect",
-    note="UART0 = passwordless root console until #137 ships: release gate")
+    note="console = passwordless root until #137 ships: release gate")
+R("R48", "1k", "3V3_PI", "TC_3V3", note="sense only: an adapter that drives VCC cannot back-feed the Pi")
+for i, (tc, net) in enumerate([("TC_TX", "CONSOLE_TX"), ("TC_RX", "CONSOLE_RX"), ("TC_SCLK", "SPI0_SCLK"),
+                               ("TC_MOSI", "SPI0_MOSI"), ("TC_MISO", "SPI0_MISO"), ("TC_CS", "SPI0_CE0"),
+                               ("TC_IRQ", "HALOW_IRQ"), ("TC_BUSY", "HALOW_BUSY")]):
+    R(f"R{40 + i}", "0R", net, tc,
+      note="R40-R47 debug links: fitted on dev boards, NOT fitted on production (HaLow keys cross SPI0)"
+      if i == 0 else "")
 POWER_TPS = [  # net, silkscreen text with the expected reading
     ("VBAT_RAW", "VBAT 6-17V"), ("VSYS", "VSYS 6-17V"), ("5V_BUCK", "5V 5.10-5.25"),
     ("5V_PI", "5V_PI 5.0-5.2"), ("OR_NODE", "OR 5-17V"), ("3V3_BUCK", "3V3 3.25-3.40"),
@@ -456,13 +479,13 @@ BCM_TO_PHYS = {2: 3, 3: 5, 4: 7, 17: 11, 27: 13, 22: 15, 10: 19, 9: 21, 11: 23, 
 SPEC_GPIO = {0: "ID_SD", 1: "ID_SC", 2: "I2C1_SDA", 3: "I2C1_SCL", 4: "BAT_PRESENT_N",
              5: "HALOW_IRQ", 6: "GNSS_PPS", 7: None, 8: "SPI0_CE0", 9: "SPI0_MISO",
              10: "SPI0_MOSI", 11: "SPI0_SCLK", 12: "UART5_TX", 13: "UART5_RX",
-             14: "UART0_TX", 15: "UART0_RX", 16: "TPM_RST_N", 17: "HALOW_RESET_N",
+             14: "CONSOLE_TX", 15: "CONSOLE_RX", 16: "TPM_RST_N", 17: "HALOW_RESET_N",
              18: "TPM_CS_N", 19: "SPI1_MISO", 20: "SPI1_MOSI", 21: "SPI1_SCLK",
              22: "TPM_PIRQ_N", 23: "HALOW_WAKE", 24: "HALOW_BUSY", 25: "INA_ALERT_N",
              26: "PWR_INT_N", 27: "KILL_REQ"}
 
 # Worst-case DC voltage on nets that touch voltage-limited pins (V).
-VBAT_MAX = 18.4  # eFuse OVP trip
+VBAT_MAX = 19.6  # eFuse OVP trip, worst case
 NET_VMAX = {
     "GND": 0, "VBAT_RAW": 22.2, "EF_IN": VBAT_MAX, "EF_OUT": VBAT_MAX, "VSYS": VBAT_MAX,
     "OR_NODE": VBAT_MAX, "5V_BUCK": 5.3, "5V_PI": 5.3, "3V3_PI": 3.4, "3V3_SEC": 3.4,
