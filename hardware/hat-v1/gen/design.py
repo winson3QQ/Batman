@@ -157,7 +157,6 @@ part("U2", "INA226", "INA226AIDGSR", {
     note="I2C 0x40 (A0=A1=GND): whole-node current + battery voltage")
 C("C5", "100n 16V", "3V3_PI", "GND")
 C("C6", "10u 50V X7R", "VSYS", "GND", "1210")
-C("C7", "10u 50V X7R", "VSYS", "GND", "1210")
 # battery present -> GPIO4 (low = battery / adapter connected)
 R("R10", "1M", "VBAT_RAW", "BATP_G", note="1M/1M: 9 uA standby drain")
 R("R11", "1M", "BATP_G", "GND")
@@ -281,12 +280,11 @@ R("R33", "10k", "3V3_PI", "LTC_KILL_N", note="KILL high as soon as the Pi 3.3 V 
 NMOS_SOT23("Q10", "KILL_REQ", "LTC_KILL_N", "GND", note="GPIO27 high (gpio-poweroff) -> power off")
 R("R34", "100k", "KILL_REQ", "GND", note="reboot: GPIO27 default pull-down keeps power on")
 R("R35", "10k", "PWR_INT_N", "3V3_PI")
-part("SW1", "SW_PUSH", "on-board PWR", {1: "PWR_BTN_N", 2: "GND"},
-     fp="Button_Switch_SMD:SW_SPST_EVQP7A", mpn="EVQ-P7A01P", mfr="Panasonic",
-     note="low-profile side button for the bench")
 part("J6", "CONN2", "PANEL BTN", {1: "PWR_BTN_N", 2: "GND"},
      fp="Connector_JST:JST_SH_SM02B-SRSS-TB_1x02-1MP_P1.00mm_Horizontal",
-     mpn="SM02B-SRSS-TB", mfr="JST", note="to the IP67 panel push-button")
+     mpn="SM02B-SRSS-TB", mfr="JST",
+     note="to the IP67 panel push-button. No on-board button (user decision): on the bench plug a button "
+     "here or short the PWR_BTN_N back-side pad to GND")
 part("D4", "TVS_UNI", "TPD1E10B06", {1: "PWR_BTN_N", 2: "GND"},
      fp="Diode_SMD:D_0402_1005Metric", mpn="TPD1E10B06DPYR", mfr="TI", tier="C",
      note="ESD for the panel button wire")

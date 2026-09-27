@@ -3,7 +3,7 @@ Refs,Qty,Value,Footprint,MPN,Manufacturer,Tier,LCSC,Assembly,Note
 "C2,C9,C24,C40",4,100n 50V X7R,C_0402_1005Metric,,,C,,JLCPCB,
 C3,1,22n 16V X7R,C_0402_1005Metric,,,C,,JLCPCB,2.27 V/ms soft start
 "C5,C12,C25,C30,C50,C63,C64,C70,C71,C72,C74,C75,C77,C81,C84",15,100n 16V,C_0402_1005Metric,,,C,,JLCPCB,
-"C6,C7,C8,C10,C22,C23,C33",7,10u 50V X7R,C_1210_3225Metric,,,C,,JLCPCB,
+"C6,C8,C10,C22,C23,C33",6,10u 50V X7R,C_1210_3225Metric,,,C,,JLCPCB,
 C11,1,220n 50V X7R,C_0603_1608Metric,,,C,,JLCPCB,hot-loop cap: closest to VIN/PGND
 "C13,C41,C73",3,1u 10V,C_0402_1005Metric,,,C,,JLCPCB,
 "C14,C15,C16,C19,C27,C28",6,22u 10V X5R,C_0805_2012Metric,,,C,,JLCPCB,
@@ -26,7 +26,7 @@ FB1,1,600R@100MHz >=4A,L_1206_3216Metric,BLM31KN601SN1L,Murata,C,,JLCPCB,"verify
 J2,1,"Pi 40-pin (female, 11 mm stack)",PinSocket_2x20_P2.54mm_Vertical,,,C,,JLCPCB,through-hole on the bottom side; 8.5 mm socket for 11 mm standoffs
 J3,1,mPCIe 5.2H,MiniPCIe_Lianxin_XDMP-052-A01_H5.2,XDMP-052-A01,Lianxin (China),C,C7498130,JLCPCB,pin 8 UIM_PWR not connected on the card -> GPIO18 freed for the TPM
 J4,1,U.FL,U.FL_Hirose_U.FL-R-SMT-1_Vertical,U.FL-R-SMT-1(10),Hirose,C,,JLCPCB,active patch antenna with SAW pre-filter; 50 ohm CPWG trace
-J6,1,PANEL BTN,JST_SH_SM02B-SRSS-TB_1x02-1MP_P1.00mm_Horizontal,SM02B-SRSS-TB,JST,C,,JLCPCB,to the IP67 panel push-button
+J6,1,PANEL BTN,JST_SH_SM02B-SRSS-TB_1x02-1MP_P1.00mm_Horizontal,SM02B-SRSS-TB,JST,C,,JLCPCB,to the IP67 panel push-button. No on-board button (user decision): on the bench plug a button here or short the PWR_BTN_N back-side pad to GND
 L1,1,3.3uH Isat>=5.5A,L_Coilcraft_XxL4030,XGL4030-332MEC,Coilcraft,C,,JLCPCB,height <=3.1 mm; alternative: Wurth WE-XHMI 4030
 L2,1,2.2uH Isat>=5.8A,L_Coilcraft_XxL4030,XGL4030-222MEC,Coilcraft,C,,JLCPCB,
 L80,1,27nH,L_0402_1005Metric,LQG15HS27NJ02D,Murata,C,,JLCPCB,"L3: bias-T inductor, >500 ohm at L1, >=300 mA (Table 54)"
@@ -60,7 +60,6 @@ R31,1,787k 1%,R_0402_1005Metric,,,C,,JLCPCB,AUTO-ON 7.10 V typ / 6.74 V min: abo
 R80,1,DNP 0R,R_0402_1005Metric,,,C,,DNP,leave NOT fitted: VIO_SEL to GND would select 1.8 V I/O (datasheet Table 10)
 R81,1,10R,R_1206_3216Metric,,,C,,JLCPCB,R8: current sense / short limiter 10 ohm 0.25 W (Table 53); ~18.5 mV per 1.85 mA
 R82,1,560R,R_0402_1005Metric,,,C,,JLCPCB,R5 (Table 53)
-SW1,1,on-board PWR,SW_SPST_EVQP7A,EVQ-P7A01P,Panasonic,C,,JLCPCB,low-profile side button for the bench
 TP1,1,VBAT 6-17V,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
 TP2,1,5V 5.10-5.25,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
 TP3,1,3V3 HaLow 3.2-3.4,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,

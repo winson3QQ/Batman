@@ -26,10 +26,11 @@ BW, BH = 65.0, 56.5            # Raspberry Pi HAT outline
 MM = pcbnew.FromMM
 
 # mPCIe socket: origin = 1.60 mm locating hole; rotated so the card lies toward -x
-J3_X, J3_Y = 59.0, 46.3
+J3_X, J3_Y = 59.0, 45.9
 CARD = (J3_X - 49.45, J3_Y - 27.5, J3_X + 1.5, J3_Y + 2.5)   # x0, y0, x1, y1 (approx.)
 CARD_HOLES = [(J3_X - 48.04, J3_Y - 0.40), (J3_X - 48.04, J3_Y - 24.60)]
-WIFI_KEEPOUT = (0.0, 0.0, 12.0, 14.0)  # Pi 4 PCB antenna corner -- INFERENCE, verify vs Pi 4 drawing
+WIFI_KEEPOUT = (0.0, 6.7, 12.0, 14.0)  # Pi 4 PCB antenna corner -- INFERENCE, verify vs Pi 4 drawing
+WIFI_KEEPOUT2 = (0.0, 0.0, 6.3, 6.7)  # left of the header; header pins 1-4 stay routable
 
 REGIONS = {  # name: (x0, y0, x1, y1, max component height mm)
     "top": (12.5, 7.0, 64.5, 18.5, 99),
@@ -54,7 +55,7 @@ PREF = {
     "gnss": ["top", "left", "under"],
     "debug": ["top", "left", "bottom", "under"],
 }
-NOT_UNDER = ("TP", "J5", "D2", "D3", "SW1", "J6")  # must stay reachable / visible
+NOT_UNDER = ("TP", "J5", "D2", "D3", "J6")  # must stay reachable / visible
 # Switching cores (IC + inductor + hot-loop input caps): bottom edge only, away from GNSS (top right)
 # and from the HaLow card's RF end (left).
 POWER_HOT = {"U3", "L1", "C10", "C11", "C12", "C13", "U7", "L2", "C22", "C23", "C24", "C25", "C26"}
@@ -232,10 +233,9 @@ def main():
     place_at(fps["J1"][1], 4.6, 20.0, 90)       # battery wires enter at the left edge
     place_at(fps["J4"][1], 62.0, 12.0)          # GNSS U.FL, far from the HaLow card RF end
     place_at(fps["J6"][1], 1.8, 44.0, 270)      # panel button cable
-    place_at(fps["SW1"][1], 2.2, 36.0, 90)
     place_at(fps["J5"][1], 22.0, 10.5)          # Tag-Connect near the header
-    place_at(fps["U14"][1], 53.5, 12.8)         # GNSS next to its U.FL, far from the HaLow RF end
-    fixed = {"J2", "J3", "H1", "H2", "H3", "H4", "H5", "H6", "J1", "J4", "J6", "SW1", "J5", "U14"}
+    place_at(fps["U14"][1], 53.5, 12.3)         # GNSS next to its U.FL, far from the HaLow RF end
+    fixed = {"J2", "J3", "H1", "H2", "H3", "H4", "H5", "H6", "J1", "J4", "J6", "J5", "U14"}
 
     # obstacles for packing: courtyards of the fixed parts + keep-outs
     obst = []

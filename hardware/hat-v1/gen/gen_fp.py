@@ -93,11 +93,11 @@ def main():
           h=0.8)
     placeholder("Seiko_CPH3225A", 3.2, 2.5, [(1, -1.25, 0, 1.0, 2.2), (2, 1.25, 0, 1.0, 2.2)],
                 0.9, "Seiko CPH3225A 3.2x2.5 mm")
-    b = pad(1, -2.75, 0, 3.0, 5.0) + pad(2, 2.75, 0, 3.0, 5.0)
-    for x in (-2.75, 2.75):
+    b = pad(1, -2.5, 0, 2.5, 5.0) + pad(2, 2.5, 0, 2.5, 5.0)
+    for x in (-2.5, 2.5):
         b += pad("", x, 4.2, 2.2, 2.2, "circle", '"*.Cu" "*.Mask"', "np_thru_hole", 2.2)
-    b += rect("F.CrtYd", -4.5, -2.75, 4.5, 5.6)
-    write("BattPads_2x_3x5mm_StrainRelief", b, "Battery wire pads 3x5 mm + zip-tie holes", h=0)
+    b += rect("F.CrtYd", -3.95, -2.75, 3.95, 5.55)
+    write("BattPads_2x_3x5mm_StrainRelief", b, "Battery wire pads 2.5x5 mm (AWG18-20) + zip-tie holes", h=0)
     b = pad(1, 0, 0, 4.2, 4.2, "circle") + rect("F.CrtYd", -2.6, -2.6, 2.6, 2.6)
     b += text("user", "PLACEHOLDER", 0, 3, "F.Fab")
     write("SMT_Standoff_M2_TBD", b, "PLACEHOLDER M2 SMT standoff ~3.1 mm; part TBD after V14", h=3.1)
