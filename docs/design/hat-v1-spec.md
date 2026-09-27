@@ -74,9 +74,25 @@ flowchart LR
 | wake(power-gpios[0]) | GPIO23 | 33 | SX1262_IO1 |
 | busy(power-gpios[1]) | GPIO24 | 31 | SX1262_IO2 |
 
-**mPCIe 第 8 腳(Seeed 接 GPIO18)、25 腳(GPIO6)、19 腳(1PPS)、30/32(I2C)、36/38(USB)**:新 HAT **預設不接**,各留一顆 0 Ω 跳線(不上件)。
-理由:HaLow 驅動的裝置樹沒有用到這些腳【事實】;`docs/root-cause.md` 的對照實驗把 GPIO18 拉低也沒有任何影響【事實】。
-⚠️ 仍需用 **Wio-WM6108 V30 電路圖**再確認一次(Seeed 檔案伺服器被本環境的網路代理擋住,待人工下載,見 §10)。
+**已用 Wio-WM6108 V30 電路圖(`Wi-Fi_Halow_FGH100M_MINI_PCIE` Rev 1.0,2024-11-07)逐腳確認**【事實】:
+
+| mPCIe 腳 | 卡片上的網路 | 卡片內部接到 | 新 HAT 接法 |
+|---|---|---|---|
+| 45 / 47 / 49 / 51 | PCM_CLK / DOUT / DIN / SYNC | SPI SCK / MISO / MOSI / CS(22 Ω、0 Ω 串聯) | GPIO11 / 9 / 10 / 8 |
+| 10 | UIM_DATA → MOD_INT | FGH100M 的 SPI_INT(0 Ω) | GPIO5 |
+| 22 | PERST_N → MOD_RESET | FGH100M 的 RESET_N(0 Ω) | GPIO17 |
+| 31 | MOD_BUSY | **R17 = DNP,卡上沒接通** | GPIO24(照接,相容驅動設定) |
+| 33 | MOD_WAKEUP_IN | **R10 = DNP,卡上沒接通**(WAKEUP_IN 由 R9 10 kΩ 上拉) | GPIO23(照接,相容驅動設定) |
+| 2 / 24 / 39 / 41 / 52 | VCC_3V3 / NC15 / VCC_3V3A/B/D | 全部接到 PCIE_3V3 | **全部接 3.3 V 降壓輸出** |
+| 8(Seeed 接 GPIO18) | UIM_PWR | **未連接(×)** | **不接 → GPIO18 給 TPM** ✅ |
+| 25(Seeed 接 GPIO6) | NC9/UART1_CTS | 未連接(×) | 不接 |
+| 19(Seeed 接 1PPS) | NC8 | 未連接(×) | 不接 |
+| 30 / 32(I2C) | UIM_CLK / UIM_RESET 區 | 未連接(×) | 不接 |
+| 36 / 38 | USB_D− / USB_D+ | 未連接(×) | 不接 |
+
+因此原本規劃的「各留一顆 0 Ω 跳線」**取消**,這些腳直接不拉線,省面積【決策】。
+
+**電源注意**:卡片上有一顆 TI TPS613222A 升壓,把 3.3 V 升到 5 V 給 FGH100M 的射頻前端(VDD_FEM)【事實】→ HaLow 發射時的峰值電流全部從 3.3 V 抽,所以 3.3 V 降壓維持 **3 A 等級**,並在插座旁放大電容【推論】。
 
 ### 4.2 新增功能
 
@@ -270,7 +286,7 @@ OpenWrt 端需要的核心模組 / 套件(**官方 feed 是否齊全待確認**)
 
 | # | 項目 | 驗證方式 |
 |---|---|---|
-| V1 | mPCIe 第 8/25/19/30/32/36/38 腳在 WM6108 上是否真的沒用到 | 對照 Wio-WM6108 V30 電路圖;第一版保留 0 Ω 跳線 |
+| V1 | ~~mPCIe 第 8/25/19/30/32/36/38 腳在 WM6108 上是否真的沒用到~~ | ✅ 已用 Wio-WM6108 V30 電路圖確認:全部未連接(§4.1) |
 | V2 | SPI1 上 TPM 與 SPI0 上 HaLow 同時運作無干擾 | 上機:HaLow iperf 滿載 + `tpm2_getrandom` 迴圈 |
 | V3 | 自製 TPM overlay 能被 `tpm_tis_spi` 綁定 | `ls /dev/tpm0`、`tpm2_getcap properties-fixed` |
 | V4 | ATECC608B I2C 位址與其他 I2C 裝置不衝突 | `i2cdetect -y 1` |
@@ -281,7 +297,7 @@ OpenWrt 端需要的核心模組 / 套件(**官方 feed 是否齊全待確認**)
 
 ## 10. 需要的外部資料(本環境網路代理擋住,需人工下載放進 repo)
 
-- **Wio-WM6108 V30 電路圖**:`files.seeedstudio.com/wiki/wifi_halow/res/Wio-WM6108_V30_SCH_20241107.pdf`(確認 mPCIe 腳位,V1)
+- ~~Wio-WM6108 V30 電路圖~~(已由使用者提供,§4.1 已對照)
 - Infineon SLB9672 規格書與參考電路
 - u-blox MAX-M10S 整合手冊(天線 / 偏壓設計)
 - Micro Crystal RV-3028-C7 規格書
