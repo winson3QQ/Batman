@@ -4,3 +4,4 @@ fp-info-cache
 _autosave-*
 out/*.net
 gen/__pycache__/
+out/route/
