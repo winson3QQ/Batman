@@ -391,6 +391,7 @@ Raspberry Pi OS 先驗證,再移植到 OpenWrt / OpenMANET:
 ```ini
 # config.txt(新增部分;HaLow 原有的 morse-ps / morse-spi 不動)
 dtparam=i2c_arm=on
+dtparam=i2c_arm_baudrate=100000   # 維持 100 kHz:400 kHz 時 ATECC608 的喚醒脈衝(寫位址 0x00)短於 60 µs 下限【推論,電路圖審查】
 dtoverlay=batman-hat-tpm          # 自製、自足(含 SPI1 腳位與 cs-gpios);不要再載 spi1-1cs
 dtoverlay=i2c-rtc,rv3028,trickle-resistor-ohms=3000,backup-switchover-mode=3
 dtoverlay=uart5                   # GPIO12/13;裝置名稱不要寫死,交給 gpsd 設定
