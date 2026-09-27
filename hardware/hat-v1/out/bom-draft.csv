@@ -1,5 +1,4 @@
 Refs,Qty,Value,Footprint,MPN,Manufacturer,Tier,LCSC,Assembly,Note
-BT1,1,MS621FE 3V 5.5mAh,BatteryHolder_Seiko_MS621F,MS621FE-FL11E,Seiko Instruments,C,,JLCPCB,"rechargeable Li (MnSi), user choice 2026-09-27: years of RTC backup. Charged by the RTC trickle charger (Schottky -> ~3.05 V). Pad polarity + charge current: verify vs Seiko MS621FE drawing"
 "C1,C4",2,1u 50V X7R,C_0805_2012Metric,,,C,,JLCPCB,
 "C2,C9,C24,C40",4,100n 50V X7R,C_0402_1005Metric,,,C,,JLCPCB,
 C3,1,22n 16V X7R,C_0402_1005Metric,,,C,,JLCPCB,2.27 V/ms soft start
@@ -15,6 +14,7 @@ C31,1,10u 10V X5R,C_0603_1608Metric,,,C,,JLCPCB,pi-filter input cap
 C32,1,2.2n 16V,C_0402_1005Metric,,,C,,JLCPCB,EN has only a 0.7 uA pull-up: noise immunity
 "C60,C61",2,47u 6.3V X5R,C_1206_3216Metric,,,C,,JLCPCB,
 C62,1,220u 6.3V polymer,CP_EIA-7343-20_Kemet-V,T520V227M006ATE015,KEMET,C,,JLCPCB,7343-20: <=1.9 mm tall; absorbs HaLow TX bursts
+C76,1,CPH3225A 11mF,Seiko_CPH3225A,CPH3225A,Seiko Instruments,C,,JLCPCB,"RTC backup (user decision 2026-09-27: supercap, GPS re-syncs after ~2 days off). Internal trickle path has a Schottky (0.25 V) -> charges to ~3.05 V, below the 3.3 V rating"
 C80,1,10u 10V,C_0603_1608Metric,,,C,,JLCPCB,
 C82,1,10n 16V X7R,C_0402_1005Metric,,,C,,JLCPCB,C14: bias-T capacitor (Table 52)
 C83,1,47p C0G,C_0402_1005Metric,,,C,,JLCPCB,C18: DC block 47 pF 5 % C0G (Table 52)
@@ -55,7 +55,7 @@ R22,1,20m 1% 0.5W,R_1206_3216Metric,,,C,,JLCPCB,"INA226 #2 shunt, upstream of ev
 R23,1,4.7M,R_0402_1005Metric,,,C,,JLCPCB,"high value: BENCH (Q9 on) must not load LTC_ENB, or Q7 cannot turn 5 V off (review P2)"
 R31,1,787k 1%,R_0402_1005Metric,,,C,,JLCPCB,AUTO-ON 7.10 V typ / 6.74 V min: above the 5 V buck EN max 6.55 V (review P1)
 "R40,R41,R42,R43,R44,R45,R46,R47",8,0R,R_0402_1005Metric,,,C,,JLCPCB,"R40-R47 debug links: fitted on dev boards, NOT fitted on production (HaLow keys cross SPI0)"
-"R48,R65,R85",3,1k,R_0402_1005Metric,,,C,,JLCPCB,sense only: an adapter that drives VCC cannot back-feed the Pi
+"R48,R85",2,1k,R_0402_1005Metric,,,C,,JLCPCB,sense only: an adapter that drives VCC cannot back-feed the Pi
 "R51,R52",2,3.9k,R_0402_1005Metric,,,C,,JLCPCB,
 R80,1,DNP 0R,R_0402_1005Metric,,,C,,DNP,leave NOT fitted: VIO_SEL to GND would select 1.8 V I/O (datasheet Table 10)
 R81,1,10R,R_1206_3216Metric,,,C,,JLCPCB,R8: current sense / short limiter 10 ohm 0.25 W (Table 53); ~18.5 mV per 1.85 mA

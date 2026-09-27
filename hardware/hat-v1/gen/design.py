@@ -396,12 +396,10 @@ part("U13", "RV3028", "RV-3028-C7", {
     "backup mode LSM (BSM=11) because VBACKUP ~3.05 V is close to VDD (DSM not recommended, sec 4.2.2)")
 C("C75", "100n 16V", "3V3_SEC", "GND")
 R("R64", "100k", "RTC_EVI", "GND", note="EVI must not float: tie to VSS through a resistor (App Manual sec 7.1)")
-R("R65", "1k", "VRTC", "VBAT_RTC",
-  note="App Manual sec 7.3: 100-1000 ohm in series with a lithium cell (limits current if pins short)")
-part("BT1", "BATT", "MS621FE 3V 5.5mAh", {1: "VBAT_RTC", 2: "GND"},
-     fp="Battery:BatteryHolder_Seiko_MS621F", mpn="MS621FE-FL11E", mfr="Seiko Instruments", tier="C",
-     note="rechargeable Li (MnSi), user choice 2026-09-27: years of RTC backup. Charged by the RTC trickle "
-     "charger (Schottky -> ~3.05 V). Pad polarity + charge current: verify vs Seiko MS621FE drawing")
+part("C76", "CP", "CPH3225A 11mF", {1: "VRTC", 2: "GND"},
+     fp="batman:Seiko_CPH3225A", mpn="CPH3225A", mfr="Seiko Instruments",
+     note="RTC backup (user decision 2026-09-27: supercap, GPS re-syncs after ~2 days off). Internal trickle "
+     "path has a Schottky (0.25 V) -> charges to ~3.05 V, below the 3.3 V rating")
 C("C77", "100n 16V", "VRTC", "GND", note="VBACKUP decoupling close to the RTC (App Manual sec 7.3)")
 
 # ---------------------------------------------------------------------------
@@ -496,7 +494,7 @@ HEADER_PROBE = ["I2C1_SDA", "I2C1_SCL", "ID_SD", "ID_SC", "UART5_TX", "UART5_RX"
 # Power flags: tell KiCad ERC which nets are supplies (no electrical content).
 POWER_NETS = ["GND", "VBAT_RAW", "EF_IN", "EF_OUT", "VSYS", "5V_BUCK", "5V_PI", "OR_NODE",
               "3V3_BUCK", "3V3_SH", "3V3_FILT", "3V3_MPCIE", "3V3_PI", "3V3_SEC", "3V3_GNSS",
-              "VRTC", "VBAT_RTC"]
+              "VRTC"]
 for i, net in enumerate(POWER_NETS, start=1):
     part(f"#FLG{i:02d}", "PWR_FLAG", "PWR_FLAG", {1: net})
 

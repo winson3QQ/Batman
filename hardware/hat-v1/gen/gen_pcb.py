@@ -299,7 +299,7 @@ def main():
         _, p, fp = t
         if p.ref in POWER_STAGE:
             k = 0
-        elif "Keystone" in p.fp or p.ref == "BT1":
+        elif "Keystone" in p.fp:
             k = 1                        # the clip-able pads the user asked to keep
         else:
             k = 2

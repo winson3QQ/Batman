@@ -82,8 +82,7 @@ Origin column: company headquarters (user rule: flag China). All China-origin li
 | U11 | 1 | SLB9672XU2.0 | QFN-32-1EP_5x5mm_P0.5mm_EP3.6x3.6mm |  | NOT-JLC |  |  |  |  | Tier A: bought from an authorised distributor, fitted in Taiwan |
 | U12 | 1 | ATECC608C-TFLXTLS | SOIC-8_3.9x4.9mm_P1.27mm |  | NOT-JLC |  |  |  |  | Tier A: bought from an authorised distributor, fitted in Taiwan |
 | U13 | 1 | RV-3028-C7 | MicroCrystal_RV-3028-C7 |  | NOT-JLC |  |  |  |  | Tier A: bought from an authorised distributor, fitted in Taiwan |
-| R65,R85,R48 | 3 | 1k | R_0402_1005Metric | C7038379 | DB | YAGEO | Taiwan | 10076 | 0.0763 | RC0402BR-071KL; 2 candidates |
-| BT1 | 1 | MS621FE 3V 5.5mAh | BatteryHolder_Seiko_MS621F |  | SEARCH |  |  |  |  | search JLC by MPN: MS621FE-FL11E |
+| C76 | 1 | CPH3225A 11mF | Seiko_CPH3225A |  | SEARCH |  |  |  |  | search JLC by MPN: CPH3225A |
 | JP6 | 1 | GNSS (closed) | SolderJumper-2_P1.3mm_Bridged_RoundedPad1.0x1.5mm |  | NOT-JLC |  |  |  |  | copper only (pads / jumper / hole) |
 | U14 | 1 | MAX-M10S-00B | ublox_MAX |  | NOT-JLC |  |  |  |  | Tier A: bought from an authorised distributor, fitted in Taiwan |
 | R80 | 1 | DNP 0R | R_0402_1005Metric |  | DNP |  |  |  |  | footprint only, not fitted |
@@ -92,6 +91,7 @@ Origin column: company headquarters (user rule: flag China). All China-origin li
 | R81 | 1 | 10R | R_1206_3216Metric | C7468465 | DB | FOJAN | China | 77933 | 0.0094 | FRQ1206J100 TS; 3 candidates |
 | R82 | 1 | 560R | R_0402_1005Metric | C7470232 | DB | RESI | check | 256 | 0.1041 | PTFR0402B560RP9; 1 candidates |
 | U15 | 1 | OPA333AIDBVR | SOT-23-5 |  | SEARCH |  |  |  |  | search JLC by MPN: OPA333AIDBVR |
+| R85,R48 | 2 | 1k | R_0402_1005Metric | C7038379 | DB | YAGEO | Taiwan | 10076 | 0.0763 | RC0402BR-071KL; 2 candidates |
 | C82 | 1 | 10n 16V X7R | C_0402_1005Metric | C15195 | BASIC-verify |  |  |  |  | check JLC shows: Samsung CL05B103KB5NNNC 10n 50V X7R |
 | L80 | 1 | 27nH | L_0402_1005Metric |  | SEARCH |  |  |  |  | search JLC by MPN: LQG15HS27NJ02D |
 | C83 | 1 | 47p C0G | C_0402_1005Metric | C6870379 | DB | KEMET | USA (Yageo group) | 3295 | 0.0573 | C0402C470K5RACAUTO; 2 candidates |
