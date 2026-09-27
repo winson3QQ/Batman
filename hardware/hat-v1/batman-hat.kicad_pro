@@ -1,0 +1,49 @@
+{
+  "meta": {
+    "filename": "batman-hat.kicad_pro",
+    "version": 1
+  },
+  "sheets": [
+    [
+      "bad0bf22-4662-5834-886f-55d01014b15a",
+      ""
+    ],
+    [
+      "1adc0704-a6af-5b3a-93b0-790b7d9f73c9",
+      "power_in"
+    ],
+    [
+      "80f2a0d6-904b-5a9e-b72e-c529cfad06d9",
+      "power_5v"
+    ],
+    [
+      "6136946b-cc0b-5885-9a14-8a673913826d",
+      "power_3v3"
+    ],
+    [
+      "2400c5ce-cadc-5a31-a527-82a8cb6ca448",
+      "softpower"
+    ],
+    [
+      "a2b597ea-a715-5a78-a845-484864c5d536",
+      "pi_header"
+    ],
+    [
+      "84737a6c-f701-542d-9454-519ca41a00ff",
+      "halow"
+    ],
+    [
+      "b0ebbc6d-2e97-5070-8b63-d543eba25b44",
+      "security"
+    ],
+    [
+      "e0f0ce72-1b5a-5f68-820b-b0251967d3f5",
+      "gnss"
+    ],
+    [
+      "02b90d21-87d4-50f6-94db-12e47b95b656",
+      "debug"
+    ]
+  ],
+  "text_variables": {}
+}
