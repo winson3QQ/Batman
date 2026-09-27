@@ -36,6 +36,7 @@ REGIONS = {  # name: (x0, y0, x1, y1, max component height mm)
     "under": (12.5, 19.8, 52.8, 45.8, 1.9),
     "left": (0.6, 14.5, 9.2, 48.8, 99),
     "bottom": (7.2, 49.2, 57.8, 56.0, 99),
+    "back": (7.5, 8.0, 57.5, 48.0, 0),   # B side (faces the Pi): flat probe pads only (user decision)
 }
 PREF = {
     "power_in": ["left", "bottom", "top", "under"],
@@ -247,12 +248,21 @@ def main():
 
     for b in obst:
         mark(*b)
+    occ_top = occ
+    occ_back = np.zeros((NY, NX), dtype=np.int32)
+    for ref in ("J1", "J5", "J3", "H1", "H2", "H3", "H4"):   # parts with holes through the board
+        b = courtyard(fps[ref][1])
+        x0, y0 = pcbnew.ToMM(b.GetLeft()) - OX, pcbnew.ToMM(b.GetTop()) - OY
+        x1, y1 = pcbnew.ToMM(b.GetRight()) - OX, pcbnew.ToMM(b.GetBottom()) - OY
+        occ_back[max(0, int(y0 / G)):int(math.ceil(y1 / G)), max(0, int(x0 / G)):int(math.ceil(x1 / G))] = 1
     used = {r: 0.0 for r in REGIONS}
     placed_in, failed = {}, []
     order = [s for s, _ in D.SHEETS]
     GAP = 0.25
 
     def try_region(r, w, h):
+        nonlocal occ
+        occ = occ_back if r == "back" else occ_top
         rx0, ry0, rx1, ry1, _ = REGIONS[r]
         pre = np.pad(occ, ((1, 0), (1, 0))).cumsum(0).cumsum(1)
         cw, ch = int(math.ceil((w + GAP) / G)), int(math.ceil((h + GAP) / G))
@@ -292,8 +302,11 @@ def main():
             prefs = ["under"] + [r for r in prefs if r != "under"]
         if p.ref in POWER_STAGE:
             prefs = [r for r in prefs if r != "under"]
+        back = p.sym == "TP" and "Keystone" not in p.fp
+        if back:
+            prefs = ["back"]
         for r in prefs:
-            if hgt > REGIONS[r][4] or (r == "under" and p.ref.startswith(NOT_UNDER)):
+            if (hgt > REGIONS[r][4] and r != "back") or (r == "under" and p.ref.startswith(NOT_UNDER)):
                 continue
             ok = try_region(r, w, h)
             if ok:
@@ -306,6 +319,9 @@ def main():
                                            pos.y + MM(OY + (k // 4) * 5) - cy.GetTop()))
             continue
         x, y = ok
+        if back:
+            fp.Flip(fp.GetPosition(), False)
+            cy = courtyard(fp)
         pos = fp.GetPosition()
         fp.SetPosition(pcbnew.VECTOR2I(pos.x + MM(OX + x) - cy.GetLeft(), pos.y + MM(OY + y) - cy.GetTop()))
         placed_in[p.ref] = r
@@ -318,8 +334,9 @@ def main():
     keepout(board, WIFI_KEEPOUT, "Pi4_WiFi_antenna_keepout_VERIFY")
     label(board, "Pi 4 Wi-Fi keep-out (verify)", 0.8, 13.0, pcbnew.Dwgs_User, 0.7)
     for r, (x0, y0, x1, y1, hmax) in REGIONS.items():
-        rect(board, (x0, y0, x1, y1), pcbnew.Cmts_User, 0.1)
-    for r, (x0, y0, x1, y1, hm) in REGIONS.items():
+        if r != "back":
+            rect(board, (x0, y0, x1, y1), pcbnew.Cmts_User, 0.1)
+    for r, (x0, y0, x1, y1, hm) in [(k, v) for k, v in REGIONS.items() if k != "back"]:
         label(board, f"{r} {'(<=' + str(hm) + ' mm tall)' if hm < 99 else ''}", x0 + 0.3, y1 - 0.6, pcbnew.Cmts_User, 0.7)
     if failed:
         label(board, f"DID NOT FIT ({len(failed)})", BW + 12, -3, pcbnew.Cmts_User, 1.5)
@@ -342,9 +359,14 @@ def main():
     subprocess.run(["kicad-cli", "pcb", "export", "svg", "-o", svg, "--page-size-mode", "2", "--exclude-drawing-sheet",
                     "--layers", "Edge.Cuts,F.Cu,F.CrtYd,F.SilkS,Dwgs.User,Cmts.User",
                     path], check=True, capture_output=True)
-    import fitz  # pymupdf
+    import pymupdf as fitz
     doc = fitz.open(svg)
     doc[0].get_pixmap(dpi=300).save(os.path.join(OUT, "floorplan.png"))
+    os.remove(svg)
+    subprocess.run(["kicad-cli", "pcb", "export", "svg", "-o", svg, "--page-size-mode", "2", "--exclude-drawing-sheet",
+                    "--mirror", "--layers", "Edge.Cuts,B.Cu,B.CrtYd,B.SilkS", path], check=True, capture_output=True)
+    doc = fitz.open(svg)
+    doc[0].get_pixmap(dpi=300).save(os.path.join(OUT, "floorplan-back.png"))
     os.remove(svg)
     return 1 if failed else 0
 
