@@ -165,3 +165,23 @@ KiCad 7 的命令列沒有 ERC（電氣規則檢查），上面這些自寫檢�
 
 - 所有假設（線長、電容降額、HaLow 發射電流等）都列在報告最後一節，有更準的數據時改數字重跑即可。
 - 雜訊干擾 GNSS / HaLow 無法可靠模擬，仍需第一批板子實測（規格 V7 / V11）。
+
+## LCSC 料號（M3 草稿，`gen/lcsc.py` → [`out/lcsc-report.md`](out/lcsc-report.md)、[`out/bom-jlc.csv`](out/bom-jlc.csv)）
+
+這個環境連不到 JLC 和 LCSC 官網（網路政策擋住），所以用以下三個離線來源：
+
+1. **jlcparts 完整資料庫**：GitHub 公開，2026-09-27 16:21 UTC 快照，101 萬筆。
+   - 限制：目前只收 LCSC 編號 **C6374508 以後**的零件，所以舊編號的零件查不到，包括大部分基礎料和 TI 的 IC。
+2. **JLC 基礎料 / 優選料編號清單**：CDFER/jlcpcb-parts-database 每日自動抓取，2026-09-27 更新，共 3,493 個編號。只有編號，沒有規格。
+3. **常用基礎料對照**：例如 0402 10 kΩ = C25744。這是記憶中的對照，只有在該編號**確認列於基礎料清單**時才採用；「編號對應什麼規格」要在上傳 JLC 時核對。
+
+| 狀態 | 行數 | 意思 | 你要做的 |
+|---|---|---|---|
+| DB | 23 | 快照裡查到，有庫存 | 下單前看一下庫存有沒有變 |
+| BASIC-verify | 13 | JLC 基礎料（省擴展料費） | 上傳 BOM 後，核對 JLC 顯示的規格和報告「note」欄一致 |
+| SEARCH | 32 | 快照裡沒有 | 到 jlcpcb.com/parts 用 MPN 搜尋，或讓 JLC 的 BOM 工具依 MPN 自動配對 |
+| NOT-JLC | 40 | A 級元件（台灣補焊）或只有銅箔 | A 級向 DigiKey / Mouser 等原廠授權通路採購 |
+| DNP | 2 | 不焊 | — |
+
+- **中國廠商**：SURGING（SMBJ20CA）、hongjiacheng（BSS138）、FOJAN（3.9 kΩ）、Chinocera（47 µF）、連欣（mPCIe 插座），都是 C 級被動 / 分離元件，依規格 §5.8 可用。報告的「origin」欄標了每一家的總部所在地。
+- **重新產生**：先下載 jlcparts 的 `data/cache.zip` + `cache.z01`，合併後解壓得到 `cache.sqlite3`；再取得 CDFER repo 的 `scraped/ComponentList.csv`；最後執行 `python3 gen/lcsc.py --db cache.sqlite3 --basic ComponentList.csv`。兩個資料檔太大，不放進 repo。
