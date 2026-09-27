@@ -36,12 +36,17 @@ REGIONS = {  # name: (x0, y0, x1, y1, max component height mm)
     "under": (12.5, 19.8, 52.8, 45.8, 1.9),
     "left": (0.6, 14.5, 9.2, 48.8, 99),
     "bottom": (7.2, 49.2, 57.8, 56.0, 99),
-    "back": (7.5, 8.0, 57.5, 48.0, 0),   # B side (faces the Pi): flat probe pads only (user decision)
+    "under_edge": (12.5, 40.5, 52.8, 45.8, 1.9),  # strip of the under-card zone next to the bottom edge
+    # B side (faces the Pi): flat probe pads only, within ~3 mm of an edge so a probe reaches them
+    "back_L": (0.7, 8.5, 3.6, 48.5, 0),
+    "back_R": (61.4, 8.5, 64.3, 48.5, 0),
+    "back_B": (7.0, 53.1, 58.0, 55.9, 0),
 }
+BACK = ("back_L", "back_R", "back_B")
 PREF = {
     "power_in": ["left", "bottom", "top", "under"],
     "power_5v": ["bottom", "top", "left", "under"],
-    "power_3v3": ["bottom", "under", "top", "left"],
+    "power_3v3": ["bottom", "left", "under", "top"],
     "softpower": ["under", "top", "bottom"],
     "pi_header": ["top", "under"],
     "halow": ["under", "bottom"],
@@ -50,6 +55,12 @@ PREF = {
     "debug": ["top", "left", "bottom", "under"],
 }
 NOT_UNDER = ("TP", "J5", "D2", "D3", "SW1", "J6")  # must stay reachable / visible
+# Switching cores (IC + inductor + hot-loop input caps): bottom edge only, away from GNSS (top right)
+# and from the HaLow card's RF end (left).
+POWER_HOT = {"U3", "L1", "C10", "C11", "C12", "C13", "U7", "L2", "C22", "C23", "C24", "C25", "C26"}
+# DC-side parts of the same stages: may sit under the card, next to the bottom edge
+POWER_NEAR = {"C14", "C15", "C16", "C19", "C27", "C28", "U4", "Q3", "C18", "U5", "U6", "Q4", "Q5",
+              "C20", "C21", "R22", "FB1", "C31"}
 # Power-stage parts stay outside the card (heat, switching noise, hot loops next to their IC)
 POWER_STAGE = {"U1", "Q1", "Q2", "D1", "C1", "C2", "C8", "C9", "R19", "C4", "R9", "C6", "C7",
                "U3", "L1", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "U4", "Q3", "C18", "C19",
@@ -59,7 +70,7 @@ POWER_STAGE = {"U1", "Q1", "Q2", "D1", "C1", "C2", "C8", "C9", "R19", "C4", "R9"
 
 def height(fp_name):
     rules = [(r"L_Coilcraft_XxL4030", 3.1), (r"ublox_MAX", 2.5), (r"D_SMB", 2.45),
-             (r"_1210_", 2.5), (r"_1206_", 1.8), (r"_0805_", 1.4), (r"_0603_", 0.9),
+             (r"_1210_", 2.5), (r"R_1206_", 0.65), (r"L_1206_", 1.1), (r"_1206_", 1.8), (r"_0805_", 1.4), (r"_0603_", 0.9),
              (r"_0402_", 0.6), (r"SOT-23", 1.15), (r"TSOT-23", 1.0), (r"SOT-583", 0.6),
              (r"SOIC-8", 1.75), (r"VSSOP", 1.1), (r"HSOP", 1.7), (r"QFN", 1.0), (r"NexFET", 1.1),
              (r"7343-20", 1.9), (r"U\.FL", 1.25), (r"JST_SH", 2.95), (r"EVQP7A", 3.6),
@@ -250,11 +261,13 @@ def main():
         mark(*b)
     occ_top = occ
     occ_back = np.zeros((NY, NX), dtype=np.int32)
-    for ref in ("J1", "J5", "J3", "H1", "H2", "H3", "H4"):   # parts with holes through the board
+    for ref in ("J1", "J5", "H1", "H2", "H3", "H4"):   # parts with holes through the board
         b = courtyard(fps[ref][1])
         x0, y0 = pcbnew.ToMM(b.GetLeft()) - OX, pcbnew.ToMM(b.GetTop()) - OY
         x1, y1 = pcbnew.ToMM(b.GetRight()) - OX, pcbnew.ToMM(b.GetBottom()) - OY
         occ_back[max(0, int(y0 / G)):int(math.ceil(y1 / G)), max(0, int(x0 / G)):int(math.ceil(x1 / G))] = 1
+    for hx, hy in ((J3_X + 0.0, J3_Y), (J3_X, J3_Y - 25.0)):  # mPCIe locating holes (NPTH)
+        occ_back[int((hy - 1.5) / G):int((hy + 1.5) / G), int((hx - 1.5) / G):int((hx + 1.5) / G)] = 1
     used = {r: 0.0 for r in REGIONS}
     placed_in, failed = {}, []
     order = [s for s, _ in D.SHEETS]
@@ -262,7 +275,7 @@ def main():
 
     def try_region(r, w, h):
         nonlocal occ
-        occ = occ_back if r == "back" else occ_top
+        occ = occ_back if r in BACK else occ_top
         rx0, ry0, rx1, ry1, _ = REGIONS[r]
         pre = np.pad(occ, ((1, 0), (1, 0))).cumsum(0).cumsum(1)
         cw, ch = int(math.ceil((w + GAP) / G)), int(math.ceil((h + GAP) / G))
@@ -302,11 +315,23 @@ def main():
             prefs = ["under"] + [r for r in prefs if r != "under"]
         if p.ref in POWER_STAGE:
             prefs = [r for r in prefs if r != "under"]
+        if p.sheet == "power_in" and p.ref in POWER_STAGE:
+            prefs = ["left", "top"]
+        if p.ref in POWER_HOT:
+            prefs = ["bottom", "left"]
+        elif p.ref in POWER_NEAR:
+            prefs = ["under_edge", "bottom", "left"]
         back = p.sym == "TP" and "Keystone" not in p.fp
         if back:
-            prefs = ["back"]
+            net = next(iter(p.pins.values()))
+            if net.startswith(("GNSS", "RTC", "3V3_GNSS", "3V3_SEC", "VRTC")):
+                prefs = ["back_R", "back_B", "back_L"]
+            elif net.startswith(("EF_", "LTC", "PWR", "VSYS", "EN_5V", "PG_5V")):
+                prefs = ["back_L", "back_B", "back_R"]
+            else:
+                prefs = ["back_B", "back_L", "back_R"]
         for r in prefs:
-            if (hgt > REGIONS[r][4] and r != "back") or (r == "under" and p.ref.startswith(NOT_UNDER)):
+            if (hgt > REGIONS[r][4] and r not in BACK) or (r.startswith("under") and p.ref.startswith(NOT_UNDER)):
                 continue
             ok = try_region(r, w, h)
             if ok:
@@ -334,9 +359,9 @@ def main():
     keepout(board, WIFI_KEEPOUT, "Pi4_WiFi_antenna_keepout_VERIFY")
     label(board, "Pi 4 Wi-Fi keep-out (verify)", 0.8, 13.0, pcbnew.Dwgs_User, 0.7)
     for r, (x0, y0, x1, y1, hmax) in REGIONS.items():
-        if r != "back":
+        if r not in BACK:
             rect(board, (x0, y0, x1, y1), pcbnew.Cmts_User, 0.1)
-    for r, (x0, y0, x1, y1, hm) in [(k, v) for k, v in REGIONS.items() if k != "back"]:
+    for r, (x0, y0, x1, y1, hm) in [(k, v) for k, v in REGIONS.items() if k not in BACK]:
         label(board, f"{r} {'(<=' + str(hm) + ' mm tall)' if hm < 99 else ''}", x0 + 0.3, y1 - 0.6, pcbnew.Cmts_User, 0.7)
     if failed:
         label(board, f"DID NOT FIT ({len(failed)})", BW + 12, -3, pcbnew.Cmts_User, 1.5)
