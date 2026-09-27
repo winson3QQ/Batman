@@ -117,3 +117,15 @@ KiCad 7 的命令列沒有 ERC（電氣規則檢查），上面這些自寫檢�
 **已知、接受的行為**（寫給使用者）：
 - 用 USB-C 開發時才插上電池（且沒焊 AUTO-ON），LTC2955 會以「關機」狀態啟動，把 HaLow 的 3.3 V 關掉 → 先插電池再插 USB-C，或按一下電源鍵。
 - LTC2955 開機遮蔽期間（最多 0.72 秒），HaLow 卡可能經 SPI 腳微量反向供電給 Pi。
+
+## 第一版擺位（M4 第 1 步，尚未走線）
+
+- **產生方式**：`python3 gen/gen_fp.py && python3 gen/gen_pcb.py`，會產生 `batman-hat.kicad_pcb`、[`out/floorplan.png`](out/floorplan.png) 與 [`out/floorplan-report.md`](out/floorplan-report.md)。
+- **固定位置的零件**依機構尺寸擺放：
+  - HAT 外框 65 × 56.5 mm
+  - 40-pin 排母（在背面）
+  - 4 個固定孔
+  - mPCIe 插座與卡片外框：卡片平躺在板子上方，插座在右側
+- **其他零件**依功能分區自動排，**卡片正下方只放 ≤ 1.9 mm 高**、不發熱、不需要摸得到的零件。
+- **自製封裝**：`batman.pretty` 裡的 mPCIe 插座是照連欣規格書畫的；RTC、超級電容、電池焊墊、固定柱是**佔位封裝**（標 PLACEHOLDER），送板廠前要依原廠焊墊圖重畫。
+- **Pi 4 Wi-Fi 天線禁佈區**的位置是推論，要對照 Pi 4 機構圖確認。
