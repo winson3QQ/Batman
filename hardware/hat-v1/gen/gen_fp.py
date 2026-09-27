@@ -3,7 +3,8 @@
 
 MiniPCIe_Lianxin_XDMP-052-A01_H5.2 is drawn from the Lianxin XDMP-052-A01
 drawing (recommended PCB layout, sheet 3). The others are PLACEHOLDERS
-sized from package outlines only; each carries a 'PLACEHOLDER' fab note
+sized from package outlines only (except RV-3028-C7, drawn from the Application
+Manual); each placeholder carries a 'PLACEHOLDER' fab note
 and must be redrawn from the manufacturer land pattern before fab.
 Origin of the mPCIe footprint = centre of the 1.60 mm locating hole
 (pin-1 side); pads face +y, the card extends toward -y.
@@ -77,10 +78,19 @@ def placeholder(name, w, h, pads, height, descr):
 def main():
     os.makedirs(OUT, exist_ok=True)
     mpcie()
-    # RV-3028-C7: 3.2 x 1.5 mm, 8 pads (brief); land pattern from Application Manual still needed
-    placeholder("MicroCrystal_RV-3028-C7", 3.2, 1.5,
-                [(i + 1, -1.2 + (i % 4) * 0.8, 0.85 if i < 4 else -0.85, 0.45, 0.6) for i in range(8)],
-                0.8, "Micro Crystal RV-3028-C7 3.2x1.5 mm")
+    # RV-3028-C7: Application Manual Rev 1.4 section 8.1 "recommended solder pad layout" (top view,
+    # counter-clockwise numbering): pads 0.5 x 0.8 mm, pitch 0.9 mm, rows 0.4 mm apart (centres +/-0.6 mm).
+    b = ""
+    xs = (-1.35, -0.45, 0.45, 1.35)
+    for i, x in enumerate(xs):
+        b += pad(i + 1, x, 0.6, 0.5, 0.8)          # pins 1-4, left to right
+        b += pad(8 - i, x, -0.6, 0.5, 0.8)         # pins 8-5 above them
+    b += rect("F.Fab", -1.6, -0.75, 1.6, 0.75, 0.1)
+    b += rect("F.CrtYd", -1.85, -1.25, 1.85, 1.25)
+    b += (f'  (fp_line (start -1.85 1.35) (end -1.1 1.35) (stroke (width 0.12) (type solid)) (layer "F.SilkS"))\n')
+    write("MicroCrystal_RV-3028-C7", b,
+          "Micro Crystal RV-3028-C7 3.2x1.5 mm, land pattern per Application Manual Rev 1.4 sec 8.1; lid = VSS",
+          h=0.8)
     placeholder("Seiko_CPH3225A", 3.2, 2.5, [(1, -1.25, 0, 1.0, 2.2), (2, 1.25, 0, 1.0, 2.2)],
                 0.9, "Seiko CPH3225A 3.2x2.5 mm")
     b = pad(1, -2.75, 0, 3.0, 5.0) + pad(2, 2.75, 0, 3.0, 5.0)

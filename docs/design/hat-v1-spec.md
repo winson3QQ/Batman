@@ -134,7 +134,7 @@ flowchart LR
 - **RV-3028-C7 設計細節**(產品簡介,使用者提供):
   - 腳位【事實,由方塊圖編號辨讀】:1 CLKOUT、2 INT、3 SCL、4 SDA、5 VSS、6 VBACKUP、7 VDD、8 EVI;封裝 3.2 × 1.5 mm、高 ≤ 0.8 mm,焊墊尺寸依簡介的建議圖。
   - 工作電壓 1.1–5.5 V、45 nA @ 3 V、±1 ppm @ 25 °C、I2C 400 kHz、內建備援切換與涓流充電【事實】。
-  - 接法:VDD = Pi 3.3 V;VBACKUP = CPH3225A 超級電容;CLKOUT、INT 不接(留測試點);**EVI(外部事件輸入)的閒置處理簡介沒寫**,待取得 Application Manual 確認;先留 0 Ω 到地的選配位置【決策】。
+  - 接法:VDD = 3V3_SEC;VBACKUP = CPH3225A 超級電容 + 100 nF;CLKOUT、INT 不接(留測試點);**EVI 經 100 kΩ 接地**(App Manual §7.1:不可空接、經電阻接 VSS)【事實】。超級電容經內部蕭特基(0.25 V)充到約 3.05 V,低於 CPH3225A 額定 3.3 V【事實 + 計算】;LSM 模式下可用到 2.0 V,以約 60 nA 估計**備援約 2 天**【推論】,需要更久就換大容量電容或充電電池。
 
 ### 5.2 ATECC608C-TFLXTLS
 
@@ -393,7 +393,9 @@ Raspberry Pi OS 先驗證,再移植到 OpenWrt / OpenMANET:
 dtparam=i2c_arm=on
 dtparam=i2c_arm_baudrate=100000   # 維持 100 kHz:400 kHz 時 ATECC608 的喚醒脈衝(寫位址 0x00)短於 60 µs 下限【推論,電路圖審查】
 dtoverlay=batman-hat-tpm          # 自製、自足(含 SPI1 腳位與 cs-gpios);不要再載 spi1-1cs
-dtoverlay=i2c-rtc,rv3028,trickle-resistor-ohms=3000,backup-switchover-mode=3
+dtoverlay=i2c-rtc,rv3028,trickle-resistor-ohms=3000,backup-switchover-mode=3   # 3 = LSM(BSM=11):超級電容經內部蕭特基只充到 ~3.05 V,與 VDD 3.3 V 太接近,
+                                   # App Manual §4.2.2 明言此時不建議 DSM(會反覆切換)【事實】
+# RV-3028 出廠預設 CLKOUT 輸出 32.768 kHz【事實,App Manual §4.4】→ 開機腳本寫 EEPROM 35h:FD=111 關閉
 dtoverlay=uart5                   # GPIO12/13;裝置名稱不要寫死,交給 gpsd 設定
 dtoverlay=pps-gpio,gpiopin=6
 dtoverlay=gpio-shutdown,gpio_pin=26

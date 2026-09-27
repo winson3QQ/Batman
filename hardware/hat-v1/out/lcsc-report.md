@@ -32,7 +32,7 @@ Origin column: company headquarters (user rule: flag China). All China-origin li
 | D2 | 1 | RED | LED_0402_1005Metric | C7420553 | DB | Chau Light | check | 4992 | 0.0089 | ZSR1-1105C-045-Z4 |
 | R9 | 1 | 10m 1% 0.5W | R_1206_3216Metric | C6730232 | DB | YAGEO | Taiwan | 281 | 0.0822 | PA1206FRE070R01Z; 3 candidates |
 | U2,U8 | 2 | INA226AIDGSR | VSSOP-10_3x3mm_P0.5mm |  | SEARCH |  |  |  |  | search JLC by MPN: INA226AIDGSR |
-| C5,C12,C25,C30,C50,C63,C64,C70,C71,C72,C74,C75,C81 | 13 | 100n 16V | C_0402_1005Metric | C1525 | BASIC-verify |  |  |  |  | check JLC shows: Samsung CL05B104KO5NNNC 100n 16V X7R |
+| C5,C12,C25,C30,C50,C63,C64,C70,C71,C72,C74,C75,C77,C81 | 14 | 100n 16V | C_0402_1005Metric | C1525 | BASIC-verify |  |  |  |  | check JLC shows: Samsung CL05B104KO5NNNC 100n 16V X7R |
 | R10,R11,R30 | 3 | 1M | R_0402_1005Metric | C26083 | BASIC-verify |  |  |  |  | check JLC shows: UNI-ROYAL 0402WGF1004TCE 1M 1% |
 | R12,R33,R35,R50,R53,R60,R61,R62,R63 | 9 | 10k | R_0402_1005Metric | C25744 | BASIC-verify |  |  |  |  | check JLC shows: UNI-ROYAL 0402WGF1002TCE 10k 1% |
 | U3 | 1 | LMR33640DDDAR | Texas_HSOP-8-1EP_3.9x4.9mm_P1.27mm_ThermalVias |  | SEARCH |  |  |  |  | search JLC by MPN: LMR33640DDDAR |

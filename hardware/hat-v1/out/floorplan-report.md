@@ -1,11 +1,11 @@
 # Floorplan report (first placement, no routing)
 
-Board 65.0 x 56.5 mm (Pi HAT). Placed 181 of 181 footprints.
+Board 65.0 x 56.5 mm (Pi HAT). Placed 183 of 183 footprints.
 
 | region | limit | used courtyard mm2 | region mm2 | fill |
 |---|---|---|---|---|
-| top | - | 192 | 598 | 32% |
-| under | <=1.9 mm | 444 | 1048 | 42% |
+| top | - | 207 | 598 | 35% |
+| under | <=1.9 mm | 448 | 1048 | 43% |
 | left | - | 86 | 295 | 29% |
 | bottom | - | 175 | 344 | 51% |
 | under_edge | <=1.9 mm | 138 | 214 | 65% |

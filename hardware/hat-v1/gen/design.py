@@ -392,12 +392,15 @@ part("U13", "RV3028", "RV-3028-C7", {
     1: "RTC_CLKOUT", 2: "RTC_INT_N", 3: "I2C1_SCL", 4: "I2C1_SDA", 5: "GND", 6: "VRTC",
     7: "3V3_SEC", 8: "RTC_EVI"},
     fp="batman:MicroCrystal_RV-3028-C7", mpn="RV-3028-C7 32.768kHz 1ppm TA QC", mfr="Micro Crystal",
-    tier="A", note="I2C 0x52; trickle charge enabled by the overlay (trickle-resistor-ohms)")
+    tier="A", note="I2C 0x52. App Manual: CLKOUT 32.768 kHz ON by default -> disable in EEPROM (FD=111); "
+    "backup mode LSM (BSM=11) because VBACKUP ~3.05 V is close to VDD (DSM not recommended, sec 4.2.2)")
 C("C75", "100n 16V", "3V3_SEC", "GND")
-R("R64", "100k", "RTC_EVI", "GND", note="EVI idle: verify against the RV-3028 Application Manual")
+R("R64", "100k", "RTC_EVI", "GND", note="EVI must not float: tie to VSS through a resistor (App Manual sec 7.1)")
 part("C76", "CP", "CPH3225A 11mF", {1: "VRTC", 2: "GND"},
      fp="batman:Seiko_CPH3225A", mpn="CPH3225A", mfr="Seiko Instruments",
-     note="RTC backup; rated 3.3 V vs 3V3_SEC up to 3.4 V: confirm with Seiko limit")
+     note="RTC backup: internal trickle path has a Schottky (0.25 V) -> charges to ~3.05 V, below the 3.3 V rating. "
+     "~2 days backup 3.05->2.0 V at ~60 nA (estimate)")
+C("C77", "100n 16V", "VRTC", "GND", note="VBACKUP decoupling close to the RTC (App Manual sec 7.3)")
 
 # ---------------------------------------------------------------------------
 # Sheet 8 -- GNSS
