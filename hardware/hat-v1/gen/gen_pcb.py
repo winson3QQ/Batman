@@ -45,10 +45,10 @@ PREF = {
     "pi_header": ["top", "under"],
     "halow": ["under", "bottom"],
     "security": ["under", "top"],
-    "gnss": ["top", "left"],
-    "debug": ["top", "left", "bottom"],
+    "gnss": ["top", "left", "under"],
+    "debug": ["top", "left", "bottom", "under"],
 }
-NOT_UNDER = ("TP", "J5", "D2", "D3", "SW1", "J6", "JP")  # must stay reachable / visible
+NOT_UNDER = ("TP", "J5", "D2", "D3", "SW1", "J6")  # must stay reachable / visible
 # Power-stage parts stay outside the card (heat, switching noise, hot loops next to their IC)
 POWER_STAGE = {"U1", "Q1", "Q2", "D1", "C1", "C2", "C8", "C9", "R19", "C4", "R9", "C6", "C7",
                "U3", "L1", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "U4", "Q3", "C18", "C19",
@@ -272,7 +272,16 @@ def main():
         return x, y
 
     todo = [(order.index(p.sheet), p, fp) for ref, (p, fp) in fps.items() if ref not in fixed]
-    todo.sort(key=lambda t: (t[0], -courtyard(t[2]).GetArea()))
+    def prio(t):
+        _, p, fp = t
+        if p.ref in POWER_STAGE:
+            k = 0
+        elif "Keystone" in p.fp:
+            k = 1                        # the clip-able pads the user asked to keep
+        else:
+            k = 2
+        return (k, t[0], -courtyard(fp).GetArea())
+    todo.sort(key=prio)
     for _, p, fp in todo:
         hgt = height(p.fp)
         cy = courtyard(fp)

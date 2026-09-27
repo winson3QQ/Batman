@@ -112,6 +112,15 @@ def check_gpio():
     info("GPIO table (spec 4.2) matches J2 for all 28 GPIOs")
 
 
+def check_header_probe():
+    j2 = next(p for p in D.PARTS if p.ref == "J2")
+    on_header = set(j2.pins.values())
+    for n in D.HEADER_PROBE:
+        if n not in on_header:
+            err(f"{n} is listed as probe-on-header but is not on J2")
+    info(f"{len(D.HEADER_PROBE)} signals are probed on the 40-pin header joints (no separate test point)")
+
+
 def check_tpm_testpoints():
     bad = [(p.ref, n) for p in D.PARTS if p.sym == "TP" for n in p.pins.values()
            if n and (n.startswith("TPM_") or n.startswith("SPI1_"))]
@@ -219,6 +228,7 @@ def main():
     check_single_pin_nets()
     check_gpio()
     check_tpm_testpoints()
+    check_header_probe()
     check_i2c()
     check_voltages()
     rows = check_setpoints()

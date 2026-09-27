@@ -60,17 +60,9 @@ R80,1,DNP 0R,R_0402_1005Metric,,,C,,DNP,VIO_SEL option; open = default I/O level
 R81,1,47R,R_1206_3216Metric,,,C,,JLCPCB,antenna short = 70 mA / 0.23 W (rated 0.25 W); 10 mA antenna sees ~2.9 V. Recheck vs integration manual
 SW1,1,on-board PWR,SW_SPST_EVQP7A,EVQ-P7A01P,Panasonic,C,,JLCPCB,low-profile side button for the bench
 TP1,1,VBAT 6-17V,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
-TP2,1,VSYS 6-17V,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
-TP3,1,5V 5.10-5.25,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
-TP4,1,5V_PI 5.0-5.2,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
-TP5,1,OR 5-17V,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
-TP6,1,3V3 3.25-3.40,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
-TP7,1,3V3_MPCIE 3.2-3.4,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
-TP8,1,3V3_PI 3.2-3.4,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
-TP9,1,3V3_SEC 3.2-3.4,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
-TP10,1,3V3_GNSS 3.2-3.4,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
-TP11,1,VRTC 0-3.3,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
-"TP12,TP13,TP14,TP15",4,GND,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
+TP2,1,5V 5.10-5.25,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
+TP3,1,3V3 HaLow 3.2-3.4,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
+TP4,1,GND,TestPoint_Keystone_5015_Micro-Minature,,,C,,JLCPCB,
 U1,1,TPS26631RGER,Texas_RGE0024H_VQFN-24-1EP_4x4mm_P0.5mm_EP2.7x2.7mm_ThermalVias,TPS26631RGER,TI,B,,JLCPCB,MODE=GND auto-retry; SHDN floats (2.7 V open-circuit) = enabled; IMON unused
 "U2,U8",2,INA226AIDGSR,VSSOP-10_3x3mm_P0.5mm,INA226AIDGSR,TI,B,,JLCPCB,I2C 0x40 (A0=A1=GND): whole-node current + battery voltage
 U3,1,LMR33640DDDAR,Texas_HSOP-8-1EP_3.9x4.9mm_P1.27mm_ThermalVias,LMR33640DDDAR,TI,B,,JLCPCB,"1 MHz, 4 A"

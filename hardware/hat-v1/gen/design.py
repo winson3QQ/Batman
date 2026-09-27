@@ -438,29 +438,34 @@ for i, (tc, net) in enumerate([("TC_TX", "CONSOLE_TX"), ("TC_RX", "CONSOLE_RX"),
     R(f"R{40 + i}", "0R", net, tc,
       note="R40-R47 debug links: fitted on dev boards, NOT fitted on production (HaLow keys cross SPI0)"
       if i == 0 else "")
-POWER_TPS = [  # net, silkscreen text with the expected reading
-    ("VBAT_RAW", "VBAT 6-17V"), ("VSYS", "VSYS 6-17V"), ("5V_BUCK", "5V 5.10-5.25"),
-    ("5V_PI", "5V_PI 5.0-5.2"), ("OR_NODE", "OR 5-17V"), ("3V3_BUCK", "3V3 3.25-3.40"),
-    ("3V3_MPCIE", "3V3_MPCIE 3.2-3.4"), ("3V3_PI", "3V3_PI 3.2-3.4"),
-    ("3V3_SEC", "3V3_SEC 3.2-3.4"), ("3V3_GNSS", "3V3_GNSS 3.2-3.4"), ("VRTC", "VRTC 0-3.3"),
+# Test points (user decision 2026-09-27): clip-able Keystone pads only for battery, 5 V, the
+# HaLow 3.3 V and one GND; everything else is a 1.5 / 1.0 mm probe pad. Signals that reach the
+# 40-pin header are probed on the header's solder joints (exposed on the top side) instead.
+POWER_TPS = [  # net, silkscreen text with the expected reading, clip-able
+    ("VBAT_RAW", "VBAT 6-17V", True), ("5V_BUCK", "5V 5.10-5.25", True),
+    ("3V3_MPCIE", "3V3 HaLow 3.2-3.4", True), ("GND", "GND", True),
+    ("VSYS", "VSYS 6-17V", False), ("5V_PI", "5V_PI 5.0-5.2", False), ("OR_NODE", "OR 5-17V", False),
+    ("3V3_BUCK", "3V3_BUCK 3.25-3.40", False), ("3V3_PI", "3V3_PI 3.2-3.4", False),
+    ("3V3_SEC", "3V3_SEC 3.2-3.4", False), ("3V3_GNSS", "3V3_GNSS 3.2-3.4", False),
+    ("VRTC", "VRTC 0-3.3", False), ("GND", "GND", False),
 ]
-for i, (net, txt) in enumerate(POWER_TPS, start=1):
-    TP(f"TP{i}", net, txt, big=True)
-for i in range(4):
-    TP(f"TP{len(POWER_TPS) + 1 + i}", "GND", "GND", big=True)
-SIGNAL_TPS = [
-    "I2C1_SDA", "I2C1_SCL", "ID_SD", "ID_SC", "UART5_TX", "UART5_RX", "GNSS_PPS",
-    "GNSS_RST_N", "GNSS_SAFEBOOT_N", "PWR_BTN_N", "PWR_INT_N", "LTC_KILL_N", "KILL_REQ",
-    "LTC_ENB", "EN_5V", "EN_3V3", "PG_5V", "BAT_PRESENT_N", "EF_FLT_N", "EF_SHDN",
-    "INA_ALERT_N", "RTC_CLKOUT", "RTC_INT_N", "HALOW_RESET_N", "HALOW_WAKE",
+for i, (net, txt, big) in enumerate(POWER_TPS, start=1):
+    TP(f"TP{i}", net, txt, big=big) if big else part(
+        f"TP{i}", "TP", txt, {1: net}, fp="TestPoint:TestPoint_Pad_D1.5mm")
+SIGNAL_TPS = [  # only nets that are NOT on the 40-pin header
+    "GNSS_RST_N", "GNSS_SAFEBOOT_N", "PWR_BTN_N", "LTC_KILL_N", "LTC_ENB", "EN_5V", "EN_3V3",
+    "PG_5V", "EF_FLT_N", "EF_SHDN", "RTC_CLKOUT", "RTC_INT_N",
 ]
-n0 = len(POWER_TPS) + 5
+n0 = len(POWER_TPS) + 1
 for i, net in enumerate(SIGNAL_TPS):
     TP(f"TP{n0 + i}", net, net)
 n1 = n0 + len(SIGNAL_TPS)
 for i, (net, txt) in enumerate([("EF_OUT", "K1+ (R9)"), ("VSYS", "K1- (R9)"),
                                 ("3V3_BUCK", "K2+ (R22)"), ("3V3_SH", "K2- (R22)")]):
-    TP(f"TP{n1 + i}", net, txt, note="Kelvin pad on the shunt: mV x 100 = mA (R9)")
+    TP(f"TP{n1 + i}", net, txt, note="Kelvin pads on the shunts: R9 mV x 100 = mA, R22 mV x 50 = mA"
+       if i == 0 else "")
+HEADER_PROBE = ["I2C1_SDA", "I2C1_SCL", "ID_SD", "ID_SC", "UART5_TX", "UART5_RX", "GNSS_PPS",
+                "PWR_INT_N", "KILL_REQ", "BAT_PRESENT_N", "INA_ALERT_N", "HALOW_RESET_N", "HALOW_WAKE"]
 
 # Power flags: tell KiCad ERC which nets are supplies (no electrical content).
 POWER_NETS = ["GND", "VBAT_RAW", "EF_IN", "EF_OUT", "VSYS", "5V_BUCK", "5V_PI", "OR_NODE",
