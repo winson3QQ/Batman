@@ -599,7 +599,7 @@ def stitch_gnd(board, pitch=3.0, via_d=0.6, via_h=0.3, clear=0.2):
             hh = pcbnew.ToMM(pd.GetBoundingBox().GetHeight()) / 2
             done = False
             # normal 0.6/0.3 via first, then a 0.5/0.25 via (board minimum)
-            for vd, vh, offs in ((via_d, via_h, (0.55, 0.8, 1.1)), (0.5, 0.25, (0.4, 0.6, 0.8))):
+            for vd, vh, offs in ((via_d, via_h, (0.55, 0.8, 1.1, 1.5, 2.0)), (0.5, 0.25, (0.4, 0.6, 0.8, 1.2, 1.6))):
                 for d in offs:
                     for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)):
                         x, y = cx + dx * (hw + d), cy + dy * (hh + d)
@@ -670,11 +670,12 @@ def finish(ses_path, replace=False):
         for item in zones + tracks:
             board.Remove(item)
     n_tr, n_via = import_ses(board, ses_path)
-    widened = fatten_power(board)
     gnd = board.FindNet("GND")
     for layer in (pcbnew.F_Cu, pcbnew.In2_Cu, pcbnew.B_Cu):
         add_zone(board, gnd, layer, name=f"GND_{board.GetLayerName(layer)}")
+    # GND vias before widening: fat power tracks on In2 / B.Cu would otherwise take every via spot
     stitched = stitch_gnd(board)
+    widened = fatten_power(board)
     for z in board.Zones():   # In1 is the reference plane: solid to every GND pad
         if z.GetLayer() == pcbnew.In1_Cu:
             z.SetPadConnection(pcbnew.ZONE_CONNECTION_FULL)
@@ -684,3 +685,113 @@ def finish(ses_path, replace=False):
     rpt = os.path.join(OUT, "route", "drc.txt")
     pcbnew.WriteDRCReport(board, rpt, pcbnew.EDA_UNITS_MILLIMETRES, True)
     return n_tr, n_via, widened, rpt
+
+
+def clear_for_gnd(via_d=0.6, via_h=0.3, clear=0.2):
+    """For GND pads the router left without a via: put one next to the pad (checked against
+    F.Cu copper and hole spacing only), then rip up the In2 / B.Cu tracks it lands on, so the
+    next incremental pass re-routes those nets around it. Returns (vias added, tracks removed)."""
+    from shapely.geometry import Point, LineString, box as sbox
+    board = pcbnew.LoadBoard(PCB)
+    gnd = board.FindNet("GND")
+    f_obst, holes, deep = [], [], []
+    for fp in board.GetFootprints():
+        for pd in fp.Pads():
+            b = pd.GetBoundingBox()
+            g = sbox(pcbnew.ToMM(b.GetLeft()), pcbnew.ToMM(b.GetTop()), pcbnew.ToMM(b.GetRight()),
+                     pcbnew.ToMM(b.GetBottom()))
+            if pd.GetAttribute() != pcbnew.PAD_ATTRIB_SMD:
+                holes.append(g)
+            elif pd.GetNetname() != "GND" and pd.IsOnLayer(pcbnew.F_Cu):
+                f_obst.append(g)
+            elif pd.GetNetname() != "GND":
+                deep.append(g)   # B.Cu SMD pads (probe pads) cannot move
+    vias_other, gvias = [], []
+    for t in board.GetTracks():
+        if t.GetClass() == "PCB_VIA":
+            p = t.GetPosition()
+            g = Point(pcbnew.ToMM(p.x), pcbnew.ToMM(p.y)).buffer(pcbnew.ToMM(t.GetWidth()) / 2)
+            (gvias if t.GetNetname() == "GND" else vias_other).append(g)
+        elif t.GetNetname() != "GND" and t.GetLayer() == pcbnew.F_Cu:
+            s, e = t.GetStart(), t.GetEnd()
+            f_obst.append(LineString([(pcbnew.ToMM(s.x), pcbnew.ToMM(s.y)), (pcbnew.ToMM(e.x), pcbnew.ToMM(e.y))])
+                          .buffer(pcbnew.ToMM(t.GetWidth()) / 2))
+    keep = [sbox(OX + x0, OY + y0, OX + x1, OY + y1) for x0, y0, x1, y1 in (G.WIFI_KEEPOUT, G.WIFI_KEEPOUT2)]
+    for fp in board.GetFootprints():
+        for z in fp.Zones():
+            if z.GetIsRuleArea() and z.GetDoNotAllowVias():
+                b = z.GetBoundingBox()
+                keep.append(sbox(pcbnew.ToMM(b.GetLeft()), pcbnew.ToMM(b.GetTop()),
+                                 pcbnew.ToMM(b.GetRight()), pcbnew.ToMM(b.GetBottom())))
+    inner = sbox(OX + 0.8, OY + 0.8, OX + BW - 0.8, OY + BH - 0.8)
+    # which GND SMD pads are already tied to a via by a GND track or sit on one
+    gtracks = []
+    for t in board.GetTracks():
+        if t.GetClass() != "PCB_VIA" and t.GetNetname() == "GND":
+            s, e = t.GetStart(), t.GetEnd()
+            gtracks.append(LineString([(pcbnew.ToMM(s.x), pcbnew.ToMM(s.y)), (pcbnew.ToMM(e.x), pcbnew.ToMM(e.y))])
+                           .buffer(pcbnew.ToMM(t.GetWidth()) / 2))
+    added, rip = 0, set()
+    for fp in board.GetFootprints():
+        for pd in fp.Pads():
+            if pd.GetNetname() != "GND" or pd.GetAttribute() != pcbnew.PAD_ATTRIB_SMD \
+                    or not pd.IsOnLayer(pcbnew.F_Cu):
+                continue
+            b = pd.GetBoundingBox()
+            pg = sbox(pcbnew.ToMM(b.GetLeft()), pcbnew.ToMM(b.GetTop()), pcbnew.ToMM(b.GetRight()),
+                      pcbnew.ToMM(b.GetBottom()))
+            if any(v.intersects(pg) for v in gvias) or any(t.intersects(pg) for t in gtracks):
+                continue
+            cx, cy = pg.centroid.x, pg.centroid.y
+            hw, hh = (pg.bounds[2] - pg.bounds[0]) / 2, (pg.bounds[3] - pg.bounds[1]) / 2
+            best = None
+            for d in (0.55, 0.8, 1.1, 1.5):
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)):
+                    x, y = cx + dx * (hw + d), cy + dy * (hh + d)
+                    c = Point(x, y).buffer(via_d / 2 + clear)
+                    link = LineString([(cx, cy), (x, y)]).buffer(0.1 + clear)
+                    if not inner.contains(c) or any(k.intersects(c) for k in keep):
+                        continue
+                    if any(o.intersects(c) or o.intersects(link) for o in f_obst):
+                        continue
+                    if any(h.buffer(0.35).intersects(c) for h in holes) \
+                            or any(v.buffer(0.3).intersects(c) for v in vias_other + gvias) \
+                            or any(o.intersects(c) for o in deep):
+                        continue
+                    best = (x, y)
+                    break
+                if best:
+                    break
+            if not best:
+                print("no spot for", fp.GetReference(), pd.GetNumber())
+                continue
+            x, y = best
+            v = pcbnew.PCB_VIA(board)
+            v.SetPosition(pcbnew.VECTOR2I(MM(x), MM(y)))
+            v.SetWidth(MM(via_d))
+            v.SetDrill(MM(via_h))
+            v.SetNet(gnd)
+            board.Add(v)
+            t = pcbnew.PCB_TRACK(board)
+            t.SetStart(pd.GetPosition())
+            t.SetEnd(pcbnew.VECTOR2I(MM(x), MM(y)))
+            t.SetWidth(MM(0.25))
+            t.SetLayer(pcbnew.F_Cu)
+            t.SetNet(gnd)
+            board.Add(t)
+            gvias.append(Point(x, y).buffer(via_d / 2))
+            added += 1
+            c = Point(x, y).buffer(via_d / 2 + clear)
+            for tr in board.GetTracks():
+                if tr.GetClass() == "PCB_VIA" or tr.GetNetname() == "GND" or tr.GetLayer() == pcbnew.F_Cu:
+                    continue
+                s, e = tr.GetStart(), tr.GetEnd()
+                g = LineString([(pcbnew.ToMM(s.x), pcbnew.ToMM(s.y)), (pcbnew.ToMM(e.x), pcbnew.ToMM(e.y))]) \
+                    .buffer(pcbnew.ToMM(tr.GetWidth()) / 2)
+                if g.intersects(c):
+                    rip.add(tr.m_Uuid.AsString())
+    gone = [tr for tr in board.GetTracks() if tr.m_Uuid.AsString() in rip]
+    for tr in gone:
+        board.Remove(tr)
+    board.Save(PCB)
+    return added, len(gone)
