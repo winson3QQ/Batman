@@ -23,6 +23,9 @@
 
 ## 2. 範圍
 
+**使用情境(使用者決策,2026-09-28)**:v1 為**可移動的手持裝置**設計(電池 + 面板按鍵開關機)。無人值守站台**用市電**:12 V 變壓器接電池焊墊 + AUTO-ON 跳線;市電斷電再恢復時 VSYS 從 0 升起 = LTC2955 ON 腳的上升緣 → 自動開機【事實,LTC2955 規格書:開機需 ON 上升緣或按鍵;S3 模擬「12 V adapter, AUTO-ON closed」通過】。因此不需要 RTC 定時喚醒;`batpower` 的電池種類設為「變壓器」時不得執行低電量 `halt`(否則要人按鍵才能恢復)【推論】。
+**擴充範圍(使用者決策)**:只考慮 **OpenVLM VLM-KW(PTT 音訊)** 與 **LoRa(Meshtastic)**,兩者都走 Pi 4 的 USB,HAT 不預留 GPIO / I2C 擴充接頭(§8)。
+
 | 放上 HAT | 不放(理由見 §8) |
 |---|---|
 | mPCIe 插槽(Wio-WM6108,腳位照舊) | PTT 音訊(CM108B) |
@@ -513,7 +516,7 @@ core_freq_min=500                 # SPI1(aux)與 mini-UART 的時脈來自 core 
 | 項目 | 理由 | 可信度 |
 |---|---|---|
 | **PTT 音訊** | Pi 4 的 USB 不在 40-pin 上 → CM108B 要一條 USB 線接回 Pi;改用 I2S 會撞 TPM 的 SPI1(GPIO18–21),且 openmanetd 只認 OpenVLM 的 USB-HID PTT | 【事實】腳位;【推論】取捨 |
-| **LoRa** | ① 面積不夠;② #181 實測 LoRa 發射讓本機 HaLow 吞吐掉 50–96%(兩板分開時);③ 已無空 UART / GPIO | ①【推論】②③【事實】 |
+| **LoRa** | ① 面積不夠;② #181 實測 LoRa 發射讓本機 HaLow 吞吐掉 50–96%(兩板分開時);③ 已無空 UART / GPIO → **擴充方式:獨立的 Meshtastic 裝置經 USB 序列埠接 Pi**(使用者決策 2026-09-28);常見板子 RAK、Heltec、LILYGO、Seeed 皆為中國公司,選型時另行評估 | ①【推論】②③【事實】 |
 
 ## 9. 風險與待驗證
 
