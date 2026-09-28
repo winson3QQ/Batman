@@ -270,6 +270,13 @@ def main(route=True):
         mark(side, x, y, x + w, y + h)
         placed.add(ref)
 
+    # hand nudges recorded by nudge_for_gnd() (routing fixes), applied on top of the packer
+    import json
+    if os.path.exists(NUDGE_FILE):
+        for ref, (dx, dy) in json.load(open(NUDGE_FILE)).items():
+            fp = fps[ref][1]
+            p = fp.GetPosition()
+            fp.SetPosition(pcbnew.VECTOR2I(p.x + MM(dx), p.y + MM(dy)))
     # drawings (card outline, keep-outs, regions)
     G.rect(board, G.CARD, pcbnew.Dwgs_User, 0.25)
     G.keepout(board, G.WIFI_KEEPOUT, "Pi4_WiFi_antenna_keepout_VERIFY")
@@ -795,3 +802,155 @@ def clear_for_gnd(via_d=0.6, via_h=0.3, clear=0.2):
         board.Remove(tr)
     board.Save(PCB)
     return added, len(gone)
+
+
+NUDGE_FILE = os.path.join(HERE, "gen", "nudges.json")
+
+
+def nudge_for_gnd(targets, via_d=0.6, via_h=0.3, clear=0.2, steps=(0.25, 0.5, 0.75, 1.0), rip_front=False):
+    """Hand-placement helper for GND pads the router could not stitch. For each (ref, pad):
+    shift the part by <= 1 mm so a GND via fits beside that pad on F.Cu, rip up every track
+    touching the part (the next incremental pass re-routes it) and the In2 / B.Cu tracks under
+    the new via, then add the via + link. Moves are recorded in gen/nudges.json so a fresh
+    placement run reproduces them. Returns {ref: (dx, dy)} and the refs it could not fix."""
+    import json
+    from shapely.geometry import Point, LineString, box as sbox
+    board = pcbnew.LoadBoard(PCB)
+    gnd = board.FindNet("GND")
+    ft = lambda b: sbox(pcbnew.ToMM(b.GetLeft()), pcbnew.ToMM(b.GetTop()),  # noqa: E731
+                        pcbnew.ToMM(b.GetRight()), pcbnew.ToMM(b.GetBottom()))
+    keep = [sbox(OX + x0, OY + y0, OX + x1, OY + y1) for x0, y0, x1, y1 in (G.WIFI_KEEPOUT, G.WIFI_KEEPOUT2)]
+    for fp in board.GetFootprints():
+        for z in fp.Zones():
+            if z.GetIsRuleArea():
+                keep.append(ft(z.GetBoundingBox()))
+    inner = sbox(OX + 0.8, OY + 0.8, OX + BW - 0.8, OY + BH - 0.8)
+    try:
+        nudges = json.load(open(NUDGE_FILE))
+    except (OSError, ValueError):
+        nudges = {}
+    done, failed = {}, []
+    tracks = list(board.GetTracks())   # one snapshot: SWIG iterators break after a Remove()
+    removed = set()
+    added = []                          # (kind, geometry) of vias / links placed in this run
+
+    def key(t):   # SWIG does not expose m_Uuid here: identify a track by its geometry
+        s, e = t.GetStart(), t.GetEnd()
+        return (s.x, s.y, e.x, e.y, t.GetLayer(), t.GetNetCode())
+
+    def seg(t):
+        s, e = t.GetStart(), t.GetEnd()
+        return LineString([(pcbnew.ToMM(s.x), pcbnew.ToMM(s.y)), (pcbnew.ToMM(e.x), pcbnew.ToMM(e.y))]) \
+            .buffer(pcbnew.ToMM(t.GetWidth()) / 2)
+
+    for ref, pn in targets:
+        fp = board.FindFootprintByReference(ref)
+        pad = [p for p in fp.Pads() if p.GetNumber() == pn][0]
+        own = [ft(p.GetBoundingBox()) for p in fp.Pads()]
+        live = [t for t in tracks if key(t) not in removed]
+        mine = [t for t in live if t.GetClass() != "PCB_VIA" and any(seg(t).intersects(o) for o in own)]
+        mine_ids = {key(t) for t in mine}
+        fp.BuildCourtyardCaches()
+        side = pcbnew.F_CrtYd if fp.GetLayer() == pcbnew.F_Cu else pcbnew.B_CrtYd
+        others = []
+        for o in board.GetFootprints():
+            if o.GetReference() == ref or o.GetLayer() != fp.GetLayer():
+                continue
+            o.BuildCourtyardCaches()
+            c = o.GetCourtyard(side)
+            if c.OutlineCount():
+                others.append(ft(c.BBox()))
+        f_obst, holes = [], []
+        for o in board.GetFootprints():
+            for p in o.Pads():
+                if o.GetReference() == ref:
+                    continue
+                g = ft(p.GetBoundingBox())
+                if p.GetAttribute() != pcbnew.PAD_ATTRIB_SMD:
+                    holes.append(g)
+                elif p.IsOnLayer(pcbnew.F_Cu) and p.GetNetname() != "GND":
+                    f_obst.append(g)
+        vias = [g for k, g in added if k == "via"]
+        f_obst += [g for k, g in added if k == "link"]
+        for t in live:
+            if t.GetClass() == "PCB_VIA":
+                p = t.GetPosition()
+                vias.append(Point(pcbnew.ToMM(p.x), pcbnew.ToMM(p.y)).buffer(pcbnew.ToMM(t.GetWidth()) / 2))
+            elif t.GetLayer() == pcbnew.F_Cu and t.GetNetname() != "GND" and key(t) not in mine_ids \
+                    and not rip_front:   # rip_front: F.Cu tracks may be ripped too, only pads are fixed
+                f_obst.append(seg(t))
+        pos0 = fp.GetPosition()
+        best = None
+        for d in (0.0,) + tuple(steps):
+            for dx, dy in (((0, 0),) if d == 0 else ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1))):
+                fp.SetPosition(pcbnew.VECTOR2I(pos0.x + MM(dx * d), pos0.y + MM(dy * d)))
+                fp.BuildCourtyardCaches()
+                cy = fp.GetCourtyard(side)
+                cyb = ft(cy.BBox()) if cy.OutlineCount() else ft(fp.GetBoundingBox(False, False))
+                if not inner.contains(cyb) or any(cyb.intersects(o) for o in others) \
+                        or any(cyb.intersects(k) for k in keep):
+                    continue
+                newpads = [ft(p.GetBoundingBox()) for p in fp.Pads()]
+                if any(n.buffer(clear).intersects(o) for n in newpads for o in f_obst):
+                    continue
+                pg = ft(pad.GetBoundingBox())
+                cx, cy0 = pg.centroid.x, pg.centroid.y
+                hw, hh = (pg.bounds[2] - pg.bounds[0]) / 2, (pg.bounds[3] - pg.bounds[1]) / 2
+                for off in (0.55, 0.8, 1.1):
+                    for vx, vy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)):
+                        x, y = cx + vx * (hw + off), cy0 + vy * (hh + off)
+                        c = Point(x, y).buffer(via_d / 2 + clear)
+                        link = LineString([(cx, cy0), (x, y)]).buffer(0.125 + clear)
+                        if not inner.contains(c) or any(k.intersects(c) for k in keep):
+                            continue
+                        if any(o.intersects(c) or o.intersects(link) for o in f_obst):
+                            continue
+                        if any(n.intersects(c) for i, n in enumerate(newpads)
+                               if list(fp.Pads())[i].GetNumber() != pn):
+                            continue
+                        if any(h.buffer(0.35).intersects(c) for h in holes) or any(v.buffer(0.3).intersects(c) for v in vias):
+                            continue
+                        best = (dx * d, dy * d, x, y)
+                        break
+                    if best:
+                        break
+                if best:
+                    break
+            if best:
+                break
+        if not best:
+            fp.SetPosition(pos0)
+            failed.append(ref)
+            continue
+        mx, my, x, y = best
+        fp.SetPosition(pcbnew.VECTOR2I(pos0.x + MM(mx), pos0.y + MM(my)))
+        removed |= mine_ids
+        v = pcbnew.PCB_VIA(board)
+        v.SetPosition(pcbnew.VECTOR2I(MM(x), MM(y)))
+        v.SetWidth(MM(via_d))
+        v.SetDrill(MM(via_h))
+        v.SetNet(gnd)
+        board.Add(v)
+        t = pcbnew.PCB_TRACK(board)
+        t.SetStart(pad.GetPosition())
+        t.SetEnd(pcbnew.VECTOR2I(MM(x), MM(y)))
+        t.SetWidth(MM(0.25))
+        t.SetLayer(pcbnew.F_Cu)
+        t.SetNet(gnd)
+        board.Add(t)
+        added.append(("via", Point(x, y).buffer(via_d / 2)))
+        added.append(("link", LineString([(cx, cy0), (x, y)]).buffer(0.125)))
+        c = Point(x, y).buffer(via_d / 2 + clear)
+        lk = LineString([(cx, cy0), (x, y)]).buffer(0.125 + clear)
+        removed |= {key(tr) for tr in live if tr.GetClass() != "PCB_VIA" and tr.GetNetname() != "GND"
+                    and (seg(tr).intersects(c) if tr.GetLayer() != pcbnew.F_Cu
+                         else rip_front and (seg(tr).intersects(c) or seg(tr).intersects(lk)))}
+        prev = nudges.get(ref, [0, 0])
+        nudges[ref] = [round(prev[0] + mx, 3), round(prev[1] + my, 3)]
+        done[ref] = (mx, my)
+    for t in tracks:
+        if t.GetClass() != "PCB_VIA" and key(t) in removed:
+            board.Remove(t)
+    board.Save(PCB)
+    json.dump(nudges, open(NUDGE_FILE, "w"), indent=1, sort_keys=True)
+    return done, failed
