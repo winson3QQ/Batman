@@ -127,6 +127,15 @@ def main():
             if overlap(B.cy(a), B.cy(b), tol=0.01):
                 ov = area(inter(B.cy(a), B.cy(b)))
                 check(False, f"courtyard overlap {a} x {b} ({ov:.2f} mm2)")
+    back = [r for r in placed if fp[r]["back"] and r != "J2"]   # back-side pads (r2 review: checker ignored the back)
+    for i, a in enumerate(back):
+        for b in back[i + 1:]:
+            if overlap(B.cy(a), B.cy(b), tol=0.01):
+                check(False, f"back courtyard overlap {a} x {b}")
+    for r in back:
+        for name, k in BACK_KEEPOUTS.items():
+            if overlap(B.cy(r), k, tol=0.01):
+                check(False, f"back part {r} in back keep-out '{name}'")
     # 2. board edge + keep-outs + card height
     for r in front:
         c = B.cy(r)

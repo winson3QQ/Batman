@@ -179,6 +179,36 @@ def main():
         nc.SetClearance(MM(max(0.2, pcbnew.ToMM(nc.GetClearance()))))
         nc.SetViaDiameter(MM(0.8))
         nc.SetViaDrill(MM(0.3))
+    _ra = router.rule_areas
+
+    def rule_areas_with_fp(b):
+        out = _ra(b)
+        for f in b.GetFootprints():
+            for z in f.Zones():
+                if not z.GetIsRuleArea():
+                    continue
+                poly = rt.polyset_to_shapely(z.Outline())
+                ls = [l for l in rt.CU if z.IsOnLayer(l)]
+                out.append((ls, z.GetDoNotAllowTracks(), z.GetDoNotAllowVias(), poly, f"{f.GetReference()}:{z.GetZoneName()}"))
+        return out
+    router.rule_areas = rule_areas_with_fp
+    # provisional standoff drill keep-outs (all layers)
+    for cx, cy, r in es.get("standoff_keepouts", []):
+        z = pcbnew.ZONE(board)
+        z.SetIsRuleArea(True)
+        z.SetDoNotAllowTracks(True)
+        z.SetDoNotAllowVias(True)
+        z.SetDoNotAllowCopperPour(True)
+        z.SetDoNotAllowPads(False)
+        z.SetDoNotAllowFootprints(False)
+        z.SetLayerSet(pcbnew.LSET.AllCuMask())
+        z.SetZoneName("standoff_npth")
+        ol = z.Outline()
+        ol.NewOutline()
+        import math as _m
+        for k in range(24):
+            ol.Append(MM(cx + O + r * _m.cos(k * _m.pi / 12)), MM(cy + O + r * _m.sin(k * _m.pi / 12)))
+        board.Add(z)
     # 3. planned pours + the In1 GND plane
     for p in es["pours"]:
         for i, r in enumerate(p["rects"]):
@@ -250,6 +280,29 @@ def main():
             log.append(("route", net, f"ok ({n} links)"))
         except Exception as e:
             log.append(("route", net, f"FAIL {e}"))
+    # 5b. every remaining multi-pad net (G2 pre-check), shortest span first
+    rest = es.get("route_rest")
+    if rest:
+        done = {i["net"] for i in es["routes"]} | set(rest.get("skip", []))
+        span = {}
+        for f in board.GetFootprints():
+            for p in f.Pads():
+                n = p.GetNetname()
+                if n and n not in done:
+                    span.setdefault(n, []).append((pcbnew.ToMM(p.GetPosition().x), pcbnew.ToMM(p.GetPosition().y)))
+        nets = [n for n, pts in span.items() if len(pts) > 1]
+        nets.sort(key=lambda n: max(abs(a[0] - b[0]) + abs(a[1] - b[1]) for a in span[n] for b in span[n]))
+        first = [n for n in rest.get("first", []) if n in nets]
+        nets = first + [n for n in nets if n not in first]
+        for net in nets:
+            kw = dict(RULE)
+            if net in rest.get("wide", {}):
+                kw["width"] = rest["wide"][net]
+            try:
+                n = router.connect_all(board, net, max_iter=60, margin=rest.get("margin", 10.0), **kw)
+                log.append(("rest", net, f"ok ({n} links)"))
+            except Exception as e:
+                log.append(("rest", net, f"FAIL {e}"))
     pcbnew.ZONE_FILLER(board).Fill(board.Zones())
     out = os.path.join(HERE, "escape.kicad_pcb")
     rpt = os.path.join(HERE, "escape-drc.rpt")
