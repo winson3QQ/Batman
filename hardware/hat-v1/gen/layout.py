@@ -35,7 +35,7 @@ ANCHORS = {
     # --- left column, battery enters bottom-left and flows up (user decision: 5 V buck at the header) ---
     "D1": (4.1, 38.9, 0), "Q1": (2.3, 34.3, 0), "Q2": (6.3, 34.3, 0),
     "C8": (2.6, 30.6, 0), "C33": (2.6, 27.2, 0), "R19": (6.65, 29.3, 90), "C1": (7.3, 25.85, 90),
-    "U1": (3.6, 22.3, 0), "R9": (2.6, 18.35, 0), "C4": (7.1, 18.0, 90), "C6": (2.6, 15.5, 0),
+    "U1": (3.6, 22.3, 0), "R9": (2.6, 18.55, 0), "C4": (7.3, 17.9, 90), "C6": (2.6, 15.75, 0),
     # --- top-left: 5 V buck right next to header pins 2/4 ---
     "L1": (15.0, 13.9, 0), "U3": (21.2, 14.4, 180), "C10": (27.0, 14.4, 90),
     "Q3": (15.0, 8.45, 0), "U4": (19.6, 8.4, 0),
@@ -68,6 +68,8 @@ def build_board():
         board.Add(fp)
         for pad in fp.Pads():
             net = p.pins.get(pad.GetNumber())
+            if not pad.GetNumber() and p.sym == "NMOS_SON8" and pad.IsOnLayer(pcbnew.F_Cu):
+                net = p.pins.get("5")   # stock NexFET footprint leaves the drain leads unnumbered
             if net:
                 if net not in nets:
                     nets[net] = pcbnew.NETINFO_ITEM(board, net)
@@ -165,6 +167,10 @@ def main(route=True):
     for hx, hy in G.CARD_HOLES:
         mark("top", hx - 2.9, hy - 2.9, hx + 2.9, hy + 2.9)
     for ref in ("J1", "J5", "H1", "H2", "H3", "H4"):
+        mark("back", *bbox_mm(fps[ref][1]))
+    for box in (G.WIFI_KEEPOUT, G.WIFI_KEEPOUT2):   # rule areas cover all copper layers
+        mark("back", *box)
+    for ref in ("U14", "J4"):                        # GNSS module / U.FL keep-outs reach B.Cu
         mark("back", *bbox_mm(fps[ref][1]))
     for ref in [r for r in fixed if r.startswith("U")]:   # thermal pads / vias that reach B.Cu (e.g. the eFuse QFN) keep probe pads away
         if any(pd.IsOnLayer(pcbnew.B_Cu) for pd in fps[ref][1].Pads()):
@@ -281,8 +287,8 @@ if __name__ == "__main__":
 # Routing
 # ------------------------------------------------------------------------------------------------
 NETCLASSES = [  # name, track, clearance, via dia, via drill
-    ("Default", 0.20, 0.15, 0.60, 0.30),
-    ("PWR", 0.35, 0.15, 0.80, 0.40),   # widened after routing (fatten_power)
+    ("Default", 0.20, 0.127, 0.60, 0.30),
+    ("PWR", 0.35, 0.127, 0.80, 0.40),   # widened after routing (fatten_power)
     ("RF", 0.36, 0.30, 0.60, 0.30),    # ~50 ohm microstrip over In1 GND on JLC 7628 prepreg (inference)
 ]
 
