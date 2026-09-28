@@ -9182,4 +9182,17 @@
       )
     )
   )
+  (zone (net 2) (net_name "GND") (layer "In1.Cu") (tstamp a70e7aba-fa29-4924-8824-90692a995f61) (name "GND_PLANE_In1") (hatch edge 0.5)
+    (connect_pads (clearance 0.2))
+    (min_thickness 0.2) (filled_areas_thickness no)
+    (fill (thermal_gap 0.25) (thermal_bridge_width 0.35))
+    (polygon
+      (pts
+        (xy 100.3 100.3)
+        (xy 164.7 100.3)
+        (xy 164.7 156.2)
+        (xy 100.3 156.2)
+      )
+    )
+  )
 )
