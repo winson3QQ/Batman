@@ -322,6 +322,7 @@ def add_zone(board, net, layer, box=(0.3, 0.3, BW - 0.3, BH - 0.3), prio=0, clea
     z.SetPadConnection(pcbnew.ZONE_CONNECTION_THERMAL)
     z.SetThermalReliefGap(MM(0.25))
     z.SetThermalReliefSpokeWidth(MM(0.35))
+    z.SetIslandRemovalMode(pcbnew.ISLAND_REMOVAL_MODE_ALWAYS)   # no floating copper islands
     if name:
         z.SetZoneName(name)
     x0, y0, x1, y1 = box
@@ -509,8 +510,28 @@ def fatten_power(board, max_w=1.2, steps=(1.2, 1.0, 0.8, 0.6, 0.5, 0.4)):
     return widened
 
 
-def finish(ses_path):
+def prepare_reroute():
+    """Second-stage routing: export the routed board (pours removed) so Freerouting keeps the
+    existing wires and only fills in what is still open. Returns the DSN path."""
     board = pcbnew.LoadBoard(PCB)
+    for z in list(board.Zones()):
+        if z.GetZoneName().startswith("GND_") and z.GetLayer() != pcbnew.In1_Cu:
+            board.Remove(z)
+    dsn = os.path.join(OUT, "route", "batman-hat-inc.dsn")
+    pcbnew.ExportSpecctraDSN(board, dsn)
+    txt = open(dsn).read().replace("(layer In1.Cu\n      (type signal)", "(layer In1.Cu\n      (type power)")
+    open(dsn, "w").write(txt)
+    return dsn
+
+
+def finish(ses_path, replace=False):
+    board = pcbnew.LoadBoard(PCB)
+    if replace:   # the SES carries every wire: drop the old copper and pours first
+        for t in list(board.GetTracks()):
+            board.Remove(t)
+        for z in list(board.Zones()):
+            if z.GetZoneName().startswith("GND_") and z.GetLayer() != pcbnew.In1_Cu:
+                board.Remove(z)
     n_tr, n_via = import_ses(board, ses_path)
     widened = fatten_power(board)
     gnd = board.FindNet("GND")
