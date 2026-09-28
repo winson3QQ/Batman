@@ -677,6 +677,7 @@ def finish(ses_path, replace=False):
         for item in zones + tracks:
             board.Remove(item)
     n_tr, n_via = import_ses(board, ses_path)
+    print("dangling segments removed:", remove_dangling(board))
     gnd = board.FindNet("GND")
     for layer in (pcbnew.F_Cu, pcbnew.In2_Cu, pcbnew.B_Cu):
         add_zone(board, gnd, layer, name=f"GND_{board.GetLayerName(layer)}")
@@ -954,3 +955,57 @@ def nudge_for_gnd(targets, via_d=0.6, via_h=0.3, clear=0.2, steps=(0.25, 0.5, 0.
     board.Save(PCB)
     json.dump(nudges, open(NUDGE_FILE, "w"), indent=1, sort_keys=True)
     return done, failed
+
+
+def remove_dangling(board, tol=0.02):
+    """Delete track segments with an end that touches nothing of their net on their layer (pad,
+    via, other segment); repeat until stable. Rip-up leftovers otherwise confuse the next
+    incremental pass. Returns the number removed."""
+    from shapely.geometry import Point, LineString, box as sbox
+    tracks = list(board.GetTracks())
+    pads = {}
+    for fp in board.GetFootprints():
+        for pd in fp.Pads():
+            b = pd.GetBoundingBox()
+            g = sbox(pcbnew.ToMM(b.GetLeft()), pcbnew.ToMM(b.GetTop()), pcbnew.ToMM(b.GetRight()),
+                     pcbnew.ToMM(b.GetBottom()))
+            for layer in (pcbnew.F_Cu, pcbnew.In1_Cu, pcbnew.In2_Cu, pcbnew.B_Cu):
+                if pd.IsOnLayer(layer):
+                    pads.setdefault((pd.GetNetCode(), layer), []).append(g)
+    alive = set(range(len(tracks)))
+    geo = {}
+    for i, t in enumerate(tracks):
+        if t.GetClass() == "PCB_VIA":
+            p = t.GetPosition()
+            geo[i] = ("via", Point(pcbnew.ToMM(p.x), pcbnew.ToMM(p.y)).buffer(pcbnew.ToMM(t.GetWidth()) / 2))
+        else:
+            s, e = t.GetStart(), t.GetEnd()
+            a, b2 = (pcbnew.ToMM(s.x), pcbnew.ToMM(s.y)), (pcbnew.ToMM(e.x), pcbnew.ToMM(e.y))
+            geo[i] = ("trk", LineString([a, b2]).buffer(pcbnew.ToMM(t.GetWidth()) / 2), Point(a), Point(b2))
+    changed = True
+    while changed:
+        changed = False
+        for i in list(alive):
+            if geo[i][0] != "trk":
+                continue
+            t = tracks[i]
+            net, layer = t.GetNetCode(), t.GetLayer()
+            for end in geo[i][2:]:
+                probe = end.buffer(tol)
+                hit = any(g.intersects(probe) for g in pads.get((net, layer), ()))
+                if not hit:
+                    for j in alive:
+                        if j == i or tracks[j].GetNetCode() != net:
+                            continue
+                        if geo[j][0] == "via" or tracks[j].GetLayer() == layer:
+                            if geo[j][1].intersects(probe):
+                                hit = True
+                                break
+                if not hit:
+                    alive.discard(i)
+                    changed = True
+                    break
+    gone = [tracks[i] for i in range(len(tracks)) if i not in alive]
+    for t in gone:
+        board.Remove(t)
+    return len(gone)
