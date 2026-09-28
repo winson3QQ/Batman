@@ -312,8 +312,10 @@ part("J2", "PI_GPIO40", "Pi 40-pin (female, 11 mm stack)", PI_HEADER,
 # device-tree injection point outside the SD card image (spec 5.7).
 R("R53", "10k", "INA_ALERT_N", "3V3_PI")
 for i in range(1, 5):
-    part(f"H{i}", "MH", "M2.5", {1: "GND"}, fp="MountingHole:MountingHole_2.7mm_M2.5_Pad_Via",
-         note="Pi HAT mounting hole")
+    # H1 sits in the Pi 4 Wi-Fi antenna keep-out: plain non-plated hole, no copper ring
+    part(f"H{i}", "MH", "M2.5", {1: None if i == 1 else "GND"},
+         fp="MountingHole:MountingHole_2.7mm_M2.5" if i == 1 else "MountingHole:MountingHole_2.7mm_M2.5_Pad_Via",
+         note="Pi HAT mounting hole" + (" (NPTH: Wi-Fi antenna keep-out)" if i == 1 else ""))
 
 # ---------------------------------------------------------------------------
 # Sheet 6 -- mPCIe

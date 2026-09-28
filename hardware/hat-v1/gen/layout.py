@@ -34,8 +34,8 @@ FREEROUTING = os.environ.get("FREEROUTING_JAR", os.path.join(
 ANCHORS = {
     # --- left column, battery enters bottom-left and flows up (user decision: 5 V buck at the header) ---
     "D1": (4.1, 38.9, 0), "Q1": (2.3, 34.3, 0), "Q2": (6.3, 34.3, 0),
-    "C8": (2.6, 30.6, 0), "C33": (2.6, 27.2, 0), "R19": (6.65, 29.3, 90), "C1": (6.65, 25.85, 90),
-    "U1": (3.0, 22.3, 0), "R9": (2.6, 18.35, 0), "C4": (6.65, 18.55, 90), "C6": (2.6, 15.5, 0),
+    "C8": (2.6, 30.6, 0), "C33": (2.6, 27.2, 0), "R19": (6.65, 29.3, 90), "C1": (7.3, 25.85, 90),
+    "U1": (3.6, 22.3, 0), "R9": (2.6, 18.35, 0), "C4": (7.1, 18.0, 90), "C6": (2.6, 15.5, 0),
     # --- top-left: 5 V buck right next to header pins 2/4 ---
     "L1": (15.0, 13.9, 0), "U3": (21.2, 14.4, 180), "C10": (27.0, 14.4, 90),
     "Q3": (15.0, 8.45, 0), "U4": (19.6, 8.4, 0),
@@ -104,6 +104,18 @@ PREF = dict(G.PREF, power_in=["left", "under", "top"], power_5v=["top", "under"]
             power_3v3=["bottom", "under_edge", "under"], softpower=["under", "top"])
 
 
+def gap(p):
+    """Free ring around a part's courtyard (mm): routing channels. v1 packed everything at 0.2 mm
+    and left fine-pitch ICs no room to fan out (68 unconnected after routing, 2026-09-28)."""
+    if p.sym == "TP":
+        return 0.2
+    ic = p.ref[0] in "UQJ" and len([n for n in p.pins.values() if n]) >= 5
+    return GAP_IC if ic else GAP_PASSIVE
+
+
+GAP_IC, GAP_PASSIVE = 1.0, 0.5
+
+
 def allowed_regions(p):
     prefs = list(PREF[p.sheet])
     if p.sheet.startswith(("power", "soft")) and p.ref not in G.POWER_STAGE:
@@ -154,6 +166,10 @@ def main(route=True):
         mark("top", hx - 2.9, hy - 2.9, hx + 2.9, hy + 2.9)
     for ref in ("J1", "J5", "H1", "H2", "H3", "H4"):
         mark("back", *bbox_mm(fps[ref][1]))
+    for ref in [r for r in fixed if r.startswith("U")]:   # thermal pads / vias that reach B.Cu (e.g. the eFuse QFN) keep probe pads away
+        if any(pd.IsOnLayer(pcbnew.B_Cu) for pd in fps[ref][1].Pads()):
+            x0, y0, x1, y1 = bbox_mm(fps[ref][1])
+            mark("back", x0 - 0.5, y0 - 0.5, x1 + 0.5, y1 + 0.5)
     mark("back", 0, 0, BW, 7.0)                                   # header pins
     for hx, hy in ((G.J3_X, G.J3_Y), (G.J3_X, G.J3_Y - 25.0)):
         mark("back", hx - 1.5, hy - 1.5, hx + 1.5, hy + 1.5)
@@ -208,7 +224,7 @@ def main(route=True):
         for rot in (0, 90):
             fp.SetOrientationDegrees(rot)
             cy = G.courtyard(fp)
-            w, h = pcbnew.ToMM(cy.GetWidth()) + 0.2, pcbnew.ToMM(cy.GetHeight()) + 0.2
+            w, h = pcbnew.ToMM(cy.GetWidth()) + gap(p), pcbnew.ToMM(cy.GetHeight()) + gap(p)
             cw, ch = int(math.ceil(w / Gd)), int(math.ceil(h / Gd))
             pre = np.pad(occ[side], ((1, 0), (1, 0))).cumsum(0).cumsum(1)
             for r in (["back_L", "back_R", "back_B"] if back else allowed_regions(p)):
@@ -244,7 +260,7 @@ def main(route=True):
             fp.Flip(fp.GetPosition(), False)
         cy = G.courtyard(fp)
         pos = fp.GetPosition()
-        fp.SetPosition(pcbnew.VECTOR2I(pos.x + MM(OX + x + 0.1) - cy.GetLeft(), pos.y + MM(OY + y + 0.1) - cy.GetTop()))
+        fp.SetPosition(pcbnew.VECTOR2I(pos.x + MM(OX + x + gap(p) / 2) - cy.GetLeft(), pos.y + MM(OY + y + gap(p) / 2) - cy.GetTop()))
         mark(side, x, y, x + w, y + h)
         placed.add(ref)
 
@@ -284,7 +300,7 @@ def write_rules():
         "netclass_patterns": [{"netclass": "PWR", "pattern": n} for n in PWR_NETS] +
                              [{"netclass": "RF", "pattern": n} for n in RF_NETS]}
     r = d.setdefault("board", {}).setdefault("design_settings", {}).setdefault("rules", {})
-    r.update(min_clearance=0.127, min_track_width=0.127, min_via_diameter=0.5, min_through_hole_diameter=0.3,
+    r.update(min_clearance=0.127, min_track_width=0.127, min_via_diameter=0.5, min_through_hole_diameter=0.2,
              min_copper_edge_clearance=0.3, min_hole_clearance=0.25, min_via_annular_width=0.1)
     json.dump(d, open(pro, "w"), indent=2)
 
@@ -328,11 +344,35 @@ def track_keepout(board, layer, name):
     board.Add(z)
 
 
+def edge_ring(board, w=0.45):
+    """Tracks / vias stay >= w from the board edge (JLC copper-to-edge; Freerouting only knows 0.2)."""
+    for i, box in enumerate(((0, 0, BW, w), (0, BH - w, BW, BH), (0, 0, w, BH), (BW - w, 0, BW, BH))):
+        z = pcbnew.ZONE(board)
+        z.SetIsRuleArea(True)
+        z.SetDoNotAllowTracks(True)
+        z.SetDoNotAllowVias(True)
+        z.SetDoNotAllowCopperPour(False)
+        z.SetDoNotAllowPads(False)
+        z.SetDoNotAllowFootprints(False)
+        ls = pcbnew.LSET()
+        for layer in (pcbnew.F_Cu, pcbnew.In2_Cu, pcbnew.B_Cu):
+            ls.AddLayer(layer)
+        z.SetLayerSet(ls)
+        z.SetZoneName(f"edge_ring_{i}")
+        o = z.Outline()
+        o.NewOutline()
+        x0, y0, x1, y1 = box
+        for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+            o.Append(MM(OX + x), MM(OY + y))
+        board.Add(z)
+
+
 def prepare_routing():
     write_rules()
     board = pcbnew.LoadBoard(PCB)
     gnd = board.FindNet("GND")
     add_zone(board, gnd, pcbnew.In1_Cu, name="GND_PLANE_In1")
+    edge_ring(board)
     board.Save(PCB)
     board = pcbnew.LoadBoard(PCB)
     dsn = os.path.join(OUT, "route", "batman-hat.dsn")
@@ -438,7 +478,9 @@ def fatten_power(board, max_w=1.2, steps=(1.2, 1.0, 0.8, 0.6, 0.5, 0.4)):
             per_layer.setdefault(layer, []).append((t.GetNetname(), g))
     trees = {l: (STRtree([g for _, g in items]), items) for l, items in per_layer.items()}
     edge = sbox(OX + 0.35, OY + 0.35, OX + BW - 0.35, OY + BH - 0.35)
+    wifi = [sbox(OX + x0, OY + y0, OX + x1, OY + y1) for x0, y0, x1, y1 in (G.WIFI_KEEPOUT, G.WIFI_KEEPOUT2)]
     widened = 0
+    grown = {}   # layer -> [(net, geometry)] of tracks already widened: later ones must clear them too
     for t in tracks:
         if t.GetClass() == "PCB_VIA" or t.GetNetname() not in PWR_NETS:
             continue
@@ -449,11 +491,13 @@ def fatten_power(board, max_w=1.2, steps=(1.2, 1.0, 0.8, 0.6, 0.5, 0.4)):
             if w <= pcbnew.ToMM(t.GetWidth()):
                 break
             g = line.buffer(w / 2 + clear)
-            if not edge.contains(line.buffer(w / 2)):
+            if not edge.contains(line.buffer(w / 2)) or any(k.intersects(line.buffer(w / 2)) for k in wifi):
                 continue
-            hit = any(items[i][0] != t.GetNetname() for i in tree.query(g) if items[i][1].intersects(g))
+            hit = any(items[i][0] != t.GetNetname() for i in tree.query(g) if items[i][1].intersects(g)) \
+                or any(n != t.GetNetname() and o.intersects(g) for n, o in grown.get(t.GetLayer(), ()))
             if not hit:
                 t.SetWidth(MM(w))
+                grown.setdefault(t.GetLayer(), []).append((t.GetNetname(), line.buffer(w / 2)))
                 widened += 1
                 break
     return widened
