@@ -277,6 +277,10 @@ def main(route=True):
             fp = fps[ref][1]
             p = fp.GetPosition()
             fp.SetPosition(pcbnew.VECTOR2I(p.x + MM(dx), p.y + MM(dy)))
+    if os.path.exists(POS_FILE):   # absolute re-placements from repack()
+        for ref, (x, y, rot) in json.load(open(POS_FILE)).items():
+            fps[ref][1].SetOrientationDegrees(rot)
+            fps[ref][1].SetPosition(pcbnew.VECTOR2I(MM(OX + x), MM(OY + y)))
     # drawings (card outline, keep-outs, regions)
     G.rect(board, G.CARD, pcbnew.Dwgs_User, 0.25)
     G.keepout(board, G.WIFI_KEEPOUT, "Pi4_WiFi_antenna_keepout_VERIFY")
@@ -1009,3 +1013,105 @@ def remove_dangling(board, tol=0.02):
     for t in gone:
         board.Remove(t)
     return len(gone)
+
+
+POS_FILE = os.path.join(HERE, "gen", "positions.json")   # hand re-placements: ref -> [x, y, rot]
+
+
+def repack(refs, window=(0.8, 12.0, 16.0, 42.0), gap_mm=0.5, grid=0.25):
+    """Pick the listed parts up and re-place them near the pads they connect to (same rules as
+    the main packer, but only inside `window` and only for these parts), rip up their tracks.
+    Used after a part rotates so its satellites follow the new pin order. Positions are stored
+    in gen/positions.json and replayed by main()."""
+    import json
+    import numpy as _np
+    from shapely.geometry import LineString, box as sbox
+    board = pcbnew.LoadBoard(PCB)
+    ft = lambda b: sbox(pcbnew.ToMM(b.GetLeft()) - OX, pcbnew.ToMM(b.GetTop()) - OY,  # noqa: E731
+                        pcbnew.ToMM(b.GetRight()) - OX, pcbnew.ToMM(b.GetBottom()) - OY)
+    parts = {p.ref: p for p in D.PARTS}
+    fps = {f.GetReference(): f for f in board.GetFootprints()}
+    moving = set(refs)
+    obst = []
+    for r, f in fps.items():
+        if r in moving or f.GetLayer() != pcbnew.F_Cu:
+            continue
+        f.BuildCourtyardCaches()
+        c = f.GetCourtyard(pcbnew.F_CrtYd)
+        obst.append(ft(c.BBox()) if c.OutlineCount() else ft(f.GetBoundingBox(False, False)))
+    keep = [sbox(*k) for k in (G.WIFI_KEEPOUT, G.WIFI_KEEPOUT2)]
+    for f in board.GetFootprints():
+        for z in f.Zones():
+            if z.GetIsRuleArea():
+                keep.append(ft(z.GetBoundingBox()))
+    inner = sbox(0.8, 0.8, BW - 0.8, BH - 0.8)
+    own = []
+    for r in moving:
+        for p in fps[r].Pads():
+            own.append(ft(p.GetBoundingBox()).buffer(0.05))
+    tracks = list(board.GetTracks())
+
+    def tg(t):
+        s, e = t.GetStart(), t.GetEnd()
+        return LineString([(pcbnew.ToMM(s.x) - OX, pcbnew.ToMM(s.y) - OY),
+                           (pcbnew.ToMM(e.x) - OX, pcbnew.ToMM(e.y) - OY)]).buffer(pcbnew.ToMM(t.GetWidth()) / 2)
+    rip = [t for t in tracks if t.GetClass() != "PCB_VIA" and any(tg(t).intersects(o) for o in own)]
+    nodes = {}
+    for p in D.PARTS:
+        for pin, n in p.pins.items():
+            if n and n != "GND":
+                nodes.setdefault(n, []).append((p.ref, str(pin)))
+    try:
+        store = json.load(open(POS_FILE))
+    except (OSError, ValueError):
+        store = {}
+    order = sorted(moving, key=lambda r: -sum(len(nodes.get(n, ())) <= BIG_NETS
+                                              for n in parts[r].pins.values() if n and n != "GND"))
+    x0w, y0w, x1w, y1w = window
+    for r in order:
+        f = fps[r]
+        pts = []
+        for n in {n for n in parts[r].pins.values() if n and n != "GND"}:
+            if len(nodes[n]) > BIG_NETS:
+                continue
+            for ref, pin in nodes[n]:
+                if ref in moving or ref not in fps:   # power flags have no footprint
+                    continue
+                for p in fps[ref].Pads():
+                    if p.GetNumber() == pin:
+                        q = p.GetPosition()
+                        pts.append((pcbnew.ToMM(q.x) - OX, pcbnew.ToMM(q.y) - OY))
+        tx, ty = (sum(x for x, _ in pts) / len(pts), sum(y for _, y in pts) / len(pts)) if pts else (5, 25)
+        best = None
+        for rot in (0, 90):
+            f.SetOrientationDegrees(rot)
+            f.BuildCourtyardCaches()
+            cb = f.GetCourtyard(pcbnew.F_CrtYd).BBox()
+            w, h = pcbnew.ToMM(cb.GetWidth()), pcbnew.ToMM(cb.GetHeight())
+            off = (pcbnew.ToMM(f.GetPosition().x) - pcbnew.ToMM(cb.GetLeft()),
+                   pcbnew.ToMM(f.GetPosition().y) - pcbnew.ToMM(cb.GetTop()))
+            for y in _np.arange(y0w, y1w - h, grid):
+                for x in _np.arange(x0w, x1w - w, grid):
+                    c = sbox(x, y, x + w, y + h)
+                    if not inner.contains(c):
+                        continue
+                    cg = c.buffer(gap_mm / 2)
+                    if any(cg.intersects(o) for o in obst) or any(c.intersects(k) for k in keep):
+                        continue
+                    d = ((x + w / 2 - tx) ** 2 + (y + h / 2 - ty) ** 2) ** 0.5
+                    if best is None or d < best[0]:
+                        best = (d, rot, x + off[0], y + off[1], c)
+        if best is None:
+            print("no room for", r)
+            continue
+        _, rot, px, py, c = best
+        f.SetOrientationDegrees(rot)
+        f.SetPosition(pcbnew.VECTOR2I(MM(float(OX + px)), MM(float(OY + py))))
+        obst.append(c.buffer(gap_mm / 2))
+        store[r] = [round(float(px), 3), round(float(py), 3), rot]
+    for t in rip:
+        board.Remove(t)
+    print("dangling", remove_dangling(board))
+    board.Save(PCB)
+    json.dump(store, open(POS_FILE, "w"), indent=1, sort_keys=True)
+    return {r: store.get(r) for r in refs}, len(rip)
