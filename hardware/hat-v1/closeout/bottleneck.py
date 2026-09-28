@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pcbnew  # noqa: E402
 
 import rt  # noqa: E402
+from shapely.ops import unary_union  # noqa: E402
 
 VIA_EQ = 0.8
 b = pcbnew.LoadBoard(os.environ.get("HAT_PCB", rt.PCB))
@@ -85,5 +86,45 @@ for dst_s in sys.argv[3:]:
         k = prev[k]
     path.append(src)
     bn = best[dst]
-    narrow = [describe(k) for k in path if width[k] <= bn + 1e-6]
+    # pours count as 99 mm in the search; measure their real neck between the path neighbours:
+    # the widest w for which the pour eroded by w/2 still joins entry and exit copper
+    necks = []
+    for i, k in enumerate(path):
+        if nodes[k][0][2] != "zone" or i == 0 or i == len(path) - 1:
+            continue
+        zg = nodes[k][0][1]
+        a = unary_union([it[1] for it in nodes[path[i + 1]]])
+        c = unary_union([it[1] for it in nodes[path[i - 1]]])
+        lo, hi = 0.0, 4.0
+        for _ in range(12):
+            w = (lo + hi) / 2
+            er = zg.buffer(-w / 2)
+            parts = getattr(er, "geoms", [er])
+            ok = any(p.intersects(a.buffer(w / 2)) and p.intersects(c.buffer(w / 2)) for p in parts if not p.is_empty)
+            lo, hi = (w, hi) if ok else (lo, w)
+        # locate the neck: just above it the eroded pour splits; the gap between the piece touching
+        # the entry and the piece touching the exit is where it pinches
+        er = zg.buffer(-(lo + 0.05) / 2)
+        parts = [p for p in getattr(er, "geoms", [er]) if not p.is_empty]
+        pa = [p for p in parts if p.intersects(c.buffer((lo + 0.05) / 2))]
+        pb = [p for p in parts if p.intersects(a.buffer((lo + 0.05) / 2))]
+        where = ""
+        if pa and pb:
+            from shapely.ops import nearest_points
+            q1, q2 = nearest_points(unary_union(pa), unary_union(pb))
+            where = f" near ({(q1.x + q2.x) / 2 - 100:.2f},{(q1.y + q2.y) / 2 - 100:.2f}) board-rel"
+        necks.append((round(lo, 2), describe(k) + where))
+        bn = min(bn, lo)
+    narrow = [describe(k) for k in path if width[k] <= bn + 1e-6] + [f"{d} neck {w}" for w, d in necks if w <= bn + 1e-6]
     print(f"{net} {sys.argv[2]} -> {dst_s}: bottleneck {bn:.2f} mm at {narrow[:4]}")
+    if os.environ.get("HAT_BN_PATH"):
+        print("    path:", [(describe(k), round(width[k], 2)) for k in path], "necks:", necks)
+    if os.environ.get("HAT_BN_DETAIL"):
+        thin = [(width[k], nodes[k][0]) for k in path if width[k] < 1.0 and nodes[k][0][2] == "track"]
+        L = sum(rt.TO(it[3].GetLength()) for w, it in thin)
+        print(f"    segments < 1.0 mm on this path: {len(thin)}, total {L:.1f} mm; vias on path: "
+              f"{sum(1 for k in path if nodes[k][0][2] == 'via')}")
+        for w, it in thin:
+            s0, e0 = it[3].GetStart(), it[3].GetEnd()
+            print(f"      w{w:.2f} {rt.LNAME[it[0]]:3s} ({rt.TO(s0.x) - 100:.2f},{rt.TO(s0.y) - 100:.2f})->"
+                  f"({rt.TO(e0.x) - 100:.2f},{rt.TO(e0.y) - 100:.2f}) len {rt.TO(it[3].GetLength()):.2f}")

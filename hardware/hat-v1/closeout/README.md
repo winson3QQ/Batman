@@ -43,11 +43,11 @@
 ## 本機環境與坑（KiCad 7.0.11 在 WSL Ubuntu 24.04）
 - KiCad 7 的 `kicad-cli` **沒有 `pcb drc`**：DRC 一律用 `pcbnew.WriteDRCReport`。
 - **`build.sh`（gen_sch.py）會重寫 `batman-hat.kicad_pro`，把 PCB 的 netclass 和規則洗掉**：之後跑 DRC 會多出幾百個假錯誤。跑 DRC 前要先把 `.kicad_pro` 還原（`git checkout`）。尚未修正。
-- Freerouting 2.1.0：無介面模式（`--gui.enabled=false`）**不理會 `-mp`**，會一直跑、永不存檔；圖形介面模式 `-mp 12 -dct 0` 跑完會自己存檔並退出。`-da` 加上環境變數可以關掉資料回傳。
+- Freerouting 2.1.0：`run.sh` 用無介面模式，靠環境變數 `FREEROUTING__ROUTER__MAX_PASSES` 和 `FREEROUTING__ROUTER__JOB_TIMEOUT` 控制，跑完會自己存檔、退出。圖形介面模式跑完會跳「User Settings」對話框擋住存檔，無介面模式則不理會 `-mp`。`-da` 加上環境變數可以關掉資料回傳。細節見 `HANDOFF.md` §7.5。
 - pcbnew SWIG：迴圈裡刪除物件要用 `board.Delete()`，用 `Remove()` 會把 board 物件弄壞。
 - DSN 裡的鋪銅會匯出成 `plane`，但**擋不住別的網路穿過去**；要保護鋪銅，得另加禁止走線區。
 
-## 還沒做（見 PR）
+## 還沒做（見 `HANDOFF.md` §7；電源鋪銅的實驗在 `experiments/power-pours.patch`，尚未通過 0 未接）
 - **主電流路徑的電源分配**：VSYS→U3、5V_BUCK、5V_PI→J2、3V3 等路徑最窄只有 0.35 mm（PWR netclass 的預設值）。雲端版就已經如此。用 `bottleneck.py` 可以量。
 - C13（U3 的 VCC 旁路電容）離 VCC 腳約 6 mm。
 - H1 禁佈區警告：等 Pi 4 機構圖。

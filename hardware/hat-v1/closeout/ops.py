@@ -315,3 +315,18 @@ def via_to_pour(board, net, pad_xy, radius=1.3, width=0.4):
             return (sx, sy)
         board.Delete(v)
     raise RuntimeError(f"via_to_pour {net} {pad_xy}: no spot")
+
+
+def rip_in_poly(board, pts, layer, keep=()):
+    """Delete tracks on `layer` (and vias) of nets not in keep that touch the board-relative polygon."""
+    from shapely.geometry import Polygon
+    poly = Polygon([(100 + x, 100 + y) for x, y in pts])
+    geo, _h = rt.geometry(board)
+    dead = {}
+    for l in (LAYER[layer],):
+        for n, g, k, o in geo[l]:
+            if k in ("track", "via") and n not in keep and g.intersects(poly):
+                dead[o.m_Uuid.AsString()] = o
+    for o in dead.values():
+        board.Delete(o)
+    return len(dead)

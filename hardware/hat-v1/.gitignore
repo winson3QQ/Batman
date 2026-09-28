@@ -5,3 +5,4 @@ _autosave-*
 out/*.net
 gen/__pycache__/
 out/route/
+~*.lck

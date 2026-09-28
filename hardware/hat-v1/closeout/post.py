@@ -52,6 +52,12 @@ for ref, num in (("U1", "25"), ("J2", "25")):
             p.SetZoneConnection(pcbnew.ZONE_CONNECTION_FULL)
             n += 1
 print("solid zone connection on pads:", n)
+# the *_keep_tracks_out rule areas only steer Freerouting away from the pours; GND stubs that
+# finish() adds next to pads inside them would otherwise be flagged
+ka = [z for z in b.Zones() if z.GetIsRuleArea() and z.GetZoneName().endswith("_keep_tracks_out")]
+print("routing keep-outs removed:", len(ka))
+for z in ka:
+    b.Delete(z)
 ops.fill(b)
 
 base = unconnected(b)

@@ -79,6 +79,9 @@ def geometry(board, with_zones=False):
                 if z.IsOnLayer(l) and z.HasFilledPolysForLayer(l):
                     geom = polyset_to_shapely(z.GetFilledPolysList(l))
                     if geom is not None and not geom.is_empty:
+                        # KiCad stores fills "fractured": each hole joined to the outline by a
+                        # zero-width slit. Close the slits or erosion-based neck checks split there.
+                        geom = geom.buffer(0.002).buffer(-0.002)
                         g[l].append((z.GetNetname(), geom, "zone", z))
     return g, holes
 
