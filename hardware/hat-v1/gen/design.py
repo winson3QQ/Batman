@@ -188,6 +188,8 @@ R("R14", "24.0k 0.5%", "FB_5V", "GND", note="Vout = 1.0 V x (1 + 100/24) = 5.17 
 C("C17", "DNP 22p", "5V_BUCK", "FB_5V", dnp=True, note="optional feed-forward (datasheet 9.2.2.8)")
 R("R15", "102k 1%", "VSYS", "EN_5V")
 R("R16", "24.3k 1%", "EN_5V", "GND", note="EN UVLO: 6.40 V on / 5.88 V off")
+C("C34", "2.2n 16V", "EN_5V", "GND",
+  note="at U3 EN: R15/R16 sit by Q7 (layout v2), EN_5V is a ~30 mm In2 node; 19.6k x 2.2n = 43 us")
 NMOS_SOT23("Q7", "LTC_ENB", "EN_5V", "GND", note="LTC2955 EN-bar high (off) -> 5 V buck off")
 R("R17", "100k", "PG_5V", "VCC_5V")
 part("U4", "LM74700", "LM74700QDBVRQ1", {

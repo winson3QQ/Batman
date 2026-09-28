@@ -11,7 +11,7 @@ C11,1,220n 50V X7R,C_0603_1608Metric,,,C,,JLCPCB,hot-loop cap: closest to VIN/PG
 C18,1,220n 25V X7R,C_0603_1608Metric,,,C,,JLCPCB,
 C26,1,22n 16V,C_0402_1005Metric,,,C,,JLCPCB,soft start ~3.2 ms
 C31,1,10u 10V X5R,C_0603_1608Metric,,,C,,JLCPCB,pi-filter input cap
-C32,1,2.2n 16V,C_0402_1005Metric,,,C,,JLCPCB,EN has only a 0.7 uA pull-up: noise immunity
+"C32,C34",2,2.2n 16V,C_0402_1005Metric,,,C,,JLCPCB,EN has only a 0.7 uA pull-up: noise immunity
 "C60,C61",2,47u 6.3V X5R,C_1206_3216Metric,,,C,,JLCPCB,
 C62,1,220u 6.3V polymer,CP_EIA-7343-20_Kemet-V,T520V227M006ATE015,KEMET,C,,JLCPCB,7343-20: <=1.9 mm tall; absorbs HaLow TX bursts
 C76,1,CPH3225A 11mF,Seiko_CPH3225A,CPH3225A,Seiko Instruments,C,,JLCPCB,"RTC backup (user decision 2026-09-27: supercap, GPS re-syncs after ~2 days off). Internal trickle path has a Schottky (0.25 V) -> charges to ~3.05 V, below the 3.3 V rating"
