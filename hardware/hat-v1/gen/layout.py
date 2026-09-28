@@ -319,7 +319,7 @@ def add_zone(board, net, layer, box=(0.3, 0.3, BW - 0.3, BH - 0.3), prio=0, clea
     z.SetAssignedPriority(prio)
     z.SetLocalClearance(MM(clearance))
     z.SetMinThickness(MM(0.2))
-    z.SetPadConnection(pcbnew.ZONE_CONNECTION_THERMAL)
+    z.SetPadConnection(pcbnew.ZONE_CONNECTION_THT_THERMAL)   # SMD pads solid, through-hole relieved
     z.SetThermalReliefGap(MM(0.25))
     z.SetThermalReliefSpokeWidth(MM(0.35))
     z.SetIslandRemovalMode(pcbnew.ISLAND_REMOVAL_MODE_ALWAYS)   # no floating copper islands
@@ -524,21 +524,163 @@ def prepare_reroute():
     return dsn
 
 
+def stitch_gnd(board, pitch=3.0, via_d=0.6, via_h=0.3, clear=0.2):
+    """GND vias: one next to every SMD GND pad that has none within 1 mm, then a grid over the
+    board. Each via must clear every other-net copper item on all four layers."""
+    from shapely.geometry import Point, LineString, box as sbox
+    from shapely.strtree import STRtree
+    gnd = board.FindNet("GND")
+    obst, gvias, gnd_drills = [], [], []
+    for fp in board.GetFootprints():
+        for pd in fp.Pads():
+            b = pd.GetBoundingBox()
+            g = sbox(pcbnew.ToMM(b.GetLeft()), pcbnew.ToMM(b.GetTop()), pcbnew.ToMM(b.GetRight()),
+                     pcbnew.ToMM(b.GetBottom()))
+            if pd.GetNetname() != "GND" or pd.GetAttribute() != pcbnew.PAD_ATTRIB_SMD:
+                obst.append(g.buffer(0.1))   # any drilled pad, GND included: hole-to-hole spacing
+                if pd.GetNetname() == "GND":
+                    gnd_drills.append(g)
+    for t in board.GetTracks():
+        if t.GetClass() == "PCB_VIA":
+            p = t.GetPosition()
+            pt = Point(pcbnew.ToMM(p.x), pcbnew.ToMM(p.y))
+            (gvias if t.GetNetname() == "GND" else obst).append(pt.buffer(pcbnew.ToMM(t.GetWidth()) / 2))
+        elif t.GetNetname() != "GND":
+            a, e = t.GetStart(), t.GetEnd()
+            obst.append(LineString([(pcbnew.ToMM(a.x), pcbnew.ToMM(a.y)), (pcbnew.ToMM(e.x), pcbnew.ToMM(e.y))])
+                        .buffer(pcbnew.ToMM(t.GetWidth()) / 2))
+    keep = [sbox(OX + x0, OY + y0, OX + x1, OY + y1) for x0, y0, x1, y1 in (G.WIFI_KEEPOUT, G.WIFI_KEEPOUT2)]
+    for fp in board.GetFootprints():   # footprint rule areas (GNSS module, U.FL) forbid vias too
+        for z in fp.Zones():
+            if z.GetIsRuleArea() and z.GetDoNotAllowVias():
+                b = z.GetBoundingBox()
+                keep.append(sbox(pcbnew.ToMM(b.GetLeft()), pcbnew.ToMM(b.GetTop()),
+                                 pcbnew.ToMM(b.GetRight()), pcbnew.ToMM(b.GetBottom())))
+    inner = sbox(OX + 0.8, OY + 0.8, OX + BW - 0.8, OY + BH - 0.8)
+    tree = STRtree(obst)
+    placed = list(gvias)
+
+    def fits(x, y, d=None):
+        d = d or via_d
+        c = Point(x, y).buffer(d / 2 + clear)
+        if not inner.contains(c) or any(k.intersects(c) for k in keep):
+            return False
+        if any(obst[i].intersects(c) for i in tree.query(c)):
+            return False
+        return not any(v.distance(Point(x, y)) < d / 2 + 0.3 for v in placed)
+
+    def add(x, y, pad=None, d=None, h=None):
+        v = pcbnew.PCB_VIA(board)
+        v.SetPosition(pcbnew.VECTOR2I(MM(x), MM(y)))
+        v.SetWidth(MM(d or via_d))
+        v.SetDrill(MM(h or via_h))
+        v.SetNet(gnd)
+        board.Add(v)
+        placed.append(Point(x, y).buffer((d or via_d) / 2))
+        if pad is not None:
+            t = pcbnew.PCB_TRACK(board)
+            t.SetStart(pad.GetPosition())
+            t.SetEnd(pcbnew.VECTOR2I(MM(x), MM(y)))
+            t.SetWidth(MM(0.2))
+            t.SetLayer(pcbnew.F_Cu if pad.IsOnLayer(pcbnew.F_Cu) else pcbnew.B_Cu)
+            t.SetNet(gnd)
+            board.Add(t)
+
+    n_pad = 0
+    for fp in board.GetFootprints():
+        for pd in fp.Pads():
+            if pd.GetNetname() != "GND" or pd.GetAttribute() != pcbnew.PAD_ATTRIB_SMD:
+                continue
+            p = pd.GetPosition()
+            cx, cy = pcbnew.ToMM(p.x), pcbnew.ToMM(p.y)
+            if any(v.distance(Point(cx, cy)) < 0.05 for v in placed):
+                continue   # via-in-pad already there (a nearby via is not necessarily connected)
+            hw = pcbnew.ToMM(pd.GetBoundingBox().GetWidth()) / 2
+            hh = pcbnew.ToMM(pd.GetBoundingBox().GetHeight()) / 2
+            done = False
+            # normal 0.6/0.3 via first, then a 0.5/0.25 via (board minimum)
+            for vd, vh, offs in ((via_d, via_h, (0.55, 0.8, 1.1)), (0.5, 0.25, (0.4, 0.6, 0.8))):
+                for d in offs:
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)):
+                        x, y = cx + dx * (hw + d), cy + dy * (hh + d)
+                        # the link track must not cross other-net copper either
+                        link = LineString([(cx, cy), (x, y)]).buffer(0.1 + clear)
+                        if fits(x, y, vd) and not any(obst[i].intersects(link) for i in tree.query(link)):
+                            add(x, y, pd, vd, vh)
+                            n_pad += 1
+                            done = True
+                            break
+                    if done:
+                        break
+                if done:
+                    break
+    n_grid = 0
+    y = OY + 1.5
+    while y < OY + BH - 1.0:
+        x = OX + 1.5
+        while x < OX + BW - 1.0:
+            if fits(x, y):
+                add(x, y)
+                n_grid += 1
+            x += pitch
+        y += pitch
+    n_frag = 0
+    for _ in range(2):   # refill after each round: a new via can split or merge fragments
+        board.BuildConnectivity()
+        pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+        from shapely.geometry import Polygon
+        for z in list(board.Zones()):
+            if z.GetNetname() != "GND" or z.GetLayer() == pcbnew.In1_Cu or z.GetIsRuleArea():
+                continue
+            polys = z.GetFilledPolysList(z.GetLayer())
+            for i in range(polys.OutlineCount()):
+                ol = polys.Outline(i)
+                pts = [(pcbnew.ToMM(ol.CPoint(k).x), pcbnew.ToMM(ol.CPoint(k).y)) for k in range(ol.PointCount())]
+                if len(pts) < 3:
+                    continue
+                frag = Polygon(pts)
+                if any(v.intersects(frag) for v in placed) or any(o.intersects(frag) for o in gnd_drills):
+                    continue   # already tied to the plane
+                core = frag.buffer(-(via_d / 2 + 0.05))
+                if core.is_empty:
+                    continue
+                x0, y0, x1, y1 = core.bounds
+                done = False
+                yy = y0
+                while yy <= y1 and not done:
+                    xx = x0
+                    while xx <= x1:
+                        if core.contains(Point(xx, yy)) and fits(xx, yy):
+                            add(xx, yy)
+                            n_frag += 1
+                            done = True
+                            break
+                        xx += 0.2
+                    yy += 0.2
+    return n_pad, n_frag, n_grid
+
+
 def finish(ses_path, replace=False):
     board = pcbnew.LoadBoard(PCB)
     if replace:   # the SES carries every wire: drop the old copper and pours first
-        for t in list(board.GetTracks()):
-            board.Remove(t)
-        for z in list(board.Zones()):
-            if z.GetZoneName().startswith("GND_") and z.GetLayer() != pcbnew.In1_Cu:
-                board.Remove(z)
+        # snapshot both lists before removing anything: SWIG's iterators break after a Remove()
+        zones = [z for z in board.Zones()
+                 if z.GetZoneName().startswith("GND_") and z.GetLayer() != pcbnew.In1_Cu]
+        tracks = list(board.GetTracks())
+        for item in zones + tracks:
+            board.Remove(item)
     n_tr, n_via = import_ses(board, ses_path)
     widened = fatten_power(board)
     gnd = board.FindNet("GND")
     for layer in (pcbnew.F_Cu, pcbnew.In2_Cu, pcbnew.B_Cu):
         add_zone(board, gnd, layer, name=f"GND_{board.GetLayerName(layer)}")
+    stitched = stitch_gnd(board)
+    for z in board.Zones():   # In1 is the reference plane: solid to every GND pad
+        if z.GetLayer() == pcbnew.In1_Cu:
+            z.SetPadConnection(pcbnew.ZONE_CONNECTION_FULL)
     pcbnew.ZONE_FILLER(board).Fill(board.Zones())
     board.Save(PCB)
+    print("stitching vias (pad, grid):", stitched)
     rpt = os.path.join(OUT, "route", "drc.txt")
     pcbnew.WriteDRCReport(board, rpt, pcbnew.EDA_UNITS_MILLIMETRES, True)
     return n_tr, n_via, widened, rpt
