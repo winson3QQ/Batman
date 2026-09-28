@@ -1,6 +1,6 @@
 # HAT v1 交接說明（雲端 session → 本機）
 
-最後更新：2026-09-28。本文件說明目前進度、怎麼在本機重現每一步、以及還沒完成的事。
+最後更新：2026-09-28（本機接手後見 §6）。本文件說明目前進度、怎麼在本機重現每一步、以及還沒完成的事。
 標記：**【事實】** 可在 repo / 報告中查證；**【推論】** 尚未實測。
 
 ---
@@ -14,7 +14,7 @@
 | 模擬（`sim/run_all.py`） | 4 組全部符合設計意圖【事實】 |
 | LCSC 料號 | 部分完成（見 `out/lcsc-report.md`）；約 31 項待人工查 |
 | 擺位 | 174 顆全部擺好，零件外框無重疊【事實】 |
-| 佈線 | **未完成**：剩 10 個未接（明細見 §5）；其餘電氣 DRC 錯誤為 0【事實】 |
+| 佈線 | **2026-09-28 本機收尾：0 未接、0 間距 / 鑽孔錯誤**（見 `closeout/README.md`）；主電流路徑的線寬尚未處理（§6） |
 | Gerber / 鑽孔 / CPL / JLC 檔（M5） | 未開始 |
 | 上機指南（M6） | 未開始 |
 
@@ -112,3 +112,12 @@ python3 -c "import sys; sys.path.insert(0,'gen'); import layout as L; print(L.fi
 | 修 MOSFET 封裝與間距規則 | 37 |
 | 補線模式 + 接地縫合孔 | 19 → 17 |
 | 零件微調讓接地焊盤打孔（`gen/nudges.json`） | 10 |
+
+## 6. 本機接手（2026-09-28）
+
+- 工具：WSL Ubuntu 24.04 + KiCad 7.0.11（apt）+ OpenJDK 21 + Freerouting 2.1.0；流程在 `closeout/run.sh`。
+- §5 的 10 個未接全部解掉。其中左側 eFuse 欄是擺位問題，不是補線問題：U1、Q1 各轉 90°，主電流改走鋪銅。細節見 `closeout/README.md`。
+- 結果【事實，`pcbnew.WriteDRCReport`】：**0 未接**；間距、鑽孔、防焊、`starved_thermal` 都是 0。剩下 `items_not_allowed` ×2（H1，§4-2）與 6 段橋接型懸空線（warning）。
+- **新發現（雲端版就有）**：主電流路徑的最窄處只有 0.35 mm，包括 VSYS→U3、5V_BUCK、5V_PI→J2、3V3_BUCK。3.5–3.85 A 的路徑不能只靠 0.35 mm。用 `closeout/bottleneck.py` 可以量。這是下一步。
+- §5 建議的「手動拉線」對 1–4 項不成立：Q1 的 source 腳面向板邊，只放得下一個 0.3 mm 的孔，卻要走整顆電池的電流。
+- 坑：`build.sh` 會洗掉 `.kicad_pro` 的 PCB 規則（跑 DRC 前要還原）；Freerouting 無介面模式不理會 `-mp`。
