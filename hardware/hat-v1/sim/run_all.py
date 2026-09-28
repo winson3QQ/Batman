@@ -307,9 +307,9 @@ def s3():
         REPORT.append(f"| {name} | {'on' if exp[1] else 'off'} | {got[0]} | {got[1]} | {'OK' if ok else 'FAIL'} |")
     REPORT.append("\nNote: 6.6 V is below AUTO-ON (7.10 V typ) by design, so a nearly empty 2S pack does "
                   "not start by itself; a button press still starts it if VSYS > 6.40 V.\n")
-    REPORT.append("USB-C-only bench mode: LTC2955 has no supply, EN-bar = 0 V, so Q8 is off and the HaLow "
-                  "3.3 V buck runs; the 5 V buck has no input. (Direct consequence of the schematic, "
-                  "not simulated in time.)\n")
+    REPORT.append("USB-C-only mode: LTC2955 and the 5 V buck have no input; the HaLow 3.3 V buck is fed "
+                  "from the Pi 5 V and enabled by the Pi 3.3 V, so the card runs as on the WM1302 HAT. "
+                  "(Direct consequence of the schematic, not simulated in time.)\n")
     return fails
 
 

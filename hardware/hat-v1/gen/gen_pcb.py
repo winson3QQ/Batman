@@ -60,12 +60,12 @@ NOT_UNDER = ("TP", "J5", "D2", "D3", "J6")  # must stay reachable / visible
 # and from the HaLow card's RF end (left).
 POWER_HOT = {"U3", "L1", "C10", "C11", "C12", "C13", "U7", "L2", "C22", "C23", "C24", "C25", "C26"}
 # DC-side parts of the same stages: may sit under the card, next to the bottom edge
-POWER_NEAR = {"C14", "C15", "C16", "C19", "C27", "C28", "U4", "Q3", "C18", "U5", "U6", "Q4", "Q5",
-              "C20", "C21", "R22", "FB1", "C31"}
+POWER_NEAR = {"C14", "C15", "C16", "C19", "C27", "C28", "U4", "Q3", "C18", "Q5",
+              "R22", "FB1", "C31"}
 # Power-stage parts stay outside the card (heat, switching noise, hot loops next to their IC)
 POWER_STAGE = {"U1", "Q1", "Q2", "D1", "C1", "C2", "C8", "C9", "R19", "C4", "R9", "C6", "C7",
                "U3", "L1", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "U4", "Q3", "C18", "C19",
-               "U5", "U6", "Q4", "Q5", "C20", "C21", "C22", "C23", "C24", "U7", "L2", "C25", "C26",
+               "C22", "C23", "C24", "U7", "L2", "C25", "C26",
                "C27", "C28", "R22", "FB1", "C31"}
 
 

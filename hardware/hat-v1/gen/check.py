@@ -218,6 +218,8 @@ def check_setpoints():
         "V", "VFB max 1.015 V, 0.5% resistors")
     row(f"LTC EN-bar gate @{D.VBAT_MAX} V", D.VBAT_MAX * val("R30") / (val("R30") + 900e3), 0, 12, "V", "900k internal")
     row("LTC EN-bar gate @5.8 V", 5.8 * val("R30") / (val("R30") + 900e3), 2.0, 99, "V", "BSS138 Vth max 1.5 V")
+    row("HaLow EN, Pi 3.3 V off", 0.7e-6 * val("R23"), 0, 1.0, "V", "TPS62933 EN falling min 1.1 V, 0.7 uA pull-up")
+    row("HaLow EN, Pi 3.3 V on", 3.4 + 2.1e-6 * val("R23"), 1.4, 5.5, "V", "rising max 1.28 V; abs max 6 V")
     row("BAT_PRESENT gate @5.4 V", 5.4 * val("R11") / (val("R10") + val("R11")), 2.0, 99, "V", "BSS138 Vth max 1.5 V")
     row("BAT_PRESENT gate @22 V", 22.2 * val("R11") / (val("R10") + val("R11")), 0, 20, "V", "Vgs max 20 V")
     return rows

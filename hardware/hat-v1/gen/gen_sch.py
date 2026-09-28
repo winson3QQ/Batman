@@ -221,17 +221,17 @@ Design spec: docs/design/hat-v1-spec.md (sections referenced in the part notes)
 Blocks (one sheet each):
   1 power_in   battery pads, SMBJ20CA TVS, TPS26631 eFuse + reverse FET, INA226 #1 (0x40), BAT_PRESENT
   2 power_5v   LMR33640 5.17 V / 4 A with hardware UVLO on EN, LM74700 ideal diode to the Pi 5 V pins
-  3 power_3v3  LM74700 x2 OR-ing (battery / Pi 5 V), TPS62933F FCCM 3.33 V, INA226 #2 (0x41), pi filter
+  3 power_3v3  TPS62933F FCCM 3.33 V from the Pi 5 V rail, INA226 #2 (0x41), pi filter
   4 softpower  LTC2955-2 push-button controller, AUTO-ON jumper, GPIO27 -> KILL, GPIO26 <- INT
-  5 pi_header  40-pin header, CAT24C32 HAT EEPROM (write-protected), mounting holes
+  5 pi_header  40-pin header (no ID EEPROM: overlays in config.txt), mounting holes
   6 halow      mPCIe 5.2H socket for Wio-WM6108, bulk capacitors
   7 security   SLB9672 TPM 2.0 on SPI1, ATECC608C-TFLXTLS (0x36), RV-3028-C7 RTC (0x52) + supercap
   8 gnss       u-blox MAX-M10S on UART5 + PPS, active antenna bias, U.FL
   9 debug      Tag-Connect TC2050 (UART0 + HaLow SPI), test points with expected values, power flags
 
 Enable logic: 5 V buck runs when (LTC2955 on) AND (eFuse PGOOD) AND (VSYS > 6.40 V).
-              3.3 V buck runs when (LTC2955 on) OR (LTC2955 unpowered: USB-C-only bench) OR (BENCH jumper).
-Tier A parts (TPM, ATECC608C, EEPROM, RTC, GNSS) are not assembled by JLCPCB: fitted in Taiwan (spec 5.9).
+              HaLow 3.3 V buck: input = Pi 5 V (HAT buck or Pi USB-C), runs while the Pi 3.3 V is up.
+Tier A parts (TPM, ATECC608C, RTC, GNSS) are not assembled by JLCPCB: fitted in Taiwan (spec 5.9).
 No test points on TPM / SPI1 nets (spec 5.1)."""
 
 

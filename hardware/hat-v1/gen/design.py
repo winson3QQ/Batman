@@ -42,7 +42,7 @@ SHEETS = [
     ("power_5v", "2 5 V buck for the Pi + ideal-diode (HAT back-power rule)"),
     ("power_3v3", "3 3.3 V for HaLow: source OR-ing, FCCM buck, HaLow current"),
     ("softpower", "4 Soft power: LTC2955-2 push-button / AUTO-ON / KILL"),
-    ("pi_header", "5 Pi 40-pin header, HAT ID EEPROM, mounting"),
+    ("pi_header", "5 Pi 40-pin header, mounting"),
     ("halow", "6 mPCIe socket for Wio-WM6108 (pinout unchanged)"),
     ("security", "7 TPM 2.0 SLB9672, ATECC608C, RTC RV-3028"),
     ("gnss", "8 GNSS MAX-M10S + active antenna bias"),
@@ -157,7 +157,8 @@ part("U2", "INA226", "INA226AIDGSR", {
     note="I2C 0x40 (A0=A1=GND): whole-node current + battery voltage")
 C("C5", "100n 16V", "3V3_PI", "GND")
 C("C6", "10u 50V X7R", "VSYS", "GND", "1210")
-# battery present -> GPIO4 (low = battery / adapter connected)
+# battery present -> GPIO4 (low = battery / adapter connected). Kept (spec review #22): INA226 #1
+# reading 0 V can also mean an eFuse trip or a broken shunt, which must not look like "no battery".
 R("R10", "1M", "VBAT_RAW", "BATP_G", note="1M/1M: 9 uA standby drain")
 R("R11", "1M", "BATP_G", "GND")
 NMOS_SOT23("Q6", "BATP_G", "BAT_PRESENT_N", "GND")
@@ -205,24 +206,14 @@ part("D3", "LED", "GREEN", {1: "GND", 2: "LED_5V_A"}, fp="LED_SMD:LED_0402_1005M
 # Sheet 3 -- 3.3 V for HaLow
 # ---------------------------------------------------------------------------
 sheet("power_3v3")
-part("U5", "LM74700", "LM74700QDBVRQ1", {
-    1: "VCAP_ORA", 2: "GND", 3: "VSYS", 4: "OR_NODE", 5: "G_ORA", 6: "VSYS"},
-    fp="Package_TO_SOT_SMD:SOT-23-6", mpn="LM74700QDBVRQ1", mfr="TI", tier="B",
-    note="OR-ing path A: battery / adapter")
-C("C20", "220n 25V X7R", "VCAP_ORA", "VSYS", "0603")
-NMOS_Q3("Q4", "G_ORA", "OR_NODE", "VSYS", "CSD17578Q3A", mpn="CSD17578Q3A")
-part("U6", "LM74700", "LM74700QDBVRQ1", {
-    1: "VCAP_ORB", 2: "GND", 3: "5V_PI", 4: "OR_NODE", 5: "G_ORB", 6: "5V_PI"},
-    fp="Package_TO_SOT_SMD:SOT-23-6", mpn="LM74700QDBVRQ1", mfr="TI", tier="B",
-    note="OR-ing path B: Pi 5 V (USB-C only bench mode)")
-C("C21", "220n 25V X7R", "VCAP_ORB", "5V_PI", "0603")
-NMOS_Q3("Q5", "G_ORB", "OR_NODE", "5V_PI", "CSD17578Q3A", mpn="CSD17578Q3A",
-        note="sees up to 13 V Vds when battery path wins")
-C("C22", "10u 50V X7R", "OR_NODE", "GND", "1210")
-C("C23", "10u 50V X7R", "OR_NODE", "GND", "1210")
-C("C24", "100n 50V X7R", "OR_NODE", "GND", "0402", note="hot-loop cap: closest to VIN/GND")
+# 3.3 V buck fed from the Pi 5 V rail, like the WM1302 HAT (option D, user decision 2026-09-28):
+# battery -> 5 V buck -> ideal diode -> 5V_PI, or Pi USB-C -> 5V_PI; either way the HaLow card
+# runs. Replaces the LM74700 x2 OR-ing and the BENCH jumper.
+C("C22", "22u 10V X5R", "5V_PI", "GND", "0805")
+C("C23", "22u 10V X5R", "5V_PI", "GND", "0805")
+C("C24", "100n 16V", "5V_PI", "GND", "0402", note="hot-loop cap: closest to VIN/GND")
 part("U7", "TPS62933F", "TPS62933FDRLR", {
-    1: "GND", 2: "EN_3V3", 3: "OR_NODE", 4: "GND", 5: "SW_3V3", 6: "BST_3V3", 7: "SS_3V3",
+    1: "GND", 2: "EN_3V3", 3: "5V_PI", 4: "GND", 5: "SW_3V3", 6: "BST_3V3", 7: "SS_3V3",
     8: "FB_3V3"},
     fp="Package_TO_SOT_SMD:SOT-583-8", mpn="TPS62933FDRLR", mfr="TI", tier="B",
     note="FCCM fixed 1.2 MHz (RT=GND); EN abs max 6 V -> open-drain pull-down only")
@@ -249,15 +240,11 @@ part("FB1", "FB", "600R@100MHz >=4A", {1: "3V3_SH", 2: "3V3_FILT"},
      note="verify rating at BOM step: >=4 A, <=30 mOhm")
 SJ("JP1", "3V3_FILT", "3V3_MPCIE", True, "MPCIE",
    note="cut to isolate the HaLow card rail")
-# enable logic: 3.3 V on when LTC2955 is on OR LTC2955 unpowered (USB-C only) OR BENCH
-NMOS_SOT23("Q8", "G33", "EN_3V3", "GND", note="pulls TPS62933F EN low when LTC2955 is off")
-R("R23", "4.7M", "LTC_ENB", "G33",
-  note="high value: BENCH (Q9 on) must not load LTC_ENB, or Q7 cannot turn 5 V off (review P2)")
-NMOS_SOT23("Q9", "BENCH_G", "G33", "GND", note="BENCH override: keeps 3.3 V on")
-R("R24", "100k", "BENCH_G", "GND")
+# enable: HaLow 3.3 V only while the Pi 3.3 V is up. No back-feed into an unpowered Pi through
+# MISO / IRQ, and HAT+ STANDBY (5 V on, 3.3 V off) turns the card off. LTC2955 off -> no 5 V at all.
+R("R23", "100k", "3V3_PI", "EN_3V3",
+  note="EN pull-up 0.7 uA: Pi off -> EN 0.07 V < 1.1 V off; on -> 3.3 + 0.21 V < 6 V abs max")
 C("C32", "2.2n 16V", "EN_3V3", "GND", note="EN has only a 0.7 uA pull-up: noise immunity")
-SJ("JP2", "3V3_PI", "BENCH_G", False, "BENCH",
-   note="close: HaLow 3.3 V forced on while the Pi 3.3 V is present")
 
 # ---------------------------------------------------------------------------
 # Sheet 4 -- soft power
@@ -290,7 +277,7 @@ part("D4", "TVS_UNI", "TPD1E10B06", {1: "PWR_BTN_N", 2: "GND"},
      note="ESD for the panel button wire")
 
 # ---------------------------------------------------------------------------
-# Sheet 5 -- Pi header, EEPROM
+# Sheet 5 -- Pi header
 # ---------------------------------------------------------------------------
 sheet("pi_header")
 PI_HEADER = {  # physical pin -> net (BCM numbers in the comments)
@@ -308,7 +295,7 @@ PI_HEADER = {  # physical pin -> net (BCM numbers in the comments)
     22: "INA_ALERT_N",           # GPIO25
     23: "SPI0_SCLK", 24: "SPI0_CE0",  # GPIO11 / GPIO8
     25: "GND", 26: None,         # GPIO7 = SPI0 CE1, held by the base device tree
-    27: "ID_SD", 28: "ID_SC",    # GPIO0 / GPIO1
+    27: None, 28: None,          # GPIO0 / GPIO1: ID EEPROM only (HAT+ spec 2.3) -> none fitted
     29: "HALOW_IRQ",             # GPIO5
     30: "GND", 31: "GNSS_PPS",   # GPIO6
     32: "UART5_TX", 33: "UART5_RX",  # GPIO12 / GPIO13
@@ -321,15 +308,8 @@ PI_HEADER = {  # physical pin -> net (BCM numbers in the comments)
 part("J2", "PI_GPIO40", "Pi 40-pin (female, 11 mm stack)", PI_HEADER,
      fp="Connector_PinSocket_2.54mm:PinSocket_2x20_P2.54mm_Vertical",
      note="through-hole on the bottom side; 8.5 mm socket for 11 mm standoffs")
-part("U10", "EEPROM_24", "CAT24C32WI-GT3", {
-    1: "GND", 2: "GND", 3: "GND", 4: "GND", 5: "ID_SD", 6: "ID_SC", 7: "EEP_WP", 8: "3V3_PI"},
-    fp="Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", mpn="CAT24C32WI-GT3", mfr="onsemi", tier="A",
-    note="HAT ID EEPROM 0x50 on I2C0; device-tree injection point -> write protected")
-C("C50", "100n 16V", "3V3_PI", "GND")
-R("R50", "10k", "EEP_WP", "3V3_PI", note="WP high = protected by default")
-SJ("JP4", "EEP_WP", "GND", False, "EEP-WRITE", note="close only while programming the EEPROM")
-R("R51", "3.9k", "ID_SD", "3V3_PI")
-R("R52", "3.9k", "ID_SC", "3V3_PI")
+# No HAT ID EEPROM (removed 2026-09-28): overlays come from config.txt; the EEPROM was a
+# device-tree injection point outside the SD card image (spec 5.7).
 R("R53", "10k", "INA_ALERT_N", "3V3_PI")
 for i in range(1, 5):
     part(f"H{i}", "MH", "M2.5", {1: "GND"}, fp="MountingHole:MountingHole_2.7mm_M2.5_Pad_Via",
@@ -466,7 +446,7 @@ for i, (tc, net) in enumerate([("TC_TX", "CONSOLE_TX"), ("TC_RX", "CONSOLE_RX"),
 POWER_TPS = [  # net, silkscreen text with the expected reading, clip-able
     ("VBAT_RAW", "VBAT 6-17V", True), ("5V_BUCK", "5V 5.10-5.25", True),
     ("3V3_MPCIE", "3V3 HaLow 3.2-3.4", True), ("GND", "GND", True),
-    ("VSYS", "VSYS 6-17V", False), ("5V_PI", "5V_PI 5.0-5.2", False), ("OR_NODE", "OR 5-17V", False),
+    ("VSYS", "VSYS 6-17V", False), ("5V_PI", "5V_PI 5.0-5.2", False),
     ("3V3_BUCK", "3V3_BUCK 3.25-3.40", False), ("3V3_PI", "3V3_PI 3.2-3.4", False),
     ("3V3_SEC", "3V3_SEC 3.2-3.4", False), ("3V3_GNSS", "3V3_GNSS 3.2-3.4", False),
     ("VRTC", "VRTC 0-3.3", False), ("GND", "GND", False),
@@ -486,11 +466,11 @@ for i, (net, txt) in enumerate([("EF_OUT", "K1+ (R9)"), ("VSYS", "K1- (R9)"),
                                 ("3V3_BUCK", "K2+ (R22)"), ("3V3_SH", "K2- (R22)")]):
     TP(f"TP{n1 + i}", net, txt, note="Kelvin pads on the shunts: R9 mV x 100 = mA, R22 mV x 50 = mA"
        if i == 0 else "")
-HEADER_PROBE = ["I2C1_SDA", "I2C1_SCL", "ID_SD", "ID_SC", "UART5_TX", "UART5_RX", "GNSS_PPS",
+HEADER_PROBE = ["I2C1_SDA", "I2C1_SCL", "UART5_TX", "UART5_RX", "GNSS_PPS",
                 "PWR_INT_N", "KILL_REQ", "BAT_PRESENT_N", "INA_ALERT_N", "HALOW_RESET_N", "HALOW_WAKE"]
 
 # Power flags: tell KiCad ERC which nets are supplies (no electrical content).
-POWER_NETS = ["GND", "VBAT_RAW", "EF_IN", "EF_OUT", "VSYS", "5V_BUCK", "5V_PI", "OR_NODE",
+POWER_NETS = ["GND", "VBAT_RAW", "EF_IN", "EF_OUT", "VSYS", "5V_BUCK", "5V_PI",
               "3V3_BUCK", "3V3_SH", "3V3_FILT", "3V3_MPCIE", "3V3_PI", "3V3_SEC", "3V3_GNSS",
               "VRTC"]
 for i, net in enumerate(POWER_NETS, start=1):
@@ -503,7 +483,7 @@ for i, net in enumerate(POWER_NETS, start=1):
 BCM_TO_PHYS = {2: 3, 3: 5, 4: 7, 17: 11, 27: 13, 22: 15, 10: 19, 9: 21, 11: 23, 0: 27,
                5: 29, 6: 31, 13: 33, 19: 35, 26: 37, 14: 8, 15: 10, 18: 12, 23: 16,
                24: 18, 25: 22, 8: 24, 7: 26, 1: 28, 12: 32, 16: 36, 20: 38, 21: 40}
-SPEC_GPIO = {0: "ID_SD", 1: "ID_SC", 2: "I2C1_SDA", 3: "I2C1_SCL", 4: "BAT_PRESENT_N",
+SPEC_GPIO = {0: None, 1: None, 2: "I2C1_SDA", 3: "I2C1_SCL", 4: "BAT_PRESENT_N",
              5: "HALOW_IRQ", 6: "GNSS_PPS", 7: None, 8: "SPI0_CE0", 9: "SPI0_MISO",
              10: "SPI0_MOSI", 11: "SPI0_SCLK", 12: "UART5_TX", 13: "UART5_RX",
              14: "CONSOLE_TX", 15: "CONSOLE_RX", 16: "TPM_RST_N", 17: "HALOW_RESET_N",
@@ -515,12 +495,13 @@ SPEC_GPIO = {0: "ID_SD", 1: "ID_SC", 2: "I2C1_SDA", 3: "I2C1_SCL", 4: "BAT_PRESE
 VBAT_MAX = 19.6  # eFuse OVP trip, worst case
 NET_VMAX = {
     "GND": 0, "VBAT_RAW": 22.2, "EF_IN": VBAT_MAX, "EF_OUT": VBAT_MAX, "VSYS": VBAT_MAX,
-    "OR_NODE": VBAT_MAX, "5V_BUCK": 5.3, "5V_PI": 5.3, "3V3_PI": 3.4, "3V3_SEC": 3.4,
+    "5V_BUCK": 5.3, "5V_PI": 5.3, "3V3_PI": 3.4, "3V3_SEC": 3.4,
     "3V3_GNSS": 3.4, "3V3_BUCK": 3.4, "3V3_SH": 3.4, "3V3_FILT": 3.4, "3V3_MPCIE": 3.4,
-    "EN_3V3": 3.0,       # internal 0.7 uA pull-up only, open-drain pull-down
+    "EN_3V3": 3.4 + 2.1e-6 * 100e3,  # 3V3_PI + (0.7 + 1.4 uA) x R23
     "LTC_KILL_N": 3.4, "PWR_INT_N": 3.4, "INA_ALERT_N": 3.4, "BAT_PRESENT_N": 3.4,
     "KILL_REQ": 3.4, "EN_5V": VBAT_MAX * 24.3 / (102 + 24.3), "LTC_ENB": VBAT_MAX,
-    "G33": VBAT_MAX * 1000 / 1900, "BATP_G": 22.2 / 2, "BENCH_G": 3.4,
+    
+    "BATP_G": 22.2 / 2,
     "EF_UVLO": 22.2 * 100 / 483, "EF_OVP": 22.2 * 100 / 1530, "EF_PGTH": VBAT_MAX * 100 / 483,
     "LTC_ON": VBAT_MAX * 100 / 781,
     "GNSS_LNA_EN": 3.4, "GNSS_T1G": 3.4,
