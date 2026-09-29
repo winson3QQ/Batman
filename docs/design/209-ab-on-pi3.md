@@ -153,7 +153,9 @@ brcmfmac-nvram-43455-sdio / cypress-firmware-43455-sdio 皆在
 → mm8108 / kmod-mm8108 / mm8108-firmware 一筆都沒有
 ```
 
-`-x mm6108only` 的兩個目的都達成:mm8108 已剝除、`kmod-brcmfmac` 已 `=y` 進 squashfs(radio0 佔位,morse 留 radio1)。
+`-x mm6108only` 的兩個目的都達成:mm8108 已剝除、`kmod-brcmfmac` **已進 squashfs**(radio0 佔位,morse 留 radio1)。
+
+> ⚠️ 措辭精確性:manifest 只證明「套件已安裝進 image」,**不區分 `=y`(builtin)與 `=m`**。R6 的要求是強制 `=y`,那要看 `.config`(已查:`CONFIG_PACKAGE_kmod-brcmfmac=y`)。不要拿這份 manifest 當 `=y` 的證據。
 
 **殘留但不擋本設計**:`98e598b`(移除 USB 無線)**確實尚未編進 image** —— manifest 仍有 `kmod-rt2800-usb` / `kmod-rt2x00-usb` / `rt2800-usb-firmware` 等 5 筆。這只影響體積與「單一 USB-A 已 committed 給 CM108 PTT」的產品決策,**與 A/B 機制無關**,E1–E3 實驗不需要它。建議下次為別的理由重編時一併帶進去,不為此單獨重編一輪。
 
