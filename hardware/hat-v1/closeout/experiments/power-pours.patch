@@ -1,0 +1,90 @@
+diff --git a/hardware/hat-v1/closeout/closeout.py b/hardware/hat-v1/closeout/closeout.py
+index 2c9cb79..8dfb917 100644
+--- a/hardware/hat-v1/closeout/closeout.py
++++ b/hardware/hat-v1/closeout/closeout.py
+@@ -80,6 +80,12 @@ IN_PLACE = {  # ref: (x, y, rot), board-relative mm
+     "R9": (2.6, 16.0, 0), "C6": (10.5, 16.35, 90), "R6": (5.3, 18.3, 180),
+     "C1": (7.0, 28.4, 0),
+     "C33": (10.5, 34.6, 90), "C8": (10.5, 39.5, 270), "R19": (13.3, 37.5, 90),    # hot-plug damper: VD pads face each other
++    # UVLO / OVP dividers as two rows, VBAT ends on the left over the In2 VBAT_RAW pour, the divider
++    # nodes in the middle (UVLO reached from above), GND ends on the right; C3 / R5 beside them.
++    # Before, R1 / R3 stood in one column and every VBAT_RAW join had to cross the control lines.
++    "R1": (10.2, 29.8, 0), "R2": (12.15, 29.8, 0), "C3": (14.9, 29.8, 0),
++    "R3": (10.2, 31.3, 0), "R4": (12.15, 31.3, 0), "R5": (14.9, 31.3, 0),
++    "R8": (12.0, 27.23, 90),   # 1.5 mm left: frees a vertical lane right of the dividers
+ }
+ IN_RIP = {"EF_IN", "VBAT_RAW", "VBAT_DAMP", "EF_BGATE", "EF_DRV", "EF_UVLO", "EF_OVP", "EF_DVDT",
+           "EF_ILIM", "EF_SHDN", "EF_FLT_N", "EF_PGTH", "EN_5V", "EF_OUT", "VSYS", "GND"}
+@@ -101,7 +107,7 @@ def input_stage(b):
+     print("  C9.2 GND via:", ops.via_to_pour(b, "GND", (100.62, 126.38), radius=1.2, width=0.3))
+     ops.zone(b, "EF_IN", "F", [(0.5, 24.0), (3.05, 24.0), (3.05, 32.4), (3.6, 32.4), (3.6, 33.3), (1.35, 33.3),
+                                (1.35, 25.75), (0.5, 25.75)])
+-    ops.zone(b, "EF_OUT", "F", [(0.5, 15.0), (2.05, 15.0), (2.05, 18.9), (2.95, 19.5), (2.95, 20.25), (0.5, 20.25)])
++    ops.zone(b, "EF_OUT", "F", [(0.5, 15.0), (2.45, 15.0), (2.45, 18.9), (2.95, 19.5), (2.95, 20.25), (0.5, 20.25)])
+     ops.fill(b)
+     # U1 bottom row (pins 3-6) has a fixed left-to-right order: hand-drawn lanes, router for the rest
+     T = lambda net, pts, w=0.2, layer="F": ops.add_track(b, net, layer, [(100 + x, 100 + y) for x, y in pts], w)
+@@ -109,13 +115,25 @@ def input_stage(b):
+     T("EF_BGATE", [(3.85, 35.74), (3.85, 36.35), (8.3, 36.35), (8.3, 34.3), (7.237, 34.3)], 0.25)
+     T("EF_DRV", [(3.85, 24.263), (3.85, 25.0), (4.3, 25.45), (4.3, 33.35), (5.362, 33.35)])
+     T("VBAT_RAW", [(4.35, 24.263), (4.35, 24.95), (4.8, 25.4), (4.8, 28.4), (6.05, 28.4)])
+-    T("EF_UVLO", [(4.85, 24.263), (4.85, 24.45), (5.4, 24.45), (5.4, 26.6), (8.8, 26.6)])
++    T("EF_UVLO", [(4.85, 24.263), (4.85, 24.45), (5.4, 24.45), (5.4, 26.6), (11.18, 26.6), (11.18, 29.8)])
++    # divider rows: node bridges, the VBAT_RAW bus + its via onto the In2 pour, one GND via for R2 / R4
++    T("EF_UVLO", [(10.71, 29.8), (11.64, 29.8)])
++    T("EF_OVP", [(10.71, 31.3), (11.64, 31.3)])
++    T("VBAT_RAW", [(9.69, 29.8), (9.69, 31.3)], 0.3)
++    T("VBAT_RAW", [(8.6, 30.55), (9.69, 30.55)], 0.3)
++    ops.add_via(b, "VBAT_RAW", (108.6, 130.55))
++    T("GND", [(12.66, 29.8), (12.66, 31.3)], 0.3)
++    ops.add_via(b, "GND", (112.66, 130.55))
+     # U1 top row: EN_5V drops through a via under R9's body, PGTH up to R6, FLT_N over pin 13 to a via
+     T("EN_5V", [(3.35, 20.338), (3.35, 18.2), (3.0, 17.85), (3.0, 16.8)])
+     ops.add_via(b, "EN_5V", (103.0, 116.8))    # clear of TP20 / TP27 on the back
+     T("EF_PGTH", [(3.85, 20.338), (3.85, 19.1), (4.79, 18.3)])
+     T("EF_FLT_N", [(4.35, 20.338), (4.35, 19.62), (5.8, 19.62)])
+     ops.add_via(b, "EF_FLT_N", (105.8, 119.62))
++    # TP27 (R9 Kelvin K1+, back side) joins the EF_OUT pour through a via next to it (Freerouting
++    # missed this join in 2 of 3 runs)
++    ops.add_via(b, "EF_OUT", (101.2, 117.9))
++    ops.add_track(b, "EF_OUT", "B", [(101.2, 117.9), (102.34, 117.84)], 0.3)
+     # VBAT_RAW distribution (Q2, IN_SYS, C1, damper, dividers) on an In2 pour fed from the F pour
+     print("  VBAT_RAW F->In2 vias", ops.via_array(b, "VBAT_RAW", (0.6, 36.9, 3.3, 41.3), 6))
+     in2 = [(3.8, 27.6), (9.0, 27.6), (9.0, 41.0), (0.6, 41.0), (0.6, 35.0), (3.8, 35.0)]   # x 9-12.6 left free for U1 control lines
+@@ -129,7 +147,35 @@ def input_stage(b):
+     # every remaining connection of these nets is left to Freerouting (run.sh)
+
+
+-STEPS = [spi1_sclk, j5_gnd, buck5, halow_reset, input_stage]
++# ------------------------------------------------------------------ main power distribution
++# 5 V (Q3 = ideal-diode FET, U4 = its LM74700 controller). Q3 keeps the cloud orientation: source
++# pins 1-3 on its left (5V_BUCK), drain + tab on its right facing U4. Rotating Q3 90 deg (source
++# down, drain up) widened the 5V_BUCK neck to 1.7 mm but made Q3's gate / source / drain lines cross
++# on their way to U4 (left column VCAP/GND/5V_BUCK, right column 5V_BUCK/G_5VID/5V_PI): Freerouting
++# failed U4 on every run, so it was reverted.
++# 5V_BUCK: L1.2 -> Q3 source, a strip along Q3's left edge (the Pi 4 Wi-Fi keep-out starts at x 12,
++# the gate pin 4 sits bottom-left) -> ~1 mm neck, from 0.35 mm.
++# 5V_PI: Q3 drain / tab -> Pi header J2.2 / J2.4 through the gaps between the second-row pins; the
++# In2 5V_PI track stays in parallel; B.Cu is left for the header signals.
++POUR_5V_BUCK = [(12.05, 6.9), (13.7, 6.9), (13.7, 9.07), (13.05, 9.07), (13.05, 9.95), (16.6, 9.95), (16.6, 13.5),
++                (15.5, 13.5), (15.5, 12.4), (12.05, 12.4)]
++POUR_5V_PI = [(6.4, 0.6), (16.9, 0.6), (16.9, 9.75), (14.3, 9.75), (14.3, 6.7), (6.4, 6.7)]
++# 3.3 V HaLow: L2.2 -> C27 / C28 -> both sides of C27.2 (GND) -> R22 shunt
++POUR_3V3_BUCK = [(29.1, 49.2), (36.7, 49.2), (36.7, 53.45), (32.9, 53.45), (32.9, 55.1), (29.1, 55.1)]
++
++
++def power_5v_3v3(b):
++    # keep Q3's gate stub / via and the Q3 -> U4 sense lines that cross the pour corners
++    print("  ripped 5V_BUCK area", ops.rip_in_poly(b, POUR_5V_BUCK, "F", keep={"5V_BUCK", "G_5VID", "5V_PI"}),
++          "5V_PI area", ops.rip_in_poly(b, POUR_5V_PI, "F", keep={"5V_PI"}),
++          "3V3_BUCK area", ops.rip_in_poly(b, POUR_3V3_BUCK, "F"))
++    ops.zone(b, "5V_BUCK", "F", POUR_5V_BUCK)
++    ops.zone(b, "5V_PI", "F", POUR_5V_PI)
++    ops.zone(b, "3V3_BUCK", "F", POUR_3V3_BUCK)
++    ops.fill(b)
++
++
++STEPS = [spi1_sclk, j5_gnd, buck5, halow_reset, input_stage, power_5v_3v3]
+
+ if __name__ == "__main__":
+     upto = int(sys.argv[1]) if len(sys.argv) > 1 else len(STEPS)

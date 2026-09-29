@@ -1,0 +1,210 @@
+source board: src-board.kicad_pcb
+gnd-via | C1.2 | ok
+gnd-via | C10.2 | ok
+gnd-via | C10.2 | ok
+gnd-via | C11.2 | NO SPOT
+gnd-via | C13.2 | ok
+gnd-via | C14.2 | ok
+gnd-via | C14.2 | ok
+gnd-via | C14.2 | ok
+gnd-via | C15.2 | ok
+gnd-via | C15.2 | ok
+gnd-via | C15.2 | ok
+gnd-via | C16.2 | ok
+gnd-via | C16.2 | ok
+gnd-via | C16.2 | ok
+gnd-via | C2.2 | ok
+gnd-via | C22.2 | ok
+gnd-via | C22.2 | ok
+gnd-via | C23.2 | ok
+gnd-via | C23.2 | ok
+gnd-via | C24.2 | ok
+gnd-via | C26.2 | ok
+gnd-via | C27.2 | ok
+gnd-via | C27.2 | ok
+gnd-via | C27.2 | ok
+gnd-via | C28.2 | ok
+gnd-via | C28.2 | ok
+gnd-via | C28.2 | ok
+gnd-via | C3.2 | ok
+gnd-via | C30.2 | ok
+gnd-via | C31.2 | ok
+gnd-via | C32.2 | ok
+gnd-via | C34.2 | ok
+gnd-via | C4.2 | ok
+gnd-via | C40.2 | ok
+gnd-via | C41.2 | NO SPOT
+gnd-via | C5.2 | ok
+gnd-via | C6.2 | ok
+gnd-via | C6.2 | ok
+gnd-via | C60.2 | ok
+gnd-via | C61.2 | ok
+gnd-via | C62.2 | ok
+gnd-via | C63.2 | ok
+gnd-via | C64.2 | ok
+gnd-via | C70.2 | ok
+gnd-via | C71.2 | ok
+gnd-via | C72.2 | ok
+gnd-via | C73.2 | ok
+gnd-via | C74.2 | ok
+gnd-via | C75.2 | ok
+gnd-via | C77.2 | ok
+gnd-via | C80.2 | ok
+gnd-via | C81.2 | ok
+gnd-via | C82.2 | ok
+gnd-via | C84.2 | ok
+gnd-via | C9.2 | ok
+gnd-via | D1.2 | ok
+gnd-via | D4.2 | ok
+gnd-via | J4.2 | ok
+gnd-via | J4.2 | ok
+gnd-via | J6.2 | ok
+gnd-via | Q10.2 | ok
+gnd-via | Q12.2 | ok
+gnd-via | Q7.2 | ok
+gnd-via | R11.2 | ok
+gnd-via | R14.2 | ok
+gnd-via | R16.2 | ok
+gnd-via | R2.2 | ok
+gnd-via | R21.2 | ok
+gnd-via | R4.2 | ok
+gnd-via | R5.2 | ok
+gnd-via | R7.2 | ok
+gnd-via | R83.2 | ok
+gnd-via | TP12.1 | NO SPOT
+gnd-via | TP4.1 | ok
+gnd-via | U11.2 | ok
+gnd-via | U11.9 | ok
+gnd-via | U11.16 | ok
+gnd-via | U11.23 | ok
+gnd-via | U11.32 | ok
+gnd-via | U11.33 | NO SPOT
+gnd-via | U12.4 | ok
+gnd-via | U13.5 | ok
+gnd-via | U14.1 | ok
+gnd-via | U14.10 | ok
+gnd-via | U14.12 | ok
+gnd-via | U15.2 | ok
+gnd-via | U4.2 | ok
+gnd-via | U7.1 | ok
+gnd-via | U7.4 | ok
+route | EF_SHDN | ok (1 links)
+route | EF_BGATE | ok (2 links)
+route | VBAT_RAW | ok (9 links)
+route | EF_UVLO | ok (2 links)
+route | EF_OVP | ok (2 links)
+route | EF_ILIM | ok (1 links)
+route | EF_DVDT | ok (1 links)
+route | EN_5V | ok (5 links)
+route | EF_PGTH | ok (1 links)
+route | EF_FLT_N | ok (2 links)
+route | EF_DRV | ok (1 links)
+route | EF_OUT | ok (4 links)
+route | EF_IN | ok (1 links)
+route | G_5VID | ok (1 links)
+route | BOOT_5V | ok (1 links)
+route | VCC_5V | ok (2 links)
+route | FB_5V | ok (3 links)
+route | PG_5V | ok (1 links)
+route | VCAP_5V | ok (1 links)
+route | VSYS | ok (8 links)
+route | 5V_PI | ok (1 links)
+route | EN_3V3 | ok (3 links)
+route | BST_3V3 | ok (1 links)
+route | SS_3V3 | ok (0 links)
+route | FB_3V3 | ok (3 links)
+route | 3V3_SH | ok (5 links)
+route | 3V3_FILT | ok (1 links)
+route | 3V3_MPCIE | ok (11 links)
+route | 5V_BUCK | ok (6 links)
+route | 3V3_BUCK | ok (5 links)
+route | VBAT_DAMP | ok (2 links)
+rest | 3V3_PI | FAIL connect_all 3V3_PI: no route (116.525, 126.925) -> (117.29, 126.92) (15 groups)
+rest | 3V3_SEC | FAIL connect_all 3V3_SEC: no route (147.13, 122.909999) -> (148.525, 122.909999) (10 groups)
+rest | 3V3_GNSS | ok (10 links)
+rest | VRTC | ok (3 links)
+rest | I2C1_SDA | ok (4 links)
+rest | I2C1_SCL | FAIL connect_all I2C1_SCL: no route (127.2, 122.325) -> (132.534999, 122.325) (5 groups)
+rest | GNSS_RFIN | ok (1 links)
+rest | LED_5V_A | ok (1 links)
+rest | RTC_EVI | ok (1 links)
+rest | LED_FLT_A | ok (1 links)
+rest | LTC_TMR | ok (1 links)
+rest | SW_3V3 | ok (0 links)
+rest | GNSS_ANT | ok (2 links)
+rest | UART5_RX | ok (1 links)
+rest | GNSS_ANT_VREF | ok (2 links)
+rest | GNSS_VIOSEL | ok (1 links)
+rest | SW_5V | ok (0 links)
+rest | TC_SCLK | ok (1 links)
+rest | TC_3V3 | ok (1 links)
+rest | BATP_G | ok (2 links)
+rest | LTC_ON | ok (2 links)
+rest | TC_MOSI | ok (1 links)
+rest | TC_BUSY | FAIL connect_all TC_BUSY: no route (141.4907718023388, 114.5923538692168) -> (139.736662, 111.149724) (2 groups)
+rest | TC_RX | ok (1 links)
+rest | TC_MISO | ok (1 links)
+rest | TC_IRQ | ok (1 links)
+rest | TC_CS | FAIL connect_all TC_CS: no route (141.54334, 112.025569) -> (139.736662, 107.349724) (2 groups)
+rest | GNSS_ANT_SUP | ok (2 links)
+rest | GNSS_PPS | ok (1 links)
+rest | TPM_P10 | ok (1 links)
+rest | UART5_TX | FAIL connect_all UART5_TX: no route (147.973463, 109.315224) -> (146.64330250721554, 103.05739240650355) (2 groups)
+rest | TC_TX | ok (1 links)
+rest | GNSS_T1G | FAIL connect_all GNSS_T1G: no route (141.7, 126.15) -> (137.76, 125.585) (3 groups)
+rest | SPI1_MISO | ok (1 links)
+rest | LTC_KILL_N | ok (3 links)
+rest | SPI1_MOSI | ok (1 links)
+rest | SPI1_SCLK | ok (1 links)
+rest | CONSOLE_RX | FAIL connect_all CONSOLE_RX: no route (138.190276, 109.823338) -> (119.306513, 102.575726) (2 groups)
+rest | CONSOLE_TX | ok (1 links)
+rest | TPM_RST_N | FAIL connect_all TPM_RST_N: no route (151.025, 129.879999) -> (151.0875, 123.35) (3 groups)
+rest | GNSS_ANT_FEED | ok (4 links)
+rest | GNSS_LNA_EN | ok (1 links)
+rest | PWR_BTN_N | ok (3 links)
+rest | AUTO_A | ok (1 links)
+rest | GNSS_RST_N | ok (1 links)
+rest | GNSS_SAFEBOOT_N | ok (1 links)
+rest | LTC_ENB | ok (3 links)
+rest | GNSS_ANT_SHORT_N | FAIL connect_all GNSS_ANT_SHORT_N: no route (145.030459, 124.759541) -> (157.408579, 108.941421) (3 groups)
+rest | RTC_INT_N | FAIL connect_all RTC_INT_N: no route (125.877165, 122.990485) -> (116.771157, 154.105089) (2 groups)
+rest | GNSS_ANT_DET | FAIL connect_all GNSS_ANT_DET: no route (141.781066, 121.393934) -> (157.408579, 110.041421) (3 groups)
+rest | RTC_CLKOUT | ok (1 links)
+rest | BAT_PRESENT_N | ok (2 links)
+rest | SPI0_SCLK | ok (2 links)
+rest | SPI0_CE0 | FAIL connect_all SPI0_CE0: no route (139.263338, 107.850276) -> (136.734999, 102.966122) (3 groups)
+rest | HALOW_IRQ | FAIL connect_all HALOW_IRQ: no route (139.780459, 109.779541) -> (143.361238, 105.401673) (3 groups)
+rest | SPI0_MISO | FAIL connect_all SPI0_MISO: no route (162.111418, 123.392597) -> (138.809724, 115.896662) (2 groups)
+rest | TPM_PIRQ_N | FAIL connect_all TPM_PIRQ_N: no route (149.076662, 129.890275) -> (150.563582, 123.345242) (3 groups)
+rest | SPI0_MOSI | FAIL connect_all SPI0_MOSI: no route (138.219541, 113.579541) -> (131.79876, 105.401673) (3 groups)
+rest | PWR_INT_N | FAIL connect_all PWR_INT_N: no route (137.230276, 138.136662) -> (135.790485, 138.852165) (3 groups)
+rest | KILL_REQ | ok (2 links)
+rest | TPM_CS_N | FAIL connect_all TPM_CS_N: no route (149.563582, 123.345242) -> (147.076662, 129.890275) (3 groups)
+rest | INA_ALERT_N | ok (3 links)
+rest | HALOW_BUSY | FAIL connect_all HALOW_BUSY: no route (139.219541, 111.679541) -> (129.33374811292126, 102.77838973347241) (3 groups)
+rest | HALOW_RESET_N | ok (1 links)
+rest | HALOW_WAKE | ok (1 links)
+
+DRC: {'annular_width': 41, 'clearance': 26, 'courtyards_overlap': 2, 'hole_clearance': 2, 'item_on_disabled_layer': 5, 'items_not_allowed': 2, 'lib_footprint_issues': 175, 'silk_edge_clearance': 15, 'silk_over_copper': 90, 'silk_overlap': 192, 'solder_mask_bridge': 2, 'unconnected_items': 97}
+  DRC clearance: 26
+  DRC hole_clearance: 2
+  DRC courtyards_overlap: 2
+  DRC items_not_allowed: 2
+  DRC annular_width: 41
+
+24 escape/via failures; see escape-drc.rpt
+
+neck widths (outer layers; pads exempt):
+  VBAT_RAW    J1.1 -> Q1.1  : F 2.45 mm, In2 short hop (pads adjacent)
+  EF_IN       Q1.5 -> U1.1  : F short hop (pads adjacent), In2 short hop (pads adjacent)
+  EF_OUT     U1.18 -> R9.1  : F short hop (pads adjacent), In2 short hop (pads adjacent)
+  VSYS        R9.2 -> C10.1 : F 1.90 mm, In2 0.00 mm
+  VSYS       C10.1 -> U3.2  : F 1.19 mm, In2 short hop (pads adjacent)
+  SW_5V       U3.8 -> L1.1  : F short hop (pads adjacent)
+  5V_BUCK     L1.2 -> Q3.1  : F 1.71 mm, In2 short hop (pads adjacent)
+  5V_PI       Q3.5 -> J2.4  : F 0.96 mm, In2 short hop (pads adjacent)
+  5V_PI       Q3.5 -> J2.2  : F 0.96 mm, In2 short hop (pads adjacent)
+  SW_3V3      U7.5 -> L2.1  : F short hop (pads adjacent)
+  3V3_BUCK    L2.2 -> R22.1 : F 1.30 mm, In2 0.00 mm
+  5V_PI      C23.1 -> U7.3  : F short hop (pads adjacent), In2 short hop (pads adjacent)
+  5V_PI      C19.1 -> C23.1 : F 0.00 mm, In2 0.00 mm

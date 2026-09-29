@@ -1,0 +1,3 @@
+(fp_lib_table
+  (lib (name "batman")(type "KiCad")(uri "${KIPRJMOD}/batman.pretty")(options "")(descr "Batman HAT"))
+)

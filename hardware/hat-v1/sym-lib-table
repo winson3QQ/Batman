@@ -1,0 +1,3 @@
+(sym_lib_table
+  (lib (name "batman")(type "KiCad")(uri "${KIPRJMOD}/batman.kicad_sym")(options "")(descr "Batman HAT"))
+)

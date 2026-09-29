@@ -1,0 +1,10 @@
+*-backups/
+*.kicad_prl
+fp-info-cache
+_autosave-*
+out/*.net
+gen/__pycache__/
+out/route/
+~*.lck
+layout-v2/src-board.kicad_pcb
+layout-v2/src-board.kicad_pro

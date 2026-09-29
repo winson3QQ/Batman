@@ -1,0 +1,264 @@
+2026-09-29 08:06:52.422 INFO   Freerouting v2.1.0 (build-date: 2025-04-12)
+2026-09-29 08:06:52.507 WARN   GUI is disabled and you don't have a console available, so the only feedback from Freerouting is in the log.
+2026-09-29 08:06:54.238 INFO   New version available: v2.4.1
+2026-09-29 08:07:12.775 INFO   [1804D1\3C3A1B] Job '1804D1\3C3A1B' started at 2026-09-29T00:07:12.774840195Z
+2026-09-29 08:08:03.620 INFO   [1804D1\3C3A1B] Auto-router pass #1 on board 'bb190dbd8c13d9be1a18e35fef941625' was completed in 50.54 seconds with the score of 791.03 (255 unrouted), using 1284.44 CPU seconds and 43211 MB memory.
+2026-09-29 08:08:31.025 INFO   [1804D1\3C3A1B] Auto-router pass #2 on board '30e703802d130dd3d72d894c3add73a8' was completed in 27.33 seconds with the score of 811.94 (231 unrouted), using 3063.12 CPU seconds and 65595 MB memory.
+2026-09-29 08:08:55.079 INFO   [1804D1\3C3A1B] Auto-router pass #3 on board '5f5677466d8543f3faf2b71045337622' was completed in 23.98 seconds with the score of 810.71 (231 unrouted), using 5178.48 CPU seconds and 85596 MB memory.
+2026-09-29 08:09:54.783 INFO   [1804D1\3C3A1B] Auto-router pass #4 on board 'da49fe956ceafd035dc9afb5325b36be' was completed in 59.64 seconds with the score of 881.42 (159 unrouted), using 13024.16 CPU seconds and 139217 MB memory.
+2026-09-29 08:10:16.787 INFO   [1804D1\3C3A1B] Auto-router pass #5 on board 'b0d46ece7fee405af039d931671940a5' was completed in 21.92 seconds with the score of 878.09 (162 unrouted), using 16899.75 CPU seconds and 156230 MB memory.
+2026-09-29 08:10:39.162 INFO   [1804D1\3C3A1B] Auto-router pass #6 on board '84c6c9334b5d1d60b9fcb8c39e1f7dbe' was completed in 22.30 seconds with the score of 878.61 (162 unrouted), using 21283.24 CPU seconds and 172815 MB memory.
+2026-09-29 08:11:02.163 INFO   [1804D1\3C3A1B] Auto-router pass #7 on board '9759af2f71f40de869eea36879e890c4' was completed in 22.93 seconds with the score of 879.13 (162 unrouted), using 26173.98 CPU seconds and 189619 MB memory.
+2026-09-29 08:11:01.787 WARN   PolylineTrace.get_trace_connection_shape p_index out of range
+2026-09-29 08:11:01.787 ERROR  AutorouteEngine.autoroute_connection: Exception in maze_search_algo.find_connection
+java.lang.NullPointerException: Cannot invoke "app.freerouting.geometry.planar.TileShape.nearest_point_approx(app.freerouting.geometry.planar.FloatPoint)" because "target_shape" is null
+	at app.freerouting.autoroute.MazeSearchAlgo.expand_to_target_doors(MazeSearchAlgo.java:534) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.expand_to_room_doors(MazeSearchAlgo.java:398) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.occupy_next_element(MazeSearchAlgo.java:286) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.find_connection(MazeSearchAlgo.java:206) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.AutorouteEngine.autoroute_connection(AutorouteEngine.java:155) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_item(BatchAutorouter.java:610) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_pass(BatchAutorouter.java:332) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.runBatchLoop(BatchAutorouter.java:447) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.management.RoutingJobSchedulerActionThread.thread_action(RoutingJobSchedulerActionThread.java:131) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.core.StoppableThread.run(StoppableThread.java:26) [freerouting-2.1.0.jar:unspecified]
+2026-09-29 08:11:01.787 ERROR  AutorouteEngine.autoroute_connection: Exception in maze_search_algo.find_connection
+java.lang.NullPointerException: Cannot invoke "app.freerouting.geometry.planar.TileShape.nearest_point_approx(app.freerouting.geometry.planar.FloatPoint)" because "target_shape" is null
+	at app.freerouting.autoroute.MazeSearchAlgo.expand_to_target_doors(MazeSearchAlgo.java:534) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.expand_to_room_doors(MazeSearchAlgo.java:398) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.occupy_next_element(MazeSearchAlgo.java:286) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.find_connection(MazeSearchAlgo.java:206) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.AutorouteEngine.autoroute_connection(AutorouteEngine.java:155) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_item(BatchAutorouter.java:610) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_pass(BatchAutorouter.java:332) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.runBatchLoop(BatchAutorouter.java:447) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.management.RoutingJobSchedulerActionThread.thread_action(RoutingJobSchedulerActionThread.java:131) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.core.StoppableThread.run(StoppableThread.java:26) [freerouting-2.1.0.jar:unspecified]
+2026-09-29 08:11:34.796 INFO   [1804D1\3C3A1B] Restoring an earlier board that has the score of 881.42 (159 unrouted).
+2026-09-29 08:11:34.803 INFO   [1804D1\3C3A1B] Auto-router pass #8 on board '93135ee18a14030d13d79715e705f2ef' was completed in 32.57 seconds with the score of 875.42 (163 unrouted), using 34583.65 CPU seconds and 219368 MB memory.
+2026-09-29 08:12:02.049 INFO   [1804D1\3C3A1B] Auto-router pass #9 on board 'b0d46ece7fee405af039d931671940a5' was completed in 27.22 seconds with the score of 895.18 (143 unrouted), using 41862.42 CPU seconds and 244190 MB memory.
+2026-09-29 08:12:16.681 INFO   [1804D1\3C3A1B] Auto-router pass #10 on board '7829e3221d35c0a9f803059d3a071e47' was completed in 14.57 seconds with the score of 898.38 (139 unrouted), using 46207.16 CPU seconds and 258257 MB memory.
+2026-09-29 08:12:30.939 INFO   [1804D1\3C3A1B] Auto-router pass #11 on board '40c2d517e193d37a6ab0f293c531c339' was completed in 14.20 seconds with the score of 898.78 (139 unrouted), using 50767.80 CPU seconds and 272421 MB memory.
+2026-09-29 08:13:01.859 INFO   [1804D1\3C3A1B] Auto-router pass #12 on board '71a2b356ec448f931f01812a77731d9c' was completed in 30.86 seconds with the score of 904.90 (132 unrouted), using 60868.65 CPU seconds and 302034 MB memory.
+2026-09-29 08:13:14.371 INFO   [1804D1\3C3A1B] Auto-router pass #13 on board 'ef577b774dd2aef65b7ba3503491cd85' was completed in 12.44 seconds with the score of 903.72 (133 unrouted), using 65730.51 CPU seconds and 315606 MB memory.
+2026-09-29 08:13:27.975 INFO   [1804D1\3C3A1B] Auto-router pass #14 on board '6407189942f95c500f6a6195063d93c9' was completed in 13.54 seconds with the score of 902.88 (134 unrouted), using 70413.43 CPU seconds and 328192 MB memory.
+2026-09-29 08:13:40.639 INFO   [1804D1\3C3A1B] Auto-router pass #15 on board 'ad4ba228c73751ebe09bd4ef876b6f18' was completed in 12.60 seconds with the score of 903.30 (133 unrouted), using 75636.80 CPU seconds and 341654 MB memory.
+2026-09-29 08:13:52.599 WARN   LocateFoundConnectionAlgo45Degree.calculate_next_trace_corners: next_room is null
+2026-09-29 08:13:55.677 INFO   [1804D1\3C3A1B] Restoring an earlier board that has the score of 904.90 (132 unrouted).
+2026-09-29 08:13:55.681 INFO   [1804D1\3C3A1B] Auto-router pass #16 on board 'b293b81554bf106cf1800908811f82aa' was completed in 14.98 seconds with the score of 901.61 (135 unrouted), using 81441.13 CPU seconds and 355855 MB memory.
+2026-09-29 08:14:15.061 ERROR  AutorouteEngine.autoroute_connection: Exception in maze_search_algo.find_connection
+java.lang.ArrayIndexOutOfBoundsException: Index 6 out of bounds for length 6
+	at app.freerouting.autoroute.MazeShoveTraceAlgo.check_shove_trace_line(MazeShoveTraceAlgo.java:123) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.shove_trace_room(MazeSearchAlgo.java:1214) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.expand_to_room_doors(MazeSearchAlgo.java:443) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.occupy_next_element(MazeSearchAlgo.java:286) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.find_connection(MazeSearchAlgo.java:206) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.AutorouteEngine.autoroute_connection(AutorouteEngine.java:155) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_item(BatchAutorouter.java:610) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_pass(BatchAutorouter.java:332) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.runBatchLoop(BatchAutorouter.java:447) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.management.RoutingJobSchedulerActionThread.thread_action(RoutingJobSchedulerActionThread.java:131) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.core.StoppableThread.run(StoppableThread.java:26) [freerouting-2.1.0.jar:unspecified]
+2026-09-29 08:14:15.061 ERROR  AutorouteEngine.autoroute_connection: Exception in maze_search_algo.find_connection
+java.lang.ArrayIndexOutOfBoundsException: Index 6 out of bounds for length 6
+	at app.freerouting.autoroute.MazeShoveTraceAlgo.check_shove_trace_line(MazeShoveTraceAlgo.java:123) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.shove_trace_room(MazeSearchAlgo.java:1214) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.expand_to_room_doors(MazeSearchAlgo.java:443) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.occupy_next_element(MazeSearchAlgo.java:286) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.find_connection(MazeSearchAlgo.java:206) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.AutorouteEngine.autoroute_connection(AutorouteEngine.java:155) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_item(BatchAutorouter.java:610) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_pass(BatchAutorouter.java:332) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.runBatchLoop(BatchAutorouter.java:447) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.management.RoutingJobSchedulerActionThread.thread_action(RoutingJobSchedulerActionThread.java:131) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.core.StoppableThread.run(StoppableThread.java:26) [freerouting-2.1.0.jar:unspecified]
+2026-09-29 08:14:16.992 INFO   [1804D1\3C3A1B] Auto-router pass #17 on board 'ef577b774dd2aef65b7ba3503491cd85' was completed in 21.29 seconds with the score of 908.79 (126 unrouted), using 90336.12 CPU seconds and 374894 MB memory.
+2026-09-29 08:14:22.575 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.581 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.583 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.584 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.585 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.586 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.586 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.586 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.587 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.587 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.588 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.588 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.589 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.589 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.589 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.590 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.590 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.590 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.591 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.591 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.594 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.594 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.598 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.599 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.602 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.603 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.607 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.610 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.613 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.613 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.614 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.614 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.615 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.615 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.620 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.620 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.621 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.621 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.622 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.623 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.624 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.626 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.627 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.629 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.630 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.632 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.635 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.636 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.636 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.637 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.637 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.637 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.644 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.644 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.652 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.653 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.655 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:22.655 WARN   MazeShoveTraceAlgo.check_shove_trace_line: trace_corner_no to big
+2026-09-29 08:14:28.540 ERROR  AutorouteEngine.autoroute_connection: Exception in maze_search_algo.find_connection
+java.lang.ArrayIndexOutOfBoundsException: Index 8 out of bounds for length 8
+	at app.freerouting.autoroute.MazeShoveTraceAlgo.check_shove_trace_line(MazeShoveTraceAlgo.java:123) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.shove_trace_room(MazeSearchAlgo.java:1214) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.expand_to_room_doors(MazeSearchAlgo.java:443) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.occupy_next_element(MazeSearchAlgo.java:286) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.find_connection(MazeSearchAlgo.java:206) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.AutorouteEngine.autoroute_connection(AutorouteEngine.java:155) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_item(BatchAutorouter.java:610) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_pass(BatchAutorouter.java:332) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.runBatchLoop(BatchAutorouter.java:447) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.management.RoutingJobSchedulerActionThread.thread_action(RoutingJobSchedulerActionThread.java:131) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.core.StoppableThread.run(StoppableThread.java:26) [freerouting-2.1.0.jar:unspecified]
+2026-09-29 08:14:28.540 ERROR  AutorouteEngine.autoroute_connection: Exception in maze_search_algo.find_connection
+java.lang.ArrayIndexOutOfBoundsException: Index 8 out of bounds for length 8
+	at app.freerouting.autoroute.MazeShoveTraceAlgo.check_shove_trace_line(MazeShoveTraceAlgo.java:123) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.shove_trace_room(MazeSearchAlgo.java:1214) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.expand_to_room_doors(MazeSearchAlgo.java:443) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.occupy_next_element(MazeSearchAlgo.java:286) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.find_connection(MazeSearchAlgo.java:206) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.AutorouteEngine.autoroute_connection(AutorouteEngine.java:155) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_item(BatchAutorouter.java:610) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_pass(BatchAutorouter.java:332) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.runBatchLoop(BatchAutorouter.java:447) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.management.RoutingJobSchedulerActionThread.thread_action(RoutingJobSchedulerActionThread.java:131) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.core.StoppableThread.run(StoppableThread.java:26) [freerouting-2.1.0.jar:unspecified]
+2026-09-29 08:14:32.009 INFO   [1804D1\3C3A1B] Auto-router pass #18 on board '36e7e7d5e211e1a5b1afc0ceb8903fa3' was completed in 14.96 seconds with the score of 901.15 (135 unrouted), using 96663.35 CPU seconds and 388786 MB memory.
+2026-09-29 08:14:33.849 ERROR  AutorouteEngine.autoroute_connection: Exception in maze_search_algo.find_connection
+java.lang.ArrayIndexOutOfBoundsException: Index 8 out of bounds for length 8
+	at app.freerouting.autoroute.MazeShoveTraceAlgo.check_shove_trace_line(MazeShoveTraceAlgo.java:123) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.shove_trace_room(MazeSearchAlgo.java:1214) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.expand_to_room_doors(MazeSearchAlgo.java:443) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.occupy_next_element(MazeSearchAlgo.java:286) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.find_connection(MazeSearchAlgo.java:206) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.AutorouteEngine.autoroute_connection(AutorouteEngine.java:155) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_item(BatchAutorouter.java:610) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_pass(BatchAutorouter.java:332) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.runBatchLoop(BatchAutorouter.java:447) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.management.RoutingJobSchedulerActionThread.thread_action(RoutingJobSchedulerActionThread.java:131) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.core.StoppableThread.run(StoppableThread.java:26) [freerouting-2.1.0.jar:unspecified]
+2026-09-29 08:14:33.849 ERROR  AutorouteEngine.autoroute_connection: Exception in maze_search_algo.find_connection
+java.lang.ArrayIndexOutOfBoundsException: Index 8 out of bounds for length 8
+	at app.freerouting.autoroute.MazeShoveTraceAlgo.check_shove_trace_line(MazeShoveTraceAlgo.java:123) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.shove_trace_room(MazeSearchAlgo.java:1214) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.expand_to_room_doors(MazeSearchAlgo.java:443) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.occupy_next_element(MazeSearchAlgo.java:286) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.MazeSearchAlgo.find_connection(MazeSearchAlgo.java:206) ~[freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.AutorouteEngine.autoroute_connection(AutorouteEngine.java:155) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_item(BatchAutorouter.java:610) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.autoroute_pass(BatchAutorouter.java:332) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.autoroute.BatchAutorouter.runBatchLoop(BatchAutorouter.java:447) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.management.RoutingJobSchedulerActionThread.thread_action(RoutingJobSchedulerActionThread.java:131) [freerouting-2.1.0.jar:unspecified]
+	at app.freerouting.core.StoppableThread.run(StoppableThread.java:26) [freerouting-2.1.0.jar:unspecified]
+2026-09-29 08:14:46.628 INFO   [1804D1\3C3A1B] Auto-router pass #19 on board 'e0c590d393fb482202b9e0c9499d4ebc' was completed in 14.56 seconds with the score of 894.61 (141 unrouted), using 103647.29 CPU seconds and 403629 MB memory.
+2026-09-29 08:15:35.251 INFO   [1804D1\3C3A1B] Restoring an earlier board that has the score of 908.79 (126 unrouted).
+2026-09-29 08:15:35.255 INFO   [1804D1\3C3A1B] Auto-router pass #20 on board '6ca69fd3ad022343f360488148f0a6c6' was completed in 48.56 seconds with the score of 902.52 (133 unrouted), using 126527.71 CPU seconds and 446441 MB memory.
+2026-09-29 08:16:00.538 INFO   [1804D1\3C3A1B] Auto-router pass #21 on board '36e7e7d5e211e1a5b1afc0ceb8903fa3' was completed in 25.26 seconds with the score of 909.08 (127 unrouted), using 139583.28 CPU seconds and 469191 MB memory.
+2026-09-29 08:16:15.272 INFO   [1804D1\3C3A1B] Auto-router pass #22 on board '16694606148c6c9cff132e56d54c3fec' was completed in 14.65 seconds with the score of 908.27 (128 unrouted), using 147404.36 CPU seconds and 482908 MB memory.
+2026-09-29 08:16:28.261 INFO   [1804D1\3C3A1B] Auto-router pass #23 on board 'c0da991d725c35fdc2c847cc15d0d707' was completed in 12.92 seconds with the score of 909.05 (127 unrouted), using 154899.23 CPU seconds and 496163 MB memory.
+2026-09-29 08:17:13.754 INFO   [1804D1\3C3A1B] Auto-router pass #24 on board 'edce71a896c0e4b127aecfe22c498876' was completed in 45.44 seconds with the score of 913.13 (123 unrouted), using 181407.81 CPU seconds and 539573 MB memory.
+{
+  "host": "KiCad's Pcbnew,7.0.11+dfsg-1build4",
+  "unit": "mm",
+  "board": {
+    "bounding_box": {
+      "x": 1651.0,
+      "y": -999.0,
+      "width": 999.0,
+      "height": -1566.0
+    },
+    "size": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 652.0,
+      "height": 567.0
+    }
+  },
+  "layers": {
+    "total_count": 4,
+    "signal_count": 3
+  },
+  "items": {
+    "total_count": 3413,
+    "trace_count": 855,
+    "via_count": 202,
+    "conduction_area_count": 36,
+    "drill_item_count": 601,
+    "pin_count": 0,
+    "component_count": 1641,
+    "other_count": 78
+  },
+  "components": {
+    "total_count": 175
+  },
+  "pads": {
+    "total_count": 601
+  },
+  "nets": {
+    "total_count": 97,
+    "class_count": 4
+  },
+  "connections": {
+    "maximum_count": 1538,
+    "incomplete_count": 123
+  },
+  "traces": {
+    "total_count": 855,
+    "total_segment_count": 1697,
+    "total_length": 23886.07,
+    "total_weighted_length": 5.3598256E7,
+    "average_length": 27.936924,
+    "total_vertical_length": 6745.698,
+    "total_horizontal_length": 6729.824,
+    "total_angled_length": 8853.697
+  },
+  "bends": {
+    "total_count": 842,
+    "90_degree_count": 18,
+    "45_degree_count": 824,
+    "other_angle_count": 0
+  },
+  "vias": {
+    "total_count": 202,
+    "through_hole_count": 202,
+    "blind_count": 0,
+    "buried_count": 0
+  },
+  "clearance_violations": {
+    "total_count": 0
+  }
+}
