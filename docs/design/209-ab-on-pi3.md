@@ -139,9 +139,23 @@ U-Boot 既有的 `CONFIG_BOOTCOUNT_LIMIT`:每次開機 `bootcount++`;超過 `boo
 - **O3 — 兩槽都壞時的行為。** 停在 U-Boot prompt(無 console = 靜默)vs 無限重試 vs 進入某種最小救援模式。與 #142(離網節點診斷投遞)相關。
 - **O4 — U-Boot 版本與 defconfig。** 需確認採用的 U-Boot 版本對 Pi 3A+(BCM2837, arm64)的支援狀態與 SD/MMC + FAT + GPT 驅動齊備度。**本文件未驗證任何 U-Boot 版本;§5 的機制描述基於 U-Boot 既有的 `bootcount` / `altbootcmd` / `ENV_IS_IN_FAT` 功能,尚未在 bcm2710 上實測。**
 
-## 9. 前置擋點(與機制無關,但會讓任何 A/B 實驗撞牆)
+## 9. 前置擋點:✅ 已解(2026-09-30 查核產物)
 
-目前 2710 image **同時帶 mm6108 + mm8108**。A/B 兩槽共用同一份 `root.squashfs`,雙 S1G 驅動會讓驅動拒載(`morse_sdio already registered`)→ **走 A/B 前必須先補 `-x mm6108only`**(#217 R6)。
+#217 R6 記載「目前這顆 2710 image 同時帶 mm6108 + mm8108」→ A/B 兩槽共用同一份 `root.squashfs`,雙 S1G 驅動會拒載(`morse_sdio already registered`)。**該敘述已過期,擋點不存在。**
+
+查交付產物本身(非設定檔),`openmanet-24.10-1.8.0-bcm27xx-bcm2710.manifest`(2026-09-29 22:16 build,與交付資料夾內那份 **byte-identical**):
+
+```
+kmod-mm6108 - 6.6.138.mm6108-2.0.1-r2
+mm6108-firmware - mm6108-2.0.1-r1
+kmod-brcmfmac - 6.6.138.6.12.61-r1
+brcmfmac-nvram-43455-sdio / cypress-firmware-43455-sdio 皆在
+→ mm8108 / kmod-mm8108 / mm8108-firmware 一筆都沒有
+```
+
+`-x mm6108only` 的兩個目的都達成:mm8108 已剝除、`kmod-brcmfmac` 已 `=y` 進 squashfs(radio0 佔位,morse 留 radio1)。
+
+**殘留但不擋本設計**:`98e598b`(移除 USB 無線)**確實尚未編進 image** —— manifest 仍有 `kmod-rt2800-usb` / `kmod-rt2x00-usb` / `rt2800-usb-firmware` 等 5 筆。這只影響體積與「單一 USB-A 已 committed 給 CM108 PTT」的產品決策,**與 A/B 機制無關**,E1–E3 實驗不需要它。建議下次為別的理由重編時一併帶進去,不為此單獨重編一輪。
 
 ## 10. 實作順序(review 通過後才開始)
 
