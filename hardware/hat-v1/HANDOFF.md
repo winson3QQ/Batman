@@ -223,7 +223,7 @@ python3 -c "import sys; sys.path.insert(0,'gen'); import layout as L; print(L.fi
 ### 8.4 還沒解、下一步
 1. **讀 `escape-full.log`**：看 `FAIL`、`NO SPOT`、DRC 那一行、頸部表。貪婪繞線器大約只能到 45 / 65；**不要再逐條硬試**。結構問題修完就進 G1。
 2. **G1**：寫 `place_v2.py`，把 `sketch.json` 的座標寫進正式板檔，順序照 PLAN §5。**G2**：電源用預畫的鋪銅，訊號交給 Freerouting，要求連續兩次 0 未接。
-3. **卡片高度 / 固定柱（待使用者）**：
+3. **卡片高度 / 固定柱：已定案（PLAN §11）**：WM1302 照片量得卡片底面約 3.15 mm；H5 / H6 用 Würth WA-SMSI M2，3.0 mm（9774030243R，另備 3.5 mm），Ø5.3 焊墊 + Ø3.0 NPTH。封裝和 design.py 已更新。以下是定案前的背景：：
    - 規格書沒標卡片底面高度，3.0–3.3 mm 是推論。
    - 專用 mPCIe 固定螺帽常見高度是 4.15（JAE NT4R1600）、4.6（Attend 119A-NUT-70）。
    - 候選：**Würth WA-SMSI M2**（9774030243R / 9774035243R，要 Ø5.3 焊墊 + Ø3.0 NPTH）、**JAE NT4R1600**（SMT、說是不用打孔，未驗證）。
@@ -241,3 +241,16 @@ python3 -c "import sys; sys.path.insert(0,'gen'); import layout as L; print(L.fi
    - 保護 3V3_BUCK / VSYS 通道，不讓訊號線穿過
 6. **軟體配合**：#223（#224 poweroff 斷電、#225 電源鍵、#226 HaLow 上電時序）與 #122 的留言。
 7. **Git**：`hat-v1-local` 已有本地 commit `43f522f`（layout-v2 工具 + C34）；本節和之後的修改另外 commit。**都還沒 push 到 PR #222**，push 要使用者同意。
+
+## 9. 2026-09-29 白天：固定柱換正式封裝、G2 預演（先讀這節）
+
+- **固定柱**：escape 改用正式 Würth 封裝。`layout-v2/src_board.py` → `src-board.kicad_pcb`（主板不動，不進版控，重跑即可產生）；escape / export_fp 用 `SRC_BOARD=src-board.kicad_pcb`，會印出實際讀的板檔。
+- **H6 周邊**：最小位移搜尋 + 對抗式審查（PASS WITH CHANGES）。
+  - C6 / R9 x −0.3、U2 / R6 y +0.1、C34 x +2.0；EN_5V 手畫線跟著改。
+  - J1 不動，J1 × H5 的 courtyard 用 `courtyard_exempt` 豁免（KiCad DRC 仍會報，G1 前要收 J1 courtyard）。
+  - H5 / H6 周圍 r 3.05 禁過孔、NPTH 禁佈 r 1.8。
+  - 細節見 PLAN §12.0。
+- **完整 escape**：電源 31 / 31 繞通；VSYS 頸部 1.90 / 1.19；H5 / H6 的 r 3.05 內 0 顆過孔；其餘訊號 45 / 65。DRC 抓到 H5 / H6 實心焊墊蓋在 NPTH 上 → **封裝要改成環形**。
+- **G2 預演（PLAN §13）**：Freerouting 只繞訊號（電源保留計畫的形狀），兩次都不通過（DRC 未接 102 / 95）。卡住的是非電源區、主要在卡片下；懷疑 5V_PI 的 B 層饋線帶縱貫全板把卡片下切開。**G1 暫緩。**
+- **備案（PLAN §12，使用者擱置）**：板子往左延伸 3 mm、重擺電源區；審查建議 VSYS 走 V1B（§12.7）。
+- **下一步**：5V_PI B 層帶的診斷實驗（只改這條，其他不動，比 Freerouting 未接數）→ 依結果改擺件 / 饋線 → 再預演兩次 0 未接 → G1。

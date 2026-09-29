@@ -122,11 +122,16 @@ def main():
     placed = list(B.pos)
     front = [r for r in placed if not fp[r]["back"]]
     # 1. courtyard overlaps (front side)
+    exempt = {frozenset((e["a"], e["b"])): e["why"] for e in sk.get("courtyard_exempt", [])}
     for i, a in enumerate(front):
         for b in front[i + 1:]:
             if overlap(B.cy(a), B.cy(b), tol=0.01):
                 ov = area(inter(B.cy(a), B.cy(b)))
-                check(False, f"courtyard overlap {a} x {b} ({ov:.2f} mm2)")
+                why = exempt.get(frozenset((a, b)))
+                if why:
+                    notes.append(f"EXEMPT courtyard overlap {a} x {b} ({ov:.2f} mm2): {why}")
+                else:
+                    check(False, f"courtyard overlap {a} x {b} ({ov:.2f} mm2)")
     back = [r for r in placed if fp[r]["back"] and r != "J2"]   # back-side pads (r2 review: checker ignored the back)
     for i, a in enumerate(back):
         for b in back[i + 1:]:

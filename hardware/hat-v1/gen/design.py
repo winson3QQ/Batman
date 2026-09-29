@@ -341,9 +341,12 @@ part("C62", "CP", "220u 6.3V polymer", {1: "3V3_MPCIE", 2: "GND"},
      note="7343-20: <=1.9 mm tall; absorbs HaLow TX bursts")
 C("C63", "100n 16V", "3V3_MPCIE", "GND", note="at pins 2/52")
 C("C64", "100n 16V", "3V3_MPCIE", "GND", note="at pins 39/41")
-part("H5", "MH", "M2 SMT standoff ~3.1mm", {1: "GND"}, fp="batman:SMT_Standoff_M2_TBD",
-     note="card hold-down; height TBD after measuring (spec V14)")
-part("H6", "MH", "M2 SMT standoff ~3.1mm", {1: "GND"}, fp="batman:SMT_Standoff_M2_TBD")
+part("H5", "MH", "WA-SMSI M2 H3.0", {1: "GND"}, fp="batman:Wurth_WA-SMSI_M2_OD4.35",
+     mpn="9774030243R", mfr="Wurth Elektronik",
+     note="card hold-down, M2 internal thread, NPTH D3.0; alt 9774035243R (3.5 mm). WM1302 reference "
+     "measures ~3.15 mm card-underside height (photo, 2026-09-29); confirm on our 5.2H socket (spec V14)")
+part("H6", "MH", "WA-SMSI M2 H3.0", {1: "GND"}, fp="batman:Wurth_WA-SMSI_M2_OD4.35",
+     mpn="9774030243R", mfr="Wurth Elektronik")
 
 # ---------------------------------------------------------------------------
 # Sheet 7 -- security + RTC

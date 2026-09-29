@@ -23,6 +23,7 @@ D2,1,RED,LED_0402_1005Metric,,,C,,JLCPCB,eFuse fault LED (on = fault)
 D3,1,GREEN,LED_0402_1005Metric,,,C,,JLCPCB,HAT 5 V buck running
 D4,1,TPD1E10B06,D_0402_1005Metric,TPD1E10B06DPYR,TI,C,,JLCPCB,ESD for the panel button wire
 FB1,1,600R@100MHz >=4A,L_1206_3216Metric,BLM31KN601SN1L,Murata,C,,JLCPCB,"verify rating at BOM step: >=4 A, <=30 mOhm"
+"H5,H6",2,WA-SMSI M2 H3.0,Wurth_WA-SMSI_M2_OD4.35,9774030243R,Wurth Elektronik,C,,JLCPCB,"card hold-down, M2 internal thread, NPTH D3.0; alt 9774035243R (3.5 mm). WM1302 reference measures ~3.15 mm card-underside height (photo, 2026-09-29); confirm on our 5.2H socket (spec V14)"
 J2,1,"Pi 40-pin (female, 11 mm stack)",PinSocket_2x20_P2.54mm_Vertical,,,C,,JLCPCB,through-hole on the bottom side; 8.5 mm socket for 11 mm standoffs
 J3,1,mPCIe 5.2H,MiniPCIe_Lianxin_XDMP-052-A01_H5.2,XDMP-052-A01,Lianxin (China),C,C7498130,JLCPCB,pin 8 UIM_PWR not connected on the card -> GPIO18 freed for the TPM
 J4,1,U.FL,U.FL_Hirose_U.FL-R-SMT-1_Vertical,U.FL-R-SMT-1(10),Hirose,C,,JLCPCB,active patch antenna with SAW pre-filter; 50 ohm CPWG trace

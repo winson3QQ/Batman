@@ -22,7 +22,9 @@ def mm(v):
 
 
 def main():
-    board = pcbnew.LoadBoard(os.path.join(HAT, "batman-hat.kicad_pcb"))
+    src = os.environ.get("SRC_BOARD") or os.path.join(HAT, "batman-hat.kicad_pcb")
+    print("source board:", src, flush=True)
+    board = pcbnew.LoadBoard(src)
     sheet = {p.ref: p.sheet for p in D.PARTS}
     out = {}
     for fp in board.GetFootprints():

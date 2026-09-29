@@ -1,0 +1,5 @@
+# regenerable: python3 ../frpreview.py export && sh run2.sh
+*.kicad_pcb
+*.kicad_pro
+*.dsn
+*.ses

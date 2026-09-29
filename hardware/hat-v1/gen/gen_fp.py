@@ -98,9 +98,17 @@ def main():
         b += pad("", x, 4.2, 2.2, 2.2, "circle", '"*.Cu" "*.Mask"', "np_thru_hole", 2.2)
     b += rect("F.CrtYd", -3.95, -2.75, 3.95, 5.55)
     write("BattPads_2x_3x5mm_StrainRelief", b, "Battery wire pads 2.5x5 mm (AWG18-20) + zip-tie holes", h=0)
-    b = pad(1, 0, 0, 4.2, 4.2, "circle") + rect("F.CrtYd", -2.6, -2.6, 2.6, 2.6)
-    b += text("user", "PLACEHOLDER", 0, 3, "F.Fab")
-    write("SMT_Standoff_M2_TBD", b, "PLACEHOLDER M2 SMT standoff ~3.1 mm; part TBD after V14", h=3.1)
+    # Wuerth WA-SMSI M2 internal-thread SMT spacer (9774030243R, 3.0 mm; alt 9774035243R 3.5 mm).
+    # Datasheet land pattern: annular pad D5.3 / D3.0 with a non-plated hole D3.0 (the M2 screw passes
+    # through the open-bottom thread); stencil D5.2 / D3.1 annulus. Height 3.0 mm matches the WM1302
+    # reference (card underside ~3.15 mm, photo-measured 2026-09-29); final check on our 5.2H socket (V14).
+    b = pad(1, 0, 0, 5.3, 5.3, "circle", '"F.Cu" "F.Mask"')
+    b += pad("", 0, 0, 3.0, 3.0, "circle", '"*.Cu" "*.Mask"', "np_thru_hole", 3.0)
+    b += ('  (fp_circle (center 0 0) (end 2.075 0) (stroke (width 1.05) (type solid)) (fill none) '
+          '(layer "F.Paste"))\n')
+    b += rect("F.CrtYd", -2.9, -2.9, 2.9, 2.9)   # = the socket drawing's 5.8 x 5.8 keep-out
+    write("Wurth_WA-SMSI_M2_OD4.35", b,
+          "Wuerth WA-SMSI M2 SMT spacer, OD 4.35, pad D5.3 + NPTH D3.0 (9774030243R / 9774035243R)", h=3.0)
 
 
 if __name__ == "__main__":

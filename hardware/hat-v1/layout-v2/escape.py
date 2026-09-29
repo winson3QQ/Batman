@@ -128,7 +128,9 @@ def main():
         return measure_only()
     sk = json.load(open(os.path.join(HERE, "sketch.json"), encoding="utf-8"))
     es = json.load(open(os.path.join(HERE, "escape.json"), encoding="utf-8"))
-    board = pcbnew.LoadBoard(os.path.join(HAT, "batman-hat.kicad_pcb"))
+    src = os.environ.get("SRC_BOARD") or os.path.join(HAT, "batman-hat.kicad_pcb")
+    print("source board:", src, flush=True)
+    board = pcbnew.LoadBoard(src)
     pos = {**sk["fixed"], **sk["place"]}
     # 1. strip copper, old rule areas (keep the edge ring), unplaced footprints
     for t in list(board.GetTracks()):
@@ -208,6 +210,23 @@ def main():
         import math as _m
         for k in range(24):
             ol.Append(MM(cx + O + r * _m.cos(k * _m.pi / 12)), MM(cy + O + r * _m.sin(k * _m.pi / 12)))
+        board.Add(z)
+    # no via under a standoff pad (solder wicks into the via -> spacer tilts / height off; review 2026-09-29 M3)
+    vr = es.get("standoff_via_keepout_r")
+    for cx, cy, _r in (es.get("standoff_keepouts", []) if vr else []):
+        z = pcbnew.ZONE(board)
+        z.SetIsRuleArea(True)
+        z.SetDoNotAllowTracks(False)
+        z.SetDoNotAllowVias(True)
+        z.SetDoNotAllowCopperPour(False)
+        z.SetDoNotAllowPads(False)
+        z.SetDoNotAllowFootprints(False)
+        z.SetLayerSet(pcbnew.LSET.AllCuMask())
+        z.SetZoneName("standoff_novia")
+        ol = z.Outline()
+        ol.NewOutline()
+        for k in range(24):
+            ol.Append(MM(cx + O + vr * _m.cos(k * _m.pi / 12)), MM(cy + O + vr * _m.sin(k * _m.pi / 12)))
         board.Add(z)
     # 3. planned pours + the In1 GND plane
     for p in es["pours"]:
