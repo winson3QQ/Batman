@@ -4,14 +4,15 @@ Gate for design v3.1 (`docs/design/209-ab-on-pi3.md` §8). **Run E0f first**; it
 
 | File | What | Tested on the DEV machine (no DUT) |
 |---|---|---|
-| `reboot-part.c` | `reboot(RESTART2, "N")`; busybox `reboot` cannot pass N | host gcc `-Wall -Wextra -Werror` clean; bad args (`''`, `x`, `63`, `-1`, `1x`) → rc 2 before any reboot. **Not tested:** the actual reboot, aarch64 build |
-| `e0f-prep-card.sh` | fresh bcm2710 OpenWrt card/image → p3 ext4 1G + p4 FAT copy of p1, markers, `autoboot.txt` | `sh -n`; table step run on a real image file (`E0_TABLE_ONLY=1`): p3/p4 placed 4 MiB-aligned, file grown, refuses a 4-partition or GPT image. **Not tested:** mkfs/mount/copy part (needs root) |
+| `reboot-part.c` | `reboot(RESTART2, "N")`; busybox `reboot` cannot pass N | host gcc `-Wall -Wextra -Werror` clean; bad args (`''`, `x`, `63`, `-1`, `1x`) → rc 2 before any reboot. DUT machine 2026-09-30: static aarch64 build clean (gcc 13.3.0 musl). **Not tested yet:** the actual reboot |
+| `e0f-prep-card.sh` | fresh bcm2710 OpenWrt card/image → p3 ext4 1G + p4 FAT copy of p1, markers, `autoboot.txt` | `sh -n`; table step run on a real image file (`E0_TABLE_ONLY=1`): p3/p4 placed 4 MiB-aligned, file grown, refuses a 4-partition or GPT image. DUT machine 2026-09-30: full run as root on `openmanet-1.8.0-rpi3-mm6108-spi-squashfs-sysupgrade.img` (1.4.14) → rc 0, mkfs/mount/copy done, loop released, no CR, p2 squashfs byte-identical to `root.squashfs` |
 | `e0-probe.sh` | per-boot record: marker, DT `chosen/bootloader`, PSCI, restart handlers, blob versions → persistent log | `sh -n` only |
 
 ## 0. Build the tool (machine with the OpenWrt tree)
 
 ```sh
-TC=$(ls -d ~/firmware-2710/staging_dir/toolchain-aarch64_cortex-a53_gcc-*_musl | head -1)
+TC=$(ls -d ~/firmware-2710/staging_dir/toolchain-aarch64_cortex-a53_gcc-*_musl | head -1)   # gcc-13.3.0 on the bench tree
+export STAGING_DIR=~/firmware-2710/staging_dir        # otherwise only a warning
 $TC/bin/aarch64-openwrt-linux-musl-gcc -static -Os -s -o reboot-part scripts/e0/reboot-part.c
 file reboot-part        # expect: ELF 64-bit ARM aarch64, statically linked
 ```
@@ -25,6 +26,7 @@ Use a **freshly built / flashed bcm2710 image that has never booted**. A booted 
 - ⚠️ **Do not edit the boot files from Windows with `Set-Content` / `>`** (CRLF, #208). The script writes LF and refuses if it finds a CR.
 
 Why p3 is a pre-made ext4 and the trial FAT is p4: the pre-#230 `95-batman-storage` keeps an existing ext4 p3. It would `mkfs.ext4` a FAT at p3, which is the exact bug #230 fixes. On a post-#230 image the data partition is refused on this layout instead. That is harmless: the probe then logs to `/root`.
+On 1.4.14 (feed `8685c5a`), the `PARTCOUNT -eq 2` refusal (line 62) sits **inside** `if [ ! -b "$PART" ]`. With p3 pre-made, that branch is skipped. The hook sees the ext4 magic on p3, keeps it and mounts it at `/opt/batdata`. So the pre-made p3 is what actually protects the card, and the probe logs to `/opt/batdata/e0.log`. Confirm on first boot: `logread | grep batman-storage` should say p3 already has a filesystem.
 
 ## 2. Boot and copy the tools
 
