@@ -249,6 +249,25 @@ chk_iperf() {
   [ "$kbps" -le "$ceil" ] || { echo "ABOVE CEILING — traffic did NOT cross HaLow (wrong IPERF_PEER / eth path)"; return 1; }
   [ "$kbps" -ge "$floor" ]
 }
+chk_socgate_209() { fssh "$1" 12 '                              # #209 review
+  # The SoC gate must exist AND classify. The bug this guards against is a check that does not
+  # check: before #209 the board comparison lived in platform_do_upgrade (after sysupgrade had
+  # already accepted the image), only echoed "WARN", and carried a `*bcm2711*` wildcard that
+  # matched every bcm2711 image on every board. On a mixed bcm2710/bcm2711 fleet that is the
+  # highest-probability brick path, and no runtime symptom would ever reveal its absence.
+  # White-box on purpose: source the installed override and exercise the classifier directly.
+  [ -f /lib/upgrade/platform.sh ] || { echo "no /lib/upgrade/platform.sh"; exit 1; }
+  grep -q "REFUSING: image is for" /lib/upgrade/platform.sh || { echo "SoC gate missing from platform.sh (#209 regression)"; exit 1; }
+  grep -q "platform_check_image" /lib/upgrade/platform.sh || { echo "no platform_check_image"; exit 1; }
+  # the gate must be INSIDE platform_check_image, not back in platform_do_upgrade
+  awk "/^platform_check_image\(\)/{f=1} f&&/REFUSING: image is for/{found=1} /^}/{if(f&&!found)f=0} END{exit !found}" /lib/upgrade/platform.sh \
+    || { echo "SoC gate is not inside platform_check_image — it cannot refuse anything there"; exit 1; }
+  . /lib/upgrade/platform.sh 2>/dev/null || true
+  command -v soc_token >/dev/null 2>&1 || { echo "soc_token not defined"; exit 1; }
+  [ "$(soc_token bcm27xx/bcm2711)" = bcm2711 ] || { echo "soc_token misreads bcm2711"; exit 1; }
+  [ "$(soc_token bcm27xx/bcm2710)" = bcm2710 ] || { echo "soc_token misreads bcm2710"; exit 1; }
+  [ -z "$(soc_token something-else)" ]         || { echo "soc_token invents a token"; exit 1; }
+  echo "SoC gate present in platform_check_image and classifying"'; }
 chk_autocommit() { fssh "$1" 12 '                              # ab-autocommit.md / #211
   # A completed reflash must not leave the node in an uncommitted trial (a reboot would then revert to
   # the old slot). batman-autocommit health-gates + commits; assert the node ended committed.
@@ -340,6 +359,7 @@ fi
 if up "$BENCH_NODE"; then
   suite autocommit-211 "A/B node is committed, not left in an uncommitted trial (#211, ab-autocommit)" "chk_autocommit $BENCH_NODE"
   suite p6grow-201 "A/B card data partition (p6) grew to fill the card at first boot (#201, not stuck at the baked ~200MiB)" "chk_p6grow_201 $BENCH_NODE"
+  suite socgate-209 "sysupgrade refuses a wrong-SoC A/B image (#209 review: the old check only warned, and a bcm2711 wildcard passed everything)" "chk_socgate_209 $BENCH_NODE"
 else
   suite autocommit-211 "A/B commit state (#211) — BENCH_NODE $BENCH_NODE did not answer" ""
   suite p6grow-201 "p6 grow-to-fill (#201) — BENCH_NODE $BENCH_NODE did not answer" ""

@@ -7,8 +7,10 @@
 #
 #   * boot_partition is the firmware's index, not the GPT index (#133)
 #   * cmdline uses a BOUNDED rootwait plus panic=, never a bare rootwait (#133)
+#   * the data partition is identified POSITIVELY, never guessed — a guess lands on rootfs B
+#     on the five-partition Pi 3 profile and mkfs.ext4's over a slot (#209 review)
 #
-# Runs in CI; needs sudo, losetup, gdisk, dosfstools, squashfs-tools, parted, rsync.
+# Runs in CI; needs sudo, losetup, gdisk, dosfstools, squashfs-tools, parted, rsync, hexdump.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -17,6 +19,9 @@ LOOP=""
 PASS=0; FAIL=0
 
 cleanup() {
+  if [ -n "${LOOP2:-}" ]; then
+    sudo losetup -d "$LOOP2" 2>/dev/null || true
+  fi
   if [ -n "$LOOP" ]; then
     sudo umount "${LOOP}p"* 2>/dev/null || true
     sudo losetup -d "$LOOP" 2>/dev/null || true
@@ -155,6 +160,48 @@ else
   bad "could not read the squashfs size (got '$SB') — skipping the root-slot digests rather than comparing empty input"
   echo "  ---- rootA/rootB digest comparison NOT RUN ----"
 fi
+
+# ---------------------------------------------------------------------------------------------
+# Data-partition identification (#209 review). 95-batman-storage used to pick the data partition
+# with `[ -b p6 ] && 6 || 3`. That is a guess, and on the five-partition Pi 3 A/B profile
+# (boot / rootA / rootB / config / data, docs/storage-architecture.md) it lands on p3 = ROOTFS B,
+# which step 2/3 then luksFormat / mkfs.ext4 over. has_fs() cannot catch it: it matches only the
+# ext4 magic, so a squashfs rootfs reads back as "empty". These assert the identification, using
+# the script's BATMAN_STORAGE_PROBE seam so nothing is written and the CI host is not touched.
+echo
+echo "== data-partition identification =="
+STORAGE=$REPO/feed/batman-provision/files/etc/uci-defaults/95-batman-storage
+# The script logs to stdout as well, so take only a device path: a refusal then yields "".
+probe() { sudo env DISK="$1" BATMAN_STORAGE_PROBE=1 sh "$STORAGE" 2>/dev/null | grep -E '^/dev/' | tail -1; }
+
+# (a) the real six-partition A/B card built above must still resolve to p6 (no regression)
+check "six-partition A/B card -> p6" "$(probe "$LOOP")" "${LOOP}p6"
+
+# (b) a five-partition layout with NOTHING named data must be REFUSED, not guessed at p3
+IMG2=$WORK/five.img
+truncate -s 320M "$IMG2"
+sudo sgdisk -a 2048 \
+  -n 1:4M:+32M -t 1:0700 -c 1:boot \
+  -n 2:36M:+64M -t 2:8300 -c 2:rootA \
+  -n 3:100M:+64M -t 3:8300 -c 3:rootB \
+  -n 4:164M:+32M -t 4:8300 -c 4:config \
+  -n 5:196M:0    -t 5:8300 -c 5:spare \
+  "$IMG2" >/dev/null
+LOOP2=$(sudo losetup --show -fP "$IMG2")
+# squashfs magic 'hsqs' at the head of both rootfs slots, exactly as a real slot carries it
+for pn in 2 3; do printf 'hsqs' | sudo dd of="${LOOP2}p$pn" bs=4 count=1 conv=notrunc status=none; done
+sudo partprobe "$LOOP2" 2>/dev/null || true
+got=$(probe "$LOOP2")
+if [ -z "$got" ]; then ok "five-partition, no 'data' name -> refused (did not guess p3 = rootfs B)"
+else bad "five-partition: selected '$got' instead of refusing (p3 is rootfs B — this wipes a slot)"; fi
+
+# (c) name p5 'data' and it must resolve to p5, never p3
+sudo sgdisk -c 5:data "$LOOP2" >/dev/null
+check "five-partition, p5 named data -> p5" "$(probe "$LOOP2")" "${LOOP2}p5"
+
+# (d) rootfs B must still carry its squashfs magic after all of the above
+magic=$(sudo od -An -tx1 -N4 "${LOOP2}p3" | tr -d ' \n')
+check "rootfs B squashfs magic intact" "$magic" "68737173"
 
 echo
 echo "================ $PASS passed, $FAIL failed ================"

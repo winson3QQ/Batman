@@ -38,7 +38,39 @@ platform_check_image() {
 	grep -qx 'root.squashfs' "$list" || { echo "A/B image missing root.squashfs"; rm -f "$list"; return 1; }
 	grep -qx 'metadata' "$list"      || { echo "A/B image missing metadata"; rm -f "$list"; return 1; }
 	rm -f "$list"
+
+	# SoC gate (#209 review). This MUST live here, not in platform_do_upgrade: by the time
+	# do_upgrade runs, sysupgrade has already accepted the image and pivoted to the ramfs, so a
+	# complaint there cannot stop anything — and the pre-existing check there only echoed "WARN".
+	# Consequence on a single-SoC fleet: none. Consequence once bcm2710 cards exist: a bcm2711
+	# image sysupgraded onto a Pi 3A+ is written into the slot, flipped to, and the board is
+	# SILENTLY dead (no EEPROM bootloader, so no fallback) — recoverable only by pulling the card.
+	# NB the payload's kernel is always named kernel8.img on both SoCs, so neither the tar listing
+	# above nor any checksum of it can catch this; only the board token can.
+	# Running SoC comes from DISTRIB_TARGET (bcm27xx/bcm2710) — available here because check_image
+	# still runs in the full system, before the ramfs pivot.
+	local want run wt rt
+	want=$(get_image "$@" | tar -xOf - metadata 2>/dev/null | sed -n 's/^board=//p')
+	run=$(sed -n "s/^DISTRIB_TARGET='*[^/]*\/\([^']*\)'*$/\1/p" /etc/openwrt_release 2>/dev/null)
+	wt=$(soc_token "$want"); rt=$(soc_token "$run")
+	# Refuse only on a POSITIVE mismatch of two recognised tokens. If either side is unrecognisable
+	# we fall through (board_name spelling has always been allowed to differ — that is why the old
+	# check was a warning); what is removed is the `*bcm2711*` wildcard, which made every bcm2711
+	# image pass on every board, including the one it cannot boot.
+	if [ -n "$wt" ] && [ -n "$rt" ] && [ "$wt" != "$rt" ]; then
+		echo "REFUSING: image is for $wt but this node is $rt — flashing it would silently brick the node"
+		return 1
+	fi
 	return 0
+}
+
+# bcm2708/9/10/11 = the RPi SoC generations OpenWrt splits bcm27xx into. Empty = unrecognised.
+soc_token() {
+	case "$1" in
+		*bcm2711*) echo bcm2711 ;; *bcm2710*) echo bcm2710 ;;
+		*bcm2709*) echo bcm2709 ;; *bcm2708*) echo bcm2708 ;;
+		*) echo "" ;;
+	esac
 }
 
 platform_do_upgrade() {
@@ -52,7 +84,10 @@ platform_do_upgrade() {
 	local want run
 	want=$(sed -n 's/^board=//p' "$dir/metadata" 2>/dev/null)
 	run=$(cat /tmp/sysinfo/board_name 2>/dev/null)
-	[ -z "$want" ] || [ -z "$run" ] || case "$run" in *"$want"*|*bcm2711*) : ;; *) echo "WARN: image board='$want' vs running='$run'";; esac
+	# Second layer only — the gate that can actually refuse is in platform_check_image above. The
+	# `*bcm2711*` wildcard that used to be in this case is GONE: it matched every bcm2711 image on
+	# every board, so the one check that existed passed the one case that bricks.
+	[ -z "$want" ] || [ -z "$run" ] || case "$run" in *"$want"*) : ;; *) echo "WARN: image board='$want' vs running='$run'";; esac
 
 	# batman-slot's [tryboot] read + boot write need bootA (autoboot.txt) mounted; the sysupgrade
 	# ramfs pivot may have unmounted /boot, so re-mount p1 there if needed (mkdir first — in the
