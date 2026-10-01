@@ -21,6 +21,8 @@ on:
       - 'deploy/**/verify-profile-*.sh'
       - 'deploy/**/reconcile-resources.sh'
       - 'feed/batman-payload-host/Makefile'
+      - 'deploy/payload-host-packages.txt'
+      - 'scripts/check-payload-host-sync.sh'
   push:
     branches: [main]
     paths:
@@ -40,3 +42,7 @@ jobs:
       - run: pip install --quiet pyyaml
       - name: payload artifacts must match profile SoT + no tenant collisions
         run: PYTHON=python3 sh scripts/check-payload-manifest.sh
+      # #159 review M2 drift guard (meta-package DEPENDS == captured runtime closure). It existed but
+      # was never wired in, and had silently gone red on main (#209 S4-4).
+      - name: batman-payload-host DEPENDS must match deploy/payload-host-packages.txt
+        run: sh scripts/check-payload-host-sync.sh
