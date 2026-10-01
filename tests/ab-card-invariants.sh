@@ -172,7 +172,9 @@ echo
 echo "== data-partition identification =="
 STORAGE=$REPO/feed/batman-provision/files/etc/uci-defaults/95-batman-storage
 # The script logs to stdout as well, so take only a device path: a refusal then yields "".
-probe() { sudo env DISK="$1" BATMAN_STORAGE_PROBE=1 sh "$STORAGE" 2>/dev/null | grep -E '^/dev/' | tail -1; }
+# `|| true`: a refusal prints no device, so grep exits 1 — under `set -euo pipefail` that would
+# abort the whole suite silently at the very case (b) is meant to assert.
+probe() { sudo env DISK="$1" BATMAN_STORAGE_PROBE=1 sh "$STORAGE" 2>/dev/null | grep -E '^/dev/' | tail -1 || true; }
 
 # (a) the real six-partition A/B card built above must still resolve to p6 (no regression)
 check "six-partition A/B card -> p6" "$(probe "$LOOP")" "${LOOP}p6"
