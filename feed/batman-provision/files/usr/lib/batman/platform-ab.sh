@@ -38,7 +38,51 @@ platform_check_image() {
 	grep -qx 'root.squashfs' "$list" || { echo "A/B image missing root.squashfs"; rm -f "$list"; return 1; }
 	grep -qx 'metadata' "$list"      || { echo "A/B image missing metadata"; rm -f "$list"; return 1; }
 	rm -f "$list"
+
+	# SoC gate (#209 review), first layer: refuses BEFORE the ramfs pivot, so a plain `sysupgrade`
+	# of a wrong-SoC image stops here with the node untouched. `sysupgrade -F` ignores a failed
+	# check, so platform_do_upgrade repeats the same comparison and refuses there too (#209 v4 D8).
+	# Consequence on a single-SoC fleet: none. Consequence once bcm2710 cards exist: a bcm2711
+	# image sysupgraded onto a Pi 3A+ is written into the slot, flipped to, and the board is
+	# SILENTLY dead (no EEPROM bootloader, so no fallback) — recoverable only by pulling the card.
+	# NB the payload's kernel is always named kernel8.img on both SoCs, so neither the tar listing
+	# above nor any checksum of it can catch this; only the board token can.
+	# Running SoC comes from DISTRIB_TARGET (bcm27xx/bcm2710) — available here because check_image
+	# still runs in the full system, before the ramfs pivot.
+	local want run wt rt
+	want=$(get_image "$@" | tar -xOf - metadata 2>/dev/null | sed -n 's/^board=//p')
+	run=$(sed -n "s/^DISTRIB_TARGET='*[^/]*\/\([^']*\)'*$/\1/p" /etc/openwrt_release 2>/dev/null)
+	wt=$(soc_token "$want"); rt=$(soc_token "$run")
+	# Refuse only on a POSITIVE mismatch of two recognised tokens. If either side is unrecognisable
+	# we fall through (board_name spelling has always been allowed to differ — that is why the old
+	# check was a warning); what is removed is the `*bcm2711*` wildcard, which made every bcm2711
+	# image pass on every board, including the one it cannot boot.
+	if [ -n "$wt" ] && [ -n "$rt" ] && [ "$wt" != "$rt" ]; then
+		echo "REFUSING: image is for $wt but this node is $rt — flashing it would silently brick the node"
+		return 1
+	fi
 	return 0
+}
+
+# bcm2708/9/10/11 = the RPi SoC generations OpenWrt splits bcm27xx into. Empty = unrecognised.
+soc_token() {
+	case "$1" in
+		*bcm2711*) echo bcm2711 ;; *bcm2710*) echo bcm2710 ;;
+		*bcm2709*) echo bcm2709 ;; *bcm2708*) echo bcm2708 ;;
+		*) echo "" ;;
+	esac
+}
+
+# The running SoC as an OpenWrt subtarget name, from the device tree (works inside the sysupgrade
+# ramfs). Empty = unrecognised. No `tr` here: the ramfs does not stage it (see RAMFS_COPY_BIN).
+soc_running() {
+	local c
+	c=$(cat /proc/device-tree/compatible 2>/dev/null)
+	case "$c" in
+		*bcm2711*) echo bcm2711 ;; *bcm2837*) echo bcm2710 ;;
+		*bcm2836*) echo bcm2709 ;; *bcm2835*) echo bcm2708 ;;
+		*) echo "" ;;
+	esac
 }
 
 platform_do_upgrade() {
@@ -47,12 +91,22 @@ platform_do_upgrade() {
 	get_image "$@" | tar -xf - -C "$dir" || { echo "A/B image unpack failed"; return 1; }  # -x not -xz: get_image already un-gzips (see platform_check_image)
 	[ -f "$dir/root.squashfs" ] || { echo "no root.squashfs in image"; return 1; }
 
-	# board sanity: refuse a grossly-wrong image (best-effort — warn, don't false-refuse on a string
-	# mismatch, since board_name spelling can differ from the build's board tag). TODO tighten per-SoC.
-	local want run
+	# SoC gate, second (and under `sysupgrade -F`, the ONLY) layer. -F makes sysupgrade ignore a
+	# failed platform_check_image and call us anyway, and the fleet tooling routinely uses -F
+	# (#209 E0). Returning 1 here is a real refusal: nothing has been written yet, stage2 then
+	# reboots without an argument and the node comes back on its untouched default slot.
+	# The running SoC comes from the device tree, which the ramfs still sees (/etc/openwrt_release
+	# and board_name are not reliable here: board_name carries no SoC token at all, e.g.
+	# "raspberrypi,3-model-a-plus"). bcm2837 is the Pi 3 SoC that OpenWrt builds as bcm2710.
+	local want run wt rt
 	want=$(sed -n 's/^board=//p' "$dir/metadata" 2>/dev/null)
-	run=$(cat /tmp/sysinfo/board_name 2>/dev/null)
-	[ -z "$want" ] || [ -z "$run" ] || case "$run" in *"$want"*|*bcm2711*) : ;; *) echo "WARN: image board='$want' vs running='$run'";; esac
+	run=$(soc_running)
+	wt=$(soc_token "$want"); rt=$(soc_token "$run")
+	if [ -n "$wt" ] && [ -n "$rt" ] && [ "$wt" != "$rt" ]; then
+		echo "REFUSING: image is for $wt but this node is $rt — not writing anything"
+		return 1
+	fi
+	[ -n "$wt" ] && [ -n "$rt" ] || echo "WARN: SoC not recognised (image board='$want', running='$run') — not gated"
 
 	# batman-slot's [tryboot] read + boot write need bootA (autoboot.txt) mounted; the sysupgrade
 	# ramfs pivot may have unmounted /boot, so re-mount p1 there if needed (mkdir first — in the

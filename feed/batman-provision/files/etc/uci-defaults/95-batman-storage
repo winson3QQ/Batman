@@ -25,12 +25,10 @@
 # reformats a partition that already carries a filesystem; a non-zero exit makes OpenWrt re-run
 # it next boot (used when the kernel needs a reboot to see a freshly-created partition).
 
-DISK=/dev/mmcblk0
-# layout-aware: the v2 GPT A/B card ships data as a pre-made p6 (bootA/rootA/bootB/rootB/config/
-# data, #88); the interim/MBR card carves data into free space as p3. Detect p6 and use it — the
-# "create partition in free space" step (guarded by `[ ! -b $PART ]`) then naturally skips.
-if [ -b "${DISK}p6" ]; then PART_NUM=6; else PART_NUM=3; fi
-PART=${DISK}p${PART_NUM}
+# DISK is overridable ONLY so tests/ab-card-invariants.sh can run this script against a loop
+# device; on a node it is always the SD card. DISKN is the sysfs/basename form.
+DISK=${DISK:-/dev/mmcblk0}
+DISKN=${DISK##*/}
 LABEL=batdata
 MAPPER=batdata_crypt
 MOUNT=/opt/batdata
@@ -40,6 +38,64 @@ INIT=/etc/init.d/batdata-mount
 lg(){ logger -t batman-storage "$*"; echo "batman-storage: $*"; }
 # ext4 superblock magic (0xEF53 LE at byte 1080) — no dumpe2fs/blkid needed (not in the image)
 has_fs(){ [ "$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$1" 2>/dev/null)" = "53ef" ]; }
+# has_fs matches the ext4 superblock magic ONLY, so a squashfs rootfs reads back as "empty".
+# Every guard built on it is therefore blind to a rootfs slot — hence is_squashfs below.
+is_squashfs(){ [ "$(hexdump -n 4 -e '4/1 "%02x"' "$1" 2>/dev/null)" = "68737173" ]; }   # 'hsqs'
+
+# --- identify the data partition POSITIVELY (#209 review) --------------------------------------
+# build-gpt-ab-card.sh stamps GPT names (bootA/rootA/bootB/rootB/config/data) and unique GUIDs
+# 3276af79-0000-4000-8000-00000000000N, so "the partition NAMED data" is an answer. The old
+# `[ -b p6 ] && 6 || 3` was a GUESS, and it mis-identifies any layout whose data area is not p6:
+# on the five-partition Pi 3 A/B profile (boot / rootA / rootB / config / data —
+# docs/storage-architecture.md) it lands on p3 = ROOTFS B, and step 2/3 below then luksFormat or
+# mkfs.ext4 straight over a rootfs. has_fs() cannot catch that (see above). Refusing beats
+# guessing: a node with no data partition is recoverable, a node with a wiped slot is not.
+GUID_ROOTA=3276af79-0000-4000-8000-000000000002
+GUID_ROOTB=3276af79-0000-4000-8000-000000000004
+partcount(){ set -- /sys/class/block/"$DISKN"p*; [ -e "$1" ] || { echo 0; return; }; echo "$#"; }
+gpt_field(){ # $1 = partition number, $2 = sgdisk field label
+	command -v sgdisk >/dev/null 2>&1 || return 1
+	sgdisk -i "$1" "$DISK" 2>/dev/null | sed -n "s/^$2: //p" | sed "s/^'//;s/'$//"
+}
+find_named_data(){
+	command -v sgdisk >/dev/null 2>&1 || return 1
+	for d in /sys/class/block/"$DISKN"p*; do
+		[ -e "$d" ] || continue
+		pn=${d##*p}
+		[ "$(gpt_field "$pn" 'Partition name')" = "data" ] && { echo "$pn"; return 0; }
+	done
+	return 1
+}
+if PART_NUM=$(find_named_data); then
+	:                                                   # GPT says which one it is
+elif [ -b "${DISK}p6" ]; then
+	PART_NUM=6                                          # v2 six-partition A/B card (no sgdisk on node)
+elif [ "$(partcount)" -le 2 ]; then
+	PART_NUM=3                                          # interim/MBR card: carve data out of free space
+elif [ "$(partcount)" = 3 ] && { has_fs "${DISK}p3" || cryptsetup isLuks "${DISK}p3" 2>/dev/null; }; then
+	PART_NUM=3                                          # interim card, already provisioned (re-run)
+else
+	PART_NUM=""
+fi
+PART=${DISK}p${PART_NUM}
+
+[ -n "$PART_NUM" ] || { lg "cannot identify the data partition on a $(partcount)-partition layout (no GPT partition named 'data', no p6) — REFUSING rather than guessing (#209)"; exit 0; }
+
+# Test seam (tests/ab-card-invariants.sh): print which partition was identified and stop, before
+# anything is written. Deliberately placed AFTER the refusal above so a refusal prints nothing.
+[ -z "${BATMAN_STORAGE_PROBE:-}" ] || { echo "$PART"; exit 0; }
+
+# Last line of defence, independent of the identification above: never write a filesystem over
+# something that is demonstrably a system area. Called before the two destructive steps.
+assert_not_system(){
+	is_squashfs "$PART" && { lg "REFUSING: $PART carries a squashfs — that is a rootfs slot, not data"; exit 0; }
+	n=$(gpt_field "$PART_NUM" 'Partition name') || n=""
+	case "$n" in ""|data) : ;; *) lg "REFUSING: $PART is GPT-named '$n', not 'data'"; exit 0 ;; esac
+	g=$(gpt_field "$PART_NUM" 'Partition unique GUID') || g=""
+	case "$g" in
+		"$GUID_ROOTA"|"$GUID_ROOTB") lg "REFUSING: $PART carries the rootfs GUID $g"; exit 0 ;;
+	esac
+}
 
 # already provisioned + mounted? (a re-run after success, or the init already did it) -> done
 if mount | grep -q " $MOUNT "; then lg "already mounted — nothing to do"; exit 0; fi
@@ -123,6 +179,10 @@ if [ "$PART_NUM" = 6 ] && [ -b "$PART" ] && command -v sgdisk >/dev/null 2>&1; t
 		fi
 	fi
 fi
+
+# Everything below this line WRITES. Assert the target is not a system area first (#209 review:
+# a five-partition layout used to send step 2/3 onto rootfs B).
+assert_not_system
 
 # 2. LUKS (if capable, idempotent)
 if [ "$LUKS" = 1 ]; then
