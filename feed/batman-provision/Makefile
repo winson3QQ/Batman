@@ -23,7 +23,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=batman-provision
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=10
+PKG_RELEASE:=11
 PKG_MAINTAINER:=Batman <yellow.winson@gmail.com>
 PKG_LICENSE:=GPL-2.0-or-later
 
@@ -101,6 +101,10 @@ define Package/batman-provision/install
 	# A/B slot operator (#89): the one audited place for slot apply/commit/rollback, shared with
 	# scripts/ab-selftest.sh and /lib/upgrade/platform.sh. See docs/design/ab-sysupgrade-platform.md.
 	$(INSTALL_BIN) ./files/usr/sbin/batman-slot       $(1)/usr/sbin/batman-slot
+	# Pi 3 (bcm2710) firmware allow-list (#209 v4.3 D4): read by batman-slot apply on the node and by
+	# the card builders in the repo (scripts/lib/pi3-fwpart.sh) — one copy, so they cannot drift.
+	$(INSTALL_DIR) $(1)/usr/share/batman
+	$(INSTALL_DATA) ./files/usr/share/batman/firmware-allowlist-bcm2710.sha256 $(1)/usr/share/batman/firmware-allowlist-bcm2710.sha256
 	# #211 health-gated auto-commit of an A/B trial slot (companion to batman-slot)
 	$(INSTALL_BIN) ./files/usr/bin/batman-autocommit  $(1)/usr/bin/batman-autocommit
 	# A/B platform.sh override (installed over /lib/upgrade/platform.sh by 98-batman-sysupgrade,

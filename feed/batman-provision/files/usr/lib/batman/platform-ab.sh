@@ -7,9 +7,13 @@
 # Image format (our own dedicated A/B target, so no busybox MBR-parse and no OpenWrt metadata
 # trailer — REQUIRE_IMAGE_METADATA=0, we do our own board check): a gzip'd tar containing
 #   root.squashfs
-#   boot/{kernel8.img, *.dtb, overlays/*, start4*.elf, fixup4*.dat}
-#   metadata            # board=<board>\nversion=<...>
+#   boot/{kernel8.img, *.dtb, overlays/*, start*.elf, fixup*.dat}   # start4* on Pi 4, start* on Pi 3
+#   metadata            # board=<board>\nversion=<...>\nsize=<root.squashfs bytes>
+#   SHA256SUMS          # sha256 of root.squashfs and every boot/ file (#209 v4.3 D5)
 # assembled by scripts/build-ab-payload.sh.
+#
+# root.squashfs is STREAMED from the image straight onto the target root partition (#209 D7): on a
+# 512 MB Pi 3 the /tmp tmpfs cannot hold the uploaded image AND an extracted copy of it.
 #
 # Config crosses slots via p5 + 96-batman-config-migrate, so the stock single-slot config tar dance
 # is neutralised below — invoke as `sysupgrade -n <image>`.
@@ -25,8 +29,12 @@ REQUIRE_IMAGE_METADATA=0
 # then dies "empty squashfs" with `tr: not found`, aborting apply before any write. So stage tr too.
 # (#89 bench: confirmed via a stage2 log on p6 — tr was the sole MISSING tool of the set apply uses.
 #  If a future bench run reports another missing tool, add its path here.)
+# #209 v4.3 adds the uncached read-back verification (sha256sum/head/tail/cut/cmp) and the Pi 3
+# firmware allow-list (RAMFS_COPY_DATA). Prove the set on the bench with a stage2 log, as #89 did.
 # shellcheck disable=SC2034
-RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr'
+RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr /usr/bin/sha256sum /usr/bin/head /usr/bin/tail /usr/bin/cut /usr/bin/cmp'
+# shellcheck disable=SC2034
+RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256'
 
 platform_check_image() {
 	[ "$#" -gt 1 ] && return 1
@@ -37,7 +45,18 @@ platform_check_image() {
 	get_image "$@" | tar -tf - >"$list" 2>/dev/null || { echo "not a batman A/B image (not a gzip tar)"; rm -f "$list"; return 1; }
 	grep -qx 'root.squashfs' "$list" || { echo "A/B image missing root.squashfs"; rm -f "$list"; return 1; }
 	grep -qx 'metadata' "$list"      || { echo "A/B image missing metadata"; rm -f "$list"; return 1; }
+	grep -qx 'SHA256SUMS' "$list"    || { echo "A/B image has no SHA256SUMS — rebuild it with the current scripts/build-ab-payload.sh (#209)"; rm -f "$list"; return 1; }
 	rm -f "$list"
+
+	# /tmp budget (#209 D7): do_upgrade extracts everything EXCEPT root.squashfs (streamed) next to
+	# the uploaded image. Refuse here, before the pivot, if that cannot fit. Sizes from `tar -tv`.
+	local need_kb free_kb
+	need_kb=$(get_image "$@" | tar -tvf - 2>/dev/null | awk '$NF!="root.squashfs"{s+=$3} END{print int(s/1024)+16384}')
+	free_kb=$(df -k /tmp 2>/dev/null | awk 'NR==2{print $4}')
+	if [ -n "$need_kb" ] && [ -n "$free_kb" ] && [ "$free_kb" -lt "$need_kb" ]; then
+		echo "REFUSING: /tmp has ${free_kb} KiB free, the boot payload needs ~${need_kb} KiB"
+		return 1
+	fi
 
 	# SoC gate (#209 review), first layer: refuses BEFORE the ramfs pivot, so a plain `sysupgrade`
 	# of a wrong-SoC image stops here with the node untouched. `sysupgrade -F` ignores a failed
@@ -86,10 +105,12 @@ soc_running() {
 }
 
 platform_do_upgrade() {
-	local dir=/tmp/ab-payload
+	local dir=/tmp/ab-payload troot
 	rm -rf "$dir"; mkdir -p "$dir"
-	get_image "$@" | tar -xf - -C "$dir" || { echo "A/B image unpack failed"; return 1; }  # -x not -xz: get_image already un-gzips (see platform_check_image)
-	[ -f "$dir/root.squashfs" ] || { echo "no root.squashfs in image"; return 1; }
+	# everything but root.squashfs (streamed below). -x not -xz: get_image already un-gzips.
+	echo 'root.squashfs' > /tmp/ab-exclude
+	get_image "$@" | tar -xf - -C "$dir" -X /tmp/ab-exclude || { echo "A/B image unpack failed"; return 1; }
+	[ -f "$dir/SHA256SUMS" ] && [ -f "$dir/metadata" ] || { echo "image lacks SHA256SUMS/metadata"; return 1; }
 
 	# SoC gate, second (and under `sysupgrade -F`, the ONLY) layer. -F makes sysupgrade ignore a
 	# failed platform_check_image and call us anyway, and the fleet tooling routinely uses -F
@@ -114,7 +135,16 @@ platform_do_upgrade() {
 	mkdir -p /boot
 	grep -q ' /boot ' /proc/mounts || mount -t vfat -o rw /dev/mmcblk0p1 /boot 2>/dev/null
 
-	# write the inactive slot + arm the one-shot tryboot (batman-slot NEVER touches autoboot.txt).
+	# 1) every check, then clear the target overlay window — nothing is streamed before this passes
+	troot=$(batman-slot stage-root "$dir") || { echo "batman-slot stage-root refused"; return 1; }
+	[ -b "$troot" ] || { echo "stage-root gave no target device ('$troot')"; return 1; }
+	# 2) stream the rootfs straight onto the target root partition (no /tmp copy)
+	get_image "$@" | tar -xOf - root.squashfs | dd of="$troot" bs=1M conv=fsync 2>/dev/null \
+		|| { echo "rootfs stream to $troot failed"; return 1; }
+	sync
+	# 3) boot files, uncached read-back of rootfs + boot against SHA256SUMS, then arm + read back
+	#    the one-shot tryboot. A failed verification invalidates the target slot and arms nothing,
+	#    and stage2's plain reboot then lands on the untouched default slot.
 	batman-slot apply "$dir" || { echo "batman-slot apply failed"; return 1; }
 	# the harness reboots next; the firmware then trials the freshly-written inactive slot. Commit
 	# (making it the default) happens later, gated on a soaked-healthy verdict — NOT here.

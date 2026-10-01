@@ -63,7 +63,8 @@ pi3_assert_mbr() {
 # $1 = boot-file dir. Every Raspberry Pi firmware blob present must be in the allow-list, and the
 # set a Pi 3 boots with must be complete. FW_ALLOWLIST overrides the list (tests use placeholders).
 pi3_check_firmware() {
-	local dir=$1 list=${FW_ALLOWLIST:-$(dirname "${BASH_SOURCE[0]:-$0}")/firmware-allowlist-bcm2710.sha256} f h bad=0
+	# the one copy of the list is the one baked into the node (batman-slot apply reads it there too)
+	local dir=$1 list=${FW_ALLOWLIST:-$(dirname "${BASH_SOURCE[0]:-$0}")/../../feed/batman-provision/files/usr/share/batman/firmware-allowlist-bcm2710.sha256} f h bad=0
 	[ -f "$list" ] || { echo "firmware allow-list not found: $list" >&2; return 1; }
 	for f in bootcode.bin start.elf start_cd.elf fixup.dat fixup_cd.dat; do
 		[ -f "$dir/$f" ] || { echo "bcm2710 boot set incomplete: $f missing in $dir" >&2; bad=1; }
