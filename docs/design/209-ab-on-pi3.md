@@ -1,6 +1,6 @@
 # Design: A/B on Pi 3 (bcm2710) —— 沿用 Pi 4 設計,只處理差異 (#209)
 
-Status: **DRAFT v4.2(v4 review = NEEDS-REWORK → v4.1;v4.1 review = APPROVE-WITH-CHANGES → 本版吸收 A1–A6 與 SHOULD-FIX;E0g 實機是硬關卡,過了才進 S4)**
+Status: **DRAFT v4.3(v4 NEEDS-REWORK → v4.1 APPROVE-WITH-CHANGES → v4.2 → 本版併入 E0g 實機結果:p7 版面可行、p7 必須有 `config.txt`、`autoboot.txt` 損壞 = 磚化 → commit 改為單一磁區原始寫入;下一步 S3/S4)**
 Parent: #209 · 父單 #203 / #89 · 姊妹 #133(Pi 4 A/B)· 前置 #230(`fix/209-prereq-brick-paths`)
 SoT: #75
 版本史:v1 U-Boot chainloader(NEEDS-REWORK)→ v2 preinit 計數器(救援者在受測槽內)→ v3/v3.1 A0:firmware `reboot N`(APPROVE-WITH-CHANGES)→ v4:E0 證實 Pi 3 支援 tryboot、hybrid MBR 可開 Pi 4 的 GPT 版面 → 沿用 Pi 4(NEEDS-REWORK)→ **v4.1:補齊 memcg、/tmp、SoC gate、讀回驗證、firmware 白名單、watchdog;bootcode/autoboot 移到獨立 firmware 分割**。v1–v3.1 全文見 git(`882f32d`、`bc62c0e`)。
@@ -18,6 +18,8 @@ Pi 3A+ firmware **支援 tryboot**,在 **hybrid MBR** 卡上可以開 Pi 4 的 G
 | E0d:純 GPT | ❌ 完全不開機;拔卡驗內容全對 → **Pi 3 ROM 不讀純 GPT** | 5921015540 |
 | E0d:hybrid MBR(`--hybrid=1:3:EE`,`ee` 最後,MBR 1/2 = `0x0c`) | ✅ 開機;Linux 見 6 GPT 分割;#201 p6 200 MB→24.5 GB;tryboot → B、一般 reboot → A | 5921015540 |
 | #201 後的 MBR | 三格類型/起點/順序/active 不變,CHS 被正規化為 `fe ff ff`(第 0 磁區 dump 前後對照待貼 #209) | 待補 |
+
+| **E0g**:p7 firmware 分割(hybrid MBR 1=p7 2=bootA 3=bootB 4=`ee`,firmware 1.20250915) | p7 只有 `bootcode.bin`+`autoboot.txt` → **全黑、無燈**(3 MiB 與 64 MiB 皆然,`autoboot.txt` 有無填充皆然);**加一個空的 `config.txt` → 開機**(3 MiB FAT16 `-s 1` @1 MiB 可用 → p7 留在 1–4 MiB 空隙,不佔 rescue gap)。tryboot A↔B ✅;`autoboot.txt` 缺檔 / 截斷 → 全黑恆綠、亂碼 → 閃 4 下,**三者皆永久卡死、只能重燒**;單一磁區原始寫入 commit A→B→A ✅(讀回一致);trial 中 panic / 拔電 → 回預設 ✅;bootB 少 `start_cd.elf` → 仍開機;bootB 無任何 `start*.elf` → 閃 4 下卡住、拔電回預設;**bootB 缺 kernel → tryboot 自動 42 s 回預設(不需斷電)**;watchdog:procd 停止餵狗 → 56 s 重開、kernel panic 且 `kernel.panic=0` → 38 s 重開 ✅ | 見 #209 E0g 留言 |
 
 已知事實:psci absent,restart handler = `bcm2835-wdt`;DT `/chosen/bootloader/{partition,tryboot,rsts}` 存在且忠實;**Pi 3 firmware 依 MBR 格序編號**;`gpu_mem_512=16` → 實際載入 `start_cd.elf`/`fixup_cd.dat`;**cmdline 帶 `cgroup_disable=memory`**(DT bootargs 注入);`/tmp` = 212 MB。
 **未解**:E0 期間一次「開機約 7 分鐘後失聯、無 panic/pstore、無 watchdog 重開、只能斷電恢復」(boot `ccf48c0c`)。
@@ -55,14 +57,16 @@ Pi 3A+ firmware **支援 tryboot**,在 **hybrid MBR** 卡上可以開 Pi 4 的 G
 
 ### D3. 獨立 firmware 分割(使用者決定,2026-10-01)
 - **問題**:Pi 3 ROM 從 MBR 第 1 格讀 `bootcode.bin`,它再讀同分割的 `autoboot.txt`。若這是 bootA,則節點跑在 B、OTA 寫 bootA 時斷電撕裂 FAT → **兩槽都開不了**(Pi 4 的 `bootcode` 在 EEPROM,沒有這一半風險)。v4 的「寫完讀回驗證」不可行(同一 mount 讀到的是 page cache;而且 stage2 無論如何都會重開)。
-- **做法**:在 bootA 前方現成的 1–4 MiB 空隙建 **p7 = 3 MiB FAT16(`mkfs.vfat -F 16 -s 1`,約 6100 clusters,builder 斷言 ≥ 4085;不用 FAT12)**,GPT 名稱 `batfw`(不可與 `bootA`/`bootB`/`data` 相同 —— `92-ramoops-fix` 與 #230 靠名稱辨識;invariants 斷言)。**只放 `bootcode.bin` 與 `autoboot.txt`**,不放 `config.txt`(除非 E0g 證明需要),**不放 `start*.elf`**。
+- **做法**:在 bootA 前方現成的 1–4 MiB 空隙建 **p7 = 3 MiB FAT16(`mkfs.vfat -F 16 -s 1`,約 6100 clusters,builder 斷言 ≥ 4085;不用 FAT12)**,GPT 名稱 `batfw`(不可與 `bootA`/`bootB`/`data` 相同 —— `92-ramoops-fix` 與 #230 靠名稱辨識;invariants 斷言)。**p7 內容固定為三個檔:`bootcode.bin`、`autoboot.txt`、空的 `config.txt`**(E0g:少了 `config.txt` 整台不開機,連 ACT 都不亮),**不放 `start*.elf`**。`config.txt` 保持空檔(E0g 試過在其中放 `gpu_mem_512=16` 無作用)。
   - `autoboot.txt`:`[all] tryboot_a_b=1 / boot_partition=2`、`[tryboot] boot_partition=3`(數字由 D1 推導,不寫死)。
   - **OTA(`apply`)永遠不寫 p7**;只有 commit / rollback 改寫 p7 的 `autoboot.txt`,以及燒卡。**p7 平時不掛載**,只在 commit / rollback / apply 前的讀取時短暫掛載(`noatime`,讀取用 `ro`)。
   - bootA/bootB 照舊放 `start*.elf`/`fixup*.dat`/kernel/dtb/overlays/`config.txt`/`cmdline.txt`;**不再放 `bootcode.bin` 與 `autoboot.txt`**。
   - GPT p1–p6 編號不變 → #201(p6 在最後)、p5/p6、`95-batman-storage`、#230 的 `data` 名稱辨識都不受影響(review 已逐一確認)。
-- **A1:p7 上 `autoboot.txt` 缺失 / 撕裂 = 新的磚化路徑,必須處理**:
-  - 舊版面 autoboot 讀不到會開 MBR[1] = bootA;新版面 MBR[1] = p7。官方 `autoboot.adoc`:預設分割是「第一個 **bootable** FAT」,而 bootable 的定義是「含 `start.elf`」→ p7 沒有 `start.elf`,**依文件應跳過 p7、開 bootA**。**這是 E0g 必測項目**(`autoboot.txt` 缺檔、截斷、亂碼三種)。E0g 若證明不會跳過 → 在 p7 放一組 `start*.elf` 指向 bootA 作為退路,並重跑 review。
-  - **commit 寫入改為「就地覆寫」**:vfat 上的 staging + `mv` 不是斷電原子操作(目錄項與 FAT 更新無序)。p7 的 `autoboot.txt` 在燒卡時建成**固定大小、補空白到一個 cluster** 的檔案;commit / rollback 只**就地覆寫同一個 cluster 的內容**(不改目錄項、不改 FAT 鏈,檔案大小不變)。斷電最壞情況是該磁區內容撕裂 → 落入上一條(E0g 驗證的退路)。
+- **A1:p7 上 `autoboot.txt` 損壞 = 磚化(E0g 已實證)**:
+  - 官方 `autoboot.adoc` 說預設分割是「第一個含 `start.elf` 的 FAT」,但 **Pi 3 的 `bootcode.bin` 不照做**:`autoboot.txt` 缺檔 / 截斷 → 全黑恆綠;亂碼 → 閃 4 下;三者都永久卡死,斷電也無用,只能重燒。(對照:舊版面 bootA = MBR[1] 時,`autoboot.txt` 壞了會開 bootA。但舊版面的暴露面是「每次 OTA 寫 bootA 的 FAT」,遠大於本版的單一磁區 → 使用者決定維持 p7。)
+  - **commit / rollback 改為「單一磁區原始寫入」**(E0g ④ 已實證):`autoboot.txt` 永遠 ≤ 512 bytes,commit 只改 `boot_partition` 的數字(長度不變);由 BPB 與根目錄項算出該檔資料磁區,**p7 不掛載**,`dd bs=512 count=1 conv=notrunc,fsync` 只寫那一個磁區(不動 FAT、不動目錄項、連 mtime 都不更新),`drop_caches` 後讀回比對,不符就重寫一次、仍不符則中止並告警。不採用 v4.2 的「補空白填滿」(E0g 未證實有害,但沒有必要)。
+  - **前置條件**:commit 前 `vcgencmd get_throttled` 無欠壓、batpower 不在 warn/crit;不滿足就延後 commit(trial 狀態本身是安全的)。
+  - **殘餘風險(release note 必列)**:commit 那一個磁區寫入的瞬間斷電(或 SD FTL 撕裂波及該磁區)→ 節點磚化、需現場重燒。每次 OTA 一次,窗口為毫秒級。
   - Pi 4 的 `ab.good` 錨點在 bcm2710 上**不寫到 p7**(沒有任何修復流程讀它)。
 - **A2:所有讀 `autoboot.txt` 的地方都要改為 p7(依版面偵測,不依 SoC 猜)**:`batman-slot` 的 `BOOTMNT`(:21)、apply 的 `[tryboot]` 檢查(:177)、`committed_fw`(:186,驅動 `is-trial` 與 autocommit)、`ab-selftest.sh:101-115`、`tests/ab-card-invariants.sh:59-61,75-84`、`build-ab-image.sh:135`、`build-gpt-ab-card.sh:149`、`platform-ab.sh:60-61`(stage2 需同時能讀 p7)。
   - **版面偵測**:`batfw` 分割存在且 MBR[1] = p7 → Pi 3 版面;否則 Pi 4 版面。偵測結果與執行中的 SoC 不符 → 拒絕(避免同一支 `batman-slot` 把 Pi 4 邏輯套在 Pi 3 卡上)。
@@ -112,10 +116,10 @@ Pi 3A+ firmware **支援 tryboot**,在 **hybrid MBR** 卡上可以開 Pi 4 的 G
 ### D9. 當機 / 失聯的重開路徑(watchdog)
 - **事實**:A/B 的「trial 不健康就回退」依賴**有東西讓節點重開**。`batman-autocommit:120` 只是不 commit,從不重開。E0 期間那次失聯既無 panic 也無 watchdog 重開。
 - **處理**:
-  1. S5 實測:3A+ 上 kernel hang / userland hang(停掉 procd 的 watchdog 餵食)時,`bcm2835-wdt` 會不會重開;時間多長。
+  1. ~~S5 實測~~ **E0g 已驗**:procd 停止餵狗 → 56 s 重開;kernel panic 且 `kernel.panic=0` → 38 s 重開(`kill -STOP 1` 無效:kernel 不會對 PID 1 送 SIGSTOP)。
   2. trial 中「活著但連不上」(mesh 沒起、網路掛)要有重開路徑:autocommit timeout 後,若仍是 trial 且健康閘未過 → **主動 reboot 回預設槽**(Pi 4 也適用;改 `batman-autocommit`,需另過 review)。tryboot 是一次性的,重開後回到已 commit 槽、`is-trial`=1 → no-op,**不會形成重開迴圈**。
   2a. **A5:健康閘要能看見「連不上」**。目前的閘(`batman-autocommit:49`)只看 mesh11sd/openmanetd/wpad 是否在跑,而且刻意容忍未入網 → mesh 壞掉但服務在跑的槽(brcmfmac/radio 對調、morse 驅動卡住)會被 commit,節點就此失聯,根本到不了 timeout。**新增可達性條件**:OTA 前若 p5/p6 記錄節點曾有 mesh peer,trial 必須在 timeout 內看到 peer(或到已知鄰居的 link)才 commit,否則不 commit 並重開。`TIMEOUT` 要在 3A+ + docker + canary `docker load` 下校準;回退原因寫到 p6,讓「慢但正常」的槽不會默默讓整批 OTA 失效。
-  3. 那次不明失聯:release 前必須重現或界定(至少能證明 watchdog 會處理);不能解釋就列在 release note。
+  3. 那次不明失聯:watchdog 對 hang 有效(上一條),而那次沒有 watchdog 重開 → 判定為「系統活著但網路斷」,不是 hang。release 前要嘗試重現;不能解釋就列在 release note,並由 A5 / S2 處理。
 - **建議(未決,另開單)**:已 commit 的槽之後 hang 或失去 mesh(E0 那次失聯)目前沒有自動恢復 —— watchdog 管不到「網路掛了但系統在轉」。評估有上限、有退避的「N 小時無 mesh peer → 重開」,以及外部 watchdog / 定時斷電器。
 
 ### D10. 建置與驗證管線
@@ -143,8 +147,14 @@ Pi 3A+ firmware **支援 tryboot**,在 **hybrid MBR** 卡上可以開 Pi 4 的 G
 | apply 寫入後讀回不符(D5) | 不發 tryboot、目標 cmdline 作廢、重開回預設 | 🔴 S5(故障注入) |
 | tryboot 發起失敗(GET ≠ 1) | apply 失敗 → 回預設 | 🔴 S5 |
 | OTA 寫 bootA 中斷電(D3) | 只影響 A;B 照常開 | 🔴 S5 |
-| commit 中斷電(p7 就地覆寫) | 舊 / 新 / 撕裂之一;撕裂 → 落入下一列 | 🔴 S5 |
-| p7 `autoboot.txt` 缺檔 / 截斷 / 亂碼(A1) | 依官方文件跳過無 `start.elf` 的 p7 → 開 bootA | 🔴 **E0g 必測** |
+| commit(p7 單一磁區原始寫入)A→B→A | 生效、讀回一致 | ✅ E0g ④ |
+| commit 那一磁區寫入中斷電 | 舊 / 新 / 撕裂;撕裂 → 下一列(磚化) | ⚠️ 已知殘餘風險(不測) |
+| p7 `autoboot.txt` 缺檔 / 截斷 / 亂碼(A1) | ~~跳過 p7 開 bootA~~ → **實測:永久卡死,需重燒** | ✅ E0g ③(負面結果) |
+| p7 缺 `config.txt` | 不開機 | ✅ E0g(V1–V3)→ builder / invariants 必須斷言 |
+| trial 中 panic / 斷電(p7 版面) | 回預設 | ✅ E0g ⑤ |
+| bootB 無任何 `start*.elf` | 閃 4 卡住,拔電回預設 | ✅ E0g ⑥c(需斷電 → D5 讀回驗證是防線) |
+| bootB 缺 kernel(tryboot) | 自動回預設 | ✅ E0g ⑦(42 s,不需斷電) |
+| userland hang / kernel hang | watchdog 重開 | ✅ E0g ⑧(56 s / 38 s) |
 | rollback / commit 到被作廢(`BAD`)的槽(A3) | 拒絕 | 🔴 S5 |
 | 誤開被作廢的槽 | `panic=10` → 回預設 | 🔴 S5 |
 | stage2 ramfs 工具齊全(A4) | stage2 log 證明 | 🔴 S5 |
@@ -213,6 +223,8 @@ SHOULD-FIX 已吸收:§2 實證程度據實標註、bootA 寫入者清點(D3)、
 SHOULD-FIX 已吸收:S1(D2 訊號)、S2(已 commit 槽失聯 → 另開單)、S3(p7 名稱)、S4(p7 只放兩個檔)、S5(`ab.good`)、S6(`/tmp` 檢查位置)。
 
 **v4.2**:依上列修改;下一關 = E0g 實機。
+
+**v4.3(E0g 實機後)**:p7 必含空 `config.txt`(新發現,builder/invariants 斷言);p7 留在 1–4 MiB 空隙(3 MiB 可用);A1 實證為磚化 → commit 改單一磁區原始寫入 + 供電前置條件 + 殘餘風險入 release note;D9 watchdog 對 kernel / userland hang 有效 → E0 那次失聯屬「活著但連不上」,A5 可達性條件與 S2(另開單)更為必要;tryboot 對「缺 kernel」會自動回退(`reboot N` 不會)。另:3A+ `gpu_mem` 從來沒生效(單槽 image 已知問題,與 A/B 無關,另追;影響 docker 可用 RAM 48 MB)。
 
 ## 參考
 
