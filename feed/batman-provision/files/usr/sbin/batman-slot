@@ -77,7 +77,11 @@ soc_token() { case "$1" in *bcm2711*) echo bcm2711 ;; *bcm2710*) echo bcm2710 ;;
 # ---- MBR (pi3 only) ---------------------------------------------------------------------------
 # Fixed per-invocation path ($$ is the same inside command substitutions), read once uncached.
 MBR_FILE=/tmp/batman-slot.mbr.$$
-trap 'rm -f "$MBR_FILE"' EXIT
+# One EXIT trap for everything this invocation owns (the MBR read cache, and the busy marker that
+# tells batman-autocommit's revert watchdog not to reboot under a running apply, ab-autocommit v2.2).
+BUSY=/tmp/batman-slot.busy
+BUSY_MINE=0
+trap 'rm -f "$MBR_FILE"; [ "$BUSY_MINE" = 1 ] && rm -f "$BUSY"' EXIT
 mbr_load() { [ -s "$MBR_FILE" ] || raw_read "$DISK" 0 1 > "$MBR_FILE"; }
 mbr_entry() {  # $1 = 1..4 -> "TYPE START FLAG" (hex type, decimal start LBA, hex flag)
 	mbr_load; o=$((446 + 16 * ($1 - 1)))
@@ -265,6 +269,14 @@ sum_of() { awk -v f="$2" '$2==f{print $1; exit}' "$1/SHA256SUMS"; }
 # Every check apply needs, BEFORE anything is written. Sets T TROOT TBOOT TGUID SQ_BYTES ZERO_MB.
 precheck() {
 	PAYLOAD=$1; [ -d "$PAYLOAD" ] || die "payload dir '$PAYLOAD' not found"
+	# Never write while running a one-shot TRIAL (#209 v3.1 MUST-FIX 1 / ab-autocommit v2.2 G): on a
+	# trial of B the "other" slot is A = the COMMITTED one, so a second OTA here would overwrite the only
+	# known-good slot. Only a real tryboot (DT tryboot=1) is refused; a #133 stale-fallback boot may
+	# still be re-OTA'd to repair the slot that does not boot. Bench override: BATMAN_ALLOW_TRIAL_APPLY=1.
+	if [ "${BATMAN_ALLOW_TRIAL_APPLY:-0}" != 1 ] && [ "$(hexdump -v -e '1/1 "%02x"' /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null)" = 00000001 ]; then
+		is_trial; [ $? -eq 0 ] && die "this boot is an uncommitted TRIAL of slot $(active_slot) — refusing to write slot $(other_slot "$(active_slot)") (the committed one). Commit or revert the trial first."
+	fi
+	: > "$BUSY"; BUSY_MINE=1
 	[ -d "$PAYLOAD/boot" ] || die "no $PAYLOAD/boot"
 	[ -f "$PAYLOAD/SHA256SUMS" ] || die "payload has no SHA256SUMS — refusing an unverifiable write"
 	[ -f "$PAYLOAD/boot/kernel8.img" ] || die "payload has no boot/kernel8.img"

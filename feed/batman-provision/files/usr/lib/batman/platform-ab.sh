@@ -48,6 +48,14 @@ platform_check_image() {
 	grep -qx 'SHA256SUMS' "$list"    || { echo "A/B image has no SHA256SUMS — rebuild it with the current scripts/build-ab-payload.sh (#209)"; rm -f "$list"; return 1; }
 	rm -f "$list"
 
+	# Running an uncommitted one-shot TRIAL: the inactive slot is the COMMITTED one. Refuse here, in
+	# stage 1, before sysupgrade kills services (batman-slot apply refuses too, ab-autocommit v2.2 G/N6).
+	if [ "$(hexdump -v -e '1/1 "%02x"' /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null)" = 00000001 ] \
+	   && batman-slot is-trial >/dev/null 2>&1; then
+		echo "REFUSING: this boot is an uncommitted trial — sysupgrade would overwrite the committed slot. Commit or revert the trial first."
+		return 1
+	fi
+
 	# /tmp budget (#209 D7): do_upgrade extracts everything EXCEPT root.squashfs (streamed) next to
 	# the uploaded image. Refuse here, before the pivot, if that cannot fit. Sizes from `tar -tv`.
 	local need_kb free_kb

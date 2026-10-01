@@ -23,7 +23,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=batman-provision
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=12
+PKG_RELEASE:=13
 PKG_MAINTAINER:=Batman <yellow.winson@gmail.com>
 PKG_LICENSE:=GPL-2.0-or-later
 
@@ -96,6 +96,8 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/usr/bin/payload-arbiter    $(1)/usr/bin/payload-arbiter
 	$(INSTALL_BIN) ./files/usr/bin/payload-teardown   $(1)/usr/bin/payload-teardown
 	$(INSTALL_DATA) ./files/usr/lib/batman/payload-guardian.sh $(1)/usr/lib/batman/payload-guardian.sh
+	# shared "in the mesh" test (joinwatch + batman-autocommit OTA gate, #209 S4-5)
+	$(INSTALL_DATA) ./files/usr/lib/batman/meshjoin.sh $(1)/usr/lib/batman/meshjoin.sh
 	# offline monotonic wall-clock (#174): restore@S12 (after batdata-mount S11), save@K09 + periodic
 	$(INSTALL_BIN) ./files/usr/sbin/batman-faketime   $(1)/usr/sbin/batman-faketime
 	# A/B slot operator (#89): the one audited place for slot apply/commit/rollback, shared with

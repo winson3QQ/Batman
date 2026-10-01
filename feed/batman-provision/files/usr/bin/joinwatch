@@ -34,12 +34,17 @@ up(){ cut -d. -f1 /proc/uptime; }
 bid(){ cut -c1-8 /proc/sys/kernel/random/boot_id; }
 ts(){ date +%Y%m%d-%H%M%S; }
 mounted(){ grep -q " /opt/batdata " /proc/mounts 2>/dev/null; }
+# "joined" is defined once, in the lib shared with batman-autocommit's OTA commit gate (#209 S4-5)
+# shellcheck source=/dev/null
+. /usr/lib/batman/meshjoin.sh
+# p6 marker: this node has been part of a mesh. Written ONCE (first JOINED) and read by
+# batman-autocommit, which then requires a join before committing an OTA trial (ab-autocommit.md v2.2).
+MESHMARK=/opt/batdata/state/mesh-joined
 
 # ---- observe -------------------------------------------------------------------------------
 live(){ # the two things that change from tick to tick: 802.11s plinks and batman neighbours
-	dump=$(iw dev wlh0 station dump 2>/dev/null)
-	PLINK=$(printf '%s\n' "$dump" | grep -c "plink:.*ESTAB"); STA=$(printf '%s\n' "$dump" | grep -c "^Station")
-	BAT=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
+	meshjoin_sample
+	PLINK=$MJ_PLINK; STA=$MJ_STA; BAT=$MJ_BAT
 }
 radio(){ # config + driver state, only read when a diagnosis is composed
 	RADIO=$(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)\.type='morse'$/\1/p" | head -1)
@@ -56,7 +61,7 @@ radio(){ # config + driver state, only read when a diagnosis is composed
 	PREV=$(tail -1 "$BR" 2>/dev/null | sed 's/^[^ ]* boot_id=[^ ]* prev=//' | cut -c1-60)
 	live
 }
-joined(){ [ "$PLINK" -ge 1 ] && [ "$BAT" -ge 1 ]; }
+joined(){ meshjoin_joined; }
 verdict(){ # one human phrase, the thing a person would report (needs radio)
 	if [ "$GUARD" != none ]; then echo "KEY PLACEHOLDER — radio kept down by keyguard (run halow-setkey)"
 	elif [ "$KEY" != SET ]; then echo "mesh key $KEY"
@@ -117,6 +122,7 @@ run(){
 		live
 		if joined; then
 			echo "JOINED $(up) plinks=$PLINK batman=$BAT" > "$STATE"
+			[ -f "$MESHMARK" ] || { mounted && mkdir -p "${MESHMARK%/*}" && echo "first-joined boot=$me $(ts)" > "$MESHMARK" && sync && note notice "recorded mesh membership ($MESHMARK)"; }
 			# close a diagnosed episode — this boot's, or one left open by an earlier boot that
 			# the user power-cycled out of (otherwise "consecutive unjoined boots" never resets)
 			if [ "$short" = 1 ] || { [ "$checked" = 0 ] && open_episode; }; then radio; write "$(diagline JOINED)"; fi
