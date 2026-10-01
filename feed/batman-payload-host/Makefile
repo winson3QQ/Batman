@@ -1,7 +1,18 @@
-# Batman payload-host meta-package (#159) — bakes the Docker engine into the Pi 4
-# image so a payload-host node gets a container runtime from the image, not from a
-# manual 43-package offline opkg install (the bench expedient proven on manet01 during
-# #98). One dependency closure, one tracked toggle, board-gated to bcm2711.
+# Batman payload-host meta-package (#159) — bakes the Docker engine into the image so a
+# payload-host node gets a container runtime from the image, not from a manual 43-package
+# offline opkg install (the bench expedient proven on manet01 during #98). One dependency
+# closure, one tracked toggle.
+#
+# Two packages from this Makefile (#209 S4-4):
+#   batman-payload-host  Docker engine closure + dockerd data-root + the tenant-agnostic
+#                        first-boot image loader. BOTH SoCs (Pi 4 bcm2711, Pi 3A+ bcm2710).
+#   batman-payload-ots   the OpenTAKServer tenant's baked golden config. Pi 4 ONLY: the OTS
+#                        core stack idles at ~620 MiB (deploy/ots/README.md) and a Pi 3A+ has
+#                        512 MB. Pulled in automatically on bcm2711 by a conditional DEPENDS of
+#                        batman-payload-host, so existing Pi 4 build configs (which select only
+#                        batman-payload-host) keep shipping it without a firmware-repo change.
+# bcm2710 additionally needs memcg in its kernel bootargs (firmware repo, #209 S4-6), or
+# batman-autocommit's docker gate refuses to commit ("no memcg controller").
 #
 # WHY a meta-package (review M3): selecting the 43 packages as loose CONFIG_PACKAGE_*=y
 # lines had the "kmod stays =m" trap — a kmod dragged in only as a transitive dep does
@@ -38,7 +49,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=batman-payload-host
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=6
+PKG_RELEASE:=7
 PKG_MAINTAINER:=Batman <yellow.winson@gmail.com>
 PKG_LICENSE:=GPL-2.0-or-later
 
@@ -49,9 +60,10 @@ define Package/batman-payload-host
   CATEGORY:=Utilities
   TITLE:=Batman payload-host (Docker engine) meta-package [#159]
   URL:=https://github.com/winson3QQ/Batman
-  # Pi 4 (bcm2711) only. The Zero 2 W (bcm2710) has no headroom for a container host
-  # and is board-gated out of the payload-host archetype (#110/#68).
-  DEPENDS:=@TARGET_bcm27xx_bcm2711 \
+  # Raspberry Pi targets: Pi 4 (bcm2711) and Pi 3A+ (bcm2710, #209). The OTS tenant config is
+  # a separate package that only bcm2711 pulls in (conditional dependency below).
+  DEPENDS:=@(TARGET_bcm27xx_bcm2711||TARGET_bcm27xx_bcm2710) \
+    +TARGET_bcm27xx_bcm2711:batman-payload-ots \
     +btrfs-progs \
     +ca-certificates \
     +containerd \
@@ -93,10 +105,29 @@ endef
 
 define Package/batman-payload-host/description
  Meta-package that pulls the full Docker engine closure (dockerd/containerd/runc +
- iptables-nft + kernel modules) into the Pi 4 image, so a payload-host node ships with
- a container runtime instead of needing a manual offline opkg install. Board-gated to
- bcm2711. Ships a uci-default that points dockerd's data-root at the persistent data
- partition (/opt/batdata/docker) and enables the service. See #159 #119 #98 #68.
+ iptables-nft + kernel modules) into the image, so a payload-host node ships with a
+ container runtime instead of needing a manual offline opkg install. Pi 4 and Pi 3A+.
+ Ships a uci-default that points dockerd's data-root at the persistent data partition
+ (/opt/batdata/docker) and enables the service, plus the tenant-agnostic first-boot
+ image loader. See #159 #119 #98 #68 #209.
+endef
+
+define Package/batman-payload-ots
+  SECTION:=utils
+  CATEGORY:=Utilities
+  TITLE:=Batman OpenTAKServer tenant golden config [#162]
+  URL:=https://github.com/winson3QQ/Batman
+  # Pi 4 only (RAM: OTS idles at ~620 MiB, a Pi 3A+ has 512 MB). No "+batman-payload-host":
+  # batman-payload-host already selects this package on bcm2711, and a select in both directions
+  # is a Kconfig recursive dependency. It is only ever pulled in through batman-payload-host.
+  DEPENDS:=@TARGET_bcm27xx_bcm2711
+  PKGARCH:=all
+endef
+
+define Package/batman-payload-ots/description
+ The OpenTAKServer tenant's declarative, non-secret config baked read-only into the
+ image (docs/design/payload-config-golden.md); batdata-mount refreshes an existing p6
+ tenant from it on every boot. Pi 4 (bcm2711) only.
 endef
 
 # files-only meta-package: the value is the DEPENDS closure + the data-root uci-default.
@@ -115,6 +146,9 @@ define Package/batman-payload-host/install
 	$(INSTALL_DIR) $(1)/etc/init.d $(1)/etc/rc.d
 	$(INSTALL_BIN) ./files/etc/init.d/batman-ots-firstload $(1)/etc/init.d/batman-ots-firstload
 	$(LN) ../init.d/batman-ots-firstload $(1)/etc/rc.d/S95batman-ots-firstload
+endef
+
+define Package/batman-payload-ots/install
 	# payload config golden (docs/design/payload-config-golden.md): bake the OTS tenant's declarative,
 	# non-secret config as the read-only source of truth. batdata-mount refreshes p6 from this on every
 	# boot (refresh-existing-only), so an A/B reflash converges the p6 manifest to the image (unless-stopped)
@@ -137,3 +171,4 @@ define Package/batman-payload-host/install
 endef
 
 $(eval $(call BuildPackage,batman-payload-host))
+$(eval $(call BuildPackage,batman-payload-ots))

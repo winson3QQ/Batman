@@ -21,10 +21,17 @@ tmp_mk="$(mktemp)"
 tmp_txt="$(mktemp)"
 trap 'rm -f "$tmp_mk" "$tmp_txt"' EXIT
 
-# Packages the meta-package DEPENDS on: the "+pkg" tokens (drop the @TARGET_* gate and any
-# +CONFIG:pkg conditionals, which none are used here but guard anyway).
-grep -oE '\+[A-Za-z0-9._-]+' "$MK" \
+# Packages the meta-package DEPENDS on: the "+pkg" tokens of the batman-payload-host package
+# definition ONLY. Grepping the whole Makefile picked up "+x" from a comment ("preserves +x"),
+# so this check had been failing on main without anyone noticing (it was not wired into CI).
+# Dropped: the @(...) target gate, +SYMBOL:pkg conditionals (the bcm2711-only
+# +TARGET_bcm27xx_bcm2711:batman-payload-ots, #209), and our own batman-* packages — none are
+# part of the captured runtime closure.
+awk '/^define Package\/batman-payload-host$/{f=1} f&&/^endef/{f=0} f' "$MK" \
+  | grep -oE '\+[A-Za-z0-9._-]+(:[A-Za-z0-9._-]+)?' \
+  | grep -v ':' \
   | sed 's/^+//' \
+  | grep -v '^batman-' \
   | sort -u > "$tmp_mk"
 
 # The captured runtime manifest, minus comments, cgroupfs-mount (excluded by design,
