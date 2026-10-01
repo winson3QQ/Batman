@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # pi3-fwpart.sh — Pi 3 (bcm2710) A/B card helpers shared by scripts/build-ab-image.sh and
 # scripts/build-gpt-ab-card.sh (#209 design v4.3 D1/D3/D4). Source it; it defines functions only.
 #
