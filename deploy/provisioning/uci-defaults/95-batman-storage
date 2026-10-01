@@ -126,6 +126,42 @@ if [ ! -b "$PART" ]; then
 	[ -b "$PART" ] || { lg "$PART not visible yet — will retry next boot"; exit 1; }
 fi
 
+# --- Pi 3 card (#209 v4.3 D2) --------------------------------------------------------------------
+# A Pi 3 A/B card carries a hybrid MBR (1=p7 batfw, 2=bootA, 3=bootB, 4=ee) that the Pi 3 boot ROM
+# reads to find bootcode.bin. Step 1b's sgdisk rewrites sector 0; E0d showed the hybrid entries
+# survive it, but a power cut inside that write could leave a Pi 3 unable to boot at all (a Pi 4
+# reads the GPT from its EEPROM and is unaffected). So on a Pi 3 card the grow runs only on a card
+# that was never provisioned (the factory first boot), sector 0 is backed up first, and the MBR is
+# re-read uncached afterwards and restored if it is not exactly what the builder wrote.
+raw_sector0(){ dd if="$DISK" bs=512 count=1 iflag=direct 2>/dev/null || dd if="$DISK" bs=512 count=1 2>/dev/null; }
+mbr_entry(){ # $1 = sector-0 file, $2 = 1..4 -> "TYPE START FLAG"
+	o=$((446 + 16 * ($2 - 1)))
+	echo "$(hexdump -s $((o + 4)) -n1 -e '1/1 "%02x"' "$1") $(hexdump -s $((o + 8)) -n4 -e '1/4 "%u"' "$1") $(hexdump -s "$o" -n1 -e '1/1 "%02x"' "$1")"
+}
+part_start(){ cat "/sys/class/block/${DISKN}p$1/start" 2>/dev/null; }
+pi3_mbr_ok(){ # $1 = sector-0 file
+	[ "$(mbr_entry "$1" 1)" = "0c $(part_start 7) 80" ] \
+	&& [ "$(mbr_entry "$1" 2 | cut -d' ' -f1,2)" = "0c $(part_start 1)" ] \
+	&& [ "$(mbr_entry "$1" 3 | cut -d' ' -f1,2)" = "0c $(part_start 3)" ] \
+	&& [ "$(mbr_entry "$1" 4 | cut -d' ' -f1)" = ee ]
+}
+IS_PI3=0
+if [ -b "${DISK}p7" ]; then
+	raw_sector0 > /tmp/95-mbr.$$
+	[ "$(mbr_entry /tmp/95-mbr.$$ 1 | cut -d' ' -f2)" = "$(part_start 7)" ] && IS_PI3=1
+	rm -f /tmp/95-mbr.$$
+fi
+# 0 only when p5 is a plain ext4 that mounts and has NO .seeded — i.e. provably never provisioned.
+# LUKS / unmountable / unknown all answer "provisioned" so the grow is skipped (fail-safe: a small
+# p6 is a degraded node, a torn MBR is a site visit).
+p5_never_seeded(){
+	p5=${DISK}p5; [ -b "$p5" ] && has_fs "$p5" || return 1
+	m=/tmp/95-p5.$$; mkdir -p "$m"
+	mount -t ext4 -o ro "$p5" "$m" 2>/dev/null || { rmdir "$m"; return 1; }
+	[ -f "$m/.seeded" ]; s=$?
+	umount "$m"; rmdir "$m"; [ "$s" -ne 0 ]
+}
+
 # 1b. grow a pre-made GPT last partition (v2 A/B p6) to fill the card (#201). Step 1 only expands
 #     partitions IT creates; a baked-small p6 (200 MiB in the distributable .img) would otherwise
 #     stay small forever, because A/B OTA never touches the partition table (one-way door). Table
@@ -133,16 +169,16 @@ fi
 #     sgdisk only for the atomic table rewrite. Idempotent, grow-only, fail-open.
 #     See docs/design/201-firstboot-grow.md.
 if [ "$PART_NUM" = 6 ] && [ -b "$PART" ] && command -v sgdisk >/dev/null 2>&1; then
-	dsz=$(cat /sys/block/mmcblk0/size 2>/dev/null)
-	pst=$(cat /sys/class/block/mmcblk0p6/start 2>/dev/null)
-	psz=$(cat /sys/class/block/mmcblk0p6/size 2>/dev/null)
+	dsz=$(cat /sys/block/"$DISKN"/size 2>/dev/null)
+	pst=$(cat /sys/class/block/"$DISKN"p6/start 2>/dev/null)
+	psz=$(cat /sys/class/block/"$DISKN"p6/size 2>/dev/null)
 	if [ -n "$dsz" ] && [ -n "$pst" ] && [ -n "$psz" ]; then
 		pend=$((pst + psz))
 		# p6 must be PHYSICALLY last: nothing may occupy a sector at/after our start (GPT entries
 		# can be out of order, so key off geometry not the number). Refuse otherwise (fail-open).
 		last=1
-		for d in /sys/class/block/mmcblk0p*; do
-			pn=${d##*mmcblk0p}; [ "$pn" = 6 ] && continue
+		for d in /sys/class/block/"$DISKN"p*; do
+			pn=${d##*"$DISKN"p}; [ "$pn" = 6 ] && continue
 			s=$(cat "$d/start" 2>/dev/null); z=$(cat "$d/size" 2>/dev/null)
 			[ -n "$s" ] && [ -n "$z" ] || continue
 			[ $((s + z)) -le "$pst" ] || { last=0; lg "p$pn sits at/after p6 start — refusing grow"; break; }
@@ -150,8 +186,14 @@ if [ "$PART_NUM" = 6 ] && [ -b "$PART" ] && command -v sgdisk >/dev/null 2>&1; t
 		# gate on the PHYSICAL device size (sysfs), NOT GPT last-usable — the latter is stale on a
 		# dd'd card until sgdisk -e runs, which would wrongly report "already full" (=#201 unfixed).
 		# 32768 sectors = 16 MiB slack so an already-full card / slot flip is a clean no-op.
-		if [ "$last" = 1 ] && [ $((dsz - pend)) -gt 32768 ]; then
+		grow_ok=1
+		if [ "$last" = 1 ] && [ $((dsz - pend)) -gt 32768 ] && [ "$IS_PI3" = 1 ] && ! p5_never_seeded; then
+			grow_ok=0
+			lg "Pi 3 card that is already provisioned (or p5 unreadable): NOT rewriting the boot-critical MBR — p6 stays at $psz sectors (#209 D2; grow it at the factory first boot)"
+		fi
+		if [ "$last" = 1 ] && [ $((dsz - pend)) -gt 32768 ] && [ "$grow_ok" = 1 ]; then
 			guid=$(sgdisk -i 6 "$DISK" 2>/dev/null | sed -n 's/^Partition unique GUID: //p')
+			[ "$IS_PI3" = 1 ] && { raw_sector0 > /tmp/95-mbr.bak; lg "Pi 3 card: sector 0 backed up before the table rewrite"; }
 			if [ -n "$guid" ]; then
 				lg "growing p6 to fill card: start=$pst old_end=$pend dev_end=$dsz (sectors)"
 				# ONE atomic sgdisk write: -e relocates the backup header to the true disk end,
@@ -160,8 +202,23 @@ if [ "$PART_NUM" = 6 ] && [ -b "$PART" ] && command -v sgdisk >/dev/null 2>&1; t
 				# same GUID/type/name. Never a bare -d then -n (a crash between them orphans p6 with
 				# no rebuild path — the create branch above refuses when p1..p5 already exist).
 				if sgdisk -a 1 -e -d 6 -n "6:${pst}:0" -t 6:8300 -u "6:$guid" -c 6:data "$DISK" >/dev/null 2>&1; then
+					# test only (tests/ab-card-invariants.sh): break MBR entry 1 as a torn write would
+					[ "${BATMAN_FAULT_INJECT:-}" = mbr-after-grow ] && dd if=/dev/zero of="$DISK" bs=1 seek=446 count=16 conv=notrunc,fsync 2>/dev/null
+					if [ "$IS_PI3" = 1 ]; then
+						raw_sector0 > /tmp/95-mbr.now
+						if pi3_mbr_ok /tmp/95-mbr.now; then
+							lg "Pi 3 card: hybrid MBR intact after the table rewrite"
+						else
+							lg "!!! Pi 3 card: hybrid MBR WRONG after the table rewrite — restoring sector 0 from the backup"
+							dd if=/tmp/95-mbr.bak of="$DISK" bs=512 count=1 conv=notrunc,fsync 2>/dev/null; sync
+							raw_sector0 > /tmp/95-mbr.now
+							if pi3_mbr_ok /tmp/95-mbr.now; then lg "Pi 3 card: sector 0 restored and verified"
+							else lg "!!! Pi 3 card: sector 0 restore did NOT verify — this card may not boot; CHECK IT before deployment"; fi
+						fi
+						rm -f /tmp/95-mbr.now
+					fi
 					partx -u "$DISK" 2>/dev/null; partprobe "$DISK" 2>/dev/null; sync; sleep 1
-					nsz=$(cat /sys/class/block/mmcblk0p6/size 2>/dev/null)
+					nsz=$(cat /sys/class/block/"$DISKN"p6/size 2>/dev/null)
 					if [ -n "$nsz" ] && [ "$nsz" -gt "$psz" ]; then
 						lg "p6 partition grown ($psz -> $nsz sectors); ext4 grown in step 3b"
 					else
@@ -179,6 +236,10 @@ if [ "$PART_NUM" = 6 ] && [ -b "$PART" ] && command -v sgdisk >/dev/null 2>&1; t
 		fi
 	fi
 fi
+
+rm -f /tmp/95-mbr.bak
+# Test seam (tests/ab-card-invariants.sh): stop after the table grow, before anything is formatted.
+[ -z "${BATMAN_STORAGE_STOP_AFTER_GROW:-}" ] || { echo "p6=$(cat /sys/class/block/"$DISKN"p6/size 2>/dev/null)"; exit 0; }
 
 # Everything below this line WRITES. Assert the target is not a system area first (#209 review:
 # a five-partition layout used to send step 2/3 onto rootfs B).
