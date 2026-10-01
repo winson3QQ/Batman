@@ -68,6 +68,56 @@ lockdown can't be claimed.
 release SBOM) + signed artifacts. 3. Image + SBOM + provenance published; rollback tag kept.
 4. Changelog from the issues closed since the last tag.
 
+## Repos — what goes where
+
+Two repos, split by **layer, not by board**. Both boards (Pi 4 = `ekh-bcm2711`,
+Pi 3A+ = `ekh-bcm2710`) use both.
+
+| repo | what it is | holds |
+|---|---|---|
+| **`winson3QQ/firmware`** | our **fork of `OpenMANET/firmware`** (itself an OpenWrt fork) — the build tree | board configs (`boards/`), kernel configs (`target/linux/bcm27xx/<subtarget>/config-6.6`), image assembly (`target/linux/bcm27xx/image/`), quilt patches (`patches/<board>/`), feed pins (`feeds.conf.default`) |
+| **`winson3QQ/Batman`** | our own repo (not a fork); firmware pulls it in as a **feed** | `feed/batman-provision/` (what runs on the node), `scripts/` (host-side tooling), `docs/`, the issue tree (#75) |
+
+The link between them is one line in the firmware fork:
+
+```
+src-git batman https://github.com/winson3QQ/Batman.git^<pinned commit>
+```
+
+### Which repo for which change
+
+| the change | repo | where |
+|---|---|---|
+| a package in or out of the image; a kernel option | firmware | `boards/<board>/target_diffconfig`, or an opt-in `boards/common_extras/<name>_diffconfig` selected with `-x <name>` |
+| boot-time config: overlays, cmdline, memory split | firmware | `target/linux/bcm27xx/image/boards/<board>/distroconfig.txt` — use the RPi `[pi3]` / `[pi4]` / `[pi02]` filters to keep boards apart in a shared file |
+| how the image is assembled | firmware | `target/linux/bcm27xx/image/Makefile` (per-device `Device/…` blocks) |
+| someone else's package source | firmware | `patches/<board>/` |
+| **what runs on the node** | **Batman** | `feed/batman-provision/` |
+| **host-side tooling / validation** | **Batman** | `scripts/` |
+| **design, decisions, docs** | **Batman** | `docs/` + the issue |
+
+The build itself is driven by the fork's own script — never by hand-editing `.config`:
+
+```sh
+./scripts/openmanet_setup.sh -i -m -b <board> -x <extra> …
+make download -j$(nproc) && make -j$(nproc)
+```
+
+### Because firmware is a fork
+
+Everything we add there is a **downstream delta carried across upstream merges**.
+
+- **Prefer adding a new file** (e.g. a new `common_extras/*_diffconfig`) over editing an
+  upstream one. New files do not conflict on merge; edits to upstream files do.
+- **`boards/common/*` is applied to every board unconditionally.** Upstream sometimes puts
+  board-specific choices there — the `# WIFI` block in `common/openmanet_diffconfig`
+  force-enables PCIe/M.2 wifi cards as `=y` for boards that have no PCIe at all. **Diff
+  `boards/common/*` before every feed-pin bump or upstream rebase**: a change there reaches
+  both boards silently.
+- **The firmware fork has no PR convention** — work is pushed as a branch
+  (`build-108-batman`, `build-3aplus`, …). The issue-first / PR / CI gate described above
+  applies to the **Batman** repo.
+
 ## Local setup
 
 ```bash
