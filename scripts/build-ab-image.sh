@@ -17,12 +17,23 @@
 #             carries the exact same build (must be a build that INCLUDES the #201 fix).
 #   OUT       output .img path (a matching .img.gz is written next to it)
 #   P6_MB     size of the pre-made data partition (default 200; first boot grows it to fill)
+#   SOC       bcm2711 (Pi 4, default) | bcm2710 (Pi 3 / 3A+). bcm2710 adds the #209 v4.3 Pi 3
+#             parts on top of the SAME GPT layout: firmware partition p7 (batfw: bootcode.bin +
+#             autoboot.txt + empty config.txt) in the 1-4 MiB gap, a hybrid MBR the Pi 3 ROM can
+#             read (1=p7 2=bootA 3=bootB 4=ee), and the firmware allow-list check (D4).
+#             See scripts/lib/pi3-fwpart.sh.
 # Run as root (losetup/mount/mkfs). Designed for the WSL build host.
 set -euo pipefail
 
 SRC_IMG=${SRC_IMG:-}   # optional when BOTH ROOTFS and BOOTDIR are supplied
 OUT=${OUT:?set OUT to the output .img path}
 P6_MB=${P6_MB:-200}
+SOC=${SOC:-bcm2711}
+case "$SOC" in bcm2711|bcm2710) ;; *) echo "SOC must be bcm2711 or bcm2710 (got '$SOC')"; exit 1 ;; esac
+# shellcheck disable=SC2034  # read by the sourced lib/pi3-fwpart.sh (already root here)
+SUDO=""
+# shellcheck source=lib/pi3-fwpart.sh
+. "$(dirname "$0")/lib/pi3-fwpart.sh"
 if [ -n "$SRC_IMG" ] && [ ! -f "$SRC_IMG" ]; then echo "SRC_IMG set but not found: $SRC_IMG"; exit 1; fi
 
 # Deterministic PARTUUIDs (same scheme as build-gpt-ab-card.sh, traceable to the original card).
@@ -68,6 +79,17 @@ fi
 rm -f "$TMP/boot/cmdline.txt" "$TMP/boot/autoboot.txt"
 echo "boot files: $(ls "$TMP/boot" | tr '\n' ' ')"
 
+# The boot files must match SOC: a Pi 4 image passed with SOC=bcm2710 (or the reverse) would build
+# a card that the board cannot start, with no fallback on a Pi 3.
+if [ "$SOC" = bcm2710 ]; then
+	pi3_check_firmware "$TMP/boot" || { echo "refusing: bcm2710 firmware check failed (see above)"; exit 1; }
+	ls "$TMP/boot"/bcm2710-*.dtb >/dev/null 2>&1 || { echo "refusing: SOC=bcm2710 but no bcm2710-*.dtb in the boot files"; exit 1; }
+	# bootcode.bin moves to p7; the boot slots must not carry it (OTA never rewrites p7, D3)
+	mv "$TMP/boot/bootcode.bin" "$TMP/bootcode.bin"
+else
+	[ -f "$TMP/boot/start4.elf" ] || { echo "refusing: SOC=bcm2711 but no start4.elf in the boot files"; exit 1; }
+fi
+
 # rootfs squashfs: PREFER a pristine ROOTFS file (build_dir/.../root.squashfs) over extracting
 # from the source image's p2 — a gzip'd release .img can be a few hundred bytes short of 512
 # alignment ("trailing garbage"), which truncates the squashfs tail and makes root unmountable
@@ -111,9 +133,22 @@ sgdisk -a 2048 \
   -n "6:4016M:+${P6_MB}M" -t 6:8300 -c 6:data -u 6:$G6 \
   "$OUT"
 
+NPART=6
+if [ "$SOC" = bcm2710 ]; then
+	say "Pi 3: firmware partition p7 (batfw) + hybrid MBR 1=p7 2=bootA 3=bootB 4=ee"
+	pi3_add_p7 "$OUT"
+	gpt_start() { sgdisk -i "$1" "$OUT" | awk '/^First sector:/{print $3}'; }
+	S7=$(gpt_start 7); SA=$(gpt_start 1); SB=$(gpt_start 3)
+	pi3_hybrid_mbr "$OUT" "$S7" "$SA" "$SB" || { echo "refusing: hybrid MBR did not read back as expected"; exit 1; }
+	FW_A=$(pi3_fw_index "$OUT" "$SA"); FW_B=$(pi3_fw_index "$OUT" "$SB")
+	echo "firmware numbering (MBR entry order): bootA=$FW_A bootB=$FW_B"
+	NPART=7
+fi
+sgdisk -v "$OUT" | grep -q "No problems found" || { echo "refusing: sgdisk -v reports GPT problems"; sgdisk -v "$OUT"; exit 1; }
+
 OLO=$(losetup --show -fP "$OUT")
 echo "out loop=$OLO"
-for i in 1 2 3 4 5 6; do [ -b "${OLO}p${i}" ] || { echo "missing ${OLO}p${i}"; exit 1; }; done
+for i in $(seq 1 $NPART); do [ -b "${OLO}p${i}" ] || { echo "missing ${OLO}p${i}"; exit 1; }; done
 
 # --- 3. boot slots: mkfs.vfat + populate -------------------------------------------------------
 say "mkfs.vfat boot slots + populate"
@@ -129,11 +164,19 @@ for slot in A B; do
   echo "console=serial0 console=ttyUSB0,115200 console=tty1 rootfstype=squashfs,ext4 rootwait=20 panic=10 root=PARTUUID=$g batman_slot=$slot" > "$MB/cmdline.txt"
   sync; umount "$MB"
 done
-# autoboot.txt on bootA (first FAT partition): firmware boot_partition is the FAT-only index, so
-# bootA(gpt1)=1, bootB(gpt3)=2 (NOT 3) — bench-verified in #133.
-mount "${OLO}p1" "$MB"
-printf '%s\n' '[all]' 'tryboot_a_b=1' 'boot_partition=1' '' '[tryboot]' 'boot_partition=2' > "$MB/autoboot.txt"
-sync; umount "$MB"; rmdir "$MB"; MB=""
+if [ "$SOC" = bcm2710 ]; then
+	rmdir "$MB"; MB=""
+	# Pi 3: autoboot.txt + bootcode.bin + empty config.txt live on p7 only (#209 v4.3 D3); the
+	# numbers are the MBR entry order derived above, not hard-coded.
+	say "populate p7 (bootcode.bin, autoboot.txt [all]=$FW_A [tryboot]=$FW_B, empty config.txt)"
+	pi3_fill_p7 "${OLO}p7" "$TMP/bootcode.bin" "$FW_A" "$FW_B"
+else
+	# autoboot.txt on bootA (first FAT partition): firmware boot_partition is the FAT-only index, so
+	# bootA(gpt1)=1, bootB(gpt3)=2 (NOT 3) — bench-verified in #133.
+	mount "${OLO}p1" "$MB"
+	printf '%s\n' '[all]' 'tryboot_a_b=1' 'boot_partition=1' '' '[tryboot]' 'boot_partition=2' > "$MB/autoboot.txt"
+	sync; umount "$MB"; rmdir "$MB"; MB=""
+fi
 
 # --- 4. rootfs slots: zero then write the squashfs to each ------------------------------------
 SQUASH_MB=$(( (SQUASH_BYTES + 1048575) / 1048576 ))
@@ -167,6 +210,10 @@ sync
 say "final layout"
 sgdisk -p "$OUT"
 losetup -d "$OLO"; OLO=""
+if [ "$SOC" = bcm2710 ]; then
+	pi3_assert_mbr "$OUT" "$S7" "$SA" "$SB" || { echo "refusing: hybrid MBR changed during the build"; exit 1; }
+	echo "hybrid MBR re-verified: 1=p7@$S7 2=bootA@$SA 3=bootB@$SB 4=ee"
+fi
 
 say "gzip -> ${OUT}.gz"
 gzip -1 -kf "$OUT"

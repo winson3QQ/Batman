@@ -1,0 +1,17 @@
+# Raspberry Pi firmware blobs allowed on a bcm2710 (Pi 3 / 3A+ / Zero 2 W) A/B card (#209 v4 D4).
+# Source: raspberrypi/firmware release 1.20250915, raspi-firmware_1.20250915.orig.tar.xz
+#   (sha256 545b5f8a624b98222c7b4ef4244ac219845993aba15e49d5440b21ccd722340e = GitHub release digest).
+# Why pinned: 1.20250430 cannot boot from MBR partition 4 (raspberrypi/rpi-eeprom#705, fixed by
+# raspberrypi/firmware 0ea2874060). That release is what OpenWrt bcm27xx-gpu-fw shipped, and the
+# failure is a hang with no fallback (#209 E0f). All Pi 3 A/B hardware tests (#209 E0, E0d, E0g)
+# ran on exactly these files. A date check would also accept branch builds without the fix.
+# To bump: re-run #209 E0g on the new set, then replace every line below.
+4948532b1c5b60935388301715154ad8d3ed394727568d830ea883468a3f5ef9  bootcode.bin
+14d54df30f437e2120dd99f81ae0427ad033a7ed258e20b366a5ffcff5633e35  start.elf
+0323487b6151ceae1e82355861df71a5df61458af2347cc33386324cea298d80  start_cd.elf
+019cef4b1142223c61b5c72e62f80279e217dea015913b4f5c53fc1acf3566b5  start_x.elf
+fa4c3d5322e34e6f2e39df4fb2df58b714556a3201e1f44f9877f9e81fe3860a  start_db.elf
+bf23063135feaba121b2a8340cc1d25425d921551c8cb3446efd21f3aa50f396  fixup.dat
+788e6403b1e1c6d7e86b8a5de5748434f55d898b0c36c2bb27cc991649de0a4f  fixup_cd.dat
+5e41fb29415e9b7e9a0696e4b1838f51d65a7f2bdb29244a454b0ee8b142c225  fixup_x.dat
+45ce29d2644afd978a73f8d5f3feb99f4268dc7550f25445673348668db62edf  fixup_db.dat

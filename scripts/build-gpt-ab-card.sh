@@ -7,7 +7,15 @@ set -euo pipefail
 #   DEV             target block device (default /dev/mmcblk0)
 #   SRC             source dir holding the rootfs dump, boot tar and data to restore
 #   EXPECT_SECTORS  refuse to run unless DEV is exactly this many sectors (safety interlock)
+#   SOC             bcm2711 (Pi 4, default) | bcm2710 (Pi 3 / 3A+): same GPT layout plus the Pi 3
+#                   firmware partition p7 and hybrid MBR (#209 v4.3; scripts/lib/pi3-fwpart.sh)
 DEV=${DEV:-/dev/mmcblk0}
+SOC=${SOC:-bcm2711}
+case "$SOC" in bcm2711|bcm2710) ;; *) echo "SOC must be bcm2711 or bcm2710 (got '$SOC')"; exit 1 ;; esac
+# shellcheck disable=SC2034  # read by the sourced lib/pi3-fwpart.sh
+SUDO=sudo
+# shellcheck source=lib/pi3-fwpart.sh
+. "$(dirname "$0")/lib/pi3-fwpart.sh"
 SRC=${SRC:?set SRC to the backup dir (see docs/storage-architecture.md B1)}
 EXPECT_SECTORS=${EXPECT_SECTORS:-62333952}
 SQUASH_SRC="$SRC/p2-rootfs-squashfs.img"   # dump of the v1.1 p2; squashfs sits at offset 0
@@ -57,6 +65,18 @@ say(){ echo; echo "=== $* ==="; }
 SZ=$(sudo blockdev --getsz "$DEV")
 [[ $SZ -eq $EXPECT_SECTORS ]] || { echo "unexpected device size $SZ sectors (want $EXPECT_SECTORS) - refusing"; exit 1; }
 
+# Check the boot files against SOC BEFORE the card is wiped: a wrong-SoC or non-allow-listed
+# firmware set is refused while the old card is still intact.
+BT=$(mktemp -d)
+tar -C "$BT" -xf "$BOOTTAR"
+if [[ $SOC == bcm2710 ]]; then
+  pi3_check_firmware "$BT" || { echo "bcm2710 firmware check failed - refusing (card untouched)"; exit 1; }
+  ls "$BT"/bcm2710-*.dtb >/dev/null 2>&1 || { echo "SOC=bcm2710 but no bcm2710-*.dtb in $BOOTTAR - refusing (card untouched)"; exit 1; }
+  BOOTCODE="$BT/bootcode.bin"
+else
+  [[ -f $BT/start4.elf ]] || { echo "SOC=bcm2711 but no start4.elf in $BOOTTAR - refusing (card untouched)"; exit 1; }
+fi
+
 say "unmount everything on $DEV"
 for m in $(mount | awk -v d="$DEV" '$1 ~ "^"d {print $3}'); do sudo umount "$m" && echo "umounted $m"; done
 
@@ -73,8 +93,18 @@ sudo sgdisk -a 2048 \
   -n 5:3504M:+512M  -t 5:8300 -c 5:config -u 5:$G5 \
   -n 6:4016M:0      -t 6:8300 -c 6:data   -u 6:$G6 \
   "$DEV"
+NPART=6
+if [[ $SOC == bcm2710 ]]; then
+  say "Pi 3: firmware partition p7 (batfw) + hybrid MBR 1=p7 2=bootA 3=bootB 4=ee"
+  pi3_add_p7 "$DEV"
+  gpt_start() { sudo sgdisk -i "$1" "$DEV" | awk '/^First sector:/{print $3}'; }
+  S7=$(gpt_start 7); SA=$(gpt_start 1); SB=$(gpt_start 3)
+  pi3_hybrid_mbr "$DEV" "$S7" "$SA" "$SB" || { echo "hybrid MBR did not read back as expected - refusing"; exit 1; }
+  NPART=7
+fi
+sudo sgdisk -v "$DEV" | grep -q "No problems found" || { echo "sgdisk -v reports GPT problems - refusing"; sudo sgdisk -v "$DEV"; exit 1; }
 sudo partprobe "$DEV"; sleep 2
-for i in 1 2 3 4 5 6; do
+for i in $(seq 1 $NPART); do
   [[ -b ${DEV}${P}${i} ]] || { echo "expected partition ${DEV}${P}${i} does not exist after partprobe - refusing"; exit 1; }
 done
 
@@ -142,13 +172,25 @@ fw_boot_partition() {            # $1 = GPT index -> the firmware's boot_partiti
   done
   echo "fw_boot_partition: GPT $target is not a FAT partition" >&2; return 1
 }
-FW_A=$(fw_boot_partition 1)
-FW_B=$(fw_boot_partition 3)
-echo "firmware numbering: bootA(gpt1)=$FW_A  bootB(gpt3)=$FW_B"
-printf '%s\n' '[all]' 'tryboot_a_b=1' "boot_partition=$FW_A" '' '[tryboot]' "boot_partition=$FW_B" \
-  | sudo tee "$T/a/autoboot.txt" >/dev/null
-
-sudo sync; sudo umount "$T/a" "$T/b"; sudo rmdir "$T/a" "$T/b" "$T"
+if [[ $SOC == bcm2710 ]]; then
+  # Pi 3: the firmware numbers boot partitions by MBR ENTRY ORDER (#209 E0f/E0d), not by FAT
+  # count, and bootcode.bin + autoboot.txt (+ an empty config.txt) live on p7, never on a slot.
+  FW_A=$(pi3_fw_index "$DEV" "$SA"); FW_B=$(pi3_fw_index "$DEV" "$SB")
+  echo "firmware numbering (MBR entry order): bootA=$FW_A  bootB=$FW_B"
+  sudo rm -f "$T/a/bootcode.bin" "$T/b/bootcode.bin" "$T/a/autoboot.txt" "$T/b/autoboot.txt"
+  sudo sync; sudo umount "$T/a" "$T/b"; sudo rmdir "$T/a" "$T/b" "$T"
+  say "populate p7 (bootcode.bin, autoboot.txt [all]=$FW_A [tryboot]=$FW_B, empty config.txt)"
+  pi3_fill_p7 "${DEV}${P}7" "$BOOTCODE" "$FW_A" "$FW_B"
+  pi3_assert_mbr "$DEV" "$S7" "$SA" "$SB" || { echo "hybrid MBR changed during the build - refusing to call this card done"; exit 1; }
+else
+  FW_A=$(fw_boot_partition 1)
+  FW_B=$(fw_boot_partition 3)
+  echo "firmware numbering: bootA(gpt1)=$FW_A  bootB(gpt3)=$FW_B"
+  printf '%s\n' '[all]' 'tryboot_a_b=1' "boot_partition=$FW_A" '' '[tryboot]' "boot_partition=$FW_B" \
+    | sudo tee "$T/a/autoboot.txt" >/dev/null
+  sudo sync; sudo umount "$T/a" "$T/b"; sudo rmdir "$T/a" "$T/b" "$T"
+fi
+rm -rf "$BT"
 
 say "restore data partition"
 # mktemp, not a fixed /mnt/newdata: a run that dies mid-way leaves the fixed path mounted and

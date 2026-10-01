@@ -10,9 +10,15 @@
 #   * the data partition is identified POSITIVELY, never guessed — a guess lands on rootfs B
 #     on the five-partition Pi 3 profile and mkfs.ext4's over a slot (#209 review)
 #
+# SOC=bcm2710 runs the same suite against the Pi 3 card (#209 v4.3): firmware partition p7,
+# hybrid MBR, firmware numbering by MBR entry order, firmware allow-list. Default: bcm2711.
+#
 # Runs in CI; needs sudo, losetup, gdisk, dosfstools, squashfs-tools, parted, rsync, hexdump.
 set -euo pipefail
 
+SOC=${SOC:-bcm2711}
+case "$SOC" in bcm2711|bcm2710) ;; *) echo "SOC must be bcm2711 or bcm2710"; exit 2 ;; esac
+echo "##### ab-card invariants: SOC=$SOC #####"
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d)
 LOOP=""
@@ -39,9 +45,19 @@ mkdir -p "$WORK/src/p1-bootA" "$WORK/src/p3-batdata" "$WORK/rootfs/etc"
 echo "dummy openmanet rootfs" > "$WORK/rootfs/etc/openwrt_release"
 mksquashfs "$WORK/rootfs" "$WORK/src/p2-rootfs-squashfs.img" -comp xz -b 262144 -no-xattrs -all-root -noappend -nopad -quiet
 mkdir -p "$WORK/boot"
-for f in start4.elf fixup4.dat kernel8.img config.txt bcm2711-rpi-4-b.dtb; do echo "$f placeholder" > "$WORK/boot/$f"; done
+if [ "$SOC" = bcm2710 ]; then
+  BOOTSET="bootcode.bin start.elf start_cd.elf fixup.dat fixup_cd.dat kernel8.img config.txt bcm2710-rpi-3-b-plus.dtb"
+else
+  BOOTSET="start4.elf fixup4.dat kernel8.img config.txt bcm2711-rpi-4-b.dtb"
+fi
+for f in $BOOTSET; do echo "$f placeholder" > "$WORK/boot/$f"; done
 echo "placeholder" > "$WORK/boot/cmdline.txt"
 tar -C "$WORK/boot" -cf "$WORK/src/p1-bootA/bootA.tar" .
+if [ "$SOC" = bcm2710 ]; then
+  # placeholders are not the real blobs: allow-list exactly these, so the gate itself is exercised
+  (cd "$WORK/boot" && sha256sum bootcode.bin start*.elf fixup*.dat) > "$WORK/allowlist.sha256"
+  export FW_ALLOWLIST="$WORK/allowlist.sha256"
+fi
 echo "payload" > "$WORK/src/p3-batdata/keepme"
 
 echo "=== attach a 5 GiB loop device ==="
@@ -50,8 +66,22 @@ LOOP=$(sudo losetup -Pf --show "$WORK/card.img")
 SECTORS=$(sudo blockdev --getsz "$LOOP")
 echo "loop=$LOOP sectors=$SECTORS"
 
+if [ "$SOC" = bcm2710 ]; then
+  echo "=== negative: a firmware blob outside the allow-list must be refused BEFORE the card is touched ==="
+  sudo sgdisk -o -n 1:2048:+8M -c 1:sentinel "$LOOP" >/dev/null
+  cp -r "$WORK/src" "$WORK/srcbad"; mkdir -p "$WORK/bootbad"; tar -C "$WORK/bootbad" -xf "$WORK/src/p1-bootA/bootA.tar"
+  echo "tampered" > "$WORK/bootbad/start_cd.elf"; tar -C "$WORK/bootbad" -cf "$WORK/srcbad/p1-bootA/bootA.tar" .
+  if DEV="$LOOP" SRC="$WORK/srcbad" EXPECT_SECTORS="$SECTORS" SOC=bcm2710 bash "$REPO/scripts/build-gpt-ab-card.sh" >"$WORK/bad.log" 2>&1; then
+    bad "build accepted a start_cd.elf that is not in the allow-list"
+  else
+    grep -q "not in the bcm2710 allow-list" "$WORK/bad.log" && ok "non-allow-listed start_cd.elf refused" || bad "build failed, but not on the allow-list check: $(tail -1 "$WORK/bad.log")"
+  fi
+  [ "$(sudo sgdisk -i 1 "$LOOP" | awk -F"'" '/Partition name/{print $2}')" = sentinel ] \
+    && ok "card untouched after the refusal (sentinel partition still there)" || bad "the refused build modified the card"
+fi
+
 echo "=== run the real build script ==="
-DEV="$LOOP" SRC="$WORK/src" EXPECT_SECTORS="$SECTORS" bash "$REPO/scripts/build-gpt-ab-card.sh" >"$WORK/build.log" 2>&1 \
+DEV="$LOOP" SRC="$WORK/src" EXPECT_SECTORS="$SECTORS" SOC="$SOC" bash "$REPO/scripts/build-gpt-ab-card.sh" >"$WORK/build.log" 2>&1 \
   || { echo "build script FAILED:"; tail -30 "$WORK/build.log"; exit 1; }
 grep -q "BUILD DONE" "$WORK/build.log" || { echo "build did not complete"; tail -30 "$WORK/build.log"; exit 1; }
 echo "build ok"
@@ -60,6 +90,42 @@ sudo mkdir -p "$WORK/a" "$WORK/b"
 sudo mount -o ro "${LOOP}p1" "$WORK/a"
 sudo mount -o ro "${LOOP}p3" "$WORK/b"
 
+if [ "$SOC" = bcm2710 ]; then
+echo
+echo "=== A(pi3). firmware partition p7: bootcode.bin + autoboot.txt + EMPTY config.txt; slots carry neither ==="
+sudo mkdir -p "$WORK/f"; sudo mount -o ro "${LOOP}p7" "$WORK/f"
+[ "$(sudo sgdisk -i 7 "$LOOP" | awk -F"'" '/Partition name/{print $2}')" = batfw ] && ok "GPT p7 is named batfw" || bad "GPT p7 is not named batfw"
+for f in bootcode.bin autoboot.txt config.txt; do [ -f "$WORK/f/$f" ] && ok "p7 has $f" || bad "p7 lacks $f"; done
+[ -f "$WORK/f/config.txt" ] && [ ! -s "$WORK/f/config.txt" ] && ok "p7 config.txt is empty" || bad "p7 config.txt missing or not empty (#209 E0g: required, empty)"
+ls "$WORK/f"/start*.elf >/dev/null 2>&1 && bad "p7 must not carry start*.elf" || ok "p7 carries no start*.elf"
+for s in a b; do
+  [ -f "$WORK/$s/autoboot.txt" ] && bad "boot slot $s carries autoboot.txt (must be p7 only)" || ok "boot slot $s has no autoboot.txt"
+  [ -f "$WORK/$s/bootcode.bin" ] && bad "boot slot $s carries bootcode.bin (must be p7 only)" || ok "boot slot $s has no bootcode.bin"
+done
+cmp -s "$WORK/f/bootcode.bin" "$WORK/boot/bootcode.bin" && ok "p7 bootcode.bin is the source one" || bad "p7 bootcode.bin differs from the source"
+# FAT16 with >= 4085 clusters (a 3 MiB volume would default to FAT12 — never tested on a Pi 3)
+FT=$(sudo dd if="${LOOP}p7" bs=1 skip=54 count=8 2>/dev/null)
+case "$FT" in FAT16*) ok "p7 is FAT16" ;; *) bad "p7 filesystem type '$FT' is not FAT16" ;; esac
+
+echo
+echo "=== B(pi3). hybrid MBR 1=p7 2=bootA 3=bootB 4=ee; boot_partition = MBR entry order ==="
+mbr() { local o=$((446 + 16 * ($1 - 1))); echo "$(sudo od -An -tx1 -j $((o+4)) -N1 "$LOOP" | tr -d ' ') $(sudo od -An -tu4 -j $((o+8)) -N4 "$LOOP" | tr -d ' ') $(sudo od -An -tx1 -j $o -N1 "$LOOP" | tr -d ' ')"; }
+st() { sudo cat "/sys/class/block/$(basename "${LOOP}p$1")/start"; }
+check "MBR[1] = p7, FAT32-LBA type, active" "$(mbr 1)" "0c $(st 7) 80"
+check "MBR[2] = bootA, FAT32-LBA type"       "$(mbr 2)" "0c $(st 1) 00"
+check "MBR[3] = bootB, FAT32-LBA type"       "$(mbr 3)" "0c $(st 3) 00"
+E4=$(mbr 4); [ "${E4%% *}" = ee ] && ok "MBR[4] is the GPT protective entry (ee, last)" || bad "MBR[4] = '$E4', want ee"
+# independent derivation: the Pi 3 firmware's number for a partition is its MBR entry index
+idx() { local n; for n in 1 2 3 4; do [ "$(mbr $n | cut -d' ' -f2)" = "$(st "$1")" ] && { echo $n; return; }; done; echo NONE; }
+GOT_A=$(awk '/^\[all\]/{s=1;next}/^\[/{s=0}s&&/^boot_partition=/{sub(/.*=/,"");print;exit}' "$WORK/f/autoboot.txt")
+GOT_B=$(awk '/^\[tryboot\]/{s=1;next}/^\[/{s=0}s&&/^boot_partition=/{sub(/.*=/,"");print;exit}' "$WORK/f/autoboot.txt")
+check "[all] boot_partition == MBR index of bootA" "$GOT_A" "$(idx 1)"
+check "[tryboot] boot_partition == MBR index of bootB" "$GOT_B" "$(idx 3)"
+grep -q '^tryboot_a_b=1' "$WORK/f/autoboot.txt" && ok "tryboot_a_b=1 present" || bad "tryboot_a_b=1 missing"
+sudo sgdisk -v "$LOOP" | grep -q "No problems found" && ok "GPT still valid next to the hybrid MBR" || bad "sgdisk -v reports problems"
+grep -q 'pi3_fw_index' "$REPO/scripts/build-gpt-ab-card.sh" && ok "build script derives the Pi 3 numbering from the MBR" || bad "build script does not derive the Pi 3 numbering"
+sudo umount "$WORK/f"
+else
 echo
 echo "=== A. autoboot.txt lives on bootA only ==="
 [ -f "$WORK/a/autoboot.txt" ] && ok "bootA has autoboot.txt" || bad "bootA has no autoboot.txt"
@@ -95,6 +161,7 @@ if grep -q 'fw_boot_partition' "$REPO/scripts/build-gpt-ab-card.sh"; then
 else
   bad "build script hard-codes boot_partition — derive it from the FAT partition order (#133)"
 fi
+fi   # SOC
 
 echo
 echo "=== C. cmdline: bounded rootwait + panic (#133) ==="
