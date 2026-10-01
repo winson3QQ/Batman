@@ -273,5 +273,45 @@ magic=$(sudo od -An -tx1 -N4 "${LOOP2}p3" | tr -d ' \n')
 check "rootfs B squashfs magic intact" "$magic" "68737173"
 
 echo
+echo "== #201 first-boot grow on the real card (+ Pi 3 MBR guard, #209 v4.3 D2) =="
+# Runs the real 95-batman-storage against the card built above, stopping right after step 1b
+# (BATMAN_STORAGE_STOP_AFTER_GROW). p6 is first shrunk to 200 MiB, as the distributable .img ships it.
+sudo umount "$WORK/a" "$WORK/b" 2>/dev/null || true
+psize() { sudo cat "/sys/class/block/$(basename "${LOOP}p6")/size"; }
+P6S=$(sudo cat "/sys/class/block/$(basename "${LOOP}p6")/start")
+G6=$(sudo sgdisk -i 6 "$LOOP" | sed -n 's/^Partition unique GUID: //p')
+shrink_p6() {
+  sudo sgdisk -a 1 -d 6 -n "6:${P6S}:+200M" -t 6:8300 -u "6:$G6" -c 6:data "$LOOP" >/dev/null
+  sudo partx -u "$LOOP" 2>/dev/null; sudo partprobe "$LOOP" 2>/dev/null; sleep 1
+}
+seed_p5() {   # $1 = yes|no
+  sudo mkdir -p "$WORK/p5"; sudo mount "${LOOP}p5" "$WORK/p5"
+  if [ "$1" = yes ]; then sudo touch "$WORK/p5/.seeded"; else sudo rm -f "$WORK/p5/.seeded"; fi
+  sudo umount "$WORK/p5"
+}
+run95() { sudo env DISK="$LOOP" BATMAN_STORAGE_STOP_AFTER_GROW=1 "$@" sh "$STORAGE" 2>&1 | tail -6 > "$WORK/95.log" || true; }
+SMALL=$((200 * 2048))
+
+shrink_p6; seed_p5 no; run95
+[ "$(psize)" -gt "$SMALL" ] && ok "never-seeded card: p6 grown ($SMALL -> $(psize) sectors)" || { bad "never-seeded card: p6 not grown ($(psize))"; cat "$WORK/95.log"; }
+if [ "$SOC" = bcm2710 ]; then
+  pi3ok() { [ "$(mbr 1)" = "0c $(st 7) 80" ] && [ "$(mbr 2)" = "0c $(st 1) 00" ] && [ "$(mbr 3)" = "0c $(st 3) 00" ] && [ "$(mbr 4 | cut -d' ' -f1)" = ee ]; }
+  pi3ok && ok "hybrid MBR intact after the grow" || bad "hybrid MBR wrong after the grow: 1='$(mbr 1)' 4='$(mbr 4)'"
+  grep -q "hybrid MBR intact after the table rewrite" "$WORK/95.log" && ok "95 verified the MBR itself" || bad "95 did not report its MBR check: $(tail -2 "$WORK/95.log")"
+
+  shrink_p6; seed_p5 no; run95 BATMAN_FAULT_INJECT=mbr-after-grow
+  grep -q "sector 0 restored and verified" "$WORK/95.log" && ok "torn MBR after the grow -> restored from the backup" || { bad "fault-injected MBR not restored"; cat "$WORK/95.log"; }
+  pi3ok && ok "hybrid MBR correct after the restore" || bad "hybrid MBR still wrong after the restore: 1='$(mbr 1)'"
+
+  shrink_p6; seed_p5 yes; before=$(sudo dd if="$LOOP" bs=512 count=1 2>/dev/null | md5sum); run95
+  check "SEEDED Pi 3 card: p6 left alone (no MBR rewrite after provisioning)" "$(psize)" "$SMALL"
+  [ "$(sudo dd if="$LOOP" bs=512 count=1 2>/dev/null | md5sum)" = "$before" ] && ok "sector 0 untouched on the seeded card" || bad "sector 0 changed on a seeded Pi 3 card"
+  grep -q "NOT rewriting the boot-critical MBR" "$WORK/95.log" && ok "95 logged why it skipped the grow" || bad "no skip reason logged: $(tail -1 "$WORK/95.log")"
+else
+  shrink_p6; seed_p5 yes; run95
+  [ "$(psize)" -gt "$SMALL" ] && ok "Pi 4: seeded card still grows (behaviour unchanged)" || bad "Pi 4: seeded card no longer grows ($(psize))"
+fi
+
+echo
 echo "================ $PASS passed, $FAIL failed ================"
 [ "$FAIL" -eq 0 ]

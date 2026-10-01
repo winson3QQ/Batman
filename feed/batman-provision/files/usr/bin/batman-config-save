@@ -62,6 +62,38 @@ fi
 mkdir -p "$MNT"
 mount -t ext4 "$DEV" "$MNT" 2>/dev/null || die "mount rw failed"
 
+# #209 v4.3 D2 — Pi 3 factory gate. On a Pi 3 A/B card the first seed is the point after which
+# 95-batman-storage will never rewrite the boot-critical MBR again, so p6 must already fill the card
+# and the hybrid MBR + firmware partition p7 must be intact. An unseeded node cannot be OTA'd (#202
+# interlock), so refusing here forces "first boot at the factory, verified" before deployment.
+pi3_factory_check() {
+	D=/dev/mmcblk0
+	s7=$(cat /sys/class/block/mmcblk0p7/start 2>/dev/null) || return 0
+	sec0=/tmp/cfgsave-mbr.$$
+	dd if="$D" bs=512 count=1 iflag=direct 2>/dev/null > "$sec0" || dd if="$D" bs=512 count=1 2>/dev/null > "$sec0"
+	e() { o=$((446 + 16 * ($1 - 1))); echo "$(hexdump -s $((o + 4)) -n1 -e '1/1 "%02x"' "$sec0") $(hexdump -s $((o + 8)) -n4 -e '1/4 "%u"' "$sec0") $(hexdump -s "$o" -n1 -e '1/1 "%02x"' "$sec0")"; }
+	[ "$(e 1 | cut -d' ' -f2)" = "$s7" ] || { rm -f "$sec0"; return 0; }      # not a Pi 3 card
+	err=""
+	[ "$(e 1)" = "0c $s7 80" ] || err="$err MBR[1]='$(e 1)'"
+	[ "$(e 2 | cut -d' ' -f1,2)" = "0c $(cat /sys/class/block/mmcblk0p1/start)" ] || err="$err MBR[2]='$(e 2)'"
+	[ "$(e 3 | cut -d' ' -f1,2)" = "0c $(cat /sys/class/block/mmcblk0p3/start)" ] || err="$err MBR[3]='$(e 3)'"
+	[ "$(e 4 | cut -d' ' -f1)" = ee ] || err="$err MBR[4]='$(e 4)'"
+	rm -f "$sec0"
+	dsz=$(cat /sys/block/mmcblk0/size); pend=$(( $(cat /sys/class/block/mmcblk0p6/start) + $(cat /sys/class/block/mmcblk0p6/size) ))
+	[ $((dsz - pend)) -le 32768 ] || err="$err p6-not-grown($((dsz - pend))-sectors-free)"
+	m=/tmp/cfgsave-p7.$$; mkdir -p "$m"
+	if mount -t vfat -o ro /dev/mmcblk0p7 "$m" 2>/dev/null; then
+		for f in bootcode.bin autoboot.txt config.txt; do [ -f "$m/$f" ] || err="$err p7-lacks-$f"; done
+		umount "$m"
+	else
+		err="$err p7-unmountable"
+	fi
+	rmdir "$m"
+	[ -z "$err" ] || { umount "$MNT"; die "Pi 3 card not ready to be provisioned:$err — fix at the bench (reflash) before seeding (#209 D2)"; }
+	echo "batman-config-save: Pi 3 factory check passed (hybrid MBR, p6 grown, p7 intact)"
+}
+{ [ "$mode" = --seed ] || [ "$mode" = --on-join ]; } && [ ! -f "$MNT/.seeded" ] && [ -b /dev/mmcblk0p7 ] && pi3_factory_check
+
 STAGE="$MNT/.stage.$$"
 rm -rf "$STAGE"; mkdir -p "$STAGE/identity/dropbear"
 
