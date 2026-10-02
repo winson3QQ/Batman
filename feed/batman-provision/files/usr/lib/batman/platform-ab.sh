@@ -48,6 +48,10 @@ platform_check_image() {
 	grep -qx 'SHA256SUMS' "$list"    || { echo "A/B image has no SHA256SUMS — rebuild it with the current scripts/build-ab-payload.sh (#209)"; rm -f "$list"; return 1; }
 	rm -f "$list"
 
+	# A real OTA must always be gated by batman-autocommit: drop any ab-selftest skip-once token left
+	# on p6. Here, not only in batman-slot, because p6 may already be unmounted in the ramfs stage.
+	rm -f /opt/batdata/state/autocommit-skip-once
+
 	# Running an uncommitted one-shot TRIAL: the inactive slot is the COMMITTED one. Refuse here, in
 	# stage 1, before sysupgrade kills services (batman-slot apply refuses too, ab-autocommit v2.2 G/N6).
 	if [ "$(hexdump -v -e '1/1 "%02x"' /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null)" = 00000001 ] \

@@ -53,9 +53,10 @@ suite() {                       # $1 = name, $2 = why-it-matters, $3 = command (
   if [ $rc -eq 0 ]; then NPASS=$((NPASS+1)); ROWS+=("| $name | PASS | ${dt}s — $why |"); echo "PASS  $name (${dt}s)"
   else NFAIL=$((NFAIL+1)); ROWS+=("| $name | **FAIL** | ${dt}s — $why |"); echo "FAIL  $name (${dt}s)"; fi
 }
-# N/A is NOT a skip: the suite does not apply to this node's SoC BY DESIGN (e.g. OTS is not shipped
-# on bcm2710, #209 D6). It is listed with its reason, but it does not fail the run the way a SKIP
-# (= "should have been verified and was not") does. Only ever call it from a SoC check.
+# N/A is NOT a skip: the suite does not apply to this node's SoC BY DESIGN (e.g. a Pi 4 bench has no
+# p7 firmware partition). It is listed with its reason, but it does not fail the run the way a SKIP
+# (= "should have been verified and was not") does. Only ever call it from a SoC check, and never for
+# a REQUIRED capability on a misconfigured node (an OTS_NODE that is a Pi 3 is a FAIL, not N/A).
 NNA=0
 na() {                          # $1 = name, $2 = reason
   NNA=$((NNA+1)); ROWS+=("| $1 | N/A | $2 |"); echo "N/A   $1 — $2"
@@ -105,8 +106,11 @@ fi
 # --inspect-only run it is SKIPped (reported as loudly as a fail).
 OTS_NODE=${OTS_NODE:-$MESH_NODE}          # the node carrying the OTS payload (also set below, kept identical)
 OTS_SOC=$(soc_of "$OTS_NODE")
+# OTS is a REQUIRED capability, so an OTS_NODE that is a Pi 3 is a misconfigured run, not "does not
+# apply": FAIL it loudly (an N/A here would make every OTS regression vanish from a green run).
 if [ "$OTS_SOC" = bcm2710 ]; then
-  na fault-injection "OTS_NODE $OTS_NODE is a Pi 3 (bcm2710): the OTS flash-and-go payload is not shipped there (#209 D6)"
+  suite ots-node-209 "OTS_NODE must be the bcm2711 OTS host" "echo 'OTS_NODE $OTS_NODE is a Pi 3 (bcm2710); OTS is not shipped there (#209 D6). Set OTS_NODE to the Pi 4 OTS host.'; false"
+  suite fault-injection "OTS_NODE $OTS_NODE is bcm2710 — OTS suites not run (see ots-node-209)" ""
 elif [ "$AB_MODE" != --destructive ]; then
   suite fault-injection "flash-and-go fault-injection F1/F2/R2/R1 (#159/#216) — needs AB_MODE=--destructive" ""
 elif up "$OTS_NODE"; then
@@ -305,7 +309,14 @@ chk_trybootget_209() { fssh "$1" 12 '                          # #209 v4.3 D5: t
   # (committed, non-trial) boot the one-shot flag must read 0 — a 1 means the next reboot trials a slot.
   r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null); set -- $r
   echo "tryboot GET: ${r:-no answer}"
-  [ "${2:-}" = 0x80000000 ] || { echo "firmware does not answer the tryboot GET"; exit 1; }
+  # Both SoCs must answer: batman-slot only WARNs on a silent Pi 4 firmware (armed blind) — that is a
+  # degraded OTA, so the daily run flags it, with a SoC-specific message.
+  if [ "${2:-}" != 0x80000000 ]; then
+    case "$(cat /proc/device-tree/compatible)" in
+      *bcm2837*) echo "Pi 3 firmware does not answer the tryboot GET — batman-slot apply will REFUSE every OTA" ;;
+      *) echo "Pi 4 firmware does not answer the tryboot GET — batman-slot arms tryboot blind (warn-only)" ;;
+    esac; exit 1
+  fi
   [ "$(( ${6:-1} ))" -eq 0 ] || { echo "tryboot flag is ARMED on a normal boot — the next reboot will trial the other slot"; exit 1; }'; }
 chk_p7_209() { fssh "$1" 20 '                                  # #209 v4.3 D3/D4: Pi 3 firmware partition
   m=/mnt/dv-p7; mkdir -p $m; mount -t vfat -o ro /dev/mmcblk0p7 $m 2>/dev/null || { echo "cannot mount p7"; exit 1; }
@@ -385,7 +396,7 @@ chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash
 
 if [ "$OTS_SOC" = bcm2710 ]; then
   for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden flashgo-159; do
-    na "$s" "OTS_NODE $OTS_NODE is a Pi 3 (bcm2710): OTS is not shipped on bcm2710 (#209 D6) — point OTS_NODE at the Pi 4 OTS host"
+    suite "$s" "OTS_NODE $OTS_NODE is bcm2710 — not run (see ots-node-209)" ""
   done
 elif up "$OTS_NODE"; then
   suite confinement-98  "OTS container confinement — 9 axes ×6 (#98)"                       "chk_98 $OTS_NODE"

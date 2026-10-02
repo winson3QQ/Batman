@@ -8,16 +8,27 @@ name: ab-shared-change
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
+    # Keep in sync with docs/boards-and-builds.md §6 and CLAUDE.md (same list, same order).
     paths:
       - 'feed/batman-provision/files/usr/sbin/batman-slot'
       - 'feed/batman-provision/files/usr/lib/batman/platform-ab.sh'
       - 'feed/batman-provision/files/etc/uci-defaults/95-batman-storage'
+      - 'feed/batman-provision/files/etc/uci-defaults/96-batman-config-migrate'
       - 'feed/batman-provision/files/etc/uci-defaults/98-batman-sysupgrade'
       - 'feed/batman-provision/files/usr/bin/batman-autocommit'
+      - 'feed/batman-provision/files/etc/init.d/batman-autocommit'
       - 'feed/batman-provision/files/usr/lib/batman/meshjoin.sh'
+      - 'feed/batman-provision/files/usr/bin/joinwatch'
+      - 'feed/batman-provision/files/usr/bin/batman-config-save'
+      - 'feed/batman-provision/files/usr/share/batman/firmware-allowlist-bcm2710.sha256'
+      - 'deploy/provisioning/uci-defaults/**'
+      - 'deploy/provisioning/joinwatch'
+      - 'deploy/provisioning/batman-config-save'
       - 'feed/batman-payload-host/**'
       - 'scripts/build-ab-payload.sh'
       - 'scripts/build-gpt-ab-card.sh'
+      - 'scripts/build-ab-image.sh'
+      - 'scripts/lib/pi3-fwpart.sh'
 jobs:
   both-boards-tested:
     runs-on: ubuntu-latest

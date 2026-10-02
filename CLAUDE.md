@@ -13,7 +13,17 @@
 - release 只發實機驗過的那一批(以 sha256 為準)。
 
 ## 改共用 A/B 程式
-- `batman-slot`、`platform-ab.sh`、`95-batman-storage`、`batman-autocommit`、`meshjoin.sh`、`98-batman-sysupgrade`、`feed/batman-payload-host/`、`scripts/build-ab-payload.sh`、`scripts/build-gpt-ab-card.sh` 是**兩塊板共用**的。改了就要兩塊板都實機驗證。PR body 必須有 `### bcm2711` 和 `### bcm2710` 兩個實測段落,CI 的 `ab-shared-change` 會檢查。
+- 以下是**兩塊板共用**的 A/B 檔案,完整清單見 `docs/boards-and-builds.md` §6(和 CI 的 `paths` 是同一份):
+  - `batman-slot`
+  - `platform-ab.sh`
+  - `95` / `96` / `98` 的 uci-defaults
+  - `batman-autocommit`(含 init 腳本)
+  - `meshjoin.sh`、`joinwatch`、`batman-config-save`
+  - Pi 3 firmware 白名單
+  - `deploy/provisioning` 裡的複本
+  - `feed/batman-payload-host/`
+  - 建卡與打包腳本
+- 改到上面任何一個,兩塊板都要實機驗證。PR body 必須有 `### bcm2711` 和 `### bcm2710` 兩個實測段落;CI 的 `ab-shared-change` 只檢查有沒有交代,內容要由人讀。
 - Pi 3 沒有 EEPROM:firmware 缺檔或 `autoboot.txt` 壞掉都會卡死。p7 只能經由 `batman-slot` 寫入。
 - 新功能的回歸測試加進 `scripts/daily-validation.sh`;因 SoC 本來就不適用的 suite 用 `na`,不要用 SKIP。
 

@@ -286,6 +286,9 @@ precheck() {
 		is_trial; [ $? -eq 0 ] && die "this boot is an uncommitted TRIAL of slot $(active_slot) — refusing to write slot $(other_slot "$(active_slot)") (the committed one). Commit or revert the trial first."
 	fi
 	: > "$BUSY"; BUSY_MINE=1
+	# A real OTA must always be gated: drop any ab-selftest skip-once token a broken selftest run left
+	# on p6, or the trial this write creates would be neither committed nor reverted (#209 S5 review).
+	rm -f /opt/batdata/state/autocommit-skip-once
 	[ -d "$PAYLOAD/boot" ] || die "no $PAYLOAD/boot"
 	[ -f "$PAYLOAD/SHA256SUMS" ] || die "payload has no SHA256SUMS — refusing an unverifiable write"
 	[ -f "$PAYLOAD/boot/kernel8.img" ] || die "payload has no boot/kernel8.img"
@@ -417,8 +420,6 @@ cmd_apply() {
 	[ "$MOUNTED_HERE" = 1 ] && { umount "$BM"; rmdir "$BM" 2>/dev/null; }
 	echo "batman-slot: slot $T verified (rootfs + boot files match SHA256SUMS, read back uncached)"
 
-	# don't pollute boot-reasons with a spurious UNCLEAN on the trial's first boot
-	[ -f /tmp/shutdown.reason ] || echo "sysupgrade-trial (slot $T)" > /tmp/shutdown.reason 2>/dev/null
 	# arm one-shot tryboot and READ IT BACK: a silently unarmed flag means the "trial" reboot just
 	# boots the default slot again and the upgrade quietly never happens.
 	sync
@@ -436,6 +437,9 @@ cmd_apply() {
 		[ "$(layout)" = pi3 ] && die "cannot read the tryboot flag back (vcmailbox: '$r') — NOT armed"
 		warn "cannot read the tryboot flag back on this firmware (vcmailbox: '$r'); armed blind as before"
 	fi
+	# don't pollute boot-reasons with a spurious UNCLEAN on the trial's first boot — written only once
+	# the trial is really armed, so a failed arm does not label the next plain boot a trial (S5 review)
+	[ -f /tmp/shutdown.reason ] || echo "sysupgrade-trial (slot $T)" > /tmp/shutdown.reason 2>/dev/null
 	echo "batman-slot: slot $T armed as one-shot tryboot; reboot to trial it (autoboot.txt untouched)"
 }
 
@@ -484,6 +488,7 @@ case "${1:-}" in
 	is-trial)   is_trial; exit $? ;;
 	# read-only: the same sanity every slot op runs first (layout vs SoC, FAT count, pi3 hybrid MBR,
 	# firmware-booted partition vs cmdline) — for ab-selftest / daily-validation (#209 S5)
-	verify)     assert_fw_sane; echo "batman-slot: verify ok (layout $(layout), slot $(active_slot))" ;;
+	verify)     [ -n "$(soc_running)" ] || die "cannot tell the running SoC from the device tree — refusing to call the card sane"
+	            assert_fw_sane; echo "batman-slot: verify ok (layout $(layout), slot $(active_slot))" ;;
 	*) echo "usage: batman-slot active|target|layout|fw-part A|B|stage-root <dir>|apply <dir>|commit|rollback|is-trial|verify" >&2; exit 2 ;;
 esac

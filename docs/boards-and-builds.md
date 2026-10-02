@@ -52,7 +52,7 @@ scripts/build-board.sh ekh-bcm2711     # Pi 4
 
 | 檔案(feed `batman-provision` 除非另註) | 兩板都會執行 | 只有 pi3 | 只有 pi4 |
 |---|---|---|---|
-| `usr/sbin/batman-slot` | `detect_layout`/`layout`(版面要對上 SoC)、`verify`、`is-trial`、commit/rollback 流程、`apply`(SHA256SUMS、寫後不經快取讀回、不符就作廢成 BAD 槽、arm tryboot + GET 讀回、busy 檔、試用中拒寫)、`stage-root`、電壓不足延後、`BATMAN_FAULT_INJECT` 注入點 | `assert_mbr` / `mbr_entry`、由 MBR 推 `fw_part`、`write_autoboot_pi3`(p7 單一磁區原地覆寫)、firmware 白名單、GET 讀不到就硬失敗 | 由 GPT 內 FAT 順序推 `fw_part`、bootA 上的 `autoboot.txt`、GET 讀不到只警告 |
+| `usr/sbin/batman-slot` | `detect_layout`/`layout`(版面要對上 SoC)、`verify`(SoC 認不出來就拒絕)、`is-trial`、commit/rollback 流程、`apply`(先刪除殘留的 skip-once 標記、SHA256SUMS、寫後不經快取讀回、不符就作廢成 BAD 槽、arm tryboot + GET 讀回、busy 檔、試用中拒寫)、`stage-root`、電壓不足延後、`tryboot-get` / `corrupt-after-write` 注入點 | `assert_mbr` / `mbr_entry`、由 MBR 推 `fw_part`、`write_autoboot_pi3`(p7 單一磁區原地覆寫)、firmware 白名單、GET 讀不到就硬失敗、`mbr-mismatch` 注入點 | 由 GPT 內 FAT 順序推 `fw_part`、bootA 上的 `autoboot.txt`、GET 讀不到只警告 |
 | `usr/lib/batman/platform-ab.sh`(由 98 裝成 `/lib/upgrade/platform.sh`) | check_image:tar 清單、SHA256SUMS、試用中拒絕、`/tmp` 容量、**SoC gate(fail-closed)**;do_upgrade:SoC gate(`-F` 下也擋)、rootfs 串流寫入、apply | `RAMFS_COPY_DATA` 白名單檔(只有 pi3 會讀) | — |
 | `etc/uci-defaults/95-batman-storage` | `$DISKN`、#201 長滿卡(step 1b / 3b) | hybrid MBR 備份、驗證、寫回;**已佈建的 pi3 卡不長**(D2) | — |
 | `usr/bin/batman-autocommit` | v2.2 全部:mesh 加入閘、獨立 watchdog revert、只在真 tryboot 才 revert、p6 逾時覆寫、hold-once、skip-once、`autocommit.log` | 預設逾時 900 s(bcm2837) | 預設逾時 600 s |
@@ -84,16 +84,25 @@ scripts/build-board.sh ekh-bcm2711     # Pi 4
 
 ## 6. 改共用 A/B 程式的規則
 
-- PR 改到下列任一檔案時,CI 檢查 `ab-shared-change` 要求 PR body 同時有 `### bcm2711` 和 `### bcm2710` 兩個實測段落(寫哪台、做了什麼、原始輸出或數字;沒測就寫「未測」和原因)。檔案:
-  - `batman-slot`
-  - `platform-ab.sh`
-  - `95-batman-storage`
-  - `batman-autocommit`
-  - `meshjoin.sh`
-  - `98-batman-sysupgrade`
-  - `feed/batman-payload-host/`
-  - `scripts/build-ab-payload.sh`
-  - `scripts/build-gpt-ab-card.sh`
+- 「共用 A/B 檔案」= 一改就會影響兩塊板的 OTA、開機、slot 或 commit 閘門的檔案,清單如下。和 `.github/workflows/ab-shared-change.yml` 的 `paths`、`CLAUDE.md` 是同一份清單,改一處就要三處一起改:
+  - feed `batman-provision`:
+    - `usr/sbin/batman-slot`
+    - `usr/lib/batman/platform-ab.sh`
+    - `etc/uci-defaults/95-batman-storage`
+    - `etc/uci-defaults/96-batman-config-migrate`(設定跨 slot 靠它)
+    - `etc/uci-defaults/98-batman-sysupgrade`
+    - `usr/bin/batman-autocommit`
+    - `etc/init.d/batman-autocommit`
+    - `usr/lib/batman/meshjoin.sh`
+    - `usr/bin/joinwatch`
+    - `usr/bin/batman-config-save`(後兩者會寫入 commit 閘門要讀的 mesh 標記)
+    - `usr/share/batman/firmware-allowlist-bcm2710.sha256`
+  - `deploy/provisioning/` 裡的複本:`uci-defaults/*`、`joinwatch`、`batman-config-save`
+  - feed `batman-payload-host/`
+  - 建卡與打包:`scripts/build-ab-payload.sh`、`scripts/build-gpt-ab-card.sh`、`scripts/build-ab-image.sh`、`scripts/lib/pi3-fwpart.sh`
+- §4 裡 `halow-status`、`batman-version` 也是兩板都會執行,但只負責顯示,不影響 OTA,所以不在這份清單上。firmware fork 的改動(gpu-fw、distroconfig 等)不在這個 CI 的管轄範圍,由 firmware fork 的 config lock 和 `build-board.sh` 把關。
+- PR 改到上面任一檔案時,CI 檢查 `ab-shared-change` 要求 PR body 同時有 `### bcm2711` 和 `### bcm2710` 兩個實測段落(寫哪台、做了什麼、原始輸出或數字;沒測就寫「未測」和原因)。**這個檢查只確認「有交代」,不確認「真的測了」**:review 的人要讀內容。不要把它設成 branch protection 的必要檢查,否則沒動到這些檔案的 PR 會永遠卡在 "Expected"。
+- 故障注入點(`BATMAN_FAULT_INJECT`)只在直接呼叫 `batman-slot` 時生效:sysupgrade 的 stage2 由 procd 用自己的環境啟動,環境變數傳不進去,所以正式運作時不會誤觸發。`mbr-mismatch` 只對 pi3 有效(pi4 不讀 MBR);`tryboot-get`、`corrupt-after-write` 兩板都有效。§4 失效矩陣第 147、148、164 列要直接執行 `batman-slot apply`。
 - 部署角色的節點只用 sysupgrade 驗證。
 - 新功能的回歸測試加進 `scripts/daily-validation.sh`;因 SoC 本來就不適用的 suite 用 `na`(會列出理由,但不算失敗),不要用 SKIP 偽裝。
 

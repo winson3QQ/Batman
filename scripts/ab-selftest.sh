@@ -77,10 +77,6 @@ reboot_wait() {                      # $1 = tryboot|plain ; $2 = max seconds
   local mode=$1 max=${2:-180} i before after
   before=$(boot_id)
   [[ $before =~ ^[0-9a-f-]{36}$ ]] || { echo "NOBOOTID"; return 1; }
-  # batman-autocommit (ab-autocommit v2.2) would otherwise commit a healthy trial under us — then the
-  # "plain reboot returns to the committed slot" step sees B as committed. One-boot token on p6,
-  # consumed by whichever slot boots next (#209 S5).
-  sshn '[ -d /opt/batdata/state ] && : > /opt/batdata/state/autocommit-skip-once; sync' >/dev/null
   [ "$mode" = tryboot ] && sshn 'vcmailbox 0x00038064 4 4 1 >/dev/null' >/dev/null
   sshn '(sleep 1; reboot) >/dev/null 2>&1 &' >/dev/null
   sleep 12
@@ -99,6 +95,18 @@ reboot_wait() {                      # $1 = tryboot|plain ; $2 = max seconds
   done
   echo "TIMEOUT"; return 1
 }
+# batman-autocommit (ab-autocommit v2.2) would otherwise commit (or revert) a healthy trial under us —
+# then "plain reboot returns to the committed slot" sees B committed. Before every reboot this script
+# causes, drop a one-boot `autocommit-skip-once` token on p6; after it, prove the token was consumed.
+# A token that survives would later disarm a REAL OTA's gate (#209 S5 review): it is removed here, and
+# batman-slot apply / platform_check_image also remove any leftover before a real write.
+skip_arm()  { sshn '[ -d /opt/batdata/state ] && : > /opt/batdata/state/autocommit-skip-once && sync && echo ARMED' | grep -q ARMED \
+                || bad "could not drop the autocommit skip-once token (no /opt/batdata/state?) — autocommit may act under this test"; }
+skip_check() { if sshn '[ -e /opt/batdata/state/autocommit-skip-once ] && echo LEFT' | grep -q LEFT; then
+                 bad "skip-once token NOT consumed by the boot (autocommit too old, or p6 not mounted) — removed now"
+                 sshn 'rm -f /opt/batdata/state/autocommit-skip-once; sync' >/dev/null; fi; }
+# reboot with the token: sets RB_T (seconds or TIMEOUT/NOBOOTID), returns reboot_wait's status
+rb() { local rc; skip_arm; RB_T=$(reboot_wait "$1" "${2:-180}"); rc=$?; [ $rc -eq 0 ] && skip_check; return $rc; }
 # after a manual power pull: wait for a boot_id different from $1 (taken before the case started)
 reboot_wait_up() {                   # $1 = boot_id before ; $2 = max seconds
   local before=$1 max=${2:-240} i after
@@ -121,9 +129,12 @@ PART0=$(be32 partition)
 LAYOUT=$(sshn 'batman-slot layout' | tr -d '\r')
 if ! [[ $LAYOUT =~ ^pi[34]$ ]]; then
   # A pre-#209 batman-slot has no `layout`; it only ever ran on Pi 4 GPT cards. Accept that one case
-  # (so the fleet can be baselined before its upgrade) — anything else is refused.
+  # for --inspect-only (so the fleet can be baselined before its upgrade) — anything else is refused.
+  # No reboots there: its autocommit ignores the skip-once token, so a live run would let it commit
+  # the trial under the test AND leave the token on p6 to disarm the node's next real OTA.
   if sshn 'cat /proc/device-tree/compatible' | grep -q bcm2711; then
-    LAYOUT=pi4; echo "NOTE: pre-#209 batman-slot on a bcm2711 node — treating the card as pi4"
+    LAYOUT=pi4; echo "NOTE: pre-#209 batman-slot on a bcm2711 node — treating the card as pi4, inspect-only"
+    [ "$MODE" = --inspect-only ] || { echo "FATAL: a pre-#209 node allows only --inspect-only (see the comment above). Refusing."; exit 2; }
   else
     echo "FATAL: batman-slot layout gave '${LAYOUT:0:60}' and the node is not a bcm2711. Refusing."; exit 2
   fi
@@ -134,8 +145,11 @@ echo
 echo "--- static invariants ---"
 # pi4: autoboot.txt lives on bootA. pi3: on the firmware partition p7, which stays unmounted except
 # for short read-only looks like this one (#209 v4.3 D3).
+# The trap unmounts p7 even when the ssh session is cut: a p7 left mounted makes batman-slot refuse
+# every later commit (write_autoboot_pi3), and the next OTA trial would then be reverted.
+P7RO='m=/mnt/_p7; mkdir -p $m; trap "umount $m 2>/dev/null" EXIT HUP INT TERM; mount -t vfat -o ro /dev/mmcblk0p7 $m >/dev/null 2>&1 || { echo NOMOUNT; exit; }'
 if [ "$LAYOUT" = pi3 ]; then
-  AB=$(sshn 'mkdir -p /mnt/_p7; mount -t vfat -o ro /dev/mmcblk0p7 /mnt/_p7 >/dev/null 2>&1 && { cat /mnt/_p7/autoboot.txt; umount /mnt/_p7; }')
+  AB=$(sshn "$P7RO; cat \$m/autoboot.txt")
 else
   AB=$(boot_cat A autoboot.txt)
 fi
@@ -160,6 +174,9 @@ elif [ "$LAYOUT" = pi3 ]; then
   else
     bad "pi3 autoboot.txt [all]=$AB_ALL [tryboot]=$AB_TRY — want the two slot MBR entries 2 and 3, different"
   fi
+  FP=$(sshn "batman-slot fw-part $SLOT0" | tr -d '\r')
+  [ "$FP" = "$AB_ALL" ] && ok "pi3 [all]=$AB_ALL is slot $SLOT0's MBR entry (batman-slot fw-part)" \
+                        || bad "pi3 [all]=$AB_ALL but batman-slot fw-part $SLOT0 = '${FP:0:60}'"
 elif [ "$AB_TRY" = 3 ]; then
   bad "[tryboot] boot_partition=3 is the GPT index; the firmware counts only bootable FAT partitions, so bootB is 2 (#133)"
 else
@@ -175,12 +192,11 @@ else bad "batman-slot verify refused: ${V:0:200}"; fi
 if [ "$LAYOUT" = pi3 ]; then
   # p7 must hold an allow-listed bootcode.bin, autoboot.txt with tryboot_a_b, and a config.txt (an
   # absent one stops the boot — E0g V1-V3). Checked on the node against its own allow-list.
-  P7=$(sshn 'm=/mnt/_p7; mkdir -p $m; mount -t vfat -o ro /dev/mmcblk0p7 $m >/dev/null 2>&1 || { echo NOMOUNT; exit; }
+  P7=$(sshn "$P7RO"'
     h=$(sha256sum $m/bootcode.bin 2>/dev/null | cut -d" " -f1)
     grep -q "^$h  bootcode.bin$" /usr/share/batman/firmware-allowlist-bcm2710.sha256 2>/dev/null && echo BOOTCODE_OK || echo "BOOTCODE_BAD:$h"
     [ -f $m/config.txt ] && echo CONFIG_OK || echo CONFIG_MISSING
-    grep -q "^tryboot_a_b=1" $m/autoboot.txt 2>/dev/null && echo AUTOBOOT_OK || echo AUTOBOOT_BAD
-    umount $m')
+    grep -q "^tryboot_a_b=1" $m/autoboot.txt 2>/dev/null && echo AUTOBOOT_OK || echo AUTOBOOT_BAD')
   grep -q BOOTCODE_OK <<<"$P7" && ok "p7 bootcode.bin is on the firmware allow-list" || bad "p7 bootcode.bin not allow-listed / unreadable: ${P7:0:120}"
   grep -q CONFIG_OK <<<"$P7" && ok "p7 config.txt present" || bad "p7 config.txt missing — the Pi 3 will not boot (E0g)"
   grep -q AUTOBOOT_OK <<<"$P7" && ok "p7 autoboot.txt has tryboot_a_b=1" || bad "p7 autoboot.txt unreadable or without tryboot_a_b=1"
@@ -208,22 +224,22 @@ fi
 
 echo
 echo "--- live: tryboot switches slots, and the trial is one-shot ---"
-if T=$(reboot_wait tryboot); then
-  S=$(slot); P=$(be32 partition); TB=$(be32 tryboot)
+if rb tryboot; then
+  T=$RB_T; S=$(slot); P=$(be32 partition); TB=$(be32 tryboot)
   if ! is_slot "$S"; then bad "node came back but did not report a usable batman_slot (got '${S:0:40}')"
   elif [ "$S" != "$SLOT0" ]; then ok "tryboot switched $SLOT0 -> $S (partition=$P, tryboot=$TB, ${T}s)"
   else bad "tryboot did not switch: still slot $S, partition=$P (silent no-op — check boot_partition numbering, #133)"; fi
 else
-  bad "node did not come back after tryboot ($T)"
+  bad "node did not come back after tryboot ($RB_T)"
 fi
 
-if T=$(reboot_wait plain); then
-  S=$(slot)
+if rb plain; then
+  T=$RB_T; S=$(slot)
   if ! is_slot "$S"; then bad "node came back but did not report a usable batman_slot (got '${S:0:40}')"
   elif [ "$S" = "$SLOT0" ]; then ok "plain reboot returned to the committed slot $S (${T}s)"
   else bad "trial boot stuck: expected $SLOT0, got $S"; fi
 else
-  bad "node did not come back after a plain reboot ($T)"
+  bad "node did not come back after a plain reboot ($RB_T)"
 fi
 
 if [ "$MODE" != --destructive ]; then
@@ -251,46 +267,53 @@ require_inactive_B "destructive 1/2"
 
 echo
 echo "--- destructive 1/2: inactive slot unbootable by the firmware ---"
-# pi4: start4.elf (the EEPROM bootloader falls back — #133). pi3: the start file the firmware really
-# loads — start_cd.elf when the GPU split is 16 MB, else start.elf (#209 §4 row 143: whether bootcode
-# then falls back, hangs, or boots B on another start file is exactly what this case finds out).
+# pi4: start4.elf (the EEPROM bootloader falls back — #133). pi3: BOTH start.elf and start_cd.elf —
+# which one bootB's firmware picks depends on bootB's own config (gpu_mem), which may differ from the
+# running slot's, so both go (#209 §4 row 143: whether bootcode then falls back, hangs, or boots B on
+# yet another start file is exactly what this case finds out).
 # On a pi3 a hang needs a power pull, so the case runs only with ATTENDED=1 and a terminal.
-STARTF=start4.elf
-if [ "$LAYOUT" = pi3 ]; then
-  G=$(sshn 'vcgencmd get_mem gpu' | tr -d '\r'); STARTF=start.elf; [ "$G" = gpu=16M ] && STARTF=start_cd.elf
-  echo "pi3: GPU split '$G' -> the firmware loads $STARTF; renaming that one"
-fi
+STARTFS=start4.elf
+[ "$LAYOUT" = pi3 ] && STARTFS="start.elf start_cd.elf"
 STAGE=1
 if [ "$LAYOUT" = pi3 ] && { [ "${ATTENDED:-0}" != 1 ] || ! [ -r /dev/tty ]; }; then
   bad "pi3 fw-fallback case needs ATTENDED=1 and a terminal (a hang needs someone to pull power) — not run"; STAGE=0
 fi
-if [ "$STAGE" = 1 ]; then bootb_rw "mv /mnt/_ab/$STARTF /mnt/_ab/$STARTF.selftest" >/dev/null; fi
-if [ "$STAGE" = 1 ] && [ -z "$(bootb_rw "ls /mnt/_ab/$STARTF.selftest" | grep "$STARTF.selftest")" ]; then
+if [ "$STAGE" = 1 ]; then
+  for f in $STARTFS; do bootb_rw "mv /mnt/_ab/$f /mnt/_ab/$f.selftest" >/dev/null; done
+  L=$(bootb_rw "ls /mnt/_ab" | tr -d '\r')
+  for f in $STARTFS; do grep -qx "$f.selftest" <<<"$L" || STAGE=2; done
+fi
+if [ "$STAGE" = 2 ]; then
   bad "could not stage the fw-fallback case (bootB not writable?) — skipping it rather than reporting a pass"
+  for f in $STARTFS; do bootb_rw "[ -e /mnt/_ab/$f.selftest ] && mv /mnt/_ab/$f.selftest /mnt/_ab/$f" >/dev/null; done
 elif [ "$STAGE" = 1 ]; then
   BID0=$(boot_id)
-  if T=$(reboot_wait tryboot 240); then R=up
+  if rb tryboot 240; then R=up
   elif [ "$LAYOUT" = pi3 ]; then
     echo "  .. node did not come back in 240s — the firmware hung on bootB (expected 'ACT flashes, no fallback')."
     read -r -p "  >> Pull the node's power, plug it back in, then press Enter: " _ < /dev/tty
-    if T=$(reboot_wait_up "$BID0" 240); then R=power; else R=dead; fi
+    if RB_T=$(reboot_wait_up "$BID0" 240); then R=power; skip_check; else R=dead; fi
   else R=dead; fi
-  S=$(slot)
+  T=$RB_T; S=$(slot)
   case "$R:$S" in
     up:A)    ok "firmware fell back to slot A on its own (${T}s)" ;;
-    power:A) ok "firmware HUNG without $STARTF; after a power pull the node came back on slot A — recovery needs a site visit (record in §4 row 143)" ;;
-    *:B)     bad "slot B BOOTED without $STARTF — the firmware used another start file, so this case tested nothing; B was not committed (skip-once), a plain reboot returns to A"
-             reboot_wait plain >/dev/null || bad "plain reboot after the B boot did not come back" ;;
+    power:A) ok "firmware HUNG without $STARTFS; after a power pull the node came back on slot A — recovery needs a site visit (record in §4 row 143)" ;;
+    *:B)     if sshn 'batman-slot is-trial >/dev/null; echo rc=$?' | grep -q 'rc=0'; then
+               bad "slot B BOOTED without $STARTFS — the firmware used another start file, so this case tested nothing; B is still an uncommitted trial, a plain reboot returns to A"
+             else
+               bad "slot B BOOTED without $STARTFS AND is now committed (skip-once not honoured?) — rolling back to A"
+               sshn 'batman-slot rollback' >/dev/null || bad "rollback to A refused — fix by hand before using this card"
+             fi
+             rb plain || bad "plain reboot after the B boot did not come back ($RB_T)" ;;
     *)       bad "node did not come back ($R, slot '${S:0:40}') — the firmware-level fallback did not happen" ;;
   esac
-  bootb_rw "mv /mnt/_ab/$STARTF.selftest /mnt/_ab/$STARTF" >/dev/null
-  # Inside the staged branch on purpose. When staging failed, the file was never renamed, so this
-  # `ls` succeeds and would print a green "restored" line for a restore that never ran.
-  if [ -n "$(bootb_rw "ls /mnt/_ab/$STARTF" | grep -w "$STARTF")" ]; then
-    ok "restored bootB/$STARTF"
-  else
-    bad "bootB/$STARTF NOT restored — slot B is left unbootable by the firmware, fix it before using this card"
-  fi
+  for f in $STARTFS; do bootb_rw "mv /mnt/_ab/$f.selftest /mnt/_ab/$f" >/dev/null; done
+  # Inside the staged branch on purpose. When staging failed, the files were never renamed, so this
+  # check would print a green "restored" line for a restore that never ran.
+  L=$(bootb_rw "ls /mnt/_ab" | tr -d '\r'); RST=1
+  for f in $STARTFS; do grep -qx "$f" <<<"$L" || RST=0; done
+  [ "$RST" = 1 ] && ok "restored bootB/{$STARTFS}" \
+                 || bad "bootB start file(s) NOT restored ($STARTFS) — slot B is left unbootable by the firmware, fix it before using this card"
 fi
 
 echo
@@ -305,12 +328,12 @@ if [ "$(stat -c%s "$HEADFILE")" != 1048576 ]; then
   bad "could not save rootB's head — refusing to damage it, so this case did not run"
 else
   sshn 'dd if=/dev/zero of=/dev/mmcblk0p4 bs=1M count=1 conv=fsync 2>/dev/null; sync' >/dev/null
-  if T=$(reboot_wait tryboot); then
-    S=$(slot)
+  if rb tryboot; then
+    T=$RB_T; S=$(slot)
     [ "$S" = A ] && ok "kernel panicked and the node returned to slot A on its own (${T}s)" \
                  || bad "expected recovery to A, got '${S:0:40}'"
   else
-    bad "node never came back — this is the bare-rootwait dead hang; cmdline needs rootwait=N panic=N (#133) ($T)"
+    bad "node never came back — this is the bare-rootwait dead hang; cmdline needs rootwait=N panic=N (#133) ($RB_T)"
   fi
   sshraw 'dd of=/dev/mmcblk0p4 bs=1M conv=fsync 2>/dev/null; sync' < "$HEADFILE"
   RB=$(sshn 'dd if=/dev/mmcblk0p4 bs=4 count=1 2>/dev/null | hexdump -C' | head -1 | awk '{print $2$3$4$5}')
