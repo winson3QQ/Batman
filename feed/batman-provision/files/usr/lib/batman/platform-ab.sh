@@ -52,6 +52,13 @@ platform_check_image() {
 	# on p6. Here, not only in batman-slot, because p6 may already be unmounted in the ramfs stage.
 	rm -f /opt/batdata/state/autocommit-skip-once
 
+	# Pi 4 bootloader floor (#209 S5) — warn only, here in stage 1 where vcgencmd still exists (the
+	# ramfs stage has none). Below 2025-08-20 the EEPROM cannot fall back from a slot that fails at
+	# the firmware level; the read-back verification is then the only guard. docs/boards-and-builds.md §1
+	local bts
+	bts=$(vcgencmd bootloader_version 2>/dev/null | sed -n 's/^timestamp //p' | head -1)
+	case "$bts" in ''|*[!0-9]*) ;; *) [ "$bts" -lt 1755648000 ] && echo "WARN: Pi 4 bootloader $(vcgencmd bootloader_version 2>/dev/null | head -1) predates 2025-08-20 — no firmware-level fallback on this node; update the EEPROM" ;; esac
+
 	# Running an uncommitted one-shot TRIAL: the inactive slot is the COMMITTED one. Refuse here, in
 	# stage 1, before sysupgrade kills services (batman-slot apply refuses too, ab-autocommit v2.2 G/N6).
 	if [ "$(hexdump -v -e '1/1 "%02x"' /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null)" = 00000001 ] \

@@ -325,6 +325,22 @@ chk_p7_209() { fssh "$1" 20 '                                  # #209 v4.3 D3/D4
   [ -f $m/config.txt ] && echo "config.txt present" || { echo "config.txt MISSING — the board will not boot (E0g)"; rc=1; }
   grep -q "^tryboot_a_b=1" $m/autoboot.txt 2>/dev/null && echo "autoboot.txt tryboot_a_b=1" || { echo "autoboot.txt bad/missing"; rc=1; }
   umount $m; rmdir $m 2>/dev/null; exit $rc'; }
+chk_eeprom_209() {                                             # #209 S5: Pi 4 bootloader floor
+  # Below 2025-08-20 the EEPROM cannot fall back from a slot that fails at the firmware level (a FAT
+  # boot slot without a valid start4.elf): the trial hangs until someone pulls power (manet02,
+  # 2023-01-11, 2026-10-02). Every Pi 4 the run can see must be at or above the floor.
+  local n ts v rc=0 seen=0
+  for n in "$@"; do
+    [ "$(soc_of "$n")" = bcm2711 ] || continue
+    seen=1
+    ts=$(fssh "$n" 12 'vcgencmd bootloader_version | sed -n "s/^timestamp //p"' | tr -d '\r')
+    v=$(fssh "$n" 12 'vcgencmd bootloader_version | head -1' | tr -d '\r')
+    if ! [[ $ts =~ ^[0-9]+$ ]]; then echo "$n: bootloader version unreadable"; rc=1
+    elif [ "$ts" -lt 1755648000 ]; then echo "$n: bootloader $v < 2025-08-20 — NO firmware-level A/B fallback; update the EEPROM"; rc=1
+    else echo "$n: bootloader $v ok"; fi
+  done
+  [ "$seen" = 1 ] || { echo "no reachable Pi 4 among: $*"; return 1; }
+  return $rc; }
 chk_autocommit() { fssh "$1" 12 '                              # ab-autocommit.md / #211
   # A completed reflash must not leave the node in an uncommitted trial (a reboot would then revert to
   # the old slot). batman-autocommit health-gates + commits; assert the node ended committed.
@@ -434,6 +450,13 @@ if up "$BENCH_NODE"; then
   suite slot-verify-209 "card sanity every slot op relies on: layout=SoC, FAT count, Pi 3 hybrid MBR, DT vs cmdline (#209 S5)" "chk_slotverify_209 $BENCH_NODE"
   suite memcg-209 "memory cgroup controller enabled — docker limits + autocommit canary (#209 D6; bcm2710 DTB disables it)" "chk_memcg_209 $BENCH_NODE"
   suite trybootget-209 "firmware answers the tryboot GET and the one-shot flag is clear on a normal boot (#209 D5)" "chk_trybootget_209 $BENCH_NODE"
+  # every reachable Pi 4 in the run (bench, mesh, OTS) must meet the bootloader floor
+  P4S=""; for n in "$BENCH_NODE" "$MESH_NODE" "$OTS_NODE"; do [ "$(soc_of "$n")" = bcm2711 ] && case " $P4S " in *" $n "*) ;; *) P4S="$P4S $n" ;; esac; done
+  if [ -n "$P4S" ]; then
+    suite eeprom-209 "Pi 4 bootloader >= 2025-08-20 — below it a firmware-level slot failure hangs instead of falling back (#209 S5)" "chk_eeprom_209 $P4S"
+  else
+    na eeprom-209 "no Pi 4 in this run (bench/mesh/OTS are all Pi 3, which has no EEPROM; its fallback is covered by p7-209 + the read-back)"
+  fi
   if [ "$(soc_of "$BENCH_NODE")" = bcm2711 ]; then
     na p7-209 "BENCH_NODE is a Pi 4: it boots from GPT via the EEPROM, there is no p7 firmware partition"
   else
@@ -442,7 +465,7 @@ if up "$BENCH_NODE"; then
 else
   suite autocommit-211 "A/B commit state (#211) — BENCH_NODE $BENCH_NODE did not answer" ""
   suite p6grow-201 "p6 grow-to-fill (#201) — BENCH_NODE $BENCH_NODE did not answer" ""
-  for s in socgate-209 slot-verify-209 memcg-209 trybootget-209 p7-209; do suite "$s" "BENCH_NODE $BENCH_NODE did not answer" ""; done
+  for s in socgate-209 slot-verify-209 memcg-209 trybootget-209 p7-209 eeprom-209; do suite "$s" "BENCH_NODE $BENCH_NODE did not answer" ""; done
 fi
 
 # ---- tier B: destructive, induces the real failure — DNODE (eth) only, --destructive ----
