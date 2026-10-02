@@ -121,6 +121,7 @@ JOIN      $join
 DIAGNOSIS ${jdiag:-none recorded (never failed to join)}
 POWER     battery=$bat throttled=$thr temp=${temp}C   $cycdesc
 TENANTS   ${fts:-none}
+LAST OTA  $(l=$(tail -1 /opt/batdata/log/autocommit.log 2>/dev/null | cut -d' ' -f2-); echo "${l:-none recorded}")
 CHECKS
 $(printf '%s' "$CHECKS" | awk -F'|' 'NF==3{printf "    [%s] %s: %s\n",$1,$2,$3}')
 LAST 3 BOOTS

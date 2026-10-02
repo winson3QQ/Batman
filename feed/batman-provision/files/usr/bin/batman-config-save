@@ -163,6 +163,11 @@ rm -rf "$STAGE"
 sync
 umount "$MNT" 2>/dev/null
 echo "batman-config-save: saved ($mode) schema=$SCHEMA -> $DEV"
+# A seeded node is provisioned to live in a mesh: mirror that onto p6 so batman-autocommit's OTA gate
+# can require a mesh join without mounting p5 itself (#209 S4-5, ab-autocommit.md v2.2 N5).
+if { [ "$mode" = --seed ] || [ "$mode" = --on-join ]; } && grep -q " /opt/batdata " /proc/mounts 2>/dev/null; then
+	[ -f /opt/batdata/state/mesh-expected ] || { mkdir -p /opt/batdata/state && echo "seeded $mode" > /opt/batdata/state/mesh-expected && sync; }
+fi
 # --on-join persists the RADIO delta so a reflash survives, but signals joinwatch NOT to latch
 # (exit 4) while the node is still open (no password) — so a #137 lockdown performed later THIS boot
 # is re-persisted on the next tick instead of being silently lost on the next reflash (finding #2).

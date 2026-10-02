@@ -277,6 +277,15 @@ chk_autocommit() { fssh "$1" 12 '                              # ab-autocommit.m
     0) echo "UNCOMMITTED TRIAL — autocommit did not commit (reboot would revert)"; exit 1 ;;
     *) echo "cannot determine slot commit state (rc=$rc)"; exit 1 ;;
   esac'; }
+chk_meshjoin_209() { fssh "$1" 20 '                    # ab-autocommit v2.2 N10 / #209 S4-5
+  # The OTA commit gate requires meshjoin_reachable on any node expected in a mesh. If a future image
+  # renames wlh0/br-ahwlan/dropbear this would fail on EVERY trial and silently turn all OTAs into
+  # reverts — so assert it on a committed, joined node first.
+  [ -f /usr/lib/batman/meshjoin.sh ] || { echo "no /usr/lib/batman/meshjoin.sh (pre-v2.2 image)"; exit 1; }
+  . /usr/lib/batman/meshjoin.sh; meshjoin_sample
+  echo "plink=$MJ_PLINK batman(wlh0)=$MJ_BAT sta=$MJ_STA expected=$( [ -f /opt/batdata/state/mesh-joined ] || [ -f /opt/batdata/state/mesh-expected ] && echo yes || echo no)"
+  meshjoin_reachable || { echo "meshjoin_reachable FAILS on a joined node — every OTA would revert"; exit 1; }
+  echo "reachable"'; }
 chk_130() { fssh "$1" 20 '
   st=$(/usr/bin/halow-status json 2>/dev/null | sed -n "s/.*\"join\":{\"state\":\"\([A-Za-z_]*\)\".*/\1/p" | head -1)
   p=$(batctl n 2>/dev/null | grep -c wlh0)
@@ -341,6 +350,7 @@ else
 fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"
+  suite meshjoin-209 "the OTA commit gate's mesh test passes on a joined node (ab-autocommit v2.2 N10)" "chk_meshjoin_209 $MESH_NODE"
   suite mesh-console-14  "/cgi-bin/mesh aggregate agrees with batctl (#14)"                   "chk_14 $MESH_NODE"
   suite p5-seed-202      "a JOINED node auto-seeds p5 (radio delta), decoupled from lockdown (#202)" "chk_202 $MESH_NODE"
   suite mesh-tput        "sustained mesh throughput to peer (median of N batctl tp; baseline soak median ~9.4 Mbps)" "chk_tput $MESH_NODE"
@@ -350,7 +360,7 @@ if up "$MESH_NODE"; then
     suite mesh-tput-iperf "IPERF_PEER '$IPERF_PEER' unusable (unset / == MESH_NODE / down) — set IPERF_PEER to the other mesh node" ""
   fi
 else
-  for s in field-status-130 mesh-console-14 p5-seed-202 mesh-tput mesh-tput-iperf; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
+  for s in field-status-130 meshjoin-209 mesh-console-14 p5-seed-202 mesh-tput mesh-tput-iperf; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
 fi
 
 # A/B commit hygiene (#211): a completed reflash must not leave the node an uncommitted trial (a reboot

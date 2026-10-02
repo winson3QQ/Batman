@@ -1,61 +1,160 @@
 #!/bin/sh
-# batman-autocommit (#211) — after a `sysupgrade -n` TRIAL boot, commit the new slot ONCE it proves the
-# new rootfs booted a functional userland; otherwise leave it a trial so a reboot reverts (rollback
-# safety). See docs/design/ab-autocommit.md. Started late by /etc/init.d/batman-autocommit (one-shot).
+# batman-autocommit (#211, v2.2 #209 S4-5) — after a `sysupgrade -n` TRIAL boot, commit the new slot ONCE
+# it proves the new rootfs booted a functional, REACHABLE node; otherwise revert it by rebooting into the
+# committed slot. See docs/design/ab-autocommit.md (v1 + v2.2). Started late by
+# /etc/init.d/batman-autocommit (one-shot).
 #
 # Health gate (review B1/M1/M2): the signal is the CURRENT rootfs's own core services, NOT raw docker
 # container liveness (unless-stopped containers on the shared p6 docker-root come up under ANY rootfs,
-# so they don't prove the new rootfs is good). We tolerate not-joined / not-keyed (peer/key state, not
-# an image defect) so a lone or not-yet-keyed node still commits.
+# so they don't prove the new rootfs is good).
 #
 # #216 layered health model: this gate = OS/infra health only. It ADDS a docker-ENGINE liveness +
 # canary-run check (can this rootfs actually run containers — overlay/memcg/runc), and it treats a
 # tenant that is still doing (or gave up) a first-load THIS boot as NON-GATING (a per-boot latch set
 # by batman-ots-firstload). App/payload health is an app-layer concern (guardian reconcile / in-field
 # swap), NOT an OS-commit criterion. Steady-state tenants (no latch) still gate on drift as before.
+#
+# v2.2 (#209 S4-5):
+#   * a node EXPECTED in a mesh (p6 marker mesh-joined / mesh-expected, else p5 .seeded, fail-closed)
+#     must also be joined + reachable (shared /usr/lib/batman/meshjoin.sh) before it commits;
+#   * an unhealthy REAL tryboot (is-trial=0 AND DT tryboot=1) is reverted by a detached watchdog at an
+#     uptime deadline, so a wedged check cannot stop the revert, and a #133 stale-fallback boot
+#     (tryboot=0) is never rebooted (that would loop);
+#   * commit and revert race for ONE atomic claim, so our reboot never tears a Pi 3 p7 sector write.
+#
+# Test seams (bench only): AUTOCOMMIT_DRYRUN=1 evaluates and prints the decision, never commits or
+# reboots; AUTOCOMMIT_FORCE_TRIAL=1 (dry-run only) treats a committed slot as a real tryboot;
+# AUTOCOMMIT_TIMEOUT overrides the deadline (dry-run only — never in production).
 
-TIMEOUT="${AUTOCOMMIT_TIMEOUT:-600}"   # wait this long for health, then give up (leave trial -> revert)
 POLL=10                                # seconds between polls
-NEED=3                                 # consecutive healthy polls before commit (dwell; review M2)
+NEED=3                                 # consecutive healthy SERVICE polls before commit (dwell; review M2)
+JOIN_NEED=3                            # joined samples needed in this trial (v2.2 N8) ...
+JOIN_FRESH=60                          # ... and joined within the last JOIN_FRESH seconds
+MIN_WINDOW=300                         # never give a trial less than this from autocommit start (N2)
+DEFER_MAX=600                          # bound on postponing the revert for a busy apply / first-load
+ST=/opt/batdata/state
+ACLOG=/opt/batdata/log/autocommit.log
+[ "${AUTOCOMMIT_DRYRUN:-0}" = 1 ] && ACLOG=/tmp/autocommit-dryrun.log   # a dry run must not show up as "LAST OTA"
+DECIDED=/tmp/autocommit.decided        # the one atomic claim (mkdir) both main and watchdog must win
+COMMITTED=/tmp/autocommit.committed
+DRY=${AUTOCOMMIT_DRYRUN:-0}
+[ "$DRY" = 1 ] && DEFER_MAX=${AUTOCOMMIT_DEFER_MAX:-$DEFER_MAX}   # test seam: shorten the bounded deferral
 
-log(){ logger -t batman-autocommit "$*" 2>/dev/null; echo "batman-autocommit: $*" > /dev/kmsg 2>/dev/null; }
+log(){ logger -t batman-autocommit "$*" 2>/dev/null; echo "batman-autocommit: $*" > /dev/kmsg 2>/dev/null; [ "$DRY" = 1 ] && echo "batman-autocommit: $*"; }
+up(){ cut -d. -f1 /proc/uptime; }
+p6(){ grep -q " /opt/batdata " /proc/mounts 2>/dev/null; }
+aclog(){ p6 && { mkdir -p "${ACLOG%/*}"; echo "$(date +%Y%m%d-%H%M%S) $*" >> "$ACLOG"; sync; }; }
+version(){ sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build 2>/dev/null; }
+dt_tryboot(){ [ "$(hexdump -v -e '1/1 "%02x"' /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null)" = 00000001 ]; }
+real_tryboot(){  # this boot is a one-shot tryboot of an uncommitted slot
+	[ "$DRY" = 1 ] && [ "${AUTOCOMMIT_FORCE_TRIAL:-0}" = 1 ] && return 0
+	batman-slot is-trial >/dev/null 2>&1; [ $? -eq 0 ] && dt_tryboot
+}
+
+# shellcheck source=/dev/null
+. /usr/lib/batman/meshjoin.sh
+
+# The revert watchdog (B/N1/N4): runs as its own process (`batman-autocommit watchdog`, started with
+# setsid so it is outside procd's instance), one per boot, and fires at the deadline whatever the poll
+# loop is doing. It must win the claim; if main won it, it waits for main's commit to finish.
+# Inputs via env: AC_DEADLINE AC_START AC_SLOT.
+revert_watchdog(){
+	DEADLINE=$AC_DEADLINE; START=$AC_START; SLOT=$AC_SLOT
+	mkdir /tmp/autocommit.wd 2>/dev/null || exit 0
+	while [ "$(up)" -lt "$DEADLINE" ]; do [ -f "$COMMITTED" ] && exit 0; sleep 5; done
+	if ! mkdir "$DECIDED" 2>/dev/null; then
+		n=0; while [ $n -lt 120 ]; do [ -f "$COMMITTED" ] && exit 0; sleep 5; n=$((n + 5)); done
+		log "commit claimed but not finished after 120s — re-checking before revert"
+	fi
+	# bounded deferral: an apply/stage-root writing a slot, or a first-load still loading images
+	# (the p6 docker store is shared with the committed slot)
+	d=0
+	while [ $d -lt $DEFER_MAX ]; do
+		if [ -e /tmp/batman-slot.busy ] || { ls /tmp/batman-firstload-*.latch >/dev/null 2>&1 && pgrep -f "docker load" >/dev/null 2>&1; }; then
+			[ $d -eq 0 ] && log "revert deferred: slot write or first-load in progress (max ${DEFER_MAX}s)"
+			sleep 10; d=$((d + 10))
+		else break; fi
+	done
+	# re-check right before acting (N1): never reboot a slot that got committed, or a non-tryboot boot
+	real_tryboot || { log "no longer a real tryboot at the deadline — not reverting"; exit 0; }
+	why=$(cat /tmp/autocommit.why 2>/dev/null)
+	log "TRIAL-REVERTED slot $SLOT after $(( $(up) - START ))s: ${why:-unhealthy}"
+	aclog "TRIAL-REVERTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version) waited=$(( $(up) - START ))s reason=${why:-unhealthy}"
+	if [ "$DRY" = 1 ]; then echo "DRYRUN decision: REVERT (reboot to the committed slot) — reason: ${why:-unhealthy}"; exit 0; fi
+	echo "autocommit: trial slot $SLOT reverted (${why:-unhealthy})" > /tmp/shutdown.reason 2>/dev/null
+	sync; reboot
+}
+[ "${1:-}" = watchdog ] && { revert_watchdog; exit 0; }
 
 [ "${1:-}" = run ] || { echo "usage: batman-autocommit run" >&2; exit 2; }
 
 # 1) trial? batman-slot owns the authoritative autoboot parse (is-trial: 0=trial, 1=committed, 2=unknown)
-batman-slot is-trial
-case $? in
-	0) : ;;                                                   # trial -> proceed
+if [ "$DRY" = 1 ] && [ "${AUTOCOMMIT_FORCE_TRIAL:-0}" = 1 ]; then rc=0; else batman-slot is-trial; rc=$?; fi
+case $rc in
+	0) : ;;
 	1) log "running slot is already the committed default — nothing to do"; exit 0 ;;
-	*) log "cannot determine slot commit state — leaving as-is"; exit 0 ;;
+	*) log "cannot determine slot commit state — leaving as-is (no commit, no revert)"; exit 0 ;;
 esac
 SLOT=$(batman-slot active)
-log "slot $SLOT is an uncommitted trial — waiting for health before commit (timeout ${TIMEOUT}s)"
+# single instance per boot (N4): a `restart` must not start a second loop or a second watchdog
+mkdir /tmp/autocommit.run 2>/dev/null || { [ "$DRY" = 1 ] || { log "already running this boot — exiting"; exit 0; }; }
 
-# Authoritative "is this service actually up" via procd (review m1): pgrep -f substring-matches a
-# stray process (e.g. `logread|grep openmanetd`) and could false-positive this COMMIT SAFETY gate when
-# the real daemon is dead. procd's own `running` can't be fooled and reliably matches the wrapped
-# daemons (mesh11sd runs as `sh /usr/sbin/mesh11sd`, wpad as a ujail'd hostapd — pgrep -x/pidof MISS
-# all three). Fall back to pgrep -f only when there is no init script.
+# 2) can we revert? Only a REAL tryboot (review M1): a stale-fallback boot lands on the same slot again.
+REVERT=0
+if real_tryboot; then REVERT=1; else log "slot $SLOT is uncommitted but this is NOT a tryboot boot (stale fallback?) — will commit when healthy, will NOT reboot"; fi
+# hold-once (N3): consumed at the START of every real tryboot, whatever the outcome
+if [ "$REVERT" = 1 ] && [ -f "$ST/autocommit-hold-once" ]; then
+	[ "$DRY" = 1 ] || rm -f "$ST/autocommit-hold-once"
+	log "HOLD-CONSUMED: autocommit-hold-once present — this trial will not be reverted"; aclog "HOLD-CONSUMED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version)"
+	REVERT=0
+fi
+[ -f /tmp/batman-autocommit.hold ] && { log "/tmp/batman-autocommit.hold present — no revert this boot"; REVERT=0; }
+
+# 3) deadline (N2): uptime-based; operator override on p6 (survives OTA) else the image default per SoC
+case "$(cat /proc/device-tree/compatible 2>/dev/null)" in *bcm2837*) DEF=900 ;; *) DEF=600 ;; esac
+T=$(cat "$ST/autocommit.timeout" 2>/dev/null | tr -dc '0-9'); [ -n "$T" ] || T=$DEF
+[ "$T" -lt 300 ] && T=300; [ "$T" -gt 3600 ] && T=3600
+if [ "$DRY" = 1 ] && [ -n "${AUTOCOMMIT_TIMEOUT:-}" ]; then T=$AUTOCOMMIT_TIMEOUT; MIN_WINDOW=0; fi
+START=$(up); DEADLINE=$T; [ "$DEADLINE" -lt $((START + MIN_WINDOW)) ] && DEADLINE=$((START + MIN_WINDOW))
+log "slot $SLOT is an uncommitted trial — gate until uptime ${DEADLINE}s (now ${START}s), revert=$REVERT"
+
+# 4) expected in a mesh? (N5: fail-closed) — p6 markers first; else p5 .seeded read-only
+expected_in_mesh(){
+	[ -f "$ST/mesh-joined" ] || [ -f "$ST/mesh-expected" ] && return 0
+	p5=/dev/mmcblk0p5; [ -b "$p5" ] || return 1
+	grep -q "^$p5 " /proc/mounts && return 0                     # being written by a save right now
+	[ "$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$p5" 2>/dev/null)" = 53ef ] || return 0   # LUKS / not plain ext4
+	m=/tmp/autocommit.p5.$$; mkdir -p "$m"
+	mount -t ext4 -o ro "$p5" "$m" 2>/dev/null || { rmdir "$m"; return 0; }   # unreadable -> expected
+	[ -f "$m/.seeded" ]; r=$?; umount "$m"; rmdir "$m"; return $r
+}
+NEED_MESH=0; expected_in_mesh && NEED_MESH=1
+log "mesh join required: $NEED_MESH"
+
+# 5) start the revert watchdog (see revert_watchdog above)
+if [ "$REVERT" = 1 ]; then
+	export AC_DEADLINE=$DEADLINE AC_START=$START AC_SLOT=$SLOT
+	if [ "$DRY" = 1 ]; then
+		( revert_watchdog ) & WDPID=$!
+	else
+		setsid "$0" watchdog </dev/null >/dev/null 2>&1 &
+	fi
+fi
+
+# 6) health
 running(){
 	if [ -x "/etc/init.d/$1" ]; then /etc/init.d/"$1" running >/dev/null 2>&1; return $?; fi
 	pgrep -f "$1" >/dev/null 2>&1 || pidof "$1" >/dev/null 2>&1
 }
-
-# echo a reason + return 1 when unhealthy; silent + return 0 when healthy.
+CANARY_OK=0
+# echo a reason + return 1 when unhealthy; silent + return 0 when healthy (services/infra only)
 health_ok(){
-	# core services = the new rootfs booted a functional userland (review B1). Same set halow-status
-	# treats as core (mesh11sd/openmanetd/wpad). NOT peer/key dependent.
+	# p6 must be mounted (v2.2 M3b): otherwise the docker/payload checks below silently skip themselves
+	p6 || { echo "data partition /opt/batdata not mounted"; return 1; }
 	for s in mesh11sd openmanetd wpad; do running "$s" || { echo "svc $s down"; return 1; }; done
-	# undervoltage NOW (bit0 of vcgencmd get_throttled) — not a stable state to commit on
 	thr=$(vcgencmd get_throttled 2>/dev/null | sed -n 's/.*=0x//p')
 	[ $(( 0x${thr:-0} & 1 )) -eq 0 ] || { echo "undervoltage now"; return 1; }
-	# trial rootfs stamp readable (defense-in-depth: we are on a sane rootfs)
 	[ -s /etc/batman-build ] || { echo "no /etc/batman-build"; return 1; }
-	# #216 R1: OS-level "can this rootfs actually RUN our containers" — docker ENGINE liveness (+ the
-	# kernel features a diffconfig can silently drop + a canary run), NOT app health. A daemon that
-	# answers `docker info` but cannot `docker run` (dropped overlay/memcg, wrong-arch runc) would
-	# otherwise commit a slot that strands the payload with no rollback. This is a ROOTFS-health signal.
 	have_docker_tenant=0
 	for d in /opt/batdata/apps/*/; do [ -d "$d" ] && ls "$d"/*.manifest >/dev/null 2>&1 && { have_docker_tenant=1; break; }; done
 	if [ "$have_docker_tenant" = 1 ] && command -v docker >/dev/null 2>&1; then
@@ -65,57 +164,56 @@ health_ok(){
 		if [ -e /sys/fs/cgroup/cgroup.controllers ]; then
 			grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null || { echo "no memcg controller"; return 1; }
 		fi
-		# canary run (authoritative): exercises create+runtime+cgroup+storage-mount in ~1-3s. Uses the
-		# baked image if available; degrades to the feature probes above if the blob is absent so a
-		# missing canary can never itself cause a false revert.
-		CANARY=/opt/batdata/canary.tar.gz; [ -f "$CANARY" ] || CANARY=/usr/share/batman/canary.tar.gz
-		if docker image inspect batman-canary >/dev/null 2>&1 || [ -f "$CANARY" ]; then
-			docker image inspect batman-canary >/dev/null 2>&1 || docker load -i "$CANARY" >/dev/null 2>&1
-			if docker image inspect batman-canary >/dev/null 2>&1; then
-				docker run --rm --network none batman-canary true >/dev/null 2>&1 || { echo "docker canary run failed"; return 1; }
+		# canary run (authoritative), once per boot (v2.2 S3: heavy on a 512 MB Pi 3A+)
+		if [ "$CANARY_OK" = 0 ]; then
+			CANARY=/opt/batdata/canary.tar.gz; [ -f "$CANARY" ] || CANARY=/usr/share/batman/canary.tar.gz
+			if docker image inspect batman-canary >/dev/null 2>&1 || [ -f "$CANARY" ]; then
+				docker image inspect batman-canary >/dev/null 2>&1 || docker load -i "$CANARY" >/dev/null 2>&1
+				if docker image inspect batman-canary >/dev/null 2>&1; then
+					docker run --rm --network none batman-canary true >/dev/null 2>&1 || { echo "docker canary run failed"; return 1; }
+				fi
 			fi
+			CANARY_OK=1
 		fi
 	fi
-	# payload (if provisioned): the guardian on THIS boot reached drift=OK — i.e. it fully brought up +
-	# verified the stack on the new rootfs. /tmp is tmpfs (wiped each boot) so the file's presence means
-	# "this boot" (review B1/M2). Not raw container liveness.
 	for d in /opt/batdata/apps/*/; do
 		[ -d "$d" ] || continue
 		ls "$d"/*.manifest >/dev/null 2>&1 || continue
 		t=${d%/}; t=${t##*/}
-		# #216 R2: a tenant still doing (or that gave up) a first-load THIS boot is NON-GATING — app
-		# bootstrap is an app-layer concern (guardian reconcile / in-field swap), not an OS-commit
-		# criterion. batman-ots-firstload sets this per-boot latch synchronously and never clears it
-		# for the boot, so a slow cold-start after load-done cannot re-arm drift-gating and false-revert
-		# a good slot. Steady-state (no latch — images already loaded) still gates on drift below, so a
-		# new rootfs that breaks a previously-working app still reverts (#211 preserved).
-		[ -f "/tmp/batman-firstload-$t.latch" ] && { echo "payload $t: first-load in progress (non-gating)" >/dev/null; continue; }
+		[ -f "/tmp/batman-firstload-$t.latch" ] && continue
 		df=/tmp/batman-payload-$t-drift.json
 		[ -f "$df" ] || { echo "payload $t: no this-boot drift verdict yet"; return 1; }
-		# freshness (review m2): the guardian reconciles every ~30s; require a verdict written in the
-		# last minute so a stale early-boot OK can't outlive a container that died since.
 		[ -n "$(find "$df" -mmin -1 2>/dev/null)" ] || { echo "payload $t: drift verdict stale (>1min)"; return 1; }
 		grep -q '"status":"OK"' "$df" || { echo "payload $t: drift not OK"; return 1; }
 	done
 	return 0
 }
 
-t=0; ok=0; why=""
-while [ "$t" -lt "$TIMEOUT" ]; do
-	if why=$(health_ok); then
-		ok=$((ok+1))
-		if [ "$ok" -ge "$NEED" ]; then
-			if batman-slot commit; then
-				log "slot $SLOT committed (healthy ${NEED}x${POLL}s)"; exit 0
-			else
-				rc=$?; log "slot $SLOT healthy but 'batman-slot commit' FAILED rc=$rc — left as trial"; exit 1
-			fi
-		fi
-	else
-		[ "$ok" -gt 0 ] && log "health regressed ($why) — resetting dwell"
-		ok=0
+# 7) poll: services dwell NEED polls; mesh join latched (>= JOIN_NEED samples, last within JOIN_FRESH)
+ok=0; jn=0; jlast=-100000; why=""
+while [ "$(up)" -lt "$DEADLINE" ]; do
+	if [ "$NEED_MESH" = 1 ]; then
+		meshjoin_sample
+		if meshjoin_reachable; then jn=$((jn + 1)); jlast=$(up); fi
 	fi
-	sleep "$POLL"; t=$((t+POLL))
+	if why=$(health_ok); then ok=$((ok + 1)); else [ "$ok" -gt 0 ] && log "health regressed ($why) — resetting dwell"; ok=0; fi
+	if [ "$NEED_MESH" = 1 ]; then
+		if [ "$jn" -lt "$JOIN_NEED" ]; then why="${why:+$why; }mesh not joined/reachable ($jn/$JOIN_NEED samples: plink=${MJ_PLINK:-0} batman(wlh0)=${MJ_BAT:-0})"
+		elif [ $(( $(up) - jlast )) -gt "$JOIN_FRESH" ]; then why="${why:+$why; }mesh lost (last joined $(( $(up) - jlast ))s ago)"; fi
+	fi
+	echo "$why" > /tmp/autocommit.why
+	if [ "$ok" -ge "$NEED" ] && [ -z "$why" ]; then
+		if [ "$DRY" = 1 ]; then echo "DRYRUN decision: COMMIT slot $SLOT (services ${NEED}x${POLL}s, mesh samples $jn)"; [ -n "${WDPID:-}" ] && kill "$WDPID" 2>/dev/null; exit 0; fi
+		# claim (N1); if the watchdog already won it, it is reverting — stand down
+		mkdir "$DECIDED" 2>/dev/null || { log "revert already in progress — not committing"; exit 0; }
+		if batman-slot commit; then
+			: > "$COMMITTED"; log "slot $SLOT committed (services ${NEED}x${POLL}s, mesh samples $jn)"; aclog "COMMITTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version)"; exit 0
+		else
+			rc=$?; rmdir "$DECIDED" 2>/dev/null; log "slot $SLOT healthy but 'batman-slot commit' failed rc=$rc — retrying (v2.2 F)"; ok=0
+		fi
+	fi
+	sleep "$POLL"
 done
-log "slot $SLOT NOT healthy after ${TIMEOUT}s — left as trial (reverts on reboot). last: ${why:-?}"
+log "slot $SLOT NOT committed by uptime ${DEADLINE}s. last: ${why:-?}$([ "$REVERT" = 1 ] && echo ' — watchdog reverts')"
+[ "$DRY" = 1 ] && [ -n "${WDPID:-}" ] && wait "$WDPID"
 exit 0
