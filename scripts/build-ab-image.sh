@@ -148,7 +148,12 @@ sgdisk -v "$OUT" | grep -q "No problems found" || { echo "refusing: sgdisk -v re
 
 OLO=$(losetup --show -fP "$OUT")
 echo "out loop=$OLO"
-for i in $(seq 1 $NPART); do [ -b "${OLO}p${i}" ] || { echo "missing ${OLO}p${i}"; exit 1; }; done
+# The partition nodes appear asynchronously (no udev on the WSL build host): wait up to 10 s before
+# calling one missing (#209 S5: a Pi 3 card build failed once on "missing /dev/loop0p3", then passed).
+for i in $(seq 1 $NPART); do
+  n=0; while [ ! -b "${OLO}p${i}" ] && [ $n -lt 20 ]; do sleep 0.5; n=$((n + 1)); done
+  [ -b "${OLO}p${i}" ] || { echo "missing ${OLO}p${i} after 10 s"; exit 1; }
+done
 
 # --- 3. boot slots: mkfs.vfat + populate -------------------------------------------------------
 say "mkfs.vfat boot slots + populate"
@@ -158,7 +163,8 @@ MB=$(mktemp -d)
 for slot in A B; do
   if [ "$slot" = A ]; then dev="${OLO}p1"; g=$G2; else dev="${OLO}p3"; g=$G4; fi
   mount "$dev" "$MB"
-  cp -a "$TMP/boot/." "$MB/"
+  # FAT has no owners: copy mode + times only (cp -a fails when the boot files are not root-owned)
+  cp -r --preserve=mode,timestamps "$TMP/boot/." "$MB/"
   # rootwait=20 panic=10 (bounded wait + auto-return to the other slot on a dead slot — see
   # build-gpt-ab-card.sh). PARTUUID-rooted so it survives partition-table rewrites.
   echo "console=serial0 console=ttyUSB0,115200 console=tty1 rootfstype=squashfs,ext4 rootwait=20 panic=10 root=PARTUUID=$g batman_slot=$slot" > "$MB/cmdline.txt"

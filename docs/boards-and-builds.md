@@ -29,20 +29,33 @@ Pi 3 的 firmware 必須 **≥ 1.20250915**。1.20250430 無法從 MBR 分割 4 
 
 ```
 # firmware fork(WSL:wsl -d Ubuntu-24.04 -u yello,樹在 /home/yello/firmware-2710)
-scripts/build-board.sh ekh-bcm2710     # Pi 3A+
-scripts/build-board.sh ekh-bcm2711     # Pi 4
+scripts/build-board.sh ekh-bcm2710               # Pi 3A+:build + OTA payload(樹的擁有者身分)
+scripts/build-board.sh ekh-bcm2711               # Pi 4
+scripts/build-board.sh <board> --card-only       # 以 root 執行,build 完之後:燒卡 image + 卡片 invariants
 ```
 
 `build-board.sh` 依序負責:
-1. 該板的配方(`-x` 清單;Pi 3 包含 `-x payloadhost`);
-2. 產生戳記;
-3. build;
-4. manifest gate(`check-image-manifest.sh`:兩板必含 brcmfmac / 43455 / mm6108 / batman-provision,禁 mm8108;Pi 4 必含 OTS,Pi 3 禁 OTS);
-5. 戳記斷言;
-6. 產出燒卡 image + OTA payload,跑 `tests/ab-card-invariants.sh`(本 repo);
-7. 印出 sha256。
+1. 該板的配方(`boards/<board>/batman-recipe`;Pi 3 包含 `-x payloadhost`);
+2. `.config` 必須等於 `boards/<board>/batman-config.lock`;
+3. 產生戳記;
+4. build(平行編譯失敗時自動用 `-j1` 重試);
+5. manifest gate(`check-image-manifest.sh`:兩板必含 brcmfmac / 43455 / mm6108 / batman-provision,禁 mm8108;Pi 4 必含 OTS,Pi 3 禁 OTS);
+6. 用 `scripts/pick-rootfs.sh` 選出 rootfs(見下),並斷言其中的戳記與 SoC;
+7. OTA payload(之後以 root 執行 `--card-only` 做燒卡 image + invariants);
+8. 印出 sha256。
 
 **不要自己拼 `openmanet_setup.sh` 的參數,也不要裸跑 `make defconfig`。** 裸 defconfig 會默默丟掉 `kmod-brcmfmac` 和 mm6108 firmware,morse 就會掉到 radio0,OTA 後節點 stranded(1.4.12 事故)。
+
+### rootfs:燒卡 image 和 OTA payload 必須是同一個檔案(2026-10-02)
+OpenWrt 開了 `CONFIG_TARGET_PER_DEVICE_ROOTFS`,`build_dir/target-*/linux-bcm27xx_<sub>/` 底下有兩種 squashfs:
+- `root.squashfs`:**target 通用版**,不含該裝置的 `DEVICE_PACKAGES`。
+- `root.squashfs+pkg=<hash>`:**per-device 版**,也就是出貨 image p2 的內容。只有 per-device 套件與通用版不同時才會產生;Pi 3 沒有這個檔,因為它的通用版就等於裝置版。
+
+過去在這件事上出過兩次事,教訓剛好相反:
+1. **2026-09-16(manet02 卡片救援)**:用通用 `root.squashfs` 建卡,缺 `morse/mm6108.bin`,HaLow 起不來。當時 mm6108 韌體只是 `DEVICE_PACKAGES`。教訓是「改用 image 的 p2」。
+2. **2026-09-25**:從 gunzip 後的 `.img.gz` 切出 p2,少了 268 bytes,squashfs 尾巴被截斷,開機 kernel panic。教訓是「改用 build_dir 的完整檔」。後來通用版剛好夠用,只是因為 `mm6108only_diffconfig` 把 mm6108 韌體強制設成 `=y`。
+
+**規則**:一律用 `scripts/pick-rootfs.sh <board>`。它從 image p2 的前 4 KiB(squashfs superblock)認出是哪一個檔,交出的是 build_dir 裡完整的那一份,並驗證「檔案大小 = superblock 的 bytes_used」。燒卡 image、OTA payload、戳記檢查、CI 都用它。這樣一來,不會缺裝置套件,也不會被截斷。
 
 產物與 release:release 只發「實機驗過的那一批」,以 sha256 為準。CI 的 A/B payload 步驟失敗時,整個 build 必須失敗。
 
@@ -80,7 +93,12 @@ scripts/build-board.sh ekh-bcm2711     # Pi 4
 | 9 | #236 | autocommit v2.2:節點預期在 mesh 時要加入 mesh 才 commit;watchdog 保證 revert;試用中拒絕 apply / sysupgrade;`autocommit.log` | 02 OTA commit + 刻意失敗 OTA 退回;04 docker tenant 路徑 | 待 S5-D |
 | 10 | S5-A | 無法辨識的 SoC 改成拒絕;`batman-slot verify`;skip-once;注入點;`batman-version` 印 board | 165b;`slot-verify-209`;02 上 `ab-selftest` 正常路徑 | 待 S5-D |
 | 11 | firmware `c68ddf4` | GPU firmware 1.20250915:Pi 4 的 `start4*` / `fixup4*` 換新 | 02 OTA:trial 在新 start4 上開機;記錄 EEPROM 版本;**Pi 4 燒卡 image 待 S5-F 實燒** | 待 S5-D / S5-F |
-| 12 | firmware distroconfig | 檔案位元組重排,Pi 4 生效設定不變 | S5-B 差異審計 + 02 OTA 前後 `vcgencmd get_config int` / `str` 比對 | 待 S5-B / S5-D |
+| 12 | firmware distroconfig | 檔案位元組重排,Pi 4 生效設定不變。**只影響燒卡 image**:OTA payload 不帶 `config.txt`、`distroconfig.txt`、`cmdline.txt`,已部署的節點保留自己的設定 | S5-B 差異審計 + S5-F 燒卡後 `vcgencmd get_config int` / `str` 比對 | 待 S5-F |
+| 13 | rootfs 統一(2026-10-02) | 已部署的 Pi 4(1.4.12 / 1.4.14)跑的是通用 rootfs;1.5.0 改用 per-device rootfs,**多出 6 個 Pi 4 系列標準驅動**:`kmod-r8169`、`r8169-firmware`、`kmod-usb-net-lan78xx`、`kmod-phy-realtek`、`kmod-phy-microchip`、`kmod-i2c-brcmstb`。只有對應硬體存在時才載入(Pi 4B 上預期只有 i2c-brcmstb) | 02 / 04 OTA 後 `lsmod` 對照、dmesg 無新錯誤、mesh 與 eth 正常 | 待 S5-D |
+
+S5-B 差異審計結果(1.5.0 Pi 4 payload 對 1.4.14 payload):
+- 開機檔只有 `start4*` / `fixup4*`(gpu-fw)和 `kernel8.img` 改變。kernel `.config`、版本字串、大小相同,只差 40 個 build-id 類 bytes。bcm2711 DTB 和所有 overlay 完全相同。
+- rootfs 套件差異 = `batman-*` 版本、`batman-payload-ots`(#235)、`gpu-fw`,以及第 13 項那 6 個驅動;沒有其他差異。
 
 ## 6. 改共用 A/B 程式的規則
 
@@ -107,6 +125,12 @@ scripts/build-board.sh ekh-bcm2711     # Pi 4
 - 新功能的回歸測試加進 `scripts/daily-validation.sh`;因 SoC 本來就不適用的 suite 用 `na`(會列出理由,但不算失敗),不要用 SKIP 偽裝。
 
 ## 7. 坑
+
+- rootfs:一律用 `scripts/pick-rootfs.sh`,不要直接拿 build_dir 的 `root.squashfs`,也不要從 `.img.gz` 切 p2。原因見 §3 的兩次事故。
+- 從 Windows 經 `\\wsl.localhost` 寫進 WSL 樹的檔案,擁有者會變成 root。Windows git 操作過 `.git` 之後,WSL 的 git 會寫不進去(`cannot lock ref`)。處理:`wsl -u root chown -R yello:yello <path>`。
+- OpenWrt 平行編譯偶爾會有競態(例如 `toolchain/gcc/final`);改用 `-j1` 重跑就會過。`build-board.sh` 會自動重試。
+- 開機檔要複製到 FAT(boot 分割、p7)時不要用 `cp -a`:FAT 沒有擁有者,非 root 擁有的檔案會出現 "failed to preserve ownership",在 `set -e` 下整個建卡就中止。`build-ab-image.sh` 已改用 `cp -r --preserve=mode,timestamps`。
+- WSL 沒有 udev:`losetup -P` 之後,loop 的分割節點(`/dev/loopNpX`)是非同步出現的。`build-ab-image.sh` 現在最多等 10 秒;曾經有一次 Pi 3 建卡因為這樣失敗,重跑就過。
 
 - WSL:`wsl bash -c '...'` 會吃掉 `$變數`,一律寫成腳本檔再執行;WSL 裡 `git push` 會卡在認證,改用 Windows git:`git -c safe.directory='*' -C //wsl.localhost/Ubuntu-24.04/home/yello/firmware-2710 push github build-3aplus`。
 - 不要從 Windows 用 `Set-Content` / `>` 改開機分割的檔案(會變成 CRLF,#208)。
