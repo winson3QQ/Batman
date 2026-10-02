@@ -82,7 +82,16 @@ MBR_FILE=/tmp/batman-slot.mbr.$$
 BUSY=/tmp/batman-slot.busy
 BUSY_MINE=0
 trap 'rm -f "$MBR_FILE"; [ "$BUSY_MINE" = 1 ] && rm -f "$BUSY"' EXIT
-mbr_load() { [ -s "$MBR_FILE" ] || raw_read "$DISK" 0 1 > "$MBR_FILE"; }
+mbr_load() {
+	[ -s "$MBR_FILE" ] && return 0
+	raw_read "$DISK" 0 1 > "$MBR_FILE"
+	# test only (#209 S5 §4 row 164): change MBR[3]'s type 0c -> 0b in the CACHED copy — the card is
+	# never written — so every slot op must refuse on "MBR drifted" exactly as for a real drift.
+	if [ "${BATMAN_FAULT_INJECT:-}" = mbr-mismatch ]; then
+		printf '\013' | dd of="$MBR_FILE" bs=1 seek=$((446 + 32 + 4)) conv=notrunc 2>/dev/null
+		warn "FAULT INJECTED: cached MBR[3] type changed to 0b (card untouched)"
+	fi
+}
 mbr_entry() {  # $1 = 1..4 -> "TYPE START FLAG" (hex type, decimal start LBA, hex flag)
 	mbr_load; o=$((446 + 16 * ($1 - 1)))
 	echo "$(hexdump -s $((o + 4)) -n1 -e '1/1 "%02x"' "$MBR_FILE") $(hexdump -s $((o + 8)) -n4 -e '1/4 "%u"' "$MBR_FILE") $(hexdump -s "$o" -n1 -e '1/1 "%02x"' "$MBR_FILE")"
@@ -414,7 +423,10 @@ cmd_apply() {
 	# boots the default slot again and the upgrade quietly never happens.
 	sync
 	command -v vcmailbox >/dev/null 2>&1 || die "vcmailbox missing — cannot arm tryboot"
-	vcmailbox 0x00038064 4 4 1 >/dev/null 2>&1
+	# test only (#209 S5 §4 row 148): skip the SET, as a SET the firmware silently ignored would —
+	# the GET read-back below must then catch it and refuse.
+	if [ "${BATMAN_FAULT_INJECT:-}" = tryboot-get ]; then warn "FAULT INJECTED: tryboot SET skipped"
+	else vcmailbox 0x00038064 4 4 1 >/dev/null 2>&1; fi
 	r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null)
 	# response: <size> <code> <tag> <len> <reqresp> <value> <end>; code 0x80000000 = success
 	set -- $r
@@ -458,7 +470,7 @@ cmd_rollback() {
 }
 
 case "${1:-}" in
-	layout|fw-part|stage-root|apply|commit|rollback|is-trial) detect_layout ;;
+	layout|fw-part|stage-root|apply|commit|rollback|is-trial|verify) detect_layout ;;
 esac
 case "${1:-}" in
 	active)     active_slot ;;
@@ -470,5 +482,8 @@ case "${1:-}" in
 	commit)     cmd_commit ;;
 	rollback)   cmd_rollback ;;
 	is-trial)   is_trial; exit $? ;;
-	*) echo "usage: batman-slot active|target|layout|fw-part A|B|stage-root <dir>|apply <dir>|commit|rollback|is-trial" >&2; exit 2 ;;
+	# read-only: the same sanity every slot op runs first (layout vs SoC, FAT count, pi3 hybrid MBR,
+	# firmware-booted partition vs cmdline) — for ab-selftest / daily-validation (#209 S5)
+	verify)     assert_fw_sane; echo "batman-slot: verify ok (layout $(layout), slot $(active_slot))" ;;
+	*) echo "usage: batman-slot active|target|layout|fw-part A|B|stage-root <dir>|apply <dir>|commit|rollback|is-trial|verify" >&2; exit 2 ;;
 esac

@@ -53,6 +53,20 @@ suite() {                       # $1 = name, $2 = why-it-matters, $3 = command (
   if [ $rc -eq 0 ]; then NPASS=$((NPASS+1)); ROWS+=("| $name | PASS | ${dt}s — $why |"); echo "PASS  $name (${dt}s)"
   else NFAIL=$((NFAIL+1)); ROWS+=("| $name | **FAIL** | ${dt}s — $why |"); echo "FAIL  $name (${dt}s)"; fi
 }
+# N/A is NOT a skip: the suite does not apply to this node's SoC BY DESIGN (e.g. OTS is not shipped
+# on bcm2710, #209 D6). It is listed with its reason, but it does not fail the run the way a SKIP
+# (= "should have been verified and was not") does. Only ever call it from a SoC check.
+NNA=0
+na() {                          # $1 = name, $2 = reason
+  NNA=$((NNA+1)); ROWS+=("| $1 | N/A | $2 |"); echo "N/A   $1 — $2"
+}
+# The node's SoC as an OpenWrt subtarget (bcm2711 = Pi 4, bcm2710 = Pi 3), from the device tree.
+# Empty = unreachable or unrecognised — callers must treat that as "run the suite" (it then fails
+# loudly), never as N/A.
+soc_of() {
+  timeout 15 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 "root@$1" \
+    'case "$(cat /proc/device-tree/compatible 2>/dev/null)" in *bcm2711*) echo bcm2711;; *bcm2837*) echo bcm2710;; esac' 2>/dev/null | tr -d '\r'
+}
 
 echo "=== daily validation $STAMP ==="
 
@@ -89,7 +103,11 @@ fi
 # R2 first-load-latch non-gating, R1 docker-run-broken -> canary revert. Reboots/OTA-flashes the node,
 # so it runs ONLY under AB_MODE=--destructive (the release gate), like ab-selftest above. On the daily
 # --inspect-only run it is SKIPped (reported as loudly as a fail).
-if [ "$AB_MODE" != --destructive ]; then
+OTS_NODE=${OTS_NODE:-$MESH_NODE}          # the node carrying the OTS payload (also set below, kept identical)
+OTS_SOC=$(soc_of "$OTS_NODE")
+if [ "$OTS_SOC" = bcm2710 ]; then
+  na fault-injection "OTS_NODE $OTS_NODE is a Pi 3 (bcm2710): the OTS flash-and-go payload is not shipped there (#209 D6)"
+elif [ "$AB_MODE" != --destructive ]; then
   suite fault-injection "flash-and-go fault-injection F1/F2/R2/R1 (#159/#216) — needs AB_MODE=--destructive" ""
 elif up "$OTS_NODE"; then
   suite fault-injection \
@@ -268,6 +286,34 @@ chk_socgate_209() { fssh "$1" 12 '                              # #209 review
   [ "$(soc_token bcm27xx/bcm2710)" = bcm2710 ] || { echo "soc_token misreads bcm2710"; exit 1; }
   [ -z "$(soc_token something-else)" ]         || { echo "soc_token invents a token"; exit 1; }
   echo "SoC gate present in platform_check_image and classifying"'; }
+chk_slotverify_209() { fssh "$1" 30 '                          # #209 S5: card sanity, both layouts
+  # The same read-only sanity every slot op runs first: layout matches the SoC, FAT count, the Pi 3
+  # hybrid MBR (1=p7 2=bootA 3=bootB 4=ee), firmware-booted partition agrees with the cmdline. A
+  # drift here makes the NEXT OTA refuse (or, without the check, mis-aim) — catch it on a quiet day.
+  l=$(batman-slot layout 2>&1); s=$(case "$(cat /proc/device-tree/compatible)" in *bcm2711*) echo bcm2711;; *bcm2837*) echo bcm2710;; esac)
+  echo "layout=$l soc=$s"
+  case "$l:$s" in pi4:bcm2711|pi3:bcm2710) ;; *) echo "layout/SoC mismatch"; exit 1 ;; esac
+  batman-slot verify'; }
+chk_memcg_209() { fssh "$1" 12 '                               # #209 D6: docker needs memcg on both SoCs
+  # bcm2710 DTBs ship cgroup_disable=memory (fixed by the 999-batman-enable-memcg-pi3 patch); losing
+  # it silently breaks every container memory limit and the autocommit canary gate.
+  c=$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null)
+  echo "cgroup2 controllers: ${c:-none}  cmdline cgroup_disable: $(grep -o "cgroup_disable=[a-z]*" /proc/cmdline || echo none)"
+  echo " $c " | grep -q " memory "'; }
+chk_trybootget_209() { fssh "$1" 12 '                          # #209 v4.3 D5: tryboot GET read-back
+  # batman-slot apply refuses on a pi3 unless the firmware answers the tryboot GET; on a normal
+  # (committed, non-trial) boot the one-shot flag must read 0 — a 1 means the next reboot trials a slot.
+  r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null); set -- $r
+  echo "tryboot GET: ${r:-no answer}"
+  [ "${2:-}" = 0x80000000 ] || { echo "firmware does not answer the tryboot GET"; exit 1; }
+  [ "$(( ${6:-1} ))" -eq 0 ] || { echo "tryboot flag is ARMED on a normal boot — the next reboot will trial the other slot"; exit 1; }'; }
+chk_p7_209() { fssh "$1" 20 '                                  # #209 v4.3 D3/D4: Pi 3 firmware partition
+  m=/mnt/dv-p7; mkdir -p $m; mount -t vfat -o ro /dev/mmcblk0p7 $m 2>/dev/null || { echo "cannot mount p7"; exit 1; }
+  h=$(sha256sum $m/bootcode.bin 2>/dev/null | cut -d" " -f1); rc=0
+  grep -q "^$h  bootcode.bin$" /usr/share/batman/firmware-allowlist-bcm2710.sha256 2>/dev/null && echo "bootcode.bin allow-listed" || { echo "bootcode.bin $h NOT on the allow-list"; rc=1; }
+  [ -f $m/config.txt ] && echo "config.txt present" || { echo "config.txt MISSING — the board will not boot (E0g)"; rc=1; }
+  grep -q "^tryboot_a_b=1" $m/autoboot.txt 2>/dev/null && echo "autoboot.txt tryboot_a_b=1" || { echo "autoboot.txt bad/missing"; rc=1; }
+  umount $m; rmdir $m 2>/dev/null; exit $rc'; }
 chk_autocommit() { fssh "$1" 12 '                              # ab-autocommit.md / #211
   # A completed reflash must not leave the node in an uncommitted trial (a reboot would then revert to
   # the old slot). batman-autocommit health-gates + commits; assert the node ended committed.
@@ -337,8 +383,12 @@ chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash
   grep -q "timeout 15 docker" /usr/bin/batman-autocommit && { echo "autocommit uses busybox-absent timeout applet"; exit 1; }
   echo "firstload enabled; offline copies present; canary runs; autocommit gate ok"'; }
 
-if up "$OTS_NODE"; then
-  suite confinement-98   "OTS container confinement — 9 axes ×6 (#98)"                       "chk_98 $OTS_NODE"
+if [ "$OTS_SOC" = bcm2710 ]; then
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden flashgo-159; do
+    na "$s" "OTS_NODE $OTS_NODE is a Pi 3 (bcm2710): OTS is not shipped on bcm2710 (#209 D6) — point OTS_NODE at the Pi 4 OTS host"
+  done
+elif up "$OTS_NODE"; then
+  suite confinement-98  "OTS container confinement — 9 axes ×6 (#98)"                       "chk_98 $OTS_NODE"
   suite ots-up-162       "OTS 6/6 running + postgres endpoint answers (#162)"                "chk_162 $OTS_NODE"
   suite drift-detect-156 "reconciler flags an unhardened decoy as DRIFT (#156, white-box)"   "chk_156 $OTS_NODE"
   suite payload-mgr-167  "OTS on the generic payload manager, old guardian gone (#167)"       "chk_167g $OTS_NODE"
@@ -346,7 +396,7 @@ if up "$OTS_NODE"; then
   suite payload-config-golden "p6 tenant config == baked golden + unless-stopped + images present (payload-config-golden.md)" "chk_golden $OTS_NODE"
   suite flashgo-159      "flash-and-go integrity — firstload enabled, offline copies (F2), canary runs, autocommit gate (#159/#216)" "chk_flashgo $OTS_NODE"
 else
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden flashgo-159; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"
@@ -370,9 +420,18 @@ if up "$BENCH_NODE"; then
   suite autocommit-211 "A/B node is committed, not left in an uncommitted trial (#211, ab-autocommit)" "chk_autocommit $BENCH_NODE"
   suite p6grow-201 "A/B card data partition (p6) grew to fill the card at first boot (#201, not stuck at the baked ~200MiB)" "chk_p6grow_201 $BENCH_NODE"
   suite socgate-209 "sysupgrade refuses a wrong-SoC A/B image (#209 review: the old check only warned, and a bcm2711 wildcard passed everything)" "chk_socgate_209 $BENCH_NODE"
+  suite slot-verify-209 "card sanity every slot op relies on: layout=SoC, FAT count, Pi 3 hybrid MBR, DT vs cmdline (#209 S5)" "chk_slotverify_209 $BENCH_NODE"
+  suite memcg-209 "memory cgroup controller enabled — docker limits + autocommit canary (#209 D6; bcm2710 DTB disables it)" "chk_memcg_209 $BENCH_NODE"
+  suite trybootget-209 "firmware answers the tryboot GET and the one-shot flag is clear on a normal boot (#209 D5)" "chk_trybootget_209 $BENCH_NODE"
+  if [ "$(soc_of "$BENCH_NODE")" = bcm2711 ]; then
+    na p7-209 "BENCH_NODE is a Pi 4: it boots from GPT via the EEPROM, there is no p7 firmware partition"
+  else
+    suite p7-209 "Pi 3 firmware partition: allow-listed bootcode.bin, config.txt present, autoboot.txt valid (#209 D3/D4)" "chk_p7_209 $BENCH_NODE"
+  fi
 else
   suite autocommit-211 "A/B commit state (#211) — BENCH_NODE $BENCH_NODE did not answer" ""
   suite p6grow-201 "p6 grow-to-fill (#201) — BENCH_NODE $BENCH_NODE did not answer" ""
+  for s in socgate-209 slot-verify-209 memcg-209 trybootget-209 p7-209; do suite "$s" "BENCH_NODE $BENCH_NODE did not answer" ""; done
 fi
 
 # ---- tier B: destructive, induces the real failure — DNODE (eth) only, --destructive ----
@@ -437,7 +496,7 @@ fi
 {
   echo "# Batman daily validation — $(date -Is)"
   echo
-  echo "**$NPASS passed, $NFAIL failed, $NSKIP skipped**"
+  echo "**$NPASS passed, $NFAIL failed, $NSKIP skipped, $NNA not applicable (by SoC, listed with reason)**"
   echo
   echo "| suite | result | notes |"
   echo "|---|---|---|"

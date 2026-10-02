@@ -1,0 +1,38 @@
+name: ab-shared-change
+# The A/B machinery is ONE set of scripts shared by every board (Pi 4 ekh-bcm2711, Pi 3A+ ekh-bcm2710).
+# A change made "for Pi 3" runs on every Pi 4 at its next OTA, and vice versa (#209 S5: the Pi 4 fleet
+# picked up five #209 PRs it was barely tested on). A PR touching these files must therefore carry
+# hardware results for BOTH boards: a `### bcm2711` and a `### bcm2710` heading in the PR body
+# (which node, what was done, raw output/numbers — or "not tested" and why, so reviewers see the gap).
+# See docs/boards-and-builds.md §6.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    paths:
+      - 'feed/batman-provision/files/usr/sbin/batman-slot'
+      - 'feed/batman-provision/files/usr/lib/batman/platform-ab.sh'
+      - 'feed/batman-provision/files/etc/uci-defaults/95-batman-storage'
+      - 'feed/batman-provision/files/etc/uci-defaults/98-batman-sysupgrade'
+      - 'feed/batman-provision/files/usr/bin/batman-autocommit'
+      - 'feed/batman-provision/files/usr/lib/batman/meshjoin.sh'
+      - 'feed/batman-payload-host/**'
+      - 'scripts/build-ab-payload.sh'
+      - 'scripts/build-gpt-ab-card.sh'
+jobs:
+  both-boards-tested:
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR body must carry hardware results for both boards
+        env:
+          BODY: ${{ github.event.pull_request.body }}   # via env, never interpolated into the script
+        run: |
+          miss=""
+          printf '%s\n' "$BODY" | grep -Eq '^###[[:space:]]+bcm2711' || miss="$miss bcm2711"
+          printf '%s\n' "$BODY" | grep -Eq '^###[[:space:]]+bcm2710' || miss="$miss bcm2710"
+          if [ -n "$miss" ]; then
+            echo "::error::This PR changes the shared A/B machinery. Add hardware results for:$miss"
+            echo "Add a '### bcm2711' and a '### bcm2710' section to the PR body (node, what was done, raw output;"
+            echo "or 'not tested' and why). See docs/boards-and-builds.md section 6. Editing the body re-runs this check."
+            exit 1
+          fi
+          echo "both board sections present"

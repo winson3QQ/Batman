@@ -14,6 +14,11 @@ if [ ! -f "$F" ]; then
 	exit 0
 fi
 echo "Batman $(get BATMAN_VERSION) ($(get BATMAN_CHANNEL)) built $(get BATMAN_BUILD_DATE)"
+# board (#209 S5: one firmware tree builds every board, so the version alone no longer names the
+# image). From the stamp when the build wrote it; otherwise from the rootfs's own target.
+b=$(get BATMAN_BOARD); t=$(sed -n "s/^DISTRIB_TARGET='*\([^']*\)'*$/\1/p" /etc/openwrt_release 2>/dev/null)
+echo "  board:     ${b:-unstamped} (target ${t:-?})"
+[ -n "$(get BATMAN_DIRTY)" ] && [ "$(get BATMAN_DIRTY)" != 0 ] && echo "  DIRTY:     built from a modified firmware tree — not a release build"
 [ -n "$(get BATMAN_MILESTONE)" ] && echo "  milestone: $(get BATMAN_MILESTONE)"
 echo "  base:      $(get BATMAN_BASE)"
 echo "  feed:      winson3QQ/Batman@$(get BATMAN_FEED_COMMIT)"
