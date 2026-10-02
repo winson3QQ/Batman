@@ -399,14 +399,12 @@ chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash
   # (2) offline copies present (F2 mv-not-rm contract) + no stuck tars in the images root (load complete).
   ls "$d"/images/loaded/*.tar >/dev/null 2>&1 || { echo "no offline copies in images/loaded"; exit 1; }
   ls "$d"/images/*.tar >/dev/null 2>&1 && { echo "stuck tars in images root (load incomplete)"; exit 1; }
-  # (3) canary blob present AND actually runnable — the R1 gate dependency; proves this rootfs can run
+  # (3) the autocommit canary, run through autocommit itself (same code path as the OTA gate): it is
+  #     built on the node from this rootfs (#209 S5 review K1c) and proves the rootfs can run
   #     containers (overlay/memcg/runc), the very thing docker-info alone does not.
-  c=/opt/batdata/canary.tar.gz; [ -f "$c" ] || c=/usr/share/batman/canary.tar.gz
-  [ -f "$c" ] || { echo "canary blob missing"; exit 1; }
-  docker image inspect batman-canary >/dev/null 2>&1 || docker load -i "$c" >/dev/null 2>&1
-  docker run --rm --network none batman-canary true >/dev/null 2>&1 || { echo "canary run failed (rootfs cannot run containers)"; exit 1; }
+  batman-autocommit canary || { echo "canary failed (rootfs cannot run containers)"; exit 1; }
   # (4) autocommit carries the docker-engine/canary gate and NOT the busybox-absent timeout applet.
-  grep -q "docker canary run failed" /usr/bin/batman-autocommit || { echo "autocommit missing docker-engine/canary gate"; exit 1; }
+  grep -q "tenants on p6 but this rootfs has no docker engine" /usr/bin/batman-autocommit || { echo "autocommit missing docker-engine/canary gate"; exit 1; }
   grep -q "timeout 15 docker" /usr/bin/batman-autocommit && { echo "autocommit uses busybox-absent timeout applet"; exit 1; }
   echo "firstload enabled; offline copies present; canary runs; autocommit gate ok"'; }
 

@@ -46,13 +46,73 @@ p6(){ grep -q " /opt/batdata " /proc/mounts 2>/dev/null; }
 aclog(){ p6 && { mkdir -p "${ACLOG%/*}"; echo "$(date +%Y%m%d-%H%M%S) $*" >> "$ACLOG"; sync; }; }
 version(){ sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build 2>/dev/null; }
 dt_tryboot(){ [ "$(hexdump -v -e '1/1 "%02x"' /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null)" = 00000001 ]; }
-real_tryboot(){  # this boot is a one-shot tryboot of an uncommitted slot
+real_tryboot(){  # this boot is a one-shot tryboot of a slot that is not provably committed
 	[ "$DRY" = 1 ] && [ "${AUTOCOMMIT_FORCE_TRIAL:-0}" = 1 ] && return 0
-	batman-slot is-trial >/dev/null 2>&1; [ $? -eq 0 ] && dt_tryboot
+	# #209 S5 review R4: is-trial 0 = trial, 1 = committed, 2 = unknown. On a DT tryboot=1 boot a
+	# reboot ALWAYS lands on the [all] slot (the flag is one-shot), so "unknown" may be reverted —
+	# leaving it running neither committed nor reverted needed a site visit to power-cycle.
+	dt_tryboot || return 1
+	batman-slot is-trial >/dev/null 2>&1; [ $? -ne 1 ]
+}
+
+RUN=/tmp/autocommit.run                # main's pid lives in $RUN/pid (R1)
+HOLDC=/tmp/autocommit.hold-consumed    # a hold seen this boot — survives a main restart (R1)
+main_alive(){
+	p=$(cat "$RUN/pid" 2>/dev/null); [ -n "$p" ] && kill -0 "$p" 2>/dev/null || return 1
+	tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'batman-autocommit run'
+}
+# A hold cancels the revert (#209 S5 review R2): the operator's /tmp hold (root-owned: /tmp is world-
+# writable), a hold-once on p6 (consumed here, and remembered in $HOLDC so a restarted main and the
+# watchdog both still see it), or one already consumed this boot. Checked by main at start AND by the
+# watchdog on every tick, so a hold set after the trial booted still works.
+held(){
+	[ -f /tmp/batman-autocommit.hold ] && [ -O /tmp/batman-autocommit.hold ] && return 0
+	[ -f "$HOLDC" ] && return 0
+	if [ -f "$ST/autocommit-hold-once" ]; then
+		[ "$DRY" = 1 ] || { rm -f "$ST/autocommit-hold-once"; sync; }
+		: > "$HOLDC"
+		log "HOLD-CONSUMED: autocommit-hold-once present — this trial will not be reverted"
+		aclog "HOLD-CONSUMED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=${SLOT:-$AC_SLOT} version=$(version)"
+		return 0
+	fi
+	return 1
 }
 
 # shellcheck source=/dev/null
 . /usr/lib/batman/meshjoin.sh
+
+# The canary is built ON THE NODE from this rootfs's own busybox + musl loader (#209 S5 review K1c):
+# nothing to ship (the old canary.tar.gz never was), always the same arch/version as the rootfs, ~1 MB,
+# and it exercises exactly the runc/overlay/container-start chain the tenants need. Tagged by the
+# content of its inputs, so one image per rootfs build; older tags are pruned after a good run.
+# Measured on the Pi 3A+ (manet03, 2026-10-03): import <1 s, run 5 s, ~4 MB RAM.
+# `batman-autocommit canary` runs exactly this, for daily-validation (no side effects beyond the image).
+canary_run(){
+	free=$(df -k /opt/batdata 2>/dev/null | awk 'NR==2{print $4}')
+	[ "${free:-0}" -gt 16384 ] || { echo "canary: p6 nearly full (${free:-?} KiB free) — cannot import"; return 1; }
+	set -- /bin/busybox /lib/ld-musl-*.so.1 /lib/libc.so
+	for f; do [ -e "$f" ] || { echo "canary: $f missing from this rootfs"; return 1; }; done
+	tag=$(cat /bin/busybox /lib/ld-musl-*.so.1 /lib/libc.so /lib/libgcc_s.so.1 2>/dev/null | sha256sum | cut -c1-12)
+	img=batman-canary:$tag
+	if ! docker image inspect "$img" >/dev/null 2>&1; then
+		t=/tmp/canary.$$; rm -rf "$t"; mkdir -p "$t/bin" "$t/lib"
+		cp /bin/busybox "$t/bin/"
+		cp -P /lib/ld-musl-*.so.1 "$t/lib/"; cp /lib/libc.so "$t/lib/"
+		[ -e /lib/libgcc_s.so.1 ] && cp /lib/libgcc_s.so.1 "$t/lib/"
+		tar -C "$t" -cf - . | docker import - "$img" >/dev/null 2>&1; r=$?; rm -rf "$t"
+		[ "$r" = 0 ] || { echo "canary: docker import failed"; return 1; }
+	fi
+	docker run --rm --network none "$img" /bin/busybox true >/dev/null 2>&1 || { echo "canary: docker run failed (runc/overlay/cgroups)"; return 1; }
+	for old in $(docker images batman-canary --format '{{.Tag}}' 2>/dev/null); do
+		[ "$old" = "$tag" ] || docker rmi "batman-canary:$old" >/dev/null 2>&1
+	done
+	return 0
+}
+if [ "${1:-}" = canary ]; then
+	command -v docker >/dev/null 2>&1 || { echo "batman-autocommit: no docker in this rootfs"; exit 1; }
+	c=$(canary_run) && { echo "batman-autocommit: canary ok"; exit 0; }
+	echo "batman-autocommit: $c"; exit 1
+fi
 
 # The revert watchdog (B/N1/N4): runs as its own process (`batman-autocommit watchdog`, started with
 # setsid so it is outside procd's instance), one per boot, and fires at the deadline whatever the poll
@@ -61,11 +121,21 @@ real_tryboot(){  # this boot is a one-shot tryboot of an uncommitted slot
 revert_watchdog(){
 	DEADLINE=$AC_DEADLINE; START=$AC_START; SLOT=$AC_SLOT
 	mkdir /tmp/autocommit.wd 2>/dev/null || exit 0
-	while [ "$(up)" -lt "$DEADLINE" ]; do [ -f "$COMMITTED" ] && exit 0; sleep 5; done
-	if ! mkdir "$DECIDED" 2>/dev/null; then
-		n=0; while [ $n -lt 120 ]; do [ -f "$COMMITTED" ] && exit 0; sleep 5; n=$((n + 5)); done
-		log "commit claimed but not finished after 120s — re-checking before revert"
-	fi
+	while [ "$(up)" -lt "$DEADLINE" ]; do
+		[ -f "$COMMITTED" ] && exit 0
+		held && { log "hold present — revert watchdog stands down"; exit 0; }
+		sleep 5
+	done
+	# The claim is mandatory (#209 S5 review R6): main holds it only while running `batman-slot commit`,
+	# which on a Pi 3 is a raw p7 sector write — rebooting under it tears autoboot.txt (= a brick).
+	# Wait for it; take it over only from a main that is gone. 30 min cap (a write takes seconds).
+	w=0
+	while ! mkdir "$DECIDED" 2>/dev/null; do
+		[ -f "$COMMITTED" ] && exit 0
+		if ! main_alive; then log "claim left behind by a main that is gone — taking it over"; rmdir "$DECIDED" 2>/dev/null; continue; fi
+		[ $w -ge 1800 ] && { log "main has held the claim for ${w}s — re-checking without it"; break; }
+		sleep 5; w=$((w + 5))
+	done
 	# bounded deferral: an apply/stage-root writing a slot, or a first-load still loading images
 	# (the p6 docker store is shared with the committed slot)
 	d=0
@@ -76,6 +146,8 @@ revert_watchdog(){
 		else break; fi
 	done
 	# re-check right before acting (N1): never reboot a slot that got committed, or a non-tryboot boot
+	[ -f "$COMMITTED" ] && exit 0
+	held && { log "hold present at the deadline — not reverting"; exit 0; }
 	real_tryboot || { log "no longer a real tryboot at the deadline — not reverting"; exit 0; }
 	why=$(cat /tmp/autocommit.why 2>/dev/null)
 	log "TRIAL-REVERTED slot $SLOT after $(( $(up) - START ))s: ${why:-unhealthy}"
@@ -100,34 +172,49 @@ if [ "$DRY" != 1 ] && [ -f "$ST/autocommit-skip-once" ]; then
 fi
 
 # 1) trial? batman-slot owns the authoritative autoboot parse (is-trial: 0=trial, 1=committed, 2=unknown)
+UNKNOWN=0
 if [ "$DRY" = 1 ] && [ "${AUTOCOMMIT_FORCE_TRIAL:-0}" = 1 ]; then rc=0; else batman-slot is-trial; rc=$?; fi
 case $rc in
 	0) : ;;
 	1) log "running slot is already the committed default — nothing to do"; exit 0 ;;
-	*) log "cannot determine slot commit state — leaving as-is (no commit, no revert)"; exit 0 ;;
+	*) if dt_tryboot; then
+		# R4: never commit what cannot be read, but do revert it (a reboot here always lands on [all])
+		UNKNOWN=1; log "cannot determine the slot commit state on a TRYBOOT boot — will not commit; the watchdog reverts at the deadline"
+	   else log "cannot determine slot commit state (not a tryboot boot) — leaving as-is (no commit, no revert)"; exit 0; fi ;;
 esac
 SLOT=$(batman-slot active)
-# single instance per boot (N4): a `restart` must not start a second loop or a second watchdog
-mkdir /tmp/autocommit.run 2>/dev/null || { [ "$DRY" = 1 ] || { log "already running this boot — exiting"; exit 0; }; }
+# Single instance per boot (N4) that survives a restart (#209 S5 review R1): the run dir holds main's
+# pid. A live main -> exit; a dead one (killed by `restart`) -> take over, keeping its deadline and any
+# hold it saw — a restart must neither leave zero poll loops (the watchdog would then revert a healthy
+# trial) nor start a second watchdog (it is single via /tmp/autocommit.wd).
+if [ "$DRY" != 1 ]; then
+	if ! mkdir "$RUN" 2>/dev/null; then
+		main_alive && { log "already running this boot (pid $(cat "$RUN/pid" 2>/dev/null)) — exiting"; exit 0; }
+		log "previous run of this boot is gone — taking over"
+		rm -rf "$RUN"; mkdir "$RUN" 2>/dev/null || { log "lost the takeover race — exiting"; exit 0; }
+	fi
+	echo $$ > "$RUN/pid"
+fi
 
 # 2) can we revert? Only a REAL tryboot (review M1): a stale-fallback boot lands on the same slot again.
 REVERT=0
 if real_tryboot; then REVERT=1; else log "slot $SLOT is uncommitted but this is NOT a tryboot boot (stale fallback?) — will commit when healthy, will NOT reboot"; fi
-# hold-once (N3): consumed at the START of every real tryboot, whatever the outcome
-if [ "$REVERT" = 1 ] && [ -f "$ST/autocommit-hold-once" ]; then
-	[ "$DRY" = 1 ] || rm -f "$ST/autocommit-hold-once"
-	log "HOLD-CONSUMED: autocommit-hold-once present — this trial will not be reverted"; aclog "HOLD-CONSUMED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version)"
-	REVERT=0
-fi
-[ -f /tmp/batman-autocommit.hold ] && { log "/tmp/batman-autocommit.hold present — no revert this boot"; REVERT=0; }
+# hold (N3/R2): hold-once is consumed at the START of a real tryboot, whatever the outcome
+if [ "$REVERT" = 1 ] && held; then log "hold present — this trial will not be reverted"; REVERT=0; fi
 
-# 3) deadline (N2): uptime-based; operator override on p6 (survives OTA) else the image default per SoC
-case "$(cat /proc/device-tree/compatible 2>/dev/null)" in *bcm2837*) DEF=900 ;; *) DEF=600 ;; esac
-T=$(cat "$ST/autocommit.timeout" 2>/dev/null | tr -dc '0-9'); [ -n "$T" ] || T=$DEF
-[ "$T" -lt 300 ] && T=300; [ "$T" -gt 3600 ] && T=3600
-if [ "$DRY" = 1 ] && [ -n "${AUTOCOMMIT_TIMEOUT:-}" ]; then T=$AUTOCOMMIT_TIMEOUT; MIN_WINDOW=0; fi
-START=$(up); DEADLINE=$T; [ "$DEADLINE" -lt $((START + MIN_WINDOW)) ] && DEADLINE=$((START + MIN_WINDOW))
-log "slot $SLOT is an uncommitted trial — gate until uptime ${DEADLINE}s (now ${START}s), revert=$REVERT"
+# 3) deadline (N2): uptime-based; operator override on p6 (survives OTA) else the image default per SoC.
+#    Computed ONCE per boot and kept in /tmp, so a main that takes over keeps the watchdog's deadline (R1).
+if [ "$DRY" != 1 ] && [ -s /tmp/autocommit.deadline ] && [ -s /tmp/autocommit.start ]; then
+	DEADLINE=$(cat /tmp/autocommit.deadline); START=$(cat /tmp/autocommit.start)
+else
+	case "$(cat /proc/device-tree/compatible 2>/dev/null)" in *bcm2837*) DEF=900 ;; *) DEF=600 ;; esac
+	T=$(cat "$ST/autocommit.timeout" 2>/dev/null | tr -dc '0-9'); [ -n "$T" ] || T=$DEF
+	[ "$T" -lt 300 ] && T=300; [ "$T" -gt 3600 ] && T=3600
+	if [ "$DRY" = 1 ] && [ -n "${AUTOCOMMIT_TIMEOUT:-}" ]; then T=$AUTOCOMMIT_TIMEOUT; MIN_WINDOW=0; fi
+	START=$(up); DEADLINE=$T; [ "$DEADLINE" -lt $((START + MIN_WINDOW)) ] && DEADLINE=$((START + MIN_WINDOW))
+	[ "$DRY" = 1 ] || { echo "$DEADLINE" > /tmp/autocommit.deadline; echo "$START" > /tmp/autocommit.start; }
+fi
+log "slot $SLOT is an uncommitted trial — gate until uptime ${DEADLINE}s (now $(up)s), revert=$REVERT"
 
 # 4) expected in a mesh? (N5: fail-closed) — p6 markers first; else p5 .seeded read-only
 expected_in_mesh(){
@@ -151,6 +238,7 @@ if [ "$REVERT" = 1 ]; then
 		setsid "$0" watchdog </dev/null >/dev/null 2>&1 &
 	fi
 fi
+[ "$UNKNOWN" = 1 ] && { echo "slot commit state unreadable (batman-slot is-trial)" > /tmp/autocommit.why; exit 0; }
 
 # 6) health
 running(){
@@ -168,22 +256,19 @@ health_ok(){
 	[ -s /etc/batman-build ] || { echo "no /etc/batman-build"; return 1; }
 	have_docker_tenant=0
 	for d in /opt/batdata/apps/*/; do [ -d "$d" ] && ls "$d"/*.manifest >/dev/null 2>&1 && { have_docker_tenant=1; break; }; done
-	if [ "$have_docker_tenant" = 1 ] && command -v docker >/dev/null 2>&1; then
+	# #209 S5 review K1: with tenants on p6 this rootfs MUST be able to run them. A missing docker, a
+	# cgroup v1 tree (memcg unverifiable) or a canary that cannot run is UNHEALTHY — each used to make
+	# the whole block skip itself and commit (the 1.4.12 lesson: a build that silently lost a package).
+	if [ "$have_docker_tenant" = 1 ]; then
+		command -v docker >/dev/null 2>&1 || { echo "tenants on p6 but this rootfs has no docker engine"; return 1; }
 		docker info >/dev/null 2>&1 || { echo "docker engine not live"; return 1; }
 		grep -qw overlay /proc/filesystems 2>/dev/null || modprobe overlay 2>/dev/null
 		grep -qw overlay /proc/filesystems 2>/dev/null || { echo "no overlay filesystem"; return 1; }
-		if [ -e /sys/fs/cgroup/cgroup.controllers ]; then
-			grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null || { echo "no memcg controller"; return 1; }
-		fi
-		# canary run (authoritative), once per boot (v2.2 S3: heavy on a 512 MB Pi 3A+)
+		[ -e /sys/fs/cgroup/cgroup.controllers ] || { echo "no cgroup v2 hierarchy (memcg cannot be verified)"; return 1; }
+		grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null || { echo "no memcg controller"; return 1; }
+		# canary run (authoritative), latched only on SUCCESS (a dockerd still starting is retried next poll)
 		if [ "$CANARY_OK" = 0 ]; then
-			CANARY=/opt/batdata/canary.tar.gz; [ -f "$CANARY" ] || CANARY=/usr/share/batman/canary.tar.gz
-			if docker image inspect batman-canary >/dev/null 2>&1 || [ -f "$CANARY" ]; then
-				docker image inspect batman-canary >/dev/null 2>&1 || docker load -i "$CANARY" >/dev/null 2>&1
-				if docker image inspect batman-canary >/dev/null 2>&1; then
-					docker run --rm --network none batman-canary true >/dev/null 2>&1 || { echo "docker canary run failed"; return 1; }
-				fi
-			fi
+			c=$(canary_run) || { echo "$c"; return 1; }
 			CANARY_OK=1
 		fi
 	fi

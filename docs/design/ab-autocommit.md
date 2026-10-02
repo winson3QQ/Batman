@@ -139,7 +139,7 @@ for a bad image, and is a no-op on a normal boot. Needs independent adversarial 
 **A. When may autocommit reboot?** Only on a *real tryboot* of *this* boot: `is-trial` = 0 **and** DT
 `/proc/device-tree/chosen/bootloader/tryboot` = 1 (faithful on Pi 3 and Pi 4, #209 E0/E0g). A #133
 stale-fallback boot (`[all]` ≠ booted slot, tryboot = 0) is never rebooted — that would loop, because
-the firmware lands on the same slot again (review M1). `is-trial` = 2 (unknown) → never reboot.
+the firmware lands on the same slot again (review M1). `is-trial` = 2 (unknown) → never commit; on a DT tryboot = 1 boot it IS reverted at the deadline (a reboot there always lands on `[all]`), otherwise left alone (v2.3, #209 S5 review R4).
 
 **B. The revert is guaranteed by a deadline, not by the poll loop** (review M2). busybox has no
 `timeout`, so a detached watchdog subshell is started first: it sleeps until the uptime deadline and
@@ -263,3 +263,34 @@ old slot with no site visit; and a normal OTA → committed within the per-SoC t
   - **N11** → tests added to the plan above: commit/watchdog race (slow commit stub), deadline already
     past, garbage timeout, hold-once + healthy trial, unreadable p5, double `restart`.
 
+
+## v2.3 (#209 S5 review, 2026-10-03)
+
+Code review of v2.2 found five ways the gate could do the wrong thing; all fixed in `batman-autocommit` /
+`joinwatch` / `batman-slot`, regression in `scripts/daily-validation.sh`:
+
+- **R1 restart = zero loops.** The single-instance guard was "started this boot" (a bare mkdir), so a
+  `restart` killed main and the new main exited — only the watchdog was left, and it reverted a healthy
+  trial at the deadline. Now `/tmp/autocommit.run/pid` + a liveness check (`kill -0` and the pid's cmdline):
+  a live main makes a second one exit, a dead one is taken over. The deadline (`/tmp/autocommit.deadline`,
+  `.start`) and any hold seen (`/tmp/autocommit.hold-consumed`) are kept in /tmp, so the successor uses
+  the same deadline as the watchdog and does not forget a hold.
+- **R2 hold after boot.** `/tmp/batman-autocommit.hold` was read once at start, and the watchdog never
+  looked at any hold; since autocommit starts at S99, a person on the trial could never hold it. The
+  watchdog now checks every tick and right before the reboot: the `/tmp` hold (root-owned only — /tmp
+  is world-writable), `autocommit-hold-once` on p6 (consumed when seen — so one created DURING a trial
+  is spent on that trial, not the next OTA), or a hold consumed earlier this boot.
+- **R3 joinwatch vs held trials.** joinwatch's AUTOREBOOT ended held trials after an hour, undoing a
+  planned hand-commit. Now only the live `/tmp` hold suppresses it; an unattended hold-once or a plain
+  uncommitted trial keeps the reboot — for a trial that cannot join any mesh it is the last way back.
+- **R4 unknown state.** `batman-slot` died with exit 1 = "committed", and `is-trial` = 2 started no
+  watchdog: a trial whose slot state could not be read was neither committed nor reverted. `batman-slot
+  is-trial` now exits 2 on any internal failure; autocommit never commits "unknown" but reverts it on a
+  DT tryboot = 1 boot (always safe: the one-shot flag is gone after the reboot).
+- **R6 claim before reboot.** The watchdog waited 120 s for main's claim and then rebooted WITHOUT it —
+  possibly in the middle of a Pi 3 p7 sector write. It now retries the claim and takes it over only from
+  a main that is gone (30 min cap).
+- **K1 docker gate.** With tenants on p6: no `docker` command, no cgroup v2 hierarchy, or a canary that
+  will not run are each UNHEALTHY (before, each silently skipped the block and committed). The canary is
+  built on the node from the rootfs's own busybox + musl (`batman-autocommit canary`; no shipped blob —
+  the old `canary.tar.gz` never shipped), latched only on success, old tags pruned.
