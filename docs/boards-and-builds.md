@@ -30,12 +30,18 @@ A/B 的救援是分層的:Pi 提供 tryboot 一次性旗標,也就是「再重�
 - daily-validation 的 `eeprom-209` suite 會檢查每台看得到的 Pi 4;
 - `ab-selftest` 在舊 EEPROM 上要 `ATTENDED=1` 才會跑 fw-fallback 測試。
 
-**EEPROM 升級是機台韌體變更,部署角色的節點要先經使用者同意。**
+**EEPROM 升級是機台韌體變更,部署角色的節點要先經使用者同意。** 做法(OpenWrt 沒有 `rpi-eeprom-update`,改用官方的 recovery 機制;manet02 2026-10-02 實際用過):
+1. 從 [raspberrypi/rpi-eeprom](https://github.com/raspberrypi/rpi-eeprom) 取得 `firmware-2711/old/stable/pieeprom-2026-01-09.bin`、`firmware-2711/default/recovery.bin`,以及 repo 根目錄的 `rpi-eeprom-config`;用 git blob 雜湊核對 image。
+2. 讀出節點現有的 `vcgencmd bootloader_config`,用 `rpi-eeprom-config --config <它> --out pieeprom.upd <image>` 把設定原樣寫進新 image。
+3. 產生 `pieeprom.sig`:第一行是 `pieeprom.upd` 的 sha256,第二行是 `ts: <epoch>`。
+4. 把 `pieeprom.upd`、`pieeprom.sig`、`recovery.bin` 放到 **p1(bootA)根目錄**。開機 ROM 只看第一個分割;放好後重開。
+5. Pi 會自己燒錄(約 1 分鐘,**不能斷電**),`recovery.bin` 會被改名為 `RECOVERY.000`,然後再重開。
+6. 驗證 `vcgencmd bootloader_version`(版本與 `update-time`)、`bootloader_config` 是否保留,最後刪掉 p1 上的 `pieeprom.*` 和 `RECOVERY.000`。
 
 | 節點 | bootloader | 狀態 |
 |---|---|---|
-| manet02 | 2023-01-11 | ❌ 低於下限,待升級 |
-| manet04 | 2026-01-09 | ✅ |
+| manet02 | 2026-09-23(2026-10-02 由 2023-01-11 → 2026-01-09 → 2026-09-23) | ✅ |
+| manet04 | 2026-09-23(2026-10-03 由 2026-01-09 升級) | ✅ |
 | manet01 | 2026-01-09(依 #106 bench 紀錄) | ✅ |
 
 ### 驗證角色(使用者 2026-10-02)
