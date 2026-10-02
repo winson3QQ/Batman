@@ -48,6 +48,10 @@ platform_check_image() {
 	grep -qx 'SHA256SUMS' "$list"    || { echo "A/B image has no SHA256SUMS — rebuild it with the current scripts/build-ab-payload.sh (#209)"; rm -f "$list"; return 1; }
 	rm -f "$list"
 
+	# A real OTA must always be gated by batman-autocommit: drop any ab-selftest skip-once token left
+	# on p6. Here, not only in batman-slot, because p6 may already be unmounted in the ramfs stage.
+	rm -f /opt/batdata/state/autocommit-skip-once
+
 	# Running an uncommitted one-shot TRIAL: the inactive slot is the COMMITTED one. Refuse here, in
 	# stage 1, before sysupgrade kills services (batman-slot apply refuses too, ab-autocommit v2.2 G/N6).
 	if [ "$(hexdump -v -e '1/1 "%02x"' /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null)" = 00000001 ] \
@@ -80,11 +84,14 @@ platform_check_image() {
 	want=$(get_image "$@" | tar -xOf - metadata 2>/dev/null | sed -n 's/^board=//p')
 	run=$(sed -n "s/^DISTRIB_TARGET='*[^/]*\/\([^']*\)'*$/\1/p" /etc/openwrt_release 2>/dev/null)
 	wt=$(soc_token "$want"); rt=$(soc_token "$run")
-	# Refuse only on a POSITIVE mismatch of two recognised tokens. If either side is unrecognisable
-	# we fall through (board_name spelling has always been allowed to differ — that is why the old
-	# check was a warning); what is removed is the `*bcm2711*` wildcard, which made every bcm2711
-	# image pass on every board, including the one it cannot boot.
-	if [ -n "$wt" ] && [ -n "$rt" ] && [ "$wt" != "$rt" ]; then
+	# Fail-closed (#209 S5 review): an image or a node whose SoC cannot be recognised is refused too.
+	# Every payload that can still pass the SHA256SUMS check above comes from the #209
+	# build-ab-payload.sh, which refuses a board name without a SoC token; the pre-#209 payloads
+	# (board=rpi4-mm6108-spi) already fail on the missing SHA256SUMS. So nothing legitimate is lost,
+	# and a malformed or foreign payload can no longer slip through as "not gated".
+	[ -n "$wt" ] || { echo "REFUSING: image metadata board='$want' names no known SoC"; return 1; }
+	[ -n "$rt" ] || { echo "REFUSING: cannot tell this node's SoC (DISTRIB_TARGET='$run')"; return 1; }
+	if [ "$wt" != "$rt" ]; then
 		echo "REFUSING: image is for $wt but this node is $rt — flashing it would silently brick the node"
 		return 1
 	fi
@@ -131,11 +138,15 @@ platform_do_upgrade() {
 	want=$(sed -n 's/^board=//p' "$dir/metadata" 2>/dev/null)
 	run=$(soc_running)
 	wt=$(soc_token "$want"); rt=$(soc_token "$run")
-	if [ -n "$wt" ] && [ -n "$rt" ] && [ "$wt" != "$rt" ]; then
+	# fail-closed, as in platform_check_image (this is the only layer under -F)
+	if [ -z "$wt" ] || [ -z "$rt" ]; then
+		echo "REFUSING: SoC not recognised (image board='$want', running='$run') — not writing anything"
+		return 1
+	fi
+	if [ "$wt" != "$rt" ]; then
 		echo "REFUSING: image is for $wt but this node is $rt — not writing anything"
 		return 1
 	fi
-	[ -n "$wt" ] && [ -n "$rt" ] || echo "WARN: SoC not recognised (image board='$want', running='$run') — not gated"
 
 	# batman-slot's [tryboot] read + boot write need bootA (autoboot.txt) mounted; the sysupgrade
 	# ramfs pivot may have unmounted /boot, so re-mount p1 there if needed (mkdir first — in the

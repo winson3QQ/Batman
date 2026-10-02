@@ -88,6 +88,17 @@ revert_watchdog(){
 
 [ "${1:-}" = run ] || { echo "usage: batman-autocommit run" >&2; exit 2; }
 
+# 0) skip-once (#209 S5): scripts/ab-selftest.sh drives tryboot/plain reboots itself and must not have
+# a healthy trial committed (or reverted) under it. It writes this token on p6 right before each
+# reboot it causes; the token is consumed on the very next boot of EITHER slot, whatever happens, so
+# a selftest that dies mid-run cannot leave OTAs un-gated for longer than one boot.
+if [ "$DRY" != 1 ] && [ -f "$ST/autocommit-skip-once" ]; then
+	rm -f "$ST/autocommit-skip-once"; sync
+	log "SKIP-ONCE: autocommit-skip-once present (ab-selftest) — no commit and no revert this boot"
+	aclog "SKIP-ONCE boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$(batman-slot active) version=$(version)"
+	exit 0
+fi
+
 # 1) trial? batman-slot owns the authoritative autoboot parse (is-trial: 0=trial, 1=committed, 2=unknown)
 if [ "$DRY" = 1 ] && [ "${AUTOCOMMIT_FORCE_TRIAL:-0}" = 1 ]; then rc=0; else batman-slot is-trial; rc=$?; fi
 case $rc in

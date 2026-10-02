@@ -17,6 +17,18 @@ example: 1.3.0-wsl.1+b93040f.fw1f997e7
 
 Stamped at build time into `/etc/batman-build` (KEY=VALUE); a node self-reports with `batman-version`, and it is appended to the login banner.
 
+### One tree, every board (#209 S5, 2026-10-02)
+
+- Since 1.5.0, every board (`ekh-bcm2711` Pi 4, `ekh-bcm2710` Pi 3A+) is built from the **same firmware-fork commit** (`build-3aplus`). One version number = one pair of source commits, whatever the board.
+- The board is a separate field: `BATMAN_BOARD` in the stamp, and the board name in every artifact file name.
+- `/etc/batman-build` is **generated at build time** by the firmware fork's `scripts/stamp-batman-build.sh`, never hand-edited.
+  - The script reads the real `feeds/batman` HEAD and asserts it equals the feeds.conf pin.
+  - It writes the firmware HEAD, and sets `BATMAN_DIRTY=1` when the tree has local changes.
+  - `scripts/build-board.sh` checks the stamp inside the built rootfs.
+  - A dirty build is never a release.
+- 1.4.14's hand-written stamp named the wrong commits (`6763ed8`/`c19763a`; the build was really feed `8685c5a` + firmware `397e313`). That is the reason the stamp is generated now.
+- See `docs/boards-and-builds.md`.
+
 ## Policy — MAJOR maps to the #75 milestone that has been REACHED
 
 `MAJOR` tracks the #75 milestone **whose gate has actually been met/shipped** — it is conservative, not aspirational:
@@ -42,6 +54,8 @@ Existing GitHub release tags were named ad-hoc (by content/date) and do **not** 
 | 1.1.0 | Self-provisioning golden (single-slot) | `v2.0.0` *(mis-numbered; is DEV-golden, not the Build gate)* | OpenMANET 1.8.0 |
 | 1.2.0 | A/B dual-image OTA payload | `v1.1.0-ab-ota` (pre-release) | OpenMANET 1.8.0 |
 | 1.3.0 | **docker-in-image A/B card (#159)** | *(WSL dev; stored in Batman-P release `batman-1.3.0-wsl`, Batman-P#1)* | OpenMANET 1.8.0 |
+| 1.4.14 | flash-and-go rework (#216), Pi 4 only | *(WSL dev, Batman-P)* — stamp names wrong commits, real = feed `8685c5a` fw `397e313` | OpenMANET 1.8.0 |
+| 1.5.0 | **Pi 3A+ A/B (#209) + one tree for both boards**; Pi 4 gets the #209 shared A/B hardening + gpu-fw 1.20250915 | *(in validation, S5)* | OpenMANET 1.8.0 |
 | 2.0.0 | *(reserved)* v2.0 Build-gate reached | — | — |
 
 Refs #75 (SoT), #160 (provenance), #73 (dev-infra).
