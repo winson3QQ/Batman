@@ -34,6 +34,10 @@ MAPPER=batdata_crypt
 MOUNT=/opt/batdata
 KEYFILE=/etc/batman-provision.key   # PLACEHOLDER (LUKS mode). Real key = secure element (#47/B3).
 INIT=/etc/init.d/batdata-mount
+# The ONLY licence to format: this script created the partition itself (step 1, legacy MBR card).
+# A pre-made data partition (every A/B card: the builders mkfs p6) is never formatted — a missing
+# ext4 magic there means damage, and damage gets a repair attempt, not mkfs (see step 3).
+P3MARK=/etc/batman-storage.p3-created
 
 lg(){ logger -t batman-storage "$*"; echo "batman-storage: $*"; }
 # ext4 superblock magic (0xEF53 LE at byte 1080) — no dumpe2fs/blkid needed (not in the image)
@@ -91,7 +95,8 @@ assert_not_system(){
 	is_squashfs "$PART" && { lg "REFUSING: $PART carries a squashfs — that is a rootfs slot, not data"; exit 0; }
 	n=$(gpt_field "$PART_NUM" 'Partition name') || n=""
 	case "$n" in ""|data) : ;; *) lg "REFUSING: $PART is GPT-named '$n', not 'data'"; exit 0 ;; esac
-	g=$(gpt_field "$PART_NUM" 'Partition unique GUID') || g=""
+	# sgdisk prints GUIDs in UPPER case; the constants are lower case (the guard never fired before)
+	g=$(gpt_field "$PART_NUM" 'Partition unique GUID' | tr 'A-F' 'a-f') || g=""
 	case "$g" in
 		"$GUID_ROOTA"|"$GUID_ROOTB") lg "REFUSING: $PART carries the rootfs GUID $g"; exit 0 ;;
 	esac
@@ -105,7 +110,9 @@ if mount | grep -q " $MOUNT "; then lg "already mounted — nothing to do"; exit
 
 # LUKS capability
 LUKS=0
-if command -v cryptsetup >/dev/null 2>&1; then modprobe dm-crypt 2>/dev/null; [ -e /dev/mapper/control ] && LUKS=1; fi
+# BATMAN_STORAGE_NO_LUKS: test seam only (tests/storage-p6-safety.sh runs this on a host that has
+# cryptsetup); a node never sets it.
+if [ -z "${BATMAN_STORAGE_NO_LUKS:-}" ] && command -v cryptsetup >/dev/null 2>&1; then modprobe dm-crypt 2>/dev/null; [ -e /dev/mapper/control ] && LUKS=1; fi
 if [ "$LUKS" = 1 ]; then
 	DEV="/dev/mapper/$MAPPER"
 else
@@ -120,6 +127,8 @@ if [ ! -b "$PART" ]; then
 	START=$(parted -sm "$DISK" unit s print free 2>/dev/null | awk -F: '/free;?$/{sz=$4; gsub("s","",sz); if(sz+0>best){best=sz+0; bs=$2}} END{gsub("s","",bs); print bs}')
 	[ -n "$START" ] && [ "$START" -gt 0 ] 2>/dev/null || { lg "no free space — skip"; exit 0; }
 	lg "creating $PART ${START}s..100% (expand-to-fill)"
+	# marker BEFORE mkpart: the exit-1 retry below re-enters with the partition already present
+	touch "$P3MARK"; sync
 	parted -s "$DISK" mkpart primary ext4 "${START}s" 100% || { lg "mkpart failed"; exit 0; }
 	sync; sleep 1; [ -b "$PART" ] || partprobe "$DISK" 2>/dev/null || true; sleep 1
 	# if the kernel still can't see it, ask OpenWrt to re-run us next boot (non-zero exit)
@@ -245,25 +254,78 @@ rm -f /tmp/95-mbr.bak
 # a five-partition layout used to send step 2/3 onto rootfs B).
 assert_not_system
 
+crit(){ lg "!!! $*"; echo "<2>batman-storage: $*" > /dev/kmsg 2>/dev/null; echo "$*" > /tmp/batman-storage.crit 2>/dev/null; }
+may_format(){ [ -f "$P3MARK" ]; }
+
 # 2. LUKS (if capable, idempotent)
+# NB (#111, not fixed here): the key lives on the overlay, so an OTA (fresh overlay) generates a NEW
+# key and cannot open an existing LUKS p6. Latent until the image carries dm-crypt.
+JUST_LUKSFORMATTED=0
 if [ "$LUKS" = 1 ]; then
 	[ -f "$KEYFILE" ] || { head -c 512 /dev/urandom > "$KEYFILE"; chmod 600 "$KEYFILE"; }
-	# never luksFormat a partition that already carries a filesystem (a pre-made plain-ext4 p6
-	# would otherwise be wiped when a dm-crypt-capable image meets an unencrypted card — N-R4)
 	if ! cryptsetup isLuks "$PART" 2>/dev/null; then
-		has_fs "$PART" && { lg "refusing luksFormat: $PART already has a filesystem"; exit 0; }
-		cryptsetup luksFormat --type luks2 --batch-mode --key-file "$KEYFILE" "$PART"
+		if has_fs "$PART"; then
+			# a dm-crypt-capable image meeting a plain-ext4 data partition: never luksFormat over it
+			# (N-R4), and do NOT stop here either — stopping skipped step 4, so the trial slot booted
+			# with p6 unmounted and autocommit reverted every OTA. Carry on unencrypted.
+			lg "$PART already carries a plain ext4 — NOT encrypting it; continuing unencrypted"
+			LUKS=0; DEV=$PART
+		elif may_format; then
+			cryptsetup luksFormat --type luks2 --batch-mode --key-file "$KEYFILE" "$PART" && JUST_LUKSFORMATTED=1
+		else
+			crit "$PART is neither LUKS nor ext4 and was not created by this script — not formatting it (pre-made data partition: damaged, or written by something else)"
+			LUKS=0; DEV=$PART
+		fi
 	fi
-	cryptsetup status "$MAPPER" >/dev/null 2>&1 || cryptsetup open --key-file "$KEYFILE" "$PART" "$MAPPER"
+	[ "$LUKS" = 1 ] && { cryptsetup status "$MAPPER" >/dev/null 2>&1 || cryptsetup open --key-file "$KEYFILE" "$PART" "$MAPPER"; }
 fi
 
-# 3. ext4 (idempotent — never touch a partition that already has a filesystem)
+# 3. ext4. A pre-made data partition is NEVER formatted (#209 S5 review W1): this hook re-runs on the
+#    first boot of every OTA slot, before p6 is mounted, so "no ext4 magic" there means a damaged
+#    superblock (power cut) or a transient read error — and mkfs would wipe the data before the
+#    autocommit gate could revert anything. Only a partition this script created (P3MARK), or the
+#    mapper of a LUKS volume it formatted just now, may be formatted.
+recover_ext4(){ # $1 = device without a readable ext4 magic; 0 = a filesystem is there now
+	d=$1
+	# a transient read must not be "repaired": re-read uncached a few times first
+	n=0
+	while [ $n -lt 3 ]; do
+		sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+		has_fs "$d" && { lg "$d: ext4 magic present on re-read — transient read, nothing repaired"; return 0; }
+		sleep 1; n=$((n + 1))
+	done
+	# card I/O errors this boot: e2fsck -y over unreliable reads would destroy what is left
+	if dmesg 2>/dev/null | grep -qiE 'mmc[0-9]+: .*(error|timeout)|I/O error.*mmcblk|Buffer I/O error'; then
+		crit "$d: no ext4 magic AND the card reported I/O errors this boot — not running fsck, not formatting; replace/inspect the card"
+		return 1
+	fi
+	if [ "$(hexdump -n 6 -e '6/1 "%02x"' "$d" 2>/dev/null)" = 4c554b53babe ]; then
+		crit "$d carries a LUKS header but this image has no dm-crypt — leaving it untouched (an image without encryption must not be OTA'd onto an encrypted node)"
+		return 1
+	fi
+	command -v e2fsck >/dev/null 2>&1 || { crit "$d: no ext4 magic and no e2fsck to repair it — not formatting"; return 1; }
+	lg "$d: no ext4 magic — trying e2fsck (it locates a backup superblock itself)"
+	e2fsck -fy "$d" >/dev/null 2>&1
+	has_fs "$d" && { lg "$d: ext4 recovered by e2fsck"; return 0; }
+	for bb in 32768:4096 16384:2048 8193:1024; do
+		e2fsck -fy -b "${bb%%:*}" -B "${bb##*:}" "$d" >/dev/null 2>&1
+		has_fs "$d" && { lg "$d: ext4 recovered from backup superblock ${bb%%:*} (block ${bb##*:})"; return 0; }
+	done
+	crit "$d: ext4 unrecoverable (primary and backup superblocks) — NOT formatting; the data stays on the card for manual recovery"
+	return 1
+}
 if has_fs "$DEV"; then
 	lg "$DEV already has a filesystem — keeping it"
-elif command -v mkfs.ext4 >/dev/null 2>&1; then
-	lg "mkfs.ext4 $DEV"; mkfs.ext4 -F -L "$LABEL" -m 0 "$DEV" >/dev/null 2>&1
+elif may_format || [ "$JUST_LUKSFORMATTED" = 1 ]; then
+	if command -v mkfs.ext4 >/dev/null 2>&1; then
+		lg "mkfs.ext4 $DEV (created by this script)"; mkfs.ext4 -F -b 4096 -L "$LABEL" -m 0 "$DEV" >/dev/null 2>&1
+		# the licence is single-use: a later damaged superblock on this partition gets a repair, not mkfs
+		has_fs "$DEV" && { rm -f "$P3MARK"; sync; }
+	else
+		lg "mkfs.ext4 missing and $DEV unformatted — skip"; exit 0
+	fi
 else
-	lg "mkfs.ext4 missing and $DEV unformatted — skip"; exit 0
+	recover_ext4 "$DEV" || lg "continuing without a usable data filesystem (the mount will fail and be reported)"
 fi
 
 # 3b. grow the ext4 to fill the (possibly enlarged by 1b) partition (#201). This is a one-shot
@@ -280,6 +342,9 @@ if [ "$PART_NUM" = 6 ] && has_fs "$DEV" && command -v resize2fs >/dev/null 2>&1;
 		lg "e2fsck rc=$rc on $DEV — skip resize (degraded, fail-open)"
 	fi
 fi
+# Test seam (tests/storage-p6-safety.sh): report the filesystem outcome and stop before step 4
+# installs the init / mounts anything on the host.
+[ -z "${BATMAN_STORAGE_STOP_AFTER_FS:-}" ] || { has_fs "$DEV" && echo "fs=ext4" || echo "fs=none"; exit 0; }
 
 # 4. install the persistent data-partition service (runs on every boot + clean shutdown).
 #    Node-specific values are baked into the header; the body is verbatim (quoted heredoc).

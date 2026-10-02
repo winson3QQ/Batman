@@ -195,8 +195,8 @@ done
 
 # --- 5. config + data: ext4 (data stays small; grown on first boot by #201) --------------------
 say "mkfs.ext4 config + data (data ${P6_MB}M, first-boot grows to fill — #201)"
-mkfs.ext4 -q -F -L batconfig "${OLO}p5"
-mkfs.ext4 -q -F -L batdata   "${OLO}p6"
+mkfs.ext4 -q -F -b 4096 -L batconfig "${OLO}p5"
+mkfs.ext4 -q -F -b 4096 -L batdata   "${OLO}p6"
 if [ -n "${P6_PAYLOAD:-}" ]; then
   [ -d "$P6_PAYLOAD" ] || { echo "P6_PAYLOAD not found: $P6_PAYLOAD"; exit 1; }
   # #216 M9: fail loudly BEFORE mount/cp if the payload cannot fit p6 (else a late ENOSPC under set -e).
