@@ -97,8 +97,8 @@ OpenWrt 開了 `CONFIG_TARGET_PER_DEVICE_ROOTFS`,`build_dir/target-*/linux-bcm27
 
 | 檔案(feed `batman-provision` 除非另註) | 兩板都會執行 | 只有 pi3 | 只有 pi4 |
 |---|---|---|---|
-| `usr/sbin/batman-slot` | `detect_layout`/`layout`(版面要對上 SoC)、`verify`(SoC 認不出來就拒絕)、`is-trial`、commit/rollback 流程、`apply`(先刪除殘留的 skip-once 標記、SHA256SUMS、寫後不經快取讀回、不符就作廢成 BAD 槽、arm tryboot + GET 讀回、busy 檔、試用中拒寫)、`stage-root`、電壓不足延後、`tryboot-get` / `corrupt-after-write` 注入點 | `assert_mbr` / `mbr_entry`、由 MBR 推 `fw_part`、`write_autoboot_pi3`(p7 單一磁區原地覆寫)、firmware 白名單、GET 讀不到就硬失敗、`mbr-mismatch` 注入點 | 由 GPT 內 FAT 順序推 `fw_part`、bootA 上的 `autoboot.txt`、GET 讀不到只警告 |
-| `usr/lib/batman/platform-ab.sh`(由 98 裝成 `/lib/upgrade/platform.sh`) | check_image:tar 清單、SHA256SUMS、試用中拒絕、`/tmp` 容量、**SoC gate(fail-closed)**;do_upgrade:SoC gate(`-F` 下也擋)、rootfs 串流寫入、apply | `RAMFS_COPY_DATA` 白名單檔(只有 pi3 會讀) | — |
+| `usr/sbin/batman-slot` | `detect_layout`/`layout`(版面要對上 SoC)、`verify`(SoC 認不出來就拒絕)、`is-trial`、commit/rollback 流程、`apply`(先刪除殘留的 skip-once 標記、SHA256SUMS、寫入前先解除 tryboot 並作廢目標槽、寫後不經快取讀回、全部通過才清 BAD、arm tryboot + GET 讀回、busy 檔、寫入鎖、試用中拒寫)、`stage-root`、`precheck-node`、電壓不足延後(當下欠壓;Pi 3 commit 讀不到 vcgencmd 也延後;batpower CRIT/Pi 3 WARN)、SoC 認不出來一律拒絕、注入點 | `assert_mbr` / `mbr_entry`、由 MBR 推 `fw_part`、`write_autoboot_pi3`(p7 單一磁區原地覆寫)、firmware 白名單、GET 讀不到就硬失敗、`mbr-mismatch` 注入點 | 由 GPT 內 FAT 順序推 `fw_part`、bootA 上的 `autoboot.txt`、GET 讀不到只警告 |
+| `usr/lib/batman/platform-ab.sh`(由 98 裝成 `/lib/upgrade/platform.sh`) | check_image:tar 清單、SHA256SUMS、試用中拒絕、`batman-slot precheck-node`、`/tmp` 容量、**SoC gate(fail-closed)**;do_upgrade:SoC gate(`-F` 下也擋)、rootfs 串流寫入、apply | `RAMFS_COPY_DATA` 白名單檔(只有 pi3 會讀) | — |
 | `etc/uci-defaults/95-batman-storage` | `$DISKN`、#201 長滿卡(step 1b / 3b) | hybrid MBR 備份、驗證、寫回;**已佈建的 pi3 卡不長**(D2) | — |
 | `usr/bin/batman-autocommit` | v2.2 全部:mesh 加入閘、獨立 watchdog revert、只在真 tryboot 才 revert、p6 逾時覆寫、hold-once、skip-once、`autocommit.log` | 預設逾時 900 s(bcm2837) | 預設逾時 600 s |
 | `usr/lib/batman/meshjoin.sh`、`usr/bin/joinwatch`、`usr/bin/batman-config-save`(mesh 標記)、`usr/bin/halow-status`(LAST OTA)、`usr/bin/batman-version` | 全部 | — | — |
@@ -153,7 +153,11 @@ S5-D 觀察中(manet02,2026-10-02):1.5.0 的兩次開機各出現一次 HaLow SP
   - 建卡與打包:`scripts/build-ab-payload.sh`、`scripts/build-gpt-ab-card.sh`、`scripts/build-ab-image.sh`、`scripts/lib/pi3-fwpart.sh`
 - §4 裡 `halow-status`、`batman-version` 也是兩板都會執行,但只負責顯示,不影響 OTA,所以不在這份清單上。firmware fork 的改動(gpu-fw、distroconfig 等)不在這個 CI 的管轄範圍,由 firmware fork 的 config lock 和 `build-board.sh` 把關。
 - PR 改到上面任一檔案時,CI 檢查 `ab-shared-change` 要求 PR body 同時有 `### bcm2711` 和 `### bcm2710` 兩個實測段落(寫哪台、做了什麼、原始輸出或數字;沒測就寫「未測」和原因)。**這個檢查只確認「有交代」,不確認「真的測了」**:review 的人要讀內容。不要把它設成 branch protection 的必要檢查,否則沒動到這些檔案的 PR 會永遠卡在 "Expected"。
-- 故障注入點(`BATMAN_FAULT_INJECT`)只在直接呼叫 `batman-slot` 時生效:sysupgrade 的 stage2 由 procd 用自己的環境啟動,環境變數傳不進去,所以正式運作時不會誤觸發。`mbr-mismatch` 只對 pi3 有效(pi4 不讀 MBR);`tryboot-get`、`corrupt-after-write` 兩板都有效。§4 失效矩陣第 147、148、164 列要直接執行 `batman-slot apply`。
+- 故障注入點有兩種觸發方式:`BATMAN_FAULT_INJECT=<名稱>`(直接呼叫 `batman-slot` 時),或 **root 擁有**的旗標檔 `/tmp/batman-fault.<名稱>`(sysupgrade stage2 與 procd 服務收不到呼叫者的環境變數;/tmp 人人可寫,所以要求 root 擁有)。正式節點上兩者都不會出現。名稱:`mbr-mismatch`(只 pi3)、`tryboot-get`、`corrupt-after-write`、`die-mid-apply`、`soc-unknown`、`undervolt`;95 另有 `mbr-after-grow` 與測試用的 `BATMAN_STORAGE_PROBE` / `_STOP_AFTER_GROW` / `_STOP_AFTER_FS` / `_NO_LUKS`。
+- 操作者覆寫同樣兩種形式:`BATMAN_ALLOW_UNSEEDED=1` / `BATMAN_ALLOW_TRIAL_APPLY=1`(直接呼叫),或 root 擁有的 `/tmp/batman-slot.allow-unseeded` / `/tmp/batman-slot.allow-trial-apply`(透過 sysupgrade 時只有旗標檔有效)。
+- 寫入順序(#209 S5 review K3/W5):precheck → **解除 tryboot(讀回 0)→ 目標槽先作廢(cmdline 指向不存在的 rootfs + `BATMAN-BAD`)**→ 清空 → 寫入 → 不經快取驗證 → 才寫回真 cmdline、清 BAD → arm。中途任何中斷都留下被作廢的槽,commit/rollback 會拒絕。寫入類指令同時只能跑一個(`/tmp/batman-slot.lock`)。
+- sysupgrade 的 stage1 會先跑 `batman-slot precheck-node`(不需 payload 的節點檢查),拒絕時直接報錯、不重開。`sysupgrade -F` 會忽略 stage1 的失敗,這時只剩 stage2 的完整檢查,而 stage2 拒絕後一定會重開(回原槽),錯誤訊息隨 ramfs 消失。所以**一般 OTA 不要加 `-F`**。
+- **Pi 3 firmware 升級(換 `start*.elf` / `fixup*.dat`)要分兩版發**:節點端 apply 用的是**正在跑的舊 image** 裡的白名單,新 firmware 不在舊白名單上就會被整個 fleet 拒絕。先發一版「舊 firmware + 新白名單」,所有節點都升上去之後,再發換 firmware 的版本。
 - 部署角色的節點只用 sysupgrade 驗證。
 - 新功能的回歸測試加進 `scripts/daily-validation.sh`;因 SoC 本來就不適用的 suite 用 `na`(會列出理由,但不算失敗),不要用 SKIP 偽裝。
 

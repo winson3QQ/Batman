@@ -67,6 +67,14 @@ platform_check_image() {
 		return 1
 	fi
 
+	# Every node-side apply check that needs no payload (#209 S5 review W3): layout vs SoC, MBR, FAT
+	# count, firmware partition vs cmdline, p5 seeded, [tryboot] aim. Here a refusal stops sysupgrade
+	# with a visible error and the node untouched; in stage 2 the same refusal comes after services
+	# are killed and ends in a silent reboot. NB `sysupgrade -F` ignores a failed check — stage 2
+	# then repeats every check (batman-slot precheck) and refuses there instead.
+	local pn
+	pn=$(batman-slot precheck-node 2>&1) || { echo "REFUSING (node not ready for an OTA): ${pn##*batman-slot: }"; return 1; }
+
 	# /tmp budget (#209 D7): do_upgrade extracts everything EXCEPT root.squashfs (streamed) next to
 	# the uploaded image. Refuse here, before the pivot, if that cannot fit. Sizes from `tar -tv`.
 	local need_kb free_kb
