@@ -129,7 +129,7 @@ if [ ! -b "$PART" ]; then
 	lg "creating $PART ${START}s..100% (expand-to-fill)"
 	# marker BEFORE mkpart: the exit-1 retry below re-enters with the partition already present
 	touch "$P3MARK"; sync
-	parted -s "$DISK" mkpart primary ext4 "${START}s" 100% || { lg "mkpart failed"; exit 0; }
+	parted -s "$DISK" mkpart primary ext4 "${START}s" 100% || { lg "mkpart failed"; rm -f "$P3MARK"; exit 0; }   # licence only for a partition that exists
 	sync; sleep 1; [ -b "$PART" ] || partprobe "$DISK" 2>/dev/null || true; sleep 1
 	# if the kernel still can't see it, ask OpenWrt to re-run us next boot (non-zero exit)
 	[ -b "$PART" ] || { lg "$PART not visible yet — will retry next boot"; exit 1; }
@@ -295,7 +295,7 @@ recover_ext4(){ # $1 = device without a readable ext4 magic; 0 = a filesystem is
 		sleep 1; n=$((n + 1))
 	done
 	# card I/O errors this boot: e2fsck -y over unreliable reads would destroy what is left
-	if dmesg 2>/dev/null | grep -qiE 'mmc[0-9]+: .*(error|timeout)|I/O error.*mmcblk|Buffer I/O error'; then
+	if dmesg 2>/dev/null | grep -qE "I/O error,? dev ${DISKN}|Buffer I/O error on dev ${DISKN}"; then
 		crit "$d: no ext4 magic AND the card reported I/O errors this boot — not running fsck, not formatting; replace/inspect the card"
 		return 1
 	fi
