@@ -37,8 +37,21 @@ CMDLINE_COMMON="console=serial0 console=ttyUSB0,115200 console=tty1 rootfstype=s
 
 # DIE_RC: `is-trial` sets 2 so an internal failure reads as "unknown", never as its 1 = "committed"
 # (#209 S5 review R4: a die() during is-trial used to look exactly like a committed slot).
-die() { echo "batman-slot: $*" >&2; exit "${DIE_RC:-1}"; }
+die() {
+	echo "batman-slot: $*" >&2
+	[ "${TRACE:-0}" = 1 ] && otalog_k SLOT DIE cmd="${CMD:-?}" msg="$*"
+	exit "${DIE_RC:-1}"
+}
 warn() { echo "batman-slot: WARN: $*" >&2; }
+
+# OTA flight recorder (#209 S5, docs/design/ota-trace.md): only the commands that CHANGE state
+# (stage-root/apply/commit/rollback) trace — read-only ones (is-trial, verify, layout, …) are called
+# often by autocommit/daily-validation and must not write p6. A missing lib degrades to no trace.
+# shellcheck source=/dev/null
+[ -f /usr/lib/batman/otatrace.sh ] && . /usr/lib/batman/otatrace.sh
+type otalog >/dev/null 2>&1 || { otalog() { :; }; otalog_k() { :; }; ota_get() { :; }; ota_thr() { :; }; }
+TRACE=0; CMD=${1:-}
+st() { [ "$TRACE" = 1 ] && otalog SLOT "$@"; return 0; }
 
 # Test-only fault seams: the BATMAN_FAULT_INJECT env (direct calls), or a ROOT-OWNED flag file
 # /tmp/batman-fault.<name> — sysupgrade stage2 and procd services do not inherit the caller's env,
@@ -361,6 +374,7 @@ disarm_tryboot() {
 	command -v vcmailbox >/dev/null 2>&1 || { [ "$(layout)" = pi3 ] && die "vcmailbox missing — cannot disarm tryboot"; warn "vcmailbox missing — tryboot not disarmed"; return 0; }
 	vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1
 	r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null)
+	st DISARM get="$r"
 	# shellcheck disable=SC2086
 	set -- $r
 	if [ "${2:-}" = 0x80000000 ]; then
@@ -509,6 +523,7 @@ cmd_apply() {
 	slot_lock
 	precheck "$1"
 	echo "batman-slot: apply -> slot $T root=$TROOT boot=$TBOOT layout=$(layout) (squashfs $SQ_BYTES B)"
+	st APPLY-BEGIN target="$T" layout="$(layout)" sq="$SQ_BYTES" streamed="$([ -f "$PAYLOAD/root.squashfs" ] && echo no || echo yes)"
 	# idempotent after stage-root: the slot is already invalidated, tryboot already disarmed
 	begin_write
 	if [ -f "$PAYLOAD/root.squashfs" ]; then
@@ -545,6 +560,7 @@ cmd_apply() {
 		case "$f" in boot/bootcode.bin|boot/autoboot.txt|boot/cmdline.txt|boot/config.txt|boot/distroconfig.txt) continue ;; esac
 		[ -f "$BM/${f#boot/}" ] && [ "$(sha256sum "$BM/${f#boot/}" | cut -d' ' -f1)" = "$(sum_of "$PAYLOAD" "$f")" ] || bad="$bad ${f#boot/}"
 	done
+	st VERIFY slot="$T" result="${bad:-ok}"
 	if [ -n "$bad" ]; then
 		invalidate_slot "$T" "$BM" "apply verification failed ($bad)"
 		tboot_close
@@ -566,9 +582,11 @@ cmd_apply() {
 	command -v vcmailbox >/dev/null 2>&1 || die "vcmailbox missing — cannot arm tryboot"
 	# test only (#209 S5 §4 row 148): skip the SET, as a SET the firmware silently ignored would —
 	# the GET read-back below must then catch it and refuse.
-	if fault tryboot-get; then warn "FAULT INJECTED: tryboot SET skipped"
-	else vcmailbox 0x00038064 4 4 1 >/dev/null 2>&1; fi
+	if fault tryboot-get; then warn "FAULT INJECTED: tryboot SET skipped"; s="skipped(fault)"
+	else s=$(vcmailbox 0x00038064 4 4 1 2>&1); fi
 	r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null)
+	# the decisive evidence for "armed vs ignored": raw SET + GET, what autoboot aims at, the supply
+	otalog_k SLOT ARM target="$T" fw_t="$(fw_part "$T" 2>/dev/null)" ab_all="$(ab_section all 2>/dev/null)" ab_try="$(ab_section tryboot 2>/dev/null)" set="$s" get="$r" thr="$(ota_thr)"
 	# response: <size> <code> <tag> <len> <reqresp> <value> <end>; code 0x80000000 = success
 	set -- $r
 	if [ "${2:-}" = 0x80000000 ]; then
@@ -601,7 +619,9 @@ cmd_commit() {
 	A=$(active_slot); T=$(other_slot "$A")
 	slot_is_bad "$A" && die "slot $A carries $BADMARK — refusing to commit it"
 	FA=$(fw_part "$A") && FT=$(fw_part "$T") || die "cannot derive the firmware partitions"
+	st COMMIT-BEGIN slot="$A" was_all="$(ab_section all)" want_all="$FA" want_try="$FT"
 	write_autoboot "$FA" "$FT" commit
+	st COMMITTED slot="$A" all="$FA" try="$FT"
 	echo "batman-slot: committed slot $A as default ([all]=$FA, [tryboot]=$FT)"
 }
 
@@ -611,11 +631,14 @@ cmd_rollback() {
 	A=$(active_slot); T=$(other_slot "$A")
 	slot_is_bad "$T" && die "slot $T carries $BADMARK ($(slot_bad_reason "$T")) — refusing to make it the default"
 	FA=$(fw_part "$A") && FT=$(fw_part "$T") || die "cannot derive the firmware partitions"
+	st ROLLBACK-BEGIN to="$T" was_all="$(ab_section all)" want_all="$FT"
 	write_autoboot "$FT" "$FA" rollback
+	st ROLLED-BACK to="$T" all="$FT" try="$FA"
 	echo "batman-slot: rolled back — default is now slot $T ([all]=$FT); reboot to enter it"
 }
 
 [ "${1:-}" = is-trial ] && DIE_RC=2   # any internal failure there = "unknown", never "committed"
+case "${1:-}" in stage-root|apply|commit|rollback) TRACE=1 ;; esac
 case "${1:-}" in
 	layout|fw-part|stage-root|apply|commit|rollback|is-trial|verify|precheck-node) detect_layout ;;
 esac

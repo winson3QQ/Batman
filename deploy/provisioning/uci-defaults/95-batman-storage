@@ -368,6 +368,31 @@ bid(){ cut -c1-8 /proc/sys/kernel/random/boot_id; }
 # logd picks up when it starts -> visible in both dmesg and logread.
 note(){ logger -t batdata-mount "$*" 2>/dev/null; echo "batdata-mount: $*" > /dev/kmsg 2>/dev/null; }
 
+# OTA flight recorder (#209 S5, docs/design/ota-trace.md). A missing lib degrades to no trace.
+# shellcheck source=/dev/null
+[ -f /usr/lib/batman/otatrace.sh ] && . /usr/lib/batman/otatrace.sh
+type otalog >/dev/null 2>&1 || { otalog(){ :; }; otalog_k(){ :; }; ota_get(){ :; }; ota_thr(){ :; }; }
+dt_hex(){ hexdump -v -e '1/1 "%02x"' "/proc/device-tree/chosen/bootloader/$1" 2>/dev/null; }
+# One line of firmware facts per boot — the raw material for "did the tryboot happen, and if not,
+# why": what the firmware reports (DT), what autoboot.txt asked for, the flag right now, the supply,
+# the firmware's own log of which partition it booted, and on a Pi 3 the p7 boot code it ran.
+boot_facts(){
+	ab=""; p7=""; extra=""
+	if [ -b /dev/mmcblk0p7 ]; then
+		bm=/tmp/bm-p7; mkdir -p "$bm"
+		if mount -t vfat -o ro /dev/mmcblk0p7 "$bm" 2>/dev/null; then
+			ab=$(tr '\n' ' ' < "$bm/autoboot.txt" 2>/dev/null)
+			p7="p7_bootcode=$(sha256sum "$bm/bootcode.bin" 2>/dev/null | cut -c1-12) p7_autoboot=$(sha256sum "$bm/autoboot.txt" 2>/dev/null | cut -c1-12)"
+			umount "$bm"
+		fi
+		rmdir "$bm" 2>/dev/null
+	else
+		ab=$(tr '\n' ' ' < /boot/autoboot.txt 2>/dev/null)
+		extra="eeprom=$(vcgencmd bootloader_version 2>/dev/null | sed -n 's/^timestamp //p') $(vcgencmd bootloader_config 2>/dev/null | grep -E '^(BOOT_ORDER|PARTITION_WALK)=' | tr '\n' ' ')"
+	fi
+	echo "slot=$(sed -n 's/.*batman_slot=\([AB]\).*/\1/p' /proc/cmdline) ver=$(sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build 2>/dev/null) dt_tryboot=$(dt_hex tryboot) dt_partition=$(dt_hex partition) dt_rsts=$(dt_hex rsts) dt_bootmode=$(dt_hex boot-mode) get_now=$(ota_get) thr=$(ota_thr) autoboot=\"$ab\" fw=\"$(vclog -m 2>/dev/null | grep -m1 'boot-part')\" devkmsg=$(cat /proc/sys/kernel/printk_devkmsg 2>/dev/null) $p7 $extra"
+}
+
 # payload guardian restore (#192, extended for #167): an A/B flash clears the overlay, so a payload
 # guardian init that lives on the persistent data area (deploy/<payload>/<name>.init or the generic
 # apps/<tenant>/<name>.init — NOT baked into the generic image) is gone from /etc/init.d. Reinstate it
@@ -450,6 +475,9 @@ boot(){
 	if ! mount | grep -q " $MOUNT "; then
 		merr=$(mount "$DEV" "$MOUNT" 2>&1) || { note "mount $DEV on $MOUNT FAILED: $merr"; return 0; }
 	fi
+	# the real data device (the LUKS mapper when encrypted) for the sysupgrade stage-2 recorder,
+	# which re-mounts it to keep its trace (/tmp crosses into the stage-2 ramfs)
+	echo "$DEV" > /tmp/batdata.dev
 	mkdir -p "$CRASH" "$LOG"
 	note "mounted $DEV on $MOUNT"
 	# #215: online-grow the ext4 to fill the partition (offline step 3b can no-op on first boot
@@ -517,9 +545,30 @@ boot(){
 	fi
 	bs=$(cat /sys/class/watchdog/watchdog0/bootstatus 2>/dev/null)
 	[ -n "$bs" ] && [ "$bs" != 0 ] && reason="$reason [watchdog bootstatus=$bs]"
+	# Stage-2 evidence of the previous life (#209 S5): the stock sysupgrade ends in `reboot -f`, which
+	# looks exactly like a hang above. Graded by evidence, never inferred: the last S2 line the previous
+	# boot wrote — to p6 (stage 2 re-mounts it) or, where ramoops survives, its kmsg copy. Read BEFORE
+	# this boot's boot-reasons line is appended (its last line is still the previous life's boot_id).
+	# PANIC keeps precedence; the original text and hints are kept, not replaced.
+	pb=$(tail -n 1 "$LOG/boot-reasons.log" 2>/dev/null | sed -n 's/.* boot_id=\([^ ]*\) .*/\1/p')
+	s2=""
+	[ -n "$pb" ] && s2=$(grep " boot=$pb .* S2 " "$LOG/ota-trace.log" 2>/dev/null | tail -n 1)
+	[ -z "$s2" ] && [ -n "$confile" ] && s2=$(grep -a "batman-ota: .* S2 " "$confile" 2>/dev/null | tail -n 1)
+	if [ -n "$s2" ]; then
+		case "$s2" in
+			*" S2 END "*) tag="SYSUPGRADE-REBOOT (${s2#* S2 END })" ;;
+			*) tag="DIED-IN-STAGE2 (last: ${s2#* up=})" ;;
+		esac
+		if [ "$n" -gt 0 ]; then reason="$reason [after stage 2: $tag]"; else reason="$tag — $reason"; fi
+	fi
+	prevslot=""; [ -n "$confile" ] && prevslot=$(grep -ao 'batman_slot=[AB]' "$confile" 2>/dev/null | tail -n 1)
 	rm -f "$LOG/shutdown.marker"
 	echo "$(ts) boot_id=$(bid) prev=$reason" >> "$LOG/boot-reasons.log"
 	note "previous shutdown: $reason"
+	# shellcheck disable=SC2046
+	otalog_k BOOT $(boot_facts) prevslot="${prevslot#batman_slot=}" prev="$(echo "$reason" | cut -c1-100)"
+	tf="$LOG/ota-trace.log"
+	if [ "$(wc -c < "$tf" 2>/dev/null || echo 0)" -gt 262144 ]; then tail -n 1500 "$tf" > "$tf.tmp" && mv "$tf.tmp" "$tf"; fi
 	sync
 }
 start(){ boot; }

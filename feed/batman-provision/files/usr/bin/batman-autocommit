@@ -77,12 +77,17 @@ held(){
 		: > "$HOLDC"
 		log "HOLD-CONSUMED: autocommit-hold-once present — this trial will not be reverted"
 		aclog "HOLD-CONSUMED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=${SLOT:-$AC_SLOT} version=$(version)"
+		otalog AC HOLD-CONSUMED slot="${SLOT:-$AC_SLOT}"
 		return 0
 	fi
 	return 1
 }
 
 # shellcheck source=/dev/null
+# OTA flight recorder (#209 S5, docs/design/ota-trace.md). A missing lib degrades to no trace.
+# shellcheck source=/dev/null
+[ -f /usr/lib/batman/otatrace.sh ] && . /usr/lib/batman/otatrace.sh
+type otalog >/dev/null 2>&1 || { otalog() { :; }; otalog_k() { :; }; ota_get() { :; }; ota_thr() { :; }; }
 . /usr/lib/batman/meshjoin.sh
 
 # The canary is built ON THE NODE from this rootfs's own busybox + musl loader (#209 S5 review K1c):
@@ -163,6 +168,7 @@ revert_watchdog(){
 	aclog "TRIAL-REVERTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version) waited=$(( $(up) - START ))s reason=${why:-unhealthy}"
 	if [ "$DRY" = 1 ]; then echo "DRYRUN decision: REVERT (reboot to the committed slot) — reason: ${why:-unhealthy}"; exit 0; fi
 	echo "autocommit: trial slot $SLOT reverted (${why:-unhealthy})" > /tmp/shutdown.reason 2>/dev/null
+	otalog_k AC REVERT slot=$SLOT why="${why:-unhealthy}"
 	sync; reboot
 }
 [ "${1:-}" = watchdog ] && { revert_watchdog; exit 0; }
@@ -200,6 +206,7 @@ if [ "$DRY" != 1 ]; then
 	if ! mkdir "$RUN" 2>/dev/null; then
 		main_alive && { log "already running this boot (pid $(cat "$RUN/pid" 2>/dev/null)) — exiting"; exit 0; }
 		log "previous run of this boot is gone — taking over"
+		otalog AC TAKEOVER prev_pid="$(cat "$RUN/pid" 2>/dev/null)"
 		rm -rf "$RUN"; mkdir "$RUN" 2>/dev/null || { log "lost the takeover race — exiting"; exit 0; }
 	fi
 	echo $$ > "$RUN/pid"
@@ -237,6 +244,7 @@ expected_in_mesh(){
 }
 NEED_MESH=0; expected_in_mesh && NEED_MESH=1
 log "mesh join required: $NEED_MESH"
+otalog_k AC START slot=$SLOT is_trial_rc=$rc revert=$REVERT unknown=$UNKNOWN deadline=$DEADLINE need_mesh=$NEED_MESH dt_tryboot="$(dt_tryboot && echo 1 || echo 0)"
 
 # 5) start the revert watchdog (see revert_watchdog above)
 if [ "$REVERT" = 1 ]; then
@@ -309,6 +317,7 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 		elif [ $(( $(up) - jlast )) -gt "$JOIN_FRESH" ]; then why="${why:+$why; }mesh lost (last joined $(( $(up) - jlast ))s ago)"; fi
 	fi
 	echo "$why" > /tmp/autocommit.why
+	[ -n "$why" ] && [ -z "${FIRSTWHY:-}" ] && { FIRSTWHY=$why; otalog AC UNHEALTHY first_why="$why"; }   # the first reason, not every poll
 	if [ "$ok" -ge "$NEED" ] && [ -z "$why" ]; then
 		if [ "$DRY" = 1 ]; then echo "DRYRUN decision: COMMIT slot $SLOT (services ${NEED}x${POLL}s, mesh samples $jn)"; [ -n "${WDPID:-}" ] && kill "$WDPID" 2>/dev/null; exit 0; fi
 		# claim (N1); if a LIVE watchdog won it, it is reverting — stand down. A claim whose owner is
@@ -318,7 +327,7 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 			log "stale claim from a process that is gone — clearing it"; rm -rf "$DECIDED"; sleep "$POLL"; continue
 		fi
 		if batman-slot commit; then
-			: > "$COMMITTED"; log "slot $SLOT committed (services ${NEED}x${POLL}s, mesh samples $jn)"; aclog "COMMITTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version)"; exit 0
+			: > "$COMMITTED"; log "slot $SLOT committed (services ${NEED}x${POLL}s, mesh samples $jn)"; aclog "COMMITTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version)"; otalog_k AC COMMITTED slot=$SLOT mesh_samples=$jn; exit 0
 		else
 			rc=$?; rm -rf "$DECIDED"; log "slot $SLOT healthy but 'batman-slot commit' failed rc=$rc — retrying (v2.2 F)"; ok=0
 		fi
