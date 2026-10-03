@@ -107,8 +107,10 @@ case "$WORST" in CRIT) verdict="NOT WORKING — ${SUMMARY}";; WARN) verdict="DEG
 if [ "$mode" = json ]; then
 	j(){ printf '%s' "$1" | tr -d '\000-\010\013-\037' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'; }
 	chk=$(printf '%s' "$CHECKS" | awk -F'|' 'NF==3{if(n++)printf ",";gsub(/\\/,"\\\\",$3);gsub(/"/,"\\\"",$3);printf "{\"level\":\"%s\",\"id\":\"%s\",\"msg\":\"%s\"}",$1,$2,$3}')
-	printf '{"node":"%s","image":"%s","boot_id":"%s","uptime_s":%s,"health":{"level":"%s","verdict":"%s","checks":[%s]},"last_boot_reason":"%s","join":{"state":"%s","detail":"%s","mesh_id":"%s","channel":"%s","country":"%s","key":"%s","plinks":%s,"batman_neighbours":%s,"peers":"%s","snr_db":"%s","noise_dbm":"%s","tx_retry_pct":"%s","address":"%s","ip":"%s"},"last_join_diagnosis":"%s","battery":"%s","throttled":"%s","temp_c":"%s","boots_since_join":%s,"power_loss_since_join":%s,"evidence":{"crash_files":%s,"join_log_lines":%s},"tenants":"%s","time":"%s"}\n' \
-		"$(j "$host")" "$(j "$ver")" "$bid" "$u" "$WORST" "$(j "$verdict")" "$chk" "$(j "$last")" "$jstate" "$(j "${join#* }")" "$(j "$mesh")" "$ch" "$cc" "$key" "$plink" "$nb" "$(j "$peers")" "${snr:-}" "${noise:-}" "${retry:-}" "$addr" "$ip" "$(j "$jdiag")" "$bat" "$thr" "$temp" "$cyc" "$pl" "$ncrash" "$njoin" "$(j "$fts")" "$(date +%Y-%m-%dT%H:%M:%S)"
+	lota=$(grep -v " SKIP-ONCE " /opt/batdata/log/autocommit.log 2>/dev/null | tail -1 | cut -d" " -f2-)   # #209 S5: OTA outcome over HTTP
+	bver=$(sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build 2>/dev/null)
+	printf '{"node":"%s","image":"%s","boot_id":"%s","uptime_s":%s,"health":{"level":"%s","verdict":"%s","checks":[%s]},"last_boot_reason":"%s","last_ota":"%s","batman_version":"%s","join":{"state":"%s","detail":"%s","mesh_id":"%s","channel":"%s","country":"%s","key":"%s","plinks":%s,"batman_neighbours":%s,"peers":"%s","snr_db":"%s","noise_dbm":"%s","tx_retry_pct":"%s","address":"%s","ip":"%s"},"last_join_diagnosis":"%s","battery":"%s","throttled":"%s","temp_c":"%s","boots_since_join":%s,"power_loss_since_join":%s,"evidence":{"crash_files":%s,"join_log_lines":%s},"tenants":"%s","time":"%s"}\n' \
+		"$(j "$host")" "$(j "$ver")" "$bid" "$u" "$WORST" "$(j "$verdict")" "$chk" "$(j "$last")" "$(j "${lota:-none recorded}")" "$(j "$bver")" "$jstate" "$(j "${join#* }")" "$(j "$mesh")" "$ch" "$cc" "$key" "$plink" "$nb" "$(j "$peers")" "${snr:-}" "${noise:-}" "${retry:-}" "$addr" "$ip" "$(j "$jdiag")" "$bat" "$thr" "$temp" "$cyc" "$pl" "$ncrash" "$njoin" "$(j "$fts")" "$(date +%Y-%m-%dT%H:%M:%S)"
 	exit 0
 fi
 cat <<EOF

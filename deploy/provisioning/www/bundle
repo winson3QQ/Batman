@@ -7,7 +7,8 @@ printf 'Content-Type: application/gzip\r\nContent-Disposition: attachment; filen
 name="$host-report-$ts"; d="/tmp/$name"; rm -rf "$d"; mkdir -p "$d"
 /usr/bin/halow-status > "$d/status.txt" 2>/dev/null
 /usr/bin/halow-status json > "$d/status.json" 2>/dev/null
-cp "$BAT/log/boot-reasons.log" "$BAT/log/join.log" "$d/" 2>/dev/null
+cp "$BAT/log/boot-reasons.log" "$BAT/log/join.log" "$BAT/log/autocommit.log" "$d/" 2>/dev/null   # autocommit.log: OTA commit/revert + reason (#209 S5)
+cat /etc/batman-build > "$d/batman-build.txt" 2>/dev/null
 # our own timestamp-named files: ls -t is safe here
 # shellcheck disable=SC2012
 for f in $(ls -t "$BAT"/crash/* 2>/dev/null | head -5) $(ls -t "$BAT"/log/shutdown_*.log 2>/dev/null | head -2); do cp "$f" "$d/" 2>/dev/null; done
