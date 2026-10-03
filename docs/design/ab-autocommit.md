@@ -294,3 +294,10 @@ Code review of v2.2 found five ways the gate could do the wrong thing; all fixed
   will not run are each UNHEALTHY (before, each silently skipped the block and committed). The canary is
   built on the node from the rootfs's own busybox + musl (`batman-autocommit canary`; no shipped blob —
   the old `canary.tar.gz` never shipped), latched only on success, old tags pruned.
+- **Code review of v2.3 (same day).** The claim now records its owner pid (`/tmp/autocommit.decided/pid`):
+  a claim whose owner is gone is cleared — by main (retry next poll) or by the watchdog — but only while
+  no `batman-slot` holds the slot-write lock, because a `restart` kills main but not the `batman-slot
+  commit` it started (F2/F5); the watchdog's revert also defers while a slot writer is alive. The
+  canary latch is a file (`/tmp/autocommit.canary-ok`): `health_ok` runs in a `$(...)` subshell, so the
+  old variable latch never held and the canary ran on every poll (F4). A p6 that 95-batman-storage
+  refused to touch now shows its reason in the trial's `why` (F8).

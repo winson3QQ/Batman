@@ -57,10 +57,14 @@ real_tryboot(){  # this boot is a one-shot tryboot of a slot that is not provabl
 
 RUN=/tmp/autocommit.run                # main's pid lives in $RUN/pid (R1)
 HOLDC=/tmp/autocommit.hold-consumed    # a hold seen this boot — survives a main restart (R1)
-main_alive(){
-	p=$(cat "$RUN/pid" 2>/dev/null); [ -n "$p" ] && kill -0 "$p" 2>/dev/null || return 1
-	tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'batman-autocommit run'
+pid_is(){  # $1 pid, $2 pattern in its (NUL-flattened) cmdline
+	[ -n "$1" ] && kill -0 "$1" 2>/dev/null && tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q "$2"
 }
+main_alive(){ pid_is "$(cat "$RUN/pid" 2>/dev/null)" 'batman-autocommit run'; }
+# The one claim (N1) records its owner, so a claim whose owner died can be told from a live one.
+claim(){ mkdir "$DECIDED" 2>/dev/null || return 1; echo $$ > "$DECIDED/pid"; }
+claim_owner_alive(){ pid_is "$(cat "$DECIDED/pid" 2>/dev/null)" batman-autocommit; }
+slot_writer_alive(){ pid_is "$(cat /tmp/batman-slot.lock/pid 2>/dev/null)" batman-slot; }
 # A hold cancels the revert (#209 S5 review R2): the operator's /tmp hold (root-owned: /tmp is world-
 # writable), a hold-once on p6 (consumed here, and remembered in $HOLDC so a restarted main and the
 # watchdog both still see it), or one already consumed this boot. Checked by main at start AND by the
@@ -129,18 +133,23 @@ revert_watchdog(){
 	# The claim is mandatory (#209 S5 review R6): main holds it only while running `batman-slot commit`,
 	# which on a Pi 3 is a raw p7 sector write — rebooting under it tears autoboot.txt (= a brick).
 	# Wait for it; take it over only from a main that is gone. 30 min cap (a write takes seconds).
+	# Take it over only when its owner is gone AND no batman-slot is still writing (a `restart` kills
+	# main but not the `batman-slot commit` it started — code review F2/F5).
 	w=0
-	while ! mkdir "$DECIDED" 2>/dev/null; do
+	while ! claim; do
 		[ -f "$COMMITTED" ] && exit 0
-		if ! main_alive; then log "claim left behind by a main that is gone — taking it over"; rmdir "$DECIDED" 2>/dev/null; continue; fi
-		[ $w -ge 1800 ] && { log "main has held the claim for ${w}s — re-checking without it"; break; }
+		if ! claim_owner_alive && ! slot_writer_alive; then
+			log "claim left behind by a process that is gone — taking it over"; rm -rf "$DECIDED"
+		elif [ $w -ge 1800 ]; then
+			log "the claim has been held for ${w}s — re-checking without it"; break
+		fi
 		sleep 5; w=$((w + 5))
 	done
-	# bounded deferral: an apply/stage-root writing a slot, or a first-load still loading images
-	# (the p6 docker store is shared with the committed slot)
+	# bounded deferral: an apply/stage-root/commit/rollback writing a slot, or a first-load still loading
+	# images (the p6 docker store is shared with the committed slot)
 	d=0
 	while [ $d -lt $DEFER_MAX ]; do
-		if [ -e /tmp/batman-slot.busy ] || { ls /tmp/batman-firstload-*.latch >/dev/null 2>&1 && pgrep -f "docker load" >/dev/null 2>&1; }; then
+		if [ -e /tmp/batman-slot.busy ] || slot_writer_alive || { ls /tmp/batman-firstload-*.latch >/dev/null 2>&1 && pgrep -f "docker load" >/dev/null 2>&1; }; then
 			[ $d -eq 0 ] && log "revert deferred: slot write or first-load in progress (max ${DEFER_MAX}s)"
 			sleep 10; d=$((d + 10))
 		else break; fi
@@ -245,11 +254,13 @@ running(){
 	if [ -x "/etc/init.d/$1" ]; then /etc/init.d/"$1" running >/dev/null 2>&1; return $?; fi
 	pgrep -f "$1" >/dev/null 2>&1 || pidof "$1" >/dev/null 2>&1
 }
-CANARY_OK=0
+# health_ok runs inside $(...) — a subshell — so its latch must be a file, not a variable (code review F4)
+CANARY_LATCH=/tmp/autocommit.canary-ok
 # echo a reason + return 1 when unhealthy; silent + return 0 when healthy (services/infra only)
 health_ok(){
-	# p6 must be mounted (v2.2 M3b): otherwise the docker/payload checks below silently skip themselves
-	p6 || { echo "data partition /opt/batdata not mounted"; return 1; }
+	# p6 must be mounted (v2.2 M3b): otherwise the docker/payload checks below silently skip themselves.
+	# 95-batman-storage leaves its verdict in /tmp when it refused to touch a damaged p6 (code review F8).
+	p6 || { echo "data partition /opt/batdata not mounted$( [ -s /tmp/batman-storage.crit ] && printf ': %s' "$(cat /tmp/batman-storage.crit)")"; return 1; }
 	for s in mesh11sd openmanetd wpad; do running "$s" || { echo "svc $s down"; return 1; }; done
 	thr=$(vcgencmd get_throttled 2>/dev/null | sed -n 's/.*=0x//p')
 	[ $(( 0x${thr:-0} & 1 )) -eq 0 ] || { echo "undervoltage now"; return 1; }
@@ -267,9 +278,9 @@ health_ok(){
 		[ -e /sys/fs/cgroup/cgroup.controllers ] || { echo "no cgroup v2 hierarchy (memcg cannot be verified)"; return 1; }
 		grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null || { echo "no memcg controller"; return 1; }
 		# canary run (authoritative), latched only on SUCCESS (a dockerd still starting is retried next poll)
-		if [ "$CANARY_OK" = 0 ]; then
+		if [ ! -f "$CANARY_LATCH" ]; then
 			c=$(canary_run) || { echo "$c"; return 1; }
-			CANARY_OK=1
+			: > "$CANARY_LATCH"
 		fi
 	fi
 	for d in /opt/batdata/apps/*/; do
@@ -300,12 +311,16 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 	echo "$why" > /tmp/autocommit.why
 	if [ "$ok" -ge "$NEED" ] && [ -z "$why" ]; then
 		if [ "$DRY" = 1 ]; then echo "DRYRUN decision: COMMIT slot $SLOT (services ${NEED}x${POLL}s, mesh samples $jn)"; [ -n "${WDPID:-}" ] && kill "$WDPID" 2>/dev/null; exit 0; fi
-		# claim (N1); if the watchdog already won it, it is reverting — stand down
-		mkdir "$DECIDED" 2>/dev/null || { log "revert already in progress — not committing"; exit 0; }
+		# claim (N1); if a LIVE watchdog won it, it is reverting — stand down. A claim whose owner is
+		# gone (a main killed by `restart` mid-commit, code review F2) is cleared and retried next poll.
+		if ! claim; then
+			if claim_owner_alive || slot_writer_alive; then log "revert (or a slot write) in progress — not committing"; exit 0; fi
+			log "stale claim from a process that is gone — clearing it"; rm -rf "$DECIDED"; sleep "$POLL"; continue
+		fi
 		if batman-slot commit; then
 			: > "$COMMITTED"; log "slot $SLOT committed (services ${NEED}x${POLL}s, mesh samples $jn)"; aclog "COMMITTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version)"; exit 0
 		else
-			rc=$?; rmdir "$DECIDED" 2>/dev/null; log "slot $SLOT healthy but 'batman-slot commit' failed rc=$rc — retrying (v2.2 F)"; ok=0
+			rc=$?; rm -rf "$DECIDED"; log "slot $SLOT healthy but 'batman-slot commit' failed rc=$rc — retrying (v2.2 F)"; ok=0
 		fi
 	fi
 	sleep "$POLL"
