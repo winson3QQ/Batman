@@ -32,15 +32,17 @@ REQUIRE_IMAGE_METADATA=0
 # #209 v4.3 adds the uncached read-back verification (sha256sum/head/tail/cut/cmp) and the Pi 3
 # firmware allow-list (RAMFS_COPY_DATA). Prove the set on the bench with a stage2 log, as #89 did.
 # shellcheck disable=SC2034
-RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr /usr/bin/sha256sum /usr/bin/head /usr/bin/tail /usr/bin/cut /usr/bin/cmp'
+RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/sbin/batman-reboot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr /usr/bin/sha256sum /usr/bin/head /usr/bin/tail /usr/bin/cut /usr/bin/cmp'
 # shellcheck disable=SC2034
-RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256 /usr/lib/batman/otatrace.sh'
+RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256 /usr/lib/batman/otatrace.sh /usr/lib/batman/bootfacts.sh'
 
 # OTA flight recorder (#209 S5, docs/design/ota-trace.md). Functions only; a missing or broken lib
 # degrades to no trace, never to a different upgrade decision.
 # shellcheck source=/dev/null
 [ -f /usr/lib/batman/otatrace.sh ] && . /usr/lib/batman/otatrace.sh
 type otalog >/dev/null 2>&1 || { otalog() { :; }; otalog_k() { :; }; ota_get() { :; }; ota_thr() { :; }; }
+# shellcheck source=/dev/null
+[ -f /usr/lib/batman/bootfacts.sh ] && . /usr/lib/batman/bootfacts.sh
 
 # Stage 1 (also run by validate_firmware_image / `sysupgrade -T` / LuCI): trace the verdict ONLY —
 # no state file, so a mere validation leaves nothing that a later boot could misread as an OTA.
@@ -192,7 +194,34 @@ platform_do_upgrade() {
 	_ab_do_upgrade "$@"; abrc=$?
 	otalog_k S2 END rc=$abrc get="$(ota_get)" thr="$(ota_thr)"
 	ota_s2_close
+	ota_s2_explicit_restart_if_not_armed "$abrc"
 	return $abrc
+}
+
+# Stage 2 failure path (#209 S5 D3, docs/design/explicit-reboot.md): when nothing was armed (apply
+# refused, verification failed) the stock do_stage2 would `reboot -f` with partition 0 — the restart
+# the Pi 4 bootloader may misread, walking onto partition 1, possibly the slot just invalidated
+# (no rootfs -> panic -> partition 0 again, with no userspace to correct it). So on a Pi 4 with the
+# flag certainly CLEAR, restart explicitly to [all]. An armed flag keeps the stock path (the tryboot
+# reboot -f, ~25/25 correct); an unreadable flag or [all] also keeps it — never guess.
+ota_s2_explicit_restart_if_not_armed() {
+	local g n m
+	type bf_get >/dev/null 2>&1 || return 0
+	[ "$(bf_pi4)" = yes ] || return 0
+	g=$(bf_get); [ "$g" = 0 ] || return 0
+	[ -x /usr/sbin/batman-reboot ] || return 0
+	if grep -q ' /boot ' /proc/mounts; then
+		n=$(bf_ab_all /boot)
+	else
+		m=/tmp/s2-p1; mkdir -p "$m"
+		mount -t vfat -o ro /dev/mmcblk0p1 "$m" 2>/dev/null && { n=$(bf_ab_all "$m"); umount "$m" 2>/dev/null; }
+	fi
+	case "$n" in 1|2) ;; *) return 0 ;; esac
+	otalog_k S2 EXPLICIT-RESTART to="$n" rc="$1" why=tryboot-not-armed
+	umount /boot 2>/dev/null
+	sync
+	/usr/sbin/batman-reboot "$n"
+	return 0   # only if the restart failed: the stock reboot -f follows
 }
 
 _ab_do_upgrade() {

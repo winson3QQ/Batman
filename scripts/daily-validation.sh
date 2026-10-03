@@ -304,6 +304,20 @@ chk_memcg_209() { fssh "$1" 12 '                               # #209 D6: docker
   c=$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null)
   echo "cgroup2 controllers: ${c:-none}  cmdline cgroup_disable: $(grep -o "cgroup_disable=[a-z]*" /proc/cmdline || echo none)"
   echo " $c " | grep -q " memory "'; }
+chk_slotintegrity_209() { fssh "$1" 20 '                       # #209 S5: Pi 4 EEPROM boots the wrong slot
+  # The Pi 4 bootloader (EEPROM 2026-09-23) may read raw PM_RSTS as the reboot partition after a
+  # partition-0 restart and walk to p1 (docs/design/explicit-reboot.md). The node must have the tool and
+  # the K90 hook for explicit restarts, must not be running on a wrongly-booted slot now, must not be
+  # stuck in correcting restarts, and both slots must carry the boot-time self-check.
+  case "$(cat /proc/device-tree/compatible 2>/dev/null)" in *bcm2711*) ;; *) echo "Pi 3: no EEPROM bootloader, the bug is Pi 4 only — n/a"; exit 0 ;; esac
+  [ -x /usr/sbin/batman-reboot ] || { echo "batman-reboot missing"; exit 1; }
+  [ -e /etc/rc.d/K90batman-reboot ] || { echo "K90batman-reboot hook not enabled"; exit 1; }
+  [ -f /tmp/batman-fw-override ] && { echo "the firmware booted the WRONG slot this boot: $(cat /tmp/batman-fw-override)"; exit 1; }
+  tail -n 20 /opt/batdata/log/autocommit.log 2>/dev/null | grep -q "FW-OVERRIDE-STUCK" && { echo "recent FW-OVERRIDE-STUCK in autocommit.log"; exit 1; }
+  a=/opt/batdata/state/slot-A.protected; b=/opt/batdata/state/slot-B.protected
+  [ -f "$a" ] && [ -f "$b" ] || { echo "only partly protected (A:$(cat "$a" 2>/dev/null || echo -) B:$(cat "$b" 2>/dev/null || echo -)) — sysupgrade the same image once more"; exit 1; }
+  w=$(grep -c " BOOT FW-OVERRIDE to=" /opt/batdata/log/ota-trace.log 2>/dev/null)
+  echo "tool + hook present, on the committed slot, both slots protected; ${w:-0} correcting restart(s) in the trace"'; }
 chk_otatrace_209() { fssh "$1" 15 '                            # #209 S5: OTA flight recorder
   # Every OTA must leave a complete stage-2 chain on p6 (S2 BEGIN ... S2 END rc=…), and every boot a
   # BOOT line of firmware facts — the evidence an OTA failure is diagnosed from (docs/design/ota-trace.md).
@@ -460,6 +474,7 @@ if up "$BENCH_NODE"; then
   suite memcg-209 "memory cgroup controller enabled — docker limits + autocommit canary (#209 D6; bcm2710 DTB disables it)" "chk_memcg_209 $BENCH_NODE"
   suite trybootget-209 "firmware answers the tryboot GET and the one-shot flag is clear on a normal boot (#209 D5)" "chk_trybootget_209 $BENCH_NODE"
   suite ota-trace-209 "OTA flight recorder: BOOT facts every boot + a complete stage-2 chain for the last OTA (#209 S5)" "chk_otatrace_209 $BENCH_NODE"
+  suite slot-integrity-209 "Pi 4: explicit-restart tool + hook, not on a wrongly-booted slot, not stuck, both slots self-checking (#209 S5)" "chk_slotintegrity_209 $BENCH_NODE"
   # every reachable Pi 4 in the run (bench, mesh, OTS) must meet the bootloader floor
   P4S=""; for n in "$BENCH_NODE" "$MESH_NODE" "$OTS_NODE"; do [ "$(soc_of "$n")" = bcm2711 ] && case " $P4S " in *" $n "*) ;; *) P4S="$P4S $n" ;; esac; done
   if [ -n "$P4S" ]; then

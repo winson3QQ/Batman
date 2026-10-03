@@ -406,6 +406,14 @@ begin_write() {
 	tboot_open
 	invalidate_slot "$T" "$BM" "write in progress (apply not completed)"
 	tboot_close
+	# migration record (#209 S5 D6): slot T no longer holds the image that recorded itself as running
+	# the boot-time self-check; the new image re-records it on its first boot. p6 is at /tmp/p6t in the
+	# sysupgrade stage 2 (platform-ab re-mounts it there), at /opt/batdata otherwise.
+	case "${OTATRACE_FILE:-}" in
+		/tmp/p6t/*) rm -f "/tmp/p6t/state/slot-$T.protected" ;;
+		*) grep -q " /opt/batdata " /proc/mounts && rm -f "/opt/batdata/state/slot-$T.protected" ;;
+	esac
+	return 0
 }
 
 # ---- apply ----------------------------------------------------------------------------------------
@@ -417,6 +425,8 @@ sum_of() { awk -v f="$2" '$2==f{print $1; exit}' "$1/SHA256SUMS"; }
 # (Under `sysupgrade -F` stage 1 failures are ignored; stage 2 runs every check again via precheck.)
 # Sets A T TROOT TBOOT TGUID.
 node_checks() {
+	# the firmware booted the WRONG slot this boot (#209 S5): the "other" slot is then the committed one
+	[ -f /tmp/batman-fw-override ] && die "the firmware booted the wrong slot this boot ($(cat /tmp/batman-fw-override)) — refusing to write a slot until the node is back on its committed one (batman-slot reboot committed)"
 	# Never write while running a one-shot TRIAL (#209 v3.1 MUST-FIX 1 / ab-autocommit v2.2 G): on a
 	# trial of B the "other" slot is A = the COMMITTED one, so a second OTA here would overwrite the only
 	# known-good slot. Only a real tryboot (DT tryboot=1) is refused; a #133 stale-fallback boot may
@@ -637,6 +647,44 @@ cmd_rollback() {
 	echo "batman-slot: rolled back — default is now slot $T ([all]=$FT); reboot to enter it"
 }
 
+# ---- controlled reboot (#209 S5, docs/design/explicit-reboot.md) -----------------------------------
+# `batman-slot reboot committed [reason]` — THE way to restart a node back onto its committed slot.
+# On a Pi 4 the bootloader (EEPROM 2026-09-23) may ignore autoboot.txt after a partition-0 restart and
+# walk to partition 1 (5/10 plain reboots on manet02); an explicit partition boots right (10/10). So:
+# procd shuts down as usual, and the K90 hook /etc/init.d/batman-reboot replaces only the final
+# restart with `batman-reboot <[all]>`. Every case we cannot vouch for falls back to a plain reboot
+# (the boot-time self-check in batdata-mount then corrects a wrong landing): a Pi 3 (no such bug,
+# reboot N on its hybrid MBR never verified), an armed tryboot (explicit N + tryboot never verified),
+# an unreadable flag or [all], a missing tool or hook. Never dies: the caller wants a reboot.
+cmd_reboot() {
+	reason=${*:-operator request}
+	# shellcheck source=/dev/null
+	. /usr/lib/batman/bootfacts.sh 2>/dev/null
+	why=""
+	type bf_get >/dev/null 2>&1 || why="no bootfacts lib"
+	[ -z "$why" ] && [ "$(bf_pi4)" != yes ] && why="not a Pi 4 A/B card"
+	[ -z "$why" ] && { g=$(bf_get); [ "$g" = 0 ] || why="tryboot flag is $g"; }
+	[ -z "$why" ] && { n=$(bf_ab_all); case "$n" in 1|2) : ;; *) why="[all] unreadable ('$n')" ;; esac; }
+	[ -z "$why" ] && { [ -x /usr/sbin/batman-reboot ] || why="batman-reboot missing"; }
+	[ -z "$why" ] && { [ -e /etc/rc.d/K90batman-reboot ] || why="K90batman-reboot hook not enabled"; }
+	echo "$reason" > /tmp/shutdown.reason 2>/dev/null
+	if [ -n "$why" ]; then
+		otalog_k SLOT REBOOT mode=plain why="$why" reason="$reason"
+		echo "batman-slot: plain reboot ($why)" >&2
+		exec reboot
+	fi
+	otalog_k SLOT REBOOT mode=explicit to="$n" reason="$reason"
+	echo "$n" > /tmp/batman-reboot.want; sync
+	# safety net: if procd's shutdown has not restarted us in 240 s, restart explicitly ourselves
+	setsid sh -c "sleep 240; exec /usr/sbin/batman-reboot $n" </dev/null >/dev/null 2>&1 &
+	echo "batman-slot: rebooting to firmware partition $n (procd shutdown, explicit restart by K90batman-reboot)" >&2
+	exec reboot
+}
+if [ "${1:-}" = reboot ]; then
+	[ "${2:-}" = committed ] || { echo "usage: batman-slot reboot committed [reason]" >&2; exit 2; }
+	shift 2; cmd_reboot "$@"
+fi
+
 [ "${1:-}" = is-trial ] && DIE_RC=2   # any internal failure there = "unknown", never "committed"
 case "${1:-}" in stage-root|apply|commit|rollback) TRACE=1 ;; esac
 case "${1:-}" in
@@ -658,5 +706,5 @@ case "${1:-}" in
 	            assert_fw_sane; echo "batman-slot: verify ok (layout $(layout), slot $(active_slot))" ;;
 	# read-only: the node-side apply checks (no payload needed) — sysupgrade stage 1 (#209 S5 review W3)
 	precheck-node) node_checks; echo "batman-slot: node ready for an OTA into slot $T" ;;
-	*) echo "usage: batman-slot active|target|layout|fw-part A|B|stage-root <dir>|apply <dir>|commit|rollback|is-trial|verify|precheck-node" >&2; exit 2 ;;
+	*) echo "usage: batman-slot active|target|layout|fw-part A|B|stage-root <dir>|apply <dir>|commit|rollback|is-trial|verify|precheck-node|reboot committed [reason]" >&2; exit 2 ;;
 esac

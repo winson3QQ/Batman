@@ -23,7 +23,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=batman-provision
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=20
+PKG_RELEASE:=21
 PKG_MAINTAINER:=Batman <yellow.winson@gmail.com>
 PKG_LICENSE:=GPL-2.0-or-later
 
@@ -38,7 +38,7 @@ define Package/batman-provision
   #   e2fsprogs alone does not ship resize2fs, and sgdisk (gdisk) is not in a minimal image.
   # block-mount: mount helpers. dropbear: dropbearkey used by 96 to fingerprint restored keys.
   # The mesh/observability tools (batctl, iw, uhttpd, logger, wget) are in the OpenMANET base.
-  DEPENDS:=+parted +e2fsprogs +resize2fs +sgdisk +block-mount +dropbear +uci +blkid
+  DEPENDS:=+parted +e2fsprogs +resize2fs +sgdisk +block-mount +dropbear +uci +blkid +batman-reboot
   PKGARCH:=all
 endef
 
@@ -77,6 +77,7 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/etc/init.d/meshled        $(1)/etc/init.d/meshled
 	$(INSTALL_BIN) ./files/etc/init.d/batman-faketime $(1)/etc/init.d/batman-faketime
 	$(INSTALL_BIN) ./files/etc/init.d/batman-autocommit $(1)/etc/init.d/batman-autocommit
+	$(INSTALL_BIN) ./files/etc/init.d/batman-reboot   $(1)/etc/init.d/batman-reboot
 	# tools
 	$(INSTALL_BIN) ./files/usr/bin/batman-version     $(1)/usr/bin/batman-version
 	$(INSTALL_BIN) ./files/etc/uci-defaults/93-batman-version-banner $(1)/etc/uci-defaults/93-batman-version-banner
@@ -99,6 +100,7 @@ define Package/batman-provision/install
 	# shared "in the mesh" test (joinwatch + batman-autocommit OTA gate, #209 S4-5)
 	$(INSTALL_DATA) ./files/usr/lib/batman/meshjoin.sh $(1)/usr/lib/batman/meshjoin.sh
 	$(INSTALL_DATA) ./files/usr/lib/batman/otatrace.sh $(1)/usr/lib/batman/otatrace.sh
+	$(INSTALL_DATA) ./files/usr/lib/batman/bootfacts.sh $(1)/usr/lib/batman/bootfacts.sh
 	# offline monotonic wall-clock (#174): restore@S12 (after batdata-mount S11), save@K09 + periodic
 	$(INSTALL_BIN) ./files/usr/sbin/batman-faketime   $(1)/usr/sbin/batman-faketime
 	# A/B slot operator (#89): the one audited place for slot apply/commit/rollback, shared with
@@ -128,7 +130,7 @@ endef
 # flightrec/meshled S99). VERIFY in CI that the symlinks land in the image.
 define Package/batman-provision/postinst
 #!/bin/sh
-for s in halow-keyguard batpower flightrec joinwatch meshled batman-faketime batman-autocommit; do
+for s in halow-keyguard batpower flightrec joinwatch meshled batman-faketime batman-autocommit batman-reboot; do
 	if [ -x "$${IPKG_INSTROOT}/etc/init.d/$$s" ]; then
 		"$${IPKG_INSTROOT}/etc/init.d/$$s" enable 2>/dev/null
 	fi

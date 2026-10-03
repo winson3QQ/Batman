@@ -162,7 +162,11 @@ run(){
 				else
 					write "$(ts) boot=$(bid) up=${u}s AUTOREBOOT | not joined for ${d}s — one controlled reboot (the next one only after $GAP_BOOTS more boots)"
 					[ -f /tmp/shutdown.reason ] || echo "joinwatch: not joined for ${d}s — automatic reboot" > /tmp/shutdown.reason 2>/dev/null
-					sleep 2; reboot
+					sleep 2
+					# A/B card: controlled reboot onto the committed slot (explicit firmware partition on a Pi 4,
+					# #209 S5); a card without batman-slot (golden/MBR) keeps the plain reboot
+					command -v batman-slot >/dev/null 2>&1 && batman-slot reboot committed "joinwatch: not joined for ${d}s"
+					reboot
 				fi
 			fi
 		fi
