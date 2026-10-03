@@ -11,7 +11,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/batman-reboot
   SECTION:=utils
   CATEGORY:=Utilities
-  TITLE:=Restart into an explicit Raspberry Pi firmware boot partition (#209)
+  TITLE:=Restart into an explicit Raspberry Pi firmware boot partition
 endef
 
 define Package/batman-reboot/description
