@@ -55,7 +55,8 @@ LOCK_MINE=0
 slot_lock() {
 	if ! mkdir "$LOCK" 2>/dev/null; then
 		p=$(cat "$LOCK/pid" 2>/dev/null)
-		if [ -n "$p" ] && [ "$p" != $$ ] && kill -0 "$p" 2>/dev/null && grep -q batman-slot "/proc/$p/cmdline" 2>/dev/null; then
+		# cmdline is NUL-separated ("/bin/sh\0/usr/sbin/batman-slot\0apply…"): flatten before matching
+		if [ -n "$p" ] && [ "$p" != $$ ] && kill -0 "$p" 2>/dev/null && tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q batman-slot; then
 			die "another batman-slot (pid $p) is writing a slot — refusing to run concurrently"
 		fi
 		warn "taking over a stale slot lock (pid ${p:-?} is gone)"
