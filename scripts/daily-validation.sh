@@ -304,6 +304,31 @@ chk_memcg_209() { fssh "$1" 12 '                               # #209 D6: docker
   c=$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null)
   echo "cgroup2 controllers: ${c:-none}  cmdline cgroup_disable: $(grep -o "cgroup_disable=[a-z]*" /proc/cmdline || echo none)"
   echo " $c " | grep -q " memory "'; }
+chk_slotintegrity_209() { fssh "$1" 20 '                       # #209 S5: Pi 4 EEPROM boots the wrong slot
+  # The Pi 4 bootloader (EEPROM 2026-09-23) may read raw PM_RSTS as the reboot partition after a
+  # partition-0 restart and walk to p1 (docs/design/explicit-reboot.md). The node must have the tool and
+  # the K90 hook for explicit restarts, must not be running on a wrongly-booted slot now, must not be
+  # stuck in correcting restarts, and both slots must carry the boot-time self-check.
+  case "$(cat /proc/device-tree/compatible 2>/dev/null)" in *bcm2711*) ;; *) echo "Pi 3: no EEPROM bootloader, the bug is Pi 4 only — n/a"; exit 0 ;; esac
+  [ -x /usr/sbin/batman-reboot ] || { echo "batman-reboot missing"; exit 1; }
+  [ -e /etc/rc.d/K90batman-reboot ] || { echo "K90batman-reboot hook not enabled"; exit 1; }
+  [ -f /tmp/batman-fw-override ] && { echo "the firmware booted the WRONG slot this boot: $(cat /tmp/batman-fw-override)"; exit 1; }
+  tail -n 20 /opt/batdata/log/autocommit.log 2>/dev/null | grep -q "FW-OVERRIDE-STUCK" && { echo "recent FW-OVERRIDE-STUCK in autocommit.log"; exit 1; }
+  a=/opt/batdata/state/slot-A.protected; b=/opt/batdata/state/slot-B.protected
+  [ -f "$a" ] && [ -f "$b" ] || { echo "only partly protected (A:$(cat "$a" 2>/dev/null || echo -) B:$(cat "$b" 2>/dev/null || echo -)) — sysupgrade the same image once more"; exit 1; }
+  w=$(grep -c " BOOT FW-OVERRIDE to=" /opt/batdata/log/ota-trace.log 2>/dev/null)
+  echo "tool + hook present, on the committed slot, both slots protected; ${w:-0} correcting restart(s) in the trace"'; }
+chk_otatrace_209() { fssh "$1" 15 '                            # #209 S5: OTA flight recorder
+  # Every OTA must leave a complete stage-2 chain on p6 (S2 BEGIN ... S2 END rc=…), and every boot a
+  # BOOT line of firmware facts — the evidence an OTA failure is diagnosed from (docs/design/ota-trace.md).
+  f=/opt/batdata/log/ota-trace.log
+  [ -f /usr/lib/batman/otatrace.sh ] || { echo "otatrace.sh missing from this rootfs"; exit 1; }
+  grep -q " BOOT " "$f" 2>/dev/null || { echo "no BOOT line in $f (recorder not running at boot?)"; exit 1; }
+  b=$(grep " S2 BEGIN " "$f" | tail -n 1 | sed -n "s/.* boot=\([^ ]*\) .*/\1/p")
+  [ -n "$b" ] || { echo "recorder present, BOOT lines ok; no OTA recorded on p6 yet"; exit 0; }
+  e=$(grep " boot=$b .* S2 END " "$f" | tail -n 1)
+  [ -n "$e" ] || { echo "last OTA (stage-2 boot $b) has S2 BEGIN but no S2 END — stage 2 died or its trace was lost"; exit 1; }
+  echo "last OTA (stage-2 boot $b): S2 END ${e#* S2 END }"'; }
 chk_trybootget_209() { fssh "$1" 12 '                          # #209 v4.3 D5: tryboot GET read-back
   # batman-slot apply refuses on a pi3 unless the firmware answers the tryboot GET; on a normal
   # (committed, non-trial) boot the one-shot flag must read 0 — a 1 means the next reboot trials a slot.
@@ -325,6 +350,22 @@ chk_p7_209() { fssh "$1" 20 '                                  # #209 v4.3 D3/D4
   [ -f $m/config.txt ] && echo "config.txt present" || { echo "config.txt MISSING — the board will not boot (E0g)"; rc=1; }
   grep -q "^tryboot_a_b=1" $m/autoboot.txt 2>/dev/null && echo "autoboot.txt tryboot_a_b=1" || { echo "autoboot.txt bad/missing"; rc=1; }
   umount $m; rmdir $m 2>/dev/null; exit $rc'; }
+chk_eeprom_209() {                                             # #209 S5: Pi 4 bootloader floor
+  # Below 2025-08-20 the EEPROM cannot fall back from a slot that fails at the firmware level (a FAT
+  # boot slot without a valid start4.elf): the trial hangs until someone pulls power (manet02,
+  # 2023-01-11, 2026-10-02). Every Pi 4 the run can see must be at or above the floor.
+  local n ts v rc=0 seen=0
+  for n in "$@"; do
+    [ "$(soc_of "$n")" = bcm2711 ] || continue
+    seen=1
+    ts=$(fssh "$n" 12 'vcgencmd bootloader_version | sed -n "s/^timestamp //p"' | tr -d '\r')
+    v=$(fssh "$n" 12 'vcgencmd bootloader_version | head -1' | tr -d '\r')
+    if ! [[ $ts =~ ^[0-9]+$ ]]; then echo "$n: bootloader version unreadable"; rc=1
+    elif [ "$ts" -lt 1755648000 ]; then echo "$n: bootloader $v < 2025-08-20 — NO firmware-level A/B fallback; update the EEPROM"; rc=1
+    else echo "$n: bootloader $v ok"; fi
+  done
+  [ "$seen" = 1 ] || { echo "no reachable Pi 4 among: $*"; return 1; }
+  return $rc; }
 chk_autocommit() { fssh "$1" 12 '                              # ab-autocommit.md / #211
   # A completed reflash must not leave the node in an uncommitted trial (a reboot would then revert to
   # the old slot). batman-autocommit health-gates + commits; assert the node ended committed.
@@ -383,14 +424,12 @@ chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash
   # (2) offline copies present (F2 mv-not-rm contract) + no stuck tars in the images root (load complete).
   ls "$d"/images/loaded/*.tar >/dev/null 2>&1 || { echo "no offline copies in images/loaded"; exit 1; }
   ls "$d"/images/*.tar >/dev/null 2>&1 && { echo "stuck tars in images root (load incomplete)"; exit 1; }
-  # (3) canary blob present AND actually runnable — the R1 gate dependency; proves this rootfs can run
+  # (3) the autocommit canary, run through autocommit itself (same code path as the OTA gate): it is
+  #     built on the node from this rootfs (#209 S5 review K1c) and proves the rootfs can run
   #     containers (overlay/memcg/runc), the very thing docker-info alone does not.
-  c=/opt/batdata/canary.tar.gz; [ -f "$c" ] || c=/usr/share/batman/canary.tar.gz
-  [ -f "$c" ] || { echo "canary blob missing"; exit 1; }
-  docker image inspect batman-canary >/dev/null 2>&1 || docker load -i "$c" >/dev/null 2>&1
-  docker run --rm --network none batman-canary true >/dev/null 2>&1 || { echo "canary run failed (rootfs cannot run containers)"; exit 1; }
+  batman-autocommit canary || { echo "canary failed (rootfs cannot run containers)"; exit 1; }
   # (4) autocommit carries the docker-engine/canary gate and NOT the busybox-absent timeout applet.
-  grep -q "docker canary run failed" /usr/bin/batman-autocommit || { echo "autocommit missing docker-engine/canary gate"; exit 1; }
+  grep -q "tenants on p6 but this rootfs has no docker engine" /usr/bin/batman-autocommit || { echo "autocommit missing docker-engine/canary gate"; exit 1; }
   grep -q "timeout 15 docker" /usr/bin/batman-autocommit && { echo "autocommit uses busybox-absent timeout applet"; exit 1; }
   echo "firstload enabled; offline copies present; canary runs; autocommit gate ok"'; }
 
@@ -434,6 +473,15 @@ if up "$BENCH_NODE"; then
   suite slot-verify-209 "card sanity every slot op relies on: layout=SoC, FAT count, Pi 3 hybrid MBR, DT vs cmdline (#209 S5)" "chk_slotverify_209 $BENCH_NODE"
   suite memcg-209 "memory cgroup controller enabled — docker limits + autocommit canary (#209 D6; bcm2710 DTB disables it)" "chk_memcg_209 $BENCH_NODE"
   suite trybootget-209 "firmware answers the tryboot GET and the one-shot flag is clear on a normal boot (#209 D5)" "chk_trybootget_209 $BENCH_NODE"
+  suite ota-trace-209 "OTA flight recorder: BOOT facts every boot + a complete stage-2 chain for the last OTA (#209 S5)" "chk_otatrace_209 $BENCH_NODE"
+  suite slot-integrity-209 "Pi 4: explicit-restart tool + hook, not on a wrongly-booted slot, not stuck, both slots self-checking (#209 S5)" "chk_slotintegrity_209 $BENCH_NODE"
+  # every reachable Pi 4 in the run (bench, mesh, OTS) must meet the bootloader floor
+  P4S=""; for n in "$BENCH_NODE" "$MESH_NODE" "$OTS_NODE"; do [ "$(soc_of "$n")" = bcm2711 ] && case " $P4S " in *" $n "*) ;; *) P4S="$P4S $n" ;; esac; done
+  if [ -n "$P4S" ]; then
+    suite eeprom-209 "Pi 4 bootloader >= 2025-08-20 — below it a firmware-level slot failure hangs instead of falling back (#209 S5)" "chk_eeprom_209 $P4S"
+  else
+    na eeprom-209 "no Pi 4 in this run (bench/mesh/OTS are all Pi 3, which has no EEPROM; its fallback is covered by p7-209 + the read-back)"
+  fi
   if [ "$(soc_of "$BENCH_NODE")" = bcm2711 ]; then
     na p7-209 "BENCH_NODE is a Pi 4: it boots from GPT via the EEPROM, there is no p7 firmware partition"
   else
@@ -442,7 +490,7 @@ if up "$BENCH_NODE"; then
 else
   suite autocommit-211 "A/B commit state (#211) — BENCH_NODE $BENCH_NODE did not answer" ""
   suite p6grow-201 "p6 grow-to-fill (#201) — BENCH_NODE $BENCH_NODE did not answer" ""
-  for s in socgate-209 slot-verify-209 memcg-209 trybootget-209 p7-209; do suite "$s" "BENCH_NODE $BENCH_NODE did not answer" ""; done
+  for s in socgate-209 slot-verify-209 memcg-209 trybootget-209 p7-209 eeprom-209; do suite "$s" "BENCH_NODE $BENCH_NODE did not answer" ""; done
 fi
 
 # ---- tier B: destructive, induces the real failure — DNODE (eth) only, --destructive ----

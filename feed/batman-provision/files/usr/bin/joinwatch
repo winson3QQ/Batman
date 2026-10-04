@@ -153,10 +153,20 @@ run(){
 					write "$(ts) boot=$(bid) up=${u}s NOREBOOT | automatic reboot already used $gap boot(s) ago (min gap $GAP_BOOTS boots)"
 				elif ! mounted; then
 					write "$(ts) boot=$(bid) up=${u}s NOREBOOT | batdata not mounted — cannot record the reboot, so not taking it"
+				elif [ -f /tmp/batman-autocommit.hold ] && [ -O /tmp/batman-autocommit.hold ]; then
+					# #209 S5 review R3: an operator is on this boot (an OTA trial held for hand-commit) — a
+					# reboot would end the one-shot trial and silently undo the upgrade. Only this live,
+					# root-owned /tmp hold stops it: an unattended hold-once or a plain uncommitted trial
+					# keeps the reboot, the last way back for a trial that cannot join any mesh.
+					write "$(ts) boot=$(bid) up=${u}s NOREBOOT | /tmp/batman-autocommit.hold present (operator on this trial)"
 				else
 					write "$(ts) boot=$(bid) up=${u}s AUTOREBOOT | not joined for ${d}s — one controlled reboot (the next one only after $GAP_BOOTS more boots)"
 					[ -f /tmp/shutdown.reason ] || echo "joinwatch: not joined for ${d}s — automatic reboot" > /tmp/shutdown.reason 2>/dev/null
-					sleep 2; reboot
+					sleep 2
+					# A/B card: controlled reboot onto the committed slot (explicit firmware partition on a Pi 4,
+					# #209 S5); a card without batman-slot (golden/MBR) keeps the plain reboot
+					command -v batman-slot >/dev/null 2>&1 && batman-slot reboot committed "joinwatch: not joined for ${d}s"
+					reboot
 				fi
 			fi
 		fi

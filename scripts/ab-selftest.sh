@@ -267,16 +267,28 @@ require_inactive_B "destructive 1/2"
 
 echo
 echo "--- destructive 1/2: inactive slot unbootable by the firmware ---"
-# pi4: start4.elf (the EEPROM bootloader falls back — #133). pi3: BOTH start.elf and start_cd.elf —
+# pi4: start4.elf (the EEPROM bootloader falls back — #133 — on a bootloader >= 2025-08-20). pi3: BOTH start.elf and start_cd.elf —
 # which one bootB's firmware picks depends on bootB's own config (gpu_mem), which may differ from the
 # running slot's, so both go (#209 §4 row 143: whether bootcode then falls back, hangs, or boots B on
 # yet another start file is exactly what this case finds out).
 # On a pi3 a hang needs a power pull, so the case runs only with ATTENDED=1 and a terminal.
+# The same holds for a pi4 whose bootloader predates 2025-08-20: the EEPROM fallback for a FAT slot
+# without valid firmware (PARTITION_WALK) does not exist there and the board hangs — manet02, EEPROM
+# 2023-01-11, hung here on 2026-10-02 until power was pulled (docs/boards-and-builds.md §1).
 STARTFS=start4.elf
 [ "$LAYOUT" = pi3 ] && STARTFS="start.elf start_cd.elf"
+HANGS=0; WHY=""
+[ "$LAYOUT" = pi3 ] && { HANGS=1; WHY="pi3 (no EEPROM)"; }
+if [ "$LAYOUT" = pi4 ]; then
+  BTS=$(sshn 'vcgencmd bootloader_version | sed -n "s/^timestamp //p"' | tr -d '\r')
+  BVER=$(sshn 'vcgencmd bootloader_version | head -1' | tr -d '\r')
+  if ! [[ $BTS =~ ^[0-9]+$ ]]; then HANGS=1; WHY="pi4 bootloader version unreadable ('${BTS:0:40}')"
+  elif [ "$BTS" -lt 1755648000 ]; then HANGS=1; WHY="pi4 bootloader $BVER predates 2025-08-20 (no PARTITION_WALK fallback)"
+  else echo "pi4 bootloader $BVER >= 2025-08-20: firmware-level fallback expected"; fi
+fi
 STAGE=1
-if [ "$LAYOUT" = pi3 ] && { [ "${ATTENDED:-0}" != 1 ] || ! [ -r /dev/tty ]; }; then
-  bad "pi3 fw-fallback case needs ATTENDED=1 and a terminal (a hang needs someone to pull power) — not run"; STAGE=0
+if [ "$HANGS" = 1 ] && { [ "${ATTENDED:-0}" != 1 ] || ! [ -r /dev/tty ]; }; then
+  bad "fw-fallback case not run: $WHY — the board is expected to HANG and needs someone to pull power; run with ATTENDED=1 from a terminal"; STAGE=0
 fi
 if [ "$STAGE" = 1 ]; then
   for f in $STARTFS; do bootb_rw "mv /mnt/_ab/$f /mnt/_ab/$f.selftest" >/dev/null; done
@@ -289,7 +301,7 @@ if [ "$STAGE" = 2 ]; then
 elif [ "$STAGE" = 1 ]; then
   BID0=$(boot_id)
   if rb tryboot 240; then R=up
-  elif [ "$LAYOUT" = pi3 ]; then
+  elif [ "$HANGS" = 1 ]; then
     echo "  .. node did not come back in 240s — the firmware hung on bootB (expected 'ACT flashes, no fallback')."
     read -r -p "  >> Pull the node's power, plug it back in, then press Enter: " _ < /dev/tty
     if RB_T=$(reboot_wait_up "$BID0" 240); then R=power; skip_check; else R=dead; fi

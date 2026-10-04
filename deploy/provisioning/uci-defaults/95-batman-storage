@@ -34,6 +34,10 @@ MAPPER=batdata_crypt
 MOUNT=/opt/batdata
 KEYFILE=/etc/batman-provision.key   # PLACEHOLDER (LUKS mode). Real key = secure element (#47/B3).
 INIT=/etc/init.d/batdata-mount
+# The ONLY licence to format: this script created the partition itself (step 1, legacy MBR card).
+# A pre-made data partition (every A/B card: the builders mkfs p6) is never formatted — a missing
+# ext4 magic there means damage, and damage gets a repair attempt, not mkfs (see step 3).
+P3MARK=/etc/batman-storage.p3-created
 
 lg(){ logger -t batman-storage "$*"; echo "batman-storage: $*"; }
 # ext4 superblock magic (0xEF53 LE at byte 1080) — no dumpe2fs/blkid needed (not in the image)
@@ -91,7 +95,8 @@ assert_not_system(){
 	is_squashfs "$PART" && { lg "REFUSING: $PART carries a squashfs — that is a rootfs slot, not data"; exit 0; }
 	n=$(gpt_field "$PART_NUM" 'Partition name') || n=""
 	case "$n" in ""|data) : ;; *) lg "REFUSING: $PART is GPT-named '$n', not 'data'"; exit 0 ;; esac
-	g=$(gpt_field "$PART_NUM" 'Partition unique GUID') || g=""
+	# sgdisk prints GUIDs in UPPER case; the constants are lower case (the guard never fired before)
+	g=$(gpt_field "$PART_NUM" 'Partition unique GUID' | tr 'A-F' 'a-f') || g=""
 	case "$g" in
 		"$GUID_ROOTA"|"$GUID_ROOTB") lg "REFUSING: $PART carries the rootfs GUID $g"; exit 0 ;;
 	esac
@@ -105,7 +110,9 @@ if mount | grep -q " $MOUNT "; then lg "already mounted — nothing to do"; exit
 
 # LUKS capability
 LUKS=0
-if command -v cryptsetup >/dev/null 2>&1; then modprobe dm-crypt 2>/dev/null; [ -e /dev/mapper/control ] && LUKS=1; fi
+# BATMAN_STORAGE_NO_LUKS: test seam only (tests/storage-p6-safety.sh runs this on a host that has
+# cryptsetup); a node never sets it.
+if [ -z "${BATMAN_STORAGE_NO_LUKS:-}" ] && command -v cryptsetup >/dev/null 2>&1; then modprobe dm-crypt 2>/dev/null; [ -e /dev/mapper/control ] && LUKS=1; fi
 if [ "$LUKS" = 1 ]; then
 	DEV="/dev/mapper/$MAPPER"
 else
@@ -120,7 +127,9 @@ if [ ! -b "$PART" ]; then
 	START=$(parted -sm "$DISK" unit s print free 2>/dev/null | awk -F: '/free;?$/{sz=$4; gsub("s","",sz); if(sz+0>best){best=sz+0; bs=$2}} END{gsub("s","",bs); print bs}')
 	[ -n "$START" ] && [ "$START" -gt 0 ] 2>/dev/null || { lg "no free space — skip"; exit 0; }
 	lg "creating $PART ${START}s..100% (expand-to-fill)"
-	parted -s "$DISK" mkpart primary ext4 "${START}s" 100% || { lg "mkpart failed"; exit 0; }
+	# marker BEFORE mkpart: the exit-1 retry below re-enters with the partition already present
+	touch "$P3MARK"; sync
+	parted -s "$DISK" mkpart primary ext4 "${START}s" 100% || { lg "mkpart failed"; rm -f "$P3MARK"; exit 0; }   # licence only for a partition that exists
 	sync; sleep 1; [ -b "$PART" ] || partprobe "$DISK" 2>/dev/null || true; sleep 1
 	# if the kernel still can't see it, ask OpenWrt to re-run us next boot (non-zero exit)
 	[ -b "$PART" ] || { lg "$PART not visible yet — will retry next boot"; exit 1; }
@@ -245,25 +254,78 @@ rm -f /tmp/95-mbr.bak
 # a five-partition layout used to send step 2/3 onto rootfs B).
 assert_not_system
 
+crit(){ lg "!!! $*"; echo "<2>batman-storage: $*" > /dev/kmsg 2>/dev/null; echo "$*" > /tmp/batman-storage.crit 2>/dev/null; }
+may_format(){ [ -f "$P3MARK" ]; }
+
 # 2. LUKS (if capable, idempotent)
+# NB (#111, not fixed here): the key lives on the overlay, so an OTA (fresh overlay) generates a NEW
+# key and cannot open an existing LUKS p6. Latent until the image carries dm-crypt.
+JUST_LUKSFORMATTED=0
 if [ "$LUKS" = 1 ]; then
 	[ -f "$KEYFILE" ] || { head -c 512 /dev/urandom > "$KEYFILE"; chmod 600 "$KEYFILE"; }
-	# never luksFormat a partition that already carries a filesystem (a pre-made plain-ext4 p6
-	# would otherwise be wiped when a dm-crypt-capable image meets an unencrypted card — N-R4)
 	if ! cryptsetup isLuks "$PART" 2>/dev/null; then
-		has_fs "$PART" && { lg "refusing luksFormat: $PART already has a filesystem"; exit 0; }
-		cryptsetup luksFormat --type luks2 --batch-mode --key-file "$KEYFILE" "$PART"
+		if has_fs "$PART"; then
+			# a dm-crypt-capable image meeting a plain-ext4 data partition: never luksFormat over it
+			# (N-R4), and do NOT stop here either — stopping skipped step 4, so the trial slot booted
+			# with p6 unmounted and autocommit reverted every OTA. Carry on unencrypted.
+			lg "$PART already carries a plain ext4 — NOT encrypting it; continuing unencrypted"
+			LUKS=0; DEV=$PART
+		elif may_format; then
+			cryptsetup luksFormat --type luks2 --batch-mode --key-file "$KEYFILE" "$PART" && JUST_LUKSFORMATTED=1
+		else
+			crit "$PART is neither LUKS nor ext4 and was not created by this script — not formatting it (pre-made data partition: damaged, or written by something else)"
+			LUKS=0; DEV=$PART
+		fi
 	fi
-	cryptsetup status "$MAPPER" >/dev/null 2>&1 || cryptsetup open --key-file "$KEYFILE" "$PART" "$MAPPER"
+	[ "$LUKS" = 1 ] && { cryptsetup status "$MAPPER" >/dev/null 2>&1 || cryptsetup open --key-file "$KEYFILE" "$PART" "$MAPPER"; }
 fi
 
-# 3. ext4 (idempotent — never touch a partition that already has a filesystem)
+# 3. ext4. A pre-made data partition is NEVER formatted (#209 S5 review W1): this hook re-runs on the
+#    first boot of every OTA slot, before p6 is mounted, so "no ext4 magic" there means a damaged
+#    superblock (power cut) or a transient read error — and mkfs would wipe the data before the
+#    autocommit gate could revert anything. Only a partition this script created (P3MARK), or the
+#    mapper of a LUKS volume it formatted just now, may be formatted.
+recover_ext4(){ # $1 = device without a readable ext4 magic; 0 = a filesystem is there now
+	d=$1
+	# a transient read must not be "repaired": re-read uncached a few times first
+	n=0
+	while [ $n -lt 3 ]; do
+		sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+		has_fs "$d" && { lg "$d: ext4 magic present on re-read — transient read, nothing repaired"; return 0; }
+		sleep 1; n=$((n + 1))
+	done
+	# card I/O errors this boot: e2fsck -y over unreliable reads would destroy what is left
+	if dmesg 2>/dev/null | grep -qE "I/O error,? dev ${DISKN}|Buffer I/O error on dev ${DISKN}"; then
+		crit "$d: no ext4 magic AND the card reported I/O errors this boot — not running fsck, not formatting; replace/inspect the card"
+		return 1
+	fi
+	if [ "$(hexdump -n 6 -e '6/1 "%02x"' "$d" 2>/dev/null)" = 4c554b53babe ]; then
+		crit "$d carries a LUKS header but this image has no dm-crypt — leaving it untouched (an image without encryption must not be OTA'd onto an encrypted node)"
+		return 1
+	fi
+	command -v e2fsck >/dev/null 2>&1 || { crit "$d: no ext4 magic and no e2fsck to repair it — not formatting"; return 1; }
+	lg "$d: no ext4 magic — trying e2fsck (it locates a backup superblock itself)"
+	e2fsck -fy "$d" >/dev/null 2>&1
+	has_fs "$d" && { lg "$d: ext4 recovered by e2fsck"; return 0; }
+	for bb in 32768:4096 16384:2048 8193:1024; do
+		e2fsck -fy -b "${bb%%:*}" -B "${bb##*:}" "$d" >/dev/null 2>&1
+		has_fs "$d" && { lg "$d: ext4 recovered from backup superblock ${bb%%:*} (block ${bb##*:})"; return 0; }
+	done
+	crit "$d: ext4 unrecoverable (primary and backup superblocks) — NOT formatting; the data stays on the card for manual recovery"
+	return 1
+}
 if has_fs "$DEV"; then
 	lg "$DEV already has a filesystem — keeping it"
-elif command -v mkfs.ext4 >/dev/null 2>&1; then
-	lg "mkfs.ext4 $DEV"; mkfs.ext4 -F -L "$LABEL" -m 0 "$DEV" >/dev/null 2>&1
+elif may_format || [ "$JUST_LUKSFORMATTED" = 1 ]; then
+	if command -v mkfs.ext4 >/dev/null 2>&1; then
+		lg "mkfs.ext4 $DEV (created by this script)"; mkfs.ext4 -F -b 4096 -L "$LABEL" -m 0 "$DEV" >/dev/null 2>&1
+		# the licence is single-use: a later damaged superblock on this partition gets a repair, not mkfs
+		has_fs "$DEV" && { rm -f "$P3MARK"; sync; }
+	else
+		lg "mkfs.ext4 missing and $DEV unformatted — skip"; exit 0
+	fi
 else
-	lg "mkfs.ext4 missing and $DEV unformatted — skip"; exit 0
+	recover_ext4 "$DEV" || lg "continuing without a usable data filesystem (the mount will fail and be reported)"
 fi
 
 # 3b. grow the ext4 to fill the (possibly enlarged by 1b) partition (#201). This is a one-shot
@@ -280,6 +342,9 @@ if [ "$PART_NUM" = 6 ] && has_fs "$DEV" && command -v resize2fs >/dev/null 2>&1;
 		lg "e2fsck rc=$rc on $DEV — skip resize (degraded, fail-open)"
 	fi
 fi
+# Test seam (tests/storage-p6-safety.sh): report the filesystem outcome and stop before step 4
+# installs the init / mounts anything on the host.
+[ -z "${BATMAN_STORAGE_STOP_AFTER_FS:-}" ] || { has_fs "$DEV" && echo "fs=ext4" || echo "fs=none"; exit 0; }
 
 # 4. install the persistent data-partition service (runs on every boot + clean shutdown).
 #    Node-specific values are baked into the header; the body is verbatim (quoted heredoc).
@@ -302,6 +367,100 @@ bid(){ cut -c1-8 /proc/sys/kernel/random/boot_id; }
 # S11 runs before logd (S12): a plain `logger` here is lost. Also write the kernel ring, which
 # logd picks up when it starts -> visible in both dmesg and logread.
 note(){ logger -t batdata-mount "$*" 2>/dev/null; echo "batdata-mount: $*" > /dev/kmsg 2>/dev/null; }
+
+# OTA flight recorder (#209 S5, docs/design/ota-trace.md). A missing lib degrades to no trace.
+# shellcheck source=/dev/null
+[ -f /usr/lib/batman/otatrace.sh ] && . /usr/lib/batman/otatrace.sh
+type otalog >/dev/null 2>&1 || { otalog(){ :; }; otalog_k(){ :; }; ota_get(){ :; }; ota_thr(){ :; }; }
+# shellcheck source=/dev/null
+[ -f /usr/lib/batman/bootfacts.sh ] && . /usr/lib/batman/bootfacts.sh
+type bf_pi4 >/dev/null 2>&1 || bf_pi4(){ echo no; }   # no lib: the self-check simply does not run
+dt_hex(){ hexdump -v -e '1/1 "%02x"' "/proc/device-tree/chosen/bootloader/$1" 2>/dev/null; }
+# One line of firmware facts per boot — the raw material for "did the tryboot happen, and if not,
+# why": what the firmware reports (DT), what autoboot.txt asked for, the flag right now, the supply,
+# the firmware's own log of which partition it booted, and on a Pi 3 the p7 boot code it ran.
+boot_facts(){
+	ab=""; p7=""; extra=""
+	if [ -b /dev/mmcblk0p7 ]; then
+		bm=/tmp/bm-p7; mkdir -p "$bm"
+		if mount -t vfat -o ro /dev/mmcblk0p7 "$bm" 2>/dev/null; then
+			ab=$(tr '\n' ' ' < "$bm/autoboot.txt" 2>/dev/null)
+			p7="p7_bootcode=$(sha256sum "$bm/bootcode.bin" 2>/dev/null | cut -c1-12) p7_autoboot=$(sha256sum "$bm/autoboot.txt" 2>/dev/null | cut -c1-12)"
+			umount "$bm"
+		fi
+		rmdir "$bm" 2>/dev/null
+	else
+		ab=$(tr '\n' ' ' < /boot/autoboot.txt 2>/dev/null)
+		extra="eeprom=$(vcgencmd bootloader_version 2>/dev/null | sed -n 's/^timestamp //p') $(vcgencmd bootloader_config 2>/dev/null | grep -E '^(BOOT_ORDER|PARTITION_WALK)=' | tr '\n' ' ')"
+	fi
+	echo "slot=$(sed -n 's/.*batman_slot=\([AB]\).*/\1/p' /proc/cmdline) ver=$(sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build 2>/dev/null) dt_tryboot=$(dt_hex tryboot) dt_partition=$(dt_hex partition) dt_rsts=$(dt_hex rsts) dt_bootmode=$(dt_hex boot-mode) p_req=$(bf_preq 2>/dev/null) get_now=$(ota_get) thr=$(ota_thr) autoboot=\"$ab\" fw=\"$(vclog -m 2>/dev/null | grep -m1 'boot-part')\" devkmsg=$(cat /proc/sys/kernel/printk_devkmsg 2>/dev/null) $p7 $extra"
+}
+
+# Boot-time self-check (#209 S5, docs/design/explicit-reboot.md). The Pi 4 bootloader (EEPROM
+# 2026-09-23) sometimes reads the raw PM_RSTS flags as the reboot partition after a partition-0
+# restart (plain reboot, reboot -f, panic, watchdog): the number is always >= 32, does not exist, so
+# autoboot.txt is skipped and it walks to partition 1. Detected here and corrected with ONE explicit
+# restart to [all] — p_req is the only signal that separates this from a genuine #133 fallback (a
+# fallback has p_req 0 or p_req == [all]). Bounded: at most 2 consecutive correcting restarts, never
+# from a boot where p6 is not mounted, never in the middle of a first boot's uci-defaults (deferred to
+# batman-autocommit at S99). A slot the firmware booted wrongly is never committed (autocommit).
+fw_override_check(){
+	[ "$(bf_pi4 2>/dev/null)" = yes ] || return 0
+	mount | grep -q " $MOUNT " || {
+		# cannot count -> never restart from here; still keep it from being committed / OTA'd
+		pq=$(bf_preq); pt=$(bf_dtnum partition); al=$(bf_ab_all)
+		[ "$(bf_dtnum tryboot)" = 0 ] && [ -n "$pq" ] && [ "$pq" -ge 32 ] && [ -n "$al" ] && [ "$pt" != "$al" ] && {
+			echo "booted p$pt, [all]=$al, p_req=$pq (p6 not mounted: not corrected)" > /tmp/batman-fw-override
+			note "FW-OVERRIDE: firmware booted p$pt instead of [all]=$al (p_req $pq) — p6 not mounted, NOT correcting"
+		}
+		return 0
+	}
+	st="$MOUNT/state"; cnt="$st/fw-override-count"; mkdir -p "$st"
+	[ -f "$st/fw-override.disable" ] && { rm -f "$st/fw-override.disable"; sync; otalog BOOT FW-OVERRIDE-CHECK-DISABLED-ONCE; return 0; }
+	tb=$(bf_dtnum tryboot); pt=$(bf_dtnum partition); pq=$(bf_preq); al=$(bf_ab_all)
+	[ -n "$tb" ] && [ -n "$pt" ] && [ -n "$pq" ] || return 0
+	case "$al" in 1|2) ;; *) return 0 ;; esac
+	forced=""
+	# test seam (daily-validation / acceptance): exercise the correcting restart once, on any boot
+	[ -f "$st/fault.fw-override-once" ] && { rm -f "$st/fault.fw-override-once"; sync; forced=" (forced test)"; }
+	if [ -z "$forced" ]; then
+		if [ "$tb" != 0 ] || [ "$pq" -lt 32 ] || [ "$pt" = "$al" ]; then
+			[ "$pt" = "$al" ] && [ "$tb" = 0 ] && [ -f "$cnt" ] && { rm -f "$cnt"; sync; }   # back on [all]
+			return 0
+		fi
+	fi
+	c=$(( $(cat "$cnt" 2>/dev/null || echo 0) + 1 )); echo "$c" > "$cnt"
+	d="booted p$pt, [all]=$al, p_req=$pq$forced"
+	echo "$d" > /tmp/batman-fw-override
+	if [ "$c" -gt 2 ]; then
+		echo "$(ts) FW-OVERRIDE-STUCK boot=$(bid) $d — $c consecutive wrong boots; not restarting again, this slot is not committed" >> "$LOG/autocommit.log"
+		otalog_k BOOT FW-OVERRIDE-STUCK attempt=$c detail="$d"; sync
+		return 0
+	fi
+	if [ -n "$(ls /etc/uci-defaults 2>/dev/null)" ]; then
+		# a first boot: uci-defaults are still being applied (their uci changes commit at the end) —
+		# restarting now would lose them; batman-autocommit (S99) does the correcting restart
+		echo "$d" > /tmp/batman-fw-override-pending
+		otalog_k BOOT FW-OVERRIDE-DEFERRED attempt=$c detail="$d"; sync
+		return 0
+	fi
+	echo "$(ts) FW-OVERRIDE boot=$(bid) $d — correcting restart to p$al (attempt $c)" >> "$LOG/autocommit.log"
+	otalog_k BOOT FW-OVERRIDE to=$al attempt=$c detail="$d"
+	# the next boot reads CLEAN with this reason, not "no shutdown ran"
+	echo "$(ts) uptime=$(cut -d' ' -f1 /proc/uptime)s trigger=FW-OVERRIDE: $d -> explicit restart to p$al" > "$LOG/shutdown.marker"
+	sync
+	umount "$MOUNT" 2>/dev/null
+	mount -o remount,ro /overlay 2>/dev/null
+	/usr/sbin/batman-reboot "$al"
+	# only reached when the restart failed: put things back and carry on, marked (no commit, no OTA)
+	mount -o remount,rw /overlay 2>/dev/null
+	mount | grep -q " $MOUNT " || mount "$DEV" "$MOUNT" 2>/dev/null
+	rm -f "$LOG/shutdown.marker"
+	echo "$(ts) FW-OVERRIDE-RESTART-FAILED boot=$(bid) $d" >> "$LOG/autocommit.log" 2>/dev/null
+	note "FW-OVERRIDE: explicit restart to p$al FAILED — continuing on the wrong slot, marked (no commit, no OTA)"
+	sync
+	return 0
+}
 
 # payload guardian restore (#192, extended for #167): an A/B flash clears the overlay, so a payload
 # guardian init that lives on the persistent data area (deploy/<payload>/<name>.init or the generic
@@ -385,6 +544,9 @@ boot(){
 	if ! mount | grep -q " $MOUNT "; then
 		merr=$(mount "$DEV" "$MOUNT" 2>&1) || { note "mount $DEV on $MOUNT FAILED: $merr"; return 0; }
 	fi
+	# the real data device (the LUKS mapper when encrypted) for the sysupgrade stage-2 recorder,
+	# which re-mounts it to keep its trace (/tmp crosses into the stage-2 ramfs)
+	echo "$DEV" > /tmp/batdata.dev
 	mkdir -p "$CRASH" "$LOG"
 	note "mounted $DEV on $MOUNT"
 	# #215: online-grow the ext4 to fill the partition (offline step 3b can no-op on first boot
@@ -400,9 +562,6 @@ boot(){
 	# once per boot: the first-boot hook calls `boot` itself and the S11 link may run it again
 	[ -f /tmp/batdata-mount.booted ] && return 0
 	: > /tmp/batdata-mount.booted
-
-	refresh_payload_config      # payload-config-golden: refresh p6 tenant config from the baked image
-	restore_payload_guardians   # #192: bring the payload guardian(s) back after an A/B flash
 
 	# crash capture (#61): move pstore records off the volatile ramoops region so the next event
 	# has a clean region and the record can't be lost. With console capture on (#105) a
@@ -452,9 +611,42 @@ boot(){
 	fi
 	bs=$(cat /sys/class/watchdog/watchdog0/bootstatus 2>/dev/null)
 	[ -n "$bs" ] && [ "$bs" != 0 ] && reason="$reason [watchdog bootstatus=$bs]"
+	# Stage-2 evidence of the previous life (#209 S5): the stock sysupgrade ends in `reboot -f`, which
+	# looks exactly like a hang above. Graded by evidence, never inferred: the last S2 line the previous
+	# boot wrote — to p6 (stage 2 re-mounts it) or, where ramoops survives, its kmsg copy. Read BEFORE
+	# this boot's boot-reasons line is appended (its last line is still the previous life's boot_id).
+	# PANIC keeps precedence; the original text and hints are kept, not replaced.
+	pb=$(tail -n 1 "$LOG/boot-reasons.log" 2>/dev/null | sed -n 's/.* boot_id=\([^ ]*\) .*/\1/p')
+	s2=""
+	[ -n "$pb" ] && s2=$(grep " boot=$pb .* S2 " "$LOG/ota-trace.log" 2>/dev/null | tail -n 1)
+	[ -z "$s2" ] && [ -n "$confile" ] && s2=$(grep -a "batman-ota: .* S2 " "$confile" 2>/dev/null | tail -n 1)
+	if [ -n "$s2" ]; then
+		case "$s2" in
+			*" S2 END "*) tag="SYSUPGRADE-REBOOT (${s2#* S2 END })" ;;
+			*) tag="DIED-IN-STAGE2 (last: ${s2#* up=})" ;;
+		esac
+		if [ "$n" -gt 0 ]; then reason="$reason [after stage 2: $tag]"; else reason="$tag — $reason"; fi
+	fi
+	prevslot=""; [ -n "$confile" ] && prevslot=$(grep -ao 'batman_slot=[AB]' "$confile" 2>/dev/null | tail -n 1)
 	rm -f "$LOG/shutdown.marker"
 	echo "$(ts) boot_id=$(bid) prev=$reason" >> "$LOG/boot-reasons.log"
 	note "previous shutdown: $reason"
+	# shellcheck disable=SC2046
+	otalog_k BOOT $(boot_facts) prevslot="${prevslot#batman_slot=}" prev="$(echo "$reason" | cut -c1-100)"
+	tf="$LOG/ota-trace.log"
+	if [ "$(wc -c < "$tf" 2>/dev/null || echo 0)" -gt 262144 ]; then tail -n 1500 "$tf" > "$tf.tmp" && mv "$tf.tmp" "$tf"; fi
+	# protection record for the migration check (#209 S5 D6): this slot runs an image WITH the
+	# boot-time self-check. batman-slot apply drops the record of the slot it rewrites.
+	mkdir -p "$MOUNT/state"
+	sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build > "$MOUNT/state/slot-$(sed -n 's/.*batman_slot=\([AB]\).*/\1/p' /proc/cmdline).protected" 2>/dev/null
+	# boot-time self-check (#209 S5): did the Pi 4 firmware boot the wrong slot? Runs after the crash
+	# evidence and boot-reasons are saved and BEFORE any payload starts, so a correcting reboot here
+	# costs almost nothing. May not return (explicit restart).
+	fw_override_check
+	sync
+
+	refresh_payload_config      # payload-config-golden: refresh p6 tenant config from the baked image
+	restore_payload_guardians   # #192: bring the payload guardian(s) back after an A/B flash
 	sync
 }
 start(){ boot; }

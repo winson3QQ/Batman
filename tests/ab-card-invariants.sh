@@ -313,5 +313,50 @@ else
 fi
 
 echo
+echo "== data-partition safety (#209 S5 review W1/W4): a pre-made p6 is repaired, never formatted =="
+# 95 re-runs on the first boot of every OTA slot with p6 still unmounted. It used to mkfs any p6
+# whose ext4 magic it could not read — one torn superblock and the next OTA wiped the data partition.
+P6=${LOOP}p6
+check "p6 ext4 block size = 4096 (backup superblock at 32768)" "$(sudo hexdump -s 1048 -n 4 -e '1/4 "%u"' "$P6")" "2"
+runfs() { sudo env DISK="$LOOP" BATMAN_STORAGE_NO_LUKS=1 BATMAN_STORAGE_STOP_AFTER_FS=1 "$@" sh "$STORAGE" > "$WORK/95fs.log" 2>&1 || true; }
+fs_out() { grep -E '^fs=' "$WORK/95fs.log" | tail -1; }
+formatted() { grep -q 'mkfs.ext4 .*created by this script' "$WORK/95fs.log"; }
+mark_p6() { sudo mkdir -p "$WORK/p6"; sudo mount "$P6" "$WORK/p6"; echo keep-me | sudo tee "$WORK/p6/marker" >/dev/null; sudo umount "$WORK/p6"; }
+marker_ok() { sudo mkdir -p "$WORK/p6"; sudo mount -o ro "$P6" "$WORK/p6" 2>/dev/null || return 1
+  r=1; [ "$(sudo cat "$WORK/p6/marker" 2>/dev/null)" = keep-me ] && r=0; sudo umount "$WORK/p6"; return $r; }
+fresh_p6() { sudo mkfs.ext4 -q -F -b 4096 -L batdata "$P6"; mark_p6; }
+zero_primary() { sudo dd if=/dev/zero of="$P6" bs=1024 seek=1 count=1 conv=notrunc,fsync status=none; }
+
+fresh_p6; runfs
+check "intact p6 -> kept" "$(fs_out)" "fs=ext4"
+marker_ok && ok "intact p6: data preserved" || bad "intact p6: data lost"
+
+fresh_p6; zero_primary; runfs
+check "primary superblock destroyed -> filesystem back" "$(fs_out)" "fs=ext4"
+formatted && bad "primary superblock destroyed -> p6 was FORMATTED: $(tail -3 "$WORK/95fs.log")" || ok "primary superblock destroyed -> not formatted"
+marker_ok && ok "primary superblock destroyed -> data recovered (e2fsck)" || { bad "primary superblock destroyed -> data not recovered"; cat "$WORK/95fs.log"; }
+
+fresh_p6
+for b in $(sudo dumpe2fs "$P6" 2>/dev/null | sed -n 's/.*[Bb]ackup superblock at \([0-9]*\).*/\1/p'); do
+  sudo dd if=/dev/zero of="$P6" bs=4096 seek="$b" count=1 conv=notrunc,fsync status=none
+done
+zero_primary; runfs
+check "every superblock destroyed -> no filesystem invented" "$(fs_out)" "fs=none"
+formatted && bad "every superblock destroyed -> p6 was FORMATTED" || ok "every superblock destroyed -> not formatted (data left for manual recovery)"
+grep -q 'unrecoverable' "$WORK/95fs.log" && ok "unrecoverable p6 reported loudly" || bad "no CRIT report: $(tail -2 "$WORK/95fs.log")"
+
+fresh_p6; zero_primary; printf 'LUKS\272\276' | sudo dd of="$P6" conv=notrunc,fsync status=none; runfs
+formatted && bad "LUKS p6 on a no-dm-crypt run -> FORMATTED" || ok "LUKS p6 on a no-dm-crypt run -> not formatted"
+grep -q 'LUKS header' "$WORK/95fs.log" && ok "LUKS p6 recognised, fsck not run on it" || bad "LUKS p6 not recognised: $(tail -2 "$WORK/95fs.log")"
+
+# W4: the rootfs-GUID guard compared lower case against sgdisk's UPPER case output and never fired
+fresh_p6
+G2=$(sudo sgdisk -i 2 "$LOOP" | sed -n 's/^Partition unique GUID: //p')
+sudo sgdisk -u 2:R -u 6:3276af79-0000-4000-8000-000000000002 "$LOOP" >/dev/null; sudo partx -u "$LOOP" 2>/dev/null || true
+runfs
+grep -q 'REFUSING: .* rootfs GUID' "$WORK/95fs.log" && ok "p6 carrying the rootA GUID -> refused" || bad "rootfs-GUID guard did not fire: $(tail -2 "$WORK/95fs.log")"
+sudo sgdisk -u "2:$G2" -u "6:$G6" "$LOOP" >/dev/null; sudo partx -u "$LOOP" 2>/dev/null || true
+
+echo
 echo "================ $PASS passed, $FAIL failed ================"
 [ "$FAIL" -eq 0 ]

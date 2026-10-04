@@ -32,11 +32,29 @@ REQUIRE_IMAGE_METADATA=0
 # #209 v4.3 adds the uncached read-back verification (sha256sum/head/tail/cut/cmp) and the Pi 3
 # firmware allow-list (RAMFS_COPY_DATA). Prove the set on the bench with a stage2 log, as #89 did.
 # shellcheck disable=SC2034
-RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr /usr/bin/sha256sum /usr/bin/head /usr/bin/tail /usr/bin/cut /usr/bin/cmp'
+RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/sbin/batman-reboot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr /usr/bin/sha256sum /usr/bin/head /usr/bin/tail /usr/bin/cut /usr/bin/cmp'
 # shellcheck disable=SC2034
-RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256'
+RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256 /usr/lib/batman/otatrace.sh /usr/lib/batman/bootfacts.sh'
 
+# OTA flight recorder (#209 S5, docs/design/ota-trace.md). Functions only; a missing or broken lib
+# degrades to no trace, never to a different upgrade decision.
+# shellcheck source=/dev/null
+[ -f /usr/lib/batman/otatrace.sh ] && . /usr/lib/batman/otatrace.sh
+type otalog >/dev/null 2>&1 || { otalog() { :; }; otalog_k() { :; }; ota_get() { :; }; ota_thr() { :; }; }
+# shellcheck source=/dev/null
+[ -f /usr/lib/batman/bootfacts.sh ] && . /usr/lib/batman/bootfacts.sh
+
+# Stage 1 (also run by validate_firmware_image / `sysupgrade -T` / LuCI): trace the verdict ONLY —
+# no state file, so a mere validation leaves nothing that a later boot could misread as an OTA.
 platform_check_image() {
+	local out rc caller
+	out=$(_ab_check_image "$@" 2>&1); rc=$?
+	[ -n "$out" ] && echo "$out"
+	caller=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null | cut -c1-60)
+	otalog S1 CHECK rc=$rc caller="$caller" msg="$(echo "$out" | tail -1)"
+	return $rc
+}
+_ab_check_image() {
 	[ "$#" -gt 1 ] && return 1
 	local list=/tmp/ab-check.$$
 	# NB: tar is NOT `-z` here. get_image already transparently decompresses a gzip source (it sniffs
@@ -52,6 +70,13 @@ platform_check_image() {
 	# on p6. Here, not only in batman-slot, because p6 may already be unmounted in the ramfs stage.
 	rm -f /opt/batdata/state/autocommit-skip-once
 
+	# Pi 4 bootloader floor (#209 S5) — warn only, here in stage 1 where vcgencmd still exists (the
+	# ramfs stage has none). Below 2025-08-20 the EEPROM cannot fall back from a slot that fails at
+	# the firmware level; the read-back verification is then the only guard. docs/boards-and-builds.md §1
+	local bts
+	bts=$(vcgencmd bootloader_version 2>/dev/null | sed -n 's/^timestamp //p' | head -1)
+	case "$bts" in ''|*[!0-9]*) ;; *) [ "$bts" -lt 1755648000 ] && echo "WARN: Pi 4 bootloader $(vcgencmd bootloader_version 2>/dev/null | head -1) predates 2025-08-20 — no firmware-level fallback on this node; update the EEPROM" ;; esac
+
 	# Running an uncommitted one-shot TRIAL: the inactive slot is the COMMITTED one. Refuse here, in
 	# stage 1, before sysupgrade kills services (batman-slot apply refuses too, ab-autocommit v2.2 G/N6).
 	if [ "$(hexdump -v -e '1/1 "%02x"' /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null)" = 00000001 ] \
@@ -59,6 +84,14 @@ platform_check_image() {
 		echo "REFUSING: this boot is an uncommitted trial — sysupgrade would overwrite the committed slot. Commit or revert the trial first."
 		return 1
 	fi
+
+	# Every node-side apply check that needs no payload (#209 S5 review W3): layout vs SoC, MBR, FAT
+	# count, firmware partition vs cmdline, p5 seeded, [tryboot] aim. Here a refusal stops sysupgrade
+	# with a visible error and the node untouched; in stage 2 the same refusal comes after services
+	# are killed and ends in a silent reboot. NB `sysupgrade -F` ignores a failed check — stage 2
+	# then repeats every check (batman-slot precheck) and refuses there instead.
+	local pn
+	pn=$(batman-slot precheck-node 2>&1) || { echo "REFUSING (node not ready for an OTA): ${pn##*batman-slot: }"; return 1; }
 
 	# /tmp budget (#209 D7): do_upgrade extracts everything EXCEPT root.squashfs (streamed) next to
 	# the uploaded image. Refuse here, before the pivot, if that cannot fit. Sizes from `tar -tv`.
@@ -119,13 +152,86 @@ soc_running() {
 	esac
 }
 
+# ---- stage 2 flight recorder (#209 S5) ----------------------------------------------------------
+# The stage-2 ramfs has lost /opt/batdata (`umount -l /mnt` takes the whole old tree), and the stock
+# do_stage2 ignores our return code and always ends in `umount -a; reboot -f` — so without this,
+# nothing of stage 2 survives. Re-mount the data partition under /tmp/p6t just for the trace file
+# (batdata-mount leaves the real device in /tmp/batdata.dev; /tmp crosses into the ramfs). The
+# mount runs in the background with a 10 s budget (busybox has no `timeout`): if it hangs we give
+# up and trace to kmsg only — the upgrade itself never waits on the recorder.
+ota_s2_open() {
+	local dev mp n
+	OTATRACE_FILE=/nonexistent/ota-trace.log; export OTATRACE_FILE   # kmsg-only until p6 is up
+	dev=$(cat /tmp/batdata.dev 2>/dev/null); [ -b "$dev" ] || return 0
+	[ "$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$dev" 2>/dev/null)" = 53ef ] || return 0
+	[ -f /tmp/batman-fault.s2-nomount ] && [ -O /tmp/batman-fault.s2-nomount ] && return 0   # test seam
+	mkdir -p /tmp/p6t
+	mount -t ext4 -o rw,noatime "$dev" /tmp/p6t 2>/dev/null &
+	mp=$!; n=0
+	while kill -0 "$mp" 2>/dev/null && [ "$n" -lt 10 ]; do sleep 1; n=$((n + 1)); done
+	kill -0 "$mp" 2>/dev/null && { kill -9 "$mp" 2>/dev/null; return 0; }
+	grep -q " /tmp/p6t " /proc/mounts || return 0
+	mkdir -p /tmp/p6t/log
+	OTATRACE_FILE=/tmp/p6t/log/ota-trace.log; export OTATRACE_FILE
+	return 0
+}
+ota_s2_close() {
+	local up n
+	sync
+	grep -q " /tmp/p6t " /proc/mounts || return 0
+	umount /tmp/p6t 2>/dev/null &
+	up=$!; n=0
+	while kill -0 "$up" 2>/dev/null && [ "$n" -lt 5 ]; do sleep 1; n=$((n + 1)); done
+	return 0
+}
+
+# Wrapper: every path through stage 2 ends with an `S2 END rc=…` line and the tryboot flag read back
+# as late as we can (do_stage2 only sleeps 1 s, `umount -a` and `reboot -f` after this).
 platform_do_upgrade() {
-	local dir=/tmp/ab-payload troot
+	local abrc
+	ota_s2_open
+	otalog_k S2 BEGIN p6trace="$([ "$OTATRACE_FILE" = /tmp/p6t/log/ota-trace.log ] && echo yes || echo no)" get="$(ota_get)" thr="$(ota_thr)"
+	_ab_do_upgrade "$@"; abrc=$?
+	otalog_k S2 END rc=$abrc get="$(ota_get)" thr="$(ota_thr)"
+	ota_s2_close
+	ota_s2_explicit_restart_if_not_armed "$abrc"
+	return $abrc
+}
+
+# Stage 2 failure path (#209 S5 D3, docs/design/explicit-reboot.md): when nothing was armed (apply
+# refused, verification failed) the stock do_stage2 would `reboot -f` with partition 0 — the restart
+# the Pi 4 bootloader may misread, walking onto partition 1, possibly the slot just invalidated
+# (no rootfs -> panic -> partition 0 again, with no userspace to correct it). So on a Pi 4 with the
+# flag certainly CLEAR, restart explicitly to [all]. An armed flag keeps the stock path (the tryboot
+# reboot -f, ~25/25 correct); an unreadable flag or [all] also keeps it — never guess.
+ota_s2_explicit_restart_if_not_armed() {
+	local g n m
+	type bf_get >/dev/null 2>&1 || return 0
+	[ "$(bf_pi4)" = yes ] || return 0
+	g=$(bf_get); [ "$g" = 0 ] || return 0
+	[ -x /usr/sbin/batman-reboot ] || return 0
+	if grep -q ' /boot ' /proc/mounts; then
+		n=$(bf_ab_all /boot)
+	else
+		m=/tmp/s2-p1; mkdir -p "$m"
+		mount -t vfat -o ro /dev/mmcblk0p1 "$m" 2>/dev/null && { n=$(bf_ab_all "$m"); umount "$m" 2>/dev/null; }
+	fi
+	case "$n" in 1|2) ;; *) return 0 ;; esac
+	otalog_k S2 EXPLICIT-RESTART to="$n" rc="$1" why=tryboot-not-armed
+	umount /boot 2>/dev/null
+	sync
+	/usr/sbin/batman-reboot "$n"
+	return 0   # only if the restart failed: the stock reboot -f follows
+}
+
+_ab_do_upgrade() {
+	local dir=/tmp/ab-payload troot t0 r
 	rm -rf "$dir"; mkdir -p "$dir"
 	# everything but root.squashfs (streamed below). -x not -xz: get_image already un-gzips.
 	echo 'root.squashfs' > /tmp/ab-exclude
-	get_image "$@" | tar -xf - -C "$dir" -X /tmp/ab-exclude || { echo "A/B image unpack failed"; return 1; }
-	[ -f "$dir/SHA256SUMS" ] && [ -f "$dir/metadata" ] || { echo "image lacks SHA256SUMS/metadata"; return 1; }
+	get_image "$@" | tar -xf - -C "$dir" -X /tmp/ab-exclude || { echo "A/B image unpack failed"; otalog S2 REFUSE why=unpack-failed; return 1; }
+	[ -f "$dir/SHA256SUMS" ] && [ -f "$dir/metadata" ] || { echo "image lacks SHA256SUMS/metadata"; otalog S2 REFUSE why=no-sums-or-metadata; return 1; }
+	otalog S2 PAYLOAD "$(tr '\n' ' ' < "$dir/metadata" 2>/dev/null)"
 
 	# SoC gate, second (and under `sysupgrade -F`, the ONLY) layer. -F makes sysupgrade ignore a
 	# failed platform_check_image and call us anyway, and the fleet tooling routinely uses -F
@@ -141,10 +247,12 @@ platform_do_upgrade() {
 	# fail-closed, as in platform_check_image (this is the only layer under -F)
 	if [ -z "$wt" ] || [ -z "$rt" ]; then
 		echo "REFUSING: SoC not recognised (image board='$want', running='$run') — not writing anything"
+		otalog S2 REFUSE why=soc-unrecognised image="$want" running="$run"
 		return 1
 	fi
 	if [ "$wt" != "$rt" ]; then
 		echo "REFUSING: image is for $wt but this node is $rt — not writing anything"
+		otalog S2 REFUSE why=soc-mismatch image="$wt" running="$rt"
 		return 1
 	fi
 
@@ -155,16 +263,22 @@ platform_do_upgrade() {
 	grep -q ' /boot ' /proc/mounts || mount -t vfat -o rw /dev/mmcblk0p1 /boot 2>/dev/null
 
 	# 1) every check, then clear the target overlay window — nothing is streamed before this passes
-	troot=$(batman-slot stage-root "$dir") || { echo "batman-slot stage-root refused"; return 1; }
+	troot=$(batman-slot stage-root "$dir"); r=$?
+	otalog S2 STAGE-ROOT rc=$r dev="$troot"
+	[ "$r" = 0 ] || { echo "batman-slot stage-root refused"; return 1; }
 	[ -b "$troot" ] || { echo "stage-root gave no target device ('$troot')"; return 1; }
 	# 2) stream the rootfs straight onto the target root partition (no /tmp copy)
-	get_image "$@" | tar -xOf - root.squashfs | dd of="$troot" bs=1M conv=fsync 2>/dev/null \
-		|| { echo "rootfs stream to $troot failed"; return 1; }
+	t0=$(cut -d. -f1 /proc/uptime)
+	get_image "$@" | tar -xOf - root.squashfs | dd of="$troot" bs=1M conv=fsync 2>/dev/null; r=$?
+	otalog S2 STREAM rc=$r secs=$(( $(cut -d. -f1 /proc/uptime) - t0 ))
+	[ "$r" = 0 ] || { echo "rootfs stream to $troot failed"; return 1; }
 	sync
 	# 3) boot files, uncached read-back of rootfs + boot against SHA256SUMS, then arm + read back
 	#    the one-shot tryboot. A failed verification invalidates the target slot and arms nothing,
 	#    and stage2's plain reboot then lands on the untouched default slot.
-	batman-slot apply "$dir" || { echo "batman-slot apply failed"; return 1; }
+	batman-slot apply "$dir"; r=$?
+	otalog S2 APPLY rc=$r
+	[ "$r" = 0 ] || { echo "batman-slot apply failed"; return 1; }
 	# the harness reboots next; the firmware then trials the freshly-written inactive slot. Commit
 	# (making it the default) happens later, gated on a soaked-healthy verdict — NOT here.
 	return 0

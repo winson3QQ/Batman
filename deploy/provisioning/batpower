@@ -78,6 +78,8 @@ tick(){
 		note crit "CRITICAL BATTERY: ${v} mV <= ${V_CRIT} mV — graceful ${ACTION} now"
 		echo "$state $v $i $(date +%s)" > "$STATE"; sync
 		sleep 2
+		# never let a pending controlled reboot (/etc/init.d/batman-reboot, #209 S5) turn this halt into a restart
+		rm -f /tmp/batman-reboot.want
 		if [ "$ACTION" = reboot ]; then reboot; else halt; fi
 		return 0
 	fi

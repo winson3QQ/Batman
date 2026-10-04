@@ -1,0 +1,50 @@
+#!/bin/sh /etc/rc.common
+# batman-reboot — the last step of a CONTROLLED reboot (#209 S5, docs/design/explicit-reboot.md).
+#
+# `batman-slot reboot committed` writes /tmp/batman-reboot.want (the committed firmware partition) and
+# calls the normal procd `reboot`. procd runs every K* stop script (logs saved, shutdown marker written,
+# p6 unmounted …); this one runs at K90, after all of them except K90boot/network/sysfixtime/umount
+# (it sorts first), and instead of letting procd restart with partition 0 — the restart the Pi 4
+# bootloader may misread — it restarts with the explicit partition.
+#
+# Without the flag file it does NOTHING: a poweroff/halt (batpower low-battery) or an ordinary
+# reboot is untouched.
+#
+# Constraints (procd, verified against its source in the design review):
+#  - not USE_PROCD: rc.common's default shutdown() calls stop();
+#  - procd gives each K* script 15 s, then SIGTERM, then 10 s, then SIGKILL — hence `trap '' TERM`
+#    and a budget well under 25 s;
+#  - `kill -1` must be the shell builtin at the top level of THIS shell: it spares the caller and
+#    pid 1 (procd), nothing else;
+#  - procd respawns a killed service within 5 s while still in this shutdown state, so dockerd is
+#    stopped through its init first (else it comes back and re-mounts containers on p6) and the
+#    KILL -> restart window is kept short.
+
+# shellcheck disable=SC2034  # read by /etc/rc.common (enable creates K90batman-reboot)
+STOP=90
+
+start() { :; }
+
+stop() {
+	[ -f /tmp/batman-reboot.want ] || return 0
+	trap '' TERM
+	n=$(cat /tmp/batman-reboot.want 2>/dev/null); rm -f /tmp/batman-reboot.want
+	case "$n" in 1|2) ;; *) return 0 ;; esac
+	# shellcheck source=/dev/null
+	. /usr/lib/batman/bootfacts.sh 2>/dev/null || return 0
+	[ "$(bf_get)" = 0 ] || return 0           # an armed (or unreadable) tryboot keeps the plain restart
+	[ -x /usr/sbin/batman-reboot ] || return 0
+	echo "batman-reboot: explicit restart to firmware partition $n" > /dev/kmsg 2>/dev/null
+	[ -x /etc/init.d/sysfixtime ] && /etc/init.d/sysfixtime stop 2>/dev/null     # skipped otherwise
+	if [ -x /etc/init.d/dockerd ]; then
+		/etc/init.d/dockerd stop >/dev/null 2>&1 &
+		p=$!; i=0
+		while kill -0 "$p" 2>/dev/null && [ "$i" -lt 8 ]; do sleep 1; i=$((i + 1)); done
+	fi
+	kill -TERM -1
+	sleep 2
+	kill -KILL -1
+	sync
+	umount -a -d -r 2>/dev/null
+	exec /usr/sbin/batman-reboot "$n"
+}

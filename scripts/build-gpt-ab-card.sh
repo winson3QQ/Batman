@@ -130,8 +130,8 @@ for p in 2 4; do
 done
 
 say "config + data: ext4"
-sudo mkfs.ext4 -q -F -L batconfig "${DEV}${P}5"
-sudo mkfs.ext4 -q -F -L batdata   "${DEV}${P}6"
+sudo mkfs.ext4 -q -F -b 4096 -L batconfig "${DEV}${P}5"
+sudo mkfs.ext4 -q -F -b 4096 -L batdata   "${DEV}${P}6"
 
 say "populate boot slots"
 T=$(mktemp -d); sudo mkdir -p "$T/a" "$T/b"
