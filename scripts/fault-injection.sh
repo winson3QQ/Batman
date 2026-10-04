@@ -29,6 +29,12 @@ ots_up(){ [ "$(n 'docker ps -q 2>/dev/null | wc -l' 2>/dev/null | tr -d "\r\n ")
 PASS=0; FAIL=0
 ok(){ echo "  PASS $1"; PASS=$((PASS+1)); }
 no(){ echo "  FAIL $1"; FAIL=$((FAIL+1)); }
+# R1 deliberately renames runc to break `docker run`. If the run aborts (a failed assertion, a hang,
+# Ctrl-C) before it restores it, the node is left unable to run containers — and on a sole-bridge node
+# that is how OTS stays dark after a "passed-but-stopped" validation. Always put runc back on exit,
+# on whatever slot is currently booted. Safe to run even when nothing was renamed.
+restore_runc(){ n 'for p in /usr/bin/runc /usr/sbin/runc; do [ -f "$p.off" ] && [ ! -e "$p" ] && mv "$p.off" "$p"; done' 2>/dev/null || true; }
+trap 'restore_runc' EXIT
 
 f2(){ echo "== F2 offline-copy recovery =="
   n "docker stop rabbitmq >/dev/null 2>&1; docker rm -f rabbitmq >/dev/null 2>&1; docker rmi rabbitmq:4.3.6 >/dev/null 2>&1"
@@ -59,6 +65,13 @@ r2(){ echo "== R2 first-loading tenant is non-gating (no false revert) =="
 r1(){ echo "== R1 docker-run-broken trial -> canary reverts to good slot =="
   local pre; pre=$(slot); n "setsid sh -c 'sysupgrade -n $PAYLOAD >/opt/batdata/sysup.log 2>&1' </dev/null >/dev/null 2>&1 &"; sleep 50; waitup 60 || { no "R1 trial did not come up"; return; }
   sleep 8
+  # Only break runc once we are REALLY on the trial slot. On the Pi 4 EEPROM 2026-09-23 an armed
+  # tryboot can no-op (the wrong-slot bug, docs/design/explicit-reboot.md): the "trial" boot can come
+  # back on the committed slot. Renaming runc then would cripple docker on the GOOD slot and leave it
+  # that way. Refuse and bail instead (the EXIT trap restores runc regardless).
+  if [ "$(slot)" = "$pre" ]; then
+    no "R1 trial did not switch off committed slot $pre (EEPROM wrong-slot no-op?) — NOT breaking runc on the good slot"; return
+  fi
   n 'for p in /usr/bin/runc /usr/sbin/runc; do [ -f "$p" ] && { mv "$p" "$p.off"; break; }; done'   # docker info OK, docker run fails
   local info run; info=$(n 'docker info >/dev/null 2>&1 && echo OK || echo FAIL' 2>/dev/null|tr -d "\r\n "); run=$(n 'docker run --rm --network none batman-canary true >/dev/null 2>&1 && echo OK || echo FAIL' 2>/dev/null|tr -d "\r\n ")
   echo "    trial: docker info=$info  canary run=$run"
