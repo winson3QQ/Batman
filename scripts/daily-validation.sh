@@ -281,9 +281,18 @@ chk_socgate_209() { fssh "$1" 12 '                              # #209 review
   [ -f /lib/upgrade/platform.sh ] || { echo "no /lib/upgrade/platform.sh"; exit 1; }
   grep -q "REFUSING: image is for" /lib/upgrade/platform.sh || { echo "SoC gate missing from platform.sh (#209 regression)"; exit 1; }
   grep -q "platform_check_image" /lib/upgrade/platform.sh || { echo "no platform_check_image"; exit 1; }
-  # the gate must be INSIDE platform_check_image, not back in platform_do_upgrade
-  awk "/^platform_check_image\(\)/{f=1} f&&/REFUSING: image is for/{found=1} /^}/{if(f&&!found)f=0} END{exit !found}" /lib/upgrade/platform.sh \
-    || { echo "SoC gate is not inside platform_check_image — it cannot refuse anything there"; exit 1; }
+  # The gate must be reachable from stage 1 (platform_check_image), not back in platform_do_upgrade.
+  # Since #209 S5 the check_image override factors the classifier into _ab_check_image() and
+  # platform_check_image() DELEGATES to it (so -F/do_stage2 can reuse the same fail-closed gate), so
+  # accept either the REFUSING line directly in platform_check_image OR a delegation to _ab_check_image
+  # whose body carries the gate.
+  awk "
+    /^[a-zA-Z_][a-zA-Z0-9_]*\(\)/{fn=\$0}
+    fn ~ /^platform_check_image/ && /_ab_check_image/{deleg=1}
+    fn ~ /^platform_check_image/ && /REFUSING: image is for/{inpc=1}
+    fn ~ /^_ab_check_image/ && /REFUSING: image is for/{inab=1}
+    END{ exit !(inpc || (deleg && inab)) }" /lib/upgrade/platform.sh \
+    || { echo "SoC gate not reachable from platform_check_image (neither inline nor via _ab_check_image) — it cannot refuse at stage 1"; exit 1; }
   . /lib/upgrade/platform.sh 2>/dev/null || true
   command -v soc_token >/dev/null 2>&1 || { echo "soc_token not defined"; exit 1; }
   [ "$(soc_token bcm27xx/bcm2711)" = bcm2711 ] || { echo "soc_token misreads bcm2711"; exit 1; }
