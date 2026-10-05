@@ -51,7 +51,7 @@ A/B 的救援是分層的:Pi 提供 tryboot 一次性旗標,也就是「再重�
 
 ## 2. 一棵樹、一個版本號
 
-- 兩塊板都從 firmware fork(`winson3QQ/firmware`)的 **`build-3aplus`** 分支 build。`build-108-batman` 凍結在 1.4.14,不再使用。
+- 兩塊板都從 firmware fork(`winson3QQ/firmware`)的 **`build-3aplus`** 分支 build。舊的 `build-108-batman` 已刪除(2026-10-05);它的 commit 全部都在 `build-3aplus` 歷史裡,最後的 head 留了 tag `fw-build-108-final`(`98e598be`)。
 - **同一個 commit 出兩個 image,版本號相同**;板子是另一個欄位。版本字串規則見 `docs/VERSIONS.md`:`<M>.<m>.<p>-<channel>.<n>+<feed7>.fw<fw7>`。
 - `/etc/batman-build` 由 firmware fork 的 `scripts/stamp-batman-build.sh` **在 build 時產生**,不再手動維護;它寫入 `BATMAN_BOARD` 和 `BATMAN_DIRTY`。build 完之後,`build-board.sh` 會從 rootfs 抽出戳記,斷言 board 與兩個 commit 都對。
   - **image 裡沒有戳記就永遠無法 commit**:`batman-autocommit` 把缺 `/etc/batman-build` 視為不健康,每次 OTA 都會被 revert。所以 CI 和本機 build 都必須產生戳記。

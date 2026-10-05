@@ -114,9 +114,11 @@ Everything we add there is a **downstream delta carried across upstream merges**
   force-enables PCIe/M.2 wifi cards as `=y` for boards that have no PCIe at all. **Diff
   `boards/common/*` before every feed-pin bump or upstream rebase**: a change there reaches
   both boards silently.
-- **The firmware fork has no PR convention** — work is pushed as a branch
-  (`build-108-batman`, `build-3aplus`, …). The issue-first / PR / CI gate described above
-  applies to the **Batman** repo.
+- **The firmware fork has a lighter process.** The build branch is `build-3aplus`; feed-pin
+  work is done on a short-lived `s5x-pin-*` branch and merged into `build-3aplus` by PR
+  (e.g. winson3QQ/firmware#4, #5). The old `build-108-batman` was deleted 2026-10-05 (tag
+  `fw-build-108-final`). The issue-first / PR / CI gate described above applies to the
+  **Batman** repo.
 
 ## Local setup
 
