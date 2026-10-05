@@ -541,11 +541,48 @@ bchk_173() {   # force a real kernel panic; assert the ramoops backend captured 
   echo "dmesg-ramoops records ${before:-?} -> ${after:-?}; last boot-reason: $reason"
   [ -n "$after" ] && [ "${after:-0}" -gt "${before:-0}" ] && echo "$reason" | grep -q 'prev=PANIC'; }
 
+bchk_rejoin_245() {   # DNODE leaves+rejoins the mesh; assert peers never kernel-panic (#245) and DNODE never hangs (#246)
+  # #245: mm6108 rate-control read a freed/NULL STA table on TX-status when a mesh peer (re)joined -> peer Oops/panic.
+  # #246: batman-adv 2025.4 ELP worker vs cancel_delayed_work_sync rtnl deadlock when a hard iface left bat0 -> mover
+  #       network config hangs (no plain-reboot recovery). `wifi down/up` exercises BOTH in one test: the down path
+  #       hits #246 on the mover, the up path hits #245 on the peers. An unpatched build fails within ~2 cycles.
+  local mover=$1 N=${REJOIN_CYCLES:-3} i v t pl
+  local victims=() base=()
+  for v in "$BENCH_NODE" "$MESH_NODE" "$OTS_NODE"; do
+    [ "$v" = "$mover" ] && continue
+    case " ${victims[*]} " in *" $v "*) continue;; esac
+    up "$v" && victims+=("$v")
+  done
+  [ "${#victims[@]}" -ge 1 ] || { echo "no reachable peer besides mover $mover"; return 2; }
+  fssh "$mover" 12 '[ "$(cat /sys/class/net/wlh0/operstate 2>/dev/null)" = up ]' || { echo "mover $mover wlh0 not up at start"; return 1; }
+  for v in "${victims[@]}"; do base+=("$(fssh "$v" 12 'grep -c prev=PANIC /opt/batdata/log/boot-reasons.log 2>/dev/null' | tr -d ' ')"); done
+  local nv=${#victims[@]}
+  for i in $(seq 1 "$N"); do
+    fssh "$mover" 25 'wifi down radio1; sleep 45; wifi up radio1' >/dev/null 2>&1
+    t=0; pl=0
+    while [ "$t" -lt 180 ]; do
+      pl=$(fssh "$mover" 10 'iw dev wlh0 station dump 2>/dev/null | grep -c "mesh plink:.*ESTAB"' | tr -d ' ')
+      [ "${pl:-0}" -ge "$nv" ] && break; sleep 10; t=$((t+10))
+    done
+    [ "${pl:-0}" -ge "$nv" ] || { echo "cycle $i/$N: mover $mover did not rejoin $nv peers in 180s (plink=${pl:-0}) — likely #246 rtnl hang"; return 1; }
+    sleep 15   # let a panicking peer reboot far enough to bump its boot-reasons PANIC count
+  done
+  local bad=0 idx a b
+  for idx in "${!victims[@]}"; do
+    v=${victims[$idx]}; b=${base[$idx]}
+    a=$(fssh "$v" 12 'grep -c prev=PANIC /opt/batdata/log/boot-reasons.log 2>/dev/null' | tr -d ' ')
+    echo "peer $v PANIC ${b:-?} -> ${a:-?}"
+    [ "${a:-0}" -gt "${b:-0}" ] && bad=1
+  done
+  echo "$N leave/rejoin cycles, $nv peer(s), mover $mover back each time"
+  [ "$bad" = 0 ]; }
+
 if [ "$FEATURE_MODE" = --destructive ]; then
   if fssh "$DNODE" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
     suite faketime-174 "clock survives a reboot forward, not back to 2025 (#174, destructive)"        "bchk_174 $DNODE"
     suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE"
     suite ramoops-173  "kernel panic captured to pstore and classified PANIC (#173/#61, destructive)"  "bchk_173 $DNODE"
+    suite rejoin-245-246 "mesh peer (re)join does not panic peers (#245) and the leaver does not rtnl-hang (#246), destructive" "bchk_rejoin_245 $DNODE"
     # NOT reboot-testable — validated by other means (a supervised run on manet01 proved this the hard way):
     #  #137 LOCKED path: the lockdown gate lives in the 96-batman-config-migrate UCI-DEFAULT, which runs
     #    ONLY on a FRESH SLOT firstboot, never on a plain reboot — so a reboot-based test cannot trigger it
@@ -557,7 +594,7 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     #    is covered by field-status-130.
     #  config-survival: asserted during the flash/burn (a fresh slot's firstboot restores mesh_id/key/channel).
   else
-    for s in faketime-174 guardian-192 ramoops-173; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
+    for s in faketime-174 guardian-192 ramoops-173 rejoin-245-246; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
   fi
 fi
 
