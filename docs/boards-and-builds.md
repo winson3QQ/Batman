@@ -70,10 +70,11 @@ scripts/build-board.sh <board> --card-only       # 以 root 執行,build 完之�
 1. 該板的配方(`boards/<board>/batman-recipe`;Pi 3 包含 `-x payloadhost`);
    - setup:`feeds.conf.default` 裡**任何一條** `src-git ...^<sha>` 和 `feeds/<name>` 的 HEAD 不同(`scripts/check-feed-pins.sh`),就自動加 `-i` 重抓 feeds。以前只看 batman feed 的 pin,改 routing 等其他 pin 時舊樹會默默用舊 feed 編(#247)。戳記腳本也會拒絕過期的 pin。
    - setup 後跑 `scripts/check-batman-adv-source.sh`:batman-adv / batctl 必須**只從 routing feed(openwrt-24.10 維護線)裝一次**、版本 2024.3-13 / 2024.3-5、只選一個 batctl 變體、network coding 沒編進去。alfred 仍用 OpenMANET 的 2025.5。換 routing pin 時,這支腳本和 `check-image-manifest.sh` 的期望版本要一起改。設計:`docs/design/247-batman-adv-2024.3-backports.md`。
+   - **Go(#252)**:`-i` 會把 OpenMANET 的 golang 建置規則(= 上游 openwrt-25.12 的)複製到 packages feed,讓 runc / containerd / dockerd / docker 和 openmanetd 一樣用 build 樹自建的 Go(`staging_dir/hostpkg/lib/go-<GO_DEFAULT_VERSION>`)。以前它們用的是 build 主機的系統 go 1.22.2。`scripts/check-golang-rules.sh` 檢查同步結果;不同步就自動 `-i`,setup 後仍不同步就拒絕。設計:`docs/design/252-golang-toolchain.md`。
 2. `.config` 必須等於 `boards/<board>/batman-config.lock`;
 3. 產生戳記;
-4. build(平行編譯失敗時自動用 `-j1` 重試);
-5. manifest gate(`check-image-manifest.sh`:兩板必含 brcmfmac / 43455 / mm6108 / batman-provision,禁 mm8108;Pi 4 必含 OTS,Pi 3 禁 OTS;mesh 核心版本**精確比對** `kmod-batman-adv 6.6.138.2024.3-r13`、`batctl-full 2024.3-r5`、`alfred 2025.5-r1`,#247);
+4. build(平行編譯失敗時自動用 `-j1` 重試)。golang 規則或 staged Go 變了的話,先把所有選中的 Go 套件 `make package/<p>/clean`:OpenWrt 判斷要不要重編只看套件自己的目錄,不會因此重編(#252);
+5. manifest gate(`check-image-manifest.sh`:兩板必含 brcmfmac / 43455 / mm6108 / batman-provision,禁 mm8108;Pi 4 必含 OTS,Pi 3 禁 OTS;mesh 核心版本**精確比對** `kmod-batman-adv 6.6.138.2024.3-r13`、`batctl-full 2024.3-r5`、`alfred 2025.5-r1`,#247)。接著跑 Go 版本閘 `check-go-toolchain.sh`:rootfs 裡每個 Go 程式都必須是 build 樹那版 Go 編的,而且必要的 Go 程式要齊全(#252;CI 的 build-firmware.yml 也跑);
 6. 用 `scripts/pick-rootfs.sh` 選出 rootfs(見下),並斷言其中的戳記與 SoC;
 7. OTA payload(之後以 root 執行 `--card-only` 做燒卡 image + invariants);
 8. 印出 sha256。
