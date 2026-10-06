@@ -1,6 +1,6 @@
 # Spec: 供裝協定 —— 安全通道與訊息協定(#219 B11 / #254)
 
-Status: **DRAFT v0.4(第二輪 review:安全 / 可行性皆 APPROVE-WITH-CHANGES → 本版併入;CBOR 整數 key 表待定稿時補齊(§5.6);v0.1 review:安全 NEEDS-REWORK、可行性 APPROVE-WITH-CHANGES → 本版重寫 §3、§6、§7 並補齊編碼;待第二輪)**
+Status: **DRAFT v0.5(補齊 CBOR 整數 key 表 `219-protocol.cddl` 與測試向量 `tests/vectors/219-protocol/`;待一輪一致性 review 後定稿)**
 Parent: #254(階段 1)· 上位設計:`docs/design/219-field-provisioning.md`(PR #253)§3.3、§3.4、§5、§6.5
 範圍:手機 app 與節點 `batman-provd` 之間的**安全通道**、**傳輸分段**、**訊息格式**,以及可以轉送的**簽章物件**。民用版;戰術版沿用同一層,只換成員提供者(上位設計 F2)。
 
@@ -61,7 +61,7 @@ device_hint = 未認領:QR / 廣播上的 device_id(ASCII);已認領:空字串
   `ecdh_pub` 是 608B 裡 ECDH 槽的公鑰(§7 的加密對象);`sig_ecdh` 讓網主不會被騙去加密給攻擊者的金鑰【依 v0.1 review】。
 - `node_cert`(CBOR map)放在交握第 2 則訊息的 payload:
   ```
-  { 1: dac_chain [ bstr X.509 DER, … ],   ; 由 atcacert 產生
+  { 1: dac_chain [ bstr X.509 DER, … ],   ; 葉憑證在前,中繼憑證在後;**不放根憑證**(app 內建),節省 QR 空間
     2: s_node_pub (32 B),  3: boot_id (16 B),
     4: ecdh_pub (65 B),     5: sig_static (64 B, raw r‖s),  6: sig_ecdh (64 B),
     7: sn (9 B, 608B 序號) }
@@ -111,6 +111,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | `batman-msecrets-v1` | `member_secrets`(COSE) | 網主 |
 | `batman-owner-enc-v1` | 擁有者加密公鑰證明 | 擁有者 |
 | `batman-invite-v1` | `invite`(COSE) | 網主 |
+| `batman-joinreq-v1` | 加入申請(COSE) | 加入者的擁有者簽章金鑰 |
 | `batman-sas-v1` | 確認碼 | — |
 
 開發版的標籤一律加 `-dev` 後綴(§9)。
@@ -222,14 +223,14 @@ sas = 前 6 位十進位數字( SHA-256( "batman-sas-v1" ‖ SHA-256(完整邀�
 - **SAS 必須經另一條管道核對**:當面看兩支手機,或打電話;不能用傳圖片的同一個聊天。
 - 6 位數的強度可接受,前提是攻擊者無法大量取得合法 DAC(DAC 只能由 608B 產生、經出廠簽發)。
 
-### 5.6 CBOR 整數 key 表(定稿前補齊)
+### 5.6 CBOR 整數 key 表
 
-為了讓兩端獨立實作也能互通,**每一個 body 與 COSE payload 的欄位**都要定:整數 key、型別、是否必填【依第二輪可行性 review,MUST】。原則:
-- 0–15 保留給信封;各訊息 body 從 1 起編;未來新增的欄位只能用新的 key,不重用。
-- 型別以 CDDL(RFC 8610)寫成,放在 `docs/design/219-protocol.cddl`,與 §11 的測試向量一起產生、一起驗證。
-- `OtherData`(§5.4)不依賴槽位配置,**現在就定**:`0x08 0x00 0x00 0x00 ‖ 0x00×9`(mode 0,其餘為零),寫入測試向量。
-
-**狀態**:本版只定了信封(§5.1)與 `node_cert`(§3.3)的整數 key;其餘欄位的 key 表是**定稿前必須完成的工作**。
+**完整定義在 `docs/design/219-protocol.cddl`(CDDL,RFC 8610)**:每個訊息 body、`node_cert`、所有 COSE payload、QR 物件都有整數 key、型別、是否必填。原則:
+- 0–15 保留給信封;各訊息 body 從 1 起編;新增欄位只能用新的 key,不重用。
+- 訊息 body 的未知 key 忽略;**簽章物件的未知 key 拒絕**。
+- 內嵌的 COSE 物件一律以**巢狀 CBOR 項目**(tagged 18 / 96)內嵌,不包成 bstr。
+- `OtherData`(§5.4)= `08 00 00 00 00 00 00 00 00 00 00 00 00`(mode 0,其餘為零)。
+- content type 用短字串:`batman/netcfg`、`batman/members`、`batman/secrets`、`batman/msecrets`、`batman/invite`、`batman/joinreq`。
 
 ## 6. 金鑰與導出
 
@@ -318,7 +319,7 @@ member_list = { net_id, net_version, prev_hash,
 
 > **使用者決定 (a)(2026-10-06)**:遠端加入採雙向傳圖片(邀請 → 申請 → 同意)。民用版只靠共用密碼,**拿到 SAE 密碼就能進網**,所以遠端圖片不帶密碼,「同意」才真正有效。上位設計 §2.2 已改為朋友 4 步、網主 2 + 2 步(v2.8)。
 >
-> 圖片格式:三種圖片都是 QR,內容為 deterministic CBOR,經 base45 或二進位 QR 編碼;太大放不進一個 QR 時(同意圖片含加密的密碼與 `member_secrets`),拆成多個 QR 拼成一張圖。申請圖片帶加入者 app 的擁有者公鑰,讓網主把 `member_secrets` 加密給它。
+> 圖片格式:三種圖片都是 QR(`qr-object`,CDDL),內容為 deterministic CBOR,用**二進位模式**(不用 base45)。同意圖片**不重複帶 `net_config`**(加入者已從邀請取得)。測試向量的實測大小:邀請 428 B、加入申請 957 B、同意 1050 B,**都在 QR version 25-L(1273 B)以內**,一個 QR 放得下;超過時才用 `qr-fragment` 拆片。申請圖片帶加入者 app 的擁有者公鑰與加密公鑰,讓網主把 `member_secrets` 加密給它。
 
 ## 8. 限制與逾時
 
@@ -357,13 +358,11 @@ member_list = { net_id, net_version, prev_hash,
 
 ## 11. 測試向量
 
-放 `tests/vectors/219-protocol/`,規格定稿時一併提供:
-- 固定金鑰下 `NX` 與 `NXpsk0` 交握的完整位元組(含 prologue);
-- `node_cert` 的兩個簽章、`auth/owner`、`peers/challenge`;
-- **§5.4 認領的 CheckMac 輸入 88 B 與輸出**(與 cryptoauthlib `atcah_check_mac` 交叉驗證);
-- HKDF 導出、SAS;
-- COSE:`net_config`、`member_list`、`net_secrets`、`member_secrets`、兩種 invite;
-- GATT 框架切段與重組(含異常)。
+**已完成**:`tests/vectors/219-protocol/`(`vectors.json`、`gen.py`、`verify.py`、`README.md`)。
+- `gen.py` 以固定金鑰與決定性 ECDSA(RFC 6979)產生,**可逐位元組重現**。
+- `verify.py` 以**另一份實作**逐項驗證,共 92 項:Noise 用 `dissononce` 重跑 `NX` 與 `NXpsk0` 交握(位元組必須與 `noiseprotocol` 產生的完全相同)、ECDSA / ECDH 用 `python-ecdsa`、HKDF 用標準庫 `hmac`、所有物件以 `pycddl` 對 CDDL 驗證結構。
+- 涵蓋:測試根憑證與 DAC、`node_cert`、HKDF、兩種 Noise 交握、`auth/owner`、認領 CheckMac(88 B)、`sig_enc`、`peers/challenge`、全部 COSE 物件(含 ECDH 共享秘密、KDF context、CEK)、SAS、QR 大小、GATT 框架、CBOR 信封。
+- **尚未**:`flynn/noise`(Go)交叉驗證(這台開發機沒有 Go;§12 Q8)、開發版(`-dev`)向量、608B 實機的 CheckMac 交叉驗證(B1)。
 
 ## 12. 待決
 
@@ -374,7 +373,7 @@ member_list = { net_id, net_version, prev_hash,
 | Q3 | Rust 工具鏈、vendoring 與 FFI 可行性(§10,併入 B15) |
 | Q4 | B1:`OtherData` 常數、`ECDHPROT`、IO protection key 存放 |
 | ~~Q5~~ | 遠端加入流程 → **已決定 (a) 雙向傳圖片**(§7.6) |
-| Q7 | QR 用二進位模式、目標 version 25 以下;多個 QR 拼在一張圖時每個帶「第幾片 / 共幾片 / 物件雜湊」;實測經 LINE / WhatsApp 壓縮後的掃描成功率 |
+| Q7 | QR 大小已實測(最大 1050 B,在 version 25-L 以內);**仍待實測**經 LINE / WhatsApp 壓縮後的掃描成功率 |
 | Q8 | 608B 簽章耗時(§8 估 100 ms)與 `NXpsk0` 互通性,在 B1 / 測試向量時以 `flynn/noise` 交叉驗證 |
 | Q6 | 同意圖片的大小與 QR 拆分方式(加密的密碼 + `member_secrets` + COSE 簽章,估計 1–2 KB) |
 
@@ -410,3 +409,5 @@ SHOULD-FIX 已併入:拒絕無 PSK 的交握、手機不依廣播選模式;PSK �
 | 可行性 4 | CBOR 整數 key 未定義 | §5.6 原則與 CDDL 檔;**完整 key 表為定稿前的工作**;`OtherData` 現在定案 |
 
 SHOULD-FIX 已併入:`sn` 比對 DAC;HTTP 冪等鍵;每位擁有者各自的 `owner_tag_key` 與輪替的 `adv_owner_key`;`member_secrets` 自己的標籤;分叉的確定性規則;落後節點的轉送內容;廣播不帶明文版本號;6 位數 SAS 的前提;`device_id` 放 info 最後;COSE tagged;Q7(QR 格式)、Q8(608B 耗時、NXpsk0 交叉驗證)。
+
+**v0.5(2026-10-06)**:補齊 §5.6 的 CBOR 整數 key 表(`219-protocol.cddl`)與 §11 的測試向量(92 項獨立驗證全部通過)。產生向量時發現並修正:`node_cert` 不再帶根憑證、同意圖片不再重複帶 `net_config`、content type 改短字串、內嵌 COSE 物件一律為巢狀項目(CDDL 驗證抓到與產生器不一致);新增 `batman-joinreq-v1` 標籤。三種 QR 都縮到 1273 B 以內。

@@ -1,0 +1,340 @@
+; Batman provisioning protocol — CBOR schema (CDDL, RFC 8610)
+; Companion to docs/design/219-protocol.md (v0.5). Section numbers (§) refer to that spec.
+;
+; Rules for every structure in this file:
+;   * Deterministic CBOR (RFC 8949 §4.2.1): shortest-form integers and lengths,
+;     map keys sorted bytewise, no indefinite lengths, no floats.
+;   * Maps use small unsigned integer keys only. A key is never reused for a
+;     different meaning; new optional fields get new keys.
+;   * Envelope keys 0..15 are reserved (§5.1). Message bodies number from 1.
+;   * Receivers IGNORE unknown keys in message bodies, but REJECT unknown keys
+;     inside signed objects (COSE payloads, §7.1).
+;   * "?" = optional. Everything else is required.
+
+; ------------------------------------------------------------------ primitives
+bytes9      = bstr .size 9
+bytes16     = bstr .size 16
+bytes32     = bstr .size 32
+sha256      = bstr .size 32
+p256-pub    = bstr .size 65          ; SEC1 uncompressed (0x04 || X || Y)
+x25519-pub  = bstr .size 32
+es256-sig   = bstr .size 64          ; raw r || s, each 32 B big-endian
+der-cert    = bstr                   ; X.509 DER (atcacert output)
+device-id   = tstr                   ; ASCII, as printed on the QR
+net-id      = bytes16
+invite-id   = bytes16
+net-version = uint .le 4294967295    ; u32
+country     = tstr .size 2           ; ISO 3166-1 alpha-2, e.g. "TW"
+cose-sign1  = #6.18([ protected: bstr, unprotected: {* int => any}, payload: bstr, signature: es256-sig ])
+cose-encrypt = #6.96([ protected: bstr, unprotected: {* int => any}, ciphertext: bstr, recipients: [ recipient ] ])
+recipient   = [ protected: bstr, unprotected: {* int => any}, ciphertext: bstr .size 0 ]
+
+; ------------------------------------------------------------------ envelope (§5.1)
+request = {
+  0 => proto-ver,
+  1 => uint,                 ; id: increasing within a session
+  2 => msg-type,
+  3 => request-body,
+  ? 6 => part,               ; chunking (§5.1)
+  ? 7 => bytes16,            ; idem_key: required on every state-changing request (§4.2)
+}
+response = {
+  1 => uint,                 ; id of the request
+  4 => status,
+  ? 3 => response-body,      ; present when status = 0
+  ? 5 => error-detail,       ; present when status != 0
+  ? 6 => part,
+}
+proto-ver    = [ major: uint, minor: uint ]
+part         = { 1 => uint, 2 => uint }        ; 1: n (1-based), 2: total
+status       = 0 / error-code
+error-code   = 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 10 / 11 / 12   ; §5.2
+error-detail = { ? 1 => tstr,                  ; capability (E_UNSUPPORTED)
+                 ? 2 => reason-code,           ; E_REJECTED / E_UNSUPPORTED reason
+                 ? 3 => tstr }                 ; free text for logs only, never shown to users
+reason-code  = 1 ; update: trial slot active
+             / 2 ; update: p5 not seeded
+             / 3 ; update: board mismatch
+             / 4 ; update: needs an intermediate version first
+             / 5 ; update: needs a card reflash (config.txt / p7 change)
+             / 6 ; update: downgrade not allowed
+             / 7 ; parameter not supported by this hardware
+             / 8 ; not enough RAM (/tmp)
+
+msg-type = "info" / "claim/begin" / "claim/finish" / "auth/owner"
+         / "owner/add" / "owner/remove" / "settings/get" / "settings/set"
+         / "network/join" / "network/update" / "network/leave"
+         / "status" / "peers/challenge" / "diag/summary" / "diag/bundle"
+         / "update/check" / "update/prepare" / "update/apply" / "update/status"
+         / "bulk/open" / "bulk/close" / "reset"
+
+request-body  = info-req / claim-begin-req / claim-finish-req / auth-owner-req
+              / owner-add-req / owner-remove-req / settings-get-req / settings
+              / network-join-req / network-update-req / empty / status-req
+              / peers-challenge-req / update-check-req / bulk-open-req / reset-req
+response-body = info-resp / claim-begin-resp / claim-finish-resp / auth-owner-resp
+              / owner-add-resp / settings / network-join-resp / network-update-resp
+              / status-resp / peers-challenge-resp / diag-summary-resp / diag-bundle-resp
+              / update-check-resp / update-progress / bulk-open-resp / empty
+empty = {}
+
+; ------------------------------------------------------------------ messages (§5.3)
+info-req  = empty
+info-resp = {
+  1 => device-id,
+  2 => tstr,                 ; model, e.g. "C3"
+  3 => tstr,                 ; board, "bcm2710" / "bcm2711"
+  4 => tstr,                 ; fw_version
+  5 => proto-ver,
+  6 => [* capability],
+  7 => node-state,
+  8 => bool,                 ; claim_window open
+  ? 9 => net-version,        ; only for owner / member sessions
+  ? 10 => net-id,            ; only for owner / member sessions
+}
+capability = "halow" / "gps" / "ptt" / "lora" / "se" / "battery" / tstr   ; open set
+node-state = 0 ; unclaimed
+           / 1 ; claimed, not in a network
+           / 2 ; network member
+
+claim-begin-req   = { 1 => p256-pub }              ; owner_pub (signing key)
+claim-begin-resp  = { 1 => bytes32 }               ; nonce
+claim-finish-req  = {
+  1 => bytes32,              ; CheckMac response (§5.4)
+  2 => p256-pub,             ; owner_enc_pub
+  3 => es256-sig,            ; sig_enc = ES256_owner("batman-owner-enc-v1" || owner_enc_pub)
+}
+claim-finish-resp = {
+  1 => bytes32,              ; owner_tag_key (this owner)
+  2 => bytes32,              ; adv_owner_key (per node)
+  3 => tstr,                 ; root_password (shown once, stored by the app)
+}
+auth-owner-req  = { 1 => sha256, 2 => es256-sig }  ; owner_key_id, sig over "batman-owner-auth-v1" || h || owner_key_id
+auth-owner-resp = { 1 => bytes32 }                 ; current adv_owner_key
+owner-add-req   = { 1 => p256-pub, 2 => p256-pub, 3 => es256-sig }  ; new owner_pub, owner_enc_pub, sig_enc
+owner-add-resp  = { 1 => bytes32 }                 ; owner_tag_key for the new owner (handed over by the app)
+owner-remove-req = { 1 => sha256 }                 ; owner_key_id
+
+settings-get-req = empty
+settings = {
+  ? 1 => tstr,               ; device name
+  ? 2 => country,
+  ? 10 => halow-settings,
+  ? 11 => ptt-settings,
+  ? 12 => gps-settings,
+  ? 13 => lora-settings,
+}
+halow-settings = { ? 1 => uint, ? 2 => uint }      ; 1: channel, 2: bandwidth (MHz)
+ptt-settings   = { ? 1 => uint }                   ; 1: talk group
+gps-settings   = { ? 1 => bool }                   ; 1: enabled
+lora-settings  = { ? 1 => tstr }                   ; 1: node short name
+
+network-join-req = {
+  1 => cose-sign1,           ; net_config
+  2 => cose-sign1,           ; member_list
+  3 => cose-sign1,           ; net_secrets for this node
+  ? 4 => invite-id,
+}
+network-join-resp = { 1 => join-result }
+join-result = 0 ; joined
+            / 1 ; pending approval
+
+network-update-req  = { 1 => [+ update-step] }
+update-step = {
+  1 => cose-sign1,           ; net_config of this version
+  2 => cose-sign1,           ; member_list of this version
+  ? 3 => cose-sign1,         ; net_secrets: only in the LAST step (latest version)
+}
+network-update-resp = { 1 => net-version }
+
+status-req  = { 1 => status-scope }
+status-scope = 0 ; self
+             / 1 ; team (queried over the mesh)
+status-resp = {
+  1 => node-state,
+  2 => verdict,
+  3 => uint,                 ; mesh neighbours seen
+  4 => bool,                 ; p5_saved
+  ? 5 => join-failure,       ; when not in the mesh (#127)
+  ? 6 => uint,               ; battery percent
+  ? 7 => [* team-entry],     ; scope = team
+  ? 15 => {* tstr => any},   ; #131 status fields not yet given integer keys
+}
+verdict = 0 ; ok
+        / 1 ; degraded
+        / 2 ; down
+join-failure = { 1 => uint, ? 2 => tstr }          ; 1: reason code (#127), 2: detail for logs
+team-entry = {
+  1 => sha256,               ; dac_pub_hash
+  2 => tstr,                 ; name
+  3 => verdict,
+  4 => uint,                 ; seconds since last seen (relative, no wall clock)
+  ? 5 => uint,               ; battery percent
+}
+
+peers-challenge-req  = { 1 => bytes32 }            ; nonce_app
+peers-challenge-resp = { 1 => bytes32, 2 => es256-sig }  ; nonce_node, sig
+
+diag-summary-resp = { 1 => [* diag-item] }
+diag-item = {
+  1 => tstr,                 ; code, e.g. "join.no_peers"
+  2 => uint,                 ; severity: 0 info, 1 warning, 2 error
+  ? 3 => uint,               ; seconds since it happened (relative)
+  ? 4 => tstr,               ; detail for logs only
+}
+diag-bundle-resp = { 1 => bstr }                   ; one chunk of the compressed bundle (use `part`)
+
+update-check-req  = { 1 => update-manifest }
+update-manifest = {
+  1 => tstr,                 ; version
+  2 => tstr,                 ; board
+  3 => uint,                 ; payload size in bytes
+  4 => sha256,               ; SHA-256 of SHA256SUMS
+  5 => bstr,                 ; detached signature over metadata + SHA256SUMS (format: B18)
+  ? 6 => [* tstr],           ; versions this image may be downgraded to
+}
+update-check-resp = { 1 => bool, ? 2 => reason-code, 3 => uint }   ; ok, reason, RAM needed (bytes)
+update-progress = {
+  1 => update-phase,
+  2 => uint,                 ; percent 0..100
+  ? 3 => reason-code,        ; failure reason
+}
+update-phase = 0 ; idle
+             / 1 ; receiving
+             / 2 ; verifying
+             / 3 ; written, waiting for apply
+             / 4 ; trial boot
+             / 5 ; committed
+             / 6 ; reverted
+
+bulk-open-req  = { 1 => bulk-purpose }
+bulk-purpose   = 0 ; software update
+bulk-open-resp = {
+  1 => tstr,                 ; ssid
+  2 => tstr,                 ; one-time WPA passphrase
+  3 => tstr,                 ; node IP
+  4 => uint,                 ; port
+  5 => uint,                 ; expires_in (seconds, relative)
+}
+
+reset-req = { 1 => reset-level }
+reset-level = 0 ; leave network
+            / 1 ; factory reset
+            / 2 ; zeroize (tactical only; civil returns E_UNSUPPORTED)
+
+; ------------------------------------------------------------------ node identity (§3.3)
+node-cert = {
+  1 => [+ der-cert],         ; DAC chain, leaf first, intermediates after; the ROOT is never sent (the app has it built in)
+  2 => x25519-pub,           ; s_node_pub
+  3 => bytes16,              ; boot_id
+  4 => p256-pub,             ; ecdh_pub (608B ECDH slot)
+  5 => es256-sig,            ; sig_static
+  6 => es256-sig,            ; sig_ecdh
+  7 => bytes9,               ; sn (608B serial; must match the DAC certificate)
+}
+
+; ------------------------------------------------------------------ signed objects (§7)
+; Each is the PAYLOAD of a cose-sign1 whose protected header is
+;   { 1: -7 (ES256), 3: "<content type>" }
+; and whose external_aad is the object's label (§3.6).
+
+net-config = {                ; content type "batman/netcfg"
+  1 => net-id,
+  2 => net-version,
+  3 => sha256 / null,        ; prev_hash (null only for version 1)
+  4 => tstr,                 ; network name
+  5 => country,
+  6 => { 1 => tstr, 2 => uint, 3 => uint },   ; halow: ssid, channel, bandwidth
+  ? 7 => { 1 => tstr, 2 => uint },            ; lora: channel_name, preset
+  8 => [+ p256-pub],         ; admins (valid for signing the NEXT version)
+}
+
+member-list = {               ; content type "batman/members"
+  1 => net-id,
+  2 => net-version,
+  3 => sha256 / null,        ; prev_hash
+  4 => [* member],
+  5 => [* sha256],           ; removed dac_pub_hash
+  6 => [* invite-id],        ; used invites
+  7 => [* invite-id],        ; revoked invites
+}
+member = {
+  1 => sha256,               ; dac_pub_hash
+  2 => p256-pub,             ; ecdh_pub
+  3 => tstr,                 ; device name
+  4 => p256-pub,             ; owner_pub (signing)
+  5 => p256-pub,             ; owner_enc_pub
+  ? 6 => x25519-pub,         ; lora_pkc_pub (Meshtastic PKC)
+}
+
+net-secrets = {               ; content type "batman/secrets"
+  1 => net-id,
+  2 => net-version,
+  3 => sha256,               ; target_dac_hash
+  4 => cose-encrypt,         ; plaintext = net-secrets-plain
+}
+net-secrets-plain = {
+  1 => tstr,                 ; SAE password
+  2 => bytes32,              ; net_root
+  ? 3 => bstr,               ; LoRa PSK
+  ? 4 => tstr,               ; team AP passphrase
+}
+
+member-secrets = {            ; content type "batman/msecrets"
+  1 => net-id,
+  2 => net-version,
+  3 => sha256,               ; target = SHA-256(owner_enc_pub)
+  4 => cose-encrypt,         ; plaintext = member-secrets-plain
+}
+member-secrets-plain = { 2 => bytes32 }            ; net_root
+
+invite = {                    ; content type "batman/invite"
+  1 => net-id,
+  2 => invite-id,
+  3 => invite-kind,
+  4 => cose-sign1,           ; net_config (public)
+  5 => p256-pub,             ; admin_pub that signed this invite
+  ? 6 => tstr,               ; SAE password: in_person ONLY
+}
+invite-kind = 0 ; in_person
+            / 1 ; remote
+
+join-request = {              ; signed by the joining OWNER key; content type "batman/joinreq"
+  1 => sha256,               ; SHA-256 of the complete invite cose-sign1
+  2 => node-cert,            ; joining node identity, fetched by the owner app from its own node over BLE
+  3 => p256-pub,             ; owner_pub
+  4 => p256-pub,             ; owner_enc_pub
+  5 => es256-sig,            ; sig_enc
+  6 => tstr,                 ; device name
+}
+
+; ------------------------------------------------------------------ COSE_Encrypt details (§7.3)
+; body protected header      : { 1: 24 }                      ; ChaCha20/Poly1305
+; body unprotected header    : { 5: bytes12 }                 ; IV
+; recipient protected header : { 1: -25 }                     ; ECDH-ES + HKDF-256
+; recipient unprotected      : { -1: ephemeral COSE_Key }     ; { 1: 2, -1: 1, -2: x(32), -3: y(32) }
+; external_aad of the body   : the object's label
+; COSE_KDF_Context = [ 24, [nil, nil, nil], [ target_hash, nil, nil ],
+;                      [ 256, recipient-protected-bstr, net-id || u32BE(net-version) ] ]
+; CEK = HKDF-SHA256(salt = empty, IKM = ECDH(eph, target), info = cbor(COSE_KDF_Context), L = 32)
+
+; ------------------------------------------------------------------ QR images (§7.6)
+qr-object = {
+  1 => qr-kind,
+  2 => bstr,                 ; the complete object (cose-sign1 bytes, or approval-bundle bytes)
+}
+qr-kind = 1 ; invite
+        / 2 ; join request
+        / 3 ; approval
+approval-bundle = {
+  ? 1 => cose-sign1,         ; net_config: omitted when identical to the one in the invite (saves QR space)
+  2 => cose-sign1,           ; member_list
+  3 => cose-sign1,           ; net_secrets for the joining node
+  4 => cose-sign1,           ; member_secrets for the joining owner app
+}
+qr-fragment = {               ; when one QR is not enough (§12 Q7)
+  1 => uint,                 ; index (1-based)
+  2 => uint,                 ; total
+  3 => sha256,               ; hash of the complete qr-object bytes
+  4 => bstr,                 ; slice of the qr-object bytes
+}
