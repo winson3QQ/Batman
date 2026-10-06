@@ -410,6 +410,22 @@ chk_batver_247() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 ' 
   if batctl meshif bat0 nc >/dev/null 2>&1; then echo "batctl nc answers — network coding compiled in"; exit 1; fi
   batctl mj 2>/dev/null | grep -q network_coding_enabled && { echo "mj JSON carries network_coding_enabled"; exit 1; }
   echo "ok: 24.10 line r$r, loaded == installed, batctl agrees, NC compiled out"' || rc=1; done; return $rc; }
+chk_go_252() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '   # #252, every reachable node
+  # One Go for every Go program in the image. Up to 1.5.2 the container stack (docker/dockerd/containerd/
+  # runc) was silently built by the build host system go 1.22.2 (EOL) while openmanetd used the tree go
+  # 1.26 — so: all must report the SAME go, and it must be >= go1.23. Reads the version string the Go
+  # linker embeds (first go1.x.y in the binary). A pre-#252 image fails on purpose.
+  ref=""; bad=0
+  for f in /usr/bin/openmanetd /usr/bin/dockerd /usr/bin/docker /usr/bin/containerd /usr/sbin/runc; do
+    [ -x "$f" ] || { echo "$f missing"; bad=1; continue; }
+    v=$(strings "$f" 2>/dev/null | grep -m1 -oE "go1\.[0-9]+\.[0-9]+")
+    echo "$f $v"
+    [ -n "$v" ] || { echo "  no Go version found in $f"; bad=1; continue; }
+    [ -n "$ref" ] || ref=$v
+    [ "$v" = "$ref" ] || { echo "  $f built by $v, openmanetd by $ref — mixed toolchains"; bad=1; }
+    m=$(echo "$v" | cut -d. -f2); [ "$m" -ge 23 ] 2>/dev/null || { echo "  $f built by $v (< go1.23, EOL)"; bad=1; }
+  done
+  [ "$bad" = 0 ] && echo "ok: one toolchain $ref"' || rc=1; done; return $rc; }
 chk_130() { fssh "$1" 20 '
   st=$(/usr/bin/halow-status json 2>/dev/null | sed -n "s/.*\"join\":{\"state\":\"\([A-Za-z_]*\)\".*/\1/p" | head -1)
   p=$(batctl n 2>/dev/null | grep -c wlh0)
@@ -480,7 +496,8 @@ if up "$MESH_NODE"; then
   BV_NODES=$MESH_NODE                      # every distinct reachable node: a mixed fleet must show up
   for n in "$OTS_NODE" "$IPERF_PEER"; do [ -n "$n" ] && [ "$n" != "$MESH_NODE" ] && up "$n" && case " $BV_NODES " in *" $n "*) ;; *) BV_NODES="$BV_NODES $n" ;; esac; done
   suite batman-ver-247 "mesh core = routing openwrt-24.10 batman-adv 2024.3-r>=13, loaded == installed, NC compiled out, on: $BV_NODES (#247)" "chk_batver_247 $BV_NODES"
-  suite mesh-console-14  "/cgi-bin/mesh aggregate agrees with batctl (#14)"                   "chk_14 $MESH_NODE"
+  suite go-toolchain-252 "docker/dockerd/containerd/runc built by the same Go as openmanetd, >= go1.23, on: $BV_NODES (#252)" "chk_go_252 $BV_NODES"
+  suite mesh-console-14 "/cgi-bin/mesh aggregate agrees with batctl (#14)"                   "chk_14 $MESH_NODE"
   suite p5-seed-202      "a JOINED node auto-seeds p5 (radio delta), decoupled from lockdown (#202)" "chk_202 $MESH_NODE"
   suite mesh-tput        "sustained mesh throughput to peer (median of N batctl tp; baseline soak median ~9.4 Mbps)" "chk_tput $MESH_NODE"
   if [ "$IPERF_PEER" != "$MESH_NODE" ] && up "$IPERF_PEER"; then
@@ -489,7 +506,7 @@ if up "$MESH_NODE"; then
     suite mesh-tput-iperf "IPERF_PEER '$IPERF_PEER' unusable (unset / == MESH_NODE / down) — set IPERF_PEER to the other mesh node" ""
   fi
 else
-  for s in field-status-130 meshjoin-209 batman-ver-247 mesh-console-14 p5-seed-202 mesh-tput mesh-tput-iperf; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
+  for s in field-status-130 meshjoin-209 batman-ver-247 go-toolchain-252 mesh-console-14 p5-seed-202 mesh-tput mesh-tput-iperf; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
 fi
 
 # A/B commit hygiene (#211): a completed reflash must not leave the node an uncommitted trial (a reboot
