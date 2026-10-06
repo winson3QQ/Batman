@@ -1,0 +1,294 @@
+<title>Batman 供裝 app 原型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* 版面:左側「流程清單 + 步驟計數」,右側一支手機;窄螢幕時手機在上、清單在下 */
+:root{
+  --bg:#EEF1EC; --surface:#FFFFFF; --surface-2:#F5F7F3; --line:#D5DBD2;
+  --fg:#18201B; --muted:#5D6A61; --accent:#0E6E6A; --accent-fg:#FFFFFF;
+  --ok:#1E7B3A; --warn:#A86700; --bad:#B42318; --info:#2459A6;
+  --ok-bg:#E3F2E6; --warn-bg:#FBF0DA; --bad-bg:#FBE5E2; --info-bg:#E4ECF8;
+  --phone:#10161A;
+  --f-body:"Noto Sans TC",system-ui,"PingFang TC","Microsoft JhengHei",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"Cascadia Mono",monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#111613; --surface:#1A211D; --surface-2:#212A25; --line:#33403A;
+  --fg:#E7ECE8; --muted:#9AA79F; --accent:#3FB8B1; --accent-fg:#06201F;
+  --ok:#5CC57C; --warn:#E3A93B; --bad:#F07A6E; --info:#7FA8E8;
+  --ok-bg:#1C3324; --warn-bg:#3A2D12; --bad-bg:#3D1D19; --info-bg:#1B2A40;
+  --phone:#000; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#111613; --surface:#1A211D; --surface-2:#212A25; --line:#33403A;
+  --fg:#E7ECE8; --muted:#9AA79F; --accent:#3FB8B1; --accent-fg:#06201F;
+  --ok:#5CC57C; --warn:#E3A93B; --bad:#F07A6E; --info:#7FA8E8;
+  --ok-bg:#1C3324; --warn-bg:#3A2D12; --bad-bg:#3D1D19; --info-bg:#1B2A40;
+  --phone:#000; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:15px;line-height:1.5;padding-inline:16px;padding-block:20px}
+.wrap{max-width:1040px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:28px;align-items:start}
+@media (max-width:860px){.wrap{grid-template-columns:minmax(0,1fr)}.phone-col{order:-1}}
+h1{font-size:1.5rem;margin:0 0 4px;text-wrap:balance}
+.lead{color:var(--muted);margin:0 0 18px;max-width:60ch}
+.panel{min-width:0}
+.counter{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:14px}
+.counter b{font-family:var(--f-mono);font-size:1.4rem}
+.counter .lab{color:var(--muted);font-size:.85rem}
+.counter.over{border-color:var(--bad);background:var(--bad-bg)}
+.counter.done{border-color:var(--ok);background:var(--ok-bg)}
+.flows{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+.flow{text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer;color:var(--fg);font:inherit;display:flex;justify-content:space-between;gap:8px;align-items:center}
+.flow:hover,.flow:focus-visible{border-color:var(--accent);outline:none}
+.flow.active{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent)}
+.flow .bud{font-family:var(--f-mono);font-size:.8rem;color:var(--muted);white-space:nowrap}
+.note{color:var(--muted);font-size:.85rem;margin-top:14px;max-width:62ch}
+.legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+/* phone */
+.phone{background:var(--phone);border-radius:36px;padding:12px;max-width:400px;margin:0 auto;box-shadow:0 18px 40px rgba(0,0,0,.18)}
+.screen{background:var(--bg);border-radius:26px;overflow:hidden;height:760px;max-height:calc(100vh - 80px);min-height:560px;display:flex;flex-direction:column;position:relative}
+.topbar{padding:14px 18px 8px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.topbar h2{font-size:1.15rem;margin:0}
+.bt{font-size:.75rem;padding:3px 8px;border-radius:999px;background:var(--surface);border:1px solid var(--line);color:var(--muted);cursor:pointer;font-family:inherit}
+.bt.on{color:var(--ok);border-color:var(--ok)}
+.bt.off{color:var(--bad);border-color:var(--bad)}
+.body{flex:1;overflow-y:auto;padding:4px 16px 16px;display:flex;flex-direction:column;gap:12px}
+.tabs{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line);background:var(--surface)}
+.tab{background:none;border:0;padding:10px 0 12px;font:inherit;font-size:.8rem;color:var(--muted);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px}
+.tab .ic{font-size:1.15rem;line-height:1}
+.tab.sel{color:var(--accent);font-weight:700}
+.sec{font-size:.78rem;color:var(--muted);letter-spacing:.06em;margin:6px 2px 0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 14px;display:flex;gap:12px;align-items:center;cursor:pointer;color:var(--fg);font:inherit;text-align:left;width:100%}
+.card:focus-visible{outline:2px solid var(--accent)}
+.card .main{flex:1;min-width:0}
+.card .name{font-weight:700}
+.card .sub{font-size:.82rem;color:var(--muted)}
+.dot{width:12px;height:12px;border-radius:50%;flex:none}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}.dot.info{background:var(--info)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.chip{font-size:.72rem;padding:1px 7px;border-radius:999px;background:var(--surface-2);border:1px solid var(--line);color:var(--muted)}
+.pill{font-size:.78rem;padding:2px 9px;border-radius:999px;font-weight:500;white-space:nowrap}
+.pill.ok{background:var(--ok-bg);color:var(--ok)}.pill.warn{background:var(--warn-bg);color:var(--warn)}.pill.bad{background:var(--bad-bg);color:var(--bad)}.pill.info{background:var(--info-bg);color:var(--info)}
+.banner{border-radius:14px;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.banner.warn{background:var(--warn-bg)}.banner.bad{background:var(--bad-bg)}.banner.info{background:var(--info-bg)}.banner.ok{background:var(--ok-bg)}
+.banner p{margin:0}
+.btn{min-height:48px;border-radius:12px;border:0;font:inherit;font-weight:700;padding:0 16px;cursor:pointer;width:100%}
+.btn.pri{background:var(--accent);color:var(--accent-fg)}
+.btn.sec2{background:var(--surface);color:var(--fg);border:1px solid var(--line)}
+.btn.danger{background:var(--surface);color:var(--bad);border:1px solid var(--bad)}
+.btn:focus-visible{outline:3px solid var(--info);outline-offset:2px}
+.row{display:flex;gap:8px}
+.row .btn{flex:1}
+.field{display:flex;flex-direction:column;gap:6px}
+.field label{font-size:.85rem;color:var(--muted)}
+.field input,.field select{min-height:48px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--fg);font:inherit;padding:0 12px}
+.big{font-size:1.25rem;font-weight:700;margin:4px 0 0;text-wrap:balance}
+.muted{color:var(--muted)}
+.code{font-family:var(--f-mono);font-size:1.3rem;letter-spacing:.08em;background:var(--surface);border:1px dashed var(--line);border-radius:12px;padding:12px;text-align:center}
+.qr{width:180px;height:180px;margin:0 auto;border-radius:12px;background:var(--surface);border:1px solid var(--line);display:grid;place-items:center}
+.viewfinder{height:220px;border-radius:16px;background:#0B0F0D;display:grid;place-items:center;color:#cfe;position:relative;overflow:hidden}
+.viewfinder::after{content:"";position:absolute;inset:40px 70px;border:3px solid #3FB8B1;border-radius:14px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:.9rem}
+.kv dt{color:var(--muted)}.kv dd{margin:0}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px;text-align:center}
+.stat b{display:block;font-size:1.3rem;font-family:var(--f-mono)}
+.stat span{font-size:.75rem;color:var(--muted)}
+.progress{height:8px;border-radius:99px;background:var(--surface-2);overflow:hidden}
+.progress i{display:block;height:100%;background:var(--accent);width:0;transition:width .3s}
+.back{background:none;border:0;color:var(--accent);font:inherit;font-weight:700;cursor:pointer;padding:0}
+/* overlays */
+.sheet{position:absolute;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:flex-end;z-index:5}
+.sheet .inner{background:var(--surface);width:100%;border-radius:20px 20px 0 0;padding:18px 16px 20px;display:flex;flex-direction:column;gap:10px}
+.toast{position:absolute;left:16px;right:16px;bottom:78px;background:var(--fg);color:var(--bg);border-radius:12px;padding:10px 14px;font-size:.9rem;z-index:6}
+.led{display:inline-flex;gap:6px;align-items:center;font-size:.8rem;color:var(--muted)}
+.led i{width:10px;height:10px;border-radius:50%;background:var(--info);animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.led i{animation:none}.progress i{transition:none}}
+</style>
+
+<div class="wrap">
+  <section class="panel">
+    <h1>Batman 供裝 app 原型</h1>
+    <p class="lead">民用版(#219 v2.8)。選一個流程,在右邊的手機上操作;左上角計算你按了幾步,和設計文件 §2.2 的上限比對。資料都是示範用。</p>
+    <div class="counter" id="counter"><div><div class="lab">目前流程</div><div id="cname">自由瀏覽</div></div><div style="margin-left:auto;text-align:right"><div class="lab">步驟 / 上限</div><b id="ccount">0 / –</b></div></div>
+    <div class="flows" id="flows"></div>
+    <p class="note">「步驟」只算使用者的主要操作與系統對話框;返回、捲動、看說明不算。藍牙開關在手機右上角,可模擬「手機藍牙沒開」。</p>
+  </section>
+  <div class="phone-col"><div class="phone"><div class="screen" id="screen">
+    <div class="topbar"><h2 id="title">我的機台</h2><button class="bt on" id="btbtn" type="button">藍牙 開</button></div>
+    <div class="body" id="body"></div>
+    <nav class="tabs" id="tabs"></nav>
+  </div></div></div>
+</div>
+
+<script>
+const S={tab:'home',bt:true,flow:null,steps:0,net:{name:'家裡網路',created:true},
+ devices:[
+  {id:'a',name:'客廳',sku:'C3',caps:['對講','LoRa'],state:'ok',bat:82,seen:'剛剛',near:true,ver:'1.5.0'},
+  {id:'b',name:'陽台',sku:'C1',caps:['對講'],state:'bad',bat:64,seen:'2 分鐘前',near:true,ver:'1.5.0',reason:'找不到其他機台。上次換網路密碼時這台不在附近,還沒換到新密碼。'},
+  {id:'c',name:'車上',sku:'C0',caps:[],state:'ok',bat:41,seen:'15 分鐘前',near:false,ver:'1.4.11'}],
+ newDev:{id:'n',code:'3F9A2C',sku:'C2',caps:['LoRa']}, pendingJoin:null, unknown:false, toast:null, sheet:null, role:'owner'};
+const FLOWS=[
+ {k:'claim',n:'開箱認領',b:3},{k:'create',n:'建立網路',b:3},{k:'invite',n:'邀請朋友(當面)',b:1},
+ {k:'joinf',n:'加入朋友的網(當面)',b:2},{k:'joinr',n:'加入朋友的網(遠端,互傳圖片)',b:4},{k:'approve',n:'網主同意新成員(遠端)',b:1},
+ {k:'mixed',n:'朋友的機台不支援目前設定',b:2},{k:'fix',n:'機台回不了網',b:2},
+ {k:'rekey',n:'擋掉不認識的裝置',b:2},{k:'remove',n:'移除成員',b:3},{k:'update',n:'更新軟體',b:4},{k:'diag',n:'看診斷',b:2},
+ {k:'reset',n:'恢復出廠',b:3},{k:'phone',n:'換手機(舊手機沒了)',b:4},{k:'member',n:'以成員身分看網路',b:'–'},{k:'btoff',n:'手機藍牙沒開',b:'–'}];
+const $=s=>document.querySelector(s);
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function step(){S.steps++;counter()}
+function counter(){const f=FLOWS.find(x=>x.k===S.flow);const c=$('#counter');
+ $('#cname').textContent=f?f.n:'自由瀏覽';$('#ccount').textContent=S.steps+' / '+(f?f.b:'–');
+ c.classList.toggle('over',!!f&&typeof f.b==='number'&&S.steps>f.b);}
+function done(msg){$('#counter').classList.add('done');toast(msg)}
+function toast(t){S.toast=t;render();clearTimeout(window._tt);window._tt=setTimeout(()=>{S.toast=null;render()},2600)}
+function startFlow(k){S.flow=k;S.steps=0;$('#counter').classList.remove('done','over');S.sheet=null;S.toast=null;
+ S.bt=k!=='btoff';S.pendingJoin=null;S.unknown=false;S.role=k==='member'?'member':'owner';S.devices[2].near=(k==='update');
+ if(k==='claim'){S.tab='add';S.view='scan'}
+ else if(k==='create'){S.net.created=false;S.tab='net';S.view=null}
+ else if(k==='invite'){S.net.created=true;S.tab='net';S.view=null}
+ else if(k==='joinf'){S.tab='add';S.view='scan-net';S.remote=false}
+ else if(k==='joinr'){S.tab='add';S.view='scan-net';S.remote=true}
+ else if(k==='approve'){S.tab='home';S.view=null;S.pendingJoin={who:'小明',dev:'客房',code:'47'}}
+ else if(k==='mixed'){S.tab='home';S.view=null;S.pendingJoin={who:'小華',dev:'書房',code:'19',mixed:true}}
+ else if(k==='fix'){S.tab='home';S.view=null;S.devices[1].state='bad'}
+ else if(k==='rekey'){S.tab='home';S.view=null;S.unknown=true}
+ else if(k==='update'){S.tab='home';S.view=null}
+ else if(k==='remove'){S.net.created=true;S.tab='net';S.view=null}
+ else if(k==='member'){S.net.created=true;S.tab='net';S.view=null}
+ else if(k==='diag'){S.tab='home';S.view=null}
+ else if(k==='reset'){S.tab='home';S.view=null}
+ else if(k==='phone'){S.tab='set';S.view=null}
+ else if(k==='btoff'){S.tab='add';S.view='scan'}
+ document.querySelectorAll('.flow').forEach(b=>b.classList.toggle('active',b.dataset.k===k));counter();render();}
+function flowsUI(){$('#flows').innerHTML=FLOWS.map(f=>`<button class="flow" type="button" data-k="${f.k}"><span>${f.n}</span><span class="bud">上限 ${f.b}</span></button>`).join('');
+ document.querySelectorAll('.flow').forEach(b=>b.onclick=()=>startFlow(b.dataset.k));}
+const pill={ok:['ok','在網路裡'],bad:['bad','沒連上網路'],pend:['warn','還沒換到新密碼'],idle:['info','還沒加入網路'],new:['info','新機']};
+function devCard(d){const p=pill[d.state];return `<button class="card" type="button" data-dev="${d.id}"><span class="dot ${p[0]}"></span><span class="main"><span class="name">${esc(d.name)}</span><div class="sub">電量 ${d.bat}% · ${d.near?'附近':'經網路'} · ${d.seen}</div><div class="chips">${d.caps.map(c=>`<span class="chip">${c}</span>`).join('')||'<span class="chip">一般</span>'}</div></span><span style="display:flex;flex-direction:column;gap:4px;align-items:flex-end"><span class="pill ${p[0]}">${p[1]}</span>${d.ver!=='1.5.0'?'<span class="pill info">有新版本</span>':''}</span></button>`}
+function home(){let h='';
+ if(S.pendingJoin){const j=S.pendingJoin;
+  h+= j.mixed?`<div class="banner warn"><p><b>${j.who}的「${j.dev}」想加入,但不支援目前的網路設定。</b></p><p class="muted">要調整整個網路讓他加入嗎?通訊距離可能變短,全部機台會重新連線約 1 分鐘。</p><div class="row"><button class="btn sec2" data-act="mixno">先不要</button><button class="btn pri" data-act="mixyes">調整並同意</button></div></div>`
+  :`<div class="banner info"><p><b>${j.who}的「${j.dev}」想加入你的網路。</b></p><p class="muted">確認碼 <b style="font-family:var(--f-mono)">${j.code}</b>,兩支手機上的確認碼要一樣;不一樣請按拒絕。</p><div class="row"><button class="btn sec2" data-act="deny">拒絕</button><button class="btn pri" data-act="allow">同意</button></div></div>`}
+ if(S.unknown) h+=`<div class="banner bad"><p><b>有一台不認識的裝置連進你的網路。</b></p><p class="muted">要換網路密碼把它擋掉嗎?你的機台會自動換到新密碼。</p><button class="btn pri" data-act="rekey">換密碼</button></div>`;
+ const pend=S.devices.filter(d=>d.state==='pend');if(pend.length) h+=`<div class="banner warn"><p>附近有 ${pend.length} 台還沒換到新密碼。</p><button class="btn pri" data-act="fix">現在更新</button></div>`;
+ const bad=S.devices.find(d=>d.state==='bad');
+ if(bad) h+=`<div class="banner bad"><p><b>${esc(bad.name)} 沒有連上網路</b></p><button class="btn sec2" data-dev="${bad.id}">看原因</button></div>`;
+ const near=S.devices.filter(d=>d.near),far=S.devices.filter(d=>!d.near);
+ h+=`<div class="sec">附近(藍牙)</div>`+near.map(devCard).join('');
+ h+=`<div class="sec">全隊(經網路查詢)</div>`+(far.map(devCard).join('')||'<p class="muted">沒有其他機台。</p>');
+ return h}
+function devView(id){const d=S.devices.find(x=>x.id===id);const p=pill[d.state];let h=`<button class="back" data-act="back">‹ 我的機台</button><div><div class="big">${esc(d.name)}</div><span class="pill ${p[0]}">${p[1]}</span></div>`;
+ if(d.state==='bad') h+=`<div class="banner bad"><p>${esc(d.reason)}</p><button class="btn pri" data-act="fix">修復</button><p class="muted" style="font-size:.8rem">修復會先把新密碼送給這台;沒有待送的,才重新套用最近一份成功的設定。</p></div>`;
+ if(d.ver!=='1.5.0') h+=d.near?`<div class="banner info"><p><b>有新版本 1.5.0</b>(目前 ${d.ver})。更新約需 10 分鐘,期間機台會重新開機一次。</p><button class="btn pri" data-act="update">更新</button></div>`:`<div class="banner info"><p><b>有新版本 1.5.0</b>(目前 ${d.ver})。</p><p class="muted">靠近機台才能更新。</p></div>`;
+ h+=`<dl class="kv"><dt>電量</dt><dd>${d.bat}%</dd><dt>最後看到</dt><dd>${d.seen}</dd><dt>國家 / 地區</dt><dd>台灣</dd><dt>軟體版本</dt><dd>${d.ver}</dd></dl>`;
+ h+=`<div class="sec">功能</div>`;
+ h+=`<div class="card" style="cursor:default"><span class="main"><span class="name">網路</span><div class="sub">家裡網路</div></span></div>`;
+ if(d.caps.includes('對講')) h+=`<div class="card" style="cursor:default"><span class="main"><span class="name">對講</span><div class="sub">群組 1</div></span></div>`;
+ if(d.caps.includes('LoRa')) h+=`<div class="card" style="cursor:default"><span class="main"><span class="name">LoRa 備援通訊</span><div class="sub">網路斷了時,仍可傳簡短訊息</div></span><span class="pill info">之後更新開放</span></div>`;
+ h+=`<div class="sec">維護</div><button class="btn sec2" data-act="diag">診斷</button><button class="btn sec2" data-act="lost">回報遺失</button><button class="btn danger" data-act="leave">離開網路</button><button class="btn danger" data-act="reset">恢復出廠設定</button>`;
+ return h}
+function diagView(){return `<button class="back" data-act="dev:a">‹ 客廳</button><div class="big">診斷</div>
+ <div class="banner ok"><p><b>目前一切正常。</b>看得到 2 台機台,訊號良好。</p></div>
+ <dl class="kv"><dt>最近開機</dt><dd>昨天 21:40,正常關機後開機</dd><dt>上次問題</dt><dd>3 天前:找不到其他機台 12 分鐘,已自動恢復</dd><dt>設定</dt><dd>已存好</dd></dl>
+ <button class="btn sec2" data-act="bundle">匯出完整診斷包</button><p class="muted" style="font-size:.8rem">約 200 KB,經藍牙存到手機;之後可在有網路時分享給客服。內容包含裝置名稱與位址,不含密碼。</p>`}
+function netView(){if(!S.net.created){return S.view==='create2'?
+ `<div class="big">要加入哪些機台?</div>${S.devices.map(d=>`<label class="card" style="cursor:pointer"><input type="checkbox" id="ck-${d.id}" checked><span class="main"><span class="name">${esc(d.name)}</span><div class="sub">${d.caps.join('、')||'一般'}</div></span></label>`).join('')}<button class="btn pri" data-act="create3">完成</button>`
+ :`<div class="banner info"><p>你還沒有網路。建立一個,或用朋友給的邀請加入。</p></div><button class="btn pri" data-act="create">建立網路</button><button class="btn sec2" data-act="gojoin">加入朋友的網路</button>`}
+ if(S.view==='invite') return `<button class="back" data-act="netback">‹ 網路</button><div class="big">請朋友掃這個 QR</div><div class="qr"><svg viewBox="0 0 21 21" width="150" height="150" aria-label="邀請 QR(示意)">${qrBlocks()}</svg></div><p class="muted">當面掃就能直接加入,不用再等你同意;朋友的多台機台可以一起加入。這個邀請只能用一次,你也可以隨時收回。</p><button class="btn sec2" data-act="revoke">收回這個邀請</button><div class="sec">朋友不在旁邊?</div><button class="btn pri" data-act="share">傳邀請圖片給朋友</button><p class="muted" style="font-size:.8rem">用 LINE、訊息等傳送。圖片裡沒有密碼;朋友會傳回申請圖片,你核對確認碼後同意,app 再幫你傳回同意圖片。</p><div class="sec">只能講話(電話、無線電)?把加入碼念給他</div><div class="code">4827-1930-5561</div>`;
+ const n=S.devices.length;const stats=`<div class="stats"><div class="stat"><b>${S.devices.filter(d=>d.caps.includes('對講')).length}</b><span>可對講</span></div><div class="stat"><b>${S.devices.filter(d=>d.caps.includes('LoRa')).length}</b><span>有 LoRa(之後開放)</span></div><div class="stat"><b>${n}</b><span>全部機台</span></div></div>`;
+ if(S.role==='member') return `<div class="big">小明的網路</div><p class="muted">你是成員。只有網主能邀請、換密碼或解散。</p>${stats}<div class="sec">成員</div>${S.devices.map(d=>`<div class="card" style="cursor:default"><span class="main"><span class="name">${esc(d.name)}</span><div class="sub">${d.caps.join('、')||'一般'}</div></span></div>`).join('')}<button class="btn danger" data-act="leave">離開這個網路</button>`;
+ return `<div class="big">${esc(S.net.name)}</div><p class="muted">你是網主。</p>${stats}
+ <button class="btn pri" data-act="invite">邀請朋友</button><div class="sec">成員</div>${S.devices.map(d=>`<div class="card" style="cursor:default"><span class="main"><span class="name">${esc(d.name)}</span><div class="sub">${d.id.startsWith('j')?'小明的':'我的'} · ${d.caps.join('、')||'一般'}</div></span><button class="bt" data-act="rm:${d.id}" type="button">移除</button></div>`).join('')}<button class="btn sec2" data-act="rekey">換網路密碼</button><button class="btn danger" data-act="dissolve">解散網路</button>`}
+function qrBlocks(){let r='',x=7;for(let i=0;i<21;i++)for(let j=0;j<21;j++){x=(x*1103515245+12345)&0x7fffffff;const fin=(i<7&&j<7)||(i<7&&j>13)||(i>13&&j<7);const on=fin?((i%6===0||j%6===0||(i>1&&i<5&&j>1&&j<5)||(i>15&&i<19&&j>1&&j<5)||(i>1&&i<5&&j>15&&j<19))&&!(i===6&&j===6)):(x>>8)&1;if(on)r+=`<rect x="${j}" y="${i}" width="1" height="1" fill="currentColor"/>`}return r}
+function addView(){
+ if(S.view==='scan'||S.view==='scan-net'){
+  if(!S.bt) return `<div class="banner bad"><p><b>手機藍牙沒有打開。</b></p><p class="muted">app 用藍牙找到附近的機台。請打開藍牙後再試。</p><button class="btn pri" data-act="bton">前往設定打開藍牙</button></div><p class="muted">找不到機台時,也請確認機台已開機、燈號是藍色慢閃(藍牙就緒)。</p>`;
+  return `<div class="big">${S.view==='scan'?(S.flow==='phone'?'掃機身上的 QR':'掃機台上的 QR'):'掃朋友手機上的邀請 QR'}</div><div class="viewfinder">相機畫面(示意)</div><button class="btn pri" data-act="${S.view==='scan'?'scanned':'scannednet'}">模擬掃到 QR</button>${S.view==='scan'?'<p class="muted">QR 貼在電池蓋內側;盒內也有一張。</p>':'<button class="btn sec2" data-act="album">從相簿選取邀請圖片</button><button class="back" data-act="typecode" style="align-self:center">只能講話?輸入加入碼</button>'}`}
+ if(S.view==='found') return `<div class="banner ok"><p><b>找到機台 BATMAN-${S.newDev.code}</b></p><p class="muted">已確認是正牌 Batman 機台。</p></div><div class="field"><label for="country">國家 / 地區</label><select id="country"><option>台灣</option><option>日本</option><option>美國</option></select></div><button class="btn pri" data-act="country">確認國家</button>`;
+ if(S.view==='name') return `<div class="field"><label for="dname">為這台機台取名</label><input id="dname" value="節點 4"></div><button class="btn pri" data-act="named">完成</button>`;
+ if(S.view==='joinhome') return `<div class="banner ok"><p><b>「${esc(S.lastName)}」已加入你的裝置。</b></p></div><p class="big" style="font-size:1.05rem">要加入「家裡網路」嗎?</p><div class="row"><button class="btn sec2" data-act="joinhomeno">先不要</button><button class="btn pri" data-act="joinhomeyes">加入</button></div>`;
+ if(S.view==='pickdev') return `<div class="big">要加入「小明的網路」的機台</div>${S.devices.map(d=>`<label class="card"><input type="checkbox" id="pk-${d.id}" checked><span class="main"><span class="name">${esc(d.name)}</span></span></label>`).join('')}<div class="banner warn"><p>這些機台會離開「家裡網路」。</p></div><button class="btn pri" data-act="pickok">加入</button>`;
+ if(S.view==='swapconfirm') return `<div class="banner warn"><p><b>舊手機將不能再管理「客廳」。</b></p><p class="muted">網路設定會保留。如果遺失的是網主手機,而且沒有備用管理手機,之後無法再邀請別人,需要「重建網路」。</p></div><button class="btn pri" data-act="swapok">確認換成這支手機</button>`;
+ if(S.view==='window') return `<div class="banner warn"><p><b>這台機台目前不接受加入。</b></p><p class="muted">請在機台上按一下按鍵。燈號變成<b>藍色快閃</b>就表示可以加入(3 分鐘內有效)。</p><div class="led"><i></i> 機台燈號</div></div><button class="btn pri" data-act="pressed">我按好了</button>`;
+ if(S.view==='sendreq') return `<div class="banner info"><p><b>把申請圖片傳回給網主</b></p><p class="muted">網主同意後會傳回一張「同意圖片」。圖片裡沒有密碼,轉傳也沒有用。</p></div><div class="qr"><svg viewBox="0 0 21 21" width="150" height="150" aria-label="申請圖片(示意)">${qrBlocks()}</svg></div><p class="muted">確認碼 <b style="font-family:var(--f-mono)">482 913</b>:請和網主核對。</p><button class="btn pri" data-act="sendreq">分享申請圖片</button>`;
+ if(S.view==='waitimg') return `<div class="banner info"><p><b>等網主傳回同意圖片</b></p><p class="muted">收到後,在聊天 app 長按圖片「分享到 Batman」,或從相簿選取。</p></div><button class="btn pri" data-act="importok">從相簿選取同意圖片</button><button class="btn sec2" data-act="cancel">取消</button>`;
+ if(S.view==='code') return `<div class="field"><label for="jcode">輸入朋友給的加入碼</label><input id="jcode" value="4827-1930-5561" inputmode="numeric"></div><button class="btn pri" data-act="codeok">加入</button>`;
+ if(S.view==='waiting') return `<div class="banner info"><p><b>等待網主同意…</b></p><p class="muted">請網主打開 app。確認碼 <b style="font-family:var(--f-mono)">47</b>:不在一起時,請打電話和網主核對。</p></div><button class="btn pri" data-act="approved">模擬:網主已同意</button><button class="btn sec2" data-act="cancel">取消</button>`;
+ return `<button class="card" data-act="scanstart"><span class="main"><span class="name">加入新的機台</span><div class="sub">掃機台上的 QR</div></span></button><button class="card" data-act="joinstart"><span class="main"><span class="name">加入朋友的網路</span><div class="sub">掃邀請 QR 或輸入加入碼</div></span></button><div class="sec">附近的新機台</div><button class="card" data-act="scanstart"><span class="dot info"></span><span class="main"><span class="name">BATMAN-${S.newDev.code}</span><div class="sub">新機 · LoRa</div></span></button>`}
+function setView(){return `<div class="big">設定</div><button class="btn sec2" data-act="noop">加一支手機(備用管理)</button><button class="btn sec2" data-act="lostphone">我的手機遺失了</button><dl class="kv"><dt>app 版本</dt><dd>1.0(示意)</dd></dl>`}
+function render(){const tabs=[['home','⌂','首頁'],['net','◎','網路'],['add','＋','新增'],['set','⚙','設定']];
+ $('#tabs').innerHTML=tabs.map(t=>`<button class="tab ${S.tab===t[0]?'sel':''}" data-tab="${t[0]}" type="button"><span class="ic">${t[1]}</span>${t[2]}</button>`).join('');
+ $('#title').textContent={home:'我的機台',net:'網路',add:'新增',set:'設定'}[S.tab];
+ const b=$('#btbtn');b.textContent='藍牙 '+(S.bt?'開':'關');b.className='bt '+(S.bt?'on':'off');
+ let h='';const v=S.view||'';
+ if(S.tab==='home') h=v.startsWith('dev:')?devView(v.slice(4)):v==='diag'?diagView():v==='updating'?updView():home();
+ else if(S.tab==='net') h=netView(); else if(S.tab==='add') h=addView(); else h=setView();
+ $('#body').innerHTML=h;
+ const scr=$('#screen');scr.querySelectorAll('.sheet,.toast').forEach(e=>e.remove());
+ if(S.sheet){const d=document.createElement('div');d.className='sheet';d.innerHTML=`<div class="inner">${S.sheet}</div>`;scr.appendChild(d)}
+ if(S.toast){const t=document.createElement('div');t.className='toast';t.textContent=S.toast;scr.appendChild(t)}}
+let upd=0;function updView(){return `<div class="big">正在更新「車上」</div><div class="progress"><i style="width:${upd}%"></i></div><p class="muted">${upd<40?'用 WiFi 傳送軟體到機台…':upd<80?'機台正在安裝,稍後會重新開機…':'機台已重新開機,正在確認一切正常…'}</p><p class="muted" style="font-size:.8rem">${upd<40?'傳完之前請不要離開這個畫面。':'已傳完,可以離開這個畫面。'}失敗時機台會自動回到舊版本。</p>`}
+function confirmSheet(msg,act,danger){S.sheet=`<p class="big" style="font-size:1.05rem">${msg}</p><div class="row"><button class="btn sec2" data-act="closesheet">取消</button><button class="btn ${danger?'danger':'pri'}" data-act="${act}">確定</button></div>`;render()}
+document.addEventListener('click',e=>{const el=e.target.closest('[data-act],[data-dev],[data-tab],#btbtn');if(!el||!$('#screen').contains(el))return;
+ if(el.id==='btbtn'){S.bt=!S.bt;render();return}
+ if(el.dataset.tab){S.tab=el.dataset.tab;S.view=null;render();return}
+ if(el.dataset.dev){S.tab='home';S.view='dev:'+el.dataset.dev;if(S.flow==='diag'||S.flow==='reset'||S.flow==='fix')step();render();return}
+ const a=el.dataset.act;
+ if(a.startsWith('dev:')){S.view=a;render();return}
+ if(a.startsWith('rm:')){step();S.rmId=a.slice(3);const d=S.devices.find(x=>x.id===S.rmId);confirmSheet('移除「'+esc(d.name)+'」?會自動換網路密碼,被移除的機台就連不上了。','rm2',true);return}
+ if(a==='rm2'){step();S.sheet=null;S.devices=S.devices.filter(d=>d.id!==S.rmId);render();step();done('已移除並換好密碼。');return}
+ switch(a){
+  case 'back':S.view=null;break;
+  case 'netback':S.view=null;break;
+  case 'closesheet':S.sheet=null;break;
+  case 'bton':S.bt=true;step();break;
+  case 'scanstart':S.tab='add';S.view='scan';break;
+  case 'joinstart':S.view='scan-net';break;
+  case 'gojoin':S.tab='add';S.view='scan-net';break;
+  case 'scanned':step();if(S.flow==='phone'){S.view='window';}else S.view='found';break;
+  case 'revoke':toast('已收回邀請。');S.view=null;break;
+  case 'share':step();toast('已開啟分享選單(示意):選擇 LINE 或訊息傳送邀請圖片。');return;
+  case 'lost':step();confirmSheet('回報「客廳」遺失?會把它移出網路並自動換密碼。','lost2',true);return;
+  case 'lost2':step();S.sheet=null;S.devices=S.devices.filter(d=>d.id!=='a');S.view=null;render();done('已移除「客廳」並換密碼。');return;
+  case 'pressed':step();S.view='swapconfirm';break;
+  case 'swapok':step();S.view=null;S.tab='home';render();done('已換成這支手機管理「客廳」,網路設定都保留。');return;
+  case 'lostphone':step();S.tab='add';S.view='scan';break;
+  case 'country':step();S.view='name';break;
+  case 'named':{step();const n=($('#dname')||{}).value||'節點 4';S.lastName=n;S.devices.push({id:'n'+Date.now(),name:n,sku:'C2',caps:['LoRa'],state:'idle',bat:100,seen:'剛剛',near:true,ver:'1.5.0'});if(S.net.created){S.view='joinhome';break}S.view=null;S.tab='home';render();done('「'+n+'」已加入你的裝置。');return}
+  case 'joinhomeyes':S.devices[S.devices.length-1].state='ok';S.view=null;S.tab='home';render();done('「'+S.lastName+'」已加入「家裡網路」。');return;
+  case 'joinhomeno':S.view=null;S.tab='home';render();done('「'+S.lastName+'」已加入你的裝置,還沒加入網路。');return;
+  case 'scannednet':step();S.remote=false;S.view='pickdev';break;
+  case 'album':step();S.remote=true;S.view='pickdev';break;
+  case 'pickok':step();if(S.remote&&S.flow==='joinr'){S.view='sendreq';break}if(S.remote){S.view='waiting';break}S.tab='home';S.view=null;render();done('你的機台已加入「小明的網路」。');return;
+  case 'typecode':S.view='code';break;
+  case 'codeok':step();S.remote=true;S.view='pickdev';break;
+  case 'cancel':S.view=null;break;
+  case 'sendreq':step();toast('已開啟分享選單(示意)。');S.view='waitimg';break;
+  case 'importok':step();S.tab='home';S.view=null;render();done('你的機台已加入「小明的網路」。');return;
+  case 'approved':S.tab='home';S.view=null;render();done('網主已同意,你的機台已加入「小明的網路」。');return;
+  case 'create':step();S.view='create2';break;
+  case 'create3':step();S.net.created=true;S.view=null;render();done('已建立「家裡網路」,3 台機台都加入了。');return;
+  case 'invite':step();S.view='invite';render();if(S.flow==='invite')done('朋友掃了就能加入。');return;
+  case 'allow':step();S.devices.push({id:'j'+Date.now(),name:S.pendingJoin.dev+'(小明)',sku:'C0',caps:[],state:'ok',bat:90,seen:'剛剛',near:true,ver:'1.5.0'});S.pendingJoin=null;render();done('小明的「客房」已加入。');return;
+  case 'deny':step();S.pendingJoin=null;break;
+  case 'mixyes':step();S.pendingJoin=null;render();done('網路已改成 4 MHz,小華的「書房」已加入。');return;
+  case 'mixno':step();S.pendingJoin=null;break;
+  case 'fix':step();S.devices[1].state='ok';S.devices[1].seen='剛剛';S.view=null;render();done('已把新密碼送給「陽台」,它回到網路了。');return;
+  case 'rekey':step();confirmSheet('換網路密碼?所有機台會自動換到新密碼;不在附近的機台,之後靠近時會提示你更新。','rekey2');return;
+  case 'rekey2':step();S.sheet=null;S.unknown=false;render();done('已換密碼。2 台已更新,1 台(車上)等靠近時更新。');return;
+  case 'update':step();confirmSheet('更新「車上」到 1.5.0?約需 10 分鐘。','update2');return;
+  case 'update2':step();S.sheet=`<p class="big" style="font-size:1.05rem">「Batman」想要加入 Wi-Fi 網路「BATMAN-UPD」</p><p class="muted" style="font-size:.8rem">系統對話框(示意)</p><div class="row"><button class="btn sec2" data-act="closesheet">取消</button><button class="btn pri" data-act="update3">加入</button></div>`;render();return;
+  case 'update3':step();S.sheet=null;S.view='updating';upd=0;render();const iv=setInterval(()=>{upd+=10;if(upd>=100){clearInterval(iv);S.devices[2].ver='1.5.0';S.devices[2].state='ok';S.view='dev:c';render();done('「車上」已更新到 1.5.0。');return}render()},400);return;
+  case 'diag':step();S.view='diag';render();if(S.flow==='diag')done('診斷摘要已顯示。');return;
+  case 'bundle':step();toast('診斷包已存到手機(示意)。');return;
+  case 'leave':confirmSheet('讓這台離開網路?之後可以再加入。','leave2');return;
+  case 'leave2':S.sheet=null;S.view=null;toast('已離開網路(示意)。');return;
+  case 'reset':step();confirmSheet('把這台恢復出廠設定?會清掉所有設定。之後要在機台上按一下按鍵,才能重新加入。','reset2',true);return;
+  case 'reset2':step();S.sheet=null;S.devices=S.devices.filter(d=>d.id!=='a');S.view=null;render();done('「客廳」已恢復出廠設定。');return;
+  case 'dissolve':confirmSheet('解散「家裡網路」?所有機台會離開網路。','dissolve2',true);return;
+  case 'dissolve2':S.sheet=null;S.net.created=false;toast('已解散網路(示意)。');return;
+  case 'noop':toast('這個畫面在原型裡還沒做。');return;
+ }
+ render();});
+flowsUI();render();
+</script>
