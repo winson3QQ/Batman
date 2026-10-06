@@ -1,6 +1,6 @@
 # Spec: 供裝協定 —— 安全通道與訊息協定(#219 B11 / #254)
 
-Status: **DRAFT v0.3(Q5 決定 (a);v0.1 review:安全 NEEDS-REWORK、可行性 APPROVE-WITH-CHANGES → 本版重寫 §3、§6、§7 並補齊編碼;待第二輪)**
+Status: **DRAFT v0.4(第二輪 review:安全 / 可行性皆 APPROVE-WITH-CHANGES → 本版併入;CBOR 整數 key 表待定稿時補齊(§5.6);v0.1 review:安全 NEEDS-REWORK、可行性 APPROVE-WITH-CHANGES → 本版重寫 §3、§6、§7 並補齊編碼;待第二輪)**
 Parent: #254(階段 1)· 上位設計:`docs/design/219-field-provisioning.md`(PR #253)§3.3、§3.4、§5、§6.5
 範圍:手機 app 與節點 `batman-provd` 之間的**安全通道**、**傳輸分段**、**訊息格式**,以及可以轉送的**簽章物件**。民用版;戰術版沿用同一層,只換成員提供者(上位設計 F2)。
 
@@ -69,15 +69,16 @@ device_hint = 未認領:QR / 廣播上的 device_id(ASCII);已認領:空字串
 - **手機的驗證**(全部通過才繼續):
   1. DAC 鏈驗到內建根(正式版只信正式根,§9);
   2. `sig_static` 對上 Noise 交握裡實際的 `s_node`;
-  3. **DAC 等於預期的目標**:未認領 = 與 QR 的 `device_id` 一致;已認領 = 等於手機本機紀錄的那台 DAC,或封包 / 指令的目標 DAC。**只驗憑證鏈不夠**,否則任何持有 `psk_member` 的成員機台都能冒充別台【依 v0.1 review,MUST】。
+  3. `sn` 與 DAC 憑證內的序號一致(`sn` 本身未被簽章);
+  4. **DAC 等於預期的目標**:未認領 = 與 QR 的 `device_id` 一致;已認領 = 等於手機本機紀錄的那台 DAC,或封包 / 指令的目標 DAC。**只驗憑證鏈不夠**,否則任何持有 `psk_member` 的成員機台都能冒充別台【依 v0.1 review,MUST】。
 - 608B 每次開機只簽兩次;`node_cert` 不過期 → 送出換密碼封包前,手機另做一次新鮮的 `peers/challenge`(§5.3)。
 - 限制:拿到 root 的人能讀 `s_node`,在這次開機期間冒充節點;民用威脅模型已涵蓋。
 
 ### 3.4 PSK 模式的細節
 
 - 已認領的節點收到第 1 則訊息時,以**常數時間**試 `psk_owner` 與目前版本的 `psk_member`(固定兩次解密,不論第一次是否成功)。
-- **兩把都失敗**:回一則**長度相同的隨機第 2 則訊息**後斷線,不回錯誤細節;避免被錄下的第 1 則訊息拿來當追蹤信標、或從時序判斷【依 v0.1 review】。
-- 節點**只接受自己目前版本的 `psk_member`**,不接受舊版(否則被移除的成員還能連進來)。還沒更新的節點仍在舊版本,手機用**當時那一版**的 `psk_member` 連它 → 成員 app 保留各版 `psk_member`;廣播帶 `net_version` 的低 8 位(上位設計 §3.3),手機據此選版本。
+- **兩把都失敗**:用**真的新臨時金鑰**組出一則格式正確的第 2 則訊息(payload 為等長隨機資料),並做與真交握相同次數的 DH;送出後**和真 session 一樣等到逾時才斷線**。隨機 32 B 不是合法的 X25519 公鑰格式(最高位元)、假訊息不做 DH、送完立刻斷線,三者都能被分辨【依第二輪 review,MUST】。
+- 節點**只接受自己目前版本的 `psk_member`**,不接受舊版(否則被移除的成員還能連進來)。還沒更新的節點仍在舊版本,手機用**當時那一版**的 `psk_member` 連它 → 成員 app 保留各版 `psk_member`,依序試最近幾版(由新到舊,受 §8 全域限速)。**廣播不帶明文版本號**(會把同網節點串在一起、跨 RPA 關聯)【依第二輪 review】。
 
 ### 3.5 交握完成後:角色
 
@@ -107,6 +108,8 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | `batman-netcfg-v1` | `net_config`(COSE) | 網主 |
 | `batman-members-v1` | `member_list`(COSE) | 網主 |
 | `batman-secrets-v1` | `net_secrets`(COSE) | 網主 |
+| `batman-msecrets-v1` | `member_secrets`(COSE) | 網主 |
+| `batman-owner-enc-v1` | 擁有者加密公鑰證明 | 擁有者 |
 | `batman-invite-v1` | `invite`(COSE) | 網主 |
 | `batman-sas-v1` | 確認碼 | — |
 
@@ -141,7 +144,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 ### 4.2 HTTP(備援:大量傳輸通道、開發)
 
 - `POST /batman/v1/session`:body = 交握訊息;回應 = 交握訊息 + header `X-Batman-Session`(128-bit 隨機,base64url)。
-- `POST /batman/v1/msg`:body = 一則 Noise 傳輸訊息;**每個 session 一次只能有一個未完成的請求**;回應失敗時,手機以新的應用訊息 `id` 重送(節點以 `id` 去重,§5.1)。
+- `POST /batman/v1/msg`:body = 一則 Noise 傳輸訊息;**每個 session 一次只能有一個未完成的請求**;回應遺失時,手機**以同一個冪等鍵**重送:每個會改變狀態的請求帶 `7: idem_key`(16 B 隨機),節點保留最近 32 個冪等鍵與其結果 10 分鐘,跨 session 有效,重複的請求直接回傳上次的結果,不重複執行(例如 `owner/remove` 不會輪替兩次)【依第二輪 review】。
 - HTTP 裡一律跑完整的 §3,不依賴 TLS。
 
 ## 5. 應用訊息
@@ -178,10 +181,10 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 |---|---|---|---|
 | `info` | 全部 | — | `device_id`、`model`、`board`、`fw_version`、`proto_ver`、`capabilities[]`、`state`、`claim_window`、`net_version`(成員以上才有) |
 | `claim/begin` | 匿名 | `owner_pub`(65 B) | `nonce`(32 B) |
-| `claim/finish` | 匿名 | `response`(32 B,§5.4) | `owner_tag_key`(32 B)、`root_password`;session 升為擁有者 |
-| `auth/owner` | 擁有者候選 | `owner_key_id`(32 B = SHA-256(owner_pub))、`sig` | — |
+| `claim/finish` | 匿名 | `response`(32 B,§5.4)、`owner_enc_pub` + `sig_enc`(§6) | `owner_tag_key`(32 B,**每位擁有者各一把**)、`adv_owner_key`、`root_password`;session 升為擁有者 |
+| `auth/owner` | 擁有者候選 | `owner_key_id`(32 B = SHA-256(owner_pub 65 B))、`sig` | 目前的 `adv_owner_key` |
 | `owner/add` | 擁有者 | `owner_pub` | — |
-| `owner/remove` | 擁有者 | `owner_key_id` | 新的 `owner_tag_key`(**移除時一律輪替**,被移除的手機就不能再完成交握或追蹤)【依 review】 |
+| `owner/remove` | 擁有者 | `owner_key_id` | —(被移除者的 `owner_tag_key` 與其 `psk_owner` 一併刪除;**廣播用的 `adv_owner_key` 輪替**,其他擁有者下次 `auth/owner` 時取得新值)【依 review】 |
 | `settings/get` / `settings/set` | 擁有者 | 依能力分組 | 目前值 |
 | `network/join` | 擁有者 | `net_config`、`member_list`、`net_secrets`(本機那份)、選填 `invite_id` | `joined` / `pending` |
 | `network/update` | 擁有者、成員(轉送) | 版本鏈(§7.5) | 套用後的版本 |
@@ -212,7 +215,21 @@ response = SHA-256( K(32) ‖ ClientChal(32) ‖ OtherData[0:4] ‖ 0x00×8 ‖ 
 
 ### 5.5 確認碼(SAS)
 
-`sas = 前 6 位十進位數字( SHA-256( "batman-sas-v1" ‖ invite_id ‖ SHA-256(加入者 DAC 公鑰) ) )`;網主與加入者兩支手機各自算出並顯示,兩者一致才同意。
+```
+sas = 前 6 位十進位數字( SHA-256( "batman-sas-v1" ‖ SHA-256(完整邀請物件) ‖ SHA-256(完整申請物件) ) )
+```
+- 涵蓋**整個邀請**(`net_id`、`admins`、`invite_id`)與**整個申請**(加入者 DAC、`ecdh_pub`、擁有者公鑰、`owner_enc_pub`)。只涵蓋 `invite_id` 與 DAC 時,攻擊者可以**替換申請圖片裡的擁有者公鑰**(把 `member_secrets` 騙到自己手上),或**替換邀請圖片**(讓加入者加入攻擊者的網路),SAS 卻仍一致【依第二輪 review,MUST】。
+- **SAS 必須經另一條管道核對**:當面看兩支手機,或打電話;不能用傳圖片的同一個聊天。
+- 6 位數的強度可接受,前提是攻擊者無法大量取得合法 DAC(DAC 只能由 608B 產生、經出廠簽發)。
+
+### 5.6 CBOR 整數 key 表(定稿前補齊)
+
+為了讓兩端獨立實作也能互通,**每一個 body 與 COSE payload 的欄位**都要定:整數 key、型別、是否必填【依第二輪可行性 review,MUST】。原則:
+- 0–15 保留給信封;各訊息 body 從 1 起編;未來新增的欄位只能用新的 key,不重用。
+- 型別以 CDDL(RFC 8610)寫成,放在 `docs/design/219-protocol.cddl`,與 §11 的測試向量一起產生、一起驗證。
+- `OtherData`(§5.4)不依賴槽位配置,**現在就定**:`0x08 0x00 0x00 0x00 ‖ 0x00×9`(mode 0,其餘為零),寫入測試向量。
+
+**狀態**:本版只定了信封(§5.1)與 `node_cert`(§3.3)的整數 key;其餘欄位的 key 表是**定稿前必須完成的工作**。
 
 ## 6. 金鑰與導出
 
@@ -222,8 +239,10 @@ response = SHA-256( K(32) ‖ ClientChal(32) ‖ OtherData[0:4] ‖ 0x00×8 ‖ 
 | DAC(P-256) | 出廠,608B 內產生 | 608B | §3.3、`peers/challenge` |
 | ECDH 金鑰(P-256) | 出廠,608B 內產生 | 608B | §7 的加密對象 |
 | `s_node`(25519) | 每次開機 | 記憶體 | Noise 靜態金鑰 |
-| 擁有者金鑰(P-256) | app | 手機 keystore(可做 ECDSA 與 ECDH) | `auth/owner`;§7.4 的加密對象 |
-| `owner_tag_key`(32 B) | 認領時、移除擁有者時 | p5 + 擁有者 app | `psk_owner`、廣播的擁有者標記 |
+| 擁有者簽章金鑰(P-256) | app | 手機 keystore(ECDSA) | `auth/owner`、`sig_enc` |
+| 擁有者加密金鑰(P-256) | app | 手機 keystore(ECDH;Android 12 / API 31 以上的 `PURPOSE_AGREE_KEY`、iOS `SecureEnclave.P256.KeyAgreement`)。**Android 11 以下**:以軟體金鑰,私鑰用 keystore 的 AES 金鑰加密後存放 | §7.4 的加密對象;公鑰由簽章金鑰簽證 `sig_enc = ES256_owner("batman-owner-enc-v1" ‖ owner_enc_pub)`。**一把金鑰不兼兩種用途**【依第二輪 review】 |
+| `owner_tag_key`(32 B,每位擁有者一把) | 認領時、新增擁有者時 | p5 + 該擁有者的 app | 該擁有者的 `psk_owner` |
+| `adv_owner_key`(32 B,每台一把) | 認領時;移除擁有者時輪替 | p5 + 所有擁有者 app | 廣播的擁有者標記 |
 | `net_root`(32 B) | 建網、換密碼時 | 成員節點(§7.3)、成員 app(§7.4) | `psk_member`、廣播摘要金鑰 |
 | 網主金鑰組(P-256,可多把) | 網主 app、備用管理手機 | 手機 keystore;公鑰列在 `net_config` | 簽 COSE 物件 |
 
@@ -231,8 +250,11 @@ response = SHA-256( K(32) ‖ ClientChal(32) ‖ OtherData[0:4] ‖ 0x00×8 ‖ 
 ```
 psk_owner  = HKDF( owner_tag_key, "batman-psk-owner-v1" ‖ device_id )
 psk_member = HKDF( net_root,      "batman-psk-member-v1" ‖ net_id(16 B) ‖ u32BE(net_version) )
-adv_owner  = HKDF( owner_tag_key, "batman-adv-owner-v1" ‖ device_id )
+adv_owner  = HKDF( adv_owner_key, "batman-adv-owner-v1" ‖ device_id )
 adv_member = HKDF( net_root,      "batman-adv-member-v1" ‖ net_id ‖ u32BE(net_version) )
+
+- `device_id` 一律以 ASCII 編碼、放在 info 的最後一欄(長度不固定)。
+- 節點以常數時間試所有擁有者的 `psk_owner` 與目前的 `psk_member`(擁有者數量上限 4)。
 ```
 
 **誠實界線**:`psk_member` 是全網共用的。任何一台成員節點的 SD 卡或任何一支成員手機外流,就等於拿到全網的成員權限,而且無法單獨撤銷某一個人,只能換密碼(`net_version` +1)。這是民用版「共用密碼」模型的固有限制(上位設計 P6)【依 review】。
@@ -244,7 +266,9 @@ adv_member = HKDF( net_root,      "batman-adv-member-v1" ‖ net_id ‖ u32BE(ne
 - 一律 `COSE_Sign1`,演算法 ES256,簽章值 raw r‖s(64 B)。手機 keystore 輸出的 DER 簽章要轉換。
 - protected header 帶 `content type` = 物件種類(`application/batman-netcfg+cbor` 等),`external_aad` = 該物件的標籤(§3.6)→ 物件之間不會混用【依 review】。
 - payload 一律 deterministic CBOR;**簽章物件的未知欄位不忽略:拒絕**。
-- 簽章者必須是 `net_config` 列出的網主金鑰之一(第一版 `net_config` 由建立者自簽,手機與節點記下 `net_id` 與建立者公鑰)。
+- **第 v+1 版的簽章,一律以第 v 版 `net_config` 的 `admins` 驗證**;物件自己那一版的 `admins` 只對下一版生效。第 1 版由建立者自簽,手機與節點記下 `net_id` 與建立者公鑰【依第二輪 review,MUST:否則任何人都能發一版把自己列為網主】。
+- COSE 一律用 **tagged** 形式(`COSE_Sign1` tag 18、`COSE_Encrypt` tag 96);content type 用 tstr。
+- **雜湊的輸入**:`dac_pub_hash`、`target_dac_hash`、SAS 中的公鑰一律為 `SHA-256(SEC1 未壓縮 65 B 公鑰)`;`prev_hash` = 上一版**完整 tagged COSE_Sign1 編碼**的 SHA-256。
 
 ### 7.2 `net_config`(公開設定)
 ```
@@ -259,9 +283,11 @@ adv_member = HKDF( net_root,      "batman-adv-member-v1" ‖ net_id ‖ u32BE(ne
 COSE_Sign1( payload = {
     net_id, net_version, target_dac_hash(32 B),
     enc: COSE_Encrypt( plaintext = { sae_password, net_root, lora_psk?, team_ap_psk },
-                       recipient = ECDH-ES + HKDF-256 (alg −25),
+                       content alg = ChaCha20/Poly1305 (alg 24),
+                       recipient = ECDH-ES + HKDF-256 (alg −25),臨時公鑰以 COSE_Key 放在 recipient 標頭 −1(EC2,crv P-256,x / y 各 32 B),
                                    對 target 的 ecdh_pub(由 sig_ecdh 證明),
-                                   KDF context PartyV.identity = target_dac_hash,
+                                   KDF context:AlgorithmID = 24,keyDataLength = 256,PartyU = nil,
+                                   PartyV.identity = target_dac_hash,
                                    SuppPubInfo.other = net_id ‖ u32BE(net_version) )
 }, external_aad = "batman-secrets-v1" )
 ```
@@ -270,7 +296,7 @@ COSE_Sign1( payload = {
 - 608B 這端:ECDH 指令可以輸出共享秘密給主機(或以 IO protection key 加密輸出),主機再做 HKDF【事實,依 review 查證】;`ECDHPROT` 與 IO protection key 的存放在 B1 決定。
 
 ### 7.4 `member_secrets`(給成員 app 的秘密)
-與 §7.3 相同結構,但對象是**成員的擁有者金鑰**(P-256,手機 keystore 支援 ECDH);plaintext = `{ net_root }`(成員 app 用來導出 `psk_member`、`adv_member`)。網主同意加入時、以及每次換密碼時,發給每位成員的 app【依 review,MUST:原設計成員 app 拿不到 `net_root`】。
+與 §7.3 相同結構,標籤 `batman-msecrets-v1`,對象是**成員的擁有者加密金鑰** `owner_enc_pub`(須先驗 `sig_enc`);plaintext = `{ net_root }`(成員 app 用來導出 `psk_member`、`adv_member`)。網主同意加入時、以及每次換密碼時,發給每位成員的 app【依 review,MUST:原設計成員 app 拿不到 `net_root`】。
 
 ### 7.5 `member_list` 與版本鏈
 ```
@@ -280,12 +306,13 @@ member_list = { net_id, net_version, prev_hash,
                 used_invites: [ invite_id ], revoked_invites: [ invite_id ] }
 ```
 - `network/update` 帶從節點目前版本 `v` 到最新的每一版(`net_config`、`member_list`、該節點的 `net_secrets`),每版的 `prev_hash` 要等於上一版的雜湊;**不接受跳號**。
-- **分叉**(同一版本出現兩個不同的物件,例如兩位網主同時修改):節點與手機都拒絕兩者並告警,由網主重新發出下一版。
+- **分叉**(同一版本出現兩個不同的物件,例如兩位網主同時修改):以**雜湊值較小者**為準(確定性規則);已套用另一支的節點在看到勝出的鏈時切換;下一版的 `prev_hash` 一律指向勝出者;app 告警網主。民用版接受「共同網主可以故意製造分叉干擾」這個限制。
+- **轉送給落後的節點**:落後節點需要的是從它的版本到最新版的公開物件鏈(`net_config`、`member_list`),加上**最新一版**它自己的 `net_secrets`;網主 app 把各成員節點最新的 `net_secrets`(已對各節點加密,轉送無害)同步給所有成員 app。
 
 ### 7.6 邀請
 | 種類 | 內容 | 秘密如何送達 | 「一次性」怎麼保證 |
 |---|---|---|---|
-| **當面**(QR 只顯示在網主螢幕) | `{ net_id, invite_id, kind: in_person, net_config(公開), sae_password, admin_pub }` | **QR 內含 SAE 密碼**(等同當面告訴對方密碼),加入者的節點先入網 | 網主 app 在現場:新節點入網後送出加入申請,**網主 app 對帶這個 `invite_id`、且 SAS 一致的申請自動同意**,用過即作廢;沒有長期有效的「預先同意憑證」【依 review,MUST:原設計拍到 QR 的人在名單散播前都能重用】 |
+| **當面**(QR 只顯示在網主螢幕) | `{ net_id, invite_id, kind: in_person, net_config(公開), sae_password, admin_pub }` | **QR 內含 SAE 密碼**(等同當面告訴對方密碼),加入者的節點先入網,經 mesh 把**申請**送到網主的節點,網主節點再經 BLE 交給網主 app | **兩支手機同時顯示 SAS,網主核對後按一下同意**(不自動同意);同一個 `invite_id` 出現第二個申請時告警並拒絕【依第二輪 review,MUST:自動同意等於沒人比對 SAS,拍到 QR 的人可搶先】 |
 | **遠端**(QR 圖片) | `{ net_id, invite_id, kind: remote, net_config(公開), admin_pub }`,**不含秘密** | 加入者 app 產生一張**加入申請圖片**(加入者的 DAC 憑證、`ecdh_pub` + `sig_ecdh`、擁有者公鑰、`invite_id`),經同一個聊天管道傳回網主;網主核對 SAS 後同意,回傳一張**同意圖片**(該節點的 `net_secrets` + 成員 app 的 `member_secrets`) | 網主只對自己發出、尚未使用的 `invite_id` 同意 |
 | **加入碼**(只能講話) | 能還原 `net_config` 公開部分 + SAE 密碼 | 等同告訴對方密碼 | 網主收到申請時以 SAS 核對 |
 
@@ -347,6 +374,8 @@ member_list = { net_id, net_version, prev_hash,
 | Q3 | Rust 工具鏈、vendoring 與 FFI 可行性(§10,併入 B15) |
 | Q4 | B1:`OtherData` 常數、`ECDHPROT`、IO protection key 存放 |
 | ~~Q5~~ | 遠端加入流程 → **已決定 (a) 雙向傳圖片**(§7.6) |
+| Q7 | QR 用二進位模式、目標 version 25 以下;多個 QR 拼在一張圖時每個帶「第幾片 / 共幾片 / 物件雜湊」;實測經 LINE / WhatsApp 壓縮後的掃描成功率 |
+| Q8 | 608B 簽章耗時(§8 估 100 ms)與 `NXpsk0` 互通性,在 B1 / 測試向量時以 `flynn/noise` 交叉驗證 |
 | Q6 | 同意圖片的大小與 QR 拆分方式(加密的密碼 + `member_secrets` + COSE 簽章,估計 1–2 KB) |
 
 ## 13. Review 紀錄
@@ -366,3 +395,18 @@ member_list = { net_id, net_version, prev_hash,
 | 可行性 4 | 編碼未定義 | DER 憑證鏈、raw r‖s、SEC1 未壓縮、固定長度 nonce / boot_id、u32BE、HKDF L=32、deterministic CBOR |
 
 SHOULD-FIX 已併入:拒絕無 PSK 的交握、手機不依廣播選模式;PSK 失敗回等長假訊息並常數時間嘗試;`owner/remove` 輪替 `owner_tag_key`;角色表;`node_cert` 不過期 → 送封包前做新鮮挑戰;AEAD 失敗即中止、HTTP session id 與一次一個請求、請求也能分塊、中止只靠斷線;全域限速與 608B 限速;開發 / 正式隔離(prologue、標籤、app 不給開關);`psk_member` 共用的誠實界線;sans-IO 與簽章回呼;Rust vendoring;明文上限 65519;`AcquireNotify` 與 iOS 寫入長度。
+
+**v0.3 review(2026-10-06,第二輪):安全 APPROVE-WITH-CHANGES、可行性 APPROVE-WITH-CHANGES。** 第一輪項目:安全 4 解決 / 3 部分,可行性 2 解決 / 2 部分。v0.4 的處理:
+
+| 來源 | 問題 | 處理 |
+|---|---|---|
+| 安全 1 | SAS 只涵蓋 `invite_id` 與 DAC → 可替換申請裡的擁有者公鑰、或替換邀請 | §5.5 SAS 涵蓋完整邀請與申請;必須經另一條管道核對 |
+| 安全 2 | 網主簽章依哪一版 `admins` 驗證不明 | §7.1 第 v+1 版以第 v 版驗證 |
+| 安全 3 | 當面邀請自動同意 = 沒人比對 SAS;申請如何送達未定義 | §7.6 經 mesh → 網主節點 → BLE 送達;兩支手機顯示 SAS,網主按同意;重複申請告警 |
+| 安全 4 | 假第 2 則訊息分辨得出 | §3.4 真臨時金鑰、假 DH、等到逾時才斷線 |
+| 可行性 1 | 內容加密演算法未定 | §7.3 ChaCha20/Poly1305(alg 24),KDF context 寫明 |
+| 可行性 2、安全(部分) | 雜湊輸入、prev_hash 未定義 | §7.1 SEC1 65 B;完整 tagged Sign1 |
+| 可行性 3、安全(部分) | 擁有者金鑰兼做 ECDSA 與 ECDH;Android 11 以下沒有硬體 ECDH | §6 分出擁有者加密金鑰 + `sig_enc`;Android 11 以下用 keystore 包住的軟體金鑰 |
+| 可行性 4 | CBOR 整數 key 未定義 | §5.6 原則與 CDDL 檔;**完整 key 表為定稿前的工作**;`OtherData` 現在定案 |
+
+SHOULD-FIX 已併入:`sn` 比對 DAC;HTTP 冪等鍵;每位擁有者各自的 `owner_tag_key` 與輪替的 `adv_owner_key`;`member_secrets` 自己的標籤;分叉的確定性規則;落後節點的轉送內容;廣播不帶明文版本號;6 位數 SAS 的前提;`device_id` 放 info 最後;COSE tagged;Q7(QR 格式)、Q8(608B 耗時、NXpsk0 交叉驗證)。
