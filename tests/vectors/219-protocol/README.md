@@ -1,6 +1,6 @@
 # 供裝協定測試向量(#219 / #254)
 
-對應規格:`docs/design/219-protocol.md`(v0.5)與 `docs/design/219-protocol.cddl`。
+對應規格:`docs/design/219-protocol.md`(v0.6)與 `docs/design/219-protocol.cddl`。
 
 | 檔案 | 用途 |
 |---|---|
@@ -14,7 +14,7 @@
 ```
 python -m venv venv && venv/bin/pip install -r requirements.txt
 venv/bin/python gen.py > vectors.json      # 重新產生(輸出應與 repo 內完全相同)
-venv/bin/python verify.py vectors.json     # 92 項檢查,全部 PASS 才算通過
+venv/bin/python verify.py vectors.json     # 119 項檢查(含負向測試),全部 PASS 才算通過
 ```
 
 ## 涵蓋範圍

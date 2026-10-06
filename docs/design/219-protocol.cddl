@@ -1,5 +1,5 @@
 ; Batman provisioning protocol — CBOR schema (CDDL, RFC 8610)
-; Companion to docs/design/219-protocol.md (v0.5). Section numbers (§) refer to that spec.
+; Companion to docs/design/219-protocol.md (v0.6). Section numbers (§) refer to that spec.
 ;
 ; Rules for every structure in this file:
 ;   * Deterministic CBOR (RFC 8949 §4.2.1): shortest-form integers and lengths,
@@ -25,29 +25,87 @@ net-id      = bytes16
 invite-id   = bytes16
 net-version = uint .le 4294967295    ; u32
 country     = tstr .size 2           ; ISO 3166-1 alpha-2, e.g. "TW"
-cose-sign1  = #6.18([ protected: bstr, unprotected: {* int => any}, payload: bstr, signature: es256-sig ])
-cose-encrypt = #6.96([ protected: bstr, unprotected: {* int => any}, ciphertext: bstr, recipients: [ recipient ] ])
-recipient   = [ protected: bstr, unprotected: {* int => any}, ciphertext: bstr .size 0 ]
+; Signed objects (§7.1). The unprotected header MUST be empty and the signature MUST be
+; low-s (s <= n/2); anything else is rejected. The OBJECT HASH used by prev_hash, SAS and
+; join-request is SHA-256 of the Sig_structure bytes
+;   cbor(["Signature1", protected, external_aad(label), payload])
+; so it does not depend on the signature or on any unprotected data.
+sign1<content-type, payload-type> = #6.18([
+  protected: bstr .cbor { 1 => -7, 3 => content-type },
+  unprotected: {},
+  payload: bstr .cbor payload-type,
+  signature: es256-sig,
+])
+netcfg-sign1    = sign1<"batman/netcfg",   net-config>
+members-sign1   = sign1<"batman/members",  member-list>
+secrets-sign1   = sign1<"batman/secrets",  net-secrets>
+msecrets-sign1  = sign1<"batman/msecrets", member-secrets>
+invite-sign1    = sign1<"batman/invite",   invite>
+joinreq-sign1   = sign1<"batman/joinreq",  join-request>
+cose-encrypt = #6.96([
+  protected: bstr .cbor { 1 => 24 },                ; ChaCha20/Poly1305
+  unprotected: { 5 => bstr .size 12 },               ; IV
+  ciphertext: bstr,
+  recipients: [ recipient ],
+])
+recipient = [
+  protected: bstr .cbor { 1 => -25 },               ; ECDH-ES + HKDF-256
+  unprotected: { -1 => ec2-p256-key },              ; ephemeral public key
+  ciphertext: bstr .size 0,
+]
+ec2-p256-key = { 1 => 2, -1 => 1, -2 => bytes32, -3 => bytes32 }   ; kty EC2, crv P-256, x, y
 
 ; ------------------------------------------------------------------ envelope (§5.1)
+; A request either carries a whole body (bound to its msg-type by a group choice),
+; or one chunk of the encoded body (§5.1 chunking). All chunks of one message share
+; the same id; a COMPLETE message with an id already used in this session is rejected,
+; a chunk is rejected if (id, n) was already received.
 request = {
   0 => proto-ver,
   1 => uint,                 ; id: increasing within a session
-  2 => msg-type,
-  3 => request-body,
-  ? 6 => part,               ; chunking (§5.1)
-  ? 7 => bytes16,            ; idem_key: required on every state-changing request (§4.2)
+  request-kind,
+  ? 7 => bytes16,            ; idem_key: REQUIRED on state-changing requests (§4.2)
 }
-response = {
-  1 => uint,                 ; id of the request
-  4 => status,
-  ? 3 => response-body,      ; present when status = 0
-  ? 5 => error-detail,       ; present when status != 0
-  ? 6 => part,
-}
+request-kind = ( whole-request // chunk )
+chunk = ( 2 => msg-type, 3 => bstr, 6 => part )   ; bstr = slice of the encoded body map
+whole-request = (
+    2 => "info",            3 => info-req
+ // 2 => "claim/begin",     3 => claim-begin-req
+ // 2 => "claim/finish",    3 => claim-finish-req
+ // 2 => "auth/owner",      3 => auth-owner-req
+ // 2 => "owner/add",       3 => owner-add-req
+ // 2 => "owner/remove",    3 => owner-remove-req
+ // 2 => "settings/get",    3 => empty
+ // 2 => "settings/set",    3 => settings
+ // 2 => "network/join",    3 => network-join-req
+ // 2 => "network/update",  3 => network-update-req
+ // 2 => "network/leave",   3 => empty
+ // 2 => "status",          3 => status-req
+ // 2 => "peers/challenge", 3 => peers-challenge-req
+ // 2 => "diag/summary",    3 => empty
+ // 2 => "diag/bundle",     3 => empty
+ // 2 => "update/check",    3 => update-check-req
+ // 2 => "update/prepare",  3 => empty
+ // 2 => "update/apply",    3 => empty
+ // 2 => "update/status",   3 => empty
+ // 2 => "bulk/open",       3 => bulk-open-req
+ // 2 => "bulk/close",      3 => empty
+ // 2 => "reset",           3 => reset-req
+)
+; The response body type is determined by the request's msg-type (table in §5.3):
+;   info -> info-resp, claim/begin -> claim-begin-resp, claim/finish -> claim-finish-resp,
+;   auth/owner -> auth-owner-resp, owner/add -> owner-add-resp, settings/* -> settings,
+;   network/join -> network-join-resp, network/update -> network-update-resp,
+;   status -> status-resp, peers/challenge -> peers-challenge-resp,
+;   diag/summary -> diag-summary-resp, diag/bundle -> diag-bundle-resp (chunked),
+;   update/check -> update-check-resp, update/prepare|apply|status -> update-progress,
+;   bulk/open -> bulk-open-resp, everything else -> empty.
+response = ok-response / error-response / chunk-response
+ok-response    = { 1 => uint, 4 => 0, ? 3 => { * uint => any } }   ; body typed per table above
+error-response = { 1 => uint, 4 => error-code, 5 => error-detail } ; never carries a body (key 3)
+chunk-response = { 1 => uint, 4 => 0, 3 => bstr, 6 => part }       ; one chunk of a large body
 proto-ver    = [ major: uint, minor: uint ]
 part         = { 1 => uint, 2 => uint }        ; 1: n (1-based), 2: total
-status       = 0 / error-code
 error-code   = 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 10 / 11 / 12   ; §5.2
 error-detail = { ? 1 => tstr,                  ; capability (E_UNSUPPORTED)
                  ? 2 => reason-code,           ; E_REJECTED / E_UNSUPPORTED reason
@@ -68,15 +126,11 @@ msg-type = "info" / "claim/begin" / "claim/finish" / "auth/owner"
          / "update/check" / "update/prepare" / "update/apply" / "update/status"
          / "bulk/open" / "bulk/close" / "reset"
 
-request-body  = info-req / claim-begin-req / claim-finish-req / auth-owner-req
-              / owner-add-req / owner-remove-req / settings-get-req / settings
-              / network-join-req / network-update-req / empty / status-req
-              / peers-challenge-req / update-check-req / bulk-open-req / reset-req
-response-body = info-resp / claim-begin-resp / claim-finish-resp / auth-owner-resp
-              / owner-add-resp / settings / network-join-resp / network-update-resp
-              / status-resp / peers-challenge-resp / diag-summary-resp / diag-bundle-resp
-              / update-check-resp / update-progress / bulk-open-resp / empty
-empty = {}
+; Message bodies accept (and ignore) unknown integer keys: "* uint => any".
+empty = { * uint => any }
+
+; BLE CTRL characteristic (§4.1), read without encryption
+ctrl = { 1 => uint, 2 => uint, 3 => uint }     ; proto_major, proto_minor, max_frame
 
 ; ------------------------------------------------------------------ messages (§5.3)
 info-req  = empty
@@ -91,29 +145,32 @@ info-resp = {
   8 => bool,                 ; claim_window open
   ? 9 => net-version,        ; only for owner / member sessions
   ? 10 => net-id,            ; only for owner / member sessions
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
 capability = "halow" / "gps" / "ptt" / "lora" / "se" / "battery" / tstr   ; open set
 node-state = 0 ; unclaimed
            / 1 ; claimed, not in a network
            / 2 ; network member
 
-claim-begin-req   = { 1 => p256-pub }              ; owner_pub (signing key)
-claim-begin-resp  = { 1 => bytes32 }               ; nonce
+claim-begin-req   = { 1 => p256-pub, * uint => any }              ; owner_pub (signing key)
+claim-begin-resp  = { 1 => bytes32, * uint => any }               ; nonce
 claim-finish-req  = {
   1 => bytes32,              ; CheckMac response (§5.4)
   2 => p256-pub,             ; owner_enc_pub
   3 => es256-sig,            ; sig_enc = ES256_owner("batman-owner-enc-v1" || owner_enc_pub)
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
 claim-finish-resp = {
   1 => bytes32,              ; owner_tag_key (this owner)
   2 => bytes32,              ; adv_owner_key (per node)
   3 => tstr,                 ; root_password (shown once, stored by the app)
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
-auth-owner-req  = { 1 => sha256, 2 => es256-sig }  ; owner_key_id, sig over "batman-owner-auth-v1" || h || owner_key_id
-auth-owner-resp = { 1 => bytes32 }                 ; current adv_owner_key
-owner-add-req   = { 1 => p256-pub, 2 => p256-pub, 3 => es256-sig }  ; new owner_pub, owner_enc_pub, sig_enc
-owner-add-resp  = { 1 => bytes32 }                 ; owner_tag_key for the new owner (handed over by the app)
-owner-remove-req = { 1 => sha256 }                 ; owner_key_id
+auth-owner-req  = { 1 => sha256, 2 => es256-sig, * uint => any }  ; owner_key_id, sig over "batman-owner-auth-v1" || h || owner_key_id
+auth-owner-resp = { 1 => bytes32, * uint => any }                 ; current adv_owner_key
+owner-add-req   = { 1 => p256-pub, 2 => p256-pub, 3 => es256-sig, * uint => any }  ; new owner_pub, owner_enc_pub, sig_enc
+owner-add-resp  = { 1 => bytes32, * uint => any }                 ; owner_tag_key for the new owner (handed over by the app)
+owner-remove-req = { 1 => sha256, * uint => any }                 ; owner_key_id
 
 settings-get-req = empty
 settings = {
@@ -123,31 +180,34 @@ settings = {
   ? 11 => ptt-settings,
   ? 12 => gps-settings,
   ? 13 => lora-settings,
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
-halow-settings = { ? 1 => uint, ? 2 => uint }      ; 1: channel, 2: bandwidth (MHz)
-ptt-settings   = { ? 1 => uint }                   ; 1: talk group
-gps-settings   = { ? 1 => bool }                   ; 1: enabled
-lora-settings  = { ? 1 => tstr }                   ; 1: node short name
+halow-settings = { ? 1 => uint, ? 2 => uint, * uint => any }      ; 1: channel, 2: bandwidth (MHz)
+ptt-settings   = { ? 1 => uint, * uint => any }                   ; 1: talk group
+gps-settings   = { ? 1 => bool, * uint => any }                   ; 1: enabled
+lora-settings  = { ? 1 => tstr, * uint => any }                   ; 1: node short name
 
 network-join-req = {
-  1 => cose-sign1,           ; net_config
-  2 => cose-sign1,           ; member_list
-  3 => cose-sign1,           ; net_secrets for this node
+  1 => netcfg-sign1,
+  2 => members-sign1,
+  3 => secrets-sign1,        ; net_secrets for this node
   ? 4 => invite-id,
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
-network-join-resp = { 1 => join-result }
+network-join-resp = { 1 => join-result, * uint => any }
 join-result = 0 ; joined
             / 1 ; pending approval
 
-network-update-req  = { 1 => [+ update-step] }
+network-update-req  = { 1 => [+ update-step], * uint => any }
 update-step = {
-  1 => cose-sign1,           ; net_config of this version
-  2 => cose-sign1,           ; member_list of this version
-  ? 3 => cose-sign1,         ; net_secrets: only in the LAST step (latest version)
+  1 => netcfg-sign1,         ; net_config of this version
+  2 => members-sign1,        ; member_list of this version
+  ? 3 => secrets-sign1,      ; net_secrets: only in the LAST step (latest version)
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
-network-update-resp = { 1 => net-version }
+network-update-resp = { 1 => net-version, * uint => any }
 
-status-req  = { 1 => status-scope }
+status-req  = { 1 => status-scope, * uint => any }
 status-scope = 0 ; self
              / 1 ; team (queried over the mesh)
 status-resp = {
@@ -159,32 +219,35 @@ status-resp = {
   ? 6 => uint,               ; battery percent
   ? 7 => [* team-entry],     ; scope = team
   ? 15 => {* tstr => any},   ; #131 status fields not yet given integer keys
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
 verdict = 0 ; ok
         / 1 ; degraded
         / 2 ; down
-join-failure = { 1 => uint, ? 2 => tstr }          ; 1: reason code (#127), 2: detail for logs
+join-failure = { 1 => uint, ? 2 => tstr, * uint => any }          ; 1: reason code (#127), 2: detail for logs
 team-entry = {
   1 => sha256,               ; dac_pub_hash
   2 => tstr,                 ; name
   3 => verdict,
   4 => uint,                 ; seconds since last seen (relative, no wall clock)
   ? 5 => uint,               ; battery percent
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
 
-peers-challenge-req  = { 1 => bytes32 }            ; nonce_app
-peers-challenge-resp = { 1 => bytes32, 2 => es256-sig }  ; nonce_node, sig
+peers-challenge-req  = { 1 => bytes32, * uint => any }            ; nonce_app
+peers-challenge-resp = { 1 => bytes32, 2 => es256-sig, * uint => any }  ; nonce_node, sig
 
-diag-summary-resp = { 1 => [* diag-item] }
+diag-summary-resp = { 1 => [* diag-item], * uint => any }
 diag-item = {
   1 => tstr,                 ; code, e.g. "join.no_peers"
   2 => uint,                 ; severity: 0 info, 1 warning, 2 error
   ? 3 => uint,               ; seconds since it happened (relative)
   ? 4 => tstr,               ; detail for logs only
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
-diag-bundle-resp = { 1 => bstr }                   ; one chunk of the compressed bundle (use `part`)
+diag-bundle-resp = { 1 => bstr, * uint => any }                   ; one chunk of the compressed bundle (use `part`)
 
-update-check-req  = { 1 => update-manifest }
+update-check-req  = { 1 => update-manifest, * uint => any }
 update-manifest = {
   1 => tstr,                 ; version
   2 => tstr,                 ; board
@@ -192,12 +255,14 @@ update-manifest = {
   4 => sha256,               ; SHA-256 of SHA256SUMS
   5 => bstr,                 ; detached signature over metadata + SHA256SUMS (format: B18)
   ? 6 => [* tstr],           ; versions this image may be downgraded to
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
-update-check-resp = { 1 => bool, ? 2 => reason-code, 3 => uint }   ; ok, reason, RAM needed (bytes)
+update-check-resp = { 1 => bool, ? 2 => reason-code, 3 => uint, * uint => any }   ; ok, reason, RAM needed (bytes)
 update-progress = {
   1 => update-phase,
   2 => uint,                 ; percent 0..100
   ? 3 => reason-code,        ; failure reason
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
 update-phase = 0 ; idle
              / 1 ; receiving
@@ -207,7 +272,7 @@ update-phase = 0 ; idle
              / 5 ; committed
              / 6 ; reverted
 
-bulk-open-req  = { 1 => bulk-purpose }
+bulk-open-req  = { 1 => bulk-purpose, * uint => any }
 bulk-purpose   = 0 ; software update
 bulk-open-resp = {
   1 => tstr,                 ; ssid
@@ -215,9 +280,10 @@ bulk-open-resp = {
   3 => tstr,                 ; node IP
   4 => uint,                 ; port
   5 => uint,                 ; expires_in (seconds, relative)
+  * uint => any,           ; unknown keys ignored (§5.1)
 }
 
-reset-req = { 1 => reset-level }
+reset-req = { 1 => reset-level, * uint => any }
 reset-level = 0 ; leave network
             / 1 ; factory reset
             / 2 ; zeroize (tactical only; civil returns E_UNSUPPORTED)
@@ -234,14 +300,13 @@ node-cert = {
 }
 
 ; ------------------------------------------------------------------ signed objects (§7)
-; Each is the PAYLOAD of a cose-sign1 whose protected header is
-;   { 1: -7 (ES256), 3: "<content type>" }
-; and whose external_aad is the object's label (§3.6).
+; Each is the PAYLOAD of a sign1<> (above); external_aad = the object's label (§3.6).
+; Unknown keys inside these payloads are REJECTED (no "* uint => any").
 
 net-config = {                ; content type "batman/netcfg"
   1 => net-id,
   2 => net-version,
-  3 => sha256 / null,        ; prev_hash (null only for version 1)
+  3 => sha256 / null,        ; prev_hash = OBJECT HASH of the previous version's net_config (null only for version 1)
   4 => tstr,                 ; network name
   5 => country,
   6 => { 1 => tstr, 2 => uint, 3 => uint },   ; halow: ssid, channel, bandwidth
@@ -252,7 +317,7 @@ net-config = {                ; content type "batman/netcfg"
 member-list = {               ; content type "batman/members"
   1 => net-id,
   2 => net-version,
-  3 => sha256 / null,        ; prev_hash
+  3 => sha256 / null,        ; prev_hash = OBJECT HASH of the previous version's member_list
   4 => [* member],
   5 => [* sha256],           ; removed dac_pub_hash
   6 => [* invite-id],        ; used invites
@@ -292,15 +357,15 @@ invite = {                    ; content type "batman/invite"
   1 => net-id,
   2 => invite-id,
   3 => invite-kind,
-  4 => cose-sign1,           ; net_config (public)
-  5 => p256-pub,             ; admin_pub that signed this invite
+  4 => netcfg-sign1,         ; net_config (public)
+  5 => p256-pub,             ; admin_pub that signed this invite; MUST be in net_config.admins
   ? 6 => tstr,               ; SAE password: in_person ONLY
 }
 invite-kind = 0 ; in_person
             / 1 ; remote
 
 join-request = {              ; signed by the joining OWNER key; content type "batman/joinreq"
-  1 => sha256,               ; SHA-256 of the complete invite cose-sign1
+  1 => sha256,               ; OBJECT HASH of the invite
   2 => node-cert,            ; joining node identity, fetched by the owner app from its own node over BLE
   3 => p256-pub,             ; owner_pub
   4 => p256-pub,             ; owner_enc_pub
@@ -308,7 +373,7 @@ join-request = {              ; signed by the joining OWNER key; content type "b
   6 => tstr,                 ; device name
 }
 
-; ------------------------------------------------------------------ COSE_Encrypt details (§7.3)
+; ------------------------------------------------------------------ COSE_Encrypt details (§7.3) — types above
 ; body protected header      : { 1: 24 }                      ; ChaCha20/Poly1305
 ; body unprotected header    : { 5: bytes12 }                 ; IV
 ; recipient protected header : { 1: -25 }                     ; ECDH-ES + HKDF-256
@@ -321,16 +386,16 @@ join-request = {              ; signed by the joining OWNER key; content type "b
 ; ------------------------------------------------------------------ QR images (§7.6)
 qr-object = {
   1 => qr-kind,
-  2 => bstr,                 ; the complete object (cose-sign1 bytes, or approval-bundle bytes)
+  2 => bstr,                 ; encoded object: invite-sign1, joinreq-sign1 or approval-bundle
 }
 qr-kind = 1 ; invite
         / 2 ; join request
         / 3 ; approval
 approval-bundle = {
-  ? 1 => cose-sign1,         ; net_config: omitted when identical to the one in the invite (saves QR space)
-  2 => cose-sign1,           ; member_list
-  3 => cose-sign1,           ; net_secrets for the joining node
-  4 => cose-sign1,           ; member_secrets for the joining owner app
+  ? 1 => netcfg-sign1,       ; omitted when identical to the one in the invite (saves QR space)
+  2 => members-sign1,
+  3 => secrets-sign1,        ; for the joining node
+  4 => msecrets-sign1,       ; for the joining owner app
 }
 qr-fragment = {               ; when one QR is not enough (§12 Q7)
   1 => uint,                 ; index (1-based)

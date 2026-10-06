@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate test vectors for docs/design/219-protocol.md (v0.5).
+"""Generate test vectors for docs/design/219-protocol.md (v0.6).
 
 Everything is deterministic: keys are derived from fixed seeds and every ECDSA
 signature uses RFC 6979 (deterministic_signing=True), so running this script
@@ -51,6 +51,8 @@ def pub65(k) -> bytes:
 def es256(k: ec.EllipticCurvePrivateKey, msg: bytes) -> bytes:
     der = k.sign(msg, ec.ECDSA(hashes.SHA256(), deterministic_signing=True))
     r, s = decode_dss_signature(der)
+    if s > P256_N // 2:          # low-s (§7.1): high-s signatures are rejected by receivers
+        s = P256_N - s
     return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
 
@@ -111,7 +113,7 @@ node_e_sk, node_e_pk = x25519_key("node-ephemeral")
 fake_e_sk, fake_e_pk = x25519_key("fake-ephemeral")
 
 out = {"meta": {
-    "spec": "docs/design/219-protocol.md v0.5",
+    "spec": "docs/design/219-protocol.md v0.6",
     "note": "Deterministic test vectors. Keys derive from SHA-256('batman-test-vector/' + name). Not real keys.",
 }}
 
@@ -278,6 +280,18 @@ def sign1(key, payload: bytes, ctype: str, label: bytes):
     return cbor2.dumps(cbor2.CBORTag(18, [protected, {}, payload, sig]), canonical=True), to_sign
 
 
+LABEL_OF = {"batman/netcfg": b"batman-netcfg-v1", "batman/members": b"batman-members-v1",
+            "batman/secrets": b"batman-secrets-v1", "batman/msecrets": b"batman-msecrets-v1",
+            "batman/invite": b"batman-invite-v1", "batman/joinreq": b"batman-joinreq-v1"}
+
+
+def object_hash(raw: bytes) -> bytes:
+    """§7.1 OBJECT HASH = SHA-256(cbor(Sig_structure)); independent of signature and unprotected header."""
+    prot, _unprot, payload, _sig = cbor2.loads(raw).value
+    label = LABEL_OF[cbor2.loads(prot)[3]]
+    return H(cb(["Signature1", prot, label, payload]))
+
+
 def encrypt(plain: bytes, label: bytes, target_pub_key, target_hash: bytes, eph_key, iv: bytes):
     body_prot = cb({1: 24})
     rec_prot = cb({1: -25})
@@ -323,7 +337,7 @@ INVITE_INPERSON_PAYLOAD = cb({1: NET_ID, 2: seed("invite-id-2")[:16], 3: 0, 4: i
 INVITE_INPERSON, _ = sign1(admin_key, INVITE_INPERSON_PAYLOAD, "batman/invite",
                            b"batman-invite-v1")
 
-JOINREQ_PAYLOAD = cb({1: H(INVITE_REMOTE), 2: node_cert, 3: pub65(owner_sign), 4: pub65(owner_enc),
+JOINREQ_PAYLOAD = cb({1: object_hash(INVITE_REMOTE), 2: node_cert, 3: pub65(owner_sign), 4: pub65(owner_enc),
                       5: sig_enc, 6: "客廳"})
 JOINREQ, _ = sign1(owner_sign, JOINREQ_PAYLOAD, "batman/joinreq", b"batman-joinreq-v1")
 
@@ -331,8 +345,25 @@ APPROVAL = cb({2: item(MEMBERS), 3: item(SECRETS), 4: item(MSECRETS)})   # net_c
 QR_INVITE = cb({1: 1, 2: INVITE_REMOTE})
 QR_APPROVAL = cb({1: 3, 2: APPROVAL})
 
-SAS_DIGEST = H(b"batman-sas-v1" + H(INVITE_REMOTE) + H(JOINREQ))
-SAS = f"{int.from_bytes(SAS_DIGEST, 'big') % 1_000_000:06d}"
+SAS_DIGEST = H(b"batman-sas-v1" + object_hash(INVITE_REMOTE) + object_hash(JOINREQ))
+SAS = f"{int.from_bytes(SAS_DIGEST, 'big') % 1_000_000:06d}"     # §5.5: big-endian integer mod 10^6, zero-padded
+
+# ------------------------------------------------------------------ version chain (§7.1, §7.5)
+admin2 = p256("admin2")
+NETCFG_V2_PAYLOAD = cb({1: NET_ID, 2: 2, 3: object_hash(NETCFG), 4: "家裡網路", 5: "TW",
+                        6: {1: "batman-test", 2: 40, 3: 4}, 8: [pub65(admin_key), pub65(admin2)]})
+NETCFG_V2, _ = sign1(admin_key, NETCFG_V2_PAYLOAD, "batman/netcfg", b"batman-netcfg-v1")   # signed by a v1 admin
+NETCFG_V3_PAYLOAD = cb({1: NET_ID, 2: 3, 3: object_hash(NETCFG_V2), 4: "家裡網路", 5: "TW",
+                        6: {1: "batman-test", 2: 40, 3: 4}, 8: [pub65(admin2)]})
+NETCFG_V3, _ = sign1(admin2, NETCFG_V3_PAYLOAD, "batman/netcfg", b"batman-netcfg-v1")       # admin2 is a v2 admin
+out["version_chain"] = {
+    "rule": "version v+1 is verified against version v's admins; prev_hash = OBJECT HASH of version v",
+    "admin2_pub": hx(pub65(admin2)),
+    "v1_object_hash": hx(object_hash(NETCFG)),
+    "v2": hx(NETCFG_V2), "v2_object_hash": hx(object_hash(NETCFG_V2)),
+    "v3": hx(NETCFG_V3),
+    "note": "v3 is valid (admin2 is in v2.admins) but would be INVALID if checked against v1.admins",
+}
 
 out["cose"] = {
     "net_config": {"payload": hx(NETCFG_PAYLOAD), "sig_structure": hx(netcfg_tbs), "sign1": hx(NETCFG)},
@@ -375,6 +406,16 @@ out["gatt_framing"] = {
 }
 
 # ------------------------------------------------------------------ envelope examples (§5.1)
+_upd_body = cb({1: [{1: item(NETCFG), 2: item(MEMBERS), 3: item(SECRETS)}]})
+_half = len(_upd_body) // 2
+out["chunking"] = {
+    "rule": "chunks share id; 3 = bstr slice of the encoded body; 6 = {1: n, 2: total}",
+    "body": hx(_upd_body),
+    "chunk1": hx(cb({0: [1, 0], 1: 5, 2: "network/update", 3: _upd_body[:_half], 6: {1: 1, 2: 2},
+                     7: seed("idem-upd")[:16]})),
+    "chunk2": hx(cb({0: [1, 0], 1: 5, 2: "network/update", 3: _upd_body[_half:], 6: {1: 2, 2: 2},
+                     7: seed("idem-upd")[:16]})),
+}
 out["envelope"] = {
     "request_info": hx(REQ_INFO),
     "response_info": hx(cb({1: 1, 4: 0, 3: {1: DEVICE_ID, 2: "C3", 3: "bcm2710", 4: "1.6.0", 5: [1, 0],
