@@ -1,0 +1,6 @@
+cryptography==50.0.2
+cbor2==6.1.5
+noiseprotocol==0.3.1
+dissononce==0.34.3
+ecdsa==0.19.2
+pycddl==0.6.4

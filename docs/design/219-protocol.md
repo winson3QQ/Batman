@@ -1,6 +1,6 @@
 # Spec: 供裝協定 —— 安全通道與訊息協定(#219 B11 / #254)
 
-Status: **DRAFT v0.4(第二輪 review:安全 / 可行性皆 APPROVE-WITH-CHANGES → 本版併入;CBOR 整數 key 表待定稿時補齊(§5.6);v0.1 review:安全 NEEDS-REWORK、可行性 APPROVE-WITH-CHANGES → 本版重寫 §3、§6、§7 並補齊編碼;待第二輪)**
+Status: **DRAFT v0.6(一致性 review APPROVE-WITH-CHANGES → 本版併入:物件雜湊、low-s、訊息類型與 body 綁定、分塊格式、規格與 CDDL / 向量逐項對齊;119 項驗證全部通過)**
 Parent: #254(階段 1)· 上位設計:`docs/design/219-field-provisioning.md`(PR #253)§3.3、§3.4、§5、§6.5
 範圍:手機 app 與節點 `batman-provd` 之間的**安全通道**、**傳輸分段**、**訊息格式**,以及可以轉送的**簽章物件**。民用版;戰術版沿用同一層,只換成員提供者(上位設計 F2)。
 
@@ -17,7 +17,7 @@ Parent: #254(階段 1)· 上位設計:`docs/design/219-field-provisioning.md`(PR
 | DH 用 25519 | Noise 官方只定義 25519 與 448【事實,Noise 規格】 |
 | 節點身分用 608B 的 P-256 簽章放 payload | 608B 只支援 P-256;簽章不在 DH 路徑上;libp2p 以身分金鑰簽 Noise 靜態金鑰是已有做法【事實】 |
 | ChaChaPoly | 3A+(Cortex-A53)沒有 ARMv8 AES 指令 |
-| CBOR(RFC 8949 deterministic encoding)、COSE(RFC 9052 / 9053) | 小、標準、ES256 與 ECDH-ES 對上 608B |
+| CBOR(RFC 8949 §4.2.1 core deterministic encoding:map key 依**編碼後的位元組**排序;收到非 deterministic 編碼的簽章物件一律拒絕)、COSE(RFC 9052 / 9053) | 小、標準、ES256 與 ECDH-ES 對上 608B |
 | 實作:Rust `snow`(節點與手機共用) | 已查證:`snow` 有 `set_psk`、`get_handshake_hash`,超過 65535 B 會回錯;Go `flynn/noise` 有 `PresharedKey`、`ChannelBinding()`,可作替代。**Dart 的 `noise_protocol_framework` 只有 KNpsk0 / NKpsk0,沒有 XX / NX 與 25519,不可用**【事實,依 v0.1 review 查證】 |
 
 ## 2. 分層
@@ -38,7 +38,7 @@ Noise 傳輸訊息(§3)                 ← 加密、防竄改、防重放
 | 未認領 | `Noise_NX_25519_ChaChaPoly_SHA256` | 任何人 |
 | 已認領 / 成員 | `Noise_NXpsk0_25519_ChaChaPoly_SHA256` | 只有持 PSK 的人(`psk_owner` 或目前版本的 `psk_member`) |
 
-- 發起方 = 手機(只有臨時金鑰 `e`),回應方 = 節點(臨時 `e` + 靜態 `s_node`)。
+- 發起方 = 手機(只有臨時金鑰 `e`),回應方 = 節點(臨時 `e` + 靜態 `s_node`)。**第 1 則訊息的 payload 一律為空**;第 2 則的 payload = `node_cert`。
 - **已認領的節點一律拒絕沒有 PSK 的 `NX`**(防止降級)。
 - **手機選模式**:對自己的機台,依手機本機紀錄的狀態選,**不依廣播旗標**(廣播未經認證);對未知機台才看廣播。
 
@@ -61,7 +61,7 @@ device_hint = 未認領:QR / 廣播上的 device_id(ASCII);已認領:空字串
   `ecdh_pub` 是 608B 裡 ECDH 槽的公鑰(§7 的加密對象);`sig_ecdh` 讓網主不會被騙去加密給攻擊者的金鑰【依 v0.1 review】。
 - `node_cert`(CBOR map)放在交握第 2 則訊息的 payload:
   ```
-  { 1: dac_chain [ bstr X.509 DER, … ],   ; 由 atcacert 產生
+  { 1: dac_chain [ bstr X.509 DER, … ],   ; 葉憑證在前,中繼憑證在後;**不放根憑證**(app 內建),節省 QR 空間
     2: s_node_pub (32 B),  3: boot_id (16 B),
     4: ecdh_pub (65 B),     5: sig_static (64 B, raw r‖s),  6: sig_ecdh (64 B),
     7: sn (9 B, 608B 序號) }
@@ -69,14 +69,14 @@ device_hint = 未認領:QR / 廣播上的 device_id(ASCII);已認領:空字串
 - **手機的驗證**(全部通過才繼續):
   1. DAC 鏈驗到內建根(正式版只信正式根,§9);
   2. `sig_static` 對上 Noise 交握裡實際的 `s_node`;
-  3. `sn` 與 DAC 憑證內的序號一致(`sn` 本身未被簽章);
+  3. `sn` 與 DAC 憑證一致(`sn` 本身未被簽章)。**DAC 憑證的對應方式**:subject `CN` = `device_id`,subject `serialNumber` = `sn` 的小寫十六進位字串;
   4. **DAC 等於預期的目標**:未認領 = 與 QR 的 `device_id` 一致;已認領 = 等於手機本機紀錄的那台 DAC,或封包 / 指令的目標 DAC。**只驗憑證鏈不夠**,否則任何持有 `psk_member` 的成員機台都能冒充別台【依 v0.1 review,MUST】。
 - 608B 每次開機只簽兩次;`node_cert` 不過期 → 送出換密碼封包前,手機另做一次新鮮的 `peers/challenge`(§5.3)。
 - 限制:拿到 root 的人能讀 `s_node`,在這次開機期間冒充節點;民用威脅模型已涵蓋。
 
 ### 3.4 PSK 模式的細節
 
-- 已認領的節點收到第 1 則訊息時,以**常數時間**試 `psk_owner` 與目前版本的 `psk_member`(固定兩次解密,不論第一次是否成功)。
+- 已認領的節點收到第 1 則訊息時,以**常數時間**試**所有擁有者的 `psk_owner`(最多 4 把)與目前版本的 `psk_member`**:固定試 5 次(不足 5 把時以假 PSK 補足),不論是否已經成功。
 - **兩把都失敗**:用**真的新臨時金鑰**組出一則格式正確的第 2 則訊息(payload 為等長隨機資料),並做與真交握相同次數的 DH;送出後**和真 session 一樣等到逾時才斷線**。隨機 32 B 不是合法的 X25519 公鑰格式(最高位元)、假訊息不做 DH、送完立刻斷線,三者都能被分辨【依第二輪 review,MUST】。
 - 節點**只接受自己目前版本的 `psk_member`**,不接受舊版(否則被移除的成員還能連進來)。還沒更新的節點仍在舊版本,手機用**當時那一版**的 `psk_member` 連它 → 成員 app 保留各版 `psk_member`,依序試最近幾版(由新到舊,受 §8 全域限速)。**廣播不帶明文版本號**(會把同網節點串在一起、跨 RPA 關聯)【依第二輪 review】。
 
@@ -111,6 +111,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | `batman-msecrets-v1` | `member_secrets`(COSE) | 網主 |
 | `batman-owner-enc-v1` | 擁有者加密公鑰證明 | 擁有者 |
 | `batman-invite-v1` | `invite`(COSE) | 網主 |
+| `batman-joinreq-v1` | 加入申請(COSE) | 加入者的擁有者簽章金鑰 |
 | `batman-sas-v1` | 確認碼 | — |
 
 開發版的標籤一律加 `-dev` 後綴(§9)。
@@ -127,13 +128,13 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 ### 4.1 BLE GATT
 
 - 服務:Batman service UUID(128-bit,§12 Q1)。
-- 特徵值:`RX`(手機 → 節點,Write Without Response)、`TX`(節點 → 手機,Notify)、`CTRL`(Read,只回 `{proto_major, proto_minor, max_frame}`,不加密)。
+- 特徵值:`RX`(手機 → 節點,Write Without Response)、`TX`(節點 → 手機,Notify)、`CTRL`(Read,不加密;CDDL `ctrl` = `{1: proto_major, 2: proto_minor, 3: max_frame}`)。
 - 框架:
 
   | 欄位 | 大小 | 說明 |
   |---|---|---|
   | flags | 1 B | bit0 = 開頭、bit1 = 結尾 |
-  | seq | 2 B(大端) | 該方向的框架序號,遞增、溢位歸零 |
+  | seq | 2 B(大端) | **每則 Noise 訊息從 0 起算**,同一則訊息的框架遞增;下一則訊息重新從 0 開始 |
   | data | ≤ 框架上限 − 3 | 一則 Noise 訊息的片段 |
 
 - 框架上限:手機端以 iOS `maximumWriteValueLength(.withoutResponse)` / Android 協商後的 MTU − 3 為準。
@@ -143,8 +144,8 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 
 ### 4.2 HTTP(備援:大量傳輸通道、開發)
 
-- `POST /batman/v1/session`:body = 交握訊息;回應 = 交握訊息 + header `X-Batman-Session`(128-bit 隨機,base64url)。
-- `POST /batman/v1/msg`:body = 一則 Noise 傳輸訊息;**每個 session 一次只能有一個未完成的請求**;回應遺失時,手機**以同一個冪等鍵**重送:每個會改變狀態的請求帶 `7: idem_key`(16 B 隨機),節點保留最近 32 個冪等鍵與其結果 10 分鐘,跨 session 有效,重複的請求直接回傳上次的結果,不重複執行(例如 `owner/remove` 不會輪替兩次)【依第二輪 review】。
+- `POST /batman/v1/session`:body = 交握訊息;回應 = 交握訊息 + header `X-Batman-Session`(128-bit 隨機,base64url **不加 padding**)。
+- `POST /batman/v1/msg`:body = 一則 Noise 傳輸訊息;**每個 session 一次只能有一個未完成的請求**;回應遺失時,手機**以同一個冪等鍵**重送。**必須帶冪等鍵的請求**:`claim/finish`、`owner/add`、`owner/remove`、`settings/set`、`network/join`、`network/update`、`network/leave`、`update/prepare`、`update/apply`、`bulk/open`、`bulk/close`、`reset`(其餘為唯讀,不需要)。每個這類請求帶 `7: idem_key`(16 B 隨機),節點保留最近 32 個冪等鍵與其結果 10 分鐘,跨 session 有效,重複的請求直接回傳上次的結果,不重複執行(例如 `owner/remove` 不會輪替兩次)【依第二輪 review】。
 - HTTP 裡一律跑完整的 §3,不依賴 TLS。
 
 ## 5. 應用訊息
@@ -154,8 +155,8 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 請求:`{ 0: proto_ver [major, minor], 1: id (uint), 2: type (tstr), 3: body (map), 6: part? }`
 回應:`{ 1: id, 4: status (uint, 0 = ok), 3: body / 5: error, 6: part? }`
 
-- `id`:手機產生,單一 session 內遞增;節點拒絕重複或倒退的 `id`。
-- **分塊**(請求與回應都可以):超過 65519 B 的訊息拆成多則,`6: { n: 第幾塊, total: 總塊數 }`,每塊各自加密;收齊才處理,總大小上限 1 MB。
+- `id`:手機產生,單一 session 內遞增;節點拒絕**完整訊息**的重複或倒退 `id`。成功回應帶 `3: body`,錯誤回應帶 `5: error`,**兩者互斥**。
+- **分塊**(請求與回應都可以):超過 65519 B 的訊息,把**編碼後的 body map** 切成多段;每段是一則訊息,`3` = 該段的 **bstr**,`6 = {1: n, 2: total}`,**所有分塊共用同一個 `id`**(與同一個冪等鍵);收到重複的 `(id, n)` 即拒絕;收齊後依序串接再解碼,總大小上限 1 MB。訊息類型與 body 的對應見 CDDL 的 `whole-request`。
 - 版本:`major` 不同 → `E_VERSION`,手機只允許 `info`、`status`、`reset`;未知 `type` → `E_UNKNOWN_TYPE`;**body 的未知欄位忽略**(簽章物件除外,§7)。
 
 ### 5.2 錯誤碼
@@ -183,7 +184,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | `claim/begin` | 匿名 | `owner_pub`(65 B) | `nonce`(32 B) |
 | `claim/finish` | 匿名 | `response`(32 B,§5.4)、`owner_enc_pub` + `sig_enc`(§6) | `owner_tag_key`(32 B,**每位擁有者各一把**)、`adv_owner_key`、`root_password`;session 升為擁有者 |
 | `auth/owner` | 擁有者候選 | `owner_key_id`(32 B = SHA-256(owner_pub 65 B))、`sig` | 目前的 `adv_owner_key` |
-| `owner/add` | 擁有者 | `owner_pub` | — |
+| `owner/add` | 擁有者 | 新擁有者的 `owner_pub`、`owner_enc_pub`、`sig_enc` | 新擁有者的 `owner_tag_key`(由現任擁有者的 app 轉交) |
 | `owner/remove` | 擁有者 | `owner_key_id` | —(被移除者的 `owner_tag_key` 與其 `psk_owner` 一併刪除;**廣播用的 `adv_owner_key` 輪替**,其他擁有者下次 `auth/owner` 時取得新值)【依 review】 |
 | `settings/get` / `settings/set` | 擁有者 | 依能力分組 | 目前值 |
 | `network/join` | 擁有者 | `net_config`、`member_list`、`net_secrets`(本機那份)、選填 `invite_id` | `joined` / `pending` |
@@ -209,27 +210,27 @@ response = SHA-256( K(32) ‖ ClientChal(32) ‖ OtherData[0:4] ‖ 0x00×8 ‖ 
 本協定的定義:
 - `K` = 認領秘密(QR 上的 32 B)。
 - `ClientChal` = `SHA-256( "batman-claim-v1" ‖ nonce ‖ h ‖ SHA-256(DAC 憑證 DER) ‖ owner_pub )`。
-- `OtherData` = 固定 13 B 常數(實際值在 B1 槽位實驗時定案,寫入規格與測試向量)。
+- `OtherData` = `08 00 00 00 00 00 00 00 00 00 00 00 00`(mode 0,其餘為零;與槽位配置無關,已定案)。
 - `SN` = `node_cert` 裡的 608B 序號(不是秘密)。
 - **階段 1 起就用這個格式**(軟體計算同樣的 SHA-256),階段 2 換成 608B 時線上格式不變【依 review,MUST】。
 
 ### 5.5 確認碼(SAS)
 
 ```
-sas = 前 6 位十進位數字( SHA-256( "batman-sas-v1" ‖ SHA-256(完整邀請物件) ‖ SHA-256(完整申請物件) ) )
+sas = 補零到 6 位( int_big_endian( SHA-256( "batman-sas-v1" ‖ OBJECT_HASH(邀請) ‖ OBJECT_HASH(申請) ) ) mod 10^6 )
 ```
-- 涵蓋**整個邀請**(`net_id`、`admins`、`invite_id`)與**整個申請**(加入者 DAC、`ecdh_pub`、擁有者公鑰、`owner_enc_pub`)。只涵蓋 `invite_id` 與 DAC 時,攻擊者可以**替換申請圖片裡的擁有者公鑰**(把 `member_secrets` 騙到自己手上),或**替換邀請圖片**(讓加入者加入攻擊者的網路),SAS 卻仍一致【依第二輪 review,MUST】。
+- `OBJECT_HASH` 見 §7.1。涵蓋**整個邀請**(`net_id`、`admins`、`invite_id`)與**整個申請**(加入者 DAC、`ecdh_pub`、擁有者公鑰、`owner_enc_pub`)。只涵蓋 `invite_id` 與 DAC 時,攻擊者可以**替換申請圖片裡的擁有者公鑰**(把 `member_secrets` 騙到自己手上),或**替換邀請圖片**(讓加入者加入攻擊者的網路),SAS 卻仍一致【依第二輪 review,MUST】。
 - **SAS 必須經另一條管道核對**:當面看兩支手機,或打電話;不能用傳圖片的同一個聊天。
 - 6 位數的強度可接受,前提是攻擊者無法大量取得合法 DAC(DAC 只能由 608B 產生、經出廠簽發)。
 
-### 5.6 CBOR 整數 key 表(定稿前補齊)
+### 5.6 CBOR 整數 key 表
 
-為了讓兩端獨立實作也能互通,**每一個 body 與 COSE payload 的欄位**都要定:整數 key、型別、是否必填【依第二輪可行性 review,MUST】。原則:
-- 0–15 保留給信封;各訊息 body 從 1 起編;未來新增的欄位只能用新的 key,不重用。
-- 型別以 CDDL(RFC 8610)寫成,放在 `docs/design/219-protocol.cddl`,與 §11 的測試向量一起產生、一起驗證。
-- `OtherData`(§5.4)不依賴槽位配置,**現在就定**:`0x08 0x00 0x00 0x00 ‖ 0x00×9`(mode 0,其餘為零),寫入測試向量。
-
-**狀態**:本版只定了信封(§5.1)與 `node_cert`(§3.3)的整數 key;其餘欄位的 key 表是**定稿前必須完成的工作**。
+**完整定義在 `docs/design/219-protocol.cddl`(CDDL,RFC 8610)**:每個訊息 body、`node_cert`、所有 COSE payload、QR 物件都有整數 key、型別、是否必填。原則:
+- 0–15 保留給信封;各訊息 body 從 1 起編;新增欄位只能用新的 key,不重用。
+- 訊息 body 的未知 key 忽略;**簽章物件的未知 key 拒絕**。
+- 內嵌的 COSE 物件一律以**巢狀 CBOR 項目**(tagged 18 / 96)內嵌,不包成 bstr。
+- `OtherData`(§5.4)= `08 00 00 00 00 00 00 00 00 00 00 00 00`(mode 0,其餘為零)。
+- content type 用短字串:`batman/netcfg`、`batman/members`、`batman/secrets`、`batman/msecrets`、`batman/invite`、`batman/joinreq`。
 
 ## 6. 金鑰與導出
 
@@ -263,12 +264,13 @@ adv_member = HKDF( net_root,      "batman-adv-member-v1" ‖ net_id ‖ u32BE(ne
 
 ### 7.1 通則
 
-- 一律 `COSE_Sign1`,演算法 ES256,簽章值 raw r‖s(64 B)。手機 keystore 輸出的 DER 簽章要轉換。
-- protected header 帶 `content type` = 物件種類(`application/batman-netcfg+cbor` 等),`external_aad` = 該物件的標籤(§3.6)→ 物件之間不會混用【依 review】。
+- 一律 `COSE_Sign1`(tagged 18),演算法 ES256,簽章值 raw r‖s(64 B),**s 必須 ≤ n/2(low-s),否則拒絕**;**unprotected header 必須為空 `{}`,否則拒絕**。手機 keystore 輸出的 DER 簽章要轉換並正規化為 low-s。
+- protected header 帶 `content type` = 物件種類(`batman/netcfg`、`batman/members`、`batman/secrets`、`batman/msecrets`、`batman/invite`、`batman/joinreq`),`external_aad` = 該物件的標籤(§3.6)→ 物件之間不會混用。
+- **物件雜湊(OBJECT_HASH)** = `SHA-256( cbor(["Signature1", protected, external_aad, payload]) )`,也就是對 Sig_structure 取雜湊,**不含簽章與 unprotected header**。`prev_hash`、SAS、加入申請的邀請雜湊一律用它;直接雜湊整個 Sign1 時,把 s 換成 n−s 或塞 unprotected 欄位都能改變雜湊,轉送者可藉此弄斷版本鏈或製造假分叉【依一致性 review,MUST】。
 - payload 一律 deterministic CBOR;**簽章物件的未知欄位不忽略:拒絕**。
-- **第 v+1 版的簽章,一律以第 v 版 `net_config` 的 `admins` 驗證**;物件自己那一版的 `admins` 只對下一版生效。第 1 版由建立者自簽,手機與節點記下 `net_id` 與建立者公鑰【依第二輪 review,MUST:否則任何人都能發一版把自己列為網主】。
+- **第 v+1 版的簽章,一律以第 v 版 `net_config` 的 `admins` 驗證**(逐一嘗試,最多 4 把;不加 `kid`);物件自己那一版的 `admins` 只對下一版生效。第 1 版由建立者自簽,手機與節點記下 `net_id` 與建立者公鑰【依第二輪 review,MUST:否則任何人都能發一版把自己列為網主】。
 - COSE 一律用 **tagged** 形式(`COSE_Sign1` tag 18、`COSE_Encrypt` tag 96);content type 用 tstr。
-- **雜湊的輸入**:`dac_pub_hash`、`target_dac_hash`、SAS 中的公鑰一律為 `SHA-256(SEC1 未壓縮 65 B 公鑰)`;`prev_hash` = 上一版**完整 tagged COSE_Sign1 編碼**的 SHA-256。
+- **雜湊的輸入**:`dac_pub_hash`、`target_dac_hash`、SAS 中的公鑰一律為 `SHA-256(SEC1 未壓縮 65 B 公鑰)`;`prev_hash` = 上一版的 OBJECT_HASH。
 
 ### 7.2 `net_config`(公開設定)
 ```
@@ -290,13 +292,15 @@ COSE_Sign1( payload = {
                                    PartyV.identity = target_dac_hash,
                                    SuppPubInfo.other = net_id ‖ u32BE(net_version) )
 }, external_aad = "batman-secrets-v1" )
+
+COSE_Encrypt 的固定參數:body protected `{1: 24}`、unprotected `{5: IV(12 B 隨機)}`、Enc_structure 的 external_aad = 物件標籤;recipient protected `{1: -25}`、unprotected `{-1: 臨時 COSE_Key(EC2,P-256,x / y 各 32 B)}`;HKDF salt 為空、L = 32;KDF context 的 keyDataLength = 256(bits)。
 ```
 - **密文在網主簽章的 payload 裡面**,所以轉送的人換不掉密碼欄位(ECDH-ES 的發送方是匿名的)【依 review,MUST】。
 - 每台節點一份;網主加密前一律驗 `sig_ecdh`。
 - 608B 這端:ECDH 指令可以輸出共享秘密給主機(或以 IO protection key 加密輸出),主機再做 HKDF【事實,依 review 查證】;`ECDHPROT` 與 IO protection key 的存放在 B1 決定。
 
 ### 7.4 `member_secrets`(給成員 app 的秘密)
-與 §7.3 相同結構,標籤 `batman-msecrets-v1`,對象是**成員的擁有者加密金鑰** `owner_enc_pub`(須先驗 `sig_enc`);plaintext = `{ net_root }`(成員 app 用來導出 `psk_member`、`adv_member`)。網主同意加入時、以及每次換密碼時,發給每位成員的 app【依 review,MUST:原設計成員 app 拿不到 `net_root`】。
+與 §7.3 相同結構,標籤 `batman-msecrets-v1`,對象是**成員的擁有者加密金鑰** `owner_enc_pub`(須先驗 `sig_enc`);KDF context 的 PartyV.identity = `SHA-256(owner_enc_pub)`;plaintext = `{ 2: net_root }`(成員 app 用來導出 `psk_member`、`adv_member`)。網主同意加入時、以及每次換密碼時,發給每位成員的 app【依 review,MUST:原設計成員 app 拿不到 `net_root`】。
 
 ### 7.5 `member_list` 與版本鏈
 ```
@@ -305,7 +309,7 @@ member_list = { net_id, net_version, prev_hash,
                 removed: [ dac_pub_hash ],
                 used_invites: [ invite_id ], revoked_invites: [ invite_id ] }
 ```
-- `network/update` 帶從節點目前版本 `v` 到最新的每一版(`net_config`、`member_list`、該節點的 `net_secrets`),每版的 `prev_hash` 要等於上一版的雜湊;**不接受跳號**。
+- `network/update` 帶從節點目前版本 `v` 到最新的每一版公開物件(`net_config`、`member_list`),每版的 `prev_hash` 要等於上一版的 OBJECT_HASH;**`net_secrets` 只帶最新一版**;**不接受跳號**。
 - **分叉**(同一版本出現兩個不同的物件,例如兩位網主同時修改):以**雜湊值較小者**為準(確定性規則);已套用另一支的節點在看到勝出的鏈時切換;下一版的 `prev_hash` 一律指向勝出者;app 告警網主。民用版接受「共同網主可以故意製造分叉干擾」這個限制。
 - **轉送給落後的節點**:落後節點需要的是從它的版本到最新版的公開物件鏈(`net_config`、`member_list`),加上**最新一版**它自己的 `net_secrets`;網主 app 把各成員節點最新的 `net_secrets`(已對各節點加密,轉送無害)同步給所有成員 app。
 
@@ -313,12 +317,12 @@ member_list = { net_id, net_version, prev_hash,
 | 種類 | 內容 | 秘密如何送達 | 「一次性」怎麼保證 |
 |---|---|---|---|
 | **當面**(QR 只顯示在網主螢幕) | `{ net_id, invite_id, kind: in_person, net_config(公開), sae_password, admin_pub }` | **QR 內含 SAE 密碼**(等同當面告訴對方密碼),加入者的節點先入網,經 mesh 把**申請**送到網主的節點,網主節點再經 BLE 交給網主 app | **兩支手機同時顯示 SAS,網主核對後按一下同意**(不自動同意);同一個 `invite_id` 出現第二個申請時告警並拒絕【依第二輪 review,MUST:自動同意等於沒人比對 SAS,拍到 QR 的人可搶先】 |
-| **遠端**(QR 圖片) | `{ net_id, invite_id, kind: remote, net_config(公開), admin_pub }`,**不含秘密** | 加入者 app 產生一張**加入申請圖片**(加入者的 DAC 憑證、`ecdh_pub` + `sig_ecdh`、擁有者公鑰、`invite_id`),經同一個聊天管道傳回網主;網主核對 SAS 後同意,回傳一張**同意圖片**(該節點的 `net_secrets` + 成員 app 的 `member_secrets`) | 網主只對自己發出、尚未使用的 `invite_id` 同意 |
+| **遠端**(QR 圖片) | `{ net_id, invite_id, kind: remote, net_config(公開), admin_pub }`,**不含秘密**;`admin_pub` 必須屬於 `net_config.admins` | 加入者 app 產生一張**加入申請圖片**(CDDL `join-request`:邀請的 OBJECT_HASH、加入機台的 `node_cert`、擁有者簽章公鑰與加密公鑰 + `sig_enc`、機台名稱;由加入者的擁有者簽章金鑰簽,標籤 `batman-joinreq-v1`),經同一個聊天管道傳回網主;網主核對 SAS 後同意,回傳一張**同意圖片**(該節點的 `net_secrets` + 成員 app 的 `member_secrets`) | 網主只對自己發出、尚未使用的 `invite_id` 同意 |
 | **加入碼**(只能講話) | 能還原 `net_config` 公開部分 + SAE 密碼 | 等同告訴對方密碼 | 網主收到申請時以 SAS 核對 |
 
 > **使用者決定 (a)(2026-10-06)**:遠端加入採雙向傳圖片(邀請 → 申請 → 同意)。民用版只靠共用密碼,**拿到 SAE 密碼就能進網**,所以遠端圖片不帶密碼,「同意」才真正有效。上位設計 §2.2 已改為朋友 4 步、網主 2 + 2 步(v2.8)。
 >
-> 圖片格式:三種圖片都是 QR,內容為 deterministic CBOR,經 base45 或二進位 QR 編碼;太大放不進一個 QR 時(同意圖片含加密的密碼與 `member_secrets`),拆成多個 QR 拼成一張圖。申請圖片帶加入者 app 的擁有者公鑰,讓網主把 `member_secrets` 加密給它。
+> 圖片格式:三種圖片都是 QR(`qr-object`,CDDL),內容為 deterministic CBOR,用**二進位模式**(不用 base45)。同意圖片**不重複帶 `net_config`**(加入者已從邀請取得)。測試向量的實測大小:邀請 428 B、加入申請 957 B、同意 1050 B,**都在 QR version 25-L(1273 B)以內**,一個 QR 放得下;超過時才用 `qr-fragment` 拆片。申請圖片帶加入者 app 的擁有者公鑰與加密公鑰,讓網主把 `member_secrets` 加密給它。
 
 ## 8. 限制與逾時
 
@@ -357,13 +361,11 @@ member_list = { net_id, net_version, prev_hash,
 
 ## 11. 測試向量
 
-放 `tests/vectors/219-protocol/`,規格定稿時一併提供:
-- 固定金鑰下 `NX` 與 `NXpsk0` 交握的完整位元組(含 prologue);
-- `node_cert` 的兩個簽章、`auth/owner`、`peers/challenge`;
-- **§5.4 認領的 CheckMac 輸入 88 B 與輸出**(與 cryptoauthlib `atcah_check_mac` 交叉驗證);
-- HKDF 導出、SAS;
-- COSE:`net_config`、`member_list`、`net_secrets`、`member_secrets`、兩種 invite;
-- GATT 框架切段與重組(含異常)。
+**已完成**:`tests/vectors/219-protocol/`(`vectors.json`、`gen.py`、`verify.py`、`README.md`)。
+- `gen.py` 以固定金鑰與決定性 ECDSA(RFC 6979)產生,**可逐位元組重現**。
+- `verify.py` 以**另一份實作**逐項驗證,共 119 項(含負向測試:錯的 PSK / prologue、換標籤、high-s、竄改密文、簽章物件內的未知 key、訊息類型與 body 不符、版本鏈以錯誤的網主組驗證):Noise 用 `dissononce` 重跑 `NX` 與 `NXpsk0` 交握(位元組必須與 `noiseprotocol` 產生的完全相同)、ECDSA / ECDH 用 `python-ecdsa`、HKDF 用標準庫 `hmac`、所有物件以 `pycddl` 對 CDDL 驗證結構。
+- 涵蓋:測試根憑證與 DAC、`node_cert`、HKDF、兩種 Noise 交握、`auth/owner`、認領 CheckMac(88 B)、`sig_enc`、`peers/challenge`、全部 COSE 物件(含 ECDH 共享秘密、KDF context、CEK)、SAS、QR 大小、GATT 框架、CBOR 信封。
+- **尚未**:`flynn/noise`(Go)交叉驗證(這台開發機沒有 Go;§12 Q8)、開發版(`-dev`)向量、608B 實機的 CheckMac 交叉驗證(B1)。
 
 ## 12. 待決
 
@@ -372,9 +374,9 @@ member_list = { net_id, net_version, prev_hash,
 | Q1 | Batman service UUID(自訂 128-bit,或申請 16-bit 以節省廣播空間,上位設計 B16) |
 | Q2 | 診斷包分塊大小與 BLE 實際傳輸時間 |
 | Q3 | Rust 工具鏈、vendoring 與 FFI 可行性(§10,併入 B15) |
-| Q4 | B1:`OtherData` 常數、`ECDHPROT`、IO protection key 存放 |
+| Q4 | B1:`ECDHPROT`、IO protection key 存放(`OtherData` 已定案,§5.4) |
 | ~~Q5~~ | 遠端加入流程 → **已決定 (a) 雙向傳圖片**(§7.6) |
-| Q7 | QR 用二進位模式、目標 version 25 以下;多個 QR 拼在一張圖時每個帶「第幾片 / 共幾片 / 物件雜湊」;實測經 LINE / WhatsApp 壓縮後的掃描成功率 |
+| Q7 | QR 大小已實測(最大 1050 B,在 version 25-L 以內);**仍待實測**經 LINE / WhatsApp 壓縮後的掃描成功率 |
 | Q8 | 608B 簽章耗時(§8 估 100 ms)與 `NXpsk0` 互通性,在 B1 / 測試向量時以 `flynn/noise` 交叉驗證 |
 | Q6 | 同意圖片的大小與 QR 拆分方式(加密的密碼 + `member_secrets` + COSE 簽章,估計 1–2 KB) |
 
@@ -410,3 +412,22 @@ SHOULD-FIX 已併入:拒絕無 PSK 的交握、手機不依廣播選模式;PSK �
 | 可行性 4 | CBOR 整數 key 未定義 | §5.6 原則與 CDDL 檔;**完整 key 表為定稿前的工作**;`OtherData` 現在定案 |
 
 SHOULD-FIX 已併入:`sn` 比對 DAC;HTTP 冪等鍵;每位擁有者各自的 `owner_tag_key` 與輪替的 `adv_owner_key`;`member_secrets` 自己的標籤;分叉的確定性規則;落後節點的轉送內容;廣播不帶明文版本號;6 位數 SAS 的前提;`device_id` 放 info 最後;COSE tagged;Q7(QR 格式)、Q8(608B 耗時、NXpsk0 交叉驗證)。
+
+**v0.5(2026-10-06)**:補齊 §5.6 的 CBOR 整數 key 表(`219-protocol.cddl`)與 §11 的測試向量(v0.5 時 92 項、v0.6 擴充為 119 項獨立驗證全部通過)。產生向量時發現並修正:`node_cert` 不再帶根憑證、同意圖片不再重複帶 `net_config`、content type 改短字串、內嵌 COSE 物件一律為巢狀項目(CDDL 驗證抓到與產生器不一致);新增 `batman-joinreq-v1` 標籤。三種 QR 都縮到 1273 B 以內。
+
+**v0.5 一致性 review(2026-10-06):APPROVE-WITH-CHANGES。** v0.6 的處理:
+
+| # | 問題 | 處理 |
+|---|---|---|
+| 1 | `prev_hash` / SAS 雜湊整個 Sign1,可被 n−s 與 unprotected 欄位改動 | §7.1 OBJECT_HASH(對 Sig_structure 取雜湊);強制 low-s 與空 unprotected;向量與負向測試 |
+| 2 | SAS 規格寫「前 6 位」、程式是 mod 10^6 | §5.5 寫成明確公式 |
+| 3 | content type 兩處不一致 | §7.1 改為 `batman/*` |
+| 4 | 分塊在線上無法表達、與 `id` 去重衝突 | §5.1 與 CDDL:分塊的 `3` 為 bstr 片段,共用 `id`,以 `(id, n)` 去重 |
+| 5 | GATT `seq` 範圍、`CTRL` 格式 | §4.1:每則訊息從 0 起算;CDDL `ctrl` |
+| 6 | DAC 與 `sn` / `device_id` 的對應只在程式裡 | §3.3 寫明 CN 與 serialNumber |
+| 7 | CDDL 的 request 不設防 | CDDL `whole-request` 以 group choice 綁定訊息類型與 body;body 加 `* uint => any`;簽章物件 `sign1<>` 帶型別、unprotected 為 `{}` |
+| 8 | 規格內部矛盾(PSK 次數、`net_secrets` 帶法、`owner/add`、`OtherData`) | §3.4、§7.5、§5.3、§5.4、Q4 統一 |
+
+SHOULD-FIX 已併入:`verify.py` 從標籤重組簽章輸入、以 pycose 交叉驗證 Sign1 與 KDF context、加入負向測試與版本鏈(v1→v2→v3,含換網主)向量、deterministic 編碼以位元組序檢查;第 1 則訊息 payload 為空;COSE_Encrypt 固定參數寫入內文;`member_secrets` 的 PartyV;網主金鑰逐一嘗試;邀請的 `admin_pub` 屬於 `admins`;加入申請內容回寫 §7.6;冪等鍵清單;base64url 不加 padding;回應的 body 與 error 互斥。
+**驗證工具的已知限制**:pycddl 0.6 在陣列內的 `.cbor` 會誤判 / panic、type choice 會誤接受,`verify.py` 以寬鬆版 CDDL 驗外層、逐一驗內層與各選項替代。
+**定稿前仍待**:`flynn/noise`(Go)交叉驗證、開發版(`-dev`)向量、608B 實機的 CheckMac 交叉驗證(B1)、Q1 / Q2 / Q3 / Q4 / Q6 / Q7 / Q8。
