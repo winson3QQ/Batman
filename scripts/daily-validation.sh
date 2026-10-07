@@ -181,7 +181,30 @@ isint() { case "$1" in ""|*[!0-9]*) return 1;; esac; }   # every reading is chec
 # ---- tier A: non-destructive, real ----
 # #216: resolve the OTS tenant dir — flash-and-go / #167 uses /opt/batdata/apps/opentakserver;
 # manually-provisioned nodes used /opt/batdata/deploy/ots. Prefer apps/, fall back to deploy/ots.
-chk_98()  { fssh "$1" 60 'd=/opt/batdata/apps/opentakserver; [ -f "$d/verify-profile-ots.sh" ] || d=/opt/batdata/deploy/ots; sh "$d/verify-profile-ots.sh"'; }   # inspects 9 axes ×6
+# confinement-98 inspects 9 axes x6. The wrapper exits 0 when nothing DRIFTs — also when containers were
+# UNKNOWN (skipped). Right for the #156 reconciler (never alarm on what it could not judge), wrong for a
+# test: six UNKNOWNs verify nothing and still exit 0 (#269). So the verdict comes from its summary line:
+# all six must be OK; UNKNOWN (mid-restart / too fresh) is retried, and still UNKNOWN = not verified = FAIL.
+OTS_CTR_N=6
+vp_ots_verdict() {   # stdin: wrapper output -> rc 0 all OK / 1 FAIL / 2 retry (UNKNOWN present)
+  local s ok dr un
+  s=$(sed -n 's/^verify-profile-ots: ok=\([0-9]*\) drift=\([0-9]*\) unknown=\([0-9]*\)$/\1 \2 \3/p' | tail -1)
+  read -r ok dr un <<< "$s"
+  { isint "$ok" && isint "$dr" && isint "$un"; } || { echo "FAIL no verify-profile-ots summary line — confinement not verified"; return 1; }
+  [ "$dr" = 0 ] || { echo "FAIL $dr container(s) DRIFT from their hardening profile"; return 1; }
+  [ "$un" = 0 ] || { echo "UNKNOWN $un container(s)"; return 2; }
+  [ "$ok" = "$OTS_CTR_N" ] || { echo "FAIL only $ok/$OTS_CTR_N containers judged OK"; return 1; }
+  echo "ok: $ok/$OTS_CTR_N containers match their hardening profile"; }
+chk_98() { local i o v rc
+  for i in 1 2 3; do
+    o=$(fssh "$1" 60 'd=/opt/batdata/apps/opentakserver; [ -f "$d/verify-profile-ots.sh" ] || d=/opt/batdata/deploy/ots; sh "$d/verify-profile-ots.sh"' 2>&1)
+    v=$(echo "$o" | vp_ots_verdict); rc=$?
+    [ "$rc" = 2 ] || break
+    echo "attempt $i: $v — retrying in 20 s"; sleep 20
+  done
+  echo "$o"
+  [ "$rc" = 2 ] && { echo "FAIL ${v#UNKNOWN } still UNKNOWN after 3 attempts — confinement not verified"; return 1; }
+  echo "$v"; return "$rc"; }
 chk_162() { fssh "$1" 30 '
   n=0; for c in opentakserver ots-db ots_cot_parser ots_eud_handler ots_eud_handler_ssl rabbitmq; do
     [ "$(docker inspect -f "{{.State.Running}}" "$c" 2>/dev/null)" = true ] && n=$((n+1)); done
@@ -191,11 +214,18 @@ chk_156() { fssh "$1" 45 '
   d=/opt/batdata/apps/opentakserver; [ -f "$d/verify-profile.sh" ] || d=/opt/batdata/deploy/ots   # #216: apps/ (flash-and-go) or deploy/ots
   [ -f "$d/verify-profile.sh" ] || { echo "verify-profile.sh not found in apps/ or deploy/ots"; exit 2; }   # do not let a missing file masquerade as DRIFT
   docker rm -f dv-decoy >/dev/null 2>&1
-  docker run -d --name dv-decoy --entrypoint sleep batman/ots:1.7.13-arm64 60 >/dev/null 2>&1 || { echo "decoy start failed"; exit 2; }
-  sleep 18   # clear verify-profile MIN_UPTIME=15 (else UNKNOWN, not DRIFT)
+  docker run -d --name dv-decoy --entrypoint sleep batman/ots:1.7.13-arm64 90 >/dev/null 2>&1 || { echo "FAIL decoy start failed"; exit 1; }
+  # clear verify-profile MIN_UPTIME=15 (else UNKNOWN, not DRIFT). DV_TEST_156_NOWAIT=1 = negative control:
+  # judge a too-fresh decoy, which must end as "not verified", never as a pass.
+  [ "'"${DV_TEST_156_NOWAIT:-0}"'" = 1 ] && w=0 || w=18; sleep $w
   sh "$d/verify-profile.sh" dv-decoy "$d/ots.hardening.env" >/tmp/dv-vp 2>&1; rc=$?
+  # UNKNOWN (3) = verify-profile could not judge (too fresh, inspect failed): retry once (#269)
+  [ "$rc" = 3 ] && [ "$w" != 0 ] && { sleep 10; sh "$d/verify-profile.sh" dv-decoy "$d/ots.hardening.env" >/tmp/dv-vp 2>&1; rc=$?; }
   docker rm -f dv-decoy >/dev/null 2>&1
-  echo "unhardened decoy -> verify-profile rc=$rc (want non-0 = DRIFT detected)"; [ "$rc" -ne 0 ]'; }
+  echo "unhardened decoy -> verify-profile rc=$rc (1 = DRIFT detected; 0 OK, 2 usage, 3 UNKNOWN are failures)"
+  # only DRIFT (1) proves the reconciler sees an unhardened container. `-ne 0` used to pass rc 2 and 3 (#269).
+  case $rc in 1) exit 0 ;; 3) echo "FAIL decoy UNKNOWN — DRIFT detection not verified"; tail -3 /tmp/dv-vp; exit 1 ;;
+    0) echo "FAIL unhardened decoy judged OK — DRIFT NOT detected"; exit 1 ;; *) echo "FAIL verify-profile rc=$rc (usage/error)"; tail -3 /tmp/dv-vp; exit 1 ;; esac'; }
 chk_167g() { fssh "$1" 20 '
   # OTS runs on the GENERIC payload manager (#167), not the bespoke run.sh/batman-ots: the generic
   # guardian owns it, the old guardian is gone (double-guardian regression), and drift reads OK.
