@@ -10,6 +10,12 @@
 #   IPERF_PEER   the OTHER node reached OVER THE MESH, iperf sink for the TCP suite  (unset => SKIP)
 #   AB_MODE      --inspect-only | --destructive | --skip   (default --inspect-only)
 #   ALLOW_SKIP   set to 1 to let a run with skipped suites still exit 0  (default 0)
+#   SOAK_MIN / SOAK_HTTP_IMAGE   release-gate load soak length (>= 30) and HTTP-tenant image (#268 B3)
+#   DV_TEST_NOREBOOT=1 / DV_TEST_FAKETIME_NOSAVE=1   negative controls: the reboot-based checks must FAIL
+#
+# Failures are reported in two groups: NEW, and KNOWN (every FAIL line matches an entry for that suite in
+# scripts/validation-known-failures.txt, with an open issue). Known failures still make the exit status 1.
+# A suite that could not test prints "SKIP-REASON: ..." and returns 3; rc 3 without that line is a FAIL.
 #
 # Every suite is one of PASS / FAIL / SKIP, and SKIP is reported as loudly as FAIL — including
 # in the EXIT STATUS. A run that quietly skipped everything because no hardware answered must
@@ -40,7 +46,7 @@ ROWS=()
 
 # Liveness by ssh, not ping: `ping -c1 -W2` is Linux-only (Windows/Git-Bash ping.exe rejects the
 # flags), and the suites all need ssh anyway — an ssh-up node is what they actually require (#133).
-up() { timeout 8 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "root@$1" true >/dev/null 2>&1; }
+up() { timeout 8 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=5 "root@$1" true >/dev/null 2>&1; }
 
 suite() {                       # $1 = name, $2 = why-it-matters, $3 = command ("" => skip)
   local name=$1 why=$2 cmd=$3 log="$DIR/$1.log" rc
@@ -50,9 +56,19 @@ suite() {                       # $1 = name, $2 = why-it-matters, $3 = command (
   local t0=$SECONDS
   { echo "# $(date -Is)"; echo "# $cmd"; eval "$cmd"; } > "$log" 2>&1; rc=$?
   local dt=$((SECONDS-t0))
-  if [ $rc -eq 0 ]; then NPASS=$((NPASS+1)); ROWS+=("| $name | PASS | ${dt}s — $why |"); echo "PASS  $name (${dt}s)"
-  else NFAIL=$((NFAIL+1)); ROWS+=("| $name | **FAIL** | ${dt}s — $why |"); echo "FAIL  $name (${dt}s)"; fi
+  # "could not test here" = rc 3 AND a harness-printed SKIP-REASON line (#268 K3). rc 3 alone is NOT a skip:
+  # remote tools use exit 3 themselves (verify-profile.sh UNKNOWN, batman-config-save), and swallowing that
+  # as a skip would hide a real failure.
+  if [ $rc -eq 3 ] && grep -q '^SKIP-REASON:' "$log"; then
+    local r; r=$(grep -m1 '^SKIP-REASON:' "$log" | cut -c14-)
+    NSKIP=$((NSKIP+1)); ROWS+=("| $name | SKIP | ${dt}s — could not test:$r — $why |"); echo "SKIP  $name (${dt}s):$r"
+  elif [ $rc -eq 0 ]; then NPASS=$((NPASS+1)); ROWS+=("| $name | PASS | ${dt}s — $why |"); echo "PASS  $name (${dt}s)"
+  else
+    [ $rc -eq 3 ] && echo "FAIL rc=3 without a SKIP-REASON line — treated as a failure, not a skip" >> "$log"
+    NFAIL=$((NFAIL+1)); FAILED+=("$name"); ROWS+=("| $name | **FAIL** | ${dt}s — $why |"); echo "FAIL  $name (${dt}s)"
+  fi
 }
+FAILED=()
 # N/A is NOT a skip: the suite does not apply to this node's SoC BY DESIGN (e.g. a Pi 4 bench has no
 # p7 firmware partition). It is listed with its reason, but it does not fail the run the way a SKIP
 # (= "should have been verified and was not") does. Only ever call it from a SoC check, and never for
@@ -65,7 +81,7 @@ na() {                          # $1 = name, $2 = reason
 # Empty = unreachable or unrecognised — callers must treat that as "run the suite" (it then fails
 # loudly), never as N/A.
 soc_of() {
-  timeout 15 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 "root@$1" \
+  timeout 15 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" \
     'case "$(cat /proc/device-tree/compatible 2>/dev/null)" in *bcm2711*) echo bcm2711;; *bcm2837*) echo bcm2710;; esac' 2>/dev/null | tr -d '\r'
 }
 
@@ -108,24 +124,28 @@ OTS_NODE=${OTS_NODE:-$MESH_NODE}          # the node carrying the OTS payload (a
 OTS_SOC=$(soc_of "$OTS_NODE")
 # OTS is a REQUIRED capability, so an OTS_NODE that is a Pi 3 is a misconfigured run, not "does not
 # apply": FAIL it loudly (an N/A here would make every OTS regression vanish from a green run).
+# One suite per case (#268 A9): a known R1 failure (#265) must not hide an F1/F2/R2 regression.
+fi_desc(){ case $1 in f2) echo "lost image recovered from the offline loaded/ copy";; f1) echo "bad image tar quarantined, guardian not wedged";;
+  r2) echo "first-loading tenant is non-gating (no false revert)";; r1) echo "docker-run-broken trial is not committed and reverts (known gap #265)";; esac; }
+fi_skip_all(){ local c; for c in f2 f1 r2 r1; do suite "fi-$c" "flash-and-go fault-injection $c (#159/#216) — $1" ""; done; }
 if [ "$OTS_SOC" = bcm2710 ]; then
   suite ots-node-209 "OTS_NODE must be the bcm2711 OTS host" "echo 'OTS_NODE $OTS_NODE is a Pi 3 (bcm2710); OTS is not shipped there (#209 D6). Set OTS_NODE to the Pi 4 OTS host.'; false"
-  suite fault-injection "OTS_NODE $OTS_NODE is bcm2710 — OTS suites not run (see ots-node-209)" ""
+  fi_skip_all "OTS_NODE $OTS_NODE is bcm2710 — OTS suites not run (see ots-node-209)"
 elif [ "$AB_MODE" != --destructive ]; then
-  suite fault-injection "flash-and-go fault-injection F1/F2/R2/R1 (#159/#216) — needs AB_MODE=--destructive" ""
+  fi_skip_all "needs AB_MODE=--destructive"
 elif up "$OTS_NODE"; then
-  suite fault-injection \
-    "flash-and-go fault-injection F1/F2/R2/R1 (#159/#216, DESTRUCTIVE)" \
-    "$REPO/scripts/fault-injection.sh $OTS_NODE --case all"
+  for c in f2 f1 r2 r1; do
+    suite "fi-$c" "fault-injection $c: $(fi_desc $c) (#159/#216, DESTRUCTIVE)" "$REPO/scripts/fault-injection.sh $OTS_NODE --case $c"
+  done
 else
-  suite fault-injection "flash-and-go fault-injection (#159/#216) — OTS_NODE $OTS_NODE did not answer" ""
+  fi_skip_all "OTS_NODE $OTS_NODE did not answer"
 fi
 
 # 4. Hardware: mesh health on a live node.
 if up "$MESH_NODE"; then
   suite meshtest \
     "six-layer mesh health on $MESH_NODE" \
-    "timeout 180 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 root@$MESH_NODE 'm=\$(command -v meshtest 2>/dev/null); [ -n \"\$m\" ] || m=/root/meshtest; [ -f \"\$m\" ] || m=/rom/root/meshtest; sh \"\$m\" -q'"
+    "timeout 180 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 root@$MESH_NODE 'm=\$(command -v meshtest 2>/dev/null); [ -n \"\$m\" ] || m=/root/meshtest; [ -f \"\$m\" ] || m=/rom/root/meshtest; sh \"\$m\" -q'"
 else
   suite meshtest "six-layer mesh health — MESH_NODE $MESH_NODE did not answer" ""
 fi
@@ -155,7 +175,8 @@ OTS_NODE=${OTS_NODE:-$MESH_NODE}          # the node carrying the OTS payload
 FEATURE_MODE=${FEATURE_MODE:---daily}     # --daily | --destructive (adds tier B)
 DNODE=${DESTRUCTIVE_NODE:-$OTS_NODE}      # tier-B target — MUST have ethernet
 
-fssh() { timeout "${2:-60}" ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 "root@$1" "$3"; }
+fssh() { timeout "${2:-60}" ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" "$3"; }
+isint() { case "$1" in ""|*[!0-9]*) return 1;; esac; }   # every reading is checked before it is compared (#268)
 
 # ---- tier A: non-destructive, real ----
 # #216: resolve the OTS tenant dir — flash-and-go / #167 uses /opt/batdata/apps/opentakserver;
@@ -441,6 +462,137 @@ chk_runc_247() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '   
   ( cd $d && runc spec >/dev/null 2>&1 && sed -i "s/\"terminal\": true/\"terminal\": false/; s/\"sh\"/\"\\/bin\\/busybox\",\"true\"/" config.json )
   o=$(cd $d && runc --debug run dv-runc247 </dev/null 2>&1); runc delete -f dv-runc247 >/dev/null 2>&1; rm -rf $d
   case "$o" in *"using overlayfs for sealed /proc/self/exe"*) echo "ok: runc $v, exe sealed via overlayfs" ;; *"could not use overlayfs"*) echo "exeseal fell back to copying the runc binary"; exit 1 ;; *) echo "no exeseal message from runc --debug run: $(echo "$o" | tail -2)"; exit 1 ;; esac' || rc=1; done; return $rc; }
+# #268 B1: the container stack regression from the #252/#247-2 dogfood, on every reachable node. The node
+# script only prints PASS/FAIL items; the EXPECTED COUNT lives here (#268 C2), so an item that silently
+# stops running shows up as a short count instead of a green run.
+LC_EXPECT=17
+chk_lifecycle() { local n rc=0 o p f; for n in "$@"; do echo "== $n"
+  o=$(timeout 300 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$n" sh -s < "$REPO/scripts/node/container-lifecycle.sh" 2>&1); r=$?
+  echo "$o"
+  p=$(echo "$o" | sed -n 's/^RESULT pass=\([0-9]*\) fail=\([0-9]*\)$/\1/p'); f=$(echo "$o" | sed -n 's/^RESULT pass=\([0-9]*\) fail=\([0-9]*\)$/\2/p')
+  if [ -z "$p" ] || [ -z "$f" ]; then echo "FAIL $n: no RESULT line (ssh rc=$r) — not verified"; rc=1
+  elif [ "$f" != 0 ] || [ "$p" != "$LC_EXPECT" ]; then echo "FAIL $n: pass=$p fail=$f (expected pass=$LC_EXPECT fail=0)"; rc=1
+  else echo "ok $n: $p/$LC_EXPECT"; fi
+done; return $rc; }
+# #268 C2: dockerd restart only on nodes WITHOUT tenant containers (decided by the node's actual state).
+# Not run anywhere = SKIP (with reason), never a silent pass.
+chk_dockerd_restart() { local n rc=0 ran=0 o r; for n in "$@"; do echo "== $n"
+  o=$(timeout 240 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$n" sh -s < "$REPO/scripts/node/dockerd-restart.sh" 2>&1); r=$?
+  echo "$o"
+  case $r in 0) ran=$((ran+1)) ;; 3) echo "$o" | grep -q '^SKIP-REASON:' || { echo "FAIL $n: rc=3 without SKIP-REASON"; rc=1; } ;; *) ran=$((ran+1)); echo "FAIL $n: dockerd restart (rc=$r)"; rc=1 ;; esac
+done
+[ "$rc" = 0 ] && [ "$ran" = 0 ] && { echo "SKIP-REASON: every node carries tenant containers — dockerd restart verified nowhere"; return 3; }
+return $rc; }
+
+# #268 B2 / #264: OTS CoT end to end — sent == stored, per phase, from a peer over the mesh. Each phase
+# is judged on its own: P1 (one event per write) and P2A (the complete event in the truncating write) are
+# CONTROLS that must arrive even with #264 unfixed — losing them is a NEW failure. P2B is the deterministic
+# #264 mechanism-A victim (OTS 1.7.13 drops every one); P3 is the coalesced-write case. #264 mechanism B
+# (AMQP heartbeat) needs >= 10 min and is NOT exercised here — only its log counters are reported.
+ots_sql() { timeout 60 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" 'docker exec -i ots-db psql -U ots -d ots -At' 2>&1; }
+ots_ctr() { fssh "$1" 15 'docker ps -q 2>/dev/null | wc -l' 2>/dev/null | tr -d ' \r'; }
+ots_logc() { fssh "$1" 30 'echo "$(docker exec ots_eud_handler sh -c "grep -c \"Failed to parse\" /app/ots/logs/eud_handler_tcp.log" 2>/dev/null) $(docker logs rabbitmq 2>&1 | grep -c "missed heartbeats") $(docker exec ots_eud_handler sh -c "grep -c \"channel is closed\" /app/ots/logs/eud_handler_tcp.log" 2>/dev/null)"' 2>/dev/null | tr -d '\r'; }
+chk_cot_264() { local ots=$1 peer=$2 run o c0 c1 l0 l1 rc=0 ph sent st prev i
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  c0=$(ots_ctr "$ots"); [ "$c0" = 6 ] || { echo "FAIL OTS not 6/6 before the test ($c0)"; return 1; }
+  run=DV$(date +%Y%m%d%H%M%S); echo "run id $run; generator $peer -> $ots:8088"
+  l0=$(ots_logc "$ots")
+  o=$(timeout 400 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run sh -s" < "$REPO/scripts/node/cot-e2e-gen.sh" 2>&1)
+  echo "$o"
+  # stored: poll until two consecutive identical totals (max 60 s)
+  prev=x; for i in $(seq 1 12); do st=$(echo "select count(*) from cot where uid like '$run-%';" | ots_sql "$ots"); [ "$st" = "$prev" ] && break; prev=$st; sleep 5; done
+  echo "stored total=$st"
+  for ph in P1 P2A P2B P3; do
+    sent=$(echo "$o" | sed -n "s/^SENT $ph \([0-9]*\)$/\1/p")
+    case $ph in P2A) pat="$run-P2-%A" ;; P2B) pat="$run-P2-%B" ;; *) pat="$run-$ph-%" ;; esac
+    st=$(echo "select count(*) from cot where uid like '$pat';" | ots_sql "$ots")
+    case "$sent$st" in ''|*[!0-9]*) echo "FAIL $ph: unreadable sent=[$sent] stored=[$st] — not verified"; rc=1; continue ;; esac
+    if [ "$st" = "$sent" ]; then echo "ok $ph: stored $st/$sent"
+    else echo "FAIL $ph lost $((sent-st))/$sent (stored $st)"; rc=1
+      case $ph in P1) u="'$run-P1-'||g" ;; P2A) u="'$run-P2-'||g||'A'" ;; P2B) u="'$run-P2-'||g||'B'" ;; *) u="" ;; esac
+      [ -n "$u" ] && [ "$sent" -gt 0 ] && echo "  missing seq: $(echo "select string_agg(g::text,' ') from generate_series(1,$sent) g where not exists (select 1 from cot where uid=$u);" | ots_sql "$ots")"
+    fi
+  done
+  echo "$o" | grep '^CONNLOST' | sed 's/^/FAIL CONNECTION-LOST /' && rc=1
+  l1=$(ots_logc "$ots"); echo "eud 'Failed to parse' / rabbit 'missed heartbeats' / eud 'channel is closed': before [$l0] after [$l1] (info; #264 mechanism B is not exercised by this suite)"
+  # cleanup in one transaction, then verify every related table is empty for this run
+  ots_sql "$ots" <<SQL
+begin; delete from euds where uid like '$run-%'; delete from cot where uid like '$run-%'; commit;
+SQL
+  o=$(ots_sql "$ots" <<SQL
+select (select count(*) from cot where uid like '$run-%' or sender_uid like '$run-%') + (select count(*) from euds where uid like '$run-%') + (select count(*) from points where uid like '$run-%' or device_uid like '$run-%');
+SQL
+)
+  [ "$o" = 0 ] && echo "cleanup ok (cot/euds/points = 0)" || { echo "FAIL cleanup: $o rows of run $run left behind"; rc=1; }
+  c1=$(ots_ctr "$ots"); [ "$c1" = 6 ] || { echo "FAIL OTS not 6/6 after the test ($c1)"; rc=1; }
+  return $rc; }
+# #268 B3: release-gate load soak (AB_MODE=--destructive only). All three nodes under real load at once for
+# SOAK_MIN (>= 30) minutes: an HTTP tenant on BENCH_NODE and MESH_NODE (GET locally and over the mesh), CoT
+# into the OTS. soak-run drives the load and records one sample per node per minute in $DIR/soak.samples;
+# the soak-* suites then judge it, one property each (one suite = one state).
+SOAK_MIN=${SOAK_MIN:-30}; SOAK_HTTP_IMAGE=${SOAK_HTTP_IMAGE:-meshtastic-cli:arm64}
+SOAK_RUN=""; SOAK_WEB=""
+soak_ssh() { local n=$1 vars=$2; timeout 60 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$n" "$vars sh -s" < "$REPO/scripts/node/soak-node.sh" 2>&1 | tr -d '\r'; }
+soak_nodes() { local n out=""; for n in "$BENCH_NODE" "$MESH_NODE" "$OTS_NODE"; do case " $out " in *" $n "*) ;; *) out="$out $n";; esac; done; echo $out; }
+chk_soak_run() { local n o dur rc=0 m peer other
+  [ "$SOAK_MIN" -ge 30 ] 2>/dev/null || { echo "FAIL SOAK_MIN=$SOAK_MIN < 30: the 10-min first/last windows would overlap and miss the heartbeat period"; return 1; }
+  dur=$(( (SOAK_MIN + 3) * 60 )); SOAK_RUN=DVS$(date +%Y%m%d%H%M%S); : > "$DIR/soak.samples"
+  echo "run $SOAK_RUN, ${SOAK_MIN} min + 2 min warm-up, nodes: $(soak_nodes)"
+  for n in "$BENCH_NODE" "$MESH_NODE"; do
+    o=$(soak_ssh "$n" "ROLE=web-up IMG=$SOAK_HTTP_IMAGE"); echo "$n: $o"
+    case "$(echo "$o" | tail -1)" in OK*) SOAK_WEB="$SOAK_WEB $n";; NOIMAGE*) ;; *) echo "FAIL $n: dv-web setup"; rc=1;; esac   # judge the role's last line (docker may print warnings first)
+  done
+  for n in $SOAK_WEB; do
+    o=$(soak_ssh "$n" "ROLE=httpgen TARGET=127.0.0.1 LABEL=local DUR=$dur"); echo "$n: $o"
+    for other in "$BENCH_NODE" "$MESH_NODE"; do [ "$other" = "$n" ] && continue
+      o=$(soak_ssh "$other" "ROLE=httpgen TARGET=$n LABEL=mesh DUR=$dur"); echo "$other -> $n: $o"; done
+  done
+  o=$(soak_ssh "$BENCH_NODE" "ROLE=cotgen TARGET=$OTS_NODE RUN=$SOAK_RUN DUR=$dur"); echo "$BENCH_NODE: $o"
+  for m in $(seq 0 $((SOAK_MIN + 2))); do
+    for n in $(soak_nodes); do o=$(soak_ssh "$n" ROLE=sample); echo "$m $n $o" >> "$DIR/soak.samples"; done
+    echo "$m $(grep "^$m " "$DIR/soak.samples" | cut -c1-200 | tr '\n' '|')"
+    sleep 55
+  done
+  sleep 20   # let cot_parser drain
+  echo "stored $(echo "select count(*) from cot where uid like '$SOAK_RUN-S-%';" | ots_sql "$OTS_NODE")" >> "$DIR/soak.samples"
+  ots_sql "$OTS_NODE" <<SQL >/dev/null
+begin; delete from euds where uid like '$SOAK_RUN-%'; delete from cot where uid like '$SOAK_RUN-%'; commit;
+SQL
+  o=$(echo "select count(*) from cot where uid like '$SOAK_RUN-%' or sender_uid like '$SOAK_RUN-%';" | ots_sql "$OTS_NODE")
+  [ "$o" = 0 ] && echo "cleanup ok" || { echo "FAIL cleanup: $o soak CoT rows left"; rc=1; }
+  for n in $(soak_nodes); do o=$(soak_ssh "$n" ROLE=down); echo "$n: $o"; case "$(echo "$o" | tail -1)" in OK*) ;; *) echo "FAIL cleanup on $n"; rc=1;; esac; done
+  return $rc; }
+# value of key $3 for node $2 at minute $1 from soak.samples ("" if absent)
+sv() { awk -v m="$1" -v n="$2" -v k="$3" '$1==m && $2==n { for (i=3;i<=NF;i++) { split($i,a,"="); if (a[1]==k) { print a[2]; exit } } }' "$DIR/soak.samples"; }
+savg() { local n=$1 k=$2 a=$3 b=$4 m s=0 c=0 v; for m in $(seq "$a" "$b"); do v=$(sv "$m" "$n" "$k"); isint "$v" && { s=$((s+v)); c=$((c+1)); }; done
+  [ "$c" -ge $(( (b-a+1) * 8 / 10 )) ] && echo $((s/c)); }   # >= 80% of the window must have been read
+chk_soak_mem() { local n k f l rc=0 last=$((SOAK_MIN + 2)); for n in $(soak_nodes); do for k in dockerd_kb containerd_kb shims_kb; do
+    f=$(savg "$n" "$k" 2 11); l=$(savg "$n" "$k" $((last-9)) "$last")
+    { [ -n "$f" ] && [ -n "$l" ]; } || { echo "FAIL $n $k: window unreadable (first=[$f] last=[$l]) — not verified"; rc=1; continue; }
+    if [ "$l" -le $(( f * 115 / 100 + 8192 )) ]; then echo "ok $n $k first10=$((f/1024))M last10=$((l/1024))M"
+    else echo "FAIL $n $k grew: first10=$((f/1024))M last10=$((l/1024))M (> x1.15 + 8M)"; rc=1; fi
+  done; done; return $rc; }
+chk_soak_avail() { local n m v base mn rc=0; for n in $(soak_nodes); do base=$(sv 2 "$n" avail_kb); mn=""
+    isint "$base" || { echo "FAIL $n baseline MemAvailable unreadable — not verified"; rc=1; continue; }
+    for m in $(seq 2 $((SOAK_MIN + 2))); do v=$(sv "$m" "$n" avail_kb); isint "$v" && { [ -z "$mn" ] || [ "$v" -lt "$mn" ]; } && mn=$v; done
+    if [ "$mn" -ge $(( base * 85 / 100 )) ]; then echo "ok $n MemAvailable base=$((base/1024))M min=$((mn/1024))M"
+    else echo "FAIL $n MemAvailable fell to $((mn/1024))M (< 85% of $((base/1024))M)"; rc=1; fi; done; return $rc; }
+chk_soak_ctr() { local n k a b rc=0 last=$((SOAK_MIN + 2)); for n in $(soak_nodes); do for k in restarts oom_kill; do
+    a=$(sv 2 "$n" $k); b=$(sv "$last" "$n" $k)
+    { isint "$a" && isint "$b"; } || { echo "FAIL $n $k unreadable [$a] [$b] — not verified"; rc=1; continue; }
+    [ "$b" = "$a" ] && echo "ok $n $k $a -> $b" || { echo "FAIL $n $k $a -> $b"; rc=1; }; done; done; return $rc; }
+chk_soak_http() { local lab=$1 n o f rc=0 last=$((SOAK_MIN + 2)) any=0; for n in $(soak_nodes); do
+    o=$(sv "$last" "$n" "http_${lab}_ok"); f=$(sv "$last" "$n" "http_${lab}_fail"); [ -z "$o$f" ] && continue; any=1
+    { isint "$o" && isint "$f"; } || { echo "FAIL $n http $lab unreadable — not verified"; rc=1; continue; }
+    [ "$f" = 0 ] && [ "$o" -gt 0 ] && echo "ok $n http $lab ok=$o fail=0" || { echo "FAIL $n http $lab ok=$o fail=$f"; rc=1; }; done
+  [ "$any" = 0 ] && { echo "SKIP-REASON: no node ran the $lab HTTP generator (no '$SOAK_HTTP_IMAGE' image on BENCH/MESH: tenants started on [${SOAK_WEB# }])"; return 3; }
+  [ "$lab" = local ] && for n in "$BENCH_NODE" "$MESH_NODE"; do case " $SOAK_WEB " in *" $n "*) ;; *) echo "info: $n had no '$SOAK_HTTP_IMAGE' image — its HTTP tenant was not loaded";; esac; done
+  return $rc; }
+chk_soak_cot() { local sent st rc re
+  sent=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_sent); re=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_reconn); st=$(sed -n 's/^stored //p' "$DIR/soak.samples")
+  { isint "$sent" && isint "$st"; } || { echo "FAIL CoT counters unreadable sent=[$sent] stored=[$st] — not verified"; return 1; }
+  echo "CoT sent=$sent stored=$st reconnects=$re"
+  [ "$st" = "$sent" ] || { echo "FAIL CoT lost $((sent-st))/$sent"; return 1; }; }
 chk_130() { fssh "$1" 20 '
   st=$(/usr/bin/halow-status json 2>/dev/null | sed -n "s/.*\"join\":{\"state\":\"\([A-Za-z_]*\)\".*/\1/p" | head -1)
   p=$(batctl n 2>/dev/null | grep -c wlh0)
@@ -491,7 +643,7 @@ chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash
   echo "firstload enabled; offline copies present; canary runs; autocommit gate ok"'; }
 
 if [ "$OTS_SOC" = bcm2710 ]; then
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden flashgo-159; do
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden flashgo-159 ots-cot-e2e-264; do
     suite "$s" "OTS_NODE $OTS_NODE is bcm2710 — not run (see ots-node-209)" ""
   done
 elif up "$OTS_NODE"; then
@@ -502,8 +654,9 @@ elif up "$OTS_NODE"; then
   suite arbiter-167      "port/zone arbiter REFUSES a colliding tenant (#167, white-box)"      "chk_167a $OTS_NODE"
   suite payload-config-golden "p6 tenant config == baked golden + unless-stopped + images present (payload-config-golden.md)" "chk_golden $OTS_NODE"
   suite flashgo-159      "flash-and-go integrity — firstload enabled, offline copies (F2), canary runs, autocommit gate (#159/#216)" "chk_flashgo $OTS_NODE"
+  suite ots-cot-e2e-264  "CoT sent == stored per phase from $BENCH_NODE: P1 control, P2 deterministic truncation (A control / B #264-A), P3 burst; heartbeat (#264-B) NOT exercised (#268 B2)" "chk_cot_264 $OTS_NODE $BENCH_NODE"
 else
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden flashgo-159; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden flashgo-159 ots-cot-e2e-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"
@@ -513,6 +666,8 @@ if up "$MESH_NODE"; then
   suite batman-ver-247 "mesh core = routing openwrt-24.10 batman-adv 2024.3-r>=13, loaded == installed, NC compiled out, on: $BV_NODES (#247)" "chk_batver_247 $BV_NODES"
   suite go-toolchain-252 "docker/dockerd/containerd/runc built by the same Go as openmanetd, >= go1.23, on: $BV_NODES (#252)" "chk_go_252 $BV_NODES"
   suite runc-cve-247 "runc >= 1.3.6 (container-escape CVEs) and /proc/self/exe sealed via overlayfs, on: $BV_NODES (#247-2)" "chk_runc_247 $BV_NODES"
+  suite container-lifecycle-247 "container stack: limits, exec, OOM containment, restart policy, exeseal, tty, cp, logs -f, healthcheck, pids, runc features, CRI off — $LC_EXPECT items each, on: $BV_NODES (#268 B1)" "chk_lifecycle $BV_NODES"
+  suite dockerd-restart-247 "dockerd restarts with a live container and runs containers again — only on nodes without tenants, on: $BV_NODES (#268 C2)" "chk_dockerd_restart $BV_NODES"
   suite mesh-console-14 "/cgi-bin/mesh aggregate agrees with batctl (#14)"                   "chk_14 $MESH_NODE"
   suite p5-seed-202      "a JOINED node auto-seeds p5 (radio delta), decoupled from lockdown (#202)" "chk_202 $MESH_NODE"
   suite mesh-tput        "sustained mesh throughput to peer (median of N batctl tp; baseline soak median ~9.4 Mbps)" "chk_tput $MESH_NODE"
@@ -522,7 +677,7 @@ if up "$MESH_NODE"; then
     suite mesh-tput-iperf "IPERF_PEER '$IPERF_PEER' unusable (unset / == MESH_NODE / down) — set IPERF_PEER to the other mesh node" ""
   fi
 else
-  for s in field-status-130 meshjoin-209 batman-ver-247 go-toolchain-252 runc-cve-247 mesh-console-14 p5-seed-202 mesh-tput mesh-tput-iperf; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
+  for s in field-status-130 meshjoin-209 batman-ver-247 go-toolchain-252 runc-cve-247 container-lifecycle-247 dockerd-restart-247 mesh-console-14 p5-seed-202 mesh-tput mesh-tput-iperf; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
 fi
 
 # A/B commit hygiene (#211): a completed reflash must not leave the node an uncommitted trial (a reboot
@@ -563,79 +718,138 @@ dwait() {   # $1 node, wait until ssh answers with a boot_id, up to $2 s
     sleep 8; t=$((t+8))
   done; return 1
 }
-bchk_174() {   # clock forward-only: reboot, assert faketime restored the clock forward (not back to 2025)
-  fssh "$1" 15 '[ -f /etc/init.d/batman-faketime ]' || { echo "faketime not installed"; return 1; }
-  fssh "$1" 15 'reboot' >/dev/null 2>&1; sleep 20; dwait "$1" 220 || return 1
-  local yr; yr=$(fssh "$1" 12 'date -u +%Y' | tr -d " ")
-  echo "post-reboot year=$yr (want >=2026 = faketime restored forward)"; [ -n "$yr" ] && [ "$yr" -ge 2026 ]; }
+bootid() { fssh "$1" 10 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null | tr -d ' \r'; }
+# Every reboot-based check must PROVE the node rebooted (#268 A8/K1): a `reboot` lost to a mesh blip leaves
+# the node up, dwait returns at once, and the post-check then reads the untouched state as a pass.
+# DV_TEST_NOREBOOT=1 replaces the reboot with `true` — the negative control for exactly that failure.
+reboot_and_wait() {   # $1 node, $2 the command that reboots it (default: reboot), $3 dwait budget s
+  local n=$1 cmd=${2:-reboot} max=${3:-220} b0 b1
+  b0=$(bootid "$n"); [ -n "$b0" ] || { echo "FAIL boot_id unreadable before the reboot — not verified"; return 1; }
+  [ "${DV_TEST_NOREBOOT:-0}" = 1 ] && cmd=true
+  fssh "$n" 15 "$cmd" >/dev/null 2>&1; sleep 20
+  dwait "$n" "$max" || { echo "FAIL node did not come back within ${max}s"; return 1; }
+  b1=$(bootid "$n")
+  [ -n "$b1" ] && [ "$b1" != "$b0" ] || { echo "FAIL reboot did not happen (boot_id $b0 -> ${b1:-unreadable})"; return 1; }
+  echo "rebooted: boot_id $b0 -> $b1"; }
+
+bchk_174() {   # #174 faketime: the offline clock only moves forward across a reboot (#268 A6 — checks the MECHANISM)
+  # 1 the shutdown save happened: the saved bound S >= the clock T0 read just before the reboot (save is
+  #   forward-only, so it has to be read back, not assumed); 2 the boot restore happened: the clock T1
+  #   after boot >= S; 3 the reboot happened (boot_id). Not judged: whether the clock is RIGHT — with no
+  #   time source it cannot be (#174 is a monotonic lower bound); T0 >= 2026 is printed as info only.
+  # Not checked via logread: restore runs at START=12, before logd, so its log line may never be seen.
+  # DV_TEST_FAKETIME_NOSAVE=1: remove the K09 stop link for this reboot (negative control: check 1 must FAIL).
+  local n=$1 t0 s t1 rc=0
+  fssh "$n" 15 '[ -x /usr/sbin/batman-faketime ] && [ -f /etc/init.d/batman-faketime ]' || { echo "FAIL faketime not installed"; return 1; }
+  t0=$(fssh "$n" 10 'date +%s' | tr -d ' \r'); isint "$t0" || { echo "FAIL T0 unreadable"; return 1; }
+  if [ "${DV_TEST_FAKETIME_NOSAVE:-0}" = 1 ]; then
+    fssh "$n" 10 'l=$(ls /etc/rc.d/K*batman-faketime 2>/dev/null); [ -n "$l" ] && mv "$l" /tmp/dv-faketime-klink && echo "$l" > /tmp/dv-faketime-klink.name'
+    echo "NEGATIVE CONTROL: shutdown save link removed for this reboot"
+  fi
+  reboot_and_wait "$n" reboot 240 || rc=1
+  if [ "${DV_TEST_FAKETIME_NOSAVE:-0}" = 1 ]; then   # the link lives on the overlay: put it back
+    fssh "$n" 10 'cd /etc/rc.d && ln -sf ../init.d/batman-faketime K09batman-faketime && ls -l K09batman-faketime' || echo "FAIL could not restore /etc/rc.d/K09batman-faketime"
+  fi
+  [ "$rc" = 0 ] || return 1
+  s=$(fssh "$n" 10 'cat /opt/batdata/.faketime 2>/dev/null' | tr -d ' \r'); t1=$(fssh "$n" 10 'date +%s' | tr -d ' \r')
+  isint "$s" && isint "$t1" || { echo "FAIL saved bound [$s] or T1 [$t1] unreadable — not verified"; return 1; }
+  echo "T0=$t0 ($(date -u -d @$t0 +%FT%TZ 2>/dev/null))  saved=$s  T1=$t1 ($(date -u -d @$t1 +%FT%TZ 2>/dev/null))  had-real-time=$([ "$t0" -ge 1767225600 ] && echo yes || echo no)"
+  [ "$s" -ge "$t0" ] || { echo "FAIL shutdown save did not happen: saved bound $s < pre-reboot clock $t0"; rc=1; }
+  [ "$t1" -ge "$s" ] || { echo "FAIL boot restore did not happen: clock $t1 < saved bound $s"; rc=1; }
+  return $rc; }
+
 bchk_192() {   # clear the guardian from the overlay (as an A/B flash does), reboot, assert it auto-returns
   # #167 renamed the OTS guardian batman-ots -> batman-payload-opentakserver (generic payload manager);
-  # match any tenant guardian batman-payload-* so this stays tenant-agnostic.
-  fssh "$1" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1' || { echo "no guardian to test"; return 2; }
+  # match any tenant guardian batman-payload-* so this stays tenant-agnostic. Only called on a bcm2711
+  # DNODE (a Pi 3 carries no tenant by design -> N/A at the call site); a Pi 4 without one is BROKEN.
+  fssh "$1" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1' || { echo "FAIL no guardian on this Pi 4 (expected batman-payload-*)"; return 1; }
   fssh "$1" 15 'rm -f /etc/init.d/batman-payload-* /etc/rc.d/S*batman-payload-*' >/dev/null 2>&1
-  fssh "$1" 15 'reboot' >/dev/null 2>&1; sleep 20; dwait "$1" 240 || return 1
+  reboot_and_wait "$1" reboot 240 || return 1
   sleep 30   # batdata-mount restore + guardian start
-  local r; r=$(fssh "$1" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1 && pgrep -f batman-payload >/dev/null && echo yes || echo no' | tr -d " ")
+  local r; r=$(fssh "$1" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1 && pgrep -f batman-payload >/dev/null && echo yes || echo no' | tr -d " \r")
   echo "guardian auto-restored after overlay-clear+reboot: $r"; [ "$r" = yes ]; }
+
 bchk_173() {   # force a real kernel panic; assert the ramoops backend captured it AND boot-reason classified PANIC (#173/#61)
   # the backend must be the correctly-reg'd ramoops-pi4 (the #173 fix). With a bare `dtoverlay=ramoops` (2-cell
   # reg, invalid on arm64 bcm2711) or on HW that cannot preserve the reserved region, pstore never registers a
   # backend and the panic is silently lost — which is exactly the regression this guards. Precondition-checked so
   # a node missing the fix FAILs loudly instead of the test passing on a node that captured nothing.
   fssh "$1" 12 'dmesg | grep -q "Registered ramoops as persistent store backend"' \
-    || { echo "ramoops backend NOT registered — pstore capture inactive (#173 fix missing, or HW cannot preserve the region)"; return 1; }
-  local before; before=$(fssh "$1" 12 'ls /opt/batdata/crash/*_dmesg-ramoops-* 2>/dev/null | wc -l' | tr -d " ")
-  fssh "$1" 12 'echo 1 > /proc/sys/kernel/sysrq; sync; echo c > /proc/sysrq-trigger' >/dev/null 2>&1   # real kernel panic
-  sleep 20; dwait "$1" 240 || return 1
+    || { echo "FAIL ramoops backend NOT registered — pstore capture inactive (#173 fix missing, or HW cannot preserve the region)"; return 1; }
+  local before after reason
+  before=$(fssh "$1" 12 'ls /opt/batdata/crash/*_dmesg-ramoops-* 2>/dev/null | wc -l' | tr -d " \r")
+  isint "$before" || { echo "FAIL crash record count unreadable before the panic"; return 1; }
+  reboot_and_wait "$1" 'echo 1 > /proc/sys/kernel/sysrq; sync; echo c > /proc/sysrq-trigger' 240 || return 1
   sleep 8   # 95-batman-storage moves pstore records -> crash/ and writes boot-reasons.log at first boot
-  local after reason
-  after=$(fssh "$1" 12 'ls /opt/batdata/crash/*_dmesg-ramoops-* 2>/dev/null | wc -l' | tr -d " ")
+  after=$(fssh "$1" 12 'ls /opt/batdata/crash/*_dmesg-ramoops-* 2>/dev/null | wc -l' | tr -d " \r")
   reason=$(fssh "$1" 12 'tail -1 /opt/batdata/log/boot-reasons.log 2>/dev/null')
-  echo "dmesg-ramoops records ${before:-?} -> ${after:-?}; last boot-reason: $reason"
-  [ -n "$after" ] && [ "${after:-0}" -gt "${before:-0}" ] && echo "$reason" | grep -q 'prev=PANIC'; }
+  echo "dmesg-ramoops records $before -> ${after:-unreadable}; last boot-reason: $reason"
+  isint "$after" || { echo "FAIL crash record count unreadable after the panic — not verified"; return 1; }
+  [ "$after" -gt "$before" ] || { echo "FAIL no new pstore record"; return 1; }
+  echo "$reason" | grep -q 'prev=PANIC' || { echo "FAIL boot-reason did not classify the panic"; return 1; }; }
 
 bchk_rejoin_245() {   # DNODE leaves+rejoins the mesh; assert peers never kernel-panic (#245) and DNODE never hangs (#246)
   # #245: mm6108 rate-control read a freed/NULL STA table on TX-status when a mesh peer (re)joined -> peer Oops/panic.
   # #246: batman-adv 2025.4 ELP worker vs cancel_delayed_work_sync rtnl deadlock when a hard iface left bat0 -> mover
   #       network config hangs (no plain-reboot recovery). `wifi down/up` exercises BOTH in one test: the down path
   #       hits #246 on the mover, the up path hits #245 on the peers. An unpatched build fails within ~2 cycles.
-  local mover=$1 N=${REJOIN_CYCLES:-3} i v t pl
-  local victims=() base=()
+  # #268 A1/A7: every peer reading must be a number (unreadable = FAIL, never 0); a peer that rebooted during the
+  # test (boot_id changed: panic, or a hang -> watchdog) FAILs even if its PANIC count did not move; and the
+  # mover must have rejoined the mesh before we decide nobody is reachable (it may be the operator's only bridge).
+  local mover=$1 N=${REJOIN_CYCLES:-3} i v t pl idx a b ba bb
+  local victims=() base=() boots=() cand=()
   for v in "$BENCH_NODE" "$MESH_NODE" "$OTS_NODE"; do
-    [ "$v" = "$mover" ] && continue
-    case " ${victims[*]} " in *" $v "*) continue;; esac
-    up "$v" && victims+=("$v")
+    [ "$v" = "$mover" ] && continue; case " ${cand[*]} " in *" $v "*) continue;; esac; cand+=("$v"); done
+  t=0; pl=0
+  while [ "$t" -lt 240 ]; do
+    pl=$(fssh "$mover" 10 'iw dev wlh0 station dump 2>/dev/null | grep -c "mesh plink:.*ESTAB"' | tr -d ' \r')
+    isint "$pl" && [ "$pl" -ge 1 ] && break; sleep 10; t=$((t+10))
   done
-  [ "${#victims[@]}" -ge 1 ] || { echo "no reachable peer besides mover $mover"; return 2; }
-  fssh "$mover" 12 '[ "$(cat /sys/class/net/wlh0/operstate 2>/dev/null)" = up ]' || { echo "mover $mover wlh0 not up at start"; return 1; }
-  for v in "${victims[@]}"; do base+=("$(fssh "$v" 12 'grep -c prev=PANIC /opt/batdata/log/boot-reasons.log 2>/dev/null' | tr -d ' ')"); done
+  isint "$pl" && [ "$pl" -ge 1 ] || { echo "FAIL mover $mover has no ESTAB mesh peer after 240 s (plink=${pl:-unreadable}) — it did not (re)join the mesh"; return 1; }
+  for v in "${cand[@]}"; do dwait "$v" 240 && victims+=("$v") || echo "info: peer $v not reachable from this host (mover has $pl plink)"; done
+  [ "${#victims[@]}" -ge 1 ] || { echo "SKIP-REASON: mover $mover is in the mesh ($pl plink) but no peer is reachable from this host"; return 3; }
+  fssh "$mover" 12 '[ "$(cat /sys/class/net/wlh0/operstate 2>/dev/null)" = up ]' || { echo "FAIL mover $mover wlh0 not up at start"; return 1; }
+  for v in "${victims[@]}"; do
+    b=$(fssh "$v" 12 'grep -c prev=PANIC /opt/batdata/log/boot-reasons.log 2>/dev/null' | tr -d ' \r'); bb=$(bootid "$v")
+    isint "$b" && [ -n "$bb" ] || { echo "FAIL peer $v baseline unreadable (PANIC=[$b] boot_id=[$bb]) — not verified"; return 1; }
+    base+=("$b"); boots+=("$bb")
+  done
   local nv=${#victims[@]}
   for i in $(seq 1 "$N"); do
     fssh "$mover" 25 'wifi down radio1; sleep 45; wifi up radio1' >/dev/null 2>&1
     t=0; pl=0
     while [ "$t" -lt 180 ]; do
-      pl=$(fssh "$mover" 10 'iw dev wlh0 station dump 2>/dev/null | grep -c "mesh plink:.*ESTAB"' | tr -d ' ')
-      [ "${pl:-0}" -ge "$nv" ] && break; sleep 10; t=$((t+10))
+      pl=$(fssh "$mover" 10 'iw dev wlh0 station dump 2>/dev/null | grep -c "mesh plink:.*ESTAB"' | tr -d ' \r')
+      isint "$pl" && [ "$pl" -ge "$nv" ] && break; sleep 10; t=$((t+10))
     done
-    [ "${pl:-0}" -ge "$nv" ] || { echo "cycle $i/$N: mover $mover did not rejoin $nv peers in 180s (plink=${pl:-0}) — likely #246 rtnl hang"; return 1; }
+    isint "$pl" && [ "$pl" -ge "$nv" ] || { echo "FAIL cycle $i/$N: mover $mover did not rejoin $nv peers in 180s (plink=${pl:-unreadable}) — likely #246 rtnl hang"; return 1; }
     sleep 15   # let a panicking peer reboot far enough to bump its boot-reasons PANIC count
   done
-  local bad=0 idx a b
+  local bad=0
   for idx in "${!victims[@]}"; do
-    v=${victims[$idx]}; b=${base[$idx]}
-    a=$(fssh "$v" 12 'grep -c prev=PANIC /opt/batdata/log/boot-reasons.log 2>/dev/null' | tr -d ' ')
-    echo "peer $v PANIC ${b:-?} -> ${a:-?}"
-    [ "${a:-0}" -gt "${b:-0}" ] && bad=1
+    v=${victims[$idx]}; b=${base[$idx]}; bb=${boots[$idx]}
+    dwait "$v" 240 >/dev/null
+    a=$(fssh "$v" 12 'grep -c prev=PANIC /opt/batdata/log/boot-reasons.log 2>/dev/null' | tr -d ' \r'); ba=$(bootid "$v")
+    if ! isint "$a" || [ -z "$ba" ]; then echo "FAIL peer $v unreadable after the test (PANIC=[$a] boot_id=[$ba]) — not verified"; bad=1; continue; fi
+    echo "peer $v PANIC $b -> $a, boot_id $bb -> $ba"
+    [ "$a" -gt "$b" ] && { echo "FAIL peer $v panicked during the rejoin cycles"; bad=1; }
+    [ "$ba" != "$bb" ] && { echo "FAIL peer $v rebooted during the rejoin cycles (boot_id changed)"; bad=1; }
   done
   echo "$N leave/rejoin cycles, $nv peer(s), mover $mover back each time"
   [ "$bad" = 0 ]; }
 
 if [ "$FEATURE_MODE" = --destructive ]; then
   if fssh "$DNODE" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
-    suite faketime-174 "clock survives a reboot forward, not back to 2025 (#174, destructive)"        "bchk_174 $DNODE"
-    suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE"
-    suite ramoops-173  "kernel panic captured to pstore and classified PANIC (#173/#61, destructive)"  "bchk_173 $DNODE"
+    # rejoin FIRST (#268 A7): the three below reboot DNODE, and a just-rebooted DNODE may be the host's only
+    # way into the mesh. Tier A never reboots DNODE.
     suite rejoin-245-246 "mesh peer (re)join does not panic peers (#245) and the leaver does not rtnl-hang (#246), destructive" "bchk_rejoin_245 $DNODE"
+    suite faketime-174 "offline clock moves only forward across a reboot: shutdown save + boot restore happened (#174, destructive)" "bchk_174 $DNODE"
+    if [ "$(soc_of "$DNODE")" = bcm2710 ]; then
+      na guardian-192 "DNODE $DNODE is a Pi 3: it carries no tenant/guardian by design (#209 D6)"
+    else
+      suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE"
+    fi
+    suite ramoops-173  "kernel panic captured to pstore and classified PANIC (#173/#61, destructive)"  "bchk_173 $DNODE"
     # NOT reboot-testable — validated by other means (a supervised run on manet01 proved this the hard way):
     #  #137 LOCKED path: the lockdown gate lives in the 96-batman-config-migrate UCI-DEFAULT, which runs
     #    ONLY on a FRESH SLOT firstboot, never on a plain reboot — so a reboot-based test cannot trigger it
@@ -651,6 +865,61 @@ if [ "$FEATURE_MODE" = --destructive ]; then
   fi
 fi
 
+# ---- release-gate load soak (#268 B3) ----
+# Tier B just rebooted (and panicked) DNODE, which may be the host's only way into the mesh: wait for every
+# soak node to answer again before deciding it is unavailable (2026-10-07: an `up` right after ramoops-173
+# found 03 still booting and skipped the whole soak).
+soak_ready() { local n miss=""; for n in $(soak_nodes); do dwait "$n" 300 || miss="$miss $n"; done; SOAK_MISS=${miss# }; [ -z "$miss" ]; }
+SOAK_MISS=""
+if [ "$AB_MODE" != --destructive ]; then
+  suite load-soak "${SOAK_MIN}-min three-node load soak (daemon memory, MemAvailable, restarts/OOM, HTTP, CoT) — release gate, needs AB_MODE=--destructive" ""
+elif [ "$BENCH_NODE" = "$OTS_NODE" ]; then
+  suite load-soak "load soak (#268 B3) — BENCH_NODE == OTS_NODE: the CoT generator must be a different node" ""
+elif ! soak_ready; then
+  suite load-soak "load soak (#268 B3) — node(s) [$SOAK_MISS] did not answer within 300 s" ""
+else
+  suite soak-run        "${SOAK_MIN}-min load on $(soak_nodes): HTTP tenant + GETs local/mesh, CoT 5/s into OTS; setup and cleanup must succeed (#268 B3)" "chk_soak_run"
+  suite soak-daemon-mem "dockerd/containerd/shims RSS: last 10 min <= first 10 min x1.15 + 8 MB, every node (leak)" "chk_soak_mem"
+  suite soak-memavail   "MemAvailable never below 85% of the post-warm-up baseline, every node" "chk_soak_avail"
+  suite soak-containers "no container restart and no cgroup oom_kill during the soak, every node" "chk_soak_ctr"
+  suite soak-http-local "HTTP tenant answered every local GET (container stack)" "chk_soak_http local"
+  suite soak-http-mesh  "HTTP tenant answered every GET over the mesh (container + radio; judged separately)" "chk_soak_http mesh"
+  suite soak-cot-264    "CoT sent == stored over the soak (#264 mechanisms A and B both in play)" "chk_soak_cot"
+fi
+
+# ---- NEW vs KNOWN failures (#268 C1) ----------------------------------------------------------------
+# A failed suite is KNOWN only if every "FAIL ..." line in its log matches a pattern listed for it in
+# scripts/validation-known-failures.txt. No FAIL lines (a free-form check) = NEW. These can never be known,
+# whatever the list says: a node left degraded, a cleanup that failed, a dropped connection, a reboot that
+# did not happen, anything unreadable. The exit status is NOT affected — a known failure is still a failure.
+KNOWN_FILE="$REPO/scripts/validation-known-failures.txt"
+NEVER_KNOWN='restore|cleanup|CONNECTION-LOST|CONNLOST|reboot did not happen|unreadable|not verified|rc=3 without'
+NEWF=(); KNOWNF=()
+classify() {   # $1 suite -> echoes "known <issues>" or "new <why>"
+  local s=$1 log="$DIR/$1.log" line pat iss hit issues="" st ks
+  local lines; lines=$(grep -E '^[[:space:]]*FAIL ' "$log" 2>/dev/null | sed 's/^[[:space:]]*//')
+  [ -n "$lines" ] || { echo "new (no FAIL lines to match)"; return; }
+  while IFS= read -r line; do
+    echo "$line" | grep -qE "$NEVER_KNOWN" && { echo "new (never-known failure: $line)"; return; }
+    hit=""
+    while IFS=$'\t' read -r ks pat iss; do
+      case "$ks" in ''|'#'*) continue;; esac
+      [ "$ks" = "$s" ] && [ -n "$iss" ] && echo "$line" | grep -qE -- "$pat" && { hit=$iss; break; }
+    done < "$KNOWN_FILE"
+    [ -n "$hit" ] || { echo "new (unmatched: $line)"; return; }
+    case " $issues " in *" #$hit "*) ;; *) issues="$issues #$hit";; esac
+  done <<< "$lines"
+  if command -v gh >/dev/null 2>&1; then
+    for iss in $issues; do st=$(gh issue view "${iss#\#}" -R winson3QQ/Batman --json state --jq .state 2>/dev/null)
+      [ "$st" = CLOSED ] && { echo "new (matches $iss, but $iss is CLOSED)"; return; }
+      [ -z "$st" ] && issues="$issues(state?)"; done
+  else issues="$issues (issue state not checked: no gh)"; fi
+  echo "known$issues"; }
+for s in "${FAILED[@]}"; do
+  c=$(classify "$s")
+  case "$c" in known*) KNOWNF+=("| $s | ${c#known } |");; *) NEWF+=("| $s | ${c#new } |");; esac
+done
+
 {
   echo "# Batman daily validation — $(date -Is)"
   echo
@@ -660,6 +929,13 @@ fi
   echo "|---|---|---|"
   printf '%s\n' "${ROWS[@]}"
   echo
+  if [ "${#FAILED[@]}" -gt 0 ]; then
+    echo "## FAIL — NEW (${#NEWF[@]})"; echo
+    if [ "${#NEWF[@]}" -gt 0 ]; then echo "| suite | why it is new |"; echo "|---|---|"; printf '%s\n' "${NEWF[@]}"; else echo "(none)"; fi
+    echo; echo "## FAIL — known, tracked (${#KNOWNF[@]}) — still failures; the exit status counts them"; echo
+    if [ "${#KNOWNF[@]}" -gt 0 ]; then echo "| suite | issue |"; echo "|---|---|"; printf '%s\n' "${KNOWNF[@]}"; else echo "(none)"; fi
+    echo
+  fi
   echo "Host: \`$(hostname)\`  ·  bench: \`$BENCH_NODE\` (\`$AB_MODE\`)  ·  mesh: \`$MESH_NODE\`"
   echo "Repo: \`$(cd "$REPO" && git rev-parse --short HEAD 2>/dev/null)\` on \`$(cd "$REPO" && git rev-parse --abbrev-ref HEAD 2>/dev/null)\`"
   echo
