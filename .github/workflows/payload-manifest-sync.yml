@@ -23,6 +23,8 @@ on:
       - 'feed/batman-payload-host/Makefile'
       - 'deploy/payload-host-packages.txt'
       - 'scripts/check-payload-host-sync.sh'
+      - 'deploy/ots/patches/**'     # #264 overlay: pinned upstream + patch == shipped file, offline tests
+      - 'feed/batman-provision/files/usr/bin/payload-run'
   push:
     branches: [main]
     paths:
@@ -32,6 +34,7 @@ on:
       - 'deploy/**/*.fw4.uci'
       - 'scripts/profile-to-manifest.py'
       - 'scripts/profile-to-fw4.py'
+      - 'deploy/ots/patches/**'
 jobs:
   sync:
     runs-on: ubuntu-latest

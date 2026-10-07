@@ -168,6 +168,8 @@ define Package/batman-payload-ots/install
 	$(INSTALL_DATA) ../../deploy/ots/ots.hardening.env                  $(1)/usr/share/batman/payload-golden/opentakserver/ots.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq.hardening.env             $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq-extra.conf                $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq-extra.conf
+	# #264: patched eud_handler, bind-mounted ro by the manifest (GPL-3.0-or-later, deploy/ots/patches/README.md)
+	$(INSTALL_DATA) ../../deploy/ots/patches/EudHandler-264.py          $(1)/usr/share/batman/payload-golden/opentakserver/EudHandler-264.py
 endef
 
 $(eval $(call BuildPackage,batman-payload-host))

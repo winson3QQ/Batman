@@ -489,6 +489,14 @@ refresh_payload_config(){
 			b=${f##*/}
 			[ "$b" = secrets ] && continue         # never touch p6 secrets/
 			cmp -s "$f" "$dst/$b" 2>/dev/null && continue   # idempotent: write only on change (#41)
+			# #264 F8: a legacy `docker run -v` with a missing file source leaves an empty root-owned
+			# DIRECTORY at $dst/$b; mv would then drop the file INTO it forever. Clear our own earlier
+			# tmp files inside it, then rmdir (only ever removes an empty dir — anything else is kept).
+			if [ -d "$dst/$b" ] && [ ! -L "$dst/$b" ]; then
+				rm -f "$dst/$b"/."$b".tmp.* 2>/dev/null
+				if rmdir "$dst/$b" 2>/dev/null; then note "payload config: removed stray directory $tenant/$b"
+				else note "payload config refresh BLOCKED: $tenant/$b is a non-empty directory"; continue; fi
+			fi
 			# cp -p keeps the golden's mode (+x on .sh/.init/.fw4.uci, installed 0755); &&/|| so a failed
 			# cp is removed, never promoted to a truncated live file (review M1 + R2 atomicity).
 			tmp="$dst/.$b.tmp.$$"

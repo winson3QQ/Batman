@@ -81,12 +81,17 @@ images:
                                                              # so ots-db failed "address already in use" and got
                                                              # stuck Created (intermittent OTS reboot flakiness).
                                                              # Explicit static IP makes bring-up order-independent.
+      # #264: both CoT listeners run the patched EudHandler.py (deploy/ots/patches/, GPL-3.0-or-later),
+      # bind-mounted read-only over the image's file. It is made for THIS image's file only (UPSTREAM_SHA256;
+      # CI refuses the mount on any other image ref) — re-check it whenever the ref above changes.
       - {name: ots_eud_handler, ip: 172.20.0.10, hostname: ots_eud_handler,
          entrypoint: [python3, /app/venv/bin/eud_handler],
-         volumes: [{name: ots-appdata, path: /app/ots}]}
+         volumes: [{name: ots-appdata, path: /app/ots}],
+         mounts: [{src: EudHandler-264.py, dst: /app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py, ro: true}]}
       - {name: ots_eud_handler_ssl, ip: 172.20.0.12, hostname: ots_eud_handler_ssl,
          entrypoint: [python3, /app/venv/bin/eud_handler, --ssl],
-         volumes: [{name: ots-appdata, path: /app/ots}]}
+         volumes: [{name: ots-appdata, path: /app/ots}],
+         mounts: [{src: EudHandler-264.py, dst: /app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py, ro: true}]}
   - ref: "imresamu/postgis:18-3.6"
     containers:
       - {name: ots-db, ip: 172.20.0.2, hostname: ots-db,
