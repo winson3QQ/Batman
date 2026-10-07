@@ -1,3 +1,4 @@
+#!/bin/sh
 # dockerd-restart.sh — dockerd restarts cleanly with a live container (#268 C2, split out of the lifecycle
 # suite). Sent as `ssh root@node sh -s < this`. Runs ONLY on a node with no tenant containers: restarting
 # dockerd on a node that carries one (OTS) is a service outage, and the 1.5.2 baseline showed an

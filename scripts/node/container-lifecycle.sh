@@ -1,3 +1,4 @@
+#!/bin/sh
 # container-lifecycle.sh — node-side container stack regression (#268 B1; from the #252/#247-2 dogfood).
 # Sent by daily-validation.sh as `ssh root@node sh -s < this`. busybox ash; no network needed:
 # the test image is imported from this rootfs's own busybox + musl (same recipe as the autocommit

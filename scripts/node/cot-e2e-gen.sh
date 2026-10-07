@@ -1,3 +1,4 @@
+#!/bin/sh
 # cot-e2e-gen.sh — CoT generator for the OTS end-to-end suite (#268 B2 / #264). Runs on a PEER node:
 #   ssh root@peer "TARGET=<ots-ip> RUN=DV<stamp> sh -s" < this
 # Three phases, each on its OWN long-lived TCP connection to TARGET:8088 (busybox nc through a FIFO,

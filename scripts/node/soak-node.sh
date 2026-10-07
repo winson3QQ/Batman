@@ -1,3 +1,4 @@
+#!/bin/sh
 # soak-node.sh — node side of the release-gate load soak (#268 B3; from the #247-2 30-min dogfood).
 #   ssh root@node "ROLE=<role> [vars] sh -s" < this
 #   ROLE=web-up   IMG=<image with python3>        start dv-web (host net :8098, 256m) serving a 64 KiB blob
