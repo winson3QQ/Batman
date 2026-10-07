@@ -301,3 +301,35 @@ Code review of v2.2 found five ways the gate could do the wrong thing; all fixed
   canary latch is a file (`/tmp/autocommit.canary-ok`): `health_ok` runs in a `$(...)` subshell, so the
   old variable latch never held and the canary ran on every poll (F4). A p6 that 95-batman-storage
   refused to touch now shows its reason in the trial's `why` (F8).
+
+## v2.4 (#265 + #261, 2026-10-07) — pre-commit canary + operator-acceptance hold
+
+Full design + review: `docs/design/265-261-autocommit-recheck-hold.md` (review PASS-with-changes, folded in as v1.1).
+
+- **Pre-commit canary (#265).** The canary latch (v2.3 S3) meant a runtime broken after the first success was committed
+  — measured on 04: latched 41–46 s before an injected runc break, then COMMITTED. With tenants on p6 the canary is now
+  re-run, unlatched, right before every commit attempt (before the DRY decision too). A failure drops the latch, so every
+  later poll re-runs it: a broken trial is never committed and the watchdog reverts it (`PRECOMMIT-CANARY-FAIL` in the
+  autocommit log; the revert reason names the canary). Pi 3 without tenants: no-op (applies automatically once a tenant
+  is installed).
+- **hold-commit (#261).** p6 one-shot flag `/opt/batdata/state/autocommit-hold-commit` containing the BATMAN_VERSION it is
+  for. Consumed on the first tryboot boot of ANY outcome, before every early exit (skip-once, fw-override, unknown /
+  committed is-trial) — a flag that outlived such a boot would silently hold, then revert, a later unrelated OTA. It
+  takes effect only if it names the booted build (else `HOLD-COMMIT-DISCARDED`). A non-tryboot boot (plain reboot, #133
+  stale fallback) leaves it untouched — documented exception: the stale-fallback guarded commit (v2.3) is not held.
+  The live marker sits in a root-owned 0700 dir `/tmp/autocommit.ctl/` (`/tmp` is world-writable).
+- While held, a healthy trial's `why` is `held for operator acceptance (batman-autocommit release)` (logged once as
+  `AC HELD`, never as the first UNHEALTHY reason); the commit branch is not entered; **the watchdog still reverts at the
+  deadline**. `batman-autocommit release [--wait]` lifts it — refused if no hold this boot, not a trial, main gone, or past
+  the deadline (then `batman-slot commit` by hand). It never commits by itself: main's loop commits through the same
+  dwell + pre-commit canary + claim.
+- Visibility: `halow-status` `OTA HOLD` line / JSON `ota_hold`; daily-validation `autocommit-211` prints an armed flag.
+
+| Situation | v2.4 behaviour |
+|---|---|
+| hold-commit for this build, nobody releases | healthy but not committed → deadline revert |
+| hold-commit → `release` (runc healthy) | commits after the next healthy dwell (fault-injection R3) |
+| hold-commit → runc broken → `release` | pre-commit canary fails → not committed → deadline revert (fault-injection R1) |
+| hold-commit flag for another build | discarded on the first tryboot, logged |
+| hold-commit + hold-once | not committed and not reverted — stays an uncommitted trial until `release` or a hand commit |
+| `release` after the deadline / with main gone | refused, exit 1, points to `batman-slot commit` |

@@ -151,15 +151,16 @@ OTS_SOC=$(soc_of "$OTS_NODE")
 # apply": FAIL it loudly (an N/A here would make every OTS regression vanish from a green run).
 # One suite per case (#268 A9): a known R1 failure (#265) must not hide an F1/F2/R2 regression.
 fi_desc(){ case $1 in f2) echo "lost image recovered from the offline loaded/ copy";; f1) echo "bad image tar quarantined, guardian not wedged";;
-  r2) echo "first-loading tenant is non-gating (no false revert)";; r1) echo "docker-run-broken trial is not committed and reverts (known gap #265)";; esac; }
-fi_skip_all(){ local c; for c in f2 f1 r2 r1; do suite "fi-$c" "flash-and-go fault-injection $c (#159/#216) — $1" ""; done; }
+  r2) echo "first-loading tenant is non-gating (no false revert)";; r1) echo "held trial with a broken runc is refused by the pre-commit canary and reverts (#265)";;
+  r3) echo "held healthy trial waits for release, then commits (#261)";; esac; }
+fi_skip_all(){ local c; for c in f2 f1 r2 r1 r3; do suite "fi-$c" "flash-and-go fault-injection $c (#159/#216) — $1" ""; done; }
 if [ "$OTS_SOC" = bcm2710 ]; then
   suite ots-node-209 "OTS_NODE must be the bcm2711 OTS host" "echo 'OTS_NODE $OTS_NODE is a Pi 3 (bcm2710); OTS is not shipped there (#209 D6). Set OTS_NODE to the Pi 4 OTS host.'; false"
   fi_skip_all "OTS_NODE $OTS_NODE is bcm2710 — OTS suites not run (see ots-node-209)"
 elif [ "$AB_MODE" != --destructive ]; then
   fi_skip_all "needs AB_MODE=--destructive"
 elif up "$OTS_NODE"; then
-  for c in f2 f1 r2 r1; do
+  for c in f2 f1 r2 r1 r3; do
     suite "fi-$c" "fault-injection $c: $(fi_desc $c) (#159/#216, DESTRUCTIVE)" "$REPO/scripts/fault-injection.sh $OTS_NODE --case $c"
   done
 else
@@ -484,6 +485,9 @@ chk_eeprom_209() {                                             # #209 S5: Pi 4 b
 chk_autocommit() { fssh "$1" 12 '                              # ab-autocommit.md / #211
   # A completed reflash must not leave the node in an uncommitted trial (a reboot would then revert to
   # the old slot). batman-autocommit health-gates + commits; assert the node ended committed.
+  # #261: show an armed hold-commit flag — a forgotten one would hold, then revert, the next OTA (info only:
+  # an operator legitimately arms it right before a planned OTA).
+  [ -f /opt/batdata/state/autocommit-hold-commit ] && echo "info: hold-commit ARMED on p6 for [$(head -c 120 /opt/batdata/state/autocommit-hold-commit)]"
   batman-slot is-trial; rc=$?
   case $rc in
     1) echo "committed (not a stuck trial)"; exit 0 ;;

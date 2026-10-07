@@ -39,6 +39,14 @@ DECIDED=/tmp/autocommit.decided        # the one atomic claim (mkdir) both main 
 COMMITTED=/tmp/autocommit.committed
 DRY=${AUTOCOMMIT_DRYRUN:-0}
 [ "$DRY" = 1 ] && DEFER_MAX=${AUTOCOMMIT_DEFER_MAX:-$DEFER_MAX}   # test seam: shorten the bounded deferral
+# v2.4 (#261/#265): operator-acceptance hold. The p6 one-shot flag names the build it is meant for; it is
+# consumed on the first tryboot, whatever that boot then does, and becomes a marker in a root-owned 0700
+# control dir (/tmp is world-writable: a marker there could be planted or symlinked by anyone).
+HOLDCOMMIT_FLAG=$ST/autocommit-hold-commit
+CTL=/tmp/autocommit.ctl; [ "$DRY" = 1 ] && CTL=/tmp/autocommit.ctl.dry
+ctl_ok(){ [ -d "$CTL" ] && [ ! -L "$CTL" ] && [ -O "$CTL" ]; }
+ctl_init(){ [ -e "$CTL" ] || mkdir -m 700 "$CTL" 2>/dev/null; ctl_ok || { log "control dir $CTL is not a root-owned directory — ignoring hold-commit/release markers"; return 1; }; }
+held_commit(){ ctl_ok && [ -f "$CTL/hold-commit" ] && [ ! -f "$CTL/released" ]; }
 
 log(){ logger -t batman-autocommit "$*" 2>/dev/null; echo "batman-autocommit: $*" > /dev/kmsg 2>/dev/null; [ "$DRY" = 1 ] && echo "batman-autocommit: $*"; }
 up(){ cut -d. -f1 /proc/uptime; }
@@ -122,6 +130,35 @@ if [ "${1:-}" = canary ]; then
 	c=$(canary_run) && { echo "batman-autocommit: canary ok"; exit 0; }
 	echo "batman-autocommit: $c"; exit 1
 fi
+have_docker_tenant(){ for d in /opt/batdata/apps/*/; do [ -d "$d" ] && ls "$d"/*.manifest >/dev/null 2>&1 && return 0; done; return 1; }
+
+# `batman-autocommit release [--wait]` (#261): lift this boot's hold-commit. It never commits by itself —
+# main's poll loop does, through the same dwell + pre-commit canary + claim as any commit. Refused when
+# there is nothing it could still change: no hold this boot, not a trial, main gone, or past the deadline
+# (then: batman-slot commit by hand). --wait returns 0 once committed, 1 on revert/deadline/main gone.
+if [ "${1:-}" = release ]; then
+	[ "$(id -u)" = 0 ] || { echo "release: must run as root"; exit 1; }
+	ctl_ok && [ -f "$CTL/hold-commit" ] || { echo "release: no hold-commit is in effect this boot"; exit 1; }
+	[ -f "$COMMITTED" ] && { echo "release: already committed"; exit 0; }
+	if [ "$DRY" != 1 ]; then
+		batman-slot is-trial >/dev/null 2>&1; [ $? = 0 ] || { echo "release: this boot is not an uncommitted trial"; exit 1; }
+		main_alive || { echo "release: the autocommit run is not alive — commit by hand: batman-slot commit"; exit 1; }
+		dl=$(cat /tmp/autocommit.deadline 2>/dev/null); case "$dl" in ''|*[!0-9]*) echo "release: no deadline recorded"; exit 1;; esac
+		[ "$(up)" -lt "$dl" ] || { echo "release: past the deadline (${dl}s) — the trial is being reverted"; exit 1; }
+	fi
+	: > "$CTL/released" && log "RELEASED: operator lifted the hold-commit — commit follows the normal gate (incl. the pre-commit canary)"
+	aclog "RELEASED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$(batman-slot active 2>/dev/null) version=$(version)"
+	otalog AC RELEASED
+	[ "${2:-}" = --wait ] || { echo "release: hold lifted"; exit 0; }
+	s0=$(batman-slot active 2>/dev/null); dl=${dl:-$(( $(up) + 300 ))}; lim=$(( dl - $(up) + 30 ))
+	while [ "$lim" -gt 0 ]; do
+		[ -f "$COMMITTED" ] && { echo "release: committed"; exit 0; }
+		[ "$DRY" = 1 ] || main_alive || { echo "release: autocommit run ended without committing ($(cat /tmp/autocommit.why 2>/dev/null))"; exit 1; }
+		[ "$(batman-slot active 2>/dev/null)" = "$s0" ] || { echo "release: slot changed"; exit 1; }
+		sleep 2; lim=$((lim - 2))
+	done
+	echo "release: not committed by the deadline ($(cat /tmp/autocommit.why 2>/dev/null))"; exit 1
+fi
 
 # The revert watchdog (B/N1/N4): runs as its own process (`batman-autocommit watchdog`, started with
 # setsid so it is outside procd's instance), one per boot, and fires at the deadline whatever the poll
@@ -181,6 +218,25 @@ revert_watchdog(){
 [ "${1:-}" = watchdog ] && { revert_watchdog; exit 0; }
 
 [ "${1:-}" = run ] || { echo "usage: batman-autocommit run" >&2; exit 2; }
+
+# 00) hold-commit (#261, v2.4): consumed on ANY tryboot boot, BEFORE every early exit below (skip-once,
+# fw-override, unknown/committed is-trial) — a flag that survived such a boot would later silently hold
+# an unrelated OTA until its deadline revert. It applies only when it names the build that booted.
+# Order: marker first, then delete the p6 flag (+sync), so a kill in between never loses the hold.
+# A non-tryboot boot (plain reboot, stale fallback) leaves it for the trial it was set for.
+if { dt_tryboot || { [ "$DRY" = 1 ] && [ "${AUTOCOMMIT_FORCE_TRIAL:-0}" = 1 ]; }; } && [ -f "$HOLDCOMMIT_FLAG" ] && [ ! -f "$CTL/hold-commit" ]; then
+	want=$(head -c 200 "$HOLDCOMMIT_FLAG" 2>/dev/null | tr -d '\r\n')
+	if [ "$want" = "$(version)" ] && ctl_init; then
+		echo "$want" > "$CTL/hold-commit"
+		log "HOLD-COMMIT: this trial ($want) will not be committed until 'batman-autocommit release'; the deadline revert stays armed"
+		aclog "HOLD-COMMIT boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$(batman-slot active 2>/dev/null) version=$want"
+		otalog AC HOLD-COMMIT version="$want"
+	else
+		log "HOLD-COMMIT-DISCARDED: flag is for [$want], this boot runs [$(version)] — not holding"
+		aclog "HOLD-COMMIT-DISCARDED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) flag=$want booted=$(version)"
+	fi
+	[ "$DRY" = 1 ] || { rm -f "$HOLDCOMMIT_FLAG"; sync; }
+fi
 
 # 0) skip-once (#209 S5): scripts/ab-selftest.sh drives tryboot/plain reboots itself and must not have
 # a healthy trial committed (or reverted) under it. It writes this token on p6 right before each
@@ -315,12 +371,10 @@ health_ok(){
 	thr=$(vcgencmd get_throttled 2>/dev/null | sed -n 's/.*=0x//p')
 	[ $(( 0x${thr:-0} & 1 )) -eq 0 ] || { echo "undervoltage now"; return 1; }
 	[ -s /etc/batman-build ] || { echo "no /etc/batman-build"; return 1; }
-	have_docker_tenant=0
-	for d in /opt/batdata/apps/*/; do [ -d "$d" ] && ls "$d"/*.manifest >/dev/null 2>&1 && { have_docker_tenant=1; break; }; done
 	# #209 S5 review K1: with tenants on p6 this rootfs MUST be able to run them. A missing docker, a
 	# cgroup v1 tree (memcg unverifiable) or a canary that cannot run is UNHEALTHY — each used to make
 	# the whole block skip itself and commit (the 1.4.12 lesson: a build that silently lost a package).
-	if [ "$have_docker_tenant" = 1 ]; then
+	if have_docker_tenant; then
 		command -v docker >/dev/null 2>&1 || { echo "tenants on p6 but this rootfs has no docker engine"; return 1; }
 		docker info >/dev/null 2>&1 || { echo "docker engine not live"; return 1; }
 		grep -qw overlay /proc/filesystems 2>/dev/null || modprobe overlay 2>/dev/null
@@ -358,9 +412,28 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 		if [ "$jn" -lt "$JOIN_NEED" ]; then why="${why:+$why; }mesh not joined/reachable ($jn/$JOIN_NEED samples: plink=${MJ_PLINK:-0} batman(wlh0)=${MJ_BAT:-0})"
 		elif [ $(( $(up) - jlast )) -gt "$JOIN_FRESH" ]; then why="${why:+$why; }mesh lost (last joined $(( $(up) - jlast ))s ago)"; fi
 	fi
-	echo "$why" > /tmp/autocommit.why
 	[ -n "$why" ] && [ -z "${FIRSTWHY:-}" ] && { FIRSTWHY=$why; otalog AC UNHEALTHY first_why="$why"; }   # the first reason, not every poll
+	# hold-commit (#261): a healthy trial waits for `batman-autocommit release`; the watchdog still reverts at
+	# the deadline. Folded into why ONLY when otherwise healthy, so the commit branch (and its canary) is not
+	# entered while held, and the hold is never mistaken for the first UNHEALTHY reason.
+	if [ -z "$why" ] && held_commit; then
+		why="held for operator acceptance (batman-autocommit release)"
+		[ -n "${HELDLOGGED:-}" ] || { HELDLOGGED=1; log "trial $SLOT is healthy and HELD — waiting for release (deadline ${DEADLINE}s)"; otalog AC HELD slot=$SLOT; }
+	fi
+	echo "$why" > /tmp/autocommit.why
 	if [ "$ok" -ge "$NEED" ] && [ -z "$why" ]; then
+		# #265: the canary latched on its FIRST success, so a runtime broken after that was committed (measured:
+		# latched 41-46 s before an injected runc break, then committed). Re-run it — unlatched — right before
+		# committing. A failure drops the latch: every following poll re-runs it, so a broken trial is never
+		# committed and the watchdog reverts it. Once per commit attempt only (v2.3 S3: Pi 3A+ memory).
+		if have_docker_tenant; then
+			if ! c=$(canary_run); then
+				rm -f "$CANARY_LATCH"; why="pre-commit canary failed: $c"; echo "$why" > /tmp/autocommit.why
+				log "PRECOMMIT-CANARY-FAIL: $c — not committing, dwell reset"; otalog AC PRECOMMIT-CANARY-FAIL why="$c"
+				aclog "PRECOMMIT-CANARY-FAIL boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version) why=$c"
+				ok=0; sleep "$POLL"; continue
+			fi
+		fi
 		if [ "$DRY" = 1 ]; then echo "DRYRUN decision: COMMIT slot $SLOT (services ${NEED}x${POLL}s, mesh samples $jn)"; [ -n "${WDPID:-}" ] && kill "$WDPID" 2>/dev/null; exit 0; fi
 		# claim (N1); if a LIVE watchdog won it, it is reverting — stand down. A claim whose owner is
 		# gone (a main killed by `restart` mid-commit, code review F2) is cleared and retried next poll.
