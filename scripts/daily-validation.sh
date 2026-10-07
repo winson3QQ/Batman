@@ -945,10 +945,8 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     suite faketime-174 "offline clock moves only forward across a reboot: shutdown save + boot restore happened (#174, destructive)" "bchk_174 $DNODE"
     if [ "$(soc_of "$DNODE")" = bcm2710 ]; then
       na guardian-192 "DNODE $DNODE is a Pi 3: it carries no tenant/guardian by design (#209 D6)"
-      na cleanstop-274 "DNODE $DNODE is a Pi 3: it carries no tenant/guardian by design (#209 D6)"
     else
       suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE"
-      suite cleanstop-274 "clean reboot stops the tenant gracefully (postgres no crash recovery) and rebuilds it from the current config (#274, destructive)" "bchk_cleanstop_274 $DNODE"
     fi
     suite ramoops-173  "kernel panic captured to pstore and classified PANIC (#173/#61, destructive)"  "bchk_173 $DNODE"
     # NOT reboot-testable — validated by other means (a supervised run on manet01 proved this the hard way):
@@ -962,7 +960,17 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     #    is covered by field-status-130.
     #  config-survival: asserted during the flash/burn (a fresh slot's firstboot restores mesh_id/key/channel).
   else
-    for s in faketime-174 guardian-192 cleanstop-274 ramoops-173 rejoin-245-246; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
+    for s in faketime-174 guardian-192 ramoops-173 rejoin-245-246; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
+  fi
+  # #274 runs on the OTS node (the only one with a tenant), NOT behind DNODE's ethernet gate: a plain, clean
+  # reboot is the node's normal life (every OTA does one) and never touches the mesh config, so it needs no
+  # out-of-band recovery — unlike the panic/rejoin cases above. reboot_and_wait FAILs if it does not return.
+  if [ "$OTS_SOC" = bcm2710 ]; then
+    na cleanstop-274 "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"
+  elif up "$OTS_NODE"; then
+    suite cleanstop-274 "clean reboot of the OTS node stops the tenant gracefully (postgres no crash recovery) and rebuilds it from the current config (#274, destructive)" "bchk_cleanstop_274 $OTS_NODE"
+  else
+    suite cleanstop-274 "clean-stop/rebuild (#274) — OTS_NODE $OTS_NODE did not answer" ""
   fi
 fi
 
