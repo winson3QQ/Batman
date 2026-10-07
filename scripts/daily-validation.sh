@@ -572,6 +572,13 @@ chk_cot_264() { local ots=$1 peer=$2 run o c0 c1 l0 l1 rc=0 ph sent st prev i
   l0=$(ots_logc "$ots")
   o=$(timeout 400 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run sh -s" < "$REPO/scripts/node/cot-e2e-gen.sh" 2>&1)
   echo "$o"
+  cot_judge "$ots" "$run" "$o" || rc=1
+  l1=$(ots_logc "$ots"); echo "eud 'Failed to parse' / rabbit 'missed heartbeats' / eud 'channel is closed': before [$l0] after [$l1] (info; #264 mechanism B is not exercised by this suite)"
+  c1=$(ots_ctr "$ots"); [ "$c1" = 6 ] || { echo "FAIL OTS not 6/6 after the test ($c1)"; rc=1; }
+  return $rc; }
+# cot_judge <ots> <run> <generator output>: per phase sent == stored, connection losses, then delete the run's
+# rows and prove they are gone. Shared by the TCP (8088) and SSL (8089) suites.
+cot_judge() { local ots=$1 run=$2 o=$3 rc=0 ph sent st prev i pat u
   # stored: poll until two consecutive identical totals (max 60 s)
   prev=x; for i in $(seq 1 12); do st=$(echo "select count(*) from cot where uid like '$run-%';" | ots_sql "$ots"); [ "$st" = "$prev" ] && break; prev=$st; sleep 5; done
   echo "stored total=$st"
@@ -587,7 +594,6 @@ chk_cot_264() { local ots=$1 peer=$2 run o c0 c1 l0 l1 rc=0 ph sent st prev i
     fi
   done
   echo "$o" | grep '^CONNLOST' | sed 's/^/FAIL CONNECTION-LOST /' && rc=1
-  l1=$(ots_logc "$ots"); echo "eud 'Failed to parse' / rabbit 'missed heartbeats' / eud 'channel is closed': before [$l0] after [$l1] (info; #264 mechanism B is not exercised by this suite)"
   # cleanup in one transaction, then verify every related table is empty for this run
   ots_sql "$ots" <<SQL
 begin; delete from euds where uid like '$run-%'; delete from cot where uid like '$run-%'; commit;
@@ -597,7 +603,25 @@ select (select count(*) from cot where uid like '$run-%' or sender_uid like '$ru
 SQL
 )
   [ "$o" = 0 ] && echo "cleanup ok (cot/euds/points = 0)" || { echo "FAIL cleanup: $o rows of run $run left behind"; rc=1; }
-  c1=$(ots_ctr "$ots"); [ "$c1" = 6 ] || { echo "FAIL OTS not 6/6 after the test ($c1)"; rc=1; }
+  return $rc; }
+# #264 on the SSL listener (8089): same three phases over mutual TLS. The generator runs INSIDE ots_cot_parser
+# (python3 + ssl; the node has neither), against ots_eud_handler_ssl on br-ots — so this exercises the handler,
+# not the mesh path (ots-cot-e2e-264 covers that on 8088). A 1-day client cert for the existing OTS user
+# 'administrator' (the SSL handler maps the cert CN to a user) is signed on the node by the OTS CA into the
+# container's tmpfs and removed afterwards; the CA password is read inside the container, never printed.
+chk_cot_264_ssl() { local ots=$1 run o c0 rc=0
+  c0=$(ots_ctr "$ots"); [ "$c0" = 6 ] || { echo "FAIL OTS not 6/6 before the test ($c0)"; return 1; }
+  o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" 'docker exec -i ots_cot_parser python3 -' < "$REPO/scripts/node/ots-test-client-cert.py" 2>&1)
+  echo "$o"; echo "$o" | grep -q '^OK test client cert' || { echo "FAIL could not issue the test client cert — not verified"; return 1; }
+  run=DVS$(date +%Y%m%d%H%M%S); echo "run id $run; generator ots_cot_parser -> ots_eud_handler_ssl:8089 (mTLS, CN=administrator)"
+  o=$(timeout 400 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" \
+    "docker exec -i -e TARGET=172.20.0.12 -e RUN=$run -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key ots_cot_parser python3 -" \
+    < "$REPO/scripts/node/cot-e2e-gen-ssl.py" 2>&1)
+  echo "$o"
+  cot_judge "$ots" "$run" "$o" || rc=1
+  fssh "$ots" 15 'docker exec ots_cot_parser rm -f /tmp/dv-client.pem /tmp/dv-client.key; docker exec ots_cot_parser ls /tmp/dv-client.pem 2>/dev/null' | grep -q . \
+    && { echo "FAIL test client cert still present in ots_cot_parser:/tmp"; rc=1; } || echo "test client cert removed"
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
   return $rc; }
 # #268 B3: release-gate load soak (AB_MODE=--destructive only). All three nodes under real load at once for
 # SOAK_MIN (>= 30) minutes: an HTTP tenant on BENCH_NODE and MESH_NODE (GET locally and over the mesh), CoT
@@ -729,6 +753,7 @@ elif up "$OTS_NODE"; then
   suite payload-conform "live containers == manifest: running + config-fingerprint label + MOUNTs (src/RO) + #264 overlay marker & image upstream file (#274/#264)" "chk_conform $OTS_NODE"
   suite flashgo-159      "flash-and-go integrity — firstload enabled, offline copies (F2), canary runs, autocommit gate (#159/#216)" "chk_flashgo $OTS_NODE"
   suite ots-cot-e2e-264  "CoT sent == stored per phase from $BENCH_NODE: P1 control, P2 deterministic truncation (A control / B #264-A), P3 burst; heartbeat (#264-B) NOT exercised (#268 B2)" "chk_cot_264 $OTS_NODE $BENCH_NODE"
+  suite ots-cot-e2e-264-ssl "CoT sent == stored per phase on the SSL listener 8089 (mTLS, 1-day test cert for an existing user): P1 / P2 truncation / P3 burst — handler path via br-ots, not the mesh (#264)" "chk_cot_264_ssl $OTS_NODE"
 else
   for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden flashgo-159 ots-cot-e2e-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
@@ -843,6 +868,40 @@ bchk_192() {   # clear the guardian from the overlay (as an A/B flash does), reb
   local r; r=$(fssh "$1" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1 && pgrep -f batman-payload >/dev/null && echo yes || echo no' | tr -d " \r")
   echo "guardian auto-restored after overlay-clear+reboot: $r"; [ "$r" = yes ]; }
 
+bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY and rebuilds it from the current config (#274)
+  # Before #274 the guardian's stop was a no-op (wrong manifest name) and dockerd revived the old containers,
+  # so postgres was killed at every reboot ("not properly shut down; automatic recovery") and a changed
+  # manifest never reached the containers. Asserts, on the boot after a plain `reboot`:
+  #   1 ots-db's first start log says "database system was shut down at" (graceful), not "not properly shut down"
+  #   2 every manifest container was created during THIS boot and carries the current config label
+  # DV_TEST_274_NOSTOP=1: remove the guardian's K stop link for this reboot (negative control: 1 must FAIL).
+  local n=$1 rc=0 t l
+  fssh "$n" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1' || { echo "FAIL no payload guardian on this Pi 4"; return 1; }
+  if [ "${DV_TEST_274_NOSTOP:-0}" = 1 ]; then
+    fssh "$n" 10 'for l in /etc/rc.d/K*batman-payload-*; do [ -e "$l" ] && mv "$l" /tmp/dv-274-klink.$(basename "$l"); done; ls /tmp/dv-274-klink.* 2>/dev/null'
+    echo "NEGATIVE CONTROL: guardian stop link removed for this reboot"
+  fi
+  reboot_and_wait "$n" reboot 240 || rc=1
+  if [ "${DV_TEST_274_NOSTOP:-0}" = 1 ]; then   # the K link lives on the overlay: put it back
+    fssh "$n" 10 'for f in /tmp/dv-274-klink.*; do [ -e "$f" ] || continue; b=${f#/tmp/dv-274-klink.}; t=${b#K??}; ln -sf ../init.d/$t /etc/rc.d/$b; ls -l /etc/rc.d/$b; done' \
+      || echo "FAIL could not restore the guardian K link"
+  fi
+  [ "$rc" = 0 ] || return 1
+  for t in $(seq 1 30); do [ "$(ots_ctr "$n")" = 6 ] && break; sleep 10; done
+  [ "$(ots_ctr "$n")" = 6 ] || { echo "FAIL OTS not 6/6 within 300 s after the reboot"; return 1; }
+  l=$(fssh "$n" 15 'docker logs ots-db 2>&1 | grep -m2 -E "database system was shut down at|not properly shut down|was interrupted"')
+  echo "ots-db start: ${l:-<no shutdown line>}"
+  case "$l" in *"not properly shut down"*|*"was interrupted"*) echo "FAIL postgres was not stopped gracefully (crash recovery on start)"; rc=1 ;;
+    *"shut down at"*) echo "ok graceful postgres stop" ;; *) echo "FAIL no postgres shutdown line — not verified"; rc=1 ;; esac
+  l=$(fssh "$n" 30 'up=$(cut -d. -f1 /proc/uptime); bt=$(( $(date +%s) - up )); want=$(payload-run --cfg-hash opentakserver 2>/dev/null)
+    m=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); bad=0
+    for c in $(awk "/^CONTAINER /{print \$2}" "$m"); do
+      cr=$(date -d "$(docker inspect -f "{{.Created}}" $c | cut -c1-19 | tr T " ")" +%s 2>/dev/null); lab=$(docker inspect -f "{{index .Config.Labels \"batman.cfg\"}}" $c)
+      [ -n "$cr" ] && [ "$cr" -ge "$bt" ] && [ -n "$want" ] && [ "$lab" = "$want" ] || { echo "$c created=$cr boot=$bt label=${lab:-none}"; bad=1; }
+    done; echo "bad=$bad"')
+  echo "$l" | grep -v '^bad=' ; echo "$l" | grep -qx 'bad=0' && echo "ok all containers rebuilt this boot with the current config label" || { echo "FAIL containers not rebuilt from the current config"; rc=1; }
+  return $rc; }
+
 bchk_173() {   # force a real kernel panic; assert the ramoops backend captured it AND boot-reason classified PANIC (#173/#61)
   # the backend must be the correctly-reg'd ramoops-pi4 (the #173 fix). With a bare `dtoverlay=ramoops` (2-cell
   # reg, invalid on arm64 bcm2711) or on HW that cannot preserve the reserved region, pstore never registers a
@@ -920,8 +979,10 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     suite faketime-174 "offline clock moves only forward across a reboot: shutdown save + boot restore happened (#174, destructive)" "bchk_174 $DNODE"
     if [ "$(soc_of "$DNODE")" = bcm2710 ]; then
       na guardian-192 "DNODE $DNODE is a Pi 3: it carries no tenant/guardian by design (#209 D6)"
+      na cleanstop-274 "DNODE $DNODE is a Pi 3: it carries no tenant/guardian by design (#209 D6)"
     else
       suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE"
+      suite cleanstop-274 "clean reboot stops the tenant gracefully (postgres no crash recovery) and rebuilds it from the current config (#274, destructive)" "bchk_cleanstop_274 $DNODE"
     fi
     suite ramoops-173  "kernel panic captured to pstore and classified PANIC (#173/#61, destructive)"  "bchk_173 $DNODE"
     # NOT reboot-testable — validated by other means (a supervised run on manet01 proved this the hard way):
@@ -935,7 +996,7 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     #    is covered by field-status-130.
     #  config-survival: asserted during the flash/burn (a fresh slot's firstboot restores mesh_id/key/channel).
   else
-    for s in faketime-174 guardian-192 ramoops-173 rejoin-245-246; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
+    for s in faketime-174 guardian-192 cleanstop-274 ramoops-173 rejoin-245-246; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
   fi
 fi
 
