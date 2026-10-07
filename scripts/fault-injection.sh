@@ -173,7 +173,7 @@ r1(){ echo "== R1 docker-run-broken trial is NOT committed and reverts (hold -> 
 
 r3(){ echo "== R3 healthy held trial waits for release, then commits (#261) =="
   precheck || return
-  local pre tr i w u
+  local pre tr w u
   pre=$(slot); held_trial R3 "$pre" || return; tr=$HT
   echo "    trial on slot $tr (held); must stay uncommitted until uptime 240 s with ONLY the hold as reason"
   while :; do
