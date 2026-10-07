@@ -116,6 +116,13 @@ lifecycle:
     ots-db:        "pg_isready -q"
     rabbitmq:      "rabbitmq-diagnostics -q ping"
     opentakserver: "curl -fsS http://localhost:8081/api/health"
+  # #274 graceful stop order (lower tier first; a container not listed is in the FINAL tier = the stateful
+  # services, which get the longest grace). Clients -> the app -> postgres + rabbitmq.
+  stop_tier:
+    ots_cot_parser: 1
+    ots_eud_handler: 1
+    ots_eud_handler_ssl: 1
+    opentakserver: 2
   init_once:                           # first-boot only; app self-inits schema/CA
     - "opentakserver first-run creates CA + DB schema (no manual step needed)"
   restart: unless-stopped              # #206: on a fresh reflash boot the containers race their deps

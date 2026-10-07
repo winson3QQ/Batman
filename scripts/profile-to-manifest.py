@@ -66,6 +66,7 @@ def render_manifest(doc, app):
     life = doc.get("lifecycle", {}) or {}
     order = life.get("order") or []
     health = life.get("health", {}) or {}
+    stop_tier = life.get("stop_tier", {}) or {}
     restart = life.get("restart", "on-failure:5")
     env_common = doc.get("env_common", {}) or {}
     # secrets (#167 §5): file-delivered secrets mount read-only into named containers. `source`:
@@ -144,6 +145,12 @@ def render_manifest(doc, app):
         h = health.get(name)
         if h:
             a(f"HEALTH {h}")
+        # #274: graceful stop tier (lifecycle.stop_tier); absent = the final tier (stateful services)
+        st = stop_tier.get(name)
+        if st is not None:
+            if not isinstance(st, int) or st < 1 or st > 98:
+                sys.exit(f"{tenant}: lifecycle.stop_tier.{name} must be an integer 1..98")
+            a(f"STOPTIER {st}")
         a("ENDCONTAINER")
     return "\n".join(L) + "\n"
 
@@ -177,7 +184,9 @@ def render_guardian_init(doc):
         "# Generic payload guardian (#156/#167): the shared logic is /usr/lib/batman/payload-guardian.sh;\n"
         "# this stub only names the tenant. Restored after A/B flash by the #192 glob (95-batman-storage).\n"
         "START=99\n"
-        "STOP=10\n"
+        # #274: K09 — after K08batman-prestop-payload (client tiers), BEFORE K10batdata-mount captures the
+        # shutdown log, so the stop record is in shutdown_*.log
+        "STOP=09\n"
         "USE_PROCD=1\n"
         f"PAYLOAD_TENANT={tenant}\n"
         ". /usr/lib/batman/payload-guardian.sh\n"

@@ -44,6 +44,7 @@ ENV OTS_FQDN=_
 ENV OTS_MEDIAMTX_API_ADDRESS=http://localhost:9997
 VOLUME ots-appdata:/app/ots:1000:1024
 HEALTH curl -fsS http://localhost:8081/api/health
+STOPTIER 2
 ENDCONTAINER
 
 CONTAINER ots_cot_parser
@@ -58,6 +59,7 @@ ENV OTS_FQDN=_
 ENV OTS_MEDIAMTX_API_ADDRESS=http://localhost:9997
 ENTRYPOINT python3 /app/venv/bin/cot_parser
 VOLUME ots-appdata:/app/ots
+STOPTIER 1
 ENDCONTAINER
 
 CONTAINER ots_eud_handler
@@ -72,6 +74,7 @@ ENV OTS_FQDN=_
 ENV OTS_MEDIAMTX_API_ADDRESS=http://localhost:9997
 ENTRYPOINT python3 /app/venv/bin/eud_handler
 VOLUME ots-appdata:/app/ots
+STOPTIER 1
 ENDCONTAINER
 
 CONTAINER ots_eud_handler_ssl
@@ -86,4 +89,5 @@ ENV OTS_FQDN=_
 ENV OTS_MEDIAMTX_API_ADDRESS=http://localhost:9997
 ENTRYPOINT python3 /app/venv/bin/eud_handler --ssl
 VOLUME ots-appdata:/app/ots
+STOPTIER 1
 ENDCONTAINER

@@ -23,6 +23,11 @@ on:
       - 'feed/batman-payload-host/Makefile'
       - 'deploy/payload-host-packages.txt'
       - 'scripts/check-payload-host-sync.sh'
+      # #274: payload-run / stop / guardian behaviour is gated by scripts/test-payload-run.sh (run by the check)
+      - 'feed/batman-provision/files/usr/bin/payload-run'
+      - 'feed/batman-provision/files/usr/lib/batman/payload-stop.sh'
+      - 'feed/batman-provision/files/usr/lib/batman/payload-guardian.sh'
+      - 'scripts/test-payload-run.sh'
   push:
     branches: [main]
     paths:
@@ -32,6 +37,9 @@ on:
       - 'deploy/**/*.fw4.uci'
       - 'scripts/profile-to-manifest.py'
       - 'scripts/profile-to-fw4.py'
+      - 'feed/batman-provision/files/usr/bin/payload-run'
+      - 'feed/batman-provision/files/usr/lib/batman/payload-stop.sh'
+      - 'scripts/test-payload-run.sh'
 jobs:
   sync:
     runs-on: ubuntu-latest
