@@ -36,13 +36,14 @@ pstop_kill(){
 	logger -t "batman-payload-$t" "stop: killing in-flight payload-run (pid $pid, tree:$(echo $tree))"
 	# shellcheck disable=SC2086
 	kill -TERM $tree 2>/dev/null
-	i=0; while [ "$i" -lt 10 ]; do
+	# busybox sleep takes whole seconds only: one 1 s grace, then KILL what is left
+	alive=""; for p in $tree; do [ -d "/proc/$p" ] && alive="$alive $p"; done
+	if [ -n "$alive" ]; then
+		sleep 1
 		alive=""; for p in $tree; do [ -d "/proc/$p" ] && alive="$alive $p"; done
-		[ -z "$alive" ] && break
-		sleep 0.1; i=$((i + 1))
-	done
-	# shellcheck disable=SC2086
-	[ -n "$alive" ] && kill -KILL $alive 2>/dev/null
+		# shellcheck disable=SC2086
+		[ -n "$alive" ] && kill -KILL $alive 2>/dev/null
+	fi
 	return 0
 }
 
