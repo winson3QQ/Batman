@@ -104,6 +104,13 @@ echo "$last" | grep -q "^PANIC" && hc INFO boot "last boot recovered from a kern
 
 case "$WORST" in CRIT) verdict="NOT WORKING — ${SUMMARY}";; WARN) verdict="DEGRADED — ${SUMMARY}";; *) verdict="OK — joined, $nb neighbour(s)${snr:+, SNR ${snr}dB}";; esac
 
+# #261: an armed hold-commit flag (p6, waiting for the next tryboot of the named build) or a hold in force
+# on this trial. A forgotten flag would silently hold — then revert — a later OTA, so it must be visible.
+ohold=""
+[ -f /opt/batdata/state/autocommit-hold-commit ] && ohold="armed for $(head -c 120 /opt/batdata/state/autocommit-hold-commit | tr -d '\r\n') (next tryboot of that build will wait for 'batman-autocommit release')"
+if [ -f /tmp/autocommit.ctl/hold-commit ]; then
+	if [ -f /tmp/autocommit.ctl/released ]; then ohold="${ohold:+$ohold; }this trial: released"; else ohold="${ohold:+$ohold; }this trial HELD — commit only after 'batman-autocommit release'; deadline revert armed"; fi
+fi
 if [ "$mode" = json ]; then
 	j(){ printf '%s' "$1" | tr -d '\000-\010\013-\037' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'; }
 	chk=$(printf '%s' "$CHECKS" | awk -F'|' 'NF==3{if(n++)printf ",";gsub(/\\/,"\\\\",$3);gsub(/"/,"\\\"",$3);printf "{\"level\":\"%s\",\"id\":\"%s\",\"msg\":\"%s\"}",$1,$2,$3}')
@@ -114,8 +121,8 @@ if [ "$mode" = json ]; then
 	fwo=$(cat /tmp/batman-fw-override 2>/dev/null)                                    # firmware booted the wrong slot this boot (#209 S5)
 	prot=unknown; [ -f /opt/batdata/state/slot-A.protected ] && [ -f /opt/batdata/state/slot-B.protected ] && prot=both
 	[ "$prot" = unknown ] && { [ -f /opt/batdata/state/slot-A.protected ] || [ -f /opt/batdata/state/slot-B.protected ]; } && prot=partial
-	printf '{"node":"%s","image":"%s","boot_id":"%s","uptime_s":%s,"health":{"level":"%s","verdict":"%s","checks":[%s]},"last_boot_reason":"%s","last_ota":"%s","last_s2":"%s","last_arm":"%s","fw_override":"%s","fw_protection":"%s","batman_version":"%s","join":{"state":"%s","detail":"%s","mesh_id":"%s","channel":"%s","country":"%s","key":"%s","plinks":%s,"batman_neighbours":%s,"peers":"%s","snr_db":"%s","noise_dbm":"%s","tx_retry_pct":"%s","address":"%s","ip":"%s"},"last_join_diagnosis":"%s","battery":"%s","throttled":"%s","temp_c":"%s","boots_since_join":%s,"power_loss_since_join":%s,"evidence":{"crash_files":%s,"join_log_lines":%s},"tenants":"%s","time":"%s"}\n' \
-		"$(j "$host")" "$(j "$ver")" "$bid" "$u" "$WORST" "$(j "$verdict")" "$chk" "$(j "$last")" "$(j "${lota:-none recorded}")" "$(j "$ls2")" "$(j "$larm")" "$(j "$fwo")" "$prot" "$(j "$bver")" "$jstate" "$(j "${join#* }")" "$(j "$mesh")" "$ch" "$cc" "$key" "$plink" "$nb" "$(j "$peers")" "${snr:-}" "${noise:-}" "${retry:-}" "$addr" "$ip" "$(j "$jdiag")" "$bat" "$thr" "$temp" "$cyc" "$pl" "$ncrash" "$njoin" "$(j "$fts")" "$(date +%Y-%m-%dT%H:%M:%S)"
+	printf '{"node":"%s","image":"%s","boot_id":"%s","uptime_s":%s,"health":{"level":"%s","verdict":"%s","checks":[%s]},"last_boot_reason":"%s","last_ota":"%s","last_s2":"%s","last_arm":"%s","fw_override":"%s","fw_protection":"%s","ota_hold":"%s","batman_version":"%s","join":{"state":"%s","detail":"%s","mesh_id":"%s","channel":"%s","country":"%s","key":"%s","plinks":%s,"batman_neighbours":%s,"peers":"%s","snr_db":"%s","noise_dbm":"%s","tx_retry_pct":"%s","address":"%s","ip":"%s"},"last_join_diagnosis":"%s","battery":"%s","throttled":"%s","temp_c":"%s","boots_since_join":%s,"power_loss_since_join":%s,"evidence":{"crash_files":%s,"join_log_lines":%s},"tenants":"%s","time":"%s"}\n' \
+		"$(j "$host")" "$(j "$ver")" "$bid" "$u" "$WORST" "$(j "$verdict")" "$chk" "$(j "$last")" "$(j "${lota:-none recorded}")" "$(j "$ls2")" "$(j "$larm")" "$(j "$fwo")" "$prot" "$(j "$ohold")" "$(j "$bver")" "$jstate" "$(j "${join#* }")" "$(j "$mesh")" "$ch" "$cc" "$key" "$plink" "$nb" "$(j "$peers")" "${snr:-}" "${noise:-}" "${retry:-}" "$addr" "$ip" "$(j "$jdiag")" "$bat" "$thr" "$temp" "$cyc" "$pl" "$ncrash" "$njoin" "$(j "$fts")" "$(date +%Y-%m-%dT%H:%M:%S)"
 	exit 0
 fi
 cat <<EOF
@@ -129,6 +136,7 @@ DIAGNOSIS ${jdiag:-none recorded (never failed to join)}
 POWER     battery=$bat throttled=$thr temp=${temp}C   $cycdesc
 TENANTS   ${fts:-none}
 LAST OTA  $(l=$(grep -v " SKIP-ONCE " /opt/batdata/log/autocommit.log 2>/dev/null | tail -1 | cut -d' ' -f2-); echo "${l:-none recorded}")
+OTA HOLD  ${ohold:-none}
 CHECKS
 $(printf '%s' "$CHECKS" | awk -F'|' 'NF==3{printf "    [%s] %s: %s\n",$1,$2,$3}')
 LAST 3 BOOTS
