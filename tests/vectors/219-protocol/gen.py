@@ -88,7 +88,7 @@ def u32be(n: int) -> bytes:
 
 # ------------------------------------------------------------------ fixed inputs
 DEVICE_ID = "BATMAN-TEST01"
-SN = bytes.fromhex("0123456789abcdef01")          # 608B serial (9 B)
+SN = bytes.fromhex("0123a5f0c3e1b74dee")          # 608B serial (9 B): 01 23 .. EE like a real ATECC608; synthetic (#267: must not contain the lab-key literal the leak canary blocks)
 BOOT_ID = seed("boot_id")[:16]
 NET_ID = seed("net_id")[:16]
 NET_VERSION = 1
