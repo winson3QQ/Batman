@@ -838,9 +838,12 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY and rebuil
   # Before #274 the guardian's stop was a no-op (wrong manifest name) and dockerd revived the old containers,
   # so postgres was killed at every reboot ("not properly shut down; automatic recovery") and a changed
   # manifest never reached the containers. Asserts, on the boot after a plain `reboot`:
-  #   1 ots-db's first start log says "database system was shut down at" (graceful), not "not properly shut down"
-  #   2 every manifest container was created during THIS boot and carries the current config label
-  # DV_TEST_274_NOSTOP=1: remove the guardian's K stop link for this reboot (negative control: 1 must FAIL).
+  #   1 ots-db's start log says "database system was shut down at" (graceful), not "not properly shut down" —
+  #     guards against a stop that SIGKILLs (docker rm -f); a plain reboot's procd SIGTERM alone also passes
+  #     this, so 1 cannot tell whether the guardian's stop ran (measured 2026-10-07)
+  #   2 every manifest container was created during THIS boot and carries the current config label — only true
+  #     if the stop removed them (else dockerd revives the old ones and the unchanged label keeps them)
+  # DV_TEST_274_NOSTOP=1: remove the guardian's K stop link for this reboot (negative control: 2 must FAIL).
   local n=$1 rc=0 t l
   fssh "$n" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1' || { echo "FAIL no payload guardian on this Pi 4"; return 1; }
   if [ "${DV_TEST_274_NOSTOP:-0}" = 1 ]; then
