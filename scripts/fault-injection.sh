@@ -4,7 +4,7 @@
 # breaks a slot's docker runtime. Runs from an operator box that can ssh the node (default key).
 # daily-validation.sh invokes it only under AB_MODE=--destructive, one case per suite (fi-f2/f1/r2/r1).
 #
-#   scripts/fault-injection.sh <ots-node> [--case f1|f2|r2|r1|all]   (default: all)
+#   scripts/fault-injection.sh <ots-node> [--case f1|f2|r2|r1|r3|all]   (default: all)
 #
 # Env:
 #   FI_PAYLOAD      payload ON THE NODE that R2/R1 OTA-flash (default /opt/batdata/ota.tar.gz)
@@ -18,7 +18,9 @@
 #   R2  a first-loading tenant is NON-GATING (per-boot latch) so autocommit commits, not false-reverts
 #   R1  a trial whose docker ENGINE answers `docker info` but cannot `docker run` (broken runc) fails
 #       the autocommit canary and REVERTS to the good committed slot. KNOWN GAP #265: the canary latches
-#       on its first success and is not re-run before commit, so runc broken AFTER the latch is committed.
+#       on its first success; v2.4 re-runs it before every commit. R1 holds the trial (#261 hold-commit),
+#       breaks runc, releases — the pre-commit canary must refuse and the watchdog revert.
+#   R3  a healthy trial with hold-commit stays uncommitted until `batman-autocommit release`, then commits (#261)
 set -uo pipefail
 NODE=${1:?usage: fault-injection.sh <ots-node> [--case f1|f2|r2|r1|all]}
 CASE=${3:-all}; [ "${2:-}" = --case ] && CASE=${3:-all}
@@ -46,6 +48,8 @@ restore_node(){
   echo "== restore_node"
   waitup 50 || { no "restore: node unreachable after 300 s — restore NOT done, node may be degraded"; return 1; }
   local moved i
+  # a hold-commit flag left on p6 by an aborted R1/R3 would hold — then revert — the NEXT, unrelated OTA
+  n 'rm -f /opt/batdata/state/autocommit-hold-commit; sync' 2>/dev/null
   moved=$(n 'm=""; for p in /usr/bin/runc /usr/sbin/runc; do [ -f "$p.off" ] && [ ! -e "$p" ] && mv "$p.off" "$p" && m="$m $p"; done; echo "$m"' 2>/dev/null | tr -d '\r')
   [ -n "$moved" ] && echo "    put back:$moved (slot $(slot))"
   if [ -n "$moved" ] || ! n 'pidof dockerd >/dev/null' 2>/dev/null; then
@@ -118,39 +122,78 @@ r2(){ echo "== R2 first-loading tenant is non-gating (no false revert) =="
   [ "$c" = 1 ] && [ -n "$latch" ] && ok "R2 committed while r2test first-loading (latch present) — non-gating, no false revert" || no "R2 did not commit / no latch (committed=$c latch=$latch)"
   n "rm -rf $APPS/r2test; rm -f /tmp/batman-firstload-r2test.latch"; }
 
-r1(){ echo "== R1 docker-run-broken trial -> canary reverts to good slot =="
-  precheck || return
-  local pre; pre=$(slot); n "setsid sh -c 'sysupgrade -n $PAYLOAD >/opt/batdata/sysup.log 2>&1' </dev/null >/dev/null 2>&1 &"; sleep 50; waitup 60 || { no "R1 trial did not come up"; return; }
+# R1/R3 use the #261 hold-commit (ab-autocommit v2.4) so nothing races: the trial is held, the fault is
+# injected (R1) or not (R3), THEN released — the commit decision happens strictly after.
+nodever(){ n 'sed -n s/^BATMAN_VERSION=//p /etc/batman-build' 2>/dev/null | tr -d '\r'; }
+bootid(){ n 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null | tr -d '\r'; }
+# OTA the staged payload into a HELD trial; on success sets HT (the trial slot). Not run in $(...): its FAILs must count.
+HT=""
+isint(){ case "$1" in ""|*[!0-9]*) return 1;; esac; }
+held_trial(){ local tag=$1 pre=$2 ver; HT=""
+  ver=$(nodever); [ -n "$ver" ] || { no "$tag: node version unreadable"; return 1; }
+  n "echo '$ver' > /opt/batdata/state/autocommit-hold-commit; sync" || { no "$tag: could not arm hold-commit"; return 1; }
+  n "setsid sh -c 'sysupgrade -n $PAYLOAD >/opt/batdata/sysup.log 2>&1' </dev/null >/dev/null 2>&1 &"; sleep 50
+  waitup 60 || { no "$tag: trial did not come up"; return 1; }
   sleep 8
-  # Only break runc once we are REALLY on the trial slot. On the Pi 4 EEPROM 2026-09-23 an armed
-  # tryboot can no-op (the wrong-slot bug, docs/design/explicit-reboot.md): the "trial" boot can come
-  # back on the committed slot. Renaming runc then would cripple docker on the GOOD slot. Refuse instead.
-  if [ "$(slot)" = "$pre" ]; then
-    no "R1 trial did not switch off committed slot $pre (EEPROM wrong-slot no-op?) — NOT breaking runc on the good slot"; return
-  fi
-  # #265 diagnostics: was the canary already latched when runc was broken? (busybox has no stat: date -r)
-  local diag; diag=$(n 'now=$(date +%s); up=$(cut -d. -f1 /proc/uptime); l=$(date -r /tmp/autocommit.canary-ok +%s 2>/dev/null)
-    for p in /usr/bin/runc /usr/sbin/runc; do [ -f "$p" ] && { mv "$p" "$p.off"; break; }; done
-    if [ -n "$l" ]; then echo "latched $((now - l))s before injection (uptime ${up}s)"; else echo "not latched at injection (uptime ${up}s)"; fi' 2>/dev/null | tr -d '\r')
-  R1_BROKE=1; R1_SLOT=$(slot); echo "    injection on trial slot $R1_SLOT: canary $diag"
-  local tag info run tagd=""
-  tag=$(n "docker images batman-canary --format '{{.Tag}}' | head -1" 2>/dev/null | tr -d '\r ')
-  info=$(n 'docker info >/dev/null 2>&1 && echo OK || echo FAIL' 2>/dev/null|tr -d "\r\n ")
-  # run the canary image as it exists (tagged). Not `batman-autocommit canary` during the trial: the
-  # autocommit daemon may be running and that command rmi's old tags (race).
-  run=$(n "[ -n '$tag' ] && docker run --rm --network none batman-canary:$tag /bin/busybox true >/dev/null 2>&1 && echo OK || echo FAIL" 2>/dev/null|tr -d "\r\n ")
-  echo "    trial: docker info=$info  canary(batman-canary:${tag:-none}) run=$run"
-  local stilltrial=1; for _ in $(seq 1 8); do committed && { stilltrial=0; break; }; sleep 9; done
-  case "$diag" in latched*) tagd=" [CANARY-LATCHED-BEFORE-INJECTION $(echo "$diag" | sed -n 's/^latched \([0-9]*\)s.*/\1/p')s]";; esac
-  [ "$stilltrial" = 1 ] && ok "R1 autocommit REFUSED to commit the docker-run-broken trial" || no "R1 committed a broken trial (BAD)$tagd"
-  n 'sync; reboot' 2>/dev/null; sleep 55; waitup 40 || { no "R1 node did not return after revert"; return; }; sleep 20
-  local post crun; post=$(slot); crun=$(n 'batman-autocommit canary >/dev/null 2>&1 && echo OK || echo FAIL' 2>/dev/null|tr -d "\r\n ")
-  if committed && ots_up && [ "$crun" = OK ]; then ok "R1 reverted to good committed slot $post; canary=$crun, OTS 6/6 (runc intact)"
-  else no "R1 did not revert to a healthy slot (post=$post committed/ots/canary=$crun)"; restore_node; fi; }
+  # Pi 4 EEPROM 2026-09-23 wrong-slot no-op: the "trial" can come back on the committed slot. Never inject there.
+  [ "$(slot)" != "$pre" ] || { no "$tag: trial did not switch off committed slot $pre (EEPROM wrong-slot no-op?) — not injecting on the good slot"; return 1; }
+  n 'batman-slot is-trial >/dev/null 2>&1; [ $? = 0 ]' || { no "$tag: booted slot is not an uncommitted trial"; return 1; }
+  n '[ ! -e /opt/batdata/state/autocommit-hold-commit ] && [ -f /tmp/autocommit.ctl/hold-commit ]' \
+    || { no "$tag: hold-commit not consumed into this trial (p6 flag still there or no marker) — v2.4 autocommit missing?"; return 1; }
+  HT=$(slot); }
+
+r1(){ echo "== R1 docker-run-broken trial is NOT committed and reverts (hold -> break runc -> release) =="
+  precheck || return
+  local pre tr b0 dl i post crun log
+  pre=$(slot); held_trial R1 "$pre" || return; tr=$HT
+  echo "    trial on slot $tr (held); breaking runc"
+  n 'for p in /usr/bin/runc /usr/sbin/runc; do [ -f "$p" ] && { mv "$p" "$p.off"; break; }; done'; R1_BROKE=1; R1_SLOT=$tr
+  n 'docker info >/dev/null 2>&1' && echo "    trial: docker engine still answers (docker run cannot)"
+  b0=$(bootid); dl=$(n 'cat /tmp/autocommit.deadline' 2>/dev/null | tr -d '\r ')
+  isint "$dl" || { no "R1: no autocommit deadline on the trial"; return; }
+  n 'batman-autocommit release' 2>&1 | sed 's/^/    /'
+  n '[ -f /tmp/autocommit.ctl/released ]' || { no "R1: release did not take effect (no released marker) — would revert for 'held', not for the canary"; return; }
+  # now the pre-commit canary must refuse; the watchdog reverts at the deadline (no manual reboot here)
+  echo "    released; waiting for the watchdog revert (deadline uptime ${dl}s)"
+  for i in $(seq 1 $(( (dl + 180) / 10 ))); do
+    [ "$(bootid)" != "$b0" ] && [ -n "$(bootid)" ] && break
+    n '[ -f /tmp/autocommit.committed ]' 2>/dev/null && { no "R1 committed a broken trial (BAD) despite the pre-commit canary"; break; }
+    sleep 10
+  done
+  waitup 60 || { no "R1 node did not return after the revert"; return; }; sleep 20
+  post=$(slot); crun=$(n 'batman-autocommit canary >/dev/null 2>&1 && echo OK || echo FAIL' 2>/dev/null | tr -d '\r\n ')
+  log=$(n "tail -6 /opt/batdata/log/autocommit.log" 2>/dev/null | tr -d '\r'); echo "$log" | sed 's/^/    aclog: /'
+  echo "$log" | grep -q "PRECOMMIT-CANARY-FAIL .*slot=$tr" || no "R1: no PRECOMMIT-CANARY-FAIL for trial slot $tr in autocommit.log"
+  echo "$log" | grep "TRIAL-REVERTED .*slot=$tr" | grep -q 'reason=.*canary' || no "R1: TRIAL-REVERTED for slot $tr missing or its reason is not the canary"
+  echo "$log" | grep "TRIAL-REVERTED .*slot=$tr" | grep -q 'held for operator' && no "R1: reverted because still HELD, not because of the canary"
+  n "grep -q '^slot=$tr ' /opt/batdata/state/bad-slot" || no "R1: bad-slot does not record trial slot $tr"
+  if [ "$post" = "$pre" ] && committed && ots_up && [ "$crun" = OK ]; then ok "R1 broken trial $tr refused at the pre-commit canary and reverted to committed slot $pre; canary OK, OTS 6/6"
+  else no "R1 did not end on the good committed slot (pre=$pre post=$post committed/ots/canary=$crun)"; restore_node; fi
+  echo "    NOTE: slot $tr keeps runc.off until its next OTA rewrites it (bad-slot records it: never committed as a stale fallback)"; }
+
+r3(){ echo "== R3 healthy held trial waits for release, then commits (#261) =="
+  precheck || return
+  local pre tr w u
+  pre=$(slot); held_trial R3 "$pre" || return; tr=$HT
+  echo "    trial on slot $tr (held); must stay uncommitted until uptime 240 s with ONLY the hold as reason"
+  while :; do
+    u=$(n 'cut -d. -f1 /proc/uptime' 2>/dev/null | tr -d '\r ')
+    n '[ -f /tmp/autocommit.committed ]' 2>/dev/null && { no "R3 committed while HELD (uptime ${u}s)"; return; }
+    w=$(n 'cat /tmp/autocommit.why' 2>/dev/null | tr -d '\r')
+    case "${u:-0}" in *[!0-9]*) u=0;; esac
+    [ "${u:-0}" -ge 240 ] && break
+    sleep 10
+  done
+  [ "$w" = "held for operator acceptance (batman-autocommit release)" ] || { no "R3: at ${u}s the trial was not healthy-and-held (why: [$w])"; return; }
+  echo "    uptime ${u}s, still uncommitted, why=[held only]; releasing"
+  local t0=$SECONDS o; o=$(n 'batman-autocommit release --wait' 2>&1 | tr -d '\r'); echo "$o" | sed 's/^/    /'
+  echo "$o" | grep -q 'release: committed' || { no "R3: release --wait did not end committed"; return; }
+  [ $((SECONDS - t0)) -le 60 ] || no "R3: commit took $((SECONDS - t0)) s after release (> 60 s)"
+  committed && ots_up && ok "R3 healthy trial $tr held until release, then committed; OTS 6/6" || no "R3: after release not committed/OTS (committed=$(committed && echo y || echo n))"; }
 
 echo "=== fault-injection on $NODE (case=$CASE) ==="
 committed || echo "WARN: node not on a committed slot; some cases assume a clean committed start"
-case "$CASE" in f2) f2;; f1) f1;; r2) r2;; r1) r1;; all) f2; f1; r2; r1;; *) echo "unknown case $CASE"; exit 2;; esac
+case "$CASE" in f2) f2;; f1) f1;; r2) r2;; r1) r1;; r3) r3;; all) f2; f1; r2; r1; r3;; *) echo "unknown case $CASE"; exit 2;; esac
 restore_node
 echo "================ fault-injection: $PASS passed, $FAIL failed ================"
 [ "$FAIL" = 0 ]
