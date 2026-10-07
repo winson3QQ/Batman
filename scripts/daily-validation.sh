@@ -306,24 +306,24 @@ chk_conform() { local up; up=$(tr -d ' \r\n' < "$REPO/deploy/ots/patches/UPSTREA
   for d in /opt/batdata/apps/*/; do
     man=$(ls "$d"*.manifest 2>/dev/null | head -1); [ -n "$man" ] || continue
     t=${d%/}; t=${t##*/}; checked=1
-    want=$(payload-run --cfg-hash "$t" 2>/dev/null); [ -n "$want" ] || { echo "$t: payload-run --cfg-hash gave nothing"; rc=1; }
+    want=$(payload-run --cfg-hash "$t" 2>/dev/null); [ -n "$want" ] || { echo "FAIL $t: payload-run --cfg-hash gave nothing"; rc=1; }
     c=""; img=""
     while read -r k v; do
       case "$k" in
         CONTAINER) c=$v
           s=$(docker inspect -f "{{.State.Status}} {{.State.Restarting}} {{index .Config.Labels \"batman.cfg\"}}" "$c" 2>/dev/null)
-          [ "$s" = "running false $want" ] || { echo "$t/$c [status restarting cfg]=[$s] want [running false $want]"; rc=1; } ;;
+          [ "$s" = "running false $want" ] || { echo "FAIL $t/$c [status restarting cfg]=[$s] want [running false $want]"; rc=1; } ;;
         IMAGE) img=$v ;;
         MOUNT) src=${v%%:*}; r=${v#*:}; dst=${r%%:*}; ro=true; case "$v" in *:ro) ro=false ;; esac
-          case "$src" in /*) ;; *) src="$d$src"; [ -f "$src" ] || { echo "$t/$c mount source $src is not a regular file"; rc=1; } ;; esac
+          case "$src" in /*) ;; *) src="$d$src"; [ -f "$src" ] || { echo "FAIL $t/$c mount source $src is not a regular file"; rc=1; } ;; esac
           m=$(docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$dst\"}}{{.Source}} {{.RW}}{{end}}{{end}}" "$c" 2>/dev/null)
-          [ "$m" = "$src $ro" ] || { echo "$t/$c mount $dst = [$m] want [$src $ro]"; rc=1; }
+          [ "$m" = "$src $ro" ] || { echo "FAIL $t/$c mount $dst = [$m] want [$src $ro]"; rc=1; }
           case "$src" in */EudHandler-264.py)
             n=$(docker exec "$c" grep -c BATMAN-264-PA "$dst" 2>/dev/null)
-            [ "${n:-0}" -gt 0 ] 2>/dev/null || { echo "$t/$c does not run the #264 patched file (marker count ${n:-none})"; rc=1; }
+            [ "${n:-0}" -gt 0 ] 2>/dev/null || { echo "FAIL $t/$c does not run the #264 patched file (marker count ${n:-none})"; rc=1; }
             k2=$(docker create --pull=never "$img" 2>/dev/null)
             h=$( { docker cp "$k2:$SP" - 2>/dev/null | tar -xO; } | sha256sum | cut -d" " -f1); docker rm "$k2" >/dev/null 2>&1
-            [ "$h" = "$UP" ] || { echo "$t/$c image $img own EudHandler.py sha256 $h != pinned upstream $UP"; rc=1; }
+            [ "$h" = "$UP" ] || { echo "FAIL $t/$c image $img own EudHandler.py sha256 $h != pinned upstream $UP"; rc=1; }
             echo "$t/$c #264 overlay: marker=$n image-file=${h%${h#????????}}..." ;;
           esac ;;
       esac
