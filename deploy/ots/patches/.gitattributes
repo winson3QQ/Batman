@@ -1,0 +1,2 @@
+# #264: these files are byte-pinned (UPSTREAM_SHA256 round-trip via patch -R) — never let git rewrite EOLs
+* -text

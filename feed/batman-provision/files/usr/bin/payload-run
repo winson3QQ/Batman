@@ -10,13 +10,21 @@
 # can't consume the run-flag $HARDEN_FLAGS string). See docs/design/167-payload-manager.md.
 #
 # Usage:  payload-run <tenant>
+#         payload-run --cfg-hash <tenant>   # print the tenant's config fingerprint and exit (#274)
 # Env:    APPS_DIR (default /opt/batdata/apps) — the tenant lives at $APPS_DIR/<tenant>/, which
 #         holds: <tenant>.manifest, <tenant>.fw4.uci, *.hardening.env, secrets/. On the bench,
 #         point APPS_DIR at a dir containing <tenant>/ (e.g. deploy/).
+#
+# Config fingerprint (#274): every container gets --label batman.cfg=<cfg_hash>. The guardian
+# re-runs payload-run when a live container's label differs from `payload-run --cfg-hash`, so a
+# manifest / mounted file / hardening / image change delivered by an OTA (golden refresh) actually
+# reaches the containers — dockerd (live-restore + unless-stopped) otherwise revives the OLD ones.
 set -eu
 
+HASH_ONLY=0
+[ "${1:-}" = --cfg-hash ] && { HASH_ONLY=1; shift; }
 TENANT="${1:-}"
-[ -n "$TENANT" ] || { echo "usage: payload-run <tenant>" >&2; exit 2; }
+[ -n "$TENANT" ] || { echo "usage: payload-run [--cfg-hash] <tenant>" >&2; exit 2; }
 APPS_DIR="${APPS_DIR:-/opt/batdata/apps}"
 # #216 M6: default to never-pull (offline fleet: images come from baked tars / the local store), but
 # let a future online tenant override. Was hardcoded --pull=never at both docker-run sites.
@@ -27,6 +35,29 @@ DIR="$APPS_DIR/$TENANT"
 MANIFEST=""; for m in "$DIR"/*.manifest; do [ -f "$m" ] && { MANIFEST="$m"; break; }; done
 [ -n "$MANIFEST" ] || { echo "payload-run: no *.manifest in $DIR" >&2; exit 1; }
 command -v docker >/dev/null || { echo "payload-run: docker not installed" >&2; exit 1; }
+
+# cfg_hash: sha256 over an unambiguous, line-per-input list (#274 review R4): a version tag (bump
+# CFG_VER whenever this script's rendering of a manifest into `docker run` flags changes), the
+# manifest, every HARDEN env file and MOUNT source (by content; a missing one is the literal
+# MISSING so the hash stays deterministic), and every IMAGE's local image ID (a re-tagged/reloaded
+# image converges too). Never fails: the guardian must get a stable value even for a broken tenant.
+CFG_VER=cfg-v1
+cfg_hash(){
+	{
+		echo "$CFG_VER"
+		echo "MANIFEST $(sha256sum < "$MANIFEST" | cut -d' ' -f1)"
+		awk '$1=="HARDEN" || $1=="MOUNT" || $1=="IMAGE" {print $1, $2}' "$MANIFEST" | while read -r k v; do
+			case "$k" in
+				IMAGE)  echo "IMAGE $v $(docker image inspect -f '{{.Id}}' "$v" 2>/dev/null || echo MISSING)"; continue ;;
+				HARDEN) f="$DIR/$v" ;;
+				MOUNT)  f=${v%%:*}; case "$f" in /*) : ;; *) f="$DIR/$f" ;; esac ;;
+			esac
+			if [ -f "$f" ]; then echo "$k $v $(sha256sum < "$f" | cut -d' ' -f1)"; else echo "$k $v MISSING"; fi
+		done
+	} | sha256sum | cut -d' ' -f1
+}
+if [ "$HASH_ONLY" = 1 ]; then cfg_hash; exit 0; fi
+CFG=$(cfg_hash)
 
 log(){ echo "payload-run[$TENANT]: $*"; }
 die(){ echo "payload-run[$TENANT]: FATAL: $*" >&2; exit 1; }
@@ -72,7 +103,12 @@ prechown(){   # $1 = spec, $2 = fallback image
 	pg=${pr%%:*}; pi=${pr#*:}
 	[ "$pg" = "$pi" ] && pi="$2"          # no explicit image field → use fallback
 	docker volume inspect "$pn" >/dev/null 2>&1 || docker volume create "$pn" >/dev/null
-	docker run --pull="$PULL_POLICY" --rm --user 0 -v "$pn:$pp" --entrypoint chown "$pi" -R "$pu:$pg" "$pp" >/dev/null 2>&1 \
+	# #274 R1(c): chown -R only when the volume root is not already $pu:$pg (a fresh volume is root-owned).
+	# A recursive chown on every recreate walks the whole CoT DB on the SD card and eats the autocommit
+	# window. The ownership test runs in the vehicle image (host busybox has no stat).
+	# shellcheck disable=SC2016  # $1..$3 expand inside the vehicle container's sh
+	docker run --pull="$PULL_POLICY" --rm --user 0 -v "$pn:$pp" --entrypoint sh "$pi" -c \
+		'find "$1" -maxdepth 0 -user "$2" -group "$3" | grep -q . || chown -R "$2:$3" "$1"' sh "$pp" "$pu" "$pg" >/dev/null 2>&1 \
 		|| log "WARN: prechown $pn ($pu:$pg) failed"
 }
 
@@ -87,16 +123,22 @@ for _c in $(awk '/^CONTAINER /{print $2}' "$MANIFEST"); do docker rm -f "$_c" >/
 
 # state for the current CONTAINER block
 NAME=""; IMG=""; IP=""; HOST=""; HARDEN=""; RESTART="$DEF_RESTART"
-EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""
+EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; BAD=0
 
 finish_block(){
 	[ -n "$NAME" ] || return 0
 	[ -n "$IMG" ] || die "container $NAME has no IMAGE"
+	docker rm -f "$NAME" >/dev/null 2>&1 || true
+	if [ "$BAD" = 1 ]; then
+		# a bad MOUNT source: do not start THIS container with a wrong/missing file (#264 F8); the
+		# rest of the stack still comes up, and the guardian's liveness verdict reports it as DRIFT.
+		log "WARN: $NAME NOT started (bad MOUNT source, see above)"; FAILED=1; return 0
+	fi
 	OLDIFS=$IFS; IFS=' '
 	for cz in $CHOWNS; do [ -n "$cz" ] && prechown "$cz" "$IMG"; done
 	IFS=$OLDIFS
 	# assemble: fixed opts + accumulated -e/-v ("$@") + $HARDEN_FLAGS + entrypoint + image + trailing args
-	set -- --name "$NAME" --hostname "${HOST:-$NAME}" --network "$NET" --restart "$RESTART" "$@"
+	set -- --name "$NAME" --hostname "${HOST:-$NAME}" --network "$NET" --restart "$RESTART" --label "batman.cfg=$CFG" "$@"
 	[ -n "$IP" ] && set -- --ip "$IP" "$@"
 	[ -n "$EP_HEAD" ] && set -- --entrypoint "$EP_HEAD" "$@"
 	if [ -n "$HARDEN" ] && [ -f "$DIR/$HARDEN" ]; then
@@ -106,7 +148,6 @@ finish_block(){
 		# shellcheck disable=SC2086  # flag string, no spaces-in-values → word-split on purpose
 		set -- $HARDEN_FLAGS "$@"
 	fi
-	docker rm -f "$NAME" >/dev/null 2>&1 || true
 	# shellcheck disable=SC2086  # EP_REST = trailing command args (may be empty) → split on purpose
 	docker run --pull="$PULL_POLICY" -d "$@" "$IMG" $EP_REST >/dev/null
 	log "started $NAME (${HARDEN:-no-harden})"
@@ -122,7 +163,7 @@ finish_block(){
 
 reset_block(){
 	NAME="$1"; IMG=""; IP=""; HOST=""; HARDEN=""; RESTART="$DEF_RESTART"
-	EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""
+	EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; BAD=0
 }
 
 # The per-container -e/-v accumulator is the MAIN shell's positional params ($@). finish_block is a
@@ -142,9 +183,19 @@ while read -r key rest || [ -n "$key" ]; do
 		VOLUME)       vn=${rest%%:*}; vtail=${rest#*:}; vpath=${vtail%%:*}
 		              set -- "$@" -v "$vn:$vpath"
 		              case "$rest" in *:*:*:*) CHOWNS="$CHOWNS $rest" ;; esac ;;
-		MOUNT)        # a relative src (config file shipped in the tenant dir) resolves against $DIR
-		              case "$rest" in /*) : ;; *) rest="$DIR/$rest" ;; esac
-		              set -- "$@" -v "$rest" ;;
+		MOUNT)        # <src>:<dst>[:ro]. A relative src (a config file shipped in the tenant dir) resolves
+		              # against $DIR and must be a regular FILE. --mount, not -v: -v silently creates a
+		              # missing source as an empty root-owned DIRECTORY (then the start fails and the
+		              # leftover dir blocks the golden refresh for good — #264 review F8).
+		              msrc=${rest%%:*}; mtail=${rest#*:}; mdst=${mtail%%:*}; mro=""
+		              case "$mtail" in *:ro) mro=",readonly" ;; esac
+		              case "$msrc" in
+		                  /*) [ -e "$msrc" ] || { log "WARN: $NAME MOUNT source $msrc missing"; BAD=1; } ;;
+		                  *)  msrc="$DIR/$msrc"
+		                      [ -f "$msrc" ] || { log "WARN: $NAME MOUNT source $msrc is not a regular file"; BAD=1; } ;;
+		              esac
+		              case "$msrc$mdst" in *,*) log "WARN: $NAME MOUNT path contains a comma"; BAD=1 ;; esac
+		              set -- "$@" --mount "type=bind,source=$msrc,target=$mdst$mro" ;;
 		SECRET)       sname=${rest%% *}; srest=${rest#* }; smount=${srest%% *}
 		              case "$srest" in *" "*) suid=${srest#* } ;; *) suid="" ;; esac
 		              if [ -f "$DIR/secrets/$sname" ]; then

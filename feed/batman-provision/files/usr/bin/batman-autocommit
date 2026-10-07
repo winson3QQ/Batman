@@ -154,8 +154,11 @@ revert_watchdog(){
 	# images (the p6 docker store is shared with the committed slot)
 	d=0
 	while [ $d -lt $DEFER_MAX ]; do
-		if [ -e /tmp/batman-slot.busy ] || slot_writer_alive || { ls /tmp/batman-firstload-*.latch >/dev/null 2>&1 && pgrep -f "docker load" >/dev/null 2>&1; }; then
-			[ $d -eq 0 ] && log "revert deferred: slot write or first-load in progress (max ${DEFER_MAX}s)"
+		# #274: also while a payload guardian is rebuilding its stack for a changed config (post-OTA the whole
+		# stack is recreated once) — bounded by DEFER_MAX like the rest, never a hold.
+		if [ -e /tmp/batman-slot.busy ] || slot_writer_alive || { ls /tmp/batman-firstload-*.latch >/dev/null 2>&1 && pgrep -f "docker load" >/dev/null 2>&1; } \
+			|| { ls /tmp/batman-payload-*.converging >/dev/null 2>&1 && pgrep -f "/usr/bin/payload-run " >/dev/null 2>&1; }; then
+			[ $d -eq 0 ] && log "revert deferred: slot write, first-load or payload rebuild in progress (max ${DEFER_MAX}s)"
 			sleep 10; d=$((d + 10))
 		else break; fi
 	done

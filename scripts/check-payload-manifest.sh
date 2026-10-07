@@ -69,5 +69,23 @@ if [ -f "$MK" ]; then
 	fi
 fi
 
-[ "$rc" = 0 ] && echo "OK: payload artifacts in sync + no tenant collisions + golden source present"
+# --- 4) mounted files (#264/#274). (a) every RELATIVE MOUNT source in a committed manifest must be
+#     installed into the payload golden by $MK — otherwise nodes never get the file and the container is
+#     skipped (payload-run refuses a missing mount source). (b) an OpenTAKServer source overlay is made for
+#     one exact upstream file: the EudHandler-264.py mount is only allowed on the image it was made from.
+#     (c) the overlay itself is consistent (pinned upstream + patch == shipped file; offline tests pass). ---
+for man in deploy/*/*.manifest; do
+	[ -f "$man" ] || continue
+	for src in $(awk '$1=="MOUNT"{split($2,a,":"); if (a[1] !~ /^\//) print a[1]}' "$man" | sort -u); do
+		grep -Eq "\\\$\\(INSTALL_(BIN|DATA)\\).*/payload-golden/[A-Za-z0-9._-]+/$src([[:space:]]|\$)" "$MK" 2>/dev/null \
+			|| { echo "FAIL: $man mounts '$src' but $MK does not install it into the payload golden"; rc=1; }
+	done
+	bad=$(awk '$1=="CONTAINER"{img=""} $1=="IMAGE"{img=$2} $1=="MOUNT" && $2 ~ /^EudHandler-264\.py:/ && img!="batman/ots:1.7.13-arm64"{print img}' "$man")
+	[ -z "$bad" ] || { echo "FAIL: $man mounts EudHandler-264.py on image(s) '$bad' — it is made for batman/ots:1.7.13-arm64 only (deploy/ots/patches/README.md)"; rc=1; }
+done
+if [ -f deploy/ots/patches/check-eudhandler-264.sh ]; then
+	sh deploy/ots/patches/check-eudhandler-264.sh >/dev/null 2>&1 || { echo "FAIL: deploy/ots/patches inconsistent:"; sh deploy/ots/patches/check-eudhandler-264.sh 2>&1 | sed 's/^/  /'; rc=1; }
+fi
+
+[ "$rc" = 0 ] && echo "OK: payload artifacts in sync + no tenant collisions + golden source present + mounts installed/pinned"
 exit "$rc"

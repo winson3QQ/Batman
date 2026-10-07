@@ -53,9 +53,23 @@ start_service() {
 		# #206: bring the stack up if ANY manifest container is not running, not just PRIMARY. PRIMARY is ots-db,
 		# which the restart policy revives on its own after a reboot — a PRIMARY-only check would see it running
 		# and never rebuild a dead opentakserver/parser (guardian blind-spot). payload-run applies fw4 + is idempotent.
+		# #274: ...and also if any container was NOT created from the current config. dockerd (live-restore,
+		# unless-stopped) revives the OLD containers after an OTA, so a golden-refreshed manifest/mount/image
+		# would otherwise never take effect. payload-run labels every container with its config fingerprint;
+		# a missing/different label means rebuild. Liveness = Status running AND not Restarting (#264 R2: a
+		# crash-looping container in restart backoff still reports State.Running=true).
+		# While the rebuild runs, a latch tells batman-autocommit the tenant is converging (bounded deferral).
+		CFG=$(payload-run --cfg-hash "$T" 2>/dev/null)
 		_need=0; for c in $(awk "/^CONTAINER /{print \$2}" "$MANIFEST"); do
-			docker inspect -f "{{.State.Running}}" "$c" 2>/dev/null | grep -q true || _need=1; done
-		[ "$_need" = 1 ] && payload-run "$T"
+			s=$(docker inspect -f "{{.State.Status}} {{.State.Restarting}} {{index .Config.Labels \"batman.cfg\"}}" "$c" 2>/dev/null)
+			# a missing label renders as "" — so an empty CFG must never count as a match
+			[ -n "$CFG" ] && [ "$s" = "running false $CFG" ] || _need=1; done
+		if [ "$_need" = 1 ]; then
+			echo "batman-payload[$T]: (re)building the stack (container down or config fingerprint changed)"
+			touch "/tmp/batman-payload-$T.converging"
+			payload-run "$T"
+			rm -f "/tmp/batman-payload-$T.converging"
+		fi
 		# Reconcile loop — #156 Phase 1 = ALARM-ONLY (no destructive re-assert here; that is #97/#156
 		# Phase 2). Each tick: optional in-place resource correction, then verify, publish a verdict.
 		while docker inspect -f "{{.State.Running}}" "$PRIMARY" >/dev/null 2>&1; do
@@ -64,7 +78,7 @@ start_service() {
 			# #206: liveness is part of the verdict — a manifest container being down (e.g. opentakserver
 			# crash-looping while PRIMARY ots-db stays up) must surface as DRIFT, not a silent OK.
 			for c in $(awk "/^CONTAINER /{print \$2}" "$MANIFEST"); do
-				docker inspect -f "{{.State.Running}}" "$c" 2>/dev/null | grep -q true || { st=DRIFT; echo "container $c NOT running" >>"$VERIFY_LOG"; }
+				docker inspect -f "{{.State.Status}} {{.State.Restarting}}" "$c" 2>/dev/null | grep -qx "running false" || { st=DRIFT; echo "container $c NOT running" >>"$VERIFY_LOG"; }
 			done
 			# only the tenant ROLLUP scripts (verify-profile-<tenant>.sh, with the dash) — NOT the
 			# low-level helper verify-profile.sh (no dash; it needs an <app> arg and would false-alarm).
@@ -86,11 +100,14 @@ start_service() {
 
 stop_service() {
 	# Tear down the tenant's containers (names read from its manifest, reverse lifecycle order).
-	_M="$_DIR/$_T.manifest"
-	[ -f "$_M" ] || return 0
-	# collect names, then rm -f in reverse
+	# Glob the manifest like payload-run does: the on-node name keeps the deploy-dir name (ots.manifest),
+	# so the old "$_T.manifest" never matched and stop was a silent no-op (#274).
+	_M=$(ls "$_DIR"/*.manifest 2>/dev/null | head -1)
+	[ -n "$_M" ] || return 0
 	_names=$(awk '/^CONTAINER /{print $2}' "$_M")
 	_rev=""
 	for _n in $_names; do _rev="$_n $_rev"; done
-	for _n in $_rev; do docker rm -f "$_n" >/dev/null 2>&1 || true; done
+	# graceful first (#264 R3: postgres/rabbitmq must not be SIGKILLed on every clean reboot/restart),
+	# then remove so the next start rebuilds from the manifest.
+	for _n in $_rev; do docker stop -t 20 "$_n" >/dev/null 2>&1 || true; docker rm -f "$_n" >/dev/null 2>&1 || true; done
 }

@@ -110,6 +110,8 @@ normally run comes back green.
 
 ## License
 
-Repository content is MIT (see [`LICENSE`](LICENSE)).
-The patch in `patches/` applies to Morse Micro's driver, which is GPL-2.0-or-later;
-the patch is offered under the same terms as the code it modifies.
+Repository content is MIT (see [`LICENSE`](LICENSE)), except where noted:
+- The patch in `patches/` applies to Morse Micro's driver, which is GPL-2.0-or-later;
+  the patch is offered under the same terms as the code it modifies.
+- `deploy/ots/patches/` contains a modified OpenTAKServer source file and its patch/generator,
+  which are GPL-3.0-or-later like OpenTAKServer itself (see that directory's README).

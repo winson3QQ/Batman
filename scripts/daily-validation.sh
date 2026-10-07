@@ -236,6 +236,45 @@ chk_golden() { fssh "$1" 30 '                                  # payload-config-
   done
   [ "$checked" = 1 ] || echo "no provisioned tenant on this node — nothing to check"
   echo "golden-config rc=$rc"; [ "$rc" = 0 ]'; }
+chk_conform() { local up; up=$(tr -d ' \r\n' < "$REPO/deploy/ots/patches/UPSTREAM_SHA256" 2>/dev/null)
+  fssh "$1" 90 '                                                # #274 / #264 G4
+  # The LIVE containers are what the manifest says, not just the files on p6 (chk_golden): (1) every
+  # container is running (not restart-looping) AND carries the current config fingerprint label
+  # (payload-run --cfg-hash) — after an OTA dockerd revives the OLD containers unless the guardian
+  # rebuilt them; (2) every MOUNT is present with the right source and RO/RW, source a regular file;
+  # (3) #264: the eud containers really run the patched file (marker), and the image own (unmounted)
+  # EudHandler.py is the upstream file the overlay was made for (docker create + cp, nothing executes).
+  UP='"$up"'
+  SP=/app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py
+  rc=0; checked=0
+  for d in /opt/batdata/apps/*/; do
+    man=$(ls "$d"*.manifest 2>/dev/null | head -1); [ -n "$man" ] || continue
+    t=${d%/}; t=${t##*/}; checked=1
+    want=$(payload-run --cfg-hash "$t" 2>/dev/null); [ -n "$want" ] || { echo "$t: payload-run --cfg-hash gave nothing"; rc=1; }
+    c=""; img=""
+    while read -r k v; do
+      case "$k" in
+        CONTAINER) c=$v
+          s=$(docker inspect -f "{{.State.Status}} {{.State.Restarting}} {{index .Config.Labels \"batman.cfg\"}}" "$c" 2>/dev/null)
+          [ "$s" = "running false $want" ] || { echo "$t/$c [status restarting cfg]=[$s] want [running false $want]"; rc=1; } ;;
+        IMAGE) img=$v ;;
+        MOUNT) src=${v%%:*}; r=${v#*:}; dst=${r%%:*}; ro=true; case "$v" in *:ro) ro=false ;; esac
+          case "$src" in /*) ;; *) src="$d$src"; [ -f "$src" ] || { echo "$t/$c mount source $src is not a regular file"; rc=1; } ;; esac
+          m=$(docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$dst\"}}{{.Source}} {{.RW}}{{end}}{{end}}" "$c" 2>/dev/null)
+          [ "$m" = "$src $ro" ] || { echo "$t/$c mount $dst = [$m] want [$src $ro]"; rc=1; }
+          case "$src" in */EudHandler-264.py)
+            n=$(docker exec "$c" grep -c BATMAN-264-PA "$dst" 2>/dev/null)
+            [ "${n:-0}" -gt 0 ] 2>/dev/null || { echo "$t/$c does not run the #264 patched file (marker count ${n:-none})"; rc=1; }
+            k2=$(docker create --pull=never "$img" 2>/dev/null)
+            h=$( { docker cp "$k2:$SP" - 2>/dev/null | tar -xO; } | sha256sum | cut -d" " -f1); docker rm "$k2" >/dev/null 2>&1
+            [ "$h" = "$UP" ] || { echo "$t/$c image $img own EudHandler.py sha256 $h != pinned upstream $UP"; rc=1; }
+            echo "$t/$c #264 overlay: marker=$n image-file=${h%${h#????????}}..." ;;
+          esac ;;
+      esac
+    done < "$man"
+  done
+  [ "$checked" = 1 ] || echo "no provisioned tenant on this node — nothing to check"
+  echo "payload-conform rc=$rc"; [ "$rc" = 0 ]'; }
 chk_tput() { fssh "$1" 170 '                                   # sustained-ish mesh throughput
   # A single batctl tp is jittery (seen 0.5-6 Mbps); take the MEDIAN of N runs so a real regression
   # (dead link / MCS collapse) is caught without false-failing on jitter. Baseline = soak-30min-4mhz
@@ -653,6 +692,7 @@ elif up "$OTS_NODE"; then
   suite payload-mgr-167  "OTS on the generic payload manager, old guardian gone (#167)"       "chk_167g $OTS_NODE"
   suite arbiter-167      "port/zone arbiter REFUSES a colliding tenant (#167, white-box)"      "chk_167a $OTS_NODE"
   suite payload-config-golden "p6 tenant config == baked golden + unless-stopped + images present (payload-config-golden.md)" "chk_golden $OTS_NODE"
+  suite payload-conform "live containers == manifest: running + config-fingerprint label + MOUNTs (src/RO) + #264 overlay marker & image upstream file (#274/#264)" "chk_conform $OTS_NODE"
   suite flashgo-159      "flash-and-go integrity — firstload enabled, offline copies (F2), canary runs, autocommit gate (#159/#216)" "chk_flashgo $OTS_NODE"
   suite ots-cot-e2e-264  "CoT sent == stored per phase from $BENCH_NODE: P1 control, P2 deterministic truncation (A control / B #264-A), P3 burst; heartbeat (#264-B) NOT exercised (#268 B2)" "chk_cot_264 $OTS_NODE $BENCH_NODE"
 else
