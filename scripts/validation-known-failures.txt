@@ -1,0 +1,12 @@
+# Known, tracked failures (#268 C1). Read by daily-validation.sh to split the report into NEW vs KNOWN fails.
+# It never turns a FAIL green: the exit status stays 1 either way. A suite is KNOWN only if EVERY "FAIL ..." line
+# its log printed matches one of its patterns below; one unmatched FAIL line makes the whole suite NEW.
+# Some failures can never be listed (restore failed, cleanup failed, CONNECTION-LOST, reboot did not happen,
+# unreadable/not verified) — the harness refuses those patterns. With `gh` available, a closed issue = NEW.
+#
+# suite<TAB>ERE matched against one FAIL line<TAB>issue number (required)
+fi-r1	FAIL R1 committed a broken trial \(BAD\) \[CANARY-LATCHED-BEFORE-INJECTION [0-9]+s\]	265
+fi-r1	FAIL R1 did not revert to a healthy slot	265
+ots-cot-e2e-264	^FAIL P2B lost [0-9]+/[0-9]+	264
+ots-cot-e2e-264	^FAIL P3 lost [0-9]+/[0-9]+	264
+soak-cot-264	^FAIL CoT lost [0-9]+/[0-9]+	264
