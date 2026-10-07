@@ -607,6 +607,25 @@ chk_runc_247() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '   
   ( cd $d && runc spec >/dev/null 2>&1 && sed -i "s/\"terminal\": true/\"terminal\": false/; s/\"sh\"/\"\\/bin\\/busybox\",\"true\"/" config.json )
   o=$(cd $d && runc --debug run dv-runc247 </dev/null 2>&1); runc delete -f dv-runc247 >/dev/null 2>&1; rm -rf $d
   case "$o" in *"using overlayfs for sealed /proc/self/exe"*) echo "ok: runc $v, exe sealed via overlayfs" ;; *"could not use overlayfs"*) echo "exeseal fell back to copying the runc binary"; exit 1 ;; *) echo "no exeseal message from runc --debug run: $(echo "$o" | tail -2)"; exit 1 ;; esac' || rc=1; done; return $rc; }
+# #263 M0: joinwatch runs `batman-config-save --on-join` every ~15 s while a node is open; before the fix each
+# call mounted p5 rw (215 mounts/hour on 03, coinciding with the SPI stalls in the #263 crash logs). On every
+# reachable node, count p5 mounts (ext4 superblock s_mnt_count, read without mounting) over 90 s: a joined node
+# must not mount p5 at all. All nodes are sampled in the same window.
+chk_p5churn_263() { local n a b rc=0 tested=0; declare -A A
+  for n in "$@"; do A[$n]=$(fssh "$n" 15 'hexdump -s 1076 -n 2 -e "1/2 \"%u\"" /dev/mmcblk0p5 2>/dev/null; echo " $(cut -d" " -f1 /tmp/joinwatch.state 2>/dev/null)"'); done
+  sleep 90
+  for n in "$@"; do
+    b=$(fssh "$n" 15 'hexdump -s 1076 -n 2 -e "1/2 \"%u\"" /dev/mmcblk0p5 2>/dev/null; echo " $(cut -d" " -f1 /tmp/joinwatch.state 2>/dev/null)"')
+    set -- ${A[$n]}; a=$1; local sa=$2; set -- $b
+    if [ -z "$a" ] || [ -z "$1" ]; then echo "  $n: no p5 superblock readable — not tested"; continue; fi
+    if [ "$sa" != JOINED ] || [ "$2" != JOINED ]; then echo "  $n: joinwatch not JOINED ($sa/$2) — on-join not exercised"; continue; fi
+    tested=$((tested+1))
+    if [ $(( $1 - a )) -eq 0 ]; then echo "  $n: p5 mounts in 90 s: 0 (ok)"; else echo "FAIL $n: p5 mounted $(( $1 - a ))x in 90 s while joined (M0 churn)"; rc=1; fi
+  done
+  [ "$tested" -gt 0 ] || { echo "SKIP-REASON: no joined node to observe"; return 3; }
+  return $rc; }
+# #263 M0 feature test on one node: the installed batman-config-save --on-join mounts p5 once per change, not per tick.
+chk_p5onjoin_263() { timeout 120 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" sh -s < "$REPO/scripts/node/p5-onjoin-263.sh"; }
 # #275: every board patch the image was BUILT with is visible in /rom of the running image — its Batman-Witness,
 # baked by the firmware stamp into /etc/batman-patch-witness (file <glob> <string> | pkg <name> <ver-prefix> |
 # none <reason>). 1.5.5-wsl.2 (Pi 4) shipped without a board patch and only the #263 probe noticed. Checks the
@@ -863,6 +882,9 @@ if up "$MESH_NODE"; then
   suite batman-ver-247 "mesh core = routing openwrt-24.10 batman-adv 2024.3-r>=13, loaded == installed, NC compiled out, on: $BV_NODES (#247)" "chk_batver_247 $BV_NODES"
   suite go-toolchain-252 "docker/dockerd/containerd/runc built by the same Go as openmanetd, >= go1.23, on: $BV_NODES (#252)" "chk_go_252 $BV_NODES"
   suite halow-cmd-263 "mm6108 driver carries the #263 command-ownership fix; no refused unlink / Oops this boot; reports late responses + survived races, on: $BV_NODES (#263)" "chk_halow_263 $BV_NODES"
+  suite p5-churn-263 "no p5 mount churn from joinwatch save-on-join on a joined node (M0), on: $BV_NODES (#263)" "chk_p5churn_263 $BV_NODES"
+  if up "$BENCH_NODE"; then suite p5-onjoin-263 "save-on-join mounts p5 once per change, not per tick: unchanged/changed/other-writer/--save cases, on $BENCH_NODE (#263 M0)" "chk_p5onjoin_263 $BENCH_NODE"
+  else suite p5-onjoin-263 "save-on-join p5 cache (#263 M0) — BENCH_NODE $BENCH_NODE did not answer" ""; fi
   suite board-patches-275 "every firmware board patch is witnessed in the running image (/rom), not only applied at build time, on: $BV_NODES (#275)" "chk_patches_275 $BV_NODES"
   suite runc-cve-247 "runc >= 1.3.6 (container-escape CVEs) and /proc/self/exe sealed via overlayfs, on: $BV_NODES (#247-2)" "chk_runc_247 $BV_NODES"
   suite container-lifecycle-247 "container stack: limits, exec, OOM containment, restart policy, exeseal, tty, cp, logs -f, healthcheck, pids, runc features, CRI off — $LC_EXPECT items each, on: $BV_NODES (#268 B1)" "chk_lifecycle $BV_NODES"
