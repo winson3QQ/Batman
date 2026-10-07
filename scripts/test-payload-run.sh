@@ -3,16 +3,37 @@
 # docs/design/274-payload-converge.md). A docker STUB on PATH models containers/images/networks as files,
 # records every call, and flags violations (rm -f of a running container, fd 9 leaked to a child). Runs
 # on any Linux with sh, flock, sha256sum, awk (CI: payload-manifest-sync). Exit 0 = all pass.
+#
+# BUSYBOX=1: run everything under busybox applets FIRST on PATH (sh, awk, sed, grep, flock, ...), closer to the
+# node (busybox 1.36.1) than a CI runner's GNU tools; any busybox usage error in any output (invalid number /
+# unrecognized option / applet not found / syntax error ...) is a FAIL. NOT a replica of the node: Ubuntu's
+# busybox is built with different options (e.g. it ACCEPTS `sleep 0.1`; the node's rejects it — the bug in
+# #274's first rc, caught only on the node). That class is covered by check 0 (static) and check 14 (the
+# grace must really wait >= 1 s), which fail on either busybox.
+# shellcheck disable=SC1090,SC2034  # payload-stop.sh is sourced from a computed path; PSTOP_* are read by it
 set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 PR="$REPO/feed/batman-provision/files/usr/bin/payload-run"
 PS="$REPO/feed/batman-provision/files/usr/lib/batman/payload-stop.sh"
 T=$(mktemp -d); trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
 S="$T/stub"; A="$T/apps"; mkdir -p "$S/c" "$S/img" "$S/net" "$T/bin" "$A/t/secrets" "$T/run"
-export DOCKER_STUB="$S" APPS_DIR="$A" PAYLOAD_RUNDIR="$T/run" PATH="$T/bin:$PATH"
 PASS=0; FAIL=0
 ok(){ echo "PASS $*"; PASS=$((PASS+1)); }
 no(){ echo "FAIL $*"; FAIL=$((FAIL+1)); }
+
+# 0 static (host grep, before PATH changes): node scripts must not use a fractional sleep — the node's
+# busybox sleep takes whole seconds only (`sleep 0.1` fails at once, so a "grace" never waits)
+fs=$(grep -rnE '(^|[^.[:alnum:]_])sleep +[0-9]*\.[0-9]' "$REPO"/feed/*/files "$REPO"/deploy 2>/dev/null | grep -v '\.py:' | grep -v '^[^:]*:[0-9]*:[[:space:]]*#')
+[ -z "$fs" ] && ok "0 no fractional sleep in node scripts (busybox sleep takes whole seconds)" || { no "0 fractional sleep in a node script:"; echo "$fs"; }
+
+BBP=""
+if [ "${BUSYBOX:-0}" = 1 ]; then
+	bb=$(command -v busybox) || { echo "FAIL BUSYBOX=1 but no busybox on PATH"; exit 1; }
+	mkdir -p "$T/bb"; for a in $("$bb" --list); do ln -s "$bb" "$T/bb/$a"; done
+	BBP="$T/bb:"; echo "== busybox mode: $("$bb" | head -1)"
+fi
+export DOCKER_STUB="$S" APPS_DIR="$A" PAYLOAD_RUNDIR="$T/run" PATH="$T/bin:$BBP$PATH"
+ALL="$T/all-output"; : > "$ALL"
 
 cat > "$T/bin/docker" <<'STUB'
 #!/bin/sh
@@ -99,10 +120,10 @@ ENTRYPOINT app --x
 STOPTIER 1
 ENDCONTAINER
 EOF
-pr(){ sh "$PR" "$@" >"$T/out" 2>&1; echo $?; }
+pr(){ sh "$PR" "$@" >"$T/out" 2>&1; r=$?; cat "$T/out" >> "$ALL"; echo $r; }
 calls(){ cat "$S/calls" 2>/dev/null; }
 reset_calls(){ : > "$S/calls"; }
-h(){ sh "$PR" --cfg-hash t; }
+h(){ sh "$PR" --cfg-hash t 2>>"$ALL"; }
 
 # 1 fresh rebuild: labels == --cfg-hash, --mount (never -v) for MOUNT, hardening flags parsed in
 reset_calls; rc=$(pr t); H=$(h)
@@ -117,7 +138,7 @@ grep -q -- "--read-only --cap-drop=ALL" "$S/c/db/argv" && ok "1 HARDEN_FLAGS par
 chmod 0644 "$A/t/secrets/tok"; [ "$(h)" = "$H" ] && ok "2 secret mode change does not change the fingerprint" || no "2 secret mode in hash"
 
 # 3 converge with an unchanged stack, all stopped → start mode: start in order, no rm/run/stop
-sh "$PR" t >/dev/null 2>&1   # (fresh again, labels current)
+sh "$PR" t >>"$ALL" 2>&1   # (fresh again, labels current)
 for c in db app; do echo exited > "$S/c/$c/status"; done
 reset_calls; rc=$(pr --converge t)
 [ "$rc" = 0 ] && grep -q "start mode" "$T/out" && ! calls | grep -Eq '^(rm|run|stop) ' \
@@ -132,12 +153,12 @@ reset_calls; rc=$(pr --converge t)
 sl=$(calls | grep -n '^stop ' | head -1 | cut -d: -f1); rl=$(calls | grep -n '^rm ' | head -1 | cut -d: -f1)
 [ -n "$sl" ] && [ -n "$rl" ] && [ "$sl" -lt "$rl" ] && ! calls | grep -q '^rm -f' && ok "4 rebuild stops before removing, never rm -f" || { no "4 order stop=$sl rm=$rl"; calls; }
 echo "conf v2" > "$A/t/m.conf"; [ "$(h)" != "$H2" ] && ok "4 mounted relative file content is in the fingerprint" || no "4 mount content not in hash"
-sh "$PR" t >/dev/null 2>&1; H3=$(h)
+sh "$PR" t >>"$ALL" 2>&1; H3=$(h)
 echo "abs v2" > "$T/abs.conf"; [ "$(h)" = "$H3" ] && ok "4 absolute mount source content is NOT in the fingerprint" || no "4 abs content in hash"
 chmod u+w "$A/t/secrets/tok"; echo "token v2" > "$A/t/secrets/tok"; [ "$(h)" != "$H3" ] && ok "4 secret content is in the fingerprint" || no "4 secret content not in hash"
-sh "$PR" t >/dev/null 2>&1; H4=$(h)
+sh "$PR" t >>"$ALL" 2>&1; H4=$(h)
 echo 'sha256:bbb2' > "$S/img/img_app_1"; [ "$(h)" != "$H4" ] && ok "4 a re-tagged image (new ID) changes the fingerprint" || no "4 image id not in hash"
-sh "$PR" t >/dev/null 2>&1; H5=$(h)
+sh "$PR" t >>"$ALL" 2>&1; H5=$(h)
 
 # 5 start failure → the others are still started, then rebuild
 for c in db app; do echo exited > "$S/c/$c/status"; done
@@ -165,7 +186,7 @@ reset_calls; rc=$(pr --converge t); mv "$T/img.bak" "$S/img/img_app_1"
 for c in db app; do echo exited > "$S/c/$c/status"; done
 reset_calls; rc=$(pr --start-only t)
 [ "$rc" = 3 ] && ! calls | grep -Eq '^(start|run|rm|stop) ' && ok "8 --start-only on a changed config: rc 3, nothing done" || { no "8 rc=$rc"; calls; }
-sh "$PR" t >/dev/null 2>&1; for c in db app; do echo exited > "$S/c/$c/status"; done
+sh "$PR" t >>"$ALL" 2>&1; for c in db app; do echo exited > "$S/c/$c/status"; done
 rc=$(pr --start-only t); [ "$rc" = 0 ] && [ "$(cat "$S/c/app/status")" = running ] && ok "8 --start-only on an unchanged stack starts it" || no "8b rc=$rc"
 
 # 9 orphan: a container labelled for the tenant but no longer in the manifest is removed (graceful)
@@ -179,7 +200,7 @@ r1=$(pr t); r2=$(pr --converge t); r3=$(pr --start-only t)
 rm -f "$T/run/batman-payload-t.stopping"
 
 # 11 lock: a held lock makes payload-run wait, then give up (busybox has no flock -w)
-( exec 9>"$T/run/batman-payload-t.lock"; flock 9; sleep 5 ) & lp=$!; sleep 0.5
+( exec 9>"$T/run/batman-payload-t.lock"; flock 9; sleep 5 ) & lp=$!; sleep 1
 rc=$(PAYLOAD_LOCK_WAIT=2 pr t); kill $lp 2>/dev/null; wait $lp 2>/dev/null
 [ "$rc" = 1 ] && grep -q "gave up" "$T/out" && ok "11 lock held: payload-run waits then exits 1" || { no "11 rc=$rc"; cat "$T/out"; }
 
@@ -187,8 +208,8 @@ rc=$(PAYLOAD_LOCK_WAIT=2 pr t); kill $lp 2>/dev/null; wait $lp 2>/dev/null
 [ -s "$S/violations" ] && { no "12 violations:"; cat "$S/violations"; } || ok "12 no rm -f of a running container, no fd 9 leaked (all runs above)"
 
 # 13 stop: tiers in order (tier 1 first, final tier last), no rm, record written; .stopping set
-sh "$PR" t >/dev/null 2>&1; reset_calls
-( . "$PS"; PSTOP_APPS="$A"; PSTOP_RUN="$T/run"; PSTOP_LOG="$T/stop.log"; pstop_final t ) >/dev/null 2>&1
+sh "$PR" t >>"$ALL" 2>&1; reset_calls
+( . "$PS"; PSTOP_APPS="$A"; PSTOP_RUN="$T/run"; PSTOP_LOG="$T/stop.log"; pstop_final t ) >>"$ALL" 2>&1
 s1=$(calls | grep -n '^stop -t 5 app' | cut -d: -f1); s2=$(calls | grep -n '^stop -t 10 db' | cut -d: -f1)
 [ -n "$s1" ] && [ -n "$s2" ] && [ "$s1" -lt "$s2" ] && ! calls | grep -q '^rm ' && [ -e "$T/run/batman-payload-t.stopping" ] \
 	&& ok "13 stop: client tier (-t 5) before the final tier (-t 10), no rm, tenant marked stopping" || { no "13 order s1=$s1 s2=$s2"; calls; }
@@ -196,14 +217,23 @@ rm -f "$T/run/batman-payload-t.stopping"
 
 # 14 stop kills an in-flight payload-run ONLY if it holds the lock and its cmdline matches (#274 P2)
 sleep 30 & sp=$!; echo "$sp" > "$T/run/batman-payload-t.pid"
-( . "$PS"; PSTOP_RUN="$T/run"; pstop_kill t )
+( . "$PS"; PSTOP_RUN="$T/run"; pstop_kill t ) >>"$ALL" 2>&1
 kill -0 "$sp" 2>/dev/null && ok "14 stale pid file (lock free): unrelated process NOT killed" || no "14 killed an unrelated process"
 kill "$sp" 2>/dev/null
-printf '#!/bin/sh\nexec 9>"$PAYLOAD_RUNDIR/batman-payload-t.lock"; flock 9; sleep 30 & wait\n' > "$T/bin/payload-run"
-sh "$T/bin/payload-run" --converge t & fp=$!; sleep 0.5; echo "$fp" > "$T/run/batman-payload-t.pid"
-( . "$PS"; PSTOP_RUN="$T/run"; pstop_kill t ); sleep 0.3
-kill -0 "$fp" 2>/dev/null && { no "14 in-flight payload-run not killed"; kill "$fp"; } || ok "14 in-flight payload-run (lock held, cmdline matches) killed with its tree"
+# a holder that IGNORES TERM: exercises the 1 s grace + KILL path (the sleep that was 0.1 and failed on busybox)
+printf '#!/bin/sh\nexec 9>"$PAYLOAD_RUNDIR/batman-payload-t.lock"; flock 9; trap "" TERM; while :; do sleep 1; done\n' > "$T/bin/payload-run"
+sh "$T/bin/payload-run" --converge t & fp=$!; sleep 1; echo "$fp" > "$T/run/batman-payload-t.pid"
+t0=$(date +%s); ( . "$PS"; PSTOP_RUN="$T/run"; pstop_kill t ) >>"$ALL" 2>&1; t1=$(date +%s); sleep 1
+if kill -0 "$fp" 2>/dev/null; then no "14 in-flight payload-run not killed"; kill -9 "$fp"
+else ok "14 in-flight payload-run (lock held, cmdline matches, ignores TERM) killed after a $((t1 - t0)) s grace"; fi
+[ $((t1 - t0)) -ge 1 ] && ok "14 the TERM grace really waited (>= 1 s)" || no "14 no TERM grace (the sleep did not wait)"
 rm -f "$T/bin/payload-run"
+
+# 15 busybox mode: no usage error from any applet in any output above
+if [ -n "$BBP" ]; then
+	e=$(grep -E "invalid number|unrecognized option|invalid option|applet not found|syntax error|bad substitution|unknown operand|^Usage: |^BusyBox v" "$ALL")
+	[ -z "$e" ] && ok "15 busybox: no applet usage error in any output" || { no "15 busybox usage errors:"; echo "$e" | head -10; }
+fi
 
 echo "== test-payload-run: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
