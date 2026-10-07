@@ -492,6 +492,32 @@ chk_runc_247() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '   
   ( cd $d && runc spec >/dev/null 2>&1 && sed -i "s/\"terminal\": true/\"terminal\": false/; s/\"sh\"/\"\\/bin\\/busybox\",\"true\"/" config.json )
   o=$(cd $d && runc --debug run dv-runc247 </dev/null 2>&1); runc delete -f dv-runc247 >/dev/null 2>&1; rm -rf $d
   case "$o" in *"using overlayfs for sealed /proc/self/exe"*) echo "ok: runc $v, exe sealed via overlayfs" ;; *"could not use overlayfs"*) echo "exeseal fell back to copying the runc binary"; exit 1 ;; *) echo "no exeseal message from runc --debug run: $(echo "$o" | tail -2)"; exit 1 ;; esac' || rc=1; done; return $rc; }
+# #275: every board patch the image was BUILT with is visible in /rom of the running image — its Batman-Witness,
+# baked by the firmware stamp into /etc/batman-patch-witness (file <glob> <string> | pkg <name> <ver-prefix> |
+# none <reason>). 1.5.5-wsl.2 (Pi 4) shipped without a board patch and only the #263 probe noticed. Checks the
+# image (/rom, opkg status there), not the overlay. An image built without the #275 stamp fails on purpose.
+chk_patches_275() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 30 '
+  R=/rom; [ -f $R/etc/batman-build ] || R=
+  S=$R/etc/batman-build; W=$R/etc/batman-patch-witness
+  g() { sed -n "s/^$1=//p" $S | head -1; }
+  echo "$(g BATMAN_VERSION) board=$(g BATMAN_BOARD) patches=$(g BATMAN_BOARD_PATCHES) root=${R:-/}"
+  [ -f $W ] || { echo "no $W: image built without the #275 stamp (pre-#275 or a bypassed build)"; exit 1; }
+  np=$(g BATMAN_BOARD_PATCHES | cut -d: -f1); nw=$(grep -c . $W)
+  [ -n "$np" ] && [ "$np" = "$nw" ] || { echo "witness list has $nw entries, stamp says ${np:-?} patches"; exit 1; }
+  T=$(printf "\t"); f=0; k=0
+  while IFS="$T" read -r p kind a v; do
+    [ -n "$p" ] || continue; k=$((k+1))
+    case "$kind" in
+      file) ok=0; for x in $R/$a; do [ -f "$x" ] && grep -aqF -- "$v" "$x" && ok=1; done
+        if [ $ok = 1 ]; then echo "  ok    $p: $a has $v"; else echo "  FAIL  $p: no $a in the image contains $v"; f=1; fi ;;
+      pkg) i=$(awk -v P="$a" "\$0==\"Package: \"P{q=1} q&&/^Version:/{print \$2; exit}" $R/usr/lib/opkg/status)
+        case "$i" in "$v"*) echo "  ok    $p: $a $i" ;; *) echo "  FAIL  $p: image has $a ${i:-not installed}, want $v*"; f=1 ;; esac ;;
+      none) echo "  none  $p: $v" ;;
+      *) echo "  FAIL  $p: unknown witness kind $kind"; f=1 ;;
+    esac
+  done < $W
+  [ $f = 0 ] && echo "ok: $k board patch(es) witnessed in the running image"
+  exit $f' || rc=1; done; return $rc; }
 # #268 B1: the container stack regression from the #252/#247-2 dogfood, on every reachable node. The node
 # script only prints PASS/FAIL items; the EXPECTED COUNT lives here (#268 C2), so an item that silently
 # stops running shows up as a short count instead of a green run.
@@ -695,6 +721,7 @@ if up "$MESH_NODE"; then
   for n in "$OTS_NODE" "$IPERF_PEER"; do [ -n "$n" ] && [ "$n" != "$MESH_NODE" ] && up "$n" && case " $BV_NODES " in *" $n "*) ;; *) BV_NODES="$BV_NODES $n" ;; esac; done
   suite batman-ver-247 "mesh core = routing openwrt-24.10 batman-adv 2024.3-r>=13, loaded == installed, NC compiled out, on: $BV_NODES (#247)" "chk_batver_247 $BV_NODES"
   suite go-toolchain-252 "docker/dockerd/containerd/runc built by the same Go as openmanetd, >= go1.23, on: $BV_NODES (#252)" "chk_go_252 $BV_NODES"
+  suite board-patches-275 "every firmware board patch is witnessed in the running image (/rom), not only applied at build time, on: $BV_NODES (#275)" "chk_patches_275 $BV_NODES"
   suite runc-cve-247 "runc >= 1.3.6 (container-escape CVEs) and /proc/self/exe sealed via overlayfs, on: $BV_NODES (#247-2)" "chk_runc_247 $BV_NODES"
   suite container-lifecycle-247 "container stack: limits, exec, OOM containment, restart policy, exeseal, tty, cp, logs -f, healthcheck, pids, runc features, CRI off — $LC_EXPECT items each, on: $BV_NODES (#268 B1)" "chk_lifecycle $BV_NODES"
   suite dockerd-restart-247 "dockerd restarts with a live container and runs containers again — only on nodes without tenants, on: $BV_NODES (#268 C2)" "chk_dockerd_restart $BV_NODES"
