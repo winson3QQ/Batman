@@ -74,7 +74,7 @@ scripts/build-board.sh <board> --card-only       # 以 root 執行,build 完之�
 2. `.config` 必須等於 `boards/<board>/batman-config.lock`;
 3. 產生戳記;
 4. build(平行編譯失敗時自動用 `-j1` 重試)。golang 規則或 staged Go 變了的話,先把所有選中的 Go 套件 `make package/<p>/clean`:OpenWrt 判斷要不要重編只看套件自己的目錄,不會因此重編(#252);
-5. manifest gate(`check-image-manifest.sh`:兩板必含 brcmfmac / 43455 / mm6108 / batman-provision,禁 mm8108;Pi 4 必含 OTS,Pi 3 禁 OTS;mesh 核心版本**精確比對** `kmod-batman-adv 6.6.138.2024.3-r13`、`batctl-full 2024.3-r5`、`alfred 2025.5-r1`,#247)。接著跑 Go 版本閘 `check-go-toolchain.sh`:rootfs 裡每個 Go 程式都必須是 build 樹那版 Go 編的,而且必要的 Go 程式要齊全(#252;CI 的 build-firmware.yml 也跑);
+5. manifest gate(`check-image-manifest.sh`:兩板必含 brcmfmac / 43455 / mm6108 / batman-provision,禁 mm8108;Pi 4 必含 OTS,Pi 3 禁 OTS;mesh 核心版本**精確比對** `kmod-batman-adv 6.6.138.2024.3-r13`、`batctl-full 2024.3-r5`、`alfred 2025.5-r1`,#247;`runc 1.3.6-r1`,#247-2:24.10 的 runc 1.1.14 有三個 high 級容器逃逸 CVE,用 board patch `0010-runc-1.3.6-cves-247.patch` 升版,同一個 patch 也拿掉 dockerd 的 vendored runc 版本檢查,設計見 `docs/design/247-2-runc-1.3.6.md`)。接著跑 Go 版本閘 `check-go-toolchain.sh`:rootfs 裡每個 Go 程式都必須是 build 樹那版 Go 編的,而且必要的 Go 程式要齊全(#252;CI 的 build-firmware.yml 也跑);
 6. 用 `scripts/pick-rootfs.sh` 選出 rootfs(見下),並斷言其中的戳記與 SoC;
 7. OTA payload(之後以 root 執行 `--card-only` 做燒卡 image + invariants);
 8. 印出 sha256。

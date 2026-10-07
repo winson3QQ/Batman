@@ -426,6 +426,21 @@ chk_go_252() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '   # 
     m=$(echo "$v" | cut -d. -f2); [ "$m" -ge 23 ] 2>/dev/null || { echo "  $f built by $v (< go1.23, EOL)"; bad=1; }
   done
   [ "$bad" = 0 ] && echo "ok: one toolchain $ref"' || rc=1; done; return $rc; }
+chk_runc_247() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '   # #247-2, every reachable node
+  # runc <= 1.2.7 / <= 1.3.2 is hit by CVE-2025-31133 / -52565 / -52881 (high: container escape) and
+  # <= 1.3.5 by CVE-2026-41579; the image ships 1.3.6. Also: the overlayfs /proc/self/exe seal must be
+  # the path runc takes here (a fallback copies the ~12 MB binary into the container memcg on every
+  # run/exec). A pre-#247-2 image (runc 1.1.14) fails on purpose.
+  v=$(runc --version 2>/dev/null | sed -n "s/^runc version //p" | head -1)
+  echo "runc $v"
+  [ -n "$v" ] || { echo "no runc"; exit 1; }
+  ok=$(echo "$v" | awk -F. "{ if (\$1>1 || (\$1==1 && \$2>3) || (\$1==1 && \$2==3 && \$3>=6)) print 1; else print 0 }")
+  [ "$ok" = 1 ] || { echo "runc $v < 1.3.6 (container-escape CVEs)"; exit 1; }
+  d=/tmp/dv-runc247; rm -rf $d; mkdir -p $d/rootfs/bin $d/rootfs/lib
+  cp /bin/busybox $d/rootfs/bin/; cp -P /lib/ld-musl-*.so.1 $d/rootfs/lib/; cp /lib/libc.so $d/rootfs/lib/
+  ( cd $d && runc spec >/dev/null 2>&1 && sed -i "s/\"terminal\": true/\"terminal\": false/; s/\"sh\"/\"\\/bin\\/busybox\",\"true\"/" config.json )
+  o=$(cd $d && runc --debug run dv-runc247 </dev/null 2>&1); runc delete -f dv-runc247 >/dev/null 2>&1; rm -rf $d
+  case "$o" in *"using overlayfs for sealed /proc/self/exe"*) echo "ok: runc $v, exe sealed via overlayfs" ;; *"could not use overlayfs"*) echo "exeseal fell back to copying the runc binary"; exit 1 ;; *) echo "no exeseal message from runc --debug run: $(echo "$o" | tail -2)"; exit 1 ;; esac' || rc=1; done; return $rc; }
 chk_130() { fssh "$1" 20 '
   st=$(/usr/bin/halow-status json 2>/dev/null | sed -n "s/.*\"join\":{\"state\":\"\([A-Za-z_]*\)\".*/\1/p" | head -1)
   p=$(batctl n 2>/dev/null | grep -c wlh0)
@@ -497,6 +512,7 @@ if up "$MESH_NODE"; then
   for n in "$OTS_NODE" "$IPERF_PEER"; do [ -n "$n" ] && [ "$n" != "$MESH_NODE" ] && up "$n" && case " $BV_NODES " in *" $n "*) ;; *) BV_NODES="$BV_NODES $n" ;; esac; done
   suite batman-ver-247 "mesh core = routing openwrt-24.10 batman-adv 2024.3-r>=13, loaded == installed, NC compiled out, on: $BV_NODES (#247)" "chk_batver_247 $BV_NODES"
   suite go-toolchain-252 "docker/dockerd/containerd/runc built by the same Go as openmanetd, >= go1.23, on: $BV_NODES (#252)" "chk_go_252 $BV_NODES"
+  suite runc-cve-247 "runc >= 1.3.6 (container-escape CVEs) and /proc/self/exe sealed via overlayfs, on: $BV_NODES (#247-2)" "chk_runc_247 $BV_NODES"
   suite mesh-console-14 "/cgi-bin/mesh aggregate agrees with batctl (#14)"                   "chk_14 $MESH_NODE"
   suite p5-seed-202      "a JOINED node auto-seeds p5 (radio delta), decoupled from lockdown (#202)" "chk_202 $MESH_NODE"
   suite mesh-tput        "sustained mesh throughput to peer (median of N batctl tp; baseline soak median ~9.4 Mbps)" "chk_tput $MESH_NODE"
@@ -506,7 +522,7 @@ if up "$MESH_NODE"; then
     suite mesh-tput-iperf "IPERF_PEER '$IPERF_PEER' unusable (unset / == MESH_NODE / down) — set IPERF_PEER to the other mesh node" ""
   fi
 else
-  for s in field-status-130 meshjoin-209 batman-ver-247 go-toolchain-252 mesh-console-14 p5-seed-202 mesh-tput mesh-tput-iperf; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
+  for s in field-status-130 meshjoin-209 batman-ver-247 go-toolchain-252 runc-cve-247 mesh-console-14 p5-seed-202 mesh-tput mesh-tput-iperf; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
 fi
 
 # A/B commit hygiene (#211): a completed reflash must not leave the node an uncommitted trial (a reboot
