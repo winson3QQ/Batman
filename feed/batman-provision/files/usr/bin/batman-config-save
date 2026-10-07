@@ -52,6 +52,47 @@ if [ "$magic" != "53ef" ]; then
 	mkfs.ext4 -F -q -L batman-cfg -m 0 "$DEV" >/dev/null 2>&1 || die "mkfs.ext4 failed"
 fi
 
+# M0 (#263): joinwatch calls --on-join every ~15 s until it latches, and an OPEN node never latches
+# (exit 4) — every call mounted p5 rw just to find nothing changed (215 mounts/hour measured on 03).
+# Per boot (/tmp), cache a fingerprint of everything the save would write plus p5's superblock write
+# stamp (s_wtime, s_mnt_count — read without mounting, so ANY other mount/write/mkfs of p5 invalidates
+# it); while both match, answer from the cache. Other modes write p5 themselves -> drop the cache.
+ST=/tmp/cfgsave-onjoin.state; GATEFAIL=/tmp/cfgsave-pi3gate.failed; MNTFAIL=/tmp/cfgsave-mount.failed
+sbstamp() { hexdump -s 1072 -n 6 -e '1/4 "%u" " " 1/2 "%u"' "$DEV" 2>/dev/null; }
+onjoin_fp() {
+	{ echo "schema=$SCHEMA"
+	  for t in $PRESERVE; do printf '%s=%s\n' "$t" "$(uci -q get "$t")"; done
+	  for f in /etc/dropbear/dropbear_ed25519_host_key /etc/dropbear/dropbear_rsa_host_key \
+		/etc/dropbear/authorized_keys /etc/openmanet/config.yml; do
+		if [ -s "$f" ]; then echo "$f $(sha256sum < "$f")"; else echo "$f -"; fi
+	  done
+	  echo "shadow $(grep '^root:' /etc/shadow 2>/dev/null | sha256sum)"
+	} | sha256sum | cut -d' ' -f1
+}
+onjoin_record() {   # $1 = rc; only after p5 provably matches the inputs (written, or unchanged), p5 unmounted
+	[ "$mode" = --on-join ] && [ -n "$FP" ] || return 0
+	sb=$(sbstamp); [ -n "$sb" ] || return 0
+	( umask 077; rm -f "$ST"; echo "$FP $sb $1" > "$ST" )
+}
+FP=""
+if [ "$mode" = --on-join ]; then
+	# a Pi 3 card that failed the factory gate only changes at the bench (= a reboot): stop re-checking
+	[ -f "$GATEFAIL" ] && [ -O "$GATEFAIL" ] && { echo "batman-config-save: Pi 3 factory check failed earlier this boot — skip (fix the card at the bench)" >&2; exit 1; }
+	# a failed rw mount: back off 5 minutes instead of retrying every tick
+	if [ -f "$MNTFAIL" ] && [ -O "$MNTFAIL" ]; then
+		t=$(cat "$MNTFAIL" 2>/dev/null); now=$(cut -d. -f1 /proc/uptime)
+		case "$t" in ''|*[!0-9]*) ;; *) [ $((now - t)) -lt 300 ] && { echo "batman-config-save: p5 mount failed $((now - t))s ago — backing off" >&2; exit 1; } ;; esac
+	fi
+	FP=$(onjoin_fp); [ "${#FP}" = 64 ] && case "$FP" in *[!0-9a-f]*) FP="" ;; esac || FP=""   # fail-safe: no valid fp -> no cache
+	if [ -n "$FP" ] && [ -f "$ST" ] && [ -O "$ST" ] && read -r cfp cwt cmc crc < "$ST" && [ "$cfp" = "$FP" ] \
+		&& [ "$cwt $cmc" = "$(sbstamp)" ] && { [ "$crc" = 0 ] || [ "$crc" = 4 ]; }; then
+		echo "batman-config-save: unchanged ($mode, cached this boot) — skip"
+		exit "$crc"
+	fi
+else
+	rm -f "$ST"
+fi
+
 if [ "$mode" = "--if-healthy" ]; then
 	verdict=$(halow-status 2>/dev/null | sed -n 's/^HEALTH[[:space:]]*\[\([A-Z]*\)\].*/\1/p')
 	# exit NON-zero on a not-OK skip so joinwatch's `&& :>/tmp/config-saved` guard does NOT latch —
@@ -60,7 +101,7 @@ if [ "$mode" = "--if-healthy" ]; then
 fi
 
 mkdir -p "$MNT"
-mount -t ext4 "$DEV" "$MNT" 2>/dev/null || die "mount rw failed"
+mount -t ext4 "$DEV" "$MNT" 2>/dev/null || { [ "$mode" = --on-join ] && ( umask 077; cut -d. -f1 /proc/uptime > "$MNTFAIL" ); die "mount rw failed"; }
 
 # #209 v4.3 D2 — Pi 3 factory gate. On a Pi 3 A/B card the first seed is the point after which
 # 95-batman-storage will never rewrite the boot-critical MBR again, so p6 must already fill the card
@@ -89,7 +130,7 @@ pi3_factory_check() {
 		err="$err p7-unmountable"
 	fi
 	rmdir "$m"
-	[ -z "$err" ] || { umount "$MNT"; die "Pi 3 card not ready to be provisioned:$err — fix at the bench (reflash) before seeding (#209 D2)"; }
+	[ -z "$err" ] || { umount "$MNT"; [ "$mode" = --on-join ] && ( umask 077; : > "$GATEFAIL" ); die "Pi 3 card not ready to be provisioned:$err — fix at the bench (reflash) before seeding (#209 D2)"; }
 	echo "batman-config-save: Pi 3 factory check passed (hybrid MBR, p6 grown, p7 intact)"
 }
 { [ "$mode" = --seed ] || [ "$mode" = --on-join ]; } && [ ! -f "$MNT/.seeded" ] && [ -b /dev/mmcblk0p7 ] && pi3_factory_check
@@ -134,19 +175,36 @@ for t in $PRESERVE; do
 done
 echo "$SCHEMA" > "$STAGE/schema_version"
 
-# idempotency for --on-join (bounds re-writes while a node stays open, #104): joinwatch calls this
-# every joined tick until it latches, and an open node never latches (see the exit below) — so skip
-# the write entirely when the delta AND the shadow-presence already match what is on p5.
-if [ "$mode" = --on-join ] && [ -f "$MNT/.seeded" ] && cmp -s "$STAGE/overrides.uci" "$MNT/overrides.uci" 2>/dev/null; then
-	# .seeded must already be present too: a write interrupted between overrides.uci and the
-	# .seeded sentinel (power loss, #41) leaves overrides matching but the node still "un-seeded";
-	# skipping then would never re-create the sentinel. Require it, so that case falls through and writes.
-	live_shadow=0; [ -s "$MNT/identity/shadow-root" ] && live_shadow=1
-	if [ "$live_shadow" = "$HAS_SHADOW" ]; then
-		rm -rf "$STAGE"; sync; umount "$MNT" 2>/dev/null
-		echo "batman-config-save: unchanged ($mode) — skip"
-		[ "$HAS_SHADOW" = 1 ] && exit 0 || exit 4
+same_identity() {   # every identity file this save would write is already on p5, byte for byte. Files only
+	# on p5 (removed locally since) do not count: the write never deletes them either (cp -a), so
+	# counting them would rewrite p5 every tick forever (review M0-R2) — e.g. p5 keeps shadow-root
+	# after a local `passwd -d`; deleting it there is a lockdown decision, not a save's.
+	( cd "$STAGE/identity" && find . -type f ) | while IFS= read -r f; do
+		cmp -s "$STAGE/identity/$f" "$MNT/identity/$f" || { echo differs; break; }
+	done | grep -q differs && return 1
+	return 0
+}
+mark_mesh_expected() {
+	# A seeded node is provisioned to live in a mesh: mirror that onto p6 so batman-autocommit's OTA gate
+	# can require a mesh join without mounting p5 itself (#209 S4-5, ab-autocommit.md v2.2 N5). Also on an
+	# unchanged skip: a first save that ran before /opt/batdata was mounted must still get the marker.
+	if { [ "$mode" = --seed ] || [ "$mode" = --on-join ]; } && grep -q " /opt/batdata " /proc/mounts 2>/dev/null; then
+		[ -f /opt/batdata/state/mesh-expected ] || { mkdir -p /opt/batdata/state && echo "seeded $mode" > /opt/batdata/state/mesh-expected && sync; }
 	fi
+}
+
+# idempotency for --on-join (bounds re-writes while a node stays open, #104): skip the write when p5
+# already holds exactly what this save would write — overrides, the proven lkg copy (a --save in between
+# updates overrides but not lkg; this joined boot must rotate it, review M0-R3), schema, every identity file.
+# .seeded must already be present too: a write interrupted before the sentinel (power loss, #41) must redo.
+if [ "$mode" = --on-join ] && [ -f "$MNT/.seeded" ] && cmp -s "$STAGE/overrides.uci" "$MNT/overrides.uci" \
+	&& cmp -s "$STAGE/overrides.uci" "$MNT/lkg/overrides.uci" && cmp -s "$STAGE/schema_version" "$MNT/schema_version" \
+	&& same_identity; then
+	rm -rf "$STAGE"; sync; umount "$MNT" 2>/dev/null
+	echo "batman-config-save: unchanged ($mode) — skip"
+	mark_mesh_expected
+	rc=4; [ "$HAS_SHADOW" = 1 ] && rc=0
+	onjoin_record "$rc"; exit "$rc"
 fi
 
 # publish atomically. lkg = last config that was PROVEN good: rotate it on --seed (the baseline),
@@ -163,13 +221,10 @@ rm -rf "$STAGE"
 sync
 umount "$MNT" 2>/dev/null
 echo "batman-config-save: saved ($mode) schema=$SCHEMA -> $DEV"
-# A seeded node is provisioned to live in a mesh: mirror that onto p6 so batman-autocommit's OTA gate
-# can require a mesh join without mounting p5 itself (#209 S4-5, ab-autocommit.md v2.2 N5).
-if { [ "$mode" = --seed ] || [ "$mode" = --on-join ]; } && grep -q " /opt/batdata " /proc/mounts 2>/dev/null; then
-	[ -f /opt/batdata/state/mesh-expected ] || { mkdir -p /opt/batdata/state && echo "seeded $mode" > /opt/batdata/state/mesh-expected && sync; }
-fi
+mark_mesh_expected
 # --on-join persists the RADIO delta so a reflash survives, but signals joinwatch NOT to latch
 # (exit 4) while the node is still open (no password) — so a #137 lockdown performed later THIS boot
 # is re-persisted on the next tick instead of being silently lost on the next reflash (finding #2).
-[ "$mode" = --on-join ] && [ "$HAS_SHADOW" = 0 ] && exit 4
-exit 0
+rc=0; [ "$mode" = --on-join ] && [ "$HAS_SHADOW" = 0 ] && rc=4
+onjoin_record "$rc"
+exit "$rc"
