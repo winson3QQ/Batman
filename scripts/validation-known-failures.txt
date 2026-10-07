@@ -7,6 +7,4 @@
 # suite<TAB>ERE matched against one FAIL line<TAB>issue number (required)
 fi-r1	FAIL R1 committed a broken trial \(BAD\) \[CANARY-LATCHED-BEFORE-INJECTION [0-9]+s\]	265
 fi-r1	FAIL R1 did not revert to a healthy slot	265
-ots-cot-e2e-264	^FAIL P2B lost [0-9]+/[0-9]+	264
-ots-cot-e2e-264	^FAIL P3 lost [0-9]+/[0-9]+	264
 soak-cot-264	^FAIL CoT lost [0-9]+/[0-9]+	264
