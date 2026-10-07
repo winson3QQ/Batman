@@ -49,7 +49,8 @@ ALLOW_SKIP=${ALLOW_SKIP:-0}
 DV_ONLY=${DV_ONLY:-}
 DV_BRANCH=$(git -c safe.directory='*' -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
 DV_COMMIT=$(git -c safe.directory='*' -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)
-DV_DIRTY=$(git -c safe.directory='*' -C "$REPO" status --porcelain -- scripts 2>/dev/null | grep -c . || true)
+# core.fileMode=false: Git Bash reading a WSL checkout over \\wsl.localhost sees every file as mode-changed
+DV_DIRTY=$(git -c safe.directory='*' -c core.fileMode=false -C "$REPO" status --porcelain -- scripts 2>/dev/null | grep -c . || true)
 if [ "$DV_BRANCH" != main ] || [ "${DV_DIRTY:-0}" != 0 ]; then
   {
     echo "##########################################################################################"
@@ -552,12 +553,12 @@ chk_halow_263() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '  
   # (the patch WARNs instead of corrupting), no fault-injection residue, no Oops/BUG. The counter > 0 means the
   # race HAPPENED and was survived — reported, not failed. The race itself: halow-fi-263 (destructive tier).
   P=/sys/module/mm6108_sdio/parameters
-  [ -d $P ] || { echo "mm6108_sdio not loaded"; exit 1; }
-  [ -f $P/cmd_timeout_in_flight ] || { echo "loaded mm6108 driver lacks the #263 fix (no cmd_timeout_in_flight)"; exit 1; }
-  [ -f $P/fi263_put_delay_ms ] && { echo "a fault-injection DEBUG driver is loaded (fi263 knobs) — never on a normal boot"; exit 1; }
+  [ -d $P ] || { echo "FAIL mm6108_sdio not loaded"; exit 1; }
+  [ -f $P/cmd_timeout_in_flight ] || { echo "FAIL loaded mm6108 driver lacks the #263 fix (no cmd_timeout_in_flight)"; exit 1; }
+  [ -f $P/fi263_put_delay_ms ] && { echo "FAIL a fault-injection DEBUG driver is loaded (fi263 knobs) — never on a normal boot"; exit 1; }
   echo "cmd_timeout_in_flight=$(cat $P/cmd_timeout_in_flight)  late responses this boot=$(dmesg | grep -c "Late response")  SPI timeouts=$(dmesg | grep -c "SPI transfer timed out")"
   b=$(dmesg | grep -E "not on this queue|Unable to handle kernel|Internal error: Oops|BUG: |FI263")
-  [ -z "$b" ] || { echo "$b" | head -5; exit 1; }
+  [ -z "$b" ] || { echo "$b" | head -5 | sed "s/^/FAIL dmesg: /"; exit 1; }
   echo "no refused unlink / Oops / BUG this boot"' || rc=1; done; return $rc; }
 
 # #263 destructive: drive the race on purpose with the fault-injection build of THIS image's driver and require
@@ -1158,7 +1159,7 @@ done
     echo
   fi
   echo "Host: \`$(hostname)\`  ·  bench: \`$BENCH_NODE\` (\`$AB_MODE\`)  ·  mesh: \`$MESH_NODE\`"
-  echo "Repo: \`$(cd "$REPO" && git rev-parse --short HEAD 2>/dev/null)\` on \`$(cd "$REPO" && git rev-parse --abbrev-ref HEAD 2>/dev/null)\`"
+  echo "Repo: \`$DV_COMMIT\` on \`$DV_BRANCH\` (\`$REPO\`)"
   echo
   echo "Logs are next to this file, one per suite."
   [ $NSKIP -gt 0 ] && { echo; echo "> A skipped suite verified nothing. Do not read this run as green unless the skip count is 0."; }
