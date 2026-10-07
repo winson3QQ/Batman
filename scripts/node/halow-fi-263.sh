@@ -19,7 +19,7 @@ L=/opt/batdata/halow-fi-263-$TS.log; D=/opt/batdata/halow-fi-263-$TS-dmesg.txt
 P=/sys/module/mm6108_sdio/parameters
 log(){ echo "[$(cut -d. -f1 /proc/uptime)] $*" >> "$L"; sync; }
 snap(){ dmesg -c > /tmp/hfi.dm; cat /tmp/hfi.dm >> "$D"
-	grep -E "FI263 inject|QLEN|WARNING|Late response|timed out|Oops|Unable to handle|not on this queue" /tmp/hfi.dm | tail -40 >> "$L"; sync; }
+	grep -E "FI263 inject|QLEN|WARNING: CPU|Late response|timed out|Oops|Unable to handle|not on this queue" /tmp/hfi.dm | tail -40 >> "$L"; sync; }
 stats(){ t0=$(cut -d" " -f1 /proc/uptime); morse_cli -i wlh0 stats > /tmp/hfi-stats.out 2>&1; rc=$?
 	log "$1: morse_cli stats rc=$rc ($(awk -v a="$t0" '{printf "%.1f", $1-a}' /proc/uptime)s)"; }
 trap 'log "aborted -> reboot"; reboot' INT TERM
