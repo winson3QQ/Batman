@@ -12,6 +12,15 @@
 #   ALLOW_SKIP   set to 1 to let a run with skipped suites still exit 0  (default 0)
 #   SOAK_MIN / SOAK_HTTP_IMAGE   release-gate load soak length (>= 30) and HTTP-tenant image (#268 B3)
 #   DV_TEST_NOREBOOT=1 / DV_TEST_FAKETIME_NOSAVE=1   negative controls: the reboot-based checks must FAIL
+#   DV_ONLY      ERE of suite names to run (whole-name match); every other suite is reported SKIP "not
+#                selected", so a partial run can never exit 0 unless ALLOW_SKIP=1. For targeted re-runs.
+#   DV_T263_KO   #263 fault-injection module (built by the firmware's scripts/build-debug-mm6108-fi.sh for
+#                the build the target runs); unset => halow-fi-263 is SKIP. DV_T263_NODE = its target
+#                (default BENCH_NODE). DESTRUCTIVE: the node leaves the mesh for ~3 min and reboots.
+#
+# THE canonical harness is /home/yello/Batman on branch main. Run from anywhere else (a feature worktree, an
+# rc integration branch) it says so loudly on stderr AND in the report header, so a report can never be
+# mistaken for a main-harness run (#263 hygiene: several worktrees carry different copies of this file).
 #
 # Failures are reported in two groups: NEW, and KNOWN (every FAIL line matches an entry for that suite in
 # scripts/validation-known-failures.txt, with an open issue). Known failures still make the exit status 1.
@@ -37,6 +46,18 @@ MESH_NODE=${MESH_NODE:-10.41.239.205}
 IPERF_PEER=${IPERF_PEER:-}                 # the other node reached over the mesh (iperf sink); unset => SKIP
 AB_MODE=${AB_MODE:---inspect-only}
 ALLOW_SKIP=${ALLOW_SKIP:-0}
+DV_ONLY=${DV_ONLY:-}
+DV_BRANCH=$(git -c safe.directory='*' -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+DV_COMMIT=$(git -c safe.directory='*' -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)
+DV_DIRTY=$(git -c safe.directory='*' -C "$REPO" status --porcelain -- scripts 2>/dev/null | grep -c . || true)
+if [ "$DV_BRANCH" != main ] || [ "${DV_DIRTY:-0}" != 0 ]; then
+  {
+    echo "##########################################################################################"
+    echo "## NOT THE CANONICAL HARNESS: $REPO is on '$DV_BRANCH' @ $DV_COMMIT (scripts/ dirty: ${DV_DIRTY:-?})"
+    echo "## The canonical run is /home/yello/Batman on main. This report is for that branch only."
+    echo "##########################################################################################"
+  } >&2
+fi
 
 STAMP=$(date +%Y%m%d-%H%M%S)
 DIR="$OUT/$STAMP"; mkdir -p "$DIR"
@@ -50,6 +71,9 @@ up() { timeout 8 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o Log
 
 suite() {                       # $1 = name, $2 = why-it-matters, $3 = command ("" => skip)
   local name=$1 why=$2 cmd=$3 log="$DIR/$1.log" rc
+  if [ -n "$DV_ONLY" ] && ! printf '%s\n' "$name" | grep -Eqx "$DV_ONLY"; then
+    NSKIP=$((NSKIP+1)); ROWS+=("| $name | SKIP | not selected (DV_ONLY=$DV_ONLY) |"); echo "SKIP  $name (not selected)"; return
+  fi
   if [ -z "$cmd" ]; then
     NSKIP=$((NSKIP+1)); ROWS+=("| $name | SKIP | $why |"); echo "SKIP  $name"; return
   fi
@@ -520,6 +544,53 @@ chk_go_252() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '   # 
     m=$(echo "$v" | cut -d. -f2); [ "$m" -ge 23 ] 2>/dev/null || { echo "  $f built by $v (< go1.23, EOL)"; bad=1; }
   done
   [ "$bad" = 0 ] && echo "ok: one toolchain $ref"' || rc=1; done; return $rc; }
+chk_halow_263() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '   # #263, every reachable node
+  # The shipped mm6108 driver carries the command-ownership fix (mm6108-driver patch 023): before it, a command
+  # that timed out while the TX path held its skb corrupted the command queue counters and the next timeout
+  # unlinked a freed skb (Oops, write to 0x8; 3 fleet panics). Black-box: the loaded driver exposes the fix
+  # counter cmd_timeout_in_flight (a pre-fix image fails here on purpose), and this boot has no refused unlink
+  # (the patch WARNs instead of corrupting), no fault-injection residue, no Oops/BUG. The counter > 0 means the
+  # race HAPPENED and was survived — reported, not failed. The race itself: halow-fi-263 (destructive tier).
+  P=/sys/module/mm6108_sdio/parameters
+  [ -d $P ] || { echo "mm6108_sdio not loaded"; exit 1; }
+  [ -f $P/cmd_timeout_in_flight ] || { echo "loaded mm6108 driver lacks the #263 fix (no cmd_timeout_in_flight)"; exit 1; }
+  [ -f $P/fi263_put_delay_ms ] && { echo "a fault-injection DEBUG driver is loaded (fi263 knobs) — never on a normal boot"; exit 1; }
+  echo "cmd_timeout_in_flight=$(cat $P/cmd_timeout_in_flight)  late responses this boot=$(dmesg | grep -c "Late response")  SPI timeouts=$(dmesg | grep -c "SPI transfer timed out")"
+  b=$(dmesg | grep -E "not on this queue|Unable to handle kernel|Internal error: Oops|BUG: |FI263")
+  [ -z "$b" ] || { echo "$b" | head -5; exit 1; }
+  echo "no refused unlink / Oops / BUG this boot"' || rc=1; done; return $rc; }
+
+# #263 destructive: drive the race on purpose with the fault-injection build of THIS image's driver and require
+# the patched driver to survive it (scripts/node/halow-fi-263.sh). $1 node, $2 local .ko. The node leaves the
+# mesh and reboots; judged afterwards from its log + boot reason. With the STOCK debug module it is the
+# negative control: the node panics on the first case and this FAILs.
+bchk_fi_263() { local n=$1 ko=$2 b0 b1 t l kv nv rc=0
+  [ -f "$ko" ] || { echo "SKIP-REASON: DV_T263_KO '$ko' does not exist"; return 3; }
+  up "$n" || { echo "SKIP-REASON: DV_T263_NODE $n did not answer"; return 3; }
+  kv=$(grep -a -o -m1 'vermagic=[^ ]*' "$ko" | cut -d= -f2); nv=$(fssh "$n" 8 'uname -r' | tr -d ' \r')
+  [ -n "$kv" ] && [ "$kv" = "$nv" ] || { echo "FAIL module vermagic [$kv] != node kernel [$nv] — build the FI module for the image this node runs"; return 1; }
+  grep -aq fi263_put_delay_ms "$ko" || { echo "FAIL $ko is not a fault-injection build (no fi263 knobs)"; return 1; }
+  grep -aq cmd_timeout_in_flight "$ko" && echo "module: patched (023) + FI" || echo "module: STOCK + FI — NEGATIVE CONTROL, the node is expected to panic"
+  scp -q -o BatchMode=yes -o LogLevel=ERROR "$ko" "root@$n:/tmp/mm6108_sdio-dvfi.ko" && \
+  scp -q -o BatchMode=yes -o LogLevel=ERROR "$REPO/scripts/node/halow-fi-263.sh" "root@$n:/tmp/halow-fi-263.sh" || { echo "FAIL could not stage the module/script on $n"; return 1; }
+  b0=$(bootid "$n"); [ -n "$b0" ] || { echo "FAIL boot_id unreadable — not verified"; return 1; }
+  fssh "$n" 10 'setsid sh /tmp/halow-fi-263.sh </dev/null >/dev/null 2>&1 & echo launched' || { echo "FAIL could not launch"; return 1; }
+  echo "launched on $n (boot $b0); waiting for its reboot"
+  for t in $(seq 1 90); do sleep 10; b1=$(bootid "$n"); [ -n "$b1" ] && [ "$b1" != "$b0" ] && break; done
+  [ -n "$b1" ] && [ "$b1" != "$b0" ] || { echo "FAIL $n did not reboot within 15 min — check it by hand"; return 1; }
+  sleep 20
+  l=$(fssh "$n" 15 'f=$(ls -t /opt/batdata/halow-fi-263-*.log 2>/dev/null | grep -v dmesg | head -1); cat "$f"; echo "PREV: $(grep " BOOT " /opt/batdata/log/ota-trace.log | tail -1 | sed "s/.*prev=//" | cut -c1-80)"')
+  echo "$l"
+  case "$(echo "$l" | sed -n 's/^PREV: //p')" in PANIC*) echo "FAIL the node PANICKED during the injection (the #263 race is not survived)"; rc=1 ;; esac
+  echo "$l" | grep -q "START boot=$b0" || { echo "FAIL no result log for this run — not verified"; return 1; }
+  echo "$l" | grep -qE "QLEN|WARNING|Oops|Unable to handle|not on this queue" && { echo "FAIL WARN/Oops during the injection"; rc=1; }
+  echo "$l" | grep -q "case4-5:" || { echo "FAIL the run did not reach case 4"; rc=1; }
+  echo "$l" | grep -q "case2: morse_cli stats rc=0" || { echo "FAIL case 2: a response to a command the host dropped after writing was not delivered"; rc=1; }
+  echo "$l" | grep -q "case3: morse_cli stats rc=0" || { echo "FAIL case 3: a 300 ms stall turned the live response into a late one"; rc=1; }
+  echo "$l" | grep -q "normal stats after injection: 20/20 ok" || { echo "FAIL commands did not all work after the injection"; rc=1; }
+  [ "$rc" = 0 ] && echo "ok the patched driver survived every injected case; node rebooted back to the shipped driver"
+  return $rc; }
+
 chk_runc_247() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '   # #247-2, every reachable node
   # runc <= 1.2.7 / <= 1.3.2 is hit by CVE-2025-31133 / -52565 / -52881 (high: container escape) and
   # <= 1.3.5 by CVE-2026-41579; the image ships 1.3.6. Also: the overlayfs /proc/self/exe seal must be
@@ -764,6 +835,7 @@ if up "$MESH_NODE"; then
   for n in "$OTS_NODE" "$IPERF_PEER"; do [ -n "$n" ] && [ "$n" != "$MESH_NODE" ] && up "$n" && case " $BV_NODES " in *" $n "*) ;; *) BV_NODES="$BV_NODES $n" ;; esac; done
   suite batman-ver-247 "mesh core = routing openwrt-24.10 batman-adv 2024.3-r>=13, loaded == installed, NC compiled out, on: $BV_NODES (#247)" "chk_batver_247 $BV_NODES"
   suite go-toolchain-252 "docker/dockerd/containerd/runc built by the same Go as openmanetd, >= go1.23, on: $BV_NODES (#252)" "chk_go_252 $BV_NODES"
+  suite halow-cmd-263 "mm6108 driver carries the #263 command-ownership fix; no refused unlink / Oops this boot; reports late responses + survived races, on: $BV_NODES (#263)" "chk_halow_263 $BV_NODES"
   suite runc-cve-247 "runc >= 1.3.6 (container-escape CVEs) and /proc/self/exe sealed via overlayfs, on: $BV_NODES (#247-2)" "chk_runc_247 $BV_NODES"
   suite container-lifecycle-247 "container stack: limits, exec, OOM containment, restart policy, exeseal, tty, cp, logs -f, healthcheck, pids, runc features, CRI off — $LC_EXPECT items each, on: $BV_NODES (#268 B1)" "chk_lifecycle $BV_NODES"
   suite dockerd-restart-247 "dockerd restarts with a live container and runs containers again — only on nodes without tenants, on: $BV_NODES (#268 C2)" "chk_dockerd_restart $BV_NODES"
@@ -1000,6 +1072,15 @@ if [ "$FEATURE_MODE" = --destructive ]; then
   fi
 fi
 
+# ---- #263 driver race under fault injection (release gate) ----
+if [ "$AB_MODE" != --destructive ]; then
+  suite halow-fi-263 "mm6108 command race under fault injection (#263) — release gate, needs AB_MODE=--destructive" ""
+elif [ -z "${DV_T263_KO:-}" ]; then
+  suite halow-fi-263 "mm6108 command race under fault injection (#263) — DV_T263_KO unset: build the FI module for this image (firmware scripts/build-debug-mm6108-fi.sh)" ""
+else
+  suite halow-fi-263 "patched mm6108 driver survives the #263 race driven by fault injection (no WARN/Oops, responses delivered, 20/20 after), on ${DV_T263_NODE:-$BENCH_NODE} (DESTRUCTIVE)" "bchk_fi_263 ${DV_T263_NODE:-$BENCH_NODE} $DV_T263_KO"
+fi
+
 # ---- release-gate load soak (#268 B3) ----
 # Tier B just rebooted (and panicked) DNODE, which may be the host's only way into the mesh: wait for every
 # soak node to answer again before deciding it is unavailable (2026-10-07: an `up` right after ramoops-173
@@ -1058,6 +1139,11 @@ done
 {
   echo "# Batman daily validation — $(date -Is)"
   echo
+  if [ "$DV_BRANCH" != main ] || [ "${DV_DIRTY:-0}" != 0 ]; then
+    echo "> ⚠️ **NOT THE CANONICAL HARNESS** — run from \`$REPO\` on \`$DV_BRANCH\` @ \`$DV_COMMIT\` (uncommitted changes under scripts/: ${DV_DIRTY:-?}). Valid for that branch only."
+    echo
+  fi
+  [ -n "$DV_ONLY" ] && { echo "> ⚠️ **PARTIAL RUN** — only suites matching \`DV_ONLY=$DV_ONLY\`; everything else is SKIP (not selected)."; echo; }
   echo "**$NPASS passed, $NFAIL failed, $NSKIP skipped, $NNA not applicable (by SoC, listed with reason)**"
   echo
   echo "| suite | result | notes |"
