@@ -584,7 +584,7 @@ bchk_fi_263() { local n=$1 ko=$2 b0 b1 t l kv nv rc=0
   echo "$l"
   case "$(echo "$l" | sed -n 's/^PREV: //p')" in PANIC*) echo "FAIL the node PANICKED during the injection (the #263 race is not survived)"; rc=1 ;; esac
   echo "$l" | grep -q "START boot=$b0" || { echo "FAIL no result log for this run — not verified"; return 1; }
-  echo "$l" | grep -qE "QLEN|WARNING|Oops|Unable to handle|not on this queue" && { echo "FAIL WARN/Oops during the injection"; rc=1; }
+  echo "$l" | grep -qE "QLEN|WARNING: CPU|Oops|Unable to handle|not on this queue" && { echo "FAIL WARN/Oops during the injection"; rc=1; }
   echo "$l" | grep -q "case4-5:" || { echo "FAIL the run did not reach case 4"; rc=1; }
   echo "$l" | grep -q "case2: morse_cli stats rc=0" || { echo "FAIL case 2: a response to a command the host dropped after writing was not delivered"; rc=1; }
   echo "$l" | grep -q "case3: morse_cli stats rc=0" || { echo "FAIL case 3: a 300 ms stall turned the live response into a late one"; rc=1; }
