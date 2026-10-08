@@ -1056,6 +1056,14 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
     fssh "$n" 10 'mkdir -p /opt/batdata/state && : > /opt/batdata/state/fault.274-rmstop-once'
     echo "NEGATIVE CONTROL: the stop removes the containers once"
   fi
+  # 6 (C1): a peer sends one CoT the moment 8088 accepts again after the reboot (as early as a field client)
+  local pu="" pnode=${BENCH_NODE:-}
+  if [ -n "$pnode" ] && [ "$pnode" != "$n" ] && up "$pnode"; then
+    pu="DV274E$(date +%Y%m%d%H%M%S)"
+    timeout 20 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$pnode" \
+      "cat > /tmp/dv274-probe.sh && (setsid sh /tmp/dv274-probe.sh $n $pu > /tmp/dv274-probe.out 2>&1 < /dev/null &)" < "$REPO/scripts/node/cot-probe-274.sh"
+    echo "early-CoT probe $pu started on $pnode"
+  fi
   reboot_and_wait "$n" reboot 240 || rc=1
   if [ "${DV_TEST_274_NOSTOP:-0}" = 1 ]; then   # the K links live on the overlay: put them back
     fssh "$n" 10 'for f in /tmp/dv-274-klink.*; do [ -e "$f" ] || continue; b=${f#/tmp/dv-274-klink.}; t=${b#K??}; ln -sf ../init.d/$t /etc/rc.d/$b; ls -l /etc/rc.d/$b; done' \
@@ -1069,6 +1077,12 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
   if [ -z "$l" ]; then echo "FAIL 1 no payload-stop.log record for the previous boot $pb (the stop did not run)"; rc=1
   else
     echo "stop record: $l"
+    # each K script gets its own 15 s from procd (then TERM): K08 (client tiers) and K09 (final tier + record)
+    for k in k08 k09; do
+      v=$(echo "$l" | sed -n "s/.* $k=\([0-9]*\)\.[0-9]s.*/\1/p")
+      if isint "$v"; then [ "$v" -lt 15 ] && echo "ok 1 $k took ${v}.x s (< 15 s procd budget)" || { echo "FAIL 1 $k took ${v}.x s — over procd's 15 s per K script"; rc=1; }
+      else echo "FAIL 1 no $k time in the stop record"; rc=1; fi
+    done
     codes=${l#*exit: }
     for c in $codes; do case "$c" in
       ots-db=137|ots-db=255|rabbitmq=137|rabbitmq=255) echo "FAIL 1 final-tier container SIGKILLed: $c"; rc=1 ;;
@@ -1085,16 +1099,39 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
   ids1=$(ots_ids "$n")
   if [ "$ids0" = "$ids1" ]; then echo "ok 3 same container IDs (started, not recreated)"
   else echo "FAIL 3 containers recreated:"; echo "  before: $(echo $ids0)"; echo "  after:  $(echo $ids1)"; rc=1; fi
-  # 4 start mode + order
+  # 4 start mode, two phases (D2'): every final-tier service (no STOPTIER) started before any other container
   fssh "$n" 15 'logread | grep -q "payload-run\[opentakserver\]: start mode"' && echo "ok 4 guardian used start mode" || { echo "FAIL 4 no start-mode line this boot"; rc=1; }
-  l=$(fssh "$n" 20 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); for c in $(awk "/^CONTAINER /{print \$2}" "$m"); do echo "$c $(docker inspect -f "{{.State.StartedAt}}" $c)"; done | awk "{ if (NR > 1 && \$2 < p) { print \$1 \" started before its predecessor\"; b = 1 } p = \$2 } END { print \"bad=\" (b ? 1 : 0) }"' | tr -d '\r')
-  echo "$l" | grep -qx 'bad=0' && echo "ok 4 started in manifest order" || { echo "FAIL 4 $(echo "$l" | grep -v '^bad=')"; rc=1; }
+  l=$(fssh "$n" 20 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); awk "\$1==\"CONTAINER\"{if(c!=\"\")print c, t; c=\$2; t=99} \$1==\"STOPTIER\"{t=\$2} END{print c, t}" "$m" | while read -r c t; do echo "$c $t $(docker inspect -f "{{.State.StartedAt}}" $c)"; done | awk "{ if (\$2 == 99) { if (\$3 > maxf) maxf = \$3 } else { if (minr == \"\" || \$3 < minr) { minr = \$3; mc = \$1 } } } END { if (minr != \"\" && minr < maxf) print \"bad=1 \" mc \" started \" minr \" before the last service \" maxf; else print \"bad=0\" }"' | tr -d '\r')
+  case "$l" in bad=0*) echo "ok 4 services started before the rest (two-phase start)" ;; *) echo "FAIL 4 ${l#bad=1 }"; rc=1 ;; esac
   # 5 boot-to-ready
   up=$(fssh "$n" 15 'logread | grep "batman-payload\[opentakserver\]: converge done" | tail -1 | sed -n "s/.*uptime=\([0-9]*\).*/\1/p"' | tr -d ' \r')
   if isint "$up"; then
     echo "boot-to-ready: ${up} s uptime (SLO <= 90 s; control 1.5.4: 6 running at +63 s)"
     [ "$up" -le 90 ] || { echo "FAIL 5 boot-to-ready ${up} s > 90 s"; rc=1; }
   else echo "FAIL 5 no 'converge done' line this boot — boot-to-ready not measured"; rc=1; fi
+  # 6 (#274 review C1) the clients do not depend on the opentakserver API: no container restarted during the
+  # two-phase start, and a CoT sent the moment 8088 accepted (before the API gate, when the timing allows) is stored
+  l=$(fssh "$n" 15 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); for c in $(awk "/^CONTAINER /{print \$2}" "$m"); do echo "$c=$(docker inspect -f "{{.RestartCount}}" $c)"; done' | tr '\r\n' '  ')
+  echo "restart counts: $l"
+  echo "$l" | grep -Eq '=[1-9]' && { echo "FAIL 6 a container restarted during the start (a dependency the two-phase start does not honour)"; rc=1; } || echo "ok 6 no container restarted"
+  if [ -n "$pu" ]; then
+    local po d02 d04 bt sent i st
+    for i in $(seq 1 20); do po=$(fssh "$pnode" 10 'cat /tmp/dv274-probe.out 2>/dev/null' | tr -d '\r'); echo "$po" | grep -q '^SENT\|^NEVER' && break; sleep 3; done
+    echo "probe: $(echo $po)"
+    d02=$(fssh "$pnode" 10 'date +%s' | tr -d ' \r'); d04=$(fssh "$n" 10 'echo $(( $(date +%s) - $(cut -d. -f1 /proc/uptime) )) $(date +%s)' | tr -d '\r')
+    bt=${d04%% *}; d04=${d04##* }
+    sent=$(echo "$po" | sed -n 's/^SENT \([0-9]*\) rc=0$/\1/p')
+    if isint "$sent" && isint "$d02" && isint "$bt" && isint "$up"; then
+      sent=$(( sent + d04 - d02 - bt ))   # the peer's send time on the OTS node's uptime axis (+-2 s: two clocks)
+      if [ "$sent" -lt $((up - 3)) ]; then echo "ok 6 CoT sent at +${sent} s, before the API gate passed (+${up} s)"
+      else echo "NOTE 6 8088 accepted only at +${sent} s, API gate at +${up} s — before-API delivery not exercised this run"; fi
+      st=0; for i in $(seq 1 12); do st=$(echo "select count(*) from cot where uid='$pu';" | ots_sql "$n" | tr -d ' \r'); [ "$st" = 1 ] && break; sleep 5; done
+      [ "$st" = 1 ] && echo "ok 6 the early CoT was stored" || { echo "FAIL 6 the early CoT ($pu) was not stored (count=$st)"; rc=1; }
+      ots_sql "$n" <<SQL >/dev/null
+begin; delete from euds where uid like '$pu%'; delete from cot where uid like '$pu%'; commit;
+SQL
+    else echo "FAIL 6 early-CoT probe did not send (probe: $(echo $po))"; rc=1; fi
+  fi
   return $rc; }
 
 bchk_converge_274() {   # the guardian converges a CHANGED config by a graceful rebuild and leaves an unchanged one alone (#274)
@@ -1171,15 +1208,18 @@ if [ "$FEATURE_MODE" = --destructive ]; then
   # #274 runs on the OTS node (the only one with a tenant), NOT behind DNODE's ethernet gate: a plain, clean
   # reboot and guardian restarts are the node's normal life and never touch the mesh config, so they need no
   # out-of-band recovery. reboot_and_wait FAILs if the node does not return.
+  # ramoops-173 just panicked DNODE, which may be the host's only way into the mesh: WAIT for the OTS node
+  # (as soak_ready does) instead of a one-shot `up` — 2026-10-08 an `up` here found 03 still booting and
+  # skipped both #274 suites.
   if [ "$OTS_SOC" = bcm2710 ]; then
     na cleanstop-274 "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"
     na converge-274 "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"
-  elif up "$OTS_NODE"; then
+  elif dwait "$OTS_NODE" 300; then
     suite converge-274 "guardian converges a changed manifest / mounted file by a graceful rebuild, leaves an unchanged stack alone, restores to the golden fingerprint (#274, destructive)" "bchk_converge_274 $OTS_NODE"
     suite cleanstop-274 "clean reboot: tiered graceful stop recorded before the shutdown capture, postgres clean, same containers started in order, boot-to-ready <= 90 s (#274, destructive)" "bchk_cleanstop_274 $OTS_NODE"
-  else
-    suite converge-274 "OTS_NODE $OTS_NODE did not answer" ""
-    suite cleanstop-274 "OTS_NODE $OTS_NODE did not answer" ""
+  else   # not back within 300 s after the destructive tier = a real finding, never a SKIP (#274 review C6)
+    suite converge-274 "guardian converges a changed config (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
+    suite cleanstop-274 "clean reboot stop/start (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
   fi
 fi
 

@@ -123,7 +123,7 @@ problem(){ PF="$PF
 health_gate(){
 	[ -n "$HEALTH" ] || return 0
 	printf 'payload-run[%s]: wait %s' "$TENANT" "$NAME"; i=0
-	while [ "$i" -lt 60 ]; do
+	while [ "$i" -lt "${PAYLOAD_HEALTH_TRIES:-60}" ]; do   # 60 x 2 s; the offline test shortens it
 		docker exec "$NAME" sh -c "$HEALTH" >/dev/null 2>&1 && { echo " ok"; return 0; }
 		printf .; sleep 2; i=$((i+1))
 	done
@@ -173,15 +173,8 @@ finish_block(){
 		printf '%s' "$FACTS" ;;
 	preflight)
 		docker image inspect "$IMG" >/dev/null 2>&1 || problem "$NAME: image $IMG not present locally" ;;
-	start)
-		stopping && exit 4
-		st=$(docker inspect -f '{{.State.Status}}' "$NAME" 2>/dev/null || echo missing)
-		case "$st" in
-			running|restarting) log "$NAME already $st" ;;
-			*) if docker start "$NAME" >/dev/null 2>&1; then log "started $NAME (existing container, start mode)"
-			   else log "WARN: docker start $NAME failed (was $st)"; START_FAILED="$START_FAILED $NAME"; return 0; fi ;;
-		esac
-		health_gate ;;
+	prep)
+		: ;;   # start mode: the walk only enforces the secret owner/mode (SECRET below); start_group starts
 	run)
 		stopping && exit 4
 		OLDIFS=$IFS; IFS=' '
@@ -232,13 +225,13 @@ walk(){   # $1 = ACTION
 			                  # a 0600 root secret is unreadable by a non-root container → chown to the
 			                  # container's run_as uid + 0400, ENFORCED on every start and rebuild (#274 N2:
 			                  # owner/mode are enforced, not fingerprinted). Never in render/preflight.
-			                  case "$ACTION" in start|run)
+			                  case "$ACTION" in prep|run)
 			                      [ -n "$suid" ] && { chown "$suid" "$sf" 2>/dev/null || true; chmod 0400 "$sf" 2>/dev/null || true; } ;;
 			                  esac
 			                  set -- "$@" -v "$sf:$smount:ro"
 			              else
 			                  fact "SECRET $sname MISSING"
-			                  case "$ACTION" in start|run) log "WARN: secret '$sname' missing ($sf) — $NAME may fail" ;; esac
+			                  case "$ACTION" in prep|run) log "WARN: secret '$sname' missing ($sf) — $NAME may fail" ;; esac
 			              fi ;;
 			ENTRYPOINT)   EP_HEAD=${rest%% *}; case "$rest" in *" "*) EP_REST=${rest#* } ;; *) EP_REST="" ;; esac ;;
 			HEALTH)       HEALTH="$rest" ;;
@@ -309,10 +302,42 @@ remove_stack(){
 }
 
 short(){ echo "$CFG" | cut -c1-12; }
+# Start mode in two phases (#274 D2', docs/design/274-payload-converge.md §9). Contract (167-payload-manager.md):
+# the FINAL stop tier (containers without STOPTIER) are the stateful services, independent of each other; every
+# other container depends only on them being healthy. Phase A starts the final tier in parallel and waits for
+# their HEALTH; phase B starts all the rest at once, then runs their gates. A phase-A failure (start or gate)
+# still runs phase B (skipping it = a guaranteed outage; their restart policy backs off until the services are
+# up, as dockerd's own revival did) — FAILED=1, and a start failure falls through to the preflighted rebuild.
+hc_of(){ awk -v c="$1" '$1=="CONTAINER"{n=$2} $1=="HEALTH" && n==c {sub(/^HEALTH[ \t]+/,""); print; exit}' "$MANIFEST"; }
+tiers(){ awk '$1=="CONTAINER"{if(n!="")print n, t; n=$2; t=99} $1=="STOPTIER"{t=$2+0} END{if(n!="")print n, t}' "$MANIFEST"; }
+start_group(){   # $@ = container names: start in parallel, collect each status, then gate each
+	pids=""
+	for c in "$@"; do
+		st=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+		case "$st" in
+			running|restarting) log "$c already $st" ;;
+			*) docker start "$c" >/dev/null 2>&1 & pids="$pids $!:$c" ;;
+		esac
+	done
+	for pc in $pids; do
+		if wait "${pc%%:*}"; then log "started ${pc#*:} (existing container, start mode)"
+		else log "WARN: docker start ${pc#*:} failed"; START_FAILED="$START_FAILED ${pc#*:}"; FAILED=1; fi
+	done
+	for c in "$@"; do
+		case " $START_FAILED " in *" $c "*) continue ;; esac
+		NAME=$c; HEALTH=$(hc_of "$c"); health_gate
+	done
+}
 do_start(){
-	log "start mode: stack unchanged (cfg $(short)) — starting the existing containers in order"
+	log "start mode: stack unchanged (cfg $(short)) — services first (parallel, gated), then the rest at once"
 	ensure_net; apply_fw4
-	START_FAILED=""; walk start
+	START_FAILED=""; walk prep
+	final=$(tiers | awk 'BEGIN{x=0} $2>x{x=$2} END{print x}')
+	# shellcheck disable=SC2046
+	start_group $(tiers | awk -v f="$final" '$2==f{print $1}')
+	stopping && exit 4
+	# shellcheck disable=SC2046
+	start_group $(tiers | awk -v f="$final" '$2!=f{print $1}')
 }
 do_rebuild(){
 	log "rebuild (cfg $(short))"

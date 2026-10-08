@@ -67,21 +67,24 @@ pstop_early(){
 	n=0; for c in $(awk '$1=="CONTAINER"{print $2}' "$m"); do
 		[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = true ] && n=$((n + 1))
 	done
-	echo "$(pstop_up) $n" > "$st"
+	t0=$(pstop_up); echo "$t0 $n" > "$st"
 	final=$(pstop_tiers "$m" | awk 'BEGIN{x=0} $2>x{x=$2} END{print x}')
 	for tier in $(pstop_tiers "$m" | awk -v f="$final" '$2<f{print $2}' | sort -n -u); do
 		# shellcheck disable=SC2046
 		pstop_stop 5 $(pstop_tiers "$m" | awk -v k="$tier" '$2==k{print $1}')
 	done
+	# this half's own time, for the record (each K script has its own 15 s procd budget)
+	echo "$t0 $n $(awk -v a="$t0" -v b="$(pstop_up)" 'BEGIN{printf "%.1f", b-a}')" > "$st"
 	return 0
 }
 
 pstop_final(){
 	t=$1; st="$PSTOP_RUN/batman-payload-$t.stop0"
 	pstop_early "$t"
+	t9=$(pstop_up)
 	m=$(pstop_manifest "$t"); [ -n "$m" ] || return 0
-	read -r t0 n rest < "$st" 2>/dev/null || { t0=$(pstop_up); n=0; rest=""; }
-	[ "$rest" = nodocker ] && { rm -f "$st"; return 0; }
+	read -r t0 n k08 < "$st" 2>/dev/null || { t0=$t9; n=0; k08=""; }
+	[ "$k08" = nodocker ] && { rm -f "$st"; return 0; }
 	final=$(pstop_tiers "$m" | awk 'BEGIN{x=0} $2>x{x=$2} END{print x}')
 	# shellcheck disable=SC2046
 	pstop_stop 10 $(pstop_tiers "$m" | awk -v f="$final" '$2==f{print $1}')
@@ -100,8 +103,11 @@ pstop_final(){
 	[ "$n" -gt 0 ] 2>/dev/null || return 0             # nothing was running: no record (double stop, legacy K10)
 	# shellcheck disable=SC2046
 	codes=$(docker inspect -f '{{.Name}}={{.State.ExitCode}}' $(awk '$1=="CONTAINER"{print $2}' "$m") 2>/dev/null | sed 's#^/##' | tr '\n' ' ')
-	el=$(awk -v a="$t0" -v b="$(pstop_up)" 'BEGIN{printf "%.1f", b-a}')
-	line="boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) tenant=$t elapsed=${el}s running_at_start=$n exit: $codes"
+	t1=$(pstop_up)
+	el=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.1f", b-a}')
+	k09=$(awk -v a="$t9" -v b="$t1" 'BEGIN{printf "%.1f", b-a}')
+	# elapsed = whole stop; k08 = the client-tier half (K08, or inline for an operator stop); k09 = this half
+	line="boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) tenant=$t elapsed=${el}s k08=${k08:-?}s k09=${k09}s running_at_start=$n exit: $codes"
 	logger -t "batman-payload-$t" "stop: $line"
 	mount | grep -q " /opt/batdata " && { mkdir -p "${PSTOP_LOG%/*}"; echo "$(date +%Y%m%d-%H%M%S) $line" >> "$PSTOP_LOG"; }
 	return 0

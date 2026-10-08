@@ -45,7 +45,7 @@ case "$1" in
 info) exit 0 ;;
 image) [ "$2" = inspect ] || exit 1; shift 2; [ "$1" = -f ] && shift 2; f="$S/img/$(e "$1")"; [ -f "$f" ] || exit 1; cat "$f" ;;
 volume) exit 0 ;;
-exec) exit 0 ;;
+exec) [ -f "$S/fail-health-$2" ] && exit 1; exit 0 ;;
 inspect) shift; fmt=""; [ "$1" = -f ] && { fmt=$2; shift 2; }; rc=0
 	for n; do d="$S/c/$n"; [ -d "$d" ] || { rc=1; continue; }
 		case "$fmt" in
@@ -206,6 +206,20 @@ rc=$(PAYLOAD_LOCK_WAIT=2 pr t); kill $lp 2>/dev/null; wait $lp 2>/dev/null
 
 # 12 no docker child ever inherited fd 9 (the lock dies with the wrapper)
 [ -s "$S/violations" ] && { no "12 violations:"; cat "$S/violations"; } || ok "12 no rm -f of a running container, no fd 9 leaked (all runs above)"
+
+# 16 start mode, two phases (D2'): the final-tier service (db) is started AND gated before any other
+# container is started; the rest are started after it
+sh "$PR" t >>"$ALL" 2>&1; for c in db app; do echo exited > "$S/c/$c/status"; done
+reset_calls; rc=$(pr --converge t)
+sd=$(calls | grep -n '^start db' | cut -d: -f1); ed=$(calls | grep -n '^exec db' | head -1 | cut -d: -f1); sa=$(calls | grep -n '^start app' | cut -d: -f1)
+[ "$rc" = 0 ] && [ -n "$sd" ] && [ -n "$ed" ] && [ -n "$sa" ] && [ "$sd" -lt "$ed" ] && [ "$ed" -lt "$sa" ] \
+	&& ok "16 start mode: service started + gated (phase A) before the rest (phase B)" || { no "16 order start-db=$sd gate-db=$ed start-app=$sa rc=$rc"; calls; }
+
+# 17 a phase-A gate failure still starts phase B (no outage by design), rc 1 (DRIFT), nothing removed
+for c in db app; do echo exited > "$S/c/$c/status"; done
+: > "$S/fail-health-db"; reset_calls; rc=$(PAYLOAD_HEALTH_TRIES=1 pr --converge t); rm -f "$S/fail-health-db"
+[ "$rc" = 1 ] && [ "$(cat "$S/c/app/status")" = running ] && ! calls | grep -Eq '^(rm|run) ' \
+	&& ok "17 service gate timeout: the rest still started, rc 1, nothing removed" || { no "17 rc=$rc app=$(cat "$S/c/app/status")"; calls; }
 
 # 13 stop: tiers in order (tier 1 first, final tier last), no rm, record written; .stopping set
 sh "$PR" t >>"$ALL" 2>&1; reset_calls

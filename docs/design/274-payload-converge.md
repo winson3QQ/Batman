@@ -283,3 +283,35 @@ comes back (as dockerd's revival did before), a changed one waits for the guardi
 | P6 lock fd hygiene | payload-run's lock holder is a thin wrapper: it takes the lock and runs the worker (`payload-run --worker …`) with fd 9 closed, then waits; killing the wrapper's tree frees the lock immediately. |
 | P7 | as P1: only `start_service` / firstload-S95 clear `.stopping`. |
 | HARDEN parse vs `verify-profile.sh` source | both use the same quote stripping; test-payload-run compares the parsed value to a sourced one for every committed hardening file. Rationale for parse = determinism (the guardian still runs tenant `*.fw4.uci`/verify scripts by design). |
+
+## 9. v3.2 — start mode in two phases (D2'), after the rc's full validation
+
+**Why.** rc 1.5.5-wsl.6 full validation: fi-f1 still FAIL. Start mode (D2: manifest order, every container
+behind its gate) put the three CoT clients behind the opentakserver API gate; "converge done" at +76 s, and F1
+samples `docker ps ≥ 6` at ssh-up + 25 s (~+70..75). Measured on 04 (steady state, twice):
+
+| start order | 6 running | API ready | restarts |
+|---|---|---|---|
+| D2: one by one, each gated | 37 s | 37 s | 0 |
+| **D2': final tier parallel + gated, then the rest at once** | **20 s** | 38 s | 0 |
+
+**D2'.** Start mode = phase A: `docker start` every final-stop-tier container (no STOPTIER) in parallel
+(each in the background, every exit status collected with `wait <pid>`), then their HEALTH gates; re-check
+`.stopping`; phase B: start all the rest at once, then their gates. Rebuild is unchanged (strict order).
+A phase-A failure (start or gate) still runs phase B — skipping it guarantees an outage, while the clients'
+restart policy backs off until the services are up (what dockerd's own revival did) — with FAILED=1 (DRIFT);
+a start failure then falls through to the preflighted rebuild. Contract: 167-payload-manager.md §4.5
+(final tier = independent stateful services; everything else depends only on them; intermediate stop tiers
+order the stop only).
+
+**Review (4th round, APPROVE-WITH-CHANGES) → done:**
+
+| finding | resolution |
+|---|---|
+| C1 the "clients don't need the API" claim rests on 2 samples | cleanstop-274 check 6: RestartCount 0 for all six, and a peer sends one CoT the moment 8088 accepts after the reboot — must be stored; reports whether it was before the API gate. Run ≥ 5 times before merge. |
+| C2 phase-A failure unspecified | phase B still runs, FAILED=1, start failure → preflighted rebuild; offline test 17 (service gate timeout → rest started, rc 1, nothing removed) |
+| C3 tier meaning | 167 §4.5: intermediate tiers order the stop only |
+| C4 busybox parallelism | background starts + `wait <pid>` per container; `.stopping` re-checked between phases; the stop's tree kill covers the background jobs (children of the worker) |
+| C5 F1 counted restarting containers | fault-injection `ots_up` counts `status=running` only (stricter) |
+| C6 dwait | not back within 300 s → FAIL, not SKIP |
+| C7 27.9 s stop record | that boot was fi-r1's runc-broken trial (docker cannot stop cleanly without runc); the record now carries k08= / k09= per script, cleanstop asserts each < 15 s |

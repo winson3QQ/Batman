@@ -63,3 +63,14 @@ Refs #75 (SoT), #160 (provenance), #73 (dev-infra).
 ## Retention (what goes to Batman-P)
 
 Not every build is promoted. WSL `bin/targets/` holds every build (transient, overwritten). A build is **promoted** to a Batman-P pre-release only when it is **validated** (on-node / `ab-selftest`) and worth keeping/flashing. Keep **one current good build per version line**; prune superseded ones (e.g. `batman-ab-docker-v2` was retired when `batman-1.3.0-wsl` landed). Each promoted release carries the full-card `.img.gz`, the OTA `ab-payload` tar, and the `<image>.manifest.txt`.
+
+## RC builds and the shipped number (2026-10-08, #274)
+
+- **A version number only goes up.** A fix (or a batch of fixes) that ships bumps PATCH. Its validation builds
+  are rc's of THAT number: `<next PATCH>-wsl.N` from the issue's branch (a local firmware branch pinning the
+  unmerged Batman commit). After merge, the firmware pin-bump PR builds the shipped image as the next `-wsl.N`
+  of the same number (the feed SHA changes on squash-merge, so it is a rebuild; its content is the last
+  validated rc plus test/CI-only commits).
+- **Never ship a number lower than an rc already built.** 1.5.5-wsl.1..5 were rc's of #275/#263 that shipped as
+  1.5.4-wsl.2 — the shipped number was lower than its own rc's. Those five rc numbers are retired: never flash
+  or ship them. #274's rc's are 1.5.5-wsl.6.. and it ships as the next 1.5.5-wsl.N.

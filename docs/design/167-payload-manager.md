@@ -211,6 +211,21 @@ the tenant's **primary** container (from `manifest.env`, not the literal `openta
 "guardian survives A/B flash via batdata-mount restore" keeps working because the generated init
 still lands under `deploy/*/*.init` on p6.
 
+### 4.5 Lifecycle contract for a tenant author (#274, docs/design/274-payload-converge.md)
+
+- **The final stop tier = the stateful services.** A container with **no** `lifecycle.stop_tier` entry is
+  in the final tier: it is stopped last (`-t 10`) and, in start mode (an unchanged stack after a reboot), started
+  **first and in parallel** with the other final-tier containers, then health-gated. So final-tier containers
+  must **not depend on each other**, and each should declare a `lifecycle.health` command (that is their gate).
+- **Every other container may depend only on the final tier being healthy.** In start mode they are all started
+  at once after the final tier passed its gates (OTS: parser and both eud handlers need postgres + rabbitmq, not
+  the opentakserver API — measured: 0 restarts, a CoT sent before the API gate is stored; cleanstop-274 check 6).
+  If a container needs another non-final one, the two-phase start does not order it — put the dependency in the
+  final tier or make the container retry on its own.
+- **Intermediate stop tiers (1..98) order the STOP only** (lower first: clients before the app that serves
+  them). They mean nothing for start.
+- A rebuild (changed config) keeps the strict manifest order, one container at a time behind its gate.
+
 ## 5. Secrets delivery (#167 item 3)
 
 ### 5.1 Reality: air-gapped tactical node, no vault, no network CA
