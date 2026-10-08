@@ -41,6 +41,9 @@ fi
 rev=""; for n in $NAMES; do rev="$n $rev"; done
 for n in $rev; do docker rm -f "$n" >/dev/null 2>&1 || true; done
 [ -n "$NAMES" ] && log "containers removed"
+# #274: the guardian's stop marks the tenant as stopping; with the guardian gone nothing would clear it,
+# and a later re-install (`payload-run <tenant>`) would refuse (exit 4)
+rm -f "/tmp/batman-payload-$TENANT.stopping" "/tmp/batman-payload-$TENANT.stop0"
 
 # 3. fw4 objects — section names read FROM the tenant's fw4.uci (avoids the app-dir vs tenant naming
 #    gap: sections are named by the deploy-dir slug, not $TENANT). Then `fw4 restart` (NOT reload —

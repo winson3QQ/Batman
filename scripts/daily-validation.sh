@@ -291,6 +291,36 @@ chk_golden() { fssh "$1" 30 '                                  # payload-config-
   done
   [ "$checked" = 1 ] || echo "no provisioned tenant on this node — nothing to check"
   echo "golden-config rc=$rc"; [ "$rc" = 0 ]'; }
+chk_conform() { fssh "$1" 90 '                                  # #274 payload-conform
+  # The LIVE containers are what the manifest says, not just the files on p6 (chk_golden): every container
+  # running, not restart-looping, labelled batman.cfg == payload-run --cfg-hash and batman.tenant == the
+  # tenant (after an OTA dockerd revives the OLD containers unless the guardian converged them); every
+  # MOUNT present with the right source and RO/RW, source a regular file; no container labelled for the
+  # tenant outside its manifest (orphan).
+  rc=0; checked=0
+  for d in /opt/batdata/apps/*/; do
+    man=$(ls "$d"*.manifest 2>/dev/null | head -1); [ -n "$man" ] || continue
+    t=${d%/}; t=${t##*/}; checked=1
+    want=$(payload-run --cfg-hash "$t" 2>/dev/null); [ -n "$want" ] || { echo "FAIL $t: payload-run --cfg-hash gave nothing"; rc=1; }
+    names=$(awk "/^CONTAINER /{print \$2}" "$man" | tr "\n" " "); c=""
+    while read -r k v; do
+      case "$k" in
+        CONTAINER) c=$v
+          s=$(docker inspect -f "{{.State.Status}} {{.State.Restarting}} {{index .Config.Labels \"batman.cfg\"}} {{index .Config.Labels \"batman.tenant\"}}" "$c" 2>/dev/null)
+          [ "$s" = "running false $want $t" ] || { echo "FAIL $t/$c [status restarting cfg tenant]=[$s] want [running false $want $t]"; rc=1; } ;;
+        MOUNT) src=${v%%:*}; r=${v#*:}; dst=${r%%:*}; rw=true; case "$v" in *:ro) rw=false ;; esac
+          case "$src" in /*) ;; *) src="$d$src"; [ -f "$src" ] || { echo "FAIL $t/$c mount source $src is not a regular file"; rc=1; } ;; esac
+          m=$(docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$dst\"}}{{.Source}} {{.RW}}{{end}}{{end}}" "$c" 2>/dev/null)
+          [ "$m" = "$src $rw" ] || { echo "FAIL $t/$c mount $dst = [$m] want [$src $rw]"; rc=1; } ;;
+      esac
+    done < "$man"
+    for o in $(docker ps -a --filter "label=batman.tenant=$t" --format "{{.Names}}" 2>/dev/null); do
+      case " $names " in *" $o "*) ;; *) echo "FAIL $t: orphan container $o (labelled for the tenant, not in its manifest)"; rc=1 ;; esac
+    done
+    echo "$t: containers [$names] checked, cfg $(echo "$want" | cut -c1-12)"
+  done
+  [ "$checked" = 1 ] || echo "no provisioned tenant on this node — nothing to check"
+  echo "payload-conform rc=$rc"; [ "$rc" = 0 ]'; }
 chk_tput() { fssh "$1" 170 '                                   # sustained-ish mesh throughput
   # A single batctl tp is jittery (seen 0.5-6 Mbps); take the MEDIAN of N runs so a real regression
   # (dead link / MCS collapse) is caught without false-failing on jitter. Baseline = soak-30min-4mhz
@@ -790,7 +820,7 @@ chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash
   echo "firstload enabled; offline copies present; canary runs; autocommit gate ok"'; }
 
 if [ "$OTS_SOC" = bcm2710 ]; then
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden flashgo-159 ots-cot-e2e-264; do
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264; do
     suite "$s" "OTS_NODE $OTS_NODE is bcm2710 — not run (see ots-node-209)" ""
   done
 elif up "$OTS_NODE"; then
@@ -800,10 +830,11 @@ elif up "$OTS_NODE"; then
   suite payload-mgr-167  "OTS on the generic payload manager, old guardian gone (#167)"       "chk_167g $OTS_NODE"
   suite arbiter-167      "port/zone arbiter REFUSES a colliding tenant (#167, white-box)"      "chk_167a $OTS_NODE"
   suite payload-config-golden "p6 tenant config == baked golden + unless-stopped + images present (payload-config-golden.md)" "chk_golden $OTS_NODE"
+  suite payload-conform "live containers == manifest: running + config-fingerprint label + tenant label + MOUNTs (src/RO) + no orphans (#274)" "chk_conform $OTS_NODE"
   suite flashgo-159      "flash-and-go integrity — firstload enabled, offline copies (F2), canary runs, autocommit gate (#159/#216)" "chk_flashgo $OTS_NODE"
   suite ots-cot-e2e-264  "CoT sent == stored per phase from $BENCH_NODE: P1 control, P2 deterministic truncation (A control / B #264-A), P3 burst; heartbeat (#264-B) NOT exercised (#268 B2)" "chk_cot_264 $OTS_NODE $BENCH_NODE"
 else
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden flashgo-159 ots-cot-e2e-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"
@@ -990,6 +1021,175 @@ bchk_rejoin_245() {   # DNODE leaves+rejoins the mesh; assert peers never kernel
   echo "$N leave/rejoin cycles, $nv peer(s), mover $mover back each time"
   [ "$bad" = 0 ]; }
 
+# ---- #274 payload converge / clean stop (docs/design/274-payload-converge.md §6) ----
+ots_ids() { fssh "$1" 20 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); for c in $(awk "/^CONTAINER /{print \$2}" "$m"); do echo "$c $(docker inspect -f "{{.Id}}" $c 2>/dev/null | cut -c1-12)"; done' | tr -d '\r'; }
+ots_ready() { fssh "$1" 20 '[ "$(docker ps -q | wc -l)" -ge 6 ] && docker exec ots-db pg_isready -q && wget -q -T 5 -O /dev/null http://172.20.0.5:8081/api/health' >/dev/null 2>&1; }
+# the guardian's LAST "converge done ... uptime=<s.ss>" line (unique: it carries the uptime). Compared by content,
+# not counted: a rebuild logs enough to push older lines out of the logread ring, so a count can stand still.
+conv_last() { fssh "$1" 15 'logread | grep "batman-payload\[opentakserver\]: converge done" | tail -1 | sed -n "s/.*\(converge done.*\)/\1/p"' | tr -d '\r'; }
+# wait until the last "converge done" line differs from $2 (max $3 s); prints it
+wait_converge() { local n=$1 l0=$2 max=${3:-300} i l
+  for i in $(seq 1 $((max / 5))); do
+    l=$(conv_last "$n")
+    [ -n "$l" ] && [ "$l" != "$l0" ] && { echo "$l"; return 0; }
+    sleep 5
+  done; return 1; }
+# early-CoT probe (#274 review C1), run on the HOST in the background: the nodes' busybox nc has no -w, the host
+# has bash /dev/tcp + timeout and reaches the OTS node over the mesh like a field client. Waits for 8088 to go
+# down (the reboot) and come back, then sends one CoT the moment it accepts. Writes "UP <epoch>" / "SENT <epoch> rc=".
+cot_probe_274() { local ip=$1 uid=$2 out=$3 i n
+  ( i=0; while timeout 2 bash -c ": > /dev/tcp/$ip/8088" 2>/dev/null; do i=$((i+1)); [ $i -gt 180 ] && { echo NEVER-DOWN; exit 1; }; sleep 1; done
+    i=0; until timeout 2 bash -c ": > /dev/tcp/$ip/8088" 2>/dev/null; do i=$((i+1)); [ $i -gt 400 ] && { echo NEVER-UP; exit 1; }; sleep 1; done
+    echo "UP $(date +%s)"; n=$(date +%s)
+    ev="<event version=\"2.0\" uid=\"$uid\" type=\"a-f-G-U-C\" how=\"h-e\" time=\"$(date -u -d @$n +%Y-%m-%dT%H:%M:%S.000Z)\" start=\"$(date -u -d @$n +%Y-%m-%dT%H:%M:%S.000Z)\" stale=\"$(date -u -d @$((n+60)) +%Y-%m-%dT%H:%M:%S.000Z)\"><point lat=\"25.03\" lon=\"121.56\" hae=\"10\" ce=\"9999999\" le=\"9999999\"/><detail><contact callsign=\"$uid\"/><marti><dest callsign=\"dv-nobody\"/></marti></detail></event>"
+    timeout 5 bash -c "exec 3<>/dev/tcp/$ip/8088; printf '%s' '$ev' >&3; sleep 2" 2>/dev/null
+    echo "SENT $n rc=$?" ) > "$out" 2>&1 &
+}
+
+bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, recorded) and the next boot STARTS it (no rebuild)
+  # Asserts on the boot after a plain `reboot`:
+  #  1 a payload-stop.log record for the PREVIOUS boot_id, also in that boot's shutdown_*.log; no final-tier
+  #    (stateful: ots-db, rabbitmq) ExitCode 137/255 (SIGKILLed); an earlier tier's 137 is reported, not failed
+  #  2 ots-db's LAST start says "database system was shut down at" (graceful), not crash recovery
+  #  3 the same container IDs as before the reboot (not recreated — the feat/264 regression that broke fi-f1)
+  #  4 the guardian logged "start mode" this boot, and StartedAt is non-decreasing in manifest order
+  #  5 boot-to-ready (health gates passed: the guardian's "converge done ... uptime=") <= 90 s
+  #    (control 1.5.4: 6 running at +63 s)
+  # Negative controls: DV_TEST_274_NOSTOP=1 (K08/K09 stop links removed) must FAIL 1 (and 4: dockerd revives,
+  # no start mode); DV_TEST_274_RMSTOP=1 (the stop removes the containers once, feat/264-style) must FAIL 3.
+  local n=$1 rc=0 ids0 ids1 pb l r up codes c
+  fssh "$n" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1 && [ -f /usr/lib/batman/payload-stop.sh ]' || { echo "FAIL no payload guardian / payload-stop.sh on this node"; return 1; }
+  ots_ready "$n" || { echo "FAIL OTS not ready before the test"; return 1; }
+  ids0=$(ots_ids "$n"); pb=$(bootid "$n" | cut -c1-8)
+  if [ "${DV_TEST_274_NOSTOP:-0}" = 1 ]; then
+    fssh "$n" 10 'for l in /etc/rc.d/K*batman-payload-* /etc/rc.d/K*batman-prestop-payload; do [ -e "$l" ] && mv "$l" /tmp/dv-274-klink.$(basename "$l"); done; ls /tmp/dv-274-klink.* 2>/dev/null'
+    echo "NEGATIVE CONTROL: payload stop links removed for this reboot"
+  fi
+  if [ "${DV_TEST_274_RMSTOP:-0}" = 1 ]; then
+    fssh "$n" 10 'mkdir -p /opt/batdata/state && : > /opt/batdata/state/fault.274-rmstop-once'
+    echo "NEGATIVE CONTROL: the stop removes the containers once"
+  fi
+  # 6 (C1): a peer sends one CoT the moment 8088 accepts again after the reboot (as early as a field client)
+  # 6 (C1): the host sends one CoT the moment 8088 accepts again after the reboot (as early as a field client)
+  local pu pf
+  pu="DV274E$(date +%Y%m%d%H%M%S)"; pf="$DIR/cleanstop-274.probe"
+  cot_probe_274 "$n" "$pu" "$pf"; echo "early-CoT probe $pu started on the host (-> $n:8088)"
+  reboot_and_wait "$n" reboot 240 || rc=1
+  if [ "${DV_TEST_274_NOSTOP:-0}" = 1 ]; then   # the K links live on the overlay: put them back
+    fssh "$n" 10 'for f in /tmp/dv-274-klink.*; do [ -e "$f" ] || continue; b=${f#/tmp/dv-274-klink.}; t=${b#K??}; ln -sf ../init.d/$t /etc/rc.d/$b; ls -l /etc/rc.d/$b; done' \
+      || echo "FAIL could not restore the payload K links"
+  fi
+  [ "$rc" = 0 ] || return 1
+  for r in $(seq 1 60); do ots_ready "$n" && break; sleep 5; done
+  ots_ready "$n" || { echo "FAIL OTS not ready within 300 s after the reboot"; return 1; }
+  # 1 stop record
+  l=$(fssh "$n" 15 "grep 'boot=$pb ' /opt/batdata/log/payload-stop.log 2>/dev/null | tail -1" | tr -d '\r')
+  if [ -z "$l" ]; then echo "FAIL 1 no payload-stop.log record for the previous boot $pb (the stop did not run)"; rc=1
+  else
+    echo "stop record: $l"
+    # each K script gets its own 15 s from procd (then TERM): K08 (client tiers) and K09 (final tier + record)
+    for k in k08 k09; do
+      v=$(echo "$l" | sed -n "s/.* $k=\([0-9]*\)\.[0-9]s.*/\1/p")
+      if isint "$v"; then [ "$v" -lt 15 ] && echo "ok 1 $k took ${v}.x s (< 15 s procd budget)" || { echo "FAIL 1 $k took ${v}.x s — over procd's 15 s per K script"; rc=1; }
+      else echo "FAIL 1 no $k time in the stop record"; rc=1; fi
+    done
+    codes=${l#*exit: }
+    for c in $codes; do case "$c" in
+      ots-db=137|ots-db=255|rabbitmq=137|rabbitmq=255) echo "FAIL 1 final-tier container SIGKILLed: $c"; rc=1 ;;
+      *=137|*=255) echo "NOTE 1 earlier-tier container killed after its grace: $c (reported, not failed)" ;;
+    esac; done
+    fssh "$n" 15 "grep -l 'stop: boot=$pb ' /opt/batdata/log/shutdown_*.log 2>/dev/null | tail -1" | grep -q . \
+      && echo "ok 1 the record is in that boot's shutdown log" || { echo "FAIL 1 the stop record is not in any shutdown_*.log (stop ran after the shutdown capture?)"; rc=1; }
+  fi
+  # 2 postgres graceful
+  l=$(fssh "$n" 15 'docker logs ots-db 2>&1 | grep -E "database system was shut down at|not properly shut down|was interrupted" | tail -1')
+  echo "ots-db last start: ${l:-<none>}"
+  case "$l" in *"shut down at"*) echo "ok 2 graceful postgres stop" ;; *) echo "FAIL 2 postgres was not stopped gracefully (crash recovery on start)"; rc=1 ;; esac
+  # 3 same containers
+  ids1=$(ots_ids "$n")
+  if [ "$ids0" = "$ids1" ]; then echo "ok 3 same container IDs (started, not recreated)"
+  else echo "FAIL 3 containers recreated:"; echo "  before: $(echo $ids0)"; echo "  after:  $(echo $ids1)"; rc=1; fi
+  # 4 start mode, two phases (D2'): every final-tier service (no STOPTIER) started before any other container
+  fssh "$n" 15 'logread | grep -q "payload-run\[opentakserver\]: start mode"' && echo "ok 4 guardian used start mode" || { echo "FAIL 4 no start-mode line this boot"; rc=1; }
+  l=$(fssh "$n" 20 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); awk "\$1==\"CONTAINER\"{if(c!=\"\")print c, t; c=\$2; t=99} \$1==\"STOPTIER\"{t=\$2} END{print c, t}" "$m" | while read -r c t; do echo "$c $t $(docker inspect -f "{{.State.StartedAt}}" $c)"; done | awk "{ if (\$2 == 99) { if (\$3 > maxf) maxf = \$3 } else { if (minr == \"\" || \$3 < minr) { minr = \$3; mc = \$1 } } } END { if (minr != \"\" && minr < maxf) print \"bad=1 \" mc \" started \" minr \" before the last service \" maxf; else print \"bad=0\" }"' | tr -d '\r')
+  case "$l" in bad=0*) echo "ok 4 services started before the rest (two-phase start)" ;; *) echo "FAIL 4 ${l#bad=1 }"; rc=1 ;; esac
+  # 5 boot-to-ready
+  up=$(fssh "$n" 15 'logread | grep "batman-payload\[opentakserver\]: converge done" | tail -1 | sed -n "s/.*uptime=\([0-9]*\).*/\1/p"' | tr -d ' \r')
+  if isint "$up"; then
+    echo "boot-to-ready: ${up} s uptime (SLO <= 90 s; control 1.5.4: 6 running at +63 s)"
+    [ "$up" -le 90 ] || { echo "FAIL 5 boot-to-ready ${up} s > 90 s"; rc=1; }
+  else echo "FAIL 5 no 'converge done' line this boot — boot-to-ready not measured"; rc=1; fi
+  # 6 (#274 review C1) the clients do not depend on the opentakserver API: no container restarted during the
+  # two-phase start, and a CoT sent the moment 8088 accepted (before the API gate, when the timing allows) is stored
+  l=$(fssh "$n" 15 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); for c in $(awk "/^CONTAINER /{print \$2}" "$m"); do echo "$c=$(docker inspect -f "{{.RestartCount}}" $c)"; done' | tr '\r\n' '  ')
+  echo "restart counts: $l"
+  echo "$l" | grep -Eq '=[1-9]' && { echo "FAIL 6 a container restarted during the start (a dependency the two-phase start does not honour)"; rc=1; } || echo "ok 6 no container restarted"
+  if [ -n "$pu" ]; then
+    local po d04 bt sent i st
+    for i in $(seq 1 30); do po=$(cat "$pf" 2>/dev/null); echo "$po" | grep -q '^SENT\|^NEVER' && break; sleep 3; done
+    echo "probe: $(echo $po)"
+    d02=$(date +%s); d04=$(fssh "$n" 10 'echo $(( $(date +%s) - $(cut -d. -f1 /proc/uptime) )) $(date +%s)' | tr -d '\r')
+    bt=${d04%% *}; d04=${d04##* }
+    sent=$(echo "$po" | sed -n 's/^SENT \([0-9]*\) rc=0$/\1/p')
+    if isint "$sent" && isint "$d02" && isint "$bt" && isint "$up"; then
+      sent=$(( sent + d04 - d02 - bt ))   # the host's send time on the OTS node's uptime axis (+-2 s: two clocks)
+      if [ "$sent" -lt $((up - 3)) ]; then echo "ok 6 CoT sent at +${sent} s, before the API gate passed (+${up} s)"
+      else echo "NOTE 6 8088 accepted only at +${sent} s, API gate at +${up} s — before-API delivery not exercised this run"; fi
+      st=0; for i in $(seq 1 12); do st=$(echo "select count(*) from cot where uid='$pu';" | ots_sql "$n" | tr -d ' \r'); [ "$st" = 1 ] && break; sleep 5; done
+      [ "$st" = 1 ] && echo "ok 6 the early CoT was stored" || { echo "FAIL 6 the early CoT ($pu) was not stored (count=$st)"; rc=1; }
+      ots_sql "$n" <<SQL >/dev/null
+begin; delete from euds where uid like '$pu%'; delete from cot where uid like '$pu%'; commit;
+SQL
+    else echo "FAIL 6 early-CoT probe did not send (probe: $(echo $po))"; rc=1; fi
+  fi
+  return $rc; }
+
+bchk_converge_274() {   # the guardian converges a CHANGED config by a graceful rebuild and leaves an unchanged one alone (#274)
+  # No reboot. On the OTS node: (a) guardian restart, nothing changed -> same container IDs; (b) a comment appended
+  # to the p6 manifest -> restart -> every container recreated with the new fingerprint; (c) a comment appended to
+  # the MOUNTED rabbitmq-extra.conf (a real mount-content case) -> recreated again; (d) both restored from the
+  # golden -> recreated with the ORIGINAL fingerprint, verdict OK. Postgres never crash-recovers (rebuilds stop
+  # gracefully before removing).
+  local n=$1 rc=0 g=/etc/init.d/batman-payload-opentakserver D=/opt/batdata/apps/opentakserver GD=/usr/share/batman/payload-golden/opentakserver
+  local cfg0 cfg ids0 ids man l pg
+  fssh "$n" 10 "[ -x $g ] && [ -d $GD ]" || { echo "FAIL no guardian / golden on this node"; return 1; }
+  ots_ready "$n" || { echo "FAIL OTS not ready before the test"; return 1; }
+  man=$(fssh "$n" 10 "ls $D/*.manifest | head -1" | tr -d '\r')
+  cfg0=$(fssh "$n" 30 'payload-run --cfg-hash opentakserver' | tr -d '\r'); ids0=$(ots_ids "$n")
+  c274_restart() { local l0; l0=$(conv_last "$n"); fssh "$n" 90 "$g restart" >/dev/null 2>&1
+    wait_converge "$n" "$l0" 400 || { echo "FAIL $1: the guardian did not converge within 400 s"; return 1; }; }
+  c274_check() {   # $1 ids before, $2 step, $3 expected fingerprint
+    local ids1 lab x
+    ids1=$(ots_ids "$n")
+    lab=$(fssh "$n" 20 "for c in \$(awk '/^CONTAINER /{print \$2}' $man); do docker inspect -f '{{index .Config.Labels \"batman.cfg\"}}' \$c; done | sort -u" | tr -d '\r')
+    for x in $(echo "$1" | awk '{print $2}'); do echo "$ids1" | grep -q " $x\$" && { echo "FAIL $2 container $x survived (not recreated)"; return 1; }; done
+    [ "$lab" = "$3" ] || { echo "FAIL $2 labels [$lab] != fingerprint [$3]"; return 1; }
+    echo "ok $2 every container recreated with fingerprint $(echo "$3" | cut -c1-12)"; }
+  # (a)
+  c274_restart a || return 1
+  ids=$(ots_ids "$n"); [ "$ids" = "$ids0" ] && echo "ok a unchanged config: restart kept the same containers" || { echo "FAIL a containers recreated on an unchanged config"; rc=1; }
+  # (b)
+  fssh "$n" 10 "echo '# dv-274 converge test' >> $man"
+  cfg=$(fssh "$n" 30 'payload-run --cfg-hash opentakserver' | tr -d '\r')
+  [ "$cfg" != "$cfg0" ] || { echo "FAIL b fingerprint did not change"; rc=1; }
+  c274_restart b && c274_check "$ids0" b "$cfg" || rc=1; ids=$(ots_ids "$n")
+  # (c)
+  fssh "$n" 10 "echo '# dv-274 converge test' >> $D/rabbitmq-extra.conf"
+  cfg=$(fssh "$n" 30 'payload-run --cfg-hash opentakserver' | tr -d '\r')
+  c274_restart c && c274_check "$ids" c "$cfg" || rc=1; ids=$(ots_ids "$n")
+  # (d)
+  fssh "$n" 10 "cp -p $GD/$(basename "$man") $man && cp -p $GD/rabbitmq-extra.conf $D/rabbitmq-extra.conf"
+  cfg=$(fssh "$n" 30 'payload-run --cfg-hash opentakserver' | tr -d '\r')
+  [ "$cfg" = "$cfg0" ] || { echo "FAIL d restored fingerprint $cfg != original $cfg0"; rc=1; }
+  c274_restart d && c274_check "$ids" d "$cfg0" || rc=1
+  ots_ready "$n" || { echo "FAIL OTS not ready at the end"; rc=1; }
+  sleep 35; l=$(fssh "$n" 10 'cat /tmp/batman-payload-opentakserver-drift.json' | tr -d '\r'); echo "verdict: $l"
+  case "$l" in *'"status":"OK"'*) ;; *) echo "FAIL verdict not OK after convergence"; rc=1 ;; esac
+  # the rebuilds removed the old ots-db only after a graceful stop: the current one started from a clean shutdown
+  pg=$(fssh "$n" 15 'docker logs ots-db 2>&1 | grep -E "database system was shut down at|not properly shut down|was interrupted" | tail -1')
+  case "$pg" in *"shut down at"*) echo "ok postgres: clean shutdown before the last rebuild" ;; *) echo "FAIL postgres last start: ${pg:-<none>}"; rc=1 ;; esac
+  return $rc; }
+
 if [ "$FEATURE_MODE" = --destructive ]; then
   if fssh "$DNODE" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
     # rejoin FIRST (#268 A7): the three below reboot DNODE, and a just-rebooted DNODE may be the host's only
@@ -1014,6 +1214,22 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     #  config-survival: asserted during the flash/burn (a fresh slot's firstboot restores mesh_id/key/channel).
   else
     for s in faketime-174 guardian-192 ramoops-173 rejoin-245-246; do suite "$s" "DNODE $DNODE has no ethernet — destructive refused (no out-of-band recovery)" ""; done
+  fi
+  # #274 runs on the OTS node (the only one with a tenant), NOT behind DNODE's ethernet gate: a plain, clean
+  # reboot and guardian restarts are the node's normal life and never touch the mesh config, so they need no
+  # out-of-band recovery. reboot_and_wait FAILs if the node does not return.
+  # ramoops-173 just panicked DNODE, which may be the host's only way into the mesh: WAIT for the OTS node
+  # (as soak_ready does) instead of a one-shot `up` — 2026-10-08 an `up` here found 03 still booting and
+  # skipped both #274 suites.
+  if [ "$OTS_SOC" = bcm2710 ]; then
+    na cleanstop-274 "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"
+    na converge-274 "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"
+  elif dwait "$OTS_NODE" 300; then
+    suite converge-274 "guardian converges a changed manifest / mounted file by a graceful rebuild, leaves an unchanged stack alone, restores to the golden fingerprint (#274, destructive)" "bchk_converge_274 $OTS_NODE"
+    suite cleanstop-274 "clean reboot: tiered graceful stop recorded before the shutdown capture, postgres clean, same containers started in order, boot-to-ready <= 90 s (#274, destructive)" "bchk_cleanstop_274 $OTS_NODE"
+  else   # not back within 300 s after the destructive tier = a real finding, never a SKIP (#274 review C6)
+    suite converge-274 "guardian converges a changed config (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
+    suite cleanstop-274 "clean reboot stop/start (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
   fi
 fi
 

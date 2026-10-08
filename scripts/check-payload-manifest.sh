@@ -69,5 +69,33 @@ if [ -f "$MK" ]; then
 	fi
 fi
 
-[ "$rc" = 0 ] && echo "OK: payload artifacts in sync + no tenant collisions + golden source present"
+# --- 4) #274 (docs/design/274-payload-converge.md). (a) every RELATIVE MOUNT source in a committed manifest
+#     must be installed into the payload golden by $MK — otherwise nodes never get the file and payload-run's
+#     preflight refuses the stack. (c) payload-run PARSES hardening files (never sources them): each must be
+#     comments/blank + exactly one HARDEN_FLAGS="..." line, and the parsed value must equal what a shell
+#     sourcing it (verify-profile.sh) gets. (d) the offline payload-run white-box test. ---
+for man in deploy/*/*.manifest; do
+	[ -f "$man" ] || continue
+	for src in $(awk '$1=="MOUNT"{split($2,a,":"); if (a[1] !~ /^\//) print a[1]}' "$man" | sort -u); do
+		grep -Eq "\\\$\\(INSTALL_(BIN|DATA)\\).*/payload-golden/[A-Za-z0-9._-]+/$src([[:space:]]|\$)" "$MK" 2>/dev/null \
+			|| { echo "FAIL: $man mounts '$src' but $MK does not install it into the payload golden"; rc=1; }
+	done
+done
+for hf in deploy/*/*.hardening.env; do
+	[ -f "$hf" ] || continue
+	parsed=$(awk 'BEGIN{n=0; bad=0} /^[[:space:]]*(#|$)/ {next}
+		/^HARDEN_FLAGS="[^"]*"[[:space:]]*$/ {n++; v=$0; sub(/^HARDEN_FLAGS="/,"",v); sub(/"[[:space:]]*$/,"",v); next}
+		{bad=1} END{ if (n != 1 || bad) exit 1; print v }' "$hf") \
+		|| { echo "FAIL: $hf is not comments + exactly one HARDEN_FLAGS=\"...\" line (payload-run parses, never sources it)"; rc=1; continue; }
+	# shellcheck disable=SC2016  # $1 / $HARDEN_FLAGS expand in the child sh
+	sourced=$(sh -c 'HARDEN_FLAGS=""; . "./$1"; printf %s "$HARDEN_FLAGS"' sh "$hf")
+	[ "$parsed" = "$sourced" ] || { echo "FAIL: $hf parsed [$parsed] != sourced [$sourced]"; rc=1; }
+done
+if [ -f scripts/test-payload-run.sh ]; then
+	tl=$(mktemp)
+	sh scripts/test-payload-run.sh >"$tl" 2>&1 || { echo "FAIL: scripts/test-payload-run.sh:"; sed 's/^/  /' "$tl"; rc=1; }
+	rm -f "$tl"
+fi
+
+[ "$rc" = 0 ] && echo "OK: payload artifacts in sync + no tenant collisions + golden source present + mounts installed + hardening parseable + payload-run tests"
 exit "$rc"

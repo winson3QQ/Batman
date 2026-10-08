@@ -9,19 +9,46 @@
 # NOT docker-compose (it builds a random br-<hash> bridge that the fw4 iifname rules miss, and
 # can't consume the run-flag $HARDEN_FLAGS string). See docs/design/167-payload-manager.md.
 #
-# Usage:  payload-run <tenant>
+# Usage:  payload-run <tenant>                rebuild the stack (bench / manual / F2)
+#         payload-run --converge <tenant>     guardian: start the existing stack if it was created from the
+#                                             current config, else rebuild (#274)
+#         payload-run --start-only <tenant>   firstload: start the existing stack if it matches, else nothing
+#         payload-run --renet <tenant>        operator: recreate the tenant network after a SUBNET/bridge change
+#         payload-run --cfg-hash <tenant>     print the config fingerprint and exit (read-only, no lock)
 # Env:    APPS_DIR (default /opt/batdata/apps) — the tenant lives at $APPS_DIR/<tenant>/, which
 #         holds: <tenant>.manifest, <tenant>.fw4.uci, *.hardening.env, secrets/. On the bench,
 #         point APPS_DIR at a dir containing <tenant>/ (e.g. deploy/).
+# Exit:   0 ok · 1 failure (reason logged) · 2 usage · 3 --start-only: config changed, nothing done ·
+#         4 the tenant is being stopped (/tmp/batman-payload-<t>.stopping), nothing done
+#
+# #274 (docs/design/274-payload-converge.md):
+#  - every container carries --label batman.cfg=<fingerprint of what this script RENDERS> and
+#    --label batman.tenant=<t>. dockerd (live-restore, unless-stopped) revives old containers after an
+#    OTA; the guardian compares labels and converges.
+#  - start mode: an unchanged stack is `docker start`ed in manifest order behind the health gates — no
+#    rebuild on every boot (fi-f1).
+#  - rebuild: a preflight refuses the WHOLE rebuild before anything is touched; containers are stopped
+#    gracefully before removal (postgres is never SIGKILLed here).
+#  - one lock per tenant (busybox flock has only -sxun: a -n poll). The lock holder is this wrapper; the
+#    worker and all its children run with fd 9 closed, so killing the wrapper's tree frees the lock.
 set -eu
 
+MODE=rebuild
+case "${1:-}" in
+	--cfg-hash|--converge|--start-only|--renet) MODE=${1#--}; shift ;;
+	--worker) MODE=worker; shift; WMODE="${1:-}"; shift ;;
+esac
 TENANT="${1:-}"
-[ -n "$TENANT" ] || { echo "usage: payload-run <tenant>" >&2; exit 2; }
+[ -n "$TENANT" ] || { echo "usage: payload-run [--converge|--start-only|--renet|--cfg-hash] <tenant>" >&2; exit 2; }
 APPS_DIR="${APPS_DIR:-/opt/batdata/apps}"
 # #216 M6: default to never-pull (offline fleet: images come from baked tars / the local store), but
 # let a future online tenant override. Was hardcoded --pull=never at both docker-run sites.
 PULL_POLICY="${PULL_POLICY:-never}"
 DIR="$APPS_DIR/$TENANT"
+RUNDIR="${PAYLOAD_RUNDIR:-/tmp}"
+LOCK="$RUNDIR/batman-payload-$TENANT.lock"
+PIDF="$RUNDIR/batman-payload-$TENANT.pid"
+STOPPING="$RUNDIR/batman-payload-$TENANT.stopping"
 # glob the manifest/fw4 by extension (one per tenant dir) so the on-node FILE name can keep the
 # emitter's deploy-dir name (e.g. ots.manifest) even when the tenant dir is apps/opentakserver/.
 MANIFEST=""; for m in "$DIR"/*.manifest; do [ -f "$m" ] && { MANIFEST="$m"; break; }; done
@@ -30,6 +57,25 @@ command -v docker >/dev/null || { echo "payload-run: docker not installed" >&2; 
 
 log(){ echo "payload-run[$TENANT]: $*"; }
 die(){ echo "payload-run[$TENANT]: FATAL: $*" >&2; exit 1; }
+# every mode honours a stop in progress (#274 P1): a shutdown must not be undone by a late start
+stopping(){ [ -e "$STOPPING" ] && { log "tenant is being stopped ($STOPPING) — nothing done"; return 0; }; return 1; }
+
+# ---- wrapper: take the tenant lock, run the worker with fd 9 closed ----
+if [ "$MODE" != worker ] && [ "$MODE" != cfg-hash ]; then
+	stopping && exit 4
+	exec 9>"$LOCK"
+	w=0; until flock -n 9; do
+		w=$((w + 1)); [ "$w" -ge "${PAYLOAD_LOCK_WAIT:-600}" ] && { log "another payload-run holds $LOCK — gave up after ${w}s"; exit 1; }
+		[ "$w" = 1 ] && log "waiting for another payload-run of this tenant"
+		sleep 1
+	done
+	stopping && exit 4                       # re-check: a stop may have begun while we waited
+	echo $$ > "$PIDF"
+	rc=0; sh "$0" --worker "$MODE" "$TENANT" 9>&- || rc=$?
+	rm -f "$PIDF"
+	exit "$rc"
+fi
+[ "$MODE" = worker ] && MODE="$WMODE"
 
 # ---- pass 1: tenant-level header (network name + kernel bridge + subnet + default restart) ----
 NET=""; BRIDGE=""; SUBNET=""; DEF_RESTART="on-failure:5"
@@ -43,26 +89,47 @@ while read -r hkey hval || [ -n "$hkey" ]; do
 	esac
 done < "$MANIFEST"
 [ -n "$NET" ] && [ -n "$BRIDGE" ] || die "manifest missing NETWORK_NAME/BRIDGE"
+NAMES=$(awk '/^CONTAINER /{print $2}' "$MANIFEST")
 
-# ---- network: create with the EXACT kernel bridge name so fw4 iifname "$BRIDGE" matches ----
-if ! docker network inspect "$NET" >/dev/null 2>&1; then
-	[ -n "$SUBNET" ] || die "network $NET absent and no SUBNET to create it"
-	docker network create --driver bridge --subnet "$SUBNET" \
-		-o com.docker.network.bridge.name="$BRIDGE" "$NET" >/dev/null
-	log "created network $NET (bridge $BRIDGE, $SUBNET)"
-fi
-have_br=$(docker network inspect "$NET" -f '{{index .Options "com.docker.network.bridge.name"}}' 2>/dev/null || true)
-[ "$have_br" = "$BRIDGE" ] || die "network $NET kernel bridge is '$have_br', not '$BRIDGE' — fw4 iifname rules would miss"
+# HARDEN files are PARSED, never sourced (#274 D1): comments/blank + exactly one HARDEN_FLAGS="..." line
+# (CI check-payload-manifest.sh §4c). Prints the flags; rc 1 = missing/unreadable/not that format.
+harden_flags(){
+	[ -f "$1" ] && [ -r "$1" ] || return 1
+	awk 'BEGIN{n=0; bad=0}
+		/^[[:space:]]*(#|$)/ {next}
+		/^HARDEN_FLAGS="[^"]*"[[:space:]]*$/ {n++; v=$0; sub(/^HARDEN_FLAGS="/,"",v); sub(/"[[:space:]]*$/,"",v); next}
+		{bad=1}
+		END{ if (n != 1 || bad) exit 1; print v }' "$1"
+}
+sha(){ sha256sum < "$1" | cut -d' ' -f1; }
 
-# FAILED tracks any non-fatal-but-degrading step (fw4 apply, health-gate timeout) so bring-up can
-# still finish the stack yet EXIT NON-ZERO — otherwise a never-healthy container or a missed fw4
-# rule is reported as success ("bring-up complete", rc 0), masking a broken stack from the caller.
-FAILED=0
+# ---- the manifest walk, shared by every action ----
+# ACTION = render (print argv + file/image facts for the fingerprint) | preflight (collect problems into
+# $PF) | start (start mode) | run (rebuild). finish_block gets the per-container -e/-v/--mount accumulator
+# as "$@" (a bare call would see no args — the #167 Inc-2 on-node bug).
+NAME=""; IMG=""; IP=""; HOST=""; HARDEN=""; RESTART="$DEF_RESTART"
+EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; FACTS=""
+FAILED=0; PF=""; START_FAILED=""; ACTION=""; CFG=""
 
-# ---- firewall: apply the tenant's fw4 rules (idempotent; requires dockerd iptables=0) ----
-for f in "$DIR"/*.fw4.uci; do [ -f "$f" ] && { sh "$f" || { log "WARN: fw4 apply non-zero"; FAILED=1; }; }; done
+reset_block(){
+	NAME="$1"; IMG=""; IP=""; HOST=""; HARDEN=""; RESTART="$DEF_RESTART"
+	EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; FACTS=""
+}
+fact(){ FACTS="$FACTS$*
+"; }
+problem(){ PF="$PF
+  $*"; }
 
-# ---- per-container run ----
+health_gate(){
+	[ -n "$HEALTH" ] || return 0
+	printf 'payload-run[%s]: wait %s' "$TENANT" "$NAME"; i=0
+	while [ "$i" -lt "${PAYLOAD_HEALTH_TRIES:-60}" ]; do   # 60 x 2 s; the offline test shortens it
+		docker exec "$NAME" sh -c "$HEALTH" >/dev/null 2>&1 && { echo " ok"; return 0; }
+		printf .; sleep 2; i=$((i+1))
+	done
+	echo " TIMEOUT"; log "WARN: $NAME health gate timed out"; FAILED=1
+}
+
 # Volume pre-chown, mirroring run.sh's "vehicle image" trick: chown a named volume using an
 # explicit image before the container mounts it. Spec: <name>:<path>:<uid>:<gid>[:<image>].
 prechown(){   # $1 = spec, $2 = fallback image
@@ -72,98 +139,258 @@ prechown(){   # $1 = spec, $2 = fallback image
 	pg=${pr%%:*}; pi=${pr#*:}
 	[ "$pg" = "$pi" ] && pi="$2"          # no explicit image field → use fallback
 	docker volume inspect "$pn" >/dev/null 2>&1 || docker volume create "$pn" >/dev/null
-	docker run --pull="$PULL_POLICY" --rm --user 0 -v "$pn:$pp" --entrypoint chown "$pi" -R "$pu:$pg" "$pp" >/dev/null 2>&1 \
+	# #274: chown -R only when the volume root is not already $pu:$pg (a fresh volume is root-owned). A
+	# recursive chown on every rebuild walks the whole CoT DB on the SD card. The ownership test runs in
+	# the vehicle image (host busybox has no stat).
+	# shellcheck disable=SC2016  # $1..$3 expand inside the vehicle container's sh
+	docker run --pull="$PULL_POLICY" --rm --user 0 -v "$pn:$pp" --entrypoint sh "$pi" -c \
+		'find "$1" -maxdepth 0 -user "$2" -group "$3" | grep -q . || chown -R "$2:$3" "$1"' sh "$pp" "$pu" "$pg" >/dev/null 2>&1 \
 		|| log "WARN: prechown $pn ($pu:$pg) failed"
 }
-
-# ---- pre-pass: remove ALL manifest containers BEFORE (re)creating any. The bring-up runs
-# `docker rm -f`+`docker run` per container in manifest order; if a stale sibling is still running
-# on another container's static IP (e.g. one that came up with an auto-assigned IP that equals a
-# later container's static IP), the first `docker run` fails "address already in use" and `set -e`
-# aborts before the squatter is ever removed — a deadlock that leaves the stack half-up across every
-# boot. Removing every declared container up front frees all static IPs, so the in-order run cannot
-# collide with a sibling. Idempotent; the per-container rm in finish_block stays as a belt.
-for _c in $(awk '/^CONTAINER /{print $2}' "$MANIFEST"); do docker rm -f "$_c" >/dev/null 2>&1 || true; done
-
-# state for the current CONTAINER block
-NAME=""; IMG=""; IP=""; HOST=""; HARDEN=""; RESTART="$DEF_RESTART"
-EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""
 
 finish_block(){
 	[ -n "$NAME" ] || return 0
 	[ -n "$IMG" ] || die "container $NAME has no IMAGE"
-	OLDIFS=$IFS; IFS=' '
-	for cz in $CHOWNS; do [ -n "$cz" ] && prechown "$cz" "$IMG"; done
-	IFS=$OLDIFS
-	# assemble: fixed opts + accumulated -e/-v ("$@") + $HARDEN_FLAGS + entrypoint + image + trailing args
+	HF=""
+	if [ -n "$HARDEN" ]; then
+		if HF=$(harden_flags "$DIR/$HARDEN"); then fact "HARDEN $HARDEN $(sha "$DIR/$HARDEN")"
+		else HF=""; fact "HARDEN $HARDEN MISSING"
+			problem "$NAME: hardening file $HARDEN missing, unreadable or not exactly one HARDEN_FLAGS=\"...\" line (would run UNHARDENED)"; fi
+	fi
+	# exactly what `docker run` gets (minus the labels): fixed opts + accumulated -e/-v/--mount
+	# + $HARDEN_FLAGS + entrypoint + image + trailing args
 	set -- --name "$NAME" --hostname "${HOST:-$NAME}" --network "$NET" --restart "$RESTART" "$@"
 	[ -n "$IP" ] && set -- --ip "$IP" "$@"
 	[ -n "$EP_HEAD" ] && set -- --entrypoint "$EP_HEAD" "$@"
-	if [ -n "$HARDEN" ] && [ -f "$DIR/$HARDEN" ]; then
-		HARDEN_FLAGS=""
-		# shellcheck source=/dev/null
-		. "$DIR/$HARDEN"
-		# shellcheck disable=SC2086  # flag string, no spaces-in-values → word-split on purpose
-		set -- $HARDEN_FLAGS "$@"
-	fi
-	docker rm -f "$NAME" >/dev/null 2>&1 || true
-	# shellcheck disable=SC2086  # EP_REST = trailing command args (may be empty) → split on purpose
-	docker run --pull="$PULL_POLICY" -d "$@" "$IMG" $EP_REST >/dev/null
-	log "started $NAME (${HARDEN:-no-harden})"
-	if [ -n "$HEALTH" ]; then
-		printf 'payload-run[%s]: wait %s' "$TENANT" "$NAME"; i=0
-		while [ "$i" -lt 60 ]; do
-			docker exec "$NAME" sh -c "$HEALTH" >/dev/null 2>&1 && { echo " ok"; return 0; }
-			printf .; sleep 2; i=$((i+1))
-		done
-		echo " TIMEOUT"; log "WARN: $NAME health gate timed out"; FAILED=1
-	fi
-}
-
-reset_block(){
-	NAME="$1"; IMG=""; IP=""; HOST=""; HARDEN=""; RESTART="$DEF_RESTART"
-	EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""
-}
-
-# The per-container -e/-v accumulator is the MAIN shell's positional params ($@). finish_block is a
-# function with its OWN $@, so the accumulator is PASSED to it (finish_block "$@"); a bare
-# `finish_block` would see empty args and drop every -e/-v/secret (bug found on-node, #167 Inc-2).
-# `set --` to clear the accumulator must run in the main shell here, not inside reset_block.
-IN=0
-while read -r key rest || [ -n "$key" ]; do
-	case "$key" in
-		CONTAINER)    [ "$IN" = 1 ] && finish_block "$@"; reset_block "$rest"; set --; IN=1 ;;
-		IMAGE)        IMG="$rest" ;;
-		IP)           IP="$rest" ;;
-		HOSTNAME)     HOST="$rest" ;;
-		HARDEN)       HARDEN="$rest" ;;
-		RESTART)      [ "$IN" = 1 ] && RESTART="$rest" ;;
-		ENV)          set -- "$@" -e "$rest" ;;
-		VOLUME)       vn=${rest%%:*}; vtail=${rest#*:}; vpath=${vtail%%:*}
-		              set -- "$@" -v "$vn:$vpath"
-		              case "$rest" in *:*:*:*) CHOWNS="$CHOWNS $rest" ;; esac ;;
-		MOUNT)        # a relative src (config file shipped in the tenant dir) resolves against $DIR
-		              case "$rest" in /*) : ;; *) rest="$DIR/$rest" ;; esac
-		              set -- "$@" -v "$rest" ;;
-		SECRET)       sname=${rest%% *}; srest=${rest#* }; smount=${srest%% *}
-		              case "$srest" in *" "*) suid=${srest#* } ;; *) suid="" ;; esac
-		              if [ -f "$DIR/secrets/$sname" ]; then
-		                  # a 0600 root secret is unreadable by a non-root container → chown to the
-		                  # container's run_as uid + 0400 (readable by that user only), then mount ro.
-		                  [ -n "$suid" ] && { chown "$suid" "$DIR/secrets/$sname" 2>/dev/null || true; chmod 0400 "$DIR/secrets/$sname" 2>/dev/null || true; }
-		                  set -- "$@" -v "$DIR/secrets/$sname:$smount:ro"
-		              else
-		                  log "WARN: secret '$sname' missing ($DIR/secrets/$sname) — $NAME may fail"
-		              fi ;;
-		ENTRYPOINT)   EP_HEAD=${rest%% *}; case "$rest" in *" "*) EP_REST=${rest#* } ;; *) EP_REST="" ;; esac ;;
-		HEALTH)       HEALTH="$rest" ;;
-		ENDCONTAINER) finish_block "$@"; set --; IN=0 ;;
+	# shellcheck disable=SC2086  # flag string, no spaces-in-values → word-split on purpose
+	[ -n "$HF" ] && set -- $HF "$@"
+	case "$ACTION" in
+	render)
+		echo "CONTAINER $NAME"
+		# shellcheck disable=SC2086  # EP_REST = trailing command args → split on purpose
+		printf 'ARG %s\n' "$@" "$IMG" $EP_REST
+		echo "IMAGEID $(docker image inspect -f '{{.Id}}' "$IMG" 2>/dev/null || echo MISSING)"
+		printf '%s' "$FACTS" ;;
+	preflight)
+		docker image inspect "$IMG" >/dev/null 2>&1 || problem "$NAME: image $IMG not present locally" ;;
+	prep)
+		: ;;   # start mode: the walk only enforces the secret owner/mode (SECRET below); start_group starts
+	run)
+		stopping && exit 4
+		OLDIFS=$IFS; IFS=' '
+		for cz in $CHOWNS; do [ -n "$cz" ] && prechown "$cz" "$IMG"; done
+		IFS=$OLDIFS
+		# shellcheck disable=SC2086  # EP_REST = trailing command args (may be empty) → split on purpose
+		docker run --pull="$PULL_POLICY" -d --label "batman.cfg=$CFG" --label "batman.tenant=$TENANT" "$@" "$IMG" $EP_REST >/dev/null
+		log "started $NAME (${HARDEN:-no-harden})"
+		health_gate ;;
 	esac
-done < "$MANIFEST"
-[ "$IN" = 1 ] && finish_block "$@"   # tolerate a missing final ENDCONTAINER
+}
 
-if [ "$FAILED" = 0 ]; then
-	log "bring-up complete"
-else
+walk(){   # $1 = ACTION
+	ACTION=$1; IN=0; set --
+	while read -r key rest || [ -n "$key" ]; do
+		case "$key" in
+			CONTAINER)    [ "$IN" = 1 ] && finish_block "$@"; reset_block "$rest"; set --; IN=1 ;;
+			IMAGE)        IMG="$rest" ;;
+			IP)           IP="$rest" ;;
+			HOSTNAME)     HOST="$rest" ;;
+			HARDEN)       HARDEN="$rest" ;;
+			RESTART)      [ "$IN" = 1 ] && RESTART="$rest" ;;
+			ENV)          set -- "$@" -e "$rest" ;;
+			VOLUME)       vn=${rest%%:*}; vtail=${rest#*:}; vpath=${vtail%%:*}
+			              set -- "$@" -v "$vn:$vpath"
+			              case "$rest" in *:*:*:*) CHOWNS="$CHOWNS $rest" ;; esac ;;
+			MOUNT)        # <src>:<dst>[:ro]. A relative src (a config file shipped in the tenant dir) resolves
+			              # against $DIR and must be a regular FILE. --mount, not -v: -v silently creates a
+			              # missing source as an empty root-owned DIRECTORY (the start then fails and the
+			              # leftover dir blocks the golden refresh for good — #264 review F8). An absolute
+			              # source is fingerprinted by path + type only (a live file must not drift forever).
+			              msrc=${rest%%:*}; mtail=${rest#*:}; mdst=${mtail%%:*}; mro=""
+			              case "$mtail" in *:ro) mro=",readonly" ;; esac
+			              case "$msrc" in
+			                  /*) if [ -d "$msrc" ]; then fact "MOUNT $msrc dir"; elif [ -e "$msrc" ]; then fact "MOUNT $msrc file"
+			                      else fact "MOUNT $msrc MISSING"; problem "$NAME: MOUNT source $msrc missing"; fi ;;
+			                  *)  msrc="$DIR/$msrc"
+			                      if [ -f "$msrc" ]; then fact "MOUNT $msrc $(sha "$msrc")"
+			                      else fact "MOUNT $msrc MISSING"; problem "$NAME: MOUNT source $msrc is not a regular file"; fi ;;
+			              esac
+			              case "$msrc$mdst" in *,*) problem "$NAME: MOUNT path contains a comma" ;; esac
+			              set -- "$@" --mount "type=bind,source=$msrc,target=$mdst$mro" ;;
+			SECRET)       sname=${rest%% *}; srest=${rest#* }; smount=${srest%% *}
+			              case "$srest" in *" "*) suid=${srest#* } ;; *) suid="" ;; esac
+			              sf="$DIR/secrets/$sname"
+			              if [ -f "$sf" ]; then
+			                  fact "SECRET $sname $(sha "$sf")"
+			                  # a 0600 root secret is unreadable by a non-root container → chown to the
+			                  # container's run_as uid + 0400, ENFORCED on every start and rebuild (#274 N2:
+			                  # owner/mode are enforced, not fingerprinted). Never in render/preflight.
+			                  case "$ACTION" in prep|run)
+			                      [ -n "$suid" ] && { chown "$suid" "$sf" 2>/dev/null || true; chmod 0400 "$sf" 2>/dev/null || true; } ;;
+			                  esac
+			                  set -- "$@" -v "$sf:$smount:ro"
+			              else
+			                  fact "SECRET $sname MISSING"
+			                  case "$ACTION" in prep|run) log "WARN: secret '$sname' missing ($sf) — $NAME may fail" ;; esac
+			              fi ;;
+			ENTRYPOINT)   EP_HEAD=${rest%% *}; case "$rest" in *" "*) EP_REST=${rest#* } ;; *) EP_REST="" ;; esac ;;
+			HEALTH)       HEALTH="$rest" ;;
+			STOPTIER)     : ;;   # read by the stop path (/usr/lib/batman/payload-stop.sh), not here
+			ENDCONTAINER) finish_block "$@"; set --; IN=0 ;;
+		esac
+	done < "$MANIFEST"
+	[ "$IN" = 1 ] && finish_block "$@"   # tolerate a missing final ENDCONTAINER
+	return 0
+}
+
+# Fingerprint: sha256 over a format tag, the manifest bytes, and per container the rendered argv + image ID
+# + content of every relative file source. The rendering logic is IN the hash (cfg-v2 versions only the
+# format). Never fails: the guardian needs a stable value even for a broken tenant.
+CFG=$({ echo "cfg-v2"; echo "MANIFEST $(sha "$MANIFEST")"; walk render; } | sha256sum | cut -d' ' -f1)
+if [ "$MODE" = cfg-hash ]; then echo "$CFG"; exit 0; fi
+
+# ---- network ----
+net_problem(){   # prints a reason if the network cannot be used as the manifest says
+	docker network inspect "$NET" >/dev/null 2>&1 || { [ -n "$SUBNET" ] || echo "network $NET absent and no SUBNET to create it"; return 0; }
+	have_br=$(docker network inspect "$NET" -f '{{index .Options "com.docker.network.bridge.name"}}' 2>/dev/null || true)
+	[ "$have_br" = "$BRIDGE" ] || { echo "network $NET kernel bridge is '$have_br', not '$BRIDGE' (fw4 iifname rules would miss) — operator: payload-run --renet $TENANT"; return 0; }
+	if [ -n "$SUBNET" ]; then
+		have_sn=$(docker network inspect "$NET" -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | awk '{print $1}')
+		[ "$have_sn" = "$SUBNET" ] || echo "network $NET subnet is '$have_sn', manifest says '$SUBNET' — operator: payload-run --renet $TENANT"
+	fi
+	return 0
+}
+ensure_net(){
+	docker network inspect "$NET" >/dev/null 2>&1 && return 0
+	[ -n "$SUBNET" ] || die "network $NET absent and no SUBNET to create it"
+	docker network create --driver bridge --subnet "$SUBNET" -o com.docker.network.bridge.name="$BRIDGE" "$NET" >/dev/null
+	log "created network $NET (bridge $BRIDGE, $SUBNET)"
+}
+apply_fw4(){   # idempotent; requires dockerd iptables=0
+	for f in "$DIR"/*.fw4.uci; do [ -f "$f" ] && { sh "$f" || { log "WARN: fw4 apply non-zero"; FAILED=1; }; }; done
+	return 0
+}
+
+all_match(){   # every manifest container exists and carries the current fingerprint
+	for c in $NAMES; do
+		[ "$(docker inspect -f '{{index .Config.Labels "batman.cfg"}}' "$c" 2>/dev/null)" = "$CFG" ] || return 1
+	done
+}
+all_exist(){ for c in $NAMES; do docker inspect "$c" >/dev/null 2>&1 || return 1; done; }
+
+preflight(){   # rc 0 = a rebuild may proceed; else the reasons are in $PF
+	PF=""; walk preflight
+	np=$(net_problem); [ -z "$np" ] || problem "$np"
+	[ -z "$PF" ]
+}
+refuse(){ log "REFUSED rebuild — nothing was touched:$PF"; }
+
+# graceful removal of the manifest containers + any container labelled for this tenant that the manifest
+# no longer lists (orphans). Never `rm -f` a running container; never `-v` (volumes/data are kept).
+remove_stack(){
+	orph=$(docker ps -a --filter "label=batman.tenant=$TENANT" --format '{{.Names}}' 2>/dev/null || true)
+	victims=""
+	for c in $NAMES $orph; do
+		case " $victims " in *" $c "*) continue ;; esac
+		docker inspect "$c" >/dev/null 2>&1 && victims="$victims $c"
+	done
+	[ -n "$victims" ] || return 0
+	for c in $orph; do case " $NAMES " in *" $c "*) ;; *) log "removing orphan container $c (no longer in the manifest)" ;; esac; done
+	# shellcheck disable=SC2086
+	docker stop -t 10 $victims >/dev/null 2>&1 || true
+	for c in $victims; do docker rm "$c" >/dev/null 2>&1 || die "could not remove $c after stopping it"; done
+}
+
+short(){ echo "$CFG" | cut -c1-12; }
+# Start mode in two phases (#274 D2', docs/design/274-payload-converge.md §9). Contract (167-payload-manager.md):
+# the FINAL stop tier (containers without STOPTIER) are the stateful services, independent of each other; every
+# other container depends only on them being healthy. Phase A starts the final tier in parallel and waits for
+# their HEALTH; phase B starts all the rest at once, then runs their gates. A phase-A failure (start or gate)
+# still runs phase B (skipping it = a guaranteed outage; their restart policy backs off until the services are
+# up, as dockerd's own revival did) — FAILED=1, and a start failure falls through to the preflighted rebuild.
+hc_of(){ awk -v c="$1" '$1=="CONTAINER"{n=$2} $1=="HEALTH" && n==c {sub(/^HEALTH[ \t]+/,""); print; exit}' "$MANIFEST"; }
+tiers(){ awk '$1=="CONTAINER"{if(n!="")print n, t; n=$2; t=99} $1=="STOPTIER"{t=$2+0} END{if(n!="")print n, t}' "$MANIFEST"; }
+start_group(){   # $@ = container names: start in parallel, collect each status, then gate each
+	pids=""
+	for c in "$@"; do
+		st=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+		case "$st" in
+			running|restarting) log "$c already $st" ;;
+			*) docker start "$c" >/dev/null 2>&1 & pids="$pids $!:$c" ;;
+		esac
+	done
+	for pc in $pids; do
+		if wait "${pc%%:*}"; then log "started ${pc#*:} (existing container, start mode)"
+		else log "WARN: docker start ${pc#*:} failed"; START_FAILED="$START_FAILED ${pc#*:}"; FAILED=1; fi
+	done
+	for c in "$@"; do
+		case " $START_FAILED " in *" $c "*) continue ;; esac
+		NAME=$c; HEALTH=$(hc_of "$c"); health_gate
+	done
+}
+do_start(){
+	log "start mode: stack unchanged (cfg $(short)) — services first (parallel, gated), then the rest at once"
+	ensure_net; apply_fw4
+	START_FAILED=""; walk prep
+	final=$(tiers | awk 'BEGIN{x=0} $2>x{x=$2} END{print x}')
+	# shellcheck disable=SC2046
+	start_group $(tiers | awk -v f="$final" '$2==f{print $1}')
+	stopping && exit 4
+	# shellcheck disable=SC2046
+	start_group $(tiers | awk -v f="$final" '$2!=f{print $1}')
+}
+do_rebuild(){
+	log "rebuild (cfg $(short))"
+	remove_stack
+	ensure_net; apply_fw4
+	walk run
+}
+finish(){
+	if [ "$FAILED" = 0 ]; then log "bring-up complete"; exit 0; fi
 	log "bring-up FINISHED WITH FAILURES (fw4 and/or health gate) — see WARNs above"; exit 1
-fi
+}
+
+case "$MODE" in
+	rebuild)
+		preflight || { refuse; exit 1; }
+		do_rebuild; finish ;;
+	start-only)
+		all_match || { log "config changed — nothing started (the guardian converges it)"; exit 3; }
+		do_start
+		[ -z "$START_FAILED" ] || { log "WARN: could not start:$START_FAILED"; exit 1; }
+		finish ;;
+	converge)
+		if all_match; then
+			do_start
+			[ -z "$START_FAILED" ] && finish
+			log "start failed for:$START_FAILED — converging by rebuild"
+			preflight || { refuse; exit 1; }
+			FAILED=0; do_rebuild; finish
+		fi
+		if preflight; then do_rebuild; finish; fi
+		log "converge REFUSED (config changed but a rebuild is not possible):$PF"
+		if all_exist; then
+			log "starting the existing stack on its OLD config (verdict stays DRIFT until fixed)"
+			do_start
+		fi
+		exit 1 ;;
+	renet)
+		[ -n "$SUBNET" ] || die "manifest has no SUBNET"
+		al=$(ls "$DIR"/*.net.alloc 2>/dev/null | head -1)
+		if [ -n "$al" ]; then
+			asn=$(sed -n 's/^SUBNET=//p' "$al")
+			[ "$asn" = "$SUBNET" ] || die "manifest SUBNET $SUBNET != $al SUBNET $asn — refusing"
+		fi
+		if docker network inspect "$NET" >/dev/null 2>&1; then
+			for c in $(docker network inspect "$NET" -f '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null); do
+				case " $NAMES " in *" $c "*) continue ;; esac
+				[ "$(docker inspect -f '{{index .Config.Labels "batman.tenant"}}' "$c" 2>/dev/null)" = "$TENANT" ] \
+					|| die "network $NET has a foreign endpoint ($c) — detach it first"
+			done
+		fi
+		PF=""; walk preflight
+		[ -z "$PF" ] || { refuse; exit 1; }
+		remove_stack
+		docker network rm "$NET" >/dev/null 2>&1 || true
+		ensure_net; apply_fw4; walk run; finish ;;
+esac

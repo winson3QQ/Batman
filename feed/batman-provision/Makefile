@@ -78,6 +78,7 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/etc/init.d/batman-faketime $(1)/etc/init.d/batman-faketime
 	$(INSTALL_BIN) ./files/etc/init.d/batman-autocommit $(1)/etc/init.d/batman-autocommit
 	$(INSTALL_BIN) ./files/etc/init.d/batman-reboot   $(1)/etc/init.d/batman-reboot
+	$(INSTALL_BIN) ./files/etc/init.d/batman-prestop-payload $(1)/etc/init.d/batman-prestop-payload
 	# tools
 	$(INSTALL_BIN) ./files/usr/bin/batman-version     $(1)/usr/bin/batman-version
 	$(INSTALL_BIN) ./files/etc/uci-defaults/93-batman-version-banner $(1)/etc/uci-defaults/93-batman-version-banner
@@ -97,6 +98,8 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/usr/bin/payload-arbiter    $(1)/usr/bin/payload-arbiter
 	$(INSTALL_BIN) ./files/usr/bin/payload-teardown   $(1)/usr/bin/payload-teardown
 	$(INSTALL_DATA) ./files/usr/lib/batman/payload-guardian.sh $(1)/usr/lib/batman/payload-guardian.sh
+	# #274: graceful tiered stop, shared by the guardian (K09) and batman-prestop-payload (K08)
+	$(INSTALL_DATA) ./files/usr/lib/batman/payload-stop.sh $(1)/usr/lib/batman/payload-stop.sh
 	# shared "in the mesh" test (joinwatch + batman-autocommit OTA gate, #209 S4-5)
 	$(INSTALL_DATA) ./files/usr/lib/batman/meshjoin.sh $(1)/usr/lib/batman/meshjoin.sh
 	$(INSTALL_DATA) ./files/usr/lib/batman/otatrace.sh $(1)/usr/lib/batman/otatrace.sh
@@ -130,7 +133,7 @@ endef
 # flightrec/meshled S99). VERIFY in CI that the symlinks land in the image.
 define Package/batman-provision/postinst
 #!/bin/sh
-for s in halow-keyguard batpower flightrec joinwatch meshled batman-faketime batman-autocommit batman-reboot; do
+for s in halow-keyguard batpower flightrec joinwatch meshled batman-faketime batman-autocommit batman-reboot batman-prestop-payload; do
 	if [ -x "$${IPKG_INSTROOT}/etc/init.d/$$s" ]; then
 		"$${IPKG_INSTROOT}/etc/init.d/$$s" enable 2>/dev/null
 	fi

@@ -51,6 +51,10 @@ boot() {
 		: > "/tmp/batman-firstload-$t.latch" 2>/dev/null
 		g="batman-payload-$t"
 		[ -x "/etc/init.d/$g" ] && { "/etc/init.d/$g" stop >/dev/null 2>&1; "/etc/init.d/$g" disable >/dev/null 2>&1; }
+		# #274 P1: that stop marked the tenant "stopping" (payload-run then refuses every mode). This is OUR
+		# S95 stop, not a shutdown — clear it now, synchronously, so the loader's --start-only below can run;
+		# a real shutdown later sets it again and the loader honours that.
+		rm -f "/tmp/batman-payload-$t.stopping" "/tmp/batman-payload-$t.stop0"
 	done
 	[ "$any" = 1 ] || return 0
 
@@ -137,6 +141,12 @@ boot() {
 
 			if ls "$imgdir"/*.tar >/dev/null 2>&1; then
 				lg "$t: incomplete (tars remain) — retry next boot; guardian stays down"
+				# #274 D8: a clean reboot left the stack STOPPED (graceful stop, docker manual-stop flag), so
+				# dockerd no longer revives it on its own. Bring an UNCHANGED stack back (start mode only; a
+				# changed one waits for the guardian, as before). rc 3 = config changed, 4 = shutting down.
+				if command -v payload-run >/dev/null 2>&1; then
+					payload-run --start-only "$t" >> "$LOG" 2>&1; lg "$t: payload-run --start-only rc=$?"
+				fi
 			else
 				[ -x "/etc/init.d/$g" ] && { "/etc/init.d/$g" enable >/dev/null 2>&1; "/etc/init.d/$g" start >/dev/null 2>&1; }
 				lg "$t: complete — guardian enabled+started (ran whatever loaded)"

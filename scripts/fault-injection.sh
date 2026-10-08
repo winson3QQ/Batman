@@ -30,7 +30,8 @@ n(){ ssh $S "root@$NODE" "$@"; }                       # node ssh
 waitup(){ for _ in $(seq 1 "${1:-60}"); do ssh $S -o ConnectTimeout=6 "root@$NODE" true 2>/dev/null && return 0; sleep 6; done; return 1; }
 slot(){ n 'batman-slot active' 2>/dev/null | tr -d "\r\n "; }
 committed(){ n 'batman-slot is-trial >/dev/null 2>&1; [ $? = 1 ]' 2>/dev/null; }   # rc0 if committed
-ots_up(){ [ "$(n 'docker ps -q 2>/dev/null | wc -l' 2>/dev/null | tr -d "\r\n ")" -ge 6 ] 2>/dev/null; }
+# 6/6 = six containers in state running (`docker ps` also lists ones restarting in a crash loop — #274 review C5)
+ots_up(){ [ "$(n 'docker ps -q --filter status=running 2>/dev/null | wc -l' 2>/dev/null | tr -d "\r\n ")" -ge 6 ] 2>/dev/null; }
 PASS=0; FAIL=0
 ok(){ echo "  PASS $1"; PASS=$((PASS+1)); }
 no(){ echo "  FAIL $1"; FAIL=$((FAIL+1)); }

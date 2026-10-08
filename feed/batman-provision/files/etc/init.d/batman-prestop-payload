@@ -1,0 +1,24 @@
+#!/bin/sh /etc/rc.common
+# batman-prestop-payload — first half of a payload tenant's graceful shutdown (#274, docs/design/274-payload-converge.md §8).
+# STOP=08: before every guardian (K09batman-payload-<t>), which stops the final tier (the stateful services)
+#          and records the stop; each K script gets its own 15 s from procd, so the clients and the
+#          services each get a real budget. Not procd: rc.common's shutdown() calls stop().
+# Here: mark every provisioned tenant as stopping, kill an in-flight payload-run, stop all tiers but the last.
+# shellcheck disable=SC2034  # read by /etc/rc.common (enable creates K08batman-prestop-payload; NOT named batman-payload-* — that glob means "a tenant guardian" everywhere)
+STOP=08
+
+start() { :; }
+
+stop() {
+	[ -f /usr/lib/batman/payload-stop.sh ] || return 0
+	# shellcheck source=/dev/null
+	. /usr/lib/batman/payload-stop.sh
+	for d in "${APPS_DIR:-/opt/batdata/apps}"/*/; do
+		[ -d "$d" ] || continue
+		t=${d%/}; t=${t##*/}
+		ls "$d"*.manifest >/dev/null 2>&1 || continue
+		[ -x "/etc/init.d/batman-payload-$t" ] || continue    # only a tenant with a guardian
+		pstop_early "$t"
+	done
+	return 0
+}

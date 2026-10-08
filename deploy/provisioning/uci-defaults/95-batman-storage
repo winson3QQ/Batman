@@ -489,6 +489,14 @@ refresh_payload_config(){
 			b=${f##*/}
 			[ "$b" = secrets ] && continue         # never touch p6 secrets/
 			cmp -s "$f" "$dst/$b" 2>/dev/null && continue   # idempotent: write only on change (#41)
+			# #264 F8 / #274: a legacy `docker run -v` with a missing file source leaves an empty root-owned
+			# DIRECTORY at $dst/$b; mv would then drop the file INTO it forever. Clear our own earlier tmp
+			# files inside it, then rmdir (only ever removes an empty dir — anything else is kept).
+			if [ -d "$dst/$b" ] && [ ! -L "$dst/$b" ]; then
+				rm -f "$dst/$b"/."$b".tmp.* 2>/dev/null
+				if rmdir "$dst/$b" 2>/dev/null; then note "payload config: removed stray directory $tenant/$b"
+				else note "payload config refresh BLOCKED: $tenant/$b is a non-empty directory"; continue; fi
+			fi
 			# cp -p keeps the golden's mode (+x on .sh/.init/.fw4.uci, installed 0755); &&/|| so a failed
 			# cp is removed, never promoted to a truncated live file (review M1 + R2 atomicity).
 			tmp="$dst/.$b.tmp.$$"
@@ -498,6 +506,25 @@ refresh_payload_config(){
 				rm -f "$tmp" 2>/dev/null; note "payload config refresh FAILED: $tenant/$b (kept old)"
 			fi
 		done
+		# #274 D6 prune: remove a file the golden installed EARLIER (listed in .golden-files) that the golden
+		# no longer has — the guardian runs *.fw4.uci / verify-profile-*.sh / reconcile-resources.sh by glob,
+		# so a stale one is not inert. Never secrets/, never *.manifest / *.init (the refresh gate + the
+		# guardian; a broken golden must not deprovision the tenant), and only when the new golden has a
+		# manifest. A trial slot's prune is undone by a revert: the old slot's refresh re-copies missing files.
+		# No list yet → nothing pruned (files from images before this are left alone). Rules a pruned
+		# *.fw4.uci committed stay in /etc/config/firewall until the next A/B flash resets the overlay.
+		ls "$golden"*.manifest >/dev/null 2>&1 || { note "payload config: golden $tenant has no manifest — prune skipped"; continue; }
+		new=""; for f in "$golden"* ; do [ -f "$f" ] && new="$new ${f##*/}"; done
+		if [ -f "$dst/.golden-files" ]; then
+			while read -r b; do
+				case "$b" in ''|*/*|.*|secrets|*.manifest|*.init) continue ;; esac
+				case " $new " in *" $b "*) continue ;; esac
+				[ -f "$dst/$b" ] && [ ! -L "$dst/$b" ] || continue
+				rm -f "$dst/$b" && note "payload config: pruned $tenant/$b (no longer in the golden)"
+			done < "$dst/.golden-files"
+		fi
+		echo "$new" | tr ' ' '\n' | grep -v '^$' > "$dst/.golden-files.tmp.$$" && mv -f "$dst/.golden-files.tmp.$$" "$dst/.golden-files" \
+			|| rm -f "$dst/.golden-files.tmp.$$" 2>/dev/null
 	done
 }
 
@@ -511,6 +538,13 @@ restore_payload_guardians(){
 			cp "$src" "$dst" 2>/dev/null || { note "payload restore: cp $name FAILED"; continue; }
 			chmod +x "$dst"; note "payload guardian $name (re)installed from p6"
 		fi
+		# #274: rc.common `enable` never removes old links — drop S??/K?? links whose number is not the
+		# stub's current START/STOP (STOP moved 10 → 09; a legacy image may re-add K10)
+		s=$(sed -n 's/^START=\([0-9][0-9]\).*/\1/p' "$dst"); k=$(sed -n 's/^STOP=\([0-9][0-9]\).*/\1/p' "$dst")
+		for l in /etc/rc.d/S??"$name" /etc/rc.d/K??"$name"; do
+			[ -L "$l" ] || continue
+			case "${l##*/}" in "S$s$name"|"K$k$name") ;; *) rm -f "$l" && note "payload restore: removed stale link ${l##*/}" ;; esac
+		done
 		"$dst" enable 2>/dev/null
 		# S11 runs before the S99 start pass, but the first-boot hook calls boot() during uci-defaults
 		# AFTER that pass — so start explicitly when not already up (idempotent on a normal boot).

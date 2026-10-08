@@ -23,6 +23,11 @@ on:
       - 'feed/batman-payload-host/Makefile'
       - 'deploy/payload-host-packages.txt'
       - 'scripts/check-payload-host-sync.sh'
+      # #274: payload-run / stop / guardian behaviour is gated by scripts/test-payload-run.sh (run by the check)
+      - 'feed/batman-provision/files/usr/bin/payload-run'
+      - 'feed/batman-provision/files/usr/lib/batman/payload-stop.sh'
+      - 'feed/batman-provision/files/usr/lib/batman/payload-guardian.sh'
+      - 'scripts/test-payload-run.sh'
   push:
     branches: [main]
     paths:
@@ -32,6 +37,9 @@ on:
       - 'deploy/**/*.fw4.uci'
       - 'scripts/profile-to-manifest.py'
       - 'scripts/profile-to-fw4.py'
+      - 'feed/batman-provision/files/usr/bin/payload-run'
+      - 'feed/batman-provision/files/usr/lib/batman/payload-stop.sh'
+      - 'scripts/test-payload-run.sh'
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -40,8 +48,14 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
       - run: pip install --quiet pyyaml
-      - name: payload artifacts must match profile SoT + no tenant collisions
+      - name: payload artifacts must match profile SoT + no tenant collisions (+ test-payload-run, GNU tools)
         run: PYTHON=python3 sh scripts/check-payload-manifest.sh
+      # #274: the same offline test with busybox applets first on PATH (the node runs busybox, not GNU;
+      # a GNU-only construct shipped once in an rc). See the BUSYBOX=1 note in the script.
+      - name: payload-run / payload-stop under busybox
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq busybox
+          BUSYBOX=1 sh scripts/test-payload-run.sh
       # #159 review M2 drift guard (meta-package DEPENDS == captured runtime closure). It existed but
       # was never wired in, and had silently gone red on main (#209 S4-4).
       - name: batman-payload-host DEPENDS must match deploy/payload-host-packages.txt
