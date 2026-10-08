@@ -315,3 +315,89 @@ order the stop only).
 | C5 F1 counted restarting containers | fault-injection `ots_up` counts `status=running` only (stricter) |
 | C6 dwait | not back within 300 s → FAIL, not SKIP |
 | C7 27.9 s stop record | that boot was fi-r1's runc-broken trial (docker cannot stop cleanly without runc); the record now carries k08= / k09= per script, cleanstop asserts each < 15 s |
+
+## 10. v4 (2026-10-09, #274 reopened): ordered start after an OTA too — stop the tenant gracefully in stage 2
+
+### 10.0 Reality check (04, 1.5.6-wsl.2)
+
+On every OTA boot, opentakserver and ots_cot_parser **crash-restart once** (RestartCount=1).
+
+Evidence:
+- the opentakserver log has a `pika.BlockingConnection` traceback;
+- the verify log of a captured held trial: `container opentakserver restarted 1x`, `ots_cot_parser restarted 1x`.
+
+Why:
+1. sysupgrade never stops the containers (§5 T3).
+2. On the new slot, dockerd (`unless-stopped`) revives all six at once, before the guardian runs.
+3. The ordered two-phase start (§D2') never happens; the apps race rabbitmq.
+
+Effects:
+- a false `confinement DRIFT detected` alarm on every OTA;
+- commit delayed by one guardian tick (30–40 s);
+- post-OTA healthy-window tests become timing-sensitive (#265 canonical fi-r4 FAIL, 2026-10-08).
+
+A normal reboot is unaffected: K08/K09 stop the tenant and the guardian's start mode runs.
+
+### 10.1 What §5 missed
+
+`lib/upgrade/stage2` line 18 runs `include /lib/upgrade`, which sources every `/lib/upgrade/*.sh` of the OLD image's rootfs. That happens **before** the `ubus call service delete` loop (line 150) and before `kill_remaining`.
+
+Top-level code in a file there therefore runs while dockerd and the tenant are still alive, and only on the real upgrade path:
+- stage 1 (`sysupgrade -T`, LuCI validation) runs `/sbin/sysupgrade`, which does not run stage2;
+- stage2 runs only after `ubus call system sysupgrade` has committed to the upgrade.
+
+So the objection in §5, "stopping in stage 1 leaves the tenant down after an aborted upgrade", does not apply.
+
+### 10.2 Design
+
+**D10a — the stop hook.** New `/lib/upgrade/zz-batman-payload-stop.sh` (installed by the feed; no clash with a base file). At include time, it acts only when **all** of these hold:
+- `[ "${0##*/}" = stage2 ]`;
+- `$IMAGE` is set;
+- `/usr/lib/batman/payload-stop.sh` is readable.
+
+It then runs, for every tenant with a manifest, the same path as a clean reboot:
+- `pstop_early` (client tiers, `-t 5`);
+- then `pstop_final` (services, `-t 10`, sweep).
+
+This sets docker's manual-stop flag, so the new slot's dockerd does **not** revive them. The guardian's start mode then starts the stack ordered and gated, and postgres starts from a clean shutdown (this also closes §5 T3).
+
+The stop record line gets `via=stage2`.
+
+**Bounded:**
+- each `docker stop` has its own `-t`;
+- the whole hook runs under a watchdog subshell that kills it after 40 s;
+- the upgrade then continues regardless. A hook that misbehaves never blocks an OTA; at worst we are back to today's behaviour.
+
+**Failure of the upgrade after the stop.**
+- stage2 never returns to the old system; it always ends in `reboot -f`.
+- On an apply failure, the node reboots onto its untouched committed slot. Containers stopped with the manual-stop flag are then started by the guardian's start mode, which is the same as after a clean reboot.
+- Nothing is left down.
+
+**D10b — guardian: first-tick restarts after boot are start-up, not drift.**
+- For containers that dockerd revived **with no stop record for this boot** (an OTA from an image without D10a, or an unclean boot), the RestartCount baseline is taken from the first tick *after* converge, not from the container's age.
+  - Today the baseline is empty on the first tick, so the restart is counted only on the second tick. The crash itself happened before the first tick.
+- **Not changed:** a crash loop **after** the first tick still alarms (D3a).
+- The verdict on the first tick stays honest:
+  - a container that is down → DRIFT;
+  - restarts that happened before the guardian started → logged as `start-up restarts N (revived by dockerd, no ordered start)` in the verify log;
+  - those restarts are not a DRIFT verdict.
+
+**D10c — daily-validation.**
+- `ota-start-274` runs on the OTS host: a hold-commit OTA of the same build. It asserts:
+  1. a stop record with `via=stage2`, written by the OLD slot before the reboot;
+  2. on the trial, `start mode:` in the log (not dockerd revival);
+  3. RestartCount=0 for all six containers;
+  4. no `confinement DRIFT detected` this boot;
+  5. postgres `database system was shut down at`.
+- It then releases the trial.
+- **Negative control:** with the hook file renamed (`DV_TEST_274_NOHOOK=1`), checks 1–3 must FAIL.
+
+### 10.3 Alternatives
+- **Restart policy `no` + guardian owns every start:** this removes dockerd revival entirely, but then the guardian has to restart every crashed non-primary container itself. That is a larger change of the supervision model; it remains an option if D10a fails.
+- **A batman OTA wrapper:** there is no single entry point (§5); D10a sits under every entry point.
+- **Only D10b (cosmetic):** the crash and the WAL recovery stay. Rejected as the fix; kept as defence for OTAs from images without D10a.
+
+### 10.4 Risks
+- `include /lib/upgrade` also happens in other contexts that source the upgrade libs (e.g. `/sbin/sysupgrade` itself, `fwtool`). The `$0 = stage2` + `$IMAGE` guard limits the hook to the real stage 2. Proof: a grep of every `include /lib/upgrade` / `. /lib/upgrade` caller in the image, plus a negative check that `sysupgrade -T` leaves the tenant up.
+- **Order with the other `/lib/upgrade/*.sh`:** `zz-` sorts last. Our `platform.sh` override only defines functions, so the hook does not depend on it.
+- **Time budget:** stage 2 has no procd 15 s limit (it is not a K script). The hook's 40 s cap plus the existing stop budgets (K08 ≈6 s, K09 ≈2.5 s measured) apply.
