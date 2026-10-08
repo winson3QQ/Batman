@@ -13,7 +13,17 @@ f=0; step(){ # $1 label, $2 expected mount delta
 	if [ "$d" = "$2" ] && { [ $r = 0 ] || [ $r = 4 ]; }; then echo "PASS $1: rc=$r p5 mounts +$d"
 	else echo "FAIL $1: rc=$r p5 mounts +$d (want +$2) — $(echo "$o" | tail -1)"; f=1; fi; }
 cp -p $AK /tmp/ak.p5dv 2>/dev/null; restore(){ [ -f /tmp/ak.p5dv ] && cp -p /tmp/ak.p5dv $AK; rm -f /tmp/ak.p5dv; }
-trap restore EXIT
+# joinwatch calls `--on-join` on its own every ~15 s for the whole boot (rc 4 "unchanged" never latches
+# /tmp/config-saved). Its compare after an invalidation is legitimate, but it makes THIS caller see the cache
+# already refreshed (+0 instead of +1) — 2026-10-08 the "another writer" step failed that way on 1.5.5-wsl.8
+# (s_mnt_count moved between steps with nobody in this script mounting). Pause it so this script is the only
+# caller, wait out an in-flight one, and start it again on exit (joinwatch has no stop action of its own).
+jw=0; if /etc/init.d/joinwatch running >/dev/null 2>&1; then /etc/init.d/joinwatch stop >/dev/null 2>&1; jw=1; fi
+i=0; while pgrep -f "$B" >/dev/null 2>&1 && [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done
+pgrep -f "$B" >/dev/null 2>&1 && { echo "FAIL a batman-config-save is still running after 30 s — not verified"; [ $jw = 1 ] && /etc/init.d/joinwatch start; exit 1; }
+cleanup(){ restore; [ $jw = 1 ] && /etc/init.d/joinwatch start >/dev/null 2>&1; }
+trap cleanup EXIT
+[ $jw = 1 ] && echo "joinwatch paused for the test (restarted on exit)"
 rm -f $ST
 step "first call this boot compares once" 1
 step "unchanged -> cached, no mount" 0
