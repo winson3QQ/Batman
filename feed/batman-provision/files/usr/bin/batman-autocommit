@@ -45,7 +45,11 @@ DRY=${AUTOCOMMIT_DRYRUN:-0}
 HOLDCOMMIT_FLAG=$ST/autocommit-hold-commit
 CTL=/tmp/autocommit.ctl; [ "$DRY" = 1 ] && CTL=/tmp/autocommit.ctl.dry
 ctl_ok(){ [ -d "$CTL" ] && [ ! -L "$CTL" ] && [ -O "$CTL" ]; }
-ctl_init(){ [ -e "$CTL" ] || mkdir -m 700 "$CTL" 2>/dev/null; ctl_ok || { log "control dir $CTL is not a root-owned directory — ignoring hold-commit/release markers"; return 1; }; }
+# A planted $CTL (a file, a symlink, someone else's dir) is removed and re-made once; rm -rf on a symlink
+# removes the link, never its target. Still not ours after that = the caller fails CLOSED (review #265 F14a).
+ctl_init(){ ctl_ok && return 0
+	{ [ -e "$CTL" ] || [ -L "$CTL" ]; } && { log "control dir $CTL is not a root-owned directory — removing it"; rm -rf "$CTL"; }
+	mkdir -m 700 "$CTL" 2>/dev/null; ctl_ok || { log "control dir $CTL still not a root-owned directory"; return 1; }; }
 held_commit(){ ctl_ok && [ -f "$CTL/hold-commit" ] && [ ! -f "$CTL/released" ]; }
 
 log(){ logger -t batman-autocommit "$*" 2>/dev/null; echo "batman-autocommit: $*" > /dev/kmsg 2>/dev/null; [ "$DRY" = 1 ] && echo "batman-autocommit: $*"; }
@@ -153,7 +157,7 @@ if [ "${1:-}" = release ]; then
 	s0=$(batman-slot active 2>/dev/null); dl=${dl:-$(( $(up) + 300 ))}; lim=$(( dl - $(up) + 30 ))
 	while [ "$lim" -gt 0 ]; do
 		[ -f "$COMMITTED" ] && { echo "release: committed"; exit 0; }
-		[ "$DRY" = 1 ] || main_alive || { echo "release: autocommit run ended without committing ($(cat /tmp/autocommit.why 2>/dev/null))"; exit 1; }
+		[ "$DRY" = 1 ] || main_alive || [ -f "$COMMITTED" ] || { echo "release: autocommit run ended without committing ($(cat /tmp/autocommit.why 2>/dev/null))"; exit 1; }
 		[ "$(batman-slot active 2>/dev/null)" = "$s0" ] || { echo "release: slot changed"; exit 1; }
 		sleep 2; lim=$((lim - 2))
 	done
@@ -224,18 +228,33 @@ revert_watchdog(){
 # an unrelated OTA until its deadline revert. It applies only when it names the build that booted.
 # Order: marker first, then delete the p6 flag (+sync), so a kill in between never loses the hold.
 # A non-tryboot boot (plain reboot, stale fallback) leaves it for the trial it was set for.
-if { dt_tryboot || { [ "$DRY" = 1 ] && [ "${AUTOCOMMIT_FORCE_TRIAL:-0}" = 1 ]; }; } && [ -f "$HOLDCOMMIT_FLAG" ] && [ ! -f "$CTL/hold-commit" ]; then
+# A main restarted between the marker and the rm finds the marker already there: the hold is in force, the
+# flag is just dropped (review #265 F14b). A flag for this build whose control dir cannot be made safe fails
+# CLOSED: HOLDUNSAFE keeps the trial from committing (the deadline revert still fires) and the p6 flag is
+# KEPT, so a restarted main holds too (F14a). A discarded flag is shown by halow-status (F14c).
+HOLDUNSAFE=0
+if { dt_tryboot || { [ "$DRY" = 1 ] && [ "${AUTOCOMMIT_FORCE_TRIAL:-0}" = 1 ]; }; } && [ -f "$HOLDCOMMIT_FLAG" ]; then
 	want=$(head -c 200 "$HOLDCOMMIT_FLAG" 2>/dev/null | tr -d '\r\n')
-	if [ "$want" = "$(version)" ] && ctl_init; then
-		echo "$want" > "$CTL/hold-commit"
-		log "HOLD-COMMIT: this trial ($want) will not be committed until 'batman-autocommit release'; the deadline revert stays armed"
-		aclog "HOLD-COMMIT boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$(batman-slot active 2>/dev/null) version=$want"
-		otalog AC HOLD-COMMIT version="$want"
+	if ctl_ok && [ -f "$CTL/hold-commit" ]; then
+		:
+	elif [ "$want" = "$(version)" ]; then
+		if ctl_init; then
+			echo "$want" > "$CTL/hold-commit"
+			log "HOLD-COMMIT: this trial ($want) will not be committed until 'batman-autocommit release'; the deadline revert stays armed"
+			aclog "HOLD-COMMIT boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$(batman-slot active 2>/dev/null) version=$want"
+			otalog AC HOLD-COMMIT version="$want"
+		else
+			HOLDUNSAFE=1
+			log "HOLD-COMMIT-UNSAFE: hold requested for this build but $CTL is not usable — NOT committing (deadline revert armed)"
+			aclog "HOLD-COMMIT-UNSAFE boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) version=$want"
+			otalog AC HOLD-COMMIT-UNSAFE version="$want"
+		fi
 	else
 		log "HOLD-COMMIT-DISCARDED: flag is for [$want], this boot runs [$(version)] — not holding"
 		aclog "HOLD-COMMIT-DISCARDED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) flag=$want booted=$(version)"
+		echo "flag for [$want] discarded by a tryboot of [$(version)]" > /tmp/autocommit.hold-discarded
 	fi
-	[ "$DRY" = 1 ] || { rm -f "$HOLDCOMMIT_FLAG"; sync; }
+	[ "$DRY" = 1 ] || [ "$HOLDUNSAFE" = 1 ] || { rm -f "$HOLDCOMMIT_FLAG"; sync; }
 fi
 
 # 0) skip-once (#209 S5): scripts/ab-selftest.sh drives tryboot/plain reboots itself and must not have
@@ -416,7 +435,9 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 	# hold-commit (#261): a healthy trial waits for `batman-autocommit release`; the watchdog still reverts at
 	# the deadline. Folded into why ONLY when otherwise healthy, so the commit branch (and its canary) is not
 	# entered while held, and the hold is never mistaken for the first UNHEALTHY reason.
-	if [ -z "$why" ] && held_commit; then
+	if [ -z "$why" ] && [ "$HOLDUNSAFE" = 1 ]; then
+		why="hold-commit requested but its control dir is unsafe — not committing (deadline revert armed)"
+	elif [ -z "$why" ] && held_commit; then
 		why="held for operator acceptance (batman-autocommit release)"
 		[ -n "${HELDLOGGED:-}" ] || { HELDLOGGED=1; log "trial $SLOT is healthy and HELD — waiting for release (deadline ${DEADLINE}s)"; otalog AC HELD slot=$SLOT; }
 	fi

@@ -323,7 +323,16 @@ Full design + review: `docs/design/265-261-autocommit-recheck-hold.md` (review P
   deadline**. `batman-autocommit release [--wait]` lifts it — refused if no hold this boot, not a trial, main gone, or past
   the deadline (then `batman-slot commit` by hand). It never commits by itself: main's loop commits through the same
   dwell + pre-commit canary + claim.
-- Visibility: `halow-status` `OTA HOLD` line / JSON `ota_hold`; daily-validation `autocommit-211` prints an armed flag.
+- **Fail closed (v1.3, review F14).** If the control dir cannot be made root-owned (it is removed and re-made once), a flag that names this build means
+  `HOLD-COMMIT-UNSAFE`. The trial never commits and the deadline revert still fires. The p6 flag is kept, so a restarted main holds too.
+- If a main restarted after it wrote the marker but before it removed the flag, it only removes the flag.
+- A discarded flag is shown by halow-status.
+- **Visibility.**
+  - `halow-status` shows an `OTA HOLD` line (JSON `ota_hold`), in this order: committed > released > hold-once > held.
+  - daily-validation `autocommit-211` FAILs on a stray armed flag, on every fleet node.
+- **Tests.**
+  - fault-injection R1/R3/R4 on the Pi 4.
+  - R3/R4 with `--no-tenant` on the Pi 3 (`hold-261-*`).
 
 | Situation | v2.4 behaviour |
 |---|---|
