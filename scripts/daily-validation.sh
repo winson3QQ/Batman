@@ -1024,14 +1024,27 @@ bchk_rejoin_245() {   # DNODE leaves+rejoins the mesh; assert peers never kernel
 # ---- #274 payload converge / clean stop (docs/design/274-payload-converge.md §6) ----
 ots_ids() { fssh "$1" 20 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); for c in $(awk "/^CONTAINER /{print \$2}" "$m"); do echo "$c $(docker inspect -f "{{.Id}}" $c 2>/dev/null | cut -c1-12)"; done' | tr -d '\r'; }
 ots_ready() { fssh "$1" 20 '[ "$(docker ps -q | wc -l)" -ge 6 ] && docker exec ots-db pg_isready -q && wget -q -T 5 -O /dev/null http://172.20.0.5:8081/api/health' >/dev/null 2>&1; }
-conv_count() { fssh "$1" 15 'logread | grep -c "batman-payload\[opentakserver\]: converge done"' | tr -d ' \r'; }
-# wait until the guardian logged one more "converge done" than $2 (max $3 s); prints that line
-wait_converge() { local n=$1 c0=$2 max=${3:-300} i l
+# the guardian's LAST "converge done ... uptime=<s.ss>" line (unique: it carries the uptime). Compared by content,
+# not counted: a rebuild logs enough to push older lines out of the logread ring, so a count can stand still.
+conv_last() { fssh "$1" 15 'logread | grep "batman-payload\[opentakserver\]: converge done" | tail -1 | sed -n "s/.*\(converge done.*\)/\1/p"' | tr -d '\r'; }
+# wait until the last "converge done" line differs from $2 (max $3 s); prints it
+wait_converge() { local n=$1 l0=$2 max=${3:-300} i l
   for i in $(seq 1 $((max / 5))); do
-    l=$(fssh "$n" 15 'logread | grep "batman-payload\[opentakserver\]: converge done"' | tr -d '\r')
-    [ "$(echo "$l" | grep -c .)" -gt "$c0" ] && { echo "$l" | tail -1; return 0; }
+    l=$(conv_last "$n")
+    [ -n "$l" ] && [ "$l" != "$l0" ] && { echo "$l"; return 0; }
     sleep 5
   done; return 1; }
+# early-CoT probe (#274 review C1), run on the HOST in the background: the nodes' busybox nc has no -w, the host
+# has bash /dev/tcp + timeout and reaches the OTS node over the mesh like a field client. Waits for 8088 to go
+# down (the reboot) and come back, then sends one CoT the moment it accepts. Writes "UP <epoch>" / "SENT <epoch> rc=".
+cot_probe_274() { local ip=$1 uid=$2 out=$3 i n
+  ( i=0; while timeout 2 bash -c ": > /dev/tcp/$ip/8088" 2>/dev/null; do i=$((i+1)); [ $i -gt 180 ] && { echo NEVER-DOWN; exit 1; }; sleep 1; done
+    i=0; until timeout 2 bash -c ": > /dev/tcp/$ip/8088" 2>/dev/null; do i=$((i+1)); [ $i -gt 400 ] && { echo NEVER-UP; exit 1; }; sleep 1; done
+    echo "UP $(date +%s)"; n=$(date +%s)
+    ev="<event version=\"2.0\" uid=\"$uid\" type=\"a-f-G-U-C\" how=\"h-e\" time=\"$(date -u -d @$n +%Y-%m-%dT%H:%M:%S.000Z)\" start=\"$(date -u -d @$n +%Y-%m-%dT%H:%M:%S.000Z)\" stale=\"$(date -u -d @$((n+60)) +%Y-%m-%dT%H:%M:%S.000Z)\"><point lat=\"25.03\" lon=\"121.56\" hae=\"10\" ce=\"9999999\" le=\"9999999\"/><detail><contact callsign=\"$uid\"/><marti><dest callsign=\"dv-nobody\"/></marti></detail></event>"
+    timeout 5 bash -c "exec 3<>/dev/tcp/$ip/8088; printf '%s' '$ev' >&3; sleep 2" 2>/dev/null
+    echo "SENT $n rc=$?" ) > "$out" 2>&1 &
+}
 
 bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, recorded) and the next boot STARTS it (no rebuild)
   # Asserts on the boot after a plain `reboot`:
@@ -1057,13 +1070,10 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
     echo "NEGATIVE CONTROL: the stop removes the containers once"
   fi
   # 6 (C1): a peer sends one CoT the moment 8088 accepts again after the reboot (as early as a field client)
-  local pu="" pnode=${BENCH_NODE:-}
-  if [ -n "$pnode" ] && [ "$pnode" != "$n" ] && up "$pnode"; then
-    pu="DV274E$(date +%Y%m%d%H%M%S)"
-    timeout 20 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$pnode" \
-      "cat > /tmp/dv274-probe.sh && (setsid sh /tmp/dv274-probe.sh $n $pu > /tmp/dv274-probe.out 2>&1 < /dev/null &)" < "$REPO/scripts/node/cot-probe-274.sh"
-    echo "early-CoT probe $pu started on $pnode"
-  fi
+  # 6 (C1): the host sends one CoT the moment 8088 accepts again after the reboot (as early as a field client)
+  local pu pf
+  pu="DV274E$(date +%Y%m%d%H%M%S)"; pf="$DIR/cleanstop-274.probe"
+  cot_probe_274 "$n" "$pu" "$pf"; echo "early-CoT probe $pu started on the host (-> $n:8088)"
   reboot_and_wait "$n" reboot 240 || rc=1
   if [ "${DV_TEST_274_NOSTOP:-0}" = 1 ]; then   # the K links live on the overlay: put them back
     fssh "$n" 10 'for f in /tmp/dv-274-klink.*; do [ -e "$f" ] || continue; b=${f#/tmp/dv-274-klink.}; t=${b#K??}; ln -sf ../init.d/$t /etc/rc.d/$b; ls -l /etc/rc.d/$b; done' \
@@ -1115,14 +1125,14 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
   echo "restart counts: $l"
   echo "$l" | grep -Eq '=[1-9]' && { echo "FAIL 6 a container restarted during the start (a dependency the two-phase start does not honour)"; rc=1; } || echo "ok 6 no container restarted"
   if [ -n "$pu" ]; then
-    local po d02 d04 bt sent i st
-    for i in $(seq 1 20); do po=$(fssh "$pnode" 10 'cat /tmp/dv274-probe.out 2>/dev/null' | tr -d '\r'); echo "$po" | grep -q '^SENT\|^NEVER' && break; sleep 3; done
+    local po d04 bt sent i st
+    for i in $(seq 1 30); do po=$(cat "$pf" 2>/dev/null); echo "$po" | grep -q '^SENT\|^NEVER' && break; sleep 3; done
     echo "probe: $(echo $po)"
-    d02=$(fssh "$pnode" 10 'date +%s' | tr -d ' \r'); d04=$(fssh "$n" 10 'echo $(( $(date +%s) - $(cut -d. -f1 /proc/uptime) )) $(date +%s)' | tr -d '\r')
+    d02=$(date +%s); d04=$(fssh "$n" 10 'echo $(( $(date +%s) - $(cut -d. -f1 /proc/uptime) )) $(date +%s)' | tr -d '\r')
     bt=${d04%% *}; d04=${d04##* }
     sent=$(echo "$po" | sed -n 's/^SENT \([0-9]*\) rc=0$/\1/p')
     if isint "$sent" && isint "$d02" && isint "$bt" && isint "$up"; then
-      sent=$(( sent + d04 - d02 - bt ))   # the peer's send time on the OTS node's uptime axis (+-2 s: two clocks)
+      sent=$(( sent + d04 - d02 - bt ))   # the host's send time on the OTS node's uptime axis (+-2 s: two clocks)
       if [ "$sent" -lt $((up - 3)) ]; then echo "ok 6 CoT sent at +${sent} s, before the API gate passed (+${up} s)"
       else echo "NOTE 6 8088 accepted only at +${sent} s, API gate at +${up} s — before-API delivery not exercised this run"; fi
       st=0; for i in $(seq 1 12); do st=$(echo "select count(*) from cot where uid='$pu';" | ots_sql "$n" | tr -d ' \r'); [ "$st" = 1 ] && break; sleep 5; done
@@ -1146,8 +1156,8 @@ bchk_converge_274() {   # the guardian converges a CHANGED config by a graceful 
   ots_ready "$n" || { echo "FAIL OTS not ready before the test"; return 1; }
   man=$(fssh "$n" 10 "ls $D/*.manifest | head -1" | tr -d '\r')
   cfg0=$(fssh "$n" 30 'payload-run --cfg-hash opentakserver' | tr -d '\r'); ids0=$(ots_ids "$n")
-  c274_restart() { local c0; c0=$(conv_count "$n"); fssh "$n" 90 "$g restart" >/dev/null 2>&1
-    wait_converge "$n" "$c0" 400 || { echo "FAIL $1: the guardian did not converge within 400 s"; return 1; }; }
+  c274_restart() { local l0; l0=$(conv_last "$n"); fssh "$n" 90 "$g restart" >/dev/null 2>&1
+    wait_converge "$n" "$l0" 400 || { echo "FAIL $1: the guardian did not converge within 400 s"; return 1; }; }
   c274_check() {   # $1 ids before, $2 step, $3 expected fingerprint
     local ids1 lab x
     ids1=$(ots_ids "$n")
