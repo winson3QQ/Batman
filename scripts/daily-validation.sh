@@ -365,7 +365,11 @@ chk_tput() { fssh "$1" 170 '                                   # sustained-ish m
   [ "$n" -ge 3 ] || { echo "only $n throughput samples (need >=3) — link flaky/down"; exit 1; }
   eval med=\${$(( (n+1)/2 ))}; min=$1; eval max=\${$n}
   echo "tput to $mac: median=${med} min=${min} max=${max} Kbps over $n runs (baseline soak median ~9440 Kbps)"
-  FLOOR=${TPUT_FLOOR_KBPS:-3000}
+  # Floor 1500 (was 3000, #265 full run 2026-10-08): over 16 runs 10/06-10/08 on healthy links (iperf 8529-9275
+  # Kbps every time) the tp median ranged 2459-6552 across 1.5.1/1.5.4/1.5.5/1.5.6 — 3000 sat INSIDE the healthy
+  # spread and false-FAILed at random. 1500 still catches a dead link / MCS collapse; the real throughput gate
+  # is mesh-tput-iperf (band 4000..30000).
+  FLOOR=${TPUT_FLOOR_KBPS:-1500}
   [ "$med" -ge "$FLOOR" ]'; }
 # iperf TCP throughput — the REAL IP-layer payload over the mesh. batctl tp (chk_tput) is the
 # batman-adv internal meter and systematically under-reports ~15%; iperf is what an app actually
