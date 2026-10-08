@@ -45,6 +45,22 @@ Two lessons came from #274:
    Mark any row that does not apply with the reason.
 4. **Assumptions about other code.** List every behaviour of another component the change relies on, upstream ones included (procd, docker, busybox, OpenWrt sysupgrade). Each needs evidence: `file:line` in the source, or output captured on a node. "Should be" is not evidence. Unverified assumptions are checked with a read-only probe on a node before the design is approved.
 
+5. **Security.** This is part of the design review, not a step after the code is written. State:
+   - **Assets and actors.** Assets: control of the node (commit/revert, slot, reboot, halt), radio and mesh, keys and certs, tenant data, availability. Go through each actor:
+     - remote attacker over the mesh or WiFi;
+     - local non-root process;
+     - compromised tenant or container;
+     - physical capture of a node or SD card;
+     - supply chain;
+     - our own mistakes.
+   - **Attack-surface delta.** Every new or changed input (file or path, port, CGI, uci key, env var, mesh message, CLI argument), who can reach it, and how it is validated.
+   - **Privilege.** What runs as root and why. Root code that reads or writes anything a non-root process can write (`/tmp`, `/dev/shm`, world-writable dirs, symlinks, hardlinks, predictable names) is a finding. Use the root-only run dir and `opf` from #280 (once merged).
+   - **Secrets.** Where keys, PSKs and certs live, who can read them, and how they are rotated or revoked. Never in logs, URLs, world-readable files or the public repo.
+   - **Failure mode.** Fail-secure by default. Any fail-open needs a stated reason.
+   - **Verification.** A negative test that shows the attack is blocked, for example running it as a non-root process (as #280's `tmp-trust-280` will do).
+
+   Before the PR, the code also gets `/security-review`. That review complements the design review and does not replace it.
+
 A change that touches no shared state (internal to one component) may replace 1–3 with one sentence that says so and why.
 
 The weight of the review depends on how much shared state the change touches, not on how big the change is.
@@ -54,6 +70,7 @@ The weight of the review depends on how much shared state the change touches, no
 - Reviews the **whole** design, not only the newest revision. The first task is to find rows missing from the lifecycle matrix and resources missing from the ownership list.
 - Starts from what happens in the field, not from the list of points the author asks about.
 - Checks each claimed assumption against the source, or against read-only output from a node.
+- Attacks the design as each actor in item 5, especially a local non-root process and a compromised tenant.
 - Checks that every claim has a test with a negative control, meaning a test that would fail without the change.
 - Outputs numbered findings (BLOCKER / MAJOR / MINOR), each with a concrete failure scenario, evidence and a fix, and then a verdict: APPROVE / APPROVE-WITH-CHANGES / REJECT.
 
