@@ -41,7 +41,7 @@ done
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 PROV="$HERE/../deploy/provisioning"
-for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey batpower batpower.init flightrec flightrec.init joinwatch joinwatch.init meshjoin.sh halow-status www/status www/bundle www/mesh www/index.html uci-defaults/95-batman-storage uci-defaults/96-batman-config-migrate batman-config-save; do
+for f in meshpoint-1.8.0.sh halow-keyguard.init halow-setkey batpower batpower.init flightrec flightrec.init joinwatch joinwatch.init meshjoin.sh rundir.sh halow-status www/status www/bundle www/mesh www/index.html uci-defaults/95-batman-storage uci-defaults/96-batman-config-migrate batman-config-save; do
 	[ -f "$PROV/$f" ] || { echo "missing $PROV/$f — stage the repo on the node (scripts/ + deploy/)"; exit 1; }
 done
 [ -f "$HERE/meshled.1.8.0" ] && [ -f "$HERE/meshled.init" ] || { echo "missing scripts/meshled.1.8.0 or meshled.init"; exit 1; }
@@ -121,7 +121,7 @@ cat > /etc/uci-defaults/99-halow-identity <<'FIRSTBOOT'
 # If 96-batman-config-migrate restored this slot's identity from a seeded p5 (an A/B slot switch,
 # not a fresh card), do NOT re-personalise: deleting the host keys / resetting hostname, IP and
 # dhcpconfigured below would undo the restore and change identity across the switch (#88/#89).
-[ -f /tmp/p5-restored ] && { echo "99-halow-identity: identity restored from p5 — skipping personalisation"; exit 0; }
+[ -f /etc/.batman-p5-restored ] && { rm -f /etc/.batman-p5-restored; echo "99-halow-identity: identity restored from p5 — skipping personalisation"; exit 0; }
 # 1. unique hostname with OpenMANET's own scheme (e.g. BCM2711-47ee from the MAC label / eth0)
 . /lib/functions/morse.sh 2>/dev/null
 host=$(morse_generate_default_hostname 2>/dev/null)
@@ -159,6 +159,7 @@ rm -f /etc/config/batpower   # the init writes defaults on first start (source=m
 cp "$PROV/flightrec" /usr/bin/flightrec && chmod 0755 /usr/bin/flightrec
 cp "$PROV/flightrec.init" /etc/init.d/flightrec && chmod 0755 /etc/init.d/flightrec && /etc/init.d/flightrec enable
 mkdir -p /usr/lib/batman && cp "$PROV/meshjoin.sh" /usr/lib/batman/meshjoin.sh   # joinwatch sources it (#209 S5 review R5)
+cp "$PROV/rundir.sh" /usr/lib/batman/rundir.sh   # #280: every component's root-only run dir
 cp "$PROV/joinwatch" /usr/bin/joinwatch && chmod 0755 /usr/bin/joinwatch
 cp "$PROV/joinwatch.init" /etc/init.d/joinwatch && chmod 0755 /etc/init.d/joinwatch && /etc/init.d/joinwatch enable
 rm -f /etc/config/joinwatch   # the init writes defaults on first start
@@ -176,7 +177,7 @@ echo "==> 10. no steady-state SD writes (#104): openmanetd DB -> tmpfs; ramoops 
 # writer on the rootfs overlay (~1.8-37 MiB/h). Its top-level `dbFile:` is configurable: keep
 # it in RAM. Rewrite-or-insert (an existing on-overlay dbFile is replaced, not kept).
 if [ -f "$OMCFG" ]; then
-	awk 'BEGIN{v="dbFile: /tmp/openmanetd.db"} /^dbFile:/{print v; f=1; next} {print} END{if(!f) print v}' "$OMCFG" > "$OMCFG.tmp" && mv "$OMCFG.tmp" "$OMCFG"
+	awk 'BEGIN{v="dbFile: /tmp/run/openmanetd.db"} /^dbFile:/{print v; f=1; next} {print} END{if(!f) print v}' "$OMCFG" > "$OMCFG.tmp" && mv "$OMCFG.tmp" "$OMCFG"
 	echo "    $(grep -E '^dbFile' "$OMCFG")"
 else
 	echo "    WARN: $OMCFG missing — openmanetd DB stays wherever the daemon defaults to"

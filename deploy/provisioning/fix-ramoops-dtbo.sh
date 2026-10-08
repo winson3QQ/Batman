@@ -49,10 +49,11 @@ if [ "$CONSOLE_ONLY" = 0 ]; then
 		echo "step 2: ramoops.dtbo already fixed (reg has the high address cell)"
 	else
 		cp "$DTBO" "$DTBO.orig-badreg"
-		dtc -I dtb -O dts "$DTBO" -o /tmp/ramoops.dts 2>/dev/null
-		sed -i 's/reg = <0xb000000 0x10000>/reg = <0x0 0xb000000 0x10000>/' /tmp/ramoops.dts
-		grep -q "reg = <0x0 0xb000000 0x10000>" /tmp/ramoops.dts || { echo "reg line not matched — image differs, inspect /tmp/ramoops.dts"; exit 1; }
-		dtc -I dts -O dtb /tmp/ramoops.dts -o "$DTBO" 2>/dev/null
+		DTS=$(mktemp /tmp/ramoops.XXXXXX) || exit 1   # #280: unpredictable (this is compiled back into the boot overlay)
+		dtc -I dtb -O dts "$DTBO" -o "$DTS" 2>/dev/null
+		sed -i 's/reg = <0xb000000 0x10000>/reg = <0x0 0xb000000 0x10000>/' "$DTS"
+		grep -q "reg = <0x0 0xb000000 0x10000>" "$DTS" || { echo "reg line not matched — image differs, inspect $DTS"; exit 1; }
+		dtc -I dts -O dtb "$DTS" -o "$DTBO" 2>/dev/null; rm -f "$DTS"
 		echo "step 2: fixed $DTBO -> reg = <0x0 0xb000000 0x10000> (backup at $DTBO.orig-badreg)"; changed=1
 	fi
 fi

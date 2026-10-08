@@ -79,7 +79,7 @@ captured into the golden image (the same model Batman already uses for meshled/m
   flashed, no key set".
 - **`batpower` + `batpower.init`** (#122, S95) — battery watchdog: reads pack voltage/current
   (`hwmon` via the kernel ina2xx driver, raw `i2c`, or `mock` for the bench), per-cell WARN /
-  CRIT thresholds with confirm count + hysteresis; WARN → syslog/kmsg/`/tmp/batpower.state`,
+  CRIT thresholds with confirm count + hysteresis; WARN → syslog/kmsg/`/tmp/run/batman/batpower.state` (root-only run dir, #280),
   CRIT → shutdown marker (so `boot-reasons.log` says `low-battery Vbat=…`) then `halt`
   (`crit_action=reboot` on the bench). No steady-state SD writes. uci `batpower.main.*`;
   `batpower status`. Ships with `source=mock` until the INA226 is fitted — then set `source`

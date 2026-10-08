@@ -102,6 +102,9 @@ define Package/batman-provision/install
 	$(INSTALL_DATA) ./files/usr/lib/batman/payload-stop.sh $(1)/usr/lib/batman/payload-stop.sh
 	# shared "in the mesh" test (joinwatch + batman-autocommit OTA gate, #209 S4-5)
 	$(INSTALL_DATA) ./files/usr/lib/batman/meshjoin.sh $(1)/usr/lib/batman/meshjoin.sh
+	$(INSTALL_DATA) ./files/usr/lib/batman/rundir.sh $(1)/usr/lib/batman/rundir.sh
+	$(INSTALL_DIR) $(1)/etc/sysctl.d
+	$(INSTALL_DATA) ./files/etc/sysctl.d/90-batman.conf $(1)/etc/sysctl.d/90-batman.conf
 	$(INSTALL_DATA) ./files/usr/lib/batman/otatrace.sh $(1)/usr/lib/batman/otatrace.sh
 	$(INSTALL_DATA) ./files/usr/lib/batman/bootfacts.sh $(1)/usr/lib/batman/bootfacts.sh
 	# offline monotonic wall-clock (#174): restore@S12 (after batdata-mount S11), save@K09 + periodic

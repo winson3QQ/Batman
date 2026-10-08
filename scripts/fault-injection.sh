@@ -41,6 +41,10 @@ DEFER_MAX=600   # batman-autocommit: the watchdog may postpone a revert this lon
 # ServerAlive: an ssh whose route dies mid-session (the mesh re-forming) ends as rc 255 in ~15 s instead of hanging (F3)
 S="-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o LogLevel=ERROR"
 FI_TMP=$(mktemp -d); UNREADF=$FI_TMP/unread; : > "$UNREADF"
+# #280: where the node keeps its decision state: the root-only run dir on an image that ships rundir.sh, /tmp on
+# an older image. Never a fall back to /tmp on a #280 image — a missing run dir there reads as empty (no commit
+# seen, no why), never as names a non-root process could have planted in /tmp.
+RDR='R=/tmp; [ -r /usr/lib/batman/rundir.sh ] && R=/tmp/run/batman; '
 n(){ ssh $S "root@$NODE" "$@"; }                       # action / raw poll: no retry
 q(){ local o rc                                      # reading: retry connection failures, record the unreadable
   for _ in 1 2 3 4 5 6; do
@@ -188,11 +192,11 @@ r2(){ echo "== R2 first-loading tenant is non-gating (no false revert) =="
   ota_boot R2 "$b0" || return
   local c=0; for _ in $(seq 1 80); do committed && ots_up && { c=1; break; }; sleep 8; done
   unread_reset
-  local latch; latch=$(q 'ls /tmp/batman-firstload-r2test.latch 2>/dev/null; true')
+  local latch; latch=$(q "$RDR"'ls "$R/batman-firstload-r2test.latch" 2>/dev/null; true')
   [ "$c" = 1 ] || { committed && ots_up && c=1; }
   undetermined R2 && return
   [ "$c" = 1 ] && [ -n "$latch" ] && ok "R2 committed while r2test first-loading (latch present) — non-gating, no false revert" || no "R2 did not commit / no latch (committed=$c latch=$latch)"
-  q "rm -rf $APPS/r2test; rm -f /tmp/batman-firstload-r2test.latch" >/dev/null; }
+  q "$RDR rm -rf $APPS/r2test; rm -f \"\$R/batman-firstload-r2test.latch\"" >/dev/null; }
 
 # R1/R3/R4 use the #261 hold-commit (ab-autocommit v2.4) so nothing races: the trial is held, the fault is
 # injected (R1) or not (R3/R4), THEN released (R1/R3) or left alone (R4).
@@ -206,8 +210,8 @@ held_trial(){ local tag=$1 pre=$2 ver b0; HT=""; HB=""; HDL=""
   ota_boot "$tag" "$b0" || return 1
   unread_reset
   local s it hc; s=$(slot); q 'batman-slot is-trial >/dev/null 2>&1; [ $? = 0 ]'; it=$?
-  q '[ ! -e /opt/batdata/state/autocommit-hold-commit ] && [ -f /tmp/autocommit.ctl/hold-commit ]'; hc=$?
-  HDL=$(q 'cat /tmp/autocommit.deadline' | tr -d '\r '); HB=$(bootid)
+  q "$RDR"'[ ! -e /opt/batdata/state/autocommit-hold-commit ] && [ -f "$R/autocommit.ctl/hold-commit" ]'; hc=$?
+  HDL=$(q "$RDR"'cat "$R/autocommit.deadline"' | tr -d '\r '); HB=$(bootid)
   undetermined "$tag" && return 1
   # Pi 4 EEPROM 2026-09-23 wrong-slot no-op: the "trial" can come back on the committed slot. Never inject there.
   [ "$s" != "$pre" ] || { no "$tag: trial did not switch off committed slot $pre (EEPROM wrong-slot no-op?) — not injecting on the good slot"; return 1; }
@@ -222,7 +226,7 @@ held_trial(){ local tag=$1 pre=$2 ver b0; HT=""; HB=""; HDL=""
 wait_revert(){ local tag=$1 b0=$2 dl=$3 lim t0=$SECONDS o b c
   lim=$((dl + DEFER_MAX + 120))
   while [ $((SECONDS - t0)) -lt "$lim" ]; do
-    o=$(timeout 30 ssh $S -o ConnectTimeout=6 "root@$NODE" 'echo "$(cat /proc/sys/kernel/random/boot_id) $([ -f /tmp/autocommit.committed ] && echo C || echo -)"' 2>/dev/null | tr -d '\r')
+    o=$(timeout 30 ssh $S -o ConnectTimeout=6 "root@$NODE" "$RDR"'echo "$(cat /proc/sys/kernel/random/boot_id) $([ -f "$R/autocommit.committed" ] && echo C || echo -)"' 2>/dev/null | tr -d '\r')
     b=${o% *}; c=${o##* }
     if [ -n "$o" ]; then
       [ "$b" != "$b0" ] && return 0
@@ -243,7 +247,7 @@ r1(){ echo "== R1 docker-run-broken trial is NOT committed and reverts (hold -> 
   n 'for p in /usr/bin/runc /usr/sbin/runc; do [ -f "$p" ] && { mv "$p" "$p.off"; break; }; done'; R1_BROKE=1; R1_SLOT=$tr
   q 'docker info >/dev/null 2>&1' && echo "    trial: docker engine still answers (docker run cannot)"
   n 'batman-autocommit release' 2>&1 | sed 's/^/    /'
-  unread_reset; q '[ -f /tmp/autocommit.ctl/released ]'; rm=$?
+  unread_reset; q "$RDR"'[ -f "$R/autocommit.ctl/released" ]'; rm=$?
   undetermined R1 && return
   [ "$rm" = 0 ] || { no "R1: release did not take effect (no released marker) — would revert for 'held', not for the canary"; return; }
   echo "    released; waiting for the watchdog revert (deadline uptime ${dl}s, budget +${DEFER_MAX}s deferral)"
@@ -277,9 +281,9 @@ HELDWHY="held for operator acceptance (batman-autocommit release)"
 # not healthy-and-held (2026-10-08 canonical fi-r4: held at 81 s per the node, yet no 60 s held window by 480 s).
 wait_held(){ local tag=$1 b0=$2 dl=$3 hs="" o b u c w t0=$SECONDS dd mm last=""
   while :; do
-    o=$(timeout 30 ssh $S -o ConnectTimeout=6 "root@$NODE" 'd=$(for f in /tmp/batman-payload-*-drift.json; do [ -f "$f" ] && printf "%s@%ss," "$(sed -n "s/.*\"status\":\"\([A-Z]*\)\".*/\1/p" "$f")" "$(( $(date +%s) - $(sed -n "s/.*\"ts\":\([0-9]*\).*/\1/p" "$f") ))"; done)
+    o=$(timeout 30 ssh $S -o ConnectTimeout=6 "root@$NODE" "$RDR"'d=$(for f in "$R"/batman-payload-*-drift.json; do [ -f "$f" ] && printf "%s@%ss," "$(sed -n "s/.*\"status\":\"\([A-Z]*\)\".*/\1/p" "$f")" "$(( $(date +%s) - $(sed -n "s/.*\"ts\":\([0-9]*\).*/\1/p" "$f") ))"; done)
       m=-; . /usr/lib/batman/meshjoin.sh 2>/dev/null && meshjoin_sample && { meshjoin_reachable && m=R; m="$m/plink${MJ_PLINK:-0}/bat${MJ_BAT:-0}"; }
-      echo "$(cat /proc/sys/kernel/random/boot_id) $(cut -d. -f1 /proc/uptime) $([ -f /tmp/autocommit.committed ] && echo C || echo -) ${d:--} $m $(cat /tmp/autocommit.why 2>/dev/null)"' 2>/dev/null | tr -d '\r')
+      echo "$(cat /proc/sys/kernel/random/boot_id) $(cut -d. -f1 /proc/uptime) $([ -f "$R/autocommit.committed" ] && echo C || echo -) ${d:--} $m $(cat "$R/autocommit.why" 2>/dev/null)"' 2>/dev/null | tr -d '\r')
     if [ -n "$o" ]; then
       read -r b u c dd mm w <<< "$o"
       [ "drift=$dd mesh=$mm why=[$w]" = "$last" ] || { last="drift=$dd mesh=$mm why=[$w]"; echo "    @${u}s $last"; }

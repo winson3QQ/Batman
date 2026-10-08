@@ -3,7 +3,10 @@
 # `--on-join` (joinwatch, every ~15 s while the node is open) must mount p5 at most once per change, not per tick.
 # Counts p5 mounts with the ext4 superblock s_mnt_count (offset 1076, read without mounting). Touches only an
 # appended comment line in authorized_keys (restored, and re-saved, before exit). Prints PASS/FAIL lines.
-B=/usr/bin/batman-config-save; AK=/etc/dropbear/authorized_keys; ST=/tmp/cfgsave-onjoin.state
+# #280: the harness scratch dir lives under /tmp/run (root 0755 on every OpenWrt image): no non-root process
+# can pre-create or rewrite what root runs or reads from it (a /tmp/dv-* name could be).
+H=/tmp/run/batman-dv; { [ -d "$H" ] || mkdir -m 700 "$H"; } && [ -O "$H" ] && [ ! -L "$H" ] || { echo "FAIL harness scratch $H unusable"; exit 1; }
+B=/usr/bin/batman-config-save; AK=/etc/dropbear/authorized_keys; R=/tmp; [ -r /usr/lib/batman/rundir.sh ] && R=/tmp/run/batman; ST=$R/cfgsave-onjoin.state   # #280
 [ -b /dev/mmcblk0p5 ] || { echo "SKIP-REASON: no p5 on this card"; exit 3; }
 [ "$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' /dev/mmcblk0p5)" = 53ef ] || { echo "SKIP-REASON: p5 not seeded (not ext4)"; exit 3; }
 grep -q 'cfgsave-onjoin.state' $B || { echo "FAIL installed batman-config-save has no on-join cache (pre-#263-M0 image)"; exit 1; }
@@ -12,7 +15,7 @@ f=0; step(){ # $1 label, $2 expected mount delta
 	a=$(mc); o=$($B --on-join 2>&1); r=$?; d=$(( $(mc) - a ))
 	if [ "$d" = "$2" ] && { [ $r = 0 ] || [ $r = 4 ]; }; then echo "PASS $1: rc=$r p5 mounts +$d"
 	else echo "FAIL $1: rc=$r p5 mounts +$d (want +$2) — $(echo "$o" | tail -1)"; f=1; fi; }
-cp -p $AK /tmp/ak.p5dv 2>/dev/null; restore(){ [ -f /tmp/ak.p5dv ] && cp -p /tmp/ak.p5dv $AK; rm -f /tmp/ak.p5dv; }
+cp -p $AK $H/ak.p5dv 2>/dev/null; restore(){ [ -f $H/ak.p5dv ] && cp -p $H/ak.p5dv $AK; rm -f $H/ak.p5dv; }
 # joinwatch calls `--on-join` on its own every ~15 s for the whole boot (rc 4 "unchanged" never latches
 # /tmp/config-saved). Its compare after an invalidation is legitimate, but it makes THIS caller see the cache
 # already refreshed (+0 instead of +1) — 2026-10-08 the "another writer" step failed that way on 1.5.5-wsl.8
@@ -33,7 +36,7 @@ step "identity changed -> exactly one save" 1
 step "after the save -> cached again" 0
 restore
 step "identity restored -> exactly one save" 1
-mkdir -p /tmp/p5dv && mount -t ext4 /dev/mmcblk0p5 /tmp/p5dv && umount /tmp/p5dv && rmdir /tmp/p5dv
+mkdir -p $H/p5dv && mount -t ext4 /dev/mmcblk0p5 $H/p5dv && umount $H/p5dv && rmdir $H/p5dv
 step "another writer mounted p5 rw -> cache invalid, compare once" 1
 step "-> cached again" 0
 $B --save >/dev/null 2>&1; [ -f $ST ] && { echo "FAIL --save left the on-join cache in place"; f=1; } || echo "PASS --save drops the on-join cache"

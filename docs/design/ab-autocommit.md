@@ -342,3 +342,10 @@ Full design + review: `docs/design/265-261-autocommit-recheck-hold.md` (review P
 | hold-commit flag for another build | discarded on the first tryboot, logged |
 | hold-commit + hold-once | not committed and not reverted — stays an uncommitted trial until `release` or a hand commit |
 | `release` after the deadline / with main gone | refused, exit 1, points to `batman-slot commit` |
+
+## v2.5 (#280, 2026-10-08) — decision state out of world-writable /tmp
+
+Every `/tmp/autocommit.*` path above now lives in the root-only run dir `/tmp/run/batman/`, with the same basename. That covers decided, committed, run, wd, hold-consumed, deadline, start, canary-ok, why, ctl, hold-discarded and dryrun.log. The same applies to the fw-override, reboot-want, slot-lock/busy, batpower, firstload and payload markers that autocommit reads. Mapping table: `docs/design/280-tmp-trust.md` §9 N3.
+
+- **Operator flags stay in `/tmp`.** `batman-autocommit.hold`, `batman-fault.*` and `batman-slot.allow-*` are honoured only if the file is root-owned, not a symlink and has link count 1. Anything else is ignored, logged and shown by halow-status as TAMPER.
+- **Fail closed.** With no usable run dir, main never commits. A real tryboot still reverts at the deadline, via the watchdog's no-claim fallback (`AC_NOCLAIM`).

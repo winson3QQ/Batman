@@ -13,7 +13,10 @@
 # connected ATAK clients (no ghost markers). stale = +60 s.
 # Output (one per line): "SENT <phase> <n>" and, if the server dropped the connection, "CONNLOST <phase> <seq>".
 : "${TARGET:?}" "${RUN:?}"
-F=/tmp/dv-cot.fifo
+# #280: the harness scratch dir lives under /tmp/run (root 0755 on every OpenWrt image): no non-root process
+# can pre-create or rewrite what root runs or reads from it (a /tmp/dv-* name could be).
+H=/tmp/run/batman-dv; { [ -d "$H" ] || mkdir -m 700 "$H"; } && [ -O "$H" ] && [ ! -L "$H" ] || { echo "FAIL harness scratch $H unusable"; exit 1; }
+F=$H/dv-cot.fifo
 trap '' PIPE
 ts(){ date -u -d @$1 +%Y-%m-%dT%H:%M:%S.000Z; }
 head_of(){ n=$(date +%s); printf '<event version="2.0" uid="%s" type="a-' "$1"; }

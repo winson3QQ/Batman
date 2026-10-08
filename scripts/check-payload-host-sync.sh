@@ -45,7 +45,8 @@ grep -v '^#' "$TXT" \
   | grep -vE "$AUTOLIBS" \
   | sort -u > "$tmp_txt"
 
-if diff -u "$tmp_txt" "$tmp_mk" >/tmp/ph_sync_diff 2>&1; then
+dout=$(mktemp)
+if diff -u "$tmp_txt" "$tmp_mk" >"$dout" 2>&1; then
   echo "OK: batman-payload-host DEPENDS matches payload-host-packages.txt (minus cgroupfs-mount + auto-split libs)"
   echo "    $(wc -l < "$tmp_mk") packages in sync"
   exit 0
@@ -53,5 +54,5 @@ fi
 
 echo "FAIL: batman-payload-host DEPENDS drifted from payload-host-packages.txt"
 echo "  (< = only in payload-host-packages.txt, > = only in meta-package DEPENDS)"
-cat /tmp/ph_sync_diff
+cat "$dout"; rm -f "$dout"
 exit 1

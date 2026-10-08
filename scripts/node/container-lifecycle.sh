@@ -6,6 +6,9 @@
 # count; the HARNESS owns the expected count and checks `RESULT pass=N fail=M` against it.
 # Does NOT restart dockerd (that is dockerd-restart.sh, only on nodes without tenants) and never
 # touches a container it did not create (all names start with dv-).
+# #280: the harness scratch dir lives under /tmp/run (root 0755 on every OpenWrt image): no non-root process
+# can pre-create or rewrite what root runs or reads from it (a $H/dv-* name could be).
+H=/tmp/run/batman-dv; { [ -d "$H" ] || mkdir -m 700 "$H"; } && [ -O "$H" ] && [ ! -L "$H" ] || { echo "FAIL harness scratch $H unusable"; exit 1; }
 P=0; F=0
 ok(){ P=$((P+1)); echo "  PASS $*"; }
 no(){ F=$((F+1)); echo "  FAIL $*"; }
@@ -17,7 +20,7 @@ echo "== $(uci -q get system.@system[0].hostname) $(sed -n 's/^BATMAN_VERSION=//
 cleanup(){
 	for c in $(docker ps -aq --filter name=^dv- 2>/dev/null); do docker rm -f "$c" >/dev/null 2>&1; done
 	[ -n "${IMG:-}" ] && docker rmi "$IMG" >/dev/null 2>&1
-	rm -rf /tmp/dv-lc.* /tmp/dv-bundle /tmp/dv-cp.*
+	rm -rf $H/dv-lc.* $H/dv-bundle $H/dv-cp.*
 }
 cleanup
 trap cleanup EXIT
@@ -25,7 +28,7 @@ trap cleanup EXIT
 # 1 import (always — a cached image would hide a broken import path)
 IMG=dv-lc:$(cat $B /lib/ld-musl-*.so.1 /lib/libc.so 2>/dev/null | sha256sum | cut -c1-12)
 docker rmi "$IMG" >/dev/null 2>&1
-t=/tmp/dv-lc.$$; mkdir -p $t/bin $t/lib; cp $B $t/bin/; for a in sh cat tr sleep echo true; do ln -s busybox $t/bin/$a; done
+t=$(mktemp -d "$H/dv-lc.XXXXXX") || exit 1; mkdir -p $t/bin $t/lib; cp $B $t/bin/; for a in sh cat tr sleep echo true; do ln -s busybox $t/bin/$a; done
 cp -P /lib/ld-musl-*.so.1 $t/lib/; cp /lib/libc.so $t/lib/; [ -e /lib/libgcc_s.so.1 ] && cp /lib/libgcc_s.so.1 $t/lib/
 tar -C $t -cf - . | docker import - "$IMG" >/dev/null 2>&1 && ok "import image" || no "import image"; rm -rf $t
 
@@ -48,7 +51,7 @@ sleep 25; rc=$(docker inspect -f '{{.RestartCount}}' dv-rp 2>/dev/null)
 case "$rc" in ''|*[!0-9]*) no "restart policy: RestartCount unreadable [$rc]" ;; *) [ "$rc" -ge 2 ] && ok "restart policy on-failure (RestartCount=$rc)" || no "restart policy RestartCount=$rc" ;; esac
 
 # 7 exeseal (CVE-2025-52881 class): plain runc --debug on a bundle exported from the image
-cid=$(docker create "$IMG" $B true 2>/dev/null); d=/tmp/dv-bundle; mkdir -p $d/rootfs
+cid=$(docker create "$IMG" $B true 2>/dev/null); d=$H/dv-bundle; mkdir -p $d/rootfs
 docker export "$cid" 2>/dev/null | tar -C $d/rootfs -xf - 2>/dev/null; docker rm "$cid" >/dev/null 2>&1
 ( cd $d && runc spec >/dev/null 2>&1 && sed -i 's/"terminal": true/"terminal": false/; s/"sh"/"\/bin\/busybox","true"/' config.json )
 o=$(cd $d && runc --debug run dv-exeseal </dev/null 2>&1); runc delete -f dv-exeseal >/dev/null 2>&1; rm -rf $d
@@ -66,8 +69,8 @@ o=$(to 25 docker run --rm --name dv-tty -t "$IMG" $B echo tty-run-ok 2>&1); case
 o=$(to 25 docker exec -t dv-mp $B echo tty-exec-ok 2>&1); case "$o" in *tty-exec-ok*) ok "exec -t returns" ;; *) no "exec -t: [$o]" ;; esac
 
 # 11 docker cp both ways
-echo cp-ok > /tmp/dv-cp.in; docker cp /tmp/dv-cp.in dv-mp:/dv-cp.txt >/dev/null 2>&1; docker cp dv-mp:/dv-cp.txt /tmp/dv-cp.out >/dev/null 2>&1
-[ "$(cat /tmp/dv-cp.out 2>/dev/null)" = cp-ok ] && ok "docker cp in + out" || no "docker cp"
+echo cp-ok > $H/dv-cp.in; docker cp $H/dv-cp.in dv-mp:/dv-cp.txt >/dev/null 2>&1; docker cp dv-mp:/dv-cp.txt $H/dv-cp.out >/dev/null 2>&1
+[ "$(cat $H/dv-cp.out 2>/dev/null)" = cp-ok ] && ok "docker cp in + out" || no "docker cp"
 docker rm -f dv-mp >/dev/null 2>&1
 
 # 12 logs -f streams to the end

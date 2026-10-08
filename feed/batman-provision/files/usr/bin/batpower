@@ -7,26 +7,33 @@
 #   hwmon  kernel ina2xx driver (kmod-hwmon-ina2xx + dtoverlay=i2c-sensor,<ina226|ina219>):
 #          /sys/class/hwmon/hwmonN/{in1_input (mV bus), curr1_input (mA)}
 #   i2c    raw register reads with i2c-tools (INA226/INA219 bus-voltage register 0x02)
-#   mock   /tmp/batpower.mock holds the pack voltage in mV (bench tests, no hardware)
+#   mock   $RUNDIR/batpower.mock holds the pack voltage in mV — bench only: needs `option mock_ok 1`
+#          and lives in the root-only run dir (#280: the old /tmp path let any non-root process HALT the node)
+#   none   (default until the INA226 is fitted, #91) no reading: state UNKNOWN, never an action
 # Policy (all in mV, integer maths): per-cell thresholds x cells; N consecutive readings
 # (confirm) below a threshold change state; hysteresis on the way back up.
-#   WARN  -> syslog + kmsg + /tmp/batpower.state (meshled / EMS pick it up)
+#   WARN  -> syslog + kmsg + $RUNDIR/batpower.state (halow-status / flightrec / batman-slot read it, as root)
 #   CRIT  -> write the shutdown-trigger marker (boot-reasons.log will say low-battery), sync,
 #            then crit_action: halt (production) | reboot (bench)
-# Writes nothing to the SD in steady state: the last reading lives in /tmp; only the marker
+# Writes nothing to the SD in steady state: the last reading lives in the run dir (tmpfs); only the marker
 # is consumed by batdata-mount's shutdown dump.
 #
 #   batpower run | status | once
 
-STATE=/tmp/batpower.state
-MARK=/tmp/shutdown.reason   # read by batdata-mount stop(): names this shutdown in boot-reasons.log
-MOCK=/tmp/batpower.mock
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh   # #280: root-only run dir (never /tmp)
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+STATE=$RUNDIR/batpower.state
+MARK=$RUNDIR/shutdown.reason   # read by batdata-mount stop(): names this shutdown in boot-reasons.log
+MOCK=$RUNDIR/batpower.mock
 
 cfg(){ uci -q get "batpower.main.$1" || echo "$2"; }
 note(){ logger -t batpower -p "daemon.$1" "$2" 2>/dev/null; echo "batpower: $2" > /dev/kmsg 2>/dev/null; }
 
 load_cfg(){
-	SOURCE=$(cfg source mock)
+	SOURCE=$(cfg source none)
+	# mock is bench-only (#280 D3): honoured only when explicitly allowed, else treated as none
+	[ "$SOURCE" = mock ] && [ "$(cfg mock_ok 0)" != 1 ] && SOURCE=none
 	CELLS=$(cfg cells 2)
 	V_WARN=$(( $(cfg v_warn_cell_mv 3500) * CELLS ))
 	V_CRIT=$(( $(cfg v_crit_cell_mv 3300) * CELLS ))
@@ -59,7 +66,7 @@ read_i2c(){
 	esac
 }
 read_mock(){ [ -f "$MOCK" ] && read -r v < "$MOCK" && [ -n "$v" ] && echo "$v -"; }
-read_v(){ case "$SOURCE" in hwmon) read_hwmon;; i2c) read_i2c;; *) read_mock;; esac; }
+read_v(){ case "$SOURCE" in hwmon) read_hwmon;; i2c) read_i2c;; mock) read_mock;; *) return 1;; esac; }
 
 # ---- state machine
 state=OK; below_warn=0; below_crit=0
@@ -79,7 +86,7 @@ tick(){
 		echo "$state $v $i $(date +%s)" > "$STATE"; sync
 		sleep 2
 		# never let a pending controlled reboot (/etc/init.d/batman-reboot, #209 S5) turn this halt into a restart
-		rm -f /tmp/batman-reboot.want
+		rm -f "$RUNDIR/batman-reboot.want"
 		if [ "$ACTION" = reboot ]; then reboot; else halt; fi
 		return 0
 	fi
@@ -87,11 +94,16 @@ tick(){
 }
 
 load_cfg
+# test seam (scripts/node/tmp-trust-280.sh negative control): `once` only, never the daemon — proves the runtime
+# oracle can tell a reading from the old world-writable path from none.
+[ "${1:-}" = once ] && [ -n "${BATPOWER_MOCK_PATH:-}" ] && MOCK=$BATPOWER_MOCK_PATH
 case "$1" in
 	once)   tick; cat "$STATE";;
 	status) [ -f "$STATE" ] && read -r s v i t < "$STATE" && printf 'state=%s vbat=%smV i=%smA age=%ss source=%s warn<=%s crit<=%s cells=%s action=%s\n' \
 			"$s" "$v" "$i" "$(( $(date +%s) - t ))" "$SOURCE" "$V_WARN" "$V_CRIT" "$CELLS" "$ACTION" || echo "no reading yet";;
 	run)    [ "$(cfg enabled 1)" = 1 ] || { note notice "disabled by uci"; exit 0; }
+	        # no private run dir: no state file and no mock — readings from hwmon/i2c still protect the pack
+	        type batman_rundir >/dev/null 2>&1 && batman_rundir || { note warn "run dir unusable (#280) — mock disabled, state not published"; [ "$SOURCE" = mock ] && SOURCE=none; STATE=/dev/null; }
 	        note notice "started source=${SOURCE} cells=${CELLS} warn<=${V_WARN}mV crit<=${V_CRIT}mV confirm=${CONFIRM} action=${ACTION}"
 	        while :; do tick; sleep "$INTERVAL"; done;;
 	*)      echo "usage: batpower run|status|once"; exit 2;;

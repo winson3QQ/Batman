@@ -28,10 +28,18 @@ APPS_DIR="${APPS_DIR:-/opt/batdata/apps}"
 _T="${PAYLOAD_TENANT:?payload-guardian.sh: PAYLOAD_TENANT not set by the init stub}"
 _DIR="$APPS_DIR/$_T"
 
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh   # #280: root-only run dir (RUNDIR)
+_R="${PAYLOAD_RUNDIR:-${RUNDIR:-/nonexistent/batman-rundir}}"   # #280: lock/pid/stop flags, drift verdict, converge marker
+
 start_service() {
 	[ -d "$_DIR" ] || { echo "batman-payload[$_T]: $_DIR missing (payload not installed)"; return 1; }
+	# #280 fail closed: no private run dir = no trustworthy verdict/stop state -> do not start the tenant
+	if [ -z "${PAYLOAD_RUNDIR:-}" ]; then
+		type batman_rundir >/dev/null 2>&1 && batman_rundir || { echo "batman-payload[$_T]: run dir unusable (#280) — not starting"; return 1; }
+	fi
 	# a start ends any stop (#274: only start_service — and firstload's own S95 stop — clear the flag)
-	rm -f "/tmp/batman-payload-$_T.stopping" "/tmp/batman-payload-$_T.stop0"
+	rm -f "$_R/batman-payload-$_T.stopping" "$_R/batman-payload-$_T.stop0"
 	procd_open_instance
 	# The supervised command does the whole guarded bring-up, then blocks as a keepalive. It EXITS
 	# (non-zero) if docker isn't ready or the primary container isn't up -> procd respawns it.
@@ -41,9 +49,10 @@ start_service() {
 		DIR='"$_DIR"'
 		MANIFEST=$(ls "$DIR"/*.manifest 2>/dev/null | head -1)
 		NETALLOC=$(ls "$DIR"/*.net.alloc 2>/dev/null | head -1)
-		DRIFT_FILE=/tmp/batman-payload-$T-drift.json
-		VERIFY_LOG=/tmp/batman-payload-$T-verify.log
-		RC_STATE=/tmp/batman-payload-$T-restarts.state
+		R='"$_R"'
+		DRIFT_FILE=$R/batman-payload-$T-drift.json
+		VERIFY_LOG=$R/batman-payload-$T-verify.log
+		RC_STATE=$R/batman-payload-$T-restarts.state
 		INTERVAL=30
 		i=0; until docker info >/dev/null 2>&1; do
 			i=$((i + 1)); [ "$i" -gt 45 ] && { echo "batman-payload[$T]: waiting for dockerd"; exit 1; }
@@ -71,9 +80,9 @@ start_service() {
 		if [ "$_need" = 1 ]; then
 			echo "batman-payload[$T]: converging the stack (container down or config fingerprint changed)"
 			# tells batman-autocommit the tenant is converging (bounded revert deferral)
-			touch "/tmp/batman-payload-$T.converging"
+			touch "$R/batman-payload-$T.converging"
 			payload-run --converge "$T"; prc=$?
-			rm -f "/tmp/batman-payload-$T.converging"
+			rm -f "$R/batman-payload-$T.converging"
 			# boot-to-ready evidence (daily-validation cleanstop-274 SLO): health gates passed by this uptime
 			echo "batman-payload[$T]: converge done rc=$prc uptime=$(cut -d" " -f1 /proc/uptime)"
 			[ "$prc" = 4 ] && { echo "batman-payload[$T]: tenant is being stopped — not converging"; exit 1; }
@@ -90,7 +99,7 @@ start_service() {
 			fi
 			down=0
 			[ "$(docker inspect -f "{{.State.Running}}" "$PRIMARY" 2>/dev/null)" = true ] || break
-			[ -x "$DIR/reconcile-resources.sh" ] && sh "$DIR/reconcile-resources.sh" >/tmp/batman-payload-$T-resources.log 2>&1 || true
+			[ -x "$DIR/reconcile-resources.sh" ] && sh "$DIR/reconcile-resources.sh" >"$R/batman-payload-$T-resources.log" 2>&1 || true
 			st=OK; : > "$VERIFY_LOG"   # truncate once per tick (entries below append)
 			CFG=$(payload-run --cfg-hash "$T" 2>/dev/null)
 			new=""

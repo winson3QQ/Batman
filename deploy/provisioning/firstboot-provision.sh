@@ -50,7 +50,8 @@ PARTCOUNT=$(parted -sm "$DISK" print 2>/dev/null | grep -cE '^[0-9]+:')
 # ext4-present check without blkid (dumpe2fs if available, else a probe mount)
 has_ext4(){
   if command -v dumpe2fs >/dev/null 2>&1; then dumpe2fs -h "$1" >/dev/null 2>&1; return $?; fi
-  mkdir -p /tmp/_pchk 2>/dev/null; if mount -t ext4 "$1" /tmp/_pchk 2>/dev/null; then umount /tmp/_pchk; return 0; fi; return 1
+  c=$(mktemp -d /tmp/pchk.XXXXXX) || return 1   # #280: unpredictable
+  if mount -t ext4 "$1" "$c" 2>/dev/null; then umount "$c"; rmdir "$c"; return 0; fi; rmdir "$c"; return 1
 }
 
 status(){

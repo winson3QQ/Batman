@@ -19,7 +19,7 @@
 #         holds: <tenant>.manifest, <tenant>.fw4.uci, *.hardening.env, secrets/. On the bench,
 #         point APPS_DIR at a dir containing <tenant>/ (e.g. deploy/).
 # Exit:   0 ok · 1 failure (reason logged) · 2 usage · 3 --start-only: config changed, nothing done ·
-#         4 the tenant is being stopped (/tmp/batman-payload-<t>.stopping), nothing done
+#         4 the tenant is being stopped ($RUNDIR/batman-payload-<t>.stopping), nothing done
 #
 # #274 (docs/design/274-payload-converge.md):
 #  - every container carries --label batman.cfg=<fingerprint of what this script RENDERS> and
@@ -45,7 +45,14 @@ APPS_DIR="${APPS_DIR:-/opt/batdata/apps}"
 # let a future online tenant override. Was hardcoded --pull=never at both docker-run sites.
 PULL_POLICY="${PULL_POLICY:-never}"
 DIR="$APPS_DIR/$TENANT"
-RUNDIR="${PAYLOAD_RUNDIR:-/tmp}"
+# #280: lock, pid and stop flags live in the root-only run dir (a non-root process could pre-create a
+# /tmp "stopping" flag and keep the tenant down). PAYLOAD_RUNDIR overrides it (scripts/test-payload-run.sh).
+if [ -n "${PAYLOAD_RUNDIR:-}" ]; then RUNDIR=$PAYLOAD_RUNDIR
+else
+	# shellcheck source=/dev/null
+	[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+	type batman_rundir >/dev/null 2>&1 && batman_rundir || { echo "payload-run: run dir unusable (#280) — refusing" >&2; exit 1; }
+fi
 LOCK="$RUNDIR/batman-payload-$TENANT.lock"
 PIDF="$RUNDIR/batman-payload-$TENANT.pid"
 STOPPING="$RUNDIR/batman-payload-$TENANT.stopping"

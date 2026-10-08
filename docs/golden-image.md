@@ -92,8 +92,9 @@ A Pi boots from its only SD slot, so you can't overwrite it with a normal `dd`. 
 `sysupgrade` runs its stage2 **from RAM** (pivots off the SD), so it can rewrite the Pi's own
 card. Force it to take our raw full-disk image:
 ```sh
-scp golden-1.8.0.img.gz root@<node>:/tmp/
-ssh root@<node> 'sysupgrade -F -n /tmp/golden-1.8.0.img.gz'
+d=$(ssh root@<node> mktemp -d)        # #280: a private dir, never a predictable /tmp name root then flashes
+scp golden-1.8.0.img.gz root@<node>:$d/
+ssh root@<node> "sysupgrade -F -n $d/golden-1.8.0.img.gz"
 #   -F  force (skip the sysupgrade-format check — ours is a raw dd image)
 #   -n  don't keep config = flash as blank (also skips the gpsboard config-save hang)
 ```

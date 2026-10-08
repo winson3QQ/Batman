@@ -15,7 +15,7 @@
 # resources live; auto-expires after PAUSE_TTL_MIN so a forgotten pause can't disable it forever.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
-PAUSE=/tmp/batman-ots-pause
+PAUSE=/tmp/batman-ots-pause   # operator flag (touch as root): honoured only root-owned, not a link (#280)
 PAUSE_TTL_MIN="${PAUSE_TTL_MIN:-60}"
 
 # container -> hardening.env (same pairing as verify-profile-ots.sh)
@@ -24,7 +24,7 @@ set -- \
   "ots-db:ots-db" "rabbitmq:rabbitmq"
 
 # maintenance pause (auto-expiring): a fresh pause file suspends correction
-if [ -f "$PAUSE" ] && find "$PAUSE" -mmin "-$PAUSE_TTL_MIN" 2>/dev/null | grep -q .; then
+if [ -f "$PAUSE" ] && [ ! -L "$PAUSE" ] && [ -O "$PAUSE" ] && [ "$(ls -ln "$PAUSE" | awk '{print $2}')" = 1 ] 	&& find "$PAUSE" -mmin "-$PAUSE_TTL_MIN" 2>/dev/null | grep -q .; then
 	echo "reconcile-resources: paused ($PAUSE fresh < ${PAUSE_TTL_MIN}min) — no correction"; exit 0
 fi
 

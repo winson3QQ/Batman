@@ -42,19 +42,23 @@ LOAD_TIMEOUT=600
 
 boot() {
 	any=0
+	# #280: latch and stop flags live in the root-only run dir; without it nothing is loaded (fail closed)
+	# shellcheck source=/dev/null
+	[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+	type batman_rundir >/dev/null 2>&1 && batman_rundir || { logger -t batman-ots-firstload "run dir unusable (#280) — not loading"; return 1; }
 	for imgdir in "$APPS"/*/images; do
 		[ -d "$imgdir" ] || continue
 		ls "$imgdir"/*.tar >/dev/null 2>&1 || continue
 		t=${imgdir%/images}; t=${t##*/}
 		any=1
 		# per-boot latch, set BEFORE the guardian stop (#216 C2/R2)
-		: > "/tmp/batman-firstload-$t.latch" 2>/dev/null
+		: > "$RUNDIR/batman-firstload-$t.latch" 2>/dev/null
 		g="batman-payload-$t"
 		[ -x "/etc/init.d/$g" ] && { "/etc/init.d/$g" stop >/dev/null 2>&1; "/etc/init.d/$g" disable >/dev/null 2>&1; }
 		# #274 P1: that stop marked the tenant "stopping" (payload-run then refuses every mode). This is OUR
 		# S95 stop, not a shutdown — clear it now, synchronously, so the loader's --start-only below can run;
 		# a real shutdown later sets it again and the loader honours that.
-		rm -f "/tmp/batman-payload-$t.stopping" "/tmp/batman-payload-$t.stop0"
+		rm -f "$RUNDIR/batman-payload-$t.stopping" "$RUNDIR/batman-payload-$t.stop0"
 	done
 	[ "$any" = 1 ] || return 0
 

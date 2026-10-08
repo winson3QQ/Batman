@@ -135,6 +135,19 @@ if [ ! -b "$PART" ]; then
 	[ -b "$PART" ] || { lg "$PART not visible yet — will retry next boot"; exit 1; }
 fi
 
+# #280: decision markers (fw-override, batdata.dev, storage verdict, once-per-boot guard) and private temp
+# files (sector-0 copies that may be dd'd BACK to the card) live in the root-only run dir — /tmp is
+# world-writable (docs/design/280-tmp-trust.md). BATMAN_RUNDIR overrides it for tests/ab-card-invariants.sh.
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+RDOK=0; type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null && RDOK=1
+# private temp file/dir: the run dir, else an unpredictable mktemp in /tmp (O_EXCL, 0600, root)
+tmpf(){ { [ "$RDOK" = 1 ] && batman_tmp "$1"; } 2>/dev/null || mktemp "/tmp/$1.XXXXXX"; }
+tmpd(){ { [ "$RDOK" = 1 ] && batman_tmp -d "$1"; } 2>/dev/null || mktemp -d "/tmp/$1.XXXXXX"; }
+# a marker other components act on: only into the run dir (none written = they fail closed, see each reader)
+mark(){ [ "$RDOK" = 1 ] || return 1; printf '%s\n' "$2" > "$RUNDIR/$1"; }
+
 # --- Pi 3 card (#209 v4.3 D2) --------------------------------------------------------------------
 # A Pi 3 A/B card carries a hybrid MBR (1=p7 batfw, 2=bootA, 3=bootB, 4=ee) that the Pi 3 boot ROM
 # reads to find bootcode.bin. Step 1b's sgdisk rewrites sector 0; E0d showed the hybrid entries
@@ -156,16 +169,15 @@ pi3_mbr_ok(){ # $1 = sector-0 file
 }
 IS_PI3=0
 if [ -b "${DISK}p7" ]; then
-	raw_sector0 > /tmp/95-mbr.$$
-	[ "$(mbr_entry /tmp/95-mbr.$$ 1 | cut -d' ' -f2)" = "$(part_start 7)" ] && IS_PI3=1
-	rm -f /tmp/95-mbr.$$
+	t=$(tmpf 95-mbr) && raw_sector0 > "$t" && [ "$(mbr_entry "$t" 1 | cut -d' ' -f2)" = "$(part_start 7)" ] && IS_PI3=1
+	rm -f "$t"
 fi
 # 0 only when p5 is a plain ext4 that mounts and has NO .seeded — i.e. provably never provisioned.
 # LUKS / unmountable / unknown all answer "provisioned" so the grow is skipped (fail-safe: a small
 # p6 is a degraded node, a torn MBR is a site visit).
 p5_never_seeded(){
 	p5=${DISK}p5; [ -b "$p5" ] && has_fs "$p5" || return 1
-	m=/tmp/95-p5.$$; mkdir -p "$m"
+	m=$(tmpd 95-p5) || return 1
 	mount -t ext4 -o ro "$p5" "$m" 2>/dev/null || { rmdir "$m"; return 1; }
 	[ -f "$m/.seeded" ]; s=$?
 	umount "$m"; rmdir "$m"; [ "$s" -ne 0 ]
@@ -202,7 +214,9 @@ if [ "$PART_NUM" = 6 ] && [ -b "$PART" ] && command -v sgdisk >/dev/null 2>&1; t
 		fi
 		if [ "$last" = 1 ] && [ $((dsz - pend)) -gt 32768 ] && [ "$grow_ok" = 1 ]; then
 			guid=$(sgdisk -i 6 "$DISK" 2>/dev/null | sed -n 's/^Partition unique GUID: //p')
-			[ "$IS_PI3" = 1 ] && { raw_sector0 > /tmp/95-mbr.bak; lg "Pi 3 card: sector 0 backed up before the table rewrite"; }
+			[ "$IS_PI3" = 1 ] && { MBRBAK=$(tmpf 95-mbr.bak) && MBRNOW=$(tmpf 95-mbr.now) && raw_sector0 > "$MBRBAK" && lg "Pi 3 card: sector 0 backed up before the table rewrite"; }
+			# no verified backup on a Pi 3 = no rewrite of the boot-critical sector 0 (#280: the backup must be private)
+			[ "$IS_PI3" = 1 ] && [ "$(wc -c < "${MBRBAK:-/nonexistent}" 2>/dev/null)" != 512 ] && { lg "!!! Pi 3 card: sector 0 backup failed — NOT rewriting the table"; guid=""; }
 			if [ -n "$guid" ]; then
 				lg "growing p6 to fill card: start=$pst old_end=$pend dev_end=$dsz (sectors)"
 				# ONE atomic sgdisk write: -e relocates the backup header to the true disk end,
@@ -214,17 +228,17 @@ if [ "$PART_NUM" = 6 ] && [ -b "$PART" ] && command -v sgdisk >/dev/null 2>&1; t
 					# test only (tests/ab-card-invariants.sh): break MBR entry 1 as a torn write would
 					[ "${BATMAN_FAULT_INJECT:-}" = mbr-after-grow ] && dd if=/dev/zero of="$DISK" bs=1 seek=446 count=16 conv=notrunc,fsync 2>/dev/null
 					if [ "$IS_PI3" = 1 ]; then
-						raw_sector0 > /tmp/95-mbr.now
-						if pi3_mbr_ok /tmp/95-mbr.now; then
+						raw_sector0 > "$MBRNOW"
+						if pi3_mbr_ok "$MBRNOW"; then
 							lg "Pi 3 card: hybrid MBR intact after the table rewrite"
 						else
 							lg "!!! Pi 3 card: hybrid MBR WRONG after the table rewrite — restoring sector 0 from the backup"
-							dd if=/tmp/95-mbr.bak of="$DISK" bs=512 count=1 conv=notrunc,fsync 2>/dev/null; sync
-							raw_sector0 > /tmp/95-mbr.now
-							if pi3_mbr_ok /tmp/95-mbr.now; then lg "Pi 3 card: sector 0 restored and verified"
+							dd if="$MBRBAK" of="$DISK" bs=512 count=1 conv=notrunc,fsync 2>/dev/null; sync
+							raw_sector0 > "$MBRNOW"
+							if pi3_mbr_ok "$MBRNOW"; then lg "Pi 3 card: sector 0 restored and verified"
 							else lg "!!! Pi 3 card: sector 0 restore did NOT verify — this card may not boot; CHECK IT before deployment"; fi
 						fi
-						rm -f /tmp/95-mbr.now
+						rm -f "$MBRNOW"
 					fi
 					partx -u "$DISK" 2>/dev/null; partprobe "$DISK" 2>/dev/null; sync; sleep 1
 					nsz=$(cat /sys/class/block/"$DISKN"p6/size 2>/dev/null)
@@ -246,7 +260,7 @@ if [ "$PART_NUM" = 6 ] && [ -b "$PART" ] && command -v sgdisk >/dev/null 2>&1; t
 	fi
 fi
 
-rm -f /tmp/95-mbr.bak
+rm -f "${MBRBAK:-}" "${MBRNOW:-}"
 # Test seam (tests/ab-card-invariants.sh): stop after the table grow, before anything is formatted.
 [ -z "${BATMAN_STORAGE_STOP_AFTER_GROW:-}" ] || { echo "p6=$(cat /sys/class/block/"$DISKN"p6/size 2>/dev/null)"; exit 0; }
 
@@ -254,7 +268,7 @@ rm -f /tmp/95-mbr.bak
 # a five-partition layout used to send step 2/3 onto rootfs B).
 assert_not_system
 
-crit(){ lg "!!! $*"; echo "<2>batman-storage: $*" > /dev/kmsg 2>/dev/null; echo "$*" > /tmp/batman-storage.crit 2>/dev/null; }
+crit(){ lg "!!! $*"; echo "<2>batman-storage: $*" > /dev/kmsg 2>/dev/null; mark batman-storage.crit "$*" 2>/dev/null; }
 may_format(){ [ -f "$P3MARK" ]; }
 
 # 2. LUKS (if capable, idempotent)
@@ -382,7 +396,7 @@ dt_hex(){ hexdump -v -e '1/1 "%02x"' "/proc/device-tree/chosen/bootloader/$1" 2>
 boot_facts(){
 	ab=""; p7=""; extra=""
 	if [ -b /dev/mmcblk0p7 ]; then
-		bm=/tmp/bm-p7; mkdir -p "$bm"
+		bm=$(tmpd bm-p7) || return 0
 		if mount -t vfat -o ro /dev/mmcblk0p7 "$bm" 2>/dev/null; then
 			ab=$(tr '\n' ' ' < "$bm/autoboot.txt" 2>/dev/null)
 			p7="p7_bootcode=$(sha256sum "$bm/bootcode.bin" 2>/dev/null | cut -c1-12) p7_autoboot=$(sha256sum "$bm/autoboot.txt" 2>/dev/null | cut -c1-12)"
@@ -410,7 +424,7 @@ fw_override_check(){
 		# cannot count -> never restart from here; still keep it from being committed / OTA'd
 		pq=$(bf_preq); pt=$(bf_dtnum partition); al=$(bf_ab_all)
 		[ "$(bf_dtnum tryboot)" = 0 ] && [ -n "$pq" ] && [ "$pq" -ge 32 ] && [ -n "$al" ] && [ "$pt" != "$al" ] && {
-			echo "booted p$pt, [all]=$al, p_req=$pq (p6 not mounted: not corrected)" > /tmp/batman-fw-override
+			mark batman-fw-override "booted p$pt, [all]=$al, p_req=$pq (p6 not mounted: not corrected)"
 			note "FW-OVERRIDE: firmware booted p$pt instead of [all]=$al (p_req $pq) — p6 not mounted, NOT correcting"
 		}
 		return 0
@@ -431,7 +445,7 @@ fw_override_check(){
 	fi
 	c=$(( $(cat "$cnt" 2>/dev/null || echo 0) + 1 )); echo "$c" > "$cnt"
 	d="booted p$pt, [all]=$al, p_req=$pq$forced"
-	echo "$d" > /tmp/batman-fw-override
+	mark batman-fw-override "$d"
 	if [ "$c" -gt 2 ]; then
 		echo "$(ts) FW-OVERRIDE-STUCK boot=$(bid) $d — $c consecutive wrong boots; not restarting again, this slot is not committed" >> "$LOG/autocommit.log"
 		otalog_k BOOT FW-OVERRIDE-STUCK attempt=$c detail="$d"; sync
@@ -440,7 +454,7 @@ fw_override_check(){
 	if [ -n "$(ls /etc/uci-defaults 2>/dev/null)" ]; then
 		# a first boot: uci-defaults are still being applied (their uci changes commit at the end) —
 		# restarting now would lose them; batman-autocommit (S99) does the correcting restart
-		echo "$d" > /tmp/batman-fw-override-pending
+		mark batman-fw-override-pending "$d"
 		otalog_k BOOT FW-OVERRIDE-DEFERRED attempt=$c detail="$d"; sync
 		return 0
 	fi
@@ -555,7 +569,7 @@ restore_payload_guardians(){
 # best-effort "who triggered this shutdown" for the marker
 reboot_trigger(){
 	# a daemon asked for this shutdown and said why (batpower low-battery #122, joinwatch #127)
-	if [ -f /tmp/shutdown.reason ]; then read -r m < /tmp/shutdown.reason; echo "$m"; return; fi
+	if [ -f "$RUNDIR/shutdown.reason" ]; then read -r m < "$RUNDIR/shutdown.reason"; echo "$m"; return; fi
 	if [ -e /tmp/sysupgrade.tgz ] || { command -v pgrep >/dev/null 2>&1 && pgrep -f sysupgrade >/dev/null 2>&1; }; then
 		echo "sysupgrade"; return
 	fi
@@ -580,7 +594,7 @@ boot(){
 	fi
 	# the real data device (the LUKS mapper when encrypted) for the sysupgrade stage-2 recorder,
 	# which re-mounts it to keep its trace (/tmp crosses into the stage-2 ramfs)
-	echo "$DEV" > /tmp/batdata.dev
+	mark batdata.dev "$DEV"
 	mkdir -p "$CRASH" "$LOG"
 	note "mounted $DEV on $MOUNT"
 	# #215: online-grow the ext4 to fill the partition (offline step 3b can no-op on first boot
@@ -594,8 +608,8 @@ boot(){
 		rerr=$(resize2fs "$DEV" 2>&1) && note "p6 ext4 online-resized to fill partition" || note "p6 ext4 online-resize skipped/failed: $rerr"
 	fi
 	# once per boot: the first-boot hook calls `boot` itself and the S11 link may run it again
-	[ -f /tmp/batdata-mount.booted ] && return 0
-	: > /tmp/batdata-mount.booted
+	[ -f "$RUNDIR/batdata-mount.booted" ] && return 0
+	mark batdata-mount.booted "" 2>/dev/null
 
 	# crash capture (#61): move pstore records off the volatile ramoops region so the next event
 	# has a clean region and the record can't be lost. With console capture on (#105) a

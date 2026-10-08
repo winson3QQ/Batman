@@ -5,13 +5,16 @@
 # unless-stopped container comes back `exited` (OpenWrt dockerd stop path — tenants rely on the payload
 # guardian). The precondition is the node's actual state, not its name.
 #   exit 0 PASS · 1 FAIL · 3 + "SKIP-REASON:" line = not run here (the harness turns all-skipped into SKIP)
+# #280: the harness scratch dir lives under /tmp/run (root 0755 on every OpenWrt image): no non-root process
+# can pre-create or rewrite what root runs or reads from it (a $H/dv-* name could be).
+H=/tmp/run/batman-dv; { [ -d "$H" ] || mkdir -m 700 "$H"; } && [ -O "$H" ] && [ ! -L "$H" ] || { echo "FAIL harness scratch $H unusable"; exit 1; }
 B=/bin/busybox
 others=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -v '^dv-' | tr '\n' ' ')
 if [ -n "$others" ]; then echo "SKIP-REASON: tenant containers present ($others) — dockerd restart would be an outage"; exit 3; fi
 IMG=dv-dr:$(cat $B /lib/ld-musl-*.so.1 /lib/libc.so 2>/dev/null | sha256sum | cut -c1-12)
-cleanup(){ docker rm -f dv-dr >/dev/null 2>&1; docker rmi "$IMG" >/dev/null 2>&1; rm -rf /tmp/dv-dr.*; }
+cleanup(){ docker rm -f dv-dr >/dev/null 2>&1; docker rmi "$IMG" >/dev/null 2>&1; rm -rf $H/dv-dr.*; }
 cleanup; trap cleanup EXIT
-t=/tmp/dv-dr.$$; mkdir -p $t/bin $t/lib; cp $B $t/bin/; for a in sh sleep; do ln -s busybox $t/bin/$a; done
+t=$(mktemp -d "$H/dv-dr.XXXXXX") || exit 1; mkdir -p $t/bin $t/lib; cp $B $t/bin/; for a in sh sleep; do ln -s busybox $t/bin/$a; done
 cp -P /lib/ld-musl-*.so.1 $t/lib/; cp /lib/libc.so $t/lib/; [ -e /lib/libgcc_s.so.1 ] && cp /lib/libgcc_s.so.1 $t/lib/
 tar -C $t -cf - . | docker import - "$IMG" >/dev/null 2>&1 || { echo "FAIL import"; exit 1; }; rm -rf $t
 docker run -d --name dv-dr --restart=unless-stopped "$IMG" $B sleep 600 >/dev/null 2>&1 || { echo "FAIL run -d"; exit 1; }

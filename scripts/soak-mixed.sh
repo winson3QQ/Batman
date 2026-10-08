@@ -15,7 +15,7 @@ M1=${M1:-10.41.239.205}          # manet01 (clean reference)
 M2=${M2:-10.41.254.156}          # manet02 (runs FTS; partner)
 DUR=${DUR:-43200}                # 12 h
 PHASE=${PHASE:-300}              # 5 min per phase
-OUT=${OUT:-/tmp/soakprof}
+OUT=${OUT:-/tmp/run/soakprof}   # #280: under root-only /tmp/run on the node
 IVL=${IVL:-10}
 SAMPLE_CPU=${SAMPLE_CPU:-3}
 LOG=${LOG:-$HOME/soak-mixed.log}
@@ -32,7 +32,7 @@ log "=== soak-mixed start: DUR=${DUR}s PHASE=${PHASE}s M1=$M1 M2=$M2 ==="
 # --- one-time setup on both nodes: clean, sampler, iperf servers, ping ---
 for H in $M1 $M2; do
   on $H "rm -rf $OUT; mkdir -p $OUT; echo 'ts,marker,name' > $OUT/phases.csv"
-  on $H "setsid sh -c 'OUT=$OUT IVL=$IVL CPU=$SAMPLE_CPU /tmp/deep-sample.sh >$OUT/samp.log 2>&1' >/dev/null 2>&1 &"
+  on $H "setsid sh -c 'OUT=$OUT IVL=$IVL CPU=$SAMPLE_CPU /tmp/run/deep-sample.sh >$OUT/samp.log 2>&1' >/dev/null 2>&1 &"
   # UDP servers 5001-5005, TCP 5011-5012, multicast receiver on 6969
   on $H "for p in 5001 5002 5003 5004 5005; do (ss -lun 2>/dev/null|grep -q :\$p ) || setsid iperf -su -p \$p >/dev/null 2>&1 & done"
   on $H "for p in 5011 5012; do (ss -ltn 2>/dev/null|grep -q :\$p ) || setsid iperf -s -p \$p >/dev/null 2>&1 & done"

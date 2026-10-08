@@ -4,7 +4,9 @@
 BAT=/opt/batdata
 host=$(cat /proc/sys/kernel/hostname); ts=$(date +%Y%m%d-%H%M%S)
 printf 'Content-Type: application/gzip\r\nContent-Disposition: attachment; filename="%s-report-%s.tar.gz"\r\nCache-Control: no-store\r\n\r\n' "$host" "$ts"
-name="$host-report-$ts"; d="/tmp/$name"; rm -rf "$d"; mkdir -p "$d"
+# #280: a private, unpredictable directory (a predictable /tmp/<name> could be pre-created by a non-root
+# process, and root would then write the report — and through planted symlinks, anywhere — inside it)
+d=$(mktemp -d "/tmp/$host-report-$ts.XXXXXX") || exit 1; name=${d##*/}
 /usr/bin/halow-status > "$d/status.txt" 2>/dev/null
 /usr/bin/halow-status json > "$d/status.json" 2>/dev/null
 cp "$BAT/log/boot-reasons.log" "$BAT/log/join.log" "$BAT/log/autocommit.log" "$d/" 2>/dev/null   # autocommit.log: OTA commit/revert + reason (#209 S5)

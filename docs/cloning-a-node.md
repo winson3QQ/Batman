@@ -44,9 +44,10 @@ python3 uci-dump-to-config.py node1.txt ./out network wireless dhcp firewall sys
 harmless on the target and read them back with uci's alternate config dir:
 
 ```sh
-scp out/* root@node2:/tmp/verify/
-ssh root@node2 'for p in network wireless dhcp firewall system mesh11sd; do
-                  uci -c /tmp/verify show $p; done' > roundtrip.txt
+d=$(ssh root@node2 mktemp -d)   # #280: private dir, not a predictable /tmp name
+scp out/* root@node2:$d/
+ssh root@node2 "for p in network wireless dhcp firewall system mesh11sd; do
+                  uci -c $d show \$p; done" > roundtrip.txt
 diff <(sort node1.txt | grep -E '^(network|wireless|...)\.') <(sort roundtrip.txt)
 ```
 
@@ -144,17 +145,18 @@ The SSH key goes in first, before anything can set a password:
 # 1. install your SSH key first (bootstrap access — see ops/cloning-a-node.md in Batman-P)
 
 # 2. stage the config and check it
-scp out/* root@10.41.254.1:/tmp/verify/
-ssh root@10.41.254.1 'uci -c /tmp/verify set system.@system[0].hostname=manet02
+d=$(ssh root@10.41.254.1 mktemp -d)   # #280: private dir, not a predictable /tmp name
+scp out/* root@10.41.254.1:$d/
+ssh root@10.41.254.1 "uci -c $d set system.@system[0].hostname=manet02
                       ...one line per per-node override...
-                      uci -c /tmp/verify commit'
+                      uci -c $d commit"
 
 # 3. install
-ssh root@10.41.254.1 'cp -a /etc/config /root/config-factory-backup
-                      cp /tmp/verify/* /etc/config/
+ssh root@10.41.254.1 "cp -a /etc/config /root/config-factory-backup
+                      cp $d/* /etc/config/
                       uci set openmanetd.config.dhcpconfigured=1
                       uci commit
-                      sync'
+                      sync"
 
 # 4. reboot, then reach it by name
 ssh root@manet02.local

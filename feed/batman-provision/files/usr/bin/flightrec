@@ -20,7 +20,9 @@ line(){
 	# neighbour count the way meshled does it (independent of the batctl header length)
 	peers=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
 	plink=$(iw dev wlh0 station dump 2>/dev/null | grep -c "plink:.*ESTAB")
-	bat=$( [ -f /tmp/batpower.state ] && cut -d' ' -f1-2 /tmp/batpower.state | tr ' ' '/' || echo "-")
+	# shellcheck source=/dev/null
+	[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh   # #280 run dir
+	bat=$( [ -f "${RUNDIR:-/nonexistent}/batpower.state" ] && cut -d' ' -f1-2 "$RUNDIR/batpower.state" | tr ' ' '/' || echo "-")
 	thr=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
 	echo "flightrec: load=$load memfree=${memfree}M peers=$peers plink=$plink bat=$bat thr=$thr temp=${temp}C"
 }
