@@ -76,17 +76,17 @@ wait_revert R1 B0 100; [ $? = 2 ] && tok "wait_revert: commit seen -> rc 2" || t
 FAIL=0
 sleep(){ SECONDS=$((SECONDS + ${1:-0})); }
 H="held for operator acceptance (batman-autocommit release)"
-scen h1 "0|B0 100 - mesh not joined" "0|B0 110 - $H" "0|B0 120 - $H" "0|B0 130 - $H" "0|B0 140 - $H" "0|B0 150 - $H" "0|B0 160 - $H" "0|B0 170 - $H"
+scen h1 "0|B0 100 - OK@5s, R/plink2/bat2 mesh not joined" "0|B0 110 - OK@5s, R/plink2/bat2 $H" "0|B0 120 - OK@5s, R/plink2/bat2 $H" "0|B0 130 - OK@5s, R/plink2/bat2 $H" "0|B0 140 - OK@5s, R/plink2/bat2 $H" "0|B0 150 - OK@5s, R/plink2/bat2 $H" "0|B0 160 - OK@5s, R/plink2/bat2 $H" "0|B0 170 - OK@5s, R/plink2/bat2 $H"
 o=$(wait_held R3 B0 600); rc=$?
 [ $rc = 0 ] && echo "$o" | grep -q 'HELD for' && tok "wait_held: held 60 s -> ok" || tbad "wait_held ok (rc=$rc o=$o)"
 # 12 wait_held: a reboot meanwhile is a FAIL
-scen h2 "0|B0 100 - $H" "0|B9 20 - "
+scen h2 "0|B0 100 - OK@5s, R/plink2/bat2 $H" "0|B9 20 - OK@5s, R/plink2/bat2 "
 o=$(wait_held R3 B0 600); [ $? = 1 ] && echo "$o" | grep -q 'rebooted/reverted' && tok "wait_held: reboot -> FAIL" || tbad "wait_held reboot [$o]"
 # 13 wait_held: committed while held is a FAIL
-scen h3 "0|B0 100 C $H"
+scen h3 "0|B0 100 C OK@5s, R/plink2/bat2 $H"
 o=$(wait_held R3 B0 600); [ $? = 1 ] && echo "$o" | grep -q 'committed while HELD' && tok "wait_held: commit while held -> FAIL" || tbad "wait_held commit [$o]"
 # 14 wait_held: never held before deadline-120 -> FAIL
-scen h4 "0|B0 470 - mesh not joined" "0|B0 490 - mesh not joined"
+scen h4 "0|B0 470 - OK@5s, R/plink2/bat2 mesh not joined" "0|B0 490 - OK@5s, R/plink2/bat2 mesh not joined"
 o=$(wait_held R3 B0 600); [ $? = 1 ] && echo "$o" | grep -q 'not healthy-and-held' && tok "wait_held: never held -> FAIL" || tbad "wait_held never [$o]"
 sleep(){ :; }
 
