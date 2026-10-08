@@ -28,5 +28,5 @@
 - 新功能的回歸測試加進 `scripts/daily-validation.sh`;因 SoC 本來就不適用的 suite 用 `na`,不要用 SKIP。
 
 ## 流程
-- 動手前先給計畫;設計要先過對抗式 review;PR 附實測結果(哪台、做什麼、原始輸出;沒測到的要寫出來);PR 由使用者 merge。
+- 動手前先給計畫;設計(feat 與 fix 皆同)要先過對抗式 review,必寫擁有權/介面契約/生命週期矩陣/依賴證據/安全(威脅模型),reviewer 審整份——見 `docs/design/REVIEW.md`(交給每位獨立 reviewer);PR 附實測結果(哪台、做什麼、原始輸出;沒測到的要寫出來);PR 由使用者 merge。
 - 回覆使用繁體中文。
