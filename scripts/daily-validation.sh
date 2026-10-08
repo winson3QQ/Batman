@@ -70,8 +70,8 @@ ROWS=()
 # flags), and the suites all need ssh anyway — an ssh-up node is what they actually require (#133).
 up() { timeout 8 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=5 "root@$1" true >/dev/null 2>&1; }
 
-suite() {                       # $1 = name, $2 = why-it-matters, $3 = command ("" => skip)
-  local name=$1 why=$2 cmd=$3 log="$DIR/$1.log" rc
+suite() {                       # $1 = name, $2 = why-it-matters, $3 = command ("" => skip), $4 = D if it reboots/de-meshes a node
+  local name=$1 why=$2 cmd=$3 kind=${4:-} log="$DIR/$1.log" rc
   if [ -n "$DV_ONLY" ] && ! printf '%s\n' "$name" | grep -Eqx "$DV_ONLY"; then
     NSKIP=$((NSKIP+1)); ROWS+=("| $name | SKIP | not selected (DV_ONLY=$DV_ONLY) |"); echo "SKIP  $name (not selected)"; return
   fi
@@ -92,7 +92,10 @@ suite() {                       # $1 = name, $2 = why-it-matters, $3 = command (
     [ $rc -eq 3 ] && echo "FAIL rc=3 without a SKIP-REASON line — treated as a failure, not a skip" >> "$log"
     NFAIL=$((NFAIL+1)); FAILED+=("$name"); ROWS+=("| $name | **FAIL** | ${dt}s — $why |"); echo "FAIL  $name (${dt}s)"
   fi
+  fleet_settle "$name" "$kind"
 }
+# Fleet settle (#265 v1.2 H2): see scripts/lib/fleet-settle.sh.
+. "$REPO/scripts/lib/fleet-settle.sh"
 FAILED=()
 # N/A is NOT a skip: the suite does not apply to this node's SoC BY DESIGN (e.g. a Pi 4 bench has no
 # p7 firmware partition). It is listed with its reason, but it does not fail the run the way a SKIP
@@ -125,10 +128,20 @@ else
     "needs loop device + squashfs-tools + sudo — not available on this host; run in CI or WSL/Linux" ""
 fi
 
+# 2b. No hardware needed: the harness's own reachability logic (#265 v1.2) — a read lost to a mesh re-forming
+#     must end UNDETERMINED (never PASS), and a destructive suite must not turn the next one into a SKIP.
+suite harness-265   "harness reachability: q retry/UNDETERMINED, settle, revert/held waits, fleet settle (stub ssh, #265)"   "bash $REPO/scripts/test-harness-265.sh"
+
 # 2. No hardware needed: the MAC->IP derivation used by the first-boot hook.
 suite onboarding-ip \
   "first-boot MAC->IP + DHCP-window derivation" \
   "sh $REPO/scripts/test-onboarding-ip"
+
+# Fleet for fleet_settle (H2): every node any suite may target, as reachable now. fssh/isint are defined
+# here (again below, identical) because the settle needs them from the first hardware suite on.
+fssh() { timeout "${2:-60}" ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" "$3"; }
+isint() { case "$1" in ""|*[!0-9]*) return 1;; esac; }
+fleet_init "$BENCH_NODE" "$MESH_NODE" "${OTS_NODE:-$MESH_NODE}" "${DESTRUCTIVE_NODE:-${OTS_NODE:-$MESH_NODE}}" "${DV_T263_NODE:-}"
 
 # 3. Hardware: the A/B bench card. Refuses on its own if the target is not an A/B card.
 if [ "$AB_MODE" = --skip ]; then
@@ -136,7 +149,7 @@ if [ "$AB_MODE" = --skip ]; then
 elif up "$BENCH_NODE"; then
   suite ab-selftest \
     "A/B boot, switch, fallback and panic recovery (#133)" \
-    "$REPO/scripts/ab-selftest.sh $BENCH_NODE $AB_MODE"
+    "$REPO/scripts/ab-selftest.sh $BENCH_NODE $AB_MODE" D
 else
   suite ab-selftest "A/B boot, switch, fallback and panic recovery (#133) — BENCH_NODE $BENCH_NODE did not answer" ""
 fi
@@ -152,19 +165,33 @@ OTS_SOC=$(soc_of "$OTS_NODE")
 # One suite per case (#268 A9): a known R1 failure (#265) must not hide an F1/F2/R2 regression.
 fi_desc(){ case $1 in f2) echo "lost image recovered from the offline loaded/ copy";; f1) echo "bad image tar quarantined, guardian not wedged";;
   r2) echo "first-loading tenant is non-gating (no false revert)";; r1) echo "held trial with a broken runc is refused by the pre-commit canary and reverts (#265)";;
-  r3) echo "held healthy trial waits for release, then commits (#261)";; esac; }
-fi_skip_all(){ local c; for c in f2 f1 r2 r1 r3; do suite "fi-$c" "flash-and-go fault-injection $c (#159/#216) — $1" ""; done; }
+  r3) echo "held healthy trial waits for release, then commits (#261)";;
+  r4) echo "held healthy trial nobody releases is reverted at the deadline (#261)";; esac; }
+fi_skip_all(){ local c; for c in f2 f1 r2 r1 r3 r4; do suite "fi-$c" "flash-and-go fault-injection $c (#159/#216) — $1" ""; done; }
 if [ "$OTS_SOC" = bcm2710 ]; then
   suite ots-node-209 "OTS_NODE must be the bcm2711 OTS host" "echo 'OTS_NODE $OTS_NODE is a Pi 3 (bcm2710); OTS is not shipped there (#209 D6). Set OTS_NODE to the Pi 4 OTS host.'; false"
   fi_skip_all "OTS_NODE $OTS_NODE is bcm2710 — OTS suites not run (see ots-node-209)"
 elif [ "$AB_MODE" != --destructive ]; then
   fi_skip_all "needs AB_MODE=--destructive"
 elif up "$OTS_NODE"; then
-  for c in f2 f1 r2 r1 r3; do
-    suite "fi-$c" "fault-injection $c: $(fi_desc $c) (#159/#216, DESTRUCTIVE)" "$REPO/scripts/fault-injection.sh $OTS_NODE --case $c"
+  for c in f2 f1 r2 r1 r3 r4; do
+    suite "fi-$c" "fault-injection $c: $(fi_desc $c) (#159/#216, DESTRUCTIVE)" "$REPO/scripts/fault-injection.sh $OTS_NODE --case $c" D
   done
 else
   fi_skip_all "OTS_NODE $OTS_NODE did not answer"
+fi
+
+# #261 requires both boards: the Pi 4 is covered by fi-r3/fi-r4 on the OTS host; the Pi 3 (no tenant by
+# design, #209 D6 — declared --no-tenant by the caller, never inferred) runs R3/R4 on the first bcm2710 node
+# of the fleet. None in the fleet = SKIP (loud), never N/A: the requirement still stands.
+H261=""; for n in "${DESTRUCTIVE_NODE:-}" "$BENCH_NODE" "$MESH_NODE"; do [ -n "$n" ] && [ "$(soc_of "$n")" = bcm2710 ] && { H261=$n; break; }; done
+if [ "$AB_MODE" != --destructive ]; then
+  for c in release norelease; do suite "hold-261-$c" "Pi 3 hold-commit $c (#261) — needs AB_MODE=--destructive" ""; done
+elif [ -z "$H261" ]; then
+  for c in release norelease; do suite "hold-261-$c" "Pi 3 hold-commit $c (#261) — no reachable bcm2710 node among DESTRUCTIVE/BENCH/MESH" ""; done
+else
+  suite hold-261-release "Pi 3 ($H261): held healthy trial waits for release, then commits (#261, DESTRUCTIVE)" "$REPO/scripts/fault-injection.sh $H261 --case r3 --no-tenant" D
+  suite hold-261-norelease "Pi 3 ($H261): held healthy trial nobody releases is reverted at the deadline (#261, DESTRUCTIVE)" "$REPO/scripts/fault-injection.sh $H261 --case r4 --no-tenant" D
 fi
 
 # 4. Hardware: mesh health on a live node.
@@ -485,9 +512,9 @@ chk_eeprom_209() {                                             # #209 S5: Pi 4 b
 chk_autocommit() { fssh "$1" 12 '                              # ab-autocommit.md / #211
   # A completed reflash must not leave the node in an uncommitted trial (a reboot would then revert to
   # the old slot). batman-autocommit health-gates + commits; assert the node ended committed.
-  # #261: show an armed hold-commit flag — a forgotten one would hold, then revert, the next OTA (info only:
-  # an operator legitimately arms it right before a planned OTA).
-  [ -f /opt/batdata/state/autocommit-hold-commit ] && echo "info: hold-commit ARMED on p6 for [$(head -c 120 /opt/batdata/state/autocommit-hold-commit)]"
+  # #261: an armed hold-commit flag during a validation run is stray (no OTA is pending — an operator arms
+  # it right before one): it would hold, then revert, the next OTA of that build. FAIL (review #265 F10).
+  [ -f /opt/batdata/state/autocommit-hold-commit ] && { echo "FAIL hold-commit ARMED on p6 for [$(head -c 120 /opt/batdata/state/autocommit-hold-commit)] — stray flag"; exit 1; }
   batman-slot is-trial; rc=$?
   case $rc in
     1) echo "committed (not a stuck trial)"; exit 0 ;;
@@ -871,7 +898,7 @@ fi
 # would revert). batman-autocommit health-gates + commits; assert the bench node ended committed.
 # Placed here (after chk_* are defined) — chk_autocommit is used, unlike the inline BENCH suites above.
 if up "$BENCH_NODE"; then
-  suite autocommit-211 "A/B node is committed, not left in an uncommitted trial (#211, ab-autocommit)" "chk_autocommit $BENCH_NODE"
+  suite autocommit-211 "every fleet node committed (not an uncommitted trial) and no stray hold-commit flag (#211/#261)" '(rc=0; for n in $FLEET; do echo "== $n"; chk_autocommit "$n" || rc=1; done; [ -n "$FLEET" ] || { echo "FAIL fleet empty"; rc=1; }; exit $rc)' 
   suite p6grow-201 "A/B card data partition (p6) grew to fill the card at first boot (#201, not stuck at the baked ~200MiB)" "chk_p6grow_201 $BENCH_NODE"
   suite socgate-209 "sysupgrade refuses a wrong-SoC A/B image (#209 review: the old check only warned, and a bcm2711 wildcard passed everything)" "chk_socgate_209 $BENCH_NODE"
   suite slot-verify-209 "card sanity every slot op relies on: layout=SoC, FAT count, Pi 3 hybrid MBR, DT vs cmdline (#209 S5)" "chk_slotverify_209 $BENCH_NODE"
@@ -1198,14 +1225,14 @@ if [ "$FEATURE_MODE" = --destructive ]; then
   if fssh "$DNODE" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
     # rejoin FIRST (#268 A7): the three below reboot DNODE, and a just-rebooted DNODE may be the host's only
     # way into the mesh. Tier A never reboots DNODE.
-    suite rejoin-245-246 "mesh peer (re)join does not panic peers (#245) and the leaver does not rtnl-hang (#246), destructive" "bchk_rejoin_245 $DNODE"
-    suite faketime-174 "offline clock moves only forward across a reboot: shutdown save + boot restore happened (#174, destructive)" "bchk_174 $DNODE"
+    suite rejoin-245-246 "mesh peer (re)join does not panic peers (#245) and the leaver does not rtnl-hang (#246), destructive" "bchk_rejoin_245 $DNODE" D
+    suite faketime-174 "offline clock moves only forward across a reboot: shutdown save + boot restore happened (#174, destructive)" "bchk_174 $DNODE" D
     if [ "$(soc_of "$DNODE")" = bcm2710 ]; then
       na guardian-192 "DNODE $DNODE is a Pi 3: it carries no tenant/guardian by design (#209 D6)"
     else
-      suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE"
+      suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE" D
     fi
-    suite ramoops-173  "kernel panic captured to pstore and classified PANIC (#173/#61, destructive)"  "bchk_173 $DNODE"
+    suite ramoops-173  "kernel panic captured to pstore and classified PANIC (#173/#61, destructive)"  "bchk_173 $DNODE" D
     # NOT reboot-testable — validated by other means (a supervised run on manet01 proved this the hard way):
     #  #137 LOCKED path: the lockdown gate lives in the 96-batman-config-migrate UCI-DEFAULT, which runs
     #    ONLY on a FRESH SLOT firstboot, never on a plain reboot — so a reboot-based test cannot trigger it
@@ -1229,8 +1256,8 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     na cleanstop-274 "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"
     na converge-274 "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"
   elif dwait "$OTS_NODE" 300; then
-    suite converge-274 "guardian converges a changed manifest / mounted file by a graceful rebuild, leaves an unchanged stack alone, restores to the golden fingerprint (#274, destructive)" "bchk_converge_274 $OTS_NODE"
-    suite cleanstop-274 "clean reboot: tiered graceful stop recorded before the shutdown capture, postgres clean, same containers started in order, boot-to-ready <= 90 s (#274, destructive)" "bchk_cleanstop_274 $OTS_NODE"
+    suite converge-274 "guardian converges a changed manifest / mounted file by a graceful rebuild, leaves an unchanged stack alone, restores to the golden fingerprint (#274, destructive)" "bchk_converge_274 $OTS_NODE" D
+    suite cleanstop-274 "clean reboot: tiered graceful stop recorded before the shutdown capture, postgres clean, same containers started in order, boot-to-ready <= 90 s (#274, destructive)" "bchk_cleanstop_274 $OTS_NODE" D
   else   # not back within 300 s after the destructive tier = a real finding, never a SKIP (#274 review C6)
     suite converge-274 "guardian converges a changed config (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
     suite cleanstop-274 "clean reboot stop/start (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
@@ -1243,7 +1270,7 @@ if [ "$AB_MODE" != --destructive ]; then
 elif [ -z "${DV_T263_KO:-}" ]; then
   suite halow-fi-263 "mm6108 command race under fault injection (#263) — DV_T263_KO unset: build the FI module for this image (firmware scripts/build-debug-mm6108-fi.sh)" ""
 else
-  suite halow-fi-263 "patched mm6108 driver survives the #263 race driven by fault injection (no WARN/Oops, responses delivered, 20/20 after), on ${DV_T263_NODE:-$BENCH_NODE} (DESTRUCTIVE)" "bchk_fi_263 ${DV_T263_NODE:-$BENCH_NODE} $DV_T263_KO"
+  suite halow-fi-263 "patched mm6108 driver survives the #263 race driven by fault injection (no WARN/Oops, responses delivered, 20/20 after), on ${DV_T263_NODE:-$BENCH_NODE} (DESTRUCTIVE)" "bchk_fi_263 ${DV_T263_NODE:-$BENCH_NODE} $DV_T263_KO" D
 fi
 
 # ---- release-gate load soak (#268 B3) ----

@@ -11,6 +11,8 @@ jobs:
         uses: ludeeus/action-shellcheck@master
         with:
           severity: error
+      - name: validation harness reachability logic (#265) — q/UNDETERMINED, settle, revert/held waits, fleet settle (stub ssh)
+        run: bash scripts/test-harness-265.sh
       - name: line-endings must be LF
         run: |
           if grep -rlIP '\r$' --include='*.sh' --include='*.py' .; then

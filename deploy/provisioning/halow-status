@@ -108,9 +108,16 @@ case "$WORST" in CRIT) verdict="NOT WORKING — ${SUMMARY}";; WARN) verdict="DEG
 # on this trial. A forgotten flag would silently hold — then revert — a later OTA, so it must be visible.
 ohold=""
 [ -f /opt/batdata/state/autocommit-hold-commit ] && ohold="armed for $(head -c 120 /opt/batdata/state/autocommit-hold-commit | tr -d '\r\n') (next tryboot of that build will wait for 'batman-autocommit release')"
-if [ -f /tmp/autocommit.ctl/hold-commit ]; then
-	if [ -f /tmp/autocommit.ctl/released ]; then ohold="${ohold:+$ohold; }this trial: released"; else ohold="${ohold:+$ohold; }this trial HELD — commit only after 'batman-autocommit release'; deadline revert armed"; fi
+# State in the order that decides it (review #265 F15): committed beats held; a hold-once (no revert) changes
+# what "held" means; only a root-owned control dir is trusted (/tmp is world-writable).
+if [ -d /tmp/autocommit.ctl ] && [ ! -L /tmp/autocommit.ctl ] && [ -O /tmp/autocommit.ctl ] && [ -f /tmp/autocommit.ctl/hold-commit ]; then
+	batman-slot is-trial >/dev/null 2>&1; it=$?
+	if [ -f /tmp/autocommit.committed ] || [ "$it" = 1 ]; then ohold="${ohold:+$ohold; }this trial was held, now committed"
+	elif [ -f /tmp/autocommit.ctl/released ]; then ohold="${ohold:+$ohold; }this trial: released, commit pending the normal gate"
+	elif [ -f /tmp/autocommit.hold-consumed ]; then ohold="${ohold:+$ohold; }this trial HELD and hold-once set — no deadline revert: release or 'batman-slot commit' by hand"
+	else ohold="${ohold:+$ohold; }this trial HELD — commit only after 'batman-autocommit release'; deadline revert armed"; fi
 fi
+[ -f /tmp/autocommit.hold-discarded ] && ohold="${ohold:+$ohold; }hold-commit $(head -c 160 /tmp/autocommit.hold-discarded | tr -d '\r\n')"
 if [ "$mode" = json ]; then
 	j(){ printf '%s' "$1" | tr -d '\000-\010\013-\037' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'; }
 	chk=$(printf '%s' "$CHECKS" | awk -F'|' 'NF==3{if(n++)printf ",";gsub(/\\/,"\\\\",$3);gsub(/"/,"\\\"",$3);printf "{\"level\":\"%s\",\"id\":\"%s\",\"msg\":\"%s\"}",$1,$2,$3}')
