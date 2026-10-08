@@ -273,11 +273,16 @@ r1(){ echo "== R1 docker-run-broken trial is NOT committed and reverts (hold -> 
 # must hold for NEED*POLL+30 = 60 s (a slow mesh join or a post-OTA converge may still be settling, so no
 # fixed uptime), bounded by deadline-120; a reboot or a commit meanwhile is a FAIL (F9).
 HELDWHY="held for operator acceptance (batman-autocommit release)"
-wait_held(){ local tag=$1 b0=$2 dl=$3 hs="" o b u c w t0=$SECONDS
+# Every change of (drift verdict, mesh reachability+plinks, why) is printed, so a FAIL shows WHY the trial was
+# not healthy-and-held (2026-10-08 canonical fi-r4: held at 81 s per the node, yet no 60 s held window by 480 s).
+wait_held(){ local tag=$1 b0=$2 dl=$3 hs="" o b u c w t0=$SECONDS dd mm last=""
   while :; do
-    o=$(timeout 30 ssh $S -o ConnectTimeout=6 "root@$NODE" 'echo "$(cat /proc/sys/kernel/random/boot_id) $(cut -d. -f1 /proc/uptime) $([ -f /tmp/autocommit.committed ] && echo C || echo -) $(cat /tmp/autocommit.why 2>/dev/null)"' 2>/dev/null | tr -d '\r')
+    o=$(timeout 30 ssh $S -o ConnectTimeout=6 "root@$NODE" 'd=$(for f in /tmp/batman-payload-*-drift.json; do [ -f "$f" ] && printf "%s@%ss," "$(sed -n "s/.*\"status\":\"\([A-Z]*\)\".*/\1/p" "$f")" "$(( $(date +%s) - $(sed -n "s/.*\"ts\":\([0-9]*\).*/\1/p" "$f") ))"; done)
+      m=-; . /usr/lib/batman/meshjoin.sh 2>/dev/null && meshjoin_sample && { meshjoin_reachable && m=R; m="$m/plink${MJ_PLINK:-0}/bat${MJ_BAT:-0}"; }
+      echo "$(cat /proc/sys/kernel/random/boot_id) $(cut -d. -f1 /proc/uptime) $([ -f /tmp/autocommit.committed ] && echo C || echo -) ${d:--} $m $(cat /tmp/autocommit.why 2>/dev/null)"' 2>/dev/null | tr -d '\r')
     if [ -n "$o" ]; then
-      read -r b u c w <<< "$o"
+      read -r b u c dd mm w <<< "$o"
+      [ "drift=$dd mesh=$mm why=[$w]" = "$last" ] || { last="drift=$dd mesh=$mm why=[$w]"; echo "    @${u}s $last"; }
       [ "$b" = "$b0" ] || { no "$tag: the held trial rebooted/reverted before the check ended (boot ${b0:0:8} -> ${b:0:8})"; return 1; }
       [ "$c" = C ] && { no "$tag committed while HELD (uptime ${u}s)"; return 1; }
       if isint "$u" && [ "$u" -ge $((dl - 120)) ]; then no "$tag: not healthy-and-held for 60 s before deadline-120 (last why: [$w])"; return 1; fi
