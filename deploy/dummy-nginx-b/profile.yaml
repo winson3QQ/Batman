@@ -41,6 +41,6 @@ lifecycle:
   order:  [dummy-web-b]
   health:
     dummy-web-b: "wget -q -O /dev/null http://127.0.0.1:8080/"
-  restart: on-failure:5
+  restart: "no"                       # #274 §12 D7-1: the guardian restarts
 
 volumes: []

@@ -133,7 +133,8 @@ canary_run(){
 		tar -C "$t" -cf - . | docker import - "$img" >/dev/null 2>&1; r=$?; rm -rf "$t"
 		[ "$r" = 0 ] || { echo "canary: docker import failed"; return 1; }
 	fi
-	docker run --rm --network none "$img" /bin/busybox true >/dev/null 2>&1 || { echo "canary: docker run failed (runc/overlay/cgroups)"; return 1; }
+	# --network none + no-new-privileges: the canary passes the payload guardian's container allowlist (#274 D7-6)
+	docker run --rm --network none --security-opt no-new-privileges "$img" /bin/busybox true >/dev/null 2>&1 || { echo "canary: docker run failed (runc/overlay/cgroups)"; return 1; }
 	for old in $(docker images batman-canary --format '{{.Tag}}' 2>/dev/null); do
 		[ "$old" = "$tag" ] || docker rmi "batman-canary:$old" >/dev/null 2>&1
 	done
@@ -504,6 +505,18 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 	fi
 	sleep "$POLL"
 done
+# #274 §12 (B-P2): an operator `batman-slot commit` during the trial (the remedy for a crash in the trial) is a
+# commit, not a failure — say so instead of "NOT committed … watchdog reverts" (the watchdog stands down: no
+# longer a real tryboot).
+if [ "$DRY" != 1 ]; then
+	itr=0; batman-slot is-trial >/dev/null 2>&1 || itr=$?
+	if [ "$itr" = 1 ]; then
+		log "slot $SLOT COMMITTED-BY-OPERATOR before the deadline (autocommit's last verdict: ${why:-?})"
+		aclog "COMMITTED-BY-OPERATOR boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version)"
+		otalog_k AC COMMITTED-BY-OPERATOR slot="$SLOT"
+		exit 0
+	fi
+fi
 log "slot $SLOT NOT committed by uptime ${DEADLINE}s. last: ${why:-?}$([ "$REVERT" = 1 ] && echo ' — watchdog reverts')"
 [ "$DRY" = 1 ] && [ -n "${WDPID:-}" ] && wait "$WDPID"
 exit 0

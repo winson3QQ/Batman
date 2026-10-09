@@ -67,7 +67,13 @@ def render_manifest(doc, app):
     order = life.get("order") or []
     health = life.get("health", {}) or {}
     stop_tier = life.get("stop_tier", {}) or {}
-    restart = life.get("restart", "on-failure:5")
+    # #274 §12 D7-1: containers are created --restart no; the guardian is the only restarter. YAML 1.1
+    # reads a bare `no` as False — accept that, refuse anything else (payload-run would ignore it anyway).
+    restart = life.get("restart", "no")
+    if restart is False:
+        restart = "no"
+    if restart != "no":
+        raise SystemExit(f"{app}: lifecycle.restart must be \"no\" (#274: the guardian is the only restarter), got {restart!r}")
     env_common = doc.get("env_common", {}) or {}
     # secrets (#167 §5): file-delivered secrets mount read-only into named containers. `source`:
     #   self-signed = app makes it in its own volume (no delivery, emit nothing)

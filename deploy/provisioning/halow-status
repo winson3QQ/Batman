@@ -93,7 +93,15 @@ for df in "$RUNDIR"/batman-payload-*-drift.json; do
 	[ -f "$df" ] || continue
 	cdrift=$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$df" 2>/dev/null)
 	t=${df##*/batman-payload-}; t=${t%-drift.json}
-	[ "$cdrift" = DRIFT ] && hc WARN confinement "payload $t confinement DRIFT — a container no longer matches its hardened profile (see: logread | grep batman-payload)"
+	# #274 D7-8: DRIFT now also means "a container crashed and was restarted in the last 10 min"
+	[ "$cdrift" = DRIFT ] && hc WARN confinement "payload $t degraded (DRIFT) — see $RUNDIR/batman-payload-$t-verify.log"
+	# a verdict older than 90 s = the guardian is stuck, respawning, or dockerd is down (A10)
+	[ -n "$(find "$df" -mmin -2 2>/dev/null)" ] || hc WARN confinement "payload $t: verdict stale (guardian not running its checks)"
+done
+# #274 D7-5: node-wide conditions the guardian reports, never part of the commit verdict
+for af in "$RUNDIR"/batman-payload-*-host-alarm; do
+	[ -s "$af" ] || continue
+	while IFS= read -r a; do [ -n "$a" ] && hc WARN host "$(echo "$a" | cut -c1-160)"; done < "$af"
 done
 # #280 D2: an operator/test flag in /tmp that is not a root-owned single-link file was planted by someone else
 for f in /tmp/batman-autocommit.hold /tmp/batman-fault.* /tmp/batman-slot.allow-*; do

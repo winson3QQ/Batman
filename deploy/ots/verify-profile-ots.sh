@@ -8,9 +8,11 @@
 # Wrapper exit: 1 if ANY container is DRIFT (caller alarms); else 0 (unknowns are skipped, NOT alarmed).
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
-# locate the generic checker: next to us (node deploy dir) or in the repo's scripts/
-VP="$HERE/verify-profile.sh"; [ -f "$VP" ] || VP="$HERE/../../scripts/verify-profile.sh"
-[ -f "$VP" ] || { echo "cannot find verify-profile.sh (looked in $HERE and ../../scripts)"; exit 2; }
+# locate the generic checker: shipped in the image (#274 §12 D7-7: the guardian runs this wrapper from the
+# read-only golden dir), else next to us (an older node layout), else the repo's scripts/ (bench)
+VP=/usr/lib/batman/verify-profile.sh
+[ -f "$VP" ] || VP="$HERE/verify-profile.sh"; [ -f "$VP" ] || VP="$HERE/../../scripts/verify-profile.sh"
+[ -f "$VP" ] || { echo "cannot find verify-profile.sh (looked in /usr/lib/batman, $HERE and ../../scripts)"; exit 2; }
 
 # container -> hardening.env  (the 4 app containers share ots.hardening.env)
 set -- \

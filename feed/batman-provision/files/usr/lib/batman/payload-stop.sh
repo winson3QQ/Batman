@@ -7,8 +7,8 @@
 #   K09 guardian  pstop_final <t>  (does pstop_early itself if K08 did not run, e.g. an operator `stop`),
 #                                  stop the final tier (the stateful services), -t 10, sweep, record
 # Tiers come from `STOPTIER <n>` in the manifest (profile.yaml lifecycle.stop_tier); a container without one
-# is in the final tier. `docker stop` (never rm) sets docker's manual-stop flag, so with unless-stopped
-# dockerd does not revive the stack at the next boot — the guardian's start mode does, ordered and gated.
+# is in the final tier. `docker stop` (never rm); containers are `--restart no` (#274 §12), so nothing revives
+# the stack at the next boot except the guardian's start mode, ordered and gated.
 # Record: one line per stop in $LOG/payload-stop.log and in syslog (so the shutdown_*.log that K10batdata-mount
 # captures has it): elapsed, how many were running, every container's ExitCode (137/255 = SIGKILLed).
 #
@@ -95,8 +95,9 @@ pstop_final(){
 	pstop_stop 1 $(awk '$1=="CONTAINER"{print $2}' "$m")
 	# test seam (daily-validation cleanstop-274 negative control DV_TEST_274_RMSTOP): behave like the
 	# rejected feat/264 stop once — remove the containers — so the "not recreated" check must FAIL
-	if [ -f /opt/batdata/state/fault.274-rmstop-once ]; then
-		rm -f /opt/batdata/state/fault.274-rmstop-once
+	# #274 D7-6: the seam lives in the root-only run dir (on p6 a container with p6 RW could plant it)
+	if type batman_opf >/dev/null 2>&1 && BATMAN_OPF_QUIET=1 batman_opf "$PSTOP_RUN/fault.274-rmstop-once"; then
+		rm -f "$PSTOP_RUN/fault.274-rmstop-once"
 		# shellcheck disable=SC2046
 		docker rm $(awk '$1=="CONTAINER"{print $2}' "$m") >/dev/null 2>&1
 		logger -t "batman-payload-$t" "stop: TEST fault.274-rmstop-once — containers removed"

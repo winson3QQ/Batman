@@ -14,7 +14,8 @@
 #   - sets a PER-BOOT latch $RUNDIR/batman-firstload-<t>.latch (#280) SYNCHRONOUSLY in boot(), BEFORE stopping
 #     the guardian, so batman-autocommit (#211) can tolerate a still-bootstrapping tenant. The latch
 #     persists for the whole boot (tmpfs = per-boot scope); it is NEVER cleared here (#216 R2).
-#   - stops+disables that tenant's guardian (kills the boot race with the slow ~2.5min/Pi4 load)
+#   - stops that tenant's guardian and removes only its S link (kills the boot race with the slow ~2.5min/Pi4
+#     load; the K09 link stays so a shutdown during the hold is still graceful — #274 §12 D7-4)
 #   - in a FULLY DETACHED (setsid) master loader (survives boot() returning; never blocks boot/net):
 #       * verifies each tar's sha256 against images/manifest.sha256 if present (#216 M8); a mismatch
 #         is quarantined immediately (the ONLY defense against a wrong-arch/substituted tar, which
@@ -28,8 +29,9 @@
 #       * tenants are processed serially (bounded by the per-load timeout) so concurrent loads do not
 #         spike RAM/IO on a 2GB-floor Pi4 (#216 m-load-concurrency)
 #   - re-enables+starts the guardian once that tenant has no *.tar left (all loaded or quarantined),
-#     restoring the #192 "guardian always running" contract; otherwise leaves it down to retry next
-#     boot (self-healing across reboots)
+#     restoring the #192 "guardian always running" contract; otherwise starts it for this boot only (not
+#     enabled) and retries the load next boot (self-healing across reboots). Containers are --restart no
+#     (#274), so the guardian is what brings the stack up; no guardian start once the node is shutting down.
 #   - docker engine never comes up: restores the guardian anyway (do not wedge it); the latch stays,
 #     so batman-autocommit's docker-liveness/canary core gate — not this service — decides commit vs
 #     revert for a docker-broken rootfs (#216 R1/B1)
@@ -54,7 +56,11 @@ boot() {
 		# per-boot latch, set BEFORE the guardian stop (#216 C2/R2)
 		: > "$RUNDIR/batman-firstload-$t.latch" 2>/dev/null
 		g="batman-payload-$t"
-		[ -x "/etc/init.d/$g" ] && { "/etc/init.d/$g" stop >/dev/null 2>&1; "/etc/init.d/$g" disable >/dev/null 2>&1; }
+		# #274 §12 D7-4: hold = stop + remove only the S link (rcS runs S links by path, so S99 skips it this
+		# boot). The K09 link stays, so a shutdown during the hold still runs the full graceful two-half stop
+		# (with `disable` K09 was gone and procd's halt KILLed postgres after 1 s). restore_payload_guardians
+		# re-creates the S link at the next boot's S11 and starts the guardian there.
+		[ -x "/etc/init.d/$g" ] && { "/etc/init.d/$g" stop >/dev/null 2>&1; rm -f /etc/rc.d/S??"$g"; }
 		# #274 P1: that stop marked the tenant "stopping" (payload-run then refuses every mode). This is OUR
 		# S95 stop, not a shutdown — clear it now, synchronously, so the loader's --start-only below can run;
 		# a real shutdown later sets it again and the loader honours that.
@@ -67,6 +73,10 @@ boot() {
 	setsid sh -c '
 		APPS=/opt/batdata/apps
 		LOG=/opt/batdata/log/firstload.log
+		SHUTDOWN='"$RUNDIR"'/batman-shutdown
+		# #274 §12 D7-4: start a guardian only when the node is not shutting down (start_service checks again)
+		gstart(){ [ -e "$SHUTDOWN" ] && { lg "$1: node shutting down — guardian not started"; return 0; }
+			[ -x "/etc/init.d/$1" ] && "/etc/init.d/$1" start >/dev/null 2>&1; }
 		FAILCAP='"$FAILCAP"'
 		LOAD_TIMEOUT='"$LOAD_TIMEOUT"'
 		mkdir -p "$(dirname "$LOG")"
@@ -102,7 +112,7 @@ boot() {
 
 			if [ "$up" = 0 ]; then
 				lg "$t: docker engine never came up — cannot load; restoring guardian, latch stays (non-gating)"
-				[ -x "/etc/init.d/$g" ] && { "/etc/init.d/$g" enable >/dev/null 2>&1; "/etc/init.d/$g" start >/dev/null 2>&1; }
+				[ -x "/etc/init.d/$g" ] && "/etc/init.d/$g" enable >/dev/null 2>&1; gstart "$g"
 				continue
 			fi
 
@@ -144,15 +154,13 @@ boot() {
 			done
 
 			if ls "$imgdir"/*.tar >/dev/null 2>&1; then
-				lg "$t: incomplete (tars remain) — retry next boot; guardian stays down"
-				# #274 D8: a clean reboot left the stack STOPPED (graceful stop, docker manual-stop flag), so
-				# dockerd no longer revives it on its own. Bring an UNCHANGED stack back (start mode only; a
-				# changed one waits for the guardian, as before). rc 3 = config changed, 4 = shutting down.
-				if command -v payload-run >/dev/null 2>&1; then
-					payload-run --start-only "$t" >> "$LOG" 2>&1; lg "$t: payload-run --start-only rc=$?"
-				fi
+				# #274 §12 D7-4: containers are --restart no, so only the guardian brings the stack up — start it
+				# for this boot (not enabled: the next boot S95 holds it again until the tars are loaded or
+				# quarantined). It converges whatever is loadable and supervises it; an old config is DRIFT.
+				lg "$t: incomplete (tars remain) — retry next boot; guardian started for this boot (not enabled)"
+				gstart "$g"
 			else
-				[ -x "/etc/init.d/$g" ] && { "/etc/init.d/$g" enable >/dev/null 2>&1; "/etc/init.d/$g" start >/dev/null 2>&1; }
+				[ -x "/etc/init.d/$g" ] && "/etc/init.d/$g" enable >/dev/null 2>&1; gstart "$g"
 				lg "$t: complete — guardian enabled+started (ran whatever loaded)"
 			fi
 		done

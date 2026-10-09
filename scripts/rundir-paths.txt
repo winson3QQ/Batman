@@ -39,7 +39,16 @@ shutdown.reason
 # payload tenants
 batman-firstload-*.latch
 batman-payload-*-drift.json
-batman-payload-*-restarts.state
+batman-payload-*-restarts
+batman-payload-*.up
+batman-payload-*-host-alarm
+batman-payload-*-host-alarm.tmp
+# #274 §12: per-boot shutdown marker (prestop shutdown()) and the root-only test seams
+batman-shutdown
+fault.274-rmstop-once
+fault.274-window60
+fault.274-health-*
+fault.274-leftover-drift
 batman-payload-*-verify.log
 batman-payload-*-resources.log
 batman-payload-*.converging

@@ -168,6 +168,11 @@ define Package/batman-payload-ots/install
 	$(INSTALL_DATA) ../../deploy/ots/ots.hardening.env                  $(1)/usr/share/batman/payload-golden/opentakserver/ots.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq.hardening.env             $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq-extra.conf                $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq-extra.conf
+	# #274 §12 D7-7: the generic checker the golden verify-profile-ots.sh runs, shipped in the image. NOT in the
+	# golden set: a revert to an image whose refresh prunes golden files it does not know would delete the p6
+	# copy its own wrapper needs (E38).
+	$(INSTALL_DIR) $(1)/usr/lib/batman
+	$(INSTALL_BIN)  ../../scripts/verify-profile.sh                    $(1)/usr/lib/batman/verify-profile.sh
 endef
 
 $(eval $(call BuildPackage,batman-payload-host))

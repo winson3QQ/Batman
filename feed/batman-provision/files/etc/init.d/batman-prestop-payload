@@ -1,13 +1,33 @@
 #!/bin/sh /etc/rc.common
-# batman-prestop-payload — first half of a payload tenant's graceful shutdown (#274, docs/design/274-payload-converge.md §8).
+# batman-prestop-payload — first half of a payload tenant's graceful shutdown (#274, docs/design/274-payload-converge.md §8, §12 D7-4).
 # STOP=08: before every guardian (K09batman-payload-<t>), which stops the final tier (the stateful services)
 #          and records the stop; each K script gets its own 15 s from procd, so the clients and the
 #          services each get a real budget. Not procd: rc.common's shutdown() calls stop().
 # Here: mark every provisioned tenant as stopping, kill an in-flight payload-run, stop all tiers but the last.
+# At SYSTEM shutdown (rcS runs `K* shutdown`) it first writes the per-boot shutdown marker $RUNDIR/batman-shutdown:
+# from then on no guardian start, payload-run or firstload start can undo the shutdown (§12 D7-4).
 # shellcheck disable=SC2034  # read by /etc/rc.common (enable creates K08batman-prestop-payload; NOT named batman-payload-* — that glob means "a tenant guardian" everywhere)
 STOP=08
 
-start() { :; }
+prestop_rundir() {
+	# shellcheck source=/dev/null
+	[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+	type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null
+}
+
+# An operator `start` (after an operator `stop`/`restart` of this service) ends the stop it began: clear the
+# stop flags of tenants whose guardian runs, so it restarts them — unless the node is shutting down (B-m5).
+start() {
+	prestop_rundir || return 0
+	[ -e "$RUNDIR/batman-shutdown" ] && return 0
+	for d in "${APPS_DIR:-/opt/batdata/apps}"/*/; do
+		[ -d "$d" ] || continue
+		t=${d%/}; t=${t##*/}
+		"/etc/init.d/batman-payload-$t" running >/dev/null 2>&1 || continue
+		rm -f "$RUNDIR/batman-payload-$t.stopping" "$RUNDIR/batman-payload-$t.stop0"
+	done
+	return 0
+}
 
 stop() {
 	[ -f /usr/lib/batman/payload-stop.sh ] || return 0
@@ -21,4 +41,11 @@ stop() {
 		pstop_early "$t"
 	done
 	return 0
+}
+
+shutdown() {
+	if prestop_rundir; then
+		: > "$RUNDIR/batman-shutdown" 2>/dev/null && logger -t batman-prestop-payload "shutdown: marker set — tenant starts are refused from now on"
+	fi
+	stop
 }
