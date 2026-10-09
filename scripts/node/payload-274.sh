@@ -6,7 +6,10 @@
 #   hostalarm    L-FOREIGN: dangerous foreign containers (created, never started) are a host alarm, not DRIFT
 #   golden       L-GOLDEN-TAMPER: root never executes a p6 copy of a golden tenant's script
 # Prints "ok …" / "FAIL …" lines and "== payload-274 <case>: PASS|FAIL". Every case cleans up what it made.
-T=opentakserver; R=/tmp/run/batman; D=/opt/batdata/apps/$T; G=/usr/share/batman/payload-golden/$T
+# the run dir from the image (the one definition; #280) — a pre-#280 image has none: not a v8.2 node
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+T=opentakserver; R=${RUNDIR:-}; D=/opt/batdata/apps/$T; G=/usr/share/batman/payload-golden/$T
+[ -n "$R" ] && [ -d "$R" ] || { echo "FAIL no run dir (pre-#280 image)"; echo "== payload-274 ${CASE:-?}: FAIL"; exit 1; }
 LED=$R/batman-payload-$T-restarts; DF=$R/batman-payload-$T-drift.json; VL=$R/batman-payload-$T-verify.log
 AL=$R/batman-payload-$T-host-alarm
 F=0; ok(){ echo "ok   $*"; }; no(){ echo "FAIL $*"; F=1; }
@@ -61,11 +64,11 @@ crash)
 		&& ok "4 dry-run after a crash: not committed — '$(echo "$o" | grep -m1 -oE '(DRYRUN decision: [A-Z]+|NOT committed)[^—]*' | cut -c1-80)' (drift not OK)" \
 		|| no "4 dry-run: $(echo "$o" | tail -2 | tr '\n' ' ')"
 	# 5 old config: a crash while the stack runs on an OLD config is restarted on it (never rebuilt here)
-	cp "$D/ots.manifest" /tmp/run/batman-dv274.man; echo "# dv274 config change" >> "$D/ots.manifest"
+	cp "$D/ots.manifest" "$R/dv274.man"; echo "# dv274 config change" >> "$D/ots.manifest"
 	c=ots_eud_handler; id0=$(docker inspect -f '{{.Id}}' $c); crash $c
 	waitfor "running $c" 60 && [ "$(docker inspect -f '{{.Id}}' $c)" = "$id0" ] && ok "5 old config: $c restarted on its old container (no rebuild)" || no "5 old config: not restarted / rebuilt"
 	sleep 35; grep -q "config changed" "$VL" && ok "5 DRIFT 'config changed'" || no "5 verify log has no 'config changed'"
-	cp /tmp/run/batman-dv274.man "$D/ots.manifest"; rm -f /tmp/run/batman-dv274.man
+	cp "$R/dv274.man" "$D/ots.manifest"; rm -f "$R/dv274.man"
 	# 6 the guardian dies while a client is down: the respawn's converge starts it and records 'respawn' once
 	r0=$(nrec respawn); gp=$(gpid); kill -9 "$gp"; crash ots_eud_handler_ssl
 	waitfor "[ -n \"\$(gpid)\" ] && [ \"\$(gpid)\" != $gp ] && running ots_eud_handler_ssl" 120 \

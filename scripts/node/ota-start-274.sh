@@ -9,7 +9,10 @@
 #   4 postgres' last start followed a clean shutdown (dockerd stopped it gracefully during the OTA)
 #   5 the guardian's restart ledger is empty
 #   6 the OTA really went through stage 2 (S2 END rc=0 for the old boot) and this boot is its SYSUPGRADE-REBOOT
-R=/tmp/run/batman; T=opentakserver; fail=0
+# the run dir from the image (the one definition; #280) — a pre-#280 image has none: not a v8.2 node
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+R=${RUNDIR:-}; T=opentakserver; fail=0
+[ -n "$R" ] && [ -d "$R" ] || { echo "FAIL 0 no run dir (pre-#280 image)"; echo "RESULT 1"; exit 0; }
 M=$(ls /opt/batdata/apps/$T/*.manifest 2>/dev/null | head -1)
 [ -n "$M" ] || { echo "FAIL 0 no $T manifest — nothing to check"; echo "RESULT 1"; exit 0; }
 e0=$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ))

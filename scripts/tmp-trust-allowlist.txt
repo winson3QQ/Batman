@@ -58,3 +58,4 @@ scripts/depersonalise.sh	/tmp/bat-hosts	removes the display-only host map from a
 feed/batman-provision/files/usr/lib/batman/platform-ab.sh	if \[ "\$f" != /tmp \]; then	image-directory check: compares against sticky /tmp (others cannot rename root's file there)
 scripts/daily-validation.sh	/run/batman/ramroot	expected ramfs root as the kernel reports it in mountinfo (relative to the /tmp tmpfs); compared, never used as a path
 scripts/fault-injection.sh	(mkdir -m 700 /tmp/root|ls -ld /tmp/root|find /tmp/root ! -user root|/tmp/root on the node is not)	OTA tooling takes /tmp/root atomically (mkdir, never rm) before an OTA a pre-#280 platform.sh runs; aborts if it is someone else's
+scripts/node/payload-274.sh	-v /var/run/docker\.sock:/s:ro	host-alarm-274 creates (never starts) a container with a docker.sock bind to prove the guardian raises a host alarm for it; nothing reads or writes the path
