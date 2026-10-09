@@ -1,6 +1,6 @@
 # #274 — payload tenant converges on its config; clean stop, fast start
 
-Status: design **v3** (2026-10-08) — v1 REJECTED (B1–B3, M1–M9), v2 REJECTED (N1–N10); §7 maps every finding
+Status: design **v5** (2026-10-09). §11 supersedes §10 (v4 was REJECTED; its BLOCKER was confirmed on 04) and overrides §2 T3/T5, §4 and §5 where they differ. Earlier: v1 REJECTED (B1–B3, M1–M9), v2 REJECTED (N1–N10); §7 maps every finding
 to its resolution. Issue: winson3QQ/Batman#274.
 
 ## 1. Problem (measured)
@@ -401,3 +401,320 @@ The stop record line gets `via=stage2`.
 - `include /lib/upgrade` also happens in other contexts that source the upgrade libs (e.g. `/sbin/sysupgrade` itself, `fwtool`). The `$0 = stage2` + `$IMAGE` guard limits the hook to the real stage 2. Proof: a grep of every `include /lib/upgrade` / `. /lib/upgrade` caller in the image, plus a negative check that `sysupgrade -T` leaves the tenant up.
 - **Order with the other `/lib/upgrade/*.sh`:** `zz-` sorts last. Our `platform.sh` override only defines functions, so the hook does not depend on it.
 - **Time budget:** stage 2 has no procd 15 s limit (it is not a K script). The hook's 40 s cap plus the existing stop budgets (K08 ≈6 s, K09 ≈2.5 s measured) apply.
+
+## 11. v5 (2026-10-09): one owner for the tenant lifecycle; stop it before procd's service_stop_all
+
+**v4 (§10) is REJECTED and superseded.** Review v4's finding 1 (BLOCKER) was confirmed on 04 by a stage-2 probe. The probe also found a bigger, older error. §1, §2 T3/T5, §5, and three places in code and docs all rest on it.
+
+This section is written against `docs/design/REVIEW.md`. The reviewer reviews the WHOLE document. Where §11 differs from §2, §4, §5 or §10, §11 wins.
+
+### 11.0 Evidence (reality check, all on 04 = Pi 4, 1.5.6-wsl.2, OTS tenant)
+
+| # | fact | evidence |
+|---|---|---|
+| E1 | **live-restore has never been on.**<br>• `uci dockerd.globals.live_restore='1'` is set (`99-batman-payload-docker:39`), but the stock `/etc/init.d/dockerd` does not map it.<br>• The init maps only these options into `/tmp/dockerd/daemon.json`: data_root, log_level, iptables, ip6tables, log_driver, bip, registry_mirrors, hosts, dns, ipv6, ip, fixed_cidr(_v6), proxies, storage_driver.<br>• It also supports `alt_config_file`. | `docker info` → `Live Restore Enabled: false`. The generated daemon.json is `{data-root, log-level, iptables:false, ip6tables:false}`. Source: `/etc/init.d/dockerd:166-217`. |
+| E2 | procd handles `ubus call system sysupgrade` in this order:<br>1. `validate_firmware_image_call(path)`;<br>2. reject if the image is invalid and not forced;<br>3. `service_stop_all()`;<br>4. `sysupgrade_exec_upgraded()`. | procd `system.c` (2026.03.14~c59f2d80), sysupgrade handler, about l.785–823 |
+| E3 | `service_stop_all()` sends `instance_stop(halt)` (SIGTERM) to every instance of every service at once. It then calls `sleep(max term_timeout)`: an unconditional sleep for the LARGEST `term_timeout` of any instance (default 5 s, `instance.c:1621`). The KILL timer never fires, because procd is blocked in `sleep()` and then execs `upgraded`. | `service/service.c:677-702` |
+| E4 | `validate_firmware_image` `include`s `/lib/upgrade` and calls `platform_check_image "$1"`. That function is ours (`platform-ab.sh:49`, installed as `/lib/upgrade/platform.sh`).<br>It runs as a separate process with `$0=/usr/libexec/validate_firmware_image`. It is called from stage 1 (`/sbin/sysupgrade`) and from procd (E2), so it runs on EVERY path into a sysupgrade, including a direct `ubus call system sysupgrade` and `--force`. | `/usr/libexec/validate_firmware_image` on 04; E2 |
+| E5 | Probe at the stage-2 `include /lib/upgrade` (B→A OTA):<br>• the dockerd pid is still present, but the API is dead (`docker info rc=1`);<br>• procd is gone (0 ubus objects);<br>• postgres has already exited, and rabbitmq got SIGTERM at that same instant (container logs, 14:49:43.795).<br>`Commencing upgrade` was 14 s earlier. | #274 comment 6071717554 |
+| E6 | Without live-restore, dockerd's own shutdown (on procd's TERM) stops every container at once, in no order. It does NOT set the manual-stop flag. So `unless-stopped` revives all six together when the next dockerd starts, and `opentakserver` + `ots_cot_parser` each crash once (pika connects before rabbitmq is up).<br>Reproduced on both OTAs of 2026-10-09. | `docker inspect` after each OTA: `RestartCount` = 1 on those two, 0 on the other four |
+| E7 | The guardian's DRIFT rule ("RestartCount grew since the previous tick") turns E6 into a false DRIFT on the first verdict after every OTA boot. autocommit gates steady-state tenants on drift (`batman-autocommit:12-15`). | fi-r4 printed `@121s drift=DRIFT why=[payload opentakserver: drift not OK]` (canonical run #2 log) |
+| E8 | A clean stop (T1: K08/K09) uses `docker stop`, which sets the manual-stop flag. The next boot's dockerd therefore does NOT revive the containers; the guardian's ordered start does, with 0 restarts. So the ordered start already works whenever the stop went through us. | §8/§9, cleanstop-274 |
+| E9 | Docker's own guidance: don't combine container restart policies with a host-level process manager for the same container, because they conflict. Today both dockerd (`unless-stopped`) and the guardian start the containers.<br>`unless-stopped` was chosen in #206 because `on-failure:5` gave up during the reflash dependency race. The guardian's gated start (§9) has since removed that race. | Docker docs "Start containers automatically"; `deploy/ots/profile.yaml:128-132` |
+| E10 | The node has no `docker compose` (`docker: 'compose' is not a docker command`). Pi 3 (03) also runs dockerd, with no tenant. | 04, 03 |
+| E11 | Statements that are wrong and must be corrected:<br>• `payload-guardian.sh:83`: "live-restore keeps the containers";<br>• §1 item 1 and §2 T5 of this doc;<br>• `167-payload-manager.md:473`: "OTS survived via live_restore=true" (it was the restart policy);<br>• `payload-run:26`;<br>• `payload-stop.sh:10-11`;<br>• `batman-autocommit:8`: "unless-stopped containers … come up under ANY rootfs" (true today, false after D5-1). | grep |
+
+### 11.1 Ownership (who may change what)
+
+**Container running/stopped state**
+- Owner today: the guardian, AND dockerd (`unless-stopped`), AND dockerd's shutdown.
+- Owner in v5: **the guardian only**, with restart policy `no`. The guardian acts through start mode, restart-on-exit and stop_service. Two other stop paths share its code through `payload-stop.sh`: K08 prestop and the dockerd wrap (D5-3).
+- Readers: autocommit, halow-status, tests.
+
+**Container existence and config (create / rm)**
+- Owner: `payload-run`, called only by the guardian, firstload and the operator. Unchanged.
+- Reader: the guardian (cfg hash).
+
+**Tenant manifest on p6**
+- Owner: the image golden (the 95-batman-storage refresh). Unchanged, except that the RESTART line changes.
+- Readers: payload-run, payload-stop, the guardian.
+
+**The dockerd process**
+- Owner: procd, through `/etc/init.d/dockerd`. In v5 procd runs it through the wrap (D5-3).
+- Readers: everyone.
+
+**dockerd config (daemon.json)**
+- Owner: `/etc/init.d/dockerd`, built from uci `dockerd.globals`.
+- Today the uci `live_restore` value is silently dropped. In v5 the init maps `live_restore` (D5-2), and the guardian verifies that the value is actually in effect.
+- Reader: dockerd.
+
+**"An upgrade is imminent"**
+- Doesn't exist today. In v5, `platform_check_image` (ours) writes it as the D5-3 marker.
+- Reader: the dockerd wrap.
+
+**Drift verdict**
+- Owner: the guardian. In v5 it follows the D5-4 semantics.
+- Readers: autocommit, halow-status, fi-r4.
+
+### 11.2 Design
+
+**D5-1 Restart policy `no` for every tenant container; only the guardian starts one.**
+- The OTS manifest gets `RESTART no`: profile.yaml says `restart: "no"`, rendered by profile-to-manifest. The dummy-nginx tenants change the same way, so T12 disappears: no restart policy can override a manual stop any more.
+- The policy is part of the rendered argv, so the cfg hash changes. That means one rebuild on the first v5 boot, through the T6 path that is already supported.
+- A downgrade costs one more rebuild, because the older golden writes its own RESTART line back (T8).
+
+Effects:
+- After T2 (power loss) and T3 (OTA), no container comes up by itself. The guardian's start mode brings them up services-first and gated (§9). The E6 race is gone by construction, not suppressed.
+- A crashed container stays exited until the guardian restarts it (D5-4).
+
+**D5-2 live-restore made real, and verified.**
+- Patch the dockerd init (`feeds/packages/utils/dockerd/files/dockerd.init`, in the firmware board patches for both boards). The patch maps `config_get_bool live_restore globals live_restore 0` to `json_add_boolean "live-restore"`. It is small and could go upstream.
+- With it, a dockerd restart or crash (T5) leaves the containers running, and the new dockerd re-attaches to them.
+- The guardian checks at every start that `docker info -f '{{.LiveRestoreEnabled}}'` equals the uci value. If not, it publishes DRIFT `dockerd live-restore not effective`, so E1 can never come back silently.
+- No path in §11.3 depends on live-restore for correctness. It only removes an outage on T5.
+
+**D5-3 Stop the tenant at the last moment dockerd is fully alive: a procd wrap around dockerd.**
+
+The marker:
+- `platform_check_image` (E4) writes a marker `upgrade-imminent` containing `<uptime>`. It writes it on entry, whatever its verdict, so `--force` is covered.
+- The marker goes into the root-only run dir (`/tmp/run/batman`, 0700 root), which is the #280 design. #274 lands a minimal `usr/lib/batman/rundir.sh` and #280 then extends it, so there is ONE definition.
+
+The wrap:
+- The dockerd procd instance command becomes `/usr/lib/batman/dockerd-wrap /usr/bin/dockerd <args>`, with `procd_set_param term_timeout 45`. Both changes are in the same init patch as D5-2.
+- The wrap starts dockerd as its child and forwards HUP, INT and QUIT.
+- On TERM it decides between two cases:
+  - **The marker exists, passes the opf checks, and is ≤ 30 s old.** The opf checks are: root-owned, a regular file, not a symlink, link count 1, inside a 0700 root dir. This is a sysupgrade, so the wrap:
+    1. runs `pstop_all`, which is new in payload-stop.sh:
+       - it stops every tenant that K08 would stop, using the same selection as K08 (review v4 #7);
+       - each tenant's tiers are stopped as today, and tenants are stopped in PARALLEL;
+       - the whole stop is capped at 35 s;
+    2. KILLs whatever is left of that process tree and `wait`s for it (review v4 #3);
+    3. logs one line, `via=sysupgrade`, to syslog and `payload-stop.log`;
+    4. runs `sync`;
+    5. TERMs dockerd and waits for it.
+  - **Anything else** (plain stop or restart, the shutdown K path where K08/K09 already ran, an opkg upgrade): TERM dockerd only.
+
+Why this point:
+- It is the only moment on EVERY sysupgrade path (CLI, LuCI/rpcd, direct ubus, `--force`) at which dockerd still answers (E2, E3, E5).
+- procd waits for it, because it sleeps for the largest term_timeout (E3).
+
+Cost:
+- Every sysupgrade takes at least 45 s longer, because procd sleeps the full term_timeout even when everything has already exited (E3).
+- Accepted: an OTA takes about 120–150 s today. Stated in §5.
+
+Manual-stop flag:
+- The stop uses `docker stop`, so the manual-stop flag is set. With D5-1 that doesn't matter.
+- It is harmless for a downgrade target that still uses `unless-stopped`: that image does not revive the containers, and its guardian starts the stack.
+
+**D5-4 The guardian restarts exited containers and owns the crash accounting.**
+
+Restarting:
+- Each tick, the guardian looks for manifest containers that are exited while the tenant is not being stopped (`.stopping` absent). For those it runs `payload-run --converge` in start mode, which starts what is down, services first, gated.
+- Backoff is per tenant: 30 s, then 60, 120, capped at 300 s. It resets after 10 min without a crash.
+
+Counting:
+- The count lives in the guardian loop's memory: the restarts it performed in the last 10 min. There is no file, so no new /tmp input (§11.5).
+- Docker's RestartCount is no longer used. With policy `no` it only grows if someone re-enables a restart policy, and the cfg hash already reports that as config drift.
+
+Verdict:
+- `STARTING`: from guardian start until the start-mode gates pass, or for at most 300 s.
+- `OK`.
+- `RECOVERED`: for 10 min after a single successful restart. Logged, not DRIFT.
+- `DRIFT`, when any of these hold:
+  - a container is still down after a restart attempt;
+  - ≥ 3 restarts within 10 min (crash loop);
+  - cfg drift;
+  - a verify-profile failure;
+  - a D5-2 mismatch.
+
+autocommit:
+- `STARTING` means "not yet healthy": autocommit keeps polling, bounded by the existing converging deferral (DEFER_MAX).
+- `RECOVERED` counts as healthy.
+- A real crash loop still becomes DRIFT within ≤ 3 restarts, so a broken new image is still reverted. Nothing is hidden by a baseline trick (review v4 #2).
+
+**D5-5 Correct the wrong text and comments (E11).** §2 T3/T5 and §5 are rewritten below.
+
+### 11.3 Lifecycle matrix (today → v5; the test that proves it)
+
+**L1 First boot / firstload**
+- Today: firstload loads the images, and the guardian rebuilds.
+- v5: the same, with containers created with policy `no`.
+- Proof: flashgo-159, payload-config-golden.
+
+**L2 Boot after a clean stop (T1)**
+- Today: the guardian's ordered start, 0 restarts.
+- v5: the same.
+- Proof: cleanstop-274.
+
+**L3 Reboot / batman-slot reboot / autocommit revert / batpower poweroff**
+- Today: K08/K09 graceful stop.
+- v5: the same. The wrap sees no marker, so it sends a plain TERM.
+- Proof: cleanstop-274; the revert legs of fi-r1, fi-r3 and fi-r4.
+
+**L4 OTA via `sysupgrade` (CLI / LuCI / ubus / `--force`)**
+- Today:
+  - dockerd's shutdown stops every container at once;
+  - the new dockerd revives them all at once;
+  - 2 crash-restarts;
+  - a false DRIFT.
+- v5:
+  - the wrap stops the tenant gracefully, tier by tier, before dockerd exits;
+  - on the new boot, the guardian does an ordered start with 0 restarts;
+  - the first verdict goes STARTING → OK.
+- Proof: **ota-start-274** (new). After a same-build OTA:
+  - Gate 1: the stop record says `via=sysupgrade`, and every ExitCode is 0 or 143 (none is 137).
+  - Gate 2: the first post-boot verdict is never DRIFT, and RestartCount is 0 for every container.
+  - Reported as info: postgres logs "shut down" (not crash recovery); the stop's elapsed time.
+  - Negative control: a one-shot fault flag on p6 makes the wrap skip the stop, and gate 1 must then FAIL.
+  - fi-r4 must show no `drift not OK` after the OTA.
+
+**L5 sysupgrade aborted after service_stop_all (`upgraded` fails)**
+- Today: the node reboots (`upgraded.c`) and dockerd revives the containers.
+- v5: the node reboots and the guardian's start mode brings the stack up.
+- Proof: covered by the boot path in L3; not induced.
+
+**L6 `sysupgrade -T` / validation only (no flash)**
+- Today: nothing happens.
+- v5: the marker is written but no TERM follows, so it expires after 30 s. A dockerd restart inside those 30 s would stop the tenant once, and the guardian restarts it.
+- Proof: a unit test of the wrap's decision (host, stubbed).
+
+**L7 Power loss / watchdog / panic (T2)**
+- Today: dockerd revives every container at once, with crash-restarts.
+- v5: nothing revives by itself, and the guardian does an ordered start. postgres still crash-recovers once (unchanged).
+- Proof: crash-blackbox-173 and guardian-192 (destructive) assert an ordered start with 0 restarts.
+
+**L8 dockerd restart (init restart, opkg, uci reload) (T5)**
+- Today: every container stops and is revived, because there is no live-restore.
+- v5: the containers keep running (D5-2). The guardian waits up to 120 s for the API.
+- Proof: **dockerd-restart-274** (new).
+  - Restart dockerd, then assert that each container's StartedAt is unchanged and that the verdict is never DRIFT.
+  - Negative control: with live_restore=0, StartedAt changes.
+
+**L9 dockerd crash (SIGKILL)**
+- Today and v5: as L8 (procd respawns dockerd).
+- Proof: the same suite, with a kill -9 variant.
+
+**L10 One container crashes**
+- Today: docker restarts it at once, and the next tick reports DRIFT.
+- v5: the guardian restarts it within ≤ 30 s, and the verdict is RECOVERED.
+- Proof: **crash-274** (new). `docker kill` cot_parser; it must be back within 60 s, with the verdict RECOVERED, not DRIFT.
+
+**L11 Crash loop**
+- Today: DRIFT, from RestartCount.
+- v5: DRIFT after ≤ 3 restarts, with backoff.
+- Proof: the crash-274 loop variant (an entrypoint that exits).
+
+**L12 Guardian restart / respawn**
+- Today and v5: converge if needed.
+- Proof: guardian-192.
+
+**L13 Operator `docker stop <c>`**
+- Today: the container stays stopped (manual-stop flag) and the guardian reports DRIFT.
+- v5: treated as a crash, so it is restarted and logged. The supported way to stop a tenant is `/etc/init.d/batman-payload-<t> stop`.
+- Proof: crash-274.
+
+**L14 Operator `docker run` bypass (T7)**
+- Today and v5: the cfg hash catches it and the guardian converges.
+- Proof: drift-detect-156.
+
+**L15 Config change via the golden (T6)**
+- Today and v5: a converge rebuild.
+- Proof: payload-config-golden.
+
+**L16 Downgrade to ≤ 1.5.6 (T8)**
+- The older golden rewrites the RESTART line. Its guardian then rebuilds: a converge rebuild on 1.5.5/1.5.6, the legacy rebuild on ≤ 1.5.4.
+- Its dockerd has no wrap, so the old OTA behaviour returns.
+- The manual-stop flag from our stop is harmless there, because its guardian starts the stack.
+- Proof: one manual downgrade run before the PR (recorded), not daily.
+
+**L17 Pi 3 (no tenant)**
+- Today: dockerd runs, with no tenant.
+- v5: the wrap is installed and `pstop_all` is a no-op. The marker is harmless.
+- Proof: ab-selftest on 03; hold-261 on the Pi 3.
+
+**L18 Both boards**
+- v5: the init patch goes into both boards' patch sets.
+- Proof: build both boards; ab-card-invariants on both.
+
+### 11.4 Interface contracts
+
+**`$RUNDIR/upgrade-imminent`** (one line: the uptime)
+- Writer → reader: platform_check_image → dockerd-wrap.
+- Valid when: a root-owned regular file, not a symlink, link count 1, inside a 0700 root dir, and ≤ 30 s old.
+- Missing or bad: treated as absent, so the wrap sends a plain TERM. A failure means the old OTA behaviour, never a stuck OTA.
+
+**wrap ↔ procd**
+- procd sends TERM to the wrap; `term_timeout` is 45.
+- If the wrap has a bug, dockerd won't be running. autocommit's docker-engine canary then fails, and the node reverts.
+
+**`pstop_all` result**
+- The wrap writes one `via=sysupgrade` line per tenant to `payload-stop.log`.
+- If the line is missing, the test FAILs (L4 gate 1).
+
+**drift.json `status`**
+- Writer → readers: the guardian → autocommit, halow-status.
+- Valid values: STARTING / OK / RECOVERED / DRIFT.
+- An unknown value is treated as DRIFT by autocommit (fail-closed).
+
+**uci `dockerd.globals.live_restore`**
+- Path: 99-batman-payload-docker → the init → daemon.json.
+- Valid when the init patch is present.
+- If it isn't in effect, the guardian reports DRIFT `live-restore not effective`.
+
+**Manifest `RESTART`**
+- Writer → reader: the golden → payload-run.
+- Valid value: `no`.
+- Any other value changes the cfg hash, so the guardian converges. The guardian still owns restarts.
+
+### 11.5 Security
+
+**Assets**
+- Tenant availability and DB integrity.
+- The OTA path. The wrap can delay `upgraded` by up to 45 s but cannot block it, because procd's sleep is fixed (E3).
+- Root code in the wrap.
+
+**New inputs**
+- The marker. It lives in the root-only dir, so a non-root process cannot create or replace it. The trust boundary is the #280 run dir, never `/tmp`.
+- procd's signals. Only procd or root can signal the wrap.
+- No new network input and no new tenant-controlled input. The wrap reads only the manifests the guardian already trusts.
+
+**Actors**
+- **Remote over the mesh:** no new surface.
+- **Local non-root process:** cannot forge the marker, because it cannot make a root-owned file in a 0700 root dir. Cannot signal a root process.
+- **Compromised tenant container:** can crash itself. The guardian restarts it with backoff and reports DRIFT on a loop, so CPU and IO use are bounded and there is no escalation. It cannot reach dockerd (the socket is not mounted; verify-profile checks this).
+- **Physical capture:** unchanged.
+- **Supply chain:** the init patch is ours, reviewed, and in the firmware repo.
+- **Our own mistakes:** every failure of the wrap falls back to today's behaviour (a plain TERM). autocommit's engine canary catches a dockerd that won't start.
+
+**Privilege**
+- The wrap runs as root because dockerd must; it adds no capability.
+- The crash counters live in the guardian's memory. There is no new file that anyone else could write.
+
+**Open: probe before implementation, and record on #280 if real**
+- Stage 1 installs `upgraded` into `/tmp/root` (`RAM_ROOT`). If a non-root process can pre-create `/tmp/root`, that is a root-exec TOCTOU in upstream OpenWrt sysupgrade, independent of this design.
+- v5 deliberately does not use `/tmp/root` as a signal.
+
+**Verification**
+- The unit test of the wrap's decision includes four bad markers: one owned by nobody, a symlink, a hardlink, and a stale one. All four must give a plain TERM.
+
+### 11.6 Alternatives considered
+
+- **v4 stage-2 hook:** impossible (E5).
+- **Stage-1 hook (override `install_bin` in /lib/upgrade):**
+  - misses a direct `ubus call system sysupgrade`, which has no stage 1;
+  - needs a restore timer for the case where procd then rejects the image.
+
+  The wrap covers every path (E2/E4).
+- **Our own OTA entry command that stops the tenant, then calls sysupgrade:** it only covers callers that use it, so LuCI, ubus and manual use would still need the wrap. Dropped, so there is one mechanism, not two.
+- **Keep `unless-stopped`, only add a start-up grace to the DRIFT rule:** this hides the symptom. dockerd keeps racing the guardian on T2/T3 (two owners, E9), and the 2 crash-restarts per OTA remain.
+- **Client tiers `no`, services `unless-stopped` (review v4 alt C):** still two owners, and dockerd would revive the services without gates. Rejected in favour of one rule for all containers.
+- **docker compose / Quadlet:** not available on the node (E10). The guardian already is the reconciler (#156).
+
+### 11.7 Risks and limits (these replace §5's T3 statement)
+
+- An OTA takes at least 45 s longer (E3).
+- Recovering a crashed container goes from about 1 s (docker) to up to 30 s (one guardian tick), plus backoff. This is stated and accepted, as the price of one owner and an ordered start.
+- Power loss (L7) still means one postgres crash recovery. No software can stop a container on power loss.
+- The 30 s marker window can stop a tenant once, if dockerd restarts right after a `sysupgrade -T`. The guardian restarts it. Benign, and logged.
+- A downgrade to ≤ 1.5.6 brings back that version's behaviour (L16) and costs one rebuild each way.
+- v5 depends on #280's run dir. #274 introduces `rundir.sh`, and #280 rebases on it.
