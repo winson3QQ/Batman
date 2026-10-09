@@ -176,6 +176,16 @@ gstop; rm -f "$LED"; mkdir "$LED"; gstart; sleep 2; echo exited > "$S/c/app/stat
 [ "$(status)" = DRIFT ] && grep -q "ledger unwritable" "$VL" && ok "11 ledger unwritable: DRIFT" || { no "11 $(status)"; cat "$VL"; }
 gstop; rmdir "$LED"
 
+# 14 a crash is DRIFT at once, not at the next tick (fi-c1 on 1.5.8-wsl.1: a stale OK verdict < 1 min old let
+#    autocommit commit a trial 21 s after a crash). Ticks are made impossible (interval 100000, fake time frozen),
+#    so only the immediate publish can turn the verdict to DRIFT.
+echo running > "$S/c/app/status"; echo running > "$S/c/db/status"
+PAYLOAD_INTERVAL=100000 sh "$G" t >> "$T/glog" 2>&1 & GP=$!
+sleep 3; echo '{"status":"OK","tenant":"t","ts":0,"detail":"x"}' > "$DF"
+echo 1 > "$S/pr-rc"; echo exited > "$S/c/app/status"; sleep 3
+[ "$(status)" = DRIFT ] && grep -q "container(s) down: app" "$DF" && ok "14 a down container is published DRIFT within a poll, no tick needed" || { no "14 verdict still $(status) without a tick"; cat "$DF"; }
+rm -f "$S/pr-rc"; echo running > "$S/c/app/status"; gstop
+
 # 12 start_service refuses while the shutdown marker exists (a late start never undoes a shutdown)
 r=$( procd_open_instance(){ echo OPENED; }; procd_set_param(){ :; }; procd_close_instance(){ :; }
 	PAYLOAD_TENANT=t; . "$L/payload-guardian.sh"; : > "$R/batman-shutdown"; start_service; echo "rc=$?" )

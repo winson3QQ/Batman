@@ -17,8 +17,13 @@ up(){ cut -d. -f1 /proc/uptime; }
 st(){ sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$DF" 2>/dev/null; }
 running(){ [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = true ]; }
 pidof_c(){ docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null; }
-crash(){ p=$(pidof_c "$1"); [ -n "$p" ] && [ "$p" != 0 ] && kill -9 "$p"; }
-nrec(){ grep -c "$1" "$LED" 2>/dev/null || echo 0; }
+# SIGKILL the container's main process, then wait until docker sees it exited (a check right after the kill
+# can still see it running — that race made crash-274 step 5 FAIL on 1.5.8-wsl.1)
+crash(){ p=$(pidof_c "$1"); [ -n "$p" ] && [ "$p" != 0 ] || return 1; kill -9 "$p"; waitfor "! running $1" 15; }
+# number of ledger records matching $1 (grep -c prints 0 AND exits 1 on no match: never "0\n0")
+nrec(){ n_=$(grep -c -- "$1" "$LED" 2>/dev/null); echo "${n_:-0}"; }
+# start events of a container ID since dockerd started (clock-independent: compared before/after)
+nstart(){ docker events --since 0 --until "$(date +%s)" --filter "container=$1" --filter event=start --format x 2>/dev/null | wc -l; }
 waitfor(){ i=0; while ! eval "$1"; do i=$((i + 1)); [ "$i" -ge "$2" ] && return 1; sleep 1; done; return 0; }
 all_running(){ for c in $(awk '/^CONTAINER /{print $2}' "$D"/*.manifest); do running "$c" || return 1; done; }
 gpid(){ pgrep -f "payload-guardian-run.sh $T" | head -1; }
@@ -38,10 +43,10 @@ case "${CASE:-}" in
 crash)
 	quiet_ledger
 	# 1 a client crash: back within ~10 s, same container, RestartCount 0 (only an API start can do that), ledgered
-	c=ots_eud_handler_ssl; id0=$(docker inspect -f '{{.Id}}' $c); t0=$(date +%s); r0=$(nrec "crash $c")
+	c=ots_eud_handler_ssl; id0=$(docker inspect -f '{{.Id}}' $c); r0=$(nrec "crash $c"); e0=$(nstart "$id0")
 	crash $c
 	if waitfor "running $c && [ \$(nrec 'crash $c') -gt $r0 ]" 20; then
-		ev=$(docker events --since "$t0" --until "$(date +%s)" --filter "container=$c" --filter event=start --format x | wc -l)
+		ev=$(( $(nstart "$id0") - e0 ))
 		# shellcheck disable=SC2046  # three space-free fields
 		set -- $(docker inspect -f '{{.Id}} {{.RestartCount}} {{.HostConfig.RestartPolicy.Name}}' $c)
 		[ "$1" = "$id0" ] && [ "$2" = 0 ] && [ "$3" = no ] && [ "$ev" -ge 1 ] \
@@ -60,11 +65,15 @@ crash)
 	waitfor "running $c" 120
 	sp=$(awk '$2=="crash"{t[n++]=$1} END{k=0; for(i=1;i<n;i++){ if (t[i]-t[i-1] >= 600) {k=0; continue}; k++; e=10; for(j=1;j<k;j++) e*=2; if (e>60) e=60; if (t[i]-t[i-1] < e-6) {print "gap", t[i]-t[i-1], "want", e; bad=1} } if (!bad) print "ok"}' "$LED")
 	[ "$sp" = ok ] && ok "3 crash loop: every restart respected the backoff (0,10,20,40,60 s)" || no "3 backoff violated: $sp"
-	# 4 trial policy (dry-run on this committed boot): one crash keeps the tenant DRIFT, so a trial would NOT commit
+	# 4 trial policy (dry-run on this committed boot): one crash keeps the tenant DRIFT, so a trial would NOT commit.
+	#   A firstload latch this boot makes the tenant NON-GATING (by design), so the policy is not measurable then
+	#   (crash-274 on 1.5.8-wsl.1 ran on hold-274's held boot: the dry-run committed because of the latch).
+	if ls "$R"/batman-firstload-*.latch >/dev/null 2>&1; then no "4 precondition: a firstload latch exists this boot ($(ls "$R"/batman-firstload-*.latch | tr '\n' ' ')) — the tenant is non-gating, the trial policy is not measurable"; else
 	o=$(AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=$(( $(up) + 60 )) batman-autocommit run 2>&1)
 	echo "$o" | grep -q 'drift not OK' && ! echo "$o" | grep -q 'DRYRUN decision: COMMIT' \
 		&& ok "4 dry-run after a crash: not committed — '$(echo "$o" | grep -m1 -oE '(DRYRUN decision: [A-Z]+|NOT committed)[^—]*' | cut -c1-80)' (drift not OK)" \
 		|| no "4 dry-run: $(echo "$o" | tail -2 | tr '\n' ' ')"
+	fi
 	# 5 old config: a crash while the stack runs on an OLD config is restarted on it (never rebuilt here)
 	cp "$D/ots.manifest" "$R/dv274.man"; echo "# dv274 config change" >> "$D/ots.manifest"
 	c=ots_eud_handler; id0=$(docker inspect -f '{{.Id}}' $c); r0=$(nrec "crash $c"); crash $c

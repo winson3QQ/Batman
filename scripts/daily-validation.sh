@@ -1283,8 +1283,9 @@ bchk_unclean_274() {
     l=$(fssh "$n" 30 "B0=$b0 sh -s" < "$REPO/scripts/node/ota-start-274.sh" | tr -d '\r')
     echo "$l" | grep -E '^(ok|FAIL) (1|2|5) ' | sed 's/^/  /'
     echo "$l" | grep -qE '^FAIL (1|2|5) ' && { echo "FAIL the start after reboot -f was not clean (see above)"; rc=1; } || echo "ok one start per container, ordered, empty ledger after reboot -f"
-    l=$(fssh "$n" 10 "$RDR"'grep -q "\"status\":\"OK\"" "$R/batman-payload-opentakserver-drift.json" && echo OK')
-    [ "$(echo "$l" | tr -d '\r ')" = OK ] && echo "ok verdict OK" || { echo "FAIL verdict not OK after reboot -f"; rc=1; }
+    # the first verdict comes at the guardian's first tick after its converge (up to INTERVAL later): wait for it
+    l=""; for r in $(seq 1 24); do l=$(fssh "$n" 10 "$RDR"'grep -q "\"status\":\"OK\"" "$R/batman-payload-opentakserver-drift.json" 2>/dev/null && echo OK' | tr -d '\r '); [ "$l" = OK ] && break; sleep 5; done
+    [ "$l" = OK ] && echo "ok verdict OK" || { echo "FAIL verdict not OK within 120 s after OTS ready (reboot -f)"; rc=1; }
     fssh "$n" 10 'grep -i "fw-override\|correcting" /opt/batdata/log/ota-trace.log 2>/dev/null | grep " boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) " | tail -1' | sed 's/^/  report (EEPROM partition misread this boot?): /'
   fi
   fssh "$n" 20 "$RDR"'/etc/init.d/batman-payload-zz274 stop >/dev/null 2>&1; /etc/init.d/batman-payload-zz274 disable >/dev/null 2>&1; rm -f /etc/init.d/batman-payload-zz274 "$R/zz274-init-ran"; rm -rf /opt/batdata/apps/zz274; sync' >/dev/null
@@ -1318,9 +1319,13 @@ bchk_hold_274() {
     l=$(fssh "$n" 15 'docker logs ots-db 2>&1 | grep -E "database system was shut down at|not properly shut down|was interrupted" | tail -1')
     echo "postgres (reported): ${l:-<none>}"
   fi
-  fssh "$n" 20 'rm -f /opt/batdata/apps/opentakserver/images/zz274.tar /opt/batdata/apps/opentakserver/images/.fail-zz274.tar /opt/batdata/apps/opentakserver/images/failed/zz274.tar; /etc/init.d/batman-payload-opentakserver enable; /etc/init.d/batman-payload-opentakserver running || /etc/init.d/batman-payload-opentakserver start; sync' >/dev/null
+  fssh "$n" 20 'rm -f /opt/batdata/apps/opentakserver/images/zz274.tar /opt/batdata/apps/opentakserver/images/.fail-zz274.tar /opt/batdata/apps/opentakserver/images/failed/zz274.tar; /etc/init.d/batman-payload-opentakserver enable; sync' >/dev/null
+  # one more clean reboot: the held boot carries a firstload latch (the tenant is non-gating for the rest of that
+  # boot), which would change what later suites measure (crash-274 step 4 on 1.5.8-wsl.1)
+  reboot_and_wait "$n" reboot 300 || { echo "FAIL node did not return from the cleanup reboot"; rc=1; }
   for r in $(seq 1 60); do ots_ready "$n" && break; sleep 5; done
   ots_ready "$n" || { echo "FAIL OTS not back after the cleanup"; rc=1; }
+  fssh "$n" 10 "$RDR"'ls "$R"/batman-firstload-*.latch 2>/dev/null' | grep -q . && { echo "FAIL a firstload latch is still present after the cleanup reboot"; rc=1; }
   return $rc; }
 
 if [ "$FEATURE_MODE" = --destructive ]; then

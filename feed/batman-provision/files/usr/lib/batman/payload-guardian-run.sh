@@ -40,6 +40,9 @@ POLL=${PAYLOAD_POLL:-5}; INTERVAL=${PAYLOAD_INTERVAL:-30}; WINDOW=600
 
 UPF=${PAYLOAD_UPTIME_FILE:-/proc/uptime}  # test seam (scripts/test-payload-guardian.sh); procd sets no env
 now(){ cut -d. -f1 "$UPF"; }
+publish(){   # $1 = OK|DRIFT, $2 = detail; the verdict autocommit and halow-status read (atomic replace)
+	printf '{"status":"%s","tenant":"%s","ts":%s,"detail":"%s"}\n' "$1" "$T" "$(date -u +%s)" "${2:-see $VERIFY_LOG}" > "$DRIFT_FILE.tmp" 2>/dev/null \
+		&& mv -f "$DRIFT_FILE.tmp" "$DRIFT_FILE" 2>/dev/null; }
 lg(){ echo "batman-payload[$T]: $*"; }
 opf(){ type batman_opf >/dev/null 2>&1 && BATMAN_OPF_QUIET=1 batman_opf "$1"; }
 halted(){ [ -e "$STOPPING" ] || [ -e "$SHUTDOWN" ]; }
@@ -154,6 +157,10 @@ while :; do
 			*) NOTRUN="$NOTRUN $c" ;;
 		esac
 	done
+	# A container down is DRIFT NOW, not at the next 30 s tick: autocommit accepts a verdict up to 1 min old, so a
+	# stale OK could commit a trial in which a container just crashed (fi-c1 on 1.5.8-wsl.1: crash at +100 s,
+	# committed at +121 s). The tick recomputes the full verdict; the ledger keeps it DRIFT for the window.
+	[ -n "$NOTRUN" ] && publish DRIFT "container(s) down:$NOTRUN — full verdict at the next tick"
 	if ! halted; then
 		if [ -n "$MISSING" ]; then
 			lo=$(( $(now) - 600 ))
@@ -241,7 +248,7 @@ while :; do
 		case "$ALARM_PREV" in *"$a"*) ;; *) logger -t "batman-payload-$T" "host alarm: $a" ;; esac
 	done
 	ALARM_PREV=$alarm
-	printf "{\"status\":\"%s\",\"tenant\":\"%s\",\"ts\":%s,\"detail\":\"see %s\"}\n" "$st" "$T" "$(date -u +%s)" "$VERIFY_LOG" > "$DRIFT_FILE" 2>/dev/null || true
+	publish "$st" "see $VERIFY_LOG"
 	[ "$st" = DRIFT ] && logger -t "batman-payload-$T" "confinement DRIFT detected (see $VERIFY_LOG)"   # parsed by the harness
 	sleep "$POLL"
 done

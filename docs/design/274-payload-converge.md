@@ -1406,4 +1406,15 @@ Recorded so a reader of the code and of this section see the same thing; none ch
 - **Bugs the new guardian unit test found before any node run:** the verdict variable was overwritten by the policy
   check (it would have published garbage as `status`), and the ledger reader lost the first record (awk array
   indexed by an uninitialised counter). Both fixed in b0ad503.
-
+- **Immediate DRIFT on a down container (found by fi-c1 on 1.5.8-wsl.1).** The verdict was published only at the 30 s
+  tick, and autocommit accepts a verdict up to 1 min old: a crash at +100 s of a trial was committed at +121 s on
+  a still-OK verdict (ota-trace boot d482f24e: RELEASED up=104, COMMITTED up=121). The guardian now publishes DRIFT
+  in the 5 s poll as soon as a manifest container is not running (the tick then recomputes the full verdict; the
+  ledger keeps it DRIFT for 600 s). Remaining race: a crash in the ≤ 5 s between a poll and autocommit's third
+  healthy read. Unit test 14 (no tick possible) passes; against bc56b71's guardian it FAILs (negative control).
+- **Harness fixes from the same run:** crash-274 counted ledger records wrongly (`grep -c || echo 0` printed two
+  lines), checked "running" right after the kill (race), and ran on hold-274's held boot (firstload latch = the
+  tenant is non-gating, so the dry-run committed — ota-trace boot 8d9302f7, firstload.log 05:00:48); hold-274 now
+  ends with a clean reboot and asserts no latch remains; crash-274 step 4 FAILs its precondition if a latch exists;
+  unclean-boot-274 waits up to 120 s for the first verdict.
+\n
