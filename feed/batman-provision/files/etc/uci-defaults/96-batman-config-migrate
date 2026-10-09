@@ -120,7 +120,8 @@ idfp=$(dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key 2>/dev/null | s
 # (delete host keys / reset hostname / IP / dhcpconfigured), or it undoes this restore (N-R2).
 # Only if a host key actually landed: otherwise let 99 personalise, so a p5 with no usable
 # identity does not leave the golden sentinel hostname + bootstrap IP colliding across nodes (N5r1).
-[ -n "$idfp" ] && : > /tmp/p5-restored
+# #280: in /etc (root-only), not /tmp — ubus already runs non-root at this point; 99 removes it.
+[ -n "$idfp" ] && : > /etc/.batman-p5-restored
 
 # 4) Lane B: pick a fragment. overrides.uci only if its schema is supported (rollback: a too-new
 #    p5 falls back to lkg/, never discards the identity we already restored) — V3-3.
@@ -135,7 +136,7 @@ fi
 
 applied=skipped
 if [ -n "$FRAG" ]; then
-	TMP=/tmp/overrides.$$; cp "$FRAG" "$TMP" 2>/dev/null
+	TMP=$(mktemp /tmp/overrides.XXXXXX) && cp "$FRAG" "$TMP" 2>/dev/null   # #280: unpredictable, root 0600
 	[ "$SRC" = lkg ] || schema_migrate "$TMP" "$schema" "$SUPPORTED_SCHEMA"
 	if uci batch < "$TMP" 2>/dev/null; then
 		uci commit 2>/dev/null; applied=ok

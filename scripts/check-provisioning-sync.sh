@@ -24,6 +24,7 @@ flightrec:usr/bin/flightrec
 flightrec.init:etc/init.d/flightrec
 joinwatch:usr/bin/joinwatch
 meshjoin.sh:usr/lib/batman/meshjoin.sh
+rundir.sh:usr/lib/batman/rundir.sh
 joinwatch.init:etc/init.d/joinwatch
 halow-keyguard.init:etc/init.d/halow-keyguard
 uci-defaults/95-batman-storage:etc/uci-defaults/95-batman-storage

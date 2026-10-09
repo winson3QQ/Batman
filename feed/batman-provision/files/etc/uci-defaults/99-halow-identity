@@ -4,7 +4,7 @@
 # If 96-batman-config-migrate restored this slot's identity from a seeded p5 (an A/B slot switch,
 # not a fresh card), do NOT re-personalise: deleting the host keys / resetting hostname, IP and
 # dhcpconfigured below would undo the restore and change identity across the switch (#88/#89).
-[ -f /tmp/p5-restored ] && { echo "99-halow-identity: identity restored from p5 — skipping personalisation"; exit 0; }
+[ -f /etc/.batman-p5-restored ] && { rm -f /etc/.batman-p5-restored; echo "99-halow-identity: identity restored from p5 — skipping personalisation"; exit 0; }
 # 1. unique hostname with OpenMANET's own scheme (e.g. BCM2711-47ee from the MAC label / eth0)
 . /lib/functions/morse.sh 2>/dev/null
 host=$(morse_generate_default_hostname 2>/dev/null)

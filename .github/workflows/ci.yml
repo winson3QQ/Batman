@@ -13,6 +13,8 @@ jobs:
           severity: error
       - name: validation harness reachability logic (#265) — q/UNDETERMINED, settle, revert/held waits, fleet settle (stub ssh)
         run: bash scripts/test-harness-265.sh
+      - name: nothing root runs on a node trusts world-writable /tmp (#280) — allowlist check + mutation proof
+        run: bash scripts/check-tmp-trust.sh && bash scripts/test-tmp-trust.sh
       - name: line-endings must be LF
         run: |
           if grep -rlIP '\r$' --include='*.sh' --include='*.py' .; then

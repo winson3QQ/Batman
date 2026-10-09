@@ -1,0 +1,57 @@
+# scripts/rundir-paths.txt — #280 N3: every basename that lives in the root-only run dir /tmp/run/batman.
+# One shell glob per line (* = a tenant name or a mktemp suffix). scripts/check-tmp-trust.sh fails when the tree
+# reads or writes "$RUNDIR/<name>" (node code) or "$R/<name>" (harness) for a name not listed here, so the
+# harness and the node cannot drift apart silently. Writer/reader of each: docs/design/280-tmp-trust.md §11.2.
+# autocommit
+autocommit.decided
+autocommit.committed
+autocommit.run
+autocommit.wd
+autocommit.hold-consumed
+autocommit.hold-discarded
+autocommit.deadline
+autocommit.start
+autocommit.canary-ok
+autocommit.why
+autocommit.ctl
+autocommit.ctl.dry
+autocommit-dryrun.log
+# slot / firmware / reboot
+batman-fw-override
+batman-fw-override-pending
+batman-reboot.want
+batman-slot.lock
+batman-slot.busy
+# platform-ab / storage
+ramroot
+batdata.dev
+p6t
+batman-storage.crit
+batdata-mount.booted
+# LED (meshled; meshtest reads the state)
+meshled.state
+meshled.undervolt
+meshled.txstat
+# power
+batpower.state
+batpower.mock
+shutdown.reason
+# payload tenants
+batman-firstload-*.latch
+batman-payload-*-drift.json
+batman-payload-*-restarts.state
+batman-payload-*-verify.log
+batman-payload-*-resources.log
+batman-payload-*.converging
+batman-payload-*.lock
+batman-payload-*.pid
+batman-payload-*.stopping
+batman-payload-*.stop0
+# joinwatch / config save
+config-saved
+joinwatch.state
+cfgsave-onjoin.state
+cfgsave-pi3gate.failed
+cfgsave-mount.failed
+# test probe of scripts/node/tmp-trust-280.sh (nobody tries to create it; it must never exist)
+tt280

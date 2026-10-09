@@ -20,7 +20,7 @@ DEV=/dev/mmcblk0p5
 [ -b "$DEV" ] || exit 0
 
 (
-	MNT=/tmp/p5-chanfix.$$
+	MNT=$(mktemp -d /tmp/p5-chanfix.XXXXXX) || exit 0   # #280: unpredictable
 	mkdir -p "$MNT"
 	mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>/dev/null || exit 0
 	# match:  set wireless.radio1.channel='40'   (quotes optional)

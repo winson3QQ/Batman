@@ -14,13 +14,16 @@
 # reboot, which brings back the shipped driver (the debug module is only insmod'ed, never installed).
 #   setsid sh /tmp/halow-fi-263.sh </dev/null >/dev/null 2>&1 &
 # Result: /opt/batdata/halow-fi-263-<stamp>.log (+ -dmesg.txt). The harness judges it after the reboot.
-KO=/tmp/mm6108_sdio-dvfi.ko; TS=$(date +%Y%m%d%H%M%S)
+# #280: the harness scratch dir lives under /tmp/run (root 0755 on every OpenWrt image): no non-root process
+# can pre-create or rewrite what root runs or reads from it (a /tmp/dv-* name could be).
+H=/tmp/run/batman-dv; { [ -d "$H" ] || mkdir -m 700 "$H"; } && [ -O "$H" ] && [ ! -L "$H" ] || { echo "FAIL harness scratch $H unusable"; exit 1; }
+KO=${KO:-$H/mm6108_sdio-dvfi.ko}; TS=$(date +%Y%m%d%H%M%S)
 L=/opt/batdata/halow-fi-263-$TS.log; D=/opt/batdata/halow-fi-263-$TS-dmesg.txt
 P=/sys/module/mm6108_sdio/parameters
 log(){ echo "[$(cut -d. -f1 /proc/uptime)] $*" >> "$L"; sync; }
-snap(){ dmesg -c > /tmp/hfi.dm; cat /tmp/hfi.dm >> "$D"
-	grep -E "FI263 inject|QLEN|WARNING: CPU|Late response|timed out|Oops|Unable to handle|not on this queue" /tmp/hfi.dm | tail -40 >> "$L"; sync; }
-stats(){ t0=$(cut -d" " -f1 /proc/uptime); morse_cli -i wlh0 stats > /tmp/hfi-stats.out 2>&1; rc=$?
+snap(){ dmesg -c > $H/hfi.dm; cat $H/hfi.dm >> "$D"
+	grep -E "FI263 inject|QLEN|WARNING: CPU|Late response|timed out|Oops|Unable to handle|not on this queue" $H/hfi.dm | tail -40 >> "$L"; sync; }
+stats(){ t0=$(cut -d" " -f1 /proc/uptime); morse_cli -i wlh0 stats > $H/hfi-stats.out 2>&1; rc=$?
 	log "$1: morse_cli stats rc=$rc ($(awk -v a="$t0" '{printf "%.1f", $1-a}' /proc/uptime)s)"; }
 trap 'log "aborted -> reboot"; reboot' INT TERM
 [ -f "$KO" ] || { echo "no $KO" > "$L"; exit 1; }

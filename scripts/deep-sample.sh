@@ -5,12 +5,12 @@
 # Attributes CPU time to processes, hardware IRQs and softirqs during a soak so
 # you can see WHERE the sys/softirq time goes and whether there's room to tune.
 #
-#   OUT=/tmp/soakprof IVL=10 CPU=3 ./deep-sample.sh &
-#   touch /tmp/soakprof/STOP     # clean stop
+#   OUT=/tmp/run/soakprof IVL=10 CPU=3 ./deep-sample.sh &
+#   touch /tmp/run/soakprof/STOP     # clean stop
 #
 # Writes into $OUT (put on tmpfs): sys.csv proc.csv irq.csv softirq.csv
 # Self-measuring: this script's own awk PID shows up in proc.csv.
-OUT="${OUT:-/tmp/soakprof}"
+OUT="${OUT:-/tmp/run/soakprof}"   # #280: root-only parent on the node
 IVL="${IVL:-10}"
 CPU="${CPU:--1}"
 HZ="${HZ:-100}"           # USER_HZ; 100 on these kernels

@@ -53,19 +53,36 @@ type otalog >/dev/null 2>&1 || { otalog() { :; }; otalog_k() { :; }; ota_get() {
 TRACE=0; CMD=${1:-}
 st() { [ "$TRACE" = 1 ] && otalog SLOT "$@"; return 0; }
 
-# Test-only fault seams: the BATMAN_FAULT_INJECT env (direct calls), or a ROOT-OWNED flag file
-# /tmp/batman-fault.<name> — sysupgrade stage2 and procd services do not inherit the caller's env,
-# and /tmp is world-writable, hence -O (owned by us = root). Never present on a production node.
-fault() { [ "${BATMAN_FAULT_INJECT:-}" = "$1" ] || { [ -f "/tmp/batman-fault.$1" ] && [ -O "/tmp/batman-fault.$1" ]; }; }
-# Operator overrides, same two forms (env for direct calls, root-owned /tmp flag for sysupgrade).
-allowed() { [ "$(eval echo "\${BATMAN_ALLOW_$1:-0}")" = 1 ] || { f=/tmp/batman-slot.allow-$(echo "$1" | tr 'A-Z_' 'a-z-'); [ -f "$f" ] && [ -O "$f" ]; }; }
+# #280: decision state (lock, busy marker, MBR cache, p7 sector images, fw-override, reboot target, power
+# state) lives in the root-only run dir — /tmp is world-writable and a non-root process could pre-create any
+# of those names (docs/design/280-tmp-trust.md). /tmp/run/batman crosses into the sysupgrade ramfs like /tmp
+# itself (platform-ab copies rundir.sh + mktemp there). Slot WRITES refuse without it (fail closed); reads
+# fall back to an unpredictable mktemp in /tmp.
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+RDOK=0; type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null && RDOK=1
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+need_rundir() { [ "$RDOK" = 1 ] || die "run dir $RUNDIR unusable (#280) — refusing to write a slot"; }
+tmpf() { batman_tmp "$1" 2>/dev/null || mktemp "/tmp/$1.XXXXXX"; }
+tmpd() { batman_tmp -d "$1" 2>/dev/null || mktemp -d "/tmp/$1.XXXXXX"; }
 
-# One writer at a time (#209 S5 review W6). /tmp is fresh every boot and survives into the sysupgrade
+# An operator/test flag in /tmp is honoured only if root-owned, not a symlink and a single link (#280 D2 —
+# a hardlink to any root-owned file would otherwise pass -O); anything else is reported as tamper.
+opf() { type batman_opf >/dev/null 2>&1 || return 1; batman_opf "$1"; }   # rundir.sh: the one opf (#280 D1), logs TAMPER
+# Test-only fault seams: the BATMAN_FAULT_INJECT env (direct calls), or a ROOT-OWNED flag file
+# /tmp/batman-fault.<name> — sysupgrade stage2 and procd services do not inherit the caller's env.
+# Never present on a production node.
+fault() { [ "${BATMAN_FAULT_INJECT:-}" = "$1" ] || opf "/tmp/batman-fault.$1"; }
+# Operator overrides, same two forms (env for direct calls, root-owned /tmp flag for sysupgrade).
+allowed() { [ "$(eval echo "\${BATMAN_ALLOW_$1:-0}")" = 1 ] || opf "/tmp/batman-slot.allow-$(echo "$1" | tr 'A-Z_' 'a-z-')"; }
+
+# One writer at a time (#209 S5 review W6). The run dir is fresh every boot and survives into the sysupgrade
 # ramfs, so a lock left by a SIGKILLed holder is taken over once its pid is gone or is not batman-slot
 # (pids are small and reused in the ramfs — hence the cmdline check, not only kill -0).
-LOCK=/tmp/batman-slot.lock
+LOCK=$RUNDIR/batman-slot.lock
 LOCK_MINE=0
 slot_lock() {
+	need_rundir
 	if ! mkdir "$LOCK" 2>/dev/null; then
 		p=$(cat "$LOCK/pid" 2>/dev/null)
 		# cmdline is NUL-separated ("/bin/sh\0/usr/sbin/batman-slot\0apply…"): flatten before matching
@@ -131,11 +148,11 @@ eeprom_floor_warn() {
 }
 
 # ---- MBR (pi3 only) ---------------------------------------------------------------------------
-# Fixed per-invocation path ($$ is the same inside command substitutions), read once uncached.
-MBR_FILE=/tmp/batman-slot.mbr.$$
+# Fixed per-invocation path (created once here, so command substitutions share it), read once uncached.
+MBR_FILE=$(tmpf batman-slot.mbr)
 # One EXIT trap for everything this invocation owns (the MBR read cache, and the busy marker that
 # tells batman-autocommit's revert watchdog not to reboot under a running apply, ab-autocommit v2.2).
-BUSY=/tmp/batman-slot.busy
+BUSY=$RUNDIR/batman-slot.busy
 BUSY_MINE=0
 trap 'rm -f "$MBR_FILE"; [ "$BUSY_MINE" = 1 ] && rm -f "$BUSY"; [ "$LOCK_MINE" = 1 ] && rm -rf "$LOCK"' EXIT
 mbr_load() {
@@ -237,7 +254,7 @@ assert_fw_sane() {
 autoboot_read() {
 	if [ "$(layout)" = pi3 ]; then
 		grep -q "^$P7 " /proc/mounts && { cat "$(awk -v d="$P7" '$1==d{print $2; exit}' /proc/mounts)/autoboot.txt"; return; }
-		m=/tmp/batfw.ro.$$; mkdir -p "$m"
+		m=$(tmpd batfw.ro) || return 1
 		mount -t vfat -o ro "$P7" "$m" 2>/dev/null || { rmdir "$m"; return 1; }
 		cat "$m/autoboot.txt" 2>/dev/null; r=$?
 		umount "$m"; rmdir "$m"; return $r
@@ -275,8 +292,8 @@ power_ok() {
 		[ $(( 0x$t & 0x1 )) -eq 0 ] || { warn "under-voltage now (throttled=0x$t)"; return 1; }
 		n=$((n + 1)); [ $n -lt 3 ] && sleep 1
 	done
-	if [ -r /tmp/batpower.state ] && /etc/init.d/batpower running >/dev/null 2>&1; then
-		case "$(cut -d' ' -f1 /tmp/batpower.state)" in
+	if [ -r "$RUNDIR/batpower.state" ] && /etc/init.d/batpower running >/dev/null 2>&1; then
+		case "$(cut -d' ' -f1 "$RUNDIR/batpower.state")" in
 			CRIT) warn "batpower reports CRIT"; return 1 ;;
 			WARN) [ "$(layout)" = pi3 ] && { warn "batpower reports WARN (Pi 3)"; return 1; } ;;
 		esac
@@ -294,18 +311,20 @@ write_autoboot_pi3() {
 	bps=$(u16 11); spc=$(u8 13); res=$(u16 14); nfat=$(u8 16); rents=$(u16 17); fsz=$(u16 22)
 	[ "$bps" = 512 ] || die "p7: unexpected sector size $bps"
 	root=$((res + nfat * fsz)); data=$((root + (rents * 32 + 511) / 512))
-	raw_read "$P7" "$root" $(( (rents * 32 + 511) / 512 )) > /tmp/batfw.root.$$
+	need_rundir   # the sector images below are written to the card: never build them where others can write
+	rt=$(batman_tmp batfw.root) || die "cannot create a private temp file"
+	raw_read "$P7" "$root" $(( (rents * 32 + 511) / 512 )) > "$rt"
 	off=""; i=0
 	while [ $i -lt "$rents" ]; do
-		[ "$(dd if=/tmp/batfw.root.$$ bs=1 skip=$((i * 32)) count=11 2>/dev/null)" = AUTOBOOTTXT ] && { off=$((i * 32)); break; }
+		[ "$(dd if="$rt" bs=1 skip=$((i * 32)) count=11 2>/dev/null)" = AUTOBOOTTXT ] && { off=$((i * 32)); break; }
 		i=$((i + 1))
 	done
-	[ -n "$off" ] || { rm -f /tmp/batfw.root.$$; die "p7: no AUTOBOOT.TXT directory entry"; }
-	cl=$(hexdump -s $((off + 26)) -n2 -e '1/2 "%u"' /tmp/batfw.root.$$); sz=$(hexdump -s $((off + 28)) -n4 -e '1/4 "%u"' /tmp/batfw.root.$$)
-	rm -f /tmp/batfw.root.$$
+	[ -n "$off" ] || { rm -f "$rt"; die "p7: no AUTOBOOT.TXT directory entry"; }
+	cl=$(hexdump -s $((off + 26)) -n2 -e '1/2 "%u"' "$rt"); sz=$(hexdump -s $((off + 28)) -n4 -e '1/4 "%u"' "$rt")
+	rm -f "$rt"
 	sec=$((data + (cl - 2) * spc))
 	[ "$sz" -gt 0 ] && [ "$sz" -le 512 ] || die "p7: autoboot.txt is $sz bytes, not a single sector — refusing"
-	new=/tmp/batfw.new.$$; sect=/tmp/batfw.sec.$$
+	new=$(batman_tmp batfw.new) && sect=$(batman_tmp batfw.sec) || die "cannot create a private temp file"
 	printf '[all]\ntryboot_a_b=1\nboot_partition=%s\n\n[tryboot]\nboot_partition=%s\n' "$all" "$try" > "$new"
 	[ "$(wc -c < "$new")" -eq "$sz" ] || { rm -f "$new"; die "new autoboot.txt is $(wc -c < "$new") bytes but the file is $sz — refusing (would desync the directory entry)"; }
 	raw_read "$P7" "$sec" 1 > "$sect.old"
@@ -345,13 +364,13 @@ write_autoboot() {  # $1 [all], $2 [tryboot], $3 commit|rollback
 slot_is_bad() {
 	d=$(slot_bootdev "$1"); m=$(awk -v d="$d" '$1==d{print $2; exit}' /proc/mounts)
 	if [ -n "$m" ]; then [ -f "$m/$BADMARK" ]; return; fi
-	m=/tmp/slotchk.$$; mkdir -p "$m"; mount -t vfat -o ro "$d" "$m" 2>/dev/null || { rmdir "$m"; return 1; }
+	m=$(tmpd slotchk) || return 1; mount -t vfat -o ro "$d" "$m" 2>/dev/null || { rmdir "$m"; return 1; }
 	[ -f "$m/$BADMARK" ]; r=$?; umount "$m"; rmdir "$m"; return $r
 }
 slot_bad_reason() {
 	d=$(slot_bootdev "$1"); m=$(awk -v d="$d" '$1==d{print $2; exit}' /proc/mounts)
 	if [ -n "$m" ]; then cat "$m/$BADMARK" 2>/dev/null; return; fi
-	m=/tmp/slotchk.$$; mkdir -p "$m"; mount -t vfat -o ro "$d" "$m" 2>/dev/null || { rmdir "$m"; return; }
+	m=$(tmpd slotchk) || return; mount -t vfat -o ro "$d" "$m" 2>/dev/null || { rmdir "$m"; return; }
 	cat "$m/$BADMARK" 2>/dev/null; umount "$m"; rmdir "$m"
 }
 
@@ -407,10 +426,10 @@ begin_write() {
 	invalidate_slot "$T" "$BM" "write in progress (apply not completed)"
 	tboot_close
 	# migration record (#209 S5 D6): slot T no longer holds the image that recorded itself as running
-	# the boot-time self-check; the new image re-records it on its first boot. p6 is at /tmp/p6t in the
+	# the boot-time self-check; the new image re-records it on its first boot. p6 is at $RUNDIR/p6t in the
 	# sysupgrade stage 2 (platform-ab re-mounts it there), at /opt/batdata otherwise.
 	case "${OTATRACE_FILE:-}" in
-		/tmp/p6t/*) rm -f "/tmp/p6t/state/slot-$T.protected" ;;
+		"$RUNDIR"/p6t/*) rm -f "$RUNDIR/p6t/state/slot-$T.protected" ;;
 		*) grep -q " /opt/batdata " /proc/mounts && rm -f "/opt/batdata/state/slot-$T.protected" ;;
 	esac
 	return 0
@@ -426,7 +445,7 @@ sum_of() { awk -v f="$2" '$2==f{print $1; exit}' "$1/SHA256SUMS"; }
 # Sets A T TROOT TBOOT TGUID.
 node_checks() {
 	# the firmware booted the WRONG slot this boot (#209 S5): the "other" slot is then the committed one
-	[ -f /tmp/batman-fw-override ] && die "the firmware booted the wrong slot this boot ($(cat /tmp/batman-fw-override)) — refusing to write a slot until the node is back on its committed one (batman-slot reboot committed)"
+	[ -f "$RUNDIR/batman-fw-override" ] && die "the firmware booted the wrong slot this boot ($(cat "$RUNDIR/batman-fw-override")) — refusing to write a slot until the node is back on its committed one (batman-slot reboot committed)"
 	# Never write while running a one-shot TRIAL (#209 v3.1 MUST-FIX 1 / ab-autocommit v2.2 G): on a
 	# trial of B the "other" slot is A = the COMMITTED one, so a second OTA here would overwrite the only
 	# known-good slot. Only a real tryboot (DT tryboot=1) is refused; a #133 stale-fallback boot may
@@ -607,7 +626,7 @@ cmd_apply() {
 	fi
 	# don't pollute boot-reasons with a spurious UNCLEAN on the trial's first boot — written only once
 	# the trial is really armed, so a failed arm does not label the next plain boot a trial (S5 review)
-	[ -f /tmp/shutdown.reason ] || echo "sysupgrade-trial (slot $T)" > /tmp/shutdown.reason 2>/dev/null
+	[ -f "$RUNDIR/shutdown.reason" ] || echo "sysupgrade-trial (slot $T)" > "$RUNDIR/shutdown.reason" 2>/dev/null
 	echo "batman-slot: slot $T armed as one-shot tryboot; reboot to trial it (autoboot.txt untouched)"
 }
 
@@ -667,14 +686,15 @@ cmd_reboot() {
 	[ -z "$why" ] && { n=$(bf_ab_all); case "$n" in 1|2) : ;; *) why="[all] unreadable ('$n')" ;; esac; }
 	[ -z "$why" ] && { [ -x /usr/sbin/batman-reboot ] || why="batman-reboot missing"; }
 	[ -z "$why" ] && { [ -e /etc/rc.d/K90batman-reboot ] || why="K90batman-reboot hook not enabled"; }
-	echo "$reason" > /tmp/shutdown.reason 2>/dev/null
+	[ -z "$why" ] && { [ "$RDOK" = 1 ] || why="run dir unusable (#280)"; }
+	echo "$reason" > "$RUNDIR/shutdown.reason" 2>/dev/null
 	if [ -n "$why" ]; then
 		otalog_k SLOT REBOOT mode=plain why="$why" reason="$reason"
 		echo "batman-slot: plain reboot ($why)" >&2
 		exec reboot
 	fi
 	otalog_k SLOT REBOOT mode=explicit to="$n" reason="$reason"
-	echo "$n" > /tmp/batman-reboot.want; sync
+	echo "$n" > "$RUNDIR/batman-reboot.want"; sync
 	# safety net: if procd's shutdown has not restarted us in 240 s, restart explicitly ourselves
 	setsid sh -c "sleep 240; exec /usr/sbin/batman-reboot $n" </dev/null >/dev/null 2>&1 &
 	echo "batman-slot: rebooting to firmware partition $n (procd shutdown, explicit restart by K90batman-reboot)" >&2

@@ -18,8 +18,11 @@ ver="OpenMANET $(cat /etc/openwrt_version 2>/dev/null)"; [ -f /etc/BENCH-IMAGE ]
 last=$(tail -1 "$BR" 2>/dev/null | sed 's/^[^ ]* boot_id=[^ ]* prev=//')
 join=$(joinwatch status 2>/dev/null); jstate=${join%% *}
 jdiag=$(tail -1 "$JL" 2>/dev/null); jverdict=$(echo "$join" | cut -d' ' -f3-)
-bat=$( [ -f /tmp/batpower.state ] && cut -d' ' -f1-2 /tmp/batpower.state | tr ' ' '/' || echo "-")
-batstate=$( [ -f /tmp/batpower.state ] && cut -d' ' -f1 /tmp/batpower.state || echo "-")
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh   # #280: root-only run dir (never /tmp)
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+bat=$( [ -f "$RUNDIR/batpower.state" ] && cut -d' ' -f1-2 "$RUNDIR/batpower.state" | tr ' ' '/' || echo "-")
+batstate=$( [ -f "$RUNDIR/batpower.state" ] && cut -d' ' -f1 "$RUNDIR/batpower.state" || echo "-")
 thr=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2); temp=$(awk '{print int($1/1000)}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
 # the morse radio, found the same way joinwatch/meshpoint-1.8.0.sh find it (never hardcode radio1)
 radio=$(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)\.type='morse'$/\1/p" | head -1)
@@ -84,11 +87,19 @@ if [ -n "$temp" ]; then [ "$temp" -ge 80 ] && hc CRIT thermal "SoC ${temp}C (cri
 for s in mesh11sd openmanetd wpad; do running "$s" || hc CRIT svc "$s not running"; done
 running dnsmasq || hc WARN svc "dnsmasq not running"
 if [ -S /var/run/docker.sock ] && [ -n "$fts" ]; then echo "$fts" | grep -q "Exited\|Restarting\|Created" && hc WARN tenant "a tenant container is not Up ($fts)"; fi
-# payload confinement drift (#156 reconciler writes this verdict; DRIFT = degraded-but-working = WARN)
-if [ -f /tmp/batman-ots-drift.json ]; then
-	cdrift=$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' /tmp/batman-ots-drift.json 2>/dev/null)
-	[ "$cdrift" = DRIFT ] && hc WARN confinement "payload confinement DRIFT — a container no longer matches its hardened profile (see: logread | grep batman-ots)"
-fi
+# payload confinement drift (#156/#167: each tenant's guardian writes its verdict; DRIFT = degraded-but-working
+# = WARN). #280: read from the root-only run dir (the old /tmp/batman-ots-drift.json had no writer any more).
+for df in "$RUNDIR"/batman-payload-*-drift.json; do
+	[ -f "$df" ] || continue
+	cdrift=$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$df" 2>/dev/null)
+	t=${df##*/batman-payload-}; t=${t%-drift.json}
+	[ "$cdrift" = DRIFT ] && hc WARN confinement "payload $t confinement DRIFT — a container no longer matches its hardened profile (see: logread | grep batman-payload)"
+done
+# #280 D2: an operator/test flag in /tmp that is not a root-owned single-link file was planted by someone else
+for f in /tmp/batman-autocommit.hold /tmp/batman-fault.* /tmp/batman-slot.allow-*; do
+	{ [ -e "$f" ] || [ -L "$f" ]; } || continue
+	BATMAN_OPF_QUIET=1 batman_opf "$f"; [ $? = 2 ] && hc WARN tamper "TAMPER: $f is not a root-owned single-link file (ignored by the node)"
+done
 # #137 management-plane lockdown posture (96-batman-config-migrate writes this at provisioning).
 # NB: a NEVER-seeded node writes no marker (96 early-exits before the lockdown), and that node is the
 # WIDE-OPEN one — so "no marker" MUST warn (unless it's a build-time dev image).
@@ -110,14 +121,14 @@ ohold=""
 [ -f /opt/batdata/state/autocommit-hold-commit ] && ohold="armed for $(head -c 120 /opt/batdata/state/autocommit-hold-commit | tr -d '\r\n') (next tryboot of that build will wait for 'batman-autocommit release')"
 # State in the order that decides it (review #265 F15): committed beats held; a hold-once (no revert) changes
 # what "held" means; only a root-owned control dir is trusted (/tmp is world-writable).
-if [ -d /tmp/autocommit.ctl ] && [ ! -L /tmp/autocommit.ctl ] && [ -O /tmp/autocommit.ctl ] && [ -f /tmp/autocommit.ctl/hold-commit ]; then
+if [ -d "$RUNDIR/autocommit.ctl" ] && [ ! -L "$RUNDIR/autocommit.ctl" ] && [ -O "$RUNDIR/autocommit.ctl" ] && [ -f "$RUNDIR/autocommit.ctl/hold-commit" ]; then
 	batman-slot is-trial >/dev/null 2>&1; it=$?
-	if [ -f /tmp/autocommit.committed ] || [ "$it" = 1 ]; then ohold="${ohold:+$ohold; }this trial was held, now committed"
-	elif [ -f /tmp/autocommit.ctl/released ]; then ohold="${ohold:+$ohold; }this trial: released, commit pending the normal gate"
-	elif [ -f /tmp/autocommit.hold-consumed ]; then ohold="${ohold:+$ohold; }this trial HELD and hold-once set — no deadline revert: release or 'batman-slot commit' by hand"
+	if [ -f "$RUNDIR/autocommit.committed" ] || [ "$it" = 1 ]; then ohold="${ohold:+$ohold; }this trial was held, now committed"
+	elif [ -f "$RUNDIR/autocommit.ctl/released" ]; then ohold="${ohold:+$ohold; }this trial: released, commit pending the normal gate"
+	elif [ -f "$RUNDIR/autocommit.hold-consumed" ]; then ohold="${ohold:+$ohold; }this trial HELD and hold-once set — no deadline revert: release or 'batman-slot commit' by hand"
 	else ohold="${ohold:+$ohold; }this trial HELD — commit only after 'batman-autocommit release'; deadline revert armed"; fi
 fi
-[ -f /tmp/autocommit.hold-discarded ] && ohold="${ohold:+$ohold; }hold-commit $(head -c 160 /tmp/autocommit.hold-discarded | tr -d '\r\n')"
+[ -f "$RUNDIR/autocommit.hold-discarded" ] && ohold="${ohold:+$ohold; }hold-commit $(head -c 160 "$RUNDIR/autocommit.hold-discarded" | tr -d '\r\n')"
 if [ "$mode" = json ]; then
 	j(){ printf '%s' "$1" | tr -d '\000-\010\013-\037' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'; }
 	chk=$(printf '%s' "$CHECKS" | awk -F'|' 'NF==3{if(n++)printf ",";gsub(/\\/,"\\\\",$3);gsub(/"/,"\\\"",$3);printf "{\"level\":\"%s\",\"id\":\"%s\",\"msg\":\"%s\"}",$1,$2,$3}')
@@ -125,7 +136,7 @@ if [ "$mode" = json ]; then
 	bver=$(sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build 2>/dev/null)
 	ls2=$(grep " S2 " /opt/batdata/log/ota-trace.log 2>/dev/null | tail -n 1)       # flight recorder: last stage-2 line
 	larm=$(grep " SLOT ARM " /opt/batdata/log/ota-trace.log 2>/dev/null | tail -n 1) # and the last tryboot arm (raw SET/GET)
-	fwo=$(cat /tmp/batman-fw-override 2>/dev/null)                                    # firmware booted the wrong slot this boot (#209 S5)
+	fwo=$(cat "$RUNDIR/batman-fw-override" 2>/dev/null)                                    # firmware booted the wrong slot this boot (#209 S5)
 	prot=unknown; [ -f /opt/batdata/state/slot-A.protected ] && [ -f /opt/batdata/state/slot-B.protected ] && prot=both
 	[ "$prot" = unknown ] && { [ -f /opt/batdata/state/slot-A.protected ] || [ -f /opt/batdata/state/slot-B.protected ]; } && prot=partial
 	printf '{"node":"%s","image":"%s","boot_id":"%s","uptime_s":%s,"health":{"level":"%s","verdict":"%s","checks":[%s]},"last_boot_reason":"%s","last_ota":"%s","last_s2":"%s","last_arm":"%s","fw_override":"%s","fw_protection":"%s","ota_hold":"%s","batman_version":"%s","join":{"state":"%s","detail":"%s","mesh_id":"%s","channel":"%s","country":"%s","key":"%s","plinks":%s,"batman_neighbours":%s,"peers":"%s","snr_db":"%s","noise_dbm":"%s","tx_retry_pct":"%s","address":"%s","ip":"%s"},"last_join_diagnosis":"%s","battery":"%s","throttled":"%s","temp_c":"%s","boots_since_join":%s,"power_loss_since_join":%s,"evidence":{"crash_files":%s,"join_log_lines":%s},"tenants":"%s","time":"%s"}\n' \

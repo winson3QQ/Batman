@@ -19,14 +19,20 @@
 # uci joinwatch.main.{poll,t_short,t_full,t_reboot,reboot_gap_boots,unjoined_boots_max}
 #   poll 15  t_short 60  t_full 300  t_reboot 3600  reboot_gap_boots 5  unjoined_boots_max 3
 # Writes: /opt/batdata/log/join.log (only while NOT joined, plus one JOINED line closing a
-# diagnosed episode — even one from an earlier boot), /tmp/joinwatch.state (live, tmpfs).
+# diagnosed episode — even one from an earlier boot), $RUNDIR/joinwatch.state (live, tmpfs, root-only #280).
 # Zero writes on a node that joins normally. Nothing is written unless /opt/batdata is
 # mounted (a diagnosis on the rootfs overlay would be an SD write AND be hidden later).
 
 LOG=/opt/batdata/log/join.log
-STATE=/tmp/joinwatch.state
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh   # #280: root-only run dir (never /tmp)
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+STATE=$RUNDIR/joinwatch.state
 BR=/opt/batdata/log/boot-reasons.log
 cfg(){ uci -q get "joinwatch.main.$1" || echo "$2"; }
+# operator flag in /tmp: root-owned, not a symlink, single link (#280 D2)
+opf() { type batman_opf >/dev/null 2>&1 || return 1; batman_opf "$1"; }   # rundir.sh: the one opf (#280 D1), logs TAMPER
+type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null || STATE=/dev/null   # no run dir: no live state
 POLL=$(cfg poll 15); T_SHORT=$(cfg t_short 60); T_FULL=$(cfg t_full 300)
 T_REBOOT=$(cfg t_reboot 3600); GAP_BOOTS=$(cfg reboot_gap_boots 5); UNJOINED_MAX=$(cfg unjoined_boots_max 3)
 note(){ logger -t joinwatch -p "daemon.$1" "$2" 2>/dev/null; echo "joinwatch: $2" > /dev/kmsg 2>/dev/null; }
@@ -135,7 +141,7 @@ run(){
 			# real password was also persisted = fully provisioned); while the node is still open it
 			# returns non-zero, so we keep retrying and re-persist once a later same-boot lockdown
 			# sets the password (finding #2). Skip cheaply on cards with no p5 (no fork loop, N5r4).
-			[ -f /tmp/config-saved ] || [ ! -b /dev/mmcblk0p5 ] || { command -v batman-config-save >/dev/null 2>&1 && batman-config-save --on-join >/dev/null 2>&1 && : > /tmp/config-saved; }
+			[ -f "$RUNDIR/config-saved" ] || [ ! -b /dev/mmcblk0p5 ] || { command -v batman-config-save >/dev/null 2>&1 && batman-config-save --on-join >/dev/null 2>&1 && : > "$RUNDIR/config-saved"; }
 		else
 			u=$(up); [ -n "$since" ] || since=$u; d=$((u - since))
 			radio
@@ -153,7 +159,7 @@ run(){
 					write "$(ts) boot=$(bid) up=${u}s NOREBOOT | automatic reboot already used $gap boot(s) ago (min gap $GAP_BOOTS boots)"
 				elif ! mounted; then
 					write "$(ts) boot=$(bid) up=${u}s NOREBOOT | batdata not mounted — cannot record the reboot, so not taking it"
-				elif [ -f /tmp/batman-autocommit.hold ] && [ -O /tmp/batman-autocommit.hold ]; then
+				elif opf /tmp/batman-autocommit.hold; then
 					# #209 S5 review R3: an operator is on this boot (an OTA trial held for hand-commit) — a
 					# reboot would end the one-shot trial and silently undo the upgrade. Only this live,
 					# root-owned /tmp hold stops it: an unattended hold-once or a plain uncommitted trial
@@ -161,7 +167,7 @@ run(){
 					write "$(ts) boot=$(bid) up=${u}s NOREBOOT | /tmp/batman-autocommit.hold present (operator on this trial)"
 				else
 					write "$(ts) boot=$(bid) up=${u}s AUTOREBOOT | not joined for ${d}s — one controlled reboot (the next one only after $GAP_BOOTS more boots)"
-					[ -f /tmp/shutdown.reason ] || echo "joinwatch: not joined for ${d}s — automatic reboot" > /tmp/shutdown.reason 2>/dev/null
+					[ -f "$RUNDIR/shutdown.reason" ] || echo "joinwatch: not joined for ${d}s — automatic reboot" > "$RUNDIR/shutdown.reason" 2>/dev/null
 					sleep 2
 					# A/B card: controlled reboot onto the committed slot (explicit firmware partition on a Pi 4,
 					# #209 S5); a card without batman-slot (golden/MBR) keeps the plain reboot

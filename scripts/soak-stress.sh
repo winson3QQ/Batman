@@ -9,7 +9,7 @@
 set +e
 M1=${M1:-10.41.239.205}          # manet01 (load partner, stable)
 M2=${M2:-10.41.254.156}          # manet02 (target — runs FTS, expected to hang)
-OUT=/tmp/soakprof
+OUT=/tmp/run/soakprof   # #280: node-side output under root-only /tmp/run
 DUR=${DUR:-21600}
 CHUNK=${CHUNK:-120}
 LOG=${LOG:-/c/Users/yello/Desktop/Batman/soak-stress.log}

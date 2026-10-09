@@ -1,0 +1,60 @@
+# scripts/tmp-trust-allowlist.txt — #280: each line a file glob, a line ERE and the REASON the hit is safe.
+# Columns are TAB-separated. Every entry needs a reviewer-readable reason; nothing that influences a decision
+# (commit/revert/slot/reboot/halt, a health verdict, a lock, what root writes to a boot sector or executes)
+# may stay in a world-writable path — move it to the run dir (usr/lib/batman/rundir.sh) instead of listing it.
+#
+# --- the run dir itself: the literal may appear only here (stage-2-safe spelling, design B1/N4) ---
+feed/batman-provision/files/usr/lib/batman/rundir.sh	^RUNDIR=/tmp/run/batman$	the one definition of the run dir
+deploy/provisioning/rundir.sh	^RUNDIR=/tmp/run/batman$	deploy copy of rundir.sh (provisioning-sync pair)
+scripts/daily-validation.sh	^RDR='R=/tmp; if \[ -r /usr/lib/batman/rundir\.sh \]; then R=/tmp/run/batman;	harness resolver: run dir on a #280 image (missing = FAIL), /tmp only on an older image
+scripts/fault-injection.sh	^RDR='R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/tmp/run/batman; '$	harness resolver (missing run dir on a #280 image reads empty, never /tmp)
+scripts/node/p5-onjoin-263.sh	R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/tmp/run/batman; ST=\$R/	harness resolver for the cfgsave cache path
+# --- private dirs under /tmp/run (root 0755, created by procd before any non-root process) ---
+scripts/*	(/tmp/run/batman-dv|/tmp/run/soakprof|/tmp/run/deep-sample\.sh)	harness/dev scratch under root-only /tmp/run, created 0700 and owner-checked
+scripts/depersonalise.sh	dbFile: /tmp/run/openmanetd\.db	openmanetd (root) SQLite on tmpfs under root-only /tmp/run (golden images)
+# --- unpredictable temp names: mktemp O_EXCL, random, 0600/0700, root-owned ---
+*	mktemp( -d)? "?/tmp/[^ ]*XXXXXX	mktemp in /tmp: random name, exclusive create, root-only mode
+feed/batman-provision/files/www/cgi-bin/bundle	^tar -C /tmp -czf - "\$name"$	tars the private mktemp report dir by its basename
+deploy/provisioning/www/bundle	^tar -C /tmp -czf - "\$name"$	same, deploy copy
+# --- operator / test flags that stay in /tmp: honoured only via opf/op_flag (root-owned, no symlink, link count 1) ---
+*	(opf|op_flag) "?/tmp/batman-(autocommit\.hold|fault\.|slot\.allow-)	operator flag checked by opf/op_flag (owner, symlink, hardlink)
+*/halow-status	^for f in /tmp/batman-autocommit\.hold /tmp/batman-fault\.\* /tmp/batman-slot\.allow-\*; do$	TAMPER display: reports operator flags that fail the opf checks
+*/joinwatch	NOREBOOT \| /tmp/batman-autocommit\.hold present	log text naming the operator flag (already checked by opf)
+deploy/ots/reconcile-resources.sh	PAUSE=/tmp/batman-ots-pause *$	operator pause flag; honoured only root-owned, not a symlink, link count 1 (next lines)
+# --- sysupgrade guard (review 3): CHECKS that upstream sysupgrade's own /tmp files are root's; never writes or removes them
+feed/batman-provision/files/usr/lib/batman/platform-ab.sh	for f in /tmp/sysupgrade\*; do	guard: refuses when an image copy / config backup / conffiles list in /tmp is not root's
+# --- display / informational only: never used for a decision ---
+*/mesh	/tmp/bat-hosts	alfred host-name map, display only in the mesh CGI (upstream residual R5)
+*/halow-status	/tmp/bat-hosts	alfred's host-name map (display: peer names in halow-status / the mesh CGI)
+*/halow-status	\[ -S /var/run/docker\.sock \]	socket existence test only (dockerd's own socket, root 0660)
+scripts/node/container-lifecycle.sh	cfg=/var/run/docker/containerd/containerd\.toml	reads dockerd's own root-owned config (test assertion)
+feed/batman-provision/files/usr/bin/meshled	/tmp/meshled\.(state|undervolt|txstat)	LED display state only (no decision, no root exec)
+feed/batman-provision/files/usr/bin/meshtest	/tmp/meshled\.state	prints meshled's display state
+scripts/depersonalise.sh	rm -f /tmp/meshled\.\*	removes display files from a golden master
+*/95-batman-storage	\[ -e /tmp/sysupgrade\.tgz \]	labels the shutdown reason "sysupgrade" only (boot-reasons text, no decision)
+feed/batman-provision/files/usr/lib/batman/platform-ab.sh	(df -k /tmp 2>/dev/null|REFUSING: /tmp has)	free-space read of the tmpfs and its message
+# --- $$ inside root-only directories (p6, p5 mount, /boot, /mnt, make escapes) ---
+*/95-batman-storage	"\$dst/\.(\$b|golden-files)\.tmp\.\$\$"	temp file inside the tenant dir on p6 (root-only)
+feed/batman-provision/files/usr/sbin/batman-faketime	tmp="\$FILE\.tmp\.\$\$"$	temp next to the faketime file on p6 (root-only)
+*/batman-config-save	^STAGE="\$MNT/\.stage\.\$\$"$	staging dir inside the private p5 mount
+feed/batman-provision/files/usr/sbin/batman-slot	(tmp="\$BOOTMNT/\.autoboot\.\$\$"|=/mnt/slotboot\.\$\$|"/mnt/p5seed\.\$\$")	inside /boot or /mnt (root 0755)
+feed/batman-provision/Makefile	\$\$	make escapes ($$ = a literal $ in the recipe)
+scripts/test-payload-run.sh	/proc/\$\$/fd/9	this process's own fd table (test assertion)
+# --- not node code (host / CI / container specs) ---
+deploy/ots/*	/var/lib/(postgresql|rabbitmq|apt/lists)[^ "]*	path INSIDE a container (volume mount point / env / image build), not the host /var
+deploy/*/*.hardening.env	--tmpfs /[^ "]*	container-private tmpfs mounts in a hardening flag set
+deploy/*	--tmpfs /[^ "]*	container-private tmpfs (inside the container, not the host /tmp)
+deploy/*	tmpfs: \[[^]]*\]	container-private tmpfs list in a tenant profile
+deploy/ots/profile.yaml	status: "VALIDATED[^"]*"	profile documentation string
+deploy/ots/build-arm64.sh	^OUT=\$\{OUT:-/tmp/ots-arm64\.tar\}$	build host output (WSL), not node code
+scripts/soak-stress.sh	\[ -f /tmp/soakstress\.STOP \]	operator stop file on the HOST that drives the soak
+scripts/verify-profile.sh	(\*'/tmp:'\*|tmpfs /tmp (present|missing))	matches a container's tmpfs mount key (assertion text)
+feed/batman-provision/files/usr/sbin/batman-slot	override: touch /tmp/batman-slot\.allow-unseeded \(as root\)	message text naming the opf-checked operator flag
+scripts/node/tmp-trust-280.sh	.	the attacker simulation: plants /tmp markers AS NOBODY on purpose and removes them (root guard)
+scripts/daily-validation.sh	^ *suite tmp-trust-280 ".*$	suite description text
+scripts/daily-validation.sh	scripts/node/tmp-trust-280\.sh	the file name of the #280 node check (not a /tmp path)
+scripts/daily-validation.sh	"no decision state / root-executed file in world-writable /tmp on the node	suite description text
+scripts/depersonalise.sh	/tmp/bat-hosts	removes the display-only host map from a golden master
+feed/batman-provision/files/usr/lib/batman/platform-ab.sh	if \[ "\$f" != /tmp \]; then	image-directory check: compares against sticky /tmp (others cannot rename root's file there)
+scripts/daily-validation.sh	/run/batman/ramroot	expected ramfs root as the kernel reports it in mountinfo (relative to the /tmp tmpfs); compared, never used as a path
+scripts/fault-injection.sh	(mkdir -m 700 /tmp/root|ls -ld /tmp/root|find /tmp/root ! -user root|/tmp/root on the node is not)	OTA tooling takes /tmp/root atomically (mkdir, never rm) before an OTA a pre-#280 platform.sh runs; aborts if it is someone else's

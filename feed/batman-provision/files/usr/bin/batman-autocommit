@@ -34,16 +34,22 @@ MIN_WINDOW=300                         # never give a trial less than this from 
 DEFER_MAX=600                          # bound on postponing the revert for a busy apply / first-load
 ST=/opt/batdata/state
 ACLOG=/opt/batdata/log/autocommit.log
-[ "${AUTOCOMMIT_DRYRUN:-0}" = 1 ] && ACLOG=/tmp/autocommit-dryrun.log   # a dry run must not show up as "LAST OTA"
-DECIDED=/tmp/autocommit.decided        # the one atomic claim (mkdir) both main and watchdog must win
-COMMITTED=/tmp/autocommit.committed
+# #280: every marker below lives in the root-only run dir, never in world-writable /tmp — a non-root process
+# could pre-create a claim, a "committed", a hold or a deadline there (docs/design/280-tmp-trust.md).
+# A missing helper leaves RUNDIR unset -> RDBAD below -> never commit (the deadline revert still runs).
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+[ "${AUTOCOMMIT_DRYRUN:-0}" = 1 ] && ACLOG=$RUNDIR/autocommit-dryrun.log   # a dry run must not show up as "LAST OTA"
+DECIDED=$RUNDIR/autocommit.decided        # the one atomic claim (mkdir) both main and watchdog must win
+COMMITTED=$RUNDIR/autocommit.committed
 DRY=${AUTOCOMMIT_DRYRUN:-0}
 [ "$DRY" = 1 ] && DEFER_MAX=${AUTOCOMMIT_DEFER_MAX:-$DEFER_MAX}   # test seam: shorten the bounded deferral
 # v2.4 (#261/#265): operator-acceptance hold. The p6 one-shot flag names the build it is meant for; it is
 # consumed on the first tryboot, whatever that boot then does, and becomes a marker in a root-owned 0700
-# control dir (/tmp is world-writable: a marker there could be planted or symlinked by anyone).
+# control dir inside the run dir (#280).
 HOLDCOMMIT_FLAG=$ST/autocommit-hold-commit
-CTL=/tmp/autocommit.ctl; [ "$DRY" = 1 ] && CTL=/tmp/autocommit.ctl.dry
+CTL=$RUNDIR/autocommit.ctl; [ "$DRY" = 1 ] && CTL=$RUNDIR/autocommit.ctl.dry
 ctl_ok(){ [ -d "$CTL" ] && [ ! -L "$CTL" ] && [ -O "$CTL" ]; }
 # A planted $CTL (a file, a symlink, someone else's dir) is removed and re-made once; rm -rf on a symlink
 # removes the link, never its target. Still not ours after that = the caller fails CLOSED (review #265 F14a).
@@ -67,8 +73,8 @@ real_tryboot(){  # this boot is a one-shot tryboot of a slot that is not provabl
 	batman-slot is-trial >/dev/null 2>&1; [ $? -ne 1 ]
 }
 
-RUN=/tmp/autocommit.run                # main's pid lives in $RUN/pid (R1)
-HOLDC=/tmp/autocommit.hold-consumed    # a hold seen this boot — survives a main restart (R1)
+RUN=$RUNDIR/autocommit.run                # main's pid lives in $RUN/pid (R1)
+HOLDC=$RUNDIR/autocommit.hold-consumed    # a hold seen this boot — survives a main restart (R1)
 pid_is(){  # $1 pid, $2 pattern in its (NUL-flattened) cmdline
 	[ -n "$1" ] && kill -0 "$1" 2>/dev/null && tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q "$2"
 }
@@ -76,13 +82,16 @@ main_alive(){ pid_is "$(cat "$RUN/pid" 2>/dev/null)" 'batman-autocommit run'; }
 # The one claim (N1) records its owner, so a claim whose owner died can be told from a live one.
 claim(){ mkdir "$DECIDED" 2>/dev/null || return 1; echo $$ > "$DECIDED/pid"; }
 claim_owner_alive(){ pid_is "$(cat "$DECIDED/pid" 2>/dev/null)" batman-autocommit; }
-slot_writer_alive(){ pid_is "$(cat /tmp/batman-slot.lock/pid 2>/dev/null)" batman-slot; }
+slot_writer_alive(){ pid_is "$(cat "$RUNDIR/batman-slot.lock/pid" 2>/dev/null)" batman-slot; }
 # A hold cancels the revert (#209 S5 review R2): the operator's /tmp hold (root-owned: /tmp is world-
 # writable), a hold-once on p6 (consumed here, and remembered in $HOLDC so a restarted main and the
 # watchdog both still see it), or one already consumed this boot. Checked by main at start AND by the
 # watchdog on every tick, so a hold set after the trial booted still works.
+# An operator flag in /tmp (#280 D2): honoured only if root-owned, not a symlink and not a hardlink (link
+# count 1 — protected_hardlinks is pinned too, this does not rely on it). Anything else is logged as tamper.
+op_flag(){ type batman_opf >/dev/null 2>&1 || return 1; batman_opf "$1"; }   # rundir.sh: the one opf (#280 D1), logs TAMPER
 held(){
-	[ -f /tmp/batman-autocommit.hold ] && [ -O /tmp/batman-autocommit.hold ] && return 0
+	op_flag /tmp/batman-autocommit.hold && return 0
 	[ -f "$HOLDC" ] && return 0
 	if [ -f "$ST/autocommit-hold-once" ]; then
 		[ "$DRY" = 1 ] || { rm -f "$ST/autocommit-hold-once"; sync; }
@@ -116,7 +125,8 @@ canary_run(){
 	tag=$(cat /bin/busybox /lib/ld-musl-*.so.1 /lib/libc.so /lib/libgcc_s.so.1 2>/dev/null | sha256sum | cut -c1-12)
 	img=batman-canary:$tag
 	if ! docker image inspect "$img" >/dev/null 2>&1; then
-		t=/tmp/canary.$$; rm -rf "$t"; mkdir -p "$t/bin" "$t/lib"
+		t=$(batman_tmp -d canary) || { echo "canary: run dir unusable"; return 1; }
+		mkdir -p "$t/bin" "$t/lib"
 		cp /bin/busybox "$t/bin/"
 		cp -P /lib/ld-musl-*.so.1 "$t/lib/"; cp /lib/libc.so "$t/lib/"
 		[ -e /lib/libgcc_s.so.1 ] && cp /lib/libgcc_s.so.1 "$t/lib/"
@@ -147,7 +157,7 @@ if [ "${1:-}" = release ]; then
 	if [ "$DRY" != 1 ]; then
 		batman-slot is-trial >/dev/null 2>&1; [ $? = 0 ] || { echo "release: this boot is not an uncommitted trial"; exit 1; }
 		main_alive || { echo "release: the autocommit run is not alive — commit by hand: batman-slot commit"; exit 1; }
-		dl=$(cat /tmp/autocommit.deadline 2>/dev/null); case "$dl" in ''|*[!0-9]*) echo "release: no deadline recorded"; exit 1;; esac
+		dl=$(cat "$RUNDIR/autocommit.deadline" 2>/dev/null); case "$dl" in ''|*[!0-9]*) echo "release: no deadline recorded"; exit 1;; esac
 		[ "$(up)" -lt "$dl" ] || { echo "release: past the deadline (${dl}s) — the trial is being reverted"; exit 1; }
 	fi
 	: > "$CTL/released" && log "RELEASED: operator lifted the hold-commit — commit follows the normal gate (incl. the pre-commit canary)"
@@ -157,11 +167,11 @@ if [ "${1:-}" = release ]; then
 	s0=$(batman-slot active 2>/dev/null); dl=${dl:-$(( $(up) + 300 ))}; lim=$(( dl - $(up) + 30 ))
 	while [ "$lim" -gt 0 ]; do
 		[ -f "$COMMITTED" ] && { echo "release: committed"; exit 0; }
-		[ "$DRY" = 1 ] || main_alive || [ -f "$COMMITTED" ] || { echo "release: autocommit run ended without committing ($(cat /tmp/autocommit.why 2>/dev/null))"; exit 1; }
+		[ "$DRY" = 1 ] || main_alive || [ -f "$COMMITTED" ] || { echo "release: autocommit run ended without committing ($(cat "$RUNDIR/autocommit.why" 2>/dev/null))"; exit 1; }
 		[ "$(batman-slot active 2>/dev/null)" = "$s0" ] || { echo "release: slot changed"; exit 1; }
 		sleep 2; lim=$((lim - 2))
 	done
-	echo "release: not committed by the deadline ($(cat /tmp/autocommit.why 2>/dev/null))"; exit 1
+	echo "release: not committed by the deadline ($(cat "$RUNDIR/autocommit.why" 2>/dev/null))"; exit 1
 fi
 
 # The revert watchdog (B/N1/N4): runs as its own process (`batman-autocommit watchdog`, started with
@@ -170,7 +180,21 @@ fi
 # Inputs via env: AC_DEADLINE AC_START AC_SLOT.
 revert_watchdog(){
 	DEADLINE=$AC_DEADLINE; START=$AC_START; SLOT=$AC_SLOT
-	mkdir /tmp/autocommit.wd 2>/dev/null || exit 0
+	# #280 N6: only an UNUSABLE run dir (batman_rundir rc 1) selects the no-claim fallback — then main cannot
+	# commit and batman-slot refuses slot writes, so reverting without the claim is safe. A failed mkdir on a
+	# good run dir still means "another watchdog runs".
+	if [ "${AC_NOCLAIM:-0}" = 1 ]; then
+		log "run dir unusable — watchdog runs WITHOUT the claim and reverts at the deadline"
+		while [ "$(up)" -lt "$DEADLINE" ]; do held && { log "hold present — revert watchdog stands down"; exit 0; }; sleep 5; done
+		held && exit 0; real_tryboot || exit 0
+		log "TRIAL-REVERTED slot $SLOT after $(( $(up) - START ))s: run dir unusable"
+		aclog "TRIAL-REVERTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version) waited=$(( $(up) - START ))s reason=run dir unusable"
+		[ "$DRY" = 1 ] && { echo "DRYRUN decision: REVERT (no claim) — reason: run dir unusable"; exit 0; }
+		echo "slot=$SLOT version=$(version)" > "$ST/bad-slot" 2>/dev/null; sync
+		batman-slot reboot committed "autocommit: trial slot $SLOT reverted (run dir unusable)"
+		sync; reboot
+	fi
+	mkdir "$RUNDIR/autocommit.wd" 2>/dev/null || exit 0
 	while [ "$(up)" -lt "$DEADLINE" ]; do
 		[ -f "$COMMITTED" ] && exit 0
 		held && { log "hold present — revert watchdog stands down"; exit 0; }
@@ -197,8 +221,8 @@ revert_watchdog(){
 	while [ $d -lt $DEFER_MAX ]; do
 		# #274: also while a payload guardian converges its stack (post-OTA a changed config is rebuilt once)
 		# — bounded by DEFER_MAX like the rest, never a hold.
-		if [ -e /tmp/batman-slot.busy ] || slot_writer_alive || { ls /tmp/batman-firstload-*.latch >/dev/null 2>&1 && pgrep -f "docker load" >/dev/null 2>&1; } \
-			|| { ls /tmp/batman-payload-*.converging >/dev/null 2>&1 && pgrep -f "payload-run --worker" >/dev/null 2>&1; }; then
+		if [ -e "$RUNDIR/batman-slot.busy" ] || slot_writer_alive || { ls "$RUNDIR"/batman-firstload-*.latch >/dev/null 2>&1 && pgrep -f "docker load" >/dev/null 2>&1; } \
+			|| { ls "$RUNDIR"/batman-payload-*.converging >/dev/null 2>&1 && pgrep -f "payload-run --worker" >/dev/null 2>&1; }; then
 			[ $d -eq 0 ] && log "revert deferred: slot write, first-load or payload converge in progress (max ${DEFER_MAX}s)"
 			sleep 10; d=$((d + 10))
 		else break; fi
@@ -207,7 +231,7 @@ revert_watchdog(){
 	[ -f "$COMMITTED" ] && exit 0
 	held && { log "hold present at the deadline — not reverting"; exit 0; }
 	real_tryboot || { log "no longer a real tryboot at the deadline — not reverting"; exit 0; }
-	why=$(cat /tmp/autocommit.why 2>/dev/null)
+	why=$(cat "$RUNDIR/autocommit.why" 2>/dev/null)
 	log "TRIAL-REVERTED slot $SLOT after $(( $(up) - START ))s: ${why:-unhealthy}"
 	aclog "TRIAL-REVERTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version) waited=$(( $(up) - START ))s reason=${why:-unhealthy}"
 	if [ "$DRY" = 1 ]; then echo "DRYRUN decision: REVERT (reboot to the committed slot) — reason: ${why:-unhealthy}"; exit 0; fi
@@ -222,6 +246,13 @@ revert_watchdog(){
 [ "${1:-}" = watchdog ] && { revert_watchdog; exit 0; }
 
 [ "${1:-}" = run ] || { echo "usage: batman-autocommit run" >&2; exit 2; }
+
+# #280 fail closed: without a usable root-only run dir there is no trustworthy claim, deadline or hold state.
+# Never commit; a real tryboot still gets its deadline revert (watchdog without the claim, see above).
+RDBAD=0
+if ! type batman_rundir >/dev/null 2>&1 || ! batman_rundir; then
+	RDBAD=1; log "run dir unusable (#280) — this boot will NOT be committed; a trial is reverted at the deadline"
+fi
 
 # 00) hold-commit (#261, v2.4): consumed on ANY tryboot boot, BEFORE every early exit below (skip-once,
 # fw-override, unknown/committed is-trial) — a flag that survived such a boot would later silently hold
@@ -252,7 +283,7 @@ if { dt_tryboot || { [ "$DRY" = 1 ] && [ "${AUTOCOMMIT_FORCE_TRIAL:-0}" = 1 ]; }
 	else
 		log "HOLD-COMMIT-DISCARDED: flag is for [$want], this boot runs [$(version)] — not holding"
 		aclog "HOLD-COMMIT-DISCARDED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) flag=$want booted=$(version)"
-		echo "flag for [$want] discarded by a tryboot of [$(version)]" > /tmp/autocommit.hold-discarded
+		echo "flag for [$want] discarded by a tryboot of [$(version)]" > "$RUNDIR/autocommit.hold-discarded"
 	fi
 	[ "$DRY" = 1 ] || [ "$HOLDUNSAFE" = 1 ] || { rm -f "$HOLDCOMMIT_FLAG"; sync; }
 fi
@@ -271,16 +302,16 @@ fi
 # 0b) the firmware booted the wrong slot (#209 S5, docs/design/explicit-reboot.md). batdata-mount (S11)
 # detected it. Deferred from a first boot (uci-defaults still running then): do the correcting reboot
 # now. Otherwise it could not correct (p6 unmounted / retries exhausted): never commit this slot.
-if [ "$DRY" != 1 ] && [ -f /tmp/batman-fw-override-pending ]; then
-	w=$(cat /tmp/batman-fw-override-pending 2>/dev/null); rm -f /tmp/batman-fw-override-pending
+if [ "$DRY" != 1 ] && [ -f "$RUNDIR/batman-fw-override-pending" ]; then
+	w=$(cat "$RUNDIR/batman-fw-override-pending" 2>/dev/null); rm -f "$RUNDIR/batman-fw-override-pending"
 	log "firmware booted the wrong slot ($w) — correcting reboot deferred from the first boot, doing it now"
 	otalog_k AC FW-OVERRIDE-REBOOT detail="$w"
 	batman-slot reboot committed "fw-override (deferred from first boot): $w"
 	exit 0
 fi
-if [ -f /tmp/batman-fw-override ]; then
-	log "firmware booted the wrong slot ($(cat /tmp/batman-fw-override)) — this slot is NOT committed (needs: batman-slot reboot committed)"
-	otalog AC FW-OVERRIDE-NO-COMMIT detail="$(cat /tmp/batman-fw-override)"
+if [ -f "$RUNDIR/batman-fw-override" ]; then
+	log "firmware booted the wrong slot ($(cat "$RUNDIR/batman-fw-override")) — this slot is NOT committed (needs: batman-slot reboot committed)"
+	otalog AC FW-OVERRIDE-NO-COMMIT detail="$(cat "$RUNDIR/batman-fw-override")"
 	exit 0
 fi
 
@@ -299,8 +330,10 @@ SLOT=$(batman-slot active)
 # Single instance per boot (N4) that survives a restart (#209 S5 review R1): the run dir holds main's
 # pid. A live main -> exit; a dead one (killed by `restart`) -> take over, keeping its deadline and any
 # hold it saw — a restart must neither leave zero poll loops (the watchdog would then revert a healthy
-# trial) nor start a second watchdog (it is single via /tmp/autocommit.wd).
-if [ "$DRY" != 1 ]; then
+# trial) nor start a second watchdog (it is single via $RUNDIR/autocommit.wd). No run dir: no single
+# instance either (#280 N6) — each procd respawn starts another claim-less watchdog; they all revert to the
+# same committed slot (harmless, logged; the case should never occur).
+if [ "$DRY" != 1 ] && [ "$RDBAD" = 0 ]; then
 	if ! mkdir "$RUN" 2>/dev/null; then
 		main_alive && { log "already running this boot (pid $(cat "$RUN/pid" 2>/dev/null)) — exiting"; exit 0; }
 		log "previous run of this boot is gone — taking over"
@@ -336,16 +369,16 @@ fi
 if [ "$REVERT" = 1 ] && held; then log "hold present — this trial will not be reverted"; REVERT=0; fi
 
 # 3) deadline (N2): uptime-based; operator override on p6 (survives OTA) else the image default per SoC.
-#    Computed ONCE per boot and kept in /tmp, so a main that takes over keeps the watchdog's deadline (R1).
-if [ "$DRY" != 1 ] && [ -s /tmp/autocommit.deadline ] && [ -s /tmp/autocommit.start ]; then
-	DEADLINE=$(cat /tmp/autocommit.deadline); START=$(cat /tmp/autocommit.start)
+#    Computed ONCE per boot and kept in the run dir, so a main that takes over keeps the watchdog's deadline (R1).
+if [ "$DRY" != 1 ] && [ -s "$RUNDIR/autocommit.deadline" ] && [ -s "$RUNDIR/autocommit.start" ]; then
+	DEADLINE=$(cat "$RUNDIR/autocommit.deadline"); START=$(cat "$RUNDIR/autocommit.start")
 else
 	case "$(cat /proc/device-tree/compatible 2>/dev/null)" in *bcm2837*) DEF=900 ;; *) DEF=600 ;; esac
 	T=$(cat "$ST/autocommit.timeout" 2>/dev/null | tr -dc '0-9'); [ -n "$T" ] || T=$DEF
 	[ "$T" -lt 300 ] && T=300; [ "$T" -gt 3600 ] && T=3600
 	if [ "$DRY" = 1 ] && [ -n "${AUTOCOMMIT_TIMEOUT:-}" ]; then T=$AUTOCOMMIT_TIMEOUT; MIN_WINDOW=0; fi
 	START=$(up); DEADLINE=$T; [ "$DEADLINE" -lt $((START + MIN_WINDOW)) ] && DEADLINE=$((START + MIN_WINDOW))
-	[ "$DRY" = 1 ] || { echo "$DEADLINE" > /tmp/autocommit.deadline; echo "$START" > /tmp/autocommit.start; }
+	[ "$DRY" = 1 ] || [ "$RDBAD" = 1 ] || { echo "$DEADLINE" > "$RUNDIR/autocommit.deadline"; echo "$START" > "$RUNDIR/autocommit.start"; }
 fi
 log "slot $SLOT is an uncommitted trial — gate until uptime ${DEADLINE}s (now $(up)s), revert=$REVERT"
 
@@ -355,7 +388,7 @@ expected_in_mesh(){
 	p5=/dev/mmcblk0p5; [ -b "$p5" ] || return 1
 	grep -q "^$p5 " /proc/mounts && return 0                     # being written by a save right now
 	[ "$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$p5" 2>/dev/null)" = 53ef ] || return 0   # LUKS / not plain ext4
-	m=/tmp/autocommit.p5.$$; mkdir -p "$m"
+	m=$(batman_tmp -d autocommit.p5) || return 0   # cannot look -> treat as expected (fail closed)
 	mount -t ext4 -o ro "$p5" "$m" 2>/dev/null || { rmdir "$m"; return 0; }   # unreadable -> expected
 	[ -f "$m/.seeded" ]; r=$?; umount "$m"; rmdir "$m"; return $r
 }
@@ -365,14 +398,15 @@ otalog_k AC START slot=$SLOT is_trial_rc=$rc revert=$REVERT unknown=$UNKNOWN dea
 
 # 5) start the revert watchdog (see revert_watchdog above)
 if [ "$REVERT" = 1 ]; then
-	export AC_DEADLINE=$DEADLINE AC_START=$START AC_SLOT=$SLOT
+	export AC_DEADLINE=$DEADLINE AC_START=$START AC_SLOT=$SLOT AC_NOCLAIM=$RDBAD
 	if [ "$DRY" = 1 ]; then
 		( revert_watchdog ) & WDPID=$!
 	else
 		setsid "$0" watchdog </dev/null >/dev/null 2>&1 &
 	fi
 fi
-[ "$UNKNOWN" = 1 ] && { echo "slot commit state unreadable (batman-slot is-trial)" > /tmp/autocommit.why; exit 0; }
+[ "$UNKNOWN" = 1 ] && { echo "slot commit state unreadable (batman-slot is-trial)" > "$RUNDIR/autocommit.why"; exit 0; }
+[ "$RDBAD" = 1 ] && { log "not committing: run dir unusable (#280)"; exit 0; }
 
 # 6) health
 running(){
@@ -380,12 +414,12 @@ running(){
 	pgrep -f "$1" >/dev/null 2>&1 || pidof "$1" >/dev/null 2>&1
 }
 # health_ok runs inside $(...) — a subshell — so its latch must be a file, not a variable (code review F4)
-CANARY_LATCH=/tmp/autocommit.canary-ok
+CANARY_LATCH=$RUNDIR/autocommit.canary-ok
 # echo a reason + return 1 when unhealthy; silent + return 0 when healthy (services/infra only)
 health_ok(){
 	# p6 must be mounted (v2.2 M3b): otherwise the docker/payload checks below silently skip themselves.
-	# 95-batman-storage leaves its verdict in /tmp when it refused to touch a damaged p6 (code review F8).
-	p6 || { echo "data partition /opt/batdata not mounted$( [ -s /tmp/batman-storage.crit ] && printf ': %s' "$(cat /tmp/batman-storage.crit)")"; return 1; }
+	# 95-batman-storage leaves its verdict in the run dir when it refused to touch a damaged p6 (code review F8).
+	p6 || { echo "data partition /opt/batdata not mounted$( [ -s "$RUNDIR/batman-storage.crit" ] && printf ': %s' "$(cat "$RUNDIR/batman-storage.crit")")"; return 1; }
 	for s in mesh11sd openmanetd wpad; do running "$s" || { echo "svc $s down"; return 1; }; done
 	thr=$(vcgencmd get_throttled 2>/dev/null | sed -n 's/.*=0x//p')
 	[ $(( 0x${thr:-0} & 1 )) -eq 0 ] || { echo "undervoltage now"; return 1; }
@@ -410,8 +444,8 @@ health_ok(){
 		[ -d "$d" ] || continue
 		ls "$d"/*.manifest >/dev/null 2>&1 || continue
 		t=${d%/}; t=${t##*/}
-		[ -f "/tmp/batman-firstload-$t.latch" ] && continue
-		df=/tmp/batman-payload-$t-drift.json
+		[ -f "$RUNDIR/batman-firstload-$t.latch" ] && continue
+		df=$RUNDIR/batman-payload-$t-drift.json
 		[ -f "$df" ] || { echo "payload $t: no this-boot drift verdict yet"; return 1; }
 		[ -n "$(find "$df" -mmin -1 2>/dev/null)" ] || { echo "payload $t: drift verdict stale (>1min)"; return 1; }
 		grep -q '"status":"OK"' "$df" || { echo "payload $t: drift not OK"; return 1; }
@@ -441,7 +475,7 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 		why="held for operator acceptance (batman-autocommit release)"
 		[ -n "${HELDLOGGED:-}" ] || { HELDLOGGED=1; log "trial $SLOT is healthy and HELD — waiting for release (deadline ${DEADLINE}s)"; otalog AC HELD slot=$SLOT; }
 	fi
-	echo "$why" > /tmp/autocommit.why
+	echo "$why" > "$RUNDIR/autocommit.why"
 	if [ "$ok" -ge "$NEED" ] && [ -z "$why" ]; then
 		# #265: the canary latched on its FIRST success, so a runtime broken after that was committed (measured:
 		# latched 41-46 s before an injected runc break, then committed). Re-run it — unlatched — right before
@@ -449,7 +483,7 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 		# committed and the watchdog reverts it. Once per commit attempt only (v2.3 S3: Pi 3A+ memory).
 		if have_docker_tenant; then
 			if ! c=$(canary_run); then
-				rm -f "$CANARY_LATCH"; why="pre-commit canary failed: $c"; echo "$why" > /tmp/autocommit.why
+				rm -f "$CANARY_LATCH"; why="pre-commit canary failed: $c"; echo "$why" > "$RUNDIR/autocommit.why"
 				log "PRECOMMIT-CANARY-FAIL: $c — not committing, dwell reset"; otalog AC PRECOMMIT-CANARY-FAIL why="$c"
 				aclog "PRECOMMIT-CANARY-FAIL boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version) why=$c"
 				ok=0; sleep "$POLL"; continue

@@ -54,10 +54,14 @@ fi
 
 # M0 (#263): joinwatch calls --on-join every ~15 s until it latches, and an OPEN node never latches
 # (exit 4) — every call mounted p5 rw just to find nothing changed (215 mounts/hour measured on 03).
-# Per boot (/tmp), cache a fingerprint of everything the save would write plus p5's superblock write
+# Per boot (the root-only run dir, #280), cache a fingerprint of everything the save would write plus p5's superblock write
 # stamp (s_wtime, s_mnt_count — read without mounting, so ANY other mount/write/mkfs of p5 invalidates
 # it); while both match, answer from the cache. Other modes write p5 themselves -> drop the cache.
-ST=/tmp/cfgsave-onjoin.state; GATEFAIL=/tmp/cfgsave-pi3gate.failed; MNTFAIL=/tmp/cfgsave-mount.failed
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh   # #280: root-only run dir (never /tmp)
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+ST=$RUNDIR/cfgsave-onjoin.state; GATEFAIL=$RUNDIR/cfgsave-pi3gate.failed; MNTFAIL=$RUNDIR/cfgsave-mount.failed
+type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null || { ST=/nonexistent/cfgsave; GATEFAIL=$ST; MNTFAIL=$ST; }   # no cache: always the full path
 sbstamp() { hexdump -s 1072 -n 6 -e '1/4 "%u" " " 1/2 "%u"' "$DEV" 2>/dev/null; }
 onjoin_fp() {
 	{ echo "schema=$SCHEMA"
@@ -110,7 +114,7 @@ mount -t ext4 "$DEV" "$MNT" 2>/dev/null || { [ "$mode" = --on-join ] && ( umask 
 pi3_factory_check() {
 	D=/dev/mmcblk0
 	s7=$(cat /sys/class/block/mmcblk0p7/start 2>/dev/null) || return 0
-	sec0=/tmp/cfgsave-mbr.$$
+	sec0=$(batman_tmp cfgsave-mbr 2>/dev/null || mktemp /tmp/cfgsave-mbr.XXXXXX) || return 1
 	dd if="$D" bs=512 count=1 iflag=direct 2>/dev/null > "$sec0" || dd if="$D" bs=512 count=1 2>/dev/null > "$sec0"
 	e() { o=$((446 + 16 * ($1 - 1))); echo "$(hexdump -s $((o + 4)) -n1 -e '1/1 "%02x"' "$sec0") $(hexdump -s $((o + 8)) -n4 -e '1/4 "%u"' "$sec0") $(hexdump -s "$o" -n1 -e '1/1 "%02x"' "$sec0")"; }
 	[ "$(e 1 | cut -d' ' -f2)" = "$s7" ] || { rm -f "$sec0"; return 0; }      # not a Pi 3 card
@@ -122,7 +126,7 @@ pi3_factory_check() {
 	rm -f "$sec0"
 	dsz=$(cat /sys/block/mmcblk0/size); pend=$(( $(cat /sys/class/block/mmcblk0p6/start) + $(cat /sys/class/block/mmcblk0p6/size) ))
 	[ $((dsz - pend)) -le 32768 ] || err="$err p6-not-grown($((dsz - pend))-sectors-free)"
-	m=/tmp/cfgsave-p7.$$; mkdir -p "$m"
+	m=$(batman_tmp -d cfgsave-p7 2>/dev/null || mktemp -d /tmp/cfgsave-p7.XXXXXX) || return 1
 	if mount -t vfat -o ro /dev/mmcblk0p7 "$m" 2>/dev/null; then
 		for f in bootcode.bin autoboot.txt config.txt; do [ -f "$m/$f" ] || err="$err p7-lacks-$f"; done
 		umount "$m"

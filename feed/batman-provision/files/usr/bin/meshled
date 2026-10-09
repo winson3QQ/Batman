@@ -34,8 +34,13 @@ NOISE_DEFAULT=-90  # dBm: assumed noise floor if the radio won't report one
 RETRY_WEAK_PCT=30  # secondary gate: an interval retransmitting more than this
 RETRY_MIN_PKTS=200 # % over >= this many tx packets is WEAK despite good SNR
 
-STATE_FILE=/tmp/meshled.state
-UV_LATCH=/tmp/meshled.undervolt   # sticky undervoltage, cleared by `meshled clear`
+# #280 review 4 #10: the LED drives what a field operator does (swap a battery, pull a node) — its state is not
+# for anyone else to fake or freeze, so it lives in the root-only run dir (none: no state, the LED still runs)
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+MLDIR=/nonexistent/batman-rundir; type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null && MLDIR=$RUNDIR
+STATE_FILE=$MLDIR/meshled.state
+UV_LATCH=$MLDIR/meshled.undervolt   # sticky undervoltage, cleared by `meshled clear`
 
 # ---------------------------------------------------------------- LED driving
 
@@ -175,8 +180,8 @@ halow_retry_pct() {  # tx retransmit % over the last poll interval, "" if idle
 		/tx packets:/ { p += $3 } /tx retries:/ { r += $3 }
 		END { if (p) print p" "r }')
 	[ -n "$_now" ] || return
-	_prev=$(cat /tmp/meshled.txstat 2>/dev/null)
-	echo "$_now" > /tmp/meshled.txstat
+	_prev=$(cat "$MLDIR/meshled.txstat" 2>/dev/null)
+	echo "$_now" > "$MLDIR/meshled.txstat" 2>/dev/null
 	[ -n "$_prev" ] || return
 	set -- $_now;  _p=$1; _r=$2
 	set -- $_prev; _pp=$1; _pr=$2

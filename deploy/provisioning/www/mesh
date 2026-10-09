@@ -25,7 +25,7 @@ fetch(){
 jf(){ printf '%s' "$1" | jsonfilter -e "$2" 2>/dev/null; }
 
 # fetch every node in parallel (tmpfs, no SD write) so total latency is ~one timeout, not N of them
-TMP=$(mktemp -d 2>/dev/null || { d=/tmp/mesh.$$; mkdir -p "$d"; printf '%s' "$d"; })
+TMP=$(mktemp -d) || exit 1   # #280: never a predictable /tmp fallback
 i=0; for n in $nodes; do i=$((i+1)); fetch "$n" > "$TMP/$i" 2>/dev/null & done
 wait
 

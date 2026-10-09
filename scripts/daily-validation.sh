@@ -132,6 +132,10 @@ fi
 #     must end UNDETERMINED (never PASS), and a destructive suite must not turn the next one into a SKIP.
 suite harness-265   "harness reachability: q retry/UNDETERMINED, settle, revert/held waits, fleet settle (stub ssh, #265)"   "bash $REPO/scripts/test-harness-265.sh"
 
+# 2c. No hardware needed: nothing that runs as root on a node trusts world-writable /tmp (#280) — the static
+#     allowlist check, and its mutation proof (every bypass form must be caught).
+suite tmp-trust-static   "no decision state / root-executed file in world-writable /tmp on the node; per-hit allowlist, path table, wiring checks + mutation proofs (#280)"   "bash $REPO/scripts/check-tmp-trust.sh && bash $REPO/scripts/test-tmp-trust.sh"
+
 # 2. No hardware needed: the MAC->IP derivation used by the first-boot hook.
 suite onboarding-ip \
   "first-boot MAC->IP + DHCP-window derivation" \
@@ -230,6 +234,13 @@ DNODE=${DESTRUCTIVE_NODE:-$OTS_NODE}      # tier-B target — MUST have ethernet
 
 fssh() { timeout "${2:-60}" ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" "$3"; }
 isint() { case "$1" in ""|*[!0-9]*) return 1;; esac; }   # every reading is checked before it is compared (#268)
+# #280 node-side snippets. RDR resolves where the node keeps its decision state: the root-only run dir on an
+# image that ships rundir.sh (missing there = FAIL, never a fall back to /tmp names anyone can plant), /tmp on
+# an older image (version-tolerant harness). HDS = the harness's own scratch dir on the node: under /tmp/run
+# (root 0755 on every OpenWrt image), so no non-root process can pre-create or rewrite what root runs from it.
+RDR='R=/tmp; if [ -r /usr/lib/batman/rundir.sh ]; then R=/tmp/run/batman; [ -d "$R" ] || { echo "FAIL run dir $R missing on a #280 image"; exit 1; }; fi; '
+HDS='H=/tmp/run/batman-dv; { [ -d "$H" ] || mkdir -m 700 "$H"; } && [ -O "$H" ] && [ ! -L "$H" ] || { echo "FAIL harness scratch $H unusable"; exit 1; }; '
+HD=/tmp/run/batman-dv
 
 # ---- tier A: non-destructive, real ----
 # #216: resolve the OTS tenant dir — flash-and-go / #167 uses /opt/batdata/apps/opentakserver;
@@ -263,7 +274,7 @@ chk_162() { fssh "$1" 30 '
     [ "$(docker inspect -f "{{.State.Running}}" "$c" 2>/dev/null)" = true ] && n=$((n+1)); done
   db=$(docker exec ots-db psql -U ots -d ots -tAc "select 1" 2>/dev/null | tr -d " ")
   echo "running=$n/6 postgres=$db"; [ "$n" = 6 ] && [ "$db" = 1 ]'; }
-chk_156() { fssh "$1" 45 '
+chk_156() { fssh "$1" 45 "$HDS"'
   d=/opt/batdata/apps/opentakserver; [ -f "$d/verify-profile.sh" ] || d=/opt/batdata/deploy/ots   # #216: apps/ (flash-and-go) or deploy/ots
   [ -f "$d/verify-profile.sh" ] || { echo "verify-profile.sh not found in apps/ or deploy/ots"; exit 2; }   # do not let a missing file masquerade as DRIFT
   docker rm -f dv-decoy >/dev/null 2>&1
@@ -271,21 +282,21 @@ chk_156() { fssh "$1" 45 '
   # clear verify-profile MIN_UPTIME=15 (else UNKNOWN, not DRIFT). DV_TEST_156_NOWAIT=1 = negative control:
   # judge a too-fresh decoy, which must end as "not verified", never as a pass.
   [ "'"${DV_TEST_156_NOWAIT:-0}"'" = 1 ] && w=0 || w=18; sleep $w
-  sh "$d/verify-profile.sh" dv-decoy "$d/ots.hardening.env" >/tmp/dv-vp 2>&1; rc=$?
+  sh "$d/verify-profile.sh" dv-decoy "$d/ots.hardening.env" >"$H/dv-vp" 2>&1; rc=$?
   # UNKNOWN (3) = verify-profile could not judge (too fresh, inspect failed): retry once (#269)
-  [ "$rc" = 3 ] && [ "$w" != 0 ] && { sleep 10; sh "$d/verify-profile.sh" dv-decoy "$d/ots.hardening.env" >/tmp/dv-vp 2>&1; rc=$?; }
+  [ "$rc" = 3 ] && [ "$w" != 0 ] && { sleep 10; sh "$d/verify-profile.sh" dv-decoy "$d/ots.hardening.env" >"$H/dv-vp" 2>&1; rc=$?; }
   docker rm -f dv-decoy >/dev/null 2>&1
   echo "unhardened decoy -> verify-profile rc=$rc (1 = DRIFT detected; 0 OK, 2 usage, 3 UNKNOWN are failures)"
   # only DRIFT (1) proves the reconciler sees an unhardened container. `-ne 0` used to pass rc 2 and 3 (#269).
-  case $rc in 1) exit 0 ;; 3) echo "FAIL decoy UNKNOWN — DRIFT detection not verified"; tail -3 /tmp/dv-vp; exit 1 ;;
-    0) echo "FAIL unhardened decoy judged OK — DRIFT NOT detected"; exit 1 ;; *) echo "FAIL verify-profile rc=$rc (usage/error)"; tail -3 /tmp/dv-vp; exit 1 ;; esac'; }
-chk_167g() { fssh "$1" 20 '
+  case $rc in 1) exit 0 ;; 3) echo "FAIL decoy UNKNOWN — DRIFT detection not verified"; tail -3 "$H/dv-vp"; exit 1 ;;
+    0) echo "FAIL unhardened decoy judged OK — DRIFT NOT detected"; exit 1 ;; *) echo "FAIL verify-profile rc=$rc (usage/error)"; tail -3 "$H/dv-vp"; exit 1 ;; esac'; }
+chk_167g() { fssh "$1" 20 "$RDR"'
   # OTS runs on the GENERIC payload manager (#167), not the bespoke run.sh/batman-ots: the generic
   # guardian owns it, the old guardian is gone (double-guardian regression), and drift reads OK.
   command -v payload-run >/dev/null 2>&1 || { echo "payload-run not installed (pre-image-bake #159)"; exit 1; }
   [ -x /etc/init.d/batman-payload-opentakserver ] || { echo "generic guardian init missing"; exit 1; }
   [ -e /etc/init.d/batman-ots ] && { echo "old batman-ots still present -> double-guardian risk"; exit 1; }
-  st=$(sed -n "s/.*\"status\":\"\([A-Z]*\)\".*/\1/p" /tmp/batman-payload-opentakserver-drift.json 2>/dev/null | head -1)
+  st=$(sed -n "s/.*\"status\":\"\([A-Z]*\)\".*/\1/p" "$R/batman-payload-opentakserver-drift.json" 2>/dev/null | head -1)
   echo "generic guardian drift=$st (old batman-ots absent)"; [ "$st" = OK ]'; }
 chk_167a() { fssh "$1" 20 '
   # white-box: the port/zone arbiter REFUSES a colliding tenant (host-port clash) with exit 3.
@@ -293,7 +304,7 @@ chk_167a() { fssh "$1" 20 '
   T=$(mktemp -d); mkdir -p "$T/ots" "$T/dup"
   printf "TENANT=opentakserver\nPORTS=8088 8089 8443\nSUBNET=172.20.0.0/24\nZONE=dockert\nBRIDGE=br-ots\n" > "$T/ots/ots.net.alloc"
   printf "TENANT=dup\nPORTS=8088\nSUBNET=172.20.9.0/24\nZONE=dupz\nBRIDGE=br-dup\n" > "$T/dup/dup.net.alloc"
-  payload-arbiter "$T/dup/dup.net.alloc" "$T" >/tmp/dv-arb 2>&1; rc=$?
+  payload-arbiter "$T/dup/dup.net.alloc" "$T" >"$T/arb.out" 2>&1; rc=$?
   rm -rf "$T"
   echo "colliding tenant (:8088) -> arbiter rc=$rc (want 3=REFUSED)"; [ "$rc" = 3 ]'; }
 chk_golden() { fssh "$1" 30 '                                  # payload-config-golden.md
@@ -397,13 +408,13 @@ chk_iperf() {
   # (re)start a dedicated sink; kill any prior one only if that pid is still an iperf (PID-reuse guard)
   # detach with setsid, NOT nohup — busybox ash on the nodes has no nohup. The pid is captured INSIDE
   # the new session (echo \$\$ then exec) so it is iperf's real pid whether or not busybox setsid forks.
-  fssh "$srv" 12 "p=\$(cat /tmp/dv-iperf-s.pid 2>/dev/null); [ -n \"\$p\" ] && grep -qs iperf \"/proc/\$p/cmdline\" && kill \"\$p\" 2>/dev/null; setsid sh -c 'echo \$\$ >/tmp/dv-iperf-s.pid; exec iperf -s -p $port -f k' >/tmp/dv-iperf-s.log 2>&1 </dev/null & sleep 1"
+  fssh "$srv" 12 "$HDS p=\$(cat $HD/iperf-s.pid 2>/dev/null); [ -n \"\$p\" ] && grep -qs iperf \"/proc/\$p/cmdline\" && kill \"\$p\" 2>/dev/null; setsid sh -c 'echo \$\$ >$HD/iperf-s.pid; exec iperf -s -p $port -f k' >$HD/iperf-s.log 2>&1 </dev/null & sleep 1"
   # confirm the sink actually bound — iperf -s exits immediately if the port is already in use
-  fssh "$srv" 8 "p=\$(cat /tmp/dv-iperf-s.pid 2>/dev/null); kill -0 \"\$p\" 2>/dev/null" \
-    || { echo "iperf sink failed to start on $srv (port $port busy?)"; fssh "$srv" 8 'rm -f /tmp/dv-iperf-s.pid /tmp/dv-iperf-s.log' 2>/dev/null; return 1; }
+  fssh "$srv" 8 "p=\$(cat $HD/iperf-s.pid 2>/dev/null); kill -0 \"\$p\" 2>/dev/null" \
+    || { echo "iperf sink failed to start on $srv (port $port busy?)"; fssh "$srv" 8 "rm -f $HD/iperf-s.pid $HD/iperf-s.log" 2>/dev/null; return 1; }
   local kbps
   kbps=$(fssh "$cli" $((dur+25)) "iperf -c $srv -p $port -f k -t $dur 2>/dev/null | awk '/Kbits\/sec/{v=\$(NF-1)} END{printf \"%d\", v}'")
-  fssh "$srv" 10 "p=\$(cat /tmp/dv-iperf-s.pid 2>/dev/null); [ -n \"\$p\" ] && grep -qs iperf \"/proc/\$p/cmdline\" && kill \"\$p\" 2>/dev/null; rm -f /tmp/dv-iperf-s.pid /tmp/dv-iperf-s.log"
+  fssh "$srv" 10 "p=\$(cat $HD/iperf-s.pid 2>/dev/null); [ -n \"\$p\" ] && grep -qs iperf \"/proc/\$p/cmdline\" && kill \"\$p\" 2>/dev/null; rm -f $HD/iperf-s.pid $HD/iperf-s.log"
   [ -n "$kbps" ] && [ "$kbps" -gt 0 ] || { echo "no iperf result — sink/link down or connection refused"; return 1; }
   echo "iperf TCP $cli -> $srv: ${kbps} Kbits/sec over ${dur}s [band ${floor}..${ceil} Kbps; mesh single-dir baseline ~9300]"
   [ "$kbps" -le "$ceil" ] || { echo "ABOVE CEILING — traffic did NOT cross HaLow (wrong IPERF_PEER / eth path)"; return 1; }
@@ -451,7 +462,7 @@ chk_memcg_209() { fssh "$1" 12 '                               # #209 D6: docker
   c=$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null)
   echo "cgroup2 controllers: ${c:-none}  cmdline cgroup_disable: $(grep -o "cgroup_disable=[a-z]*" /proc/cmdline || echo none)"
   echo " $c " | grep -q " memory "'; }
-chk_slotintegrity_209() { fssh "$1" 20 '                       # #209 S5: Pi 4 EEPROM boots the wrong slot
+chk_slotintegrity_209() { fssh "$1" 20 "$RDR"'                       # #209 S5: Pi 4 EEPROM boots the wrong slot
   # The Pi 4 bootloader (EEPROM 2026-09-23) may read raw PM_RSTS as the reboot partition after a
   # partition-0 restart and walk to p1 (docs/design/explicit-reboot.md). The node must have the tool and
   # the K90 hook for explicit restarts, must not be running on a wrongly-booted slot now, must not be
@@ -459,7 +470,7 @@ chk_slotintegrity_209() { fssh "$1" 20 '                       # #209 S5: Pi 4 E
   case "$(cat /proc/device-tree/compatible 2>/dev/null)" in *bcm2711*) ;; *) echo "Pi 3: no EEPROM bootloader, the bug is Pi 4 only — n/a"; exit 0 ;; esac
   [ -x /usr/sbin/batman-reboot ] || { echo "batman-reboot missing"; exit 1; }
   [ -e /etc/rc.d/K90batman-reboot ] || { echo "K90batman-reboot hook not enabled"; exit 1; }
-  [ -f /tmp/batman-fw-override ] && { echo "the firmware booted the WRONG slot this boot: $(cat /tmp/batman-fw-override)"; exit 1; }
+  [ -f "$R/batman-fw-override" ] && { echo "the firmware booted the WRONG slot this boot: $(cat "$R/batman-fw-override")"; exit 1; }
   tail -n 20 /opt/batdata/log/autocommit.log 2>/dev/null | grep -q "FW-OVERRIDE-STUCK" && { echo "recent FW-OVERRIDE-STUCK in autocommit.log"; exit 1; }
   a=/opt/batdata/state/slot-A.protected; b=/opt/batdata/state/slot-B.protected
   [ -f "$a" ] && [ -f "$b" ] || { echo "only partly protected (A:$(cat "$a" 2>/dev/null || echo -) B:$(cat "$b" 2>/dev/null || echo -)) — sysupgrade the same image once more"; exit 1; }
@@ -475,7 +486,13 @@ chk_otatrace_209() { fssh "$1" 15 '                            # #209 S5: OTA fl
   [ -n "$b" ] || { echo "recorder present, BOOT lines ok; no OTA recorded on p6 yet"; exit 0; }
   e=$(grep " boot=$b .* S2 END " "$f" | tail -n 1)
   [ -n "$e" ] || { echo "last OTA (stage-2 boot $b) has S2 BEGIN but no S2 END — stage 2 died or its trace was lost"; exit 1; }
-  echo "last OTA (stage-2 boot $b): S2 END ${e#* S2 END }"'; }
+  # #280 review 4 #2: an OTA run by a #280 stage 2 records the ramfs root; it must be the root-only run dir
+  rf=$(grep " boot=$b .* S2 BEGIN " "$f" | tail -n 1 | sed -n "s/.* ramfs=\([^ ]*\).*/\1/p")
+  s1=$(grep " boot=$b .* S1 CHECK .*caller=/sbin/procd" "$f" | tail -n 1 | sed -n "s/.* ramroot=\([^ ]*\).*/\1/p")
+  [ -n "$s1" ] && [ -z "$rf" ] && { echo "last OTA: #280 stage 1 (ramroot=$s1) but stage 2 wrote no ramfs= — not the #280 stage 2"; exit 1; }
+  case "$rf" in "") rr="(pre-#280 stage 2: no ramfs field)";; /run/batman/ramroot) rr="ramfs=$rf";;
+    *) echo "last OTA ramfs root is $rf, not /run/batman/ramroot — RAM_ROOT not in the run dir"; exit 1;; esac
+  echo "last OTA (stage-2 boot $b): S2 END ${e#* S2 END } $rr"'; }
 chk_trybootget_209() { fssh "$1" 12 '                          # #209 v4.3 D5: tryboot GET read-back
   # batman-slot apply refuses on a pi3 unless the firmware answers the tryboot GET; on a normal
   # (committed, non-trial) boot the one-shot flag must read 0 — a 1 means the next reboot trials a slot.
@@ -594,10 +611,11 @@ bchk_fi_263() { local n=$1 ko=$2 b0 b1 t l kv nv rc=0
   [ -n "$kv" ] && [ "$kv" = "$nv" ] || { echo "FAIL module vermagic [$kv] != node kernel [$nv] — build the FI module for the image this node runs"; return 1; }
   grep -aq fi263_put_delay_ms "$ko" || { echo "FAIL $ko is not a fault-injection build (no fi263 knobs)"; return 1; }
   grep -aq cmd_timeout_in_flight "$ko" && echo "module: patched (023) + FI" || echo "module: STOCK + FI — NEGATIVE CONTROL, the node is expected to panic"
-  scp -q -o BatchMode=yes -o LogLevel=ERROR "$ko" "root@$n:/tmp/mm6108_sdio-dvfi.ko" && \
-  scp -q -o BatchMode=yes -o LogLevel=ERROR "$REPO/scripts/node/halow-fi-263.sh" "root@$n:/tmp/halow-fi-263.sh" || { echo "FAIL could not stage the module/script on $n"; return 1; }
+  fssh "$n" 10 "$HDS"'echo ok' >/dev/null || { echo "FAIL harness scratch dir on $n unusable"; return 1; }
+  scp -q -o BatchMode=yes -o LogLevel=ERROR "$ko" "root@$n:$HD/mm6108_sdio-dvfi.ko" && \
+  scp -q -o BatchMode=yes -o LogLevel=ERROR "$REPO/scripts/node/halow-fi-263.sh" "root@$n:$HD/halow-fi-263.sh" || { echo "FAIL could not stage the module/script on $n"; return 1; }
   b0=$(bootid "$n"); [ -n "$b0" ] || { echo "FAIL boot_id unreadable — not verified"; return 1; }
-  fssh "$n" 10 'setsid sh /tmp/halow-fi-263.sh </dev/null >/dev/null 2>&1 & echo launched' || { echo "FAIL could not launch"; return 1; }
+  fssh "$n" 10 "KO=$HD/mm6108_sdio-dvfi.ko setsid sh $HD/halow-fi-263.sh </dev/null >/dev/null 2>&1 & echo launched" || { echo "FAIL could not launch"; return 1; }
   echo "launched on $n (boot $b0); waiting for its reboot"
   for t in $(seq 1 90); do sleep 10; b1=$(bootid "$n"); [ -n "$b1" ] && [ "$b1" != "$b0" ] && break; done
   [ -n "$b1" ] && [ "$b1" != "$b0" ] || { echo "FAIL $n did not reboot within 15 min — check it by hand"; return 1; }
@@ -624,7 +642,7 @@ chk_runc_247() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '   
   [ -n "$v" ] || { echo "no runc"; exit 1; }
   ok=$(echo "$v" | awk -F. "{ if (\$1>1 || (\$1==1 && \$2>3) || (\$1==1 && \$2==3 && \$3>=6)) print 1; else print 0 }")
   [ "$ok" = 1 ] || { echo "runc $v < 1.3.6 (container-escape CVEs)"; exit 1; }
-  d=/tmp/dv-runc247; rm -rf $d; mkdir -p $d/rootfs/bin $d/rootfs/lib
+  d=$(mktemp -d) || exit 1; mkdir -p $d/rootfs/bin $d/rootfs/lib
   cp /bin/busybox $d/rootfs/bin/; cp -P /lib/ld-musl-*.so.1 $d/rootfs/lib/; cp /lib/libc.so $d/rootfs/lib/
   ( cd $d && runc spec >/dev/null 2>&1 && sed -i "s/\"terminal\": true/\"terminal\": false/; s/\"sh\"/\"\\/bin\\/busybox\",\"true\"/" config.json )
   o=$(cd $d && runc --debug run dv-runc247 </dev/null 2>&1); runc delete -f dv-runc247 >/dev/null 2>&1; rm -rf $d
@@ -634,10 +652,10 @@ chk_runc_247() { local n rc=0; for n in "$@"; do echo "== $n"; fssh "$n" 20 '   
 # reachable node, count p5 mounts (ext4 superblock s_mnt_count, read without mounting) over 90 s: a joined node
 # must not mount p5 at all. All nodes are sampled in the same window.
 chk_p5churn_263() { local n a b rc=0 tested=0; declare -A A
-  for n in "$@"; do A[$n]=$(fssh "$n" 15 'hexdump -s 1076 -n 2 -e "1/2 \"%u\"" /dev/mmcblk0p5 2>/dev/null; echo " $(cut -d" " -f1 /tmp/joinwatch.state 2>/dev/null)"'); done
+  for n in "$@"; do A[$n]=$(fssh "$n" 15 "$RDR"'hexdump -s 1076 -n 2 -e "1/2 \"%u\"" /dev/mmcblk0p5 2>/dev/null; echo " $(cut -d" " -f1 "$R/joinwatch.state" 2>/dev/null)"'); done
   sleep 90
   for n in "$@"; do
-    b=$(fssh "$n" 15 'hexdump -s 1076 -n 2 -e "1/2 \"%u\"" /dev/mmcblk0p5 2>/dev/null; echo " $(cut -d" " -f1 /tmp/joinwatch.state 2>/dev/null)"')
+    b=$(fssh "$n" 15 "$RDR"'hexdump -s 1076 -n 2 -e "1/2 \"%u\"" /dev/mmcblk0p5 2>/dev/null; echo " $(cut -d" " -f1 "$R/joinwatch.state" 2>/dev/null)"')
     set -- ${A[$n]}; a=$1; local sa=$2; set -- $b
     if [ -z "$a" ] || [ -z "$1" ]; then echo "  $n: no p5 superblock readable — not tested"; continue; fi
     if [ "$sa" != JOINED ] || [ "$2" != JOINED ]; then echo "  $n: joinwatch not JOINED ($sa/$2) — on-join not exercised"; continue; fi
@@ -961,7 +979,7 @@ bchk_174() {   # #174 faketime: the offline clock only moves forward across a re
   fssh "$n" 15 '[ -x /usr/sbin/batman-faketime ] && [ -f /etc/init.d/batman-faketime ]' || { echo "FAIL faketime not installed"; return 1; }
   t0=$(fssh "$n" 10 'date +%s' | tr -d ' \r'); isint "$t0" || { echo "FAIL T0 unreadable"; return 1; }
   if [ "${DV_TEST_FAKETIME_NOSAVE:-0}" = 1 ]; then
-    fssh "$n" 10 'l=$(ls /etc/rc.d/K*batman-faketime 2>/dev/null); [ -n "$l" ] && mv "$l" /tmp/dv-faketime-klink && echo "$l" > /tmp/dv-faketime-klink.name'
+    fssh "$n" 10 'rm -f /etc/rc.d/K*batman-faketime'
     echo "NEGATIVE CONTROL: shutdown save link removed for this reboot"
   fi
   reboot_and_wait "$n" reboot 240 || rc=1
@@ -1092,12 +1110,13 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
   #    (control 1.5.4: 6 running at +63 s)
   # Negative controls: DV_TEST_274_NOSTOP=1 (K08/K09 stop links removed) must FAIL 1 (and 4: dockerd revives,
   # no start mode); DV_TEST_274_RMSTOP=1 (the stop removes the containers once, feat/264-style) must FAIL 3.
-  local n=$1 rc=0 ids0 ids1 pb l r up codes c
+  local n=$1 rc=0 ids0 ids1 pb l r up codes c kl=""
   fssh "$n" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1 && [ -f /usr/lib/batman/payload-stop.sh ]' || { echo "FAIL no payload guardian / payload-stop.sh on this node"; return 1; }
   ots_ready "$n" || { echo "FAIL OTS not ready before the test"; return 1; }
   ids0=$(ots_ids "$n"); pb=$(bootid "$n" | cut -c1-8)
   if [ "${DV_TEST_274_NOSTOP:-0}" = 1 ]; then
-    fssh "$n" 10 'for l in /etc/rc.d/K*batman-payload-* /etc/rc.d/K*batman-prestop-payload; do [ -e "$l" ] && mv "$l" /tmp/dv-274-klink.$(basename "$l"); done; ls /tmp/dv-274-klink.* 2>/dev/null'
+    kl=$(fssh "$n" 10 'for l in /etc/rc.d/K*batman-payload-* /etc/rc.d/K*batman-prestop-payload; do [ -e "$l" ] && rm -f "$l" && basename "$l"; done' | tr -d '\r' | tr '\n' ' ')
+    echo "removed K links: $kl"
     echo "NEGATIVE CONTROL: payload stop links removed for this reboot"
   fi
   if [ "${DV_TEST_274_RMSTOP:-0}" = 1 ]; then
@@ -1111,7 +1130,7 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
   cot_probe_274 "$n" "$pu" "$pf"; echo "early-CoT probe $pu started on the host (-> $n:8088)"
   reboot_and_wait "$n" reboot 240 || rc=1
   if [ "${DV_TEST_274_NOSTOP:-0}" = 1 ]; then   # the K links live on the overlay: put them back
-    fssh "$n" 10 'for f in /tmp/dv-274-klink.*; do [ -e "$f" ] || continue; b=${f#/tmp/dv-274-klink.}; t=${b#K??}; ln -sf ../init.d/$t /etc/rc.d/$b; ls -l /etc/rc.d/$b; done' \
+    fssh "$n" 10 "for b in $kl; do case \$b in K[0-9][0-9]batman-*) ;; *) continue;; esac; t=\${b#K??}; ln -sf ../init.d/\$t /etc/rc.d/\$b; ls -l /etc/rc.d/\$b; done" \
       || echo "FAIL could not restore the payload K links"
   fi
   [ "$rc" = 0 ] || return 1
@@ -1218,7 +1237,7 @@ bchk_converge_274() {   # the guardian converges a CHANGED config by a graceful 
   [ "$cfg" = "$cfg0" ] || { echo "FAIL d restored fingerprint $cfg != original $cfg0"; rc=1; }
   c274_restart d && c274_check "$ids" d "$cfg0" || rc=1
   ots_ready "$n" || { echo "FAIL OTS not ready at the end"; rc=1; }
-  sleep 35; l=$(fssh "$n" 10 'cat /tmp/batman-payload-opentakserver-drift.json' | tr -d '\r'); echo "verdict: $l"
+  sleep 35; l=$(fssh "$n" 10 "$RDR"'cat "$R/batman-payload-opentakserver-drift.json"' | tr -d '\r'); echo "verdict: $l"
   case "$l" in *'"status":"OK"'*) ;; *) echo "FAIL verdict not OK after convergence"; rc=1 ;; esac
   # the rebuilds removed the old ots-db only after a graceful stop: the current one started from a clean shutdown
   pg=$(fssh "$n" 15 'docker logs ots-db 2>&1 | grep -E "database system was shut down at|not properly shut down|was interrupted" | tail -1')
@@ -1266,6 +1285,21 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     suite converge-274 "guardian converges a changed config (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
     suite cleanstop-274 "clean reboot stop/start (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
   fi
+fi
+
+# ---- #280: a non-root process cannot steer the node through /tmp (every fleet node, version-gated) ----
+# Plants as nobody: old /tmp markers, an operator flag, a battery reading. Restarts batpower under a STAGED mock
+# config; the plant lives < (confirm-1)*interval so even a regressed build cannot reach CRIT (design §9 N2).
+chk_tmptrust_280() { local n rc=0 o r; for n in $FLEET; do echo "== $n"
+  o=$(timeout 300 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$n" 'sh -s' < "$REPO/scripts/node/tmp-trust-280.sh" 2>&1); r=$?
+  echo "$o"
+  [ "$r" = 0 ] && ! echo "$o" | grep -qx '== tmp-trust-280: PASS' && { echo "FAIL $n: rc 0 without the PASS trailer (script cut short?)"; rc=1; }
+  case $r in 0) ;; 3) echo "$o" | grep -q '^SKIP-REASON: pre-#280' && echo "FAIL $n runs a pre-#280 image — this run cannot verify #280 on it" ; rc=1 ;; *) rc=1 ;; esac
+  done; return $rc; }
+if [ "$FEATURE_MODE" = --destructive ]; then
+  suite tmp-trust-280 "nobody cannot write the run dir, planted /tmp markers + operator flag ignored (TAMPER), batpower never reads a planted value — every fleet node (#280)" "chk_tmptrust_280"
+else
+  suite tmp-trust-280 "non-root /tmp steering (#280) — restarts batpower, needs FEATURE_MODE=--destructive" ""
 fi
 
 # ---- #263 driver race under fault injection (release gate) ----

@@ -31,10 +31,12 @@ REQUIRE_IMAGE_METADATA=0
 #  If a future bench run reports another missing tool, add its path here.)
 # #209 v4.3 adds the uncached read-back verification (sha256sum/head/tail/cut/cmp) and the Pi 3
 # firmware allow-list (RAMFS_COPY_DATA). Prove the set on the bench with a stage2 log, as #89 did.
+# #280: the root-only run dir helper (rundir.sh) and mktemp — every private temp file and the p6 trace
+# mount live in /tmp/run/batman, which crosses into the ramfs with /tmp.
 # shellcheck disable=SC2034
-RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/sbin/batman-reboot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr /usr/bin/sha256sum /usr/bin/head /usr/bin/tail /usr/bin/cut /usr/bin/cmp'
+RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/sbin/batman-reboot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr /usr/bin/sha256sum /usr/bin/head /usr/bin/tail /usr/bin/cut /usr/bin/cmp /bin/mktemp'
 # shellcheck disable=SC2034
-RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256 /usr/lib/batman/otatrace.sh /usr/lib/batman/bootfacts.sh'
+RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256 /usr/lib/batman/otatrace.sh /usr/lib/batman/bootfacts.sh /usr/lib/batman/rundir.sh'
 
 # OTA flight recorder (#209 S5, docs/design/ota-trace.md). Functions only; a missing or broken lib
 # degrades to no trace, never to a different upgrade decision.
@@ -43,20 +45,74 @@ RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256 /usr/lib/ba
 type otalog >/dev/null 2>&1 || { otalog() { :; }; otalog_k() { :; }; ota_get() { :; }; ota_thr() { :; }; }
 # shellcheck source=/dev/null
 [ -f /usr/lib/batman/bootfacts.sh ] && . /usr/lib/batman/bootfacts.sh
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+type batman_tmp >/dev/null 2>&1 || batman_tmp() { return 1; }
+type batman_rundir >/dev/null 2>&1 || batman_rundir() { return 1; }
+# root-owned, not a symlink, single link (#280 D2)
+opf() { type batman_opf >/dev/null 2>&1 || return 1; batman_opf "$1"; }   # rundir.sh: the one opf (#280 D1), logs TAMPER
+
+# #280 review 3 — RAM_ROOT lives in the root-only run dir. Upstream lib/upgrade/common.sh sets RAM_ROOT=/tmp/root,
+# where stage 1 installs `upgraded` (procd chroots there and execs it as PID 1) and stage 2 builds its ramfs —
+# and install_file copies a file only if it does NOT exist yet. In world-writable /tmp a non-root process could
+# pre-create it and choose what root executes; "take /tmp/root back" (review 2 fix) loses a race under
+# `sysupgrade -F` and its rm -rf of an attacker tree can be steered by symlinks. This file is sourced by every
+# `include /lib/upgrade` AFTER common.sh (stage 1, validate_firmware_image, stage 2, do_stage2), so overriding the
+# variable here moves EVERY user of it (stage 1's install_bin, the procd prefix and the failsafe /tmp/sysupgrade
+# both pass $RAM_ROOT, stage 2's switch_to_ramfs/supivot) to a place no non-root process can create anything in.
+# No run dir: RAM_ROOT is left unset-to-ours and platform_check_image refuses (fail closed).
+if batman_rundir 2>/dev/null; then RAM_ROOT=$RUNDIR/ramroot; fi
+# review 4 #3: without a run dir RAM_ROOT would stay in world-writable /tmp — refuse the upgrade itself right
+# here (stage 1 / stage 2 include us before any install_bin), so not even `sysupgrade -F` can use /tmp/root.
+case "$RAM_ROOT" in "$RUNDIR"/*) ;; *) case "${0##*/}" in sysupgrade|stage2)
+	# not an upgrade (sysupgrade -b/-r/-l/-h): no RAM_ROOT is used, let it run (review 5 m3)
+	[ -n "${CONF_BACKUP:-}${CONF_RESTORE:-}${CONF_BACKUP_LIST:-}${HELP:-}" ] && [ "${0##*/}" = sysupgrade ] || {
+	echo "REFUSING: no root-only run dir ($RUNDIR) for the sysupgrade RAM_ROOT — not installing into world-writable $RAM_ROOT" >&2
+	exit 1; };; esac;; esac
 
 # Stage 1 (also run by validate_firmware_image / `sysupgrade -T` / LuCI): trace the verdict ONLY —
 # no state file, so a mere validation leaves nothing that a later boot could misread as an OTA.
 platform_check_image() {
 	local out rc caller
-	out=$(_ab_check_image "$@" 2>&1); rc=$?
+	out=$( { _ab_ramroot_guard "$@" && _ab_check_image "$@"; } 2>&1); rc=$?
 	[ -n "$out" ] && echo "$out"
 	caller=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null | cut -c1-60)
-	otalog S1 CHECK rc=$rc caller="$caller" msg="$(echo "$out" | tail -1)"
+	otalog S1 CHECK rc=$rc caller="$caller" ramroot="$RAM_ROOT" upg="$([ -x "$RAM_ROOT/sbin/upgraded" ] && echo y || echo n)" msg="$(echo "$out" | tail -1)"
 	return $rc
+}
+# #280 review 3: the upgrade's own inputs must be root's. Checks only — nothing is removed (an rm -rf of a tree
+# someone else owns can be steered). Under `sysupgrade -F` a refusal is ignored; RAM_ROOT is safe regardless
+# (above), so what -F still lets through is a non-root-owned image or config backup, which the operator forced.
+_ab_ramroot_guard() {
+	local f
+	# a fresh RAM_ROOT per OTA: install_file never overwrites, so files left by an OTA aborted earlier this boot
+	# would be reused. Only stage 1 (our parent is /sbin/sysupgrade) resets it — procd validates AFTER install_bin.
+	# It is inside the root-only run dir, so this rm cannot be steered by anyone else (unlike /tmp/root).
+	case "$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null)" in *sysupgrade*) case "$RAM_ROOT" in "$RUNDIR"/ramroot) rm -rf "$RAM_ROOT";; esac;; esac
+	case "$RAM_ROOT" in "$RUNDIR"/*) ;; *) echo "REFUSING: no root-only run dir for the sysupgrade RAM_ROOT (it would be $RAM_ROOT)"; return 1;; esac
+	# the image itself (stage 1 hands a /tmp copy; LuCI/cgi-io upload to /tmp as root): root's, no link tricks
+	if [ -n "${1:-}" ] && [ "$1" != - ]; then
+		{ [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(ls -ln "$1" 2>/dev/null | awk '{print $2}')" = 1 ]; } \
+			|| { echo "REFUSING: image $1 is not a root-owned single-link regular file (possible plant)"; return 1; }
+		# its directory: sticky /tmp (others cannot rename our file there), or root's and not writable by others
+		f=${1%/*}; [ "$f" = "$1" ] && f=.
+		if [ "$f" != /tmp ]; then
+			{ [ -d "$f" ] && [ -O "$f" ] && case "$(ls -ld "$f" | cut -c1-10)" in d????w????|d???????w?) false;; *) true;; esac; } \
+				|| { echo "REFUSING: image directory $f is not root's or is writable by others (the image could be swapped)"; return 1; }
+		fi
+	fi
+	# the rest of sysupgrade's /tmp files: image copy, config backup, conffiles list, failsafe hand-over
+	for f in /tmp/sysupgrade*; do
+		[ -e "$f" ] || [ -L "$f" ] || continue
+		{ [ ! -L "$f" ] && [ -O "$f" ]; } || { echo "REFUSING: $f is not root's (possible plant) — remove it and retry"; return 1; }
+	done
+	return 0
 }
 _ab_check_image() {
 	[ "$#" -gt 1 ] && return 1
-	local list=/tmp/ab-check.$$
+	local list
+	list=$(batman_tmp ab-check 2>/dev/null || mktemp /tmp/ab-check.XXXXXX) || { echo "cannot create a temp file"; return 1; }
 	# NB: tar is NOT `-z` here. get_image already transparently decompresses a gzip source (it sniffs
 	# the 1f8b magic and pipes through `busybox zcat`), so it hands us a PLAIN tar stream; `tar -tzf`
 	# would then try to gunzip an already-gunzipped stream and fail with "not a gzip tar". (#89 bench)
@@ -155,31 +211,33 @@ soc_running() {
 # ---- stage 2 flight recorder (#209 S5) ----------------------------------------------------------
 # The stage-2 ramfs has lost /opt/batdata (`umount -l /mnt` takes the whole old tree), and the stock
 # do_stage2 ignores our return code and always ends in `umount -a; reboot -f` — so without this,
-# nothing of stage 2 survives. Re-mount the data partition under /tmp/p6t just for the trace file
-# (batdata-mount leaves the real device in /tmp/batdata.dev; /tmp crosses into the ramfs). The
+# nothing of stage 2 survives. Re-mount the data partition under $RUNDIR/p6t just for the trace file
+# (batdata-mount leaves the real device in $RUNDIR/batdata.dev; /tmp — and so /tmp/run/batman — crosses
+# into the ramfs, #280: never spell it /var/run, /var is a fresh dir in the ramfs). The
 # mount runs in the background with a 10 s budget (busybox has no `timeout`): if it hangs we give
 # up and trace to kmsg only — the upgrade itself never waits on the recorder.
 ota_s2_open() {
 	local dev mp n
 	OTATRACE_FILE=/nonexistent/ota-trace.log; export OTATRACE_FILE   # kmsg-only until p6 is up
-	dev=$(cat /tmp/batdata.dev 2>/dev/null); [ -b "$dev" ] || return 0
+	batman_rundir 2>/dev/null || return 0   # no private run dir: trace to kmsg only (never trust /tmp here)
+	dev=$(cat "$RUNDIR/batdata.dev" 2>/dev/null); [ -b "$dev" ] || return 0
 	[ "$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$dev" 2>/dev/null)" = 53ef ] || return 0
-	[ -f /tmp/batman-fault.s2-nomount ] && [ -O /tmp/batman-fault.s2-nomount ] && return 0   # test seam
-	mkdir -p /tmp/p6t
-	mount -t ext4 -o rw,noatime "$dev" /tmp/p6t 2>/dev/null &
+	opf /tmp/batman-fault.s2-nomount && return 0   # test seam
+	mkdir -p "$RUNDIR/p6t"
+	mount -t ext4 -o rw,noatime "$dev" "$RUNDIR/p6t" 2>/dev/null &
 	mp=$!; n=0
 	while kill -0 "$mp" 2>/dev/null && [ "$n" -lt 10 ]; do sleep 1; n=$((n + 1)); done
 	kill -0 "$mp" 2>/dev/null && { kill -9 "$mp" 2>/dev/null; return 0; }
-	grep -q " /tmp/p6t " /proc/mounts || return 0
-	mkdir -p /tmp/p6t/log
-	OTATRACE_FILE=/tmp/p6t/log/ota-trace.log; export OTATRACE_FILE
+	grep -q " $RUNDIR/p6t " /proc/mounts || return 0
+	mkdir -p "$RUNDIR/p6t/log"
+	OTATRACE_FILE=$RUNDIR/p6t/log/ota-trace.log; export OTATRACE_FILE
 	return 0
 }
 ota_s2_close() {
 	local up n
 	sync
-	grep -q " /tmp/p6t " /proc/mounts || return 0
-	umount /tmp/p6t 2>/dev/null &
+	grep -q " $RUNDIR/p6t " /proc/mounts || return 0
+	umount "$RUNDIR/p6t" 2>/dev/null &
 	up=$!; n=0
 	while kill -0 "$up" 2>/dev/null && [ "$n" -lt 5 ]; do sleep 1; n=$((n + 1)); done
 	return 0
@@ -190,7 +248,10 @@ ota_s2_close() {
 platform_do_upgrade() {
 	local abrc
 	ota_s2_open
-	otalog_k S2 BEGIN p6trace="$([ "$OTATRACE_FILE" = /tmp/p6t/log/ota-trace.log ] && echo yes || echo no)" get="$(ota_get)" thr="$(ota_thr)"
+	# the ramfs root as the kernel sees it (/run/batman/ramroot inside the /tmp tmpfs on #280; stock: /root)
+	local rfs="" _a _b _c _r _m _x
+	while read -r _a _b _c _r _m _x; do [ "$_m" = / ] && rfs=$_r; done < /proc/self/mountinfo
+	otalog_k S2 BEGIN ramfs="${rfs:-?}" p6trace="$([ "$OTATRACE_FILE" = "$RUNDIR/p6t/log/ota-trace.log" ] && echo yes || echo no)" get="$(ota_get)" thr="$(ota_thr)"
 	_ab_do_upgrade "$@"; abrc=$?
 	otalog_k S2 END rc=$abrc get="$(ota_get)" thr="$(ota_thr)"
 	ota_s2_close
@@ -213,7 +274,7 @@ ota_s2_explicit_restart_if_not_armed() {
 	if grep -q ' /boot ' /proc/mounts; then
 		n=$(bf_ab_all /boot)
 	else
-		m=/tmp/s2-p1; mkdir -p "$m"
+		m=$(batman_tmp -d s2-p1) || return 0
 		mount -t vfat -o ro /dev/mmcblk0p1 "$m" 2>/dev/null && { n=$(bf_ab_all "$m"); umount "$m" 2>/dev/null; }
 	fi
 	case "$n" in 1|2) ;; *) return 0 ;; esac
@@ -225,11 +286,12 @@ ota_s2_explicit_restart_if_not_armed() {
 }
 
 _ab_do_upgrade() {
-	local dir=/tmp/ab-payload troot t0 r
-	rm -rf "$dir"; mkdir -p "$dir"
+	local dir troot t0 r ex
+	# #280: the boot payload and the exclude list are what stage 2 writes to the slot — private, never /tmp
+	dir=$(batman_tmp -d ab-payload) && ex=$(batman_tmp ab-exclude) || { echo "run dir unusable (#280)"; otalog S2 REFUSE why=rundir-unusable; return 1; }
 	# everything but root.squashfs (streamed below). -x not -xz: get_image already un-gzips.
-	echo 'root.squashfs' > /tmp/ab-exclude
-	get_image "$@" | tar -xf - -C "$dir" -X /tmp/ab-exclude || { echo "A/B image unpack failed"; otalog S2 REFUSE why=unpack-failed; return 1; }
+	echo 'root.squashfs' > "$ex" || { otalog S2 REFUSE why=exclude-write; return 1; }
+	get_image "$@" | tar -xf - -C "$dir" -X "$ex" || { echo "A/B image unpack failed"; otalog S2 REFUSE why=unpack-failed; return 1; }
 	[ -f "$dir/SHA256SUMS" ] && [ -f "$dir/metadata" ] || { echo "image lacks SHA256SUMS/metadata"; otalog S2 REFUSE why=no-sums-or-metadata; return 1; }
 	otalog S2 PAYLOAD "$(tr '\n' ' ' < "$dir/metadata" 2>/dev/null)"
 

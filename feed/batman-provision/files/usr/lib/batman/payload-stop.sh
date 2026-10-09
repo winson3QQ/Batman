@@ -15,7 +15,9 @@
 # shellcheck shell=sh
 
 PSTOP_APPS="${APPS_DIR:-/opt/batdata/apps}"
-PSTOP_RUN="${PAYLOAD_RUNDIR:-/tmp}"
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh   # #280: root-only run dir (RUNDIR)
+PSTOP_RUN="${PAYLOAD_RUNDIR:-${RUNDIR:-/nonexistent/batman-rundir}}"
 PSTOP_LOG="${PAYLOAD_STOP_LOG:-/opt/batdata/log/payload-stop.log}"
 
 pstop_up(){ cut -d' ' -f1 /proc/uptime; }

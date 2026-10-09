@@ -192,7 +192,7 @@ worth investigating, since the daemon should never exit on its own.
 | | `radio3` not disabled | `radio-disabled` |
 | | hostname is not the factory default | `default-hostname` |
 
-Failure tags go to `/tmp/meshled.state`, to syslog, and to `meshled status`.
+Failure tags go to `/tmp/run/batman/meshled.state` (the root-only run dir, #280), to syslog, and to `meshled status`.
 
 > **Do not test for a `morse_spi` module.** OpenMANET compiles SPI support into a
 > single `morse` module; there is no separate `morse_spi`, so that check reports a
