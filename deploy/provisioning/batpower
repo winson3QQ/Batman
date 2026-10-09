@@ -98,7 +98,9 @@ load_cfg
 # oracle can tell a reading from the old world-writable path from none.
 [ "${1:-}" = once ] && [ -n "${BATPOWER_MOCK_PATH:-}" ] && MOCK=$BATPOWER_MOCK_PATH
 case "$1" in
-	once)   tick; cat "$STATE";;
+	once)   # same rule as the daemon (#280 review 2 #8): no private run dir -> no mock, print the reading only
+	        if type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null; then tick; cat "$STATE"
+	        else [ "$SOURCE" = mock ] && SOURCE=none; STATE=/dev/stdout; tick; fi;;
 	status) [ -f "$STATE" ] && read -r s v i t < "$STATE" && printf 'state=%s vbat=%smV i=%smA age=%ss source=%s warn<=%s crit<=%s cells=%s action=%s\n' \
 			"$s" "$v" "$i" "$(( $(date +%s) - t ))" "$SOURCE" "$V_WARN" "$V_CRIT" "$CELLS" "$ACTION" || echo "no reading yet";;
 	run)    [ "$(cfg enabled 1)" = 1 ] || { note notice "disabled by uci"; exit 0; }

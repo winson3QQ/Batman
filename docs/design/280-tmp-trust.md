@@ -1,6 +1,6 @@
 # #280 Stop treating `/tmp` as trusted IPC: decision state moves to a root-only run directory
 
-Status: **design v2.1** — v1 REJECT; v2 APPROVE-WITH-CHANGES; §9 makes the changes binding · 2026-10-08 · Refs #280 #265 #261 #209 #91
+Status: **design v3** (2026-10-09) — §10 adds the docs/design/REVIEW.md sections (evidence, ownership, contracts, lifecycle matrix, security per actor, residuals) and resolves review 2 (whole design + implementation, REJECT); §10 overrides §2–§9 where they differ. Earlier: v1 REJECT; v2 APPROVE-WITH-CHANGES (§9) · Refs #280 #274 #265 #261 #209 #91
 
 ## 0. Reality check (2026-10-08, 02/03/04 on 1.5.6-wsl.1; full inventory on #280)
 
@@ -344,3 +344,247 @@ If the run dir is unusable in stage 2, batman-slot refuses apply: **the OTA is r
 The static check is authoritative; the D4 list is examples only. Known extra snippets are fixed with `mktemp` staging or `$R`:
 - `daily-validation.sh` 274, 296, 400-406;
 - 964, 1100, 1114 — rc.d links rebuilt from a `/tmp` glob; a planted name could add an S/K link.
+
+## 10. v3 (2026-10-09): written against `docs/design/REVIEW.md`; review 2 (whole design + implementation) resolved
+
+Review 2 was the first review under REVIEW.md. It read the whole document and the implementation, and checked the code and all three nodes read-only. Verdict: **REJECT**, with 2 BLOCKERs and 3 MAJORs (#280 comment 6072601765).
+
+This section adds the REVIEW.md sections the design lacked. Where it differs from §2–§9, it overrides them.
+
+### 10.0 Evidence (assumptions, each checked)
+
+**A1 — `/tmp/run` exists, root 0755, before any process starts.** procd `initd/early.c:75-79` mounts `/tmp` 01777 and runs `mkdir("/tmp/run",0755)` before it starts anything. All three nodes show `drwxr-xr-x root /tmp/run`.
+
+**A2 — `/tmp` survives into the stage-2 ramfs; `/var` does not.** `stage2:30` moves `/tmp` into the ramfs (`supivot`), and `/var` there is a fresh directory. That is design B1, and why the run dir is spelled through `/tmp/run`.
+
+**A3 — A non-root process can plant a root-executed file through `/tmp/root`.** Evidence:
+- `lib/upgrade/common.sh:1` sets `RAM_ROOT=/tmp/root`.
+- `install_file` (`common.sh:8-27`) copies only when `[ ! -f "$dest" ]` and uses `mkdir -p`.
+- `sbin/sysupgrade:407` calls `install_bin /sbin/upgraded`; procd then chroots there and execs it as root.
+- stage 2 `switch_to_ramfs` (`stage2:42-65`) copies into the same directory.
+- Today `/tmp/root` is absent on all three nodes, so the path is exploitable but has not been exploited.
+
+**A4 — `validate_firmware_image` calls our `platform_check_image` on every path into an upgrade: stage 1 first, then procd after stage 1's `install_bin`.** Evidence: `/usr/libexec/validate_firmware_image` and procd `system.c` (sysupgrade handler: validate, then `service_stop_all`).
+
+**A5 — Non-root code cannot trigger validation over ubus.** `acl.d` grants `nobody` only `board` and `info`.
+
+**A6 — A generated init is a separate process.** The `batdata-mount` init is written from a quoted heredoc and run as `"$INIT" boot` (`95-batman-storage`), so it inherits nothing from 95. This was BLOCKER 1, and it is now checked statically.
+
+**A7 — The node sysctls today: `protected_regular=0`, `protected_fifos=0`, `protected_symlinks=1`, `protected_hardlinks=1`.** `sysctl -n` on 02/03/04.
+
+**A8 — The upstream `/etc/init.d/boot:31` creates `/tmp/.uci` (then `chmod 0700`) after ubusd (uid 81) has started.** Evidence: the boot script and §0. This is a residual (R2).
+
+### 10.1 Ownership
+
+| resource | owner (writer) | readers | notes |
+|---|---|---|---|
+| `/tmp/run` | procd (A1) | — | never created by us |
+| `$RUNDIR` (`/tmp/run/batman`) | **`batman_rundir` in `rundir.sh`** (every caller, idempotent `mkdir -m 700` + verify) | all | the one creator function; no other code may create it |
+| `shutdown.reason` | batpower, joinwatch: first writer wins; batman-slot `cmd_apply`/`cmd_reboot`: overwrite | batdata-mount `stop()` (K10) | The process that actually triggers the shutdown names it. batman-slot is that process when it reboots. batpower and joinwatch never overwrite a reason someone else already set, because they may lose a race with a shutdown that is already under way. |
+| `batman-reboot.want` | batman-slot `reboot` | K90 `batman-reboot` (consumes it) | batpower deletes it so that a pending controlled reboot cannot turn a low-battery halt into a restart. One writer, two deleters, both intentional. |
+| `batman-fw-override(-pending)`, `batdata.dev`, `batdata-mount.booted`, `batman-storage.crit` | batdata-mount init / 95 (via `mark`) | autocommit, batman-slot, halow-status, platform-ab (stage 2) | |
+| autocommit state (`autocommit.*`) | batman-autocommit | halow-status, harness | table in `scripts/rundir-paths.txt` |
+| payload state (`batman-payload-<t>.*`, firstload latch) | payload-run / payload-stop / guardian / firstload | autocommit, halow-status, harness | consumed by #274 |
+| `batpower.state`, `batpower.mock` | batpower; mock = an operator on the bench (root) | halow-status, flightrec, batman-slot | |
+| `/etc/.batman-p5-restored` | 96-batman-config-migrate | 99-halow-identity (consumes it) | **Deliberately persistent (deviation from N3).** See the note below this table. |
+| operator flags `/tmp/batman-autocommit.hold`, `/tmp/batman-fault.*`, `/tmp/batman-slot.allow-*`, `/tmp/batman-ots-pause` | an operator (root, by hand) | via `batman_opf` only | they stay in `/tmp` because operators type them; `batman_opf` (rundir.sh) is the one check (D1) |
+| `/tmp/root` (RAM_ROOT), `/tmp/sysupgrade*` | upstream sysupgrade; **taken by our `_ab_ramroot_guard`** before stage 1 copies into it | procd, `upgraded`, stage 2 | BLOCKER 2 |
+| `/tmp/run/batman-dv` | the harness (root over ssh) | the harness | 0700, owner-checked |
+| `/tmp/.uci` | upstream `boot` | uci | residual R2 |
+| `/etc/sysctl.d/90-batman.conf` | batman-provision | procd sysctl at boot | Applied after OpenWrt's `10-default.conf`, so our values win for the keys we set: `protected_regular=2`, `protected_fifos=2`. The runtime check verifies the values are live. |
+
+**Why `/etc/.batman-p5-restored` stays persistent.** The flag tells 99 "the identity came from p5, don't re-personalise". 96 writes it and 99 consumes it in the same uci-defaults pass.
+- If power is lost between 96 and 99, a run-dir copy would be gone at the next boot. 99 would then overwrite the restored identity.
+- `/etc` is root-only overlay.
+
+### 10.2 Contracts
+
+**`$RUNDIR` (`/tmp/run/batman`)**
+- Valid when the parent `/tmp/run` is root-owned, not a symlink, and not group/other-writable, and `$RUNDIR` itself is `drwx------` root.
+- Missing or bad: `batman_rundir` returns rc 1, and every caller fails CLOSED (§3, N6, N7).
+- Trust: only root can create anything in it.
+
+**A marker `$RUNDIR/<name>`**
+- Written by the owner named in §10.1; the names are those in `scripts/rundir-paths.txt`. Valid for the current boot (tmpfs).
+- Missing: the reader takes the safe default named per reader. Examples: no fw-override means no correcting reboot; no `batdata.dev` means no stage-2 trace.
+- Trust: root-only.
+
+**An operator flag in `/tmp`**
+- Valid only through `batman_opf`: a regular file, owned by root, not a symlink, link count 1.
+- Present but failing the check: TAMPER, logged and shown by halow-status, and the flag is ignored. A non-root process can therefore cancel an operator hold (R1).
+
+**`/tmp/root`**
+- Before stage 1 copies into it, `_ab_ramroot_guard` makes it root `drwx------`, with nothing inside that is not root-owned.
+- If anything else is there, it is removed, recreated, and verified.
+- If it cannot be made private, the upgrade is REFUSED. Under `sysupgrade -F` the refusal is ignored, but the clean-up has already happened.
+
+**`/tmp/sysupgrade*`**
+- Each entry must be root-owned and not a symlink; otherwise the upgrade is refused.
+
+**Path table `scripts/rundir-paths.txt`**
+- Owner: the code that writes the names. Readers: the static check.
+- A name missing from the table fails the check (N3).
+
+### 10.3 Lifecycle matrix
+
+**First boot**
+- Behaviour: 95 runs at S10 and writes the init. The generated `batdata-mount` init sources `rundir.sh` and defines `mark`/`tmpd`/`tmpf` itself (BLOCKER 1). The S11 re-run is idempotent.
+- Proof: `tmp-trust-280` §2 (the markers exist); the static check "INIT HELPER MISSING" plus 2 mutations.
+
+**Every boot**
+- Behaviour: the run dir is created on first use by the first caller.
+- Proof: `tmp-trust-280` §1/§2.
+
+**Clean shutdown / reboot**
+- Behaviour: K10 `stop()` reads `$RUNDIR/shutdown.reason`; K90 consumes `batman-reboot.want`.
+- Proof: boot-reasons.log shows the reason (ab-selftest / fi-r*).
+
+**OTA stage 1**
+- Behaviour: `_ab_ramroot_guard` runs in every validation, before `install_bin`.
+- Proof: `tmp-trust-280` §5: a nobody plant is taken back and recreated as root 0700.
+
+**OTA stage 2 (ramfs)**
+- Behaviour: `rundir.sh` and `mktemp` are copied in, and `/tmp` crosses into the ramfs (A2). If the run dir is unusable, the apply is refused (fail closed, N7).
+- Proof: the stage-2 proof on both boards: `p6trace=yes` in the trace (§7.3).
+
+**Mid-trial OTA from a pre-#280 slot**
+- Behaviour: the old `platform-ab` runs and is self-consistent, with its own `/tmp` names.
+- Proof: the fi-r* OTA legs from 1.5.6 to the rc.
+
+**autocommit commit / revert**
+- Behaviour: run-dir claim and markers. With the run dir unusable: never commit; the watchdog reverts without the claim (N6). Several watchdogs can result, which is harmless.
+- Proof: fi-r1/r3/r4, hold-261.
+
+**Power loss**
+- Behaviour: run-dir state is lost (tmpfs; per-boot by design). `/etc/.batman-p5-restored` survives on purpose (§10.1).
+- Proof: by design.
+
+**Restart of a component (batpower, guardian, autocommit, procd services)**
+- Behaviour: each re-verifies the run dir on start.
+- Proof: `tmp-trust-280` §7 (batpower restart).
+
+**Restart of dnsmasq, network, firewall, odhcpd, LuCI under `protected_regular=2` / `protected_fifos=2`**
+- Behaviour: none of them may break: an `O_CREAT` on a file another user owns in sticky `/tmp` now fails.
+- Proof: **D5 / §7.5 restart-path test** on the rc: each restart, then the service is healthy, and no `EACCES` in logread.
+
+**Downgrade to an image without #280**
+- Behaviour: that image's code uses its `/tmp` names again. The run dir stays as an unused root dir.
+- On batpower:
+  - the p5 config restore brings back what that image's migration wrote;
+  - 1.5.6's binary default is `mock`;
+  - a node carrying `source=mock` in uci gets the old risk back;
+  - our migration writes `none` into uci, so a downgrade keeps `none` unless that uci was restored from an older p5.
+
+  This is stated as residual R3.
+- Proof: one downgrade run before the PR, recorded.
+
+**Failsafe boot**
+- Behaviour: no procd services. `/tmp/run` still comes from `early.c`, and our scripts don't run.
+- Proof: n/a (no batman services in failsafe).
+
+**Both boards**
+- Behaviour: Pi 3: the MBR cache falls back to a `/tmp` mktemp (O_EXCL, random name, 0600) when the run dir is unusable, never to a fixed name.
+- Proof: `tmp-trust-280` and the stage-2 proof on 03.
+
+### 10.4 Security (per actor)
+
+**Local non-root process** (dnsmasq, ubus, avahi, an escaped container uid). This is the main actor.
+- It cannot create anything in `/tmp/run` or `$RUNDIR`.
+- Its plants in `/tmp` have no effect, because every reader looks in the run dir. The runtime test checks the *effect* (autocommit still decides; payload-run not stopped), not only "not honoured".
+- It cannot own `/tmp/root` at upgrade time (guard).
+- It can cancel an operator flag by pre-creating its name (R1).
+- It can make an upgrade refuse by planting `/tmp/sysupgrade*` (DoS only).
+
+**Compromised tenant container**
+- The containers run as uid 1000/999 with no `/tmp` bind (verified on 04), so at most it is a local non-root process once escaped.
+- `lora-rx` has `/opt/batdata` mounted RW. That is a p6 writer, handled in #274, not a `/tmp` path.
+
+**Remote over the mesh**
+- No new surface. `tmp-trust` adds no network input.
+- The CGI bundle uses a private mktemp report directory.
+
+**Physical capture**
+- Unchanged. The run dir is tmpfs and is gone at power-off.
+
+**Supply chain**
+- The static check plus the mutation test run in CI on every change. A new file under `deploy/` or `feed/` that names `/tmp` fails the build.
+
+**Our own mistakes**
+- Most regressions are caught statically: per-hit allowlist (no line waivers), N3 path table, init-helper check, 21 mutations.
+- The rest are caught at runtime by `tmp-trust-280`: markers produced, N8 sweep, effects.
+- BLOCKER 1 was exactly this class of mistake, and it is now covered both ways.
+
+### 10.5 Deviations from §2–§9, with reasons
+
+**D6 `$(date` / boot_id patterns.**
+- A path in a world-writable directory is flagged whatever its name, and that is now proven by a mutation (`/tmp/ac.$(date +%s)`).
+- The 9 `$(date`/`$(bid)` names in the tree are all in root-only p6 directories (`$CRASH`, `$LOG`) or are run IDs, not paths.
+- A pattern on the name alone would only add allowlist noise. Not added.
+
+**N8 sweep.**
+- A committed per-board list of stock root-owned `/tmp` entries would break with every package change.
+- Instead, the runtime sweep fails on (a) any root-owned entry under a directory someone else owns, the M2 pattern, and (b) any batman decision name still at the top of `/tmp`.
+
+**N9 / `BATMAN_RUNDIR`.**
+- Removed (review 2 #7). Production code takes its trust root from the environment nowhere.
+- No test used it. Host tests fall back to `mktemp`.
+
+**D1 `opf`.**
+- Now the single `batman_opf` in `rundir.sh`, which logs TAMPER unless told to be quiet (halow-status displays it itself).
+- Every former copy calls it: autocommit, batman-slot, joinwatch, platform-ab, halow-status, reconcile-resources.
+- `reconcile-resources` on an image without `rundir.sh` never honours the pause (fail closed).
+
+### 10.6 Residuals (stated, not fixed here)
+
+**R1 — Operator-flag DoS.**
+- A non-root process can pre-create `/tmp/batman-autocommit.hold`. The operator's `touch` then leaves it owned by nobody, so the hold is ignored (TAMPER shown) and the trial is reverted. That is the safe direction.
+- The persistent hold-commit of #261 is not affected and is the preferred hold: the root-only p6 flag `/opt/batdata/state/autocommit-hold-commit`, lifted by `batman-autocommit release`.
+
+**R2 — Upstream `/etc/init.d/boot:31`** creates `/tmp/.uci` after ubusd (uid 81) is running.
+- If a non-root process wins that race and owns `/tmp/.uci`, it can stage uci deltas that a later root `uci commit` applies.
+- `/tmp/.uci` is absent before `boot`. Only ubusd and procd-started root services exist at that point, so the window is boot-only and uid 81 only.
+- To report upstream together with A3. #263's upstream report is pending the user's decision, so this one is not posted either without asking.
+
+**R3 — Downgrade.** See the downgrade entry in §10.3.
+
+**R4 — `sysupgrade -F`.** The refusals of `_ab_ramroot_guard` are ignored, but its clean-up has already run.
+
+### 10.7 Review 2 → v3 mapping
+
+**#1 BLOCKER — init lacked the helpers.**
+- Fix: the INITBODY sources `rundir.sh` and defines `mark`/`tmpd`/`tmpf`.
+- Static check: INIT HELPER MISSING, plus 2 mutations.
+- Runtime: `tmp-trust-280` §2.
+
+**#2 BLOCKER — `/tmp/root`.**
+- Fix: `_ab_ramroot_guard` in `platform_check_image`; refuse on non-root `/tmp/sysupgrade*`.
+- Runtime: `tmp-trust-280` §5. Mutation: RAM_ROOT path outside the guard.
+
+**#3 MAJOR — REVIEW.md sections.** Added as §10.0–§10.6.
+
+**#4 MAJOR — N8, N3, D6, D1 and D5.**
+- N8: runtime sweep (§10.5).
+- N3: `scripts/rundir-paths.txt` plus the check, with a mutation.
+- D6: a mutation, plus the rationale in §10.5.
+- D1: `batman_opf`.
+- D5: restart-path test on the rc (§10.3).
+
+**#5 MAJOR — negative controls.**
+- Effects asserted: autocommit decides with committed/decided/wd/busy planted; payload-run is not stopped by a planted stopping/stop0.
+- The batpower daemon must have ticked in the window.
+- The staged uci is reverted at start, and the test asserts none is left.
+- The "not honoured" check is reported as info, not as a gate.
+
+**#6 MINOR — per-hit allowlist.**
+- Fix: the allowlist is applied per hit, and the entries were tightened to the exact hit text.
+- Mutation: an allowed mktemp sharing a line with a decision path.
+
+**#7 MINOR.** `BATMAN_RUNDIR` removed.
+
+**#8 MINOR.** `batpower once` uses the daemon's rule (no run dir: no mock, print only).
+
+**#9 MINOR.** Stated as R1.
+
+**#10 MINOR.** Stated as R2.
+
+**#11 MINOR.** The firstload comment has been fixed.

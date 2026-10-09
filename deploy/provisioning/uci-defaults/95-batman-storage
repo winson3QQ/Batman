@@ -137,7 +137,7 @@ fi
 
 # #280: decision markers (fw-override, batdata.dev, storage verdict, once-per-boot guard) and private temp
 # files (sector-0 copies that may be dd'd BACK to the card) live in the root-only run dir — /tmp is
-# world-writable (docs/design/280-tmp-trust.md). BATMAN_RUNDIR overrides it for tests/ab-card-invariants.sh.
+# world-writable (docs/design/280-tmp-trust.md). On a build host (no rundir.sh) RUNDIR is unusable and temp files fall back to mktemp.
 # shellcheck source=/dev/null
 [ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
 RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
@@ -386,6 +386,16 @@ note(){ logger -t batdata-mount "$*" 2>/dev/null; echo "batdata-mount: $*" > /de
 # shellcheck source=/dev/null
 [ -f /usr/lib/batman/otatrace.sh ] && . /usr/lib/batman/otatrace.sh
 type otalog >/dev/null 2>&1 || { otalog(){ :; }; otalog_k(){ :; }; ota_get(){ :; }; ota_thr(){ :; }; }
+# #280: this init is its OWN process — nothing from 95-batman-storage is inherited, so the run dir and its
+# helpers are set up here again (review 2 BLOCKER 1: without this every mark/tmpd failed rc 127 and the
+# fw-override / batdata.dev / once-per-boot markers were never written). Keep in step with the 95 block.
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+RDOK=0; type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null && RDOK=1
+tmpf(){ { [ "$RDOK" = 1 ] && batman_tmp "$1"; } 2>/dev/null || mktemp "/tmp/$1.XXXXXX"; }
+tmpd(){ { [ "$RDOK" = 1 ] && batman_tmp -d "$1"; } 2>/dev/null || mktemp -d "/tmp/$1.XXXXXX"; }
+mark(){ [ "$RDOK" = 1 ] || return 1; printf '%s\n' "$2" > "$RUNDIR/$1"; }
 # shellcheck source=/dev/null
 [ -f /usr/lib/batman/bootfacts.sh ] && . /usr/lib/batman/bootfacts.sh
 type bf_pi4 >/dev/null 2>&1 || bf_pi4(){ echo no; }   # no lib: the self-check simply does not run

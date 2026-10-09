@@ -68,11 +68,7 @@ tmpd() { batman_tmp -d "$1" 2>/dev/null || mktemp -d "/tmp/$1.XXXXXX"; }
 
 # An operator/test flag in /tmp is honoured only if root-owned, not a symlink and a single link (#280 D2 —
 # a hardlink to any root-owned file would otherwise pass -O); anything else is reported as tamper.
-opf() {
-	[ -e "$1" ] || [ -L "$1" ] || return 1
-	if [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(ls -ln "$1" 2>/dev/null | awk '{print $2}')" = 1 ]; then return 0; fi
-	warn "TAMPER: $1 is not a root-owned single-link file — ignored"; return 1
-}
+opf() { type batman_opf >/dev/null 2>&1 || return 1; batman_opf "$1"; }   # rundir.sh: the one opf (#280 D1), logs TAMPER
 # Test-only fault seams: the BATMAN_FAULT_INJECT env (direct calls), or a ROOT-OWNED flag file
 # /tmp/batman-fault.<name> — sysupgrade stage2 and procd services do not inherit the caller's env.
 # Never present on a production node.

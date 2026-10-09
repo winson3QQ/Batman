@@ -29,6 +29,18 @@ mut "/var/lock"                                 feed/batman-provision/files/usr/
 mut "harness: root runs a staged /tmp script"   scripts/daily-validation.sh '  fssh "$n" 10 "sh /tmp/x.sh"'
 mut "node script: /tmp output"                  scripts/node/soak-node.sh 'echo 1 > /tmp/dv-x.cnt'
 mut "a new node file under deploy/"             deploy/provisioning/new-tool.sh 'echo x > /tmp/new-tool.state'
+mut "a decision path sharing a line with an allowed mktemp (per hit)" $A 't=$(mktemp /tmp/a.XXXXXX); cat /tmp/autocommit.decided'
+mut "a \$(date) name in /tmp (D6)"              $A 'L=/tmp/ac.$(date +%s)'
+mut "the RAM_ROOT path outside its guard"       feed/batman-provision/files/usr/lib/batman/platform-ab.sh 'cp x /tmp/root/sbin/upgraded'
+# N3: a run-dir name the path table does not know (a reader polling a file nobody writes)
+fresh; printf '%s\n' 'cat "$RUNDIR/autocommit.nosuch"' >> "$W/r/$A"; ( cd "$W/r" && git add -A >/dev/null 2>&1 )
+check && tbad "unknown run-dir name accepted" || { grep -q "NOT IN PATH TABLE: run-dir name 'autocommit.nosuch'" "$W/out" && tok "caught: a run-dir name missing from the path table (N3)" || tbad "N3 failure not reported"; }
+# review 2 BLOCKER 1: the generated batdata-mount init must define the helpers it calls
+S=feed/batman-provision/files/etc/uci-defaults/95-batman-storage
+fresh; s=$(grep -n "<<'INITBODY'" "$W/r/$S" | cut -d: -f1); sed -i "$((s+1)),\$ { /^mark()/d }" "$W/r/$S"; ( cd "$W/r" && git add -A >/dev/null 2>&1 )
+check && tbad "init without mark() accepted" || { grep -q 'INIT HELPER MISSING: .*calls mark' "$W/out" && tok "caught: generated init calls mark without defining it" || tbad "init helper failure not reported"; }
+fresh; s=$(grep -n "<<'INITBODY'" "$W/r/$S" | cut -d: -f1); sed -i "$((s+1)),\$ { \\#^\\[ -r /usr/lib/batman/rundir.sh \\] && \\. /usr/lib/batman/rundir.sh\$#d }" "$W/r/$S"; ( cd "$W/r" && git add -A >/dev/null 2>&1 )
+check && tbad "init without rundir.sh accepted" || { grep -q 'INIT HELPER MISSING: .*without sourcing' "$W/out" && tok "caught: generated init uses RUNDIR without sourcing rundir.sh" || tbad "init rundir.sh failure not reported"; }
 # a waiver needs a reason
 fresh; printf '%s\n' 'X=/tmp/y   # tmp-trust: ok' >> "$W/r/$A"; ( cd "$W/r" && git add -A >/dev/null 2>&1 )
 check && tbad "reasonless waiver accepted" || { grep -q 'WAIVER WITHOUT REASON' "$W/out" && tok "reasonless waiver refused" || tbad "waiver failure not reported"; }

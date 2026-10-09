@@ -37,18 +37,57 @@ while IFS= read -r f; do
 		code=$(printf '%s\n' "$line" | sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#[^"'"'"']*$//')
 		printf '%s\n' "$code" | grep -qE -- "$PAT" || continue
 		line=$code
-		ok=0
+		# per HIT, not per line (review 2 #6): every allowlisted construct is cut out of the line, and the line
+		# is untrusted if anything world-writable is left — an allowed mktemp must not waive a decision path
+		# that happens to share its line
+		rest=$line
 		while IFS=$'\t' read -r glob re _why; do
 			case "$glob" in ''|'#'*) continue;; esac
 			# shellcheck disable=SC2254
-			case "$f" in $glob) printf '%s\n' "$line" | grep -qE -- "$re" && { ok=1; break; };; esac
+			case "$f" in $glob) rest=$(printf '%s\n' "$rest" | sed -E "s"$'\001'"$re"$'\001'$'\001'"g");; esac
 		done < "$ALLOW"
-		[ "$ok" = 1 ] || echo "UNTRUSTED $f:$ln: $(printf '%s' "$line" | sed 's/^[[:space:]]*//' | cut -c1-160)"
+		printf '%s\n' "$rest" | grep -qE -- "$PAT" && echo "UNTRUSTED $f:$ln: $(printf '%s' "$line" | sed 's/^[[:space:]]*//' | cut -c1-160)"
 	done
 done < <(files) > "$OUT" 2>&1
 n=$(grep -c "^UNTRUSTED" "$OUT")
 cat "$OUT"
 [ "$n" = 0 ] || bad=1
+
+# N3: every run-dir basename the tree uses must be in the path table — node code ($RUNDIR, $_R, $PSTOP_RUN) and
+# the harness ($R from the RDR resolver) must agree on the names, or a reader polls a file nobody writes
+TABLE=$ROOT/scripts/rundir-paths.txt
+if [ -f "$TABLE" ]; then
+	nt=0
+	while IFS= read -r nm; do
+		case "$nm" in ''|'$'*) continue;; esac          # "$RUNDIR/$1": a generic writer, its callers are checked
+		g=$(printf '%s' "$nm" | sed -E 's/\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|<[a-z]+>/*/g')   # $t / ${T} / <t> -> *
+		hit=0
+		while IFS= read -r pat; do
+			case "$pat" in ''|'#'*) continue;; esac
+			# shellcheck disable=SC2254
+			case "$g" in $pat) hit=1; break;; esac
+			[ "$g" = "$pat" ] && { hit=1; break; }
+		done < "$TABLE"
+		[ "$hit" = 1 ] || { echo "NOT IN PATH TABLE: run-dir name '$nm' (add it to scripts/rundir-paths.txt with its writer/reader)"; nt=$((nt+1)); }
+	done < <(files | grep -vE '^scripts/(check|test)-tmp-trust\.sh$' | xargs grep -ohE \
+		'\$\{?(RUNDIR|_R|PSTOP_RUN|R)\}?/[A-Za-z0-9_.<>${}-]+([^/A-Za-z0-9_.<>${}-]|$)' 2>/dev/null \
+		| sed -E 's#^\$\{?[A-Z_]+\}?/##; s#[^A-Za-z0-9_.<>${}-]$##' | sort -u)
+	[ "$nt" = 0 ] || bad=1
+else echo "missing $TABLE"; bad=1; fi
+
+# review 2 BLOCKER 1: an init generated from a quoted heredoc is its OWN process — nothing of the generating
+# script is inherited, so it must source rundir.sh and define every run-dir helper it calls itself
+for f in feed/batman-provision/files/etc/uci-defaults/95-batman-storage deploy/provisioning/uci-defaults/95-batman-storage; do
+	[ -f "$f" ] || continue
+	body=$(awk "/<<'INITBODY'/{f=1;next} /^INITBODY\$/{f=0} f" "$f")
+	for h in mark tmpd tmpf; do
+		printf '%s\n' "$body" | grep -qE "(^|[;&|({[:space:]=])$h " || continue
+		printf '%s\n' "$body" | grep -qE "^$h\(\)" || { echo "INIT HELPER MISSING: $f INITBODY calls $h but does not define it"; bad=1; }
+	done
+	if printf '%s\n' "$body" | grep -q 'RUNDIR' && ! printf '%s\n' "$body" | grep -q '\. /usr/lib/batman/rundir\.sh'; then
+		echo "INIT HELPER MISSING: $f INITBODY uses RUNDIR without sourcing /usr/lib/batman/rundir.sh"; bad=1
+	fi
+done
 
 # inline waivers must say why
 w=$(files | xargs grep -nE 'tmp-trust: ok *$' 2>/dev/null)

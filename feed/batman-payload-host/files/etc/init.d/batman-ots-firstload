@@ -11,7 +11,7 @@
 # `docker info`. (Do not "fix" the ordering by dropping the wait loop.)
 #
 # Per tenant with baked tars, this service:
-#   - sets a PER-BOOT latch /tmp/batman-firstload-<t>.latch SYNCHRONOUSLY in boot(), BEFORE stopping
+#   - sets a PER-BOOT latch $RUNDIR/batman-firstload-<t>.latch (#280) SYNCHRONOUSLY in boot(), BEFORE stopping
 #     the guardian, so batman-autocommit (#211) can tolerate a still-bootstrapping tenant. The latch
 #     persists for the whole boot (tmpfs = per-boot scope); it is NEVER cleared here (#216 R2).
 #   - stops+disables that tenant's guardian (kills the boot race with the slow ~2.5min/Pi4 load)

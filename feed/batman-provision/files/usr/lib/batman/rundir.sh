@@ -12,8 +12,11 @@
 #
 #   batman_rundir           ensure + verify; rc 0 ok, rc 1 unusable (the caller fails CLOSED)
 #   batman_tmp [-d] [prefix] print a fresh mktemp file (or dir) <prefix>.XXXXXX inside it; rc 1 if unusable
-# Test seam: BATMAN_RUNDIR (tests/ab-card-invariants.sh runs storage scripts on a build host).
-RUNDIR=${BATMAN_RUNDIR:-/tmp/run/batman}
+#   batman_opf <path>       an operator/test flag that has to stay in /tmp (operators touch it by hand): rc 0
+#                           honoured, rc 1 absent, rc 2 present but rejected (TAMPER, logged unless
+#                           BATMAN_OPF_QUIET=1). The ONE implementation (#280 D1) — never copy it.
+# No override: production code must not take its trust root from the environment (#280 review 2 #7).
+RUNDIR=/tmp/run/batman
 
 # owner-is-me, not a symlink, and mode bits per `ls -ld` (busybox has no stat)
 _rd_mode(){ ls -ld "$1" 2>/dev/null | cut -c1-10; }
@@ -36,3 +39,13 @@ batman_tmp(){
 	mktemp $d "$RUNDIR/${1:-t}.XXXXXX"
 }
 _rd_log(){ logger -t batman-rundir "UNUSABLE: $*" 2>/dev/null; echo "batman-rundir: UNUSABLE: $*" >&2; }
+# An operator flag counts only if it is a regular file owned by us (root), not a symlink, and has ONE link
+# (a hardlink to any root-owned file would pass -O; protected_hardlinks is pinned too, this does not rely on it).
+batman_opf(){
+	[ -e "$1" ] || [ -L "$1" ] || return 1
+	if [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(ls -ln "$1" 2>/dev/null | awk '{print $2}')" = 1 ]; then return 0; fi
+	[ "${BATMAN_OPF_QUIET:-0}" = 1 ] || {
+		logger -t batman-opf "TAMPER: $1 is not a root-owned single-link file — ignored" 2>/dev/null
+		echo "batman-opf: TAMPER: $1 is not a root-owned single-link file — ignored" >&2; }
+	return 2
+}

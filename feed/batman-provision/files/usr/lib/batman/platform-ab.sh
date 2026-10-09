@@ -51,17 +51,43 @@ RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
 type batman_tmp >/dev/null 2>&1 || batman_tmp() { return 1; }
 type batman_rundir >/dev/null 2>&1 || batman_rundir() { return 1; }
 # root-owned, not a symlink, single link (#280 D2)
-opf() { [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(ls -ln "$1" 2>/dev/null | awk '{print $2}')" = 1 ]; }
+opf() { type batman_opf >/dev/null 2>&1 || return 1; batman_opf "$1"; }   # rundir.sh: the one opf (#280 D1), logs TAMPER
 
 # Stage 1 (also run by validate_firmware_image / `sysupgrade -T` / LuCI): trace the verdict ONLY —
 # no state file, so a mere validation leaves nothing that a later boot could misread as an OTA.
 platform_check_image() {
 	local out rc caller
-	out=$(_ab_check_image "$@" 2>&1); rc=$?
+	out=$( { _ab_ramroot_guard && _ab_check_image "$@"; } 2>&1); rc=$?
 	[ -n "$out" ] && echo "$out"
 	caller=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null | cut -c1-60)
 	otalog S1 CHECK rc=$rc caller="$caller" msg="$(echo "$out" | tail -1)"
 	return $rc
+}
+# #280 review 2 BLOCKER 2 — RAM_ROOT. Stage 1 installs `upgraded` (procd chroots there and execs it as root)
+# and stage 2 the ramfs tools into RAM_ROOT=/tmp/root, and install_file (lib/upgrade/common.sh) copies a
+# file only when it does NOT exist yet. A non-root process that pre-creates /tmp/root therefore decides what
+# root executes (or swaps it after the copy: the dir is not sticky). Take /tmp/root before stage 1 copies
+# into it: anything there that is not entirely ours is removed, then it is created 0700 and verified.
+# Runs on every validation (stage 1, procd's own, LuCI, -T): the empty 0700 root dir a validation leaves is
+# harmless and pre-empts a plant. procd validates AFTER stage 1's install_bin, so a clean dir with our
+# files passes. `sysupgrade -F` ignores the refusal, but the clean-up has already happened by then.
+_ab_ramroot_guard() {
+	local r=/tmp/root f
+	_rr_ok() { [ -d "$r" ] && [ ! -L "$r" ] && [ -O "$r" ] && [ "$(ls -ld "$r" | cut -c1-10)" = drwx------ ] \
+		&& [ -z "$(find "$r" ! -user root 2>/dev/null | head -1)" ]; }
+	if { [ -e "$r" ] || [ -L "$r" ]; } && ! _rr_ok; then
+		logger -t batman-ab "TAMPER: $r (sysupgrade RAM_ROOT) is not entirely root's — removing it" 2>/dev/null
+		echo "WARN: $r was not entirely root's (possible plant) — removed"
+		rm -rf "$r" 2>/dev/null
+	fi
+	[ -e "$r" ] || mkdir -m 700 "$r" 2>/dev/null
+	_rr_ok || { echo "REFUSING: $r (sysupgrade RAM_ROOT) is not a private root directory — something keeps planting it"; return 1; }
+	# the rest of sysupgrade's /tmp files: an image, config backup or conffiles list owned by someone else
+	for f in /tmp/sysupgrade*; do
+		[ -e "$f" ] || [ -L "$f" ] || continue
+		{ [ ! -L "$f" ] && [ -O "$f" ]; } || { echo "REFUSING: $f is not root's (possible plant) — remove it and retry"; return 1; }
+	done
+	return 0
 }
 _ab_check_image() {
 	[ "$#" -gt 1 ] && return 1

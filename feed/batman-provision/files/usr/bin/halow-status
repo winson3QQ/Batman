@@ -98,7 +98,7 @@ done
 # #280 D2: an operator/test flag in /tmp that is not a root-owned single-link file was planted by someone else
 for f in /tmp/batman-autocommit.hold /tmp/batman-fault.* /tmp/batman-slot.allow-*; do
 	{ [ -e "$f" ] || [ -L "$f" ]; } || continue
-	{ [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] && [ "$(ls -ln "$f" 2>/dev/null | awk '{print $2}')" = 1 ]; } || hc WARN tamper "TAMPER: $f is not a root-owned single-link file (ignored by the node)"
+	BATMAN_OPF_QUIET=1 batman_opf "$f"; [ $? = 2 ] && hc WARN tamper "TAMPER: $f is not a root-owned single-link file (ignored by the node)"
 done
 # #137 management-plane lockdown posture (96-batman-config-migrate writes this at provisioning).
 # NB: a NEVER-seeded node writes no marker (96 early-exits before the lockdown), and that node is the

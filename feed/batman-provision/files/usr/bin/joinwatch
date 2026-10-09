@@ -31,7 +31,7 @@ STATE=$RUNDIR/joinwatch.state
 BR=/opt/batdata/log/boot-reasons.log
 cfg(){ uci -q get "joinwatch.main.$1" || echo "$2"; }
 # operator flag in /tmp: root-owned, not a symlink, single link (#280 D2)
-opf(){ [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(ls -ln "$1" 2>/dev/null | awk '{print $2}')" = 1 ]; }
+opf() { type batman_opf >/dev/null 2>&1 || return 1; batman_opf "$1"; }   # rundir.sh: the one opf (#280 D1), logs TAMPER
 type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null || STATE=/dev/null   # no run dir: no live state
 POLL=$(cfg poll 15); T_SHORT=$(cfg t_short 60); T_FULL=$(cfg t_full 300)
 T_REBOOT=$(cfg t_reboot 3600); GAP_BOOTS=$(cfg reboot_gap_boots 5); UNJOINED_MAX=$(cfg unjoined_boots_max 3)

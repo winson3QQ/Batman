@@ -89,11 +89,7 @@ slot_writer_alive(){ pid_is "$(cat "$RUNDIR/batman-slot.lock/pid" 2>/dev/null)" 
 # watchdog on every tick, so a hold set after the trial booted still works.
 # An operator flag in /tmp (#280 D2): honoured only if root-owned, not a symlink and not a hardlink (link
 # count 1 — protected_hardlinks is pinned too, this does not rely on it). Anything else is logged as tamper.
-op_flag(){
-	[ -e "$1" ] || [ -L "$1" ] || return 1
-	if [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(ls -ln "$1" 2>/dev/null | awk '{print $2}')" = 1 ]; then return 0; fi
-	log "TAMPER: $1 is not a root-owned single-link file — ignored"; return 1
-}
+op_flag(){ type batman_opf >/dev/null 2>&1 || return 1; batman_opf "$1"; }   # rundir.sh: the one opf (#280 D1), logs TAMPER
 held(){
 	op_flag /tmp/batman-autocommit.hold && return 0
 	[ -f "$HOLDC" ] && return 0
