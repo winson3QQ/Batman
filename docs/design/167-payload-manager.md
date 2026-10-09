@@ -400,7 +400,8 @@ critical — verified and rejected with evidence.
   read-only config-file bind-mounts (the `rabbitmq-extra.conf` → `/etc/rabbitmq/conf.d/…:ro`
   case), `containers[].hostname` for every container (incl. the `ots-cot_parser` dash-vs-underscore
   quirk — carry it literally, don't "fix" it), infra `--ip` `.2/.3` **only if published** (they
-  are not → drop them, docker DNS), and a `restart:` → `--restart on-failure:5` mapping.
+  are not → drop them, docker DNS), and a `restart:` → `--restart on-failure:5` mapping. **Superseded by #274
+  §12 D7-1: every container is `--restart no`; the guardian is the only restarter.**
   Acceptance test: **diff the generated command set against `run.sh` line-by-line** before writing
   `payload-run`.
 - **M2 "byte-for-byte equivalent" DoD unfalsifiable → ACCEPTED.** Redefine Increment-3 (OTS
@@ -470,7 +471,8 @@ Proven live with a **second tenant `dummy-nginx-b`** (172.20.2.0/24 / `br-dummyb
 
 **Node config fix (authorized):** manet01 had **drifted to `dockerd.globals.iptables=1`** (docker
 managing its own iptables → 3 nft tables), not the design-B `iptables=0` validated in #164/#165.
-Set back to `iptables=0` + `dockerd restart`; **OTS survived via `live_restore=true`** (verified 6/6
+Set back to `iptables=0` + `dockerd restart`; **OTS came back 6/6** — **correction (#274 E1): live-restore was
+never on (the stock init does not map it); the containers were revived by their restart policy** (verified 6/6
 + API healthy before and after). The stale `ip nat`/`ip filter` docker tables linger inert under
 iptables=0 and clear on the next reboot. **The node is now on the correct design-B config.**
 

@@ -5,8 +5,9 @@
 # /etc/init.d/batman-autocommit (one-shot).
 #
 # Health gate (review B1/M1/M2): the signal is the CURRENT rootfs's own core services, NOT raw docker
-# container liveness (unless-stopped containers on the shared p6 docker-root come up under ANY rootfs,
-# so they don't prove the new rootfs is good).
+# container liveness (containers on the shared p6 docker-root are started by the payload guardian under ANY
+# rootfs, so their being up does not prove the new rootfs is good — #274: they are --restart no, the guardian
+# starts them; a tenant container crash in the trial keeps its verdict DRIFT for 600 s, which reverts the trial).
 #
 # #216 layered health model: this gate = OS/infra health only. It ADDS a docker-ENGINE liveness +
 # canary-run check (can this rootfs actually run containers — overlay/memcg/runc), and it treats a

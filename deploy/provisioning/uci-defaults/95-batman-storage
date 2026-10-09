@@ -564,7 +564,8 @@ restore_payload_guardians(){
 		[ -d "$d" ] || continue
 		t=${d%/}; t=${t##*/}
 		case "$t" in *[!a-z0-9-]*) note "payload restore: tenant dir '$t' has a disallowed name — skipped"; continue ;; esac
-		ls "$d"*.manifest >/dev/null 2>&1 || continue
+		# a tenant = a manifest with at least one CONTAINER (a decoy/test dir is not; it would respawn forever)
+		grep -qs '^CONTAINER ' "$d"*.manifest || continue
 		name="batman-payload-$t"; dst="/etc/init.d/$name"
 		sed "s/@TENANT@/$t/g" "$tmpl" > "$dst.new" 2>/dev/null || { rm -f "$dst.new"; note "payload restore: render $name FAILED"; continue; }
 		if cmp -s "$dst.new" "$dst" 2>/dev/null; then rm -f "$dst.new"

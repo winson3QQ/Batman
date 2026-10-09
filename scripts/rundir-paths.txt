@@ -49,6 +49,8 @@ fault.274-rmstop-once
 fault.274-window60
 fault.274-health-*
 fault.274-leftover-drift
+# harness: unclean-boot-274's planted .init would create this if it ever ran (it must never exist)
+zz274-init-ran
 batman-payload-*-verify.log
 batman-payload-*-resources.log
 batman-payload-*.converging

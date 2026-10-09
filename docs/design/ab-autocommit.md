@@ -349,3 +349,37 @@ Every `/tmp/autocommit.*` path above now lives in the root-only run dir `/tmp/ru
 
 - **Operator flags stay in `/tmp`.** `batman-autocommit.hold`, `batman-fault.*` and `batman-slot.allow-*` are honoured only if the file is root-owned, not a symlink and has link count 1. Anything else is ignored, logged and shown by halow-status as TAMPER.
 - **Fail closed.** With no usable run dir, main never commits. A real tryboot still reverts at the deadline, via the watchdog's no-claim fallback (`AC_NOCLAIM`).
+
+## v2.6 (#274 §12, 2026-10-09) — a tenant crash in the trial reverts it; operator commit is reported
+
+**Policy (user decision, #274 §12.13).** Payload containers are `--restart no`; the payload guardian is the only
+component that restarts them, and every restart is a line in its per-boot ledger
+(`$RUNDIR/batman-payload-<t>-restarts`). Any ledger record in the last 600 s keeps the tenant's verdict `DRIFT`.
+autocommit's contract is unchanged (it needs `"status":"OK"` and a verdict < 1 min old), so **a crash of a
+current-config tenant container during a trial keeps the trial unhealthy past its deadline (≈ +600 s on a Pi 4)
+and the trial is reverted.** A crash is a bug to be fixed; the trial is the gate a new image must pass.
+
+Not counted: the one-time revival of an older image's containers before the guardian's start-up converge
+(the first OTA into the new image), the start-up converge itself, and an attempt the guardian cancelled (stop
+in progress, lock busy).
+
+Accepted consequences, stated:
+- an external cause (a malformed message from the mesh, a start-up race) also reverts the OTA — the old slot
+  would crash the same way, so the revert does not fix it; it only blocks the upgrade;
+- **remedy (manual):** check the crash, then `batman-slot commit` before the deadline — the watchdog stands down
+  (no longer a real tryboot). Or set a **revert hold** before the OTA (`autocommit-hold-once` on p6, or a
+  root-owned `/tmp/batman-autocommit.hold`) and commit by hand. **A hold-commit + `batman-autocommit release`
+  does NOT stop the deadline revert** (it only blocks the commit; `release` leads to the normal gate, which
+  needs drift OK);
+- a crash after the commit (≈ +90 s) cannot revert anything: it is DRIFT for 10 min in halow-status. A slow crash
+  loop whose first crash comes after the commit is committed — inherent to the short dwell.
+
+**Operator commit is a commit.** When the trial ends committed by someone else (`batman-slot is-trial` = 1 at
+autocommit's end), autocommit logs `COMMITTED-BY-OPERATOR` (autocommit.log, OTA trace) instead of "NOT committed
+… watchdog reverts".
+
+**Canary.** The canary container runs `--network none --security-opt no-new-privileges`, so it passes the payload
+guardian's container allowlist (#274 D7-6).
+
+Tests: fault-injection `c1` (a crash in a held trial reverts after release), `c1n` (negative control: a 60 s
+window commits), `c2` (a manual commit after the crash stands; COMMITTED-BY-OPERATOR logged).

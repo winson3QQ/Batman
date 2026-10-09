@@ -1379,3 +1379,31 @@ them.
    fixed, so a new image that crashes in its trial is not committed. Excluded: the one-time revival crash of the
    old containers on the first OTA into v8 (that is the symptom #274 removes, not the new image's). Accepted
    consequence: an external crash cause also reverts; the remedy is a manual `batman-slot commit`.
+
+### 12.14 Implementation notes (b0ad503 and after) — where the code differs from the text above
+
+Recorded so a reader of the code and of this section see the same thing; none changes a reviewed property.
+- **Host alarm file is per tenant** (`$RUNDIR/batman-payload-<t>-host-alarm`), not one shared file: one writer per
+  file (each tenant's guardian); halow-status reads the glob. Node-wide lines (foreign containers, live-restore)
+  appear in every tenant's file.
+- **No S95 guardian start after a hold boot** (12.2 D7-4 last bullet, B-P4): `restore_payload_guardians` already
+  runs `running || start` for every generated stub at S11 on every boot (`95-batman-storage`), before firstload's
+  S95 hold, so the guardian is started on the boot after a hold without any firstload change.
+- **What counts as a crash** (12.2 D7-3 "What does not count"): implemented as "every restart the guardian performs
+  after its start-up converge is a record" — the restart path only runs after the converge, so an exit during the
+  converge is handled by the converge itself (start mode's FAILED → the converge reports it) and a container that
+  exits after it is restarted and recorded. No `FinishedAt` and no wall clock are involved; revived containers of an
+  older image are rebuilt by the converge before the loop starts and are never judged (L-OTA1).
+- **Generated stub:** only for a tenant dir whose manifest has at least one `CONTAINER` line (fault-injection R2's
+  decoy dir has a manifest without one; a stub would respawn forever).
+- **Test seams (env, root callers only; procd sets none):** `PAYLOAD_LIB`, `PAYLOAD_GOLDEN_ROOT`, `PAYLOAD_RUN`,
+  `PAYLOAD_UPTIME_FILE`, `PAYLOAD_POLL`, `PAYLOAD_INTERVAL` — used by `scripts/test-payload-run.sh` and
+  `scripts/test-payload-guardian.sh`.
+- **halow-status stale threshold** is "older than ~2 min" (`find -mmin -2`), not 90 s.
+- **hold-reboot-274 and L-FIRST2 are one suite (`hold-274`)** using the real firstload (a tar `docker load`
+  rejects), not a simulated hold. **unclean-boot-274 also carries L-TENANT-PLANT** (a planted tenant dir with its own
+  `.init`; after `reboot -f` the stub must be the generated one and the planted init must never have run).
+- **Bugs the new guardian unit test found before any node run:** the verdict variable was overwritten by the policy
+  check (it would have published garbage as `status`), and the ledger reader lost the first record (awk array
+  indexed by an uninitialised counter). Both fixed in b0ad503.
+
