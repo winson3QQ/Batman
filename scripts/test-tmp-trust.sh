@@ -41,6 +41,17 @@ fresh; s=$(grep -n "<<'INITBODY'" "$W/r/$S" | cut -d: -f1); sed -i "$((s+1)),\$ 
 check && tbad "init without mark() accepted" || { grep -q 'INIT HELPER MISSING: .*calls mark' "$W/out" && tok "caught: generated init calls mark without defining it" || tbad "init helper failure not reported"; }
 fresh; s=$(grep -n "<<'INITBODY'" "$W/r/$S" | cut -d: -f1); sed -i "$((s+1)),\$ { \\#^\\[ -r /usr/lib/batman/rundir.sh \\] && \\. /usr/lib/batman/rundir.sh\$#d }" "$W/r/$S"; ( cd "$W/r" && git add -A >/dev/null 2>&1 )
 check && tbad "init without rundir.sh accepted" || { grep -q 'INIT HELPER MISSING: .*without sourcing' "$W/out" && tok "caught: generated init uses RUNDIR without sourcing rundir.sh" || tbad "init rundir.sh failure not reported"; }
+# review 3 #3: the sysupgrade guard and the RAM_ROOT move must stay wired in
+PA=feed/batman-provision/files/usr/lib/batman/platform-ab.sh
+fresh; sed -i 's/_ab_ramroot_guard "\$@" && _ab_check_image/_ab_check_image/' "$W/r/$PA"; ( cd "$W/r" && git add -A >/dev/null 2>&1 )
+check && tbad "unwired guard accepted" || { grep -q 'GUARD NOT WIRED: .*does not run _ab_ramroot_guard' "$W/out" && tok "caught: platform_check_image without the input guard" || tbad "unwired guard not reported"; }
+fresh; sed -i '/^if batman_rundir 2>\/dev\/null; then RAM_ROOT=/d' "$W/r/$PA"; ( cd "$W/r" && git add -A >/dev/null 2>&1 )
+check && tbad "RAM_ROOT left in /tmp accepted" || { grep -q 'GUARD NOT WIRED: .*RAM_ROOT' "$W/out" && tok "caught: RAM_ROOT no longer moved into the run dir" || tbad "RAM_ROOT move not reported"; }
+# review 3 #9: a name written through mark must be in the path table too
+fresh; printf '%s\n' 'mark batdata-dev "$DEV"' >> "$W/r/$S"; ( cd "$W/r" && git add -A >/dev/null 2>&1 )
+check && tbad "mark of an unknown name accepted" || { grep -q "NOT IN PATH TABLE: run-dir name 'batdata-dev'" "$W/out" && tok "caught: mark <name> missing from the path table" || tbad "mark name not checked"; }
+# review 3 #10: any /var/<x> lands in world-writable /tmp on the node
+mut "a /var/<file> path (= /tmp/<file>)"       $A 'echo 1 > /var/autocommit.flag'
 # a waiver needs a reason
 fresh; printf '%s\n' 'X=/tmp/y   # tmp-trust: ok' >> "$W/r/$A"; ( cd "$W/r" && git add -A >/dev/null 2>&1 )
 check && tbad "reasonless waiver accepted" || { grep -q 'WAIVER WITHOUT REASON' "$W/out" && tok "reasonless waiver refused" || tbad "waiver failure not reported"; }

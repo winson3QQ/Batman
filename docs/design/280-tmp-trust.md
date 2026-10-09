@@ -1,6 +1,6 @@
 # #280 Stop treating `/tmp` as trusted IPC: decision state moves to a root-only run directory
 
-Status: **design v3** (2026-10-09) — §10 adds the docs/design/REVIEW.md sections (evidence, ownership, contracts, lifecycle matrix, security per actor, residuals) and resolves review 2 (whole design + implementation, REJECT); §10 overrides §2–§9 where they differ. Earlier: v1 REJECT; v2 APPROVE-WITH-CHANGES (§9) · Refs #280 #274 #265 #261 #209 #91
+Status: **design v3.1** (2026-10-09; v3.1 = review 3, §10.8) — §10 adds the docs/design/REVIEW.md sections (evidence, ownership, contracts, lifecycle matrix, security per actor, residuals) and resolves review 2 (whole design + implementation, REJECT); §10 overrides §2–§9 where they differ. Earlier: v1 REJECT; v2 APPROVE-WITH-CHANGES (§9) · Refs #280 #274 #265 #261 #209 #91
 
 ## 0. Reality check (2026-10-08, 02/03/04 on 1.5.6-wsl.1; full inventory on #280)
 
@@ -363,6 +363,8 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 - `sbin/sysupgrade:407` calls `install_bin /sbin/upgraded`; procd then chroots there and execs it as root.
 - stage 2 `switch_to_ramfs` (`stage2:42-65`) copies into the same directory.
 - Today `/tmp/root` is absent on all three nodes, so the path is exploitable but has not been exploited.
+- **The only user of the path is the variable.** `common.sh:1` is the only `/tmp/root` in the upgrade code. Stage 1 `install_file`, the procd `prefix` (`sysupgrade:415`), the failsafe hand-over (`sysupgrade:411`) and stage 2 `switch_to_ramfs`/`supivot` (`stage2:61-65`) all use `$RAM_ROOT`. `preinit.sh:83-86` uses a separate `/tmp/root` overlay at preinit, before procd and before any non-root process.
+- **`include /lib/upgrade` sources `*.sh` in `ls` order**, so `platform.sh` (ours) comes after `common.sh` in stage 1, `validate_firmware_image`, stage 2 and do_stage2. A `RAM_ROOT=` in `platform.sh` therefore moves every user (`functions.sh` `include`).
 
 **A4 — `validate_firmware_image` calls our `platform_check_image` on every path into an upgrade: stage 1 first, then procd after stage 1's `install_bin`.** Evidence: `/usr/libexec/validate_firmware_image` and procd `system.c` (sysupgrade handler: validate, then `service_stop_all`).
 
@@ -388,7 +390,12 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 | `batpower.state`, `batpower.mock` | batpower; mock = an operator on the bench (root) | halow-status, flightrec, batman-slot | |
 | `/etc/.batman-p5-restored` | 96-batman-config-migrate | 99-halow-identity (consumes it) | **Deliberately persistent (deviation from N3).** See the note below this table. |
 | operator flags `/tmp/batman-autocommit.hold`, `/tmp/batman-fault.*`, `/tmp/batman-slot.allow-*`, `/tmp/batman-ots-pause` | an operator (root, by hand) | via `batman_opf` only | they stay in `/tmp` because operators type them; `batman_opf` (rundir.sh) is the one check (D1) |
-| `/tmp/root` (RAM_ROOT), `/tmp/sysupgrade*` | upstream sysupgrade; **taken by our `_ab_ramroot_guard`** before stage 1 copies into it | procd, `upgraded`, stage 2 | BLOCKER 2 |
+| sysupgrade `RAM_ROOT` | **`platform-ab.sh` sets it to `$RUNDIR/ramroot`** at include time; upstream code fills it (install_file, switch_to_ramfs) | procd (`prefix`, chroot + exec `upgraded`), stage 2 (pivot) | review 3: replaces the review-2 "take /tmp/root back" fix, which could lose a race under `-F` and whose `rm -rf` could be steered |
+| `/tmp/sysupgrade*` (image copy, config backup, conffiles, failsafe hand-over) | upstream sysupgrade (root) | upstream; **checked by `_ab_ramroot_guard`**, never removed | |
+| uci `batpower.main.source`/`mock_ok` | the batpower init migration (commits `none` once), an operator; `tmp-trust-280` stages but never commits them | batpower | the test's detached guard reverts its staging whatever happens to ssh |
+| `RAMFS_COPY_BIN`/`RAMFS_COPY_DATA` additions (`/bin/mktemp` = busybox applet link, `rundir.sh`) | platform-ab | stage 2 `switch_to_ramfs` | |
+| `/tmp/run/soakprof`, `/tmp/run/deep-sample.sh`, `/tmp/run/openmanetd.db` | dev scripts / openmanetd (root) | the same | under root-only `/tmp/run`; allowlisted |
+| `/tmp/bat-hosts` | upstream alfred / openmanetd (root) | halow-status, mesh CGI (display only) | residual R5 |
 | `/tmp/run/batman-dv` | the harness (root over ssh) | the harness | 0700, owner-checked |
 | `/tmp/.uci` | upstream `boot` | uci | residual R2 |
 | `/etc/sysctl.d/90-batman.conf` | batman-provision | procd sysctl at boot | Applied after OpenWrt's `10-default.conf`, so our values win for the keys we set: `protected_regular=2`, `protected_fifos=2`. The runtime check verifies the values are live. |
@@ -413,13 +420,16 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 - Valid only through `batman_opf`: a regular file, owned by root, not a symlink, link count 1.
 - Present but failing the check: TAMPER, logged and shown by halow-status, and the flag is ignored. A non-root process can therefore cancel an operator hold (R1).
 
-**`/tmp/root`**
-- Before stage 1 copies into it, `_ab_ramroot_guard` makes it root `drwx------`, with nothing inside that is not root-owned.
-- If anything else is there, it is removed, recreated, and verified.
-- If it cannot be made private, the upgrade is REFUSED. Under `sysupgrade -F` the refusal is ignored, but the clean-up has already happened.
+**sysupgrade `RAM_ROOT`**
+- It is `$RUNDIR/ramroot`, set by `platform.sh` whenever `batman_rundir` succeeds.
+- Stage 1, procd and stage 2 all read the same variable after the same include, so they agree.
+- Inside the 0700 root run dir no other user can create, swap or pre-populate anything. There is no race, and nothing is ever removed.
+- If the run dir is unusable, `RAM_ROOT` stays upstream's `/tmp/root` and `platform_check_image` REFUSES. Under `-F` that refusal is ignored: residual R4, which needs an already broken `/tmp/run`.
 
-**`/tmp/sysupgrade*`**
-- Each entry must be root-owned and not a symlink; otherwise the upgrade is refused.
+**Upgrade inputs (`_ab_ramroot_guard`, runs first in `platform_check_image`)**
+- The image argument must be a root-owned regular file, not a symlink, with link count 1.
+- Every `/tmp/sysupgrade*` must be root-owned and not a symlink.
+- Otherwise the upgrade is refused. Checks only: nothing is removed.
 
 **Path table `scripts/rundir-paths.txt`**
 - Owner: the code that writes the names. Readers: the static check.
@@ -439,13 +449,23 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 - Behaviour: K10 `stop()` reads `$RUNDIR/shutdown.reason`; K90 consumes `batman-reboot.want`.
 - Proof: boot-reasons.log shows the reason (ab-selftest / fi-r*).
 
-**OTA stage 1**
-- Behaviour: `_ab_ramroot_guard` runs in every validation, before `install_bin`.
-- Proof: `tmp-trust-280` §5: a nobody plant is taken back and recreated as root 0700.
+**OTA stage 1 — every entry path:** CLI `sysupgrade`, `-T` (validate only), `-F` (force), the LuCI flash (`/tmp/firmware.bin` via rpcd, then `sysupgrade`), a direct `ubus call system sysupgrade` (no stage 1, procd validates), and failsafe (`/tmp/sysupgrade` hand-over).
+- Behaviour: `RAM_ROOT` is `$RUNDIR/ramroot` on every path, because every path includes `/lib/upgrade`. The input guard runs in every validation (stage 1 and procd). A direct ubus call passes procd's own `prefix` — its caller's choice. If that caller is not our stage 1, it is root by A5.
+- Proof:
+  - `tmp-trust-280` §5: `include /lib/upgrade` gives `RAM_ROOT=$RUNDIR/ramroot`; `validate_firmware_image` refuses a `/tmp/sysupgrade*` owned by nobody; a control with the plant removed passes.
+  - Static: "GUARD NOT WIRED" plus 2 mutations.
+
+**The first OTA onto #280**
+- Behaviour: it runs the OLD slot's `platform.sh`, so `RAM_ROOT=/tmp/root` and there is no guard. BLOCKER 2 stays exposed for that one OTA. Every later OTA is protected.
+- Proof: stated; not testable away.
 
 **OTA stage 2 (ramfs)**
-- Behaviour: `rundir.sh` and `mktemp` are copied in, and `/tmp` crosses into the ramfs (A2). If the run dir is unusable, the apply is refused (fail closed, N7).
-- Proof: the stage-2 proof on both boards: `p6trace=yes` in the trace (§7.3).
+- Behaviour:
+  - `rundir.sh` and `mktemp` are copied in, and `/tmp` crosses into the ramfs (A2).
+  - The ramfs is built in `$RUNDIR/ramroot`, and `supivot` bind-mounts and pivots into it.
+  - This nests inside the `/tmp` tmpfs exactly like upstream's `/tmp/root` does. Only the parent's mode differs (0700 root vs 0755), and only root runs after `kill_remaining`.
+  - If the run dir is unusable, the apply is refused (fail closed, N7).
+- Proof: ❌ **not run yet.** Required before the PR: the stage-2 proof on both boards (`p6trace=yes`, and the OTA lands) with the new `RAM_ROOT`.
 
 **Mid-trial OTA from a pre-#280 slot**
 - Behaviour: the old `platform-ab` runs and is self-consistent, with its own `/tmp` names.
@@ -462,6 +482,18 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 **Restart of a component (batpower, guardian, autocommit, procd services)**
 - Behaviour: each re-verifies the run dir on start.
 - Proof: `tmp-trust-280` §7 (batpower restart).
+
+**Crash / crash loop of a run-dir user**
+- Behaviour: state is per boot and re-verified on each start. autocommit with an unusable run dir can start several watchdogs (N6): harmless, they all revert to the same slot.
+- Proof: by design (N6).
+
+**dockerd restart**
+- Behaviour: payload state lives in the run dir, and payload-run, payload-stop and the guardian re-resolve it on every call. A dockerd restart does not touch it.
+- Proof: #274 (dockerd-restart).
+
+**Once-per-boot guard with an unusable run dir**
+- Behaviour: `mark batdata-mount.booted` fails, so `boot()` runs again on its S11 re-run. The guard fails OPEN: crash capture and the boot-reasons line may run twice. That is acceptable, since it duplicates records and never loses them.
+- Proof: stated.
 
 **Restart of dnsmasq, network, firewall, odhcpd, LuCI under `protected_regular=2` / `protected_fifos=2`**
 - Behaviour: none of them may break: an `O_CREAT` on a file another user owns in sticky `/tmp` now fails.
@@ -547,7 +579,27 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 
 **R3 — Downgrade.** See the downgrade entry in §10.3.
 
-**R4 — `sysupgrade -F`.** The refusals of `_ab_ramroot_guard` are ignored, but its clean-up has already run.
+**R4 — `sysupgrade -F`.**
+- `RAM_ROOT` does not depend on a refusal (§10.2). What `-F` still lets through is a non-root-owned image or config backup, and the operator forced it.
+- The one exception is an unusable run dir, where `RAM_ROOT` falls back to `/tmp/root`. That needs `/tmp/run` itself to be broken (A1).
+
+**R5 — `/tmp/bat-hosts`.**
+- It is written by upstream alfred/openmanetd (root) into world-writable `/tmp`.
+- With `protected_regular=2`, a pre-created file permanently stops name updates.
+- Without the sysctl (older images), a non-root process controls the displayed names.
+- It is display only: halow-status and the mesh CGI. The mesh CGI already treats the names as untrusted and filters them.
+- Upstream report: bundled with R2, pending the user's decision.
+
+**R6 — Root-only env seams.**
+- `BATPOWER_MOCK_PATH`: `batpower once` only, never the daemon.
+- `PAYLOAD_RUNDIR`: `scripts/test-payload-run.sh`.
+- Both are read from the environment of root-started processes. Only root controls that environment, so neither is a non-root input.
+- `BATMAN_RUNDIR` was removed because nothing used it.
+
+**R7 — The runtime test waives its whole file in the static check.**
+- `scripts/node/tmp-trust-280.sh` IS the attacker simulation. Every `/tmp` name in it is a plant made as nobody, or a check of one.
+- It never takes a decision from `/tmp`. It plants only names that do not exist yet, and removes only what it planted.
+- A per-line list would list every line. Stated instead of hidden.
 
 ### 10.7 Review 2 → v3 mapping
 
@@ -588,3 +640,53 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 **#10 MINOR.** Stated as R2.
 
 **#11 MINOR.** The firstload comment has been fixed.
+
+### 10.8 Review 3 → v3.1
+
+Review 3 reviewed the whole document and 9de8bd5 under REVIEW.md: **REJECT**, 1 BLOCKER, 6 MAJORs. It confirmed BLOCKER 1 fixed (generated init self-contained, both copies identical, no other 95-only helper used) and that busybox `find -user` works.
+
+**#1 BLOCKER and #2 MAJOR — the review-2 `/tmp/root` fix.**
+- The problem: "take /tmp/root back" lost a race under `-F` (rm, then mkdir; the refusal was ignored), and `rm -rf` of an attacker tree could be steered by symlinks.
+- The fix (review 3's proposal): `RAM_ROOT=$RUNDIR/ramroot` in `platform.sh`. No `/tmp/root`, no race, nothing removed. The guard only checks the inputs. A3 now carries the evidence.
+
+**#3 MAJOR — the guard was never shown to be wired in.**
+- Static "GUARD NOT WIRED" (RAM_ROOT move; guard before `_ab_check_image`), plus 2 mutations.
+- Runtime §5 runs the real `include /lib/upgrade` and the real `validate_firmware_image` with a nobody plant, plus a control.
+
+**#4 MAJOR — the test deleted an operator's real hold.**
+- It now plants only absent names, never touches existing ones, and SKIPs the batpower step if a mock file already exists.
+
+**#5 MAJOR — the test started the tenant.**
+- `--start-only` now runs only when the whole stack is already up and not being stopped, which makes it a pure no-op.
+- It requires rc 0 exactly. rc 4 means FAIL; rc 3 is reported.
+
+**#6 MAJOR — an interrupted test left battery protection off.**
+- Signal traps; `trap '' PIPE`; a staged-config revert at start.
+- A detached `setsid` guard that ignores HUP and PIPE owns the end of the bench window: it removes the plant, reverts the staged config and restarts batpower. The test asserts that the guard finished and that nothing is left staged.
+
+**#7 MAJOR — lifecycle rows missing.**
+- Added rows: crash/crash loop, dockerd restart, every stage-1 entry path, the first OTA onto #280, and the once-per-boot guard failing open.
+- The stage-2 row is marked ❌ not run.
+- All runtime proofs in §10.3 are plans until the rc runs on the nodes. They are required before the PR.
+
+**#8 MINOR — the image argument was not checked.** It is now: root-owned regular file, not a symlink, link count 1.
+
+**#9 MINOR — the N3 extractor.**
+- Comments are dropped.
+- The extractor now accepts `${X:-default}/name` and does not take `$R/etc/...` as a name.
+- `mark <name>` is extracted from 95, with a mutation.
+
+**#10 MINOR — `/var/<x>`.**
+- PAT now flags every `/var/<x>`. Container-internal `/var/lib/...` and container tmpfs entries are allowlisted.
+- Mutation: `/var/autocommit.flag`.
+
+**#11 MINOR — allowlist breadth.**
+- `bat-hosts` is narrowed to halow-status, the mesh CGI and depersonalise (R5).
+- The whole-file waiver of the runtime test is stated as R7.
+
+**#12 MINOR — leftovers.**
+- The once-per-boot guard failing open is stated in §10.3.
+- The suite text no longer hard-codes a mutation count.
+- The env seams are stated as R6.
+
+**Ownership rows added:** RAM_ROOT, `/tmp/sysupgrade*`, uci batpower source, the RAMFS_COPY additions, the `/tmp/run` dev files, and `/tmp/bat-hosts`.

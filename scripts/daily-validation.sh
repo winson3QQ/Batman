@@ -134,7 +134,7 @@ suite harness-265   "harness reachability: q retry/UNDETERMINED, settle, revert/
 
 # 2c. No hardware needed: nothing that runs as root on a node trusts world-writable /tmp (#280) — the static
 #     allowlist check, and its mutation proof (every bypass form must be caught).
-suite tmp-trust-static   "no decision state / root-executed file in world-writable /tmp on the node; allowlist + 12 mutation proofs (#280)"   "bash $REPO/scripts/check-tmp-trust.sh && bash $REPO/scripts/test-tmp-trust.sh"
+suite tmp-trust-static   "no decision state / root-executed file in world-writable /tmp on the node; per-hit allowlist, path table, wiring checks + mutation proofs (#280)"   "bash $REPO/scripts/check-tmp-trust.sh && bash $REPO/scripts/test-tmp-trust.sh"
 
 # 2. No hardware needed: the MAC->IP derivation used by the first-boot hook.
 suite onboarding-ip \

@@ -18,7 +18,9 @@ cd "$ROOT" || exit 2
 [ -f "$ALLOW" ] || { echo "missing $ALLOW"; exit 2; }
 
 # world-writable dirs; predictable names next to a path; stage-2-unsafe spellings of the run dir; mkdir -p in /tmp
-PAT='/tmp([^/[:alnum:]_]|/|$)|/var/(run|lock|tmp)([^[:alnum:]_]|$)|/run/batman([^-[:alnum:]_.]|$)|/dev/shm|[[:alnum:]_./-]\$\$|\$\$[./[:alnum:]_-]|mkdir +-p +/tmp/'
+# /var is a symlink to tmp on the nodes, so ANY /var/<x> lands in world-writable /tmp — except the root-only dirs
+# OpenWrt creates there at boot (review 3 #10): every /var/<x> is a hit, and the allowlist names the safe ones.
+PAT='/tmp([^/[:alnum:]_]|/|$)|/var/[[:alnum:]_.-]+|/run/batman([^-[:alnum:]_.]|$)|/dev/shm|[[:alnum:]_./-]\$\$|\$\$[./[:alnum:]_-]|mkdir +-p +/tmp/'
 
 files(){
 	git ls-files -- 'feed/**' 'deploy/**' 'scripts/node/**' 'scripts/*.sh' \
@@ -58,6 +60,9 @@ cat "$OUT"
 TABLE=$ROOT/scripts/rundir-paths.txt
 if [ -f "$TABLE" ]; then
 	nt=0
+	# code only (comments dropped), then: $RUNDIR/<n>, ${RUNDIR}/<n>, ${RUNDIR:-default}/<n> (same for _R, PSTOP_RUN,
+	# R), where <n> may contain $var / ${var} / <t>; plus names written through `mark <name> <value>` (review 3 #9)
+	N='([A-Za-z0-9_.<>-]|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?)+'
 	while IFS= read -r nm; do
 		case "$nm" in ''|'$'*) continue;; esac          # "$RUNDIR/$1": a generic writer, its callers are checked
 		g=$(printf '%s' "$nm" | sed -E 's/\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|<[a-z]+>/*/g')   # $t / ${T} / <t> -> *
@@ -69,9 +74,12 @@ if [ -f "$TABLE" ]; then
 			[ "$g" = "$pat" ] && { hit=1; break; }
 		done < "$TABLE"
 		[ "$hit" = 1 ] || { echo "NOT IN PATH TABLE: run-dir name '$nm' (add it to scripts/rundir-paths.txt with its writer/reader)"; nt=$((nt+1)); }
-	done < <(files | grep -vE '^scripts/(check|test)-tmp-trust\.sh$' | xargs grep -ohE \
-		'\$\{?(RUNDIR|_R|PSTOP_RUN|R)\}?/[A-Za-z0-9_.<>${}-]+([^/A-Za-z0-9_.<>${}-]|$)' 2>/dev/null \
-		| sed -E 's#^\$\{?[A-Z_]+\}?/##; s#[^A-Za-z0-9_.<>${}-]$##' | sort -u)
+	done < <( { files | grep -vE '^scripts/(check|test)-tmp-trust\.sh$' | xargs sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#[^"'"'"']*$//' 2>/dev/null \
+		| grep -oE "(\\\$(RUNDIR|_R|PSTOP_RUN|R)|\\\$\\{(RUNDIR|_R|PSTOP_RUN|R)(:-[^}]*)?\\})/$N([^/A-Za-z0-9_.<>\${}-]|\$)" \
+		| sed -E 's#^\$\{?[A-Z_]+(:-[^}]*)?\}?/##; s#[^A-Za-z0-9_.<>${}-]$##'
+		# `mark` = the run-dir marker helper only where 95-batman-storage defines it (the harness has an unrelated mark)
+		files | grep -E '/95-batman-storage$' | xargs sed -e 's/^[[:space:]]*#.*$//' 2>/dev/null \
+		| grep -oE '(^|[^A-Za-z0-9_])mark [A-Za-z0-9_.-]+' | sed -E 's#^.*mark ##'; } | sort -u)
 	[ "$nt" = 0 ] || bad=1
 else echo "missing $TABLE"; bad=1; fi
 
@@ -88,6 +96,16 @@ for f in feed/batman-provision/files/etc/uci-defaults/95-batman-storage deploy/p
 		echo "INIT HELPER MISSING: $f INITBODY uses RUNDIR without sourcing /usr/lib/batman/rundir.sh"; bad=1
 	fi
 done
+
+# review 3 #3: the sysupgrade protections must be WIRED IN, not just defined — RAM_ROOT moved into the run dir at
+# include time, and platform_check_image calling the input guard before anything else
+PA=feed/batman-provision/files/usr/lib/batman/platform-ab.sh
+if [ -f "$PA" ]; then
+	grep -qE '^if batman_rundir 2>/dev/null; then RAM_ROOT=\$RUNDIR/ramroot; fi' "$PA" \
+		|| { echo "GUARD NOT WIRED: $PA no longer moves RAM_ROOT into the run dir at include time"; bad=1; }
+	awk '/^platform_check_image\(\) \{/{f=1} f&&/^\}/{exit} f' "$PA" | grep -qE '_ab_ramroot_guard "\$@" && _ab_check_image "\$@"' \
+		|| { echo "GUARD NOT WIRED: platform_check_image does not run _ab_ramroot_guard before _ab_check_image"; bad=1; }
+fi
 
 # inline waivers must say why
 w=$(files | xargs grep -nE 'tmp-trust: ok *$' 2>/dev/null)

@@ -23,6 +23,7 @@ batman-reboot.want
 batman-slot.lock
 batman-slot.busy
 # platform-ab / storage
+ramroot
 batdata.dev
 p6t
 batman-storage.crit
