@@ -519,15 +519,17 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 - Proof: **D5 / §7.5 restart-path test** on the rc: each restart, then the service is healthy, and no `EACCES` in logread.
 
 **Downgrade to an image without #280**
-- Behaviour: that image's code uses its `/tmp` names again. The run dir stays as an unused root dir.
-- On batpower:
-  - the p5 config restore brings back what that image's migration wrote;
-  - 1.5.6's binary default is `mock`;
-  - a node carrying `source=mock` in uci gets the old risk back;
-  - our migration writes `none` into uci, so a downgrade keeps `none` unless that uci was restored from an older p5.
-
-  This is stated as residual R3.
-- Proof: one downgrade run before the PR, recorded.
+- Behaviour: the downgraded slot runs that image's code in full: its `/tmp` names, its `/tmp/root`, and its batpower default.
+- **Measured on 02 (rc → 1.5.6, 2026-10-09):** the downgraded slot came up with batpower `source=mock`.
+  - `sysupgrade -n` gives the new slot a fresh overlay, so the uci `none` that our migration wrote on the rc slot does not carry over.
+  - The p5 seed holds no batpower config, so the image default applies.
+  - The earlier claim that "a downgrade keeps `none`" was wrong and is withdrawn.
+  - A downgrade therefore brings the `/tmp/batpower.mock` halt risk back for as long as that image runs (R3).
+- Re-upgrading to the rc brought `source=none` back, measured.
+- Proof (measured on 02):
+  - rc→1.5.6 ran on the rc's stage 2 (`ramfs=/run/batman/ramroot`) and committed;
+  - 1.5.6→rc ran on 1.5.6's stage 1 (procd `prefix` `/tmp/root`, pre-taken root 0700 by the OTA tooling) and committed;
+  - batpower `none` again on the rc.
 
 **Failsafe boot**
 - Behaviour: no procd services. `/tmp/run` still comes from `early.c`, and our scripts don't run.
@@ -596,7 +598,9 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 - `/tmp/.uci` is absent before `boot`. Only ubusd and procd-started root services exist at that point, so the window is boot-only and uid 81 only.
 - To report upstream together with A3. #263's upstream report is pending the user's decision, so this one is not posted either without asking.
 
-**R3 — Downgrade.** See the downgrade entry in §10.3.
+**R3 — Downgrade.**
+- A slot downgraded to a pre-#280 image is pre-#280 in full, measured on 02: batpower `source=mock` (that image's default; `-n` leaves no uci carry-over), `/tmp` names and `/tmp/root`.
+- Only re-upgrading fixes it. Every re-upgrade is a "first OTA onto #280" (§10.3).
 
 **R4 — `sysupgrade -F` (superseded by review 4 #3: an unusable run dir now refuses at include time, even under `-F`).**
 - `RAM_ROOT` does not depend on a refusal (§10.2). What `-F` still lets through is a non-root-owned image or config backup, and the operator forced it.
@@ -754,3 +758,31 @@ Review 3 reviewed the whole document and 9de8bd5 under REVIEW.md: **REJECT**, 1 
 **Ownership rows:**
 - uci `batpower` staging is in the shared `/tmp/.uci`. The detached guard reverts it within LIFE+3 s, which is the window in which a foreign bare `uci commit` could persist it. The only such committers are the 1.8.0 meshpoint wizard and 99-halow-identity, which run at provisioning and first boot only, never during the steady state in which the test runs. Stated.
 - meshled state: owner meshled; readers meshtest and the LED.
+
+### 10.10 On-node validation of rc 1.5.7-wsl.1+b0bba53 (2026-10-09)
+
+**OTA legs.** Every leg: `sysupgrade -n`; the OTA tooling takes `/tmp/root` first, root 0700; then committed.
+
+| leg | stage that ran | `S2 BEGIN ramfs=` | procd `prefix` | result |
+|---|---|---|---|---|
+| 02 Pi 4, 1.5.6→rc | old (1.5.6) | absent (negative control) | `/tmp/root` | committed, slot B |
+| 02 Pi 4, rc→rc | #280 | `/run/batman/ramroot` | `/tmp/run/batman/ramroot` | committed, slot A |
+| 03 Pi 3, 1.5.6→rc | old | absent | `/tmp/root` | committed, slot A |
+| 03 Pi 3, rc→rc | #280 | `/run/batman/ramroot` | `/tmp/run/batman/ramroot` | committed, slot B |
+| 04 Pi 4 OTS, 1.5.6→rc | old | absent | `/tmp/root` | committed, slot B |
+| 04 Pi 4 OTS, rc→rc | #280 | `/run/batman/ramroot` | `/tmp/run/batman/ramroot` | committed, slot A |
+| 02, rc→1.5.6 (downgrade) | #280 | `/run/batman/ramroot` | `/tmp/run/batman/ramroot` | committed; batpower `mock` on 1.5.6 (R3) |
+| 02, 1.5.6→rc (re-upgrade) | old | — | `/tmp/root` | committed; batpower `none` |
+
+On every #280 stage 1, `S1 CHECK` showed `upg=n` (stage 1, before `install_bin`, after the reset) and then `upg=y` (procd's call, after `install_bin`).
+
+**`tmp-trust-280`: PASS on all three nodes.**
+- The first run FAILed only the "autocommit still decides" check, on all three. Checking the pre-#280 code showed that this check cannot discriminate: in a dry run the planted markers can only matter to the watchdog and the claim, and a dry run never exercises those.
+- It is now reported as info, not a gate. The read path is proven by the static check, the N3 table and the N8 sweep.
+- 04: the payload `--start-only` effect check passed (rc 0 with a `/tmp` stopping flag planted by nobody).
+
+**D5 restart paths: PASS on 02, 03 and 04.**
+- Services restarted: dnsmasq, firewall, uhttpd, rpcd, log, sysntpd, dropbear, cron, dbus, avahi-daemon, collectd, openmanetd, batpower, meshled, joinwatch, alfred, mesh11sd. A network reload followed.
+- All of them ran again afterwards, `br-ahwlan` got its address back, and there were 2 batman neighbours.
+- logread had no permission-denied line.
+- `protected_regular=2` and `protected_fifos=2` are live.

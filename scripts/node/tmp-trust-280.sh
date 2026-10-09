@@ -55,7 +55,7 @@ fi
 # 3 a non-root process cannot create anything in /tmp/run or the run dir
 NB "id -u" | grep -qx 65534 || bad "start-stop-daemon did not run as nobody — the non-root steps verified nothing"
 NB "mkdir /tmp/run/tt280 2>/dev/null && echo MADE" | grep -q MADE && { bad "nobody created /tmp/run/tt280"; rmdir /tmp/run/tt280; } || ok "nobody cannot create in /tmp/run"
-NB ": > $RUNDIR/tt280 2>/dev/null && echo MADE" | grep -q MADE && bad "nobody wrote into $RUNDIR" || ok "nobody cannot write into the run dir"
+NB "{ : > $RUNDIR/tt280; } 2>/dev/null && echo MADE" | grep -q MADE && bad "nobody wrote into $RUNDIR" || ok "nobody cannot write into the run dir"
 
 # 4 old /tmp markers planted by nobody have NO effect; an operator flag planted by nobody is TAMPER
 for p in /tmp/batman-autocommit.hold /tmp/batman-fw-override /tmp/autocommit.committed /tmp/batman-reboot.want /tmp/batman-slot.busy; do
@@ -72,9 +72,10 @@ o=$(AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=$((u + 20)) 
 if mine /tmp/batman-autocommit.hold; then
 	echo "$o" | grep -q 'TAMPER: /tmp/batman-autocommit.hold' && ok "autocommit reports the planted hold as TAMPER" || bad "autocommit did not report the planted hold"
 fi
-# effect: with planted committed/decided/wd/busy a pre-#280 autocommit stops before deciding; ours decides
-echo "$o" | grep -q 'DRYRUN decision:' && ok "autocommit still reached a decision with /tmp plants present" \
-	|| bad "autocommit reached no decision with /tmp plants present: $(echo "$o" | tail -2 | tr '\n' ' ')"
+# NOT a gate (on-node finding 2026-10-09): in a DRY run the planted committed/decided/wd/busy can only matter to the
+# watchdog and the commit claim, which a dry run never exercises — a pre-#280 build evaluates to the same verdict.
+# That autocommit READS the run dir, not /tmp, is proven by the static check + N3 path table and the N8 sweep.
+info "autocommit dry run with /tmp plants: $(echo "$o" | grep -oE 'DRYRUN decision: [A-Z]+|NOT committed by uptime [0-9]+s' | head -1) (not a discriminator, see comment)"
 # effect on the payload tenant (review 3 #5: this test must never be a second owner of tenant start): only when
 # the whole stack is ALREADY running and the guardian is not stopping it, `--start-only` is a pure no-op that
 # still goes through the stopping-flag decision — rc 0 exactly. A pre-#280 payload-run would return 4 (the

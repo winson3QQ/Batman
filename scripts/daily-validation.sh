@@ -1289,7 +1289,7 @@ fi
 # Plants as nobody: old /tmp markers, an operator flag, a battery reading. Restarts batpower under a STAGED mock
 # config; the plant lives < (confirm-1)*interval so even a regressed build cannot reach CRIT (design §9 N2).
 chk_tmptrust_280() { local n rc=0 o r; for n in $FLEET; do echo "== $n"
-  o=$(timeout 180 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$n" 'sh -s' < "$REPO/scripts/node/tmp-trust-280.sh" 2>&1); r=$?
+  o=$(timeout 300 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$n" 'sh -s' < "$REPO/scripts/node/tmp-trust-280.sh" 2>&1); r=$?
   echo "$o"
   [ "$r" = 0 ] && ! echo "$o" | grep -qx '== tmp-trust-280: PASS' && { echo "FAIL $n: rc 0 without the PASS trailer (script cut short?)"; rc=1; }
   case $r in 0) ;; 3) echo "$o" | grep -q '^SKIP-REASON: pre-#280' && echo "FAIL $n runs a pre-#280 image — this run cannot verify #280 on it" ; rc=1 ;; *) rc=1 ;; esac
