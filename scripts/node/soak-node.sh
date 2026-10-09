@@ -51,6 +51,8 @@ EOS
 sample)
 	r(){ s=0; for p in $(pidof $1 2>/dev/null); do v=$(sed -n 's/^VmRSS:[^0-9]*\([0-9]*\).*/\1/p' /proc/$p/status 2>/dev/null); s=$((s + ${v:-0})); done; echo $s; }
 	rs=0; for id in $(docker ps -aq 2>/dev/null); do c=$(docker inspect -f '{{.RestartCount}}' $id 2>/dev/null); rs=$((rs + ${c:-0})); done
+	# #274 v8.2: tenant containers are --restart no (RestartCount stays 0); the guardian's ledger counts their restarts
+	for f in /tmp/run/batman/batman-payload-*-restarts; do [ -f "$f" ] || continue; c=$(awk 'BEGIN{n=0} $2=="cancel"{n--; next} {n++} END{print n}' "$f"); rs=$((rs + c)); done
 	oom=0; for f in /sys/fs/cgroup/docker/*/memory.events; do v=$(sed -n 's/^oom_kill //p' $f 2>/dev/null); oom=$((oom + ${v:-0})); done
 	h=""; for f in $H/dv-http-*.cnt; do [ -f "$f" ] || continue; l=${f#$H/dv-http-}; l=${l%.cnt}; set -- $(cat $f); h="$h http_${l}_ok=$1 http_${l}_fail=$2"; done
 	cs=""; [ -f $H/dv-cot.sent ] && cs="cot_sent=$(cat $H/dv-cot.sent) cot_reconn=$(cat $H/dv-cot.reconn 2>/dev/null)"
