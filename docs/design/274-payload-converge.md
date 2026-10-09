@@ -1,6 +1,6 @@
 # #274 — payload tenant converges on its config; clean stop, fast start
 
-Status: design **v6** (2026-10-09). **§12 supersedes §11 (v5 REJECTED by two reviewers, #274 comment 6072340146)** and overrides everything earlier where they differ. Before that: design v5. §11 superseded §10 (v4 was REJECTED; its BLOCKER was confirmed on 04) and overrides §2 T3/T5, §4 and §5 where they differ. Earlier: v1 REJECTED (B1–B3, M1–M9), v2 REJECTED (N1–N10); §7 maps every finding
+Status: design **v7** (2026-10-09). **§12 supersedes §11** (v5 REJECTED, #274 comment 6072340146; v6 APPROVE-WITH-CHANGES ×2 with open MAJORs, all resolved in v7 — §12.12) and overrides everything earlier where they differ. Before that: design v5. §11 superseded §10 (v4 was REJECTED; its BLOCKER was confirmed on 04) and overrides §2 T3/T5, §4 and §5 where they differ. Earlier: v1 REJECTED (B1–B3, M1–M9), v2 REJECTED (N1–N10); §7 maps every finding
 to its resolution. Issue: winson3QQ/Batman#274.
 
 ## 1. Problem (measured)
@@ -719,33 +719,35 @@ autocommit:
 - A downgrade to ≤ 1.5.6 brings back that version's behaviour (L16) and costs one rebuild each way.
 - v5 depends on #280's run dir. #274 introduces `rundir.sh`, and #280 rebases on it.
 
-## 12. v6 (2026-10-09): one owner, nothing in the OTA path
+## 12. v7 (2026-10-09): one owner, nothing in the OTA path
 
-**v5 (§11) is REJECTED and superseded** (#274 comment 6072340146: two reviewers, two BLOCKERs, eight MAJORs).
-v6 keeps v5's direction — one owner of the tenant lifecycle, restart policy `no` — and drops its mechanics
-(the dockerd wrap, the upgrade marker, `term_timeout 45`, live-restore). A new measurement (E14) shows they
-were never needed: on an OTA, dockerd's own shutdown already stops the whole tenant gracefully, in < 1 s,
-16 s before stage 2 kills anything. The one thing that goes wrong is the *next boot*: dockerd revives all six
-containers at once (E6). With policy `no` nothing revives itself, and the guardian's ordered start runs on
-every boot, OTA included.
+**History of this section.** v5 (§11) was REJECTED (#274 comment 6072340146). v6 (commit fdf9291) kept v5's
+direction and dropped its OTA mechanics; its two independent reviews (2026-10-09) both returned
+APPROVE-WITH-CHANGES with open MAJORs (reviewer A: 5 MAJOR / 8 MINOR; reviewer B: 6 MAJOR / 10 MINOR). **v7 is
+v6 with every one of those findings resolved in place**; 12.12 maps each finding (v5's still-open ones too) to
+where it is resolved. Where §12 differs from anything earlier in this document, §12 wins. §11's evidence table
+(E1–E11) still holds.
+
+The idea in one paragraph: on an OTA, dockerd's own shutdown already stops the whole tenant gracefully, in
+< 1 s, 16 s before stage 2 kills anything (E14). What goes wrong is the *next boot*: dockerd revives all six
+containers at once because of `unless-stopped` (E6/E15). With restart policy `no` nothing revives itself; the
+guardian is the only component that starts or restarts a tenant container, in order, on every boot and after
+every crash, and it keeps a crash record that autocommit can trust.
 
 This section is written against `docs/design/REVIEW.md` and #280's root-only run dir (merged, c792b10).
-The reviewer reviews the WHOLE document. Where §12 differs from anything earlier, §12 wins. §11's evidence
-table (E1–E11) still holds and is referred to below.
 
-### 12.0 What v6 does not touch (and why that matters)
+### 12.0 What v7 does not touch
 
-- **procd's sysupgrade path is unchanged:** no wrap, no marker, no `term_timeout` change, no hook in stage 1
-  or stage 2. procd's blocked window (validate + `sleep(max term_timeout)`, E13) is exactly today's.
-- **The stock dockerd init is unchanged** (no firmware patch). Only our uci-defaults change (D6-2).
-- **K08/K09 (clean stop) are unchanged** (E8).
+- **procd's sysupgrade path:** no wrap, no marker, no `term_timeout` change, no hook in stage 1 or stage 2.
+  procd's blocked window (validate + `sleep(max term_timeout)`, E13) is exactly today's: v7 adds 0 s.
+- **The stock dockerd init** (no firmware patch). Only our uci-defaults change (D7-2).
+- **The K09 stop path** (`pstop_final`) and the OTS images.
 
 ### 12.1 New evidence (reality check 2026-10-09, fleet on 1.5.7-wsl.3+c792b10)
-
 | # | fact | evidence |
 |---|---|---|
 | E12 | `validate_firmware_image` of the real OTA payload takes **14–16 s on a Pi 4** (02, 04) and **21–25 s on a Pi 3** (03). In a real OTA procd's own call took 14 s (04) and 22 s (03). | `/usr/libexec/validate_firmware_image /opt/batdata/ota.tar.gz` ×2 per node, timed with `/proc/uptime`. ota-trace: S1 CHECK (stage 1) → S1 CHECK `caller=/sbin/procd`: 04 02:38:07→02:38:21; 03 22:14:23→22:14:45. |
-| E13 | **procd sends no watchdog pings while it validates and while it sleeps in `service_stop_all`.** `validate_firmware_image_call` forks and then reads the pipe synchronously in procd's main loop; the pings are a uloop timer. The bcm2835 driver sets `max_hw_heartbeat_ms`, so the kernel keeps the hardware alive until 30 s after the last userspace ping. So an OTA stalls procd for validate + 5 s: **≈ 19 s on a Pi 4, ≈ 27 s on a Pi 3**, plus up to 5 s since the last ping. The Pi 3 margin to 30 s is ≈ 0–3 s. This is **today's** budget; v6 adds nothing to it (12.0). A reset there loses the OTA attempt (nothing has been written yet; the node boots its old slot). | procd `system.c:643-693` (fork + `vjson_parse(fds[0])`), `watchdog.c:44-48`; kernel `drivers/watchdog/bcm2835_wdt.c:161`; `ubus call system watchdog` = `timeout 30, frequency 5` on 02/03/04. |
+| E13 | **procd sends no watchdog pings while it validates and while it sleeps in `service_stop_all`.** `validate_firmware_image_call` forks and then reads the pipe synchronously in procd's main loop; the pings are a uloop timer. The bcm2835 driver sets `max_hw_heartbeat_ms`, so the kernel keeps the hardware alive until 30 s after the last userspace ping. So an OTA stalls procd for validate + 5 s: **≈ 19 s on a Pi 4, ≈ 27 s on a Pi 3**, plus up to 5 s since the last ping. The Pi 3 margin to 30 s is ≈ −2…+3 s (27 s blocked + 0–5 s since the last ping, against 30 s). This is **today's** budget; v6 adds nothing to it (12.0). A reset there loses the OTA attempt (nothing has been written yet; the node boots its old slot). | procd `system.c:643-693` (fork + `vjson_parse(fds[0])`), `watchdog.c:44-48`; kernel `drivers/watchdog/bcm2835_wdt.c:161`; `ubus call system watchdog` = `timeout 30, frequency 5` on 02/03/04. |
 | E14 | **Today's OTA stop is already graceful.** Same-build OTA on 04 (A→B, 2026-10-09). procd validation ended 02:38:21; at 02:38:21.8 opentakserver got SIGINT (`KeyboardInterrupt`), ots-db `fast shutdown request` 02:38:22.04 → `database system is shut down` 02:38:22.35, rabbitmq closed its vhost and stores by 02:38:22.39. Stage 2 began 02:38:38 (its `kill_remaining TERM` / +4 s `KILL`, `stage2:157-159`, come later still). Next boot postgres: `database system was shut down at 02:38:22` (no recovery). | container logs on p6 (`docker logs -t`, old-boot window); ota-trace S2 BEGIN. |
 | E15 | **The symptom, same OTA:** new boot `RestartCount` opentakserver=1, ots_cot_parser=1, the other four 0; the first guardian verdict was `DRIFT` (`container opentakserver restarted 1x since the last check`, `ots_cot_parser` likewise). This run is the negative baseline for ota-start-274 (12.7). | `docker inspect`, `$RUNDIR/batman-payload-opentakserver-verify.log`, syslog `confinement DRIFT detected` 61 s after boot. |
 | E16 | Stock dockerd init: no `respawn` (`/etc/init.d/dockerd:231-241`); `reload_service` = re-render daemon.json + SIGHUP (`:244-247`); the uci trigger on `dockerd` is a reload, not a restart (`:249-251`); `stop_service` = `service_stop /usr/bin/dockerd`. | read on 02 |
@@ -757,280 +759,407 @@ table (E1–E11) still holds and is referred to below.
 | E22 | halow-status already reads the run-dir verdict (#280); review v5 MINOR "stale drift file" is closed. | `halow-status:90-96` |
 | E23 | The cleanstop-274 negative-control seam `fault.274-rmstop-once` lives on p6 (`/opt/batdata/state/`), i.e. writable by any container with p6 RW (E20). | `payload-stop.sh:98-103`, `daily-validation.sh:1123` |
 | E24 | `dockerd-restart.sh` recorded a 1.5.2 baseline where an `unless-stopped` container came back `exited` after `/etc/init.d/dockerd restart`, while after an OTA they are revived (E6/E15). Unexplained; v6 does not depend on either behaviour (policy `no` everywhere). | `scripts/node/dockerd-restart.sh:5,25` |
+| E25 | dockerd's shutdown: `Shutdown()` returns early under live-restore; otherwise every running container goes through `shutdownContainer` → `containerStop` (its StopSignal, then StopTimeout). The API is closed before `Shutdown`, so nothing can start a container during it. | `dockerd-27.3.1/daemon/daemon.go:1343-1350` and `cmd/dockerd` (reviewer A) |
+| E26 | `docker kill` sets `HasBeenManuallyStopped=true`, so a killed container is NOT restarted by a restart policy: `docker kill` does not model a crash. | `daemon/kill.go:89-90` (reviewer A) |
+| E27 | dockerd keeps events in an in-memory ring of 256; every health-gate `docker exec` adds 3 events, canary runs add more (04: 44 events at +761 s). | `daemon/events/events.go:12` (reviewer A); 04 |
+| E28 | procd's halt: `kill(-1,SIGTERM)`, `sleep(1)`, `kill(-1,SIGKILL)`. dockerd has no `STOP=`, so no K link: at shutdown, whatever K08/K09 did not stop dies in that sequence. | procd `state.c:186-196`; `/etc/rc.d` on 04 (K08 prestop, K09 guardian, S95 firstload, S99 guardian, S99 dockerd) |
+| E29 | **The guardian's tick executes p6 files as root every 30 s:** `sh $DIR/reconcile-resources.sh` (`payload-guardian.sh:102`), which *sources* `*.hardening.env` (`reconcile-resources.sh:52`); `$DIR/verify-profile-*.sh` by glob (`:125-127`), which runs `$HERE/verify-profile.sh` (`verify-profile-ots.sh:12`), which sources the env file (`verify-profile.sh:30`). `verify-profile.sh` is on p6 but **not** in the golden set (`.golden-files` on 04 lists 10 files without it), so the boot-time refresh never restores it. A glob also picks up *new* attacker-named files, which the refresh never touches. `restore_payload_guardians` installs any root-owned `apps/*/*.init` into `/etc/init.d` (`95-batman-storage:556-559`). | code; 04 |
+| E30 | Start mode's `walk prep` does `chown`/`chmod 0400` on `apps/<t>/secrets/*` after only `[ -f ]` — busybox chown follows symlinks. | `payload-run:235-236` |
+| E31 | The health gate's `docker exec` has no timeout: a hung exec holds the tenant lock forever. | `payload-run:134` |
+| E32 | autocommit commits after `NEED=3` healthy polls 10 s apart, with a drift file younger than 1 min and the pre-commit canary. | `batman-autocommit:29-30,443-452,479-499` |
+| E33 | `batman-prestop-payload start` is a no-op; its `stop` sets `.stopping` for every tenant; the guardian's `start_service` clears `.stopping` unconditionally. | `batman-prestop-payload:10-22`, `payload-guardian.sh:42` |
+| E34 | Harness F2 removes `rabbitmq` (container and image), reloads the image and runs a manual `payload-run <t>` rebuild. | `fault-injection.sh:153-158` |
+| E35 | `docker update --restart <p>` changes neither the `batman.cfg` label nor the cfg hash (the hash is computed from the manifest render). | §5; `payload-run:256` |
+| E36 | Tenant containers run non-root (1000:1024, 999, rabbitmq); daemon.json has no userns-remap, so a root container writes root-owned files on the host. `/opt/batdata/{apps,state,log}` are root 755. | 04 (reviewer B) |
 
 ### 12.2 Design
 
-**D6-1 Restart policy `no` for every tenant container; the guardian is the only starter.**
-- `payload-run` always renders `--restart no`. A manifest `RESTART` value other than `no` (tenant header or
-  per container) is ignored with a WARN line (`manifest RESTART <v> ignored — the guardian is the only
-  restarter (#274)`). `--restart` is placed after `$HARDEN_FLAGS` (as today), so a hardening file cannot
-  override it; the CI hardening-file check also rejects `--restart` there.
-- `profile.yaml` of ots / dummy-nginx / dummy-nginx-b say `restart: "no"`; `profile-to-manifest.py` defaults to
-  `no`; the manifests are re-rendered. CI (the existing manifest consistency check) fails on any `RESTART` ≠ `no`.
-- The rendered argv is in the cfg hash, so the first boot on v6 converges by one rebuild (T6 path, already
-  supported). A downgrade costs one rebuild the other way (L-DOWN).
-- Effect: after a power loss (T2) and after an OTA (T3) no container comes up by itself; the guardian's start
-  mode brings the stack up services first, gated (§9). The E6/E15 race is gone by construction.
+**D7-1 Restart policy `no`; the guardian is the only automatic starter, and it enforces the policy.**
+- `payload-run` always renders `--restart no` after `$HARDEN_FLAGS` (so a hardening file cannot override it; the
+  CI hardening-file check also rejects `--restart` there). A manifest `RESTART` other than `no` (header or per
+  container) is ignored with a WARN. `profile.yaml` (ots, dummy-nginx, dummy-nginx-b) say `restart: "no"`,
+  `profile-to-manifest.py` defaults to `no`, manifests are re-rendered, CI fails on any other value.
+- The rendered argv is in the cfg hash: the first boot on v7 converges by one rebuild (T6 path). A downgrade
+  rebuilds once the other way.
+- **Runtime enforcement (A1):** the policy can be changed after creation (`docker update`, E35), which no label
+  shows. At start-up and on every 30 s tick the guardian reads `{{.HostConfig.RestartPolicy.Name}}` and
+  `{{.RestartCount}}` of each manifest container. Policy ≠ `no` → the guardian sets it back
+  (`docker update --restart no <c>`), logs `restart policy of <c> was <p> — reset to no`, and writes a ledger
+  record (D7-3), so the tenant is DRIFT for the ledger window. `RestartCount` > 0 means a policy restarted the
+  container since its creation → ledger record once per new value. The guardian is thereby the single owner of
+  the runtime policy; any other writer is corrected and reported.
+- Operator starts remain and are serialized by the tenant lock: `payload-run <t>` (rebuild), `--renet`, and
+  the guardian's own converge. They are listed in 12.3.
 
-**D6-2 live-restore stays off, and the config says so.**
-- `99-batman-payload-docker` stops setting `live_restore` and `no_new_privileges` (the stock init maps
-  neither, E1) and deletes both keys (a keep-config upgrade would otherwise carry them). `patches/0004-*`
-  (never applied, §11 review MINOR) is deleted.
-- Why off: with policy `no`, *someone* must stop the containers on every sysupgrade path. Without
-  live-restore dockerd does it, gracefully and in < 1 s (E14), on every path (CLI, LuCI, raw ubus, `-F`).
-  With live-restore the containers would outlive dockerd and be TERM/KILLed by stage 2 (v5's MAJOR). The
-  price: a dockerd restart stops the tenant; the guardian restarts it in order (D6-3, L-DOCKERD).
-- The guardian checks `docker info -f '{{.LiveRestoreEnabled}}'` at every start; `true` is published as
-  DRIFT `dockerd live-restore is on — an OTA would kill the tenant instead of stopping it (#274)`.
-- `no-new-privileges` per container is unchanged (payload-run renders it, verify-profile checks it). The
-  daemon-wide default is not in effect today and stays so — recorded as a leftover (12.9).
+**D7-2 live-restore stays off; the config says so; a violation is a host alarm.**
+- `99-batman-payload-docker` stops setting `live_restore` and `no_new_privileges` (the stock init maps neither,
+  E1) and deletes both keys; `patches/0004-*` (never applied) is deleted.
+- Why off: with policy `no` dockerd's shutdown is what stops the tenant on every sysupgrade path (CLI, LuCI, raw
+  ubus, `-F`), gracefully and in < 1 s (E14, E25). With live-restore the containers would outlive dockerd and
+  meet stage 2's TERM/KILL. Price: a dockerd restart stops the tenant; the guardian restarts it in order.
+- The guardian checks `LiveRestoreEnabled` at start; `true` goes to the **host alarm** (D7-5), not the tenant
+  verdict: it is a node-wide condition that an OTA cannot fix, so it must not make every OTA revert (A3, B-M3).
+- Per-container `no-new-privileges` is unchanged; the daemon-wide default is a leftover (12.10).
 
-**D6-3 The guardian restarts exited containers and owns the crash record.**
-- Each tick, after the docker API answers and only while `$R/batman-payload-<t>.stopping` is absent: the
-  manifest containers whose status is `exited`, `created` or `dead` are restarted with
-  `PAYLOAD_LOCK_WAIT=5 PAYLOAD_SKIP_FW4=1 payload-run --start-only <t>` — start mode only: services first and
-  gated, the already-running ones skipped, **never a rebuild**, and **no `*.fw4.uci` execution** (the rules are
-  already in uci from this boot's start; re-running a p6 script mid-boot would execute a file the golden
-  refresh has not re-checked since boot, see D6-5) (rc 3 = config changed → no action, DRIFT stays; rc 4 =
-  being stopped → no action; rc 1 = start or gate failed → DRIFT, retried with backoff).
-- **Ledger** `$R/batman-payload-<t>-restarts`: one line `<uptime_s> <names…>` appended *before* each attempt.
-  It is in the root-only run dir (#280), per boot (tmpfs), and survives a guardian respawn.
-- **Backoff** from the ledger, on `/proc/uptime` (04's wall clock jumps): with n attempts in the last 600 s,
-  the next attempt waits until `last + min(30·2^(n−1), 300)` s. First restart ≤ one tick (30 s) after the exit.
-- **Verdict** (drift.json `status` stays `OK`/`DRIFT`, no new value, so autocommit is unchanged):
-  `DRIFT` if a manifest container is not running at the end of the tick, or the ledger has an attempt in the
-  last 60 s (`container <c> restarted by the guardian at +<n> s`), or the existing cfg / verify-profile /
-  D6-2 / D6-5 rules fire. A crash therefore shows DRIFT for one to two ticks (today: one tick, E15's rule);
-  a crash loop shows DRIFT on every tick (down between restarts, or a fresh attempt).
-- The **RestartCount rule and `RC_STATE` are removed** (vacuous under policy `no`; a re-enabled restart
-  policy changes the cfg hash and is caught by D3(b)).
-- **The PRIMARY exit is removed** (E19): PRIMARY is restarted like any other container, so the guardian
-  keeps running and the ledger keeps counting. The guardian still exits for respawn when the docker API is
-  down > 120 s (unchanged).
-- **Respawn marker** `$R/batman-payload-<t>.up` (created after the first converge of this boot): a guardian
-  that finds it at start is a respawn, and the containers its start-up converge starts are written to the
-  ledger too — so a crash cannot be hidden by a guardian respawn.
+**D7-3 The guardian restarts crashed containers quickly, on whatever config they carry, and keeps a record
+autocommit can trust.** (A4, B-M1, B-M2, B-M5, B-m1, B-m2, B-m9, A9)
+- **Detection every 5 s.** The guardian loop polls liveness with one call,
+  `docker ps -a --filter label=batman.tenant=<t> --format '{{.Names}} {{.State}}'`, every 5 s; the full verify
+  (verify-profile, cfg, policy, mounts) keeps its 30 s cadence. One CLI call per 5 s (measured cost to be
+  recorded on both boards before the PR; a Pi 3 carries no tenant).
+- **Restart = start the existing containers, never rebuild.** New mode `payload-run --restart-exited <t>`:
+  for each manifest container in state `exited|created|dead` that carries `batman.tenant=<t>`, `docker start`
+  it **on whatever config it has** (current or old cfg label alike, B-M1/A4a), final tier first and gated if
+  any final-tier container is down, then the rest. No `all_match`, no rebuild, no `*.fw4.uci`, no `walk prep`,
+  no network change. It honours `.stopping` and the shutdown marker (exit 4). A container under a manifest
+  name *without* our tenant label is never started (bypass, T7) → DRIFT.
+- **A missing container** (`docker rm`, prune, harness F2 E34) cannot be started: the guardian writes a ledger
+  record `missing <c>` and exits for respawn, so procd restarts it and its start-up converge rebuilds (the
+  preflighted path) — today's recovery, kept. At most once per 600 s; otherwise DRIFT `container <c> missing`.
+- **Backoff (B-m1, B-M5)** on `/proc/uptime`: attempt k after the crash is made at once for k = 1, then after
+  min(10·2^(k−2), 60) s since the previous attempt (0, 10, 20, 40, 60, 60, …); k resets after 600 s with no
+  attempt. Worst case one restart per 60 s, like docker's own cap.
+- **Ledger** `$R/batman-payload-<t>-restarts` (root-only run dir, per boot): a line
+  `<uptime> <kind> <names>` (kind = `crash|missing|policy|respawn`) is appended **before** each action. If the
+  append fails (e.g. `/tmp` full), the tenant is DRIFT `ledger unwritable` and the in-memory backoff applies
+  (B-m2). A busy tenant lock makes payload-run exit **5** (new code): not ledgered, retried at the next poll.
+- **Bounded gates (B-m9):** every `docker exec` of a health gate runs in the background and is killed after
+  10 s (the gate's overall bound is unchanged).
+- **Verdict (B-M2):** `DRIFT` while the ledger has any record in the last **600 s**, or a manifest container is
+  not running at the end of a tick, or the cfg / verify-profile / policy / tenant-mount rules fire. So a crash
+  keeps the tenant DRIFT for 10 min, and a crash loop of any period ≤ 10 min is DRIFT continuously: autocommit
+  (needs OK for 3 polls, E32) cannot commit it. drift.json `status` stays `OK`/`DRIFT`; the verify log names
+  the reason. This is a policy change for autocommit (a single crash in a trial now prevents the commit for
+  10 min); it is written into `docs/design/ab-autocommit.md`.
+- **PRIMARY** is restarted like any other container; the PRIMARY exit is removed (E19).
+- **Respawn accounting (A9, B-m3):** `$R/batman-payload-<t>.up` is created after the first converge of a
+  guardian instance and **removed by `start_service`**. A guardian process that finds it at start was respawned
+  by procd (not started by an operator or at boot) and ledgers the starts of its converge as `respawn`.
+- **RestartCount as DRIFT rule and `RC_STATE` are removed** (replaced by D7-1's enforcement and the ledger).
 
-**D6-4 firstload no longer starts containers itself.** In the incomplete branch (E18) the loader runs
-`/etc/init.d/batman-payload-<t> start` (not `enable`) instead of `payload-run --start-only`. The guardian
-converges whatever is loadable (a stack on its old config is published as DRIFT, exactly as today's converge
-REFUSED path), and supervises it for the rest of the boot. It stays disabled, so the next boot's S95 firstload
-holds it again until the tars are loaded or quarantined (#216 self-healing unchanged). The complete branch
-is unchanged (enable + start). Now every container start goes through the guardian.
+**D7-4 Shutdown, stop and firstload never undo each other.** (A5, B-M4, B-m4, B-m5)
+- **Shutdown marker.** `batman-prestop-payload` gets a `shutdown()` handler (rc.common calls `K* shutdown` at
+  system shutdown; an operator `stop` calls `stop()`): it writes `$R/batman-shutdown` (per boot, never removed),
+  then does what `stop()` does. While the marker exists: the guardian's `start_service` refuses (returns 1,
+  logs), payload-run refuses every mode (exit 4, like `.stopping`), and the firstload loader does not call
+  `start`.
+- **Reboot during the firstload hold.** The hold disables the guardian, which removes its K09 link; K08 then
+  stopped only the clients and procd's halt KILLed postgres after 1 s (E28). In v7 K08's `shutdown()` runs the
+  full `pstop_final` for every tenant whose `K??batman-payload-<t>` link is absent.
+- **firstload incomplete branch** starts the guardian (`/etc/init.d/batman-payload-<t> start`, not `enable`)
+  instead of the stack, after checking the shutdown marker (and `start_service` checks it again). Every
+  container start now goes through the guardian. The complete branch gets the same check.
+- **`.stopping` that sticks (B-m5):** `batman-prestop-payload start` clears `.stopping`/`.stop0` for tenants
+  whose guardian is running, unless the shutdown marker exists.
 
-**D6-5 p6 has one writer.** The tenant config on p6 (`/opt/batdata/apps/`) is written by the golden refresh
-(95-batman-storage) and read by payload-run and the guardian as root, which *execute* `*.fw4.uci` and parse
-manifests and hardening files. A container that mounts p6 RW (E20) is therefore a path from that container's
-root to host root.
-- **Detective:** each tick the guardian lists every container (any state) without a `batman.tenant` label and
-  publishes DRIFT `foreign container <c> mounts <src> RW (p6 writer)` when one has a RW mount whose source is
-  `/`, `/opt`, `/opt/batdata` or `/opt/batdata/apps` (or below apps). Tenant containers are already bounded by
-  their manifest (E21; verify-profile).
-- **Preventive (manifest side):** payload-run's preflight refuses a manifest MOUNT/volume whose source is one
-  of those paths (any mode RW).
-- **The test seam moves off p6:** `fault.274-rmstop-once` becomes `$RUNDIR/fault.274-rmstop-once`, read with
-  `batman_opf` (root-owned, regular, single link, in the 0700 dir).
-- **04's `lora-rx`** is removed before the rc goes on 04 (print first; user decision, 12.10). Until then the
-  new rule would rightly report DRIFT on 04.
+**D7-5 Host alarms are not the tenant verdict.** (A3, B-M3) A new run-dir file
+`$R/batman-payload-host-alarm` (writer: the guardian; one line per condition, rewritten each tick) carries
+node-wide conditions that an OTA cannot cause or fix: foreign containers (D7-6), live-restore on (D7-2),
+unverified p6 scripts of a non-golden tenant (D7-7). halow-status shows each as WARN; each new line is logged to
+syslog once. autocommit does not read it, so a pre-existing condition cannot make every OTA revert.
 
-**D6-6 Correct the wrong statements** (E11): `payload-guardian.sh:10-21,83/92`, `payload-run:26-27,316`,
-`payload-stop.sh:10-11`, `batman-autocommit:8`, `profile.yaml:128-132`, `167-payload-manager.md:473`,
-`99-batman-payload-docker:21-26`, and §1 item 1 / §2 T2,T3,T5,T12 / §5 of this document (12.8 replaces them).
+**D7-6 Dangerous containers are detected (foreign) or refused (ours).** (A2, B-M6)
+- *Dangerous* = any of: a RW bind mount (any source; named volumes are fine), a bind of `docker.sock` (any
+  mode), `--privileged`, `--pid=host`, `--ipc=host`, `--userns=host`, an added `SYS_ADMIN`/`ALL` capability.
+- **Foreign** containers (no `batman.tenant` label of an installed tenant; the autocommit canary's are excluded
+  by its label) that are dangerous → host alarm, any state (a stopped one can be started).
+- **Tenant** containers are checked on the 30 s tick against the same list (their manifests produce none today,
+  E21) → tenant DRIFT.
+- **payload-run's preflight** refuses a manifest that would create a dangerous container (a RW bind, a socket
+  bind, those flags in HARDEN_FLAGS) → the rebuild is refused (the existing REFUSED path: the old containers keep
+  running on their old, previously accepted config; DRIFT). Starting old containers there is not fail-open: they
+  were created from a config that passed the preflight, and they are re-checked by the tick.
+- The cleanstop seam `fault.274-rmstop-once` moves to `$RUNDIR/`, read with `batman_opf` (E23).
+- **Secrets (A2):** `walk prep` refuses a symlinked or multiply-linked secret (`[ -L ]`, link count) before the
+  chown/chmod and reports it as a preflight problem.
+
+**D7-7 For a golden tenant, root never executes a p6 copy.** (B-M6, E29)
+- A tenant whose golden copy is in the image (`/usr/share/batman/payload-golden/<t>/`, read-only squashfs) has its
+  scripts executed **from the golden dir**: `*.fw4.uci` (payload-run), `reconcile-resources.sh` and
+  `verify-profile-*.sh` (guardian), with `HERE` = the golden dir, so the env files they source are the image's.
+  `verify-profile.sh` is added to the golden set (it is missing today, E29). payload-run reads HARDEN files from
+  the golden dir too. There is no TOCTOU: the executed copy is on a read-only filesystem.
+- The p6 copies are still compared (`cmp`) on each tick; a difference, or an executable-looking p6 file
+  (`*.sh`, `*.fw4.uci`, `*.hardening.env`, `*.init`) not in the golden set, is tenant DRIFT `p6 file <f>
+  differs from the image / is not from the image` (the boot-time refresh restores golden files, so a mid-boot
+  difference means a writer).
+- The manifest is still read from p6 (tests and operators change it on purpose, e.g. converge-274's comment
+  line); what a manifest can request is bounded by D7-6's preflight.
+- Non-golden (operator-installed) tenants keep executing their p6 scripts; that is the operator's install, and
+  the residual is stated (12.10). `restore_payload_guardians` installs a golden tenant's `.init` only when it
+  equals the golden copy; other tenants' inits as today.
+
+**D7-8 Operator view (A10).** halow-status shows a verdict older than 90 s as WARN `payload <t>: verdict stale`
+(the guardian is stuck, respawning or dockerd is down), and its DRIFT text says "degraded — see verify log"
+instead of "no longer matches its hardened profile" (DRIFT now also means a recent crash).
+
+**D7-9 Correct the wrong statements** (E11 + A12): `payload-guardian.sh:10-21,83/92`, `payload-run:26-27,316`,
+`payload-stop.sh:10-11`, `batman-autocommit:8`, `profile.yaml:128-132`, `167-payload-manager.md:403,473`,
+`99-batman-payload-docker:21-26`, `test-payload-run.sh:101`, `daily-validation.sh:312-327,885`, and §1 item 1 /
+§2 T2,T3,T5,T12 / §5 of this document (12.9).
 
 ### 12.3 Ownership
 
-| resource | owner (may change it) | others (read-only) |
+| resource | owner (may change it) | others |
 |---|---|---|
-| tenant container running/stopped | **guardian** (start-up converge, D6-3 restarts); stops: `payload-stop.sh` (K08/K09/operator `stop`), dockerd's own shutdown (OTA, `dockerd stop/restart`) — a stop is never a start, so one starter | autocommit, halow-status, tests |
-| container existence / config (create, rm) | payload-run, called by the guardian (converge) and by the operator (rebuild/renet) | guardian (cfg hash) |
-| per-container restart policy | payload-run's renderer (always `no`) | cfg hash |
-| tenant config on p6 (`apps/<t>/`) | golden refresh (95-batman-storage) | payload-run, guardian, payload-stop; **no container** (D6-5) |
+| tenant container started | **guardian** (start-up converge, D7-3 restarts); operator `payload-run <t>` / `--renet` (serialized by the tenant lock) | autocommit, halow-status, tests (read) |
+| tenant container stopped | `payload-stop.sh` (K08/K09, operator `stop`); dockerd's own shutdown (OTA, dockerd stop/restart) | — |
+| container existence / config (create, rm) | payload-run (guardian converge, operator rebuild/renet) | guardian (cfg hash) |
+| restart policy (creation and runtime) | payload-run renders `no`; the guardian resets any other value | `docker update` by anyone else = corrected + ledgered |
+| golden tenant files on p6 | golden refresh (boot) | guardian/payload-run *compare*; execution uses the image copy |
+| non-golden tenant files on p6 | operator install | payload-run, guardian (execute) |
+| the rest of p6 (`state/`, `log/`, `docker/`) | root host components (as today) | no container may mount any of it RW (D7-6) |
 | dockerd process | procd via the stock init | everyone |
-| daemon config (`/tmp/dockerd/daemon.json`) | stock init from uci `dockerd.globals` (we set data_root, iptables) | dockerd; guardian checks live-restore |
-| restart ledger, `.up` marker | guardian | tests |
-| `.stopping`, `.stop0` | payload-stop (set), guardian `start_service` and firstload S95 (clear) — unchanged | payload-run, guardian loop |
+| daemon config | stock init from uci (we set data_root, iptables) | guardian (live-restore check) |
+| ledger, `.up` | guardian | tests |
+| host alarm file | guardian | halow-status, tests |
+| shutdown marker `$R/batman-shutdown` | prestop `shutdown()` (create; never removed this boot) | guardian start_service, payload-run, firstload loader |
+| `.stopping`, `.stop0` | set: payload-stop. Clear: guardian `start_service`, firstload S95, prestop `start` — each only when the shutdown marker is absent | payload-run, guardian loop |
 | `.converging` | guardian | autocommit |
 | drift.json | guardian | autocommit, halow-status, tests |
 | tenant lock / pid | payload-run wrapper | payload-stop (`pstop_kill`) |
-| `fault.274-rmstop-once` | harness (root over ssh) | payload-stop (consumes once) |
+| `fault.274-rmstop-once` | harness (root, ssh) | payload-stop (consumes once) |
 | firstload latch | firstload | autocommit |
-| procd's blocked window during sysupgrade (validate + `sleep(max term_timeout)`) = the watchdog budget | procd / platform_check_image (#209/#280); **v6 adds 0 s** | — |
-| `payload-stop.log` | `pstop_final` (only appender) | tests |
+| procd's blocked window during sysupgrade (watchdog budget) | procd / platform_check_image; **v7 adds 0 s** | — |
+| `payload-stop.log` | `pstop_final` | tests |
 
 ### 12.4 Contracts
 
-- **Ledger** `$R/batman-payload-<t>-restarts` — writer guardian, readers guardian (backoff, verdict) and
-  tests. Format: lines `<uptime seconds, integer> <name>[ <name>…]`. Valid for the current boot (tmpfs).
-  Missing = no attempts this boot. A malformed line is skipped (awk on integers); it cannot hide an attempt
-  because the guardian appends before acting. Path in the root-only run dir: no non-root writer.
-- **`.up`** — writer guardian, reader guardian. Present = a guardian already completed a start-up converge
-  this boot. Missing = first start (fail-open is safe: at worst one start-up converge is not recorded as a
-  restart, the same as today).
-- **payload-run exit codes** to the restart path: 0 ok · 1 start/gate failed (DRIFT, backoff) · 3 config
-  changed, nothing done (DRIFT via D3(b), no rebuild from the tick) · 4 being stopped (nothing). Any other
-  code = 1.
-- **drift.json `status`** — unchanged: `OK` / `DRIFT`; autocommit requires `OK` and fresh (< 1 min).
-- **Manifest `RESTART`** — writer golden/profile-to-manifest; reader payload-run. Only `no` is valid; other
-  values are ignored with a WARN (not refused: the restart policy is not a security property, and refusing
-  would leave an operator-installed tenant down after the upgrade).
-- **uci `dockerd.globals.live_restore` / `no_new_privileges`** — no longer written; deleted. If an operator
-  sets them, the stock init still ignores them (E1); the guardian's LiveRestoreEnabled check is the backstop.
-- **Guardian syslog lines tests parse:** `restart: <names> (attempt <n> in 600 s)`, `restart: rc=<rc>`,
-  `foreign container <c> mounts <src> RW`. Each test that parses one also asserts it found ≥ 1 line where it
-  expects one (an empty parse is a FAIL).
+- **Ledger** `$R/batman-payload-<t>-restarts`: lines `<uptime int> <crash|missing|policy|respawn> <names…>`;
+  per boot; missing = none this boot. Appended before acting; a failed append is DRIFT (`ledger unwritable`).
+  Malformed lines are counted as a record (fail-closed for the verdict). Root-only dir.
+- **`.up`**: present = this guardian instance (or one before it since the last `start_service`) completed its
+  start-up converge. Created by the guardian, removed by `start_service`. Missing at a respawn → that respawn's
+  starts are not ledgered (fail-open, one converge; stated).
+- **Shutdown marker** `$R/batman-shutdown`: written by prestop `shutdown()`. Missing → no shutdown in progress.
+  Its absence during a real shutdown (prestop not installed) = today's behaviour.
+- **Host alarm** `$R/batman-payload-host-alarm`: lines `<kind> <detail>`; rewritten every tick; missing = no
+  alarm; read by halow-status only.
+- **payload-run exit codes:** 0 ok · 1 failure · 2 usage · 3 `--start-only`: config changed · 4 being stopped or
+  shutting down · **5 tenant lock busy (new)**. The guardian's restart path: 0 → nothing; 1 → DRIFT, backoff;
+  4 → nothing; 5 → retry next poll, not ledgered; anything else = 1.
+- **`payload-run --restart-exited <t>`** (new mode): starts existing labelled containers only, no other effect.
+- **Env inputs:** `PAYLOAD_LOCK_WAIT` (existing) is set only by root callers (the guardian under procd); no new
+  env var (v6's `PAYLOAD_SKIP_FW4` is replaced by the mode).
+- **drift.json `status`**: `OK`/`DRIFT` (unchanged); autocommit requires `OK` and < 1 min old.
+- **Manifest `RESTART`**: only `no` is meaningful; other values ignored with a WARN.
+- **uci `dockerd.globals.live_restore` / `no_new_privileges`**: deleted; the live-restore check is the backstop.
+- **Guardian syslog lines tests parse:** `restart: <kind> <names> (attempt <k>)`, `restart policy of <c> was
+  <p> — reset to no`, `host alarm: <kind> <detail>`, `p6 file <f> …`. Every test that expects such a line
+  FAILs when it finds none.
 
-### 12.5 Lifecycle matrix (today → v6; proof)
+### 12.5 Lifecycle matrix (today → v7; proof)
 
-| path | today | v6 | proof |
+| path | today | v7 | proof |
 |---|---|---|---|
-| L-FIRST first boot, firstload complete | firstload loads, guardian rebuilds | same, containers created with `no` | flashgo-159, payload-config-golden (now wants `no`) |
-| L-FIRST2 firstload incomplete (≤ 3 boots) | stack started by firstload, guardian down, crashes restarted by docker | guardian started (not enabled), supervises; DRIFT if on old config | new node check in flashgo-159: plant one unloadable tar (sha mismatch → quarantine path is too fast, so a tar that `docker load` rejects), reboot, assert guardian running + stack up + `firstload: … guardian started` line; negative control: the old firstload leaves the guardian stopped |
-| L-BOOT boot after a clean stop | ordered start, 0 restarts | same | cleanstop-274 (RestartCount check 6 replaced by: each container has exactly one `start` event since dockerd started, `docker events --since <dockerd start> --until now`) |
-| L-STOP clean shutdown / reboot / autocommit revert / batpower poweroff | K08/K09 graceful, recorded | same | cleanstop-274 |
-| L-OTA OTA, every entry (CLI, LuCI, ubus, `-F`) | dockerd stops all gracefully (E14); next boot revives all at once, 2 crash-restarts, false DRIFT (E15) | stop unchanged; next boot nothing revives, guardian ordered start, 0 restarts, first verdict OK | **ota-start-274** (new, 12.7); negative = E15 (today's image) |
-| L-OTA1 first OTA *into* v6 (old containers `unless-stopped`) | — | dockerd revives the old containers once; guardian sees the new cfg hash and rebuilds with `no`; no RestartCount rule, so no false DRIFT | ota-start-274 run on the rc (recorded once: rebuild line + verdict OK) |
-| L-OTA-REV revert leg of that OTA (autocommit revert to ≤ 1.5.7) | — | K08/K09 stop (manual-stop flag); the old image's golden writes `unless-stopped`, its guardian rebuilds | fi-r1/r3/r4 revert legs (unchanged suites) |
-| L-AC autocommit commit/revert | gates on drift OK | same contract; fewer false DRIFTs | fi-r4 must not show `drift not OK` after the OTA |
-| L-PWR power loss / hardware watchdog / panic | dockerd revives all at once (crash-restarts), postgres crash recovery | nothing revives, guardian ordered start; postgres crash recovery unchanged (nothing can stop it) | **unclean-boot-274** (new, OTS node, destructive): `reboot -f` (no K scripts, containers die with the kernel, as on power loss), then the ota-start-274 checks 1, 2, 5 (and 3 until the verdict is OK); negative control: today's image revives all six at once (check 1 FAIL, as E15) |
-| L-GRD guardian restart (operator `restart`, respawn after API-down) | converge if needed | same; a respawn records its starts in the ledger (`.up`) | crash-274 step 4 (kill the guardian's shell, assert ledger line on the re-start of a container stopped meanwhile) |
-| L-DOCKERD `dockerd restart` / `stop`+`start` (operator) | all stop; revived by policy (or not, E24) | all stop gracefully; guardian restarts the stack in order (≤ 30 s + start) | **dockerd-restart-274** (new, OTS node, destructive): all 6 back ≤ 180 s, ledger line, postgres `shut down at`, LiveRestoreEnabled=false |
-| L-DOCKERD-KILL dockerd SIGKILL | containers keep running under their shims; nothing restarts dockerd (E16) | same (unchanged; leftover 12.9) | not induced; stated |
-| L-RELOAD `uci commit dockerd` / init reload | SIGHUP, no restart (E16) | same | — |
-| L-NET network / netifd / fw4 restart | fw4 rules for dockert persist in uci | same | existing confinement-98 |
-| L-CRASH one container crashes | docker restarts it ≈ 1 s; DRIFT next tick | guardian restarts it ≤ 30 s; DRIFT 1–2 ticks; then OK | **crash-274** (new): `docker kill -s KILL ots_cot_parser` → running again ≤ 60 s, ledger line, guardian PID unchanged, verdict back to OK ≤ 120 s; negative control: today's image has no ledger line (FAIL) |
-| L-PRIMARY PRIMARY (opentakserver) crashes | guardian exits, respawns, accounting lost | restarted like any other, guardian keeps running | crash-274 step 2 (guardian PID unchanged; negative: today's PID changes) |
-| L-LOOP crash loop | DRIFT via RestartCount | DRIFT every tick, attempts back off 30/60/120…300 s | crash-274 step 3: kill the container each time it comes back, 4 times; assert attempt spacing ≥ 30, 60, 120 s (−5 s tolerance) and DRIFT on every tick in between |
-| L-OPSTOP operator `docker stop <c>` | stays down (manual-stop), DRIFT | restarted as a crash, logged | crash-274 |
-| L-OPRUN operator `docker run` bypass (T7) | cfg hash → converge | same | drift-detect-156 |
-| L-OPSVC `/etc/init.d/batman-payload-<t> stop/start` | tiered stop / converge | same (`.stopping` blocks restarts during the stop) | cleanstop-274; payload-mgr-167 |
-| L-T6 config change via the golden | converge rebuild | same | payload-config-golden |
-| L-FOREIGN container with p6 RW (E20) | unnoticed | DRIFT `foreign container … p6 writer` | **p6-writer-274** (new, any tenant node): create an unlabelled `--network none` container `-v /opt/batdata/apps:/x` (created, never started), assert DRIFT line within 2 ticks, remove it, assert OK; negative control: today's guardian stays OK |
-| L-DOWN downgrade to ≤ 1.5.7 | — | older golden writes its RESTART; older guardian rebuilds once; older OTA behaviour returns | one manual downgrade OTA before the PR (recorded) |
-| L-CLOCK wall-clock step (04 boots in 2025) | — | backoff and windows on `/proc/uptime` | crash-274 runs on 04 |
-| L-PI3 bcm2710 (no tenant, #209 D6) | dockerd, no guardian | uci-defaults change applies (keys deleted); nothing else | ab-selftest on 03, hold-261; build both boards |
-| L-BOARDS both boards | — | no board-specific code | build both; ab-card-invariants both SoCs |
+| L-FIRST first boot, firstload complete | firstload loads, guardian rebuilds | same, `no` | flashgo-159, payload-config-golden (wants `no`) |
+| L-FIRST2 firstload incomplete (≤ 3 boots) | stack started by firstload, guardian down, docker restarts crashes | guardian started (not enabled), supervises, restarts on old config, DRIFT | flashgo-159 extension: a tar `docker load` rejects; assert guardian running + stack up; negative: old loader leaves the guardian stopped |
+| L-HOLD-REBOOT reboot during the hold | K08 stops clients only; postgres SIGKILLed by halt (E28) | K08 `shutdown()` runs `pstop_final` (no K09 link) | **hold-reboot-274**: disable the guardian as firstload does, reboot, assert stop record + postgres `shut down at`; negative: today's image → crash recovery |
+| L-LATE-START firstload loader `start` while shutting down | `--start-only` honours `.stopping`; complete branch can restart the guardian mid-shutdown | marker → refused | host test (`scripts/test-payload-run.sh` + a guardian/loader stub): marker present → start_service rc 1, payload-run rc 4, loader skips; negative: without the marker the start runs |
+| L-BOOT boot after a clean stop | ordered start | same | cleanstop-274 (start-event count by container ID replaces RestartCount) |
+| L-STOP clean shutdown / reboot / revert / poweroff | K08/K09 graceful | same + shutdown marker | cleanstop-274 |
+| L-PRESTOP-OP operator `batman-prestop-payload stop/restart` | `.stopping` sticks for the boot (E33) | `start` clears it (no marker) | host test |
+| L-OTA OTA (CLI, LuCI, ubus, `-F`) | graceful stop (E14); revival of all 6 at once; 2 crash-restarts; false DRIFT (E15) | stop unchanged; ordered start; 0 restarts; first verdict OK | **ota-start-274**; negative = E15 |
+| L-OTA1 first OTA into v7 | — | revival by the old policy once; converge rebuild with `no`; D7-1 reset/ledger not triggered (new containers) | recorded once on the rc (rebuild line, verdict) — ota-start-274 itself requires a v7 node before the OTA |
+| L-OTA-REV revert of that OTA | — | K08/K09 stop; old golden's `unless-stopped`; old guardian rebuilds | fi-r1/r3/r4 revert legs |
+| L-EXECFAIL `upgraded` exec fails after `service_stop_all` | procd returns with every service deleted, nothing reboots; dockerd stopped → tenant down | same (upstream; v7 does not touch it) | stated, not induced |
+| L-AC autocommit commit/revert | gates on OK | same contract; a crash keeps DRIFT 10 min (policy change, written down) | fi-r4 (no `drift not OK` after its OTA); slow-loop step in crash-274 |
+| L-PWR power loss / watchdog / panic | revival of all 6; postgres crash recovery | ordered start; postgres crash recovery unchanged | **unclean-boot-274** (`reboot -f`); negative: today revives all 6 at once |
+| L-GRD guardian restart / respawn | converge | same; respawn's starts ledgered (`.up`) | crash-274 step 6 |
+| L-DOCKERD dockerd stop/start/restart (operator, harness `restore_node`) | all stop; revival or not (E24) | all stop gracefully; guardian restarts in order | **dockerd-restart-274** |
+| L-DOCKERD-KILL dockerd SIGKILL | containers keep running headless; nothing restarts dockerd | same; the verdict goes stale → halow-status WARN (D7-8) | stated; leftover |
+| L-RELOAD uci reload | SIGHUP | same | — |
+| L-NET network / fw4 restart | rules persist in uci | same | confinement-98 |
+| L-CRASH container crash | docker restarts in ≈ 1 s; DRIFT one tick | guardian restarts ≤ 5 s; DRIFT 10 min | **crash-274** (crash = `kill -9` of the container's PID from the host, E26) |
+| L-PRIMARY PRIMARY crash | guardian exits/respawns, accounting lost | restarted, guardian keeps running | crash-274 |
+| L-LOOP fast crash loop | DRIFT via RestartCount | DRIFT; attempts 0, 10, 20, 40, 60 s | crash-274 |
+| L-SLOWLOOP crash every ~2 min | committed by autocommit (B-M2) | DRIFT continuously | crash-274 slow step + `batman-autocommit` dry-run decision ≠ commit |
+| L-OLDCFG crash while running on an old config (converge refused, L-FIRST2, operator image reload) | docker restarts it | restarted on its old config, DRIFT stays | crash-274 step: comment line in the p6 manifest (cfg changes), crash a client → restarted, DRIFT `config changed`; negative: v6's `--start-only` leaves it down |
+| L-RM container removed (`docker rm`, prune, F2) | PRIMARY: guardian converge; others: DRIFT forever | respawn → converge rebuild (≤ 1 per 600 s) | crash-274 step: `docker rm -f ots_eud_handler_ssl` → back ≤ 180 s; F2 unchanged |
+| L-POLICY `docker update --restart …` | hidden second owner | reset to `no`, ledgered, DRIFT | crash-274 step; negative: v6/today no reset |
+| L-OPSTOP operator `docker stop <c>` | stays down, DRIFT | restarted as a crash, ledgered | crash-274 |
+| L-OPRUN `docker run` bypass (T7) | cfg hash → converge | same; a bypass container is never *restarted* by the restart path | drift-detect-156 |
+| L-OPSVC `/etc/init.d/batman-payload-<t> stop/start/restart` | tiered stop / converge | same; `.up` removed by start, so no false crash records | cleanstop-274, payload-mgr-167, converge-274 |
+| L-T6 golden config change | converge rebuild | same | payload-config-golden |
+| L-FOREIGN dangerous foreign container | unnoticed | host alarm; tenant verdict unaffected | **host-alarm-274**: create (not start) `--network none -v /opt/batdata/state:/s`, then one with `docker.sock`; alarm lines within 35 s, drift status still OK, trap removes them; negative: today no alarm |
+| L-GOLDEN-TAMPER p6 copy of a golden script changed / new script planted | executed as root every tick | image copy executed; DRIFT `p6 file …` | **golden-exec-274**: plant `verify-profile-zz.sh` that touches a run-dir file, and append a line to p6 `reconcile-resources.sh`; within 2 ticks: the file is not created, DRIFT names both; cleanup; negative: today the planted script runs |
+| L-ARBITER arbiter refusal / run dir unusable | dockerd's revival keeps the tenant serving | tenant stays down (fail-closed), DRIFT/log | stated (intended: a colliding or unverifiable tenant should not run) |
+| L-REMOTE crash input from the mesh | ≈ 1 s restart + app start | ≤ 5 s + app start; ≤ 1 restart/60 s in a loop; DRIFT blocks OTA commit while it lasts | crash-274 timings; stated (12.6) |
+| L-DOWN downgrade to ≤ 1.5.7 | — | older golden + guardian rebuild once; older OTA behaviour | one manual downgrade before the PR (recorded) |
+| L-CLOCK wall-clock step | — | all windows on `/proc/uptime` | crash-274 on 04 (2025 clock) |
+| L-PI3 bcm2710 (no tenant) | dockerd only | uci keys deleted; prestop/guardian not installed | ab-selftest on 03, hold-261; both boards built |
+| L-BOARDS | — | no board-specific code | build both; ab-card-invariants both SoCs |
 
 ### 12.6 Security
 
-**Assets.** Host root (payload-run and the guardian run as root and execute p6 files); tenant availability;
-DB integrity; the OTA path (untouched, 12.0).
+**Assets.** Host root (guardian, payload-run and K scripts run as root and act on p6); tenant availability and
+DB integrity; OS commit/revert (autocommit reads the verdict); the OTA path (untouched).
 
-**Attack-surface delta.**
-- New run-dir files (ledger, `.up`): root-only dir (#280), no non-root writer; reader is root code that only
-  parses integers and names compared against the manifest list.
-- `fault.274-rmstop-once` moves from p6 to the run dir: removes a container-writable trigger (E23).
-- The guardian reads every container's mounts (`docker inspect`, root, local socket): read-only, no new input
-  from the network.
-- Removed: the RestartCount state file, the PRIMARY exit.
-- No new port, CGI, uci key, env var or mesh message.
+**Actual root-exec / root-write paths over p6** (E29, E30), before → after:
+- `*.fw4.uci` (payload-run start mode): p6 copy → golden copy (golden tenants).
+- `reconcile-resources.sh` and `verify-profile-*.sh` + `verify-profile.sh` (every 30 s) and the env files they
+  source: p6 copies, any glob match → golden copies only; extra or differing p6 files are DRIFT, never run.
+- `apps/*/*.init` restore at boot: any root-owned → golden tenants only when equal to the image.
+- secrets chown/chmod: follows symlinks → refused for symlinks/hardlinks.
+- Non-golden tenants: unchanged (operator-installed; residual).
+
+**Attack-surface delta.** New: ledger, `.up`, host alarm, shutdown marker (root-only run dir); the `--restart-exited`
+mode and exit code 5 (root callers only); the 5 s `docker ps` poll (local socket). Removed: RC_STATE, the PRIMARY
+exit, the p6 test seam, execution of p6 copies for golden tenants. No new port, CGI, uci key, env var or mesh
+message.
 
 **Actors.**
-- *Remote (mesh/WiFi/LoRa RF):* no new surface. The LoRa RF path into a p6-RW container (E20) is closed by
-  removing `lora-rx` and detected by D6-5 if one reappears.
-- *Local non-root process:* cannot write the run dir (0700 root) nor p6 apps (`/opt/batdata`, `apps/`,
-  `apps/opentakserver/` and its files are root-owned, 755/644/755, measured on 04); cannot reach the docker
-  socket (`srw-rw---- root docker`; the docker group's only member is the system user `docker`, uid 32768,
-  shell `/bin/false`, no processes — measured on 04).
-- *Compromised tenant container:* can crash itself — restarts are bounded by the backoff (≤ 1 per 300 s after
-  the 4th) so it cannot make the host spin; every crash is DRIFT, so it cannot hide. It cannot write p6 apps
-  (E21, preflight refuses such mounts, D6-5 detects foreign ones). It cannot reach dockerd (no socket mount;
-  verify-profile).
-- *Compromised unmanaged container with p6 RW:* today a host-root path (it can rewrite `*.fw4.uci`, which
-  root executes at the next start mode). After v6: removed from 04, and any such container is reported as
-  DRIFT within one tick. **Detection is not prevention:** a write made before anyone acts on the DRIFT is
-  still executed at the next start mode. The prevention is "no unmanaged container mounts p6", and only
-  root can create one (docker socket). Stated as a residual risk; a stronger fix (p6 config verified against
-  the image before execution) is outside #274.
-- *Physical capture:* unchanged.
-- *Supply chain:* no new package, no firmware patch (0004 deleted).
-- *Our own mistakes:* a guardian bug that stops restarting shows as DRIFT (container not running);
-  a restart storm is bounded by the backoff; `--start-only` can never rebuild.
+- *Remote over mesh/WiFi:* a payload that crashes an OTS process: today ≈ 1 s; v7 ≤ 5 s detection, then
+  restart; a loop is capped at one restart per 60 s; every crash keeps the tenant DRIFT for 10 min, so **while an
+  attack lasts an OTA trial on that node cannot commit** (it reverts to the known-good slot). That is
+  fail-safe for the node; the price is that a fix cannot be committed automatically during an attack — the
+  operator can commit with `batman-autocommit release` after checking. Stated.
+- *Remote over LoRa RF:* the `lora-rx` path (root container, p6 RW) is removed from 04 (done 2026-10-09) and
+  any such container raises a host alarm.
+- *Local non-root process:* cannot write the run dir (0700 root) or p6 (root 755); cannot use the docker socket
+  (root:docker 0660; only member: system user `docker`, `/bin/false`, no processes — 04). It *can* fill `/tmp`
+  (tmpfs): ledger append fails → DRIFT, in-memory backoff (fail-closed for commit, restarts continue).
+- *Compromised tenant container* (non-root inside, E36): can crash itself (bounded by the backoff, always
+  DRIFT); cannot write p6 apps (no such mount, refused by preflight, checked each tick); can hang a health check —
+  bounded to 10 s per exec (D7-3).
+- *Compromised dangerous container (root, p6 RW):* can write p6; for a golden tenant nothing it writes in
+  `apps/<t>/` is executed (D7-7); it can still write `state/` flags (`autocommit-skip-once`, …), `docker/`
+  (another container's hostconfig, used at the next dockerd start) and logs. Detection only (host alarm within
+  one tick); prevention = no such container exists (only root can create one). Residual, stated.
+- *Physical capture / supply chain:* unchanged; no new package, no firmware patch.
+- *Our own mistakes:* a stuck guardian → stale verdict → halow-status WARN and autocommit fail-closed; a restart
+  storm is capped; `--restart-exited` cannot rebuild or run scripts.
 
-**Privilege.** No new root code path reads a non-root-writable location. The golden refresh rewrites every
-golden file on p6 at each boot (`95-batman-storage` refresh, cmp + atomic cp), so the boot-time start mode
-executes the image's `*.fw4.uci`. The D6-3 restart path runs mid-boot and therefore does **not** execute
-`*.fw4.uci` (`PAYLOAD_SKIP_FW4=1`); it only parses the manifest and runs `docker start`. Today the PRIMARY
-exit → respawn → guardian start re-ran `*.fw4.uci` mid-boot; v6 removes that path (E19), so v6 narrows the
-exposure rather than widening it. One mid-boot execution remains, unchanged from today: a guardian respawn
-after the docker API was down > 120 s (or an operator `restart` of the guardian) runs the start-up path,
-`*.fw4.uci` included.
+**Privilege.** No new root path reads a non-root-writable location. **Failure mode:** fail-closed for commit
+(any doubt = DRIFT); fail-safe for availability (restarts continue). Fail-opens: `.up` missing at a respawn (one
+converge not ledgered).
 
-**Failure mode.** Fail-visible: every degraded state is DRIFT. The one fail-open is `.up` missing → a respawn
-converge not logged as a restart (stated in 12.4; it equals today's behaviour).
+**Verification (negative tests).** golden-exec-274, host-alarm-274, crash-274 policy step; the new run-dir names
+go into `scripts/rundir-paths.txt`, so check-tmp-trust and tmp-trust-280's N8 sweep (non-root pre-creation) cover
+them.
 
-**Verification (negative tests).** p6-writer-274 (foreign RW mount detected); crash-274 (no hidden crash, no
-PRIMARY respawn); run-dir names added to `scripts/rundir-paths.txt`, so tmp-trust-280's N8 sweep and
-check-tmp-trust cover them as a non-root writer.
+### 12.7 Tests (daily-validation; destructive ones in the destructive tier)
 
-### 12.7 Tests (all in daily-validation; destructive ones in the destructive tier)
+- **ota-start-274** (OTS node, destructive). Precondition: the node already runs a v7 image (else FAIL "not
+  measurable on the first OTA into v7"). One same-build `sysupgrade -n`, then:
+  1. each manifest container's *current* ID has exactly one `start` event since dockerd started; the oldest
+     event returned must predate the first container start (else FAIL "event buffer wrapped", E27); the boot
+     epoch (`date` − uptime) must not move during the test (else FAIL "clock stepped");
+  2. two-phase order and a `start mode` line this boot;
+  3. no DRIFT this boot until commit; the commit trace has no `drift not OK`;
+  4. postgres last start `was shut down at`;
+  5. the ledger is empty;
+  6. the OTA boot is the new slot via `S2 END rc=0` and boot-reasons `SYSUPGRADE-REBOOT` (no watchdog reset).
+  Negative: today's image fails 1 and 3 (E15; re-run once on the old image before the PR). Run once before the
+  PR **under CoT load** (the #264 generator) and record the stop timeline (E14 is an idle sample).
+- **unclean-boot-274** (destructive): `reboot -f`, then checks 1, 2, 5, and 3 until OK; also reports whether a
+  fw-override (EEPROM partition misread) happened this boot. Negative: today's image.
+- **crash-274** (destructive). Crashes are `kill -9 <State.Pid>` from the host (E26). Steps: (1) client crash →
+  running ≤ 10 s, ledger `crash`, DRIFT for ≥ 590 s then OK; (2) PRIMARY crash → back, guardian PID unchanged;
+  (3) fast loop: 5 crashes as each comes back → spacing ≥ 0/10/20/40/60 s (±6 s); (4) slow loop: a crash every
+  120 s for 6 min → DRIFT at every sample, and `batman-autocommit` dry-run decides "not commit"; (5) old config:
+  a comment line in the p6 manifest, crash a client → restarted, DRIFT `config changed`, then the line removed;
+  (6) `kill` the guardian's shell while a client is down → respawn ledgered; (7) `docker rm -f` a client →
+  back ≤ 180 s via converge; (8) `docker update --restart always` → reset to `no` ≤ 35 s, ledger `policy`;
+  (9) `docker stop` a client → restarted. Negatives: today's image (no ledger, PRIMARY respawn, policy not reset);
+  v6's `--start-only` for step 5.
+- **dockerd-restart-274** (destructive): `/etc/init.d/dockerd restart` → all 6 back ≤ 180 s in order, ledger,
+  postgres `shut down at`, LiveRestoreEnabled false.
+- **hold-reboot-274** (destructive): L-HOLD-REBOOT.
+- **host-alarm-274**, **golden-exec-274**: L-FOREIGN, L-GOLDEN-TAMPER (each with a trap that removes what it
+  created).
+- **cleanstop-274**: RestartCount check → start-event count; `DV_TEST_274_NOSTOP` now must FAIL checks 1 and 2
+  (no stop record; postgres SIGKILLed by halt), no longer 4; `DV_TEST_274_RMSTOP` uses the run-dir flag.
+- **payload-config-golden**: `no`.
+- **flashgo-159**: L-FIRST2 extension.
+- Host: `scripts/test-payload-run.sh` (RESTART ignored, `--restart no` after HARDEN_FLAGS, preflight refusals of
+  dangerous mounts/flags, symlinked secret refused, `--restart-exited` starts old-config containers and never
+  rebuilds, exit 5, marker → 4); a guardian unit test with a stub `docker` (backoff sequence, ledger window,
+  append failure, `.up`, marker in `start_service`); halow-status stale-verdict test.
+- fi-r4 (existing): no `drift not OK` after its OTA.
 
-- **ota-start-274** (new, OTS node, destructive): one same-build `sysupgrade -n` (the fault-injection OTA
-  helper), then on the new boot:
-  1. every manifest container has exactly **one** `start` event since this dockerd started
-     (`docker events --since 0 --until <now> --filter event=start`, counted for the manifest names only —
-     the autocommit canary's random-named containers also appear) — independent of the guardian's own record.
-     Evidence that it discriminates: on 04 after the E15 OTA it printed the six names once, then
-     `opentakserver` and `ots_cot_parser` a second time. A check that finds 0 events for a name FAILs;
-  2. two-phase order (final tier's StartedAt ≤ every other container's) and a `start mode` line this boot;
-  3. no `confinement DRIFT detected` line this boot until autocommit commits, and the commit trace has no
-     `drift not OK`;
-  4. postgres last start `database system was shut down at` (graceful, E14);
-  5. the ledger is empty.
-  **Negative control:** today's image (E15) fails 1 (two start events for opentakserver and ots_cot_parser)
-  and 3 — recorded from the 2026-10-09 run, and re-run once on the old image before the PR.
-- **crash-274** (new, OTS node, destructive): L-CRASH, L-PRIMARY, L-LOOP, L-GRD steps. Negative control: on
-  today's image the ledger check fails (no ledger) and the PRIMARY step fails (guardian PID changes).
-- **dockerd-restart-274** (new, OTS node, destructive): L-DOCKERD.
-- **p6-writer-274** (new, OTS node): L-FOREIGN with its negative control.
-- **cleanstop-274**: RestartCount check replaced by the start-event count; `DV_TEST_274_RMSTOP` uses the run-dir
-  flag.
-- **payload-config-golden**: wants `no`.
-- **unclean-boot-274** (new, OTS node, destructive): L-PWR.
-- **flashgo-159**: adds the L-FIRST2 incomplete-branch check (12.5).
-- **dockerd-restart-247**: unchanged (non-tenant nodes); its comment points at E24.
-- Host: `scripts/test-payload-run.sh` — RESTART ignored + WARN, `--restart no` rendered last, preflight refuses a
-  p6 MOUNT; a guardian unit test with a stub `docker` for the ledger/backoff arithmetic and the `.up` rule.
-- fi-r4 (existing) is the field regression: no `drift not OK` after its OTA.
+### 12.8 Measurements before the PR (recorded in the PR)
 
-### 12.8 §1/§2/§5 corrected
+- CPU cost of the 5 s poll on 04 (Pi 4) — `top`/`/proc/stat` over 10 min, with and without.
+- ota-start-274 under CoT load (stop timeline, postgres).
+- One downgrade OTA to 1.5.7-wsl.3 and back.
 
-- §1 item 1, §2 T2/T3: dockerd does not revive because of live-restore (it was never on, E1); it revives
-  because of `unless-stopped`. v6: nothing revives.
-- §2 T3: stage 2 does not stop the tenant — procd's `service_stop_all` TERMs dockerd, and dockerd stops every
-  container gracefully (E14).
-- §2 T5: a dockerd restart stops the tenant (no live-restore); the guardian restarts it.
-- §2 T12 disappears (no restart policy can override a stop).
-- §5's "an OTA is not a graceful stop" is wrong for the stop (E14); what an OTA lacks is the *ordered start*,
-  which v6 gives every boot.
+### 12.9 §1/§2/§5 corrected
 
-### 12.9 Limits and leftovers (to be written into #274 as a checklist)
+- §1 item 1, §2 T2/T3: the revival is `unless-stopped`, not live-restore (never on, E1). v7: nothing revives.
+- §2 T3: procd's `service_stop_all` TERMs dockerd, which stops every container gracefully (E14, E25).
+- §2 T5: a dockerd restart stops the tenant; the guardian restarts it.
+- §2 T12 disappears.
+- §5's "an OTA is not a graceful stop" is wrong for the stop; what an OTA lacked was the ordered start.
 
-- **Pi 3 OTA watchdog margin ≈ 0–3 s (E13), pre-existing.** v6 neither causes nor worsens it. Fix direction:
-  stage 2 re-verifies the image anyway, so procd's second full validate could use stage 1's verdict (cached in
-  the run dir keyed by inode/size/mtime) — an OTA-path change for its own design review.
-- dockerd SIGKILL / crash: no respawn in the stock init (E16); containers keep serving headless, the verdict
-  goes stale. Unchanged by v6.
-- Daemon-wide `no-new-privileges` is not in effect (per-container flag is).
-- Recovery from a container crash: ≈ 1 s (docker) → ≤ 30 s + backoff (guardian). Accepted as the price of one
-  owner and an ordered start.
+### 12.10 Limits and leftovers (to be written into #274 as a checklist)
+
+- **Pi 3 OTA watchdog margin −2…+3 s (E13), pre-existing; v7 adds nothing.** Direction: procd's second full
+  validate could reuse stage 1's verdict; an OTA-path change for its own design review.
+- dockerd SIGKILL/crash: no respawn in the stock init; containers keep serving headless; stale verdict now
+  visible (D7-8).
+- Daemon-wide `no-new-privileges` not in effect (per-container is).
+- p6 integrity for **non-golden** tenants and for `state/`, `docker/`, `log/`: detection only (host alarm).
+- During a crash attack an OTA cannot auto-commit (operator `release`).
+- `upgraded` exec failure leaves the node without services until a reboot (upstream).
 - Power loss still costs one postgres crash recovery.
-- The first OTA into v6 still shows one revival + one rebuild (L-OTA1), no false DRIFT.
 
-### 12.10 Alternatives
+### 12.11 Alternatives
 
-- **v5 wrap around dockerd** (stop before `service_stop_all`): rejected — adds to procd's blocked window (E13,
-  BLOCKER), needed live-restore which turns stage 2 into a KILL, and is unnecessary: the stop is already
-  graceful (E14).
-- **Stage-1 pre-stop:** unnecessary for the same reason, and misses raw ubus.
-- **Keep `unless-stopped`, add a start-up grace to the DRIFT rule:** two owners remain; the crash-restarts remain;
-  the symptom is hidden, not removed.
-- **live-restore on:** a dockerd restart would keep the tenant up, but every OTA would kill it instead of
-  stopping it (stage 2 KILL). Rejected: OTAs are routine, operator dockerd restarts are not.
-- **Patch the stock init (respawn, live-restore, no-new-privileges):** not needed for #274; a firmware patch to
-  a stock package for availability-only gains. Leftover.
+- **v5's dockerd wrap / stage-1 pre-stop:** unnecessary (E14), and the wrap added to the watchdog window.
+- **Keep `unless-stopped` + a start-up grace:** two owners; the crash-restarts stay.
+- **live-restore on:** every OTA would kill the tenant instead of stopping it.
+- **Event-driven restart (`docker events --filter event=die`)** (B-M5's suggestion): a long-lived `docker events`
+  reader in busybox sh needs reconnect handling across dockerd restarts and a second process to supervise; the
+  5 s poll gives the same order of latency with one stateless call. Chosen: poll.
+- **Gate the commit on foreign containers:** makes a pre-existing condition revert every OTA. Rejected (D7-5).
+- **Refuse a single crash for the whole trial vs. a 10 min window:** the window is equivalent for a 10 min trial and
+  also covers a committed node's halow-status.
 
-### 12.11 User decisions
+### 12.12 Findings → resolution
 
-1. **Remove the `lora-rx` container from 04** (dev residue, E20; the image and `/opt/batdata` stay). Needed before
-   the rc reaches 04, or D6-5 reports DRIFT there.
-2. The Pi 3 watchdog margin (12.9) stays a leftover in #274 unless you want it handled now.
+| finding | resolution |
+|---|---|
+| v5 B1 watchdog | no OTA-path change (12.0); Pi 3 margin measured, leftover; ota-start check 6 |
+| v5 B2 /tmp control files | all state in the #280 run dir |
+| v5 wrap fallback KILLs postgres | no wrap, live-restore off (D7-2) |
+| v5 stale marker / `.stopping` sticks | no marker; D7-4 (shutdown marker, prestop `start`) |
+| v5 dockerd no respawn | not relied on; leftover; stale-verdict WARN |
+| v5 PRIMARY crash loop | D7-3 (PRIMARY exit removed, ledger) |
+| v5 firstload hold unsupervised / K90 | D7-4, L-FIRST2, L-HOLD-REBOOT; K90 = L-DOCKERD |
+| v5 RESTART contract | D7-1 |
+| v5 vacuous RestartCount proofs | start-event count; ledger |
+| v5 autocommit STARTING/RECOVERED | no new status; policy change written into ab-autocommit.md |
+| v5 halow-status stale file | E22; D7-8 |
+| v5 /proc/uptime | D7-3 |
+| v5 p6 fault flag | D7-6 |
+| v5 restart reruns start mode | `--restart-exited` (D7-3) |
+| v5 missing rows | 12.5 |
+| A1 RestartCount tripwire | D7-1 runtime enforcement, crash-274 step 8 |
+| A2 p6 writers, secrets chown | D7-6, D7-7, 12.6 |
+| A3 / B-M3 gate on foreign | D7-5 host alarm |
+| A4 / B-M1 restart dead ends | `--restart-exited` on old config; missing → respawn converge |
+| A5 / B-M4 / B-m4 firstload, late start, hold reboot | D7-4 |
+| A6 / B-m7 events ring, L-OTA1, clock | 12.7 ota-start check 1 + precondition |
+| A7 `docker kill` | crashes via PID kill |
+| A8 NOSTOP control | 12.7 cleanstop |
+| A9 / B-m3 `.up`, lock busy | D7-3 (`start_service` removes `.up`; exit 5) |
+| A10 halow-status | D7-8 |
+| A11 rows | L-EXECFAIL, L-RM, L-DOCKERD (`restore_node`), L-HOLD-REBOOT |
+| A12 inaccuracies | env (12.4), prep (D7-3 no prep), "after HARDEN_FLAGS", E13 margin, D7-9 list |
+| A13 resolution table, watchdog check, load sample | 12.12, ota-start check 6, 12.8 |
+| B-M2 slow loop committed | 600 s DRIFT window (D7-3); crash-274 step 4 |
+| B-M5 remote DoS / latency | 5 s poll, cap 60 s; 12.6 |
+| B-M6 security section | 12.6 rewritten; D7-6, D7-7 |
+| B-m1 backoff | gap doubling from the last attempt, reset after 600 s |
+| B-m2 ledger fail-open | append failure = DRIFT |
+| B-m5 `.stopping` sticks | prestop `start` |
+| B-m6 ownership | 12.3 |
+| B-m8 load sample, fw-override | 12.8; unclean-boot report |
+| B-m9 exec hang | bounded exec |
+| B-m10 arbiter/run-dir outage | L-ARBITER (fail-closed, stated) |
+
+### 12.13 User decisions
+
+1. `lora-rx` on 04: **removed 2026-10-09** (user approved; container only — image, scripts and logs kept).
+2. Pi 3 watchdog margin: leftover in #274 (12.10); scheduling is the user's call.
