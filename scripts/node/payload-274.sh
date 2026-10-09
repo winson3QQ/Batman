@@ -30,7 +30,8 @@ quiet_ledger(){   # the 600 s window must be clear before a case that asserts OK
 		w=1; sleep 20
 	done; }
 [ -d "$G" ] || { echo "FAIL the image has no golden copy for $T — not a v8.2 OTS node"; echo "== payload-274 ${CASE:-?}: FAIL"; exit 1; }
-[ -f /usr/lib/batman/payload-guardian-run.sh ] || { echo "FAIL pre-#274-v8.2 image (no payload-guardian-run.sh)"; echo "== payload-274 ${CASE:-?}: FAIL"; exit 1; }
+# ALLOW_OLD=1: run the checks on a pre-v8.2 image anyway — the NEGATIVE CONTROL (they must FAIL there)
+[ -f /usr/lib/batman/payload-guardian-run.sh ] || [ "${ALLOW_OLD:-0}" = 1 ] || { echo "FAIL pre-#274-v8.2 image (no payload-guardian-run.sh)"; echo "== payload-274 ${CASE:-?}: FAIL"; exit 1; }
 waitfor all_running 300 || { no "precondition: OTS not 6/6"; echo "== payload-274 $CASE: FAIL"; exit 1; }
 
 case "${CASE:-}" in
@@ -49,8 +50,9 @@ crash)
 	else no "1 crash: $c not back / not ledgered within 20 s"; fi
 	sleep 35; [ "$(st)" = DRIFT ] && ok "1 verdict DRIFT after the restart" || no "1 verdict $(st) after the restart"
 	# 2 PRIMARY crash: restarted, guardian keeps running
-	gp=$(gpid); crash opentakserver
-	waitfor "running opentakserver" 120 && [ "$(gpid)" = "$gp" ] && ok "2 PRIMARY crash: opentakserver back, guardian PID $gp unchanged" \
+	gp=$(gpid); [ -n "$gp" ] || no "2 no guardian body process found (payload-guardian-run.sh) — nothing to compare"
+	crash opentakserver
+	waitfor "running opentakserver" 120 && [ -n "$gp" ] && [ "$(gpid)" = "$gp" ] && ok "2 PRIMARY crash: opentakserver back, guardian PID $gp unchanged" \
 		|| no "2 PRIMARY: running=$(running opentakserver && echo y || echo n) guardian $gp -> $(gpid)"
 	# 3 a fast loop: crash ots_cot_parser each time it comes back, 5 times; the spacing must follow the backoff
 	c=ots_cot_parser
@@ -65,8 +67,10 @@ crash)
 		|| no "4 dry-run: $(echo "$o" | tail -2 | tr '\n' ' ')"
 	# 5 old config: a crash while the stack runs on an OLD config is restarted on it (never rebuilt here)
 	cp "$D/ots.manifest" "$R/dv274.man"; echo "# dv274 config change" >> "$D/ots.manifest"
-	c=ots_eud_handler; id0=$(docker inspect -f '{{.Id}}' $c); crash $c
-	waitfor "running $c" 60 && [ "$(docker inspect -f '{{.Id}}' $c)" = "$id0" ] && ok "5 old config: $c restarted on its old container (no rebuild)" || no "5 old config: not restarted / rebuilt"
+	c=ots_eud_handler; id0=$(docker inspect -f '{{.Id}}' $c); r0=$(nrec "crash $c"); crash $c
+	waitfor "running $c" 60 && [ "$(docker inspect -f '{{.Id}}' $c)" = "$id0" ] && [ "$(docker inspect -f '{{.RestartCount}}' $c)" = 0 ] \
+		&& [ "$(nrec "crash $c")" -gt "$r0" ] && ok "5 old config: the guardian restarted $c on its old container (no rebuild, RestartCount 0, ledgered)" \
+		|| no "5 old config: not restarted by the guardian on the old container (RestartCount $(docker inspect -f '{{.RestartCount}}' $c), records $(nrec "crash $c") was $r0)"
 	sleep 35; grep -q "config changed" "$VL" && ok "5 DRIFT 'config changed'" || no "5 verify log has no 'config changed'"
 	cp "$R/dv274.man" "$D/ots.manifest"; rm -f "$R/dv274.man"
 	# 6 the guardian dies while a client is down: the respawn's converge starts it and records 'respawn' once
@@ -90,7 +94,9 @@ crash)
 	n1=$(docker top rabbitmq 2>/dev/null | grep -c "sleep 30")
 	rm -f "$R/fault.274-health-rabbitmq"; waitfor all_running 300; sleep 10
 	n2=$(docker top rabbitmq 2>/dev/null | grep -c "sleep 30")
-	[ "$n1" -le 1 ] && [ "$n2" = 0 ] && ok "10 hung health check: at most one in flight ($n1), none left after ($n2)" || no "10 health processes in rabbitmq: during=$n1 after=$n2"
+	used=$(logread | grep -c "TEST fault.274-health-rabbitmq")
+	[ "$used" -ge 1 ] || no "10 the hung health check never ran (no 'TEST fault.274-health-rabbitmq' in the log) — nothing was tested"
+	[ "$used" -ge 1 ] && [ "$n1" -le 1 ] && [ "$n2" = 0 ] && ok "10 hung health check ran ($used gate(s)): at most one in flight ($n1), none left after ($n2)" || no "10 health processes in rabbitmq: during=$n1 after=$n2 (seam used $used)"
 	echo "--- ledger:"; sed 's/^/  /' "$LED"
 	# leave the node as found: wait the 600 s window out (§12.7 order) and show the verdict comes back to OK
 	quiet_ledger; sleep 35; [ "$(st)" = OK ] && ok "verdict OK again once the 600 s window passed" || { no "verdict $(st) after the window"; sed 's/^/  /' "$VL"; } ;;
