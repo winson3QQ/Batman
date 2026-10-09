@@ -162,6 +162,8 @@ case "$sts" in ''|*[!0-9]*) bad "batpower published no state ([$st]) — the dae
 rm -rf "$GD"
 [ -z "$(uci -q changes batpower)" ] && ok "no staged batpower config left behind" || bad "staged batpower config left: $(uci -q changes batpower | tr '\n' ' ')"
 # review 5 m4: a foreign bare `uci commit` inside the window would have persisted the bench config — catch it
-grep -q "mock_ok" /etc/config/batpower 2>/dev/null && bad "/etc/config/batpower now carries mock_ok — the staged bench config reached flash" || ok "no bench config in /etc/config/batpower"
+# an option LINE, not a comment: the shipped default mentions "mock_ok" in its comment (on-node finding 2026-10-09)
+grep -qE "^[[:space:]]*option[[:space:]]+mock_ok" /etc/config/batpower 2>/dev/null && bad "/etc/config/batpower now carries option mock_ok — the staged bench config reached flash" || ok "no bench config (option mock_ok) in /etc/config/batpower"
+grep -qE "^[[:space:]]*option[[:space:]]+source[[:space:]]+'?mock" /etc/config/batpower 2>/dev/null && bad "/etc/config/batpower now carries source mock" || ok "no source mock in /etc/config/batpower"
 echo "== tmp-trust-280: $([ $rc = 0 ] && echo PASS || echo FAIL)"
 exit $rc

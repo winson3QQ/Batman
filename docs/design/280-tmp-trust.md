@@ -839,3 +839,32 @@ Every FAIL is attributed with evidence, or marked ❓:
 - a LuCI or attended-sysupgrade OTA (only the CLI `-n` path was run);
 - `sysupgrade -F` with an unusable run dir;
 - the fresh-ramroot reset reusing a stale tree (no leg aborted after `install_bin`).
+
+### 10.12 On-node round on rc 1.5.7-wsl.2+12189f6 (the v3.3 image; raw outputs attached to the PR)
+
+**OTA legs**
+
+| leg | stage that ran | procd `prefix` | `S2 BEGIN ramfs=` | result |
+|---|---|---|---|---|
+| 02, wsl.1→wsl.2 | #280 | `/tmp/run/batman/ramroot` | `/run/batman/ramroot` | committed |
+| 03 (Pi 3), wsl.1→wsl.2 | #280 | `/tmp/run/batman/ramroot` | `/run/batman/ramroot` | committed |
+| 04 (OTS), wsl.1→wsl.2 | #280 | `/tmp/run/batman/ramroot` | `/run/batman/ramroot` | committed |
+| 02, wsl.2→1.5.6 | #280 | `/tmp/run/batman/ramroot` | `/run/batman/ramroot` | committed |
+| 02, 1.5.6→wsl.2 | 1.5.6 | `/tmp/root` (pre-taken root 0700) | absent | committed |
+
+- On every #280 stage, `S1 CHECK` showed `ramroot=/tmp/run/batman/ramroot` with `upg=n` and then `upg=y`.
+- On 1.5.6, after the downgrade: batpower `source=mock`, no run dir, `protected_regular=0`. That is pre-#280 in full (R3), measured.
+- Back on wsl.2: `none`, `protected_regular=2`.
+
+**`tmp-trust-280`.** The first run FAILed on all three nodes, only on the new m4 check. Evidence that the check was wrong, not the node:
+- the only match was line 3, a **comment** in the shipped default `/etc/config/batpower` ("mock (bench: + mock_ok 1)");
+- `uci get batpower.main.mock_ok` was empty, with no staged changes;
+- the file's mtime is the boot time, before the test.
+
+The check now matches only `option mock_ok` / `option source 'mock'` lines. Re-run: **PASS on all three** (31, 31 and 32 ok). It includes:
+- the restored autocommit gate ("ignored the /tmp/batman-fw-override planted by nobody" and "evaluated to a verdict") on all three;
+- the RAM_ROOT include on all three;
+- the `validate_firmware_image` refusal on all three;
+- payload `--start-only` rc 0 on 04.
+
+**D5 restart paths:** PASS on all three.
