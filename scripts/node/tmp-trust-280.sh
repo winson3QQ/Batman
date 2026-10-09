@@ -10,6 +10,8 @@
 [ -r /usr/lib/batman/rundir.sh ] || { echo "SKIP-REASON: pre-#280 image (no /usr/lib/batman/rundir.sh) — nothing planted"; exit 3; }
 # shellcheck source=/dev/null
 . /usr/lib/batman/rundir.sh
+# never during an A/B trial: the dry-run autocommit below must not race a real one for its watchdog claim
+batman-slot is-trial >/dev/null 2>&1 && { echo "SKIP-REASON: this boot is an uncommitted A/B trial — not planting next to a live autocommit"; exit 3; }
 rc=0
 bad(){ echo "FAIL $*"; rc=1; }
 ok(){ echo "ok   $*"; }
@@ -81,7 +83,7 @@ up=1; if [ -n "$T" ]; then for c in $(awk '/^CONTAINER /{print $2}' /opt/batdata
 	[ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = true ] || up=0; done; fi
 if [ -n "$T" ] && [ "$up" = 1 ] && [ ! -e "$RUNDIR/batman-payload-$T.stopping" ] && mine "/tmp/batman-payload-$T.stopping"; then
 	NB "echo 2 > /tmp/batman-payload-$T.stopping; echo '0 0 nodocker' > /tmp/batman-payload-$T.stop0"
-	payload-run --start-only "$T" >/dev/null 2>&1; prc=$?
+	PAYLOAD_LOCK_WAIT=5 payload-run --start-only "$T" >/dev/null 2>&1; prc=$?   # never outlive the harness timeout
 	case "$prc" in 0) ok "payload-run --start-only $T (stack already up) ignores a /tmp stopping flag planted by nobody";;
 		3) info "payload-run --start-only $T: config changed (rc 3) — stopping-flag effect not judged this run";;
 		4) bad "payload-run said 'being stopped' (rc 4) because of a /tmp flag planted by nobody";;
@@ -94,13 +96,16 @@ else info "payload plant skipped (no tenant, stack not fully up, or a real stop 
 rr=$(sh -c '. /lib/functions.sh; include /lib/upgrade; echo "$RAM_ROOT"' 2>/dev/null)
 [ "$rr" = "$RUNDIR/ramroot" ] && ok "include /lib/upgrade -> RAM_ROOT=$rr (root-only)" || bad "RAM_ROOT after include /lib/upgrade is [$rr], not $RUNDIR/ramroot"
 if mine /tmp/sysupgrade.tt280; then
+	# a plant that blocks every OTA must not outlive this test, whatever kills it (review 4 #6): detached remover
+	setsid sh -c "trap '' HUP PIPE; sleep 60; rm -f /tmp/sysupgrade.tt280" </dev/null >/dev/null 2>&1 &
 	NB "echo x > /tmp/sysupgrade.tt280"
 	img=$(mktemp)
-	v=$(/usr/libexec/validate_firmware_image "$img" 2>&1)
+	# OTATRACE_FILE: these test validations must not land in the node's persistent OTA forensics (review 4 #11)
+	v=$(OTATRACE_FILE=/nonexistent/tt280 /usr/libexec/validate_firmware_image "$img" 2>&1)
 	echo "$v" | grep -q 'REFUSING: /tmp/sysupgrade.tt280 is not root' && ok "validate_firmware_image refuses a /tmp/sysupgrade* owned by nobody (guard wired in)" \
 		|| bad "validate_firmware_image did not refuse the planted /tmp/sysupgrade.tt280: $(echo "$v" | grep -i -m1 refus)"
 	rm -f /tmp/sysupgrade.tt280
-	v=$(/usr/libexec/validate_firmware_image "$img" 2>&1)
+	v=$(OTATRACE_FILE=/nonexistent/tt280 /usr/libexec/validate_firmware_image "$img" 2>&1)
 	echo "$v" | grep -q 'REFUSING: /tmp/sysupgrade' && bad "guard still refuses after the plant was removed" || ok "guard passes once the plant is gone (control)"
 	rm -f "$img"
 fi
@@ -128,10 +133,10 @@ reading(){ batpower once 2>/dev/null | awk '{print $2}'; }   # "STATE V I T" -> 
 [ "$(reading)" = - ] && ok "default config: planted mock not read (UNKNOWN)" || bad "default config read a value: $(batpower once)"
 # the detached guard owns the end of the bench window: removes the plant, reverts the staged config, restarts
 # batpower — whatever happens to this shell or its ssh (review 3 #6)
-G=$(mktemp); setsid sh -c "trap '' HUP PIPE; end=\$(( \$(cut -d. -f1 /proc/uptime) + $LIFE )); while [ \$(cut -d. -f1 /proc/uptime) -lt \$end ]; do
+GD=$(mktemp -d); G=$GD/hit; setsid sh -c "trap '' HUP PIPE; end=\$(( \$(cut -d. -f1 /proc/uptime) + $LIFE )); while [ \$(cut -d. -f1 /proc/uptime) -lt \$end ]; do
 	for s in /tmp/batpower.state $RUNDIR/batpower.state; do [ \"\$(cut -d' ' -f2 \$s 2>/dev/null)\" = 1000 ] && { rm -f /tmp/batpower.mock; echo HIT > $G; }; done
 	dmesg | tail -20 | grep -q 'LOW BATTERY' && { rm -f /tmp/batpower.mock; echo LOW >> $G; }
-	sleep 1; done; rm -f /tmp/batpower.mock; uci -q revert batpower; /etc/init.d/batpower restart; echo DONE >> $G.done" </dev/null >/dev/null 2>&1 &
+	sleep 1; done; rm -f /tmp/batpower.mock; uci -q revert batpower; /etc/init.d/batpower restart; echo DONE >> $GD/done" </dev/null >/dev/null 2>&1 &
 uci -q set batpower.main.source=mock; uci -q set batpower.main.mock_ok=1   # staged only; the guard reverts it
 v=$(reading); [ "$v" = 1000 ] && bad "mock config READ the planted /tmp value (old code path)" || ok "mock config: /tmp plant not read (reads the run dir: $v)"
 # negative control: point the once-only seam at the planted file — the oracle must see it
@@ -140,15 +145,15 @@ v=$(reading); [ "$v" = 1000 ] && bad "mock config READ the planted /tmp value (o
 t0=$(date +%s)
 /etc/init.d/batpower restart >/dev/null 2>&1
 sleep $((LIFE + 3))
-i=0; while [ ! -s "$G.done" ] && [ $i -lt 10 ]; do sleep 1; i=$((i+1)); done
-[ -s "$G.done" ] && ok "the detached guard ended the bench window (plant removed, config reverted, batpower restarted)" || bad "the detached guard did not finish"
+i=0; while [ ! -s "$GD/done" ] && [ $i -lt 10 ]; do sleep 1; i=$((i+1)); done
+[ -s "$GD/done" ] && ok "the detached guard ended the bench window (plant removed, config reverted, batpower restarted)" || bad "the detached guard did not finish"
 [ -e /tmp/batpower.mock ] && { rm -f /tmp/batpower.mock; bad "guard did not remove the plant"; }
 # the daemon must really have ticked in the window — "never read the plant" means nothing from a dead daemon
 st=$(cat "$RUNDIR/batpower.state" 2>/dev/null); sts=${st##* }
 case "$sts" in ''|*[!0-9]*) bad "batpower published no state ([$st]) — the daemon check proves nothing";;
 	*) [ "$sts" -ge "$t0" ] && ok "batpower daemon ticked in the window (state: $st)" || bad "batpower state not refreshed in the window ([$st])";; esac
 [ -s "$G" ] && bad "batpower daemon read the planted value ($(tr '\n' ' ' < "$G"))" || ok "batpower daemon never read the planted value over ${LIFE}s"
-rm -f "$G" "$G.done"
+rm -rf "$GD"
 [ -z "$(uci -q changes batpower)" ] && ok "no staged batpower config left behind" || bad "staged batpower config left: $(uci -q changes batpower | tr '\n' ' ')"
 echo "== tmp-trust-280: $([ $rc = 0 ] && echo PASS || echo FAIL)"
 exit $rc

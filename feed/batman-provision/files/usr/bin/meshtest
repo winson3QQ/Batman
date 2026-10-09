@@ -126,7 +126,7 @@ fi
 
 # ----------------------------------------------------------------- 6. LED
 say "6. LED 指示器"
-val state    "$(cat /tmp/meshled.state 2>/dev/null || echo '（meshled 沒在跑）')"
+val state    "$(R=/nonexistent; [ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh && R=$RUNDIR; cat "$R/meshled.state" 2>/dev/null || echo '（meshled 沒在跑）')"
 val 實例     "$(ps w | grep -c '[m]eshled run')"
 val PWR      "$(sed -n 's/.*\[\(.*\)\].*/\1/p' /sys/class/leds/PWR/trigger) bright=$(cat /sys/class/leds/PWR/brightness)"
 val ACT      "$(sed -n 's/.*\[\(.*\)\].*/\1/p' /sys/class/leds/ACT/trigger) on=$(cat /sys/class/leds/ACT/delay_on 2>/dev/null)/off=$(cat /sys/class/leds/ACT/delay_off 2>/dev/null)"

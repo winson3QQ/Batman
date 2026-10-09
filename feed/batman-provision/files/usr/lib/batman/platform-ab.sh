@@ -63,6 +63,11 @@ opf() { type batman_opf >/dev/null 2>&1 || return 1; batman_opf "$1"; }   # rund
 # both pass $RAM_ROOT, stage 2's switch_to_ramfs/supivot) to a place no non-root process can create anything in.
 # No run dir: RAM_ROOT is left unset-to-ours and platform_check_image refuses (fail closed).
 if batman_rundir 2>/dev/null; then RAM_ROOT=$RUNDIR/ramroot; fi
+# review 4 #3: without a run dir RAM_ROOT would stay in world-writable /tmp — refuse the upgrade itself right
+# here (stage 1 / stage 2 include us before any install_bin), so not even `sysupgrade -F` can use /tmp/root.
+case "$RAM_ROOT" in "$RUNDIR"/*) ;; *) case "${0##*/}" in sysupgrade|stage2)
+	echo "REFUSING: no root-only run dir ($RUNDIR) for the sysupgrade RAM_ROOT — not installing into world-writable $RAM_ROOT" >&2
+	exit 1;; esac;; esac
 
 # Stage 1 (also run by validate_firmware_image / `sysupgrade -T` / LuCI): trace the verdict ONLY —
 # no state file, so a mere validation leaves nothing that a later boot could misread as an OTA.
@@ -71,7 +76,7 @@ platform_check_image() {
 	out=$( { _ab_ramroot_guard "$@" && _ab_check_image "$@"; } 2>&1); rc=$?
 	[ -n "$out" ] && echo "$out"
 	caller=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null | cut -c1-60)
-	otalog S1 CHECK rc=$rc caller="$caller" msg="$(echo "$out" | tail -1)"
+	otalog S1 CHECK rc=$rc caller="$caller" ramroot="$RAM_ROOT" upg="$([ -x "$RAM_ROOT/sbin/upgraded" ] && echo y || echo n)" msg="$(echo "$out" | tail -1)"
 	return $rc
 }
 # #280 review 3: the upgrade's own inputs must be root's. Checks only — nothing is removed (an rm -rf of a tree
@@ -79,11 +84,21 @@ platform_check_image() {
 # (above), so what -F still lets through is a non-root-owned image or config backup, which the operator forced.
 _ab_ramroot_guard() {
 	local f
+	# a fresh RAM_ROOT per OTA: install_file never overwrites, so files left by an OTA aborted earlier this boot
+	# would be reused. Only stage 1 (our parent is /sbin/sysupgrade) resets it — procd validates AFTER install_bin.
+	# It is inside the root-only run dir, so this rm cannot be steered by anyone else (unlike /tmp/root).
+	case "$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null)" in *sysupgrade*) case "$RAM_ROOT" in "$RUNDIR"/ramroot) rm -rf "$RAM_ROOT";; esac;; esac
 	case "$RAM_ROOT" in "$RUNDIR"/*) ;; *) echo "REFUSING: no root-only run dir for the sysupgrade RAM_ROOT (it would be $RAM_ROOT)"; return 1;; esac
 	# the image itself (stage 1 hands a /tmp copy; LuCI/cgi-io upload to /tmp as root): root's, no link tricks
 	if [ -n "${1:-}" ] && [ "$1" != - ]; then
 		{ [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ "$(ls -ln "$1" 2>/dev/null | awk '{print $2}')" = 1 ]; } \
 			|| { echo "REFUSING: image $1 is not a root-owned single-link regular file (possible plant)"; return 1; }
+		# its directory: sticky /tmp (others cannot rename our file there), or root's and not writable by others
+		f=${1%/*}; [ "$f" = "$1" ] && f=.
+		if [ "$f" != /tmp ]; then
+			{ [ -d "$f" ] && [ -O "$f" ] && case "$(ls -ld "$f" | cut -c1-10)" in d????w????|d???????w?) false;; *) true;; esac; } \
+				|| { echo "REFUSING: image directory $f is not root's or is writable by others (the image could be swapped)"; return 1; }
+		fi
 	fi
 	# the rest of sysupgrade's /tmp files: image copy, config backup, conffiles list, failsafe hand-over
 	for f in /tmp/sysupgrade*; do
@@ -231,7 +246,10 @@ ota_s2_close() {
 platform_do_upgrade() {
 	local abrc
 	ota_s2_open
-	otalog_k S2 BEGIN p6trace="$([ "$OTATRACE_FILE" = "$RUNDIR/p6t/log/ota-trace.log" ] && echo yes || echo no)" get="$(ota_get)" thr="$(ota_thr)"
+	# the ramfs root as the kernel sees it (/run/batman/ramroot inside the /tmp tmpfs on #280; stock: /root)
+	local rfs="" _a _b _c _r _m _x
+	while read -r _a _b _c _r _m _x; do [ "$_m" = / ] && rfs=$_r; done < /proc/self/mountinfo
+	otalog_k S2 BEGIN ramfs="${rfs:-?}" p6trace="$([ "$OTATRACE_FILE" = "$RUNDIR/p6t/log/ota-trace.log" ] && echo yes || echo no)" get="$(ota_get)" thr="$(ota_thr)"
 	_ab_do_upgrade "$@"; abrc=$?
 	otalog_k S2 END rc=$abrc get="$(ota_get)" thr="$(ota_thr)"
 	ota_s2_close

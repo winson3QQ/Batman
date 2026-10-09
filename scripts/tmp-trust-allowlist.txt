@@ -55,3 +55,6 @@ scripts/daily-validation.sh	^ *suite tmp-trust-280 ".*$	suite description text
 scripts/daily-validation.sh	scripts/node/tmp-trust-280\.sh	the file name of the #280 node check (not a /tmp path)
 scripts/daily-validation.sh	"no decision state / root-executed file in world-writable /tmp on the node	suite description text
 scripts/depersonalise.sh	/tmp/bat-hosts	removes the display-only host map from a golden master
+feed/batman-provision/files/usr/lib/batman/platform-ab.sh	if \[ "\$f" != /tmp \]; then	image-directory check: compares against sticky /tmp (others cannot rename root's file there)
+scripts/daily-validation.sh	/run/batman/ramroot	expected ramfs root as the kernel reports it in mountinfo (relative to the /tmp tmpfs); compared, never used as a path
+scripts/fault-injection.sh	(mkdir -m 700 /tmp/root|ls -ld /tmp/root|find /tmp/root ! -user root|/tmp/root on the node is not)	OTA tooling takes /tmp/root atomically (mkdir, never rm) before an OTA a pre-#280 platform.sh runs; aborts if it is someone else's

@@ -486,7 +486,11 @@ chk_otatrace_209() { fssh "$1" 15 '                            # #209 S5: OTA fl
   [ -n "$b" ] || { echo "recorder present, BOOT lines ok; no OTA recorded on p6 yet"; exit 0; }
   e=$(grep " boot=$b .* S2 END " "$f" | tail -n 1)
   [ -n "$e" ] || { echo "last OTA (stage-2 boot $b) has S2 BEGIN but no S2 END — stage 2 died or its trace was lost"; exit 1; }
-  echo "last OTA (stage-2 boot $b): S2 END ${e#* S2 END }"'; }
+  # #280 review 4 #2: an OTA run by a #280 stage 2 records the ramfs root; it must be the root-only run dir
+  rf=$(grep " boot=$b .* S2 BEGIN " "$f" | tail -n 1 | sed -n "s/.* ramfs=\([^ ]*\).*/\1/p")
+  case "$rf" in "") rr="(pre-#280 stage 2: no ramfs field)";; /run/batman/ramroot) rr="ramfs=$rf";;
+    *) echo "last OTA ramfs root is $rf, not /run/batman/ramroot — RAM_ROOT not in the run dir"; exit 1;; esac
+  echo "last OTA (stage-2 boot $b): S2 END ${e#* S2 END } $rr"'; }
 chk_trybootget_209() { fssh "$1" 12 '                          # #209 v4.3 D5: tryboot GET read-back
   # batman-slot apply refuses on a pi3 unless the firmware answers the tryboot GET; on a normal
   # (committed, non-trial) boot the one-shot flag must read 0 — a 1 means the next reboot trials a slot.
@@ -1287,6 +1291,7 @@ fi
 chk_tmptrust_280() { local n rc=0 o r; for n in $FLEET; do echo "== $n"
   o=$(timeout 180 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$n" 'sh -s' < "$REPO/scripts/node/tmp-trust-280.sh" 2>&1); r=$?
   echo "$o"
+  [ "$r" = 0 ] && ! echo "$o" | grep -qx '== tmp-trust-280: PASS' && { echo "FAIL $n: rc 0 without the PASS trailer (script cut short?)"; rc=1; }
   case $r in 0) ;; 3) echo "$o" | grep -q '^SKIP-REASON: pre-#280' && echo "FAIL $n runs a pre-#280 image — this run cannot verify #280 on it" ; rc=1 ;; *) rc=1 ;; esac
   done; return $rc; }
 if [ "$FEATURE_MODE" = --destructive ]; then

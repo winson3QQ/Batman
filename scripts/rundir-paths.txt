@@ -28,6 +28,10 @@ batdata.dev
 p6t
 batman-storage.crit
 batdata-mount.booted
+# LED (meshled; meshtest reads the state)
+meshled.state
+meshled.undervolt
+meshled.txstat
 # power
 batpower.state
 batpower.mock

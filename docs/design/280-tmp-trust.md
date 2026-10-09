@@ -1,6 +1,6 @@
 # #280 Stop treating `/tmp` as trusted IPC: decision state moves to a root-only run directory
 
-Status: **design v3.1** (2026-10-09; v3.1 = review 3, §10.8) — §10 adds the docs/design/REVIEW.md sections (evidence, ownership, contracts, lifecycle matrix, security per actor, residuals) and resolves review 2 (whole design + implementation, REJECT); §10 overrides §2–§9 where they differ. Earlier: v1 REJECT; v2 APPROVE-WITH-CHANGES (§9) · Refs #280 #274 #265 #261 #209 #91
+Status: **design v3.2** (2026-10-09; v3.1 = review 3, §10.8; v3.2 = review 4, §10.9) — §10 adds the docs/design/REVIEW.md sections (evidence, ownership, contracts, lifecycle matrix, security per actor, residuals) and resolves review 2 (whole design + implementation, REJECT); §10 overrides §2–§9 where they differ. Earlier: v1 REJECT; v2 APPROVE-WITH-CHANGES (§9) · Refs #280 #274 #265 #261 #209 #91
 
 ## 0. Reality check (2026-10-08, 02/03/04 on 1.5.6-wsl.1; full inventory on #280)
 
@@ -363,7 +363,7 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 - `sbin/sysupgrade:407` calls `install_bin /sbin/upgraded`; procd then chroots there and execs it as root.
 - stage 2 `switch_to_ramfs` (`stage2:42-65`) copies into the same directory.
 - Today `/tmp/root` is absent on all three nodes, so the path is exploitable but has not been exploited.
-- **The only user of the path is the variable.** `common.sh:1` is the only `/tmp/root` in the upgrade code. Stage 1 `install_file`, the procd `prefix` (`sysupgrade:415`), the failsafe hand-over (`sysupgrade:411`) and stage 2 `switch_to_ramfs`/`supivot` (`stage2:61-65`) all use `$RAM_ROOT`. `preinit.sh:83-86` uses a separate `/tmp/root` overlay at preinit, before procd and before any non-root process.
+- **The only user of the path is the variable.** `common.sh:1` is the only `/tmp/root` in the upgrade code. Stage 1 `install_file`, the procd `prefix` (`sysupgrade:415`), the failsafe hand-over (`sysupgrade:411`) and stage 2 `switch_to_ramfs`/`supivot` (`stage2:61-65`) all use `$RAM_ROOT`. `preinit.sh:83-86` uses a separate `/tmp/root` overlay at preinit, before procd and before any non-root process. fstools `snapshot` sources `common.sh` without `platform.sh`, so it would see `/tmp/root`; it is not installed in our images (review 4 #12).
 - **`include /lib/upgrade` sources `*.sh` in `ls` order**, so `platform.sh` (ours) comes after `common.sh` in stage 1, `validate_firmware_image`, stage 2 and do_stage2. A `RAM_ROOT=` in `platform.sh` therefore moves every user (`functions.sh` `include`).
 
 **A4 — `validate_firmware_image` calls our `platform_check_image` on every path into an upgrade: stage 1 first, then procd after stage 1's `install_bin`.** Evidence: `/usr/libexec/validate_firmware_image` and procd `system.c` (sysupgrade handler: validate, then `service_stop_all`).
@@ -424,10 +424,12 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 - It is `$RUNDIR/ramroot`, set by `platform.sh` whenever `batman_rundir` succeeds.
 - Stage 1, procd and stage 2 all read the same variable after the same include, so they agree.
 - Inside the 0700 root run dir no other user can create, swap or pre-populate anything. There is no race, and nothing is ever removed.
-- If the run dir is unusable, `RAM_ROOT` stays upstream's `/tmp/root` and `platform_check_image` REFUSES. Under `-F` that refusal is ignored: residual R4, which needs an already broken `/tmp/run`.
+- If the run dir is unusable, `platform.sh` itself exits 1 at include time when `$0` is `sysupgrade` or `stage2`, before any `install_bin`. The upgrade is refused even under `-F` (review 4 #3). `validate_firmware_image` refuses as well.
+- **Fresh per OTA.** Stage 1's validation (its parent is `/sbin/sysupgrade`) removes `$RUNDIR/ramroot` before `install_bin`. `install_file` never overwrites, so files from an OTA aborted earlier in the same boot are not reused. The `rm` is inside the root-only run dir, so nobody can steer it. procd's validation runs after `install_bin` and never removes.
 
 **Upgrade inputs (`_ab_ramroot_guard`, runs first in `platform_check_image`)**
 - The image argument must be a root-owned regular file, not a symlink, with link count 1.
+- Its directory must be `/tmp` (sticky: nobody else can rename our file there), or root's and not writable by others (review 4 #5).
 - Every `/tmp/sysupgrade*` must be root-owned and not a symlink.
 - Otherwise the upgrade is refused. Checks only: nothing is removed.
 
@@ -436,6 +438,8 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 - A name missing from the table fails the check (N3).
 
 ### 10.3 Lifecycle matrix
+
+**Today, for every row** (pre-#280; REVIEW.md item 3 asks for this column): the same state lived at `/tmp/<basename>`. Any process could pre-create, read or replace it, and root followed whatever was there. Rows that differ say so with a "Today:" line.
 
 **First boot**
 - Behaviour: 95 runs at S10 and writes the init. The generated `batdata-mount` init sources `rundir.sh` and defines `mark`/`tmpd`/`tmpf` itself (BLOCKER 1). The S11 re-run is idempotent.
@@ -455,9 +459,20 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
   - `tmp-trust-280` §5: `include /lib/upgrade` gives `RAM_ROOT=$RUNDIR/ramroot`; `validate_firmware_image` refuses a `/tmp/sysupgrade*` owned by nobody; a control with the plant removed passes.
   - Static: "GUARD NOT WIRED" plus 2 mutations.
 
-**The first OTA onto #280**
-- Behaviour: it runs the OLD slot's `platform.sh`, so `RAM_ROOT=/tmp/root` and there is no guard. BLOCKER 2 stays exposed for that one OTA. Every later OTA is protected.
-- Proof: stated; not testable away.
+**The first OTA onto #280, and every re-upgrade after a downgrade**
+- Today: always `/tmp/root`.
+- Behaviour: it runs the OLD slot's `platform.sh` (`RAM_ROOT=/tmp/root`, no guard).
+- Mitigation (review 4 #4): the OTA tooling (fault-injection `ota_boot`, and the operator runbook) first runs `mkdir -m 700 /tmp/root` as root. That is atomic, with no `rm`: if it succeeds, the directory is root's and nothing can be planted. If it already exists and is not a private root directory, the OTA is aborted. An OTA started by hand without this step keeps the old exposure for that one OTA.
+- Proof: fault-injection aborts on a non-root `/tmp/root`, by code; not induced.
+
+**Stage 1 aborted after `install_bin` (e.g. procd's validation refuses), then a second OTA in the same boot**
+- Today: the stale `/tmp/root` files are reused.
+- Behaviour: stage 1 recreates `$RUNDIR/ramroot` fresh.
+- Proof: by code (the reset is keyed on the parent being `sysupgrade`).
+
+**`tmp-trust-280` during a live A/B trial**
+- Behaviour: it SKIPs. Its dry-run autocommit must not race the real one for the watchdog claim.
+- Proof: the first line of the test.
 
 **OTA stage 2 (ramfs)**
 - Behaviour:
@@ -465,7 +480,11 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
   - The ramfs is built in `$RUNDIR/ramroot`, and `supivot` bind-mounts and pivots into it.
   - This nests inside the `/tmp` tmpfs exactly like upstream's `/tmp/root` does. Only the parent's mode differs (0700 root vs 0755), and only root runs after `kill_remaining`.
   - If the run dir is unusable, the apply is refused (fail closed, N7).
-- Proof: ❌ **not run yet.** Required before the PR: the stage-2 proof on both boards (`p6trace=yes`, and the OTA lands) with the new `RAM_ROOT`.
+- Proof: ❌ **not run yet.** Required before the PR: an rc→rc OTA on both boards.
+  - **The discriminator (review 4 #2):** `S2 BEGIN` now records `ramfs=` (the kernel's root of the pivoted ramfs, read from `/proc/self/mountinfo`). It must read `/run/batman/ramroot`; stock reads `/root`.
+  - The procd-time `S1 CHECK` records `ramroot=` and `upg=y`.
+  - The 1.5.6→rc OTA is the negative control: its stage 2 is the old one, so it writes no `ramfs=` field.
+  - `chk_otatrace_209` fails if the last OTA's `ramfs=` is anything else.
 
 **Mid-trial OTA from a pre-#280 slot**
 - Behaviour: the old `platform-ab` runs and is self-consistent, with its own `/tmp` names.
@@ -579,7 +598,7 @@ This section adds the REVIEW.md sections the design lacked. Where it differs fro
 
 **R3 — Downgrade.** See the downgrade entry in §10.3.
 
-**R4 — `sysupgrade -F`.**
+**R4 — `sysupgrade -F` (superseded by review 4 #3: an unusable run dir now refuses at include time, even under `-F`).**
 - `RAM_ROOT` does not depend on a refusal (§10.2). What `-F` still lets through is a non-root-owned image or config backup, and the operator forced it.
 - The one exception is an unusable run dir, where `RAM_ROOT` falls back to `/tmp/root`. That needs `/tmp/run` itself to be broken (A1).
 
@@ -690,3 +709,48 @@ Review 3 reviewed the whole document and 9de8bd5 under REVIEW.md: **REJECT**, 1 
 - The env seams are stated as R6.
 
 **Ownership rows added:** RAM_ROOT, `/tmp/sysupgrade*`, uci batpower source, the RAMFS_COPY additions, the `/tmp/run` dev files, and `/tmp/bat-hosts`.
+
+### 10.9 Review 4 → v3.2
+
+**Verdict: APPROVE-WITH-CHANGES, no BLOCKER.** Review 4 checked the RAM_ROOT move against upstream sysupgrade, stage2, do_stage2, the `include` order, procd and `upgraded`:
+- every consumer reads the override;
+- `supivot` uses the same topology as stock;
+- the inputs of a legitimate OTA pass the guard (`sysupgrade -n`, LuCI, procd's validation).
+
+**#1 MAJOR — the batpower negative control wrote 1000 mV into the production state file.**
+- The gate became timing-dependent, and `halow-status`/`flightrec` saw a fake reading.
+- Fix: with the seam set, `once` prints to stdout only. It never publishes.
+
+**#2 MAJOR — the stage-2 proof could not tell old from new.**
+- `S2 BEGIN ramfs=` and `S1 CHECK ramroot= upg=` are now recorded, and `chk_otatrace_209` asserts them.
+- The 1.5.6→rc leg is the negative control.
+
+**#3 MINOR — fail-closed was overstated.** An unusable run dir now exits at include time for `sysupgrade`/`stage2`, before any `install_bin`, and also under `-F`.
+
+**#4 MINOR — the first OTA onto #280.** Atomic `mkdir -m 700 /tmp/root` in the OTA tooling, aborting if someone else's directory is already there.
+
+**#5 MINOR — the image's directory.** It must be `/tmp`, or root's and not writable by others.
+
+**#6 MINOR — the `/tmp/sysupgrade.tt280` plant.** A detached remover takes it away within 60 s, whatever kills the test.
+
+**#7 MINOR — the harness.** It requires the `== tmp-trust-280: PASS` trailer as well as rc 0.
+
+**#8 MINOR — the guard's result files.** They now live in a private `mktemp -d`.
+
+**#9 MINOR — the payload step.** `PAYLOAD_LOCK_WAIT=5` for the test's start-only run.
+
+**#10 MINOR — the meshled state** (`meshled.state`/`.undervolt`/`.txstat`) moves into the run dir. meshtest reads it there. Path table updated.
+
+**#11 MINOR — OTA forensics.** The test's validations set `OTATRACE_FILE=/nonexistent/tt280`, so they never write the persistent `ota-trace.log`.
+
+**#12 MINOR — fstools `snapshot`** is stated in A3.
+
+**Matrix rows added:**
+- the "today" column;
+- stage 1 aborted after `install_bin` (ramroot is now fresh per OTA);
+- the test during a trial (SKIP);
+- every re-upgrade after a downgrade counts as a "first OTA".
+
+**Ownership rows:**
+- uci `batpower` staging is in the shared `/tmp/.uci`. The detached guard reverts it within LIFE+3 s, which is the window in which a foreign bare `uci commit` could persist it. The only such committers are the 1.8.0 meshpoint wizard and 99-halow-identity, which run at provisioning and first boot only, never during the steady state in which the test runs. Stated.
+- meshled state: owner meshled; readers meshtest and the LED.

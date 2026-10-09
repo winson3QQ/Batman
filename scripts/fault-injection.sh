@@ -179,6 +179,10 @@ f1(){ echo "== F1 bad-tar quarantine + anti-wedge (decoy tenant, 3 reboots) =="
 
 # OTA-flash the staged payload; returns once the NEW boot is stably reachable. $1 tag, $2 boot_id before.
 ota_boot(){ local tag=$1 b0=$2
+  # #280 review 4 #4: an OTA run by a pre-#280 platform.sh installs into /tmp/root — take it first, atomically
+  # (mkdir, never rm): ours, or abort if someone else's is already there
+  q 'mkdir -m 700 /tmp/root 2>/dev/null; [ "$(ls -ld /tmp/root | cut -c1-10) $(ls -ld /tmp/root | awk "{print \$3}")" = "drwx------ root" ] && [ -z "$(find /tmp/root ! -user root 2>/dev/null | head -1)" ] && echo RR-OK' | grep -q RR-OK \
+    || { no "$tag: /tmp/root on the node is not a private root dir — refusing to OTA through it"; return 1; }
   n "setsid sh -c 'sysupgrade -n $PAYLOAD >/opt/batdata/sysup.log 2>&1' </dev/null >/dev/null 2>&1 &"
   waitboot "$b0" 600 || { no "$tag: node did not reboot into the new image within 600 s (sysupgrade log: $(q 'tail -2 /opt/batdata/sysup.log' | tr '\n' ' '))"; return 1; }
   settle 300 || { no "$tag: trial not stably reachable within 300 s"; return 1; }; }
