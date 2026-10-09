@@ -22,8 +22,10 @@ pidof_c(){ docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null; }
 crash(){ p=$(pidof_c "$1"); [ -n "$p" ] && [ "$p" != 0 ] || return 1; kill -9 "$p"; waitfor "! running $1" 15; }
 # number of ledger records matching $1 (grep -c prints 0 AND exits 1 on no match: never "0\n0")
 nrec(){ n_=$(grep -c -- "$1" "$LED" 2>/dev/null); echo "${n_:-0}"; }
-# start events of a container ID since dockerd started (clock-independent: compared before/after)
-nstart(){ docker events --since 0 --until "$(date +%s)" --filter "container=$1" --filter event=start --format x 2>/dev/null | wc -l; }
+# start events of container $1 since time $2. --until is 2 s in the future: an event in the current second is
+# after a truncated `date +%s` and would be cut off (crash-274 step 1 counted 0 on 1.5.8-wsl.1/2); counting
+# "since 0" before/after does not work either — the 256-event ring is full, a new event evicts an old one.
+nstart(){ docker events --since "$2" --until "$(( $(date +%s) + 2 ))" --filter "container=$1" --filter event=start --format x 2>/dev/null | wc -l; }
 waitfor(){ i=0; while ! eval "$1"; do i=$((i + 1)); [ "$i" -ge "$2" ] && return 1; sleep 1; done; return 0; }
 all_running(){ for c in $(awk '/^CONTAINER /{print $2}' "$D"/*.manifest); do running "$c" || return 1; done; }
 gpid(){ pgrep -f "payload-guardian-run.sh $T" | head -1; }
@@ -43,10 +45,10 @@ case "${CASE:-}" in
 crash)
 	quiet_ledger
 	# 1 a client crash: back within ~10 s, same container, RestartCount 0 (only an API start can do that), ledgered
-	c=ots_eud_handler_ssl; id0=$(docker inspect -f '{{.Id}}' $c); r0=$(nrec "crash $c"); e0=$(nstart "$id0")
+	c=ots_eud_handler_ssl; id0=$(docker inspect -f '{{.Id}}' $c); r0=$(nrec "crash $c"); t0=$(date +%s)
 	crash $c
 	if waitfor "running $c && [ \$(nrec 'crash $c') -gt $r0 ]" 20; then
-		ev=$(( $(nstart "$id0") - e0 ))
+		ev=$(nstart "$id0" "$t0")
 		# shellcheck disable=SC2046  # three space-free fields
 		set -- $(docker inspect -f '{{.Id}} {{.RestartCount}} {{.HostConfig.RestartPolicy.Name}}' $c)
 		[ "$1" = "$id0" ] && [ "$2" = 0 ] && [ "$3" = no ] && [ "$ev" -ge 1 ] \
@@ -99,11 +101,16 @@ crash)
 	# 9 an operator `docker stop` is treated as a crash (the supported stop is the init script)
 	docker stop ots_eud_handler >/dev/null; waitfor "running ots_eud_handler" 120 && ok "9 operator docker stop: restarted" || no "9 not restarted"
 	# 10 a hung health check is killed inside the container (no process left behind, E40)
-	echo "sleep 30" > "$R/fault.274-health-rabbitmq"; crash rabbitmq; sleep 30
+	# the restart may wait out the backoff (up to 60 s) — measure only once the hung check is really running
+	#   (on 1.5.8-wsl.2 the seam was removed after 30 s, before the delayed restart used it)
+	u0=$(logread | grep -c "TEST fault.274-health-rabbitmq")
+	echo "sleep 30" > "$R/fault.274-health-rabbitmq"; crash rabbitmq
+	waitfor "[ \$(logread | grep -c 'TEST fault.274-health-rabbitmq') -gt $u0 ]" 150
+	sleep 20
 	n1=$(docker top rabbitmq 2>/dev/null | grep -c "sleep 30")
 	rm -f "$R/fault.274-health-rabbitmq"; waitfor all_running 300; sleep 10
 	n2=$(docker top rabbitmq 2>/dev/null | grep -c "sleep 30")
-	used=$(logread | grep -c "TEST fault.274-health-rabbitmq")
+	used=$(( $(logread | grep -c "TEST fault.274-health-rabbitmq") - u0 ))
 	[ "$used" -ge 1 ] || no "10 the hung health check never ran (no 'TEST fault.274-health-rabbitmq' in the log) — nothing was tested"
 	[ "$used" -ge 1 ] && [ "$n1" -le 1 ] && [ "$n2" = 0 ] && ok "10 hung health check ran ($used gate(s)): at most one in flight ($n1), none left after ($n2)" || no "10 health processes in rabbitmq: during=$n1 after=$n2 (seam used $used)"
 	echo "--- ledger:"; sed 's/^/  /' "$LED"

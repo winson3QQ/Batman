@@ -161,16 +161,24 @@ hc_once(){   # $1 = container, $2 = command, $3 = "timeout 8" or ""
 	kill "$_hw" 2>/dev/null || true; wait "$_hw" 2>/dev/null || true
 	return "$_hr"
 }
-health_gate(){
-	hc=$HEALTH
+# the command of one try: the seam (re-read every try, so removing it ends a simulated hang at once) or HEALTH
+SEAMLOG=0
+hc_cmd(){
 	if type batman_opf >/dev/null 2>&1 && BATMAN_OPF_QUIET=1 batman_opf "$RUNDIR/fault.274-health-$NAME"; then
-		hc=$(head -c 512 "$RUNDIR/fault.274-health-$NAME"); log "TEST fault.274-health-$NAME: health command replaced"
-	fi
+		[ "$SEAMLOG" = 1 ] || { log "TEST fault.274-health-$NAME: health command replaced"; SEAMLOG=1; }
+		hc=$(head -c 512 "$RUNDIR/fault.274-health-$NAME")
+	else hc=$HEALTH; fi
+}
+# Bound: PAYLOAD_HEALTH_TRIES (60) tries, each <= 10 s + 2 s apart — a service whose check really hangs holds this
+# gate (and so the guardian's restart path) for up to ~12 min; the verdict goes stale meanwhile (fail-closed).
+health_gate(){
+	SEAMLOG=0; hc_cmd
 	[ -n "$hc" ] || return 0
 	to=""; docker exec "$NAME" sh -c 'command -v timeout' >/dev/null 2>&1 && to="timeout 8" \
 		|| log "WARN: $NAME has no timeout(1) — a hung health check is bounded by the CLI kill only"
 	printf 'payload-run[%s]: wait %s' "$TENANT" "$NAME"; i=0
 	while [ "$i" -lt "${PAYLOAD_HEALTH_TRIES:-60}" ]; do   # 60 x 2 s; the offline test shortens it
+		hc_cmd; [ -n "$hc" ] || { echo " ok (no check)"; return 0; }
 		hc_once "$NAME" "$hc" "$to" && { echo " ok"; return 0; }
 		printf .; sleep 2; i=$((i+1))
 	done

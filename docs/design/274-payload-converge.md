@@ -1418,3 +1418,15 @@ Recorded so a reader of the code and of this section see the same thing; none ch
   ends with a clean reboot and asserts no latch remains; crash-274 step 4 FAILs its precondition if a latch exists;
   unclean-boot-274 waits up to 120 s for the first verdict.
 \n
+- **A hung service health check holds the restart path (rc 1.5.8-wsl.2, crash-274 step 10).** The gate is bounded
+  (60 tries, each ≤ 10 s, 2 s apart ≈ 12 min). While it runs, the guardian is inside `payload-run`: dependent clients
+  stay down, no other crash is handled, and the verdict file is not refreshed — autocommit fails closed on the stale
+  verdict and halow-status shows it stale. Measured: rabbitmq's check hung via the test seam at 07:37, cot_parser
+  was started only after the gate timed out at 07:48 (cot_parser.log / StartedAt on 04). This is the designed bound;
+  its availability cost is stated here and in #274's leftovers (a shorter restart-path gate is an extension idea).
+  The test seam is now re-read on every try, so removing it ends a simulated hang at once (the test removed it
+  after 20 s, but payload-run had read it once and kept the hang for the full bound).
+- **Re-run evidence for the harness attributions (wsl.2):** fi-c1 PASS (the immediate-DRIFT fix), unclean-boot-274
+  PASS (the 120 s wait), crash-274 steps 1/4/10 PASS (`--until` 2 s ahead; no latch; seam waited for),
+  cleanstop-274 PASS twice — its one early-CoT loss on wsl.2 did not reproduce and stays unattributed (❓).
+\n
