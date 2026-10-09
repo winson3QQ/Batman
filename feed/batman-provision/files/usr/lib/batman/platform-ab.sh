@@ -66,8 +66,10 @@ if batman_rundir 2>/dev/null; then RAM_ROOT=$RUNDIR/ramroot; fi
 # review 4 #3: without a run dir RAM_ROOT would stay in world-writable /tmp — refuse the upgrade itself right
 # here (stage 1 / stage 2 include us before any install_bin), so not even `sysupgrade -F` can use /tmp/root.
 case "$RAM_ROOT" in "$RUNDIR"/*) ;; *) case "${0##*/}" in sysupgrade|stage2)
+	# not an upgrade (sysupgrade -b/-r/-l/-h): no RAM_ROOT is used, let it run (review 5 m3)
+	[ -n "${CONF_BACKUP:-}${CONF_RESTORE:-}${CONF_BACKUP_LIST:-}${HELP:-}" ] && [ "${0##*/}" = sysupgrade ] || {
 	echo "REFUSING: no root-only run dir ($RUNDIR) for the sysupgrade RAM_ROOT — not installing into world-writable $RAM_ROOT" >&2
-	exit 1;; esac;; esac
+	exit 1; };; esac;; esac
 
 # Stage 1 (also run by validate_firmware_image / `sysupgrade -T` / LuCI): trace the verdict ONLY —
 # no state file, so a mere validation leaves nothing that a later boot could misread as an OTA.

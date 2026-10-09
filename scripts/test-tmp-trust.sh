@@ -8,7 +8,7 @@ P=0; F=0
 tok(){ echo "ok   $1"; P=$((P+1)); }
 tbad(){ echo "FAIL $1"; F=$((F+1)); }
 fresh(){ rm -rf "$W/r"; mkdir -p "$W/r"
-	( cd "$REPO" && git ls-files -co --exclude-standard -z ) | ( cd "$REPO" && xargs -0 cp --parents -t "$W/r" ) 2>/dev/null
+	( cd "$REPO" && git -c safe.directory='*' ls-files -co --exclude-standard -z ) | ( cd "$REPO" && xargs -0 cp --parents -t "$W/r" ) 2>/dev/null
 	( cd "$W/r" && git init -q && git add -A >/dev/null 2>&1 ); }
 check(){ CHECK_TMP_TRUST_ROOT="$W/r" bash "$REPO/scripts/check-tmp-trust.sh" >"$W/out" 2>&1; }
 # $1 name, $2 file (repo-relative), $3 line appended to it
@@ -52,6 +52,10 @@ fresh; printf '%s\n' 'mark batdata-dev "$DEV"' >> "$W/r/$S"; ( cd "$W/r" && git 
 check && tbad "mark of an unknown name accepted" || { grep -q "NOT IN PATH TABLE: run-dir name 'batdata-dev'" "$W/out" && tok "caught: mark <name> missing from the path table" || tbad "mark name not checked"; }
 # review 3 #10: any /var/<x> lands in world-writable /tmp on the node
 mut "a /var/<file> path (= /tmp/<file>)"       $A 'echo 1 > /var/autocommit.flag'
+# a broken listing (git refuses, or not a repo) must FAIL, never pass as "0 untrusted" (false green, 2026-10-09)
+mkdir -p "$W/norepo/scripts"; cp "$REPO/scripts/tmp-trust-allowlist.txt" "$REPO/scripts/rundir-paths.txt" "$W/norepo/scripts/"
+CHECK_TMP_TRUST_ROOT="$W/norepo" bash "$REPO/scripts/check-tmp-trust.sh" >"$W/out" 2>&1 && tbad "an empty file list passed as clean" \
+	|| { grep -q 'refusing to report clean' "$W/out" && tok "caught: no files listed (git failed) is an error, not clean" || tbad "empty listing failed for another reason"; }
 # a waiver needs a reason
 fresh; printf '%s\n' 'X=/tmp/y   # tmp-trust: ok' >> "$W/r/$A"; ( cd "$W/r" && git add -A >/dev/null 2>&1 )
 check && tbad "reasonless waiver accepted" || { grep -q 'WAIVER WITHOUT REASON' "$W/out" && tok "reasonless waiver refused" || tbad "waiver failure not reported"; }

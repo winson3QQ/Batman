@@ -488,6 +488,8 @@ chk_otatrace_209() { fssh "$1" 15 '                            # #209 S5: OTA fl
   [ -n "$e" ] || { echo "last OTA (stage-2 boot $b) has S2 BEGIN but no S2 END — stage 2 died or its trace was lost"; exit 1; }
   # #280 review 4 #2: an OTA run by a #280 stage 2 records the ramfs root; it must be the root-only run dir
   rf=$(grep " boot=$b .* S2 BEGIN " "$f" | tail -n 1 | sed -n "s/.* ramfs=\([^ ]*\).*/\1/p")
+  s1=$(grep " boot=$b .* S1 CHECK .*caller=/sbin/procd" "$f" | tail -n 1 | sed -n "s/.* ramroot=\([^ ]*\).*/\1/p")
+  [ -n "$s1" ] && [ -z "$rf" ] && { echo "last OTA: #280 stage 1 (ramroot=$s1) but stage 2 wrote no ramfs= — not the #280 stage 2"; exit 1; }
   case "$rf" in "") rr="(pre-#280 stage 2: no ramfs field)";; /run/batman/ramroot) rr="ramfs=$rf";;
     *) echo "last OTA ramfs root is $rf, not /run/batman/ramroot — RAM_ROOT not in the run dir"; exit 1;; esac
   echo "last OTA (stage-2 boot $b): S2 END ${e#* S2 END } $rr"'; }

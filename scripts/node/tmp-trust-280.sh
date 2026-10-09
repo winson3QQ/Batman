@@ -72,10 +72,15 @@ o=$(AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=$((u + 20)) 
 if mine /tmp/batman-autocommit.hold; then
 	echo "$o" | grep -q 'TAMPER: /tmp/batman-autocommit.hold' && ok "autocommit reports the planted hold as TAMPER" || bad "autocommit did not report the planted hold"
 fi
-# NOT a gate (on-node finding 2026-10-09): in a DRY run the planted committed/decided/wd/busy can only matter to the
-# watchdog and the commit claim, which a dry run never exercises — a pre-#280 build evaluates to the same verdict.
-# That autocommit READS the run dir, not /tmp, is proven by the static check + N3 path table and the N8 sweep.
-info "autocommit dry run with /tmp plants: $(echo "$o" | grep -oE 'DRYRUN decision: [A-Z]+|NOT committed by uptime [0-9]+s' | head -1) (not a discriminator, see comment)"
+# effect (review 5 M1): a pre-#280 autocommit reads /tmp/batman-fw-override and exits "firmware booted the wrong
+# slot ... NOT committed" before any verdict (origin/main l.281, dry runs too) — a non-root OTA denial. Ours reads the
+# run dir and evaluates to a verdict: a decision, or the deadline verdict of an unhealthy dry run.
+if mine /tmp/batman-fw-override; then
+	echo "$o" | grep -q 'firmware booted the wrong slot' && bad "autocommit took the /tmp/batman-fw-override planted by nobody as real (no commit)" \
+		|| ok "autocommit ignored the /tmp/batman-fw-override planted by nobody"
+	echo "$o" | grep -qE 'DRYRUN decision:|NOT committed by uptime' && ok "autocommit evaluated to a verdict with the /tmp plants present ($(echo "$o" | grep -oE 'DRYRUN decision: [A-Z]+|NOT committed by uptime [0-9]+s' | head -1))" \
+		|| bad "autocommit reached no verdict with the /tmp plants present: $(echo "$o" | tail -2 | tr '\n' ' ')"
+else info "a real /tmp/batman-fw-override exists — autocommit effect not tested this run"; fi
 # effect on the payload tenant (review 3 #5: this test must never be a second owner of tenant start): only when
 # the whole stack is ALREADY running and the guardian is not stopping it, `--start-only` is a pure no-op that
 # still goes through the stopping-flag decision — rc 0 exactly. A pre-#280 payload-run would return 4 (the
@@ -156,5 +161,7 @@ case "$sts" in ''|*[!0-9]*) bad "batpower published no state ([$st]) — the dae
 [ -s "$G" ] && bad "batpower daemon read the planted value ($(tr '\n' ' ' < "$G"))" || ok "batpower daemon never read the planted value over ${LIFE}s"
 rm -rf "$GD"
 [ -z "$(uci -q changes batpower)" ] && ok "no staged batpower config left behind" || bad "staged batpower config left: $(uci -q changes batpower | tr '\n' ' ')"
+# review 5 m4: a foreign bare `uci commit` inside the window would have persisted the bench config — catch it
+grep -q "mock_ok" /etc/config/batpower 2>/dev/null && bad "/etc/config/batpower now carries mock_ok — the staged bench config reached flash" || ok "no bench config in /etc/config/batpower"
 echo "== tmp-trust-280: $([ $rc = 0 ] && echo PASS || echo FAIL)"
 exit $rc

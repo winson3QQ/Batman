@@ -81,6 +81,8 @@ tick(){
 	esac
 	if [ "$below_crit" -ge "$CONFIRM" ] && [ "$state" != CRIT ]; then
 		state=CRIT
+		# the once-only test seam reports, it never acts (review 5 m5)
+		[ "${SEAM:-0}" = 1 ] && { echo "$state $v $i $(date +%s)" > "$STATE"; return 0; }
 		[ -f "$MARK" ] || echo "low-battery Vbat=${v}mV I=${i}mA source=${SOURCE} action=${ACTION}" > "$MARK"   # first writer wins
 		note crit "CRITICAL BATTERY: ${v} mV <= ${V_CRIT} mV — graceful ${ACTION} now"
 		echo "$state $v $i $(date +%s)" > "$STATE"; sync

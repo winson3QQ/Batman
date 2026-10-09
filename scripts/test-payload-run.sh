@@ -200,7 +200,9 @@ r1=$(pr t); r2=$(pr --converge t); r3=$(pr --start-only t)
 rm -f "$T/run/batman-payload-t.stopping"
 
 # 11 lock: a held lock makes payload-run wait, then give up (busybox has no flock -w)
-( exec 9>"$T/run/batman-payload-t.lock"; flock 9; sleep 5 ) & lp=$!; sleep 1
+( exec 9>"$T/run/batman-payload-t.lock"; flock 9; sleep 5 ) & lp=$!
+held(){ i=0; while ( exec 8>"$T/run/batman-payload-t.lock"; flock -n 8 ) 2>/dev/null; do i=$((i+1)); [ $i -ge 100 ] && return 1; sleep 0.1; done; }
+held || no "11 setup: the holder never took the lock in 10 s"
 rc=$(PAYLOAD_LOCK_WAIT=2 pr t); kill $lp 2>/dev/null; wait $lp 2>/dev/null
 [ "$rc" = 1 ] && grep -q "gave up" "$T/out" && ok "11 lock held: payload-run waits then exits 1" || { no "11 rc=$rc"; cat "$T/out"; }
 
@@ -236,7 +238,7 @@ kill -0 "$sp" 2>/dev/null && ok "14 stale pid file (lock free): unrelated proces
 kill "$sp" 2>/dev/null
 # a holder that IGNORES TERM: exercises the 1 s grace + KILL path (the sleep that was 0.1 and failed on busybox)
 printf '#!/bin/sh\nexec 9>"$PAYLOAD_RUNDIR/batman-payload-t.lock"; flock 9; trap "" TERM; while :; do sleep 1; done\n' > "$T/bin/payload-run"
-sh "$T/bin/payload-run" --converge t & fp=$!; sleep 1; echo "$fp" > "$T/run/batman-payload-t.pid"
+sh "$T/bin/payload-run" --converge t & fp=$!; held || no "14 setup: the TERM-ignoring holder never took the lock in 10 s"; echo "$fp" > "$T/run/batman-payload-t.pid"
 t0=$(date +%s); ( . "$PS"; PSTOP_RUN="$T/run"; pstop_kill t ) >>"$ALL" 2>&1; t1=$(date +%s); sleep 1
 if kill -0 "$fp" 2>/dev/null; then no "14 in-flight payload-run not killed"; kill -9 "$fp"
 else ok "14 in-flight payload-run (lock held, cmdline matches, ignores TERM) killed after a $((t1 - t0)) s grace"; fi

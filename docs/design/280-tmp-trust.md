@@ -1,6 +1,6 @@
 # #280 Stop treating `/tmp` as trusted IPC: decision state moves to a root-only run directory
 
-Status: **design v3.2** (2026-10-09; v3.1 = review 3, §10.8; v3.2 = review 4, §10.9) — §10 adds the docs/design/REVIEW.md sections (evidence, ownership, contracts, lifecycle matrix, security per actor, residuals) and resolves review 2 (whole design + implementation, REJECT); §10 overrides §2–§9 where they differ. Earlier: v1 REJECT; v2 APPROVE-WITH-CHANGES (§9) · Refs #280 #274 #265 #261 #209 #91
+Status: **design v3.3** (2026-10-09; v3.1 = review 3, §10.8; v3.2 = review 4, §10.9; v3.3 = on-node findings + review 5, §10.11) — §10 adds the docs/design/REVIEW.md sections (evidence, ownership, contracts, lifecycle matrix, security per actor, residuals) and resolves review 2 (whole design + implementation, REJECT); §10 overrides §2–§9 where they differ. Earlier: v1 REJECT; v2 APPROVE-WITH-CHANGES (§9) · Refs #280 #274 #265 #261 #209 #91
 
 ## 0. Reality check (2026-10-08, 02/03/04 on 1.5.6-wsl.1; full inventory on #280)
 
@@ -776,9 +776,11 @@ Review 3 reviewed the whole document and 9de8bd5 under REVIEW.md: **REJECT**, 1 
 
 On every #280 stage 1, `S1 CHECK` showed `upg=n` (stage 1, before `install_bin`, after the reset) and then `upg=y` (procd's call, after `install_bin`).
 
-**`tmp-trust-280`: PASS on all three nodes.**
-- The first run FAILed only the "autocommit still decides" check, on all three. Checking the pre-#280 code showed that this check cannot discriminate: in a dry run the planted markers can only matter to the watchdog and the claim, and a dry run never exercises those.
-- It is now reported as info, not a gate. The read path is proven by the static check, the N3 table and the N8 sweep.
+**`tmp-trust-280`: PASS on all three nodes**, with the autocommit check as info.
+- **Correction (review 5 M1).** The first run FAILed the "autocommit still decides" check on all three nodes. I then demoted it to info, saying the old code "cannot discriminate". That was **wrong**.
+- origin/main's autocommit exits on `[ -f /tmp/batman-fw-override ]` (l.281) before any verdict, dry runs included. So a nobody plant blocks every commit there, and the trial is then reverted at the deadline: a non-root OTA denial.
+- The first-run FAIL was my over-narrow oracle: an unhealthy dry run ends in "NOT committed by uptime", not in "DRYRUN decision".
+- v3.3 restores it as a gate: no "firmware booted the wrong slot" line, and a verdict reached. It is re-run on the rc that carries v3.3.
 - 04: the payload `--start-only` effect check passed (rc 0 with a `/tmp` stopping flag planted by nobody).
 
 **D5 restart paths: PASS on 02, 03 and 04.**
@@ -786,3 +788,54 @@ On every #280 stage 1, `S1 CHECK` showed `upg=n` (stage 1, before `install_bin`,
 - All of them ran again afterwards, `br-ahwlan` got its address back, and there were 2 batman neighbours.
 - logread had no permission-denied line.
 - `protected_regular=2` and `protected_fifos=2` are live.
+
+### 10.11 Full suite on the rc, review 5 → v3.3
+
+**Full daily-validation on rc 1.5.7-wsl.1+b0bba53.**
+- Run from the wt-280 harness at f718086, with `--destructive`, bench 02, destructive node 03, OTS 04.
+- Result: **58 passed, 3 failed, 1 skipped, 2 not applicable** (p7-209: the bench is a Pi 4; guardian-192: the Pi 3 carries no tenant).
+- The skip is `ab-card-invariants`. It cannot run on the Windows host, and it was run in WSL as root: bcm2711 40/0, bcm2710 62/0.
+
+Every FAIL is attributed with evidence, or marked ❓:
+
+**tmp-trust-static — ✅ the harness environment, plus a real test defect.**
+- In the suite, git refused to work in the WSL worktree reached from Git Bash ("dubious ownership").
+- Flip test (only `safe.directory` added): the mutation test went from 0/25 to 25/25.
+- The flip also exposed a **false green**: `check-tmp-trust.sh` printed "0 untrusted" with rc 0 although it had scanned no file.
+- Fixed:
+  - both scripts pass `safe.directory`;
+  - fewer than 100 listed files is now an ERROR (exit 2), never "clean";
+  - a new mutation proves it, giving 26/26.
+
+**ots-cot-e2e-264 and soak-cot-264 — ✅ #264, not #280.** The same suites on 1.5.6 (two canonical runs) failed the same way:
+
+| run | P2B lost | P3 lost | soak CoT lost |
+|---|---|---|---|
+| 1.5.6, canonical #1 | 20/20 | 19/100 | 2182/8945 (24%) |
+| 1.5.6, canonical #2 | 20/20 | 18/100 | 2018/8950 (23%) |
+| rc (#280) | 20/20 | 19/100 | 1486/8955 (17%) |
+
+**test-payload-run, one failure on the host (earlier, right after a firmware build, with WSL under heavy load) — ❓ unattributed.**
+- It did not reproduce: 40 runs (4 concurrent × 10) were all clean.
+- The suspect: two setups waited a fixed `sleep 1` for a background holder to take the tenant lock. Both now wait until the lock is really held, up to 10 s.
+- This removes the race. It does not prove the race was the cause.
+
+**Review 5 → v3.3**
+- **M1:** as above. The autocommit gate is restored on the `/tmp/batman-fw-override` plant.
+- **M2:**
+  - the raw outputs of tmp-trust, D5 and the downgrade are re-run on the v3.3 rc and kept;
+  - the OTA leg script now selects trace lines by boot id, because `ota-trace.log` is capped at 1500 lines;
+  - the 02 re-upgrade leg's lines were read on the node: boot 7ace70d5, `S1 CHECK` without `ramroot`, `S2 BEGIN` without `ramfs`, so that row reads "absent".
+- **m1:** `chk_otatrace_209` fails if a #280 stage 1 (procd-time `S1 CHECK ramroot=`) is followed by a stage 2 without `ramfs=`.
+- **m2: accepted, residual R8.** A second `sysupgrade` (or `-T`) started inside the ~13 s between stage 1's `install_bin` and procd's exec of `upgraded` resets `$RUNDIR/ramroot`, so that OTA aborts. Nothing is written and the node stays up.
+  - Two concurrent sysupgrades already race upstream on `/tmp/sysupgrade.img` and `/tmp/sysupgrade.tgz`.
+  - Not guarded further.
+- **m3:** the include-time refusal applies to upgrades only. `sysupgrade -b`/`-r`/`-l`/`-h` still run when the run dir is unusable, which is exactly when an operator wants a backup.
+- **m4:** `tmp-trust-280` FAILs if `mock_ok` reached `/etc/config/batpower` (a foreign bare `uci commit` inside the window).
+- **m5:** the `once` seam never acts. On CRIT it reports, with no shutdown marker and no halt.
+- **m6:** `docs/led-indicator.md` now names the run-dir path.
+
+**Still not proven:**
+- a LuCI or attended-sysupgrade OTA (only the CLI `-n` path was run);
+- `sysupgrade -F` with an unusable run dir;
+- the fresh-ramroot reset reusing a stale tree (no leg aborted after `install_bin`).

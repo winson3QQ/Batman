@@ -23,12 +23,16 @@ cd "$ROOT" || exit 2
 PAT='/tmp([^/[:alnum:]_]|/|$)|/var/[[:alnum:]_.-]+|/run/batman([^-[:alnum:]_.]|$)|/dev/shm|[[:alnum:]_./-]\$\$|\$\$[./[:alnum:]_-]|mkdir +-p +/tmp/'
 
 files(){
-	git ls-files -- 'feed/**' 'deploy/**' 'scripts/node/**' 'scripts/*.sh' \
+	# safe.directory: run from any checkout/user (the 2026-10-09 full suite ran it on a WSL worktree from Git Bash)
+	git -c safe.directory='*' ls-files -- 'feed/**' 'deploy/**' 'scripts/node/**' 'scripts/*.sh' \
 	  | grep -vE '\.(md|png|jpg|svg|pdf|kicad.*|json|csv|txt)$' \
 	  | grep -vE '^scripts/(check-tmp-trust\.sh|test-tmp-trust\.sh)$'
 }
 
 bad=0; n=0
+# no files listed = git failed: that is an error, never "nothing untrusted" (the false green found 2026-10-09)
+nf=$(files | wc -l)
+[ "$nf" -gt 100 ] || { echo "check-tmp-trust: ERROR only $nf files listed from $ROOT (git failed?) — refusing to report clean"; exit 2; }
 OUT=$(mktemp); trap 'rm -f "$OUT"' EXIT
 while IFS= read -r f; do
 	[ -f "$f" ] || continue
