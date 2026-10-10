@@ -1460,3 +1460,15 @@ Recorded so a reader of the code and of this section see the same thing; none ch
   14:37:28.49 → "database system is shut down" 14:37:29.08; rabbitmq stores stopped by 14:37:29.06; S2 BEGIN 14:37:45.
   Next start: "database system was shut down at … 14:37:28" (clean, no recovery). dockerd's own shutdown stops the
   stack gracefully under load in < 1 s, as E14 measured idle.
+- **cleanstop-274 step 6 (early CoT not stored) — attributed, #264 mechanism C.** Failed once on wsl.2 and once on
+  wsl.4 (6/6 PASS in a row afterwards). Cause measured on 04: OTS's `cot_parser` queue is not durable, so after any
+  rabbitmq restart it is absent until `ots_cot_parser` declares it again, and a CoT eud_handler publishes in that
+  window is dropped. Single-variable flip with a warm eud_handler: queue present → stored 1; queue deleted → 0; queue
+  back → 1 (Batman#264 comment 6096058572). Not caused by this change (upstream queue durability; #274 only orders
+  the start); a boot-time start gate here would not cover a rabbitmq restart mid-run, so the fix belongs to #264
+  (user decision 2026-10-10). The FAIL line is listed in validation-known-failures.txt under #264.
+- **Security review (code level, before the PR)** found three LOW items, fixed in 58fd914 with tests that fail on
+  the previous code: the hardlinked-secret refusal used `find -links`, which the node's busybox lacks (a hardlinked
+  secret was accepted — reproduced on 04); VOLUME now takes named volumes only; a container carrying a tenant label
+  but not in that tenant's manifest is checked against the allowlist and raises a host alarm.
+
