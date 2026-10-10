@@ -23,6 +23,10 @@
 #       released; the pre-commit canary (#265) must refuse it and the watchdog revert to the committed slot
 #   R3  a healthy trial with hold-commit stays uncommitted until `batman-autocommit release`, then commits (#261)
 #   R4  a healthy trial with hold-commit that nobody releases is reverted at the deadline (#261)
+#   S1  ota-start-274: after a same-build OTA the guardian starts the stack once, in order, no DRIFT (#274 §12)
+#   C1  trial-crash-274: a crash in a held trial makes it revert even after release (C1N: negative control, a
+#       60 s ledger window commits it); C2: a manual `batman-slot commit` after the crash stands (#274 §12.13)
+#   (S1/C1/C1N/C2 are not in `all`: daily-validation runs them as their own suites)
 #
 # Reads vs actions (#265 v1.2 H1): the host reaches some nodes only through a mesh that re-forms after
 # every reboot, and an ssh can fail for a while after the first success. Every reading a verdict rests
@@ -31,7 +35,7 @@
 # "UNDETERMINED ... not verified" — never PASS, never a product FAIL. Remote commands used for readings
 # must never exit 255 themselves. Actions (sysupgrade, reboot, mv, release) use n() and are never retried.
 set -uo pipefail
-NODE=${1:?usage: fault-injection.sh <node> [--case f1|f2|r2|r1|r3|r4|all] [--no-tenant]}
+NODE=${1:?usage: fault-injection.sh <node> [--case f1|f2|r2|r1|r3|r4|s1|c1|c1n|c2|all] [--no-tenant]}
 shift; CASE=all; NOTENANT=0
 while [ $# -gt 0 ]; do case "$1" in --case) CASE=${2:-all}; shift 2;; --no-tenant) NOTENANT=1; shift;; *) echo "unknown arg $1"; exit 2;; esac; done
 TENANT=opentakserver
@@ -341,11 +345,104 @@ r4(){ echo "== R4 healthy held trial that nobody releases is reverted at the dea
   if [ "$post" = "$pre" ] && [ "$cm" = 0 ] && [ "$ou" = 0 ]; then ok "R4 held trial $tr never released -> reverted at the deadline to committed slot $pre; $(otsword)"
   else no "R4 did not end on the committed slot (pre=$pre post=$post committed=$([ $cm = 0 ] && echo y || echo n) $(otsword)=$([ $ou = 0 ] && echo y || echo n))"; fi; }
 
+# ---- #274 §12 (v8.2): the OTA start and the trial policy for a crash ----
+HERE=$(cd "$(dirname "$0")" && pwd)
+# wait until the tenant's verdict is OK on this boot (the start-up converge is done), max $1 s
+verdict_ok(){ local max=${1:-300} t0=$SECONDS
+  while [ $((SECONDS - t0)) -lt "$max" ]; do
+    q "$RDR"'T='"$TENANT"'; grep -q "\"status\":\"OK\"" "$R/batman-payload-$T-drift.json"' && return 0; sleep 10
+  done; return 1; }
+# a real crash: SIGKILL the container's main process from the host (`docker kill` sets the manual-stop flag, E26)
+crash_ctr(){ n "kill -9 \$(docker inspect -f '{{.State.Pid}}' $1)"; }
+ledger_has(){ q "$RDR"'T='"$TENANT"'; grep -q "'"$1"'" "$R/batman-payload-$T-restarts" 2>/dev/null'; }
+
+s1(){ echo "== S1 ota-start-274: after an OTA nothing revives by itself; the guardian starts the stack in order, once =="
+  need_tenant S1 || return
+  precheck || return
+  local b0 c=0 o
+  b0=$(bootid); [ -n "$b0" ] || { no "S1 boot_id unreadable — not verified"; return; }
+  ota_boot S1 "$b0" || return
+  for _ in $(seq 1 80); do committed && ots_up && { c=1; break; }; sleep 8; done
+  [ "$c" = 1 ] || { no "S1 the OTA boot did not commit with OTS 6/6 within ~640 s"; return; }
+  unread_reset
+  o=$(q "B0=${b0:0:8} sh -s" < "$HERE/node/ota-start-274.sh" | tr -d '\r')
+  undetermined S1 && return
+  echo "$o" | sed 's/^/    /'
+  echo "$o" | grep -qx 'RESULT 0' && ok "S1 OTA boot: one start per container, ordered, no DRIFT, postgres clean, empty ledger" \
+    || no "S1 OTA start not clean (see the FAIL lines above)"; }
+
+# C1: a crash during a held trial makes it revert at the deadline even after release (user decision §12.13).
+# $1 = "neg": the negative control — the run-dir seam fault.274-window60 shortens the ledger window to 60 s, so
+# the released trial must COMMIT (as v6's rule would have).
+c1(){ local neg=${1:-}; echo "== C1${neg:+ negative} trial-crash-274: a crash in a trial reverts it$([ -n "$neg" ] && echo ' — NEGATIVE: 60 s window commits')"
+  need_tenant C1 || return
+  precheck || return
+  local pre tr b0 dl w post cm log rel tag=C1${neg:+n}
+  pre=$(slot); [ -n "$pre" ] || { no "$tag slot unreadable — not verified"; return; }
+  held_trial "$tag" "$pre" || return; tr=$HT; b0=$HB; dl=$HDL
+  verdict_ok 300 || { no "$tag: the trial never reached verdict OK before the crash (start-up converge not done?)"; return; }
+  [ -n "$neg" ] && q "$RDR"': > "$R/fault.274-window60"' >/dev/null
+  echo "    crashing ots_eud_handler_ssl (SIGKILL of its process)"; crash_ctr ots_eud_handler_ssl
+  for _ in $(seq 1 12); do ledger_has "crash ots_eud_handler_ssl" && break; sleep 5; done
+  ledger_has "crash ots_eud_handler_ssl" || { no "$tag: the guardian did not record/restart the crash within 60 s"; return; }
+  n 'batman-autocommit release' 2>&1 | sed 's/^/    /'
+  wait_revert "$tag" "$b0" "$dl"; w=$?
+  if [ -n "$neg" ]; then
+    [ "$w" = 2 ] && ok "$tag negative control: with a 60 s window the crashed trial commits (the 600 s rule is what reverts it)" \
+      || no "$tag negative control did not commit (w=$w) — the control does not discriminate"
+    q "$RDR"'rm -f "$R/fault.274-window60"' >/dev/null
+    return
+  fi
+  [ "$w" = 2 ] && { no "$tag committed a trial that crashed (BAD, user decision §12.13)"; return; }
+  [ "$w" = 0 ] || { no "$tag: no revert reboot within the budget"; return; }
+  settle 300 || { no "$tag node not stably reachable after the revert"; return; }
+  unread_reset
+  post=$(slot); committed; cm=$?
+  log=$(q "tail -8 /opt/batdata/log/autocommit.log" | tr -d '\r'); ots_wait; local ou=$?
+  undetermined "$tag" && return
+  rel=$(echo "$log" | grep "TRIAL-REVERTED .*slot=$tr" | tail -1)
+  echo "$rel" | grep -q 'drift not OK' || no "$tag: TRIAL-REVERTED missing or not for 'drift not OK' [${rel:-none}]"
+  [ "$post" = "$pre" ] && [ "$cm" = 0 ] && [ "$ou" = 0 ] && ok "$tag crashed trial $tr reverted to committed slot $pre ('drift not OK'); $(otsword)" \
+    || no "$tag did not end on the committed slot (pre=$pre post=$post committed=$([ $cm = 0 ] && echo y || echo n))"; }
+
+# C2: the remedy — after a crash in the trial, an operator `batman-slot commit` before the deadline stands.
+c2(){ echo "== C2 trial-crash-274: a manual 'batman-slot commit' after a crash in the trial stands =="
+  need_tenant C2 || return
+  precheck || return
+  local pre tr b0 dl o b u lim t0 st it log
+  pre=$(slot); [ -n "$pre" ] || { no "C2 slot unreadable — not verified"; return; }
+  held_trial C2 "$pre" || return; tr=$HT; b0=$HB; dl=$HDL
+  verdict_ok 300 || { no "C2: the trial never reached verdict OK before the crash"; return; }
+  crash_ctr ots_eud_handler_ssl
+  for _ in $(seq 1 12); do ledger_has "crash ots_eud_handler_ssl" && break; sleep 5; done
+  ledger_has "crash ots_eud_handler_ssl" || { no "C2: crash not recorded within 60 s"; return; }
+  n 'batman-slot commit' 2>&1 | sed 's/^/    /'
+  lim=$((dl + DEFER_MAX + 60)); echo "    committed by hand; watching until uptime ${lim}s (deadline ${dl}s + deferral)"
+  while :; do
+    o=$(timeout 30 ssh $S -o ConnectTimeout=6 "root@$NODE" 'echo "$(cat /proc/sys/kernel/random/boot_id) $(cut -d. -f1 /proc/uptime)"' 2>/dev/null | tr -d '\r')
+    b=${o% *}; u=${o##* }
+    if [ -n "$o" ]; then
+      [ "$b" = "$b0" ] || { no "C2: the node rebooted (boot ${b0:0:8} -> ${b:0:8}) — the manual commit did not stand"; return; }
+      isint "$u" && [ "$u" -ge "$lim" ] && break
+    fi
+    sleep 20
+  done
+  unread_reset
+  st=$(slot); q 'batman-slot is-trial >/dev/null 2>&1'; it=$?
+  log=$(q "grep ' boot=${b0:0:8} ' /opt/batdata/log/autocommit.log" | tr -d '\r')
+  undetermined C2 && return
+  echo "$log" | sed 's/^/    aclog: /'
+  echo "$log" | grep -q TRIAL-REVERTED && no "C2: a TRIAL-REVERTED was logged for this boot"
+  echo "$log" | grep -q COMMITTED-BY-OPERATOR || no "C2: autocommit did not log COMMITTED-BY-OPERATOR"
+  [ "$st" = "$tr" ] && [ "$it" = 1 ] && ok "C2 manual commit after a crash stood past deadline + deferral: slot $tr committed, same boot" \
+    || no "C2 slot=$st (trial $tr) is-trial rc=$it (want 1)"; }
+
 # test seam (scripts/test-harness-265.sh): load the functions only
 [ "${FI_SOURCE_ONLY:-0}" = 1 ] && return 0 2>/dev/null
 echo "=== fault-injection on $NODE (case=$CASE$([ "$NOTENANT" = 1 ] && echo ', --no-tenant')) ==="
 committed || echo "WARN: node not on a committed slot (or unreadable); some cases assume a clean committed start"
-case "$CASE" in f2) f2;; f1) f1;; r2) r2;; r1) r1;; r3) r3;; r4) r4;; all) f2; f1; r2; r1; r3; r4;; *) echo "unknown case $CASE"; exit 2;; esac
+case "$CASE" in f2) f2;; f1) f1;; r2) r2;; r1) r1;; r3) r3;; r4) r4;; s1) s1;; c1) c1;; c1n) c1 neg;; c2) c2;;
+  all) f2; f1; r2; r1; r3; r4;; *) echo "unknown case $CASE"; exit 2;; esac
 restore_node
 echo "================ fault-injection: $PASS passed, $FAIL failed ================"
 [ "$FAIL" = 0 ]

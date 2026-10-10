@@ -91,11 +91,28 @@ for hf in deploy/*/*.hardening.env; do
 	sourced=$(sh -c 'HARDEN_FLAGS=""; . "./$1"; printf %s "$HARDEN_FLAGS"' sh "$hf")
 	[ "$parsed" = "$sourced" ] || { echo "FAIL: $hf parsed [$parsed] != sourced [$sourced]"; rc=1; }
 done
+# #274 §12 D7-7: the guardian stub is generated on the node from the image's template — it must render to
+# exactly the committed golden stub of every tenant (same START/STOP, so `enable` makes S99 + K09)
+TMPL=feed/batman-provision/files/usr/share/batman/payload-guardian.init.in
+for gi in deploy/*/batman-payload-*.init; do
+	[ -f "$gi" ] || continue
+	t=${gi##*/batman-payload-}; t=${t%.init}
+	sed "s/@TENANT@/$t/g" "$TMPL" | cmp -s - "$gi" || { echo "FAIL: $TMPL rendered for '$t' != $gi"; rc=1; }
+done
+# #274 §12 D7-1: every committed manifest says RESTART no (payload-run ignores anything else anyway)
+for m in deploy/*/*.manifest; do
+	grep -E '^RESTART ' "$m" | grep -vqx 'RESTART no' && { echo "FAIL: $m has a RESTART other than no"; rc=1; }
+done
+if [ -f scripts/test-payload-guardian.sh ]; then
+	tl=$(mktemp)
+	sh scripts/test-payload-guardian.sh >"$tl" 2>&1 || { echo "FAIL: scripts/test-payload-guardian.sh:"; sed 's/^/  /' "$tl"; rc=1; }
+	rm -f "$tl"
+fi
 if [ -f scripts/test-payload-run.sh ]; then
 	tl=$(mktemp)
 	sh scripts/test-payload-run.sh >"$tl" 2>&1 || { echo "FAIL: scripts/test-payload-run.sh:"; sed 's/^/  /' "$tl"; rc=1; }
 	rm -f "$tl"
 fi
 
-[ "$rc" = 0 ] && echo "OK: payload artifacts in sync + no tenant collisions + golden source present + mounts installed + hardening parseable + payload-run tests"
+[ "$rc" = 0 ] && echo "OK: payload artifacts in sync + no tenant collisions + golden source present + mounts installed + hardening parseable + stub template + RESTART no + payload-run/guardian tests"
 exit "$rc"

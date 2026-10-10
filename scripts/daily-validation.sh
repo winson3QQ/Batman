@@ -170,16 +170,20 @@ OTS_SOC=$(soc_of "$OTS_NODE")
 fi_desc(){ case $1 in f2) echo "lost image recovered from the offline loaded/ copy";; f1) echo "bad image tar quarantined, guardian not wedged";;
   r2) echo "first-loading tenant is non-gating (no false revert)";; r1) echo "held trial with a broken runc is refused by the pre-commit canary and reverts (#265)";;
   r3) echo "held healthy trial waits for release, then commits (#261)";;
-  r4) echo "held healthy trial nobody releases is reverted at the deadline (#261)";; esac; }
-fi_skip_all(){ local c; for c in f2 f1 r2 r1 r3 r4; do suite "fi-$c" "flash-and-go fault-injection $c (#159/#216) — $1" ""; done; }
+  r4) echo "held healthy trial nobody releases is reverted at the deadline (#261)";;
+  s1) echo "ota-start-274: after a same-build OTA every container starts once, in order, by the guardian — no DRIFT, postgres clean (#274)";;
+  c1) echo "trial-crash-274: a crash in a held trial reverts it even after release (#274 §12.13)";;
+  c2) echo "trial-crash-274: a manual batman-slot commit after a crash in the trial stands (#274 §12.13)";; esac; }
+FI_CASES="f2 f1 r2 r1 r3 r4 s1 c1 c2"
+fi_skip_all(){ local c; for c in $FI_CASES; do suite "fi-$c" "fault-injection $c (#159/#216/#274) — $1" ""; done; }
 if [ "$OTS_SOC" = bcm2710 ]; then
   suite ots-node-209 "OTS_NODE must be the bcm2711 OTS host" "echo 'OTS_NODE $OTS_NODE is a Pi 3 (bcm2710); OTS is not shipped there (#209 D6). Set OTS_NODE to the Pi 4 OTS host.'; false"
   fi_skip_all "OTS_NODE $OTS_NODE is bcm2710 — OTS suites not run (see ots-node-209)"
 elif [ "$AB_MODE" != --destructive ]; then
   fi_skip_all "needs AB_MODE=--destructive"
 elif up "$OTS_NODE"; then
-  for c in f2 f1 r2 r1 r3 r4; do
-    suite "fi-$c" "fault-injection $c: $(fi_desc $c) (#159/#216, DESTRUCTIVE)" "$REPO/scripts/fault-injection.sh $OTS_NODE --case $c" D
+  for c in $FI_CASES; do
+    suite "fi-$c" "fault-injection $c: $(fi_desc $c) (DESTRUCTIVE)" "$REPO/scripts/fault-injection.sh $OTS_NODE --case $c" D
   done
 else
   fi_skip_all "OTS_NODE $OTS_NODE did not answer"
@@ -309,7 +313,7 @@ chk_167a() { fssh "$1" 20 '
   echo "colliding tenant (:8088) -> arbiter rc=$rc (want 3=REFUSED)"; [ "$rc" = 3 ]'; }
 chk_golden() { fssh "$1" 30 '                                  # payload-config-golden.md
   # For each baked golden tenant that is PROVISIONED on this node: (1) p6 config == baked golden per
-  # file, (2) every live container has RestartPolicy unless-stopped (the real outcome the design drives;
+  # file, (2) every live container has RestartPolicy no (#274 §12 D7-1: the guardian is the only restarter;
   # tautology-free unlike the cmp alone — review m2), (3) every IMAGE the manifest references is loaded
   # (else a refreshed manifest would crash-loop the guardian — review M2). No golden / no tenant = PASS.
   GD=/usr/share/batman/payload-golden
@@ -324,7 +328,7 @@ chk_golden() { fssh "$1" 30 '                                  # payload-config-
       cmp -s "$f" "$dst/$b" 2>/dev/null || { echo "DRIFT $t/$b: p6 != baked golden"; rc=1; }; done
     for c in $(awk "/^CONTAINER /{print \$2}" "$man"); do
       rp=$(docker inspect -f "{{.HostConfig.RestartPolicy.Name}}" "$c" 2>/dev/null)
-      [ "$rp" = unless-stopped ] || { echo "$t/$c restart=${rp:-MISSING} (want unless-stopped)"; rc=1; }; done
+      [ "$rp" = no ] || { echo "$t/$c restart=${rp:-MISSING} (want no — #274)"; rc=1; }; done
     for img in $(awk "/^IMAGE /{print \$2}" "$man"); do
       docker image inspect "$img" >/dev/null 2>&1 || { echo "$t manifest references image $img — NOT loaded on p6"; rc=1; }; done
   done
@@ -882,7 +886,7 @@ elif up "$OTS_NODE"; then
   suite drift-detect-156 "reconciler flags an unhardened decoy as DRIFT (#156, white-box)"   "chk_156 $OTS_NODE"
   suite payload-mgr-167  "OTS on the generic payload manager, old guardian gone (#167)"       "chk_167g $OTS_NODE"
   suite arbiter-167      "port/zone arbiter REFUSES a colliding tenant (#167, white-box)"      "chk_167a $OTS_NODE"
-  suite payload-config-golden "p6 tenant config == baked golden + unless-stopped + images present (payload-config-golden.md)" "chk_golden $OTS_NODE"
+  suite payload-config-golden "p6 tenant config == baked golden + restart policy no (#274) + images present (payload-config-golden.md)" "chk_golden $OTS_NODE"
   suite payload-conform "live containers == manifest: running + config-fingerprint label + tenant label + MOUNTs (src/RO) + no orphans (#274)" "chk_conform $OTS_NODE"
   suite flashgo-159      "flash-and-go integrity — firstload enabled, offline copies (F2), canary runs, autocommit gate (#159/#216)" "chk_flashgo $OTS_NODE"
   suite ots-cot-e2e-264  "CoT sent == stored per phase from $BENCH_NODE: P1 control, P2 deterministic truncation (A control / B #264-A), P3 burst; heartbeat (#264-B) NOT exercised (#268 B2)" "chk_cot_264 $OTS_NODE $BENCH_NODE"
@@ -1108,8 +1112,9 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
   #  4 the guardian logged "start mode" this boot, and StartedAt is non-decreasing in manifest order
   #  5 boot-to-ready (health gates passed: the guardian's "converge done ... uptime=") <= 90 s
   #    (control 1.5.4: 6 running at +63 s)
-  # Negative controls: DV_TEST_274_NOSTOP=1 (K08/K09 stop links removed) must FAIL 1 (and 4: dockerd revives,
-  # no start mode); DV_TEST_274_RMSTOP=1 (the stop removes the containers once, feat/264-style) must FAIL 3.
+  # Negative controls: DV_TEST_274_NOSTOP=1 (K08/K09 stop links removed) must FAIL 1 (no stop record) and 2
+  # (postgres SIGKILLed by procd's halt) — #274 v8.2: start mode now runs on every boot, so 4 passes either way;
+  # DV_TEST_274_RMSTOP=1 (the stop removes the containers once, feat/264-style) must FAIL 3.
   local n=$1 rc=0 ids0 ids1 pb l r up codes c kl=""
   fssh "$n" 12 'ls /etc/init.d/batman-payload-* >/dev/null 2>&1 && [ -f /usr/lib/batman/payload-stop.sh ]' || { echo "FAIL no payload guardian / payload-stop.sh on this node"; return 1; }
   ots_ready "$n" || { echo "FAIL OTS not ready before the test"; return 1; }
@@ -1120,7 +1125,7 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
     echo "NEGATIVE CONTROL: payload stop links removed for this reboot"
   fi
   if [ "${DV_TEST_274_RMSTOP:-0}" = 1 ]; then
-    fssh "$n" 10 'mkdir -p /opt/batdata/state && : > /opt/batdata/state/fault.274-rmstop-once'
+    fssh "$n" 10 "$RDR"': > "$R/fault.274-rmstop-once"'   # #274 §12 D7-6: the seam lives in the root-only run dir
     echo "NEGATIVE CONTROL: the stop removes the containers once"
   fi
   # 6 (C1): a peer sends one CoT the moment 8088 accepts again after the reboot (as early as a field client)
@@ -1175,9 +1180,16 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
   else echo "FAIL 5 no 'converge done' line this boot — boot-to-ready not measured"; rc=1; fi
   # 6 (#274 review C1) the clients do not depend on the opentakserver API: no container restarted during the
   # two-phase start, and a CoT sent the moment 8088 accepted (before the API gate, when the timing allows) is stored
-  l=$(fssh "$n" 15 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); for c in $(awk "/^CONTAINER /{print \$2}" "$m"); do echo "$c=$(docker inspect -f "{{.RestartCount}}" $c)"; done' | tr '\r\n' '  ')
-  echo "restart counts: $l"
-  echo "$l" | grep -Eq '=[1-9]' && { echo "FAIL 6 a container restarted during the start (a dependency the two-phase start does not honour)"; rc=1; } || echo "ok 6 no container restarted"
+  # #274 v8.2: with --restart no RestartCount is always 0 (vacuous) — count each container's `start` events since
+  # this dockerd started instead (docker keeps 256 in memory; a wrapped buffer or 0 events is a FAIL, not a pass)
+  l=$(fssh "$n" 20 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); now=$(date +%s)
+    nev=$(docker events --since 0 --until "$now" --format x 2>/dev/null | wc -l); ev=$(docker events --since 0 --until "$now" --filter event=start --format "{{.ID}}" 2>/dev/null)
+    [ "$nev" -gt 0 ] && [ "$nev" -lt 256 ] || echo "events=$nev"
+    for c in $(awk "/^CONTAINER /{print \$2}" "$m"); do id=$(docker inspect -f "{{.Id}}" $c); echo "$c=$(echo "$ev" | grep -c "^$id\$")"; done' | tr '\r\n' '  ')
+  echo "start events per container this boot: $l"
+  if echo "$l" | grep -q 'events='; then echo "FAIL 6 docker event buffer empty or possibly wrapped — start count not measurable"; rc=1
+  elif echo "$l" | grep -Eq '=(0|[2-9]|[1-9][0-9])( |$)'; then echo "FAIL 6 a container was started more than once (or never) during the start"; rc=1
+  else echo "ok 6 every container started exactly once"; fi
   if [ -n "$pu" ]; then
     local po d04 bt sent i st
     for i in $(seq 1 30); do po=$(cat "$pf" 2>/dev/null); echo "$po" | grep -q '^SENT\|^NEVER' && break; sleep 3; done
@@ -1244,6 +1256,78 @@ bchk_converge_274() {   # the guardian converges a CHANGED config by a graceful 
   case "$pg" in *"shut down at"*) echo "ok postgres: clean shutdown before the last rebuild" ;; *) echo "FAIL postgres last start: ${pg:-<none>}"; rc=1 ;; esac
   return $rc; }
 
+# ---- #274 v8.2 (docs/design/274-payload-converge.md §12.7): the guardian as the only starter/restarter ----
+p274() {   # $1 node, $2 case of scripts/node/payload-274.sh
+  local o r; o=$(timeout 2400 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" "CASE=$2 sh -s" < "$REPO/scripts/node/payload-274.sh" 2>&1); r=$?
+  echo "$o"
+  echo "$o" | grep -qx "== payload-274 $2: PASS" || { [ "$r" = 0 ] && echo "FAIL rc 0 without the PASS trailer (script cut short?)"; return 1; }
+  return "$r"; }
+# L-PWR + L-TENANT-PLANT: `reboot -f` (no K scripts — containers die with the kernel, as on power loss). Before it a
+# tenant dir is planted on p6 whose .init would touch a marker if it were ever installed; after the boot the
+# guardian stub for it must be the GENERATED one. Then: every OTS container started exactly once, in order, by the
+# guardian; ledger empty; verdict OK. postgres crash recovery is expected (nothing can stop it on power loss).
+bchk_unclean_274() {
+  local n=$1 rc=0 b0 l fo
+  ots_ready "$n" || { echo "FAIL OTS not ready before the test"; return 1; }
+  fssh "$n" 20 "$RDR"'d=/opt/batdata/apps/zz274; mkdir -p "$d"; printf "NETWORK_NAME zz274-net\nBRIDGE br-zz274\nCONTAINER zz274\nIMAGE none/zz274:0\nENDCONTAINER\n" > "$d/zz274.manifest"
+    printf "#!/bin/sh /etc/rc.common\nSTART=99\nboot(){ touch $R/zz274-init-ran; }\nstart(){ touch $R/zz274-init-ran; }\n" > "$d/batman-payload-zz274.init"; chmod +x "$d/batman-payload-zz274.init"; sync' \
+    || { echo "FAIL could not plant the test tenant"; return 1; }
+  b0=$(bootid "$n" | cut -c1-8)
+  reboot_and_wait "$n" 'sync; reboot -f' 300 || rc=1
+  if [ "$rc" = 0 ]; then
+    for r in $(seq 1 60); do ots_ready "$n" && break; sleep 5; done
+    ots_ready "$n" || { echo "FAIL OTS not ready within 300 s after reboot -f"; rc=1; }
+    fo=$(fssh "$n" 20 "$RDR"'sed "s/@TENANT@/zz274/g" /usr/share/batman/payload-guardian.init.in | cmp -s - /etc/init.d/batman-payload-zz274 && echo GEN; [ -e "$R/zz274-init-ran" ] && echo RAN; true' | tr -d '\r' | tr '\n' ' ')
+    case "$fo" in *RAN*) echo "FAIL the planted p6 .init was executed"; rc=1 ;; *) echo "ok the planted p6 .init never ran" ;; esac
+    case "$fo" in *GEN*) echo "ok /etc/init.d/batman-payload-zz274 is the generated stub, not the p6 file" ;; *) echo "FAIL the zz274 stub is not the generated one [$fo]"; rc=1 ;; esac
+    l=$(fssh "$n" 30 "B0=$b0 sh -s" < "$REPO/scripts/node/ota-start-274.sh" | tr -d '\r')
+    echo "$l" | grep -E '^(ok|FAIL) (1|2|5) ' | sed 's/^/  /'
+    echo "$l" | grep -qE '^FAIL (1|2|5) ' && { echo "FAIL the start after reboot -f was not clean (see above)"; rc=1; } || echo "ok one start per container, ordered, empty ledger after reboot -f"
+    # the first verdict comes at the guardian's first tick after its converge (up to INTERVAL later): wait for it
+    l=""; for r in $(seq 1 24); do l=$(fssh "$n" 10 "$RDR"'grep -q "\"status\":\"OK\"" "$R/batman-payload-opentakserver-drift.json" 2>/dev/null && echo OK' | tr -d '\r '); [ "$l" = OK ] && break; sleep 5; done
+    [ "$l" = OK ] && echo "ok verdict OK" || { echo "FAIL verdict not OK within 120 s after OTS ready (reboot -f)"; rc=1; }
+    fssh "$n" 10 'grep -i "fw-override\|correcting" /opt/batdata/log/ota-trace.log 2>/dev/null | grep " boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) " | tail -1' | sed 's/^/  report (EEPROM partition misread this boot?): /'
+  fi
+  fssh "$n" 20 "$RDR"'/etc/init.d/batman-payload-zz274 stop >/dev/null 2>&1; /etc/init.d/batman-payload-zz274 disable >/dev/null 2>&1; rm -f /etc/init.d/batman-payload-zz274 "$R/zz274-init-ran"; rm -rf /opt/batdata/apps/zz274; sync' >/dev/null
+  return $rc; }
+# L-FIRST2 + L-HOLD-REBOOT with the real firstload: a tar that `docker load` rejects puts the tenant in the hold.
+# Reboot 1: the hold — guardian started for this boot (not enabled: no S link), K09 link kept, stack up. Reboot 2
+# while held: the stop record must have BOTH halves (K08 clients, K09 final tier) each < 15 s — with v7's `disable`
+# K09 was gone and procd's halt KILLed postgres. Negative control (old image): no k09 half in the record.
+bchk_hold_274() {
+  local n=$1 rc=0 b l pb
+  ots_ready "$n" || { echo "FAIL OTS not ready before the test"; return 1; }
+  fssh "$n" 15 'head -c 300000 /dev/urandom > /opt/batdata/apps/opentakserver/images/zz274.tar; rm -f /opt/batdata/apps/opentakserver/images/.fail-zz274.tar; sync' || { echo "FAIL could not plant the bad tar"; return 1; }
+  reboot_and_wait "$n" reboot 300 || { echo "FAIL node did not return from reboot 1"; rc=1; }
+  if [ "$rc" = 0 ]; then
+    for r in $(seq 1 90); do ots_ready "$n" && break; sleep 5; done
+    l=$(fssh "$n" 20 'ls /etc/rc.d/S??batman-payload-opentakserver >/dev/null 2>&1 && echo SLINK; ls /etc/rc.d/K??batman-payload-opentakserver >/dev/null 2>&1 && echo KLINK
+      /etc/init.d/batman-payload-opentakserver running && echo RUNNING; tail -20 /opt/batdata/log/firstload.log | grep -q "guardian started for this boot" && echo LOADER' | tr -d '\r' | tr '\n' ' ')
+    echo "hold state: $l"
+    case "$l" in *SLINK*) echo "FAIL the S link is still there (not held)"; rc=1 ;; *) echo "ok held: S link removed" ;; esac
+    case "$l" in *KLINK*) echo "ok K09 link kept during the hold" ;; *) echo "FAIL no K09 link during the hold"; rc=1 ;; esac
+    case "$l" in *RUNNING*LOADER*|*LOADER*RUNNING*) echo "ok the loader started the guardian for this boot" ;; *) echo "FAIL guardian not started by the loader"; rc=1 ;; esac
+    ots_ready "$n" && echo "ok OTS up during the hold (dark window: $(fssh "$n" 15 'docker inspect -f "{{.State.StartedAt}}" ots-db' | tr -d '\r') )" || { echo "FAIL OTS not up during the hold"; rc=1; }
+    pb=$(bootid "$n" | cut -c1-8)
+    reboot_and_wait "$n" reboot 300 || { echo "FAIL node did not return from reboot 2"; rc=1; }
+    l=$(fssh "$n" 15 "grep 'boot=$pb ' /opt/batdata/log/payload-stop.log 2>/dev/null | tail -1" | tr -d '\r')
+    echo "stop record of the held boot: ${l:-<none>}"
+    k8=$(echo "$l" | sed -n 's/.* k08=\([0-9]*\)\.[0-9]s.*/\1/p'); k9=$(echo "$l" | sed -n 's/.* k09=\([0-9]*\)\.[0-9]s.*/\1/p')
+    if isint "$k8" && isint "$k9"; then
+      [ "$k8" -lt 15 ] && [ "$k9" -lt 15 ] && echo "ok reboot during the hold: both stop halves ran (k08=${k8}.x s, k09=${k9}.x s, each < 15 s)" || { echo "FAIL a stop half over procd's 15 s (k08=$k8 k09=$k9)"; rc=1; }
+    else echo "FAIL the held boot's stop record lacks a K08 or K09 half (K09 link gone? postgres would be SIGKILLed)"; rc=1; fi
+    l=$(fssh "$n" 15 'docker logs ots-db 2>&1 | grep -E "database system was shut down at|not properly shut down|was interrupted" | tail -1')
+    echo "postgres (reported): ${l:-<none>}"
+  fi
+  fssh "$n" 20 'rm -f /opt/batdata/apps/opentakserver/images/zz274.tar /opt/batdata/apps/opentakserver/images/.fail-zz274.tar /opt/batdata/apps/opentakserver/images/failed/zz274.tar; /etc/init.d/batman-payload-opentakserver enable; sync' >/dev/null
+  # one more clean reboot: the held boot carries a firstload latch (the tenant is non-gating for the rest of that
+  # boot), which would change what later suites measure (crash-274 step 4 on 1.5.8-wsl.1)
+  reboot_and_wait "$n" reboot 300 || { echo "FAIL node did not return from the cleanup reboot"; rc=1; }
+  for r in $(seq 1 60); do ots_ready "$n" && break; sleep 5; done
+  ots_ready "$n" || { echo "FAIL OTS not back after the cleanup"; rc=1; }
+  fssh "$n" 10 "$RDR"'ls "$R"/batman-firstload-*.latch 2>/dev/null' | grep -q . && { echo "FAIL a firstload latch is still present after the cleanup reboot"; rc=1; }
+  return $rc; }
+
 if [ "$FEATURE_MODE" = --destructive ]; then
   if fssh "$DNODE" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
     # rejoin FIRST (#268 A7): the three below reboot DNODE, and a just-rebooted DNODE may be the host's only
@@ -1278,12 +1362,21 @@ if [ "$FEATURE_MODE" = --destructive ]; then
   if [ "$OTS_SOC" = bcm2710 ]; then
     na cleanstop-274 "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"
     na converge-274 "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"
+    for s274 in unclean-boot-274 hold-274 golden-exec-274 host-alarm-274 crash-274 dockerd-restart-274; do na "$s274" "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"; done
   elif dwait "$OTS_NODE" 300; then
     suite converge-274 "guardian converges a changed manifest / mounted file by a graceful rebuild, leaves an unchanged stack alone, restores to the golden fingerprint (#274, destructive)" "bchk_converge_274 $OTS_NODE" D
     suite cleanstop-274 "clean reboot: tiered graceful stop recorded before the shutdown capture, postgres clean, same containers started in order, boot-to-ready <= 90 s (#274, destructive)" "bchk_cleanstop_274 $OTS_NODE" D
+    suite unclean-boot-274 "reboot -f (as on power loss): nothing revives by itself, one ordered start by the guardian; a planted p6 .init never runs — the stub is generated (#274 §12, destructive)" "bchk_unclean_274 $OTS_NODE" D
+    suite hold-274 "firstload hold (a tar docker load rejects): guardian started for the boot, K09 kept; a reboot during the hold stops both halves (#274 §12, destructive)" "bchk_hold_274 $OTS_NODE" D
+    suite golden-exec-274 "root never executes a p6 copy of a golden tenant's script; edits are DRIFT, planted files a host alarm (#274 §12)" "p274 $OTS_NODE golden" D
+    suite host-alarm-274 "dangerous foreign containers (p6/socket bind, device, host net, disguised volume) raise a host alarm, never the verdict (#274 §12)" "p274 $OTS_NODE hostalarm"
+    # these two leave the tenant DRIFT for the 600 s ledger window: they wait it out themselves, and run last (§12.7)
+    suite crash-274 "crash / PRIMARY / loop backoff / old config / respawn / rm / docker update / docker stop / hung health check: the guardian restarts, records, and DRIFTs (#274 §12, destructive)" "p274 $OTS_NODE crash" D
+    suite dockerd-restart-274 "dockerd restart stops the tenant gracefully; the guardian brings it back in order (#274 §12, destructive)" "p274 $OTS_NODE dockerd" D
   else   # not back within 300 s after the destructive tier = a real finding, never a SKIP (#274 review C6)
     suite converge-274 "guardian converges a changed config (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
     suite cleanstop-274 "clean reboot stop/start (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
+    for s274 in unclean-boot-274 hold-274 golden-exec-274 host-alarm-274 crash-274 dockerd-restart-274; do suite "$s274" "#274 §12 — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"; done
   fi
 fi
 

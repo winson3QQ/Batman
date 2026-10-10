@@ -553,14 +553,25 @@ refresh_payload_config(){
 }
 
 restore_payload_guardians(){
-	[ -d "$MOUNT/deploy" ] || [ -d "$MOUNT/apps" ] || return 0
-	for src in "$MOUNT"/deploy/*/*.init "$MOUNT"/apps/*/*.init; do
-		[ -f "$src" ] || continue
-		[ -O "$src" ] || { note "payload restore: $src not root-owned — skipped"; continue; }
-		name=${src##*/}; name=${name%.init}; dst="/etc/init.d/$name"
-		if ! cmp -s "$src" "$dst" 2>/dev/null; then
-			cp "$src" "$dst" 2>/dev/null || { note "payload restore: cp $name FAILED"; continue; }
-			chmod +x "$dst"; note "payload guardian $name (re)installed from p6"
+	# #274 §12 D7-7: the guardian stub is GENERATED from the image's template for every tenant dir that has a
+	# manifest and a plain name — a p6 `.init` is never copied into /etc/init.d (a root container with p6 RW
+	# could otherwise plant boot-time root code). The template is byte-identical to the golden OTS stub.
+	ls "$MOUNT"/deploy/*/*.init >/dev/null 2>&1 && note "payload restore: $MOUNT/deploy/*/*.init present — no longer installed (#274)"
+	[ -d "$MOUNT/apps" ] || return 0
+	tmpl=/usr/share/batman/payload-guardian.init.in
+	[ -f "$tmpl" ] || { note "payload restore: template $tmpl missing — no guardian restored"; return 0; }
+	for d in "$MOUNT"/apps/*/; do
+		[ -d "$d" ] || continue
+		t=${d%/}; t=${t##*/}
+		case "$t" in *[!a-z0-9-]*) note "payload restore: tenant dir '$t' has a disallowed name — skipped"; continue ;; esac
+		# a tenant = a manifest with at least one CONTAINER (a decoy/test dir is not; it would respawn forever)
+		grep -qs '^CONTAINER ' "$d"*.manifest || continue
+		name="batman-payload-$t"; dst="/etc/init.d/$name"
+		sed "s/@TENANT@/$t/g" "$tmpl" > "$dst.new" 2>/dev/null || { rm -f "$dst.new"; note "payload restore: render $name FAILED"; continue; }
+		if cmp -s "$dst.new" "$dst" 2>/dev/null; then rm -f "$dst.new"
+		else
+			chmod 0755 "$dst.new" && mv -f "$dst.new" "$dst" || { rm -f "$dst.new"; note "payload restore: install $name FAILED"; continue; }
+			note "payload guardian $name (re)generated"
 		fi
 		# #274: rc.common `enable` never removes old links — drop S??/K?? links whose number is not the
 		# stub's current START/STOP (STOP moved 10 → 09; a legacy image may re-add K10)

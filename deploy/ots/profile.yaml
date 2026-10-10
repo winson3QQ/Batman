@@ -125,8 +125,9 @@ lifecycle:
     opentakserver: 2
   init_once:                           # first-boot only; app self-inits schema/CA
     - "opentakserver first-run creates CA + DB schema (no manual step needed)"
-  restart: unless-stopped              # #206: on a fresh reflash boot the containers race their deps
-                                       # (opentakserver/cot_parser start before postgres/rabbitmq accept);
-                                       # on-failure:5 exhausted its retries and left the stack half-up.
-                                       # unless-stopped retries until deps are ready, then stays — and
-                                       # does NOT restart a container the operator deliberately stops.
+  restart: "no"                        # #274 §12 D7-1: the guardian is the only starter/restarter (ordered,
+                                       # health-gated start on every boot incl. OTA and power loss; crash
+                                       # restarts with backoff and a ledger autocommit trusts). History: #206
+                                       # chose unless-stopped because on-failure:5 gave up in the reflash
+                                       # dependency race; the gated start removed that race, and
+                                       # unless-stopped made dockerd a second owner (#274 E6/E15).

@@ -44,6 +44,6 @@ lifecycle:
   order:  [dummy-web]
   health:
     dummy-web: "wget -q -O /dev/null http://127.0.0.1:8080/"   # 127.0.0.1 not localhost (busybox wget → ::1, nginx is IPv4-only); alpine has wget not curl
-  restart: on-failure:5
+  restart: "no"                       # #274 §12 D7-1: the guardian restarts
 
 volumes: []

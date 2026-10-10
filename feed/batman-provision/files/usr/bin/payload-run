@@ -12,19 +12,24 @@
 # Usage:  payload-run <tenant>                rebuild the stack (bench / manual / F2)
 #         payload-run --converge <tenant>     guardian: start the existing stack if it was created from the
 #                                             current config, else rebuild (#274)
-#         payload-run --start-only <tenant>   firstload: start the existing stack if it matches, else nothing
+#         payload-run --start-only <tenant>   start the existing stack if it matches, else nothing
+#         payload-run --restart-exited <tenant>  guardian: `docker start` the tenant's exited containers on
+#                                             whatever config they carry — never a rebuild, no fw4, no prep
 #         payload-run --renet <tenant>        operator: recreate the tenant network after a SUBNET/bridge change
 #         payload-run --cfg-hash <tenant>     print the config fingerprint and exit (read-only, no lock)
 # Env:    APPS_DIR (default /opt/batdata/apps) — the tenant lives at $APPS_DIR/<tenant>/, which
 #         holds: <tenant>.manifest, <tenant>.fw4.uci, *.hardening.env, secrets/. On the bench,
-#         point APPS_DIR at a dir containing <tenant>/ (e.g. deploy/).
+#         point APPS_DIR at a dir containing <tenant>/ (e.g. deploy/). PAYLOAD_GOLDEN_ROOT (default
+#         /usr/share/batman/payload-golden): a tenant with a golden copy there has its HARDEN files and
+#         *.fw4.uci read from the image, never from p6 (#274 D7-7).
 # Exit:   0 ok · 1 failure (reason logged) · 2 usage · 3 --start-only: config changed, nothing done ·
-#         4 the tenant is being stopped ($RUNDIR/batman-payload-<t>.stopping), nothing done
+#         4 the tenant is being stopped or the node is shutting down, nothing done · 5 the tenant lock is
+#         busy (PAYLOAD_LOCK_WAIT expired), nothing done
 #
 # #274 (docs/design/274-payload-converge.md):
 #  - every container carries --label batman.cfg=<fingerprint of what this script RENDERS> and
-#    --label batman.tenant=<t>. dockerd (live-restore, unless-stopped) revives old containers after an
-#    OTA; the guardian compares labels and converges.
+#    --label batman.tenant=<t>, and is created with `--restart no`: the guardian is the only component
+#    that starts or restarts a tenant container (§12 D7-1); a manifest RESTART other than `no` is ignored.
 #  - start mode: an unchanged stack is `docker start`ed in manifest order behind the health gates — no
 #    rebuild on every boot (fi-f1).
 #  - rebuild: a preflight refuses the WHOLE rebuild before anything is touched; containers are stopped
@@ -35,11 +40,11 @@ set -eu
 
 MODE=rebuild
 case "${1:-}" in
-	--cfg-hash|--converge|--start-only|--renet) MODE=${1#--}; shift ;;
+	--cfg-hash|--converge|--start-only|--restart-exited|--renet) MODE=${1#--}; shift ;;
 	--worker) MODE=worker; shift; WMODE="${1:-}"; shift ;;
 esac
 TENANT="${1:-}"
-[ -n "$TENANT" ] || { echo "usage: payload-run [--converge|--start-only|--renet|--cfg-hash] <tenant>" >&2; exit 2; }
+[ -n "$TENANT" ] || { echo "usage: payload-run [--converge|--start-only|--restart-exited|--renet|--cfg-hash] <tenant>" >&2; exit 2; }
 APPS_DIR="${APPS_DIR:-/opt/batdata/apps}"
 # #216 M6: default to never-pull (offline fleet: images come from baked tars / the local store), but
 # let a future online tenant override. Was hardcoded --pull=never at both docker-run sites.
@@ -56,6 +61,13 @@ fi
 LOCK="$RUNDIR/batman-payload-$TENANT.lock"
 PIDF="$RUNDIR/batman-payload-$TENANT.pid"
 STOPPING="$RUNDIR/batman-payload-$TENANT.stopping"
+SHUTDOWN="$RUNDIR/batman-shutdown"      # #274 D7-4: written by K08's shutdown(); never removed this boot
+# shellcheck source=/dev/null
+. "${PAYLOAD_LIB:-/usr/lib/batman/payload-lib.sh}" || { echo "payload-run: payload-lib.sh missing" >&2; exit 1; }
+# #274 D7-7: a tenant whose golden copy is in the image reads HARDEN files and *.fw4.uci from the image
+GOLD="${PAYLOAD_GOLDEN_ROOT:-/usr/share/batman/payload-golden}/$TENANT"
+[ -d "$GOLD" ] || GOLD=""
+gsrc(){ if [ -n "$GOLD" ] && [ -f "$GOLD/$1" ]; then echo "$GOLD/$1"; else echo "$DIR/$1"; fi; }
 # glob the manifest/fw4 by extension (one per tenant dir) so the on-node FILE name can keep the
 # emitter's deploy-dir name (e.g. ots.manifest) even when the tenant dir is apps/opentakserver/.
 MANIFEST=""; for m in "$DIR"/*.manifest; do [ -f "$m" ] && { MANIFEST="$m"; break; }; done
@@ -64,15 +76,20 @@ command -v docker >/dev/null || { echo "payload-run: docker not installed" >&2; 
 
 log(){ echo "payload-run[$TENANT]: $*"; }
 die(){ echo "payload-run[$TENANT]: FATAL: $*" >&2; exit 1; }
-# every mode honours a stop in progress (#274 P1): a shutdown must not be undone by a late start
-stopping(){ [ -e "$STOPPING" ] && { log "tenant is being stopped ($STOPPING) — nothing done"; return 0; }; return 1; }
+# every mode honours a stop in progress (#274 P1) and a system shutdown (§12 D7-4): neither may be undone
+# by a late start
+stopping(){
+	[ -e "$STOPPING" ] && { log "tenant is being stopped ($STOPPING) — nothing done"; return 0; }
+	[ -e "$SHUTDOWN" ] && { log "the node is shutting down ($SHUTDOWN) — nothing done"; return 0; }
+	return 1
+}
 
 # ---- wrapper: take the tenant lock, run the worker with fd 9 closed ----
 if [ "$MODE" != worker ] && [ "$MODE" != cfg-hash ]; then
 	stopping && exit 4
 	exec 9>"$LOCK"
 	w=0; until flock -n 9; do
-		w=$((w + 1)); [ "$w" -ge "${PAYLOAD_LOCK_WAIT:-600}" ] && { log "another payload-run holds $LOCK — gave up after ${w}s"; exit 1; }
+		w=$((w + 1)); [ "$w" -ge "${PAYLOAD_LOCK_WAIT:-600}" ] && { log "another payload-run holds $LOCK — gave up after ${w}s"; exit 5; }
 		[ "$w" = 1 ] && log "waiting for another payload-run of this tenant"
 		sleep 1
 	done
@@ -84,14 +101,17 @@ if [ "$MODE" != worker ] && [ "$MODE" != cfg-hash ]; then
 fi
 [ "$MODE" = worker ] && MODE="$WMODE"
 
-# ---- pass 1: tenant-level header (network name + kernel bridge + subnet + default restart) ----
-NET=""; BRIDGE=""; SUBNET=""; DEF_RESTART="on-failure:5"
+# ---- pass 1: tenant-level header (network name + kernel bridge + subnet) ----
+# #274 §12 D7-1: every container is created `--restart no` — the guardian is the only restarter. A manifest
+# RESTART (header or per container) other than `no` is ignored with a WARN (not refused: the restart policy is
+# not a security property, and refusing would leave an operator-installed tenant down after an upgrade).
+NET=""; BRIDGE=""; SUBNET=""; RESTART=no; RESTART_IGNORED=""
 while read -r hkey hval || [ -n "$hkey" ]; do
 	case "$hkey" in
 		NETWORK_NAME) NET="$hval" ;;
 		BRIDGE)       BRIDGE="$hval" ;;
 		SUBNET)       SUBNET="$hval" ;;
-		RESTART)      DEF_RESTART="$hval" ;;
+		RESTART)      [ "$hval" = no ] || RESTART_IGNORED="$RESTART_IGNORED $hval" ;;
 		CONTAINER)    break ;;   # header ends at the first container
 	esac
 done < "$MANIFEST"
@@ -114,12 +134,12 @@ sha(){ sha256sum < "$1" | cut -d' ' -f1; }
 # ACTION = render (print argv + file/image facts for the fingerprint) | preflight (collect problems into
 # $PF) | start (start mode) | run (rebuild). finish_block gets the per-container -e/-v/--mount accumulator
 # as "$@" (a bare call would see no args — the #167 Inc-2 on-node bug).
-NAME=""; IMG=""; IP=""; HOST=""; HARDEN=""; RESTART="$DEF_RESTART"
+NAME=""; IMG=""; IP=""; HOST=""; HARDEN=""
 EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; FACTS=""
 FAILED=0; PF=""; START_FAILED=""; ACTION=""; CFG=""
 
 reset_block(){
-	NAME="$1"; IMG=""; IP=""; HOST=""; HARDEN=""; RESTART="$DEF_RESTART"
+	NAME="$1"; IMG=""; IP=""; HOST=""; HARDEN=""
 	EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; FACTS=""
 }
 fact(){ FACTS="$FACTS$*
@@ -127,11 +147,39 @@ fact(){ FACTS="$FACTS$*
 problem(){ PF="$PF
   $*"; }
 
+# One bounded health check (#274 §12 D7-3): the command runs INSIDE the container under `timeout 8`, so a hung
+# check is killed where it runs (killing only the docker CLI leaves the exec'd process behind); the CLI is also
+# killed after 10 s as a backstop. Test seam: $RUNDIR/fault.274-health-<c> (root-only dir, read with opf)
+# replaces the container's HEALTH command — it runs inside that container only.
+hc_once(){   # $1 = container, $2 = command, $3 = "timeout 8" or ""
+	# shellcheck disable=SC2086  # $3 is "timeout 8" or empty → split on purpose
+	docker exec "$1" $3 sh -c "$2" >/dev/null 2>&1 &
+	_hp=$!
+	( sleep 10; kill -9 "$_hp" 2>/dev/null ) 2>/dev/null &
+	_hw=$!
+	_hr=0; wait "$_hp" 2>/dev/null || _hr=$?      # set -e: a failing wait must not end the script
+	kill "$_hw" 2>/dev/null || true; wait "$_hw" 2>/dev/null || true
+	return "$_hr"
+}
+# the command of one try: the seam (re-read every try, so removing it ends a simulated hang at once) or HEALTH
+SEAMLOG=0
+hc_cmd(){
+	if type batman_opf >/dev/null 2>&1 && BATMAN_OPF_QUIET=1 batman_opf "$RUNDIR/fault.274-health-$NAME"; then
+		[ "$SEAMLOG" = 1 ] || { log "TEST fault.274-health-$NAME: health command replaced"; SEAMLOG=1; }
+		hc=$(head -c 512 "$RUNDIR/fault.274-health-$NAME")
+	else hc=$HEALTH; fi
+}
+# Bound: PAYLOAD_HEALTH_TRIES (60) tries, each <= 10 s + 2 s apart — a service whose check really hangs holds this
+# gate (and so the guardian's restart path) for up to ~12 min; the verdict goes stale meanwhile (fail-closed).
 health_gate(){
-	[ -n "$HEALTH" ] || return 0
+	SEAMLOG=0; hc_cmd
+	[ -n "$hc" ] || return 0
+	to=""; docker exec "$NAME" sh -c 'command -v timeout' >/dev/null 2>&1 && to="timeout 8" \
+		|| log "WARN: $NAME has no timeout(1) — a hung health check is bounded by the CLI kill only"
 	printf 'payload-run[%s]: wait %s' "$TENANT" "$NAME"; i=0
 	while [ "$i" -lt "${PAYLOAD_HEALTH_TRIES:-60}" ]; do   # 60 x 2 s; the offline test shortens it
-		docker exec "$NAME" sh -c "$HEALTH" >/dev/null 2>&1 && { echo " ok"; return 0; }
+		hc_cmd; [ -n "$hc" ] || { echo " ok (no check)"; return 0; }
+		hc_once "$NAME" "$hc" "$to" && { echo " ok"; return 0; }
 		printf .; sleep 2; i=$((i+1))
 	done
 	echo " TIMEOUT"; log "WARN: $NAME health gate timed out"; FAILED=1
@@ -150,7 +198,8 @@ prechown(){   # $1 = spec, $2 = fallback image
 	# recursive chown on every rebuild walks the whole CoT DB on the SD card. The ownership test runs in
 	# the vehicle image (host busybox has no stat).
 	# shellcheck disable=SC2016  # $1..$3 expand inside the vehicle container's sh
-	docker run --pull="$PULL_POLICY" --rm --user 0 -v "$pn:$pp" --entrypoint sh "$pi" -c \
+	# --network none + no-new-privileges: the vehicle passes the guardian's container allowlist (§12 D7-6)
+	docker run --pull="$PULL_POLICY" --rm --network none --security-opt no-new-privileges --user 0 -v "$pn:$pp" --entrypoint sh "$pi" -c \
 		'find "$1" -maxdepth 0 -user "$2" -group "$3" | grep -q . || chown -R "$2:$3" "$1"' sh "$pp" "$pu" "$pg" >/dev/null 2>&1 \
 		|| log "WARN: prechown $pn ($pu:$pg) failed"
 }
@@ -160,9 +209,16 @@ finish_block(){
 	[ -n "$IMG" ] || die "container $NAME has no IMAGE"
 	HF=""
 	if [ -n "$HARDEN" ]; then
-		if HF=$(harden_flags "$DIR/$HARDEN"); then fact "HARDEN $HARDEN $(sha "$DIR/$HARDEN")"
+		# #274 D7-6/D7-7: a basename, read from the image for a golden tenant (and fingerprinted from there:
+		# the hash covers the bytes actually used), every flag on the allowlist
+		if ! pl_isbase "$HARDEN"; then fact "HARDEN $HARDEN REFUSED"; problem "$NAME: HARDEN '$HARDEN' is not a plain file name"
+		elif hfile=$(gsrc "$HARDEN") && HF=$(harden_flags "$hfile"); then
+			fact "HARDEN $HARDEN $(sha "$hfile")"
+			hp=$(pl_harden_problems "$HF")
+			[ -z "$hp" ] || { problem "$NAME: hardening flags not allowed: $(echo "$hp" | tr '\n' ';')"; fact "HARDEN $HARDEN DISALLOWED"; }
 		else HF=""; fact "HARDEN $HARDEN MISSING"
 			problem "$NAME: hardening file $HARDEN missing, unreadable or not exactly one HARDEN_FLAGS=\"...\" line (would run UNHARDENED)"; fi
+	else problem "$NAME: no HARDEN file (no-new-privileges would not be set)"
 	fi
 	# exactly what `docker run` gets (minus the labels): fixed opts + accumulated -e/-v/--mount
 	# + $HARDEN_FLAGS + entrypoint + image + trailing args
@@ -203,31 +259,44 @@ walk(){   # $1 = ACTION
 			IP)           IP="$rest" ;;
 			HOSTNAME)     HOST="$rest" ;;
 			HARDEN)       HARDEN="$rest" ;;
-			RESTART)      [ "$IN" = 1 ] && RESTART="$rest" ;;
+			RESTART)      [ "$IN" = 1 ] && [ "$rest" != no ] && RESTART_IGNORED="$RESTART_IGNORED $rest" ;;   # §12 D7-1
 			ENV)          set -- "$@" -e "$rest" ;;
 			VOLUME)       vn=${rest%%:*}; vtail=${rest#*:}; vpath=${vtail%%:*}
-			              set -- "$@" -v "$vn:$vpath"
+			              # #274 D7-6: a named volume only — `-v /host:/x` would be a RW host bind
+			              case "$vn" in
+			                  ""|[!a-zA-Z0-9]*|*[!a-zA-Z0-9_.-]*)
+			                      fact "VOLUME $vn REFUSED"; problem "$NAME: VOLUME '$vn' is not a named volume" ;;
+			                  *)  set -- "$@" -v "$vn:$vpath" ;;
+			              esac
 			              case "$rest" in *:*:*:*) CHOWNS="$CHOWNS $rest" ;; esac ;;
 			MOUNT)        # <src>:<dst>[:ro]. A relative src (a config file shipped in the tenant dir) resolves
 			              # against $DIR and must be a regular FILE. --mount, not -v: -v silently creates a
 			              # missing source as an empty root-owned DIRECTORY (the start then fails and the
-			              # leftover dir blocks the golden refresh for good — #264 review F8). An absolute
-			              # source is fingerprinted by path + type only (a live file must not drift forever).
+			              # leftover dir blocks the golden refresh for good — #264 review F8). #274 §12 D7-6: the
+			              # source is a plain file name in the tenant dir, mounted read-only; an absolute source,
+			              # a path or a RW mount is refused (a host file or dir must never reach a tenant).
 			              msrc=${rest%%:*}; mtail=${rest#*:}; mdst=${mtail%%:*}; mro=""
-			              case "$mtail" in *:ro) mro=",readonly" ;; esac
-			              case "$msrc" in
-			                  /*) if [ -d "$msrc" ]; then fact "MOUNT $msrc dir"; elif [ -e "$msrc" ]; then fact "MOUNT $msrc file"
-			                      else fact "MOUNT $msrc MISSING"; problem "$NAME: MOUNT source $msrc missing"; fi ;;
-			                  *)  msrc="$DIR/$msrc"
-			                      if [ -f "$msrc" ]; then fact "MOUNT $msrc $(sha "$msrc")"
-			                      else fact "MOUNT $msrc MISSING"; problem "$NAME: MOUNT source $msrc is not a regular file"; fi ;;
-			              esac
+			              case "$mtail" in *:ro) mro=",readonly" ;; *) problem "$NAME: MOUNT $msrc is not read-only (:ro)" ;; esac
+			              if ! pl_isbase "$msrc"; then
+			                  fact "MOUNT $msrc REFUSED"; problem "$NAME: MOUNT source '$msrc' is not a plain file name in the tenant dir"
+			                  msrc="$DIR/.refused"
+			              else
+			                  msrc="$DIR/$msrc"
+			                  if [ -f "$msrc" ] && [ ! -L "$msrc" ]; then fact "MOUNT $msrc $(sha "$msrc")"
+			                  else fact "MOUNT $msrc MISSING"; problem "$NAME: MOUNT source $msrc is not a regular file"; fi
+			              fi
 			              case "$msrc$mdst" in *,*) problem "$NAME: MOUNT path contains a comma" ;; esac
 			              set -- "$@" --mount "type=bind,source=$msrc,target=$mdst$mro" ;;
 			SECRET)       sname=${rest%% *}; srest=${rest#* }; smount=${srest%% *}
 			              case "$srest" in *" "*) suid=${srest#* } ;; *) suid="" ;; esac
 			              sf="$DIR/secrets/$sname"
-			              if [ -f "$sf" ]; then
+			              if ! pl_isbase "$sname"; then
+			                  fact "SECRET $sname REFUSED"; problem "$NAME: SECRET '$sname' is not a plain file name"
+			              elif [ -L "$sf" ] || { [ -e "$sf" ] && [ "$(ls -ln "$sf" 2>/dev/null | awk '{print $2}')" != 1 ]; }; then
+			                  # #274 D7-6: chown/chmod follow a symlink; a hardlink aliases another file. The link
+			                  # count comes from ls -ln (busybox find has no -links); unreadable = refused
+			                  fact "SECRET $sname LINK"; problem "$NAME: secret $sf is a symlink or has several links — refused"
+			              elif [ -f "$sf" ]; then
 			                  fact "SECRET $sname $(sha "$sf")"
 			                  # a 0600 root secret is unreadable by a non-root container → chown to the
 			                  # container's run_as uid + 0400, ENFORCED on every start and rebuild (#274 N2:
@@ -255,6 +324,7 @@ walk(){   # $1 = ACTION
 # format). Never fails: the guardian needs a stable value even for a broken tenant.
 CFG=$({ echo "cfg-v2"; echo "MANIFEST $(sha "$MANIFEST")"; walk render; } | sha256sum | cut -d' ' -f1)
 if [ "$MODE" = cfg-hash ]; then echo "$CFG"; exit 0; fi
+[ -z "$RESTART_IGNORED" ] || log "WARN: manifest RESTART$RESTART_IGNORED ignored — every container is created --restart no; the guardian is the only restarter (#274)"
 
 # ---- network ----
 net_problem(){   # prints a reason if the network cannot be used as the manifest says
@@ -273,8 +343,18 @@ ensure_net(){
 	docker network create --driver bridge --subnet "$SUBNET" -o com.docker.network.bridge.name="$BRIDGE" "$NET" >/dev/null
 	log "created network $NET (bridge $BRIDGE, $SUBNET)"
 }
-apply_fw4(){   # idempotent; requires dockerd iptables=0
-	for f in "$DIR"/*.fw4.uci; do [ -f "$f" ] && { sh "$f" || { log "WARN: fw4 apply non-zero"; FAILED=1; }; }; done
+apply_fw4(){   # idempotent; requires dockerd iptables=0. #274 D7-7: a golden tenant runs the IMAGE's copies only
+	fdir=$DIR; [ -n "$GOLD" ] && fdir=$GOLD
+	for f in "$fdir"/*.fw4.uci; do [ -f "$f" ] && { sh "$f" || { log "WARN: fw4 apply non-zero"; FAILED=1; }; }; done
+	return 0
+}
+# a container start mode may start: ours (tenant label) and on the allowlist (#274 D7-3/D7-6) — one created
+# before the allowlist existed, or edited since, is not started; the guardian reports it
+startable(){
+	[ "$(docker inspect -f '{{index .Config.Labels "batman.tenant"}}' "$1" 2>/dev/null)" = "$TENANT" ] \
+		|| { log "WARN: $1 does not carry batman.tenant=$TENANT — not started (not ours)"; return 1; }
+	cp_=$(pl_container_problems "$1" "$DIR" "$NET")
+	[ -z "$cp_" ] || { log "WARN: $1 is not on the container allowlist — not started: $(echo "$cp_" | tr '\n' ';')"; return 1; }
 	return 0
 }
 
@@ -313,8 +393,8 @@ short(){ echo "$CFG" | cut -c1-12; }
 # the FINAL stop tier (containers without STOPTIER) are the stateful services, independent of each other; every
 # other container depends only on them being healthy. Phase A starts the final tier in parallel and waits for
 # their HEALTH; phase B starts all the rest at once, then runs their gates. A phase-A failure (start or gate)
-# still runs phase B (skipping it = a guaranteed outage; their restart policy backs off until the services are
-# up, as dockerd's own revival did) — FAILED=1, and a start failure falls through to the preflighted rebuild.
+# still runs phase B (skipping it = a guaranteed outage; a client that then exits is restarted by the guardian,
+# §12 D7-3) — FAILED=1, and a start failure falls through to the preflighted rebuild.
 hc_of(){ awk -v c="$1" '$1=="CONTAINER"{n=$2} $1=="HEALTH" && n==c {sub(/^HEALTH[ \t]+/,""); print; exit}' "$MANIFEST"; }
 tiers(){ awk '$1=="CONTAINER"{if(n!="")print n, t; n=$2; t=99} $1=="STOPTIER"{t=$2+0} END{if(n!="")print n, t}' "$MANIFEST"; }
 start_group(){   # $@ = container names: start in parallel, collect each status, then gate each
@@ -323,7 +403,9 @@ start_group(){   # $@ = container names: start in parallel, collect each status,
 		st=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
 		case "$st" in
 			running|restarting) log "$c already $st" ;;
-			*) docker start "$c" >/dev/null 2>&1 & pids="$pids $!:$c" ;;
+			missing) log "WARN: $c does not exist"; START_FAILED="$START_FAILED $c"; FAILED=1 ;;
+			*) if startable "$c"; then docker start "$c" >/dev/null 2>&1 & pids="$pids $!:$c"
+			   else START_FAILED="$START_FAILED $c"; FAILED=1; fi ;;
 		esac
 	done
 	for pc in $pids; do
@@ -346,6 +428,28 @@ do_start(){
 	# shellcheck disable=SC2046
 	start_group $(tiers | awk -v f="$final" '$2!=f{print $1}')
 }
+# #274 §12 D7-3: the guardian's restart path. Only the tenant's EXITED containers (exited/created/dead), on
+# whatever config they carry; final tier first and gated when one of them is down, then the rest. No rebuild,
+# no network change, no fw4, no secret chown (all done at this boot's start). A missing container is not
+# started here (the guardian handles it by a respawn converge).
+do_restart_exited(){
+	final=$(tiers | awk 'BEGIN{x=0} $2>x{x=$2} END{print x}')
+	ex_f=""; ex_r=""
+	for ct in $(tiers | awk '{print $1":"$2}'); do
+		c=${ct%%:*}; t=${ct#*:}
+		case "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)" in
+			exited|created|dead) if [ "$t" = "$final" ]; then ex_f="$ex_f $c"; else ex_r="$ex_r $c"; fi ;;
+		esac
+	done
+	[ -n "$ex_f$ex_r" ] || { log "restart: nothing exited"; return 0; }
+	log "restart: exited containers:$ex_f$ex_r (final tier first, gated)"
+	START_FAILED=""
+	# shellcheck disable=SC2086
+	[ -z "$ex_f" ] || start_group $ex_f
+	stopping && exit 4
+	# shellcheck disable=SC2086
+	[ -z "$ex_r" ] || start_group $ex_r
+}
 do_rebuild(){
 	log "rebuild (cfg $(short))"
 	remove_stack
@@ -361,6 +465,10 @@ case "$MODE" in
 	rebuild)
 		preflight || { refuse; exit 1; }
 		do_rebuild; finish ;;
+	restart-exited)
+		do_restart_exited
+		[ -z "$START_FAILED" ] || { log "WARN: could not restart:$START_FAILED"; exit 1; }
+		finish ;;
 	start-only)
 		all_match || { log "config changed — nothing started (the guardian converges it)"; exit 3; }
 		do_start

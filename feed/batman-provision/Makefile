@@ -98,6 +98,12 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/usr/bin/payload-arbiter    $(1)/usr/bin/payload-arbiter
 	$(INSTALL_BIN) ./files/usr/bin/payload-teardown   $(1)/usr/bin/payload-teardown
 	$(INSTALL_DATA) ./files/usr/lib/batman/payload-guardian.sh $(1)/usr/lib/batman/payload-guardian.sh
+	# #274 §12: the guardian's supervised body, the shared container allowlist, and the stub template that
+	# restore_payload_guardians renders (a p6 .init is never installed)
+	$(INSTALL_DATA) ./files/usr/lib/batman/payload-guardian-run.sh $(1)/usr/lib/batman/payload-guardian-run.sh
+	$(INSTALL_DATA) ./files/usr/lib/batman/payload-lib.sh $(1)/usr/lib/batman/payload-lib.sh
+	$(INSTALL_DIR) $(1)/usr/share/batman
+	$(INSTALL_DATA) ./files/usr/share/batman/payload-guardian.init.in $(1)/usr/share/batman/payload-guardian.init.in
 	# #274: graceful tiered stop, shared by the guardian (K09) and batman-prestop-payload (K08)
 	$(INSTALL_DATA) ./files/usr/lib/batman/payload-stop.sh $(1)/usr/lib/batman/payload-stop.sh
 	# shared "in the mesh" test (joinwatch + batman-autocommit OTA gate, #209 S4-5)

@@ -27,7 +27,11 @@ on:
       - 'feed/batman-provision/files/usr/bin/payload-run'
       - 'feed/batman-provision/files/usr/lib/batman/payload-stop.sh'
       - 'feed/batman-provision/files/usr/lib/batman/payload-guardian.sh'
+      - 'feed/batman-provision/files/usr/lib/batman/payload-guardian-run.sh'
+      - 'feed/batman-provision/files/usr/lib/batman/payload-lib.sh'
+      - 'feed/batman-provision/files/usr/share/batman/payload-guardian.init.in'
       - 'scripts/test-payload-run.sh'
+      - 'scripts/test-payload-guardian.sh'
   push:
     branches: [main]
     paths:
@@ -39,7 +43,10 @@ on:
       - 'scripts/profile-to-fw4.py'
       - 'feed/batman-provision/files/usr/bin/payload-run'
       - 'feed/batman-provision/files/usr/lib/batman/payload-stop.sh'
+      - 'feed/batman-provision/files/usr/lib/batman/payload-guardian-run.sh'
+      - 'feed/batman-provision/files/usr/lib/batman/payload-lib.sh'
       - 'scripts/test-payload-run.sh'
+      - 'scripts/test-payload-guardian.sh'
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -56,6 +63,7 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq busybox
           BUSYBOX=1 sh scripts/test-payload-run.sh
+          BUSYBOX=1 sh scripts/test-payload-guardian.sh
       # #159 review M2 drift guard (meta-package DEPENDS == captured runtime closure). It existed but
       # was never wired in, and had silently gone red on main (#209 S4-4).
       - name: batman-payload-host DEPENDS must match deploy/payload-host-packages.txt

@@ -15,6 +15,7 @@ set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 PR="$REPO/feed/batman-provision/files/usr/bin/payload-run"
 PS="$REPO/feed/batman-provision/files/usr/lib/batman/payload-stop.sh"
+PL="$REPO/feed/batman-provision/files/usr/lib/batman/payload-lib.sh"
 T=$(mktemp -d); trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
 S="$T/stub"; A="$T/apps"; mkdir -p "$S/c" "$S/img" "$S/net" "$T/bin" "$A/t/secrets" "$T/run"
 PASS=0; FAIL=0
@@ -32,7 +33,7 @@ if [ "${BUSYBOX:-0}" = 1 ]; then
 	mkdir -p "$T/bb"; for a in $("$bb" --list); do ln -s "$bb" "$T/bb/$a"; done
 	BBP="$T/bb:"; echo "== busybox mode: $("$bb" | head -1)"
 fi
-export DOCKER_STUB="$S" APPS_DIR="$A" PAYLOAD_RUNDIR="$T/run" PATH="$T/bin:$BBP$PATH"
+export DOCKER_STUB="$S" APPS_DIR="$A" PAYLOAD_RUNDIR="$T/run" PATH="$T/bin:$BBP$PATH" PAYLOAD_LIB="$PL" PAYLOAD_GOLDEN_ROOT="$T/golden"
 ALL="$T/all-output"; : > "$ALL"
 
 cat > "$T/bin/docker" <<'STUB'
@@ -49,6 +50,10 @@ exec) [ -f "$S/fail-health-$2" ] && exit 1; exit 0 ;;
 inspect) shift; fmt=""; [ "$1" = -f ] && { fmt=$2; shift 2; }; rc=0
 	for n; do d="$S/c/$n"; [ -d "$d" ] || { rc=1; continue; }
 		case "$fmt" in
+			*HostConfig.Privileged*) if [ -f "$d/danger" ]; then echo 'true|host||private|||private|1|0|SYS_ADMIN |seccomp=unconfined |0'
+			                         else echo 'false|t-net||private|||private|0|0||no-new-privileges |0'; fi ;;
+			*range\ .Mounts*|*'range .Mounts'*) : ;;
+			*Mounts*) : ;;
 			*batman.cfg*) cat "$d/label" ;;
 			*batman.tenant*) cat "$d/tenant" ;;
 			*State.Status*) cat "$d/status" ;;
@@ -90,8 +95,8 @@ chmod +x "$T/bin/docker"
 # (secret with uid like dummy-nginx-b, absolute mount, stop tier 1)
 echo 'sha256:aaa' > "$S/img/img_db_1"; echo 'sha256:bbb' > "$S/img/img_app_1"
 echo "abs v1" > "$T/abs.conf"
-printf '# test\nHARDEN_FLAGS="--read-only --cap-drop=ALL"\n' > "$A/t/t.hardening.env"
-echo "conf v1" > "$A/t/m.conf"
+printf '# test\nHARDEN_FLAGS="--read-only --cap-drop=ALL --security-opt no-new-privileges"\n' > "$A/t/t.hardening.env"
+echo "conf v1" > "$A/t/m.conf"; echo "abs v1" > "$A/t/a.conf"
 echo "token v1" > "$A/t/secrets/tok"; chmod 0644 "$A/t/secrets/tok"
 cat > "$A/t/t.manifest" <<EOF
 TENANT t
@@ -115,7 +120,7 @@ IMAGE img/app:1
 IP 172.29.0.3
 HARDEN t.hardening.env
 SECRET tok /tok $(id -u)
-MOUNT $T/abs.conf:/etc/abs.conf
+MOUNT a.conf:/etc/abs.conf:ro
 ENTRYPOINT app --x
 STOPTIER 1
 ENDCONTAINER
@@ -154,7 +159,6 @@ sl=$(calls | grep -n '^stop ' | head -1 | cut -d: -f1); rl=$(calls | grep -n '^r
 [ -n "$sl" ] && [ -n "$rl" ] && [ "$sl" -lt "$rl" ] && ! calls | grep -q '^rm -f' && ok "4 rebuild stops before removing, never rm -f" || { no "4 order stop=$sl rm=$rl"; calls; }
 echo "conf v2" > "$A/t/m.conf"; [ "$(h)" != "$H2" ] && ok "4 mounted relative file content is in the fingerprint" || no "4 mount content not in hash"
 sh "$PR" t >>"$ALL" 2>&1; H3=$(h)
-echo "abs v2" > "$T/abs.conf"; [ "$(h)" = "$H3" ] && ok "4 absolute mount source content is NOT in the fingerprint" || no "4 abs content in hash"
 chmod u+w "$A/t/secrets/tok"; echo "token v2" > "$A/t/secrets/tok"; [ "$(h)" != "$H3" ] && ok "4 secret content is in the fingerprint" || no "4 secret content not in hash"
 sh "$PR" t >>"$ALL" 2>&1; H4=$(h)
 echo 'sha256:bbb2' > "$S/img/img_app_1"; [ "$(h)" != "$H4" ] && ok "4 a re-tagged image (new ID) changes the fingerprint" || no "4 image id not in hash"
@@ -204,7 +208,76 @@ rm -f "$T/run/batman-payload-t.stopping"
 held(){ i=0; while ( exec 8>"$T/run/batman-payload-t.lock"; flock -n 8 ) 2>/dev/null; do i=$((i+1)); [ $i -ge 100 ] && return 1; sleep 0.1; done; }
 held || no "11 setup: the holder never took the lock in 10 s"
 rc=$(PAYLOAD_LOCK_WAIT=2 pr t); kill $lp 2>/dev/null; wait $lp 2>/dev/null
-[ "$rc" = 1 ] && grep -q "gave up" "$T/out" && ok "11 lock held: payload-run waits then exits 1" || { no "11 rc=$rc"; cat "$T/out"; }
+[ "$rc" = 5 ] && grep -q "gave up" "$T/out" && ok "11 lock held: payload-run waits then exits 5 (lock busy, #274 §12)" || { no "11 rc=$rc"; cat "$T/out"; }
+
+
+# ---- #274 §12 (v8.2) ----
+sh "$PR" t >>"$ALL" 2>&1; H=$(h)
+# 18 restart policy: a manifest RESTART other than `no` is ignored with a WARN; --restart no after HARDEN_FLAGS
+rc=$(pr t)
+grep -q "manifest RESTART unless-stopped ignored" "$T/out" && ok "18 manifest RESTART unless-stopped ignored with a WARN" || no "18 no WARN: $(cat "$T/out")"
+a=$(cat "$S/c/db/argv"); ph=${a%%no-new-privileges*}; case "$a" in *"--restart no"*) pr_=${a%%--restart no*}
+	[ "${#pr_}" -gt "${#ph}" ] && ok "18 --restart no rendered, after HARDEN_FLAGS" || no "18 --restart no before HARDEN_FLAGS: $a" ;;
+	*) no "18 no --restart no in argv: $a" ;; esac
+case "$a" in *unless-stopped*) no "18 unless-stopped reached docker run" ;; *) ok "18 no other restart policy in the argv" ;; esac
+# 19 basename rule and read-only mounts (refused by the preflight, nothing touched)
+cp "$A/t/t.manifest" "$T/man.bak"
+sed -i 's#^HARDEN t.hardening.env$#HARDEN ../t/t.hardening.env#' "$A/t/t.manifest"; pf t && ok "19 HARDEN with a path: refused" || no "19 HARDEN path"
+cp "$T/man.bak" "$A/t/t.manifest"; sed -i "s#^MOUNT a.conf:/etc/abs.conf:ro#MOUNT $A/t/a.conf:/etc/abs.conf:ro#" "$A/t/t.manifest"; pf t && ok "19 absolute MOUNT source: refused" || no "19 abs mount"
+cp "$T/man.bak" "$A/t/t.manifest"; sed -i 's#^MOUNT a.conf:/etc/abs.conf:ro#MOUNT a.conf:/etc/abs.conf#' "$A/t/t.manifest"; pf t && ok "19 RW MOUNT: refused" || no "19 rw mount"
+cp "$T/man.bak" "$A/t/t.manifest"; sed -i 's#^SECRET tok #SECRET ../tok #' "$A/t/t.manifest"; pf t && ok "19 SECRET with a path: refused" || no "19 secret path"
+for vn in / /opt/batdata ./x ../x a/b; do
+	cp "$T/man.bak" "$A/t/t.manifest"; sed -i "s#^VOLUME vd:#VOLUME $vn:#" "$A/t/t.manifest"
+	pf t && ok "19 VOLUME '$vn' (a host path, not a named volume): refused" || no "19 VOLUME '$vn' accepted"
+done
+cp "$T/man.bak" "$A/t/t.manifest"
+# 20 a symlinked or hardlinked secret is refused, never chowned through
+mv "$A/t/secrets/tok" "$T/tok.real"; ln -s "$T/tok.real" "$A/t/secrets/tok"; chmod 0644 "$T/tok.real"
+pf t && [ "$(stat -c %a "$T/tok.real")" = 644 ] && ok "20 symlinked secret: refused, target not chowned/chmodded" || no "20 symlink secret"
+rm -f "$A/t/secrets/tok"; ln "$T/tok.real" "$A/t/secrets/tok"; pf t && ok "20 hardlinked secret: refused" || no "20 hardlink secret"
+# the node's busybox find has no -links (it errors, prints nothing): the check must not depend on it
+mkdir -p "$T/nodefind"; printf '#!/bin/sh\nfor a; do [ "$a" = -links ] && { echo "find: unrecognized: -links" >&2; exit 1; }; done\nexec %s "$@"\n' "$(command -v find)" > "$T/nodefind/find"; chmod +x "$T/nodefind/find"
+PATH="$T/nodefind:$PATH" pf t && ok "20 hardlinked secret refused with a node-like find (no -links)" || no "20 hardlink secret accepted with a node-like find"
+rm -f "$A/t/secrets/tok"; mv "$T/tok.real" "$A/t/secrets/tok"
+# 21 hardening flags outside the allowlist are refused (and no-new-privileges is required)
+cp "$A/t/t.hardening.env" "$T/h.bak"
+for fl in "--privileged" "--cap-add SYS_ADMIN" "--security-opt seccomp=unconfined" "--network host" "--device /dev/mmcblk0" "--restart always"; do
+	printf 'HARDEN_FLAGS="--read-only --security-opt no-new-privileges %s"\n' "$fl" > "$A/t/t.hardening.env"
+	pf t && ok "21 hardening '$fl': refused" || no "21 hardening '$fl' accepted"
+done
+printf 'HARDEN_FLAGS="--read-only --cap-drop=ALL"\n' > "$A/t/t.hardening.env"; pf t && ok "21 hardening without no-new-privileges: refused" || no "21 nnp missing accepted"
+cp "$T/h.bak" "$A/t/t.hardening.env"
+# 22 --restart-exited: starts exited containers on whatever config they carry, never rebuilds/scripts
+sh "$PR" t >>"$ALL" 2>&1
+echo "# config changed" >> "$A/t/t.manifest"; echo exited > "$S/c/db/status"
+reset_calls; rc=$(pr --restart-exited t)
+[ "$rc" = 0 ] && [ "$(cat "$S/c/db/status")" = running ] && ! calls | grep -Eq '^(rm|run|stop|network create) ' && grep -q "restart: exited containers: db" "$T/out" \
+	&& ok "22 --restart-exited: exited db started on its OLD config, nothing rebuilt" || { no "22 rc=$rc"; calls; cat "$T/out"; }
+calls | grep -q '^exec db' && ok "22 the restarted final-tier service was gated" || no "22 no gate"
+cp "$T/man.bak" "$A/t/t.manifest"
+# 23 --restart-exited never starts a container that is not ours or not on the allowlist
+echo exited > "$S/c/app/status"; echo other > "$S/c/app/tenant"; rc=$(pr --restart-exited t)
+[ "$rc" = 1 ] && [ "$(cat "$S/c/app/status")" = exited ] && ok "23 unlabelled (bypass) container: not started, rc 1" || no "23 bypass rc=$rc"
+echo t > "$S/c/app/tenant"; : > "$S/c/app/danger"; rc=$(pr --restart-exited t)
+[ "$rc" = 1 ] && [ "$(cat "$S/c/app/status")" = exited ] && grep -q "not on the container allowlist" "$T/out" && ok "23 dangerous container: not started, rc 1" || no "23 dangerous rc=$rc"
+rm -f "$S/c/app/danger"
+# 24 the shutdown marker stops every mode (exit 4), like .stopping
+: > "$T/run/batman-shutdown"
+r1=$(pr t); r2=$(pr --converge t); r3=$(pr --start-only t); r4=$(pr --restart-exited t)
+[ "$r1$r2$r3$r4" = 4444 ] && ok "24 shutdown marker: rebuild/converge/start-only/restart-exited all exit 4" || no "24 got $r1 $r2 $r3 $r4"
+rm -f "$T/run/batman-shutdown"
+# 25 golden tenant: HARDEN and *.fw4.uci come from the image, never p6
+mkdir -p "$T/golden/t"; printf 'HARDEN_FLAGS="--read-only --cap-drop=ALL --security-opt no-new-privileges --pids-limit 77"\n' > "$T/golden/t/t.hardening.env"
+printf 'touch "%s/fw4-golden-ran"\n' "$T" > "$T/golden/t/t.fw4.uci"; printf 'touch "%s/fw4-p6-ran"\n' "$T" > "$A/t/t.fw4.uci"
+rc=$(pr t)
+grep -q -- "--pids-limit 77" "$S/c/db/argv" && ok "25 golden tenant: HARDEN flags read from the image copy" || no "25 golden HARDEN not used: $(cat "$S/c/db/argv")"
+[ -e "$T/fw4-golden-ran" ] && [ ! -e "$T/fw4-p6-ran" ] && ok "25 golden tenant: the image's fw4.uci ran, the p6 copy did not" || no "25 fw4 golden=$([ -e "$T/fw4-golden-ran" ] && echo y) p6=$([ -e "$T/fw4-p6-ran" ] && echo y)"
+Hg=$(h); echo 'HARDEN_FLAGS="--read-only"' > "$A/t/t.hardening.env.x"; cp "$A/t/t.hardening.env" "$T/h.bak"; echo "# p6 edit" >> "$A/t/t.hardening.env"
+[ "$(h)" = "$Hg" ] && ok "25 a p6-only HARDEN edit does not change a golden tenant's fingerprint" || no "25 p6 HARDEN edit changed the hash"
+cp "$T/h.bak" "$A/t/t.hardening.env"; rm -rf "$T/golden/t" "$A/t/t.fw4.uci" "$A/t/t.hardening.env.x" "$T/fw4-"*
+# 26 health check runs inside the container under timeout(1) when the image has it
+sh "$PR" t >>"$ALL" 2>&1; echo exited > "$S/c/db/status"; reset_calls; rc=$(pr --restart-exited t)
+calls | grep -q '^exec db timeout 8 sh -c true' && ok "26 health check: docker exec … timeout 8 sh -c <cmd>" || { no "26 no in-container timeout"; calls | grep '^exec'; }
 
 # 12 no docker child ever inherited fd 9 (the lock dies with the wrapper)
 [ -s "$S/violations" ] && { no "12 violations:"; cat "$S/violations"; } || ok "12 no rm -f of a running container, no fd 9 leaked (all runs above)"

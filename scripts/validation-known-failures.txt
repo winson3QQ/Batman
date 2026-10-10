@@ -8,3 +8,4 @@
 ots-cot-e2e-264	^FAIL P2B lost [0-9]+/[0-9]+	264
 ots-cot-e2e-264	^FAIL P3 lost [0-9]+/[0-9]+	264
 soak-cot-264	^FAIL CoT lost [0-9]+/[0-9]+	264
+cleanstop-274	^FAIL 6 the early CoT \(DV274E[0-9]+\) was not stored \(count=0\)$	264
