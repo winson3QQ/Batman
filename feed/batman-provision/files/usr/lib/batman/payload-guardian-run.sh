@@ -230,11 +230,18 @@ while :; do
 	# host alarm (D7-5): node-wide conditions an OTA cannot cause or fix — never in the verdict
 	[ "$(docker info -f '{{.LiveRestoreEnabled}}' 2>/dev/null)" = true ] && alarm="${alarm}live-restore is on — an OTA would kill the tenant instead of stopping it
 "
-	tenants=" "; for d in "$APPS_DIR"/*/; do ls "$d"*.manifest >/dev/null 2>&1 && { t_=${d%/}; tenants="$tenants${t_##*/} "; }; done
-	for line in $(docker ps -a --format '{{.ID}}:{{.Label "batman.tenant"}}' 2>/dev/null); do
-		id=${line%%:*}; lt=${line#*:}
-		case "$tenants" in *" $lt "*) [ -n "$lt" ] && continue ;; esac
-		p=$(pl_container_problems "$id" "" "")
+	# a tenant label exempts only the containers that tenant's manifest lists; anything else carrying the label
+	# (an orphan, or one created by hand to hide) is checked too, with that tenant's dir for RO binds
+	tenants=" "; listed=" "
+	for d in "$APPS_DIR"/*/; do
+		ls "$d"*.manifest >/dev/null 2>&1 || continue
+		t_=${d%/}; t_=${t_##*/}; tenants="$tenants$t_ "
+		for nm_ in $(awk '$1 == "CONTAINER" { print $2 }' "$d"*.manifest 2>/dev/null); do listed="$listed$t_:$nm_ "; done
+	done
+	for line in $(docker ps -a --format '{{.ID}}:{{.Names}}:{{.Label "batman.tenant"}}' 2>/dev/null); do
+		id=${line%%:*}; rest_=${line#*:}; nm=${rest_%%:*}; lt=${rest_#*:}; tdir=""
+		case "$tenants" in *" $lt "*) [ -n "$lt" ] && { case "$listed" in *" $lt:$nm "*) continue ;; esac; tdir="$APPS_DIR/$lt"; } ;; esac
+		p=$(pl_container_problems "$id" "$tdir" "")
 		[ -n "$p" ] && [ "$p" != gone ] && alarm="${alarm}foreign-container $(docker inspect -f '{{.Name}}' "$id" 2>/dev/null | tr -d /) ($id): $(echo "$p" | tr '\n' ';')
 "
 	done

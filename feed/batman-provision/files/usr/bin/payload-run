@@ -262,7 +262,12 @@ walk(){   # $1 = ACTION
 			RESTART)      [ "$IN" = 1 ] && [ "$rest" != no ] && RESTART_IGNORED="$RESTART_IGNORED $rest" ;;   # §12 D7-1
 			ENV)          set -- "$@" -e "$rest" ;;
 			VOLUME)       vn=${rest%%:*}; vtail=${rest#*:}; vpath=${vtail%%:*}
-			              set -- "$@" -v "$vn:$vpath"
+			              # #274 D7-6: a named volume only — `-v /host:/x` would be a RW host bind
+			              case "$vn" in
+			                  ""|[!a-zA-Z0-9]*|*[!a-zA-Z0-9_.-]*)
+			                      fact "VOLUME $vn REFUSED"; problem "$NAME: VOLUME '$vn' is not a named volume" ;;
+			                  *)  set -- "$@" -v "$vn:$vpath" ;;
+			              esac
 			              case "$rest" in *:*:*:*) CHOWNS="$CHOWNS $rest" ;; esac ;;
 			MOUNT)        # <src>:<dst>[:ro]. A relative src (a config file shipped in the tenant dir) resolves
 			              # against $DIR and must be a regular FILE. --mount, not -v: -v silently creates a
@@ -287,8 +292,9 @@ walk(){   # $1 = ACTION
 			              sf="$DIR/secrets/$sname"
 			              if ! pl_isbase "$sname"; then
 			                  fact "SECRET $sname REFUSED"; problem "$NAME: SECRET '$sname' is not a plain file name"
-			              elif [ -L "$sf" ] || [ -n "$(find "$sf" -maxdepth 0 -links +1 2>/dev/null)" ]; then
-			                  # #274 D7-6: chown/chmod follow a symlink; a hardlink aliases another file
+			              elif [ -L "$sf" ] || { [ -e "$sf" ] && [ "$(ls -ln "$sf" 2>/dev/null | awk '{print $2}')" != 1 ]; }; then
+			                  # #274 D7-6: chown/chmod follow a symlink; a hardlink aliases another file. The link
+			                  # count comes from ls -ln (busybox find has no -links); unreadable = refused
 			                  fact "SECRET $sname LINK"; problem "$NAME: secret $sf is a symlink or has several links — refused"
 			              elif [ -f "$sf" ]; then
 			                  fact "SECRET $sname $(sha "$sf")"

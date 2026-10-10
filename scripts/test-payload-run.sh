@@ -226,11 +226,18 @@ sed -i 's#^HARDEN t.hardening.env$#HARDEN ../t/t.hardening.env#' "$A/t/t.manifes
 cp "$T/man.bak" "$A/t/t.manifest"; sed -i "s#^MOUNT a.conf:/etc/abs.conf:ro#MOUNT $A/t/a.conf:/etc/abs.conf:ro#" "$A/t/t.manifest"; pf t && ok "19 absolute MOUNT source: refused" || no "19 abs mount"
 cp "$T/man.bak" "$A/t/t.manifest"; sed -i 's#^MOUNT a.conf:/etc/abs.conf:ro#MOUNT a.conf:/etc/abs.conf#' "$A/t/t.manifest"; pf t && ok "19 RW MOUNT: refused" || no "19 rw mount"
 cp "$T/man.bak" "$A/t/t.manifest"; sed -i 's#^SECRET tok #SECRET ../tok #' "$A/t/t.manifest"; pf t && ok "19 SECRET with a path: refused" || no "19 secret path"
+for vn in / /opt/batdata ./x ../x a/b; do
+	cp "$T/man.bak" "$A/t/t.manifest"; sed -i "s#^VOLUME vd:#VOLUME $vn:#" "$A/t/t.manifest"
+	pf t && ok "19 VOLUME '$vn' (a host path, not a named volume): refused" || no "19 VOLUME '$vn' accepted"
+done
 cp "$T/man.bak" "$A/t/t.manifest"
 # 20 a symlinked or hardlinked secret is refused, never chowned through
 mv "$A/t/secrets/tok" "$T/tok.real"; ln -s "$T/tok.real" "$A/t/secrets/tok"; chmod 0644 "$T/tok.real"
 pf t && [ "$(stat -c %a "$T/tok.real")" = 644 ] && ok "20 symlinked secret: refused, target not chowned/chmodded" || no "20 symlink secret"
 rm -f "$A/t/secrets/tok"; ln "$T/tok.real" "$A/t/secrets/tok"; pf t && ok "20 hardlinked secret: refused" || no "20 hardlink secret"
+# the node's busybox find has no -links (it errors, prints nothing): the check must not depend on it
+mkdir -p "$T/nodefind"; printf '#!/bin/sh\nfor a; do [ "$a" = -links ] && { echo "find: unrecognized: -links" >&2; exit 1; }; done\nexec %s "$@"\n' "$(command -v find)" > "$T/nodefind/find"; chmod +x "$T/nodefind/find"
+PATH="$T/nodefind:$PATH" pf t && ok "20 hardlinked secret refused with a node-like find (no -links)" || no "20 hardlink secret accepted with a node-like find"
 rm -f "$A/t/secrets/tok"; mv "$T/tok.real" "$A/t/secrets/tok"
 # 21 hardening flags outside the allowlist are refused (and no-new-privileges is required)
 cp "$A/t/t.hardening.env" "$T/h.bak"

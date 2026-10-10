@@ -48,6 +48,7 @@ inspect) shift; fmt=""; [ "$1" = -f ] && { fmt=$2; shift 2; }; n=$1; d="$S/c/$n"
 ps) t=$(echo "$*" | sed -n 's/.*label=batman.tenant=\([^ ]*\).*/\1/p')
 	for d in "$S"/c/*/; do [ -d "$d" ] || continue; n=$(basename "$d"); ct=$(c $n tenant)
 		case "$*" in
+			*'{{.ID}}:{{.Names}}:'*) echo "$n:$n:$ct" ;;
 			*'{{.ID}}:'*) echo "$n:$ct" ;;
 			*-aq*) [ "$ct" = "$t" ] && echo "$n" ;;
 			*) [ "$ct" = "$t" ] && echo "$n $(c $n status)" ;;
@@ -170,6 +171,12 @@ grep -q "foreign-container lora" "$AL" && grep -q "live-restore is on" "$AL" && 
 	&& ok "10 foreign dangerous container + live-restore: host alarm, verdict OK" || { no "10 alarm"; cat "$AL"; echo "status $(status)"; cat "$VL"; }
 grep -q "host alarm: foreign-container lora" "$T/syslog" && ok "10 the new alarm line was logged" || no "10 not logged"
 rm -rf "$S/c/lora" "$S/liverestore"; tick 1; [ ! -s "$AL" ] && ok "10 alarm cleared" || no "10 alarm not cleared: $(cat "$AL")"
+# 10b a tenant label does not hide a container the manifest does not list (security review #3); a harmless
+#     labelled orphan raises nothing
+mkc hide running CFG1 t no; : > "$S/c/hide/danger"; mkc orph running CFG1 t no; tick 1
+grep -q "foreign-container hide" "$AL" && ! grep -q "orph" "$AL" \
+	&& ok "10b dangerous container labelled for the tenant but not in its manifest: host alarm; harmless orphan: none" || { no "10b"; cat "$AL"; }
+rm -rf "$S/c/hide" "$S/c/orph"; tick 1; [ ! -s "$AL" ] && ok "10b alarm cleared" || no "10b alarm not cleared: $(cat "$AL")"
 
 # 11 ledger unwritable: DRIFT (fail-closed)
 gstop; rm -f "$LED"; mkdir "$LED"; gstart; sleep 2; echo exited > "$S/c/app/status"; adv 1; sleep 2; tick 1
