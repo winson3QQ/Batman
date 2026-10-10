@@ -1430,3 +1430,33 @@ Recorded so a reader of the code and of this section see the same thing; none ch
   PASS (the 120 s wait), crash-274 steps 1/4/10 PASS (`--until` 2 s ahead; no latch; seam waited for),
   cleanstop-274 PASS twice — its one early-CoT loss on wsl.2 did not reproduce and stays unattributed (❓).
 \n
+- **CPU cost, measured (04, Pi 4, rc 1.5.8-wsl.3, 2026-10-10) — corrects the "≈ 1 %" estimate in 12.8 (that counted the
+  5 s poll only).** Guardian process tree over 600 s: 140.8 s CPU = **23.6 % of one core**. Per part (3 runs each):
+
+  | part | per run | of one core | new in v8.2? |
+  |---|---|---|---|
+  | verify-profile-ots.sh (30 s tick) | 4 200 ms | 14 % | no (#156) |
+  | reconcile-resources.sh (30 s tick) | 1 093 ms | 3.6 % | no |
+  | payload-run --cfg-hash (30 s tick) | 346 ms | 1.2 % | no |
+  | label check, 6 inspects (30 s tick) | 260 ms | 0.9 % | no (rewritten) |
+  | container allowlist, 6 containers (30 s tick) | 953 ms | 3.2 % | yes |
+  | restart-policy check (30 s tick) | 306 ms | 1.0 % | yes |
+  | foreign scan + golden cmp + live-restore (30 s tick) | ≈ 110 ms | 0.4 % | yes |
+  | liveness poll, docker ps + docker info (5 s) | 93 ms | 1.9 % | yes |
+
+  Pre-existing ≈ 20 % of a core (verify-profile alone 14 %) — never measured before; handed to #171 (OTS resource
+  budget). Added by v8.2 ≈ 6.5 % of a core (≈ 1.6 % of the 4-core Pi 4). User decision 2026-10-10: accepted for this
+  PR; reducing it (drop the per-poll `docker info`, run the allowlist/foreign scan less often) is a #274 leftover.
+- **Second "missing" within 600 s:** measured on 04 — with only the guardian acting, a container removed 6 min after
+  an earlier missing record came back after 300 s (the once-per-600 s limit on the respawn converge). Stated limit;
+  #274 leftover (rare in the field: only an operator `docker rm` / prune removes a container).
+- **fi-f2 in the full run (wsl.3)** failed once (OTS not 6/6 within 200 s); re-run twice (a manual repro: 6/6 at +82 s;
+  the harness case after the 600 s window: PASS). Not reproduced: unattributed (❓).
+- **Cosmetic, pre-existing:** remove_stack logs "removing orphan container … (no longer in the manifest)" for containers
+  that are in the manifest (NAMES is newline-separated, the check matches spaces). Behaviour is right; #274 leftover.
+- **OTA under CoT load (04, wsl.3, 2026-10-10):** 02 sent CoT to 04 (soak-node cotgen) while fi-s1 ran a same-build
+  OTA. PASS: one start per container, two-phase order, no DRIFT, empty ledger. Stop timeline of the old boot (node
+  clock): procd validation ended 14:37:28; opentakserver KeyboardInterrupt 14:37:28.46; ots-db "fast shutdown request"
+  14:37:28.49 → "database system is shut down" 14:37:29.08; rabbitmq stores stopped by 14:37:29.06; S2 BEGIN 14:37:45.
+  Next start: "database system was shut down at … 14:37:28" (clean, no recovery). dockerd's own shutdown stops the
+  stack gracefully under load in < 1 s, as E14 measured idle.
