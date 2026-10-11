@@ -806,11 +806,11 @@ chk_cot_264_ssl() { local ots=$1 run o c0 rc=0
 # 600 s) — asserted, never worked around: the test only acts inside the broker and never starts/stops a container.
 # Patched eud: the unroutable publishes come back (mandatory), the session re-declares the queue and retries, so
 # sent == stored. Unpatched: every CoT in the window is dropped (negative control, measured before the overlay).
-bchk_queue_gone_264() { local ots=$1 peer=$2 run rc=0 l0 l1 s st rec i
+bchk_queue_gone_264() { local ots=$1 peer=$2 run rc=0 l0 l1 s st sd rec i t0
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   l0=$(fssh "$ots" 15 "$RDR"'grep -c "crash ots_cot_parser" "$R"/batman-payload-opentakserver-restarts 2>/dev/null || echo 0' | tr -d ' \r')
-  run=DVQ$(date +%Y%m%d%H%M%S)
+  run=DVQ$(date +%Y%m%d%H%M%S); t0=$(date +%s)
   soak_ssh "$peer" "ROLE=cotgen TARGET=$ots RUN=$run DUR=150" | grep -q '^OK cotgen' || { echo "FAIL could not start the CoT generator on $peer"; return 1; }
   echo "run $run: $peer streams 5 CoT/s to $ots:8088 for 150 s; the cot_parser queue is deleted at +30 s"
   sleep 30
@@ -818,10 +818,12 @@ bchk_queue_gone_264() { local ots=$1 peer=$2 run rc=0 l0 l1 s st rec i
   for i in $(seq 1 24); do l1=$(fssh "$ots" 15 "$RDR"'grep -c "crash ots_cot_parser" "$R"/batman-payload-opentakserver-restarts 2>/dev/null || echo 0' | tr -d ' \r'); [ "${l1:-0}" -gt "${l0:-0}" ] 2>/dev/null && break; sleep 5; done
   [ "${l1:-0}" -gt "${l0:-0}" ] 2>/dev/null && echo "ok cot_parser exited on the cancelled consumer and the guardian restarted it (ledger $l0 -> $l1)" \
     || { echo "FAIL no guardian restart of ots_cot_parser within 120 s of the queue deletion (ledger $l0 -> ${l1:-?}) — the fault was not what this test assumes"; rc=1; }
-  sleep 100
+  # read the sent counter only after the generator has ENDED (DUR 150 s + margin): sampled while it still ran,
+  # "sent" undercounts and stored > sent looked like duplicates (745/720, 740/720 on the rc: distinct == rows)
+  while [ $(( $(date +%s) - t0 )) -lt 165 ]; do sleep 5; done
   s=$(soak_ssh "$peer" "ROLE=sample" | sed -n 's/.*cot_sent=\([0-9]*\).*/\1/p'); rec=$(soak_ssh "$peer" "ROLE=sample" | sed -n 's/.*cot_reconn=\([0-9]*\).*/\1/p')
   # at-least-once (user decision 2026-10-11): every (uid, time) the generator sent is stored at least once; a
-  # duplicate row is reported, never a FAIL (one run on the rc stored 745 rows for 720 sent, 0 lost - unreproduced)
+  # duplicate row is reported, never a FAIL
   i=0; while [ "$i" -lt 12 ]; do sd=$(echo "select count(distinct (uid, timestamp)) from cot where uid like '$run-%';" | ots_sql "$ots" | tr -d ' \r'); [ "$sd" = "$s" ] && break; sleep 5; i=$((i+1)); done
   st=$(echo "select count(*) from cot where uid like '$run-%';" | ots_sql "$ots" | tr -d ' \r')
   echo "sent=$s stored rows=$st distinct (uid,time)=$sd duplicates=$((st - sd)) client reconnects=$rec"
