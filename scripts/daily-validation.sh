@@ -360,7 +360,10 @@ chk_conform() { fssh "$1" 90 '                                  # #274 payload-c
           case "$src" in */EudHandler-264.py)
             hs=$(sha256sum < "$src" | cut -d" " -f1); hc=$(docker exec "$c" sha256sum "$dst" 2>/dev/null | cut -d" " -f1)
             [ -n "$hc" ] && [ "$hc" = "$hs" ] && echo "$t/$c #264 overlay in the container == p6 source (${hs%${hs#????????}}...)" \
-              || { echo "FAIL $t/$c $dst in the container is sha256 [${hc:-unreadable}], the p6 overlay is $hs"; rc=1; } ;;
+              || { echo "FAIL $t/$c $dst in the container is sha256 [${hc:-unreadable}], the p6 overlay is $hs"; rc=1; }
+            # which #264 items the overlay carries (the module-level BATMAN_264 string), read where the process reads it
+            items=$(docker exec "$c" sed -n "s/^BATMAN_264 = \"\([^\"]*\)\".*/\1/p" "$dst" 2>/dev/null)
+            [ -n "$items" ] && echo "$t/$c #264 overlay items: $items" || { echo "FAIL $t/$c $dst carries no BATMAN_264 item list"; rc=1; } ;;
           esac ;;
         MOUNTSHA) dst=${v%% *}; want_sha=${v#* }
           # #264 R8: the image own (unmounted) file at $dst is still the upstream file the overlay was made for.
