@@ -23,7 +23,8 @@ class FakePika:
     BasicProperties = FakeProps
 
 
-g = {"pika": FakePika, "CACHE_MAX": 5, "CACHE_MAX_BYTES": 10 ** 9}
+import random as _random
+g = {"pika": FakePika, "CACHE_MAX": 5, "CACHE_MAX_BYTES": 10 ** 9, "random": _random, "DRAIN_MAX_S": 60, "Channel": object}
 for name in WANT:
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
     exec(textwrap.dedent(ast.get_source_segment(src, fn)), g)
@@ -66,6 +67,8 @@ class H:
         self._chan_errors = []; self._reconnect_n = 0; self._reconnect_timer = None; self._ioloop = self.rabbit_connection.ioloop
         self._drained = _threading.Event(); self.client_address = ("10.0.0.9", 1)
         self.on_connection_open = lambda c: None
+        self.on_channel_open = lambda c: None
+        self._end_args = None; self._loop_dead = False
 
 
 for name in WANT:
@@ -227,16 +230,48 @@ h._publish_on_ioloop("cot_parser", "cot_parser", "u1", None); h._publish_on_iolo
 h._cache("later", None)
 h.on_close(h.rabbit_connection, "missed heartbeats")
 ok([b for b, m in h.cached_messages] == ["u1", "u2", "later"] and not h._unacked and h.rabbit_channel is None and h._need_replay
-   and h._reconnect_timer is not None and h._ioloop.timers[-1][0] == 1, "11 connection closed: unacked at the head in order, reconnect in 1 s")
+   and h._reconnect_timer is not None and 0.75 <= h._ioloop.timers[-1][0] <= 1.25, "11 connection closed: unacked at the head in order, reconnect in ~1 s (jitter)")
 h._ioloop.fire()   # _reconnect -> new SelectConnection on the same ioloop
 ok(isinstance(h.rabbit_connection, FakeConn2) and h.rabbit_connection.args[1].get("custom_ioloop") is h._ioloop and h.rabbit_connection.args[0][0] == "P"
    and h._reconnect_timer is None, "11 reconnect: new connection with the same params on the same ioloop")
 h.on_open_error(h.rabbit_connection, "refused"); h.on_open_error(h.rabbit_connection, "refused")
-ok(h._reconnect_n == 2 and h._ioloop.timers[-1][0] == 2, "11 open error: next attempt in 2 s (backoff), one timer at a time")
+ok(h._reconnect_n == 2 and 1.5 <= h._ioloop.timers[-1][0] <= 2.5, "11 open error: next attempt in ~2 s (backoff), one timer at a time")
 for i in range(6): h._ioloop.fire(); h.on_open_error(h.rabbit_connection, "refused")
-ok(h._ioloop.timers[-1][0] == 30, "11 backoff capped at 30 s")
+ok(22.5 <= h._ioloop.timers[-1][0] <= 37.5, "11 backoff capped at 30 s (with jitter)")
 h2 = H(); h2.rabbit_connection = FakeConn2(); h2._ioloop = h2.rabbit_connection.ioloop; h2._closed = True; stopped = []
 h2._ioloop.stop = lambda: stopped.append(1); h2.rabbit_connection.ioloop.add_callback_threadsafe = lambda fn: fn()
 h2.on_close(h2.rabbit_connection, "bye")
 ok(stopped == [1] and h2._reconnect_timer is None, "11 session already closing: loop stopped, no reconnect")
+# 12 R4b order and bound: a new body queues behind a non-empty cache (never ahead of older ones); with CACHE_MAX
+#    publishes unconfirmed the next body is held and released by the ack; the head retry goes ahead (force)
+h = H(); h._cache("old", None); h._publish_on_ioloop("cot_parser", "cot_parser", "new", None)
+ok([b for b, m in h.cached_messages] == ["old", "new"] and not h.rabbit_channel.pubs, "12 something older cached: the new body queues behind it")
+h = H()
+for i in range(7): h._publish_on_ioloop("cot_parser", "cot_parser", "b%d" % i, None)
+ok(len(h._unacked) == 5 and [b for b, m in h.cached_messages] == ["b5", "b6"], "12 CACHE_MAX (5) unconfirmed: b5, b6 held in the cache")
+h._on_confirm(Fr("Basic.Ack", 2, multiple=True))
+ok(len(h._unacked) == 5 and not h.cached_messages and [p["body"] for p in h.rabbit_channel.pubs][-2:] == ["b5", "b6"], "12 ack frees room: held bodies published in order")
+h = H(); h._cache("h1", None); h._cache("h2", None); h._retry_head()
+ok([p["body"] for p in h.rabbit_channel.pubs] == ["h1"] and [b for b, m in h.cached_messages] == ["h2"], "12 head retry publishes ahead of the rest (force)")
+# 13 R4: three channel closes within 60 s end the session loudly instead of looping
+for fname in ("on_channel_close",):
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == fname)
+    exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); setattr(H, fname, g[fname])
+import time as _time; g["time"] = _time
+ended = []
+H.close_connection = lambda self: ended.append(1)
+h = H(); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h.callsign = "C"
+h._sub_ops = [("queue_declare", (), {"queue": "amq.x"})]
+h.on_channel_close(h.rabbit_channel, "403"); h.on_channel_close(h.rabbit_channel, "403")
+ok(len(h.rabbit_connection.opened) == 2 and h._need_replay and not ended, "13 two channel errors: channel reopened twice, subscription to be replayed")
+h.on_channel_close(h.rabbit_channel, "403")
+ok(ended == [1] and h._sub_ops is None and len(h.rabbit_connection.opened) == 2, "13 third error within 60 s: session ended, no further reopen")
+# 14 R4b drain: the client leaves while the broker is away -> reconnect kept alive for the cache; after the channel
+#    opens and flushes, the session ends; a closing session with nothing pending stops at once
+h = H(chan_open=False); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h._closed = True
+h._cache("left-behind", None); h._end_args = ("U", "disc", []); h._schedule_reconnect()
+ok(h._reconnect_timer is not None, "14 closing with a cached body: reconnect still scheduled (bounded drain)")
+h._ioloop.fire(); ok(isinstance(h.rabbit_connection, FakeConn2) and h.rabbit_connection.args[1].get("custom_ioloop") is h._ioloop, "14 reconnect runs for the drain")
+h2 = H(chan_open=False); h2.rabbit_connection = FakeConn2(); h2._ioloop = h2.rabbit_connection.ioloop; h2._closed = True
+h2._schedule_reconnect(); ok(h2._reconnect_timer is None, "14 closing with nothing pending: no reconnect")
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)

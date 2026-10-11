@@ -34,6 +34,7 @@ KEEPALIVE_IDLE = 45
 KEEPALIVE_INTVL = 15
 KEEPALIVE_CNT = 4
 KEEPALIVE_USER_TIMEOUT_MS = 120000
+DRAIN_MAX_S = 60  # BATMAN-264-R4b: a client that leaves while the broker is away: the child stays this long to deliver its cache
 # BATMAN-264-R7: a new session is refused when the container has less than this much memory left. Measured on the
 # node (2026-10-11, 512 MiB cgroup): upstream costs 39 MB per idle session (the child's Flask+Security build 28.6 MB
 # plus the child's first gc pass copying 58.7 MB of the parent's heap); the kernel OOM-kills the whole container
@@ -314,17 +315,25 @@ NEW_CLOSE = '''    def close_connection(self):
                 self._retry_timer = None
             try:
                 if self.rabbit_channel and self.rabbit_channel.is_open:
+                    self._flush_cache()  # BATMAN-264-R4b: cached bodies leave before the disconnect; their acks precede CloseOk
                     self._end_session(uid, body, binds)  # BATMAN-264-R6: cancel, count peers, then disconnect/unbind
+                elif (self.cached_messages or self._unacked) and not self._loop_dead:
+                    # BATMAN-264-R4b: the broker is away while the client leaves: keep this child for a bounded
+                    # time, let the reconnect flush the cache, then end the session (upstream lost all of it)
+                    self._end_args = (uid, body, binds)
+                    self._schedule_reconnect()
                 else:
                     self._drained.set()
             except Exception as e:
                 self.logger.error(f"close on ioloop failed: {e}")
                 self._drained.set()
 
+        pending = bool(self.cached_messages or self._unacked)
         if threading.current_thread() is self.iothread:
             _close_on_ioloop()  # called from on_message: never wait for ourselves
         elif self._io(_close_on_ioloop):
-            self._drained.wait(3.0)
+            if not self._drained.wait(DRAIN_MAX_S if pending else 3.0) and pending:
+                self.logger.error(f"session end: {len(self.cached_messages)} cached and {len(self._unacked)} unacked cot not delivered within {DRAIN_MAX_S} s")
 
         if not self.shutdown:
 '''
@@ -357,6 +366,11 @@ rep('''        for message in self.cached_messages:
             self._subscribe(ops)
 
         self._flush_cache()  # BATMAN-264-R9: cot_parser bodies cached while the channel was closed/blocked
+        if self._end_args:   # BATMAN-264-R4b: the client already left; the cache is flushed, now end the session
+            uid, body, binds = self._end_args
+            self._end_args = None
+            self._end_session(uid, body, binds)
+            return
 ''')
 
 # --- on_channel_close / on_close: signal the drain; new callbacks + ioloop helpers ---------------------
@@ -409,8 +423,14 @@ rep('''    def on_close(self, connection, error):
             self.logger.error(f"cannot hand work to the RabbitMQ ioloop: {e}")
             return False
 
-    def _publish_on_ioloop(self, exchange, routing_key, body, meta=None):
+    def _publish_on_ioloop(self, exchange, routing_key, body, meta=None, force=False):
         if self.rabbit_channel and self.rabbit_channel.is_open and not self._blocked:
+            if exchange == "cot_parser" and not force and (self.cached_messages or len(self._unacked) >= CACHE_MAX):
+                # BATMAN-264-R4b: order and bound. Something older is still cached (a return retry, a reconnect
+                # flush in progress) -> queue behind it, never ahead; or the broker has CACHE_MAX publishes
+                # unconfirmed -> hold until acks come in, so the unacked set is bounded like the cache.
+                self._cache(body, meta)
+                return
             if exchange == "cot_parser":
                 # BATMAN-264-R5: mandatory -> an unroutable publish comes back through _on_return instead of
                 # being dropped (#264 mechanism C); uid/type ride in headers so a returned body keeps its meta
@@ -531,7 +551,7 @@ rep('''    def on_close(self, connection, error):
         self._head_returned = False
         body, meta = self.cached_messages.pop(0)
         self._cache_bytes -= len(body)
-        self._publish_on_ioloop("cot_parser", "cot_parser", body, meta)
+        self._publish_on_ioloop("cot_parser", "cot_parser", body, meta, force=True)  # the head goes ahead of the rest
         self._retry_timer = self.rabbit_connection.ioloop.call_later(1.0, self._after_head)
 
     def _after_head(self):
@@ -720,6 +740,7 @@ rep('''        self._head_returned = False
         self._reconnect_n = 0
         self._reconnect_timer = None
         self._ioloop = None
+        self._end_args = None        # BATMAN-264-R4b: (uid, body, binds) of a client that left while the broker was away
         self.iothread = None
 ''')
 # keep the native ioloop for reconnects
@@ -794,22 +815,29 @@ rep('''    def on_channel_close(self, channel: Channel, error):
         self.shutdown = True
 ''', '''    def on_channel_close(self, channel: Channel, error):
         self._drained.set()  # BATMAN-264: CloseOk received -> earlier frames were sent
-        if self._closed:
+        if self._closed and not self._end_args:
             if self.rabbit_connection and self.rabbit_connection.is_open:
                 self.rabbit_connection.close()  # session end: upstream's order (channel, then connection, then loop)
             return
         # BATMAN-264-R4: upstream ended the session here (shutdown=True, connection.close()); a channel error
         # (a refused declare, a bad queue name on replay) now costs this channel only: unacked bodies go back
         # to the cache, the channel is reopened on the same connection and the subscription replayed. A
-        # channel that keeps failing (3 closes within 60 s) stops replaying the subscription but keeps publishing.
+        # channel that keeps failing (3 closes within 60 s) ends the session loudly: the client reconnects and
+        # starts clean, instead of looking connected while receiving nothing.
         self.logger.error(f"RabbitMQ channel closed for {self.callsign}: {error}; reopening")
         self.rabbit_channel = None
         self._requeue_unacked()
         now = time.monotonic()
         self._chan_errors = [t for t in self._chan_errors if now - t < 60] + [now]
-        if len(self._chan_errors) >= 3 and self._sub_ops:
-            self.logger.error(f"{self.callsign}: the subscription fails repeatedly ({error}); not replaying it")
+        if len(self._chan_errors) >= 3:
+            self.logger.error(f"{self.callsign}: the channel keeps failing ({error}); ending the session")
             self._sub_ops = None
+            self._end_args = None
+            if not self._closed:
+                self.close_connection()
+            elif self.rabbit_connection and self.rabbit_connection.is_open:
+                self.rabbit_connection.close()
+            return
         self._need_replay = True
         if self.rabbit_connection and self.rabbit_connection.is_open:
             self.rabbit_connection.channel(on_open_callback=self.on_channel_open)
@@ -822,7 +850,7 @@ rep('''    def on_close(self, connection, error):
 ''', '''    def on_close(self, connection, error):
         self.logger.info("Connection closed for {}: {}".format(self.client_address[0], error))
         self._drained.set()  # BATMAN-264
-        if self._closed:
+        if self._closed and not self._end_args:
             # Stop the ioloop using add_callback_threadsafe because ioloop.stop() isn't threadsafe
             connection.ioloop.add_callback_threadsafe(self._ioloop.stop)
             return
@@ -844,7 +872,7 @@ rep('''    def on_open_error(self, connection, error):
 ''', '''    def on_open_error(self, connection, error):
         # Upstream passed no on_open_error_callback: pika's default raised inside the ioloop and killed it.
         self.logger.error(f"RabbitMQ connection failed for {self.client_address[0]}: {error}")
-        if self._closed:
+        if self._closed and not self._end_args:
             connection.ioloop.stop()
             return
         self._schedule_reconnect()  # BATMAN-264-R4: the broker is down or restarting: keep the session, retry
@@ -870,6 +898,8 @@ rep('''    # ---- BATMAN-264-R6: a vanished peer, and a session end that must no
                 self._cache_bytes += len(body)
         if nack and keys and self._retry_timer is None:
             self._schedule_retry()
+        elif keys and self.cached_messages and self._retry_timer is None and len(self._unacked) < CACHE_MAX:
+            self._flush_cache()  # bodies held back by the unacked bound may go now
 
     def _requeue_unacked(self):
         # the channel/connection is gone: everything not acked goes back to the cache, in publish order, at the
@@ -882,16 +912,16 @@ rep('''    # ---- BATMAN-264-R6: a vanished peer, and a session end that must no
             self._cache_bytes += len(body)
 
     def _schedule_reconnect(self):
-        if self._closed or self._reconnect_timer is not None or self._ioloop is None:
+        if (self._closed and not self._end_args) or self._reconnect_timer is not None or self._ioloop is None:
             return
         self._reconnect_n += 1
-        delay = min(2 ** (self._reconnect_n - 1), 30)
-        self.logger.error(f"RabbitMQ reconnect for {self.client_address[0]} in {delay} s (attempt {self._reconnect_n})")
+        delay = min(2 ** (self._reconnect_n - 1), 30) * (0.75 + random.random() / 2)  # jitter: no lockstep
+        self.logger.error(f"RabbitMQ reconnect for {self.client_address[0]} in {delay:.1f} s (attempt {self._reconnect_n})")
         self._reconnect_timer = self._ioloop.call_later(delay, self._reconnect)
 
     def _reconnect(self):
         self._reconnect_timer = None
-        if self._closed:
+        if self._closed and not self._end_args:
             return
         try:
             params = self.rabbit_connection.params
