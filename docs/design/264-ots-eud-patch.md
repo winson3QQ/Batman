@@ -64,30 +64,48 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     `connection.py:2005-2091`).
   - **Backoff with jitter:** 1, 2, 4, 8, 16, 30 s ±25 %. It runs while the client session lives. The timer is
     cancelled when the client leaves.
-  - **On every channel open, in this order:**
-    1. declare the exchanges and the `cot_parser` queue and binding (R5);
-    2. replay the session's subscription;
-    3. **only after the last DeclareOk/BindOk/ConsumeOk**, flush the cache. The steps are chained by callbacks.
-  - **Replay failures:** a channel error during replay counts as a replay failure. After 3 consecutive
-    failures, the subscription is dropped with an error log. The session keeps publishing (storage still
-    works) and the replay is never looped.
-  - **`on_channel_close` no longer sets `shutdown`.** `_reconnect` checks `_closing`.
-- **Test:** `amqp-close-264`.
-  - Steps: stream, then `close_connection` on the session's own connection, found by `connection_name` =
-    `eud-<port>-<uid>` set in `client_properties`.
-  - Asserts:
-    - no client reconnect;
-    - sent ≤ stored, with duplicates counted (at-least-once);
-    - a CoT addressed to the session reaches its socket after the reconnect.
-  - Negative control: unpatched gives reconn = 1 and loss.
+  - **On every connection open (as implemented, c5eb1ea/a978af2):** the `cot_parser` declare runs on its own
+    channel (R5); on the publishing channel: `Confirm.Select`, the unacked bodies of the previous channel go
+    back to the cache head, the subscription is replayed, then the cache is flushed. The steps are not chained
+    by callbacks: with confirms, a publish that lands on a channel the replay then breaks is simply unconfirmed
+    and goes back to the cache, so nothing is lost by flushing early (review v4B-4).
+  - **Channel closed while the connection lives** (refused declare, bad name on replay): the channel is
+    reopened on the same connection and the subscription replayed. **Three channel closes within 60 s end the
+    session loudly** (the client reconnects clean) instead of a session that looks connected and receives
+    nothing (review v5B-M2).
+  - **Broker down at connect or reconnect:** `on_open_error` retries with the same backoff instead of ending
+    the session (upstream let pika's default raise inside the ioloop).
+  - **`on_channel_close` no longer sets `shutdown`.** The reconnect, open-error and close paths check `_closed`.
+- **Test:** `amqp-close-264` (daily-validation tier A, about 90 s): one session streams 120 unique CoT at 2/s
+  from the bench node (`scripts/node/cot-stream-264.sh`); at 15 s and 35 s the harness closes that session's
+  broker connection with `rabbitmqctl close_connection`, found by the client's peer address (so the negative
+  control finds an unpatched session too, review v5A-F7; the `connection_name` is
+  `eud-<listener port>-<client ip>:<client port>`, no client-controlled value). Asserts: both closes landed, the
+  client's TCP session never dropped (`CONNLOST` = FAIL), `distinct(uid) == sent` with duplicates reported,
+  two reconnect lines in the handler's log file, rows and queues removed. Negative control measured on
+  upstream (2026-10-11): the session ends, the client sees the drop, the CoT in flight are lost.
 
-### R4b — at-least-once delivery
+### R4b — at-least-once delivery (as implemented, c5eb1ea/a978af2)
 - **Fix:**
-  - `confirm_delivery` on each channel.
-  - Each publish to `cot_parser` keeps its serialized body until Basic.Ack, keyed by delivery tag.
-  - On Nack, return or connection loss, every unacked body goes back to the head of the cache.
-  - Duplicates are possible after a reconnect. cot_parser inserts each message as a row, so a duplicate becomes
-    a second row with the same `uid`/`time`. This is accepted and stated in the PR.
+  - `confirm_delivery` on the publishing channel. Every publish on that channel is numbered as the broker
+    numbers it (firehose, flask-socketio and the disconnect message included); the `cot_parser` bodies are
+    kept until their Basic.Ack, `multiple=True` honoured; numbering restarts with every channel.
+  - A Basic.Nack puts only the nacked bodies back at the head of the cache and schedules the head retry.
+  - A `basic.return` carries no tag: the returned body is matched to its unacked entry by content and marked,
+    so the ack that follows a return is not counted as a delivery (the body is already back in the cache).
+  - On any channel close or connection loss, the unacked bodies (not the returned ones, already cached) go back
+    to the cache head in publish order.
+  - **Order:** a new body queues behind a non-empty cache (a return retry or a reconnect flush in progress);
+    only the head retry goes ahead. Old PLI never lands after newer PLI of the same session.
+  - **Bound:** with `CACHE_MAX` publishes unconfirmed, further bodies are held in the cache (the same bound)
+    and released in order as acks arrive; the unacked set can never exceed the cache budget.
+  - **Client leaves while the broker is away:** the child keeps its reconnect for at most `DRAIN_MAX_S` (60 s),
+    flushes the cache on the new channel and only then ends the session (disconnect + unbind guard, R6).
+    Nothing pending: it ends at once as before. Not delivered within 60 s: the counts are logged (residual).
+  - Duplicates are possible after a close (a publish acked after it was re-cached). cot_parser inserts each
+    message as a row, so a duplicate becomes a second row with the same `uid`/`time`, and `route_cot` re-sends
+    it to DM and group recipients (review v5A-F16). This is accepted and stated in the PR. R9 coalescing uses
+    insertion order, not the CoT `time`.
 - **Residual loss, stated and not hidden:**
   - CoT already in the transient `cot_parser` queue but not yet processed are lost when the broker restarts.
     This covers the parser's prefetch of 2 and any backlog.
