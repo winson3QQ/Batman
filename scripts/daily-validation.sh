@@ -801,6 +801,44 @@ chk_cot_264_ssl() { local ots=$1 run o c0 rc=0
     && { echo "FAIL test client cert still present in ots_cot_parser:/tmp"; rc=1; } || echo "test client cert removed"
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
   return $rc; }
+# #264 R4/R4b (mechanism B): the broker ends the session's AMQP connection while the client streams. One session
+# streams 120 unique CoT at 2/s from the bench node (scripts/node/cot-stream-264.sh); at ~15 s and ~35 s the
+# harness closes that session's broker connection (rabbitmqctl close_connection, found by the client's peer
+# address, which also finds an unpatched session). Patched: the session reconnects on its own ioloop, the
+# unconfirmed bodies go back to the cache and out again -> every uid stored at least once (duplicates reported,
+# at-least-once by decision), the client's TCP session never drops, 2 reconnect log lines. Negative control,
+# measured on upstream (2026-10-11, rabbitmqctl close_connection): the session ends, the client sees CONNLOST,
+# the CoT in flight are lost.
+chk_amqp_close_264() { local ots=$1 peer=$2 run o rc=0 sent st distinct dup i closed=0 rec
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  run=DVB$(date +%H%M%S)
+  rec=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"RabbitMQ reconnect for '"$peer"'\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$rec" || rec=0
+  ( timeout 180 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run N=120 sh -s" < "$REPO/scripts/node/cot-stream-264.sh" > "$DIR/$run.gen" 2>&1 ) &
+  for i in 15 35; do
+    sleep $(( i == 15 ? 15 : 20 ))
+    o=$(fssh "$ots" 30 'n=$(docker exec rabbitmq rabbitmqctl -q list_connections name peer_host 2>/dev/null | grep "	'"$peer"'$" | cut -f1 | head -1); [ -n "$n" ] && docker exec rabbitmq rabbitmqctl -q close_connection "$n" "amqp-close-264 at '"$i"' s" >/dev/null 2>&1 && echo "closed $n" || echo "no connection from '"$peer"' found"' | tr -d '\r')
+    echo "t=${i}s: $o"; case "$o" in closed*) closed=$((closed+1)) ;; esac
+  done
+  wait; o=$(cat "$DIR/$run.gen"); echo "generator: $(echo "$o" | tr '\n' ' ')"
+  [ "$closed" = 2 ] || { echo "FAIL the session's broker connection was closed $closed/2 times — not verified"; rc=1; }
+  sent=$(echo "$o" | sed -n 's/^SENT \([0-9]*\)$/\1/p'); isint "$sent" || { echo "FAIL unreadable sent count"; return 1; }
+  echo "$o" | grep -q '^CONNLOST' && { echo "FAIL the client's session dropped ($(echo "$o" | grep '^CONNLOST')) — upstream behaviour"; rc=1; }
+  sleep 10
+  distinct=$(echo "select count(distinct uid) from cot where uid like '$run-%';" | ots_sql "$ots"); st=$(echo "select count(*) from cot where uid like '$run-%';" | ots_sql "$ots")
+  isint "$distinct" && isint "$st" || { echo "FAIL unreadable stored counts [$distinct] [$st]"; return 1; }
+  dup=$((st - distinct)); echo "sent $sent, stored rows $st, distinct uids $distinct, duplicates $dup (at-least-once: allowed, reported)"
+  [ "$distinct" = "$sent" ] || { echo "FAIL $((sent - distinct)) of $sent CoT never stored (lost across the broker-side close)"; rc=1
+    echo "  missing seq: $(echo "select string_agg(g::text,' ') from generate_series(1,$sent) g where not exists (select 1 from cot where uid='$run-'||g);" | ots_sql "$ots")"; }
+  o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"RabbitMQ reconnect for '"$peer"'\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$o" || o=0
+  [ $((o - rec)) -ge 2 ] && echo "handler log: $((o - rec)) reconnect line(s) for $peer" || { echo "FAIL expected 2 reconnect lines in the handler's log, got $((o - rec))"; rc=1; }
+  ots_sql "$ots" <<SQL
+begin; delete from cot where uid like '$run-%'; delete from euds where uid like '$run-%'; commit;
+SQL
+  o=$(fssh "$ots" 60 'n=0; for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1 && n=$((n+1)); done; echo "deleted=$n left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'")"' | tr -d '\r')
+  echo "rabbit per-EUD queues of this run: $o"; case "$o" in *left=0) ;; *) echo "FAIL cleanup: per-EUD rabbit queues of run $run left behind"; rc=1 ;; esac
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
 # #264 R6: a vanished EUD (zombie) and the same EUD's live session. On the bench node (scripts/node/zombie-264.sh):
 # B = live reading session of EUD X; phase 0: 10 CoT from C reach B (10/10). A = stale session of the same X, its
 # port black-holed on the bench node both ways (no FIN/RST ever; own nft table, elements expire, detached delete)
@@ -1038,7 +1076,7 @@ chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash
   echo "firstload enabled; offline copies present; canary runs; autocommit gate ok"'; }
 
 if [ "$OTS_SOC" = bcm2710 ]; then
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264; do
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264 amqp-close-264; do
     suite "$s" "OTS_NODE $OTS_NODE is bcm2710 — not run (see ots-node-209)" ""
   done
 elif up "$OTS_NODE"; then
@@ -1054,8 +1092,9 @@ elif up "$OTS_NODE"; then
   suite ots-cot-e2e-264-ssl "CoT sent == stored per phase on the SSL listener 8089 (mTLS, 1-day test cert for an existing user): P1 / P2 truncation / P3 burst — handler path via br-ots, not the mesh (#264)" "chk_cot_264_ssl $OTS_NODE"
   suite eud-mem-264 "ots_eud_handler memory per idle session from $BENCH_NODE: 6 sessions, <= 12 MiB each (upstream 39, OOM at ~10 clients), none refused, no leak after they leave (#264 R7)" "chk_eud_mem_264 $OTS_NODE $BENCH_NODE"
   suite zombie-264 "a vanished EUD session (port black-holed on $BENCH_NODE, data pending) is reaped within 180 s, and its end does not unbind the same EUD's live session: 10/10 before and after (#264 R6; upstream: immortal zombie, then 0/10)" "chk_zombie_264 $OTS_NODE $BENCH_NODE"
+  suite amqp-close-264 "the broker closes the streaming session's AMQP connection twice (rabbitmqctl close_connection): every CoT stored at least once, client session kept, 2 reconnects logged (#264 R4/R4b mechanism B; upstream: session dropped, CoT in flight lost)" "chk_amqp_close_264 $OTS_NODE $BENCH_NODE"
 else
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264 amqp-close-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"
