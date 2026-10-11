@@ -136,7 +136,7 @@ sha(){ sha256sum < "$1" | cut -d' ' -f1; }
 # as "$@" (a bare call would see no args — the #167 Inc-2 on-node bug).
 NAME=""; IMG=""; IP=""; HOST=""; HARDEN=""
 EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; FACTS=""
-FAILED=0; PF=""; START_FAILED=""; ACTION=""; CFG=""
+FAILED=0; PF=""; START_FAILED=""; ACTION=""; CFG=""; SKIP_START=""
 
 reset_block(){
 	NAME="$1"; IMG=""; IP=""; HOST=""; HARDEN=""
@@ -160,6 +160,32 @@ mountsha_check(){
 		[ "$got" = "$msha" ] || problem "$NAME: MOUNTSHA $mdst: the image's own file is sha256 ${got:-unreadable}, the overlay was made for $msha (image changed under the overlay)"
 	done <<EOF
 $MSHAS
+EOF
+}
+# #264 R8 (review r2 B2-5): a REFUSED converge starts the existing stack on its OLD config, but docker re-reads a
+# bind-mount source when a container starts: an overlay on p6 that the update replaced would run over the OLD image
+# (fail-open). Before that start, every container with a MOUNTSHA is checked against ITS OWN image (the one it was
+# created from, by id: no pull); a mismatch, or a probe that cannot run, keeps it stopped (fail-closed: code that
+# was never validated against that image never runs; the verdict stays DRIFT and the log says why).
+mountsha_old_check(){
+	SKIP_START=""
+	while read -r c mdst msha; do
+		[ -n "$c" ] && [ -n "$mdst" ] || continue
+		why=""
+		iid=$(docker inspect -f '{{.Image}}' "$c" 2>/dev/null) || why="no image id"
+		if [ -z "$why" ]; then
+			mc=$(docker create --pull=never --network none --security-opt no-new-privileges "$iid" 2>/dev/null) || why="cannot create a probe from $iid"
+		fi
+		if [ -z "$why" ]; then
+			got=$(docker cp "$mc:$mdst" - 2>/dev/null | tar -xO 2>/dev/null | sha256sum | cut -d' ' -f1)
+			docker rm "$mc" >/dev/null 2>&1 || true
+			[ "$got" = "$msha" ] || why="its image's $mdst is sha256 ${got:-unreadable}, the overlay on p6 was made for $msha"
+		fi
+		[ -n "$why" ] || continue
+		case " $SKIP_START " in *" $c "*) ;; *) SKIP_START="$SKIP_START $c" ;; esac
+		log "WARN: $c kept STOPPED on its old config: $why (#264 R8, fail-closed)"
+	done <<EOF
+$(awk '$1=="CONTAINER"{n=$2} $1=="MOUNTSHA"{print n, $2, $3}' "$MANIFEST")
 EOF
 }
 fact(){ FACTS="$FACTS$*
@@ -423,6 +449,7 @@ tiers(){ awk '$1=="CONTAINER"{if(n!="")print n, t; n=$2; t=99} $1=="STOPTIER"{t=
 start_group(){   # $@ = container names: start in parallel, collect each status, then gate each
 	pids=""
 	for c in "$@"; do
+		case " $SKIP_START " in *" $c "*) START_FAILED="$START_FAILED $c"; FAILED=1; continue ;; esac   # #264 R8
 		st=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
 		case "$st" in
 			running|restarting) log "$c already $st" ;;
@@ -509,6 +536,7 @@ case "$MODE" in
 		log "converge REFUSED (config changed but a rebuild is not possible):$PF"
 		if all_exist; then
 			log "starting the existing stack on its OLD config (verdict stays DRIFT until fixed)"
+			mountsha_old_check
 			do_start
 		fi
 		exit 1 ;;

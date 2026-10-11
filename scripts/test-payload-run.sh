@@ -297,6 +297,24 @@ printf 'upstream v1\n' > "$S/imgfs/etc/m.conf"
 awk -v s="$sx" '{print} /^MOUNT m.conf:/{print "MOUNTSHA etc/m.conf " s}' "$T/man.bak" > "$A/t/t.manifest"
 pf t && ok "27 MOUNTSHA with a relative target: REFUSED" || no "27 relative target accepted"
 cp "$T/man.bak" "$A/t/t.manifest"; rm -rf "$S/imgfs"
+# 28 MOUNTSHA on a REFUSED converge (#264 review r2 B2-5): the old stack is started on its old config, but a container
+#    whose OWN image does not match the overlay's MOUNTSHA stays stopped (docker would re-read the replaced p6 overlay)
+mkdir -p "$S/imgfs/etc"; printf 'upstream v1\n' > "$S/imgfs/etc/m.conf"; sx=$(sha256sum < "$S/imgfs/etc/m.conf" | cut -d' ' -f1)
+awk -v s="$sx" '{print} /^MOUNT m.conf:/{print "MOUNTSHA /etc/m.conf " s}' "$T/man.bak" > "$A/t/t.manifest"
+sh "$PR" t >>"$ALL" 2>&1                                           # a stack made for this MOUNTSHA
+for c in db app; do echo exited > "$S/c/$c/status"; done            # stopped (an OTA reboot)
+printf 'upstream v2\n' > "$S/imgfs/etc/m.conf"                       # the image no longer matches the overlay
+echo "# overlay replaced" >> "$A/t/m.conf"                           # the update replaced the overlay on p6
+reset_calls; rc=$(pr --converge t)
+[ "$rc" = 1 ] && grep -q "converge REFUSED" "$T/out" && grep -q "db kept STOPPED on its old config" "$T/out" && [ "$(cat "$S/c/db/status")" = exited ] \
+	&& [ "$(cat "$S/c/app/status")" = running ] && ! calls | grep -q '^start db' \
+	&& ok "28 refused converge: the overlay container whose own image mismatches stays stopped; the others start (rc 1, DRIFT)" || { no "28 rc=$rc db=$(cat "$S/c/db/status")"; cat "$T/out"; }
+printf 'upstream v1\n' > "$S/imgfs/etc/m.conf"; for c in db app; do echo exited > "$S/c/$c/status"; done
+echo "# changed again" >> "$A/t/t.manifest"; mv "$S/img/img_app_1" "$T/img.bak"   # refused for another reason (image gone)
+reset_calls; rc=$(pr --converge t); mv "$T/img.bak" "$S/img/img_app_1"
+[ "$rc" = 1 ] && [ "$(cat "$S/c/db/status")" = running ] && ! grep -q "kept STOPPED" "$T/out" \
+	&& ok "28 refused for another reason, own image matches the MOUNTSHA: the overlay container starts as before" || { no "28b rc=$rc db=$(cat "$S/c/db/status")"; cat "$T/out"; }
+sed -i '/^# overlay replaced$/d' "$A/t/m.conf"; cp "$T/man.bak" "$A/t/t.manifest"; rm -rf "$S/imgfs"; sh "$PR" t >>"$ALL" 2>&1
 
 # 12 no docker child ever inherited fd 9 (the lock dies with the wrapper)
 [ -s "$S/violations" ] && { no "12 violations:"; cat "$S/violations"; } || ok "12 no rm -f of a running container, no fd 9 leaked (all runs above)"

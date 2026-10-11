@@ -1036,9 +1036,12 @@ bchk_group_disc_264() { local ots=$1 peer=$2 run o rc=0 V VC c0 c1 i
   o=$(echo "delete from groups_users where user_id = (select id from \"user\" where username = 'administrator') and group_id = (select id from groups where name = 'ADS-B') returning user_id;" | ots_sql "$ots")
   echo "test membership removed: $(echo "$o" | head -1)"
   fssh "$ots" 15 'docker exec ots_cot_parser rm -f /tmp/dv-client.pem /tmp/dv-client.key' >/dev/null 2>&1
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do [ "$(ots_ctr "$ots")" = 6 ] && break; sleep 10; done
-  o=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name messages consumers 2>/dev/null | grep "^cot_parser	"' | tr -d '\r' | tr '\t' ' ')
-  echo "cot_parser queue: $o (expect 0 messages, 1 consumer)"; case "$o" in "cot_parser 0 1") ;; *) echo "FAIL cot_parser not consuming a drained queue"; rc=1 ;; esac
+  # recovery (a broken build: the guardian's next restart processes the poison message once the group is gone): wait
+  # up to 180 s for 6/6 and a drained, consumed cot_parser queue, so the node is left usable either way
+  for i in $(seq 1 18); do
+    o=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name messages consumers 2>/dev/null | grep "^cot_parser'"$(printf '	')"'"' | tr -d '' | tr '	' ' ')
+    [ "$(ots_ctr "$ots")" = 6 ] && [ "$o" = "cot_parser 0 1" ] && break; sleep 10; done
+  echo "cot_parser queue: $o (expect 0 messages, 1 consumer)"; case "$o" in "cot_parser 0 1") ;; *) echo "FAIL cot_parser not consuming a drained queue within 180 s"; rc=1 ;; esac
   r264_clean "$ots" "$run"
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
   return $rc; }
