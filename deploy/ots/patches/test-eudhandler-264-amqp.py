@@ -202,7 +202,8 @@ H.unbind_rabbitmq_queues = lambda self, uid, binds: unbound.append((uid, binds))
 h = H(); h.callsign = "CS"; h._subscribed = True; h.rabbit_channel = EndChan(0); h._end_session("U", "disc", [{"q": 1}])
 ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and h.rabbit_channel.passive == [("U", True), ("CS", True)] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"]
    and unbound == [("U", [{"q": 1}])] and h.rabbit_channel.closed, "9 last session of U: consumers cancelled, both queues checked, disconnect published, unbound, channel closed")
-ok([d[0] for d in h.rabbit_channel.deleted] == ["U", "CS"] and all(d[1] == {"if_unused": True, "if_empty": True} for d in h.rabbit_channel.deleted), "9 (F3) idle empty queues U and CS deleted (if_unused, if_empty)")
+ok([d[0] for d in h.rabbit_channel.deleted] == ["CS", "U"] and all(d[1] == {"if_unused": True, "if_empty": True} for d in h.rabbit_channel.deleted),
+   "9 (F3) idle empty queues deleted (if_unused, if_empty), the <uid> queue LAST: a broadcast landing in it refuses its delete and closes the channel, which must not cost the callsign queue")
 unbound.clear(); h = H(); h.callsign = "CS"; h._subscribed = True; h.rabbit_channel = EndChan(0, messages=3); h._end_session("U", "disc", [])
 ok(not h.rabbit_channel.deleted and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and h.rabbit_channel.closed, "9 (F3) queues with messages are kept")
 unbound.clear(); h = H(); h.callsign = "U"; h._subscribed = True; h.rabbit_channel = EndChan(0); h._end_session("U", "disc", [])

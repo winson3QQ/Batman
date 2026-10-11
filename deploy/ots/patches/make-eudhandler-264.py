@@ -680,7 +680,11 @@ rep('''    def on_close(self, connection, error):
                         properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
                     )
                     self.unbind_rabbitmq_queues(uid, binds)
-                    for q in empty:
+                    # the <uid> queue goes last: it is bound to the group fan-out, so a broadcast can land in it
+                    # between the passive declare and the delete; the broker then refuses the delete (406
+                    # precondition_failed) and closes the channel, which dropped every delete after it (rc wsl.7:
+                    # an empty callsign queue left behind, rabbitmq log "queue.delete ... not empty")
+                    for q in reversed(empty):
                         ch.queue_delete(queue=q, if_unused=True, if_empty=True)
                 else:
                     self.logger.info(f"another session of {uid} is live: no disconnect, bindings kept")

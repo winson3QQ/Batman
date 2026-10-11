@@ -856,7 +856,10 @@ chk_amqp_close_264() { local ots=$1 peer=$2 run o rc=0 sent st distinct dup i cl
     # the AMQP peer of every session is the eud container; the session is found by the connection_name the
     # overlay sets (eud-8088-<client ip>:<client port>); upstream sets no name (its negative control was measured
     # by hand with close_connection on 2026-10-11, comment 6103334725)
-    o=$(fssh "$ots" 30 'n=$(docker exec rabbitmq rabbitmqctl -q list_connections name client_properties 2>/dev/null | grep "eud-8088-'"$peer"':" | cut -f1 | head -1); [ -n "$n" ] && docker exec rabbitmq rabbitmqctl -q close_connection "$n" "amqp-close-264 at '"$i"' s" >/dev/null 2>&1 && echo "closed $n" || echo "no connection named eud-8088-'"$peer"':* found"' | tr -d '\r')
+    # close_connection takes the connection's pid, not its name (rc wsl.6/wsl.7: the name was rejected with
+    # invalid_pid_syntax and an "&& ... ||" printed that as "not found"); a miss or a failed close prints
+    # rabbitmqctl's own output so it is attributable
+    o=$(fssh "$ots" 45 'l=$(docker exec rabbitmq rabbitmqctl -q list_connections pid client_properties 2>&1); r=$?; n=$(echo "$l" | grep "eud-8088-'"$peer"':" | cut -f1 | head -1); if [ -n "$n" ]; then e=$(docker exec rabbitmq rabbitmqctl -q close_connection "$n" "amqp-close-264 at '"$i"' s" 2>&1) && echo "closed $n" || echo "close_connection failed on $n: $e"; else echo "no connection named eud-8088-'"$peer"':* found (list_connections rc=$r, $(echo "$l" | wc -l) line(s)):"; echo "$l" | sed "s/^/    | /" | cut -c1-300; fi' | tr -d '\r')
     echo "t=${i}s: $o"; case "$o" in closed*) closed=$((closed+1)) ;; esac
   done
   wait; o=$(cat "$DIR/$run.gen"); echo "generator: $(echo "$o" | tr '\n' ' ')"
@@ -888,12 +891,13 @@ SQL
 # Negative control, measured on upstream 1.7.13 (node 04, 2026-10-11): the zombie outlived a 30 s black hole with
 # its consumers (deliveries went to it), and when it ended the live session got 0/10 for good (cot_parser unbinds
 # <uid> on the disconnect). Residual, stated: B receives nothing until A is reaped (about 2 min).
-chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 reaped="" q s0 s1
+chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 reaped="" q apid bpid
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   run=DVZ$(date +%H%M%S); q="$run-A"
   zlog() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"'"$1"'\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'; }
-  s0=$(zlog "subscribed $q/"); isint "$s0" || s0=0
+  # the handler pids that logged "subscribed <q>/": A's is the first, B's must be a different one
+  zpids() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"subscribed '"$q"'/\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | sed -n 's/.* - eud_handler\[\([0-9]*\)\] - .*/\1/p' | tr -d '\r'; }
   o=$(timeout 120 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run ACTION=start sh -s" < "$REPO/scripts/node/zombie-264.sh" 2>&1 | tr -d '\r')
   echo "$o" | sed 's/^/  peer: /'
   echo "$o" | grep -q '^BLACKHOLE [0-9]* 1$' || { echo "FAIL the black hole was not installed — not verified"; rc=1; }
@@ -902,14 +906,17 @@ chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 reaped="" q s0 s1
   c=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name consumers 2>/dev/null | grep "^'"$q"'	" | cut -f2' | tr -d ' \r')
   echo "consumers of queue $q while the stale A holds it and B waits: [$c] (expect 1 = A; B is not subscribed yet)"
   [ "$c" = 1 ] || { echo "FAIL expected 1 consumer (A) on $q, got [$c]"; rc=1; }
-  o=$(zlog "queue $q already has a consumer"); echo "handler log: B waiting on the held queue: ${o:-0} line(s) (info)"
+  apid=$(zpids | head -1); echo "A's handler pid (first \"subscribed $q/\" line): [${apid:-none}]"
+  isint "$apid" || { echo "FAIL A never got subscribed — nothing to test"; rc=1; }
+  o=$(zlog "queue ${q}[^ ]* already has a consumer"); echo "handler log: B waiting on the held queue ($q or $q-cs): ${o:-0} line(s)"
+  [ "${o:-0}" -ge 1 ] 2>/dev/null || { echo "FAIL no \"already has a consumer\" line: B was not held off by A"; rc=1; }
   # A is reaped (TCP_USER_TIMEOUT with D's data pending), then B's 15 s retry subscribes: the handler logs it
   t0=$SECONDS
   while [ $((SECONDS - t0)) -lt "${ZOMBIE_MAX_S:-200}" ]; do
-    sleep 10; s1=$(zlog "subscribed $q/"); isint "$s1" || s1=0
-    [ "$s1" -gt "$s0" ] && { reaped=$((SECONDS - t0)); break; }
+    sleep 10; bpid=$(zpids | grep -v -x -F "${apid:-x}" | head -1)
+    isint "$bpid" && { reaped=$((SECONDS - t0)); break; }
   done
-  if [ -n "$reaped" ]; then echo "B subscribed $reaped s after the black hole (A reaped, B's retry took the queue)"
+  if [ -n "$reaped" ]; then echo "B (pid $bpid, not A's $apid) subscribed $reaped s after the black hole (A reaped, B's retry took the queue)"
   else echo "FAIL B never got subscribed within ${ZOMBIE_MAX_S:-200} s (A still holds the queue, or the retry never ran)"; rc=1; fi
   c=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name consumers 2>/dev/null | grep "^'"$q"'	" | cut -f2' | tr -d ' \r')
   echo "consumers of $q now: [$c] (expect 1 = B)"; [ "$c" = 1 ] || { echo "FAIL expected 1 consumer (B) on $q, got [$c]"; rc=1; }
@@ -924,9 +931,16 @@ chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 reaped="" q s0 s1
 begin; delete from cot where uid like '$run-%'; delete from euds where uid like '$run-%'; commit;
 SQL
   # B was the last session of the EUD: its end removes the idle, empty queues itself (F3); the harness only verifies
+  # every EUD of the run (A/B, C, D) has ended: a queue left EMPTY is an orphan (FAIL); one left holding
+  # messages is kept by design (a broadcast that landed after the session's last check; message TTL applies).
+  # rc wsl.7: D's session ended during C's phase-2 broadcast, its uid queue's delete was refused (406 not empty)
+  # and closed the channel, so its EMPTY callsign queue was never deleted (2 of 5 runs; rabbitmq log)
+  o=$(fssh "$ots" 30 'docker exec rabbitmq rabbitmqctl -q list_queues name messages consumers 2>&1 | grep "^'"$run"'"' | tr -d '\r')
+  [ -n "$o" ] && echo "$o" | sed 's/^/  left: /'
+  c=$(echo "$o" | awk -F'\t' 'NF>=3 && $2==0 {n++} END {print n+0}')
+  [ "$c" = 0 ] || { echo "FAIL $c EMPTY queue(s) of the run left behind after their EUD's last session ended (orphans, F3)"; rc=1; }
   o=$(fssh "$ots" 60 'left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'"); for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1; done; echo "left-by-the-handler=$left"' | tr -d '\r')
-  echo "rabbit per-EUD queues after the last session ended: $o (expect 0: the handler removed them)"
-  case "$o" in left-by-the-handler=0) ;; *) echo "FAIL the last session did not remove its idle queues ($o)"; rc=1 ;; esac
+  echo "rabbit per-EUD queues after the last session ended: $o (empty ones: FAIL above; ones holding messages: kept by design)"
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
   return $rc; }
 # #264 R7: memory per idle EUD session on the 8088 handler. N idle sessions from the peer (one CoT each, then

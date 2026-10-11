@@ -458,7 +458,7 @@
  
          # Publish the EUD info to flask-socketio for the web UI map
          if self.eud:
-@@ -301,30 +572,456 @@
+@@ -301,30 +572,460 @@
                  "binary": False,
                  "host_id": uuid.uuid4().hex,
              }
@@ -891,7 +891,11 @@
 +                        properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
 +                    )
 +                    self.unbind_rabbitmq_queues(uid, binds)
-+                    for q in empty:
++                    # the <uid> queue goes last: it is bound to the group fan-out, so a broadcast can land in it
++                    # between the passive declare and the delete; the broker then refuses the delete (406
++                    # precondition_failed) and closes the channel, which dropped every delete after it (rc wsl.7:
++                    # an empty callsign queue left behind, rabbitmq log "queue.delete ... not empty")
++                    for q in reversed(empty):
 +                        ch.queue_delete(queue=q, if_unused=True, if_empty=True)
 +                else:
 +                    self.logger.info(f"another session of {uid} is live: no disconnect, bindings kept")
@@ -932,7 +936,7 @@
  
      def on_message(self, unused_channel, basic_deliver, properties, body):
          try:
-@@ -459,28 +1156,20 @@
+@@ -459,28 +1160,20 @@
          if not event:
              return
  
@@ -974,7 +978,7 @@
  
      def parse_device_info(self, event):
          link = event.find("link")
-@@ -511,17 +1200,37 @@
+@@ -511,17 +1204,37 @@
                  self.callsign = contact.attrs["callsign"]
  
                  # Declare a RabbitMQ Queue for this uid and join the 'dms' and 'cot' exchanges
@@ -1017,7 +1021,7 @@
  
                      with self.app.app_context():
                          if self.is_ssl:
-@@ -534,7 +1243,7 @@
+@@ -534,7 +1247,7 @@
                                  self.logger.debug(
                                      f"{self.callsign} doesn't belong to any groups, adding them to the __ANON__ group"
                                  )
@@ -1026,7 +1030,7 @@
                                      exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                                  )
                                  if {
-@@ -556,7 +1265,7 @@
+@@ -556,7 +1269,7 @@
                                      self.group_memberships.append(membership)
  
                                      if membership.enabled:
@@ -1035,7 +1039,7 @@
                                              exchange="groups",
                                              queue=self.uid,
                                              routing_key=f"{membership.group.name}.OUT",
-@@ -575,7 +1284,7 @@
+@@ -575,7 +1288,7 @@
                                              }
                                          )
  
@@ -1044,7 +1048,7 @@
                              exchange="missions", routing_key="missions", queue=self.uid
                          )
                          if {
-@@ -592,10 +1301,10 @@
+@@ -592,10 +1305,10 @@
                              )
  
                          # The DMs queue also binds by callsign since the <dest> tag in CoT messages can be by callsign instead of UID
@@ -1057,7 +1061,7 @@
                              exchange="dms", queue=self.callsign, routing_key=self.callsign
                          )
  
-@@ -625,7 +1334,7 @@
+@@ -625,7 +1338,7 @@
                              self.logger.debug(
                                  f"{self.callsign} is connected via TCP, adding them to the __ANON__ group"
                              )
@@ -1066,7 +1070,7 @@
                                  exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                              )
                              self.bound_queues.append(
-@@ -636,12 +1345,14 @@
+@@ -636,12 +1349,14 @@
                                  }
                              )
  
@@ -1083,7 +1087,7 @@
  
              if "phone" in contact.attrs and contact.attrs["phone"]:
                  self.phone_number = contact.attrs["phone"]
-@@ -746,28 +1457,21 @@
+@@ -746,28 +1461,21 @@
                          "binary": False,
                          "host_id": uuid.uuid4().hex,
                      }

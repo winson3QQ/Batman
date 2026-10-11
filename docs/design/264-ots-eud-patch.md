@@ -177,6 +177,9 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 - **Orphan queues (review F3):** the last session of an EUD passively declares its `<uid>` and `<callsign>`
   queues and deletes the ones with no consumer and no message (`if_unused`, `if_empty`); a queue with messages
   stays (TTL 24 h) and is declared again by the next session. Upstream left every EUD's queues behind for ever.
+  The `<uid>` queue is deleted last: it is bound to the group fan-out, a broadcast can land in it between the
+  check and the delete, and the broker's refusal (406) closes the channel and drops every delete after it
+  (rc wsl.7, register impl-4). Residual: a DM landing in the callsign queue in that window keeps both.
 - **Residual, stated:** deliveries during the zombie's last ~2 minutes go to the zombie and are lost (`auto_ack`
   round-robin); the live session is not told. An exclusive consumer would refuse the reconnecting phone instead,
   so not done. Other writers of the per-EUD bindings (group/mission APIs, register v5B-B1) are unchanged; they
