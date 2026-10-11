@@ -430,7 +430,7 @@
  
          # Publish the EUD info to flask-socketio for the web UI map
          if self.eud:
-@@ -301,30 +546,399 @@
+@@ -301,30 +546,421 @@
                  "binary": False,
                  "host_id": uuid.uuid4().hex,
              }
@@ -809,13 +809,17 @@
 +        # unbound the dms/groups/missions bindings unconditionally: when a stale session of an EUD ended, the
 +        # EUD's live session (same uid, reconnected phone) lost all its bindings (measured: 10/10 -> 0/10).
 +        # So: cancel this session's consumers, ask the broker how many consumers the <uid> queue still has, and
-+        # publish the disconnect + unbind only when this was the last session of that EUD.
++        # publish the disconnect + unbind only when this was the last session of that EUD. The last session also
++        # removes the EUD's queues when they are idle and empty (review F3: upstream left them behind for ever,
++        # one orphan per EUD ever seen); a queue with messages stays (TTL 24 h) and is declared again next time.
 +        ch = self.rabbit_channel
 +        for tag in list(getattr(ch, "consumer_tags", []) or []):
 +            try:
 +                ch.basic_cancel(tag)
 +            except Exception as e:
 +                self.logger.error(f"basic_cancel failed: {e}")
++
++        empty = []   # queues seen with no consumer and no message: safe to delete
 +
 +        def finish(last):
 +            try:
@@ -827,6 +831,8 @@
 +                        properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
 +                    )
 +                    self.unbind_rabbitmq_queues(uid, binds)
++                    for q in empty:
++                        ch.queue_delete(queue=q, if_unused=True, if_empty=True)
 +                else:
 +                    self.logger.info(f"another session of {uid} is live: no disconnect, bindings kept")
 +            finally:
@@ -836,18 +842,34 @@
 +            finish(True)   # never identified: upstream published the (uid-less) disconnect; cot_parser ignores it
 +            return
 +
++        names = [q for q in (uid, self.callsign) if q]
++        if len(names) == 2 and names[0] == names[1]:
++            names = names[:1]
++
++        state = {"i": 0}
++
 +        def declared(frame):
-+            finish(getattr(getattr(frame, "method", None), "consumer_count", 0) == 0)
++            m = getattr(frame, "method", None)
++            if getattr(m, "consumer_count", 0):
++                finish(False)
++                return
++            if not getattr(m, "message_count", 0):
++                empty.append(names[state["i"]])
++            state["i"] += 1
++            if state["i"] < len(names):
++                ch.queue_declare(queue=names[state["i"]], passive=True, callback=declared)
++            else:
++                finish(True)
 +
 +        try:
-+            ch.queue_declare(queue=uid, passive=True, callback=declared)
++            ch.queue_declare(queue=names[0], passive=True, callback=declared)
 +        except Exception as e:
 +            self.logger.error(f"passive declare of {uid} failed: {e}")
 +            finish(True)
  
      def on_message(self, unused_channel, basic_deliver, properties, body):
          try:
-@@ -459,28 +1073,20 @@
+@@ -459,28 +1095,20 @@
          if not event:
              return
  
@@ -889,7 +911,7 @@
  
      def parse_device_info(self, event):
          link = event.find("link")
-@@ -511,17 +1117,31 @@
+@@ -511,17 +1139,31 @@
                  self.callsign = contact.attrs["callsign"]
  
                  # Declare a RabbitMQ Queue for this uid and join the 'dms' and 'cot' exchanges
@@ -926,7 +948,7 @@
  
                      with self.app.app_context():
                          if self.is_ssl:
-@@ -534,7 +1154,7 @@
+@@ -534,7 +1176,7 @@
                                  self.logger.debug(
                                      f"{self.callsign} doesn't belong to any groups, adding them to the __ANON__ group"
                                  )
@@ -935,7 +957,7 @@
                                      exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                                  )
                                  if {
-@@ -556,7 +1176,7 @@
+@@ -556,7 +1198,7 @@
                                      self.group_memberships.append(membership)
  
                                      if membership.enabled:
@@ -944,7 +966,7 @@
                                              exchange="groups",
                                              queue=self.uid,
                                              routing_key=f"{membership.group.name}.OUT",
-@@ -575,7 +1195,7 @@
+@@ -575,7 +1217,7 @@
                                              }
                                          )
  
@@ -953,7 +975,7 @@
                              exchange="missions", routing_key="missions", queue=self.uid
                          )
                          if {
-@@ -592,10 +1212,10 @@
+@@ -592,10 +1234,10 @@
                              )
  
                          # The DMs queue also binds by callsign since the <dest> tag in CoT messages can be by callsign instead of UID
@@ -966,7 +988,7 @@
                              exchange="dms", queue=self.callsign, routing_key=self.callsign
                          )
  
-@@ -625,7 +1245,7 @@
+@@ -625,7 +1267,7 @@
                              self.logger.debug(
                                  f"{self.callsign} is connected via TCP, adding them to the __ANON__ group"
                              )
@@ -975,7 +997,7 @@
                                  exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                              )
                              self.bound_queues.append(
-@@ -636,12 +1256,14 @@
+@@ -636,12 +1278,14 @@
                                  }
                              )
  
@@ -992,7 +1014,7 @@
  
              if "phone" in contact.attrs and contact.attrs["phone"]:
                  self.phone_number = contact.attrs["phone"]
-@@ -746,28 +1368,21 @@
+@@ -746,28 +1390,21 @@
                          "binary": False,
                          "host_id": uuid.uuid4().hex,
                      }

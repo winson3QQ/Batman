@@ -173,6 +173,9 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     live session of the same EUD: log `another session of <uid> is live: no disconnect, bindings kept`, close
     the channel. cot_parser therefore never sees a disconnect for an EUD that is still connected, so its own
     unbinds never run against a live session. A never-identified session (uid None) takes upstream's path.
+- **Orphan queues (review F3):** the last session of an EUD passively declares its `<uid>` and `<callsign>`
+  queues and deletes the ones with no consumer and no message (`if_unused`, `if_empty`); a queue with messages
+  stays (TTL 24 h) and is declared again by the next session. Upstream left every EUD's queues behind for ever.
 - **Residual, stated:** deliveries during the zombie's last ~2 minutes go to the zombie and are lost (`auto_ack`
   round-robin); the live session is not told. An exclusive consumer would refuse the reconnecting phone instead,
   so not done. Other writers of the per-EUD bindings (group/mission APIs, register v5B-B1) are unchanged; they

@@ -904,13 +904,17 @@ class EudHandler(socketserver.BaseRequestHandler):
         # unbound the dms/groups/missions bindings unconditionally: when a stale session of an EUD ended, the
         # EUD's live session (same uid, reconnected phone) lost all its bindings (measured: 10/10 -> 0/10).
         # So: cancel this session's consumers, ask the broker how many consumers the <uid> queue still has, and
-        # publish the disconnect + unbind only when this was the last session of that EUD.
+        # publish the disconnect + unbind only when this was the last session of that EUD. The last session also
+        # removes the EUD's queues when they are idle and empty (review F3: upstream left them behind for ever,
+        # one orphan per EUD ever seen); a queue with messages stays (TTL 24 h) and is declared again next time.
         ch = self.rabbit_channel
         for tag in list(getattr(ch, "consumer_tags", []) or []):
             try:
                 ch.basic_cancel(tag)
             except Exception as e:
                 self.logger.error(f"basic_cancel failed: {e}")
+
+        empty = []   # queues seen with no consumer and no message: safe to delete
 
         def finish(last):
             try:
@@ -922,6 +926,8 @@ class EudHandler(socketserver.BaseRequestHandler):
                         properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
                     )
                     self.unbind_rabbitmq_queues(uid, binds)
+                    for q in empty:
+                        ch.queue_delete(queue=q, if_unused=True, if_empty=True)
                 else:
                     self.logger.info(f"another session of {uid} is live: no disconnect, bindings kept")
             finally:
@@ -931,11 +937,27 @@ class EudHandler(socketserver.BaseRequestHandler):
             finish(True)   # never identified: upstream published the (uid-less) disconnect; cot_parser ignores it
             return
 
+        names = [q for q in (uid, self.callsign) if q]
+        if len(names) == 2 and names[0] == names[1]:
+            names = names[:1]
+
+        state = {"i": 0}
+
         def declared(frame):
-            finish(getattr(getattr(frame, "method", None), "consumer_count", 0) == 0)
+            m = getattr(frame, "method", None)
+            if getattr(m, "consumer_count", 0):
+                finish(False)
+                return
+            if not getattr(m, "message_count", 0):
+                empty.append(names[state["i"]])
+            state["i"] += 1
+            if state["i"] < len(names):
+                ch.queue_declare(queue=names[state["i"]], passive=True, callback=declared)
+            else:
+                finish(True)
 
         try:
-            ch.queue_declare(queue=uid, passive=True, callback=declared)
+            ch.queue_declare(queue=names[0], passive=True, callback=declared)
         except Exception as e:
             self.logger.error(f"passive declare of {uid} failed: {e}")
             finish(True)
