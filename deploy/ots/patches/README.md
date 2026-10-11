@@ -4,7 +4,7 @@
 
 ## #264 eud_handler CoT loss
 
-What the overlay carries (`BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10"` in the file; design: `docs/design/264-ots-eud-patch.md`):
+What the overlay carries (`BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12"` in the file; design: `docs/design/264-ots-eud-patch.md`):
 - **R1** a message cut by a recv boundary is carried to the next recv, not dropped (mechanism A);
 - **R3** every channel operation runs on the pika ioloop thread;
 - **R4/R4b** publisher confirms (at-least-once: a body is kept until its ack, nack/return/close put it back),
