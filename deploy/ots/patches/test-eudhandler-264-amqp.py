@@ -143,4 +143,53 @@ g["_cg_mem"] = lambda: (500 << 20, None); ok(h._session_allowed() is True, "8 me
 g["_cg_mem"] = lambda: (None, None); ok(h._session_allowed() is True, "8 cgroup unreadable: allowed (no cap)")
 import gc as _gc
 g["gc"] = _gc; g["_before_fork"](); ok(_gc.get_freeze_count() > 0, "8 _before_fork freezes the heap"); _gc.unfreeze()
+# 9 R6: keepalive options on the client socket; session end publishes the disconnect + unbinds only when no other
+#   consumer of the <uid> queue is left (another live session of the same EUD keeps its bindings)
+for fname in ("_keepalive", "_end_session"):
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == fname)
+    exec(textwrap.dedent(ast.get_source_segment(src, fn)), g)
+    setattr(H, fname, g[fname])
+import socket as _socket
+g["socket_mod"] = _socket
+for k in ("KEEPALIVE_IDLE", "KEEPALIVE_INTVL", "KEEPALIVE_CNT", "KEEPALIVE_USER_TIMEOUT_MS"):
+    g[k] = {"KEEPALIVE_IDLE": 45, "KEEPALIVE_INTVL": 15, "KEEPALIVE_CNT": 4, "KEEPALIVE_USER_TIMEOUT_MS": 120000}[k]
+
+
+class Sock:
+    def __init__(self): self.opts = []
+    def setsockopt(self, lvl, opt, val): self.opts.append((lvl, opt, val))
+
+
+h = H(); s = Sock(); h._keepalive(s)
+want = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1), (_socket.IPPROTO_TCP, getattr(_socket, "TCP_KEEPIDLE", -1), 45),
+        (_socket.IPPROTO_TCP, getattr(_socket, "TCP_KEEPINTVL", -1), 15), (_socket.IPPROTO_TCP, getattr(_socket, "TCP_KEEPCNT", -1), 4),
+        (_socket.IPPROTO_TCP, getattr(_socket, "TCP_USER_TIMEOUT", -1), 120000)]
+if hasattr(_socket, "TCP_USER_TIMEOUT"):
+    ok(s.opts == want, "9 keepalive: SO_KEEPALIVE + IDLE 45 / INTVL 15 / CNT 4 + USER_TIMEOUT 120 s set in order")
+else:
+    ok(s.opts[:1] == want[:1], "9 keepalive: SO_KEEPALIVE set (TCP_* names absent on this host: the rest is skipped, logged)")
+
+
+class EndChan(Chan):
+    def __init__(self, consumers_left):
+        super().__init__(); self.consumer_tags = ["ct1", "ct2"]; self.cancelled = []; self.closed = False; self.left = consumers_left; self.passive = []
+    def basic_cancel(self, tag): self.cancelled.append(tag)
+    def queue_declare(self, queue, passive=False, callback=None, **k):
+        self.passive.append((queue, passive))
+        class M: pass
+        m = M(); m.method = M(); m.method.consumer_count = self.left; callback(m)
+    def close(self): self.closed = True
+
+
+unbound = []
+H.unbind_rabbitmq_queues = lambda self, uid, binds: unbound.append((uid, binds))
+h = H(); h.rabbit_channel = EndChan(0); h._end_session("U", "disc", [{"q": 1}])
+ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and h.rabbit_channel.passive == [("U", True)] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"]
+   and unbound == [("U", [{"q": 1}])] and h.rabbit_channel.closed, "9 last session of U: consumers cancelled, passive declare, disconnect published, unbound, channel closed")
+unbound.clear(); h = H(); h.rabbit_channel = EndChan(1); h._end_session("U", "disc", [{"q": 1}])
+ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and not h.rabbit_channel.pubs and not unbound and h.rabbit_channel.closed,
+   "9 another consumer of U is live: no disconnect, no unbind, channel still closed")
+unbound.clear(); h = H(); h.rabbit_channel = EndChan(5); h._end_session(None, "disc", [])
+ok(not h.rabbit_channel.passive and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and unbound == [(None, [])] and h.rabbit_channel.closed,
+   "9 never identified (uid None): upstream path, no declare")
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)

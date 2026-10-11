@@ -136,18 +136,39 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     shared between the two.
   - When the old session finally closes, its unbind (upstream `:759-774`) removes bindings the live session
     shares.
-- **Fix (root cause):**
-  - `SO_KEEPALIVE` on every accepted socket, with `TCP_KEEPIDLE` 30 s, `TCP_KEEPINTVL` 10 s and `TCP_KEEPCNT` 3.
-    A lost client is detected in about 60 s.
-- **Protection:** at session close, cancel the session's own consumers first. Then `queue_declare(passive)` each
-  per-EUD queue, and unbind only if its `consumer_count` is 0.
-- **Test:** `zombie-264`.
-  - Steps: a client identifies; the peer node drops its traffic with a firewall rule on the peer only, for
-    90 s; the client reconnects with the same uid.
-  - Asserts:
-    - the old session is gone within 90 s;
-    - direct messages to that callsign all reach the live socket.
-  - Negative control: unpatched keeps the old session.
+- **Reproduced on node 04, upstream 1.7.13, 2026-10-11 (scratchpad `264/zombie-repro2.log`):** B = live reading
+  session of EUD X gets 10/10 of another EUD's plain CoT. A = stale session of X, its port black-holed on the
+  bench node both ways: 30 s later the server still holds A (4 consumers on X's queue, 2nd AMQP connection) and
+  B gets **0/10** (the deliveries went to the zombie, `auto_ack`). When A's socket finally closes (FIN), X's
+  queue keeps only its default-exchange binding and B gets **0/10 for good** (cot_parser's `send_disconnect_cot`,
+  `cot_parser.py:944-1033`, unbinds `<uid>` from every group and mission on the disconnect message, and
+  upstream's close unbound dms/groups/missions as well).
+- **Fix (root cause, `BATMAN-264-R6`, implemented after the reproduction):**
+  - `SO_KEEPALIVE` with `TCP_KEEPIDLE` 45 s, `TCP_KEEPINTVL` 15 s, `TCP_KEEPCNT` 4 **and `TCP_USER_TIMEOUT`
+    120 s** on every accepted socket, set in `setup()` before the SSL wrap (the options survive it). The kernel
+    sends no keepalive probe while data is unacknowledged (review v5A-F1/v5B-M1: with other clients on the node
+    the server is always writing to the zombie), so the user timeout is the bound that matters: a vanished peer
+    ends its session in about 2 minutes either way. A `send()` blocked on the zombie's full buffer (the R2 stall)
+    is bounded by the same 120 s: the write fails, `on_message` closes the session.
+  - **Session end is guarded (B1):** on the ioloop, cancel this session's consumers, `queue_declare(passive)`
+    the `<uid>` queue; only when `consumer_count` is 0 publish the disconnect message and unbind. With another
+    live session of the same EUD: log `another session of <uid> is live: no disconnect, bindings kept`, close
+    the channel. cot_parser therefore never sees a disconnect for an EUD that is still connected, so its own
+    unbinds never run against a live session. A never-identified session (uid None) takes upstream's path.
+- **Residual, stated:** deliveries during the zombie's last ~2 minutes go to the zombie and are lost (`auto_ack`
+  round-robin); the live session is not told. An exclusive consumer would refuse the reconnecting phone instead,
+  so not done. Other writers of the per-EUD bindings (group/mission APIs, register v5B-B1) are unchanged; they
+  act on operator actions, not on session ends.
+- **Test:** `zombie-264` (daily-validation tier A, about 4 min, `scripts/node/zombie-264.sh` on the bench node).
+  - B live reading session of X; phase 0: 10 CoT from C → B 10/10.
+  - A = second session of X, its port black-holed on the bench node both ways: own nft table `dvz264`, set
+    elements with a 240 s timeout and a detached `delete table` after 300 s (review v5B-M8: nothing can stay
+    behind if the harness dies); D streams 1 CoT/s for 150 s so data is pending towards A.
+  - Asserts: X's queue goes from 2 consumers (A+B) to 1 within 180 s (A reaped); then phase 2: 10 CoT from
+    C → B 10/10 (bindings kept); peer cleanup `LEFT 0`; the run's rows and queues removed.
+  - Negative control: upstream, measured above (zombie outlives the black hole with its consumers; B 0/10 after
+    A's end). Offline: 4 cases in `test-eudhandler-264-amqp.py` #9 (socket options; last session vs another
+    consumer live vs uid None).
 
 ### R7 — memory per session (measured 2026-10-11 on node 04, implemented e106c04)
 - **Step 1, measured with N clients (scratchpad `264/r7-mem.log`):** 8 idle 8088 sessions (one CoT each, then

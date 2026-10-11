@@ -801,6 +801,47 @@ chk_cot_264_ssl() { local ots=$1 run o c0 rc=0
     && { echo "FAIL test client cert still present in ots_cot_parser:/tmp"; rc=1; } || echo "test client cert removed"
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
   return $rc; }
+# #264 R6: a vanished EUD (zombie) and the same EUD's live session. On the bench node (scripts/node/zombie-264.sh):
+# B = live reading session of EUD X; phase 0: 10 CoT from C reach B (10/10). A = stale session of the same X, its
+# port black-holed on the bench node both ways (no FIN/RST ever; own nft table, elements expire, detached delete)
+# while D streams 1 CoT/s so the server has data pending towards A (keepalive probes alone would never fire).
+# Asserted on the OTS node: the <uid> queue goes from 2 consumers (A+B) to 1 within ZOMBIE_MAX_S (180): A's
+# session ended by TCP_USER_TIMEOUT/keepalive. Then phase 2: 10 CoT from C reach B (10/10): A's end did not
+# unbind the EUD's queue (consumer-count guard before the disconnect publish). Negative control, measured on
+# upstream 1.7.13 (node 04, 2026-10-11): the zombie outlived a 30 s black hole with its consumers (deliveries
+# went to it: B 0/10), and when it finally ended B got 0/10 for good (cot_parser unbinds <uid> on the disconnect).
+chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 reaped="" q
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  run=DVZ$(date +%H%M%S); q="$run-A"
+  o=$(timeout 120 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run ACTION=start sh -s" < "$REPO/scripts/node/zombie-264.sh" 2>&1 | tr -d '\r')
+  echo "$o" | sed 's/^/  peer: /'
+  echo "$o" | grep -q '^PHASE0 10$' || { echo "FAIL phase 0: B alone did not get 10/10 ($(echo "$o" | grep '^PHASE0'))"; rc=1; }
+  echo "$o" | grep -q '^BLACKHOLE [0-9]* 1$' || { echo "FAIL the black hole was not installed — not verified"; rc=1; }
+  c=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name consumers 2>/dev/null | grep "^'"$q"'	" | cut -f2' | tr -d ' \r')
+  echo "consumers of queue $q with A + B: $c (expect 2)"; [ "$c" = 2 ] || { echo "FAIL expected 2 consumers (A+B) on $q, got [$c]"; rc=1; }
+  t0=$SECONDS
+  while [ $((SECONDS - t0)) -lt "${ZOMBIE_MAX_S:-180}" ]; do
+    sleep 10; c=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name consumers 2>/dev/null | grep "^'"$q"'	" | cut -f2' | tr -d ' \r')
+    [ "$c" = 1 ] && { reaped=$((SECONDS - t0)); break; }
+  done
+  if [ -n "$reaped" ]; then echo "zombie A reaped after $reaped s (consumers of $q now 1 = B)"
+  else echo "FAIL zombie A still holds its consumer after ${ZOMBIE_MAX_S:-180} s (consumers [$c]) — upstream behaviour"; rc=1; fi
+  sleep 5
+  o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run ACTION=phase2 sh -s" < "$REPO/scripts/node/zombie-264.sh" 2>&1 | tr -d '\r')
+  echo "  peer: $o"
+  echo "$o" | grep -q '^PHASE2 10$' || { echo "FAIL phase 2: after A's end the live session B got $(echo "$o" | sed -n 's/^PHASE2 //p')/10 (bindings lost = B1)"; rc=1; }
+  echo "eud log: $(fssh "$ots" 20 'docker logs --since 6m ots_eud_handler 2>&1 | grep -c "another session of '"$q"' is live"') 'another session is live' line(s) (info)"
+  o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run ACTION=cleanup sh -s" < "$REPO/scripts/node/zombie-264.sh" 2>&1 | tr -d '\r')
+  echo "  peer: $o"; echo "$o" | grep -q '^LEFT 0$' || { echo "FAIL peer cleanup left sessions ($o)"; rc=1; }
+  sleep 5
+  ots_sql "$ots" <<SQL
+begin; delete from cot where uid like '$run-%'; delete from euds where uid like '$run-%'; commit;
+SQL
+  o=$(fssh "$ots" 60 'n=0; for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1 && n=$((n+1)); done; echo "deleted=$n left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'")"' | tr -d '\r')
+  echo "rabbit per-EUD queues of this run: $o"; case "$o" in *left=0) ;; *) echo "FAIL cleanup: per-EUD rabbit queues of run $run left behind"; rc=1 ;; esac
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
 # #264 R7: memory per idle EUD session on the 8088 handler. N idle sessions from the peer (one CoT each, then
 # silent); cgroup memory.current of ots_eud_handler before/after; the per-session cost must stay under
 # EUD_MEM_MAX_MB (12). Negative control: upstream 1.7.13 costs 39 MB per session (8 sessions: 153 -> 465 MB,
@@ -992,7 +1033,7 @@ chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash
   echo "firstload enabled; offline copies present; canary runs; autocommit gate ok"'; }
 
 if [ "$OTS_SOC" = bcm2710 ]; then
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264; do
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264; do
     suite "$s" "OTS_NODE $OTS_NODE is bcm2710 — not run (see ots-node-209)" ""
   done
 elif up "$OTS_NODE"; then
@@ -1007,8 +1048,9 @@ elif up "$OTS_NODE"; then
   suite ots-cot-e2e-264  "CoT sent == stored per phase from $BENCH_NODE: P1 control, P2 deterministic truncation (A control / B #264-A), P3 burst; heartbeat (#264-B) NOT exercised (#268 B2)" "chk_cot_264 $OTS_NODE $BENCH_NODE"
   suite ots-cot-e2e-264-ssl "CoT sent == stored per phase on the SSL listener 8089 (mTLS, 1-day test cert for an existing user): P1 / P2 truncation / P3 burst — handler path via br-ots, not the mesh (#264)" "chk_cot_264_ssl $OTS_NODE"
   suite eud-mem-264 "ots_eud_handler memory per idle session from $BENCH_NODE: 6 sessions, <= 12 MiB each (upstream 39, OOM at ~10 clients), none refused, no leak after they leave (#264 R7)" "chk_eud_mem_264 $OTS_NODE $BENCH_NODE"
+  suite zombie-264 "a vanished EUD session (port black-holed on $BENCH_NODE, data pending) is reaped within 180 s, and its end does not unbind the same EUD's live session: 10/10 before and after (#264 R6; upstream: immortal zombie, then 0/10)" "chk_zombie_264 $OTS_NODE $BENCH_NODE"
 else
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"

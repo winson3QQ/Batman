@@ -16,6 +16,7 @@ import traceback
 import uuid
 import functools  # BATMAN-264
 import gc  # BATMAN-264-R7
+import socket as socket_mod  # BATMAN-264-R6 (upstream imports the socket CLASS as 'socket')
 import threading  # BATMAN-264
 from logging.handlers import TimedRotatingFileHandler
 from socket import socket, SHUT_RDWR
@@ -75,7 +76,12 @@ from opentakserver.models.ZMIST import ZMIST
 MAX_PENDING = 1 << 20  # BATMAN-264-PA: bytes held while waiting for a closing tag (upstream: unbounded)
 CACHE_MAX = 2000         # BATMAN-264-R9: cot_parser bodies held per session while the broker is away/blocked
 CACHE_MAX_BYTES = 2 << 20
-BATMAN_264 = "R1 R3 R5 R7 R9"  # BATMAN-264: which #264 items this overlay carries (payload-conform greps it)
+BATMAN_264 = "R1 R3 R5 R6 R7 R9"  # BATMAN-264: which #264 items this overlay carries (payload-conform greps it)
+# BATMAN-264-R6: client-socket keepalive (seconds / count / ms): a peer that vanished is gone in about 2 minutes
+KEEPALIVE_IDLE = 45
+KEEPALIVE_INTVL = 15
+KEEPALIVE_CNT = 4
+KEEPALIVE_USER_TIMEOUT_MS = 120000
 # BATMAN-264-R7: a new session is refused when the container has less than this much memory left. Measured on the
 # node (2026-10-11, 512 MiB cgroup): upstream costs 39 MB per idle session (the child's Flask+Security build 28.6 MB
 # plus the child's first gc pass copying 58.7 MB of the parent's heap); the kernel OOM-kills the whole container
@@ -245,6 +251,7 @@ class EudHandler(socketserver.BaseRequestHandler):
             except OSError:
                 pass
             return
+        self._keepalive(self.request)  # BATMAN-264-R6: a vanished peer ends the session in about 2 min
         self.create_app()
 
         # RabbitMQ
@@ -312,14 +319,7 @@ class EudHandler(socketserver.BaseRequestHandler):
                 self._retry_timer = None
             try:
                 if self.rabbit_channel and self.rabbit_channel.is_open:
-                    self.rabbit_channel.basic_publish(
-                        exchange="cot_parser",
-                        body=body,
-                        routing_key="cot_parser",
-                        properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
-                    )
-                    self.unbind_rabbitmq_queues(uid, binds)
-                    self.rabbit_channel.close()  # on_channel_close (CloseOk) sets _drained
+                    self._end_session(uid, body, binds)  # BATMAN-264-R6: cancel, count peers, then disconnect/unbind
                 else:
                     self._drained.set()
             except Exception as e:
@@ -329,7 +329,7 @@ class EudHandler(socketserver.BaseRequestHandler):
         if threading.current_thread() is self.iothread:
             _close_on_ioloop()  # called from on_message: never wait for ourselves
         elif self._io(_close_on_ioloop):
-            self._drained.wait(2.0)
+            self._drained.wait(3.0)
 
         if not self.shutdown:
             self.shutdown = True
@@ -653,6 +653,63 @@ class EudHandler(socketserver.BaseRequestHandler):
                 getattr(self.rabbit_channel, name)(*a, **k)
         else:
             self._pending_ops = ops
+
+    # ---- BATMAN-264-R6: a vanished peer, and a session end that must not cut a live session of the same EUD --
+    def _keepalive(self, sock):
+        # Upstream never wrote to an idle client and set no keepalive, so a peer that vanished (HaLow drop, phone
+        # off, roaming) kept its session, its consumers on the shared <uid>/<callsign> queues and its memory for
+        # ever (measured: still consuming after 30 s of a black-holed port, deliveries lost to it). Probe after 45 s
+        # idle, every 15 s, 4 misses; TCP_USER_TIMEOUT also bounds unacknowledged writes. ~2 min to a dead peer.
+        try:
+            sock.setsockopt(socket_mod.SOL_SOCKET, socket_mod.SO_KEEPALIVE, 1)
+            sock.setsockopt(socket_mod.IPPROTO_TCP, socket_mod.TCP_KEEPIDLE, KEEPALIVE_IDLE)
+            sock.setsockopt(socket_mod.IPPROTO_TCP, socket_mod.TCP_KEEPINTVL, KEEPALIVE_INTVL)
+            sock.setsockopt(socket_mod.IPPROTO_TCP, socket_mod.TCP_KEEPCNT, KEEPALIVE_CNT)
+            sock.setsockopt(socket_mod.IPPROTO_TCP, socket_mod.TCP_USER_TIMEOUT, KEEPALIVE_USER_TIMEOUT_MS)
+        except (OSError, AttributeError) as e:
+            self.logger.error(f"keepalive not set on the client socket: {e}")
+
+    def _end_session(self, uid, body, binds):
+        # ioloop thread. cot_parser's send_disconnect_cot (cot_parser.py:944-1033) unbinds <uid> from EVERY group
+        # and mission on a disconnect message, whoever else still holds that queue, and upstream's close also
+        # unbound the dms/groups/missions bindings unconditionally: when a stale session of an EUD ended, the
+        # EUD's live session (same uid, reconnected phone) lost all its bindings (measured: 10/10 -> 0/10).
+        # So: cancel this session's consumers, ask the broker how many consumers the <uid> queue still has, and
+        # publish the disconnect + unbind only when this was the last session of that EUD.
+        ch = self.rabbit_channel
+        for tag in list(getattr(ch, "consumer_tags", []) or []):
+            try:
+                ch.basic_cancel(tag)
+            except Exception as e:
+                self.logger.error(f"basic_cancel failed: {e}")
+
+        def finish(last):
+            try:
+                if last:
+                    ch.basic_publish(
+                        exchange="cot_parser",
+                        body=body,
+                        routing_key="cot_parser",
+                        properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+                    )
+                    self.unbind_rabbitmq_queues(uid, binds)
+                else:
+                    self.logger.info(f"another session of {uid} is live: no disconnect, bindings kept")
+            finally:
+                ch.close()  # on_channel_close (CloseOk) sets _drained
+
+        if not uid:
+            finish(True)   # never identified: upstream published the (uid-less) disconnect; cot_parser ignores it
+            return
+
+        def declared(frame):
+            finish(getattr(getattr(frame, "method", None), "consumer_count", 0) == 0)
+
+        try:
+            ch.queue_declare(queue=uid, passive=True, callback=declared)
+        except Exception as e:
+            self.logger.error(f"passive declare of {uid} failed: {e}")
+            finish(True)
 
     def on_message(self, unused_channel, basic_deliver, properties, body):
         try:
