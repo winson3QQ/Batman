@@ -26,6 +26,9 @@ rep("import uuid\n", "import uuid\nimport functools  # BATMAN-264\nimport thread
 # --- helpers (module level) ------------------------------------------------------------------------
 rep("class EudHandler(socketserver.BaseRequestHandler):\n",
 '''MAX_PENDING = 1 << 20  # BATMAN-264-PA: bytes held while waiting for a closing tag (upstream: unbounded)
+CACHE_MAX = 2000         # BATMAN-264-R9: cot_parser bodies held per session while the broker is away/blocked
+CACHE_MAX_BYTES = 2 << 20
+BATMAN_264 = "R1 R3 R5 R9"  # BATMAN-264: which #264 items this overlay carries (payload-conform greps it)
 
 
 class _OpRecorder:  # BATMAN-264: records channel calls made on the handler thread, replayed on the ioloop
@@ -139,12 +142,27 @@ rep('''    def setup(self):
         self._closed = False
         self._pending_ops = None
         self._drained = threading.Event()
+        self._blocked = False        # BATMAN-264-R9: broker flow control (connection.blocked)
+        self._cache_bytes = 0
+        self._dropped = 0
+        self._decl_channel = None    # BATMAN-264-R5: the cot_parser declare runs on its own channel
+        self._decl_refused = False
+        self._retry_n = 0
+        self._retry_timer = None
+        self._head_returned = False
         self.create_app()
 ''')
 rep('''                pika.ConnectionParameters(host=rabbit_host, credentials=rabbit_credentials),
                 self.on_connection_open,
                 on_close_callback=self.on_close,
-            )''', '''                pika.ConnectionParameters(host=rabbit_host, credentials=rabbit_credentials),
+            )''', '''                pika.ConnectionParameters(
+                    host=rabbit_host,
+                    credentials=rabbit_credentials,
+                    blocked_connection_timeout=60,  # BATMAN-264-R9: a broker blocked for 60 s ends the connection
+                    client_properties={  # BATMAN-264: name the connection so a test can find this session's
+                        "connection_name": "eud-%s-%s:%s" % (
+                            getattr(self.server, "server_address", ("", 0))[1], self.client_address[0], self.client_address[1])},
+                ),
                 self.on_connection_open,
                 on_open_error_callback=self.on_open_error,  # BATMAN-264: upstream had none -> ioloop died
                 on_close_callback=self.on_close,
@@ -202,7 +220,16 @@ NEW_CLOSE = '''    def close_connection(self):
         binds = list(self.bound_queues)
         uid = self.uid
 
+        if self.cached_messages or self._dropped:  # BATMAN-264-R9: never silent
+            self.logger.error(f"session end: {len(self.cached_messages)} cached and {self._dropped} dropped cot never delivered")
+
         def _close_on_ioloop():
+            if self._retry_timer is not None:  # BATMAN-264-R5
+                try:
+                    self.rabbit_connection.ioloop.remove_timeout(self._retry_timer)
+                except Exception:
+                    pass
+                self._retry_timer = None
             try:
                 if self.rabbit_channel and self.rabbit_channel.is_open:
                     self.rabbit_channel.basic_publish(
@@ -228,15 +255,33 @@ NEW_CLOSE = '''    def close_connection(self):
 '''
 rep(OLD_CLOSE, NEW_CLOSE)
 
-# --- on_channel_open: replay deferred subscriptions before cached messages ------------------------------
+# --- on_connection_open: flow-control callbacks + the declare channel (R5/R9) -----------------------------
+rep('''    def on_connection_open(self, connection: pika.SelectConnection):
+        self.rabbit_connection.channel(on_open_callback=self.on_channel_open)
+''', '''    def on_connection_open(self, connection: pika.SelectConnection):
+        # BATMAN-264-R9: broker flow control -> cache, instead of filling pika's unbounded write buffer
+        connection.add_on_connection_blocked_callback(self._on_blocked)
+        connection.add_on_connection_unblocked_callback(self._on_unblocked)
+        # BATMAN-264-R5: the cot_parser queue declare gets its own channel: a refused declare (406 if the
+        # queue's arguments ever change) closes only that channel, never the publishing one
+        connection.channel(on_open_callback=self._on_decl_channel_open)
+        self.rabbit_connection.channel(on_open_callback=self.on_channel_open)
+''')
+
+# --- on_channel_open: return callback; replay deferred subscriptions; flush the body cache ---------------
+rep('''        self.rabbit_channel.add_on_close_callback(self.on_channel_close)
+''', '''        self.rabbit_channel.add_on_close_callback(self.on_channel_close)
+        self.rabbit_channel.add_on_return_callback(self._on_return)  # BATMAN-264-R5: unroutable -> cache
+''')
 rep('''        for message in self.cached_messages:
             self.publish_cot(message)
+
+        self.cached_messages.clear()
 ''', '''        if self._pending_ops:  # BATMAN-264: a subscription requested before the channel was open
             ops, self._pending_ops = self._pending_ops, None
             self._subscribe(ops)
 
-        for message in self.cached_messages:
-            self.publish_cot(message)
+        self._flush_cache()  # BATMAN-264-R9: cot_parser bodies cached while the channel was closed/blocked
 ''')
 
 # --- on_channel_close / on_close: signal the drain; new callbacks + ioloop helpers ---------------------
@@ -289,22 +334,136 @@ rep('''    def on_close(self, connection, error):
             self.logger.error(f"cannot hand work to the RabbitMQ ioloop: {e}")
             return False
 
-    def _publish_on_ioloop(self, exchange, routing_key, body, event=None):
-        if self.rabbit_channel and self.rabbit_channel.is_open:
-            self.rabbit_channel.basic_publish(
-                exchange=exchange,
-                routing_key=routing_key,
-                body=body,
-                properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
-            )
-        elif event is not None and exchange == "cot_parser":
-            self._cache(event)
+    def _publish_on_ioloop(self, exchange, routing_key, body, meta=None):
+        if self.rabbit_channel and self.rabbit_channel.is_open and not self._blocked:
+            if exchange == "cot_parser":
+                # BATMAN-264-R5: mandatory -> an unroutable publish comes back through _on_return instead of
+                # being dropped (#264 mechanism C); uid/type ride in headers so a returned body keeps its meta
+                hdr = {}
+                if meta and meta[0]:
+                    hdr["x-b264-uid"] = str(meta[0])
+                if meta and meta[1]:
+                    hdr["x-b264-type"] = str(meta[1])
+                self.rabbit_channel.basic_publish(
+                    exchange=exchange,
+                    routing_key=routing_key,
+                    body=body,
+                    properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL"), headers=hdr or None),
+                    mandatory=True,
+                )
+            else:
+                self.rabbit_channel.basic_publish(
+                    exchange=exchange,
+                    routing_key=routing_key,
+                    body=body,
+                    properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+                )
+        elif exchange == "cot_parser":
+            self._cache(body, meta)
 
-    def _cache(self, event):
-        if len(self.cached_messages) >= 1000:
-            self.cached_messages.pop(0)
-        self.cached_messages.append(event)
-        self.logger.error("RabbitMQ channel is closed, not publishing cot")
+    # ---- BATMAN-264-R5/R9: cot_parser queue declare, mandatory publish + return, bounded body cache --------
+    def _on_decl_channel_open(self, channel):
+        self._decl_channel = channel
+        channel.add_on_close_callback(self._on_decl_channel_close)
+        self._declare_cot_parser()
+
+    def _on_decl_channel_close(self, channel, error):
+        # a refused declare must never take the session down: log once, keep publishing (cot_parser's own
+        # declare + the return path still apply)
+        self._decl_channel = None
+        if not self._decl_refused and not self._closed:
+            self._decl_refused = True
+            self.logger.error(f"cot_parser queue declare refused ({error}); publishing without it")
+
+    def _declare_cot_parser(self):
+        # #264 mechanism C: the transient cot_parser queue is gone after every broker restart until
+        # cot_parser re-declares it, and a publish in that window is unroutable (dropped). Declare it here,
+        # before this session's first publish, with EXACTLY cot_parser.py:90's arguments (an identical
+        # redeclare is accepted, a different one is 406 - probed on the node 2026-10-11) and bind it as
+        # cot_parser.py:91 does; the exchanges with app.py:204/210's arguments.
+        ch = self._decl_channel
+        if ch is None or not ch.is_open:
+            if not self._decl_refused and self.rabbit_connection and self.rabbit_connection.is_open:
+                self.rabbit_connection.channel(on_open_callback=self._on_decl_channel_open)
+            return
+        ch.exchange_declare("cot_parser", durable=True, exchange_type="direct")
+        ch.exchange_declare("firehose", durable=True, exchange_type="fanout")
+        ch.queue_declare(queue="cot_parser")
+        ch.queue_bind(exchange="cot_parser", queue="cot_parser", routing_key="cot_parser")
+
+    def _on_blocked(self, connection, method):
+        self._blocked = True
+        self.logger.error("RabbitMQ blocked this connection (broker alarm): caching cot")
+
+    def _on_unblocked(self, connection, method):
+        self._blocked = False
+        self._flush_cache()
+
+    def _cache(self, body, meta=None):
+        # bodies (the serialized cot_parser message), never parsed CoT objects (~25x larger); bounded by
+        # count and bytes. Over the bound: the oldest position report (type a-*) whose uid/type has a newer
+        # entry goes first, then the oldest entry. Every drop is counted; the upstream log line is kept so
+        # ots_logc still counts drops - it now means DROPPED, not cached.
+        self.cached_messages.append((body, meta))
+        self._cache_bytes += len(body)
+        while len(self.cached_messages) > CACHE_MAX or self._cache_bytes > CACHE_MAX_BYTES:
+            victim = 0
+            seen = set()
+            for i in range(len(self.cached_messages) - 1, -1, -1):
+                m = self.cached_messages[i][1]
+                if m and m[0] and m[1] and str(m[1]).startswith("a-"):
+                    if m in seen:
+                        victim = i
+                    seen.add(m)
+            b, _ = self.cached_messages.pop(victim)
+            self._cache_bytes -= len(b)
+            self._dropped += 1
+            if self._dropped == 1 or self._dropped % 100 == 0:
+                self.logger.error(f"RabbitMQ channel is closed, not publishing cot: cache full, dropped={self._dropped}")
+
+    def _flush_cache(self):
+        if not (self.rabbit_channel and self.rabbit_channel.is_open) or self._blocked:
+            return
+        pending, self.cached_messages, self._cache_bytes = self.cached_messages, [], 0
+        for body, meta in pending:
+            self._publish_on_ioloop("cot_parser", "cot_parser", body, meta)
+
+    def _on_return(self, channel, method, properties, body):
+        # basic.return: the broker had no queue for it (the mechanism-C window, or a deleted queue). Keep it
+        # at the HEAD of the cache, re-declare the queue, and retry the head only, with backoff 2/4/8 s; the
+        # rest flushes once a head publish is not returned within 1 s (no return storm).
+        h = getattr(properties, "headers", None) or {}
+        meta = (h.get("x-b264-uid"), h.get("x-b264-type")) if h else None
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", errors="replace")
+        self.cached_messages.insert(0, (body, meta))
+        self._cache_bytes += len(body)
+        self._head_returned = True
+        self._declare_cot_parser()
+        if self._retry_timer is None:
+            self._schedule_retry()
+
+    def _schedule_retry(self):
+        self._retry_n += 1
+        self._retry_timer = self.rabbit_connection.ioloop.call_later(min(2 ** self._retry_n, 8), self._retry_head)
+
+    def _retry_head(self):
+        self._retry_timer = None
+        if not self.cached_messages or not (self.rabbit_channel and self.rabbit_channel.is_open) or self._blocked:
+            return
+        self._head_returned = False
+        body, meta = self.cached_messages.pop(0)
+        self._cache_bytes -= len(body)
+        self._publish_on_ioloop("cot_parser", "cot_parser", body, meta)
+        self._retry_timer = self.rabbit_connection.ioloop.call_later(1.0, self._after_head)
+
+    def _after_head(self):
+        self._retry_timer = None
+        if self._head_returned:
+            self._schedule_retry()   # the head came back again: wait longer before the next single try
+        else:
+            self._retry_n = 0
+            self._flush_cache()      # the queue is back: everything else may go
 
     def _subscribe(self, ops):
         # replay queue_declare / queue_bind / basic_consume recorded by parse_device_info; if the channel is
@@ -345,15 +504,16 @@ NEW_PUB = '''        # BATMAN-264: bodies are built here (the DB-bound self.user
         # publishes run on the ioloop thread. If the loop is gone: upstream's "channel closed" path.
         fh = json.dumps({"uid": self.uid, "cot": str(event)})
         cp = json.dumps({"uid": self.uid, "cot": str(event), "user_id": self.user.id if self.user else None})
+        meta = (self.uid, event.attrs.get("type") if hasattr(event, "attrs") else None)  # BATMAN-264-R9
 
         def _both():
             # Route all CoTs to the firehose exchange for plugins and users that connect directly to RabbitMQ
             self._publish_on_ioloop("firehose", "", fh)
             # Route all cots to the cot_parser direct exchange to be processed by a pool of cot_parser processes
-            self._publish_on_ioloop("cot_parser", "cot_parser", cp, event)
+            self._publish_on_ioloop("cot_parser", "cot_parser", cp, meta)
 
         if not self._io(_both):
-            self._cache(event)
+            self._cache(cp, meta)
 '''
 rep(OLD_PUB, NEW_PUB)
 

@@ -168,6 +168,9 @@ define Package/batman-payload-ots/install
 	$(INSTALL_DATA) ../../deploy/ots/ots.hardening.env                  $(1)/usr/share/batman/payload-golden/opentakserver/ots.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq.hardening.env             $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq-extra.conf                $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq-extra.conf
+	# #264: the patched eud_handler (GPL-3.0-or-later, deploy/ots/patches/README.md), bind-mounted ro over the
+	# image's file by the manifest (MOUNT + MOUNTSHA pin); refreshed to p6 at boot like every golden file
+	$(INSTALL_DATA) ../../deploy/ots/patches/EudHandler-264.py          $(1)/usr/share/batman/payload-golden/opentakserver/EudHandler-264.py
 	# #274 §12 D7-7: the generic checker the golden verify-profile-ots.sh runs, shipped in the image. NOT in the
 	# golden set: a revert to an image whose refresh prunes golden files it does not know would delete the p6
 	# copy its own wrapper needs (E38).

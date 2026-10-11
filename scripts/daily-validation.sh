@@ -345,16 +345,30 @@ chk_conform() { fssh "$1" 90 '                                  # #274 payload-c
     man=$(ls "$d"*.manifest 2>/dev/null | head -1); [ -n "$man" ] || continue
     t=${d%/}; t=${t##*/}; checked=1
     want=$(payload-run --cfg-hash "$t" 2>/dev/null); [ -n "$want" ] || { echo "FAIL $t: payload-run --cfg-hash gave nothing"; rc=1; }
-    names=$(awk "/^CONTAINER /{print \$2}" "$man" | tr "\n" " "); c=""
+    names=$(awk "/^CONTAINER /{print \$2}" "$man" | tr "\n" " "); c=""; img=""
     while read -r k v; do
       case "$k" in
         CONTAINER) c=$v
           s=$(docker inspect -f "{{.State.Status}} {{.State.Restarting}} {{index .Config.Labels \"batman.cfg\"}} {{index .Config.Labels \"batman.tenant\"}}" "$c" 2>/dev/null)
           [ "$s" = "running false $want $t" ] || { echo "FAIL $t/$c [status restarting cfg tenant]=[$s] want [running false $want $t]"; rc=1; } ;;
+        IMAGE) img=$v ;;
         MOUNT) src=${v%%:*}; r=${v#*:}; dst=${r%%:*}; rw=true; case "$v" in *:ro) rw=false ;; esac
           case "$src" in /*) ;; *) src="$d$src"; [ -f "$src" ] || { echo "FAIL $t/$c mount source $src is not a regular file"; rc=1; } ;; esac
           m=$(docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$dst\"}}{{.Source}} {{.RW}}{{end}}{{end}}" "$c" 2>/dev/null)
-          [ "$m" = "$src $rw" ] || { echo "FAIL $t/$c mount $dst = [$m] want [$src $rw]"; rc=1; } ;;
+          [ "$m" = "$src $rw" ] || { echo "FAIL $t/$c mount $dst = [$m] want [$src $rw]"; rc=1; }
+          # #264: what the process actually reads at $dst is the p6 overlay, byte for byte (not a stale pyc, not the image file)
+          case "$src" in */EudHandler-264.py)
+            hs=$(sha256sum < "$src" | cut -d" " -f1); hc=$(docker exec "$c" sha256sum "$dst" 2>/dev/null | cut -d" " -f1)
+            [ -n "$hc" ] && [ "$hc" = "$hs" ] && echo "$t/$c #264 overlay in the container == p6 source (${hs%${hs#????????}}...)" \
+              || { echo "FAIL $t/$c $dst in the container is sha256 [${hc:-unreadable}], the p6 overlay is $hs"; rc=1; } ;;
+          esac ;;
+        MOUNTSHA) dst=${v%% *}; want_sha=${v#* }
+          # #264 R8: the image own (unmounted) file at $dst is still the upstream file the overlay was made for.
+          # docker create + cp: nothing executes; the allowlist flags keep the guardian foreign scan quiet.
+          k2=$(docker create --pull=never --network none --security-opt no-new-privileges "$img" 2>/dev/null)
+          h=$( { docker cp "$k2:$dst" - 2>/dev/null | tar -xO 2>/dev/null; } | sha256sum | cut -d" " -f1); docker rm "$k2" >/dev/null 2>&1
+          [ "$h" = "$want_sha" ] && echo "$t/$c image $img own $dst == MOUNTSHA (${h%${h#????????}}...)" \
+            || { echo "FAIL $t/$c image $img own $dst sha256 $h != MOUNTSHA $want_sha (the overlay was made for a different file)"; rc=1; } ;;
       esac
     done < "$man"
     for o in $(docker ps -a --filter "label=batman.tenant=$t" --format "{{.Names}}" 2>/dev/null); do
@@ -733,6 +747,13 @@ chk_cot_264() { local ots=$1 peer=$2 run o c0 c1 l0 l1 rc=0 ph sent st prev i
   l0=$(ots_logc "$ots")
   o=$(timeout 400 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run sh -s" < "$REPO/scripts/node/cot-e2e-gen.sh" 2>&1)
   echo "$o"
+  cot_judge "$ots" "$run" "$o" || rc=1
+  l1=$(ots_logc "$ots"); echo "eud 'Failed to parse' / rabbit 'missed heartbeats' / eud 'channel is closed': before [$l0] after [$l1] (info; #264 mechanism B is not exercised by this suite)"
+  c1=$(ots_ctr "$ots"); [ "$c1" = 6 ] || { echo "FAIL OTS not 6/6 after the test ($c1)"; rc=1; }
+  return $rc; }
+# cot_judge <ots> <run> <generator output>: per phase sent == stored, connection losses, then delete the run's
+# rows and prove they are gone. Shared by the TCP (8088) and SSL (8089) suites (#264).
+cot_judge() { local ots=$1 run=$2 o=$3 rc=0 ph sent st prev i pat u
   # stored: poll until two consecutive identical totals (max 60 s)
   prev=x; for i in $(seq 1 12); do st=$(echo "select count(*) from cot where uid like '$run-%';" | ots_sql "$ots"); [ "$st" = "$prev" ] && break; prev=$st; sleep 5; done
   echo "stored total=$st"
@@ -748,7 +769,6 @@ chk_cot_264() { local ots=$1 peer=$2 run o c0 c1 l0 l1 rc=0 ph sent st prev i
     fi
   done
   echo "$o" | grep '^CONNLOST' | sed 's/^/FAIL CONNECTION-LOST /' && rc=1
-  l1=$(ots_logc "$ots"); echo "eud 'Failed to parse' / rabbit 'missed heartbeats' / eud 'channel is closed': before [$l0] after [$l1] (info; #264 mechanism B is not exercised by this suite)"
   # cleanup in one transaction, then verify every related table is empty for this run
   ots_sql "$ots" <<SQL
 begin; delete from euds where uid like '$run-%'; delete from cot where uid like '$run-%'; commit;
@@ -758,7 +778,63 @@ select (select count(*) from cot where uid like '$run-%' or sender_uid like '$ru
 SQL
 )
   [ "$o" = 0 ] && echo "cleanup ok (cot/euds/points = 0)" || { echo "FAIL cleanup: $o rows of run $run left behind"; rc=1; }
-  c1=$(ots_ctr "$ots"); [ "$c1" = 6 ] || { echo "FAIL OTS not 6/6 after the test ($c1)"; rc=1; }
+  # #264: the per-EUD rabbit queues a test EUD declares (<callsign>, <uid>) outlive the session; delete ours
+  o=$(fssh "$ots" 60 'n=0; for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1 && n=$((n+1)); done; left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'"); echo "deleted=$n left=$left"' | tr -d '\r')
+  echo "rabbit per-EUD queues of this run: $o"; case "$o" in *left=0) ;; *) echo "FAIL cleanup: per-EUD rabbit queues of run $run left behind"; rc=1 ;; esac
+  return $rc; }
+# #264 on the SSL listener (8089): the same three phases over mutual TLS. The generator runs INSIDE ots_cot_parser
+# (python3 + ssl; the node has neither) against ots_eud_handler_ssl on br-ots, so this exercises the handler, not
+# the mesh path (ots-cot-e2e-264 covers that on 8088). A 1-day client cert for the existing OTS user 'administrator'
+# (the SSL handler maps the cert CN to a user) is signed on the node by the OTS CA into the container's tmpfs and
+# removed afterwards; the CA password is read inside the container, never printed.
+chk_cot_264_ssl() { local ots=$1 run o c0 rc=0
+  c0=$(ots_ctr "$ots"); [ "$c0" = 6 ] || { echo "FAIL OTS not 6/6 before the test ($c0)"; return 1; }
+  o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" 'docker exec -i ots_cot_parser python3 -' < "$REPO/scripts/node/ots-test-client-cert.py" 2>&1)
+  echo "$o"; echo "$o" | grep -q '^OK test client cert' || { echo "FAIL could not issue the test client cert — not verified"; return 1; }
+  run=DVS$(date +%Y%m%d%H%M%S); echo "run id $run; generator ots_cot_parser -> ots_eud_handler_ssl:8089 (mTLS, CN=administrator)"
+  o=$(timeout 400 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" \
+    "docker exec -i -e TARGET=172.20.0.12 -e RUN=$run -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key ots_cot_parser python3 -" \
+    < "$REPO/scripts/node/cot-e2e-gen-ssl.py" 2>&1)
+  echo "$o"
+  cot_judge "$ots" "$run" "$o" || rc=1
+  fssh "$ots" 15 'docker exec ots_cot_parser rm -f /tmp/dv-client.pem /tmp/dv-client.key; docker exec ots_cot_parser ls /tmp/dv-client.pem 2>/dev/null' | grep -q . \
+    && { echo "FAIL test client cert still present in ots_cot_parser:/tmp"; rc=1; } || echo "test client cert removed"
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
+# #264 mechanism C, destructive (tier B): the transient cot_parser queue disappears while a client streams. Deleting
+# it also cancels cot_parser's consumer, so cot_parser EXITS and the guardian restarts it (a ledger line, DRIFT for
+# 600 s) — asserted, never worked around: the test only acts inside the broker and never starts/stops a container.
+# Patched eud: the unroutable publishes come back (mandatory), the session re-declares the queue and retries, so
+# sent == stored. Unpatched: every CoT in the window is dropped (negative control, measured before the overlay).
+bchk_queue_gone_264() { local ots=$1 peer=$2 run rc=0 l0 l1 s st rec i
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  l0=$(fssh "$ots" 15 "$RDR"'grep -c "crash ots_cot_parser" "$R"/batman-payload-opentakserver-restarts 2>/dev/null || echo 0' | tr -d ' \r')
+  run=DVQ$(date +%Y%m%d%H%M%S)
+  soak_ssh "$peer" "ROLE=cotgen TARGET=$ots RUN=$run DUR=150" | grep -q '^OK cotgen' || { echo "FAIL could not start the CoT generator on $peer"; return 1; }
+  echo "run $run: $peer streams 5 CoT/s to $ots:8088 for 150 s; the cot_parser queue is deleted at +30 s"
+  sleep 30
+  fssh "$ots" 30 'docker exec rabbitmq rabbitmqctl -q delete_queue cot_parser 2>&1 | tail -1' | tr -d '\r'
+  for i in $(seq 1 24); do l1=$(fssh "$ots" 15 "$RDR"'grep -c "crash ots_cot_parser" "$R"/batman-payload-opentakserver-restarts 2>/dev/null || echo 0' | tr -d ' \r'); [ "${l1:-0}" -gt "${l0:-0}" ] 2>/dev/null && break; sleep 5; done
+  [ "${l1:-0}" -gt "${l0:-0}" ] 2>/dev/null && echo "ok cot_parser exited on the cancelled consumer and the guardian restarted it (ledger $l0 -> $l1)" \
+    || { echo "FAIL no guardian restart of ots_cot_parser within 120 s of the queue deletion (ledger $l0 -> ${l1:-?}) — the fault was not what this test assumes"; rc=1; }
+  sleep 100
+  s=$(soak_ssh "$peer" "ROLE=sample" | sed -n 's/.*cot_sent=\([0-9]*\).*/\1/p'); rec=$(soak_ssh "$peer" "ROLE=sample" | sed -n 's/.*cot_reconn=\([0-9]*\).*/\1/p')
+  i=0; while [ "$i" -lt 12 ]; do st=$(echo "select count(*) from cot where uid like '$run-%';" | ots_sql "$ots" | tr -d ' \r'); [ "$st" = "$s" ] && break; sleep 5; i=$((i+1)); done
+  echo "sent=$s stored=$st client reconnects=$rec"
+  case "$s$st" in ''|*[!0-9]*) echo "FAIL unreadable sent=[$s] stored=[$st] — not verified"; rc=1 ;;
+    *) [ "$s" -gt 100 ] || { echo "FAIL generator sent only $s"; rc=1; }
+       [ "$st" = "$s" ] && echo "ok every CoT sent across the queue-gone window was stored" || { echo "FAIL lost $((s - st))/$s CoT across the queue-gone window"; rc=1; } ;;
+  esac
+  fssh "$ots" 30 'docker exec ots_eud_handler sh -c "tail -400 /app/ots/logs/eud_handler_tcp.log" | grep -ciE "declare refused|cache full|session end:"' | tr -d '\r' | sed 's/^/eud error lines (declare refused / cache full / session end): /'
+  soak_ssh "$peer" "ROLE=down" | tail -1
+  ots_sql "$ots" <<SQL >/dev/null
+begin; delete from euds where uid like '$run-%'; delete from cot where uid like '$run-%'; commit;
+SQL
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  # the guardian restart left the tenant DRIFT for the 600 s ledger window: wait it out so later suites judge a clean tenant
+  for i in $(seq 1 70); do fssh "$ots" 10 "$RDR"'grep -q "\"status\":\"OK\"" "$R"/batman-payload-opentakserver-drift.json' && break; sleep 10; done
+  fssh "$ots" 10 "$RDR"'grep -q "\"status\":\"OK\"" "$R"/batman-payload-opentakserver-drift.json' && echo "tenant verdict back to OK" || { echo "FAIL tenant verdict not OK 700 s after the test"; rc=1; }
   return $rc; }
 # #268 B3: release-gate load soak (AB_MODE=--destructive only). All three nodes under real load at once for
 # SOAK_MIN (>= 30) minutes: an HTTP tenant on BENCH_NODE and MESH_NODE (GET locally and over the mesh), CoT
@@ -877,7 +953,7 @@ chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash
   echo "firstload enabled; offline copies present; canary runs; autocommit gate ok"'; }
 
 if [ "$OTS_SOC" = bcm2710 ]; then
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264; do
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl; do
     suite "$s" "OTS_NODE $OTS_NODE is bcm2710 — not run (see ots-node-209)" ""
   done
 elif up "$OTS_NODE"; then
@@ -890,8 +966,9 @@ elif up "$OTS_NODE"; then
   suite payload-conform "live containers == manifest: running + config-fingerprint label + tenant label + MOUNTs (src/RO) + no orphans (#274)" "chk_conform $OTS_NODE"
   suite flashgo-159      "flash-and-go integrity — firstload enabled, offline copies (F2), canary runs, autocommit gate (#159/#216)" "chk_flashgo $OTS_NODE"
   suite ots-cot-e2e-264  "CoT sent == stored per phase from $BENCH_NODE: P1 control, P2 deterministic truncation (A control / B #264-A), P3 burst; heartbeat (#264-B) NOT exercised (#268 B2)" "chk_cot_264 $OTS_NODE $BENCH_NODE"
+  suite ots-cot-e2e-264-ssl "CoT sent == stored per phase on the SSL listener 8089 (mTLS, 1-day test cert for an existing user): P1 / P2 truncation / P3 burst — handler path via br-ots, not the mesh (#264)" "chk_cot_264_ssl $OTS_NODE"
 else
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"
@@ -1362,7 +1439,7 @@ if [ "$FEATURE_MODE" = --destructive ]; then
   if [ "$OTS_SOC" = bcm2710 ]; then
     na cleanstop-274 "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"
     na converge-274 "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"
-    for s274 in unclean-boot-274 hold-274 golden-exec-274 host-alarm-274 crash-274 dockerd-restart-274; do na "$s274" "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"; done
+    for s274 in unclean-boot-274 hold-274 golden-exec-274 host-alarm-274 queue-gone-264 crash-274 dockerd-restart-274; do na "$s274" "OTS_NODE $OTS_NODE is a Pi 3: no tenant/guardian by design (#209 D6)"; done
   elif dwait "$OTS_NODE" 300; then
     suite converge-274 "guardian converges a changed manifest / mounted file by a graceful rebuild, leaves an unchanged stack alone, restores to the golden fingerprint (#274, destructive)" "bchk_converge_274 $OTS_NODE" D
     suite cleanstop-274 "clean reboot: tiered graceful stop recorded before the shutdown capture, postgres clean, same containers started in order, boot-to-ready <= 90 s (#274, destructive)" "bchk_cleanstop_274 $OTS_NODE" D
@@ -1370,13 +1447,14 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     suite hold-274 "firstload hold (a tar docker load rejects): guardian started for the boot, K09 kept; a reboot during the hold stops both halves (#274 §12, destructive)" "bchk_hold_274 $OTS_NODE" D
     suite golden-exec-274 "root never executes a p6 copy of a golden tenant's script; edits are DRIFT, planted files a host alarm (#274 §12)" "p274 $OTS_NODE golden" D
     suite host-alarm-274 "dangerous foreign containers (p6/socket bind, device, host net, disguised volume) raise a host alarm, never the verdict (#274 §12)" "p274 $OTS_NODE hostalarm"
-    # these two leave the tenant DRIFT for the 600 s ledger window: they wait it out themselves, and run last (§12.7)
+    # these three leave the tenant DRIFT for the 600 s ledger window: they wait it out themselves, and run last (§12.7)
+    suite queue-gone-264 "the transient cot_parser queue is deleted under a CoT stream: cot_parser exits and the guardian restarts it (asserted), the patched eud re-declares + retries so sent == stored (#264 mechanism C, destructive)" "bchk_queue_gone_264 $OTS_NODE $BENCH_NODE" D
     suite crash-274 "crash / PRIMARY / loop backoff / old config / respawn / rm / docker update / docker stop / hung health check: the guardian restarts, records, and DRIFTs (#274 §12, destructive)" "p274 $OTS_NODE crash" D
     suite dockerd-restart-274 "dockerd restart stops the tenant gracefully; the guardian brings it back in order (#274 §12, destructive)" "p274 $OTS_NODE dockerd" D
   else   # not back within 300 s after the destructive tier = a real finding, never a SKIP (#274 review C6)
     suite converge-274 "guardian converges a changed config (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
     suite cleanstop-274 "clean reboot stop/start (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
-    for s274 in unclean-boot-274 hold-274 golden-exec-274 host-alarm-274 crash-274 dockerd-restart-274; do suite "$s274" "#274 §12 — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"; done
+    for s274 in unclean-boot-274 hold-274 golden-exec-274 host-alarm-274 queue-gone-264 crash-274 dockerd-restart-274; do suite "$s274" "#274 §12 / #264 — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"; done
   fi
 fi
 

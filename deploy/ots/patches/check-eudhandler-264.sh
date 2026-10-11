@@ -36,6 +36,10 @@ echo "ok   patch == diff -u upstream EudHandler-264.py"
 python3 "$HERE/test-eudhandler-264.py" "$F" > "$T/test.out" 2>&1 || true
 tail -1 "$T/test.out" | grep -qx "ALL PASS" || { cat "$T/test.out"; fail "offline handle() tests"; }
 echo "ok   offline handle() tests ($(grep -c '^PASS' "$T/test.out") cases)"
+# 4b. offline AMQP-side tests (R5 mandatory/return/declare, R9 cache bounds + flow control) on the shipped file
+python3 "$HERE/test-eudhandler-264-amqp.py" "$F" > "$T/test2.out" 2>&1 || true
+tail -1 "$T/test2.out" | grep -qx "ALL PASS" || { cat "$T/test2.out"; fail "offline AMQP tests"; }
+echo "ok   offline AMQP tests ($(grep -c '^PASS' "$T/test2.out") cases)"
 
 # 5. optional: the image's own file (no mount) is the pinned upstream
 if [ "${1:-}" = --image ]; then

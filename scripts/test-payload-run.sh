@@ -80,6 +80,8 @@ network) case "$2" in
 		mkdir -p "$S/net/$a"; echo "$sn" > "$S/net/$a/subnet"; echo "$br" > "$S/net/$a/bridge" ;;
 	rm) rm -rf "${S:?}/net/$3" ;;
 	esac ;;
+create) shift; while [ $# -gt 1 ]; do shift; done; echo "stubc-$(e "$1")" ;;   # #264 R8 probe: prints a container id, runs nothing
+cp) p=${2#*:}; [ -f "$S/imgfs$p" ] && tar -cf - -C "$S/imgfs" "${p#/}" 2>/dev/null; exit 0 ;;   # `docker cp c:path -` = a tar stream
 run) shift; name=""; cfg=""; ten=""; rmo=0; all="$*"
 	while [ $# -gt 0 ]; do case "$1" in --name) name=$2; shift ;; --label) case "$2" in batman.cfg=*) cfg=${2#batman.cfg=} ;; batman.tenant=*) ten=${2#batman.tenant=} ;; esac; shift ;; --rm) rmo=1 ;; esac; shift; done
 	[ "$rmo" = 1 ] && exit 0
@@ -170,7 +172,7 @@ for c in db app; do echo exited > "$S/c/$c/status"; done
 calls | grep -q '^start app' && grep -q "converging by rebuild" "$T/out" && [ "$rc" = 0 ] && ok "5 start failure: others started, then rebuild" || { no "5 rc=$rc"; cat "$T/out"; }
 
 # 6 preflight refuses the WHOLE rebuild before anything is touched (missing image / hardening / mount / subnet)
-pf(){ reset_calls; rc=$(pr "$@"); if [ "$rc" = 1 ] && grep -q REFUSED "$T/out" && ! calls | grep -Eq '^(stop|rm|run|start) '; then return 0; fi; cat "$T/out"; return 1; }
+pf(){ reset_calls; rc=$(pr "$@"); if [ "$rc" = 1 ] && grep -q REFUSED "$T/out" && ! calls | grep -v '^rm stubc-' | grep -Eq '^(stop|rm|run|start) '; then return 0; fi; cat "$T/out"; return 1; }   # rm stubc-* = the #264 R8 probe container, never a tenant container
 mv "$S/img/img_db_1" "$T/img.bak"; pf t && ok "6 missing image: refused, nothing touched" || no "6 missing image"; mv "$T/img.bak" "$S/img/img_db_1"
 mv "$A/t/t.hardening.env" "$T/h.bak"; pf t && ok "6 missing hardening file: refused (never runs unhardened)" || no "6 missing hardening"; mv "$T/h.bak" "$A/t/t.hardening.env"
 printf 'HARDEN_FLAGS="--x"\necho pwned\n' > "$T/h2"; cp "$A/t/t.hardening.env" "$T/h.bak"; cp "$T/h2" "$A/t/t.hardening.env"
@@ -278,6 +280,23 @@ cp "$T/h.bak" "$A/t/t.hardening.env"; rm -rf "$T/golden/t" "$A/t/t.fw4.uci" "$A/
 # 26 health check runs inside the container under timeout(1) when the image has it
 sh "$PR" t >>"$ALL" 2>&1; echo exited > "$S/c/db/status"; reset_calls; rc=$(pr --restart-exited t)
 calls | grep -q '^exec db timeout 8 sh -c true' && ok "26 health check: docker exec … timeout 8 sh -c <cmd>" || { no "26 no in-container timeout"; calls | grep '^exec'; }
+
+# 27 MOUNTSHA (#264 R8): an overlay over an IMAGE file is pinned to one upstream file; the preflight reads the
+#    image's own file (docker create + cp, nothing runs) and refuses the rebuild when it differs or is missing
+mkdir -p "$S/imgfs/etc"; printf 'upstream v1\n' > "$S/imgfs/etc/m.conf"; sx=$(sha256sum < "$S/imgfs/etc/m.conf" | cut -d' ' -f1)
+cp "$A/t/t.manifest" "$T/man.bak"
+awk -v s="$sx" '{print} /^MOUNT m.conf:/{print "MOUNTSHA /etc/m.conf " s}' "$T/man.bak" > "$A/t/t.manifest"
+reset_calls; rc=$(pr t)
+[ "$rc" = 0 ] && calls | grep -q '^create --pull=never --network none --security-opt no-new-privileges img/db:1$' && calls | grep -q '^rm stubc-img_db_1$' \
+	&& ok "27 MOUNTSHA matches: rebuild proceeds; probe = docker create with the allowlist flags, removed after" || { no "27 rc=$rc"; calls | grep -E '^(create|cp|rm)'; }
+printf 'upstream v2\n' > "$S/imgfs/etc/m.conf"
+pf t && grep -q "image changed under the overlay" "$T/out" && ok "27 MOUNTSHA mismatch (the image's file changed): REFUSED, nothing touched" || no "27 mismatch not refused: $(cat "$T/out")"
+rm -f "$S/imgfs/etc/m.conf"
+pf t && grep -q "MOUNTSHA /etc/m.conf" "$T/out" && ok "27 MOUNTSHA target missing in the image: REFUSED" || no "27 missing not refused"
+printf 'upstream v1\n' > "$S/imgfs/etc/m.conf"
+awk -v s="$sx" '{print} /^MOUNT m.conf:/{print "MOUNTSHA etc/m.conf " s}' "$T/man.bak" > "$A/t/t.manifest"
+pf t && ok "27 MOUNTSHA with a relative target: REFUSED" || no "27 relative target accepted"
+cp "$T/man.bak" "$A/t/t.manifest"; rm -rf "$S/imgfs"
 
 # 12 no docker child ever inherited fd 9 (the lock dies with the wrapper)
 [ -s "$S/violations" ] && { no "12 violations:"; cat "$S/violations"; } || ok "12 no rm -f of a running container, no fd 9 leaked (all runs above)"

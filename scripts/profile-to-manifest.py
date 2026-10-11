@@ -146,6 +146,17 @@ def render_manifest(doc, app):
         for m in c["mounts"]:
             ro = ":ro" if m.get("ro", True) else ""
             a(f"MOUNT {m['src']}:{m['dst']}{ro}")
+            # #264 R8: an overlay over an IMAGE file names the file holding the upstream sha256 it was made for
+            # (one source of truth, e.g. patches/UPSTREAM_SHA256); payload-run refuses a rebuild on an image whose
+            # own file differs (MOUNTSHA <dst> <sha>, checked in preflight).
+            if m.get("image_sha_file"):
+                shaf = REPO / "deploy" / app / m["image_sha_file"]
+                if not shaf.is_file():
+                    sys.exit(f"{tenant}: mount {m['src']} names image_sha_file {m['image_sha_file']} but {shaf} does not exist")
+                sha = shaf.read_text(encoding="utf-8").strip()
+                if len(sha) != 64 or any(ch not in "0123456789abcdef" for ch in sha):
+                    sys.exit(f"{tenant}: {shaf} is not a lowercase sha256")
+                a(f"MOUNTSHA {m['dst']} {sha}")
         for sname, smount, suid in secrets_by_ctr.get(name, []):
             a(f"SECRET {sname} {smount} {suid}" if suid is not None else f"SECRET {sname} {smount}")
         h = health.get(name)

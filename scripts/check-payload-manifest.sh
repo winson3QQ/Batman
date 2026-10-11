@@ -103,6 +103,25 @@ done
 for m in deploy/*/*.manifest; do
 	grep -E '^RESTART ' "$m" | grep -vqx 'RESTART no' && { echo "FAIL: $m has a RESTART other than no"; rc=1; }
 done
+# --- 5) #264 R8: an overlay bind-mounted over an IMAGE file (MOUNTSHA) is pinned to one upstream file. The manifest's
+#     sha must equal deploy/<app>/patches/UPSTREAM_SHA256 (the single source the generator reads), the target must be
+#     the file the overlay was made for (SP in check-eudhandler-264.sh), and the shipped overlay + patch + generator +
+#     offline tests must be consistent (check-eudhandler-264.sh). ---
+for man in deploy/*/*.manifest; do
+	[ -f "$man" ] || continue; app=$(basename "$(dirname "$man")")
+	for dst_sha in $(awk '$1=="MOUNTSHA"{print $2 "=" $3}' "$man"); do
+		dst=${dst_sha%%=*}; sha=${dst_sha#*=}
+		up=$(tr -d ' \r\n' < "deploy/$app/patches/UPSTREAM_SHA256" 2>/dev/null)
+		[ -n "$up" ] && [ "$sha" = "$up" ] || { echo "FAIL: $man MOUNTSHA $dst sha $sha != deploy/$app/patches/UPSTREAM_SHA256 (${up:-missing})"; rc=1; }
+		grep -qx "SP=$dst" "deploy/$app/patches/check-eudhandler-264.sh" 2>/dev/null || { echo "FAIL: $man MOUNTSHA target $dst is not the file the overlay was made for (SP in check-eudhandler-264.sh)"; rc=1; }
+	done
+done
+for ck in deploy/*/patches/check-eudhandler-264.sh; do
+	[ -f "$ck" ] || continue
+	tl=$(mktemp)
+	sh "$ck" >"$tl" 2>&1 || { echo "FAIL: $ck:"; sed 's/^/  /' "$tl"; rc=1; }
+	rm -f "$tl"
+done
 if [ -f scripts/test-payload-guardian.sh ]; then
 	tl=$(mktemp)
 	sh scripts/test-payload-guardian.sh >"$tl" 2>&1 || { echo "FAIL: scripts/test-payload-guardian.sh:"; sed 's/^/  /' "$tl"; rc=1; }
@@ -114,5 +133,5 @@ if [ -f scripts/test-payload-run.sh ]; then
 	rm -f "$tl"
 fi
 
-[ "$rc" = 0 ] && echo "OK: payload artifacts in sync + no tenant collisions + golden source present + mounts installed + hardening parseable + stub template + RESTART no + payload-run/guardian tests"
+[ "$rc" = 0 ] && echo "OK: payload artifacts in sync + no tenant collisions + golden source present + mounts installed + hardening parseable + stub template + RESTART no + MOUNTSHA pinned + overlay consistent + payload-run/guardian tests"
 exit "$rc"

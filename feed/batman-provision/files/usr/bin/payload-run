@@ -140,7 +140,27 @@ FAILED=0; PF=""; START_FAILED=""; ACTION=""; CFG=""
 
 reset_block(){
 	NAME="$1"; IMG=""; IP=""; HOST=""; HARDEN=""
-	EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; FACTS=""
+	EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; FACTS=""; MSHAS=""
+}
+# #264 R8: `MOUNTSHA <dst> <sha256>` pins an overlay that is bind-mounted OVER AN IMAGE FILE to the one upstream
+# file it was made for. Before a rebuild, read the image's OWN file at <dst> (docker create + cp: nothing in the
+# image executes; the probe container carries the allowlist flags, so the guardian's foreign scan ignores it) and
+# refuse the rebuild if its sha differs. Fail-closed: a re-tagged image would otherwise run unpatched, or have
+# newer code silently overwritten by an old overlay. Preflight only (never in the 30 s cfg-hash walk).
+mountsha_check(){
+	[ -n "$MSHAS" ] || return 0
+	while read -r mdst msha; do
+		[ -n "$mdst" ] || continue
+		case "$mdst" in /*) ;; *) problem "$NAME: MOUNTSHA $mdst is not an absolute path"; continue ;; esac
+		case "$msha" in *[!0-9a-f]*|"") problem "$NAME: MOUNTSHA $mdst: not a sha256"; continue ;; esac
+		mc=$(docker create --pull="$PULL_POLICY" --network none --security-opt no-new-privileges "$IMG" 2>/dev/null) \
+			|| { problem "$NAME: MOUNTSHA $mdst: cannot create a probe container from $IMG"; continue; }
+		got=$(docker cp "$mc:$mdst" - 2>/dev/null | tar -xO 2>/dev/null | sha256sum | cut -d' ' -f1)
+		docker rm "$mc" >/dev/null 2>&1 || true
+		[ "$got" = "$msha" ] || problem "$NAME: MOUNTSHA $mdst: the image's own file is sha256 ${got:-unreadable}, the overlay was made for $msha (image changed under the overlay)"
+	done <<EOF
+$MSHAS
+EOF
 }
 fact(){ FACTS="$FACTS$*
 "; }
@@ -235,7 +255,8 @@ finish_block(){
 		echo "IMAGEID $(docker image inspect -f '{{.Id}}' "$IMG" 2>/dev/null || echo MISSING)"
 		printf '%s' "$FACTS" ;;
 	preflight)
-		docker image inspect "$IMG" >/dev/null 2>&1 || problem "$NAME: image $IMG not present locally" ;;
+		docker image inspect "$IMG" >/dev/null 2>&1 || problem "$NAME: image $IMG not present locally"
+		mountsha_check ;;
 	prep)
 		: ;;   # start mode: the walk only enforces the secret owner/mode (SECRET below); start_group starts
 	run)
@@ -287,6 +308,8 @@ walk(){   # $1 = ACTION
 			              fi
 			              case "$msrc$mdst" in *,*) problem "$NAME: MOUNT path contains a comma" ;; esac
 			              set -- "$@" --mount "type=bind,source=$msrc,target=$mdst$mro" ;;
+			MOUNTSHA)     MSHAS="$MSHAS$rest
+" ;;   # #264 R8: "<dst> <sha256>", checked by mountsha_check in preflight
 			SECRET)       sname=${rest%% *}; srest=${rest#* }; smount=${srest%% *}
 			              case "$srest" in *" "*) suid=${srest#* } ;; *) suid="" ;; esac
 			              sf="$DIR/secrets/$sname"

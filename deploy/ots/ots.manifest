@@ -74,6 +74,8 @@ ENV OTS_FQDN=_
 ENV OTS_MEDIAMTX_API_ADDRESS=http://localhost:9997
 ENTRYPOINT python3 /app/venv/bin/eud_handler
 VOLUME ots-appdata:/app/ots
+MOUNT EudHandler-264.py:/app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py:ro
+MOUNTSHA /app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py 2edfefac9fbfc794cc542923fcc1dde5ec379f7675f636b1a837da27df1b206b
 STOPTIER 1
 ENDCONTAINER
 
@@ -89,5 +91,7 @@ ENV OTS_FQDN=_
 ENV OTS_MEDIAMTX_API_ADDRESS=http://localhost:9997
 ENTRYPOINT python3 /app/venv/bin/eud_handler --ssl
 VOLUME ots-appdata:/app/ots
+MOUNT EudHandler-264.py:/app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py:ro
+MOUNTSHA /app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py 2edfefac9fbfc794cc542923fcc1dde5ec379f7675f636b1a837da27df1b206b
 STOPTIER 1
 ENDCONTAINER
