@@ -801,6 +801,35 @@ chk_cot_264_ssl() { local ots=$1 run o c0 rc=0
     && { echo "FAIL test client cert still present in ots_cot_parser:/tmp"; rc=1; } || echo "test client cert removed"
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
   return $rc; }
+# #264 R10: an 8088 client's uid/callsign become queue names on the shared broker. A callsign "cot_parser" would
+# consume the cot_parser queue (round-robin with cot_parser: every second CoT of every EUD lost from storage).
+# From the bench node: one session identifies with callsign cot_parser and a plain uid, keeps the session 8 s.
+# Patched: the subscription is refused (handler log line), the cot_parser queue keeps exactly 1 consumer, the CoT
+# is still stored. Negative control (upstream, by code: EudHandler.py:524-645 declares/consumes the callsign
+# queue unconditionally): consumers 2 and the storage round-robin starts.
+chk_name_guard_264() { local ots=$1 peer=$2 run o c rc=0 g0 g1 st
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  run=DVN$(date +%H%M%S)
+  g0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"refusing the subscription of '"$peer"'\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$g0" || g0=0
+  ( timeout 40 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" \
+      'n=$(date +%s); ts(){ date -u -d @$1 +%Y-%m-%dT%H:%M:%S.000Z; }; { printf "<event version=\"2.0\" uid=\"'"$run"'\" type=\"a-f-G-U-C\" how=\"h-e\" time=\"%s\" start=\"%s\" stale=\"%s\"><point lat=\"25.03\" lon=\"121.56\" hae=\"10\" ce=\"9999999\" le=\"9999999\"/><detail><contact callsign=\"cot_parser\"/><marti><dest callsign=\"dv-nobody\"/></marti></detail></event>" "$(ts $n)" "$(ts $n)" "$(ts $((n+120)))"; sleep 8; } | nc '"$ots"' 8088 >/dev/null 2>&1; echo done' ) > "$DIR/$run.gen" 2>&1 &
+  sleep 5
+  c=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name consumers 2>/dev/null | grep "^cot_parser	" | cut -f2' | tr -d ' \r')
+  echo "cot_parser queue consumers while the callsign=cot_parser session is up: [$c] (expect 1)"
+  [ "$c" = 1 ] || { echo "FAIL the client's session consumes the cot_parser queue (consumers [$c]) — upstream behaviour"; rc=1; }
+  wait; echo "peer: $(tr '\n' ' ' < "$DIR/$run.gen")"
+  g1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"refusing the subscription of '"$peer"'\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$g1" || g1=0
+  [ "$g1" -gt "$g0" ] && echo "handler log: subscription refused ($((g1 - g0)) line(s))" || { echo "FAIL no 'refusing the subscription' line in the handler's log"; rc=1; }
+  sleep 3; st=$(echo "select count(*) from cot where uid = '$run';" | ots_sql "$ots")
+  [ "$st" = 1 ] && echo "the CoT itself was stored (1 row)" || { echo "FAIL the CoT was not stored ([$st] rows)"; rc=1; }
+  ots_sql "$ots" <<SQL
+begin; delete from cot where uid = '$run'; delete from euds where uid = '$run'; commit;
+SQL
+  o=$(fssh "$ots" 60 'for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'$"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1; done; echo "left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'$")"' | tr -d '\r')
+  echo "rabbit queue of this run: $o"; case "$o" in *left=0) ;; *) echo "FAIL cleanup: rabbit queue of run $run left behind"; rc=1 ;; esac
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
 # #264 R4/R4b (mechanism B): the broker ends the session's AMQP connection while the client streams. One session
 # streams 120 unique CoT at 2/s from the bench node (scripts/node/cot-stream-264.sh); at ~15 s and ~35 s the
 # harness closes that session's broker connection (rabbitmqctl close_connection, found by the client's peer
@@ -1076,7 +1105,7 @@ chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash
   echo "firstload enabled; offline copies present; canary runs; autocommit gate ok"'; }
 
 if [ "$OTS_SOC" = bcm2710 ]; then
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264 amqp-close-264; do
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264 amqp-close-264 name-guard-264; do
     suite "$s" "OTS_NODE $OTS_NODE is bcm2710 — not run (see ots-node-209)" ""
   done
 elif up "$OTS_NODE"; then
@@ -1093,8 +1122,9 @@ elif up "$OTS_NODE"; then
   suite eud-mem-264 "ots_eud_handler memory per idle session from $BENCH_NODE: 6 sessions, <= 12 MiB each (upstream 39, OOM at ~10 clients), none refused, no leak after they leave (#264 R7)" "chk_eud_mem_264 $OTS_NODE $BENCH_NODE"
   suite zombie-264 "a vanished EUD session (port black-holed on $BENCH_NODE, data pending) is reaped within 180 s, and its end does not unbind the same EUD's live session: 10/10 before and after (#264 R6; upstream: immortal zombie, then 0/10)" "chk_zombie_264 $OTS_NODE $BENCH_NODE"
   suite amqp-close-264 "the broker closes the streaming session's AMQP connection twice (rabbitmqctl close_connection): every CoT stored at least once, client session kept, 2 reconnects logged (#264 R4/R4b mechanism B; upstream: session dropped, CoT in flight lost)" "chk_amqp_close_264 $OTS_NODE $BENCH_NODE"
+  suite name-guard-264 "an 8088 client with callsign cot_parser gets no subscription: cot_parser queue keeps 1 consumer, log line, CoT still stored (#264 R10; upstream: the client consumes storage's queue)" "chk_name_guard_264 $OTS_NODE $BENCH_NODE"
 else
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264 amqp-close-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264 amqp-close-264 name-guard-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"

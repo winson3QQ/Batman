@@ -274,4 +274,13 @@ ok(h._reconnect_timer is not None, "14 closing with a cached body: reconnect sti
 h._ioloop.fire(); ok(isinstance(h.rabbit_connection, FakeConn2) and h.rabbit_connection.args[1].get("custom_ioloop") is h._ioloop, "14 reconnect runs for the drain")
 h2 = H(chan_open=False); h2.rabbit_connection = FakeConn2(); h2._ioloop = h2.rabbit_connection.ioloop; h2._closed = True
 h2._schedule_reconnect(); ok(h2._reconnect_timer is None, "14 closing with nothing pending: no reconnect")
+# 15 R10: client-supplied uid/callsign must be usable, non-system queue names
+fn = next(n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == "_valid_name")
+exec(textwrap.dedent(ast.get_source_segment(src, fn)), g)
+g["RESERVED_NAMES"] = frozenset({"cot_parser", "dms", "chatrooms", "missions", "groups", "firehose", "flask-socketio", "meshtastic", "dmrcot"})
+v = g["_valid_name"]
+ok(v("ANDROID-abc123") and v("Alpha 1") and v("中文呼號") and v("a" * 255), "15 ordinary uids/callsigns (incl. UTF-8, 255 ASCII bytes) accepted")
+ok(not v("") and not v(None) and not v("a" * 256) and not v("中" * 86), "15 empty / None / >255 bytes refused")
+ok(not v("cot_parser") and not v("COT_PARSER") and not v("firehose") and not v("groups") and not v("flask-socketio"), "15 system queue/exchange names refused (any case)")
+ok(not v("amq.x") and not v("AMQ.gen-1") and not v("evil" + chr(0)) and not v("a" + chr(10) + "b"), "15 amq.* prefix and non-printable characters refused")
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)

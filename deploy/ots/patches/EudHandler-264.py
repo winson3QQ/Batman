@@ -77,7 +77,7 @@ from opentakserver.models.ZMIST import ZMIST
 MAX_PENDING = 1 << 20  # BATMAN-264-PA: bytes held while waiting for a closing tag (upstream: unbounded)
 CACHE_MAX = 2000         # BATMAN-264-R9: cot_parser bodies held per session while the broker is away/blocked
 CACHE_MAX_BYTES = 2 << 20
-BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9"  # BATMAN-264: which #264 items this overlay carries (payload-conform greps it)
+BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10"  # BATMAN-264: which #264 items this overlay carries (payload-conform greps it)
 # BATMAN-264-R6: client-socket keepalive (seconds / count / ms): a peer that vanished is gone in about 2 minutes
 KEEPALIVE_IDLE = 45
 KEEPALIVE_INTVL = 15
@@ -90,6 +90,23 @@ DRAIN_MAX_S = 60  # BATMAN-264-R4b: a client that leaves while the broker is awa
 # (PID 1 = every session) at about the 10th client. With the shared app and gc.freeze() below a session costs a
 # few MB, and the reserve turns the remaining limit into a refused connection instead of a container kill.
 SESSION_RESERVE_MB = int(os.environ.get("BATMAN_264_SESSION_RESERVE_MB", "40"))
+
+
+# BATMAN-264-R10: the client's uid and callsign become queue names (declare/bind/consume) on the shared broker,
+# unauthenticated on 8088. A callsign equal to a system queue would consume that queue (callsign "cot_parser"
+# steals every CoT from storage, round-robin with cot_parser); "amq.*" is refused by the broker with a channel
+# error; a name over 255 bytes raises inside pika. Refused names get no subscription (the CoT is still stored).
+RESERVED_NAMES = frozenset({"cot_parser", "dms", "chatrooms", "missions", "groups", "firehose", "flask-socketio",
+                            "meshtastic", "dmrcot"})
+
+
+def _valid_name(name):
+    if not isinstance(name, str) or not name or len(name.encode("utf-8", "replace")) > 255:
+        return False
+    low = name.lower()
+    if low.startswith("amq.") or low in RESERVED_NAMES:
+        return False
+    return all(c.isprintable() for c in name)
 
 
 def _cg_mem():
@@ -1029,7 +1046,11 @@ class EudHandler(socketserver.BaseRequestHandler):
 
                 # Declare a RabbitMQ Queue for this uid and join the 'dms' and 'cot' exchanges
                 _ch = _OpRecorder()  # BATMAN-264: channel calls recorded here, run on the ioloop by _subscribe
-                if (
+                if not (_valid_name(self.uid) and _valid_name(self.callsign)):  # BATMAN-264-R10
+                    self.logger.error(
+                        f"refusing the subscription of {self.client_address[0]}: uid or callsign is not a usable "
+                        f"queue name (empty, >255 bytes, amq.*, a system name or not printable); CoT is still stored")
+                elif (
                     platform != "OpenTAK ICU"
                     and platform != "Meshtastic"
                     and platform != "DMRCOT"

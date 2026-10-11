@@ -43,6 +43,23 @@ DRAIN_MAX_S = 60  # BATMAN-264-R4b: a client that leaves while the broker is awa
 SESSION_RESERVE_MB = int(os.environ.get("BATMAN_264_SESSION_RESERVE_MB", "40"))
 
 
+# BATMAN-264-R10: the client's uid and callsign become queue names (declare/bind/consume) on the shared broker,
+# unauthenticated on 8088. A callsign equal to a system queue would consume that queue (callsign "cot_parser"
+# steals every CoT from storage, round-robin with cot_parser); "amq.*" is refused by the broker with a channel
+# error; a name over 255 bytes raises inside pika. Refused names get no subscription (the CoT is still stored).
+RESERVED_NAMES = frozenset({"cot_parser", "dms", "chatrooms", "missions", "groups", "firehose", "flask-socketio",
+                            "meshtastic", "dmrcot"})
+
+
+def _valid_name(name):
+    if not isinstance(name, str) or not name or len(name.encode("utf-8", "replace")) > 255:
+        return False
+    low = name.lower()
+    if low.startswith("amq.") or low in RESERVED_NAMES:
+        return False
+    return all(c.isprintable() for c in name)
+
+
 def _cg_mem():
     """(current, max) bytes of this container's own cgroup; (None, None) when unreadable (then no cap)."""
     try:
@@ -969,7 +986,18 @@ rep('''            if self._retry_timer is not None:  # BATMAN-264-R5
 ''')
 rep("import uuid\nimport functools  # BATMAN-264\n", "import uuid\nimport functools  # BATMAN-264\nimport time  # BATMAN-264-R4\n")
 BATMAN_TAG_OLD = 'BATMAN_264 = "R1 R3 R5 R6 R7 R9"'
-rep(BATMAN_TAG_OLD, 'BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9"')
+rep(BATMAN_TAG_OLD, 'BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10"')
+
+# --- R10: client-supplied identifiers are checked before they become queue names ----------------------------
+rep('''                _ch = _OpRecorder()  # BATMAN-264: channel calls recorded here, run on the ioloop by _subscribe
+                if (
+                    platform != "OpenTAK ICU"''', '''                _ch = _OpRecorder()  # BATMAN-264: channel calls recorded here, run on the ioloop by _subscribe
+                if not (_valid_name(self.uid) and _valid_name(self.callsign)):  # BATMAN-264-R10
+                    self.logger.error(
+                        f"refusing the subscription of {self.client_address[0]}: uid or callsign is not a usable "
+                        f"queue name (empty, >255 bytes, amq.*, a system name or not printable); CoT is still stored")
+                elif (
+                    platform != "OpenTAK ICU"''')
 
 # --- license notice (GPL-3.0-or-later §5a: modified files carry a prominent dated notice) ----------
 assert s.startswith("import base64\n"), "upstream file no longer starts with 'import base64'"
