@@ -1,0 +1,454 @@
+--- a/opentakserver/eud_handler/EudHandler.py
++++ b/opentakserver/eud_handler/EudHandler.py
+@@ -1,3 +1,7 @@
++# SPDX-License-Identifier: GPL-3.0-or-later
++# OpenTAKServer 1.7.13 opentakserver/eud_handler/EudHandler.py, (c) the OpenTAKServer authors.
++# Modified by the Batman project for winson3QQ/Batman#264 on 2026-10-07 (every change is marked
++# BATMAN-264); see deploy/ots/patches/README.md. Distributed under the GNU GPL v3 or later.
+ import base64
+ import datetime
+ import json
+@@ -10,6 +14,8 @@
+ import sys
+ import traceback
+ import uuid
++import functools  # BATMAN-264
++import threading  # BATMAN-264
+ from logging.handlers import TimedRotatingFileHandler
+ from socket import socket, SHUT_RDWR
+ from threading import Thread
+@@ -65,6 +71,19 @@
+ from opentakserver.models.ZMIST import ZMIST
+ 
+ 
++MAX_PENDING = 1 << 20  # BATMAN-264-PA: bytes held while waiting for a closing tag (upstream: unbounded)
++
++
++class _OpRecorder:  # BATMAN-264: records channel calls made on the handler thread, replayed on the ioloop
++    def __init__(self):
++        self.ops = []
++
++    def __getattr__(self, name):
++        def rec(*a, **k):
++            self.ops.append((name, a, k))
++        return rec
++
++
+ class EudHandler(socketserver.BaseRequestHandler):
+ 
+     timeout = 1.0
+@@ -93,8 +112,13 @@
+         self.socket: socket = request
+ 
+     def handle(self):
+-        cot = ""
+-
++        # BATMAN-264-PA (#264 mechanism A): upstream split each recv on </event>, and when a recv ended inside a
++        # message it saved the partial (cot = c) and then wiped it (cot = ""), so every message cut by a TCP
++        # segment or a coalesced write was lost (measured 20-35 %). Keep raw BYTES until a closing tag is seen
++        # (a multi-byte UTF-8 character split across recvs must not raise), decode only complete messages,
++        # carry the remainder, and drop only a message that really is malformed.
++        buf = b""
++        scan = 0
+         while not self.shutdown:
+             try:
+                 data = self.request.recv(65536)
+@@ -105,26 +129,32 @@
+                 self.logger.debug("no data")
+                 break
+ 
+-            cot += data.decode("utf-8")
+-            cot_list = re.split("</event>|</auth>", cot)
+-
+-            if len(cot_list) < 2:
+-                continue
+-
+-            for c in cot_list:
++            buf += data
++            while not self.shutdown:
++                ends = [(i, t) for i, t in ((buf.find(b"</event>", scan), b"</event>"),
++                                            (buf.find(b"</auth>", scan), b"</auth>")) if i >= 0]
++                if not ends:
++                    scan = max(0, len(buf) - 8)  # resume near the end: no O(n^2) rescan of a slow sender
++                    break
++                end, tag = min(ends)
++                end += len(tag)
++                chunk, buf, scan = buf[:end], buf[end:], 0
++                start = chunk.rfind(b"<event" if tag == b"</event>" else b"<auth>")
++                if start < 0:
++                    self.logger.error("Failed to parse: closing tag without an opening tag, dropped")
++                    continue
++                msg = chunk[start:].decode("utf-8", errors="replace")
+                 try:
+-                    if "<event" in c:
+-                        fromstring(c + "</event>")
+-                        self.handle_cot(c + "</event>")
+-                    elif "<auth>" in c:
+-                        fromstring(c + "</auth>")
+-                        self.handle_auth(c + "</auth>")
++                    fromstring(msg)
++                    if tag == b"</event>":
++                        self.handle_cot(msg)
++                    else:
++                        self.handle_auth(msg)
+                 except ParseError as e:
+                     self.logger.error(f"Failed to parse: {e}")
+-                    cot = c
+-                    break
+-
+-            cot = ""
++            if len(buf) > MAX_PENDING:
++                self.logger.error(f"{len(buf)} bytes without a closing tag from {self.client_address[0]}, dropped")
++                buf, scan = b"", 0
+ 
+         self.close_connection()
+ 
+@@ -158,6 +188,14 @@
+         return False
+ 
+     def setup(self):
++        # BATMAN-264: per-instance state (upstream used class attributes) + ioloop liveness / drain signals
++        self.cached_messages = []
++        self.bound_queues = []
++        self.group_memberships = []
++        self._loop_dead = False
++        self._closed = False
++        self._pending_ops = None
++        self._drained = threading.Event()
+         self.create_app()
+ 
+         # RabbitMQ
+@@ -170,13 +208,12 @@
+             self.rabbit_connection = pika.SelectConnection(
+                 pika.ConnectionParameters(host=rabbit_host, credentials=rabbit_credentials),
+                 self.on_connection_open,
++                on_open_error_callback=self.on_open_error,  # BATMAN-264: upstream had none -> ioloop died
+                 on_close_callback=self.on_close,
+             )
+             self.rabbit_channel: Channel | None = None
+             # Start the pika ioloop in a thread or else it blocks and we can't receive any CoT messages
+-            self.iothread = Thread(
+-                target=self.rabbit_connection.ioloop.start, name=f"IOLOOP_{self.common_name}"
+-            )
++            self.iothread = Thread(target=self._run, name=f"IOLOOP_{self.common_name}")  # BATMAN-264
+             # self.iothread.daemon = True
+             self.iothread.start()
+             self.is_consuming = False
+@@ -188,30 +225,46 @@
+         print("finish")
+ 
+     def close_connection(self):
++        # BATMAN-264: idempotent (handle_auth and handle() could both call it); the disconnect publish, the
++        # unbinds and channel.close() run on the ioloop thread (pika is not thread-safe); the handler waits
++        # at most 2 s for the CloseOk so the last messages leave before the forked child os._exit()s.
++        # Upstream published before checking the channel (ChannelWrongStateError, upstream #404).
++        if self._closed:
++            return
++        self._closed = True
+         self.logger.info("{} disconnected".format(self.client_address[0]))
+-
+-        self.rabbit_channel.basic_publish(
+-            exchange="cot_parser",
+-            body=json.dumps(
+-                {
+-                    "uid": self.uid,
+-                    "cot": None,
+-                    "disconnected": True,
+-                    "user_id": self.user.id if self.user else None,
+-                }
+-            ),
+-            routing_key="cot_parser",
+-            properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
++        body = json.dumps(
++            {
++                "uid": self.uid,
++                "cot": None,
++                "disconnected": True,
++                "user_id": self.user.id if self.user else None,
++            }
+         )
++        binds = list(self.bound_queues)
++        uid = self.uid
+ 
+-        self.unbind_rabbitmq_queues()
++        def _close_on_ioloop():
++            try:
++                if self.rabbit_channel and self.rabbit_channel.is_open:
++                    self.rabbit_channel.basic_publish(
++                        exchange="cot_parser",
++                        body=body,
++                        routing_key="cot_parser",
++                        properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
++                    )
++                    self.unbind_rabbitmq_queues(uid, binds)
++                    self.rabbit_channel.close()  # on_channel_close (CloseOk) sets _drained
++                else:
++                    self._drained.set()
++            except Exception as e:
++                self.logger.error(f"close on ioloop failed: {e}")
++                self._drained.set()
+ 
+-        if (
+-            self.rabbit_channel
+-            and not self.rabbit_channel.is_closing
+-            and not self.rabbit_channel.is_closed
+-        ):
+-            self.rabbit_channel.close()
++        if threading.current_thread() is self.iothread:
++            _close_on_ioloop()  # called from on_message: never wait for ourselves
++        elif self._io(_close_on_ioloop):
++            self._drained.wait(2.0)
+ 
+         if not self.shutdown:
+             self.shutdown = True
+@@ -283,6 +336,10 @@
+             "flask-socketio", durable=False, exchange_type="fanout"
+         )
+ 
++        if self._pending_ops:  # BATMAN-264: a subscription requested before the channel was open
++            ops, self._pending_ops = self._pending_ops, None
++            self._subscribe(ops)
++
+         for message in self.cached_messages:
+             self.publish_cot(message)
+ 
+@@ -310,6 +367,7 @@
+ 
+     def on_channel_close(self, channel: Channel, error):
+         self.logger.error(f"RabbitMQ channel closed for {self.callsign}, shut it down")
++        self._drained.set()  # BATMAN-264: CloseOk received -> earlier frames were sent
+         if (
+             self.rabbit_connection
+             and not self.rabbit_connection.is_closing
+@@ -325,6 +383,67 @@
+         # Stop the ioloop using add_callback_threadsafe because ioloop.stop() isn't threadsafe
+         connection.ioloop.add_callback_threadsafe(self.rabbit_connection.ioloop.stop)
+         self.logger.info("Connection closed for {}: {}".format(self.client_address[0], error))
++        self._drained.set()  # BATMAN-264
++
++    # ---- BATMAN-264: thread-safety helpers (stage 1; reconnect is stage 2) -------------------------------
++    def _run(self):
++        # Own ioloop entry: the handler must know when the loop is gone (a callback queued to a stopped loop
++        # is silently never run), and a waiter must not hang on it.
++        try:
++            self.rabbit_connection.ioloop.start()
++        except BaseException as e:
++            self.logger.error(f"RabbitMQ ioloop ended with an error: {e}")
++        finally:
++            self._loop_dead = True
++            self._drained.set()
++
++    def on_open_error(self, connection, error):
++        # Upstream passed no on_open_error_callback: pika's default raised inside the ioloop and killed it.
++        self.logger.error(f"RabbitMQ connection failed for {self.client_address[0]}: {error}")
++        self.shutdown = True
++        connection.ioloop.stop()
++
++    def _io(self, fn, *args):
++        # Run fn on the ioloop thread. False = the loop is gone; the caller falls back to upstream's
++        # "channel closed" behaviour. Never touches the channel from this (handler) thread.
++        if threading.current_thread() is self.iothread:
++            fn(*args)
++            return True
++        if self._loop_dead or not self.iothread or not self.iothread.is_alive():
++            return False
++        try:
++            self.rabbit_connection.ioloop.add_callback_threadsafe(functools.partial(fn, *args))
++            return True
++        except Exception as e:
++            self.logger.error(f"cannot hand work to the RabbitMQ ioloop: {e}")
++            return False
++
++    def _publish_on_ioloop(self, exchange, routing_key, body, event=None):
++        if self.rabbit_channel and self.rabbit_channel.is_open:
++            self.rabbit_channel.basic_publish(
++                exchange=exchange,
++                routing_key=routing_key,
++                body=body,
++                properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
++            )
++        elif event is not None and exchange == "cot_parser":
++            self._cache(event)
++
++    def _cache(self, event):
++        if len(self.cached_messages) >= 1000:
++            self.cached_messages.pop(0)
++        self.cached_messages.append(event)
++        self.logger.error("RabbitMQ channel is closed, not publishing cot")
++
++    def _subscribe(self, ops):
++        # replay queue_declare / queue_bind / basic_consume recorded by parse_device_info; if the channel is
++        # not open yet (a client often sends its first CoT before AMQP is up), do it in on_channel_open
++        # instead of never (upstream skipped the subscription for good)
++        if self.rabbit_channel and self.rabbit_channel.is_open:
++            for name, a, k in ops:
++                getattr(self.rabbit_channel, name)(*a, **k)
++        else:
++            self._pending_ops = ops
+ 
+     def on_message(self, unused_channel, basic_deliver, properties, body):
+         try:
+@@ -459,28 +578,19 @@
+         if not event:
+             return
+ 
+-        if not self.rabbit_channel or not self.rabbit_channel.is_open:
+-            self.cached_messages.append(event)
+-            self.logger.error("RabbitMQ channel is closed, not publishing cot")
+-            return
++        # BATMAN-264: bodies are built here (the DB-bound self.user is thread-local to this thread), the
++        # publishes run on the ioloop thread. If the loop is gone: upstream's "channel closed" path.
++        fh = json.dumps({"uid": self.uid, "cot": str(event)})
++        cp = json.dumps({"uid": self.uid, "cot": str(event), "user_id": self.user.id if self.user else None})
++
++        def _both():
++            # Route all CoTs to the firehose exchange for plugins and users that connect directly to RabbitMQ
++            self._publish_on_ioloop("firehose", "", fh)
++            # Route all cots to the cot_parser direct exchange to be processed by a pool of cot_parser processes
++            self._publish_on_ioloop("cot_parser", "cot_parser", cp, event)
+ 
+-        # Route all CoTs to the firehose exchange for plugins and users that connect directly to RabbitMQ
+-        self.rabbit_channel.basic_publish(
+-            exchange="firehose",
+-            body=json.dumps({"uid": self.uid, "cot": str(event)}),
+-            routing_key="",
+-            properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+-        )
+-
+-        # Route all cots to the cot_parser direct exchange to be processed by a pool of cot_parser processes
+-        self.rabbit_channel.basic_publish(
+-            exchange="cot_parser",
+-            body=json.dumps(
+-                {"uid": self.uid, "cot": str(event), "user_id": self.user.id if self.user else None}
+-            ),
+-            routing_key="cot_parser",
+-            properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+-        )
++        if not self._io(_both):
++            self._cache(event)
+ 
+     def parse_device_info(self, event):
+         link = event.find("link")
+@@ -511,17 +621,16 @@
+                 self.callsign = contact.attrs["callsign"]
+ 
+                 # Declare a RabbitMQ Queue for this uid and join the 'dms' and 'cot' exchanges
++                _ch = _OpRecorder()  # BATMAN-264: channel calls recorded here, run on the ioloop by _subscribe
+                 if (
+-                    self.rabbit_channel
+-                    and self.rabbit_channel.is_open
+-                    and platform != "OpenTAK ICU"
++                    platform != "OpenTAK ICU"
+                     and platform != "Meshtastic"
+                     and platform != "DMRCOT"
+                 ):
+ 
+                     self.logger.debug(f"Declaring queue for {self.callsign} {self.uid}")
+-                    self.rabbit_channel.queue_declare(queue=self.callsign)
+-                    self.rabbit_channel.queue_declare(queue=self.uid)
++                    _ch.queue_declare(queue=self.callsign)
++                    _ch.queue_declare(queue=self.uid)
+ 
+                     with self.app.app_context():
+                         if self.is_ssl:
+@@ -534,7 +643,7 @@
+                                 self.logger.debug(
+                                     f"{self.callsign} doesn't belong to any groups, adding them to the __ANON__ group"
+                                 )
+-                                self.rabbit_channel.queue_bind(
++                                _ch.queue_bind(
+                                     exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
+                                 )
+                                 if {
+@@ -556,7 +665,7 @@
+                                     self.group_memberships.append(membership)
+ 
+                                     if membership.enabled:
+-                                        self.rabbit_channel.queue_bind(
++                                        _ch.queue_bind(
+                                             exchange="groups",
+                                             queue=self.uid,
+                                             routing_key=f"{membership.group.name}.OUT",
+@@ -575,7 +684,7 @@
+                                             }
+                                         )
+ 
+-                        self.rabbit_channel.queue_bind(
++                        _ch.queue_bind(
+                             exchange="missions", routing_key="missions", queue=self.uid
+                         )
+                         if {
+@@ -592,10 +701,10 @@
+                             )
+ 
+                         # The DMs queue also binds by callsign since the <dest> tag in CoT messages can be by callsign instead of UID
+-                        self.rabbit_channel.queue_bind(
++                        _ch.queue_bind(
+                             exchange="dms", queue=self.uid, routing_key=self.uid
+                         )
+-                        self.rabbit_channel.queue_bind(
++                        _ch.queue_bind(
+                             exchange="dms", queue=self.callsign, routing_key=self.callsign
+                         )
+ 
+@@ -625,7 +734,7 @@
+                             self.logger.debug(
+                                 f"{self.callsign} is connected via TCP, adding them to the __ANON__ group"
+                             )
+-                            self.rabbit_channel.queue_bind(
++                            _ch.queue_bind(
+                                 exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
+                             )
+                             self.bound_queues.append(
+@@ -636,12 +745,14 @@
+                                 }
+                             )
+ 
+-                        self.rabbit_channel.basic_consume(
++                        _ch.basic_consume(
+                             queue=self.callsign, on_message_callback=self.on_message, auto_ack=True
+                         )
+-                        self.rabbit_channel.basic_consume(
++                        _ch.basic_consume(
+                             queue=self.uid, on_message_callback=self.on_message, auto_ack=True
+                         )
++                if _ch.ops:
++                    self._io(self._subscribe, _ch.ops)
+ 
+             if "phone" in contact.attrs and contact.attrs["phone"]:
+                 self.phone_number = contact.attrs["phone"]
+@@ -746,28 +857,21 @@
+                         "binary": False,
+                         "host_id": uuid.uuid4().hex,
+                     }
+-                    self.rabbit_channel.basic_publish(
+-                        exchange="flask-socketio",
+-                        routing_key="",
+-                        body=json.dumps(message).encode(),
+-                        properties=pika.BasicProperties(
+-                            expiration=self.app.config.get("OTS_RABBITMQ_TTL")
+-                        ),
+-                    )
++                    self._io(self._publish_on_ioloop, "flask-socketio", "", json.dumps(message).encode())  # BATMAN-264
+ 
+-    def unbind_rabbitmq_queues(self):
++    def unbind_rabbitmq_queues(self, uid, binds):  # BATMAN-264: ioloop thread only, snapshot of the bindings
+         if (
+-            self.uid
++            uid
+             and self.rabbit_channel
+             and not self.rabbit_channel.is_closing
+             and not self.rabbit_channel.is_closed
+         ):
+             self.rabbit_channel.queue_unbind(
+-                queue=self.uid, exchange="missions", routing_key="missions"
++                queue=uid, exchange="missions", routing_key="missions"
+             )
+-            self.rabbit_channel.queue_unbind(queue=self.uid, exchange="groups")
++            self.rabbit_channel.queue_unbind(queue=uid, exchange="groups")
+ 
+-            for bind in self.bound_queues:
++            for bind in binds:
+                 self.rabbit_channel.queue_unbind(
+                     exchange=bind["exchange"], queue=bind["queue"], routing_key=bind["routing_key"]
+                 )
