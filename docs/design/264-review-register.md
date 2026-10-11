@@ -191,7 +191,7 @@ Rows: 59
 | A-F9 / B-5 | MINOR (A) / MAJOR (B) | `_end_session` acted on names the session never declared (404 for relays, deleting someone else's idle queue). | fixed 3e0f559: only a session that subscribed checks/deletes; others take upstream's path |
 | A-F10 / B-8 | MINOR | Cache bounds bypassed on return/requeue/nack; unacked bytes unbounded; coalescing key is the session uid. | partly: re-inserts stay outside the count bound by design (they are older than anything cached since); the unacked set is bounded by CACHE_MAX entries, not bytes (stated); the coalescing key is the session uid: stated, an EUD's reports share one uid |
 | A-F11 / B-9 | MINOR | Returned bodies and multiple nacks re-cached in reverse order. | fixed 3e0f559 |
-| A-F12 | MINOR | soak-cot-264 requires stored == sent (contradicts at-least-once); ots_logc reads the TCP log only. | leftover: soak-cot-264 to count distinct uids (next harness change); ots_logc stated in the design |
+| A-F12 | MINOR | soak-cot-264 requires stored == sent (contradicts at-least-once); ots_logc reads the TCP log only. | fixed (next commit after a43b721): soak-cot-264 judges distinct stored uids == sent, duplicates reported; ots_logc reading the TCP log only is stated in the design |
 | A-F13 | MINOR | Offline case 8 passed without testing on 3.12 (freeze count 375) and crashed on 3.13. | fixed 3e0f559 (`_prewarm_parent` stubbed; the freeze-once branch is exercised) |
 | A-F14 | MINOR | A reconnect could be scheduled while the connection is open. | fixed 3e0f559 |
 | A-F15 / B-6 | MINOR (A) / MAJOR (B) | R7 claims ran ahead of the evidence; the cap reads memory.current (page cache). | measured 22 MiB on wsl.6 after the pre-warm (design updated); cap now reads memory.stat anon (3e0f559); eud-mem-264 limit 25 with the composition stated (e60ee5f) |
@@ -200,7 +200,7 @@ Rows: 59
 | A-F18 | MINOR | A client leaving during the queue-gone window loses its returned bodies. | covered by the bounded drain (R4b) once the queue is back within 60 s; beyond that logged: stated |
 | A-F19 | MINOR | `_owned_by_user` also refuses a legitimate 8088 device whose callsign collides with a user's device. | stated in design R10 (residual) |
 | B-11 | MINOR | `chk_conform` only checked that the item list is non-empty. | fixed e60ee5f: must equal the p6 overlay's |
-| B-12 | MINOR | CI does not require a MOUNTSHA for an overlay mount. | leftover (check-payload-manifest.sh: a MOUNT over an image path without MOUNTSHA should fail) |
+| B-12 | MINOR | CI does not require a MOUNTSHA for an overlay mount. | fixed (same commit): check-payload-manifest.sh fails a MOUNT whose source is under patches/ without a MOUNTSHA for its target |
 | B-14 | MINOR | `handle()`'s `<event` search would mis-split a CoT whose detail contains an element named `<event...`. | leftover, stated (no such element in the CoT schema used by ATAK/iTAK) |
 | B (impl-1) | note | impl-1's stated cause contradicted the code. | corrected in zombie-264.sh's comment: a `<contact>` per event does not re-identify upstream's session; the race is cot_parser's insert against the EUD row of the first identification |
 

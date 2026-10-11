@@ -109,6 +109,11 @@ done
 #     offline tests must be consistent (check-eudhandler-264.sh). ---
 for man in deploy/*/*.manifest; do
 	[ -f "$man" ] || continue; app=$(basename "$(dirname "$man")")
+	# a code overlay (MOUNT source under patches/) must carry a MOUNTSHA for its target (review B-12)
+	for mnt in $(awk '$1=="MOUNT"{print $2}' "$man"); do
+		msrc=${mnt%%:*}; mrest=${mnt#*:}; mdst=${mrest%%:*}
+		case "$msrc" in patches/*) grep -q "^MOUNTSHA $mdst " "$man" || { echo "FAIL: $man MOUNT $msrc over $mdst has no MOUNTSHA line (an overlay over an image file must be pinned)"; rc=1; } ;; esac
+	done
 	for dst_sha in $(awk '$1=="MOUNTSHA"{print $2 "=" $3}' "$man"); do
 		dst=${dst_sha%%=*}; sha=${dst_sha#*=}
 		up=$(tr -d ' \r\n' < "deploy/$app/patches/UPSTREAM_SHA256" 2>/dev/null)
