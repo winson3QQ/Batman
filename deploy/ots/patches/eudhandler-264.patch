@@ -19,7 +19,7 @@
  from logging.handlers import TimedRotatingFileHandler
  from socket import socket, SHUT_RDWR
  from threading import Thread
-@@ -65,6 +73,56 @@
+@@ -65,6 +73,60 @@
  from opentakserver.models.ZMIST import ZMIST
  
  
@@ -55,12 +55,16 @@
 +def _before_fork():
 +    # BATMAN-264-R7: the parent's heap is read-only for a session; freezing it keeps the child's garbage
 +    # collector from writing every gc header and so copying the pages (measured: 58.7 MB -> 2.6 MB per child).
-+    gc.collect()
-+    gc.freeze()
++    # Freeze ONCE and never collect the frozen heap in the parent again: a parent-side full collection after
++    # a fork writes every gc header too, and with children alive that copies the parent's whole heap for the
++    # parent (measured on the node: 1st session 33 MB, every further one 78 MB with collect+freeze per fork).
++    if gc.get_freeze_count() == 0:
++        gc.collect()
++        gc.freeze()
 +
 +
 +if hasattr(os, "register_at_fork"):
-+    os.register_at_fork(before=_before_fork, after_in_parent=gc.unfreeze)
++    os.register_at_fork(before=_before_fork)
 +
 +
 +class _OpRecorder:  # BATMAN-264: records channel calls made on the handler thread, replayed on the ioloop
@@ -76,7 +80,7 @@
  class EudHandler(socketserver.BaseRequestHandler):
  
      timeout = 1.0
-@@ -93,8 +151,13 @@
+@@ -93,8 +155,13 @@
          self.socket: socket = request
  
      def handle(self):
@@ -92,7 +96,7 @@
          while not self.shutdown:
              try:
                  data = self.request.recv(65536)
-@@ -105,26 +168,32 @@
+@@ -105,26 +172,32 @@
                  self.logger.debug("no data")
                  break
  
@@ -142,7 +146,7 @@
  
          self.close_connection()
  
-@@ -158,6 +227,31 @@
+@@ -158,6 +231,31 @@
          return False
  
      def setup(self):
@@ -174,7 +178,7 @@
          self.create_app()
  
          # RabbitMQ
-@@ -168,15 +262,21 @@
+@@ -168,15 +266,21 @@
              )
              rabbit_host = self.app.config.get("OTS_RABBITMQ_SERVER_ADDRESS")
              self.rabbit_connection = pika.SelectConnection(
@@ -200,7 +204,7 @@
              # self.iothread.daemon = True
              self.iothread.start()
              self.is_consuming = False
-@@ -188,30 +288,48 @@
+@@ -188,30 +292,48 @@
          print("finish")
  
      def close_connection(self):
@@ -269,7 +273,7 @@
  
          if not self.shutdown:
              self.shutdown = True
-@@ -219,7 +337,33 @@
+@@ -219,7 +341,35 @@
              self.request.shutdown(SHUT_RDWR)
              self.request.close()
  
@@ -296,14 +300,16 @@
 +            with app.app_context():
 +                db.engine.dispose(close=False)
 +            self.app = app
++            self.logger.debug("BATMAN-264-R7: sharing the parent's app")
 +            return app
++        self.logger.error("BATMAN-264-R7: no parent app on the server, building one per session (upstream path)")
 +        return self._create_app_upstream()
 +
 +    def _create_app_upstream(self):
          app = Flask(__name__)
          app.config.from_object(DefaultConfig)
  
-@@ -272,21 +416,29 @@
+@@ -272,21 +422,29 @@
          return app
  
      def on_connection_open(self, connection: pika.SelectConnection):
@@ -336,7 +342,7 @@
  
          # Publish the EUD info to flask-socketio for the web UI map
          if self.eud:
-@@ -310,6 +462,7 @@
+@@ -310,6 +468,7 @@
  
      def on_channel_close(self, channel: Channel, error):
          self.logger.error(f"RabbitMQ channel closed for {self.callsign}, shut it down")
@@ -344,7 +350,7 @@
          if (
              self.rabbit_connection
              and not self.rabbit_connection.is_closing
-@@ -325,6 +478,238 @@
+@@ -325,6 +484,238 @@
          # Stop the ioloop using add_callback_threadsafe because ioloop.stop() isn't threadsafe
          connection.ioloop.add_callback_threadsafe(self.rabbit_connection.ioloop.stop)
          self.logger.info("Connection closed for {}: {}".format(self.client_address[0], error))
@@ -583,7 +589,7 @@
  
      def on_message(self, unused_channel, basic_deliver, properties, body):
          try:
-@@ -459,28 +844,20 @@
+@@ -459,28 +850,20 @@
          if not event:
              return
  
@@ -625,7 +631,7 @@
  
      def parse_device_info(self, event):
          link = event.find("link")
-@@ -511,17 +888,16 @@
+@@ -511,17 +894,16 @@
                  self.callsign = contact.attrs["callsign"]
  
                  # Declare a RabbitMQ Queue for this uid and join the 'dms' and 'cot' exchanges
@@ -647,7 +653,7 @@
  
                      with self.app.app_context():
                          if self.is_ssl:
-@@ -534,7 +910,7 @@
+@@ -534,7 +916,7 @@
                                  self.logger.debug(
                                      f"{self.callsign} doesn't belong to any groups, adding them to the __ANON__ group"
                                  )
@@ -656,7 +662,7 @@
                                      exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                                  )
                                  if {
-@@ -556,7 +932,7 @@
+@@ -556,7 +938,7 @@
                                      self.group_memberships.append(membership)
  
                                      if membership.enabled:
@@ -665,7 +671,7 @@
                                              exchange="groups",
                                              queue=self.uid,
                                              routing_key=f"{membership.group.name}.OUT",
-@@ -575,7 +951,7 @@
+@@ -575,7 +957,7 @@
                                              }
                                          )
  
@@ -674,7 +680,7 @@
                              exchange="missions", routing_key="missions", queue=self.uid
                          )
                          if {
-@@ -592,10 +968,10 @@
+@@ -592,10 +974,10 @@
                              )
  
                          # The DMs queue also binds by callsign since the <dest> tag in CoT messages can be by callsign instead of UID
@@ -687,7 +693,7 @@
                              exchange="dms", queue=self.callsign, routing_key=self.callsign
                          )
  
-@@ -625,7 +1001,7 @@
+@@ -625,7 +1007,7 @@
                              self.logger.debug(
                                  f"{self.callsign} is connected via TCP, adding them to the __ANON__ group"
                              )
@@ -696,7 +702,7 @@
                                  exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                              )
                              self.bound_queues.append(
-@@ -636,12 +1012,14 @@
+@@ -636,12 +1018,14 @@
                                  }
                              )
  
@@ -713,7 +719,7 @@
  
              if "phone" in contact.attrs and contact.attrs["phone"]:
                  self.phone_number = contact.attrs["phone"]
-@@ -746,28 +1124,21 @@
+@@ -746,28 +1130,21 @@
                          "binary": False,
                          "host_id": uuid.uuid4().hex,
                      }

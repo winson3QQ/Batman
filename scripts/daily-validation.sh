@@ -831,7 +831,7 @@ chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 reaped="" q
   o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run ACTION=phase2 sh -s" < "$REPO/scripts/node/zombie-264.sh" 2>&1 | tr -d '\r')
   echo "  peer: $o"
   echo "$o" | grep -q '^PHASE2 10$' || { echo "FAIL phase 2: after A's end the live session B got $(echo "$o" | sed -n 's/^PHASE2 //p')/10 (bindings lost = B1)"; rc=1; }
-  echo "eud log: $(fssh "$ots" 20 'docker logs --since 6m ots_eud_handler 2>&1 | grep -c "another session of '"$q"' is live"') 'another session is live' line(s) (info)"
+  echo "eud log: $(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"another session of '"$q"' is live\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r') 'another session is live' line(s) in the handler's log file (info)"
   o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run ACTION=cleanup sh -s" < "$REPO/scripts/node/zombie-264.sh" 2>&1 | tr -d '\r')
   echo "  peer: $o"; echo "$o" | grep -q '^LEFT 0$' || { echo "FAIL peer cleanup left sessions ($o)"; rc=1; }
   sleep 5
@@ -849,11 +849,13 @@ SQL
 # refused, memory back near the baseline after the clients leave (no per-session leak), the run's EUD rows and
 # per-EUD rabbit queues removed. The clients are nc sessions on the peer, killed by pattern at the end.
 eud_mem_264() { fssh "$1" 20 'c=$(docker inspect -f "{{.Id}}" ots_eud_handler 2>/dev/null); cat /sys/fs/cgroup/docker/$c/memory.current 2>/dev/null' | tr -d ' \r'; }
-chk_eud_mem_264() { local ots=$1 peer=$2 n=6 run m0 m1 m2 d rc=0 o H=/tmp/run/batman-dv
+# the handler logs to a file in its data volume (stdout only on a tty); count "refusing session from <peer>" lines
+eud_refused_264() { fssh "$1" 20 'docker exec ots_eud_handler sh -c "grep -c \"refusing session from '"$2"'\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'; }
+chk_eud_mem_264() { local ots=$1 peer=$2 n=6 run m0 m1 m2 d rc=0 o r0 H=/tmp/run/batman-dv
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   m0=$(eud_mem_264 "$ots"); isint "$m0" || { echo "FAIL cannot read ots_eud_handler memory.current ([$m0]) — not verified"; return 1; }
-  run=DVM$(date +%Y%m%d%H%M%S)
+  run=DVM$(date +%Y%m%d%H%M%S); r0=$(eud_refused_264 "$ots" "$peer"); isint "$r0" || r0=0
   o=$(timeout 90 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" \
     "{ [ -d $H ] || mkdir -m 700 $H; } && [ -O $H ] && [ ! -L $H ] || { echo FAIL-scratch; exit 1; }; cat > $H/eud-idle-264.sh; for k in \$(seq 1 $n); do (trap '' HUP; TARGET=$ots RUN=$run HOLD=150 sh $H/eud-idle-264.sh \$k </dev/null >/dev/null 2>&1) & sleep 3; done; sleep 2; echo clients=\$(netstat -tn 2>/dev/null | grep -c \"$ots:8088 .*ESTABLISHED\")" \
     < "$REPO/scripts/node/eud-idle-client-264.sh" 2>&1 | tr -d '\r')
@@ -863,9 +865,12 @@ chk_eud_mem_264() { local ots=$1 peer=$2 n=6 run m0 m1 m2 d rc=0 o H=/tmp/run/ba
   d=$(( (m1 - m0) / n / 1048576 ))
   echo "ots_eud_handler memory.current: before $((m0/1048576)) MiB, with $n idle sessions $((m1/1048576)) MiB -> $d MiB per session (limit ${EUD_MEM_MAX_MB:-12}; upstream 39)"
   [ "$d" -le "${EUD_MEM_MAX_MB:-12}" ] || { echo "FAIL $d MiB per idle session"; rc=1; }
-  o=$(fssh "$ots" 20 'docker logs --since 5m ots_eud_handler 2>&1 | grep -c "refusing session"' | tr -d ' \r')
-  [ "$o" = 0 ] && echo "no session refused" || { echo "FAIL $o session(s) refused during the test"; rc=1; }
-  fssh "$peer" 30 'for p in $(pgrep -f "eud-idle-264.sh"); do kill $p; done; for p in $(pgrep -f "nc '"$ots"' 8088"); do kill $p; done; sleep 2; echo "clients left: $(pgrep -f "nc '"$ots"' 8088" | wc -l)"' | tr -d '\r'
+  # the handler logs to a file in its data volume (stdout only on a tty): refusals of this peer, before vs after
+  o=$(eud_refused_264 "$ots" "$peer"); isint "$o" || o=0
+  [ "$o" -le "$r0" ] && echo "no session refused (file count $o)" || { echo "FAIL $((o - r0)) session(s) refused during the test (container memory at the limit)"; rc=1; }
+  # kill by exact process name: a pgrep -f pattern naming the target matches this very shell and kills it first
+  o=$(fssh "$peer" 30 'for p in $(pgrep -f "^sh /tmp/run/batman-dv/eud-idle-264.sh") $(pgrep -x nc) $(pgrep -f "^sleep 150$"); do kill $p 2>/dev/null; done; sleep 2; echo "clients left: $(pgrep -x nc | wc -l) (established: $(netstat -tn 2>/dev/null | grep -c ":8088 .*ESTABLISHED"))"' | tr -d '\r')
+  echo "$o"; case "$o" in "clients left: 0 (established: 0)") ;; *) echo "FAIL peer cleanup did not end the sessions ($o)"; rc=1 ;; esac
   sleep 20; m2=$(eud_mem_264 "$ots"); isint "$m2" || m2=$m1
   echo "after the clients left: $((m2/1048576)) MiB (baseline $((m0/1048576)))"
   [ $(( (m2 - m0) / 1048576 )) -le 15 ] || { echo "FAIL memory did not return within 15 MiB of the baseline (leak)"; rc=1; }

@@ -105,12 +105,16 @@ def _cg_mem():
 def _before_fork():
     # BATMAN-264-R7: the parent's heap is read-only for a session; freezing it keeps the child's garbage
     # collector from writing every gc header and so copying the pages (measured: 58.7 MB -> 2.6 MB per child).
-    gc.collect()
-    gc.freeze()
+    # Freeze ONCE and never collect the frozen heap in the parent again: a parent-side full collection after
+    # a fork writes every gc header too, and with children alive that copies the parent's whole heap for the
+    # parent (measured on the node: 1st session 33 MB, every further one 78 MB with collect+freeze per fork).
+    if gc.get_freeze_count() == 0:
+        gc.collect()
+        gc.freeze()
 
 
 if hasattr(os, "register_at_fork"):
-    os.register_at_fork(before=_before_fork, after_in_parent=gc.unfreeze)
+    os.register_at_fork(before=_before_fork)
 
 
 class _OpRecorder:  # BATMAN-264: records channel calls made on the handler thread, replayed on the ioloop
@@ -360,7 +364,9 @@ class EudHandler(socketserver.BaseRequestHandler):
             with app.app_context():
                 db.engine.dispose(close=False)
             self.app = app
+            self.logger.debug("BATMAN-264-R7: sharing the parent's app")
             return app
+        self.logger.error("BATMAN-264-R7: no parent app on the server, building one per session (upstream path)")
         return self._create_app_upstream()
 
     def _create_app_upstream(self):
