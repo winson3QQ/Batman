@@ -174,3 +174,33 @@ Rows: 59
 | impl-2 | MINOR | The first R7 implementation (collect+freeze before every fork, unfreeze after) cost 78 MB per session. | rc wsl.2 `r7-mem2.log`: parent-side full collections after each fork copied the parent's heap for the parent while children were alive. | fixed 9423e25 (freeze once); measured 31 MiB/session on wsl.4; pre-warm 9fae867 to be measured on wsl.6 |
 | impl-3 | process | I edited `scripts/daily-validation.sh` while rc4-val was running it. | bash read the changed file mid-run: syntax error after zombie-264, the #274 suites of that run did not execute. | recorded; rule: never edit a running script |
 
+---
+
+## Code review round 1 (2026-10-11, two independent reviewers on the code: `scratchpad/264/reviewer-A.md`, `reviewer-B.md`; both REJECT)
+
+| ID | Severity | Finding (reviewer wording, trimmed) | Status |
+|---|---|---|---|
+| A-F1 / B-2 | BLOCKER | The subscription replay never runs: `on_channel_open` cleared `_need_replay` before `_subscribe`, which returned at once. | fixed 3e0f559: `_subscribed` cleared on every channel/connection loss, `_subscribe` clears `_need_replay` only when the consumes are placed; offline case 17 drives `on_channel_open` |
+| A-F2 / B-1 | BLOCKER | A refused subscription is never retried ("the next report" never comes: upstream identifies once); in field order the reconnecting phone stays deaf and the stale session deletes its queues. | fixed 3e0f559: 15 s retry timer; DB-down lookup leaves `self.uid` unset so the next identifying CoT retries; zombie-264 rewritten in field order (e60ee5f); the "consumer per report" claim withdrawn |
+| A-F3 / B-3 | BLOCKER (B) / MAJOR (A) | `_drained` is a latch that is already set after any broker event; the bounded drain, disconnect, unbind and cleanup never wait. | fixed 3e0f559: cleared at the start of `close_connection` |
+| A-F4 | MAJOR | A close from the ioloop (send failure) is not waited for; `request.shutdown` ENOTCONN raises into the ioloop. | fixed 3e0f559: shutdown/close wrapped; the ioloop path is by design not waited for (the handler thread ends through the socket) |
+| A-F5 | MAJOR | amqp-close-264 looks for the bench node's IP as AMQP peer; the peer is the eud container: closed=0 every run. | fixed e60ee5f: found by `connection_name eud-8088-<client ip>:`; rc6 confirmed the old lookup found nothing |
+| A-F6 / B-4 | MAJOR | Callback exceptions kill the ioloop and the session stays a silent black hole. | partly: a dead loop now ends the client session (3e0f559), `_subscribe`'s channel calls and the close path cannot raise; `self.eud.to_json()` on reopen is upstream code, left (stated) |
+| A-F7 / B-13 | MAJOR | The design and README were stale (R5 "not probed", R7 unfreeze, R8 docker run + log line, R11, §3/§4/§6/§7, README items). | fixed b142ec2 |
+| A-F8 / B-10 | MINOR | A connection drop counted toward the 3-channel-closes rule. | fixed 3e0f559 |
+| A-F9 / B-5 | MINOR (A) / MAJOR (B) | `_end_session` acted on names the session never declared (404 for relays, deleting someone else's idle queue). | fixed 3e0f559: only a session that subscribed checks/deletes; others take upstream's path |
+| A-F10 / B-8 | MINOR | Cache bounds bypassed on return/requeue/nack; unacked bytes unbounded; coalescing key is the session uid. | partly: re-inserts stay outside the count bound by design (they are older than anything cached since); the unacked set is bounded by CACHE_MAX entries, not bytes (stated); the coalescing key is the session uid: stated, an EUD's reports share one uid |
+| A-F11 / B-9 | MINOR | Returned bodies and multiple nacks re-cached in reverse order. | fixed 3e0f559 |
+| A-F12 | MINOR | soak-cot-264 requires stored == sent (contradicts at-least-once); ots_logc reads the TCP log only. | leftover: soak-cot-264 to count distinct uids (next harness change); ots_logc stated in the design |
+| A-F13 | MINOR | Offline case 8 passed without testing on 3.12 (freeze count 375) and crashed on 3.13. | fixed 3e0f559 (`_prewarm_parent` stubbed; the freeze-once branch is exercised) |
+| A-F14 | MINOR | A reconnect could be scheduled while the connection is open. | fixed 3e0f559 |
+| A-F15 / B-6 | MINOR (A) / MAJOR (B) | R7 claims ran ahead of the evidence; the cap reads memory.current (page cache). | measured 22 MiB on wsl.6 after the pre-warm (design updated); cap now reads memory.stat anon (3e0f559); eud-mem-264 limit 25 with the composition stated (e60ee5f) |
+| A-F16 | MINOR | README manual install missed the overlay file. | fixed b142ec2 |
+| A-F17 / B-7 | MINOR (A) / MAJOR (B) | Negative controls do not cover the broken paths (downlink after reconnect, the handler's own session-end effects, field-order zombie). | partly: zombie-264 in field order asserts the downlink after the stale session's end and the handler's own queue cleanup (e60ee5f); downlink after a broker-side reconnect is still not asserted by a node test (amqp-close-264 checks uplink only): leftover |
+| A-F18 | MINOR | A client leaving during the queue-gone window loses its returned bodies. | covered by the bounded drain (R4b) once the queue is back within 60 s; beyond that logged: stated |
+| A-F19 | MINOR | `_owned_by_user` also refuses a legitimate 8088 device whose callsign collides with a user's device. | stated in design R10 (residual) |
+| B-11 | MINOR | `chk_conform` only checked that the item list is non-empty. | fixed e60ee5f: must equal the p6 overlay's |
+| B-12 | MINOR | CI does not require a MOUNTSHA for an overlay mount. | leftover (check-payload-manifest.sh: a MOUNT over an image path without MOUNTSHA should fail) |
+| B-14 | MINOR | `handle()`'s `<event` search would mis-split a CoT whose detail contains an element named `<event...`. | leftover, stated (no such element in the CoT schema used by ATAK/iTAK) |
+| B (impl-1) | note | impl-1's stated cause contradicted the code. | corrected in zombie-264.sh's comment: a `<contact>` per event does not re-identify upstream's session; the race is cot_parser's insert against the EUD row of the first identification |
+
