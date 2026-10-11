@@ -18,7 +18,12 @@ H=/tmp/run/batman-dv
 ts(){ date -u -d @"$1" +%Y-%m-%dT%H:%M:%S.000Z; }
 ev(){ n=$(date +%s); printf '<event version="2.0" uid="%s" type="a-f-G-U-C" how="h-e" time="%s" start="%s" stale="%s"><point lat="25.03" lon="121.56" hae="10" ce="9999999" le="9999999"/><detail><contact callsign="%s"/></detail></event>' "$1" "$(ts "$n")" "$(ts "$n")" "$(ts $((n+600)))" "$2"; }
 est(){ netstat -tn 2>/dev/null | grep "$TARGET:8088.*ESTABLISHED" | awk '{print $4}' | cut -d: -f2; }
-sendC(){ { i=1; while [ $i -le 10 ]; do ev "$RUN-C-$1-$i" "$RUN-C"; sleep 1; i=$((i+1)); done; sleep 3; } | nc "$TARGET" 8088 >/dev/null 2>&1; }
+# C identifies first (one CoT, 2 s for the EUD row to land: cot_parser rejects a CoT whose sender has no row yet),
+# then sends the 10 counted events from that same session
+# the counted events carry no <contact>: the session's identity stays $RUN-C-$1-0 (a <contact> on every event
+# would re-identify the session per event and race cot_parser's insert against the new EUD row)
+evn(){ n=$(date +%s); printf '<event version="2.0" uid="%s" type="a-f-G-U-C" how="h-e" time="%s" start="%s" stale="%s"><point lat="25.03" lon="121.56" hae="10" ce="9999999" le="9999999"/><detail/></event>' "$1" "$(ts "$n")" "$(ts "$n")" "$(ts $((n+600)))"; }
+sendC(){ { ev "$RUN-C-$1-0" "$RUN-C"; sleep 2; i=1; while [ $i -le 10 ]; do evn "$RUN-C-$1-$i"; sleep 1; i=$((i+1)); done; sleep 3; } | nc "$TARGET" 8088 >/dev/null 2>&1; }
 countB(){ grep -o "uid=\"$RUN-C-$1-[0-9]*\"" "$H/$RUN-B.out" 2>/dev/null | sort -u | wc -l; }
 case $ACTION in
 start)

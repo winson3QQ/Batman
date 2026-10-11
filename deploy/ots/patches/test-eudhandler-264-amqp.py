@@ -68,6 +68,7 @@ class H:
         self._drained = _threading.Event(); self.client_address = ("10.0.0.9", 1)
         self.on_connection_open = lambda c: None
         self.on_channel_open = lambda c: None
+        self._subscribed = False; self._squat_logged = False
         self._end_args = None; self._loop_dead = False
 
 
@@ -283,4 +284,28 @@ ok(v("ANDROID-abc123") and v("Alpha 1") and v("中文呼號") and v("a" * 255), 
 ok(not v("") and not v(None) and not v("a" * 256) and not v("中" * 86), "15 empty / None / >255 bytes refused")
 ok(not v("cot_parser") and not v("COT_PARSER") and not v("firehose") and not v("groups") and not v("flask-socketio"), "15 system queue/exchange names refused (any case)")
 ok(not v("amq.x") and not v("AMQ.gen-1") and not v("evil" + chr(0)) and not v("a" + chr(10) + "b"), "15 amq.* prefix and non-printable characters refused")
+# 16 R10: the subscription is made once per session, and not while another consumer holds the EUD's queue
+fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_subscribe")
+exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); setattr(H, "_subscribe", g["_subscribe"])
+class SubChan(Chan):
+    def __init__(self, consumers):
+        super().__init__(); self.consumers = consumers; self.ops = []
+    def queue_declare(self, queue, callback=None, **k):
+        self.ops.append(("queue_declare", queue))
+        class M: pass
+        m = M(); m.method = M(); m.method.consumer_count = self.consumers.get(queue, 0); m.method.queue = queue
+        if callback: callback(m)
+    def queue_bind(self, **k): self.ops.append(("queue_bind", k["queue"]))
+    def basic_consume(self, **k): self.ops.append(("basic_consume", k["queue"]))
+OPS = [("queue_declare", (), {"queue": "CS"}), ("queue_declare", (), {"queue": "U"}), ("queue_bind", (), {"exchange": "dms", "queue": "U", "routing_key": "U"}),
+       ("basic_consume", (), {"queue": "CS", "on_message_callback": None, "auto_ack": True}), ("basic_consume", (), {"queue": "U", "on_message_callback": None, "auto_ack": True})]
+h = H(); h.rabbit_channel = SubChan({}); h.client_address = ("10.0.0.9", 1); h._subscribe(OPS)
+ok([o[0] for o in h.rabbit_channel.ops] == ["queue_declare", "queue_declare", "queue_bind", "basic_consume", "basic_consume"] and h._subscribed, "16 nobody on the queues: declare, bind, consume")
+h._subscribe(OPS); ok(len(h.rabbit_channel.ops) == 5, "16 a second identifying CoT does not subscribe again (no consumer accumulation)")
+h = H(); h.rabbit_channel = SubChan({"U": 1}); h.client_address = ("10.0.0.9", 1); h._subscribe(OPS)
+ok([o[0] for o in h.rabbit_channel.ops] == ["queue_declare", "queue_declare"] and not h._subscribed and h._squat_logged, "16 another consumer on U: declared only, no bind/consume, logged once")
+h._subscribe(OPS); ok(len(h.rabbit_channel.ops) == 4 and not h._subscribed, "16 retried on the next report while the other consumer is there")
+h.rabbit_channel.consumers = {}; h._subscribe(OPS); ok(h._subscribed and h.rabbit_channel.ops[-1] == ("basic_consume", "U"), "16 the other consumer gone: subscribed")
+h = H(); h.rabbit_channel = SubChan({"U": 1}); h.client_address = ("10.0.0.9", 1); h._need_replay = True; h._subscribe(OPS)
+ok(h._subscribed and not h._need_replay and h.rabbit_channel.ops[-1] == ("basic_consume", "U"), "16 replay after a reconnect ignores the consumer count (our own old consumer)")
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)

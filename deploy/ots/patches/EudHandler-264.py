@@ -128,8 +128,29 @@ def _before_fork():
     # a fork writes every gc header too, and with children alive that copies the parent's whole heap for the
     # parent (measured on the node: 1st session 33 MB, every further one 78 MB with collect+freeze per fork).
     if gc.get_freeze_count() == 0:
+        _prewarm_parent()
         gc.collect()
         gc.freeze()
+
+
+def _prewarm_parent():
+    # BATMAN-264-R7: work every session would otherwise do first in its own child, done once in the parent so
+    # the children share the result: SQLAlchemy's lazy mapper configuration and the first ORM statement build
+    # (measured 19.6 MB in a child, the largest remaining per-session cost), the engine object (the pool is
+    # replaced in each child), and the XML parser plugin. Never fatal: a failure here only costs memory.
+    try:
+        entry = sys.modules.get("opentakserver.eud_handler.eud_handler")
+        app = getattr(entry, "app", None)
+        if isinstance(app, Flask):
+            from sqlalchemy.orm import configure_mappers
+            from opentakserver.models.EUD import EUD as _EUD
+            with app.app_context():
+                db.engine
+                configure_mappers()
+                str(select(_EUD).filter_by(uid="warm"))
+        BeautifulSoup('<event uid="warm"><detail><contact callsign="warm"/></detail></event>', "xml")
+    except Exception as e:  # pragma: no cover - diagnostic only
+        logging.getLogger().error(f"BATMAN-264-R7 pre-warm skipped: {e}")
 
 
 if hasattr(os, "register_at_fork"):
@@ -276,6 +297,8 @@ class EudHandler(socketserver.BaseRequestHandler):
         self._reconnect_timer = None
         self._ioloop = None
         self._end_args = None        # BATMAN-264-R4b: (uid, body, binds) of a client that left while the broker was away
+        self._subscribed = False     # BATMAN-264-R10: the per-EUD subscription is made once per session
+        self._squat_logged = False
         self.iothread = None
         if not self._session_allowed():  # BATMAN-264-R7: fail closed before anything is allocated or declared
             self.shutdown = True
@@ -380,6 +403,18 @@ class EudHandler(socketserver.BaseRequestHandler):
 
             self.request.shutdown(SHUT_RDWR)
             self.request.close()
+
+    def _owned_by_user(self, uid, callsign):
+        # BATMAN-264-R10: does an EUD row with this uid or callsign belong to an OTS user (an 8089 device)?
+        try:
+            with self.app.app_context():
+                row = db.session.execute(
+                    select(EUD.uid).filter((EUD.uid == uid) | (EUD.callsign == callsign)).filter(EUD.user_id.isnot(None))
+                ).first()
+            return row is not None
+        except Exception as e:
+            self.logger.error(f"ownership lookup failed ({e}); refusing the subscription (fail closed)")
+            return True
 
     def _session_allowed(self):
         # BATMAN-264-R7: refuse a session while the container has less than SESSION_RESERVE_MB left, so the
@@ -746,12 +781,49 @@ class EudHandler(socketserver.BaseRequestHandler):
         # replay queue_declare / queue_bind / basic_consume recorded by parse_device_info; if the channel is
         # not open yet (a client often sends its first CoT before AMQP is up), do it in on_channel_open
         # instead of never (upstream skipped the subscription for good)
+        # BATMAN-264-R10: once per session (upstream re-declared, re-bound and re-consumed on EVERY identifying
+        # CoT, one more consumer per position report), and only when nobody else consumes the EUD's queues:
+        # the broker's DeclareOk carries consumer_count; another consumer means another session of the same
+        # uid/callsign (this device's stale session, gone within ~2 min by R6, or a second device claiming the
+        # name). Then: no subscription now, one log line, tried again on the next identifying CoT.
         self._sub_ops = ops  # BATMAN-264-R4: replayed on the channel after a reconnect
-        if self.rabbit_channel and self.rabbit_channel.is_open:
-            for name, a, k in ops:
-                getattr(self.rabbit_channel, name)(*a, **k)
-        else:
+        if self._subscribed and not self._need_replay:
+            return
+        if not (self.rabbit_channel and self.rabbit_channel.is_open):
             self._pending_ops = ops
+            return
+        ch = self.rabbit_channel
+        declares = [op for op in ops if op[0] == "queue_declare"]
+        rest = [op for op in ops if op[0] != "queue_declare"]
+        replay = self._need_replay
+        state = {"n": len(declares), "busy": None}
+
+        def finish():
+            if state["busy"] and not replay:
+                if not self._squat_logged:
+                    self._squat_logged = True
+                    self.logger.error(
+                        f"{self.client_address[0]}: queue {state['busy']} already has a consumer (another session "
+                        f"of this uid/callsign); not subscribing now, retried on the next report")
+                return
+            for name, a, k in rest:
+                getattr(ch, name)(*a, **k)
+            self._subscribed = True
+            self._need_replay = False
+
+        def declared(frame):
+            m = getattr(frame, "method", None)
+            if getattr(m, "consumer_count", 0) and state["busy"] is None:
+                state["busy"] = getattr(m, "queue", "?")
+            state["n"] -= 1
+            if state["n"] == 0:
+                finish()
+
+        if not declares:
+            finish()
+            return
+        for name, a, k in declares:
+            ch.queue_declare(*a, callback=declared, **k)
 
     # ---- BATMAN-264-R4/R4b: publisher confirms (at-least-once) and reconnect on the same ioloop ---------------
     def _on_confirm(self, frame):
@@ -1050,7 +1122,18 @@ class EudHandler(socketserver.BaseRequestHandler):
                     self.logger.error(
                         f"refusing the subscription of {self.client_address[0]}: uid or callsign is not a usable "
                         f"queue name (empty, >255 bytes, amq.*, a system name or not printable); CoT is still stored")
-                elif (
+                    return
+                if not self.is_ssl and self._owned_by_user(self.uid, self.callsign):  # BATMAN-264-R10 (review F8/M7)
+                    # an unauthenticated 8088 client naming an authenticated user's device: no subscription (it
+                    # would receive that user's DMs and group traffic) and no EUD row update (it would detach the
+                    # device from its user). Its CoT is still stored under that uid, as upstream does.
+                    if not self._squat_logged:
+                        self._squat_logged = True
+                        self.logger.error(
+                            f"refusing the subscription of {self.client_address[0]} on the plaintext listener: "
+                            f"uid/callsign {self.uid}/{self.callsign} belong to an authenticated user's device")
+                    return
+                if (
                     platform != "OpenTAK ICU"
                     and platform != "Meshtastic"
                     and platform != "DMRCOT"
