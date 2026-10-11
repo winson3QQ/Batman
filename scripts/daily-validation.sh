@@ -801,6 +801,40 @@ chk_cot_264_ssl() { local ots=$1 run o c0 rc=0
     && { echo "FAIL test client cert still present in ots_cot_parser:/tmp"; rc=1; } || echo "test client cert removed"
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
   return $rc; }
+# #264 R7: memory per idle EUD session on the 8088 handler. N idle sessions from the peer (one CoT each, then
+# silent); cgroup memory.current of ots_eud_handler before/after; the per-session cost must stay under
+# EUD_MEM_MAX_MB (12). Negative control: upstream 1.7.13 costs 39 MB per session (8 sessions: 153 -> 465 MB,
+# measured on node 04 2026-10-11, OOM at about the 10th client in the 512 MiB cgroup). Also asserted: no session
+# refused, memory back near the baseline after the clients leave (no per-session leak), the run's EUD rows and
+# per-EUD rabbit queues removed. The clients are nc sessions on the peer, killed by pattern at the end.
+eud_mem_264() { fssh "$1" 20 'c=$(docker inspect -f "{{.Id}}" ots_eud_handler 2>/dev/null); cat /sys/fs/cgroup/docker/$c/memory.current 2>/dev/null' | tr -d ' \r'; }
+chk_eud_mem_264() { local ots=$1 peer=$2 n=6 run m0 m1 m2 d rc=0 o H=/tmp/run/batman-dv
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  m0=$(eud_mem_264 "$ots"); isint "$m0" || { echo "FAIL cannot read ots_eud_handler memory.current ([$m0]) — not verified"; return 1; }
+  run=DVM$(date +%Y%m%d%H%M%S)
+  o=$(timeout 90 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" \
+    "{ [ -d $H ] || mkdir -m 700 $H; } && [ -O $H ] && [ ! -L $H ] || { echo FAIL-scratch; exit 1; }; cat > $H/eud-idle-264.sh; for k in \$(seq 1 $n); do (trap '' HUP; TARGET=$ots RUN=$run HOLD=150 sh $H/eud-idle-264.sh \$k </dev/null >/dev/null 2>&1) & sleep 3; done; sleep 2; echo clients=\$(netstat -tn 2>/dev/null | grep -c \"$ots:8088 .*ESTABLISHED\")" \
+    < "$REPO/scripts/node/eud-idle-client-264.sh" 2>&1 | tr -d '\r')
+  echo "run id $run; $n idle sessions $peer -> $ots:8088: $o"
+  case "$o" in *clients=$n) ;; *) echo "FAIL expected $n established sessions on the peer ($o) — not verified"; rc=1 ;; esac
+  sleep 20; m1=$(eud_mem_264 "$ots"); isint "$m1" || { echo "FAIL memory.current unreadable after ([$m1]) — not verified"; return 1; }
+  d=$(( (m1 - m0) / n / 1048576 ))
+  echo "ots_eud_handler memory.current: before $((m0/1048576)) MiB, with $n idle sessions $((m1/1048576)) MiB -> $d MiB per session (limit ${EUD_MEM_MAX_MB:-12}; upstream 39)"
+  [ "$d" -le "${EUD_MEM_MAX_MB:-12}" ] || { echo "FAIL $d MiB per idle session"; rc=1; }
+  o=$(fssh "$ots" 20 'docker logs --since 5m ots_eud_handler 2>&1 | grep -c "refusing session"' | tr -d ' \r')
+  [ "$o" = 0 ] && echo "no session refused" || { echo "FAIL $o session(s) refused during the test"; rc=1; }
+  fssh "$peer" 30 'for p in $(pgrep -f "eud-idle-264.sh"); do kill $p; done; for p in $(pgrep -f "nc '"$ots"' 8088"); do kill $p; done; sleep 2; echo "clients left: $(pgrep -f "nc '"$ots"' 8088" | wc -l)"' | tr -d '\r'
+  sleep 20; m2=$(eud_mem_264 "$ots"); isint "$m2" || m2=$m1
+  echo "after the clients left: $((m2/1048576)) MiB (baseline $((m0/1048576)))"
+  [ $(( (m2 - m0) / 1048576 )) -le 15 ] || { echo "FAIL memory did not return within 15 MiB of the baseline (leak)"; rc=1; }
+  ots_sql "$ots" <<SQL
+begin; delete from cot where uid like '$run-%'; delete from euds where uid like '$run-%'; commit;
+SQL
+  o=$(fssh "$ots" 60 'n=0; for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1 && n=$((n+1)); done; echo "deleted=$n left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'")"' | tr -d '\r')
+  echo "rabbit per-EUD queues of this run: $o"; case "$o" in *left=0) ;; *) echo "FAIL cleanup: per-EUD rabbit queues of run $run left behind"; rc=1 ;; esac
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
 # #264 mechanism C, destructive (tier B): the transient cot_parser queue disappears while a client streams. Deleting
 # it also cancels cot_parser's consumer, so cot_parser EXITS and the guardian restarts it (a ledger line, DRIFT for
 # 600 s) — asserted, never worked around: the test only acts inside the broker and never starts/stops a container.
@@ -958,7 +992,7 @@ chk_flashgo() { fssh "$1" 40 '                                 # #159/#216 flash
   echo "firstload enabled; offline copies present; canary runs; autocommit gate ok"'; }
 
 if [ "$OTS_SOC" = bcm2710 ]; then
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl; do
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264; do
     suite "$s" "OTS_NODE $OTS_NODE is bcm2710 — not run (see ots-node-209)" ""
   done
 elif up "$OTS_NODE"; then
@@ -972,8 +1006,9 @@ elif up "$OTS_NODE"; then
   suite flashgo-159      "flash-and-go integrity — firstload enabled, offline copies (F2), canary runs, autocommit gate (#159/#216)" "chk_flashgo $OTS_NODE"
   suite ots-cot-e2e-264  "CoT sent == stored per phase from $BENCH_NODE: P1 control, P2 deterministic truncation (A control / B #264-A), P3 burst; heartbeat (#264-B) NOT exercised (#268 B2)" "chk_cot_264 $OTS_NODE $BENCH_NODE"
   suite ots-cot-e2e-264-ssl "CoT sent == stored per phase on the SSL listener 8089 (mTLS, 1-day test cert for an existing user): P1 / P2 truncation / P3 burst — handler path via br-ots, not the mesh (#264)" "chk_cot_264_ssl $OTS_NODE"
+  suite eud-mem-264 "ots_eud_handler memory per idle session from $BENCH_NODE: 6 sessions, <= 12 MiB each (upstream 39, OOM at ~10 clients), none refused, no leak after they leave (#264 R7)" "chk_eud_mem_264 $OTS_NODE $BENCH_NODE"
 else
-  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
+  for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
 if up "$MESH_NODE"; then
   suite field-status-130 "halow-status verdict agrees with batctl radio truth (#130)"        "chk_130 $MESH_NODE"
