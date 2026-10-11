@@ -15,6 +15,7 @@ import sys
 import traceback
 import uuid
 import functools  # BATMAN-264
+import gc  # BATMAN-264-R7
 import threading  # BATMAN-264
 from logging.handlers import TimedRotatingFileHandler
 from socket import socket, SHUT_RDWR
@@ -74,7 +75,36 @@ from opentakserver.models.ZMIST import ZMIST
 MAX_PENDING = 1 << 20  # BATMAN-264-PA: bytes held while waiting for a closing tag (upstream: unbounded)
 CACHE_MAX = 2000         # BATMAN-264-R9: cot_parser bodies held per session while the broker is away/blocked
 CACHE_MAX_BYTES = 2 << 20
-BATMAN_264 = "R1 R3 R5 R9"  # BATMAN-264: which #264 items this overlay carries (payload-conform greps it)
+BATMAN_264 = "R1 R3 R5 R7 R9"  # BATMAN-264: which #264 items this overlay carries (payload-conform greps it)
+# BATMAN-264-R7: a new session is refused when the container has less than this much memory left. Measured on the
+# node (2026-10-11, 512 MiB cgroup): upstream costs 39 MB per idle session (the child's Flask+Security build 28.6 MB
+# plus the child's first gc pass copying 58.7 MB of the parent's heap); the kernel OOM-kills the whole container
+# (PID 1 = every session) at about the 10th client. With the shared app and gc.freeze() below a session costs a
+# few MB, and the reserve turns the remaining limit into a refused connection instead of a container kill.
+SESSION_RESERVE_MB = int(os.environ.get("BATMAN_264_SESSION_RESERVE_MB", "40"))
+
+
+def _cg_mem():
+    """(current, max) bytes of this container's own cgroup; (None, None) when unreadable (then no cap)."""
+    try:
+        with open("/sys/fs/cgroup/memory.current") as f:
+            cur = int(f.read())
+        with open("/sys/fs/cgroup/memory.max") as f:
+            mx = f.read().strip()
+        return cur, (None if mx == "max" else int(mx))
+    except (OSError, ValueError):
+        return None, None
+
+
+def _before_fork():
+    # BATMAN-264-R7: the parent's heap is read-only for a session; freezing it keeps the child's garbage
+    # collector from writing every gc header and so copying the pages (measured: 58.7 MB -> 2.6 MB per child).
+    gc.collect()
+    gc.freeze()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before=_before_fork, after_in_parent=gc.unfreeze)
 
 
 class _OpRecorder:  # BATMAN-264: records channel calls made on the handler thread, replayed on the ioloop
@@ -207,6 +237,14 @@ class EudHandler(socketserver.BaseRequestHandler):
         self._retry_n = 0
         self._retry_timer = None
         self._head_returned = False
+        self.iothread = None
+        if not self._session_allowed():  # BATMAN-264-R7: fail closed before anything is allocated or declared
+            self.shutdown = True
+            try:
+                self.request.close()
+            except OSError:
+                pass
+            return
         self.create_app()
 
         # RabbitMQ
@@ -299,7 +337,33 @@ class EudHandler(socketserver.BaseRequestHandler):
             self.request.shutdown(SHUT_RDWR)
             self.request.close()
 
+    def _session_allowed(self):
+        # BATMAN-264-R7: refuse a session while the container has less than SESSION_RESERVE_MB left, so the
+        # limit shows as one refused client in the log instead of the kernel killing PID 1 and every session.
+        cur, mx = _cg_mem()
+        if cur is None or mx is None:
+            return True
+        if mx - cur < SESSION_RESERVE_MB << 20:
+            self.logger.error(
+                f"refusing session from {self.client_address[0]}: container memory {cur >> 20}/{mx >> 20} MiB, "
+                f"less than {SESSION_RESERVE_MB} MiB free (BATMAN-264-R7)")
+            return False
+        return True
+
     def create_app(self):
+        # BATMAN-264-R7: eud_handler.py builds the app once in the parent (app = create_app()) and hands it to the
+        # server as app_context; the child shares it copy-on-write instead of building its own (28.6 MB measured
+        # per session). The SQLAlchemy pool a child inherits is replaced without closing the parent's sockets.
+        # Consequence: config.yml is read when the handler process starts, not per session.
+        app = getattr(self.server, "app_context", None)
+        if isinstance(app, Flask):
+            with app.app_context():
+                db.engine.dispose(close=False)
+            self.app = app
+            return app
+        return self._create_app_upstream()
+
+    def _create_app_upstream(self):
         app = Flask(__name__)
         app.config.from_object(DefaultConfig)
 

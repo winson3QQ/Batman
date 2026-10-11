@@ -123,4 +123,24 @@ ok([b for b, m in h.cached_messages] == ["m2", "m3", "m4", "m5", "m6"] and h._dr
 g["CACHE_MAX_BYTES"] = 10; h = H(chan_open=False)
 for i in range(4): h._cache("abcd", ("U%d" % i, "x"))   # 16 bytes > 10
 ok(len(h.cached_messages) == 2 and h._cache_bytes == 8 and h._dropped == 2, "7 byte bound: entries dropped until under CACHE_MAX_BYTES")
+# 8 R7 session cap: refused only when the container's own cgroup has less than SESSION_RESERVE_MB left;
+#   no cap when the cgroup files are unreadable or the limit is "max"
+for fname in ("_cg_mem", "_before_fork"):
+    fn = next(n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == fname)
+    exec(textwrap.dedent(ast.get_source_segment(src, fn)), g)
+fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_session_allowed")
+exec(textwrap.dedent(ast.get_source_segment(src, fn)), g)
+setattr(H, "_session_allowed", g["_session_allowed"])
+real_cg_mem = g["_cg_mem"]
+r = real_cg_mem()
+ok(r == (None, None) or (isinstance(r[0], int) and (r[1] is None or isinstance(r[1], int))), "8 _cg_mem on this host: ints or (None, None), never raises")
+g["SESSION_RESERVE_MB"] = 40
+h = H(); h.client_address = ("10.0.0.9", 1234)
+g["_cg_mem"] = lambda: (400 << 20, 512 << 20); ok(h._session_allowed() is True, "8 112 MiB free >= 40 MiB reserve: session allowed")
+g["_cg_mem"] = lambda: (480 << 20, 512 << 20); ok(h._session_allowed() is False, "8 32 MiB free < 40 MiB reserve: session refused")
+g["_cg_mem"] = lambda: (472 << 20, 512 << 20); ok(h._session_allowed() is True, "8 exactly 40 MiB free: allowed (strict less-than)")
+g["_cg_mem"] = lambda: (500 << 20, None); ok(h._session_allowed() is True, "8 memory.max = max (no limit): allowed")
+g["_cg_mem"] = lambda: (None, None); ok(h._session_allowed() is True, "8 cgroup unreadable: allowed (no cap)")
+import gc as _gc
+g["gc"] = _gc; g["_before_fork"](); ok(_gc.get_freeze_count() > 0, "8 _before_fork freezes the heap"); _gc.unfreeze()
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)
