@@ -29,7 +29,7 @@ Process model:
 
 Measured on 04 (shipped 1.5.8-wsl.5):
 - Each eud container has a 512 MiB limit.
-- `memory.current` is 189 MB idle and 229 MB with one streaming client (about +39 MB per session). See R7.
+- `memory.current` is 189 MB idle and 229 MB with one streaming client; 8 idle sessions measured +39 MB each (R7, fixed).
 - Broker heartbeat 60 s.
 
 ## 1. Problems and fixes
@@ -149,19 +149,45 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     - direct messages to that callsign all reach the live socket.
   - Negative control: unpatched keeps the old session.
 
-### R7 — memory per session
-- **Measured:** about +39 MB of cgroup memory per session. Extrapolated, that is about 9 concurrent clients per
-  listener within 512 MiB. Only extrapolated, not measured with N clients.
-- **Likely cause (inferred, not yet measured):**
-  - each forked child re-runs `create_app()` (Flask, SQLAlchemy, flask-security);
-  - touching objects copies the parent's pages;
-  - each child also has its own pika connection and DB pool.
-- **Step 1 (reproduction before any fix):** connect N = 1, 4, 8, 12 normal clients and record `memory.current`,
-  per-child `VmRSS`/`RssAnon` and any `oom_kill` event. That gives the real limit.
-- **Step 2, only if the limit is real and below field need:**
-  - build the app once in the parent before forking, and reuse it in the children;
-  - measure again;
-  - the negative control is the step-1 curve.
+### R7 — memory per session (measured 2026-10-11 on node 04, implemented e106c04)
+- **Step 1, measured with N clients (scratchpad `264/r7-mem.log`):** 8 idle 8088 sessions (one CoT each, then
+  silent) took `ots_eud_handler` from 152.8 MB to 464.6 MB of `memory.current` = **39 MB per session**, back to
+  153.8 MB after they left (no leak). Every child had `VmRSS` 132 MB (mostly pages shared with the parent; the
+  cgroup counts the copied ones). `memory.max` 512 MiB, `oom_kill 0` so far: the 10th client would have been the
+  OOM kill of the whole container (PID 1 = every session).
+- **Attribution (throwaway container from the same image, `r7-attr.py`, two repetitions each):**
+
+  | child does | cost |
+  |---|---|
+  | nothing (fork only) | 2.5 MB |
+  | `gc.collect()` | 58.7 MB (the collector writes every gc header, so the parent's pages are copied) |
+  | parent `gc.freeze()` first, then child `gc.collect()` | 2.6 MB |
+  | `create_app()` (Flask + SQLAlchemy + flask-security) | 28.6 MB |
+  | parent-built app shared, child `gc.collect()` with freeze | 2.6 MB |
+
+  The 39 MB is create_app (28.6) plus the gc copies the child's own allocations trigger, plus pika/thread.
+- **Fix (overlay, `BATMAN-264-R7`):**
+  - `create_app()` reuses the app `eud_handler.py` already builds in the parent (`app = create_app()`, handed to
+    the server as `app_context`); the child only disposes the inherited SQLAlchemy pool (`dispose(close=False)`:
+    the parent's sockets, if any, are not closed). `config.yml` is now read when the handler process starts, not
+    per session (the parent already reads it the same way).
+  - `os.register_at_fork(before=gc.collect+gc.freeze, after_in_parent=gc.unfreeze)`: the child's collector never
+    touches the parent's heap.
+  - **Session cap, fail-closed:** `setup()` reads the container's own `/sys/fs/cgroup/memory.current|max` first;
+    with less than `BATMAN_264_SESSION_RESERVE_MB` (40) left it logs `refusing session from <ip>` and closes the
+    socket before any allocation, AMQP connect or declare. No cap when the cgroup is unreadable or unlimited
+    (nothing to derive it from). The check is in the child after the fork (a fork is 2.5 MB with the freeze), so
+    the parent keeps accepting and a client at the limit sees one refused connection instead of the kernel killing
+    the container; the guardian never sees a crash, so no DRIFT and no OTA revert from a session flood.
+- **What it does not do (register v5A-F2 / v5B-M6):** the SSL handler still runs `setup()` (now cheap) and the
+  AMQP connect before `do_handshake()`; moving the handshake first needs the `EudHandlerSSL` overlay (F9). No
+  per-source-IP cap and no pre-identification idle timeout: a dead peer is R6's keepalive; a silent *live* peer
+  costs one session and is bounded only by the memory cap.
+- **Tests:** `eud-mem-264` (daily-validation, tier A): 6 idle sessions from the bench node, <= 12 MiB per session
+  (negative control: upstream 39, measured above), none refused, back within 15 MiB of the baseline after the
+  clients leave, the run's EUD rows and rabbit queues removed. The cap itself: 5 offline cases
+  (`test-eudhandler-264-amqp.py` #8) with the cgroup reader stubbed; on the node the refusal would need about 60
+  sessions after the fix and is not exercised (stated, not claimed).
 - **The cache bounds in R9 are sized against the measured per-session figure.**
 
 ### R8 — the patch must fail closed at runtime when the image changes
@@ -265,7 +291,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | cot_parser restart | queue persists while the broker is up | same | — |
 | ots-db down | cot_parser nacks and drops (upstream) | unchanged; residual, stated | — |
 | client network loss | session lives for hours | gone in ~60 s | zombie-264 |
-| N concurrent clients | ~+39 MB each (to be measured) | per R7 | R7 step 1 measurement |
+| N concurrent clients | +39 MB each (measured), OOM kill of the container at ~10 | a few MB each; over the memory reserve a session is refused and logged | eud-mem-264 + offline cap cases |
 | image changed under the patch | runs unpatched or the old patch overwrites newer code | refused at rebuild, DRIFT | MOUNTSHA negative control |
 | downgrade to an image without the change | — | the old payload-run ignores `MOUNTSHA`? **must be checked**; the D6 prune deletes the p6 file once `.golden-files` lists it | first-ota / downgrade |
 | bcm2711 / bcm2710 | — | the OTS package is bcm2711 only (`DEPENDS:=@TARGET_bcm27xx_bcm2711`); Pi 3 not applicable | ab-card |
