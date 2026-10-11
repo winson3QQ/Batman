@@ -5,7 +5,5 @@
 # unreadable/not verified) — the harness refuses those patterns. With `gh` available, a closed issue = NEW.
 #
 # suite<TAB>ERE matched against one FAIL line<TAB>issue number (required)
-ots-cot-e2e-264	^FAIL P2B lost [0-9]+/[0-9]+	264
-ots-cot-e2e-264	^FAIL P3 lost [0-9]+/[0-9]+	264
-soak-cot-264	^FAIL CoT lost [0-9]+/[0-9]+	264
-cleanstop-274	^FAIL 6 the early CoT \(DV274E[0-9]+\) was not stored \(count=0\)$	264
+# (the #264 entries - ots-cot-e2e-264 P2B/P3, soak-cot-264, cleanstop-274 early CoT - were removed with the #264
+#  overlay: a loss there is a NEW failure again)

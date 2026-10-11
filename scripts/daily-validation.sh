@@ -820,13 +820,16 @@ bchk_queue_gone_264() { local ots=$1 peer=$2 run rc=0 l0 l1 s st rec i
     || { echo "FAIL no guardian restart of ots_cot_parser within 120 s of the queue deletion (ledger $l0 -> ${l1:-?}) — the fault was not what this test assumes"; rc=1; }
   sleep 100
   s=$(soak_ssh "$peer" "ROLE=sample" | sed -n 's/.*cot_sent=\([0-9]*\).*/\1/p'); rec=$(soak_ssh "$peer" "ROLE=sample" | sed -n 's/.*cot_reconn=\([0-9]*\).*/\1/p')
-  i=0; while [ "$i" -lt 12 ]; do st=$(echo "select count(*) from cot where uid like '$run-%';" | ots_sql "$ots" | tr -d ' \r'); [ "$st" = "$s" ] && break; sleep 5; i=$((i+1)); done
-  echo "sent=$s stored=$st client reconnects=$rec"
-  case "$s$st" in ''|*[!0-9]*) echo "FAIL unreadable sent=[$s] stored=[$st] — not verified"; rc=1 ;;
+  # at-least-once (user decision 2026-10-11): every (uid, time) the generator sent is stored at least once; a
+  # duplicate row is reported, never a FAIL (one run on the rc stored 745 rows for 720 sent, 0 lost - unreproduced)
+  i=0; while [ "$i" -lt 12 ]; do sd=$(echo "select count(distinct (uid, timestamp)) from cot where uid like '$run-%';" | ots_sql "$ots" | tr -d ' \r'); [ "$sd" = "$s" ] && break; sleep 5; i=$((i+1)); done
+  st=$(echo "select count(*) from cot where uid like '$run-%';" | ots_sql "$ots" | tr -d ' \r')
+  echo "sent=$s stored rows=$st distinct (uid,time)=$sd duplicates=$((st - sd)) client reconnects=$rec"
+  case "$s$st$sd" in ''|*[!0-9]*) echo "FAIL unreadable sent=[$s] stored=[$st] distinct=[$sd] — not verified"; rc=1 ;;
     *) [ "$s" -gt 100 ] || { echo "FAIL generator sent only $s"; rc=1; }
-       [ "$st" = "$s" ] && echo "ok every CoT sent across the queue-gone window was stored" || { echo "FAIL lost $((s - st))/$s CoT across the queue-gone window"; rc=1; } ;;
+       [ "$sd" = "$s" ] && echo "ok every CoT sent across the queue-gone window was stored (at least once)" || { echo "FAIL lost $((s - sd))/$s CoT across the queue-gone window"; rc=1; } ;;
   esac
-  fssh "$ots" 30 'docker exec ots_eud_handler sh -c "tail -400 /app/ots/logs/eud_handler_tcp.log" | grep -ciE "declare refused|cache full|session end:"' | tr -d '\r' | sed 's/^/eud error lines (declare refused / cache full / session end): /'
+  fssh "$ots" 30 'docker exec ots_eud_handler sh -c "tail -400 /app/ots/logs/eud_handler_tcp.log" | grep -ciE "declare refused|cache full|session end:"' | tr -d '\r' | sed 's|^|eud error lines (declare refused, cache full, session end): |'
   soak_ssh "$peer" "ROLE=down" | tail -1
   ots_sql "$ots" <<SQL >/dev/null
 begin; delete from euds where uid like '$run-%'; delete from cot where uid like '$run-%'; commit;
