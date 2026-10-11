@@ -24,7 +24,8 @@ class FakePika:
 
 
 import random as _random
-g = {"pika": FakePika, "CACHE_MAX": 5, "CACHE_MAX_BYTES": 10 ** 9, "random": _random, "DRAIN_MAX_S": 60, "Channel": object}
+g = {"pika": FakePika, "CACHE_MAX": 5, "CACHE_MAX_BYTES": 10 ** 9, "random": _random, "DRAIN_MAX_S": 60, "Channel": object,
+     "SUBSCRIBE_RETRY_S": 15, "_prewarm_parent": lambda: None, "SHUT_RDWR": 2}
 for name in WANT:
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
     exec(textwrap.dedent(ast.get_source_segment(src, fn)), g)
@@ -37,6 +38,8 @@ class Chan:
     def queue_declare(self, **k): self.decls.append(("q", k))
     def queue_bind(self, **k): self.decls.append(("b", k))
     def add_on_close_callback(self, cb): self.cbs.append(cb)
+    def add_on_return_callback(self, cb): self.cbs.append(cb)
+    def confirm_delivery(self, cb): self.confirm = cb
 
 
 class Loop:
@@ -70,6 +73,7 @@ class H:
         self.on_channel_open = lambda c: None
         self._subscribed = False; self._squat_logged = False
         self.callsign = "CS"
+        self._sub_timer = None; self._ret_n = 0
         self._end_args = None; self._loop_dead = False
 
 
@@ -195,15 +199,18 @@ class EndChan(Chan):
 
 unbound = []
 H.unbind_rabbitmq_queues = lambda self, uid, binds: unbound.append((uid, binds))
-h = H(); h.callsign = "CS"; h.rabbit_channel = EndChan(0); h._end_session("U", "disc", [{"q": 1}])
+h = H(); h.callsign = "CS"; h._subscribed = True; h.rabbit_channel = EndChan(0); h._end_session("U", "disc", [{"q": 1}])
 ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and h.rabbit_channel.passive == [("U", True), ("CS", True)] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"]
    and unbound == [("U", [{"q": 1}])] and h.rabbit_channel.closed, "9 last session of U: consumers cancelled, both queues checked, disconnect published, unbound, channel closed")
 ok([d[0] for d in h.rabbit_channel.deleted] == ["U", "CS"] and all(d[1] == {"if_unused": True, "if_empty": True} for d in h.rabbit_channel.deleted), "9 (F3) idle empty queues U and CS deleted (if_unused, if_empty)")
-unbound.clear(); h = H(); h.callsign = "CS"; h.rabbit_channel = EndChan(0, messages=3); h._end_session("U", "disc", [])
+unbound.clear(); h = H(); h.callsign = "CS"; h._subscribed = True; h.rabbit_channel = EndChan(0, messages=3); h._end_session("U", "disc", [])
 ok(not h.rabbit_channel.deleted and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and h.rabbit_channel.closed, "9 (F3) queues with messages are kept")
-unbound.clear(); h = H(); h.callsign = "U"; h.rabbit_channel = EndChan(0); h._end_session("U", "disc", [])
+unbound.clear(); h = H(); h.callsign = "U"; h._subscribed = True; h.rabbit_channel = EndChan(0); h._end_session("U", "disc", [])
 ok(h.rabbit_channel.passive == [("U", True)] and [d[0] for d in h.rabbit_channel.deleted] == ["U"], "9 callsign == uid: one queue, checked and deleted once")
-unbound.clear(); h = H(); h.rabbit_channel = EndChan(1); h._end_session("U", "disc", [{"q": 1}])
+unbound.clear(); h = H(); h.callsign = "CS"; h.rabbit_channel = EndChan(5); h._end_session("U", "disc", [])
+ok(not h.rabbit_channel.passive and not h.rabbit_channel.deleted and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and h.rabbit_channel.closed,
+   "9 never subscribed (relay platform / refused name): no queue check, no delete, disconnect published (upstream path)")
+unbound.clear(); h = H(); h._subscribed = True; h.rabbit_channel = EndChan(1); h._end_session("U", "disc", [{"q": 1}])
 ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and not h.rabbit_channel.pubs and not unbound and h.rabbit_channel.closed,
    "9 another consumer of U is live: no disconnect, no unbind, channel still closed")
 unbound.clear(); h = H(); h.rabbit_channel = EndChan(5); h._end_session(None, "disc", [])
@@ -230,7 +237,7 @@ ok(not h._unacked and not h._returned and [b for b, m in h.cached_messages] == [
 # 11 R4 reconnect: connection closed while the session lives -> unacked re-cached in order, reconnect scheduled with
 #    backoff 1,2,4..30 on the SAME ioloop with the same parameters; closed session -> loop stopped instead
 class FakeConn2(Conn):
-    def __init__(self, *a, **k): super().__init__(); self.args = (a, k); self.params = "P"; self.is_open = True
+    def __init__(self, *a, **k): super().__init__(); self.args = (a, k); self.params = "P"; self.is_open = False   # a connection object exists while closed/failed
     def close(self): self.is_open = False
 g["pika"].SelectConnection = FakeConn2
 h = H(); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h.client_address = ("10.0.0.9", 1)
@@ -268,7 +275,7 @@ for fname in ("on_channel_close",):
 import time as _time; g["time"] = _time
 ended = []
 H.close_connection = lambda self: ended.append(1)
-h = H(); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h.callsign = "C"
+h = H(); h.rabbit_connection = FakeConn2(); h.rabbit_connection.is_open = True; h._ioloop = h.rabbit_connection.ioloop; h.callsign = "C"
 h._sub_ops = [("queue_declare", (), {"queue": "amq.x"})]
 h.on_channel_close(h.rabbit_channel, "403"); h.on_channel_close(h.rabbit_channel, "403")
 ok(len(h.rabbit_connection.opened) == 2 and h._need_replay and not ended, "13 two channel errors: channel reopened twice, subscription to be replayed")
@@ -310,9 +317,36 @@ h = H(); h.rabbit_channel = SubChan({}); h.client_address = ("10.0.0.9", 1); h._
 ok([o[0] for o in h.rabbit_channel.ops] == ["queue_declare", "queue_declare", "queue_bind", "basic_consume", "basic_consume"] and h._subscribed, "16 nobody on the queues: declare, bind, consume")
 h._subscribe(OPS); ok(len(h.rabbit_channel.ops) == 5, "16 a second identifying CoT does not subscribe again (no consumer accumulation)")
 h = H(); h.rabbit_channel = SubChan({"U": 1}); h.client_address = ("10.0.0.9", 1); h._subscribe(OPS)
-ok([o[0] for o in h.rabbit_channel.ops] == ["queue_declare", "queue_declare"] and not h._subscribed and h._squat_logged, "16 another consumer on U: declared only, no bind/consume, logged once")
-h._subscribe(OPS); ok(len(h.rabbit_channel.ops) == 4 and not h._subscribed, "16 retried on the next report while the other consumer is there")
-h.rabbit_channel.consumers = {}; h._subscribe(OPS); ok(h._subscribed and h.rabbit_channel.ops[-1] == ("basic_consume", "U"), "16 the other consumer gone: subscribed")
+ok([o[0] for o in h.rabbit_channel.ops] == ["queue_declare", "queue_declare"] and not h._subscribed and h._squat_logged and h._sub_timer is not None and h._ioloop.timers[-1][0] == 15,
+   "16 another consumer on U: declared only, no bind/consume, logged once, retry timer 15 s")
+h._ioloop.fire(); ok(len(h.rabbit_channel.ops) == 4 and not h._subscribed and h._sub_timer is not None, "16 the timer retries while the other consumer is there, and re-arms")
+h.rabbit_channel.consumers = {}; h._ioloop.fire(); ok(h._subscribed and h._sub_timer is None and h.rabbit_channel.ops[-1] == ("basic_consume", "U"), "16 the other consumer gone: the timer subscribes, no more timer")
 h = H(); h.rabbit_channel = SubChan({"U": 1}); h.client_address = ("10.0.0.9", 1); h._need_replay = True; h._subscribe(OPS)
 ok(h._subscribed and not h._need_replay and h.rabbit_channel.ops[-1] == ("basic_consume", "U"), "16 replay after a reconnect ignores the consumer count (our own old consumer)")
+# 17 R4: after a reconnect the subscription really is replayed through on_channel_open (review A-F1 / B-2)
+fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "on_channel_open")
+exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); setattr(H, "on_channel_open", g["on_channel_open"])
+g["uuid"] = __import__("uuid"); g["json"] = __import__("json")
+h = H(); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h.eud = None; h._pending_ops = None
+h._sub_ops = OPS; h._subscribed = True          # subscribed on the old channel
+h.on_close(h.rabbit_connection, "missed heartbeats")   # connection lost -> _need_replay, _subscribed cleared
+ok(h._need_replay and not h._subscribed, "17 connection lost: replay pending, subscription gone")
+nc = SubChan({}); del h.on_channel_open; h.on_channel_open(nc)   # the real method, not the fake's stub
+ok([o[0] for o in nc.ops] == ["queue_declare", "queue_declare", "queue_bind", "basic_consume", "basic_consume"] and h._subscribed and not h._need_replay,
+   "17 new channel: declares, binds and consumes replayed; replay flag cleared")
+# 18 R4: a channel closed because the connection dropped is not a channel error (review A-F8)
+h = H(); h.rabbit_connection = FakeConn2(); h.rabbit_connection.is_open = False; h._ioloop = h.rabbit_connection.ioloop; h.callsign = "C"
+h.on_channel_close(None, "connection lost"); h.on_channel_close(None, "x"); h.on_channel_close(None, "x")
+ok(not h._chan_errors and not ended[1:] and h.rabbit_channel is None and not h._subscribed, "18 three channel closes with the connection down: nothing counted, nothing reopened")
+# 19 R4b order: returns of one burst and a multiple nack keep their order at the cache head (review A-F11 / B-9)
+h = H(); h._cache("later", None)
+for b in (b"r1", b"r2", b"r3"): h._on_return(None, None, FakeProps(headers={}), b)
+ok([b for b, m in h.cached_messages] == ["r1", "r2", "r3", "later"], "19 three returns keep their order ahead of the older cache")
+h = H()
+for i in range(3): h._publish_on_ioloop("cot_parser", "cot_parser", "n%d" % i, None)
+h._on_confirm(Fr("Basic.Nack", 3, multiple=True))
+ok([b for b, m in h.cached_messages] == ["n0", "n1", "n2"], "19 a multiple nack re-caches in publish order")
+# 20 R7 cap reads anonymous memory, not memory.current (review B-6): stubbed through _cg_mem in case 8 already;
+#    here only that the real reader never raises
+r = real_cg_mem(); ok(r == (None, None) or isinstance(r[0], int), "20 _cg_mem (memory.stat anon) never raises")
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)
