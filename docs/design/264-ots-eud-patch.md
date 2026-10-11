@@ -134,9 +134,10 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   - A returned body goes back into the cache.
   - Retry is **head-only** with backoff (2, 4, 8 s): one message is re-sent, and the rest flush only after it is
     acked without a return. This avoids a return storm.
-- **Assumption to verify by test (not yet probed; scratch-broker probes failed on node networking):** an
-  identical second declare is accepted, and a mandatory publish with no bound queue is returned and then acked.
-  The `queue-gone-264` negative control and the `amqp-*` suites prove it on the real broker.
+- **Probed on the live broker (2026-10-11, read-only, #264 comment 6103334725):** an identical second declare
+  (including the server-added `x-queue-type`) is accepted, a different one is 406; a mandatory publish with no
+  bound queue is returned and then acked, the message preserved. Scratch-broker probes on the node and in WSL
+  failed (docker `iptables=0`, erlang cookie), so this is the evidence.
 - **Test:** `queue-gone-264`.
   - Steps: delete the `cot_parser` queue with `rabbitmqctl delete_queue` while the parser is running, then
     stream.
@@ -213,9 +214,13 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     the server as `app_context`); the child only disposes the inherited SQLAlchemy pool (`dispose(close=False)`:
     the parent's sockets, if any, are not closed). `config.yml` is now read when the handler process starts, not
     per session (the parent already reads it the same way).
-  - `os.register_at_fork(before=gc.collect+gc.freeze, after_in_parent=gc.unfreeze)`: the child's collector never
-    touches the parent's heap.
-  - **Session cap, fail-closed:** `setup()` reads the container's own `/sys/fs/cgroup/memory.current|max` first;
+  - `os.register_at_fork(before=_before_fork)`: once, before the first fork, the parent pre-warms the ORM and
+    freezes its heap (`gc.collect(); gc.freeze()`); it is never unfrozen or collected again, so no child's
+    collector and no later parent collection writes the frozen gc headers (the first variant that unfroze and
+    re-collected per fork cost 78 MB per session, measured).
+  - **Session cap, fail-closed:** `setup()` reads the container's own cgroup first (`memory.stat` `anon`, the
+    unreclaimable part, against `memory.max`; `memory.current` also counts page cache and would refuse sessions
+    after days of log writes);
     with less than `BATMAN_264_SESSION_RESERVE_MB` (40) left it logs `refusing session from <ip>` and closes the
     socket before any allocation, AMQP connect or declare. No cap when the cgroup is unreadable or unlimited
     (nothing to derive it from). The check is in the child after the fork (a fork is 2.5 MB with the freeze), so
@@ -245,12 +250,14 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 - **Today:** the sha check is CI-only and is not even wired into a workflow. At runtime, a re-tagged image with
   different upstream code would either run unpatched or be overwritten by an old patch.
 - **Fix:**
-  - New manifest key `MOUNTSHA <basename> <sha256>` on the containers that mount a code overlay. On every
-    rebuild, payload-run reads the image's own file at the mount target (`docker run --rm --network none
-    --entrypoint sha256sum <image> <target>`) and refuses the rebuild if it differs. The guardian then reports
-    DRIFT.
-  - The patched module logs `BATMAN-264 active upstream=<sha>` once at import. payload-conform asserts the log
-    line exists for both eud containers.
+  - New manifest key `MOUNTSHA <target> <sha256>` on the containers that mount a code overlay (generated from
+    `patches/UPSTREAM_SHA256` by profile-to-manifest). In the preflight of every rebuild, payload-run reads the
+    image's own file at the mount target without running the image (`docker create --network none
+    --security-opt no-new-privileges` + `docker cp` + `sha256sum`, then `docker rm`) and refuses the rebuild if
+    it differs; the old containers keep running and the guardian reports DRIFT.
+  - No import-time log line (it would not reach the sink before `setup_logging`): payload-conform instead
+    reads the overlay where the process reads it (sha256 inside the container == the p6 source, and the
+    module-level `BATMAN_264` item list) and the image's own file == MOUNTSHA.
   - The CI triggers include `deploy/ots/patches/**`, and the workflow runs `check-eudhandler-264.sh`.
 - **Owner:** payload-run (from #274) stays the only container starter; this is one more refusal reason in its
   preflight.
@@ -326,10 +333,13 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   failure, or when the container stops.
 - **Log lines other tools read:**
   - `Failed to parse` (ots_logc, info);
-  - `RabbitMQ channel is closed, not publishing cot`, which now appears only when a CoT is **dropped**;
-  - new: `cache overflow dropped=N`, `BATMAN-264 active upstream=<sha>`.
+  - `RabbitMQ channel is closed, not publishing cot: cache full, dropped=N`, which now appears only when a CoT
+    is **dropped** (the upstream prefix is kept so ots_logc keeps counting);
+  - new, read by the suites from `/app/ots/logs/eud_handler_tcp.log` inside the container (the handler logs to
+    that file, not to stdout): `refusing session from <ip>` (R7), `another session of <uid> is live` (R6),
+    `RabbitMQ reconnect for <ip>` (R4), `refusing the subscription of <ip>` (R10), `subscribed <uid>/<callsign>`.
 
-  `ots_logc` reads the TCP **and** SSL logs.
+  `ots_logc` reads the TCP log only (the SSL suite judges by storage, not by log lines).
 
 ## 4. Lifecycle
 
@@ -345,10 +355,10 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | broker memory alarm | publishers blocked; pika buffers grow | cache instead; timeout → reconnect | covered by R9 unit test (fake connection) |
 | cot_parser restart | queue persists while the broker is up | same | — |
 | ots-db down | cot_parser nacks and drops (upstream) | unchanged; residual, stated | — |
-| client network loss | session lives for hours | gone in ~60 s | zombie-264 |
+| client network loss | session lives for hours; its end unbinds the EUD's live session | gone in ~2 min (TCP_USER_TIMEOUT 120 s, keepalive 45/15/4); its end never unbinds a live session; the reconnecting phone is subscribed once the stale session is reaped (15 s retry) | zombie-264 (field order) |
 | N concurrent clients | +39 MB each (measured), OOM kill of the container at ~10 | a few MB each; over the memory reserve a session is refused and logged | eud-mem-264 + offline cap cases |
 | image changed under the patch | runs unpatched or the old patch overwrites newer code | refused at rebuild, DRIFT | MOUNTSHA negative control |
-| downgrade to an image without the change | — | the old payload-run ignores `MOUNTSHA`? **must be checked**; the D6 prune deletes the p6 file once `.golden-files` lists it | first-ota / downgrade |
+| downgrade to an image without the change | — | the shipped payload-run (main d43025c) has no default branch in its manifest-key case, so `MOUNTSHA` is silently ignored and the overlay mounts unpinned; the D6 prune removes the p6 overlay once `.golden-files` no longer lists it, and the mount then fails closed (source missing) until the next OTA | first-ota / downgrade (manual, stated) |
 | bcm2711 / bcm2710 | — | the OTS package is bcm2711 only (`DEPENDS:=@TARGET_bcm27xx_bcm2711`); Pi 3 not applicable | ab-card |
 
 ## 5. Assumptions with evidence
@@ -359,8 +369,8 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 - `ForkingTCPServer`, PID 1 python, StopSignal SIGINT (probed).
 - The image's `.pyc` uses timestamp invalidation, so a mounted source is recompiled (reviewer B probe).
 - The `cot_parser` exchange is durable and its queue transient; TTL 86400000 ms (probed).
-- To verify by the suites' negative controls (not yet probed): identical-redeclare acceptance and mandatory
-  return-then-ack on 4.3.6.
+- Identical-redeclare acceptance and mandatory return-then-ack on RabbitMQ 4.3.6: probed on the live broker
+  (R5 above).
 
 ## 6. Security
 
@@ -372,7 +382,11 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 - **Compromised tenant:** no new interface.
 - **Local non-root process:** none. Files are root-owned, mounted ro, and D7-7 reports DRIFT on an edit.
 - **Supply chain:** the patch is generated from the pinned upstream; R8 enforces the pin at runtime.
-- **Attack-surface delta:** none new (same ports and credentials); R10 reduces it.
+- **Attack-surface delta:** same ports and credentials. New inputs the overlay reads: the container's own
+  cgroup files (`memory.stat`, `memory.max`: kernel-owned, read-only), the broker's DeclareOk/Return/Ack
+  frames (the broker is trusted as before), the `x-b264-uid`/`x-b264-type` headers of our own returned
+  messages (only our own publishes come back), and `BATMAN_264_SESSION_RESERVE_MB` from the container env
+  (profile-owned). Client-supplied uid/callsign are now checked before they become broker names (R10).
 - **Failure modes:**
   - image mismatch: fail-closed (refuse);
   - broker away: cache with bounds, then counted drops.
@@ -382,11 +396,12 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | suite | tier | destructive | negative control |
 |---|---|---|---|
 | ots-cot-e2e-264 (8088), ots-cot-e2e-264-ssl (8089) | feature | no | unpatched P2B 0/20 |
-| amqp-close-264 | feature | no (broker-side close only) | unpatched reconn = 1 + loss |
+| amqp-close-264 | feature | no (`rabbitmqctl close_connection` of the session's own connection, found by its `connection_name`) | measured on upstream: the session is dropped and the CoT in flight lost |
 | queue-gone-264 | feature | no (`delete_queue` only) | unpatched loss |
-| amqp-restart-264 | feature | yes (`docker kill rabbitmq`; guardian restart; DRIFT expected) | unpatched sessions end + loss |
-| zombie-264 | feature | yes (peer firewall rule, removed in cleanup) | unpatched old session persists |
-| names-264 | feature | no | unpatched subscription created |
+| amqp-restart-264 | not built: a broker restart is mechanism B (amqp-close-264) plus mechanism C (queue-gone-264), both covered without killing a container | — | — |
+| zombie-264 | feature | peer-side nft rules on the test client's port only, self-expiring (300 s), table deleted by a detached timer | measured on upstream: zombie outlives the black hole, live session 0/10 |
+| name-guard-264 | feature | no | by code: upstream subscribes unconditionally |
+| eud-mem-264 | feature | no | measured on upstream: 39 MB per idle session |
 | mountsha (in payload-conform / R8 suite) | feature | no | wrong sha → refuse |
 | soak-cot-264 | soak | — | every sent CoT stored (duplicates counted, at-least-once); heartbeat closes recorded per session (info, R2) |
 | offline: test-eudhandler-264.py (+ fake-pika state machine for R4/R4b/R5/R9) | CI | — | each case fails on the unpatched module |

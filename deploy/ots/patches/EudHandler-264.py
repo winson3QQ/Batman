@@ -1204,7 +1204,8 @@ class EudHandler(socketserver.BaseRequestHandler):
                 if not (_valid_name(self.uid) and _valid_name(self.callsign)):  # BATMAN-264-R10
                     self.logger.error(
                         f"refusing the subscription of {self.client_address[0]}: uid or callsign is not a usable "
-                        f"queue name (empty, >255 bytes, amq.*, a system name or not printable); CoT is still stored")
+                        f"queue name (empty, >255 bytes, amq.*, a system name or not printable); no EUD row, so "
+                        f"cot_parser stores nothing from it")
                     return
                 owned = self._owned_by_user(self.uid, self.callsign) if not self.is_ssl else False
                 if owned is None:  # BATMAN-264-R10: database down: identify again on the next report
@@ -1213,7 +1214,8 @@ class EudHandler(socketserver.BaseRequestHandler):
                 if owned:  # BATMAN-264-R10 (review F8/M7)
                     # an unauthenticated 8088 client naming an authenticated user's device: no subscription (it
                     # would receive that user's DMs and group traffic) and no EUD row update (it would detach the
-                    # device from its user). Its CoT is still stored under that uid, as upstream does.
+                    # device from its user). Measured on the node: cot_parser then stores nothing from this
+                    # session (no EUD row for the sender), so the user's track is not polluted either.
                     if not self._squat_logged:
                         self._squat_logged = True
                         self.logger.error(

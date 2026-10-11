@@ -974,7 +974,7 @@
  
      def parse_device_info(self, event):
          link = event.find("link")
-@@ -511,17 +1200,35 @@
+@@ -511,17 +1200,37 @@
                  self.callsign = contact.attrs["callsign"]
  
                  # Declare a RabbitMQ Queue for this uid and join the 'dms' and 'cot' exchanges
@@ -982,7 +982,8 @@
 +                if not (_valid_name(self.uid) and _valid_name(self.callsign)):  # BATMAN-264-R10
 +                    self.logger.error(
 +                        f"refusing the subscription of {self.client_address[0]}: uid or callsign is not a usable "
-+                        f"queue name (empty, >255 bytes, amq.*, a system name or not printable); CoT is still stored")
++                        f"queue name (empty, >255 bytes, amq.*, a system name or not printable); no EUD row, so "
++                        f"cot_parser stores nothing from it")
 +                    return
 +                owned = self._owned_by_user(self.uid, self.callsign) if not self.is_ssl else False
 +                if owned is None:  # BATMAN-264-R10: database down: identify again on the next report
@@ -991,7 +992,8 @@
 +                if owned:  # BATMAN-264-R10 (review F8/M7)
 +                    # an unauthenticated 8088 client naming an authenticated user's device: no subscription (it
 +                    # would receive that user's DMs and group traffic) and no EUD row update (it would detach the
-+                    # device from its user). Its CoT is still stored under that uid, as upstream does.
++                    # device from its user). Measured on the node: cot_parser then stores nothing from this
++                    # session (no EUD row for the sender), so the user's track is not polluted either.
 +                    if not self._squat_logged:
 +                        self._squat_logged = True
 +                        self.logger.error(
@@ -1015,7 +1017,7 @@
  
                      with self.app.app_context():
                          if self.is_ssl:
-@@ -534,7 +1241,7 @@
+@@ -534,7 +1243,7 @@
                                  self.logger.debug(
                                      f"{self.callsign} doesn't belong to any groups, adding them to the __ANON__ group"
                                  )
@@ -1024,7 +1026,7 @@
                                      exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                                  )
                                  if {
-@@ -556,7 +1263,7 @@
+@@ -556,7 +1265,7 @@
                                      self.group_memberships.append(membership)
  
                                      if membership.enabled:
@@ -1033,7 +1035,7 @@
                                              exchange="groups",
                                              queue=self.uid,
                                              routing_key=f"{membership.group.name}.OUT",
-@@ -575,7 +1282,7 @@
+@@ -575,7 +1284,7 @@
                                              }
                                          )
  
@@ -1042,7 +1044,7 @@
                              exchange="missions", routing_key="missions", queue=self.uid
                          )
                          if {
-@@ -592,10 +1299,10 @@
+@@ -592,10 +1301,10 @@
                              )
  
                          # The DMs queue also binds by callsign since the <dest> tag in CoT messages can be by callsign instead of UID
@@ -1055,7 +1057,7 @@
                              exchange="dms", queue=self.callsign, routing_key=self.callsign
                          )
  
-@@ -625,7 +1332,7 @@
+@@ -625,7 +1334,7 @@
                              self.logger.debug(
                                  f"{self.callsign} is connected via TCP, adding them to the __ANON__ group"
                              )
@@ -1064,7 +1066,7 @@
                                  exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                              )
                              self.bound_queues.append(
-@@ -636,12 +1343,14 @@
+@@ -636,12 +1345,14 @@
                                  }
                              )
  
@@ -1081,7 +1083,7 @@
  
              if "phone" in contact.attrs and contact.attrs["phone"]:
                  self.phone_number = contact.attrs["phone"]
-@@ -746,28 +1455,21 @@
+@@ -746,28 +1457,21 @@
                          "binary": False,
                          "host_id": uuid.uuid4().hex,
                      }
