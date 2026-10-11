@@ -5,12 +5,14 @@ Negative control: these methods do not exist upstream (the upstream behaviour th
 unroutable publish, caching parsed objects without bound - is measured by the node suites), so this file only
 proves the patched logic; it is not a discriminating test against upstream."""
 import ast, sys, textwrap, logging
+import threading as _threading
 
 src = open(sys.argv[1], encoding="utf-8").read()
 mod = ast.parse(src)
 cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "EudHandler")
 WANT = ["_publish_on_ioloop", "_on_decl_channel_open", "_on_decl_channel_close", "_declare_cot_parser", "_on_blocked",
-        "_on_unblocked", "_cache", "_flush_cache", "_on_return", "_schedule_retry", "_retry_head", "_after_head"]
+        "_on_unblocked", "_cache", "_flush_cache", "_on_return", "_schedule_retry", "_retry_head", "_after_head",
+        "_on_confirm", "_requeue_unacked", "_schedule_reconnect", "_reconnect", "on_close", "on_open_error"]
 
 
 class FakeProps:
@@ -60,6 +62,10 @@ class H:
         self.cached_messages = []; self._cache_bytes = 0; self._dropped = 0; self._blocked = False
         self._decl_channel = None; self._decl_refused = False; self._retry_n = 0; self._retry_timer = None
         self._head_returned = False; self._closed = False
+        self._pub_seq = 0; self._unacked = {}; self._returned = set(); self._need_replay = False; self._sub_ops = None
+        self._chan_errors = []; self._reconnect_n = 0; self._reconnect_timer = None; self._ioloop = self.rabbit_connection.ioloop
+        self._drained = _threading.Event(); self.client_address = ("10.0.0.9", 1)
+        self.on_connection_open = lambda c: None
 
 
 for name in WANT:
@@ -192,4 +198,45 @@ ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and not h.rabbit_channel.pubs an
 unbound.clear(); h = H(); h.rabbit_channel = EndChan(5); h._end_session(None, "disc", [])
 ok(not h.rabbit_channel.passive and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and unbound == [(None, [])] and h.rabbit_channel.closed,
    "9 never identified (uid None): upstream path, no declare")
+# 10 R4b publisher confirms: every publish on the channel is numbered; cot_parser bodies are kept until their ack;
+#    multiple-ack, nack -> re-cached at the head, a returned message's ack is not a delivery
+class Fr:
+    def __init__(self, name, tag, multiple=False):
+        class M: pass
+        self.method = M(); self.method.NAME = name; self.method.delivery_tag = tag; self.method.multiple = multiple
+h = H(); h._publish_on_ioloop("firehose", "", "fh"); h._publish_on_ioloop("cot_parser", "cot_parser", "c1", ("U", "a-f"))
+h._publish_on_ioloop("cot_parser", "cot_parser", "c2", ("U", "a-f")); h._publish_on_ioloop("cot_parser", "cot_parser", "c3", ("U", "b-m"))
+ok(h._pub_seq == 4 and list(h._unacked) == [2, 3, 4], "10 publishes numbered 1..4 (firehose counted), cot_parser bodies 2,3,4 unacked")
+h._on_confirm(Fr("Basic.Ack", 3, multiple=True))
+ok(list(h._unacked) == [4] and not h.cached_messages, "10 multiple ack up to 3: 2 and 3 delivered, 4 still unacked")
+h._on_confirm(Fr("Basic.Nack", 4))
+ok(not h._unacked and [b for b, m in h.cached_messages] == ["c3"] and bool(h.rabbit_connection.ioloop.timers), "10 nack 4: body back at the cache head, retry scheduled")
+h = H(); h._publish_on_ioloop("cot_parser", "cot_parser", "r1", ("U", "a-f")); h._publish_on_ioloop("cot_parser", "cot_parser", "r2", ("U", "a-f"))
+h._on_return(None, None, FakeProps(headers={"x-b264-uid": "U", "x-b264-type": "a-f"}), b"r1")
+ok(h._returned == {1} and [b for b, m in h.cached_messages] == ["r1"], "10 return of r1: marked, re-cached once")
+h._on_confirm(Fr("Basic.Ack", 2, multiple=True))
+ok(not h._unacked and not h._returned and [b for b, m in h.cached_messages] == ["r1"], "10 ack covering the returned r1 is not a delivery: cache unchanged, r2 delivered")
+# 11 R4 reconnect: connection closed while the session lives -> unacked re-cached in order, reconnect scheduled with
+#    backoff 1,2,4..30 on the SAME ioloop with the same parameters; closed session -> loop stopped instead
+class FakeConn2(Conn):
+    def __init__(self, *a, **k): super().__init__(); self.args = (a, k); self.params = "P"; self.is_open = True
+    def close(self): self.is_open = False
+g["pika"].SelectConnection = FakeConn2
+h = H(); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h.client_address = ("10.0.0.9", 1)
+h._publish_on_ioloop("cot_parser", "cot_parser", "u1", None); h._publish_on_ioloop("cot_parser", "cot_parser", "u2", None)
+h._cache("later", None)
+h.on_close(h.rabbit_connection, "missed heartbeats")
+ok([b for b, m in h.cached_messages] == ["u1", "u2", "later"] and not h._unacked and h.rabbit_channel is None and h._need_replay
+   and h._reconnect_timer is not None and h._ioloop.timers[-1][0] == 1, "11 connection closed: unacked at the head in order, reconnect in 1 s")
+h._ioloop.fire()   # _reconnect -> new SelectConnection on the same ioloop
+ok(isinstance(h.rabbit_connection, FakeConn2) and h.rabbit_connection.args[1].get("custom_ioloop") is h._ioloop and h.rabbit_connection.args[0][0] == "P"
+   and h._reconnect_timer is None, "11 reconnect: new connection with the same params on the same ioloop")
+h.on_open_error(h.rabbit_connection, "refused"); h.on_open_error(h.rabbit_connection, "refused")
+ok(h._reconnect_n == 2 and h._ioloop.timers[-1][0] == 2, "11 open error: next attempt in 2 s (backoff), one timer at a time")
+for i in range(6): h._ioloop.fire(); h.on_open_error(h.rabbit_connection, "refused")
+ok(h._ioloop.timers[-1][0] == 30, "11 backoff capped at 30 s")
+h2 = H(); h2.rabbit_connection = FakeConn2(); h2._ioloop = h2.rabbit_connection.ioloop; h2._closed = True; stopped = []
+h2._ioloop.stop = lambda: stopped.append(1); h2.rabbit_connection.ioloop.add_callback_threadsafe = lambda fn: fn()
+h2.on_close(h2.rabbit_connection, "bye")
+ok(stopped == [1] and h2._reconnect_timer is None, "11 session already closing: loop stopped, no reconnect")
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)

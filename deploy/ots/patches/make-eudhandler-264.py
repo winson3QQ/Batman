@@ -446,7 +446,9 @@ rep('''    def on_close(self, connection, error):
         # a refused declare must never take the session down: log once, keep publishing (cot_parser's own
         # declare + the return path still apply)
         self._decl_channel = None
-        if not self._decl_refused and not self._closed:
+        # BATMAN-264-R4: a connection drop closes this channel too; that is not a refusal (the next connection
+        # declares again). Only a close while the connection stays open is the broker refusing the declare.
+        if not self._decl_refused and not self._closed and self.rabbit_connection and self.rabbit_connection.is_open:
             self._decl_refused = True
             self.logger.error(f"cot_parser queue declare refused ({error}); publishing without it")
 
@@ -703,6 +705,241 @@ NEW_UNBIND = '''    def unbind_rabbitmq_queues(self, uid, binds):  # BATMAN-264:
 
             for bind in binds:'''
 rep(OLD_UNBIND, NEW_UNBIND)
+
+# --- R4/R4b: at-least-once (publisher confirms) + reconnect on the same ioloop ---------------------------------
+# state
+rep('''        self._head_returned = False
+        self.iothread = None
+''', '''        self._head_returned = False
+        self._pub_seq = 0            # BATMAN-264-R4b: publishes on rabbit_channel since Confirm.Select (broker numbering)
+        self._unacked = {}           # seq -> (body, meta) of cot_parser publishes not yet acked (insertion-ordered)
+        self._returned = set()       # seqs that came back via basic.return (already re-cached; their ack is not a delivery)
+        self._need_replay = False    # BATMAN-264-R4: re-run the recorded subscription on the next channel
+        self._sub_ops = None
+        self._chan_errors = []
+        self._reconnect_n = 0
+        self._reconnect_timer = None
+        self._ioloop = None
+        self.iothread = None
+''')
+# keep the native ioloop for reconnects
+rep('''            self.iothread = Thread(target=self._run, name=f"IOLOOP_{self.common_name}")  # BATMAN-264''',
+    '''            self._ioloop = self.rabbit_connection.ioloop  # BATMAN-264-R4: one loop for the session, connections come and go
+            self.iothread = Thread(target=self._run, name=f"IOLOOP_{self.common_name}")  # BATMAN-264''')
+# on_channel_open: confirms, unacked -> cache, replay the subscription after a reconnect, eud info via the counted path
+rep('''        self.rabbit_channel.add_on_return_callback(self._on_return)  # BATMAN-264-R5: unroutable -> cache
+''', '''        self.rabbit_channel.add_on_return_callback(self._on_return)  # BATMAN-264-R5: unroutable -> cache
+        self.rabbit_channel.confirm_delivery(self._on_confirm)      # BATMAN-264-R4b: at-least-once
+        self._pub_seq = 0
+        self._requeue_unacked()
+        self._reconnect_n = 0
+        if self._need_replay and self._sub_ops:  # BATMAN-264-R4: the subscription of the previous channel
+            self._need_replay = False
+            self._subscribe(self._sub_ops)
+''')
+rep('''            self.rabbit_channel.basic_publish(
+                "flask-socketio",
+                "",
+                json.dumps(message),
+                properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+            )
+''', '''            self._publish_on_ioloop("flask-socketio", "", json.dumps(message))  # BATMAN-264-R4b: counted
+''')
+# every publish on rabbit_channel is numbered by the broker; remember the cot_parser ones until their ack
+rep('''                    mandatory=True,
+                )
+            else:
+                self.rabbit_channel.basic_publish(
+                    exchange=exchange,
+                    routing_key=routing_key,
+                    body=body,
+                    properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+                )
+''', '''                    mandatory=True,
+                )
+                self._pub_seq += 1
+                self._unacked[self._pub_seq] = (body, meta)
+            else:
+                self.rabbit_channel.basic_publish(
+                    exchange=exchange,
+                    routing_key=routing_key,
+                    body=body,
+                    properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+                )
+                self._pub_seq += 1
+''')
+# a returned message: its ack follows and is not a delivery
+rep('''        self.cached_messages.insert(0, (body, meta))
+        self._cache_bytes += len(body)
+        self._head_returned = True
+''', '''        for k, v in self._unacked.items():   # mark the publish this return belongs to: its ack is not a delivery
+            if v[0] == body and k not in self._returned:
+                self._returned.add(k)
+                break
+        self.cached_messages.insert(0, (body, meta))
+        self._cache_bytes += len(body)
+        self._head_returned = True
+''')
+# channel closed while the session lives: keep the session, reopen the channel; connection closed: reconnect
+rep('''    def on_channel_close(self, channel: Channel, error):
+        self.logger.error(f"RabbitMQ channel closed for {self.callsign}, shut it down")
+        self._drained.set()  # BATMAN-264: CloseOk received -> earlier frames were sent
+        if (
+            self.rabbit_connection
+            and not self.rabbit_connection.is_closing
+            and not self.rabbit_connection.is_closed
+        ):
+            self.rabbit_connection.close()
+
+        self.shutdown = True
+''', '''    def on_channel_close(self, channel: Channel, error):
+        self._drained.set()  # BATMAN-264: CloseOk received -> earlier frames were sent
+        if self._closed:
+            if self.rabbit_connection and self.rabbit_connection.is_open:
+                self.rabbit_connection.close()  # session end: upstream's order (channel, then connection, then loop)
+            return
+        # BATMAN-264-R4: upstream ended the session here (shutdown=True, connection.close()); a channel error
+        # (a refused declare, a bad queue name on replay) now costs this channel only: unacked bodies go back
+        # to the cache, the channel is reopened on the same connection and the subscription replayed. A
+        # channel that keeps failing (3 closes within 60 s) stops replaying the subscription but keeps publishing.
+        self.logger.error(f"RabbitMQ channel closed for {self.callsign}: {error}; reopening")
+        self.rabbit_channel = None
+        self._requeue_unacked()
+        now = time.monotonic()
+        self._chan_errors = [t for t in self._chan_errors if now - t < 60] + [now]
+        if len(self._chan_errors) >= 3 and self._sub_ops:
+            self.logger.error(f"{self.callsign}: the subscription fails repeatedly ({error}); not replaying it")
+            self._sub_ops = None
+        self._need_replay = True
+        if self.rabbit_connection and self.rabbit_connection.is_open:
+            self.rabbit_connection.channel(on_open_callback=self.on_channel_open)
+''')
+rep('''    def on_close(self, connection, error):
+        # Stop the ioloop using add_callback_threadsafe because ioloop.stop() isn't threadsafe
+        connection.ioloop.add_callback_threadsafe(self.rabbit_connection.ioloop.stop)
+        self.logger.info("Connection closed for {}: {}".format(self.client_address[0], error))
+        self._drained.set()  # BATMAN-264
+''', '''    def on_close(self, connection, error):
+        self.logger.info("Connection closed for {}: {}".format(self.client_address[0], error))
+        self._drained.set()  # BATMAN-264
+        if self._closed:
+            # Stop the ioloop using add_callback_threadsafe because ioloop.stop() isn't threadsafe
+            connection.ioloop.add_callback_threadsafe(self._ioloop.stop)
+            return
+        # BATMAN-264-R4 (#264 mechanism B): the broker ended the connection (missed heartbeats, broker restart,
+        # rabbitmqctl close_connection). Upstream let the session die with everything in flight. Keep the
+        # session and the ioloop; unacked bodies go back to the cache; reconnect with backoff 1..30 s.
+        self.rabbit_channel = None
+        self._decl_channel = None
+        self._blocked = False
+        self._requeue_unacked()
+        self._need_replay = True
+        self._schedule_reconnect()
+''')
+rep('''    def on_open_error(self, connection, error):
+        # Upstream passed no on_open_error_callback: pika's default raised inside the ioloop and killed it.
+        self.logger.error(f"RabbitMQ connection failed for {self.client_address[0]}: {error}")
+        self.shutdown = True
+        connection.ioloop.stop()
+''', '''    def on_open_error(self, connection, error):
+        # Upstream passed no on_open_error_callback: pika's default raised inside the ioloop and killed it.
+        self.logger.error(f"RabbitMQ connection failed for {self.client_address[0]}: {error}")
+        if self._closed:
+            connection.ioloop.stop()
+            return
+        self._schedule_reconnect()  # BATMAN-264-R4: the broker is down or restarting: keep the session, retry
+''')
+rep('''    # ---- BATMAN-264-R6: a vanished peer, and a session end that must not cut a live session of the same EUD --
+''', '''    # ---- BATMAN-264-R4/R4b: publisher confirms (at-least-once) and reconnect on the same ioloop ---------------
+    def _on_confirm(self, frame):
+        # Basic.Ack / Basic.Nack from the broker, delivery_tag = the n-th publish on this channel; multiple=True
+        # covers every tag up to and including it. An acked cot_parser publish is delivered (unless it was
+        # returned first: then it is already back in the cache and the ack means nothing). A nack puts the
+        # bodies back at the head of the cache. Duplicates are possible (a publish acked after we re-cached it on
+        # a close): at-least-once, as decided.
+        m = getattr(frame, "method", None)
+        tag = getattr(m, "delivery_tag", 0)
+        keys = [k for k in self._unacked if (k <= tag if getattr(m, "multiple", False) else k == tag)]
+        nack = getattr(m, "NAME", "").endswith("Nack")
+        for k in keys:
+            body, meta = self._unacked.pop(k)
+            if k in self._returned:
+                self._returned.discard(k)
+            elif nack:
+                self.cached_messages.insert(0, (body, meta))
+                self._cache_bytes += len(body)
+        if nack and keys and self._retry_timer is None:
+            self._schedule_retry()
+
+    def _requeue_unacked(self):
+        # the channel/connection is gone: everything not acked goes back to the cache, in publish order, at the
+        # head (older than anything cached since); returned ones are already there
+        pending = [v for k, v in self._unacked.items() if k not in self._returned]
+        self._unacked.clear()
+        self._returned.clear()
+        for body, meta in reversed(pending):
+            self.cached_messages.insert(0, (body, meta))
+            self._cache_bytes += len(body)
+
+    def _schedule_reconnect(self):
+        if self._closed or self._reconnect_timer is not None or self._ioloop is None:
+            return
+        self._reconnect_n += 1
+        delay = min(2 ** (self._reconnect_n - 1), 30)
+        self.logger.error(f"RabbitMQ reconnect for {self.client_address[0]} in {delay} s (attempt {self._reconnect_n})")
+        self._reconnect_timer = self._ioloop.call_later(delay, self._reconnect)
+
+    def _reconnect(self):
+        self._reconnect_timer = None
+        if self._closed:
+            return
+        try:
+            params = self.rabbit_connection.params
+            self.rabbit_connection = pika.SelectConnection(
+                params,
+                self.on_connection_open,
+                on_open_error_callback=self.on_open_error,
+                on_close_callback=self.on_close,
+                custom_ioloop=self._ioloop,
+            )
+        except Exception as e:
+            self.logger.error(f"RabbitMQ reconnect failed to start: {e}")
+            self._schedule_reconnect()
+
+    # ---- BATMAN-264-R6: a vanished peer, and a session end that must not cut a live session of the same EUD --
+''')
+# _subscribe remembers the recorded ops for a replay after a reconnect
+rep('''        if self.rabbit_channel and self.rabbit_channel.is_open:
+            for name, a, k in ops:
+                getattr(self.rabbit_channel, name)(*a, **k)
+        else:
+            self._pending_ops = ops
+''', '''        self._sub_ops = ops  # BATMAN-264-R4: replayed on the channel after a reconnect
+        if self.rabbit_channel and self.rabbit_channel.is_open:
+            for name, a, k in ops:
+                getattr(self.rabbit_channel, name)(*a, **k)
+        else:
+            self._pending_ops = ops
+''')
+# session end: no reconnect once closing; cancel a pending reconnect
+rep('''            if self._retry_timer is not None:  # BATMAN-264-R5
+                try:
+                    self.rabbit_connection.ioloop.remove_timeout(self._retry_timer)
+                except Exception:
+                    pass
+                self._retry_timer = None
+''', '''            for attr in ("_retry_timer", "_reconnect_timer"):  # BATMAN-264-R5/R4
+                t = getattr(self, attr)
+                if t is not None:
+                    try:
+                        self._ioloop.remove_timeout(t)
+                    except Exception:
+                        pass
+                    setattr(self, attr, None)
+''')
+rep("import uuid\nimport functools  # BATMAN-264\n", "import uuid\nimport functools  # BATMAN-264\nimport time  # BATMAN-264-R4\n")
+BATMAN_TAG_OLD = 'BATMAN_264 = "R1 R3 R5 R6 R7 R9"'
+rep(BATMAN_TAG_OLD, 'BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9"')
 
 # --- license notice (GPL-3.0-or-later §5a: modified files carry a prominent dated notice) ----------
 assert s.startswith("import base64\n"), "upstream file no longer starts with 'import base64'"
