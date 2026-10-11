@@ -1,5 +1,5 @@
 #!/bin/sh
-# cot-stream-264.sh — one EUD session streaming N unique CoT at 2/s to TARGET:8088 (amqp-close-264, #264 R4).
+# cot-stream-264.sh — one EUD session streaming N unique CoT at 1/s to TARGET:8088 (busybox sleep takes whole seconds) (amqp-close-264, #264 R4).
 #   ssh root@peer "TARGET=<ots-ip> RUN=<id> N=<count> sh -s" < this
 # Every event has uid $RUN-<seq> and <dest callsign="dv-nobody"/> (stored, fanned out to nobody). One long-lived
 # connection through a FIFO so a server-side drop is seen (CONNLOST) instead of counted as sent. Prints
@@ -20,7 +20,7 @@ while [ "$i" -le "$N" ]; do
 	kill -0 "$NCP" 2>/dev/null || { echo "CONNLOST $i"; break; }
 	printf '%s' "$(ev "$RUN-$i")" >&3 2>/dev/null || { echo "CONNLOST $i"; break; }
 	s=$((s+1)); i=$((i+1))
-	sleep 0.5
+	sleep 1
 done
 sleep 3; exec 3>&-; kill "$NCP" 2>/dev/null; wait "$NCP" 2>/dev/null; rm -f "$F"
 echo "SENT $s"
