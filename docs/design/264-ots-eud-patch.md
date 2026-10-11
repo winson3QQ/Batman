@@ -227,6 +227,15 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   clients leave, the run's EUD rows and rabbit queues removed. The cap itself: 5 offline cases
   (`test-eudhandler-264-amqp.py` #8) with the cgroup reader stubbed; on the node the refusal would need about 60
   sessions after the fix and is not exercised (stated, not claimed).
+- **Second measurement (rc 1.5.9-wsl.4, freeze-once, `eud-mem-264`): 31 MiB per idle session**, memory back to
+  the baseline when the clients leave. The first implementation (collect+freeze before every fork, unfreeze
+  after) measured 33 MB then 78 MB per session: the parent's full collection after each fork wrote every gc
+  header and copied the parent's heap for the parent while children were alive. Fixed by freezing once.
+- **Third attribution (`r7-attr3.py`): the first ORM statement in a child costs 19.6 MB** (SQLAlchemy's lazy
+  mapper configuration and compiled caches), the engine object 3.9, the XML parser 3.9, pika parameters 3.0;
+  with the parent pre-warming these once before the first fork (`_prewarm_parent`: `db.engine`,
+  `configure_mappers()`, one EUD select, one XML parse) the same child costs 8.6 MB, idle 2.7 MB. To be measured
+  on the node with rc 1.5.9-wsl.6; `eud-mem-264`'s limit stays 12 MiB until then.
 - **The cache bounds in R9 are sized against the measured per-session figure.**
 
 ### R8 — the patch must fail closed at runtime when the image changes
@@ -259,24 +268,28 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   `rabbitmq-extra.conf` 300 MB), the session caches instead of publishing. `blocked_connection_timeout` = 60 s
   ends the connection, and R4 reconnects.
 
-### R10 — client-supplied identifiers used as broker resource names
+### R10 — client-supplied identifiers used as broker resource names (implemented d129c40 / 9fae867)
 - **Cause:** upstream uses the client-supplied callsign and uid directly as queue names and routing keys
-  (`parse_device_info`, `:512-650`). On 8088 the client is unauthenticated.
-- **Fix:** before any declare, bind or consume, validate both values. Reject:
-  - empty values;
-  - values over 255 bytes UTF-8;
-  - values starting with `amq.`;
-  - values equal to any broker resource OTS itself uses (`cot_parser`, `firehose`, `dms`, `groups`, `missions`,
-    `chatrooms`, `flask-socketio`).
-
-  For a rejected value, the session does not subscribe and logs an error. Its CoT are still stored.
-- **Test:** `names-264`: a client with a reserved callsign. Asserts:
-  - no per-EUD subscription is created;
-  - the reserved queue's consumer count is unchanged;
-  - its CoT are stored;
-  - a normal client is unaffected.
-
-  Negative control: unpatched creates the subscription.
+  (`parse_device_info`, `:512-650`), on every identifying CoT (one more consumer per position report). On
+  8088 the client is unauthenticated.
+- **Fix:**
+  - Before any declare, bind or consume, both values are checked: empty, over 255 bytes UTF-8, `amq.` prefix,
+    a system queue/exchange name in any case (`cot_parser`, `dms`, `chatrooms`, `missions`, `groups`,
+    `firehose`, `flask-socketio`, `meshtastic`, `dmrcot`) or a non-printable character -> no subscription, no EUD
+    row, one error log line. The CoT is still stored by cot_parser.
+  - An 8088 client whose uid or callsign belongs to an authenticated user's device (`EUD.user_id` set) gets no
+    subscription and no EUD row update (which would have detached the device from its user). Fail closed when
+    the lookup fails.
+  - The subscription is made once per session, and only when the broker's DeclareOk reports no other consumer
+    on the EUD's queues; otherwise one log line and a retry on the next identifying CoT. A replay after a
+    reconnect ignores the count (our own old consumer).
+- **Residual, stated:** a device never seen on 8089 (no row with a user) is not protected from an 8088 client
+  using its name; a phone reconnecting while its stale session is still consuming waits for R6's reaping
+  (about 2 min) before it is subscribed again; the reserved list is a constant in the overlay, not generated
+  from the pinned source.
+- **Tests:** `name-guard-264` (daily-validation): a session with callsign `cot_parser` from the bench node;
+  the `cot_parser` queue keeps exactly 1 consumer, the refusal is logged, the CoT is stored. Offline cases 15
+  (names) and 16 (once-only, consumer-count guard, replay).
 
 ### R11 — diagnosis aid
 - `faulthandler.register(SIGUSR1, all_threads=True)` at module import, so the parent is covered too.
