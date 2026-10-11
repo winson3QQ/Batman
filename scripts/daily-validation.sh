@@ -881,43 +881,213 @@ SQL
   echo "rabbit per-EUD queues of this run: $o"; case "$o" in *left=0) ;; *) echo "FAIL cleanup: per-EUD rabbit queues of run $run left behind"; rc=1 ;; esac
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
   return $rc; }
+# #264 review round 2 (2026-10-12): every suite below reproduced its finding on node 04 with rc wsl.8 before the
+# fix (negative control, logs in the register) and must PASS on the fixed overlay. Helpers: s264 runs
+# scripts/node/session-264.sh on the bench node; r264_clean removes a run's rows and per-EUD queues.
+s264() { local peer=$1 ots=$2 run=$3 act=$4; shift 4
+  timeout "${S264_T:-90}" ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run ACTION=$act $* sh -s" < "$REPO/scripts/node/session-264.sh" 2>&1 | tr -d '\r'; }
+r264_clean() { local ots=$1 run=$2 o
+  ots_sql "$ots" <<SQL >/dev/null
+begin; delete from cot where uid like '$run%'; delete from euds where uid like '$run%'; commit;
+SQL
+  o=$(fssh "$ots" 60 'n=0; for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1 && n=$((n+1)); done; echo "harness-deleted=$n"' | tr -d '\r')
+  echo "cleanup of run $run: rows deleted, $o"; }
+r264_binds() { fssh "$1" 20 'docker exec rabbitmq rabbitmqctl -q list_bindings source_name destination_name routing_key 2>/dev/null | grep "	'"$2"'	" | grep -v "^	" | sort' | tr -d '\r'; }
+# R6 (review r2 B2-1): a second session of the SAME uid/callsign that connects and leaves again (a phone flapping at
+# the edge of range, a second app instance) must not take the live session's bindings with it. A stays connected
+# and must keep dms/__ANON__/missions and get 10/10 after B's end. Negative control, rc wsl.8 (node 04,
+# 2026-10-12): B was held off (never subscribed), its end still unbound A's bindings: A got 0/10.
+chk_same_uid_end_264() { local ots=$1 peer=$2 run o rc=0 b0 b1
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  run=DVSU$(date +%H%M%S)
+  ( s264 "$peer" "$ots" "$run" same-uid > "$DIR/$run.peer" ) & sleep 3
+  b0=$(r264_binds "$ots" "$run-U"); echo "bindings of $run-U while A and B are connected:"; echo "$b0" | sed 's/^/  /'
+  wait; echo "  peer: $(cat "$DIR/$run.peer")"; sleep 4
+  b1=$(r264_binds "$ots" "$run-U"); echo "bindings of $run-U after B's end:"; echo "${b1:-  (none)}" | sed 's/^/  /'
+  [ -n "$b0" ] && [ "$b0" = "$b1" ] || { echo "FAIL B's end changed A's bindings (rc wsl.8: dms/__ANON__/missions removed)"; rc=1; }
+  echo "  peer: $(s264 "$peer" "$ots" "$run" send10 TAG=post)"; sleep 2
+  o=$(s264 "$peer" "$ots" "$run" count TAG=post); echo "A received after B's end: $o (expect A 10)"
+  case "$o" in "A 10 "*) ;; *) echo "FAIL the live session lost its downlink when the other session of its uid ended"; rc=1 ;; esac
+  o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"another session of '"$run"'-U is live\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r')
+  echo "handler log: \"another session of $run-U is live\": ${o:-0} (expect >= 1, from B's end)"; [ "${o:-0}" -ge 1 ] 2>/dev/null || { echo "FAIL B's end did not see A live"; rc=1; }
+  echo "  peer: $(s264 "$peer" "$ots" "$run" cleanup)"; sleep 5; r264_clean "$ots" "$run"
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
+# R10 (review r2 B2-4): two devices with the same callsign and different uids both get broadcast traffic (own
+# <uid> queue each, as upstream). Negative control, rc wsl.8 (node 04, 2026-10-12): A 10, B 0 (B held off for its
+# whole session, its <uid> queue never bound, left behind as an orphan).
+chk_callsign_share_264() { local ots=$1 peer=$2 run o rc=0
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  run=DVCS$(date +%H%M%S)
+  o=$(s264 "$peer" "$ots" "$run" share-cs); echo "  peer: $o"
+  echo "$o" | grep -q '^STARTED established=2$' || { echo "FAIL expected A and B established"; rc=1; }
+  sleep 3; echo "  peer: $(s264 "$peer" "$ots" "$run" send10 TAG=t1)"; sleep 2
+  o=$(s264 "$peer" "$ots" "$run" count TAG=t1); echo "received: $o (expect A 10 B 10)"
+  [ "$o" = "A 10 B 10" ] || { echo "FAIL a device sharing a callsign lost its broadcast traffic"; rc=1; }
+  # the two end one after the other (A, then B): the last one removes the shared callsign queue. Residual, stated:
+  # two devices sharing a callsign that end at the same instant both see the other consumer and both keep it
+  echo "  peer: $(s264 "$peer" "$ots" "$run" stop WHO=A)"; sleep 4
+  echo "  peer: $(s264 "$peer" "$ots" "$run" cleanup)"; sleep 6
+  o=$(fssh "$ots" 30 'docker exec rabbitmq rabbitmqctl -q list_queues name messages consumers 2>/dev/null | grep "^'"$run"'"' | tr -d '\r')
+  [ -n "$o" ] && echo "$o" | sed 's/^/  left: /'
+  o=$(echo "$o" | awk -F'\t' 'NF>=3 && $2==0 {n++} END {print n+0}')
+  [ "$o" = 0 ] || { echo "FAIL $o EMPTY queue(s) of the run left behind (orphans, F3)"; rc=1; }
+  r264_clean "$ots" "$run"
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
+# R10 (review r2 B2-2): an unauthenticated 8088 client must not take over an authenticated (8089) user's queues by
+# swapping uid and callsign. An 8089 session (test cert, CN=administrator) identifies once; then an 8088 client
+# uses the user's uid as its CALLSIGN (and, as the control, as its uid). Both must be refused (log line) and no
+# 8088 session may consume the user's queues. Negative control, rc wsl.8 (node 04, 2026-10-12): the swap was
+# subscribed ("subscribed ...-X/<user's uid>", 1 consumer on the user's uid queue); the direct one was refused.
+chk_owner_swap_264() { local ots=$1 peer=$2 run o rc=0 V VC r0 r1 mode
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" 'docker exec -i ots_cot_parser python3 -' < "$REPO/scripts/node/ots-test-client-cert.py" 2>&1)
+  echo "$o" | grep -q '^OK test client cert' || { echo "FAIL could not issue the test client cert — not verified"; return 1; }
+  run=DVOS$(date +%H%M%S); V=$run-V; VC=$run-Vc
+  o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "docker exec -i -e TARGET=172.20.0.12 -e V=$V -e VC=$VC -e HOLD=5 -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key ots_cot_parser python3 -" < "$REPO/scripts/node/eud-ssl-victim-264.py" 2>&1 | tr -d '\r')
+  echo "8089 user session: $o"; sleep 3
+  o=$(echo "select uid, callsign, user_id is not null from euds where uid = '$V';" | ots_sql "$ots"); echo "the user's EUD row: $o"
+  case "$o" in "$V|$VC|t") ;; *) echo "FAIL no EUD row with a user for $V — not verified"; rc=1 ;; esac
+  for mode in swap direct; do
+    r0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"belong to an authenticated user\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'); isint "$r0" || r0=0
+    if [ $mode = swap ]; then ( s264 "$peer" "$ots" "$run-$mode" swap VICTIM="$V" >/dev/null ) &
+    else ( timeout 40 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" 'n=$(date +%s); ts(){ date -u -d @$1 +%Y-%m-%dT%H:%M:%S.000Z; }; { printf "<event version=\"2.0\" uid=\"'"$V"'\" type=\"a-f-G-U-C\" how=\"h-e\" time=\"%s\" start=\"%s\" stale=\"%s\"><point lat=\"25.03\" lon=\"121.56\" hae=\"10\" ce=\"9999999\" le=\"9999999\"/><detail><contact callsign=\"'"$run"'-direct-c\"/></detail></event>" "$(ts $n)" "$(ts $n)" "$(ts $((n+600)))"; sleep 10; } | nc '"$ots"' 8088 >/dev/null 2>&1' ) & fi
+    sleep 6
+    o=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name consumers 2>/dev/null | grep -E "^('"$V"'|'"$VC"')	"' | tr -d '\r' | tr '\t\n' '= ')
+    echo "$mode: consumers of the user's queues while the 8088 client is up: [${o:-none}] (expect none or =0)"
+    case "$o" in *=[1-9]*) echo "FAIL $mode: an unauthenticated 8088 session consumes the user's queue"; rc=1 ;; esac
+    wait
+    r1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"belong to an authenticated user\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'); isint "$r1" || r1=0
+    [ "$r1" -gt "$r0" ] && echo "$mode: refused (handler log)" || { echo "FAIL $mode: no refusal line in the handler's log"; rc=1; }
+  done
+  fssh "$ots" 15 'docker exec ots_cot_parser rm -f /tmp/dv-client.pem /tmp/dv-client.key' >/dev/null
+  sleep 3; r264_clean "$ots" "$run"
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
+# R12 (review r2 B2-6, the user's decision 2026-10-12): admission. (a) 8088: silent sockets (no byte ever sent) are
+# closed by the server within IDENT_MAX_S (60 s) + slack; (b) 8088: more than PER_IP_MAX (8) sessions from one
+# address are refused at once (log line); (c) 8089: a socket that never completes the TLS handshake gets no AMQP
+# connection (nothing allocated) and is closed within 10 s. Negative control, rc wsl.8 (node 04, 2026-10-12):
+# silent sockets stayed open (no deadline), nothing refused, and every 8089 socket opened an AMQP connection
+# before its handshake (measured: see register r2 B2-6).
+chk_admission_264() { local ots=$1 peer=$2 run o rc=0 r0 r1 t0 e
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  run=DVAD$(date +%H%M%S)
+  rlog() { fssh "$ots" 20 'docker exec '"$1"' sh -c "grep -c \"'"$2"'\" /app/ots/logs/'"$3"' 2>/dev/null"' | tr -d ' \r'; }
+  # (c) 8089 first (its sockets are gone within seconds): 3 TCP connections that never start TLS
+  o=$(s264 "$peer" "$ots" "$run" silent N=3 PORT=8089); echo "  peer: $o (8089, no TLS)"; sleep 2
+  o=$(fssh "$ots" 20 'l=$(docker exec rabbitmq rabbitmqctl -q list_connections client_properties 2>&1) || { echo "ERR $l" | head -1; exit 0; }; echo "$l" | grep -c "eud-8089-'"$peer"':"' | tr -d ' \r')
+  echo "(c) AMQP connections of 8089 sessions from $peer before their handshake: ${o:-?} (expect 0)"
+  [ "$o" = 0 ] || { echo "FAIL (c) an 8089 socket without a TLS handshake got an AMQP connection (allocated before authentication)"; rc=1; }
+  t0=$SECONDS; e=3; while [ $((SECONDS - t0)) -lt 20 ] && [ "$e" != 0 ]; do sleep 2; e=$(s264 "$peer" "$ots" "$run" est PORT=8089 | sed -n 's/^EST //p'); done
+  echo "(c) 8089 silent sockets still open after $((SECONDS - t0 + 4)) s: ${e:-?} (expect 0 within ~14 s)"; [ "$e" = 0 ] || { echo "FAIL (c) handshake-less 8089 sockets not closed"; rc=1; }
+  s264 "$peer" "$ots" "$run" cleanup >/dev/null
+  # (b) 10 silent 8088 sockets at once from one address: refusals over PER_IP_MAX (8). All 10 are established when
+  # the sessions count, so more than 2 may be refused: the assertion is "at least 2"
+  r0=$(rlog ots_eud_handler "sessions from this address" eud_handler_tcp.log); isint "$r0" || r0=0
+  o=$(s264 "$peer" "$ots" "$run" silent N=10 PORT=8088); echo "  peer: $o (8088, silent)"; sleep 3
+  r1=$(rlog ots_eud_handler "sessions from this address" eud_handler_tcp.log); isint "$r1" || r1=0
+  echo "(b) refusals over the per-address limit: $((r1 - r0)) (expect >= 2)"; [ $((r1 - r0)) -ge 2 ] || { echo "FAIL (b) 10 sessions from one address, none refused"; rc=1; }
+  s264 "$peer" "$ots" "$run" cleanup >/dev/null; sleep 3
+  # (a) 3 silent 8088 sockets (under the limit) are closed by the server at IDENT_MAX_S
+  r0=$(rlog ots_eud_handler "sent no complete message within" eud_handler_tcp.log); isint "$r0" || r0=0
+  o=$(s264 "$peer" "$ots" "$run" silent N=3 PORT=8088); echo "  peer: $o (8088, silent, under the limit)"
+  t0=$SECONDS; e=3; while [ $((SECONDS - t0)) -lt 90 ] && [ "$e" != 0 ]; do sleep 5; e=$(s264 "$peer" "$ots" "$run" est PORT=8088 | sed -n 's/^EST //p'); done
+  r1=$(rlog ots_eud_handler "sent no complete message within" eud_handler_tcp.log); isint "$r1" || r1=0
+  echo "(a) silent 8088 sockets open after $((SECONDS - t0)) s: ${e:-?} (expect 0 by ~65 s); deadline log lines: $((r1 - r0)) (expect 3)"
+  [ "$e" = 0 ] && [ $((r1 - r0)) -ge 3 ] || { echo "FAIL (a) silent 8088 sockets kept open (no first-message deadline)"; rc=1; }
+  echo "  peer: $(s264 "$peer" "$ots" "$run" cleanup)"
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
+# #264 review r2 A2-1 (destructive on a broken build: it crash-loops cot_parser): an authenticated (8089) user in an
+# OTS group ends its session while cot_parser is busy. cot_parser's 8089 disconnect branch BINDS <uid> to the
+# user's groups (cot_parser.py:989); if the eud handler has deleted <uid> by then, the bind is a 404 that kills
+# cot_parser, and the unacked disconnect is redelivered first after every restart: a crash loop (up to 24 h).
+# Setup: a group membership for 'administrator' (ADS-B, OUT; removed on every exit path), a 600-CoT burst from the
+# bench node so cot_parser lags, the 8089 session ends. Asserted: no "crash ots_cot_parser" in the guardian ledger,
+# no "no queue '<uid>'" in the broker log, cot_parser running with its queue drained. Negative control, rc wsl.8
+# (node 04, 2026-10-12): 5 x "queue.bind ... not_found: no queue 'DVRE061117-V'", 6 x crash ots_cot_parser; the
+# loop ended only when the membership was removed.
+bchk_group_disc_264() { local ots=$1 peer=$2 run o rc=0 V VC c0 c1 i
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" 'docker exec -i ots_cot_parser python3 -' < "$REPO/scripts/node/ots-test-client-cert.py" 2>&1)
+  echo "$o" | grep -q '^OK test client cert' || { echo "FAIL could not issue the test client cert — not verified"; return 1; }
+  run=DVGD$(date +%H%M%S); V=$run-V; VC=$run-Vc
+  c0=$(fssh "$ots" 20 'logread | grep -c "crash ots_cot_parser"' | tr -d ' \r'); isint "$c0" || c0=0
+  o=$(echo "insert into groups_users (user_id, group_id, direction, enabled) select u.id, g.id, 'OUT', true from \"user\" u, groups g where u.username = 'administrator' and g.name = 'ADS-B' returning user_id, group_id;" | ots_sql "$ots")
+  echo "test membership added: $(echo "$o" | head -1)"
+  case "$o" in [0-9]*"|"[0-9]*) ;; *) echo "FAIL could not add the test membership — not verified"; return 1 ;; esac
+  ( timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "sleep 5; n=\$(date +%s); t=\$(date -u -d @\$n +%Y-%m-%dT%H:%M:%S.000Z); i=1; while [ \$i -le 600 ]; do printf '<event version=\"2.0\" uid=\"$run-L-%s\" type=\"a-f-G-U-C\" how=\"h-e\" time=\"%s\" start=\"%s\" stale=\"%s\"><point lat=\"25.03\" lon=\"121.56\" hae=\"10\" ce=\"9999999\" le=\"9999999\"/><detail><contact callsign=\"$run-L\"/></detail></event>' \$i \$t \$t \$t; i=\$((i+1)); done | nc $ots 8088 >/dev/null 2>&1; echo burst sent" ) > "$DIR/$run.burst" 2>&1 &
+  o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "docker exec -i -e TARGET=172.20.0.12 -e V=$V -e VC=$VC -e HOLD=8 -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key ots_cot_parser python3 -" < "$REPO/scripts/node/eud-ssl-victim-264.py" 2>&1 | tr -d '\r')
+  wait; echo "8089 group member: $o; bench: $(cat "$DIR/$run.burst")"
+  for i in 1 2 3 4 5 6 7 8 9; do sleep 10; done
+  c1=$(fssh "$ots" 20 'logread | grep -c "crash ots_cot_parser"' | tr -d ' \r'); isint "$c1" || c1=0
+  o=$(fssh "$ots" 20 'docker logs --since 3m rabbitmq 2>&1 | grep -c "no queue '"'$V'"'"' | tr -d ' \r')
+  echo "guardian ledger crash ots_cot_parser: +$((c1 - c0)); broker \"no queue '$V'\": ${o:-?}"
+  [ "$c1" = "$c0" ] || { echo "FAIL cot_parser crashed after the group member's disconnect (r2 A2-1 crash loop)"; rc=1; }
+  [ "${o:-1}" = 0 ] || { echo "FAIL cot_parser's group bind hit a deleted <uid> queue"; rc=1; }
+  # every exit path below removes the membership (also the recovery from a crash loop: no group, no bind)
+  o=$(echo "delete from groups_users where user_id = (select id from \"user\" where username = 'administrator') and group_id = (select id from groups where name = 'ADS-B') returning user_id;" | ots_sql "$ots")
+  echo "test membership removed: $(echo "$o" | head -1)"
+  fssh "$ots" 15 'docker exec ots_cot_parser rm -f /tmp/dv-client.pem /tmp/dv-client.key' >/dev/null 2>&1
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do [ "$(ots_ctr "$ots")" = 6 ] && break; sleep 10; done
+  o=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name messages consumers 2>/dev/null | grep "^cot_parser	"' | tr -d '\r' | tr '\t' ' ')
+  echo "cot_parser queue: $o (expect 0 messages, 1 consumer)"; case "$o" in "cot_parser 0 1") ;; *) echo "FAIL cot_parser not consuming a drained queue"; rc=1 ;; esac
+  r264_clean "$ots" "$run"
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
 # #264 R6/R10, in FIELD ORDER (scripts/node/zombie-264.sh on the bench node): A = the EUD's first session, which
 # goes stale (its port black-holed on the bench node both ways: no FIN/RST ever); then B = the same EUD
 # reconnecting while A still holds its queues; D streams 1 CoT/s so the server has data pending towards A
-# (keepalive probes alone would never fire). Asserted on the OTS node: while A holds the queue B is NOT
-# subscribed (1 consumer, a "queue already has a consumer" log line); A is reaped (TCP_USER_TIMEOUT) and B's
-# retry subscribes within ZOMBIE_MAX_S (200 s): "subscribed <uid>/<callsign>" in the handler's log, 1 consumer
-# again; then 10 CoT from C reach B (10/10); when B leaves, the handler removes the EUD's idle queues (F3).
-# Negative control, measured on upstream 1.7.13 (node 04, 2026-10-11): the zombie outlived a 30 s black hole with
-# its consumers (deliveries went to it), and when it ended the live session got 0/10 for good (cot_parser unbinds
-# <uid> on the disconnect). Residual, stated: B receives nothing until A is reaped (about 2 min).
-chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 reaped="" q apid bpid
+# (keepalive probes alone would never fire). Asserted on the OTS node (review round 2 model: shared, not held):
+# B is subscribed AT ONCE next to the stale A (2 consumers on the queue, a "shared with" log line); A is reaped
+# (TCP_USER_TIMEOUT) within ZOMBIE_MAX_S and its end sees B live: "another session of <uid> is live" from A's
+# handler pid, and cot_parser gets NO disconnect for the uid (its 8089 branch would unbind the user's missions,
+# review r2 A2-3); then 10 CoT from C reach B (10/10); when B leaves the handler removes the idle queues (F3).
+# Negative controls, measured on node 04: upstream 1.7.13 (2026-10-11): the zombie kept its consumers, and when
+# it ended the live session got 0/10 for good; rc wsl.8 (the "busy" guard, 2026-10-12): 1 consumer (B held off,
+# no downlink for ~2 min) and A's end, as the last session, published the disconnect.
+# Residual, stated: while A is alive deliveries alternate between A (lost) and B (auto_ack round-robin).
+chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 reaped="" q apid bpid d0 d1
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   run=DVZ$(date +%H%M%S); q="$run-A"
   zlog() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"'"$1"'\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'; }
   # the handler pids that logged "subscribed <q>/": A's is the first, B's must be a different one
   zpids() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"subscribed '"$q"'/\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | sed -n 's/.* - eud_handler\[\([0-9]*\)\] - .*/\1/p' | tr -d '\r'; }
+  cpdisc() { fssh "$ots" 20 'docker exec ots_cot_parser sh -c "grep -c \"Sending disconnect cot to '"$q"'\$\" /app/ots/logs/cot_parser.log 2>/dev/null"' | tr -d ' \r'; }
+  d0=$(cpdisc); isint "$d0" || d0=0
   o=$(timeout 120 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run ACTION=start sh -s" < "$REPO/scripts/node/zombie-264.sh" 2>&1 | tr -d '\r')
   echo "$o" | sed 's/^/  peer: /'
   echo "$o" | grep -q '^BLACKHOLE [0-9]* 1$' || { echo "FAIL the black hole was not installed — not verified"; rc=1; }
   echo "$o" | grep -q '^STARTED established=3$' || { echo "FAIL expected A, B and D established on the peer ($(echo "$o" | grep '^STARTED'))"; rc=1; }
   sleep 5
   c=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name consumers 2>/dev/null | grep "^'"$q"'	" | cut -f2' | tr -d ' \r')
-  echo "consumers of queue $q while the stale A holds it and B waits: [$c] (expect 1 = A; B is not subscribed yet)"
-  [ "$c" = 1 ] || { echo "FAIL expected 1 consumer (A) on $q, got [$c]"; rc=1; }
-  apid=$(zpids | head -1); echo "A's handler pid (first \"subscribed $q/\" line): [${apid:-none}]"
-  isint "$apid" || { echo "FAIL A never got subscribed — nothing to test"; rc=1; }
-  o=$(zlog "queue ${q}[^ ]* already has a consumer"); echo "handler log: B waiting on the held queue ($q or $q-cs): ${o:-0} line(s)"
-  [ "${o:-0}" -ge 1 ] 2>/dev/null || { echo "FAIL no \"already has a consumer\" line: B was not held off by A"; rc=1; }
-  # A is reaped (TCP_USER_TIMEOUT with D's data pending), then B's 15 s retry subscribes: the handler logs it
+  echo "consumers of queue $q while the stale A is alive: [$c] (expect 2: A and the reconnected B, shared)"
+  [ "$c" = 2 ] || { echo "FAIL expected 2 consumers (A and B) on $q, got [$c] — B is not subscribed (rc wsl.8 held it off)"; rc=1; }
+  apid=$(zpids | head -1); bpid=$(zpids | sed -n 2p)
+  echo "handler pids with \"subscribed $q/\": A [${apid:-none}] B [${bpid:-none}]"
+  isint "$apid" && isint "$bpid" && [ "$apid" != "$bpid" ] || { echo "FAIL A and B are not both subscribed"; rc=1; }
+  o=$(zlog "queue ${q}[^ ]* shared with"); echo "handler log: \"shared with\" lines for $q: ${o:-0}"
+  [ "${o:-0}" -ge 1 ] 2>/dev/null || { echo "FAIL no \"shared with\" line: B did not see A's consumer"; rc=1; }
+  # A is reaped (TCP_USER_TIMEOUT with D's data pending); its end must see B live
   t0=$SECONDS
   while [ $((SECONDS - t0)) -lt "${ZOMBIE_MAX_S:-200}" ]; do
-    sleep 10; bpid=$(zpids | grep -v -x -F "${apid:-x}" | head -1)
-    isint "$bpid" && { reaped=$((SECONDS - t0)); break; }
+    sleep 10
+    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"eud_handler\['"${apid:-x}"'\] .*another session of '"$q"' is live\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d '\r')
+    [ -n "$o" ] && { reaped=$((SECONDS - t0)); break; }
   done
-  if [ -n "$reaped" ]; then echo "B (pid $bpid, not A's $apid) subscribed $reaped s after the black hole (A reaped, B's retry took the queue)"
-  else echo "FAIL B never got subscribed within ${ZOMBIE_MAX_S:-200} s (A still holds the queue, or the retry never ran)"; rc=1; fi
+  if [ -n "$reaped" ]; then echo "A (pid $apid) reaped $reaped s after the black hole; its end saw B live (no disconnect, bindings kept)"
+  else echo "FAIL A's end never logged \"another session of $q is live\" within ${ZOMBIE_MAX_S:-200} s (not reaped, or it took itself for the last session)"; rc=1; fi
+  d1=$(cpdisc); isint "$d1" || d1=0
+  echo "cot_parser disconnects for $q while B is live: $((d1 - d0)) (expect 0)"
+  [ "$d1" = "$d0" ] || { echo "FAIL the stale A's end sent cot_parser a disconnect for the live EUD (8089: missions unbound, r2 A2-3)"; rc=1; }
   c=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name consumers 2>/dev/null | grep "^'"$q"'	" | cut -f2' | tr -d ' \r')
   echo "consumers of $q now: [$c] (expect 1 = B)"; [ "$c" = 1 ] || { echo "FAIL expected 1 consumer (B) on $q, got [$c]"; rc=1; }
   sleep 3
@@ -1159,9 +1329,13 @@ elif up "$OTS_NODE"; then
   suite ots-cot-e2e-264  "CoT sent == stored per phase from $BENCH_NODE: P1 control, P2 deterministic truncation (A control / B #264-A), P3 burst; heartbeat (#264-B) NOT exercised (#268 B2)" "chk_cot_264 $OTS_NODE $BENCH_NODE"
   suite ots-cot-e2e-264-ssl "CoT sent == stored per phase on the SSL listener 8089 (mTLS, 1-day test cert for an existing user): P1 / P2 truncation / P3 burst — handler path via br-ots, not the mesh (#264)" "chk_cot_264_ssl $OTS_NODE"
   suite eud-mem-264 "ots_eud_handler memory per idle session from $BENCH_NODE: 6 sessions, <= 12 MiB each (upstream 39, OOM at ~10 clients), none refused, no leak after they leave (#264 R7)" "chk_eud_mem_264 $OTS_NODE $BENCH_NODE"
-  suite zombie-264 "field order: the EUD's stale session (port black-holed on $BENCH_NODE, data pending) holds the queue, the reconnecting session waits, the stale one is reaped within 200 s, the live one is subscribed by its retry and gets 10/10; its end removes the idle queues (#264 R6/R10/F3; upstream: immortal zombie, then 0/10)" "chk_zombie_264 $OTS_NODE $BENCH_NODE"
+  suite zombie-264 "field order: the EUD's stale session (port black-holed on $BENCH_NODE, data pending) and the reconnected one share the queue at once; the stale one is reaped within 200 s and its end keeps the live one's bindings (no disconnect); 10/10; the last end removes the idle queues (#264 R6/R10/F3; upstream: immortal zombie then 0/10; wsl.8: held off ~2 min)" "chk_zombie_264 $OTS_NODE $BENCH_NODE"
   suite amqp-close-264 "the broker closes the streaming session's AMQP connection twice (rabbitmqctl close_connection): every CoT stored at least once, client session kept, 2 reconnects logged (#264 R4/R4b mechanism B; upstream: session dropped, CoT in flight lost)" "chk_amqp_close_264 $OTS_NODE $BENCH_NODE"
   suite name-guard-264 "an 8088 client with callsign cot_parser gets no subscription: cot_parser queue keeps 1 consumer, log line, CoT still stored (#264 R10; upstream: the client consumes storage's queue)" "chk_name_guard_264 $OTS_NODE $BENCH_NODE"
+  suite same-uid-end-264 "a second session of the same uid/callsign connects and leaves while the first stays: the first keeps its bindings and gets 10/10 (#264 R6, review r2 B2-1; wsl.8: 0/10)" "chk_same_uid_end_264 $OTS_NODE $BENCH_NODE"
+  suite callsign-share-264 "two devices with the same callsign and different uids both get broadcast traffic, no empty queue left (#264 R10, review r2 B2-4; wsl.8: 10/0)" "chk_callsign_share_264 $OTS_NODE $BENCH_NODE"
+  suite owner-swap-264 "an 8088 client naming an 8089 user's uid as its callsign (and as its uid) is refused and consumes none of the user's queues (#264 R10, review r2 B2-2; wsl.8: the swap was subscribed)" "chk_owner_swap_264 $OTS_NODE $BENCH_NODE"
+  suite admission-264 "admission: 8089 sockets get nothing allocated before the TLS handshake and close in ~10 s; 8088 >8 sessions per address refused; silent 8088 sockets closed at 60 s (#264 R12, review r2 B2-6)" "chk_admission_264 $OTS_NODE $BENCH_NODE"
 else
   for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264 amqp-close-264 name-guard-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
@@ -1644,6 +1818,7 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     suite host-alarm-274 "dangerous foreign containers (p6/socket bind, device, host net, disguised volume) raise a host alarm, never the verdict (#274 §12)" "p274 $OTS_NODE hostalarm"
     # these three leave the tenant DRIFT for the 600 s ledger window: they wait it out themselves, and run last (§12.7)
     suite queue-gone-264 "the transient cot_parser queue is deleted under a CoT stream: cot_parser exits and the guardian restarts it (asserted), the patched eud re-declares + retries so sent == stored (#264 mechanism C, destructive)" "bchk_queue_gone_264 $OTS_NODE $BENCH_NODE" D
+    suite group-disc-264 "an 8089 group member ends its session while cot_parser is busy: no cot_parser crash loop, no bind on a deleted queue (#264 review r2 A2-1; wsl.8: 6 crashes until the membership was removed; destructive on a broken build)" "bchk_group_disc_264 $OTS_NODE $BENCH_NODE" D
     suite crash-274 "crash / PRIMARY / loop backoff / old config / respawn / rm / docker update / docker stop / hung health check: the guardian restarts, records, and DRIFTs (#274 §12, destructive)" "p274 $OTS_NODE crash" D
     suite dockerd-restart-274 "dockerd restart stops the tenant gracefully; the guardian brings it back in order (#274 §12, destructive)" "p274 $OTS_NODE dockerd" D
   else   # not back within 300 s after the destructive tier = a real finding, never a SKIP (#274 review C6)

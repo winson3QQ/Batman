@@ -7,21 +7,28 @@ mod = ast.parse(src)
 cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "EudHandler")
 fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "handle")
 code = textwrap.dedent(ast.get_source_segment(src, fn))
-g = {"fromstring": fromstring, "ParseError": ParseError, "MAX_PENDING": 1 << 20}
+import socket as _socket, time as _time
+g = {"fromstring": fromstring, "ParseError": ParseError, "MAX_PENDING": 1 << 20, "time": _time, "socket_mod": _socket,
+     "IDENT_MAX_S": 60}
 exec(code, g)
 handle = g["handle"]
 
 class Sock:
-    def __init__(self, chunks): self.c = list(chunks)
-    def recv(self, n): return self.c.pop(0) if self.c else b""
+    def __init__(self, chunks): self.c = list(chunks); self.timeouts = []
+    def recv(self, n):
+        if self.c and self.c[0] == "TIMEOUT":
+            self.c.pop(0); raise _socket.timeout("timed out")
+        return self.c.pop(0) if self.c else b""
+    def settimeout(self, t): self.timeouts.append(t)
 
 class H:
     def __init__(self, chunks):
         self.request = Sock(chunks); self.shutdown = False; self.got = []; self.auth = []
-        self.logger = logging.getLogger("t"); self.client_address = ("x", 0); self.closed = 0
+        self.logger = logging.getLogger("t"); self.client_address = ("x", 0); self.closed = 0; self.waited = 0
     def handle_cot(self, m): self.got.append(m)
     def handle_auth(self, m): self.auth.append(m)
     def close_connection(self): self.closed += 1
+    def _wait_end(self): self.waited += 1
 
 def ev(u, cs=None, decl=True):
     cs = cs or u
@@ -69,4 +76,12 @@ R.append(run("malformed then good", [bad + ev("G1")], ["G1"]))
 R.append(run("unterminated then good", [b'<?xml version="1.0"?><event uid="LOST" ' + ev("G2")], ["G2"]))
 # > 1 MiB without a closing tag is dropped, the stream continues
 R.append(run(">1 MiB pending dropped", [b"<event " + b"x" * 1100000, ev("AFTER")], ["AFTER"]))
+# R12 (review r2 B2-6): a client that sends no complete message by the deadline is closed; the deadline is armed
+# on every recv until the first complete message and cleared (None) after it; the handler always waits for the end
+h = H(["TIMEOUT"]); handle(h)
+c = h.closed == 1 and h.waited == 1 and not h.got and len(h.request.timeouts) == 1 and 0 < h.request.timeouts[0] <= 60
+print(("PASS" if c else "FAIL"), f"R12 silent client: closed at the deadline (timeouts {h.request.timeouts}), end waited"); R.append(c)
+h = H([ev("Q1")[:30], ev("Q1")[30:], ev("Q2")]); handle(h)
+c = [m.split('uid="')[1].split('"')[0] for m in h.got] == ["Q1", "Q2"] and h.request.timeouts[-1] is None and h.request.timeouts.count(None) == 1 and h.waited == 1
+print(("PASS" if c else "FAIL"), f"R12 talking client: deadline armed until the first message, then cleared once (timeouts {h.request.timeouts})"); R.append(c)
 print("ALL PASS" if all(R) else "SOME FAILED")

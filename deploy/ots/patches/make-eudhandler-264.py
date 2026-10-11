@@ -1181,6 +1181,490 @@ rep("""            self.request.shutdown(SHUT_RDWR)
                 pass
 """)
 
+# --- code review round 2 (2026-10-12): session model, end flow, ownership, admission ------------------------
+# Every finding here was reproduced on node 04 (rc wsl.8) before it was changed; register "Code review round 2".
+
+def rep_region(start, end, new):
+    """Replace s[start_marker .. end_marker) (both unique) with new; the end marker stays."""
+    global s
+    assert s.count(start) == 1, f"region start found {s.count(start)}x: {start[:70]!r}"
+    i = s.index(start)
+    j = s.find(end, i + len(start))
+    assert j > i and s.count(end) == 1, f"region end found {s.count(end)}x: {end[:70]!r}"
+    s = s[:i] + new + s[j:]
+
+
+rep('BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10"', 'BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12"')
+rep("import threading  # BATMAN-264\n", "import struct  # BATMAN-264-R12\nimport threading  # BATMAN-264\n")
+
+# R10: the busy guard is gone (r2 B2-4/A2-2/A2-3); R12: admission limits (r2 B2-6, the user's decision 2026-10-12)
+rep_region("SUBSCRIBE_RETRY_S = 15", "\n# BATMAN-264-R7: a new session is refused",
+'''# BATMAN-264-R12 (review r2 B2-6): admission. A client that sends no complete message within IDENT_MAX_S is
+# closed (ATAK/iTAK send their SA as soon as they connect); at most PER_IP_MAX sessions per client address (the
+# mesh routes phones with their own addresses, no NAT: fw4 masquerades on wan only, checked on the nodes).
+IDENT_MAX_S = int(os.environ.get("BATMAN_264_IDENT_MAX_S", "60"))
+PER_IP_MAX = int(os.environ.get("BATMAN_264_PER_IP_MAX", "8"))''')
+
+rep('''error; a name over 255 bytes raises inside pika. Refused names get no subscription (the CoT is still stored).''',
+    '''error; a name over 255 bytes raises inside pika. A refused session gets no subscription and no EUD row, and
+# cot_parser stores nothing from a sender without one (measured on node 04): it is invisible (fail-secure).''')
+rep('''    low = name.lower()
+    if low.startswith("amq.") or low in RESERVED_NAMES:''', '''    if name.lower().startswith("amq.") or name in RESERVED_NAMES:  # queue names are case-sensitive (r2 B2-3)''')
+
+rep('''def _before_fork():''', '''def _sessions_from(ip, port):
+    """BATMAN-264-R12: established TCP connections from ip to our listening port, read from this container's own
+    /proc/net/tcp (the forked sessions share the network namespace; this session's socket is counted). None when
+    unreadable: then only the memory reserve applies (fail-open, logged by the caller)."""
+    try:
+        want = "%08X" % struct.unpack("<I", socket_mod.inet_aton(ip))[0]
+        port_hex = "%04X" % port
+        n = 0
+        for path, rem in (("/proc/net/tcp", want), ("/proc/net/tcp6", "0000000000000000FFFF0000" + want)):
+            try:
+                with open(path) as f:
+                    next(f)
+                    for line in f:
+                        p = line.split()
+                        if p[3] == "01" and p[1].endswith(":" + port_hex) and p[2].split(":")[0] == rem:
+                            n += 1
+            except FileNotFoundError:
+                pass
+        return n
+    except (OSError, ValueError, struct.error, StopIteration):
+        return None
+
+
+def _before_fork():''')
+
+# setup: new per-session state; admission before anything is allocated
+rep('''        self._squat_logged = False
+        self._sub_timer = None
+''', '''        self._squat_logged = False
+        self._sub_binds = []         # BATMAN-264-R6: the bindings this session placed (none: it removes none)
+        self._sub_binds_pending = []
+        self._relay = False          # an RF relay platform (Meshtastic/ICU/DMRCOT): no queues, upstream's disconnect
+        self._close_lock = threading.Lock()   # r2 A2-4: close_connection's test-and-set is atomic
+        self._end_done = threading.Event()    # r2 A2-4/A2-6: set only when THIS session's end is complete
+        self._final_close = False
+        self._end_deadline = None
+''')
+rep('''        if not self._session_allowed():  # BATMAN-264-R7: fail closed before anything is allocated or declared''',
+    '''        if not self._admit():  # BATMAN-264-R7/R12: fail closed before anything is allocated or declared''')
+rep('''    def _session_allowed(self):''', '''    def _admit(self):
+        # BATMAN-264-R12 (review r2 B2-6): about 16 idle sockets used to exhaust the memory reserve and lock every
+        # new phone out. 8089: the TLS handshake (client certificate) now completes before anything is allocated
+        # (upstream's EudHandlerSSL.setup ran it after this setup; its own do_handshake() then is a no-op, probed);
+        # then at most PER_IP_MAX sessions per client address; then the memory reserve (R7).
+        if self.is_ssl:
+            try:
+                self.request.settimeout(10)
+                self.request.do_handshake()
+                self.request.settimeout(None)
+            except Exception as e:
+                self.logger.warning(f"TLS handshake with {self.client_address[0]} failed, nothing allocated: {e}")
+                return False
+        n = _sessions_from(self.client_address[0], getattr(self.server, "server_address", ("", 0))[1])
+        if n is None:
+            self.logger.error("BATMAN-264-R12: /proc/net/tcp unreadable, per-address limit not applied")
+        elif n > PER_IP_MAX:
+            self.logger.error(f"refusing session from {self.client_address[0]}: {n} sessions from this address "
+                              f"(limit {PER_IP_MAX}) (BATMAN-264-R12)")
+            return False
+        return self._session_allowed()
+
+    def _session_allowed(self):''')
+
+# R12 + end flow in handle(): no complete message within IDENT_MAX_S closes; the handler always waits for the end
+rep('''        buf = b""
+        scan = 0
+        while not self.shutdown:
+            try:
+                data = self.request.recv(65536)
+            except Exception as e:''', '''        buf = b""
+        scan = 0
+        first_by = time.monotonic() + IDENT_MAX_S  # BATMAN-264-R12: the first complete message is due by then
+        while not self.shutdown:
+            try:
+                if first_by is not None:
+                    self.request.settimeout(max(0.1, first_by - time.monotonic()))
+                data = self.request.recv(65536)
+            except (socket_mod.timeout, TimeoutError):
+                self.logger.error(f"{self.client_address[0]} sent no complete message within {IDENT_MAX_S} s; "
+                                  f"closing (BATMAN-264-R12)")
+                break
+            except Exception as e:''')
+rep('''                    fromstring(msg)
+''', '''                    fromstring(msg)
+                    if first_by is not None:  # BATMAN-264-R12: a client that talks has no deadline
+                        first_by = None
+                        self.request.settimeout(None)
+''')
+rep('''                buf, scan = b"", 0
+
+        self.close_connection()
+''', '''                buf, scan = b"", 0
+
+        self.close_connection()
+        self._wait_end()  # BATMAN-264 (r2 A2-4): whoever started the end, the handler thread waits for it
+''')
+
+# close_connection: atomic start; the end itself runs on the ioloop (_begin_end); the waiting is _wait_end()
+rep_region("    def close_connection(self):\n", "        if not self.shutdown:\n            self.shutdown = True\n",
+'''    def close_connection(self):
+        # BATMAN-264: starts the session end exactly once. handle_auth, handle(), the ioloop (a send failure in
+        # on_message) and the channel-error rule can all call it, from two threads: the test-and-set is atomic
+        # (review r2 A2-4). All channel work runs on the ioloop (pika is not thread-safe); the HANDLER thread
+        # waits for the end in _wait_end() whoever started it, so the forked child does not os._exit() with the
+        # drain, the disconnect or the unbinds still in flight (r2 A2-4: an ioloop-started end was not waited for).
+        # Upstream published before checking the channel (ChannelWrongStateError, upstream #404).
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        self.logger.info("{} disconnected".format(self.client_address[0]))
+        body = json.dumps(
+            {
+                "uid": self.uid,
+                "cot": None,
+                "disconnected": True,
+                "user_id": self.user.id if self.user else None,
+            }
+        )
+        if self.cached_messages or self._dropped:  # BATMAN-264-R9: never silent
+            self.logger.error(f"session end: {len(self.cached_messages)} cached and {self._dropped} dropped cot not delivered yet")
+        self._end_done.clear()
+        if not self._io(self._begin_end, self.uid, body):
+            self._end_done.set()  # no ioloop: nothing to drain or tell the broker
+
+''')
+rep('''    def _owned_by_user(self, uid, callsign):''', '''    def _wait_end(self):
+        if self.iothread is None or threading.current_thread() is self.iothread:
+            return
+        if not self._end_done.wait(DRAIN_MAX_S + 10):
+            self.logger.error(f"session end of {self.client_address[0]} did not complete within {DRAIN_MAX_S + 10} s")
+
+    # ---- BATMAN-264-R4b/R6: the session end, on the ioloop: drain (bounded), then disconnect/unbind/cleanup ----
+    def _begin_end(self, uid, body):
+        self._end_args = (uid, body)
+        self._end_deadline = self._ioloop.call_later(DRAIN_MAX_S, self._end_timeout)
+        self._try_end()
+
+    def _try_end(self):
+        # called again by every event that can unblock the end: an ack, a reopened channel, unblocked flow
+        # control, the head retry after a return. Cached bodies go first and must be ACKED (r2 A2-6/A-F18: a
+        # returned body re-cached after the close was lost); then the session end proper (_end_session).
+        if self._end_args is None:
+            return
+        ch = self.rabbit_channel
+        if ch is not None and ch.is_open and not self._blocked:
+            if self._retry_timer is None:
+                self._flush_cache()
+            if self.cached_messages or self._unacked:
+                return
+            self._finish_end()
+            return
+        if self.rabbit_connection is not None and self.rabbit_connection.is_open:
+            return  # a channel is reopening (or flow control): on_channel_open / unblocked call us again
+        if not self._loop_dead:
+            self._schedule_reconnect()  # the broker is away: deliver and say goodbye once it is back (bounded)
+            return
+        self._done()
+
+    def _finish_end(self):
+        uid, body = self._end_args
+        self._end_args = None
+        if self._end_deadline is not None:
+            try:
+                self._ioloop.remove_timeout(self._end_deadline)
+            except Exception:
+                pass
+            self._end_deadline = None
+        self._end_session(uid, body)
+
+    def _end_timeout(self):
+        self._end_deadline = None
+        if self._end_args is None:
+            return
+        self.logger.error(f"session end: {len(self.cached_messages)} cached and {len(self._unacked)} unacked cot not "
+                          f"delivered within {DRAIN_MAX_S} s")
+        if self.rabbit_channel is not None and self.rabbit_channel.is_open:
+            self._finish_end()  # disconnect and unbind anyway; the undelivered bodies are counted above
+        else:
+            self._done()
+
+    def _done(self):
+        # the end is complete (or cannot be told to the broker): release the handler, close the connection, which
+        # stops the loop (on_close)
+        if self._end_deadline is not None:
+            try:
+                self._ioloop.remove_timeout(self._end_deadline)
+            except Exception:
+                pass
+            self._end_deadline = None
+        self._end_args = None
+        self._end_done.set()
+        c = self.rabbit_connection
+        try:
+            if c is not None and c.is_open:
+                c.close()
+                return
+        except Exception:
+            pass
+        try:
+            self._ioloop.stop()
+        except Exception:
+            pass
+
+    def _owned_by_user(self, uid, callsign):''')
+
+# R10 ownership: both names against both columns (r2 B2-2: callsign = a user's uid passed the check)
+rep('''                    select(EUD.uid).filter((EUD.uid == uid) | (EUD.callsign == callsign)).filter(EUD.user_id.isnot(None))''',
+    '''                    select(EUD.uid).filter(EUD.uid.in_(names) | EUD.callsign.in_(names)).filter(EUD.user_id.isnot(None))''')
+rep('''        # BATMAN-264-R10: does an EUD row with this uid or callsign belong to an OTS user (an 8089 device)?
+        # True / False, or None when the database did not answer (the caller retries later).
+        try:''', '''        # BATMAN-264-R10: does an EUD row whose uid OR callsign equals this uid OR callsign belong to an OTS user
+        # (an 8089 device)? Both names against both columns: a queue is named by either, so a callsign equal to a
+        # user's uid would consume that user's <uid> queue (review r2 B2-2, reproduced on node 04).
+        # True / False, or None when the database did not answer (the caller retries later).
+        names = [n for n in (uid, callsign) if n]
+        try:''')
+
+# on_channel_open: an ended session does not subscribe again; the end continues from here
+rep('''        if self._need_replay and self._sub_ops:  # BATMAN-264-R4: the subscription of the previous channel''',
+    '''        if self._need_replay and self._sub_ops and not self._closed:  # BATMAN-264-R4: the previous channel's subscription''')
+rep('''        if self._pending_ops:  # BATMAN-264: a subscription requested before the channel was open''',
+    '''        if self._pending_ops and not self._closed:  # BATMAN-264: a subscription requested before the channel was open''')
+rep('''        if self._end_args:   # BATMAN-264-R4b: the client already left; the cache is flushed, now end the session
+            uid, body, binds = self._end_args
+            self._end_args = None
+            self._end_session(uid, body, binds)
+            return
+''', '''        if self._end_args is not None:  # BATMAN-264-R4b: the client already left: deliver, then end
+            self._try_end()
+            return
+''')
+
+# on_channel_close / on_close / ioloop end / open error: only the END sets _end_done (r2 A2-6: the old latch was set
+# by every intermediate close, so the handler stopped waiting while the drain was still running)
+rep('''        self._drained.set()  # BATMAN-264: CloseOk received -> earlier frames were sent
+        if self._closed and not self._end_args:
+            if self.rabbit_connection and self.rabbit_connection.is_open:
+                self.rabbit_connection.close()  # session end: upstream's order (channel, then connection, then loop)
+            return
+''', '''        if self._final_close or (self._closed and self._end_args is None):
+            self._done()  # CloseOk of the end (frames before it were sent), or the end's channel died: complete
+            return
+''')
+rep('''            if not self._closed:
+                self.close_connection()
+            elif self.rabbit_connection and self.rabbit_connection.is_open:
+                self.rabbit_connection.close()
+            return
+''', '''            if not self._closed:
+                self.close_connection()
+            self._done()  # no drain or goodbye over a channel that keeps failing
+            return
+''')
+rep('''        self._drained.set()  # BATMAN-264
+        if self._closed and not self._end_args:
+''', '''        if self._closed and self._end_args is None:
+            self._end_done.set()
+''')
+rep('''            self._loop_dead = True
+            self._drained.set()
+''', '''            self._loop_dead = True
+            self._end_done.set()
+''')
+rep('''        if self._closed and not self._end_args:
+            connection.ioloop.stop()
+            return
+        self._schedule_reconnect()  # BATMAN-264-R4''', '''        if self._closed and self._end_args is None:
+            self._end_done.set()
+            connection.ioloop.stop()
+            return
+        self._schedule_reconnect()  # BATMAN-264-R4''')
+
+# events that can unblock a pending end
+rep('''        elif keys and self.cached_messages and self._retry_timer is None and len(self._unacked) < CACHE_MAX:
+            self._flush_cache()  # bodies held back by the unacked bound may go now
+''', '''        elif keys and self.cached_messages and self._retry_timer is None and len(self._unacked) < CACHE_MAX:
+            self._flush_cache()  # bodies held back by the unacked bound may go now
+        if keys and self._end_args is not None:
+            self._try_end()  # BATMAN-264-R4b: a session end waits for its acks
+''')
+rep('''        self._blocked = False
+        self._flush_cache()
+''', '''        self._blocked = False
+        self._flush_cache()
+        if self._end_args is not None:
+            self._try_end()
+''')
+rep('''            self._retry_n = 0
+            self._flush_cache()      # the queue is back: everything else may go
+''', '''            self._retry_n = 0
+            self._flush_cache()      # the queue is back: everything else may go
+            if self._end_args is not None:
+                self._try_end()
+''')
+
+# R10/R6 subscription: no busy refusal; the bindings placed are recorded for the end
+rep_region("    def _subscribe(self, ops):\n", "    # ---- BATMAN-264-R4/R4b: publisher confirms",
+'''    def _subscribe(self, ops, binds=None):
+        # replay queue_declare / queue_bind / basic_consume recorded by parse_device_info; if the channel is
+        # not open yet (a client often sends its first CoT before AMQP is up), do it in on_channel_open
+        # instead of never (upstream skipped the subscription for good). Once per session (upstream identifies a
+        # session once too: handle_cot runs parse_device_info only while self.uid is unset), replayed on a new
+        # channel after a reconnect.
+        # BATMAN-264-R10 (review r2 B2-4/A2-2/A2-3, reproduced on node 04): no "busy" refusal any more. The
+        # earlier guard left a phone that shares a callsign, or a reconnecting phone, with no downlink at all,
+        # and its end then unbound the live holder. Another consumer on the EUD's queues is this device's stale
+        # session (R6 reaps it in ~2 min) or a second device with the same callsign; both are subscribed, as
+        # upstream did (round-robin on a shared queue). The reconnecting phone is subscribed at once and the
+        # stale session's end sees it live (no disconnect, bindings kept). Squatting on an AUTHENTICATED user's
+        # names is refused before this (_owned_by_user); an unauthenticated 8088 name has no owner to protect.
+        if binds is not None:
+            self._sub_binds_pending = list(binds)
+        self._sub_ops = ops  # BATMAN-264-R4: replayed on the channel after a reconnect
+        if (self._subscribed and not self._need_replay) or self._closed:
+            return
+        if not (self.rabbit_channel and self.rabbit_channel.is_open):
+            self._pending_ops = ops
+            return
+        ch = self.rabbit_channel
+        replay = self._need_replay
+
+        def declared(frame):
+            m = getattr(frame, "method", None)
+            n = getattr(m, "consumer_count", 0)
+            if n:
+                self.logger.info(f"{self.client_address[0]}: queue {getattr(m, 'queue', '?')} shared with {n} other "
+                                 f"consumer(s) (a stale session of this EUD, or another device with this callsign)")
+
+        try:
+            for name, a, k in ops:
+                if name == "queue_declare":
+                    ch.queue_declare(*a, callback=declared, **k)
+                else:
+                    getattr(ch, name)(*a, **k)
+        except Exception as e:
+            self.logger.error(f"subscription failed ({e}); the channel close path handles it")
+            return
+        self._subscribed = True
+        self._need_replay = False
+        self._sub_binds = list(self._sub_binds_pending)
+        self.logger.info(f"subscribed {self.uid}/{self.callsign} for {self.client_address[0]}{' (replay)' if replay else ''}")
+
+''')
+rep('''                if _ch.ops:
+                    self._io(self._subscribe, _ch.ops)''', '''                if _ch.ops:
+                    self._io(self._subscribe, _ch.ops, list(self.bound_queues))''')
+rep('''                if (
+                    platform != "OpenTAK ICU"
+                    and platform != "Meshtastic"
+                    and platform != "DMRCOT"
+                ):
+''', '''                self._relay = platform in ("OpenTAK ICU", "Meshtastic", "DMRCOT")  # BATMAN-264: no queues of its own
+                if (
+                    platform != "OpenTAK ICU"
+                    and platform != "Meshtastic"
+                    and platform != "DMRCOT"
+                ):
+''')
+
+# R6 session end: only what this session placed; "last" judged per queue; F3 for 8088 sessions only
+rep_region("    def _end_session(self, uid, body, binds):\n", "    def on_message(self, unused_channel, basic_deliver, properties, body):",
+'''    def _end_session(self, uid, body):
+        # ioloop thread. cot_parser's send_disconnect_cot (cot_parser.py:944-1033) unbinds <uid> from EVERY group
+        # and mission on a disconnect message, whoever else still holds that queue, and upstream's close also
+        # unbound the dms/groups/missions bindings unconditionally: when a stale session of an EUD ended, the
+        # EUD's live session (same uid, reconnected phone) lost all its bindings (measured: 10/10 -> 0/10).
+        # Review round 2 (all reproduced on node 04, rc wsl.8):
+        #  - B2-1/A2-2c: a session that never subscribed (a refused name, a refused owner, a relay) published a
+        #    disconnect and unbound the recorded bindings, i.e. the LIVE session's (0/10). It placed nothing, so it
+        #    removes nothing and tells cot_parser nothing about that uid (a relay / never-identified session keeps
+        #    upstream's disconnect: it has no queues).
+        #  - "last" is judged per queue: the <uid> queue's consumers decide the disconnect and its bindings; the
+        #    <callsign> queue's binding is removed only when nobody else consumes it (a second device with the
+        #    same callsign keeps its DMs).
+        #  - A2-1 (cot_parser crash loop, reproduced under load): the queues of an AUTHENTICATED (8089) session are
+        #    never deleted: cot_parser's 8089 disconnect branch BINDS <uid> to the user's groups
+        #    (cot_parser.py:989) and a deleted queue made that a 404, a channel close, an exception out of
+        #    basic_nack and a container exit, with the unacked disconnect redelivered first: a crash loop. F3's
+        #    cleanup applies to 8088 sessions only (no user: cot_parser's 8088 branch does not bind). Their
+        #    orphans are bounded by the enrolled devices.
+        ch = self.rabbit_channel
+        for tag in list(getattr(ch, "consumer_tags", []) or []):
+            try:
+                ch.basic_cancel(tag)
+            except Exception as e:
+                self.logger.error(f"basic_cancel failed: {e}")
+
+        binds = list(self._sub_binds)
+        authenticated = self.user is not None
+
+        def close():
+            self._final_close = True
+            ch.close()  # on_channel_close (CloseOk) -> _done()
+
+        def publish_disconnect():
+            ch.basic_publish(
+                exchange="cot_parser",
+                body=body,
+                routing_key="cot_parser",
+                properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+            )
+
+        if not binds:
+            try:
+                if self._relay or not uid:
+                    publish_disconnect()  # upstream's path; cot_parser ignores a uid-less one
+            finally:
+                close()
+            return
+
+        names = [uid] + ([self.callsign] if self.callsign and self.callsign != uid else [])
+        seen = {}
+
+        def finish():
+            try:
+                cu, mu = seen[uid]
+                cc, mc = seen.get(self.callsign, (0, 0)) if len(names) == 2 else (cu, mu)
+                if cu:
+                    self.logger.info(f"another session of {uid} is live: no disconnect, bindings kept")
+                    return
+                publish_disconnect()
+                keep_cs = len(names) == 2 and cc > 0
+                self.unbind_rabbitmq_queues(uid, [b for b in binds if not (keep_cs and b["queue"] == self.callsign)])
+                if authenticated:
+                    return  # A2-1: cot_parser binds <uid> on this disconnect; the queues stay
+                # F3, 8088 only: idle empty queues go, the <uid> queue LAST (a broadcast landing in it between the
+                # check and the delete is refused with 406, which closes the channel and drops every later delete)
+                if len(names) == 2 and not cc and not mc:
+                    ch.queue_delete(queue=self.callsign, if_unused=True, if_empty=True)
+                if not mu:
+                    ch.queue_delete(queue=uid, if_unused=True, if_empty=True)
+            finally:
+                close()
+
+        def declared(frame):
+            m = getattr(frame, "method", None)
+            seen[names[len(seen)]] = (getattr(m, "consumer_count", 0), getattr(m, "message_count", 0))
+            if len(seen) < len(names):
+                ch.queue_declare(queue=names[len(seen)], passive=True, callback=declared)
+            else:
+                finish()
+
+        try:
+            ch.queue_declare(queue=names[0], passive=True, callback=declared)
+        except Exception as e:
+            self.logger.error(f"passive declare of {uid} failed: {e}")
+            close()
+
+''')
+rep('''        self._drained = threading.Event()
+''', '')
+assert "_drained" not in s and "_sub_timer" not in s and "SUBSCRIBE_RETRY_S" not in s, "round-2 leftovers"
+
 # --- license notice (GPL-3.0-or-later §5a: modified files carry a prominent dated notice) ----------
 assert s.startswith("import base64\n"), "upstream file no longer starts with 'import base64'"
 s = ("# SPDX-License-Identifier: GPL-3.0-or-later\n"

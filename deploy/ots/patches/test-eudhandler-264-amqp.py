@@ -12,7 +12,8 @@ mod = ast.parse(src)
 cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "EudHandler")
 WANT = ["_publish_on_ioloop", "_on_decl_channel_open", "_on_decl_channel_close", "_declare_cot_parser", "_on_blocked",
         "_on_unblocked", "_cache", "_flush_cache", "_on_return", "_schedule_retry", "_retry_head", "_after_head",
-        "_on_confirm", "_requeue_unacked", "_schedule_reconnect", "_reconnect", "on_close", "on_open_error"]
+        "_on_confirm", "_requeue_unacked", "_schedule_reconnect", "_reconnect", "on_close", "on_open_error",
+        "_begin_end", "_try_end", "_finish_end", "_end_timeout", "_done", "_wait_end", "close_connection", "_admit"]
 
 
 class FakeProps:
@@ -25,7 +26,8 @@ class FakePika:
 
 import random as _random
 g = {"pika": FakePika, "CACHE_MAX": 5, "CACHE_MAX_BYTES": 10 ** 9, "random": _random, "DRAIN_MAX_S": 60, "Channel": object,
-     "SUBSCRIBE_RETRY_S": 15, "_prewarm_parent": lambda: None, "SHUT_RDWR": 2}
+     "_prewarm_parent": lambda: None, "SHUT_RDWR": 2, "json": __import__("json"), "threading": _threading,
+     "PER_IP_MAX": 8}
 for name in WANT:
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
     exec(textwrap.dedent(ast.get_source_segment(src, fn)), g)
@@ -68,13 +70,16 @@ class H:
         self._head_returned = False; self._closed = False
         self._pub_seq = 0; self._unacked = {}; self._returned = set(); self._need_replay = False; self._sub_ops = None
         self._chan_errors = []; self._reconnect_n = 0; self._reconnect_timer = None; self._ioloop = self.rabbit_connection.ioloop
-        self._drained = _threading.Event(); self.client_address = ("10.0.0.9", 1)
+        self._end_done = _threading.Event(); self.client_address = ("10.0.0.9", 1)
         self.on_connection_open = lambda c: None
         self.on_channel_open = lambda c: None
         self._subscribed = False; self._squat_logged = False
         self.callsign = "CS"
-        self._sub_timer = None; self._ret_n = 0
+        self._ret_n = 0
         self._end_args = None; self._loop_dead = False
+        self._close_lock = _threading.Lock(); self._final_close = False; self._end_deadline = None
+        self._sub_binds = []; self._sub_binds_pending = []; self._relay = False; self.user = None
+        self.iothread = None; self.shutdown = False; self._pending_ops = None
 
 
 for name in WANT:
@@ -83,6 +88,7 @@ for name in WANT:
 P = 0; F = 0
 def ok(c, msg):
     global P, F
+    c = bool(c)
     P += c; F += (not c); print(("PASS" if c else "FAIL"), msg)
 
 # 1 open channel: cot_parser publish is mandatory with uid/type headers; firehose is plain
@@ -186,37 +192,51 @@ else:
 
 
 class EndChan(Chan):
-    def __init__(self, consumers_left, messages=0):
-        super().__init__(); self.consumer_tags = ["ct1", "ct2"]; self.cancelled = []; self.closed = False; self.left = consumers_left; self.passive = []; self.deleted = []; self.messages = messages
+    # per-queue (consumers, messages) as the broker's passive DeclareOk reports them AFTER our own cancels
+    def __init__(self, counts=None):
+        super().__init__(); self.consumer_tags = ["ct1", "ct2"]; self.cancelled = []; self.closed = False; self.counts = counts or {}; self.passive = []; self.deleted = []
     def basic_cancel(self, tag): self.cancelled.append(tag)
     def queue_declare(self, queue, passive=False, callback=None, **k):
         self.passive.append((queue, passive))
         class M: pass
-        m = M(); m.method = M(); m.method.consumer_count = self.left; m.method.message_count = self.messages; m.method.queue = queue; callback(m)
+        c, n = self.counts.get(queue, (0, 0))
+        m = M(); m.method = M(); m.method.consumer_count = c; m.method.message_count = n; m.method.queue = queue; callback(m)
     def queue_delete(self, queue, **k): self.deleted.append((queue, k))
     def close(self): self.closed = True
 
 
+BU = {"exchange": "dms", "routing_key": "U", "queue": "U"}; BC = {"exchange": "dms", "routing_key": "CS", "queue": "CS"}
+BG = {"exchange": "groups", "routing_key": "__ANON__.OUT", "queue": "U"}
 unbound = []
 H.unbind_rabbitmq_queues = lambda self, uid, binds: unbound.append((uid, binds))
-h = H(); h.callsign = "CS"; h._subscribed = True; h.rabbit_channel = EndChan(0); h._end_session("U", "disc", [{"q": 1}])
+def endh(counts=None, binds=(BU, BC, BG), callsign="CS", user=None, relay=False):
+    unbound.clear(); h = H(); h.callsign = callsign; h._sub_binds = list(binds); h.user = user; h._relay = relay
+    h.rabbit_channel = EndChan(counts); return h
+h = endh(); h._end_session("U", "disc")
 ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and h.rabbit_channel.passive == [("U", True), ("CS", True)] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"]
-   and unbound == [("U", [{"q": 1}])] and h.rabbit_channel.closed, "9 last session of U: consumers cancelled, both queues checked, disconnect published, unbound, channel closed")
+   and unbound == [("U", [BU, BC, BG])] and h.rabbit_channel.closed and h._final_close, "9 last session of U (8088): cancelled, both checked, disconnect, all its bindings unbound, final close")
 ok([d[0] for d in h.rabbit_channel.deleted] == ["CS", "U"] and all(d[1] == {"if_unused": True, "if_empty": True} for d in h.rabbit_channel.deleted),
-   "9 (F3) idle empty queues deleted (if_unused, if_empty), the <uid> queue LAST: a broadcast landing in it refuses its delete and closes the channel, which must not cost the callsign queue")
-unbound.clear(); h = H(); h.callsign = "CS"; h._subscribed = True; h.rabbit_channel = EndChan(0, messages=3); h._end_session("U", "disc", [])
-ok(not h.rabbit_channel.deleted and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and h.rabbit_channel.closed, "9 (F3) queues with messages are kept")
-unbound.clear(); h = H(); h.callsign = "U"; h._subscribed = True; h.rabbit_channel = EndChan(0); h._end_session("U", "disc", [])
+   "9 (F3) idle empty queues deleted (if_unused, if_empty), the <uid> queue LAST (a 406 on it must not cost the callsign queue)")
+h = endh({"U": (0, 3)}); h._end_session("U", "disc")
+ok([d[0] for d in h.rabbit_channel.deleted] == ["CS"] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"], "9 (F3) the <uid> queue holding messages is kept, the empty callsign queue goes")
+h = endh(callsign="U", binds=(BU, BG)); h._end_session("U", "disc")
 ok(h.rabbit_channel.passive == [("U", True)] and [d[0] for d in h.rabbit_channel.deleted] == ["U"], "9 callsign == uid: one queue, checked and deleted once")
-unbound.clear(); h = H(); h.callsign = "CS"; h.rabbit_channel = EndChan(5); h._end_session("U", "disc", [])
-ok(not h.rabbit_channel.passive and not h.rabbit_channel.deleted and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and h.rabbit_channel.closed,
-   "9 never subscribed (relay platform / refused name): no queue check, no delete, disconnect published (upstream path)")
-unbound.clear(); h = H(); h._subscribed = True; h.rabbit_channel = EndChan(1); h._end_session("U", "disc", [{"q": 1}])
-ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and not h.rabbit_channel.pubs and not unbound and h.rabbit_channel.closed,
-   "9 another consumer of U is live: no disconnect, no unbind, channel still closed")
-unbound.clear(); h = H(); h.rabbit_channel = EndChan(5); h._end_session(None, "disc", [])
-ok(not h.rabbit_channel.passive and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and unbound == [(None, [])] and h.rabbit_channel.closed,
-   "9 never identified (uid None): upstream path, no declare")
+h = endh(binds=()); h._end_session("U", "disc")
+ok(not h.rabbit_channel.passive and not h.rabbit_channel.deleted and not h.rabbit_channel.pubs and not unbound and h.rabbit_channel.closed,
+   "9 (r2 B2-1) never subscribed (refused name/owner): no check, no disconnect, NO unbind of the live session's bindings, no delete")
+h = endh(binds=(), relay=True); h._end_session("U", "disc")
+ok([p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and not unbound and not h.rabbit_channel.passive, "9 relay platform (no queues): upstream's disconnect, nothing unbound")
+h = endh(binds=()); h._end_session(None, "disc")
+ok([p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and not unbound and h.rabbit_channel.closed, "9 never identified (uid None): upstream's disconnect, no declare")
+h = endh({"U": (1, 0)}); h._end_session("U", "disc")
+ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and not h.rabbit_channel.pubs and not unbound and not h.rabbit_channel.deleted and h.rabbit_channel.closed,
+   "9 (r2 A2-3) another consumer of U is live (the reconnected phone): no disconnect, no unbind, no delete")
+h = endh({"CS": (1, 0)}); h._end_session("U", "disc")
+ok([p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and unbound == [("U", [BU, BG])] and [d[0] for d in h.rabbit_channel.deleted] == ["U"],
+   "9 (r2 B2-4) another device shares the callsign: disconnect for U, U's bindings unbound, the callsign binding and queue kept")
+h = endh(user=object()); h._end_session("U", "disc")
+ok([p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and unbound and not h.rabbit_channel.deleted,
+   "9 (r2 A2-1) an authenticated (8089) session's queues are never deleted (cot_parser binds <uid> on its disconnect)")
 # 10 R4b publisher confirms: every publish on the channel is numbered; cot_parser bodies are kept until their ack;
 #    multiple-ack, nack -> re-cached at the head, a returned message's ack is not a delivery
 class Fr:
@@ -275,21 +295,44 @@ for fname in ("on_channel_close",):
     exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); setattr(H, fname, g[fname])
 import time as _time; g["time"] = _time
 ended = []
+real_close_connection = H.close_connection
 H.close_connection = lambda self: ended.append(1)
 h = H(); h.rabbit_connection = FakeConn2(); h.rabbit_connection.is_open = True; h._ioloop = h.rabbit_connection.ioloop; h.callsign = "C"
 h._sub_ops = [("queue_declare", (), {"queue": "amq.x"})]
 h.on_channel_close(h.rabbit_channel, "403"); h.on_channel_close(h.rabbit_channel, "403")
 ok(len(h.rabbit_connection.opened) == 2 and h._need_replay and not ended, "13 two channel errors: channel reopened twice, subscription to be replayed")
 h.on_channel_close(h.rabbit_channel, "403")
-ok(ended == [1] and h._sub_ops is None and len(h.rabbit_connection.opened) == 2, "13 third error within 60 s: session ended, no further reopen")
-# 14 R4b drain: the client leaves while the broker is away -> reconnect kept alive for the cache; after the channel
-#    opens and flushes, the session ends; a closing session with nothing pending stops at once
+ok(ended == [1] and h._sub_ops is None and len(h.rabbit_connection.opened) == 2 and h._end_done.is_set(), "13 third error within 60 s: session ended at once (end complete), no further reopen")
+# 14 R4b/R6 end flow (review r2 A2-4/A2-6/A-F18): the end waits for its bodies to be ACKED, survives intermediate
+#    channel/connection events, and only the end itself releases the handler
+ends = []
+g["CACHE_MAX_BYTES"] = 10 ** 9   # case 7 lowered it
+H._end_session = lambda self, uid, body: ends.append((uid, body))
 h = H(chan_open=False); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h._closed = True
-h._cache("left-behind", None); h._end_args = ("U", "disc", []); h._schedule_reconnect()
-ok(h._reconnect_timer is not None, "14 closing with a cached body: reconnect still scheduled (bounded drain)")
-h._ioloop.fire(); ok(isinstance(h.rabbit_connection, FakeConn2) and h.rabbit_connection.args[1].get("custom_ioloop") is h._ioloop, "14 reconnect runs for the drain")
+h._cache("left-behind", None); h._begin_end("U", "disc")
+ok(h._reconnect_timer is not None and h._end_deadline is not None and not ends and not h._end_done.is_set(),
+   "14 broker away at the end with a cached body: reconnect scheduled, deadline armed, handler not released")
+h.on_channel_close(None, "x")   # an intermediate close must not release the handler (the old latch did)
+ok(not h._end_done.is_set() and not ends, "14 (r2 A2-6) an intermediate channel close does not complete the end")
+h.rabbit_channel = Chan(); h._try_end()
+ok([p["body"] for p in h.rabbit_channel.pubs] == ["left-behind"] and not ends and bool(h._unacked), "14 channel back: the body is published, the end waits for its ack")
+h._on_return(None, None, FakeProps(headers={}), b"left-behind")
+h._on_confirm(Fr("Basic.Ack", 1))
+ok(not ends and h.cached_messages and h._retry_timer is not None, "14 (A-F18) returned during the end: back in the cache, the end still waits")
+h._ioloop.timers = [t for t in h._ioloop.timers if t[1] == h._retry_head]   # keep only the head retry
+h._ioloop.fire(); h._on_confirm(Fr("Basic.Ack", 2)); h._ioloop.fire()
+ok(ends == [("U", "disc")] and h._end_deadline is None, "14 head retried and acked: the end proceeds, the deadline is cancelled")
+ends.clear(); h = H(); h._closed = True; h._begin_end("U", "disc")
+ok(ends == [("U", "disc")], "14 nothing pending and an open channel: the end proceeds at once")
+ends.clear(); h = H(); h._closed = True; h._cache("stuck", None); h._unacked = {1: ("x", None)}; h._begin_end("U", "disc")
+dl = [t for t in h._ioloop.timers if t[1] == h._end_timeout]; ok(len(dl) == 1 and dl[0][0] == 60 and not ends, "14 unacked at the end: deadline DRAIN_MAX_S (60 s)")
+h._ioloop.timers.remove(dl[0]); h._end_timeout()
+ok(ends == [("U", "disc")], "14 deadline: disconnect/unbind anyway (the undelivered bodies are logged)")
 h2 = H(chan_open=False); h2.rabbit_connection = FakeConn2(); h2._ioloop = h2.rabbit_connection.ioloop; h2._closed = True
-h2._schedule_reconnect(); ok(h2._reconnect_timer is None, "14 closing with nothing pending: no reconnect")
+h2._schedule_reconnect(); ok(h2._reconnect_timer is None, "14 closing with nothing pending and no end in progress: no reconnect")
+h = H(); h._loop_dead = True; h.rabbit_channel = None; h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop
+h._ioloop.stop = lambda: None; h._end_args = ("U", "disc"); h._try_end()
+ok(h._end_done.is_set() and h._end_args is None, "14 loop dead: the end completes without the broker")
 # 15 R10: client-supplied uid/callsign must be usable, non-system queue names
 fn = next(n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == "_valid_name")
 exec(textwrap.dedent(ast.get_source_segment(src, fn)), g)
@@ -297,7 +340,8 @@ g["RESERVED_NAMES"] = frozenset({"cot_parser", "dms", "chatrooms", "missions", "
 v = g["_valid_name"]
 ok(v("ANDROID-abc123") and v("Alpha 1") and v("中文呼號") and v("a" * 255), "15 ordinary uids/callsigns (incl. UTF-8, 255 ASCII bytes) accepted")
 ok(not v("") and not v(None) and not v("a" * 256) and not v("中" * 86), "15 empty / None / >255 bytes refused")
-ok(not v("cot_parser") and not v("COT_PARSER") and not v("firehose") and not v("groups") and not v("flask-socketio"), "15 system queue/exchange names refused (any case)")
+ok(not v("cot_parser") and not v("firehose") and not v("groups") and not v("flask-socketio"), "15 system queue/exchange names refused")
+ok(v("COT_PARSER") and v("Missions"), "15 (r2 B2-3) other spellings are different queues (names are case-sensitive): a callsign 'Missions' is accepted")
 ok(not v("amq.x") and not v("AMQ.gen-1") and not v("evil" + chr(0)) and not v("a" + chr(10) + "b"), "15 amq.* prefix and non-printable characters refused")
 # 16 R10: the subscription is made once per session, and not while another consumer holds the EUD's queue
 fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_subscribe")
@@ -314,16 +358,17 @@ class SubChan(Chan):
     def basic_consume(self, **k): self.ops.append(("basic_consume", k["queue"]))
 OPS = [("queue_declare", (), {"queue": "CS"}), ("queue_declare", (), {"queue": "U"}), ("queue_bind", (), {"exchange": "dms", "queue": "U", "routing_key": "U"}),
        ("basic_consume", (), {"queue": "CS", "on_message_callback": None, "auto_ack": True}), ("basic_consume", (), {"queue": "U", "on_message_callback": None, "auto_ack": True})]
-h = H(); h.rabbit_channel = SubChan({}); h.client_address = ("10.0.0.9", 1); h._subscribe(OPS)
-ok([o[0] for o in h.rabbit_channel.ops] == ["queue_declare", "queue_declare", "queue_bind", "basic_consume", "basic_consume"] and h._subscribed, "16 nobody on the queues: declare, bind, consume")
+FULL = ["queue_declare", "queue_declare", "queue_bind", "basic_consume", "basic_consume"]
+h = H(); h.rabbit_channel = SubChan({}); h.client_address = ("10.0.0.9", 1); h._subscribe(OPS, [BU, BC])
+ok([o[0] for o in h.rabbit_channel.ops] == FULL and h._subscribed and h._sub_binds == [BU, BC], "16 declare, bind, consume; the placed bindings recorded for the end")
 h._subscribe(OPS); ok(len(h.rabbit_channel.ops) == 5, "16 a second identifying CoT does not subscribe again (no consumer accumulation)")
-h = H(); h.rabbit_channel = SubChan({"U": 1}); h.client_address = ("10.0.0.9", 1); h._subscribe(OPS)
-ok([o[0] for o in h.rabbit_channel.ops] == ["queue_declare", "queue_declare"] and not h._subscribed and h._squat_logged and h._sub_timer is not None and h._ioloop.timers[-1][0] == 15,
-   "16 another consumer on U: declared only, no bind/consume, logged once, retry timer 15 s")
-h._ioloop.fire(); ok(len(h.rabbit_channel.ops) == 4 and not h._subscribed and h._sub_timer is not None, "16 the timer retries while the other consumer is there, and re-arms")
-h.rabbit_channel.consumers = {}; h._ioloop.fire(); ok(h._subscribed and h._sub_timer is None and h.rabbit_channel.ops[-1] == ("basic_consume", "U"), "16 the other consumer gone: the timer subscribes, no more timer")
-h = H(); h.rabbit_channel = SubChan({"U": 1}); h.client_address = ("10.0.0.9", 1); h._need_replay = True; h._subscribe(OPS)
-ok(h._subscribed and not h._need_replay and h.rabbit_channel.ops[-1] == ("basic_consume", "U"), "16 replay after a reconnect ignores the consumer count (our own old consumer)")
+h = H(); h.rabbit_channel = SubChan({"U": 1, "CS": 1}); h.client_address = ("10.0.0.9", 1); h._subscribe(OPS, [BU, BC])
+ok([o[0] for o in h.rabbit_channel.ops] == FULL and h._subscribed and not h._ioloop.timers,
+   "16 (r2 B2-4/A2-3) another consumer on U/CS (stale session, same callsign): subscribed at once, shared as upstream, no retry timer")
+h = H(); h.rabbit_channel = SubChan({}); h._closed = True; h._subscribe(OPS, [BU])
+ok(not h.rabbit_channel.ops and not h._subscribed and not h._sub_binds, "16 an ended session does not subscribe")
+h = H(); h.rabbit_channel = Chan(is_open=False); h._subscribe(OPS, [BU]); ok(h._pending_ops == OPS and not h._sub_binds, "16 channel not open yet: deferred, nothing recorded as placed")
+h.rabbit_channel = SubChan({}); h._subscribe(h._pending_ops); ok(h._subscribed and h._sub_binds == [BU], "16 deferred subscription placed later with the bindings given first")
 # 17 R4: after a reconnect the subscription really is replayed through on_channel_open (review A-F1 / B-2)
 fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "on_channel_open")
 exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); setattr(H, "on_channel_open", g["on_channel_open"])
@@ -350,4 +395,59 @@ ok([b for b, m in h.cached_messages] == ["n0", "n1", "n2"], "19 a multiple nack 
 # 20 R7 cap reads anonymous memory, not memory.current (review B-6): stubbed through _cg_mem in case 8 already;
 #    here only that the real reader never raises
 r = real_cg_mem(); ok(r == (None, None) or isinstance(r[0], int), "20 _cg_mem (memory.stat anon) never raises")
+# 21 R12 per-address count from this container's /proc/net/tcp(6): ESTABLISHED to our port from that address only
+fn = next(n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == "_sessions_from")
+exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); g["struct"] = __import__("struct"); g["socket_mod"] = _socket
+import io as _io
+HDR = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+def row(l, r, st): return f"   0: {l} {r} {st} 00000000:00000000 00:00000000 00000000     0        0 1\n"
+TCP = HDR + row("0C0014AC:1F98", "20182A0A:C350", "01") + row("0C0014AC:1F98", "20182A0A:C351", "01") + row("0C0014AC:1F98", "20182A0A:C352", "06") \
+    + row("0C0014AC:1F99", "20182A0A:C353", "01") + row("0C0014AC:1F98", "0A0F290A:C354", "01") + row("00000000:1F98", "00000000:0000", "0A")
+TCP6 = HDR + row("00000000000000000000000000000000:1F98", "0000000000000000FFFF000020182A0A:C355", "01")
+files = {"/proc/net/tcp": TCP, "/proc/net/tcp6": TCP6}
+g["open"] = lambda p, *a, **k: _io.StringIO(files[p]) if p in files else (_ for _ in ()).throw(FileNotFoundError(p))
+ok(g["_sessions_from"]("10.42.24.32", 8088) == 3, "21 10.42.24.32 -> :8088: 2 established (tcp) + 1 (v4-mapped tcp6); TIME_WAIT, other port, other host, listener not counted")
+ok(g["_sessions_from"]("10.41.15.10", 8088) == 1 and g["_sessions_from"]("10.9.9.9", 8088) == 0, "21 other addresses counted separately")
+files.clear(); ok(g["_sessions_from"]("10.42.24.32", 8088) == 0, "21 no /proc files: 0 (both absent)")
+g["open"] = lambda *a, **k: (_ for _ in ()).throw(PermissionError("x")); ok(g["_sessions_from"]("10.42.24.32", 8088) is None, "21 unreadable: None (the caller logs, the memory reserve still applies)")
+ok(g["_sessions_from"]("not-an-ip", 8088) is None, "21 a non-IPv4 client address: None, never raises"); del g["open"]
+# 22 R12 admission: the TLS handshake comes BEFORE any allocation; per-address limit; then the memory reserve
+class TLS:
+    def __init__(self, fail=False): self.fail = fail; self.calls = []
+    def settimeout(self, t): self.calls.append(("timeout", t))
+    def do_handshake(self):
+        self.calls.append(("handshake",))
+        if self.fail: raise OSError("bad certificate")
+class Srv: server_address = ("0.0.0.0", 8089)
+order = []
+H._session_allowed = lambda self: order.append("mem") or True
+g["_sessions_from"] = lambda ip, port: order.append(("count", ip, port)) or 1
+h = H(); h.is_ssl = True; h.request = TLS(); h.server = Srv(); h.client_address = ("10.42.24.32", 5)
+ok(h._admit() is True and h.request.calls == [("timeout", 10), ("handshake",), ("timeout", None)] and order == [("count", "10.42.24.32", 8089), "mem"],
+   "22 8089: handshake (10 s timeout) first, then the per-address count, then the memory reserve")
+order.clear(); h = H(); h.is_ssl = True; h.request = TLS(fail=True); h.server = Srv()
+ok(h._admit() is False and not order, "22 8089 handshake fails: refused, nothing counted or allocated")
+order.clear(); g["_sessions_from"] = lambda ip, port: 9; h = H(); h.is_ssl = False; h.request = TLS(); h.server = Srv()
+ok(h._admit() is False and not order and not h.request.calls, "22 8088 with 9 sessions from the address (limit 8): refused before the memory check, no handshake")
+g["_sessions_from"] = lambda ip, port: 8; ok(h._admit() is True and order == ["mem"], "22 exactly 8: allowed (strict greater-than)")
+order.clear(); g["_sessions_from"] = lambda ip, port: None; ok(h._admit() is True and order == ["mem"], "22 count unreadable: only the memory reserve applies (logged)")
+# 23 close_connection starts the end once, atomically, from either thread; _wait_end blocks until the END completes
+H.close_connection = real_close_connection
+queued = []
+H._io = lambda self, fn, *a: queued.append((fn.__name__, a)) or True
+class Req:
+    def __init__(self): self.n = 0
+    def shutdown(self, how): self.n += 1
+    def close(self): self.n += 1
+h = H(); h.request = Req(); h.uid = "U"
+ts = [_threading.Thread(target=h.close_connection) for _ in range(8)]
+[t.start() for t in ts]; [t.join() for t in ts]
+ok(queued == [("_begin_end", ("U", '{"uid": "U", "cot": null, "disconnected": true, "user_id": null}'))] and h.shutdown and not h._end_done.is_set(),
+   "23 (r2 A2-4) eight concurrent close_connection calls: the end is started exactly once, socket shut, end not yet complete")
+h.iothread = _threading.Thread(target=lambda: None); done = []
+w = _threading.Thread(target=lambda: (h._wait_end(), done.append(1))); w.start(); w.join(0.3)
+ok(not done, "23 the handler thread waits while the end is in progress")
+h._end_done.set(); w.join(2); ok(done == [1], "23 ... and is released when the end completes")
+H._io = lambda self, fn, *a: False; h = H(); h.request = Req(); h.close_connection()
+ok(h._end_done.is_set(), "23 no ioloop: the end is complete at once (nothing to drain)")
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)
