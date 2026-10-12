@@ -2829,6 +2829,265 @@ rep('''                if cu:
 # the end's declare is not passive since r5: its log text said so (review r6 B6-7)
 rep('''            self.logger.error(f"passive declare of {uid} failed: {e}")''', '''            self.logger.error(f"declare of {uid} at the end failed: {e}")''')
 
+# --- code review round 7 (2026-10-12): R17 per the user's decision; admission threads; TLS-safe shutdown ----------
+# Reviewers A7/B7. The user's decision (2026-10-12): when the same device opens a new session, its previous session
+# stops its downlink at once but keeps reading its uplink, and ends after SUPERSEDE_QUIET_S without any data (round 6
+# ended it at once: a live older connection was killed, and reports the phone's TCP still retransmitted on it were
+# lost). Admission: a ping or <auth> is answered without the admission (B7-1: one 20 s timer thread per message).
+
+rep('''FI_FILE = "/tmp/batman-264-fi"
+''', '''FI_FILE = "/tmp/batman-264-fi"
+# BATMAN-264-R17 (r7, the user's decision 2026-10-12): a superseded session ends after this long without any data
+SUPERSEDE_QUIET_S = int(os.environ.get("BATMAN_264_SUPERSEDE_QUIET_S", "20"))
+''')
+rep('''        self._fi_done = False        # r6 B6-2: fault injection fires once per session
+''', '''        self._fi_done = False        # r6 B6-2: fault injection fires once per session
+        self._last_rx = time.monotonic()  # R17 (r7): when the client last sent anything
+        self._my_start = None        # R17 (r7): this process's start ticks (registry order)
+        self._admit_timer = None     # r7 A7-5/B7-1: the one ADMIT_HOLD_S timer of the current hold
+''')
+rep('''            buf += data
+            while not self.shutdown:
+''', '''            buf += data
+            self._last_rx = time.monotonic()  # BATMAN-264-R17 (r7): a superseded session ends once quiet
+            while not self.shutdown:
+''')
+rep('''                if self._admit_pending:
+                    # BATMAN-264-R12/R16: admissions are serialized from here until the subscription is placed
+                    self._admit_pending = False
+                    self._take_admit()
+                    if not self._session_allowed():
+                        self._release_admit()
+                        self._refused = True
+                        break
+                    self._open_broker()  # BATMAN-264-R16 (r6 A6-1): allocated under the lock
+''', '''                ping = tag != b"</event>" or b'type="t-x-c-t"' in chunk[:600]
+                if self._admit_pending and not ping:
+                    # BATMAN-264-R12/R16: admissions are serialized from here until the subscription is placed. A ping
+                    # or an <auth> is answered without it (review r7 B7-1: each one took the lock and started a 20 s
+                    # timer thread; 450 small messages = 451 threads, and the eud containers' pids.max is 512)
+                    self._admit_pending = False
+                    self._take_admit()
+                    if not self._session_allowed() or not self._open_broker():  # r6 A6-1: allocated under the lock
+                        self._release_admit()
+                        self._refused = True
+                        break
+''')
+rep('''                if not self._sub_wanted:
+                    # BATMAN-264-R12/R16: this session's first work is done. A session that asked for its subscription
+                    # keeps the lock until _subscribe has placed it, so the next admission's memory check sees what
+                    # this one really costs (rc wsl.11: released here, 16 reconnects all passed while still growing).
+                    # Review r6 A6-3/B6-3: a ping or an <auth> before the identifying CoT releases the lock at once (r5
+                    # held it for ADMIT_HOLD_S: one ping every 20 s switched serialization off for everyone) and the
+                    # next message is admitted again, under the lock, with its own memory check.
+                    ping = tag != b"</event>" or b'type="t-x-c-t"' in chunk[:600]
+                    if self._release_admit() and ping and self.uid is None:
+                        self._admit_pending = True
+''', '''                if not self._sub_wanted and not ping:
+                    # BATMAN-264-R12/R16: this session's first work is done. A session that asked for its subscription
+                    # keeps the lock until _subscribe has placed it, so the next admission's memory check sees what
+                    # this one really costs (rc wsl.11: released here, 16 reconnects all passed while still growing).
+                    # A message that does not identify releases it and re-arms the admission, so the identifying CoT
+                    # that follows is checked under the lock again (review r7 A7-6).
+                    if self._release_admit() and self.uid is None:
+                        self._admit_pending = True
+''')
+rep('''    def _open_broker(self):
+        if self.rabbit_connection is not None or self._closed:
+            return
+''', '''    def _open_broker(self):
+        # -> False when the session cannot have its ioloop (review r7 B7-1: a session without one stores nothing and
+        # the phone sees no error): the caller refuses it
+        if self.rabbit_connection is not None:
+            return True
+        if self._closed:
+            return False
+''')
+rep('''        except BaseException as e:
+            self.logger.error("Failed to connect to rabbitmq: {}".format(e))
+            return
+
+    def finish(self):''', '''        except BaseException as e:
+            self.logger.error(f"Failed to connect to rabbitmq: {e}; session of {self.client_address[0]} refused (BATMAN-264-R16)")
+            return False
+        return True
+
+    def finish(self):''')
+rep('''        t = threading.Timer(ADMIT_HOLD_S, self._release_admit)
+        t.daemon = True
+        t.start()
+''', '''        t = threading.Timer(ADMIT_HOLD_S, self._release_admit)  # r7 A7-5/B7-1: one per hold, cancelled by the release
+        t.daemon = True
+        with self._admit_mx:
+            self._admit_timer = t
+        t.start()
+''')
+rep('''        with self._admit_mx:
+            fd, self._admit_fd = self._admit_fd, None
+''', '''        with self._admit_mx:
+            fd, self._admit_fd = self._admit_fd, None
+            t, self._admit_timer = self._admit_timer, None
+        if t is not None and t is not threading.current_thread():
+            t.cancel()
+''')
+# TLS-safe socket shutdown (review r7 A7-8): SSLSocket.shutdown() drops its TLS object BEFORE shutting the socket, so
+# a concurrent send on the ioloop thread could write a CoT in clear; the base class's shutdown keeps the TLS object
+assert s.count("self.request.shutdown(SHUT_RDWR)") == 3, s.count("self.request.shutdown(SHUT_RDWR)")
+s = s.replace("self.request.shutdown(SHUT_RDWR)", "socket_mod.socket.shutdown(self.request, SHUT_RDWR)  # r7 A7-8: keeps TLS")
+# the minimal-row retry does not keep a postgres connection (r7 A7-9)
+rep('''            self._minimal_eud_row(self.uid)  # BATMAN-264-R14 (r6): the device's row is still missing
+''', '''            self._minimal_eud_row(self.uid)  # BATMAN-264-R14 (r6): the device's row is still missing
+            with self.app.app_context():  # r7 A7-9: as after identification, the retry keeps no postgres connection
+                db.session.close()
+                db.engine.dispose()
+''')
+# a superseded session never places its subscription
+rep('''        if self._subscribed or self._closed:
+            return
+''', '''        if self._subscribed or self._closed:
+            return
+        if self._superseded:  # BATMAN-264-R17 (r7): a newer session of the device has the downlink
+            self._release_admit()
+            return
+''')
+rep('''                if _ch.ops:
+                    self._sub_wanted = True  # BATMAN-264-R16: the admission lock is released once this is placed
+                    self._claim(self.uid)  # BATMAN-264-R17: the device's previous session on this listener ends
+                    self._io(self._subscribe, _ch.ops, list(self.bound_queues))
+''', '''                if _ch.ops and self._claim(self.uid):  # BATMAN-264-R17 (r7): False = a NEWER session of this device exists
+                    self._sub_wanted = True  # BATMAN-264-R16: the admission lock is released once this is placed
+                    self._io(self._subscribe, _ch.ops, list(self.bound_queues))
+''')
+# R17 rewritten
+i0 = s.index("    # ---- BATMAN-264-R17 (review r6 A6-2/A6-4/B6-6): one live session per device and listener")
+i1 = s.index("    def _fi(self, uid, stage):")
+s = s[:i0] + '''    # ---- BATMAN-264-R17 (review r6 A6-2/A6-4/B6-6, r7; the user's decision 2026-10-12): one downlink per device ----
+    # When the RTO walks out of range and back, each phone reconnects while its previous session is still open (no FIN
+    # reached the server; R6 reaps it in ~2 min): 16 zombies + 16 reconnects, a second flap inside that window 48
+    # sessions, more than the container holds (r6 A6-2); and the zombie takes every other downlink message meanwhile
+    # (auto_ack, round-robin on the shared <uid> queue). When the same device (8089: the same OTS user; 8088: the same
+    # client address) identifies on a new session, its previous session stops its downlink at once and ends after
+    # SUPERSEDE_QUIET_S without any data from the client; until then it keeps reading and publishing what the phone's
+    # TCP still retransmits on it (the user's decision: round 6 ended it at once, which lost those reports and killed a
+    # live older connection). Its end sees the newer session: no disconnect, bindings and queues kept.
+    # Registry: one file per (listener, uid, device) in the eud container's own tmpfs: "<pid> <start ticks> <address>
+    # <user>"; the process start ticks order the sessions (a reused pid has other ticks).
+    def _ident(self):
+        return str(self.user.id) if (self.is_ssl and self.user) else self.client_address[0]
+
+    def _reg_prefix(self, uid):
+        port = getattr(self.server, "server_address", ("", 0))[1]
+        return f"{port}-{hashlib.sha256(str(uid).encode('utf-8', 'replace')).hexdigest()[:32]}-"
+
+    def _reg_path(self, uid):
+        return os.path.join(SESS_DIR, self._reg_prefix(uid) + hashlib.sha256(self._ident().encode()).hexdigest()[:16])
+
+    @staticmethod
+    def _reg_read(path):
+        # -> (pid, start ticks, address, user) of a registry entry whose process still lives, else None
+        try:
+            with open(path, encoding="ascii") as f:
+                pid, start, ip, user = f.read().split()[:4]
+            pid, start = int(pid), int(start)
+        except (OSError, ValueError, UnicodeDecodeError):
+            return None
+        if pid <= 1 or _proc_start(pid) != start:
+            return None  # gone, or the pid was reused
+        return pid, start, ip, user
+
+    def _claim(self, uid):
+        # Handler thread, at identification, after the ownership checks. -> False when a NEWER session of this device
+        # is already registered (this one is an older connection whose report arrived late, r7 A7-1): this session is
+        # superseded itself and does not subscribe. Registry errors -> True (fail-safe: subscribe as before R17).
+        try:
+            os.makedirs(SESS_DIR, mode=0o700, exist_ok=True)
+            me = os.getpid()
+            self._my_start = mine = _proc_start(me)
+            path = self._reg_path(uid)
+            old = self._reg_read(path)
+            if old is not None and old[0] != me and mine is not None and old[1] > mine:
+                self.logger.info(f"{self.client_address[0]}: a newer session of {uid} (pid {old[0]}) exists; this one "
+                                 f"takes no downlink (BATMAN-264-R17)")
+                self._on_supersede(None, None)
+                return False
+            # the entry first, then the signal (r7 A7-4/B7-4: the old end must already see this session)
+            with open(f"{path}.{me}", "w", encoding="ascii") as f:
+                f.write(f"{me} {mine} {self.client_address[0]} {str(self.user.id) if self.user else '-'}\\n")
+            os.replace(f"{path}.{me}", path)
+            self._claimed = True
+            if old is not None and old[0] != me:
+                os.kill(old[0], signal.SIGUSR1)
+                self.logger.info(f"{self.client_address[0]}: device {uid} is back; its previous session (pid {old[0]}) "
+                                 f"stops its downlink and ends after {SUPERSEDE_QUIET_S} s quiet (BATMAN-264-R17)")
+        except Exception as e:
+            self.logger.error(f"BATMAN-264-R17: device registry for {uid} unusable ({type(e).__name__}: {e}); "
+                              f"a previous session is left to R6")
+        return True
+
+    def _newer_session(self, uid):
+        # the end (ioloop thread): a live session of this uid on this listener that started after this one, from any
+        # device (r6 A6-4: its subscription may not consume yet, so the consumer count alone would publish a disconnect
+        # and unbind it)
+        if not uid:
+            return False
+        mine = self._my_start or _proc_start(os.getpid()) or 0
+        prefix = self._reg_prefix(uid)
+        try:
+            names = [n for n in os.listdir(SESS_DIR) if n.startswith(prefix) and "." not in n]
+        except OSError:
+            return False
+        for n in names:
+            e = self._reg_read(os.path.join(SESS_DIR, n))
+            if e is not None and e[0] != os.getpid() and e[1] > mine:
+                return True
+        return False
+
+    def _unclaim(self):
+        if not self._claimed or not self.uid:
+            return
+        path = self._reg_path(self.uid)
+        e = self._reg_read(path)
+        if e is not None and e[0] == os.getpid():
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def _on_supersede(self, signum, frame):
+        # SIGUSR1 from this device's newer session (_claim), in this child's main thread between bytecodes: a flag and
+        # a watcher thread only (logging and the channel work happen there)
+        if self._superseded:
+            return
+        self._superseded = True
+        threading.Thread(target=self._superseded_watch, daemon=True).start()
+
+    def _superseded_watch(self):
+        self.logger.info(f"{self.client_address[0]}: session of {self.uid} superseded by the device's new session: "
+                         f"downlink stopped, ends after {SUPERSEDE_QUIET_S} s without data (BATMAN-264-R17)")
+        self._io(self._drop_downlink)
+        while not self._closed and not self.shutdown:
+            idle = time.monotonic() - self._last_rx
+            if idle >= SUPERSEDE_QUIET_S:
+                self.logger.info(f"{self.client_address[0]}: superseded session of {self.uid} quiet for {idle:.0f} s; "
+                                 f"ending (BATMAN-264-R17)")
+                try:
+                    socket_mod.socket.shutdown(self.request, SHUT_RDWR)  # r7 A7-8: keeps TLS
+                except OSError:
+                    pass
+                return
+            time.sleep(min(5.0, SUPERSEDE_QUIET_S - idle + 0.1))
+
+    def _drop_downlink(self):
+        # ioloop thread: this session's consumers go; the newer session's stay (they are its own consumer tags)
+        ch = self.rabbit_channel
+        for tag in list(getattr(ch, "consumer_tags", []) or []):
+            try:
+                ch.basic_cancel(tag)
+            except Exception as e:
+                self.logger.error(f"basic_cancel of a superseded session failed: {e}")
+
+''' + s[i1:]
+
 # --- license notice (GPL-3.0-or-later §5a: modified files carry a prominent dated notice) ----------
 assert s.startswith("import base64\n"), "upstream file no longer starts with 'import base64'"
 s = ("# SPDX-License-Identifier: GPL-3.0-or-later\n"

@@ -26,11 +26,13 @@ sendC(){ { ev "$RUN-C-$1-0" "$RUN-C"; sleep 2; i=1; while [ $i -le 10 ]; do evn 
 countB(){ grep -o "uid=\"$RUN-C-$1-[1-9][0-9]*\"" "$H/$RUN-B.out" 2>/dev/null | sort -u | wc -l; }
 case $ACTION in
 start)
-	rm -f "$H/$RUN-"*
+	rm -f "$H/$RUN-"* "$H/$RUN.pids"
 	mkfifo "$H/$RUN-B.fifo" "$H/$RUN-A.fifo" || exit 1
 	# A first: the session that will go stale
 	(trap '' HUP; nc "$TARGET" 8088 < "$H/$RUN-A.fifo" > /dev/null 2>&1) &
+	echo $! >> "$H/$RUN.pids"
 	(trap '' HUP; { ev "$RUN-A" "$RUN-A-cs"; sleep 600; } > "$H/$RUN-A.fifo") &
+	echo $! >> "$H/$RUN.pids"
 	sleep 3; ap=$(est | head -1); echo "APORT ${ap:-none}"
 	[ -n "$ap" ] || { echo "FAIL no port for A"; exit 1; }
 	# black hole A's port both ways: own table, elements expire by themselves, table deleted by a detached timer
@@ -45,10 +47,13 @@ start)
 	echo "BLACKHOLE $ap $(nft list set inet dvz264 ports 2>/dev/null | grep -c "$ap")"
 	# B: the same EUD reconnects while A is stale
 	(trap '' HUP; nc "$TARGET" 8088 < "$H/$RUN-B.fifo" > "$H/$RUN-B.out" 2>/dev/null) &
+	echo $! >> "$H/$RUN.pids"
 	(trap '' HUP; { ev "$RUN-A" "$RUN-A-cs"; sleep 600; } > "$H/$RUN-B.fifo") &
+	echo $! >> "$H/$RUN.pids"
 	sleep 3; bp=$(est | grep -v -x -F "$ap" | head -1); echo "BPORT ${bp:-none}"
 	# D streams for 150 s so the server has data pending towards A
 	(trap '' HUP; { i=1; while [ $i -le 150 ]; do ev "$RUN-D-$i" "$RUN-D"; sleep 1; i=$((i+1)); done; } | nc "$TARGET" 8088 >/dev/null 2>&1) </dev/null &
+	echo $! >> "$H/$RUN.pids"
 	sleep 2; echo "STARTED established=$(est | wc -l)"
 	;;
 phase1)
@@ -59,8 +64,15 @@ phase2)
 	;;
 cleanup)
 	nft delete table inet dvz264 2>/dev/null
-	for p in $(pgrep -x nc) $(pgrep -f "^sleep 600$"); do kill "$p" 2>/dev/null; done
-	sleep 2; rm -f "$H/$RUN-"*
+	# this run's background subshells and their children only (review r7 B7-7: it killed every nc and sleep 600)
+	for p in $(cat "$H/$RUN.pids" 2>/dev/null); do
+		for c in $(grep -l "^PPid:[[:space:]]*$p\$" /proc/[0-9]*/status 2>/dev/null | cut -d/ -f3); do
+			for cc in $(grep -l "^PPid:[[:space:]]*$c\$" /proc/[0-9]*/status 2>/dev/null | cut -d/ -f3); do kill "$cc" 2>/dev/null; done
+			kill "$c" 2>/dev/null
+		done
+		kill "$p" 2>/dev/null
+	done
+	sleep 2; rm -f "$H/$RUN-"* "$H/$RUN.pids"
 	echo "LEFT $(est | wc -l)"
 	;;
 *) echo "FAIL unknown ACTION $ACTION"; exit 1 ;;

@@ -40,7 +40,7 @@ class H:
     def _release_admit(self):
         self.released += 1; was, self.held = self.held, False; return was
     def _take_admit(self): self.taken += 1; self.held = True
-    def _open_broker(self): self.opened += 1
+    def _open_broker(self): self.opened += 1; return True
     def _unclaim(self): self.unclaimed += 1
     def _session_allowed(self): return self.allowed
     def handle_auth(self, m): self.auth.append(m)
@@ -150,9 +150,17 @@ print(("PASS" if c else "FAIL"), f"R16 r6 refused at the first message: no AMQP 
 ping = (b'<event version="2.0" uid="P1-ping" type="t-x-c-t" how="h-g-i-g-o" time="T" start="T" stale="T">'
         b'<point lat="0" lon="0" hae="0" ce="9999999" le="9999999"/></event>')
 h = H([ping, ev("P1")]); h._admit_pending = True; handle(h)
-c = h.taken == 2 and h.opened == 2 and [m.split('uid="')[1].split('"')[0] for m in h.got] == ["P1-ping", "P1"]
-print(("PASS" if c else "FAIL"), f"R16 r6 ping first: lock released after the ping, taken again for the identifying CoT (taken {h.taken}x)"); R.append(c)
+c = h.taken == 1 and h.opened == 1 and [m.split('uid="')[1].split('"')[0] for m in h.got] == ["P1-ping", "P1"]
+print(("PASS" if c else "FAIL"), f"R16 r7 ping first: answered without the admission; the identifying CoT takes it (taken {h.taken}x)"); R.append(c)
 h = H([ping, ping, ping]); h._admit_pending = True; handle(h)
-c = not h.held and h.taken == 3
-print(("PASS" if c else "FAIL"), f"R16 r6 pings only: the lock is never kept between messages (taken {h.taken}x, held at the end {h.held})"); R.append(c)
+c = not h.held and h.taken == 0 and h.opened == 0
+print(("PASS" if c else "FAIL"), f"R16 r7 pings only: never admitted (no lock, no timer thread, no AMQP; taken {h.taken}x, opened {h.opened}x)"); R.append(c)
+# review r7 B7-1: 450 <auth/> from an unidentified client: no lock taken, so no timer thread per message
+h = H([b"<auth></auth>" * 450]); h._admit_pending = True; handle(h)
+c = h.taken == 0
+print(("PASS" if c else "FAIL"), f"R16 r7 450 <auth> messages: the admission never taken (taken {h.taken}x)"); R.append(c)
+# review r7 A7-6: a non-identifying first message, then the identifying one: both admitted under the lock
+h = H([plain("N1"), ev("I1")]); h._admit_pending = True; handle(h)
+c = h.taken == 2 and h.opened == 2
+print(("PASS" if c else "FAIL"), f"R16 r7 a non-identifying first message re-arms the admission for the identifying CoT (taken {h.taken}x)"); R.append(c)
 print("ALL PASS" if all(R) else "SOME FAILED")

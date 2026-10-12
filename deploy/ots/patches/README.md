@@ -33,8 +33,9 @@ every review finding: `docs/design/264-ots-eud-patch.md`, `docs/design/264-revie
   device is always recorded (a minimal row if the full row cannot be written);
 - **R16** each session process volunteers as the OOM killer's first choice (`oom_score_adj` 1000), so an OOM takes a
   session, never the listener;
-- **R17** one live session per device and listener: when the same device comes back (8089: the same OTS user;
-  8088: the same address) its previous session is ended at once, and a newer session counts as live at any end.
+- **R17** one downlink per device: when the same device opens a new session (8089: the same OTS user; 8088: the same
+  address) its previous session stops its downlink at once, keeps reading its uplink, and ends after
+  `BATMAN_264_SUPERSEDE_QUIET_S` (20) without data; a newer session counts as live at any end.
 
 Not in the overlay (stated leftovers): R2 (a client that stops reading can still block the ioloop's send for up to
 `TCP_USER_TIMEOUT`), R11 (faulthandler diagnosis aid). Test hook: `/tmp/batman-264-fi` in the eud container makes one

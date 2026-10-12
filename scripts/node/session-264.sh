@@ -2,8 +2,9 @@
 # session-264.sh — bench-node side of the #264 review-round-2 suites (busybox sh). Runs on the BENCH node:
 #   ssh root@peer "TARGET=<ots-ip> RUN=<id> ACTION=<a> [TAG=..] [VICTIM=..] [N=..] [PORT=..] sh -s" < this
 # All uids/callsigns are under $RUN so the harness can delete their rows and queues.
-#   same-uid : A (uid $RUN-U, cs $RUN-Uc) reads into $H/$RUN-A.out; B, the same uid/callsign, connects, stays 6 s,
-#              closes cleanly (a phone that flapped at the edge of range, or a second app instance)
+#   same-uid : A (uid $RUN-U, cs $RUN-Uc) reads into $H/$RUN-A.out and sends a report (uid $RUN-U-a-<i>) every 4 s
+#              for 40 s; 4 s after A, B (the same uid/callsign: the phone's new connection) reads into $H/$RUN-B.out
+#              for 25 s (R17, the user's decision 2026-10-12)
 #   share-cs : A (uid $RUN-U1) and B (uid $RUN-U2) with the SAME callsign $RUN-S, both reading
 #   send10   : C (another EUD) sends 10 counted broadcast CoT (identifies once, contact-less events); "SENT10 <tag>"
 #   stop     : ends reader $WHO (A or B) only: "STOPPED <who>"
@@ -19,6 +20,7 @@
 #              without role (review r5 B5-1), then 2 reports, 6 s
 #   idle     : N identifying idle sessions (uid/callsign $RUN-<k>), HOLD s each (capacity)
 #   pinger   : N sockets that send one ping (t-x-c-t) each and then nothing (admission (f), review r6)
+#   authflood: one socket that sends N "<auth></auth>" and stays 10 s (admission (g), review r7 B7-1)
 #   est      : "EST <n>" established connections from this node to TARGET:PORT
 #   cleanup  : kills the run's clients only (the background pids recorded in $H/$RUN*.pids, review r3 A3-10:
 #              it used to kill every nc and sleep on the node); "LEFT <n>" established to 8088
@@ -39,9 +41,14 @@ reader(){ # $1 name, $2 uid, $3 callsign: a long-lived session reading into $H/$
 case $ACTION in
 same-uid)
 	rm -f "$H/$RUN-"*
-	reader A "$RUN-U" "$RUN-Uc"; sleep 4
-	{ ev "$RUN-U" "$RUN-Uc"; sleep 6; } | nc "$TARGET" 8088 >/dev/null 2>&1
-	echo "B closed"
+	mkfifo "$H/$RUN-A.fifo" || exit 1
+	(trap '' HUP; exec nc "$TARGET" 8088 < "$H/$RUN-A.fifo" > "$H/$RUN-A.out" 2>/dev/null) &
+	echo $! >> "$H/$RUN.pids"
+	(trap '' HUP; { ev "$RUN-U" "$RUN-Uc"; i=1; while [ $i -le 10 ]; do sleep 4; evn "$RUN-U-a-$i"; i=$((i+1)); done; sleep 600; } > "$H/$RUN-A.fifo") &
+	echo $! >> "$H/$RUN.pids"; sleep 4
+	(trap '' HUP; { ev "$RUN-U" "$RUN-Uc"; sleep 25; } | nc "$TARGET" 8088 > "$H/$RUN-B.out" 2>/dev/null) </dev/null &
+	echo $! >> "$H/$RUN.pids"; sleep 1
+	echo "A sending, B connected"
 	;;
 share-cs)
 	rm -f "$H/$RUN-"*
@@ -71,6 +78,10 @@ silent)
 chatter)
 	i=0; while [ $i -lt "${N:?}" ]; do (trap '' HUP; { printf '<event></event>'; sleep 300; } | nc "$TARGET" 8088 >/dev/null 2>&1) </dev/null >/dev/null 2>&1 & echo $! >> "$H/$RUN.pids"; i=$((i+1)); sleep 1; done
 	sleep 2; echo "CHATTER $(est 8088)"
+	;;
+authflood)
+	(trap '' HUP; { i=0; while [ $i -lt "${N:?}" ]; do printf '<auth></auth>'; i=$((i+1)); done; sleep 10; } | nc "$TARGET" 8088 >/dev/null 2>&1) </dev/null >/dev/null 2>&1 &
+	echo $! >> "$H/$RUN.pids"; sleep 3; echo "AUTHFLOOD $N sent, EST $(est 8088)"
 	;;
 pinger)
 	i=0; while [ $i -lt "${N:?}" ]; do n=$(date +%s); (trap '' HUP; { printf '<event version="2.0" uid="%s-p%s-ping" type="t-x-c-t" how="h-g-i-g-o" time="%s" start="%s" stale="%s"><point lat="0" lon="0" hae="0" ce="9999999" le="9999999"/><detail/></event>' "$RUN" "$i" "$(ts "$n")" "$(ts "$n")" "$(ts $((n+10)))"; sleep 300; } | nc "$TARGET" 8088 >/dev/null 2>&1) </dev/null >/dev/null 2>&1 & echo $! >> "$H/$RUN.pids"; i=$((i+1)); sleep 1; done

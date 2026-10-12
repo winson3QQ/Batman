@@ -105,6 +105,8 @@ ADMIT_HOLD_S = 20  # R16: a fallback only; the lock is normally released once th
 SESS_DIR = "/tmp/batman-264-sess"
 # BATMAN-264 (review r6 B6-2): white-box fault injection for the validation suite exception-264 (_fi)
 FI_FILE = "/tmp/batman-264-fi"
+# BATMAN-264-R17 (r7, the user's decision 2026-10-12): a superseded session ends after this long without any data
+SUPERSEDE_QUIET_S = int(os.environ.get("BATMAN_264_SUPERSEDE_QUIET_S", "20"))
 # upstream's ForkingTCPServer listens with a backlog of 5: a crowd of connects overflows it and the kernel drops
 # the handshake's last ACK (the client thinks it is connected, the server never accepted it; measured: 10 at once
 # from one address -> 8 accepted). somaxconn on the nodes is 4096.
@@ -325,6 +327,7 @@ class EudHandler(socketserver.BaseRequestHandler):
                 break
 
             buf += data
+            self._last_rx = time.monotonic()  # BATMAN-264-R17 (r7): a superseded session ends once quiet
             while not self.shutdown:
                 ends = [(i, t) for i, t in ((buf.find(b"</event>", scan), b"</event>"),
                                             (buf.find(b"</auth>", scan), b"</auth>")) if i >= 0]
@@ -339,15 +342,17 @@ class EudHandler(socketserver.BaseRequestHandler):
                     self.logger.error("Failed to parse: closing tag without an opening tag, dropped")
                     continue
                 msg = chunk[start:].decode("utf-8", errors="replace")
-                if self._admit_pending:
-                    # BATMAN-264-R12/R16: admissions are serialized from here until the subscription is placed
+                ping = tag != b"</event>" or b'type="t-x-c-t"' in chunk[:600]
+                if self._admit_pending and not ping:
+                    # BATMAN-264-R12/R16: admissions are serialized from here until the subscription is placed. A ping
+                    # or an <auth> is answered without it (review r7 B7-1: each one took the lock and started a 20 s
+                    # timer thread; 450 small messages = 451 threads, and the eud containers' pids.max is 512)
                     self._admit_pending = False
                     self._take_admit()
-                    if not self._session_allowed():
+                    if not self._session_allowed() or not self._open_broker():  # r6 A6-1: allocated under the lock
                         self._release_admit()
                         self._refused = True
                         break
-                    self._open_broker()  # BATMAN-264-R16 (r6 A6-1): allocated under the lock
                 try:
                     fromstring(msg)
                     if tag == b"</event>":
@@ -363,15 +368,13 @@ class EudHandler(socketserver.BaseRequestHandler):
                     # session goes on.
                     self.logger.error(f"{self.client_address[0]}: a message raised {type(e).__name__}: {e}; dropped")
                     self.logger.debug(traceback.format_exc())
-                if not self._sub_wanted:
+                if not self._sub_wanted and not ping:
                     # BATMAN-264-R12/R16: this session's first work is done. A session that asked for its subscription
                     # keeps the lock until _subscribe has placed it, so the next admission's memory check sees what
                     # this one really costs (rc wsl.11: released here, 16 reconnects all passed while still growing).
-                    # Review r6 A6-3/B6-3: a ping or an <auth> before the identifying CoT releases the lock at once (r5
-                    # held it for ADMIT_HOLD_S: one ping every 20 s switched serialization off for everyone) and the
-                    # next message is admitted again, under the lock, with its own memory check.
-                    ping = tag != b"</event>" or b'type="t-x-c-t"' in chunk[:600]
-                    if self._release_admit() and ping and self.uid is None:
+                    # A message that does not identify releases it and re-arms the admission, so the identifying CoT
+                    # that follows is checked under the lock again (review r7 A7-6).
+                    if self._release_admit() and self.uid is None:
                         self._admit_pending = True
                 if first_by is not None:
                     # BATMAN-264-R12 (review r3 B3-3): one parsable message used to clear the deadline for good (an
@@ -468,6 +471,9 @@ class EudHandler(socketserver.BaseRequestHandler):
         self._claimed = False        # R17 (r6): this session is in the device registry
         self._row_next = 0.0         # r6 A6-6/B6-4: when to retry a minimal EUD row that could not be written (0: none due)
         self._fi_done = False        # r6 B6-2: fault injection fires once per session
+        self._last_rx = time.monotonic()  # R17 (r7): when the client last sent anything
+        self._my_start = None        # R17 (r7): this process's start ticks (registry order)
+        self._admit_timer = None     # r7 A7-5/B7-1: the one ADMIT_HOLD_S timer of the current hold
         _oom_first()                 # R16: under memory pressure the kernel kills a session, never the listener
         if not self._admit():  # BATMAN-264-R7/R12: fail closed before anything is allocated or declared
             self.shutdown = True
@@ -485,8 +491,12 @@ class EudHandler(socketserver.BaseRequestHandler):
         # the serialized check, and a socket that never sends costs no AMQP connection
 
     def _open_broker(self):
-        if self.rabbit_connection is not None or self._closed:
-            return
+        # -> False when the session cannot have its ioloop (review r7 B7-1: a session without one stores nothing and
+        # the phone sees no error): the caller refuses it
+        if self.rabbit_connection is not None:
+            return True
+        if self._closed:
+            return False
         # RabbitMQ
         try:
             rabbit_credentials = pika.PlainCredentials(
@@ -517,8 +527,9 @@ class EudHandler(socketserver.BaseRequestHandler):
             self.iothread.start()
             self.is_consuming = False
         except BaseException as e:
-            self.logger.error("Failed to connect to rabbitmq: {}".format(e))
-            return
+            self.logger.error(f"Failed to connect to rabbitmq: {e}; session of {self.client_address[0]} refused (BATMAN-264-R16)")
+            return False
+        return True
 
     def finish(self):
         print("finish")
@@ -553,7 +564,7 @@ class EudHandler(socketserver.BaseRequestHandler):
             self.shutdown = True
 
             try:
-                self.request.shutdown(SHUT_RDWR)  # BATMAN-264: ENOTCONN on a socket already closed by the peer
+                socket_mod.socket.shutdown(self.request, SHUT_RDWR)  # r7 A7-8: keeps TLS  # BATMAN-264: ENOTCONN on a socket already closed by the peer
             except OSError:
                 pass
             try:
@@ -740,13 +751,18 @@ class EudHandler(socketserver.BaseRequestHandler):
             self._admit_fd = fd
             self._admit_t0 = time.monotonic()
         self.logger.info(f"admission of {self.client_address[0]}: lock taken (BATMAN-264-R12)")
-        t = threading.Timer(ADMIT_HOLD_S, self._release_admit)
+        t = threading.Timer(ADMIT_HOLD_S, self._release_admit)  # r7 A7-5/B7-1: one per hold, cancelled by the release
         t.daemon = True
+        with self._admit_mx:
+            self._admit_timer = t
         t.start()
 
     def _release_admit(self):
         with self._admit_mx:
             fd, self._admit_fd = self._admit_fd, None
+            t, self._admit_timer = self._admit_timer, None
+        if t is not None and t is not threading.current_thread():
+            t.cancel()
         if fd is not None:
             self.logger.info(f"admission of {self.client_address[0]}: lock released after "
                              f"{(time.monotonic() - getattr(self, '_admit_t0', time.monotonic())) * 1000:.0f} ms (BATMAN-264-R12)")
@@ -976,7 +992,7 @@ class EudHandler(socketserver.BaseRequestHandler):
                 self.logger.error(f"RabbitMQ ioloop of {self.client_address[0]} ended; closing the client session")
                 self.shutdown = True
                 try:
-                    self.request.shutdown(SHUT_RDWR)
+                    socket_mod.socket.shutdown(self.request, SHUT_RDWR)  # r7 A7-8: keeps TLS
                 except OSError:
                     pass
 
@@ -1176,6 +1192,9 @@ class EudHandler(socketserver.BaseRequestHandler):
             self._sub_binds_pending = list(binds)
         self._sub_ops = ops  # kept for diagnosis; R13 (r3 A3-3) ends the session instead of replaying
         if self._subscribed or self._closed:
+            return
+        if self._superseded:  # BATMAN-264-R17 (r7): a newer session of the device has the downlink
+            self._release_admit()
             return
         if not (self.rabbit_channel and self.rabbit_channel.is_open):
             self._pending_ops = ops
@@ -1403,86 +1422,130 @@ class EudHandler(socketserver.BaseRequestHandler):
             self.logger.error(f"declare of {uid} at the end failed: {e}")
             close()
 
-    # ---- BATMAN-264-R17 (review r6 A6-2/A6-4/B6-6): one live session per device and listener ----------------------
-    def _reg_path(self, uid):
-        port = getattr(self.server, "server_address", ("", 0))[1]
-        return os.path.join(SESS_DIR, f"{port}-{hashlib.sha256(str(uid).encode('utf-8', 'replace')).hexdigest()[:32]}")
+    # ---- BATMAN-264-R17 (review r6 A6-2/A6-4/B6-6, r7; the user's decision 2026-10-12): one downlink per device ----
+    # When the RTO walks out of range and back, each phone reconnects while its previous session is still open (no FIN
+    # reached the server; R6 reaps it in ~2 min): 16 zombies + 16 reconnects, a second flap inside that window 48
+    # sessions, more than the container holds (r6 A6-2); and the zombie takes every other downlink message meanwhile
+    # (auto_ack, round-robin on the shared <uid> queue). When the same device (8089: the same OTS user; 8088: the same
+    # client address) identifies on a new session, its previous session stops its downlink at once and ends after
+    # SUPERSEDE_QUIET_S without any data from the client; until then it keeps reading and publishing what the phone's
+    # TCP still retransmits on it (the user's decision: round 6 ended it at once, which lost those reports and killed a
+    # live older connection). Its end sees the newer session: no disconnect, bindings and queues kept.
+    # Registry: one file per (listener, uid, device) in the eud container's own tmpfs: "<pid> <start ticks> <address>
+    # <user>"; the process start ticks order the sessions (a reused pid has other ticks).
+    def _ident(self):
+        return str(self.user.id) if (self.is_ssl and self.user) else self.client_address[0]
 
-    def _reg_read(self, uid):
-        # -> (pid, ip, user) of the session that last claimed uid on this listener, if that process still lives
+    def _reg_prefix(self, uid):
+        port = getattr(self.server, "server_address", ("", 0))[1]
+        return f"{port}-{hashlib.sha256(str(uid).encode('utf-8', 'replace')).hexdigest()[:32]}-"
+
+    def _reg_path(self, uid):
+        return os.path.join(SESS_DIR, self._reg_prefix(uid) + hashlib.sha256(self._ident().encode()).hexdigest()[:16])
+
+    @staticmethod
+    def _reg_read(path):
+        # -> (pid, start ticks, address, user) of a registry entry whose process still lives, else None
         try:
-            with open(self._reg_path(uid), encoding="ascii") as f:
+            with open(path, encoding="ascii") as f:
                 pid, start, ip, user = f.read().split()[:4]
             pid, start = int(pid), int(start)
         except (OSError, ValueError, UnicodeDecodeError):
             return None
         if pid <= 1 or _proc_start(pid) != start:
             return None  # gone, or the pid was reused
-        return pid, ip, user
+        return pid, start, ip, user
 
     def _claim(self, uid):
-        # Handler thread, at identification, after the ownership checks. When the RTO walks out of range and back,
-        # each phone reconnects while its previous session is still open (no FIN reached the server; R6 reaps it in
-        # ~2 min): 16 zombies + 16 reconnects, and a second flap inside that window 48 sessions, more than the
-        # container holds (review r6 A6-2). The zombie also takes every other downlink message meanwhile (auto_ack,
-        # round-robin on the shared <uid> queue). The device is back, so its previous session ends now (SIGUSR1 ->
-        # _on_supersede; its end sees this session and sends no disconnect, keeps the bindings). Only the SAME device:
-        # on 8089 the same OTS user; on 8088 (unauthenticated) the same client address as well, so a client elsewhere
-        # on the mesh naming this uid ends nothing. A phone that comes back through another node (a new address)
-        # keeps R6's reap of the old session (as before).
+        # Handler thread, at identification, after the ownership checks. -> False when a NEWER session of this device
+        # is already registered (this one is an older connection whose report arrived late, r7 A7-1): this session is
+        # superseded itself and does not subscribe. Registry errors -> True (fail-safe: subscribe as before R17).
         try:
             os.makedirs(SESS_DIR, mode=0o700, exist_ok=True)
             me = os.getpid()
-            user = str(self.user.id) if self.user else "-"
-            old = self._reg_read(uid)
-            if old is not None and old[0] != me:
-                if self.is_ssl:
-                    same = user != "-" and old[2] == user
-                else:
-                    same = user == "-" and old[2] == "-" and old[1] == self.client_address[0]
-                if not same:
-                    self.logger.info(f"{self.client_address[0]}: uid {uid} has a live session from {old[1]} (pid "
-                                     f"{old[0]}); both kept (BATMAN-264-R17)")
-                    return
-                os.kill(old[0], signal.SIGUSR1)
-                self.logger.info(f"{self.client_address[0]}: device {uid} is back; its previous session (pid "
-                                 f"{old[0]}) is ended (BATMAN-264-R17)")
+            self._my_start = mine = _proc_start(me)
             path = self._reg_path(uid)
+            old = self._reg_read(path)
+            if old is not None and old[0] != me and mine is not None and old[1] > mine:
+                self.logger.info(f"{self.client_address[0]}: a newer session of {uid} (pid {old[0]}) exists; this one "
+                                 f"takes no downlink (BATMAN-264-R17)")
+                self._on_supersede(None, None)
+                return False
+            # the entry first, then the signal (r7 A7-4/B7-4: the old end must already see this session)
             with open(f"{path}.{me}", "w", encoding="ascii") as f:
-                f.write(f"{me} {_proc_start(me)} {self.client_address[0]} {user}\n")
+                f.write(f"{me} {mine} {self.client_address[0]} {str(self.user.id) if self.user else '-'}\n")
             os.replace(f"{path}.{me}", path)
             self._claimed = True
+            if old is not None and old[0] != me:
+                os.kill(old[0], signal.SIGUSR1)
+                self.logger.info(f"{self.client_address[0]}: device {uid} is back; its previous session (pid {old[0]}) "
+                                 f"stops its downlink and ends after {SUPERSEDE_QUIET_S} s quiet (BATMAN-264-R17)")
         except Exception as e:
             self.logger.error(f"BATMAN-264-R17: device registry for {uid} unusable ({type(e).__name__}: {e}); "
                               f"a previous session is left to R6")
+        return True
 
     def _newer_session(self, uid):
-        # the end (ioloop thread): another live session has claimed this uid on this listener. Its subscription may
-        # not consume yet (a broker restart: the late end of the old session, review r6 A6-4), so the consumer count
-        # alone would publish a disconnect and unbind the phone's new session.
-        old = self._reg_read(uid) if uid else None
-        return old is not None and old[0] != os.getpid()
+        # the end (ioloop thread): a live session of this uid on this listener that started after this one, from any
+        # device (r6 A6-4: its subscription may not consume yet, so the consumer count alone would publish a disconnect
+        # and unbind it)
+        if not uid:
+            return False
+        mine = self._my_start or _proc_start(os.getpid()) or 0
+        prefix = self._reg_prefix(uid)
+        try:
+            names = [n for n in os.listdir(SESS_DIR) if n.startswith(prefix) and "." not in n]
+        except OSError:
+            return False
+        for n in names:
+            e = self._reg_read(os.path.join(SESS_DIR, n))
+            if e is not None and e[0] != os.getpid() and e[1] > mine:
+                return True
+        return False
 
     def _unclaim(self):
         if not self._claimed or not self.uid:
             return
-        old = self._reg_read(self.uid)
-        if old is not None and old[0] == os.getpid():
+        path = self._reg_path(self.uid)
+        e = self._reg_read(path)
+        if e is not None and e[0] == os.getpid():
             try:
-                os.remove(self._reg_path(self.uid))
+                os.remove(path)
             except OSError:
                 pass
 
     def _on_supersede(self, signum, frame):
-        # SIGUSR1 from this device's newer session (_claim). Runs in this child's main thread between bytecodes: a
-        # flag and the socket shutdown only; recv returns and handle() runs the normal end.
+        # SIGUSR1 from this device's newer session (_claim), in this child's main thread between bytecodes: a flag and
+        # a watcher thread only (logging and the channel work happen there)
+        if self._superseded:
+            return
         self._superseded = True
-        self.logger.info(f"{self.client_address[0]}: session of {self.uid} superseded by the device's new session "
-                         f"(BATMAN-264-R17)")
-        try:
-            self.request.shutdown(SHUT_RDWR)
-        except OSError:
-            pass
+        threading.Thread(target=self._superseded_watch, daemon=True).start()
+
+    def _superseded_watch(self):
+        self.logger.info(f"{self.client_address[0]}: session of {self.uid} superseded by the device's new session: "
+                         f"downlink stopped, ends after {SUPERSEDE_QUIET_S} s without data (BATMAN-264-R17)")
+        self._io(self._drop_downlink)
+        while not self._closed and not self.shutdown:
+            idle = time.monotonic() - self._last_rx
+            if idle >= SUPERSEDE_QUIET_S:
+                self.logger.info(f"{self.client_address[0]}: superseded session of {self.uid} quiet for {idle:.0f} s; "
+                                 f"ending (BATMAN-264-R17)")
+                try:
+                    socket_mod.socket.shutdown(self.request, SHUT_RDWR)  # r7 A7-8: keeps TLS
+                except OSError:
+                    pass
+                return
+            time.sleep(min(5.0, SUPERSEDE_QUIET_S - idle + 0.1))
+
+    def _drop_downlink(self):
+        # ioloop thread: this session's consumers go; the newer session's stay (they are its own consumer tags)
+        ch = self.rabbit_channel
+        for tag in list(getattr(ch, "consumer_tags", []) or []):
+            try:
+                ch.basic_cancel(tag)
+            except Exception as e:
+                self.logger.error(f"basic_cancel of a superseded session failed: {e}")
 
     def _fi(self, uid, stage):
         # BATMAN-264 (review r6 B6-2): white-box fault injection for exception-264. Since r5 no client input makes
@@ -1664,6 +1727,9 @@ class EudHandler(socketserver.BaseRequestHandler):
         self._fi(event.attrs.get("uid") if event else None, "message")  # r6 B6-2: test-only, see _fi
         if self.uid and self._row_next and time.monotonic() >= self._row_next:
             self._minimal_eud_row(self.uid)  # BATMAN-264-R14 (r6): the device's row is still missing
+            with self.app.app_context():  # r7 A7-9: as after identification, the retry keeps no postgres connection
+                db.session.close()
+                db.engine.dispose()
 
         if event and not self.uid:
             try:
@@ -1925,9 +1991,8 @@ class EudHandler(socketserver.BaseRequestHandler):
                         _ch.basic_consume(
                             queue=self.uid, on_message_callback=self.on_message, auto_ack=True
                         )
-                if _ch.ops:
+                if _ch.ops and self._claim(self.uid):  # BATMAN-264-R17 (r7): False = a NEWER session of this device exists
                     self._sub_wanted = True  # BATMAN-264-R16: the admission lock is released once this is placed
-                    self._claim(self.uid)  # BATMAN-264-R17: the device's previous session on this listener ends
                     self._io(self._subscribe, _ch.ops, list(self.bound_queues))
 
             if "phone" in contact.attrs and contact.attrs["phone"]:

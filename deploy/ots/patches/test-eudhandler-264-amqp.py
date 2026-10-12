@@ -91,7 +91,7 @@ class H:
         self.iothread = None; self.shutdown = False; self._pending_ops = None; self._chan_opening = False
         self._admit_fd = None; self._admit_mx = _threading.Lock(); self.request = _Req(); self.eud = None
         self._cs_queue = True; self._goodbye = None; self._goodbye_retried = False; self._admit_pending = False
-        self._refused = False; self._owner = False; self._newer = False
+        self._refused = False; self._owner = False; self._newer = False; self._superseded = False; self._admit_timer = None
     def _uid_has_owner(self, uid): return self._owner
     def _newer_session(self, uid): return self._newer
 
@@ -186,7 +186,13 @@ for fname in ("_keepalive", "_end_session"):
     exec(textwrap.dedent(ast.get_source_segment(src, fn)), g)
     setattr(H, fname, g[fname])
 import socket as _socket
-g["socket_mod"] = _socket
+# r7 A7-8: the overlay shuts client sockets with socket_mod.socket.shutdown(sock, how) (TLS kept); the fake request is
+# not a socket, so the class's shutdown is shimmed to the object's own
+class _SockShim:
+    @staticmethod
+    def shutdown(o, how): return o.shutdown(how)
+_sm = __import__("types").ModuleType("socket_shim"); _sm.__dict__.update(_socket.__dict__); _sm.socket = _SockShim
+g["socket_mod"] = _sm
 for k in ("KEEPALIVE_IDLE", "KEEPALIVE_INTVL", "KEEPALIVE_CNT", "KEEPALIVE_USER_TIMEOUT_MS"):
     g[k] = {"KEEPALIVE_IDLE": 45, "KEEPALIVE_INTVL": 15, "KEEPALIVE_CNT": 4, "KEEPALIVE_USER_TIMEOUT_MS": 120000}[k]
 
@@ -421,6 +427,8 @@ ok([o[0] for o in h.rabbit_channel.ops] == FULL and h._subscribed and not h._iol
    "16 (r2 B2-4/A2-3) another consumer on U/CS (stale session, same callsign): subscribed at once, shared as upstream, no retry timer")
 h = H(); h.rabbit_channel = SubChan({}); h._closed = True; h._subscribe(OPS, [BU])
 ok(not h.rabbit_channel.ops and not h._subscribed and not h._sub_binds, "16 an ended session does not subscribe")
+h = H(); h.rabbit_channel = SubChan({}); h._superseded = True; rel = []; h._release_admit = lambda: rel.append(1); h._subscribe(OPS, [BU])
+ok(not h.rabbit_channel.ops and not h._subscribed and rel == [1], "16 (r7 R17) a superseded session places no subscription and releases the admission")
 h = H(); h.rabbit_channel = Chan(is_open=False); h._subscribe(OPS, [BU]); ok(h._pending_ops == OPS and not h._sub_binds, "16 channel not open yet: deferred, nothing recorded as placed")
 h.rabbit_channel = SubChan({}); h._subscribe(h._pending_ops); ok(h._subscribed and h._sub_binds == [BU], "16 deferred subscription placed later with the bindings given first")
 # 17 R13 (review r3 A3-3): a new channel never replays the recorded subscription (Marti-API bindings made after
@@ -459,7 +467,7 @@ _os20.remove(_os20.path.join(cg, "memory.current")); ok(real_cg_mem() == (None, 
 g["CG_DIR"] = "/sys/fs/cgroup"; r = real_cg_mem(); ok(r == (None, None) or isinstance(r[0], int), "20 the real reader on this host never raises")
 # 21 R12 per-address count from this container's /proc/net/tcp(6): ESTABLISHED to our port from that address only
 fn = next(n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == "_sessions_from")
-exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); g["struct"] = __import__("struct"); g["socket_mod"] = _socket
+exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); g["struct"] = __import__("struct"); g["socket_mod"] = _sm
 import io as _io
 HDR = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
 def row(l, r, st): return f"   0: {l} {r} {st} 00000000:00000000 00:00000000 00000000     0        0 1\n"

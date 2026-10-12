@@ -101,7 +101,7 @@ class H:
         self.logger = logging.getLogger("a5"); self.app = types.SimpleNamespace(app_context=contextlib.nullcontext)
     def _minimal_eud_row(self, uid): self.minimal += 1
     def _fi(self, uid, stage): pass
-    def _claim(self, uid): self.claims += 1
+    def _claim(self, uid): self.claims += 1; return True
     def pong(self, e): return False
     def on_message(self, *a): pass
     def _owned_by_user(self, u, c): return (False, False) if "cs_owned" in src else False
@@ -184,6 +184,7 @@ ok(r is True and m._row_next == 0.0 and ss.committed[-1].uid == "U3", "R14 r6 mi
 gh = g; gh["time"] = Clock
 h = H(); h.uid = "U4"; h._row_next = Clock.t + 30; h.minimal = 0
 h.handle_cot("<event/>"); n0 = h.minimal
-Clock.t += 31; h.handle_cot("<event/>")
+Clock.t += 31; d0 = DB.engine.n; h.handle_cot("<event/>")
 ok(n0 == 0 and h.minimal == 1, f"R14 r6 handle_cot retries the missing row only when due (before {n0}, after {h.minimal})")
+ok(DB.engine.n == d0 + 1, f"R14 r7 A7-9: the retry keeps no postgres connection (engine disposed {DB.engine.n - d0}x)")
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)
