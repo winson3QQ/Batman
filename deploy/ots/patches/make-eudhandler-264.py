@@ -3265,6 +3265,69 @@ s = s[:i0] + '''    def _superseded_watch(self):
 
 ''' + s[i1:]
 
+# --- round 8b (2026-10-12, found by the rto-ssl reproduction on rc wsl.16): the EUD info for the web map -------------
+# Upstream publishes the EUD's info in on_channel_open when the channel opens after identification, calling
+# eud.to_json() on the ioloop thread. to_json() lazy-loads relationships (the user, the team) through Flask-SQLAlchemy,
+# which needs an app context that thread does not have: RuntimeError('Working outside of application context'), the
+# connection reported lost (StreamLostError), R13 ended the session (node 04, rc wsl.16 rto-ssl: 1 of 8 second-return
+# phones; 2 occurrences in each listener's log). Since round 6 the AMQP connection is opened at the first message, so
+# the channel is usually NOT open yet at identification and this path is the common one (upstream opened it in setup).
+# Fix: the JSON is built on the handler thread, inside the app context, at identification; on_channel_open publishes
+# the stored bytes and never touches the model on the ioloop.
+rep('''        self._prev = None            # R17 (r8 A8-4/B8-3): (pid, start ticks) of the session this one superseded
+''', '''        self._prev = None            # R17 (r8 A8-4/B8-3): (pid, start ticks) of the session this one superseded
+        self._eud_json = None        # r8b: the EUD's web-map JSON, built on the handler thread (app context)
+''')
+rep('''        # Publish the EUD info to flask-socketio for the web UI map
+        if self.eud:
+            message = {
+                "method": "emit",
+                "event": "eud",
+                "data": self.eud.to_json(),
+                "namespace": "/socket.io",
+                "room": None,
+                "skip_sid": [],
+                "callback": None,
+                "binary": False,
+                "host_id": uuid.uuid4().hex,
+            }
+            self._publish_on_ioloop("flask-socketio", "", json.dumps(message))  # BATMAN-264-R4b: counted
+''', '''        # Publish the EUD info to flask-socketio for the web UI map (BATMAN-264 r8b: the JSON was built on the handler
+        # thread inside the app context; to_json() here, on the ioloop, raised "Working outside of application context")
+        if self._eud_json is not None:
+            self._publish_on_ioloop("flask-socketio", "", self._eud_json)  # BATMAN-264-R4b: counted
+''')
+rep('''                    self.eud = eud
+                    if self.rabbit_channel:
+                        message = {
+                            "method": "emit",
+                            "event": "eud",
+                            "data": eud.to_json(),
+                            "namespace": "/socket.io",
+                            "room": None,
+                            "skip_sid": None,
+                            "callback": None,
+                            "binary": False,
+                            "host_id": uuid.uuid4().hex,
+                        }
+                        self._io(self._publish_on_ioloop, "flask-socketio", "", json.dumps(message).encode())  # BATMAN-264
+''', '''                    self.eud = eud
+                    message = {
+                        "method": "emit",
+                        "event": "eud",
+                        "data": eud.to_json(),  # on this thread, inside the app context (r8b)
+                        "namespace": "/socket.io",
+                        "room": None,
+                        "skip_sid": None,
+                        "callback": None,
+                        "binary": False,
+                        "host_id": uuid.uuid4().hex,
+                    }
+                    self._eud_json = json.dumps(message).encode()
+                    if self.rabbit_channel:
+                        self._io(self._publish_on_ioloop, "flask-socketio", "", self._eud_json)  # BATMAN-264
+''')
+
 # --- license notice (GPL-3.0-or-later §5a: modified files carry a prominent dated notice) ----------
 assert s.startswith("import base64\n"), "upstream file no longer starts with 'import base64'"
 s = ("# SPDX-License-Identifier: GPL-3.0-or-later\n"

@@ -484,6 +484,7 @@ class EudHandler(socketserver.BaseRequestHandler):
         self._admits = 0             # r8 A8-2: admissions so far (only the first logs at INFO)
         self._sup_t = None           # R17 (r8): when this session was superseded
         self._prev = None            # R17 (r8 A8-4/B8-3): (pid, start ticks) of the session this one superseded
+        self._eud_json = None        # r8b: the EUD's web-map JSON, built on the handler thread (app context)
         _oom_first()                 # R16: under memory pressure the kernel kills a session, never the listener
         if not self._admit():  # BATMAN-264-R7/R12: fail closed before anything is allocated or declared
             self.shutdown = True
@@ -898,20 +899,10 @@ class EudHandler(socketserver.BaseRequestHandler):
             self._try_end()
             return
 
-        # Publish the EUD info to flask-socketio for the web UI map
-        if self.eud:
-            message = {
-                "method": "emit",
-                "event": "eud",
-                "data": self.eud.to_json(),
-                "namespace": "/socket.io",
-                "room": None,
-                "skip_sid": [],
-                "callback": None,
-                "binary": False,
-                "host_id": uuid.uuid4().hex,
-            }
-            self._publish_on_ioloop("flask-socketio", "", json.dumps(message))  # BATMAN-264-R4b: counted
+        # Publish the EUD info to flask-socketio for the web UI map (BATMAN-264 r8b: the JSON was built on the handler
+        # thread inside the app context; to_json() here, on the ioloop, raised "Working outside of application context")
+        if self._eud_json is not None:
+            self._publish_on_ioloop("flask-socketio", "", self._eud_json)  # BATMAN-264-R4b: counted
 
     def _retry_goodbye(self):
         # review r3 A3-6: the channel or the connection was lost while the goodbye (disconnect, unbinds) was in
@@ -2170,19 +2161,20 @@ class EudHandler(socketserver.BaseRequestHandler):
                     # If the RabbitMQ channel is open, publish the EUD info to socketio to be displayed on the web UI map.
                     # Also save the EUD's info for on_channel_open to publish
                     self.eud = eud
+                    message = {
+                        "method": "emit",
+                        "event": "eud",
+                        "data": eud.to_json(),  # on this thread, inside the app context (r8b)
+                        "namespace": "/socket.io",
+                        "room": None,
+                        "skip_sid": None,
+                        "callback": None,
+                        "binary": False,
+                        "host_id": uuid.uuid4().hex,
+                    }
+                    self._eud_json = json.dumps(message).encode()
                     if self.rabbit_channel:
-                        message = {
-                            "method": "emit",
-                            "event": "eud",
-                            "data": eud.to_json(),
-                            "namespace": "/socket.io",
-                            "room": None,
-                            "skip_sid": None,
-                            "callback": None,
-                            "binary": False,
-                            "host_id": uuid.uuid4().hex,
-                        }
-                        self._io(self._publish_on_ioloop, "flask-socketio", "", json.dumps(message).encode())  # BATMAN-264
+                        self._io(self._publish_on_ioloop, "flask-socketio", "", self._eud_json)  # BATMAN-264
             except Exception as e:
                 self.logger.error(f"{self.client_address[0]}: EUD row of {uid} not written ({type(e).__name__}: {e}); "
                                   f"writing a minimal row so its CoT are recorded (BATMAN-264-R14)")

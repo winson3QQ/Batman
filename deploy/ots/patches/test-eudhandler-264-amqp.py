@@ -89,7 +89,7 @@ class H:
         self._close_lock = _threading.Lock(); self._final_close = False; self._end_deadline = None
         self._sub_binds = []; self._sub_binds_pending = []; self._relay = False; self.user = None
         self.iothread = None; self.shutdown = False; self._pending_ops = None; self._chan_opening = False
-        self._admit_fd = None; self._admit_mx = _threading.Lock(); self.request = _Req(); self.eud = None
+        self._admit_fd = None; self._admit_mx = _threading.Lock(); self.request = _Req(); self.eud = None; self._eud_json = None
         self._cs_queue = True; self._goodbye = None; self._goodbye_retried = False; self._admit_pending = False
         self._refused = False; self._owner = False; self._newer = False; self._superseded = False; self._admit_timer = None; self._prev_ok = False; self._admits = 0
     def _uid_has_owner(self, uid): return self._owner
@@ -445,6 +445,28 @@ h._sub_ops = OPS; h._subscribed = True; h._need_replay = True
 nc = SubChan({}); del h.on_channel_open; h.on_channel_open(nc)
 ok(not [o for o in nc.ops if o[0] in ("queue_declare", "queue_bind", "basic_consume")],
    "17 a new channel does not replay the recorded subscription (declare/bind/consume)")
+# 17b (r8b, found by the rto-ssl reproduction on rc wsl.16): the EUD's web-map info is published from the JSON built on
+#     the handler thread; on_channel_open never calls the model's to_json() on the ioloop (no app context there: it
+#     raised "Working outside of application context" and R13 ended the session)
+class _Model:
+    def to_json(self): raise RuntimeError("Working outside of application context.")
+h = H(); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h._pending_ops = None
+h.eud = _Model(); h._eud_json = b'{"event": "eud"}'
+nc = SubChan({}); del h.on_channel_open
+try:
+    h.on_channel_open(nc); raised = None
+except Exception as e:
+    raised = e
+pubs = [p for p in nc.pubs if p.get("exchange") == "flask-socketio"]
+ok(raised is None and len(pubs) == 1 and pubs[0]["body"] == b'{"event": "eud"}',
+   f"17b (r8b) on_channel_open publishes the stored EUD JSON and never calls to_json on the ioloop (raised {raised!r}, publishes {len(pubs)})")
+h = H(); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h._pending_ops = None
+h.eud = _Model(); h._eud_json = None; nc = SubChan({}); del h.on_channel_open
+try:
+    h.on_channel_open(nc); raised = None
+except Exception as e:
+    raised = e
+ok(raised is None and not [p for p in nc.pubs if p.get("exchange") == "flask-socketio"], "17b (r8b) no stored JSON (not identified yet): nothing published, nothing raised")
 # 18 R4: a channel closed because the connection dropped is not a channel error (review A-F8)
 h = H(); h.rabbit_connection = FakeConn2(); h.rabbit_connection.is_open = False; h._ioloop = h.rabbit_connection.ioloop; h.callsign = "C"
 h.on_channel_close(None, "connection lost"); h.on_channel_close(None, "x"); h.on_channel_close(None, "x")

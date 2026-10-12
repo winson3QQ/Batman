@@ -349,7 +349,7 @@
  
      def pong(self, event):
          if event.attrs.get("type") == "t-x-c-t":
-@@ -158,8 +428,85 @@
+@@ -158,8 +428,86 @@
          return False
  
      def setup(self):
@@ -409,6 +409,7 @@
 +        self._admits = 0             # r8 A8-2: admissions so far (only the first logs at INFO)
 +        self._sup_t = None           # R17 (r8): when this session was superseded
 +        self._prev = None            # R17 (r8 A8-4/B8-3): (pid, start ticks) of the session this one superseded
++        self._eud_json = None        # r8b: the EUD's web-map JSON, built on the handler thread (app context)
 +        _oom_first()                 # R16: under memory pressure the kernel kills a session, never the listener
 +        if not self._admit():  # BATMAN-264-R7/R12: fail closed before anything is allocated or declared
 +            self.shutdown = True
@@ -436,7 +437,7 @@
          # RabbitMQ
          try:
              rabbit_credentials = pika.PlainCredentials(
-@@ -168,58 +515,305 @@
+@@ -168,58 +516,305 @@
              )
              rabbit_host = self.app.config.get("OTS_RABBITMQ_SERVER_ADDRESS")
              self.rabbit_connection = pika.SelectConnection(
@@ -772,7 +773,7 @@
          app = Flask(__name__)
          app.config.from_object(DefaultConfig)
  
-@@ -272,21 +866,37 @@
+@@ -272,59 +867,797 @@
          return app
  
      def on_connection_open(self, connection: pika.SelectConnection):
@@ -802,8 +803,6 @@
  
 -        for message in self.cached_messages:
 -            self.publish_cot(message)
--
--        self.cached_messages.clear()
 +        if self._pending_ops and not self._closed:  # BATMAN-264: a subscription requested before the channel was open
 +            ops, self._pending_ops = self._pending_ops, None
 +            self._subscribe(ops)
@@ -813,28 +812,12 @@
 +            self._try_end()
 +            return
  
-         # Publish the EUD info to flask-socketio for the web UI map
-         if self.eud:
-@@ -301,30 +911,762 @@
-                 "binary": False,
-                 "host_id": uuid.uuid4().hex,
-             }
--            self.rabbit_channel.basic_publish(
--                "flask-socketio",
--                "",
--                json.dumps(message),
--                properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
--            )
-+            self._publish_on_ioloop("flask-socketio", "", json.dumps(message))  # BATMAN-264-R4b: counted
- 
--    def on_channel_close(self, channel: Channel, error):
--        self.logger.error(f"RabbitMQ channel closed for {self.callsign}, shut it down")
--        if (
--            self.rabbit_connection
--            and not self.rabbit_connection.is_closing
--            and not self.rabbit_connection.is_closed
--        ):
--            self.rabbit_connection.close()
+-        self.cached_messages.clear()
++        # Publish the EUD info to flask-socketio for the web UI map (BATMAN-264 r8b: the JSON was built on the handler
++        # thread inside the app context; to_json() here, on the ioloop, raised "Working outside of application context")
++        if self._eud_json is not None:
++            self._publish_on_ioloop("flask-socketio", "", self._eud_json)  # BATMAN-264-R4b: counted
++
 +    def _retry_goodbye(self):
 +        # review r3 A3-6: the channel or the connection was lost while the goodbye (disconnect, unbinds) was in
 +        # flight: once, put it back and run the end again (it reconnects, bounded by a new DRAIN_MAX_S deadline)
@@ -847,9 +830,23 @@
 +        self._end_deadline = self._ioloop.call_later(DRAIN_MAX_S, self._end_timeout)
 +        return True
  
--        self.shutdown = True
--        # self.request.shutdown(socket.SHUT_RDWR)
--        # self.sock.close()
+-        # Publish the EUD info to flask-socketio for the web UI map
+-        if self.eud:
+-            message = {
+-                "method": "emit",
+-                "event": "eud",
+-                "data": self.eud.to_json(),
+-                "namespace": "/socket.io",
+-                "room": None,
+-                "skip_sid": [],
+-                "callback": None,
+-                "binary": False,
+-                "host_id": uuid.uuid4().hex,
+-            }
+-            self.rabbit_channel.basic_publish(
+-                "flask-socketio",
+-                "",
+-                json.dumps(message),
 +    def on_channel_close(self, channel: Channel, error):
 +        if not self._final_close and self._closed and self._end_args is None and self._retry_goodbye():
 +            self.rabbit_channel = None
@@ -881,11 +878,9 @@
 +            self.close_connection()
 +        else:
 +            self._try_end()
- 
-     def on_close(self, connection, error):
--        # Stop the ioloop using add_callback_threadsafe because ioloop.stop() isn't threadsafe
--        connection.ioloop.add_callback_threadsafe(self.rabbit_connection.ioloop.stop)
-         self.logger.info("Connection closed for {}: {}".format(self.client_address[0], error))
++
++    def on_close(self, connection, error):
++        self.logger.info("Connection closed for {}: {}".format(self.client_address[0], error))
 +        if self._closed and self._end_args is None and self._retry_goodbye():
 +            self.rabbit_channel = None
 +            self._decl_channel = None
@@ -1284,9 +1279,17 @@
 +                exchange="cot_parser",
 +                body=body,
 +                routing_key="cot_parser",
-+                properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
-+            )
-+
+                 properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+             )
+ 
+-    def on_channel_close(self, channel: Channel, error):
+-        self.logger.error(f"RabbitMQ channel closed for {self.callsign}, shut it down")
+-        if (
+-            self.rabbit_connection
+-            and not self.rabbit_connection.is_closing
+-            and not self.rabbit_connection.is_closed
+-        ):
+-            self.rabbit_connection.close()
 +        if not binds:
 +            if self._relay or not uid:
 +                try:
@@ -1320,10 +1323,17 @@
 +                self.logger.error(f"declare of {uid} at the end failed: {e}")
 +                close()
 +            return
-+
+ 
+-        self.shutdown = True
+-        # self.request.shutdown(socket.SHUT_RDWR)
+-        # self.sock.close()
 +        names = [uid] + ([self.callsign] if self._cs_queue and self.callsign and self.callsign != uid else [])
 +        seen = {}
-+
+ 
+-    def on_close(self, connection, error):
+-        # Stop the ioloop using add_callback_threadsafe because ioloop.stop() isn't threadsafe
+-        connection.ioloop.add_callback_threadsafe(self.rabbit_connection.ioloop.stop)
+-        self.logger.info("Connection closed for {}: {}".format(self.client_address[0], error))
 +        def finish():
 +            try:
 +                cu, mu = seen[uid]
@@ -1597,7 +1607,7 @@
  
      def on_message(self, unused_channel, basic_deliver, properties, body):
          try:
-@@ -446,8 +1788,36 @@
+@@ -446,8 +1779,36 @@
          if self.pong(event):
              return
  
@@ -1635,7 +1645,7 @@
              # Close the DB connection once the EUD is authenticated and identified
              with self.app.app_context():
                  db.session.close()
-@@ -459,28 +1829,20 @@
+@@ -459,28 +1820,20 @@
          if not event:
              return
  
@@ -1677,7 +1687,7 @@
  
      def parse_device_info(self, event):
          link = event.find("link")
-@@ -500,6 +1862,7 @@
+@@ -500,6 +1853,7 @@
          # Only assume it's an EUD if it's got a <contact> tag
          if contact and uid and not uid.endswith("ping") and (self.user or not self.is_ssl):
              self.uid = uid
@@ -1685,7 +1695,7 @@
              device = operating_system = platform = version = None
              if takv:
                  device = takv.attrs["device"] if "device" in takv.attrs else None
-@@ -511,30 +1874,78 @@
+@@ -511,30 +1865,78 @@
                  self.callsign = contact.attrs["callsign"]
  
                  # Declare a RabbitMQ Queue for this uid and join the 'dms' and 'cot' exchanges
@@ -1775,7 +1785,7 @@
                                      exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                                  )
                                  if {
-@@ -556,7 +1967,7 @@
+@@ -556,7 +1958,7 @@
                                      self.group_memberships.append(membership)
  
                                      if membership.enabled:
@@ -1784,7 +1794,7 @@
                                              exchange="groups",
                                              queue=self.uid,
                                              routing_key=f"{membership.group.name}.OUT",
-@@ -575,7 +1986,7 @@
+@@ -575,7 +1977,7 @@
                                              }
                                          )
  
@@ -1793,7 +1803,7 @@
                              exchange="missions", routing_key="missions", queue=self.uid
                          )
                          if {
-@@ -592,12 +2003,13 @@
+@@ -592,12 +1994,13 @@
                              )
  
                          # The DMs queue also binds by callsign since the <dest> tag in CoT messages can be by callsign instead of UID
@@ -1811,7 +1821,7 @@
  
                          if {
                              "exchange": "dms",
-@@ -608,7 +2020,7 @@
+@@ -608,7 +2011,7 @@
                                  {"exchange": "dms", "routing_key": self.uid, "queue": self.uid}
                              )
  
@@ -1820,7 +1830,7 @@
                              "exchange": "dms",
                              "routing_key": self.callsign,
                              "queue": self.callsign,
-@@ -625,7 +2037,7 @@
+@@ -625,7 +2028,7 @@
                              self.logger.debug(
                                  f"{self.callsign} is connected via TCP, adding them to the __ANON__ group"
                              )
@@ -1829,7 +1839,7 @@
                                  exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                              )
                              self.bound_queues.append(
-@@ -636,138 +2048,160 @@
+@@ -636,109 +2039,132 @@
                                  }
                              )
  
@@ -2021,25 +2031,6 @@
 -                # Also save the EUD's info for on_channel_open to publish
 -                self.eud = eud
 -                if self.rabbit_channel:
--                    message = {
--                        "method": "emit",
--                        "event": "eud",
--                        "data": eud.to_json(),
--                        "namespace": "/socket.io",
--                        "room": None,
--                        "skip_sid": None,
--                        "callback": None,
--                        "binary": False,
--                        "host_id": uuid.uuid4().hex,
--                    }
--                    self.rabbit_channel.basic_publish(
--                        exchange="flask-socketio",
--                        routing_key="",
--                        body=json.dumps(message).encode(),
--                        properties=pika.BasicProperties(
--                            expiration=self.app.config.get("OTS_RABBITMQ_TTL")
--                        ),
--                    )
 +                    try:
 +                        db.session.add(eud)
 +                        db.session.commit()
@@ -2057,19 +2048,29 @@
 +                    # If the RabbitMQ channel is open, publish the EUD info to socketio to be displayed on the web UI map.
 +                    # Also save the EUD's info for on_channel_open to publish
 +                    self.eud = eud
+                     message = {
+                         "method": "emit",
+                         "event": "eud",
+-                        "data": eud.to_json(),
++                        "data": eud.to_json(),  # on this thread, inside the app context (r8b)
+                         "namespace": "/socket.io",
+                         "room": None,
+                         "skip_sid": None,
+@@ -746,28 +2172,28 @@
+                         "binary": False,
+                         "host_id": uuid.uuid4().hex,
+                     }
+-                    self.rabbit_channel.basic_publish(
+-                        exchange="flask-socketio",
+-                        routing_key="",
+-                        body=json.dumps(message).encode(),
+-                        properties=pika.BasicProperties(
+-                            expiration=self.app.config.get("OTS_RABBITMQ_TTL")
+-                        ),
+-                    )
++                    self._eud_json = json.dumps(message).encode()
 +                    if self.rabbit_channel:
-+                        message = {
-+                            "method": "emit",
-+                            "event": "eud",
-+                            "data": eud.to_json(),
-+                            "namespace": "/socket.io",
-+                            "room": None,
-+                            "skip_sid": None,
-+                            "callback": None,
-+                            "binary": False,
-+                            "host_id": uuid.uuid4().hex,
-+                        }
-+                        self._io(self._publish_on_ioloop, "flask-socketio", "", json.dumps(message).encode())  # BATMAN-264
++                        self._io(self._publish_on_ioloop, "flask-socketio", "", self._eud_json)  # BATMAN-264
 +            except Exception as e:
 +                self.logger.error(f"{self.client_address[0]}: EUD row of {uid} not written ({type(e).__name__}: {e}); "
 +                                  f"writing a minimal row so its CoT are recorded (BATMAN-264-R14)")
