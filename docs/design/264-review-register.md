@@ -264,3 +264,11 @@ Fixed in f3f7c9d (rc wsl.11).
 | impl-7 | harness | — | admission-264 (b) opened 10 sockets at once and overflowed upstream's backlog of 5 (the kernel dropped the last ACKs, so the server never saw them). | Flip: the same overlay, the sockets 1 s apart: 2 refused, as designed. | fixed (GAP=1) |
 | impl-8 | harness | — | queue-policy-264's count check did not discriminate on wsl.10: the burst put only 366 messages in (< 500), so only the policy-presence check failed. | `dv264neg10/.../queue-policy-264.log`: `capped: 366 <= 500`, `FAIL ... no batman-264-eud-queues policy`. | fixed: 1500 CoT, measured once the cot_parser queue is empty (~75 s; cot_parser routes ~24/s); a missing queue FAILs. Re-run on wsl.10: `holds 1502 messages (no cap)` (`r3/negqp2-wsl10.log`) |
 | ❓-1 | — | — | test-payload-run.sh #14 fails intermittently (2 of 9 runs), also before the round-3 change. | Same failure on the pre-change payload-run. | ❓ unattributed: leftover |
+
+## Field scenario findings (2026-10-12, before review round 4; the user's field description, memory `project_ots_field_context`)
+
+| ID | Severity | Class | Finding | Reproduction | Status |
+|---|---|---|---|---|---|
+| fs-1 | BLOCKER | A | The RTO returns: 16 zombies + 16 reconnecting phones; the memcg OOM killer killed the listener parent, every session and cache lost, 0/16 kept. | rc wsl.11 (768m), twice: `r4/rto-rc11.log` (`Killed process 15458 (python3) ... anon-rss:118192kB`, `restart: crash ots_eud_handler`), `dv264negrto11` (StartedAt 07:00:53 -> 07:15:31). | fixed 0b8efff (R16 + 1280m); suite rto-264 |
+| impl-9 | harness | — | cap16-264 counted OOM kills from the current container's `memory.events`: an OOM-killed listener restarts in a new cgroup whose count starts at 0. | `rto-rc11.log`: `oom_kill 0 -> 0` while the container had restarted. | fixed 0b8efff: StartedAt compared too (cap16-264, rto-264) |
+| impl-10 | build | — | BATMAN_NOTE in batman-release.env still says wsl.4: the build scripts' sed never matched. Cosmetic (release-note text). | `git show HEAD:batman-release.env` on the firmware tree. | leftover: fix before the shipped build |

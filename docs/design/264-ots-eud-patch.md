@@ -18,6 +18,13 @@ User decisions (2026-10-12, code review rounds 2–3):
 - An 8089 session may not claim the uid of another user's device; callsigns stay shared as upstream (R10).
 - Field tests with real ATAK/iTAK devices are deferred (not enough devices now): a #264 leftover.
 
+Field scenario (the user, 2026-10-12): off-grid tactical team. Each member carries a node and their phone joins
+that node over Wi-Fi (or BLE) and runs a TAK client. All nodes move; the OTS node is carried by the RTO.
+Meshtastic is the fallback when HaLow is jammed (positions and short messages). Batteries are swapped when flat.
+OTA happens during maintenance, not on missions. **After the mission the review must restore every record**;
+a few duplicate rows are acceptable. **OTS runs only on Pi 4 8 GB.** A 48-hour duty soak (16 clients, 2 CoT/min)
+is scheduled after this issue as #287.
+
 Scope:
 - the patched `EudHandler.py` (`deploy/ots/patches/`);
 - the OTS manifest and profile;
@@ -294,7 +301,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     0 sessions and 512 MiB, the reserve refused after about 15 sessions per listener.
   - Mass reconnect (power back, OTA): measured on rc wsl.10, 16 sessions at once all passed a 110 MiB check and
     then used 474 MiB anon of 512 (93 %), 0 refused, 0 OOM: one phone short of the OOM kill of every session.
-  - Fix: the eud containers' `memory` is 768m (profile); admissions are serialized (R12 admission lock) so each
+  - Fix: the eud containers' `memory` is 768m in round 3, 1280m since R16 (profile); admissions are serialized (R12 admission lock) so each
     memory check sees the sessions admitted before it; the listen backlog is 64 (upstream 5 dropped the last ACK
     of a crowd: 10 at once from one address -> 8 accepted).
   - Test: `cap16-264`: 16 identifying sessions at once from two addresses (8 + 8): all subscribed, none refused,
@@ -424,6 +431,32 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   control: rc wsl.8 (a, b, c), rc wsl.10 (d). Offline #21 (address count), #22/#22b (order, lock), the handle()
   tests (rolling deadline).
 
+### R16 — a reconnecting crowd never takes the listener down (field scenario 2026-10-12)
+- **Cause (reproduced twice on node 04 with rc wsl.11, 768m; `scratchpad/264/r4/rto-rc11.log`, `negrto11`):** the RTO
+  walks out of range and is back within ~2 min. The team's 16 sessions are still on the server (zombies, no FIN)
+  when the same 16 phones reconnect at once. R7 refused 3, then the memcg OOM killer killed the LARGEST process,
+  the listener parent (anon-rss 118 MB): the container exited, every session and every cache with it (an AAR gap),
+  and the guardian restarted it; 0/16 reconnects kept. Three causes: the OOM killer picks the parent; the
+  admission lock was released at the first message, before the session had grown (subscription, AMQP); the
+  reserve read only `anon`, while the zombies' unsent data sits in socket buffers charged to the same limit
+  (tcp_wmem max 4 MiB each).
+- **Fix (`BATMAN-264-R16`):**
+  - each session process writes `oom_score_adj` 1000 for itself at setup (raising one's own score needs no
+    privilege; probed as uid 1000 on 04): an OOM kills one session, whose phone reconnects, never the listener;
+  - the admission lock is held until the session's subscription is placed or fails (`_subscribe`), a
+    non-identifying session releases it at its first message, `ADMIT_HOLD_S` 20 s is the fallback;
+  - "used" for the reserve = `memory.current` minus the page cache (`file`): anon plus kernel memory, socket
+    buffers included (log page cache is still excluded, review B-6);
+  - the app containers' limit is 1280m: OTS runs only on Pi 4 8 GB; 4 x 1280m + 2 x 512m = 6.1 GiB, below the
+    6.6 GiB available, so even every cap hit at once does not OOM the node.
+- **Residual, stated:** a session killed by the OOM killer loses its cache (bounded by R9) and ends without its
+  goodbye (its queues stay until R15's expiry); a refused phone records nothing until it is admitted.
+- **Test:** `rto-264` (16 zombies black-holed on 02/03, the same 16 uids reconnecting from inside two OTS
+  containers; asserts all 16 kept for 120 s, `ots_eud_handler` StartedAt unchanged, no OOM kill). Negative
+  control: rc wsl.11 (0/16, listener restarted). `cap16-264` now also compares StartedAt (an OOM-killed listener
+  comes back in a new cgroup whose `oom_kill` count starts at 0: seen as "0 -> 0" while it had restarted).
+  Offline #20 (used = current - file), #24 (oom_score_adj; lock release), handle() R16 cases.
+
 ### R13 — end-on-loss (review r3 A3-3; the user's decision 2026-10-12)
 - **Cause:** R4 replayed the subscription recorded at identification after a reconnect; bindings made later
   through the Marti API (missions, group changes) were silently missing until the phone reconnected.
@@ -475,7 +508,8 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | `cot_parser` exchange, queue and binding | two idempotent declarers with identical arguments: cot_parser (upstream) and eud (R5) | broker |
 | per-EUD queues and bindings | every live session of the EUD (shared, as upstream); a binding is removed only by a session that placed it, when no other consumer is left on that queue; queues are deleted only by the last 8088 session (never for 8089: cot_parser binds them on the disconnect) | web/API, cot_parser (8089 disconnect), other sessions (publish) |
 | the session end of one child | that child: started once (lock), run on its ioloop, waited for by its handler thread | — |
-| admission lock `/tmp/batman-264-admit.lock` (container tmpfs) | each child holds it while being admitted (flock, released by the kernel on exit) | — |
+| admission lock `/tmp/batman-264-admit.lock` (container tmpfs) | each child holds it from its memory check until its subscription is placed (or 20 s; flock, released by the kernel on exit) | — |
+| a session process's `oom_score_adj` | that process (sets 1000 for itself, R16) | kernel OOM killer |
 | R8 hold file `$RUNDIR/batman-payload-<tenant>.mountsha-hold` | payload-run (written by a refused converge, removed by a successful one) | every start path of payload-run (incl. the guardian's `--restart-exited`) |
 | broker policy `batman-264-eud-queues`, vhost `/`, user `guest` | `batman-definitions.json` (golden, imported at every broker start) | broker; OTS logs in as guest |
 
@@ -530,7 +564,8 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | a phone flapping at the edge of range / two app instances | the second session's end unbinds the first | the first keeps its bindings | same-uid-end-264 |
 | two devices with one callsign | both shared (round-robin on the callsign queue) | same; each has its own `<uid>` queue | callsign-share-264 |
 | 8089 group member leaves while cot_parser is busy | (upstream keeps the queue) | queues kept (never deleted for 8089) | group-disc-264 |
-| N concurrent clients / mass reconnect after power loss | +39 MB each (measured), OOM kill of the container at ~10 | 23 MiB each (rc wsl.7); 768m; 8 per address and the memory reserve before TLS, serialized admission, rolling deadline until identified, backlog 64; target 16 phones | eud-mem-264, admission-264, cap16-264 + offline cases |
+| the RTO walks out of range and back (16 zombies + 16 reconnects) | (upstream: OOM kill of the container) | each reconnect admitted after the previous one is placed; an OOM kills a session, never the listener; 1280m | rto-264 |
+| N concurrent clients / mass reconnect after power loss | +39 MB each (measured), OOM kill of the container at ~10 | 23 MiB each (rc wsl.7); 1280m (R16); 8 per address and the memory reserve before TLS, serialized admission, rolling deadline until identified, backlog 64; target 16 phones | eud-mem-264, admission-264, cap16-264 + offline cases |
 | a CoT that makes cot_parser's helpers raise | the child dies, queues left bound | that message dropped, session goes on (R14) | exception-264 |
 | an 8089 group member leaves for good | its queue bound to its groups, fills for ever | capped at 500 / 1 MiB, deleted 24 h unused (R15) | queue-policy-264 |
 | guardian restart after a refused converge | (R8 new) | the held container stays stopped until a converge succeeds | test-payload-run #29, r8-hold-264 |
@@ -601,6 +636,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | owner-8089-264 | feature | no (a 1-day test cert in the container's tmpfs, removed) | wsl.10: the row was taken over |
 | queue-policy-264 | feature | no | wsl.10: the departed member's queue grew without bound |
 | cap16-264 | feature | no | wsl.10: anon peak 93 % of memory.max |
+| rto-264 | feature | no (peer-side nft on the test clients' ports only, self-expiring) | wsl.11: the listener OOM-killed, 0/16 kept |
 | r8-hold-264 | tier B | yes (stops the OTS overlay containers, restores from the golden) | wsl.10: the guardian started the held container |
 | group-disc-264 | feature | yes on a broken build (cot_parser crash loop; ends when the test membership is removed, which every exit path does) | wsl.8: 6 x crash ots_cot_parser |
 | name-guard-264 | feature | no | by code: upstream subscribes unconditionally |
