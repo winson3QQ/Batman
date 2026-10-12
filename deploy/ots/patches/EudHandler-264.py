@@ -79,7 +79,7 @@ from opentakserver.models.ZMIST import ZMIST
 MAX_PENDING = 1 << 20  # BATMAN-264-PA: bytes held while waiting for a closing tag (upstream: unbounded)
 CACHE_MAX = 2000         # BATMAN-264-R9: cot_parser bodies held per session while the broker is away/blocked
 CACHE_MAX_BYTES = 2 << 20
-BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13 R16"  # BATMAN-264: which #264 items this overlay carries (payload-conform greps it)
+BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13 R14 R16"  # BATMAN-264: which #264 items this overlay carries (payload-conform greps it)
 # BATMAN-264-R6: client-socket keepalive (seconds / count / ms): a peer that vanished is gone in about 2 minutes
 KEEPALIVE_IDLE = 45
 KEEPALIVE_INTVL = 15
@@ -114,8 +114,9 @@ CG_DIR = "/sys/fs/cgroup"  # this container's own cgroup (cgroup v2, namespaced)
 # BATMAN-264-R10: the client's uid and callsign become queue names (declare/bind/consume) on the shared broker,
 # unauthenticated on 8088. A callsign equal to a system queue would consume that queue (callsign "cot_parser"
 # steals every CoT from storage, round-robin with cot_parser); "amq.*" is refused by the broker with a channel
-# error; a name over 255 bytes raises inside pika. A refused session gets no subscription and no EUD row, and
-# cot_parser stores nothing from a sender without one (measured on node 04): it is invisible (fail-secure).
+# error; a name over 255 bytes raises inside pika. An unusable or owned CALLSIGN is not used as a queue and the device
+# is still subscribed by its uid and RECORDED (the user's decision 2026-10-12, review r4); an unusable or owned UID
+# gets no subscription and no row update (its CoT go to that uid's existing row, if any).
 RESERVED_NAMES = frozenset({"cot_parser", "dms", "chatrooms", "missions", "groups", "firehose", "flask-socketio",
                             "meshtastic", "dmrcot"})
 
@@ -148,6 +149,13 @@ def _cg_mem():
         return cur - fil, (None if mx == "max" else int(mx))
     except (OSError, ValueError):
         return None, None
+
+
+def _phone_int(phone):
+    """BATMAN-264-R14 (review r5): euds.phone_number is a BigInteger. A phone such as '555-123-4567' made the row
+    insert fail every time; its digits are kept (up to 18), anything else becomes None."""
+    d = re.sub(r"\D", "", str(phone or ""))
+    return int(d) if d and len(d) <= 18 else None
 
 
 def _oom_first():
@@ -332,8 +340,9 @@ class EudHandler(socketserver.BaseRequestHandler):
                     # session goes on.
                     self.logger.error(f"{self.client_address[0]}: a message raised {type(e).__name__}: {e}; dropped")
                     self.logger.debug(traceback.format_exc())
-                if not self._sub_wanted:
-                    # BATMAN-264-R12/R16: this session's first work is done. A session that asked for its
+                if not self._sub_wanted and tag == b"</event>" and b'type="t-x-c-t"' not in chunk[:600]:
+                    # BATMAN-264-R12/R16: this session's first work is done (review r5 B5-9: a ping or an <auth>
+                    # is not; the identifying CoT that follows is admitted under the same lock, or ADMIT_HOLD_S). A session that asked for its
                     # subscription keeps the lock until _subscribe has placed it, so the next admission's memory
                     # check sees what this one really costs (rc wsl.11: released here, 16 reconnects all passed
                     # while still growing)
@@ -402,7 +411,6 @@ class EudHandler(socketserver.BaseRequestHandler):
         self._pub_seq = 0            # BATMAN-264-R4b: publishes on rabbit_channel since Confirm.Select (broker numbering)
         self._unacked = {}           # seq -> (body, meta) of cot_parser publishes not yet acked (insertion-ordered)
         self._returned = set()       # seqs that came back via basic.return (already re-cached; their ack is not a delivery)
-        self._need_replay = False    # BATMAN-264-R4: re-run the recorded subscription on the next channel
         self._sub_ops = None
         self._chan_errors = []
         self._reconnect_n = 0
@@ -429,6 +437,7 @@ class EudHandler(socketserver.BaseRequestHandler):
         self._refused = False
         self._goodbye = None         # r4 (A3-6): the end's (uid, body) until its CloseOk: a loss in between retries it
         self._goodbye_retried = False
+        self._ident_failures = 0     # R14 (r5): bounded re-identification
         _oom_first()                 # R16: under memory pressure the kernel kills a session, never the listener
         if not self._admit():  # BATMAN-264-R7/R12: fail closed before anything is allocated or declared
             self.shutdown = True
@@ -517,8 +526,8 @@ class EudHandler(socketserver.BaseRequestHandler):
     def _wait_end(self):
         if self.iothread is None or threading.current_thread() is self.iothread:
             return
-        if not self._end_done.wait(DRAIN_MAX_S + 10):
-            self.logger.error(f"session end of {self.client_address[0]} did not complete within {DRAIN_MAX_S + 10} s")
+        if not self._end_done.wait(2 * DRAIN_MAX_S + 10):  # r5 A5-7: room for the one retried goodbye (A3-6)
+            self.logger.error(f"session end of {self.client_address[0]} did not complete within {2 * DRAIN_MAX_S + 10} s")
 
     # ---- BATMAN-264-R4b/R6: the session end, on the ioloop: drain (bounded), then disconnect/unbind/cleanup ----
     def _begin_end(self, uid, body):
@@ -843,7 +852,8 @@ class EudHandler(socketserver.BaseRequestHandler):
             return False
         self._goodbye_retried = True
         self._end_args, self._goodbye = self._goodbye, None
-        self.logger.error(f"session end of {self.client_address[0]}: the broker went away during the goodbye; retrying it once")
+        self.logger.error(f"session end of {self.client_address[0]}: the channel or connection closed during the goodbye; "
+                          f"retrying it once")
         self._end_deadline = self._ioloop.call_later(DRAIN_MAX_S, self._end_timeout)
         return True
 
@@ -1126,13 +1136,12 @@ class EudHandler(socketserver.BaseRequestHandler):
         if binds is not None:
             self._sub_binds_pending = list(binds)
         self._sub_ops = ops  # kept for diagnosis; R13 (r3 A3-3) ends the session instead of replaying
-        if (self._subscribed and not self._need_replay) or self._closed:
+        if self._subscribed or self._closed:
             return
         if not (self.rabbit_channel and self.rabbit_channel.is_open):
             self._pending_ops = ops
             return
         ch = self.rabbit_channel
-        replay = self._need_replay
 
         def declared(frame):
             m = getattr(frame, "method", None)
@@ -1155,9 +1164,8 @@ class EudHandler(socketserver.BaseRequestHandler):
             self._release_admit()
             return
         self._subscribed = True
-        self._need_replay = False
         self._sub_binds = list(self._sub_binds_pending)
-        self.logger.info(f"subscribed {self.uid}/{self.callsign} for {self.client_address[0]}{' (replay)' if replay else ''}")
+        self.logger.info(f"subscribed {self.uid}/{self.callsign} for {self.client_address[0]}")
         self._release_admit()  # BATMAN-264-R16: admitted and placed: the next admission may go
 
     # ---- BATMAN-264-R4/R4b: publisher confirms (at-least-once) and reconnect on the same ioloop ---------------
@@ -1300,6 +1308,8 @@ class EudHandler(socketserver.BaseRequestHandler):
                 try:
                     if not getattr(getattr(frame, "method", None), "consumer_count", 0):
                         publish_disconnect()
+                        if self.user is None and not self._uid_has_owner(uid):  # r5 B5-11: no 24 h empty orphan
+                            ch.queue_delete(queue=uid, if_unused=True, if_empty=True)
                     else:
                         self.logger.info(f"another session of {uid} is live: no disconnect")
                 finally:
@@ -1340,15 +1350,43 @@ class EudHandler(socketserver.BaseRequestHandler):
             m = getattr(frame, "method", None)
             seen[names[len(seen)]] = (getattr(m, "consumer_count", 0), getattr(m, "message_count", 0))
             if len(seen) < len(names):
-                ch.queue_declare(queue=names[len(seen)], passive=True, callback=declared)
+                ch.queue_declare(queue=names[len(seen)], callback=declared)  # r5: not passive (see _end_session)
             else:
                 finish()
 
         try:
-            ch.queue_declare(queue=names[0], passive=True, callback=declared)
+            # BATMAN-264 (review r5 A5-3/B5-5): NOT passive. The per-EUD queues are transient: after a broker restart,
+            # or after the other device of a shared callsign deleted the callsign queue, a passive declare was a 404
+            # that closed the channel (no disconnect, a ghost "Connected" row). A normal declare re-creates an empty
+            # queue (R15 expires it) and reports the consumers the same way.
+            ch.queue_declare(queue=names[0], callback=declared)
         except Exception as e:
             self.logger.error(f"passive declare of {uid} failed: {e}")
             close()
+
+    def _minimal_eud_row(self, uid):
+        # BATMAN-264-R14/R10 (review r5): the smallest row cot_parser's FK needs: the uid, "Connected", this session's
+        # user, and the callsign only if no other device holds it (euds.callsign is UNIQUE). Never raises.
+        with self.app.app_context():
+            for with_cs in (True, False):
+                try:
+                    db.session.rollback()
+                    row = db.session.execute(select(EUD).filter_by(uid=uid)).first()
+                    if row is not None:
+                        return
+                    e = EUD()
+                    e.uid = uid
+                    e.last_status = "Connected"
+                    e.user_id = self.user.id if self.user else None
+                    if with_cs and self.callsign:
+                        e.callsign = str(self.callsign)[:255]
+                    db.session.add(e)
+                    db.session.commit()
+                    return
+                except Exception as ex:
+                    db.session.rollback()
+                    if not with_cs:
+                        self.logger.error(f"minimal EUD row of {uid} failed too: {type(ex).__name__}: {ex}")
 
     def _uid_has_owner(self, uid):
         # review r3 B3-7: an 8088 session of a uid that an OTS user's device (8089) holds as well must not delete
@@ -1494,7 +1532,17 @@ class EudHandler(socketserver.BaseRequestHandler):
                 self.logger.error(f"{self.client_address[0]}: identification raised {type(e).__name__}: {e}; "
                                   f"identifying again on the next report (BATMAN-264-R14)")
                 self.logger.debug(traceback.format_exc())
-                self.uid = None
+                self._ident_failures += 1
+                if self._ident_failures < 3:
+                    self.uid = None
+                else:
+                    # BATMAN-264-R14 (review r5 A5-2/B5-2): an identification that keeps raising re-ran on every CoT
+                    # (a new postgres connection each, measured offline: 10 000 runs); after 3 the session keeps
+                    # this uid, its minimal row is written once, and identification is not tried again
+                    self.logger.error(f"{self.client_address[0]}: identification failed 3 times; keeping uid {self.uid}, "
+                                      f"minimal row (BATMAN-264-R14)")
+                    if self.uid:
+                        self._minimal_eud_row(self.uid)
             # Close the DB connection once the EUD is authenticated and identified
             with self.app.app_context():
                 db.session.close()
@@ -1731,118 +1779,132 @@ class EudHandler(socketserver.BaseRequestHandler):
             if "phone" in contact.attrs and contact.attrs["phone"]:
                 self.phone_number = contact.attrs["phone"]
 
-            with self.app.app_context():
-                __group = event.find("__group")
-                team = Team()
+            # BATMAN-264-R14 (review r5 A5-2/B5-1): the row is written whatever the metadata looks like
+            try:
+                with self.app.app_context():
+                    __group = event.find("__group")
+                    team = Team()
 
-                if __group:
-                    team.name = bleach.clean(__group.attrs["name"])
+                    if __group:
+                        team.name = bleach.clean(__group.attrs["name"])
 
-                    try:
-                        chatroom = db.session.execute(
-                            select(Chatroom).filter(Chatroom.name == team.name)
-                        ).first()[0]
-                        team.chatroom_id = chatroom.id
-                    except TypeError:
-                        chatroom = None
-
-                    try:
-                        db.session.add(team)
-                        db.session.commit()
-                    except sqlalchemy.exc.IntegrityError:
-                        db.session.rollback()
-                        team = db.session.execute(
-                            select(Team).filter(Team.name == __group.attrs["name"])
-                        ).first()[0]
-                        if not team.chatroom_id and chatroom:
+                        try:
+                            chatroom = db.session.execute(
+                                select(Chatroom).filter(Chatroom.name == team.name)
+                            ).first()[0]
                             team.chatroom_id = chatroom.id
-                            db.session.execute(
-                                update(Team)
-                                .filter(Team.name == chatroom.id)
-                                .values(chatroom_id=chatroom.id)
-                            )
+                        except TypeError:
+                            chatroom = None
 
-                try:
-                    eud = db.session.execute(select(EUD).filter_by(uid=uid)).first()[0]
-                except:
-                    eud = EUD()
+                        try:
+                            db.session.add(team)
+                            db.session.commit()
+                        except sqlalchemy.exc.IntegrityError:
+                            db.session.rollback()
+                            team = db.session.execute(
+                                select(Team).filter(Team.name == __group.attrs["name"])
+                            ).first()[0]
+                            if not team.chatroom_id and chatroom:
+                                team.chatroom_id = chatroom.id
+                                db.session.execute(
+                                    update(Team)
+                                    .filter(Team.name == chatroom.id)
+                                    .values(chatroom_id=chatroom.id)
+                                )
 
-                eud.uid = uid
-                if self.callsign:
-                    # BATMAN-264-R10 (review r4): euds.callsign is UNIQUE. A callsign held by ANOTHER device's row made
-                    # the insert fail and the fallback update match nothing: no row, every CoT of this device dropped
-                    # by cot_parser's FK (upstream too; measured on node 04: the second device of a shared callsign).
-                    # The device is recorded under its uid without a callsign column (the CoT keep their callsign).
-                    clash = db.session.execute(
-                        select(EUD.uid).filter(EUD.callsign == self.callsign).filter(EUD.uid != uid)
-                    ).first()
-                    if clash is None:
-                        eud.callsign = self.callsign
-                    else:
-                        self.logger.error(f"{self.client_address[0]}: callsign {self.callsign!r} is another device's "
-                                          f"({clash[0]}); {uid} recorded without it (BATMAN-264-R10)")
-                if device:
-                    eud.device = device
-
-                eud.os = operating_system
-                eud.platform = platform
-                eud.version = version
-                eud.phone_number = self.phone_number
-                eud.last_event_time = datetime_from_iso8601_string(event.attrs["start"])
-                eud.last_status = "Connected"
-                eud.user_id = self.user.id if self.user else None
-
-                # Set a Meshtastic ID for TAK EUDs to be identified by in the Meshtastic network
-                if not eud.meshtastic_id and eud.platform != "Meshtastic":
-                    meshtastic_id = "{:x}".format(int.from_bytes(os.urandom(4), "big"))
-                    while len(meshtastic_id) < 8:
-                        meshtastic_id = "0" + meshtastic_id
-                    eud.meshtastic_id = int(meshtastic_id, 16)
-                elif not eud.meshtastic_id and eud.platform == "Meshtastic":
                     try:
-                        eud.meshtastic_id = int(takv.attrs["meshtastic_id"], 16)
+                        eud = db.session.execute(select(EUD).filter_by(uid=uid)).first()[0]
                     except:
+                        eud = EUD()
+
+                    eud.uid = uid
+                    if self.callsign:
+                        # BATMAN-264-R10 (review r4): euds.callsign is UNIQUE. A callsign held by ANOTHER device's row made
+                        # the insert fail and the fallback update match nothing: no row, every CoT of this device dropped
+                        # by cot_parser's FK (upstream too; measured on node 04: the second device of a shared callsign).
+                        # The device is recorded under its uid without a callsign column (the CoT keep their callsign).
+                        clash = db.session.execute(
+                            select(EUD.uid).filter(EUD.callsign == self.callsign).filter(EUD.uid != uid)
+                        ).first()
+                        if clash is None:
+                            eud.callsign = self.callsign
+                        else:
+                            self.logger.error(f"{self.client_address[0]}: callsign {self.callsign!r} is another device's "
+                                              f"({clash[0]}); {uid} recorded without it (BATMAN-264-R10)")
+                    if device:
+                        eud.device = str(device)[:255]  # BATMAN-264-R14 (r5)
+
+                    eud.os = (operating_system or None) and str(operating_system)[:255]  # BATMAN-264-R14 (r5): String(255)
+                    eud.platform = (platform or None) and str(platform)[:255]
+                    eud.version = (version or None) and str(version)[:255]
+                    eud.phone_number = _phone_int(self.phone_number)  # BATMAN-264-R14 (r5): BigInteger column
+                    try:  # BATMAN-264-R14 (r5): a missing or odd start must not cost the row
+                        eud.last_event_time = datetime_from_iso8601_string(event.attrs["start"])
+                    except Exception:
+                        eud.last_event_time = None
+                    eud.last_status = "Connected"
+                    eud.user_id = self.user.id if self.user else None
+
+                    # Set a Meshtastic ID for TAK EUDs to be identified by in the Meshtastic network
+                    if not eud.meshtastic_id and eud.platform != "Meshtastic":
                         meshtastic_id = "{:x}".format(int.from_bytes(os.urandom(4), "big"))
                         while len(meshtastic_id) < 8:
                             meshtastic_id = "0" + meshtastic_id
                         eud.meshtastic_id = int(meshtastic_id, 16)
+                    elif not eud.meshtastic_id and eud.platform == "Meshtastic":
+                        try:
+                            eud.meshtastic_id = int(takv.attrs["meshtastic_id"], 16)
+                        except:
+                            meshtastic_id = "{:x}".format(int.from_bytes(os.urandom(4), "big"))
+                            while len(meshtastic_id) < 8:
+                                meshtastic_id = "0" + meshtastic_id
+                            eud.meshtastic_id = int(meshtastic_id, 16)
 
-                # Get the Meshtastic device's mac address or generate a random one for TAK EUDs
-                if takv and "macaddr" in takv.attrs:
-                    eud.meshtastic_macaddr = takv.attrs["macaddr"]
-                else:
-                    eud.meshtastic_macaddr = base64.b64encode(os.urandom(6)).decode("ascii")
+                    # Get the Meshtastic device's mac address or generate a random one for TAK EUDs
+                    if takv and "macaddr" in takv.attrs:
+                        eud.meshtastic_macaddr = takv.attrs["macaddr"]
+                    else:
+                        eud.meshtastic_macaddr = base64.b64encode(os.urandom(6)).decode("ascii")
 
-                if __group:
-                    eud.team_id = team.id
-                    eud.team_role = bleach.clean(__group.attrs["role"])
+                    if __group:
+                        eud.team_id = team.id
+                        eud.team_role = bleach.clean(__group.attrs.get("role") or "")[:255] or None  # BATMAN-264-R14 (r5)
 
-                try:
-                    db.session.add(eud)
-                    db.session.commit()
-                except sqlalchemy.exc.IntegrityError:
-                    db.session.rollback()
-                    db.session.execute(
-                        update(EUD).where(EUD.uid == eud.uid).values(**eud.serialize())
-                    )
-                    db.session.commit()
+                    try:
+                        db.session.add(eud)
+                        db.session.commit()
+                    except sqlalchemy.exc.IntegrityError:
+                        db.session.rollback()
+                        r = db.session.execute(
+                            update(EUD).where(EUD.uid == eud.uid).values(**eud.serialize())
+                        )
+                        db.session.commit()
+                        if not getattr(r, "rowcount", 1):
+                            # BATMAN-264-R10 (review r5 A5-4/B5-6): no row for this uid and the insert hit a UNIQUE
+                            # callsign taken in between (two devices identifying together): recorded without it
+                            self._minimal_eud_row(uid)
 
-                # If the RabbitMQ channel is open, publish the EUD info to socketio to be displayed on the web UI map.
-                # Also save the EUD's info for on_channel_open to publish
-                self.eud = eud
-                if self.rabbit_channel:
-                    message = {
-                        "method": "emit",
-                        "event": "eud",
-                        "data": eud.to_json(),
-                        "namespace": "/socket.io",
-                        "room": None,
-                        "skip_sid": None,
-                        "callback": None,
-                        "binary": False,
-                        "host_id": uuid.uuid4().hex,
-                    }
-                    self._io(self._publish_on_ioloop, "flask-socketio", "", json.dumps(message).encode())  # BATMAN-264
+                    # If the RabbitMQ channel is open, publish the EUD info to socketio to be displayed on the web UI map.
+                    # Also save the EUD's info for on_channel_open to publish
+                    self.eud = eud
+                    if self.rabbit_channel:
+                        message = {
+                            "method": "emit",
+                            "event": "eud",
+                            "data": eud.to_json(),
+                            "namespace": "/socket.io",
+                            "room": None,
+                            "skip_sid": None,
+                            "callback": None,
+                            "binary": False,
+                            "host_id": uuid.uuid4().hex,
+                        }
+                        self._io(self._publish_on_ioloop, "flask-socketio", "", json.dumps(message).encode())  # BATMAN-264
+            except Exception as e:
+                self.logger.error(f"{self.client_address[0]}: EUD row of {uid} not written ({type(e).__name__}: {e}); "
+                                  f"writing a minimal row so its CoT are recorded (BATMAN-264-R14)")
+                self.logger.debug(traceback.format_exc())
+                self._minimal_eud_row(uid)
 
     def unbind_rabbitmq_queues(self, uid, binds):  # BATMAN-264: ioloop thread only, snapshot of the bindings
         if (

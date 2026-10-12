@@ -36,6 +36,10 @@ echo "ok   patch == diff -u upstream EudHandler-264.py"
 python3 "$HERE/test-eudhandler-264.py" "$F" > "$T/test.out" 2>&1 || true
 tail -1 "$T/test.out" | grep -qx "ALL PASS" || { cat "$T/test.out"; fail "offline handle() tests"; }
 echo "ok   offline handle() tests ($(grep -c '^PASS' "$T/test.out") cases)"
+# 4a. offline identification tests (R14: a device is identified once and always recorded)
+python3 "$HERE/test-eudhandler-264-ident.py" "$F" > "$T/test3.out" 2>&1 || true
+tail -1 "$T/test3.out" | grep -qx "ALL PASS" || { cat "$T/test3.out"; fail "offline identification tests"; }
+echo "ok   offline identification tests ($(grep -c '^PASS' "$T/test3.out") cases)"
 # 4b. offline AMQP-side tests (R5 mandatory/return/declare, R9 cache bounds + flow control) on the shipped file
 python3 "$HERE/test-eudhandler-264-amqp.py" "$F" > "$T/test2.out" 2>&1 || true
 tail -1 "$T/test2.out" | grep -qx "ALL PASS" || { cat "$T/test2.out"; fail "offline AMQP tests"; }

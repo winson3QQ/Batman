@@ -17,6 +17,10 @@ User decisions (2026-10-12, code review rounds 2–3):
 - After a broker-side loss the client session ends once its cache is delivered (R13, "end-on-loss"); no replay.
 - An 8089 session may not claim the uid of another user's device; callsigns stay shared as upstream (R10).
 - Field tests with real ATAK/iTAK devices are deferred (not enough devices now): a #264 leftover.
+- (Review round 5) Accepted as stated, with the reasons given in the register (A4-4: a node-wide OOM takes phone
+  sessions before the node's daemons; A4-9: the definitions file owns the broker credential, #47 must change both;
+  A4-10: an away 8089 device re-subscribes its missions after 24 h; B4-7: a re-issued 8089 phone needs an admin
+  reassignment; A4-6: what a server-side close leaves unread is the client's to re-send, as decision 2).
 - (Review round 4) A device refused by R10 for a colliding callsign is still RECORDED: its own row, its own `<uid>`
   queue only. CoT lost while the mesh path to OTS is down are lost: re-sending them is the client's job (the server
   keeps R6's ~2 min reap; it does not hold sockets open to catch retransmissions).
@@ -49,7 +53,7 @@ Process model:
   writes to postgres.
 
 Measured on 04 (shipped 1.5.8-wsl.5):
-- Each eud container has a 512 MiB limit.
+- Each eud container had a 512 MiB limit (now 1280m, R16).
 - `memory.current` is 189 MB idle and 229 MB with one streaming client; 8 idle sessions measured +39 MB each (R7, fixed).
 - Broker heartbeat 60 s.
 
@@ -189,7 +193,12 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   session's end (which judges "last" by the consumer count) sees the new session before its bindings exist.
 - **A session that never subscribed (review r3 B3-10):** at its end, an identified session that is not refused
   declares its `<uid>` (not passively: a missing queue must not close the channel) and sends the disconnect when
-  nobody consumes it, so its EUD row does not stay "Connected"; never for a refused uid (r2 B2-1).
+  nobody consumes it, so its EUD row does not stay "Connected"; never for a refused uid (r2 B2-1). The queue that
+  declare re-created is removed again when idle, empty and unowned (review r5 B5-11).
+- **The end after a broker restart (review r5 A5-3/B5-5):** every end declares its queues normally, not passively:
+  the per-EUD queues are transient, so after a broker restart (or after the other device of a shared callsign deleted
+  the callsign queue) a passive declare was a 404 that closed the channel: no disconnect, a ghost "Connected" row.
+  The handler waits up to 2 x DRAIN_MAX_S + 10 s, room for the one retried goodbye (review r5 A5-7).
 - **F3 and an owned uid (review r3 B3-7):** an 8088 session never deletes `<uid>` when that uid's EUD row has a
   user (cot_parser's 8089 disconnect binds it); one database lookup at the end, kept on a lookup failure.
 - **Cause:** client sockets have no keepalive and no timeout (`EudHandlerSSL.py:20`, `settimeout(None)`;
@@ -296,7 +305,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     the container; the guardian never sees a crash, so no DRIFT and no OTA revert from a session flood.
 - **Admission before allocation:** see R12 (review round 2, B2-6): the TLS handshake, a per-address limit and a
   first-message deadline now come before anything a session allocates.
-- **Tests:** `eud-mem-264` (daily-validation, tier A): 6 idle sessions from the bench node, <= 12 MiB per session
+- **Tests:** `eud-mem-264` (daily-validation, tier A): 6 idle sessions from the bench node, <= 25 MiB per session (measured 23)
   (negative control: upstream 39, measured above), none refused, back within 15 MiB of the baseline after the
   clients leave, the run's EUD rows and rabbit queues removed. The cap itself: 5 offline cases
   (`test-eudhandler-264-amqp.py` #8) with the cgroup reader stubbed; on the node the refusal would need about 60
@@ -403,8 +412,8 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     Corrected (review r3 A3-9): the CoT it sends still carry the claimed uid, and cot_parser stores and routes
     them under that uid when its row exists. Track pollution by a client that names another device is upstream
     behaviour on an unauthenticated port; it is a B leftover.
-  - The subscription is made once per session (upstream identifies once too) and replayed after a reconnect. No
-    "busy" refusal any more (R6).
+  - The subscription is made once per session (upstream identifies once too); after a broker-side loss the session
+    ends (R13) and the phone's new session subscribes from the database. No "busy" refusal any more (R6).
 - **Residual, stated:** a phone re-issued to a new user keeps its uid; its 8089 session is refused the
   subscription until an admin reassigns the device in the web UI (recorded, no downlink; review r4 B4-7). A name never
   seen on 8089 (no row with a user) is not protected from an 8088 client that
@@ -415,8 +424,9 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   its end (review r3 B3-6: a binding is (exchange, queue, key)); DMs to that EUD are unroutable until it
   reconnects (upstream; B leftover). An 8089 user that once used an 8088 phone's name makes R10 refuse that phone
   (review r3 B3-5 residual; B leftover).
-- **Tests:** `name-guard-264` (a callsign `cot_parser`: the `cot_parser` queue keeps 1 consumer, refusal
-  logged, nothing stored); `owner-swap-264` (an 8089 user's uid used as an 8088 callsign, and as an 8088 uid:
+- **Tests:** `name-guard-264` (a callsign `cot_parser`: the `cot_parser` queue keeps 1 consumer, "is not used as a
+  queue" logged, the device RECORDED; rc wsl.12: 0 stored, rc wsl.13 before its update: the suite still expected the
+  old refusal, review r5); `owner-swap-264` (an 8089 user's uid used as an 8088 callsign, and as an 8088 uid:
   both refused, no consumer on the user's queues; wsl.8: the swap was subscribed); `owner-8089-264` (an 8089 user
   claiming another user's uid: refused, none of that user's queues consumed, the row keeps its user; rc wsl.10:
   taken over). Offline #15 (names).
@@ -441,7 +451,9 @@ Measured on 04 (shipped 1.5.8-wsl.5):
      the admission lock (`flock` on `/tmp/batman-264-admit.lock` in the container; wait at most 30 s, held until
      the session's subscription is placed or fails, or 20 s), then the memory reserve again: a crowd is checked
      one after the other (R7 capacity, R16). Without the lock the check still runs (logged). Each admission logs
-     `lock taken` / `lock released after N ms`.
+     `lock taken` / `lock released after N ms`. A first message that is a ping or an `<auth>` does not release the
+     lock (review r5 B5-9). Residual, stated (review r5 B5-3): a session's setup (its AMQP connection) runs before
+     the lock; the serialized check sees it, and the flip at 768m on the shipping order is in the register (fs-1).
   - **Deadline (review r3 B3-3, reproduced on rc wsl.10: one empty `<event></event>` cleared it, the socket was
     still open at 88 s):** until the client identifies (uid set), every complete message only moves the deadline
     `BATMAN_264_IDENT_MAX_S` (60 s) further; identification clears it once. A relay that keeps sending is never
@@ -479,13 +491,13 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     non-identifying session releases it at its first message, `ADMIT_HOLD_S` 20 s is the fallback;
   - "used" for the reserve = `memory.current` minus the page cache (`file`): anon plus kernel memory, socket
     buffers included (log page cache is still excluded, review B-6);
-  - the app containers' limit is 1280m: OTS runs only on Pi 4 8 GB; 4 x 1280m + 2 x 512m = 6.1 GiB, below the
+  - the app containers' limit is 1280m: OTS runs only on Pi 4 8 GB; 4 x 1280m + 2 x 512m = 6.0 GiB, below the
     6.6 GiB available, so even every cap hit at once does not OOM the node.
 - **Residual, stated:** a session killed by the OOM killer loses its cache (bounded by R9) and ends without its
   goodbye (its queues stay until R15's expiry); a refused phone records nothing until it is admitted.
   `oom_score_adj` also applies to a NODE-wide OOM (review r4 A4-4): phone sessions go before the node's own daemons,
   which is the intended order (a session reconnects; the mesh daemons keep the node reachable). The containers'
-  caps (6.1 GiB) are below the available memory, so OTS itself cannot cause a node-wide OOM.
+  caps (6.0 GiB) are below the available memory, so OTS itself cannot cause a node-wide OOM.
 - **Platform (review r4 A4-5):** the caps hold only on a Pi 4 8 GB, where OTS is installed (the user). The manifest
   states the minimum and payload-run refuses to start the tenant on a smaller board.
 - **Test:** `rto-264` (16 zombies black-holed on 02/03, the same 16 uids reconnecting from inside two OTS
@@ -520,6 +532,12 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   writes the EUD row; an exception in between left the uid set and no row, so the session never identified again
   and every later CoT was dropped by cot_parser's FK. Now the uid is reset (the next report identifies again) and
   the CoT is still published (cot_parser decides whether it can store it).
+- **A row that can never be written (review r5 A5-2/B5-1; psql on 04: `'555-123-4567'::bigint` is refused):** the
+  metadata is written defensively (a phone reduced to its digits for the BigInteger column, strings cut to 255, a
+  missing `start` or `role` tolerated); if the row still fails, a minimal row (uid, "Connected", the user, the callsign
+  if free) is written so cot_parser's FK accepts the device's CoT. Re-identification stops after 3 failures (the
+  uid is kept, a minimal row written). Offline `test-eudhandler-264-ident.py`: identified once in 1000 CoT and
+  recorded; on 162af3a it re-identified 1000 times (a new postgres connection each) and was not recorded.
 - **Test:** `exception-264` (a CoT without `start`, then a valid CoT: no traceback ending the child, the session
   ends properly, no empty queue left, and the valid CoT is STORED). Negative controls: rc wsl.10 (child ended),
   rc wsl.12 (0 stored: FK). Offline: the handle() tests.
@@ -588,7 +606,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     is **dropped** (the upstream prefix is kept so ots_logc keeps counting);
   - new, read by the suites from `/app/ots/logs/eud_handler_tcp.log` inside the container (the handler logs to
     that file, not to stdout): `refusing session from <ip>` (R7), `another session of <uid> is live` (R6),
-    `RabbitMQ reconnect for <ip>` (R4), `refusing the subscription of <ip>` (R10), `subscribed <uid>/<callsign>`,
+    `RabbitMQ reconnect for <ip>` (R4), `refusing the subscription of <ip>` (R10, a refused uid), `is not used as a queue` (R10, a refused callsign), `subscribed <uid>/<callsign>`,
     `queue <q> shared with <n> other consumer(s)` (R6), `belong to an authenticated user` (R10),
     `sessions from this address` and `sent no complete message within` (R12); payload-run: `kept STOPPED on its old
     config` (R8).
@@ -695,7 +713,8 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | rto-264 (8088), rto-ssl-264 (8089) | feature | no (peer-side nft on the test clients' ports only, self-expiring; 8089 copies a 1-day test cert to 02/03 and removes it) | wsl.11: the listener OOM-killed, 0/16 kept |
 | r8-hold-264 | tier B | yes (stops the OTS overlay containers, restores from the golden) | wsl.10: the guardian started the held container |
 | group-disc-264 | feature | yes on a broken build (cot_parser crash loop; ends when the test membership is removed, which every exit path does) | wsl.8: 6 x crash ots_cot_parser |
-| name-guard-264 | feature | no | by code: upstream subscribes unconditionally |
+| name-guard-264 | feature | no | by code: upstream subscribes unconditionally; rc wsl.12: the device not recorded (0 rows) |
+| alarm-264 | feature | no (the broker watermark is lowered ~75 s, restored by the suite and by a detached 150 s timer on the node) | by code only: rc wsl.12's blocked_connection_timeout=60 ended the sessions (rc12 no longer installed) |
 | eud-mem-264 | feature | no | measured on upstream: 39 MB per idle session |
 | mountsha (in payload-conform / R8 suite) | feature | no | wrong sha → refuse |
 | soak-cot-264 | soak | — | every sent CoT stored (duplicates counted, at-least-once); heartbeat closes recorded per session (info, R2) |

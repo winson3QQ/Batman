@@ -227,21 +227,25 @@ def endh(counts=None, binds=(BU, BC, BG), callsign="CS", user=None, relay=False)
     unbound.clear(); h = H(); h.callsign = callsign; h._sub_binds = list(binds); h.user = user; h._relay = relay
     h.rabbit_channel = EndChan(counts); return h
 h = endh(); h._end_session("U", "disc")
-ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and h.rabbit_channel.passive == [("U", True), ("CS", True)] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"]
+ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and h.rabbit_channel.passive == [("U", False), ("CS", False)] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"]
    and unbound == [("U", [BU, BC, BG])] and h.rabbit_channel.closed and h._final_close, "9 last session of U (8088): cancelled, both checked, disconnect, all its bindings unbound, final close")
 ok([d[0] for d in h.rabbit_channel.deleted] == ["CS", "U"] and all(d[1] == {"if_unused": True, "if_empty": True} for d in h.rabbit_channel.deleted),
    "9 (F3) idle empty queues deleted (if_unused, if_empty), the <uid> queue LAST (a 406 on it must not cost the callsign queue)")
 h = endh({"U": (0, 3)}); h._end_session("U", "disc")
 ok([d[0] for d in h.rabbit_channel.deleted] == ["CS"] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"], "9 (F3) the <uid> queue holding messages is kept, the empty callsign queue goes")
 h = endh(callsign="U", binds=(BU, BG)); h._end_session("U", "disc")
-ok(h.rabbit_channel.passive == [("U", True)] and [d[0] for d in h.rabbit_channel.deleted] == ["U"], "9 callsign == uid: one queue, checked and deleted once")
+ok(h.rabbit_channel.passive == [("U", False)] and [d[0] for d in h.rabbit_channel.deleted] == ["U"], "9 callsign == uid: one queue, checked and deleted once")
 g["_valid_name"] = lambda n: bool(n)
 h = endh(binds=()); h._squat_logged = True; h._end_session("U", "disc")
 ok(not h.rabbit_channel.passive and not h.rabbit_channel.deleted and not h.rabbit_channel.pubs and not unbound and h.rabbit_channel.closed,
    "9 (r2 B2-1) refused as another user's device: no check, no disconnect, NO unbind of the live session's bindings, no delete")
 h = endh(binds=()); h._end_session("U", "disc")
-ok(h.rabbit_channel.passive == [("U", False)] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and not unbound and not h.rabbit_channel.deleted and h.rabbit_channel.closed,
-   "9 (r3 B3-10) identified, never subscribed, nobody on <uid>: a (non-passive) declare, then the disconnect (no ghost 'Connected'); nothing unbound or deleted")
+ok(h.rabbit_channel.passive == [("U", False)] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and not unbound
+   and h.rabbit_channel.deleted == [("U", {"if_unused": True, "if_empty": True})] and h.rabbit_channel.closed,
+   "9 (r3 B3-10, r5 B5-11) identified, never subscribed, nobody on <uid>: a (non-passive) declare, the disconnect (no ghost 'Connected'), the re-created queue removed if idle and empty; nothing unbound")
+h = endh(binds=()); h._owner = True; h._end_session("U", "disc")
+ok([p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and not h.rabbit_channel.deleted,
+   "9 (r5 B5-11) ... but never the <uid> queue of a uid an OTS user's device holds")
 h = endh({"U": (1, 0)}, binds=()); h._end_session("U", "disc")
 ok(h.rabbit_channel.passive == [("U", False)] and not h.rabbit_channel.pubs and not unbound and h.rabbit_channel.closed,
    "9 (r2 B2-1 kept) identified, never subscribed, another session of U is live: no disconnect")
@@ -259,7 +263,7 @@ h = endh(); h._owner = True; h._end_session("U", "disc")
 ok([d[0] for d in h.rabbit_channel.deleted] == ["CS"] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"],
    "9 (r3 B3-7) an 8088 session of a uid an OTS user's device holds: <uid> is never deleted (cot_parser binds it)")
 h = endh(binds=(BU, BG)); h._cs_queue = False; h._end_session("U", "disc")
-ok(h.rabbit_channel.passive == [("U", True)] and [d[0] for d in h.rabbit_channel.deleted] == ["U"] and unbound == [("U", [BU, BG])],
+ok(h.rabbit_channel.passive == [("U", False)] and [d[0] for d in h.rabbit_channel.deleted] == ["U"] and unbound == [("U", [BU, BG])],
    "9 (r4 R10) subscribed by uid only (callsign not a queue): the callsign queue is never checked, unbound or deleted")
 h = endh(user=object()); h._end_session("U", "disc")
 ok([p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and unbound and not h.rabbit_channel.deleted,
@@ -564,4 +568,12 @@ class OrdChan(Chan):
 h = H(); h.rabbit_channel = OrdChan()
 h._subscribe([("queue_declare", (), {"queue": "U"}), ("queue_bind", (), {"queue": "U"}), ("basic_consume", (), {"queue": "U"}), ("queue_bind", (), {"queue": "U"})], [])
 ok(order25 == ["declare", "consume", "bind", "bind"], f"25 (r4 B4-11) consume before the binds: {order25}")
+# 26 (r5 A5-3/B5-5) the end's declares are NOT passive: a queue a broker restart removed is re-created instead of a
+#    404 that closed the channel (no disconnect, a ghost "Connected" row); asserted in case 9 above ("U", False).
+# 26 (r5 A5-2/B5-1) the phone attribute fits euds.phone_number (BigInteger): digits kept, anything else None
+fn = next(n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == "_phone_int")
+exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); g["re"] = __import__("re")
+pi = g["_phone_int"]
+ok(pi("555-123-4567") == 5551234567 and pi("+1 555 123 4567") == 15551234567 and pi("") is None and pi(None) is None
+   and pi("abc") is None and pi("1" * 19) is None, "26 (r5) _phone_int: dashes/spaces/+ stripped, empty/none/19+ digits -> None")
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)

@@ -2375,6 +2375,168 @@ rep('''        # BATMAN-264-R10 (review r3 B3-5): an EUD row with this uid that 
 rep('''        self._sub_ops = ops  # BATMAN-264-R4: replayed on the channel after a reconnect''',
     '''        self._sub_ops = ops  # kept for diagnosis; R13 (r3 A3-3) ends the session instead of replaying''')
 
+# --- code review round 5 (2026-10-12): an identified device is always recorded; the goodbye after a broker restart ----
+# Reviewers A5/B5 (psql on node 04: '555-123-4567'::bigint is refused): R14's "identify again" cannot help a device
+# whose row write fails the same way every time (a phone attribute with dashes in a BigInteger column, a field over
+# 255 characters, a start the parser rejects, a __group without role): it re-identified on every CoT (a new postgres
+# connection each) and was never recorded. Now the full row is written defensively and, if it still fails, a minimal
+# row (uid, the callsign if free) is written, so cot_parser's FK accepts the device's CoT.
+
+rep('''                eud.phone_number = self.phone_number''', '''                eud.phone_number = _phone_int(self.phone_number)  # BATMAN-264-R14 (r5): BigInteger column''')
+rep('''                eud.last_event_time = datetime_from_iso8601_string(event.attrs["start"])''',
+    '''                try:  # BATMAN-264-R14 (r5): a missing or odd start must not cost the row
+                    eud.last_event_time = datetime_from_iso8601_string(event.attrs["start"])
+                except Exception:
+                    eud.last_event_time = None''')
+rep('''                    eud.team_role = bleach.clean(__group.attrs["role"])''',
+    '''                    eud.team_role = bleach.clean(__group.attrs.get("role") or "")[:255] or None  # BATMAN-264-R14 (r5)''')
+rep('''                eud.os = operating_system
+                eud.platform = platform
+                eud.version = version''', '''                eud.os = (operating_system or None) and str(operating_system)[:255]  # BATMAN-264-R14 (r5): String(255)
+                eud.platform = (platform or None) and str(platform)[:255]
+                eud.version = (version or None) and str(version)[:255]''')
+rep('''                if device:
+                    eud.device = device''', '''                if device:
+                    eud.device = str(device)[:255]  # BATMAN-264-R14 (r5)''')
+# the clash race (r5 A5-4/B5-6): the fallback update matching nothing is retried as an insert without the callsign
+rep('''                except sqlalchemy.exc.IntegrityError:
+                    db.session.rollback()
+                    db.session.execute(
+                        update(EUD).where(EUD.uid == eud.uid).values(**eud.serialize())
+                    )
+                    db.session.commit()''', '''                except sqlalchemy.exc.IntegrityError:
+                    db.session.rollback()
+                    r = db.session.execute(
+                        update(EUD).where(EUD.uid == eud.uid).values(**eud.serialize())
+                    )
+                    db.session.commit()
+                    if not getattr(r, "rowcount", 1):
+                        # BATMAN-264-R10 (review r5 A5-4/B5-6): no row for this uid and the insert hit a UNIQUE
+                        # callsign taken in between (two devices identifying together): recorded without it
+                        self._minimal_eud_row(uid)''')
+# the row write: wrapped; any failure falls back to the minimal row (the subscription part above is unchanged)
+_a = "            with self.app.app_context():\n                __group = event.find(\"__group\")\n"
+_b = "    def unbind_rabbitmq_queues(self, uid, binds):"
+assert s.count(_a) == 1 and s.count(_b) == 1
+_i = s.index(_a); _j = s.index(_b)
+_body = s[_i:_j].rstrip("\n")
+_ind = "\n".join(("    " + l) if l.strip() else l for l in _body.split("\n"))
+s = s[:_i] + ('''            # BATMAN-264-R14 (review r5 A5-2/B5-1): the row is written whatever the metadata looks like
+            try:
+''' + _ind + '''
+            except Exception as e:
+                self.logger.error(f"{self.client_address[0]}: EUD row of {uid} not written ({type(e).__name__}: {e}); "
+                                  f"writing a minimal row so its CoT are recorded (BATMAN-264-R14)")
+                self.logger.debug(traceback.format_exc())
+                self._minimal_eud_row(uid)
+
+''') + s[_j:]
+
+rep('''    def _uid_has_owner(self, uid):''', '''    def _minimal_eud_row(self, uid):
+        # BATMAN-264-R14/R10 (review r5): the smallest row cot_parser's FK needs: the uid, "Connected", this session's
+        # user, and the callsign only if no other device holds it (euds.callsign is UNIQUE). Never raises.
+        with self.app.app_context():
+            for with_cs in (True, False):
+                try:
+                    db.session.rollback()
+                    row = db.session.execute(select(EUD).filter_by(uid=uid)).first()
+                    if row is not None:
+                        return
+                    e = EUD()
+                    e.uid = uid
+                    e.last_status = "Connected"
+                    e.user_id = self.user.id if self.user else None
+                    if with_cs and self.callsign:
+                        e.callsign = str(self.callsign)[:255]
+                    db.session.add(e)
+                    db.session.commit()
+                    return
+                except Exception as ex:
+                    db.session.rollback()
+                    if not with_cs:
+                        self.logger.error(f"minimal EUD row of {uid} failed too: {type(ex).__name__}: {ex}")
+
+    def _uid_has_owner(self, uid):''')
+rep('''def _oom_first():''', '''def _phone_int(phone):
+    """BATMAN-264-R14 (review r5): euds.phone_number is a BigInteger. A phone such as '555-123-4567' made the row
+    insert fail every time; its digits are kept (up to 18), anything else becomes None."""
+    d = re.sub(r"\\D", "", str(phone or ""))
+    return int(d) if d and len(d) <= 18 else None
+
+
+def _oom_first():''')
+
+# R14 (r5 A5-2/B5-2): the re-identification is bounded
+rep('''                self.logger.debug(traceback.format_exc())
+                self.uid = None
+            # Close the DB connection once the EUD is authenticated and identified''', '''                self.logger.debug(traceback.format_exc())
+                self._ident_failures += 1
+                if self._ident_failures < 3:
+                    self.uid = None
+                else:
+                    # BATMAN-264-R14 (review r5 A5-2/B5-2): an identification that keeps raising re-ran on every CoT
+                    # (a new postgres connection each, measured offline: 10 000 runs); after 3 the session keeps
+                    # this uid, its minimal row is written once, and identification is not tried again
+                    self.logger.error(f"{self.client_address[0]}: identification failed 3 times; keeping uid {self.uid}, "
+                                      f"minimal row (BATMAN-264-R14)")
+                    if self.uid:
+                        self._minimal_eud_row(self.uid)
+            # Close the DB connection once the EUD is authenticated and identified''')
+rep('''        self._goodbye_retried = False''', '''        self._goodbye_retried = False
+        self._ident_failures = 0     # R14 (r5): bounded re-identification''')
+
+# the goodbye after a broker restart (r5 A5-3/B5-5): the per-EUD queues are transient, so a passive declare of a
+# queue the restart removed was a 404 that closed the channel: no disconnect, a ghost "Connected" row. A normal
+# declare (as the subscription's) re-creates it empty (R15 expires it) and reports its consumers.
+rep('''                ch.queue_declare(queue=names[len(seen)], passive=True, callback=declared)''',
+    '''                ch.queue_declare(queue=names[len(seen)], callback=declared)  # r5: not passive (see _end_session)''')
+rep('''            ch.queue_declare(queue=names[0], passive=True, callback=declared)''',
+    '''            # BATMAN-264 (review r5 A5-3/B5-5): NOT passive. The per-EUD queues are transient: after a broker restart,
+            # or after the other device of a shared callsign deleted the callsign queue, a passive declare was a 404
+            # that closed the channel (no disconnect, a ghost "Connected" row). A normal declare re-creates an empty
+            # queue (R15 expires it) and reports the consumers the same way.
+            ch.queue_declare(queue=names[0], callback=declared)''')
+rep('''        self.logger.error(f"session end of {self.client_address[0]}: the broker went away during the goodbye; retrying it once")''',
+    '''        self.logger.error(f"session end of {self.client_address[0]}: the channel or connection closed during the goodbye; "
+                          f"retrying it once")''')
+# the handler waits long enough for a retried goodbye (r5 A5-7)
+rep('''        if not self._end_done.wait(DRAIN_MAX_S + 10):
+            self.logger.error(f"session end of {self.client_address[0]} did not complete within {DRAIN_MAX_S + 10} s")''',
+    '''        if not self._end_done.wait(2 * DRAIN_MAX_S + 10):  # r5 A5-7: room for the one retried goodbye (A3-6)
+            self.logger.error(f"session end of {self.client_address[0]} did not complete within {2 * DRAIN_MAX_S + 10} s")''')
+
+# dead code (r5 A5-8/B5-12): no replay since R13
+rep('''        if (self._subscribed and not self._need_replay) or self._closed:''', '''        if self._subscribed or self._closed:''')
+rep('''        replay = self._need_replay
+''', '')
+rep('''        self._need_replay = False
+        self._sub_binds = list(self._sub_binds_pending)''', '''        self._sub_binds = list(self._sub_binds_pending)''')
+rep('''        self.logger.info(f"subscribed {self.uid}/{self.callsign} for {self.client_address[0]}{' (replay)' if replay else ''}")''',
+    '''        self.logger.info(f"subscribed {self.uid}/{self.callsign} for {self.client_address[0]}")''')
+rep('''        self._need_replay = False    # BATMAN-264-R4: re-run the recorded subscription on the next channel
+''', '')
+rep('BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13 R16"', 'BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13 R14 R16"')
+
+# R12/R16 (r5 B5-9): a first message that is a ping or <auth> does not end the serialized admission
+rep('''                if not self._sub_wanted:
+                    # BATMAN-264-R12/R16: this session's first work is done.''', '''                if not self._sub_wanted and tag == b"</event>" and b'type="t-x-c-t"' not in chunk[:600]:
+                    # BATMAN-264-R12/R16: this session's first work is done (review r5 B5-9: a ping or an <auth>
+                    # is not; the identifying CoT that follows is admitted under the same lock, or ADMIT_HOLD_S).''')
+# B3-10 path (r5 B5-11): the <uid> queue its declare re-created is removed again when it is idle, empty and unowned
+rep('''                    if not getattr(getattr(frame, "method", None), "consumer_count", 0):
+                        publish_disconnect()
+                    else:''', '''                    if not getattr(getattr(frame, "method", None), "consumer_count", 0):
+                        publish_disconnect()
+                        if self.user is None and not self._uid_has_owner(uid):  # r5 B5-11: no 24 h empty orphan
+                            ch.queue_delete(queue=uid, if_unused=True, if_empty=True)
+                    else:''')
+# the R10 header text (r5 A5-1/B5-4): decision 1
+rep('''# error; a name over 255 bytes raises inside pika. A refused session gets no subscription and no EUD row, and
+# cot_parser stores nothing from a sender without one (measured on node 04): it is invisible (fail-secure).''',
+    '''# error; a name over 255 bytes raises inside pika. An unusable or owned CALLSIGN is not used as a queue and the device
+# is still subscribed by its uid and RECORDED (the user's decision 2026-10-12, review r4); an unusable or owned UID
+# gets no subscription and no row update (its CoT go to that uid's existing row, if any).''')
+
 # --- license notice (GPL-3.0-or-later §5a: modified files carry a prominent dated notice) ----------
 assert s.startswith("import base64\n"), "upstream file no longer starts with 'import base64'"
 s = ("# SPDX-License-Identifier: GPL-3.0-or-later\n"

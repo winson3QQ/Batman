@@ -41,6 +41,7 @@ batman-firstload-*.latch
 batman-payload-*-drift.json
 batman-payload-*-restarts
 batman-payload-*.up
+batman-payload-*.mountsha-hold
 batman-payload-*-host-alarm
 batman-payload-*-host-alarm.tmp
 # #274 §12: per-boot shutdown marker (prestop shutdown()) and the root-only test seams

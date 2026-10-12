@@ -817,7 +817,7 @@ chk_name_guard_264() { local ots=$1 peer=$2 run o c rc=0 g0 g1 st
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   run=DVN$(date +%H%M%S)
-  g0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"refusing the subscription of '"$peer"'\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$g0" || g0=0
+  g0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"is not used as a queue\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$g0" || g0=0
   ( timeout 40 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" \
       'n=$(date +%s); ts(){ date -u -d @$1 +%Y-%m-%dT%H:%M:%S.000Z; }; { printf "<event version=\"2.0\" uid=\"'"$run"'\" type=\"a-f-G-U-C\" how=\"h-e\" time=\"%s\" start=\"%s\" stale=\"%s\"><point lat=\"25.03\" lon=\"121.56\" hae=\"10\" ce=\"9999999\" le=\"9999999\"/><detail><contact callsign=\"cot_parser\"/><marti><dest callsign=\"dv-nobody\"/></marti></detail></event>" "$(ts $n)" "$(ts $n)" "$(ts $((n+120)))"; sleep 8; } | nc '"$ots"' 8088 >/dev/null 2>&1; echo done' ) > "$DIR/$run.gen" 2>&1 &
   sleep 5
@@ -825,11 +825,12 @@ chk_name_guard_264() { local ots=$1 peer=$2 run o c rc=0 g0 g1 st
   echo "cot_parser queue consumers while the callsign=cot_parser session is up: [$c] (expect 1)"
   [ "$c" = 1 ] || { echo "FAIL the client's session consumes the cot_parser queue (consumers [$c]) — upstream behaviour"; rc=1; }
   wait; echo "peer: $(tr '\n' ' ' < "$DIR/$run.gen")"
-  g1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"refusing the subscription of '"$peer"'\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$g1" || g1=0
-  [ "$g1" -gt "$g0" ] && echo "handler log: subscription refused ($((g1 - g0)) line(s))" || { echo "FAIL no 'refusing the subscription' line in the handler's log"; rc=1; }
+  g1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"is not used as a queue\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$g1" || g1=0
+  [ "$g1" -gt "$g0" ] && echo "handler log: the callsign is not used as a queue ($((g1 - g0)) line(s))" || { echo "FAIL no 'is not used as a queue' line in the handler's log"; rc=1; }
   sleep 3; st=$(echo "select count(*) from cot where uid = '$run';" | ots_sql "$ots")
-  # no EUD row is written for a refused session, so cot_parser rejects its CoT (no sender row): nothing stored
-  [ "$st" = 0 ] && echo "nothing stored from the refused session (0 rows, no EUD row)" || { echo "FAIL [$st] row(s) stored from a refused session"; rc=1; }
+  # the user's decision 2026-10-12 (review r4/r5): the colliding NAME is refused, the device is RECORDED (its own row,
+  # its own <uid> queue). Negative control: rc wsl.12 stored 0 (cot_parser FK: no EUD row)
+  isint "$st" && [ "$st" -ge 1 ] && echo "the device is recorded: $st row(s) (expect >= 1)" || { echo "FAIL [$st] rows: the device with a refused callsign was not recorded (AAR gap)"; rc=1; }
   ots_sql "$ots" <<SQL
 begin; delete from cot where uid = '$run'; delete from euds where uid = '$run'; commit;
 SQL
@@ -1232,6 +1233,38 @@ chk_cap16_264() { local ots=$1 p1=$2 p2=$3 run o rc=0 r0 r1 sub peak mx oom0 oom
   r264_clean "$ots" "$run"
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
   return $rc; }
+# Broker memory alarm (review r4 A4-8/B4-5, r5 A5-5): no blocked_connection_timeout any more, so a broker alarm
+# longer than 60 s must not end the sessions; they cache and deliver after it. The watermark is dropped to 1 MB for
+# ~75 s (every publisher is blocked), then put back to the value in rabbitmq-extra.conf; a detached timer on the
+# node restores it after 150 s whatever happens to this script. Asserted: the alarm was raised (blocked
+# connections seen), the client's session was not cut (no CONNLOST), every CoT sent is stored after the alarm.
+# Negative control: by code only (rc wsl.12 had blocked_connection_timeout=60: pika's ConnectionBlockedTimeout
+# closed the connection, R13 ended the client session) - rc12 is no longer installed (stated, register r5).
+chk_alarm_264() { local ots=$1 peer=$2 run o rc=0 wm blk sent lost distinct
+  [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  wm=$(fssh "$ots" 20 'docker exec rabbitmq sh -c "sed -n \"s/^vm_memory_high_watermark.absolute = //p\" /etc/rabbitmq/conf.d/99-batman.conf"' | tr -d ' \r')
+  case "$wm" in [0-9]*MB) ;; *) echo "FAIL unreadable configured watermark [$wm] — not verified"; return 1 ;; esac
+  run=DVAL$(date +%H%M%S)
+  ( timeout 200 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run N=110 sh -s" < "$REPO/scripts/node/cot-stream-264.sh" > "$DIR/$run.gen" 2>&1 ) &
+  sleep 10
+  fssh "$ots" 20 "docker exec rabbitmq rabbitmqctl -q set_vm_memory_high_watermark absolute 1MB >/dev/null; (trap '' HUP; sleep 150; docker exec rabbitmq rabbitmqctl -q set_vm_memory_high_watermark absolute $wm) </dev/null >/dev/null 2>&1 &" >/dev/null
+  sleep 15
+  blk=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_connections state 2>/dev/null | grep -c block' | tr -d ' \r')
+  echo "broker alarm raised (watermark 1MB): blocked/blocking connections ${blk:-?}"
+  isint "$blk" && [ "$blk" -ge 1 ] || { echo "FAIL the alarm did not block publishers — not verified"; rc=1; }
+  sleep 60
+  fssh "$ots" 20 "docker exec rabbitmq rabbitmqctl -q set_vm_memory_high_watermark absolute $wm" >/dev/null; echo "watermark restored to $wm after ~75 s of alarm"
+  wait; o=$(cat "$DIR/$run.gen"); echo "generator: $(echo "$o" | tr '\n' ' ')"
+  lost=$(echo "$o" | sed -n 's/^CONNLOST \([0-9]*\)$/\1/p'); sent=$(echo "$o" | sed -n 's/^SENT \([0-9]*\)$/\1/p')
+  [ -z "$lost" ] && echo "the client's session lasted through the alarm" || { echo "FAIL the session was cut during the alarm (CONNLOST at $lost)"; rc=1; }
+  sleep 20
+  distinct=$(echo "select count(distinct uid) from cot where uid like '$run-%';" | ots_sql "$ots" | tr -d ' \r')
+  echo "sent ${sent:-?}, stored distinct ${distinct:-?}"
+  isint "$sent" && [ "$sent" -ge 100 ] && [ "$distinct" = "$sent" ] || { echo "FAIL not every CoT sent through the alarm was stored"; rc=1; }
+  rm -f "$DIR/$run.gen"; r264_clean "$ots" "$run"
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
 # The RTO returns (field scenario, the user 2026-10-12: the OTS node is carried by the RTO): the node walks out of
 # range and is back within ~2 min, so the team's 16 sessions are still on the server as zombies (no FIN) when the
 # same 16 phones reconnect at once: 32 sessions on one listener. Zombies: 8 from each peer, then black-holed there
@@ -1253,9 +1286,12 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   if [ "$port" = 8089 ]; then
     ctr=ots_eud_handler_ssl; tgt=172.20.0.12; run=DVRTS$(date +%H%M%S)
     cert264 "$ots" administrator || { echo "FAIL could not issue the test client cert — not verified"; return 1; }
-    for c in pem key; do fssh "$ots" 20 "docker exec ots_cot_parser cat /tmp/dv-client.$c" > "$DIR/$run.$c" || { echo "FAIL cert copy"; return 1; }
-      for n in "$p1:$run-a" "$p2:$run-b"; do timeout 20 ssh -o BatchMode=yes -o LogLevel=ERROR "root@${n%%:*}" "umask 077; cat > /tmp/run/batman-dv/${n#*:}.$c" < "$DIR/$run.$c"; done
-      timeout 20 ssh -o BatchMode=yes -o LogLevel=ERROR "root@$ots" "docker exec -i opentakserver sh -c 'umask 077; cat > /tmp/dv-client.$c'" < "$DIR/$run.$c"
+    # the container-internal /tmp/dv-client.{pem,key} (tmpfs of ots_cot_parser / opentakserver, not the node's /tmp)
+    for c in pem key; do
+      case $c in pem) f=/tmp/dv-client.pem ;; *) f=/tmp/dv-client.key ;; esac
+      fssh "$ots" 20 "docker exec ots_cot_parser cat $f" > "$DIR/$run.$c" || { echo "FAIL cert copy"; return 1; }
+      for n in "$p1:$run-a" "$p2:$run-b"; do timeout 20 ssh -o BatchMode=yes -o LogLevel=ERROR "root@${n%%:*}" "umask 077; cat > /tmp/run/batman-dv/${n#*:}.$c; (trap '' HUP; sleep 900; rm -f /tmp/run/batman-dv/${n#*:}.$c) </dev/null >/dev/null 2>&1 &" < "$DIR/$run.$c"; done   # self-expiring (r5 B5-8)
+      timeout 20 ssh -o BatchMode=yes -o LogLevel=ERROR "root@$ots" "docker exec -i opentakserver sh -c 'umask 077; cat > $f'" < "$DIR/$run.$c"
     done; rm -f "$DIR/$run.pem" "$DIR/$run.key"
   fi
   cg='c=$(docker inspect -f "{{.Id}}" '"$ctr"'); d=/sys/fs/cgroup/docker/$c'
@@ -1264,26 +1300,33 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   r0=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -c \"refusing session\"'" | tr -d ' \r'); isint "$r0" || r0=0
   mx=$(fssh "$ots" 20 "$cg"'; cat $d/memory.max' | tr -d ' \r')
   echo "the team ($port): 02 $(rto264 "$p1" "$run-a" 60 start "$port") / 03 $(rto264 "$p2" "$run-b" 60 start "$port")"; sleep 8
-  sub=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -c \"subscribed $run-\"'" | tr -d ' \r')
+  sub=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -cE \"subscribed $run-[ab]-\"'" | tr -d ' \r')
   echo "subscribed $sub (expect 16)"; [ "$sub" = 16 ] || { echo "FAIL the team's 16 sessions are not all subscribed: nothing to measure"; rc=1; }
   echo "RTO out of range: 02 $(rto264 "$p1" "$run-a" 30 blackhole "$port") / 03 $(rto264 "$p2" "$run-b" 30 blackhole "$port")"
-  ( s264 "$p2" "$ots" "$run-c" send10 TAG=z >/dev/null ) &   # downlink pending towards the zombies (8088 broadcasts reach __ANON__)
+  # downlink pending towards the zombies: 20 broadcasts from a third address (rc wsl.13: a generator on 03 was refused
+  # as the 9th session of that address and the zombies stayed idle)
+  ( fssh "$ots" 60 "docker exec -i -e TARGET=172.20.0.10 -e RUN=$run-c ots_eud_handler_ssl python3 -" < "$REPO/scripts/node/rto-downlink-264.py" > "$DIR/$run.dl" 2>&1 ) &
   sleep 5
   for c in "ots_cot_parser:$run-a" "opentakserver:$run-b"; do
     ( fssh "$ots" 200 "docker exec -i -e TARGET=$tgt -e PORT=$port -e RUN=${c#*:} -e FIRST=1 -e N=8 -e HOLD=120 -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key ${c%%:*} python3 -" < "$REPO/scripts/node/rto-reconnect-264.py" > "$DIR/$run.${c%%:*}" 2>&1 ) &
   done
   for i in $(seq 1 22); do sleep 5; a=$(fssh "$ots" 20 "$cg"'; awk "/^anon /{print \$2}" $d/memory.stat' | tr -d ' \r'); isint "$a" && [ "$a" -gt "$peak" ] && peak=$a; done; wait
   grep -hv " kept$" "$DIR/$run.ots_cot_parser" "$DIR/$run.opentakserver"
+  echo "downlink generator: $(cat "$DIR/$run.dl" 2>/dev/null | tail -1)"; grep -q '^SENT 20$' "$DIR/$run.dl" || { echo "FAIL the downlink generator did not send (the zombies had no pending data)"; rc=1; }; rm -f "$DIR/$run.dl"
   k1=$(grep -o "KEPT [0-9]*" "$DIR/$run.ots_cot_parser" | cut -d' ' -f2); k2=$(grep -o "KEPT [0-9]*" "$DIR/$run.opentakserver" | cut -d' ' -f2)
   st1=$(fssh "$ots" 20 "docker inspect -f '{{.State.StartedAt}}' $ctr" | tr -d '\r')
   o1=$(fssh "$ots" 20 "$cg"'; awk "/oom_kill /{print \$2}" $d/memory.events' | tr -d ' \r')
   r1=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -c \"refusing session\"'" | tr -d ' \r'); isint "$r1" || r1=0
-  sub=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -c \"subscribed $run-\"'" | tr -d ' \r')
+  sub=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -cE \"subscribed $run-[ab]-\"'" | tr -d ' \r')
   a=$(echo "select count(*) from cot where sender_uid like '$run-a-%' or sender_uid like '$run-b-%';" | ots_sql "$ots" | tr -d ' \r')
+  # per phone: its stale session's CoT and its reconnect's CoT, i.e. >= 2 rows for EACH of the 16 uids (r5)
+  c=$(echo "select count(*) from (select sender_uid from cot where sender_uid like '$run-a-%' or sender_uid like '$run-b-%' group by sender_uid having count(*) >= 2) x;" | ots_sql "$ots" | tr -d ' \r')
   echo "reconnects kept $((${k1:-0} + ${k2:-0}))/16, subscribed $sub of 32 (team + reconnects), stored CoT $a (expect >= 32), refused $((r1 - r0)), oom_kill $o0 -> $o1, StartedAt $st0 -> $st1, anon peak $((peak >> 20)) MiB of $(( ${mx:-0} >> 20 )) MiB"
   [ "$((${k1:-0} + ${k2:-0}))" = 16 ] || { echo "FAIL not every reconnecting phone was kept (a refused phone records no CoT: an AAR gap)"; rc=1; }
   [ "$sub" = 32 ] || { echo "FAIL not every reconnecting phone was subscribed"; rc=1; }
   isint "$a" && [ "$a" -ge 32 ] || { echo "FAIL stored ${a:-?} of 32 identifying CoT (the team's and the reconnects'; duplicates may add)"; rc=1; }
+  echo "phones with both their stale and their reconnect CoT stored: ${c:-?} of 16"
+  [ "$c" = 16 ] || { echo "FAIL ${c:-?} of 16 phones recorded on both sessions"; rc=1; }
   [ -n "$st0" ] && [ "$st0" = "$st1" ] || { echo "FAIL $ctr restarted (the listener died with every session)"; rc=1; }
   [ "$o0" = "$o1" ] || { echo "FAIL memcg OOM kill"; rc=1; }
   echo "waiting for the zombies to be reaped (R6, ~2 min)"; sleep 75
@@ -1582,7 +1625,7 @@ elif up "$OTS_NODE"; then
   suite eud-mem-264 "ots_eud_handler memory per idle session from $BENCH_NODE: 6 sessions, <= 12 MiB each (upstream 39, OOM at ~10 clients), none refused, no leak after they leave (#264 R7)" "chk_eud_mem_264 $OTS_NODE $BENCH_NODE"
   suite zombie-264 "field order: the EUD's stale session (port black-holed on $BENCH_NODE, data pending) and the reconnected one share the queue at once; the stale one is reaped within 200 s and its end keeps the live one's bindings (no disconnect); 10/10; the last end removes the idle queues (#264 R6/R10/F3; upstream: immortal zombie then 0/10; wsl.8: held off ~2 min)" "chk_zombie_264 $OTS_NODE $BENCH_NODE"
   suite amqp-close-264 "the broker closes the streaming session's AMQP connection twice (rabbitmqctl close_connection): every CoT stored at least once, client session kept, 2 reconnects logged (#264 R4/R4b mechanism B; upstream: session dropped, CoT in flight lost)" "chk_amqp_close_264 $OTS_NODE $BENCH_NODE"
-  suite name-guard-264 "an 8088 client with callsign cot_parser gets no subscription: cot_parser queue keeps 1 consumer, log line, CoT still stored (#264 R10; upstream: the client consumes storage's queue)" "chk_name_guard_264 $OTS_NODE $BENCH_NODE"
+  suite name-guard-264 "(review r5: the callsign is refused as a queue, the device recorded) an 8088 client with callsign cot_parser gets no subscription: cot_parser queue keeps 1 consumer, log line, CoT still stored (#264 R10; upstream: the client consumes storage's queue)" "chk_name_guard_264 $OTS_NODE $BENCH_NODE"
   suite same-uid-end-264 "a second session of the same uid/callsign connects and leaves while the first stays: the first keeps its bindings and gets 10/10 (#264 R6, review r2 B2-1; wsl.8: 0/10)" "chk_same_uid_end_264 $OTS_NODE $BENCH_NODE"
   suite callsign-share-264 "two devices with the same callsign and different uids both get broadcast traffic, no empty queue left (#264 R10, review r2 B2-4; wsl.8: 10/0)" "chk_callsign_share_264 $OTS_NODE $BENCH_NODE"
   suite owner-swap-264 "an 8088 client naming an 8089 user's uid as its callsign (and as its uid) is refused and consumes none of the user's queues (#264 R10, review r2 B2-2; wsl.8: the swap was subscribed)" "chk_owner_swap_264 $OTS_NODE $BENCH_NODE"
@@ -1592,6 +1635,7 @@ elif up "$OTS_NODE"; then
   suite queue-policy-264 "a departed 8089 group member's queue is capped at 500 messages by the broker policy; the cot_parser queue is not under it (#264 review r3, resources; wsl.10: grew without bound)" "chk_queue_policy_264 $OTS_NODE $BENCH_NODE"
   suite cap16-264 "16 identifying sessions at once from two addresses: all subscribed, none refused, no OOM, anon peak <= 85 % of memory.max (#264 capacity target 16; wsl.10: 93 %)" "chk_cap16_264 $OTS_NODE $BENCH_NODE $MESH_NODE"
   suite rto-264 "the RTO returns: 16 stale sessions (downlink pending) + the same 16 phones reconnecting at once on 8088; every reconnect kept, subscribed and recorded, the listener not restarted, no OOM (#264 R16, field scenario 2026-10-12; wsl.11 768m: the listener was OOM-killed)" "chk_rto_264 $OTS_NODE $BENCH_NODE $MESH_NODE 8088"
+  suite alarm-264 "a broker memory alarm of ~75 s: the client session is not cut, every CoT is stored after it (#264 R9/R13, review r4 A4-8/B4-5)" "chk_alarm_264 $OTS_NODE $BENCH_NODE"
   suite rto-ssl-264 "the RTO returns on 8089 (mTLS, the tactical listener): as rto-264 (#264 R16, review r4 B4-8)" "chk_rto_264 $OTS_NODE $BENCH_NODE $MESH_NODE 8089"
 else
   for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264 amqp-close-264 name-guard-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done

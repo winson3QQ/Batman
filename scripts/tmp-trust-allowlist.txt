@@ -61,5 +61,8 @@ scripts/fault-injection.sh	(mkdir -m 700 /tmp/root|ls -ld /tmp/root|find /tmp/ro
 scripts/node/payload-274.sh	-v /var/run/docker\.sock:/s:ro	host-alarm-274 creates (never starts) a container with a docker.sock bind to prove the guardian raises a host alarm for it; nothing reads or writes the path
 # --- #264 8089 test: the 1-day client cert lives in ots_cot_parser's OWN container tmpfs (written and read via docker exec), never on the node ---
 scripts/node/ots-test-client-cert.py	/tmp/dv-client\.(pem|key|\{pem,key\})	written INSIDE the ots_cot_parser container (python runs there via docker exec -i), not the node's /tmp
-scripts/daily-validation.sh	/tmp/dv-client\.(pem|key)	container-internal path passed to docker exec (CERT/KEY env, rm -f, ls) in the ots_cot_parser container
+scripts/daily-validation.sh	/tmp/dv-client\.(pem|key)	container-internal path passed to docker exec (CERT/KEY env, rm -f, ls, cat) in the ots_cot_parser and opentakserver containers (rto-ssl-264)
 scripts/daily-validation.sh	ots_cot_parser:/tmp"	message text naming the container path
+deploy/ots/patches/EudHandler-264.py	ADMIT_LOCK = "/tmp/batman-264-admit\.lock"	#264 R12/R16 admission lock: the eud container's OWN tmpfs (--tmpfs /tmp, private to the container; every process there is uid 1000), never the node's /tmp
+deploy/ots/patches/make-eudhandler-264.py	ADMIT_LOCK = "/tmp/batman-264-admit\.lock"	same line, in the generator of the overlay above
+deploy/ots/patches/eudhandler-264.patch	(ADMIT_LOCK = "/tmp/batman-264-admit\.lock"|a lock in the container's /tmp)	same, in the generated diff against upstream (code and its comment)
