@@ -20,7 +20,7 @@ so payload-run parses it with `while read` in busybox ash — no YAML, no jq.
 Usage:  profile-to-manifest.py <app>            # writes the three files
         profile-to-manifest.py <app> --check    # print all three to stdout (CI diff), write nothing
 """
-import sys, pathlib
+import re, sys, pathlib
 try:
     import yaml
 except ImportError:
@@ -167,7 +167,7 @@ def render_manifest(doc, app):
                 if not shaf.is_file():
                     sys.exit(f"{tenant}: mount {m['src']} names image_sha_file {m['image_sha_file']} but {shaf} does not exist")
                 sha = shaf.read_text(encoding="utf-8").strip()
-                if len(sha) != 64 or any(ch not in "0123456789abcdef" for ch in sha):
+                if not re.fullmatch(r"[0-9a-f]{64}", sha):
                     sys.exit(f"{tenant}: {shaf} is not a lowercase sha256")
                 a(f"MOUNTSHA {m['dst']} {sha}")
         for sname, smount, suid in secrets_by_ctr.get(name, []):
