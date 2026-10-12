@@ -1,7 +1,7 @@
 # #264 OTS eud_handler loses CoT — design v5
 
 Status: v5 for review · 2026-10-11 · replaces v4 (REJECT by two reviewers) and v1–v3.2 (branch `feat/264-ots-eud`).
-Revised after code review rounds 1–8 (2026-10-12); every finding and its status is in
+Revised after code review rounds 1–9 (2026-10-12); every finding and its status is in
 `264-review-register.md`.
 
 User decisions (2026-10-11):
@@ -475,9 +475,11 @@ Measured on 04 (shipped 1.5.8-wsl.5):
      parent's shared app (R7), no allocation of its own.
      A ping or an `<auth>` is answered without the admission (review r7 B7-1: round 6 took the lock and started a
      20 s timer thread for each one; 450 small messages = 451 threads, and the eud containers' pids.max is 512; round 5
-     held the lock for `ADMIT_HOLD_S` after one). A ping is recognised by the `type` of the `<event>` start tag itself
-     (review r8 A8-3/B8-1: a substring search over the first 600 bytes let an identifying SA with a child element of
-     that type skip the admission, and its next message then held the lock for 20 s). A message that does not identify
+     held the lock for `ADMIT_HOLD_S` after one). A ping is recognised by the PARSED event's own `type` attribute
+     (the message is parsed before the admission decision; review r8 A8-3/B8-1 and r9 B9-1: a byte search over the
+     first 600 bytes, then over the start tag, let an identifying SA carrying those bytes in a child element or in an
+     attribute value skip the admission, and its next message then held the lock for 20 s). A malformed message is
+     admitted like any other (logged, dropped). A message that does not identify
      releases the lock and re-arms the admission, at most `ADMIT_REARM_MAX` (2) times per session (review r7 A7-6; r8
      A8-2/B8-2: unbounded, a client that never identifies took the lock, a timer and two log lines per message, 6020
      takes in 15 s offline, and held the lock most of the time); after that the session is admitted for good (it is
@@ -572,7 +574,10 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   session only) and shuts the socket at the deadline: the supersede time plus min(outage + `SUPERSEDE_QUIET_S`,
   `SUPERSEDE_MAX_S`), extended by `SUPERSEDE_QUIET_S` after every byte that arrives while a newer session lives;
   once no newer session lives (it ended first, r8 A8-4/B8-3) the deadline is `SUPERSEDE_MAX_S` after the supersede
-  at the latest, so a superseded session is never deaf for longer than that. Until then every report is read and
+  at the latest. While a newer session lives AND the old connection keeps delivering, the deadline keeps moving (the
+  user's decision 6: what the phone still sends on it is read): a session can therefore be without downlink for longer
+  than `SUPERSEDE_MAX_S` only while its own newer session is alive and it is still being fed (r9 B9-4: intended; in
+  the field the old connection is black-holed and ends at the deadline). Until then every report is read and
   published as before. Its end (no disconnect, bindings kept) sees the newer session; and the newer session's end
   treats the session it superseded, while that one lives, as live too (no disconnect, no unbind, no delete: r8
   A8-4/B8-3). A session whose recorded entry belongs to a process that started AFTER it (an older connection whose
@@ -848,7 +853,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | queue-gone-264 | feature | no (`delete_queue` only) | unpatched loss |
 | amqp-restart-264 | not built: a broker restart is mechanism B (amqp-close-264) plus mechanism C (queue-gone-264), both covered without killing a container | — | — |
 | zombie-264 | feature | peer-side nft rules on the test client's port only, self-expiring (300 s), table deleted by a detached timer | upstream: zombie outlives the black hole, live session 0/10; wsl.8: 1 consumer (held off), the stale end sent the disconnect; rc wsl.14: no supersede, downlink split |
-| same-uid-end-264 | feature | no | wsl.8: the live session 0/10; rc wsl.14 (old suite): downlink split; rc wsl.15 (round 6, by code: the rewritten suite's first node run is rc wsl.16): the old session's later reports lost; rc wsl.16 (round 7): A deaf and a disconnect sent after B's end (seen in its log, not asserted then) |
+| same-uid-end-264 | feature | no | wsl.8: the live session 0/10; rc wsl.14 (old suite): downlink split; rc wsl.15 (round 6, by code: the rewritten suite's first node run is rc wsl.16): the old session's later reports lost; rc wsl.16 (round 7): A deaf and a disconnect sent after B's end (seen in its log, not asserted then; the r8 assertions' real negative controls are offline R17 case 11 and AMQP #9) |
 | callsign-share-264 | feature | no | wsl.8: 10/0 |
 | owner-swap-264 | feature | no (a 1-day test cert in the container's tmpfs, removed) | wsl.8: the swap was subscribed |
 | admission-264 | feature | no | wsl.8: AMQP before the handshake, nothing refused, silent sockets kept; wsl.10: (d) an empty event cleared the deadline |
@@ -856,7 +861,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | owner-8089-264 | feature | no (a 1-day test cert in the container's tmpfs, removed) | wsl.10: the row was taken over |
 | queue-policy-264 | feature | no | wsl.10: the departed member's queue grew without bound |
 | cap16-264 | feature | no | wsl.10: anon peak 93 % of memory.max |
-| rto-264 (8088), rto-ssl-264 (8089, two flaps) | feature | no (peer-side nft on the test clients' ports only, self-expiring; 8089 copies a 1-day test cert of a non-admin test user to 02/03, removed by the suite and by itself after 900 s) | wsl.11: the listener OOM-killed, 0/16 kept; both FAIL on any `admitting unserialized` line in their run (review r6) |
+| rto-264 (8088), rto-ssl-264 (8089, two flaps; the second return's 16 from the OTS host (8) and two containers (4 + 4): no address at PER_IP_MAX, r9) | feature | no (peer-side nft on the test clients' ports only, self-expiring; 8089 copies a 1-day test cert of a non-admin test user to 02/03, removed by the suite and by itself after 900 s) | wsl.11: the listener OOM-killed, 0/16 kept; both FAIL on any `admitting unserialized` line in their run (review r6); rc wsl.16: 1 of 8 second-return phones refused at PER_IP_MAX (❓-2) and 1 ended by impl-11 |
 | r8-hold-264 | tier B | yes (stops the OTS overlay containers, restores from the golden) | wsl.10: the guardian started the held container |
 | rto768-264 | tier B | yes on the limit only (ots_eud_handler at 768m for one rto run; the #156 reconciler paused by its root-owned operator flag, removed on every exit; the restore asserted) | wsl.11: the listener OOM-killed; the rc wsl.13 run with the lock held from outside (the author's mistake): 53 unserialized admissions |
 | group-disc-264 | feature | yes on a broken build (cot_parser crash loop; ends when the test membership is removed, which every exit path does) | wsl.8: 6 x crash ots_cot_parser |

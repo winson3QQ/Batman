@@ -257,7 +257,7 @@
              except Exception as e:
                  self.logger.debug(f"recv failed: {e}")
                  break
-@@ -105,28 +331,72 @@
+@@ -105,28 +331,78 @@
                  self.logger.debug("no data")
                  break
  
@@ -284,7 +284,26 @@
 +                    self.logger.error("Failed to parse: closing tag without an opening tag, dropped")
 +                    continue
 +                msg = chunk[start:].decode("utf-8", errors="replace")
-+                ping = tag != b"</event>" or b'type="t-x-c-t"' in chunk[start:chunk.find(b">", start) + 1]  # r8 A8-3/B8-1
++                root = None
+                 try:
+-                    if "<event" in c:
+-                        fromstring(c + "</event>")
+-                        self.handle_cot(c + "</event>")
+-                    elif "<auth>" in c:
+-                        fromstring(c + "</auth>")
+-                        self.handle_auth(c + "</auth>")
++                    root = fromstring(msg)
+                 except ParseError as e:
+                     self.logger.error(f"Failed to parse: {e}")
+-                    cot = c
+-                    break
+-
+-            cot = ""
+-
+-        self.close_connection()
++                # r9 B9-1: the parsed root's own type attribute (r8 searched the start tag's bytes: an attribute value
++                # carrying them passed an identifying SA as a ping); a malformed message is admitted like any other
++                ping = tag != b"</event>" or (root is not None and root.get("type") == "t-x-c-t")
 +                if self._admit_pending and not ping:
 +                    # BATMAN-264-R12/R16: admissions are serialized from here until the subscription is placed. A ping
 +                    # or an <auth> is answered without it (review r7 B7-1: each one took the lock and started a 20 s
@@ -295,26 +314,13 @@
 +                        self._release_admit()
 +                        self._refused = True
 +                        break
-                 try:
--                    if "<event" in c:
--                        fromstring(c + "</event>")
--                        self.handle_cot(c + "</event>")
--                    elif "<auth>" in c:
--                        fromstring(c + "</auth>")
--                        self.handle_auth(c + "</auth>")
-+                    fromstring(msg)
-+                    if tag == b"</event>":
++                try:
++                    if root is None:
++                        pass  # logged above; the deadline and the admission below still apply (as before r9)
++                    elif tag == b"</event>":
 +                        self.handle_cot(msg)
 +                    else:
 +                        self.handle_auth(msg)
-                 except ParseError as e:
-                     self.logger.error(f"Failed to parse: {e}")
--                    cot = c
--                    break
--
--            cot = ""
--
--        self.close_connection()
 +                except Exception as e:
 +                    # BATMAN-264 (review r3 A3-2): upstream let any exception out of handle_cot (a CoT without a
 +                    # start attribute: KeyError in parse_device_info) end the child without the session end: its
@@ -349,7 +355,7 @@
  
      def pong(self, event):
          if event.attrs.get("type") == "t-x-c-t":
-@@ -158,8 +428,86 @@
+@@ -158,8 +434,86 @@
          return False
  
      def setup(self):
@@ -437,7 +443,7 @@
          # RabbitMQ
          try:
              rabbit_credentials = pika.PlainCredentials(
-@@ -168,58 +516,305 @@
+@@ -168,58 +522,305 @@
              )
              rabbit_host = self.app.config.get("OTS_RABBITMQ_SERVER_ADDRESS")
              self.rabbit_connection = pika.SelectConnection(
@@ -773,7 +779,7 @@
          app = Flask(__name__)
          app.config.from_object(DefaultConfig)
  
-@@ -272,59 +867,797 @@
+@@ -272,59 +873,797 @@
          return app
  
      def on_connection_open(self, connection: pika.SelectConnection):
@@ -1607,7 +1613,7 @@
  
      def on_message(self, unused_channel, basic_deliver, properties, body):
          try:
-@@ -446,8 +1779,36 @@
+@@ -446,8 +1785,36 @@
          if self.pong(event):
              return
  
@@ -1645,7 +1651,7 @@
              # Close the DB connection once the EUD is authenticated and identified
              with self.app.app_context():
                  db.session.close()
-@@ -459,28 +1820,20 @@
+@@ -459,28 +1826,20 @@
          if not event:
              return
  
@@ -1687,7 +1693,7 @@
  
      def parse_device_info(self, event):
          link = event.find("link")
-@@ -500,6 +1853,7 @@
+@@ -500,6 +1859,7 @@
          # Only assume it's an EUD if it's got a <contact> tag
          if contact and uid and not uid.endswith("ping") and (self.user or not self.is_ssl):
              self.uid = uid
@@ -1695,7 +1701,7 @@
              device = operating_system = platform = version = None
              if takv:
                  device = takv.attrs["device"] if "device" in takv.attrs else None
-@@ -511,30 +1865,78 @@
+@@ -511,30 +1871,78 @@
                  self.callsign = contact.attrs["callsign"]
  
                  # Declare a RabbitMQ Queue for this uid and join the 'dms' and 'cot' exchanges
@@ -1785,7 +1791,7 @@
                                      exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                                  )
                                  if {
-@@ -556,7 +1958,7 @@
+@@ -556,7 +1964,7 @@
                                      self.group_memberships.append(membership)
  
                                      if membership.enabled:
@@ -1794,7 +1800,7 @@
                                              exchange="groups",
                                              queue=self.uid,
                                              routing_key=f"{membership.group.name}.OUT",
-@@ -575,7 +1977,7 @@
+@@ -575,7 +1983,7 @@
                                              }
                                          )
  
@@ -1803,7 +1809,7 @@
                              exchange="missions", routing_key="missions", queue=self.uid
                          )
                          if {
-@@ -592,12 +1994,13 @@
+@@ -592,12 +2000,13 @@
                              )
  
                          # The DMs queue also binds by callsign since the <dest> tag in CoT messages can be by callsign instead of UID
@@ -1821,7 +1827,7 @@
  
                          if {
                              "exchange": "dms",
-@@ -608,7 +2011,7 @@
+@@ -608,7 +2017,7 @@
                                  {"exchange": "dms", "routing_key": self.uid, "queue": self.uid}
                              )
  
@@ -1830,7 +1836,7 @@
                              "exchange": "dms",
                              "routing_key": self.callsign,
                              "queue": self.callsign,
-@@ -625,7 +2028,7 @@
+@@ -625,7 +2034,7 @@
                              self.logger.debug(
                                  f"{self.callsign} is connected via TCP, adding them to the __ANON__ group"
                              )
@@ -1839,7 +1845,7 @@
                                  exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
                              )
                              self.bound_queues.append(
-@@ -636,109 +2039,132 @@
+@@ -636,109 +2045,132 @@
                                  }
                              )
  
@@ -2056,7 +2062,7 @@
                          "namespace": "/socket.io",
                          "room": None,
                          "skip_sid": None,
-@@ -746,28 +2172,28 @@
+@@ -746,28 +2178,28 @@
                          "binary": False,
                          "host_id": uuid.uuid4().hex,
                      }

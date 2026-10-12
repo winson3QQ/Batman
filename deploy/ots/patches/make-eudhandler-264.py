@@ -3328,6 +3328,42 @@ rep('''                    self.eud = eud
                         self._io(self._publish_on_ioloop, "flask-socketio", "", self._eud_json)  # BATMAN-264
 ''')
 
+# --- code review round 9 (2026-10-12): a ping is the parsed event's own type attribute ---------------------------
+# Reviewer B9-1: round 8 searched the <event> start tag's BYTES for type="t-x-c-t"; an attribute VALUE carrying those
+# bytes (x='type="t-x-c-t"', well-formed XML) made an identifying SA pass as a ping: no admission, no ioloop, its
+# subscription never placed (deaf for life), and the next message held the lock for ADMIT_HOLD_S. The message is parsed
+# a few lines later anyway: it is parsed first now and the root's own attribute decides.
+rep('''                msg = chunk[start:].decode("utf-8", errors="replace")
+                ping = tag != b"</event>" or b'type="t-x-c-t"' in chunk[start:chunk.find(b">", start) + 1]  # r8 A8-3/B8-1
+''', '''                msg = chunk[start:].decode("utf-8", errors="replace")
+                root = None
+                try:
+                    root = fromstring(msg)
+                except ParseError as e:
+                    self.logger.error(f"Failed to parse: {e}")
+                # r9 B9-1: the parsed root's own type attribute (r8 searched the start tag's bytes: an attribute value
+                # carrying them passed an identifying SA as a ping); a malformed message is admitted like any other
+                ping = tag != b"</event>" or (root is not None and root.get("type") == "t-x-c-t")
+''')
+rep('''                try:
+                    fromstring(msg)
+                    if tag == b"</event>":
+                        self.handle_cot(msg)
+                    else:
+                        self.handle_auth(msg)
+                except ParseError as e:
+                    self.logger.error(f"Failed to parse: {e}")
+                except Exception as e:
+''', '''                try:
+                    if root is None:
+                        pass  # logged above; the deadline and the admission below still apply (as before r9)
+                    elif tag == b"</event>":
+                        self.handle_cot(msg)
+                    else:
+                        self.handle_auth(msg)
+                except Exception as e:
+''')
+
 # --- license notice (GPL-3.0-or-later §5a: modified files carry a prominent dated notice) ----------
 assert s.startswith("import base64\n"), "upstream file no longer starts with 'import base64'"
 s = ("# SPDX-License-Identifier: GPL-3.0-or-later\n"

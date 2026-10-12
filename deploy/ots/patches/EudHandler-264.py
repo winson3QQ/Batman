@@ -347,7 +347,14 @@ class EudHandler(socketserver.BaseRequestHandler):
                     self.logger.error("Failed to parse: closing tag without an opening tag, dropped")
                     continue
                 msg = chunk[start:].decode("utf-8", errors="replace")
-                ping = tag != b"</event>" or b'type="t-x-c-t"' in chunk[start:chunk.find(b">", start) + 1]  # r8 A8-3/B8-1
+                root = None
+                try:
+                    root = fromstring(msg)
+                except ParseError as e:
+                    self.logger.error(f"Failed to parse: {e}")
+                # r9 B9-1: the parsed root's own type attribute (r8 searched the start tag's bytes: an attribute value
+                # carrying them passed an identifying SA as a ping); a malformed message is admitted like any other
+                ping = tag != b"</event>" or (root is not None and root.get("type") == "t-x-c-t")
                 if self._admit_pending and not ping:
                     # BATMAN-264-R12/R16: admissions are serialized from here until the subscription is placed. A ping
                     # or an <auth> is answered without it (review r7 B7-1: each one took the lock and started a 20 s
@@ -359,13 +366,12 @@ class EudHandler(socketserver.BaseRequestHandler):
                         self._refused = True
                         break
                 try:
-                    fromstring(msg)
-                    if tag == b"</event>":
+                    if root is None:
+                        pass  # logged above; the deadline and the admission below still apply (as before r9)
+                    elif tag == b"</event>":
                         self.handle_cot(msg)
                     else:
                         self.handle_auth(msg)
-                except ParseError as e:
-                    self.logger.error(f"Failed to parse: {e}")
                 except Exception as e:
                     # BATMAN-264 (review r3 A3-2): upstream let any exception out of handle_cot (a CoT without a
                     # start attribute: KeyError in parse_device_info) end the child without the session end: its

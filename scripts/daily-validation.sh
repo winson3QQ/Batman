@@ -1391,7 +1391,7 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
     isint "$ru" || { echo "FAIL could not create the non-admin test user ($ru) — not verified"; return 1; }
     rto_user_rm() {   # every early return (r7 B7-7, r8 B8-6): the test user and the container-internal certs
       echo "delete from \"user\" where username = 'dv-264-rto';" | ots_sql "$ots" >/dev/null
-      fssh "$ots" 20 'for c in ots_cot_parser opentakserver ots_eud_handler; do docker exec $c rm -f /tmp/dv-client.pem /tmp/dv-client.key; done' >/dev/null; }
+      fssh "$ots" 20 'for c in ots_cot_parser opentakserver ots_eud_handler ots_eud_handler_ssl; do docker exec $c rm -f /tmp/dv-client.pem /tmp/dv-client.key; done' >/dev/null; }
     cert264 "$ots" dv-264-rto || { echo "FAIL could not issue the test client cert — not verified"; rto_user_rm; return 1; }
     # the container-internal /tmp/dv-client.{pem,key} (tmpfs of ots_cot_parser / opentakserver, not the node's /tmp)
     for c in pem key; do
@@ -1400,6 +1400,7 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
       for n in "$p1:$run-a" "$p2:$run-b"; do timeout 20 ssh -o BatchMode=yes -o LogLevel=ERROR "root@${n%%:*}" "umask 077; cat > /tmp/run/batman-dv/${n#*:}.$c; (trap '' HUP; sleep 900; rm -f /tmp/run/batman-dv/${n#*:}.$c) </dev/null >/dev/null 2>&1 &" < "$DIR/$run.$c"; done   # self-expiring (r5 B5-8)
       timeout 20 ssh -o BatchMode=yes -o LogLevel=ERROR "root@$ots" "docker exec -i opentakserver sh -c 'umask 077; cat > $f'" < "$DIR/$run.$c"
       timeout 20 ssh -o BatchMode=yes -o LogLevel=ERROR "root@$ots" "docker exec -i ots_eud_handler sh -c 'umask 077; cat > $f'" < "$DIR/$run.$c"
+      timeout 20 ssh -o BatchMode=yes -o LogLevel=ERROR "root@$ots" "docker exec -i ots_eud_handler_ssl sh -c 'umask 077; cat > $f'" < "$DIR/$run.$c"
       timeout 20 ssh -o BatchMode=yes -o LogLevel=ERROR "root@$ots" "H=/tmp/run/batman-dv; { [ -d \$H ] || mkdir -m 700 \$H; }; umask 077; cat > \$H/$run-a.$c; (trap '' HUP; sleep 900; rm -f \$H/$run-a.$c) </dev/null >/dev/null 2>&1 &" < "$DIR/$run.$c"
     done; rm -f "$DIR/$run.pem" "$DIR/$run.key"
   fi
@@ -1426,7 +1427,9 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
     # the field; PER_IP_MAX is not what is measured): the OTS node itself on br-ots (openssl, host side: not in the
     # measured cgroup) for $run-a, ots_eud_handler for $run-b
     sleep 30
-    ( fssh "$ots" 260 "docker exec -i -e TARGET=$tgt -e PORT=$port -e RUN=$run-b -e FIRST=1 -e N=8 -e HOLD=$((hold - 30)) -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key ots_eud_handler python3 -" < "$REPO/scripts/node/rto-reconnect-264.py" > "$DIR/$run.ots_eud_handler" 2>&1 ) &
+    for c in "ots_eud_handler:1" "ots_eud_handler_ssl:5"; do   # 4 + 4: below PER_IP_MAX per address (r9, ❓-2)
+      ( fssh "$ots" 260 "docker exec -i -e TARGET=$tgt -e PORT=$port -e RUN=$run-b -e FIRST=${c#*:} -e N=4 -e HOLD=$((hold - 30)) -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key ${c%%:*} python3 -" < "$REPO/scripts/node/rto-reconnect-264.py" > "$DIR/$run.${c%%:*}.2" 2>&1 ) &
+    done
     echo "second return, $run-a from the OTS node: $(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "TARGET=$tgt RUN=$run-a ACTION=start PORT=8089 N=8 TAG=.g3 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r')"
   fi
   for i in $(seq 1 22); do sleep 5; a=$(fssh "$ots" 20 "$cg"'; awk "/^anon /{print \$2}" $d/memory.stat' | tr -d ' \r'); isint "$a" && [ "$a" -gt "$peak" ] && peak=$a; done; wait
@@ -1438,11 +1441,11 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
     [ "$o" = 16 ] && [ "$c" = 32 ] || { echo "FAIL R17 on the second return: $o of 16 closed, ${c:-?} of 32 superseded (rc wsl.15: closed by the end-at-once code, not superseded)"; rc=1; }
     o=$(timeout 30 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "TARGET=$tgt RUN=$run-a ACTION=est PORT=8089 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r')
     echo "second return of $run-a (OTS node side) still connected: $o"; echo "KEPT ${o#EST } / 8" > "$DIR/$run.ots_cot_parser"
-    mv "$DIR/$run.ots_eud_handler" "$DIR/$run.opentakserver" 2>/dev/null
+    cat "$DIR/$run.ots_eud_handler.2" "$DIR/$run.ots_eud_handler_ssl.2" > "$DIR/$run.opentakserver" 2>/dev/null; rm -f "$DIR/$run".*.2
   fi
   grep -hv " kept$" "$DIR/$run.ots_cot_parser" "$DIR/$run.opentakserver" 2>/dev/null
   echo "downlink generator: $(cat "$DIR/$run.dl" 2>/dev/null | tail -1)"; grep -q '^SENT 20$' "$DIR/$run.dl" || { echo "FAIL the downlink generator did not send (the zombies had no pending data)"; rc=1; }; rm -f "$DIR/$run.dl"
-  k1=$(grep -o "KEPT [0-9]*" "$DIR/$run.ots_cot_parser" | cut -d' ' -f2); k2=$(grep -o "KEPT [0-9]*" "$DIR/$run.opentakserver" | cut -d' ' -f2)
+  k1=$(grep -o "KEPT [0-9]*" "$DIR/$run.ots_cot_parser" | awk '{s+=$2} END{print s+0}'); k2=$(grep -o "KEPT [0-9]*" "$DIR/$run.opentakserver" | awk '{s+=$2} END{print s+0}')
   st1=$(fssh "$ots" 20 "docker inspect -f '{{.State.StartedAt}}' $ctr" | tr -d '\r')
   o1=$(fssh "$ots" 20 "$cg"'; awk "/oom_kill /{print \$2}" $d/memory.events' | tr -d ' \r')
   r1=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -c \"refusing session\"'" | tr -d ' \r'); isint "$r1" || r1=0
@@ -1481,8 +1484,8 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   [ "$flip" = 1 ] || [ "$c" = 16 ] || { echo "FAIL ${c:-?} of 16 stale sessions ended seeing the phone live (not reaped, or took itself for the last session)"; rc=1; }
   echo "cleanup: 02 $(rto264 "$p1" "$run-a" 30 cleanup "$port") / 03 $(rto264 "$p2" "$run-b" 30 cleanup "$port")"; sleep 15
   [ "$port" = 8089 ] && echo "cleanup OTS node side: $(timeout 30 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "TARGET=$tgt RUN=$run-a ACTION=cleanup PORT=8089 TAG=.g3 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r')"
-  [ "$port" = 8089 ] && fssh "$ots" 20 'for c in ots_cot_parser opentakserver ots_eud_handler; do docker exec $c rm -f /tmp/dv-client.pem /tmp/dv-client.key; done' >/dev/null
-  rm -f "$DIR/$run".ots_cot_parser "$DIR/$run".opentakserver "$DIR/$run".*.1
+  [ "$port" = 8089 ] && fssh "$ots" 20 'for c in ots_cot_parser opentakserver ots_eud_handler ots_eud_handler_ssl; do docker exec $c rm -f /tmp/dv-client.pem /tmp/dv-client.key; done' >/dev/null
+  rm -f "$DIR/$run".ots_cot_parser "$DIR/$run".opentakserver "$DIR/$run".*.1 "$DIR/$run".*.2
   r264_clean "$ots" "$run"
   if [ "$port" = 8089 ]; then
     o=$(echo "delete from \"user\" where username = 'dv-264-rto' returning id;" | ots_sql "$ots" | head -1); echo "test user removed: $o"
@@ -1793,7 +1796,7 @@ elif up "$OTS_NODE"; then
   suite zombie-264 "field order: the EUD's stale session (port black-holed on $BENCH_NODE, data pending) is ended at once when the same device comes back from the same address, its end keeps the live one's bindings (no disconnect); 10/10 at once and later; the same uid from $MESH_NODE ends nothing; the last end removes the idle queues (#264 R17/R6/R10/F3; rc wsl.14: zombie ~116 s, downlink split)" "chk_zombie_264 $OTS_NODE $BENCH_NODE"
   suite amqp-close-264 "the broker closes the streaming session's AMQP connection twice (rabbitmqctl close_connection): every CoT stored at least once, client session kept, 2 reconnects logged (#264 R4/R4b mechanism B; upstream: session dropped, CoT in flight lost)" "chk_amqp_close_264 $OTS_NODE $BENCH_NODE"
   suite name-guard-264 "(review r5: the callsign is refused as a queue, the device recorded) an 8088 client with callsign cot_parser gets no subscription: cot_parser queue keeps 1 consumer, log line, CoT still stored (#264 R10; upstream: the client consumes storage's queue)" "chk_name_guard_264 $OTS_NODE $BENCH_NODE"
-  suite same-uid-end-264 "the same device opens a new session while the old one still sends: the downlink goes to the newest only (10/10), every report the old one sends is stored, the newer one's end disconnects nothing while the old one lives, the old one ends by the R17 deadline as the last session (#264 R17, the user's decisions 2026-10-12; rc wsl.14: split; rc wsl.16: A deaf + a disconnect after B's end)" "chk_same_uid_end_264 $OTS_NODE $BENCH_NODE"
+  suite same-uid-end-264 "the same device opens a new session while the old one still sends: the downlink goes to the newest only (10/10), every report the old one sends is stored, the newer one's end disconnects nothing while the old one lives, the old one ends by the R17 deadline as the last session (#264 R17, the user's decisions 2026-10-12; rc wsl.14: split; the r8 assertions' negative control is offline R17 case 11 / AMQP #9 — rc wsl.16's log showed A deaf and a disconnect after B's end, unasserted then)" "chk_same_uid_end_264 $OTS_NODE $BENCH_NODE"
   suite callsign-share-264 "two devices with the same callsign and different uids both get broadcast traffic, no empty queue left (#264 R10, review r2 B2-4; wsl.8: 10/0)" "chk_callsign_share_264 $OTS_NODE $BENCH_NODE"
   suite owner-swap-264 "an 8088 client naming an 8089 user's uid as its callsign (and as its uid) is refused and consumes none of the user's queues (#264 R10, review r2 B2-2; wsl.8: the swap was subscribed)" "chk_owner_swap_264 $OTS_NODE $BENCH_NODE"
   suite admission-264 "admission: 8089 nothing allocated before the TLS handshake; 8088 exactly the 9th and 10th session per address refused; silent / empty-event sockets closed at 60 s; silent, ping-only or contact-less-streaming sockets hold up no phone; an <auth> flood spawns no thread per message (#264 R12, review r2 B2-6 / r3 B3-2/B3-3 / r6 / r7 B7-1 / r8 A8-2)" "chk_admission_264 $OTS_NODE $BENCH_NODE"

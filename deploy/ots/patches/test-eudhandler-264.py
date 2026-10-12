@@ -172,4 +172,16 @@ fake = ev("FP1").replace(b"<detail>", b'<detail><x type="t-x-c-t"/>')
 h = H([fake]); h._admit_pending = True; handle(h)
 c = h.taken == 1 and h.opened == 1
 print(("PASS" if c else "FAIL"), f"R16 r8 an SA with a child of type t-x-c-t is admitted like any SA (taken {h.taken}x)"); R.append(c)
+# review r9 B9-1: an identifying SA carrying the ping bytes in an attribute VALUE is a real SA: admitted and handled
+fake2 = ev("FP2").replace(b'type="a-f-G-U-C"', b"type=\"a-f-G-U-C\" x='type=\"t-x-c-t\"'")
+h = H([fake2]); h._admit_pending = True; handle(h)
+c = h.taken == 1 and h.opened == 1 and [m.split('uid="')[1].split('"')[0] for m in h.got] == ["FP2"]
+print(("PASS" if c else "FAIL"), f"R16 r9 an SA whose attribute value carries the ping bytes is admitted like any SA (taken {h.taken}x, opened {h.opened}x)"); R.append(c)
+sq = ping.replace(b'type="t-x-c-t"', b"type='t-x-c-t'")
+h = H([sq, sq]); h._admit_pending = True; handle(h)
+c = h.taken == 0 and h.opened == 0
+print(("PASS" if c else "FAIL"), f"R16 r9 a single-quoted real ping is still a ping: never admitted (taken {h.taken}x)"); R.append(c)
+h = H([b"<event><bad></event>", ev("M1")]); h._admit_pending = True; handle(h)
+c = [m.split('uid="')[1].split('"')[0] for m in h.got] == ["M1"] and h.opened >= 1
+print(("PASS" if c else "FAIL"), f"R16 r9 a malformed message is dropped, the SA after it admitted and handled (opened {h.opened}x)"); R.append(c)
 print("ALL PASS" if all(R) else "SOME FAILED")
