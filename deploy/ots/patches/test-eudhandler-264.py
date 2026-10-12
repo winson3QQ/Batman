@@ -5,11 +5,14 @@ from xml.etree.ElementTree import fromstring, ParseError
 src = open(sys.argv[1], encoding="utf-8").read()
 mod = ast.parse(src)
 cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "EudHandler")
-fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "handle")
-code = textwrap.dedent(ast.get_source_segment(src, fn))
+code = ""
+for name in ("handle", "_handle_loop"):   # round 3: handle() wraps the loop in try/finally
+    fns = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name]
+    code += (textwrap.dedent(ast.get_source_segment(src, fns[0])) + "\n") if fns else ""
 import socket as _socket, time as _time
+import traceback as _tb
 g = {"fromstring": fromstring, "ParseError": ParseError, "MAX_PENDING": 1 << 20, "time": _time, "socket_mod": _socket,
-     "IDENT_MAX_S": 60}
+     "IDENT_MAX_S": 60, "traceback": _tb}
 exec(code, g)
 handle = g["handle"]
 
@@ -25,7 +28,13 @@ class H:
     def __init__(self, chunks):
         self.request = Sock(chunks); self.shutdown = False; self.got = []; self.auth = []
         self.logger = logging.getLogger("t"); self.client_address = ("x", 0); self.closed = 0; self.waited = 0
-    def handle_cot(self, m): self.got.append(m)
+        self.uid = None; self.released = 0; self.raise_on = None
+        if "_handle_loop" in g: self._handle_loop = g["_handle_loop"].__get__(self)
+    def handle_cot(self, m):
+        if self.raise_on and self.raise_on in m: raise KeyError("start")
+        self.got.append(m)
+        if "<contact" in m: self.uid = m.split('uid="')[1].split('"')[0]   # identified, as parse_device_info does
+    def _release_admit(self): self.released += 1
     def handle_auth(self, m): self.auth.append(m)
     def close_connection(self): self.closed += 1
     def _wait_end(self): self.waited += 1
@@ -76,12 +85,29 @@ R.append(run("malformed then good", [bad + ev("G1")], ["G1"]))
 R.append(run("unterminated then good", [b'<?xml version="1.0"?><event uid="LOST" ' + ev("G2")], ["G2"]))
 # > 1 MiB without a closing tag is dropped, the stream continues
 R.append(run(">1 MiB pending dropped", [b"<event " + b"x" * 1100000, ev("AFTER")], ["AFTER"]))
-# R12 (review r2 B2-6): a client that sends no complete message by the deadline is closed; the deadline is armed
-# on every recv until the first complete message and cleared (None) after it; the handler always waits for the end
+# R12: a client that sends no complete message by the deadline is closed; the handler always waits for the end
 h = H(["TIMEOUT"]); handle(h)
 c = h.closed == 1 and h.waited == 1 and not h.got and len(h.request.timeouts) == 1 and 0 < h.request.timeouts[0] <= 60
 print(("PASS" if c else "FAIL"), f"R12 silent client: closed at the deadline (timeouts {h.request.timeouts}), end waited"); R.append(c)
+# R12 (review r3 B3-3): until the client identifies, each complete message only moves the deadline on (it is armed
+# again, never cleared); identification clears it once
+def plain(u): return ('<event version="2.0" uid="%s" type="a-f-G-U-C"><point lat="1" lon="1"/><detail/></event>' % u).encode()
+h = H([b"<event></event>", plain("P1"), b"<event></event>"]); handle(h)
+c = None not in h.request.timeouts and len(h.request.timeouts) == 4 and h.uid is None and h.closed == 1
+print(("PASS" if c else "FAIL"), f"R12 unidentified chatter: deadline re-armed on every recv, never cleared (timeouts {h.request.timeouts})"); R.append(c)
 h = H([ev("Q1")[:30], ev("Q1")[30:], ev("Q2")]); handle(h)
-c = [m.split('uid="')[1].split('"')[0] for m in h.got] == ["Q1", "Q2"] and h.request.timeouts[-1] is None and h.request.timeouts.count(None) == 1 and h.waited == 1
-print(("PASS" if c else "FAIL"), f"R12 talking client: deadline armed until the first message, then cleared once (timeouts {h.request.timeouts})"); R.append(c)
+c = [m.split('uid="')[1].split('"')[0] for m in h.got] == ["Q1", "Q2"] and h.request.timeouts.count(None) == 1 and h.request.timeouts[-1] is None and h.waited == 1
+print(("PASS" if c else "FAIL"), f"R12 identifying client: deadline cleared once at identification (timeouts {h.request.timeouts})"); R.append(c)
+# A3-2 (review r3): an exception out of handle_cot drops that message only; the session goes on and still ends properly
+h = H([ev("BAD1") + ev("OK1")]); h.raise_on = 'uid="BAD1"'; handle(h)
+c = [m.split('uid="')[1].split('"')[0] for m in h.got] == ["OK1"] and h.closed == 1 and h.waited == 1
+print(("PASS" if c else "FAIL"), "A3-2 a raising message is dropped, the next one handled, the end runs and is waited for"); R.append(c)
+class Boom(Exception): pass
+h = H([ev("Z")]); h._handle_loop = lambda *a: (_ for _ in ()).throw(Boom("loop died"))
+try:
+    handle(h)
+except Exception:
+    pass
+c = h.closed == 1 and h.waited == 1 and h.released >= 1
+print(("PASS" if c else "FAIL"), "A3-2 whatever leaves the loop: the end runs, is waited for, the admission lock released"); R.append(c)
 print("ALL PASS" if all(R) else "SOME FAILED")

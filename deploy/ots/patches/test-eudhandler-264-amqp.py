@@ -53,7 +53,7 @@ class Loop:
 
 
 class Conn:
-    def __init__(self): self.is_open = True; self.ioloop = Loop(); self.opened = []
+    def __init__(self): self.is_open = True; self.is_closed = False; self.ioloop = Loop(); self.opened = []
     def channel(self, on_open_callback): self.opened.append(on_open_callback)
 
 
@@ -61,7 +61,14 @@ class App:
     config = {"OTS_RABBITMQ_TTL": "86400000"}
 
 
+class _Req:
+    def __init__(self): self.calls = []
+    def shutdown(self, how): self.calls.append("shutdown")
+    def close(self): self.calls.append("close")
+
+
 class H:
+    def _io(self, fn, *a): fn(*a); return True   # the ioloop thread, inline
     def __init__(self, chan_open=True):
         self.logger = logging.getLogger("t"); self.app = App(); self.uid = "U"
         self.rabbit_channel = Chan(chan_open); self.rabbit_connection = Conn()
@@ -79,7 +86,8 @@ class H:
         self._end_args = None; self._loop_dead = False
         self._close_lock = _threading.Lock(); self._final_close = False; self._end_deadline = None
         self._sub_binds = []; self._sub_binds_pending = []; self._relay = False; self.user = None
-        self.iothread = None; self.shutdown = False; self._pending_ops = None
+        self.iothread = None; self.shutdown = False; self._pending_ops = None; self._chan_opening = False
+        self._admit_fd = None; self._admit_mx = _threading.Lock(); self.request = _Req(); self.eud = None
 
 
 for name in WANT:
@@ -255,29 +263,43 @@ h._on_return(None, None, FakeProps(headers={"x-b264-uid": "U", "x-b264-type": "a
 ok(h._returned == {1} and [b for b, m in h.cached_messages] == ["r1"], "10 return of r1: marked, re-cached once")
 h._on_confirm(Fr("Basic.Ack", 2, multiple=True))
 ok(not h._unacked and not h._returned and [b for b, m in h.cached_messages] == ["r1"], "10 ack covering the returned r1 is not a delivery: cache unchanged, r2 delivered")
-# 11 R4 reconnect: connection closed while the session lives -> unacked re-cached in order, reconnect scheduled with
-#    backoff 1,2,4..30 on the SAME ioloop with the same parameters; closed session -> loop stopped instead
+# 11 R4/R13 (review r3 A3-3, the user's decision): the broker drops a LIVE session's connection -> the unacked bodies
+#    go back to the cache in order, the CLIENT session ends (socket shut, the phone reconnects and is subscribed afresh
+#    from the database), and the ioloop reconnects (backoff 1,2,4..30, same ioloop, same parameters) only to deliver
+#    the cache before the goodbye; no second connection while one is opening (review r2 A2-9)
 class FakeConn2(Conn):
-    def __init__(self, *a, **k): super().__init__(); self.args = (a, k); self.params = "P"; self.is_open = False   # a connection object exists while closed/failed
-    def close(self): self.is_open = False
+    def __init__(self, *a, **k): super().__init__(); self.args = (a, k); self.params = "P"; self.is_open = False; self.is_closed = True
+    def close(self): self.is_open = False; self.is_closed = True
 g["pika"].SelectConnection = FakeConn2
+ends11 = []
+H._end_session = lambda self, uid, body: ends11.append(uid)
 h = H(); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h.client_address = ("10.0.0.9", 1)
 h._publish_on_ioloop("cot_parser", "cot_parser", "u1", None); h._publish_on_ioloop("cot_parser", "cot_parser", "u2", None)
 h._cache("later", None)
 h.on_close(h.rabbit_connection, "missed heartbeats")
-ok([b for b, m in h.cached_messages] == ["u1", "u2", "later"] and not h._unacked and h.rabbit_channel is None and h._need_replay
-   and h._reconnect_timer is not None and 0.75 <= h._ioloop.timers[-1][0] <= 1.25, "11 connection closed: unacked at the head in order, reconnect in ~1 s (jitter)")
+ok([b for b, m in h.cached_messages] == ["u1", "u2", "later"] and not h._unacked and h.rabbit_channel is None
+   and h._closed and h._end_args is not None and h.request.calls[:1] == ["shutdown"] and not ends11
+   and h._reconnect_timer is not None and any(0.75 <= t[0] <= 1.25 for t in h._ioloop.timers),
+   "11 live connection lost: unacked back at the head in order, the client session ends, reconnect in ~1 s for the drain")
+h._ioloop.timers = [t for t in h._ioloop.timers if t[1] == h._reconnect]
 h._ioloop.fire()   # _reconnect -> new SelectConnection on the same ioloop
 ok(isinstance(h.rabbit_connection, FakeConn2) and h.rabbit_connection.args[1].get("custom_ioloop") is h._ioloop and h.rabbit_connection.args[0][0] == "P"
    and h._reconnect_timer is None, "11 reconnect: new connection with the same params on the same ioloop")
+h.rabbit_connection.is_closed = False   # opening: neither open nor closed
+h._schedule_reconnect(); ok(h._reconnect_timer is None, "11 (r2 A2-9) a connection still opening: no second connection")
+h.rabbit_connection.is_closed = True
 h.on_open_error(h.rabbit_connection, "refused"); h.on_open_error(h.rabbit_connection, "refused")
-ok(h._reconnect_n == 2 and 1.5 <= h._ioloop.timers[-1][0] <= 2.5, "11 open error: next attempt in ~2 s (backoff), one timer at a time")
-for i in range(6): h._ioloop.fire(); h.on_open_error(h.rabbit_connection, "refused")
+ok(h._reconnect_n == 2 and 1.5 <= h._ioloop.timers[-1][0] <= 2.5, "11 open error during the drain: next attempt in ~2 s (backoff), one timer at a time")
+for i in range(6): h._ioloop.timers = [t for t in h._ioloop.timers if t[1] == h._reconnect]; h._ioloop.fire(); h.on_open_error(h.rabbit_connection, "refused")
 ok(22.5 <= h._ioloop.timers[-1][0] <= 37.5, "11 backoff capped at 30 s (with jitter)")
+h.rabbit_connection.is_open = True; h.rabbit_connection.is_closed = False; h.rabbit_channel = Chan(); h._pub_seq = 0; h._try_end()
+ok([p["body"] for p in h.rabbit_channel.pubs] == ["u1", "u2", "later"] and not ends11, "11 broker back: the cache is published, the end waits for the acks")
+h._on_confirm(Fr("Basic.Ack", 3, multiple=True))
+ok(ends11 == ["U"], "11 all acked: the session end (goodbye) runs")
 h2 = H(); h2.rabbit_connection = FakeConn2(); h2._ioloop = h2.rabbit_connection.ioloop; h2._closed = True; stopped = []
 h2._ioloop.stop = lambda: stopped.append(1); h2.rabbit_connection.ioloop.add_callback_threadsafe = lambda fn: fn()
 h2.on_close(h2.rabbit_connection, "bye")
-ok(stopped == [1] and h2._reconnect_timer is None, "11 session already closing: loop stopped, no reconnect")
+ok(stopped == [1] and h2._reconnect_timer is None, "11 session already ended: loop stopped, no reconnect")
 # 12 R4b order and bound: a new body queues behind a non-empty cache (never ahead of older ones); with CACHE_MAX
 #    publishes unconfirmed the next body is held and released by the ack; the head retry goes ahead (force)
 h = H(); h._cache("old", None); h._publish_on_ioloop("cot_parser", "cot_parser", "new", None)
@@ -296,13 +318,15 @@ for fname in ("on_channel_close",):
 import time as _time; g["time"] = _time
 ended = []
 real_close_connection = H.close_connection
-H.close_connection = lambda self: ended.append(1)
-h = H(); h.rabbit_connection = FakeConn2(); h.rabbit_connection.is_open = True; h._ioloop = h.rabbit_connection.ioloop; h.callsign = "C"
-h._sub_ops = [("queue_declare", (), {"queue": "amq.x"})]
-h.on_channel_close(h.rabbit_channel, "403"); h.on_channel_close(h.rabbit_channel, "403")
-ok(len(h.rabbit_connection.opened) == 2 and h._need_replay and not ended, "13 two channel errors: channel reopened twice, subscription to be replayed")
+H.close_connection = lambda self: (ended.append(1), setattr(self, "_closed", True))
+h = H(); h.rabbit_connection = FakeConn2(); h.rabbit_connection.is_open = True; h.rabbit_connection.is_closed = False
+h._ioloop = h.rabbit_connection.ioloop; h.callsign = "C"; h._sub_ops = [("queue_declare", (), {"queue": "amq.x"})]
 h.on_channel_close(h.rabbit_channel, "403")
-ok(ended == [1] and h._sub_ops is None and len(h.rabbit_connection.opened) == 2 and h._end_done.is_set(), "13 third error within 60 s: session ended at once (end complete), no further reopen")
+ok(ended == [1] and not h.rabbit_connection.opened and not h._need_replay,
+   "13 (R13) a channel error on a LIVE session ends the client session (no reopen + replay any more)")
+h._end_args = ("U", "disc")   # the end is draining
+h.on_channel_close(None, "403"); h.on_channel_close(None, "403")
+ok(h._end_done.is_set() and h._end_args is None, "13 three channel closes within 60 s while ending: the end completes at once (no drain over a failing channel)")
 # 14 R4b/R6 end flow (review r2 A2-4/A2-6/A-F18): the end waits for its bodies to be ACKED, survives intermediate
 #    channel/connection events, and only the end itself releases the handler
 ends = []
@@ -369,17 +393,16 @@ h = H(); h.rabbit_channel = SubChan({}); h._closed = True; h._subscribe(OPS, [BU
 ok(not h.rabbit_channel.ops and not h._subscribed and not h._sub_binds, "16 an ended session does not subscribe")
 h = H(); h.rabbit_channel = Chan(is_open=False); h._subscribe(OPS, [BU]); ok(h._pending_ops == OPS and not h._sub_binds, "16 channel not open yet: deferred, nothing recorded as placed")
 h.rabbit_channel = SubChan({}); h._subscribe(h._pending_ops); ok(h._subscribed and h._sub_binds == [BU], "16 deferred subscription placed later with the bindings given first")
-# 17 R4: after a reconnect the subscription really is replayed through on_channel_open (review A-F1 / B-2)
+# 17 R13 (review r3 A3-3): a new channel never replays the recorded subscription (Marti-API bindings made after
+#    identification were silently lost on replay); a live session that lost its connection ends instead
 fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "on_channel_open")
 exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); setattr(H, "on_channel_open", g["on_channel_open"])
 g["uuid"] = __import__("uuid"); g["json"] = __import__("json")
-h = H(); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h.eud = None; h._pending_ops = None
-h._sub_ops = OPS; h._subscribed = True          # subscribed on the old channel
-h.on_close(h.rabbit_connection, "missed heartbeats")   # connection lost -> _need_replay, _subscribed cleared
-ok(h._need_replay and not h._subscribed, "17 connection lost: replay pending, subscription gone")
-nc = SubChan({}); del h.on_channel_open; h.on_channel_open(nc)   # the real method, not the fake's stub
-ok([o[0] for o in nc.ops] == ["queue_declare", "queue_declare", "queue_bind", "basic_consume", "basic_consume"] and h._subscribed and not h._need_replay,
-   "17 new channel: declares, binds and consumes replayed; replay flag cleared")
+h = H(); h.rabbit_connection = FakeConn2(); h._ioloop = h.rabbit_connection.ioloop; h._pending_ops = None
+h._sub_ops = OPS; h._subscribed = True; h._need_replay = True
+nc = SubChan({}); del h.on_channel_open; h.on_channel_open(nc)
+ok(not [o for o in nc.ops if o[0] in ("queue_declare", "queue_bind", "basic_consume")],
+   "17 a new channel does not replay the recorded subscription (declare/bind/consume)")
 # 18 R4: a channel closed because the connection dropped is not a channel error (review A-F8)
 h = H(); h.rabbit_connection = FakeConn2(); h.rabbit_connection.is_open = False; h._ioloop = h.rabbit_connection.ioloop; h.callsign = "C"
 h.on_channel_close(None, "connection lost"); h.on_channel_close(None, "x"); h.on_channel_close(None, "x")
@@ -411,26 +434,49 @@ ok(g["_sessions_from"]("10.41.15.10", 8088) == 1 and g["_sessions_from"]("10.9.9
 files.clear(); ok(g["_sessions_from"]("10.42.24.32", 8088) == 0, "21 no /proc files: 0 (both absent)")
 g["open"] = lambda *a, **k: (_ for _ in ()).throw(PermissionError("x")); ok(g["_sessions_from"]("10.42.24.32", 8088) is None, "21 unreadable: None (the caller logs, the memory reserve still applies)")
 ok(g["_sessions_from"]("not-an-ip", 8088) is None, "21 a non-IPv4 client address: None, never raises"); del g["open"]
-# 22 R12 admission: the TLS handshake comes BEFORE any allocation; per-address limit; then the memory reserve
+# 22 R12 admission (review r3 B3-2): the per-address count and the memory reserve FIRST (cheap, nothing allocated),
+#    then the 8089 TLS handshake, then the admission lock and the memory reserve again (serialized)
+for fname in ("_take_admit", "_release_admit"):
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == fname)
+    exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); setattr(H, fname, g[fname])
+import os as _os, fcntl as _fcntl, tempfile as _tf
+g["os"] = _os; g["fcntl"] = _fcntl; g["time"] = __import__("time")
+g["ADMIT_LOCK"] = _os.path.join(_tf.mkdtemp(), "admit.lock"); g["ADMIT_WAIT_S"] = 1; g["ADMIT_HOLD_S"] = 30
 class TLS:
     def __init__(self, fail=False): self.fail = fail; self.calls = []
-    def settimeout(self, t): self.calls.append(("timeout", t))
+    def settimeout(self, t): self.calls.append(("timeout", t)); order.append(("timeout", t))
     def do_handshake(self):
-        self.calls.append(("handshake",))
+        self.calls.append(("handshake",)); order.append("handshake")
         if self.fail: raise OSError("bad certificate")
 class Srv: server_address = ("0.0.0.0", 8089)
 order = []
 H._session_allowed = lambda self: order.append("mem") or True
 g["_sessions_from"] = lambda ip, port: order.append(("count", ip, port)) or 1
 h = H(); h.is_ssl = True; h.request = TLS(); h.server = Srv(); h.client_address = ("10.42.24.32", 5)
-ok(h._admit() is True and h.request.calls == [("timeout", 10), ("handshake",), ("timeout", None)] and order == [("count", "10.42.24.32", 8089), "mem"],
-   "22 8089: handshake (10 s timeout) first, then the per-address count, then the memory reserve")
+ok(h._admit() is True and order == [("count", "10.42.24.32", 8089), "mem", ("timeout", 10), "handshake", ("timeout", None), "mem"]
+   and h._admit_fd is not None, "22 8089: count, memory, handshake (10 s), then the lock and memory again; the lock is held")
+h._release_admit(); ok(h._admit_fd is None, "22 the lock is released (after the first message, or ADMIT_HOLD_S)")
 order.clear(); h = H(); h.is_ssl = True; h.request = TLS(fail=True); h.server = Srv()
-ok(h._admit() is False and not order, "22 8089 handshake fails: refused, nothing counted or allocated")
-order.clear(); g["_sessions_from"] = lambda ip, port: 9; h = H(); h.is_ssl = False; h.request = TLS(); h.server = Srv()
-ok(h._admit() is False and not order and not h.request.calls, "22 8088 with 9 sessions from the address (limit 8): refused before the memory check, no handshake")
-g["_sessions_from"] = lambda ip, port: 8; ok(h._admit() is True and order == ["mem"], "22 exactly 8: allowed (strict greater-than)")
-order.clear(); g["_sessions_from"] = lambda ip, port: None; ok(h._admit() is True and order == ["mem"], "22 count unreadable: only the memory reserve applies (logged)")
+ok(h._admit() is False and order[0][0] == "count" and order[1] == "mem" and "handshake" in order and order.count("mem") == 1 and h._admit_fd is None,
+   "22 handshake fails: refused, the lock never taken")
+order.clear(); g["_sessions_from"] = lambda ip, port: order.append("count") or 9; h = H(); h.is_ssl = True; h.request = TLS(); h.server = Srv()
+ok(h._admit() is False and order == ["count"] and not h.request.calls, "22 9 sessions from the address (limit 8): refused before memory and before the handshake")
+g["_sessions_from"] = lambda ip, port: 8; order.clear(); h = H(); h.is_ssl = False; h.request = TLS(); h.server = Srv()
+ok(h._admit() is True and order == ["mem", "mem"] and not h.request.calls, "22 8088 with exactly 8: allowed, no handshake, memory checked twice"); h._release_admit()
+order.clear(); g["_sessions_from"] = lambda ip, port: None; h = H(); h.is_ssl = False; h.request = TLS(); h.server = Srv()
+ok(h._admit() is True and order == ["mem", "mem"], "22 count unreadable: only the memory reserve applies (logged)"); h._release_admit()
+# 22b the lock serializes admissions: while one session holds it, the next waits (here ADMIT_WAIT_S 1 s, then it is
+#     admitted unserialized and says so); a second memory refusal releases the lock at once
+h1 = H(); h1.is_ssl = False; h1.request = TLS(); h1.server = Srv(); h1._admit()
+import time as _t0
+h2 = H(); h2.is_ssl = False; h2.request = TLS(); h2.server = Srv(); t0 = _t0.monotonic(); r = h2._admit(); dt = _t0.monotonic() - t0
+ok(r is True and h1._admit_fd is not None and h2._admit_fd is None and dt >= 1.0, f"22b the lock is exclusive: the second admission waited {dt:.1f} s (ADMIT_WAIT_S), then went on unserialized")
+h1._release_admit()
+h3 = H(); h3.is_ssl = False; h3.request = TLS(); h3.server = Srv(); t0 = _t0.monotonic(); h3._admit(); dt = _t0.monotonic() - t0
+ok(h3._admit_fd is not None and dt < 0.5, "22b released: the next admission takes the lock at once"); h3._release_admit()
+seq = iter([True, False]); H._session_allowed = lambda self: next(seq)
+h4 = H(); h4.is_ssl = False; h4.request = TLS(); h4.server = Srv()
+ok(h4._admit() is False and h4._admit_fd is None, "22b refused by the second (serialized) memory check: the lock is released")
 # 23 close_connection starts the end once, atomically, from either thread; _wait_end blocks until the END completes
 H.close_connection = real_close_connection
 queued = []

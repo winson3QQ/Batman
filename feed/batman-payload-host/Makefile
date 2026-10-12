@@ -168,6 +168,7 @@ define Package/batman-payload-ots/install
 	$(INSTALL_DATA) ../../deploy/ots/ots.hardening.env                  $(1)/usr/share/batman/payload-golden/opentakserver/ots.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq.hardening.env             $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq-extra.conf                $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq-extra.conf
+	$(INSTALL_DATA) ../../deploy/ots/rabbitmq-definitions.json          $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq-definitions.json
 	# #264: the patched eud_handler (GPL-3.0-or-later, deploy/ots/patches/README.md), bind-mounted ro over the
 	# image's file by the manifest (MOUNT + MOUNTSHA pin); refreshed to p6 at boot like every golden file
 	$(INSTALL_DATA) ../../deploy/ots/patches/EudHandler-264.py          $(1)/usr/share/batman/payload-golden/opentakserver/EudHandler-264.py

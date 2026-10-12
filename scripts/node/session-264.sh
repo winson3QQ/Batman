@@ -9,7 +9,11 @@
 #   stop     : ends reader $WHO (A or B) only: "STOPPED <who>"
 #   count    : "A <n> B <n>" received for tag $TAG
 #   swap     : an 8088 client uid $RUN-X whose CALLSIGN is $VICTIM (an 8089 user's uid), stays 10 s
-#   silent   : N sockets to TARGET:PORT that never send a byte (they stay open until the server closes them)
+#   silent   : N sockets to TARGET:PORT that never send a byte (they stay open until the server closes them); GAP s
+#              between connects (default 0: all at once)
+#   chatter  : N sockets that send one empty <event></event> and then nothing (review r3 B3-3)
+#   badstart : one session: a CoT without a start attribute, then the identifying CoT of $RUN-B (review r3 A3-2), 10 s
+#   idle     : N identifying idle sessions (uid/callsign $RUN-<k>), HOLD s each (capacity)
 #   est      : "EST <n>" established connections from this node to TARGET:PORT
 #   cleanup  : kills the run's clients; "LEFT <n>" established to 8088
 : "${TARGET:?}" "${RUN:?}" "${ACTION:?}"
@@ -54,14 +58,27 @@ swap)
 	{ ev "$RUN-X" "${VICTIM:?}"; sleep 10; } | nc "$TARGET" 8088 >/dev/null 2>&1; echo "swap session closed"
 	;;
 silent)
-	i=0; while [ $i -lt "${N:?}" ]; do (trap '' HUP; sleep 300 | nc "$TARGET" "${PORT:?}" >/dev/null 2>&1) </dev/null >/dev/null 2>&1 & i=$((i+1)); done
+	i=0; while [ $i -lt "${N:?}" ]; do (trap '' HUP; sleep 300 | nc "$TARGET" "${PORT:?}" >/dev/null 2>&1) </dev/null >/dev/null 2>&1 & i=$((i+1)); [ "${GAP:-0}" = 0 ] || sleep "$GAP"; done
 	sleep 2; echo "SILENT $(est "$PORT")"
+	;;
+chatter)
+	i=0; while [ $i -lt "${N:?}" ]; do (trap '' HUP; { printf '<event></event>'; sleep 300; } | nc "$TARGET" 8088 >/dev/null 2>&1) </dev/null >/dev/null 2>&1 & i=$((i+1)); sleep 1; done
+	sleep 2; echo "CHATTER $(est 8088)"
+	;;
+badstart)
+	n=$(date +%s)
+	{ printf '<event version="2.0" uid="%s" type="a-f-G-U-C" how="h-e" time="%s" stale="%s"><point lat="1" lon="1" hae="0" ce="9" le="9"/><detail><contact callsign="%s"/></detail></event>' "$RUN-B" "$(ts "$n")" "$(ts $((n+600)))" "$RUN-B"
+	  sleep 2; ev "$RUN-B" "$RUN-B"; sleep 10; } | nc "$TARGET" 8088 >/dev/null 2>&1; echo "BADSTART done"
+	;;
+idle)
+	i=1; while [ $i -le "${N:?}" ]; do (trap '' HUP; { ev "$RUN-$i" "$RUN-$i"; sleep "${HOLD:-90}"; } | nc "$TARGET" 8088 >/dev/null 2>&1) </dev/null >/dev/null 2>&1 & i=$((i+1)); done
+	sleep 3; echo "IDLE $(est 8088)"
 	;;
 est)
 	echo "EST $(est "${PORT:-8088}")"
 	;;
 cleanup)
-	for p in $(pgrep -x nc) $(pgrep -f "^sleep 600$") $(pgrep -f "^sleep 300$"); do kill "$p" 2>/dev/null; done
+	for p in $(pgrep -x nc) $(pgrep -f "^sleep 600$") $(pgrep -f "^sleep 300$") $(pgrep -f "^sleep ${HOLD:-90}$"); do kill "$p" 2>/dev/null; done
 	sleep 2; rm -f "$H/$RUN-"*
 	echo "LEFT $(est 8088)"
 	;;

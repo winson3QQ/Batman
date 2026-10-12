@@ -62,6 +62,7 @@ LOCK="$RUNDIR/batman-payload-$TENANT.lock"
 PIDF="$RUNDIR/batman-payload-$TENANT.pid"
 STOPPING="$RUNDIR/batman-payload-$TENANT.stopping"
 SHUTDOWN="$RUNDIR/batman-shutdown"      # #274 D7-4: written by K08's shutdown(); never removed this boot
+HOLD="$RUNDIR/batman-payload-$TENANT.mountsha-hold"   # #264 R8 (review r3 B3-1): containers a refused converge keeps stopped
 # shellcheck source=/dev/null
 . "${PAYLOAD_LIB:-/usr/lib/batman/payload-lib.sh}" || { echo "payload-run: payload-lib.sh missing" >&2; exit 1; }
 # #274 D7-7: a tenant whose golden copy is in the image reads HARDEN files and *.fw4.uci from the image
@@ -162,13 +163,17 @@ mountsha_check(){
 $MSHAS
 EOF
 }
+# The decision is written to $HOLD (root-only run dir, gone at boot) and honoured by EVERY later start of this
+# boot - review r3 B3-1, reproduced on rc wsl.10: the guardian's `--restart-exited` (a new payload-run with an empty
+# SKIP_START) started the held container 30 s later. Only a converge that succeeds (rebuild, or an unchanged stack)
+# removes it.
 # #264 R8 (review r2 B2-5): a REFUSED converge starts the existing stack on its OLD config, but docker re-reads a
 # bind-mount source when a container starts: an overlay on p6 that the update replaced would run over the OLD image
 # (fail-open). Before that start, every container with a MOUNTSHA is checked against ITS OWN image (the one it was
 # created from, by id: no pull); a mismatch, or a probe that cannot run, keeps it stopped (fail-closed: code that
 # was never validated against that image never runs; the verdict stays DRIFT and the log says why).
 mountsha_old_check(){
-	SKIP_START=""
+	SKIP_START=""; rm -f "$HOLD"
 	while read -r c mdst msha; do
 		[ -n "$c" ] && [ -n "$mdst" ] || continue
 		why=""
@@ -182,7 +187,7 @@ mountsha_old_check(){
 			[ "$got" = "$msha" ] || why="its image's $mdst is sha256 ${got:-unreadable}, the overlay on p6 was made for $msha"
 		fi
 		[ -n "$why" ] || continue
-		case " $SKIP_START " in *" $c "*) ;; *) SKIP_START="$SKIP_START $c" ;; esac
+		case " $SKIP_START " in *" $c "*) ;; *) SKIP_START="$SKIP_START $c"; echo "$c" >> "$HOLD" ;; esac
 		log "WARN: $c kept STOPPED on its old config: $why (#264 R8, fail-closed)"
 	done <<EOF
 $(awk '$1=="CONTAINER"{n=$2} $1=="MOUNTSHA"{print n, $2, $3}' "$MANIFEST")
@@ -448,8 +453,9 @@ hc_of(){ awk -v c="$1" '$1=="CONTAINER"{n=$2} $1=="HEALTH" && n==c {sub(/^HEALTH
 tiers(){ awk '$1=="CONTAINER"{if(n!="")print n, t; n=$2; t=99} $1=="STOPTIER"{t=$2+0} END{if(n!="")print n, t}' "$MANIFEST"; }
 start_group(){   # $@ = container names: start in parallel, collect each status, then gate each
 	pids=""
+	held=" $SKIP_START $(cat "$HOLD" 2>/dev/null | tr '\n' ' ') "
 	for c in "$@"; do
-		case " $SKIP_START " in *" $c "*) START_FAILED="$START_FAILED $c"; FAILED=1; continue ;; esac   # #264 R8
+		case "$held" in *" $c "*) log "WARN: $c is held stopped ($HOLD, #264 R8)"; START_FAILED="$START_FAILED $c"; FAILED=1; continue ;; esac
 		st=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
 		case "$st" in
 			running|restarting) log "$c already $st" ;;
@@ -502,6 +508,7 @@ do_restart_exited(){
 }
 do_rebuild(){
 	log "rebuild (cfg $(short))"
+	rm -f "$HOLD"   # #264 R8: a preflighted rebuild replaces the held containers
 	remove_stack
 	ensure_net; apply_fw4
 	walk run
@@ -526,6 +533,7 @@ case "$MODE" in
 		finish ;;
 	converge)
 		if all_match; then
+			rm -f "$HOLD"   # #264 R8: the stack matches the current config: nothing to hold
 			do_start
 			[ -z "$START_FAILED" ] && finish
 			log "start failed for:$START_FAILED — converging by rebuild"

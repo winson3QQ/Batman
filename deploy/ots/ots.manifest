@@ -29,6 +29,7 @@ ENV RABBITMQ_ERLANG_COOKIE=batman-ots-cookie
 ENV RABBITMQ_ENABLED_PLUGINS_FILE=/var/lib/rabbitmq/enabled_plugins
 VOLUME ots-mqdata:/var/lib/rabbitmq:999:999:batman/ots:1.7.13-arm64
 MOUNT rabbitmq-extra.conf:/etc/rabbitmq/conf.d/99-batman.conf:ro
+MOUNT rabbitmq-definitions.json:/etc/rabbitmq/batman-definitions.json:ro
 HEALTH rabbitmq-diagnostics -q ping
 ENDCONTAINER
 

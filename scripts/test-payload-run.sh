@@ -314,6 +314,24 @@ echo "# changed again" >> "$A/t/t.manifest"; mv "$S/img/img_app_1" "$T/img.bak" 
 reset_calls; rc=$(pr --converge t); mv "$T/img.bak" "$S/img/img_app_1"
 [ "$rc" = 1 ] && [ "$(cat "$S/c/db/status")" = running ] && ! grep -q "kept STOPPED" "$T/out" \
 	&& ok "28 refused for another reason, own image matches the MOUNTSHA: the overlay container starts as before" || { no "28b rc=$rc db=$(cat "$S/c/db/status")"; cat "$T/out"; }
+# 29 the hold outlives the refused converge (#264 review r3 B3-1): the guardian's next `--restart-exited` (a new
+#    payload-run) must not start the held container; a converge that succeeds clears the hold
+mkdir -p "$S/imgfs/etc"; printf 'upstream v1\n' > "$S/imgfs/etc/m.conf"
+awk -v s="$sx" '{print} /^MOUNT m.conf:/{print "MOUNTSHA /etc/m.conf " s}' "$T/man.bak" > "$A/t/t.manifest"
+sed -i '/^# overlay replaced$/d' "$A/t/m.conf"; sh "$PR" t >>"$ALL" 2>&1
+for c in db app; do echo exited > "$S/c/$c/status"; done
+printf 'upstream v2\n' > "$S/imgfs/etc/m.conf"; echo "# overlay replaced" >> "$A/t/m.conf"
+rc=$(pr --converge t)
+[ "$rc" = 1 ] && [ "$(cat "$T/run/batman-payload-t.mountsha-hold" 2>/dev/null)" = db ] && ok "29 refused converge writes the hold (db)" || no "29 hold file: $(cat "$T/run/batman-payload-t.mountsha-hold" 2>/dev/null)"
+reset_calls; rc=$(pr --restart-exited t)
+[ "$(cat "$S/c/db/status")" = exited ] && ! calls | grep -q '^start db' && grep -q "db is held stopped" "$T/out" \
+	&& ok "29 the guardian's restart-exited honours the hold: db stays stopped" || { no "29 restart-exited started db (rc=$rc)"; cat "$T/out"; }
+reset_calls; rc=$(pr --start-only t)
+! calls | grep -q '^start db' && ok "29 start-only honours the hold too" || no "29 start-only started db"
+sed -i '/^# overlay replaced$/d' "$A/t/m.conf"; printf 'upstream v1\n' > "$S/imgfs/etc/m.conf"
+cp "$T/man.bak" "$A/t/t.manifest"; awk -v s="$sx" '{print} /^MOUNT m.conf:/{print "MOUNTSHA /etc/m.conf " s}' "$T/man.bak" > "$A/t/t.manifest"
+rc=$(pr --converge t)
+[ ! -e "$T/run/batman-payload-t.mountsha-hold" ] && [ "$(cat "$S/c/db/status")" = running ] && ok "29 a converge that succeeds clears the hold and starts db" || { no "29 hold not cleared (rc=$rc)"; cat "$T/out"; }
 sed -i '/^# overlay replaced$/d' "$A/t/m.conf"; cp "$T/man.bak" "$A/t/t.manifest"; rm -rf "$S/imgfs"; sh "$PR" t >>"$ALL" 2>&1
 
 # 12 no docker child ever inherited fd 9 (the lock dies with the wrapper)

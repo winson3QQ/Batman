@@ -1,0 +1,4 @@
+{"vhosts":[{"name":"/"}],
+ "users":[{"name":"guest","password_hash":"chWXFCoSByrBiXlaCVNJ9aWsjOUxpviAOvwqUT7csTnB46nN","hashing_algorithm":"rabbit_password_hashing_sha256","tags":["administrator"],"limits":{}}],
+ "permissions":[{"user":"guest","vhost":"/","configure":".*","write":".*","read":".*"}],
+ "policies":[{"vhost":"/","name":"batman-264-eud-queues","pattern":"^(?!(cot_parser|meshtastic)$).+","apply-to":"queues","priority":0,"definition":{"expires":86400000,"max-length":500,"max-length-bytes":1048576,"overflow":"drop-head"}}]}
