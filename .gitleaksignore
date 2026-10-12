@@ -1,3 +1,6 @@
 # gitleaks false positives — one exact fingerprint per line, each with the reason (never a path or rule wildcard).
 # #280 design doc: the sysctl value `protected_regular=2` (fs.protected_regular) matched generic-api-key; not a secret.
 9de8bd5fb6c4d5aa5736992777c8f03cb504c950:docs/design/280-tmp-trust.md:generic-api-key:394
+# #264 R15 broker definitions: the rabbit_password_hashing_sha256 hash of the stock guest/guest credential OTS already uses
+# (checked: sha256(salt + b"guest") matches); not a new secret. Changing the broker credential is #47.
+f3f7c9d48521ad79df61cfbcc99e67f8f96dd47d:deploy/ots/rabbitmq-definitions.json:generic-api-key:2
