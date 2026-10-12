@@ -10,6 +10,7 @@
 #        to A's dead socket (data pending: keepalive probes alone would never fire, v5A-F1/v5B-M1)
 #   C  = another EUD sending 10 counted CoT once per phase (identifies once, then contact-less events)
 # start:   A, black hole, B, D; prints "APORT <p>", "BPORT <p>", "BLACKHOLE <p> 1", "STARTED established=<n>"
+# phase1:  C sends 10 right after B's return; prints "PHASE1 <n>" (R17: A already ended, 10; without: split)
 # phase2:  C sends 10; prints "PHASE2 <n>" (patched, after A is reaped and B subscribed: 10)
 # cleanup: kills the run's clients, deletes the nft table, removes the files; prints "LEFT <established>"
 : "${TARGET:?}" "${RUN:?}" "${ACTION:?}"
@@ -49,6 +50,9 @@ start)
 	# D streams for 150 s so the server has data pending towards A
 	(trap '' HUP; { i=1; while [ $i -le 150 ]; do ev "$RUN-D-$i" "$RUN-D"; sleep 1; i=$((i+1)); done; } | nc "$TARGET" 8088 >/dev/null 2>&1) </dev/null &
 	sleep 2; echo "STARTED established=$(est | wc -l)"
+	;;
+phase1)
+	sendC p1; sleep 3; echo "PHASE1 $(countB p1)"
 	;;
 phase2)
 	sendC p2; sleep 3; echo "PHASE2 $(countB p2)"

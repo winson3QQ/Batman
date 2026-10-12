@@ -66,3 +66,8 @@ scripts/daily-validation.sh	ots_cot_parser:/tmp"	message text naming the contain
 deploy/ots/patches/EudHandler-264.py	ADMIT_LOCK = "/tmp/batman-264-admit\.lock"	#264 R12/R16 admission lock: the eud container's OWN tmpfs (--tmpfs /tmp, private to the container; every process there is uid 1000), never the node's /tmp
 deploy/ots/patches/make-eudhandler-264.py	ADMIT_LOCK = "/tmp/batman-264-admit\.lock"	same line, in the generator of the overlay above
 deploy/ots/patches/eudhandler-264.patch	(ADMIT_LOCK = "/tmp/batman-264-admit\.lock"|a lock in the container's /tmp)	same, in the generated diff against upstream (code and its comment)
+scripts/daily-validation.sh	/tmp/batman-ots-pause	rto768-264 (tier B, root on the OTS node) sets and clears the #156 operator pause; reconcile-resources.sh honours it only root-owned, not a symlink, link count 1, and for 60 min
+deploy/ots/patches/EudHandler-264.py	(SESS_DIR = "/tmp/batman-264-sess"|FI_FILE = "/tmp/batman-264-fi")	#264 R17 device registry / exception-264 fault-injection file: the eud container's OWN tmpfs (--tmpfs /tmp, private to the container; every process there is uid 1000), never the node's /tmp
+deploy/ots/patches/make-eudhandler-264.py	(SESS_DIR = "/tmp/batman-264-sess"|FI_FILE = "/tmp/batman-264-fi")	same lines, in the generator of the overlay above
+deploy/ots/patches/eudhandler-264.patch	(SESS_DIR = "/tmp/batman-264-sess"|FI_FILE = "/tmp/batman-264-fi"|FI_FILE \(this container's private /tmp)	same, in the generated diff against upstream (code and its comment)
+scripts/daily-validation.sh	docker exec ots_eud_handler (sh -c 'printf .* > |rm -f )/tmp/batman-264-fi	exception-264 writes/removes the fault-injection file inside the eud container's own tmpfs (docker exec, root), not the node's /tmp

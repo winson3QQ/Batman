@@ -30,14 +30,18 @@ class H:
         self.logger = logging.getLogger("t"); self.client_address = ("x", 0); self.closed = 0; self.waited = 0
         self.uid = None; self.released = 0; self.raise_on = None; self._sub_wanted = False
         self._admit_pending = False; self._refused = False; self.taken = 0; self.allowed = True
+        self.held = False; self.opened = 0; self.unclaimed = 0
         if "_handle_loop" in g: self._handle_loop = g["_handle_loop"].__get__(self)
     def handle_cot(self, m):
         if self.raise_on and self.raise_on in m: raise KeyError("start")
         self.got.append(m)
         if "<contact" in m:   # identified and its subscription requested, as parse_device_info does
             self.uid = m.split('uid="')[1].split('"')[0]; self._sub_wanted = True
-    def _release_admit(self): self.released += 1
-    def _take_admit(self): self.taken += 1
+    def _release_admit(self):
+        self.released += 1; was, self.held = self.held, False; return was
+    def _take_admit(self): self.taken += 1; self.held = True
+    def _open_broker(self): self.opened += 1
+    def _unclaim(self): self.unclaimed += 1
     def _session_allowed(self): return self.allowed
     def handle_auth(self, m): self.auth.append(m)
     def close_connection(self): self.closed += 1
@@ -131,4 +135,24 @@ print(("PASS" if c else "FAIL"), f"R16 r4 the lock is taken once, at the first c
 h = H([ev("B1"), ev("B2")]); h._admit_pending = True; h.allowed = False; handle(h)
 c = h.taken == 1 and not h.got and h.closed == 1 and h.waited == 1
 print(("PASS" if c else "FAIL"), "R16 r4 refused by the serialized memory check at the first message: nothing handled, the session ends"); R.append(c)
+# R16 (review r6 A6-1): the broker connection is made at the first complete message, after the serialized memory
+# check, once; a silent or refused socket gets none
+h = H([ev("C1"), ev("C2")]); h._admit_pending = True; handle(h)
+c = h.taken == 1 and h.opened == 1 and h.unclaimed == 1
+print(("PASS" if c else "FAIL"), f"R16 r6 the AMQP connection is opened once, under the lock (opened {h.opened}x, taken {h.taken}x)"); R.append(c)
+h = H(["TIMEOUT"]); h._admit_pending = True; handle(h)
+c = h.opened == 0
+print(("PASS" if c else "FAIL"), f"R16 r6 silent socket: no AMQP connection (opened {h.opened}x)"); R.append(c)
+h = H([ev("D1")]); h._admit_pending = True; h.allowed = False; handle(h)
+c = h.opened == 0
+print(("PASS" if c else "FAIL"), f"R16 r6 refused at the first message: no AMQP connection (opened {h.opened}x)"); R.append(c)
+# R12/R16 (review r6 A6-3/B6-3): a ping first releases the lock at once; the identifying CoT is admitted again
+ping = (b'<event version="2.0" uid="P1-ping" type="t-x-c-t" how="h-g-i-g-o" time="T" start="T" stale="T">'
+        b'<point lat="0" lon="0" hae="0" ce="9999999" le="9999999"/></event>')
+h = H([ping, ev("P1")]); h._admit_pending = True; handle(h)
+c = h.taken == 2 and h.opened == 2 and [m.split('uid="')[1].split('"')[0] for m in h.got] == ["P1-ping", "P1"]
+print(("PASS" if c else "FAIL"), f"R16 r6 ping first: lock released after the ping, taken again for the identifying CoT (taken {h.taken}x)"); R.append(c)
+h = H([ping, ping, ping]); h._admit_pending = True; handle(h)
+c = not h.held and h.taken == 3
+print(("PASS" if c else "FAIL"), f"R16 r6 pings only: the lock is never kept between messages (taken {h.taken}x, held at the end {h.held})"); R.append(c)
 print("ALL PASS" if all(R) else "SOME FAILED")

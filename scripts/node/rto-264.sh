@@ -7,6 +7,8 @@
 #             detached timer deletes the table): the phones' link to the OTS node is gone, no FIN/RST reaches it
 # cleanup   : kills THIS run's clients only (their pids are recorded at start), deletes the table and the run's
 #             files; prints LEFT <established to PORT>
+# est       : prints EST <established to PORT> (rto-ssl-264's second return runs on the OTS node itself)
+# TAG       : suffix of the pid file: a second start of the same uids (the second return) is cleaned separately
 : "${TARGET:?}" "${RUN:?}" "${ACTION:?}"
 PORT=${PORT:-8088}
 H=/tmp/run/batman-dv
@@ -23,10 +25,10 @@ client(){
 }
 case $ACTION in
 start)
-	: > "$H/$RUN.pids"
+	: > "$H/$RUN${TAG:-}.pids"
 	i=1; while [ $i -le "${N:-8}" ]; do
 		(trap '' HUP; { ev "$RUN-$i" "$RUN-$i"; sleep 600; } | client) </dev/null >/dev/null 2>&1 &
-		echo $! >> "$H/$RUN.pids"; i=$((i+1)); sleep 1
+		echo $! >> "$H/$RUN${TAG:-}.pids"; i=$((i+1)); sleep 1
 	done
 	sleep 4; echo "STARTED $(ports | wc -l)"
 	;;
@@ -44,15 +46,18 @@ blackhole)
 cleanup)
 	nft delete table inet dvrto 2>/dev/null
 	# this run's subshells and their children (the client and the sleep), nothing else on the node
-	for p in $(cat "$H/$RUN.pids" 2>/dev/null); do
+	for p in $(cat "$H/$RUN${TAG:-}.pids" 2>/dev/null); do
 		for c in $(grep -l "^PPid:[[:space:]]*$p\$" /proc/[0-9]*/status 2>/dev/null | cut -d/ -f3); do
 			for cc in $(grep -l "^PPid:[[:space:]]*$c\$" /proc/[0-9]*/status 2>/dev/null | cut -d/ -f3); do kill "$cc" 2>/dev/null; done
 			kill "$c" 2>/dev/null
 		done
 		kill "$p" 2>/dev/null
 	done
-	sleep 2; rm -f "$H/$RUN.pids" "$H/$RUN.pem" "$H/$RUN.key"
+	sleep 2; rm -f "$H/$RUN${TAG:-}.pids" "$H/$RUN.pem" "$H/$RUN.key"
 	echo "LEFT $(ports | wc -l)"
+	;;
+est)
+	echo "EST $(ports | wc -l)"
 	;;
 *) echo "FAIL unknown ACTION $ACTION"; exit 1 ;;
 esac

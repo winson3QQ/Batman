@@ -2537,6 +2537,298 @@ rep('''# error; a name over 255 bytes raises inside pika. A refused session gets
 # is still subscribed by its uid and RECORDED (the user's decision 2026-10-12, review r4); an unusable or owned UID
 # gets no subscription and no row update (its CoT go to that uid's existing row, if any).''')
 
+# --- code review round 6 (2026-10-12): admission serializes the AMQP connection; one live session per device ----
+# Reviewers A6/B6. The 768m flip that "closed" B5-3 ran with the admission lock held by an outside process (the
+# author's mistake, register B5-3): it measured unserialized admission. What it did show: about a third of a session
+# (the pika connection and its ioloop thread, ~7.8 MiB) was allocated before the serialized check (A6-1). Two RTO
+# flaps inside R6's ~2 min reap put 48 sessions on one listener, more than 1280m holds on 8089 (A6-2).
+
+rep("import fcntl  # BATMAN-264-R12\n", "import fcntl  # BATMAN-264-R12\nimport hashlib  # BATMAN-264-R17\nimport signal  # BATMAN-264-R17\n")
+rep('''ADMIT_HOLD_S = 20  # R16: a fallback only; the lock is normally released once the session's subscription is placed
+''', '''ADMIT_HOLD_S = 20  # R16: a fallback only; the lock is normally released once the session's subscription is placed
+# BATMAN-264-R17 (review r6 A6-2/A6-4): the newest session of each device records itself here (this container's own
+# tmpfs, every process uid 1000), so the device's previous session can be ended when it comes back (_claim)
+SESS_DIR = "/tmp/batman-264-sess"
+# BATMAN-264 (review r6 B6-2): white-box fault injection for the validation suite exception-264 (_fi)
+FI_FILE = "/tmp/batman-264-fi"
+''')
+rep('''# few MB, and the reserve turns the remaining limit into a refused connection instead of a container kill.
+SESSION_RESERVE_MB = int(os.environ.get("BATMAN_264_SESSION_RESERVE_MB", "40"))''',
+    '''# few MB, and the reserve turns the remaining limit into a refused connection instead of a container kill.
+# Review r6 (A6-1/B6): 96 MiB = one whole session (~22-25 MiB, rc wsl.12/13) checked under the lock, plus the send
+# buffers a few slow phones can fill after admission (up to 4 MiB each); at the shipping 1280m the RTO case peaks
+# at 836-934 MiB (rc wsl.13), so the reserve is never reached there.
+SESSION_RESERVE_MB = int(os.environ.get("BATMAN_264_SESSION_RESERVE_MB", "96"))''')
+rep('''def _oom_first():''', '''def _proc_start(pid):
+    # BATMAN-264-R17: a process's start time (clock ticks since boot, /proc/<pid>/stat field 22). Together with the
+    # pid it names one process: a reused pid has another start time.
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            st = f.read()
+        return int(st[st.rindex(b")") + 2:].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _oom_first():''')
+rep('BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13 R14 R16"', 'BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13 R14 R16 R17"')
+
+# setup: new state; the AMQP connection moves to _open_broker, made at the first complete message under the lock
+rep('''        self._ident_failures = 0     # R14 (r5): bounded re-identification
+''', '''        self._ident_failures = 0     # R14 (r5): bounded re-identification
+        self._superseded = False     # R17 (r6): this device's newer session ended this one
+        self._claimed = False        # R17 (r6): this session is in the device registry
+        self._row_next = 0.0         # r6 A6-6/B6-4: when to retry a minimal EUD row that could not be written (0: none due)
+        self._fi_done = False        # r6 B6-2: fault injection fires once per session
+''')
+rep('''        self._keepalive(self.request)  # BATMAN-264-R6: a vanished peer ends the session in about 2 min
+        self.create_app()
+
+        # RabbitMQ
+        try:''', '''        self._keepalive(self.request)  # BATMAN-264-R6: a vanished peer ends the session in about 2 min
+        signal.signal(signal.SIGUSR1, self._on_supersede)  # BATMAN-264-R17: the forked child's main thread
+        # the app stays here: upstream's EudHandlerSSL.setup uses self.app right after this returns (the cert user)
+        self.create_app()
+        # BATMAN-264-R16 (review r6 A6-1): the broker connection is made at the session's first complete message,
+        # under the admission lock (_handle_loop -> _open_broker): its memory (pika, the ioloop thread) is counted by
+        # the serialized check, and a socket that never sends costs no AMQP connection
+
+    def _open_broker(self):
+        if self.rabbit_connection is not None or self._closed:
+            return
+        # RabbitMQ
+        try:''')
+rep('''                    if not self._session_allowed():
+                        self._release_admit()
+                        self._refused = True
+                        break
+''', '''                    if not self._session_allowed():
+                        self._release_admit()
+                        self._refused = True
+                        break
+                    self._open_broker()  # BATMAN-264-R16 (r6 A6-1): allocated under the lock
+''')
+rep('''                if not self._sub_wanted and tag == b"</event>" and b'type="t-x-c-t"' not in chunk[:600]:
+                    # BATMAN-264-R12/R16: this session's first work is done (review r5 B5-9: a ping or an <auth>
+                    # is not; the identifying CoT that follows is admitted under the same lock, or ADMIT_HOLD_S). A session that asked for its
+                    # subscription keeps the lock until _subscribe has placed it, so the next admission's memory
+                    # check sees what this one really costs (rc wsl.11: released here, 16 reconnects all passed
+                    # while still growing)
+                    self._release_admit()
+''', '''                if not self._sub_wanted:
+                    # BATMAN-264-R12/R16: this session's first work is done. A session that asked for its subscription
+                    # keeps the lock until _subscribe has placed it, so the next admission's memory check sees what
+                    # this one really costs (rc wsl.11: released here, 16 reconnects all passed while still growing).
+                    # Review r6 A6-3/B6-3: a ping or an <auth> before the identifying CoT releases the lock at once (r5
+                    # held it for ADMIT_HOLD_S: one ping every 20 s switched serialization off for everyone) and the
+                    # next message is admitted again, under the lock, with its own memory check.
+                    ping = tag != b"</event>" or b'type="t-x-c-t"' in chunk[:600]
+                    if self._release_admit() and ping and self.uid is None:
+                        self._admit_pending = True
+''')
+rep('''            try:
+                os.close(fd)  # releases the flock
+            except OSError:
+                pass
+''', '''            try:
+                os.close(fd)  # releases the flock
+            except OSError:
+                pass
+        return fd is not None
+''')
+rep('''            self._release_admit()
+            self.close_connection()
+            self._wait_end()
+''', '''            self._release_admit()
+            self.close_connection()
+            self._wait_end()
+            self._unclaim()  # BATMAN-264-R17
+''')
+
+# R17: one live session per device and listener
+rep('''    def _minimal_eud_row(self, uid):''', '''    # ---- BATMAN-264-R17 (review r6 A6-2/A6-4/B6-6): one live session per device and listener ----------------------
+    def _reg_path(self, uid):
+        port = getattr(self.server, "server_address", ("", 0))[1]
+        return os.path.join(SESS_DIR, f"{port}-{hashlib.sha256(str(uid).encode('utf-8', 'replace')).hexdigest()[:32]}")
+
+    def _reg_read(self, uid):
+        # -> (pid, ip, user) of the session that last claimed uid on this listener, if that process still lives
+        try:
+            with open(self._reg_path(uid), encoding="ascii") as f:
+                pid, start, ip, user = f.read().split()[:4]
+            pid, start = int(pid), int(start)
+        except (OSError, ValueError, UnicodeDecodeError):
+            return None
+        if pid <= 1 or _proc_start(pid) != start:
+            return None  # gone, or the pid was reused
+        return pid, ip, user
+
+    def _claim(self, uid):
+        # Handler thread, at identification, after the ownership checks. When the RTO walks out of range and back,
+        # each phone reconnects while its previous session is still open (no FIN reached the server; R6 reaps it in
+        # ~2 min): 16 zombies + 16 reconnects, and a second flap inside that window 48 sessions, more than the
+        # container holds (review r6 A6-2). The zombie also takes every other downlink message meanwhile (auto_ack,
+        # round-robin on the shared <uid> queue). The device is back, so its previous session ends now (SIGUSR1 ->
+        # _on_supersede; its end sees this session and sends no disconnect, keeps the bindings). Only the SAME device:
+        # on 8089 the same OTS user; on 8088 (unauthenticated) the same client address as well, so a client elsewhere
+        # on the mesh naming this uid ends nothing. A phone that comes back through another node (a new address)
+        # keeps R6's reap of the old session (as before).
+        try:
+            os.makedirs(SESS_DIR, mode=0o700, exist_ok=True)
+            me = os.getpid()
+            user = str(self.user.id) if self.user else "-"
+            old = self._reg_read(uid)
+            if old is not None and old[0] != me:
+                if self.is_ssl:
+                    same = user != "-" and old[2] == user
+                else:
+                    same = user == "-" and old[2] == "-" and old[1] == self.client_address[0]
+                if not same:
+                    self.logger.info(f"{self.client_address[0]}: uid {uid} has a live session from {old[1]} (pid "
+                                     f"{old[0]}); both kept (BATMAN-264-R17)")
+                    return
+                os.kill(old[0], signal.SIGUSR1)
+                self.logger.info(f"{self.client_address[0]}: device {uid} is back; its previous session (pid "
+                                 f"{old[0]}) is ended (BATMAN-264-R17)")
+            path = self._reg_path(uid)
+            with open(f"{path}.{me}", "w", encoding="ascii") as f:
+                f.write(f"{me} {_proc_start(me)} {self.client_address[0]} {user}\\n")
+            os.replace(f"{path}.{me}", path)
+            self._claimed = True
+        except Exception as e:
+            self.logger.error(f"BATMAN-264-R17: device registry for {uid} unusable ({type(e).__name__}: {e}); "
+                              f"a previous session is left to R6")
+
+    def _newer_session(self, uid):
+        # the end (ioloop thread): another live session has claimed this uid on this listener. Its subscription may
+        # not consume yet (a broker restart: the late end of the old session, review r6 A6-4), so the consumer count
+        # alone would publish a disconnect and unbind the phone's new session.
+        old = self._reg_read(uid) if uid else None
+        return old is not None and old[0] != os.getpid()
+
+    def _unclaim(self):
+        if not self._claimed or not self.uid:
+            return
+        old = self._reg_read(self.uid)
+        if old is not None and old[0] == os.getpid():
+            try:
+                os.remove(self._reg_path(self.uid))
+            except OSError:
+                pass
+
+    def _on_supersede(self, signum, frame):
+        # SIGUSR1 from this device's newer session (_claim). Runs in this child's main thread between bytecodes: a
+        # flag and the socket shutdown only; recv returns and handle() runs the normal end.
+        self._superseded = True
+        self.logger.info(f"{self.client_address[0]}: session of {self.uid} superseded by the device's new session "
+                         f"(BATMAN-264-R17)")
+        try:
+            self.request.shutdown(SHUT_RDWR)
+        except OSError:
+            pass
+
+    def _fi(self, uid, stage):
+        # BATMAN-264 (review r6 B6-2): white-box fault injection for exception-264. Since r5 no client input makes
+        # identification or a message raise, so the R14 and per-message handlers have no natural trigger left.
+        # FI_FILE (this container's private /tmp: root through docker exec, or this container's own uid 1000) holds
+        # "<stage> <uid>"; the first matching message of a session then raises once. Absent file: one failed open.
+        if self._fi_done or not uid:
+            return
+        try:
+            with open(FI_FILE, encoding="utf-8") as f:
+                want = f.read().split()
+        except (OSError, UnicodeDecodeError):
+            return
+        if want == [stage, uid]:
+            self._fi_done = True
+            raise RuntimeError(f"BATMAN-264 fault injection ({stage})")
+
+    def _minimal_eud_row(self, uid):''')
+# a minimal row that could not be written is retried (review r6 A6-6/B6-4: it was silent and never retried)
+rep('''                    row = db.session.execute(select(EUD).filter_by(uid=uid)).first()
+                    if row is not None:
+                        return
+''', '''                    row = db.session.execute(select(EUD).filter_by(uid=uid)).first()
+                    if row is not None:
+                        self._row_next = 0.0
+                        return True
+''')
+rep('''                    db.session.add(e)
+                    db.session.commit()
+                    return
+                except Exception as ex:
+                    db.session.rollback()
+                    if not with_cs:
+                        self.logger.error(f"minimal EUD row of {uid} failed too: {type(ex).__name__}: {ex}")
+''', '''                    db.session.add(e)
+                    db.session.commit()
+                    self._row_next = 0.0
+                    return True
+                except Exception as ex:
+                    db.session.rollback()
+                    if not with_cs:
+                        self.logger.error(f"minimal EUD row of {uid} failed too: {type(ex).__name__}: {ex}; retried in "
+                                          f"30 s (BATMAN-264-R14)")
+        self._row_next = time.monotonic() + 30
+        return False
+''')
+rep('''        if self.pong(event):
+            return
+
+        if event and not self.uid:''', '''        if self.pong(event):
+            return
+
+        self._fi(event.attrs.get("uid") if event else None, "message")  # r6 B6-2: test-only, see _fi
+        if self.uid and self._row_next and time.monotonic() >= self._row_next:
+            self._minimal_eud_row(self.uid)  # BATMAN-264-R14 (r6): the device's row is still missing
+
+        if event and not self.uid:''')
+rep('''            self.uid = uid
+            device = operating_system = platform = version = None
+''', '''            self.uid = uid
+            self._fi(uid, "ident")  # r6 B6-2: test-only, see _fi (raises after the uid is set: R14's reset is exercised)
+            device = operating_system = platform = version = None
+''')
+# an 8089 group lookup that fails is a database outage, not an identification failure (r6 A6-6/B6-4)
+rep('''                        if self.is_ssl:
+                            group_memberships = db.session.execute(
+                                db.session.query(GroupUser).filter_by(
+                                    user_id=self.user.id, direction=Group.OUT
+                                )
+                            ).all()
+''', '''                        if self.is_ssl:
+                            try:
+                                group_memberships = db.session.execute(
+                                    db.session.query(GroupUser).filter_by(
+                                        user_id=self.user.id, direction=Group.OUT
+                                    )
+                                ).all()
+                            except Exception as e:  # BATMAN-264 (review r6 A6-6/B6-4): not a strike, as R10's lookup
+                                self.logger.error(f"group lookup of {self.uid} failed ({type(e).__name__}: {e}); "
+                                                  f"identifying again on the next report")
+                                db.session.rollback()
+                                self.uid = None
+                                return
+''')
+rep('''                if _ch.ops:
+                    self._sub_wanted = True  # BATMAN-264-R16: the admission lock is released once this is placed
+''', '''                if _ch.ops:
+                    self._sub_wanted = True  # BATMAN-264-R16: the admission lock is released once this is placed
+                    self._claim(self.uid)  # BATMAN-264-R17: the device's previous session on this listener ends
+''')
+# the end: a newer session of the device counts as live (no disconnect, bindings and queues kept)
+rep('''                    if not getattr(getattr(frame, "method", None), "consumer_count", 0):
+                        publish_disconnect()''', '''                    if not getattr(getattr(frame, "method", None), "consumer_count", 0) and not self._newer_session(uid):
+                        publish_disconnect()''')
+rep('''                if cu:
+                    self.logger.info(f"another session of {uid} is live: no disconnect, bindings kept")
+                    return''', '''                if cu or self._newer_session(uid):  # R17 (r6 A6-4/B6-6): its new session may not consume yet
+                    self.logger.info(f"another session of {uid} is live: no disconnect, bindings kept")
+                    return''')
+
+# the end's declare is not passive since r5: its log text said so (review r6 B6-7)
+rep('''            self.logger.error(f"passive declare of {uid} failed: {e}")''', '''            self.logger.error(f"declare of {uid} at the end failed: {e}")''')
+
 # --- license notice (GPL-3.0-or-later §5a: modified files carry a prominent dated notice) ----------
 assert s.startswith("import base64\n"), "upstream file no longer starts with 'import base64'"
 s = ("# SPDX-License-Identifier: GPL-3.0-or-later\n"

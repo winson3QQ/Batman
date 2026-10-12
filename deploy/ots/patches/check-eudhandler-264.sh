@@ -40,6 +40,10 @@ echo "ok   offline handle() tests ($(grep -c '^PASS' "$T/test.out") cases)"
 python3 "$HERE/test-eudhandler-264-ident.py" "$F" > "$T/test3.out" 2>&1 || true
 tail -1 "$T/test3.out" | grep -qx "ALL PASS" || { cat "$T/test3.out"; fail "offline identification tests"; }
 echo "ok   offline identification tests ($(grep -c '^PASS' "$T/test3.out") cases)"
+# 4b. offline R17 tests (one live session per device and listener: real forked sessions, SIGUSR1, the registry)
+timeout -s INT 120 python3 "$HERE/test-eudhandler-264-supersede.py" "$F" > "$T/test4.out" 2>&1 < /dev/null || true
+tail -1 "$T/test4.out" | grep -qx "ALL PASS" || { cat "$T/test4.out"; fail "offline R17 tests"; }
+echo "ok   offline R17 tests ($(grep -c '^PASS' "$T/test4.out") cases)"
 # 4b. offline AMQP-side tests (R5 mandatory/return/declare, R9 cache bounds + flow control) on the shipped file
 python3 "$HERE/test-eudhandler-264-amqp.py" "$F" > "$T/test2.out" 2>&1 || true
 tail -1 "$T/test2.out" | grep -qx "ALL PASS" || { cat "$T/test2.out"; fail "offline AMQP tests"; }

@@ -97,9 +97,11 @@ class H:
     def __init__(self):
         self.bound_queues = []; self.group_memberships = []; self._squat_logged = False; self._relay = False
         self._cs_queue = True; self._sub_wanted = False; self.subreq = 0; self.pubs = 0; self.pdi = 0
-        self._ident_failures = 0; self.minimal = 0
+        self._ident_failures = 0; self.minimal = 0; self._row_next = 0.0; self.claims = 0
         self.logger = logging.getLogger("a5"); self.app = types.SimpleNamespace(app_context=contextlib.nullcontext)
     def _minimal_eud_row(self, uid): self.minimal += 1
+    def _fi(self, uid, stage): pass
+    def _claim(self, uid): self.claims += 1
     def pong(self, e): return False
     def on_message(self, *a): pass
     def _owned_by_user(self, u, c): return (False, False) if "cs_owned" in src else False
@@ -139,4 +141,49 @@ for fails in (False, True):
     ok((h.minimal == 1 and Sess.commits == 0) if fails else (h.minimal == 0 and Sess.commits >= 1),
        f"R14 r5 {what}: recorded ({'minimal row' if fails else 'full row'}; commits {Sess.commits}, minimal {h.minimal})")
 _os.environ.pop("COMMIT_FAILS", None)
+
+# review r6 B6-5 / A6-6: the REAL _minimal_eud_row (verbatim from the overlay) against a fake session that records
+# rollbacks and can refuse the insert with or without the callsign
+mfn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_minimal_eud_row")
+class MSess:
+    def __init__(self, exists=False, fail_with_cs=False, fail_all=False):
+        self.exists, self.fail_with_cs, self.fail_all = exists, fail_with_cs, fail_all
+        self.rollbacks = 0; self.added = []; self.committed = []
+    def rollback(self): self.rollbacks += 1
+    def execute(self, *a): return types.SimpleNamespace(first=lambda: (Row(),) if self.exists else None)
+    def add(self, e): self.added.append(e)
+    def commit(self):
+        e = self.added[-1]
+        if self.fail_all or (self.fail_with_cs and getattr(e, "callsign", None)):
+            raise ValueError("IntegrityError: duplicate key value violates unique constraint euds_callsign_key")
+        self.committed.append(e)
+class MRow:
+    uid = None
+class Clock:
+    t = 1000.0
+    @staticmethod
+    def monotonic(): return Clock.t
+mg = {"db": None, "select": lambda *a: Q(), "EUD": MRow, "time": Clock}
+exec(textwrap.dedent(ast.get_source_segment(src, mfn)), mg)
+class M:
+    callsign = "Alpha"; user = None; uid = None
+    def __init__(self, sess):
+        self.logger = logging.getLogger("a5"); self.app = types.SimpleNamespace(app_context=contextlib.nullcontext)
+        self._row_next = 0.0; mg["db"] = types.SimpleNamespace(session=sess)
+M._minimal_eud_row = mg["_minimal_eud_row"]
+ss = MSess(exists=True); m = M(ss); r = m._minimal_eud_row("U1")
+ok(r is True and not ss.added and m._row_next == 0.0, f"R14 r6 minimal row: an existing row is kept, nothing added (returned {r})")
+ss = MSess(fail_with_cs=True); m = M(ss); r = m._minimal_eud_row("U2")
+c = ss.committed and getattr(ss.committed[0], "callsign", None) is None and ss.committed[0].uid == "U2"
+ok(r is True and c and ss.rollbacks >= 2, f"R14 r6 minimal row: callsign taken -> written without it after a rollback (rollbacks {ss.rollbacks})")
+ss = MSess(fail_all=True); m = M(ss); r = m._minimal_eud_row("U3")
+ok(r is False and m._row_next == Clock.t + 30, f"R14 r6 minimal row: the database refuses -> False, retry due in 30 s (next {m._row_next - Clock.t})")
+ss.fail_all = False; r = m._minimal_eud_row("U3")
+ok(r is True and m._row_next == 0.0 and ss.committed[-1].uid == "U3", "R14 r6 minimal row: the retry writes it and clears the retry")
+# handle_cot retries a missing row once due, not on every CoT
+gh = g; gh["time"] = Clock
+h = H(); h.uid = "U4"; h._row_next = Clock.t + 30; h.minimal = 0
+h.handle_cot("<event/>"); n0 = h.minimal
+Clock.t += 31; h.handle_cot("<event/>")
+ok(n0 == 0 and h.minimal == 1, f"R14 r6 handle_cot retries the missing row only when due (before {n0}, after {h.minimal})")
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)
