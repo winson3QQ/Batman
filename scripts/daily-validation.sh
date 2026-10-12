@@ -1419,29 +1419,41 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   # as the 9th session of that address and the zombies stayed idle)
   ( fssh "$ots" 60 "docker exec -i -e TARGET=172.20.0.10 -e RUN=$run-c $gen python3 -" < "$REPO/scripts/node/rto-downlink-264.py" > "$DIR/$run.dl" 2>&1 ) &
   sleep 5
-  for c in "ots_cot_parser:$run-a" "opentakserver:$run-b"; do
-    ( fssh "$ots" 260 "docker exec -i -e TARGET=$tgt -e PORT=$port -e RUN=${c#*:} -e FIRST=1 -e N=8 -e HOLD=$hold -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key ${c%%:*} python3 -" < "$REPO/scripts/node/rto-reconnect-264.py" > "$DIR/$run.${c%%:*}.1" 2>&1 ) &
+  # the return: 4 per container address (r10 B10-5: 8 from one container sat exactly at PER_IP_MAX, and one stray
+  # established socket made the 9th a refusal, the ❓-2 signature); every phone has its own address in the field
+  for c in "ots_cot_parser $run-a 1" "ots_eud_handler $run-a 5" "opentakserver $run-b 1" "ots_eud_handler_ssl $run-b 5"; do
+    read -r rctr rrun rfirst <<< "$c"
+    ( fssh "$ots" 260 "docker exec -i -e TARGET=$tgt -e PORT=$port -e RUN=$rrun -e FIRST=$rfirst -e N=4 -e HOLD=$hold -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key $rctr python3 -" < "$REPO/scripts/node/rto-reconnect-264.py" > "$DIR/$run.$rctr.1" 2>&1 ) &
   done
   if [ "$port" = 8089 ]; then
-    # the second flap, 30 s later, from addresses that hold no 8089 session yet (every phone has its own address in
-    # the field; PER_IP_MAX is not what is measured): the OTS node itself on br-ots (openssl, host side: not in the
-    # measured cgroup) for $run-a, ots_eud_handler for $run-b
+    # the second flap, 30 s later: inside R17's wait for the first return's superseded sessions, so three generations
+    # of 16 are alive on the listener (the capacity claim; the user's decision 2, r10 B10-4: 1536m on this listener).
+    # The 16 come from the OTS node itself on br-ots (openssl, host side: not in the measured cgroup) and the four
+    # containers, 4 + 3/3/3/3 on top of the first return's 4 each: no address holds more than 7 of PER_IP_MAX 8 (r9,
+    # r10 A10-1/B10-5: 8 on one address sat at the limit, one stray socket = a refusal, ❓-2). PER_IP_MAX is not what
+    # is measured: every phone has its own address in the field. The census below names a stray before the flap.
     sleep 30
-    for c in "ots_eud_handler:1" "ots_eud_handler_ssl:5"; do   # 4 + 4: below PER_IP_MAX per address (r9, ❓-2)
-      ( fssh "$ots" 260 "docker exec -i -e TARGET=$tgt -e PORT=$port -e RUN=$run-b -e FIRST=${c#*:} -e N=4 -e HOLD=$((hold - 30)) -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key ${c%%:*} python3 -" < "$REPO/scripts/node/rto-reconnect-264.py" > "$DIR/$run.${c%%:*}.2" 2>&1 ) &
+    echo "before the second flap, established sockets to $ctr per client address (hex): $(fssh "$ots" 20 "docker exec $ctr awk '\$4 == \"01\" && \$2 ~ /:1F99\$/ { split(\$3, a, \":\"); n[a[1]]++ } END { for (k in n) printf \"%s=%d \", k, n[k] }' /proc/net/tcp" | tr -d '\r') (expect 4 each on the four containers: an 8 after the flap is a refusal)"
+    for c in "ots_cot_parser $run-a 5 3" "ots_eud_handler $run-a 8 1" "ots_eud_handler $run-b 1 2" "opentakserver $run-b 3 3" "ots_eud_handler_ssl $run-b 6 3"; do
+      read -r rctr rrun rfirst rn <<< "$c"
+      ( fssh "$ots" 260 "docker exec -i -e TARGET=$tgt -e PORT=$port -e RUN=$rrun -e FIRST=$rfirst -e N=$rn -e HOLD=$((hold - 30)) -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key $rctr python3 -" < "$REPO/scripts/node/rto-reconnect-264.py" > "$DIR/$run.2.$rctr.f$rfirst" 2>&1 ) &
     done
-    echo "second return, $run-a from the OTS node: $(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "TARGET=$tgt RUN=$run-a ACTION=start PORT=8089 N=8 TAG=.g3 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r')"
+    echo "second return, $run-a 1-4 from the OTS node: $(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "TARGET=$tgt RUN=$run-a ACTION=start PORT=8089 N=4 TAG=.g3 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r')"
   fi
   for i in $(seq 1 22); do sleep 5; a=$(fssh "$ots" 20 "$cg"'; awk "/^anon /{print \$2}" $d/memory.stat' | tr -d ' \r'); isint "$a" && [ "$a" -gt "$peak" ] && peak=$a; done; wait
-  [ "$port" = 8088 ] && for c in ots_cot_parser opentakserver; do [ -f "$DIR/$run.$c.1" ] && mv "$DIR/$run.$c.1" "$DIR/$run.$c"; done
+  if [ "$port" = 8088 ]; then   # KEPT per run: $run-a's two legs, $run-b's two legs
+    cat "$DIR/$run.ots_cot_parser.1" "$DIR/$run.ots_eud_handler.1" > "$DIR/$run.ots_cot_parser" 2>/dev/null
+    cat "$DIR/$run.opentakserver.1" "$DIR/$run.ots_eud_handler_ssl.1" > "$DIR/$run.opentakserver" 2>/dev/null
+    rm -f "$DIR/$run".*.1
+  fi
   if [ "$port" = 8089 ]; then
     o=$(cat "$DIR/$run".*.1 2>/dev/null | grep -c " closed after "); rm -f "$DIR/$run".*.1
     c=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -cE \"session of $run-[ab]-[0-9]+ superseded by\"'" | tr -d ' \r')
     echo "the first returns ended after the second: $o of 16 closed (expect 16); sessions superseded this run: ${c:-?} (expect 32: the team by the first return, the first return by the second; R17)"
     [ "$o" = 16 ] && [ "$c" = 32 ] || { echo "FAIL R17 on the second return: $o of 16 closed, ${c:-?} of 32 superseded (rc wsl.15: closed by the end-at-once code, not superseded)"; rc=1; }
     o=$(timeout 30 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "TARGET=$tgt RUN=$run-a ACTION=est PORT=8089 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r')
-    echo "second return of $run-a (OTS node side) still connected: $o"; echo "KEPT ${o#EST } / 8" > "$DIR/$run.ots_cot_parser"
-    cat "$DIR/$run.ots_eud_handler.2" "$DIR/$run.ots_eud_handler_ssl.2" > "$DIR/$run.opentakserver" 2>/dev/null; rm -f "$DIR/$run".*.2
+    echo "second return of $run-a 1-4 (OTS node side) still connected: $o"; echo "KEPT ${o#EST } / 4" > "$DIR/$run.ots_cot_parser"
+    cat "$DIR/$run".2.* > "$DIR/$run.opentakserver" 2>/dev/null; rm -f "$DIR/$run".2.*
   fi
   grep -hv " kept$" "$DIR/$run.ots_cot_parser" "$DIR/$run.opentakserver" 2>/dev/null
   echo "downlink generator: $(cat "$DIR/$run.dl" 2>/dev/null | tail -1)"; grep -q '^SENT 20$' "$DIR/$run.dl" || { echo "FAIL the downlink generator did not send (the zombies had no pending data)"; rc=1; }; rm -f "$DIR/$run.dl"
@@ -1485,7 +1497,7 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   echo "cleanup: 02 $(rto264 "$p1" "$run-a" 30 cleanup "$port") / 03 $(rto264 "$p2" "$run-b" 30 cleanup "$port")"; sleep 15
   [ "$port" = 8089 ] && echo "cleanup OTS node side: $(timeout 30 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "TARGET=$tgt RUN=$run-a ACTION=cleanup PORT=8089 TAG=.g3 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r')"
   [ "$port" = 8089 ] && fssh "$ots" 20 'for c in ots_cot_parser opentakserver ots_eud_handler ots_eud_handler_ssl; do docker exec $c rm -f /tmp/dv-client.pem /tmp/dv-client.key; done' >/dev/null
-  rm -f "$DIR/$run".ots_cot_parser "$DIR/$run".opentakserver "$DIR/$run".*.1 "$DIR/$run".*.2
+  rm -f "$DIR/$run".ots_cot_parser "$DIR/$run".opentakserver "$DIR/$run".*.1 "$DIR/$run".2.*
   r264_clean "$ots" "$run"
   if [ "$port" = 8089 ]; then
     o=$(echo "delete from \"user\" where username = 'dv-264-rto' returning id;" | ots_sql "$ots" | head -1); echo "test user removed: $o"

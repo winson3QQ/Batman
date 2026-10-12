@@ -85,7 +85,7 @@ CONTAINER ots_eud_handler_ssl
 IMAGE batman/ots:1.7.13-arm64
 IP 172.20.0.12
 HOSTNAME ots_eud_handler_ssl
-HARDEN ots.hardening.env
+HARDEN ots_eud_handler_ssl.hardening.env
 ENV SQLALCHEMY_DATABASE_URI=postgresql+psycopg://ots:password@ots-db/ots
 ENV OTS_RABBITMQ_SERVER_ADDRESS=rabbitmq
 ENV OTS_LISTENER_ADDRESS=0.0.0.0

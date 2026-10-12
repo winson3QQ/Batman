@@ -533,8 +533,13 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     non-identifying session releases it at its first message, `ADMIT_HOLD_S` 20 s is the fallback;
   - "used" for the reserve = `memory.current` minus the page cache (`file`): anon plus kernel memory, socket
     buffers included (log page cache is still excluded, review B-6);
-  - the app containers' limit is 1280m: OTS runs only on Pi 4 8 GB; 4 x 1280m + 2 x 512m = 6.0 GiB, below the
-    6.6 GiB available, so even every cap hit at once does not OOM the node.
+  - the app containers' limit is 1280m, the mTLS listener's 1536m (review r10 / the user, 2026-10-13: two flaps of the
+    RTO within the R17 window put three generations of 16 sessions on `ots_eud_handler_ssl`, 48 x ~23 MiB + base +
+    the 96 MiB reserve > 1280m; rc wsl.19 refused 8 of 16 by R7 with no OOM, as decision 6 allows, but the capacity
+    claim is 16 phones through a double flap, so the listener got the memory: `infra_values.ots_eud_handler_ssl`,
+    `ots_eud_handler_ssl.hardening.env`). OTS runs only on Pi 4 8 GB; 3 x 1280m + 1536m + 2 x 512m = 6.4 GiB, below
+    the 6.6 GiB available (04: MemAvailable 6.6 GiB of 7.6), so even every cap hit at once does not OOM the node.
+    8088 keeps 1280m: its RTO suite has one return; a double flap there refuses by R7 the same way (leftover).
 - **Residual, stated:** a session killed by the OOM killer loses its cache (bounded by R9) and ends without its
   goodbye (its queues stay until R15's expiry); a refused phone records nothing until it is admitted.
   `oom_score_adj` also applies to a NODE-wide OOM (review r4 A4-4): phone sessions go before the node's own daemons,
@@ -861,7 +866,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | owner-8089-264 | feature | no (a 1-day test cert in the container's tmpfs, removed) | wsl.10: the row was taken over |
 | queue-policy-264 | feature | no | wsl.10: the departed member's queue grew without bound |
 | cap16-264 | feature | no | wsl.10: anon peak 93 % of memory.max |
-| rto-264 (8088), rto-ssl-264 (8089, two flaps; the second return's 16 from the OTS host (8) and two containers (4 + 4): no address at PER_IP_MAX, r9) | feature | no (peer-side nft on the test clients' ports only, self-expiring; 8089 copies a 1-day test cert of a non-admin test user to 02/03, removed by the suite and by itself after 900 s) | wsl.11: the listener OOM-killed, 0/16 kept; both FAIL on any `admitting unserialized` line in their run (review r6); rc wsl.16: 1 of 8 second-return phones refused at PER_IP_MAX (❓-2) and 1 ended by impl-11 |
+| rto-264 (8088), rto-ssl-264 (8089, two flaps; first return 4 per container address, the second return's 16 spread so that no address holds more than 7 of PER_IP_MAX 8, with a per-address census logged before it, r9/r10 A10-1) | feature | no (peer-side nft on the test clients' ports only, self-expiring; 8089 copies a 1-day test cert of a non-admin test user to 02/03, removed by the suite and by itself after 900 s) | wsl.11: the listener OOM-killed, 0/16 kept; both FAIL on any `admitting unserialized` line in their run (review r6); rc wsl.16: 1 of 8 second-return phones refused at PER_IP_MAX (❓-2) and 1 ended by impl-11 |
 | r8-hold-264 | tier B | yes (stops the OTS overlay containers, restores from the golden) | wsl.10: the guardian started the held container |
 | rto768-264 | tier B | yes on the limit only (ots_eud_handler at 768m for one rto run; the #156 reconciler paused by its root-owned operator flag, removed on every exit; the restore asserted) | wsl.11: the listener OOM-killed; the rc wsl.13 run with the lock held from outside (the author's mistake): 53 unserialized admissions |
 | group-disc-264 | feature | yes on a broken build (cot_parser crash loop; ends when the test membership is removed, which every exit path does) | wsl.8: 6 x crash ots_cot_parser |

@@ -182,6 +182,9 @@ h = H([sq, sq]); h._admit_pending = True; handle(h)
 c = h.taken == 0 and h.opened == 0
 print(("PASS" if c else "FAIL"), f"R16 r9 a single-quoted real ping is still a ping: never admitted (taken {h.taken}x)"); R.append(c)
 h = H([b"<event><bad></event>", ev("M1")]); h._admit_pending = True; handle(h)
-c = [m.split('uid="')[1].split('"')[0] for m in h.got] == ["M1"] and h.opened >= 1
-print(("PASS" if c else "FAIL"), f"R16 r9 a malformed message is dropped, the SA after it admitted and handled (opened {h.opened}x)"); R.append(c)
+# r10 A10-2: the malformed message is admitted (logged, dropped) and re-arms the admission, the SA is admitted again:
+# taken 2x, opened 2x. A regression guard (a future "malformed = ping" fails it), not a negative control: 545127e
+# behaves the same
+c = [m.split('uid="')[1].split('"')[0] for m in h.got] == ["M1"] and h.taken == 2 and h.opened == 2
+print(("PASS" if c else "FAIL"), f"R16 r9 a malformed message is admitted and dropped, the SA after it admitted and handled (taken {h.taken}x, opened {h.opened}x)"); R.append(c)
 print("ALL PASS" if all(R) else "SOME FAILED")

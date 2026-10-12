@@ -166,6 +166,7 @@ define Package/batman-payload-ots/install
 	$(INSTALL_DATA) ../../deploy/ots/ots.net.alloc                      $(1)/usr/share/batman/payload-golden/opentakserver/ots.net.alloc
 	$(INSTALL_DATA) ../../deploy/ots/ots-db.hardening.env               $(1)/usr/share/batman/payload-golden/opentakserver/ots-db.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/ots.hardening.env                  $(1)/usr/share/batman/payload-golden/opentakserver/ots.hardening.env
+	$(INSTALL_DATA) ../../deploy/ots/ots_eud_handler_ssl.hardening.env  $(1)/usr/share/batman/payload-golden/opentakserver/ots_eud_handler_ssl.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq.hardening.env             $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq-extra.conf                $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq-extra.conf
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq-definitions.json          $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq-definitions.json
