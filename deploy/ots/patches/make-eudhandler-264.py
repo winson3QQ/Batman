@@ -1975,6 +1975,83 @@ rep('''    def _admit(self):''', '''    def _owned_by_other_user(self, uid):
     def _admit(self):''')
 assert "_need_replay and self._sub_ops" not in s, "replay leftover"
 
+# --- field scenario "the RTO returns" (2026-10-12, before review round 4): BATMAN-264-R16 -------------------------
+# Reproduced on node 04 with rc wsl.11 (768m, scratchpad r4/rto-rc11.log): 16 stale sessions (no FIN) + the same 16
+# phones reconnecting at once. R7 refused 3, yet the memcg OOM killer then killed the LARGEST process, the listener
+# parent (anon-rss 118 MB): the container exited, every session and every cache with it (an AAR gap), and the guardian
+# restarted it. Causes: (1) the OOM killer picks the parent; (2) the admission lock was released at the first message,
+# before the session had grown (subscription, AMQP); (3) the reserve read only "anon", while the stale sessions' unsent
+# data sits in socket buffers charged to the same limit.
+rep('''ADMIT_HOLD_S = 8''', '''ADMIT_HOLD_S = 20  # R16: a fallback only; the lock is normally released once the session's subscription is placed''')
+
+rep_region('def _cg_mem():\n', 'def _sessions_from(ip, port):\n', '''def _cg_mem():
+    """(used, max) bytes of this container's own cgroup; (None, None) when unreadable (then no cap). "Used" is what
+    the kernel charges to the limit and cannot simply drop: memory.current minus the page cache ("file" in
+    memory.stat, reclaimable). That is the anonymous memory AND the kernel memory, socket buffers included
+    (BATMAN-264-R16: stale sessions' unsent data, up to tcp_wmem 4 MiB each, is charged to the limit but not to
+    "anon"). memory.current alone would refuse sessions after days of log writes (review B-6)."""
+    try:
+        with open(CG_DIR + "/memory.current") as f:
+            cur = int(f.read())
+        fil = 0
+        with open(CG_DIR + "/memory.stat") as f:
+            for line in f:
+                if line.startswith("file "):
+                    fil = int(line.split()[1])
+                    break
+        with open(CG_DIR + "/memory.max") as f:
+            mx = f.read().strip()
+        return cur - fil, (None if mx == "max" else int(mx))
+    except (OSError, ValueError):
+        return None, None
+
+
+def _oom_first():
+    """BATMAN-264-R16: this session process volunteers to be the memcg OOM killer's first choice (oom_score_adj
+    1000). Without it the killer picks the largest process, the listener parent, and the container ends with every
+    session (reproduced on node 04, rc wsl.11). With it, the worst case is one session: its phone reconnects.
+    Raising one's own score needs no privilege (probed on node 04 as uid 1000)."""
+    try:
+        with open("/proc/self/oom_score_adj", "w") as f:
+            f.write("1000")
+        return True
+    except OSError as e:
+        logging.getLogger().error(f"BATMAN-264-R16: oom_score_adj not set ({e}); an OOM may take the listener")
+        return False
+
+
+''')
+rep('''SESSION_RESERVE_MB = int(os.environ.get("BATMAN_264_SESSION_RESERVE_MB", "40"))''',
+    '''SESSION_RESERVE_MB = int(os.environ.get("BATMAN_264_SESSION_RESERVE_MB", "40"))
+CG_DIR = "/sys/fs/cgroup"  # this container's own cgroup (cgroup v2, namespaced)''')
+
+rep('''        self.iothread = None
+        if not self._admit():''', '''        self.iothread = None
+        self._sub_wanted = False     # R16: a subscription was requested: the admission lock is held until it is placed
+        _oom_first()                 # R16: under memory pressure the kernel kills a session, never the listener
+        if not self._admit():''')
+rep('''                self._release_admit()  # BATMAN-264-R12: this session's first work is done''',
+    '''                if not self._sub_wanted:
+                    # BATMAN-264-R12/R16: this session's first work is done. A session that asked for its
+                    # subscription keeps the lock until _subscribe has placed it, so the next admission's memory
+                    # check sees what this one really costs (rc wsl.11: released here, 16 reconnects all passed
+                    # while still growing)
+                    self._release_admit()''')
+rep('''                if _ch.ops:
+                    self._io(self._subscribe, _ch.ops, list(self.bound_queues))''',
+    '''                if _ch.ops:
+                    self._sub_wanted = True  # BATMAN-264-R16: the admission lock is released once this is placed
+                    self._io(self._subscribe, _ch.ops, list(self.bound_queues))''')
+rep('''            self.logger.error(f"subscription failed ({e}); the channel close path handles it")
+            return''', '''            self.logger.error(f"subscription failed ({e}); the channel close path handles it")
+            self._release_admit()
+            return''')
+rep('''        self.logger.info(f"subscribed {self.uid}/{self.callsign} for {self.client_address[0]}{' (replay)' if replay else ''}")''',
+    '''        self.logger.info(f"subscribed {self.uid}/{self.callsign} for {self.client_address[0]}{' (replay)' if replay else ''}")
+        self._release_admit()  # BATMAN-264-R16: admitted and placed: the next admission may go''')
+assert 'BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13"' in s, "item list moved"
+rep('BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13"', 'BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13 R16"')
+
 # --- license notice (GPL-3.0-or-later §5a: modified files carry a prominent dated notice) ----------
 assert s.startswith("import base64\n"), "upstream file no longer starts with 'import base64'"
 s = ("# SPDX-License-Identifier: GPL-3.0-or-later\n"

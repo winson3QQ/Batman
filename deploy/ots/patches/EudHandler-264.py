@@ -79,7 +79,7 @@ from opentakserver.models.ZMIST import ZMIST
 MAX_PENDING = 1 << 20  # BATMAN-264-PA: bytes held while waiting for a closing tag (upstream: unbounded)
 CACHE_MAX = 2000         # BATMAN-264-R9: cot_parser bodies held per session while the broker is away/blocked
 CACHE_MAX_BYTES = 2 << 20
-BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13"  # BATMAN-264: which #264 items this overlay carries (payload-conform greps it)
+BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13 R16"  # BATMAN-264: which #264 items this overlay carries (payload-conform greps it)
 # BATMAN-264-R6: client-socket keepalive (seconds / count / ms): a peer that vanished is gone in about 2 minutes
 KEEPALIVE_IDLE = 45
 KEEPALIVE_INTVL = 15
@@ -97,7 +97,7 @@ PER_IP_MAX = int(os.environ.get("BATMAN_264_PER_IP_MAX", "8"))
 # (measured on node 04: 16 sessions at once all passed a 110 MiB check, then used 474 MiB of 512).
 ADMIT_LOCK = "/tmp/batman-264-admit.lock"
 ADMIT_WAIT_S = 30
-ADMIT_HOLD_S = 8
+ADMIT_HOLD_S = 20  # R16: a fallback only; the lock is normally released once the session's subscription is placed
 # upstream's ForkingTCPServer listens with a backlog of 5: a crowd of connects overflows it and the kernel drops
 # the handshake's last ACK (the client thinks it is connected, the server never accepted it; measured: 10 at once
 # from one address -> 8 accepted). somaxconn on the nodes is 4096.
@@ -108,6 +108,7 @@ socketserver.ForkingTCPServer.request_queue_size = 64
 # (PID 1 = every session) at about the 10th client. With the shared app and gc.freeze() below a session costs a
 # few MB, and the reserve turns the remaining limit into a refused connection instead of a container kill.
 SESSION_RESERVE_MB = int(os.environ.get("BATMAN_264_SESSION_RESERVE_MB", "40"))
+CG_DIR = "/sys/fs/cgroup"  # this container's own cgroup (cgroup v2, namespaced)
 
 
 # BATMAN-264-R10: the client's uid and callsign become queue names (declare/bind/consume) on the shared broker,
@@ -128,24 +129,39 @@ def _valid_name(name):
 
 
 def _cg_mem():
-    """(used, max) bytes of this container's own cgroup; (None, None) when unreadable (then no cap). "Used" is
-    the anonymous memory (memory.stat anon: what the kernel cannot reclaim), not memory.current, which also
-    counts page cache and would refuse sessions after days of log writes (review B-6)."""
+    """(used, max) bytes of this container's own cgroup; (None, None) when unreadable (then no cap). "Used" is what
+    the kernel charges to the limit and cannot simply drop: memory.current minus the page cache ("file" in
+    memory.stat, reclaimable). That is the anonymous memory AND the kernel memory, socket buffers included
+    (BATMAN-264-R16: stale sessions' unsent data, up to tcp_wmem 4 MiB each, is charged to the limit but not to
+    "anon"). memory.current alone would refuse sessions after days of log writes (review B-6)."""
     try:
-        cur = None
-        with open("/sys/fs/cgroup/memory.stat") as f:
+        with open(CG_DIR + "/memory.current") as f:
+            cur = int(f.read())
+        fil = 0
+        with open(CG_DIR + "/memory.stat") as f:
             for line in f:
-                if line.startswith("anon "):
-                    cur = int(line.split()[1])
+                if line.startswith("file "):
+                    fil = int(line.split()[1])
                     break
-        if cur is None:
-            with open("/sys/fs/cgroup/memory.current") as f:
-                cur = int(f.read())
-        with open("/sys/fs/cgroup/memory.max") as f:
+        with open(CG_DIR + "/memory.max") as f:
             mx = f.read().strip()
-        return cur, (None if mx == "max" else int(mx))
+        return cur - fil, (None if mx == "max" else int(mx))
     except (OSError, ValueError):
         return None, None
+
+
+def _oom_first():
+    """BATMAN-264-R16: this session process volunteers to be the memcg OOM killer's first choice (oom_score_adj
+    1000). Without it the killer picks the largest process, the listener parent, and the container ends with every
+    session (reproduced on node 04, rc wsl.11). With it, the worst case is one session: its phone reconnects.
+    Raising one's own score needs no privilege (probed on node 04 as uid 1000)."""
+    try:
+        with open("/proc/self/oom_score_adj", "w") as f:
+            f.write("1000")
+        return True
+    except OSError as e:
+        logging.getLogger().error(f"BATMAN-264-R16: oom_score_adj not set ({e}); an OOM may take the listener")
+        return False
 
 
 def _sessions_from(ip, port):
@@ -308,7 +324,12 @@ class EudHandler(socketserver.BaseRequestHandler):
                     # session goes on.
                     self.logger.error(f"{self.client_address[0]}: a message raised {type(e).__name__}: {e}; dropped")
                     self.logger.debug(traceback.format_exc())
-                self._release_admit()  # BATMAN-264-R12: this session's first work is done
+                if not self._sub_wanted:
+                    # BATMAN-264-R12/R16: this session's first work is done. A session that asked for its
+                    # subscription keeps the lock until _subscribe has placed it, so the next admission's memory
+                    # check sees what this one really costs (rc wsl.11: released here, 16 reconnects all passed
+                    # while still growing)
+                    self._release_admit()
                 if first_by is not None:
                     # BATMAN-264-R12 (review r3 B3-3): one parsable message used to clear the deadline for good (an
                     # empty <event/> kept a socket for ever). Until the client identifies, every complete message
@@ -392,6 +413,8 @@ class EudHandler(socketserver.BaseRequestHandler):
         self._chan_opening = False   # a channel open is in flight (the end opens one to drain)
         self._ret_n = 0              # returns of one burst keep their order at the cache head
         self.iothread = None
+        self._sub_wanted = False     # R16: a subscription was requested: the admission lock is held until it is placed
+        _oom_first()                 # R16: under memory pressure the kernel kills a session, never the listener
         if not self._admit():  # BATMAN-264-R7/R12: fail closed before anything is allocated or declared
             self.shutdown = True
             try:
@@ -1073,11 +1096,13 @@ class EudHandler(socketserver.BaseRequestHandler):
                     getattr(ch, name)(*a, **k)
         except Exception as e:
             self.logger.error(f"subscription failed ({e}); the channel close path handles it")
+            self._release_admit()
             return
         self._subscribed = True
         self._need_replay = False
         self._sub_binds = list(self._sub_binds_pending)
         self.logger.info(f"subscribed {self.uid}/{self.callsign} for {self.client_address[0]}{' (replay)' if replay else ''}")
+        self._release_admit()  # BATMAN-264-R16: admitted and placed: the next admission may go
 
     # ---- BATMAN-264-R4/R4b: publisher confirms (at-least-once) and reconnect on the same ioloop ---------------
     def _on_confirm(self, frame):
@@ -1583,6 +1608,7 @@ class EudHandler(socketserver.BaseRequestHandler):
                             queue=self.uid, on_message_callback=self.on_message, auto_ack=True
                         )
                 if _ch.ops:
+                    self._sub_wanted = True  # BATMAN-264-R16: the admission lock is released once this is placed
                     self._io(self._subscribe, _ch.ops, list(self.bound_queues))
 
             if "phone" in contact.attrs and contact.attrs["phone"]:

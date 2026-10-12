@@ -1177,13 +1177,14 @@ chk_queue_policy_264() { local ots=$1 peer=$2 run o rc=0 m
 # addresses (8 from the bench node, 8 from the mesh node: PER_IP_MAX 8). Asserted: all 16 subscribed, none refused,
 # no OOM kill, anonymous memory at its peak <= 85 % of the container's memory.max (room for a 17th and for the
 # sessions' traffic). Negative control, rc wsl.10 (512 MiB): 474 MiB anon of 512 = 93 % (16 fitted with ~21 MiB left).
-chk_cap16_264() { local ots=$1 p1=$2 p2=$3 run o rc=0 r0 r1 sub peak mx oom0 oom1 a
+chk_cap16_264() { local ots=$1 p1=$2 p2=$3 run o rc=0 r0 r1 sub peak mx oom0 oom1 a st0
   [ -n "$p1" ] && [ -n "$p2" ] && [ "$p1" != "$ots" ] && [ "$p2" != "$ots" ] && up "$p1" && up "$p2" || { echo "SKIP-REASON: needs two client nodes besides OTS_NODE ($p1, $p2)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   run=DVC16$(date +%H%M%S)
   cg='c=$(docker inspect -f "{{.Id}}" ots_eud_handler); d=/sys/fs/cgroup/docker/$c'
   r0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -cE \"refusing session\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'); isint "$r0" || r0=0
   oom0=$(fssh "$ots" 20 "$cg"'; awk "/oom_kill/{print \$2}" $d/memory.events' | tr -d ' \r')
+  st0=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_eud_handler' | tr -d '\r')
   ( s264 "$p1" "$ots" "$run-a" idle N=8 HOLD=90 > "$DIR/$run.p1" ) & ( s264 "$p2" "$ots" "$run-b" idle N=8 HOLD=90 > "$DIR/$run.p2" ) &
   wait; echo "  peers: $(cat "$DIR/$run.p1") / $(cat "$DIR/$run.p2")"
   peak=0
@@ -1196,8 +1197,52 @@ chk_cap16_264() { local ots=$1 p1=$2 p2=$3 run o rc=0 r0 r1 sub peak mx oom0 oom
   [ "$sub" = 16 ] || { echo "FAIL not all 16 sessions subscribed"; rc=1; }
   [ "$r1" = "$r0" ] || { echo "FAIL sessions refused under the 16-phone target"; rc=1; }
   [ "$oom0" = "$oom1" ] || { echo "FAIL the eud container was OOM-killed"; rc=1; }
+  # an OOM kill of the listener restarts the container in a NEW cgroup (memory.events from 0): compare StartedAt too
+  [ "$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_eud_handler' | tr -d '\r')" = "$st0" ] && [ -n "$st0" ] \
+    || { echo "FAIL ots_eud_handler restarted during the test (its sessions all dropped)"; rc=1; }
   isint "$mx" && [ $((peak * 100)) -le $((mx * 85)) ] || { echo "FAIL anon peak above 85 % of memory.max (no room left above 16 phones)"; rc=1; }
   s264 "$p1" "$ots" "$run-a" cleanup >/dev/null; s264 "$p2" "$ots" "$run-b" cleanup >/dev/null; sleep 8
+  r264_clean "$ots" "$run"
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  return $rc; }
+# The RTO returns (field scenario, the user 2026-10-12: the OTS node is carried by the RTO): the node walks out of
+# range and is back within ~2 min, so the team's 16 sessions are still on the server as zombies (no FIN) when the
+# same 16 phones reconnect at once: 32 sessions on one listener. Zombies: 8 from each peer, then black-holed there
+# (scripts/node/rto-264.sh, own nft table, self-expiring). Reconnects: the same 16 uids from inside ots_cot_parser and
+# opentakserver (scripts/node/rto-reconnect-264.py; distinct br-ots addresses, so PER_IP_MAX is not what is measured:
+# every phone has its own address in the field). Asserted: every reconnect kept for 120 s (a refused phone records
+# no CoT: an AAR gap), ots_eud_handler not restarted, no OOM kill; then the zombies are reaped and nothing is left.
+# Negative control, rc wsl.11 (768m, 2026-10-12): the memcg OOM killer killed the listener parent 10 s in, the
+# container restarted, 0/16 kept (r4/rto-rc11.log).
+rto264() { timeout "${3:-60}" ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" "TARGET=$OTS_NODE RUN=$2 ACTION=$4 N=8 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r'; }
+chk_rto_264() { local ots=$1 p1=$2 p2=$3 run rc=0 cg st0 st1 o0 o1 r0 r1 sub k1 k2 i a peak=0 mx
+  [ -n "$p1" ] && [ -n "$p2" ] && [ "$p1" != "$ots" ] && [ "$p2" != "$ots" ] && up "$p1" && up "$p2" || { echo "SKIP-REASON: needs two client nodes besides OTS_NODE ($p1, $p2)"; return 3; }
+  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  run=DVRTO$(date +%H%M%S)
+  cg='c=$(docker inspect -f "{{.Id}}" ots_eud_handler); d=/sys/fs/cgroup/docker/$c'
+  st0=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_eud_handler' | tr -d '\r')
+  o0=$(fssh "$ots" 20 "$cg"'; awk "/oom_kill /{print \$2}" $d/memory.events' | tr -d ' \r')
+  r0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"refusing session\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'); isint "$r0" || r0=0
+  mx=$(fssh "$ots" 20 "$cg"'; cat $d/memory.max' | tr -d ' \r')
+  echo "the team: 02 $(rto264 "$p1" "$run-a" 60 start) / 03 $(rto264 "$p2" "$run-b" 60 start)"; sleep 8
+  sub=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r')
+  echo "subscribed $sub (expect 16)"; [ "$sub" = 16 ] || { echo "FAIL the team's 16 sessions are not all subscribed: nothing to measure"; rc=1; }
+  echo "RTO out of range: 02 $(rto264 "$p1" "$run-a" 30 blackhole) / 03 $(rto264 "$p2" "$run-b" 30 blackhole)"; sleep 5
+  ( fssh "$ots" 200 "docker exec -i -e TARGET=172.20.0.10 -e RUN=$run-a -e FIRST=1 -e N=8 -e HOLD=120 ots_cot_parser python3 -" < "$REPO/scripts/node/rto-reconnect-264.py" > "$DIR/$run.r1" 2>&1 ) &
+  ( fssh "$ots" 200 "docker exec -i -e TARGET=172.20.0.10 -e RUN=$run-b -e FIRST=1 -e N=8 -e HOLD=120 opentakserver python3 -" < "$REPO/scripts/node/rto-reconnect-264.py" > "$DIR/$run.r2" 2>&1 ) &
+  for i in $(seq 1 22); do sleep 5; a=$(fssh "$ots" 20 "$cg"'; awk "/^anon /{print \$2}" $d/memory.stat' | tr -d ' \r'); isint "$a" && [ "$a" -gt "$peak" ] && peak=$a; done; wait
+  grep -hv " kept$" "$DIR/$run.r1" "$DIR/$run.r2"
+  k1=$(grep -o "KEPT [0-9]*" "$DIR/$run.r1" | cut -d' ' -f2); k2=$(grep -o "KEPT [0-9]*" "$DIR/$run.r2" | cut -d' ' -f2)
+  st1=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_eud_handler' | tr -d '\r')
+  o1=$(fssh "$ots" 20 "$cg"'; awk "/oom_kill /{print \$2}" $d/memory.events' | tr -d ' \r')
+  r1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"refusing session\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'); isint "$r1" || r1=0
+  echo "reconnects kept $((${k1:-0} + ${k2:-0}))/16, refused $((r1 - r0)), oom_kill $o0 -> $o1, StartedAt $st0 -> $st1, anon peak $((peak >> 20)) MiB of $(( ${mx:-0} >> 20 )) MiB"
+  [ "$((${k1:-0} + ${k2:-0}))" = 16 ] || { echo "FAIL not every reconnecting phone was kept (a refused phone records no CoT: an AAR gap)"; rc=1; }
+  [ -n "$st0" ] && [ "$st0" = "$st1" ] || { echo "FAIL ots_eud_handler restarted (the listener died with every session)"; rc=1; }
+  [ "$o0" = "$o1" ] || { echo "FAIL memcg OOM kill"; rc=1; }
+  echo "waiting for the zombies to be reaped (R6, ~2 min)"; sleep 75
+  echo "cleanup: 02 $(rto264 "$p1" "$run-a" 30 cleanup) / 03 $(rto264 "$p2" "$run-b" 30 cleanup)"; sleep 15
+  rm -f "$DIR/$run".r?
   r264_clean "$ots" "$run"
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
   return $rc; }
@@ -1499,6 +1544,7 @@ elif up "$OTS_NODE"; then
   suite owner-8089-264 "an 8089 user claiming another user's uid is refused, consumes none of that user's queues, the row keeps its user (#264 R10, review r3 B3-5; wsl.10: taken over)" "chk_owner_8089_264 $OTS_NODE"
   suite queue-policy-264 "a departed 8089 group member's queue is capped at 500 messages by the broker policy; the cot_parser queue is not under it (#264 review r3, resources; wsl.10: grew without bound)" "chk_queue_policy_264 $OTS_NODE $BENCH_NODE"
   suite cap16-264 "16 identifying sessions at once from two addresses: all subscribed, none refused, no OOM, anon peak <= 85 % of memory.max (#264 capacity target 16; wsl.10: 93 %)" "chk_cap16_264 $OTS_NODE $BENCH_NODE $MESH_NODE"
+  suite rto-264 "the RTO returns: 16 stale sessions + the same 16 phones reconnecting at once; every reconnect kept, the listener not restarted, no OOM (#264 R16, field scenario 2026-10-12; wsl.11 768m: the listener was OOM-killed)" "chk_rto_264 $OTS_NODE $BENCH_NODE $MESH_NODE"
 else
   for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264 amqp-close-264 name-guard-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi

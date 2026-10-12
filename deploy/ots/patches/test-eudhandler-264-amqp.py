@@ -69,6 +69,7 @@ class _Req:
 
 class H:
     def _io(self, fn, *a): fn(*a); return True   # the ioloop thread, inline
+    def _release_admit(self): self._admit_fd = None   # replaced by the real one from case 22 on
     def __init__(self, chan_open=True):
         self.logger = logging.getLogger("t"); self.app = App(); self.uid = "U"
         self.rabbit_channel = Chan(chan_open); self.rabbit_connection = Conn()
@@ -154,7 +155,8 @@ for i in range(4): h._cache("abcd", ("U%d" % i, "x"))   # 16 bytes > 10
 ok(len(h.cached_messages) == 2 and h._cache_bytes == 8 and h._dropped == 2, "7 byte bound: entries dropped until under CACHE_MAX_BYTES")
 # 8 R7 session cap: refused only when the container's own cgroup has less than SESSION_RESERVE_MB left;
 #   no cap when the cgroup files are unreadable or the limit is "max"
-for fname in ("_cg_mem", "_before_fork"):
+g["CG_DIR"] = "/sys/fs/cgroup"
+for fname in ("_cg_mem", "_before_fork", "_oom_first"):
     fn = next(n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == fname)
     exec(textwrap.dedent(ast.get_source_segment(src, fn)), g)
 fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_session_allowed")
@@ -415,9 +417,18 @@ h = H()
 for i in range(3): h._publish_on_ioloop("cot_parser", "cot_parser", "n%d" % i, None)
 h._on_confirm(Fr("Basic.Nack", 3, multiple=True))
 ok([b for b, m in h.cached_messages] == ["n0", "n1", "n2"], "19 a multiple nack re-caches in publish order")
-# 20 R7 cap reads anonymous memory, not memory.current (review B-6): stubbed through _cg_mem in case 8 already;
-#    here only that the real reader never raises
-r = real_cg_mem(); ok(r == (None, None) or isinstance(r[0], int), "20 _cg_mem (memory.stat anon) never raises")
+# 20 R7/R16 "used" = memory.current minus the page cache (file): anon AND kernel memory (socket buffers) count, the
+#    reclaimable log cache does not (review B-6); a fake cgroup dir
+import os as _os20, tempfile as _tf20
+cg = _tf20.mkdtemp(); g["CG_DIR"] = cg
+def cgw(cur, stat, mx):
+    for n, v in (("memory.current", cur), ("memory.stat", stat), ("memory.max", mx)):
+        open(_os20.path.join(cg, n), "w").write(v)
+cgw("700\n", "anon 400\nfile 200\nkernel 90\nsock 60\n", "1000\n")
+ok(real_cg_mem() == (500, 1000), "20 used = current 700 - file 200 = 500 (anon 400 + kernel/sock counted), max 1000")
+cgw("700\n", "anon 400\n", "max\n"); ok(real_cg_mem() == (700, None), "20 no file line: all of current counts (conservative); max = no limit")
+_os20.remove(_os20.path.join(cg, "memory.current")); ok(real_cg_mem() == (None, None), "20 unreadable: (None, None), never raises")
+g["CG_DIR"] = "/sys/fs/cgroup"; r = real_cg_mem(); ok(r == (None, None) or isinstance(r[0], int), "20 the real reader on this host never raises")
 # 21 R12 per-address count from this container's /proc/net/tcp(6): ESTABLISHED to our port from that address only
 fn = next(n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == "_sessions_from")
 exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); g["struct"] = __import__("struct"); g["socket_mod"] = _socket
@@ -496,4 +507,26 @@ ok(not done, "23 the handler thread waits while the end is in progress")
 h._end_done.set(); w.join(2); ok(done == [1], "23 ... and is released when the end completes")
 H._io = lambda self, fn, *a: False; h = H(); h.request = Req(); h.close_connection()
 ok(h._end_done.is_set(), "23 no ioloop: the end is complete at once (nothing to drain)")
+# 24 R16: the session process volunteers for the OOM killer (oom_score_adj 1000, no privilege needed), so a memory
+#    crunch kills one session and never the listener parent
+ok(g["_oom_first"]() is True and open("/proc/self/oom_score_adj").read().strip() == "1000", "24 oom_score_adj 1000 written and read back")
+# 24 R16: _subscribe releases the admission lock once the subscription is placed, and when it fails
+fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_subscribe")
+exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); H._subscribe = g["_subscribe"]
+H._io = lambda self, fn, *a: fn(*a) or True
+class SubChan(Chan):
+    def queue_declare(self, *a, **k): self.decls.append(("q", k))
+    def basic_consume(self, *a, **k): self.decls.append(("c", k))
+h = H(); h.rabbit_channel = SubChan(); h._admit_fd = _os.open(g["ADMIT_LOCK"], _os.O_RDWR | _os.O_CREAT, 0o600)
+h._subscribe([("queue_declare", (), {"queue": "U"}), ("basic_consume", (), {"queue": "U"})], [])
+ok(h._subscribed and h._admit_fd is None, "24 subscription placed: the admission lock is released")
+class BadChan(SubChan):
+    def basic_consume(self, *a, **k): raise RuntimeError("channel closed")
+h = H(); h.rabbit_channel = BadChan(); h._admit_fd = _os.open(g["ADMIT_LOCK"], _os.O_RDWR | _os.O_CREAT, 0o600)
+h._subscribe([("basic_consume", (), {"queue": "U"})], [])
+ok(not h._subscribed and h._admit_fd is None, "24 subscription failed: the lock is released too (the channel close path handles the rest)")
+h = H(); h.rabbit_channel = Chan(False); h._admit_fd = _os.open(g["ADMIT_LOCK"], _os.O_RDWR | _os.O_CREAT, 0o600)
+h._subscribe([("basic_consume", (), {"queue": "U"})], [])
+ok(h._pending_ops and h._admit_fd is not None, "24 channel not open yet: pending, the lock still held (released when placed, by the end, or ADMIT_HOLD_S)")
+_os.close(h._admit_fd)
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)

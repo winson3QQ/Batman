@@ -15,7 +15,7 @@ values:                                # emitter reads ONLY this
   no_new_privileges: true
   caps:     {drop: [ALL], add: []}     # plausible (>1024 ports, python stack) — TEST-GATED (gate item 2, not yet applied to OTS containers)
   rootfs:   {read_only: true, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # read_only ON (#98, manet01 2026-09-18): docker diff = only /tmp/dp.zip (opentakserver) beyond the /app/ots volume; logs go to the /app/ots volume, .pyc write is EROFS-tolerated. Validated: recreate 4 app containers --read-only + tmpfs /tmp → all up + CoT round-trip OK.
-  resources: {cpus: 1.0, memory: 768m, pids: 512}   # idle measured ~116MiB/service on Pi4 (2026-09-16). #264 r3: 768m (a cap, not a reservation) so each CoT listener holds 16 phones: measured 23 MiB per session, 16 at once = 474 MiB anon of 512 (no room); memcg enabled (docker-in-image #159).
+  resources: {cpus: 1.0, memory: 1280m, pids: 512}   # idle measured ~116MiB/service on Pi4 (2026-09-16). #264: 1280m (a cap, not a reservation). OTS runs only on Pi 4 8 GB (the user, 2026-10-12; 04: ~6.6 GiB available); 4 x 1280m + 2 x 512m = 6.1 GiB < available, so all caps hit at once still do not OOM the node. Sized for the RTO-returns case: 16 stale + 16 reconnecting sessions per listener at 23 MiB each (rc wsl.11 at 768m: the listener was OOM-killed); memcg enabled (docker-in-image #159).
   devices:  []
   seccomp:  {profile: default}
   privileged: false

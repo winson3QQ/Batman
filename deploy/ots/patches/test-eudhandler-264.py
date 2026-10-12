@@ -28,12 +28,13 @@ class H:
     def __init__(self, chunks):
         self.request = Sock(chunks); self.shutdown = False; self.got = []; self.auth = []
         self.logger = logging.getLogger("t"); self.client_address = ("x", 0); self.closed = 0; self.waited = 0
-        self.uid = None; self.released = 0; self.raise_on = None
+        self.uid = None; self.released = 0; self.raise_on = None; self._sub_wanted = False
         if "_handle_loop" in g: self._handle_loop = g["_handle_loop"].__get__(self)
     def handle_cot(self, m):
         if self.raise_on and self.raise_on in m: raise KeyError("start")
         self.got.append(m)
-        if "<contact" in m: self.uid = m.split('uid="')[1].split('"')[0]   # identified, as parse_device_info does
+        if "<contact" in m:   # identified and its subscription requested, as parse_device_info does
+            self.uid = m.split('uid="')[1].split('"')[0]; self._sub_wanted = True
     def _release_admit(self): self.released += 1
     def handle_auth(self, m): self.auth.append(m)
     def close_connection(self): self.closed += 1
@@ -98,6 +99,13 @@ print(("PASS" if c else "FAIL"), f"R12 unidentified chatter: deadline re-armed o
 h = H([ev("Q1")[:30], ev("Q1")[30:], ev("Q2")]); handle(h)
 c = [m.split('uid="')[1].split('"')[0] for m in h.got] == ["Q1", "Q2"] and h.request.timeouts.count(None) == 1 and h.request.timeouts[-1] is None and h.waited == 1
 print(("PASS" if c else "FAIL"), f"R12 identifying client: deadline cleared once at identification (timeouts {h.request.timeouts})"); R.append(c)
+# R16: a session that requested its subscription keeps the admission lock (released by _subscribe once placed, or by
+# the end); a session that does not identify releases it at its first complete message
+c = h.released == 1
+print(("PASS" if c else "FAIL"), f"R16 identifying client: the admission lock is not released by the messages, only at the end here (released {h.released}x)"); R.append(c)
+h = H([plain("N1"), plain("N2")]); handle(h)
+c = h.released == 3 and h.uid is None
+print(("PASS" if c else "FAIL"), f"R16 non-identifying client: released at each message and at the end (released {h.released}x)"); R.append(c)
 # A3-2 (review r3): an exception out of handle_cot drops that message only; the session goes on and still ends properly
 h = H([ev("BAD1") + ev("OK1")]); h.raise_on = 'uid="BAD1"'; handle(h)
 c = [m.split('uid="')[1].split('"')[0] for m in h.got] == ["OK1"] and h.closed == 1 and h.waited == 1
