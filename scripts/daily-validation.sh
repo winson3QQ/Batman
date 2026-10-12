@@ -904,12 +904,22 @@ chk_same_uid_end_264() { local ots=$1 peer=$2 run o rc=0 t0 q
   [ "$o" = "A 0 B 10" ] || { echo "FAIL the downlink is not with the device's newest session only ($o)"; rc=1; }
   o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"session of '"$q"' superseded by the device.s new session\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r')
   echo "A superseded (log): ${o:-0} (expect 1)"; [ "${o:-0}" = 1 ] || { echo "FAIL A was not superseded"; rc=1; }
-  # A sends until ~+44 s, then is quiet; it ends ~20 s later
+  # B leaves at ~+30 s while A still sends (until ~+44 s): B's end must not disconnect/unbind the device (r8 A8-4/B8-3)
+  d0=$(fssh "$ots" 20 'docker exec ots_cot_parser sh -c "grep -c \"Sending disconnect cot to '"$q"'\$\" /app/ots/logs/cot_parser.log 2>/dev/null"' | tr -d ' \r'); isint "$d0" || d0=0
+  t0=$SECONDS; o=""
+  while [ $((SECONDS - t0)) -lt 40 ] && [ -z "$o" ]; do sleep 5
+    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"another session of '"$q"' is live\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'); [ "${o:-0}" = 0 ] && o=""; done
+  echo "B's end saw A live (no disconnect, nothing unbound): ${o:-0} line(s) (expect >= 1)"; [ -n "$o" ] || { echo "FAIL B's end did not treat the superseded A as live"; rc=1; }
+  o=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_bindings source_name destination_name 2>/dev/null | grep -c "	'"$q"'$"' | tr -d ' \r')
+  echo "bindings of $q after B's end: ${o:-?} (expect >= 1: A still has them)"; isint "$o" && [ "$o" -ge 1 ] || { echo "FAIL B's end unbound the device while A lives"; rc=1; }
+  # A sends until ~+44 s, then is quiet; it ends by the R17 deadline (~20 s later), as the device's last session
   t0=$SECONDS; o=""
   while [ $((SECONDS - t0)) -lt 100 ] && [ -z "$o" ]; do sleep 5
     o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"superseded session of '"$q"' quiet for\" /app/ots/logs/eud_handler_tcp.log"' | tr -d '\r'); done
-  echo "A's quiet end: ${o:-none}"; [ -n "$o" ] || { echo "FAIL A did not end by the R17 quiet timeout"; rc=1; }
+  echo "A's end by the R17 deadline: ${o:-none}"; [ -n "$o" ] || { echo "FAIL A did not end by the R17 deadline"; rc=1; }
   sleep 3
+  d1=$(fssh "$ots" 20 'docker exec ots_cot_parser sh -c "grep -c \"Sending disconnect cot to '"$q"'\$\" /app/ots/logs/cot_parser.log 2>/dev/null"' | tr -d ' \r'); isint "$d1" || d1=0
+  echo "cot_parser disconnects for $q: $((d1 - d0)) (expect 1: from A's end, the last session)"; [ $((d1 - d0)) = 1 ] || { echo "FAIL disconnect count $((d1 - d0)) (B's end sent one while A lived, or A's end sent none)"; rc=1; }
   o=$(echo "select count(distinct uid) from cot where uid like '$q-a-%';" | ots_sql "$ots" | tr -d ' \r')
   echo "A's reports stored (sent while superseded too): ${o:-?} of 10"
   [ "$o" = 10 ] || { echo "FAIL ${o:-?} of 10 reports A sent were stored (rc wsl.15: A ended at once, its later reports lost)"; rc=1; }
@@ -1042,10 +1052,26 @@ chk_admission_264() { local ots=$1 peer=$2 run o rc=0 r0 r1 t0 e
   # (g) review r7 B7-1 (dc7474b: one 20 s timer thread per ping/<auth>; pids.max 512): 450 <auth></auth> from one
   # unidentified client; the container's task count must not follow the message count
   r0=$(fssh "$ots" 20 'docker exec ots_eud_handler cat /sys/fs/cgroup/pids.current' | tr -d ' \r')
-  o=$(s264 "$peer" "$ots" "$run" authflood N=450); echo "  peer: $o"; sleep 2
+  o=$(s264 "$peer" "$ots" "$run" authflood N=450); echo "  peer: $o"
+  echo "$o" | grep -q "EST 1$" || { echo "FAIL (g) the flood socket is not open (nothing to measure)"; rc=1; }   # r8 A8-6
+  o=$(s264 "$peer" "$ots" "$run-g" idle N=1 HOLD=20); echo "  peer: $o (one identifying phone during the flood)"; sleep 2
   r1=$(fssh "$ots" 20 'docker exec ots_eud_handler cat /sys/fs/cgroup/pids.current' | tr -d ' \r')
-  echo "(g) ots_eud_handler tasks before / during an <auth> flood of 450: $r0 / $r1 (expect +< 20)"
-  isint "$r0" && isint "$r1" && [ $((r1 - r0)) -lt 20 ] || { echo "FAIL (g) the flood grew the container's tasks by $((r1 - r0)) (a thread per message)"; rc=1; }
+  echo "(g) ots_eud_handler tasks before / during an <auth> flood of 450: $r0 / $r1 (expect +< 25: the phone's session included)"
+  isint "$r0" && isint "$r1" && [ $((r1 - r0)) -lt 25 ] || { echo "FAIL (g) the flood grew the container's tasks by $((r1 - r0)) (a thread per message)"; rc=1; }
+  sleep 3; e=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-g-1/\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r')
+  echo "(g) the phone subscribed during the flood: ${e:-?} (expect 1)"; [ "$e" = 1 ] || { echo "FAIL (g) a phone was not admitted during an <auth> flood"; rc=1; }
+  echo "  peer: $(s264 "$peer" "$ots" "$run" cleanup)"; sleep 3
+  # (h) review r8 A8-2/B8-2 (afbb22f: a client that never identifies took the admission per message, 6020 takes in
+  # 15 s offline; phones waited seconds, up to the 30 s wait and then unserialized): one socket streams contact-less
+  # events (a relay that never identifies) while a phone identifies: the phone is subscribed within ~8 s, nothing is
+  # admitted unserialized
+  u0=$(rlog ots_eud_handler "admitting unserialized" eud_handler_tcp.log); isint "$u0" || u0=0
+  o=$(s264 "$peer" "$ots" "$run" stream N=400); echo "  peer: $o (8088, ~400 contact-less events over ~20 s)"; sleep 3
+  o=$(s264 "$peer" "$ots" "$run-h" idle N=1 HOLD=20); echo "  peer: $o (one identifying phone during the stream)"; sleep 5
+  e=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-h-1/\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r')
+  u1=$(rlog ots_eud_handler "admitting unserialized" eud_handler_tcp.log); isint "$u1" || u1=0
+  echo "(h) the phone subscribed within ~8 s during a contact-less stream: ${e:-?} (expect 1); unserialized admissions +$((u1 - u0)) (expect 0)"
+  [ "$e" = 1 ] && [ "$u1" = "$u0" ] || { echo "FAIL (h) a non-identifying stream holds up a phone's admission (the lock re-taken per message)"; rc=1; }
   echo "  peer: $(s264 "$peer" "$ots" "$run" cleanup)"; r264_clean "$ots" "$run"
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
   return $rc; }
@@ -1176,6 +1202,7 @@ chk_owner_8089_264() { local ots=$1 run o rc=0 V r0 r1 u1 c
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   run=DVO9$(date +%H%M%S); V=$run-V
   u1=$(echo "select id from \"user\" where username = 'administrator';" | ots_sql "$ots"); isint "$u1" || { echo "FAIL no administrator user — not verified"; return 1; }
+  echo "delete from \"user\" where username = 'dv-264-u2';" | ots_sql "$ots" >/dev/null   # left by an interrupted run (r8 B8-6)
   o=$(echo "insert into \"user\" (username, active, fs_uniquifier) values ('dv-264-u2', true, md5(random()::text)) returning id;" | ots_sql "$ots" | head -1)
   isint "$o" || { echo "FAIL could not create the test user ($o) — not verified"; return 1; }
   cert264 "$ots" administrator || { echo "FAIL cert"; rc=1; }
@@ -1359,9 +1386,12 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   run=DVRTO$(date +%H%M%S); ctr=ots_eud_handler; tgt=172.20.0.10; gen=ots_eud_handler_ssl
   if [ "$port" = 8089 ]; then
     ctr=ots_eud_handler_ssl; tgt=172.20.0.12; run=DVRTS$(date +%H%M%S); gen=ots_eud_handler; nb=3; want=3
+    echo "delete from \"user\" where username = 'dv-264-rto';" | ots_sql "$ots" >/dev/null   # left by an interrupted run (r8 B8-6)
     ru=$(echo "insert into \"user\" (username, active, fs_uniquifier) values ('dv-264-rto', true, md5(random()::text)) returning id;" | ots_sql "$ots" | head -1)
     isint "$ru" || { echo "FAIL could not create the non-admin test user ($ru) — not verified"; return 1; }
-    rto_user_rm() { echo "delete from \"user\" where username = 'dv-264-rto';" | ots_sql "$ots" >/dev/null; }   # every early return (r7 B7-7)
+    rto_user_rm() {   # every early return (r7 B7-7, r8 B8-6): the test user and the container-internal certs
+      echo "delete from \"user\" where username = 'dv-264-rto';" | ots_sql "$ots" >/dev/null
+      fssh "$ots" 20 'for c in ots_cot_parser opentakserver ots_eud_handler; do docker exec $c rm -f /tmp/dv-client.pem /tmp/dv-client.key; done' >/dev/null; }
     cert264 "$ots" dv-264-rto || { echo "FAIL could not issue the test client cert — not verified"; rto_user_rm; return 1; }
     # the container-internal /tmp/dv-client.{pem,key} (tmpfs of ots_cot_parser / opentakserver, not the node's /tmp)
     for c in pem key; do
@@ -1403,8 +1433,9 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   [ "$port" = 8088 ] && for c in ots_cot_parser opentakserver; do [ -f "$DIR/$run.$c.1" ] && mv "$DIR/$run.$c.1" "$DIR/$run.$c"; done
   if [ "$port" = 8089 ]; then
     o=$(cat "$DIR/$run".*.1 2>/dev/null | grep -c " closed after "); rm -f "$DIR/$run".*.1
-    echo "the first returns ended after the second (R17: downlink to the newest, the superseded ends once quiet): $o of 16 (expect 16)"
-    [ "$o" = 16 ] || { echo "FAIL $o of 16 first returns were ended after the phones came back again (R17)"; rc=1; }
+    c=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -cE \"session of $run-[ab]-[0-9]+ superseded by\"'" | tr -d ' \r')
+    echo "the first returns ended after the second: $o of 16 closed (expect 16); sessions superseded this run: ${c:-?} (expect 32: the team by the first return, the first return by the second; R17)"
+    [ "$o" = 16 ] && [ "$c" = 32 ] || { echo "FAIL R17 on the second return: $o of 16 closed, ${c:-?} of 32 superseded (rc wsl.15: closed by the end-at-once code, not superseded)"; rc=1; }
     o=$(timeout 30 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "TARGET=$tgt RUN=$run-a ACTION=est PORT=8089 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r')
     echo "second return of $run-a (OTS node side) still connected: $o"; echo "KEPT ${o#EST } / 8" > "$DIR/$run.ots_cot_parser"
     mv "$DIR/$run.ots_eud_handler" "$DIR/$run.opentakserver" 2>/dev/null
@@ -1463,8 +1494,9 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
 # first session, which goes stale (its port black-holed on the bench node both ways: no FIN/RST ever); then B = the
 # same EUD reconnecting FROM THE SAME ADDRESS while A still holds its queues; D streams 1 CoT/s so the server has data
 # pending towards A. Asserted on the OTS node: B's identification stops A's downlink at once (A logs "superseded", B
-# logs "is back"; rc wsl.14 without R17: A lived ~116 s and took every other downlink message) and A, black-holed,
-# ends once quiet for 20 s (the user's decision 2026-10-12; rc wsl.15 ended it at once), A's end sees B live
+# logs "is back"; rc wsl.14 without R17: A lived ~116 s and took every other downlink message) and A, black-holed
+# (nothing arrives), ends by the R17 deadline (its outage + 20 s, the user's decision 2026-10-12; rc wsl.15 ended it at
+# once), A's end sees B live
 # (no disconnect to cot_parser: its 8089 branch would unbind the user's missions, r2 A2-3), 1 consumer; 10/10 from C
 # reach B right away (phase 1: no split) and again later (phase 2). Spoof leg: the same uid from ANOTHER address
 # ($MESH_NODE) ends nothing ("both kept"; B is not superseded). The last end removes the idle queues (F3).
@@ -1761,10 +1793,10 @@ elif up "$OTS_NODE"; then
   suite zombie-264 "field order: the EUD's stale session (port black-holed on $BENCH_NODE, data pending) is ended at once when the same device comes back from the same address, its end keeps the live one's bindings (no disconnect); 10/10 at once and later; the same uid from $MESH_NODE ends nothing; the last end removes the idle queues (#264 R17/R6/R10/F3; rc wsl.14: zombie ~116 s, downlink split)" "chk_zombie_264 $OTS_NODE $BENCH_NODE"
   suite amqp-close-264 "the broker closes the streaming session's AMQP connection twice (rabbitmqctl close_connection): every CoT stored at least once, client session kept, 2 reconnects logged (#264 R4/R4b mechanism B; upstream: session dropped, CoT in flight lost)" "chk_amqp_close_264 $OTS_NODE $BENCH_NODE"
   suite name-guard-264 "(review r5: the callsign is refused as a queue, the device recorded) an 8088 client with callsign cot_parser gets no subscription: cot_parser queue keeps 1 consumer, log line, CoT still stored (#264 R10; upstream: the client consumes storage's queue)" "chk_name_guard_264 $OTS_NODE $BENCH_NODE"
-  suite same-uid-end-264 "the same device opens a new session while the old one still sends: the downlink goes to the newest only (10/10), every report the old one sends is stored, it ends once quiet (#264 R17, the user's decision 2026-10-12; rc wsl.14: split; rc wsl.15: reports lost)" "chk_same_uid_end_264 $OTS_NODE $BENCH_NODE"
+  suite same-uid-end-264 "the same device opens a new session while the old one still sends: the downlink goes to the newest only (10/10), every report the old one sends is stored, the newer one's end disconnects nothing while the old one lives, the old one ends by the R17 deadline as the last session (#264 R17, the user's decisions 2026-10-12; rc wsl.14: split; rc wsl.16: A deaf + a disconnect after B's end)" "chk_same_uid_end_264 $OTS_NODE $BENCH_NODE"
   suite callsign-share-264 "two devices with the same callsign and different uids both get broadcast traffic, no empty queue left (#264 R10, review r2 B2-4; wsl.8: 10/0)" "chk_callsign_share_264 $OTS_NODE $BENCH_NODE"
   suite owner-swap-264 "an 8088 client naming an 8089 user's uid as its callsign (and as its uid) is refused and consumes none of the user's queues (#264 R10, review r2 B2-2; wsl.8: the swap was subscribed)" "chk_owner_swap_264 $OTS_NODE $BENCH_NODE"
-  suite admission-264 "admission: 8089 nothing allocated before the TLS handshake; 8088 exactly the 9th and 10th session per address refused; silent / empty-event sockets closed at 60 s; silent or ping-only sockets hold up no phone; an <auth> flood spawns no thread per message (#264 R12, review r2 B2-6 / r3 B3-2/B3-3 / r6 / r7 B7-1)" "chk_admission_264 $OTS_NODE $BENCH_NODE"
+  suite admission-264 "admission: 8089 nothing allocated before the TLS handshake; 8088 exactly the 9th and 10th session per address refused; silent / empty-event sockets closed at 60 s; silent, ping-only or contact-less-streaming sockets hold up no phone; an <auth> flood spawns no thread per message (#264 R12, review r2 B2-6 / r3 B3-2/B3-3 / r6 / r7 B7-1 / r8 A8-2)" "chk_admission_264 $OTS_NODE $BENCH_NODE"
   suite exception-264 "injected faults: a raising identification is reset and the device recorded (R14), a raising message is dropped and the session goes on (A3-2); hostile metadata recorded (r5 B5-1); no traceback, no orphan queue (#264 review r6 B6-2; rc wsl.14: no injection)" "chk_exception_264 $OTS_NODE $BENCH_NODE"
   suite owner-8089-264 "an 8089 user claiming another user's uid is refused, consumes none of that user's queues, the row keeps its user (#264 R10, review r3 B3-5; wsl.10: taken over)" "chk_owner_8089_264 $OTS_NODE"
   suite queue-policy-264 "a departed 8089 group member's queue is capped at 500 messages by the broker policy; the cot_parser queue is not under it (#264 review r3, resources; wsl.10: grew without bound)" "chk_queue_policy_264 $OTS_NODE $BENCH_NODE"

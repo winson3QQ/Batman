@@ -91,9 +91,10 @@ class H:
         self.iothread = None; self.shutdown = False; self._pending_ops = None; self._chan_opening = False
         self._admit_fd = None; self._admit_mx = _threading.Lock(); self.request = _Req(); self.eud = None
         self._cs_queue = True; self._goodbye = None; self._goodbye_retried = False; self._admit_pending = False
-        self._refused = False; self._owner = False; self._newer = False; self._superseded = False; self._admit_timer = None
+        self._refused = False; self._owner = False; self._newer = False; self._superseded = False; self._admit_timer = None; self._prev_ok = False; self._admits = 0
     def _uid_has_owner(self, uid): return self._owner
     def _newer_session(self, uid): return self._newer
+    def _prev_alive(self): return self._prev_ok
 
 
 for name in WANT:
@@ -269,6 +270,9 @@ ok(not h.rabbit_channel.pubs and not unbound and not h.rabbit_channel.deleted an
 h = endh(binds=()); h._newer = True; h._end_session("U", "disc")
 ok(not h.rabbit_channel.pubs and not h.rabbit_channel.deleted and h.rabbit_channel.closed,
    "9 (r6 R17) identified, never subscribed, the device's newer session exists: no disconnect, no delete")
+h = endh(); h._prev_ok = True; h._end_session("U", "disc")
+ok(not h.rabbit_channel.pubs and not unbound and not h.rabbit_channel.deleted and h.rabbit_channel.closed,
+   "9 (r8 A8-4/B8-3) the session this one superseded still lives (waiting for retransmissions): no disconnect, no unbind, no delete")
 h = endh({"CS": (1, 0)}); h._end_session("U", "disc")
 ok([p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and unbound == [("U", [BU, BG])] and [d[0] for d in h.rabbit_channel.deleted] == ["U"],
    "9 (r2 B2-4) another device shares the callsign: disconnect for U, U's bindings unbound, the callsign binding and queue kept")

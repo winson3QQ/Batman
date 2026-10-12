@@ -12,7 +12,7 @@ for name in ("handle", "_handle_loop"):   # round 3: handle() wraps the loop in 
 import socket as _socket, time as _time
 import traceback as _tb
 g = {"fromstring": fromstring, "ParseError": ParseError, "MAX_PENDING": 1 << 20, "time": _time, "socket_mod": _socket,
-     "IDENT_MAX_S": 60, "traceback": _tb}
+     "IDENT_MAX_S": 60, "traceback": _tb, "ADMIT_REARM_MAX": 2}
 exec(code, g)
 handle = g["handle"]
 
@@ -30,7 +30,7 @@ class H:
         self.logger = logging.getLogger("t"); self.client_address = ("x", 0); self.closed = 0; self.waited = 0
         self.uid = None; self.released = 0; self.raise_on = None; self._sub_wanted = False
         self._admit_pending = False; self._refused = False; self.taken = 0; self.allowed = True
-        self.held = False; self.opened = 0; self.unclaimed = 0
+        self.held = False; self.opened = 0; self.unclaimed = 0; self._rearms = 0; self._admits = 0
         if "_handle_loop" in g: self._handle_loop = g["_handle_loop"].__get__(self)
     def handle_cot(self, m):
         if self.raise_on and self.raise_on in m: raise KeyError("start")
@@ -163,4 +163,13 @@ print(("PASS" if c else "FAIL"), f"R16 r7 450 <auth> messages: the admission nev
 h = H([plain("N1"), ev("I1")]); h._admit_pending = True; handle(h)
 c = h.taken == 2 and h.opened == 2
 print(("PASS" if c else "FAIL"), f"R16 r7 a non-identifying first message re-arms the admission for the identifying CoT (taken {h.taken}x)"); R.append(c)
+# review r8 A8-2/B8-2: a client that never identifies is re-admitted at most twice, not per message
+h = H([plain("N%d" % i) for i in range(100)]); h._admit_pending = True; handle(h)
+c = h.taken == 3
+print(("PASS" if c else "FAIL"), f"R16 r8 100 non-identifying messages: admitted 3 times, not per message (taken {h.taken}x)"); R.append(c)
+# review r8 A8-3/B8-1: an identifying SA carrying type="t-x-c-t" in a CHILD element is not a ping: it is admitted
+fake = ev("FP1").replace(b"<detail>", b'<detail><x type="t-x-c-t"/>')
+h = H([fake]); h._admit_pending = True; handle(h)
+c = h.taken == 1 and h.opened == 1
+print(("PASS" if c else "FAIL"), f"R16 r8 an SA with a child of type t-x-c-t is admitted like any SA (taken {h.taken}x)"); R.append(c)
 print("ALL PASS" if all(R) else "SOME FAILED")

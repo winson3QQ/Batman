@@ -2,19 +2,20 @@
 Extracts _proc_start and the R17 methods verbatim (ast) from the overlay and drives them with real processes: every
 session is a forked child (so process start ticks order them as on the node), installs the overlay's _on_supersede for
 SIGUSR1, reads its socket like the handler (recording the time of each byte) and answers commands from the test over a
-pipe. SUPERSEDE_QUIET_S is 2 s here (20 s in the overlay)."""
+pipe. SUPERSEDE_QUIET_S is 2 s and SUPERSEDE_MAX_S 6 s here (20 s and 120 s in the overlay)."""
 import ast, sys, textwrap, logging, os, signal, socket, tempfile, time, types, hashlib, threading, select
 
 src = open(sys.argv[1], encoding="utf-8").read()
 mod = ast.parse(src)
 cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "EudHandler")
 QUIET = 2
-g = {"os": os, "signal": signal, "hashlib": hashlib, "SHUT_RDWR": socket.SHUT_RDWR, "time": time,
-     "threading": threading, "socket_mod": socket, "SUPERSEDE_QUIET_S": QUIET}
+MAXW = 6
+g = {"os": os, "signal": signal, "hashlib": hashlib, "SHUT_RDWR": socket.SHUT_RDWR, "time": time, "fcntl": __import__("fcntl"),
+     "threading": threading, "socket_mod": socket, "SUPERSEDE_QUIET_S": QUIET, "SUPERSEDE_MAX_S": MAXW}
 pf = next(n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == "_proc_start")
 exec(ast.get_source_segment(src, pf), g)
 NAMES = ("_ident", "_reg_prefix", "_reg_path", "_reg_read", "_claim", "_newer_session", "_unclaim", "_on_supersede",
-         "_superseded_watch")
+         "_superseded_watch", "_reg_lock", "_reg_unlock", "_prev_alive")
 M = {}
 for name in NAMES:
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
@@ -35,11 +36,11 @@ class H:
         self.is_ssl = ssl; self.server = types.SimpleNamespace(server_address=("0.0.0.0", port))
         self.uid = uid; self._claimed = False; self._superseded = False; self.logger = lg; self.request = None
         self._my_start = None; self._last_rx = time.monotonic(); self._closed = False; self.shutdown = False
-        self.io_calls = []
+        self.io_calls = []; self._sup_t = None; self._prev = None
     def _io(self, fn, *a): self.io_calls.append(getattr(fn, "__name__", str(fn))); return True
     def _drop_downlink(self): pass
 for name in NAMES:
-    setattr(H, name, staticmethod(M[name]) if name == "_reg_read" else M[name])
+    setattr(H, name, staticmethod(M[name]) if name in ("_reg_read", "_reg_unlock") else M[name])
 
 signal.alarm(100)  # the whole test: a hang FAILs instead of blocking the check
 P = F = 0
@@ -197,6 +198,46 @@ A = Sess("10.41.24.32", uid="U11"); A.ask("claim"); time.sleep(0.05)
 B = Sess("10.41.7.57", uid="U11"); B.ask("unclaim")
 ok(os.path.exists(path("U11", "10.41.24.32")), "R17 the end never removes another session's entry")
 A.done(); B.done()
+# 10. r8 A8-1 (the user's decision): the RTO case. A was quiet through the outage (QUIET + 1 s) before B came back;
+#     the phone's TCP retransmits on A 1 s after the supersede: A must still be reading (round 7 ended it at once)
+A = Sess("10.41.24.32", uid="U13"); A.ask("claim"); time.sleep(QUIET + 1)
+B = Sess("10.41.24.32", uid="U13"); B.ask("claim"); time.sleep(1)
+sent = 0
+for i in range(5):
+    try:
+        A.b.send(b"r"); sent += 1
+    except OSError:
+        break
+    time.sleep(0.2)
+o = A.read(MAXW + 6)
+ok(sent == 5 and field(o, "chunks") == "5", f"R17 r8 A8-1: the reports retransmitted after an outage longer than QUIET are read ({o}; sent {sent})")
+ok(o is not None and QUIET + 1 <= float(field(o, "after")) <= MAXW + 1, f"R17 r8: the wait covered the outage plus QUIET, bounded by MAX ({field(o, 'after')} s)")
+A.done(); B.done()
+# 11. r8 A8-4/B8-3: the newer session ends first while the superseded one keeps talking: it ends at MAX after the
+#     supersede at the latest (round 7: deaf for as long as the phone talked)
+A = Sess("10.41.24.32", uid="U14"); A.ask("claim"); time.sleep(0.05)
+B = Sess("10.41.24.32", uid="U14"); B.ask("claim"); time.sleep(0.5)
+B.ask("unclaim"); B.done()
+t0 = time.monotonic(); o = None
+while o is None and time.monotonic() - t0 < MAXW + 6:
+    try:
+        A.b.send(b"t")
+    except OSError:
+        pass
+    o = A.read(0.5)
+ok(o is not None and float(field(o, "after")) <= MAXW + 1.5, f"R17 r8: with no newer session left, a talking superseded session ends at MAX ({o})")
+A.done()
+# 12. r8 A8-5/B8-4: claims are serialized by the registry lock (a claim waits while it is held)
+import fcntl as _f
+os.makedirs(g["SESS_DIR"], exist_ok=True)
+lk = os.open(os.path.join(g["SESS_DIR"], ".lock"), os.O_RDWR | os.O_CREAT, 0o600); _f.flock(lk, _f.LOCK_EX)
+A = Sess("10.41.24.32", uid="U15")
+os.write(A.cw, b"claim\n"); t0 = time.monotonic()
+early = A.read(0.8)
+os.close(lk)
+late = A.read(3)
+ok(early is None and late == "CLAIM True", f"R17 r8: a claim waits for the registry lock ({early}, then {late})")
+A.done()
 # 9. registry unusable: logged, subscribe as before (fail-safe), nothing signalled
 g["SESS_DIR"] = "/proc/forbidden/sess"
 h = H("10.41.24.32", uid="U12"); r = h._claim("U12")

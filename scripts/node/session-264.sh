@@ -21,6 +21,8 @@
 #   idle     : N identifying idle sessions (uid/callsign $RUN-<k>), HOLD s each (capacity)
 #   pinger   : N sockets that send one ping (t-x-c-t) each and then nothing (admission (f), review r6)
 #   authflood: one socket that sends N "<auth></auth>" and stays 10 s (admission (g), review r7 B7-1)
+#   stream   : one socket that sends N contact-less events 50 ms apart (a relay that never identifies; admission (h),
+#              review r8 A8-2), then stays 10 s
 #   est      : "EST <n>" established connections from this node to TARGET:PORT
 #   cleanup  : kills the run's clients only (the background pids recorded in $H/$RUN*.pids, review r3 A3-10:
 #              it used to kill every nc and sleep on the node); "LEFT <n>" established to 8088
@@ -82,6 +84,10 @@ chatter)
 authflood)
 	(trap '' HUP; { i=0; while [ $i -lt "${N:?}" ]; do printf '<auth></auth>'; i=$((i+1)); done; sleep 10; } | nc "$TARGET" 8088 >/dev/null 2>&1) </dev/null >/dev/null 2>&1 &
 	echo $! >> "$H/$RUN.pids"; sleep 3; echo "AUTHFLOOD $N sent, EST $(est 8088)"
+	;;
+stream)
+	(trap '' HUP; { i=0; while [ $i -lt "${N:?}" ]; do evn "$RUN-s-$i"; i=$((i+1)); usleep 50000 2>/dev/null || sleep 0.05; done; sleep 10; } | nc "$TARGET" 8088 >/dev/null 2>&1) </dev/null >/dev/null 2>&1 &
+	echo $! >> "$H/$RUN.pids"; sleep 2; echo "STREAM $N events, EST $(est 8088)"
 	;;
 pinger)
 	i=0; while [ $i -lt "${N:?}" ]; do n=$(date +%s); (trap '' HUP; { printf '<event version="2.0" uid="%s-p%s-ping" type="t-x-c-t" how="h-g-i-g-o" time="%s" start="%s" stale="%s"><point lat="0" lon="0" hae="0" ce="9999999" le="9999999"/><detail/></event>' "$RUN" "$i" "$(ts "$n")" "$(ts "$n")" "$(ts $((n+10)))"; sleep 300; } | nc "$TARGET" 8088 >/dev/null 2>&1) </dev/null >/dev/null 2>&1 & echo $! >> "$H/$RUN.pids"; i=$((i+1)); sleep 1; done

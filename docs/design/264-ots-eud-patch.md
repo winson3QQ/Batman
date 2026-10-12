@@ -1,7 +1,7 @@
 # #264 OTS eud_handler loses CoT — design v5
 
 Status: v5 for review · 2026-10-11 · replaces v4 (REJECT by two reviewers) and v1–v3.2 (branch `feat/264-ots-eud`).
-Revised after code review rounds 1–7 (2026-10-12); every finding and its status is in
+Revised after code review rounds 1–8 (2026-10-12); every finding and its status is in
 `264-review-register.md`.
 
 User decisions (2026-10-11):
@@ -18,8 +18,15 @@ User decisions (2026-10-12, code review rounds 2–3):
 - An 8089 session may not claim the uid of another user's device; callsigns stay shared as upstream (R10).
 - Field tests with real ATAK/iTAK devices are deferred (not enough devices now): a #264 leftover.
 - (Review round 7) When the same device opens a new session, its previous session stops its downlink at once but
-  keeps reading its uplink, and ends after 20 s without any data (R17). Reason: a reconnecting phone's downlink must
-  not be split with its zombie, and reports the phone's TCP still delivers on the old connection must not be lost.
+  keeps reading its uplink (R17). Reason: a reconnecting phone's downlink must not be split with its zombie, and
+  reports the phone's TCP still delivers on the old connection must not be lost.
+- (Review round 8) The previous session waits for those retransmissions as long as the outage lasted plus 20 s, at
+  most ~2 min (R6's window) after the supersede; while it waits it costs its memory (a second flap inside that window
+  may be refused by R7 until it ends: refused, never an OOM, rto768-264). A7-11 (a disconnect published before the
+  reconnect but processed by cot_parser after the new 8089 subscription unbinds its missions until the next
+  reconnect) is ACCEPTED as a residual: #264 checklist.
+- **Design frozen after round 8 (the user, 2026-10-12: "問題越來越多"):** no new mechanism is added for a review
+  finding from here on; a finding that needs one is recorded as a leftover and put to the user.
 - (Review round 5) Accepted as stated, with the reasons given in the register (A4-4: a node-wide OOM takes phone
   sessions before the node's daemons; A4-9: the definitions file owns the broker credential, #47 must change both;
   A4-10: an away 8089 device re-subscribes its missions after 24 h; B4-7: a re-issued 8089 phone needs an admin
@@ -468,10 +475,15 @@ Measured on 04 (shipped 1.5.8-wsl.5):
      parent's shared app (R7), no allocation of its own.
      A ping or an `<auth>` is answered without the admission (review r7 B7-1: round 6 took the lock and started a
      20 s timer thread for each one; 450 small messages = 451 threads, and the eud containers' pids.max is 512; round 5
-     held the lock for `ADMIT_HOLD_S` after one). A message that does not identify releases the lock and re-arms the
-     admission, so the identifying CoT that follows is checked under the lock again (review r7 A7-6). One hold has one
-     cancellable timer (r7 A7-5). A session whose AMQP connection or ioloop thread cannot be made is refused (r7 B7-1:
-     without its ioloop it stored nothing and the phone saw no error).
+     held the lock for `ADMIT_HOLD_S` after one). A ping is recognised by the `type` of the `<event>` start tag itself
+     (review r8 A8-3/B8-1: a substring search over the first 600 bytes let an identifying SA with a child element of
+     that type skip the admission, and its next message then held the lock for 20 s). A message that does not identify
+     releases the lock and re-arms the admission, at most `ADMIT_REARM_MAX` (2) times per session (review r7 A7-6; r8
+     A8-2/B8-2: unbounded, a client that never identifies took the lock, a timer and two log lines per message, 6020
+     takes in 15 s offline, and held the lock most of the time); after that the session is admitted for good (it is
+     bounded like any talking client). Only a session's first admission logs at INFO. One hold has one cancellable
+     timer (r7 A7-5). A session whose AMQP connection or ioloop thread cannot be made is refused (r7 B7-1: without its
+     ioloop it stored nothing and the phone saw no error).
   - **Deadline (review r3 B3-3, reproduced on rc wsl.10: one empty `<event></event>` cleared it, the socket was
     still open at 88 s):** until the client identifies (uid set), every complete message only moves the deadline
     `BATMAN_264_IDENT_MAX_S` (60 s) further; identification clears it once. A relay that keeps sending is never
@@ -488,8 +500,11 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 - **Test:** `admission-264`: (c) 3 sockets to 8089 that never start TLS get no AMQP connection and are closed
   within ~10 s; (b) 10 silent sockets from one address, opened 1 s apart: exactly the 9th and 10th refused; (a) 3
   silent sockets under the limit are closed at 60 s; (d) an empty event then silence: still closed at the deadline;
-  (e) 3 silent and (f) 3 ping-only sockets hold up no phone; (g) 450 `<auth>` from one client add no task per
-  message. Negative controls: rc wsl.8 (a, b, c), rc wsl.10 (d), rc wsl.12 (e), rc wsl.14 (f, by code), rc wsl.15 (g). Offline #21 (address count), #22/#22b (order, lock), the handle()
+  (e) 3 silent and (f) 3 ping-only sockets hold up no phone; (g) 450 `<auth>` from one client (its socket asserted
+  open) add no task per message; (h) a contact-less stream from one socket holds up no phone and nothing is admitted
+  unserialized. Negative controls: rc wsl.8 (a, b, c), rc wsl.10 (d), rc wsl.12 (e); (f), (g), (h): by code on rc
+  wsl.14 / wsl.15 / wsl.16 respectively (the harness of those builds' runs predates the case: not node runs), the
+  offline handle() cases FAIL on the previous overlay (author's runs). Offline #21 (address count), #22/#22b (order, lock), the handle()
   tests (rolling deadline).
 
 ### R16 — a reconnecting crowd never takes the listener down (field scenario 2026-10-12)
@@ -505,8 +520,10 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   a separate flip at 768m with the same build (register fs-1). Correction (review r6 A6-1/B6-1): the rc wsl.13 flip
   ran while the lock negative control's outside holder still held the admission lock (every admission logged
   `admitting unserialized`): it shows the OOM backstop (4 kills, all `oom_score_adj:1000` sessions, the listener
-  kept) but not the shipping order; the flip is repeated on the round-6 build with the holder bounded and the run
-  asserting 0 `unserialized` lines.
+  kept) but not the shipping order. Since round 6 the flip is the tier-B suite `rto768-264` (the reconciler paused by
+  its operator flag and its restore asserted; the lock checked free before; 0 `admitting unserialized`; R7 refusals;
+  an OOM victim only ever a session; the listener kept). First valid run: rc wsl.15 (768m held, 0 unserialized, 9
+  refused, 0 OOM, 7/16 kept); the admission changed again in rounds 7-8, so the latest build's run is the evidence.
 - **Fix (`BATMAN-264-R16`):**
   - each session process writes `oom_score_adj` 1000 for itself at setup (raising one's own score needs no
     privilege; probed as uid 1000 on 04): an OOM kills one session, whose phone reconnects, never the listener;
@@ -540,7 +557,11 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 - **Round 6 ended the previous session at once.** Review r7 (A7-1/A7-2, B7-2) showed the cost: an older connection
   that is still alive was killed, and the reports the phone's TCP still retransmits on the old connection were lost
   (RST). The user's decision (2026-10-12): the previous session stops its downlink at once, keeps reading its uplink,
-  and ends after `SUPERSEDE_QUIET_S` (20 s) without any data.
+  and ends once quiet. Round 7 counted the quiet (`SUPERSEDE_QUIET_S`, 20 s) from the last byte received, which in
+  the RTO case is BEFORE the outage, so the zombie still ended at once (review r8 A8-1, offline: 0 of 5 retransmitted
+  reports read). The user's decision (round 8): the wait is the outage's length plus 20 s, at most
+  `SUPERSEDE_MAX_S` (120 s, R6's window) after the supersede; Linux backs a retransmission off up to 120 s, so this
+  covers what the phone queued before an outage of up to ~2 min at the cost of the zombie's memory for that long.
 - **Fix (`BATMAN-264-R17`):** at identification (after R10's ownership checks, when the subscription is requested) a
   session records itself in a registry in the eud container's own tmpfs, one file per (listener, uid, device):
   `/tmp/batman-264-sess/<port>-<sha256(uid)[:32]>-<sha256(device)[:16]>` with `<pid> <start ticks> <address> <user>`.
@@ -548,11 +569,18 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   has its own entry and touches nothing. The entry is written FIRST (r7 A7-4/B7-4), then the previous LIVE session of
   that key (its pid exists with the recorded start ticks: a reused pid is not a match) gets SIGUSR1. Its handler only
   sets a flag and starts a watcher thread, which cancels the session's consumers on its ioloop (downlink to the newest
-  session only) and shuts the socket once nothing arrived for `SUPERSEDE_QUIET_S`; until then every report is read and
-  published as before. Its end (no disconnect, bindings kept) sees the newer session. A session whose recorded entry
-  belongs to a process that started AFTER it (an older connection whose report arrived late, r7 A7-1) does not
-  signal: it is superseded itself and places no subscription. Every end treats a live session of the uid that started
-  later as "another session is live" (A6-4, B6-6). A session removes its own entry at its end, never another's.
+  session only) and shuts the socket at the deadline: the supersede time plus min(outage + `SUPERSEDE_QUIET_S`,
+  `SUPERSEDE_MAX_S`), extended by `SUPERSEDE_QUIET_S` after every byte that arrives while a newer session lives;
+  once no newer session lives (it ended first, r8 A8-4/B8-3) the deadline is `SUPERSEDE_MAX_S` after the supersede
+  at the latest, so a superseded session is never deaf for longer than that. Until then every report is read and
+  published as before. Its end (no disconnect, bindings kept) sees the newer session; and the newer session's end
+  treats the session it superseded, while that one lives, as live too (no disconnect, no unbind, no delete: r8
+  A8-4/B8-3). A session whose recorded entry belongs to a process that started AFTER it (an older connection whose
+  report arrived late, r7 A7-1) does not signal: it is superseded itself and places no subscription. Every end treats
+  a live session of the uid that started later as "another session is live" (A6-4, B6-6). Claims and removals run
+  under one registry lock (`SESS_DIR/.lock`, flock, 2 s bound then logged and skipped; r8 A8-5/B8-4: a claim could
+  land between an end's read and its remove, and two returns racing could leave neither superseded). A session
+  removes its own entry at its end, never another's.
 - **Failure modes:** registry unreadable or malformed -> no signal, the session subscribes as before R17 (logged;
   fail-safe towards keeping sessions). The client socket is shut with the base socket's `shutdown` so a TLS session
   keeps its TLS object (r7 A7-8: `SSLSocket.shutdown` drops it first, and a concurrent send on the ioloop thread could
@@ -561,18 +589,24 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   not superseded (R6's ~2 min reap, as before; both share the downlink meanwhile); on 8089 it is (same user). Two
   sessions of one device forked within the same clock tick are ordered by who claims last. A disconnect sent before the
   phone reconnects but processed by cot_parser after the new 8089 session subscribed still unbinds its missions until
-  the phone reconnects (r7 A7-11: cot_parser's order, not the handler's; stated). Depends on real ATAK/iTAK reconnect
-  behaviour (a new session per flap?): deferred device test.
-- **Tests:** offline `test-eudhandler-264-supersede.py` (24 cases, every session a real forked process: same address
-  superseded, the entry written before the signal, ended ~QUIET after the last byte while reports keep being read,
-  another address / another 8089 user not signalled, per listener, a late older connection superseded itself, dead
-  and reused pids, malformed entries, pid 1, own entry only, registry unusable); offline AMQP #9 and #16 (a newer
-  session that does not consume yet: no disconnect, no unbind, no delete; a superseded session places no
-  subscription). Node: `zombie-264` (same address: the zombie's downlink stops at once, 10/10 to the new session, the
-  zombie ends by the quiet timeout and its end keeps the bindings; a client at another address with the same uid
+  the phone reconnects (r7 A7-11: cot_parser's order, not the handler's; ACCEPTED by the user 2026-10-12, #264
+  checklist). While superseded sessions wait (up to ~2 min each) they cost their memory: a second flap inside that
+  window is bounded by R7 (refused, never an OOM: rto768-264). Depends on real ATAK/iTAK reconnect behaviour (a new
+  session per flap?): deferred device test.
+- **Tests:** offline `test-eudhandler-264-supersede.py` (28 cases, every session a real forked process: same address
+  superseded, the entry written before the signal, reports read while they arrive, the RTO case (quiet through the
+  outage, retransmissions after the supersede read: r8 A8-1), the newer session ending first (the superseded one ends
+  at MAX), the registry lock, another address / another 8089 user not signalled, per listener, a late older
+  connection superseded itself, dead and reused pids, malformed entries, pid 1, own entry only, registry unusable);
+  offline AMQP #9 and #16 (a newer session that does not consume yet, or the session this one superseded still alive:
+  no disconnect, no unbind, no delete; a superseded session places no subscription). Node: `zombie-264` (same
+  address: the zombie's downlink stops at once, 10/10 to the new session, the zombie, black-holed since before the
+  supersede, ends by the R17 deadline and its end keeps the bindings; a client at another address with the same uid
   takes nothing), `same-uid-end-264` (the old session still sends: downlink to the newest only, every report of the
-  old one stored, it ends once quiet), `rto-ssl-264` (two flaps; the first returns end once quiet). Negative controls:
-  rc wsl.14 (no R17: downlink split, zombie ~116 s), rc wsl.15 (round 6: the old session's later reports lost).
+  old one stored, no disconnect while it lives, it ends after the newer one left), `rto-ssl-264` (two flaps; the
+  first returns are superseded and end by the deadline). Negative controls: rc wsl.14 (no R17: downlink split,
+  zombie ~116 s), rc wsl.15 (round 6: superseded at once; by code for the rewritten suites, whose first node run is
+  rc wsl.16), rc wsl.16 (round 7: the quiet counted from before the outage; by code, offline case 10 FAILs on it).
 
 ### R13 — end-on-loss (review r3 A3-3; the user's decision 2026-10-12)
 - **Cause:** R4 replayed the subscription recorded at identification after a reconnect; bindings made later
@@ -659,7 +693,8 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | `cot_parser` exchange, queue and binding | two idempotent declarers with identical arguments: cot_parser (upstream) and eud (R5) | broker |
 | per-EUD queues and bindings | every live session of the EUD (shared, as upstream); a binding is removed only by a session that placed it, when no other consumer is left on that queue; queues are deleted only by the last 8088 session (never for 8089: cot_parser binds them on the disconnect) | web/API, cot_parser (8089 disconnect), other sessions (publish) |
 | the session end of one child | that child: started once (lock), run on its ioloop, waited for by its handler thread | — |
-| admission lock `/tmp/batman-264-admit.lock` (container tmpfs) | each child holds it from its memory check (and its AMQP connect) until its subscription is placed, or after a non-identifying message, or 20 s (one cancellable timer); a ping or `<auth>` never takes it; flock, released by the kernel on exit | — |
+| admission lock `/tmp/batman-264-admit.lock` (container tmpfs) | each child holds it from its memory check (and its AMQP connect) until its subscription is placed, or after a non-identifying message (at most 2 re-admissions per session), or 20 s (one cancellable timer); a ping or `<auth>` never takes it; flock, released by the kernel on exit | — |
+| R17 registry lock `/tmp/batman-264-sess/.lock` (eud container tmpfs) | each child, around its claim and its removal (ms) | — |
 | a session process's `oom_score_adj` | that process (sets 1000 for itself, R16) | kernel OOM killer |
 | R17 registry `/tmp/batman-264-sess/<port>-<uid hash>-<device hash>` (eud container tmpfs, emptied by a container restart) | the newest identified session of that device on that listener (atomic rename, written before any signal); removed by that session at its end | the device's later sessions (signal decision), every session end (newer-session check) |
 | fault-injection file `/tmp/batman-264-fi` (eud container tmpfs) | the validation suite exception-264 (docker exec, root), removed by it | the eud sessions (read only) |
@@ -697,7 +732,11 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 - **R17 registry entry:** one line `<pid> <start ticks> <client address> <user id or ->`, written by a session of
   that device (uid 1000, the container's own tmpfs); valid while that pid lives with that start time. Missing,
   malformed or stale -> ignored (no signal): fail-safe towards keeping a session.
-- **Container env (R17):** `BATMAN_264_SUPERSEDE_QUIET_S` (20); malformed -> the handler fails to import (as above).
+- **Container env (R17):** `BATMAN_264_SUPERSEDE_QUIET_S` (20), `BATMAN_264_SUPERSEDE_MAX_S` (120); malformed -> the
+  handler fails to import (as above).
+- **R17 registry lock** `SESS_DIR/.lock`: flock around every claim and removal; held for milliseconds; not free within
+  2 s -> logged, the claim or removal goes on without it (fail-safe towards the field: a stuck lock must not keep a
+  phone from its subscription).
 - **Container env (profile-owned, optional):** `BATMAN_264_SESSION_RESERVE_MB` (96), `BATMAN_264_PER_IP_MAX` (8),
   `BATMAN_264_IDENT_MAX_S` (60). The admission wait (30 s) and hold (20 s) are constants. Malformed -> the handler fails to import (`int()`), the container exits and the
   guardian reports it: fail-closed and visible.
@@ -718,9 +757,10 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | broker memory alarm | publishers blocked; pika buffers grow | the sessions cache (bounded) and resume after the alarm; no timeout (r4) | R9 unit test (fake connection); alarm-264 (negative control by code only, ⚠️) |
 | cot_parser restart | queue persists while the broker is up | same | queue-gone-264 (cot_parser exits and is restarted) |
 | ots-db down | cot_parser nacks and drops (upstream) | unchanged; residual, stated | — |
-| client network loss | session lives for hours; its end unbinds the EUD's live session | gone in ~2 min (TCP_USER_TIMEOUT 120 s, keepalive 45/15/4); when the same device is back (8089: same user; 8088: same address) the old session's downlink stops at once and it ends after 20 s without data (R17); back from another address: shared until R6 reaps it; the stale end sees the new session and keeps everything | zombie-264 (same address: R17), rto-264 (another address: R6, 16 zombies' ends see their phones live) |
-| the RTO flaps twice within ~2 min | (upstream: OOM) | without R17: 48 sessions, over 8089's 1280m; with R17 the previous sessions stop their downlink at each return and end ~20 s later | rto-ssl-264 (second flap) |
-| the phone's new connection while the old one still delivers (lossy link) | (upstream: both shared) | the downlink goes to the newest; every report on the old connection is stored; it ends once quiet | same-uid-end-264 |
+| client network loss | session lives for hours; its end unbinds the EUD's live session | gone in ~2 min (TCP_USER_TIMEOUT 120 s, keepalive 45/15/4); when the same device is back (8089: same user; 8088: same address) the old session's downlink stops at once and it waits for the phone's retransmissions as long as the outage lasted + 20 s, at most 120 s (R17); back from another address: shared until R6 reaps it; the stale end sees the new session and keeps everything | zombie-264 (same address: R17), rto-264 (another address: R6, 16 zombies' ends see their phones live) |
+| the RTO flaps twice within ~2 min | (upstream: OOM) | without R17: 48 sessions, over 8089's 1280m, an OOM; with R17 the previous sessions stop their downlink at each return and wait (up to ~2 min) for retransmissions: the third wave may be refused by R7 (never an OOM) until they end; the phones reconnect | rto-ssl-264 (second flap), rto768-264 (the reserve at the margin) |
+| the phone's new connection while the old one still delivers (lossy link) | (upstream: both shared) | the downlink goes to the newest; every report on the old connection is stored; no disconnect while it lives; it ends by the R17 deadline | same-uid-end-264 |
+| the newer session ends while the superseded one still talks | (upstream: n/a) | the newer end sends no disconnect and unbinds nothing while the superseded one lives; the superseded one ends at most 120 s after the supersede (deaf until then; the phone reconnects) | same-uid-end-264 (A ends after B), offline R17 case 11 |
 | broker restart, a late end of the old session | the late end's disconnect unbinds the new 8089 session's missions (by code, A6-4) | the registry names the newer session: no disconnect, no unbind (R17) | offline AMQP #9; node: leftover (no broker kill, §7) |
 | two app instances with one uid on one address | the second session's end unbinds the first | not supported: the older instance gets no downlink while a newer one lives (R17, the user's decision) | same-uid-end-264 |
 | two devices with one callsign | both shared (round-robin on the callsign queue) | same; each has its own `<uid>` queue | callsign-share-264 |
@@ -774,10 +814,12 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   (profile-owned). Client-supplied uid/callsign are now checked before they become broker names (R10).
 - **Admission lock:** in the container's own tmpfs, reachable only from the eud processes (same uid). A session
   takes it only after its first complete message (review r4: a silent 8088 socket held it 20 s). A ping or `<auth>`
-  releases it at once (review r6 A6-3/B6-3); an identifying session holds it until its subscription is placed (ms,
-  measured p90 235 ms), at most `ADMIT_HOLD_S`. An unauthenticated 8088 client that keeps identifying under many uids
-  is bounded by 8 sessions per address and the memory reserve; a compromised eud process can hold the lock, which
-  only delays admissions by 30 s (then checked without it, logged `admitting unserialized`).
+  never takes it (review r7 B7-1; recognised by the event's own start tag, r8 A8-3/B8-1); a non-identifying message
+  releases it and re-arms the admission at most twice per session (r8 A8-2/B8-2: unbounded, a contact-less stream
+  held it most of the time); an identifying session holds it until its subscription is placed (ms, measured p90 235
+  ms), at most `ADMIT_HOLD_S`. An unauthenticated 8088 client that keeps identifying under many uids is bounded by 8
+  sessions per address and the memory reserve; a compromised eud process can hold the lock, which only delays
+  admissions by 30 s (then checked without it, logged `admitting unserialized`).
 - **R17 signal (review r6, r7):** a session sends SIGUSR1 only to a pid named in its own device's registry entry
   whose start ticks match, never pid 1: 8089 the same OTS user; 8088 the same client address. An unauthenticated 8088
   client elsewhere on the mesh naming a phone's uid writes its own entry and signals nothing; one at the SAME address
@@ -787,7 +829,8 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   address / another user: no signal); node: zombie-264's spoof leg.
 - **Fault-injection file:** read-only for the sessions, absent in normal operation; only root (docker exec) or the
   eud processes can create it. It can make one message of a session raise once (dropped, logged): no more than a
-  compromised eud process could do anyway.
+  compromised eud process could do anyway. Cost in production: `_fi` runs on every CoT of every session, one failed
+  `open()` of a tmpfs path each (µs; r7 B7-8).
 - **Broker definitions:** contain the guest password hash (the default credential OTS already uses); root-owned,
   mounted ro; no new secret.
 - **Failure modes:**
@@ -805,7 +848,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | queue-gone-264 | feature | no (`delete_queue` only) | unpatched loss |
 | amqp-restart-264 | not built: a broker restart is mechanism B (amqp-close-264) plus mechanism C (queue-gone-264), both covered without killing a container | — | — |
 | zombie-264 | feature | peer-side nft rules on the test client's port only, self-expiring (300 s), table deleted by a detached timer | upstream: zombie outlives the black hole, live session 0/10; wsl.8: 1 consumer (held off), the stale end sent the disconnect; rc wsl.14: no supersede, downlink split |
-| same-uid-end-264 | feature | no | wsl.8: the live session 0/10; rc wsl.14: downlink split; rc wsl.15: the old session's later reports lost |
+| same-uid-end-264 | feature | no | wsl.8: the live session 0/10; rc wsl.14 (old suite): downlink split; rc wsl.15 (round 6, by code: the rewritten suite's first node run is rc wsl.16): the old session's later reports lost; rc wsl.16 (round 7): A deaf and a disconnect sent after B's end (seen in its log, not asserted then) |
 | callsign-share-264 | feature | no | wsl.8: 10/0 |
 | owner-swap-264 | feature | no (a 1-day test cert in the container's tmpfs, removed) | wsl.8: the swap was subscribed |
 | admission-264 | feature | no | wsl.8: AMQP before the handshake, nothing refused, silent sockets kept; wsl.10: (d) an empty event cleared the deadline |
@@ -815,13 +858,14 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | cap16-264 | feature | no | wsl.10: anon peak 93 % of memory.max |
 | rto-264 (8088), rto-ssl-264 (8089, two flaps) | feature | no (peer-side nft on the test clients' ports only, self-expiring; 8089 copies a 1-day test cert of a non-admin test user to 02/03, removed by the suite and by itself after 900 s) | wsl.11: the listener OOM-killed, 0/16 kept; both FAIL on any `admitting unserialized` line in their run (review r6) |
 | r8-hold-264 | tier B | yes (stops the OTS overlay containers, restores from the golden) | wsl.10: the guardian started the held container |
+| rto768-264 | tier B | yes on the limit only (ots_eud_handler at 768m for one rto run; the #156 reconciler paused by its root-owned operator flag, removed on every exit; the restore asserted) | wsl.11: the listener OOM-killed; the rc wsl.13 run with the lock held from outside (the author's mistake): 53 unserialized admissions |
 | group-disc-264 | feature | yes on a broken build (cot_parser crash loop; ends when the test membership is removed, which every exit path does) | wsl.8: 6 x crash ots_cot_parser |
 | name-guard-264 | feature | no | by code: upstream subscribes unconditionally; rc wsl.12: the device not recorded (0 rows) |
 | alarm-264 | feature | no (the broker watermark is lowered ~75 s, restored by the suite and by a detached 150 s timer on the node) | by code only: rc wsl.12's blocked_connection_timeout=60 ended the sessions (rc12 no longer installed) |
 | eud-mem-264 | feature | no | measured on upstream: 39 MB per idle session |
 | mountsha (in payload-conform / R8 suite) | feature | no | wrong sha → refuse |
 | soak-cot-264 | soak | — | every sent CoT stored (duplicates counted, at-least-once); heartbeat closes recorded per session (info, R2) |
-| offline: test-eudhandler-264.py, test-eudhandler-264-amqp.py (fake pika), test-eudhandler-264-ident.py, test-eudhandler-264-supersede.py (real forked processes) | CI | — | regression tests of the overlay's own logic; the round-6 cases FAIL on the round-5 overlay (handle 3, ident 5, AMQP 2, R17 all), the round-7 cases on the round-6 overlay (handle 4, ident 1, AMQP 1, R17 all); most do not run against the unpatched module (they call overlay methods), so the node suites above are the negative controls |
+| offline: test-eudhandler-264.py, test-eudhandler-264-amqp.py (fake pika), test-eudhandler-264-ident.py, test-eudhandler-264-supersede.py (real forked processes) | CI | — | regression tests of the overlay's own logic; the round-6 cases FAIL on the round-5 overlay (handle 3, ident 5, AMQP 2, R17 all), the round-7 cases on the round-6 overlay (handle 4, ident 1, AMQP 1, R17 all), the round-8 cases on the round-7 overlay (handle 2, AMQP 1, R17 all); most do not run against the unpatched module (they call overlay methods), so the node suites above are the negative controls |
 
 Every suite deletes the per-EUD queues and DB rows it created, and its cleanup FAILs if anything is left. The
 2026-10-11 residue queues on 04 are removed once, with the list printed first. The #264 known-failure entries
