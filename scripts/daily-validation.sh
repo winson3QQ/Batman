@@ -1137,8 +1137,9 @@ chk_owner_8089_264() { local ots=$1 run o rc=0 V r0 r1 u1 c
 # (cot_parser.py:989) when cot_parser is busy, and kept filling for nobody (rc wsl.10: 12 messages in 40 s). The
 # policy "batman-264-eud-queues" (rabbitmq-definitions.json) caps every per-EUD queue at 500 messages / 1 MiB (oldest
 # dropped) and deletes it after 24 h unused; cot_parser's own queue is excluded. Asserted, behaviourally: the departed
-# member's queue holds at most 500 after 520 group messages; the cot_parser queue carries no such policy. Negative
-# control, rc wsl.10: no policy, the queue grew to 521.
+# member's queue holds at most 500 after 1500 group messages; the cot_parser queue carries no such policy. Negative
+# control, rc wsl.10 (2026-10-12): no policy; with 520 messages the queue reached only 366 (< 500, so the count did not
+# discriminate: register impl-8): 1500, measured once cot_parser has routed them: 1502 held, no cap.
 chk_queue_policy_264() { local ots=$1 peer=$2 run o rc=0 m
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
@@ -1149,10 +1150,18 @@ chk_queue_policy_264() { local ots=$1 peer=$2 run o rc=0 m
   ( timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "sleep 4; n=\$(date +%s); t=\$(date -u -d @\$n +%Y-%m-%dT%H:%M:%S.000Z); i=1; while [ \$i -le 600 ]; do printf '<event version=\"2.0\" uid=\"$run-L-%s\" type=\"a-f-G-U-C\" how=\"h-e\" time=\"%s\" start=\"%s\" stale=\"%s\"><point lat=\"1\" lon=\"1\" hae=\"0\" ce=\"9\" le=\"9\"/><detail><contact callsign=\"$run-L\"/></detail></event>' \$i \$t \$t \$t; i=\$((i+1)); done | nc $ots 8088 >/dev/null 2>&1; echo burst" ) > "$DIR/$run.burst" 2>&1 &
   echo "member V1 (leaves while cot_parser is busy): $(ssl264 "$ots" "$run-V1" "$run-V1c" 7)"; wait; sleep 40
   echo "V1's queue after it left: $(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name messages consumers policy 2>/dev/null | grep "^'"$run"'-V1	"' | tr -d '\r' | tr '\t' ' ')"
-  echo "member V2 sends 520 to the group: $(ssl264 "$ots" "$run-V2" "$run-V2c" 10 520 0)"; sleep 15
+  o=$(ssl264 "$ots" "$run-V2" "$run-V2c" 10 1500 0); echo "member V2 sends 1500 to the group: $o"
+  # cot_parser routes about 24 CoT/s (rc wsl.10): measure only once it has routed the burst (its queue empty), or the
+  # count shows the routing rate, not the cap (impl-8: 366 after 520 and 364 after 1500, both read 15 s after)
+  for i in $(seq 1 36); do
+    m=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name messages 2>/dev/null | grep "^cot_parser	"' | tr -d '\r' | awk '{print $2}')
+    [ "$m" = 0 ] && break; sleep 5
+  done; echo "cot_parser queue drained: ${m:-?} left after ~$((i * 5)) s"
+  [ "$m" = 0 ] || { echo "FAIL cot_parser did not route the burst within 180 s: nothing to measure"; rc=1; }
+  case "$o" in *"sent 1501"*) ;; *) echo "FAIL the burst did not send 1500 CoT: nothing to measure"; rc=1 ;; esac
   o=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name messages consumers policy 2>/dev/null | grep "^'"$run"'-V1	"' | tr -d '\r' | tr '\t' ' ')
   echo "V1's queue now: [$o]"; m=$(echo "$o" | awk '{print $2}')
-  if ! isint "$m"; then echo "V1's queue is gone (deleted): nothing accumulates (info)"
+  if ! isint "$m"; then echo "FAIL V1's queue is gone: nothing to measure (an 8089 queue is never deleted, the expiry is 24 h)"; rc=1
   elif [ "$m" -le 500 ]; then echo "capped: $m <= 500 messages"
   else echo "FAIL the departed member's queue holds $m messages (no cap)"; rc=1; fi
   case "$o" in ""|*batman-264-eud-queues*) ;; *) echo "FAIL V1's queue carries no batman-264-eud-queues policy"; rc=1 ;; esac
