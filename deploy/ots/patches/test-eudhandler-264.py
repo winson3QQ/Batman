@@ -29,6 +29,7 @@ class H:
         self.request = Sock(chunks); self.shutdown = False; self.got = []; self.auth = []
         self.logger = logging.getLogger("t"); self.client_address = ("x", 0); self.closed = 0; self.waited = 0
         self.uid = None; self.released = 0; self.raise_on = None; self._sub_wanted = False
+        self._admit_pending = False; self._refused = False; self.taken = 0; self.allowed = True
         if "_handle_loop" in g: self._handle_loop = g["_handle_loop"].__get__(self)
     def handle_cot(self, m):
         if self.raise_on and self.raise_on in m: raise KeyError("start")
@@ -36,6 +37,8 @@ class H:
         if "<contact" in m:   # identified and its subscription requested, as parse_device_info does
             self.uid = m.split('uid="')[1].split('"')[0]; self._sub_wanted = True
     def _release_admit(self): self.released += 1
+    def _take_admit(self): self.taken += 1
+    def _session_allowed(self): return self.allowed
     def handle_auth(self, m): self.auth.append(m)
     def close_connection(self): self.closed += 1
     def _wait_end(self): self.waited += 1
@@ -118,4 +121,14 @@ except Exception:
     pass
 c = h.closed == 1 and h.waited == 1 and h.released >= 1
 print(("PASS" if c else "FAIL"), "A3-2 whatever leaves the loop: the end runs, is waited for, the admission lock released"); R.append(c)
+# R16 (review r4 A4-3/B4-9): the admission lock is taken at the first COMPLETE message, never by a silent socket
+h = H(["TIMEOUT"]); h._admit_pending = True; handle(h)
+c = h.taken == 0 and h.closed == 1
+print(("PASS" if c else "FAIL"), f"R16 r4 silent socket: the admission lock is never taken (taken {h.taken}x)"); R.append(c)
+h = H([ev("A1")[:20], ev("A1")[20:], ev("A2")]); h._admit_pending = True; handle(h)
+c = h.taken == 1 and [m.split('uid="')[1].split('"')[0] for m in h.got] == ["A1", "A2"]
+print(("PASS" if c else "FAIL"), f"R16 r4 the lock is taken once, at the first complete message (taken {h.taken}x)"); R.append(c)
+h = H([ev("B1"), ev("B2")]); h._admit_pending = True; h.allowed = False; handle(h)
+c = h.taken == 1 and not h.got and h.closed == 1 and h.waited == 1
+print(("PASS" if c else "FAIL"), "R16 r4 refused by the serialized memory check at the first message: nothing handled, the session ends"); R.append(c)
 print("ALL PASS" if all(R) else "SOME FAILED")

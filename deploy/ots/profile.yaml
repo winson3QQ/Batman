@@ -8,6 +8,11 @@ apiVersion: batman.payload/v1
 tenant: opentakserver
 archetype: network-service
 co_scheduled_with: [ots-db, rabbitmq, ots-cot-parser, ots-eud-handler, ots-eud-handler-ssl]
+# operational (emitter-ignored; -> manifest MEMTOTAL_MIN_MB, honoured by payload-run): #264 - OTS runs only on a Pi 4
+# with 8 GB (the user, 2026-10-12). Its memory caps are 4 x 1280m + 2 x 512m = 6.1 GiB; on a smaller node all caps hit
+# at once would OOM the node, not the tenant. A Pi 4 8 GB reports MemTotal ~7.6 GiB, a 4 GB one ~3.7 GiB: payload-run
+# refuses to start or rebuild the stack below 7000 MB (and when MemTotal is unreadable - fail-closed).
+requires: {mem_total_min_mb: 7000}
 
 values:                                # emitter reads ONLY this
   network:  {mode: bridged}            # br-ots; EUD 8088/8089 + web 8443, all >1024. VALIDATED (design B) on manet01.

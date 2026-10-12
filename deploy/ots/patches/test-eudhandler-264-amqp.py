@@ -13,7 +13,8 @@ cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == "Eud
 WANT = ["_publish_on_ioloop", "_on_decl_channel_open", "_on_decl_channel_close", "_declare_cot_parser", "_on_blocked",
         "_on_unblocked", "_cache", "_flush_cache", "_on_return", "_schedule_retry", "_retry_head", "_after_head",
         "_on_confirm", "_requeue_unacked", "_schedule_reconnect", "_reconnect", "on_close", "on_open_error",
-        "_begin_end", "_try_end", "_finish_end", "_end_timeout", "_done", "_wait_end", "close_connection", "_admit"]
+        "_begin_end", "_try_end", "_finish_end", "_end_timeout", "_done", "_wait_end", "close_connection", "_admit",
+        "_retry_goodbye"]
 
 
 class FakeProps:
@@ -89,6 +90,9 @@ class H:
         self._sub_binds = []; self._sub_binds_pending = []; self._relay = False; self.user = None
         self.iothread = None; self.shutdown = False; self._pending_ops = None; self._chan_opening = False
         self._admit_fd = None; self._admit_mx = _threading.Lock(); self.request = _Req(); self.eud = None
+        self._cs_queue = True; self._goodbye = None; self._goodbye_retried = False; self._admit_pending = False
+        self._refused = False; self._owner = False
+    def _uid_has_owner(self, uid): return self._owner
 
 
 for name in WANT:
@@ -231,9 +235,16 @@ h = endh({"U": (0, 3)}); h._end_session("U", "disc")
 ok([d[0] for d in h.rabbit_channel.deleted] == ["CS"] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"], "9 (F3) the <uid> queue holding messages is kept, the empty callsign queue goes")
 h = endh(callsign="U", binds=(BU, BG)); h._end_session("U", "disc")
 ok(h.rabbit_channel.passive == [("U", True)] and [d[0] for d in h.rabbit_channel.deleted] == ["U"], "9 callsign == uid: one queue, checked and deleted once")
-h = endh(binds=()); h._end_session("U", "disc")
+g["_valid_name"] = lambda n: bool(n)
+h = endh(binds=()); h._squat_logged = True; h._end_session("U", "disc")
 ok(not h.rabbit_channel.passive and not h.rabbit_channel.deleted and not h.rabbit_channel.pubs and not unbound and h.rabbit_channel.closed,
-   "9 (r2 B2-1) never subscribed (refused name/owner): no check, no disconnect, NO unbind of the live session's bindings, no delete")
+   "9 (r2 B2-1) refused as another user's device: no check, no disconnect, NO unbind of the live session's bindings, no delete")
+h = endh(binds=()); h._end_session("U", "disc")
+ok(h.rabbit_channel.passive == [("U", False)] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and not unbound and not h.rabbit_channel.deleted and h.rabbit_channel.closed,
+   "9 (r3 B3-10) identified, never subscribed, nobody on <uid>: a (non-passive) declare, then the disconnect (no ghost 'Connected'); nothing unbound or deleted")
+h = endh({"U": (1, 0)}, binds=()); h._end_session("U", "disc")
+ok(h.rabbit_channel.passive == [("U", False)] and not h.rabbit_channel.pubs and not unbound and h.rabbit_channel.closed,
+   "9 (r2 B2-1 kept) identified, never subscribed, another session of U is live: no disconnect")
 h = endh(binds=(), relay=True); h._end_session("U", "disc")
 ok([p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and not unbound and not h.rabbit_channel.passive, "9 relay platform (no queues): upstream's disconnect, nothing unbound")
 h = endh(binds=()); h._end_session(None, "disc")
@@ -244,6 +255,12 @@ ok(h.rabbit_channel.cancelled == ["ct1", "ct2"] and not h.rabbit_channel.pubs an
 h = endh({"CS": (1, 0)}); h._end_session("U", "disc")
 ok([p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and unbound == [("U", [BU, BG])] and [d[0] for d in h.rabbit_channel.deleted] == ["U"],
    "9 (r2 B2-4) another device shares the callsign: disconnect for U, U's bindings unbound, the callsign binding and queue kept")
+h = endh(); h._owner = True; h._end_session("U", "disc")
+ok([d[0] for d in h.rabbit_channel.deleted] == ["CS"] and [p["body"] for p in h.rabbit_channel.pubs] == ["disc"],
+   "9 (r3 B3-7) an 8088 session of a uid an OTS user's device holds: <uid> is never deleted (cot_parser binds it)")
+h = endh(binds=(BU, BG)); h._cs_queue = False; h._end_session("U", "disc")
+ok(h.rabbit_channel.passive == [("U", True)] and [d[0] for d in h.rabbit_channel.deleted] == ["U"] and unbound == [("U", [BU, BG])],
+   "9 (r4 R10) subscribed by uid only (callsign not a queue): the callsign queue is never checked, unbound or deleted")
 h = endh(user=object()); h._end_session("U", "disc")
 ok([p["body"] for p in h.rabbit_channel.pubs] == ["disc"] and unbound and not h.rabbit_channel.deleted,
    "9 (r2 A2-1) an authenticated (8089) session's queues are never deleted (cot_parser binds <uid> on its disconnect)")
@@ -384,9 +401,9 @@ class SubChan(Chan):
     def basic_consume(self, **k): self.ops.append(("basic_consume", k["queue"]))
 OPS = [("queue_declare", (), {"queue": "CS"}), ("queue_declare", (), {"queue": "U"}), ("queue_bind", (), {"exchange": "dms", "queue": "U", "routing_key": "U"}),
        ("basic_consume", (), {"queue": "CS", "on_message_callback": None, "auto_ack": True}), ("basic_consume", (), {"queue": "U", "on_message_callback": None, "auto_ack": True})]
-FULL = ["queue_declare", "queue_declare", "queue_bind", "basic_consume", "basic_consume"]
+FULL = ["queue_declare", "queue_declare", "basic_consume", "basic_consume", "queue_bind"]   # r4 B4-11: consumers before the binds
 h = H(); h.rabbit_channel = SubChan({}); h.client_address = ("10.0.0.9", 1); h._subscribe(OPS, [BU, BC])
-ok([o[0] for o in h.rabbit_channel.ops] == FULL and h._subscribed and h._sub_binds == [BU, BC], "16 declare, bind, consume; the placed bindings recorded for the end")
+ok([o[0] for o in h.rabbit_channel.ops] == FULL and h._subscribed and h._sub_binds == [BU, BC], "16 declare, consume, bind (r4 order); the placed bindings recorded for the end")
 h._subscribe(OPS); ok(len(h.rabbit_channel.ops) == 5, "16 a second identifying CoT does not subscribe again (no consumer accumulation)")
 h = H(); h.rabbit_channel = SubChan({"U": 1, "CS": 1}); h.client_address = ("10.0.0.9", 1); h._subscribe(OPS, [BU, BC])
 ok([o[0] for o in h.rabbit_channel.ops] == FULL and h._subscribed and not h._ioloop.timers,
@@ -464,30 +481,26 @@ order = []
 H._session_allowed = lambda self: order.append("mem") or True
 g["_sessions_from"] = lambda ip, port: order.append(("count", ip, port)) or 1
 h = H(); h.is_ssl = True; h.request = TLS(); h.server = Srv(); h.client_address = ("10.42.24.32", 5)
-ok(h._admit() is True and order == [("count", "10.42.24.32", 8089), "mem", ("timeout", 10), "handshake", ("timeout", None), "mem"]
-   and h._admit_fd is not None, "22 8089: count, memory, handshake (10 s), then the lock and memory again; the lock is held")
-h._release_admit(); ok(h._admit_fd is None, "22 the lock is released (after the first message, or ADMIT_HOLD_S)")
+ok(h._admit() is True and order == [("count", "10.42.24.32", 8089), "mem", ("timeout", 10), "handshake", ("timeout", None)]
+   and h._admit_fd is None and h._admit_pending, "22 8089: count, memory, handshake (10 s); the lock is NOT taken yet (r4: at the first complete message)")
 order.clear(); h = H(); h.is_ssl = True; h.request = TLS(fail=True); h.server = Srv()
 ok(h._admit() is False and order[0][0] == "count" and order[1] == "mem" and "handshake" in order and order.count("mem") == 1 and h._admit_fd is None,
    "22 handshake fails: refused, the lock never taken")
 order.clear(); g["_sessions_from"] = lambda ip, port: order.append("count") or 9; h = H(); h.is_ssl = True; h.request = TLS(); h.server = Srv()
 ok(h._admit() is False and order == ["count"] and not h.request.calls, "22 9 sessions from the address (limit 8): refused before memory and before the handshake")
 g["_sessions_from"] = lambda ip, port: 8; order.clear(); h = H(); h.is_ssl = False; h.request = TLS(); h.server = Srv()
-ok(h._admit() is True and order == ["mem", "mem"] and not h.request.calls, "22 8088 with exactly 8: allowed, no handshake, memory checked twice"); h._release_admit()
+ok(h._admit() is True and order == ["mem"] and not h.request.calls and h._admit_fd is None, "22 8088 with exactly 8: allowed, no handshake, no lock yet")
 order.clear(); g["_sessions_from"] = lambda ip, port: None; h = H(); h.is_ssl = False; h.request = TLS(); h.server = Srv()
-ok(h._admit() is True and order == ["mem", "mem"], "22 count unreadable: only the memory reserve applies (logged)"); h._release_admit()
+ok(h._admit() is True and order == ["mem"], "22 count unreadable: only the memory reserve applies (logged)")
 # 22b the lock serializes admissions: while one session holds it, the next waits (here ADMIT_WAIT_S 1 s, then it is
 #     admitted unserialized and says so); a second memory refusal releases the lock at once
-h1 = H(); h1.is_ssl = False; h1.request = TLS(); h1.server = Srv(); h1._admit()
+h1 = H(); h1._take_admit()
 import time as _t0
-h2 = H(); h2.is_ssl = False; h2.request = TLS(); h2.server = Srv(); t0 = _t0.monotonic(); r = h2._admit(); dt = _t0.monotonic() - t0
-ok(r is True and h1._admit_fd is not None and h2._admit_fd is None and dt >= 1.0, f"22b the lock is exclusive: the second admission waited {dt:.1f} s (ADMIT_WAIT_S), then went on unserialized")
+h2 = H(); t0 = _t0.monotonic(); h2._take_admit(); dt = _t0.monotonic() - t0
+ok(h1._admit_fd is not None and h2._admit_fd is None and dt >= 1.0, f"22b the lock is exclusive: the second admission waited {dt:.1f} s (ADMIT_WAIT_S), then went on unserialized")
 h1._release_admit()
-h3 = H(); h3.is_ssl = False; h3.request = TLS(); h3.server = Srv(); t0 = _t0.monotonic(); h3._admit(); dt = _t0.monotonic() - t0
+h3 = H(); t0 = _t0.monotonic(); h3._take_admit(); dt = _t0.monotonic() - t0
 ok(h3._admit_fd is not None and dt < 0.5, "22b released: the next admission takes the lock at once"); h3._release_admit()
-seq = iter([True, False]); H._session_allowed = lambda self: next(seq)
-h4 = H(); h4.is_ssl = False; h4.request = TLS(); h4.server = Srv()
-ok(h4._admit() is False and h4._admit_fd is None, "22b refused by the second (serialized) memory check: the lock is released")
 # 23 close_connection starts the end once, atomically, from either thread; _wait_end blocks until the END completes
 H.close_connection = real_close_connection
 queued = []
@@ -529,4 +542,26 @@ h = H(); h.rabbit_channel = Chan(False); h._admit_fd = _os.open(g["ADMIT_LOCK"],
 h._subscribe([("basic_consume", (), {"queue": "U"})], [])
 ok(h._pending_ops and h._admit_fd is not None, "24 channel not open yet: pending, the lock still held (released when placed, by the end, or ADMIT_HOLD_S)")
 _os.close(h._admit_fd)
+# 25 (r3 A3-7) an end with no uid, no cache and nothing unacked completes at once (no 60 s wait for an away broker)
+H._done = g["_done"]; H._begin_end = g["_begin_end"]
+h = H(); h._begin_end(None, "disc")
+ok(h._end_done.is_set() and h._end_args is None and h._end_deadline is None, "25 (r3 A3-7) nothing to deliver or say: done at once, no deadline armed")
+h = H(); h.cached_messages = [("x", None)]; h.rabbit_channel = Chan(False); h.rabbit_connection.is_open = False; h.rabbit_connection.is_closed = False
+h._begin_end(None, "disc"); ok(h._end_args is not None and not h._end_done.is_set(), "25 a cache to deliver: the end waits (bounded) as before")
+# 25 (r3 A3-6) the goodbye lost in flight is retried once, then given up
+fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_retry_goodbye")
+exec(textwrap.dedent(ast.get_source_segment(src, fn)), g); H._retry_goodbye = g["_retry_goodbye"]
+h = H(); h._closed = True; h._goodbye = ("U", "disc")
+ok(h._retry_goodbye() is True and h._end_args == ("U", "disc") and h._goodbye is None and h._end_deadline is not None, "25 (r3 A3-6) goodbye in flight lost: put back once, new deadline")
+h._goodbye = ("U", "disc"); ok(h._retry_goodbye() is False, "25 ... and only once")
+h = H(); h._closed = True; h._goodbye = ("U", "disc"); h._final_close = True; ok(h._retry_goodbye() is False, "25 after the final close nothing is retried")
+# 25 (r4 B4-11) _subscribe: declares, then consumers, then the bindings
+order25 = []
+class OrdChan(Chan):
+    def queue_declare(self, *a, **k): order25.append("declare")
+    def basic_consume(self, *a, **k): order25.append("consume")
+    def queue_bind(self, *a, **k): order25.append("bind")
+h = H(); h.rabbit_channel = OrdChan()
+h._subscribe([("queue_declare", (), {"queue": "U"}), ("queue_bind", (), {"queue": "U"}), ("basic_consume", (), {"queue": "U"}), ("queue_bind", (), {"queue": "U"})], [])
+ok(order25 == ["declare", "consume", "bind", "bind"], f"25 (r4 B4-11) consume before the binds: {order25}")
 print("ALL PASS" if F == 0 else "SOME FAILED (%d)" % F)

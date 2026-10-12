@@ -17,6 +17,9 @@ User decisions (2026-10-12, code review rounds 2–3):
 - After a broker-side loss the client session ends once its cache is delivered (R13, "end-on-loss"); no replay.
 - An 8089 session may not claim the uid of another user's device; callsigns stay shared as upstream (R10).
 - Field tests with real ATAK/iTAK devices are deferred (not enough devices now): a #264 leftover.
+- (Review round 4) A device refused by R10 for a colliding callsign is still RECORDED: its own row, its own `<uid>`
+  queue only. CoT lost while the mesh path to OTS is down are lost: re-sending them is the client's job (the server
+  keeps R6's ~2 min reap; it does not hold sockets open to catch retransmissions).
 
 Field scenario (the user, 2026-10-12): off-grid tactical team. Each member carries a node and their phone joins
 that node over Wi-Fi (or BLE) and runs a TAK client. All nodes move; the OTS node is carried by the RTO.
@@ -137,6 +140,11 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     it to DM and group recipients (review v5A-F16). This is accepted and stated in the PR. R9 coalescing uses
     insertion order, not the CoT `time`.
 - **Residual loss, stated and not hidden:**
+  - A server-side close (R13, the R12 deadline, the channel-error rule, R6's reap) loses what the server had not
+    read yet: complete messages still in the session's buffer and bytes in the kernel's receive queue (review r4
+    A4-6/B4-6). R13 loses nothing the server had already read. Re-sending is the client's job (the user, 2026-10-12).
+  - A mesh outage longer than ~2 min: the session is reaped (R6) and what the phone sent meanwhile is lost unless
+    the client re-sends it (the user's decision, review r4 B4-3).
   - CoT already in the transient `cot_parser` queue but not yet processed are lost when the broker restarts.
     This covers the parser's prefetch of 2 and any backlog.
   - On a container stop, the forked children are SIGKILLed when the parent exits, so their caches are lost.
@@ -177,6 +185,13 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   - The test stays inside the broker and never starts or stops containers (R-tests).
 
 ### R6 — sessions that outlive a lost client (network loss without a FIN)
+- **Order (review r4 B4-11):** a subscription is placed as declares, then consumers, then bindings, so an old
+  session's end (which judges "last" by the consumer count) sees the new session before its bindings exist.
+- **A session that never subscribed (review r3 B3-10):** at its end, an identified session that is not refused
+  declares its `<uid>` (not passively: a missing queue must not close the channel) and sends the disconnect when
+  nobody consumes it, so its EUD row does not stay "Connected"; never for a refused uid (r2 B2-1).
+- **F3 and an owned uid (review r3 B3-7):** an 8088 session never deletes `<uid>` when that uid's EUD row has a
+  user (cot_parser's 8089 disconnect binds it); one database lookup at the end, kept on a lookup failure.
 - **Cause:** client sockets have no keepalive and no timeout (`EudHandlerSSL.py:20`, `settimeout(None)`;
   `tcp_keepalive_time` = 7200). A HaLow link loss, roaming or a phone switched off leaves the session alive
   indefinitely.
@@ -354,8 +369,9 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 - **Firehose:** a firehose publish is never re-sent, only the `cot_parser` body, so there are no firehose
   duplicates from returns.
 - **Broker flow control:** `add_on_connection_blocked_callback`. While the broker is blocked (memory alarm,
-  `rabbitmq-extra.conf` 300 MB), the session caches instead of publishing. `blocked_connection_timeout` = 60 s
-  ends the connection, and R4 reconnects.
+  `rabbitmq-extra.conf` 300 MB), the session caches instead of publishing (R9 bounds) and resumes when unblocked.
+  No `blocked_connection_timeout` (review r4 A4-8/B4-5): with R13 it ended every session after 60 s of alarm and the
+  drain, which a blocked broker never acks, dropped each cache every ~2 min.
 
 ### R10 — client-supplied identifiers used as broker resource names (implemented d129c40 / 9fae867, revised fad4091)
 - **Cause:** upstream uses the client-supplied callsign and uid directly as queue names and routing keys
@@ -373,16 +389,29 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     device row owned by ANOTHER user gets no subscription and no EUD row update (reproduced on rc wsl.10: the row's
     `user_id` went from 1 to 2, the device was taken from its user). Callsigns are not checked on 8089: two users
     naming their phones alike is common in the field, and upstream shares them.
-  - **A refused session (fail-secure, stated):** no subscription and no row of its own, so it receives nothing.
+  - **A colliding or unusable CALLSIGN (review r4 A4-2/B4-1, the user's decision 2026-10-12):** the callsign is not
+    used as a queue (no declare, bind or consume on it, and the end never checks, unbinds or deletes it); the device
+    is subscribed by its own `<uid>` and RECORDED. Before, the whole device was refused, it had no EUD row, and
+    cot_parser's FK (`CoT.sender_uid -> euds.uid`) dropped every CoT it sent (measured on rc wsl.12).
+  - **euds.callsign is UNIQUE** (live `models/EUD.py`): a callsign already held by another device's row made the
+    row insert fail and the fallback update match nothing, so the second device of a shared callsign was never
+    recorded (upstream; measured on rc wsl.12, callsign-share). Such a device is recorded under its uid without the
+    callsign column (its CoT keep their callsign).
+  - **A refused uid** (another user's device on 8089, an authenticated user's device on 8088, or not a usable name):
+    no subscription and no row update; its CoT go to the existing row of that uid if there is one.
+  - **A refused session (fail-secure, stated):** no subscription, so it receives nothing.
     Corrected (review r3 A3-9): the CoT it sends still carry the claimed uid, and cot_parser stores and routes
     them under that uid when its row exists. Track pollution by a client that names another device is upstream
     behaviour on an unauthenticated port; it is a B leftover.
   - The subscription is made once per session (upstream identifies once too) and replayed after a reconnect. No
     "busy" refusal any more (R6).
-- **Residual, stated:** a name never seen on 8089 (no row with a user) is not protected from an 8088 client that
+- **Residual, stated:** a phone re-issued to a new user keeps its uid; its 8089 session is refused the
+  subscription until an admin reassigns the device in the web UI (recorded, no downlink; review r4 B4-7). A name never
+  seen on 8089 (no row with a user) is not protected from an 8088 client that
   connects first (it shares the queue, as upstream); an 8088 session that subscribed before the user's first 8089
   session keeps its share until it ends; the reserved list is a constant in the overlay, not generated from the
-  pinned source. An 8088 client naming an OFFLINE unowned EUD places that EUD's own bindings and removes them at
+  pinned source. Deleting an EUD row (web UI/API) deletes every CoT that device sent (`ondelete=CASCADE`, upstream;
+  B leftover, review r4 A4-13). An 8088 client naming an OFFLINE unowned EUD places that EUD's own bindings and removes them at
   its end (review r3 B3-6: a binding is (exchange, queue, key)); DMs to that EUD are unroutable until it
   reconnects (upstream; B leftover). An 8089 user that once used an 8088 phone's name makes R10 refuse that phone
   (review r3 B3-5 residual; B leftover).
@@ -408,10 +437,11 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   2. The R7 memory reserve.
   3. 8089 only: the TLS handshake (10 s). `EudHandlerSSL.setup`'s own `do_handshake()` afterwards is a no-op on
      an established TLS connection (probed with Python's ssl).
-  4. The admission lock (`flock` on `/tmp/batman-264-admit.lock` in the container; wait at most
-     `BATMAN_264_ADMIT_WAIT_S` 30 s, held until the session's first message is handled or `ADMIT_HOLD_S` 8 s),
-     then the memory reserve again: a crowd is checked one after the other (R7 capacity). Without the lock the
-     check still runs (logged).
+  4. At the session's FIRST COMPLETE MESSAGE (review r4 A4-3/B4-9: a socket that sends nothing never holds it):
+     the admission lock (`flock` on `/tmp/batman-264-admit.lock` in the container; wait at most 30 s, held until
+     the session's subscription is placed or fails, or 20 s), then the memory reserve again: a crowd is checked
+     one after the other (R7 capacity, R16). Without the lock the check still runs (logged). Each admission logs
+     `lock taken` / `lock released after N ms`.
   - **Deadline (review r3 B3-3, reproduced on rc wsl.10: one empty `<event></event>` cleared it, the socket was
     still open at 88 s):** until the client identifies (uid set), every complete message only moves the deadline
     `BATMAN_264_IDENT_MAX_S` (60 s) further; identification clears it once. A relay that keeps sending is never
@@ -440,6 +470,8 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   admission lock was released at the first message, before the session had grown (subscription, AMQP); the
   reserve read only `anon`, while the zombies' unsent data sits in socket buffers charged to the same limit
   (tcp_wmem max 4 MiB each).
+- **Validation note (review r4 A4-1/B4-4):** rto-264 passes at 1280m without any OOM, so the R16 code is proven by
+  a separate flip at 768m with the same build (register fs-1).
 - **Fix (`BATMAN-264-R16`):**
   - each session process writes `oom_score_adj` 1000 for itself at setup (raising one's own score needs no
     privilege; probed as uid 1000 on 04): an OOM kills one session, whose phone reconnects, never the listener;
@@ -451,6 +483,11 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     6.6 GiB available, so even every cap hit at once does not OOM the node.
 - **Residual, stated:** a session killed by the OOM killer loses its cache (bounded by R9) and ends without its
   goodbye (its queues stay until R15's expiry); a refused phone records nothing until it is admitted.
+  `oom_score_adj` also applies to a NODE-wide OOM (review r4 A4-4): phone sessions go before the node's own daemons,
+  which is the intended order (a session reconnects; the mesh daemons keep the node reachable). The containers'
+  caps (6.1 GiB) are below the available memory, so OTS itself cannot cause a node-wide OOM.
+- **Platform (review r4 A4-5):** the caps hold only on a Pi 4 8 GB, where OTS is installed (the user). The manifest
+  states the minimum and payload-run refuses to start the tenant on a smaller board.
 - **Test:** `rto-264` (16 zombies black-holed on 02/03, the same 16 uids reconnecting from inside two OTS
   containers; asserts all 16 kept for 120 s, `ots_eud_handler` StartedAt unchanged, no OOM kill). Negative
   control: rc wsl.11 (0/16, listener restarted). `cap16-264` now also compares StartedAt (an OOM-killed listener
@@ -465,7 +502,11 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   then the CLIENT session ends. The phone reconnects and its new session is subscribed from the database, as
   upstream does. While a connection is opening no second one is created (review r2 A2-9 / r3 A3-5).
 - **Difference from upstream, stated:** upstream also ended the session, but lost what was in flight; R13 loses
-  nothing that was sent before the loss. The phone sees one reconnect per broker-side loss.
+  nothing the server had already read (what was still unread is lost, R4b residual). The phone sees one reconnect
+  per broker-side loss.
+- **The goodbye (review r3 A3-6):** a channel or connection lost while the disconnect/unbinds are in flight is
+  retried once (a new DRAIN_MAX_S deadline), then given up. An end with no uid, no cache and nothing unacked
+  completes at once (review r3 A3-7).
 - **Test:** `amqp-close-264` (R4 above). Offline #11 (R13), #17 (no replay).
 
 ### R14 — an exception in one message ends nothing else (review r3 A3-2)
@@ -475,8 +516,13 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 - **Fix:** the failing message is dropped (logged once with its traceback); the session goes on. `handle()` runs
   its loop in `try/finally`: whatever leaves it, the admission lock is released, the session end runs and is
   waited for.
-- **Test:** `exception-264` (a CoT without `start`, then normal CoT: no traceback ending the child, the session
-  ends properly, no empty queue left). Negative control: rc wsl.10. Offline: the handle() tests.
+- **Identification (review r4 A4-7/B4-2, measured on rc wsl.12):** `parse_device_info` sets the uid before it
+  writes the EUD row; an exception in between left the uid set and no row, so the session never identified again
+  and every later CoT was dropped by cot_parser's FK. Now the uid is reset (the next report identifies again) and
+  the CoT is still published (cot_parser decides whether it can store it).
+- **Test:** `exception-264` (a CoT without `start`, then a valid CoT: no traceback ending the child, the session
+  ends properly, no empty queue left, and the valid CoT is STORED). Negative controls: rc wsl.10 (child ended),
+  rc wsl.12 (0 stored: FK). Offline: the handle() tests.
 
 ### R15 — per-EUD queues bounded by a broker policy (review r3, resources)
 - **Cause (reproduced on rc wsl.10):** cot_parser's 8089 disconnect BINDS the departed device's `<uid>` queue to
@@ -491,7 +537,13 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   permissions: with a definitions file the broker seeds no default vhost or user (probed with a throwaway
   `rabbitmq:4.3.6` container, `--network none`: guest logs in, the policy applies, 0 errors).
 - **Residual, stated:** a reconnecting phone finds at most the newest 500 messages of its queue (upstream: all);
-  DMs older than that are dropped while it is away.
+  DMs older than that are dropped while it is away. A device away more than 24 h finds its queue deleted with its
+  mission bindings (`missions.<name>`); its Data Sync downlink returns when it re-subscribes (review r4 A4-10; a
+  broker restart does the same to these transient queues today).
+- **Ownership (review r4 A4-9/B4-10):** the definitions file is imported at every broker start and OWNS the broker
+  credential (user `guest`, the password OTS uses). Rotating it means changing both this file and OTS's
+  `config.yml`; a change made with `rabbitmqctl` alone is reverted at the next broker start (noted for #47,
+  per-node credentials). After a downgrade the policy stays in the broker's metadata (`ots-mqdata`): harmless.
 - **Test:** `queue-policy-264` (a departed 8089 group member's queue stops at 500 under a burst; `cot_parser` is not
   under the policy). Negative control: rc wsl.10 (grew without bound).
 
@@ -541,7 +593,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
     `sessions from this address` and `sent no complete message within` (R12); payload-run: `kept STOPPED on its old
     config` (R8).
 - **Container env (profile-owned, optional):** `BATMAN_264_SESSION_RESERVE_MB` (40), `BATMAN_264_PER_IP_MAX` (8),
-  `BATMAN_264_IDENT_MAX_S` (60), `BATMAN_264_ADMIT_WAIT_S` (30), `BATMAN_264_ADMIT_HOLD_S` (8). Malformed -> the handler fails to import (`int()`), the container exits and the
+  `BATMAN_264_IDENT_MAX_S` (60). The admission wait (30 s) and hold (20 s) are constants. Malformed -> the handler fails to import (`int()`), the container exits and the
   guardian reports it: fail-closed and visible.
 
   `ots_logc` reads the TCP log only (the SSL suite judges by storage, not by log lines).
@@ -557,7 +609,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | restart of eud container (guardian) | clients reconnect | same | crash-274 |
 | broker-side connection close (heartbeat) | session ends, CoT lost | cache delivered (reconnect, at-least-once), then the session ends and the phone reconnects (R13) | amqp-close-264 |
 | broker restart (crash, guardian) | sessions end; C window; cot_parser exits (its BlockingConnection has no reconnect) and the guardian restarts it with backoff | caches delivered once the broker is back, then the sessions end and the phones reconnect (R13); eud re-declares the queue; the policy is re-imported; transient-queue backlog lost (residual) | amqp-close-264 (mechanism B) + queue-gone-264 (mechanism C); no broker kill (§7) |
-| broker memory alarm | publishers blocked; pika buffers grow | cache instead; timeout → reconnect | covered by R9 unit test (fake connection) |
+| broker memory alarm | publishers blocked; pika buffers grow | the sessions cache (bounded) and resume after the alarm; no timeout (r4) | R9 unit test (fake connection); node test: leftover |
 | cot_parser restart | queue persists while the broker is up | same | — |
 | ots-db down | cot_parser nacks and drops (upstream) | unchanged; residual, stated | — |
 | client network loss | session lives for hours; its end unbinds the EUD's live session | gone in ~2 min (TCP_USER_TIMEOUT 120 s, keepalive 45/15/4); the reconnecting phone is subscribed at once (shared); the stale end sees it live and keeps everything | zombie-264 (field order) |
@@ -571,6 +623,8 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | guardian restart after a refused converge | (R8 new) | the held container stays stopped until a converge succeeds | test-payload-run #29, r8-hold-264 |
 | first install with a MOUNTSHA mismatch | — | the rebuild is refused: no TAK server until the image matches (fail-closed, stated; review r3 B3-9) | MOUNTSHA negative control |
 | image changed under the patch | runs unpatched or the old patch overwrites newer code | refused at rebuild, DRIFT; on the refused converge the mismatching overlay container stays stopped, for every later start of the boot (hold) | MOUNTSHA negative control, test-payload-run #27/#28/#29, r8-hold-264 |
+| downgrade to an image without the change (broker) | — | the R15 policy and the definitions' user stay in `ots-mqdata` (harmless) | — |
+| power loss of the OTS node | children SIGKILLed | the sessions' caches, the transient cot_parser backlog and unread socket data are lost; phones reconnect (cap16/rto) | cleanstop-274, unclean-boot-274 |
 | downgrade to an image without the change | — | the shipped payload-run (main d43025c) has no default branch in its manifest-key case, so `MOUNTSHA` is silently ignored and the overlay mounts unpinned; the D6 prune removes the p6 overlay once `.golden-files` no longer lists it, and the mount then fails closed (source missing) until the next OTA | first-ota / downgrade (manual, stated) |
 | bcm2711 / bcm2710 | — | the OTS package is bcm2711 only (`DEPENDS:=@TARGET_bcm27xx_bcm2711`); Pi 3 not applicable | ab-card |
 
@@ -600,7 +654,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   - It cannot take an authenticated user's queues (8088, both names) or, as another authenticated user, a device
     uid of another user (8089, R10). It can still send CoT under another device's uid (A3-9, upstream, stated).
   - It cannot crash cot_parser through our queue deletes: 8089 queues are never deleted (R6/F3).
-  - It cannot trigger a reconnect loop: replay failures are bounded (R4).
+  - It cannot trigger a reconnect loop: there is no replay (R13); a session ends once its cache is delivered.
 - **Compromised tenant:** no new interface.
 - **Local non-root process:** none. Files are root-owned, mounted ro, and D7-7 reports DRIFT on an edit.
 - **Supply chain:** the patch is generated from the pinned upstream; R8 enforces the pin at runtime.
@@ -609,8 +663,10 @@ Measured on 04 (shipped 1.5.8-wsl.5):
   frames (the broker is trusted as before), the `x-b264-uid`/`x-b264-type` headers of our own returned
   messages (only our own publishes come back), and `BATMAN_264_SESSION_RESERVE_MB` from the container env
   (profile-owned). Client-supplied uid/callsign are now checked before they become broker names (R10).
-- **Admission lock:** in the container's own tmpfs, reachable only from the eud processes (same uid); a
-  compromised eud process can hold it, which only delays admissions by `ADMIT_WAIT_S` (then checked without it).
+- **Admission lock:** in the container's own tmpfs, reachable only from the eud processes (same uid). A session
+  takes it only after its first complete message (review r4: a silent 8088 socket held it 20 s), so an
+  unauthenticated 8088 client holds it at most `ADMIT_HOLD_S` per message-sending session (8 per address); a
+  compromised eud process can hold it, which only delays admissions by 30 s (then checked without it).
 - **Broker definitions:** contain the guest password hash (the default credential OTS already uses); root-owned,
   mounted ro; no new secret.
 - **Failure modes:**
@@ -636,7 +692,7 @@ Measured on 04 (shipped 1.5.8-wsl.5):
 | owner-8089-264 | feature | no (a 1-day test cert in the container's tmpfs, removed) | wsl.10: the row was taken over |
 | queue-policy-264 | feature | no | wsl.10: the departed member's queue grew without bound |
 | cap16-264 | feature | no | wsl.10: anon peak 93 % of memory.max |
-| rto-264 | feature | no (peer-side nft on the test clients' ports only, self-expiring) | wsl.11: the listener OOM-killed, 0/16 kept |
+| rto-264 (8088), rto-ssl-264 (8089) | feature | no (peer-side nft on the test clients' ports only, self-expiring; 8089 copies a 1-day test cert to 02/03 and removes it) | wsl.11: the listener OOM-killed, 0/16 kept |
 | r8-hold-264 | tier B | yes (stops the OTS overlay containers, restores from the golden) | wsl.10: the guardian started the held container |
 | group-disc-264 | feature | yes on a broken build (cot_parser crash loop; ends when the test membership is removed, which every exit path does) | wsl.8: 6 x crash ots_cot_parser |
 | name-guard-264 | feature | no | by code: upstream subscribes unconditionally |

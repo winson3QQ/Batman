@@ -272,3 +272,36 @@ Fixed in f3f7c9d (rc wsl.11).
 | fs-1 | BLOCKER | A | The RTO returns: 16 zombies + 16 reconnecting phones; the memcg OOM killer killed the listener parent, every session and cache lost, 0/16 kept. | rc wsl.11 (768m), twice: `r4/rto-rc11.log` (`Killed process 15458 (python3) ... anon-rss:118192kB`, `restart: crash ots_eud_handler`), `dv264negrto11` (StartedAt 07:00:53 -> 07:15:31). | fixed 0b8efff (R16 + 1280m); suite rto-264 |
 | impl-9 | harness | — | cap16-264 counted OOM kills from the current container's `memory.events`: an OOM-killed listener restarts in a new cgroup whose count starts at 0. | `rto-rc11.log`: `oom_kill 0 -> 0` while the container had restarted. | fixed 0b8efff: StartedAt compared too (cap16-264, rto-264) |
 | impl-10 | build | — | BATMAN_NOTE in batman-release.env still says wsl.4: the build scripts' sed never matched. Cosmetic (release-note text). | `git show HEAD:batman-release.env` on the firmware tree. | leftover: fix before the shipped build |
+
+## Code review round 4 (2026-10-12, two independent reviewers on the code @ 0b8efff with the field scenario: `scratchpad/264/r4/reviewer-A4.md` APPROVE-WITH-CHANGES, `reviewer-B4.md` REJECT; 0 BLOCKER)
+
+Evidence on node 04, rc 1.5.9-wsl.12 (0b8efff), read before any change: cot_parser.log FK violations
+`Key (sender_uid)=(...) is not present in table "euds"` for the R10-refused swap device (DVOS121453-swap-X), the
+R14 device (DVEX121903-B) and, every run, the second device of a shared callsign (DVCS...-U2: euds.callsign UNIQUE).
+The 1136 FK lines of DVQP092428/093039 are harness: cleanup deleted the rows while cot_parser still had the burst
+(flip: with the drain wait, rc wsl.10b/11/12 have none).
+
+The user's decisions 2026-10-12: (1) a device refused for a colliding callsign is still recorded (own row, own
+`<uid>` only); (2) CoT lost while the mesh path is down are lost: re-sending is the client's job (B4-3 closed).
+
+| ID | Severity | Class | Finding (trimmed) | Status |
+|---|---|---|---|---|
+| A4-1 / B4-4 | MAJOR | A | R16 never exercised: rto-264 passes at 1280m without an OOM; the negative control changed limit and code. cap16's 85 % no longer discriminates the lock. | flip done (`r4/flip768b-rc12.log`): rc wsl.12 code, limit held at 768m (40/40 samples; reconcile-resources paused, a first attempt was invalid: the reconciler restored 1280m within 5 s): listener not restarted, oom 0, 10/16 kept, 6 refused by the reserve (rc wsl.11 at 768m: listener OOM-killed, 0/16). ⚠️ the oom_score_adj backstop was not reached (offline + write probe only). cap16 asserts the lock alternation |
+| A4-2 / B4-1 | MAJOR | C | An R10-refused 8088 device is never recorded (FK). | fixed (decision 1): the colliding name is refused, the device recorded; owner-swap-264 asserts storage |
+| B4-2 / A4-7 | MAJOR / MINOR | A / C | R14 left the uid set and no row: every later CoT dropped. exception-264 passed without checking storage. | fixed: uid reset, CoT still published; exception-264 asserts storage (rc wsl.12: 0 stored) |
+| B4-3 | MAJOR | C | R6's ~2 min reap loses a 2-15 min mesh outage's CoT. | closed by the user's decision 2: re-sending is the client's job; stated in R4b |
+| new | — | B (fixed with A4-2) | The second device of a shared callsign is never recorded (euds.callsign UNIQUE). | fixed: recorded without the callsign column; callsign-share-264 asserts storage |
+| A4-3 / B4-9 | MINOR | C | Silent sockets held the admission lock 20 s; past 30 s admissions went unserialized. | fixed: the lock at the first complete message; admission-264 (e) |
+| A4-4 | MINOR | C | oom_score_adj 1000 also applies node-wide. | stated as the intended order (sessions before node daemons); caps below available |
+| A4-5 | MINOR | C | 1280m holds only on 8 GB; nothing keeps OTS off a smaller Pi 4. | fixed: manifest minimum MemTotal, payload-run refuses (test-payload-run) |
+| A4-6 / B4-6 | MINOR | A | A server-side close loses unread uplink; R13 overclaimed. | text corrected (R4b residual, R13); re-sending is the client's job (decision 2) |
+| A4-8 / B4-5 | MINOR | C | blocked_connection_timeout + R13: periodic cache loss under a broker alarm. | fixed: no blocked timeout; lifecycle row updated; node test of an alarm: leftover |
+| A4-9 / B4-10 | MINOR | C | The definitions file is a second writer of the guest credential; downgrade row. | stated: the definitions file owns the credential (#47 to know); downgrade row added |
+| A4-10 | MINOR | C | R15 expiry deletes an away (>24 h) 8089 device's queue and mission bindings. | stated in R15 |
+| A4-11 / B4-12 | MINOR | docs | Stale text and dead code (env knobs, 8 s, replay, R7/R9/§3/§4/§6). | corrected; replay comments removed |
+| A4-12 | MINOR | A | rto-264: margin, assertions (subscription, storage), idle zombies, cleanup kills every nc. | fixed: stored and subscribed asserted, downlink pending (a streaming peer), own pids only |
+| B4-7 | MINOR | C | A re-issued 8089 phone is refused for good (deaf). | stated in R10 with the operator path (reassign in the web UI) |
+| B4-8 | MINOR | A | Capacity / RTO validated on 8088 only. | fixed: rto-ssl-264 (8089) |
+| B4-11 | MINOR | A | TOCTOU between a new session's binds and the old end's count. | fixed: declares, consumers, then bindings |
+| B4-13 / process | — | — | A/C findings were parked as leftovers against the user's rule. | corrected: A3-6 (goodbye retried once), A3-7 (immediate end), B3-7 (no delete of an owned uid), B3-9 (payload-run probe), B3-10 (disconnect of a never-subscribed identified session) fixed in this round |
+| A4-13 | MINOR | B | Deleting an EUD row deletes its CoT history (CASCADE). | leftover (operator guidance in #264's checklist) |

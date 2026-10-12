@@ -2052,6 +2052,329 @@ rep('''        self.logger.info(f"subscribed {self.uid}/{self.callsign} for {sel
 assert 'BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13"' in s, "item list moved"
 rep('BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13"', 'BATMAN_264 = "R1 R3 R4 R4b R5 R6 R7 R9 R10 R12 R13 R16"')
 
+# --- code review round 4 (2026-10-12): every record kept, admission at the first message, the goodbye kept ---------
+# Reviewers A4/B4, verified on node 04 (rc wsl.12 cot_parser.log): a device refused by R10, a device whose
+# identifying CoT raised (R14), and the second device of a shared callsign (upstream: euds.callsign is UNIQUE) had no
+# EUD row, so cot_parser's FK (CoT.sender_uid -> euds.uid) rejected every CoT they sent: invisible in the after-action
+# review. The user's decision 2026-10-12: a refused device is still recorded (own row, own <uid> queue only).
+
+# R10 (r4 A4-2/B4-1): refuse the colliding NAME, not the device
+rep('''                if not (_valid_name(self.uid) and _valid_name(self.callsign)):  # BATMAN-264-R10
+                    self.logger.error(
+                        f"refusing the subscription of {self.client_address[0]}: uid or callsign is not a usable "
+                        f"queue name (empty, >255 bytes, amq.*, a system name or not printable); no EUD row, so "
+                        f"cot_parser stores nothing from it")
+                    return
+                owned = (self._owned_by_user(self.uid, self.callsign) if not self.is_ssl
+                         else self._owned_by_other_user(self.uid))
+                if owned is None:  # BATMAN-264-R10: database down: identify again on the next report
+                    self.uid = None
+                    return
+                if owned:  # BATMAN-264-R10 (review F8/M7)''',
+    '''                if not _valid_name(self.uid):  # BATMAN-264-R10
+                    self.logger.error(
+                        f"refusing the subscription of {self.client_address[0]}: uid is not a usable queue name "
+                        f"(empty, >255 bytes, amq.*, a system name or not printable); no EUD row, so cot_parser "
+                        f"stores nothing from it")
+                    return
+                if self.is_ssl:
+                    owned, cs_owned = self._owned_by_other_user(self.uid), False
+                else:
+                    owned, cs_owned = self._owned_by_user(self.uid, self.callsign)
+                if owned is None:  # BATMAN-264-R10: database down: identify again on the next report
+                    self.uid = None
+                    return
+                # BATMAN-264-R10 (review r4 A4-2/B4-1, the user's decision 2026-10-12): a callsign that is not a usable
+                # queue name, or that belongs to an authenticated user's device, is not used as a queue; the device is
+                # still subscribed by its own uid and RECORDED (its EUD row is written below). Refusing the whole
+                # device left it without a row, and cot_parser's FK dropped every CoT it sent (measured on rc wsl.12).
+                self._cs_queue = _valid_name(self.callsign) and not cs_owned
+                if not self._cs_queue:
+                    self.logger.error(
+                        f"{self.client_address[0]}: callsign {self.callsign!r} is not used as a queue (not a usable "
+                        f"name, or an authenticated user's device's name); subscribed by uid {self.uid} only, recorded "
+                        f"(BATMAN-264-R10)")
+                if owned:  # BATMAN-264-R10 (review F8/M7)''')
+rep('''                    _ch.queue_declare(queue=self.callsign)
+                    _ch.queue_declare(queue=self.uid)''', '''                    if self._cs_queue:  # BATMAN-264-R10 (r4)
+                        _ch.queue_declare(queue=self.callsign)
+                    _ch.queue_declare(queue=self.uid)''')
+rep('''                        _ch.queue_bind(
+                            exchange="dms", queue=self.callsign, routing_key=self.callsign
+                        )''', '''                        if self._cs_queue:  # BATMAN-264-R10 (r4)
+                            _ch.queue_bind(
+                                exchange="dms", queue=self.callsign, routing_key=self.callsign
+                            )''')
+rep('''                        if {
+                            "exchange": "dms",
+                            "routing_key": self.callsign,
+                            "queue": self.callsign,
+                        } not in self.bound_queues:''', '''                        if self._cs_queue and {  # BATMAN-264-R10 (r4)
+                            "exchange": "dms",
+                            "routing_key": self.callsign,
+                            "queue": self.callsign,
+                        } not in self.bound_queues:''')
+rep('''                        _ch.basic_consume(
+                            queue=self.callsign, on_message_callback=self.on_message, auto_ack=True
+                        )''', '''                        if self._cs_queue:  # BATMAN-264-R10 (r4)
+                            _ch.basic_consume(
+                                queue=self.callsign, on_message_callback=self.on_message, auto_ack=True
+                            )''')
+# the row: euds.callsign is UNIQUE; a callsign held by another device's row leaves this device's row unwritten
+rep('''                eud.uid = uid
+                if self.callsign:
+                    eud.callsign = self.callsign''', '''                eud.uid = uid
+                if self.callsign:
+                    # BATMAN-264-R10 (review r4): euds.callsign is UNIQUE. A callsign held by ANOTHER device's row made
+                    # the insert fail and the fallback update match nothing: no row, every CoT of this device dropped
+                    # by cot_parser's FK (upstream too; measured on node 04: the second device of a shared callsign).
+                    # The device is recorded under its uid without a callsign column (the CoT keep their callsign).
+                    clash = db.session.execute(
+                        select(EUD.uid).filter(EUD.callsign == self.callsign).filter(EUD.uid != uid)
+                    ).first()
+                    if clash is None:
+                        eud.callsign = self.callsign
+                    else:
+                        self.logger.error(f"{self.client_address[0]}: callsign {self.callsign!r} is another device's "
+                                          f"({clash[0]}); {uid} recorded without it (BATMAN-264-R10)")''')
+rep('''    def _owned_by_user(self, uid, callsign):
+        # BATMAN-264-R10: does an EUD row whose uid OR callsign equals this uid OR callsign belong to an OTS user
+        # (an 8089 device)? Both names against both columns: a queue is named by either, so a callsign equal to a
+        # user's uid would consume that user's <uid> queue (review r2 B2-2, reproduced on node 04).
+        # True / False, or None when the database did not answer (the caller retries later).
+        names = [n for n in (uid, callsign) if n]
+        try:
+            with self.app.app_context():
+                row = db.session.execute(
+                    select(EUD.uid).filter(EUD.uid.in_(names) | EUD.callsign.in_(names)).filter(EUD.user_id.isnot(None))
+                ).first()
+            return row is not None
+        except Exception as e:
+            self.logger.error(f"ownership lookup failed ({e}); not subscribing yet, retried on the next report")
+            return None''', '''    def _owned_by_user(self, uid, callsign):
+        # BATMAN-264-R10: is this uid, and is this callsign, a name (uid OR callsign column) of an EUD row that
+        # belongs to an OTS user (an 8089 device)? Both names against both columns: a queue is named by either, so a
+        # callsign equal to a user's uid would consume that user's <uid> queue (review r2 B2-2, reproduced on node
+        # 04). (uid_owned, callsign_owned), or (None, None) when the database did not answer (retried later).
+        names = [n for n in (uid, callsign) if n]
+        try:
+            with self.app.app_context():
+                rows = db.session.execute(
+                    select(EUD.uid, EUD.callsign).filter(EUD.uid.in_(names) | EUD.callsign.in_(names))
+                    .filter(EUD.user_id.isnot(None))
+                ).all()
+            held = {n for r in rows for n in r if n}
+            return uid in held, bool(callsign) and callsign in held
+        except Exception as e:
+            self.logger.error(f"ownership lookup failed ({e}); not subscribing yet, retried on the next report")
+            return None, None''')
+rep('''        self._sub_wanted = False     # R16: a subscription was requested: the admission lock is held until it is placed''',
+    '''        self._sub_wanted = False     # R16: a subscription was requested: the admission lock is held until it is placed
+        self._cs_queue = True        # R10 (r4): the callsign is used as a queue (False: subscribed by uid only)
+        self._admit_pending = False  # R16 (r4): the admission lock is taken at the first complete message
+        self._refused = False
+        self._goodbye = None         # r4 (A3-6): the end's (uid, body) until its CloseOk: a loss in between retries it
+        self._goodbye_retried = False''')
+
+# R14 (r4 A4-7/B4-2): an exception during identification must not leave the device unrecorded
+rep('''        if event and not self.uid:
+            self.parse_device_info(event)''', '''        if event and not self.uid:
+            try:
+                self.parse_device_info(event)
+            except Exception as e:
+                # BATMAN-264-R14 (review r4 A4-7/B4-2, measured on rc wsl.12): parse_device_info sets self.uid before
+                # it writes the EUD row; an exception in between (a CoT without start, a missing role, a DB error)
+                # left the uid set and the row unwritten, so the session never identified again and cot_parser's FK
+                # dropped every later CoT. The uid is reset: the next report identifies again; this CoT is still
+                # published (cot_parser decides whether it can be stored).
+                self.logger.error(f"{self.client_address[0]}: identification raised {type(e).__name__}: {e}; "
+                                  f"identifying again on the next report (BATMAN-264-R14)")
+                self.logger.debug(traceback.format_exc())
+                self.uid = None''')
+
+# R16 (r4 A4-3/B4-9): the admission lock is taken at the session's first complete message, not at accept
+rep('''        self._take_admit()
+        if not self._session_allowed():
+            self._release_admit()
+            return False
+        return True''', '''        # BATMAN-264-R16 (review r4 A4-3/B4-9, measured on rc wsl.12: three silent sockets held the lock 20 s each and
+        # the next admission went "unserialized" after 30 s): the lock and the second memory check come at the
+        # session's first complete message (_handle_loop), so a socket that sends nothing never holds the lock.
+        self._admit_pending = True
+        return True''')
+rep('''                msg = chunk[start:].decode("utf-8", errors="replace")
+                try:
+                    fromstring(msg)''', '''                msg = chunk[start:].decode("utf-8", errors="replace")
+                if self._admit_pending:
+                    # BATMAN-264-R12/R16: admissions are serialized from here until the subscription is placed
+                    self._admit_pending = False
+                    self._take_admit()
+                    if not self._session_allowed():
+                        self._release_admit()
+                        self._refused = True
+                        break
+                try:
+                    fromstring(msg)''')
+rep('''            if len(buf) > MAX_PENDING:
+                self.logger.error(f"{len(buf)} bytes without a closing tag from {self.client_address[0]}, dropped")''',
+    '''            if self._refused:
+                break
+            if len(buf) > MAX_PENDING:
+                self.logger.error(f"{len(buf)} bytes without a closing tag from {self.client_address[0]}, dropped")''')
+rep('''        with self._admit_mx:
+            self._admit_fd = fd
+        t = threading.Timer(ADMIT_HOLD_S, self._release_admit)''', '''        with self._admit_mx:
+            self._admit_fd = fd
+            self._admit_t0 = time.monotonic()
+        self.logger.info(f"admission of {self.client_address[0]}: lock taken (BATMAN-264-R12)")
+        t = threading.Timer(ADMIT_HOLD_S, self._release_admit)''')
+rep('''    def _release_admit(self):
+        with self._admit_mx:
+            fd, self._admit_fd = self._admit_fd, None
+        if fd is not None:
+            try:
+                os.close(fd)  # releases the flock
+            except OSError:
+                pass''', '''    def _release_admit(self):
+        with self._admit_mx:
+            fd, self._admit_fd = self._admit_fd, None
+        if fd is not None:
+            self.logger.info(f"admission of {self.client_address[0]}: lock released after "
+                             f"{(time.monotonic() - getattr(self, '_admit_t0', time.monotonic())) * 1000:.0f} ms (BATMAN-264-R12)")
+            try:
+                os.close(fd)  # releases the flock
+            except OSError:
+                pass''')
+
+# R9/R13 (r4 A4-8/B4-5): a broker memory alarm must not end every session and drop its cache
+rep('''                    blocked_connection_timeout=60,  # BATMAN-264-R9: a broker blocked for 60 s ends the connection
+''', '''                    # BATMAN-264-R9/R13 (review r4 A4-8/B4-5): no blocked_connection_timeout. With it, a broker memory
+                    # alarm over 60 s closed the connection, R13 ended every session and the drain (no acks from a
+                    # blocked broker) dropped each cache. While blocked the session caches (R9 bounds), and resumes.
+''')
+
+# R6 (r4 B4-11): consume before the binds, so a stale session's end never sees the new session's queue unused
+rep('''        try:
+            for name, a, k in ops:
+                if name == "queue_declare":''', '''        # BATMAN-264-R6 (review r4 B4-11): declares, then the consumers, then the bindings: the old session's
+        # end judges "last" by the consumer count, so a reconnecting session is visible before its bindings exist
+        rank = {"queue_declare": 0, "basic_consume": 1}
+        try:
+            for name, a, k in sorted(ops, key=lambda o: rank.get(o[0], 2)):
+                if name == "queue_declare":''')
+
+# A3-7 (r4): an end with nothing to deliver and nothing to say does not wait for the broker
+rep('''    def _begin_end(self, uid, body):
+        self._end_args = (uid, body)''', '''    def _begin_end(self, uid, body):
+        if uid is None and not self.cached_messages and not self._unacked:
+            # review r3 A3-7: nothing to deliver and nothing cot_parser would act on (a uid-less disconnect is
+            # ignored): no 60 s wait for an away broker, the child goes at once
+            self._done()
+            return
+        self._end_args = (uid, body)''')
+
+# A3-6 (r4): a connection or channel lost after _finish_end retries the goodbye once instead of abandoning it
+rep('''    def _finish_end(self):
+        uid, body = self._end_args
+        self._end_args = None''', '''    def _finish_end(self):
+        uid, body = self._end_args
+        self._end_args = None
+        self._goodbye = (uid, body)  # review r3 A3-6: kept until the end's CloseOk''')
+rep('''    def on_channel_close(self, channel: Channel, error):
+        if self._final_close or (self._closed and self._end_args is None):''', '''    def _retry_goodbye(self):
+        # review r3 A3-6: the channel or the connection was lost while the goodbye (disconnect, unbinds) was in
+        # flight: once, put it back and run the end again (it reconnects, bounded by a new DRAIN_MAX_S deadline)
+        if self._goodbye is None or self._goodbye_retried or self._final_close:
+            return False
+        self._goodbye_retried = True
+        self._end_args, self._goodbye = self._goodbye, None
+        self.logger.error(f"session end of {self.client_address[0]}: the broker went away during the goodbye; retrying it once")
+        self._end_deadline = self._ioloop.call_later(DRAIN_MAX_S, self._end_timeout)
+        return True
+
+    def on_channel_close(self, channel: Channel, error):
+        if not self._final_close and self._closed and self._end_args is None and self._retry_goodbye():
+            self.rabbit_channel = None
+            self._chan_opening = False
+            self._try_end()
+            return
+        if self._final_close or (self._closed and self._end_args is None):''')
+rep('''        self.logger.info("Connection closed for {}: {}".format(self.client_address[0], error))
+        if self._closed and self._end_args is None:
+            self._end_done.set()''', '''        self.logger.info("Connection closed for {}: {}".format(self.client_address[0], error))
+        if self._closed and self._end_args is None and self._retry_goodbye():
+            self.rabbit_channel = None
+            self._decl_channel = None
+            self._chan_opening = False
+            self._try_end()
+            return
+        if self._closed and self._end_args is None:
+            self._end_done.set()''')
+
+# B3-10 / B3-7 (r4): the end of an identified session that never subscribed; never delete a queue that has an owner
+rep('''        if not binds:
+            try:
+                if self._relay or not uid:
+                    publish_disconnect()  # upstream's path; cot_parser ignores a uid-less one
+            finally:
+                close()
+            return''', '''        if not binds:
+            if self._relay or not uid:
+                try:
+                    publish_disconnect()  # upstream's path; cot_parser ignores a uid-less one
+                finally:
+                    close()
+                return
+            if self._squat_logged or not _valid_name(uid):
+                close()  # refused as another user's device, or not a usable name: never speak for that uid (r2 B2-1)
+                return
+
+            def counted(frame):
+                # review r3 B3-10: an identified session whose subscription never happened (it left before AMQP was
+                # up) left its EUD row "Connected" for ever. Its disconnect is sent when nobody consumes <uid> (a live
+                # session of the uid would lose its bindings to cot_parser's disconnect, r2 B2-1). The declare is a
+                # normal (not passive) one, as the subscription's: a missing queue must not close the channel.
+                try:
+                    if not getattr(getattr(frame, "method", None), "consumer_count", 0):
+                        publish_disconnect()
+                    else:
+                        self.logger.info(f"another session of {uid} is live: no disconnect")
+                finally:
+                    close()
+
+            try:
+                ch.queue_declare(queue=uid, callback=counted)
+            except Exception as e:
+                self.logger.error(f"declare of {uid} at the end failed: {e}")
+                close()
+            return''')
+rep('''        names = [uid] + ([self.callsign] if self.callsign and self.callsign != uid else [])''',
+    '''        names = [uid] + ([self.callsign] if self._cs_queue and self.callsign and self.callsign != uid else [])''')
+rep('''                if not mu:
+                    ch.queue_delete(queue=uid, if_unused=True, if_empty=True)''', '''                if not mu and not self._uid_has_owner(uid):  # review r3 B3-7
+                    ch.queue_delete(queue=uid, if_unused=True, if_empty=True)''')
+rep('''    def on_message(self, unused_channel, basic_deliver, properties, body):''', '''    def _uid_has_owner(self, uid):
+        # review r3 B3-7: an 8088 session of a uid that an OTS user's device (8089) holds as well must not delete
+        # <uid>: cot_parser's 8089 disconnect BINDS it (cot_parser.py:989), a deleted queue there is the A2-1 crash
+        # loop. One lookup at the end; when the database does not answer the queue is kept (fail-safe).
+        try:
+            with self.app.app_context():
+                row = db.session.execute(select(EUD.user_id).filter(EUD.uid == uid)).first()
+            return row is not None and row[0] is not None
+        except Exception as e:
+            self.logger.error(f"owner lookup of {uid} at the end failed ({e}); queue kept")
+            return True
+
+    def on_message(self, unused_channel, basic_deliver, properties, body):''')
+rep('''        # BATMAN-264-R10 (review r3 B3-5): an EUD row with this uid that belongs to a DIFFERENT user.''',
+    '''        # BATMAN-264-R10 (review r3 B3-5): an EUD row with this uid that belongs to a DIFFERENT user.
+        # Residual (review r4 B4-7): a phone re-issued to a new user keeps its uid; until an admin reassigns the
+        # device (web UI), its 8089 session is refused its subscription (recorded, but no downlink).''')
+
+# dead code (r4 A4-11): no replay since R13
+rep('''        self._sub_ops = ops  # BATMAN-264-R4: replayed on the channel after a reconnect''',
+    '''        self._sub_ops = ops  # kept for diagnosis; R13 (r3 A3-3) ends the session instead of replaying''')
+
 # --- license notice (GPL-3.0-or-later §5a: modified files carry a prominent dated notice) ----------
 assert s.startswith("import base64\n"), "upstream file no longer starts with 'import base64'"
 s = ("# SPDX-License-Identifier: GPL-3.0-or-later\n"

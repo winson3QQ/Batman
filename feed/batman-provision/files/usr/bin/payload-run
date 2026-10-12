@@ -148,17 +148,36 @@ reset_block(){
 # image executes; the probe container carries the allowlist flags, so the guardian's foreign scan ignores it) and
 # refuse the rebuild if its sha differs. Fail-closed: a re-tagged image would otherwise run unpatched, or have
 # newer code silently overwritten by an old overlay. Preflight only (never in the 30 s cfg-hash walk).
+# probe_sha (review r3 B3-9): reads <path> of <image> into PROBE_SHA; rc 1 = the probe could not read it, the reason
+# in PROBE_WHY. Each step's exit status is checked (no pipefail in ash: a pipe would hash the EMPTY output of a
+# failed copy and report a sha). The probe container has a deterministic name, so a leftover of a payload-run
+# killed between create and rm is removed by the next probe instead of piling up. The copy lands in the
+# root-only run dir (the tenant lock serialises probes of one tenant).
+PROBE_SHA=""; PROBE_WHY=""
+probe_sha(){   # $1 = image ref or id, $2 = absolute path in the image, $3 = container name, $4 = pull policy
+	pn="batman-probe-$TENANT-$3"; pt="$RUNDIR/$pn.tar"; PROBE_SHA=""; PROBE_WHY=""
+	docker rm -f "$pn" >/dev/null 2>&1 </dev/null || true
+	if ! docker create --name "$pn" --pull="$4" --network none --security-opt no-new-privileges "$1" >/dev/null 2>&1 </dev/null; then
+		PROBE_WHY="cannot create a probe container from $1"; return 1
+	fi
+	prc=0
+	docker cp "$pn:$2" - > "$pt" 2>/dev/null </dev/null || prc=1
+	docker rm -f "$pn" >/dev/null 2>&1 </dev/null || true
+	[ "$prc" = 0 ] && [ -s "$pt" ] && tar -xOf "$pt" > "$pt.f" 2>/dev/null || prc=1
+	[ "$prc" = 0 ] && PROBE_SHA=$(sha "$pt.f")
+	rm -f "$pt" "$pt.f"
+	[ "$prc" = 0 ] && [ -n "$PROBE_SHA" ] && return 0
+	PROBE_WHY="the image's own $2 is unreadable (probe: docker cp/tar failed)"; return 1
+}
 mountsha_check(){
 	[ -n "$MSHAS" ] || return 0
 	while read -r mdst msha; do
 		[ -n "$mdst" ] || continue
 		case "$mdst" in /*) ;; *) problem "$NAME: MOUNTSHA $mdst is not an absolute path"; continue ;; esac
 		case "$msha" in *[!0-9a-f]*|"") problem "$NAME: MOUNTSHA $mdst: not a sha256"; continue ;; esac
-		mc=$(docker create --pull="$PULL_POLICY" --network none --security-opt no-new-privileges "$IMG" 2>/dev/null) \
-			|| { problem "$NAME: MOUNTSHA $mdst: cannot create a probe container from $IMG"; continue; }
-		got=$(docker cp "$mc:$mdst" - 2>/dev/null | tar -xO 2>/dev/null | sha256sum | cut -d' ' -f1)
-		docker rm "$mc" >/dev/null 2>&1 || true
-		[ "$got" = "$msha" ] || problem "$NAME: MOUNTSHA $mdst: the image's own file is sha256 ${got:-unreadable}, the overlay was made for $msha (image changed under the overlay)"
+		if probe_sha "$IMG" "$mdst" "$NAME" "$PULL_POLICY"; then
+			[ "$PROBE_SHA" = "$msha" ] || problem "$NAME: MOUNTSHA $mdst: the image's own file is sha256 $PROBE_SHA, the overlay was made for $msha (image changed under the overlay)"
+		else problem "$NAME: MOUNTSHA $mdst: $PROBE_WHY - refused (fail-closed)"; fi
 	done <<EOF
 $MSHAS
 EOF
@@ -179,12 +198,9 @@ mountsha_old_check(){
 		why=""
 		iid=$(docker inspect -f '{{.Image}}' "$c" 2>/dev/null) || why="no image id"
 		if [ -z "$why" ]; then
-			mc=$(docker create --pull=never --network none --security-opt no-new-privileges "$iid" 2>/dev/null) || why="cannot create a probe from $iid"
-		fi
-		if [ -z "$why" ]; then
-			got=$(docker cp "$mc:$mdst" - 2>/dev/null | tar -xO 2>/dev/null | sha256sum | cut -d' ' -f1)
-			docker rm "$mc" >/dev/null 2>&1 || true
-			[ "$got" = "$msha" ] || why="its image's $mdst is sha256 ${got:-unreadable}, the overlay on p6 was made for $msha"
+			if probe_sha "$iid" "$mdst" "$c" never; then
+				[ "$PROBE_SHA" = "$msha" ] || why="its image's $mdst is sha256 $PROBE_SHA, the overlay on p6 was made for $msha"
+			else why=$PROBE_WHY; fi
 		fi
 		[ -n "$why" ] || continue
 		case " $SKIP_START " in *" $c "*) ;; *) SKIP_START="$SKIP_START $c"; echo "$c" >> "$HOLD" ;; esac
@@ -378,6 +394,20 @@ walk(){   # $1 = ACTION
 # format). Never fails: the guardian needs a stable value even for a broken tenant.
 CFG=$({ echo "cfg-v2"; echo "MANIFEST $(sha "$MANIFEST")"; walk render; } | sha256sum | cut -d' ' -f1)
 if [ "$MODE" = cfg-hash ]; then echo "$CFG"; exit 0; fi
+# #264: `MEMTOTAL_MIN_MB <n>` (profile `requires.mem_total_min_mb`): the tenant's memory caps are sized for a node
+# with at least this much RAM (OTS: Pi 4 8 GB only). Every mode that starts or (re)builds containers refuses below
+# it, and when MemTotal cannot be read (fail-closed: caps summing past the RAM would OOM the node, not the tenant).
+# PAYLOAD_MEMINFO overrides /proc/meminfo (scripts/test-payload-run.sh).
+MEMMIN=$(awk '$1=="MEMTOTAL_MIN_MB"{print $2; exit}' "$MANIFEST")
+mem_gate(){
+	[ -n "$MEMMIN" ] || return 0
+	case "$MEMMIN" in *[!0-9]*) log "REFUSED: manifest MEMTOTAL_MIN_MB '$MEMMIN' is not a number - nothing started"; return 1 ;; esac
+	mi=${PAYLOAD_MEMINFO:-/proc/meminfo}
+	mkb=$(awk '$1=="MemTotal:"{print $2; exit}' "$mi" 2>/dev/null) || mkb=""
+	case "$mkb" in ""|*[!0-9]*) log "REFUSED: MemTotal unreadable ($mi) - $MEMMIN MB required by the manifest, nothing started (fail-closed)"; return 1 ;; esac
+	[ $((mkb / 1024)) -ge "$MEMMIN" ] && return 0
+	log "REFUSED: MemTotal $((mkb / 1024)) MB < $MEMMIN MB required by the manifest"; return 1
+}
 [ -z "$RESTART_IGNORED" ] || log "WARN: manifest RESTART$RESTART_IGNORED ignored — every container is created --restart no; the guardian is the only restarter (#274)"
 
 # ---- network ----
@@ -518,6 +548,8 @@ finish(){
 	log "bring-up FINISHED WITH FAILURES (fw4 and/or health gate) — see WARNs above"; exit 1
 }
 
+# #264: every mode that starts or (re)builds containers honours the manifest's RAM floor before touching anything
+case "$MODE" in rebuild|converge|start-only|restart-exited|renet) mem_gate || exit 1 ;; esac
 case "$MODE" in
 	rebuild)
 		preflight || { refuse; exit 1; }

@@ -115,6 +115,19 @@ def render_manifest(doc, app):
     if net.get("zone"):
         a(f"ZONE {net['zone']}")
     a(f"RESTART {restart}")
+    # #264: `requires.mem_total_min_mb` - the node RAM floor the tenant's memory caps are sized for; payload-run
+    # refuses every start/rebuild when /proc/meminfo MemTotal (MB) is below it or unreadable. Emitted only when set.
+    req = doc.get("requires") or {}
+    if not isinstance(req, dict):
+        sys.exit(f"{tenant}: requires must be a mapping")
+    unknown = set(req) - {"mem_total_min_mb"}
+    if unknown:
+        sys.exit(f"{tenant}: requires has unknown key(s) {sorted(unknown)} (payload-run would ignore them)")
+    mm = req.get("mem_total_min_mb")
+    if mm is not None:
+        if isinstance(mm, bool) or not isinstance(mm, int) or mm < 1:
+            sys.exit(f"{tenant}: requires.mem_total_min_mb must be a positive integer (MB), got {mm!r}")
+        a(f"MEMTOTAL_MIN_MB {mm}")
     for name in order:
         c = containers.get(name)
         if not c:

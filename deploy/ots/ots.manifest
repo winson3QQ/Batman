@@ -6,6 +6,7 @@ BRIDGE br-ots
 SUBNET 172.20.0.0/24
 ZONE dockert
 RESTART no
+MEMTOTAL_MIN_MB 7000
 
 CONTAINER ots-db
 IMAGE imresamu/postgis:18-3.6

@@ -65,7 +65,8 @@ inspect) shift; fmt=""; [ "$1" = -f ] && { fmt=$2; shift 2; }; rc=0
 start) shift; for n; do [ -f "$S/fail-start-$n" ] && exit 1; [ -d "$S/c/$n" ] || exit 1; echo running > "$S/c/$n/status"; done ;;
 stop) shift; [ "$1" = -t ] && shift 2; for n; do [ -d "$S/c/$n" ] && echo exited > "$S/c/$n/status"; done; exit 0 ;;
 rm) shift; f=0; [ "$1" = -f ] && { f=1; shift; }
-	for n; do d="$S/c/$n"; [ -d "$d" ] || continue
+	for n; do [ -d "$S/probe/$n" ] && { rm -rf "${S:?}/probe/$n"; continue; }
+		d="$S/c/$n"; [ -d "$d" ] || continue
 		if [ "$(cat "$d/status")" = running ]; then
 			[ "$f" = 1 ] || exit 1
 			echo "rm -f of RUNNING $n" >> "$S/violations"
@@ -80,8 +81,12 @@ network) case "$2" in
 		mkdir -p "$S/net/$a"; echo "$sn" > "$S/net/$a/subnet"; echo "$br" > "$S/net/$a/bridge" ;;
 	rm) rm -rf "${S:?}/net/$3" ;;
 	esac ;;
-create) shift; while [ $# -gt 1 ]; do shift; done; echo "stubc-$(e "$1")" ;;   # #264 R8 probe: prints a container id, runs nothing
-cp) p=${2#*:}; [ -f "$S/imgfs$p" ] && tar -cf - -C "$S/imgfs" "${p#/}" 2>/dev/null; exit 0 ;;   # `docker cp c:path -` = a tar stream
+create) shift; pn=""; while [ $# -gt 1 ]; do [ "$1" = --name ] && { pn=$2; shift; }; shift; done   # #264 R8 probe: runs nothing
+	if [ -n "$pn" ]; then [ -e "$S/probe/$pn" ] && { echo "Conflict: the container name $pn is already in use" >&2; exit 1; }
+		mkdir -p "$S/probe/$pn"; fi
+	echo "stubc-$(e "$1")" ;;
+cp) [ -f "$S/fail-cp" ] && { echo "Error: copy failed" >&2; exit 1; }   # B3-9: a failing copy (no stream, rc 1)
+	p=${2#*:}; [ -f "$S/imgfs$p" ] && tar -cf - -C "$S/imgfs" "${p#/}" 2>/dev/null; exit 0 ;;   # `docker cp c:path -` = a tar stream
 run) shift; name=""; cfg=""; ten=""; rmo=0; all="$*"
 	while [ $# -gt 0 ]; do case "$1" in --name) name=$2; shift ;; --label) case "$2" in batman.cfg=*) cfg=${2#batman.cfg=} ;; batman.tenant=*) ten=${2#batman.tenant=} ;; esac; shift ;; --rm) rmo=1 ;; esac; shift; done
 	[ "$rmo" = 1 ] && exit 0
@@ -172,7 +177,7 @@ for c in db app; do echo exited > "$S/c/$c/status"; done
 calls | grep -q '^start app' && grep -q "converging by rebuild" "$T/out" && [ "$rc" = 0 ] && ok "5 start failure: others started, then rebuild" || { no "5 rc=$rc"; cat "$T/out"; }
 
 # 6 preflight refuses the WHOLE rebuild before anything is touched (missing image / hardening / mount / subnet)
-pf(){ reset_calls; rc=$(pr "$@"); if [ "$rc" = 1 ] && grep -q REFUSED "$T/out" && ! calls | grep -v '^rm stubc-' | grep -Eq '^(stop|rm|run|start) '; then return 0; fi; cat "$T/out"; return 1; }   # rm stubc-* = the #264 R8 probe container, never a tenant container
+pf(){ reset_calls; rc=$(pr "$@"); if [ "$rc" = 1 ] && grep -q REFUSED "$T/out" && ! calls | grep -Ev '^rm (-f )?(stubc-|batman-probe-)' | grep -Eq '^(stop|rm|run|start) '; then return 0; fi; cat "$T/out"; return 1; }   # rm of the #264 R8 probe container, never a tenant container
 mv "$S/img/img_db_1" "$T/img.bak"; pf t && ok "6 missing image: refused, nothing touched" || no "6 missing image"; mv "$T/img.bak" "$S/img/img_db_1"
 mv "$A/t/t.hardening.env" "$T/h.bak"; pf t && ok "6 missing hardening file: refused (never runs unhardened)" || no "6 missing hardening"; mv "$T/h.bak" "$A/t/t.hardening.env"
 printf 'HARDEN_FLAGS="--x"\necho pwned\n' > "$T/h2"; cp "$A/t/t.hardening.env" "$T/h.bak"; cp "$T/h2" "$A/t/t.hardening.env"
@@ -287,8 +292,9 @@ mkdir -p "$S/imgfs/etc"; printf 'upstream v1\n' > "$S/imgfs/etc/m.conf"; sx=$(sh
 cp "$A/t/t.manifest" "$T/man.bak"
 awk -v s="$sx" '{print} /^MOUNT m.conf:/{print "MOUNTSHA /etc/m.conf " s}' "$T/man.bak" > "$A/t/t.manifest"
 reset_calls; rc=$(pr t)
-[ "$rc" = 0 ] && calls | grep -q '^create --pull=never --network none --security-opt no-new-privileges img/db:1$' && calls | grep -q '^rm stubc-img_db_1$' \
-	&& ok "27 MOUNTSHA matches: rebuild proceeds; probe = docker create with the allowlist flags, removed after" || { no "27 rc=$rc"; calls | grep -E '^(create|cp|rm)'; }
+[ "$rc" = 0 ] && calls | grep -q '^create --name batman-probe-t-db --pull=never --network none --security-opt no-new-privileges img/db:1$' \
+	&& [ "$(calls | grep -c '^rm -f batman-probe-t-db$')" = 2 ] && [ -z "$(ls "$S/probe" 2>/dev/null)" ] \
+	&& ok "27 MOUNTSHA matches: rebuild proceeds; probe = docker create batman-probe-t-db with the allowlist flags, removed before and after" || { no "27 rc=$rc"; calls | grep -E '^(create|cp|rm)'; }
 printf 'upstream v2\n' > "$S/imgfs/etc/m.conf"
 pf t && grep -q "image changed under the overlay" "$T/out" && ok "27 MOUNTSHA mismatch (the image's file changed): REFUSED, nothing touched" || no "27 mismatch not refused: $(cat "$T/out")"
 rm -f "$S/imgfs/etc/m.conf"
@@ -333,6 +339,57 @@ cp "$T/man.bak" "$A/t/t.manifest"; awk -v s="$sx" '{print} /^MOUNT m.conf:/{prin
 rc=$(pr --converge t)
 [ ! -e "$T/run/batman-payload-t.mountsha-hold" ] && [ "$(cat "$S/c/db/status")" = running ] && ok "29 a converge that succeeds clears the hold and starts db" || { no "29 hold not cleared (rc=$rc)"; cat "$T/out"; }
 sed -i '/^# overlay replaced$/d' "$A/t/m.conf"; cp "$T/man.bak" "$A/t/t.manifest"; rm -rf "$S/imgfs"; sh "$PR" t >>"$ALL" 2>&1
+
+# 30 review r3 B3-9a: a probe that cannot read the image's file says "unreadable" and refuses (the sha of the EMPTY
+#    output of a failed copy must never stand in for the file); fail-closed exactly as a mismatch
+mkdir -p "$S/imgfs/etc"; printf 'upstream v1\n' > "$S/imgfs/etc/m.conf"; sx=$(sha256sum < "$S/imgfs/etc/m.conf" | cut -d' ' -f1)
+awk -v s="$sx" '{print} /^MOUNT m.conf:/{print "MOUNTSHA /etc/m.conf " s}' "$T/man.bak" > "$A/t/t.manifest"
+sh "$PR" t >>"$ALL" 2>&1; for c in db app; do echo exited > "$S/c/$c/status"; done
+: > "$S/fail-cp"; echo "# changed" >> "$A/t/t.manifest"
+pf t && grep -q "db: MOUNTSHA /etc/m.conf: the image's own /etc/m.conf is unreadable" "$T/out" && ! grep -q "sha256 e3b0c442" "$T/out" \
+	&& [ "$(cat "$S/c/db/status")" = exited ] && [ -z "$(ls "$S/probe" 2>/dev/null)" ] \
+	&& ok "30 failing docker cp: rebuild REFUSED as 'unreadable' (not the empty-input sha), nothing started, no probe left" || { no "30 cp failure: $(cat "$T/out")"; }
+mv "$S/img/img_app_1" "$T/img.bak"; reset_calls; rc=$(pr --converge t); mv "$T/img.bak" "$S/img/img_app_1"
+[ "$rc" = 1 ] && grep -q "db kept STOPPED on its old config: the image's own /etc/m.conf is unreadable" "$T/out" && [ "$(cat "$S/c/db/status")" = exited ] \
+	&& ! calls | grep -q '^start db' && ok "30 failing docker cp on a refused converge: db kept STOPPED, logged 'unreadable'" || { no "30b rc=$rc db=$(cat "$S/c/db/status")"; cat "$T/out"; }
+rm -f "$S/fail-cp" "$T/run/batman-payload-t.mountsha-hold"
+# 31 review r3 B3-9b: a probe left behind by a payload-run killed between create and rm (deterministic name) is removed
+#    before the next probe is created, and the new probe is removed after
+awk -v s="$sx" '{print} /^MOUNT m.conf:/{print "MOUNTSHA /etc/m.conf " s}' "$T/man.bak" > "$A/t/t.manifest"
+mkdir -p "$S/probe/batman-probe-t-db"
+reset_calls; rc=$(pr t)
+rl=$(calls | grep -n '^rm -f batman-probe-t-db$' | head -1 | cut -d: -f1); cl=$(calls | grep -n '^create --name batman-probe-t-db ' | head -1 | cut -d: -f1)
+[ "$rc" = 0 ] && [ -n "$rl" ] && [ -n "$cl" ] && [ "$rl" -lt "$cl" ] && [ ! -e "$S/probe/batman-probe-t-db" ] && [ "$(cat "$S/c/db/status")" = running ] \
+	&& ok "31 leftover probe batman-probe-t-db: removed before the new probe, new probe removed after, rebuild proceeds" || { no "31 rc=$rc rm=$rl create=$cl left=$(ls "$S/probe" 2>/dev/null)"; cat "$T/out"; }
+cp "$T/man.bak" "$A/t/t.manifest"; rm -rf "$S/imgfs" "$S/probe"; sh "$PR" t >>"$ALL" 2>&1
+
+# 32 #264 MEMTOTAL_MIN_MB: every mode that starts or (re)builds refuses below the manifest's RAM floor (OTS = Pi 4 8 GB
+#    only) or when MemTotal is unreadable — nothing started, exit 1; at/above the floor or without the key: unchanged
+printf 'MemTotal:        3884000 kB\nMemFree:          100000 kB\n' > "$T/mi-4g"      # 3792 MB
+printf 'MemTotal:        7168000 kB\n' > "$T/mi-eq"                                   # exactly 7000 MB
+printf 'MemFree:          100000 kB\n' > "$T/mi-nototal"
+awk '{print} /^SUBNET /{print "MEMTOTAL_MIN_MB 7000"}' "$T/man.bak" > "$A/t/t.manifest"
+mg(){   # $1 = meminfo, $2 = label, $3 = expected log text; every start/build mode refused, nothing touched
+	for m in "" --converge --start-only --restart-exited --renet; do
+		for c in db app; do echo exited > "$S/c/$c/status"; done
+		export PAYLOAD_MEMINFO="$1"; reset_calls; rc=$(pr $m t); unset PAYLOAD_MEMINFO
+		if [ "$rc" = 1 ] && grep -q "$3" "$T/out" && ! calls | grep -Eq '^(start|run|rm|stop|create|network) ' \
+			&& [ "$(cat "$S/c/db/status")$(cat "$S/c/app/status")" = exitedexited ]; then ok "32 $2: ${m:-rebuild} refused, nothing started, rc 1"
+		else no "32 $2: ${m:-rebuild} rc=$rc"; cat "$T/out"; calls; fi
+	done
+}
+mg "$T/mi-4g" "MemTotal 3792 MB < 7000" "payload-run\[t\]: REFUSED: MemTotal 3792 MB < 7000 MB required by the manifest"
+mg "$T/nonexistent" "meminfo missing" "REFUSED: MemTotal unreadable"
+mg "$T/mi-nototal" "meminfo without MemTotal" "REFUSED: MemTotal unreadable"
+export PAYLOAD_MEMINFO="$T/mi-eq"; rc=$(pr t); unset PAYLOAD_MEMINFO
+[ "$rc" = 0 ] && [ "$(cat "$S/c/db/status")" = running ] && ! grep -q REFUSED "$T/out" && ok "32 MemTotal exactly 7000 MB: rebuild proceeds" || { no "32 at floor rc=$rc"; cat "$T/out"; }
+for c in db app; do echo exited > "$S/c/$c/status"; done
+export PAYLOAD_MEMINFO="$T/mi-eq"; rc=$(pr --converge t); unset PAYLOAD_MEMINFO
+[ "$rc" = 0 ] && grep -q "start mode" "$T/out" && [ "$(cat "$S/c/app/status")" = running ] && ok "32 MemTotal at the floor: converge starts the stack as before" || { no "32 at floor converge rc=$rc"; cat "$T/out"; }
+cp "$T/man.bak" "$A/t/t.manifest"; sh "$PR" t >>"$ALL" 2>&1; for c in db app; do echo exited > "$S/c/$c/status"; done
+export PAYLOAD_MEMINFO="$T/mi-4g"; rc=$(pr --converge t); unset PAYLOAD_MEMINFO
+[ "$rc" = 0 ] && grep -q "start mode" "$T/out" && ! grep -q REFUSED "$T/out" && ok "32 no MEMTOTAL_MIN_MB in the manifest: a 3792 MB node starts the stack as before" || { no "32 key absent rc=$rc"; cat "$T/out"; }
+sh "$PR" t >>"$ALL" 2>&1
 
 # 12 no docker child ever inherited fd 9 (the lock dies with the wrapper)
 [ -s "$S/violations" ] && { no "12 violations:"; cat "$S/violations"; } || ok "12 no rm -f of a running container, no fd 9 leaked (all runs above)"
