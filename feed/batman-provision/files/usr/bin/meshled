@@ -87,7 +87,10 @@ check_system() {
 	FAILED=""
 
 	# --- health -------------------------------------------------------
-	mount | grep -q "on / type overlay (rw" || fail rootfs-ro
+	# #286: no pipe here. Under procd SIGPIPE is ignored (SigIgn bit 13 inherited), so `mount | grep -q` made mount
+	# print "mount: write error" to the log on every tick once grep -q had closed the pipe (1500+ lines per logread
+	# ring on the 1.5.9 fleet). /proc/mounts: "<src> / overlay rw,..." on the root line.
+	grep -q " / overlay rw" /proc/mounts || fail rootfs-ro
 	if [ -d /overlay ]; then
 		_use=$(df /overlay 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
 		[ -n "$_use" ] && [ "$_use" -ge "$OVERLAY_FULL_PCT" ] && fail overlay-full
@@ -98,7 +101,7 @@ check_system() {
 	[ "$_yr" -ge 2020 ] || fail clock
 
 	# --- network ------------------------------------------------------
-	ip -4 addr show br-ahwlan 2>/dev/null | grep -q "inet " || fail no-ip
+	case "$(ip -4 addr show br-ahwlan 2>/dev/null)" in *"inet "*) ;; *) fail no-ip ;; esac   # #286: no pipe (same hazard)
 
 	# --- HaLow driver probed (NOT a module-name check: OpenMANET builds
 	#     SPI support into the single `morse` module, there is no morse_spi)

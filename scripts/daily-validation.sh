@@ -1759,6 +1759,25 @@ chk_soak_cot() { local sent st rc re rows
   # sent is sampled at minute SOAK_MIN+2 while the generator still runs; stored/rows are read at the end: >= sent
   echo "CoT sent (sampled)=$sent distinct (uid,time) stored=$st rows=$rows duplicates=$((rows - st)) client reconnects=$re"
   [ "$st" -ge "$sent" ] || { echo "FAIL CoT lost $((sent-st))/$sent"; return 1; }; }
+# #286: meshled's health check must not write to the log every tick. Black-box on the REAL service under procd (SIGPIPE
+# ignored there, which a shell reproduction does not get right). Per fleet node: a marker line is logged, 60 s later
+# the lines after the marker are counted (the logread ring is FULL of these lines on an unfixed node, so a plain
+# before/after count goes negative), and meshled must be alive and ticking: procd's pid for it unchanged and its
+# CPU time incl. reaped children grown (a tick runs mount/ip/df every 5 s; a dead or stopped meshled would pass the
+# line count on its own). Negative control: 1.5.9-wsl.21 writes one line per tick.
+chk_286() { local n rc=0 id c p0 p1 u0 u1
+  for n in $FLEET; do
+    id=DV286$(date +%H%M%S)
+    read -r p0 u0 <<< "$(fssh "$n" 20 'p=$(ubus call service list "{\"name\":\"meshled\"}" 2>/dev/null | sed -n "s/.*\"pid\": \([0-9]*\).*/\1/p" | head -1); echo "${p:-0} $(awk "{print \$14+\$15+\$16+\$17}" /proc/${p:-0}/stat 2>/dev/null || echo 0)"; logger -t dv286 "MARK '"$id"'"' | tr -d '\r')"
+    sleep 60
+    read -r p1 u1 c <<< "$(fssh "$n" 20 'p=$(ubus call service list "{\"name\":\"meshled\"}" 2>/dev/null | sed -n "s/.*\"pid\": \([0-9]*\).*/\1/p" | head -1); echo "${p:-0} $(awk "{print \$14+\$15+\$16+\$17}" /proc/${p:-0}/stat 2>/dev/null || echo 0) $(logread | sed -n "/dv286: MARK '"$id"'/,\$p" | grep -c "meshled.*write error")"' | tr -d '\r')"
+    { isint "$u0" && isint "$u1" && isint "$c"; } || { echo "FAIL $n: counters unreadable pid=[$p0/$p1] cpu=[$u0/$u1] lines=[$c] — not verified"; rc=1; continue; }
+    echo "$n: meshled write-error lines in the 60 s after the marker: $c; meshled pid $p0 -> $p1, cpu(utime+stime+cutime+cstime) $u0 -> $u1 jiffies"
+    [ "$c" = 0 ] || { echo "FAIL $n: meshled still writes '$(fssh "$n" 10 'logread | grep "meshled.*write error" | tail -1' | tr -d '\r' | cut -c1-120)' every tick (#286)"; rc=1; }
+    [ "$p0" != 0 ] && [ "$p0" = "$p1" ] && [ "$u1" -gt "$u0" ] || { echo "FAIL $n: meshled not alive and ticking (pid $p0 -> $p1, cpu $u0 -> $u1)"; rc=1; }
+  done
+  [ -n "$FLEET" ] || { echo "FAIL fleet empty"; rc=1; }
+  return $rc; }
 chk_130() { fssh "$1" 20 '
   st=$(/usr/bin/halow-status json 2>/dev/null | sed -n "s/.*\"join\":{\"state\":\"\([A-Za-z_]*\)\".*/\1/p" | head -1)
   p=$(batctl n 2>/dev/null | grep -c wlh0)
@@ -1872,6 +1891,7 @@ fi
 # would revert). batman-autocommit health-gates + commits; assert the bench node ended committed.
 # Placed here (after chk_* are defined) — chk_autocommit is used, unlike the inline BENCH suites above.
 if up "$BENCH_NODE"; then
+  suite meshled-286 "meshled's health check writes nothing to the log (no 'mount: write error' per tick) and keeps ticking, on every fleet node (#286)" "chk_286"
   suite autocommit-211 "every fleet node committed (not an uncommitted trial) and no stray hold-commit flag (#211/#261)" '(rc=0; for n in $FLEET; do echo "== $n"; chk_autocommit "$n" || rc=1; done; [ -n "$FLEET" ] || { echo "FAIL fleet empty"; rc=1; }; exit $rc)' 
   suite p6grow-201 "A/B card data partition (p6) grew to fill the card at first boot (#201, not stuck at the baked ~200MiB)" "chk_p6grow_201 $BENCH_NODE"
   suite socgate-209 "sysupgrade refuses a wrong-SoC A/B image (#209 review: the old check only warned, and a bcm2711 wildcard passed everything)" "chk_socgate_209 $BENCH_NODE"
