@@ -1430,6 +1430,7 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   for c in "ots_cot_parser $run-a 1" "ots_eud_handler $run-a 5" "opentakserver $run-b 1" "ots_eud_handler_ssl $run-b 5"; do
     read -r rctr rrun rfirst <<< "$c"
     ( fssh "$ots" 260 "docker exec -i -e TARGET=$tgt -e PORT=$port -e RUN=$rrun -e FIRST=$rfirst -e N=4 -e HOLD=$hold -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key $rctr python3 -" < "$REPO/scripts/node/rto-reconnect-264.py" > "$DIR/$run.$rctr.1" 2>&1 ) &
+    sleep 1   # ssh launches 1 s apart: dropbear (-T 3) resets the 6th simultaneous connection from one host (rc wsl.20 re-run)
   done
   if [ "$port" = 8089 ]; then
     # the second flap, 30 s later: inside R17's wait for the first return's superseded sessions, so three generations
@@ -1440,11 +1441,16 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
     # is measured: every phone has its own address in the field. The census below names a stray before the flap.
     sleep 30
     echo "before the second flap, established sockets to $ctr per client address (hex): $(fssh "$ots" 20 "docker exec $ctr awk '\$4 == \"01\" && \$2 ~ /:1F99\$/ { split(\$3, a, \":\"); n[a[1]]++ } END { for (k in n) printf \"%s=%d \", k, n[k] }' /proc/net/tcp" | tr -d '\r') (expect 4 each on the four containers: an 8 after the flap is a refusal)"
+    # the host leg first and alone (rc wsl.20 re-run: launched as the 6th simultaneous ssh it was reset by dropbear
+    # -T 3 and printed nothing; flip test 6 parallel -> 1 reset, 3 -> 0), then the container legs 1 s apart
+    o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "TARGET=$tgt RUN=$run-a ACTION=start PORT=8089 N=4 TAG=.g3 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r')
+    echo "second return, $run-a 1-4 from the OTS node: $o"
+    case "$o" in *STARTED*) ;; *) echo "FAIL the host leg of the second return did not run (its ssh produced no STARTED: a reset connection, not a refusal)"; rc=1 ;; esac
     for c in "ots_cot_parser $run-a 5 3" "ots_eud_handler $run-a 8 1" "ots_eud_handler $run-b 1 2" "opentakserver $run-b 3 3" "ots_eud_handler_ssl $run-b 6 3"; do
       read -r rctr rrun rfirst rn <<< "$c"
       ( fssh "$ots" 260 "docker exec -i -e TARGET=$tgt -e PORT=$port -e RUN=$rrun -e FIRST=$rfirst -e N=$rn -e HOLD=$((hold - 30)) -e CA=/app/ots/ca/ca.pem -e CERT=/tmp/dv-client.pem -e KEY=/tmp/dv-client.key $rctr python3 -" < "$REPO/scripts/node/rto-reconnect-264.py" > "$DIR/$run.2.$rctr.f$rfirst" 2>&1 ) &
+      sleep 1
     done
-    echo "second return, $run-a 1-4 from the OTS node: $(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "TARGET=$tgt RUN=$run-a ACTION=start PORT=8089 N=4 TAG=.g3 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r')"
   fi
   for i in $(seq 1 22); do sleep 5; a=$(fssh "$ots" 20 "$cg"'; awk "/^anon /{print \$2}" $d/memory.stat' | tr -d ' \r'); isint "$a" && [ "$a" -gt "$peak" ] && peak=$a; done; wait
   if [ "$port" = 8088 ]; then   # KEPT per run: $run-a's two legs, $run-b's two legs
