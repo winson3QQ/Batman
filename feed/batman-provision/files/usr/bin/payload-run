@@ -62,6 +62,7 @@ LOCK="$RUNDIR/batman-payload-$TENANT.lock"
 PIDF="$RUNDIR/batman-payload-$TENANT.pid"
 STOPPING="$RUNDIR/batman-payload-$TENANT.stopping"
 SHUTDOWN="$RUNDIR/batman-shutdown"      # #274 D7-4: written by K08's shutdown(); never removed this boot
+HOLD="$RUNDIR/batman-payload-$TENANT.mountsha-hold"   # #264 R8 (review r3 B3-1): containers a refused converge keeps stopped
 # shellcheck source=/dev/null
 . "${PAYLOAD_LIB:-/usr/lib/batman/payload-lib.sh}" || { echo "payload-run: payload-lib.sh missing" >&2; exit 1; }
 # #274 D7-7: a tenant whose golden copy is in the image reads HARDEN files and *.fw4.uci from the image
@@ -136,11 +137,77 @@ sha(){ sha256sum < "$1" | cut -d' ' -f1; }
 # as "$@" (a bare call would see no args — the #167 Inc-2 on-node bug).
 NAME=""; IMG=""; IP=""; HOST=""; HARDEN=""
 EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; FACTS=""
-FAILED=0; PF=""; START_FAILED=""; ACTION=""; CFG=""
+FAILED=0; PF=""; START_FAILED=""; ACTION=""; CFG=""; SKIP_START=""
 
 reset_block(){
 	NAME="$1"; IMG=""; IP=""; HOST=""; HARDEN=""
-	EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; FACTS=""
+	EP_HEAD=""; EP_REST=""; HEALTH=""; CHOWNS=""; FACTS=""; MSHAS=""
+}
+# #264 R8: `MOUNTSHA <dst> <sha256>` pins an overlay that is bind-mounted OVER AN IMAGE FILE to the one upstream
+# file it was made for. Before a rebuild, read the image's OWN file at <dst> (docker create + cp: nothing in the
+# image executes; the probe container carries the allowlist flags, so the guardian's foreign scan ignores it) and
+# refuse the rebuild if its sha differs. Fail-closed: a re-tagged image would otherwise run unpatched, or have
+# newer code silently overwritten by an old overlay. Preflight only (never in the 30 s cfg-hash walk).
+# probe_sha (review r3 B3-9): reads <path> of <image> into PROBE_SHA; rc 1 = the probe could not read it, the reason
+# in PROBE_WHY. Each step's exit status is checked (no pipefail in ash: a pipe would hash the EMPTY output of a
+# failed copy and report a sha). The probe container has a deterministic name, so a leftover of a payload-run
+# killed between create and rm is removed by the next probe instead of piling up. The copy lands in the
+# root-only run dir (the tenant lock serialises probes of one tenant).
+PROBE_SHA=""; PROBE_WHY=""
+probe_sha(){   # $1 = image ref or id, $2 = absolute path in the image, $3 = container name, $4 = pull policy
+	pn="batman-probe-$TENANT-$3"; pt="$RUNDIR/$pn.tar"; PROBE_SHA=""; PROBE_WHY=""
+	docker rm -f "$pn" >/dev/null 2>&1 </dev/null || true
+	if ! docker create --name "$pn" --pull="$4" --network none --security-opt no-new-privileges "$1" >/dev/null 2>&1 </dev/null; then
+		PROBE_WHY="cannot create a probe container from $1"; return 1
+	fi
+	prc=0
+	docker cp "$pn:$2" - > "$pt" 2>/dev/null </dev/null || prc=1
+	docker rm -f "$pn" >/dev/null 2>&1 </dev/null || true
+	[ "$prc" = 0 ] && [ -s "$pt" ] && tar -xOf "$pt" > "$pt.f" 2>/dev/null || prc=1
+	[ "$prc" = 0 ] && PROBE_SHA=$(sha "$pt.f")
+	rm -f "$pt" "$pt.f"
+	[ "$prc" = 0 ] && [ -n "$PROBE_SHA" ] && return 0
+	PROBE_WHY="the image's own $2 is unreadable (probe: docker cp/tar failed)"; return 1
+}
+mountsha_check(){
+	[ -n "$MSHAS" ] || return 0
+	while read -r mdst msha; do
+		[ -n "$mdst" ] || continue
+		case "$mdst" in /*) ;; *) problem "$NAME: MOUNTSHA $mdst is not an absolute path"; continue ;; esac
+		case "$msha" in *[!0-9a-f]*|"") problem "$NAME: MOUNTSHA $mdst: not a sha256"; continue ;; esac
+		if probe_sha "$IMG" "$mdst" "$NAME" "$PULL_POLICY"; then
+			[ "$PROBE_SHA" = "$msha" ] || problem "$NAME: MOUNTSHA $mdst: the image's own file is sha256 $PROBE_SHA, the overlay was made for $msha (image changed under the overlay)"
+		else problem "$NAME: MOUNTSHA $mdst: $PROBE_WHY - refused (fail-closed)"; fi
+	done <<EOF
+$MSHAS
+EOF
+}
+# The decision is written to $HOLD (root-only run dir, gone at boot) and honoured by EVERY later start of this
+# boot - review r3 B3-1, reproduced on rc wsl.10: the guardian's `--restart-exited` (a new payload-run with an empty
+# SKIP_START) started the held container 30 s later. Only a converge that succeeds (rebuild, or an unchanged stack)
+# removes it.
+# #264 R8 (review r2 B2-5): a REFUSED converge starts the existing stack on its OLD config, but docker re-reads a
+# bind-mount source when a container starts: an overlay on p6 that the update replaced would run over the OLD image
+# (fail-open). Before that start, every container with a MOUNTSHA is checked against ITS OWN image (the one it was
+# created from, by id: no pull); a mismatch, or a probe that cannot run, keeps it stopped (fail-closed: code that
+# was never validated against that image never runs; the verdict stays DRIFT and the log says why).
+mountsha_old_check(){
+	SKIP_START=""; rm -f "$HOLD"
+	while read -r c mdst msha; do
+		[ -n "$c" ] && [ -n "$mdst" ] || continue
+		why=""
+		iid=$(docker inspect -f '{{.Image}}' "$c" 2>/dev/null) || why="no image id"
+		if [ -z "$why" ]; then
+			if probe_sha "$iid" "$mdst" "$c" never; then
+				[ "$PROBE_SHA" = "$msha" ] || why="its image's $mdst is sha256 $PROBE_SHA, the overlay on p6 was made for $msha"
+			else why=$PROBE_WHY; fi
+		fi
+		[ -n "$why" ] || continue
+		case " $SKIP_START " in *" $c "*) ;; *) SKIP_START="$SKIP_START $c"; echo "$c" >> "$HOLD" ;; esac
+		log "WARN: $c kept STOPPED on its old config: $why (#264 R8, fail-closed)"
+	done <<EOF
+$(awk '$1=="CONTAINER"{n=$2} $1=="MOUNTSHA"{print n, $2, $3}' "$MANIFEST")
+EOF
 }
 fact(){ FACTS="$FACTS$*
 "; }
@@ -235,7 +302,8 @@ finish_block(){
 		echo "IMAGEID $(docker image inspect -f '{{.Id}}' "$IMG" 2>/dev/null || echo MISSING)"
 		printf '%s' "$FACTS" ;;
 	preflight)
-		docker image inspect "$IMG" >/dev/null 2>&1 || problem "$NAME: image $IMG not present locally" ;;
+		docker image inspect "$IMG" >/dev/null 2>&1 || problem "$NAME: image $IMG not present locally"
+		mountsha_check ;;
 	prep)
 		: ;;   # start mode: the walk only enforces the secret owner/mode (SECRET below); start_group starts
 	run)
@@ -287,6 +355,8 @@ walk(){   # $1 = ACTION
 			              fi
 			              case "$msrc$mdst" in *,*) problem "$NAME: MOUNT path contains a comma" ;; esac
 			              set -- "$@" --mount "type=bind,source=$msrc,target=$mdst$mro" ;;
+			MOUNTSHA)     MSHAS="$MSHAS$rest
+" ;;   # #264 R8: "<dst> <sha256>", checked by mountsha_check in preflight
 			SECRET)       sname=${rest%% *}; srest=${rest#* }; smount=${srest%% *}
 			              case "$srest" in *" "*) suid=${srest#* } ;; *) suid="" ;; esac
 			              sf="$DIR/secrets/$sname"
@@ -324,6 +394,20 @@ walk(){   # $1 = ACTION
 # format). Never fails: the guardian needs a stable value even for a broken tenant.
 CFG=$({ echo "cfg-v2"; echo "MANIFEST $(sha "$MANIFEST")"; walk render; } | sha256sum | cut -d' ' -f1)
 if [ "$MODE" = cfg-hash ]; then echo "$CFG"; exit 0; fi
+# #264: `MEMTOTAL_MIN_MB <n>` (profile `requires.mem_total_min_mb`): the tenant's memory caps are sized for a node
+# with at least this much RAM (OTS: Pi 4 8 GB only). Every mode that starts or (re)builds containers refuses below
+# it, and when MemTotal cannot be read (fail-closed: caps summing past the RAM would OOM the node, not the tenant).
+# PAYLOAD_MEMINFO overrides /proc/meminfo (scripts/test-payload-run.sh).
+MEMMIN=$(awk '$1=="MEMTOTAL_MIN_MB"{print $2; exit}' "$MANIFEST")
+mem_gate(){
+	[ -n "$MEMMIN" ] || return 0
+	case "$MEMMIN" in *[!0-9]*) log "REFUSED: manifest MEMTOTAL_MIN_MB '$MEMMIN' is not a number - nothing started"; return 1 ;; esac
+	mi=${PAYLOAD_MEMINFO:-/proc/meminfo}
+	mkb=$(awk '$1=="MemTotal:"{print $2; exit}' "$mi" 2>/dev/null) || mkb=""
+	case "$mkb" in ""|*[!0-9]*) log "REFUSED: MemTotal unreadable ($mi) - $MEMMIN MB required by the manifest, nothing started (fail-closed)"; return 1 ;; esac
+	[ $((mkb / 1024)) -ge "$MEMMIN" ] && return 0
+	log "REFUSED: MemTotal $((mkb / 1024)) MB < $MEMMIN MB required by the manifest"; return 1
+}
 [ -z "$RESTART_IGNORED" ] || log "WARN: manifest RESTART$RESTART_IGNORED ignored — every container is created --restart no; the guardian is the only restarter (#274)"
 
 # ---- network ----
@@ -399,7 +483,9 @@ hc_of(){ awk -v c="$1" '$1=="CONTAINER"{n=$2} $1=="HEALTH" && n==c {sub(/^HEALTH
 tiers(){ awk '$1=="CONTAINER"{if(n!="")print n, t; n=$2; t=99} $1=="STOPTIER"{t=$2+0} END{if(n!="")print n, t}' "$MANIFEST"; }
 start_group(){   # $@ = container names: start in parallel, collect each status, then gate each
 	pids=""
+	held=" $SKIP_START $(cat "$HOLD" 2>/dev/null | tr '\n' ' ') "
 	for c in "$@"; do
+		case "$held" in *" $c "*) log "WARN: $c is held stopped ($HOLD, #264 R8)"; START_FAILED="$START_FAILED $c"; FAILED=1; continue ;; esac
 		st=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
 		case "$st" in
 			running|restarting) log "$c already $st" ;;
@@ -452,6 +538,7 @@ do_restart_exited(){
 }
 do_rebuild(){
 	log "rebuild (cfg $(short))"
+	rm -f "$HOLD"   # #264 R8: a preflighted rebuild replaces the held containers
 	remove_stack
 	ensure_net; apply_fw4
 	walk run
@@ -461,6 +548,8 @@ finish(){
 	log "bring-up FINISHED WITH FAILURES (fw4 and/or health gate) — see WARNs above"; exit 1
 }
 
+# #264: every mode that starts or (re)builds containers honours the manifest's RAM floor before touching anything
+case "$MODE" in rebuild|converge|start-only|restart-exited|renet) mem_gate || exit 1 ;; esac
 case "$MODE" in
 	rebuild)
 		preflight || { refuse; exit 1; }
@@ -476,6 +565,7 @@ case "$MODE" in
 		finish ;;
 	converge)
 		if all_match; then
+			rm -f "$HOLD"   # #264 R8: the stack matches the current config: nothing to hold
 			do_start
 			[ -z "$START_FAILED" ] && finish
 			log "start failed for:$START_FAILED — converging by rebuild"
@@ -486,6 +576,7 @@ case "$MODE" in
 		log "converge REFUSED (config changed but a rebuild is not possible):$PF"
 		if all_exist; then
 			log "starting the existing stack on its OLD config (verdict stays DRIFT until fixed)"
+			mountsha_old_check
 			do_start
 		fi
 		exit 1 ;;

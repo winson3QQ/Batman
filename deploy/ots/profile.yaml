@@ -8,6 +8,11 @@ apiVersion: batman.payload/v1
 tenant: opentakserver
 archetype: network-service
 co_scheduled_with: [ots-db, rabbitmq, ots-cot-parser, ots-eud-handler, ots-eud-handler-ssl]
+# operational (emitter-ignored; -> manifest MEMTOTAL_MIN_MB, honoured by payload-run): #264 - OTS runs only on a Pi 4
+# with 8 GB (the user, 2026-10-12). Its memory caps are 3 x 1280m + 1536m (ots_eud_handler_ssl, #264 r10) + 2 x 512m = 6.4 GiB; on a smaller node all caps hit
+# at once would OOM the node, not the tenant. A Pi 4 8 GB reports MemTotal ~7.6 GiB, a 4 GB one ~3.7 GiB: payload-run
+# refuses to start or rebuild the stack below 7000 MB (and when MemTotal is unreadable - fail-closed).
+requires: {mem_total_min_mb: 7000}
 
 values:                                # emitter reads ONLY this
   network:  {mode: bridged}            # br-ots; EUD 8088/8089 + web 8443, all >1024. VALIDATED (design B) on manet01.
@@ -15,7 +20,7 @@ values:                                # emitter reads ONLY this
   no_new_privileges: true
   caps:     {drop: [ALL], add: []}     # plausible (>1024 ports, python stack) — TEST-GATED (gate item 2, not yet applied to OTS containers)
   rootfs:   {read_only: true, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # read_only ON (#98, manet01 2026-09-18): docker diff = only /tmp/dp.zip (opentakserver) beyond the /app/ots volume; logs go to the /app/ots volume, .pyc write is EROFS-tolerated. Validated: recreate 4 app containers --read-only + tmpfs /tmp → all up + CoT round-trip OK.
-  resources: {cpus: 1.0, memory: 512m, pids: 512}   # idle measured ~116MiB/service on Pi4 (2026-09-16); 512m leaves headroom. memcg enabled (docker-in-image #159).
+  resources: {cpus: 1.0, memory: 1280m, pids: 512}   # idle measured ~116MiB/service on Pi4 (2026-09-16). #264: 1280m (a cap, not a reservation). OTS runs only on Pi 4 8 GB (the user, 2026-10-12; 04: ~6.6 GiB available); 3 x 1280m + 1536m (ots_eud_handler_ssl: its own block under infra_values) + 2 x 512m = 6.4 GiB < available, so all caps hit at once still do not OOM the node. Sized for the RTO-returns case: 16 stale + 16 reconnecting sessions per listener at 23 MiB each (rc wsl.11 at 768m: the listener was OOM-killed); memcg enabled (docker-in-image #159).
   devices:  []
   seccomp:  {profile: default}
   privileged: false
@@ -40,6 +45,17 @@ infra_values:                          # NEW (#98): per-container confinement fo
     caps:     {drop: [ALL], add: []}   # non-root broker binds 5672/15672/25672 (>1024) → no caps
     rootfs:   {read_only: true, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # read_only ON (#98, manet01 2026-09-18): docker diff = ONLY /etc/rabbitmq/enabled_plugins (cookie + mnesia are on the /var/lib/rabbitmq volume). Fixed by RABBITMQ_ENABLED_PLUGINS_FILE=/var/lib/rabbitmq/enabled_plugins (run.sh) → the boot write lands on the volume. Validated: recreate --read-only → rabbitmq up + CoT round-trip OK.
     resources: {cpus: 1.0, memory: 512m, pids: 512}   # provisional; revise after load (#171)
+    seccomp:  {profile: default}
+  ots_eud_handler_ssl:                 # #264 r10 (the user, 2026-10-13): the mTLS CoT listener alone gets 1536m. Two RTO
+                                       # flaps within the R17 window (outage + 20 s) put three generations of 16 sessions
+                                       # on this listener: 48 x ~23 MiB + ~150 MiB base + the 96 MiB reserve > 1280m
+                                       # (rc wsl.19: 8 of 16 refused by R7, no OOM). Same confinement as `values`, memory
+                                       # apart; the container spec above carries env_common: true.
+    user:     {run_as: 1000, run_as_gid: 1024}
+    no_new_privileges: true
+    caps:     {drop: [ALL], add: []}
+    rootfs:   {read_only: true, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}
+    resources: {cpus: 1.0, memory: 1536m, pids: 512}
     seccomp:  {profile: default}
 
 assessment:
@@ -81,12 +97,20 @@ images:
                                                              # so ots-db failed "address already in use" and got
                                                              # stuck Created (intermittent OTS reboot flakiness).
                                                              # Explicit static IP makes bring-up order-independent.
+      # #264: both CoT listeners run the patched EudHandler.py (deploy/ots/patches/, GPL-3.0-or-later), bind-mounted
+      # read-only over the image's file. The overlay is made for THIS image's file only: image_sha_file pins it
+      # (MOUNTSHA in the manifest; payload-run refuses a rebuild on an image whose own file differs — fail-closed).
+      # Re-check / regenerate whenever the ref above changes (patches/README.md).
       - {name: ots_eud_handler, ip: 172.20.0.10, hostname: ots_eud_handler,
          entrypoint: [python3, /app/venv/bin/eud_handler],
-         volumes: [{name: ots-appdata, path: /app/ots}]}
-      - {name: ots_eud_handler_ssl, ip: 172.20.0.12, hostname: ots_eud_handler_ssl,
+         volumes: [{name: ots-appdata, path: /app/ots}],
+         mounts: [{src: EudHandler-264.py, dst: /app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py, ro: true, image_sha_file: patches/UPSTREAM_SHA256}]}
+      # #264 r10: confined by its OWN infra_values block (1536m); env_common: true keeps the app env on it (an
+      # infra_values key drops env_common by default: those are the db and the broker)
+      - {name: ots_eud_handler_ssl, ip: 172.20.0.12, hostname: ots_eud_handler_ssl, env_common: true,
          entrypoint: [python3, /app/venv/bin/eud_handler, --ssl],
-         volumes: [{name: ots-appdata, path: /app/ots}]}
+         volumes: [{name: ots-appdata, path: /app/ots}],
+         mounts: [{src: EudHandler-264.py, dst: /app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py, ro: true, image_sha_file: patches/UPSTREAM_SHA256}]}
   - ref: "imresamu/postgis:18-3.6"
     containers:
       - {name: ots-db, ip: 172.20.0.2, hostname: ots-db,
@@ -96,7 +120,8 @@ images:
     containers:
       - {name: rabbitmq, ip: 172.20.0.3, hostname: rabbitmq,
          env: {RABBITMQ_ERLANG_COOKIE: batman-ots-cookie, RABBITMQ_ENABLED_PLUGINS_FILE: /var/lib/rabbitmq/enabled_plugins},
-         mounts: [{src: rabbitmq-extra.conf, dst: /etc/rabbitmq/conf.d/99-batman.conf, ro: true}],   # tenant-relative src (shipped in apps/opentakserver/)
+         mounts: [{src: rabbitmq-extra.conf, dst: /etc/rabbitmq/conf.d/99-batman.conf, ro: true},   # tenant-relative src (shipped in apps/opentakserver/)
+                  {src: rabbitmq-definitions.json, dst: /etc/rabbitmq/batman-definitions.json, ro: true}],   # #264 r3: per-EUD queue policy (see rabbitmq-extra.conf)
          volumes: [{name: ots-mqdata, path: /var/lib/rabbitmq, chown: "999:999", chown_image: "batman/ots:1.7.13-arm64"}]}
 
 network:                               # -> fw4-native uci-default (validated design B)

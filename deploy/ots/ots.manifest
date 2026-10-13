@@ -6,6 +6,7 @@ BRIDGE br-ots
 SUBNET 172.20.0.0/24
 ZONE dockert
 RESTART no
+MEMTOTAL_MIN_MB 7000
 
 CONTAINER ots-db
 IMAGE imresamu/postgis:18-3.6
@@ -29,6 +30,7 @@ ENV RABBITMQ_ERLANG_COOKIE=batman-ots-cookie
 ENV RABBITMQ_ENABLED_PLUGINS_FILE=/var/lib/rabbitmq/enabled_plugins
 VOLUME ots-mqdata:/var/lib/rabbitmq:999:999:batman/ots:1.7.13-arm64
 MOUNT rabbitmq-extra.conf:/etc/rabbitmq/conf.d/99-batman.conf:ro
+MOUNT rabbitmq-definitions.json:/etc/rabbitmq/batman-definitions.json:ro
 HEALTH rabbitmq-diagnostics -q ping
 ENDCONTAINER
 
@@ -74,6 +76,8 @@ ENV OTS_FQDN=_
 ENV OTS_MEDIAMTX_API_ADDRESS=http://localhost:9997
 ENTRYPOINT python3 /app/venv/bin/eud_handler
 VOLUME ots-appdata:/app/ots
+MOUNT EudHandler-264.py:/app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py:ro
+MOUNTSHA /app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py 2edfefac9fbfc794cc542923fcc1dde5ec379f7675f636b1a837da27df1b206b
 STOPTIER 1
 ENDCONTAINER
 
@@ -81,7 +85,7 @@ CONTAINER ots_eud_handler_ssl
 IMAGE batman/ots:1.7.13-arm64
 IP 172.20.0.12
 HOSTNAME ots_eud_handler_ssl
-HARDEN ots.hardening.env
+HARDEN ots_eud_handler_ssl.hardening.env
 ENV SQLALCHEMY_DATABASE_URI=postgresql+psycopg://ots:password@ots-db/ots
 ENV OTS_RABBITMQ_SERVER_ADDRESS=rabbitmq
 ENV OTS_LISTENER_ADDRESS=0.0.0.0
@@ -89,5 +93,7 @@ ENV OTS_FQDN=_
 ENV OTS_MEDIAMTX_API_ADDRESS=http://localhost:9997
 ENTRYPOINT python3 /app/venv/bin/eud_handler --ssl
 VOLUME ots-appdata:/app/ots
+MOUNT EudHandler-264.py:/app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py:ro
+MOUNTSHA /app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py 2edfefac9fbfc794cc542923fcc1dde5ec379f7675f636b1a837da27df1b206b
 STOPTIER 1
 ENDCONTAINER

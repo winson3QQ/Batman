@@ -14,12 +14,12 @@ VP=/usr/lib/batman/verify-profile.sh
 [ -f "$VP" ] || VP="$HERE/verify-profile.sh"; [ -f "$VP" ] || VP="$HERE/../../scripts/verify-profile.sh"
 [ -f "$VP" ] || { echo "cannot find verify-profile.sh (looked in /usr/lib/batman, $HERE and ../../scripts)"; exit 2; }
 
-# container -> hardening.env  (the 4 app containers share ots.hardening.env)
+# container -> hardening.env  (3 app containers share ots.hardening.env; the mTLS listener has its own: #264 r10, 1536m)
 set -- \
   "opentakserver:ots" \
   "ots_cot_parser:ots" \
   "ots_eud_handler:ots" \
-  "ots_eud_handler_ssl:ots" \
+  "ots_eud_handler_ssl:ots_eud_handler_ssl" \
   "ots-db:ots-db" \
   "rabbitmq:rabbitmq"
 

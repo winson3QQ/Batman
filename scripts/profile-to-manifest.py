@@ -20,7 +20,7 @@ so payload-run parses it with `while read` in busybox ash — no YAML, no jq.
 Usage:  profile-to-manifest.py <app>            # writes the three files
         profile-to-manifest.py <app> --check    # print all three to stdout (CI diff), write nothing
 """
-import sys, pathlib
+import re, sys, pathlib
 try:
     import yaml
 except ImportError:
@@ -55,6 +55,7 @@ def resolve_containers(doc, app):
                 "volumes": c.get("volumes") or [],          # [{name,path,chown?,chown_image?}]
                 "mounts": c.get("mounts") or [],            # [{src,dst,ro?}] read-only config bind-mounts
                 "harden": harden,
+                "env_common": bool(c.get("env_common")),   # opt-in: an infra_values-confined APP container keeps env_common
             }
     return out
 
@@ -115,6 +116,19 @@ def render_manifest(doc, app):
     if net.get("zone"):
         a(f"ZONE {net['zone']}")
     a(f"RESTART {restart}")
+    # #264: `requires.mem_total_min_mb` - the node RAM floor the tenant's memory caps are sized for; payload-run
+    # refuses every start/rebuild when /proc/meminfo MemTotal (MB) is below it or unreadable. Emitted only when set.
+    req = doc.get("requires") or {}
+    if not isinstance(req, dict):
+        sys.exit(f"{tenant}: requires must be a mapping")
+    unknown = set(req) - {"mem_total_min_mb"}
+    if unknown:
+        sys.exit(f"{tenant}: requires has unknown key(s) {sorted(unknown)} (payload-run would ignore them)")
+    mm = req.get("mem_total_min_mb")
+    if mm is not None:
+        if isinstance(mm, bool) or not isinstance(mm, int) or mm < 1:
+            sys.exit(f"{tenant}: requires.mem_total_min_mb must be a positive integer (MB), got {mm!r}")
+        a(f"MEMTOTAL_MIN_MB {mm}")
     for name in order:
         c = containers.get(name)
         if not c:
@@ -127,9 +141,11 @@ def render_manifest(doc, app):
         a(f"HOSTNAME {c['hostname']}")
         a(f"HARDEN {c['harden']}")
         # env_common applies to APP containers only (not infra) — an infra container has its own
-        # env map; the app containers share env_common plus their own.
+        # env map; the app containers share env_common plus their own. A container confined by its own
+        # infra_values block but still an app container (#264 r10: ots_eud_handler_ssl, 1536m) says
+        # `env_common: true` in its spec to keep the shared env.
         is_infra = c["harden"] != f"{app}.hardening.env"
-        merged_env = {} if is_infra else dict(env_common)
+        merged_env = dict(env_common) if (not is_infra or c["env_common"]) else {}
         merged_env.update(c["env"])
         for k, v in merged_env.items():
             a(f"ENV {k}={v}")
@@ -146,6 +162,17 @@ def render_manifest(doc, app):
         for m in c["mounts"]:
             ro = ":ro" if m.get("ro", True) else ""
             a(f"MOUNT {m['src']}:{m['dst']}{ro}")
+            # #264 R8: an overlay over an IMAGE file names the file holding the upstream sha256 it was made for
+            # (one source of truth, e.g. patches/UPSTREAM_SHA256); payload-run refuses a rebuild on an image whose
+            # own file differs (MOUNTSHA <dst> <sha>, checked in preflight).
+            if m.get("image_sha_file"):
+                shaf = REPO / "deploy" / app / m["image_sha_file"]
+                if not shaf.is_file():
+                    sys.exit(f"{tenant}: mount {m['src']} names image_sha_file {m['image_sha_file']} but {shaf} does not exist")
+                sha = shaf.read_text(encoding="utf-8").strip()
+                if not re.fullmatch(r"[0-9a-f]{64}", sha):
+                    sys.exit(f"{tenant}: {shaf} is not a lowercase sha256")
+                a(f"MOUNTSHA {m['dst']} {sha}")
         for sname, smount, suid in secrets_by_ctr.get(name, []):
             a(f"SECRET {sname} {smount} {suid}" if suid is not None else f"SECRET {sname} {smount}")
         h = health.get(name)

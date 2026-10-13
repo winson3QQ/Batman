@@ -51,7 +51,7 @@ Ship `deploy/ots/`'s **declarative, non-secret** files into the rootfs at a read
     ots.manifest            # RESTART unless-stopped (source of truth)
     ots.fw4.uci
     ots.net.alloc
-    ots-db.hardening.env  ots.hardening.env  rabbitmq.hardening.env
+    ots-db.hardening.env  ots.hardening.env  ots_eud_handler_ssl.hardening.env  rabbitmq.hardening.env
     rabbitmq-extra.conf
     verify-profile-ots.sh
     reconcile-resources.sh
