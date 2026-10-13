@@ -744,7 +744,13 @@ return $rc; }
 # (AMQP heartbeat) needs >= 10 min and is NOT exercised here — only its log counters are reported.
 ots_sql() { timeout 60 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" 'docker exec -i ots-db psql -U ots -d ots -At' 2>&1; }
 ots_ctr() { fssh "$1" 15 'docker ps -q 2>/dev/null | wc -l' 2>/dev/null | tr -d ' \r'; }
-ots_logc() { fssh "$1" 30 'echo "$(docker exec ots_eud_handler sh -c "grep -c \"Failed to parse\" /app/ots/logs/eud_handler_tcp.log" 2>/dev/null) $(docker logs rabbitmq 2>&1 | grep -c "missed heartbeats") $(docker exec ots_eud_handler sh -c "grep -c \"channel is closed\" /app/ots/logs/eud_handler_tcp.log" 2>/dev/null)"' 2>/dev/null | tr -d '\r'; }
+# #264 harness note (rc wsl.20, 2026-10-13): the eud handlers' log files are read as "the newest file of the name"
+# (`ls -t eud_handler_tcp.log* | head -1`, expanded inside the container). Upstream's TimedRotatingFileHandler runs in
+# every forked session process; at node midnight the rename race leaves the LIVE writes in the dated file (PID 1's fd
+# pointed at eud_handler_tcp.log.2025-07-10 while eud_handler_tcp.log held 116 bytes), so a fixed path reads nothing
+# after the rotation (every log-based #264 suite FAILed with the product fine). Upstream (B); the gateway (#289) owns
+# its logging. A rotation inside one suite still skews that suite's before/after counts: once a day, attributable.
+ots_logc() { fssh "$1" 30 'echo "$(docker exec ots_eud_handler sh -c "grep -c \"Failed to parse\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)" 2>/dev/null) $(docker logs rabbitmq 2>&1 | grep -c "missed heartbeats") $(docker exec ots_eud_handler sh -c "grep -c \"channel is closed\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)" 2>/dev/null)"' 2>/dev/null | tr -d '\r'; }
 chk_cot_264() { local ots=$1 peer=$2 run o c0 c1 l0 l1 rc=0 ph sent st prev i
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   c0=$(ots_ctr "$ots"); [ "$c0" = 6 ] || { echo "FAIL OTS not 6/6 before the test ($c0)"; return 1; }
@@ -817,7 +823,7 @@ chk_name_guard_264() { local ots=$1 peer=$2 run o c rc=0 g0 g1 st
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   run=DVN$(date +%H%M%S)
-  g0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"is not used as a queue\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$g0" || g0=0
+  g0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"is not used as a queue\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r'); isint "$g0" || g0=0
   ( timeout 40 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" \
       'n=$(date +%s); ts(){ date -u -d @$1 +%Y-%m-%dT%H:%M:%S.000Z; }; { printf "<event version=\"2.0\" uid=\"'"$run"'\" type=\"a-f-G-U-C\" how=\"h-e\" time=\"%s\" start=\"%s\" stale=\"%s\"><point lat=\"25.03\" lon=\"121.56\" hae=\"10\" ce=\"9999999\" le=\"9999999\"/><detail><contact callsign=\"cot_parser\"/><marti><dest callsign=\"dv-nobody\"/></marti></detail></event>" "$(ts $n)" "$(ts $n)" "$(ts $((n+120)))"; sleep 8; } | nc '"$ots"' 8088 >/dev/null 2>&1; echo done' ) > "$DIR/$run.gen" 2>&1 &
   sleep 5
@@ -825,7 +831,7 @@ chk_name_guard_264() { local ots=$1 peer=$2 run o c rc=0 g0 g1 st
   echo "cot_parser queue consumers while the callsign=cot_parser session is up: [$c] (expect 1)"
   [ "$c" = 1 ] || { echo "FAIL the client's session consumes the cot_parser queue (consumers [$c]) — upstream behaviour"; rc=1; }
   wait; echo "peer: $(tr '\n' ' ' < "$DIR/$run.gen")"
-  g1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"is not used as a queue\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$g1" || g1=0
+  g1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"is not used as a queue\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r'); isint "$g1" || g1=0
   [ "$g1" -gt "$g0" ] && echo "handler log: the callsign is not used as a queue ($((g1 - g0)) line(s))" || { echo "FAIL no 'is not used as a queue' line in the handler's log"; rc=1; }
   sleep 3; st=$(echo "select count(*) from cot where uid = '$run';" | ots_sql "$ots")
   # the user's decision 2026-10-12 (review r4/r5): the colliding NAME is refused, the device is RECORDED (its own row,
@@ -851,7 +857,7 @@ chk_amqp_close_264() { local ots=$1 peer=$2 run o rc=0 sent st distinct dup clos
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   run=DVB$(date +%H%M%S)
-  l0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"delivering the cache, then ending\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$l0" || l0=0
+  l0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"delivering the cache, then ending\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r'); isint "$l0" || l0=0
   ( timeout 240 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run N=120 sh -s" < "$REPO/scripts/node/cot-stream-264.sh" > "$DIR/$run.gen" 2>&1 ) &
   sleep 20
   # close_connection takes the connection's pid, not its name (rc wsl.6/wsl.7: the name was rejected); a miss or a
@@ -870,7 +876,7 @@ chk_amqp_close_264() { local ots=$1 peer=$2 run o rc=0 sent st distinct dup clos
   dup=$((st - distinct)); echo "sent $sent (all before the session ended), stored rows $st, distinct uids $distinct, duplicates $dup (at-least-once: allowed, reported)"
   [ "$distinct" = "$sent" ] || { echo "FAIL $((sent - distinct)) of $sent CoT never stored (lost across the broker-side close)"; rc=1
     echo "  missing seq: $(echo "select string_agg(g::text,' ') from generate_series(1,$sent) g where not exists (select 1 from cot where uid='$run-'||g);" | ots_sql "$ots")"; }
-  l1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"delivering the cache, then ending\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'); isint "$l1" || l1=0
+  l1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"delivering the cache, then ending\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r'); isint "$l1" || l1=0
   [ $((l1 - l0)) -ge 1 ] && echo "handler log: \"delivering the cache, then ending the client session\" ($((l1 - l0)))" || { echo "FAIL no R13 log line"; rc=1; }
   r264_clean "$ots" "$run"
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
@@ -902,20 +908,20 @@ chk_same_uid_end_264() { local ots=$1 peer=$2 run o rc=0 t0 q
   echo "  peer: $(s264 "$peer" "$ots" "$run" send10 TAG=post)"; sleep 2
   o=$(s264 "$peer" "$ots" "$run" count TAG=post); echo "received while both are connected: $o (expect A 0 B 10: the downlink with the newest session)"
   [ "$o" = "A 0 B 10" ] || { echo "FAIL the downlink is not with the device's newest session only ($o)"; rc=1; }
-  o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"session of '"$q"' superseded by the device.s new session\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r')
+  o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"session of '"$q"' superseded by the device.s new session\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r')
   echo "A superseded (log): ${o:-0} (expect 1)"; [ "${o:-0}" = 1 ] || { echo "FAIL A was not superseded"; rc=1; }
   # B leaves at ~+30 s while A still sends (until ~+44 s): B's end must not disconnect/unbind the device (r8 A8-4/B8-3)
   d0=$(fssh "$ots" 20 'docker exec ots_cot_parser sh -c "grep -c \"Sending disconnect cot to '"$q"'\$\" /app/ots/logs/cot_parser.log 2>/dev/null"' | tr -d ' \r'); isint "$d0" || d0=0
   t0=$SECONDS; o=""
   while [ $((SECONDS - t0)) -lt 40 ] && [ -z "$o" ]; do sleep 5
-    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"another session of '"$q"' is live\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'); [ "${o:-0}" = 0 ] && o=""; done
+    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"another session of '"$q"' is live\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r'); [ "${o:-0}" = 0 ] && o=""; done
   echo "B's end saw A live (no disconnect, nothing unbound): ${o:-0} line(s) (expect >= 1)"; [ -n "$o" ] || { echo "FAIL B's end did not treat the superseded A as live"; rc=1; }
   o=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_bindings source_name destination_name 2>/dev/null | grep -c "	'"$q"'$"' | tr -d ' \r')
   echo "bindings of $q after B's end: ${o:-?} (expect >= 1: A still has them)"; isint "$o" && [ "$o" -ge 1 ] || { echo "FAIL B's end unbound the device while A lives"; rc=1; }
   # A sends until ~+44 s, then is quiet; it ends by the R17 deadline (~20 s later), as the device's last session
   t0=$SECONDS; o=""
   while [ $((SECONDS - t0)) -lt 100 ] && [ -z "$o" ]; do sleep 5
-    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"superseded session of '"$q"' quiet for\" /app/ots/logs/eud_handler_tcp.log"' | tr -d '\r'); done
+    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"superseded session of '"$q"' quiet for\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d '\r'); done
   echo "A's end by the R17 deadline: ${o:-none}"; [ -n "$o" ] || { echo "FAIL A did not end by the R17 deadline"; rc=1; }
   sleep 3
   d1=$(fssh "$ots" 20 'docker exec ots_cot_parser sh -c "grep -c \"Sending disconnect cot to '"$q"'\$\" /app/ots/logs/cot_parser.log 2>/dev/null"' | tr -d ' \r'); isint "$d1" || d1=0
@@ -970,7 +976,7 @@ chk_owner_swap_264() { local ots=$1 peer=$2 run o rc=0 V VC r0 r1 mode
   o=$(echo "select uid, callsign, user_id is not null from euds where uid = '$V';" | ots_sql "$ots"); echo "the user's EUD row: $o"
   case "$o" in "$V|$VC|t") ;; *) echo "FAIL no EUD row with a user for $V — not verified"; rc=1 ;; esac
   for mode in swap direct; do
-    r0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -cE \"belong to an authenticated user|is not used as a queue\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'); isint "$r0" || r0=0
+    r0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -cE \"belong to an authenticated user|is not used as a queue\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r'); isint "$r0" || r0=0
     if [ $mode = swap ]; then ( s264 "$peer" "$ots" "$run-$mode" swap VICTIM="$V" >/dev/null ) &
     else ( timeout 40 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" 'n=$(date +%s); ts(){ date -u -d @$1 +%Y-%m-%dT%H:%M:%S.000Z; }; { printf "<event version=\"2.0\" uid=\"'"$V"'\" type=\"a-f-G-U-C\" how=\"h-e\" time=\"%s\" start=\"%s\" stale=\"%s\"><point lat=\"25.03\" lon=\"121.56\" hae=\"10\" ce=\"9999999\" le=\"9999999\"/><detail><contact callsign=\"'"$run"'-direct-c\"/></detail></event>" "$(ts $n)" "$(ts $n)" "$(ts $((n+600)))"; sleep 10; } | nc '"$ots"' 8088 >/dev/null 2>&1' ) & fi
     sleep 6
@@ -978,7 +984,7 @@ chk_owner_swap_264() { local ots=$1 peer=$2 run o rc=0 V VC r0 r1 mode
     echo "$mode: consumers of the user's queues while the 8088 client is up: [${o:-none}] (expect none or =0)"
     case "$o" in *=[1-9]*) echo "FAIL $mode: an unauthenticated 8088 session consumes the user's queue"; rc=1 ;; esac
     wait
-    r1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -cE \"belong to an authenticated user|is not used as a queue\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'); isint "$r1" || r1=0
+    r1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -cE \"belong to an authenticated user|is not used as a queue\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r'); isint "$r1" || r1=0
     [ "$r1" -gt "$r0" ] && echo "$mode: refused (handler log)" || { echo "FAIL $mode: no refusal line in the handler's log"; rc=1; }
     if [ $mode = swap ]; then   # review r4 (the user's decision): the colliding NAME is refused, the device is recorded
       o=$(r264_stored "$ots" "$run-$mode-X"); echo "swap: stored CoT of $run-$mode-X: ${o:-?} (expect >= 1)"
@@ -1037,7 +1043,7 @@ chk_admission_264() { local ots=$1 peer=$2 run o rc=0 r0 r1 t0 e
   # sockets open, a phone that identifies at once is subscribed within a few seconds
   o=$(s264 "$peer" "$ots" "$run" silent N=3 PORT=8088); echo "  peer: $o (8088, silent, holding nothing)"
   o=$(s264 "$peer" "$ots" "$run-e" idle N=1 HOLD=20); echo "  peer: $o (one identifying phone)"; sleep 5
-  e=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-e-1/\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r')
+  e=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-e-1/\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r')
   echo "(e) the phone subscribed within ~8 s while 3 silent sockets are open: ${e:-?} (expect 1)"
   [ "$e" = 1 ] || { echo "FAIL (e) silent sockets hold up a phone's admission (the lock is taken before any message)"; rc=1; }
   echo "  peer: $(s264 "$peer" "$ots" "$run" cleanup)"; sleep 3
@@ -1045,7 +1051,7 @@ chk_admission_264() { local ots=$1 peer=$2 run o rc=0 r0 r1 t0 e
   # one ping and stay; a phone that identifies right after is subscribed within a few seconds, serialized
   o=$(s264 "$peer" "$ots" "$run" pinger N=3); echo "  peer: $o (8088, one ping each, then silent)"
   o=$(s264 "$peer" "$ots" "$run-f" idle N=1 HOLD=20); echo "  peer: $o (one identifying phone)"; sleep 5
-  e=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-f-1/\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r')
+  e=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-f-1/\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r')
   echo "(f) the phone subscribed within ~8 s while 3 ping-only sockets are open: ${e:-?} (expect 1)"
   [ "$e" = 1 ] || { echo "FAIL (f) ping-first sockets hold up a phone's admission (the lock held after a ping)"; rc=1; }
   echo "  peer: $(s264 "$peer" "$ots" "$run" cleanup)"; sleep 3
@@ -1058,7 +1064,7 @@ chk_admission_264() { local ots=$1 peer=$2 run o rc=0 r0 r1 t0 e
   r1=$(fssh "$ots" 20 'docker exec ots_eud_handler cat /sys/fs/cgroup/pids.current' | tr -d ' \r')
   echo "(g) ots_eud_handler tasks before / during an <auth> flood of 450: $r0 / $r1 (expect +< 25: the phone's session included)"
   isint "$r0" && isint "$r1" && [ $((r1 - r0)) -lt 25 ] || { echo "FAIL (g) the flood grew the container's tasks by $((r1 - r0)) (a thread per message)"; rc=1; }
-  sleep 3; e=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-g-1/\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r')
+  sleep 3; e=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-g-1/\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r')
   echo "(g) the phone subscribed during the flood: ${e:-?} (expect 1)"; [ "$e" = 1 ] || { echo "FAIL (g) a phone was not admitted during an <auth> flood"; rc=1; }
   echo "  peer: $(s264 "$peer" "$ots" "$run" cleanup)"; sleep 3
   # (h) review r8 A8-2/B8-2 (afbb22f: a client that never identifies took the admission per message, 6020 takes in
@@ -1068,7 +1074,7 @@ chk_admission_264() { local ots=$1 peer=$2 run o rc=0 r0 r1 t0 e
   u0=$(rlog ots_eud_handler "admitting unserialized" eud_handler_tcp.log); isint "$u0" || u0=0
   o=$(s264 "$peer" "$ots" "$run" stream N=400); echo "  peer: $o (8088, ~400 contact-less events over ~20 s)"; sleep 3
   o=$(s264 "$peer" "$ots" "$run-h" idle N=1 HOLD=20); echo "  peer: $o (one identifying phone during the stream)"; sleep 5
-  e=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-h-1/\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r')
+  e=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-h-1/\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r')
   u1=$(rlog ots_eud_handler "admitting unserialized" eud_handler_tcp.log); isint "$u1" || u1=0
   echo "(h) the phone subscribed within ~8 s during a contact-less stream: ${e:-?} (expect 1); unserialized admissions +$((u1 - u0)) (expect 0)"
   [ "$e" = 1 ] && [ "$u1" = "$u0" ] || { echo "FAIL (h) a non-identifying stream holds up a phone's admission (the lock re-taken per message)"; rc=1; }
@@ -1165,7 +1171,7 @@ chk_exception_264() { local ots=$1 peer=$2 run o rc=0 t0 t1 k0 k1 m0 m1 u
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   run=DVEX$(date +%H%M%S)
-  exlog() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"'"$1"'\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'; }
+  exlog() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"'"$1"'\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r'; }
   k0=$(exlog "identification raised RuntimeError"); isint "$k0" || k0=0
   m0=$(exlog "a message raised RuntimeError"); isint "$m0" || m0=0
   t0=$(fssh "$ots" 20 'docker logs ots_eud_handler 2>&1 | grep -c "Exception occurred during processing"' | tr -d ' \r'); isint "$t0" || t0=0
@@ -1207,14 +1213,14 @@ chk_owner_8089_264() { local ots=$1 run o rc=0 V r0 r1 u1 c
   isint "$o" || { echo "FAIL could not create the test user ($o) — not verified"; return 1; }
   cert264 "$ots" administrator || { echo "FAIL cert"; rc=1; }
   echo "user 1: $(ssl264 "$ots" "$V" "$V-c1" 4)"; sleep 3
-  r0=$(fssh "$ots" 20 'docker exec ots_eud_handler_ssl sh -c "grep -c \"belongs to another user\" /app/ots/logs/eud_handler_ssl.log"' | tr -d ' \r'); isint "$r0" || r0=0
+  r0=$(fssh "$ots" 20 'docker exec ots_eud_handler_ssl sh -c "grep -c \"belongs to another user\" \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)"' | tr -d ' \r'); isint "$r0" || r0=0
   cert264 "$ots" dv-264-u2 || { echo "FAIL cert"; rc=1; }
   ( ssl264 "$ots" "$V" "$V-c2" 12 > "$DIR/$run.u2" ) & sleep 6
   c=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name consumers 2>/dev/null | grep "^'"$V"'	" | cut -f2' | tr -d ' \r')
   echo "consumers of user 1's queue $V while user 2 claims it: [${c:-none}] (expect 0 or none)"
   case "$c" in ""|0) ;; *) echo "FAIL user 2 consumes user 1's queue"; rc=1 ;; esac
   wait; echo "user 2: $(cat "$DIR/$run.u2")"; sleep 3
-  r1=$(fssh "$ots" 20 'docker exec ots_eud_handler_ssl sh -c "grep -c \"belongs to another user\" /app/ots/logs/eud_handler_ssl.log"' | tr -d ' \r'); isint "$r1" || r1=0
+  r1=$(fssh "$ots" 20 'docker exec ots_eud_handler_ssl sh -c "grep -c \"belongs to another user\" \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)"' | tr -d ' \r'); isint "$r1" || r1=0
   [ "$r1" -gt "$r0" ] && echo "refused (handler log)" || { echo "FAIL no refusal line"; rc=1; }
   o=$(echo "select user_id from euds where uid = '$V';" | ots_sql "$ots"); echo "EUD row $V user_id: $o (expect $u1)"
   [ "$o" = "$u1" ] || { echo "FAIL the row was taken over by user 2"; rc=1; }
@@ -1299,7 +1305,7 @@ chk_cap16_264() { local ots=$1 p1=$2 p2=$3 run o rc=0 r0 r1 sub peak mx oom0 oom
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   run=DVC16$(date +%H%M%S)
   cg='c=$(docker inspect -f "{{.Id}}" ots_eud_handler); d=/sys/fs/cgroup/docker/$c'
-  r0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -cE \"refusing session\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'); isint "$r0" || r0=0
+  r0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -cE \"refusing session\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r'); isint "$r0" || r0=0
   oom0=$(fssh "$ots" 20 "$cg"'; awk "/oom_kill/{print \$2}" $d/memory.events' | tr -d ' \r')
   st0=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_eud_handler' | tr -d '\r')
   ( s264 "$p1" "$ots" "$run-a" idle N=8 HOLD=90 > "$DIR/$run.p1" ) & ( s264 "$p2" "$ots" "$run-b" idle N=8 HOLD=90 > "$DIR/$run.p2" ) &
@@ -1307,8 +1313,8 @@ chk_cap16_264() { local ots=$1 p1=$2 p2=$3 run o rc=0 r0 r1 sub peak mx oom0 oom
   peak=0
   for i in 1 2 3 4 5 6; do sleep 5; a=$(fssh "$ots" 20 "$cg"'; awk "/^anon /{print \$2}" $d/memory.stat' | tr -d ' \r'); isint "$a" && [ "$a" -gt "$peak" ] && peak=$a; done
   mx=$(fssh "$ots" 20 "$cg"'; cat $d/memory.max' | tr -d ' \r')
-  sub=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r')
-  r1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -cE \"refusing session\" /app/ots/logs/eud_handler_tcp.log"' | tr -d ' \r'); isint "$r1" || r1=0
+  sub=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"subscribed '"$run"'-\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r')
+  r1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -cE \"refusing session\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r'); isint "$r1" || r1=0
   oom1=$(fssh "$ots" 20 "$cg"'; awk "/oom_kill/{print \$2}" $d/memory.events' | tr -d ' \r')
   echo "16 at once: subscribed $sub (expect 16), refused $((r1 - r0)) (expect 0), oom_kill $oom0 -> $oom1, anon peak $((peak >> 20)) MiB of memory.max $(( ${mx:-0} >> 20 )) MiB"
   [ "$sub" = 16 ] || { echo "FAIL not all 16 sessions subscribed"; rc=1; }
@@ -1319,7 +1325,7 @@ chk_cap16_264() { local ots=$1 p1=$2 p2=$3 run o rc=0 r0 r1 sub peak mx oom0 oom
     || { echo "FAIL ots_eud_handler restarted during the test (its sessions all dropped)"; rc=1; }
   # review r4 B4-4: at 1280m the 85 % bound no longer discriminates the lock; the log does. The 16 admissions take
   # the lock one after the other: "lock taken" and "lock released" strictly alternate, and none is unserialized
-  o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "tail -n 400 /app/ots/logs/eud_handler_tcp.log | grep -E \"admission of .*lock (taken|released)|admitting unserialized\" | tail -n 32"' | tr -d '\r' \
+  o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "tail -n 400 \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) | grep -E \"admission of .*lock (taken|released)|admitting unserialized\" | tail -n 32"' | tr -d '\r' \
       | awk '/admitting unserialized/ {u++} /lock taken/ {if (h) bad++; h=1; t++} /lock released/ {h=0} END {printf "%d %d %d", t, bad+0, u+0}')
   echo "admission lock over the last 16 sessions: taken / overlapping / unserialized = $o (expect 16 0 0)"
   [ "$o" = "16 0 0" ] || { echo "FAIL the admissions were not serialized by the lock"; rc=1; }
@@ -1407,12 +1413,12 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   cg='c=$(docker inspect -f "{{.Id}}" '"$ctr"'); d=/sys/fs/cgroup/docker/$c'
   st0=$(fssh "$ots" 20 "docker inspect -f '{{.State.StartedAt}}' $ctr" | tr -d '\r')
   o0=$(fssh "$ots" 20 "$cg"'; awk "/oom_kill /{print \$2}" $d/memory.events' | tr -d ' \r')
-  r0=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -c \"refusing session\"'" | tr -d ' \r'); isint "$r0" || r0=0
+  r0=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat \$(ls -t \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)* | head -1) \$(ls -t \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)* | head -1) | grep -c \"refusing session\"'" | tr -d ' \r'); isint "$r0" || r0=0
   mx=$(fssh "$ots" 20 "$cg"'; cat $d/memory.max' | tr -d ' \r')
-  u0=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -c \"admitting unserialized\"'" | tr -d ' \r'); isint "$u0" || u0=0
-  m0=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -c \"MiB free (BATMAN-264-R7)\"'" | tr -d ' \r'); isint "$m0" || m0=0
+  u0=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat \$(ls -t \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)* | head -1) \$(ls -t \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)* | head -1) | grep -c \"admitting unserialized\"'" | tr -d ' \r'); isint "$u0" || u0=0
+  m0=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat \$(ls -t \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)* | head -1) \$(ls -t \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)* | head -1) | grep -c \"MiB free (BATMAN-264-R7)\"'" | tr -d ' \r'); isint "$m0" || m0=0
   echo "the team ($port): 02 $(rto264 "$p1" "$run-a" 60 start "$port") / 03 $(rto264 "$p2" "$run-b" 60 start "$port")"; sleep 8
-  sub=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -cE \"subscribed $run-[ab]-\"'" | tr -d ' \r')
+  sub=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat \$(ls -t \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)* | head -1) \$(ls -t \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)* | head -1) | grep -cE \"subscribed $run-[ab]-\"'" | tr -d ' \r')
   echo "subscribed $sub (expect 16)"; [ "$sub" = 16 ] || { echo "FAIL the team's 16 sessions are not all subscribed: nothing to measure"; rc=1; }
   echo "RTO out of range: 02 $(rto264 "$p1" "$run-a" 30 blackhole "$port") / 03 $(rto264 "$p2" "$run-b" 30 blackhole "$port")"
   # downlink pending towards the zombies: 20 broadcasts from a third address (rc wsl.13: a generator on 03 was refused
@@ -1448,7 +1454,7 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   fi
   if [ "$port" = 8089 ]; then
     o=$(cat "$DIR/$run".*.1 2>/dev/null | grep -c " closed after "); rm -f "$DIR/$run".*.1
-    c=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -cE \"session of $run-[ab]-[0-9]+ superseded by\"'" | tr -d ' \r')
+    c=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat \$(ls -t \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)* | head -1) \$(ls -t \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)* | head -1) | grep -cE \"session of $run-[ab]-[0-9]+ superseded by\"'" | tr -d ' \r')
     echo "the first returns ended after the second: $o of 16 closed (expect 16); sessions superseded this run: ${c:-?} (expect 32: the team by the first return, the first return by the second; R17)"
     [ "$o" = 16 ] && [ "$c" = 32 ] || { echo "FAIL R17 on the second return: $o of 16 closed, ${c:-?} of 32 superseded (rc wsl.15: closed by the end-at-once code, not superseded)"; rc=1; }
     o=$(timeout 30 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "TARGET=$tgt RUN=$run-a ACTION=est PORT=8089 sh -s" < "$REPO/scripts/node/rto-264.sh" 2>&1 | tr -d '\r')
@@ -1460,16 +1466,16 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   k1=$(grep -o "KEPT [0-9]*" "$DIR/$run.ots_cot_parser" | awk '{s+=$2} END{print s+0}'); k2=$(grep -o "KEPT [0-9]*" "$DIR/$run.opentakserver" | awk '{s+=$2} END{print s+0}')
   st1=$(fssh "$ots" 20 "docker inspect -f '{{.State.StartedAt}}' $ctr" | tr -d '\r')
   o1=$(fssh "$ots" 20 "$cg"'; awk "/oom_kill /{print \$2}" $d/memory.events' | tr -d ' \r')
-  r1=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -c \"refusing session\"'" | tr -d ' \r'); isint "$r1" || r1=0
-  sub=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -cE \"subscribed $run-[ab]-\"'" | tr -d ' \r')
-  u1=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -c \"admitting unserialized\"'" | tr -d ' \r'); isint "$u1" || u1=0
+  r1=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat \$(ls -t \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)* | head -1) \$(ls -t \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)* | head -1) | grep -c \"refusing session\"'" | tr -d ' \r'); isint "$r1" || r1=0
+  sub=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat \$(ls -t \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)* | head -1) \$(ls -t \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)* | head -1) | grep -cE \"subscribed $run-[ab]-\"'" | tr -d ' \r')
+  u1=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat \$(ls -t \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)* | head -1) \$(ls -t \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)* | head -1) | grep -c \"admitting unserialized\"'" | tr -d ' \r'); isint "$u1" || u1=0
   a=$(echo "select count(*) from cot where sender_uid like '$run-a-%' or sender_uid like '$run-b-%';" | ots_sql "$ots" | tr -d ' \r')
   # per phone: one DISTINCT report per session (the team's, each return's), not a duplicate of one (review r6)
   c=$(echo "select count(*) from (select sender_uid from cot where sender_uid like '$run-a-%' or sender_uid like '$run-b-%' group by sender_uid having count(distinct start) >= $want) x;" | ots_sql "$ots" | tr -d ' \r')
   echo "reconnects kept $((${k1:-0} + ${k2:-0}))/16, subscribed $sub of $((16 * nb)) (team + returns), stored CoT $a (expect >= $((16 * nb))), refused $((r1 - r0)), unserialized admissions $((u1 - u0)), oom_kill $o0 -> $o1, StartedAt $st0 -> $st1, anon peak $((peak >> 20)) MiB of $(( ${mx:-0} >> 20 )) MiB"
   if [ "$flip" = 1 ]; then
     # rto768-264: the limit is below what 32 sessions need; the R7 reserve must refuse, an OOM may only take sessions
-    m1=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -c \"MiB free (BATMAN-264-R7)\"'" | tr -d ' \r'); isint "$m1" || m1=0
+    m1=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat \$(ls -t \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)* | head -1) \$(ls -t \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)* | head -1) | grep -c \"MiB free (BATMAN-264-R7)\"'" | tr -d ' \r'); isint "$m1" || m1=0
     echo "R7 reserve refusals during the run: $((m1 - m0)) (expect >= 1 at this limit)"
     [ $((m1 - m0)) -ge 1 ] || { echo "FAIL the R7 reserve refused nothing although 32 sessions do not fit"; rc=1; }
     if [ "$o1" != "$o0" ]; then
@@ -1491,7 +1497,7 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
   # the zombies' ends (8088: R6 reap ~120 s after the black hole, their phones' reconnects still live until ~175 s;
   # 8089: ended by R17 at the return) must see their phones live: no disconnect, bindings kept
   sleep 20
-  c=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat /app/ots/logs/eud_handler*.log | grep -oE \"another session of $run-[ab]-[0-9]+ is live\" | sort -u | wc -l'" | tr -d ' \r')
+  c=$(fssh "$ots" 20 "docker exec $ctr sh -c 'cat \$(ls -t \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)* | head -1) \$(ls -t \$(ls -t /app/ots/logs/eud_handler_ssl.log* | head -1)* | head -1) | grep -oE \"another session of $run-[ab]-[0-9]+ is live\" | sort -u | wc -l'" | tr -d ' \r')
   echo "phones whose stale session's end saw them live: ${c:-?} of 16"
   [ "$flip" = 1 ] || [ "$c" = 16 ] || { echo "FAIL ${c:-?} of 16 stale sessions ended seeing the phone live (not reaped, or took itself for the last session)"; rc=1; }
   echo "cleanup: 02 $(rto264 "$p1" "$run-a" 30 cleanup "$port") / 03 $(rto264 "$p2" "$run-b" 30 cleanup "$port")"; sleep 15
@@ -1522,8 +1528,8 @@ chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 sup="" q apid bpid d0 d1
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
   run=DVZ$(date +%H%M%S); q="$run-A"
-  zlog() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"'"$1"'\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'; }
-  zpids() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"subscribed '"$q"'/\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | sed -n 's/.* - eud_handler\[\([0-9]*\)\] - .*/\1/p' | tr -d '\r'; }
+  zlog() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"'"$1"'\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r'; }
+  zpids() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"subscribed '"$q"'/\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | sed -n 's/.* - eud_handler\[\([0-9]*\)\] - .*/\1/p' | tr -d '\r'; }
   cpdisc() { fssh "$ots" 20 'docker exec ots_cot_parser sh -c "grep -c \"Sending disconnect cot to '"$q"'\$\" /app/ots/logs/cot_parser.log 2>/dev/null"' | tr -d ' \r'; }
   d0=$(cpdisc); isint "$d0" || d0=0
   o=$(timeout 120 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run ACTION=start sh -s" < "$REPO/scripts/node/zombie-264.sh" 2>&1 | tr -d '\r')
@@ -1533,7 +1539,7 @@ chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 sup="" q apid bpid d0 d1
   # A's handler pid: the first "subscribed <q>/" line; wait (bounded) for its "superseded" line
   while [ $((SECONDS - t0)) -lt 20 ]; do
     sleep 2; apid=$(zpids | head -1)
-    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"eud_handler\['"${apid:-x}"'\] .*superseded by the device.s new session\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d '\r')
+    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"eud_handler\['"${apid:-x}"'\] .*superseded by the device.s new session\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d '\r')
     [ -n "$o" ] && { sup=$((SECONDS - t0)); break; }
   done
   bpid=$(zpids | sed -n 2p)
@@ -1541,7 +1547,7 @@ chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 sup="" q apid bpid d0 d1
   isint "$apid" && isint "$bpid" && [ "$apid" != "$bpid" ] || { echo "FAIL A and B are not both subscribed"; rc=1; }
   if [ -n "$sup" ]; then echo "A (pid $apid) superseded within ${sup} s of B's start (R17)"
   else echo "FAIL A was not superseded within 20 s (rc wsl.14 without R17: A lived ~116 s)"; rc=1; fi
-  o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"eud_handler\['"${bpid:-x}"'\] .*device '"$q"' is back; its previous session (pid '"${apid:-x}"')\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r')
+  o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"eud_handler\['"${bpid:-x}"'\] .*device '"$q"' is back; its previous session (pid '"${apid:-x}"')\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r')
   [ "${o:-0}" = 1 ] && echo "B logged that the device is back (A: downlink stopped)" || { echo "FAIL B did not log superseding A ($o)"; rc=1; }
   sleep 2
   c=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name consumers 2>/dev/null | grep "^'"$q"'	" | cut -f2' | tr -d ' \r')
@@ -1552,14 +1558,14 @@ chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 sup="" q apid bpid d0 d1
   # the user's decision (2026-10-12): the superseded A ends once quiet for 20 s (it is black-holed: nothing arrives)
   t0=$SECONDS; o=""
   while [ $((SECONDS - t0)) -lt 60 ] && [ -z "$o" ]; do sleep 5
-    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"eud_handler\['"${apid:-x}"'\] .*another session of '"$q"' is live\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d '\r'); done
+    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"eud_handler\['"${apid:-x}"'\] .*another session of '"$q"' is live\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d '\r'); done
   [ -n "$o" ] && echo "A ended once quiet and its end saw B live (no disconnect, bindings kept)" || { echo "FAIL A's end did not log \"another session of $q is live\" within ~80 s of B's return"; rc=1; }
-  o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"eud_handler\['"${apid:-x}"'\] .*superseded session of '"$q"' quiet for\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r')
+  o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"eud_handler\['"${apid:-x}"'\] .*superseded session of '"$q"' quiet for\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r')
   [ "${o:-0}" = 1 ] && echo "A's end came from the quiet timeout (R17)" || { echo "FAIL A did not end by the R17 quiet timeout ($o)"; rc=1; }
   # spoof leg: the same uid from another address ends nothing
   if [ -n "$MESH_NODE" ] && [ "$MESH_NODE" != "$ots" ] && [ "$MESH_NODE" != "$peer" ] && up "$MESH_NODE"; then
     echo "  spoof from $MESH_NODE: $(s264 "$MESH_NODE" "$ots" "$run" twice UID="$q")"
-    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"eud_handler\['"${bpid:-x}"'\] .*superseded\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r')
+    o=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"eud_handler\['"${bpid:-x}"'\] .*superseded\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r')
     c=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name consumers 2>/dev/null | grep "^'"$q"'	" | cut -f2' | tr -d ' \r')
     echo "spoof: B superseded ${o:-?} (expect 0); consumers of $q after the spoof left: [$c] (expect 1 = B)"
     [ "${o:-1}" = 0 ] && [ "$c" = 1 ] || { echo "FAIL a client at another address took the device's downlink"; rc=1; }
@@ -1599,7 +1605,7 @@ SQL
 # per-EUD rabbit queues removed. The clients are nc sessions on the peer, killed by pattern at the end.
 eud_mem_264() { fssh "$1" 20 'c=$(docker inspect -f "{{.Id}}" ots_eud_handler 2>/dev/null); cat /sys/fs/cgroup/docker/$c/memory.current 2>/dev/null' | tr -d ' \r'; }
 # the handler logs to a file in its data volume (stdout only on a tty); count "refusing session from <peer>" lines
-eud_refused_264() { fssh "$1" 20 'docker exec ots_eud_handler sh -c "grep -c \"refusing session from '"$2"'\" /app/ots/logs/eud_handler_tcp.log 2>/dev/null"' | tr -d ' \r'; }
+eud_refused_264() { fssh "$1" 20 'docker exec ots_eud_handler sh -c "grep -c \"refusing session from '"$2"'\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r'; }
 chk_eud_mem_264() { local ots=$1 peer=$2 n=6 run m0 m1 m2 d rc=0 o r0 H=/tmp/run/batman-dv
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
   [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
@@ -1660,7 +1666,7 @@ bchk_queue_gone_264() { local ots=$1 peer=$2 run rc=0 l0 l1 s st sd rec i t0
     *) [ "$s" -gt 100 ] || { echo "FAIL generator sent only $s"; rc=1; }
        [ "$sd" = "$s" ] && echo "ok every CoT sent across the queue-gone window was stored (at least once)" || { echo "FAIL lost $((s - sd))/$s CoT across the queue-gone window"; rc=1; } ;;
   esac
-  fssh "$ots" 30 'docker exec ots_eud_handler sh -c "tail -400 /app/ots/logs/eud_handler_tcp.log" | grep -ciE "declare refused|cache full|session end:"' | tr -d '\r' | sed 's|^|eud error lines (declare refused, cache full, session end): |'
+  fssh "$ots" 30 'docker exec ots_eud_handler sh -c "tail -400 \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)" | grep -ciE "declare refused|cache full|session end:"' | tr -d '\r' | sed 's|^|eud error lines (declare refused, cache full, session end): |'
   soak_ssh "$peer" "ROLE=down" | tail -1
   ots_sql "$ots" <<SQL >/dev/null
 begin; delete from euds where uid like '$run-%'; delete from cot where uid like '$run-%'; commit;
