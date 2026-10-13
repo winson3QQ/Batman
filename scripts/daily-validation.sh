@@ -1777,8 +1777,8 @@ chk_286() { local n rc=0 id c p0 p1 u0 u1 v
     [ "$p0" != 0 ] && [ "$p0" = "$p1" ] && [ "$u1" -gt "$u0" ] || { echo "FAIL $n: meshled not alive and ticking (pid $p0 -> $p1, cpu $u0 -> $u1)"; rc=1; }
     # the two rewritten checks must still judge right: on a healthy node neither rootfs-ro nor no-ip is raised, and
     # the raw inputs the new patterns read are shown (the root line of /proc/mounts, br-ahwlan's inet line)
-    v=$(fssh "$n" 20 'cat /tmp/run/batman/meshled.state 2>/dev/null | tr "
-" " "; echo; grep " / " /proc/mounts | cut -c1-60; ip -4 addr show br-ahwlan 2>/dev/null | grep "inet " | head -1' | tr -d '')
+    # (#280: the state file is read from the run dir the node resolves, never from a /tmp name anyone can plant)
+    v=$(fssh "$n" 20 "$RDR"'cat "$R/meshled.state" 2>/dev/null | tr "\n" " "; echo; grep " / " /proc/mounts | cut -c1-60; ip -4 addr show br-ahwlan 2>/dev/null | grep "inet " | head -1' | tr -d "\r")
     echo "$n: meshled state [$(echo "$v" | sed -n 1p)]; /proc/mounts root: $(echo "$v" | sed -n 2p); br-ahwlan: $(echo "$v" | sed -n 3p | sed "s/^ *//")"
     case "$(echo "$v" | sed -n 1p)" in *rootfs-ro*|*no-ip*) echo "FAIL $n: meshled raises rootfs-ro/no-ip on a healthy node — the rewritten check misjudges (#286)"; rc=1 ;; esac
     echo "$v" | sed -n 2p | grep -q " / overlay rw" || { echo "FAIL $n: /proc/mounts root line does not carry ' / overlay rw' — the new pattern would misjudge"; rc=1; }
