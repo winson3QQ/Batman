@@ -1655,7 +1655,11 @@ bchk_queue_gone_264() { local ots=$1 peer=$2 run rc=0 l0 l1 s st sd rec i t0
   soak_ssh "$peer" "ROLE=cotgen TARGET=$ots RUN=$run DUR=150" | grep -q '^OK cotgen' || { echo "FAIL could not start the CoT generator on $peer"; return 1; }
   echo "run $run: $peer streams 5 CoT/s to $ots:8088 for 150 s; the cot_parser queue is deleted at +30 s"
   sleep 30
-  fssh "$ots" 30 'docker exec rabbitmq rabbitmqctl -q delete_queue cot_parser 2>&1 | tail -1' | tr -d '\r'
+  # only an EMPTY queue is deleted (--if-empty, up to 20 tries 0.5 s apart): a message still in the queue at the
+  # deletion is destroyed by the test, not lost by the product (02/03 full run 2026-10-13: "deleted with 2 ready
+  # messages", exactly 2/740 lost). R5 is about what is published AFTER the queue is gone.
+  o=$(fssh "$ots" 40 'for i in $(seq 1 20); do r=$(docker exec rabbitmq rabbitmqctl -q delete_queue cot_parser --if-empty 2>&1 | tail -1); case "$r" in *"successfully deleted"*) echo "$r (try $i)"; exit 0;; esac; sleep 0.5; done; echo "NOT DELETED: $r"' | tr -d '\r')
+  echo "$o"; case "$o" in *"successfully deleted"*) ;; *) echo "FAIL the cot_parser queue was never empty to delete — the queue-gone path was not exercised"; return 1 ;; esac
   for i in $(seq 1 24); do l1=$(fssh "$ots" 15 "$RDR"'grep -c "crash ots_cot_parser" "$R"/batman-payload-opentakserver-restarts 2>/dev/null || echo 0' | tr -d ' \r'); [ "${l1:-0}" -gt "${l0:-0}" ] 2>/dev/null && break; sleep 5; done
   [ "${l1:-0}" -gt "${l0:-0}" ] 2>/dev/null && echo "ok cot_parser exited on the cancelled consumer and the guardian restarted it (ledger $l0 -> $l1)" \
     || { echo "FAIL no guardian restart of ots_cot_parser within 120 s of the queue deletion (ledger $l0 -> ${l1:-?}) — the fault was not what this test assumes"; rc=1; }
@@ -1710,7 +1714,9 @@ chk_soak_run() { local n o dur rc=0 m peer other
     sleep 55
   done
   sleep 20   # let cot_parser drain
-  echo "stored $(echo "select count(distinct uid) from cot where uid like '$SOAK_RUN-S-%';" | ots_sql "$OTS_NODE")" >> "$DIR/soak.samples"
+  # distinct (uid, timestamp): the generator sends one batch of 5 uids per second (batches >= 1 s apart), so every
+  # sent CoT is one distinct pair; distinct uid alone is always 5 (02/03 full run 2026-10-13: "stored=5" vs 8955 sent)
+  echo "stored $(echo "select count(distinct (uid, timestamp)) from cot where uid like '$SOAK_RUN-S-%';" | ots_sql "$OTS_NODE")" >> "$DIR/soak.samples"
   echo "rows $(echo "select count(*) from cot where uid like '$SOAK_RUN-S-%';" | ots_sql "$OTS_NODE")" >> "$DIR/soak.samples"
   ots_sql "$OTS_NODE" <<SQL >/dev/null
 begin; delete from euds where uid like '$SOAK_RUN-%'; delete from cot where uid like '$SOAK_RUN-%'; commit;
@@ -1750,8 +1756,9 @@ chk_soak_cot() { local sent st rc re rows
   sent=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_sent); re=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_reconn); st=$(sed -n 's/^stored //p' "$DIR/soak.samples"); rows=$(sed -n 's/^rows //p' "$DIR/soak.samples")
   { isint "$sent" && isint "$st"; } || { echo "FAIL CoT counters unreadable sent=[$sent] stored=[$st] — not verified"; return 1; }
   isint "$rows" || rows=$st
-  echo "CoT sent=$sent distinct stored=$st rows=$rows duplicates=$((rows - st)) client reconnects=$re"
-  [ "$st" = "$sent" ] || { echo "FAIL CoT lost $((sent-st))/$sent"; return 1; }; }
+  # sent is sampled at minute SOAK_MIN+2 while the generator still runs; stored/rows are read at the end: >= sent
+  echo "CoT sent (sampled)=$sent distinct (uid,time) stored=$st rows=$rows duplicates=$((rows - st)) client reconnects=$re"
+  [ "$st" -ge "$sent" ] || { echo "FAIL CoT lost $((sent-st))/$sent"; return 1; }; }
 chk_130() { fssh "$1" 20 '
   st=$(/usr/bin/halow-status json 2>/dev/null | sed -n "s/.*\"join\":{\"state\":\"\([A-Za-z_]*\)\".*/\1/p" | head -1)
   p=$(batctl n 2>/dev/null | grep -c wlh0)
@@ -2368,7 +2375,7 @@ else
   suite soak-containers "no container restart and no cgroup oom_kill during the soak, every node" "chk_soak_ctr"
   suite soak-http-local "HTTP tenant answered every local GET (container stack)" "chk_soak_http local"
   suite soak-http-mesh  "HTTP tenant answered every GET over the mesh (container + radio; judged separately)" "chk_soak_http mesh"
-  suite soak-cot-264    "every CoT sent over the soak stored at least once (distinct uids == sent; duplicates reported, #264 at-least-once; mechanisms A and B both in play)" "chk_soak_cot"
+  suite soak-cot-264    "every CoT sent over the soak stored at least once (distinct (uid,time) >= sent; duplicates reported, #264 at-least-once; mechanisms A and B both in play)" "chk_soak_cot"
 fi
 
 # ---- NEW vs KNOWN failures (#268 C1) ----------------------------------------------------------------
