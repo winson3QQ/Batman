@@ -1765,7 +1765,7 @@ chk_soak_cot() { local sent st rc re rows
 # before/after count goes negative), and meshled must be alive and ticking: procd's pid for it unchanged and its
 # CPU time incl. reaped children grown (a tick runs mount/ip/df every 5 s; a dead or stopped meshled would pass the
 # line count on its own). Negative control: 1.5.9-wsl.21 writes one line per tick.
-chk_286() { local n rc=0 id c p0 p1 u0 u1
+chk_286() { local n rc=0 id c p0 p1 u0 u1 v
   for n in $FLEET; do
     id=DV286$(date +%H%M%S)
     read -r p0 u0 <<< "$(fssh "$n" 20 'p=$(ubus call service list "{\"name\":\"meshled\"}" 2>/dev/null | sed -n "s/.*\"pid\": \([0-9]*\).*/\1/p" | head -1); echo "${p:-0} $(awk "{print \$14+\$15+\$16+\$17}" /proc/${p:-0}/stat 2>/dev/null || echo 0)"; logger -t dv286 "MARK '"$id"'"' | tr -d '\r')"
@@ -1775,6 +1775,14 @@ chk_286() { local n rc=0 id c p0 p1 u0 u1
     echo "$n: meshled write-error lines in the 60 s after the marker: $c; meshled pid $p0 -> $p1, cpu(utime+stime+cutime+cstime) $u0 -> $u1 jiffies"
     [ "$c" = 0 ] || { echo "FAIL $n: meshled still writes '$(fssh "$n" 10 'logread | grep "meshled.*write error" | tail -1' | tr -d '\r' | cut -c1-120)' every tick (#286)"; rc=1; }
     [ "$p0" != 0 ] && [ "$p0" = "$p1" ] && [ "$u1" -gt "$u0" ] || { echo "FAIL $n: meshled not alive and ticking (pid $p0 -> $p1, cpu $u0 -> $u1)"; rc=1; }
+    # the two rewritten checks must still judge right: on a healthy node neither rootfs-ro nor no-ip is raised, and
+    # the raw inputs the new patterns read are shown (the root line of /proc/mounts, br-ahwlan's inet line)
+    v=$(fssh "$n" 20 'cat /tmp/run/batman/meshled.state 2>/dev/null | tr "
+" " "; echo; grep " / " /proc/mounts | cut -c1-60; ip -4 addr show br-ahwlan 2>/dev/null | grep "inet " | head -1' | tr -d '')
+    echo "$n: meshled state [$(echo "$v" | sed -n 1p)]; /proc/mounts root: $(echo "$v" | sed -n 2p); br-ahwlan: $(echo "$v" | sed -n 3p | sed "s/^ *//")"
+    case "$(echo "$v" | sed -n 1p)" in *rootfs-ro*|*no-ip*) echo "FAIL $n: meshled raises rootfs-ro/no-ip on a healthy node — the rewritten check misjudges (#286)"; rc=1 ;; esac
+    echo "$v" | sed -n 2p | grep -q " / overlay rw" || { echo "FAIL $n: /proc/mounts root line does not carry ' / overlay rw' — the new pattern would misjudge"; rc=1; }
+    echo "$v" | sed -n 3p | grep -q "inet " || { echo "FAIL $n: br-ahwlan has no inet line — the no-ip check would fire"; rc=1; }
   done
   [ -n "$FLEET" ] || { echo "FAIL fleet empty"; rc=1; }
   return $rc; }
