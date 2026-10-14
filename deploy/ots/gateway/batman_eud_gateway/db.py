@@ -150,10 +150,12 @@ class Database:
     def write_eud(self, uid: str, user_id: int | None, callsign: str | None, device: str | None, os_: str | None,
                   platform: str | None, version: str | None, phone: str | None, group_name: str | None,
                   group_role: str | None, event_start: _dt.datetime | None, adopt: bool) -> str:
-        """M5 defensive write of the identification metadata. Returns 'inserted' | 'updated'.
+        """M5 defensive write of the identification metadata. Returns 'inserted' | 'updated' | 'owned-elsewhere'.
         - callsign written only when free (euds.callsign UNIQUE);
         - phone reduced to digits; strings cut to 255; team created if named;
-        - user_id written only when `adopt` (a new row or an adopted unowned row) — never over another user.
+        - user_id written only when `adopt` (a new row or an adopted unowned row) — never over another user:
+          an adopting UPDATE is guarded by `user_id IS NULL OR user_id = :user_id`; when it matches no row the row
+          was taken by another user first and 'owned-elsewhere' is returned, nothing written (SEC-1).
         """
         cs = _cut(callsign) if (callsign and self.callsign_free(callsign, uid)) else None
         team_id = self._team_id(group_name) if group_name else None
@@ -176,24 +178,30 @@ class Database:
                     "last_event_time=:last_event_time, last_status=:last_status, team_id=:team_id, team_role=:team_role")
             if cs is not None:
                 sets += ", callsign=:callsign"
+            where = "uid = :uid"
             if adopt:
                 sets += ", user_id=:user_id"
                 vals["user_id"] = user_id
-            c.execute(text(f"UPDATE euds SET {sets} WHERE uid = :uid"), vals)
-            return "updated"
+                where += " AND (user_id IS NULL OR user_id = :user_id)"
+            r = c.execute(text(f"UPDATE euds SET {sets} WHERE {where}"), vals)
+            return "updated" if r.rowcount == 1 else "owned-elsewhere"
 
-    def minimal_eud(self, uid: str, user_id: int | None, callsign: str | None, adopt: bool) -> None:
-        """M5 fallback: the smallest row cot_parser's FK accepts."""
+    def minimal_eud(self, uid: str, user_id: int | None, callsign: str | None, adopt: bool) -> str:
+        """M5 fallback: the smallest row cot_parser's FK accepts. Same return values and the same adopt guard as
+        write_eud (SEC-1)."""
         cs = _cut(callsign) if (callsign and self.callsign_free(callsign, uid)) else None
         now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
         with self.engine.begin() as c:
             r = c.execute(text("INSERT INTO euds (uid, callsign, last_status, last_event_time, user_id) "
                                "VALUES (:u, :c, 'Connected', :t, :uid_) ON CONFLICT (uid) DO NOTHING"),
                           {"u": uid, "c": cs, "t": now, "uid_": user_id if adopt else None})
-            if r.rowcount != 1:
-                c.execute(text("UPDATE euds SET last_status='Connected', last_event_time=:t" +
-                               (", user_id=:uid_" if adopt else "") + " WHERE uid=:u"),
+            if r.rowcount == 1:
+                return "inserted"
+            r = c.execute(text("UPDATE euds SET last_status='Connected', last_event_time=:t" +
+                               (", user_id=:uid_ WHERE uid=:u AND (user_id IS NULL OR user_id=:uid_)" if adopt
+                                else " WHERE uid=:u")),
                           {"u": uid, "t": now, "uid_": user_id})
+            return "updated" if r.rowcount == 1 else "owned-elsewhere"
 
     def _team_id(self, name: str) -> int | None:
         name = _cut(name)

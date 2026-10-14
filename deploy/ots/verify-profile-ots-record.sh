@@ -14,7 +14,8 @@
 # tick, OK after (design §4, B3-12).
 set -u
 DB=ots-db
-Q_FK="SELECT string_agg(conname || '=' || confdeltype, ',' ORDER BY conname) FROM pg_constraint WHERE contype='f' AND conname IN ('cot_eud','point_eud','geochat_eud');"
+# confdeltype is "char": cast it, or PG 16 says `operator is not unique: text || "char"` (seen on 04, rc 3)
+Q_FK="SELECT string_agg(conname || '=' || confdeltype::text, ',' ORDER BY conname) FROM pg_constraint WHERE contype='f' AND conname IN ('cot_eud','point_eud','geochat_eud');"
 Q_JOBS="SELECT coalesce(string_agg(id, ',' ORDER BY id), '') FROM apscheduler_jobs WHERE id IN ('delete_old_data','purge_data') AND next_run_time IS NOT NULL;"
 
 if [ "$(docker inspect -f '{{.State.Running}}' "$DB" 2>/dev/null)" != true ]; then

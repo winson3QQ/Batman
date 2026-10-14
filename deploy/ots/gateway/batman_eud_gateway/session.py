@@ -8,6 +8,7 @@ consumer, one cache, its placed bindings and a list of CONNECTIONS: the current 
 """
 from __future__ import annotations
 
+import asyncio
 import collections
 import dataclasses
 import logging
@@ -83,6 +84,9 @@ class Device:
         self.last_reconcile = time.monotonic()
         self.ended = False
         self.writer_wakeup: Callable[[], None] = lambda: None
+        # C3A-1: the row writes of identify / the 30 s cycle and the end's Disconnected write are serialised per
+        # device, so a late write_eud / set_connected can never land after the end's set_disconnected
+        self.db_lock = asyncio.Lock()
 
     @property
     def conns(self) -> list[Conn]:
@@ -192,6 +196,13 @@ class Table:
         key = (c.user_id, uid) if c.port == self.s.tls_port else (c.addr, uid)
         dev = self.devices.get(key)
         if dev is None:
+            # SEC-1: a uid live under ANOTHER user is refused in memory, before any row exists for it (the DB-side
+            # ownership check saw no row while the owner's row write was still pending or failing)
+            if c.port == self.s.tls_port:
+                for d in self.devices.values():
+                    if d.uid == uid and not d.ended and d.user_id is not None and d.user_id != c.user_id:
+                        self.stats["refused_owned"] += 1
+                        raise Refused("uid live under another user")
             if len(self.devices) >= self.s.max_devices:
                 self.stats["refused_devices"] += 1
                 raise Refused("device cap")

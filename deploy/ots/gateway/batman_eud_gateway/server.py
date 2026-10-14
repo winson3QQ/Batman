@@ -176,7 +176,7 @@ class Protocol(asyncio.Protocol):
         try:
             frames = self.framer.feed(data)
         except CarryOverflow:
-            log.warning("carry-over over the bound from %s: closing", c.addr)
+            self.gw.log_limited("carry-over", f"carry-over over the bound from {c.addr}: closing", logging.WARNING)
             self.close("carry-over bound"); return
         # uplink rate: per session (bytes + messages), per user, global (M1)
         deficit = c.uplink.charge(len(data), now)
@@ -191,7 +191,8 @@ class Protocol(asyncio.Protocol):
         for f in frames:
             if f.kind == "oversize":
                 self.gw.stats["oversize"] += 1
-                log.warning("oversize message from %s: %d bytes, discarded", self._who(), f.size)
+                self.gw.log_limited("oversize", f"oversize message from {self._who()}: {f.size} bytes, discarded",
+                                    logging.WARNING)
                 continue
             if f.kind == "junk":
                 continue
@@ -202,7 +203,9 @@ class Protocol(asyncio.Protocol):
                 ev = cot.parse_event(f.data)
             except cot.Malformed as e:
                 self.gw.stats["malformed"] += 1
-                log.info("malformed message from %s dropped: %s", self._who(), e)
+                # one line per minute, not per message: a cert holder sending `<event/>` at 20/s for a day would
+                # otherwise write GBs into the node's log volume (SEC-2); the count is in stats/snapshot
+                self.gw.log_limited("malformed", f"malformed message from {self._who()} dropped: {e}")
                 continue
             if ev.is_ping:
                 self._write(cot.pong())
@@ -250,6 +253,12 @@ class Protocol(asyncio.Protocol):
         c.closed = True
         self.can_write.set()                  # a writer waiting on this socket must wake and re-check (C1B-1)
         self.gw.conns.pop(c.cid, None)
+        # what the phone sent before its identification completed dies with the socket: counted, never silent (C3A-2)
+        n = len(self._pre_ident) + (1 if self._first_sa is not None else 0)
+        if n:
+            self.gw.stats["pre_ident_dropped"] += n
+            self._pre_ident, self._first_sa = [], None
+            self.gw.log_limited("pre-ident-dropped", f"{n} message(s) from {c.addr} dropped: closed before identified")
         if self._resume_handle is not None:
             self._resume_handle.cancel()
         self.gw.on_connection_closed(c, c.close_reason or (str(exc) if exc else "peer closed"))
@@ -319,6 +328,9 @@ class Gateway:
         self.stopping = False
         self._refusal_log: dict[str, float] = {}
         self.ending_devices: list[Device] = []
+        # C3B-4: Disconnected writes that failed at a device's end (DB down) are retried on the cycle, bounded
+        self.pending_disconnects: dict[str, float] = {}      # uid -> give-up deadline (monotonic)
+        self._pd_retry_at = 0.0
 
     # -- helpers ---------------------------------------------------------------------------------
     def spawn(self, coro) -> asyncio.Task:
@@ -344,6 +356,14 @@ class Gateway:
             self._refusal_log[key] = now
             log.warning(line)
         self.stats["refusals"] += 1
+
+    def log_limited(self, key: str, line: str, level: int = logging.INFO) -> None:
+        """One line per fixed KEY per minute for per-message conditions a peer controls (malformed, oversize,
+        carry-over): the counters carry the rate, the log stays bounded (SEC-2)."""
+        now = time.monotonic()
+        if now - self._refusal_log.get(key, 0.0) >= 60:
+            self._refusal_log[key] = now
+            log.log(level, "%s (one line per minute; see the counters)", line)
 
     # -- listeners -------------------------------------------------------------------------------
     async def start_listeners(self) -> None:
@@ -436,6 +456,13 @@ class Gateway:
             dev.writer_wakeup()
             await self.reconcile(dev, first=False)
         # the identifying SA is also a report: publish it, then what arrived during the identification
+        if dev.ended:
+            # the socket died (or the row was found owned elsewhere) during the awaits above: the SA and what
+            # followed it are dropped — counted, never silent (C3A-2)
+            n = 1 + len(proto.take_pre_ident())
+            self.stats["pre_ident_dropped"] += n
+            self.log_limited("pre-ident-dropped", f"{n} message(s) of {uid} dropped: ended during identification")
+            return
         self.uplink(c, ev)
         for pending in proto.take_pre_ident():
             self.uplink(c, pending)
@@ -444,23 +471,39 @@ class Gateway:
 
     async def _write_row(self, dev: Device, ev: cot.Event, adopt: bool) -> None:
         """M5 store-before-route: the row before the first publish; minimal row as the fallback;
-        retried later by the reconcile cycle while the cache holds."""
-        try:
-            await self.db_call(self.db.write_eud, dev.uid, dev.user_id, ev.callsign, ev.device, ev.os, ev.platform,
-                               ev.version, ev.phone, ev.group_name, ev.group_role, _parse_start(ev.start), adopt)
-            dev.row_ok = True
-        except Exception as e:
-            log.warning("row write for %s failed (%s): minimal row", dev.uid, e)
+        retried later by the reconcile cycle while the cache holds. Serialised with the device's end (C3A-1)."""
+        async with dev.db_lock:
+            if dev.ended:
+                return
+            res = None
             try:
-                await self.db_call(self.db.minimal_eud, dev.uid, dev.user_id, ev.callsign, adopt)
-                dev.row_ok = True
-            except Exception as e2:
-                log.warning("minimal row for %s failed (%s): retry in 30 s, CoT cached", dev.uid, e2)
-                dev.row_ok = False
-                dev.row_retry_at = time.monotonic() + 30
-        if dev.row_ok and dev.cache is not None:
-            dev.cache.hold = False
-            self.broker.flush_all()
+                res = await self.db_call(self.db.write_eud, dev.uid, dev.user_id, ev.callsign, ev.device, ev.os,
+                                         ev.platform, ev.version, ev.phone, ev.group_name, ev.group_role,
+                                         _parse_start(ev.start), adopt)
+                dev.row_ok = res != "owned-elsewhere"
+            except Exception as e:
+                log.warning("row write for %s failed (%s): minimal row", dev.uid, e)
+                try:
+                    res = await self.db_call(self.db.minimal_eud, dev.uid, dev.user_id, ev.callsign, adopt)
+                    dev.row_ok = res != "owned-elsewhere"
+                except Exception as e2:
+                    log.warning("minimal row for %s failed (%s): retry in 30 s, CoT cached", dev.uid, e2)
+                    dev.row_ok = False
+                    dev.row_retry_at = time.monotonic() + 30
+            if res == "owned-elsewhere":
+                # another user took the row between our ownership check and our write (SEC-1): first owner wins,
+                # this device is ended; its cached CoT is dropped (cot_dropped_no_row) rather than recorded under it
+                self.log_refusal(f"refusing device {dev.uid} from {dev.current.addr if dev.current else '?'}: "
+                                 "owned by another user")
+                dev.ended = True        # identify's reconcile and tail see it at once; end_device follows
+                for c in dev.conns:
+                    p = self.conns.get(c.cid)
+                    if p is not None:
+                        p.close("owned by another user")
+                return
+            if dev.row_ok and dev.cache is not None:
+                dev.cache.hold = False
+                self.broker.flush_all()
 
     async def _web_map(self, dev: Device) -> None:
         try:
@@ -546,19 +589,22 @@ class Gateway:
         if dev.channel is not None:
             dev.channel.unbind_placed_and_close()
             self.broker.drop_device("%s|%s" % dev.key)
-        if not dev.row_ok:
-            # one last try for the row; without it cot_parser's FK would drop everything (C1A-16 / C1B-7)
+        async with dev.db_lock:     # after any in-flight identify / reconcile write of this device (C3A-1)
+            if not dev.row_ok:
+                # one last try for the row; without it cot_parser's FK would drop everything (C1A-16 / C1B-7)
+                try:
+                    await self.db_call(self.db.minimal_eud, dev.uid, dev.user_id, dev.callsign, False)
+                    dev.row_ok = True
+                except Exception as e:
+                    log.warning("row for %s still missing at its end (%s): %d cached CoT dropped", dev.uid, e,
+                                len(dev.cache) if dev.cache is not None else 0)
             try:
-                await self.db_call(self.db.minimal_eud, dev.uid, dev.user_id, dev.callsign, False)
-                dev.row_ok = True
+                await self.db_call(self.db.set_disconnected, [dev.uid])
+                log.info("presence %s Disconnected", dev.uid)
             except Exception as e:
-                log.warning("row for %s still missing at its end (%s): %d cached CoT dropped", dev.uid, e,
-                            len(dev.cache) if dev.cache is not None else 0)
-        try:
-            await self.db_call(self.db.set_disconnected, [dev.uid])
-            log.info("presence %s Disconnected", dev.uid)
-        except Exception as e:
-            log.warning("presence write for %s failed: %s", dev.uid, e)
+                # retried on the cycle for up to 10 min; a live device of the same uid cancels the retry (C3B-4)
+                log.warning("presence write for %s failed: %s (retried on the cycle)", dev.uid, e)
+                self.pending_disconnects[dev.uid] = time.monotonic() + 600
         if dev.cache is not None:
             if dev.row_ok:
                 dev.cache.hold = False
@@ -575,25 +621,52 @@ class Gateway:
     async def reconcile(self, dev: Device, first: bool) -> None:
         if dev.ended:
             return
+        async with dev.db_lock:     # never interleaved with the end's Disconnected write (C3A-1)
+            try:
+                if not dev.row_ok and time.monotonic() >= dev.row_retry_at:
+                    await self.db_call(self.db.minimal_eud, dev.uid, dev.user_id, dev.callsign, False)
+                    dev.row_ok = True
+                    if dev.cache is not None:
+                        dev.cache.hold = False
+                        self.broker.flush_all()
+                needed = await self.db_call(self.db.needed_bindings, dev.uid, dev.user_id,
+                                            dev.callsign if dev.callsign_usable else None)
+                cand = await self.db_call(self.db.candidate_bindings, dev.uid) if first else None
+                if dev.ended:
+                    return              # ended while we awaited the DB: no bindings, no Connected re-assert (C3A-1)
+                if dev.channel is not None:
+                    dev.channel.set_needed(needed, cand)
+                if dev.row_ok and await self.db_call(self.db.set_connected, dev.uid, dev.last_sa_start):
+                    self.stats["presence_reasserted"] += 1
+            except asyncio.TimeoutError:
+                log.warning("reconcile %s: db timeout", dev.uid)
+            except Exception as e:
+                log.warning("reconcile %s failed: %s", dev.uid, e)
+            finally:
+                dev.last_reconcile = time.monotonic()
+
+    async def retry_disconnects(self) -> None:
+        """C3B-4: the Disconnected writes that failed at a device's end, retried every 30 s for 10 min."""
+        now = time.monotonic()
+        live = {d.uid for d in self.table.devices.values() if not d.ended}
+        for uid in list(self.pending_disconnects):
+            if uid in live:
+                self.pending_disconnects.pop(uid)       # it came back: its reconcile owns the row now
+            elif now > self.pending_disconnects[uid]:
+                self.pending_disconnects.pop(uid)
+                self.stats["presence_retry_dropped"] += 1
+                log.warning("presence Disconnected for %s not written within 10 min: given up", uid)
+        uids = list(self.pending_disconnects)
+        if not uids:
+            return
         try:
-            if not dev.row_ok and time.monotonic() >= dev.row_retry_at:
-                await self.db_call(self.db.minimal_eud, dev.uid, dev.user_id, dev.callsign, False)
-                dev.row_ok = True
-                if dev.cache is not None:
-                    dev.cache.hold = False
-                    self.broker.flush_all()
-            needed = await self.db_call(self.db.needed_bindings, dev.uid, dev.user_id,
-                                        dev.callsign if dev.callsign_usable else None)
-            cand = await self.db_call(self.db.candidate_bindings, dev.uid) if first else None
-            if dev.channel is not None:
-                dev.channel.set_needed(needed, cand)
-            if dev.row_ok and await self.db_call(self.db.set_connected, dev.uid, dev.last_sa_start):
-                self.stats["presence_reasserted"] += 1
-        except asyncio.TimeoutError:
-            log.warning("reconcile %s: db timeout", dev.uid)
+            await self.db_call(self.db.set_disconnected, uids)
         except Exception as e:
-            log.warning("reconcile %s failed: %s", dev.uid, e)
-        dev.last_reconcile = time.monotonic()
+            log.warning("presence retry for %d device(s) failed: %s", len(uids), e)
+            return
+        for uid in uids:
+            self.pending_disconnects.pop(uid, None)
+            log.info("presence %s Disconnected (retried)", uid)
 
     def tick(self, now: float) -> None:
         """Every second: pending deadlines, superseded deadlines, reconcile due."""
@@ -617,6 +690,9 @@ class Gateway:
             if now - dev.last_reconcile >= self.s.reconcile_s and not dev.ended:
                 dev.last_reconcile = now
                 self.spawn(self.reconcile(dev, first=False))
+        if self.pending_disconnects and now >= self._pd_retry_at:
+            self._pd_retry_at = now + self.s.reconcile_s
+            self.spawn(self.retry_disconnects())
 
 
 def _log_task_error(t: asyncio.Task) -> None:

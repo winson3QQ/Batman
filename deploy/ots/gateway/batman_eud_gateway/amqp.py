@@ -72,7 +72,12 @@ class SessionCache:
         self._bound()
 
     def push_head(self, e: CacheEntry) -> None:
-        self.q.appendleft(e); self.bytes += len(e.body)
+        """A returned / nacked entry goes back to the head, AFTER the entries already returned before it: returns
+        and multiple nacks arrive in publish order, so the retry order stays the session order (C3B-3)."""
+        k = 0
+        while k < len(self.q) and self.q[k].returned:
+            k += 1
+        self.q.insert(k, e); self.bytes += len(e.body)
         self._bound()
 
     def pop_head(self) -> CacheEntry:
@@ -391,6 +396,7 @@ class DeviceChannel:
         self.unbind_first: set[tuple[str, str, str]] = set()   # candidate set at identification (B2-13)
         self._consumer_tags: list[str] = []
         self._closed = False
+        self._opening = None            # the Channel whose OpenOk is awaited: place() is idempotent meanwhile (C3B-1)
         self.replaces = 0
         self.delivered = 0
 
@@ -408,10 +414,22 @@ class DeviceChannel:
             return
         if self.ch is not None and self.ch.is_open:
             return
+        if self._opening is not None:
+            return                      # OpenOk pending (pika opens asynchronously): one channel per device (C3B-1)
         self.replaces += 1
-        self.broker.conn.channel(on_open_callback=self._on_open)
+        self._opening = True            # placeholder: pika may run _on_open synchronously (and a fake does)
+        ch = self.broker.conn.channel(on_open_callback=self._on_open)
+        if self._opening is True:
+            self._opening = ch          # OpenOk still pending
 
     def _on_open(self, ch) -> None:
+        self._opening = None
+        if self._closed:                # the device ended before OpenOk: no declare/bind/consume for it (C3B-2)
+            try:
+                ch.close()
+            except Exception:
+                pass
+            return
         self.ch = ch
         ch.add_on_close_callback(self._on_close)
         ch.basic_qos(prefetch_count=50, callback=lambda _f: self._declare())
@@ -474,6 +492,7 @@ class DeviceChannel:
     def on_connection_lost(self) -> None:
         self.ready = False
         self.ch = None
+        self._opening = None            # its OpenOk will never come
         self.placed = set()
 
     def unbind_placed_and_close(self) -> None:
