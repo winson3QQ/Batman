@@ -60,7 +60,8 @@ class Database:
     def __init__(self, url: str, pool_size: int = 4):
         kw = {}
         if not url.startswith("sqlite"):
-            kw = dict(pool_size=pool_size, max_overflow=2, pool_pre_ping=True, pool_recycle=1800)
+            kw = dict(pool_size=pool_size, max_overflow=2, pool_pre_ping=True, pool_recycle=1800,
+                      connect_args={"connect_timeout": 5})     # a stalled DB must not pin an executor thread for ever
         self.engine = sa.create_engine(url, future=True, **kw)
         self.is_pg = self.engine.dialect.name == "postgresql"
 
@@ -227,12 +228,15 @@ class Database:
                       {"u": uid, "t": want_t})
             return True
 
-    def set_disconnected(self, uids: list[str]) -> int:
-        """Disconnected with last_event_time = max(last SA start, now) (B2-12)."""
+    def set_disconnected(self, uids: list[str], statement_timeout_ms: int | None = None) -> int:
+        """Disconnected with last_event_time = max(last SA start, now) (B2-12). M13 passes a 1 s statement
+        timeout so a stalled DB cannot eat the stop budget."""
         if not uids:
             return 0
         now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
         with self.engine.begin() as c:
+            if statement_timeout_ms and self.is_pg:
+                c.execute(text(f"SET LOCAL statement_timeout = {int(statement_timeout_ms)}"))
             n = 0
             for u in uids:
                 r = c.execute(text(

@@ -46,7 +46,8 @@ class Conn:
     write: Callable[[bytes], None] = lambda b: None
     close: Callable[[str], None] = lambda r: None
     pause: Callable[[float], None] = lambda s: None
-    uplink = None                          # TokenBucket, set at accept
+    uplink = None                          # TokenBucket (bytes), set at accept
+    uplink_msgs = None                     # TokenBucket (messages), set at accept
 
     @property
     def identified(self) -> bool:
@@ -155,8 +156,8 @@ class Table:
 
     def after_handshake(self, c: Conn) -> None:
         """8089: the cert's user is known. Per-user cap on unidentified connections (M2.4)."""
-        if c.user_id is None:
-            return
+        if c.user_id is None or c.cid not in self.pending:
+            return                             # closed during the cert lookup: nothing to count (C1A-11)
         n = self.pending_by_user[c.user_id]
         if n >= self.s.max_pending_per_user:
             # close the oldest unidentified connection of this user
@@ -184,6 +185,8 @@ class Table:
     def identify(self, c: Conn, uid: str, callsign: str | None, callsign_usable: bool) -> tuple[Device, bool]:
         """Admit the connection as (a connection of) a device. Returns (device, is_new_device).
         Raises Refused. The caller holds the admission lock and has done the DB-side ownership checks."""
+        if c.closed:
+            raise Refused("connection closed")
         key = (c.user_id, uid) if c.port == self.s.tls_port else (c.addr, uid)
         dev = self.devices.get(key)
         if dev is None:
@@ -259,14 +262,15 @@ class Table:
             return None
         if dev.current is c:
             dev.current = None
-            if dev.draining:
-                newest = max(dev.draining, key=lambda x: x.opened)
+            live = [x for x in dev.draining if not x.closed]
+            if live:
+                newest = max(live, key=lambda x: x.opened)
                 dev.draining.remove(newest)
                 newest.superseded_at = None
                 newest.deadline = None
                 dev.current = newest
                 self.stats["promoted"] += 1
-                dev.writer_wakeup()
+            dev.writer_wakeup()
         elif c in dev.draining:
             dev.draining.remove(c)
         if dev.current is None and not dev.draining:

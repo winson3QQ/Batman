@@ -59,6 +59,7 @@ class Settings:
     sendq_mb: int = 1
     amqp_max_down_s: int = 300
     allowlist_8088: tuple[str, ...] = ()
+    ots_version: str = ""                  # GATEWAY_OTS_VERSION: the OTS version this build was validated against ("" = unchecked)
     # fixed (not profile-owned)
     tcp_port: int = 8088
     tls_port: int = 8089
@@ -121,6 +122,10 @@ def load(env: dict[str, str] | None = None) -> Settings:
     if len(set(names)) != len(names):
         raise ConfigError("GATEWAY_8088_ALLOWLIST has a duplicate uid")
     kw["allowlist_8088"] = names
+    ver = env.get("GATEWAY_OTS_VERSION", "").strip()
+    if ver and not re.match(r"^[0-9][0-9A-Za-z.+-]{0,30}$", ver):
+        raise ConfigError(f"GATEWAY_OTS_VERSION={ver!r} is not a version string")
+    kw["ots_version"] = ver
     s = Settings(**kw)
     # sanity relations the design states
     if s.max_conns_per_device < 1 or s.max_devices < 1 or s.max_pending < 1:

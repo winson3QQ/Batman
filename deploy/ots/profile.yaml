@@ -106,6 +106,7 @@ images:
       # block (1024m, pids 32); env_common: true keeps the app env on it.
       - {name: ots_eud_gateway, ip: 172.20.0.10, hostname: ots_eud_gateway, env_common: true,
          entrypoint: [python3, /app/eud-gateway.pyz],
+         env: {GATEWAY_OTS_VERSION: "1.7.13"},   # design §4 OTA stage 2: the gateway exits 2 on another OTS version (validated against this one; bump with the image ref above)
          volumes: [{name: ots-appdata, path: /app/ots}],
          mounts: [{src: eud-gateway.pyz, dst: /app/eud-gateway.pyz, ro: true}]}
   - ref: "imresamu/postgis:18-3.6"

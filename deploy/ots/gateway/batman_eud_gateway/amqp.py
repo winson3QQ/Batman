@@ -62,6 +62,7 @@ class SessionCache:
         self.retry_n = 0
         self.hold = False          # M5 store-before-route: True until the device's euds row exists
         self.ending = False        # the device ended: unregister once empty and fully acked
+        self.retry_armed = False   # a head retry is scheduled on the loop
 
     def __len__(self) -> int:
         return len(self.q)
@@ -281,8 +282,15 @@ class Broker:
                 return                      # head-only retry: the rest waits for its ack
 
     def _arm_retry(self, cache: SessionCache) -> None:
+        if cache.retry_armed:
+            return
+        cache.retry_armed = True
         delay = max(0.0, cache.retry_at - time.monotonic())
-        self.loop.call_later(delay + 0.01, self._flush, cache)
+
+        def fire():
+            cache.retry_armed = False
+            self._flush(cache)
+        self.loop.call_later(delay + 0.01, fire)
 
     def _on_ack(self, frame) -> None:
         m = frame.method
@@ -298,6 +306,8 @@ class Broker:
                 self.stats["nacked"] += 1
                 e.returned = True
                 cache.push_head(e)
+                cache.retry_n += 1           # a nack is retried with the same backoff as a return (C1A-8)
+                cache.retry_at = time.monotonic() + RETURN_BACKOFF[min(cache.retry_n, len(RETURN_BACKOFF)) - 1]
             elif e.returned:
                 pass                         # returned then acked: already back in the cache
             else:
@@ -305,6 +315,8 @@ class Broker:
                 cache.retry_n = 0
             if cache.q and (is_nack or not e.returned):
                 self._flush(cache)
+            elif cache.q and e.returned and cache.inflight == 0:
+                self._arm_retry(cache)          # returned then acked: the head retry is scheduled, not waited for (C1A-6)
             elif cache.ending and not cache.q and cache.inflight == 0:
                 self.caches.discard(cache)      # the device's goodbye is delivered: forget its cache
 
@@ -319,6 +331,7 @@ class Broker:
                 cache.retry_at = time.monotonic() + RETURN_BACKOFF[min(cache.retry_n, len(RETURN_BACKOFF)) - 1]
                 log.warning("cot_parser body returned (%s); retry in %d s", method.reply_text,
                             RETURN_BACKOFF[min(cache.retry_n, len(RETURN_BACKOFF)) - 1])
+                self._arm_retry(cache)      # scheduled now: the ack that follows the return may be the last event (C1A-6)
                 return
         log.warning("returned body matched no in-flight entry")
 
@@ -384,6 +397,8 @@ class DeviceChannel:
             self.unbind_first = set(unbind_candidates) - self.needed
         if self.ready:
             self.reconcile()
+        elif self.ch is None and not self._closed:
+            self.place()                    # a channel closed by a 404/406 is re-placed on the next reconcile (C1A-3/C1B-4)
 
     def place(self) -> None:
         if self._closed or self.broker.conn is None or not self.broker.conn.is_open:

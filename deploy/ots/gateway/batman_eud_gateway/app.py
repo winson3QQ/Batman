@@ -119,16 +119,27 @@ class App:
 
     async def start(self) -> None:
         log.info("batman-eud-gateway %s starting; config %s", __version__, self.ots.redacted())
+        check_ots_version(self.s.ots_version)
         await self.wait_dependencies()
         await self.migrate()
         await self.sweep()
-        self.tls.build()
-        self.broker.start()
-        await self.gw.start_listeners()
-        self.listening = True
+        while True:                        # a half-written cert file is waited for, never a crash loop (C1A-10)
+            try:
+                self.tls.build(); break
+            except Exception as e:
+                log.warning("TLS context not built yet (%s): retry in 5 s", e)
+                await asyncio.sleep(5)
         self.loop.create_task(self._periodic())
         threading.Thread(target=self._watchdog, name="watchdog", daemon=True).start()
         self.loop.create_task(self._health_server())
+        self.broker.start()
+        t0 = time.monotonic()               # §1 order: AMQP open and declared BEFORE the listeners bind
+        while not self.broker.open:
+            if time.monotonic() - t0 > 60 and int(time.monotonic() - t0) % 30 == 0:
+                log.info("waiting for AMQP before binding the listeners")
+            await asyncio.sleep(0.5)
+        await self.gw.start_listeners()
+        self.listening = True
         log.info("ready")
 
     # -- periodic (1 s) ---------------------------------------------------------------------------
@@ -169,7 +180,7 @@ class App:
         pass
 
     def _amqp_down_check(self, now: float) -> None:
-        if self.broker.down_since is not None and now - self.broker.down_since > self.s.amqp_max_down_s and self.listening:
+        if self.broker.down_since is not None and now - self.broker.down_since > self.s.amqp_max_down_s:
             log.error("exit 3: AMQP down for %d s", int(now - self.broker.down_since))
             self._exit(3)
 
@@ -247,20 +258,25 @@ class App:
         self.gw.stop_accepting()
         devices = list(self.gw.table.devices.values())
         uids = [d.uid for d in devices]
+        # (1) close the sockets FIRST: what was read until now is published and counted; nothing more arrives (C1B-8)
+        self.gw.stopping = True
+        for proto in list(self.gw.conns.values()):
+            proto.close("stop")
+        await asyncio.sleep(0)
         rows = 0
         try:
-            rows = await self.gw.db_call(self.db.set_disconnected, uids, timeout=1.0)
+            rows = await self.gw.db_call(self.db.set_disconnected, uids, 1000, timeout=1.2)
         except Exception as e:
             log.warning("stop: presence rows skipped (%s)", e)
+        from . import cot
         for d in devices:
-            d.ended = True
             if d.channel is not None:
                 d.channel.unbind_placed_and_close()
-            if d.cache is not None:
+            if d.cache is not None and d.row_ok:
                 d.cache.hold = False
-                from . import cot
                 self.broker.publish_cot(d.cache, d.uid, cot.PRESENCE_TYPE,
                                         cot.uplink_body(d.uid, cot.presence_offline(d.uid, d.last_type), d.user_id))
+            d.ended = True
         self.broker.flush_all()
         # wait for confirms <= 1.5 s
         deadline = t0 + 1.5
@@ -280,8 +296,6 @@ class App:
             if left == 0 or left is None:
                 break
             await asyncio.sleep(0.1)
-        for proto in list(self.gw.conns.values()):
-            proto.close("stop")
         self.stop_line = f"stop: {len(devices)} devices, {rows} rows, {confirmed} bodies confirmed, {unconfirmed} unconfirmed, {left if left is not None else '?'} left in cot_parser queue, {time.monotonic() - t0:.2f} s"
         log.info(self.stop_line)
         self._snapshot(time.monotonic())
@@ -296,6 +310,22 @@ class App:
         self.loop.run_until_complete(self.start())
         self.loop.run_forever()
         return self.exit_code
+
+
+def check_ots_version(pin: str) -> None:
+    """§4 OTA stage 2: the pyz runs only on the OTS version it was validated against (C1B-9)."""
+    if not pin:
+        return
+    try:
+        from importlib.metadata import version
+        have = version("opentakserver")
+    except Exception as e:
+        log.error("exit 2: cannot read the installed opentakserver version: %s", e)
+        os._exit(2)
+    if have != pin:
+        log.error("exit 2: installed opentakserver %s != pinned %s (this gateway was validated against %s)", have, pin, pin)
+        os._exit(2)
+    log.info("opentakserver %s == pin", have)
 
 
 def setup_logging(path: str) -> None:

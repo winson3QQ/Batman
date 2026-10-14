@@ -66,10 +66,14 @@ class Protocol(asyncio.Protocol):
         self._ident_task: asyncio.Task | None = None
         self._hs_task: asyncio.Task | None = None
         self._first_sa = None          # an identifying event that arrived before the cert lookup finished
+        self._pre_ident: list = []     # CoT read between the first SA and the end of identification (C1A-4)
         self._resume_handle = None
+        self.tls_done = port != gw.s.tls_port   # 8088: no handshake; 8089: set by _handshake()
 
     # -- transport events --------------------------------------------------------------------
     def connection_made(self, transport) -> None:
+        """Called at ACCEPT, before any TLS handshake (8089 listens raw and upgrades with start_tls, C1A-5/C1B-3):
+        the pending pool and the memory reserve therefore cover pre-TLS sockets."""
         self.transport = transport
         peer = transport.get_extra_info("peername") or ("?", 0)
         cid = Protocol._next_cid; Protocol._next_cid += 1
@@ -78,6 +82,7 @@ class Protocol(asyncio.Protocol):
         c.close = self.close
         c.pause = self._pause
         c.uplink = TokenBucket(self.s.uplink_bytes_per_s, self.s.uplink_bytes_per_s * 8)
+        c.uplink_msgs = TokenBucket(self.s.uplink_msgs_per_s, self.s.uplink_msgs_per_s * 5)
         self.conn = c
         sock = transport.get_extra_info("socket")
         if sock is not None:
@@ -91,7 +96,26 @@ class Protocol(asyncio.Protocol):
             return
         self.gw.conns[cid] = self
         if self.port == self.s.tls_port:
-            self._hs_task = self.gw.spawn(self._after_handshake())
+            self._hs_task = self.gw.spawn(self._handshake(transport))
+
+    async def _handshake(self, raw_transport) -> None:
+        """8089: TLS over the accepted socket (M14 context, 10 s), then the cert lookup (M2.2)."""
+        try:
+            tls = await self.gw.loop.start_tls(raw_transport, self, self.gw.tls.ctx, server_side=True,
+                                               ssl_handshake_timeout=self.s.handshake_s)
+        except Exception as e:
+            c = self.conn
+            if c is not None and not c.closed:
+                self.gw.log_refusal(f"refusing cert from {c.addr}: handshake failed ({type(e).__name__}: {str(e)[:80]})")
+                self.gw.stats["handshake_failed"] += 1
+                self.close("handshake failed")
+            return
+        if tls is None or self.conn is None or self.conn.closed:
+            return
+        self.transport = tls
+        tls.set_write_buffer_limits(high=256 * 1024, low=64 * 1024)
+        self.tls_done = True
+        await self._after_handshake()
 
     async def _after_handshake(self) -> None:
         """M2.2: the cert's CN must be an existing, active user (DB error -> close, not a refusal)."""
@@ -123,6 +147,8 @@ class Protocol(asyncio.Protocol):
         c = self.conn
         if c is None or c.closed:
             return
+        if not self.tls_done:
+            return                            # bytes before the handshake completed (start_tls consumes them)
         now = time.monotonic()
         self.gw.table.note_rx(c, now)
         try:
@@ -130,8 +156,11 @@ class Protocol(asyncio.Protocol):
         except CarryOverflow:
             log.warning("carry-over over the bound from %s: closing", c.addr)
             self.close("carry-over bound"); return
-        # uplink rate: per session, per user, global (M1)
+        # uplink rate: per session (bytes + messages), per user, global (M1)
         deficit = c.uplink.charge(len(data), now)
+        nmsg = sum(1 for f in frames if f.kind in ("event", "auth"))
+        if nmsg:
+            deficit = max(deficit, c.uplink_msgs.charge(nmsg, now))
         if c.user_id is not None:
             deficit = max(deficit, self.gw.user_bucket(c.user_id).charge(len(data), now))
         deficit = max(deficit, self.gw.global_bucket.charge(len(data), now))
@@ -157,14 +186,25 @@ class Protocol(asyncio.Protocol):
                 self._write(cot.pong())
                 continue
             if c.device is None:
+                if self._ident_task is not None and not self._ident_task.done():
+                    # identification in progress: keep what the phone sends meanwhile (bounded, C1A-4)
+                    if len(self._pre_ident) < 64:
+                        self._pre_ident.append(ev)
+                    else:
+                        self.gw.stats["pre_ident_dropped"] += 1
+                    continue
                 if not ev.identifies:
                     continue
                 if self.port == self.s.tls_port and c.user_id is None:
                     self._first_sa = ev          # the cert lookup is still running: keep the newest SA
-                elif self._ident_task is None or self._ident_task.done():
+                else:
                     self._ident_task = self.gw.spawn(self.gw.identify(self, c, ev))
                 continue
             self.gw.uplink(c, ev)
+
+    def take_pre_ident(self) -> list:
+        evs, self._pre_ident = self._pre_ident, []
+        return evs
 
     def pause_writing(self) -> None:
         self.can_write.clear()
@@ -177,7 +217,10 @@ class Protocol(asyncio.Protocol):
         if c is None:
             return
         c.closed = True
+        self.can_write.set()                  # a writer waiting on this socket must wake and re-check (C1B-1)
         self.gw.conns.pop(c.cid, None)
+        if self._resume_handle is not None:
+            self._resume_handle.cancel()
         self.gw.on_connection_closed(c, c.close_reason or (str(exc) if exc else "peer closed"))
 
     # -- actions ---------------------------------------------------------------------------------
@@ -214,13 +257,16 @@ class Protocol(asyncio.Protocol):
                 pass
 
     def close(self, reason: str) -> None:
+        """A forced close (refusal, deadline, excess connection, stop): abort(), never the graceful close()
+        — a black-holed peer never acknowledges a FIN, so close() would keep the socket until
+        TCP_USER_TIMEOUT and the deadlines would be only labels (C1B-2)."""
         c = self.conn
         if c is not None:
             if c.closed:
                 return
             c.close_reason = reason
         if self.transport is not None:
-            self.transport.close()
+            self.transport.abort()
 
 
 class Gateway:
@@ -258,9 +304,10 @@ class Gateway:
         return b
 
     def log_refusal(self, line: str) -> None:
-        """One line per distinct refusal per minute (a flood must not flood the log)."""
+        """One line per distinct refusal REASON per minute (a flood must not flood the log; the key carries no
+        uid/address so the table stays bounded)."""
         now = time.monotonic()
-        key = line.split(":")[0]
+        key = line.rsplit(":", 1)[-1].strip()[:60]
         if now - self._refusal_log.get(key, 0.0) >= 60:
             self._refusal_log[key] = now
             log.warning(line)
@@ -275,24 +322,17 @@ class Gateway:
             log.info("listening 8088 (allowlist: %d uids)", len(self.s.allowlist_8088))
         else:
             log.info("8088 not bound (allowlist empty)")
+        # raw TCP; the handshake is started by the protocol AFTER the pending-pool/reserve admission (M2.1)
         srv = await self.loop.create_server(lambda: Protocol(self, self.s.tls_port), self.bind_host, self.s.tls_port,
-                                            ssl=self.tls.ctx, ssl_handshake_timeout=self.s.handshake_s,
                                             reuse_address=True, backlog=64)
         self._tls_server = srv
         self.servers.append(srv)
         log.info("listening %d (mTLS)", self.s.tls_port)
 
     async def restart_tls_listener(self) -> None:
-        old = [s for s in self.servers if s is getattr(self, "_tls_server", None)]
-        for s in old:
-            s.close()
-            self.servers.remove(s)
-        srv = await self.loop.create_server(lambda: Protocol(self, self.s.tls_port), "0.0.0.0", self.s.tls_port,
-                                            ssl=self.tls.ctx, ssl_handshake_timeout=self.s.handshake_s,
-                                            reuse_address=True, backlog=64)
-        self._tls_server = srv
-        self.servers.append(srv)
-        log.info("8089 listener re-created with the rebuilt TLS context")
+        """The TLS context is taken per connection from `self.tls.ctx` (start_tls), so a rebuilt context is
+        used by every NEW connection without touching the listener (M14 cert rotation)."""
+        log.info("8089 uses the rebuilt TLS context for new connections")
 
     def stop_accepting(self) -> None:
         for srv in self.servers:
@@ -338,6 +378,8 @@ class Gateway:
             except Exception as e:
                 log.warning("db error identifying %s: %s", uid, e)
                 proto.close("db error"); return
+            if c.closed:
+                return                       # died while we awaited the DB: never becomes a device (C1A-1)
             try:
                 dev, new = self.table.identify(c, uid, callsign if cs_usable else None, cs_usable)
             except Refused as r:
@@ -361,8 +403,13 @@ class Gateway:
             log.info("superseded %s: new connection from %s", uid, c.addr)
             dev.writer_wakeup()
             await self.reconcile(dev, first=False)
-        # the identifying SA is also a report: publish it
+        # the identifying SA is also a report: publish it, then what arrived during the identification
         self.uplink(c, ev)
+        for pending in proto.take_pre_ident():
+            self.uplink(c, pending)
+        if c.closed:
+            # the socket died during the awaits above: the device must not outlive it (C1A-1)
+            self.on_connection_closed(c, "closed during identification")
 
     async def _write_row(self, dev: Device, ev: cot.Event, adopt: bool) -> None:
         """M5 store-before-route: the row before the first publish; minimal row as the fallback;
@@ -421,27 +468,38 @@ class Gateway:
     async def _writer(self, dev: Device) -> None:
         dev._wake = asyncio.Event()
         while not dev.ended:
-            p = dev.pop_send()
-            if p is None:
-                dev._wake.clear()
-                await dev._wake.wait()
-                continue
             cur = dev.current
             if cur is None or cur.closed:
-                dev.sendq.appendleft(p); dev.sendq_bytes += len(p)
                 dev._wake.clear()
                 await dev._wake.wait()
                 continue
             proto = self.conns.get(cur.cid)
             if proto is None:
+                dev._wake.clear()
+                await dev._wake.wait()
                 continue
-            await proto.can_write.wait()        # back-pressure: no timeout, a dead peer ends by TCP_USER_TIMEOUT
+            if not proto.can_write.is_set():
+                # back-pressure on the CURRENT socket: wait for it to drain OR for the device to change its
+                # current socket (supersede / promotion / close), whichever first (C1A-2 / C1B-1)
+                dev._wake.clear()
+                w1 = asyncio.ensure_future(proto.can_write.wait())
+                w2 = asyncio.ensure_future(dev._wake.wait())
+                await asyncio.wait({w1, w2}, return_when=asyncio.FIRST_COMPLETED)
+                for w in (w1, w2):
+                    if not w.done():
+                        w.cancel()
+                continue                        # re-evaluate dev.current
+            p = dev.pop_send()
+            if p is None:
+                dev._wake.clear()
+                await dev._wake.wait()
+                continue
             proto._write(p)
             self.stats["downlink"] += 1
 
     # -- supersede / ends (M3, M8) ----------------------------------------------------------------
     def _on_supersede(self, dev: Device, old: Conn, new: Conn) -> None:
-        pass                                    # downlink follows dev.current by construction
+        dev.writer_wakeup()                     # the writer must leave the old socket's back-pressure wait
 
     def on_connection_closed(self, c: Conn, reason: str) -> None:
         dev = self.table.connection_closed(c)
@@ -457,15 +515,27 @@ class Gateway:
         if dev.channel is not None:
             dev.channel.unbind_placed_and_close()
             self.broker.drop_device("%s|%s" % dev.key)
+        if not dev.row_ok:
+            # one last try for the row; without it cot_parser's FK would drop everything (C1A-16 / C1B-7)
+            try:
+                await self.db_call(self.db.minimal_eud, dev.uid, dev.user_id, dev.callsign, False)
+                dev.row_ok = True
+            except Exception as e:
+                log.warning("row for %s still missing at its end (%s): %d cached CoT dropped", dev.uid, e,
+                            len(dev.cache) if dev.cache is not None else 0)
         try:
             await self.db_call(self.db.set_disconnected, [dev.uid])
             log.info("presence %s Disconnected", dev.uid)
         except Exception as e:
             log.warning("presence write for %s failed: %s", dev.uid, e)
         if dev.cache is not None:
-            dev.cache.hold = False
-            self.broker.publish_cot(dev.cache, dev.uid, cot.PRESENCE_TYPE,
-                                    cot.uplink_body(dev.uid, cot.presence_offline(dev.uid, dev.last_type), dev.user_id))
+            if dev.row_ok:
+                dev.cache.hold = False
+                self.broker.publish_cot(dev.cache, dev.uid, cot.PRESENCE_TYPE,
+                                        cot.uplink_body(dev.uid, cot.presence_offline(dev.uid, dev.last_type), dev.user_id))
+            else:
+                self.stats["cot_dropped_no_row"] += len(dev.cache)
+                dev.cache.q.clear(); dev.cache.bytes = 0
             dev.cache.ending = True
             if not dev.cache.q and dev.cache.inflight == 0:
                 self.broker.unregister(dev.cache)
@@ -507,6 +577,11 @@ class Gateway:
                     proto.close(why)
             elif self.table.superseded_due(c, now):
                 proto.close("superseded: deadline")
+        # a draining connection whose protocol is gone (closed before it was recorded) must not linger
+        for dev in list(self.table.devices.values()):
+            for c in list(dev.draining):
+                if c.closed or c.cid not in self.conns:
+                    self.on_connection_closed(c, "stale draining connection")
         for dev in list(self.table.devices.values()):
             if now - dev.last_reconcile >= self.s.reconcile_s and not dev.ended:
                 dev.last_reconcile = now

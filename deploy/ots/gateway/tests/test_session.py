@@ -100,8 +100,8 @@ def test_supersede_keeps_old_reading_then_closes_excess():
     c2 = conn(2); t.accept(c2); d2, new = t.identify(c2, "U1", None, False)
     assert d2 is d and not new and d.current is c2 and d.draining == [c1] and events == [(1, 2)]
     assert c1.superseded_at is not None and c1.deadline is not None
-    # outage + 20 capped at 120
-    assert c1.deadline - c1.superseded_at <= 120.0
+    # outage + 20 capped at 120 (float arithmetic: allow 1 ms)
+    assert c1.deadline - c1.superseded_at <= 120.001
     c3 = conn(3); t.accept(c3); t.identify(c3, "U1", None, False)
     assert d.current is c3 and set(x.cid for x in d.draining) == {1, 2}
     c4 = conn(4); t.accept(c4); t.identify(c4, "U1", None, False)
