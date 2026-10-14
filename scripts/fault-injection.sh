@@ -355,6 +355,9 @@ verdict_ok(){ local max=${1:-300} t0=$SECONDS
 # a real crash: SIGKILL the container's main process from the host (`docker kill` sets the manual-stop flag, E26)
 crash_ctr(){ n "kill -9 \$(docker inspect -f '{{.State.Pid}}' $1)"; }
 ledger_has(){ q "$RDR"'T='"$TENANT"'; grep -q "'"$1"'" "$R/batman-payload-$T-restarts" 2>/dev/null'; }
+# #289: the EUD container to crash is whichever the node runs (ots_eud_gateway on the gateway build, the mTLS
+# eud_handler on the overlay build) — read from the node, never assumed from this script's idea of the build
+eudc(){ q "docker ps -a --format '{{.Names}}' 2>/dev/null | grep -m1 -E '^ots_eud_gateway\$|^ots_eud_handler_ssl\$'" | tr -d '\r'; }
 
 s1(){ echo "== S1 ota-start-274: after an OTA nothing revives by itself; the guardian starts the stack in order, once =="
   need_tenant S1 || return
@@ -363,7 +366,7 @@ s1(){ echo "== S1 ota-start-274: after an OTA nothing revives by itself; the gua
   b0=$(bootid); [ -n "$b0" ] || { no "S1 boot_id unreadable — not verified"; return; }
   ota_boot S1 "$b0" || return
   for _ in $(seq 1 80); do committed && ots_up && { c=1; break; }; sleep 8; done
-  [ "$c" = 1 ] || { no "S1 the OTA boot did not commit with OTS 6/6 within ~640 s"; return; }
+  [ "$c" = 1 ] || { no "S1 the OTA boot did not commit with the OTS stack up within ~640 s"; return; }
   unread_reset
   o=$(q "B0=${b0:0:8} sh -s" < "$HERE/node/ota-start-274.sh" | tr -d '\r')
   undetermined S1 && return
@@ -377,14 +380,15 @@ s1(){ echo "== S1 ota-start-274: after an OTA nothing revives by itself; the gua
 c1(){ local neg=${1:-}; echo "== C1${neg:+ negative} trial-crash-274: a crash in a trial reverts it$([ -n "$neg" ] && echo ' — NEGATIVE: 60 s window commits')"
   need_tenant C1 || return
   precheck || return
+  EUDC=$(eudc); [ -n "$EUDC" ] || { no "no EUD container on the node — not verified"; return; }
   local pre tr b0 dl w post cm log rel tag=C1${neg:+n}
   pre=$(slot); [ -n "$pre" ] || { no "$tag slot unreadable — not verified"; return; }
   held_trial "$tag" "$pre" || return; tr=$HT; b0=$HB; dl=$HDL
   verdict_ok 300 || { no "$tag: the trial never reached verdict OK before the crash (start-up converge not done?)"; return; }
   [ -n "$neg" ] && q "$RDR"': > "$R/fault.274-window60"' >/dev/null
-  echo "    crashing ots_eud_handler_ssl (SIGKILL of its process)"; crash_ctr ots_eud_handler_ssl
-  for _ in $(seq 1 12); do ledger_has "crash ots_eud_handler_ssl" && break; sleep 5; done
-  ledger_has "crash ots_eud_handler_ssl" || { no "$tag: the guardian did not record/restart the crash within 60 s"; return; }
+  echo "    crashing $EUDC (SIGKILL of its process)"; crash_ctr $EUDC
+  for _ in $(seq 1 12); do ledger_has "crash $EUDC" && break; sleep 5; done
+  ledger_has "crash $EUDC" || { no "$tag: the guardian did not record/restart the crash within 60 s"; return; }
   n 'batman-autocommit release' 2>&1 | sed 's/^/    /'
   wait_revert "$tag" "$b0" "$dl"; w=$?
   if [ -n "$neg" ]; then
@@ -409,13 +413,14 @@ c1(){ local neg=${1:-}; echo "== C1${neg:+ negative} trial-crash-274: a crash in
 c2(){ echo "== C2 trial-crash-274: a manual 'batman-slot commit' after a crash in the trial stands =="
   need_tenant C2 || return
   precheck || return
+  EUDC=$(eudc); [ -n "$EUDC" ] || { no "no EUD container on the node — not verified"; return; }
   local pre tr b0 dl o b u lim t0 st it log
   pre=$(slot); [ -n "$pre" ] || { no "C2 slot unreadable — not verified"; return; }
   held_trial C2 "$pre" || return; tr=$HT; b0=$HB; dl=$HDL
   verdict_ok 300 || { no "C2: the trial never reached verdict OK before the crash"; return; }
-  crash_ctr ots_eud_handler_ssl
-  for _ in $(seq 1 12); do ledger_has "crash ots_eud_handler_ssl" && break; sleep 5; done
-  ledger_has "crash ots_eud_handler_ssl" || { no "C2: crash not recorded within 60 s"; return; }
+  crash_ctr $EUDC
+  for _ in $(seq 1 12); do ledger_has "crash $EUDC" && break; sleep 5; done
+  ledger_has "crash $EUDC" || { no "C2: crash not recorded within 60 s"; return; }
   n 'batman-slot commit' 2>&1 | sed 's/^/    /'
   lim=$((dl + DEFER_MAX + 60)); echo "    committed by hand; watching until uptime ${lim}s (deadline ${dl}s + deferral)"
   while :; do
