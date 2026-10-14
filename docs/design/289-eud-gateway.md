@@ -1,6 +1,7 @@
 # #289 OTS EUD gateway — design v3.1
 
-Status: v3.1 · 2026-10-14 · v1 (38e949d): A REJECT / B APPROVE-WITH-CHANGES; v2 (0709ff9): A2 REJECT (5 MAJOR) / B2
+Status: **v3.2 — FROZEN for implementation** (closure checks by A3 and B3 on v3.1: every round-3 finding closed,
+no new MAJOR; v3.2 = their four text fixes + B3-12 MINOR) · 2026-10-14 · v1 (38e949d): A REJECT / B APPROVE-WITH-CHANGES; v2 (0709ff9): A2 REJECT (5 MAJOR) / B2
 APPROVE-WITH-CHANGES (7 MAJOR); v3 (fe77341): **A3 APPROVE-WITH-CHANGES (1 MAJOR) / B3 APPROVE-WITH-CHANGES (2
 MAJOR)**, both stating that no further design round is needed once their MAJORs are written in; v3.1 writes them in
 (§10, round 3). Every finding and its disposition is in §10. Parent #75. Facts, measurements and leftovers it builds on: #289 body
@@ -171,7 +172,7 @@ up on its own once the schema exists; stated in §4.
 | **Bindings** | reconciled: at identification, on the first SA after a (re)connect, every 30 s: bind `needed − placed`, unbind `placed − needed` (gateway-placed only); `needed` computed from the DB | P2 — A1-10/B1-15 |
 | **Snapshot** | `/tmp/gateway/sessions.json` every 10 s (atomic rename) with counters and a monotonic `uptime_s` (no wall clock) | R17 registry (no files/signals/pids) — B1-18 |
 | **Health / watchdog** | `GET /healthz` bound on `0.0.0.0:8090` inside the container netns (reachable as `localhost` for the start gate and as 172.20.0.10 on br-ots); 200 when both configured listeners are bound and AMQP is open; **the process exits 3** when AMQP has been down for `AMQP_MAX_DOWN_S` (300 s) or the loop is wedged (a 1 s heartbeat task not run for 30 s, checked by a thread) → the guardian's crash path | — A1-9/B1-13 |
-| **Stop** | SIGINT and SIGTERM: ≤ 3 s plan (M13) | #274 — A1-3/B1-1 |
+| **Stop** | SIGINT and SIGTERM: ≤ 4.5 s plan (M13) | #274 — A1-3/B1-1 |
 
 ### 1.1 Mechanisms
 
@@ -349,8 +350,10 @@ are paused on 04; their state is the `apscheduler_jobs` row (`next_run_time` NUL
   `ots_eud_handler_ssl` by `ots_eud_gateway` in that list** (otherwise the gateway's confinement is checked by nobody
   — a regression on today), and (b) adds a sibling **`verify-profile-ots-record.sh`** run by the same hook: `docker
   exec ots-db psql … "SELECT count(*) FROM apscheduler_jobs WHERE id IN (…) AND next_run_time IS NOT NULL"` must be
-  0 and `pg_constraint.confdeltype` of the three FKs must be `r` → otherwise exit 1 (DRIFT within 30 s); DB
-  unreachable → UNKNOWN (exit 0 with a log line, never a false DRIFT), bounded by `timeout 8`. Both files are in
+  0 and `pg_constraint.confdeltype` of the three FKs must be `r` → otherwise exit 1 (DRIFT within 30 s); **any
+  non-definite outcome** (DB unreachable, missing relation on a first boot, auth error, timeout) → UNKNOWN (exit 0
+  with a log line, never a false DRIFT), bounded by `timeout 8`; "history" for M4 and here = any `cot`, `points` or
+  `geochat` row of the uid. Both files are in
   scope and golden-shipped. The harness `conform` suite gets the same two legs (FK + jobs). Retention = archiving
   (out of scope).
 - Not covered (stated): the other 11 CASCADE FKs to `euds` (not the record's track/chat); an ORM
@@ -457,7 +460,7 @@ harness PR that lands first (#290), with known-failures entries bound to this is
 | `GATEWAY_*` env, allowlist, stop tiers | `profile.yaml` (golden) → manifest | the gateway, payload-stop |
 | snapshot `/tmp/gateway/sessions.json`, counters | the gateway (atomic rename, 10 s) | suites, operators (ro) |
 | `/healthz` | the gateway | the start gate (payload-run) |
-| the node clock | the kernel (no RTC; NTP when reachable) | TLS validity (certs 2025-06-23 → 2035-06-21: ✅ today), log timestamps; **not** presence or any row comparison |
+| the node clock | the kernel (no RTC; NTP when reachable) | TLS validity (certs 2025-06-23 → 2035-06-21: ✅ today; client certs' `notBefore` and the CRL's `lastUpdate`/`nextUpdate`, M14), log timestamps; **not** presence or any row comparison |
 | TLS cert/key/CA/CRL files (`ots-appdata`) | OTS cert-gen / the operator (#54) | the gateway (reloaded on mtime change) |
 
 ## 3. Contracts
@@ -487,7 +490,8 @@ harness PR that lands first (#290), with known-failures entries bound to this is
 - **Health 8090:** as M17; the start gate only.
 - **FK + scheduler state:** written by the gateway (migration) and the OTS app/API (`apscheduler_jobs`); read by the
   gateway's 30 s watch (log line, snapshot counter `jobs_resumed`, `/healthz` body) and by the harness `conform`
-  and `fk-restrict-289` suites. There is no node-side verdict for them (stated, §8); nothing stops.
+  and `fk-restrict-289` suites, and by `verify-profile-ots-record.sh` under the guardian (DRIFT ≤ 30 s, M10); the
+  stack keeps running (nothing stops), but the verdict gates an autocommit (§4).
 - **Manifest (generated, no new key):** `CONTAINER ots_eud_gateway / IMAGE batman/ots:… / IP 172.20.0.10 / HARDEN
   ots_eud_gateway.hardening.env / ENV … / VOLUME ots-appdata:/app/ots / MOUNT eud-gateway.pyz:/app/eud-gateway.pyz:ro
   / ENTRYPOINT python3 /app/eud-gateway.pyz / HEALTH curl -fsS http://localhost:8090/healthz / STOPTIER 1`;
@@ -505,12 +509,12 @@ harness PR that lands first (#290), with known-failures entries bound to this is
 | one cert cycling fresh uids | unbounded rows + queues | new-device bucket (4 burst, 10/h): refused before row/queue | cap-289 cycling leg |
 | one cert streaming large CoT at link rate | loop stalls (overlay: per-process) | per-session uplink bucket pauses reading; other phones' ping RTT < 1 s | admission-289 (k) |
 | boot / reboot / power loss | children SIGKILLed; caches lost | caches lost (stated); presence sweep at start (clock-free); phones reconnect | unclean-boot-274, presence-289 (sweep leg) |
-| clean stop / OTA stage 1 | tier 1 `-t 5`, SIGINT; caches lost | M13 ≤ 3 s: rows, `t-x-d-d`, flush with confirms; cot_parser stopped in tier 2 after; residual stated | cleanstop-274 (asserts stored == sent for a stream running into the stop, minus the stated residual; negative control: today's parallel tier) |
+| clean stop / OTA stage 1 | tier 1 `-t 5`, SIGINT; caches lost | M13 ≤ 4.5 s: rows, `t-x-d-d`, flush with confirms, cot_parser queue drain poll; cot_parser stopped in tier 2 after; residual stated | cleanstop-274 (asserts stored == sent for a stream running into the stop, minus the stated residual; negative control: today's parallel tier) |
 | OTA stage 2 (new image) | MOUNTSHA refusal | the pyz imports the image's OTS models and compares the installed `opentakserver` version with its pin (B3-9) — a mismatch or an import error → exit 2, guardian crash loop (visible: DRIFT from the guardian's restart count, `exit 2` lines); fail-closed; offline test `import` against the pinned image digest in CI | first-ota + the harness conform suite |
 | first boot: the gateway's start gate TIMEOUT (120 s) while opentakserver still initialises | — | payload-run logs WARN, `FAILED=1`, continues; no restart or rebuild; the gateway comes up on its own | fresh-volumes-289 |
 | a revoked phone (CRL regenerated, #54) | n/a | CRL honoured when issued with the node clock; a CRL from the future is ignored (logged, counter) rather than taking the server down | cert-reload-289 CRL legs (expired / future / valid-listing) |
 | an 8088-era unowned device with history connects on 8089 | taken by the first cert holder (upstream) | refused until the admin assigns it (fail-closed) | owner-8089-289 NULL-row leg |
-| autocommit trial / revert | unchanged | unchanged | fi-s1 |
+| autocommit trial / revert | unchanged | the guardian verdict now includes `verify-profile-ots-record.sh`, and autocommit requires the tenant verdict OK to dwell (`batman-autocommit:449-465`): on the OTA trial boot that introduces the gateway the FKs are `c` until the gateway's migration ran → DRIFT at the first tick, OK after; a DRIFT that persists through the trial (migration blocked, DB late) delays the commit and reverts at the deadline — **intended fail-closed** (B3-12). The script maps any non-definite psql outcome (missing relation, auth, timeout) to UNKNOWN (exit 0), only a definite `confdeltype <> 'r'` or non-NULL `next_run_time` is DRIFT | fi-s1 (new leg: the record check UNKNOWN with the DB stopped does not block the commit; DRIFT with a resumed job does) |
 | downgrade to an image without the gateway | — | the old manifest rebuilds the two handler containers + overlay; RESTRICT FKs stay (cot_parser never deletes; the paused jobs would fail on EUD deletes — stated); stop tiers back to the old manifest's | downgrade (manual, stated) |
 | gateway crash / crash loop | one session's child | every session ends; guardian restarts with backoff; sweep at start | crash-274 (ported) |
 | gateway exit 3 (AMQP down > 300 s, loop wedged) | n/a | guardian restart; sessions end; phones reconnect | amqp-down-289 (tier B: broker stopped 6 min) |
@@ -526,7 +530,7 @@ harness PR that lands first (#290), with known-failures entries bound to this is
 | cert rotation (#54) | restart needed | context reloaded on mtime change; existing sessions keep theirs | cert-reload-289 |
 | `ots-appdata` volume full / read-only | log writes fail | logging to stdout continues; TLS files still readable; stated | by code |
 | client network loss (no FIN) | ~2 min reap; same device → R17 | M11 reap; back on any address (8089) → M3 supersede | zombie-289, same-uid-end-289 |
-| RTO out and back (16 + 16) | serialized admission, 1280/1536m | 16 supersedes, no new devices; memory flat (⚠️ measured) | rto-289, rto-ssl-289 |
+| RTO out and back (16 + 16) | serialized admission, 1280/1536m | 16 supersedes, no new devices; memory flat (⚠️ measured); the 17th client (the RTO's phone, on the OTS node's own Wi-Fi) keeps its session and its ping RTT stays < 1 s through the storm | rto-289, rto-ssl-289 (17th-client leg) |
 | RTO flaps twice within 2 min | third generation may be refused | ≤ 3 connections per device by cap; nothing refused | rto-ssl-289 second flap |
 | a phone flapping every second | unbounded | `MAX_CONNS_PER_DEVICE` 3: the oldest draining closed | same-uid-end-289 flap leg |
 | one cert holder with many uids | — | `MAX_DEVICES_PER_USER` 4 | cap-289 per-user leg |
@@ -692,6 +696,13 @@ FAIL.
 3. The decision-3 residual (certless flood > ~100 conn/s) and the one-user-per-member assumption: the user's call.
 
 ## 10. Review register
+
+### Closure (v3.1 → v3.2)
+
+A3 closure: A3-1..8 closed, no new MAJOR (one implementer MINOR: fairness among sessions when the global parse
+bucket is empty — round-robin by session, stated for the implementer). B3 closure: B3-1..11 closed in mechanism;
+four stale lines fixed here (§1/§4 "≤ 3 s" → 4.5 s, §3 node-side verdict, the 17th-client RTT cell); B3-12 MINOR:
+the record check gates autocommit → §4 row rewritten as intended fail-closed, UNKNOWN mapping in M10.
 
 ### Round 3 (v3 → v3.1)
 
