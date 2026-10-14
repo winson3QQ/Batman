@@ -1,8 +1,9 @@
-# #289 OTS EUD gateway — design v3
+# #289 OTS EUD gateway — design v3.1
 
-Status: v3 for whole re-review (round 3, authorised by the user 2026-10-14 beyond the two-round budget) · v1
-(38e949d): A REJECT / B APPROVE-WITH-CHANGES; v2 (0709ff9): A2 REJECT (5 MAJOR) / B2 APPROVE-WITH-CHANGES (7 MAJOR);
-every finding and its disposition is in §10. Parent #75. Facts, measurements and leftovers it builds on: #289 body
+Status: v3.1 · 2026-10-14 · v1 (38e949d): A REJECT / B APPROVE-WITH-CHANGES; v2 (0709ff9): A2 REJECT (5 MAJOR) / B2
+APPROVE-WITH-CHANGES (7 MAJOR); v3 (fe77341): **A3 APPROVE-WITH-CHANGES (1 MAJOR) / B3 APPROVE-WITH-CHANGES (2
+MAJOR)**, both stating that no further design round is needed once their MAJORs are written in; v3.1 writes them in
+(§10, round 3). Every finding and its disposition is in §10. Parent #75. Facts, measurements and leftovers it builds on: #289 body
 and comments; `264-ots-eud-patch.md` and `264-review-register.md`.
 
 Review rules: `docs/design/REVIEW.md` plus the user's global rules. **Design freeze (the #264 lesson, in force from
@@ -37,6 +38,16 @@ ANOTHER user is refused outright (closed, logged) — a change from #264's "reco
 8089-only, no member has a legitimate reason to claim another member's device, and the re-issued phone is the
 accepted admin reassignment (B4-7)**; all suites move to 8089 (§7); #54/#219 is a hard deployment dependency, and
 **one OTS user per member** is a #54 requirement the per-user caps rely on (§8).
+
+The four points put to the user on 2026-10-14 (answered in plain words, the user raised no objection to the
+recommended values — recorded here as taken, to be overruled by a word): (1) a cert holder claiming another user's
+device is refused; (2) one OTS user per member is a #54 requirement; (3) the decision-3 residual (a certless flood
+above ~100 TLS connections/s, i.e. a saturated link) is accepted; (4) the record's controls get a node-side DRIFT
+through the EXISTING guardian hook `verify-profile-ots.sh` (A3-1 corrected v3's "no node-side mechanism").
+
+Capacity target: **16 members + the RTO's own phone = 17 devices** (the RTO's phone joins the OTS node's own
+Wi-Fi: the one client that does not go stale when the RTO walks away). Every "16" in the suites means the 16
+members; the RTO's phone is the 17th client whose RTT the storm suites also assert (B3-4).
 
 Field scenario (the user, 2026-10-12; `project_ots_field_context`): off-grid tactical team, one node per member,
 the phone joins its own node (Wi-Fi/BLE) and runs ATAK/iTAK; all nodes move; the OTS node is carried by the RTO,
@@ -82,9 +93,14 @@ The upstream contract the gateway keeps (measured on 04, `cot_parser.py` 1.7.13)
   nothing binds EUD queues to it.
 - **Web map:** `{"data": eud.to_json(), …}` to the fanout `flask-socketio` at identification (`EudHandler.py:290-305`);
   `to_json()` needs a Flask app context.
-- **Identity on 8089:** cert CN → `find_user` with **no None/active check** (`EudHandlerSSL.py:14-30`); context
-  `CERT_REQUIRED`, CA `/app/ots/ca/ca.pem`, server cert/key `/app/ots/ca/certs/opentakserver/`; `ca.crl` is a static
-  638 B file written at CA creation, never updated (no revoke path in 1.7.13; `crl_index.txt` empty).
+- **Identity on 8089:** cert CN → `find_user` (`EudHandlerSSL.py:14-30`); an unknown or inactive CN is then refused
+  by `handle_auth` (`EudHandler.py:407-416`; the overlay too, `:1738,1742`) — corrected in v3.1 (A3-2): the gateway's
+  M2.2 keeps the rule, it only moves it before any allocation; context `CERT_REQUIRED`, CA `/app/ots/ca/ca.pem`,
+  server cert/key `/app/ots/ca/certs/opentakserver/`; `ca.crl` is a static 638 B file written at CA creation, never
+  updated (no revoke path in 1.7.13; `crl_index.txt` empty). **Device ownership:** `euds.user_id` is written
+  unconditionally at identification by upstream (`EudHandler.py:681-697, 415-428`): the first 8089 session of a uid
+  takes it; on 04, 24 of 27 rows have `user_id` NULL (8088-era devices). The admin reassignment API exists
+  (`user_api.py:385-437`).
 - **Orchestrator (payload-run, payload-stop, the guardian; verified 2026-10-14):** `MOUNT` must be a plain file name
   in the tenant dir and a regular file (`payload-run:340-358`); keys: ENV/VOLUME/MOUNT/MOUNTSHA/ENTRYPOINT/HARDEN/
   HEALTH/STOPTIER/SECRET; **no `init_once` key** (`profile.yaml` `init_once:` is a comment list); `HEALTH` runs
@@ -105,7 +121,8 @@ container **`ots_eud_gateway`** (172.20.0.10, 8088 + 8089, image `batman/ots`, e
 gateway applies at start (M10).
 
 Scope: `deploy/ots/gateway/` (package + offline tests; built into one file `eud-gateway.pyz` by the Makefile),
-`deploy/ots/profile.yaml` + generated files, the harness `conform` suite (FK + scheduler legs), the ported suites + new
+`deploy/ots/profile.yaml` + generated files, `deploy/ots/verify-profile-ots.sh` (container list) + the new
+`deploy/ots/verify-profile-ots-record.sh` (guardian hook, M10), the harness `conform` suite (FK + scheduler legs), the ported suites + new
 suites, docs. Out of scope: UDP; the OTS web/API; relay semantics (decision 5); #47; the enrolment tool (#54 —
 a hard dependency for deployment, §8); retention/archiving policy (the jobs stay paused).
 
@@ -119,11 +136,15 @@ every model imported): the gateway bootstraps exactly as `cot_parser.py:1336-136
 throughout; blocking DB calls run in a `ThreadPoolExecutor(4)` set as the loop's default executor, and anything a
 worker thread must send on the AMQP channel is hopped to the loop with `call_soon_threadsafe`.
 
-**Start sequence (A2-1, B2-8):** connect to the DB → wait until the schema exists (`alembic_version` present and the
-tables `euds`, `cot`, `points`, `geochat`) and the TLS files exist and parse — polling every 5 s with a log line, for
-ever (opentakserver's first run creates both; the guardian would otherwise crash-loop the gateway every 60 s with
-no give-up) → M10 migration → M8 sweep → AMQP connect, declare → bind listeners → `/healthz` 200. `exit 2` is only
-for a malformed config value (M16); a missing or late dependency is waited for, never exited on.
+**Start sequence (A2-1, A3-3, B2-8):** connect to the DB → wait until the schema exists (`alembic_version` present
+and the tables `euds`, `cot`, `points`, `geochat`, `apscheduler_jobs`) and the TLS files exist and parse — polling
+every 5 s with a log line, for ever (opentakserver's first run creates both; the guardian would otherwise crash-loop
+the gateway every 60 s with no give-up) → M10 migration → M8 sweep → AMQP connect, declare → bind listeners →
+`/healthz` 200. `exit 2` is only for a malformed config value (M16); a missing or late dependency is waited for,
+never exited on. The gateway is listed AFTER `opentakserver` in the manifest (gates run in manifest order;
+opentakserver's `/api/health` passes only after `upgrade()` + `create_ca()`); on a first boot the gateway's gate may
+hit the 120 s TIMEOUT → payload-run logs WARN and continues (`FAILED=1`, no restart, no rebuild): the gateway comes
+up on its own once the schema exists; stated in §4.
 
 ```
  phones ──8089 mTLS──┐                                ┌─► cot_parser exchange ──► ots_cot_parser ──► postgres
@@ -161,7 +182,11 @@ closing could loop a legitimate app). The carry-over without a closing tag is bo
 over it the connection is closed. Parsing is CPU on the single loop (probed: 77 KiB → 0.33 s; 1 MiB → 5.8 s / 88
 MiB), so every session has an **uplink token bucket**: `UPLINK_BYTES_PER_S` 32 KiB (burst 256 KiB) and
 `UPLINK_MSGS_PER_S` 20 (burst 100); when exhausted the connection's `transport.pause_reading()` until the bucket
-refills (back-pressure, no close, counted). A real phone (SA every 2–5 s, chat, occasional 10 KiB) never touches it.
+refills (back-pressure, no close, counted); **plus a per-user bucket (2× the session figures) and a global parse
+budget (`UPLINK_GLOBAL_BYTES_PER_S` 256 KiB, burst 2 MiB)** so that four sessions of one user, or the RTO-storm
+replay of 16 phones, cannot own the loop (B3-4: one session's bucket alone ≈ 14 % of the loop, four ≈ 55 %). A real
+phone (SA every 2–5 s, chat, occasional 10 KiB) never touches it. A paused connection observes no EOF until resumed
+(asyncio `sslproto`): the pause is bounded by the bucket's refill (≤ 8 s), stated.
 A malformed message (including one with a DOCTYPE) is dropped and logged; the session goes on (R14).
 
 **M2 Admission (decision 3; A2-3, B2-3, B2-5, B2-11).**
@@ -181,7 +206,9 @@ A malformed message (including one with a DOCTYPE) is dropped and logged; the se
    rolling `IDENT_MAX_S` 60 s between complete messages; after the handshake, at most `MAX_PENDING_PER_USER` (12)
    unidentified connections per user (the 13th closes the oldest of that user's). So a cert holder's ping-only
    sockets cannot hold the pool.
-5. At identification, under the admission lock (asyncio; held across the checks and the table insert):
+5. At identification, under the admission lock (asyncio; held across the checks and the table insert; the DB
+   reads it needs run in the executor with a 5 s timeout — a timeout refuses this identification with `db
+   timeout`, the lock is released, the phone retries; A3-6):
    `MAX_DEVICES` (64) total; `MAX_DEVICES_PER_USER` (4) live on 8089; **a per-user new-device token bucket**
    (`NEW_DEVICES_BURST` 4, `NEW_DEVICES_PER_H` 10) charged for every uid the user has not used since the gateway
    started — refused BEFORE any row or queue exists (a cert cycling fresh uids would otherwise create a bound queue
@@ -206,11 +233,21 @@ channel closed, gateway-placed bindings removed, presence `Disconnected` + `t-x-
 prefix, a system name — `cot_parser`, `dms`, `chatrooms`, `missions`, `groups`, `firehose`, `flask-socketio`,
 `meshtastic`, `dmrcot` —, non-printable): a bad uid → no subscription, **no row write of any kind**, one log line; a
 bad or colliding callsign → not used as a queue, the device recorded under its uid without the callsign column
-(UNIQUE; decision #264-1). 8089: a uid whose row has another `user_id` → **the identification is refused: the
-connection is closed and logged `refusing device <uid>: owned by user <id>`; nothing is written, published or
-subscribed** (B2-6: on 8089-only, planting CoT under a teammate's uid is the P4 threat; the re-issued phone keeps
-being refused until the admin reassigns it, B4-7 — a change from #264's "recorded, no subscription", put to the
-user in the header). An allowlisted 8088 uid equal to an 8089 user's device uid →
+(UNIQUE; decision #264-1). **Ownership on 8089 ("owned" = `euds.user_id` of the uid's row; B3-2):**
+- row owned by this user → identified;
+- row owned by ANOTHER user → **refused: the connection is closed and logged `refusing device <uid>: owned by user
+  <id>`; nothing is written, published or subscribed** (B2-6: planting CoT under a teammate's uid is the P4 threat;
+  a re-issued phone keeps being refused until the admin reassigns it through `user_api.py:385-437`, B4-7 — a change
+  from #264's "recorded, no subscription", taken with the user);
+- **no row → created and owned by this user** (the normal first connect of an enrolled phone; #54 sets `user_id`
+  at enrolment, so in production the row is owned before the first connect);
+- **row with `user_id` NULL and NO CoT history → adopted by this user, logged `adopted <uid>`** (a never-used
+  device);
+- **row with `user_id` NULL and CoT history → refused `unowned device with history`, fail-closed** (B3-2's
+  recommendation: a hostile member could otherwise claim a teammate's uid — visible in every SA — before the
+  teammate's first 8089 connect and own it; the admin assigns it once; the 24 such rows on 04 are test residue to
+  be assigned or archived before deployment, §8).
+An allowlisted 8088 uid equal to an 8089 user's device uid →
 refused at that identification (8089 wins); at start the allowlist is validated for names only (the DB may be late:
 a DB error at start is retried, not exit 2 — B1-18).
 
@@ -242,12 +279,18 @@ a slow reader into back-pressure that lands in the bounded queue; a dead peer en
 nothing. Downlink to a device goes to its current socket only. **If the current connection ends while draining
 ones live (the newest ended first, B2-10), the newest draining connection is promoted to current** (it is being
 read anyway) so the consumer never acks into a socket nobody drains; a device ends only when its last connection
-ends. Two consumers per device when the callsign queue is usable (uid + callsign), on the device's channel.
+ends. Trade-off stated (B3-10): a promoted socket may be the phone's abandoned one (black-holed), so downlink acked
+into it until `TCP_USER_TIMEOUT` is lost (≤ 120 s, ≤ the send-queue bound); the alternative — ending the device
+and letting the phone re-subscribe — loses the same window's queue content on the broker side; promotion keeps the
+record path (uplink) alive, which is the asset. Two consumers per device when the callsign queue is usable (uid +
+callsign), on the device's channel; the callsign queue is bound to `dms` only (A3-8); the candidate-set unbind
+(M9) applies to the uid queue.
 
 **M8 Presence (P1, A1-8, A1-11, B1-4, B1-12).**
-- At start, **before binding the listeners**: `UPDATE euds SET last_status='Disconnected', last_event_time=:now
-  WHERE last_status='Connected'` (the gateway owns zero sessions at start; no clock comparison; log the count; no
-  `t-x-d-d` burst — the phones' next SA restores them).
+- At start, **before binding the listeners**: `UPDATE euds SET last_status='Disconnected', last_event_time =
+  GREATEST(last_event_time, :now) WHERE last_status='Connected'` (the gateway owns zero sessions at start; no clock
+  comparison decides anything; `GREATEST` keeps the phone-time "last seen" from jumping back to the node's 2025
+  clock, A3-4; log the count; no `t-x-d-d` burst — the phones' next SA restores them).
 - At identification and on the 30 s cycle: `Connected` + `last_event_time` = the device's last SA `start`
   (the phone's clock, as upstream `EudHandler.py:695` — B2-12: the node clock is 2025, writing it would make the
   web UI's "last seen" jump back 15 months) when the row differs (the re-assert undoes a late `t-x-d-d` written by
@@ -271,10 +314,11 @@ needed`; log `rebind <uid> +N -M` only when N+M > 0. Triggers: identification; t
 every 30 s per device (16 devices ≈ 0.5 reconciles/s, 2 DB reads each; broker calls only on deltas). **At
 identification `placed` is unknown (a crash or restart lost it): the gateway unbinds the full candidate set minus
 `needed`** — candidates = every `<group>.OUT` of all groups and `missions.<name>` of all missions (bounded by the
-tables' sizes, tens) — so a stale binding from the API race window or from before a crash is removed (⚠️ RabbitMQ's
-`queue.unbind` on an absent binding returns unbind-ok per AMQP 0-9-1 since 3.x; probed at implementation; the
-per-device channel bounds a 404 to that device). A removal by the admin takes effect within 30 s. Queues are
-never deleted (R15 policy expires them after 24 h unused).
+tables' sizes, tens; `__ANON__` is itself a `groups` row, so it is in the set) — so a stale binding from the API
+race window or from before a crash is removed (RabbitMQ 4.3.6 `rabbit_db_binding.erl:249-268` returns `ok` for an
+absent binding; a 404 only for an absent queue or exchange — closed by reviewer B3, no probe needed; the per-device
+channel bounds a 404 to that device). A removal by the admin takes effect within 30 s. Queues are never deleted
+(R15 policy expires them after 24 h unused).
 
 **M10 The record (P3, A1-7, A2-2, A2-7, B1-3, B2-2).** The record = `cot` + `points` (track) + `geochat` (chat).
 Deleters today: `delete_old_data` (interval 1 min: `delete(EUD) where last_event_time <= now − 1 week`, then
@@ -289,17 +333,26 @@ are paused on 04; their state is the `apscheduler_jobs` row (`next_run_time` NUL
   future route, an operator `DELETE FROM euds`), not against the retention jobs. The control against the jobs is
   "they stay paused", and it is enforced by watching the DB, not the config.**
 - Migration, owned by **the gateway at every start** (after the schema wait, before the listeners; as role `ots`,
-  the table owner; idempotent): per FK, **two transactions** — `ALTER TABLE … DROP CONSTRAINT IF EXISTS <name>, ADD
-  CONSTRAINT <name> … ON DELETE RESTRICT NOT VALID` then, separately, `VALIDATE CONSTRAINT` — each under
-  `SET lock_timeout = '5s'`, retried with backoff while cot_parser inserts. Names/columns from the catalog
-  (probed on 04): `cot_eud (sender_uid)`, `point_eud (device_uid)`, `geochat_eud (sender_uid)`. Log `fk <name>:
-  RESTRICT (migrated|already)`.
+  the table owner; idempotent): first read `pg_constraint.confdeltype` and `convalidated` for the three FKs (04
+  today: `c|t` on all three) and do NOTHING when already `r|t`; otherwise per FK, **two transactions** — `ALTER TABLE
+  … DROP CONSTRAINT IF EXISTS <name>, ADD CONSTRAINT <name> … ON DELETE RESTRICT NOT VALID` then, separately,
+  `VALIDATE CONSTRAINT` — each under `SET lock_timeout = '5s'`, retried with backoff while cot_parser inserts.
+  Names/columns from the catalog (probed on 04): `cot_eud (sender_uid)`, `point_eud (device_uid)`, `geochat_eud
+  (sender_uid)`. Log `fk <name>: RESTRICT (migrated|already)`.
 - **Scheduler watch, owned by the gateway**: at start and every 30 s, `SELECT id FROM apscheduler_jobs WHERE id IN
-  ('delete_old_data','purge_data') AND next_run_time IS NOT NULL`; a row → log `RESUMED job <id>` (once per change),
-  snapshot counter `jobs_resumed`, `/healthz` body carries it. **No node-side verdict carries it today** (no
-  payload-conform on the node; a guardian hook is a #274-scope PR, put to the user in §8); the harness `conform`
-  suite (`chk_conform`) and `fk-restrict-289` check the FKs and the job rows; `daily-validation` runs daily (#290).
-  Retention = archiving (out of scope).
+  ('delete_old_data','purge_data') AND next_run_time IS NOT NULL` (a missing table — first boot before the app
+  seeded it — is "retry next tick", not an error); a row → log `RESUMED job <id>` (once per change), snapshot
+  counter `jobs_resumed`, `/healthz` body carries it.
+- **Node-side DRIFT (A3-1, corrects v3):** the guardian already runs the hand-maintained tenant file
+  `deploy/ots/verify-profile-ots.sh` from the golden dir every 30 s (`payload-guardian-run.sh:226-229`; exit 1 =
+  DRIFT; its container list is hard-coded, `:17-24`). This change (a) **replaces `ots_eud_handler` and
+  `ots_eud_handler_ssl` by `ots_eud_gateway` in that list** (otherwise the gateway's confinement is checked by nobody
+  — a regression on today), and (b) adds a sibling **`verify-profile-ots-record.sh`** run by the same hook: `docker
+  exec ots-db psql … "SELECT count(*) FROM apscheduler_jobs WHERE id IN (…) AND next_run_time IS NOT NULL"` must be
+  0 and `pg_constraint.confdeltype` of the three FKs must be `r` → otherwise exit 1 (DRIFT within 30 s); DB
+  unreachable → UNKNOWN (exit 0 with a log line, never a false DRIFT), bounded by `timeout 8`. Both files are in
+  scope and golden-shipped. The harness `conform` suite gets the same two legs (FK + jobs). Retention = archiving
+  (out of scope).
 - Not covered (stated): the other 11 CASCADE FKs to `euds` (not the record's track/chat); an ORM
   `session.delete(eud)` from a future upstream route cascades `cot` through the ORM before RESTRICT fires (no such
   route in 1.7.13; the image pin is the control); `purge_data` if resumed deletes the record directly (watched,
@@ -320,13 +373,15 @@ Node budget after: opentakserver 1280 + cot_parser 1280 + gateway 1024 + rabbitm
 GiB available. No `oom_score_adj`: the caps and bounds above are the defence; a kernel OOM kill of the gateway =
 every session, phones reconnect, the guardian restarts it (lifecycle row).
 
-**M13 Stop (A1-3, A1-12, A2-6, B1-1, B2-9).** Signals: SIGINT (the image's StopSignal) and SIGTERM, via
-`loop.add_signal_handler` (no KeyboardInterrupt unwinding). Budget: **≤ 4.5 s** inside `docker stop -t 5`, every
-step bounded: (1) stop accepting; (2) one `UPDATE euds … Disconnected WHERE uid IN (:live)` with `statement_timeout
-1s` (skipped and counted if the DB stalls); (3) publish the `t-x-d-d` events and flush every cache, awaiting
-confirms ≤ 1.5 s; (4) wait for cot_parser to drain: poll `queue_declare("cot_parser", passive=True)`'s
-`message_count` until 0 or until t = 4 s (cot_parser is a forking parent that SIGINT ends at once when its tier
-starts, so the only window in which it consumes the flushed bodies is while the gateway is still alive — B2-9);
+**M13 Stop (A1-3, A1-12, A2-6, B1-1, B2-9, B3-6).** Signals: SIGINT (the image's StopSignal) and SIGTERM, via
+`loop.add_signal_handler` (no KeyboardInterrupt unwinding). Budget: **≤ 4.5 s** inside `docker stop -t 5` (the
+single figure; §1/§4 say the same), every step bounded: (1) stop accepting; (2) one `UPDATE euds … Disconnected
+WHERE uid IN (:live)` with `statement_timeout 1s` (skipped and counted if the DB stalls); (3) publish the `t-x-d-d`
+events and flush every cache, awaiting confirms ≤ 1.5 s; (4) wait for cot_parser to drain: poll
+`queue_declare("cot_parser", passive=True)`'s `message_count` (= READY messages only: unacked ones in cot_parser's
+prefetch of 2 are not counted — residual ≤ 2 per stop, stated) until 0 or until t = 4 s (cot_parser is a forking
+parent that SIGINT ends at once when its tier starts, so the only window in which it consumes the flushed bodies is
+while the gateway is still alive — B2-9);
 (5) close sockets; (6) log `stop: N devices, M bodies confirmed, K unconfirmed, Q left in cot_parser queue`;
 `os._exit(0)` (no thread can hold the exit). Stop tiers: **gateway 1; `ots_cot_parser` and `opentakserver` 2**
 (two client tiers ≤ 10 s inside K08's 15 s; the final tier `-t 10` in K09 as today). Residual, stated: Q bodies not
@@ -338,11 +393,18 @@ today; K unconfirmed are counted and lost.
 transport (no `SSLSocket.shutdown` race). **CRL:** `ca.crl` is static (lastUpdate 2025-06-23, `nextUpdate
 2027-06-23`, `default_crl_days 730`, no regeneration path in 1.7.13 — probed with openssl); with
 `VERIFY_CRL_CHECK_LEAF` an expired CRL fails EVERY handshake (`openssl verify -crl_check -attime 2027-07-01` →
-error 12). So the CRL is loaded only when `nextUpdate − now ≥ 30 days` by the node clock (today: 2025 clock →
-loaded); otherwise the context runs without it (= today's behaviour), logs `CRL not honoured: <reason>` once and
-sets the snapshot counter `crl_ignored` (fail-open on revocation only, stated: the alternative is a server that is
-down for everyone). The context is rebuilt when any cert/CRL file's mtime changes and re-evaluated daily (a clock
-jump re-evaluates it too). Regenerating the CRL is #54's.
+error 12). **The node clock is 15 months behind real time, so the other direction bites too (B3-1, reproduced by
+reviewer B with a throw-away CA): a CRL regenerated off-node at real time is "not yet valid" by the node clock
+(`error 11: CRL is not yet valid`) and, once loaded, fails every handshake — exactly when revocation is used for a
+captured phone; likewise a client cert issued off-node at real time is refused (`error 9: certificate is not yet
+valid`).** So the CRL is loaded only when **`lastUpdate ≤ now` AND `nextUpdate − now ≥ 30 days`** by the node
+clock (today's static CRL: loaded); otherwise the context runs without it (= today's behaviour), logs `CRL not
+honoured: <reason>` once and sets the snapshot counter `crl_ignored` (fail-open on revocation only, stated: the
+alternative is a server that is down for everyone); every refused handshake logs OpenSSL's verify reason. The
+context is rebuilt when any cert/CRL file's mtime changes and re-evaluated daily (a clock jump re-evaluates it
+too). **Contract for #54 (§8): client certs and the CRL must be issued on the node's own CA with the node's clock
+(as the harness's `ots-test-client-cert.py:34` does, `now − 1 h`), or with `notBefore`/`lastUpdate` ≤ the node
+clock.** Regenerating the CRL is #54's.
 
 **M15 Relays (decision 5).** The 8088 listener + allowlist are implemented (P4); relay semantics are the M5 hook
 only; the allowlist ships empty (8088 not bound).
@@ -353,6 +415,7 @@ only; the allowlist ships empty (8088 not bound).
 `GATEWAY_MAX_PENDING_PER_USER` 12, `GATEWAY_RESERVE_MB` 64, `GATEWAY_IDENT_MAX_S` 60, `GATEWAY_IDENT_HARD_S` 120,
 `GATEWAY_SUPERSEDE_QUIET_S` 20, `GATEWAY_SUPERSEDE_MAX_S` 120, `GATEWAY_MAX_EVENT_BYTES` 65536,
 `GATEWAY_MAX_CARRY_BYTES` 1048576, `GATEWAY_UPLINK_BYTES_PER_S` 32768, `GATEWAY_UPLINK_MSGS_PER_S` 20,
+`GATEWAY_UPLINK_GLOBAL_BYTES_PER_S` 262144,
 `GATEWAY_CACHE_MB` 2, `GATEWAY_SENDQ_MB` 1, `GATEWAY_AMQP_MAX_DOWN_S` 300, `GATEWAY_8088_ALLOWLIST` "" (names
 validated at start; DB cross-check at each identification). Secrets: none new.
 
@@ -386,8 +449,10 @@ harness PR that lands first (#290), with known-failures entries bound to this is
 | `euds.last_status`, `last_event_time` | **the gateway** (M8; sweep at start, re-assert on the cycle); cot_parser's `t-x-d-d` branch writes the same value for the gateway's own event (idempotent; a late one is undone by the re-assert) | web UI |
 | other `euds` columns | the gateway at identification (defensive, only for an admitted, owned uid); the web UI/API | cot_parser |
 | `cot`, `points`, `geochat` rows | cot_parser (insert); the retention jobs if resumed (direct deletes — watched, not prevented) | web/API, the AAR |
-| FK definitions (3) | the gateway's start migration (M10) | the harness conform suite |
-| `apscheduler_jobs` rows (`delete_old_data`, `purge_data`) | the OTS app (seeded from `config.yml` once) and operators via the scheduler API | the gateway's 30 s watch (ro), the harness |
+| FK definitions (3) | the gateway's start migration (M10) | `verify-profile-ots-record.sh` (guardian, 30 s → DRIFT), the harness conform suite |
+| `apscheduler_jobs` rows (`delete_old_data`, `purge_data`) | the OTS app (seeded from `config.yml` once) and operators via the scheduler API | the gateway's 30 s watch (ro), `verify-profile-ots-record.sh`, the harness |
+| `verify-profile-ots.sh` container list, `verify-profile-ots-record.sh` | this change (hand-maintained tenant files, golden-shipped) | the guardian (`payload-guardian-run.sh:226-229`) |
+| `euds.user_id` (ownership) | the gateway at the first identification of an unowned row without history (adopt) or a new row; the admin reassignment API; #54 enrolment | the gateway's ownership rule (M4) |
 | broker policy, vhost, user | `rabbitmq-definitions.json` (golden) | broker |
 | `GATEWAY_*` env, allowlist, stop tiers | `profile.yaml` (golden) → manifest | the gateway, payload-stop |
 | snapshot `/tmp/gateway/sessions.json`, counters | the gateway (atomic rename, 10 s) | suites, operators (ro) |
@@ -441,7 +506,10 @@ harness PR that lands first (#290), with known-failures entries bound to this is
 | one cert streaming large CoT at link rate | loop stalls (overlay: per-process) | per-session uplink bucket pauses reading; other phones' ping RTT < 1 s | admission-289 (k) |
 | boot / reboot / power loss | children SIGKILLed; caches lost | caches lost (stated); presence sweep at start (clock-free); phones reconnect | unclean-boot-274, presence-289 (sweep leg) |
 | clean stop / OTA stage 1 | tier 1 `-t 5`, SIGINT; caches lost | M13 ≤ 3 s: rows, `t-x-d-d`, flush with confirms; cot_parser stopped in tier 2 after; residual stated | cleanstop-274 (asserts stored == sent for a stream running into the stop, minus the stated residual; negative control: today's parallel tier) |
-| OTA stage 2 (new image) | MOUNTSHA refusal | the pyz imports the image's OTS models; a changed image breaks at import → exit 2, guardian crash loop (visible: DRIFT from the guardian's restart count, `exit 2` lines); fail-closed; offline test `import` against the pinned image digest in CI | first-ota + the harness conform suite |
+| OTA stage 2 (new image) | MOUNTSHA refusal | the pyz imports the image's OTS models and compares the installed `opentakserver` version with its pin (B3-9) — a mismatch or an import error → exit 2, guardian crash loop (visible: DRIFT from the guardian's restart count, `exit 2` lines); fail-closed; offline test `import` against the pinned image digest in CI | first-ota + the harness conform suite |
+| first boot: the gateway's start gate TIMEOUT (120 s) while opentakserver still initialises | — | payload-run logs WARN, `FAILED=1`, continues; no restart or rebuild; the gateway comes up on its own | fresh-volumes-289 |
+| a revoked phone (CRL regenerated, #54) | n/a | CRL honoured when issued with the node clock; a CRL from the future is ignored (logged, counter) rather than taking the server down | cert-reload-289 CRL legs (expired / future / valid-listing) |
+| an 8088-era unowned device with history connects on 8089 | taken by the first cert holder (upstream) | refused until the admin assigns it (fail-closed) | owner-8089-289 NULL-row leg |
 | autocommit trial / revert | unchanged | unchanged | fi-s1 |
 | downgrade to an image without the gateway | — | the old manifest rebuilds the two handler containers + overlay; RESTRICT FKs stay (cot_parser never deletes; the paused jobs would fail on EUD deletes — stated); stop tiers back to the old manifest's | downgrade (manual, stated) |
 | gateway crash / crash loop | one session's child | every session ends; guardian restarts with backoff; sweep at start | crash-274 (ported) |
@@ -534,8 +602,10 @@ harness PR that lands first (#290), with known-failures entries bound to this is
     bucket (CPU), per-session cache/queue, the memory reserve; **cannot identify as another user's device at all
     (refused, M4)**, cannot consume another user's queues, cannot delete history (M10), cannot forge presence for
     others (no disconnect message; a client-sent `t-x-d-d` naming another uid passes through as upstream — stated,
-    B class), can send CoT under a uid of ITS OWN user (upstream, stated). The per-user bounds assume one OTS user
-    per member (#54 requirement; on 04 today every device is `administrator`'s or unowned). **Revocation:** the
+    B class), can send CoT under a uid of ITS OWN user (upstream, stated), and can use a teammate's CALLSIGN (the
+    callsign is not checked on 8089, as upstream and #264: two members naming their phones alike is common; the
+    track is still stored under the sender's own uid — B class, stated, B3-9). The per-user bounds assume one OTS
+    user per member (#54 requirement; on 04 today every device is `administrator`'s or unowned). **Revocation:** the
     operator deactivates the user (M2.2) or regenerates `ca.crl` (#54; honoured while valid, M14); the next
     connection is refused (owner-8089-289 revocation leg); the live session ends at its next reconnect only (stated:
     no active kill on deactivation — leftover).
@@ -560,17 +630,21 @@ harness PR that lands first (#290), with known-failures entries bound to this is
 
 Harness changes land first in their own PR (#290); every new/changed suite carries "old build FAIL + rc PASS" in its
 commit; every rc gets ≥ 1 full `daily-validation`; the shipping candidate = last harness commit + last rc. All
-suites drive **8089** with the harness's 1-day test cert (`cert264`-style issuance of a non-admin test user), except
-`allowlist-289`, which sets a one-run allowlist through the profile override path and is the only 8088 user.
+suites drive **8089** with 1-day test certs issued on the node (`ots-test-client-cert.py`, node clock), **one test
+user per simulated phone** (the 16-device suites create 16 non-admin users `dv-289-u01..16` + 1 for the RTO leg;
+A3-5/B3-3: a single user would collide with `MAX_DEVICES_PER_USER` 4 and the new-device burst 4; every suite removes
+its users), except `allowlist-289`, which sets a one-run allowlist through the profile override path and is the only
+8088 user.
 
 | suite | what | negative control (shipped overlay 1.5.10-wsl.1 unless noted) |
 |---|---|---|
 | ots-cot-e2e-289 | sent == stored over a coalesced stream (8089) | overlay PASS (regression guard; upstream 0/20 by record) |
 | admission-289 | a–h as #264 on 8089; (i) 1000 pre-TLS sockets from 30 addresses churning for 60 s: a phone identifies and stores 10/10 DURING the flood, process alive; (i2) one cert, 40 ping-only sockets: ≤ 12 open, all gone by 120 s, a phone of another user identifies; (j) 10 × 1 MiB from one client: discarded, session kept, another client's ping RTT < 1 s; (k) one cert streaming 64 KiB events at 8/s for 30 s: reading paused (counter), another client's ping RTT < 1 s | (i) overlay: by code (address rule); (i2) overlay: 8 per address, by code; (j) overlay: 5.8 s stall → FAIL; (k) overlay: separate processes, by code |
 | zombie-289, same-uid-end-289 (+ flap leg: 10 connects/10 s → ≤ 3 sockets, survivors' reports stored), callsign-share-289, name-guard-289, exception-289, queue-gone-289, amqp-close-289 (session KEPT), alarm-289, queue-policy-289, cap16-289, rto-289, rto-ssl-289, soak-cot-289 | as #264, asserting the gateway's log/snapshot | overlay where the mechanism differs (amqp-close: overlay ENDS the session → FAIL; flap leg: overlay unbounded → FAIL) |
-| owner-8089-289 | another user's uid: connection closed, `refusing device … owned by user` logged, no row/queue/CoT; revocation leg: a deactivated user's cert and a CRL-listed cert (a fresh CRL written by the suite with nextUpdate +1 y, restored after) refused before any identification line | overlay: recorded / admitted → FAIL |
+| owner-8089-289 | another user's uid: connection closed, `refusing device … owned by user` logged, no row/queue/CoT; NULL-row legs: an unowned row without history is adopted (`adopted` line, `user_id` set), an unowned row with 1 cot row is refused `unowned device with history`; revocation leg: a CRL listing the test cert, written on the node with the node clock (lastUpdate now − 1 h, nextUpdate + 1 y, restored after) → refused before any identification line (the deactivated-user sub-leg is a regression guard only: upstream refuses it too, A3-2) | overlay: recorded / NULL row taken by the first cert / CRL ignored → FAIL |
 | fresh-volumes-289 (tier B) | `ots-pgdata` + `ots-appdata` removed, stack rebuilt: the gateway logs `waiting for schema`/`waiting for TLS files`, never exits, identifies a phone once opentakserver is up; guardian shows 0 restarts of the gateway | v2 design would exit 2 (by code); overlay: handlers crash-loop until the first run → FAIL on "0 restarts" |
-| cert-reload-289 (CRL leg) | an expired CRL file placed (nextUpdate in the past by the node clock): handshakes keep working, `crl_ignored` counter set; a valid CRL listing the test cert: refused | by code |
+| cert-reload-289 (CRL legs) | (a) an expired CRL (nextUpdate in the past by the node clock) and (b) a future CRL (lastUpdate = real time, 15 months ahead of the node clock): handshakes keep working, `crl_ignored` set with the reason; (c) a valid CRL listing the test cert: refused | v3 design would fail every handshake on (b) (by code; reproduced by B3 with openssl) |
+| conform (harness, extended) | FK `confdeltype = r` ×3; `apscheduler_jobs` resumed count 0; `verify-profile-ots.sh` lists `ots_eud_gateway` and not the handlers; `verify-profile-ots-record.sh` present and exit 0 on the node; a job resumed by the suite → the guardian's next tick reports DRIFT within 30 s, re-paused → clean | overlay build: handlers listed, no record script → FAIL |
 | presence-289 | device stale → row Disconnected ≤ 150 s and a group peer receives `t-x-d-d`; reconnect while cot_parser works a 600-CoT backlog → row `Connected` ≤ 60 s; sweep leg: gateway restart with 4 Connected rows and no clients → 4 Disconnected before the listener answers | overlay: 8088 ghost; race leg: overlay row stays Disconnected → FAIL |
 | rebind-289 | (a) late `t-x-d-d`/API unbind of a live device's `missions.<name>` → re-bound ≤ 30 s, 10/10; (b) group disabled while live → 0/10 within 30 s | overlay: (a) 0/10 until reconnect; (b) keeps receiving → FAIL |
 | fk-restrict-289 | (a) the three FKs RESTRICT after start (catalog); (b) `DELETE FROM euds WHERE uid=<throwaway with 3 cot, 1 point, 1 geochat>` as `ots` → refused, rows intact; (c) `delete_old_data` resumed through the scheduler API for one run with the cutoff set so only the throwaway EUD (with children) is older → the job fails on the EUD delete, nothing deleted; the gateway logs `RESUMED job` within 30 s and the snapshot shows it; the suite re-pauses the job (and a detached timer does too); (d) honest negative leg, reported as INFO not PASS: with the throwaway EUD having NO children older than the cutoff, the job's direct timestamp deletes DO run on throwaway cot rows — the record is not protected against a resumed job, only watched | overlay build: (b) rows gone, (c) EUD + children gone, no RESUMED line → FAIL |
@@ -597,9 +671,11 @@ FAIL.
   certs only.
 - **One OTS user per member** (the per-user caps and the ownership rule assume it): a #54 enrolment requirement; on
   04 today every device is `administrator`'s or unowned.
-- **A node-side verdict for the record's controls** (FK + paused jobs): there is no node-side conform today; a
-  guardian hook is a #274-scope PR — the user decides whether to add it; until then the daily harness run is the
-  control.
+- **Before deployment:** the 24 unowned `euds` rows with history on 04 (and any node's 8088-era rows) must be
+  assigned to their users or archived, or those phones are refused on 8089 (M4, fail-closed); #54's enrolment sets
+  `user_id` for new devices. **Certs and the CRL must be issued with the node's clock** (M14).
+- **Decision 5 scope note (A3-7):** "8089 wins" lets a cert holder lock an allowlisted relay uid out; relay rules are
+  the Meshtastic work's.
 - **Decision 3 residual**: a certless flood > ~100 TLS connections/s can starve admission (M2.1); a per-address
   rule would bound it — the user chose none.
 - Relay semantics and `minimal_row` for forwarded uids (decision 5, with Meshtastic); #47; retention/archiving; an
@@ -616,6 +692,29 @@ FAIL.
 3. The decision-3 residual (certless flood > ~100 conn/s) and the one-user-per-member assumption: the user's call.
 
 ## 10. Review register
+
+### Round 3 (v3 → v3.1)
+
+| finding | disposition in v3.1 |
+|---|---|
+| A3-1 [MAJOR] `verify-profile-ots.sh` is the existing guardian hook; the gateway was unlisted; "no node-side verdict" was false | M10: container list updated + `verify-profile-ots-record.sh` (FK + jobs, UNKNOWN on DB down); §2, §7 conform legs; header point 4 |
+| B3-1 [MAJOR] CRL gate ignored `lastUpdate`; off-node CRL/certs "not yet valid" on the 2025 clock | M14: `lastUpdate ≤ now` AND `nextUpdate − now ≥ 30 d`; verify reason logged; #54 contract (issue with the node clock); cert-reload-289 legs (a)(b)(c) |
+| B3-2 [MAJOR] NULL-owned rows undefined; upstream writes `user_id` unconditionally | M4 ownership rule: owned-by-me / other → refused / none → create / NULL+no history → adopt / NULL+history → refused fail-closed; §2 owner row; §8 pre-deployment clean-up; owner-8089-289 NULL legs |
+| A3-2 upstream already refuses unknown/inactive CN | §0 corrected; M2.2 unchanged; the deactivated sub-leg is a regression guard |
+| A3-3 gate order / TIMEOUT semantics / missing `apscheduler_jobs` | §1 start sequence; §4 row; M10 watch retry |
+| A3-4 sweep writes the node clock | M8 `GREATEST` |
+| A3-5 / B3-3 one test user collides with per-user caps | §7: one test user per simulated phone |
+| A3-6 DB reads under the lock unbounded | M2.5 5 s executor timeout |
+| A3-7 reassignment API; relay lock-out | §0 (`user_api.py:385-437`), §8 |
+| A3-8 callsign queue binding; candidate-set scope | M7 |
+| B3-4 per-session bucket only | M1 per-user + global budgets; RTO (17th) RTT asserted in the storm suites |
+| B3-5 missing table; read `confdeltype` first | M10 |
+| B3-6 3 s vs 4.5 s; `message_count` = ready only | M13 |
+| B3-7 unbind-ok closed from source | M9 (⚠️ removed) |
+| B3-8 callsign impersonation unstated | §6 |
+| B3-9 OTA stage-2 version compare | §4 |
+| B3-10 promotion trade-off | M7 |
+| B3-11 `pause_reading` on TLS verified; no EOF while paused | M1 |
 
 ### Round 2 (v2 → v3)
 
