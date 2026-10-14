@@ -180,7 +180,8 @@ class App:
         pass
 
     def _amqp_down_check(self, now: float) -> None:
-        if self.broker.down_since is not None and now - self.broker.down_since > self.s.amqp_max_down_s:
+        # only once the listeners are bound: the start sequence WAITS for the broker (§1), it never exits (C2A-5)
+        if self.listening and self.broker.down_since is not None and now - self.broker.down_since > self.s.amqp_max_down_s:
             log.error("exit 3: AMQP down for %d s", int(now - self.broker.down_since))
             self._exit(3)
 

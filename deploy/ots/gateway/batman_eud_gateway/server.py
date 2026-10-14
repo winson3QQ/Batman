@@ -67,6 +67,8 @@ class Protocol(asyncio.Protocol):
         self._hs_task: asyncio.Task | None = None
         self._first_sa = None          # an identifying event that arrived before the cert lookup finished
         self._pre_ident: list = []     # CoT read between the first SA and the end of identification (C1A-4)
+        self._early: list[bytes] = []  # app bytes delivered by sslproto before start_tls() returned (C2A-2)
+        self._lost = False             # connection_lost ran (idempotent: also called by _handshake's exits, C2A-1)
         self._resume_handle = None
         self.tls_done = port != gw.s.tls_port   # 8088: no handshake; 8089: set by _handshake()
 
@@ -104,17 +106,31 @@ class Protocol(asyncio.Protocol):
             tls = await self.gw.loop.start_tls(raw_transport, self, self.gw.tls.ctx, server_side=True,
                                                ssl_handshake_timeout=self.s.handshake_s)
         except Exception as e:
+            # a handshake that failed, timed out, or whose socket we aborted meanwhile (pool eviction, deadline):
+            # sslproto never calls the app's connection_lost in the handshake state, so we do (C2A-1)
             c = self.conn
             if c is not None and not c.closed:
                 self.gw.log_refusal(f"refusing cert from {c.addr}: handshake failed ({type(e).__name__}: {str(e)[:80]})")
                 self.gw.stats["handshake_failed"] += 1
-                self.close("handshake failed")
+                c.close_reason = "handshake failed"
+            try:
+                raw_transport.abort()
+            except Exception:
+                pass
+            self.connection_lost(None)
             return
         if tls is None or self.conn is None or self.conn.closed:
+            self.connection_lost(None)
             return
         self.transport = tls
         tls.set_write_buffer_limits(high=256 * 1024, low=64 * 1024)
         self.tls_done = True
+        if self._early:
+            # sslproto delivers the app bytes that came with the client's Finished BEFORE start_tls() returns:
+            # they were parked, process them now (C2A-2)
+            early, self._early = self._early, []
+            for chunk in early:
+                self.data_received(chunk)
         await self._after_handshake()
 
     async def _after_handshake(self) -> None:
@@ -148,7 +164,13 @@ class Protocol(asyncio.Protocol):
         if c is None or c.closed:
             return
         if not self.tls_done:
-            return                            # bytes before the handshake completed (start_tls consumes them)
+            # app bytes delivered by sslproto while start_tls() has not returned yet: park them (bounded), never
+            # process them here (a pong would go out through the raw transport, in clear)
+            if sum(len(b) for b in self._early) + len(data) <= self.s.max_carry_bytes:
+                self._early.append(data)
+            else:
+                self.gw.stats["early_dropped"] += 1
+            return
         now = time.monotonic()
         self.gw.table.note_rx(c, now)
         try:
@@ -214,8 +236,9 @@ class Protocol(asyncio.Protocol):
 
     def connection_lost(self, exc) -> None:
         c = self.conn
-        if c is None:
+        if c is None or self._lost:
             return
+        self._lost = True
         c.closed = True
         self.can_write.set()                  # a writer waiting on this socket must wake and re-check (C1B-1)
         self.gw.conns.pop(c.cid, None)
@@ -285,6 +308,7 @@ class Gateway:
         self.tls = tls_holder
         self.servers: list[asyncio.base_events.Server] = []
         self.bind_host = "0.0.0.0"
+        self.stopping = False
         self._refusal_log: dict[str, float] = {}
         self.ending_devices: list[Device] = []
 
@@ -347,7 +371,7 @@ class Gateway:
             self.log_refusal(f"refusing device {uid!r} from {c.addr}: unusable uid")
             proto.close("unusable uid"); return
         if c.port == self.s.tcp_port and uid not in self.s.allowlist_8088:
-            self.log_refusal(f"allowlist refused {uid} from {c.addr}")
+            self.log_refusal(f"allowlist refused {uid} from {c.addr}: not on the allowlist")
             proto.close("not on the allowlist"); return
         adopt = False
         async with self.admission:
@@ -505,7 +529,7 @@ class Gateway:
         dev = self.table.connection_closed(c)
         if c.device is not None:
             log.info("connection of %s from %s closed (%s)", c.device.uid, c.addr, reason)
-        if dev is not None:
+        if dev is not None and not self.stopping:   # at stop the stop sequence owns the goodbyes (C2A-4)
             self.spawn(self.end_device(dev, reason))
 
     async def end_device(self, dev: Device, reason: str) -> None:

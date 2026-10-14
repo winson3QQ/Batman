@@ -260,6 +260,8 @@ class Table:
         dev = c.device
         if dev is None:
             return None
+        if dev.current is not c and c not in dev.draining:
+            return None                        # already removed (a second connection_closed for the same conn, C2A-3)
         if dev.current is c:
             dev.current = None
             live = [x for x in dev.draining if not x.closed]
