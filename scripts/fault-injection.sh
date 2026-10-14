@@ -81,7 +81,8 @@ committed(){ q 'batman-slot is-trial >/dev/null 2>&1; [ $? = 1 ]'; }   # rc0 com
 bootid(){ q 'cat /proc/sys/kernel/random/boot_id' | tr -d '\r\n '; }
 nodever(){ q 'sed -n s/^BATMAN_VERSION=//p /etc/batman-build' | tr -d '\r'; }
 # 6/6 = six containers in state running (`docker ps` also lists ones restarting in a crash loop — #274 review C5)
-ots_up(){ [ "$NOTENANT" = 1 ] && return 0; [ "$(q 'docker ps -q --filter status=running 2>/dev/null | wc -l' | tr -d "\r\n ")" -ge 6 ] 2>/dev/null; }
+# #289: "the stack is up" = every container the node's manifest lists is running (6 on the overlay build, 5 with the gateway)
+ots_up(){ [ "$NOTENANT" = 1 ] && return 0; local o; o=$(q 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest 2>/dev/null | head -1); w=$(awk '"'"'$1=="CONTAINER"{n++} END{print n+0}'"'"' "$m" 2>/dev/null); r=$(docker ps -q --filter status=running 2>/dev/null | wc -l); echo "$w $r"' | tr -d "\r"); [ -n "${o%% *}" ] && [ "${o%% *}" -gt 0 ] && [ "${o##* }" -ge "${o%% *}" ] 2>/dev/null; }
 ots_wait(){ [ "$NOTENANT" = 1 ] && return 0; for _ in $(seq 1 48); do ots_up && return 0; sleep 5; done; return 1; }
 otsword(){ [ "$NOTENANT" = 1 ] && echo "no tenant (declared)" || echo "OTS 6/6"; }
 PASS=0; FAIL=0
