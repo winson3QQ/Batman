@@ -1,415 +1,530 @@
-# #289 OTS EUD gateway — design v1
+# #289 OTS EUD gateway — design v2
 
-Status: v1 for review · 2026-10-14 · replaces the `EudHandler-264.py` overlay (#264, PR #288) with a component of
-our own. Parent #75. Facts, measurements and leftovers it builds on: #289 body and comments; `264-ots-eud-patch.md`
-and `264-review-register.md` (the overlay's seventeen mechanisms R1–R17 and every finding).
+Status: v2 for whole re-review · 2026-10-14 · v1 (38e949d) was reviewed by A (REJECT: A1-1..A1-18) and B
+(APPROVE-WITH-CHANGES: B1-1..B1-18); every finding and its disposition is in §10. Parent #75. Facts, measurements
+and leftovers it builds on: #289 body and comments; `264-ots-eud-patch.md` and `264-review-register.md`.
 
-Review rules: `docs/design/REVIEW.md` plus the user's global rules (ownership, contracts, lifecycle matrix, evidence
-for every assumption, security per actor; two independent reviewers; BLOCKER/MAJOR to zero before code).
+Review rules: `docs/design/REVIEW.md` plus the user's global rules. **Design freeze (the #264 lesson, in force from
+this version):** the mechanism list is M1–M18 below. After the whole-design re-review reaches zero BLOCKER/MAJOR,
+a finding in code review is fixed only if it is class A (field harm from the symptom this component exists to
+stop: lost CoT, deaf or ghost sessions, the server down); anything else is recorded as a leftover and put to the
+user. Review budget: at most two design rounds and two code-review rounds; if either is exceeded, work stops and
+the user decides.
 
 ## User decisions this design honours
 
 | # | decision | source |
 |---|---|---|
-| 1 | Data Sync / missions ARE needed in the field → OTS stays (cot_parser, postgres, web, enrollment); goatak rejected (#289 comment 2026-10-14: burst loses 57 % and the record with it) | 2026-10-14 |
-| 2 | Team members use **8089 (client cert) only**; **8088 only for an allowlist of relay uids, default off** (this implements #48's "disable plaintext CoT") | 2026-10-13 |
-| 3 | **No per-address limit**; admission by device count and memory only, sized to use the Pi 4's 8 GB | 2026-10-14 |
+| 1 | Data Sync / missions ARE needed → OTS stays; goatak rejected (#289 comment 2026-10-14: a burst loses 57 % and the record with it) | 2026-10-14 |
+| 2 | Members use **8089 (client cert) only**; **8088 only for an allowlist of relay uids, default off** (implements #48's "disable plaintext CoT") | 2026-10-13 |
+| 3 | **No per-address limit**; admission by device count and memory, sized to use the Pi 4's 8 GB | 2026-10-14 |
 | 4 | A superseded connection keeps reading its uplink for the outage's length + 20 s, at most 120 s | 2026-10-14 (= #264 decision 6) |
-| 5 | Relays stay in scope but are **not tied to the TAK path now**; the Meshtastic relay is taken up when Meshtastic is scheduled | 2026-10-14 |
-| 6 | **No dedup** at the gateway; at-least-once, small numbers of duplicates accepted | 2026-10-14 |
+| 5 | Relays stay in scope but are **not tied to the TAK path now**; taken up with Meshtastic | 2026-10-14 |
+| 6 | **No dedup**; at-least-once, small numbers of duplicates accepted | 2026-10-14 |
 | #264-1 | a device refused for a colliding callsign is still RECORDED (own row, own `<uid>` queue) | 2026-10-12 |
 | #264-2 | CoT lost while the mesh path is down are lost; re-sending is the client's job | 2026-10-12 |
-| #264-3 | accepted residuals A4-4 (OOM order), A4-6 (unread uplink on a server-side close), A4-9 (definitions file owns the broker credential, #47), A4-10 (24 h queue expiry), B4-7 (re-issued phone needs an admin reassignment) | 2026-10-12 |
-| #264-5 | when the same device opens a new session, the previous one stops its downlink at once and keeps reading | 2026-10-12 |
-| P1–P4 | presence owned by the gateway; bindings re-asserted idempotently; FK CASCADE→RESTRICT migration + conform check; 8088 allowlist | 2026-10-13 ("都納入") |
+| #264-3 | accepted residuals A4-4, A4-6, A4-9 (#47), A4-10, B4-7 | 2026-10-12 |
+| #264-5 | the same device's new connection takes the downlink at once; the previous keeps reading | 2026-10-12 |
+| P1–P4 | presence owned by the gateway; bindings re-asserted; FK RESTRICT + conform check; 8088 allowlist | 2026-10-13 |
+
+Decisions taken by the author in v2 (for the user to overrule): stop tiers gateway 1 / cot_parser + opentakserver 2
+(M13); RESTRICT also on `points` and `geochat` (M10); the retention jobs stay paused and payload-conform reports DRIFT
+if resumed (M10); a cert whose CN is not an active user is refused and `ca.crl` is honoured (M14); `MAX_EVENT_BYTES`
+64 KiB (M1); caps `MAX_PENDING` 128, `MAX_CONNS_PER_DEVICE` 3, `MAX_DEVICES_PER_USER` 4 (M2); all suites move to 8089
+(§7); #54/#219 is a hard deployment dependency (§8).
 
 Field scenario (the user, 2026-10-12; `project_ots_field_context`): off-grid tactical team, one node per member,
 the phone joins its own node (Wi-Fi/BLE) and runs ATAK/iTAK; all nodes move; the OTS node is carried by the RTO,
 so the whole team's sessions go stale at once and reconnect together (16 zombies + 16 reconnects, possibly twice
 within 2 min); Meshtastic is the fallback when HaLow is jammed; batteries are swapped (power loss); OTA only in
 maintenance; **the after-action review must restore every record**; OTS runs only on Pi 4 8 GB (04: MemTotal 7.6
-GiB, MemAvailable 6.6 GiB). Capacity target: 16 phones.
+GiB, MemAvailable 6.6 GiB). Capacity target: 16 phones. The node has no RTC: its clock is 2025-07 while rows carry
+2026-10 timestamps from the phones (04, probed): **nothing in this design compares a row timestamp with the node
+clock.**
 
-What is NOT captured from real devices (⚠️ assumptions, the deferred field test): whether ATAK/iTAK send their SA
-within seconds of connecting (A1), what they do in the background (A4), whether a flap opens a new session (A7),
-how phones roam between nodes (A8), the phones' addresses as OTS sees them (D4). Every mechanism below that
-depends on one of these says so.
+Not captured from real devices (⚠️ assumptions, the deferred field test): SA within seconds of connect (A1),
+background behaviour (A4), a new session per flap (A7), roaming (A8), the phones' addresses (D4). Each mechanism
+that depends on one is bounded whatever the outcome (deadline, supersede, reap, caps).
 
 ## 0. What exists and what changes
 
 Today (04, 1.5.10-wsl.1): six containers on `br-ots`: `ots-db` (postgis 18-3.6), `rabbitmq` (4.3.6, definitions
-file with policy `batman-264-eud-queues`), `opentakserver` (Flask API 8081), `ots_cot_parser`, `ots_eud_handler`
-(8088, 1280m) and `ots_eud_handler_ssl` (8089, 1536m); both listeners run upstream OTS 1.7.13 `EudHandler.py` under
-the 2205-line overlay (bind-mounted ro, `MOUNTSHA`-pinned). fw4 DNATs 8088 → 172.20.0.10 and 8089 → 172.20.0.12.
-`cot` has 1060 rows, `euds` 27; FK `cot_eud` is `ON DELETE CASCADE` (psql, 2026-10-14).
+file with policy `batman-264-eud-queues`), `opentakserver` (Flask API 8081; **declares every exchange** — dms,
+cot_parser, chatrooms, missions, groups, firehose, flask-socketio — `app.py:163-172`), `ots_cot_parser`,
+`ots_eud_handler` (8088, 1280m) and `ots_eud_handler_ssl` (8089, 1536m), both under the 2205-line overlay
+(bind-mounted ro, `MOUNTSHA`-pinned). fw4 DNATs 8088 → 172.20.0.10, 8089 → 172.20.0.12. `cot` 1060 rows, `euds` 27;
+`cot_eud` and 13 other FKs to `euds` are `ON DELETE CASCADE`; `EUD.cots` has ORM `cascade="all, delete-orphan"`
+(`models/EUD.py:35-49`). There is **no EUD delete route** in 1.7.13 (`/api/eud` GET only). The deleters of the record
+are two scheduled jobs: `delete_old_data` (interval 1 min: `delete(EUD) where last_event_time <= now − 1 week`, then
+points, then cot) and `purge_data` (daily: every table), both **paused** on 04 (`config.yml` `next_run_time: null`;
+0 "Deleted data older" log lines in 9 h) and resumable through `scheduler_api.py` (reviewers A/B, 2026-10-14).
 
 The upstream contract the gateway keeps (measured on 04, `cot_parser.py` 1.7.13):
-- **Uplink:** JSON `{"uid": <session uid or null>, "cot": "<event …/>", "user_id": <int or null>}` published to the
-  durable direct exchange `cot_parser`, routing key `cot_parser`, property `expiration` = `OTS_RABBITMQ_TTL`
-  (86400000); a copy `{"uid","cot"}` to the fanout exchange `firehose` (plugins). `cot_parser` consumes queue
-  `cot_parser` (transient, declared by cot_parser with default arguments, prefetch 2), inserts the row (FK
-  `cot.sender_uid → euds.uid`: no row = `basic_nack(requeue=False)`, the CoT is gone), parses, routes (`route_cot`:
-  DMs by `<dest callsign|uid>`, missions, groups `__ANON__.OUT` or `<group>.OUT`), and on a `t-x-d-d` event sets the
-  EUD row `Disconnected` and emits it to the web (`cot_parser.py:1253-1275`).
-- **Disconnect message:** `{"uid","cot":null,"disconnected":true,"user_id"}` → `send_disconnect_cot`
-  (`cot_parser.py:940-1033`): on 8088 it raises (`BlockingChannel.is_closing`, A6-5) before updating the row; on 8089
-  it publishes `t-x-d-d` to the user's groups and **binds** the departed `<uid>` queue to them (R15's filling queue),
-  then sets the row `Disconnected`. **The gateway never sends this message** (P1).
-- **Downlink:** per-EUD transient queues `<uid>` and `<callsign>` bound to `dms` (routing keys uid/callsign),
-  `groups` (`__ANON__.OUT` or the user's `<group>.OUT` keys), `missions` (`missions`, plus `missions.<name>` placed by
-  the Marti API `mission_marti_api.py:1504` and by cot_parser on a mission change), `chatrooms`. Consumed by every
-  session of that uid (`auto_ack=True`, round-robin) upstream.
-- **Web map:** the handler publishes `{"data": eud.to_json(), …}` to the fanout exchange `flask-socketio` at
-  identification (`EudHandler.py:291-305`); `to_json()` needs a Flask app context (impl-11).
-- **Identity on 8089:** the client cert's CN is an OTS `user.username` (`EudHandlerSSL.setup`, `find_user`); the
-  server context is `CERT_REQUIRED`, CA `/app/ots/ca/ca.pem`, server cert/key under `/app/ots/ca/certs/opentakserver/`
-  (`EudServerSSL.py:19-38`); no CRL is loaded there (⚠️ grep only: to confirm against `ca.crl` use elsewhere).
+- **Uplink:** JSON `{"uid": <device uid or null>, "cot": "<event …/>", "user_id": <int or null>}` to the durable
+  direct exchange `cot_parser`, routing key `cot_parser`, `expiration` = `OTS_RABBITMQ_TTL` (86400000); a copy
+  `{"uid","cot"}` to the fanout `firehose`. cot_parser consumes queue `cot_parser` (transient, default args,
+  prefetch 2), `insert_cot` (FK: no `euds` row = `basic_nack(requeue=False)`, gone; KeyError on a missing
+  `how/type/start/stale/time/uid` attribute = the same nack), parses, `route_cot` (DMs by `<dest callsign|uid>`,
+  missions, groups), and on a `t-x-d-d` event sets the row `Disconnected` with `last_event_time` = the event's
+  `start` and emits it to the web (`cot_parser.py:1253-1275`). It also inserts a `cot` row for that event.
+- **Disconnect message** `{"uid","cot":null,"disconnected":true,"user_id"}` → `send_disconnect_cot` (`:940-1033`):
+  raises on 8088 (A6-5); on 8089 publishes `t-x-d-d`, **binds** the departed `<uid>` queue to its groups and unbinds
+  it from every mission (`:1012-1023`, the A7-11 mechanism). **The gateway never sends this message.**
+- **Downlink:** per-EUD transient queues `<uid>` / `<callsign>` bound to `dms`, `groups` (`__ANON__.OUT` or
+  `<group>.OUT`), `missions` (`missions`; `missions.<name>` placed by `mission_marti_api.py:1497-1507` with a
+  `mission_roles` row and removed by `:1538-1558`, which deletes the row BEFORE unbinding); `group_marti_api.py:323-342`
+  unbinds BEFORE its commit (a reconcile may see the old DB state for that window). `chatrooms` is declared but
+  nothing binds EUD queues to it.
+- **Web map:** `{"data": eud.to_json(), …}` to the fanout `flask-socketio` at identification (`EudHandler.py:290-305`);
+  `to_json()` needs a Flask app context.
+- **Identity on 8089:** cert CN → `find_user` with **no None/active check** (`EudHandlerSSL.py:14-30`); context
+  `CERT_REQUIRED`, CA `/app/ots/ca/ca.pem`, server cert/key `/app/ots/ca/certs/opentakserver/`; `ca.crl` is a static
+  638 B file written at CA creation, never updated (no revoke path in 1.7.13; `crl_index.txt` empty).
+- **Orchestrator (payload-run, payload-stop, the guardian; verified 2026-10-14):** `MOUNT` must be a plain file name
+  in the tenant dir and a regular file (`payload-run:340-358`); keys: ENV/VOLUME/MOUNT/MOUNTSHA/ENTRYPOINT/HARDEN/
+  HEALTH/STOPTIER/SECRET; **no `init_once` key** (`profile.yaml` `init_once:` is a comment list); `HEALTH` runs
+  only in the start gate (`health_gate`, 60 × 2 s), never afterwards; the guardian restarts EXITED containers only;
+  stop = `payload-stop.sh`: tiers in ascending order, each tier in parallel with `docker stop -t 5`, the final tier
+  `-t 10`, K08's whole budget 15 s; `StopSignal` of the OTS image is **SIGINT**; `STOPTIER` accepted 1..98.
 
-After this change: `ots_eud_handler`, `ots_eud_handler_ssl`, the overlay, its generator, `MOUNTSHA` and the
-`patches/` directory are gone; one container **`ots_eud_gateway`** (172.20.0.10, both ports, image `batman/ots`,
-entrypoint our module) replaces them. `ots-db`, `rabbitmq`, `opentakserver`, `ots_cot_parser` are unchanged (one
-idempotent DB migration, P3, runs in the tenant's `init_once`; the broker definitions keep R15's policy).
+After this change: `ots_eud_handler`, `ots_eud_handler_ssl`, the overlay, its generator and `MOUNTSHA` are gone; one
+container **`ots_eud_gateway`** (172.20.0.10, 8088 + 8089, image `batman/ots`, entrypoint our zipapp) replaces them.
+`ots-db`, `rabbitmq`, `opentakserver`, `ots_cot_parser` are unchanged except their stop tiers and one FK migration the
+gateway applies at start (M10).
 
-Scope: `deploy/ots/gateway/` (the gateway package + its offline tests), `deploy/ots/profile.yaml` + generated
-manifest/fw4/hardening files, `payload-conform` (one FK check), the #264 validation suites ported to the gateway,
-new suites for P1–P4, docs. Out of scope: the UDP listener (unsupported today too), the OTS web/API, Meshtastic
-relay semantics (decision 5), per-node broker credentials (#47), the enrolment tool (#54).
+Scope: `deploy/ots/gateway/` (package + offline tests; built into one file `eud-gateway.pyz` by the Makefile),
+`deploy/ots/profile.yaml` + generated files, `payload-conform` (FK + scheduler checks), the ported suites + new
+suites, docs. Out of scope: UDP; the OTS web/API; relay semantics (decision 5); #47; the enrolment tool (#54 —
+a hard dependency for deployment, §8); retention/archiving policy (the jobs stay paused).
 
 ## 1. Architecture
 
-One process, `python3 -m batman_eud_gateway` inside the existing `batman/ots:1.7.13-arm64` image (Python 3.13,
-pika 1.3.2 with `AsyncioConnection`, SQLAlchemy + the OTS models, bs4/lxml: all present — probed 2026-10-14; no new
-image, no new dependency). `asyncio` throughout; blocking database calls run in a bounded thread pool (4 threads)
-so no DB stall ever blocks the event loop. Language choice stated: Python keeps the OTS models (euds, users, groups,
-missions) and the image; the per-session cost of an asyncio session is the thing to measure first (M12).
+One process, `python3 /app/eud-gateway.pyz` inside `batman/ots:1.7.13-arm64` (Python 3.13.15, pika 1.3.2 with
+`AsyncioConnection`, SQLAlchemy 2.0.44 + the OTS models, bs4 4.14.2 / lxml 6.0.2 — probed; no new image, no new
+dependency). `asyncio` throughout; blocking DB calls run in a `ThreadPoolExecutor(4)` set as the loop's default
+executor (A1-14), so no DB stall blocks the loop.
 
 ```
  phones ──8089 mTLS──┐                                ┌─► cot_parser exchange ──► ots_cot_parser ──► postgres
- relays ──8088 (off)─┤  Listeners → Admission → Session table (by DEVICE)        (unchanged)        │
-                     │     │            │             │                                              │
-                     │     ▼            ▼             ▼                                              ▼
-                     │  Framing     Identity      Uplink: parse → store-before-route → Publisher (confirms, cache)
-                     │                                │
-                     │                                ▼
-                     └◄── Downlink: one consumer per device → bounded per-session send queue → current socket
-                           Presence (owner) · Bindings (owner, re-asserted) · Registry/metrics/log
+ relays ──8088 (off)─┤  Listeners → Pending cap → Framing → Identity/Admission → Session table (by DEVICE)
+                     │                                       │
+                     │                                       ▼
+                     │  Uplink: parse → store-before-route → Publisher (one connection, confirms, per-session cache)
+                     │                                       │
+                     └◄── Downlink: one consumer + channel per device → bounded send queue → current socket
+                           Presence (owner) · Bindings (reconciled) · Snapshot/metrics/log · Health/watchdog
 ```
-
-Components and the overlay mechanism each one absorbs:
 
 | component | does | absorbs |
 |---|---|---|
-| **Listener** (×2) | `asyncio.start_server`; 8089 with `ssl.SSLContext` (CERT_REQUIRED, CA, server cert) and a 10 s handshake timeout; 8088 only when `GATEWAY_8088_ALLOWLIST` is non-empty, else not bound at all | R12 (handshake before allocation) |
-| **Admission** | per-connection: nothing allocated before the first complete message (a 64 KiB read buffer only); a rolling first-message deadline of 60 s until identified; device-count cap and memory check **at identification**, serialized by one asyncio lock (no file lock, one process) | R7, R12, R16 (no per-address rule: decision 3) |
-| **Framing** | bytes → complete `<event>…</event>` / `<auth>` messages, carry-over bounded 1 MiB, bs4 parse once | R1 |
-| **Identity** | 8089: user = cert CN; uid/callsign from the first SA; ownership rule (another user's device uid → refused subscription, recorded); 8088: uid must be on the allowlist (else the connection is closed before any allocation and logged once per address per minute); name guard for every broker name | R10, P4 |
-| **Session table** | key = device: 8089 `(user_id, uid)`, 8088 `(address, uid)`; value = one session object owning the AMQP consumer, the cache, the bindings it placed, the registry row and **a list of connections** (the current socket + superseded ones draining) | R17 by construction (one downlink per device), R6 |
-| **Uplink** | per message: identify if needed → **store-before-route** (euds row written or confirmed before the first publish) → publish `{uid,cot,user_id}` to `cot_parser` and `firehose` | R14 (an exception drops the message, not the session), R5, R4/R4b |
-| **Publisher** | ONE AMQP connection and one publishing channel for the whole gateway (`confirm_delivery`, `mandatory`); per-session bounded cache (2 MiB / 500 entries, a-* coalesced per uid on overflow, then drop-oldest with a count); head-only retry on a return; reconnect with backoff on loss; declares `cot_parser` exchange/queue/binding with cot_parser's exact arguments on every channel open; blocked-connection callback → cache | R4, R4b, R5, R9, R13 (no session end on a broker loss: the connection is the gateway's, the session keeps its socket and its cache) |
-| **Downlink** | one consumer per device on `<uid>` (and `<callsign>` when the callsign is usable and free), `auto_ack=False`, ack after the message is queued to the socket; per-session send queue bounded (1 MiB / 200 msgs, a-* coalesced per uid, then drop-oldest + count); writes are `transport.write` + `drain()` with a 5 s timeout → the socket is closed (the kernel buffer is full: the phone is not reading); never blocks another session | R2 (closed), R6 shared-queue residual (gone) |
-| **Presence** | owner of `euds.last_status/last_event_time` for its devices: `Connected` at identification, `Disconnected` at the device's last connection end (incl. reap), and a `t-x-d-d` CoT (`<link uid= type= relation="p-p"/>`) published as a NORMAL uplink message so cot_parser routes it to the team and sets the row (its existing `t-x-d-d` branch, both ports) | P1, A6-5 |
-| **Bindings** | owner of the per-EUD queue bindings of live devices: placed at identification from the DB (dms, groups or `__ANON__`, `missions`, mission subscriptions of the user), **re-asserted idempotently on every SA of the device and every 30 s**; unbound at the device's last end only what this gateway placed; queues deleted only for 8088 relays' own queues (none: relays get no queues) | P2, A7-11, R6, R15 |
-| **Registry** | in-memory table + a JSON snapshot every 10 s to the container's tmpfs (for `docker exec` diagnosis and the suites: `/tmp/gateway/sessions.json`); prometheus-style counters in the same file | R17 registry (no files, no signals, no pids) |
-| **Health** | `GET /healthz` on 172.20.0.10:8090 (br-ots only): 200 when both listeners are bound and the AMQP connection is open, else 503 → guardian `HEALTH` | #156/#274 guardian |
+| **Listener** (×2) | `asyncio.start_server`; 8089 with an `SSLContext` (CERT_REQUIRED, CA, server cert, CRL when it parses) and a 10 s handshake timeout; 8088 bound only when the allowlist is non-empty | R12 |
+| **Pending cap** | `MAX_PENDING` (128) not-yet-identified connections in total; beyond it the accept loop closes the socket at once (one log line per minute); the cgroup memory reserve is also checked at accept (µs) | R12's per-address rule (replaced, decision 3) — A1-4/B1-5 |
+| **Framing** | bytes → complete `<event>…</event>` / `<auth>`; a message over `MAX_EVENT_BYTES` (64 KiB) or a carry-over over it closes the connection (logged); bs4 parse once; a message with a DOCTYPE is malformed (lxml yields no event: probed) | R1 — B1-7 |
+| **Identity / Admission** | 8089: user = cert CN, must exist and be `active`, else closed before anything; uid/callsign from the first SA; ownership rule; 8088: uid on the allowlist or closed. Under the admission lock at identification: `MAX_DEVICES`, `MAX_DEVICES_PER_USER`, `MAX_CONNS_PER_DEVICE`, memory reserve | R7, R10, R12, R16, P4 — A1-5/B1-6/B1-10 |
+| **Session table** | key = device: 8089 `(user_id, uid)`, 8088 `(address, uid)`; a session owns its AMQP channel + consumer, cache, placed bindings, snapshot row and the list of connections (current + ≤ 2 draining) | R17 by construction, R6 |
+| **Uplink** | identify if needed → store-before-route → publish `{uid,cot,user_id}` to `cot_parser` and `firehose` | R14, R5, R4/R4b |
+| **Publisher** | ONE AMQP connection for the gateway; one publishing channel (`confirm_delivery`, `mandatory`); on every connection open: declare EVERY exchange it uses with `app.py:163-172`'s exact arguments and `cot_parser` queue/binding with cot_parser's; per-session bounded cache; head-only retry on a return; reconnect with backoff; blocked callback → cache | R4, R4b, R5, R9, R13 — B1-9 |
+| **Downlink** | per device: its own channel, `queue_declare(uid)` (+callsign when usable and free), bindings reconciled, `basic_consume` with `prefetch 50`, manual ack after the message is appended to the session's send queue; writer drains to the CURRENT socket with `set_write_buffer_limits(high=256 KiB, low=64 KiB)` and **no drain timeout** (a dead peer ends by `TCP_USER_TIMEOUT`); a channel exception affects that device only | R2 closed, R6 residual gone — A1-6/B1-8/B1-14 |
+| **Presence** | owner of `last_status`/`last_event_time` for its devices (gateway clock); `Connected` at identification and re-asserted on the 30 s cycle; `Disconnected` + a `t-x-d-d` CoT at the device's last end; clock-free sweep at start | P1 — A1-8/B1-4/B1-12 |
+| **Bindings** | reconciled: at identification, on the first SA after a (re)connect, every 30 s: bind `needed − placed`, unbind `placed − needed` (gateway-placed only); `needed` computed from the DB | P2 — A1-10/B1-15 |
+| **Snapshot** | `/tmp/gateway/sessions.json` every 10 s (atomic rename) with counters and a monotonic `uptime_s` (no wall clock) | R17 registry (no files/signals/pids) — B1-18 |
+| **Health / watchdog** | `GET /healthz` bound on `0.0.0.0:8090` inside the container netns (reachable as `localhost` for the start gate and as 172.20.0.10 on br-ots); 200 when both configured listeners are bound and AMQP is open; **the process exits 3** when AMQP has been down for `AMQP_MAX_DOWN_S` (300 s) or the loop is wedged (a 1 s heartbeat task not run for 30 s, checked by a thread) → the guardian's crash path | — A1-9/B1-13 |
+| **Stop** | SIGINT and SIGTERM: ≤ 3 s plan (M13) | #274 — A1-3/B1-1 |
 
-### 1.1 Mechanisms stated as rules
+### 1.1 Mechanisms
 
-**M1 Framing.** As R1: raw bytes kept until a closing tag; decode only complete messages; carry-over ≤ 1 MiB,
-then the connection is closed (logged). A malformed message is dropped and logged; the session goes on (R14).
+**M1 Framing.** As R1: raw bytes until a closing tag; decode complete messages only; `MAX_EVENT_BYTES` 64 KiB per
+message and for the carry-over: over it the connection is closed (log `oversize message from <uid|ip>: N bytes`).
+A real CoT is < 10 KiB; data packages go over HTTP. Evidence for the bound: a 1 MiB event costs bs4 5.84 s and 88
+MiB in this image (reviewer B, probed) — unbounded, one client stalls every phone and the AMQP heartbeat.
+A malformed message is dropped and logged; the session goes on (R14).
 
 **M2 Admission (decision 3).**
-1. 8089: TLS handshake within 10 s or the socket is closed; nothing else allocated before it.
-2. 8088: the listener exists only when the allowlist is non-empty; a connection whose first identifying message
-   carries a uid not on the allowlist is closed at once; a non-identifying first message (ping, `<auth>`) is
-   answered and the deadline keeps running.
-3. Until identified: rolling deadline `IDENT_MAX_S` 60 s moved by every complete message (a silent socket is cut,
-   a relay that keeps sending is not), as R12 (B3-3).
-4. At identification, under the admission lock (asyncio, held only across the check and the table insert, µs):
-   - **device cap** `MAX_DEVICES` (default 64 = 16 phones × 3 generations in flight + margin; a superseded
-     connection counts as its device's, not as a new device);
-   - **memory**: the container's own cgroup `memory.current − memory.stat file` against `memory.max` with a reserve
-     `RESERVE_MB` 64 (fail-closed: unreadable cgroup → no cap, logged, as R7);
-   - refused → the connection is closed with one log line `refusing device <uid> from <ip>: <reason>`; the phone
-     reconnects later. A device already in the table is never refused (its new connection supersedes, M3).
-5. Pings (`t-x-c-t`) and `<auth>` never allocate a session (answered from the connection object).
+1. Accept: `pending < MAX_PENDING` (128) and the memory reserve (M12) hold, else close at once.
+2. 8089: TLS handshake ≤ 10 s; the cert chain verified against `ca.pem` and, when `ca.crl` parses, the CRL
+   (`VERIFY_CRL_CHECK_LEAF`); the CN must be an existing, `active` user (`User.active`) — else close before any
+   allocation, log `refusing cert CN=<cn>: <reason>` (rate-limited per CN). This is the stack's only revocation
+   path today (a captured phone: the operator deactivates the user in the web UI; runbook line).
+3. 8088: bound only with a non-empty allowlist; the first identifying message's uid must be on it, else close.
+4. Until identified: rolling deadline `IDENT_MAX_S` 60 s moved by every complete message.
+5. At identification, under the admission lock (asyncio; held across the checks and the table insert):
+   `MAX_DEVICES` (64) total; `MAX_DEVICES_PER_USER` (4) on 8089; `MAX_CONNS_PER_DEVICE` (3 = current + 2
+   draining: a 4th connection closes the oldest draining one — decision #264-2 accepts that loss); the memory
+   reserve. Refused → closed with one log line `refusing device <uid> from <ip>: <reason>`; the listener lives.
+6. Pings (`t-x-c-t`) and `<auth>` are answered from the connection object; they never allocate a session and
+   never reset anything but the deadline.
+7. Re-check at every 8088 identification that the uid is not an 8089 user's device (the start-time check alone
+   misses a user enrolled later); 8089 wins (B1-17).
 
-**M3 Sessions by device; supersede (decisions 4, #264-5).** A new identified connection of a device already in the
-table replaces the current socket: the new socket gets the downlink at once; the old socket stops receiving
-downlink, keeps being read, and is closed at `supersede_time + min(outage + 20 s, 120 s)`, extended by 20 s after
-every byte that arrives while a newer connection lives (`outage` = time since the old socket's last byte). A device
-whose socket dies (FIN/RST, `TCP_USER_TIMEOUT` 120 s, keepalive 45/15/4) with no other live connection ends the
-session: consumer cancelled, bindings removed, presence `Disconnected` + `t-x-d-d`, row kept. A device on 8089 is
-identified by `(user_id, uid)`, so a phone coming back through ANOTHER node (new address) supersedes its old
-connection the same way (A8 ⚠️ assumed). On 8088 `(address, uid)`: a relay from another address is another device.
+**M3 Sessions by device; supersede (decisions 4, #264-5).** A new identified connection of a device already in
+the table replaces the current socket: it gets the downlink at once; the old socket stops receiving downlink, is
+read until `supersede_time + min(outage + 20 s, 120 s)` (outage = time since its last byte, gateway monotonic
+clock), extended 20 s after every byte while a newer connection lives, then closed. A device whose last connection
+ends (FIN/RST, `TCP_USER_TIMEOUT`, the M2 deadline, supersede deadline, stop) ends the session: consumer cancelled,
+channel closed, gateway-placed bindings removed, presence `Disconnected` + `t-x-d-d`, row kept. 8089 key
+`(user_id, uid)`: a phone back through ANOTHER node (new address) supersedes its old connection (A8 ⚠️); 8088
+`(address, uid)`.
 
-**M4 Identity and names (R10, P4).** uid and callsign are checked before any broker use: empty, >255 bytes, `amq.`
-prefix, a system name (`cot_parser`, `dms`, `chatrooms`, `missions`, `groups`, `firehose`, `flask-socketio`,
-`meshtastic`, `dmrcot`), non-printable → the uid gives no subscription and no row (one log line), the callsign is not
-used as a queue and the device is recorded under its uid (decision #264-1). 8089: a uid whose row belongs to another
-user → recorded, no subscription (B4-7 reassignment in the web UI). The callsign column is written only when free
-(`euds.callsign` UNIQUE). 8088 uids come only from the allowlist, so the "8088 client naming a user's device" rules of
-R10 reduce to: an allowlisted uid that equals an 8089 user's device uid is refused at config validation (the gateway
-refuses to start with a log line; fail-closed).
+**M4 Identity and names (R10, P4).** uid and callsign are checked before any broker use (empty, > 255 bytes, `amq.`
+prefix, a system name — `cot_parser`, `dms`, `chatrooms`, `missions`, `groups`, `firehose`, `flask-socketio`,
+`meshtastic`, `dmrcot` —, non-printable): a bad uid → no subscription, **no row write of any kind**, one log line; a
+bad or colliding callsign → not used as a queue, the device recorded under its uid without the callsign column
+(UNIQUE; decision #264-1). 8089: a uid whose row has another `user_id` → **no row write (no user_id, callsign or
+metadata), no subscription, no bindings**; its CoT are published and stored under the claimed uid's existing row
+(upstream, stated; B4-7 reassignment in the web UI). An allowlisted 8088 uid equal to an 8089 user's device uid →
+refused at that identification (8089 wins); at start the allowlist is validated for names only (the DB may be late:
+a DB error at start is retried, not exit 2 — B1-18).
 
-**M5 Store-before-route (R14, F1).** The first publish of a device waits for its euds row: metadata written
-defensively (phone digits only, strings cut to 255, missing `start`/`role` tolerated), else a minimal row (uid,
-Connected, user, callsign if free); a DB failure is retried every 30 s on the device's next CoT while its CoT are
-cached (bounded, M6) instead of being FK-dropped by cot_parser. Relays (deferred, decision 5): their forwarded CoT
-need a row per forwarded uid; the hook is a `minimal_row(uid)` call per distinct event uid, rate-limited; **not
-implemented now**, so an allowlisted relay's CoT for unknown uids is dropped by cot_parser's FK today (stated).
+**M5 Store-before-route (R14, F1).** A device's first publish waits for its `euds` row: metadata written
+defensively (phone digits, strings cut to 255, missing `start`/`role` tolerated), else a minimal row (uid, Connected,
+user, callsign if free); a DB failure is retried every 30 s on the next CoT while the device's CoT are cached (M6
+bounds). Relay hook (`minimal_row(uid)` per forwarded uid) is designed, not implemented (decision 5): an
+allowlisted relay's CoT for unknown uids are FK-dropped by cot_parser today (stated).
 
-**M6 Publisher (R4, R4b, R5, R9, R13).** One `AsyncioConnection`; on every channel open: declare exchange
-`cot_parser` (direct, durable), queue `cot_parser` (default args), bind; `Confirm.Select`. Every body is held until
-its ack; a nack or return puts it back at the head of its session's cache; on channel/connection loss all unacked
-bodies go back in publish order and the connection reconnects with backoff 1, 2, 4, 8, 16, 30 s ±25 %. Order per
-session is kept (a new body queues behind a non-empty cache). The session's TCP connection is NOT ended on a
-broker-side loss (the overlay had to, R13, because its subscription lived on the lost connection; here the consumer
-is re-placed from the session's recorded bindings when the connection is back — the gateway is the owner of those
-bindings, P2, so nothing placed through the Marti API is lost: those bindings live in the broker, not in the
-connection). Broker blocked (memory alarm) → cache, resume on unblock, no timeout.
+**M6 Publisher (R4, R4b, R5, R9, R13, B1-9).** One `AsyncioConnection`. On every connection open: `exchange_declare`
+for dms (direct), cot_parser (direct, durable), chatrooms, missions (topic), groups (topic), firehose (fanout,
+durable), flask-socketio (fanout, non-durable) — **the exact types/durability of `app.py:163-172`** (a fresh broker
+volume, or the gateway starting before opentakserver, must not 404 a bind); `queue_declare("cot_parser")` + bind as
+cot_parser; `Confirm.Select` on the publishing channel. Every body held until its ack; nack/return → head of its
+session's cache; loss → unacked bodies back in order, reconnect with backoff 1, 2, 4, 8, 16, 30 s ±25 %; order per
+session kept; a session's TCP connection is never ended by a broker-side loss (its consumer/channel/bindings are
+re-placed from the session's state when the connection is back: `queue_declare`, reconcile, `basic_consume`).
+Broker blocked → cache, no timeout. AMQP down for `AMQP_MAX_DOWN_S` (300 s) → exit 3 (M17).
 
-**M7 Downlink (R2, R6).** Consumer per device, `prefetch` 50, manual ack after the message is appended to the
-session's send queue; the writer task drains the queue to the CURRENT socket with `await drain()` bounded by 5 s;
-on timeout or error the socket is closed (the device's session survives if another connection exists, else ends).
-Queue overflow coalesces `a-*` by uid, then drops the oldest and counts. A superseded socket gets nothing.
-With one consumer per device the broker never splits the device's downlink with a zombie (the overlay's residual).
+**M7 Downlink (R2, R6, A1-6, B1-8, B1-14).** One channel + one consumer per device (a 404/406 on one device's
+channel closes that channel only; it is re-placed on the next reconcile; other devices unaffected). `prefetch 50`,
+manual ack after append to the send queue (bounded 1 MiB / 200 msgs; `a-*` coalesced per uid, then drop-oldest +
+count). The writer awaits `drain()` with **no timeout**; `set_write_buffer_limits(high=256 KiB, low=64 KiB)` turns
+a slow reader into back-pressure that lands in the bounded queue; a dead peer ends by `TCP_USER_TIMEOUT` 120 s
+(M11); `SO_SNDBUF` 256 KiB explicit (bounds the kernel's charge to the cgroup, A1-14). A superseded socket gets
+nothing. Downlink to a device goes to its current socket only.
 
-**M8 Presence (P1).** The gateway writes `last_status`/`last_event_time` and publishes a `t-x-d-d` event for
-the device at its last end (and at a reap). It never sends the `disconnected` JSON, so cot_parser's 8088 raise and
-8089 queue-binding paths are not exercised. cot_parser's own `t-x-d-d` branch sets the row again (idempotent) and
-emits it to the web. At identification the gateway publishes `{"data": eud.to_json(), …}` to `flask-socketio` from a
-worker thread holding an app context (impl-11).
+**M8 Presence (P1, A1-8, A1-11, B1-4, B1-12).**
+- At start, **before binding the listeners**: `UPDATE euds SET last_status='Disconnected', last_event_time=:now
+  WHERE last_status='Connected'` (the gateway owns zero sessions at start; no clock comparison; log the count; no
+  `t-x-d-d` burst — the phones' next SA restores them).
+- At identification and on the 30 s cycle: `Connected` + `last_event_time = now` (gateway clock) when the row
+  differs (the re-assert undoes a late `t-x-d-d` written by cot_parser from the gateway's own queued event — the
+  race B1-4; residual: one stale `t-x-d-d` to the team until the next SA).
+- At the device's last end: row `Disconnected`, then a `t-x-d-d` CoT published as a normal uplink message with
+  the body `{"uid": <device uid>, "cot": <event>, "user_id"}`; the event exactly as upstream's
+  (`cot_parser.py:945-975`): `version="2.0" uid="<uuid4>" type="t-x-d-d" how="h-g-i-g-o" time/start=now
+  stale=now+10s`, `<point ce="9999999" le="9999999" hae="0" lat="0" lon="0"/>`, `<detail><link relation="p-p"
+  uid="<device uid>" type="<device type>"/></detail>` — every attribute cot_parser's `insert_cot` reads, so it is
+  never nacked; cot_parser inserts a `cot` row for it, routes it to the team and sets the row (idempotent).
+- Web map: `{"data": eud.to_json(), …}` to `flask-socketio` from the executor thread holding an app context
+  (impl-11) at identification.
 
-**M9 Bindings (P2).** The set a device needs = `dms`:uid (+callsign when usable), `groups`: `__ANON__.OUT` or each
-`<group>.OUT` of the user's memberships, `missions`:`missions`, and `missions.<name>` for every mission the device is
-subscribed to (DB truth = `mission_roles`: `mission_subscribe` adds a role row and binds, `mission_unsubscribe`
-deletes the row and unbinds — `mission_marti_api.py:1345-1555`, probed 2026-10-14; `mission_uids` is mission
-content, not subscriptions). Placed at
-identification and re-asserted (idempotent `queue_bind`) on every SA and every 30 s; a late `t-x-d-d` or a Marti
-API change can therefore remove a binding for at most 30 s / one SA. Unbound at the device's last end: only what the
-gateway placed. Queues are never deleted for 8089 devices (R15's policy expires them after 24 h unused).
+**M9 Bindings (P2, A1-10, B1-15).** `needed(device)` = `dms`:uid (+callsign when usable), `groups`: `__ANON__.OUT`
+or every enabled `<group>.OUT` of the user (`groups_users.enabled`), `missions`:`missions`, `missions.<name>` for
+every `mission_roles` row of the uid. Reconcile = bind `needed − placed`, unbind `placed − needed` (only what the
+gateway placed; never a binding placed by the API or a plugin), `placed := needed`; log `rebind <uid> +N -M`
+only when N+M > 0. Triggers: identification; the first SA after a (re)connect; every 30 s per device (16 devices ≈
+0.5 reconciles/s, each 2 DB reads; `queue_bind` only on deltas, so ~0 broker calls in steady state). A removal by
+the admin (group disabled, mission unsubscribed) therefore takes effect within 30 s even if the gateway re-bound
+inside the API's unbind-before-commit window (`group_marti_api.py:323-342`). Queues are never deleted (R15 policy
+expires them after 24 h unused).
 
-**M10 FK migration (P3).** `init_once` (tenant, runs with the DB up, idempotent SQL): `ALTER TABLE cot DROP
-CONSTRAINT cot_eud; ALTER TABLE cot ADD CONSTRAINT cot_eud FOREIGN KEY (sender_uid) REFERENCES euds(uid) ON DELETE
-RESTRICT`. `payload-conform` queries `pg_get_constraintdef` and reports DRIFT when it is not RESTRICT (an OTS
-upgrade's migration could revert it). A device with history can no longer be deleted from the web UI (the API
-returns an error; archiving is the operator's path).
+**M10 The record (P3, A1-7, B1-3).** The record = `cot` + `points` (track) + `geochat` (chat). Deleters today:
+the two scheduled jobs (paused), any ORM `session.delete(eud)` (cascades first), a future upstream route.
+- Migration, owned by **the gateway at every start** (after its DB connection, before the listeners; as role `ots`,
+  the table owner; idempotent; one transaction; `ADD CONSTRAINT … NOT VALID` then `VALIDATE CONSTRAINT` so the lock
+  is short while cot_parser inserts): `cot.sender_uid`, `points.device_uid` (⚠️ column names from `\d` at
+  implementation), `geochat.sender_uid` → `ON DELETE RESTRICT`. Log `fk <name>: RESTRICT (migrated|already)`. A DB
+  unreachable at start → retry with backoff (the listeners stay unbound until the migration ran: fail-closed for the
+  record, visible as a long start gate).
+- `payload-conform` at every boot: the three FKs are RESTRICT, and `config.yml`'s `delete_old_data` / `purge_data`
+  jobs have `next_run_time: null` → otherwise DRIFT (the stack keeps running: the record's safety is visible, not
+  fatal). Retention = archiving (out of scope); a resumed `delete_old_data` now fails on the EUD delete every minute
+  (RESTRICT) and deletes nothing: stated.
+- Not covered (stated): the other 11 CASCADE FKs to `euds` (alerts, markers, casevac, rb_lines, certificates,
+  chatrooms_uids, data_packages, missions.creator_uid, eud_stats, mission_invitations, …) — they are not the
+  record's track/chat; an ORM `session.delete(eud)` from a future upstream route would cascade `cot` through the ORM
+  before RESTRICT fires (no such route in 1.7.13; the conform check and the image pin are the control).
 
-**M11 Zombies (R6).** `SO_KEEPALIVE` 45/15/4 + `TCP_USER_TIMEOUT` 120 s on every accepted socket; a vanished peer
-ends its connection in ≤ ~2 min either way; a blocked writer is bounded by M7's 5 s drain, not by 120 s.
+**M11 Zombies (R6).** `SO_KEEPALIVE` 45/15/4 + `TCP_USER_TIMEOUT` 120 s on every accepted socket.
 
-**M12 Resources (decision 3).** Container cap `GATEWAY_MEMORY` 1024m (one process; expected ≤ 2 MiB per session:
-**to be measured in the first rc, the cap is revised from the measurement**), `pids` 64 (asyncio + 4 DB threads),
-`MAX_DEVICES` 64, cache 2 MiB/session (worst case 128 MiB), send queue 1 MiB/session. Node budget after the change:
-opentakserver 1280 + cot_parser 1280 + gateway 1024 + rabbitmq 512 + ots-db 512 = **4.6 GiB** < 6.6 GiB available
-(was 6.4). The 1.8 GiB freed is not reassigned by this design (the user: use the 8 GB — the gateway's cap is sized
-from the measurement, not from the 1280m era; cot_parser/postgres caps are #171-closed figures, re-measured in
-#287's soak). `oom_score_adj` is NOT raised (one process = the listener; an OOM would take everything, so the cap +
-reserve + bounded caches are the defence; the kernel OOM is a backstop the lifecycle table states).
+**M12 Resources (decision 3, A1-14, B1-5).** Container `memory` 1024m (to be revised from rc 1), `pids` 32
+(asyncio main + 4 executor + health/watchdog threads + `docker exec` health = ~10), `MAX_PENDING` 128,
+`MAX_DEVICES` 64, `MAX_DEVICES_PER_USER` 4, `MAX_CONNS_PER_DEVICE` 3, cache 2 MiB/session, send queue 1 MiB/session,
+`SO_SNDBUF`/`SO_RCVBUF` 256 KiB. Worst-case arithmetic: 64 devices × 3 conns × (256 KiB snd + 256 KiB rcv + ~0.2
+MiB TLS/buffers) ≈ 140 MiB sockets + 64 × 3 MiB caches/queues ≈ 192 MiB + 128 pending × 0.3 MiB ≈ 40 MiB + base
+(~150 MiB with the OTS models) ≈ **520 MiB < 1024m** before the per-session Python cost (⚠️ measured in rc 1 by
+`eud-mem-289` with its D2 leg, and the cap revised). The memory reserve `RESERVE_MB` 64 is read from the cgroup
+(`memory.current − memory.stat file` vs `memory.max`) at accept and at identification; unreadable → no cap, logged.
+Node budget after: opentakserver 1280 + cot_parser 1280 + gateway 1024 + rabbitmq 512 + ots-db 512 = 4.6 GiB < 6.6
+GiB available. No `oom_score_adj`: the caps and bounds above are the defence; a kernel OOM kill of the gateway =
+every session, phones reconnect, the guardian restarts it (lifecycle row).
 
-**M13 Graceful stop (#274).** SIGTERM: stop accepting, publish presence `Disconnected`+`t-x-d-d` for every device,
-drain caches ≤ 60 s, close sockets, exit 0. The guardian's stop tier 1 (before opentakserver, then db/broker).
-SIGKILL (power loss): caches and unread data lost (stated, as today).
+**M13 Stop (A1-3, A1-12, B1-1).** Signals: SIGINT (the image's StopSignal) and SIGTERM, via
+`loop.add_signal_handler` (no KeyboardInterrupt unwinding). Budget: **≤ 3 s** inside `docker stop -t 5`: (1) stop
+accepting; (2) one `UPDATE euds … Disconnected WHERE uid IN (:live)`; (3) publish the `t-x-d-d` events and flush
+every cache, awaiting confirms ≤ 2 s; (4) close sockets; (5) log `stop: N devices, M bodies confirmed, K
+unconfirmed`; exit 0. Stop tiers: **gateway 1; `ots_cot_parser` and `opentakserver` 2** (cot_parser is stopped
+AFTER the gateway, so it consumes what the gateway flushed; two client tiers ≤ 10 s inside K08's 15 s; the final
+tier (db, broker) `-t 10` in K09 as today). Residual, stated: bodies cot_parser had not consumed when the broker
+stops (its prefetch 2 + whatever is left in the transient queue) are lost, as today; what the gateway could not
+confirm in 2 s is counted and lost.
 
-**M14 TLS.** `ssl.SSLContext(PROTOCOL_TLS_SERVER)`, `verify_mode CERT_REQUIRED`, `load_verify_locations(ca.pem)`,
-`load_cert_chain(opentakserver.pem, .nopass.key)` as `EudServerSSL.py`; handshake 10 s; shutdown by closing the
-transport (asyncio never calls `SSLSocket.shutdown` on the raw socket: no clear-text race). CRL: as upstream (none
-loaded in the listener ⚠️); revocation is #54/#219's concern.
+**M14 TLS.** `ssl.SSLContext(PROTOCOL_TLS_SERVER)`, `CERT_REQUIRED`, `load_verify_locations(ca.pem)`,
+`load_cert_chain(opentakserver.pem, .nopass.key)` as `EudServerSSL.py:19-38`; `load_verify_locations(ca.crl)` +
+`verify_flags |= VERIFY_CRL_CHECK_LEAF` when the file parses (else logged once, no CRL — as today); handshake 10 s;
+close by the transport (no `SSLSocket.shutdown` race). The context is rebuilt when the cert files' mtime changes
+(cert rotation without restart; lifecycle row).
 
-**M15 Relays (decision 5).** The 8088 listener and the allowlist are implemented (P4). Relay semantics (no queues,
-rolling deadline, `minimal_row` per forwarded uid, status of forwarded devices) are designed here only as the hook
-in M5 and are NOT implemented; the allowlist ships empty (listener not bound). Taken up with Meshtastic.
+**M15 Relays (decision 5).** The 8088 listener + allowlist are implemented (P4); relay semantics are the M5 hook
+only; the allowlist ships empty (8088 not bound).
 
-**M16 Configuration.** Env from the profile (all optional, validated at start, a malformed value → exit 2 with a
-log line, fail-closed): `GATEWAY_MAX_DEVICES` (64), `GATEWAY_RESERVE_MB` (64), `GATEWAY_IDENT_MAX_S` (60),
-`GATEWAY_SUPERSEDE_QUIET_S` (20), `GATEWAY_SUPERSEDE_MAX_S` (120), `GATEWAY_8088_ALLOWLIST` ("" = listener off; a
-comma-separated uid list), `GATEWAY_CACHE_MB` (2), `GATEWAY_SENDQ_MB` (1). Secrets: none new (the broker guest
-credential and the DB URI come from `env_common` as today, #47 unchanged).
+**M16 Configuration.** Env from the profile, validated at start (a malformed value → exit 2, fail-closed):
+`GATEWAY_MAX_DEVICES` 64, `GATEWAY_MAX_DEVICES_PER_USER` 4, `GATEWAY_MAX_CONNS_PER_DEVICE` 3, `GATEWAY_MAX_PENDING`
+128, `GATEWAY_RESERVE_MB` 64, `GATEWAY_IDENT_MAX_S` 60, `GATEWAY_SUPERSEDE_QUIET_S` 20, `GATEWAY_SUPERSEDE_MAX_S`
+120, `GATEWAY_MAX_EVENT_BYTES` 65536, `GATEWAY_CACHE_MB` 2, `GATEWAY_SENDQ_MB` 1, `GATEWAY_AMQP_MAX_DOWN_S` 300,
+`GATEWAY_8088_ALLOWLIST` "" (names validated at start; DB cross-check at each identification). Secrets: none new.
+
+**M17 Health and watchdog (A1-9, B1-13).** `/healthz` on `0.0.0.0:8090` (container netns; br-ots reachable; GET
+only, request ≤ 1 KiB, 2 s timeout, no state change). The start gate's `HEALTH curl -fsS http://localhost:8090/healthz`
+passes once both configured listeners are bound and AMQP is open. At runtime nothing polls it: the gateway
+**exits 3** when AMQP is down > `AMQP_MAX_DOWN_S` or the loop heartbeat is stale > 30 s (a watchdog thread) → the
+guardian restarts an EXITED container with backoff (sessions end, phones reconnect).
+
+**M18 Logging and readers (A1-13).** File `/app/ots/logs/eud_gateway.log` (daily rotation by count as upstream;
+⚠️ C6 size on the `ots-appdata` volume measured by #287) + stdout. Lines read by tools (§3). The harness's
+`ots_logc`/`rlog` readers move from `eud_handler_tcp.log`@`ots_eud_handler` to this file@`ots_eud_gateway` in the
+harness PR that lands first (#290), with known-failures entries bound to this issue for the interval.
 
 ## 2. Ownership
 
 | resource | owner (writes) | readers / notes |
 |---|---|---|
-| gateway package (golden, p6 `apps/opentakserver/gateway/`) | the build (golden refresh at boot; D7-7 DRIFT on edit) | payload-run (bind mount ro into the container) |
-| container `ots_eud_gateway` | payload-run (starter), the guardian (health, restart) | — |
-| the TCP/TLS listeners, every accepted socket | the gateway process (asyncio) | kernel |
-| session table, caches, send queues, admission lock | the gateway process (single event loop) | `/tmp/gateway/sessions.json` snapshot: read-only for `docker exec` and the suites |
-| the gateway's AMQP connection, channels, consumers | the gateway process | broker |
-| `cot_parser` exchange/queue/binding | two idempotent declarers with identical args: cot_parser (upstream) and the gateway (M6) | broker |
-| per-EUD queues `<uid>`, `<callsign>` | declared by the gateway at identification (and by the Marti API, cot_parser's disconnect path — not exercised, and plugins as upstream); never deleted by the gateway; expired by the broker policy (definitions file) | — |
-| bindings of a live device's queues | **the gateway** (placed, re-asserted, removed only what it placed); the Marti API also binds `missions.<name>` on subscribe/unsubscribe (operator action, upstream) — two writers, stated: the gateway re-asserts the DB truth within 30 s, so the API's add is kept and the API's remove is honoured because the gateway's set is computed from the DB at each re-assert | cot_parser (publishes to them) |
-| `euds.last_status`, `last_event_time` of a device with a live session | **the gateway** (M8); cot_parser's `t-x-d-d` branch writes the same value (idempotent) | web UI (reads) |
-| other `euds` columns (metadata, callsign, user_id, team) | the gateway at identification (defensive write, as the overlay); the web UI/API (operator) | cot_parser |
-| `cot` rows | cot_parser (insert); nobody deletes (P3 RESTRICT) | web/API, the AAR |
-| FK `cot_eud` definition | `init_once` migration (P3) | payload-conform (DRIFT check) |
+| `eud-gateway.pyz` (golden, p6 `apps/opentakserver/`) | the build (golden refresh at boot; D7-7 DRIFT on edit) | payload-run (`MOUNT eud-gateway.pyz:/app/eud-gateway.pyz:ro`; its sha is a `fact`) |
+| container `ots_eud_gateway` | payload-run (start), payload-stop (stop, tier 1), the guardian (restart of EXITED) | — |
+| listeners, accepted sockets, pending count | the gateway process | kernel |
+| session table, caches, send queues, admission lock, per-device channels/consumers | the gateway process (single loop) | snapshot (ro) |
+| the gateway's AMQP connection | the gateway | broker |
+| exchanges (7) | two idempotent declarers with identical args: opentakserver (`app.py`) and the gateway (M6) | cot_parser, plugins |
+| `cot_parser` exchange/queue/binding | two idempotent declarers: cot_parser and the gateway | broker |
+| per-EUD queues | declared by the gateway at identification/reconnect (and by the Marti API / plugins as upstream); never deleted by the gateway; expired by the broker policy | — |
+| bindings of a live device's queues | **the gateway** reconciles what it placed; the Marti API also binds/unbinds `missions.<name>` and `<group>.OUT` on operator actions (second writer, stated): the gateway converges to the DB state within 30 s | cot_parser publishes |
+| `euds.last_status`, `last_event_time` | **the gateway** (M8; sweep at start, re-assert on the cycle); cot_parser's `t-x-d-d` branch writes the same value for the gateway's own event (idempotent; a late one is undone by the re-assert) | web UI |
+| other `euds` columns | the gateway at identification (defensive, only for an admitted, owned uid); the web UI/API | cot_parser |
+| `cot`, `points`, `geochat` rows | cot_parser (insert); the paused retention jobs (DRIFT if resumed) | web/API, the AAR |
+| FK definitions (3) | the gateway's start migration (M10) | payload-conform (DRIFT) |
+| `config.yml` scheduler entries | the OTS app (volume); operators via the scheduler API | payload-conform (DRIFT when resumed) |
 | broker policy, vhost, user | `rabbitmq-definitions.json` (golden) | broker |
-| `GATEWAY_*` env, allowlist | `profile.yaml` (golden) | the gateway at start |
-| snapshot `/tmp/gateway/sessions.json`, counters | the gateway (atomic rename, every 10 s) | suites, operators (ro) |
-| health endpoint 8090 | the gateway | the guardian (`HEALTH curl -fsS http://localhost:8090/healthz` inside the container) |
+| `GATEWAY_*` env, allowlist, stop tiers | `profile.yaml` (golden) → manifest | the gateway, payload-stop |
+| snapshot `/tmp/gateway/sessions.json`, counters | the gateway (atomic rename, 10 s) | suites, operators (ro) |
+| `/healthz` | the gateway | the start gate (payload-run) |
+| the node clock | the kernel (no RTC; NTP when reachable) | TLS validity (certs 2025-06-23 → 2035-06-21: ✅ today), log timestamps; **not** presence or any row comparison |
+| TLS cert/key/CA/CRL files (`ots-appdata`) | OTS cert-gen / the operator (#54) | the gateway (reloaded on mtime change) |
 
 ## 3. Contracts
 
-- **Uplink to cot_parser:** body, exchange, routing key, TTL property exactly as upstream (§0); `mandatory` + confirms
-  on our side; at-least-once; order kept per session, not across a reconnect; a replayed CoT may be stale when routed
-  (stated). Trust: only the gateway and upstream's own publishers write to the exchange; the broker is trusted.
-- **Downlink from the broker:** JSON bodies as upstream (`{"uid","cot"}` or the CoT string: ⚠️ both forms exist
-  upstream, `route_cot` publishes `str(event)` — the gateway sends the `cot` field or the raw body unchanged, as the
-  overlay does). Malformed → dropped and counted.
-- **`t-x-d-d` presence event (M8):** a CoT event `type="t-x-d-d"` with `<link uid="<uid>" type="<device type>"
-  relation="p-p"/>`, `uid="<uid>"`; written by the gateway; read by cot_parser (route + row) and by the phones (contact
-  removed). Valid whenever the device's last connection ended. Trust: only the gateway (and cot_parser upstream) emit
-  it; a client's own `t-x-d-d` goes through unchanged (upstream behaviour).
-- **Client session:** a connection ends on FIN/RST, `TCP_USER_TIMEOUT`, the M2 deadline, M7's drain timeout, the M3
-  supersede deadline, a refused admission, or container stop. A device's session ends when its last connection ends.
-  A broker-side loss ends nothing on the client side (M6).
-- **Allowlist `GATEWAY_8088_ALLOWLIST`:** comma-separated uids, written by the profile; empty = 8088 not bound;
-  a uid failing M4's name guard or equal to an 8089 user's device uid → the gateway exits 2 at start (fail-closed,
-  visible as a guardian crash + DRIFT). Trust boundary: root-owned golden file.
-- **`/tmp/gateway/sessions.json`:** `{"ts", "devices": [{"key","uid","user","port","connections":[{"addr","since",
-  "superseded_at","last_rx"}],"cache":n,"sendq":n,"bindings":[…]}], "counters": {…}}`; valid when `ts` is < 30 s
-  old; stale/missing/malformed → the suites FAIL (never report clean, per the validation rules). Written only by the
-  gateway (container tmpfs, uid 1000).
-- **Log lines other tools read** (file `/app/ots/logs/eud_gateway.log`, daily rotation by count as upstream, plus
-  stdout): `identified <uid> user=<u> port=<p> from <ip>`, `superseded <uid>: new connection from <ip>`, `ended <uid>
-  (<reason>)`, `refusing device <uid> from <ip>: <reason>`, `cache full for <uid>: dropped=N`, `sendq full for
-  <uid>: dropped=N`, `AMQP lost: reconnecting in <s>`, `AMQP open`, `rebind <uid> +N -M`, `presence <uid>
-  Disconnected`, `allowlist refused <uid> from <ip>`. `ots_logc` counts `Failed to parse` (kept) and `dropped=` lines.
-- **Health 8090:** 200 only with both configured listeners bound and the AMQP connection open; 503 otherwise;
-  unreachable = the guardian's existing crash path.
-- **FK `cot_eud`:** RESTRICT after `init_once`; payload-conform reads it at every boot: not RESTRICT → DRIFT (the
-  stack keeps running: the gateway does not depend on it; the record's safety does, so it is visible, not fatal).
-- **Manifest (generated):** container `ots_eud_gateway`, IP 172.20.0.10, `HARDEN ots_eud_gateway.hardening.env`
-  (1024m, pids 64, cap-drop ALL, ro rootfs, tmpfs /tmp 64m, user 1000:1024), `VOLUME ots-appdata:/app/ots`, `MOUNT
-  gateway/:/app/gateway:ro` (no MOUNTSHA: it overlays no upstream file; the image pin stays the digest), `ENTRYPOINT
-  python3 /app/gateway/main.py`, `HEALTH`, `STOPTIER 1`. fw4 publish: 8088 and 8089 both to 172.20.0.10. Downgrade
-  to an image whose payload-run lacks nothing new: no new manifest key is introduced (checked: every key above
-  exists in `payload-run` today — MOUNT/HEALTH/STOPTIER/ENTRYPOINT/HARDEN; ✅ by the current manifest).
+- **Uplink to cot_parser:** body/exchange/routing key/TTL exactly as §0; `mandatory` + confirms; at-least-once; order
+  per session, not across a reconnect; stale replays stated. Trust: the broker and its publishers (guest, #47).
+- **Presence `t-x-d-d` (M8):** the event and body exactly as stated; writer: the gateway; readers: cot_parser (row +
+  route + a `cot` row), the phones. A client's own `t-x-d-d` passes through unchanged (upstream).
+- **Downlink bodies:** `{"uid","cot"}` or a raw CoT string (both exist upstream); the `cot` field or the raw body is
+  written unchanged; malformed → dropped and counted.
+- **Client session:** a connection ends on FIN/RST, `TCP_USER_TIMEOUT`, the M2 deadline/caps, the supersede
+  deadline, an oversize message, or stop. A device's session ends when its last connection ends. A broker-side loss
+  ends nothing on the client side.
+- **Allowlist:** comma-separated uids; empty = 8088 not bound; a name failing M4 → exit 2 at start; an 8089 user's
+  device uid → refused at identification (8089 wins). Trust: golden, root-owned.
+- **Snapshot:** `{"uptime_s", "written_monotonic", "devices": [{"key","uid","user","port","connections":[{"addr",
+  "age_s","superseded_age_s","last_rx_age_s"}],"cache":n,"sendq":n,"bindings":[…]}], "counters": {…}}` — ages, not
+  timestamps (the harness clock is ~6.5 h off the node's). Valid when `written_monotonic` is within 30 s of the
+  container's `/proc/uptime`; stale/missing/malformed → the suites FAIL.
+- **Log lines read by tools** (`/app/ots/logs/eud_gateway.log` in `ots_eud_gateway`; readers: `ots_logc`, `rlog`,
+  the suites): `identified <uid> user=<u> port=<p> from <ip>`, `superseded <uid>: new connection from <ip>`, `ended
+  <uid> (<reason>)`, `refusing device <uid> from <ip>: <reason>`, `refusing cert CN=<cn>: <reason>`, `refusing
+  pending from <ip>: <reason>`, `oversize message from …`, `cache full for <uid>: dropped=N`, `sendq full for <uid>:
+  dropped=N`, `AMQP lost: reconnecting in <s>`, `AMQP open`, `rebind <uid> +N -M`, `presence <uid> Disconnected`,
+  `presence sweep: N rows`, `fk <name>: RESTRICT (migrated|already)`, `allowlist refused <uid> from <ip>`, `stop: N
+  devices, M bodies confirmed, K unconfirmed`, `exit 3: <reason>`. `Failed to parse` kept for `ots_logc`.
+- **Health 8090:** as M17; the start gate only.
+- **FK + scheduler DRIFT:** payload-conform reports; nothing stops.
+- **Manifest (generated, no new key):** `CONTAINER ots_eud_gateway / IMAGE batman/ots:… / IP 172.20.0.10 / HARDEN
+  ots_eud_gateway.hardening.env / ENV … / VOLUME ots-appdata:/app/ots / MOUNT eud-gateway.pyz:/app/eud-gateway.pyz:ro
+  / ENTRYPOINT python3 /app/eud-gateway.pyz / HEALTH curl -fsS http://localhost:8090/healthz / STOPTIER 1`;
+  `ots_cot_parser` and `opentakserver` `STOPTIER 2`. fw4: 8088 and 8089 → 172.20.0.10. Every key exists in the
+  shipped payload-run (`:340-384`) — a downgrade of payload-run is not an issue; a downgrade of the manifest is the
+  old stack (§4).
 
 ## 4. Lifecycle matrix
 
 | path | today (overlay) | after | test |
 |---|---|---|---|
-| first boot / firstload | handlers start after broker; C window (R5 fixed) | `init_once` migration (P3) then the stack; the gateway declares `cot_parser` on its first channel open; allowlist empty → 8088 not bound | cleanstop-274 step 6, queue-gone-289, fk-restrict-289 |
-| boot / reboot / power loss | as above; children SIGKILLed, caches lost | the gateway starts health-gated; caches lost at SIGKILL (stated); phones reconnect; presence rows of devices live at the loss are set `Disconnected` at the next start (startup sweep: every row `Connected` with `last_event_time` older than the boot is set Disconnected — ⚠️ new, the only writer is the gateway at start) | unclean-boot-274, presence-289 |
-| clean stop / OTA (stage 1) | handlers SIGINT; caches lost | M13: presence out, caches drained ≤ 60 s, sockets closed | cleanstop-274 (asserts the drain log line) |
-| OTA stage 2 (new image) | overlay refused if MOUNTSHA differs | no overlay: the gateway runs on the image's Python; an image whose OTS models differ breaks at import → exit 2, guardian crash, DRIFT (fail-closed) | first-ota + payload-conform |
-| autocommit trial / revert | unchanged | unchanged (no state outside the containers and the tmpfs) | fi-s1 |
-| downgrade to an image without the gateway | — | the old manifest names the two handler containers and the overlay; payload-run rebuilds them; the FK stays RESTRICT (harmless for the old stack: cot_parser never deletes); the web UI's EUD delete fails on devices with history (stated) | downgrade (manual, stated) |
-| gateway crash / crash loop | per-session child death ended one session | every session ends; phones reconnect; the guardian restarts with backoff; presence sweep at start | crash-274 (ported) |
-| broker-side connection close / broker restart | caches delivered then the sessions END (R13) | sessions kept; the gateway reconnects, re-declares, re-places every live device's consumer and bindings, flushes caches; transient `cot_parser` backlog lost (residual, as today) | amqp-close-289, queue-gone-289 |
-| broker memory alarm | cache, no timeout | same | alarm-289 (negative control by code: ⚠️ as before) |
+| first boot / firstload | handlers after the broker | the gateway starts after db/broker/opentakserver gates; migration (M10) → sweep (M8) → declare exchanges+queue (M6) → bind listeners → healthz 200 | cleanstop-274 step 6, fk-restrict-289, fresh-broker-289 |
+| boot / reboot / power loss | children SIGKILLed; caches lost | caches lost (stated); presence sweep at start (clock-free); phones reconnect | unclean-boot-274, presence-289 (sweep leg) |
+| clean stop / OTA stage 1 | tier 1 `-t 5`, SIGINT; caches lost | M13 ≤ 3 s: rows, `t-x-d-d`, flush with confirms; cot_parser stopped in tier 2 after; residual stated | cleanstop-274 (asserts stored == sent for a stream running into the stop, minus the stated residual; negative control: today's parallel tier) |
+| OTA stage 2 (new image) | MOUNTSHA refusal | the pyz imports the image's OTS models; a changed image breaks at import → exit 2, guardian crash, DRIFT (fail-closed); offline test `import` against the pinned image digest in CI | first-ota + payload-conform |
+| autocommit trial / revert | unchanged | unchanged | fi-s1 |
+| downgrade to an image without the gateway | — | the old manifest rebuilds the two handler containers + overlay; RESTRICT FKs stay (cot_parser never deletes; the paused jobs would fail on EUD deletes — stated); stop tiers back to the old manifest's | downgrade (manual, stated) |
+| gateway crash / crash loop | one session's child | every session ends; guardian restarts with backoff; sweep at start | crash-274 (ported) |
+| gateway exit 3 (AMQP down > 300 s, loop wedged) | n/a | guardian restart; sessions end; phones reconnect | amqp-down-289 (tier B: broker stopped 6 min) |
+| broker-side close | sessions END (R13) | sessions kept; reconnect, re-declare, re-place consumers/bindings, flush caches | amqp-close-289 |
+| broker restart / fresh broker volume | C window | per-EUD queues gone → re-declared per device on reconnect; exchanges re-declared by the gateway (no 404 even before opentakserver) | broker-restart-289 (tier B), fresh-broker-289 |
+| broker memory alarm | cache | same | alarm-289 (by code ⚠️) |
 | cot_parser restart | queue persists | same | queue-gone-289 |
-| ots-db down at identification / during | identification retried; minimal row retried 30 s; cot_parser nacks (upstream) | same; the gateway caches the device's CoT until its row exists (bounded) | exception-289 (fault injection by a DB stop? ⚠️ no node test with the DB stopped today — proposed: tier B `dbdown-289`, stops `ots-db` 20 s) |
-| client network loss (no FIN) | ~2 min reap (R6); same device back → R17 supersede | M11 reap; back on any address (8089) → M3 supersede; one downlink by construction | zombie-289, same-uid-end-289 |
-| RTO walks out and back (16 zombies + 16 reconnects) | 1280m/1536m, serialized admission | 16 supersedes (no new devices); memory flat (⚠️ to measure) | rto-289, rto-ssl-289 |
-| RTO flaps twice within 2 min | third generation may be refused by R7 | 16 devices, ≤ 3 connections each; no refusal (devices unchanged) | rto-ssl-289 second flap |
-| two app instances, one uid, one device | newest gets the downlink | same (the second is a supersede) | same-uid-end-289 |
-| two devices, one callsign | both subscribed by uid; callsign queue shared | same; callsign queue only for the first (M4) | callsign-share-289 |
-| a device goes stale → presence | 8088 stays Connected for ever (A6-5); 8089 via cot_parser | gateway sets Disconnected + `t-x-d-d` on both ports | presence-289 (negative control: today's stack keeps 8088 Connected) |
-| a late disconnect vs a live session's missions | A7-11: missions unbound until the next reconnect | no disconnect message exists; bindings re-asserted ≤ 30 s | rebind-289 (negative control: today's stack loses the binding) |
-| deleting an EUD with history (web UI) | CASCADE: the device's CoT history gone | RESTRICT: the delete fails, nothing lost | fk-restrict-289 (negative control: today a delete removes the rows — run on a throwaway uid only) |
-| 8088 client not on the allowlist | admitted (8088 open) | listener off by default; with an allowlist, refused before allocation | allowlist-289 |
-| hostile 8089 client (valid cert): floods, huge messages, XML bombs, pings | R12 bounds | M1 1 MiB, M2 deadline, M7 drain timeout, bs4/lxml with `resolve_entities` off (⚠️ confirm the parser used: lxml-xml; entity expansion is lxml's default-off for XML? — probe) | admission-289 (a–h ported) |
-| mesh outage > 2 min | reap; what the phone queued is lost unless re-sent (decision #264-2) | same | zombie-289 |
-| N devices > MAX_DEVICES / memory reserve | R7/R16 | refused at identification, logged; listener never dies | cap-289 (negative control: a cap of 4 with 6 devices) |
+| opentakserver restart | — | no dependency (own app context); the web-map publish during its restart is a fanout to nobody (dropped, stated) | by code |
+| ots-db down at start / during | — / retried | start: migration retried, listeners unbound meanwhile (fail-closed); during: identification retried, CoT cached ≤ 2 MiB/session, presence writes retried on the cycle | dbdown-289 (tier B) |
+| dockerd restart | `--restart no`: the guardian's start path restarts the tenant | same (no change) | test-payload-guardian |
+| br-ots / fw4 reload with sessions up | sockets survive a fw4 reload (conntrack kept, verified in #164/#165 design B) | same | by code |
+| clock jump (NTP after boot) | — | nothing compares row times to the clock; TLS validity only | by code |
+| cert rotation (#54) | restart needed | context reloaded on mtime change; existing sessions keep theirs | cert-reload-289 |
+| `ots-appdata` volume full / read-only | log writes fail | logging to stdout continues; TLS files still readable; stated | by code |
+| client network loss (no FIN) | ~2 min reap; same device → R17 | M11 reap; back on any address (8089) → M3 supersede | zombie-289, same-uid-end-289 |
+| RTO out and back (16 + 16) | serialized admission, 1280/1536m | 16 supersedes, no new devices; memory flat (⚠️ measured) | rto-289, rto-ssl-289 |
+| RTO flaps twice within 2 min | third generation may be refused | ≤ 3 connections per device by cap; nothing refused | rto-ssl-289 second flap |
+| a phone flapping every second | unbounded | `MAX_CONNS_PER_DEVICE` 3: the oldest draining closed | same-uid-end-289 flap leg |
+| one cert holder with many uids | — | `MAX_DEVICES_PER_USER` 4 | cap-289 per-user leg |
+| certless flood (pre-TLS sockets) | 8 per address | `MAX_PENDING` 128 + memory reserve at accept; the process survives | admission-289 (i) |
+| a 1 MiB message | parsed (5.8 s stall) | closed at 64 KiB | admission-289 (j) |
+| slow reader at the edge of coverage | TCP_USER_TIMEOUT | back-pressure into the bounded queue; not closed | slowreader-289 |
+| two app instances, one uid | newest gets the downlink | same | same-uid-end-289 |
+| two devices, one callsign | both by uid | same | callsign-share-289 |
+| device goes stale → presence | 8088 ghost (A6-5) | Disconnected + `t-x-d-d` on both ports; reconnect while cot_parser is busy → `Connected` within 30 s | presence-289 |
+| admin disables a group / unsubscribes a mission of a live device | — | unbound within 30 s | rebind-289 |
+| a late `t-x-d-d` vs a live session's missions | A7-11 | no disconnect message; reconcile ≤ 30 s | rebind-289 |
+| retention job resumed | deletes EUD + CoT | the EUD delete fails (RESTRICT), nothing deleted; DRIFT reported | fk-restrict-289 |
+| cert of a deactivated user / revoked in `ca.crl` | admitted | refused before allocation | owner-8089-289 (revocation leg) |
+| 8088 client, no allowlist | admitted | no listener | allowlist-289 |
+| mesh outage > 2 min | reap; loss (decision #264-2) | same | zombie-289 |
+| N devices > caps / memory | R7 | refused, logged; listener alive | cap-289 |
 | 48 h soak | — | #287 on the gateway build | soak-cot-289 + #287 |
-| Pi 3 (bcm2710) | OTS package bcm2711 only | unchanged | ab-card |
+| Pi 3 (bcm2710) | bcm2711 only | unchanged | ab-card |
 
 ## 5. Assumptions with evidence
 
 | assumption | evidence |
 |---|---|
-| pika 1.3.2 `AsyncioConnection` is in the image | probed 2026-10-14 on 04: `pika.adapters.asyncio_connection.AsyncioConnection` imports |
-| cot_parser body/exchange/TTL contract | `cot_parser.py:1214-1290`, `EudHandler.py:190-210, 455-484` (04, 1.7.13) |
-| cot_parser's `t-x-d-d` branch sets `Disconnected` and emits to the web, both ports | `cot_parser.py:1253-1275` (uid from the body or the event) |
-| `send_disconnect_cot` raises on 8088 and binds queues on 8089 | `cot_parser.py:940-1033`; #264 register A6-5, R15 |
-| identical re-declare of `cot_parser` queue is accepted; mandatory return-then-ack | probed on the live broker 2026-10-11 (#264 comment 6103334725) |
-| FK today is CASCADE | psql 04 2026-10-14: `cot_eud FOREIGN KEY (sender_uid) REFERENCES euds(uid) ON DELETE CASCADE` |
-| TLS context: CERT_REQUIRED, CA path, server cert path | `EudServerSSL.py:19-38` |
-| user = cert CN via `find_user` | `EudHandlerSSL.py` setup |
-| `euds.callsign` UNIQUE, `phone_number` bigint | `\d euds` 04; #264 R10 |
-| overlay facts: per-session 23 MiB, 16 reconnects, R6/R17 behaviour | #264 suites on rc wsl.20/21 (register) |
-| payload-run supports MOUNT/HEALTH/STOPTIER/ENTRYPOINT/HARDEN | current `ots.manifest` on 04 uses them |
-| mission subscriptions live in `mission_roles` (API subscribe adds a row + binds; unsubscribe deletes + unbinds) | `mission_marti_api.py:1345-1555` on 04 (probed 2026-10-14) |
-| cot_parser's 8089 disconnect unbinds the uid from EVERY mission (`missions.<name>` for all rows of `missions`) | `cot_parser.py:1012-1023` on 04 — the A7-11 mechanism; not exercised by the gateway (no disconnect message) |
-| bs4 `"xml"` (bs4 4.14.2 / lxml 6.0.2) does not expand a DOCTYPE entity bomb: the event is not found (parse recovers to nothing), 5 ms | probed in `ots_cot_parser` 2026-10-14 (3-level entity, no expansion, `event None`) → such a message is "malformed", dropped by M1 |
-| no CRL is loaded by the listeners | `grep -ri crl eud_handler/` on 04: empty |
-| ATAK/iTAK connect/reconnect behaviour (A1, A4, A7, A8, D4) | ⚠️ not captured (deferred field test); every mechanism is stated so that any outcome is bounded (deadline, supersede, reap) |
-| asyncio per-session memory ≤ 2 MiB | ⚠️ to measure in rc 1 (`eud-mem-289`); the cap is revised from it |
+| pika 1.3.2 `AsyncioConnection`, `confirm_delivery`, return/blocked callbacks, `basic_qos`; SQLAlchemy 2.0.44; bs4 4.14.2; lxml 6.0.2; curl; cgroup v2 readable as uid 1000 | probed in the image 2026-10-14 (author, reviewers A/B; `asyncio_connection.py:143,150`, `channel.py:555,170`, `connection.py:1163`) |
+| cot_parser body/exchange/TTL; `t-x-d-d` branch; nack on KeyError; FK nack | `cot_parser.py:101-130, 940-1033, 1142-1290` on 04 |
+| exchanges declared only by opentakserver, their types/durability | `app.py:163-172` (reviewer B); definitions file has no `exchanges` |
+| `send_disconnect_cot` raises on 8088, binds groups and unbinds all missions on 8089 | `cot_parser.py:945-1023` |
+| `MOUNT` must be a regular file in the tenant dir; keys; HEALTH at start only; `STOPTIER` 1..98 | `payload-run:217-253, 340-384`; `profile-to-manifest.py:181-186` |
+| stop: tiers ascending, each parallel `-t 5`, final `-t 10`, K08 15 s; StopSignal SIGINT | `payload-stop.sh:4-11, 62-92`; `docker inspect` (reviewers) |
+| no `init_once` mechanism | `grep init_once payload-run profile-to-manifest.py` → none |
+| no EUD delete route; retention jobs, their SQL, paused state, resumable | `api.py:497`, `scheduled_jobs.py:169-193, 275-298, 375-395`, `config.yml:30-47`, `scheduler_api.py:41-58` (reviewers) |
+| 14 FKs to `euds`, 13 CASCADE; ORM cascade on `EUD.cots` | psql `\d euds`; `models/EUD.py:35-49` |
+| CN → `find_user` without None/active check; `ca.crl` static | `EudHandlerSSL.py:14-30`; `certificate_authority.py:92-111`; `ls -l ca.crl` |
+| mission subscriptions in `mission_roles`; unsubscribe deletes then unbinds; group API unbinds before commit | `mission_marti_api.py:1345-1360, 1497-1558`; `group_marti_api.py:323-342` |
+| a 1 MiB event: 5.84 s / 88 MiB in bs4 | reviewer B, probed in `ots_cot_parser` |
+| lxml does not expand a DOCTYPE entity bomb (no event found) | author, probed |
+| node clock 2025-07 vs rows 2026-10 | `date`, `max(last_event_time)` on 04 |
+| `ulimit -n` 1048576, `tcp_wmem` max 4 MiB charged to the cgroup | reviewer B; #264 R16 |
+| identical re-declare accepted; mandatory return-then-ack | #264 probe 2026-10-11 (not repeated) |
+| `points.device_uid`/`geochat.sender_uid` column names | ⚠️ `\d` at implementation (the migration is written from the catalog, not from memory) |
+| asyncio per-session / per-pending memory | ⚠️ rc 1 (`eud-mem-289`), the cap revised from it |
+| `set_write_buffer_limits` back-pressure on a 100 kbit/s link | ⚠️ `slowreader-289` is the measurement |
+| ATAK/iTAK behaviour (A1, A4, A7, A8, D4) | ⚠️ not captured; bounded either way |
 
 ## 6. Security
 
-- **Assets:** CoT confidentiality (8089 users' DMs/missions), integrity of the record (every CoT, no planted tracks),
-  availability of the TAK server to the team; the node itself is unchanged (same ports, zone, DNAT target IP).
+- **Assets:** confidentiality of 8089 users' DMs/missions/groups; integrity and completeness of the record;
+  availability of the TAK server to the team. The node is unchanged (ports, zone, DNAT target).
 - **Actors:**
-  - *Remote mesh client without a cert:* 8088 is not bound by default (decision 2): nothing to reach. With an
-    allowlist: a uid not on it is closed before any allocation; an allowlisted uid can be spoofed by anyone on the
-    mesh (plain TCP) — stated, the relay path's own problem (decision 5), bounded by M1/M2/M7 per connection and by
-    MAX_DEVICES in total.
-  - *Remote client with a valid cert (a compromised or hostile member's phone):* can hold its own device's session,
-    flood (bounded per connection by M1 1 MiB, M7 queues, M6 cache; globally by MAX_DEVICES and the memory
-    reserve); cannot take another user's device uid (M4), cannot read another user's queues (consumer per device of
-    its own user only), cannot delete history (P3), cannot plant a `disconnected` for others (no such message),
-    can still send CoT under a claimed uid of ITS OWN user's devices (upstream, stated). XML bombs: ⚠️ parser probe.
-  - *Local unprivileged process on the node:* no interface (container tmpfs, root-owned golden files, br-ots only).
-  - *Compromised tenant container (another app):* reaches 172.20.0.10:8088/8089/8090 only if on br-ots (intra-zone
-    accept); 8090 is health only (GET, no state change); the broker credential is the same guest as today (#47).
-  - *Physical capture:* unchanged (rootfs not encrypted, #47).
-  - *Supply chain:* the gateway is our code in the pinned image; no upstream file is overlaid; the image digest pin
-    is the existing control.
-  - *Our own mistakes:* fail-closed config (exit 2), DRIFT on FK/golden edits, one owner per resource (§2), suites
-    with negative controls on the overlay build.
-- **Attack-surface delta:** removed: two listeners' per-connection fork, the admission file lock, the R17 signal
-  registry, the fault-injection file, MOUNTSHA path; added: `/healthz` on br-ots (read-only), `GATEWAY_*` env
-  (golden), the allowlist (golden), `/tmp/gateway/sessions.json` (gateway-only writer, uid 1000 tmpfs).
-- **Privilege:** uid 1000:1024, cap-drop ALL, no-new-privileges, ro rootfs, ports > 1024; the DB migration runs as
-  the `ots` DB role (owner of the table) via `init_once`.
-- **Secrets:** unchanged (DB URI, broker guest, TLS key on the `ots-appdata` volume, 0700/1000). Never logged.
-- **Failure mode:** fail-secure: a bad config stops the gateway (no TAK server rather than an open one); an
-  unreadable cgroup drops only the memory cap (logged) because refusing everyone would be a self-inflicted outage
-  (as R7); a missing allowlist = 8088 closed.
-- **Negative tests:** allowlist-289 (unlisted uid refused; listener absent when empty); owner-8089-289 (another
-  user's uid refused); admission-289 (floods hold up no phone); fk-restrict-289 (delete refused); a non-root `docker
-  exec` cannot write the golden or the snapshot of another container (by confinement, existing suites).
+  - *Remote mesh client without a cert:* 8088 not bound (decision 2). Pre-TLS sockets on 8089: `MAX_PENDING` 128,
+    10 s handshake, memory reserve at accept → the process survives a flood (admission-289 i). With an allowlist, an
+    allowlisted uid can be spoofed from the mesh (plain TCP) — the relay path's problem (decision 5), bounded per
+    connection and in total.
+  - *Hostile or captured member's phone (valid cert):* bounded by `MAX_DEVICES_PER_USER` 4, `MAX_CONNS_PER_DEVICE`
+    3, 64 KiB messages, per-session cache/queue, the memory reserve; cannot take another user's device uid (M4),
+    cannot consume another user's queues (consumer per device of its own user), cannot delete history (M10), cannot
+    forge presence for others (no disconnect message; a client-sent `t-x-d-d` for another uid passes through as
+    upstream — stated, B class), can send CoT under a uid of ITS OWN user (upstream, stated). **Revocation:** the
+    operator deactivates the user (M2.2) or adds the cert to `ca.crl` (M14); the next connection is refused
+    (owner-8089-289 revocation leg); the live session ends at its next reconnect only (stated: no active kill on
+    deactivation — leftover if wanted).
+  - *Local unprivileged process:* no interface (container tmpfs, root-owned golden, br-ots).
+  - *Compromised tenant container:* reaches 172.20.0.10 ports only on br-ots; 8090 is GET-only, ≤ 1 KiB, 2 s;
+    the broker credential is guest as today (#47).
+  - *Physical capture of the node:* unchanged (#47). *Of a phone:* see revocation.
+  - *Supply chain:* our zipapp in the pinned image; no upstream file overlaid; CI imports the pyz against the pinned
+    digest.
+  - *Our own mistakes:* fail-closed config; DRIFT on FK/scheduler/golden; one owner per resource; negative controls
+    on the overlay build; the design freeze.
+- **Attack-surface delta:** removed: fork per connection, the admission file lock, the R17 registry/signals, the
+  fault-injection file, MOUNTSHA; added: `/healthz` (GET, bounded), `GATEWAY_*` env, the allowlist, the snapshot
+  (gateway-only writer), the start migration (as `ots`, idempotent DDL).
+- **Privilege:** uid 1000:1024, cap-drop ALL, no-new-privileges, ro rootfs, ports > 1024; DDL as the DB owner role
+  the app already uses.
+- **Secrets:** unchanged; never logged.
+- **Failure mode:** fail-secure: bad config → exit 2; DB away at start → listeners stay unbound; unreadable cgroup →
+  memory cap only is dropped (logged); allowlist empty → 8088 closed.
 
 ## 7. Tests
 
-Every `-264` suite is ported as `-289` against the gateway, each with its negative control run on the shipped
-overlay build (1.5.10-wsl.1) where the behaviour differs, or "by code" stated; new suites: presence-289 (P1),
-rebind-289 (P2), fk-restrict-289 (P3), allowlist-289 (P4), cap-289 (device cap), dbdown-289 (tier B), eud-mem-289
-(per-session memory, the figure that sets the cap). Offline: the gateway's own pytest (framing, admission,
-supersede with real sockets on loopback, publisher with a fake channel incl. return/nack/loss, downlink bounds,
-presence). Harness changes go in their own PR before the product PR (#290 rule); every rc gets at least one full
-`daily-validation` run; the shipping candidate is the last harness commit + the last rc.
+Harness changes land first in their own PR (#290); every new/changed suite carries "old build FAIL + rc PASS" in its
+commit; every rc gets ≥ 1 full `daily-validation`; the shipping candidate = last harness commit + last rc. All
+suites drive **8089** with the harness's 1-day test cert (`cert264`-style issuance of a non-admin test user), except
+`allowlist-289`, which sets a one-run allowlist through the profile override path and is the only 8088 user.
 
-| suite | what | negative control |
+| suite | what | negative control (shipped overlay 1.5.10-wsl.1 unless noted) |
 |---|---|---|
-| ots-cot-e2e-289 (+ssl) | sent == stored over a coalesced stream | R1 overlay = PASS; upstream 0/20 (by record) |
-| admission-289 | a–h: silent, pre-TLS, ping-only, `<auth>` flood, contact-less stream hold up no phone | overlay: same PASS; the test proves no regression |
-| zombie-289, same-uid-end-289, callsign-share-289, owner-8089-289, name-guard-289, exception-289, queue-gone-289, amqp-close-289, alarm-289, queue-policy-289, cap16-289, rto-289, rto-ssl-289, soak-cot-289 | as #264, asserting the gateway's log lines and snapshot instead of the overlay's | overlay build where the mechanism differs (amqp-close: the overlay ENDS the session → FAIL on the new assertion "session kept") |
-| presence-289 | an 8089 device (and an allowlisted 8088 uid) goes stale: row Disconnected within 150 s, teammates receive `t-x-d-d` | overlay: 8088 row stays Connected (A6-5) → FAIL |
-| rebind-289 | a late `t-x-d-d`/API unbind of a live device's `missions.<name>`: re-bound within 30 s, downlink 10/10 | overlay: 0/10 until reconnect (A7-11) → FAIL |
-| fk-restrict-289 | delete an EUD with 3 CoT via the API: refused, rows intact; payload-conform reports the FK | overlay build: rows gone → FAIL |
-| allowlist-289 | allowlist empty: 8088 connection refused (no listener); allowlist with uid X: X admitted, Y closed before any row/queue | overlay: Y admitted → FAIL |
-| cap-289 | `GATEWAY_MAX_DEVICES=4` for one run (profile env override via the reconciler's pause flag as rto768 does): the 5th device refused, logged, the listener alive | overlay: n/a (by code) |
-| eud-mem-289 | 16 idle devices: ≤ X MiB each (X from rc 1; assert ≤ 4 MiB provisional), back to baseline | overlay: 23 MiB → FAIL at 4 |
-| dbdown-289 (tier B) | stop `ots-db` 20 s while 4 devices stream: all CoT stored after it is back | overlay: FK-dropped → FAIL |
-| r8-hold-264 | retired with MOUNTSHA (payload-run keeps the mechanism for other tenants; its test stays in test-payload-run) | — |
+| ots-cot-e2e-289 | sent == stored over a coalesced stream (8089) | overlay PASS (regression guard; upstream 0/20 by record) |
+| admission-289 | a–h as #264 on 8089; (i) 1000 pre-TLS sockets from 30 addresses: no phone held up, process alive; (j) 10 × 1 MiB from one client: closed, another client's ping RTT < 1 s | (i) overlay: by code (address rule); (j) overlay: 5.8 s stall → FAIL |
+| zombie-289, same-uid-end-289 (+ flap leg: 10 connects/10 s → ≤ 3 sockets, survivors' reports stored), callsign-share-289, name-guard-289, exception-289, queue-gone-289, amqp-close-289 (session KEPT), alarm-289, queue-policy-289, cap16-289, rto-289, rto-ssl-289, soak-cot-289 | as #264, asserting the gateway's log/snapshot | overlay where the mechanism differs (amqp-close: overlay ENDS the session → FAIL; flap leg: overlay unbounded → FAIL) |
+| owner-8089-289 | another user's uid: no row write, no subscription; revocation leg: a deactivated user's cert and a CRL-listed cert refused before any log line of identification | overlay: admitted → FAIL |
+| presence-289 | device stale → row Disconnected ≤ 150 s and a group peer receives `t-x-d-d`; reconnect while cot_parser works a 600-CoT backlog → row `Connected` ≤ 60 s; sweep leg: gateway restart with 4 Connected rows and no clients → 4 Disconnected before the listener answers | overlay: 8088 ghost; race leg: overlay row stays Disconnected → FAIL |
+| rebind-289 | (a) late `t-x-d-d`/API unbind of a live device's `missions.<name>` → re-bound ≤ 30 s, 10/10; (b) group disabled while live → 0/10 within 30 s | overlay: (a) 0/10 until reconnect; (b) keeps receiving → FAIL |
+| fk-restrict-289 | the three FKs RESTRICT after start; `delete_old_data` resumed for one run with a 1 s cutoff on a throwaway uid → fails, rows intact, DRIFT reported, job re-paused by the suite (and by a detached timer) | overlay build: rows gone → FAIL |
+| allowlist-289 | empty: no listener on 8088; `X`: X admitted, Y closed before any row/queue | overlay: Y admitted → FAIL |
+| cap-289 | `MAX_DEVICES=4` for one run: the 5th refused; per-user leg: one cert, 6 uids → 4 admitted | overlay: all admitted (R7 refuses by memory only) → FAIL |
+| eud-mem-289 | 16 idle devices ≤ X MiB each (X from rc 1, provisional 4); D2 leg: 8 of 16 not reading under a 1 MB burst → peak ≤ 70 % of the cap, back to baseline | overlay: 23 MiB idle → FAIL at 4 |
+| slowreader-289 | one phone at 64 kbit/s (tc on the bench node) under a 16-phone burst for 120 s: session kept, drops counted, others unaffected | overlay: by code (no close path) |
+| fresh-broker-289 | the 7 exchanges deleted live (`rabbitmqctl delete_exchange` — ⚠️ confirm the CLI; else tier B with a fresh volume): a phone identifies, 10/10 | overlay: bind 404 → session ends → FAIL |
+| broker-restart-289 (tier B) | `docker restart rabbitmq` with 4 devices: all kept, queues re-declared, 10/10 after | overlay: sessions end → FAIL on "kept" |
+| amqp-down-289 (tier B) | broker stopped 6 min: the gateway exits 3, the guardian restarts it, phones reconnect after | by code |
+| dbdown-289 (tier B) | `ots-db` stopped 20 s while 4 devices stream: all CoT stored after | overlay: FK-dropped → FAIL |
+| cleanstop-274 (extended) | a stream running into `payload-stop`: stored == sent − stated residual; `stop:` line | today's tiers: cot_parser stopped in parallel → FAIL |
+| cert-reload-289 | server cert re-issued: a new connection sees the new cert without restart | overlay: restart needed → FAIL |
+| offline (CI) | framing/oversize, admission caps, supersede with loopback sockets, publisher with a fake channel (return/nack/loss/blocked), downlink bounds and back-pressure, presence event shape against cot_parser's `insert_cot` attribute list, reconcile add/remove, migration idempotency against a postgres container, import against the pinned image digest | the suites FAIL on the previous gateway commit (register) |
+
+Every suite removes the rows/queues it created and FAILs if anything is left; an empty or unreadable snapshot is a
+FAIL.
 
 ## 8. Not in scope / leftovers for the user
 
-- Relay semantics (decision 5), `minimal_row` for forwarded uids, Meshtastic bridge: with the Meshtastic work.
-- #47 per-node broker/DB credentials; #54 enrolment; CRL in the listener.
-- The 1.8 GiB freed in the node budget: left unassigned until #287 measures cot_parser/postgres under load.
-- Upstream reports (A6-5, A4-13): after validation, with the gateway's evidence; outside the project repos (ask).
+- **Hard deployment dependency:** 8089-only needs a field enrolment flow for client certs (#54, or #219/#254 stage
+  1) and the server cert ≤ 398 days for iOS (#170 note). Until then the build is validated with the harness's test
+  certs only.
+- Relay semantics and `minimal_row` for forwarded uids (decision 5, with Meshtastic); #47; retention/archiving; an
+  active kill of a live session on user deactivation (today: at its next reconnect); the other 11 CASCADE FKs.
+- The 1.8 GiB freed in the node budget: unassigned until #287 measures cot_parser/postgres under load.
+- Upstream reports (A6-5, A4-13, `find_user` None): after validation; outside the project repos (ask first).
 
 ## 9. Open questions for the review
 
-1. Is one AMQP connection for the whole gateway acceptable (a broker-side close now affects every device at once,
-   but no session ends) versus one connection per device (the overlay's model, 16 connections)? Proposed: one, with
-   the reconnect bounded by backoff; the consumers are re-placed within seconds.
-2. M9's 30 s re-assert window vs. an operator's unsubscribe through the API: verified — the API deletes the
-   `mission_roles` row before it unbinds (`mission_marti_api.py:1544-1555`), so the gateway's next re-assert computes
-   the set without that mission and the unbind holds. Remaining window: an API subscribe/unsubscribe racing a
-   re-assert is at most one 30 s cycle out of date, then converges.
-3. The startup presence sweep (lifecycle "power loss"): acceptable as the only writer at start?
+1. One AMQP connection for the gateway (a broker-side close touches every device at once, no session ends) vs.
+   one per device: proposed one; the per-device channel isolates channel-level faults.
+2. RESTRICT on `points`/`geochat` as well as `cot` (M10): the record = track + chat; agree or restrict to `cot`?
+3. Stop tiers gateway 1 / cot_parser + opentakserver 2 (two client tiers ≤ 10 s inside K08's 15 s): acceptable?
+
+## 10. Review register (round 1)
+
+| finding | disposition in v2 |
+|---|---|
+| A1-1 / B1-2 `init_once` does not exist | M10: migration by the gateway at every start (NOT VALID + VALIDATE), retried on DB error; §2/§4 updated |
+| A1-2 directory MOUNT refused | single file `eud-gateway.pyz`; manifest §3; no payload-run change |
+| A1-3 / B1-1 / A1-12 stop 5 s, SIGINT, same tier | M13: ≤ 3 s plan, SIGINT+SIGTERM, tiers gateway 1 / cot_parser+opentakserver 2, residual stated, cleanstop-274 asserts the record |
+| A1-4 / B1-5 unbounded pending | M2.1 `MAX_PENDING` 128 + reserve at accept; admission-289 (i) |
+| A1-5 / B1-6 per-device / per-user unbounded | M2.5 caps 3 / 4; flap leg; cap-289 per-user leg |
+| A1-6 / B1-8 drain timeout closes live phones | M7: no timeout, write-buffer limits, `SO_SNDBUF`; slowreader-289 |
+| A1-7 / B1-3 real deleters are jobs; no delete API; ORM cascade; sibling FKs | M10 rewritten; §0 facts; conform checks FK + scheduler; fk-restrict-289 uses the job; leftovers stated |
+| A1-8 / B1-12 clock-based sweep | M8: clock-free sweep of all Connected rows before listeners; node clock in §2; no row/clock comparison anywhere |
+| A1-9 / B1-13 health contract | M17: bind 0.0.0.0, start gate only, exit 3 watchdog; amqp-down-289 |
+| A1-10 / B1-15 re-assert only adds; cost | M9 reconcile add+remove, 30 s + first SA, deltas only; rebind-289 (b) |
+| A1-11 / B1-18 `t-x-d-d` shape | M8: exact upstream event + body; offline test against `insert_cot`'s attribute list |
+| A1-13 log readers | M18 + §3; harness PR first |
+| A1-14 socket buffers, pids | M12 arithmetic, `SO_SNDBUF`, executor pinned, pids 32; eud-mem-289 D2 leg |
+| A1-15 / B1-17 "recorded" ambiguity; allowlist re-check | M4: no row write for a refused uid; re-check at each 8088 identification |
+| A1-16 / B1-9 queues/exchanges after a broker restart or fresh volume | M6 declares all 7 exchanges + per-device queues on reconnect; fresh-broker-289, broker-restart-289 |
+| A1-17 / B1-16 lifecycle rows | §4: dockerd, br-ots, clock jump, opentakserver restart, broker away, volume full, cert rotation, DB late, fresh broker |
+| A1-18 negative controls | §7: cap-289 real control; (i)/(j)/flap stated |
+| B1-4 presence race | M8 re-assert on the cycle; presence-289 race leg |
+| B1-7 1 MiB message | M1 `MAX_EVENT_BYTES` 64 KiB; admission-289 (j) |
+| B1-10 inactive CN / CRL | M2.2 + M14; owner-8089-289 revocation leg; §6 captured phone |
+| B1-11 suites on 8088; enrolment dependency | §7 all on 8089; §8 hard dependency |
+| B1-14 channel topology | M7 channel per device |
+| B1-18 snapshot ts, chatrooms, entrypoint, lock/reserve, allowlist DB at start | §3 ages not timestamps; chatrooms noted (nothing binds); entrypoint = pyz; M2.5 lock holds across checks+insert; M4 DB check at identification |
