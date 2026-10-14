@@ -89,7 +89,14 @@ if A in ("hold", "refused"):
     s.close()
 elif A == "noread":
     s = connect(); s.sendall(ev(U, True))
-    time.sleep(HOLD)
+    ks = float(os.environ.get("KEEPSEND", "0")); t0 = time.time()
+    while time.time() - t0 < HOLD:
+        time.sleep(ks if ks > 0 else HOLD)
+        if ks > 0:
+            try:
+                s.settimeout(1); s.sendall(ping())      # dropped by the black hole: proof that it bites
+            except OSError:
+                pass
     print("NOREAD", U, "done")
     try:
         s.close()
@@ -106,11 +113,18 @@ elif A == "stream":
         print("CONNLOST after", n, e)
     print("SENT", n); s.close()
 elif A == "readcount":
+    # STAY=1: keep reading for the whole HOLD (the connection must outlive the test's other steps);
+    # TXDD=1: count only t-x-d-d events whose <link uid=...> is EXPECT (a presence goodbye, not the phone's own SA)
     s = connect(); s.sendall(ev(U, True))
     import re
+    stay = os.environ.get("STAY") == "1"; txdd = os.environ.get("TXDD") == "1"
     pat = re.compile(rb'uid="(%s[^"]*)"' % re.escape(EXPECT.encode()))
-    buf, closed, dt = read_until(s, HOLD, want=lambda b: len(set(pat.findall(b))) >= N)
-    print("GOT", len(set(pat.findall(buf))), "closed" if closed else "open")
+    def count(b):
+        if not txdd:
+            return len(set(pat.findall(b)))
+        return sum(1 for e in b.split(b"</event>") if b'type="t-x-d-d"' in e and (b'<link relation="p-p" uid="%s"' % EXPECT.encode()) in e)
+    buf, closed, dt = read_until(s, HOLD, want=None if stay else (lambda b: count(b) >= N))
+    print("GOT", count(buf), "closed" if closed else "open")
     s.close()
 elif A == "pingflood":
     s = connect(); t0 = time.time(); p = ping(); n = 0; ok = 1

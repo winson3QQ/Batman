@@ -262,7 +262,7 @@ HD=/tmp/run/batman-dv
 # UNKNOWN (skipped). Right for the #156 reconciler (never alarm on what it could not judge), wrong for a
 # test: six UNKNOWNs verify nothing and still exit 0 (#269). So the verdict comes from its summary line:
 # all six must be OK; UNKNOWN (mid-restart / too fresh) is retried, and still UNKNOWN = not verified = FAIL.
-OTS_CTR_N=6
+OTS_CTR_N=6   # #289: ots_probe sets it to the node's manifest count (OTS_N) before the OTS suites run
 vp_ots_verdict() {   # stdin: wrapper output -> rc 0 all OK / 1 FAIL / 2 retry (UNKNOWN present)
   local s ok dr un
   s=$(sed -n 's/^verify-profile-ots: ok=\([0-9]*\) drift=\([0-9]*\) unknown=\([0-9]*\)$/\1 \2 \3/p' | tail -1)
@@ -270,8 +270,8 @@ vp_ots_verdict() {   # stdin: wrapper output -> rc 0 all OK / 1 FAIL / 2 retry (
   { isint "$ok" && isint "$dr" && isint "$un"; } || { echo "FAIL no verify-profile-ots summary line — confinement not verified"; return 1; }
   [ "$dr" = 0 ] || { echo "FAIL $dr container(s) DRIFT from their hardening profile"; return 1; }
   [ "$un" = 0 ] || { echo "UNKNOWN $un container(s)"; return 2; }
-  [ "$ok" = "$OTS_CTR_N" ] || { echo "FAIL only $ok/$OTS_CTR_N containers judged OK"; return 1; }
-  echo "ok: $ok/$OTS_CTR_N containers match their hardening profile"; }
+  [ "$ok" = "${OTS_N:-$OTS_CTR_N}" ] || { echo "FAIL only $ok/${OTS_N:-$OTS_CTR_N} containers judged OK"; return 1; }
+  echo "ok: $ok/${OTS_N:-$OTS_CTR_N} containers match their hardening profile"; }
 chk_98() { local i o v rc
   for i in 1 2 3; do
     o=$(fssh "$1" 60 'd=/opt/batdata/apps/opentakserver; [ -f "$d/verify-profile-ots.sh" ] || d=/opt/batdata/deploy/ots; sh "$d/verify-profile-ots.sh"' 2>&1)
@@ -792,7 +792,7 @@ cot_judge() { local ots=$1 run=$2 o=$3 rc=0 ph sent st prev i pat u
   echo "$o" | grep '^CONNLOST' | sed 's/^/FAIL CONNECTION-LOST /' && rc=1
   # cleanup in one transaction, then verify every related table is empty for this run
   ots_sql "$ots" <<SQL
-begin; delete from euds where uid like '$run-%'; delete from cot where uid like '$run-%'; commit;
+begin; delete from cot where uid like '$run-%' or sender_uid like '$run-%'; delete from points where device_uid like '$run-%'; delete from euds where uid like '$run-%'; commit;
 SQL
   o=$(ots_sql "$ots" <<SQL
 select (select count(*) from cot where uid like '$run-%' or sender_uid like '$run-%') + (select count(*) from euds where uid like '$run-%') + (select count(*) from points where uid like '$run-%' or device_uid like '$run-%');
@@ -1689,7 +1689,7 @@ bchk_queue_gone_264() { local ots=$1 peer=$2 run rc=0 l0 l1 s st sd rec i t0
   fssh "$ots" 30 'docker exec ots_eud_handler sh -c "tail -400 \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)" | grep -ciE "declare refused|cache full|session end:"' | tr -d '\r' | sed 's|^|eud error lines (declare refused, cache full, session end): |'
   soak_ssh "$peer" "ROLE=down" | tail -1
   ots_sql "$ots" <<SQL >/dev/null
-begin; delete from euds where uid like '$run-%'; delete from cot where uid like '$run-%'; commit;
+begin; delete from cot where uid like '$run-%' or sender_uid like '$run-%'; delete from points where device_uid like '$run-%'; delete from euds where uid like '$run-%'; commit;
 SQL
   [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   # the guardian restart left the tenant DRIFT for the 600 s ledger window: wait it out so later suites judge a clean tenant

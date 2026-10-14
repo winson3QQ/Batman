@@ -44,13 +44,25 @@ gwc() { local ots=$1 ctr=$2 to=$3; shift 3; local e="" v
   for v in "$@"; do e="$e -e $v"; done
   timeout "$to" ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "docker exec -i $e -e TARGET=$GW -e CA=/app/ots/ca/ca.pem ots_cot_parser python3 -" < "$REPO/scripts/node/gw-client-289.py" 2>&1; }
 rd() { tr -d '\r' < "$1" 2>/dev/null; }
-gw_bh() { timeout 30 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" "ACTION=$2 PORT=${3:-0} sh -s" < "$REPO/scripts/node/gw-blackhole-289.sh" 2>&1 | tr -d '\r'; }
+gw_bh() { timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" "ACTION=$2 PORTS='${3:-}' sh -s" < "$REPO/scripts/node/gw-blackhole-289.sh" 2>&1 | tr -d '\r'; }
+# gw_bh_bites <ots>: the drop counters moved (the stale client keeps sending pings) — else the scenario was not made
+gw_bh_bites() { local d; sleep "${2:-12}"; d=$(gw_bh "$1" count | sed -n 's/^DROPPED \([0-9]*\)$/\1/p'); echo "black hole dropped ${d:-?} packet(s)"; isint "$d" && [ "$d" -gt 0 ]; }
 # gw_cleanup <ots> <run-prefix> <user-prefix> <n-users>: rows (RESTRICT order), users, certs, queues; FAIL on leftovers
-gw_cleanup() { local ots=$1 run=$2 p=$3 n=$4 o rc=0
+gw_cleanup() { local ots=$1 run=$2 p=$3 n=$4 o rc=0 i
+  # the run's last goodbyes are still on their way to cot_parser when the clients have just left: a cot row inserted
+  # between our delete of cot and of euds makes RESTRICT abort the whole transaction (rc 1 run: "[2 2]" left)
+  for i in 1 2 3 4 5 6 7 8 9 10; do o=$(gw_snap "$ots" | grep -c "\"$run-"); [ "${o:-1}" = 0 ] && break; sleep 2; done
+  sleep 4
   ots_sql "$ots" <<SQL >/dev/null
 begin; delete from cot where sender_uid like '$run-%' or uid like '$run-%'; delete from points where device_uid like '$run-%'; delete from geochat where sender_uid like '$run-%'; delete from euds where uid like '$run-%'; delete from "user" where username like '$p-u%'; commit;
 SQL
   o=$(echo "select (select count(*) from euds where uid like '$run-%') || ' ' || (select count(*) from \"user\" where username like '$p-u%');" | ots_sql "$ots")
+  if [ "$o" != "0 0" ]; then
+    sleep 6; ots_sql "$ots" <<SQL >/dev/null
+begin; delete from cot where sender_uid like '$run-%' or uid like '$run-%'; delete from points where device_uid like '$run-%'; delete from geochat where sender_uid like '$run-%'; delete from euds where uid like '$run-%'; delete from "user" where username like '$p-u%'; commit;
+SQL
+    o=$(echo "select (select count(*) from euds where uid like '$run-%') || ' ' || (select count(*) from \"user\" where username like '$p-u%');" | ots_sql "$ots")
+  fi
   [ "$o" = "0 0" ] || { echo "FAIL cleanup left rows/users: [$o]"; rc=1; }
   fssh "$ots" 20 "docker exec ots_cot_parser sh -c 'rm -f /tmp/$p-u*.pem /tmp/$p-u*.key'" >/dev/null
   o=$(fssh "$ots" 60 'n=0; for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1 && n=$((n+1)); done; echo "deleted=$n left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'")"' | tr -d '\r')
@@ -78,15 +90,16 @@ chk_presence_289() { local ots=$1 run o rc=0 port t0 st dis0 dis1 cnt
   gw_users "$ots" GWP 2 || return 1
   run=DVP$(date +%H%M%S)
   # B (user 2) reads for 170 s and counts the t-x-d-d naming A (its uid appears in <link uid=...>)
-  ( gwc "$ots" ots_cot_parser 200 ACTION=readcount UID="$run-B" CS="$run-B" CERT=/tmp/GWP-u2.pem KEY=/tmp/GWP-u2.key EXPECT="$run-A" N=1 HOLD=170 > "$DIR/presence-289.B" ) &
+  ( gwc "$ots" ots_cot_parser 200 ACTION=readcount UID="$run-B" CS="$run-B" CERT=/tmp/GWP-u2.pem KEY=/tmp/GWP-u2.key EXPECT="$run-A" N=1 TXDD=1 HOLD=170 > "$DIR/presence-289.B" ) &
   sleep 3
   # A (user 1) identifies and stops reading; its port is black-holed on the node
-  ( gwc "$ots" ots_cot_parser 260 ACTION=noread UID="$run-A" CS="$run-A" CERT=/tmp/GWP-u1.pem KEY=/tmp/GWP-u1.key HOLD=230 > "$DIR/presence-289.A" ) &
+  ( gwc "$ots" ots_cot_parser 260 ACTION=noread UID="$run-A" CS="$run-A" CERT=/tmp/GWP-u1.pem KEY=/tmp/GWP-u1.key HOLD=230 KEEPSEND=5 > "$DIR/presence-289.A" ) &
   for t0 in 1 2 3 4 5 6 7 8; do sleep 1; port=$(rd "$DIR/presence-289.A" | sed -n 's/^PORT \([0-9]*\)$/\1/p'); [ -n "$port" ] && break; done
   isint "$port" || { echo "FAIL A did not report its port — not verified"; wait; return 1; }
   st=$(echo "select last_status from euds where uid='$run-A';" | ots_sql "$ots"); echo "A identified (port $port), row [$st]"
   [ "$st" = Connected ] || { echo "FAIL A's row is not Connected after identification"; rc=1; }
-  o=$(gw_bh "$ots" add "$port"); echo "$o"; echo "$o" | grep -q "^BLACKHOLE $port 1$" || { echo "FAIL black hole not installed — not verified"; rc=1; }
+  o=$(gw_bh "$ots" add "$port"); echo "$o"; echo "$o" | grep -q "^BLACKHOLE 1$" || { echo "FAIL black hole not installed — not verified"; rc=1; }
+  gw_bh_bites "$ots" || { echo "FAIL the black hole does not bite — the stale phone was not made, not verified"; rc=1; }
   t0=$SECONDS
   while [ $((SECONDS - t0)) -lt 160 ]; do sleep 10; st=$(echo "select last_status from euds where uid='$run-A';" | ots_sql "$ots"); [ "$st" = Disconnected ] && break; done
   echo "A's row after the black hole: [$st] after $((SECONDS - t0)) s (expect Disconnected within 150 s)"
@@ -94,7 +107,7 @@ chk_presence_289() { local ots=$1 run o rc=0 port t0 st dis0 dis1 cnt
   cnt=$(gw_log "$ots" "ended $run-A"); [ "${cnt:-0}" -ge 1 ] && echo "gateway logged the end of $run-A" || { echo "FAIL no 'ended $run-A' line"; rc=1; }
   wait
   o=$(rd "$DIR/presence-289.B"); echo "B: $o"
-  echo "$o" | grep -q '^GOT [1-9]' && echo "B received the t-x-d-d for A" || { echo "FAIL B did not receive A's t-x-d-d"; rc=1; }
+  echo "$o" | grep -q '^GOT [1-9]' && echo "B received the t-x-d-d naming A" || { echo "FAIL B did not receive a t-x-d-d naming A"; rc=1; }
   gw_bh "$ots" del >/dev/null
   # the phone comes back: its row flips to Connected
   o=$(gwc "$ots" ots_cot_parser 60 ACTION=hold UID="$run-A" CS="$run-A" CERT=/tmp/GWP-u1.pem KEY=/tmp/GWP-u1.key HOLD=8); echo "A back: $(echo "$o" | tail -1)"
@@ -111,22 +124,24 @@ chk_zombie_289() { local ots=$1 run o rc=0 port t0 d0 d1 cnt
   gw_users "$ots" GWZ 2 || return 1
   run=DVZ$(date +%H%M%S)
   d0=$(fssh "$ots" 20 'docker exec ots_cot_parser sh -c "grep -c \"Sending disconnect cot to '"$run-A"'\$\" /app/ots/logs/cot_parser.log 2>/dev/null"' | tr -d ' \r'); isint "$d0" || d0=0
-  ( gwc "$ots" ots_cot_parser 260 ACTION=noread UID="$run-A" CS="$run-A" CERT=/tmp/GWZ-u1.pem KEY=/tmp/GWZ-u1.key HOLD=200 > "$DIR/zombie-289.A" ) &
+  ( gwc "$ots" ots_cot_parser 260 ACTION=noread UID="$run-A" CS="$run-A" CERT=/tmp/GWZ-u1.pem KEY=/tmp/GWZ-u1.key HOLD=220 KEEPSEND=5 > "$DIR/zombie-289.A" ) &
   for t0 in 1 2 3 4 5 6 7 8; do sleep 1; port=$(rd "$DIR/zombie-289.A" | sed -n 's/^PORT \([0-9]*\)$/\1/p'); [ -n "$port" ] && break; done
   isint "$port" || { echo "FAIL A did not report its port"; wait; return 1; }
   o=$(gw_bh "$ots" add "$port"); echo "A (port $port) black-holed: $o"
+  echo "$o" | grep -q "^BLACKHOLE 1$" && gw_bh_bites "$ots" 8 || { echo "FAIL the black hole does not bite — not verified"; rc=1; }
   # B: the same device reconnects (same user, same uid) and reads what C sends
-  ( gwc "$ots" ots_cot_parser 120 ACTION=readcount UID="$run-A" CS="$run-A" CERT=/tmp/GWZ-u1.pem KEY=/tmp/GWZ-u1.key EXPECT="$run-C-p" N=10 HOLD=60 > "$DIR/zombie-289.B" ) &
+  # B stays for the whole test: if it left early, A (still draining) would be promoted to current by design (B2-10)
+  ( gwc "$ots" ots_cot_parser 230 ACTION=readcount UID="$run-A" CS="$run-A" CERT=/tmp/GWZ-u1.pem KEY=/tmp/GWZ-u1.key EXPECT="$run-C-p" N=10 STAY=1 HOLD=200 > "$DIR/zombie-289.B" ) &
   sleep 4
   cnt=$(gw_log "$ots" "superseded $run-A"); [ "${cnt:-0}" -ge 1 ] && echo "gateway logged the supersede" || { echo "FAIL no 'superseded $run-A' line"; rc=1; }
-  o=$(gwc "$ots" ots_cot_parser 60 ACTION=stream UID="$run-C" CS="$run-C" CERT=/tmp/GWZ-u2.pem KEY=/tmp/GWZ-u2.key N=10 DELAY=1 HOLD=3); echo "C: $o"
-  wait
-  o=$(rd "$DIR/zombie-289.B"); echo "B: $o"
-  echo "$o" | grep -q '^GOT 10' && echo "B got 10/10 (downlink to the new connection only)" || { echo "FAIL B got $(echo "$o" | sed -n 's/^GOT \([0-9]*\).*/\1/p')/10 (split with the zombie?)"; rc=1; }
-  # A's socket is closed by the supersede deadline (outage + 20 s, <= 120 s after the supersede)
+  o=$(gwc "$ots" ots_cot_parser 60 ACTION=stream UID="$run-C" CS="$run-C" CERT=/tmp/GWZ-u2.pem KEY=/tmp/GWZ-u2.key N=10 DELAY=1 HOLD=3 | tr -d '\r'); echo "C: $o"
+  # A's socket is closed by the supersede deadline (outage + 20 s, <= 120 s after the supersede) while B lives
   t0=$SECONDS; cnt=0
   while [ $((SECONDS - t0)) -lt 130 ]; do sleep 10; cnt=$(gw_log "$ots" "closed (superseded: deadline)"); [ "${cnt:-0}" -ge 1 ] && break; done
   [ "${cnt:-0}" -ge 1 ] && echo "A's stale connection closed by the deadline after $((SECONDS - t0)) s" || { echo "FAIL A's connection was not closed by the supersede deadline within 130 s"; rc=1; }
+  wait
+  o=$(rd "$DIR/zombie-289.B"); echo "B: $o"
+  echo "$o" | grep -q '^GOT 10 open' && echo "B got 10/10 and was kept (downlink to the new connection only)" || { echo "FAIL B: $o (expected GOT 10 open)"; rc=1; }
   d1=$(fssh "$ots" 20 'docker exec ots_cot_parser sh -c "grep -c \"Sending disconnect cot to '"$run-A"'\$\" /app/ots/logs/cot_parser.log 2>/dev/null"' | tr -d ' \r'); isint "$d1" || d1=0
   [ "$d1" = "$d0" ] && echo "no cot_parser disconnect for the live device" || { echo "FAIL a disconnect went through cot_parser for the live device"; rc=1; }
   gw_bh "$ots" del >/dev/null
@@ -160,8 +175,9 @@ chk_cap_289() { local ots=$1 run o rc=0 k kept closed cnt q
 # admission (M2.1 / M1): (i) 300 pre-TLS sockets from another container while a phone identifies: the phone is
 # kept, the pool stays <= MAX_PENDING; (i2) a ping flood from one session is paused (counter), the socket kept;
 # (j) a 70 KiB message is discarded and the session answers the next ping.
-chk_admission_289() { local ots=$1 run o rc=0 p0 p1 pend
+chk_admission_289() { local ots=$1 run o rc=0 p0 p1 pend c0 c1 m0 m1
   gw_pre "$ots" || return $?
+  c0=$(gw_snap "$ots" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("conns", -1), d["pending"])' 2>/dev/null); m0=$(gw_mem "$ots")
   gw_users "$ots" GWA 1 || return 1
   run=DVA$(date +%H%M%S)
   ( gwc "$ots" ots_cot_parser 60 ACTION=rawflood N=300 HOLD=15 > "$DIR/admission-289.raw" ) &
@@ -171,8 +187,13 @@ chk_admission_289() { local ots=$1 run o rc=0 p0 p1 pend
   wait; echo "raw flood: $(rd "$DIR/admission-289.raw"); phone during it: $o; pending in the snapshot: $pend"
   case "$o" in KEPT*) ;; *) echo "FAIL the phone was not kept during the pre-TLS flood"; rc=1 ;; esac
   isint "$pend" && [ "$pend" -le 1024 ] || { echo "FAIL pending [$pend] not within MAX_PENDING"; rc=1; }
+  rd "$DIR/admission-289.raw" | grep -q '^RAW 300 open=0$' || { echo "FAIL the raw sockets were not all closed by the handshake timeout"; rc=1; }
+  # B2 H1: once the flood's handshakes timed out, the pool and the held sockets are back to the baseline
+  sleep 12; c1=$(gw_snap "$ots" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("conns", -1), d["pending"])' 2>/dev/null); m1=$(gw_mem "$ots")
+  echo "conns/pending before [$c0] after [$c1]; memory $((${m0:-0}/1048576)) -> $((${m1:-0}/1048576)) MiB"
+  [ "${c1#* }" = "${c0#* }" ] && [ "${c1%% *}" -le "$(( ${c0%% *} + 1 ))" ] 2>/dev/null || { echo "FAIL the flood's dead sockets are still held (B2 C2B-1)"; rc=1; }
   p0=$(gw_counter "$ots" uplink_paused 11); isint "$p0" || p0=0
-  o=$(gwc "$ots" ots_cot_parser 60 ACTION=pingflood UID="$run-F" CERT=/tmp/GWA-u1.pem KEY=/tmp/GWA-u1.key N=3000 | tr -d '\r' | tail -1); echo "ping flood: $o"
+  o=$(gwc "$ots" ots_cot_parser 60 ACTION=pingflood UID="$run-F" CERT=/tmp/GWA-u1.pem KEY=/tmp/GWA-u1.key N=500 | tr -d '\r' | tail -1); echo "ping flood: $o"
   p1=$(gw_counter "$ots" uplink_paused 12); isint "$p1" || p1=0
   echo "$o" | grep -q 'open=1' && [ "$p1" -gt "$p0" ] && echo "flood paused ($((p1 - p0)) pause(s)), socket kept" || { echo "FAIL ping flood not bounded by the message bucket (paused $p0 -> $p1, $o)"; rc=1; }
   o=$(gwc "$ots" ots_cot_parser 40 ACTION=oversize UID="$run-O" CS="$run-O" CERT=/tmp/GWA-u1.pem KEY=/tmp/GWA-u1.key SIZE=70000 | tr -d '\r' | tail -1); echo "oversize: $o"
@@ -190,7 +211,7 @@ chk_owner_289() { local ots=$1 run o rc=0 uid
   u1=$(echo "select user_id from euds where uid='$uid';" | ots_sql "$ots")
   o=$(gwc "$ots" ots_cot_parser 30 ACTION=refused UID="$uid" CS="$uid" CERT=/tmp/GWO-u2.pem KEY=/tmp/GWO-u2.key HOLD=5 | tr -d '\r' | tail -1); echo "user 2 claims it: $o"
   echo "$o" | grep -q '^CLOSED' && [ "$(echo "select user_id from euds where uid='$uid';" | ots_sql "$ots")" = "$u1" ] && echo "refused, row kept by user 1" || { echo "FAIL another user's device was not refused / the row changed"; rc=1; }
-  [ "$(gw_log "$ots" "refusing device $uid from")" -ge 1 ] && [ "$(gw_log "$ots" "owned by user")" -ge 1 ] || { echo "FAIL no 'owned by user' refusal line"; rc=1; }
+  [ "$(gw_log "$ots" "refusing device $uid from")" -ge 1 ] 2>/dev/null && [ "$(gw_log "$ots" "owned by user")" -ge 1 ] 2>/dev/null || { echo "FAIL no 'owned by user' refusal line"; rc=1; }
   ots_sql "$ots" <<SQL >/dev/null
 insert into euds (uid, last_status) values ('$run-H', 'Disconnected'), ('$run-N', 'Disconnected'); insert into cot (uid, sender_uid, timestamp, how, type, start, stale, xml) values ('$run-H-c', '$run-H', now(), 'h-e', 'a-f', now(), now(), '<event/>');
 SQL
@@ -253,7 +274,7 @@ SQL
   while [ $((SECONDS - t0)) -lt 70 ]; do sleep 5; v=$(gw_health "$ots"); case "$v" in *'"jobs_resumed": ["delete_old_data"]'*) break ;; esac; done
   echo "healthz after the resume: $v ($((SECONDS - t0)) s)"
   case "$v" in *'"jobs_resumed": ["delete_old_data"]'*) echo "the gateway saw the resumed job" ;; *) echo "FAIL the gateway did not report the resumed job within 70 s"; rc=1 ;; esac
-  [ "$(gw_log "$ots" "RESUMED job delete_old_data")" -ge 1 ] || { echo "FAIL no 'RESUMED job' line"; rc=1; }
+  [ "$(gw_log "$ots" "RESUMED job delete_old_data")" -ge 1 ] 2>/dev/null || { echo "FAIL no 'RESUMED job' line"; rc=1; }
   sleep 35
   o=$(fssh "$ots" 30 "$RDR"'grep -c "verify-profile-ots-record: DRIFT retention job RESUMED" "$R"/batman-payload-opentakserver-verify.log 2>/dev/null' | tr -d ' \r')
   [ "${o:-0}" -ge 1 ] && echo "the guardian's record check reported DRIFT" || { echo "FAIL verify-profile-ots-record did not report the resumed job (count [$o])"; rc=1; }
@@ -278,7 +299,7 @@ except Exception as e:
 EOF
 ); echo "8088 on the gateway: $o"
   echo "$o" | grep -q '^REFUSED' || { echo "FAIL 8088 accepts connections with an empty allowlist"; rc=1; }
-  [ "$(gw_log "$ots" "8088 not bound")" -ge 1 ] || { echo "FAIL no '8088 not bound' line"; rc=1; }
+  [ "$(gw_log "$ots" "8088 not bound")" -ge 1 ] 2>/dev/null || { echo "FAIL no '8088 not bound' line"; rc=1; }
   echo "the allowlisted-relay leg needs a profile override (no override path on the node): covered offline (tests/test_config_bucket.py, test_integration.py)"
   return $rc; }
 
@@ -311,7 +332,7 @@ EOF' | tr -d '\r'; }
   ( gwc "$ots" ots_cot_parser 120 ACTION=readcount UID="$uid" CS="$uid" CERT=/tmp/GWR-u1.pem KEY=/tmp/GWR-u1.key EXPECT="$run-G2-" N=10 HOLD=60 > "$DIR/rebind-289.2" ) &
   sleep 40; o=$(pubg "$run-G2"); echo "publish 2 (membership disabled 40 s ago): $o"; wait; o=$(rd "$DIR/rebind-289.2"); echo "A: $o"
   echo "$o" | grep -q '^GOT 0' && echo "unbound within the reconcile cycle" || { echo "FAIL A kept receiving a disabled group's traffic"; rc=1; }
-  [ "$(gw_log "$ots" "rebind $uid +0 -1")" -ge 1 ] || echo "note: no 'rebind $uid +0 -1' line (the unbind may have been logged with other deltas)"
+  [ "$(gw_log "$ots" "rebind $uid +0 -1")" -ge 1 ] 2>/dev/null || echo "note: no 'rebind $uid +0 -1' line (the unbind may have been logged with other deltas)"
   ots_sql "$ots" <<SQL >/dev/null
 delete from groups_users where group_id=(select id from groups where name='$g'); delete from groups where name='$g';
 SQL
@@ -331,4 +352,51 @@ gw_register() {
   suite fk-restrict-289 "record FKs RESTRICT, a device with history cannot be deleted, a resumed retention job is reported by the gateway and the guardian's record check within 35 s (#289 P3/M10)" "chk_fk_289 $OTS_NODE"
   suite allowlist-289 "8088 is not bound with an empty allowlist (#289 P4)" "chk_allowlist_289 $OTS_NODE"
   suite rebind-289 "a disabled group membership stops the device's group traffic within the 30 s reconcile (#289 P2/M9; overlay: until reconnect)" "chk_rebind_289 $OTS_NODE"
+  suite rto-289 "the RTO walks out and back: 16 phones stale (black-holed) + the same 16 reconnecting, a teammate streams, the RTO phone stays: 16 supersedes, 16/16 + RTO 10/10 kept, stale sockets closed by the deadline, no restart/OOM (#289 B1, M3/M7)" "chk_rto_289 $OTS_NODE"
 }
+
+# THE field scenario (design §0 / #289 B1, review B2 H2): the RTO walks out of range and comes back. 16 phones (4 users
+# x 4) go stale at once (black-holed, still sending — dropped), the same 16 reconnect while their old sockets are
+# stale, a teammate streams 10 events, the RTO's own phone (17th client, never stale) stays connected throughout.
+# Asserted: 16 supersedes, every returned phone 10/10 and kept, the RTO phone kept and 10/10, the 16 stale sockets
+# closed by the supersede deadline (<= 120 s), the gateway not restarted, no OOM kill, 17 devices then 0 left.
+# One process on the node runs all 33 connections (scripts/node/gw-rto-289.py): the node's ssh limit.
+chk_rto_289() { local ots=$1 run o rc=0 ports n i d0 d1 st0 st1 oom0 oom1 c0 c1 cg
+  gw_pre "$ots" || return $?
+  gw_users "$ots" GWT 5 || return 1
+  run=DVT$(date +%H%M%S)
+  cg='$(docker inspect -f "{{.Id}}" ots_eud_gateway)'
+  st0=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_eud_gateway' | tr -d '\r')
+  oom0=$(fssh "$ots" 20 "grep oom_kill /sys/fs/cgroup/docker/$cg/memory.events | cut -d' ' -f2" | tr -d ' \r')
+  d0=$(gw_log "$ots" "closed (superseded: deadline)"); isint "$d0" || d0=0
+  ( timeout 330 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" \
+      "docker exec -i -e TARGET=$GW -e RUN=$run -e 'USERS=GWT-u1 GWT-u2 GWT-u3 GWT-u4' -e RTO=GWT-u5 -e PER=4 -e T1=40 -e HOLD2=170 ots_cot_parser python3 -" \
+      < "$REPO/scripts/node/gw-rto-289.py" > "$DIR/rto-289.out" 2>&1 ) &
+  for i in $(seq 1 20); do sleep 1; n=$(rd "$DIR/rto-289.out" | grep -c '^PORT '); [ "$n" = 16 ] && break; done
+  ports=$(rd "$DIR/rto-289.out" | sed -n 's/^PORT [^ ]* \([0-9]*\)$/\1/p' | tr '\n' ' ')
+  echo "16 phones connected and identified: $n port(s)"
+  [ "$n" = 16 ] || { echo "FAIL only $n/16 phones reported a port — not verified"; rc=1; }
+  o=$(gw_bh "$ots" add "$ports"); echo "black hole: $o"
+  echo "$o" | grep -q '^BLACKHOLE 16$' && gw_bh_bites "$ots" 10 || { echo "FAIL the black hole does not bite — the storm was not made, not verified"; rc=1; }
+  # PHASE2 at T1 = 40 s: the 16 return
+  for i in $(seq 1 40); do sleep 1; rd "$DIR/rto-289.out" | grep -q '^PHASE2' && break; done
+  sleep 12
+  c0=$(gw_snap "$ots" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(1 for x in d["devices"] if x["uid"].startswith("'"$run"'-")))' 2>/dev/null)
+  o=$(gw_log "$ots" "superseded $run-"); echo "after the return: $c0 device(s) of the run, $o supersede line(s)"
+  [ "$c0" = 17 ] || { echo "FAIL expected 17 devices of the run (16 + the RTO phone), got [$c0]"; rc=1; }
+  [ "${o:-0}" = 16 ] || { echo "FAIL expected 16 supersedes, got [$o]"; rc=1; }
+  # the 16 stale sockets are closed by the supersede deadline while the returned phones live
+  for i in $(seq 1 14); do sleep 10; d1=$(gw_log "$ots" "closed (superseded: deadline)"); isint "$d1" || d1=0; [ $((d1 - d0)) -ge 16 ] && break; done
+  echo "stale sockets closed by the deadline: $((d1 - d0)) / 16 after ~$((i * 10)) s"
+  [ $((d1 - d0)) -ge 16 ] || { echo "FAIL not every stale socket was closed by the supersede deadline"; rc=1; }
+  wait
+  o=$(rd "$DIR/rto-289.out"); echo "$o" | grep -E '^(GOT|RTO|OLD|STREAM|STALE-ERR)' | sed 's/^/  /'
+  n=$(echo "$o" | grep -c '^GOT .* 10 kept'); echo "returned phones with 10/10 and kept: $n / 16"
+  [ "$n" = 16 ] || { echo "FAIL $((16 - n)) returned phone(s) missed downlink or were cut"; rc=1; }
+  echo "$o" | grep -q '^RTO GOT 10 kept' || { echo "FAIL the RTO's own phone missed the stream or was cut"; rc=1; }
+  st1=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_eud_gateway' | tr -d '\r')
+  oom1=$(fssh "$ots" 20 "grep oom_kill /sys/fs/cgroup/docker/$cg/memory.events | cut -d' ' -f2" | tr -d ' \r')
+  [ "$st0" = "$st1" ] && [ "$oom0" = "$oom1" ] && echo "gateway not restarted (StartedAt $st1), oom_kill $oom1" || { echo "FAIL the gateway restarted or was OOM-killed (StartedAt $st0 -> $st1, oom_kill $oom0 -> $oom1)"; rc=1; }
+  gw_bh "$ots" del | sed 's/^/  /'
+  gw_cleanup "$ots" "$run" GWT 5 || rc=1
+  return $rc; }
