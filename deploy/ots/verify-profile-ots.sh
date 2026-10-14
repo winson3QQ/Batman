@@ -14,12 +14,13 @@ VP=/usr/lib/batman/verify-profile.sh
 [ -f "$VP" ] || VP="$HERE/verify-profile.sh"; [ -f "$VP" ] || VP="$HERE/../../scripts/verify-profile.sh"
 [ -f "$VP" ] || { echo "cannot find verify-profile.sh (looked in /usr/lib/batman, $HERE and ../../scripts)"; exit 2; }
 
-# container -> hardening.env  (3 app containers share ots.hardening.env; the mTLS listener has its own: #264 r10, 1536m)
+# container -> hardening.env  (2 app containers share ots.hardening.env; the EUD gateway (#289) has its own
+# block: 1024m, pids 32, both CoT ports. It replaced ots_eud_handler + ots_eud_handler_ssl — a container
+# missing from this list is checked by nobody (review A3-1), so keep it in sync with profile.yaml.)
 set -- \
   "opentakserver:ots" \
   "ots_cot_parser:ots" \
-  "ots_eud_handler:ots" \
-  "ots_eud_handler_ssl:ots_eud_handler_ssl" \
+  "ots_eud_gateway:ots_eud_gateway" \
   "ots-db:ots-db" \
   "rabbitmq:rabbitmq"
 
