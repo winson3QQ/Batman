@@ -72,3 +72,7 @@ deploy/ots/patches/make-eudhandler-264.py	(SESS_DIR = "/tmp/batman-264-sess"|FI_
 deploy/ots/patches/eudhandler-264.patch	(SESS_DIR = "/tmp/batman-264-sess"|FI_FILE = "/tmp/batman-264-fi"|FI_FILE \(this container's private /tmp)	same, in the generated diff against upstream (code and its comment)
 scripts/daily-validation.sh	docker exec ots_eud_handler (sh -c 'printf .* > |rm -f )/tmp/batman-264-fi	exception-264 writes/removes the fault-injection file inside the eud container's own tmpfs (docker exec, root), not the node's /tmp
 scripts/daily-validation.sh	docker exec ots_eud_handler python3 -c .*os\.open\('/tmp/batman-264-admit\.lock'	rto768-264 pre-check that the admission lock is free: flock -n on the lock inside the eud container's own tmpfs (docker exec), not the node's /tmp
+scripts/dv/gateway-289.sh	/tmp/(GW[A-Z]-u([0-9]+|\$u)|\$p-u\$k|\$p-u\*|dv-client)\.(pem|key)	#289 suites: 1-day test client certs in ots_cot_parser's OWN container tmpfs (written, used and removed via docker exec), never the node's /tmp
+scripts/dv/gateway-289.sh	cat /tmp/gateway/sessions\.json	#289: the gateway's snapshot in ots_eud_gateway's private tmpfs (uid 1000), read via docker exec; nothing on the node decides on it
+scripts/node/gw-client-289.py	/tmp/<u>\.(pem|key)	usage text naming the container-internal cert path
+scripts/node/gw-rto-289.py	(/tmp/<user>\.pem|"/tmp/%s\.(pem|key)")	certs inside the ots_cot_parser container (python runs there via docker exec -i), not the node's /tmp
