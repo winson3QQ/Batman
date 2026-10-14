@@ -1,0 +1,39 @@
+name: eud-gateway
+# #289 — the OTS EUD gateway (deploy/ots/gateway): offline tests on every change, and the committed single-file
+# artifact deploy/ots/eud-gateway.pyz MUST be exactly what build-pyz.sh builds from the package (reproducible:
+# fixed mtimes, sorted entries, stored). A stale .pyz would ship code the tests did not run.
+on:
+  pull_request:
+    paths:
+      - 'deploy/ots/gateway/**'
+      - 'deploy/ots/eud-gateway.pyz'
+      - '.github/workflows/eud-gateway.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/ots/gateway/**'
+      - 'deploy/ots/eud-gateway.pyz'
+jobs:
+  test-and-reproduce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - run: pip install --quiet pika==1.3.2 beautifulsoup4 lxml sqlalchemy pyyaml pytest
+      - name: offline tests (framing, admission, supersede over loopback mTLS, publisher with a fake channel, DB on sqlite)
+        run: cd deploy/ots/gateway && PYTHONPATH=. python -m pytest -q -W ignore::DeprecationWarning
+      - name: the committed eud-gateway.pyz is reproducible from the package
+        run: |
+          sh deploy/ots/gateway/build-pyz.sh /tmp/rebuilt.pyz
+          cmp /tmp/rebuilt.pyz deploy/ots/eud-gateway.pyz || { echo "deploy/ots/eud-gateway.pyz is stale: run sh deploy/ots/gateway/build-pyz.sh"; exit 1; }
+      - name: the pyz starts and refuses a malformed config with exit 2 (no DB needed)
+        run: |
+          set +e
+          GATEWAY_MAX_DEVICES=sixty python3 deploy/ots/eud-gateway.pyz; rc=$?
+          set -e
+          [ "$rc" = 2 ] || { echo "expected exit 2, got $rc"; exit 1; }
+      - name: shellcheck the tenant scripts
+        run: |
+          sudo apt-get install -y -q shellcheck >/dev/null
+          shellcheck -s sh deploy/ots/verify-profile-ots.sh deploy/ots/verify-profile-ots-record.sh deploy/ots/gateway/build-pyz.sh

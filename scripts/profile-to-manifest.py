@@ -142,7 +142,7 @@ def render_manifest(doc, app):
         a(f"HARDEN {c['harden']}")
         # env_common applies to APP containers only (not infra) — an infra container has its own
         # env map; the app containers share env_common plus their own. A container confined by its own
-        # infra_values block but still an app container (#264 r10: ots_eud_handler_ssl, 1536m) says
+        # infra_values block but still an app container (#289: ots_eud_gateway, 1024m) says
         # `env_common: true` in its spec to keep the shared env.
         is_infra = c["harden"] != f"{app}.hardening.env"
         merged_env = dict(env_common) if (not is_infra or c["env_common"]) else {}

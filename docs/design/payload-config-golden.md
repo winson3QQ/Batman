@@ -51,9 +51,10 @@ Ship `deploy/ots/`'s **declarative, non-secret** files into the rootfs at a read
     ots.manifest            # RESTART unless-stopped (source of truth)
     ots.fw4.uci
     ots.net.alloc
-    ots-db.hardening.env  ots.hardening.env  ots_eud_handler_ssl.hardening.env  rabbitmq.hardening.env
-    rabbitmq-extra.conf
-    verify-profile-ots.sh
+    ots-db.hardening.env  ots.hardening.env  ots_eud_gateway.hardening.env  rabbitmq.hardening.env
+    rabbitmq-extra.conf  rabbitmq-definitions.json
+    eud-gateway.pyz                      # #289: the EUD gateway, one regular file (payload-run MOUNT rule)
+    verify-profile-ots.sh  verify-profile-ots-record.sh   # #289 M10: FK RESTRICT + paused retention jobs -> DRIFT
     reconcile-resources.sh
     batman-payload-opentakserver.init
 ```

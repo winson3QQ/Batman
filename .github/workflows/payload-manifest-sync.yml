@@ -32,8 +32,8 @@ on:
       - 'feed/batman-provision/files/usr/share/batman/payload-guardian.init.in'
       - 'scripts/test-payload-run.sh'
       - 'scripts/test-payload-guardian.sh'
-      # #264: the OTS eud_handler overlay (generator / patch / shipped file / sha pin / offline tests)
-      - 'deploy/**/patches/**'
+      # #289: the EUD gateway's single-file artifact is a golden MOUNT source (its own tests: eud-gateway.yml)
+      - 'deploy/ots/eud-gateway.pyz'
   push:
     branches: [main]
     paths:
@@ -49,7 +49,7 @@ on:
       - 'feed/batman-provision/files/usr/lib/batman/payload-lib.sh'
       - 'scripts/test-payload-run.sh'
       - 'scripts/test-payload-guardian.sh'
-      - 'deploy/**/patches/**'
+      - 'deploy/ots/eud-gateway.pyz'
 jobs:
   sync:
     runs-on: ubuntu-latest

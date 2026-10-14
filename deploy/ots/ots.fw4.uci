@@ -3,7 +3,7 @@
 # fw4 rules for the payload's docker bridge (design B, docs/design/ots-networking.md).
 # Idempotent; install as a uci-default or source from run.sh. Requires dockerd iptables=0.
 set -e
-for s in ots_zone ots_allow ots_allow1 ots_allow2 ots_dnat_0 ots_dnat_1 ots_dnat_2; do uci -q delete firewall."$s" || true; done
+for s in ots_zone ots_allow ots_allow1 ots_dnat_0 ots_dnat_1 ots_dnat_2; do uci -q delete firewall."$s" || true; done
 uci set firewall.ots_zone=zone
 uci set firewall.ots_zone.name='dockert'
 uci set firewall.ots_zone.device='br-ots'
@@ -25,7 +25,7 @@ uci set firewall.ots_dnat_1.name='ots-pub-8089'
 uci set firewall.ots_dnat_1.src='ahwlan'
 uci set firewall.ots_dnat_1.src_dport='8089'
 uci set firewall.ots_dnat_1.dest='dockert'
-uci set firewall.ots_dnat_1.dest_ip='172.20.0.12'
+uci set firewall.ots_dnat_1.dest_ip='172.20.0.10'
 uci set firewall.ots_dnat_1.dest_port='8089'
 uci set firewall.ots_dnat_1.proto='tcp'
 uci set firewall.ots_dnat_1.target='DNAT'
@@ -44,7 +44,7 @@ uci set firewall.ots_allow.src='ahwlan'
 uci set firewall.ots_allow.dest='dockert'
 uci set firewall.ots_allow.dest_ip='172.20.0.10'
 uci set firewall.ots_allow.proto='tcp'
-uci set firewall.ots_allow.dest_port='8088'
+uci set firewall.ots_allow.dest_port='8088 8089'
 uci set firewall.ots_allow.target='ACCEPT'
 uci set firewall.ots_allow1=rule
 uci set firewall.ots_allow1.name='ots-pub-allow'
@@ -54,14 +54,6 @@ uci set firewall.ots_allow1.dest_ip='172.20.0.11'
 uci set firewall.ots_allow1.proto='tcp'
 uci set firewall.ots_allow1.dest_port='443'
 uci set firewall.ots_allow1.target='ACCEPT'
-uci set firewall.ots_allow2=rule
-uci set firewall.ots_allow2.name='ots-pub-allow'
-uci set firewall.ots_allow2.src='ahwlan'
-uci set firewall.ots_allow2.dest='dockert'
-uci set firewall.ots_allow2.dest_ip='172.20.0.12'
-uci set firewall.ots_allow2.proto='tcp'
-uci set firewall.ots_allow2.dest_port='8089'
-uci set firewall.ots_allow2.target='ACCEPT'
 uci commit firewall
 fw4 reload >/dev/null 2>&1 || true
 echo "fw4: ots zone dockert on br-ots applied"
