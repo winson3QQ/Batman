@@ -1942,7 +1942,14 @@ reboot_and_wait() {   # $1 node, $2 the command that reboots it (default: reboot
   local n=$1 cmd=${2:-reboot} max=${3:-220} b0 b1
   b0=$(bootid "$n"); [ -n "$b0" ] || { echo "FAIL boot_id unreadable before the reboot — not verified"; return 1; }
   [ "${DV_TEST_NOREBOOT:-0}" = 1 ] && cmd=true
-  fssh "$n" 15 "$cmd" >/dev/null 2>&1; sleep 20
+  # #270: the trigger's ssh outcome is evidence, not noise. A reboot/panic cuts the session (rc 255 is the normal
+  # signature of a successful `echo c`); a node that was already wedged never takes the command at all, and the
+  # boot_id change that follows then came from somewhere else (watchdog, brown-out). Record it so a later FAIL
+  # can say "the trigger was not delivered" instead of blaming the capture.
+  local trc t0 t1
+  t0=$(date +%s); fssh "$n" 15 "$cmd" >/dev/null 2>&1; trc=$?; t1=$(date +%s)
+  echo "trigger '$cmd' ssh rc=$trc in $((t1-t0))s (255/cut = the node went down under it; 0 with a delay = command returned first)"
+  sleep 20
   dwait "$n" "$max" || { echo "FAIL node did not come back within ${max}s"; return 1; }
   b1=$(bootid "$n")
   [ -n "$b1" ] && [ "$b1" != "$b0" ] || { echo "FAIL reboot did not happen (boot_id $b0 -> ${b1:-unreadable})"; return 1; }
@@ -2001,7 +2008,12 @@ bchk_173() {   # force a real kernel panic; assert the ramoops backend captured 
   reason=$(fssh "$1" 12 'tail -1 /opt/batdata/log/boot-reasons.log 2>/dev/null')
   echo "dmesg-ramoops records $before -> ${after:-unreadable}; last boot-reason: $reason"
   isint "$after" || { echo "FAIL crash record count unreadable after the panic — not verified"; return 1; }
-  [ "$after" -gt "$before" ] || { echo "FAIL no new pstore record"; return 1; }
+  if [ "$after" -le "$before" ]; then
+    # #270: say what the console zone holds so the loss can be attributed (crash started? pstore dropped the dump?
+    # only the driver flood?) — the 2026-10-07 FAILs on 03 left nothing but "UNCLEAN" and were never attributed
+    echo "FAIL no new pstore record — console record evidence: $(fssh "$1" 15 'c=$(ls -t /opt/batdata/crash/*_console-ramoops-* 2>/dev/null | head -1); [ -n "$c" ] || { echo "none saved"; exit 0; }; echo "$c $(wc -c < "$c") bytes; sysrq-crash=$(grep -c "sysrq: Trigger a crash" "$c") panic-text=$(grep -c "Kernel panic - not syncing" "$c") dump-skipped=$(grep -c "because of concurrent dump" "$c") spi-timeouts=$(grep -c "SPI transfer timed out" "$c") throttled=$(vcgencmd get_throttled 2>/dev/null)"; echo "tail: $(tail -2 "$c" | tr "\n" "|")"' | tr -d '\r')"
+    return 1
+  fi
   echo "$reason" | grep -q 'prev=PANIC' || { echo "FAIL boot-reason did not classify the panic"; return 1; }; }
 
 bchk_rejoin_245() {   # DNODE leaves+rejoins the mesh; assert peers never kernel-panic (#245) and DNODE never hangs (#246)

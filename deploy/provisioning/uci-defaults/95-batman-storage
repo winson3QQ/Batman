@@ -672,6 +672,13 @@ boot(){
 		grep -qE "reboot: (Restarting system|Power down)" "$confile" 2>/dev/null && hint="$hint kernel-reboot"
 		grep -q "watchdog did not stop" "$confile" 2>/dev/null && hint="$hint watchdog-dev-closed"
 		grep -qE "Out of memory|oom-kill" "$confile" 2>/dev/null && hint="$hint oom"
+		# #270: a panic that left NO dmesg record is the case we could not attribute (03, 2026-10-07). Two
+		# hints make the next one attributable from the console tail alone: the kernel did start a crash
+		# (sysrq c, as opposed to any other sysrq), and pstore itself said it dropped the dump (6.6
+		# pstore_dump() trylocks buf_lock in the panic path and gives up when another CPU is mid-dump).
+		grep -q "sysrq: Trigger a crash" "$confile" 2>/dev/null && hint="$hint sysrq-crash"
+		grep -qE "Kernel panic - not syncing|Internal error: Oops" "$confile" 2>/dev/null && hint="$hint panic-text-no-record"
+		grep -q "dump skipped in .* path because of concurrent dump" "$confile" 2>/dev/null && hint="$hint pstore-dump-skipped"
 		reason="UNCLEAN — no shutdown ran (hang→hardware watchdog, reboot -f, sysrq or reflash); last console log saved under $CRASH${hint:+; hints:$hint}"
 	elif [ "$(cat /sys/module/ramoops/parameters/console_size 2>/dev/null || echo 0)" -gt 0 ]; then
 		reason="UNCLEAN (power loss: no shutdown marker, no panic, no console record)"
