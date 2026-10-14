@@ -77,8 +77,10 @@ class Device:
         self.cache = None                 # amqp.SessionCache, set by the server
         self.channel = None               # amqp.DeviceChannel
         self.row_ok = False               # store-before-route: the euds row exists
-        self.row_retry_at = 0.0
-        self.last_reconcile = 0.0
+        # identify() writes the row and runs the first reconcile itself: the 30 s cycle and the row retry start
+        # after it, never concurrently with it (a cycle at once raced the row insert, UniqueViolation on 04)
+        self.row_retry_at = time.monotonic() + settings.reconcile_s
+        self.last_reconcile = time.monotonic()
         self.ended = False
         self.writer_wakeup: Callable[[], None] = lambda: None
 

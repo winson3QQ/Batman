@@ -20,7 +20,18 @@ Q_JOBS="SELECT coalesce(string_agg(id, ',' ORDER BY id), '') FROM apscheduler_jo
 if [ "$(docker inspect -f '{{.State.Running}}' "$DB" 2>/dev/null)" != true ]; then
 	echo "verify-profile-ots-record: UNKNOWN ($DB not running)"; exit 0
 fi
-run_q(){ timeout 8 docker exec "$DB" psql -U ots -d ots -Atq -v ON_ERROR_STOP=1 -c "$1" 2>&1; }
+# bounded without timeout(1): the node's busybox has no timeout applet (rc 1 on 04: "timeout: not found" made every
+# tick UNKNOWN, so a resumed job was never DRIFT). The server side is bounded by statement_timeout; the docker CLI by
+# a watchdog that kills it after 10 s (its stdout is /dev/null, so it never holds the $(...) open).
+run_q(){
+	( docker exec -e PGOPTIONS='-c statement_timeout=8000' "$DB" psql -U ots -d ots -Atq -v ON_ERROR_STOP=1 -c "$1" 2>&1 &
+	  p=$!
+	  ( sleep 10; kill "$p" 2>/dev/null ) >/dev/null 2>&1 &
+	  w=$!
+	  wait "$p"; r=$?
+	  kill "$w" 2>/dev/null
+	  exit "$r" )
+}
 
 fk=$(run_q "$Q_FK"); rc=$?
 if [ "$rc" -ne 0 ] || [ -z "$fk" ]; then

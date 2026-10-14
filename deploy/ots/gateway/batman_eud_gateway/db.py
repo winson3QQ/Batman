@@ -164,13 +164,13 @@ class Database:
             "last_status": "Connected", "team_id": team_id, "team_role": _cut(group_role),
         }
         with self.engine.begin() as c:
-            exists = c.execute(text("SELECT id FROM euds WHERE uid = :u"), {"u": uid}).first()
-            if exists is None:
-                vals["user_id"] = user_id
-                c.execute(text(
-                    "INSERT INTO euds (uid, callsign, device, os, platform, version, phone_number, last_event_time, "
-                    "last_status, user_id, team_id, team_role) VALUES (:uid, :callsign, :device, :os, :platform, "
-                    ":version, :phone_number, :last_event_time, :last_status, :user_id, :team_id, :team_role)"), vals)
+            # insert-or-nothing in ONE statement: no SELECT-then-INSERT race with a concurrent writer of the row
+            r = c.execute(text(
+                "INSERT INTO euds (uid, callsign, device, os, platform, version, phone_number, last_event_time, "
+                "last_status, user_id, team_id, team_role) VALUES (:uid, :callsign, :device, :os, :platform, "
+                ":version, :phone_number, :last_event_time, :last_status, :user_id, :team_id, :team_role) "
+                "ON CONFLICT (uid) DO NOTHING"), dict(vals, user_id=user_id))
+            if r.rowcount == 1:
                 return "inserted"
             sets = ("device=:device, os=:os, platform=:platform, version=:version, phone_number=:phone_number, "
                     "last_event_time=:last_event_time, last_status=:last_status, team_id=:team_id, team_role=:team_role")
@@ -187,12 +187,10 @@ class Database:
         cs = _cut(callsign) if (callsign and self.callsign_free(callsign, uid)) else None
         now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
         with self.engine.begin() as c:
-            exists = c.execute(text("SELECT id FROM euds WHERE uid = :u"), {"u": uid}).first()
-            if exists is None:
-                c.execute(text("INSERT INTO euds (uid, callsign, last_status, last_event_time, user_id) "
-                               "VALUES (:u, :c, 'Connected', :t, :uid_)"),
+            r = c.execute(text("INSERT INTO euds (uid, callsign, last_status, last_event_time, user_id) "
+                               "VALUES (:u, :c, 'Connected', :t, :uid_) ON CONFLICT (uid) DO NOTHING"),
                           {"u": uid, "c": cs, "t": now, "uid_": user_id if adopt else None})
-            else:
+            if r.rowcount != 1:
                 c.execute(text("UPDATE euds SET last_status='Connected', last_event_time=:t" +
                                (", user_id=:uid_" if adopt else "") + " WHERE uid=:u"),
                           {"u": uid, "t": now, "uid_": user_id})

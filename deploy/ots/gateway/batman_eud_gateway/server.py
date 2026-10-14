@@ -215,12 +215,20 @@ class Protocol(asyncio.Protocol):
                     else:
                         self.gw.stats["pre_ident_dropped"] += 1
                     continue
+                if self.port == self.s.tls_port and c.user_id is None:
+                    # the cert lookup is still running: identify later with the FIRST SA, keep everything after it
+                    # (a burst of reports in the first write must not lose all but one, C2B-5)
+                    if self._first_sa is None:
+                        if ev.identifies:
+                            self._first_sa = ev
+                    elif len(self._pre_ident) < 64:
+                        self._pre_ident.append(ev)
+                    else:
+                        self.gw.stats["pre_ident_dropped"] += 1
+                    continue
                 if not ev.identifies:
                     continue
-                if self.port == self.s.tls_port and c.user_id is None:
-                    self._first_sa = ev          # the cert lookup is still running: keep the newest SA
-                else:
-                    self._ident_task = self.gw.spawn(self.gw.identify(self, c, ev))
+                self._ident_task = self.gw.spawn(self.gw.identify(self, c, ev))
                 continue
             self.gw.uplink(c, ev)
 
@@ -431,9 +439,8 @@ class Gateway:
         self.uplink(c, ev)
         for pending in proto.take_pre_ident():
             self.uplink(c, pending)
-        if c.closed:
-            # the socket died during the awaits above: the device must not outlive it (C1A-1)
-            self.on_connection_closed(c, "closed during identification")
+        # a socket that died during the awaits above was already ended by its own connection_lost (Table.identify
+        # refuses a closed connection, so it never became a device after its close): nothing more to do (C2B-3)
 
     async def _write_row(self, dev: Device, ev: cot.Event, adopt: bool) -> None:
         """M5 store-before-route: the row before the first publish; minimal row as the fallback;

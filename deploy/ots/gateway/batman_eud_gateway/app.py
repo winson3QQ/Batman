@@ -204,6 +204,7 @@ class App:
     def _snapshot(self, now: float) -> None:
         snap = self.gw.table.snapshot(now)
         snap.update({
+            "conns": len(self.gw.conns),          # every accepted socket the gateway still holds (pre-TLS included)
             "uptime_s": round(now - self.started, 1), "written_monotonic": round(now, 1),
             "version": __version__, "listening": self.listening, "amqp_open": self.broker.open,
             "amqp_down_s": (None if self.broker.down_since is None else round(now - self.broker.down_since, 1)),

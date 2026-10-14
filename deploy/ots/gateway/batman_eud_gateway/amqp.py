@@ -127,6 +127,9 @@ class Broker:
 
     # -- lifecycle -------------------------------------------------------------------------------
     def start(self) -> None:
+        # the AMQP-down clock starts when we first try the broker, not when the object was built (the start
+        # sequence may have waited minutes for the schema before, C2B-2)
+        self.down_since = time.monotonic()
         self._connect()
 
     def _connect(self) -> None:
