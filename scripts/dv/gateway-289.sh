@@ -48,7 +48,7 @@ gw_bh() { timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 
 # gw_bh_bites <ots>: the drop counters moved (the stale client keeps sending pings) — else the scenario was not made
 gw_bh_bites() { local d; sleep "${2:-12}"; d=$(gw_bh "$1" count | sed -n 's/^DROPPED \([0-9]*\)$/\1/p'); echo "black hole dropped ${d:-?} packet(s)"; isint "$d" && [ "$d" -gt 0 ]; }
 # gw_cleanup <ots> <run-prefix> <user-prefix> <n-users>: rows (RESTRICT order), users, certs, queues; FAIL on leftovers
-gw_cleanup() { local ots=$1 run=$2 p=$3 n=$4 o rc=0 i c err
+gw_cleanup() { local ots=$1 run=$2 p=$3 n=$4 o rc=0 i c err sql
   # the run's last goodbyes are still on their way to cot_parser when the clients have just left: a cot row inserted
   # between our delete of cot and of euds makes RESTRICT abort the whole transaction (rc 1 run: "[2 2]" left)
   for i in 1 2 3 4 5 6 7 8 9 10; do o=$(gw_snap "$ots" | grep -c "\"$run-"); [ "${o:-1}" = 0 ] && break; sleep 2; done
@@ -56,14 +56,11 @@ gw_cleanup() { local ots=$1 run=$2 p=$3 n=$4 o rc=0 i c err
   # run's cot row count has not moved for 4 s (rc 3: the fixed sleep lost the race twice, "[2 2]")
   o=$(echo "select count(*) from cot where sender_uid like '$run-%' or uid like '$run-%';" | ots_sql "$ots")
   for i in 1 2 3 4 5 6 7 8; do sleep 4; c=$(echo "select count(*) from cot where sender_uid like '$run-%' or uid like '$run-%';" | ots_sql "$ots"); [ "$c" = "$o" ] && break; o=$c; done
-  err=$(ots_sql "$ots" 2>&1 <<SQL | grep -i "error" | head -2 | tr '\n' ' ')
-begin; delete from cot where sender_uid like '$run-%' or uid like '$run-%' or sender_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from points where device_uid like '$run-%' or device_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from geochat where sender_uid like '$run-%' or sender_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from euds where uid like '$run-%' or user_id in (select id from "user" where username like '$p-u%'); delete from "user" where username like '$p-u%'; commit;
-SQL
+  sql="begin; delete from cot where sender_uid like '$run-%' or uid like '$run-%' or sender_uid in (select uid from euds where user_id in (select id from \"user\" where username like '$p-u%')); delete from points where device_uid like '$run-%' or device_uid in (select uid from euds where user_id in (select id from \"user\" where username like '$p-u%')); delete from geochat where sender_uid like '$run-%' or sender_uid in (select uid from euds where user_id in (select id from \"user\" where username like '$p-u%')); delete from euds where uid like '$run-%' or user_id in (select id from \"user\" where username like '$p-u%'); delete from \"user\" where username like '$p-u%'; commit;"
+  err=$(printf '%s\n' "$sql" | ots_sql "$ots" 2>&1 | grep -i "error" | head -2 | tr '\n' ' ')
   o=$(echo "select (select count(*) from euds where uid like '$run-%') || ' ' || (select count(*) from \"user\" where username like '$p-u%');" | ots_sql "$ots")
   if [ "$o" != "0 0" ]; then
-    sleep 6; err=$(ots_sql "$ots" 2>&1 <<SQL | grep -i "error" | head -2 | tr '\n' ' ')
-begin; delete from cot where sender_uid like '$run-%' or uid like '$run-%' or sender_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from points where device_uid like '$run-%' or device_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from geochat where sender_uid like '$run-%' or sender_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from euds where uid like '$run-%' or user_id in (select id from "user" where username like '$p-u%'); delete from "user" where username like '$p-u%'; commit;
-SQL
+    sleep 6; err=$(printf '%s\n' "$sql" | ots_sql "$ots" 2>&1 | grep -i "error" | head -2 | tr '\n' ' ')
     o=$(echo "select (select count(*) from euds where uid like '$run-%') || ' ' || (select count(*) from \"user\" where username like '$p-u%');" | ots_sql "$ots")
   fi
   [ "$o" = "0 0" ] || { echo "FAIL cleanup left rows/users: [$o]; psql: [${err:-no error text}]; cot rows of the run still there (timestamp uid): $(echo "select timestamp || ' ' || coalesce(sender_uid, uid) from cot where sender_uid like '$run-%' or uid like '$run-%' order by timestamp desc limit 5;" | ots_sql "$ots" | tr '\n' ';')"; rc=1; }
@@ -139,7 +136,9 @@ chk_zombie_289() { local ots=$1 run o rc=0 port t0 d0 d1 cnt sq
   # and the TLS layer (256 KiB) fill (~0.9 MiB measured on loopback) and the gateway's writer blocks on it
   # (pause_writing). The pre-fix gateway (C1A-2/C1B-1) stayed stuck there and B below got nothing. 12 x 60 KiB
   # did NOT reach pause_writing (B3 closure): the leg asserts the stale device's sendq > 0 before the reconnect.
-  o=$(gwc "$ots" ots_cot_parser 120 ACTION=stream UID="$run-F" CS="$run-F" CERT=/tmp/GWZ-u2.pem KEY=/tmp/GWZ-u2.key N=24 DELAY=0.2 PAD=60000 HOLD=2 | tr -d '\r' | tail -1); echo "filler to the stale socket: $o"
+  # paced at 60 KiB / 2 s, under the gateway's per-session uplink bucket (32 KiB/s, burst 256 KiB, M1): at 0.2 s
+  # the gateway read only ~640 KiB of the 1.4 MiB before the filler closed and sendq stayed 0 (rc 4 run)
+  o=$(gwc "$ots" ots_cot_parser 120 ACTION=stream UID="$run-F" CS="$run-F" CERT=/tmp/GWZ-u2.pem KEY=/tmp/GWZ-u2.key N=24 DELAY=2 PAD=60000 HOLD=5 | tr -d '\r' | tail -1); echo "filler to the stale socket: $o"
   echo "$o" | grep -q '^SENT 24' || { echo "FAIL the filler stream was not sent — the stuck-writer scenario was not made"; rc=1; }
   sq=$(sleep 11; gw_snap "$ots" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(x["sendq"] for x in d["devices"] if x["uid"] == "'"$run-A"'"))' 2>/dev/null)
   echo "stale device's sendq before the reconnect: [${sq:-?}] (> 0: its writer is blocked on the black-holed socket)"
