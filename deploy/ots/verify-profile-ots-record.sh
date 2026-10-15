@@ -12,14 +12,33 @@
 # relation does not exist yet (first boot), auth error, timeout (8 s).
 # On the OTA trial boot that introduces the gateway the FKs are CASCADE until its migration ran: one DRIFT
 # tick, OK after (design §4, B3-12).
+# SEC-11: an UNKNOWN that persists is itself a finding (a broken psql, a changed password, a DB that never comes
+# back: the record goes unwatched). The first UNKNOWN of a streak is remembered in the root-only run dir; one that
+# has lasted UNKNOWN_MAX_S (600 s, the guardian's window) is DRIFT. A definite verdict (OK or DRIFT) clears it.
 set -u
+UNKNOWN_MAX_S=${UNKNOWN_MAX_S:-600}
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh   # #280: root-only run dir (RUNDIR)
+SINCE=""
+if type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null; then SINCE="$RUNDIR/batman-ots-record-unknown-since"; fi
+up_s(){ cut -d. -f1 /proc/uptime; }
+unknown(){   # $1 = reason; exit 0 (UNKNOWN) or 1 (DRIFT: the streak is older than UNKNOWN_MAX_S)
+	t0=""; [ -n "$SINCE" ] && t0=$(cat "$SINCE" 2>/dev/null)
+	case "$t0" in ''|*[!0-9]*) t0=$(up_s); [ -n "$SINCE" ] && echo "$t0" > "$SINCE" ;; esac
+	age=$(( $(up_s) - t0 ))
+	if [ "$age" -ge "$UNKNOWN_MAX_S" ]; then
+		echo "verify-profile-ots-record: DRIFT record check UNKNOWN for ${age} s ($1)"; exit 1
+	fi
+	echo "verify-profile-ots-record: UNKNOWN ($1; ${age} s of ${UNKNOWN_MAX_S} s before DRIFT)"; exit 0
+}
+known(){ [ -n "$SINCE" ] && rm -f "$SINCE"; }
 DB=ots-db
 # confdeltype is "char": cast it, or PG 16 says `operator is not unique: text || "char"` (seen on 04, rc 3)
 Q_FK="SELECT string_agg(conname || '=' || confdeltype::text, ',' ORDER BY conname) FROM pg_constraint WHERE contype='f' AND conname IN ('cot_eud','point_eud','geochat_eud');"
 Q_JOBS="SELECT coalesce(string_agg(id, ',' ORDER BY id), '') FROM apscheduler_jobs WHERE id IN ('delete_old_data','purge_data') AND next_run_time IS NOT NULL;"
 
 if [ "$(docker inspect -f '{{.State.Running}}' "$DB" 2>/dev/null)" != true ]; then
-	echo "verify-profile-ots-record: UNKNOWN ($DB not running)"; exit 0
+	unknown "$DB not running"
 fi
 # bounded without timeout(1): the node's busybox has no timeout applet (rc 1 on 04: "timeout: not found" made every
 # tick UNKNOWN, so a resumed job was never DRIFT). The server side is bounded by statement_timeout; the docker CLI by
@@ -36,14 +55,15 @@ run_q(){
 
 fk=$(run_q "$Q_FK"); rc=$?
 if [ "$rc" -ne 0 ] || [ -z "$fk" ]; then
-	echo "verify-profile-ots-record: UNKNOWN (fk query rc=$rc: $(echo "$fk" | head -1))"; exit 0
+	unknown "fk query rc=$rc: $(echo "$fk" | head -1)"
 fi
 jobs=$(run_q "$Q_JOBS"); rc=$?
 if [ "$rc" -ne 0 ]; then
-	case "$jobs" in *"does not exist"*) echo "verify-profile-ots-record: UNKNOWN (apscheduler_jobs absent yet)"; exit 0 ;; esac
-	echo "verify-profile-ots-record: UNKNOWN (jobs query rc=$rc: $(echo "$jobs" | head -1))"; exit 0
+	case "$jobs" in *"does not exist"*) unknown "apscheduler_jobs absent yet" ;; esac
+	unknown "jobs query rc=$rc: $(echo "$jobs" | head -1)"
 fi
 
+known   # a definite verdict follows: the UNKNOWN streak (if any) is over
 drift=0
 case "$fk" in
 	*cot_eud=r*geochat_eud=r*point_eud=r*) ;;

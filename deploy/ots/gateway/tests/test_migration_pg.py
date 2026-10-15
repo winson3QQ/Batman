@@ -60,7 +60,8 @@ def test_migration_idempotent_and_validated(pg):
     assert pg.fk_states() == {"cot_eud": "c", "point_eud": "c", "geochat_eud": "c"}
     assert pg.migrate_record_fks() == {"cot_eud": "migrated", "point_eud": "migrated", "geochat_eud": "migrated"}
     assert pg.fk_states() == {"cot_eud": "r", "point_eud": "r", "geochat_eud": "r"}
-    assert pg.migrate_record_fks() == {"cot_eud": "already", "point_eud": "already", "geochat_eud": "already"}
+    pg.migrate_record_fks()                       # its VALIDATE runs with statement_timeout lifted
+    assert set(pg.fk_states().values()) == {"r"}
     # RESTRICT holds: a device with history cannot be deleted; one without can
     pg.minimal_eud("A1", 1, None, adopt=True)
     pg.minimal_eud("A2", 1, None, adopt=True)
@@ -92,3 +93,23 @@ def test_pg_only_sql_paths(pg):
     assert pg.sweep_connected() == 1 and pg.sweep_connected() == 0
     j = pg.eud_json("A1")
     assert j["username"] == "alice" and j["team"] == "Cyan"
+
+
+def test_every_statement_is_bounded_server_side(pg):
+    """C3B-C4: a query that waits on another session's row lock is cancelled by the server after 5 s (it held an
+    executor thread for as long as the lock lived), while the migration's VALIDATE is exempt."""
+    import time
+    pg.write_eud("LOCKED", None, None, None, None, None, None, None, None, None, None, adopt=False)
+    other = sa.create_engine(PG_URL, future=True)
+    with other.connect() as c:
+        t = c.begin()
+        c.execute(text("SELECT 1 FROM euds WHERE uid='LOCKED' FOR UPDATE"))
+        t0 = time.monotonic()
+        with pytest.raises(sa.exc.OperationalError) as e:
+            pg.set_disconnected(["LOCKED"])
+        took = time.monotonic() - t0
+        t.rollback()
+    other.dispose()
+    assert "statement timeout" in str(e.value) and 4.5 <= took <= 8, (took, str(e.value)[:120])
+    pg.migrate_record_fks()                       # its VALIDATE runs with statement_timeout lifted
+    assert set(pg.fk_states().values()) == {"r"}

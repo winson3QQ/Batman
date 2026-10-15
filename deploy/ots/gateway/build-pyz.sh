@@ -9,6 +9,10 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 cp -r "$HERE/batman_eud_gateway" "$T/"
 find "$T" -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
 find "$T" -type f -exec sed -i 's/\r$//' {} +
+# C3B-C6: the log/healthz version names the source it was built from - a hash of the package's .py files (sorted,
+# CRLF-normalised above), so a rebuild of the same source gives the same stamp and the same pyz
+SRC=$(cd "$T" && find batman_eud_gateway -type f -name '*.py' | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-12)
+echo "SOURCE = \"$SRC\"" > "$T/batman_eud_gateway/_build.py"
 cat > "$T/__main__.py" <<'EOF'
 import sys
 from batman_eud_gateway.app import main

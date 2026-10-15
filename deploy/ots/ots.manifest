@@ -75,6 +75,7 @@ ENV OTS_LISTENER_ADDRESS=0.0.0.0
 ENV OTS_FQDN=_
 ENV OTS_MEDIAMTX_API_ADDRESS=http://localhost:9997
 ENV GATEWAY_OTS_VERSION=1.7.13
+ENV MALLOC_MMAP_THRESHOLD_=131072
 ENTRYPOINT python3 /app/eud-gateway.pyz
 VOLUME ots-appdata:/app/ots
 MOUNT eud-gateway.pyz:/app/eud-gateway.pyz:ro

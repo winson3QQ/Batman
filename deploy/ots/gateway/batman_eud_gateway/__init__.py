@@ -7,3 +7,8 @@ Mechanisms are numbered M1–M18 as in the design; every module names the ones i
 """
 
 __version__ = "0.1.0"
+try:   # build-pyz.sh writes the content hash of this package into _build.py (C3B-C6)
+    from ._build import SOURCE as _SOURCE
+    __version__ = f"{__version__}+src.{_SOURCE}"
+except ImportError:   # a source checkout (tests): no stamp
+    pass

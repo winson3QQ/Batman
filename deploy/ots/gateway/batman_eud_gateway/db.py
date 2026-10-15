@@ -60,8 +60,11 @@ class Database:
     def __init__(self, url: str, pool_size: int = 4):
         kw = {}
         if not url.startswith("sqlite"):
+            # a stalled DB must not pin an executor thread for ever: connect bounded, and EVERY statement bounded
+            # server-side (C3B-C4: a row lock held elsewhere kept set_disconnected 3 s+; 4 such calls fill the pool's
+            # executor threads and every db_call after them times out). The migration lifts it for its VALIDATE.
             kw = dict(pool_size=pool_size, max_overflow=2, pool_pre_ping=True, pool_recycle=1800,
-                      connect_args={"connect_timeout": 5})     # a stalled DB must not pin an executor thread for ever
+                      connect_args={"connect_timeout": 5, "options": "-c statement_timeout=5000"})
         self.engine = sa.create_engine(url, future=True, **kw)
         self.is_pg = self.engine.dialect.name == "postgresql"
 
@@ -107,6 +110,7 @@ class Database:
                     f'REFERENCES euds(uid) ON DELETE RESTRICT NOT VALID'))
             with self.engine.begin() as c:
                 c.execute(text("SET LOCAL lock_timeout = '5s'"))
+                c.execute(text("SET LOCAL statement_timeout = 0"))   # VALIDATE scans the table: no 5 s cap here
                 c.execute(text(f'ALTER TABLE "{table}" VALIDATE CONSTRAINT "{name}"'))
             res[name] = "migrated"
         return res
