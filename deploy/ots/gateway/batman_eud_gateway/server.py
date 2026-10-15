@@ -113,6 +113,12 @@ class Protocol(asyncio.Protocol):
                 self.gw.log_refusal(f"refusing cert from {c.addr}: handshake failed ({type(e).__name__}: {str(e)[:80]})")
                 self.gw.stats["handshake_failed"] += 1
                 c.close_reason = "handshake failed"
+            # MEM-1: the exception's traceback references start_tls's frame, whose local waiter references the
+            # exception again: a reference CYCLE that keeps the SSLProtocol and its 256 KiB _ssl_buffer alive until
+            # a full GC (which the big buffers never trigger). 300 failed handshakes held ~90 MiB on 04; floods
+            # kept adding. Breaking the cycle here frees them at once (refcount).
+            e.__traceback__ = None
+            del e
             try:
                 raw_transport.abort()
             except Exception:

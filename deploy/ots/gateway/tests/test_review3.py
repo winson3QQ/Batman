@@ -274,3 +274,38 @@ def test_pending_disconnect_is_cancelled_by_a_live_device(stack, db, pki):
     assert stack.gw.pending_disconnects == {}
     assert db.eud("ANDROID-R1")["last_status"] == "Connected"
     w.close(); stack.run(0.3)
+
+
+# ---- MEM-1: failed handshakes leave no SSLProtocol behind (the traceback cycle) --------------------------------
+def test_failed_handshakes_free_their_ssl_protocol(db, pki):
+    """MEM-1 (node 04: 300 raw sockets left ~90 MiB held after they all timed out): the start_tls exception's
+    traceback -> frame -> waiter -> exception cycle kept every SSLProtocol (256 KiB buffer each) until a full GC.
+    With the cycle broken they go at once. gc is disabled during the test so only refcounting can free them:
+    the pre-fix gateway leaves one SSLProtocol per failed handshake (FAIL)."""
+    import gc
+    import socket
+    s = config.load({})
+    s = config.dataclasses.replace(s, tls_port=free_port(), health_port=free_port(), handshake_s=0.5)
+    st = Stack(db, pki, s)
+    gc.disable()
+    # earlier tests in this process leave client-side SSLProtocols behind (closed loops, TimerHandles): count only
+    # the ones that appear during THIS test (`pre` is kept alive past the assert so no id is reused)
+    pre = [o for o in gc.get_objects() if type(o).__name__ == "SSLProtocol"]
+    pre_ids = {id(o) for o in pre}
+    try:
+        raws = []
+        for i in range(30):
+            raws.append(socket.create_connection(("127.0.0.1", st.port)))          # never a ClientHello
+        for i in range(30):
+            g = socket.create_connection(("127.0.0.1", st.port)); g.sendall(b"GET / HTTP/1.0\r\n\r\n"); raws.append(g)
+        st.run(1.5)                                                               # every handshake failed by now
+        assert st.gw.table.pending == {} and st.gw.conns == {}
+        assert st.gw.stats["handshake_failed"] >= 60
+        held = sum(1 for o in gc.get_objects() if type(o).__name__ == "SSLProtocol" and id(o) not in pre_ids)
+        assert held == 0, f"{held} SSLProtocol objects kept alive by the exception/traceback cycle"
+        assert pre is not None
+        for r in raws:
+            r.close()
+    finally:
+        gc.enable()
+        st.close()
