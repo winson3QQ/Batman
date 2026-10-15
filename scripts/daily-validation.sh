@@ -2096,7 +2096,8 @@ bchk_rejoin_245() {   # DNODE leaves+rejoins the mesh; assert peers never kernel
 
 # ---- #274 payload converge / clean stop (docs/design/274-payload-converge.md §6) ----
 ots_ids() { fssh "$1" 20 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); for c in $(awk "/^CONTAINER /{print \$2}" "$m"); do echo "$c $(docker inspect -f "{{.Id}}" $c 2>/dev/null | cut -c1-12)"; done' | tr -d '\r'; }
-ots_ready() { fssh "$1" 20 '[ "$(docker ps -q | wc -l)" -ge 6 ] && docker exec ots-db pg_isready -q && wget -q -T 5 -O /dev/null http://172.20.0.5:8081/api/health' >/dev/null 2>&1; }
+# the container count comes from the node's manifest (OTS_N: 6 on the overlay build, 5 on the gateway build; #289)
+ots_ready() { fssh "$1" 20 '[ "$(docker ps -q | wc -l)" -ge '"$OTS_N"' ] && docker exec ots-db pg_isready -q && wget -q -T 5 -O /dev/null http://172.20.0.5:8081/api/health' >/dev/null 2>&1; }
 # the guardian's LAST "converge done ... uptime=<s.ss>" line (unique: it carries the uptime). Compared by content,
 # not counted: a rebuild logs enough to push older lines out of the logread ring, so a count can stand still.
 conv_last() { fssh "$1" 15 'logread | grep "batman-payload\[opentakserver\]: converge done" | tail -1 | sed -n "s/.*\(converge done.*\)/\1/p"' | tr -d '\r'; }
