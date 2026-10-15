@@ -1744,6 +1744,14 @@ chk_soak_run() { local n o dur rc=0 m peer other
   done
   [ "$OTS_EUD" = gateway ] && { wait; echo "generator: $(rd "$DIR/soak-cot-289.gen" | tail -1)"; }
   sleep 20   # let cot_parser drain
+  if [ "$OTS_EUD" = gateway ]; then
+    # the device's goodbye lands after the client left: wait for the device to end and the run's cot count to settle,
+    # or the euds delete below meets a fresh cot row and RESTRICT rolls the whole cleanup back (rc 5: 9902 left)
+    local i a b
+    for i in 1 2 3 4 5 6 7 8 9 10; do a=$(gw_snap "$OTS_NODE" | grep -c "\"$SOAK_RUN-"); [ "${a:-1}" = 0 ] && break; sleep 2; done
+    a=$(echo "select count(*) from cot where uid like '$SOAK_RUN-%' or sender_uid like '$SOAK_RUN-%';" | ots_sql "$OTS_NODE")
+    for i in 1 2 3 4 5 6 7 8; do sleep 4; b=$(echo "select count(*) from cot where uid like '$SOAK_RUN-%' or sender_uid like '$SOAK_RUN-%';" | ots_sql "$OTS_NODE"); [ "$b" = "$a" ] && break; a=$b; done
+  fi
   # distinct (uid, timestamp): the generator sends one batch of 5 uids per second (batches >= 1 s apart), so every
   # sent CoT is one distinct pair; distinct uid alone is always 5 (02/03 full run 2026-10-13: "stored=5" vs 8955 sent)
   echo "stored $(echo "select count(distinct (uid, timestamp)) from cot where uid like '$SOAK_RUN-S-%';" | ots_sql "$OTS_NODE")" >> "$DIR/soak.samples"
