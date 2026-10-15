@@ -16,11 +16,11 @@ gw_last() { rd "$1" | tail -1; }
 # (4 users) stream 1 event / 0.5 s for 60 s. Asserted: no client session cut (no CONNLOST); every CoT stored
 # after (4 x 120 distinct); the 4 rows Connected again within one reconcile cycle; gateway not restarted.
 # Negative control: offline tests/test_review3.py (end with the DB down) + design (overlay: FK-dropped CoT).
-chk_dbdown_289() { local ots=$1 run o rc=0 k st0 st1 n paused=0
+chk_dbdown_289() { local ots=$1 run o rc=0 k st0 st1 n paused=0 GWC=opentakserver
   gw_pre "$ots" || return $?
   gw_users "$ots" GWB 4 || return 1
   run=DVB$(date +%H%M%S); st0=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_eud_gateway' | tr -d '\r')
-  for k in 1 2 3 4; do ( gwc "$ots" ots_cot_parser 150 ACTION=stream UID="$run-u$k" CS="$run-u$k" CERT=/tmp/GWB-u$k.pem KEY=/tmp/GWB-u$k.key N=120 DELAY=0.5 HOLD=20 > "$DIR/dbdown-289.$k" ) & sleep 0.3; done
+  for k in 1 2 3 4; do ( gwc "$ots" $GWC 150 ACTION=stream UID="$run-u$k" CS="$run-u$k" CERT=/tmp/GWB-u$k.pem KEY=/tmp/GWB-u$k.key N=120 DELAY=0.5 HOLD=20 > "$DIR/dbdown-289.$k" ) & sleep 0.3; done
   sleep 10
   o=$(fssh "$ots" 20 'docker pause ots-db >/dev/null 2>&1 && echo PAUSED || echo "pause failed"' | tr -d '\r'); echo "t=10 s: ots-db $o"
   [ "$o" = PAUSED ] && paused=1 || { echo "FAIL could not pause ots-db — not verified"; rc=1; }
@@ -32,7 +32,7 @@ chk_dbdown_289() { local ots=$1 run o rc=0 k st0 st1 n paused=0
     echo "$o" | grep -q '^SENT 120' || { echo "FAIL client $k did not send 120 ($o)"; rc=1; }
     rd "$DIR/dbdown-289.$k" | grep -q CONNLOST && { echo "FAIL client $k's session was cut while the DB was away"; rc=1; }; done
   sleep 40
-  n=$(gw_stored "$ots" "$run-"); echo "stored distinct uids: $n / 480 (4 x 120, cached while the DB was away, flushed after)"
+  n=$(gw_stored "$ots" "$run-u%-p"); echo "stored distinct stream uids: $n / 480 (4 x 120, cached while the DB was away, flushed after)"
   isint "$n" && [ "$n" = 480 ] || { echo "FAIL $((480 - ${n:-0})) CoT lost across the DB outage"; rc=1; }
   o=$(echo "select count(*) from euds where uid like '$run-%' and last_status='Disconnected';" | ots_sql "$ots" | tr -d ' \r')
   echo "rows Disconnected after the clients left: $o / 4"; [ "$o" = 4 ] || { echo "FAIL presence not re-asserted / ended after the outage ($o of 4 Disconnected)"; rc=1; }
@@ -42,16 +42,18 @@ chk_dbdown_289() { local ots=$1 run o rc=0 k st0 st1 n paused=0
   gw_cleanup "$ots" "$run" GWB 4 || rc=1
   return $rc; }
 
-# broker-restart-289 (tier B by design; `rabbitmqctl stop_app` 15 s then start_app: the container stays, the
-# guardian sees nothing): 4 held devices. Asserted: all 4 sessions KEPT; after the broker is back a teammate's
+# broker-restart-289 (tier B: `rabbitmqctl stop_app` 15 s then start_app keeps the rabbitmq container, but
+# cot_parser EXITS on the broker loss (upstream pika) and the guardian restarts it — a ledger record, so the suite
+# runs in daily-validation's tier-B block; the clients live in opentakserver, which survives): 4 held devices. Asserted: all 4 sessions KEPT; after the broker is back a teammate's
 # 10-event stream reaches each of the 4 (10/10: queues re-declared, bindings re-placed); `AMQP open` logged
 # again. Negative control: design (overlay ended every session on a broker loss; amqp-close-289 covers the
 # single-close case on the gateway).
-chk_broker_restart_289() { local ots=$1 run o rc=0 k l0 l1
+chk_broker_restart_289() { local ots=$1 run o rc=0 k l0 l1 GWC=opentakserver cp0 cp1
   gw_pre "$ots" || return $?
+  cp0=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_cot_parser' | tr -d '\r')
   gw_users "$ots" GWK 5 || return 1
   run=DVK$(date +%H%M%S); l0=$(gw_log "$ots" "AMQP open"); isint "$l0" || l0=0
-  for k in 1 2 3 4; do ( gwc "$ots" ots_cot_parser 200 ACTION=readcount UID="$run-u$k" CS="$run-u$k" CERT=/tmp/GWK-u$k.pem KEY=/tmp/GWK-u$k.key EXPECT="$run-T-p" N=10 STAY=1 HOLD=110 > "$DIR/broker-restart-289.$k" ) & sleep 0.3; done
+  for k in 1 2 3 4; do ( gwc "$ots" $GWC 200 ACTION=readcount UID="$run-u$k" CS="$run-u$k" CERT=/tmp/GWK-u$k.pem KEY=/tmp/GWK-u$k.key EXPECT="$run-T-p" N=10 STAY=1 HOLD=110 > "$DIR/broker-restart-289.$k" ) & sleep 0.3; done
   sleep 8
   o=$(fssh "$ots" 60 'docker exec rabbitmq rabbitmqctl stop_app >/dev/null 2>&1 && echo STOPPED || echo "stop_app failed"' | tr -d '\r'); echo "t=8 s: broker app $o"
   [ "$o" = STOPPED ] || { echo "FAIL could not stop the broker app — not verified"; rc=1; }
@@ -59,7 +61,8 @@ chk_broker_restart_289() { local ots=$1 run o rc=0 k l0 l1
   o=$(fssh "$ots" 90 'docker exec rabbitmq rabbitmqctl start_app >/dev/null 2>&1 && echo STARTED || echo "start_app failed"' | tr -d '\r'); echo "t=23 s: broker app $o"
   [ "$o" = STARTED ] || { echo "FAIL could not start the broker app"; rc=1; }
   sleep 45   # the gateway reconnects with backoff, re-declares, re-places; the 30 s reconcile re-binds
-  o=$(gwc "$ots" ots_cot_parser 60 ACTION=stream UID="$run-T" CS="$run-T" CERT=/tmp/GWK-u5.pem KEY=/tmp/GWK-u5.key N=10 DELAY=1 HOLD=3 | tr -d '\r' | tail -1); echo "teammate after the restart: $o"
+  cp1=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_cot_parser' | tr -d '\r'); [ "$cp0" = "$cp1" ] && echo "cot_parser kept running through the broker outage" || echo "cot_parser restarted by the guardian during the outage (upstream exits on a broker loss; stated): $cp0 -> $cp1"
+  o=$(gwc "$ots" $GWC 60 ACTION=stream UID="$run-T" CS="$run-T" CERT=/tmp/GWK-u5.pem KEY=/tmp/GWK-u5.key N=10 DELAY=1 HOLD=3 | tr -d '\r' | tail -1); echo "teammate after the restart: $o"
   wait
   for k in 1 2 3 4; do o=$(gw_last "$DIR/broker-restart-289.$k"); echo "device $k: $o"
     echo "$o" | grep -q '^GOT 10 open' || { echo "FAIL device $k: $o (expected GOT 10 open: session kept and re-bound after the broker restart)"; rc=1; }; done
@@ -70,11 +73,11 @@ chk_broker_restart_289() { local ots=$1 run o rc=0 k l0 l1
 # queue-gone-289: cot_parser restarted (`docker restart`, the guardian records it: run in the tier-B block)
 # under a 4-device stream: sessions kept, every CoT stored (the cot_parser queue is durable; bodies unacked at
 # the restart are redelivered). Negative control: design (the overlay re-declared + retried; upstream lost).
-chk_queue_gone_289() { local ots=$1 run o rc=0 k n
+chk_queue_gone_289() { local ots=$1 run o rc=0 k n GWC=opentakserver
   gw_pre "$ots" || return $?
   gw_users "$ots" GWG 4 || return 1
   run=DVG$(date +%H%M%S)
-  for k in 1 2 3 4; do ( gwc "$ots" ots_cot_parser 150 ACTION=stream UID="$run-u$k" CS="$run-u$k" CERT=/tmp/GWG-u$k.pem KEY=/tmp/GWG-u$k.key N=100 DELAY=0.5 HOLD=20 > "$DIR/queue-gone-289.$k" ) & sleep 0.3; done
+  for k in 1 2 3 4; do ( gwc "$ots" $GWC 150 ACTION=stream UID="$run-u$k" CS="$run-u$k" CERT=/tmp/GWG-u$k.pem KEY=/tmp/GWG-u$k.key N=100 DELAY=0.5 HOLD=20 > "$DIR/queue-gone-289.$k" ) & sleep 0.3; done
   sleep 12
   o=$(fssh "$ots" 90 'docker restart -t 5 ots_cot_parser >/dev/null 2>&1 && echo RESTARTED || echo "restart failed"' | tr -d '\r'); echo "t=12 s: cot_parser $o"
   [ "$o" = RESTARTED ] || { echo "FAIL could not restart cot_parser — not verified"; rc=1; }
@@ -83,7 +86,7 @@ chk_queue_gone_289() { local ots=$1 run o rc=0 k n
     echo "$o" | grep -q '^SENT 100' || { echo "FAIL client $k did not send 100 ($o)"; rc=1; }
     rd "$DIR/queue-gone-289.$k" | grep -q CONNLOST && { echo "FAIL client $k's session was cut by the cot_parser restart"; rc=1; }; done
   sleep 30
-  n=$(gw_stored "$ots" "$run-"); echo "stored distinct uids: $n / 400"
+  n=$(gw_stored "$ots" "$run-u%-p"); echo "stored distinct stream uids: $n / 400"
   isint "$n" && [ "$n" = 400 ] || { echo "FAIL $((400 - ${n:-0})) CoT lost across the cot_parser restart"; rc=1; }
   gw_cleanup "$ots" "$run" GWG 4 || rc=1
   return $rc; }
@@ -107,6 +110,8 @@ chk_slowreader_289() { local ots=$1 run o rc=0 k sq
   echo "$o" | grep -q '^SLOW .* open' || { echo "FAIL the slow phone's session was cut ($o)"; rc=1; }
   for k in 2 3 4; do o=$(gw_last "$DIR/slowreader-289.$k"); echo "phone $k: $o"
     echo "$o" | grep -q '^GOT 40 open' || { echo "FAIL phone $k: $o (expected GOT 40 open: unaffected by the slow reader)"; rc=1; }; done
+  # attribution: what the record stored of the burst (uplink side) and what the gateway dropped per phone
+  echo "record: $(gw_stored "$ots" "$run-T-p") / 40 burst events stored; gateway counters: $(gw_snap "$ots" | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["counters"]; print({k: c.get(k, 0) for k in ("downlink", "sendq_dropped", "downlink_malformed", "uplink", "returned", "nacked")})' 2>/dev/null)"
   gw_cleanup "$ots" "$run" GWS 5 || rc=1
   return $rc; }
 
@@ -147,7 +152,7 @@ chk_cert_reload_289() { local ots=$1 run o rc=0 leg v
 # amqp-down-289 (tier B, opens the guardian's DRIFT window: run last): the broker app stopped for 330 s -> the
 # gateway exits 3 (AMQP down > 300 s), the guardian restarts it (ledger), a phone identifies after the broker is
 # back. Negative control: by code (the exit-3 watchdog; offline tests cover the clock).
-chk_amqp_down_289() { local ots=$1 run o rc=0 st0 st1 e0 e1 t0
+chk_amqp_down_289() { local ots=$1 run o rc=0 st0 st1 e0 e1 t0 GWC=opentakserver
   gw_pre "$ots" || return $?
   gw_users "$ots" GWX 1 || return 1
   run=DVX$(date +%H%M%S); st0=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_eud_gateway' | tr -d '\r')
@@ -162,18 +167,18 @@ chk_amqp_down_289() { local ots=$1 run o rc=0 st0 st1 e0 e1 t0
   [ "$o" = STARTED ] || { echo "FAIL could not start the broker app — CHECK rabbitmq ON THE NODE"; rc=1; }
   e1=$(gw_log "$ots" "exit 3"); [ "${e1:-0}" -gt "$e0" ] && echo "exit 3 logged ($e0 -> $e1)" || echo "note: no 'exit 3' line found in the current log file ($e0 -> $e1)"
   sleep 60
-  o=$(gwc "$ots" ots_cot_parser 60 ACTION=hold UID="$run-A" CS="$run-A" CERT=/tmp/GWX-u1.pem KEY=/tmp/GWX-u1.key HOLD=5 | tr -d '\r' | tail -1); echo "phone after the broker is back: $o"
+  o=$(gwc "$ots" $GWC 60 ACTION=hold UID="$run-A" CS="$run-A" CERT=/tmp/GWX-u1.pem KEY=/tmp/GWX-u1.key HOLD=5 | tr -d '\r' | tail -1); echo "phone after the broker is back: $o"
   echo "$o" | grep -q '^KEPT' || { echo "FAIL a phone cannot identify after the broker outage ($o)"; rc=1; }
   gw_cleanup "$ots" "$run" GWX 1 || rc=1
   return $rc; }
 
 gw_register_b() {
   suite dbdown-289 "ots-db paused 20 s under a 4-device stream: sessions kept, 480/480 stored after, rows re-asserted, gateway not restarted (#289 §4 'ots-db down during')" "chk_dbdown_289 $OTS_NODE"
-  suite broker-restart-289 "the broker app stopped 15 s with 4 held devices: all kept, re-declared and re-bound (10/10 after), reconnect logged (#289 §4 'broker restart')" "chk_broker_restart_289 $OTS_NODE"
   suite slowreader-289 "a phone reading at ~20 kbit/s under a 1.2 MiB burst: session kept, sendq bounded, 3 normal phones 40/40 (#289 §4 'slow reader')" "chk_slowreader_289 $OTS_NODE"
   suite cert-reload-289 "an expired and a future CRL are ignored (phones still connect), a valid CRL listing the test cert refuses it; the original CRL honoured again after (#289 M14)" "chk_cert_reload_289 $OTS_NODE"
 }
 gw_register_b_destructive() {
+  suite broker-restart-289 "the broker app stopped 15 s with 4 held devices: all kept, re-declared and re-bound (10/10 after), reconnect logged; cot_parser's restart by the guardian stated (#289 §4 'broker restart'; tier B)" "chk_broker_restart_289 $OTS_NODE" D
   suite queue-gone-289 "cot_parser restarted under a 4-device stream: sessions kept, 400/400 stored (#289 §4 'cot_parser restart'; opens the guardian's ledger window)" "chk_queue_gone_289 $OTS_NODE" D
   suite amqp-down-289 "broker app down > 300 s: the gateway exits 3, the guardian restarts it, a phone identifies after (#289 §4 'exit 3'; tier B)" "chk_amqp_down_289 $OTS_NODE" D
 }

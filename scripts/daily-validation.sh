@@ -2402,7 +2402,7 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     suite crash-274 "crash / PRIMARY / loop backoff / old config / respawn / rm / docker update / docker stop / hung health check: the guardian restarts, records, and DRIFTs (#274 §12, destructive)" "p274 $OTS_NODE crash" D
     suite dockerd-restart-274 "dockerd restart stops the tenant gracefully; the guardian brings it back in order (#274 §12, destructive)" "p274 $OTS_NODE dockerd" D
     if [ "$OTS_EUD" = gateway ]; then gw_register_b_destructive
-    else for s289 in queue-gone-289 amqp-down-289; do na "$s289" "gateway suites: the overlay build has no gateway (#289)"; done; fi
+    else for s289 in broker-restart-289 queue-gone-289 amqp-down-289; do na "$s289" "gateway suites: the overlay build has no gateway (#289)"; done; fi
   else   # not back within 300 s after the destructive tier = a real finding, never a SKIP (#274 review C6)
     suite converge-274 "guardian converges a changed config (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
     suite cleanstop-274 "clean reboot stop/start (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"

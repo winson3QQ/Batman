@@ -29,13 +29,16 @@ gw_pre() { local o
   o=$(gw_health "$1"); case "$o" in *'"ok": true'*) ;; *) echo "FAIL gateway healthz not ok: [$o]"; return 1 ;; esac
   o=$(gw_devices "$1"); isint "$o" || { echo "FAIL snapshot unreadable ([$o])"; return 1; }
   echo "gateway up: healthz ok, $o device(s) before the test"; }
-# gw_users <ots> <prefix> <n>: n non-admin test users + 1-day certs at ots_cot_parser:/tmp/<prefix>-u<k>.{pem,key}
+# gw_users <ots> <prefix> <n>: n non-admin test users + 1-day certs at $GWC:/tmp/<prefix>-u<k>.{pem,key}
+# GWC = the container the clients and their certs live in (default ots_cot_parser; the suites that stop the broker
+# or restart cot_parser use opentakserver, which survives both — cot_parser exits on a broker loss and is restarted)
+GWC=${GWC:-ots_cot_parser}
 gw_users() { local ots=$1 p=$2 n=$3 k o
   for k in $(seq 1 "$n"); do
     echo "delete from \"user\" where username='$p-u$k'; insert into \"user\" (username, active, fs_uniquifier) values ('$p-u$k', true, md5(random()::text));" | ots_sql "$ots" >/dev/null
-    o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "docker exec -i -e CN=$p-u$k ots_cot_parser python3 -" < "$REPO/scripts/node/ots-test-client-cert.py" 2>&1 | tr -d '\r')
+    o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "docker exec -i -e CN=$p-u$k $GWC python3 -" < "$REPO/scripts/node/ots-test-client-cert.py" 2>&1 | tr -d '\r')
     echo "$o" | grep -q '^OK test client cert' || { echo "FAIL could not issue the test cert for $p-u$k: $o"; return 1; }
-    fssh "$ots" 15 "docker exec ots_cot_parser sh -c 'mv /tmp/dv-client.pem /tmp/$p-u$k.pem; mv /tmp/dv-client.key /tmp/$p-u$k.key'"
+    fssh "$ots" 15 "docker exec $GWC sh -c 'mv /tmp/dv-client.pem /tmp/$p-u$k.pem; mv /tmp/dv-client.key /tmp/$p-u$k.key'"
   done; echo "$n test user(s) $p-u1..$n with 1-day certs (node clock)"; }
 # gwc <ots> <ctr> <timeout> <env...>: run gw-client-289.py inside <ctr> with the given -e assignments.
 # No `tr` on the output: a pipe would buffer a backgrounded client's "PORT n" line until it exits (the first run
@@ -64,7 +67,7 @@ gw_cleanup() { local ots=$1 run=$2 p=$3 n=$4 o rc=0 i c err sql
     o=$(echo "select (select count(*) from euds where uid like '$run-%') || ' ' || (select count(*) from \"user\" where username like '$p-u%');" | ots_sql "$ots")
   fi
   [ "$o" = "0 0" ] || { echo "FAIL cleanup left rows/users: [$o]; psql: [${err:-no error text}]; cot rows of the run still there (timestamp uid): $(echo "select timestamp || ' ' || coalesce(sender_uid, uid) from cot where sender_uid like '$run-%' or uid like '$run-%' order by timestamp desc limit 5;" | ots_sql "$ots" | tr '\n' ';')"; rc=1; }
-  fssh "$ots" 20 "docker exec ots_cot_parser sh -c 'rm -f /tmp/$p-u*.pem /tmp/$p-u*.key'" >/dev/null
+  fssh "$ots" 20 "docker exec $GWC sh -c 'rm -f /tmp/$p-u*.pem /tmp/$p-u*.key'" >/dev/null
   o=$(fssh "$ots" 60 'n=0; for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1 && n=$((n+1)); done; echo "deleted=$n left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'")"' | tr -d '\r')
   echo "cleanup: rows/users removed; queues $o"; case "$o" in *left=0) ;; *) rc=1 ;; esac
   return $rc; }
