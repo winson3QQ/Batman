@@ -134,7 +134,18 @@ suite harness-265   "harness reachability: q retry/UNDETERMINED, settle, revert/
 
 # 2c. No hardware needed: nothing that runs as root on a node trusts world-writable /tmp (#280) — the static
 #     allowlist check, and its mutation proof (every bypass form must be caught).
-suite tmp-trust-static   "no decision state / root-executed file in world-writable /tmp on the node; per-hit allowlist, path table, wiring checks + mutation proofs (#280)"   "bash $REPO/scripts/check-tmp-trust.sh && bash $REPO/scripts/test-tmp-trust.sh"
+# the mutation proofs make git temp repos: under Git Bash (MSYS) they hang (2026-10-15, twice: case 3 / case 23;
+# in WSL 26/26 twice), so a //wsl.localhost repo is checked INSIDE its distro; a hang is a FAIL (timeout), never a stall
+chk_tmp_trust_static() { local d p
+  case "$(uname -o 2>/dev/null)" in
+    Msys) if command -v wsl.exe >/dev/null 2>&1; then case "$REPO" in //wsl.localhost/*)
+            d=${REPO#//wsl.localhost/}; p=/${d#*/}; d=${d%%/*}
+            echo "MSYS: delegated to WSL distro $d, repo $p"
+            timeout 900 wsl.exe -d "$d" -- bash -c "cd '$p' && bash scripts/check-tmp-trust.sh && bash scripts/test-tmp-trust.sh"; return ;;
+          esac; fi ;;
+  esac
+  timeout 900 bash "$REPO/scripts/check-tmp-trust.sh" && timeout 900 bash "$REPO/scripts/test-tmp-trust.sh"; }
+suite tmp-trust-static   "no decision state / root-executed file in world-writable /tmp on the node; per-hit allowlist, path table, wiring checks + mutation proofs (#280)"   "chk_tmp_trust_static"
 
 # 2. No hardware needed: the MAC->IP derivation used by the first-boot hook.
 suite onboarding-ip \
@@ -2390,6 +2401,8 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     else na r8-hold-264 "overlay-only mechanism; the gateway build has no eud_handler (#289)"; fi
     suite crash-274 "crash / PRIMARY / loop backoff / old config / respawn / rm / docker update / docker stop / hung health check: the guardian restarts, records, and DRIFTs (#274 §12, destructive)" "p274 $OTS_NODE crash" D
     suite dockerd-restart-274 "dockerd restart stops the tenant gracefully; the guardian brings it back in order (#274 §12, destructive)" "p274 $OTS_NODE dockerd" D
+    if [ "$OTS_EUD" = gateway ]; then gw_register_b_destructive
+    else for s289 in queue-gone-289 amqp-down-289; do na "$s289" "gateway suites: the overlay build has no gateway (#289)"; done; fi
   else   # not back within 300 s after the destructive tier = a real finding, never a SKIP (#274 review C6)
     suite converge-274 "guardian converges a changed config (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
     suite cleanstop-274 "clean reboot stop/start (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"

@@ -130,6 +130,22 @@ elif A == "readcount":
     buf, closed, dt = read_until(s, HOLD, want=None if stay else (lambda b: count(b) >= N))
     print("GOT", count(buf), "closed" if closed else "open")
     s.close()
+elif A == "slowread":
+    # a phone at the edge of coverage: reads CHUNK bytes every PAUSE s (default 512 B / 0.2 s ~ 20 kbit/s)
+    s = connect(); s.sendall(ev(U, True)); chunk = int(os.environ.get("CHUNK", "512")); pause = float(os.environ.get("PAUSE", "0.2"))
+    got = 0; closed = False; t0 = time.time(); s.settimeout(0.5)
+    while time.time() - t0 < HOLD:
+        try:
+            d = s.recv(chunk)
+            if not d:
+                closed = True; break
+            got += len(d)
+        except socket.timeout:
+            pass
+        except OSError:
+            closed = True; break
+        time.sleep(pause)
+    print("SLOW", got, "closed" if closed else "open"); s.close()
 elif A == "pingflood":
     # identify first (an unidentified flood ended by the client before its cert lookup finished was never charged:
     # rc 3 run), flood, then after the pause window one more ping must be answered: the session was paused, not cut

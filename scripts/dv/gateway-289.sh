@@ -355,6 +355,8 @@ SQL
   return $rc; }
 
 # registration (called from daily-validation.sh when OTS_EUD=gateway)
+# shellcheck source=scripts/dv/gateway-289b.sh
+. "$REPO/scripts/dv/gateway-289b.sh"
 gw_register() {
   suite ots-cot-e2e-289 "CoT sent == stored per phase on the gateway's 8089 (mTLS, a non-admin test user): P1 / P2 truncation / P3 burst (#289 M1/M5/M6)" "chk_cot_289 $OTS_NODE"
   suite presence-289 "a stale phone (black-holed, no FIN) -> row Disconnected and a teammate gets t-x-d-d within 150 s; back -> Connected (#289 P1/M8; overlay 8088: ghost for ever)" "chk_presence_289 $OTS_NODE"
@@ -416,4 +418,5 @@ chk_rto_289() { local ots=$1 run o rc=0 ports n i d0 d1 st0 st1 oom0 oom1 c0 c1 
   [ "$st0" = "$st1" ] && [ "$oom0" = "$oom1" ] && echo "gateway not restarted (StartedAt $st1), oom_kill $oom1" || { echo "FAIL the gateway restarted or was OOM-killed (StartedAt $st0 -> $st1, oom_kill $oom0 -> $oom1)"; rc=1; }
   gw_bh "$ots" del | sed 's/^/  /'
   gw_cleanup "$ots" "$run" GWT 5 || rc=1
-  return $rc; }
+  return $rc;   gw_register_b
+}

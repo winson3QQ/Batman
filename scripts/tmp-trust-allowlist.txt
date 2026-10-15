@@ -76,3 +76,5 @@ scripts/dv/gateway-289.sh	/tmp/(GW[A-Z]-u([0-9]+|\$u)|\$p-u\$k|\$p-u\*|dv-client
 scripts/dv/gateway-289.sh	cat /tmp/gateway/sessions\.json	#289: the gateway's snapshot in ots_eud_gateway's private tmpfs (uid 1000), read via docker exec; nothing on the node decides on it
 scripts/node/gw-client-289.py	/tmp/<u>\.(pem|key)	usage text naming the container-internal cert path
 scripts/node/gw-rto-289.py	(/tmp/<user>\.pem|"/tmp/%s\.(pem|key)")	certs inside the ots_cot_parser container (python runs there via docker exec -i), not the node's /tmp
+scripts/dv/gateway-289b.sh	/tmp/(GW[A-Z]-u([0-9]+|\$k|\$u)|\$p-u\$k|\$p-u\*|dv-client)\.(pem|key)	#289 tier-B/dependency suites: the same 1-day test client certs in ots_cot_parser's OWN container tmpfs (docker exec), never the node's /tmp
+scripts/node/gw-crl-289.py	/tmp/<user>\.pem	usage text naming the container-internal cert path (the CRL writer runs inside ots_cot_parser via docker exec -i)
