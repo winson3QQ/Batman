@@ -1728,19 +1728,28 @@ chk_soak_run() { local n o dur rc=0 m peer other
     for other in "$BENCH_NODE" "$MESH_NODE"; do [ "$other" = "$n" ] && continue
       o=$(soak_ssh "$other" "ROLE=httpgen TARGET=$n LABEL=mesh DUR=$dur"); echo "$other -> $n: $o"; done
   done
-  o=$(soak_ssh "$BENCH_NODE" "ROLE=cotgen TARGET=$OTS_NODE RUN=$SOAK_RUN DUR=$dur"); echo "$BENCH_NODE: $o"
+  if [ "$OTS_EUD" = gateway ]; then
+    # #289: 8088 is closed on the gateway build; the generator is a stream client inside ots_cot_parser over 8089
+    # (5 CoT/s, uids $SOAK_RUN-S-p<i>), its SENT line read by chk_soak_cot
+    gw_users "$OTS_NODE" GWSK 1 || { echo "FAIL could not create the soak's test user"; rc=1; }
+    ( gwc "$OTS_NODE" ots_cot_parser $((dur + 120)) ACTION=stream UID="$SOAK_RUN-S" CS="$SOAK_RUN-S" CERT=/tmp/GWSK-u1.pem KEY=/tmp/GWSK-u1.key N=$((dur * 5)) DELAY=0.2 HOLD=5 > "$DIR/soak-cot-289.gen" ) &
+    echo "$OTS_NODE: CoT generator inside ots_cot_parser -> gateway 8089, $((dur * 5)) events over ${dur}s"
+  else
+    o=$(soak_ssh "$BENCH_NODE" "ROLE=cotgen TARGET=$OTS_NODE RUN=$SOAK_RUN DUR=$dur"); echo "$BENCH_NODE: $o"
+  fi
   for m in $(seq 0 $((SOAK_MIN + 2))); do
     for n in $(soak_nodes); do o=$(soak_ssh "$n" ROLE=sample); echo "$m $n $o" >> "$DIR/soak.samples"; done
     echo "$m $(grep "^$m " "$DIR/soak.samples" | cut -c1-200 | tr '\n' '|')"
     sleep 55
   done
+  [ "$OTS_EUD" = gateway ] && { wait; echo "generator: $(rd "$DIR/soak-cot-289.gen" | tail -1)"; }
   sleep 20   # let cot_parser drain
   # distinct (uid, timestamp): the generator sends one batch of 5 uids per second (batches >= 1 s apart), so every
   # sent CoT is one distinct pair; distinct uid alone is always 5 (02/03 full run 2026-10-13: "stored=5" vs 8955 sent)
   echo "stored $(echo "select count(distinct (uid, timestamp)) from cot where uid like '$SOAK_RUN-S-%';" | ots_sql "$OTS_NODE")" >> "$DIR/soak.samples"
   echo "rows $(echo "select count(*) from cot where uid like '$SOAK_RUN-S-%';" | ots_sql "$OTS_NODE")" >> "$DIR/soak.samples"
   ots_sql "$OTS_NODE" <<SQL >/dev/null
-begin; delete from euds where uid like '$SOAK_RUN-%'; delete from cot where uid like '$SOAK_RUN-%'; commit;
+begin; delete from cot where uid like '$SOAK_RUN-%' or sender_uid like '$SOAK_RUN-%'; delete from euds where uid like '$SOAK_RUN-%'; commit;
 SQL
   o=$(echo "select count(*) from cot where uid like '$SOAK_RUN-%' or sender_uid like '$SOAK_RUN-%';" | ots_sql "$OTS_NODE")
   [ "$o" = 0 ] && echo "cleanup ok" || { echo "FAIL cleanup: $o soak CoT rows left"; rc=1; }
@@ -1774,7 +1783,13 @@ chk_soak_http() { local lab=$1 n o f rc=0 last=$((SOAK_MIN + 2)) any=0; for n in
   return $rc; }
 chk_soak_cot() { local sent st rc re rows
   # at-least-once (#264 decision): every sent uid stored at least once; duplicates are reported, not failed
-  sent=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_sent); re=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_reconn); st=$(sed -n 's/^stored //p' "$DIR/soak.samples"); rows=$(sed -n 's/^rows //p' "$DIR/soak.samples")
+  if [ "$OTS_EUD" = gateway ]; then
+    sent=$(rd "$DIR/soak-cot-289.gen" | sed -n 's/^SENT \([0-9]*\).*/\1/p'); re=$(rd "$DIR/soak-cot-289.gen" | grep -c CONNLOST)
+    gw_cleanup "$OTS_NODE" "$SOAK_RUN" GWSK 1 >/dev/null
+  else
+    sent=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_sent); re=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_reconn)
+  fi
+  st=$(sed -n 's/^stored //p' "$DIR/soak.samples"); rows=$(sed -n 's/^rows //p' "$DIR/soak.samples")
   { isint "$sent" && isint "$st"; } || { echo "FAIL CoT counters unreadable sent=[$sent] stored=[$st] — not verified"; return 1; }
   isint "$rows" || rows=$st
   # sent is sampled at minute SOAK_MIN+2 while the generator still runs; stored/rows are read at the end: >= sent
@@ -2149,7 +2164,13 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
   # 6 (C1): the host sends one CoT the moment 8088 accepts again after the reboot (as early as a field client)
   local pu pf
   pu="DV274E$(date +%Y%m%d%H%M%S)"; pf="$DIR/cleanstop-274.probe"
-  cot_probe_274 "$n" "$pu" "$pf"; echo "early-CoT probe $pu started on the host (-> $n:8088)"
+  if [ "$OTS_EUD" = gateway ]; then
+    # #289: 8088 is closed and the gateway binds 8089 only once its dependencies are up (fail-closed): no CoT can
+    # arrive before the API gate; case 6 is judged after the boot instead (a phone identifies on 8089, SA stored)
+    pu=""; echo "gateway build: no early-CoT probe (8088 closed, 8089 bound after the dependencies); case 6 judged after the boot"
+  else
+    cot_probe_274 "$n" "$pu" "$pf"; echo "early-CoT probe $pu started on the host (-> $n:8088)"
+  fi
   reboot_and_wait "$n" reboot 240 || rc=1
   if [ "${DV_TEST_274_NOSTOP:-0}" = 1 ]; then   # the K links live on the overlay: put them back
     fssh "$n" 10 "for b in $kl; do case \$b in K[0-9][0-9]batman-*) ;; *) continue;; esac; t=\${b#K??}; ln -sf ../init.d/\$t /etc/rc.d/\$b; ls -l /etc/rc.d/\$b; done" \
@@ -2207,7 +2228,17 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
   if echo "$l" | grep -q 'events='; then echo "FAIL 6 docker event buffer empty or possibly wrapped — start count not measurable"; rc=1
   elif echo "$l" | grep -Eq '=(0|[2-9]|[1-9][0-9])( |$)'; then echo "FAIL 6 a container was started more than once (or never) during the start"; rc=1
   else echo "ok 6 every container started exactly once"; fi
-  if [ -n "$pu" ]; then
+  if [ -z "$pu" ] && [ "$OTS_EUD" = gateway ]; then
+    local pe po st i
+    pe="DV274G$(date +%H%M%S)"
+    if gw_users "$n" GWCS 1 >/dev/null; then
+      po=$(gwc "$n" ots_cot_parser 90 ACTION=hold UID="$pe-A" CS="$pe-A" CERT=/tmp/GWCS-u1.pem KEY=/tmp/GWCS-u1.key HOLD=3 | tr -d '\r' | tail -1)
+      echo "$po" | grep -q '^KEPT' && echo "ok 6 a phone identified on 8089 right after the boot ($po)" || { echo "FAIL 6 a phone could not identify on 8089 after the boot ($po)"; rc=1; }
+      st=0; for i in $(seq 1 12); do st=$(echo "select count(*) from cot where sender_uid='$pe-A' and type like 'a-%';" | ots_sql "$n" | tr -d ' \r'); [ "${st:-0}" -ge 1 ] && break; sleep 5; done
+      [ "${st:-0}" -ge 1 ] && echo "ok 6 its SA was stored" || { echo "FAIL 6 the phone's SA was not stored (count=$st)"; rc=1; }
+      gw_cleanup "$n" "$pe" GWCS 1 >/dev/null || { echo "FAIL 6 cleanup"; rc=1; }
+    else echo "FAIL 6 could not issue the probe phone's cert after the boot"; rc=1; fi
+  elif [ -n "$pu" ]; then
     local po d04 bt sent i st
     for i in $(seq 1 30); do po=$(cat "$pf" 2>/dev/null); echo "$po" | grep -q '^SENT\|^NEVER' && break; sleep 3; done
     echo "probe: $(echo $po)"
@@ -2454,7 +2485,12 @@ else
   suite soak-containers "no container restart and no cgroup oom_kill during the soak, every node" "chk_soak_ctr"
   suite soak-http-local "HTTP tenant answered every local GET (container stack)" "chk_soak_http local"
   suite soak-http-mesh  "HTTP tenant answered every GET over the mesh (container + radio; judged separately)" "chk_soak_http mesh"
-  suite soak-cot-264    "every CoT sent over the soak stored at least once (distinct (uid,time) >= sent; duplicates reported, #264 at-least-once; mechanisms A and B both in play)" "chk_soak_cot"
+  if [ "$OTS_EUD" = gateway ]; then
+    suite soak-cot-289  "every CoT sent over the soak (8089, mTLS, 5/s from inside ots_cot_parser) stored at least once (distinct (uid,time) >= sent; duplicates reported; #289 M1/M6 under load)" "chk_soak_cot"
+    na soak-cot-264 "overlay-only generator (8088 is closed on the gateway build); replaced by soak-cot-289"
+  else
+    suite soak-cot-264  "every CoT sent over the soak stored at least once (distinct (uid,time) >= sent; duplicates reported, #264 at-least-once; mechanisms A and B both in play)" "chk_soak_cot"
+  fi
 fi
 
 # ---- NEW vs KNOWN failures (#268 C1) ----------------------------------------------------------------
