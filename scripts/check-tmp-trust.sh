@@ -24,8 +24,10 @@ PAT='/tmp([^/[:alnum:]_]|/|$)|/var/[[:alnum:]_.-]+|/run/batman([^-[:alnum:]_.]|$
 
 files(){
 	# safe.directory: run from any checkout/user (the 2026-10-09 full suite ran it on a WSL worktree from Git Bash)
+	# .pyz: a zip of sources scanned under deploy/ots/gateway/ - binary in a grep stream it made grep stop printing
+	# matches ("binary file matches"), so every name after it went unchecked (#289, test-tmp-trust N3 case)
 	git -c safe.directory='*' ls-files -- 'feed/**' 'deploy/**' 'scripts/node/**' 'scripts/*.sh' \
-	  | grep -vE '\.(md|png|jpg|svg|pdf|kicad.*|json|csv|txt)$' \
+	  | grep -vE '\.(md|png|jpg|svg|pdf|kicad.*|json|csv|txt|pyz)$' \
 	  | grep -vE '^scripts/(check-tmp-trust\.sh|test-tmp-trust\.sh)$'
 }
 

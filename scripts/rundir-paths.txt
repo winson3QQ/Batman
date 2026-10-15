@@ -71,3 +71,5 @@ cfgsave-pi3gate.failed
 cfgsave-mount.failed
 # test probe of scripts/node/tmp-trust-280.sh (nobody tries to create it; it must never exist)
 tt280
+# verify-profile-ots-record.sh (#289 SEC-11): uptime when the current UNKNOWN streak began; the script itself reads/clears it
+batman-ots-record-unknown-since
