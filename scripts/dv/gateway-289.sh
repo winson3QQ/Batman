@@ -370,6 +370,7 @@ gw_register() {
   suite allowlist-289 "8088 is not bound with an empty allowlist (#289 P4)" "chk_allowlist_289 $OTS_NODE"
   suite rebind-289 "a disabled group membership stops the device's group traffic within the 30 s reconcile (#289 P2/M9; overlay: until reconnect)" "chk_rebind_289 $OTS_NODE"
   suite rto-289 "the RTO walks out and back: 16 phones stale (black-holed) + the same 16 reconnecting, a teammate streams, the RTO phone stays: 16 supersedes, 16/16 + RTO 10/10 kept, stale sockets closed by the deadline, no restart/OOM (#289 B1, M3/M7)" "chk_rto_289 $OTS_NODE"
+  gw_register_b
 }
 
 # THE field scenario (design §0 / #289 B1, review B2 H2): the RTO walks out of range and comes back. 16 phones (4 users
@@ -418,5 +419,4 @@ chk_rto_289() { local ots=$1 run o rc=0 ports n i d0 d1 st0 st1 oom0 oom1 c0 c1 
   [ "$st0" = "$st1" ] && [ "$oom0" = "$oom1" ] && echo "gateway not restarted (StartedAt $st1), oom_kill $oom1" || { echo "FAIL the gateway restarted or was OOM-killed (StartedAt $st0 -> $st1, oom_kill $oom0 -> $oom1)"; rc=1; }
   gw_bh "$ots" del | sed 's/^/  /'
   gw_cleanup "$ots" "$run" GWT 5 || rc=1
-  return $rc;   gw_register_b
-}
+  return $rc; }
