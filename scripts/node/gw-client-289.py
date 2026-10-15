@@ -105,9 +105,20 @@ elif A == "noread":
 elif A == "stream":
     s = connect(); s.sendall(ev(U, True)); time.sleep(1)
     n = 0; pad = int(os.environ.get("PAD", "0")); extra = ("<remarks>" + "x" * pad + "</remarks>") if pad else ""
+    def drain():
+        # a phone reads its downlink all the time: a stream that never reads lets its receive window go to zero,
+        # and the gateway's TCP_USER_TIMEOUT (120 s) then ends the session (soak-cot-289 on rc 5: CONNLOST at 998)
+        s.setblocking(False)
+        try:
+            while s.recv(65536):
+                pass
+        except (BlockingIOError, ssl.SSLWantReadError):
+            pass
+        finally:
+            s.setblocking(True)
     try:
         for i in range(1, N + 1):
-            s.sendall(ev("%s-p%d" % (U, i), False, extra)); n += 1; time.sleep(DELAY)
+            s.sendall(ev("%s-p%d" % (U, i), False, extra)); n += 1; drain(); time.sleep(DELAY)
         # a phone closes with a FIN: drain the downlink during the hold, shut the write side, read to EOF. A close()
         # with unread downlink data sends an RST and the kernel discards what the gateway has not read yet (its
         # uplink bucket pauses reading: slowreader-289 lost the last 6 of 40 x 30 KiB that way, rc 4)
