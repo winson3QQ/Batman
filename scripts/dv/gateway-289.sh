@@ -48,22 +48,25 @@ gw_bh() { timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 
 # gw_bh_bites <ots>: the drop counters moved (the stale client keeps sending pings) — else the scenario was not made
 gw_bh_bites() { local d; sleep "${2:-12}"; d=$(gw_bh "$1" count | sed -n 's/^DROPPED \([0-9]*\)$/\1/p'); echo "black hole dropped ${d:-?} packet(s)"; isint "$d" && [ "$d" -gt 0 ]; }
 # gw_cleanup <ots> <run-prefix> <user-prefix> <n-users>: rows (RESTRICT order), users, certs, queues; FAIL on leftovers
-gw_cleanup() { local ots=$1 run=$2 p=$3 n=$4 o rc=0 i
+gw_cleanup() { local ots=$1 run=$2 p=$3 n=$4 o rc=0 i c err
   # the run's last goodbyes are still on their way to cot_parser when the clients have just left: a cot row inserted
   # between our delete of cot and of euds makes RESTRICT abort the whole transaction (rc 1 run: "[2 2]" left)
   for i in 1 2 3 4 5 6 7 8 9 10; do o=$(gw_snap "$ots" | grep -c "\"$run-"); [ "${o:-1}" = 0 ] && break; sleep 2; done
-  sleep 4
-  ots_sql "$ots" <<SQL >/dev/null
-begin; delete from cot where sender_uid like '$run-%' or uid like '$run-%'; delete from points where device_uid like '$run-%'; delete from geochat where sender_uid like '$run-%'; delete from euds where uid like '$run-%'; delete from "user" where username like '$p-u%'; commit;
+  # the goodbyes land in cot through cot_parser a few seconds after the gateway logged the end: wait until the
+  # run's cot row count has not moved for 4 s (rc 3: the fixed sleep lost the race twice, "[2 2]")
+  o=$(echo "select count(*) from cot where sender_uid like '$run-%' or uid like '$run-%';" | ots_sql "$ots")
+  for i in 1 2 3 4 5 6 7 8; do sleep 4; c=$(echo "select count(*) from cot where sender_uid like '$run-%' or uid like '$run-%';" | ots_sql "$ots"); [ "$c" = "$o" ] && break; o=$c; done
+  err=$(ots_sql "$ots" 2>&1 <<SQL | grep -i "error" | head -2 | tr '\n' ' ')
+begin; delete from cot where sender_uid like '$run-%' or uid like '$run-%' or sender_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from points where device_uid like '$run-%' or device_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from geochat where sender_uid like '$run-%' or sender_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from euds where uid like '$run-%' or user_id in (select id from "user" where username like '$p-u%'); delete from "user" where username like '$p-u%'; commit;
 SQL
   o=$(echo "select (select count(*) from euds where uid like '$run-%') || ' ' || (select count(*) from \"user\" where username like '$p-u%');" | ots_sql "$ots")
   if [ "$o" != "0 0" ]; then
-    sleep 6; ots_sql "$ots" <<SQL >/dev/null
-begin; delete from cot where sender_uid like '$run-%' or uid like '$run-%'; delete from points where device_uid like '$run-%'; delete from geochat where sender_uid like '$run-%'; delete from euds where uid like '$run-%'; delete from "user" where username like '$p-u%'; commit;
+    sleep 6; err=$(ots_sql "$ots" 2>&1 <<SQL | grep -i "error" | head -2 | tr '\n' ' ')
+begin; delete from cot where sender_uid like '$run-%' or uid like '$run-%' or sender_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from points where device_uid like '$run-%' or device_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from geochat where sender_uid like '$run-%' or sender_uid in (select uid from euds where user_id in (select id from "user" where username like '$p-u%')); delete from euds where uid like '$run-%' or user_id in (select id from "user" where username like '$p-u%'); delete from "user" where username like '$p-u%'; commit;
 SQL
     o=$(echo "select (select count(*) from euds where uid like '$run-%') || ' ' || (select count(*) from \"user\" where username like '$p-u%');" | ots_sql "$ots")
   fi
-  [ "$o" = "0 0" ] || { echo "FAIL cleanup left rows/users: [$o]"; rc=1; }
+  [ "$o" = "0 0" ] || { echo "FAIL cleanup left rows/users: [$o]; psql: [${err:-no error text}]; cot rows of the run still there (timestamp uid): $(echo "select timestamp || ' ' || coalesce(sender_uid, uid) from cot where sender_uid like '$run-%' or uid like '$run-%' order by timestamp desc limit 5;" | ots_sql "$ots" | tr '\n' ';')"; rc=1; }
   fssh "$ots" 20 "docker exec ots_cot_parser sh -c 'rm -f /tmp/$p-u*.pem /tmp/$p-u*.key'" >/dev/null
   o=$(fssh "$ots" 60 'n=0; for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1 && n=$((n+1)); done; echo "deleted=$n left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'")"' | tr -d '\r')
   echo "cleanup: rows/users removed; queues $o"; case "$o" in *left=0) ;; *) rc=1 ;; esac
@@ -110,16 +113,19 @@ chk_presence_289() { local ots=$1 run o rc=0 port t0 st dis0 dis1 cnt
   echo "$o" | grep -q '^GOT [1-9]' && echo "B received the t-x-d-d naming A" || { echo "FAIL B did not receive a t-x-d-d naming A"; rc=1; }
   gw_bh "$ots" del >/dev/null
   # the phone comes back: its row flips to Connected
-  o=$(gwc "$ots" ots_cot_parser 60 ACTION=hold UID="$run-A" CS="$run-A" CERT=/tmp/GWP-u1.pem KEY=/tmp/GWP-u1.key HOLD=8); echo "A back: $(echo "$o" | tail -1)"
-  st=$(echo "select last_status from euds where uid='$run-A';" | ots_sql "$ots")
-  sleep 3; echo "A's row after it left again: [$(echo "select last_status from euds where uid='$run-A';" | ots_sql "$ots")] (Connected while held: [$st])"
+  ( gwc "$ots" ots_cot_parser 60 ACTION=hold UID="$run-A" CS="$run-A" CERT=/tmp/GWP-u1.pem KEY=/tmp/GWP-u1.key HOLD=10 > "$DIR/presence-289.A2" ) &
+  sleep 5; st=$(echo "select last_status from euds where uid='$run-A';" | ots_sql "$ots"); wait
+  echo "A back: $(rd "$DIR/presence-289.A2" | tail -1); its row while held: [$st]"
+  [ "$st" = Connected ] || { echo "FAIL the returned phone's row is not Connected while it is held"; rc=1; }
+  sleep 3; st=$(echo "select last_status from euds where uid='$run-A';" | ots_sql "$ots"); echo "A's row after it left again: [$st]"
+  [ "$st" = Disconnected ] || { echo "FAIL the row is not Disconnected after the phone left"; rc=1; }
   gw_cleanup "$ots" "$run" GWP 2 || rc=1
   return $rc; }
 
 # same device, new connection (zombie / same-uid-end): A stops reading (black-holed); B (same user+uid) connects:
 # downlink goes to B only (10/10 from C), A's socket is closed by the supersede deadline (<= 120 s), no cot_parser
 # disconnect for the uid while B lives, the row stays Connected. Overlay: the downlink was split round-robin.
-chk_zombie_289() { local ots=$1 run o rc=0 port t0 d0 d1 cnt
+chk_zombie_289() { local ots=$1 run o rc=0 port t0 d0 d1 cnt sq
   gw_pre "$ots" || return $?
   gw_users "$ots" GWZ 2 || return 1
   run=DVZ$(date +%H%M%S)
@@ -129,6 +135,15 @@ chk_zombie_289() { local ots=$1 run o rc=0 port t0 d0 d1 cnt
   isint "$port" || { echo "FAIL A did not report its port"; wait; return 1; }
   o=$(gw_bh "$ots" add "$port"); echo "A (port $port) black-holed: $o"
   echo "$o" | grep -q "^BLACKHOLE 1$" && gw_bh_bites "$ots" 8 || { echo "FAIL the black hole does not bite — not verified"; rc=1; }
+  # B3 H-1: 24 x 60 KiB (~1.4 MiB) to the stale socket first: the kernel send buffer, the raw transport (256 KiB)
+  # and the TLS layer (256 KiB) fill (~0.9 MiB measured on loopback) and the gateway's writer blocks on it
+  # (pause_writing). The pre-fix gateway (C1A-2/C1B-1) stayed stuck there and B below got nothing. 12 x 60 KiB
+  # did NOT reach pause_writing (B3 closure): the leg asserts the stale device's sendq > 0 before the reconnect.
+  o=$(gwc "$ots" ots_cot_parser 120 ACTION=stream UID="$run-F" CS="$run-F" CERT=/tmp/GWZ-u2.pem KEY=/tmp/GWZ-u2.key N=24 DELAY=0.2 PAD=60000 HOLD=2 | tr -d '\r' | tail -1); echo "filler to the stale socket: $o"
+  echo "$o" | grep -q '^SENT 24' || { echo "FAIL the filler stream was not sent — the stuck-writer scenario was not made"; rc=1; }
+  sq=$(sleep 11; gw_snap "$ots" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(x["sendq"] for x in d["devices"] if x["uid"] == "'"$run-A"'"))' 2>/dev/null)
+  echo "stale device's sendq before the reconnect: [${sq:-?}] (> 0: its writer is blocked on the black-holed socket)"
+  isint "$sq" && [ "$sq" -gt 0 ] || { echo "FAIL the writer is not blocked on the stale socket (sendq [$sq]) — the stuck-writer scenario was not made, not verified"; rc=1; }
   # B: the same device reconnects (same user, same uid) and reads what C sends
   # B stays for the whole test: if it left early, A (still draining) would be promoted to current by design (B2-10)
   ( gwc "$ots" ots_cot_parser 230 ACTION=readcount UID="$run-A" CS="$run-A" CERT=/tmp/GWZ-u1.pem KEY=/tmp/GWZ-u1.key EXPECT="$run-C-p" N=10 STAY=1 HOLD=200 > "$DIR/zombie-289.B" ) &
@@ -193,9 +208,9 @@ chk_admission_289() { local ots=$1 run o rc=0 p0 p1 pend c0 c1 m0 m1
   echo "conns/pending before [$c0] after [$c1]; memory $((${m0:-0}/1048576)) -> $((${m1:-0}/1048576)) MiB"
   [ "${c1#* }" = "${c0#* }" ] && [ "${c1%% *}" -le "$(( ${c0%% *} + 1 ))" ] 2>/dev/null || { echo "FAIL the flood's dead sockets are still held (B2 C2B-1)"; rc=1; }
   p0=$(gw_counter "$ots" uplink_paused 11); isint "$p0" || p0=0
-  o=$(gwc "$ots" ots_cot_parser 60 ACTION=pingflood UID="$run-F" CERT=/tmp/GWA-u1.pem KEY=/tmp/GWA-u1.key N=500 | tr -d '\r' | tail -1); echo "ping flood: $o"
+  o=$(gwc "$ots" ots_cot_parser 90 ACTION=pingflood UID="$run-F" CS="$run-F" CERT=/tmp/GWA-u1.pem KEY=/tmp/GWA-u1.key N=500 | tr -d '\r' | tail -1); echo "ping flood (identified session, 500 pings, a ping 12 s later): $o"
   p1=$(gw_counter "$ots" uplink_paused 12); isint "$p1" || p1=0
-  echo "$o" | grep -q 'open=1' && [ "$p1" -gt "$p0" ] && echo "flood paused ($((p1 - p0)) pause(s)), socket kept" || { echo "FAIL ping flood not bounded by the message bucket (paused $p0 -> $p1, $o)"; rc=1; }
+  echo "$o" | grep -q 'open=1 pong=1' && [ "$p1" -gt "$p0" ] && echo "flood paused ($((p1 - p0)) pause(s)), socket kept and served after the pause" || { echo "FAIL ping flood not bounded by the message bucket / session not served after it (paused $p0 -> $p1, $o)"; rc=1; }
   o=$(gwc "$ots" ots_cot_parser 40 ACTION=oversize UID="$run-O" CS="$run-O" CERT=/tmp/GWA-u1.pem KEY=/tmp/GWA-u1.key SIZE=70000 | tr -d '\r' | tail -1); echo "oversize: $o"
   echo "$o" | grep -q '^PONG 1' && echo "70 KiB message discarded, session kept (pong)" || { echo "FAIL oversize message closed the session or no pong"; rc=1; }
   gw_cleanup "$ots" "$run" GWA 1 || rc=1
@@ -259,7 +274,7 @@ chk_amqp_close_289() { local ots=$1 run o rc=0 sent st l0 l1
 
 # the record (M10): the three FKs are RESTRICT; a device with history cannot be deleted; a resumed retention job is
 # seen by the gateway within 35 s and by the guardian's record check (DRIFT), and goes quiet when re-paused.
-chk_fk_289() { local ots=$1 run o rc=0 t0 v
+chk_fk_289() { local ots=$1 run o rc=0 t0 v dr0
   gw_pre "$ots" || return $?
   run=DVF$(date +%H%M%S)
   o=$(echo "select string_agg(conname||'='||confdeltype::text||convalidated::text, ',' order by conname) from pg_constraint where conname in ('cot_eud','point_eud','geochat_eud');" | ots_sql "$ots")
@@ -269,6 +284,7 @@ insert into euds (uid, last_status) values ('$run-D', 'Disconnected'); insert in
 SQL
   o=$(echo "delete from euds where uid='$run-D';" | ots_sql "$ots" 2>&1); echo "delete of a device with history: $(echo "$o" | head -1)"
   echo "$o" | grep -qi "violates" && [ "$(echo "select count(*) from cot where sender_uid='$run-D';" | ots_sql "$ots")" = 1 ] && echo "refused, history intact" || { echo "FAIL the delete was not refused / history lost"; rc=1; }
+  dr0=$(fssh "$ots" 30 "$RDR"'grep -c "verify-profile-ots-record: DRIFT retention job RESUMED" "$R"/batman-payload-opentakserver-verify.log 2>/dev/null' | tr -d ' \r'); isint "$dr0" || dr0=0
   echo "update apscheduler_jobs set next_run_time = 4102444800 where id='delete_old_data';" | ots_sql "$ots" >/dev/null   # year 2100: never fires
   t0=$SECONDS; v=""
   while [ $((SECONDS - t0)) -lt 70 ]; do sleep 5; v=$(gw_health "$ots"); case "$v" in *'"jobs_resumed": ["delete_old_data"]'*) break ;; esac; done
@@ -277,7 +293,7 @@ SQL
   [ "$(gw_log "$ots" "RESUMED job delete_old_data")" -ge 1 ] 2>/dev/null || { echo "FAIL no 'RESUMED job' line"; rc=1; }
   sleep 35
   o=$(fssh "$ots" 30 "$RDR"'grep -c "verify-profile-ots-record: DRIFT retention job RESUMED" "$R"/batman-payload-opentakserver-verify.log 2>/dev/null' | tr -d ' \r')
-  [ "${o:-0}" -ge 1 ] && echo "the guardian's record check reported DRIFT" || { echo "FAIL verify-profile-ots-record did not report the resumed job (count [$o])"; rc=1; }
+  [ "${o:-0}" -gt "$dr0" ] && echo "the guardian's record check reported DRIFT ($dr0 -> $o)" || { echo "FAIL verify-profile-ots-record did not report the resumed job (count $dr0 -> [$o]; last record line: $(fssh "$ots" 20 "$RDR"'grep verify-profile-ots-record "$R"/batman-payload-opentakserver-verify.log 2>/dev/null | tail -1' | tr -d '\r'))"; rc=1; }
   echo "update apscheduler_jobs set next_run_time = NULL where id='delete_old_data';" | ots_sql "$ots" >/dev/null
   sleep 35; v=$(gw_health "$ots"); case "$v" in *'"jobs_resumed": []'*) echo "re-paused: healthz clean" ;; *) echo "FAIL still reported after the re-pause: $v"; rc=1 ;; esac
   o=$(fssh "$ots" 20 "$RDR"'tail -1 "$R"/batman-payload-opentakserver-verify.log 2>/dev/null; grep "verify-profile-ots-record" "$R"/batman-payload-opentakserver-verify.log 2>/dev/null | tail -1' | tr -d '\r'); echo "record check now: $o"
@@ -381,7 +397,8 @@ chk_rto_289() { local ots=$1 run o rc=0 ports n i d0 d1 st0 st1 oom0 oom1 c0 c1 
   # PHASE2 at T1 = 40 s: the 16 return
   for i in $(seq 1 40); do sleep 1; rd "$DIR/rto-289.out" | grep -q '^PHASE2' && break; done
   sleep 12
-  c0=$(gw_snap "$ots" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(1 for x in d["devices"] if x["uid"].startswith("'"$run"'-")))' 2>/dev/null)
+  # the teammate streamer ($run-T) is a device of the run too while it streams (rc 3: counted 18): not counted here
+  c0=$(gw_snap "$ots" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sum(1 for x in d["devices"] if x["uid"].startswith("'"$run"'-") and x["uid"] != "'"$run"'-T"))' 2>/dev/null)
   o=$(gw_log "$ots" "superseded $run-"); echo "after the return: $c0 device(s) of the run, $o supersede line(s)"
   [ "$c0" = 17 ] || { echo "FAIL expected 17 devices of the run (16 + the RTO phone), got [$c0]"; rc=1; }
   [ "${o:-0}" = 16 ] || { echo "FAIL expected 16 supersedes, got [$o]"; rc=1; }
@@ -394,6 +411,7 @@ chk_rto_289() { local ots=$1 run o rc=0 ports n i d0 d1 st0 st1 oom0 oom1 c0 c1 
   n=$(echo "$o" | grep -c '^GOT .* 10 kept'); echo "returned phones with 10/10 and kept: $n / 16"
   [ "$n" = 16 ] || { echo "FAIL $((16 - n)) returned phone(s) missed downlink or were cut"; rc=1; }
   echo "$o" | grep -q '^RTO GOT 10 kept' || { echo "FAIL the RTO's own phone missed the stream or was cut"; rc=1; }
+  echo "$o" | grep -q '^OLD 0/16 still open here' || { echo "FAIL a stale socket is still open on the client side (the deadline close is an abort: RST expected)"; rc=1; }
   st1=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}}" ots_eud_gateway' | tr -d '\r')
   oom1=$(fssh "$ots" 20 "grep oom_kill /sys/fs/cgroup/docker/$cg/memory.events | cut -d' ' -f2" | tr -d ' \r')
   [ "$st0" = "$st1" ] && [ "$oom0" = "$oom1" ] && echo "gateway not restarted (StartedAt $st1), oom_kill $oom1" || { echo "FAIL the gateway restarted or was OOM-killed (StartedAt $st0 -> $st1, oom_kill $oom0 -> $oom1)"; rc=1; }

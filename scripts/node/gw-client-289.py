@@ -104,10 +104,10 @@ elif A == "noread":
         pass
 elif A == "stream":
     s = connect(); s.sendall(ev(U, True)); time.sleep(1)
-    n = 0
+    n = 0; pad = int(os.environ.get("PAD", "0")); extra = ("<remarks>" + "x" * pad + "</remarks>") if pad else ""
     try:
         for i in range(1, N + 1):
-            s.sendall(ev("%s-p%d" % (U, i), False)); n += 1; time.sleep(DELAY)
+            s.sendall(ev("%s-p%d" % (U, i), False, extra)); n += 1; time.sleep(DELAY)
         time.sleep(HOLD)
     except OSError as e:
         print("CONNLOST after", n, e)
@@ -122,19 +122,32 @@ elif A == "readcount":
     def count(b):
         if not txdd:
             return len(set(pat.findall(b)))
-        return sum(1 for e in b.split(b"</event>") if b'type="t-x-d-d"' in e and (b'<link relation="p-p" uid="%s"' % EXPECT.encode()) in e)
+        # cot_parser re-serialises events with BeautifulSoup (attributes SORTED): match the <link> by its attributes,
+        # not by their order (rc 3: the goodbye arrived as <link relation="p-p" type="a-f-G-U-C" uid="..."/>)
+        want = (b'relation="p-p"', b'uid="%s"' % EXPECT.encode())
+        return sum(1 for e in b.split(b"</event>") if b'type="t-x-d-d"' in e
+                   and any(all(w in l for w in want) for l in re.findall(rb"<link [^>]*>", e)))
     buf, closed, dt = read_until(s, HOLD, want=None if stay else (lambda b: count(b) >= N))
     print("GOT", count(buf), "closed" if closed else "open")
     s.close()
 elif A == "pingflood":
-    s = connect(); t0 = time.time(); p = ping(); n = 0; ok = 1
+    # identify first (an unidentified flood ended by the client before its cert lookup finished was never charged:
+    # rc 3 run), flood, then after the pause window one more ping must be answered: the session was paused, not cut
+    s = connect(); s.sendall(ev(U, True)); time.sleep(1.5); t0 = time.time(); p = ping(); n = 0; ok = 1
     try:
         s.settimeout(20)
         for i in range(N):
             s.sendall(p); n += 1
     except OSError:
         ok = 0
-    print("PINGS", n, "%.2f" % (time.time() - t0), "open=%d" % ok); s.close()
+    t1 = time.time() - t0
+    time.sleep(float(os.environ.get("AFTER", "12")))
+    pong = 0
+    try:
+        s.sendall(ping()); buf, closed, _ = read_until(s, 8, want=lambda b: b"t-x-c-t-r" in b); pong = int(b"t-x-c-t-r" in buf)
+    except OSError:
+        ok = 0
+    print("PINGS", n, "%.2f" % t1, "open=%d" % ok, "pong=%d" % pong); s.close()
 elif A == "oversize":
     s = connect(); s.sendall(ev(U, True)); time.sleep(0.5)
     s.sendall(ev(U, False, "<remarks>" + "x" * SIZE + "</remarks>"))
