@@ -108,7 +108,15 @@ elif A == "stream":
     try:
         for i in range(1, N + 1):
             s.sendall(ev("%s-p%d" % (U, i), False, extra)); n += 1; time.sleep(DELAY)
-        time.sleep(HOLD)
+        # a phone closes with a FIN: drain the downlink during the hold, shut the write side, read to EOF. A close()
+        # with unread downlink data sends an RST and the kernel discards what the gateway has not read yet (its
+        # uplink bucket pauses reading: slowreader-289 lost the last 6 of 40 x 30 KiB that way, rc 4)
+        read_until(s, HOLD)
+        try:
+            s.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        read_until(s, 5)
     except OSError as e:
         print("CONNLOST after", n, e)
     print("SENT", n); s.close()

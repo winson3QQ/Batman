@@ -45,7 +45,7 @@ gw_users() { local ots=$1 p=$2 n=$3 k o
 # never saw A's port); readers strip the CRs themselves (rd).
 gwc() { local ots=$1 ctr=$2 to=$3; shift 3; local e="" v
   for v in "$@"; do e="$e -e $v"; done
-  timeout "$to" ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "docker exec -i $e -e TARGET=$GW -e CA=/app/ots/ca/ca.pem ots_cot_parser python3 -" < "$REPO/scripts/node/gw-client-289.py" 2>&1; }
+  timeout "$to" ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" "docker exec -i $e -e TARGET=$GW -e CA=/app/ots/ca/ca.pem $ctr python3 -" < "$REPO/scripts/node/gw-client-289.py" 2>&1; }
 rd() { tr -d '\r' < "$1" 2>/dev/null; }
 gw_bh() { timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" "ACTION=$2 PORTS='${3:-}' sh -s" < "$REPO/scripts/node/gw-blackhole-289.sh" 2>&1 | tr -d '\r'; }
 # gw_bh_bites <ots>: the drop counters moved (the stale client keeps sending pings) — else the scenario was not made
