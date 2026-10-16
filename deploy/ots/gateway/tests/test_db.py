@@ -84,6 +84,6 @@ def test_eud_json_shape(db):
 
 def test_phone_digits():
     assert phone_digits("555-123-4567") == 5551234567
-    assert phone_digits("+886 912 345 678") == 886912345678
+    assert phone_digits("+886 912 000 111") == 886912000111
     assert phone_digits("n/a") is None and phone_digits(None) is None
     assert phone_digits("1" * 30) is None
