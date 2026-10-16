@@ -18,7 +18,11 @@ add)
 		nft add chain bridge $T bh '{ type filter hook forward priority -10; }' || { echo "FAIL nft chain"; exit 1; }
 		nft add rule bridge $T bh ip protocol tcp tcp sport @ports counter drop || { echo "FAIL nft rule"; exit 1; }
 		nft add rule bridge $T bh ip protocol tcp tcp dport @ports counter drop || { echo "FAIL nft rule"; exit 1; }
-		(sleep $((TTL + 60)); nft delete table bridge $T 2>/dev/null) </dev/null >/dev/null 2>&1 &
+		# safety net for an aborted test: delete the table once nothing is left in it. It must NOT remove a table a
+		# later test is using: a deleter armed by presence-289 removed zombie-289's table seconds after its supersede
+		# (2026-10-16: A's pings got through, its deadline kept extending; on rc 5 the same race fired before the
+		# supersede and produced the only PASSes). Elements expire on their own (per-element timeout).
+		(sleep $((TTL + 60)); nft list set bridge $T ports 2>/dev/null | grep -q "elements" || nft delete table bridge $T 2>/dev/null) </dev/null >/dev/null 2>&1 &
 	fi
 	n=0
 	for p in $PORTS; do nft add element bridge $T ports "{ $p timeout ${TTL}s }" && n=$((n+1)); done

@@ -149,13 +149,20 @@ chk_zombie_289() { local ots=$1 run o rc=0 port t0 d0 d1 cnt sq
   # B: the same device reconnects (same user, same uid) and reads what C sends
   # B stays for the whole test: if it left early, A (still draining) would be promoted to current by design (B2-10)
   ( gwc "$ots" ots_cot_parser 230 ACTION=readcount UID="$run-A" CS="$run-A" CERT=/tmp/GWZ-u1.pem KEY=/tmp/GWZ-u1.key EXPECT="$run-C-p" N=10 STAY=1 HOLD=200 > "$DIR/zombie-289.B" ) &
-  sleep 4
+  sleep 4; t0=$SECONDS
   cnt=$(gw_log "$ots" "superseded $run-A"); [ "${cnt:-0}" -ge 1 ] && echo "gateway logged the supersede" || { echo "FAIL no 'superseded $run-A' line"; rc=1; }
   o=$(gwc "$ots" ots_cot_parser 60 ACTION=stream UID="$run-C" CS="$run-C" CERT=/tmp/GWZ-u2.pem KEY=/tmp/GWZ-u2.key N=10 DELAY=1 HOLD=3 | tr -d '\r'); echo "C: $o"
-  # A's socket is closed by the supersede deadline (outage + 20 s, <= 120 s after the supersede) while B lives
-  t0=$SECONDS; cnt=0
-  while [ $((SECONDS - t0)) -lt 130 ]; do sleep 10; cnt=$(gw_log "$ots" "closed (superseded: deadline)"); [ "${cnt:-0}" -ge 1 ] && break; done
-  [ "${cnt:-0}" -ge 1 ] && echo "A's stale connection closed by the deadline after $((SECONDS - t0)) s" || { echo "FAIL A's connection was not closed by the supersede deadline within 130 s"; rc=1; }
+  # A's stale socket ENDS <= 120 s after the supersede while B lives. Design decision 4 / §M3: a superseded
+  # connection is read until supersede + min(outage + 20 s, 120 s), and any of FIN/RST, TCP_USER_TIMEOUT or that
+  # deadline ends it. Here the filler's unacked downlink makes the kernel's TCP_USER_TIMEOUT (120 s from the first
+  # unacked byte, M11) fire BEFORE the gateway's deadline (outage ~75 s + 20 s): "[Errno 110]" is the expected
+  # reason, "superseded: deadline" the other legal one. Until 2026-10-16 only the deadline string counted: the rc 5
+  # PASSes came from a stale black-hole table deleter (gw-blackhole-289.sh, fixed the same day) un-black-holing A
+  # seconds before the supersede (fresh last_rx -> short deadline) — a race, not the product. On rc 6 with the hole
+  # intact: ETIMEDOUT at filler + 120 s = supersede + 54 s, no deadline line, the same gateway code.
+  cnt=0; why=""
+  while [ $((SECONDS - t0)) -lt 130 ]; do sleep 5; why=$(gw_logl "$ots" "connection of $run-A from" | grep -E 'closed \((superseded: deadline|\[Errno 110\])' | head -1 | sed -n 's/.*closed (\(.*\))$/\1/p'); [ -n "$why" ] && { cnt=1; break; }; done
+  [ "$cnt" = 1 ] && echo "A's stale connection ended ~$((SECONDS - t0 + 4)) s after the supersede ($why)" || { echo "FAIL A's stale connection was not ended within 130 s of the supersede (neither the supersede deadline nor TCP_USER_TIMEOUT)"; rc=1; }
   wait
   o=$(rd "$DIR/zombie-289.B"); echo "B: $o"
   echo "$o" | grep -q '^GOT 10 open' && echo "B got 10/10 and was kept (downlink to the new connection only)" || { echo "FAIL B: $o (expected GOT 10 open)"; rc=1; }

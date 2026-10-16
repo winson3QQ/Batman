@@ -153,6 +153,15 @@ hostalarm)
 golden)
 	cleanup(){ rm -f "$D/verify-profile-zz274.sh" "$D/zz274.fw4.uci" "$R/ge274-"*; cp "$G/reconcile-resources.sh" "$D/reconcile-resources.sh"; }
 	trap cleanup EXIT
+	# the guardian converges synchronously at start (no verify tick until it is done): run 100 s after the reboot of
+	# hold-274 it was still converging for the whole 70 s window (two-board run 2026-10-16: 'not reported' = FAIL).
+	# Wait for the converge marker to clear and for one fresh tick before editing anything.
+	w=0; while [ -e "$R/batman-payload-$T.converging" ] && [ $w -lt 600 ]; do sleep 5; w=$((w+5)); done
+	[ -e "$R/batman-payload-$T.converging" ] && { no "guardian still converging after 600 s — golden case not run"; echo "== payload-274 golden: FAIL"; exit 1; }
+	m0=$(date -r "$VL" +%s 2>/dev/null || echo 0); w2=0
+	while [ "$(date -r "$VL" +%s 2>/dev/null || echo 0)" = "$m0" ] && [ $w2 -lt 120 ]; do sleep 5; w2=$((w2+5)); done
+	[ "$(date -r "$VL" +%s 2>/dev/null || echo 0)" = "$m0" ] && { no "no verify tick within 120 s of an idle guardian — golden case not run"; echo "== payload-274 golden: FAIL"; exit 1; }
+	ok "guardian idle: converge done (waited $w s), a fresh verify tick seen (waited $w2 s)"
 	printf '#!/bin/sh\ntouch %s/ge274-vp\n' "$R" > "$D/verify-profile-zz274.sh"; printf 'touch %s/ge274-fw4\n' "$R" > "$D/zz274.fw4.uci"
 	chmod +x "$D/verify-profile-zz274.sh" "$D/zz274.fw4.uci"; echo "touch $R/ge274-rr" >> "$D/reconcile-resources.sh"
 	sleep 70

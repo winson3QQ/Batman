@@ -182,9 +182,10 @@ chk_amqp_down_289() { local ots=$1 run o rc=0 st0 st1 e0 e1 t0 GWC=opentakserver
 # Asserted: 'waiting for' lines, the gateway container created once (StartedAt == first StartedAt, RestartCount 0,
 # no restart records for it), FKs RESTRICT, healthz ok, phone KEPT, 5 containers running. Negative control: the
 # design states the overlay's handlers crash-looped until the first run (v2 design would exit 2); by code.
-chk_fresh_volumes_289() { local ots=$1 run o rc=0 t0 ts bk st0 st1 v
+chk_fresh_volumes_289() { local ots=$1 run o rc=0 t0 ts bk st0 st1 v u0 ca
   gw_pre "$ots" || return $?
   run=DVV$(date +%H%M%S); ts=$(date +%Y%m%d-%H%M%S); bk=/opt/batdata/dv289-backup-$ts
+  u0=$(fssh "$ots" 20 'cut -d. -f1 /proc/uptime' | tr -d '\r'); isint "$u0" || { echo "FAIL cannot read the node's uptime"; return 1; }
   echo "volumes to remove on $ots (printed before anything is deleted): $(fssh "$ots" 20 'docker volume ls -q | grep -E "^ots-(pgdata|appdata)$" | tr "\n" " "')"
   o=$(fssh "$ots" 60 'mkdir -p '"$bk"' && docker cp opentakserver:/app/ots/config.yml '"$bk"'/config.yml && docker cp opentakserver:/app/ots/ca '"$bk"'/ca && chmod -R go-rwx '"$bk"' && echo "BACKUP OK $(ls '"$bk"' | tr "\n" " ")"' | tr -d '\r'); echo "backup: $o"
   echo "$o" | grep -q '^BACKUP OK' || { echo "FAIL could not back up config.yml and ca/ — nothing deleted, not verified"; return 1; }
@@ -201,11 +202,19 @@ chk_fresh_volumes_289() { local ots=$1 run o rc=0 t0 ts bk st0 st1 v
   v=""; while [ $((SECONDS - t0)) -lt 900 ]; do sleep 15; v=$(gw_health "$ots"); case "$v" in *'"ok": true'*) break ;; esac; done
   echo "healthz after $((SECONDS - t0)) s: $(echo "$v" | tr -d '\n' | cut -c1-160)"
   case "$v" in *'"ok": true'*) ;; *) echo "FAIL the gateway is not healthy 900 s after the rebuild"; rc=1 ;; esac
-  o=$(gw_log "$ots" "waiting for"); echo "'waiting for' lines in the gateway log: ${o:-0} (schema / TLS files: the start gate waited, never exited)"
-  [ "${o:-0}" -ge 1 ] || { echo "FAIL the gateway logged no wait (did it start only after everything was there, or exit?)"; rc=1; }
+  # the start gate (app.py wait_dependencies) is exercised only when the gateway comes up BEFORE opentakserver's first
+  # run has written the CA / schema; the guardian's converge brought it up 9 s AFTER the new CA on 1.5.11-wsl.6
+  # (2026-10-16: no wait line, StartedAt 04:40:01 vs ca.pem 04:39:52), so a wait is required only in the first case
+  o=$(gw_log "$ots" "waiting for"); ca=$(fssh "$ots" 20 'date -u +%Y-%m-%dT%H:%M:%S -r /opt/batdata/docker/volumes/ots-appdata/_data/ca/ca.pem 2>/dev/null' | tr -d '\r')
+  echo "'waiting for' lines in the gateway log: ${o:-0}; gateway StartedAt ${st0%%.*} vs the new CA written at ${ca:-?}"
+  if [ "${o:-0}" -ge 1 ]; then echo "the start gate waited (schema / TLS files) and never exited"
+  elif [ -n "$ca" ] && [ -n "$st0" ] && [ "${st0%%.*}" \> "$ca" ]; then echo "the start gate was not exercised: the gateway came up after opentakserver's first run (dependencies present at its start)"
+  else echo "FAIL the gateway logged no wait and did not come up after the new CA existed (did it exit?)"; rc=1; fi
   st1=$(fssh "$ots" 20 'docker inspect -f "{{.State.StartedAt}} rc={{.RestartCount}}" ots_eud_gateway' | tr -d '\r')
   case "$st1" in "$st0 rc=0") echo "gateway never restarted (StartedAt $st0, RestartCount 0)" ;; *) echo "FAIL the gateway was restarted during the first boot ($st0 -> $st1)"; rc=1 ;; esac
-  o=$(fssh "$ots" 20 "$RDR"'grep -c "ots_eud_gateway" "$R"/batman-payload-opentakserver-restarts 2>/dev/null' | tr -d ' \r'); echo "guardian restart records naming the gateway: ${o:-0} (expect 0)"
+  # the ledger holds the whole boot (uptime-stamped): count only records since this test began (crash-274 / fi
+  # suites earlier in the same boot had 8 records naming the gateway: 2026-10-16 false FAIL)
+  o=$(fssh "$ots" 20 "$RDR"'cat "$R"/batman-payload-opentakserver-restarts 2>/dev/null' | tr -d '\r' | awk -v u="$u0" '$1 >= u && /ots_eud_gateway/ {n++} END {print n+0}'); echo "guardian restart records naming the gateway since the test began (uptime >= $u0 s): ${o:-0} (expect 0)"
   [ "${o:-0}" = 0 ] || { echo "FAIL the guardian recorded restarts of the gateway during the first boot"; rc=1; }
   o=$(echo "select string_agg(conname||'='||confdeltype::text, ',' order by conname) from pg_constraint where conname in ('cot_eud','point_eud','geochat_eud');" | ots_sql "$ots" | tr -d ' \r'); echo "FKs on the fresh schema: $o"
   [ "$o" = "cot_eud=r,geochat_eud=r,point_eud=r" ] || { echo "FAIL the migration did not run on the fresh schema"; rc=1; }
