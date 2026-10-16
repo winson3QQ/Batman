@@ -37,16 +37,18 @@ def test_first_unknown_is_unknown_and_starts_the_streak(tmp_path):
 
 
 def test_unknown_older_than_the_window_is_drift(tmp_path):
-    rc, out, _ = run(tmp_path, NOT_RUNNING, plant=700)
-    assert rc == 1 and "DRIFT record check UNKNOWN" in out, out
+    # the streak start is planted as "uptime - plant": it must stay >= 0 or the script treats it as malformed and
+    # restarts the streak (a 700 s plant failed on a host up for 266 s, 2026-10-16); window 3 s, streak 5 s old
+    rc, out, _ = run(tmp_path, NOT_RUNNING, plant=5, max_s="3")
+    assert rc == 1 and "DRIFT record check UNKNOWN for " in out, out
 
 
 def test_unknown_inside_the_window_stays_unknown(tmp_path):
-    rc, out, _ = run(tmp_path, NOT_RUNNING, plant=100)
+    rc, out, _ = run(tmp_path, NOT_RUNNING, plant=2)
     assert rc == 0 and out.startswith("verify-profile-ots-record: UNKNOWN") and "DRIFT record check" not in out, out
 
 
 def test_a_definite_verdict_clears_the_streak(tmp_path):
-    rc, out, rund = run(tmp_path, HEALTHY, plant=700)
+    rc, out, rund = run(tmp_path, HEALTHY, plant=5)
     assert rc == 0 and "OK" in out, out
     assert not (rund / "batman-ots-record-unknown-since").exists()
