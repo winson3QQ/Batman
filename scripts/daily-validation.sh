@@ -134,7 +134,18 @@ suite harness-265   "harness reachability: q retry/UNDETERMINED, settle, revert/
 
 # 2c. No hardware needed: nothing that runs as root on a node trusts world-writable /tmp (#280) — the static
 #     allowlist check, and its mutation proof (every bypass form must be caught).
-suite tmp-trust-static   "no decision state / root-executed file in world-writable /tmp on the node; per-hit allowlist, path table, wiring checks + mutation proofs (#280)"   "bash $REPO/scripts/check-tmp-trust.sh && bash $REPO/scripts/test-tmp-trust.sh"
+# the mutation proofs make git temp repos: under Git Bash (MSYS) they hang (2026-10-15, twice: case 3 / case 23;
+# in WSL 26/26 twice), so a //wsl.localhost repo is checked INSIDE its distro; a hang is a FAIL (timeout), never a stall
+chk_tmp_trust_static() { local d p
+  case "$(uname -o 2>/dev/null)" in
+    Msys) if command -v wsl.exe >/dev/null 2>&1; then case "$REPO" in //wsl.localhost/*)
+            d=${REPO#//wsl.localhost/}; p=/${d#*/}; d=${d%%/*}
+            echo "MSYS: delegated to WSL distro $d, repo $p"
+            timeout 900 wsl.exe -d "$d" -- bash -c "cd '$p' && bash scripts/check-tmp-trust.sh && bash scripts/test-tmp-trust.sh"; return ;;
+          esac; fi ;;
+  esac
+  timeout 900 bash "$REPO/scripts/check-tmp-trust.sh" && timeout 900 bash "$REPO/scripts/test-tmp-trust.sh"; }
+suite tmp-trust-static   "no decision state / root-executed file in world-writable /tmp on the node; per-hit allowlist, path table, wiring checks + mutation proofs (#280)"   "chk_tmp_trust_static"
 
 # 2. No hardware needed: the MAC->IP derivation used by the first-boot hook.
 suite onboarding-ip \
@@ -238,6 +249,15 @@ DNODE=${DESTRUCTIVE_NODE:-$OTS_NODE}      # tier-B target — MUST have ethernet
 
 fssh() { timeout "${2:-60}" ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" "$3"; }
 isint() { case "$1" in ""|*[!0-9]*) return 1;; esac; }   # every reading is checked before it is compared (#268)
+# #289: the OTS stack is 6 containers on the overlay build (two eud_handler listeners) and 5 on the gateway build
+# (ots_eud_gateway). Both the expected count and which EUD implementation runs come from the NODE (its manifest and
+# its containers), never from this script's idea of the build: ots_probe sets OTS_N / OTS_EUD once per run.
+OTS_N=${OTS_N:-6}; OTS_EUD=${OTS_EUD:-overlay}
+ots_probe() { local o
+  o=$(fssh "$1" 20 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest 2>/dev/null | head -1); echo "$(awk '"'"'$1=="CONTAINER"{n++} END{print n+0}'"'"' "$m" 2>/dev/null) $(docker ps --format "{{.Names}}" 2>/dev/null | grep -c "^ots_eud_gateway$")" 2>/dev/null' | tr -d '\r')
+  isint "${o%% *}" && [ "${o%% *}" -gt 0 ] && OTS_N=${o%% *}
+  [ "${o##* }" = 1 ] && OTS_EUD=gateway || OTS_EUD=overlay
+  echo "OTS stack on $1: $OTS_N containers, EUD implementation = $OTS_EUD"; }
 # #280 node-side snippets. RDR resolves where the node keeps its decision state: the root-only run dir on an
 # image that ships rundir.sh (missing there = FAIL, never a fall back to /tmp names anyone can plant), /tmp on
 # an older image (version-tolerant harness). HDS = the harness's own scratch dir on the node: under /tmp/run
@@ -253,7 +273,7 @@ HD=/tmp/run/batman-dv
 # UNKNOWN (skipped). Right for the #156 reconciler (never alarm on what it could not judge), wrong for a
 # test: six UNKNOWNs verify nothing and still exit 0 (#269). So the verdict comes from its summary line:
 # all six must be OK; UNKNOWN (mid-restart / too fresh) is retried, and still UNKNOWN = not verified = FAIL.
-OTS_CTR_N=6
+OTS_CTR_N=6   # #289: ots_probe sets it to the node's manifest count (OTS_N) before the OTS suites run
 vp_ots_verdict() {   # stdin: wrapper output -> rc 0 all OK / 1 FAIL / 2 retry (UNKNOWN present)
   local s ok dr un
   s=$(sed -n 's/^verify-profile-ots: ok=\([0-9]*\) drift=\([0-9]*\) unknown=\([0-9]*\)$/\1 \2 \3/p' | tail -1)
@@ -261,8 +281,8 @@ vp_ots_verdict() {   # stdin: wrapper output -> rc 0 all OK / 1 FAIL / 2 retry (
   { isint "$ok" && isint "$dr" && isint "$un"; } || { echo "FAIL no verify-profile-ots summary line — confinement not verified"; return 1; }
   [ "$dr" = 0 ] || { echo "FAIL $dr container(s) DRIFT from their hardening profile"; return 1; }
   [ "$un" = 0 ] || { echo "UNKNOWN $un container(s)"; return 2; }
-  [ "$ok" = "$OTS_CTR_N" ] || { echo "FAIL only $ok/$OTS_CTR_N containers judged OK"; return 1; }
-  echo "ok: $ok/$OTS_CTR_N containers match their hardening profile"; }
+  [ "$ok" = "${OTS_N:-$OTS_CTR_N}" ] || { echo "FAIL only $ok/${OTS_N:-$OTS_CTR_N} containers judged OK"; return 1; }
+  echo "ok: $ok/${OTS_N:-$OTS_CTR_N} containers match their hardening profile"; }
 chk_98() { local i o v rc
   for i in 1 2 3; do
     o=$(fssh "$1" 60 'd=/opt/batdata/apps/opentakserver; [ -f "$d/verify-profile-ots.sh" ] || d=/opt/batdata/deploy/ots; sh "$d/verify-profile-ots.sh"' 2>&1)
@@ -274,10 +294,11 @@ chk_98() { local i o v rc
   [ "$rc" = 2 ] && { echo "FAIL ${v#UNKNOWN } still UNKNOWN after 3 attempts — confinement not verified"; return 1; }
   echo "$v"; return "$rc"; }
 chk_162() { fssh "$1" 30 '
-  n=0; for c in opentakserver ots-db ots_cot_parser ots_eud_handler ots_eud_handler_ssl rabbitmq; do
+  m=$(ls /opt/batdata/apps/opentakserver/*.manifest 2>/dev/null | head -1); want=$(awk '"'"'$1=="CONTAINER"{n++} END{print n+0}'"'"' "$m" 2>/dev/null)
+  n=0; for c in $(awk '"'"'$1=="CONTAINER"{print $2}'"'"' "$m" 2>/dev/null); do
     [ "$(docker inspect -f "{{.State.Running}}" "$c" 2>/dev/null)" = true ] && n=$((n+1)); done
   db=$(docker exec ots-db psql -U ots -d ots -tAc "select 1" 2>/dev/null | tr -d " ")
-  echo "running=$n/6 postgres=$db"; [ "$n" = 6 ] && [ "$db" = 1 ]'; }
+  echo "running=$n/$want (manifest) postgres=$db"; [ "$want" -gt 0 ] && [ "$n" = "$want" ] && [ "$db" = 1 ]'; }
 chk_156() { fssh "$1" 45 "$HDS"'
   d=/opt/batdata/apps/opentakserver; [ -f "$d/verify-profile.sh" ] || d=/opt/batdata/deploy/ots   # #216: apps/ (flash-and-go) or deploy/ots
   [ -f "$d/verify-profile.sh" ] || { echo "verify-profile.sh not found in apps/ or deploy/ots"; exit 2; }   # do not let a missing file masquerade as DRIFT
@@ -753,14 +774,14 @@ ots_ctr() { fssh "$1" 15 'docker ps -q 2>/dev/null | wc -l' 2>/dev/null | tr -d 
 ots_logc() { fssh "$1" 30 'echo "$(docker exec ots_eud_handler sh -c "grep -c \"Failed to parse\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)" 2>/dev/null) $(docker logs rabbitmq 2>&1 | grep -c "missed heartbeats") $(docker exec ots_eud_handler sh -c "grep -c \"channel is closed\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)" 2>/dev/null)"' 2>/dev/null | tr -d '\r'; }
 chk_cot_264() { local ots=$1 peer=$2 run o c0 c1 l0 l1 rc=0 ph sent st prev i
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  c0=$(ots_ctr "$ots"); [ "$c0" = 6 ] || { echo "FAIL OTS not 6/6 before the test ($c0)"; return 1; }
+  c0=$(ots_ctr "$ots"); [ "$c0" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test ($c0)"; return 1; }
   run=DV$(date +%Y%m%d%H%M%S); echo "run id $run; generator $peer -> $ots:8088"
   l0=$(ots_logc "$ots")
   o=$(timeout 400 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run sh -s" < "$REPO/scripts/node/cot-e2e-gen.sh" 2>&1)
   echo "$o"
   cot_judge "$ots" "$run" "$o" || rc=1
   l1=$(ots_logc "$ots"); echo "eud 'Failed to parse' / rabbit 'missed heartbeats' / eud 'channel is closed': before [$l0] after [$l1] (info; #264 mechanism B is not exercised by this suite)"
-  c1=$(ots_ctr "$ots"); [ "$c1" = 6 ] || { echo "FAIL OTS not 6/6 after the test ($c1)"; rc=1; }
+  c1=$(ots_ctr "$ots"); [ "$c1" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test ($c1)"; rc=1; }
   return $rc; }
 # cot_judge <ots> <run> <generator output>: per phase sent == stored, connection losses, then delete the run's
 # rows and prove they are gone. Shared by the TCP (8088) and SSL (8089) suites (#264).
@@ -782,7 +803,7 @@ cot_judge() { local ots=$1 run=$2 o=$3 rc=0 ph sent st prev i pat u
   echo "$o" | grep '^CONNLOST' | sed 's/^/FAIL CONNECTION-LOST /' && rc=1
   # cleanup in one transaction, then verify every related table is empty for this run
   ots_sql "$ots" <<SQL
-begin; delete from euds where uid like '$run-%'; delete from cot where uid like '$run-%'; commit;
+begin; delete from cot where uid like '$run-%' or sender_uid like '$run-%'; delete from points where device_uid like '$run-%'; delete from euds where uid like '$run-%'; commit;
 SQL
   o=$(ots_sql "$ots" <<SQL
 select (select count(*) from cot where uid like '$run-%' or sender_uid like '$run-%') + (select count(*) from euds where uid like '$run-%') + (select count(*) from points where uid like '$run-%' or device_uid like '$run-%');
@@ -799,7 +820,7 @@ SQL
 # (the SSL handler maps the cert CN to a user) is signed on the node by the OTS CA into the container's tmpfs and
 # removed afterwards; the CA password is read inside the container, never printed.
 chk_cot_264_ssl() { local ots=$1 run o c0 rc=0
-  c0=$(ots_ctr "$ots"); [ "$c0" = 6 ] || { echo "FAIL OTS not 6/6 before the test ($c0)"; return 1; }
+  c0=$(ots_ctr "$ots"); [ "$c0" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test ($c0)"; return 1; }
   o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" 'docker exec -i ots_cot_parser python3 -' < "$REPO/scripts/node/ots-test-client-cert.py" 2>&1)
   echo "$o"; echo "$o" | grep -q '^OK test client cert' || { echo "FAIL could not issue the test client cert — not verified"; return 1; }
   run=DVS$(date +%Y%m%d%H%M%S); echo "run id $run; generator ots_cot_parser -> ots_eud_handler_ssl:8089 (mTLS, CN=administrator)"
@@ -810,7 +831,7 @@ chk_cot_264_ssl() { local ots=$1 run o c0 rc=0
   cot_judge "$ots" "$run" "$o" || rc=1
   fssh "$ots" 15 'docker exec ots_cot_parser rm -f /tmp/dv-client.pem /tmp/dv-client.key; docker exec ots_cot_parser ls /tmp/dv-client.pem 2>/dev/null' | grep -q . \
     && { echo "FAIL test client cert still present in ots_cot_parser:/tmp"; rc=1; } || echo "test client cert removed"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # #264 R10: an 8088 client's uid/callsign become queue names on the shared broker. A callsign "cot_parser" would
 # consume the cot_parser queue (round-robin with cot_parser: every second CoT of every EUD lost from storage).
@@ -821,7 +842,7 @@ chk_cot_264_ssl() { local ots=$1 run o c0 rc=0
 # round-robin starts.
 chk_name_guard_264() { local ots=$1 peer=$2 run o c rc=0 g0 g1 st
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   run=DVN$(date +%H%M%S)
   g0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"is not used as a queue\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r'); isint "$g0" || g0=0
   ( timeout 40 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" \
@@ -842,7 +863,7 @@ begin; delete from cot where uid = '$run'; delete from euds where uid = '$run'; 
 SQL
   o=$(fssh "$ots" 60 'for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'$"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1; done; echo "left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'$")"' | tr -d '\r')
   echo "rabbit queue of this run: $o"; case "$o" in *left=0) ;; *) echo "FAIL cleanup: rabbit queue of run $run left behind"; rc=1 ;; esac
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # #264 R4/R4b/R13 (mechanism B; review r3 A3-3, the user's decision 2026-10-12): the broker ends a streaming
 # session's AMQP connection (rabbitmqctl close_connection of that session's connection, found by the connection_name
@@ -855,7 +876,7 @@ SQL
 # API were lost, review r3 A3-3).
 chk_amqp_close_264() { local ots=$1 peer=$2 run o rc=0 sent st distinct dup closed=0 l0 l1 lost
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   run=DVB$(date +%H%M%S)
   l0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"delivering the cache, then ending\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r'); isint "$l0" || l0=0
   ( timeout 240 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" "TARGET=$ots RUN=$run N=120 sh -s" < "$REPO/scripts/node/cot-stream-264.sh" > "$DIR/$run.gen" 2>&1 ) &
@@ -879,7 +900,7 @@ chk_amqp_close_264() { local ots=$1 peer=$2 run o rc=0 sent st distinct dup clos
   l1=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"delivering the cache, then ending\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r'); isint "$l1" || l1=0
   [ $((l1 - l0)) -ge 1 ] && echo "handler log: \"delivering the cache, then ending the client session\" ($((l1 - l0)))" || { echo "FAIL no R13 log line"; rc=1; }
   r264_clean "$ots" "$run"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # #264 review round 2 (2026-10-12): every suite below reproduced its finding on node 04 with rc wsl.8 before the
 # fix (negative control, logs in the register) and must PASS on the fixed overlay. Helpers: s264 runs
@@ -902,7 +923,7 @@ r264_binds() { fssh "$1" 20 'docker exec rabbitmq rabbitmqctl -q list_bindings s
 # split between A and B; rc wsl.15 (round 6: superseded at once): A's later reports lost.
 chk_same_uid_end_264() { local ots=$1 peer=$2 run o rc=0 t0 q
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   run=DVSU$(date +%H%M%S); q="$run-U"
   echo "  peer: $(s264 "$peer" "$ots" "$run" same-uid)"; sleep 5
   echo "  peer: $(s264 "$peer" "$ots" "$run" send10 TAG=post)"; sleep 2
@@ -931,14 +952,14 @@ chk_same_uid_end_264() { local ots=$1 peer=$2 run o rc=0 t0 q
   [ "$o" = 10 ] || { echo "FAIL ${o:-?} of 10 reports A sent were stored (rc wsl.15: A ended at once, its later reports lost)"; rc=1; }
   o=$(fssh "$ots" 20 'docker logs ots_eud_handler 2>&1 | grep -c "Exception occurred during processing"' | tr -d ' \r'); echo "container tracebacks (total): ${o:-?}"
   echo "  peer: $(s264 "$peer" "$ots" "$run" cleanup)"; sleep 5; r264_clean "$ots" "$run"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # R10 (review r2 B2-4): two devices with the same callsign and different uids both get broadcast traffic (own
 # <uid> queue each, as upstream). Negative control, rc wsl.8 (node 04, 2026-10-12): A 10, B 0 (B held off for its
 # whole session, its <uid> queue never bound, left behind as an orphan).
 chk_callsign_share_264() { local ots=$1 peer=$2 run o rc=0
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   run=DVCS$(date +%H%M%S)
   o=$(s264 "$peer" "$ots" "$run" share-cs); echo "  peer: $o"
   echo "$o" | grep -q '^STARTED established=2$' || { echo "FAIL expected A and B established"; rc=1; }
@@ -958,7 +979,7 @@ chk_callsign_share_264() { local ots=$1 peer=$2 run o rc=0
   o=$(echo "$o" | awk -F'\t' 'NF>=3 && $2==0 {n++} END {print n+0}')
   [ "$o" = 0 ] || { echo "FAIL $o EMPTY queue(s) of the run left behind (orphans, F3)"; rc=1; }
   r264_clean "$ots" "$run"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # R10 (review r2 B2-2): an unauthenticated 8088 client must not take over an authenticated (8089) user's queues by
 # swapping uid and callsign. An 8089 session (test cert, CN=administrator) identifies once; then an 8088 client
@@ -967,7 +988,7 @@ chk_callsign_share_264() { local ots=$1 peer=$2 run o rc=0
 # subscribed ("subscribed ...-X/<user's uid>", 1 consumer on the user's uid queue); the direct one was refused.
 chk_owner_swap_264() { local ots=$1 peer=$2 run o rc=0 V VC r0 r1 mode
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" 'docker exec -i ots_cot_parser python3 -' < "$REPO/scripts/node/ots-test-client-cert.py" 2>&1)
   echo "$o" | grep -q '^OK test client cert' || { echo "FAIL could not issue the test client cert — not verified"; return 1; }
   run=DVOS$(date +%H%M%S); V=$run-V; VC=$run-Vc
@@ -993,7 +1014,7 @@ chk_owner_swap_264() { local ots=$1 peer=$2 run o rc=0 V VC r0 r1 mode
   done
   fssh "$ots" 15 'docker exec ots_cot_parser rm -f /tmp/dv-client.pem /tmp/dv-client.key' >/dev/null
   sleep 3; r264_clean "$ots" "$run"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # R12 (review r2 B2-6, the user's decision 2026-10-12): admission. (a) 8088: silent sockets (no byte ever sent) are
 # closed by the server within IDENT_MAX_S (60 s) + slack; (b) 8088: more than PER_IP_MAX (8) sessions from one
@@ -1003,7 +1024,7 @@ chk_owner_swap_264() { local ots=$1 peer=$2 run o rc=0 V VC r0 r1 mode
 # before its handshake (measured: see register r2 B2-6).
 chk_admission_264() { local ots=$1 peer=$2 run o rc=0 r0 r1 t0 e
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   run=DVAD$(date +%H%M%S)
   rlog() { fssh "$ots" 20 'docker exec '"$1"' sh -c "grep -c \"'"$2"'\" /app/ots/logs/'"$3"' 2>/dev/null"' | tr -d ' \r'; }
   # (c) 8089 first (its sockets are gone within seconds): 3 TCP connections that never start TLS
@@ -1079,7 +1100,7 @@ chk_admission_264() { local ots=$1 peer=$2 run o rc=0 r0 r1 t0 e
   echo "(h) the phone subscribed within ~8 s during a contact-less stream: ${e:-?} (expect 1); unserialized admissions +$((u1 - u0)) (expect 0)"
   [ "$e" = 1 ] && [ "$u1" = "$u0" ] || { echo "FAIL (h) a non-identifying stream holds up a phone's admission (the lock re-taken per message)"; rc=1; }
   echo "  peer: $(s264 "$peer" "$ots" "$run" cleanup)"; r264_clean "$ots" "$run"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # #264 R8 (review r3 B3-1, destructive: stops and starts the OTS stack through its guardian): an update that leaves a
 # p6 overlay whose MOUNTSHA no longer matches the image. The guardian stops the stack (as at an OTA reboot), the
@@ -1120,7 +1141,7 @@ bchk_r8_hold_264() { local n=$1 rc=0 g=/etc/init.d/batman-payload-opentakserver 
 # loop ended only when the membership was removed.
 bchk_group_disc_264() { local ots=$1 peer=$2 run o rc=0 V VC c0 c1 i
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   o=$(timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$ots" 'docker exec -i ots_cot_parser python3 -' < "$REPO/scripts/node/ots-test-client-cert.py" 2>&1)
   echo "$o" | grep -q '^OK test client cert' || { echo "FAIL could not issue the test client cert — not verified"; return 1; }
   run=DVGD$(date +%H%M%S); V=$run-V; VC=$run-Vc
@@ -1143,13 +1164,13 @@ bchk_group_disc_264() { local ots=$1 peer=$2 run o rc=0 V VC c0 c1 i
   echo "test membership removed: $(echo "$o" | head -1)"
   fssh "$ots" 15 'docker exec ots_cot_parser rm -f /tmp/dv-client.pem /tmp/dv-client.key' >/dev/null 2>&1
   # recovery (a broken build: the guardian's next restart processes the poison message once the group is gone): wait
-  # up to 180 s for 6/6 and a drained, consumed cot_parser queue, so the node is left usable either way
+  # up to 180 s for $OTS_N/$OTS_N and a drained, consumed cot_parser queue, so the node is left usable either way
   for i in $(seq 1 18); do
     o=$(fssh "$ots" 20 'docker exec rabbitmq rabbitmqctl -q list_queues name messages consumers 2>/dev/null | grep "^cot_parser'"$(printf '	')"'"' | tr -d '\r' | tr '	' ' ')
-    [ "$(ots_ctr "$ots")" = 6 ] && [ "$o" = "cot_parser 0 1" ] && break; sleep 10; done
+    [ "$(ots_ctr "$ots")" = "$OTS_N" ] && [ "$o" = "cot_parser 0 1" ] && break; sleep 10; done
   echo "cot_parser queue: $o (expect 0 messages, 1 consumer)"; case "$o" in "cot_parser 0 1") ;; *) echo "FAIL cot_parser not consuming a drained queue within 180 s"; rc=1 ;; esac
   r264_clean "$ots" "$run"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # #264 review round 3 (2026-10-12): each suite below reproduced its finding on node 04 with rc wsl.10 first (the
 # negative control, logs in the register "Code review round 3") and must PASS on the fixed build.
@@ -1169,7 +1190,7 @@ cert264() { timeout 60 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=
 fi264() { fssh "$1" 20 "docker exec ots_eud_handler sh -c 'printf \"%s\" \"$2\" > /tmp/batman-264-fi'"; }
 chk_exception_264() { local ots=$1 peer=$2 run o rc=0 t0 t1 k0 k1 m0 m1 u
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   run=DVEX$(date +%H%M%S)
   exlog() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"'"$1"'\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r'; }
   k0=$(exlog "identification raised RuntimeError"); isint "$k0" || k0=0
@@ -1197,7 +1218,7 @@ chk_exception_264() { local ots=$1 peer=$2 run o rc=0 t0 t1 k0 k1 m0 m1 u
   o=$(echo "$o" | awk -F'\t' 'NF>=3 && $2==0 {n++} END {print n+0}')
   [ "$o" = 0 ] || { echo "FAIL $o EMPTY queue(s) left behind by the sessions (they did not end properly)"; rc=1; }
   r264_clean "$ots" "$run"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # R10 (review r3 B3-5, the user's decision 2026-10-12): an 8089 user must not claim the uid of ANOTHER user's device.
 # A test user (no password: cert only) is created and removed by this suite. Asserted: user 2's session claiming user
@@ -1205,7 +1226,7 @@ chk_exception_264() { local ots=$1 peer=$2 run o rc=0 t0 t1 k0 k1 m0 m1 u
 # shared (two users naming their phones alike is common). Negative control, rc wsl.10 (2026-10-12): user 2 consumed
 # the queue and the row's user_id went 1 -> 2.
 chk_owner_8089_264() { local ots=$1 run o rc=0 V r0 r1 u1 c
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   run=DVO9$(date +%H%M%S); V=$run-V
   u1=$(echo "select id from \"user\" where username = 'administrator';" | ots_sql "$ots"); isint "$u1" || { echo "FAIL no administrator user — not verified"; return 1; }
   echo "delete from \"user\" where username = 'dv-264-u2';" | ots_sql "$ots" >/dev/null   # left by an interrupted run (r8 B8-6)
@@ -1228,7 +1249,7 @@ chk_owner_8089_264() { local ots=$1 run o rc=0 V r0 r1 u1 c
   r264_clean "$ots" "$run"
   o=$(echo "delete from \"user\" where username = 'dv-264-u2' returning id;" | ots_sql "$ots" | head -1); echo "test user removed: $o"
   [ "$(echo "select count(*) from \"user\" where username = 'dv-264-u2';" | ots_sql "$ots")" = 0 ] || { echo "FAIL test user left behind"; rc=1; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # #264 R7/R16 at the margin (tier B; review r6 A6-1/B6-1, A2-5's R7 refusal node test): ots_eud_handler's memory
 # limit is lowered to 768m for one rto-264 run, the #156 resource reconciler paused by its operator flag (it put the
@@ -1265,7 +1286,7 @@ bchk_rto768_264() { local ots=$1 p1=$2 p2=$3 rc=0 m0 m1 t0 r
 # discriminate: register impl-8): 1500, measured once cot_parser has routed them: 1502 held, no cap.
 chk_queue_policy_264() { local ots=$1 peer=$2 run o rc=0 m
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   cert264 "$ots" administrator || { echo "FAIL could not issue the test client cert — not verified"; return 1; }
   run=DVQP$(date +%H%M%S)
   o=$(echo "insert into groups_users (user_id, group_id, direction, enabled) select u.id, g.id, d, true from \"user\" u, groups g, (values ('OUT'), ('IN')) v(d) where u.username = 'administrator' and g.name = 'ADS-B' returning direction;" | ots_sql "$ots" | tr '\n' ' ')
@@ -1294,7 +1315,7 @@ chk_queue_policy_264() { local ots=$1 peer=$2 run o rc=0 m
   echo "test memberships removed: $o"
   fssh "$ots" 15 'docker exec ots_cot_parser rm -f /tmp/dv-client.pem /tmp/dv-client.key' >/dev/null 2>&1
   r264_clean "$ots" "$run"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # Capacity (the user's target 2026-10-12: 16 phones per node): 16 identifying idle 8088 sessions at once from two
 # addresses (8 from the bench node, 8 from the mesh node: PER_IP_MAX 8). Asserted: all 16 subscribed, none refused,
@@ -1302,7 +1323,7 @@ chk_queue_policy_264() { local ots=$1 peer=$2 run o rc=0 m
 # sessions' traffic). Negative control, rc wsl.10 (512 MiB): 474 MiB anon of 512 = 93 % (16 fitted with ~21 MiB left).
 chk_cap16_264() { local ots=$1 p1=$2 p2=$3 run o rc=0 r0 r1 sub peak mx oom0 oom1 a st0
   [ -n "$p1" ] && [ -n "$p2" ] && [ "$p1" != "$ots" ] && [ "$p2" != "$ots" ] && up "$p1" && up "$p2" || { echo "SKIP-REASON: needs two client nodes besides OTS_NODE ($p1, $p2)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   run=DVC16$(date +%H%M%S)
   cg='c=$(docker inspect -f "{{.Id}}" ots_eud_handler); d=/sys/fs/cgroup/docker/$c'
   r0=$(fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -cE \"refusing session\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)"' | tr -d ' \r'); isint "$r0" || r0=0
@@ -1332,7 +1353,7 @@ chk_cap16_264() { local ots=$1 p1=$2 p2=$3 run o rc=0 r0 r1 sub peak mx oom0 oom
   isint "$mx" && [ $((peak * 100)) -le $((mx * 85)) ] || { echo "FAIL anon peak above 85 % of memory.max (no room left above 16 phones)"; rc=1; }
   s264 "$p1" "$ots" "$run-a" cleanup >/dev/null; s264 "$p2" "$ots" "$run-b" cleanup >/dev/null; sleep 8
   r264_clean "$ots" "$run"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # Broker memory alarm (review r4 A4-8/B4-5, r5 A5-5): no blocked_connection_timeout any more, so a broker alarm
 # longer than 60 s must not end the sessions; they cache and deliver after it. The watermark is dropped to 1 MB for
@@ -1343,7 +1364,7 @@ chk_cap16_264() { local ots=$1 p1=$2 p2=$3 run o rc=0 r0 r1 sub peak mx oom0 oom
 # closed the connection, R13 ended the client session) - rc12 is no longer installed (stated, register r5).
 chk_alarm_264() { local ots=$1 peer=$2 run o rc=0 wm blk sent lost distinct
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   wm=$(fssh "$ots" 20 'docker exec rabbitmq sh -c "sed -n \"s/^vm_memory_high_watermark.absolute = //p\" /etc/rabbitmq/conf.d/99-batman.conf"' | tr -d ' \r')
   case "$wm" in [0-9]*MB) ;; *) echo "FAIL unreadable configured watermark [$wm] — not verified"; return 1 ;; esac
   run=DVAL$(date +%H%M%S)
@@ -1364,7 +1385,7 @@ chk_alarm_264() { local ots=$1 peer=$2 run o rc=0 wm blk sent lost distinct
   echo "sent ${sent:-?}, stored distinct ${distinct:-?}"
   isint "$sent" && [ "$sent" -ge 100 ] && [ "$distinct" = "$sent" ] || { echo "FAIL not every CoT sent through the alarm was stored"; rc=1; }
   rm -f "$DIR/$run.gen"; r264_clean "$ots" "$run"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # The RTO returns (field scenario, the user 2026-10-12: the OTS node is carried by the RTO): the node walks out of
 # range and is back within ~2 min, so the team's 16 sessions are still on the server as zombies (no FIN) when the
@@ -1388,7 +1409,7 @@ rto264() { timeout "${3:-60}" ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectT
 # listener; with R17 each return ends the previous session): the second reconnects all kept, >= 3 reports per phone.
 chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 o1 r0 r1 sub k1 k2 i a peak=0 mx ctr tgt c u0 u1 gen nb=2 want=2 hold=170 ru flip=${RTO_FLIP:-0} m0 m1 v
   [ -n "$p1" ] && [ -n "$p2" ] && [ "$p1" != "$ots" ] && [ "$p2" != "$ots" ] && up "$p1" && up "$p2" || { echo "SKIP-REASON: needs two client nodes besides OTS_NODE ($p1, $p2)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   run=DVRTO$(date +%H%M%S); ctr=ots_eud_handler; tgt=172.20.0.10; gen=ots_eud_handler_ssl
   if [ "$port" = 8089 ]; then
     ctr=ots_eud_handler_ssl; tgt=172.20.0.12; run=DVRTS$(date +%H%M%S); gen=ots_eud_handler; nb=3; want=3
@@ -1515,7 +1536,7 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
     o=$(echo "delete from \"user\" where username = 'dv-264-rto' returning id;" | ots_sql "$ots" | head -1); echo "test user removed: $o"
     [ "$(echo "select count(*) from \"user\" where username = 'dv-264-rto';" | ots_sql "$ots")" = 0 ] || { echo "FAIL test user left behind"; rc=1; }
   fi
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # #264 R17 (review r6) / R6 / R10, in FIELD ORDER (scripts/node/zombie-264.sh on the bench node): A = the EUD's
 # first session, which goes stale (its port black-holed on the bench node both ways: no FIN/RST ever); then B = the
@@ -1532,7 +1553,7 @@ chk_rto_264() { local ots=$1 p1=$2 p2=$3 port=${4:-8088} run rc=0 cg st0 st1 o0 
 # B held off ~2 min; rc wsl.14 (no R17): A not superseded, phase 1 split between A and B.
 chk_zombie_264() { local ots=$1 peer=$2 run o rc=0 c t0 sup="" q apid bpid d0 d1
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   run=DVZ$(date +%H%M%S); q="$run-A"
   zlog() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep -c \"'"$1"'\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r'; }
   zpids() { fssh "$ots" 20 'docker exec ots_eud_handler sh -c "grep \"subscribed '"$q"'/\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | sed -n 's/.* - eud_handler\[\([0-9]*\)\] - .*/\1/p' | tr -d '\r'; }
@@ -1599,7 +1620,7 @@ SQL
   [ "$c" = 0 ] || { echo "FAIL $c EMPTY queue(s) of the run left behind after their EUD's last session ended (orphans, F3)"; rc=1; }
   o=$(fssh "$ots" 60 'left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'"); for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1; done; echo "left-by-the-handler=$left"' | tr -d '\r')
   echo "rabbit per-EUD queues after the last session ended: $o (empty ones: FAIL above; ones holding messages: kept by design)"
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # #264 R7: memory per idle EUD session on the 8088 handler. N idle sessions from the peer (one CoT each, then
 # silent); cgroup memory.current of ots_eud_handler before/after; the per-session cost must stay under
@@ -1614,7 +1635,7 @@ eud_mem_264() { fssh "$1" 20 'c=$(docker inspect -f "{{.Id}}" ots_eud_handler 2>
 eud_refused_264() { fssh "$1" 20 'docker exec ots_eud_handler sh -c "grep -c \"refusing session from '"$2"'\" \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1) 2>/dev/null"' | tr -d ' \r'; }
 chk_eud_mem_264() { local ots=$1 peer=$2 n=6 run m0 m1 m2 d rc=0 o r0 H=/tmp/run/batman-dv
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   m0=$(eud_mem_264 "$ots"); isint "$m0" || { echo "FAIL cannot read ots_eud_handler memory.current ([$m0]) — not verified"; return 1; }
   run=DVM$(date +%Y%m%d%H%M%S); r0=$(eud_refused_264 "$ots" "$peer"); isint "$r0" || r0=0
   o=$(timeout 90 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$peer" \
@@ -1640,7 +1661,7 @@ begin; delete from cot where uid like '$run-%'; delete from euds where uid like 
 SQL
   o=$(fssh "$ots" 60 'n=0; for q in $(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep "^'"$run"'"); do docker exec rabbitmq rabbitmqctl -q delete_queue "$q" >/dev/null 2>&1 && n=$((n+1)); done; echo "deleted=$n left=$(docker exec rabbitmq rabbitmqctl -q list_queues name 2>/dev/null | grep -c "^'"$run"'")"' | tr -d '\r')
   echo "rabbit per-EUD queues of this run: $o"; case "$o" in *left=0) ;; *) echo "FAIL cleanup: per-EUD rabbit queues of run $run left behind"; rc=1 ;; esac
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   return $rc; }
 # #264 mechanism C, destructive (tier B): the transient cot_parser queue disappears while a client streams. Deleting
 # it also cancels cot_parser's consumer, so cot_parser EXITS and the guardian restarts it (a ledger line, DRIFT for
@@ -1649,7 +1670,7 @@ SQL
 # sent == stored. Unpatched: every CoT in the window is dropped (negative control, measured before the overlay).
 bchk_queue_gone_264() { local ots=$1 peer=$2 run rc=0 l0 l1 s st sd rec i t0
   [ -n "$peer" ] && [ "$peer" != "$ots" ] && up "$peer" || { echo "SKIP-REASON: no generator peer (BENCH_NODE '$peer' unset, == OTS_NODE or down)"; return 3; }
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 before the test"; return 1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N before the test"; return 1; }
   l0=$(fssh "$ots" 15 "$RDR"'grep -c "crash ots_cot_parser" "$R"/batman-payload-opentakserver-restarts 2>/dev/null || echo 0' | tr -d ' \r')
   run=DVQ$(date +%Y%m%d%H%M%S); t0=$(date +%s)
   soak_ssh "$peer" "ROLE=cotgen TARGET=$ots RUN=$run DUR=150" | grep -q '^OK cotgen' || { echo "FAIL could not start the CoT generator on $peer"; return 1; }
@@ -1679,9 +1700,9 @@ bchk_queue_gone_264() { local ots=$1 peer=$2 run rc=0 l0 l1 s st sd rec i t0
   fssh "$ots" 30 'docker exec ots_eud_handler sh -c "tail -400 \$(ls -t /app/ots/logs/eud_handler_tcp.log* | head -1)" | grep -ciE "declare refused|cache full|session end:"' | tr -d '\r' | sed 's|^|eud error lines (declare refused, cache full, session end): |'
   soak_ssh "$peer" "ROLE=down" | tail -1
   ots_sql "$ots" <<SQL >/dev/null
-begin; delete from euds where uid like '$run-%'; delete from cot where uid like '$run-%'; commit;
+begin; delete from cot where uid like '$run-%' or sender_uid like '$run-%'; delete from points where device_uid like '$run-%'; delete from euds where uid like '$run-%'; commit;
 SQL
-  [ "$(ots_ctr "$ots")" = 6 ] || { echo "FAIL OTS not 6/6 after the test"; rc=1; }
+  [ "$(ots_ctr "$ots")" = "$OTS_N" ] || { echo "FAIL OTS not $OTS_N/$OTS_N after the test"; rc=1; }
   # the guardian restart left the tenant DRIFT for the 600 s ledger window: wait it out so later suites judge a clean tenant
   for i in $(seq 1 70); do fssh "$ots" 10 "$RDR"'grep -q "\"status\":\"OK\"" "$R"/batman-payload-opentakserver-drift.json' && break; sleep 10; done
   fssh "$ots" 10 "$RDR"'grep -q "\"status\":\"OK\"" "$R"/batman-payload-opentakserver-drift.json' && echo "tenant verdict back to OK" || { echo "FAIL tenant verdict not OK 700 s after the test"; rc=1; }
@@ -1707,19 +1728,36 @@ chk_soak_run() { local n o dur rc=0 m peer other
     for other in "$BENCH_NODE" "$MESH_NODE"; do [ "$other" = "$n" ] && continue
       o=$(soak_ssh "$other" "ROLE=httpgen TARGET=$n LABEL=mesh DUR=$dur"); echo "$other -> $n: $o"; done
   done
-  o=$(soak_ssh "$BENCH_NODE" "ROLE=cotgen TARGET=$OTS_NODE RUN=$SOAK_RUN DUR=$dur"); echo "$BENCH_NODE: $o"
+  if [ "$OTS_EUD" = gateway ]; then
+    # #289: 8088 is closed on the gateway build; the generator is a stream client inside ots_cot_parser over 8089
+    # (5 CoT/s, uids $SOAK_RUN-S-p<i>), its SENT line read by chk_soak_cot
+    gw_users "$OTS_NODE" GWSK 1 || { echo "FAIL could not create the soak's test user"; rc=1; }
+    ( gwc "$OTS_NODE" ots_cot_parser $((dur + 120)) ACTION=stream UID="$SOAK_RUN-S" CS="$SOAK_RUN-S" CERT=/tmp/GWSK-u1.pem KEY=/tmp/GWSK-u1.key N=$((dur * 5)) DELAY=0.2 HOLD=5 > "$DIR/soak-cot-289.gen" ) &
+    echo "$OTS_NODE: CoT generator inside ots_cot_parser -> gateway 8089, $((dur * 5)) events over ${dur}s"
+  else
+    o=$(soak_ssh "$BENCH_NODE" "ROLE=cotgen TARGET=$OTS_NODE RUN=$SOAK_RUN DUR=$dur"); echo "$BENCH_NODE: $o"
+  fi
   for m in $(seq 0 $((SOAK_MIN + 2))); do
     for n in $(soak_nodes); do o=$(soak_ssh "$n" ROLE=sample); echo "$m $n $o" >> "$DIR/soak.samples"; done
     echo "$m $(grep "^$m " "$DIR/soak.samples" | cut -c1-200 | tr '\n' '|')"
     sleep 55
   done
+  [ "$OTS_EUD" = gateway ] && { wait; echo "generator: $(rd "$DIR/soak-cot-289.gen" | tail -1)"; }
   sleep 20   # let cot_parser drain
+  if [ "$OTS_EUD" = gateway ]; then
+    # the device's goodbye lands after the client left: wait for the device to end and the run's cot count to settle,
+    # or the euds delete below meets a fresh cot row and RESTRICT rolls the whole cleanup back (rc 5: 9902 left)
+    local i a b
+    for i in 1 2 3 4 5 6 7 8 9 10; do a=$(gw_snap "$OTS_NODE" | grep -c "\"$SOAK_RUN-"); [ "${a:-1}" = 0 ] && break; sleep 2; done
+    a=$(echo "select count(*) from cot where uid like '$SOAK_RUN-%' or sender_uid like '$SOAK_RUN-%';" | ots_sql "$OTS_NODE")
+    for i in 1 2 3 4 5 6 7 8; do sleep 4; b=$(echo "select count(*) from cot where uid like '$SOAK_RUN-%' or sender_uid like '$SOAK_RUN-%';" | ots_sql "$OTS_NODE"); [ "$b" = "$a" ] && break; a=$b; done
+  fi
   # distinct (uid, timestamp): the generator sends one batch of 5 uids per second (batches >= 1 s apart), so every
   # sent CoT is one distinct pair; distinct uid alone is always 5 (02/03 full run 2026-10-13: "stored=5" vs 8955 sent)
   echo "stored $(echo "select count(distinct (uid, timestamp)) from cot where uid like '$SOAK_RUN-S-%';" | ots_sql "$OTS_NODE")" >> "$DIR/soak.samples"
   echo "rows $(echo "select count(*) from cot where uid like '$SOAK_RUN-S-%';" | ots_sql "$OTS_NODE")" >> "$DIR/soak.samples"
   ots_sql "$OTS_NODE" <<SQL >/dev/null
-begin; delete from euds where uid like '$SOAK_RUN-%'; delete from cot where uid like '$SOAK_RUN-%'; commit;
+begin; delete from cot where uid like '$SOAK_RUN-%' or sender_uid like '$SOAK_RUN-%'; delete from euds where uid like '$SOAK_RUN-%'; commit;
 SQL
   o=$(echo "select count(*) from cot where uid like '$SOAK_RUN-%' or sender_uid like '$SOAK_RUN-%';" | ots_sql "$OTS_NODE")
   [ "$o" = 0 ] && echo "cleanup ok" || { echo "FAIL cleanup: $o soak CoT rows left"; rc=1; }
@@ -1753,7 +1791,13 @@ chk_soak_http() { local lab=$1 n o f rc=0 last=$((SOAK_MIN + 2)) any=0; for n in
   return $rc; }
 chk_soak_cot() { local sent st rc re rows
   # at-least-once (#264 decision): every sent uid stored at least once; duplicates are reported, not failed
-  sent=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_sent); re=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_reconn); st=$(sed -n 's/^stored //p' "$DIR/soak.samples"); rows=$(sed -n 's/^rows //p' "$DIR/soak.samples")
+  if [ "$OTS_EUD" = gateway ]; then
+    sent=$(rd "$DIR/soak-cot-289.gen" | sed -n 's/^SENT \([0-9]*\).*/\1/p'); re=$(rd "$DIR/soak-cot-289.gen" | grep -c CONNLOST)
+    gw_cleanup "$OTS_NODE" "$SOAK_RUN" GWSK 1 >/dev/null
+  else
+    sent=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_sent); re=$(sv $((SOAK_MIN + 2)) "$BENCH_NODE" cot_reconn)
+  fi
+  st=$(sed -n 's/^stored //p' "$DIR/soak.samples"); rows=$(sed -n 's/^rows //p' "$DIR/soak.samples")
   { isint "$sent" && isint "$st"; } || { echo "FAIL CoT counters unreadable sent=[$sent] stored=[$st] — not verified"; return 1; }
   isint "$rows" || rows=$st
   # sent is sampled at minute SOAK_MIN+2 while the generator still runs; stored/rows are read at the end: >= sent
@@ -1840,14 +1884,16 @@ if [ "$OTS_SOC" = bcm2710 ]; then
     suite "$s" "OTS_NODE $OTS_NODE is bcm2710 — not run (see ots-node-209)" ""
   done
 elif up "$OTS_NODE"; then
+  ots_probe "$OTS_NODE"
   suite confinement-98  "OTS container confinement — 9 axes ×6 (#98)"                       "chk_98 $OTS_NODE"
-  suite ots-up-162       "OTS 6/6 running + postgres endpoint answers (#162)"                "chk_162 $OTS_NODE"
+  suite ots-up-162       "OTS $OTS_N/$OTS_N running + postgres endpoint answers (#162)"                "chk_162 $OTS_NODE"
   suite drift-detect-156 "reconciler flags an unhardened decoy as DRIFT (#156, white-box)"   "chk_156 $OTS_NODE"
   suite payload-mgr-167  "OTS on the generic payload manager, old guardian gone (#167)"       "chk_167g $OTS_NODE"
   suite arbiter-167      "port/zone arbiter REFUSES a colliding tenant (#167, white-box)"      "chk_167a $OTS_NODE"
   suite payload-config-golden "p6 tenant config == baked golden + restart policy no (#274) + images present (payload-config-golden.md)" "chk_golden $OTS_NODE"
   suite payload-conform "live containers == manifest: running + config-fingerprint label + tenant label + MOUNTs (src/RO) + no orphans (#274)" "chk_conform $OTS_NODE"
   suite flashgo-159      "flash-and-go integrity — firstload enabled, offline copies (F2), canary runs, autocommit gate (#159/#216)" "chk_flashgo $OTS_NODE"
+  if [ "$OTS_EUD" = overlay ]; then
   suite ots-cot-e2e-264  "CoT sent == stored per phase from $BENCH_NODE: P1 control, P2 deterministic truncation (A control / B #264-A), P3 burst; heartbeat (#264-B) NOT exercised (#268 B2)" "chk_cot_264 $OTS_NODE $BENCH_NODE"
   suite ots-cot-e2e-264-ssl "CoT sent == stored per phase on the SSL listener 8089 (mTLS, 1-day test cert for an existing user): P1 / P2 truncation / P3 burst — handler path via br-ots, not the mesh (#264)" "chk_cot_264_ssl $OTS_NODE"
   suite eud-mem-264 "ots_eud_handler memory per idle session from $BENCH_NODE: 6 sessions, <= 25 MiB each (upstream 39, OOM at ~10 clients), none refused, no leak after they leave (#264 R7)" "chk_eud_mem_264 $OTS_NODE $BENCH_NODE"
@@ -1865,6 +1911,11 @@ elif up "$OTS_NODE"; then
   suite rto-264 "the RTO returns: 16 stale sessions (downlink pending) + the same 16 phones reconnecting at once on 8088; every reconnect kept, subscribed and recorded, the listener not restarted, no OOM (#264 R16, field scenario 2026-10-12; wsl.11 768m: the listener was OOM-killed)" "chk_rto_264 $OTS_NODE $BENCH_NODE $MESH_NODE 8088"
   suite alarm-264 "a broker memory alarm of ~75 s: the client session is not cut, every CoT is stored after it (#264 R9/R13, review r4 A4-8/B4-5)" "chk_alarm_264 $OTS_NODE $BENCH_NODE"
   suite rto-ssl-264 "the RTO returns TWICE on 8089 (mTLS, the tactical listener, a non-admin test user): every phone kept and recorded on every session, each return ends the previous session (R17), all admissions serialized (#264 R16/R17, review r4 B4-8, r6 A6-2)" "chk_rto_264 $OTS_NODE $BENCH_NODE $MESH_NODE 8089"
+  else
+    # #289: the gateway build — the overlay suites do not apply; the -289 suites take over
+    . "$REPO/scripts/dv/gateway-289.sh"; gw_register
+    for s in ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264 amqp-close-264 name-guard-264 same-uid-end-264 callsign-share-264 owner-swap-264 admission-264 exception-264 owner-8089-264 queue-policy-264 cap16-264 rto-264 alarm-264 rto-ssl-264; do suite "$s" "superseded by the -289 suites on the gateway build (#289)" ""; done
+  fi
 else
   for s in confinement-98 ots-up-162 drift-detect-156 payload-mgr-167 arbiter-167 payload-config-golden payload-conform flashgo-159 ots-cot-e2e-264 ots-cot-e2e-264-ssl eud-mem-264 zombie-264 amqp-close-264 name-guard-264; do suite "$s" "OTS_NODE $OTS_NODE did not answer" ""; done
 fi
@@ -2068,7 +2119,8 @@ bchk_rejoin_245() {   # DNODE leaves+rejoins the mesh; assert peers never kernel
 
 # ---- #274 payload converge / clean stop (docs/design/274-payload-converge.md §6) ----
 ots_ids() { fssh "$1" 20 'm=$(ls /opt/batdata/apps/opentakserver/*.manifest | head -1); for c in $(awk "/^CONTAINER /{print \$2}" "$m"); do echo "$c $(docker inspect -f "{{.Id}}" $c 2>/dev/null | cut -c1-12)"; done' | tr -d '\r'; }
-ots_ready() { fssh "$1" 20 '[ "$(docker ps -q | wc -l)" -ge 6 ] && docker exec ots-db pg_isready -q && wget -q -T 5 -O /dev/null http://172.20.0.5:8081/api/health' >/dev/null 2>&1; }
+# the container count comes from the node's manifest (OTS_N: 6 on the overlay build, 5 on the gateway build; #289)
+ots_ready() { fssh "$1" 20 '[ "$(docker ps -q | wc -l)" -ge '"$OTS_N"' ] && docker exec ots-db pg_isready -q && wget -q -T 5 -O /dev/null http://172.20.0.5:8081/api/health' >/dev/null 2>&1; }
 # the guardian's LAST "converge done ... uptime=<s.ss>" line (unique: it carries the uptime). Compared by content,
 # not counted: a rebuild logs enough to push older lines out of the logread ring, so a count can stand still.
 conv_last() { fssh "$1" 15 'logread | grep "batman-payload\[opentakserver\]: converge done" | tail -1 | sed -n "s/.*\(converge done.*\)/\1/p"' | tr -d '\r'; }
@@ -2120,7 +2172,13 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
   # 6 (C1): the host sends one CoT the moment 8088 accepts again after the reboot (as early as a field client)
   local pu pf
   pu="DV274E$(date +%Y%m%d%H%M%S)"; pf="$DIR/cleanstop-274.probe"
-  cot_probe_274 "$n" "$pu" "$pf"; echo "early-CoT probe $pu started on the host (-> $n:8088)"
+  if [ "$OTS_EUD" = gateway ]; then
+    # #289: 8088 is closed and the gateway binds 8089 only once its dependencies are up (fail-closed): no CoT can
+    # arrive before the API gate; case 6 is judged after the boot instead (a phone identifies on 8089, SA stored)
+    pu=""; echo "gateway build: no early-CoT probe (8088 closed, 8089 bound after the dependencies); case 6 judged after the boot"
+  else
+    cot_probe_274 "$n" "$pu" "$pf"; echo "early-CoT probe $pu started on the host (-> $n:8088)"
+  fi
   reboot_and_wait "$n" reboot 240 || rc=1
   if [ "${DV_TEST_274_NOSTOP:-0}" = 1 ]; then   # the K links live on the overlay: put them back
     fssh "$n" 10 "for b in $kl; do case \$b in K[0-9][0-9]batman-*) ;; *) continue;; esac; t=\${b#K??}; ln -sf ../init.d/\$t /etc/rc.d/\$b; ls -l /etc/rc.d/\$b; done" \
@@ -2178,7 +2236,17 @@ bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, r
   if echo "$l" | grep -q 'events='; then echo "FAIL 6 docker event buffer empty or possibly wrapped — start count not measurable"; rc=1
   elif echo "$l" | grep -Eq '=(0|[2-9]|[1-9][0-9])( |$)'; then echo "FAIL 6 a container was started more than once (or never) during the start"; rc=1
   else echo "ok 6 every container started exactly once"; fi
-  if [ -n "$pu" ]; then
+  if [ -z "$pu" ] && [ "$OTS_EUD" = gateway ]; then
+    local pe po st i
+    pe="DV274G$(date +%H%M%S)"
+    if gw_users "$n" GWCS 1 >/dev/null; then
+      po=$(gwc "$n" ots_cot_parser 90 ACTION=hold UID="$pe-A" CS="$pe-A" CERT=/tmp/GWCS-u1.pem KEY=/tmp/GWCS-u1.key HOLD=3 | tr -d '\r' | tail -1)
+      echo "$po" | grep -q '^KEPT' && echo "ok 6 a phone identified on 8089 right after the boot ($po)" || { echo "FAIL 6 a phone could not identify on 8089 after the boot ($po)"; rc=1; }
+      st=0; for i in $(seq 1 12); do st=$(echo "select count(*) from cot where sender_uid='$pe-A' and type like 'a-%';" | ots_sql "$n" | tr -d ' \r'); [ "${st:-0}" -ge 1 ] && break; sleep 5; done
+      [ "${st:-0}" -ge 1 ] && echo "ok 6 its SA was stored" || { echo "FAIL 6 the phone's SA was not stored (count=$st)"; rc=1; }
+      gw_cleanup "$n" "$pe" GWCS 1 >/dev/null || { echo "FAIL 6 cleanup"; rc=1; }
+    else echo "FAIL 6 could not issue the probe phone's cert after the boot"; rc=1; fi
+  elif [ -n "$pu" ]; then
     local po d04 bt sent i st
     for i in $(seq 1 30); do po=$(cat "$pf" 2>/dev/null); echo "$po" | grep -q '^SENT\|^NEVER' && break; sleep 3; done
     echo "probe: $(echo $po)"
@@ -2359,12 +2427,22 @@ if [ "$FEATURE_MODE" = --destructive ]; then
     suite golden-exec-274 "root never executes a p6 copy of a golden tenant's script; edits are DRIFT, planted files a host alarm (#274 §12)" "p274 $OTS_NODE golden" D
     suite host-alarm-274 "dangerous foreign containers (p6/socket bind, device, host net, disguised volume) raise a host alarm, never the verdict (#274 §12)" "p274 $OTS_NODE hostalarm"
     # these three leave the tenant DRIFT for the 600 s ledger window: they wait it out themselves, and run last (§12.7)
-    suite queue-gone-264 "the transient cot_parser queue is deleted under a CoT stream: cot_parser exits and the guardian restarts it (asserted), the patched eud re-declares + retries so sent == stored (#264 mechanism C, destructive)" "bchk_queue_gone_264 $OTS_NODE $BENCH_NODE" D
-    suite group-disc-264 "an 8089 group member ends its session while cot_parser is busy: no cot_parser crash loop, no bind on a deleted queue (#264 review r2 A2-1; wsl.8: 6 crashes until the membership was removed; destructive on a broken build)" "bchk_group_disc_264 $OTS_NODE $BENCH_NODE" D
-    suite rto768-264 "the RTO returns with ots_eud_handler at 768m (reconciler paused, restored after): the R7 reserve refuses, an OOM takes only sessions, the listener survives, admissions serialized (#264 R7/R16, review r6; tier B)" "bchk_rto768_264 $OTS_NODE $BENCH_NODE $MESH_NODE" D
-    suite r8-hold-264 "a refused converge (overlay MOUNTSHA mismatch) keeps the overlay containers stopped, and the guardian's restart path does not start them; restored from the golden after (#264 R8, review r3 B3-1; wsl.10: started after 30 s; destructive)" "bchk_r8_hold_264 $OTS_NODE" D
+    if [ "$OTS_EUD" = overlay ]; then
+      suite queue-gone-264 "the transient cot_parser queue is deleted under a CoT stream: cot_parser exits and the guardian restarts it (asserted), the patched eud re-declares + retries so sent == stored (#264 mechanism C, destructive)" "bchk_queue_gone_264 $OTS_NODE $BENCH_NODE" D
+    else na queue-gone-264 "overlay-only mechanism; the gateway build has no eud_handler (#289)"; fi
+    if [ "$OTS_EUD" = overlay ]; then
+      suite group-disc-264 "an 8089 group member ends its session while cot_parser is busy: no cot_parser crash loop, no bind on a deleted queue (#264 review r2 A2-1; wsl.8: 6 crashes until the membership was removed; destructive on a broken build)" "bchk_group_disc_264 $OTS_NODE $BENCH_NODE" D
+    else na group-disc-264 "overlay-only mechanism; the gateway build has no eud_handler (#289)"; fi
+    if [ "$OTS_EUD" = overlay ]; then
+      suite rto768-264 "the RTO returns with ots_eud_handler at 768m (reconciler paused, restored after): the R7 reserve refuses, an OOM takes only sessions, the listener survives, admissions serialized (#264 R7/R16, review r6; tier B)" "bchk_rto768_264 $OTS_NODE $BENCH_NODE $MESH_NODE" D
+    else na rto768-264 "overlay-only mechanism; the gateway build has no eud_handler (#289)"; fi
+    if [ "$OTS_EUD" = overlay ]; then
+      suite r8-hold-264 "a refused converge (overlay MOUNTSHA mismatch) keeps the overlay containers stopped, and the guardian's restart path does not start them; restored from the golden after (#264 R8, review r3 B3-1; wsl.10: started after 30 s; destructive)" "bchk_r8_hold_264 $OTS_NODE" D
+    else na r8-hold-264 "overlay-only mechanism; the gateway build has no eud_handler (#289)"; fi
     suite crash-274 "crash / PRIMARY / loop backoff / old config / respawn / rm / docker update / docker stop / hung health check: the guardian restarts, records, and DRIFTs (#274 §12, destructive)" "p274 $OTS_NODE crash" D
     suite dockerd-restart-274 "dockerd restart stops the tenant gracefully; the guardian brings it back in order (#274 §12, destructive)" "p274 $OTS_NODE dockerd" D
+    if [ "$OTS_EUD" = gateway ]; then gw_register_b_destructive
+    else for s289 in broker-restart-289 queue-gone-289 amqp-down-289; do na "$s289" "gateway suites: the overlay build has no gateway (#289)"; done; fi
   else   # not back within 300 s after the destructive tier = a real finding, never a SKIP (#274 review C6)
     suite converge-274 "guardian converges a changed config (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
     suite cleanstop-274 "clean reboot stop/start (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
@@ -2415,7 +2493,12 @@ else
   suite soak-containers "no container restart and no cgroup oom_kill during the soak, every node" "chk_soak_ctr"
   suite soak-http-local "HTTP tenant answered every local GET (container stack)" "chk_soak_http local"
   suite soak-http-mesh  "HTTP tenant answered every GET over the mesh (container + radio; judged separately)" "chk_soak_http mesh"
-  suite soak-cot-264    "every CoT sent over the soak stored at least once (distinct (uid,time) >= sent; duplicates reported, #264 at-least-once; mechanisms A and B both in play)" "chk_soak_cot"
+  if [ "$OTS_EUD" = gateway ]; then
+    suite soak-cot-289  "every CoT sent over the soak (8089, mTLS, 5/s from inside ots_cot_parser) stored at least once (distinct (uid,time) >= sent; duplicates reported; #289 M1/M6 under load)" "chk_soak_cot"
+    na soak-cot-264 "overlay-only generator (8088 is closed on the gateway build); replaced by soak-cot-289"
+  else
+    suite soak-cot-264  "every CoT sent over the soak stored at least once (distinct (uid,time) >= sent; duplicates reported, #264 at-least-once; mechanisms A and B both in play)" "chk_soak_cot"
+  fi
 fi
 
 # ---- NEW vs KNOWN failures (#268 C1) ----------------------------------------------------------------

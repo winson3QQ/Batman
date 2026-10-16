@@ -103,13 +103,12 @@ done
 for m in deploy/*/*.manifest; do
 	grep -E '^RESTART ' "$m" | grep -vqx 'RESTART no' && { echo "FAIL: $m has a RESTART other than no"; rc=1; }
 done
-# --- 5) #264 R8: an overlay bind-mounted over an IMAGE file (MOUNTSHA) is pinned to one upstream file. The manifest's
-#     sha must equal deploy/<app>/patches/UPSTREAM_SHA256 (the single source the generator reads), the target must be
-#     the file the overlay was made for (SP in check-eudhandler-264.sh), and the shipped overlay + patch + generator +
-#     offline tests must be consistent (check-eudhandler-264.sh). ---
+# --- 5) #264 R8 (kept as a generic rule; the OTS overlay itself is gone since #289): an overlay bind-mounted over an
+#     IMAGE file (a MOUNT source under patches/) must carry a MOUNTSHA pinned to deploy/<app>/patches/UPSTREAM_SHA256,
+#     and the overlay's own check script (patches/check-*.sh) must pass. A MOUNT of a file that overlays nothing
+#     (#289: eud-gateway.pyz at /app/eud-gateway.pyz) needs no pin. ---
 for man in deploy/*/*.manifest; do
 	[ -f "$man" ] || continue; app=$(basename "$(dirname "$man")")
-	# a code overlay (MOUNT source under patches/) must carry a MOUNTSHA for its target (review B-12)
 	for mnt in $(awk '$1=="MOUNT"{print $2}' "$man"); do
 		msrc=${mnt%%:*}; mrest=${mnt#*:}; mdst=${mrest%%:*}
 		case "$msrc" in patches/*) grep -q "^MOUNTSHA $mdst " "$man" || { echo "FAIL: $man MOUNT $msrc over $mdst has no MOUNTSHA line (an overlay over an image file must be pinned)"; rc=1; } ;; esac
@@ -118,15 +117,16 @@ for man in deploy/*/*.manifest; do
 		dst=${dst_sha%%=*}; sha=${dst_sha#*=}
 		up=$(tr -d ' \r\n' < "deploy/$app/patches/UPSTREAM_SHA256" 2>/dev/null)
 		[ -n "$up" ] && [ "$sha" = "$up" ] || { echo "FAIL: $man MOUNTSHA $dst sha $sha != deploy/$app/patches/UPSTREAM_SHA256 (${up:-missing})"; rc=1; }
-		grep -qx "SP=$dst" "deploy/$app/patches/check-eudhandler-264.sh" 2>/dev/null || { echo "FAIL: $man MOUNTSHA target $dst is not the file the overlay was made for (SP in check-eudhandler-264.sh)"; rc=1; }
 	done
 done
-for ck in deploy/*/patches/check-eudhandler-264.sh; do
+for ck in deploy/*/patches/check-*.sh; do
 	[ -f "$ck" ] || continue
 	tl=$(mktemp)
 	sh "$ck" >"$tl" 2>&1 || { echo "FAIL: $ck:"; sed 's/^/  /' "$tl"; rc=1; }
 	rm -f "$tl"
 done
+# --- 6) #289: a MOUNT of a golden file must be a regular file the Makefile installs (checked in 3) above) and the
+#     gateway's single-file artifact must be what its package builds (eud-gateway.yml does the rebuild + cmp). ---
 if [ -f scripts/test-payload-guardian.sh ]; then
 	tl=$(mktemp)
 	sh scripts/test-payload-guardian.sh >"$tl" 2>&1 || { echo "FAIL: scripts/test-payload-guardian.sh:"; sed 's/^/  /' "$tl"; rc=1; }
