@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # gateway-289.sh — the #289 EUD gateway suites (sourced by scripts/daily-validation.sh when the OTS node runs the
 # gateway build: container ots_eud_gateway present). Design: docs/design/289-eud-gateway.md §7.
 #

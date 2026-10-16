@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # gateway-289b.sh — the #289 gateway suites for dependency failures and tier B (sourced by gateway-289.sh;
 # design docs/design/289-eud-gateway.md §4/§7; reviewer B2 H2 / B3 H-2: these were missing).
 #
