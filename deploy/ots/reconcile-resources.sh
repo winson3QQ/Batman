@@ -20,7 +20,7 @@ PAUSE_TTL_MIN="${PAUSE_TTL_MIN:-60}"
 
 # container -> hardening.env (same pairing as verify-profile-ots.sh)
 set -- \
-  "opentakserver:ots" "ots_cot_parser:ots" "ots_eud_handler:ots" "ots_eud_handler_ssl:ots_eud_handler_ssl" \
+  "opentakserver:ots" "ots_cot_parser:ots" "ots_eud_gateway:ots_eud_gateway" \
   "ots-db:ots-db" "rabbitmq:rabbitmq"
 
 # maintenance pause (auto-expiring): a fresh pause file suspends correction

@@ -49,7 +49,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=batman-payload-host
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=7
+PKG_RELEASE:=8
 PKG_MAINTAINER:=Batman <yellow.winson@gmail.com>
 PKG_LICENSE:=GPL-2.0-or-later
 
@@ -166,13 +166,17 @@ define Package/batman-payload-ots/install
 	$(INSTALL_DATA) ../../deploy/ots/ots.net.alloc                      $(1)/usr/share/batman/payload-golden/opentakserver/ots.net.alloc
 	$(INSTALL_DATA) ../../deploy/ots/ots-db.hardening.env               $(1)/usr/share/batman/payload-golden/opentakserver/ots-db.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/ots.hardening.env                  $(1)/usr/share/batman/payload-golden/opentakserver/ots.hardening.env
-	$(INSTALL_DATA) ../../deploy/ots/ots_eud_handler_ssl.hardening.env  $(1)/usr/share/batman/payload-golden/opentakserver/ots_eud_handler_ssl.hardening.env
+	$(INSTALL_DATA) ../../deploy/ots/ots_eud_gateway.hardening.env      $(1)/usr/share/batman/payload-golden/opentakserver/ots_eud_gateway.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq.hardening.env             $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq.hardening.env
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq-extra.conf                $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq-extra.conf
 	$(INSTALL_DATA) ../../deploy/ots/rabbitmq-definitions.json          $(1)/usr/share/batman/payload-golden/opentakserver/rabbitmq-definitions.json
-	# #264: the patched eud_handler (GPL-3.0-or-later, deploy/ots/patches/README.md), bind-mounted ro over the
-	# image's file by the manifest (MOUNT + MOUNTSHA pin); refreshed to p6 at boot like every golden file
-	$(INSTALL_DATA) ../../deploy/ots/patches/EudHandler-264.py          $(1)/usr/share/batman/payload-golden/opentakserver/EudHandler-264.py
+	# #289: the EUD gateway as ONE regular file (payload-run's MOUNT rule), built reproducibly from
+	# deploy/ots/gateway by build-pyz.sh (CI: eud-gateway.yml compares the committed file with a rebuild);
+	# bind-mounted ro at /app/eud-gateway.pyz by the manifest; refreshed to p6 at boot like every golden file.
+	# It overlays no upstream file, so there is no MOUNTSHA. The record check runs under the guardian next
+	# to verify-profile-ots.sh (same glob, design M10).
+	$(INSTALL_DATA) ../../deploy/ots/eud-gateway.pyz                    $(1)/usr/share/batman/payload-golden/opentakserver/eud-gateway.pyz
+	$(INSTALL_BIN)  ../../deploy/ots/verify-profile-ots-record.sh       $(1)/usr/share/batman/payload-golden/opentakserver/verify-profile-ots-record.sh
 	# #274 §12 D7-7: the generic checker the golden verify-profile-ots.sh runs, shipped in the image. NOT in the
 	# golden set: a revert to an image whose refresh prunes golden files it does not know would delete the p6
 	# copy its own wrapper needs (E38).

@@ -7,11 +7,11 @@
 apiVersion: batman.payload/v1
 tenant: opentakserver
 archetype: network-service
-co_scheduled_with: [ots-db, rabbitmq, ots-cot-parser, ots-eud-handler, ots-eud-handler-ssl]
+co_scheduled_with: [ots-db, rabbitmq, ots-cot-parser, ots-eud-gateway]
 # operational (emitter-ignored; -> manifest MEMTOTAL_MIN_MB, honoured by payload-run): #264 - OTS runs only on a Pi 4
-# with 8 GB (the user, 2026-10-12). Its memory caps are 3 x 1280m + 1536m (ots_eud_handler_ssl, #264 r10) + 2 x 512m = 6.4 GiB; on a smaller node all caps hit
-# at once would OOM the node, not the tenant. A Pi 4 8 GB reports MemTotal ~7.6 GiB, a 4 GB one ~3.7 GiB: payload-run
-# refuses to start or rebuild the stack below 7000 MB (and when MemTotal is unreadable - fail-closed).
+# with 8 GB (the user, 2026-10-12). Its memory caps are 2 x 1280m + 1024m (ots_eud_gateway, #289 M12) + 2 x 512m = 4.6 GiB;
+# on a smaller node all caps hit at once would OOM the node, not the tenant. A Pi 4 8 GB reports MemTotal ~7.6 GiB, a 4 GB
+# one ~3.7 GiB: payload-run refuses to start or rebuild the stack below 7000 MB (and when MemTotal is unreadable - fail-closed).
 requires: {mem_total_min_mb: 7000}
 
 values:                                # emitter reads ONLY this
@@ -20,13 +20,13 @@ values:                                # emitter reads ONLY this
   no_new_privileges: true
   caps:     {drop: [ALL], add: []}     # plausible (>1024 ports, python stack) — TEST-GATED (gate item 2, not yet applied to OTS containers)
   rootfs:   {read_only: true, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # read_only ON (#98, manet01 2026-09-18): docker diff = only /tmp/dp.zip (opentakserver) beyond the /app/ots volume; logs go to the /app/ots volume, .pyc write is EROFS-tolerated. Validated: recreate 4 app containers --read-only + tmpfs /tmp → all up + CoT round-trip OK.
-  resources: {cpus: 1.0, memory: 1280m, pids: 512}   # idle measured ~116MiB/service on Pi4 (2026-09-16). #264: 1280m (a cap, not a reservation). OTS runs only on Pi 4 8 GB (the user, 2026-10-12; 04: ~6.6 GiB available); 3 x 1280m + 1536m (ots_eud_handler_ssl: its own block under infra_values) + 2 x 512m = 6.4 GiB < available, so all caps hit at once still do not OOM the node. Sized for the RTO-returns case: 16 stale + 16 reconnecting sessions per listener at 23 MiB each (rc wsl.11 at 768m: the listener was OOM-killed); memcg enabled (docker-in-image #159).
+  resources: {cpus: 1.0, memory: 1280m, pids: 512}   # idle measured ~116MiB/service on Pi4 (2026-09-16). #264: 1280m (a cap, not a reservation) for opentakserver + ots_cot_parser. OTS runs only on Pi 4 8 GB (the user, 2026-10-12; 04: ~6.6 GiB available); 2 x 1280m + 1024m (ots_eud_gateway: its own block under infra_values, #289) + 2 x 512m = 4.6 GiB < available, so all caps hit at once still do not OOM the node; memcg enabled (docker-in-image #159).
   devices:  []
   seccomp:  {profile: default}
   privileged: false
   docker_socket_mounted: false
   secrets:                             # F5 — delivery mechanism owned by #167
-    - {name: eud-ssl-cert, delivery: file, exposure: "TLS cert for eud_handler --ssl; protect at rest (#13/#47)"}
+    - {name: eud-ssl-cert, delivery: file, exposure: "TLS server cert/key + CA/CRL for the EUD gateway's 8089 listener (ots-appdata volume, /app/ots/ca); protect at rest (#13/#47)"}
 
 infra_values:                          # NEW (#98): per-container confinement for the co-scheduled infra
                                        # (db, broker). Same emitter (profile-to-flags.py) writes one
@@ -46,16 +46,17 @@ infra_values:                          # NEW (#98): per-container confinement fo
     rootfs:   {read_only: true, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}   # read_only ON (#98, manet01 2026-09-18): docker diff = ONLY /etc/rabbitmq/enabled_plugins (cookie + mnesia are on the /var/lib/rabbitmq volume). Fixed by RABBITMQ_ENABLED_PLUGINS_FILE=/var/lib/rabbitmq/enabled_plugins (run.sh) → the boot write lands on the volume. Validated: recreate --read-only → rabbitmq up + CoT round-trip OK.
     resources: {cpus: 1.0, memory: 512m, pids: 512}   # provisional; revise after load (#171)
     seccomp:  {profile: default}
-  ots_eud_handler_ssl:                 # #264 r10 (the user, 2026-10-13): the mTLS CoT listener alone gets 1536m. Two RTO
-                                       # flaps within the R17 window (outage + 20 s) put three generations of 16 sessions
-                                       # on this listener: 48 x ~23 MiB + ~150 MiB base + the 96 MiB reserve > 1280m
-                                       # (rc wsl.19: 8 of 16 refused by R7, no OOM). Same confinement as `values`, memory
-                                       # apart; the container spec above carries env_common: true.
+  ots_eud_gateway:                     # #289: ONE asyncio process serves both CoT ports (8088 allowlist, default off;
+                                       # 8089 mTLS) in front of cot_parser, replacing ots_eud_handler + ots_eud_handler_ssl
+                                       # and the #264 overlay. Memory 1024m is provisional (design M12: ~780 MiB worst case
+                                       # before the per-session Python cost, measured in rc 1 by eud-mem-289 and revised);
+                                       # pids 32 (one loop + 4 DB threads + watchdog + the health exec). Same confinement
+                                       # as `values` otherwise; the container spec below carries env_common: true.
     user:     {run_as: 1000, run_as_gid: 1024}
     no_new_privileges: true
     caps:     {drop: [ALL], add: []}
     rootfs:   {read_only: true, tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]}
-    resources: {cpus: 1.0, memory: 1536m, pids: 512}
+    resources: {cpus: 1.0, memory: 1024m, pids: 32}
     seccomp:  {profile: default}
 
 assessment:
@@ -97,20 +98,17 @@ images:
                                                              # so ots-db failed "address already in use" and got
                                                              # stuck Created (intermittent OTS reboot flakiness).
                                                              # Explicit static IP makes bring-up order-independent.
-      # #264: both CoT listeners run the patched EudHandler.py (deploy/ots/patches/, GPL-3.0-or-later), bind-mounted
-      # read-only over the image's file. The overlay is made for THIS image's file only: image_sha_file pins it
-      # (MOUNTSHA in the manifest; payload-run refuses a rebuild on an image whose own file differs — fail-closed).
-      # Re-check / regenerate whenever the ref above changes (patches/README.md).
-      - {name: ots_eud_handler, ip: 172.20.0.10, hostname: ots_eud_handler,
-         entrypoint: [python3, /app/venv/bin/eud_handler],
+      # #289: the EUD gateway (deploy/ots/gateway/, built into ONE regular file eud-gateway.pyz by build-pyz.sh:
+      # payload-run's MOUNT rule takes plain files only). It runs on the image's own Python/pika/SQLAlchemy and
+      # overlays NO upstream file (no MOUNTSHA); it reads /app/ots/config.yml for the DB/broker settings like
+      # cot_parser does. Listed AFTER opentakserver: the start gates run in manifest order and the gateway waits for
+      # the schema + TLS files that opentakserver's first run creates (design §1). Confined by its OWN infra_values
+      # block (1024m, pids 32); env_common: true keeps the app env on it.
+      - {name: ots_eud_gateway, ip: 172.20.0.10, hostname: ots_eud_gateway, env_common: true,
+         entrypoint: [python3, /app/eud-gateway.pyz],
+         env: {GATEWAY_OTS_VERSION: "1.7.13", MALLOC_MMAP_THRESHOLD_: "131072"},   # design §4 OTA stage 2: the gateway exits 2 on another OTS version (validated against this one; bump with the image ref above); MALLOC_MMAP_THRESHOLD_ 128 KiB: the 256 KiB TLS buffers come from mmap and go back to the OS when freed (glibc kept a flood's peak, 129 -> 53 MiB in the flip)
          volumes: [{name: ots-appdata, path: /app/ots}],
-         mounts: [{src: EudHandler-264.py, dst: /app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py, ro: true, image_sha_file: patches/UPSTREAM_SHA256}]}
-      # #264 r10: confined by its OWN infra_values block (1536m); env_common: true keeps the app env on it (an
-      # infra_values key drops env_common by default: those are the db and the broker)
-      - {name: ots_eud_handler_ssl, ip: 172.20.0.12, hostname: ots_eud_handler_ssl, env_common: true,
-         entrypoint: [python3, /app/venv/bin/eud_handler, --ssl],
-         volumes: [{name: ots-appdata, path: /app/ots}],
-         mounts: [{src: EudHandler-264.py, dst: /app/venv/lib/python3.13/site-packages/opentakserver/eud_handler/EudHandler.py, ro: true, image_sha_file: patches/UPSTREAM_SHA256}]}
+         mounts: [{src: eud-gateway.pyz, dst: /app/eud-gateway.pyz, ro: true}]}
   - ref: "imresamu/postgis:18-3.6"
     containers:
       - {name: ots-db, ip: 172.20.0.2, hostname: ots-db,
@@ -129,24 +127,30 @@ network:                               # -> fw4-native uci-default (validated de
   bridge: {name: br-ots, subnet: 172.20.0.0/24}
   zone:   dockert
   publish:                             # each target is a DISTINCT container's static IP on br-ots
-    - {src_zone: ahwlan, host_port: 8088, to: "172.20.0.10:8088", proto: tcp}   # eud_handler (TCP CoT)
-    - {src_zone: ahwlan, host_port: 8089, to: "172.20.0.12:8089", proto: tcp}   # eud_handler_ssl (SSL CoT)
+    - {src_zone: ahwlan, host_port: 8088, to: "172.20.0.10:8088", proto: tcp}   # EUD gateway (plain CoT: allowlisted relays only; the listener is off when the allowlist is empty, #289 P4)
+    - {src_zone: ahwlan, host_port: 8089, to: "172.20.0.10:8089", proto: tcp}   # EUD gateway (mTLS CoT, the members)
     - {src_zone: ahwlan, host_port: 8443, to: "172.20.0.11:443",  proto: tcp}   # nginx web UI (optional; not in Milestone A core)
   isolation: {input: DROP, forward: intra-zone, egress: none}   # blast-radius: container->host BLOCKED
   peer_allow: []
 
 lifecycle:
-  order:  [ots-db, rabbitmq, opentakserver, ots_cot_parser, ots_eud_handler, ots_eud_handler_ssl]
+  order:  [ots-db, rabbitmq, opentakserver, ots_cot_parser, ots_eud_gateway]
   health:
     ots-db:        "pg_isready -q"
     rabbitmq:      "rabbitmq-diagnostics -q ping"
     opentakserver: "curl -fsS http://localhost:8081/api/health"
+    # #289 M17: 200 only when both configured listeners are bound and the AMQP connection is open. A start gate
+    # only (the guardian never polls it); on a first boot the gateway waits for opentakserver's schema/certs and
+    # the gate may TIMEOUT (WARN, continue) — the gateway comes up on its own (design §4).
+    ots_eud_gateway: "curl -fsS http://localhost:8090/healthz"
   # #274 graceful stop order (lower tier first; a container not listed is in the FINAL tier = the stateful
-  # services, which get the longest grace). Clients -> the app -> postgres + rabbitmq.
+  # services, which get the longest grace). #289 M13: the gateway stops FIRST (tier 1: <= 4.5 s inside docker
+  # stop -t 5 — presence rows, the t-x-d-d events, cache flush with confirms, a poll of the cot_parser queue until
+  # drained); cot_parser is in tier 2 so it is still consuming while the gateway flushes; opentakserver with it.
+  # Two client tiers <= 10 s inside K08's 15 s.
   stop_tier:
-    ots_cot_parser: 1
-    ots_eud_handler: 1
-    ots_eud_handler_ssl: 1
+    ots_eud_gateway: 1
+    ots_cot_parser: 2
     opentakserver: 2
   init_once:                           # first-boot only; app self-inits schema/CA
     - "opentakserver first-run creates CA + DB schema (no manual step needed)"
