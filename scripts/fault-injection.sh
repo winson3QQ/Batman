@@ -444,36 +444,41 @@ c2(){ echo "== C2 trial-crash-274: a manual 'batman-slot commit' after a crash i
     || no "C2 slot=$st (trial $tr) is-trial rc=$it (want 1)"; }
 
 # ---- #202 D3: reflash-survives-config — a persisted per-node config survives a real A/B reflash ----
-# A black-box proof of #202's DoD 1 on a mesh-only node: set a hostname, persist it (--save), OTA the
-# same build into the other slot, and the fresh slot must come up with that hostname, the mesh key (not
-# the placeholder, keyguard not blocking), the same AP key, JOIN the mesh and be auto-committed.
-# Not in `all` (it reflashes the node and leaves it on the other slot, committed); daily-validation wires
-# it as its own destructive suite on MESH_NODE. The payload MUST be the running build (precheck()).
-p5(){ echo "== P5 reflash-survives-config (#202 D3): persisted hostname/keys survive an A/B reflash and the node rejoins =="
+# A black-box proof of #202's DoD 1 on a mesh-only node: change the onboarding-AP key through the supported
+# door (halow-setkey, which persists it), OTA the same build into the other slot, and the fresh slot must come
+# up with that AP key, the unchanged hostname, the mesh key (not the placeholder, keyguard not blocking), JOIN
+# the mesh and be auto-committed. The marker is the AP key, not the hostname: a hostname that differs from the
+# one openmanetd reserved the mesh IP for makes it re-reserve and reboot the fresh slot with a NEW IP (seen on
+# 02, 2026-10-17 — a rename changes the node's address; #254 must expect that). Keys are never printed (md5 only).
+# Not in `all` (it reflashes the node and leaves it on the other slot, committed); daily-validation wires it as
+# its own destructive suite on MESH_NODE. The payload MUST be the running build (precheck()).
+p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostname/mesh key survive an A/B reflash, node rejoins =="
   precheck || return
-  local b0 s0 v0 old ap0 hn key blk j t s1 v1 ap1 c
+  local b0 s0 v0 old ap0v ap0 apt aptv hn key blk j t s1 v1 ap1 c o
   q 'batman-slot is-trial >/dev/null 2>&1; [ $? = 1 ]' || { no "P5: node is not on a committed slot — not reflashing"; return; }
   q '[ ! -e /opt/batdata/state/autocommit-hold-commit ]' || { no "P5: a hold-commit flag is armed — not reflashing"; return; }
   b0=$(bootid); s0=$(slot); v0=$(q 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build' | tr -d '\r')
-  old=$(q 'uci -q get system.@system[0].hostname' | tr -d '\r'); ap0=$(q 'uci -q get wireless.default_radio0.key | md5sum | cut -c1-8' | tr -d '\r')
-  [ -n "$b0" ] && [ -n "$s0" ] && [ -n "$old" ] || { no "P5: baseline unreadable (boot=$b0 slot=$s0 host=$old) — not verified"; return; }
-  echo "    baseline: slot $s0 version $v0 host $old eth0=$(q 'cat /sys/class/net/eth0/carrier 2>/dev/null' | tr -d '\r') (0/absent = mesh-only black box)"
-  # 1. set + persist
-  q "uci set system.@system[0].hostname='$old-fi202'; uci commit system; batman-config-save --save >/dev/null 2>&1; batman-config-save --check" | tr -d '\r' | grep -q 'p5 fresh' \
-    || { no "P5: p5 not fresh after --save ($(q 'batman-config-save --check 2>&1' | tr -d '\r'))"; q "uci set system.@system[0].hostname='$old'; uci commit system; batman-config-save --save" >/dev/null 2>&1; return; }
-  ok "P5 hostname $old-fi202 persisted (p5 fresh)"
+  old=$(q 'uci -q get system.@system[0].hostname' | tr -d '\r'); ap0v=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r'); ap0=$(printf '%s\n' "$ap0v" | md5sum | cut -c1-8)
+  [ -n "$b0" ] && [ -n "$s0" ] && [ -n "$old" ] && [ -n "$ap0v" ] || { no "P5: baseline unreadable (boot=$b0 slot=$s0 host=$old ap=$ap0) — not verified"; return; }
+  echo "    baseline: slot $s0 version $v0 host $old ap-md5 $ap0 eth0=$(q 'cat /sys/class/net/eth0/carrier 2>/dev/null' | tr -d '\r') (0/absent = mesh-only black box)"
+  # 1. set + persist through the supported door
+  aptv="fi202-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"; apt=$(printf '%s\n' "$aptv" | md5sum | cut -c1-8)
+  o=$(q "halow-setkey --ap '$aptv' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
+  echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' \
+    || { no "P5: setkey --ap did not persist ($(echo "$o" | tr '\n' '|'))"; q "halow-setkey --ap '$ap0v'" >/dev/null 2>&1; return; }
+  ok "P5 AP key (md5 $apt) persisted through halow-setkey (p5 fresh)"
   # 2. reflash the same build into the other slot
-  ota_boot P5 "$b0" || { q "uci set system.@system[0].hostname='$old'; uci commit system; batman-config-save --save" >/dev/null 2>&1; return; }
+  ota_boot P5 "$b0" || { q "halow-setkey --ap '$ap0v'" >/dev/null 2>&1; return; }
   # 3. the fresh slot
   s1=$(slot); v1=$(q 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build' | tr -d '\r')
   hn=$(q 'uci -q get system.@system[0].hostname' | tr -d '\r'); key=$(q 'uci -q get wireless.default_radio1.key' | tr -d '\r')
-  blk=$(q 'halow-setkey --status 2>/dev/null | grep -c "keyguard blocked"' | tr -d '\r'); ap1=$(q 'uci -q get wireless.default_radio0.key | md5sum | cut -c1-8' | tr -d '\r')
+  blk=$(q 'halow-setkey --status 2>/dev/null | grep -c "keyguard blocked"' | tr -d '\r'); ap1=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r' | md5sum | cut -c1-8)
   [ "$s1" != "$s0" ] && ok "P5 booted the other slot ($s0 -> $s1)" || no "P5: still on slot $s0 after the OTA"
   [ "$v1" = "$v0" ] && ok "P5 same build on the fresh slot ($v1)" || no "P5: version changed $v0 -> $v1 (payload was not the running build?)"
-  [ "$hn" = "$old-fi202" ] && ok "P5 fresh slot restored the persisted hostname" || no "P5: fresh slot hostname is '$hn', expected '$old-fi202' — p5 restore failed"
+  [ "$ap1" = "$apt" ] && ok "P5 fresh slot restored the persisted AP key (md5 $apt)" || no "P5: fresh slot AP key md5 is $ap1, expected $apt — p5 restore failed"
+  [ "$hn" = "$old" ] && ok "P5 fresh slot kept the hostname ($old)" || no "P5: fresh slot hostname is '$hn', expected '$old'"
   [ -n "$key" ] && [ "$key" != CHANGE-ME-NOW ] && ok "P5 fresh slot has a real mesh key" || no "P5: fresh slot mesh key is placeholder/empty — would strand a mesh-only node"
   [ "$blk" = 0 ] && ok "P5 keyguard not blocking on the fresh slot" || no "P5: keyguard blocked something on the fresh slot: $(q 'halow-setkey --status 2>/dev/null | grep blocked' | tr -d '\r')"
-  [ -n "$ap0" ] && [ "$ap1" = "$ap0" ] && ok "P5 AP key survived (md5 $ap1)" || no "P5: AP key changed across the reflash ($ap0 -> $ap1)"
   t=0; j=0; while [ $t -lt 240 ]; do case "$(q "$RDR"'cat "$R/joinwatch.state" 2>/dev/null' | tr -d '\r')" in JOINED*) j=1; break;; esac; sleep 10; t=$((t+10)); done
   [ $j = 1 ] && ok "P5 rejoined the mesh within ${t}s" || no "P5: not JOINED within 240 s on the fresh slot"
   # 4. autocommit (needs the mesh join): expected 60–180 s; past 300 s wait for the deadline path
@@ -481,9 +486,12 @@ p5(){ echo "== P5 reflash-survives-config (#202 D3): persisted hostname/keys sur
   if [ $c = 1 ]; then ok "P5 fresh slot auto-committed"
   else for _ in $(seq 1 60); do committed && { c=1; break; }; sleep 10; done
     [ $c = 1 ] && ok "P5 fresh slot committed (late, >300 s)" || no "P5: not committed within 900 s ($(q 'logread | grep -E "batman-autocommit.*(UNHEALTHY|REVERT|revert)" | tail -2' | tr '\n' ' '))"; fi
-  # 5. restore
-  q "uci set system.@system[0].hostname='$old'; uci commit system; batman-config-save --save >/dev/null 2>&1; batman-config-save --check" | tr -d '\r' | grep -q 'p5 fresh' \
-    && ok "P5 hostname restored and persisted" || no "P5: restore --save/--check failed"
+  # 5. no address re-reservation on the fresh slot (p5 design N-R3): the restored dhcpconfigured/ipaddr must hold
+  o=$(q 'grep -c "openmanetd address reservation" /opt/batdata/log/boot-reasons.log; cut -d. -f1 /proc/uptime' | tr -d '\r' | tr '\n' ' ')
+  echo "    reservation-reboots-in-log=${o%% *} uptime=${o##* }"
+  # 6. restore the AP key through the same door
+  o=$(q "halow-setkey --ap '$ap0v' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
+  echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' && ok "P5 AP key restored and persisted (md5 $ap0)" || no "P5: restore of the AP key failed ($(echo "$o" | tr '\n' '|'))"
   echo "    NOTE: node now runs slot $s1 (committed); the next OTA lands on $s0"; }
 
 # test seam (scripts/test-harness-265.sh): load the functions only
