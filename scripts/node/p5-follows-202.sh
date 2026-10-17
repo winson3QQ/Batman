@@ -105,8 +105,8 @@ while [ $k -lt 12 ]; do
 	[ $rc -eq 0 ] || { ok=0; echo "  step4b --save #$k rc=$rc: $(echo "$out" | tail -1)"; }
 	[ "$(p5host)" = "$OLD-r$k" ] || { ok=0; echo "  step4b --save #$k reported rc=$rc but p5 hostname=$(p5host)"; }
 	[ $seen = 1 ] && break
-	# shellcheck disable=SC3028  # busybox ash has RANDOM; $$ is the fallback
-	sleep $((3 + ${RANDOM:-$$} % 2))   # jitter against the writer's 1 s retry cadence
+	# shellcheck disable=SC3028  # busybox ash has RANDOM; 0 is the fallback
+	sleep $((3 + ${RANDOM:-0} % 2))   # jitter against the writer's 1 s retry cadence (no $$: tmp-trust rule)
 done
 : > "$H/reader.stop"; wait; held=$(cat "$H/reader.held" 2>/dev/null)
 echo "  step4b: saves=$k retry_seen=$seen reader_held=$held mount.failed=$([ -f "$R/cfgsave-mount.failed" ] && echo yes || echo no)"
