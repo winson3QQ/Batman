@@ -1861,7 +1861,7 @@ _setkey202_body() { local node=$1 old=$2 o rc=0 sub
   # steps 4/4b/4c need the freshness verdict (new image); on a pre-#202 image block A already showed the FAILs
   [ "$(fssh "$node" 15 'batman-config-save --check 2>&1 | grep -c "^batman-config-save: p5 "' | tr -d '\r ')" = 1 ] \
     || { echo "FAIL --check unsupported on $node: steps 4/4b/4c untestable (pre-#202 image)"; return 1; }
-  fssh "$node" 60 '/etc/init.d/joinwatch stop >/dev/null 2>&1; i=0; while pgrep -f /usr/bin/batman-config-save >/dev/null 2>&1 && [ $i -lt 30 ]; do sleep 1; i=$((i+1)); done; pgrep -f /usr/bin/batman-config-save >/dev/null 2>&1 && echo STILL || echo STOPPED' | grep -q STOPPED \
+  fssh "$node" 60 '/etc/init.d/joinwatch stop >/dev/null 2>&1; i=0; while pgrep -f "[/]usr/bin/batman-config-save" >/dev/null 2>&1 && [ $i -lt 30 ]; do sleep 1; i=$((i+1)); done; pgrep -f "[/]usr/bin/batman-config-save" >/dev/null 2>&1 && echo STILL || echo STOPPED' | grep -q STOPPED \
     || { echo "FAIL could not stop joinwatch / an in-flight save on $node"; return 1; }
   # 4. a committed-but-unpersisted hostname = stale p5: --check says so, precheck refuses, the override is honoured
   o=$(fssh "$node" 30 "uci set system.@system[0].hostname='$old-dv202x'; uci commit system; batman-config-save --check 2>&1; echo rc=\$?" | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
