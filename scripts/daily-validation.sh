@@ -1853,9 +1853,10 @@ chk_p5follows_202() { local o r
 # (its --on-join would otherwise persist the deliberately stale hostname inside sysupgrade's stage 1 and the
 # -F probe would really reflash the node) and restores hostname + --save + joinwatch on every exit path.
 _setkey202_restore() { local node=$1 old=$2 o
-  o=$(fssh "$node" 90 "$RDR"'A=/opt/batdata/state/dv202.ap; [ -s "$A" ] && [ -O "$A" ] && [ ! -L "$A" ] && { uci set wireless.default_radio0.key="$(cat "$A")"; uci commit wireless; rm -f "$A"; }; '"uci set system.@system[0].hostname='$old'; uci commit system; batman-config-save --save >/dev/null 2>&1; /etc/init.d/joinwatch start >/dev/null 2>&1; sleep 1; echo live=\$(uci -q get system.@system[0].hostname); batman-config-save --check 2>&1" | tr -d '\r')
+  o=$(fssh "$node" 90 "$RDR"'A=/opt/batdata/state/dv202.ap; if [ -s "$A" ] && [ -O "$A" ] && [ ! -L "$A" ]; then uci set wireless.default_radio0.key="$(cat "$A")"; uci commit wireless; [ "$(uci -q get wireless.default_radio0.key | md5sum)" = "$(md5sum < "$A")" ] && echo ap=restored || echo ap=MISMATCH; rm -f "$A"; else echo ap=untouched; fi; '"uci set system.@system[0].hostname='$old'; uci commit system; batman-config-save --save >/dev/null 2>&1; /etc/init.d/joinwatch start >/dev/null 2>&1; sleep 1; echo live=\$(uci -q get system.@system[0].hostname); batman-config-save --check 2>&1" | tr -d '\r')
   echo "  restore: $(echo "$o" | tr '\n' ' ')"
   echo "$o" | grep -q "live=$old" || echo "FAIL restore: live hostname is not '$old' on $node"
+  echo "$o" | grep -q '^ap=MISMATCH' && echo "FAIL restore: AP key not restored on $node"
   echo "$o" | grep -q 'p5 fresh\|usage:' || echo "FAIL restore: p5 not fresh after restore on $node"; }
 _setkey202_body() { local node=$1 old=$2 sub
   # steps 4/4b/4c need the freshness verdict (new image); on a pre-#202 image block A already showed the FAILs
