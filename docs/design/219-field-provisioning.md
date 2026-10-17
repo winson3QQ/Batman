@@ -370,7 +370,7 @@ SoT: #75
 
 共同規則:
 - 換網路參數時,**BLE 不受影響**,手機不會失聯;**機台回不了網時,擁有者仍可經 BLE 連上修正**(不需要另開救援 AP)。
-- 成功後**明確呼叫 `batman-config-save`** 並**同步更新 `lkg/`**:現行 `joinwatch` 每次開機只存一次(L138),而 `96` 在 `overrides.uci` 損壞時會退回 `lkg/`,若 lkg 沒更新就會用回舊密碼【事實,依 review】。`96` 讀 lkg 前比對版本號,不准退回舊版。
+- 成功後**明確呼叫 `batman-config-save --save`**(#202 close-out 之後 `joinwatch` 入網中每個 tick 都會同步 p5,不再只存一次)。`lkg/` 的語意是「入網證明過的設定」:裸 `--save` **不**更新 lkg;provd 若要把推送的設定升為 lkg(例如「網主簽章設定,不要求鄰居」的場合),在自己的成功條件成立後呼叫 **`batman-config-save --save --promote-lkg`**;入網後 `--on-join` 也會自動升級。`96` 在 `overrides.uci` 損壞時退回 `lkg/`,讀 lkg 前比對版本號,不准退回舊版【依 docs/design/202-config-survival-closeout.md C2】。
 - 寫入 p5 失敗 → 提示擁有者(§2.3),不能等到下次 OTA 才爆。依賴 **#202**。
 - 擁有者可以修改網主設定裡**密碼以外**的參數(例如網主建網時國家選錯)【依 review】。
 

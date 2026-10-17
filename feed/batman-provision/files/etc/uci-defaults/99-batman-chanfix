@@ -22,7 +22,13 @@ DEV=/dev/mmcblk0p5
 (
 	MNT=$(mktemp -d /tmp/p5-chanfix.XXXXXX) || exit 0   # #280: unpredictable
 	mkdir -p "$MNT"
-	mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>/dev/null || exit 0
+	# #202 T11: a concurrent rw writer (batman-config-save) makes this ro mount EBUSY for a moment;
+	# giving up here would leave the fresh slot on morse's default channel = a stranded node. Retry.
+	_i=0
+	until mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>/dev/null; do
+		_i=$((_i + 1)); [ "$_i" -ge 3 ] && { logger -t batman-chanfix "p5 ro mount failed 3x — not reasserting the channel"; rmdir "$MNT" 2>/dev/null; exit 0; }
+		sleep 1
+	done
 	# match:  set wireless.radio1.channel='40'   (quotes optional)
 	CH=$(sed -n "s/.*wireless\.radio1\.channel=[\"']\{0,1\}\([0-9]\{1,\}\)[\"']\{0,1\}.*/\1/p" "$MNT/overrides.uci" 2>/dev/null | head -1)
 	umount "$MNT" 2>/dev/null; rmdir "$MNT" 2>/dev/null
