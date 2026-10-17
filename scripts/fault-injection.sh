@@ -454,7 +454,7 @@ c2(){ echo "== C2 trial-crash-274: a manual 'batman-slot commit' after a crash i
 # its own destructive suite on MESH_NODE. The payload MUST be the running build (precheck()).
 p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostname/mesh key survive an A/B reflash, node rejoins =="
   precheck || return
-  local b0 s0 v0 old ap0v ap0 apt aptv hn key blk j t s1 v1 ap1 c o
+  local b0 s0 v0 old ap0v ap0 apt aptv hn key blk j t s1 v1 ap1 c o apn
   q 'batman-slot is-trial >/dev/null 2>&1; [ $? = 1 ]' || { no "P5: node is not on a committed slot — not reflashing"; return; }
   q '[ ! -e /opt/batdata/state/autocommit-hold-commit ]' || { no "P5: a hold-commit flag is armed — not reflashing"; return; }
   b0=$(bootid); s0=$(slot); v0=$(q 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build' | tr -d '\r')
@@ -493,10 +493,7 @@ p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostna
  ')
   if isint "$o" && isint "$rr0" && [ "$o" = "$rr0" ]; then ok "P5 no openmanetd address re-reservation on the fresh slot (p5 design N-R3; $o in log, unchanged)"
   else no "P5: openmanetd re-reserved the address on the fresh slot ($rr0 -> $o reservation reboots) — restored ipaddr/dhcpconfigured did not hold"; fi
-  # 6. restore the AP key through the same door
-  o=$(q "halow-setkey --ap '$ap0v' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
-  echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' && ok "P5 AP key restored and persisted (md5 $ap0)" || no "P5: restore of the AP key failed ($(echo "$o" | tr '\n' '|'))"
-  # 7. leave the bench convention intact: ab-selftest's destructive cases require the node on slot A (they break
+  # 6. leave the bench convention intact: ab-selftest's destructive cases require the node on slot A (they break
   #    the inactive slot and expect a fallback to A). Both slots carry the same build here, so if the reflash
   #    landed on B, roll the default back to A and reboot into it (explicit, committed — no trial).
   if [ "$s1" != A ]; then
@@ -504,9 +501,15 @@ p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostna
     n "batman-slot rollback >/dev/null 2>&1 && setsid sh -c 'sleep 2; batman-slot reboot committed p5-back-to-A' </dev/null >/dev/null 2>&1 &"
     if waitboot "$b1" 300 && settle 180 >/dev/null 2>&1 && [ "$(slot)" = A ] && committed; then ok "P5 rolled back to slot A (bench convention), committed"
     else no "P5: could not return the node to slot A (slot=$(slot))"; fi
-    t=0; j=0; while [ $t -lt 240 ]; do case "$(q "$RDR"'cat "$R/joinwatch.state" 2>/dev/null' | tr -d '')" in JOINED*) j=1; break;; esac; sleep 10; t=$((t+10)); done
+    t=0; j=0; while [ $t -lt 240 ]; do case "$(q "$RDR"'cat "$R/joinwatch.state" 2>/dev/null' | tr -d '
+')" in JOINED*) j=1; break;; esac; sleep 10; t=$((t+10)); done
     [ $j = 1 ] && ok "P5 rejoined after returning to slot A" || no "P5: not JOINED within 240 s after returning to slot A"
   fi
+  # 7. restore the AP key through the same door — AFTER the return to slot A: that slot's overlay still holds the
+  #    test key (set there in step 1), and a rolled-back joined node persists its live key into p5 (seen on 02)
+  o=$(q "halow-setkey --ap '$ap0v' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
+  apn=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r' | md5sum | cut -c1-8)
+  echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' && [ "$apn" = "$ap0" ] && ok "P5 AP key restored and persisted (live md5 $apn == baseline)" || no "P5: restore of the AP key failed (live md5 $apn, baseline $ap0; $(echo "$o" | tr '\n' '|'))"
   echo "    NOTE: node runs slot $(slot) (committed)"; }
 
 # test seam (scripts/test-harness-265.sh): load the functions only
