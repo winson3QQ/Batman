@@ -75,7 +75,7 @@ if [ "$HAVE_CHECK" = 1 ]; then
 	#     rule keeps its hands off): --on-join must be blocked (rc 1), raise the busy marker after 8 calls, --check
 	#     must say lock-busy (rc 8); once the holder is gone the next caller takes the lock over and clears the marker.
 	rm -rf "$R/cfgsave.lock"; rm -f "$R/cfgsave-lock.busy" "$R/cfgsave-lock.count"
-	sh -c 'sleep 90' batman-config-save </dev/null >/dev/null 2>&1 & HP=$!
+	sh -c 'sleep 90; :' batman-config-save </dev/null >/dev/null 2>&1 & HP=$!   # 'sleep 90; :' keeps the shell (busybox execs a lone command)
 	mkdir "$R/cfgsave.lock" && echo $HP > "$R/cfgsave.lock/pid" && up > "$R/cfgsave.lock/uptime"
 	bl=0; for i in 1 2 3 4 5 6 7 8 9; do "$B" --on-join >/dev/null 2>&1; [ $? -eq 1 ] && bl=$((bl + 1)); done
 	"$B" --check >/dev/null 2>&1; crc=$?
