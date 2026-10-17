@@ -461,6 +461,7 @@ p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostna
   old=$(q 'uci -q get system.@system[0].hostname' | tr -d '\r'); ap0v=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r'); ap0=$(printf '%s\n' "$ap0v" | md5sum | cut -c1-8)
   [ -n "$b0" ] && [ -n "$s0" ] && [ -n "$old" ] && [ -n "$ap0v" ] || { no "P5: baseline unreadable (boot=$b0 slot=$s0 host=$old ap=$ap0) — not verified"; return; }
   echo "    baseline: slot $s0 version $v0 host $old ap-md5 $ap0 eth0=$(q 'cat /sys/class/net/eth0/carrier 2>/dev/null' | tr -d '\r') (0/absent = mesh-only black box)"
+  local rr0; rr0=$(q 'grep -c "openmanetd address reservation" /opt/batdata/log/boot-reasons.log' | tr -d ' ')
   # 1. set + persist through the supported door
   aptv="fi202-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"; apt=$(printf '%s\n' "$aptv" | md5sum | cut -c1-8)
   o=$(q "halow-setkey --ap '$aptv' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
@@ -487,8 +488,9 @@ p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostna
   else for _ in $(seq 1 60); do committed && { c=1; break; }; sleep 10; done
     [ $c = 1 ] && ok "P5 fresh slot committed (late, >300 s)" || no "P5: not committed within 900 s ($(q 'logread | grep -E "batman-autocommit.*(UNHEALTHY|REVERT|revert)" | tail -2' | tr '\n' ' '))"; fi
   # 5. no address re-reservation on the fresh slot (p5 design N-R3): the restored dhcpconfigured/ipaddr must hold
-  o=$(q 'grep -c "openmanetd address reservation" /opt/batdata/log/boot-reasons.log; cut -d. -f1 /proc/uptime' | tr -d '\r' | tr '\n' ' ')
-  echo "    reservation-reboots-in-log=${o%% *} uptime=${o##* }"
+  o=$(q 'grep -c "openmanetd address reservation" /opt/batdata/log/boot-reasons.log' | tr -d ' ')
+  if isint "$o" && isint "$rr0" && [ "$o" = "$rr0" ]; then ok "P5 no openmanetd address re-reservation on the fresh slot (p5 design N-R3; $o in log, unchanged)"
+  else no "P5: openmanetd re-reserved the address on the fresh slot ($rr0 -> $o reservation reboots) — restored ipaddr/dhcpconfigured did not hold"; fi
   # 6. restore the AP key through the same door
   o=$(q "halow-setkey --ap '$ap0v' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
   echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' && ok "P5 AP key restored and persisted (md5 $ap0)" || no "P5: restore of the AP key failed ($(echo "$o" | tr '\n' '|'))"
