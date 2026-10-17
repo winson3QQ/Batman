@@ -76,7 +76,7 @@ Not changed: W's purge-of-pending policy itself, retry policy, timeouts.
 - **T4 daily-validation**: add `halow-cmd-timeout-race` as a tier-B (manual/destructive-gated) check that runs T2 for 5 min on the bench node; plus an auto-tier check that greps the boot's dmesg for the F4 counter line and Oops.
 
 ## 6. Second root (separate): why SPI stalls
-D1–D3 turn SPI stalls into panics; the stalls themselves are #270/#263's other half: undervoltage on 03 (throttled=0x50000), and the correlation with p5 rw-mount (joinwatch churn, M0). Those are tracked separately: M0 is fixed by the joinwatch latch; power needs the PSU swap control test. This patch makes stalls survivable; it does not remove them.
+D1–D3 turn SPI stalls into panics; the stalls themselves are #270/#263's other half: undervoltage on 03 (throttled=0x50000), and the correlation with p5 rw-mount (joinwatch churn, M0). Those are tracked separately: M0 is fixed by the batman-config-save --on-join fingerprint cache (the once-per-boot joinwatch latch was removed by the #202 close-out — it froze p5 on LOCKED nodes); power needs the PSU swap control test. This patch makes stalls survivable; it does not remove them.
 
 ## 7. v2 — review v1(FAIL)併入:取代 §1 的因果敘述與 §2 的 F1–F3、§5 的 T1
 

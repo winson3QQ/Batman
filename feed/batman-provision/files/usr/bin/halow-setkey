@@ -1,50 +1,87 @@
 #!/bin/sh
-# halow-setkey — the one supported door for setting / rotating the node's radio keys (#103/#13).
+# halow-setkey — the one supported door for setting the node's radio keys and HaLow channel
+# (#103/#13/#202): validate -> apply -> read back -> PERSIST to p5.
 #
-#   halow-setkey --mesh <sae-key> [--ap <psk>] [--mesh-id <id>]
+#   halow-setkey [--mesh <sae-key>] [--ap <psk>] [--mesh-id <id>] [--channel <n>]   (at least one)
 #   halow-setkey --status
 #
-# Sets the HaLow mesh SAE key (and optionally the onboarding-AP PSK / mesh id), releases whatever
-# halow-keyguard disabled because a key was still the public placeholder, commits and reloads wifi.
-# Keys are a management-plane asset: normally baked per batch at image time; run this only to
-# bootstrap a card flashed from the public image, or to rotate on demand (#13 rotation/revocation
-# will drive it fleet-wide over signed config, #14). Needs >= 8 characters (SAE/WPA2 minimum).
+# Sets the HaLow mesh SAE key and/or the onboarding-AP PSK / mesh id / S1G channel, releases whatever
+# halow-keyguard disabled because a key was still the public placeholder, commits, reloads wifi, reads
+# the result back from the radio, and then runs `batman-config-save --save` so the change survives
+# the next A/B reflash (#202: before this, a key set here lived only in the running slot's overlay).
+#
+# Exit codes: 0 applied and persisted (or no p5 on this card); 2 bad argument, nothing changed;
+#             3 applied but NOT verified / NOT persisted (message says why; "persist:" line is the truth).
+#             3 is not a harness skip code — it means "look at this node".
+# Persisted (PRESERVE in batman-config-save): mesh key, mesh_id, channel, country, hostname, AP key,
+# address flags. NOT persisted: mesh encryption (image default sae), AP ssid (= hostname, 99-halow-identity).
+# Keys may not contain  ` $ ( ) ; | & < > '  — p5's uci batch cannot carry them (96 rejects the batch).
+# --channel is validated against the morse regdb for the radio's country: an S1G channel number implies
+# its bandwidth (US: ch40 = 4 MHz @ 922.0 MHz, ch42 = 2 MHz @ 923.0 MHz), the same table netifd uses.
 MARK=/etc/halow-keyguard.blocked
 PLACEHOLDER=CHANGE-ME-NOW
-MESH=""; AP=""; MESHID=""; STATUS=0
+REGDB=/usr/share/morse-regdb/channels.csv
+MESH=""; AP=""; MESHID=""; CHAN=""; STATUS=0
+usage() { echo "usage: halow-setkey [--mesh <key>] [--ap <key>] [--mesh-id <id>] [--channel <n>] | --status" >&2; exit 2; }
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--mesh) MESH=$2; shift 2;; --ap) AP=$2; shift 2;; --mesh-id) MESHID=$2; shift 2;;
-		--status) STATUS=1; shift;; *) echo "usage: halow-setkey --mesh <key> [--ap <key>] [--mesh-id <id>] | --status"; exit 2;;
+		--mesh) MESH=${2:-}; shift 2;; --ap) AP=${2:-}; shift 2;; --mesh-id) MESHID=${2:-}; shift 2;;
+		--channel) CHAN=${2:-}; shift 2;; --status) STATUS=1; shift;; *) usage;;
 	esac
 done
 
 mesh_ifaces(){ uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='mesh'$/\1/p"; }
 ap_ifaces(){ uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='ap'$/\1/p"; }
+morse_radio(){ uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)\.type='morse'$/\1/p" | head -1; }
+mesh_netdev(){ iw dev 2>/dev/null | awk '/^\tInterface/{i=$2} /type mesh point/{print i; exit}'; }
 
 if [ "$STATUS" = 1 ]; then
 	for s in $(mesh_ifaces); do k=$(uci -q get "wireless.$s.key"); r=$(uci -q get "wireless.$s.device")
-		printf 'mesh %-16s id=%s key=%s radio=%s disabled=%s\n' "$s" "$(uci -q get "wireless.$s.mesh_id")" \
-			"$([ "$k" = "$PLACEHOLDER" ] && echo PLACEHOLDER || echo set)" "$r" "$(uci -q get "wireless.$r.disabled" || echo 0)"; done
+		printf 'mesh %-16s id=%s key=%s radio=%s channel=%s country=%s disabled=%s\n' "$s" "$(uci -q get "wireless.$s.mesh_id")" \
+			"$([ "$k" = "$PLACEHOLDER" ] && echo PLACEHOLDER || echo set)" "$r" "$(uci -q get "wireless.$r.channel")" "$(uci -q get "wireless.$r.country")" "$(uci -q get "wireless.$r.disabled" || echo 0)"; done
 	for s in $(ap_ifaces); do k=$(uci -q get "wireless.$s.key")
 		printf 'ap   %-16s ssid=%s key=%s disabled=%s\n' "$s" "$(uci -q get "wireless.$s.ssid")" \
 			"$([ "$k" = "$PLACEHOLDER" ] && echo PLACEHOLDER || echo set)" "$(uci -q get "wireless.$s.disabled" || echo 0)"; done
 	[ -f "$MARK" ] && echo "keyguard blocked:$(cat "$MARK")" || echo "keyguard: nothing blocked"
+	if command -v batman-config-save >/dev/null 2>&1 && [ "$(id -u)" = 0 ]; then batman-config-save --check 2>/dev/null | sed 's/^batman-config-save: /persist: /'; fi
 	exit 0
 fi
 
-[ -n "$MESH" ] || [ -n "$AP" ] || { echo "nothing to set (use --mesh/--ap or --status)"; exit 2; }
+[ "$(id -u)" = 0 ] || { echo "halow-setkey: root only" >&2; exit 2; }
+[ -n "$MESH$AP$MESHID$CHAN" ] || { echo "nothing to set (use --mesh/--ap/--mesh-id/--channel or --status)"; exit 2; }
+
+# ---- 1. validate everything BEFORE changing anything --------------------------------------------
 for k in "$MESH" "$AP"; do [ -z "$k" ] || [ ${#k} -ge 8 ] || { echo "key must be >= 8 characters"; exit 2; }; done
 for k in "$MESH" "$AP"; do [ "$k" != "$PLACEHOLDER" ] || { echo "refusing the placeholder as a key"; exit 2; }; done
+for v in "$MESH" "$AP" "$MESHID"; do
+	case "$v" in *[\`\$\(\)\;\|\&\<\>\']*) echo "refusing: a key / mesh id may not contain any of  \` \$ ( ) ; | & < > '  — p5 (the config that survives a reflash) cannot carry it (#202)"; exit 2 ;; esac
+done
+RADIO=$(morse_radio)
+BW=""; CENTRE_KHZ=""
+if [ -n "$CHAN" ]; then
+	case "$CHAN" in ''|*[!0-9]*) echo "channel must be an integer"; exit 2 ;; esac
+	[ -n "$RADIO" ] || { echo "no morse (HaLow) radio in uci — cannot set a channel"; exit 2; }
+	CC=$(uci -q get "wireless.$RADIO.country"); [ -n "$CC" ] || { echo "wireless.$RADIO.country is unset — set the country first"; exit 2; }
+	[ -r "$REGDB" ] || { echo "$REGDB missing — cannot validate the channel for $CC"; exit 2; }
+	# columns: country_code,channelizations,default_channelization,bw,s1g_chan,...,centre_freq_mhz(8)
+	row=$(awk -F, -v cc="$CC" -v ch="$CHAN" '$1==cc && $5==ch {print $4, $8; exit}' "$REGDB")
+	[ -n "$row" ] || { echo "channel $CHAN is not a legal S1G channel for country $CC (per $REGDB); legal: $(awk -F, -v cc="$CC" '$1==cc {printf "%s(%sMHz) ", $5, $4}' "$REGDB")"; exit 2; }
+	BW=${row% *}; centre=${row#* }
+	CENTRE_KHZ=$(awk -v c="$centre" 'BEGIN{printf "%d", c*1000+0.5}')
+	echo "channel $CHAN = $BW MHz @ $centre MHz ($CC)"
+fi
 
+# ---- 2. apply --------------------------------------------------------------------------------------
+prev_chan=$(uci -q get "wireless.$RADIO.channel")
 changed=""
 for s in $(mesh_ifaces); do
 	[ -n "$MESH" ] && { uci -q set "wireless.$s.key=$MESH"; uci -q set "wireless.$s.encryption=sae"; changed="$changed $s"; }
-	[ -n "$MESHID" ] && uci -q set "wireless.$s.mesh_id=$MESHID"
+	[ -n "$MESHID" ] && { uci -q set "wireless.$s.mesh_id=$MESHID"; changed="$changed $s"; }
 done
 for s in $(ap_ifaces); do
 	[ -n "$AP" ] && { uci -q set "wireless.$s.key=$AP"; changed="$changed $s"; }
 done
+[ -n "$CHAN" ] && { uci -q set "wireless.$RADIO.channel=$CHAN"; changed="$changed $RADIO"; }
 # release what the guard disabled, but only where the key is no longer the placeholder
 if [ -f "$MARK" ]; then
 	rest=""; read -r prev < "$MARK"
@@ -60,8 +97,57 @@ if [ -f "$MARK" ]; then
 	if [ -n "$rest" ]; then echo "$rest" > "$MARK"; else rm -f "$MARK"; fi
 fi
 uci commit wireless
-logger -t halow-setkey "keys updated on:$changed; reloading wifi"
+logger -t halow-setkey "config updated on:$changed${CHAN:+ channel=$CHAN}; reloading wifi"
 wifi reload >/dev/null 2>&1 || wifi
-echo "keys updated on:$changed"
+echo "applied on:$changed"
 [ -f "$MARK" ] && echo "still blocked (placeholder key remains):$(cat "$MARK")"
-exit 0
+
+# ---- 3. read back (poll: wifi reload removes and re-creates wlh0, morse_cli fails for a moment) ----
+RC=0
+if [ -n "$CHAN" ]; then
+	# morse may write its hardware default back into uci when it rejects a channel (99-batman-chanfix)
+	deadline=60; i=0; verified=0
+	while [ "$i" -lt "$deadline" ]; do
+		cur=$(uci -q get "wireless.$RADIO.channel")
+		if [ "$cur" != "$CHAN" ]; then break; fi
+		dev=$(mesh_netdev)
+		if [ -n "$dev" ]; then
+			khz=$(morse_cli -i "$dev" channel 2>/dev/null | sed -n 's/^[[:space:]]*Operating Frequency:[[:space:]]*\([0-9]*\) kHz.*/\1/p' | head -1)
+			[ "$khz" = "$CENTRE_KHZ" ] && { verified=1; break; }
+		fi
+		sleep 1; i=$((i + 1))
+	done
+	cur=$(uci -q get "wireless.$RADIO.channel")
+	if [ "$cur" != "$CHAN" ]; then
+		echo "radio rejected channel $CHAN (uci now holds $cur) — restoring channel ${prev_chan:-<unset>}, NOT persisting" >&2
+		if [ -n "$prev_chan" ]; then uci -q set "wireless.$RADIO.channel=$prev_chan"; else uci -q delete "wireless.$RADIO.channel"; fi
+		uci commit wireless; wifi reload >/dev/null 2>&1 || wifi
+		echo "persist: not attempted (channel rejected)"; exit 3
+	fi
+	if [ "$verified" != 1 ]; then
+		# do NOT revert: peers may already have followed; just do not persist an unverified channel
+		echo "unverified — the radio did not report $CENTRE_KHZ kHz within ${deadline}s (got '${khz:-?}'); re-run 'halow-setkey --channel $CHAN' to verify, NOT persisting" >&2
+		echo "persist: not attempted (channel unverified)"; exit 3
+	fi
+	echo "radio on channel $CHAN ($khz kHz, $BW MHz)"
+else
+	i=0; while [ "$i" -lt 20 ] && [ -z "$(mesh_netdev)" ]; do sleep 1; i=$((i + 1)); done
+	ok=1
+	for s in $(mesh_ifaces); do [ -z "$MESH" ] || [ "$(uci -q get "wireless.$s.key")" = "$MESH" ] || ok=0; done
+	[ "$ok" = 1 ] || { echo "read-back mismatch: uci does not hold the key just set" >&2; echo "persist: not attempted"; exit 3; }
+fi
+
+# ---- 4. persist (#202) -----------------------------------------------------------------------------
+if [ ! -b /dev/mmcblk0p5 ]; then
+	echo "persist: n/a (no p5 on this card — single-slot image, nothing to survive a reflash)"; exit 0
+fi
+if ! command -v batman-config-save >/dev/null 2>&1; then
+	echo "persist: FAILED (batman-config-save missing) — the setting lives only in this slot and is LOST on the next OTA" >&2; exit 3
+fi
+out=$(batman-config-save --save 2>&1); prc=$?
+case "$prc" in
+	0) echo "persist: saved -> /dev/mmcblk0p5" ;;
+	6) echo "persist: PARTIAL — $(echo "$out" | sed -n 's/.*cannot persist\(.*\)(forbidden.*/\1/p' | head -1) could not be persisted (forbidden characters)" >&2; RC=3 ;;
+	*) echo "persist: FAILED ($(echo "$out" | tail -1)) — the setting lives only in this slot and is LOST on the next OTA" >&2; RC=3 ;;
+esac
+exit $RC

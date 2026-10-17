@@ -11,6 +11,19 @@ OK verdict** and seeds p5 then (writes `.seeded` last). Manual `batman-config-sa
 needed to seed before the first OK boot (e.g. in the bench test). The save skips (exit 3, keeps
 retrying) while health is merely WARN, so a marginal node keeps trying until genuinely OK.
 
+
+## #202 close-out (2026-10, docs/design/202-config-survival-closeout.md) — saver contract as shipped
+
+Supersedes N5/N5r2 above where they differ:
+- **No once-per-boot latch.** joinwatch calls `batman-config-save --on-join` on EVERY tick while JOINED, regardless of lockdown; idempotency is the saver's fingerprint cache (#263 M0: a cache hit mounts nothing, ~30 ms). A latch froze p5 after the first save on a LOCKED node (G1, reproduced 2026-10-17).
+- **One writer at a time**: `$RUNDIR/cfgsave.lock` (mkdir + pid, takeover when the pid is gone or not a batman-config-save). The rw mount is **verified rw** and retried: with a ro reader holding the same ext4, `mount` returns 0 but the new mount is read-only (T11, probed on 02). `cfgsave-mount.failed` is cleared by the next successful rw mount.
+- **Fail-loud values**: a PRESERVE value with `` ` $ ( ) ; | & < > ' `` cannot be persisted (96's `valid_batch` rejects the batch) — rc 6 and the key name, never a silent drop. `halow-setkey` refuses such keys up front.
+- **PRESERVE** gained `wireless.default_radio0.key` (AP PSK); schema stays 1 (additive). Values are read **committed only** (`uci -P <empty dir>`).
+- **`--save`** (operator / halow-setkey / provd #254): writes now, does not rotate lkg; `--save --promote-lkg` does. `--save` also runs the Pi 3 factory check on an unseeded card. `.seeded` therefore means "a supported tool persisted this node's config".
+- **`--check`** (read-only): is p5 equal to what a save would write? rc 0 fresh / 5 stale (keys named, never values) / 7 unseeded / 8 lock busy / 3 n/a / 1 cannot mount. `batman-slot precheck-node` refuses an OTA on stale (and records the verdict in `$RUNDIR/p5-check.rc` so the stage-2 ramfs enforces it under `sysupgrade -F` too).
+- **`--seed --reformat`**: the only exit for a p5 whose ext4 is really broken (not mounted anywhere, a ro,noload mount fails with a non-busy error, operator key present); prints what is lost.
+- Writers of PRESERVE keys besides the operator: `99-halow-identity` (first boot), openmanetd (reserved IP, two-step addressing), `99-batman-chanfix` (channel reassert on a fresh slot) — all converge into p5 at the next joined tick or `--save`.
+
 ## round-5 fixes (applied)
 | finding | fix |
 |---|---|

@@ -1,28 +1,37 @@
 #!/bin/sh
 # batman-config-save — write the per-node config delta + identity to the shared config
-# partition (p5) so 96-batman-config-migrate can restore it onto a fresh A/B slot (#88/#89).
+# partition (p5) so 96-batman-config-migrate can restore it onto a fresh A/B slot (#88/#89/#202).
 #
 # Design: the golden image bakes the mesh STRUCTURE (batman/bridge/firewall/mesh11sd, all
-# identical across nodes); p5 holds only the per-node DELTA — hostname, mesh id/key, channel/
-# country, the reserved IP, openmanetd flags — plus identity files (SSH host keys). Everything
-# not listed here takes the new image's default on upgrade (new-default-wins). Because the
-# preserve set is per-node scalars, the fragment is a small list of `uci set` commands.
+# identical across nodes); p5 holds only the per-node DELTA — hostname, mesh id/key, AP key,
+# channel/country, the reserved IP, openmanetd flags — plus identity files (SSH host keys).
+# Everything not listed here takes the new image's default on upgrade (new-default-wins).
 #
-#   batman-config-save --seed        first write at provisioning
-#   batman-config-save --save        rewrite now (operator)
-#   batman-config-save --if-healthy  rewrite only if joinwatch health is OK (#127) — the
-#                                    save-on-healthy hook; call from joinwatch on an OK verdict
+#   batman-config-save --seed [--reformat]   first write at provisioning (--reformat: see below)
+#   batman-config-save --save [--promote-lkg] rewrite now (operator / halow-setkey / provd)
+#   batman-config-save --if-healthy          rewrite only if joinwatch health is OK (#127)
+#   batman-config-save --on-join             joinwatch, every tick while JOINED (#202 close-out)
+#   batman-config-save --check               read-only: is p5 what a save would write right now?
 #
-# Writes p5 rw briefly and atomically (stage + rename + sync), keeps two copies (primary + lkg)
-# so bit-rot of one is recoverable. Not a boot-path or per-commit action (avoids #104).
-
+# Exit codes (docs/design/202-config-survival-closeout.md §4):
+#   0 done (--on-join: p5 == live AND root has a password)        1 error (see stderr)
+#   3 not applicable (--check: no p5 / not ext4 / bypass boot; --if-healthy: not OK)
+#   4 --on-join: p5 == live but the node is still OPEN (no root password)
+#   5 --check: p5 is STALE vs live (incl. a live value that cannot be persisted)
+#   6 write modes: a live value could not be persisted (forbidden characters) — the rest was written
+#   7 --check: p5 not seeded          8 --check: lock busy (a batman-config-save still runs)
+#
+# Writes p5 rw briefly and atomically (stage + rename + sync), keeps two copies (primary + lkg).
+# One writer at a time (cfgsave.lock, #202 T6); the rw mount is VERIFIED rw — a concurrent ro reader
+# makes a second mount of the same ext4 silently read-only (#202 T11) — and retried.
+set -u
 DEV=/dev/mmcblk0p5
-MNT=/mnt/cfgsave
 SCHEMA=1
 PRESERVE="
 system.@system[0].hostname
 wireless.default_radio1.mesh_id
 wireless.default_radio1.key
+wireless.default_radio0.key
 wireless.radio1.channel
 wireless.radio1.country
 network.ahwlan.ipaddr
@@ -30,42 +39,155 @@ network.ahwlan.proto
 openmanetd.config.dhcpconfigured
 openmanetd.config.roipconfigured
 "
+UNSAFE='*[`$();|&<>'"'"']*'   # same character set 96-batman-config-migrate's valid_batch rejects
 
-die() { echo "batman-config-save: $*" >&2; exit 1; }
+mode=${1:-}; opt=${2:-}
+case "$mode" in
+	--seed|--save|--if-healthy|--on-join|--check) ;;
+	*) echo "usage: batman-config-save --seed [--reformat] | --save [--promote-lkg] | --if-healthy | --on-join | --check" >&2; exit 1 ;;
+esac
+REFORMAT=0; PROMOTE=0
+case "$mode:$opt" in
+	--seed:--reformat) REFORMAT=1 ;; --save:--promote-lkg) PROMOTE=1 ;;
+	*:) ;; *) echo "batman-config-save: unknown option $opt for $mode" >&2; exit 1 ;;
+esac
+[ "$(id -u)" = 0 ] || { echo "batman-config-save: root only" >&2; exit 1; }
+up() { cut -d. -f1 /proc/uptime; }
+say() { echo "batman-config-save: $*"; }
+err() { echo "batman-config-save: $*" >&2; }
 
-mode=$1
-case "$mode" in --seed|--save|--if-healthy|--on-join) ;; *) die "usage: --seed | --save | --if-healthy | --on-join" ;; esac
+# ---- run dir (#280) and the files that live there --------------------------------------------
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh   # root-only run dir (never /tmp)
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+RDOK=0; type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null && RDOK=1
+ST=$RUNDIR/cfgsave-onjoin.state          # --on-join fingerprint cache (#263 M0)
+GATEFAIL=$RUNDIR/cfgsave-pi3gate.failed   # Pi 3 factory gate failed this boot
+MNTFAIL=$RUNDIR/cfgsave-mount.failed      # "<uptime> <reason>": the LAST rw mount attempt failed (cleared on success)
+LOCK=$RUNDIR/cfgsave.lock                 # one writer at a time (dir: pid, uptime)
+BUSY=$RUNDIR/cfgsave-lock.busy            # --on-join was lock-blocked >= 8 calls in a row (cleared when anyone gets the lock)
+BUSYCNT=$RUNDIR/cfgsave-lock.count
+WRITES=$RUNDIR/cfgsave-writes             # "<n> <uptime>": actual p5 writes this boot (write-amplification guard)
+[ "$RDOK" = 1 ] || { ST=/nonexistent/cfgsave; GATEFAIL=$ST; MNTFAIL=$ST; BUSY=$ST; BUSYCNT=$ST; WRITES=$ST; }
 
-[ -b "$DEV" ] || die "no $DEV"
+tmpd() { batman_tmp -d "$1" 2>/dev/null || mktemp -d "/tmp/$1.XXXXXX"; }
+tmpf() { batman_tmp "$1" 2>/dev/null || mktemp "/tmp/$1.XXXXXX"; }
+
+# ---- cleanup on every exit path ---------------------------------------------------------------
+LOCK_MINE=0; MNT=""; STAGE=""; UCIDIR=""
+cleanup() {
+	[ -n "$STAGE" ] && rm -rf "$STAGE"
+	if [ -n "$MNT" ]; then grep -q " $MNT " /proc/mounts 2>/dev/null && { sync; umount "$MNT" 2>/dev/null; }; rmdir "$MNT" 2>/dev/null; fi
+	[ -n "$UCIDIR" ] && rm -rf "$UCIDIR"
+	[ "$LOCK_MINE" = 1 ] && rm -rf "$LOCK"
+}
+trap cleanup EXIT
+
+# committed values only (#202 C0): a `uci set` not yet committed must not reach p5 — the running
+# config after a reboot would then be behind p5. -P <empty dir> hides the pending delta.
+UCIDIR=$(tmpd cfgsave-uci) || UCIDIR=""
+uget() { if [ -n "$UCIDIR" ]; then uci -q -P "$UCIDIR" get "$1"; else uci -q get "$1"; fi; }
+
+WRITE=1; [ "$mode" = --check ] && WRITE=0
+bypass=0; grep -q 'batman_bypass=1' /proc/cmdline 2>/dev/null && bypass=1
+
+# ---- applicability --------------------------------------------------------------------------
+if [ ! -b "$DEV" ]; then
+	[ "$WRITE" = 1 ] && { err "no $DEV"; exit 1; }
+	say "p5 SKIP no-p5"; exit 3
+fi
+if [ "$bypass" = 1 ]; then
+	[ "$WRITE" = 1 ] && { err "bypass boot (batman_bypass=1): refusing to persist image defaults over p5"; exit 1; }
+	say "p5 SKIP bypass"; exit 3
+fi
 # tier note (#202/#111): DEV is the plain p5 (civilian, no crypto chip). A Secure-tier (608B) node
 # encrypts p5 with LUKS; its plaintext ext4 lives on the cryptsetup mapper, which the LUKS software
 # path (#111) opens — batman-config-save must then resolve DEV to that mapper. Until #111 lands we
 # only ever see a plain-ext4 p5. The one hard rule that keeps this forward-safe: NEVER mkfs a
 # non-ext4 partition (that would silently reformat a LUKS p5 -> data loss + security downgrade,
-# review finding #1), so only --seed may format, and only a genuinely raw/plain p5.
+# review finding #1), so only --seed may format, and only a genuinely raw/plain p5 (or, with
+# --reformat, an ext4 p5 that provably no longer mounts — guards below).
 magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)
+sbstamp() { hexdump -s 1072 -n 6 -e '1/4 "%u" " " 1/2 "%u"' "$DEV" 2>/dev/null; }
+
+# ---- the lock (#202 A2) ----------------------------------------------------------------------
+# Takeover = pid gone OR its cmdline is not a batman-config-save (pids are small and reused).
+lock_try() {
+	mkdir "$LOCK" 2>/dev/null && return 0
+	p=$(cat "$LOCK/pid" 2>/dev/null)
+	if [ -n "$p" ] && [ "$p" != $$ ] && kill -0 "$p" 2>/dev/null && tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q batman-config-save; then
+		return 1
+	fi
+	err "taking over a stale lock (pid ${p:-?} is gone)"; rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null
+}
+lock_age() { a=$(cat "$LOCK/uptime" 2>/dev/null); case "$a" in ''|*[!0-9]*) echo "?" ;; *) echo $(( $(up) - a )) ;; esac; }
+if [ "$RDOK" = 1 ]; then
+	case "$mode" in --on-join) wait=0 ;; --check) wait=5 ;; *) wait=10 ;; esac
+	i=0
+	until lock_try; do
+		[ "$i" -ge "$wait" ] && {
+			p=$(cat "$LOCK/pid" 2>/dev/null)
+			case "$mode" in
+				--on-join)
+					n=$(cat "$BUSYCNT" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac; n=$((n + 1))
+					( umask 077; echo "$n" > "$BUSYCNT" )
+					if [ "$n" -ge 8 ] && [ ! -f "$BUSY" ]; then
+						( umask 077; echo "$(up) pid=${p:-?}" > "$BUSY" )
+						logger -t batman-config-save -p daemon.warn "p5 save blocked by a stuck batman-config-save (pid ${p:-?}, age $(lock_age)s) for $n ticks — p5 is NOT following the live config" 2>/dev/null
+					fi
+					exit 1 ;;
+				--check) say "p5 error lock-busy pid=${p:-?} age=$(lock_age)s (kill $p if it is stuck; a D-state holder needs a reboot)"; exit 8 ;;
+				*) err "lock busy (pid ${p:-?}, age $(lock_age)s) — another batman-config-save is writing p5"; exit 1 ;;
+			esac
+		}
+		sleep 1; i=$((i + 1))
+	done
+	echo $$ > "$LOCK/pid"; up > "$LOCK/uptime"; LOCK_MINE=1
+	rm -f "$BUSY" "$BUSYCNT"
+fi
+# everything below reads uci / p5 only while holding the lock
+
+# ---- --seed on a raw or broken p5 ------------------------------------------------------------
+seed_key_ok() { grep -Eq '^[[:space:]]*(ssh-(ed25519|rsa|dss)|ecdsa-sha2-|sk-)' /etc/dropbear/authorized_keys 2>/dev/null; }
+do_mkfs() {
+	command -v mkfs.ext4 >/dev/null 2>&1 || { err "mkfs.ext4 missing"; exit 1; }
+	say "formatting $DEV (ext4, label batman-cfg)"
+	# ONE -F only: e2fsprogs still refuses a mounted device with a single -F (never -F -F)
+	mkfs.ext4 -F -q -L batman-cfg -m 0 "$DEV" >/dev/null 2>&1 || { err "mkfs.ext4 failed"; exit 1; }
+	magic=53ef
+}
 if [ "$magic" != "53ef" ]; then
-	# only --seed may format p5 (the one-time deployment step); never on --save/--if-healthy/--on-join
-	[ "$mode" = "--seed" ] || die "p5 is not plain ext4 (magic=$magic) — run --seed first (or, on a Secure-tier LUKS p5, open it via #111)"
-	command -v mkfs.ext4 >/dev/null 2>&1 || die "mkfs.ext4 missing"
-	echo "batman-config-save: formatting $DEV (ext4, label batman-cfg)"
-	mkfs.ext4 -F -q -L batman-cfg -m 0 "$DEV" >/dev/null 2>&1 || die "mkfs.ext4 failed"
+	if [ "$mode" = --seed ]; then
+		seed_key_ok || { err "refusing --seed without a usable public key in /etc/dropbear/authorized_keys — a locked node with no key is unreachable. Install the operator public key first (#137)."; exit 1; }
+		do_mkfs
+	elif [ "$WRITE" = 1 ]; then
+		err "p5 is not plain ext4 (magic=$magic) — run --seed first (or, on a Secure-tier LUKS p5, open it via #111)"; exit 1
+	else
+		say "p5 SKIP not-ext4"; exit 3
+	fi
+elif [ "$REFORMAT" = 1 ]; then
+	# --seed --reformat: the exit for a p5 whose ext4 is really broken (#202 C2). All guards must hold:
+	# not mounted anywhere, a ro,noload mount fails 3x with an error that is NOT "busy/already mounted"
+	# (that is a live rw holder, T11 — not damage), operator key present. Prints what is lost.
+	grep -q "^$DEV " /proc/mounts && { err "--reformat refused: $DEV is mounted"; exit 1; }
+	seed_key_ok || { err "--reformat refused: no usable public key in /etc/dropbear/authorized_keys (#137)"; exit 1; }
+	m=$(tmpd cfgsave-ro) || exit 1; i=0; e=""
+	while [ "$i" -lt 3 ]; do
+		e=$(mount -t ext4 -o ro,noload "$DEV" "$m" 2>&1) && { umount "$m"; rmdir "$m"; err "--reformat refused: p5 mounts read-only just fine — nothing to repair"; exit 1; }
+		sleep 1; i=$((i + 1))
+	done
+	rmdir "$m" 2>/dev/null
+	case "$e" in *usy*|*already\ mounted*) err "--reformat refused: p5 is busy ($e) — someone holds it rw, it is not broken"; exit 1 ;; esac
+	err "p5 ext4 does not mount: $e"
+	dmesg 2>/dev/null | grep EXT4-fs | tail -5 >&2
+	err "reformatting: p5's lkg/ copy and identity/ copy are LOST (the live config and keys are re-seeded from this slot now)"
+	do_mkfs
 fi
 
-# M0 (#263): joinwatch calls --on-join every ~15 s until it latches, and an OPEN node never latches
-# (exit 4) — every call mounted p5 rw just to find nothing changed (215 mounts/hour measured on 03).
-# Per boot (the root-only run dir, #280), cache a fingerprint of everything the save would write plus p5's superblock write
-# stamp (s_wtime, s_mnt_count — read without mounting, so ANY other mount/write/mkfs of p5 invalidates
-# it); while both match, answer from the cache. Other modes write p5 themselves -> drop the cache.
-# shellcheck source=/dev/null
-[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh   # #280: root-only run dir (never /tmp)
-RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
-ST=$RUNDIR/cfgsave-onjoin.state; GATEFAIL=$RUNDIR/cfgsave-pi3gate.failed; MNTFAIL=$RUNDIR/cfgsave-mount.failed
-type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null || { ST=/nonexistent/cfgsave; GATEFAIL=$ST; MNTFAIL=$ST; }   # no cache: always the full path
-sbstamp() { hexdump -s 1072 -n 6 -e '1/4 "%u" " " 1/2 "%u"' "$DEV" 2>/dev/null; }
+# ---- --on-join fast paths (#263 M0 cache, backoffs) -----------------------------------------
 onjoin_fp() {
 	{ echo "schema=$SCHEMA"
-	  for t in $PRESERVE; do printf '%s=%s\n' "$t" "$(uci -q get "$t")"; done
+	  for t in $PRESERVE; do printf '%s=%s\n' "$t" "$(uget "$t")"; done
 	  for f in /etc/dropbear/dropbear_ed25519_host_key /etc/dropbear/dropbear_rsa_host_key \
 		/etc/dropbear/authorized_keys /etc/openmanet/config.yml; do
 		if [ -s "$f" ]; then echo "$f $(sha256sum < "$f")"; else echo "$f -"; fi
@@ -80,41 +202,66 @@ onjoin_record() {   # $1 = rc; only after p5 provably matches the inputs (writte
 }
 FP=""
 if [ "$mode" = --on-join ]; then
-	# a Pi 3 card that failed the factory gate only changes at the bench (= a reboot): stop re-checking
-	[ -f "$GATEFAIL" ] && [ -O "$GATEFAIL" ] && { echo "batman-config-save: Pi 3 factory check failed earlier this boot — skip (fix the card at the bench)" >&2; exit 1; }
-	# a failed rw mount: back off 5 minutes instead of retrying every tick
+	[ -f "$GATEFAIL" ] && [ -O "$GATEFAIL" ] && { err "Pi 3 factory check failed earlier this boot — skip (fix the card at the bench)"; exit 1; }
+	# the last rw mount failed: back off 5 minutes instead of retrying every tick
 	if [ -f "$MNTFAIL" ] && [ -O "$MNTFAIL" ]; then
-		t=$(cat "$MNTFAIL" 2>/dev/null); now=$(cut -d. -f1 /proc/uptime)
-		case "$t" in ''|*[!0-9]*) ;; *) [ $((now - t)) -lt 300 ] && { echo "batman-config-save: p5 mount failed $((now - t))s ago — backing off" >&2; exit 1; } ;; esac
+		read -r t reason < "$MNTFAIL" 2>/dev/null || t=""; now=$(up)
+		case "$t" in ''|*[!0-9]*) ;; *) [ $((now - t)) -lt 300 ] && { err "p5 rw mount failed $((now - t))s ago (${reason:-?}) — backing off"; exit 1; } ;; esac
 	fi
 	FP=$(onjoin_fp); [ "${#FP}" = 64 ] && case "$FP" in *[!0-9a-f]*) FP="" ;; esac || FP=""   # fail-safe: no valid fp -> no cache
+	# cached verdicts 0/4/6 are all "p5 already holds what it can hold": 6 (an unpersistable value)
+	# does not change by retrying, so it is cached too, else every tick would mount p5 again (#263 M0)
 	if [ -n "$FP" ] && [ -f "$ST" ] && [ -O "$ST" ] && read -r cfp cwt cmc crc < "$ST" && [ "$cfp" = "$FP" ] \
-		&& [ "$cwt $cmc" = "$(sbstamp)" ] && { [ "$crc" = 0 ] || [ "$crc" = 4 ]; }; then
-		echo "batman-config-save: unchanged ($mode, cached this boot) — skip"
+		&& [ "$cwt $cmc" = "$(sbstamp)" ] && { [ "$crc" = 0 ] || [ "$crc" = 4 ] || [ "$crc" = 6 ]; }; then
+		say "unchanged ($mode, cached this boot) — skip"
 		exit "$crc"
 	fi
-else
-	rm -f "$ST"
+elif [ "$WRITE" = 1 ]; then
+	rm -f "$ST"   # other writers change p5: drop the on-join cache
 fi
 
 if [ "$mode" = "--if-healthy" ]; then
 	verdict=$(halow-status 2>/dev/null | sed -n 's/^HEALTH[[:space:]]*\[\([A-Z]*\)\].*/\1/p')
-	# exit NON-zero on a not-OK skip so joinwatch's `&& :>/tmp/config-saved` guard does NOT latch —
-	# a persistently-WARN node must keep retrying, or it would never seed p5 (N5r2).
-	case "$verdict" in OK) ;; *) echo "batman-config-save: health=$verdict (not OK) — skip"; exit 3 ;; esac
+	case "$verdict" in OK) ;; *) say "health=$verdict (not OK) — skip"; exit 3 ;; esac
 fi
 
-mkdir -p "$MNT"
-mount -t ext4 "$DEV" "$MNT" 2>/dev/null || { [ "$mode" = --on-join ] && ( umask 077; cut -d. -f1 /proc/uptime > "$MNTFAIL" ); die "mount rw failed"; }
+# ---- mount -----------------------------------------------------------------------------------
+MNT=$(tmpd cfgsave-mnt) || { err "no private mount point"; exit 1; }
+if [ "$WRITE" = 1 ]; then
+	# rw, VERIFIED rw: with a ro reader holding the same ext4, `mount` returns 0 but the new mount shares
+	# the read-only superblock (#202 T11, probed on 02) — a write would then fail half-way. Retry, and only
+	# after 5 failures record the marker; a success clears it (#202 T12: it used to stay for the whole boot).
+	i=0; e=""
+	while :; do
+		if e=$(mount -t ext4 "$DEV" "$MNT" 2>&1); then
+			opts=$(awk -v m="$MNT" '$2==m {print $4}' /proc/mounts)
+			case "$opts" in rw*) break ;; esac
+			e="rw mount came up read-only ($opts)"
+			err "rw mount came up read-only — retry"   # fixed string, the D1 T11 probe looks for it (stderr + syslog)
+			logger -t batman-config-save -p daemon.notice "rw mount came up read-only — retry ($opts; a ro reader holds p5, #202 T11)" 2>/dev/null
+			umount "$MNT" 2>/dev/null
+		fi
+		i=$((i + 1)); [ "$i" -ge 5 ] && break
+		sleep 1
+	done
+	if ! awk -v m="$MNT" '$2==m {print $4}' /proc/mounts | grep -q '^rw'; then
+		[ "$mode" = --on-join ] && ( umask 077; echo "$(up) ${e:-mount-failed}" > "$MNTFAIL" )
+		err "mount rw failed after $i tries: ${e:-?}"; exit 1
+	fi
+	rm -f "$MNTFAIL"
+else
+	i=0
+	until mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>/dev/null; do
+		i=$((i + 1)); [ "$i" -ge 3 ] && { say "p5 error mount (ro,noload failed 3x)"; exit 1; }
+		sleep 1
+	done
+fi
 
-# #209 v4.3 D2 — Pi 3 factory gate. On a Pi 3 A/B card the first seed is the point after which
-# 95-batman-storage will never rewrite the boot-critical MBR again, so p6 must already fill the card
-# and the hybrid MBR + firmware partition p7 must be intact. An unseeded node cannot be OTA'd (#202
-# interlock), so refusing here forces "first boot at the factory, verified" before deployment.
+# ---- Pi 3 factory gate (#209 v4.3 D2) --------------------------------------------------------
 pi3_factory_check() {
 	D=/dev/mmcblk0
 	s7=$(cat /sys/class/block/mmcblk0p7/start 2>/dev/null) || return 0
-	sec0=$(batman_tmp cfgsave-mbr 2>/dev/null || mktemp /tmp/cfgsave-mbr.XXXXXX) || return 1
+	sec0=$(tmpf cfgsave-mbr) || return 1
 	dd if="$D" bs=512 count=1 iflag=direct 2>/dev/null > "$sec0" || dd if="$D" bs=512 count=1 2>/dev/null > "$sec0"
 	e() { o=$((446 + 16 * ($1 - 1))); echo "$(hexdump -s $((o + 4)) -n1 -e '1/1 "%02x"' "$sec0") $(hexdump -s $((o + 8)) -n4 -e '1/4 "%u"' "$sec0") $(hexdump -s "$o" -n1 -e '1/1 "%02x"' "$sec0")"; }
 	[ "$(e 1 | cut -d' ' -f2)" = "$s7" ] || { rm -f "$sec0"; return 0; }      # not a Pi 3 card
@@ -126,7 +273,7 @@ pi3_factory_check() {
 	rm -f "$sec0"
 	dsz=$(cat /sys/block/mmcblk0/size); pend=$(( $(cat /sys/class/block/mmcblk0p6/start) + $(cat /sys/class/block/mmcblk0p6/size) ))
 	[ $((dsz - pend)) -le 32768 ] || err="$err p6-not-grown($((dsz - pend))-sectors-free)"
-	m=$(batman_tmp -d cfgsave-p7 2>/dev/null || mktemp -d /tmp/cfgsave-p7.XXXXXX) || return 1
+	m=$(tmpd cfgsave-p7) || return 1
 	if mount -t vfat -o ro /dev/mmcblk0p7 "$m" 2>/dev/null; then
 		for f in bootcode.bin autoboot.txt config.txt; do [ -f "$m/$f" ] || err="$err p7-lacks-$f"; done
 		umount "$m"
@@ -134,101 +281,128 @@ pi3_factory_check() {
 		err="$err p7-unmountable"
 	fi
 	rmdir "$m"
-	[ -z "$err" ] || { umount "$MNT"; [ "$mode" = --on-join ] && ( umask 077; : > "$GATEFAIL" ); die "Pi 3 card not ready to be provisioned:$err — fix at the bench (reflash) before seeding (#209 D2)"; }
-	echo "batman-config-save: Pi 3 factory check passed (hybrid MBR, p6 grown, p7 intact)"
+	[ -z "$err" ] || { [ "$mode" = --on-join ] && ( umask 077; : > "$GATEFAIL" ); err "Pi 3 card not ready to be provisioned:$err — fix at the bench (reflash) before seeding (#209 D2)"; exit 1; }
+	say "Pi 3 factory check passed (hybrid MBR, p6 grown, p7 intact)"
 }
-{ [ "$mode" = --seed ] || [ "$mode" = --on-join ]; } && [ ! -f "$MNT/.seeded" ] && [ -b /dev/mmcblk0p7 ] && pi3_factory_check
+# --save included (#202 G4): it is now a first-seed path too (halow-setkey)
+[ "$WRITE" = 1 ] && [ "$mode" != --if-healthy ] && [ ! -f "$MNT/.seeded" ] && [ -b /dev/mmcblk0p7 ] && pi3_factory_check
 
-STAGE="$MNT/.stage.$$"
-rm -rf "$STAGE"; mkdir -p "$STAGE/identity/dropbear"
-
-# identity (verbatim)
-for f in dropbear_ed25519_host_key dropbear_rsa_host_key authorized_keys; do
-	[ -s "/etc/dropbear/$f" ] && cp -a "/etc/dropbear/$f" "$STAGE/identity/dropbear/$f"
-done
-if [ -s /etc/openmanet/config.yml ]; then
-	mkdir -p "$STAGE/identity/openmanet"; cp -a /etc/openmanet/config.yml "$STAGE/identity/openmanet/config.yml"
-fi
-
-# per-node root password (#137): capture root's /etc/shadow line ONLY if it is a real crypt hash.
-# A dev node has root:: (empty) — seeding that would ship a passwordless "prod", so skip + warn.
-# 96-batman-config-migrate restores this before dropbear and only then arms the lockdown.
-HAS_SHADOW=0
-rootline=$(grep '^root:' /etc/shadow 2>/dev/null)
-case "$rootline" in
-	root:\$*) printf '%s\n' "$rootline" > "$STAGE/identity/shadow-root"; chmod 600 "$STAGE/identity/shadow-root"; HAS_SHADOW=1 ;;
-	*) { [ "$mode" = --seed ] || [ "$mode" = --on-join ]; } && echo "batman-config-save: root has no password hash — persisting radio config only; node stays UNPROVISIONED (open) until a password is set (#137)" >&2 ;;
-esac
-
-# #137: a seeded node whose lockdown will turn OFF network password-auth MUST have a USABLE operator
-# key (not just a non-empty file — a whitespace/comment-only authorized_keys would lock it out with no
-# key = network brick). Require a real public-key line; same predicate the lockdown gate uses (96).
-if [ "$mode" = --seed ] && ! grep -Eq '^[[:space:]]*(ssh-(ed25519|rsa|dss)|ecdsa-sha2-|sk-)' "$STAGE/identity/dropbear/authorized_keys" 2>/dev/null; then
-	rm -rf "$STAGE"; umount "$MNT" 2>/dev/null
-	die "refusing --seed without a usable public key in /etc/dropbear/authorized_keys — a locked node with no key is unreachable. Install the operator public key first (#137)."
-fi
-
-# per-node delta -> uci batch (scalars only). Single-quote values so spaces survive the round
-# trip (N-R6); refuse shell metacharacters and embedded single-quotes rather than try to escape.
-: > "$STAGE/overrides.uci"
-for t in $PRESERVE; do
-	val=$(uci -q get "$t") || continue
-	[ -n "$val" ] || continue        # empty preserved key -> image default wins (documented)
-	case "$val" in *[\`\$\(\)\;\|\&\<\>\']*) echo "batman-config-save: refusing unsafe value in $t" >&2; continue ;; esac
-	printf "set %s='%s'\n" "$t" "$val" >> "$STAGE/overrides.uci"
-done
-echo "$SCHEMA" > "$STAGE/schema_version"
-
+# ---- stage what a save writes (shared by every mode, --check included) -----------------------
+HAS_SHADOW=0; REJECTED=""
+stage_overrides() {   # $1 = staging dir
+	s=$1
+	mkdir -p "$s/identity/dropbear"
+	for f in dropbear_ed25519_host_key dropbear_rsa_host_key authorized_keys; do
+		[ -s "/etc/dropbear/$f" ] && cp -a "/etc/dropbear/$f" "$s/identity/dropbear/$f"
+	done
+	if [ -s /etc/openmanet/config.yml ]; then
+		mkdir -p "$s/identity/openmanet"; cp -a /etc/openmanet/config.yml "$s/identity/openmanet/config.yml"
+	fi
+	# per-node root password (#137): only a real crypt hash. 96 restores it before dropbear.
+	rootline=$(grep '^root:' /etc/shadow 2>/dev/null)
+	case "$rootline" in
+		root:\$*) printf '%s\n' "$rootline" > "$s/identity/shadow-root"; chmod 600 "$s/identity/shadow-root"; HAS_SHADOW=1 ;;
+	esac
+	# per-node delta -> uci batch (scalars only). Single-quote values so spaces survive (N-R6); a value
+	# with shell metacharacters or a quote CANNOT be persisted (96's valid_batch rejects the whole batch
+	# otherwise) — it is reported, never silently dropped (#202 T4).
+	: > "$s/overrides.uci"
+	for t in $PRESERVE; do
+		val=$(uget "$t") || continue
+		[ -n "$val" ] || continue        # empty preserved key -> image default wins (documented)
+		# shellcheck disable=SC2254  # $UNSAFE is a glob pattern on purpose
+		case "$val" in $UNSAFE) REJECTED="$REJECTED $t"; continue ;; esac
+		printf "set %s='%s'\n" "$t" "$val" >> "$s/overrides.uci"
+	done
+	echo "$SCHEMA" > "$s/schema_version"
+}
 same_identity() {   # every identity file this save would write is already on p5, byte for byte. Files only
 	# on p5 (removed locally since) do not count: the write never deletes them either (cp -a), so
-	# counting them would rewrite p5 every tick forever (review M0-R2) — e.g. p5 keeps shadow-root
-	# after a local `passwd -d`; deleting it there is a lockdown decision, not a save's.
+	# counting them would rewrite p5 every tick forever (review M0-R2).
 	( cd "$STAGE/identity" && find . -type f ) | while IFS= read -r f; do
 		cmp -s "$STAGE/identity/$f" "$MNT/identity/$f" || { echo differs; break; }
 	done | grep -q differs && return 1
 	return 0
 }
+p5_matches() { [ -f "$MNT/.seeded" ] && cmp -s "$STAGE/overrides.uci" "$MNT/overrides.uci" && cmp -s "$STAGE/schema_version" "$MNT/schema_version" && same_identity; }
+diff_keys() {   # key names whose `set` line differs between stage and p5 (never the values)
+	for t in $PRESERVE; do
+		a=$(grep -F "set $t=" "$STAGE/overrides.uci" 2>/dev/null); b=$(grep -F "set $t=" "$MNT/overrides.uci" 2>/dev/null)
+		[ "$a" = "$b" ] || printf '%s,' "$t"
+	done
+}
+
+# ---- --check: read-only verdict (#202 C3) ----------------------------------------------------
+if [ "$mode" = --check ]; then
+	[ -f "$MNT/.seeded" ] || { say "p5 unseeded"; exit 7; }
+	STAGE=$(tmpd cfgsave-check) || { say "p5 error staging"; exit 1; }
+	stage_overrides "$STAGE"
+	keys=$(diff_keys); keys=${keys%,}
+	if [ -n "$REJECTED" ]; then
+		say "p5 stale: $(echo "$REJECTED" | tr ' ' ',' | sed 's/^,//') (unpersistable — change the value, --save cannot fix this)"; exit 5
+	fi
+	if p5_matches; then say "p5 fresh"; exit 0; fi
+	[ -n "$keys" ] || keys="identity-or-schema"
+	say "p5 stale: $keys"; exit 5
+fi
+
+# ---- write modes -----------------------------------------------------------------------------
+[ "$mode" = --seed ] && { seed_key_ok || { err "refusing --seed without a usable public key in /etc/dropbear/authorized_keys — a locked node with no key is unreachable. Install the operator public key first (#137)."; exit 1; }; }
+STAGE="$MNT/.stage.$$"
+rm -rf "$STAGE"; stage_overrides "$STAGE"
+case "$mode" in --seed|--on-join|--save) [ "$HAS_SHADOW" = 1 ] || err "root has no password hash — persisting radio config only; node stays UNPROVISIONED (open) until a password is set (#137)" ;; esac
+[ -n "$REJECTED" ] && err "cannot persist$REJECTED (forbidden characters: backtick \$ ( ) ; | & < > ') — change the value"
+
 mark_mesh_expected() {
 	# A seeded node is provisioned to live in a mesh: mirror that onto p6 so batman-autocommit's OTA gate
-	# can require a mesh join without mounting p5 itself (#209 S4-5, ab-autocommit.md v2.2 N5). Also on an
-	# unchanged skip: a first save that ran before /opt/batdata was mounted must still get the marker.
+	# can require a mesh join without mounting p5 itself (#209 S4-5, ab-autocommit.md v2.2 N5).
 	if { [ "$mode" = --seed ] || [ "$mode" = --on-join ]; } && grep -q " /opt/batdata " /proc/mounts 2>/dev/null; then
 		[ -f /opt/batdata/state/mesh-expected ] || { mkdir -p /opt/batdata/state && echo "seeded $mode" > /opt/batdata/state/mesh-expected && sync; }
 	fi
 }
+final_rc() { if [ -n "$REJECTED" ]; then echo 6; elif [ "$mode" = --on-join ] && [ "$HAS_SHADOW" = 0 ]; then echo 4; else echo 0; fi; }
 
 # idempotency for --on-join (bounds re-writes while a node stays open, #104): skip the write when p5
 # already holds exactly what this save would write — overrides, the proven lkg copy (a --save in between
 # updates overrides but not lkg; this joined boot must rotate it, review M0-R3), schema, every identity file.
-# .seeded must already be present too: a write interrupted before the sentinel (power loss, #41) must redo.
-if [ "$mode" = --on-join ] && [ -f "$MNT/.seeded" ] && cmp -s "$STAGE/overrides.uci" "$MNT/overrides.uci" \
-	&& cmp -s "$STAGE/overrides.uci" "$MNT/lkg/overrides.uci" && cmp -s "$STAGE/schema_version" "$MNT/schema_version" \
-	&& same_identity; then
-	rm -rf "$STAGE"; sync; umount "$MNT" 2>/dev/null
-	echo "batman-config-save: unchanged ($mode) — skip"
+if [ "$mode" = --on-join ] && p5_matches && cmp -s "$STAGE/overrides.uci" "$MNT/lkg/overrides.uci"; then
+	rm -rf "$STAGE"; STAGE=""; sync; umount "$MNT" 2>/dev/null
+	say "unchanged ($mode) — skip"
 	mark_mesh_expected
-	rc=4; [ "$HAS_SHADOW" = 1 ] && rc=0
-	onjoin_record "$rc"; exit "$rc"
+	rc=$(final_rc); onjoin_record "$rc"; exit "$rc"
+fi
+
+# write-amplification guard (#202 A3): after 20 real writes in one boot, at most one per 60 s
+if [ "$mode" = --on-join ] && [ "$RDOK" = 1 ]; then
+	read -r wn wl < "$WRITES" 2>/dev/null || { wn=0; wl=0; }
+	case "$wn" in ''|*[!0-9]*) wn=0 ;; esac; case "$wl" in ''|*[!0-9]*) wl=0 ;; esac
+	if [ "$wn" -ge 20 ] && [ $(( $(up) - wl )) -lt 60 ]; then
+		rm -rf "$STAGE"; STAGE=""; umount "$MNT" 2>/dev/null
+		err "write rate-limited ($wn writes this boot) — retry next tick"; exit 1
+	fi
 fi
 
 # publish atomically. lkg = last config that was PROVEN good: rotate it on --seed (the baseline),
-# --if-healthy (this boot joined) and --on-join (this boot joined — the mesh key demonstrably works,
-# so it is the rollback anchor #202/finding-C); --save (operator, unproven) must NOT clobber the
-# last proven lkg (N-R8).
+# --if-healthy / --on-join (this boot joined — the mesh key demonstrably works) and on an explicit
+# --save --promote-lkg (the caller proved it); a bare --save (operator, unproven) must NOT clobber the
+# last proven lkg (N-R8). 219 §6.4 follows this contract.
 mkdir -p "$MNT/identity" "$MNT/lkg"
 cp -a "$STAGE/identity/." "$MNT/identity/" 2>/dev/null
 mv "$STAGE/overrides.uci" "$MNT/overrides.uci"
-case "$mode" in --seed|--if-healthy|--on-join) cp -a "$MNT/overrides.uci" "$MNT/lkg/overrides.uci" ;; esac
+if [ "$mode" = --seed ] || [ "$mode" = --if-healthy ] || [ "$mode" = --on-join ] || [ "$PROMOTE" = 1 ]; then
+	cp -a "$MNT/overrides.uci" "$MNT/lkg/overrides.uci"
+fi
 mv "$STAGE/schema_version" "$MNT/schema_version"
-rm -rf "$STAGE"
+rm -rf "$STAGE"; STAGE=""
 : > "$MNT/.seeded"        # sentinel written LAST (DR-2)
 sync
 umount "$MNT" 2>/dev/null
-echo "batman-config-save: saved ($mode) schema=$SCHEMA -> $DEV"
+if [ "$mode" = --on-join ] && [ "$RDOK" = 1 ]; then
+	wn=$((wn + 1)); ( umask 077; echo "$wn $(up)" > "$WRITES" )
+	[ "$wn" = 20 ] && logger -t batman-config-save -p daemon.warn "20 p5 writes this boot — a config value is churning; further writes limited to one per 60 s" 2>/dev/null
+fi
+say "saved ($mode) schema=$SCHEMA -> $DEV${REJECTED:+ (rejected:$REJECTED)}"
 mark_mesh_expected
-# --on-join persists the RADIO delta so a reflash survives, but signals joinwatch NOT to latch
-# (exit 4) while the node is still open (no password) — so a #137 lockdown performed later THIS boot
-# is re-persisted on the next tick instead of being silently lost on the next reflash (finding #2).
-rc=0; [ "$mode" = --on-join ] && [ "$HAS_SHADOW" = 0 ] && rc=4
+rc=$(final_rc)
 onjoin_record "$rc"
 exit "$rc"

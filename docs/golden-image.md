@@ -94,7 +94,7 @@ card. Force it to take our raw full-disk image:
 ```sh
 d=$(ssh root@<node> mktemp -d)        # #280: a private dir, never a predictable /tmp name root then flashes
 scp golden-1.8.0.img.gz root@<node>:$d/
-ssh root@<node> "sysupgrade -F -n $d/golden-1.8.0.img.gz"
+ssh root@<node> "sysupgrade -n $d/golden-1.8.0.img.gz"   # no -F: a normal OTA must not skip stage-1 checks (boards-and-builds.md; #202 C5)
 #   -F  force (skip the sysupgrade-format check — ours is a raw dd image)
 #   -n  don't keep config = flash as blank (also skips the gpsboard config-save hang)
 ```
@@ -126,7 +126,9 @@ ssh root@<node> '
   cat /proc/sys/kernel/hostname; uci get wireless.default_radio0.ssid   # BCM2711-xxxx, same
   uci get network.ahwlan.ipaddr; uci get openmanetd.config.dhcpconfigured   # 10.41.254.x, 0
   halow-setkey --status; meshled status | head -3    # PLACEHOLDER, radios disabled, red
-  halow-setkey --mesh <batch-key> --ap <ap-key>      # the door (skip if keys were baked)
+  halow-setkey --mesh <batch-key> --ap <ap-key> --channel 40   # the door: validates, applies, reads back,
+                                                     # and PERSISTS to p5 (#202); ch40 = 4 MHz US (fleet default,
+                                                     # the image default ch42 = 2 MHz cannot join the fleet)
 '
 # ~2.5 min later openmanetd has reserved the final IP and rebooted once; reach the node by name:
 ssh root@<hostname>.local '
