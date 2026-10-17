@@ -78,8 +78,7 @@ cfgsave-writes
 # #202 C5: stage-1 p5 freshness verdict written by batman-slot precheck-node, read by stage 2; .dv = harness D2-4c scratch
 p5-check.rc
 p5-check.dv
-# #202 D2 harness: the original AP key kept on the node (root 0600) while step 4 makes p5 stale; restored + removed by the suite
-dv202.ap
+# (dv202.ap moved to p6 /opt/batdata/state: it must survive the 4b reboot)
 # test probe of scripts/node/tmp-trust-280.sh (nobody tries to create it; it must never exist)
 tt280
 # verify-profile-ots-record.sh (#289 SEC-11): uptime when the current UNKNOWN streak began; the script itself reads/clears it

@@ -1853,7 +1853,7 @@ chk_p5follows_202() { local o r
 # (its --on-join would otherwise persist the deliberately stale hostname inside sysupgrade's stage 1 and the
 # -F probe would really reflash the node) and restores hostname + --save + joinwatch on every exit path.
 _setkey202_restore() { local node=$1 old=$2 o
-  o=$(fssh "$node" 90 "$RDR"'[ -s "$R/dv202.ap" ] && { uci set wireless.default_radio0.key="$(cat "$R/dv202.ap")"; uci commit wireless; rm -f "$R/dv202.ap"; }; '"uci set system.@system[0].hostname='$old'; uci commit system; batman-config-save --save >/dev/null 2>&1; /etc/init.d/joinwatch start >/dev/null 2>&1; sleep 1; echo live=\$(uci -q get system.@system[0].hostname); batman-config-save --check 2>&1" | tr -d '\r')
+  o=$(fssh "$node" 90 "$RDR"'A=/opt/batdata/state/dv202.ap; [ -s "$A" ] && [ -O "$A" ] && [ ! -L "$A" ] && { uci set wireless.default_radio0.key="$(cat "$A")"; uci commit wireless; rm -f "$A"; }; '"uci set system.@system[0].hostname='$old'; uci commit system; batman-config-save --save >/dev/null 2>&1; /etc/init.d/joinwatch start >/dev/null 2>&1; sleep 1; echo live=\$(uci -q get system.@system[0].hostname); batman-config-save --check 2>&1" | tr -d '\r')
   echo "  restore: $(echo "$o" | tr '\n' ' ')"
   echo "$o" | grep -q "live=$old" || echo "FAIL restore: live hostname is not '$old' on $node"
   echo "$o" | grep -q 'p5 fresh\|usage:' || echo "FAIL restore: p5 not fresh after restore on $node"; }
@@ -1873,8 +1873,9 @@ _setkey202_body() { local node=$1 old=$2 sub
     # 4. a committed-but-unpersisted AP key = stale p5: --check says so, precheck refuses, the override is honoured.
     #    NOT the hostname: 4b reboots the node, and a node that boots with a different hostname makes openmanetd
     #    re-reserve its mesh IP and reboot again onto a new address (04 moved 10.41.1.2 -> 10.41.1.3 that way,
-    #    2026-10-17 run 2). The original AP key is kept ON the node (run dir, root 0600) and never printed.
-    o=$(fssh "$NODE" 30 "$RDR"'( umask 077; uci -q get wireless.default_radio0.key > "$R/dv202.ap" ); [ -s "$R/dv202.ap" ] || { echo "rc=noap"; exit 0; }; uci set wireless.default_radio0.key="dv202-stale-$(cut -c1-8 /proc/sys/kernel/random/uuid)"; uci commit wireless; batman-config-save --check 2>&1; echo rc=$?' | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
+    #    2026-10-17 run 2). The original AP key is kept ON the node and never printed — on p6, not in the run dir:
+    #    4b reboots the node and the run dir is tmpfs (the first AP-key version lost 04's key that way).
+    o=$(fssh "$NODE" 30 "$RDR"'A=/opt/batdata/state/dv202.ap; [ -s "$A" ] || ( umask 077; uci -q get wireless.default_radio0.key > "$A"; sync ); [ -s "$A" ] || { echo "rc=noap"; exit 0; }; uci set wireless.default_radio0.key="dv202-stale-$(cut -c1-8 /proc/sys/kernel/random/uuid)"; uci commit wireless; batman-config-save --check 2>&1; echo rc=$?' | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
     echo "$o" | grep -q '^rc=noap$' && { echo "FAIL no AP key on $NODE to make stale — step 4 not verified"; exit 1; }
     if echo "$o" | grep -q 'p5 stale: .*default_radio0.key' && echo "$o" | grep -q '^rc=5$'; then echo "PASS step4 --check reports the stale AP key (rc 5)"; else echo "FAIL --check did not report stale AP key"; rc=1; fi
     o=$(fssh "$NODE" 60 "$RDR"'batman-slot precheck-node 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)' | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
