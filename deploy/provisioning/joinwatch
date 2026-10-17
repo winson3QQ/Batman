@@ -133,15 +133,16 @@ run(){
 			# the user power-cycled out of (otherwise "consecutive unjoined boots" never resets)
 			if [ "$short" = 1 ] || { [ "$checked" = 0 ] && open_episode; }; then radio; write "$(diagline JOINED)"; fi
 			checked=1; since=""; short=0; full=0
-			# save-on-join (#88/#89/#202): once this boot has actually JOINED, persist the radio
-			# delta + identity to the shared p5 so it survives an A/B slot switch — REGARDLESS of
-			# #137 lockdown status. (Was --if-healthy, gated on HEALTH==OK, which requires lockdown;
-			# a mesh-provisioned-but-open node is WARN forever, never seeded p5, and stranded on the
-			# next reflash — #202.) --on-join latches /tmp/config-saved only when it returns 0 (a
-			# real password was also persisted = fully provisioned); while the node is still open it
-			# returns non-zero, so we keep retrying and re-persist once a later same-boot lockdown
-			# sets the password (finding #2). Skip cheaply on cards with no p5 (no fork loop, N5r4).
-			[ -f "$RUNDIR/config-saved" ] || [ ! -b /dev/mmcblk0p5 ] || { command -v batman-config-save >/dev/null 2>&1 && batman-config-save --on-join >/dev/null 2>&1 && : > "$RUNDIR/config-saved"; }
+			# save-on-join (#88/#89/#202): while this boot is JOINED, keep the shared p5 equal to the
+			# live per-node delta + identity so it survives an A/B slot switch — REGARDLESS of #137
+			# lockdown status, and on EVERY tick. There is deliberately no once-per-boot latch
+			# (#202 close-out, G1 reproduced 2026-10-17): a latch froze p5 after the first save on a
+			# LOCKED node, so a key/hostname/channel changed later that boot never reached p5 and the
+			# next reflash booted the old settings. Idempotency and cost are batman-config-save's job
+			# (#263 M0 fingerprint cache: a cache hit is ~30 ms and mounts nothing). Its rc is not a
+			# decision here (0/4/6 = p5 holds what it can, 1 = busy/backing off; it logs itself).
+			# Skip cheaply on cards with no p5 (no fork loop, N5r4).
+			[ ! -b /dev/mmcblk0p5 ] || { command -v batman-config-save >/dev/null 2>&1 && batman-config-save --on-join >/dev/null 2>&1; }
 		else
 			u=$(up); [ -n "$since" ] || since=$u; d=$((u - since))
 			radio
