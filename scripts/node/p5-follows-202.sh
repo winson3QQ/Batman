@@ -59,18 +59,32 @@ if [ "$HAVE_CHECK" = 1 ]; then
 	#    (busybox has no fractional sleep). Assert afterwards: overrides == live, lkg == overrides (one more
 	#    on-join rotates lkg), the busy marker appeared (the tight loop blocks >= 8 on-join calls) and is gone,
 	#    and p5 mounts <= 2 x saves + 5 (each --save drops the cache -> the next on-join misses and writes once more).
-	rm -f "$R/cfgsave-writes"; m0=$(mc); busy_seen=0
+	rm -f "$R/cfgsave-writes"; m0=$(mc)
 	n=0; end=$(( $(up) + 30 ))
 	( i=0; while [ "$(up)" -lt $end ]; do "$B" --on-join >/dev/null 2>&1; i=$((i + 1)); done; echo $i > "$H/onjoin.n" ) &
-	while [ "$(up)" -lt $end ]; do n=$((n + 1)); sethost "$OLD-c$n"; "$B" --save >/dev/null 2>&1; [ -f "$R/cfgsave-lock.busy" ] && busy_seen=1; done
+	while [ "$(up)" -lt $end ]; do n=$((n + 1)); sethost "$OLD-c$n"; "$B" --save >/dev/null 2>&1; done
 	wait
 	rm -f "$R/cfgsave-writes"; "$B" --on-join >/dev/null 2>&1; rc=$?
 	ov=$(p5file overrides.uci | grep -F hostname | sed "s/.*='\(.*\)'$/\1/"); lk=$(p5file lkg/overrides.uci | grep -F hostname | sed "s/.*='\(.*\)'$/\1/")
 	live=$(uci -q get system.@system[0].hostname); m1=$(mc); d=$(( (m1 - m0 + 65536) % 65536 ))
-	echo "  step4: saves=$n on-join calls=$(cat "$H/onjoin.n" 2>/dev/null) last on-join rc=$rc p5=$ov lkg=$lk live=$live mounts=+$d busy_seen=$busy_seen busy_now=$([ -f "$R/cfgsave-lock.busy" ] && echo yes || echo no)"
+	echo "  step4: saves=$n on-join calls=$(cat "$H/onjoin.n" 2>/dev/null) last on-join rc=$rc p5=$ov lkg=$lk live=$live mounts=+$d busy_now=$([ -f "$R/cfgsave-lock.busy" ] && echo yes || echo no)"
 	if [ "$ov" = "$live" ] && [ "$lk" = "$ov" ]; then pass "step4 p5 == live and lkg == overrides after concurrent writers"; else fail "p5 lost an update under concurrent writers"; fi
-	[ "$busy_seen" = 1 ] && [ ! -f "$R/cfgsave-lock.busy" ] && pass "step4 lock-busy marker appeared under contention and was cleared" || fail "lock-busy marker not observed/cleared (seen=$busy_seen now=$([ -f "$R/cfgsave-lock.busy" ] && echo yes || echo no))"
+	[ -f "$R/cfgsave-lock.busy" ] && fail "lock-busy marker left behind after contention" || pass "step4 no lock-busy marker left after short contention"
 	[ $d -le $((2 * n + 5)) ] && pass "step4 p5 mounts +$d <= 2x$n+5" || fail "p5 mounted more than expected (+$d for $n saves)"
+	# 4c. a STUCK lock holder (white-box: a sleeping process whose argv0 says batman-config-save, so the takeover
+	#     rule keeps its hands off): --on-join must be blocked (rc 1), raise the busy marker after 8 calls, --check
+	#     must say lock-busy (rc 8); once the holder is gone the next caller takes the lock over and clears the marker.
+	rm -rf "$R/cfgsave.lock"; rm -f "$R/cfgsave-lock.busy" "$R/cfgsave-lock.count"
+	sh -c 'sleep 90' batman-config-save </dev/null >/dev/null 2>&1 & HP=$!
+	mkdir "$R/cfgsave.lock" && echo $HP > "$R/cfgsave.lock/pid" && up > "$R/cfgsave.lock/uptime"
+	bl=0; for i in 1 2 3 4 5 6 7 8 9; do "$B" --on-join >/dev/null 2>&1; [ $? -eq 1 ] && bl=$((bl + 1)); done
+	"$B" --check >/dev/null 2>&1; crc=$?
+	echo "  step4c: blocked_on_join=$bl/9 check_rc=$crc busy=$([ -f "$R/cfgsave-lock.busy" ] && echo yes || echo no) busy_file=[$(cat "$R/cfgsave-lock.busy" 2>/dev/null)]"
+	[ $bl -eq 9 ] && [ -f "$R/cfgsave-lock.busy" ] && pass "step4c stuck holder: --on-join blocked 9/9 and the busy marker was raised" || fail "lock-busy marker not raised by a stuck holder (blocked=$bl)"
+	[ $crc -eq 8 ] && pass "step4c --check reports lock-busy (rc 8) under a stuck holder" || fail "--check did not report lock-busy under a stuck holder (rc $crc)"
+	kill $HP 2>/dev/null; wait $HP 2>/dev/null
+	"$B" --on-join >/dev/null 2>&1
+	[ ! -f "$R/cfgsave-lock.busy" ] && [ -f "$R/cfgsave-onjoin.state" ] && pass "step4c lock taken over after the holder died, busy marker cleared" || fail "stale lock not taken over / busy marker not cleared"
 else
 	fail "pre-#202 image: step4 concurrent writers untestable"
 fi
@@ -91,12 +105,12 @@ while [ $k -lt 12 ]; do
 	[ $rc -eq 0 ] || { ok=0; echo "  step4b --save #$k rc=$rc: $(echo "$out" | tail -1)"; }
 	[ "$(p5host)" = "$OLD-r$k" ] || { ok=0; echo "  step4b --save #$k reported rc=$rc but p5 hostname=$(p5host)"; }
 	[ $seen = 1 ] && break
-	# shellcheck disable=SC3028  # busybox ash has RANDOM; $$ is the fallback
 	sleep $((3 + ${RANDOM:-$$} % 2))   # jitter against the writer's 1 s retry cadence
 done
 : > "$H/reader.stop"; wait; held=$(cat "$H/reader.held" 2>/dev/null)
 echo "  step4b: saves=$k retry_seen=$seen reader_held=$held mount.failed=$([ -f "$R/cfgsave-mount.failed" ] && echo yes || echo no)"
-[ "${held:-0}" -ge 5 ] || fail "T11 reader could not hold p5 (held=$held)"
+# the reader is stopped as soon as the retry is seen, so a short run holds few times; without a retry it must have held long
+if [ $seen = 1 ]; then [ "${held:-0}" -ge 1 ] || fail "T11 reader could not hold p5 (held=$held)"; else [ "${held:-0}" -ge 5 ] || fail "T11 reader could not hold p5 (held=$held)"; fi
 if [ $ok = 1 ] && [ ! -f "$R/cfgsave-mount.failed" ]; then pass "step4b every --save landed under a holding ro reader"; else fail "writer silently read-only under ro readers"; fi
 [ $seen = 1 ] && pass "step4b the rw-came-up-read-only retry path was exercised" || fail "T11 not exercised"
 
