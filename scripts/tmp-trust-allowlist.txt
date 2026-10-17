@@ -77,3 +77,6 @@ scripts/node/gw-crl-289.py	/tmp/<user>\.pem	usage text naming the container-inte
 scripts/daily-validation.sh	/tmp/GW(SK|CS)-u1\.(pem|key)	#289 soak-cot-289 / cleanstop-274 case 6: 1-day test certs in ots_cot_parser's OWN container tmpfs (docker exec), never the node's /tmp
 # --- #289 gateway: its snapshot lives in the gateway container's OWN tmpfs (--tmpfs /tmp, private, uid 1000), never the node's /tmp ---
 deploy/ots/gateway/batman_eud_gateway/config.py	snapshot_path: str = "/tmp/gateway/sessions\.json"	#289 M17/§3: the sessions snapshot inside the gateway container's private tmpfs (uid 1000 only), read via docker exec by the suites; nothing on the node decides on it
+feed/batman-provision/files/usr/sbin/batman-slot	override: touch /tmp/batman-slot\.allow-stale-p5 \(as root\)	message text naming the opf-checked operator flag (#202 C5)
+scripts/node/p5-follows-202.sh	R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/tmp/run/batman	harness resolver for the run dir (#202 D1)
+scripts/node/setkey-persists-202.sh	R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/tmp/run/batman	harness resolver for the run dir (#202 D2)

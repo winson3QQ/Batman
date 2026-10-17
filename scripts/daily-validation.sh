@@ -1841,6 +1841,81 @@ chk_14()  { fssh "$1" 20 '
   p=$(batctl n 2>/dev/null | grep -c wlh0)
   echo "cgi mesh.nodes=$n  batctl peers=$p"
   [ -n "$n" ] && [ "$n" -ge 1 ] && [ "$n" -le $((p+1)) ]'; }   # aggregate agrees with batctl (<= peers+self)
+# ---- #202 close-out: p5 follows the running config (D1), setkey persists + stale p5 refuses an OTA (D2) ----
+# D1 (tier A): node-side scripts/node/p5-follows-202.sh — no latch, concurrent writers, ro readers, --check.
+chk_p5follows_202() { local o r
+  o=$(timeout 480 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" sh -s < "$REPO/scripts/node/p5-follows-202.sh" 2>&1); r=$?
+  echo "$o"; [ $r -eq 3 ] && return 3
+  [ -n "$o" ] || { echo "FAIL no output from $1 (connection?) — not verified"; return 1; }
+  return $r; }
+# D2 (tier B, DNODE = ethernet): block A runs ON the node detached (it leaves the mesh twice; a 240 s node-side
+# watchdog restores the key); the harness then does steps 4/4b/4c itself over ethernet with joinwatch STOPPED
+# (its --on-join would otherwise persist the deliberately stale hostname inside sysupgrade's stage 1 and the
+# -F probe would really reflash the node) and restores hostname + --save + joinwatch on every exit path.
+_setkey202_restore() { local node=$1 old=$2 o
+  o=$(fssh "$node" 90 "$RDR"'A=/opt/batdata/state/dv202.ap; if [ -s "$A" ] && [ -O "$A" ] && [ ! -L "$A" ]; then uci set wireless.default_radio0.key="$(cat "$A")"; uci commit wireless; [ "$(uci -q get wireless.default_radio0.key | md5sum)" = "$(md5sum < "$A")" ] && echo ap=restored || echo ap=MISMATCH; rm -f "$A"; else echo ap=untouched; fi; '"uci set system.@system[0].hostname='$old'; uci commit system; batman-config-save --save >/dev/null 2>&1; /etc/init.d/joinwatch start >/dev/null 2>&1; sleep 1; echo live=\$(uci -q get system.@system[0].hostname); batman-config-save --check 2>&1" | tr -d '\r')
+  echo "  restore: $(echo "$o" | tr '\n' ' ')"
+  echo "$o" | grep -q "live=$old" || echo "FAIL restore: live hostname is not '$old' on $node"
+  echo "$o" | grep -q '^ap=MISMATCH' && echo "FAIL restore: AP key not restored on $node"
+  echo "$o" | grep -q 'p5 fresh\|usage:' || echo "FAIL restore: p5 not fresh after restore on $node"; }
+_setkey202_body() { local node=$1 old=$2 sub
+  # steps 4/4b/4c need the freshness verdict (new image); on a pre-#202 image block A already showed the FAILs
+  [ "$(fssh "$node" 15 'batman-config-save --check 2>&1 | grep -c "^batman-config-save: p5 "' | tr -d '\r ')" = 1 ] \
+    || { echo "FAIL --check unsupported on $node: steps 4/4b/4c untestable (pre-#202 image)"; return 1; }
+  # Everything below runs in ONE subshell with fault-injection's helpers sourced (payload precheck, waitboot, slot,
+  # committed, ots_wait). Order matters: the payload sha check (~30 s) comes FIRST, then joinwatch is stopped and
+  # the hostname made stale, so the window between "stale" and the -F probe is seconds, not half a minute.
+  ( FI_SOURCE_ONLY=1 . "$REPO/scripts/fault-injection.sh" "$node" || exit 1
+    rc=0
+    precheck || exit 1
+    q '[ ! -e /opt/batdata/state/autocommit-hold-commit ]' || { echo "FAIL a hold-commit flag is armed on $NODE — not running the -F probe"; exit 1; }
+    fssh "$NODE" 60 '/etc/init.d/joinwatch stop >/dev/null 2>&1; i=0; while pgrep -f "[/]usr/bin/batman-config-save" >/dev/null 2>&1 && [ $i -lt 30 ]; do sleep 1; i=$((i+1)); done; pgrep -f "[/]usr/bin/batman-config-save" >/dev/null 2>&1 && echo STILL || echo STOPPED; /etc/init.d/joinwatch running && echo "jw=running" || echo "jw=stopped"' | tr -d '\r' | tee /dev/stderr | grep -q STOPPED \
+      || { echo "FAIL could not stop joinwatch / an in-flight save on $NODE"; exit 1; }
+    # 4. a committed-but-unpersisted AP key = stale p5: --check says so, precheck refuses, the override is honoured.
+    #    NOT the hostname: 4b reboots the node, and a node that boots with a different hostname makes openmanetd
+    #    re-reserve its mesh IP and reboot again onto a new address (04 moved 10.41.1.2 -> 10.41.1.3 that way,
+    #    2026-10-17 run 2). The original AP key is kept ON the node and never printed — on p6, not in the run dir:
+    #    4b reboots the node and the run dir is tmpfs (the first AP-key version lost 04's key that way).
+    o=$(fssh "$NODE" 30 "$RDR"'A=/opt/batdata/state/dv202.ap; [ -s "$A" ] || ( umask 077; uci -q get wireless.default_radio0.key > "$A"; sync ); [ -s "$A" ] || { echo "rc=noap"; exit 0; }; uci set wireless.default_radio0.key="dv202-stale-$(cut -c1-8 /proc/sys/kernel/random/uuid)"; uci commit wireless; batman-config-save --check 2>&1; echo rc=$?' | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
+    echo "$o" | grep -q '^rc=noap$' && { echo "FAIL no AP key on $NODE to make stale — step 4 not verified"; exit 1; }
+    if echo "$o" | grep -q 'p5 stale: .*default_radio0.key' && echo "$o" | grep -q '^rc=5$'; then echo "PASS step4 --check reports the stale AP key (rc 5)"; else echo "FAIL --check did not report stale AP key"; rc=1; fi
+    o=$(fssh "$NODE" 60 "$RDR"'batman-slot precheck-node 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)' | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
+    if echo "$o" | grep -q 'STALE' && echo "$o" | grep -Eq '^rc=[1-9]' && echo "$o" | grep -q '^verdict=stale:'; then echo "PASS step4 precheck-node refuses a stale p5 and records the verdict"; else echo "FAIL precheck passed with stale p5"; rc=1; fi
+    o=$(fssh "$NODE" 60 "$RDR"'BATMAN_ALLOW_STALE_P5=1 batman-slot precheck-node >/dev/null 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)' | tr -d '\r')
+    if echo "$o" | grep -q '^rc=0$' && echo "$o" | grep -q '^verdict=stale-allowed'; then echo "PASS step4 the stale override is honoured and recorded"; else echo "FAIL stale override not honoured ($(echo "$o" | tr '\n' ' '))"; rc=1; fi
+    # 4b. sysupgrade -F with a stale p5: stage 1's refusal is ignored by -F, stage 2 must refuse from the verdict file.
+    o=$(fssh "$NODE" 30 "$RDR"'batman-config-save --check 2>&1; /etc/init.d/joinwatch running && echo jw=running || echo jw=stopped; ls -l --full-time "$R"/cfgsave-onjoin.state "$R"/cfgsave-writes "$R"/p5-check.rc 2>/dev/null | sed "s/^.* root root *//"' | tr -d '\r'); echo "$o" | sed 's/^/  4b-pre: /'
+    echo "$o" | grep -q 'p5 stale' || { echo "FAIL stale precondition lost before -F"; exit 1; }
+    b0=$(bootid); s0=$(slot); [ -n "$b0" ] && [ -n "$s0" ] || { echo "FAIL boot_id/slot unreadable before -F — not verified"; exit 1; }
+    n "setsid sh -c 'sysupgrade -F -n $PAYLOAD >/opt/batdata/sysup-f.log 2>&1' </dev/null >/dev/null 2>&1 &"
+    waitboot "$b0" 600 || { echo "FAIL node did not reboot after sysupgrade -F (stage 2 should refuse and reboot; log: $(q 'tail -2 /opt/batdata/sysup-f.log' | tr '\n' ' '))"; exit 1; }
+    settle 300 >/dev/null 2>&1 || true
+    s1=$(slot); it=$(q 'batman-slot is-trial >/dev/null 2>&1; echo $?' | tr -d '\r '); tr=$(q 'tail -40 /opt/batdata/log/ota-trace.log 2>/dev/null')
+    [ "$s1" = "$s0" ] && echo "PASS step4b active slot unchanged ($s0) after sysupgrade -F with a stale p5" || { echo "FAIL -F reflashed the node despite a stale p5 ($s0 -> $s1)"; exit 1; }
+    [ "$it" = 1 ] && echo "PASS step4b node is committed, not a trial" || { echo "FAIL node is a trial after -F (is-trial rc $it)"; exit 1; }
+    echo "$tr" | grep -Eq 'S2 REFUSE why=p5-stale|SLOT DIE.*STALE' && echo "PASS step4b stage 2 refused on the stage-1 verdict: $(echo "$tr" | grep -E 'S2 REFUSE|SLOT DIE' | tail -1)" || { echo "FAIL no stage-2 p5 refusal in ota-trace"; echo "$tr" | tail -8 | sed 's/^/    trace: /'; exit 1; }
+    if [ "$NODE" = "$OTS_NODE" ]; then ots_wait && echo "PASS step4b OTS back after the -F reboot" || { echo "FAIL OTS not back after the -F reboot"; exit 1; }; fi
+    exit $rc ); sub=$?
+  # 4c. the pure stage-2 gate on a scratch file in the run dir (never the real verdict file): pass / expired / stale
+  o=$(fssh "$node" 30 "$RDR"'now=$(cut -d. -f1 /proc/uptime); f="$R/p5-check.dv"
+    echo "skip:unseeded-allowed $now" > "$f"; batman-slot verdict-gate "$f" >/dev/null 2>&1; printf "a=%s " $?
+    echo "stale:x $((now-700))" > "$f"; batman-slot verdict-gate "$f" >/dev/null 2>&1; printf "b=%s " $?
+    echo "stale:x $now" > "$f"; batman-slot verdict-gate "$f" >/dev/null 2>&1; printf "c=%s\n" $?; rm -f "$f"' | tr -d '\r')
+  if [ "$o" = "a=0 b=2 c=1" ]; then echo "PASS step4c verdict-gate: allowed-skip passes, expired = no verdict, stale refuses"; else echo "FAIL verdict-gate wrong ($o)"; sub=1; fi
+  return $sub; }
+bchk_setkey_202() { local node=$1 o old r rc=0 t
+  old=$(fssh "$node" 10 'uci -q get system.@system[0].hostname' | tr -d '\r'); [ -n "$old" ] || { echo "FAIL hostname unreadable on $node — not verified"; return 1; }
+  fssh "$node" 20 'mkdir -p -m 700 /tmp/run/batman-dv && cat > /tmp/run/batman-dv/setkey-202.sh && rm -f /opt/batdata/log/dv202.out' < "$REPO/scripts/node/setkey-persists-202.sh" || { echo "FAIL could not stage the node script on $node"; return 1; }
+  fssh "$node" 20 'setsid sh /tmp/run/batman-dv/setkey-202.sh </dev/null >/dev/null 2>&1 &' || { echo "FAIL could not start block A on $node"; return 1; }
+  t=0; o=""
+  while [ $t -lt 720 ]; do sleep 15; t=$((t+15)); o=$(fssh "$node" 15 'cat /opt/batdata/log/dv202.out 2>/dev/null' | tr -d '\r'); echo "$o" | grep -q '^DONE' && break; done
+  echo "$o" | grep -q '^DONE' || { echo "FAIL block A did not finish within 720 s on $node"; echo "$o" | sed 's/^/  A: /'; _setkey202_restore "$node" "$old"; return 1; }
+  echo "$o" | sed 's/^[0-9]* //' | sed 's/^\(PASS\|FAIL\|info\)/A: &/' | sed 's/^A: //'
+  echo "$o" | grep -q ' FAIL ' && rc=1
+  _setkey202_body "$node" "$old" || rc=1
+  _setkey202_restore "$node" "$old"
+  return $rc; }
+
 chk_202() { fssh "$1" 20 '                                     # a JOINED node must have seeded p5 (#202)
   [ -b /dev/mmcblk0p5 ] || { echo "no p5 — skip"; exit 0; }
   m=/mnt/dv-p5; mkdir -p "$m"
@@ -1936,6 +2011,9 @@ if up "$MESH_NODE"; then
   suite dockerd-restart-247 "dockerd restarts with a live container and runs containers again — only on nodes without tenants, on: $BV_NODES (#268 C2)" "chk_dockerd_restart $BV_NODES"
   suite mesh-console-14 "/cgi-bin/mesh aggregate agrees with batctl (#14)"                   "chk_14 $MESH_NODE"
   suite p5-seed-202      "a JOINED node auto-seeds p5 (radio delta), decoupled from lockdown (#202)" "chk_202 $MESH_NODE"
+  suite p5-follows-config-202 "p5 follows the running config within a tick on $MESH_NODE: no latch, concurrent writers, ro readers, --check verdict (#202 D1)" "chk_p5follows_202 $MESH_NODE"
+  if [ "$OTS_NODE" != "$MESH_NODE" ] && up "$OTS_NODE"; then suite p5-follows-config-202b "p5 follows the running config on the OTS host $OTS_NODE (#202 D1)" "chk_p5follows_202 $OTS_NODE"
+  else suite p5-follows-config-202b "#202 D1 on the OTS host — OTS_NODE '$OTS_NODE' == MESH_NODE or down" ""; fi
   suite mesh-tput        "sustained mesh throughput to peer (median of N batctl tp; baseline soak median ~9.4 Mbps)" "chk_tput $MESH_NODE"
   if [ "$IPERF_PEER" != "$MESH_NODE" ] && up "$IPERF_PEER"; then
     suite mesh-tput-iperf "iperf TCP throughput MESH_NODE->peer (real IP payload; batctl tp under-reports ~15%; single-dir baseline ~9.3 Mbps)" "chk_iperf $MESH_NODE $IPERF_PEER"
@@ -1943,7 +2021,21 @@ if up "$MESH_NODE"; then
     suite mesh-tput-iperf "IPERF_PEER '$IPERF_PEER' unusable (unset / == MESH_NODE / down) — set IPERF_PEER to the other mesh node" ""
   fi
 else
-  for s in field-status-130 meshjoin-209 batman-ver-247 go-toolchain-252 runc-cve-247 container-lifecycle-247 dockerd-restart-247 mesh-console-14 p5-seed-202 mesh-tput mesh-tput-iperf; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
+  for s in field-status-130 meshjoin-209 batman-ver-247 go-toolchain-252 runc-cve-247 container-lifecycle-247 dockerd-restart-247 mesh-console-14 p5-seed-202 p5-follows-config-202 p5-follows-config-202b mesh-tput mesh-tput-iperf; do suite "$s" "MESH_NODE $MESH_NODE did not answer" ""; done
+fi
+
+# #202 D2/D3 (DESTRUCTIVE): D2 on DNODE (ethernet: it leaves the mesh and reboots once under a refused -F);
+# D3 reflashes MESH_NODE (the mesh-only black box) with the payload the node runs and leaves it on the other
+# slot, committed. Lab: MESH_NODE=10.41.24.32 OTS_NODE=10.41.238.222 DESTRUCTIVE_NODE=10.41.238.222.
+if [ "$AB_MODE" != --destructive ]; then
+  suite setkey-persists-202 "halow-setkey persists to p5 at once; a stale p5 refuses an OTA, also under -F (#202 D2) — needs AB_MODE=--destructive" ""
+  suite reflash-survives-config-202 "persisted config survives a real A/B reflash + rejoin + autocommit (#202 D3) — needs AB_MODE=--destructive" ""
+else
+  if up "$DNODE"; then suite setkey-persists-202 "halow-setkey persists to p5 at once; a stale p5 refuses an OTA, also under -F, on DNODE $DNODE (#202 D2, DESTRUCTIVE: off-mesh twice + one refused-OTA reboot)" "bchk_setkey_202 $DNODE" D
+  else suite setkey-persists-202 "#202 D2 — DNODE $DNODE did not answer" ""; fi
+  if up "$MESH_NODE"; then nt202=""; [ "$MESH_NODE" = "$OTS_NODE" ] || nt202=--no-tenant
+    suite reflash-survives-config-202 "persisted hostname/keys survive a real A/B reflash of MESH_NODE=$MESH_NODE, rejoin + autocommit (#202 D3, DESTRUCTIVE: reflashes the node, leaves it on the other slot)" "$REPO/scripts/fault-injection.sh $MESH_NODE --case p5 $nt202" D
+  else suite reflash-survives-config-202 "#202 D3 — MESH_NODE $MESH_NODE did not answer" ""; fi
 fi
 
 # A/B commit hygiene (#211): a completed reflash must not leave the node an uncommitted trial (a reboot

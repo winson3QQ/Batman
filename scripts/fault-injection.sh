@@ -4,7 +4,7 @@
 # OTA-flashes trial slots, and breaks a slot's docker runtime. Runs from an operator box that can ssh the
 # node (default key). daily-validation.sh invokes it only under --destructive, one case per suite.
 #
-#   scripts/fault-injection.sh <node> [--case f1|f2|r2|r1|r3|r4|all] [--no-tenant]   (default: all)
+#   scripts/fault-injection.sh <node> [--case f1|f2|r2|r1|r3|r4|s1|c1|c1n|c2|p5|all] [--no-tenant]   (default: all; p5 never in all)
 #
 # --no-tenant  the CALLER declares the node carries no docker tenant (a Pi 3, #209 D6): only r3/r4 run, and
 #              the OTS 6/6 / canary assertions are not made. Without it a missing tenant is a FAIL — never
@@ -35,7 +35,7 @@
 # "UNDETERMINED ... not verified" — never PASS, never a product FAIL. Remote commands used for readings
 # must never exit 255 themselves. Actions (sysupgrade, reboot, mv, release) use n() and are never retried.
 set -uo pipefail
-NODE=${1:?usage: fault-injection.sh <node> [--case f1|f2|r2|r1|r3|r4|s1|c1|c1n|c2|all] [--no-tenant]}
+NODE=${1:?usage: fault-injection.sh <node> [--case f1|f2|r2|r1|r3|r4|s1|c1|c1n|c2|p5|all] [--no-tenant]}
 shift; CASE=all; NOTENANT=0
 while [ $# -gt 0 ]; do case "$1" in --case) CASE=${2:-all}; shift 2;; --no-tenant) NOTENANT=1; shift;; *) echo "unknown arg $1"; exit 2;; esac; done
 TENANT=opentakserver
@@ -443,11 +443,80 @@ c2(){ echo "== C2 trial-crash-274: a manual 'batman-slot commit' after a crash i
   [ "$st" = "$tr" ] && [ "$it" = 1 ] && ok "C2 manual commit after a crash stood past deadline + deferral: slot $tr committed, same boot" \
     || no "C2 slot=$st (trial $tr) is-trial rc=$it (want 1)"; }
 
+# ---- #202 D3: reflash-survives-config — a persisted per-node config survives a real A/B reflash ----
+# A black-box proof of #202's DoD 1 on a mesh-only node: change the onboarding-AP key through the supported
+# door (halow-setkey, which persists it), OTA the same build into the other slot, and the fresh slot must come
+# up with that AP key, the unchanged hostname, the mesh key (not the placeholder, keyguard not blocking), JOIN
+# the mesh and be auto-committed. The marker is the AP key, not the hostname: a hostname that differs from the
+# one openmanetd reserved the mesh IP for makes it re-reserve and reboot the fresh slot with a NEW IP (seen on
+# 02, 2026-10-17 — a rename changes the node's address; #254 must expect that). Keys are never printed (md5 only).
+# Not in `all` (it reflashes the node and leaves it on the other slot, committed); daily-validation wires it as
+# its own destructive suite on MESH_NODE. The payload MUST be the running build (precheck()).
+p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostname/mesh key survive an A/B reflash, node rejoins =="
+  precheck || return
+  local b0 s0 v0 old ap0v ap0 apt aptv hn key blk j t s1 v1 ap1 c o apn
+  q 'batman-slot is-trial >/dev/null 2>&1; [ $? = 1 ]' || { no "P5: node is not on a committed slot — not reflashing"; return; }
+  q '[ ! -e /opt/batdata/state/autocommit-hold-commit ]' || { no "P5: a hold-commit flag is armed — not reflashing"; return; }
+  b0=$(bootid); s0=$(slot); v0=$(q 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build' | tr -d '\r')
+  old=$(q 'uci -q get system.@system[0].hostname' | tr -d '\r'); ap0v=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r'); ap0=$(printf '%s\n' "$ap0v" | md5sum | cut -c1-8)
+  [ -n "$b0" ] && [ -n "$s0" ] && [ -n "$old" ] && [ -n "$ap0v" ] || { no "P5: baseline unreadable (boot=$b0 slot=$s0 host=$old ap=$ap0) — not verified"; return; }
+  echo "    baseline: slot $s0 version $v0 host $old ap-md5 $ap0 eth0=$(q 'cat /sys/class/net/eth0/carrier 2>/dev/null' | tr -d '\r') (0/absent = mesh-only black box)"
+  local rr0; rr0=$(q 'grep -c "openmanetd address reservation" /opt/batdata/log/boot-reasons.log' | tr -d '
+ ')
+  # 1. set + persist through the supported door
+  aptv="fi202-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"; apt=$(printf '%s\n' "$aptv" | md5sum | cut -c1-8)
+  o=$(q "halow-setkey --ap '$aptv' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
+  echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' \
+    || { no "P5: setkey --ap did not persist ($(echo "$o" | tr '\n' '|'))"; q "halow-setkey --ap '$ap0v'" >/dev/null 2>&1; return; }
+  ok "P5 AP key (md5 $apt) persisted through halow-setkey (p5 fresh)"
+  # 2. reflash the same build into the other slot
+  ota_boot P5 "$b0" || { q "halow-setkey --ap '$ap0v'" >/dev/null 2>&1; return; }
+  # 3. the fresh slot
+  s1=$(slot); v1=$(q 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build' | tr -d '\r')
+  hn=$(q 'uci -q get system.@system[0].hostname' | tr -d '\r'); key=$(q 'uci -q get wireless.default_radio1.key' | tr -d '\r')
+  blk=$(q 'halow-setkey --status 2>/dev/null | grep -c "keyguard blocked"' | tr -d '\r'); ap1=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r' | md5sum | cut -c1-8)
+  [ "$s1" != "$s0" ] && ok "P5 booted the other slot ($s0 -> $s1)" || no "P5: still on slot $s0 after the OTA"
+  [ "$v1" = "$v0" ] && ok "P5 same build on the fresh slot ($v1)" || no "P5: version changed $v0 -> $v1 (payload was not the running build?)"
+  [ "$ap1" = "$apt" ] && ok "P5 fresh slot restored the persisted AP key (md5 $apt)" || no "P5: fresh slot AP key md5 is $ap1, expected $apt — p5 restore failed"
+  [ "$hn" = "$old" ] && ok "P5 fresh slot kept the hostname ($old)" || no "P5: fresh slot hostname is '$hn', expected '$old'"
+  [ -n "$key" ] && [ "$key" != CHANGE-ME-NOW ] && ok "P5 fresh slot has a real mesh key" || no "P5: fresh slot mesh key is placeholder/empty — would strand a mesh-only node"
+  [ "$blk" = 0 ] && ok "P5 keyguard not blocking on the fresh slot" || no "P5: keyguard blocked something on the fresh slot: $(q 'halow-setkey --status 2>/dev/null | grep blocked' | tr -d '\r')"
+  t=0; j=0; while [ $t -lt 240 ]; do case "$(q "$RDR"'cat "$R/joinwatch.state" 2>/dev/null' | tr -d '\r')" in JOINED*) j=1; break;; esac; sleep 10; t=$((t+10)); done
+  [ $j = 1 ] && ok "P5 rejoined the mesh within ${t}s" || no "P5: not JOINED within 240 s on the fresh slot"
+  # 4. autocommit (needs the mesh join): expected 60–180 s; past 300 s wait for the deadline path
+  c=0; for _ in $(seq 1 30); do committed && { c=1; break; }; sleep 10; done
+  if [ $c = 1 ]; then ok "P5 fresh slot auto-committed"
+  else for _ in $(seq 1 60); do committed && { c=1; break; }; sleep 10; done
+    [ $c = 1 ] && ok "P5 fresh slot committed (late, >300 s)" || no "P5: not committed within 900 s ($(q 'logread | grep -E "batman-autocommit.*(UNHEALTHY|REVERT|revert)" | tail -2' | tr '\n' ' '))"; fi
+  # 5. no address re-reservation on the fresh slot (p5 design N-R3): the restored dhcpconfigured/ipaddr must hold
+  o=$(q 'grep -c "openmanetd address reservation" /opt/batdata/log/boot-reasons.log' | tr -d '
+ ')
+  if isint "$o" && isint "$rr0" && [ "$o" = "$rr0" ]; then ok "P5 no openmanetd address re-reservation on the fresh slot (p5 design N-R3; $o in log, unchanged)"
+  else no "P5: openmanetd re-reserved the address on the fresh slot ($rr0 -> $o reservation reboots) — restored ipaddr/dhcpconfigured did not hold"; fi
+  # 6. leave the bench convention intact: ab-selftest's destructive cases require the node on slot A (they break
+  #    the inactive slot and expect a fallback to A). Both slots carry the same build here, so if the reflash
+  #    landed on B, roll the default back to A and reboot into it (explicit, committed — no trial).
+  if [ "$s1" != A ]; then
+    local b1; b1=$(bootid)
+    n "batman-slot rollback >/dev/null 2>&1 && setsid sh -c 'sleep 2; batman-slot reboot committed p5-back-to-A' </dev/null >/dev/null 2>&1 &"
+    if waitboot "$b1" 300 && settle 180 >/dev/null 2>&1 && [ "$(slot)" = A ] && committed; then ok "P5 rolled back to slot A (bench convention), committed"
+    else no "P5: could not return the node to slot A (slot=$(slot))"; fi
+    t=0; j=0; while [ $t -lt 240 ]; do case "$(q "$RDR"'cat "$R/joinwatch.state" 2>/dev/null' | tr -d '
+')" in JOINED*) j=1; break;; esac; sleep 10; t=$((t+10)); done
+    [ $j = 1 ] && ok "P5 rejoined after returning to slot A" || no "P5: not JOINED within 240 s after returning to slot A"
+  fi
+  # 7. restore the AP key through the same door — AFTER the return to slot A: that slot's overlay still holds the
+  #    test key (set there in step 1), and a rolled-back joined node persists its live key into p5 (seen on 02)
+  o=$(q "halow-setkey --ap '$ap0v' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
+  apn=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r' | md5sum | cut -c1-8)
+  echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' && [ "$apn" = "$ap0" ] && ok "P5 AP key restored and persisted (live md5 $apn == baseline)" || no "P5: restore of the AP key failed (live md5 $apn, baseline $ap0; $(echo "$o" | tr '\n' '|'))"
+  echo "    NOTE: node runs slot $(slot) (committed)"; }
+
 # test seam (scripts/test-harness-265.sh): load the functions only
 [ "${FI_SOURCE_ONLY:-0}" = 1 ] && return 0 2>/dev/null
 echo "=== fault-injection on $NODE (case=$CASE$([ "$NOTENANT" = 1 ] && echo ', --no-tenant')) ==="
 committed || echo "WARN: node not on a committed slot (or unreadable); some cases assume a clean committed start"
-case "$CASE" in f2) f2;; f1) f1;; r2) r2;; r1) r1;; r3) r3;; r4) r4;; s1) s1;; c1) c1;; c1n) c1 neg;; c2) c2;;
+case "$CASE" in f2) f2;; f1) f1;; r2) r2;; r1) r1;; r3) r3;; r4) r4;; s1) s1;; c1) c1;; c1n) c1 neg;; c2) c2;; p5) p5;;
   all) f2; f1; r2; r1; r3; r4;; *) echo "unknown case $CASE"; exit 2;; esac
 restore_node
 echo "================ fault-injection: $PASS passed, $FAIL failed ================"
