@@ -69,6 +69,15 @@ joinwatch.state
 cfgsave-onjoin.state
 cfgsave-pi3gate.failed
 cfgsave-mount.failed
+# #202 close-out: one writer at a time (dir: pid, uptime), its busy marker + counter, the per-boot write counter
+cfgsave.lock
+cfgsave.lock/*
+cfgsave-lock.busy
+cfgsave-lock.count
+cfgsave-writes
+# #202 C5: stage-1 p5 freshness verdict written by batman-slot precheck-node, read by stage 2; .dv = harness D2-4c scratch
+p5-check.rc
+p5-check.dv
 # test probe of scripts/node/tmp-trust-280.sh (nobody tries to create it; it must never exist)
 tt280
 # verify-profile-ots-record.sh (#289 SEC-11): uptime when the current UNKNOWN streak began; the script itself reads/clears it
