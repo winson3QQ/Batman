@@ -1,6 +1,6 @@
-# Design: #202 config-survival close-out — p5 永遠跟著 live 設定走 — **v4**
+# Design: #202 config-survival close-out — p5 永遠跟著 live 設定走 — **v5**
 
-狀態:v1 兩位 REJECT;v2 兩位 APPROVE-WITH-CHANGES;v3 兩位 APPROVE-WITH-CHANGES(A:2 MAJOR + 8 MINOR;B:5 MAJOR + 8 MINOR;產品側 C0–C5 骨架已獲兩位認可,剩測試規格、升級宣告、placeholder 規則、p5 真壞出口)。v4 只改 §2/§4/§5/§6/§7/§8/§9,§12 列 v3 每條的收法。待兩位整份重審(第四輪)。
+狀態:v1 兩位 REJECT;v2 兩位 APPROVE-WITH-CHANGES;v3 兩位 APPROVE-WITH-CHANGES(A:2 MAJOR + 8 MINOR;B:5 MAJOR + 8 MINOR;產品側 C0–C5 骨架已獲兩位認可,剩測試規格、升級宣告、placeholder 規則、p5 真壞出口)。v4 兩位 APPROVE-WITH-CHANGES,**產品側 C0–C5 / A2–A4 / B2–B5 已無 BLOCKER/MAJOR(兩位明示可開始實作 PR-P)**;剩 MAJOR 全在 §8(D2 重開順序、D1 4b 讀者打不中 T11)。v5 只改 §8 與文字不一致處,§13 列 v4 每條的收法。待兩位重審 §8(第五輪)。
 基準:Batman `main` 6a049f2(= 出貨 v1.5.11),節點 02/04 = `1.5.11-rel.1+6a049f2.fw7049fd8`。真機證據:02(唯讀 + 兩個無寫入探針)、2026-10-17 G1/G2 重現(issue #202 留言 6229383727)。
 
 ## 0. 一句話
@@ -48,7 +48,7 @@
 
 | 資源 | 唯一寫者 | 唯讀者 | 備註 |
 |---|---|---|---|
-| p5 `overrides.uci` / `schema_version` / `identity/*` / `.seeded` | `batman-config-save`(寫入模式,**持 `cfgsave.lock` 且驗證 rw**) | `96`、`99-chanfix`、`batman-slot`(`.seeded`)、`batman-autocommit expected_in_mesh`(`:388-396`)、`--check`、harness(ro,noload) | 讀者不持鎖;T11 由寫側 A4 處理 |
+| p5 `overrides.uci` / `schema_version` / `identity/*` / `.seeded`(與 p5 檔案系統本身) | `batman-config-save`(寫入模式,**持 `cfgsave.lock` 且驗證 rw**;**只有 `--seed`(含 `--reformat`)可 mkfs**) | `96`、`99-chanfix`、`batman-slot`(`.seeded`)、`batman-autocommit expected_in_mesh`(`:388-396`)、`--check`、harness(ro,noload) | 讀者不持鎖;T11 由寫側 A4 處理 |
 | p5 `lkg/overrides.uci` | `batman-config-save`(`--seed/--on-join/--if-healthy/--save --promote-lkg`;裸 `--save` 不碰) | `96` | N-R8 |
 | `$RUNDIR/cfgsave.lock/`(目錄,含 `pid`、`uptime`) | `batman-config-save`(mkdir 取得、trap 釋放、殘鎖接管) | `--check` 報 lock-busy 時引用 | 新;目錄而非檔(rundir-paths 規則在 PR-H 確認) |
 | `$RUNDIR/cfgsave-lock.busy` | `--on-join`(連續 ≥ 8 tick 被鎖擋時寫,取到鎖時刪) | `batman-slot precheck-node` | 新 |
@@ -68,7 +68,7 @@
 | rc | 意義 | 哪些模式 |
 |---|---|---|
 | 0 | 完成;`--on-join`:p5 == live 且有 root 密碼 | 全部 |
-| 1 | 錯誤:非 root / mount 失敗(三次)/ Pi 3 gate / bypass(寫入模式)/ 鎖逾時(寫入模式)/ `--check` 掛不起 | 全部 |
+| 1 | 錯誤:非 root / mount 失敗(重試後)/ Pi 3 gate / bypass(寫入模式)/ 鎖逾時(寫入模式)/ `--check` 掛不起 | 全部 |
 | 3 | 不適用:無 p5 / 非 ext4 / bypass(`--check`)/ `--if-healthy` 非 OK | `--check`、`--if-healthy` |
 | 4 | p5 == live 但節點 OPEN | `--on-join` |
 | 5 | stale(含 unpersistable) | `--check` |
@@ -78,7 +78,7 @@
 
 **C0 共通**
 - `[ "$(id -u)" = 0 ] || die "root only"`(rc 1)。
-- 取鎖:mkdir `$RUNDIR/cfgsave.lock`,寫 `pid`、`uptime`;已存在 → 讀 pid:不存在或 cmdline 不含 `batman-config-save` → 接管(log);否則等待:`--on-join` 不等(rc 1;連續 ≥ 8 tick → syslog warn 一次/開機 + 寫 `cfgsave-lock.busy`)、`--save/--seed` 等 ≤ 10 s(rc 1)、`--check` 等 ≤ 5 s(**rc 8**,訊息含 `pid= age=` 與出口 `kill <pid>`)。**取鎖之後才讀 uci / 算指紋。** trap 釋放。
+- 取鎖:mkdir `$RUNDIR/cfgsave.lock`,寫 `pid`、`uptime`;已存在 → 讀 pid:不存在或 cmdline 不含 `batman-config-save` → 接管(log);否則等待:`--on-join` 不等(rc 1;連續 ≥ 8 tick → syslog warn 一次/開機 + 寫 `cfgsave-lock.busy`)、`--save/--seed` 等 ≤ 10 s(rc 1)、`--check` 等 ≤ 5 s(**rc 8**,訊息含 `pid= age=` 與出口 `kill <pid>`;持有者 D state 時 kill 無效,要重開)。`cfgsave-lock.busy` 的「連續 ≥ 8」以 `--on-join` **呼叫次數**計(= 8 個 tick),任何模式取到鎖即刪。**取鎖之後才讀 uci / 算指紋。** trap 釋放。
 - 讀已 commit 的值:`uci -q -P <空 batman_tmp 目錄> get`(02 實證 `-P` 空目錄回已 commit 值)。
 - `stage_overrides()` 共用;staging 在 `batman_tmp -d`(0600);trap 清理。回傳被拒鍵名(字元集 `` [`$();|&<>'] ``)。placeholder 值與其他值一樣照字面寫(見 B2)。
 - `batman_bypass=1`:寫入模式 rc 1 `bypass boot: refusing to persist image defaults over p5`;`--check` rc 3 `SKIP bypass`。
@@ -92,7 +92,7 @@
 **C2 `--save [--promote-lkg]`**(`halow-setkey`、操作員、provd)
 - 寫 overrides + identity + schema、刪快取、刪 `mount.failed`(成功時);裸 `--save` 不旋轉 lkg;`--promote-lkg` 旋轉。**219 §6.4 L373 在 PR-P 改成此語意**。
 - 未 seed 且有 p7 → `pi3_factory_check`。`.seeded` 語意放寬為「支援工具存過」(文件同步)。
-- **p5 真壞的出口**:`--seed --reformat` 只在「magic == ext4 **且** `ro,noload` 重試後仍掛不起」時允許 mkfs(LUKS/非 ext4 仍拒;需 `authorized_keys` 可用鍵,同 `--seed`);其後正常 seed。C5 的 `error:mount` die 訊息直接給這條命令。沒有這個出口,覆寫 `allow-stale-p5` 之後新槽的 96 一樣掛不起 → mesh-only strand(§7 寫明)。
+- **p5 真壞的出口**:`--seed --reformat` 守門(全部成立才 mkfs):magic == ext4;p5 **不在 `/proc/mounts`**;`ro,noload` 重試 3 次都失敗且**錯誤不是 EBUSY / already mounted**(EBUSY = T11 有人 rw 持有,不是壞);非 bypass 開機;持 `cfgsave.lock`;`authorized_keys` 有可用鍵(同 `--seed`)。只用 mke2fs 單一 `-F`(02 實證 e2fsprogs 1.47.0 的單 `-F` 對掛載中裝置仍拒絕),**永遠不要 `-F -F`**。執行前印 `dmesg | grep EXT4-fs` 與「將丟失:p5 上的 lkg 與 identity 副本(live 仍有,seed 重抄)」。LUKS/非 ext4 仍拒。C5 的 `error:mount` die 訊息只在原因是 mount(非 lock-busy)時給這條命令。沒有這個出口,覆寫 `allow-stale-p5` 之後新槽的 96 一樣掛不起 → mesh-only strand(§7 寫明)。
 - rc 0 / 6(`rejected: <keys>`)/ 1。
 
 **C3 `--check`(唯讀)**
@@ -127,7 +127,7 @@
 | clean stop / 重開 | 無持久狀態 | 同 | — |
 | joinwatch 重啟 | 快取由指紋+stamp 驗證 | 同;殘鎖由 pid+cmdline 接管 | D1 步驟 3 |
 | 兩個寫者同時(T6) | 舊蓋新 / lkg 回退 | 鎖序列化 | D1 步驟 4(真並行) |
-| ro 讀者撞 rw 寫者(T11) | 寫者悄悄變 ro → EROFS 卻印 saved;或讀者 EBUSY | 寫者驗證 rw + 重試;讀者重試 | D1 步驟 4b:背景每 0.2 s `ro,noload` 掛/卸 30 s 同時改設定 → p5 仍跟上、無 `mount.failed`(舊版:期待出現 EROFS/假 saved) |
+| ro 讀者撞 rw 寫者(T11) | 寫者悄悄變 ro → EROFS 卻印 saved;或讀者 EBUSY | 寫者驗證 rw + 重試(log 固定字串 `rw mount came up read-only — retry`);讀者重試 | D1 步驟 4b:背景讀者**持有** `ro,noload`(工作週期 ≥ 60 %)30 s,同時直接 `--save` → 每次 p5 跟上、無 `mount.failed`,且至少觀察到一次 retry 字串(否則 `FAIL T11 not exercised`) |
 | rw 掛載暫時失敗(T12) | marker 永留 | marker 在下次成功時清;C5 只在 `--check` ≠ 0 時看它 | D1 步驟 5:白箱寫 marker → `precheck-node` 仍 rc 0(因 `--check` 0)→ 下個 tick 寫入後 marker 消失 |
 | `wifi reload` 窗(plink 還 ESTAB) | on-join 可能把未證明 key 升 lkg(≤ 15 s) | 同(既有限制,provd 用 `--promote-lkg` 明示) | 文件化 |
 | 保留 IP(openmanetd 兩段式) | 入網後跟上;未入網落後 | 同;未入網 → C5 擋,訊息給 `--save` 出口 | D2 步驟 4 等價 |
@@ -188,23 +188,26 @@ v2 表全部保留(latch:144;快取 0.03 s;無鎖/固定掛載點;L177 靜默;`i
 1. `touch $RUNDIR/config-saved`(白箱 latch)。
 2. 改 hostname 後綴;每 5 s ro,noload 讀 p5,≤ 60 s 要變 → 否則 `FAIL p5 hostname stale after 60 s`。
 3. `/etc/init.d/joinwatch restart`;再改一次 → ≤ 60 s 跟上。
-4. **真並行**(busybox 無小數 sleep、無 usleep):節點端兩個背景無 sleep 緊迴圈同時跑 30 s(迴圈 1:`--save` 改後綴 N 次,自計次數;迴圈 2:`--on-join`);結束 → `rm $RUNDIR/cfgsave-writes`(白箱重置 A3)→ 跑一次 `--on-join` → `overrides == live` 且 `lkg == overrides`(`:204-206`)→ 否則 `FAIL p5 lost an update under concurrent writers`;`s_mnt_count` 增量(16 位元,處理繞回)≤ 腳本自計寫入 + 5。
-4b. **T11**:背景迴圈 `mount -o ro,noload … ; umount`(每 1 s)30 s,同時腳本**直接**呼叫 `--save` 改後綴 5 次(每次間隔 3 s)→ 每次 rc 0 且 p5 內容隨之改變、結束後 `cfgsave-mount.failed` 不存在 → 否則 `FAIL writer silently read-only under ro readers`(舊版:期待 `saved` 但 p5 不變或 EROFS)。
+4. **真並行**(busybox 無小數 sleep、無 usleep):節點端兩個背景無 sleep 緊迴圈同時跑 30 s(迴圈 1:`--save` 改後綴 N 次,自計次數;迴圈 2:`--on-join`);結束 → `rm $RUNDIR/cfgsave-writes`(白箱重置 A3)→ 跑一次 `--on-join` → `overrides == live` 且 `lkg == overrides`(`:204-206`)且 `cfgsave-lock.busy` 不存在 → 否則 `FAIL p5 lost an update under concurrent writers`;`s_mnt_count` 增量(16 位元,處理繞回)≤ 2 × 腳本自計 `--save` 次數 + 5(每次 `--save` 刪快取 → 下個 on-join 必 miss 並為旋轉 lkg 再寫一次)。
+4b. **T11**:背景讀者**持有**:`mount -o ro,noload …; sleep 2; umount; sleep 1`(工作週期 ≥ 60 %)跑 30 s;寫者等讀者第一次持有後才開始,直接呼叫 `--save` 改後綴 5 次,每次間隔 `3 + $RANDOM % 2` s(避免與寫側 1 s 重試相位鎖定)→ 每次 rc 0 且 p5 內容隨之改變、結束後 `cfgsave-mount.failed` 不存在、**且 stderr/syslog 至少出現一次 `rw mount came up read-only — retry`**(否則 `FAIL T11 not exercised`)→ 否則 `FAIL writer silently read-only under ro readers`(舊版:期待 `saved` 但 p5 不變或 EROFS)。
 5. 白箱 marker:`echo "0 test" > $RUNDIR/cfgsave-mount.failed` → `batman-slot precheck-node` rc 0(`--check` 0 → marker 不看)→ 改後綴 → 下次寫入後 marker 消失。
 6. 還原:`rm $RUNDIR/cfgsave-writes` → `uci set hostname=<old>; uci commit; batman-config-save --save` → ≤ 30 s `--check` rc 0 且 p5 hostname == old;刪 latch;`sh -c 'start-stop-daemon -S -c nobody -x /usr/bin/batman-config-save -- --check; echo rc=$?'` 輸出含 `rc=1`。
 負對照與失敗枚舉:rel.1 前置 `--check` 不存在 → `FAIL batman-config-save --check unsupported` **並繼續跑**步驟 1–3(G1 → `FAIL p5 hostname stale after 60 s`),步驟 4–6 在無 `--check` 時標 `FAIL not verified (pre-#202 image)`;每一行固定字串進 known-failures 掛 #202(與 `chk_tmptrust_280` 對 pre-feature image 的 FAIL 前例一致)。
 **D2 `setkey-persists-202`(tier B,DNODE = 04,有乙太網;D:離網兩次 + 重開一次)**
 前置:p6 無 hold-commit 旗標;`is-trial` rc 1;payload 過 `precheck()`(抽到 `scripts/lib/` 與 fault-injection 共用;== 執行中 build)。**步驟 1/3/4/5 在任何 image 都跑**(rel.1 上以固定字串 FAIL,掛 #202,無 FORCE 旗標);**只有 4b/4c 以 `batman-config-save --check` 存在為前置**(否則該子步驟印 `FAIL 4b not verified (pre-#202 image would really reflash DNODE)`,不真刷)。
-節點端單一腳本(setsid,結果檔 `/opt/batdata/log/dv202.out`,看門狗 150 s 以 `halow-setkey --mesh <old>` 還原);harness 送腳本 → 等 DNODE 重新 JOINED → 讀回逐項斷言;檔缺/空 = FAIL。
+**編排原則**:任何重開之前,節點的 key 與 p5 都必須已是原值;重開後的還原由 **harness 經乙太網**負責(寫在 suite 的 trap,仿 `fault-injection.sh restore_node`),不靠節點端程序。順序:1 → 2 → 3 → 5 → 4 → 4b → harness 還原 hostname → 4c。
+**節點端區塊 A(步驟 1/2/3/5,一支 setsid 腳本)**:開頭 arm 看門狗(150 s;記 pid 到結果檔;動作前再查 disarm 檔;**先還原 hostname 再 `halow-setkey --mesh <old>`**),結果寫 `/opt/batdata/log/dv202.out`;harness 送腳本 → 等 DNODE 重新 JOINED → 讀回逐項斷言;檔缺/空 = FAIL;區塊結束前 kill 看門狗並確認 `ps` 無殘留(Windows 側不適用,節點側 busybox `kill` + `pgrep`)。rel.1 上這個區塊同樣可靠:rel.1 的 setkey 可用、p5 不會被 3 改動、還原是回原 key。
 1. 字元集:`halow-setkey --mesh 'ab&cd12345'` → exit 2、key 不變。
-2. channel:`--channel 36`(US)→ exit 2 不改;`--channel <目前值>` 單獨 → exit 0、輸出含 `4 MHz @ 922.0`(會 reload 一次 = 離網 ①)。
+2. channel:`--channel 36`(US)→ exit 2 不改;`--channel <目前值>` 單獨 → exit 0、輸出含 `4 MHz @ 922.0`(reload 一次 = 離網 ①)。
 3. 持久化:`--mesh <tmp-key>`(離網 ②)→ exit 0、`persist: saved`;p5 key md5 == 新;`precheck-node` rc 0;`p5-check.rc` 含 `fresh`。
-4. stale(用 **hostname** 不用 key,擋失效時 fresh slot 仍可入網):`uci set hostname=<x>; uci commit`(不存)→ `--check` rc 5 含 `hostname`;`precheck-node` rc ≠ 0 含 `STALE`,`p5-check.rc` 含 `stale:`;`BATMAN_ALLOW_STALE_P5=1 batman-slot precheck-node` rc 0 且判定 `stale-allowed`。
-4b. `-F`:`sysupgrade -F -n <已 precheck 的同 build payload>` → `waitboot`;重開後 active slot 不變、`is-trial` rc 1、`ota-trace.log` 最後一組含 `S2 REFUSE why=p5-stale`(或既有 `SLOT DIE … msg=…STALE`)與 `S2 END rc≠0`;`ots_wait` + `fleet_settle`。
-4c. 覆寫不誤擋(白箱,不 OTA):寫 `$RUNDIR/p5-check.dv` = `skip:unseeded-allowed <now>` → `batman-slot verdict-gate $RUNDIR/p5-check.dv` rc 0;寫 `stale:x <now-700>` → rc 2 含 `no fresh stage-1`;寫 `stale:x <now>` → rc 1 含 `STALE`;不碰正本 `p5-check.rc`,不經 `fault()`。
-5. 還原:**先** `uci set hostname=<old>; uci commit`,再 `halow-setkey --mesh <old>`(其 `--save` 把兩者一起持久化)→ p5 key == 舊 **且 live 與 p5 的 hostname 都 == old**;precheck rc 0;JOINED ≤ 180 s。看門狗同樣先還原 hostname 再 setkey。
-負對照:rel.1 上步驟 1(`FAIL setkey accepted an unpersistable key`)、3(`FAIL p5 key not persisted by setkey`)、4(`FAIL precheck passed with stale p5`)、2 的 `--channel`(`FAIL --channel unsupported`)固定字串 FAIL;4b/4c `not verified`;全部掛 #202。4b 的「擋住」只能在新版證明,PR 標 ⚠️(T7 程式事實是舊版放行的證據)。
-**D3 fault-injection case `p5`(reflash-survives-config)**,由 daily-validation destructive 區塊接進:`suite "reflash-survives-config-202@$MESH_NODE" "…(DESTRUCTIVE, reflashes MESH_NODE)" "$REPO/scripts/fault-injection.sh $MESH_NODE --case p5" D`(節點來自 harness 變數並印進 suite 名;`fi all` 與 `FI_CASES` 都不含 p5,寫明)。**Lab 呼叫方式寫死在 PR 與 runbook**:`MESH_NODE=10.41.24.32 OTS_NODE=10.41.238.222 DESTRUCTIVE_NODE=10.41.238.222`(harness 預設 `MESH_NODE=10.41.239.205` 是舊 manet01、`OTS_NODE` 預設 = MESH_NODE,之前踩過 4 個假 FAIL)。前置印 `eth0` carrier(02 預期 NO-CARRIER = mesh-only 黑箱;有 carrier 只警告)。
+5. 還原 key:`halow-setkey --mesh <old>` → p5 key == 舊;precheck rc 0;JOINED ≤ 180 s;kill 看門狗。**到這裡節點 key/p5 都是原值。**
+**harness 直接經乙太網(步驟 4/4b/4c;`fssh` 到 04)**:
+4. stale(用 **hostname**,擋失效時 fresh slot 仍可入網):`uci set hostname=<x>; uci commit`(不存)→ `--check` rc 5 含 `hostname`;`precheck-node` rc ≠ 0 含 `STALE`,`p5-check.rc` 含 `stale:`;`BATMAN_ALLOW_STALE_P5=1 batman-slot precheck-node` rc 0 且判定 `stale-allowed`。(新 image 上 on-join 15 s 內會把 `<x>` 寫進 p5 → 4 的 `--check` 要在 commit 後立刻做,且 4b 前再 `uci set hostname=<x2>; commit` 一次確保 stale。)
+4b. `-F`:`sysupgrade -F -n <已 precheck 的同 build payload>`(此時 key 為原值,重開最壞情況也入得了網)→ `waitboot`;重開後 active slot 不變、`is-trial` rc 1、`ota-trace.log` 最後一組含 `S2 REFUSE why=p5-stale`(或既有 `SLOT DIE … msg=…STALE`)與 `S2 END rc≠0`;`ots_wait` + `fleet_settle`。
+**harness 還原(trap,任何退出路徑都跑)**:`uci set hostname=<old>; uci commit; batman-config-save --save`(舊 image 無差別:`--save` 存在)→ 斷言 live 與 p5 的 hostname 都 == old、`--check` rc 0(新 image)。
+4c. 覆寫不誤擋(白箱,不 OTA):寫 `$RUNDIR/p5-check.dv` = `skip:unseeded-allowed <now>` → `batman-slot verdict-gate $RUNDIR/p5-check.dv` rc 0;寫 `stale:x <now-700>` → rc 2 含 `no fresh stage-1`;寫 `stale:x <now>` → rc 1 含 `STALE`;不碰正本,不經 `fault()`。
+負對照:rel.1 上步驟 1(`FAIL setkey accepted an unpersistable key`)、3(`FAIL p5 key not persisted by setkey`)、4(`FAIL precheck passed with stale p5`)、2 的 `--channel`(`FAIL --channel unsupported`)固定字串 FAIL;4b/4c `not verified`(以 `--check` 存在為前置,舊 image 不重開);全部掛 #202。4b 的「擋住」只能在新版證明,PR 標 ⚠️(T7 程式事實是舊版放行的證據)。
+**D3 fault-injection case `p5`(reflash-survives-config)**,由 daily-validation destructive 區塊接進:`suite reflash-survives-config-202 "…(DESTRUCTIVE, reflashes MESH_NODE=$MESH_NODE)" "$REPO/scripts/fault-injection.sh $MESH_NODE --case p5" D`(節點來自 harness 變數,印進 why 欄而非 suite 名,known-failures 條目才可攜;`fi all` 與 `FI_CASES` 都不含 p5,寫明)。**Lab 呼叫方式寫死在 PR 與 runbook**:`MESH_NODE=10.41.24.32 OTS_NODE=10.41.238.222 DESTRUCTIVE_NODE=10.41.238.222`(harness 預設 `MESH_NODE=10.41.239.205` 是舊 manet01、`OTS_NODE` 預設 = MESH_NODE,之前踩過 4 個假 FAIL)。前置印 `eth0` carrier(02 預期 NO-CARRIER = mesh-only 黑箱;有 carrier 只警告)。
 前置:`precheck()`(payload == 執行中 build,否則 SKIP-REASON 絕不刷);`is-trial` rc 1;無 hold-commit;記 boot_id / slot / version / p5 快照(遮罩)。
 1. `uci set hostname=<old>-fi202; uci commit; batman-config-save --save`;`--check` 0。
 2. `ota_boot`;`waitboot 600`。
@@ -216,8 +219,8 @@ v2 表全部保留(latch:144;快取 0.03 s;無鎖/固定掛載點;L177 靜默;`i
 ## 9. 實作切法
 
 - **PR-H(先)**:`test/202-harness` → main:D1、D2(+ 節點腳本)、D3 case + daily-validation suite 行、`rundir-paths.txt` 新條目、harness 辨識 `REFUSING … STALE|lock-busy|no fresh stage-1`、known-failures(固定字串,#202)、rel.1 FAIL log。
-- **PR-P**:`feat/202-config-survival`:`joinwatch`、`batman-config-save`(C0–C3、A2–A4、B2–B5、rc 表)、`halow-setkey`(C4)、`batman-slot`(C5 兩段 + `node_checks-dry` + `otalog_k S2 REFUSE`)、`platform-ab.sh:299` 註解、文件(§2 E)、`rundir-paths.txt` 移除 `config-saved`、本文件。兩份(deploy/ + feed/)同步。
-- rc `1.5.12-wsl.N` → OTA 02 與 04 → **OTA 前後比對 AP key md5,不同即 `halow-setkey --ap <原值>`(升級列的一次性後果;寫進 release note)** → **同一 rc payload 放到節點 `/opt/batdata/ota.tar.gz`** → D1/D2/D3 → 全套 → PR → 使用者 merge → firmware pin bump → 出貨產物煙霧/全套。
+- **PR-P**:`feat/202-config-survival`:`joinwatch`、`batman-config-save`(C0–C3、A2–A4、B2–B5、rc 表)、`halow-setkey`(C4)、`batman-slot`(C5 兩段 + `verdict-gate` + `otalog_k S2 REFUSE`)、`platform-ab.sh:299` 註解、文件(§2 E)、`rundir-paths.txt` 移除 `config-saved`、本文件。兩份(deploy/ + feed/)同步。
+- rc `1.5.12-wsl.N` → OTA 02 與 04 → **OTA 前在舊槽記 live AP key md5,OTA 後比對,不同即 `halow-setkey --ap <原值>`(升級列的一次性後果;寫進 release note)** → **同一 rc payload 放到節點 `/opt/batdata/ota.tar.gz`** → D1/D2/D3 → 全套 → PR → 使用者 merge → firmware pin bump → 出貨產物煙霧/全套。
 - PR-H 另含:`precheck()` 抽到 `scripts/lib/`;`rundir-paths.txt` 的巢狀條目 `cfgsave.lock/*`、`p5-check.dv`。
 
 ## 10. 殘項(關單時回 #202)
@@ -237,7 +240,7 @@ LOCKED 黑箱;Pi 3 `--save` gate 實測;autocommit 單台建網(#254);LUKS;`--co
 | B-M6 D3 沒接進全套 | D3 以 `suite … --case p5` 接進 destructive 區塊,節點 `$MESH_NODE` |
 | A-m1 讀回時序 | C4 步驟 3 輪詢、channel 60 s、逾時不還原 exit 3 unverified |
 | A-m2 / B-m1 rc 多義 | rc 表:6 unpersistable、7 unseeded、8 lock-busy |
-| A-m3 / B-m2 B2 後果 | placeholder 視同空;矩陣「升級到本版」列(一次性重寫 + 未入網被擋) |
+| A-m3 / B-m2 B2 後果 | (v3 的 placeholder 規則已在 v4 撤回)矩陣「升級到本版」列(一次性重寫 + 未入網被擋) |
 | A-m5 判定年齡 | stage 2 600 s |
 | A-m6 harness 辨識 STALE | C7、PR-H |
 | A-m7 bypass 措辭 | C5 失效模式段改寫 |
@@ -273,3 +276,21 @@ LOCKED 黑箱;Pi 3 `--save` gate 實測;autocommit 單台建網(#254);LUKS;`--co
 | B-m6 rundir-paths 巢狀 | §9 |
 | B-m7 rc 8 出口 | C0 訊息含 `kill <pid>` |
 | B-m8 T11 文件 | §7 busybox mount 靜默降級 |
+
+## 13. v4 審查發現 → v5 對應
+
+| 發現 | 收法 |
+|---|---|
+| A-M1 / B-M1 D2 4b 重開殺掉節點端腳本與看門狗、tmp key 留在 04 | §8 D2 重排 1→2→3→5→4→4b→harness 還原→4c;重開前 key/p5 已是原值;還原由 harness 經乙太網在 trap 做;看門狗記 pid、先 hostname 後 key、結束 kill |
+| B-M2 D1 4b 讀者打不中 T11 | 讀者持有(≥ 60 %)、寫者等讀者持有後開始、A4 retry 固定字串、斷言至少一次 retry |
+| A-m1 D1 步驟 4 掛載上限 | ≤ 2 × `--save` 次數 + 5 |
+| A-m2 相位鎖定 | 4b 間隔 `3 + $RANDOM % 2` |
+| A-m3 / B-m1 reformat 守門 | C2:不在 /proc/mounts、非 EBUSY、非 bypass、持鎖、單 `-F`、印 dmesg 與丟失清單 |
+| A-m4 / B-m2 / B-m5 / B-m6 文字不一致 | rc 表、§9 `verdict-gate`、§11、§5 T11 列、rc 8 D state |
+| A-m5 看門狗規格 | D2 區塊 A |
+| A-m6 AP key md5 來源 | §9 舊槽 live |
+| A-m7 §3 mkfs 註 | §3 第一列 |
+| B-m3 C5 lock-busy 時不給 reformat | C2 |
+| B-m4 lock.busy 計數定義與結束斷言 | C0、D1 步驟 4 |
+| B-m7 D3 suite 名含 IP | 改進 why 欄 |
+| B-m8 4b 後 on-join 寫 stale | D2 步驟 4 註記 + harness 還原蓋過 |
