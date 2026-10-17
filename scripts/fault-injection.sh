@@ -461,7 +461,8 @@ p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostna
   old=$(q 'uci -q get system.@system[0].hostname' | tr -d '\r'); ap0v=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r'); ap0=$(printf '%s\n' "$ap0v" | md5sum | cut -c1-8)
   [ -n "$b0" ] && [ -n "$s0" ] && [ -n "$old" ] && [ -n "$ap0v" ] || { no "P5: baseline unreadable (boot=$b0 slot=$s0 host=$old ap=$ap0) — not verified"; return; }
   echo "    baseline: slot $s0 version $v0 host $old ap-md5 $ap0 eth0=$(q 'cat /sys/class/net/eth0/carrier 2>/dev/null' | tr -d '\r') (0/absent = mesh-only black box)"
-  local rr0; rr0=$(q 'grep -c "openmanetd address reservation" /opt/batdata/log/boot-reasons.log' | tr -d ' ')
+  local rr0; rr0=$(q 'grep -c "openmanetd address reservation" /opt/batdata/log/boot-reasons.log' | tr -d '
+ ')
   # 1. set + persist through the supported door
   aptv="fi202-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"; apt=$(printf '%s\n' "$aptv" | md5sum | cut -c1-8)
   o=$(q "halow-setkey --ap '$aptv' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
@@ -488,13 +489,25 @@ p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostna
   else for _ in $(seq 1 60); do committed && { c=1; break; }; sleep 10; done
     [ $c = 1 ] && ok "P5 fresh slot committed (late, >300 s)" || no "P5: not committed within 900 s ($(q 'logread | grep -E "batman-autocommit.*(UNHEALTHY|REVERT|revert)" | tail -2' | tr '\n' ' '))"; fi
   # 5. no address re-reservation on the fresh slot (p5 design N-R3): the restored dhcpconfigured/ipaddr must hold
-  o=$(q 'grep -c "openmanetd address reservation" /opt/batdata/log/boot-reasons.log' | tr -d ' ')
+  o=$(q 'grep -c "openmanetd address reservation" /opt/batdata/log/boot-reasons.log' | tr -d '
+ ')
   if isint "$o" && isint "$rr0" && [ "$o" = "$rr0" ]; then ok "P5 no openmanetd address re-reservation on the fresh slot (p5 design N-R3; $o in log, unchanged)"
   else no "P5: openmanetd re-reserved the address on the fresh slot ($rr0 -> $o reservation reboots) — restored ipaddr/dhcpconfigured did not hold"; fi
   # 6. restore the AP key through the same door
   o=$(q "halow-setkey --ap '$ap0v' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
   echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' && ok "P5 AP key restored and persisted (md5 $ap0)" || no "P5: restore of the AP key failed ($(echo "$o" | tr '\n' '|'))"
-  echo "    NOTE: node now runs slot $s1 (committed); the next OTA lands on $s0"; }
+  # 7. leave the bench convention intact: ab-selftest's destructive cases require the node on slot A (they break
+  #    the inactive slot and expect a fallback to A). Both slots carry the same build here, so if the reflash
+  #    landed on B, roll the default back to A and reboot into it (explicit, committed — no trial).
+  if [ "$s1" != A ]; then
+    local b1; b1=$(bootid)
+    n "batman-slot rollback >/dev/null 2>&1 && setsid sh -c 'sleep 2; batman-slot reboot committed p5-back-to-A' </dev/null >/dev/null 2>&1 &"
+    if waitboot "$b1" 300 && settle 180 >/dev/null 2>&1 && [ "$(slot)" = A ] && committed; then ok "P5 rolled back to slot A (bench convention), committed"
+    else no "P5: could not return the node to slot A (slot=$(slot))"; fi
+    t=0; j=0; while [ $t -lt 240 ]; do case "$(q "$RDR"'cat "$R/joinwatch.state" 2>/dev/null' | tr -d '')" in JOINED*) j=1; break;; esac; sleep 10; t=$((t+10)); done
+    [ $j = 1 ] && ok "P5 rejoined after returning to slot A" || no "P5: not JOINED within 240 s after returning to slot A"
+  fi
+  echo "    NOTE: node runs slot $(slot) (committed)"; }
 
 # test seam (scripts/test-harness-265.sh): load the functions only
 [ "${FI_SOURCE_ONLY:-0}" = 1 ] && return 0 2>/dev/null
