@@ -4,7 +4,7 @@
 # OTA-flashes trial slots, and breaks a slot's docker runtime. Runs from an operator box that can ssh the
 # node (default key). daily-validation.sh invokes it only under --destructive, one case per suite.
 #
-#   scripts/fault-injection.sh <node> [--case f1|f2|r2|r1|r3|r4|all] [--no-tenant]   (default: all)
+#   scripts/fault-injection.sh <node> [--case f1|f2|r2|r1|r3|r4|s1|c1|c1n|c2|p5|all] [--no-tenant]   (default: all; p5 never in all)
 #
 # --no-tenant  the CALLER declares the node carries no docker tenant (a Pi 3, #209 D6): only r3/r4 run, and
 #              the OTS 6/6 / canary assertions are not made. Without it a missing tenant is a FAIL — never
@@ -35,7 +35,7 @@
 # "UNDETERMINED ... not verified" — never PASS, never a product FAIL. Remote commands used for readings
 # must never exit 255 themselves. Actions (sysupgrade, reboot, mv, release) use n() and are never retried.
 set -uo pipefail
-NODE=${1:?usage: fault-injection.sh <node> [--case f1|f2|r2|r1|r3|r4|s1|c1|c1n|c2|all] [--no-tenant]}
+NODE=${1:?usage: fault-injection.sh <node> [--case f1|f2|r2|r1|r3|r4|s1|c1|c1n|c2|p5|all] [--no-tenant]}
 shift; CASE=all; NOTENANT=0
 while [ $# -gt 0 ]; do case "$1" in --case) CASE=${2:-all}; shift 2;; --no-tenant) NOTENANT=1; shift;; *) echo "unknown arg $1"; exit 2;; esac; done
 TENANT=opentakserver
@@ -443,11 +443,54 @@ c2(){ echo "== C2 trial-crash-274: a manual 'batman-slot commit' after a crash i
   [ "$st" = "$tr" ] && [ "$it" = 1 ] && ok "C2 manual commit after a crash stood past deadline + deferral: slot $tr committed, same boot" \
     || no "C2 slot=$st (trial $tr) is-trial rc=$it (want 1)"; }
 
+# ---- #202 D3: reflash-survives-config — a persisted per-node config survives a real A/B reflash ----
+# A black-box proof of #202's DoD 1 on a mesh-only node: set a hostname, persist it (--save), OTA the
+# same build into the other slot, and the fresh slot must come up with that hostname, the mesh key (not
+# the placeholder, keyguard not blocking), the same AP key, JOIN the mesh and be auto-committed.
+# Not in `all` (it reflashes the node and leaves it on the other slot, committed); daily-validation wires
+# it as its own destructive suite on MESH_NODE. The payload MUST be the running build (precheck()).
+p5(){ echo "== P5 reflash-survives-config (#202 D3): persisted hostname/keys survive an A/B reflash and the node rejoins =="
+  precheck || return
+  local b0 s0 v0 old ap0 hn key blk j t s1 v1 ap1 c
+  q 'batman-slot is-trial >/dev/null 2>&1; [ $? = 1 ]' || { no "P5: node is not on a committed slot — not reflashing"; return; }
+  q '[ ! -e /opt/batdata/state/autocommit-hold-commit ]' || { no "P5: a hold-commit flag is armed — not reflashing"; return; }
+  b0=$(bootid); s0=$(slot); v0=$(q 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build' | tr -d '\r')
+  old=$(q 'uci -q get system.@system[0].hostname' | tr -d '\r'); ap0=$(q 'uci -q get wireless.default_radio0.key | md5sum | cut -c1-8' | tr -d '\r')
+  [ -n "$b0" ] && [ -n "$s0" ] && [ -n "$old" ] || { no "P5: baseline unreadable (boot=$b0 slot=$s0 host=$old) — not verified"; return; }
+  echo "    baseline: slot $s0 version $v0 host $old eth0=$(q 'cat /sys/class/net/eth0/carrier 2>/dev/null' | tr -d '\r') (0/absent = mesh-only black box)"
+  # 1. set + persist
+  q "uci set system.@system[0].hostname='$old-fi202'; uci commit system; batman-config-save --save >/dev/null 2>&1; batman-config-save --check" | tr -d '\r' | grep -q 'p5 fresh' \
+    || { no "P5: p5 not fresh after --save ($(q 'batman-config-save --check 2>&1' | tr -d '\r'))"; q "uci set system.@system[0].hostname='$old'; uci commit system; batman-config-save --save" >/dev/null 2>&1; return; }
+  ok "P5 hostname $old-fi202 persisted (p5 fresh)"
+  # 2. reflash the same build into the other slot
+  ota_boot P5 "$b0" || { q "uci set system.@system[0].hostname='$old'; uci commit system; batman-config-save --save" >/dev/null 2>&1; return; }
+  # 3. the fresh slot
+  s1=$(slot); v1=$(q 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build' | tr -d '\r')
+  hn=$(q 'uci -q get system.@system[0].hostname' | tr -d '\r'); key=$(q 'uci -q get wireless.default_radio1.key' | tr -d '\r')
+  blk=$(q 'halow-setkey --status 2>/dev/null | grep -c "keyguard blocked"' | tr -d '\r'); ap1=$(q 'uci -q get wireless.default_radio0.key | md5sum | cut -c1-8' | tr -d '\r')
+  [ "$s1" != "$s0" ] && ok "P5 booted the other slot ($s0 -> $s1)" || no "P5: still on slot $s0 after the OTA"
+  [ "$v1" = "$v0" ] && ok "P5 same build on the fresh slot ($v1)" || no "P5: version changed $v0 -> $v1 (payload was not the running build?)"
+  [ "$hn" = "$old-fi202" ] && ok "P5 fresh slot restored the persisted hostname" || no "P5: fresh slot hostname is '$hn', expected '$old-fi202' — p5 restore failed"
+  [ -n "$key" ] && [ "$key" != CHANGE-ME-NOW ] && ok "P5 fresh slot has a real mesh key" || no "P5: fresh slot mesh key is placeholder/empty — would strand a mesh-only node"
+  [ "$blk" = 0 ] && ok "P5 keyguard not blocking on the fresh slot" || no "P5: keyguard blocked something on the fresh slot: $(q 'halow-setkey --status 2>/dev/null | grep blocked' | tr -d '\r')"
+  [ -n "$ap0" ] && [ "$ap1" = "$ap0" ] && ok "P5 AP key survived (md5 $ap1)" || no "P5: AP key changed across the reflash ($ap0 -> $ap1)"
+  t=0; j=0; while [ $t -lt 240 ]; do case "$(q "$RDR"'cat "$R/joinwatch.state" 2>/dev/null' | tr -d '\r')" in JOINED*) j=1; break;; esac; sleep 10; t=$((t+10)); done
+  [ $j = 1 ] && ok "P5 rejoined the mesh within ${t}s" || no "P5: not JOINED within 240 s on the fresh slot"
+  # 4. autocommit (needs the mesh join): expected 60–180 s; past 300 s wait for the deadline path
+  c=0; for _ in $(seq 1 30); do committed && { c=1; break; }; sleep 10; done
+  if [ $c = 1 ]; then ok "P5 fresh slot auto-committed"
+  else for _ in $(seq 1 60); do committed && { c=1; break; }; sleep 10; done
+    [ $c = 1 ] && ok "P5 fresh slot committed (late, >300 s)" || no "P5: not committed within 900 s ($(q 'logread | grep -E "batman-autocommit.*(UNHEALTHY|REVERT|revert)" | tail -2' | tr '\n' ' '))"; fi
+  # 5. restore
+  q "uci set system.@system[0].hostname='$old'; uci commit system; batman-config-save --save >/dev/null 2>&1; batman-config-save --check" | tr -d '\r' | grep -q 'p5 fresh' \
+    && ok "P5 hostname restored and persisted" || no "P5: restore --save/--check failed"
+  echo "    NOTE: node now runs slot $s1 (committed); the next OTA lands on $s0"; }
+
 # test seam (scripts/test-harness-265.sh): load the functions only
 [ "${FI_SOURCE_ONLY:-0}" = 1 ] && return 0 2>/dev/null
 echo "=== fault-injection on $NODE (case=$CASE$([ "$NOTENANT" = 1 ] && echo ', --no-tenant')) ==="
 committed || echo "WARN: node not on a committed slot (or unreadable); some cases assume a clean committed start"
-case "$CASE" in f2) f2;; f1) f1;; r2) r2;; r1) r1;; r3) r3;; r4) r4;; s1) s1;; c1) c1;; c1n) c1 neg;; c2) c2;;
+case "$CASE" in f2) f2;; f1) f1;; r2) r2;; r1) r1;; r3) r3;; r4) r4;; s1) s1;; c1) c1;; c1n) c1 neg;; c2) c2;; p5) p5;;
   all) f2; f1; r2; r1; r3; r4;; *) echo "unknown case $CASE"; exit 2;; esac
 restore_node
 echo "================ fault-injection: $PASS passed, $FAIL failed ================"
