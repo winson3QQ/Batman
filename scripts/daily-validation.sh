@@ -1857,25 +1857,29 @@ _setkey202_restore() { local node=$1 old=$2 o
   echo "  restore: $(echo "$o" | tr '\n' ' ')"
   echo "$o" | grep -q "live=$old" || echo "FAIL restore: live hostname is not '$old' on $node"
   echo "$o" | grep -q 'p5 fresh\|usage:' || echo "FAIL restore: p5 not fresh after restore on $node"; }
-_setkey202_body() { local node=$1 old=$2 o rc=0 sub
+_setkey202_body() { local node=$1 old=$2 sub
   # steps 4/4b/4c need the freshness verdict (new image); on a pre-#202 image block A already showed the FAILs
   [ "$(fssh "$node" 15 'batman-config-save --check 2>&1 | grep -c "^batman-config-save: p5 "' | tr -d '\r ')" = 1 ] \
     || { echo "FAIL --check unsupported on $node: steps 4/4b/4c untestable (pre-#202 image)"; return 1; }
-  fssh "$node" 60 '/etc/init.d/joinwatch stop >/dev/null 2>&1; i=0; while pgrep -f "[/]usr/bin/batman-config-save" >/dev/null 2>&1 && [ $i -lt 30 ]; do sleep 1; i=$((i+1)); done; pgrep -f "[/]usr/bin/batman-config-save" >/dev/null 2>&1 && echo STILL || echo STOPPED' | grep -q STOPPED \
-    || { echo "FAIL could not stop joinwatch / an in-flight save on $node"; return 1; }
-  # 4. a committed-but-unpersisted hostname = stale p5: --check says so, precheck refuses, the override is honoured
-  o=$(fssh "$node" 30 "uci set system.@system[0].hostname='$old-dv202x'; uci commit system; batman-config-save --check 2>&1; echo rc=\$?" | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
-  if echo "$o" | grep -q 'p5 stale: .*hostname' && echo "$o" | grep -q '^rc=5$'; then echo "PASS step4 --check reports the stale hostname (rc 5)"; else echo "FAIL --check did not report stale hostname"; rc=1; fi
-  o=$(fssh "$node" 60 "$RDR"'batman-slot precheck-node 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)' | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
-  if echo "$o" | grep -q 'STALE' && echo "$o" | grep -Eq '^rc=[1-9]' && echo "$o" | grep -q '^verdict=stale:'; then echo "PASS step4 precheck-node refuses a stale p5 and records the verdict"; else echo "FAIL precheck passed with stale p5"; rc=1; fi
-  o=$(fssh "$node" 60 "$RDR"'BATMAN_ALLOW_STALE_P5=1 batman-slot precheck-node >/dev/null 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)' | tr -d '\r')
-  if echo "$o" | grep -q '^rc=0$' && echo "$o" | grep -q '^verdict=stale-allowed'; then echo "PASS step4 the stale override is honoured and recorded"; else echo "FAIL stale override not honoured ($(echo "$o" | tr '\n' ' '))"; rc=1; fi
-  # 4b. sysupgrade -F with a stale p5: stage 1's refusal is ignored by -F, stage 2 must refuse from the verdict file.
-  #     Guards: the payload is the RUNNING build (fault-injection precheck), no hold-commit, stale still true.
+  # Everything below runs in ONE subshell with fault-injection's helpers sourced (payload precheck, waitboot, slot,
+  # committed, ots_wait). Order matters: the payload sha check (~30 s) comes FIRST, then joinwatch is stopped and
+  # the hostname made stale, so the window between "stale" and the -F probe is seconds, not half a minute.
   ( FI_SOURCE_ONLY=1 . "$REPO/scripts/fault-injection.sh" "$node" || exit 1
+    rc=0
     precheck || exit 1
     q '[ ! -e /opt/batdata/state/autocommit-hold-commit ]' || { echo "FAIL a hold-commit flag is armed on $NODE — not running the -F probe"; exit 1; }
-    fssh "$NODE" 20 'batman-config-save --check 2>&1' | grep -q 'p5 stale' || { echo "FAIL stale precondition lost before -F"; exit 1; }
+    fssh "$NODE" 60 '/etc/init.d/joinwatch stop >/dev/null 2>&1; i=0; while pgrep -f "[/]usr/bin/batman-config-save" >/dev/null 2>&1 && [ $i -lt 30 ]; do sleep 1; i=$((i+1)); done; pgrep -f "[/]usr/bin/batman-config-save" >/dev/null 2>&1 && echo STILL || echo STOPPED; /etc/init.d/joinwatch running && echo "jw=running" || echo "jw=stopped"' | tr -d '\r' | tee /dev/stderr | grep -q STOPPED \
+      || { echo "FAIL could not stop joinwatch / an in-flight save on $NODE"; exit 1; }
+    # 4. a committed-but-unpersisted hostname = stale p5: --check says so, precheck refuses, the override is honoured
+    o=$(fssh "$NODE" 30 "uci set system.@system[0].hostname='$old-dv202x'; uci commit system; batman-config-save --check 2>&1; echo rc=\$?" | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
+    if echo "$o" | grep -q 'p5 stale: .*hostname' && echo "$o" | grep -q '^rc=5$'; then echo "PASS step4 --check reports the stale hostname (rc 5)"; else echo "FAIL --check did not report stale hostname"; rc=1; fi
+    o=$(fssh "$NODE" 60 "$RDR"'batman-slot precheck-node 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)' | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
+    if echo "$o" | grep -q 'STALE' && echo "$o" | grep -Eq '^rc=[1-9]' && echo "$o" | grep -q '^verdict=stale:'; then echo "PASS step4 precheck-node refuses a stale p5 and records the verdict"; else echo "FAIL precheck passed with stale p5"; rc=1; fi
+    o=$(fssh "$NODE" 60 "$RDR"'BATMAN_ALLOW_STALE_P5=1 batman-slot precheck-node >/dev/null 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)' | tr -d '\r')
+    if echo "$o" | grep -q '^rc=0$' && echo "$o" | grep -q '^verdict=stale-allowed'; then echo "PASS step4 the stale override is honoured and recorded"; else echo "FAIL stale override not honoured ($(echo "$o" | tr '\n' ' '))"; rc=1; fi
+    # 4b. sysupgrade -F with a stale p5: stage 1's refusal is ignored by -F, stage 2 must refuse from the verdict file.
+    o=$(fssh "$NODE" 30 "$RDR"'batman-config-save --check 2>&1; /etc/init.d/joinwatch running && echo jw=running || echo jw=stopped; ls -l --full-time "$R"/cfgsave-onjoin.state "$R"/cfgsave-writes "$R"/p5-check.rc 2>/dev/null | sed "s/^.* root root *//"' | tr -d '\r'); echo "$o" | sed 's/^/  4b-pre: /'
+    echo "$o" | grep -q 'p5 stale' || { echo "FAIL stale precondition lost before -F"; exit 1; }
     b0=$(bootid); s0=$(slot); [ -n "$b0" ] && [ -n "$s0" ] || { echo "FAIL boot_id/slot unreadable before -F — not verified"; exit 1; }
     n "setsid sh -c 'sysupgrade -F -n $PAYLOAD >/opt/batdata/sysup-f.log 2>&1' </dev/null >/dev/null 2>&1 &"
     waitboot "$b0" 600 || { echo "FAIL node did not reboot after sysupgrade -F (stage 2 should refuse and reboot; log: $(q 'tail -2 /opt/batdata/sysup-f.log' | tr '\n' ' '))"; exit 1; }
@@ -1885,14 +1889,14 @@ _setkey202_body() { local node=$1 old=$2 o rc=0 sub
     [ "$it" = 1 ] && echo "PASS step4b node is committed, not a trial" || { echo "FAIL node is a trial after -F (is-trial rc $it)"; exit 1; }
     echo "$tr" | grep -Eq 'S2 REFUSE why=p5-stale|SLOT DIE.*STALE' && echo "PASS step4b stage 2 refused on the stage-1 verdict: $(echo "$tr" | grep -E 'S2 REFUSE|SLOT DIE' | tail -1)" || { echo "FAIL no stage-2 p5 refusal in ota-trace"; echo "$tr" | tail -8 | sed 's/^/    trace: /'; exit 1; }
     if [ "$NODE" = "$OTS_NODE" ]; then ots_wait && echo "PASS step4b OTS back after the -F reboot" || { echo "FAIL OTS not back after the -F reboot"; exit 1; }; fi
-    exit 0 ); sub=$?; [ $sub -eq 0 ] || rc=1
+    exit $rc ); sub=$?
   # 4c. the pure stage-2 gate on a scratch file in the run dir (never the real verdict file): pass / expired / stale
   o=$(fssh "$node" 30 "$RDR"'now=$(cut -d. -f1 /proc/uptime); f="$R/p5-check.dv"
     echo "skip:unseeded-allowed $now" > "$f"; batman-slot verdict-gate "$f" >/dev/null 2>&1; printf "a=%s " $?
     echo "stale:x $((now-700))" > "$f"; batman-slot verdict-gate "$f" >/dev/null 2>&1; printf "b=%s " $?
     echo "stale:x $now" > "$f"; batman-slot verdict-gate "$f" >/dev/null 2>&1; printf "c=%s\n" $?; rm -f "$f"' | tr -d '\r')
-  [ "$o" = "a=0 b=2 c=1" ] && echo "PASS step4c verdict-gate: allowed-skip passes, expired = no verdict, stale refuses" || { echo "FAIL verdict-gate wrong ($o)"; rc=1; }
-  return $rc; }
+  if [ "$o" = "a=0 b=2 c=1" ]; then echo "PASS step4c verdict-gate: allowed-skip passes, expired = no verdict, stale refuses"; else echo "FAIL verdict-gate wrong ($o)"; sub=1; fi
+  return $sub; }
 bchk_setkey_202() { local node=$1 o old r rc=0 t
   old=$(fssh "$node" 10 'uci -q get system.@system[0].hostname' | tr -d '\r'); [ -n "$old" ] || { echo "FAIL hostname unreadable on $node — not verified"; return 1; }
   fssh "$node" 20 'mkdir -p -m 700 /tmp/run/batman-dv && cat > /tmp/run/batman-dv/setkey-202.sh && rm -f /opt/batdata/log/dv202.out' < "$REPO/scripts/node/setkey-persists-202.sh" || { echo "FAIL could not stage the node script on $node"; return 1; }
