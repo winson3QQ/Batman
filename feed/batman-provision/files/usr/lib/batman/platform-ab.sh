@@ -296,8 +296,10 @@ _ab_do_upgrade() {
 	otalog S2 PAYLOAD "$(tr '\n' ' ' < "$dir/metadata" 2>/dev/null)"
 
 	# SoC gate, second (and under `sysupgrade -F`, the ONLY) layer. -F makes sysupgrade ignore a
-	# failed platform_check_image and call us anyway, and the fleet tooling routinely uses -F
-	# (#209 E0). Returning 1 here is a real refusal: nothing has been written yet, stage2 then
+	# failed platform_check_image and call us anyway; the fleet tooling used -F routinely once
+	# (#209 E0) — docs/boards-and-builds.md now says a normal OTA must NOT use -F, and the p5
+	# freshness gate (#202 C5) is enforced here too, from the stage-1 verdict file (batman-slot
+	# node_checks). Returning 1 here is a real refusal: nothing has been written yet, stage2 then
 	# reboots without an argument and the node comes back on its untouched default slot.
 	# The running SoC comes from the device tree, which the ramfs still sees (/etc/openwrt_release
 	# and board_name are not reliable here: board_name carries no SoC token at all, e.g.

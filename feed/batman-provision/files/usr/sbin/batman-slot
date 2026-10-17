@@ -443,6 +443,76 @@ sum_of() { awk -v f="$2" '$2==f{print $1; exit}' "$1/SHA256SUMS"; }
 # services are killed and with a visible error — instead of in stage 2 followed by a silent reboot.
 # (Under `sysupgrade -F` stage 1 failures are ignored; stage 2 runs every check again via precheck.)
 # Sets A T TROOT TBOOT TGUID.
+# ---- #202 C5: p5 must be FRESH (equal to the running per-node config) before a slot is written ----
+# A p5 that lags the live config (a key/hostname/channel changed and not yet persisted — the node is
+# not joined, or a raw `uci set`) would hand the fresh slot the OLD settings; on a mesh-only node an
+# old mesh key is unrecoverable. Two stages:
+#   stage 1 (live system, `precheck-node` from platform_check_image — also called a second time by
+#     procd, without the caller's env): run `batman-config-save --check` and ALWAYS write the effective
+#     verdict to $RUNDIR/p5-check.rc as "<verdict> <uptime>" (verdict: fresh | stale:<keys> |
+#     stale-allowed | skip:<why> | error:<why>). Refuse on stale / lock-busy / an evidenced mount failure.
+#   stage 2 (sysupgrade ramfs: no batman-config-save, no uci; `-F` skipped stage 1's refusal): read the
+#     verdict through p5_verdict_gate and refuse on stale, or when there is no verdict younger than
+#     600 s (= someone bypassed stage 1). A direct `batman-slot apply` on the live system runs stage 1.
+# Override (deliberate out-of-sync reflash): BATMAN_ALLOW_STALE_P5=1 (direct call only — stage 2 and
+# procd do not see the env) or a root-owned /tmp/batman-slot.allow-stale-p5 (sysupgrade).
+P5VERDICT=$RUNDIR/p5-check.rc
+P5VERDICT_MAX_AGE=600
+p5_verdict_write() {   # $1 verdict token (no spaces)
+	[ "$RDOK" = 1 ] || return 0
+	( umask 077; echo "$1 $(cut -d. -f1 /proc/uptime)" > "$P5VERDICT" ) 2>/dev/null
+	return 0
+}
+# pure: $1 verdict file (must be inside the run dir), $2 now (uptime s). rc 0 pass, 1 stale, 2 no fresh verdict.
+# Prints one word for the caller's message: fresh|stale:<keys>|stale-allowed|skip:*|error:*|none|expired.
+p5_verdict_gate() {
+	f=$1; now=$2; v=""; t=""
+	case "$f" in "$RUNDIR"/*) ;; *) echo "error:path-outside-rundir"; return 2 ;; esac
+	[ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] && read -r v t < "$f" 2>/dev/null || { echo none; return 2; }
+	case "$t" in ''|*[!0-9]*) echo "error:bad-stamp"; return 2 ;; esac
+	[ $((now - t)) -le "$P5VERDICT_MAX_AGE" ] || { echo "expired:age=$((now - t))s"; return 2; }
+	echo "$v"
+	case "$v" in stale:*) return 1 ;; *) return 0 ;; esac
+}
+P5_STALE_HINT="Run 'batman-config-save --save' (or halow-setkey) to persist the running config, or wait for the mesh join to do it; deliberate override: touch /tmp/batman-slot.allow-stale-p5 (as root) for sysupgrade, BATMAN_ALLOW_STALE_P5=1 for a direct batman-slot call."
+p5_freshness_gate() {
+	now=$(cut -d. -f1 /proc/uptime)
+	if command -v batman-config-save >/dev/null 2>&1 && [ -r /etc/config/wireless ]; then
+		# stage 1 (live system): compute, record, decide
+		out=$(batman-config-save --check 2>&1); rc=$?
+		keys=$(echo "$out" | sed -n 's/^batman-config-save: p5 stale: \([^ ]*\).*/\1/p' | head -1)
+		case "$rc" in
+			0) p5_verdict_write fresh ;;
+			5) if allowed STALE_P5; then p5_verdict_write stale-allowed; warn "p5 is STALE vs the running config ($keys) — override honoured"
+			   else p5_verdict_write "stale:${keys:-?}"
+				case "$out" in *unpersistable*) die "p5 (config) cannot hold the running config: $keys contains forbidden characters (backtick \$ ( ) ; | & < > ') — change that value; '--save' cannot fix this. A reflash now would boot the fresh slot without it." ;; esac
+				die "p5 (config) is STALE vs the running config ($keys) — a reflash now would boot the fresh slot with the OLD settings. $P5_STALE_HINT" ; fi ;;
+			8) p5_verdict_write error:lock-busy; die "a batman-config-save is still running (${out#*lock-busy }) — p5 may be out of date; wait for it or investigate before an OTA." ;;
+			7) p5_verdict_write skip:unseeded ;;             # only reachable under allow-unseeded (the block above died otherwise)
+			3) p5_verdict_write "skip:$(echo "$out" | sed -n 's/^batman-config-save: p5 SKIP \([^ ]*\).*/\1/p' | head -1)" ;;
+			*) # cannot read p5 now: refuse only with evidence that saves are failing this boot
+			   if [ -f "$RUNDIR/cfgsave-mount.failed" ] || [ -f "$RUNDIR/cfgsave-lock.busy" ]; then
+				p5_verdict_write error:mount
+				why=$(cat "$RUNDIR/cfgsave-mount.failed" 2>/dev/null | cut -d' ' -f2-); [ -n "$why" ] || why="save blocked by a stuck batman-config-save"
+				case "$why" in *usy*|*lock*|*stuck*) die "p5 (config) saves are failing this boot ($why) — fix that before an OTA. $P5_STALE_HINT" ;; esac
+				die "p5 (config) could not be mounted rw this boot ($why) — fix p5 before an OTA: if it is really broken, 'batman-config-save --seed --reformat' re-creates it from this slot's running config. $P5_STALE_HINT"
+			   else p5_verdict_write "skip:error"; warn "p5 freshness not checkable now ($out) — not blocking"; fi ;;
+		esac
+	else
+		# stage 2 (ramfs) or a system without the tool: the stage-1 verdict decides, fail-closed
+		v=$(p5_verdict_gate "$P5VERDICT" "$now"); rc=$?
+		case "$rc" in
+			0) ;;
+			1) allowed STALE_P5 && { warn "p5 STALE ($v) — override honoured"; return 0; }
+			   otalog_k S2 REFUSE why=p5-stale verdict="$v"
+			   die "p5 (config) is STALE vs the running config ($v) — refusing to write a slot (stage-1 verdict). $P5_STALE_HINT" ;;
+			*) otalog_k S2 REFUSE why=p5-no-verdict verdict="$v"
+			   die "no fresh stage-1 p5 verdict ($v) — run sysupgrade without -F, or 'batman-slot apply' from the live system (the freshness check needs batman-config-save and uci)." ;;
+		esac
+	fi
+	return 0
+}
+
 node_checks() {
 	# the firmware booted the WRONG slot this boot (#209 S5): the "other" slot is then the committed one
 	[ -f "$RUNDIR/batman-fw-override" ] && die "the firmware booted the wrong slot this boot ($(cat "$RUNDIR/batman-fw-override")) — refusing to write a slot until the node is back on its committed one (batman-slot reboot committed)"
@@ -465,7 +535,10 @@ node_checks() {
 		P5="${DISK}p5"
 		if [ -b "$P5" ] && [ "$(part_fstype "$P5")" = ext4 ]; then
 			m="/mnt/p5seed.$$"; mkdir -p "$m"
-			if mount -t ext4 -o ro "$P5" "$m" 2>/dev/null; then
+			# a concurrent batman-config-save (rw) makes this ro mount EBUSY for a moment (#202 T11): retry
+			_i=0; _ok=0
+			while [ "$_i" -lt 3 ]; do mount -t ext4 -o ro,noload "$P5" "$m" 2>/dev/null && { _ok=1; break; }; _i=$((_i + 1)); sleep 1; done
+			if [ "$_ok" = 1 ]; then
 				seeded=1; [ -f "$m/.seeded" ] || seeded=0
 				umount "$m" 2>/dev/null; rmdir "$m" 2>/dev/null
 				[ "$seeded" = 1 ] || die "p5 (config) is not seeded — a reflash now would boot the fresh slot UNPROVISIONED and, on a mesh-only node, strand it. Seed p5 first (join the mesh so joinwatch saves it, or run 'batman-config-save --on-join'), or override: touch /tmp/batman-slot.allow-unseeded (as root) for sysupgrade, BATMAN_ALLOW_UNSEEDED=1 for a direct batman-slot call."
@@ -474,6 +547,7 @@ node_checks() {
 			fi
 		fi
 	fi
+	p5_freshness_gate
 
 	A=$(active_slot); T=$(other_slot "$A")
 	TROOT=$(slot_rootdev "$T"); TBOOT=$(slot_bootdev "$T"); TGUID=$(slot_rootguid "$T")
@@ -726,5 +800,11 @@ case "${1:-}" in
 	            assert_fw_sane; echo "batman-slot: verify ok (layout $(layout), slot $(active_slot))" ;;
 	# read-only: the node-side apply checks (no payload needed) — sysupgrade stage 1 (#209 S5 review W3)
 	precheck-node) node_checks; echo "batman-slot: node ready for an OTA into slot $T" ;;
-	*) echo "usage: batman-slot active|target|layout|fw-part A|B|stage-root <dir>|apply <dir>|commit|rollback|is-trial|verify|precheck-node|reboot committed [reason]" >&2; exit 2 ;;
+	# test entry (#202 C5, harness D2-4c): the pure stage-2 verdict function on a file inside the run dir.
+	# Never touches the real verdict file, never consults fault seams. rc 0 pass / 1 stale / 2 no verdict.
+	verdict-gate) [ -n "${2:-}" ] || die "usage: verdict-gate <file-in-run-dir>"
+	              v=$(p5_verdict_gate "$2" "$(cut -d. -f1 /proc/uptime)"); rc=$?
+	              case "$rc" in 0) echo "batman-slot: verdict-gate pass ($v)" ;; 1) echo "batman-slot: verdict-gate STALE ($v)" >&2 ;; *) echo "batman-slot: verdict-gate no fresh stage-1 verdict ($v)" >&2 ;; esac
+	              exit "$rc" ;;
+	*) echo "usage: batman-slot active|target|layout|fw-part A|B|stage-root <dir>|apply <dir>|commit|rollback|is-trial|verify|precheck-node|verdict-gate <file>|reboot committed [reason]" >&2; exit 2 ;;
 esac

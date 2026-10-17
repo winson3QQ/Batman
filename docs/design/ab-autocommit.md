@@ -246,7 +246,7 @@ old slot with no site visit; and a normal OTA → committed within the per-SoC t
   - **N4 lifecycle** → the watchdog is started with `setsid` (outside procd's instance), guarded by
     `mkdir /tmp/autocommit.wd`, so a `restart` cannot create a second one. `service batman-autocommit stop`
     does NOT cancel the revert; the hold files do.
-  - **N5 `.seeded` fail-closed** → `batman-config-save` (`--seed`/`--on-join`) also writes the p6 marker
+  - **N5 `.seeded` fail-closed** (#202 close-out: `.seeded` now also appears after an operator `batman-config-save --save`, e.g. from `halow-setkey`, so it means "a supported tool persisted this node's config", not only "joined once / explicitly seeded"; the mesh-expected marker below is still written only by `--seed`/`--on-join`) → `batman-config-save` (`--seed`/`--on-join`) also writes the p6 marker
     `/opt/batdata/state/mesh-expected` when p6 is mounted, so autocommit normally never touches p5. If it
     must look at p5: p5 present but not readable as plain ext4 (LUKS, mount failure, or currently
     mounted rw by a save) → **expected in a mesh**. p5 is mounted read-only only.
