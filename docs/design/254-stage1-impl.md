@@ -344,7 +344,7 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 | L17 | legacy 升級(02/04) | — | helper rc 9 → 產身分 → `prov{legacy}`(`--prov-only`,不碰 overrides,trial 上也安全);AP/dropbear/lock/`mesh-expected` 不動;autocommit 今天的規則 | `prov-legacy-upgrade-254`(04):AP key、lock-status、authorized_keys、mesh-expected 不變;負對照:04 OTA 到 `radio1.disabled=1` 的 trial → revert |
 | L45 | BLE privacy:first boot / 每次開機 | wsl.3/.4:無 IRK → public 位址;wsl.5:IRK 持久在 overlay、legacy 配對可拿走 | tmpfs 新 IRK、privacy + sc-only;provd 只在 health 為真時廣播 | `ble-privacy-254` |
 | L46 | rollback / 降級到沒有本變更的槽(wsl.2/.3/.4/.5、1.5.12) | — | 舊槽:wsl.2 無 BLE;wsl.3/.4 以 **public 位址**、無 SC-only;**wsl.5 = B1 狀態(privacy 開、無 SC-only、IRK 持久在 overlay)**;04 slot A 會讀到作者的原型 IRK(privacy 開、無 SC-only);全部都沒有廣播者(wsl.3–.8 rootfs 只有 bluetoothd / bluetoothctl 參照 `LEAdvertisingManager1`) | 接受(沒有廣播者 → 無 GATT 入口);§11 收尾 |
-| L47 | `sysupgrade -b` / `-r`(LuCI 備份還原) | wsl.5:IRK 與 main.conf 進備份;**Batman 上 `-r` 不寫回任何東西**(`platform-ab.sh:353` `platform_restore_backup` 是空的,v16 A-N3) | 沒有 bluetooth conffiles → 備份不帶;還原不能改 main.conf | `ble-privacy-254` 斷言 keep.d;白箱:`sysupgrade -b` 後 tar 內無 `etc/bluetooth` |
+| L49 | `sysupgrade -b` / `-r`(LuCI 備份還原) | wsl.5:IRK 與 main.conf 進備份;**Batman 上 `-r` 不寫回任何東西**(`platform-ab.sh:353` `platform_restore_backup` 是空的,v16 A-N3) | 沒有 bluetooth conffiles → 備份不帶;還原不能改 main.conf | `ble-privacy-254` 斷言 keep.d;白箱:`sysupgrade -b` 後 tar 內無 `etc/bluetooth` |
 | L48 | bluetoothd crash / respawn | — | tmpfs 儲存區留著 → 同一個 IRK 直到重開;無 IRK 檔 → 重新產生;adapter 仍 powered 時 kernel 拒絕重設 privacy 但保留原旗標(A);patch 900 重新送 SC 模式 → root 手動改過的 SC 被改回(B-m1) | L9 + 白箱:`mgmt.sc on` 後 `/etc/init.d/bluetoothd restart` → `batman-sc` 換成新 pid、`mode=2 status=0`;空中由 `ble-pair-sc-only-254` 第 4 段證明 |
 | L18 | legacy 認領 | — | 防呆門;`radio_managed=0`;不清 lab key | 04(已有 lab key,Q6)正;02 正;另做「無 key、無 dev-open」的白箱 → `E_UNSUPPORTED(no-ssh-key)` |
 | L19 | distroconfig 改動 | — | 不隨 OTA;p1 與 p3 手動改 | PR-F(04 ✅ 40/40 500 MHz) |
@@ -634,7 +634,7 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 | A-S3 RPA 廣播 session | §9:setsid + FIFO 常駐、`advertise on` 後每 60 s 斷言無 bondable、時間戳、active scan 改字 |
 | A-S4 IRK 副本收尾 | Q8 |
 | A-S5 / B-m3 02 前置 | Q8:p1 與 p3 都改、OTA 後斷言 hci0 與 `batman-sc`、autocommit 窗口內 commit |
-| B-m1 L 編號再撞 | BLE 列改為 L45–L48(未使用),distroconfig 等四列回到 L19–L22,L32 引用改回 L20 |
+| B-m1 L 編號再撞 | BLE 列改為 L45、L46、L49、L48(未使用),distroconfig 等四列回到 L19–L22,L32 引用改回 L20 |
 | B-m2 過時文字 | §10、§3 儲存區列、D25、L48、Q8 |
 | B-m4 ah() 向量、IRK 不外流 | §9 |
 | B-m5 `batman-sc` 只有一份 | §3 health:`index=0` |
