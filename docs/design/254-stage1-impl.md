@@ -342,10 +342,10 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 | L15 | `batman_bypass=1` | 96 exit 1 留著 | `unknown(bypass)`;不產生;persist 拒 | `prov-bypass-254` |
 | L16 | 轉賣 = 轉賣工具重燒卡 | — | §4.5 | **工具層(不用現場)**:`prov-transfer-tool-254` 在 WSL 用 loop 檔(8 GiB,在 4218 MiB 之後與舊 p5 位置寫入特徵字串)以 `--test-target-file` 跑 Linux 轉賣工具 → 原始掃描特徵字串 = 0;另測:非可移除裝置被拒、不在清單的 image 被拒;負對照:只寫 image(今天的做法)→ 特徵字串仍在;拒絕上游 / 非 A/B image。**節點層(要現場)**:已認領 + 入網的 04 → 轉賣工具重燒 → 新 `device_id`、舊 `claim.secret` 無效、前任 `psk_owner`/`psk_replay` 連不上、前任 SSH key 被拒、全卡掃不到 04 上的 OTS 金鑰特徵字串;Windows 工具路徑同樣要實卡。(v11 用「UUID 換了」當斷言無效:image 的 UUID 建置時固定,A11-m1/B11-m2) |
 | L17 | legacy 升級(02/04) | — | helper rc 9 → 產身分 → `prov{legacy}`(`--prov-only`,不碰 overrides,trial 上也安全);AP/dropbear/lock/`mesh-expected` 不動;autocommit 今天的規則 | `prov-legacy-upgrade-254`(04):AP key、lock-status、authorized_keys、mesh-expected 不變;負對照:04 OTA 到 `radio1.disabled=1` 的 trial → revert |
-| L45 | BLE privacy:first boot / 每次開機 | wsl.3/.4:無 IRK → public 位址;wsl.5:IRK 持久在 overlay、legacy 配對可拿走 | tmpfs 新 IRK、privacy + sc-only;provd 只在 health 為真時廣播 | `ble-privacy-254` |
-| L46 | rollback / 降級到沒有本變更的槽(wsl.2/.3/.4/.5、1.5.12) | — | 舊槽:wsl.2 無 BLE;wsl.3/.4 以 **public 位址**、無 SC-only;**wsl.5 = B1 狀態(privacy 開、無 SC-only、IRK 持久在 overlay)**;04 slot A 會讀到作者的原型 IRK(privacy 開、無 SC-only);全部都沒有廣播者(wsl.3–.8 rootfs 只有 bluetoothd / bluetoothctl 參照 `LEAdvertisingManager1`) | 接受(沒有廣播者 → 無 GATT 入口);§11 收尾 |
-| L49 | `sysupgrade -b` / `-r`(LuCI 備份還原) | wsl.5:IRK 與 main.conf 進備份;**Batman 上 `-r` 不寫回任何東西**(`platform-ab.sh:353` `platform_restore_backup` 是空的,v16 A-N3) | 沒有 bluetooth conffiles → 備份不帶;還原不能改 main.conf | `ble-privacy-254` 斷言 keep.d;白箱:`sysupgrade -b` 後 tar 內無 `etc/bluetooth` |
-| L48 | bluetoothd crash / respawn | — | tmpfs 儲存區留著 → 同一個 IRK 直到重開;無 IRK 檔 → 重新產生;adapter 仍 powered 時 kernel 拒絕重設 privacy 但保留原旗標(A);patch 900 重新送 SC 模式 → root 手動改過的 SC 被改回(B-m1) | L9 + 白箱:`mgmt.sc on` 後 `/etc/init.d/bluetoothd restart` → `batman-sc` 換成新 pid、`mode=2 status=0`;空中由 `ble-pair-sc-only-254` 第 4 段證明 |
+| L62 | BLE privacy:first boot / 每次開機 | wsl.3/.4:無 IRK → public 位址;wsl.5:IRK 持久在 overlay、legacy 配對可拿走 | tmpfs 新 IRK、privacy + sc-only;provd 只在 health 為真時廣播 | `ble-privacy-254` |
+| L63 | rollback / 降級到沒有本變更的槽(wsl.2/.3/.4/.5、1.5.12) | — | 舊槽:wsl.2 無 BLE;wsl.3/.4 以 **public 位址**、無 SC-only;**wsl.5 = B1 狀態(privacy 開、無 SC-only、IRK 持久在 overlay)**;04 slot A 會讀到作者的原型 IRK(privacy 開、無 SC-only);全部都沒有廣播者(wsl.3–.8 rootfs 只有 bluetoothd / bluetoothctl 參照 `LEAdvertisingManager1`) | 接受(沒有廣播者 → 無 GATT 入口);§11 收尾 |
+| L64 | `sysupgrade -b` / `-r`(LuCI 備份還原) | wsl.5:IRK 與 main.conf 進備份;**Batman 上 `-r` 不寫回任何東西**(`platform-ab.sh:353` `platform_restore_backup` 是空的,v16 A-N3) | 沒有 bluetooth conffiles → 備份不帶;還原不能改 main.conf | `ble-privacy-254` 斷言 keep.d;白箱:`sysupgrade -b` 後 tar 內無 `etc/bluetooth` |
+| L65 | bluetoothd crash / respawn | — | tmpfs 儲存區留著 → 同一個 IRK 直到重開;無 IRK 檔 → 重新產生;adapter 仍 powered 時 kernel 拒絕重設 privacy 但保留原旗標(A);patch 900 重新送 SC 模式 → root 手動改過的 SC 被改回(B-m1) | L9 + 白箱:`mgmt.sc on` 後 `/etc/init.d/bluetoothd restart` → `batman-sc` 換成新 pid、`mode=2 status=0`;空中由 `ble-pair-sc-only-254` 第 4 段證明 |
 | L18 | legacy 認領 | — | 防呆門;`radio_managed=0`;不清 lab key | 04(已有 lab key,Q6)正;02 正;另做「無 key、無 dev-open」的白箱 → `E_UNSUPPORTED(no-ssh-key)` |
 | L19 | distroconfig 改動 | — | 不隨 OTA;p1 與 p3 手動改 | PR-F(04 ✅ 40/40 500 MHz) |
 | L20 | 96 掛不起 p5 | 96 被刪 | helper 下次開機自己再試;只補得回 prov / identity,overrides 仍停在 image 預設(與今天相同) | 白箱單元測試 |
@@ -455,7 +455,7 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 | D22 | 608B ECDH 槽可輸出共享秘密給主機做 HKDF(`psk_replay`、`net_secrets`) | 協定 §7.3 | ✅ 文件 / ⚠️ #255 實機 |
 | D23 | 重燒卡後 p5/p6 是新檔案系統 | F19 | ✅ 原始碼 / ❌ 實跑待 L16(要現場) |
 | D24 | 有 IRK + `Privacy=device` → kernel 以 RPA 廣播;**新 RPA 只在 `HCI_RPA_EXPIRED` 已設後的廣播重新啟用時產生**(F28)→ provd 每 `rpa_timeout` + 隨機 30–120 s 重新註冊廣播(PR-P2) | privacy 進 current settings:原型 ✅、wsl.6 待上機;原始碼 ✅;空中 ⚠️(Q8) |
-| D25 | `SecureConnections=only` → legacy 配對被拒、SC Just Works 因無 agent 被拒 → 不分發 IRK | F27 原始碼 ✅;空中 ⚠️:`ble-pair-sc-only-254` 第 2 段(legacy)與第 5 段(SC Just Works)(§9) |
+| D25 | `SecureConnections=only` → legacy 配對被拒、SC Just Works 因無 agent 被拒 → 不分發 IRK | F27 原始碼 ✅;空中:legacy 拒絕由 `ble-pair-sc-only-254` 第 2–4 段證明;SC Just Works 拒絕只有第 5 段 smoke(無負對照)⚠️ |
 | D27 | SC-only 的證據鏈(v16 N1 / v17 R1·M1):`main.conf` 由 image 擁有(非 conffile)+ patch 900 每次 bluetoothd 接管 adapter 送 `SET_SECURE_CONN(2)` + **`/var/lib/bluetooth/batman-sc`** 記錄本次 boot_id、bluetoothd pid、mode=2、status=0(只有 bluetoothd 寫、root 0600、不被 log ring 擠掉)+ current settings 有 `secure-conn` → 推論 SC-only ⚠️;root 事後 `mgmt.sc on` 看不出(§3)。**實證只有 tier B 的 `ble-pair-sc-only-254`,每次發行都跑** | 原始碼 ✅;狀態檔 wsl.9 待上機 |
 | D26 | 非特權的 mgmt `READ_INFO` 回 current settings(`mgmt.c:185-196` 放行不需權限的 opcode);`Adapter1` 沒有 privacy 屬性(`adapter.c:3914-3937`),`AddressType` 開 privacy 時仍回 `public`(`:2915-2930`)→ provd 不能經 D-Bus 讀 privacy | A/B 原始碼 ✅ |
 
@@ -509,8 +509,8 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
     1. 準備:04 跑 PR-F build、fresh overlay,`batman-sc` 為 mode 2 status 0。
     2. **目標**(04 SC-only,02 legacy)→ 必須「擋下」。
     3. **翻轉**:04 root 一次性 `bluetoothctl mgmt.sc on`(清掉 SC_ONLY)→ 重做整輪 → 必須「外洩」;**翻轉段不外洩 → 本次全部作廢**(代表測法失去鑑別力)。
-    4. **restart**:04 `/etc/init.d/bluetoothd restart` → `batman-sc` 新 pid、mode 2 → 重做整輪 → 必須「擋下」(patch 900 / L48 的負對照)。
-    5. **SC Just Works**(D25 後半,v18 A-S2):02 `mgmt.sc on`、bondable off、NoIO → 必須「擋下」(04 無 agent → `confirm_reply(FALSE)`);斷言 04 全程沒有 `bondable`。
+    4. **restart**:04 `/etc/init.d/bluetoothd restart` → `batman-sc` 新 pid、mode 2 → **重開測試廣播 session(`agent off` → `advertise on`,restart 會丟掉 D-Bus 上的廣播)並斷言 02 掃得到新的 RPA**(v19 B-delta m1)→ 重做整輪 → 必須「擋下」(patch 900 / L65 的負對照)。
+    5. **SC Just Works**(D25 後半,v18 A-S2):02 `mgmt.sc on`、bondable off、NoIO → 必須「擋下」(04 無 agent → `confirm_reply(FALSE)`);斷言 04 全程沒有 `bondable`。**這段沒有負對照**(「0x05 且曾連上」對任何 SMP 失敗都成立,v19 B-delta m2)→ 只算 smoke,D25 後半維持 ⚠️;補負對照要在 04 掛 agent 再翻轉,留到 PR-P2。
     6. 收尾:**重開 04**(外洩過的 IRK 作廢、tmpfs 換新);重啟 02 的 bluetoothd。
   - 02 的 bluetoothd 每段之間重啟(清掉它拿到的 04 IRK),每段都從步驟 1 開始。
 - **RPA 空中測試(先做,在任何配對測試之前;或兩台都重開之後)**(v17 A-R4 / B-M2):04 的測試廣播者 = 互動 bluetoothctl,以 `setsid` + FIFO 常駐(ssh 斷線不會撤廣播),第一個指令 `agent off`(bluetoothctl 連上時已自動註冊 agent,`client/main.c:491-494`,04 的 bondable 會短暫為 1;`agent off` 把它設回 0,`adapter.c:9077-9085`)→ **`advertise on` 之後與整段期間每 60 s** 斷言 04 無 `bondable`;每次 advertise on/off 記時間戳,(a) 段中出現任何重新註冊 → 該段作廢(PR-F 沒有 provd;PR-P2 改用 provd)。02 掃描(bluetoothctl `scan on` 是 active scan,不影響判定)、全程不連線。判定:位址最高兩位元 = `01`(RPA,不是 NRPA / static random)、≠ public,並以 04 的 IRK(測試時從 04 讀 `identity`,測後重開 04 作廢)驗 `ah(IRK, prand) == hash`;`ah()` 實作先以 Core spec Vol 3 Part H §2.2.2 的範例向量驗過(IRK byte order 易錯 → 假 FAIL,v18 B-m4);IRK 不進 log、PR body 或 issue。三段:(a) 不重新註冊 ≥ 30 分鐘 → 同一個 RPA(負對照,F28);(b) timeout 前重新註冊 → 同一個 RPA;(c) 超過 `rpa_timeout`(900 s)後重新註冊 → 新 RPA。
@@ -529,7 +529,7 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 
 ## 11. 殘項(回 #254)
 
-3A+ 全部 + 共用檔 bcm2710 實測;04 I2C 空;SSID / hostname 跨擁有者可串連;`/www/cgi-bin/bundle` 正式驗證;#110 能力偵測接軌;LED 不做;`halow-status:118` 文字;`owner.replace`(L29)進 S3;既有缺口 #13 / #105 / #137;改名探針(U5);`core_freq_min=500` 耗電;RSSI 遮蔽 / 外殼;02 的 p1/p3 `core_freq_min`;`.txn` 期間操作員 setkey 會被改回;`network/update` 從 app 統一改頻道(操作員 setkey 會分歧);D4 / D17 / D20 / D22 實證;**L16 節點層與 Windows 工具要現場實卡**;**app 端恢復出廠在 #255 重新設計**(U8);GPS 模組型號與 BBR 清除方式(F25 ⚠️);96 走 `unseeded` 以外的出口(p5 讀不到等)時 unclaimed 節點的 AP 仍以 95 的隨機 key 開著(接受:key 隨機且不外洩,B13-m1 partial);RV-3028(之後的 HAT RTC)的持久資料;dpp-handler 是否停用;EEPROM 殘值不清(無讀者);轉賣工具全卡清零的時間(32 GB 約 20–40 分鐘)⚠️ 實測;**磁碟上殘留的 IRK(v16 B-m7)**:04 slot A overlay 的 v15 原型 IRK 檔、以及任何裝過 wsl.5 的槽的 `/etc/bluetooth/keys`:收尾 = 該節點確定不 rollback 到那個槽時,掛起該槽 overlay、先印出再刪(只影響 L46);gate 邊界:執行時才組出 `bootloader_config` 字串的讀者 gate 看不到(A-N4,寫在 gate 註解);GATT Database Hash / Robust Caching 缺席(F29)對 iOS 的影響 ⚠️;DIS 版本字串;bcm2710:0012 / 0013 只在 bcm2711 board patch,3A+ 上 BLE 時要帶上(shim 已進兩板,行為不變,A-m4);gate 涵蓋面(A-m3 / B-m7)已在 PR-F 補:全部 11 個 key、PATH 上沒有同名 shim、直接讀 `bootloader_config` 的程式只允許 `95-batman-storage`;L12 的執行期 EEPROM 讀者(`morse.sh`、LuCI header、`diag_override`、rpcd)降級後立即恢復(B-m8,F24 → 02/04 無作用)。
+3A+ 全部 + 共用檔 bcm2710 實測;04 I2C 空;SSID / hostname 跨擁有者可串連;`/www/cgi-bin/bundle` 正式驗證;#110 能力偵測接軌;LED 不做;`halow-status:118` 文字;`owner.replace`(L29)進 S3;既有缺口 #13 / #105 / #137;改名探針(U5);`core_freq_min=500` 耗電;RSSI 遮蔽 / 外殼;02 的 p1/p3 `core_freq_min`;`.txn` 期間操作員 setkey 會被改回;`network/update` 從 app 統一改頻道(操作員 setkey 會分歧);D4 / D17 / D20 / D22 實證;**L16 節點層與 Windows 工具要現場實卡**;**app 端恢復出廠在 #255 重新設計**(U8);GPS 模組型號與 BBR 清除方式(F25 ⚠️);96 走 `unseeded` 以外的出口(p5 讀不到等)時 unclaimed 節點的 AP 仍以 95 的隨機 key 開著(接受:key 隨機且不外洩,B13-m1 partial);RV-3028(之後的 HAT RTC)的持久資料;dpp-handler 是否停用;EEPROM 殘值不清(無讀者);**02 p3 的 `core_freq_min=500` 尚未補**(下一次 02 OTA 落到 slot B 之前必做);轉賣工具全卡清零的時間(32 GB 約 20–40 分鐘)⚠️ 實測;**磁碟上殘留的 IRK(v16 B-m7)**:04 slot A overlay 的 v15 原型 IRK 檔、以及任何裝過 wsl.5 的槽的 `/etc/bluetooth/keys`:收尾 = 該節點確定不 rollback 到那個槽時,掛起該槽 overlay、先印出再刪(只影響 L63);gate 邊界:執行時才組出 `bootloader_config` 字串的讀者 gate 看不到(A-N4,寫在 gate 註解);GATT Database Hash / Robust Caching 缺席(F29)對 iOS 的影響 ⚠️;DIS 版本字串;bcm2710:0012 / 0013 只在 bcm2711 board patch,3A+ 上 BLE 時要帶上(shim 已進兩板,行為不變,A-m4);gate 涵蓋面(A-m3 / B-m7)已在 PR-F 補:全部 11 個 key、PATH 上沒有同名 shim、直接讀 `bootloader_config` 的程式只允許 `95-batman-storage`;L12 的執行期 EEPROM 讀者(`morse.sh`、LuCI header、`diag_override`、rpcd)降級後立即恢復(B-m8,F24 → 02/04 無作用)。
 
 ## 12. 待決
 
@@ -540,7 +540,7 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 | Q5 | 恢復出廠破壞性測試在哪台跑 | 不再需要(U8)。L16 工具層在 WSL 跑;節點層與 Windows 工具要現場實卡,使用者到現場時再排 |
 | Q6 | 認領測試會把 04 上鎖 | 已做(§1.1) |
 | Q7 | shim 讓 Morse 的 EEPROM 硬體區域鎖失效(國家只由 uci 決定) | **定案(使用者 2026-10-20 接受)**:02/04 今天就沒有區域鎖;民用 SKU 出廠時由 image / app 設國家(預設 TW);#255 可用 608B 或 image 簽章另做區域鎖 |
-| Q8 | 空中驗證要第二台 **Linux** BLE central(D24、D25) | **定案(使用者 2026-10-19 授權 OTA 到 02)**。程序見 §9。**副作用與還原(v17 B-m3)**:順序 = 04 OTA 並 commit 之後才動 02;02 **p1 與 p3** `distroconfig.txt` `[pi4]` 都加 `core_freq_min=500`(OTA 前;slot A 讀 p1、之後 OTA 落到 slot B 讀 p3;A 唯讀確認 p1 已有 `miniuart-bt`、沒有 `core_freq_min`,v18 B-m3 / A-S5)→ 還原 = 刪兩份的該行;02 OTA 到 PR-F build(slot A)→ **OTA 後先斷言 `hci0` 存在、`batman-sc` 為 mode 2 status 0,不符就停**,並在 autocommit 窗口內確認 commit(免得測到一半 revert);**測試中途放棄時**才還原 = `batman-slot rollback`(回 slot B wsl.2);02 runtime `mgmt.bondable/sc off`(不持久)→ 還原 = 重啟 02 bluetoothd;04 翻轉 `mgmt.sc on` → 還原 = bluetoothd restart + 重開 04;外洩過的 IRK → 重開 04 作廢;**測試主機上做 `ah()` 用的 04 IRK 副本 → 列出後刪除並確認**(v18 A-S4);**正常收尾 = 02 留在 PR-F build**(之後 PR-H1 的 02 central client 要用;v18 B-m2:與「中途放棄才 rollback」不矛盾)。 |
+| Q8 | 空中驗證要第二台 **Linux** BLE central(D24、D25) | **定案(使用者 2026-10-19 授權 OTA 到 02)**。程序見 §9。**副作用與還原(v17 B-m3)**:順序 = 04 OTA 並 commit 之後才動 02;02 **p1** `distroconfig.txt` `[pi4]` 加 `core_freq_min=500`(OTA 前;slot A 讀 p1;A 唯讀確認 p1 已有 `miniuart-bt`、沒有 `core_freq_min`)→ 還原 = 刪該行。**p3 這次不改**(要掛 p3 寫入,超出使用者 10-19 授權的「OTA 02」範圍,v19 B-delta m3):02 下一次 OTA 落到 slot B 之前要補 p3(release note 本來就要求,列入 §11);02 OTA 到 PR-F build(slot A)→ **OTA 後先斷言 `hci0` 存在、`batman-sc` 為 mode 2 status 0,不符就停**,並在 autocommit 窗口內確認 commit(免得測到一半 revert);**測試中途放棄時**才還原 = `batman-slot rollback`(回 slot B wsl.2);02 runtime `mgmt.bondable/sc off`(不持久)→ 還原 = 重啟 02 bluetoothd;04 翻轉 `mgmt.sc on` → 還原 = bluetoothd restart + 重開 04;外洩過的 IRK → 重開 04 作廢;**測試主機上做 `ah()` 用的 04 IRK 副本 → 列出後刪除並確認**(v18 A-S4);**正常收尾 = 02 留在 PR-F build**(之後 PR-H1 的 02 central client 要用;v18 B-m2:與「中途放棄才 rollback」不矛盾)。 |
 
 ## 13. v13 審查 → v14 對應
 
@@ -634,9 +634,20 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 | A-S3 RPA 廣播 session | §9:setsid + FIFO 常駐、`advertise on` 後每 60 s 斷言無 bondable、時間戳、active scan 改字 |
 | A-S4 IRK 副本收尾 | Q8 |
 | A-S5 / B-m3 02 前置 | Q8:p1 與 p3 都改、OTA 後斷言 hci0 與 `batman-sc`、autocommit 窗口內 commit |
-| B-m1 L 編號再撞 | BLE 列改為 L45、L46、L49、L48(未使用),distroconfig 等四列回到 L19–L22,L32 引用改回 L20 |
-| B-m2 過時文字 | §10、§3 儲存區列、D25、L48、Q8 |
+| B-m1 L 編號再撞 | BLE 列改為 L62–L65(v19 B-delta m4:L45–L58 裡的號碼是保留不重用的),distroconfig 等四列回到 L19–L22,L32 引用改回 L20 |
+| B-m2 過時文字 | §10、§3 儲存區列、D25、L65、Q8 |
 | B-m4 ah() 向量、IRK 不外流 | §9 |
 | B-m5 `batman-sc` 只有一份 | §3 health:`index=0` |
 | B-m6 callback 無 ref | 與上游 `set_mode` 相同,接受 |
 | A 已驗:wsl.8 rootfs;B 已驗:wsl.8 payload、wsl.9 `bluetoothd-adapter.o` 有 `batman-sc` | — |
+
+### v19 窄範圍複查(B)→ 小修
+
+B 對 v18→v19:**APPROVE-WITH-CHANGES**,0 BLOCKER / 0 MAJOR / 4 MINOR(`254-reviews/review-v19-B-delta.md`);A 對 v18:APPROVE-WITH-CHANGES(0 / 0 / 5,已在 v19 收)。→ **設計核准**。
+
+| B-delta 發現 | 收法 |
+|---|---|
+| m1 restart 後要重開廣播 | §9 第 4 段 |
+| m2 第 5 段沒有負對照 | 標 smoke,D25 後半 ⚠️;負對照留 PR-P2 |
+| m3 02 p3 超出授權 | 只改 p1;p3 列 §11 |
+| m4 L 編號與保留註記衝突 | BLE 列改 L62–L65 |
