@@ -1,8 +1,8 @@
-# Design: #254 階段 1 實作 — BLE 平台、keystore、p5 `prov`、`batman-provd` 程序模型 — **v12(自足版)**
+# Design: #254 階段 1 實作 — BLE 平台、keystore、p5 `prov`、`batman-provd` 程序模型 — **v13(自足版)**
 
-**狀態**:v12。第 11 輪 A:REJECT(窄)0 BLOCKER / 1 MAJOR / 9 MINOR;B:REJECT(窄)0 BLOCKER / 2 MAJOR / 6 MINOR(`254-reviews/review-v11-{A,B}.md`,v11 全文 `254-reviews/254-stage1-impl-v11.md`)。兩位都確認恢復出廠移除後沒有殘留機制、非轉賣部分沒有翻案。MAJOR 都在 U8 的重燒出口:**(1)** 發行 image 只有 4218 MiB,重燒只覆寫卡的開頭,舊 p6 尾端(04 上約 25 GB,含 OTS CA 私鑰)用原始讀取讀得回,而重燒後是 unclaimed 空密碼 root → 買家自己就能讀;我在 v11 寫的 F19 引錯腳本、結論錯(更正見 F19);**(2)** image 內建的兩個 uci-default 會從 Pi 的 EEPROM 讀 SSH 公鑰與 root 密碼,撐過重燒。v12 只修這兩條(§4.5:轉賣工具契約 + 全卡清零;停用兩個 EEPROM hook)與兩位列出的 MINOR。使用者決定 U8(轉賣 = 重燒卡、app 不做恢復出廠)不變(2026-10-20)。
+**狀態**:v13。第 12 輪 B:REJECT(窄)0 BLOCKER / 2 MAJOR / 8 MINOR(`254-reviews/review-v12-B.md`,B 的報告檔寫入中斷,該檔是依 B 交回的摘要整理);A 的第 12 輪在 v12 確定要改之後由我停止,沒有報告。B 的兩條 MAJOR:**(1)** image 裡讀 Pi EEPROM persistent vars 的不只 v12 列的兩支,`default_wifi_key` 會成為新卡 AP 的金鑰;**(2)** 轉賣工具會接受還帶這些讀者的舊 Batman image。**這兩條都是我該自己先查的**(使用者 2026-10-20:新的東西先 reality check,不要浪費錢)→ v13 先做了**完整掃描**(F21–F24:image 內所有讀 EEPROM 的程式、EEPROM 實際內容、AP 預設行為),再改設計:PR-F 以 shim 一次關掉所有 EEPROM 讀者;unclaimed 新卡的 AP 由 99zz 設成 placeholder 讓 keyguard 關;轉賣工具只收工具內建清單裡的發行 image(同時解決版本與完整性)。使用者決定 U8 不變。
 
-**本文件完全自足**:不再引用前版的任何小節。v1–v11 全文與 22 份審查報告在 `254-reviews/`,只當歷史紀錄。§13 列 v11 審查發現的去向。
+**本文件完全自足**:不再引用前版的任何小節。v1–v12 全文與 23 份審查報告在 `254-reviews/`,只當歷史紀錄。§13 列 v12 審查發現的去向。
 
 上層:`219-field-provisioning.md` v2.8、`219-protocol.md` v0.6;本文件要求的改動見 §1.3,成為 v0.7 / v2.9。
 基準:Batman `main` f2f2bf6(= 出貨 1.5.12-wsl.2);firmware `build-3aplus` 527303e8 + `feat/254-ble` a5e181b7。節點:02(10.41.1.1,slot B,1.5.12-wsl.2,無乙太網 carrier、無 BLE build)、04(10.41.1.3,slot B,1.5.12-wsl.3 spike build,OTS,乙太網在這台,2026-10-19 起有 lab 公鑰)。03(3A+)故障,階段 1 只做 Pi 4。
@@ -51,7 +51,9 @@
 | F18 | RSSI:iPad 與 04 室內 5–10 m −82 ~ −95 dBm | #254 留言 6255842632 |
 | F19(更正) | **重燒卡不會清掉整張卡**:發行 A/B image 由 `scripts/build-ab-image.sh` 產生,總長 `4016 + P6_MB(200) + 2` = **4218 MiB**(`:121`),p5/p6 在建 image 時 mkfs(`:198-199`),p6 第一次開機才由 #201 長到滿卡。寫 image 只覆寫卡的前 4218 MiB;**舊 p6 尾端**(04:p6 起於磁區 8224768、到卡尾 62333952,已用 5.2 G / 25.4 G)不會被覆寫,長滿後成為新 ext4 的空閒區塊,**root 用原始讀取(`dd \| strings`)讀得回**;04 這段範圍有 OTS CA 私鑰、`opentakserver.key`、goatak `db.sqlite`。`flash-card.ps1`(桌面)不在 repo;它的 `Clear-Disk -RemoveData` 推論不會寫零(⚠️ 未實測)。repo 裡的 `scripts/flash-card.sh` 寫的是上游 OpenMANET 1.8.0 **單槽** image(舊 p5 整個留著)。v11 寫「舊資料不被任何程式讀到」、引 `build-gpt-ab-card.sh`(那是 bench 就地轉卡腳本)都是錯的 | 原始碼;A11/B11 在 04 唯讀實測;我本次讀 `build-ab-image.sh:121,198-199` |
 | F20 | `/etc/uci-defaults/*` 在 S10 由 `etc/init.d/boot` 執行,exit 0 就刪 → 96 在每個槽 overlay 的第一次開機跑一次 | firmware `etc/init.d/boot` |
-| **F21** | image 內建 `/rom/etc/uci-defaults/31_dropbear_persistent_storage` 與 `31_password`(Morse 上游):每次 fresh overlay 從 `persistent_vars_storage.sh READ dropbear_authorized_keys` / `device_password` 讀值,**寫進 `authorized_keys`(並設 key-only)與 root 密碼**;`persistent_vars_storage.sh` 讀的是 **Pi EEPROM 的 `vcgencmd bootloader_config`**,`WRITE` 在 bcm2711 未實作,但有實體接觸的人可用 Raspberry Pi 的 EEPROM recovery 卡寫入 → **撐過重燒 SD 卡**。04 目前 EEPROM 沒有這兩個 key。另一個讀者 `luci-i18n-base-zz-lang-autodetect` 只讀語言 | 我本次在 04 讀 `/rom/etc/uci-defaults/31_*`、`/sbin/persistent_vars_storage.sh`、`grep -l persistent_vars_storage /rom/etc/uci-defaults/*`;recovery 卡寫自訂 key ⚠️ 未實機驗證 |
+| **F21(完整掃描)** | image 內所有讀 Pi EEPROM persistent vars(`/sbin/persistent_vars_storage.sh` → `vcgencmd bootloader_config`)的程式,共 9 個讀者:`31_dropbear_persistent_storage`(`dropbear_authorized_keys` → 寫 `authorized_keys`、key-only)、`31_password`(`device_password` → root 密碼)、`95-morse-wireless-defaults` → `/morse/scripts/morse-wireless-defaults:19-24`(`default_wifi_key` → 新卡 2.4 GHz AP 的 PSK;`mm_region` → 國家)、`/lib/netifd/wireless/morse.sh:136,471-472`(`mm_sku` → 選 BCF;`mm_region`/`mm_region_unlocked` → 鎖區域,不符時拒絕設 country)、`/etc/diag_override.sh:18` 與 `/usr/share/rpcd/ucode/morse-mode:223`(`mm_mode`)、LuCI `header.htm:82`(`mm_virtual_wire`)、`luci-i18n-base-zz-lang-autodetect`(`mm_region` → 語言)、`/etc/boot-defaults/01-region-restriction`(`mm_region` → 刪其他區域韌體;**image 裡找不到執行它的程式** ⚠️)。寫者只有 `/morse/scripts/save_dropbear_setup.sh`(`WRITE` 在 bcm2711 未實作 → 失敗)。EEPROM 可由有實體接觸的人用 Raspberry Pi 的 recovery 卡改寫 → **撐過重燒 SD 卡** | 我本次在 WSL build 樹 `root-bcm27xx` `grep -rIl persistent_vars_storage` + 逐檔讀;recovery 卡寫入自訂 key ⚠️ 未實機驗證 |
+| **F23** | **新卡的 AP 預設是開的**:94 呼叫 `meshpoint-1.8.0`,只把 **mesh** key 設成 `CHANGE-ME-NOW`(`meshpoint-1.8.0:28,60`),不碰 AP key;接著 95 的 `morse-wireless-defaults` 對還在預設狀態(ssid `OpenWrt`、encryption none)的 2.4 GHz AP 設 `psk2`、key = `default_wifi_key`(EEPROM 有就用,沒有就隨機 8 字元)並刪掉 `disabled`(`:140-158`)→ AP 開啟、key 不是 placeholder → `halow-keyguard` 不擋。發行 image 沒有內建 `/etc/config/wireless`(首次開機由 hotplug 產生) | 原始碼;⚠️ 沒有新燒的卡可實證 |
+| **F24** | EEPROM 實際內容:04 = `BOOT_UART=0 WAKE_ON_GPIO=1 POWER_OFF_ON_HALT=0 NET_INSTALL_AT_POWER_ON=1`;02 = 前三項,無 `NET_INSTALL`;**兩台都沒有任何 persistent var**、沒有 `BOOT_ORDER` 自訂;bootloader 2026/09/23;04 沒有 HAT ID EEPROM(`/proc/device-tree/hat` 不存在)。→ 對 02/04,把 persistent var 讀取一律改成「空」**不改變現有行為**(讀者今天就讀到空) | 我本次 02/04 `vcgencmd bootloader_config` / `bootloader_version` |
 | **F22** | 04 有 `firstboot`(= `jffs2reset`)、LuCI「reset」、`/etc/rc.button/reset`:都只清本槽 overlay;下一次開機 96 從 p5 把設定、身分、prov 還原 → **不是重置**;02/04 沒有 `blkdiscard`、`fstrim` | A11 在 04 唯讀實測 |
 
 ### 1.3 與上層設計不同處(→ 協定 v0.7 / 219 v2.9)
@@ -81,7 +83,7 @@ unclaimed ─(claim)─▶ claimed
 | 狀態 / 判決 | 定義 | AP、dropbear、lock | autocommit NEED_MESH | 認領 |
 |---|---|---|---|---|
 | `legacy` | prov.state | 全不動(96 4b 今天規則) | 今天的規則 | 開(防呆門) |
-| `unclaimed` | prov.state | 不動(image 預設:AP placeholder → keyguard 關) | 0 | 每次開機開 |
+| `unclaimed` | prov.state | AP:99zz 設 placeholder → keyguard 關(F23:image 預設的 AP 是開的,不能靠預設);dropbear image 預設 | 0 | 每次開機開 |
 | `claimed` | prov.state | 上鎖;AP:`radio_managed=0` 不動 / `=1` 關 | live mesh key ≠ placeholder → 今天規則;否則 0 | 只 `claim/replay` |
 | `member` | prov.state | 上鎖;AP 由網路設定 | §6.4 | 只 `claim/replay` |
 | `unknown` | helper 判決(§4.2 rc 表) | p6 已掛且 `prov-state` 的 `last_known_state` ∈ {claimed, member} → 上鎖;否則不動 | 今天的規則(p5 讀不到 → 1) | 無 |
@@ -132,9 +134,9 @@ platform_check_image(stage 1):只在真的升級時寫 p6 ota-armed.mesh(§6.4)
 | 鎖定欄位(dropbear PasswordAuth/RootPasswordAuth、ttylogin、root shadow、`lock-status`) | fresh overlay(S10):96;S89 起的轉換(認領、完成未完的認領):helper,判斷「未完」看實際值 | `halow-status` | |
 | `/etc/batman-dev-open` | 操作員 / harness | 96、helper | 對 claimed/member 不生效(照鎖,已有的 `authorized_keys` 保留) |
 | `/etc/dropbear/authorized_keys` | 96 Lane A(fresh,從 p5)、操作員、helper `ssh_keys.set`(只動 `ssh_keys.added` 上的行) | config-save | 認領不碰 |
-| live uci `wireless.*` | 執行期:`halow-setkey`(操作員、helper 交易、`.txn` 一次性對帳);fresh:96 Lane B、99-chanfix、morse 回寫 | provd | 開機不對帳 |
+| live uci `wireless.*` | 執行期:`halow-setkey`(操作員、helper 交易、`.txn` 一次性對帳);fresh:94 meshpoint、95 morse-wireless-defaults(AP 預設開啟,F23)、96 Lane B、99-chanfix、morse 回寫;**fresh 且判為 unclaimed(p5 未 seed、無 prov)時 99zz 把所有 `mode=ap` 的 key 設成 `CHANGE-ME-NOW`**,S18 keyguard 因此關掉 AP | provd | 開機不對帳;99zz 只在 unclaimed 新卡寫,legacy / seeded 不碰 |
 | `hostname`、`ahwlan.ipaddr` | 改名:helper(先 persist 再 `uci set` + `system reload`);openmanetd 之後重保留 IP 並重開(⚠️ U5) | | §6.6 |
-| Pi EEPROM `bootloader_config` 的 `dropbear_authorized_keys`、`device_password` 等 persistent vars | 有實體接觸的人(recovery 卡);Batman 不寫 | **Batman image 內沒有讀者**:`31_dropbear_persistent_storage`、`31_password` 由 PR-F 從 image 移除(F21) | 殘留在 EEPROM 的值無作用;誠實界線見 §4.5 |
+| Pi EEPROM `bootloader_config` 的 persistent vars(`dropbear_authorized_keys`、`device_password`、`default_wifi_key`、`mm_region`、`mm_region_unlocked`、`mm_sku`、`mm_mode`、`mm_virtual_wire` 等) | 有實體接觸的人(recovery 卡);Batman 不寫 | **Batman image 一律讀到空**:PR-F 以 shim 取代 `/sbin/persistent_vars_storage.sh`(`READ` 一律 rc 1、無輸出、每次開機每個 key 記一次 WARN;`WRITE`/`ERASE` rc 1),F21 的 9 個讀者一次失效 | 02/04 今天就讀到空(F24),行為不變;副作用:Morse 的 EEPROM 區域鎖不再生效,國家一律由 uci / `halow-setkey` 決定 |
 | `firstboot` / LuCI reset / `rc.button/reset` | 上游 | — | 只清本槽 overlay,96 會從 p5 還原(F22);**不是轉賣用的全清**;UI 文字改為「重新套用設定(不清除擁有者與資料)」,`rc.button/reset` 長按不再呼叫 firstboot(PR-P1) |
 | 認領窗口、失敗計數、session、`s_node` | provd 記憶體 | | |
 | `boot_id`、`nonce_node`、`nonce_helper` | helper | provd | 一次性,綁 `h` |
@@ -252,31 +254,33 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 
 **為什麼一般燒卡不夠**(F19):發行 image 只有 4218 MiB,寫 image 只覆寫卡的開頭;舊 p6 尾端(04 上約 25 GB,含 OTS CA 私鑰)留在卡上,重燒後成為新 ext4 的空閒區塊,root 用原始讀取讀得回;重燒後的 unclaimed 節點是空密碼 root,**買家自己就能讀**。另外 image 內建的兩個 uci-default 會從 Pi EEPROM 讀 SSH 公鑰與 root 密碼(F21),撐過重燒。
 
-**轉賣工具契約**(PR-P3 收進 repo:`scripts/transfer-flash.sh`(Linux / WSL)、`scripts/transfer-flash.ps1`(Windows)):
-1. **只接受 Batman A/B image**:檢查 image 的 GPT 有 6 個分割且 p5 / p6 的 PARTNAME 是 `config` / `data`、board 與 SoC 相符;上游單槽 image、其他 image → 拒絕(B11-M1:`scripts/flash-card.sh` 寫上游單槽 image,舊 p5 整個留著)。
-2. **目標必須是可移除的讀卡機裝置**(沿用 `flash-card.ps1` 的 `BusType=USB` 檢查;Linux 端檢查 `/sys/block/<dev>/removable` 與大小上限),顯示裝置型號與大小、要使用者輸入確認字串。
-3. **全卡清零**:Windows `diskpart` 的 `clean all`(對整個磁碟寫零,沿用 #208 出廠卡規則);Linux `blkdiscard -z`,不支援時 `dd if=/dev/zero of=<dev> bs=4M conv=fsync` 到卡尾。不用 `Clear-Disk -RemoveData`(⚠️ 推論不寫零)。
-4. **寫 image** 並讀回比對頭尾(沿用 `flash-card.ps1` 的雜湊比對)。
-5. **抽樣驗證清零**:在 image 結尾之後的區域隨機取 ≥ 64 個 1 MiB 區塊讀回,必須全為零;不是 → 失敗、提示換卡。
-6. 時間:32 GB 卡全卡清零預估 20–40 分鐘(⚠️ 實測);工具顯示進度。
+**轉賣工具契約**(PR-P3 收進 repo:`scripts/transfer-flash.ps1`(Windows,主要)、`scripts/transfer-flash.sh`(原生 Linux 主機);本機 WSL 看不到讀卡機(要 usbipd-win,這台沒裝),不列為支援路徑):
+1. **只接受工具內建清單裡的發行 image**:每次發行時把 image 檔名、sha256、board、版本寫進工具內建的清單(PR-P3 的發行流程更新它);image 的 sha256 不在清單 → 拒絕。這同時擋掉上游 / 單槽 image、**沒有 v13 EEPROM shim 的舊 Batman image**(清單只收階段 1 起的版本,B12-M2)與被竄改的 image。board 從清單取得,寫入前與目標使用者選的機型比對;bcm2710 image 有 7 個分割(多 p7),工具不數分割。
+2. **目標必須是讀卡機上的卡**:Windows:`BusType=USB` **且** `MediaType` 為可移除媒體 **且** 容量 ≤ 512 GB;顯示型號、容量、目前分割;要使用者輸入確認字串。Linux:`/sys/block/<dev>/removable=1` 或裝置名是 `mmcblk*`(原生 SD 槽 `removable=0`,另外要求 `--internal-sd` 明示);容量上限同上。
+3. **全卡清零**:以工具自己的寫零迴圈(Windows 對 `\\.\PhysicalDrive<N>` 4 MiB 區塊寫零;Linux `dd if=/dev/zero bs=4M conv=fsync` 或 `blkdiscard -z`)寫到卡尾,顯示進度;不用 `Clear-Disk -RemoveData`(⚠️ 推論不寫零)、不用 diskpart `clean all`(沒有進度)。
+4. **寫 image**,讀回比對頭尾。
+5. **抽樣驗證**:image 結尾之後隨機取 ≥ 64 個 1 MiB 區塊讀回,必須全為零;否則失敗、提示換卡。
+6. 時間:32 GB 卡預估 20–40 分鐘(⚠️ 實測),工具顯示進度。
+7. 測試模式:`--test-target-file <loop 檔>` 只給 harness(L16 工具層)用,跳過可移除裝置檢查;另有負測試「非可移除裝置被拒」。
 
 **節點端**:
-- **PR-F 從 image 移除 `31_dropbear_persistent_storage` 與 `31_password`**(F21):Batman image 不讀 EEPROM 的 SSH 公鑰與 root 密碼;EEPROM 裡若有殘值也沒有作用。
+- **PR-F 以 shim 取代 `/sbin/persistent_vars_storage.sh`**(F21 的 9 個讀者一次失效;`31_*` 不必另外刪):Batman image 不讀 EEPROM 的任何 persistent var;EEPROM 裡若有殘值也沒有作用。shim 的放法:`persistent-vars-storage-bcm2711` 套件的檔由 firmware board files overlay 覆蓋(PR-F 選定機制並附「image 內 `persistent_vars_storage.sh READ default_wifi_key` rc 1、無輸出」的斷言);`docs/upgrade-1.8.0.md` 同步。
+- **unclaimed 新卡的 AP**:99zz 在 fresh overlay、p5 未 seed、無 prov 時把所有 `mode=ap` 的 key 設成 `CHANGE-ME-NOW` → S18 keyguard 關 AP(F23;219 §6.2「未認領時不開 WiFi AP」)。
 - 節點端不做任何清除機制;`firstboot` / LuCI reset / reset 按鈕只清本槽 overlay,96 會從 p5 還原(F22),不是轉賣用的全清 → UI 文字改為「重新套用設定(不清除擁有者與資料)」,`rc.button/reset` 長按不再呼叫 `firstboot`(PR-P1)。
 - provd 收到協定的 `reset` → `E_UNSUPPORTED(reflash)`,app 轉到說明頁。
 
 **app 說明頁**(PR-P3):
 - **賣方**:①先在 app 把這台從網路移除(`network/leave`),免得網路的成員名單留著它;②需要保留 OTS 等資料時,先用讀卡機把 p6 備份到電腦(擁有者沒裝 SSH key 時沒有別的匯出路徑);③用轉賣工具重燒;④最安全是換一張新卡交給買家。
-- **買家**:收到二手機,**自己用轉賣工具再燒一次**(不能信任賣方說「已重燒」;賣方也可能動過 EEPROM 以外的東西);新機的 QR 與身分要經 root 取得(`batman-provhelper qr`,接乙太網或 serial;unclaimed 的 image 預設是空密碼)——階段 1 限制,#255 的 608B 會把身分與 QR 固定在晶片上。
+- **買家**:收到二手機,**先用 Raspberry Pi Imager 的 bootloader 還原卡重設 EEPROM,再自己用轉賣工具燒一次**(不能信任賣方說「已重燒」;賣方也可能動過 EEPROM 以外的東西);新機的 QR 與身分要經 root 取得(`batman-provhelper qr`,接乙太網或 serial;unclaimed 的 image 預設是空密碼)——階段 1 限制,#255 的 608B 會把身分與 QR 固定在晶片上。
 - **遺失手機或擁有者金鑰**:同賣方 ②③,重燒後重新認領(L59)。
-- 用舊版 Batman image 重燒:能開機與認領;之後 OTA 走 L44(unclaimed 不被 #202 閘擋)。
+- 轉賣只能用工具清單裡的階段 1 以後的 image;舊版 image(沒有 provd、還會讀 EEPROM)工具會拒絕。
 
 **重燒後的結果**:p1–p6 都是 image 的新內容,卡的其他區塊全為零;第一次開機 96 看到未 seed 的 p5 → image 預設;99 重新個人化(hostname 依 MAC,與重燒前相同);helper rc 7、overlay 無 identity → 產新身分 → `prov{unclaimed}`。舊 QR 的 `claim.secret` 不存在 → 無效;前任 app 的 `psk_owner` / `psk_replay` 對不上新身分;前任的 SSH key 不在新的 `authorized_keys`,EEPROM 的 key 也不會被讀進來。
 
 **誠實界線**:
 - 全卡寫零是邏輯清除,**不是安全擦除**:SD 卡控制器的磨損平均與保留區塊可能留著舊資料,鑑識工具(繞過控制器)可能讀回;219 §7 寫明最安全是換新卡。
 - 用其他燒卡工具(Raspberry Pi Imager、balenaEtcher、`dd` 只寫 image)**不會**清掉舊 p6 尾端 → 說明頁明寫只認 Batman 轉賣工具。
-- EEPROM 的殘值不清(Batman 不讀它);需要時買家可用 Raspberry Pi 的 EEPROM recovery 卡重設。
+- EEPROM 的 persistent var 殘值不清(Batman 不讀它);但 EEPROM 的**開機設定**(`BOOT_ORDER`、`NET_INSTALL_AT_POWER_ON` 等,04 現在就開著網路安裝)會影響從哪裡開機 → **買家說明:一律用 Raspberry Pi Imager 的 bootloader 還原卡把 EEPROM 重設為預設**(B12-m5)。
 - 有 root 的前任在交出前能做任何事;買家自己重燒是對這點唯一的處置。
 - hostname / SSID 依 MAC 產生,重燒後不變(前後兩任可被串連,殘項)。
 
@@ -313,7 +317,7 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 
 | # | 路徑 | 今天(1.5.12) | 階段 1 後 | 測試(負對照) |
 |---|---|---|---|---|
-| L1 | first boot,新卡 / 重燒卡 | 96 `:93` exit | 96 verdict `unseeded`;helper rc 7 → 產身分 → `prov{unclaimed}`(p5 未 seed 也寫);AP 關;dropbear image 預設 | `prov-firstboot-254`:`status/public` 可讀、`hci0` up、AP 關、`identity/` 0700、p5 有 `identity/prov/` 7 檔(負:rc 1 時不產生) |
+| L1 | first boot,新卡 / 重燒卡 | 96 `:93` exit;AP 由 95 以隨機 key 開啟(F23) | 96 verdict `unseeded`;99zz 把 AP key 設 placeholder → keyguard 關 AP;helper rc 7 → 產身分 → `prov{unclaimed}`(p5 未 seed 也寫);dropbear image 預設 | `prov-firstboot-254`:`status/public` 可讀、`hci0` up、**`iw dev` 沒有 AP 介面**、`identity/` 0700、p5 有 `identity/prov/` 7 檔(負:rc 1 時不產生;負對照:1.5.12 新卡開機後 AP 是開的) |
 | L2 | boot(member,非 fresh) | — | gen 相等 → `--apply-state` 只 log 漂移、不對帳 wireless | `prov-boot-254` ×3:無 `wifi reload` log、gen 不變、prov-state boot_id 是本次 |
 | L3 | clean shutdown | — | provd K10 先停 | boot-reasons 乾淨 |
 | L4 | reboot | 同 L2 | 同 L2 | |
@@ -322,11 +326,11 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 | L7 | 斷電 / helper 死在 `state.apply` | — | 步驟 2–3 間:uci 已 commit、p5 未變 → 開機 `.txn` 一次性對帳(會 persist);3–4 間:p5 新 → 重建;4–5 間:鎖未做 → `--apply-state` 補做 | `prov-powerloss-254`:三個點;斷言 wireless == prov、p5 overrides == prov、04 在前兩點後仍可用 key 登入 |
 | L8 | provd crash loop | — | 無限 respawn + 退避;認領結果在 helper / p5 | `prov-respawn-254` |
 | L9–L11 | bluetoothd / dbus / helper 重啟 | — | provd `NameOwnerChanged` 重註冊 / 重連;無 hci0 → health `hci0_powered=0` | 各一 |
-| L12 | downgrade 到 1.5.12 | — | 舊 96 還原 overrides + dropbear identity + shadow;LOCKED 若 authorized_keys 有行;無 BLE;`claimed` 未入網 / `member` 單台 / unclaimed 會被舊 autocommit revert,要 `batman-slot commit`;claimed 節點降級後舊 96 對「無 key 有密碼」判 UNPROVISIONED、`ttylogin` 預設 0 → serial 給 root shell(fail-open,實體威脅);p5 多出的 prov 檔舊程式不認、不刪 | `prov-downgrade-254` |
+| L12 | downgrade 到 1.5.12 | — | 舊 96 還原 overrides + dropbear identity + shadow;LOCKED 若 authorized_keys 有行;無 BLE;`claimed` 未入網 / `member` 單台 / unclaimed 會被舊 autocommit revert,要 `batman-slot commit`;claimed 節點降級後舊 96 對「無 key 有密碼」判 UNPROVISIONED、`ttylogin` 預設 0 → serial 給 root shell(fail-open,實體威脅);p5 多出的 prov 檔舊程式不認、不刪;舊 image 在 fresh overlay 會重新執行 F21 的 EEPROM 讀者(02/04 的 EEPROM 沒有這些值,F24 → 無作用;EEPROM 被動過手腳的機台則會被讀進來) | `prov-downgrade-254` |
 | L13 | bcm2710 | — | ❌ 等新板;共用檔未測 | — |
 | L14 | bcm2711 | — | 本文件 | 全部 |
 | L15 | `batman_bypass=1` | 96 exit 1 留著 | `unknown(bypass)`;不產生;persist 拒 | `prov-bypass-254` |
-| L16 | 轉賣 = 轉賣工具重燒卡 | — | §4.5 | **工具層(不用現場)**:`prov-transfer-tool-254` 在 WSL 用 loop 檔(8 GiB,在 4218 MiB 之後與舊 p5 位置寫入特徵字串)跑 Linux 轉賣工具 → 原始掃描特徵字串 = 0;負對照:只寫 image(今天的做法)→ 特徵字串仍在;拒絕上游 / 非 A/B image。**節點層(要現場)**:已認領 + 入網的 04 → 轉賣工具重燒 → 新 `device_id`、舊 `claim.secret` 無效、前任 `psk_owner`/`psk_replay` 連不上、前任 SSH key 被拒、全卡掃不到 04 上的 OTS 金鑰特徵字串;Windows 工具路徑同樣要實卡。(v11 用「UUID 換了」當斷言無效:image 的 UUID 建置時固定,A11-m1/B11-m2) |
+| L16 | 轉賣 = 轉賣工具重燒卡 | — | §4.5 | **工具層(不用現場)**:`prov-transfer-tool-254` 在 WSL 用 loop 檔(8 GiB,在 4218 MiB 之後與舊 p5 位置寫入特徵字串)以 `--test-target-file` 跑 Linux 轉賣工具 → 原始掃描特徵字串 = 0;另測:非可移除裝置被拒、不在清單的 image 被拒;負對照:只寫 image(今天的做法)→ 特徵字串仍在;拒絕上游 / 非 A/B image。**節點層(要現場)**:已認領 + 入網的 04 → 轉賣工具重燒 → 新 `device_id`、舊 `claim.secret` 無效、前任 `psk_owner`/`psk_replay` 連不上、前任 SSH key 被拒、全卡掃不到 04 上的 OTS 金鑰特徵字串;Windows 工具路徑同樣要實卡。(v11 用「UUID 換了」當斷言無效:image 的 UUID 建置時固定,A11-m1/B11-m2) |
 | L17 | legacy 升級(02/04) | — | helper rc 9 → 產身分 → `prov{legacy}`(`--prov-only`,不碰 overrides,trial 上也安全);AP/dropbear/lock/`mesh-expected` 不動;autocommit 今天的規則 | `prov-legacy-upgrade-254`(04):AP key、lock-status、authorized_keys、mesh-expected 不變;負對照:04 OTA 到 `radio1.disabled=1` 的 trial → revert |
 | L18 | legacy 認領 | — | 防呆門;`radio_managed=0`;不清 lab key | 04(已有 lab key,Q6)正;02 正;另做「無 key、無 dev-open」的白箱 → `E_UNSUPPORTED(no-ssh-key)` |
 | L19 | distroconfig 改動 | — | 不隨 OTA;p1 與 p3 手動改 | PR-F(04 ✅ 40/40 500 MHz) |
@@ -456,7 +460,8 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 | 本機非 root | 操作 org.bluez / 冒用 helper / 讀秘密 / 預建 socket 目錄 | dbus root-only policy、PEERCRED、0600 / 0700、`O_NOFOLLOW`、`/tmp/run` root 0755 | `prov-sec-dbus-254`(04 ✅)、`-helper-uid-254`、`-key-perms-254`、tmp-trust 掃描 |
 | 本機非 root / 容器 root | 偽造 sysupgrade 程序讓 `ota-armed.mesh` 被寫 | uid 0 + 主機 pid ns + 路徑解析 | §6.4 (10) |
 | 前任擁有者(轉賣) | 保留資料 | 轉賣工具全卡清零後寫 image(§4.5) | L16 工具層(WSL)+ 節點層(現場) |
-| 前任擁有者(轉賣) | 經 EEPROM 預先植入 SSH key / root 密碼,撐過重燒 | PR-F 移除 `31_dropbear_persistent_storage`、`31_password`;Batman image 不讀 EEPROM 的這些值 | `prov-eeprom-hooks-254`:image 內沒有這兩個檔;白箱以 shim 讓 `vcgencmd bootloader_config` 回傳 key → fresh overlay 後 `authorized_keys` 不含它(負對照:1.5.12 image 會寫入) |
+| 前任擁有者(轉賣) | 經 EEPROM 預先植入 SSH key / root 密碼 / AP 金鑰 / 區域鎖,撐過重燒 | PR-F 的 `persistent_vars_storage.sh` shim(F21 全部讀者失效);unclaimed AP 由 99zz 關;買家重設 EEPROM | `prov-eeprom-hooks-254`:image 內 shim 對所有 key `READ` rc 1;白箱以 PATH 上的假 `vcgencmd` 回傳 `dropbear_authorized_keys`、`device_password`、`default_wifi_key`、`mm_region` → fresh overlay 後 `authorized_keys` 不含它、root 密碼不變、AP 關、country 不被鎖(負對照:1.5.12 image 會全部採用) |
+| 前任擁有者(轉賣) | 改 EEPROM 的開機順序 / 網路安裝,讓機台從別處開機 | **擋不住**(EEPROM 不在 SD 卡上);買家說明要求重設 EEPROM | 文件 |
 | 買家(對賣方) | 收到被動過手腳的卡 | 買家說明:自己用轉賣工具再燒一次(§4.5) | 文件 |
 | 擁有 SD 卡 | 複製身分 / 改 prov.cbor 升自己為擁有者 / 讀殘留區塊 | 擋不住(階段 1 限制;608B / LUKS);重燒不是安全擦除 | — |
 | p5 被改(實體)/ helper 壞 | 96 不鎖 → fail-open | 96 對 claimed/member 一律上鎖、p5 讀不到時看 p6 提示 | `prov-lock-failsecure-254` |
@@ -476,12 +481,12 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 
 ## 10. 實作切法
 
-1. **PR-F(firmware)**:`feat/254-ble` 現狀 + 重 build(policy plugin 修正)+ **從 image 移除 `31_dropbear_persistent_storage`、`31_password`**(F21)→ 04 OTA 驗 `Powered` 自動、`Pairable: no`、三模組、dbus 負測試、閒置 500 MHz;release note:p1 與 p3 兩份 distroconfig 要手動改。
+1. **PR-F(firmware)**:`feat/254-ble` 現狀 + 重 build(policy plugin 修正)+ **以 shim 取代 `/sbin/persistent_vars_storage.sh`**(F21,9 個讀者一次失效)→ 04 OTA 驗 `Powered` 自動、`Pairable: no`、三模組、dbus 負測試、閒置 500 MHz;release note:p1 與 p3 兩份 distroconfig 要手動改。
 2. **docs PR**:`219-protocol.md` v0.7(`batman-owner-op-v1`、首版 join 授權、`device_id` 公式、helper 重算 ClientChal、`psk_replay` 與固定 6 次;`reset` 動詞 → `E_UNSUPPORTED(reflash)`、`E_VERSION` 逃生口、CDDL reset-level 移除)、CDDL、向量;`219-field-provisioning.md` v2.9(§6.1、§6.3、§6.9 對齊;§7 恢復出廠與任務表、版本協商、daily-validation 列改「階段 1 = 轉賣工具重燒卡,#255 重設計」)。
 3. **PR-H1(harness)**:`prov-*` 骨架、02 central client、`verify.py` 對手模式。
-4. **PR-P1(產品,兩板共用檔)**:config-save(`--prov-only`、`--prov-get`、fp / check 納入 prov、`prov-txn` / `.txn` 讓路、`final_rc` 的 `root:!`)、96(prov 抄寫在 `:93` 前、每個出口前判上鎖、verdict 帶 boot_id)、`halow-setkey --no-persist` + 對 `radio_managed` 節點的警告、platform-ab 的 stage 1 `ota-armed.mesh`、autocommit(§6.4)、#202 閘 prov-aware、`meshjoin_radio_up`、joinwatch 寫 `lastjoined`、99zz;helper + keystore `file`(socket 測試,無 BLE)。bcm2710 ❌,寫進 PR body。
+4. **PR-P1(產品,兩板共用檔)**:99zz 對 unclaimed 新卡的 AP placeholder(F23);config-save(`--prov-only`、`--prov-get`、fp / check 納入 prov、`prov-txn` / `.txn` 讓路、`final_rc` 的 `root:!`)、96(prov 抄寫在 `:93` 前、每個出口前判上鎖、verdict 帶 boot_id)、`halow-setkey --no-persist` + 對 `radio_managed` 節點的警告、platform-ab 的 stage 1 `ota-armed.mesh`、autocommit(§6.4)、#202 閘 prov-aware、`meshjoin_radio_up`、joinwatch 寫 `lastjoined`、99zz;helper + keystore `file`(socket 測試,無 BLE)。bcm2710 ❌,寫進 PR body。
 5. **PR-P2**:provd、GATT、協定核心、`status/public`、認領(含 replay、防呆門)、鎖定、`ssh_keys`、`root_password`。
-6. **PR-P3**:建網 / 加入 / 邀請 / 狀態 / 診斷 / 離開 / 改名;app 的賣方 / 買方 / 遺失手機說明頁;**轉賣工具**(`scripts/transfer-flash.sh`、`scripts/transfer-flash.ps1` 收進 repo,§4.5 契約)與 `prov-transfer-tool-254`;LuCI reset 文字與 `rc.button/reset`(F22)。
+6. **PR-P3**:建網 / 加入 / 邀請 / 狀態 / 診斷 / 離開 / 改名;app 的賣方 / 買方 / 遺失手機說明頁;**轉賣工具**(`scripts/transfer-flash.ps1`、`scripts/transfer-flash.sh` 收進 repo,§4.5 契約,含發行 image 清單與發行流程的更新步驟)與 `prov-transfer-tool-254`;LuCI reset 文字與 `rc.button/reset`(F22)。
 7. S4(更新)、S5(app)addendum。
 
 ## 11. 殘項(回 #254)
@@ -497,20 +502,19 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 | Q5 | 恢復出廠破壞性測試在哪台跑 | 不再需要(U8)。L16 工具層在 WSL 跑;節點層與 Windows 工具要現場實卡,使用者到現場時再排 |
 | Q6 | 認領測試會把 04 上鎖 | 已做(§1.1) |
 
-## 13. v11 審查 → v12 對應
+## 13. v12 審查 → v13 對應
 
-| v11 發現 | 收法 |
+v13 的改動來自我自己的完整掃描(F21–F24),不只回應下列發現。
+
+| v12 發現(B;A 未完成) | 收法 |
 |---|---|
-| **A11-M1 / B11-M1** 重燒只覆寫 image 的 4218 MiB,舊 p6 尾端用原始讀取讀得回;F19 引錯腳本、結論錯;`flash-card.sh` 寫上游單槽 image | F19 更正;§4.5 轉賣工具契約(只收 Batman A/B image、可移除裝置、全卡清零、寫入讀回、抽樣驗證零);L16 工具層在 WSL 以 loop 檔做負對照 |
-| **B11-M2** image 內建的 `31_dropbear_persistent_storage` / `31_password` 從 Pi EEPROM 讀 SSH 公鑰與 root 密碼,撐過重燒;v8 的誠實界線在 v11 被刪 | F21;PR-F 從 image 移除兩個 hook;§3 列 EEPROM persistent vars 為「無讀者」;§8 + `prov-eeprom-hooks-254`(shim 白箱 + 1.5.12 負對照);誠實界線恢復 |
-| A11-m1 / B11-m2 L16 用 UUID 判斷無效 | L16 改為特徵字串掃描 + 身分斷言 |
-| A11-m2 / B11-m4 上游文件的 reset 依賴 | §1.3 與 §10 docs PR 逐處列出;provd 對 `reset` 回 `E_UNSUPPORTED(reflash)` |
-| A11-m3 / B11-m3 / B11-m5 賣方 / 買方 / 遺失手機步驟 | §4.5 app 說明頁;L59 |
-| A11-m4 96:`prov.meta` 存在但壞 → fail-open | §4.3 96:壞 meta → 上鎖 |
-| A11-m5 `--seed` 的 mkfs 會清 prov | §4.2 rc 9:overlay 有完整 prov → 整份重新 persist,不產生 legacy |
-| A11-m6 同槽清 overlay、p6 永久壞 | F22;§3 列 `firstboot`/LuCI/reset 按鈕;L60、L61 |
-| A11-m7 restore marker 讀法、`--persist-now` | §4.2 helper CLI 模式清單 |
-| A11-m8 RPA 沒證據 | §8 標 ⚠️,PR-F 驗證節點廣播位址輪替 |
-| A11-m9 F8 引用前輪編號 | F8 改引 04 ota-trace 原始行 |
-| B11-m1 F19 引錯腳本、ps1 不在 repo | F19 更正;轉賣工具收進 repo(PR-P3) |
-| B11-m6 `prov-tools-254` 多斷言、L57 | `prov-tools-254` 只斷言仍有使用者的工具;L57 併入 L34 |
+| **B12-M1** image 還有其他 EEPROM 讀者,`default_wifi_key` 成為新卡 AP 金鑰;keyguard 不擋 | F21 完整列出 9 個讀者;PR-F 以 shim 取代 `persistent_vars_storage.sh` 一次關掉;F23 查清 AP 預設是開的 → 99zz 對 unclaimed 新卡設 placeholder;L1 斷言改為沒有 AP 介面並附 1.5.12 負對照 |
+| **B12-M2** 轉賣工具接受舊 Batman image;§4.5 舊 image 說法錯 | 工具只收內建發行清單裡、階段 1 以後的 image(同時驗 sha256);刪掉舊 image 那段 |
+| B12-m1 WSL 要 usbipd、原生 SD 槽 `removable=0` | WSL 不列為支援路徑;Linux 端 `mmcblk*` 需 `--internal-sd` 明示 |
+| B12-m2 Windows 裝置判斷、`clean all` 無進度、#208 不在 repo | `BusType=USB` + 可移除媒體 + ≤ 512 GB + 確認字串;改用工具自己的寫零迴圈;規則寫在本文,不引用 #208 |
+| B12-m3 loop 測試需要 override | `--test-target-file`;加「非可移除裝置被拒」負測試 |
+| B12-m4 bcm2710 有 7 個分割、board 來源 | 不數分割;board 來自發行清單 |
+| B12-m5 EEPROM 開機設定 | 誠實界線 + 買家一律重設 EEPROM;§8 加一列(擋不住) |
+| B12-m6 其他 EEPROM 讀者 | 併入 F21 / shim |
+| B12-m7 L12 降級重跑 EEPROM 讀者 | L12 補註 |
+| B12-m8 PR-F 機制與 docs | §4.5 / §10 寫明 board files overlay 覆蓋 + 斷言;`docs/upgrade-1.8.0.md` 同步 |
