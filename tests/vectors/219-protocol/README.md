@@ -1,6 +1,6 @@
 # 供裝協定測試向量(#219 / #254)
 
-對應規格:`docs/design/219-protocol.md`(v0.6)與 `docs/design/219-protocol.cddl`。
+對應規格:`docs/design/219-protocol.md`(v0.7)與 `docs/design/219-protocol.cddl`。
 
 | 檔案 | 用途 |
 |---|---|
@@ -14,7 +14,7 @@
 ```
 python -m venv venv && venv/bin/pip install -r requirements.txt
 venv/bin/python gen.py > vectors.json      # 重新產生(輸出應與 repo 內完全相同)
-venv/bin/python verify.py vectors.json     # 119 項檢查(含負向測試),全部 PASS 才算通過
+venv/bin/python verify.py vectors.json     # 156 項檢查(含負向測試),全部 PASS 才算通過
 ```
 
 ## 涵蓋範圍
@@ -26,6 +26,7 @@ venv/bin/python verify.py vectors.json     # 119 項檢查(含負向測試),全�
 - COSE:`net_config`、`member_list`、`net_secrets` / `member_secrets`(含 ECDH 共享秘密、KDF context、CEK)、兩種邀請、加入申請、同意圖片
 - SAS、QR 物件大小(三種圖片都在 QR version 25-L 的 1273 B 以內)
 - GATT 框架切段與重組;CBOR 信封範例
+- **v0.7**:file 後端身分(`sn`、`device_id = hex(sn)`、自簽 `dev:` 憑證)、`psk_replay`(雙方 ECDH、HKDF、`NXpsk0` 交握)、owner-op(`args_hash`、簽章與負向測試)、`op/nonce`、`claim/replay`、`reset` 的 `E_UNSUPPORTED` reason 9
 
 ## 注意
 
