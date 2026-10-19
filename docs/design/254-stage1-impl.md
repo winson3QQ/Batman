@@ -1,420 +1,471 @@
-# Design: #254 階段 1 實作 — BLE 平台、keystore、p5 `prov`、`batman-provd` 程序模型 — **v10**
+# Design: #254 階段 1 實作 — BLE 平台、keystore、p5 `prov`、`batman-provd` 程序模型 — **v11(自足版)**
 
-狀態:第 9 輪 A、B 都是 **REJECT(窄)**,0 BLOCKER / 1 MAJOR(A 10、B 12 MINOR;`254-reviews/review-v9-{A,B}.md`,v9 全文 `254-reviews/254-stage1-impl-v9.md`)。兩位確認第 8 輪 MAJOR(解凍不變量)已關;又**各自**找到同一條 v9 新引入的回歸:S11 讀不到 p5 時,不看本機有沒有重置跡象就上鎖並建鎖記號 → 從沒重置過的節點被鎖、之後被清 overlay。v10:**解析器多一種 `n/a`**、**只有重置證據 E 成立才凍結/上鎖**、鎖記號觸發只認 `none`;修重置鎖的自鎖交接;並把恢復出廠**整節改為自足**(§4.5.1 起),§3 / §4.3 只指向它,停止「同 vN」造成的矛盾。§13 逐條。
+**狀態**:第 10 輪 A、B 都是 REJECT(窄),各 0 BLOCKER / 2 MAJOR,兩條 MAJOR 都在「app 端恢復出廠」的失敗路徑(`254-reviews/review-v10-{A,B}.md`)。恢復出廠從第 3 輪起每一輪都在 SD 卡讀錯 / 斷電 / p5、p6 半壞的組合上長出新的 MAJOR。**使用者決定(2026-10-20)**:要支援轉賣;**階段 1 的轉賣級全清 = 重燒 SD 卡**,app 不做恢復出廠,整套 F/W 機制從設計移除(§4.5)。
 
-**文件結構**:本文件是完整設計;標「同 v4」「同 v5」的小節內容在 `254-reviews/254-stage1-impl-v4.md`、`-v5.md`,v6/v7 沒有改動它們。
-上層:`219-field-provisioning.md` v2.8、`219-protocol.md` v0.6(本文件要求的改動見 §1.3,成為 v0.7)。
-基準:Batman `main` f2f2bf6(= 1.5.12-wsl.2);firmware `build-3aplus` 527303e8 + `feat/254-ble` a5e181b7;02(10.41.1.1,slot B,wsl.2,無乙太網、無 BLE)、04(10.41.1.3,slot B,wsl.3 spike,OTS,乙太網在這台;**2026-10-19 起有 lab 公鑰,Q6**)。03 故障,階段 1 只做 Pi 4。
+**本文件完全自足**:不再引用前版的任何小節。v1–v10 全文與 20 份審查報告在 `254-reviews/`,只當歷史紀錄。§13 列 v10 審查發現的去向。
+
+上層:`219-field-provisioning.md` v2.8、`219-protocol.md` v0.6;本文件要求的改動見 §1.3,成為 v0.7 / v2.9。
+基準:Batman `main` f2f2bf6(= 出貨 1.5.12-wsl.2);firmware `build-3aplus` 527303e8 + `feat/254-ble` a5e181b7。節點:02(10.41.1.1,slot B,1.5.12-wsl.2,無乙太網 carrier、無 BLE build)、04(10.41.1.3,slot B,1.5.12-wsl.3 spike build,OTS,乙太網在這台,2026-10-19 起有 lab 公鑰)。03(3A+)故障,階段 1 只做 Pi 4。
 
 ## 0. 一句話
 
-BLE(spike 已驗)+ 非 root `batman-provd` + root `batman-provhelper`;helper 自己重算/驗證所有授權物件;p5 是擁有權 SoT,p5 的 prov 檔只有 `batman-config-save --prov-only` 一個寫入路徑;狀態只由 `prov.cbor.state` 決定;鎖定欄位:fresh overlay 由 96 寫(claimed/member 一律上鎖,p5 讀不到時看 p6 提示),執行期轉換由 helper 寫;legacy(02/04)升級後 OTA 閘與今天相同;member 的 OTA 閘看「arm 前本次開機是否曾入網」,綁 arm 那次開機的 boot_id,只在**真正的升級路徑**(procd 的第二次 validate)寫;**恢復出廠** = 執行期:凍結 → 停 payload、`apps/` 改名 → 作廢另一槽 → **在 p5 寫重置意圖(唯一的提交點)** → 清 overlay → 重開;下次開機:95 在任何人掛 p5/p6 之前把 p6、p5 都 mkfs(p5 最後,mkfs p5 = 完成紀錄)→ helper 產新身分。
+加 **BLE**(自建 `kmod-batman-bt` + 精簡 BlueZ,只開 LE、不配對、dbus root-only;04 spike 已驗)、一支**非 root 的 `batman-provd`**(Go,ujail)與一支 **root 的 `batman-provhelper`**。helper 自己重算 / 驗證每個改變節點的請求的授權物件(provd 被攻陷 ≠ 能改網、換擁有者、讀私鑰)。私鑰與 PSK 導出只經 helper 的 **keystore 介面**(階段 1 `file` 後端,之後 `se`)。**p5 是擁有權的 SoT**:p5 的 prov 檔(`prov.cbor`、最後寫的 commit 紀錄 `prov.meta`、一次寫入的 `identity/prov/`)只有 `batman-config-save --prov-only` 一個寫入路徑,其他模式不寫、不刪、不比對 prov。**狀態只由 `prov.cbor.state` 決定**。鎖定欄位:fresh overlay 由 96 寫(claimed/member 一律上鎖),執行期轉換由 helper 寫。既有 fleet(02/04)升級後是 `legacy`:OTA 的 mesh 閘與今天完全相同,AP/dropbear/lock 不動。`member` 的 OTA 閘看「arm 前本次開機是否曾入網」,綁 arm 那次開機的 boot_id。**轉賣 = 重燒卡**。
 
 ## 1. 決策、範圍、事實
 
-### 1.1 使用者決策(不變)
+### 1.1 使用者決策
 
-| # | 決策 | 後果 |
-|---|---|---|
-| U1 | 608B 留空;之後不重工 | keystore `file`/`se` |
-| U2 | Go 節點 / Flutter + Rust app / BlueZ D-Bus | 向量 + `verify.py` 裁判 |
-| U3 | 擁有權與 SSH 脫鉤 | 認領不碰 `authorized_keys`;dropbear 照跑(只關密碼);key 登入在上鎖後仍可用(dropbear `svr-authpasswd.c:94`) |
-| U4 | 恢復出廠全清含身分 | 機身 QR 失效;新 QR 經 root 取得;hostname/SSID 依 MAC 產生、跨擁有者不變(殘項) |
-| U5 | 改名探針待使用者 | ⚠️ |
-| U6 | 3A+ 等新板 | 共用檔(`batman-slot`、`platform-ab.sh`、config-save、95、96、halow-setkey、autocommit、joinwatch)bcm2710 未測 |
-| U7 | `uart_enable` typo 不動 | |
+| # | 決策 | 日期 | 後果 |
+|---|---|---|---|
+| U1 | 開發期 608B 留空;焊上 608B / 換 HAT 時 provd 與 app 不重工 | 10-18 | keystore `file`/`se` 兩後端,`node_cert` 形狀相同 |
+| U2 | 節點 Go、手機 Flutter + Rust、GATT 走 BlueZ D-Bus | 10-18 | 向量 + `verify.py` 當裁判 |
+| U3 | 擁有權與 SSH 脫鉤 | 10-18 | 認領不碰 `authorized_keys`;dropbear 照跑(只關密碼);上鎖後 key 登入仍可用(dropbear `svr-authpasswd.c:94` 的 locked 檢查只在密碼路徑) |
+| U4 | 階段 1 轉賣 = 全清含身分 | 10-18 | 全清後機身 QR 失效;hostname/SSID 依 MAC 產生、跨擁有者不變(殘項) |
+| **U8** | **要支援轉賣;階段 1 的全清 = 重燒 SD 卡;app 不做恢復出廠** | **10-20** | §4.5;app 只顯示轉賣說明;現場要讀卡機 + 電腦;#255(608B)再設計 app 端重置 |
+| U5 | 改名探針待使用者手動跑 | 10-18 | §6.6 ⚠️ |
+| U6 | 3A+ 等新板 | 10-18 | 兩板共用檔(`batman-slot`、`platform-ab.sh`、config-save、96、halow-setkey、autocommit、joinwatch)bcm2710 ❌ 未測 |
+| U7 | distroconfig 的 `uart_enable=1` typo 不動 | 10-18 | |
+| Q6 | 04 改用 lab 公鑰登入 | 10-19 | 已做:04 `authorized_keys` = 02 同一把 ed25519(sha256 5bda8113…),key-only 登入驗過,lock-status 仍 UNPROVISIONED,已進 p5 |
 
-### 1.2 Reality check(v1–v5 R1–R71 保留;本輪新增 / 更正)
+### 1.2 仍被本設計引用的事實(全部唯讀實測或原始碼)
 
 | # | 事實 | 證據 |
 |---|---|---|
-| R38–R42 | BLE spike 事實 | v3 §1.2;#254 留言 |
-| R43 | fstools `jffs2reset`:`ask_user()`(`jffs2reset.c:121`)在 `volume_find()`(`:134`)之前,「走到提示」**不能**證明找得到 volume(v3 的證據作廢);掛載中走 `fs_state_set(PENDING)` + `overlay_delete`(`:49-54`),`overlay_delete` 不回報刪除失敗;下次開機 PENDING 再刪一次(`overlay.c:444-455`);`glob("%s/*")` 無 `GLOB_PERIOD` → **任何層級**的 dot 項目都不刪 | 原始碼(兩位 reviewer 與 B9 再核);02/04 `.cache` 實測 |
-| R62 | busybox 無 `find -delete`、無 `-exec {} +`;有 `-depth -name -exec CMD ;` | 04/02 實測;兩位 v5 reviewer 在 04 實跑 `find /overlay/upper -depth -name '.*' -exec echo {} \;` 命中 `.cache` |
-| R63 | payload `metadata version=` 是組包時間戳,≠ `BATMAN_VERSION` | 04 實測 |
-| **R64(更正)** | `sysupgrade:370` 在 `:403` 的 TEST exit **之前**就呼叫 `validate_firmware_image` → **`sysupgrade -T` 時父程序也是 sysupgrade**;真的升級還會在 install 之後由 **procd** 再 validate 一次(`platform-ab.sh` 註解「procd validates AFTER install_bin」;A5 在 04 的 ota-trace 看到兩次 S1 CHECK,caller 不同) | 我本次讀 firmware `package/base-files/files/sbin/sysupgrade:370,403`;A5 |
-| R65 | joinwatch 在 `$RUNDIR/joinwatch.state` 即時寫 JOINED/NOT_JOINED | 原始碼 |
-| R66 | `boot-reasons.log` 只有 batdata-mount 一個寫者,有 once-per-boot 閂(`95:632,708,753`);fresh trial 上 S10 就寫,早於 autocommit S99 → **D28 ✅** | A5 讀原始碼;B5 在 04 對過 |
-| R67 | 95 在 fresh overlay 上以 uci-default 跑,最後 `"$INIT" boot`(`95` 尾段;「the S11 link was created after rcS enumerated it」);`boot()` 內 `[ -f "$RUNDIR/batdata-mount.booted" ] && return 0` 是 once-per-boot 閂,在 mount、resize 之後、pstore 搬移之前;pstore 搬移、boot-reasons 行、`fw_override_check`、`restore_payload_guardians` 依序在後 | 原始碼 `95-batman-storage:605-725,740-760` |
-| R68 | #202 閘:p5 是 ext4 無 `.seeded` → `precheck-node`/stage 2 die(`batman-slot:534-547`) | 原始碼 |
-| R70 | 04 harness 靠空密碼登入 | 實測 |
-| R71 | procd 開機階段 init 無逾時;busybox 無 `timeout`;`flock` 有 | 原始碼 |
-| **R72(更正)** | 02、04 **沒有 `tune2fs`**;**有** `/usr/sbin/blkid`、`/usr/bin/sgdisk`、`/usr/bin/hexdump`(v6 寫「沒有 blkid」是我照抄 v5 reviewer、沒上機查,錯);image 預設 root shadow = `root:::0`(空密碼);p5/p6 的 GPT 名稱 `PARTNAME=config` / `data`(`/sys/class/block/*/uevent`);busybox `mv -T` = 「目的地是目錄就拒絕」 | 我本次 02/04 實測 |
-| **R73** | `batman-slot` 的 `slot_lock`(`:84-96`)只認 cmdline 含 `batman-slot` 的持有者,其他持有者會被接管;`invalidate-other` 的 EXIT trap 會刪鎖 → **helper 不可能「持有 slot_lock」** | A5/B5 讀原始碼 |
-| **R74** | 協定 §3.4:已認領節點對第 1 則以常數時間**固定試 5 次** PSK;全部失敗 → 用真的新臨時金鑰送**格式正確的假第 2 則**、和真 session 一樣**等到逾時才斷**;協定 §8 全域交握每分鐘 20 次 | 我本次讀 `219-protocol.md:77-82` |
+| F1 | dropbear 無 ECDSA,只有 ed25519 / rsa | `.config` `# CONFIG_DROPBEAR_ECC is not set`;04 `strings /usr/sbin/dropbear` |
+| F2 | `batman-config-save`:`seed_key_ok()` 只在 `--seed` 用;`mark_mesh_expected()` 在 `--seed`/`--on-join` 寫 p6 `mesh-expected`;每個寫入模式最後寫 `.seeded`;`--save` 是 first-seed 路徑;rc 6 = 「a live value could not be persisted — the rest was written」;鎖接管:持有者 cmdline 不含 `batman-config-save` 就當 stale 接管;`--on-join` 對未 seed 的 p5 照寫 | 原始碼 `:21,115-122,151,287-288,356-362,389-408` |
+| F3 | `batman-autocommit`:`expected_in_mesh()`(`:388-396`)p6 `mesh-joined`/`mesh-expected` → 1,否則 p5 `.seeded`,讀不到 → 1;`health_ok()`(`:421-456`);`autocommit-hold-once`(`:97-100`)消耗一次 = 不 revert | 原始碼 |
+| F4 | `96`:早退點 `:64` bypass(exit 1 留著)、`:67` 無 p5、`:71` 非 ext4、`:89-91` mount 失敗、`:93` 未 seed(exit 0 → 被刪);4b(`:161-176`)`has_key && has_pw` → LOCKED,否則 UNPROVISIONED;dev-open → DEV-OPEN;p5 以 `ro,noload` 掛 | 原始碼 |
+| F5 | `halow-setkey`:旗標 `--mesh/--ap/--mesh-id/--channel/--status`(`:25`);拒絕 placeholder(`:55`);reload 前無條件 `uci commit wireless`(`:99`);等 `mesh_netdev` ≤ 20 s(`:134`);成功後無條件 `batman-config-save --save`(`:147`) | 原始碼 |
+| F6 | `joinwatch`:`$RUNDIR/joinwatch.state` 即時寫 JOINED/NOT_JOINED(`:130,149`);p6 `mesh-joined` 只寫一次;JOINED 時每 tick `--on-join`(`:145`) | 原始碼 |
+| F7 | `meshjoin_reachable` = joined 且 br-ahwlan 有 IPv4 且 dropbear running(`meshjoin.sh:23-27`);`meshjoin_joined` = plink ESTAB ≥ 1 且 batman 鄰居 ≥ 1 | 原始碼 |
+| F8 | sysupgrade:`sysupgrade:370` 在 `:403` 的 TEST exit 之前就呼叫 validate → `-T` 時父程序也是 sysupgrade;真的升級在 install 後由 procd 再 validate 一次。04 ota-trace 每次 OTA 兩行 S1 CHECK:先 `caller=/bin/sh /sbin/sysupgrade … upg=n`,約 14 s 後 `caller=/sbin/procd … upg=y`;`-F` 那次 procd validate rc=1。procd 的 validate 是同步的,這時 sysupgrade 卡在 `ubus call system sysupgrade` 等它 | firmware 原始碼;B7 讀 04 ota-trace |
+| F9 | stage 2 ramfs:`RAMFS_COPY_BIN` 只有 `batman-slot batman-reboot vcmailbox hexdump tr sha256sum head tail cut cmp mktemp`(無 iw/batctl/ip);`/opt/batdata` 不在 | `platform-ab.sh:37,212-233` |
+| F10 | payload `metadata version=` 是組包時的 `date +%Y%m%d-%H%M%S`,≠ rootfs `BATMAN_VERSION` | `build-ab-payload.sh:69`;04 實測 |
+| F11 | `boot-reasons.log` 只有 batdata-mount 一個寫者,有 once-per-boot 閂;每次開機一行 `boot_id=<8hex>`;fresh trial 上 S10 就寫,早於 autocommit S99 | `95:632,708,753`;04 實測 |
+| F12 | #202 的 OTA 閘:p5 是 ext4 而無 `.seeded` → `precheck-node` 與 stage 2 都 die | `batman-slot:534-547` |
+| F13 | 99-batman-chanfix:fresh slot 背景從 p5 overrides 讀頻道,最多 6 次 `wifi reload`;morse 在 regdomain 未穩時回寫硬體預設頻道 | `99-batman-chanfix:4-9,22-57` |
+| F14 | 02/04 **沒有** `tune2fs`、`timeout`、`stat`;**有** `blkid`(支援 `-p`)、`sgdisk`、`hexdump`、`mountpoint`、`flock`(flock(2))、`pgrep`、`fsync`、`mkfs.ext4`、`readlink -f`;image 預設 root shadow = `root:::0`、dropbear `PasswordAuth=on`、`RootPasswordAuth=on`;run dir `/tmp/run/batman` = root 0700 tmpfs | 02/04 實測 |
+| F15 | 協定 §3.4:已認領節點對第 1 則以常數時間固定試 N 次 PSK;全部失敗 → 送格式正確的假第 2 則、等到逾時才斷;§8 全域交握每分鐘 20 次 | `219-protocol.md:77-82` |
+| F16 | BLE spike(04):serdev `serial0-0`、無 ttyS0、BT 模組恰好 bluetooth/btbcm/hci_uart、`CONFIG_SERIAL_DEV_CTRL_TTYPORT=y`;policy plugin 必須留著(AutoEnable);bluetoothctl 會自己註冊 agent → 它在跑時 Pairable 變 yes;無 agent 時 Pairable no / Discoverable no;iPad 連線讀 GATT 不跳配對;dbus 非 root 被拒 | #254 留言 6251617876 |
+| F17 | `/boot` 永遠掛 p1;slot B 時韌體讀 p3 的 `distroconfig.txt`;`batman-slot apply` 不抄它 → 改 `[pi4] core_freq_min=500` 要改 p1 與 p3 兩份;04 兩份都改了、40/40 取樣 500 MHz;02 沒改 | #254 留言 6255818833 |
+| F18 | RSSI:iPad 與 04 室內 5–10 m −82 ~ −95 dBm | #254 留言 6255842632 |
+| F19 | 重燒卡:`flash-card.ps1` 先 `Clear-Disk -RemoveData` 再寫整張 A/B raw image 並讀回比對頭尾;A/B image 的 p5、p6 在建 image 時 `mkfs.ext4`(`build-gpt-ab-card.sh:133-134`)→ 重燒後 p5/p6 是新檔案系統,舊資料不被任何程式讀到 | 原始碼 |
+| F20 | `/etc/uci-defaults/*` 在 S10 由 `etc/init.d/boot` 執行,exit 0 就刪 → 96 在每個槽 overlay 的第一次開機跑一次 | firmware `etc/init.d/boot` |
 
-### 1.3 與上層不同處(→ 協定 v0.7 / 219 v2.9)
+### 1.3 與上層設計不同處(→ 協定 v0.7 / 219 v2.9)
 
 | 上層 | 本文件 | 理由 |
 |---|---|---|
-| 219 §6.1 認領寫 `authorized_keys` | 不寫 | U3 |
-| 219 §6.3 schema 2 | 維持 1;`prov.cbor` + `prov.meta` | `96:131` |
-| 219 §7 保留身分 | 全清 | U4 |
-| 219 §6.9 BLE 健康 S4 | 階段 1 就加,`ble-ok` gating | |
-| 協定 §3.5 | per-verb 用 `batman-owner-op-v1` | 一標籤一格式 |
-| 協定 §7.1 首版 | 需 owner-op `network/join` | |
-| 協定 §5.4 | helper 重算 ClientChal | |
-| 協定 §3.3 | `device_id = hex(sn)` | |
-| **協定 §3.4 PSK 候選** | 加一把 **`psk_replay = HKDF( ECDH(node_ecdh_priv, owner_enc_pub), "batman-psk-replay-v1" ‖ device_id )`**;app 端以 `ECDH(owner_enc_priv, node_ecdh_pub)` 算(`node_ecdh_pub` 是 app 認領時 TOFU pin 下來的 `node_cert` 裡的公開值)。**固定試 6 次**(4 把 `psk_owner` + `psk_member` + `psk_replay`,不足補假 PSK);失敗行為照 §3.4 不變(假第 2 則 + 等到逾時)。用 `psk_replay` 建立的 session 角色 =「擁有者候選(replay)」,只允許 `claim/replay` | 需要**擁有者加密私鑰**才連得上 → 只看過 QR 的人無法探測存在(A5-m7);不依賴 608B 對 `claim_secret` 做 KDF(D31 不再需要,B5-m6);608B 的 ECDH 槽本來就支援 ECDH(協定 §7.3) |
-| 協定 §10 共用 Rust | Go / Rust | U2 |
-| v1 開發 CA | 自簽 + TOFU | |
+| 219 §6.1 步驟 5:認領寫 `authorized_keys` | 不寫;認領只關密碼登入、設隨機 root 密碼、`LOCKED`;SSH 公鑰由 `ssh_keys.set` 另裝(ed25519) | U3 + F1 |
+| 219 §6.3 p5 schema 升到 2 | `schema_version` 維持 1;prov 在 `prov.cbor` + `prov.meta` | `96:131` schema > 1 丟 overrides 改用 lkg |
+| 219 §7 恢復出廠(app、SD 標記檔、保留身分) | **階段 1 不做**;轉賣 = 重燒卡(§4.5) | U8 |
+| 219 §6.9 BLE 健康檢查放 S4 | 階段 1 就加,`ble-ok` gating(§6.4) | BLE 是唯一管理面 |
+| 協定 §3.5 `batman-owner-auth-v1` | 保留給 session 升級;per-verb 授權用新標籤 `batman-owner-op-v1` | 一個標籤一種格式 |
+| 協定 §7.1 第 1 版由建立者自簽,節點「記下」 | 節點記下第 1 版需要擁有者的 owner-op `network/join` | 首版信任起點 |
+| 協定 §5.4 `ClientChal` | helper 自己重算(nonce、DAC、即將寫入的 owner_pub) | 擋「被攻陷的 provd 換擁有者」 |
+| 協定 §3.3 `device_id` 未定公式 | `device_id = hex(sn)`,18 字元;adv 帶末 4 字元 | |
+| **協定 §3.4 PSK 候選** | 加 `psk_replay = HKDF( ECDH(node_ecdh_priv, owner_enc_pub), "batman-psk-replay-v1" ‖ device_id )`(app 端用 `ECDH(owner_enc_priv, node_ecdh_pub)`);**固定試 6 次**;失敗行為照 §3.4;`psk_replay` session 只允許 `claim/replay` | 認領回應遺失時擁有者能取回金鑰;需要擁有者加密私鑰才連得上 → 只看過 QR 的人探測不到;608B ECDH 槽本來就支援(協定 §7.3) |
+| 協定 §10 共用 Rust 函式庫 | 節點 Go、app Rust,向量 + 對手實作當裁判 | U2 |
+| v1 內建開發 CA | 自簽 `node.cert`(`dev:` 前綴、2020→2120)+ app 認領時 TOFU pin;release app 拒 dev 前綴 | 公開 repo 的 CA 私鑰 = 假信任根 |
 
 ### 1.4 狀態機
 
 ```
-legacy ──(claim + 防呆門)──▶ claimed ──(network/join)──▶ member ──(network/leave)──▶ claimed
+legacy ──(claim + 防呆門 §6.1)──▶ claimed ──(network/join;owner-op)──▶ member ──(network/leave;owner-op)──▶ claimed
 unclaimed ─(claim)─▶ claimed
-任何狀態 ──(factory reset 提交)──▶ resetting ──(下次開機 95 完成)──▶ unclaimed(新身分)
+重燒卡 ─▶ unclaimed(新身分)
 ```
 
-| 狀態 / 判決 | 定義 | AP、dropbear、lock | NEED_MESH(§6.4) | 認領 |
+| 狀態 / 判決 | 定義 | AP、dropbear、lock | autocommit NEED_MESH | 認領 |
 |---|---|---|---|---|
 | `legacy` | prov.state | 全不動(96 4b 今天規則) | 今天的規則 | 開(防呆門) |
-| `unclaimed` | prov.state | 不動(image 預設) | 0 | 每次開機開 |
-| `claimed` | prov.state | 上鎖;AP:`radio_managed=0` 不動 / `=1` 關 | live key ≠ placeholder → 今天規則;否則 0 | 只 `claim/replay` |
-| `member` | prov.state | 上鎖;AP 由網路 | §6.4 | 同上 |
-| `resetting-pending` | p6 有 marker、解析器 `none` | 不動 | precheck-node 拒絕 OTA | 無;provd 只 `status/public`、cancel(U 成立時)、重新發起 |
-| `reset-uncertain` | (marker 在 或 重置證據 E 成立)且 解析器 `unreadable` | 上鎖(§4.5.7) | precheck-node 拒絕 OTA | 無;**不 cancel** |
-| `resetting` | p5 有 `.factory-reset` 意圖(含壞意圖) | **上鎖**(fresh:96;非 fresh:batdata-mount,§4.5 L) | precheck-node 拒絕 OTA | 無;provd 只 `status/public` |
-| `unknown` | helper 判決 | p6 `prov-state` 最後的 state ∈ {claimed,member} → 上鎖;否則不動 | 今天的規則 | 無 |
+| `unclaimed` | prov.state | 不動(image 預設:AP placeholder → keyguard 關) | 0 | 每次開機開 |
+| `claimed` | prov.state | 上鎖;AP:`radio_managed=0` 不動 / `=1` 關 | live mesh key ≠ placeholder → 今天規則;否則 0 | 只 `claim/replay` |
+| `member` | prov.state | 上鎖;AP 由網路設定 | §6.4 | 只 `claim/replay` |
+| `unknown` | helper 判決(§4.2 rc 表) | p6 已掛且 `prov-state` 的 `last_known_state` ∈ {claimed, member} → 上鎖;否則不動 | 今天的規則(p5 讀不到 → 1) | 無 |
+
+`prov.cbor.radio_managed`:unclaimed 認領 → 1;legacy 認領 → 0(保留操作員手設的 mesh/AP);`network/join` 後 1。
 
 ## 2. 元件
 
 ```
-手機 app ──BLE── bluetoothd(LE、無 agent、dbus root/provd)──D-Bus── batman-provd(uid provd,ujail)
-                                                                        │ helper.sock(SEQPACKET,PEERCRED)
-                                                                        ▼
-                                                              batman-provhelper(root,procd S89)
-                                                                ├─ keystore / 授權 / 交易
-                                                                ├─ --boot:p5↔overlay 對帳;身分;未完的轉換;SD 標記;.txn
-                                                                ├─ 恢復出廠執行期(F0–F5)
-                                                                └─ health 檔、ble-ok
-platform-ab.sh platform_check_image:只在 caller=procd 且 upg=y 時寫 p6 ota-armed.mesh
-95/batdata-mount boot():p5 有 .factory-reset 意圖 → 在 mount p6 之前執行 W0–W2(只此一處破壞)
+手機 app ──BLE GATT── bluetoothd(LE、無 agent、dbus root/provd-only)──D-Bus── batman-provd(uid provd,ujail)
+                                                                                 │ /tmp/run/batman-prov/helper.sock(SEQPACKET,SO_PEERCRED)
+                                                                                 ▼
+                                                                         batman-provhelper(root,procd S89)
+                                                                           ├─ keystore:file(階段 1)| se(#255)
+                                                                           ├─ 授權:owner-op / admins 鏈 / CheckMac(helper 重算)
+                                                                           ├─ 交易式 state.apply(§4.4)
+                                                                           ├─ --boot:p5 ↔ overlay 對帳、身分產生 / 還原、完成未完的轉換、.txn
+                                                                           └─ 每 15 s:$RUNDIR/batman-prov.health;ble-ok
+platform_check_image(stage 1):只在真的升級時寫 p6 ota-armed.mesh(§6.4)
 96(S10):prov 抄寫、claimed/member 上鎖
-99zz(S10):fresh overlay 寫 prov-state(writer=99zz)
+99zz-batman-prov-state(S10):fresh overlay 寫 prov-state(writer=99zz)
 ```
+
+同一個 Go 二進位,argv[0] 決定模式;協定核心(Noise `flynn/noise`、CBOR `fxamacker/cbor` core-deterministic、COSE 最小集合)只有一份。
 
 ## 3. 擁有權
 
-| 資源 | 唯一寫者 | 唯讀者 | 備註 |
+| 資源 | 唯一寫者(依時段) | 唯讀者 | 備註 |
 |---|---|---|---|
-| BLE 相關 | 同 v4 | | |
-| `$RUNDIR/batman-prov.health` | helper | autocommit | |
-| `$RUNDIR/prov-txn`(`<pid> <token>`) | helper:交易步驟 1 建、步驟 4 後刪 | config-save `--on-join` 讓路;帶 `--txn <token>` 相符不讓路;操作員 `--save` 等 ≤ 10 s | |
-| `/etc/batman-prov/.txn`(overlay,fsync;`<token> <gen_from> <gen_to> <verb>` + 變更前的 wireless 值) | helper:步驟 1 寫、步驟 4 後刪 | helper `--boot`;config-save `--on-join`(存在 → rc 1,B5-m7) | |
-| `/etc/batman-prov/identity/`、`prov.cbor`、`prov.meta`、`.stage/`、`.identity.tmp/`、`ssh_keys.added` | helper;fresh 時 96 抄 identity/prov | 96 4b、`--check` | |
-| `/etc/.batman-prov-restore` | 96 | helper | |
-| p5 `prov.*`、`identity/prov/` | **只有 `--prov-only`** | 96、`--prov-get`、`--check` | identity 經 `identity/prov.tmp/` rename |
-| p5 `.factory-reset`(意圖) | 見 §4.5.1 | 解析器 | |
+| `hci0` 存在、BR/EDR off、Bondable off | kernel + bluetoothd(`main.conf`,無 agent) | provd 斷言 Pairable==false | F16 |
+| `hci0 Powered` | bluetoothd `[Policy] AutoEnable`(policy plugin) | helper(D-Bus `Properties.Get`) | |
+| `main.conf`、`dbus-1/system.d/bluetooth.conf`、`init.d/bluetoothd` | image(`batman-ble`) | | |
+| `/etc/bluetooth/keys/`(IRK) | bluetoothd(init 建 0700) | | 重燒卡 = 新 IRK |
+| BLE 廣播、GATT | provd(不註冊 agent) | | adv 無 Local Name;GAP Name 固定 `Batman` |
+| `/tmp/run/batman-prov/`、`helper.sock`(0660) | helper(`O_NOFOLLOW`、owner 檢查) | provd | |
+| `$RUNDIR/batman-prov.health`(0600) | helper 每 15 s | autocommit | `<uptime> bluetoothd= hci0_powered= adv_registered_once=` |
+| `$RUNDIR/prov-txn`(`<pid> <token>`) | helper:交易步驟 1 建、步驟 4 後刪 | config-save `--on-join`(存在且 pid 活著 → rc 1);帶 `--txn <token>` 相符不讓路;操作員 `--save` 等 ≤ 10 s | |
+| `/etc/batman-prov/.txn`(overlay,fsync;`<token> <gen_from> <gen_to> <verb>` + 變更前的 wireless 值) | helper:步驟 1 寫、步驟 4 後刪 | helper `--boot`;config-save `--on-join`(存在 → rc 1) | |
+| `/etc/batman-prov/identity/`(7 檔)、`prov.cbor`、`prov.meta`、`.stage/`、`.identity.tmp/`、`ssh_keys.added` | helper;fresh overlay 時 96 抄 identity/prov 與 prov | 96、`--check` | |
+| `/etc/.batman-prov-restore`(`<boot_id> <verdict> …`) | 96(每個出口) | helper | |
+| p5 `prov.cbor`、`prov.meta`、`identity/prov/` | **只有 `--prov-only`**(helper 呼叫) | 96、`--prov-get`、`--check` | identity 經 `identity/prov.tmp/` rename |
 | p5 其他(`.seeded`、overrides、lkg、dropbear identity、shadow-root) | config-save 既有模式 | 96 | |
-| `/opt/batdata/state/prov-state`(`<boot_id> <writer> <last_known_state> <verdict> <members_n> <mesh_expect>`) | fresh S10:99zz;S89 起:helper;**重置中的 S11:batdata-mount W1**(寫 `resetting`)。`last_known_state` 只在讀到確定的 prov(或 W1 的 `resetting`)時更新;`unknown` 只寫 `verdict` | autocommit、`halow-status` 讀 `verdict`;96 讀 `last_known_state` | 寫前 `mountpoint -q` |
-| `/opt/batdata/state/ble-ok` | helper | autocommit | |
-| `/opt/batdata/state/ota-armed.mesh`(`<arm_boot_id8> <target_slot> joined\|radio`) | `platform_check_image`:**只在 caller=`/sbin/procd` 且 `upg=y`**(真正的升級路徑,R64);p6 已掛;先 `rm` 再 tmp+rename+sync | autocommit(arm_boot_id == `boot-reasons.log` 倒數第二行、slot 相符才採用);決策後刪 | A5-m1/B5-M4/B5-m11 |
-| `/opt/batdata/state/mesh-expected`、`mesh-joined` | config-save / joinwatch;helper 在 leave 刪 | autocommit | |
-| `$RUNDIR/joinwatch.lastjoined` | joinwatch | stage 1 | |
-| p6 marker `factory-reset.inprogress` | 見 §4.5.1 | | |
-| 哨兵 `/etc/batman-reset.sentinel` | 見 §4.5.1 | | |
-| 重置鎖 `$RUNDIR/reset.lock` | 見 §4.5.2 | | |
-| 鎖記號 `/etc/batman-reset.locked` | 見 §4.5.1、§4.5.7 | | |
-| `/opt/batdata/apps` ↔ `/opt/batdata/apps.reset` | helper(F2 改名、取消時改回);W1 mkfs 一併清掉 | `restore_payload_guardians`(只看 `apps/`) | 讓 p6 上的 tenant 在可撤銷期與任何意外重開後都不會被拉起(B5-M1/A5-M1) |
-| 鎖定欄位 | fresh S10:96;S89 起的轉換:helper(看實際值);因意圖 / 重置證據而上鎖:§4.5.7(fresh → 96、非 fresh → batdata-mount,以 96 檔是否還在判斷) | `halow-status` | |
-| `/etc/batman-dev-open` | 操作員 / harness | 96、helper | 對 claimed/member 不生效 |
-| live uci `wireless.*` | 執行期:`halow-setkey`;fresh:96 Lane B、99-chanfix、morse 回寫 | provd | 開機不對帳(只 `.txn` 一次性) |
-| 另一槽 | `batman-slot`(apply、`invalidate-other`;**各自取鎖**,helper 不持鎖,R73) | | |
-| 本槽 overlay | F4(helper)、W0 / R-locked(batdata-mount) | | |
-| p6、p5 的格式化(重置用) | 只有 batdata-mount W1(p6)、W2(p5);既有 95 首次 mkfs、config-save `--seed` 不變 | | |
-| SD 標記檔 | 實體;helper `--boot` 讀兩個 FAT(`batman-slot boot-devs`);F4 刪 | | |
+| `/opt/batdata/state/prov-state`(`<boot_id> <writer> <last_known_state> <verdict> <members_n> <mesh_expect>`,0600) | fresh S10:99zz;S89 起:helper。`last_known_state` 只在讀到確定的 prov 時更新(兩個寫者同規則);`unknown` 只寫 `verdict` | autocommit、`halow-status` 讀 `verdict`/`mesh_expect`;96 讀 `last_known_state` | 寫前 `mountpoint -q /opt/batdata` |
+| `/opt/batdata/state/ble-ok`(`<boot_id>`) | helper(§6.4 條件) | autocommit | |
+| `/opt/batdata/state/ota-armed.mesh`(`<arm_boot_id8> <target_slot> joined\|radio`) | `platform_check_image`(§6.4 條件) | autocommit;決策後刪 | |
+| `/opt/batdata/state/mesh-expected`、`mesh-joined` | config-save / joinwatch(不改);helper 在 `network/leave` 刪 | autocommit | |
+| `$RUNDIR/joinwatch.lastjoined`(`<uptime>`) | joinwatch(JOINED tick 覆寫) | stage 1 | 新 |
+| 鎖定欄位(dropbear PasswordAuth/RootPasswordAuth、ttylogin、root shadow、`lock-status`) | fresh overlay(S10):96;S89 起的轉換(認領、完成未完的認領):helper,判斷「未完」看實際值 | `halow-status` | |
+| `/etc/batman-dev-open` | 操作員 / harness | 96、helper | 對 claimed/member 不生效(照鎖,已有的 `authorized_keys` 保留) |
+| `/etc/dropbear/authorized_keys` | 96 Lane A(fresh,從 p5)、操作員、helper `ssh_keys.set`(只動 `ssh_keys.added` 上的行) | config-save | 認領不碰 |
+| live uci `wireless.*` | 執行期:`halow-setkey`(操作員、helper 交易、`.txn` 一次性對帳);fresh:96 Lane B、99-chanfix、morse 回寫 | provd | 開機不對帳 |
+| `hostname`、`ahwlan.ipaddr` | 改名:helper(先 persist 再 `uci set` + `system reload`);openmanetd 之後重保留 IP 並重開(⚠️ U5) | | §6.6 |
+| 認領窗口、失敗計數、session、`s_node` | provd 記憶體 | | |
+| `boot_id`、`nonce_node`、`nonce_helper` | helper | provd | 一次性,綁 `h` |
 
 ## 4. 契約
 
 ### 4.1 helper socket 與授權
 
-同 v5(= v4 + 改動),本輪改動:
-- `claim.replay` 只接受 **`psk_replay` session**(§1.3 新定義);其餘條件同 v5(state ∈ {claimed,member}、單一擁有者、`owner_pub` 相符、CheckMac + owner-op;helper 計數每 boot 每小時 10 次)。
-- `psks.get()` 回 `{psk_owner[≤4], psk_member, psk_replay, adv_owner, adv_member}`;`psk_replay` 由 helper 以 `ecdh.key` 與 `prov.cbor.owner.enc_pub` 在開機與 prov 變更時算出。
-- `sign.*` 額度:**每條連線**各自 0.5/s、全域 2/s;同時連線 ≤ 2(既有);兩個路人 central 可以佔滿 2 條(協定 §8 既有界線),每連線額度只保護**已連上**的買家那條不被搶(A5-m8/A6-m10)。
-- **app 契約(A6-m10/B6-m7)**:app 在送出 `claim/finish` **之前**,必須先持久化 `node_cert`(含 `ecdh_pub`)與 `claim-pending{device_id, owner_pub}`;否則回應遺失時算不出 `psk_replay`,replay 不可用。進 S5 app addendum 與協定 v0.7。
-- **新動詞 `factory_reset.cancel(owner_op)`**:只在 `resetting-pending` 且不變量 U(§4.5)當下成立時執行,否則 `E_BUSY(cannot-confirm)`;resetting 模式下 provd 對 `status/public` 之外只放行它與 `factory_reset`(重新發起)。root 等價:`batman-provhelper --factory-reset-cancel`(同樣受 U 約束)。
-- 誠實界線(同 v4/v5)。
-- **負測試(依協定 §3.4 改寫,B5-M5)**:沒有正確 PSK 的 central 對已認領節點做 NXpsk0 → 收到格式正確、可解析為 Noise 第 2 則但 payload 為隨機資料的訊息,**解不出 `node_cert`**(不含 `sn`/DAC 結構),連線在交握逾時後才斷;與正確 PSK 的時間分佈在統計上不可分(記錄 50 次的回應時間)。DoS 上限沿用協定 §8(全域 20 次/分):**路人可以吃滿全域額度,這是協定既有的界線**,測試只斷言擁有者在路人停止後 10 s 內可連,並在 §8 列明。
+- `SOCK_SEQPACKET`,一包一則 CBOR map;`SO_PEERCRED` uid == provd 否則關;單連線序列化;請求 ≤ 64 KiB;逾時 30 s。
+- 每個改變節點的動詞都帶 helper 自己能驗、且 helper 自己組被驗內容的授權物件;provd 給的「算好的雜湊 / 挑戰」一律不收。
+- **trial 槽**(`batman-slot is-trial` rc 0):改狀態動詞 `E_BUSY(updating)`;唯讀照常;身分產生照常。
+
+| 動詞 | 授權(helper 驗) | 效果 |
+|---|---|---|
+| `info.cert/ecdh_pub/counter/boot_id/state` | 無 | 唯讀 |
+| `nonce(h)` | 無 | 一次性 `nonce_node`/`nonce_helper`,綁 `h`,60 s |
+| `sign.static`、`sign.ecdh_proof`、`sign.peer(peer_nonce, peer_fields…)` | purpose 固定;helper 依協定 §3.3/§3.6 自己組被簽內容,放入自己的 `boot_id`/`nonce_node` | DAC 簽章;額度:每條連線 0.5/s、全域 2/s |
+| `psks.get()` | 無 | `{psk_owner[≤4], psk_member, psk_replay, adv_owner, adv_member}`(只回 HKDF 導出值,不回 `owner_tag_key`/`net_root`);prov 變更後 provd 重拉 |
+| `claim.verify(h, client_resp, owner_pub, owner_enc_pub, sig_enc)` | helper 以自己發給此 `h` 的 `nonce_node`、自己的 DAC、即將寫入的 `owner_pub` 重算 `ClientChal`(協定 §5.4),`CheckMac` 常數時間;`sig_enc` 以同一把 `owner_pub` 驗;legacy 另需防呆門(§6.1) | §6.1 交易;`legacy\|unclaimed → claimed` |
+| `claim.replay(h, client_resp, owner_pub, owner_op)` | 只接受 `psk_replay` session;state ∈ {claimed, member}、擁有者 1 位、`owner_pub` == 已存;CheckMac(重算)**且** owner-op(`verb=claim/replay`);失敗計數在 helper(每 boot 每小時 10 次) | 回存在 `prov.cbor` 的 `owner_tag_key`、`adv_owner_key`;產新 root 密碼 |
+| `net.apply(net_config, net_secrets[, owner_op])` | `prov.cbor.net` 為空 → 需 owner-op `network/join`(`args_hash = H(net_config ‖ net_secrets)`);否則以上一版 `admins` 驗鏈(版本 +1、不跳號);helper 以 `ecdh.key` 解 `net_secrets`(明文 SAE key / `net_root` 不出 helper) | §4.4 交易 |
+| `owner_op(obj)` | `ES256_owner("batman-owner-op-v1" ‖ h ‖ nonce_helper ‖ verb ‖ args_hash)`;`nonce_helper` 一次性、60 s、綁 `h`;verb ∈ `network/join`、`network/leave`、`owner/*`、`settings/*`、`ssh_keys`、`root_password`、`diag`、`claim/replay` | 授權物件 |
+| `root_password.reset(owner_op)` | owner-op | 新 24 字元 → shadow → `--save` → 回傳一次 |
+| `diag.bundle(owner_op)` | owner-op | helper 的私有暫存檔,O_RDONLY fd,讀完刪 |
+| `ssh_keys.set(list, owner_op)` | owner-op;每行 `^ssh-ed25519 [A-Za-z0-9+/=]+( [^\n]*)?$`、單行、≤ 256 B、≤ 8 行 | 只動 `ssh_keys.added` 清單上的行 |
+
+- 不認得的動詞 / 多餘欄位 / 長度超限 → `E_SCHEMA`;授權失敗 → `E_FORBIDDEN`;trial → `E_BUSY`。
+- **沒有** `keystore.ecdh`(解密 oracle)、`persist`(lkg 升級只由 helper 內部在 `meshjoin_joined` 後做)、`keystore.sign(purpose, msg)`(整段 msg 由 provd 給)、**沒有任何恢復出廠動詞**(U8)。
+- **app 契約**:app 在送出 `claim/finish` **之前**,必須先持久化 `node_cert`(含 `ecdh_pub`)與 `claim-pending{device_id, owner_pub}`;否則回應遺失時算不出 `psk_replay`。進 S5 app addendum 與協定 v0.7。
+- **誠實界線**:Noise 終點在 provd → 被攻陷的 provd 看得到經過它的明文:`claim/finish`/`claim/replay` 回應裡的 `owner_tag_key`、`adv_owner_key`、root 密碼,以及 `psks.get` 的 `psk_member`/`adv_member`/`psk_replay`。`psk_member` 全網共用(協定 §6)→ provd 被攻陷 = 能以成員身分連整個網路每一台的 BLE、追蹤全網廣播;換密碼後 provd 立刻重拉新值,**趕不走持續入侵,只能重燒該台**。helper 守住的是:改網、換擁有者、解 `net_secrets`、讀私鑰。同時連線 ≤ 2,兩個路人 central 可以佔滿(協定 §8 既有界線);每連線額度只保護已連上的買家那條。
+- **負測試**(每條都是「關掉檢查就過」):provd uid 送 `net.apply` 錯簽 / 首版無 owner-op → `E_FORBIDDEN`;`claim.verify(h, resp_買家, owner_pub_攻擊者)` → `E_FORBIDDEN`;`claim.replay` 用不同 `owner_pub` 或無 owner-op → `E_FORBIDDEN`;`keystore.ecdh`/`persist` → `E_SCHEMA`;trial 上 `claim.verify` → `E_BUSY`;沒有正確 PSK 的 central 對已認領節點做 NXpsk0 → 收到格式正確的假第 2 則(解不出 `node_cert`)、等到交握逾時才斷,與正確 PSK 的回應時間分佈在統計上不可分(50 次)。
 
 ### 4.2 keystore 與身分
 
-同 v4(7 檔、rc 表),v5 改動保留(rc 15 = 意圖存在、identity 寫 `prov.tmp`、`ro` 優先),本輪改動:
-- rc 15 時 helper:**不補 persist、不還原、不產生**;判 `resetting`,只開 `status/public`(95 下次開機會完成)。
-- 恢復出廠完成後的第一次開機:p5 是空 ext4(rc 7)、overlay fresh(無 identity)→ 照 rc 7 規則產新身分。**沒有特例**(v5 的 `--clear-tombstone` 刪除)。
+```go
+type Keystore interface {
+    SN() [9]byte; DeviceID() string            // file: sn = SHA-256(node_pub)[:9]; device_id = hex(sn); se: 晶片序號
+    Cert() []byte                               // node_cert DER:鏈 [leaf](file 自簽)/ [leaf, mfr-CA](se)
+    SignPurpose(purpose string, nodeNonce, peerFields []byte) ([]byte, error)  // helper 組訊息;不簽裸值
+    ECDHPub() []byte; ECDH(peerPub []byte) ([]byte, error) // 只在 helper 內部(net.apply、psk_replay)
+    CheckMac(clientChal, clientResp [32]byte) error        // 常數時間;秘密不出 keystore
+    Backend() string                                       // "file" | "se"
+}
+```
+
+`file` 後端 7 檔(`/etc/batman-prov/identity/`,目錄 0700):`node.key`、`ecdh.key`(P-256 PKCS#8,0600)、`node.cert`(自簽 `CN=dev:<device_id>`、`serialNumber=<sn hex>`、2020-01-01 → 2120-01-01,0644)、`claim.secret`(32 B,0600)、`backend`、`sn`、`sha256`(前 6 檔清單)。`claimed_counter` 在 `prov.cbor`(file 後端做不到跨重燒卡單調;608B 才有)。
+
+**身分產生**:helper 只在「overlay 沒有完整 identity **且** p5 沒有完整且 sha 對的 `identity/prov/` **且**非 bypass」時產生:先寫 `.identity.tmp/` 7 檔 → rename 成 `identity/` → `--prov-only --prov-identity`。overlay 完整而 p5 沒有 → **補 persist,絕不重產**;p5 有而 overlay 沒有 → 還原。
+
+**helper `--boot` 對 `--prov-get` 每個 rc 的行為**:
+
+| rc | 意義 | overlay identity 完整 | overlay identity 缺 |
+|---|---|---|---|
+| 0 | p5 有完整 prov + identity | 比 generation(§4.4 步驟 7) | 從 p5 還原 |
+| 7 | p5 ext4、未 seed、無 prov(新卡 / 重燒卡) | 補 persist | **產生** → `prov{unclaimed}` → persist |
+| 9 | p5 seeded、無 prov(legacy 升級) | 補 persist | **產生** → `prov{legacy}` → persist(`--prov-only`,不碰 overrides) |
+| 10 | p5 prov 不完整 / sha 不符 / meta 缺 | 以 overlay 為準 → 重新 persist | `unknown(prov-corrupt)`,不產生 |
+| 13 | p5 有 prov 但 `identity/prov/` 缺或不完整 | 補 persist identity | `unknown(identity-lost)`,不產生 |
+| 1 / 8(3 次) | mount 失敗 / lock busy | 沿用 overlay(非 fresh);persist 一律 `E_PERSIST` | `unknown(p5-unreadable)`;下次開機再試 |
+| 3 | bypass | `unknown(bypass)` | 同左 |
+| 11 | 無 p5 | `unknown(no-p5)` | 同左 |
+| 12 | p5 非 ext4 | `unknown(p5-not-ext4)` | 同左 |
+| 14 | prov `v` 太新 | `unknown(too-new)` | 同左 |
+
+`--prov-get` 以 `ro` 掛(會 replay journal);失敗才退 `ro,noload` 並標 `maybe-stale`(讀到較舊的 gen 時,§4.4 步驟 7「overlay 新 → 以 overlay 為準」會自癒)。`unknown` 每次開機重算。
+
+- `se` 後端(#255):`backend=se` 而 608B 不回應 → helper 拒絕啟動(fail-secure)。焊上 608B = 新身分、新 QR、重新認領。
+- app:鏈長 1 且 CN `dev:` → TOFU pin,畫面標「開發機」;release build 拒絕。鏈長 2 → 製造商根驗證。
+- 開發期 QR:`batman-provhelper qr`(root);`claimed|member` 拒;`legacy` 只在 dev-open 存在或 stdin 是實體 console(`/dev/console`、`ttyAMA*`、`tty1`;不收 `pts`)時執行;stdout 不進任何 log。
 
 ### 4.3 p5 與 `batman-config-save`(PR-P1,兩板共用)
 
 ```
 p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow-root  (不變)
-     identity/prov/{7 檔}, prov.cbor, prov.meta
-     .factory-reset   (格式見 §4.5.1;≤ 128 B;只在恢復出廠提交後到 W2 之間存在;解析一律用 reset-intent.sh)
+     identity/prov/{7 檔}   (寫到 identity/prov.tmp/ 再 rename)
+     prov.cbor   ({v:1, generation, state, radio_managed, claimed_counter, owner{pub,enc_pub,tag_key,adv_key}, admins[], net{config,secrets}, members, ssh_keys[]})
+     prov.meta   (一行 "v=1 state=<s> gen=<n> sha=<hex64>";≤ 256 B;字元集 [a-z0-9=_ ];未知 key 忽略;v>1 → too-new;最後寫 = commit 紀錄)
 ```
 
 | 模式 | 內容 |
 |---|---|
-| `--prov-only …` | 同 v5;`.factory-reset` 存在 → 拒寫(rc 1) |
-| `--prov-get d` | 同 v5;`.factory-reset` 存在 → rc 15 |
-| **`--reset-intent <nonce> --slot <A\|B>`** | 定義見 §4.5.5(rc 0 / 10 / 11 / 12、鎖 fd 交接、tmp 檔寫法)。既有寫入模式鎖忙仍回 rc 1(不改) |
-| `--on-join` / `--save` / `--seed` / `--if-healthy` | 同 v5;`.factory-reset`、p6 marker 或 overlay `.txn`(只 `--on-join`)存在 → rc 1 |
-| `--check` | 同 v5;`.factory-reset` → `p5 resetting`(rc 5) |
-| `final_rc` | `root:!` 視為已上鎖(v5) |
+| `--prov-only --prov-file f --prov-meta m [--prov-identity d] [--txn tok]`(新,只有 helper) | 取鎖(同 `--save`)→ 驗 `m` 格式與 sha、`f` regular ≤ 64 KiB;`--prov-identity` 驗 7 檔 + sha,p5 沒有完整 identity 時才寫 → 順序:identity → `prov.cbor` → `prov.meta` 最後 → sync。不碰 `.seeded`、overrides、lkg、dropbear identity、shadow。p5 未 seed 也可寫。rc:0 / 1 錯誤 / 8 lock busy(無 rc 6)。rc ≠ 0 時 helper 一律用 `--prov-get` 讀回 `gen` 判定 |
+| `--prov-get <dir>`(新,唯讀) | 抄 `prov.cbor`、`prov.meta`、`identity/prov/` 到 `<dir>`(root 0700);rc 表 §4.2 |
+| `--on-join`、`--save`、`--seed`、`--if-healthy` | 不寫、不刪、不比對 prov 檔(fp、`same_identity` 排除 `identity/prov/`、`prov.*`);`$RUNDIR/prov-txn` 有效 → `--on-join` rc 1(下 tick)、`--save` 等 ≤ 10 s;overlay `.txn` 存在 → `--on-join` rc 1 |
+| `--check` | 另比 overlay / p5 `prov.meta`:不同 → `p5 stale: prov`(rc 5);`batman-slot` 的 `P5_STALE_HINT` 對 `prov` 改寫成「helper 會在下一次開機補寫;仍 stale → `batman-provhelper --persist-now`」 |
+| `final_rc` 的「root 有沒有密碼」 | `root:!` 視為「已上鎖」:`--on-join` 回 0 不回 4 |
+| `mark_mesh_expected()`、`seed_key_ok()`、lkg 規則 | 不改 |
 
 `96`(PR-P1):
-- 每個出口寫 verdict(含 boot_id)。
-- 解析器回 `intent` 或 `bad` → verdict `resetting`、不還原任何東西、依 §4.5.7 上鎖(並 touch 鎖記號)、exit;回 `unreadable` 而 p6 的重置證據成立 → 同樣上鎖;回 `n/a` → 照 v4 rc 表的 `unknown` 處理,不因重置上鎖。
-- prov 抄寫在 `.seeded` 檢查之前(v4)。
-- **上鎖在每一個出口之前判斷**,出口完整清單(A5-m10/B5-m3):`:64` bypass、`:67` 無 p5、`:71` 非 ext4、`:89-91` mount 失敗、`:93` 未 seed、正常結尾:
-  - 讀得到 p5 `prov.meta` 且 state ∈ {claimed,member} → 上鎖;
-  - 讀不到 p5(`:64/:67/:71/:89`)而 p6 `prov-state` 的 `last_known_state` ∈ {claimed, member, resetting} → 上鎖(`resetting` 由 §4.5.6 W1 寫入)。
-  - 上鎖 = `PasswordAuth=off`、`RootPasswordAuth=off`、`ttylogin=1`、`LOCKED`,root 無 hash → `root:!`;dev-open 不豁免;
+- 每個出口寫 `/etc/.batman-prov-restore`(含 boot_id)。
+- **prov 抄寫放在 `.seeded` 檢查(`:93`)之前**:p5 `prov.meta` 格式對、sha 對、`prov.cbor` regular ≤ 64 KiB → 抄 `prov.*`(0600);`identity/prov/` 驗 sha 清單後抄(只 regular file、0600/0644)。meta `v` 太新 → 不抄。
+- **上鎖在每一個出口之前判斷**(`:64` bypass、`:67` 無 p5、`:71` 非 ext4、`:89-91` mount 失敗、`:93` 未 seed、正常結尾):
+  - 讀得到 p5 `prov.meta` 且 state ∈ {claimed, member}(不論 `prov.cbor` 有沒有抄成功)→ 上鎖;
+  - 讀不到 p5(`:64/:67/:71/:89`)而 p6 已掛且 `prov-state` 的 `last_known_state` ∈ {claimed, member} → 上鎖;
+  - 上鎖 = `PasswordAuth=off`、`RootPasswordAuth=off`、`ttylogin=1`、`lock-status=LOCKED`(p6 已掛時),root 無 hash → `root:!`;dev-open 不豁免;
   - 其他 → 今天的 4b。
+- 單元測試:96 對每個出口 × 有 / 無 prov × 4 種 state × meta 壞 / 好。
 
 ### 4.4 交易式 `state.apply`
 
-同 v5,本輪改動:
-- 步驟 1 寫 overlay `.txn` 後 **fsync 檔與目錄**;`.txn` 內含變更前的 wireless 值(mesh key、mesh_id、channel、AP key/disabled),首次 join 與 legacy 也有定義(B5-m7)。
-- 步驟 6(開機見 `.txn`):gen_from → **在 helper 背景**(不阻塞 `--boot`、不阻塞 provd 啟動)等 `meshjoin_radio_up` 或 120 s,然後以 `halow-setkey`(會 persist)**改回 `.txn` 記錄的變更前值**,刪 `.txn`;gen_to → 補步驟 4–5。期間 `--on-join` 因 `.txn` 讓路。
-- 操作員在 `.txn` 存在期間(秒級)跑的 `halow-setkey` 會被對帳改回:只在交易被斷電打斷時發生,寫進 halow-setkey 的警告與殘項(A5-m9)。
+以 `net.apply` 為例(`claim.verify` 見 §6.1):
+1. helper 產 token → `$RUNDIR/prov-txn` + overlay `.txn`(含變更前的 wireless 值;fsync 檔與目錄);在 `.stage/` 組新 `prov.cbor`(gen n+1)+ `prov.meta`。
+2. 可失敗的副作用:`halow-setkey … --no-persist`(它仍會 `uci commit wireless`,F5)。失敗 → 反向 setkey `--no-persist`、清 stage / txn、`E_APPLY`。
+3. `--prov-only --txn tok`;rc ≠ 0 → `--prov-get` 讀回:gen == n+1 → 已提交,走步驟 4;gen == n → 回滾步驟 2、`E_PERSIST(rc)`。
+4. rename overlay 的 `prov.cbor`、`prov.meta`(fsync)→ 刪 `prov-txn` 與 `.txn`。
+5. 不可失敗的副作用(鎖、shadow、AP)→ `--save`(帶 overrides 與 shadow-root;rc 6 = 其餘已寫,log;rc 1 → log,下次開機 `--check` stale 由 helper 補)→ 寫 `prov-state`。
+6. **開機時 `.txn` 存在**(步驟 1–4 間被打斷):`--prov-get` 判 p5 gen:== gen_to → 已提交,補步驟 4–5;== gen_from → 未提交:在 helper 背景(不阻塞 `--boot`、不阻塞 provd)等 `meshjoin_radio_up` 或 120 s,然後以 `halow-setkey`(會 persist)改回 `.txn` 記錄的變更前值,刪 `.txn`。期間 `--on-join` 讓路。沒有 `.txn` 的開機不對帳 wireless。
+7. 開機 gen 比對:p5 新 → 以 p5 重建 overlay 的 prov;overlay 新 → 以 overlay 為準重新 `--prov-only`,log `p5 lost a committed prov write`;相等 → 不動。`.stage/` 殘留一律丟棄。
+8. `--apply-state`(開機與 helper 重啟後):完成未完的轉換看實際值(PasswordAuth、RootPasswordAuth、ttylogin、shadow),不看 `lock-status`;legacy / unclaimed 不寫鎖定欄位與 AP;`--firstboot`(99zz,S10)只寫 `prov-state`(writer=99zz),不 reload、不 persist、不碰 uci。
+9. 操作員對 `radio_managed=1` 節點跑 `halow-setkey`:照做(現場要能改),但印警告「this node is app-managed (member): the change is not in the network config — other members and the app still use the old value; change it from the app」;prov 不改、開機不改回。`.txn` 存在期間(秒級)的操作員 setkey 會被步驟 6 改回,只在交易被斷電打斷時發生(殘項)。
 
-### 4.5 恢復出廠(v10:本節自足,不再引用前版;形狀同 v6–v9)
+### 4.5 轉賣與全清(U8:階段 1 = 重燒卡)
 
-#### 4.5.1 名詞與資源(本節唯一定義;§3 的對應列只指向這裡)
+- **app**:擁有者頁面的「轉賣 / 交給別人」只顯示說明,不呼叫任何節點動詞:「用讀卡機把 SD 卡取出,以 Batman 燒卡工具重燒整張卡;最安全是換一張新卡」。附燒卡工具與 image 的下載說明。
+- **重燒後的結果**(F19):`flash-card.ps1` 清空分割表並寫入整張 A/B image;p1–p6 都是 image 裡的新內容,p5/p6 是新的 ext4。第一次開機:96 看到未 seed 的 p5 → image 預設;99 重新個人化(hostname 依 MAC,與重燒前相同);helper rc 7、overlay 無 identity → 產新身分 → `prov{unclaimed}`,認領窗口開。舊 QR 的 `claim.secret` 已不存在 → 無效;前任 app 的 `psk_owner` / `psk_replay` 對不上新身分 → 連不上;前任的 SSH key 不在新的 `authorized_keys` → 被拒。
+- **誠實界線**:重燒不是安全擦除;SD 卡的磨損平均讓舊區塊可能被鑑識工具讀回(219 §7)。新卡的身分與 QR 需由 root 取得(`batman-provhelper qr`,經乙太網或 serial;unclaimed 的 image 預設是空密碼)——階段 1 限制,#255 的 608B 會把身分與 QR 固定在晶片上。hostname / SSID 依 MAC 產生,重燒後不變(前後兩任可被串連,殘項)。
+- **重燒前節點要不要先做任何事**:不需要。舊 p5 / p6 的內容在重燒時被新的檔案系統取代;節點端沒有任何狀態會撐過重燒。
+- **#255 之後**:身分在 608B,重燒卡不換身分;「曾被認領」由晶片單調計數器記錄;app 端的恢復出廠(清擁有者與網路、保留身分)在 #255 重新設計。本文件不預留任何恢復出廠的資源或動詞。
 
-| 資源 | 格式 / 位置 | 寫者(依時段) | 讀者 |
-|---|---|---|---|
-| **意圖** p5 `.factory-reset` | 一行,固定欄位順序 `reset v=1 nonce=<16 hex> slot=<A\|B> attempts=<1–3 位數字>[ p6uuid=<36 字元 [0-9a-f-]>]`,≤ **128 B**(含 p6uuid 實算 95 B,A9-m2) | F3:`--reset-intent`(建立);W0:attempts+1;W1:附 `p6uuid`;W2:mkfs p5 = 消失 | 解析器(所有讀者共用) |
-| **解析器** `/usr/lib/batman/reset-intent.sh` | 輸出 5 種:`none`(p5 可讀、無意圖檔)/ `intent <nonce> <slot> <attempts> [<p6uuid>]` / `bad`(存在但不合格式)/ `unreadable`(p5 存在、是 ext4、非 LUKS,但掛不起或讀錯)/ **`n/a`(沒有 p5 分割、p5 非 ext4、或 LUKS,B9-M1/A9-m8)** | — | 95、batdata-mount、96、config-save、helper、`node_checks` |
-| **marker** p6 `/opt/batdata/state/factory-reset.inprogress` | 0600,`<nonce> <step> <f3> <resume_n>`;`f3` ∈ `-`/`called`/`ok`/`notwritten`/`uncertain` | helper(F1 建立;每步更新;解凍時刪)。step 在**同一個 marker 的生命期內**只增不減;解凍會刪 marker,重新發起時建新 marker 從 1 開始(A9-m6/B9-m11 的矛盾消除) | helper、config-save、`node_checks`、guardian 範本 / firstload / dockerd / joinwatch init |
-| **哨兵** overlay `/etc/batman-reset.sentinel` | 非 dot 檔,內容 nonce | helper F1 建立;**刪除者只有**:F4/W0 的 overlay 清除、以及 U 成立時的解凍 | batdata-mount、helper |
-| **鎖記號** overlay `/etc/batman-reset.locked` | 空檔 | 依 §4.5.6 L 上鎖的一方 touch | batdata-mount |
-| **重置鎖** `$RUNDIR/reset.lock` | `flock(2)`(busybox `flock` = flock(2),A9 實測);run dir 是 root 0700 tmpfs;程序死亡即釋放 | 見 §4.5.2 | — |
-| **重置證據 E**(B9-M1/A9-M1) | 本機在做(或做過一半)重置的跡象:哨兵在 **或** 鎖記號在 **或** p6 marker 在 **或** p6 `prov-state` 的 `verdict`/`last_known_state` = `resetting` | — | batdata-mount、helper |
+### 4.6 BLE 平台(04 spike 實測)
 
-#### 4.5.2 重置鎖的持有與交接(A9-m1/B9-m1)
-
-- helper 在 F0 以一個 fd(Go `os.File`)`flock(LOCK_EX)` 取鎖,直到 F5 或解凍結束。
-- F3 呼叫 `batman-config-save --reset-intent` 時,**把這個 fd 當作 ExtraFiles 傳給子程序**,並設 `BATMAN_RESET_LOCK_FD=<n>`;config-save 見到這個 env 且 `flock -n <n>` 成功(同一 open file description,自己已持有)→ 不再另取。沒有這個 env → config-save 自己 `flock -w 10` 取鎖,取不到 → rc 10(忙)。
-- 子程序繼承的 fd 讓**孤兒 config-save 繼續持鎖**:helper 死了、config-save 還在寫 → 新 helper 拿不到鎖 → U 不成立 → 不解凍(這是要的)。
-- helper 的其他子程序一律不繼承(Go 預設 CLOEXEC);shell 端(batdata-mount)只在子 shell 內開鎖 fd:`( flock 9; … ) 9>"$RUNDIR/reset.lock"`,子 shell 結束即釋放,不被 `setsid sleep … &` 這類背景程序帶走(A9-m1 引 `batman-slot:773`)。
-- **解析器本身不取鎖**(只讀)。
-- `RDOK=0`(run dir 不可用,#280)→ 不能取鎖 → 恢復出廠一律 `E_PRECOND(no-rundir)`;W 階段在 `RDOK=0` 時只做 W0 之前的判斷並停住(凍結 + 上鎖),不清任何東西。
-- 孤兒卡在 D-state(永遠不死、永遠持鎖)→ U 永遠不成立 → 歸 bench(寫明,A9-m9)。
-
-#### 4.5.3 不變量 U(解凍唯一規則)
-
-任何解凍(撤銷、`factory_reset.cancel`、以新 nonce 重新發起)只在同時成立時才做:
-1. 持有重置鎖;
-2. 鎖內以解析器重讀 p5 = `none`;**p5 已被其他程序掛著(在 `/proc/mounts`)→ 不讀,視為忙**(共用 superblock 可能讀到過時內容,A9-m5);
-3. 沒有活著的 `--reset-intent` 程序。
-
-不成立 → 凍結;有意圖 → 只能往前完成;`unreadable` → `reset-uncertain`。
-解凍步驟本身**冪等**:`[ -d apps.reset ] && [ ! -e apps ] && mv -T apps.reset apps`;SD 標記、哨兵、marker 用 `rm -f`;服務 start 重複無害(A9-m9/B9-m11)。
-
-#### 4.5.4 前置條件與 sysupgrade 程序判定
-
-前置(任一不成立 → `E_PRECOND`):committed 槽;tryboot 未 arm;p6 已掛、無 `batman-storage.crit`、非 LUKS、`PARTNAME=data`;解析器回 `none`(回 `intent` → 接手,§4.5.5 F3 rc 12;`n/a` → `E_PRECOND(no-p5)`);`/overlay` 不是 tmpfs;非 bypass;`RDOK=1`;`batman-slot` 不在執行;`$RAM_ROOT/sbin/upgraded` 不存在(否則 `ota-residue`「請先重開機」)。p6 壞的節點不能用恢復出廠,只能重燒卡。
-sysupgrade 程序判定:uid 0、`/proc/<pid>/ns/pid` == `/proc/1/ns/pid`、`readlink -f`(以 `/proc/<pid>/cwd` 為基準)解析 argv[1] == `/sbin/sysupgrade`。§6.4 的 D27 用同一定義。
-
-#### 4.5.5 執行期(helper)
-
-| 步 | 動作 | 失敗 |
-|---|---|---|
-| F0 | 取重置鎖;`nonce`;`slot` | — |
-| F1 | marker `<nonce> 1 - 0`;哨兵(fsync 檔與目錄);`resetting-pending`;`joinwatch stop`;config-save 寫入模式拒寫;再查 sysupgrade 程序 / `upgraded` | 解凍(此時 p5 必為 `none`,U 成立) |
-| F2 | payload `stop`、`dockerd stop`、`mv -T apps apps.reset` | `mv` 失敗 → 解凍 |
-| F2b | `batman-slot invalidate-other` | 失敗 → 解凍 |
-| F3 | marker `step=3 f3=called` → `--reset-intent <nonce> --slot <slot>`(帶鎖 fd)→ marker `f3=<結果>` | 見下 |
-| F4 | marker step=4;刪 SD 標記;dot sweep;`rm -f /overlay/sysupgrade.tgz`;`jffs2reset -y` | 失敗 → log 繼續(W0 補做) |
-| F5 | `sync; batman-slot reboot committed "factory reset"` | — |
-
-**`--reset-intent` 的 rc**(判準 = `rename(2)` 是否已被呼叫):
-- 寫法:`rm -f .factory-reset.tmp` → 寫 `.factory-reset.tmp`(同目錄、固定名稱)→ `fsync` 檔 → `rename` → `fsync -d` 目錄 → umount → `ro` 重掛讀回。
-- **0** = 讀回相同;**10** = rename 之前停止(marker nonce 不符、LUKS、p5 已掛、鎖忙、rw 掛不起或掛成 ro(#202 T11)、寫 tmp 失敗);**11** = rename 呼叫之後的任何失敗;**12** = 開始時已有意圖(不寫、不覆蓋)。
-- 解析器忽略 `.factory-reset.tmp`;下一次 `--reset-intent` 開頭 `rm -f` 它。
-
-**helper 對 rc 的處理**:
-- **0** → F4。
-- **11 / 逾時 / crash** → 當已提交 → F4。
-- **12**(接手既有意圖,A9-m6/B9-m6):意圖 slot ≠ active → `E_RESET(intent-other-slot)`,維持凍結(等槽被帶回);`bad` → 凍結 + crit;否則把 marker 與哨兵的 nonce 改寫成意圖的 nonce → F4。
-- **10** → 依 U 重讀:`none` 且原因是「忙 / T11」→ 每 5 s 重試到 60 s,仍 10 → 解凍、`E_RESET(p5-busy)`(可重試);`none` 且其他原因 → 解凍、`E_RESET(p5-unwritable)`「請換卡」;重讀不是 `none` → 不解凍,依結果往前或 `reset-uncertain`。
-
-**helper 啟動判斷表**(開機與 respawn;p6 有沒有掛 × marker × 解析器 × E):
-
-| p6 | marker | 解析器 | helper |
-|---|---|---|---|
-| 沒掛 | — | 任意 | 不寫 p6;依解析器:`intent`/`bad` → `resetting` 凍結;其他 → `unknown`;status `p6-unmounted` |
-| 掛 | 不在 | `none` / `n/a` | 正常(`n/a` → `unknown(no-p5…)`,同 v4 rc 表) |
-| 掛 | 不在 | `intent` | W1 已清 p6、W2 未完成 → `resetting` |
-| 掛 | 不在 | `unreadable` | **E 不成立 → `unknown(p5-unreadable)`,不凍結**(B9-M1:從沒重置過的節點不受影響);E 成立(哨兵或鎖記號)→ `reset-uncertain` |
-| 掛 | 在 | `none` | `f3` ∈ {`-`,`notwritten`} → `resetting-pending`;否則依 U 重讀,仍 `none` → `resetting-pending` |
-| 掛 | 在 | `intent`(slot 相符) | 從 F4 續做,`resume_n`+1;> 3 → `reset-stuck resume` |
-| 掛 | 在 | `intent`(slot 不符) | 不動,等槽帶回 |
-| 掛 | 在 | `unreadable` | `reset-uncertain`:凍結、不 cancel |
-| 掛 | 任意 | `bad` | 凍結;crit;bench |
-| 掛 | 在 | `n/a` | 不可能由 F 階段產生(前置要求 p5 可讀);crit `reset-marker-no-p5`,解凍(U 的第 2 條改以「`n/a` = 不可能有意圖」成立) |
-
-- cancel:只在 `resetting-pending` 且 U 當下成立。重新發起:`resetting-pending` 且 U 成立 → 刪舊 marker、從 F0;解析器回 `intent` → rc 12 接手。
-
-#### 4.5.6 下次開機(batdata-mount `reset_wipe()`,只由 `boot()` 呼叫)
-
-位置:`boot()` 最前面,LUKS open 之後、掛 p6 之前、閂之前。`batdata-mount start/restart` 不呼叫。95 本體見解析器 `intent`/`bad` → 略過步驟 3/3b,步驟 4(寫 INIT)照做,步驟 5 呼叫 `boot()`。95 在寫 INIT 之前就 exit → W 不跑(意圖留著 → 96 上鎖)。
-
-**fresh 與非 fresh**(B9-m5):`/etc/uci-defaults/96-batman-config-migrate` 還在 = 本 overlay 的 96 還沒跑 = fresh(96 稍後會依意圖上鎖);不在 = 非 fresh(batdata-mount 自己上鎖)。這決定 §4.5.7 L 由誰做,三個寫者因此不重疊。
-
-**解析器結果 → 動作**:
-
-| 解析器 | 動作 |
+| 項 | 定案(firmware `feat/254-ble` a5e181b7;policy plugin 修正未重 build) |
 |---|---|
-| `none` | 若鎖記號在 → **R-locked**(下述);否則今天的流程 |
-| `n/a` | 今天的流程(不凍結、不上鎖;96 依 v4 rc 表處理 `unknown`)。鎖記號在也**不**觸發 R-locked(只認 `none`,B9-M1) |
-| `unreadable` | 先以 `ro` 掛 p6 到私有點讀 E 的 p6 部分(marker、prov-state),卸載 → **E 成立** → 凍結:不掛 p6、上鎖(L);**E 不成立** → 今天的流程(不上鎖、不建鎖記號,A9-M1/B9-M1) |
-| `bad` | crit;不清、不掛 p6;上鎖(L) |
-| `intent` | Wa → Wt → W0 → W1 → W2(下表) |
+| kernel | `kmod-batman-bt`:`CONFIG_BT=m`、`BT_BREDR=n`、`BT_LE=y`、`BT_HCIUART=m`(SERDEV / BCM / H4)、RFCOMM/BNEP/HIDP/btusb/btsdio 全 n;內建 bool `CONFIG_SERIAL_DEV_CTRL_TTYPORT=y`(改 `kernel8.img`,OTA 帶得到);FILES = bluetooth.ko、btbcm.ko、hci_uart.ko;`ble_diffconfig` deselect `kmod-bluetooth*`、`bluez-utils*`、`kmod-ath3k`、`ar3k-firmware` |
+| 韌體 | `brcm-bt-firmware-4345c0`:`BCM4345C0.hcd`(63806 B,sha256 51c45e77…,RPi-Distro/bluez-firmware pios/trixie blob 007611e)+ LICENSE.cypress |
+| BlueZ | board patch 0012:`bluez-daemon` = bluetoothd + bluetoothctl;不裝 obexd/hciattach/rfcomm/gatttool/sdptool、上游 main.conf / dbus policy / init;`bluez-libs` 依賴 `kmod-batman-bt` |
+| `main.conf` | `Name=Batman`、`ControllerMode=le`、`AlwaysPairable=false`、`PairableTimeout=0`、`DiscoverableTimeout=0`、`JustWorksRepairing=never`、`Privacy=device`、`NameResolving=false`、`[GATT] Cache=no`、`[Policy] AutoEnable=true`;不裝 agent;provd 開機斷言 Pairable==false && Discoverable==false |
+| dbus | 自己的 `bluetooth.conf`:只有 `<policy user="root">`(own/send org.bluez + 6 個 send_interface),無 default policy;PR-P2 加 `<policy user="provd">` 同一組 |
+| init | `START=61 STOP=20`、`respawn 3600 5 0`、`--noplugin=hostname,autopair,battery,neard,sap`(policy 留著);無 hci0 時照跑等熱插拔 |
+| distroconfig | `[pi4] core_freq_min=500`;p1 與 p3 兩份手動改(04 ✅、02 ❌);typo 不動(U7) |
+| 3A+ | `[pi3]` `disable-bt` → `miniuart-bt` + `core_freq_min=?`(待板) |
+| 待量 | AP 吞吐 vs BLE 共存;遮蔽 / 外殼對 RSSI;500 MHz 耗電 |
 
-| 步 | 條件 / 動作 | 失敗 |
+### 4.7 procd / ujail
+
+| 服務 | START / STOP | 說明 |
 |---|---|---|
-| Wa | slot ≠ `batman_slot` → 不清;照常掛 p6;autocommit 見意圖不 commit;`node_checks` 拒 OTA | — |
-| Wt | `/overlay` 是 tmpfs → crit;不清、不掛舊 p6;上鎖 | — |
-| W0 | 哨兵在 → 子 shell 取重置鎖 → rw 掛 p5、attempts+1、fsync、讀回 → 放鎖 → 成功且 ≤ 3 → dot sweep → `jffs2reset -y` → **確認 `/overlay/upper/etc/batman-reset.sentinel` 已不存在**(jffs2reset 不回報刪除失敗,B9-m3/A9-m4)→ 是 → `batman-slot reboot committed` → `return`;否則 crit `reset-stuck overlay`,不清、不掛舊 p6、上鎖、**不重開** | 不會無限重開 |
-| W1 | 哨兵不在:`blkid -p -s UUID -o value` p6(`-p` 不用快取,A9/B9-m8)== 意圖 `p6uuid` → 略過;否則守門 → mkfs p6 → 取新 UUID(`blkid -p`;格式不合 → crit,不寫回)→ 子 shell 取鎖 → 寫回意圖行(tmp + fsync + rename + 讀回;失敗 → crit,下次開機 p6 會再清一次,冪等)→ 掛新 p6 寫 `state/prov-state`(`verdict=resetting last_known_state=resetting`)→ 卸載 | mkfs 失敗 → crit、不掛舊 p6、不做 W2 |
-| W2 | 守門 → mkfs p5 = 意圖消失 → **若鎖記號在 → 同一次開機立刻 R-locked**(不等下次,A9-m4/B9-m2) | 失敗 → crit;照常掛新 p6;上鎖 |
+| dbus | 60 | 既有 |
+| bluetoothd | 61 / K20 | §4.6 |
+| batman-provhelper | 89 / K15 | `--boot`、health、`ble-ok` |
+| batman-provd | 92 / K10(在 bluetoothd / dbus 之前停) | ujail:uid/gid `provd`、`no-new-privs`、capabilities 空、唯讀 `/`、只掛 `/tmp/run/batman-prov` 與 dbus socket;`respawn 3600 5 0` + 自己退避 |
 
-**R-locked**(鎖記號在、解析器 `none`):dot sweep → `jffs2reset -y` → 確認 `/overlay/upper/etc/batman-reset.locked` 已不存在 → 是 → `batman-slot reboot committed` → `return`;否則 crit `reset-stuck locked`、**不重開**(B9-m3)。W2 與 R-locked 之間斷電 → 下次開機解析器 `none` + 鎖記號在 → 補做;清掉就不會再觸發 → 無迴圈。
+### 4.8 GATT / 廣播
 
-#### 4.5.7 L(因意圖或重置證據而上鎖)
-
-- 執行者:fresh overlay → 96;非 fresh → batdata-mount。
-- 內容:`PasswordAuth=off`、`RootPasswordAuth=off`、`ttylogin=1`、root 無 hash → `root:!`、touch 鎖記號。
-- `lock-status` 只在 p6 **已掛**時寫;batdata-mount 在凍結(不掛 p6)時不寫,改寫 `$RUNDIR/lock-status.override`,`halow-status` 優先讀它(B9-m12)。
-- 96 的提示集合:p5 讀不到時,p6 `prov-state` 的 `last_known_state` ∈ {claimed, member, **resetting**} → 上鎖(A9-m3/B9-m4;W1 寫的 `resetting` 因此有讀者)。
-
-#### 4.5.8 p6 沒掛的開機
-
-- guardian 範本、firstload、dockerd 的檢查:「marker 存在 **或** `/opt/batdata` 不是 mountpoint → 不啟動」。
-- joinwatch 只看 marker。
-- 96、99zz、helper、autocommit 寫 p6 前先 `mountpoint -q /opt/batdata`。
-
-#### 4.5.9 降版與 `-F`(L58,A9-m7/B9-m10)
-
-- 重置進行中(marker 或意圖存在)時,`node_checks` 拒絕任何 OTA,包括降版。
-- 若操作員以 `-F` 降版到沒有本功能的 image:舊 96 會還原前任(p5 還沒被清),舊 batdata-mount 會掛 p6(`apps.reset` 不會被拉起)。節點回到前任狀態,重置沒有完成。**之後只要升回有本功能的 image 寫進意圖槽,W 就會在那次開機執行**——可能是幾個月後,而且沒有提示。
-- 處置:新 image 的 stage 1 遇到意圖時,不是單純拒絕,而是印出 `REFUSING: a factory reset from <nonce> is pending — it will wipe this node on the next boot of slot <slot>; finish it (reboot) or cancel it first`;`-F` 仍是操作員責任。寫進 §5 矩陣 L58。
-
-#### 4.5.10 結果斷言與負對照(L16,在 04)
-
-- **結果斷言**:同 v8,另加 `blkid -p` 看 p5/p6 UUID 都換了、哨兵與鎖記號都不存在、p6 `log/factory-reset.log` 有 completed、終態未上鎖(image 預設)。
-- **負對照**:(a)–(u) 沿用 v8/v9 的定義(定義搬入 PR-P1 的測試計畫檔),其中:(m) 改用 `p6uuid`;(n) 加「容器 root」「相對路徑」。新增:
-  - (v) 從沒重置過的節點,白箱讓 p5 掛不起一次 → **不上鎖、沒有鎖記號**;p5 恢復後 overlay **沒被清**(v9:上鎖 + 之後被清,A9-M1/B9-M1);
-  - (w) LUKS / 無 p5 的 image → 解析器 `n/a`、正常開機;
-  - (x) F3 帶鎖 fd 的交接 → 一次成功(v9 照字面:rc 10 永遠失敗,A9-m1/B9-m1);
-  - (y) jffs2reset 刪不掉鎖記號(白箱 chattr 或 bind-mount 唯讀)→ 不重開、crit;
-  - (z) 意圖行含 `p6uuid`(95 B)→ 解析為 `intent`,不是 `bad`。
-- **誠實界線**:同 v9。
-
-### 4.6 BLE 平台、4.7 procd、4.8 GATT
-
-同 v4,v5 的改動保留:無 S13 init;marker 檢查加在 `payload-guardian.sh` 的 `start_service`(image 範本)、`batman-ots-firstload` `boot()`、dockerd init(patch)、joinwatch init;§4.8 無匿名 NX 例外。
+照 `219-protocol.md` §4.1;MTU 協商、分段、序號;單則 ≤ 8 KiB,上限經 `CTRL/info` 回報;未交握只 `status/public`(格式版本、能力位元、`legacy|unclaimed` 時才帶 `device_id` 末 4 字元);adv 不帶 Local Name;同時連線 ≤ 2;未交握 10 s;失敗 3 次 / 連線;trial 時 `status/public` 帶 `updating=1`;已認領節點沒有匿名 NX 例外(replay 走 `psk_replay`)。
 
 ## 5. 生命週期矩陣
 
-v4 L1–L39、v5 L40–L47 保留,以下改動:
+| # | 路徑 | 今天(1.5.12) | 階段 1 後 | 測試(負對照) |
+|---|---|---|---|---|
+| L1 | first boot,新卡 / 重燒卡 | 96 `:93` exit | 96 verdict `unseeded`;helper rc 7 → 產身分 → `prov{unclaimed}`(p5 未 seed 也寫);AP 關;dropbear image 預設 | `prov-firstboot-254`:`status/public` 可讀、`hci0` up、AP 關、`identity/` 0700、p5 有 `identity/prov/` 7 檔(負:rc 1 時不產生) |
+| L2 | boot(member,非 fresh) | — | gen 相等 → `--apply-state` 只 log 漂移、不對帳 wireless | `prov-boot-254` ×3:無 `wifi reload` log、gen 不變、prov-state boot_id 是本次 |
+| L3 | clean shutdown | — | provd K10 先停 | boot-reasons 乾淨 |
+| L4 | reboot | 同 L2 | 同 L2 | |
+| L5 | OTA 到本 image(fresh overlay) | 96 還原 | + 96 抄 prov;claimed/member 96 上鎖;前置:p1 與 p3 的 `core_freq_min` | `prov-ota-254`:claim+join → OTA → 新槽 member、gen 同、AP 同;`prov-lock-failsecure-254`:白箱把新 image 的 helper 換成 `exit 1` → claimed 節點 OTA 後密碼登入被拒;白箱讓 96 在 `:89` exit + p6 `last_known_state=claimed` → 仍上鎖 |
+| L6 | autocommit commit / revert | `.seeded` / marker → NEED_MESH=1 | §6.4 | §6.4 負對照 |
+| L7 | 斷電 / helper 死在 `state.apply` | — | 步驟 2–3 間:uci 已 commit、p5 未變 → 開機 `.txn` 一次性對帳(會 persist);3–4 間:p5 新 → 重建;4–5 間:鎖未做 → `--apply-state` 補做 | `prov-powerloss-254`:三個點;斷言 wireless == prov、p5 overrides == prov、04 在前兩點後仍可用 key 登入 |
+| L8 | provd crash loop | — | 無限 respawn + 退避;認領結果在 helper / p5 | `prov-respawn-254` |
+| L9–L11 | bluetoothd / dbus / helper 重啟 | — | provd `NameOwnerChanged` 重註冊 / 重連;無 hci0 → health `hci0_powered=0` | 各一 |
+| L12 | downgrade 到 1.5.12 | — | 舊 96 還原 overrides + dropbear identity + shadow;LOCKED 若 authorized_keys 有行;無 BLE;`claimed` 未入網 / `member` 單台 / unclaimed 會被舊 autocommit revert,要 `batman-slot commit`;claimed 節點降級後舊 96 對「無 key 有密碼」判 UNPROVISIONED、`ttylogin` 預設 0 → serial 給 root shell(fail-open,實體威脅);p5 多出的 prov 檔舊程式不認、不刪 | `prov-downgrade-254` |
+| L13 | bcm2710 | — | ❌ 等新板;共用檔未測 | — |
+| L14 | bcm2711 | — | 本文件 | 全部 |
+| L15 | `batman_bypass=1` | 96 exit 1 留著 | `unknown(bypass)`;不產生;persist 拒 | `prov-bypass-254` |
+| L16 | 轉賣 = 重燒卡 | — | §4.5 | `prov-reflash-254`:已認領 + 入網的節點 → 重燒卡 → 新 `device_id`、舊 `claim.secret` 無效、前任 `psk_owner`/`psk_replay` 連不上、前任 SSH key 被拒、p5/p6 UUID(`blkid -p`)都換了。**需要現場插拔 SD 卡** → 使用者到現場時跑(❌ 未排) |
+| L17 | legacy 升級(02/04) | — | helper rc 9 → 產身分 → `prov{legacy}`(`--prov-only`,不碰 overrides,trial 上也安全);AP/dropbear/lock/`mesh-expected` 不動;autocommit 今天的規則 | `prov-legacy-upgrade-254`(04):AP key、lock-status、authorized_keys、mesh-expected 不變;負對照:04 OTA 到 `radio1.disabled=1` 的 trial → revert |
+| L18 | legacy 認領 | — | 防呆門;`radio_managed=0`;不清 lab key | 04(已有 lab key,Q6)正;02 正;另做「無 key、無 dev-open」的白箱 → `E_UNSUPPORTED(no-ssh-key)` |
+| L19 | distroconfig 改動 | — | 不隨 OTA;p1 與 p3 手動改 | PR-F(04 ✅ 40/40 500 MHz) |
+| L20 | 96 掛不起 p5 | 96 被刪 | helper 下次開機自己再試;只補得回 prov / identity,overrides 仍停在 image 預設(與今天相同) | 白箱單元測試 |
+| L21 | trial 上 app 操作 | — | 改狀態動詞 `E_BUSY(updating)` | `prov-trial-busy-254` |
+| L22 | `network/leave` / `owner.remove` 後 OTA | — | prov 整檔換;helper 刪 `mesh-expected`/`mesh-joined`;新槽 `claimed` | `prov-leave-ota-254` |
+| L23 | 改名 | — | ⚠️ U5;#202 兩次實證「改 hostname → openmanetd 重保留 IP 並重開」 | `prov-rename-254`(⚠️ 探針待使用者) |
+| L24 | 兩支手機同時認領 | — | provd 序列化;第二個 `E_STATE` | `prov-two-phones-254` |
+| L25 | 交易進行中 `--on-join` tick / OTA | — | `prov-txn` / `.txn` 讓路;`--on-join` 從不寫 prov;`--check` 看 prov.meta → stale 擋 OTA | `prov-netupdate-254`:步驟 2 故意失敗 + 期間 `--on-join` → p5 gen 與 overrides 都不前進;步驟 3–4 間插 sleep + `--on-join` + `reboot -f` → state=claimed |
+| L26 | `network/update` → wifi reload | — | BLE 不受影響;provd 先 ack 再套用 | 同 L25 |
+| L27 | joinwatch / openmanetd / dropbear 重啟 | — | 既有;`meshjoin_reachable` 在 dropbear 重啟時暫時假,JOIN_NEED 取樣涵蓋 | 既有 |
+| L28 | BLE + WiFi AP 同顆 CYW43455 | — | 共存由韌體仲裁 | `prov-coex-254`(量吞吐) |
+| L29 | 換手機 / 第二位擁有者 | — | S3:`owner.replace`;psk_owner ≤ 4 | 殘項(S3 PR) |
+| L30 | prov 版本太新 | — | rc 14 → `unknown(too-new)` | 單元 |
+| L31 | 單台在家更新(member、隊友關機) | — | stage 1:本次開機沒入網過 → `radio` → 只要 radio_up → commit | §6.4 (3) |
+| L32 | fresh p5 暫時掛不起 | 96 被刪 | 同 L20 | 同 L20 |
+| L33 | overlay prov 壞、p5 好 | — | §4.4 步驟 7 以 p5 重建 | `prov-overlay-corrupt-254` |
+| L34 | 認領回應遺失(persist 後 BLE 斷 / 節點重開 / app 被殺) | — | app 以 `psk_replay` session + `claim/replay` 重取 | `prov-claim-replay-254`:persist 後 `reboot -f` → replay 拿到相同 `owner_tag_key`;錯 `owner_pub` → `E_FORBIDDEN`;app 被殺後重開仍可 replay(app 契約) |
+| L38 | fresh trial 上 helper 晚於 autocommit | — | autocommit 讀到 writer=99zz → 等 ≤ 60 s 至 writer=helper,仍無 → 用 99zz 的值;boot_id 不符 → 今天的規則 | 白箱 |
+| L39 | 遠端 BLE 讓 provd 一直 crash(trial 期間) | — | health 只看 bluetoothd + hci0 + 本次開機曾註冊廣播 → 不 revert 好 image | `prov-provd-dos-254` |
+| L40 | team OTA(兩台 member 依序) | — | 第二台 stage 1 看 `joinwatch.lastjoined` → `joined` → 要求鄰居 | A 在 trial 時 B 跑 stage 1,B 的 image 預設頻道改掉 → B revert |
+| L41 | `sysupgrade -T` / LuCI validate | — | 不寫 `ota-armed.mesh`(§6.4 條件) | `-T` 後檔案不存在 |
+| L42 | 直接 `batman-slot apply`(ab-selftest) | — | 無檔 → member 要求鄰居(fail-closed) | |
+| L43 | operator `batman-slot commit` / stage 2 拒寫 | — | 殘留檔綁 arm 開機 boot_id → 下一次 trial 無效 | |
+| L44 | unclaimed / 重燒卡後 OTA | #202 閘擋(p5 未 seed) | #202 閘 prov-aware:p5 `prov.meta` state=unclaimed → 不擋 | unclaimed `sysupgrade -n` 進 trial 並 commit(今天被 `not seeded` 拒) |
+| L47 | 認領測試後 harness 存取 04 | — | 上鎖後 key 登入仍可用(U3);04 已有 lab key(Q6) | 認領後 `ssh -o PasswordAuthentication=no` 成功 |
+| L51 | 現場入網後帶回家、沒重開就更新 | — | `lastjoined` 為真 → 要求鄰居 → revert;說明書寫「先重開再更新」或用 `autocommit-hold-once`;joinwatch 停用時退回當下 `meshjoin_joined` 單次取樣 | 白箱 |
 
-| # | 路徑 | 階段 1 後(v6) | 測試(負對照) |
-|---|---|---|---|
-| L16 | 恢復出廠 | §4.5(v10) | §4.5.10 (a)–(z);位置 = Q5(04) |
-| L58 | 重置進行中降版 / `-F` | §4.5.9:`node_checks` 拒絕並說明;`-F` 後回前任狀態,之後升回意圖槽時 W 執行 | 白箱 |
-| L52 | `/overlay` 是 tmpfs ramoverlay 時恢復出廠 | 前置拒絕;W 階段 Wt 停 | (l) |
-| L53 | F 各步驟中 helper respawn | §4.5 helper 啟動判斷表 | (k) |
-| L54 | 執行期 `batdata-mount start/restart` | 不跑 W(只 `boot()` 跑) | 白箱 |
-| L55 | 95 在寫 INIT 前 exit | W 不跑、意圖留著 → 上鎖、`resetting` | 白箱 |
-| L56 | Wa 遇到 trial | autocommit 不 commit → deadline revert 回意圖槽 → W | 白箱 |
-| L57 | 殺掉 app 後 `claim/replay` | app 契約(先存 `node_cert` + claim-pending)| `prov-claim-replay-254` 加 app 被殺的版本 |
-| L35 | reset 前置 | 加 p6 非 LUKS、`batman-slot` 不在執行 | `prov-reset-precond-254` |
-| L37 | reset 步驟失敗 | F 階段:依不變量 U 解凍或凍結;W 階段:crit、凍結、上鎖、不重開(§4.5.6) | (c)(d)(f)(h)(y) |
-| L41 | `sysupgrade -T` / LuCI validate | caller ≠ procd → 不寫 `ota-armed.mesh` | `-T` 後檔案不存在(v5 會寫,B5-M4) |
-| L42 | 直接 `batman-slot apply` | 無檔 → fail-closed | 同 v5 |
-| L44 | unclaimed / 重置後 OTA | #202 閘 prov-aware:p5 `prov.meta` state=unclaimed → 不擋 | 同 v5 |
-| L45 | reset 中 OTA | `precheck-node` 見 marker / 意圖拒絕;`-F` 例外寫明 | |
-| L48 | F1–F2b 間斷電 | `resetting-pending`;tenant 不起來;cancel 只在 U 成立時 | (c)(r) |
-| L49 | F3 後、下次開機前 p5 壞掉 | §4.5 雙重故障殘項 | 白箱 |
-| L50 | W0 overlay 清不掉 | attempts ≤ 3 | (f) |
-| L51 | 現場入網後帶回家、沒重開就更新 | `lastjoined` 為真 → 要求鄰居 → revert;**說明書寫「先重開再更新」或用 `autocommit-hold-once`**(A5-m11/B5-m5);joinwatch 停用時退回當下 `meshjoin_joined` 單次取樣 | 白箱 |
+(L35–L37、L45、L46、L48–L50、L52–L58 是恢復出廠機制的列,隨 U8 移除;編號保留不重用。)
 
 ## 6. 流程
 
-### 6.1 認領、6.2 鎖定、6.3 建網
-同 v5。
+### 6.1 認領 / 重取 / 防呆門
 
-### 6.4 autocommit
+**`claim.verify` 交易**:
+1. `prov-txn`;helper 驗(§4.1);產 `owner_tag_key`、`adv_owner_key`、root 密碼(24 字元,只在 helper 記憶體)、新 `prov.cbor`(state=claimed、`radio_managed`、owner、`claimed_counter+1`)。
+2. `--prov-only` persist(rc ≠ 0 → 讀回 gen 判定)。
+3. rename overlay prov → 刪 `prov-txn`。
+4. 上鎖(§6.2):shadow 寫密碼 hash → `--save`(帶 shadow-root)。
+5. 回應 `{owner_tag_key, adv_owner_key, root_password}`;不快取(回應遺失走 `claim/replay`,每次換新密碼)。
+6. `prov-state=claimed`。
 
-同 v5,本輪改動:
-- **stage 1 寫 `ota-armed.mesh` 的條件**:`platform_check_image` **rc=0** 且 `caller` 是 `/sbin/procd` 且 `upg=y`(`$RAM_ROOT/sbin/upgraded` 已安裝)**且**有一個活著的 sysupgrade 程序**(判定法見 §4.5「sysupgrade 程序判定」:uid 0、主機 pid ns、`readlink -f` 解析後的腳本路徑 = `/sbin/sysupgrade`;不用 `pgrep -f`;⚠️ bench 上以 `-T`、真 OTA、中止後 LuCI validate 各一次實證;`sysupgrade -T`、LuCI、sysupgrade 自己的第一次 validate(caller = sysupgrade)都不寫(B5-M4/A5-m1)。p6 未掛 → 不寫(讀端 fail-closed)。`rm` 舊檔失敗 → 拒絕 OTA;寫完 rename + `sync`(B5-m11)。
-- D27 改為:「caller=procd 且 upg=y 且有活著的 sysupgrade 程序(uid 0、主機 pid ns、argv[1]=`/sbin/sysupgrade`)→ 視為真的升級」(單向蘊含,不宣稱等價),證據 = `platform-ab.sh` 既有的 `caller`/`upg` 欄位 + A5 在 04 ota-trace 看到的兩次 S1 CHECK;⚠️ PR-P1 在 bench 上以 `-T` 與真 OTA 各一次,記錄兩種 caller 實證。
-- #133 stale-fallback 開機:autocommit 既有邏輯(非真 tryboot → 不 commit 不 revert)不變;`ota-armed.mesh` 只在真 tryboot 被讀(B5-m11)。
+**`claim.replay`**(L34):app 以 `psk_replay` 建 session(需要擁有者加密私鑰 + 認領時存下的 `node_cert`),送 `claim/replay`(CheckMac 用 QR 秘密 + owner-op 用擁有者簽章私鑰)→ helper 回 `prov.cbor` 裡的 `owner_tag_key`/`adv_owner_key`,並產新 root 密碼。只持有 QR 的人(前任、修理行)連不上 `psk_replay` session,也沒有 owner-op。
 
-### 6.5 診斷、6.6 改名
-同 v4。
+**legacy 防呆門**:state=`legacy` 時 `claim.verify` 另要求 `/etc/batman-dev-open` 存在**或** `authorized_keys` 至少一行可用;否則 `E_UNSUPPORTED(no-ssh-key)`。**這道門只防誠實的操作員把自己鎖在外**;legacy 節點今天 root 開放(#137:連上 04 AP 就能 SSH root),root 能自己加 key 或 touch dev-open → legacy 上的 root = 可以認領,這是既有缺口,本設計擋不住。
 
-## 7. 依賴與證據(v4 D1–D25、v5 D26–D32 保留,以下改動)
+### 6.2 鎖定
+`PasswordAuth=off`、`RootPasswordAuth=off`、`ttylogin=1`、隨機 root 密碼(交 app;遺失用 `root_password.reset`)、`lock-status=LOCKED`;dropbear 照跑(`meshjoin_reachable` 依賴它,F7);不動 `authorized_keys`;`/etc/batman-dev-open` 不進任何 image(harness / 操作員手動 touch),對 claimed/member 不生效。
+
+### 6.3 建網 / 加入
+§4.4;首版需 owner-op `network/join`;helper 驗 COSE、解 `net_secrets`;成功後 `radio_managed=1`;`--save --promote-lkg` 只由 helper 在 `meshjoin_joined` 後下。
+
+### 6.4 autocommit(兩板共用)
+
+**stage 1 寫 `ota-armed.mesh`**:`platform_check_image` 在 `precheck-node` 通過後,只在以下全部成立時寫:本次 validate rc=0、`caller` 是 `/sbin/procd`、`upg=y`(`$RAM_ROOT/sbin/upgraded` 已安裝)、有一個活著的 sysupgrade 程序(uid 0、`/proc/<pid>/ns/pid` == `/proc/1/ns/pid`、`readlink -f` 以 `/proc/<pid>/cwd` 解析 argv[1] == `/sbin/sysupgrade`;不用 `pgrep -f` 子字串)。`-T`、LuCI、sysupgrade 自己的第一次 validate 都不寫(F8)。p6 已掛;先 `rm -f` 舊檔(失敗 → 拒絕 OTA);`m=radio`;`$RUNDIR/joinwatch.lastjoined` 存在(本次開機曾 JOINED)或當下 `meshjoin_joined` → `m=joined`;寫 `<boot_id 前 8 碼> <batman-slot target> <m>`(tmp + rename + sync,0600)。⚠️ bench 上以 `-T`、真 OTA、中止後 LuCI validate 各一次實證三種 caller。
+
+**trial 讀**:`ota-armed.mesh` 的 boot_id == `boot-reasons.log` 倒數第二行(= arm 的那次開機,F11)且 slot == 本 trial 的 slot → 採用;否則(缺、不符、壞)→ 視為 `joined`(fail-closed)。決策(commit 或 revert)後刪。#133 stale-fallback 開機:既有邏輯(非真 tryboot → 不 commit 不 revert)不變,只在真 tryboot 讀這個檔。
+
+**`expected_in_mesh()`**:讀 `prov-state`(`verdict` 第 4 欄、`mesh_expect` 第 6 欄);fresh trial 上 writer=99zz → 等 ≤ 60 s 至 writer=helper,仍無 → 用 99zz 的值;boot_id 不符 → 今天的規則。
+
+| state | NEED_MESH | 鄰居要求 |
+|---|---|---|
+| 無檔 / `legacy` / `unknown` | 今天的規則(`:388-396`) | 今天的規則 |
+| `unclaimed`;`claimed` + placeholder | 0 | — |
+| `claimed` + live key | 今天的規則 | 今天的規則 |
+| `member` | `meshjoin_radio_up` 必須成立(wlh0 存在、mesh point、mesh_id == uci) | `ota-armed.mesh` 採用且 = `radio` → 不要求;否則 `meshjoin_reachable` ≥ JOIN_NEED |
+
+- `health_ok()` 加:`ble-ok` 存在才檢查 `$RUNDIR/batman-prov.health`(≤ 60 s;`bluetoothd=1 hci0_powered=1 adv_registered_once=1`;不看 provd 現在是否活著);無 `ble-ok` → 只 log WARN。
+- `ble-ok` 寫入條件:committed 槽 **且** 兩個 boot FAT 的 `distroconfig.txt` `[pi4]` 都有 `dtoverlay=miniuart-bt` 與 `core_freq_min=500`(唯讀檢查)**且** `vcgencmd get_config core_freq_min` ≥ 500 **且** `Powered` 連續 ≥ 10 分鐘。
+- 逃生口:`autocommit-hold-once`(F3)。
+
+**負對照**:(1) 04 legacy OTA 到 `radio1.disabled=1` → revert;(2) claimed + placeholder(unclaimed 認領後、`--save` 已 seed)OTA → commit(1.5.12 `.seeded` → NEED_MESH=1 → revert);(3) member 單台、本次開機未入網 → commit;(4) member 有鄰居 OTA 到改頻道的 trial → revert;(5) 刪掉 `ota-armed.mesh` → 要求鄰居;(6) `-T` 後直接 apply → 要求鄰居;(7) team OTA(L40);(8) `ble-ok` 在、`bluetoothctl power off` → UNHEALTHY;不在 → 只 WARN;(9) trial 期間 provd 反覆被 kill → 不 revert;(10) 非 root 程序 / 容器 root 偽造 sysupgrade cmdline、相對路徑呼叫 → 判定正確。
+
+### 6.5 診斷
+`diag.bundle` 走 BLE(owner-op);`/www/cgi-bin/bundle` 階段 1 只在 `legacy|unclaimed` 且 `batman-dev-open` 時可用,其他 403(殘項:正式驗證)。
+
+### 6.6 改名
+L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「機台會重新啟動」;hostname `[A-Za-z0-9-]{1,32}`;SSID 不跟著改(殘項)。⚠️ 探針待使用者。
+
+## 7. 依賴與證據
 
 | # | 依賴 | 證據 | 狀態 |
 |---|---|---|---|
-| D27(更正) | 「caller=procd 且 upg=y」只在真的升級時成立 | `platform-ab.sh` caller/upg 欄位;`sysupgrade:370,403`;A5 ota-trace | ✅ 原始碼 / ⚠️ bench 兩種各一次 |
-| D28 | `boot-reasons.log` 倒數第二行 = arm 的那次開機 | R66 | ✅ |
-| D31 | 608B 對 claim_secret 做 KDF | **不再需要**(psk_replay 改用 ECDH) | — |
-| D33 | 608B ECDH 槽可做 `ECDH(node_ecdh_priv, owner_enc_pub)` 並把共享秘密輸出給主機做 HKDF | 協定 §7.3「608B 這端:ECDH 指令可以輸出共享秘密給主機」 | ✅ 文件 / ⚠️ #255 實機 |
-| D34 | W 階段只由 `boot()` 呼叫(rc 開機 + 95 首次),每次開機都檢查意圖;**不需要 `BATMAN_FIRSTBOOT`**(v6 的設計已在 v7 刪除) | 95 尾段 `"$INIT" boot`;`etc/init.d/boot` 刪 uci-default | ✅ |
-| D35 | 02/04 **沒有** `tune2fs`、`timeout`、`stat`;**有** `blkid`、`sgdisk`、`hexdump`、`mountpoint`、`flock`、`pgrep`、`jffs2reset`、`mkfs.ext4` | R72 + A7/B7 實測 | ✅ |
-| D36 | `mv` 同一 ext4 內目錄改名是原子的 | POSIX rename | ✅ |
+| D1 | `miniuart-bt` + `SERIAL_DEV_CTRL_TTYPORT=y` → serdev 綁定、`hci_bcm` probe、patchram | F16 | ✅ |
+| D2 | 自建 kmod + deselect 上游 `kmod-bluetooth` 不衝突 | F16(04 build 過、三模組) | ✅ |
+| D3 | `.hcd` 來源與授權 | §4.6 | ✅ |
+| D4 | BlueZ D-Bus LE adv/GATT 可由 provd uid 使用(policy 放行後) | spike 以 root 驗;provd policy 待 PR-P2 | ⚠️ |
+| D5 | uci-defaults 全在 S10、`99zz` 排最後、exit 0 被刪 | F20 | ✅ |
+| D6 | 96 Lane A 順序、`.batman-p5-restored` 由 99 刪 | F4 | ✅ |
+| D7 | config-save 鎖 / 接管、stage + mv、`--check` rc、`--save` 首次 seed、rc 6 語意 | F2 | ✅ |
+| D8 | `batman-slot precheck` 擋 stale;#202 未 seed 閘 | F12 | ✅ |
+| D9 | autocommit 現行邏輯 | F3 | ✅ |
+| D10 | ujail、capabilities | 既有 | ✅ |
+| D11 | Go 工具鏈、vendoring | #252 | ✅ |
+| D12 | `core_freq_min=500` 穩定 | F17 | ✅ |
+| D13 | `halow-setkey` 行為(含 `:99` 無條件 commit) | F5 | ✅ |
+| D14 | 無 agent → 不可 bond;bluetoothctl 自帶 agent | F16 | ✅ |
+| D15 | 改名 → openmanetd 重保留 IP 並重開 | #202 兩次實證 | ⚠️ U5 |
+| D16 | 04 faketime 卡 2025-07-15 | #174 | ❓ |
+| D17 | Go CBOR / Noise 與向量一致 | 待 PR-P2 | ⚠️ |
+| D18 | stage 1 live 系統可跑 `meshjoin_sample`、p6 已掛 | `platform-ab.sh:150` | ✅ 原始碼 / ⚠️ 實跑待 PR-P1 |
+| D19 | stage 2 無 iw/batctl/ip、無 p6 | F9 | ✅ |
+| D20 | 「rc=0 + caller=procd + upg=y + 活著的 sysupgrade 程序」→ 視為真的升級(單向蘊含) | F8 | ✅ 原始碼與 04 trace / ⚠️ bench 三種實證 |
+| D21 | `boot-reasons.log` 倒數第二行 = arm 的那次開機 | F11 | ✅ |
+| D22 | 608B ECDH 槽可輸出共享秘密給主機做 HKDF(`psk_replay`、`net_secrets`) | 協定 §7.3 | ✅ 文件 / ⚠️ #255 實機 |
+| D23 | 重燒卡後 p5/p6 是新檔案系統 | F19 | ✅ 原始碼 / ❌ 實跑待 L16(要現場) |
 
-## 8. 安全(v5 表保留,改動)
+## 8. 安全
+
+**資產**:節點控制(root、OTA 槽)、mesh/AP 金鑰、節點身分、認領秘密、擁有者 / 網主金鑰、成員名單、診斷包、tenant 資料(OTS DB)、BLE 可用性。
 
 | Actor | 攻擊 | 擋法 | 負測試 |
 |---|---|---|---|
-| BLE 路人 | 拿 `node_cert` 追蹤 | psk_replay 需擁有者加密私鑰;失敗照 §3.4 送假第 2 則 | §4.1 |
-| 只看過 QR 的人 | 探測節點是否在附近 / replay | psk_replay 不只靠 QR | §4.1 |
-| BLE 路人 | 吃滿全域交握額度(20/分) | **擋不住,協定 §8 既有界線**;每連線簽章額度保護正在連的買家 | §4.1 |
-| 前任擁有者 | 重置後殘留 | 95 單點 mkfs p6、p5;overlay 含 dot;`apps/` 在可撤銷期就改名 | L16 |
-| 實體 SD | 放標記 / 改意圖檔 | 標記要 device_id;意圖:batdata-mount 只驗格式 + `slot`;nonce 只在 F3 寫入時與 p6 marker 比對(實體持有者本來能重燒卡,A6-m12) | |
-| 我們自己 | 重置卡住、迴圈、只做一半 | F 階段可撤銷、W 階段單點且天然只做一次、W0 有上限 | (c)–(f) |
+| BLE 路人 | 讀身分 / 追蹤 | 未交握只 `status/public`;`claimed\|member` 不帶 `device_id` 末碼;RPA;adv 無 Local Name;已認領節點無匿名 NX(失敗 PSK 照協定 §3.4 送假第 2 則) | §4.1 |
+| BLE 路人 | 暴力認領 | 256-bit;每連線 3 次即斷 | `prov-sec-claim-brute-254` |
+| BLE 路人 | 佔連線 / 大訊息 / crash provd / 吃簽章額度 | ≤ 2 連線、10 s、8 KiB;無限 respawn + 退避;每連線簽章額度;全域交握 20/分可被吃滿是協定 §8 既有界線 | `prov-sec-hog-254`、`-oversize-254`、`prov-respawn-254` |
+| BLE 路人 | 讓 provd crash 以 revert 好 image | health 不看 provd 存活 | `prov-provd-dos-254` |
+| BLE 路人 | 配對 / 綁定 | 無 agent、`AlwaysPairable=false`、BR/EDR 不編 | `prov-sec-bond-254`(04 ✅) |
+| BLE 路人 | kernel BT 堆疊 | 只 LE、三模組;BlueZ 進 #247 | SBOM |
+| 路人 → 攻陷 provd | 改網 / 換擁有者 / 解 `net_secrets` / replay 換擁有者 / 升 lkg | helper 重算 ClientChal、owner-op、admins 鏈、首版 join 需 owner-op、replay 綁已存 owner_pub、無 ecdh/persist 動詞 | §4.1 負測試 |
+| 攻陷的 provd(擋不住的部分) | 看到經過的明文、冒充全網成員 BLE session | 誠實界線(§4.1):只能重燒該台 | — |
+| 只看過 QR 的人(前任、修理行) | 探測節點 / replay | `psk_replay` 需擁有者加密私鑰 | L34 |
+| 連上 legacy 節點 AP 的人 | SSH root → `qr` → 搶認領 | `qr` 在 legacy 需 dev-open 或實體 console;防呆門;**legacy 上 root = 可認領,既有 #137 缺口,擋不住** | L18 白箱 |
+| 本機非 root | 操作 org.bluez / 冒用 helper / 讀秘密 / 預建 socket 目錄 | dbus root-only policy、PEERCRED、0600 / 0700、`O_NOFOLLOW`、`/tmp/run` root 0755 | `prov-sec-dbus-254`(04 ✅)、`-helper-uid-254`、`-key-perms-254`、tmp-trust 掃描 |
+| 本機非 root / 容器 root | 偽造 sysupgrade 程序讓 `ota-armed.mesh` 被寫 | uid 0 + 主機 pid ns + 路徑解析 | §6.4 (10) |
+| 前任擁有者(轉賣) | 保留存取 / 資料 | 重燒卡(§4.5):新身分、新 p5/p6、新 authorized_keys | L16(要現場) |
+| 擁有 SD 卡 | 複製身分 / 改 prov.cbor 升自己為擁有者 / 讀殘留區塊 | 擋不住(階段 1 限制;608B / LUKS);重燒不是安全擦除 | — |
+| p5 被改(實體)/ helper 壞 | 96 不鎖 → fail-open | 96 對 claimed/member 一律上鎖、p5 讀不到時看 p6 提示 | `prov-lock-failsecure-254` |
+| 供應鏈 | `.hcd`、BlueZ CVE、信任根 | sha 釘死;#247;無內建 CA | SBOM |
+| 我們自己 | 兩寫者、fail-open、log 洩密 | §3 單寫者;`qr` / 密碼不進 log | 96 單元;`logread \| grep -c <secret>` = 0 |
+
+既有缺口(不是本變更造成):AP/mesh PSK world-readable(`/etc/config/wireless` 0644,#13);LOCKED 後 login 在 GPS 口(`console=ttyAMA0`,#105);legacy root 開放(#137)。
 
 ## 9. 測試
 
-同 v5;追加 L48–L51;`prov-tools-254` 斷言 `find -depth -exec`、`mkfs.ext4`、`flock`、`jffs2reset`、`hexdump` 存在;BLE 負測試依 §4.1 改寫。
+- **協定裁判**:Go 實作逐位元組過向量(含新增 `-dev`、`batman-owner-op-v1`、`device_id`、`psk_replay`、固定 6 次);與 `verify.py` 做對手交握(CI)。02 當 central 只驗 GATT 框架。
+- 每個 `prov-sec-*` 與 §5 / §6.4 的修正都有「關掉檢查 / 舊規則就錯」的負對照。
+- tier A:firstboot、boot、sec-*、respawn、bluez-restart、helper-restart、bypass、legacy-upgrade、two-phones、trial-busy、overlay-corrupt、provd-dos。tier B(DNODE):ota、autocommit (1)–(10)、downgrade、leave-ota、legacy-claim、netupdate、claim-replay、rename(⚠️)。destructive:powerloss ×3、lock-failsecure。PR-F:coex。**L16 重燒卡驗收要現場**。
+- 破壞性測試先列副作用與還原(使用者 2026-10-18 規則)。認領測試在 04 的前提是 04 有 lab key(Q6 已做)。
+- harness 不用 bluetoothctl 當長駐 client(F16);節點端 BLE 斷言走 helper 的 health 檔。
+- `prov-tools-254`(tier A):斷言 `flock`、`fsync`、`readlink -f`、`blkid -p`、`mountpoint`、`mkfs.ext4`、`hexdump` 存在;缺 → FAIL。
 
 ## 10. 實作切法
 
-同 v5;PR-P1 改動:config-save `--reset-intent`(取代 `--wipe-all`);INITBODY `reset_wipe()`(只由 `boot()` 呼叫)+ `reset-intent.sh` 解析器 + 非 fresh 上鎖 + autocommit/`node_checks` 見意圖的處理 + guardian/firstload/dockerd/joinwatch 的「marker 或 p6 沒掛 → 不啟動」;helper 的 F0–F5 與撤銷;platform-ab 的 caller/upg 條件;協定 v0.7 的 `psk_replay`(ECDH)與固定 6 次。
+1. **PR-F(firmware)**:`feat/254-ble` 現狀 + 重 build(policy plugin 修正)→ 04 OTA 驗 `Powered` 自動、`Pairable: no`、三模組、dbus 負測試、閒置 500 MHz;release note:p1 與 p3 兩份 distroconfig 要手動改。
+2. **docs PR**:`219-protocol.md` v0.7(`batman-owner-op-v1`、首版 join 授權、`device_id` 公式、helper 重算 ClientChal、`psk_replay` 與固定 6 次)、CDDL、向量;`219-field-provisioning.md` v2.9(§6.1、§6.3、§6.9 對齊;§7 恢復出廠改「階段 1 = 重燒卡,#255 重設計」)。
+3. **PR-H1(harness)**:`prov-*` 骨架、02 central client、`verify.py` 對手模式。
+4. **PR-P1(產品,兩板共用檔)**:config-save(`--prov-only`、`--prov-get`、fp / check 納入 prov、`prov-txn` / `.txn` 讓路、`final_rc` 的 `root:!`)、96(prov 抄寫在 `:93` 前、每個出口前判上鎖、verdict 帶 boot_id)、`halow-setkey --no-persist` + 對 `radio_managed` 節點的警告、platform-ab 的 stage 1 `ota-armed.mesh`、autocommit(§6.4)、#202 閘 prov-aware、`meshjoin_radio_up`、joinwatch 寫 `lastjoined`、99zz;helper + keystore `file`(socket 測試,無 BLE)。bcm2710 ❌,寫進 PR body。
+5. **PR-P2**:provd、GATT、協定核心、`status/public`、認領(含 replay、防呆門)、鎖定、`ssh_keys`、`root_password`。
+6. **PR-P3**:建網 / 加入 / 邀請 / 狀態 / 診斷 / 離開 / 改名;app 的轉賣說明頁。
+7. S4(更新)、S5(app)addendum。
 
-## 11. 殘項
+## 11. 殘項(回 #254)
 
-v5 殘項 + F3 後 p5 壞掉的雙重故障殘留(`apps.reset/`);W2 被打斷的 p5 要 bench 重做;`.txn` 期間操作員 setkey 會被改回;路人吃滿協定 §8 全域額度(協定層);D27/D30/D33 實證。
+3A+ 全部 + 共用檔 bcm2710 實測;04 I2C 空;SSID / hostname 跨擁有者可串連;`/www/cgi-bin/bundle` 正式驗證;#110 能力偵測接軌;LED 不做;`halow-status:118` 文字;`owner.replace`(L29)進 S3;既有缺口 #13 / #105 / #137;改名探針(U5);`core_freq_min=500` 耗電;RSSI 遮蔽 / 外殼;02 的 p1/p3 `core_freq_min`;`.txn` 期間操作員 setkey 會被改回;`network/update` 從 app 統一改頻道(操作員 setkey 會分歧);D4 / D17 / D20 / D22 實證;**L16 重燒卡驗收要現場**;**app 端恢復出廠在 #255 重新設計**(U8)。
 
 ## 12. 待決
 
-| # | 題 | 建議 |
+| # | 題 | 定案 |
 |---|---|---|
-| Q1–Q4 | 同 v4 | 定案 |
-| Q5 | L16 位置與還原 | **定案(使用者 2026-10-19:遠端不能移線,選救得回來的)= 04**(有乙太網;02 重置後離網且無乙太網 = 救不回)。前置:先把 04 p6 要留的東西(OTS DB/憑證/docker image、dv289 備份)備份到主機;還原 = 經乙太網(重置後 image 預設空密碼)重裝 lab 公鑰 → `halow-setkey` 回 fleet → 重新部署 OTS。L16 等 PR-P3 實作完才排,排之前再列副作用給使用者 |。**v8 後果(A7,依「破壞性測試先列副作用」)**:恢復出廠的 F4 會清掉 04 的 lab 公鑰;若之後 W1/W2 失敗,04 會依「有意圖就上鎖」被鎖住:**沒有 key、沒有密碼 → 遠端救不回,要現場**;重置後 IP 是 image 的開機預設(10.41.254.x 隨機,之後 openmanetd 重保留),不是 10.41.1.3,要用 link-local / `.local` 找。排 L16 之前再請使用者確認
-| Q6 | BLE 認領測試會把 04 上鎖 | **定案並已做(使用者同意,2026-10-19)**:04 `authorized_keys` = 02 同一把 lab ed25519(sha256 5bda8113…),key-only 登入驗過,lock-status 仍 UNPROVISIONED,已進 p5(`--check` fresh)。這也滿足 §6.1 legacy 防呆門 |
+| Q1 | legacy 身分何時產生 | 升級後第一次開機(`--prov-only`,trial 上也安全) |
+| Q2 | `batman-dev-open` 進哪個 image | 不進任何 image |
+| Q5 | 恢復出廠破壞性測試在哪台跑 | **不再需要**(U8:沒有 app 端恢復出廠)。改成 L16 重燒卡驗收,要現場插拔 SD 卡,使用者到現場時再排 |
+| Q6 | 認領測試會把 04 上鎖 | 已做(§1.1) |
 
-## 13. v9 審查 → v10 對應
+## 13. v10 審查 → v11 對應
 
-| v9 發現 | 收法 |
+| v10 發現 | 去向 |
 |---|---|
-| **A9-M1 / B9-M1** `unreadable` 不看本機跡象就上鎖、建鎖記號 → 健康節點被鎖、之後被清 | 解析器加 `n/a`;重置證據 E(§4.5.1);`unreadable` 只在 E 成立時凍結/上鎖;鎖記號觸發只認 `none`;helper 表 `unreadable` 依 E 分列;負對照 (v)(w) |
-| A9-m1 / B9-m1 重置鎖自鎖、fd 繼承、RDOK=0 | §4.5.2:鎖 fd 經 ExtraFiles 傳給 config-save;孤兒繼續持鎖;CLOEXEC;shell 端子 shell;解析器不取鎖;RDOK=0 → 前置拒絕 / W 停住;負對照 (x) |
-| A9-m2 意圖行 64 B 與 p6uuid 衝突 | 上限 128 B;負對照 (z) |
-| A9-m3 / B9-m4 `resetting` 沒有讀者 | 96 提示集合加 `resetting`;§3 登記 W1 為 prov-state 的重置時段寫者 |
-| A9-m4 / B9-m2 / B9-m3 鎖記號:無意圖定義、同次開機、刪不掉迴圈 | 只認 `none`;W2 成功同一次開機立刻 R-locked;重開前確認檔案已消失,否則不重開;負對照 (y) |
-| A9-m5 共用 superblock | U 第 2 條:p5 已被掛 → 視為忙 |
-| A9-m6 / B9-m6 / B9-m11 接手、step 單調 | rc 12 三分支(slot 不符、bad、改寫 nonce);step 只在同一 marker 生命期內單調,解凍刪 marker |
-| A9-m7 / B9-m10 L58 | §4.5.9 + §5 L58;stage 1 遇意圖印出 pending 的後果 |
-| A9-m8 / B9-m8 / B9-m9 解析器與 tmp 細節 | `n/a`;固定欄位順序;attempts 1–3 位;`blkid -p`;`p6uuid` 字元集;寫回失敗處理;tmp 固定名、先 `rm -f`;切欄前 `set -f` |
-| A9-m9 解凍冪等、D-state 孤兒 | §4.5.3 冪等寫法;D-state 歸 bench |
-| A9-m10 / B9-m7 文件矛盾 | 恢復出廠整節自足(§4.5.1–§4.5.10);§3 / §4.3 各列只指向 §4.5;§1.4 兩列重寫;R43 實際更正;L16/L37/L48 重寫;(m) 改 `p6uuid` |
-| B9-m5 fresh / 非 fresh 判定 | 以 `/etc/uci-defaults/96-batman-config-migrate` 是否還在判斷(§4.5.6) |
-| B9-m12 凍結時 `lock-status` 舊值 | 凍結時寫 `$RUNDIR/lock-status.override`,`halow-status` 優先讀 |
+| A10-M1 / B10-M2 `n/a` 把讀錯當非 ext4 → 解凍 | 機制移除(U8:沒有解凍、沒有意圖) |
+| A10-M2 / B10-M1 fresh 開機 96 看不到重置證據 → 空密碼開放 | 機制移除(U8) |
+| A10-m1–m9 / B10-m1–m9、m11 | 全部是恢復出廠機制的細節 → 隨 U8 移除 |
+| A10-m10 / B10-m10 文件殘留(R43、E 寫法、§4.1 cancel、D27 用語、§4.5.10 指向舊版、「同 vN」矛盾) | 本文件改為完全自足;R43、E、cancel 隨機制移除;D27 改為 D20 單向蘊含寫法;「同 vN」全部消除 |
+| 恢復出廠以外、v4–v10 收斂的內容(BLE、認領、交易、OTA 閘、96 上鎖、psk_replay、sysupgrade 程序判定) | 原樣保留並寫成自足文字 |
