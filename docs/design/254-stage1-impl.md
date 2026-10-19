@@ -265,7 +265,7 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 7. 測試模式:`--test-target-file <檔>` 只給 harness(L16 工具層)用,**只接受 regular file**(不收區塊裝置),跳過可移除裝置檢查;另有負測試「非可移除裝置被拒」「區塊裝置當 test-target 被拒」。
 
 **節點端**:
-- **PR-F 以 shim 取代 `/sbin/persistent_vars_storage.sh`**(F21 的 9 個讀者一次失效;`31_*` 不必另外刪)。shim 行為:`READ` rc 1、無輸出;`READALL` 每個 key 印 `key=`(空值)、rc 0;`WRITE`/`ERASE` rc 1;每次開機每個 key 只 `logger -p daemon.warn` 一次(標記放 root-only `$RUNDIR`,不放 `/tmp`)。firmware 的 `files/` 目前沒進 git → PR-F 要 `git add files/sbin/persistent_vars_storage.sh`;斷言放進每次 build 都跑的 `check-image-manifest.sh` 並當發行清單的閘門。Batman image 不讀 EEPROM 的任何 persistent var;EEPROM 裡若有殘值也沒有作用。**後果(待使用者決定,Q7)**:Morse 的 EEPROM 硬體區域鎖不再生效,HaLow 國家只由 uci / `halow-setkey` 決定;今天 02/04 的 EEPROM 沒有區域鎖,所以不是回歸。
+- **PR-F 以 shim 取代 `/sbin/persistent_vars_storage.sh`**(F21 的 9 個讀者一次失效;`31_*` 不必另外刪)。shim 行為:`READ` rc 1、無輸出;`READALL` 每個 key 印 `key=`(空值)、rc 0;`WRITE`/`ERASE` rc 1;每次開機每個 key 只 `logger -p daemon.warn` 一次(標記放 root-only `$RUNDIR`,不放 `/tmp`)。firmware 的 `files/` 目前沒進 git → PR-F 要 `git add files/sbin/persistent_vars_storage.sh`;斷言放進每次 build 都跑的 `check-image-manifest.sh` 並當發行清單的閘門。Batman image 不讀 EEPROM 的任何 persistent var;EEPROM 裡若有殘值也沒有作用。**後果(使用者已接受,Q7)**:Morse 的 EEPROM 硬體區域鎖不再生效,HaLow 國家只由 uci / `halow-setkey` 決定;今天 02/04 的 EEPROM 沒有區域鎖,所以不是回歸。
 - 95 已在每次開機記 `BOOT_ORDER`/`PARTITION_WALK` → 改為與 bootloader 預設比對,不同就 WARN(`halow-status` 顯示),當作「EEPROM 被改過」的訊號。shim 的放法:放在 firmware 樹的 OpenWrt `files/` overlay(`files/sbin/persistent_vars_storage.sh`),它在組 rootfs 時最後複製、蓋過 `persistent-vars-storage-bcm2711` 套件的同名檔;現有 build 已用同一個 overlay 放 `files/etc/batman-build`(`build-board.sh:23`,節點上確有 `/etc/batman-build`)。PR-F 附斷言:image 內 `persistent_vars_storage.sh READ default_wifi_key` rc 1、無輸出;`docs/upgrade-1.8.0.md` 同步。
 - **unclaimed 新卡的 AP**:99zz 在 fresh overlay、p5 未 seed、無 prov 時把所有 `mode=ap` 的 key 設成 `CHANGE-ME-NOW` → S18 keyguard 關 AP(F23;219 §6.2「未認領時不開 WiFi AP」)。
 - 節點端不做任何清除機制;`firstboot` / LuCI reset / reset 按鈕只清本槽 overlay,96 會從 p5 還原(F22),不是轉賣用的全清 → UI 文字改為「重新套用設定(不清除擁有者與資料)」,`rc.button/reset` 長按不再呼叫 `firstboot`(PR-P1)。
@@ -505,7 +505,7 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 | Q2 | `batman-dev-open` 進哪個 image | 不進任何 image |
 | Q5 | 恢復出廠破壞性測試在哪台跑 | 不再需要(U8)。L16 工具層在 WSL 跑;節點層與 Windows 工具要現場實卡,使用者到現場時再排 |
 | Q6 | 認領測試會把 04 上鎖 | 已做(§1.1) |
-| **Q7** | shim 讓 Morse 的 EEPROM 硬體區域鎖失效(國家只由 uci 決定) | **待使用者決定**(法規):建議接受——02/04 今天就沒有區域鎖;民用 SKU 出廠時由 image / app 設國家(預設 TW),之後 #255 可用 608B 或 image 簽章另做區域鎖 |
+| Q7 | shim 讓 Morse 的 EEPROM 硬體區域鎖失效(國家只由 uci 決定) | **定案(使用者 2026-10-20 接受)**:02/04 今天就沒有區域鎖;民用 SKU 出廠時由 image / app 設國家(預設 TW);#255 可用 608B 或 image 簽章另做區域鎖 |
 
 ## 13. v13 審查 → v14 對應
 
