@@ -95,7 +95,7 @@ unclaimed ─(claim)─▶ claimed
                                                                 ├─ 恢復出廠執行期(F0–F5)
                                                                 └─ health 檔、ble-ok
 platform-ab.sh platform_check_image:只在 caller=procd 且 upg=y 時寫 p6 ota-armed.mesh
-95/batdata-mount boot():p5 有 .factory-reset 意圖 → 在 mount p6 之前執行 W1–W4(只此一處破壞)
+95/batdata-mount boot():p5 有 .factory-reset 意圖 → 在 mount p6 之前執行 W0–W2(只此一處破壞)
 96(S10):prov 抄寫、claimed/member 上鎖
 99zz(S10):fresh overlay 寫 prov-state(writer=99zz)
 ```
@@ -125,7 +125,7 @@ platform-ab.sh platform_check_image:只在 caller=procd 且 upg=y 時寫 p6 ota-
 | live uci `wireless.*` | 執行期:`halow-setkey`;fresh:96 Lane B、99-chanfix、morse 回寫 | provd | 開機不對帳(只 `.txn` 一次性) |
 | 另一槽 | `batman-slot`(apply、`invalidate-other`;**各自取鎖**,helper 不持鎖,R73) | | |
 | 本槽 overlay | F4(helper)、W0(95,非 fresh 時) | | |
-| p6、p5 的格式化 | **只有 95 W1/W3** | | |
+| p6、p5 的格式化 | **只有 95 W1(p6)、W2(p5)** | | |
 | SD 標記檔 | 實體;helper `--boot` 讀兩個 FAT(`batman-slot boot-devs`);F4 刪 | | |
 
 ## 4. 契約
@@ -151,7 +151,7 @@ platform-ab.sh platform_check_image:只在 caller=procd 且 upg=y 時寫 p6 ota-
 ```
 p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow-root  (不變)
      identity/prov/{7 檔}, prov.cbor, prov.meta
-     .factory-reset   ("reset v=1 nonce=<hex16> attempts=<n>"  ≤ 64 B;只在恢復出廠提交後到下次開機 W3 之間存在)
+     .factory-reset   ("reset v=1 nonce=<hex16> attempts=<n>"  ≤ 64 B;只在恢復出廠提交後到下次開機 W2 之間存在)
 ```
 
 | 模式 | 內容 |
@@ -165,7 +165,7 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 
 `96`(PR-P1):
 - 每個出口寫 verdict(含 boot_id)。
-- `.factory-reset` 存在(fresh overlay 上不該看到:95 W3 已 mkfs;看到 = W1–W2 失敗)→ verdict `resetting`、不還原任何東西、不上鎖、exit。
+- `.factory-reset` 存在(fresh overlay 上不該看到:95 W2 已 mkfs;看到 = W1–W2 失敗)→ verdict `resetting`、不還原任何東西、不上鎖、exit。
 - prov 抄寫在 `.seeded` 檢查之前(v4)。
 - **上鎖在每一個出口之前判斷**,出口完整清單(A5-m10/B5-m3):`:64` bypass、`:67` 無 p5、`:71` 非 ext4、`:89-91` mount 失敗、`:93` 未 seed、正常結尾:
   - 讀得到 p5 `prov.meta` 且 state ∈ {claimed,member} → 上鎖;
@@ -217,7 +217,7 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 - 之後 96(S10,95 之後):p5 空 ext4 未 seed → 今天的預設;99 重新個人化;helper(S89):rc 7、overlay 無 identity → 產新身分 → `prov{unclaimed}` → 窗口開。
 - **p5 在 F3 之後、下次開機之前壞掉**:95 讀不到意圖 → 不清 p6;但 `apps/` 已在 F2 改名 → 沒有 tenant 起來;overlay 已在 F4 清掉;96 讀不到 p5 → `unknown`,p6 `prov-state` 提示 → 上鎖;**殘留**:p6 上 `apps.reset/` 與 docker 資料(前任 tenant 資料,未啟動)。雙重故障,列殘項並在 status 顯示 `reset-incomplete p5-unreadable`(helper 看到 `apps.reset` 而 p5 讀不到)。
 - **95 自己的規則**:95 的「never mkfs a pre-made data partition」改寫為「…除非 p5 有恢復出廠意圖(只有 helper 的 F3 會寫,且需要 p6 marker 的 nonce 相同)」;`p5-config-partition.md`、`201-firstboot-grow.md` 同步(A5-m6/B5-m8)。#201 的 grow 在 W1 之前已完成(partition table 層),mkfs 後的 fs 本來就填滿分割,3b 的 resize 無事可做。Pi 3:`p5_never_seeded()` 的寫法兩板相同;bcm2710 ❌ 未測。
-- **時間**:W1(27 GB p6,lazy init)+ W3(512 MB p5)預估 10–30 s,在 S10 阻塞(R71);⚠️ 實測待 L16。
+- **時間**:W1(27 GB p6,lazy init)+ W2(512 MB p5)預估 10–30 s,在 S10 阻塞(R71);⚠️ 實測待 L16。
 - **結果斷言**(L16;B5-m1/A5-m2 更正):重開後 `info.state=unclaimed`、`device_id` 新、舊 `claim.secret` 無效、`authorized_keys` 不存在、root shadow = image 預設、hostname == 依 MAC 的預設、**p6 與 p5 的 ext4 UUID(`hexdump -s 1128 -n 16`)都與重置前不同**、p6 無 `apps/`、`apps.reset/`、`docker/` 內容、`find /overlay/upper -name '.*'` 為空、另一槽 BATMAN-BAD、`/etc/init.d/batman-payload-*` 不存在、`docker ps -a` 空、舊 SSH 金鑰被拒。不比時間(時鐘是假的)。
 - **負對照**:(a) v2 流程上同組斷言失敗;(b) v4 的 `find -delete` → `unrecognized`(已證);(c) F1–F2b 間 `reboot -f` → 沒有 tenant 起來、cancel 後完全回原狀(v5:p6 被 mkfs、重置被忘記,B5-M1);(d) F3 白箱讓 p5 唯讀 → `E_RESET(p5-unwritable)`、撤銷後原狀(v5:p5-dead 繼續,A5-M2/B5-M2);(e) W1 後 `reboot -f` → 下次開機只再清一次、完成;同一次開機兩次 `boot()` 只格式化一次(v5:S11 會再 mkfs,B5-M3);(f) F4 前 `reboot -f` → W0 補清 overlay 後完成;W0 白箱讓 jffs2reset 失敗 → 3 次後停、不再重開。
 - **SD 標記**:檔名 `batman-factory-reset`、兩個 FAT、內容第一行 = 本機 `device_id`,或 `any`(只在 `/etc/batman-dev-open` 存在時接受);**沒有身分(overlay 與 p5 都沒有)時不接受**(B5 建議;實體持有者可以重燒卡);讀檔 `head -c 64`、字元集、regular file;由 helper `--boot` 讀;觸發後走 F0–F5;F4 刪標記,刪不掉時重開後 device_id 已不同 → 忽略,不會迴圈(B5-m4/A5-m5)。
@@ -323,6 +323,6 @@ v5 殘項 + F3 後 p5 壞掉的雙重故障殘留(`apps.reset/`);W2 被打斷的
 | A5-m11 / B5-m5 帶回家更新 | L51 說明書 + hold-once;joinwatch 停用退回單次取樣 |
 | A5-m12 取消後果 | 寫明無回退槽;SD 標記在 F4 才刪,取消時保留 → 會再觸發,寫明(取消時一併刪 SD 標記) |
 | B5-m9 jffs2reset 失敗迴圈 | W0 attempts ≤ 3 |
-| B5-m10 tombstone 格式、清不掉 | 一份格式;不再有 clear-tombstone(W3 mkfs 就是清) |
+| B5-m10 tombstone 格式、清不掉 | 一份格式;不再有 clear-tombstone(W2 mkfs 就是清) |
 | B5-m11 stage 1 p6 未掛、sync、stale-fallback | §6.4 |
 | B5-m12 R6 之後的 dot 檔 | app 路徑不產生;root 互動 session 的 `.ash_history` 等列殘項 |
