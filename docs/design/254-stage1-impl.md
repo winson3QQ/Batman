@@ -1,6 +1,6 @@
-# Design: #254 階段 1 實作 — BLE 平台、keystore、p5 `prov`、`batman-provd` 程序模型 — **v17(自足版)**
+# Design: #254 階段 1 實作 — BLE 平台、keystore、p5 `prov`、`batman-provd` 程序模型 — **v18(自足版)**
 
-**狀態**:v17。v16 兩位審查都 REJECT(窄)(A:0 BLOCKER / 1 MAJOR / 7 MINOR;B:0 / 2 / 7;`254-reviews/review-v16-{A,B}.md`):兩位都確認 B1 已由 SC-only 擋住、tmpfs 儲存區 / 無 conffiles / gate 成立;共同 MAJOR = **kernel 沒有可讀的「SC only」位元**(F27 補);B 另一 MAJOR = provd 的 dbus 政策若與 root 同一組,被攻陷的 provd 可註冊 agent 繞過 B1(§4.6 / §8 收窄)。v17 另收:bluez patch 每次啟動都送 SC 模式、init 驗證儲存區擁有權(fail-closed)、image 不再帶空的 `/etc/bluetooth/keys`、gate 掃二進位檔且缺 busybox 即 FAIL、L20 / L21 / L22 修正、provd 廣播契約(連線即撤、health 轉壞即撤、GATT 不帶加密旗標)。v16 原狀態:v15 兩位審查都 REJECT(A:0 BLOCKER / 3 MAJOR / 6 MINOR;B:1 BLOCKER / 4 MAJOR / 10 MINOR;`254-reviews/review-v15-{A,B}.md`)。v16 收:**B1 privacy 打開後路人以不綁定的 legacy Just Works 配對就能拿到 IRK 與 public 位址 → `SecureConnections = only`**(F27);RPA 不會自己輪替 → 由 provd 重新註冊廣播(F28,PR-P2);privacy 狀態不在 D-Bus → helper 經 mgmt `READ_INFO`(D26);BlueZ 儲存區改放 tmpfs、bluetooth 套件不宣告 conffiles(IRK 每次開機換、不進備份、壞檔不會永久關 privacy);追蹤防護寫成誠實界線(F29);新增 §5 L19–L22。v14 狀態:**定稿**;v15 = v14 + F26。第 13 輪 A APPROVE-WITH-CHANGES;B 對 v13→v14 的窄範圍複查(使用者選擇)APPROVE-WITH-CHANGES,0 BLOCKER / 0 MAJOR / 3 MINOR(n1–n3 已改字;`254-reviews/review-v14-B-delta.md`)。以下為 v14 改版說明:第 13 輪 A:**APPROVE-WITH-CHANGES**(0 BLOCKER / 0 MAJOR / 11 MINOR);B:REJECT(窄)0 BLOCKER / 1 MAJOR / 9 MINOR(`254-reviews/review-v13-{A,B}.md`)。兩位各自重做了 v13 的掃描,F21–F24 成立、shim 與 99zz 順序成立。B 的 MAJOR(A 列為 m8):**轉賣沒有處理接在節點上的 RAK4631(Meshtastic)**,它自己的 flash 留著前任隊伍的 LoRa 頻道 PSK 與隊友位置——我的掃描只看了 image 與 EEPROM,漏了周邊;v14 補上周邊盤點(F25)與賣方 / 買方步驟,並修兩位列的 MINOR。使用者決定 U8 不變。
+**狀態**:v18。v17 兩位審查都 REJECT(窄)(A:0 BLOCKER / 3 MAJOR / 4 MINOR;B(重派):1 / 2 / 8;`254-reviews/review-v17-{A,B}.md`):兩位都確認 v17 的程式改動成立(B 以 busybox ash 跑 init 13 案例、gate 負對照);共同發現:**空中配對測試在目標與負對照都必然「沒存下 IRK」→ 分辨不了**(§9 / Q8 重寫)、**SC 證據放 logread 會被 128 KiB ring 擠掉 / 被灌 log → 改為 bluetoothd 寫 root 0600 狀態檔**(firmware 已改,wsl.9);A:provd 白名單擋了 `Device1.Disconnect` → 斷不了連線;bluetoothd → provd 回呼的 dbus 規則沒寫;B:RPA 測試要斷言是 RPA(不是 NRPA / static)且用 IRK 驗、順序與副作用。v17 原狀態:v17。v16 兩位審查都 REJECT(窄)(A:0 BLOCKER / 1 MAJOR / 7 MINOR;B:0 / 2 / 7;`254-reviews/review-v16-{A,B}.md`):兩位都確認 B1 已由 SC-only 擋住、tmpfs 儲存區 / 無 conffiles / gate 成立;共同 MAJOR = **kernel 沒有可讀的「SC only」位元**(F27 補);B 另一 MAJOR = provd 的 dbus 政策若與 root 同一組,被攻陷的 provd 可註冊 agent 繞過 B1(§4.6 / §8 收窄)。v17 另收:bluez patch 每次啟動都送 SC 模式、init 驗證儲存區擁有權(fail-closed)、image 不再帶空的 `/etc/bluetooth/keys`、gate 掃二進位檔且缺 busybox 即 FAIL、L20 / L21 / L22 修正、provd 廣播契約(連線即撤、health 轉壞即撤、GATT 不帶加密旗標)。v16 原狀態:v15 兩位審查都 REJECT(A:0 BLOCKER / 3 MAJOR / 6 MINOR;B:1 BLOCKER / 4 MAJOR / 10 MINOR;`254-reviews/review-v15-{A,B}.md`)。v16 收:**B1 privacy 打開後路人以不綁定的 legacy Just Works 配對就能拿到 IRK 與 public 位址 → `SecureConnections = only`**(F27);RPA 不會自己輪替 → 由 provd 重新註冊廣播(F28,PR-P2);privacy 狀態不在 D-Bus → helper 經 mgmt `READ_INFO`(D26);BlueZ 儲存區改放 tmpfs、bluetooth 套件不宣告 conffiles(IRK 每次開機換、不進備份、壞檔不會永久關 privacy);追蹤防護寫成誠實界線(F29);新增 §5 L19–L22。v14 狀態:**定稿**;v15 = v14 + F26。第 13 輪 A APPROVE-WITH-CHANGES;B 對 v13→v14 的窄範圍複查(使用者選擇)APPROVE-WITH-CHANGES,0 BLOCKER / 0 MAJOR / 3 MINOR(n1–n3 已改字;`254-reviews/review-v14-B-delta.md`)。以下為 v14 改版說明:第 13 輪 A:**APPROVE-WITH-CHANGES**(0 BLOCKER / 0 MAJOR / 11 MINOR);B:REJECT(窄)0 BLOCKER / 1 MAJOR / 9 MINOR(`254-reviews/review-v13-{A,B}.md`)。兩位各自重做了 v13 的掃描,F21–F24 成立、shim 與 99zz 順序成立。B 的 MAJOR(A 列為 m8):**轉賣沒有處理接在節點上的 RAK4631(Meshtastic)**,它自己的 flash 留著前任隊伍的 LoRa 頻道 PSK 與隊友位置——我的掃描只看了 image 與 EEPROM,漏了周邊;v14 補上周邊盤點(F25)與賣方 / 買方步驟,並修兩位列的 MINOR。使用者決定 U8 不變。
 
 **本文件完全自足**:不再引用前版的任何小節。v1–v13 全文與 25 份審查報告在 `254-reviews/`,只當歷史紀錄。§13 列 v13 審查發現的去向。
 
@@ -121,11 +121,12 @@ platform_check_image(stage 1):只在真的升級時寫 p6 ota-armed.mesh(§6.4)
 | `hci0` 存在、BR/EDR off、Bondable off | kernel + bluetoothd(`main.conf`,無 agent) | provd 斷言 Pairable==false | F16 |
 | `hci0 Powered` | bluetoothd `[Policy] AutoEnable`(policy plugin) | helper(D-Bus `Properties.Get`) | |
 | `main.conf`、`dbus-1/system.d/bluetooth.conf`、`init.d/bluetoothd` | image(`batman-ble`) | | |
-| hci0 的 SC / SC-only / privacy / bondable 旗標 | bluetoothd(每次接管 adapter 依 `main.conf` 設定;v16 B-m1) | helper(mgmt `READ_INFO`) | root 手動 `bluetoothctl mgmt.*` 是第二寫者 = 操作失誤:runbook 禁止;bluetoothd 重啟即改回;health 轉壞 → provd 撤廣播 |
+| hci0 的 SC / SC-only / privacy / bondable 旗標 | bluetoothd(每次接管 adapter 依 `main.conf` 設定;v16 B-m1) | helper(mgmt `READ_INFO`) | root 手動 `bluetoothctl mgmt.*` 是第二寫者 = 操作失誤:runbook 禁止;bluetoothd 重啟即改回(patch 900);root 改 privacy / bondable → health 看得出 → provd 撤廣播;**root 改 SC(`mgmt.sc on`)health 看不出**(kernel 沒有 SC-only 位元,`batman-sc` 仍是啟動時的值;v17 B-m1)→ 只能靠 runbook 與 bluetoothd 重啟 |
 | `/var/lib/bluetooth/`(tmpfs;adapter settings + IRK) | bluetoothd(init 每次開機在 tmpfs 建 0700 目錄,**並驗證 `/var`→`/tmp`、`/tmp/lib` 與儲存區是 root 的、非 symlink、非 group/other 可寫,否則不啟動 bluetoothd**(v16 A-N6 / B-m3);IRK 由 bluetoothd 以 `getrandom()` 產生,F26) | helper(經 mgmt `READ_INFO` 讀 privacy / sc-only / bondable 旗標,D26);provd 只讀 helper 的 health 檔 | **每次開機新 IRK**;不在 overlay、不進 `sysupgrade -b` 備份(bluez-daemon 與 batman-ble 都不宣告 conffiles);無 bond 所以不需持久。舊 spike 的 `/etc/bluetooth/keys`(overlay)不再被讀 |
 | BLE 廣播、GATT | provd(不註冊 agent) | | adv 無 Local Name;GAP Name 固定 `Batman` |
 | `/tmp/run/batman-prov/`、`helper.sock`(0660) | helper(`O_NOFOLLOW`、owner 檢查) | provd | |
-| `$RUNDIR/batman-prov.health`(0600) | helper 每 15 s | autocommit | `<uptime> bluetoothd= hci0_powered= adv_registered_once=` |
+| `$RUNDIR/batman-prov.health`(0600)— **唯一的 health 契約**,其他章節只引用這列 | helper 每 15 s(原子 rename) | autocommit(`bluetoothd`、`hci0_powered`、`adv_registered_once`)、provd(`privacy`、`sc`、`sc_file`、`bondable`) | 一行 `boot_id=<本次> ts=<uptime> bluetoothd=0\|1 hci0_powered=0\|1 adv_registered_once=0\|1 privacy=0\|1 sc=0\|1 sc_file=0\|1 bondable=0\|1`;`privacy` / `sc` / `bondable` 來自 mgmt `READ_INFO` current settings(D26);`sc_file=1` 只在 `batman-sc` 的 boot_id = 本次、pid = 現在活著的 bluetoothd、mode=2、status=0(D27);任一欄缺 / boot_id 不符 / ts 超過 60 s / 格式壞 → 讀者當成全 0(fail-closed) |
+| `/var/lib/bluetooth/batman-sc`(tmpfs,0600,儲存區 0700) | bluetoothd(patch 900 的 SET_SECURE_CONN 完成回呼;`g_file_set_contents` 原子寫) | helper | 一行 `boot_id=<kernel boot_id> pid=<bluetoothd pid> index=<hci> mode=<0\|1\|2> status=<mgmt status>`(0xff = 送不出);只有 root 能寫(儲存區 0700,init 驗證擁有權);bluetoothd 每次接管 adapter 重寫;缺 → `sc_file=0` |
 | `$RUNDIR/prov-txn`(`<pid> <token>`) | helper:交易步驟 1 建、步驟 4 後刪 | config-save `--on-join`(存在且 pid 活著 → rc 1);帶 `--txn <token>` 相符不讓路;操作員 `--save` 等 ≤ 10 s | |
 | `/etc/batman-prov/.txn`(overlay,fsync;`<token> <gen_from> <gen_to> <verb>` + 變更前的 wireless 值) | helper:步驟 1 寫、步驟 4 後刪 | helper `--boot`;config-save `--on-join`(存在 → rc 1) | |
 | `/etc/batman-prov/identity/`(7 檔)、`prov.cbor`、`prov.meta`、`.stage/`、`.identity.tmp/`、`ssh_keys.added` | helper;fresh overlay 時 96 抄 identity/prov 與 prov | 96、`--check` | |
@@ -302,9 +303,9 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 | 韌體 | `brcm-bt-firmware-4345c0`:`BCM4345C0.hcd`(63806 B,sha256 51c45e77…,RPi-Distro/bluez-firmware pios/trixie blob 007611e)+ LICENSE.cypress |
 | BlueZ | board patch 0012:`bluez-daemon` = bluetoothd + bluetoothctl;**+ `generate_and_write_irk()` 改用 `getrandom(irk, 16, 0)`,不經 AF_ALG**(F26;其他 `bt_crypto` 呼叫者不改;witness = bluetoothd 內新 log 字串 `Generated IRK (getrandom)`);**不開 AF_ALG**:`kmod-crypto-user` 會讓所有本機程序(含容器)碰得到 kernel crypto API,是一個新的本機攻擊面,只為了 16 B 亂數不值得;不裝 obexd/hciattach/rfcomm/gatttool/sdptool、上游 main.conf / dbus policy / init;`bluez-libs` 依賴 `kmod-batman-bt` |
 | `main.conf` | `Name=Batman`、`ControllerMode=le`、`AlwaysPairable=false`、`PairableTimeout=0`、`DiscoverableTimeout=0`、`JustWorksRepairing=never`、`Privacy=device`、**`SecureConnections=only`(F27)**、`NameResolving=false`、`[GATT] Cache=no`、`[Policy] AutoEnable=true`;不裝 agent;**不是 conffile**(由 image 擁有;還原備份不能把 SC-only 改回去);provd 開機斷言 Pairable==false && Discoverable==false |
-| dbus | 自己的 `bluetooth.conf`:只有 `<policy user="root">`(own/send org.bluez + 6 個 send_interface),無 default policy;**PR-P2 的 `<policy user="provd">` 不是同一組(v16 B-N2)**:只放行 `LEAdvertisingManager1.{Register,Unregister}Advertisement`、`GattManager1.{Register,Unregister}Application`、`ObjectManager.GetManagedObjects`、`Properties.{Get,GetAll}`;明確 deny `AgentManager1.*`、`Properties.Set`、`Device1.*`、`Adapter1.*` 方法(被攻陷的 provd 註冊自動接受的 agent → SC Just Works 通過 → IRK 外洩) |
+| dbus | 自己的 `bluetooth.conf`:只有 `<policy user="root">`(own/send org.bluez + 6 個 send_interface),無 default policy;**PR-P2 的 `<policy user="provd">` 不是同一組(v16 B-N2)**:每條 allow 都同時寫 `send_destination="org.bluez"` + `send_interface` + `send_member`(v17 B-m7):`LEAdvertisingManager1.{Register,Unregister}Advertisement`、`GattManager1.{Register,Unregister}Application`、`org.freedesktop.DBus.ObjectManager.GetManagedObjects`、`org.freedesktop.DBus.Properties.{Get,GetAll}`、**`Device1.Disconnect`**(v17 A-R2:BlueZ 上斷線只有這個方法 `device.c:3167`;§8 的 10 s / 3 次即斷靠它);其餘一律 deny,特別是 `AgentManager1.*`、`Properties.Set`、`Device1.{Pair,Connect,ConnectProfile,CancelPairing}`、`Adapter1.*`。**反方向(v17 A-R5)**:bluetoothd(root)呼叫 provd 匯出的物件——`LEAdvertisement1.Release`、`GattCharacteristic1.{ReadValue,WriteValue,StartNotify,StopNotify}`、`GattDescriptor1.{ReadValue,WriteValue}`、provd app 根的 `ObjectManager.GetManagedObjects`——要在 root policy 加 `send_destination=<provd 的 bus name>` + interface + member;provd 的 bus name 只有 provd uid 能 own(被攻陷的 provd 註冊自動接受的 agent → SC Just Works 通過 → IRK 外洩) |
 | init | `START=61 STOP=20`、`respawn 3600 5 0`、`--noplugin=hostname,autopair,battery,neard,sap`(policy 留著);無 hci0 時照跑等熱插拔;**BlueZ 儲存區 `/var/lib/bluetooth` 在 tmpfs 建 0700(spike 的 overlay symlink 移除);擁有權驗證不過 → 不啟動(fail-closed,同 #280 rundir 規則)**;image 不再帶空的 `/etc/bluetooth/keys` |
-| bluez patch 900(board patch 0013) | (1) IRK 用 `getrandom()`(F26);(2) 每次接管 adapter 都送 `SET_SECURE_CONN`(設定值)並記一行 log(F27);witness = bluetoothd 內 `Batman: SecureConnections mode %u requested` |
+| bluez patch 900(board patch 0013) | (1) IRK 用 `getrandom()`(F26);(2) 每次接管 adapter 都送 `SET_SECURE_CONN`(設定值),完成回呼寫 `/var/lib/bluetooth/batman-sc`(§3)並在失敗時記 mode;witness = bluetoothd 內 `Batman: SecureConnections mode %u requested`(patch 900 是單一檔案、整檔套用,一個字串足以證明兩段都在;v17 B-m6) |
 | distroconfig | `[pi4] core_freq_min=500`;p1 與 p3 兩份手動改(04 ✅、02 ❌);typo 不動(U7) |
 | 3A+ | `[pi3]` `disable-bt` → `miniuart-bt` + `core_freq_min=?`(待板) |
 | 待量 | AP 吞吐 vs BLE 共存;遮蔽 / 外殼對 RSSI;500 MHz 耗電 |
@@ -346,10 +347,10 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 | L21 | `sysupgrade -b` / `-r`(LuCI 備份還原) | wsl.5:IRK 與 main.conf 進備份;**Batman 上 `-r` 不寫回任何東西**(`platform-ab.sh:353` `platform_restore_backup` 是空的,v16 A-N3) | 沒有 bluetooth conffiles → 備份不帶;還原不能改 main.conf | `ble-privacy-254` 斷言 keep.d;白箱:`sysupgrade -b` 後 tar 內無 `etc/bluetooth` |
 | L22 | bluetoothd crash / respawn | — | tmpfs 儲存區留著 → 同一個 IRK 直到重開;無 IRK 檔 → 重新產生;adapter 仍 powered 時 kernel 拒絕重設 privacy 但保留原旗標(A);patch 900 重新送 SC 模式 → root 手動改過的 SC 被改回(B-m1) | L9 + 白箱:`mgmt.sc on` 後 `/etc/init.d/bluetoothd restart` → log 有本次的 mode 2 行 |
 | L18 | legacy 認領 | — | 防呆門;`radio_managed=0`;不清 lab key | 04(已有 lab key,Q6)正;02 正;另做「無 key、無 dev-open」的白箱 → `E_UNSUPPORTED(no-ssh-key)` |
-| L19 | distroconfig 改動 | — | 不隨 OTA;p1 與 p3 手動改 | PR-F(04 ✅ 40/40 500 MHz) |
-| L20 | 96 掛不起 p5 | 96 被刪 | helper 下次開機自己再試;只補得回 prov / identity,overrides 仍停在 image 預設(與今天相同) | 白箱單元測試 |
-| L21 | trial 上 app 操作 | — | 改狀態動詞 `E_BUSY(updating)` | `prov-trial-busy-254` |
-| L22 | `network/leave` / `owner.remove` 後 OTA | — | prov 整檔換;helper 刪 `mesh-expected`/`mesh-joined`;新槽 `claimed` | `prov-leave-ota-254` |
+| L23 | distroconfig 改動 | — | 不隨 OTA;p1 與 p3 手動改 | PR-F(04 ✅ 40/40 500 MHz) |
+| L24 | 96 掛不起 p5 | 96 被刪 | helper 下次開機自己再試;只補得回 prov / identity,overrides 仍停在 image 預設(與今天相同) | 白箱單元測試 |
+| L25 | trial 上 app 操作 | — | 改狀態動詞 `E_BUSY(updating)` | `prov-trial-busy-254` |
+| L26 | `network/leave` / `owner.remove` 後 OTA | — | prov 整檔換;helper 刪 `mesh-expected`/`mesh-joined`;新槽 `claimed` | `prov-leave-ota-254` |
 | L23 | 改名 | — | ⚠️ U5;#202 兩次實證「改 hostname → openmanetd 重保留 IP 並重開」 | `prov-rename-254`(⚠️ 探針待使用者) |
 | L24 | 兩支手機同時認領 | — | provd 序列化;第二個 `E_STATE` | `prov-two-phones-254` |
 | L25 | 交易進行中 `--on-join` tick / OTA | — | `prov-txn` / `.txn` 讓路;`--on-join` 從不寫 prov;`--check` 看 prov.meta → stale 擋 OTA | `prov-netupdate-254`:步驟 2 故意失敗 + 期間 `--on-join` → p5 gen 與 overrides 都不前進;步驟 3–4 間插 sleep + `--on-join` + `reboot -f` → state=claimed |
@@ -359,7 +360,7 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 | L29 | 換手機 / 第二位擁有者 | — | S3:`owner.replace`;psk_owner ≤ 4 | 殘項(S3 PR) |
 | L30 | prov 版本太新 | — | rc 14 → `unknown(too-new)` | 單元 |
 | L31 | 單台在家更新(member、隊友關機) | — | stage 1:本次開機沒入網過 → `radio` → 只要 radio_up → commit | §6.4 (3) |
-| L32 | fresh p5 暫時掛不起 | 96 被刪 | 同 L20 | 同 L20 |
+| L32 | fresh p5 暫時掛不起 | 96 被刪 | 同 L24 | 同 L24 |
 | L33 | overlay prov 壞、p5 好 | — | §4.4 步驟 7 以 p5 重建 | `prov-overlay-corrupt-254` |
 | L34 | 認領回應遺失(persist 後 BLE 斷 / 節點重開 / app 被殺) | — | app 以 `psk_replay` session + `claim/replay` 重取 | `prov-claim-replay-254`:persist 後 `reboot -f` → replay 拿到相同 `owner_tag_key`;錯 `owner_pub` → `E_FORBIDDEN`;app 被殺後重開仍可 replay(app 契約) |
 | L38 | fresh trial 上 helper 晚於 autocommit | — | autocommit 讀到 writer=99zz → 等 ≤ 60 s 至 writer=helper,仍無 → 用 99zz 的值;boot_id 不符 → 今天的規則 | 白箱 |
@@ -455,7 +456,7 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 | D23 | 重燒卡後 p5/p6 是新檔案系統 | F19 | ✅ 原始碼 / ❌ 實跑待 L16(要現場) |
 | D24 | 有 IRK + `Privacy=device` → kernel 以 RPA 廣播;**新 RPA 只在 `HCI_RPA_EXPIRED` 已設後的廣播重新啟用時產生**(F28)→ provd 每 `rpa_timeout` + 隨機 30–120 s 重新註冊廣播(PR-P2) | privacy 進 current settings:原型 ✅、wsl.6 待上機;原始碼 ✅;空中 ⚠️(Q8) |
 | D25 | `SecureConnections=only` → legacy 配對被拒、SC Just Works 因無 agent 被拒 → 不分發 IRK | F27 原始碼 ✅;空中 ⚠️(Q8,Linux central + btmon) |
-| D27 | SC-only 的證據鏈(v16 N1):`main.conf` 由 image 擁有(非 conffile)+ patch 900 每次啟動送設定值 + 本次開機 log 有 `Batman: SecureConnections mode 2 requested` 且其後沒有 `Failed to set mode` + current settings 有 `secure-conn` → 推論 SC-only ⚠️;**實證只有 tier B 的 `ble-pair-sc-only-254`,每次發行都跑**。log 行任何本機程序都能用 `logger` 偽造,但偽造只在 SC-only 已被 root 拿掉時才有意義(root 本來就能做任何事)→ 接受 | 原始碼 ✅;log 契約 ⚠️ 推論 |
+| D27 | SC-only 的證據鏈(v16 N1 / v17 R1·M1):`main.conf` 由 image 擁有(非 conffile)+ patch 900 每次 bluetoothd 接管 adapter 送 `SET_SECURE_CONN(2)` + **`/var/lib/bluetooth/batman-sc`** 記錄本次 boot_id、bluetoothd pid、mode=2、status=0(只有 bluetoothd 寫、root 0600、不被 log ring 擠掉)+ current settings 有 `secure-conn` → 推論 SC-only ⚠️;root 事後 `mgmt.sc on` 看不出(§3)。**實證只有 tier B 的 `ble-pair-sc-only-254`,每次發行都跑** | 原始碼 ✅;狀態檔 wsl.9 待上機 |
 | D26 | 非特權的 mgmt `READ_INFO` 回 current settings(`mgmt.c:185-196` 放行不需權限的 opcode);`Adapter1` 沒有 privacy 屬性(`adapter.c:3914-3937`),`AddressType` 開 privacy 時仍回 `public`(`:2915-2930`)→ provd 不能經 D-Bus 讀 privacy | A/B 原始碼 ✅ |
 
 ## 8. 安全
@@ -464,8 +465,8 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 
 | Actor | 攻擊 | 擋法 | 負測試 |
 |---|---|---|---|
-| BLE 路人 | 讀身分 / 追蹤 BLE 位址 | 未交握只 `status/public`;`claimed\|member` 不帶 `device_id` 末碼;adv 無 Local Name;RPA:IRK 以 `getrandom()` 產生(F26)、每次開機換(tmpfs);provd 每 `rpa_timeout` + 隨機 30–120 s 重新註冊廣播並換 B16 payload 的 nonce(F28,PR-P2);**fail-closed**:provd 只在 helper health 檔的 `privacy=1 sc=1 sc_only_log=1 bondable=0`(本次開機的 boot_id、≤ 60 s 舊;`sc_only_log` 依 D27)時註冊廣播,欄位缺 / 過期 / 壞 → 不廣播;**health 轉壞 → ≤ 10 s 內撤廣播**(v16 A-N2:有人開互動式 bluetoothctl 會讓 bondable=1);**連線建立即撤廣播,斷線後以新 nonce 重新註冊**(v16 B-m2:kernel 斷線後會用舊 payload 重開廣播並換 RPA,新舊 RPA 會被同一 nonce 串起);**GATT 特徵不帶任何 encrypt / authenticate 旗標**(v16 A-N7:否則手機會自動配對、在 SC-only 下必然失敗;PR-P2 斷言);已認領節點無匿名 NX(失敗 PSK 照協定 §3.4 送假第 2 則)。**誠實界線(F29)**:AP BSSID / SSID、HaLow MAC、unclaimed 的 `device_id` 末碼、DIS 版本都是穩定識別,RPA 只讓「只看 BLE 位址」的追蹤失效 | `ble-privacy-254`(§9);RPA 空中測試(PR-P2,Q8) |
-| BLE 路人 | 不綁定的 legacy Just Works 配對拿 IRK + public 位址(F27) | `SecureConnections=only`;無 agent | `ble-pair-sc-only-254`(tier B,Linux central + btmon:legacy 配對 → `Pairing Failed`、沒有 `Identity Information`;負對照 wsl.5(privacy 開、無 SC-only)→ 看得到 `Identity Information`) |
+| BLE 路人 | 讀身分 / 追蹤 BLE 位址 | 未交握只 `status/public`;`claimed\|member` 不帶 `device_id` 末碼;adv 無 Local Name;RPA:IRK 以 `getrandom()` 產生(F26)、每次開機換(tmpfs);provd 每 `rpa_timeout` + 隨機 30–120 s 重新註冊廣播並換 B16 payload 的 nonce(F28,PR-P2);**fail-closed**:provd 只在 helper health 檔的 `privacy=1 sc=1 sc_file=1 bondable=0`(欄位定義與過期規則只在 §3 health 列)時註冊廣播,欄位缺 / 過期 / 壞 → 不廣播;**health 轉壞 → ≤ 10 s 內撤廣播**(v16 A-N2:有人開互動式 bluetoothctl 會讓 bondable=1);**連線建立即撤廣播,斷線後以新 nonce 重新註冊**(v16 B-m2:kernel 斷線後會用舊 payload 重開廣播並換 RPA,新舊 RPA 會被同一 nonce 串起);**GATT 特徵不帶任何 encrypt / authenticate 旗標**(v16 A-N7:否則手機會自動配對、在 SC-only 下必然失敗;PR-P2 斷言);已認領節點無匿名 NX(失敗 PSK 照協定 §3.4 送假第 2 則)。**誠實界線(F29)**:AP BSSID / SSID、HaLow MAC、unclaimed 的 `device_id` 末碼、DIS 版本都是穩定識別,RPA 只讓「只看 BLE 位址」的追蹤失效 | `ble-privacy-254`(§9);RPA 空中測試(PR-P2,Q8) |
+| BLE 路人 | 不綁定的 legacy Just Works 配對拿 IRK + public 位址(F27) | `SecureConnections=only`;無 agent | `ble-pair-sc-only-254`(§9 的程序;判定看 02 是否得到 04 的 public 位址) |
 | BLE 路人 | 暴力認領 | 256-bit;每連線 3 次即斷 | `prov-sec-claim-brute-254` |
 | BLE 路人 | 佔連線 / 大訊息 / crash provd / 吃簽章額度 | ≤ 2 連線、10 s、8 KiB;無限 respawn + 退避;每連線簽章額度;全域交握 20/分可被吃滿是協定 §8 既有界線 | `prov-sec-hog-254`、`-oversize-254`、`prov-respawn-254` |
 | BLE 路人 | 讓 provd crash 以 revert 好 image | health 不看 provd 存活 | `prov-provd-dos-254` |
@@ -476,8 +477,8 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 | 只看過 QR 的人(前任、修理行) | 探測節點 / replay | `psk_replay` 需擁有者加密私鑰 | L34 |
 | 連上 legacy 節點 AP 的人 | SSH root → `qr` → 搶認領 | `qr` 在 legacy 需 dev-open 或實體 console;防呆門;**legacy 上 root = 可認領,既有 #137 缺口,擋不住** | L18 白箱 |
 | 本機非 root | 操作 org.bluez / 冒用 helper / 讀秘密 / 預建 socket 目錄 | dbus root-only policy、PEERCRED、0600 / 0700、`O_NOFOLLOW`、`/tmp/run` root 0755 | `prov-sec-dbus-254`(04 ✅)、`-helper-uid-254`、`-key-perms-254`、tmp-trust 掃描 |
-| 攻陷的 provd | 經 D-Bus 註冊 agent / 設 Pairable / 呼叫 Device1.Pair → SC Just Works 被接受 → IRK 外洩(v16 B-N2) | provd 的 dbus 政策只放行廣播 / GATT / 讀取(§4.6) | `prov-sec-dbus-254` 加:以 provd uid 呼叫 `AgentManager1.RegisterAgent`、`Properties.Set Pairable` → AccessDenied |
-| 本機非 root(開機早期) | 搶先建 `/tmp/lib` 或儲存區、植入已知 IRK(v16 A-N6 / B-m3) | init 擁有權驗證,不符不啟動 | init 單元測試(busybox ash,4 個負案例 ✅ 作者實跑);節點上白箱:預建 nobody 擁有的儲存區 → bluetoothd 不起、log `NOT STARTING` |
+| 攻陷的 provd | 經 D-Bus 註冊 agent / 設 Pairable / 呼叫 Device1.Pair → SC Just Works 被接受 → IRK 外洩(v16 B-N2) | provd 的 dbus 政策只放行廣播 / GATT / 讀取(§4.6) | `prov-sec-dbus-254` 加:以 provd uid 呼叫 `AgentManager1.RegisterAgent`、`Properties.Set Pairable`、`Device1.Pair`、以及抽測 3 個沒列出的方法 → AccessDenied;`Device1.Disconnect` → 成功(正向);bluetoothd → provd 的 `ReadValue` / `Release` 回呼 → 成功(正向,PR-P2) |
+| 本機非 root(開機早期) | 搶先建 `/tmp/lib` 或儲存區、植入已知 IRK(v16 A-N6 / B-m3);或藉 fail-closed 讓 bluetoothd 不起 → trial 上 autocommit 看到 `bluetoothd=0` → 好 image 被 revert(v17 B-m8) | init 擁有權驗證,不符不啟動。**誠實界線**:後者是可用性攻擊,前提是在 S19 之前已有非 root 程式碼在跑(= 已被攻陷);接受,記錄在 log `NOT STARTING` | init 單元測試(busybox ash,4 個負案例 ✅ 作者實跑);節點上白箱:預建 nobody 擁有的儲存區 → bluetoothd 不起、log `NOT STARTING` |
 | 本機非 root / 容器 | 經 AF_ALG 碰 kernel crypto API | 不裝 `kmod-crypto-user`(F26);IRK 改 `getrandom()` | `ble-privacy-254` 斷言 `/proc/net/protocols` 沒有 `ALG`;OTS 容器 netns + `capdrop ALL` 開不了 AF_BLUETOOTH(B 實測) |
 | 本機非 root / 容器 root | 偽造 sysupgrade 程序讓 `ota-armed.mesh` 被寫 | uid 0 + 主機 pid ns + 路徑解析 | §6.4 (10) |
 | 前任擁有者(轉賣) | 保留資料 | 轉賣工具全卡清零後寫 image(§4.5) | L16 工具層(WSL)+ 節點層(現場) |
@@ -499,9 +500,15 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 - tier A:firstboot、boot、sec-*、respawn、bluez-restart、helper-restart、bypass、legacy-upgrade、two-phones、trial-busy、overlay-corrupt、provd-dos。tier B(DNODE):ota、autocommit (1)–(10)、downgrade、leave-ota、legacy-claim、netupdate、claim-replay、rename(⚠️)。destructive:powerloss ×3、lock-failsecure。PR-F:coex。**L16 重燒卡驗收要現場**。
 - 破壞性測試先列副作用與還原(使用者 2026-10-18 規則)。認領測試在 04 的前提是 04 有 lab key(Q6 已做)。
 - harness 不用 bluetoothctl 當長駐 client(F16);節點端 BLE 斷言走 helper 的 health 檔。
-- `ble-privacy-254`(tier A,進 PR-H1;**只在 fresh overlay 上判定**,A-m2 / B-M4):本次開機 log 有 `Generated IRK (getrandom)` 與 `Batman: SecureConnections mode 2 requested`(D27);helper / 測試以 mgmt `READ_INFO` 讀 current settings 含 `privacy`、`secure-conn`,不含 `bondable`(kernel 沒有 sc-only 位元,v16 N1)(不用互動式 bluetoothctl:它註冊 agent,session 期間 current settings 會出現 `bondable`,04 實測);`/var/lib/bluetooth` 是 tmpfs 上的 0700 root 目錄、identity 0600;重開機後 IRK 雜湊不同;`/proc/net/protocols` 無 `ALG`;`/lib/upgrade/keep.d/` 沒有 bluetooth 路徑。負對照:wsl.4 + fresh overlay → 沒有 privacy;wsl.5 → 有 privacy、沒有 sc-only。
+- `ble-privacy-254`(tier A,進 PR-H1;**只在 fresh overlay 上判定**,A-m2 / B-M4):本次開機 log 有 `Generated IRK (getrandom)`;`/var/lib/bluetooth/batman-sc` 為本次 boot_id、現在活著的 bluetoothd pid、`mode=2 status=0`(D27);`/etc/init.d/bluetoothd restart` 後 pid 跟著換;helper / 測試以 mgmt `READ_INFO` 讀 current settings 含 `privacy`、`secure-conn`,不含 `bondable`(kernel 沒有 sc-only 位元,v16 N1)(不用互動式 bluetoothctl:它註冊 agent,session 期間 current settings 會出現 `bondable`,04 實測);`/var/lib/bluetooth` 是 tmpfs 上的 0700 root 目錄、identity 0600;重開機後 IRK 雜湊不同;`/proc/net/protocols` 無 `ALG`;`/lib/upgrade/keep.d/` 沒有 bluetooth 路徑。負對照:wsl.4 + fresh overlay → 沒有 privacy;wsl.5 → 有 privacy、沒有 sc-only。
 - `ble-pair-sc-only-254`(tier B,要 Linux central):見 §8。
-- RPA 空中測試(PR-P2,有廣播者之後):第二台 central **被動掃描**、期間不准連線、≥ 2 × `rpa_timeout`;看到 ≥ 2 個不同 RPA、都不是 public 位址;負對照:provd 不重新註冊 → 30 分鐘內同一個 RPA。
+- **`ble-pair-sc-only-254`(tier B,02 當 central;v17 A-R3 / B-B1 重寫)**:舊判定「02 有沒有存下 04 的 IRK」在目標與負對照都必然是否(02 帶 bonding → 04 先以 not-bondable 拒絕,`smp.c:1756`;不帶 bonding → IRK 被標成不持久,BlueZ 在存檔前 return,`smp.c:1045-1054`、`adapter.c:8980`)。新程序:
+  1. 02(central)互動 bluetoothctl:`mgmt.bondable off`、`mgmt.sc off`,印 `mgmt.info` 確認兩者都關;04 先斷言 current settings 無 `bondable`、有 `privacy` 與 `secure-conn`。
+  2. 02 `mgmt.pair -c 3 -t 2 <04 現在的 RPA>`(NoInputNoOutput、LE random)。**判定**:回覆是否為 `Paired with 88:A2:9E:B5:6C:8B (LE Public)`(`mgmt.c:3377` 以 `conn->dst` 回覆)或 02 的 `devices` 出現 04 的 public 位址(`device_update_addr`,`adapter.c:8975`,在持久檢查之前)= **外洩**;目標 = 配對失敗(Authentication Requirements)、02 只看得到 RPA。
+  3. **負對照 = 同一 build 翻轉**(不 OTA 回 wsl.5,避免 overlay 留持久 IRK):04 root `bluetoothctl mgmt.sc on`(一次性)→ 重做 2 → 必須外洩;`/etc/init.d/bluetoothd restart` → `batman-sc` 新 pid、mode=2 → 重做 2 → 必須失敗(這同時是 patch 900 與 L22 的負對照)。
+  4. 每輪之間重啟 02 的 bluetoothd(清掉它拿到的 IRK);翻轉測試做完 **重開 04**(外洩過的 IRK 作廢,tmpfs 換新)。
+- **RPA 空中測試(先做,在任何配對測試之前;或兩台都重開之後)**(v17 A-R4 / B-M2):04 的測試廣播者 = 互動 bluetoothctl 且第一個指令 `agent off`,開廣播前後都斷言 04 無 `bondable`(PR-F 沒有 provd;PR-P2 改用 provd)。02 被動掃描、全程不連線。判定:位址最高兩位元 = `01`(RPA,不是 NRPA / static random)、≠ public,並以 04 的 IRK(測試時從 04 讀 `identity`,測後重開 04 作廢)驗 `ah(IRK, prand) == hash`。三段:(a) 不重新註冊 ≥ 30 分鐘 → 同一個 RPA(負對照,F28);(b) timeout 前重新註冊 → 同一個 RPA;(c) 超過 `rpa_timeout`(900 s)後重新註冊 → 新 RPA。
+- GATT:PR-F 沒有 GATT app,02 只讀得到 bluetoothd 內建的 GAP / GATT / DIS → **smoke**(v17 A-R6 / B-m2);真正的 GATT 回歸(含 iPad)在 PR-P2。
 - `prov-tools-254`(tier A):斷言 `flock`、`fsync`、`readlink -f`、`mountpoint` 存在;缺 → FAIL。
 
 ## 10. 實作切法
@@ -509,7 +516,7 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 1. **PR-F(firmware)**:`feat/254-ble` 現狀 + 重 build(policy plugin 修正)+ **以 shim 取代 `/sbin/persistent_vars_storage.sh`**(F21,9 個讀者一次失效)+ **bluez IRK patch(F26)** → 04 OTA 驗 `Powered` 自動、`Pairable: no`、三模組、dbus 負測試、閒置 500 MHz、**privacy + sc-only 在 current settings(fresh overlay)、IRK 在 tmpfs、無 conffiles、無 AF_ALG**;PR-F 沒有廣播者(只有 bluetoothd,沒有程式註冊 LEAdvertisement:image 內 `grep -rl LEAdvertisingManager` 只有 bluetoothd / bluetoothctl),空中 RPA 移到 PR-P2(A-m6);release note:p1 與 p3 兩份 distroconfig 要手動改。
 2. **docs PR**:`219-protocol.md` v0.7(`batman-owner-op-v1`、首版 join 授權、`device_id` 公式、helper 重算 ClientChal、`psk_replay` 與固定 6 次;`reset` 動詞 → `E_UNSUPPORTED(reflash)`、`E_VERSION` 逃生口、CDDL reset-level 移除)、CDDL、向量;`219-field-provisioning.md` v2.9(§6.1、§6.3、§6.9 對齊;§7 恢復出廠與任務表、版本協商、daily-validation 列改「階段 1 = 轉賣工具重燒卡,#255 重設計」)。
 3. **PR-H1(harness)**:`prov-*` 骨架、02 central client、`verify.py` 對手模式。
-4. **PR-P1(產品,兩板共用檔)**:helper 的 mgmt `READ_INFO` 與 health 檔欄位 `privacy` / `sc_only` / `bondable`(D26);99zz 對 unclaimed 新卡的 AP placeholder(F23);config-save(`--prov-only`、`--prov-get`、fp / check 納入 prov、`prov-txn` / `.txn` 讓路、`final_rc` 的 `root:!`)、96(prov 抄寫在 `:93` 前、每個出口前判上鎖、verdict 帶 boot_id)、`halow-setkey --no-persist` + 對 `radio_managed` 節點的警告、platform-ab 的 stage 1 `ota-armed.mesh`、autocommit(§6.4)、#202 閘 prov-aware、`meshjoin_radio_up`、joinwatch 寫 `lastjoined`、99zz;helper + keystore `file`(socket 測試,無 BLE)。bcm2710 ❌,寫進 PR body。
+4. **PR-P1(產品,兩板共用檔)**:helper 的 mgmt `READ_INFO`、讀 `batman-sc`,寫 §3 health 列定義的 `privacy` / `sc` / `sc_file` / `bondable`(D26、D27);99zz 對 unclaimed 新卡的 AP placeholder(F23);config-save(`--prov-only`、`--prov-get`、fp / check 納入 prov、`prov-txn` / `.txn` 讓路、`final_rc` 的 `root:!`)、96(prov 抄寫在 `:93` 前、每個出口前判上鎖、verdict 帶 boot_id)、`halow-setkey --no-persist` + 對 `radio_managed` 節點的警告、platform-ab 的 stage 1 `ota-armed.mesh`、autocommit(§6.4)、#202 閘 prov-aware、`meshjoin_radio_up`、joinwatch 寫 `lastjoined`、99zz;helper + keystore `file`(socket 測試,無 BLE)。bcm2710 ❌,寫進 PR body。
 5. **PR-P2**:provd(含 F28 廣播重新註冊與 nonce 輪替、D26 health 檔的 privacy fail-closed)、GATT、協定核心、`status/public`、認領(含 replay、防呆門)、鎖定、`ssh_keys`、`root_password`。
 6. **PR-P3**:建網 / 加入 / 邀請 / 狀態 / 診斷 / 離開 / 改名;app 的賣方 / 買方 / 遺失手機說明頁;**轉賣工具**(`scripts/transfer-flash.ps1`、`scripts/transfer-flash.sh` 收進 repo,§4.5 契約,含發行 image 清單與發行流程的更新步驟)與 `prov-transfer-tool-254`;LuCI reset 文字與 `rc.button/reset`(F22)。
 7. S4(更新)、S5(app)addendum。
@@ -527,7 +534,7 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 | Q5 | 恢復出廠破壞性測試在哪台跑 | 不再需要(U8)。L16 工具層在 WSL 跑;節點層與 Windows 工具要現場實卡,使用者到現場時再排 |
 | Q6 | 認領測試會把 04 上鎖 | 已做(§1.1) |
 | Q7 | shim 讓 Morse 的 EEPROM 硬體區域鎖失效(國家只由 uci 決定) | **定案(使用者 2026-10-20 接受)**:02/04 今天就沒有區域鎖;民用 SKU 出廠時由 image / app 設國家(預設 TW);#255 可用 608B 或 image 簽章另做區域鎖 |
-| Q8 | 空中驗證要第二台 **Linux** BLE central(D24、D25) | **定案(使用者 2026-10-19 授權)**:把 PR-F build OTA 到 02(OTA 前在 02 p1 distroconfig 加 `core_freq_min=500`),以 02 當 central:`ble-pair-sc-only-254` 以 02 runtime `mgmt.sc off` 當 legacy initiator,判定看 02 是否存下 04 的 `IdentityResolvingKey`(負對照 04 = wsl.5);RPA 以 04 測試廣播、02 被動掃描;GATT 回歸(v16 B-m6)以 02 連線讀 GATT。原建議文字:把 PR-F build OTA 到 02(02 有同款 BCM4345C0;OTA 02 需使用者授權),以 02 當 central 跑 `ble-pair-sc-only-254`(btmon 要另外帶進 02 或用 kernel mgmt trace)與 PR-P2 的 RPA 被動掃描。iPad 看不到 BLE 位址(B-m5);Windows 藍牙看得到位址但看不到 SMP。沒做之前 D24 / D25 保持 ⚠️ |
+| Q8 | 空中驗證要第二台 **Linux** BLE central(D24、D25) | **定案(使用者 2026-10-19 授權 OTA 到 02)**。程序見 §9。**副作用與還原(v17 B-m3)**:順序 = 04 OTA 並 commit 之後才動 02;02 p1 `distroconfig.txt` `[pi4]` 加 `core_freq_min=500`(OTA 前;slot A 讀 p1;已有 `miniuart-bt` 要再確認)→ 還原 = 刪該行;02 OTA 到 PR-F build(slot A)→ 還原 = `batman-slot rollback`(回 slot B wsl.2);02 runtime `mgmt.bondable/sc off`(不持久)→ 還原 = 重啟 02 bluetoothd;04 翻轉 `mgmt.sc on` → 還原 = bluetoothd restart + 重開 04;外洩過的 IRK → 重開 04 作廢;測完 02 留在 PR-F build(之後 PR-H1 的 02 central client 要用)。 |
 
 ## 13. v13 審查 → v14 對應
 
@@ -590,3 +597,23 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 | A-N2 互動 bluetoothctl 打開 bondable | health 轉壞 ≤ 10 s 撤廣播;runbook 只用一次性指令 |
 | A-N3 `sysupgrade -r` 不寫回 | L21 |
 | A-N7 GATT 不帶加密旗標 | §8 provd 契約 + PR-P2 斷言 |
+
+### v17 → v18
+
+| v17 發現 | 收法 |
+|---|---|
+| **A-R3 / B-B1** 空中配對判定分辨不了 | §9 `ble-pair-sc-only-254` 重寫:02 bondable/sc off、`mgmt.pair -c 3 -t 2`、判定看 public 位址;負對照 = 同 build `mgmt.sc on` 翻轉再 bluetoothd restart |
+| **A-R1 / B-M1** SC 證據放 logread | patch 900 完成回呼寫 `batman-sc`(firmware wsl.9);D27;§3 health 唯一契約(`sc_file`) |
+| **A-R2** 白名單擋了 `Device1.Disconnect` | §4.6 放行 Disconnect;§8 正向 / 負向測試 |
+| **B-M2 / A-R4** RPA 測試判定、順序、廣播者 | §9:RPA 先做、`agent off` 廣播者、最高兩位元 01 + ah() 驗、三段含負對照 |
+| A-R5 bluetoothd → provd 回呼規則 | §4.6 反方向規則 + PR-P2 正向測試 |
+| A-R6 / B-m2 GATT 只是 smoke | §9 |
+| A-R7 D27 | 改為狀態檔契約 |
+| B-m1 root `mgmt.sc on` 看不出 | §3 改字(不再說 health 會轉壞) |
+| B-m3 Q8 副作用與還原 | Q8 列出 |
+| B-m4 L19–L22 編號重複 | 第二組改為 L23–L26 |
+| B-m5 過時文字 | §8 / §9 / §10 health 欄位統一引用 §3 |
+| B-m6 witness 只剩 SC 字串 | §4.6 說明 |
+| B-m7 白名單規則寫法 | §4.6:destination + interface + member;§8 抽測未列方法 |
+| B-m8 fail-closed 被拿來觸發 revert | §8 誠實界線 |
+| 審查違規(B 重派):在 02 `mkdir -p /tmp/rvp3ro` 一次 | B 自行列出後 `rmdir`;作者 `ls` 確認 02 上已不存在 |
