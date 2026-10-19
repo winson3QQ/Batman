@@ -26,6 +26,7 @@
 | U6 | 3A+ 等新板 | 10-18 | 兩板共用檔(`batman-slot`、`platform-ab.sh`、config-save、96、halow-setkey、autocommit、joinwatch)bcm2710 ❌ 未測 |
 | U7 | distroconfig 的 `uart_enable=1` typo 不動 | 10-18 | |
 | Q6 | 04 改用 lab 公鑰登入 | 10-19 | 已做:04 `authorized_keys` = 02 同一把 ed25519(sha256 5bda8113…),key-only 登入驗過,lock-status 仍 UNPROVISIONED,已進 p5 |
+- **U9(2026-10-19)**:app 設計(S5 addendum)照 §10 順序,在 PR-P3 之後才開始;不在 docs PR(協定 v0.7)之後平行進行。
 
 ### 1.2 仍被本設計引用的事實(全部唯讀實測或原始碼)
 
