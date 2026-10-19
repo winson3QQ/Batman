@@ -73,7 +73,7 @@
   - W 成功後,S89 的 helper 拿得到 `reset.lock`。
 
 **A9-m2. 意圖行的長度上限 64 B 與 v9 新加的 `p6uuid` 衝突** — **PR-P1 必帶**
-- 實算:`reset v=1 nonce=0123456789abcdef slot=A attempts=1 p6uuid=01234567-89ab-cdef-0123-456789abcdef\n` = **95 B**;不含 p6uuid 是 51 B。§4.3 寫「≤ 64 B」(`:153`),解析器寫「`head -c 65`,超過 64 B = bad」(`:235`)。
+- 實算:`reset v=1 nonce=5c1e9a07d3b2f648 slot=A attempts=1 p6uuid=7e3f2a91-c4d8-4b06-9e15-a2c7f08d3b64\n` = **95 B**;不含 p6uuid 是 51 B。§4.3 寫「≤ 64 B」(`:153`),解析器寫「`head -c 65`,超過 64 B = bad」(`:235`)。
 - 後果:
   - W1 寫回 `p6uuid` 之後,只要 W2 失敗,或 W1 與 W2 之間斷電,下一次開機解析器就回 `bad` → Wb:crit、上鎖、送 bench。設計上這條路應該自癒:`p6uuid` 相同 → 略過 W1 → 重做 W2。
   - W1 的「讀回」如果也走解析器,W1 自己就會失敗。
