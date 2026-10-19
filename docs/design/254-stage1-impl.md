@@ -264,7 +264,7 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 7. 測試模式:`--test-target-file <loop 檔>` 只給 harness(L16 工具層)用,跳過可移除裝置檢查;另有負測試「非可移除裝置被拒」。
 
 **節點端**:
-- **PR-F 以 shim 取代 `/sbin/persistent_vars_storage.sh`**(F21 的 9 個讀者一次失效;`31_*` 不必另外刪):Batman image 不讀 EEPROM 的任何 persistent var;EEPROM 裡若有殘值也沒有作用。shim 的放法:`persistent-vars-storage-bcm2711` 套件的檔由 firmware board files overlay 覆蓋(PR-F 選定機制並附「image 內 `persistent_vars_storage.sh READ default_wifi_key` rc 1、無輸出」的斷言);`docs/upgrade-1.8.0.md` 同步。
+- **PR-F 以 shim 取代 `/sbin/persistent_vars_storage.sh`**(F21 的 9 個讀者一次失效;`31_*` 不必另外刪):Batman image 不讀 EEPROM 的任何 persistent var;EEPROM 裡若有殘值也沒有作用。shim 的放法:放在 firmware 樹的 OpenWrt `files/` overlay(`files/sbin/persistent_vars_storage.sh`),它在組 rootfs 時最後複製、蓋過 `persistent-vars-storage-bcm2711` 套件的同名檔;現有 build 已用同一個 overlay 放 `files/etc/batman-build`(`build-board.sh:23`,節點上確有 `/etc/batman-build`)。PR-F 附斷言:image 內 `persistent_vars_storage.sh READ default_wifi_key` rc 1、無輸出;`docs/upgrade-1.8.0.md` 同步。
 - **unclaimed 新卡的 AP**:99zz 在 fresh overlay、p5 未 seed、無 prov 時把所有 `mode=ap` 的 key 設成 `CHANGE-ME-NOW` → S18 keyguard 關 AP(F23;219 §6.2「未認領時不開 WiFi AP」)。
 - 節點端不做任何清除機制;`firstboot` / LuCI reset / reset 按鈕只清本槽 overlay,96 會從 p5 還原(F22),不是轉賣用的全清 → UI 文字改為「重新套用設定(不清除擁有者與資料)」,`rc.button/reset` 長按不再呼叫 `firstboot`(PR-P1)。
 - provd 收到協定的 `reset` → `E_UNSUPPORTED(reflash)`,app 轉到說明頁。
