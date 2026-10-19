@@ -420,11 +420,19 @@ dev_cert = (x509.CertificateBuilder()
             .not_valid_before(DEV_T0).not_valid_after(DEV_T1)
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
             .sign(dev_key, hashes.SHA256(), ecdsa_deterministic=True))
+forged_key = p256("forged-dev")      # a stranger who saw the QR: same CN / serialNumber, own key
+forged_cert = (x509.CertificateBuilder()
+               .subject_name(dev_name).issuer_name(dev_name)
+               .public_key(forged_key.public_key()).serial_number(1)
+               .not_valid_before(DEV_T0).not_valid_after(DEV_T1)
+               .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+               .sign(forged_key, hashes.SHA256(), ecdsa_deterministic=True))
 out["identity_file"] = {
     "dac_pub": hx(pub65(dev_key)),
     "sn": hx(SN_FILE),
     "device_id": DEVICE_ID_FILE,
     "dev_cert_der": hx(dev_cert.public_bytes(serialization.Encoding.DER)),
+    "forged_dev_cert_der": hx(forged_cert.public_bytes(serialization.Encoding.DER)),
     "rule": "sn = SHA-256(SEC1 65 B dac_pub)[:9]; device_id = lowercase hex(sn) (18 chars); "
             "self-signed, CN = 'dev:' + device_id, serialNumber = hex(sn), 2020-01-01 .. 2120-01-01",
 }
@@ -499,8 +507,13 @@ out["claim_replay"] = {
     "nonce_helper": hx(NONCE_HELPER_R),
     "owner_op_input": hx(op_r_msg),
     "owner_op_sig": hx(op_r[2]),
-    "request": hx(cb({0: [1, 0], 1: 4, 2: "claim/replay", 3: {1: RESP_R, 31: op_r},
-                      7: seed("idem-replay")[:16]})),
+    "request": hx(cb({0: [1, 0], 1: 4, 2: "claim/replay", 3: {1: RESP_R, 31: op_r}})),
+    "response_envelope": hx(cb({1: 4, 4: 0, 3: {1: OWNER_TAG_KEY, 2: ADV_OWNER_KEY, 3: "Vq3x-8RtL2-mN7c-Hy4p-Zk9w"[:24]}})),
+}
+out["legacy"] = {
+    "response_info_legacy": hx(cb({1: 1, 4: 0, 3: {1: DEVICE_ID, 2: "C3", 3: "bcm2711", 4: "1.5.12", 5: [1, 0],
+                                                   6: ["halow"], 7: 3, 8: True}})),
+    "response_error_no_ssh_key": hx(cb({1: 3, 4: 6, 5: {1: "claim", 2: 10}})),
 }
 
 

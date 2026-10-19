@@ -421,6 +421,12 @@ except ecdsa.BadSignatureError:
     _ok = False
 check("dev cert self-signature (python-ecdsa)", _ok)
 check("se identity: device_id = hex(sn) for the 608B serial too (§3.3)", K["device_id"] == K["sn"])
+fc = x509.load_der_x509_certificate(b(idf["forged_dev_cert_der"]))
+fpub = fc.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+_fcn = fc.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)[0].value
+check("dev TOFU precondition: a forged cert with the victim's CN fails device_id == hex(SHA-256(dac_pub)[:9]) (§3.3)",
+      _fcn == "dev:" + idf["device_id"] and H(fpub)[:9].hex() != idf["device_id"])
+check("dev TOFU precondition holds for the real dev cert", H(dev_pub)[:9].hex() == idf["device_id"])
 
 # psk_replay (§6): ECDH from BOTH sides with python-ecdsa, HKDF with hmac
 def _priv(name):
@@ -485,6 +491,13 @@ check("owner-op: a body field added after signing changes args_hash and is rejec
 check("owner-op: signature by another key is rejected", not es256_ok(b(K["dac_pub"]), oin, jop[2]))
 _hs = jop[2][:32] + (N - int.from_bytes(jop[2][32:], "big")).to_bytes(32, "big")
 check("owner-op: high-s variant is rejected", not es256_ok(b(K["owner_sign_pub"]), oin, _hs))
+check("owner-op: verb must equal the envelope type; the node signs over the type (network/leave + join op)",
+      jop[1] != "network/leave"
+      and not es256_ok(b(K["owner_sign_pub"]), op_input(H_PSK, b(oo["nonce_helper"]), "network/leave", ah), jop[2]))
+_adm = _priv("admin")
+_adm_sig = _adm.sign_deterministic(oin, hashfunc=hashlib.sha256, sigencode=ecdsa.util.sigencode_string)
+check("owner-op: a signature by a non-owner key (network admin) does not verify as the owner",
+      not es256_ok(b(K["owner_sign_pub"]), oin, _adm_sig))
 check("CDDL rejects network/join without owner-op",
       not cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 3, 2: "network/join", 3: jbody}, canonical=True)))
 check("op/nonce request + response CDDL",
@@ -502,6 +515,11 @@ rreq = cbor2.loads(rreq_raw)
 rbody = dict(rreq[3])
 rop = rbody.pop(31)
 check("claim/replay: request CDDL", cddl_ok("request", rreq_raw) and rbody[1] == b(cr["response"]))
+check("claim/replay: owner_op_input and owner_op_sig in the vectors are the rebuilt ones",
+      op_input(H_REPLAY, b(cr["nonce_helper"]), "claim/replay", H(cbor2.dumps(rbody, canonical=True))).hex() == cr["owner_op_input"]
+      and rop[2] == b(cr["owner_op_sig"]))
+check("claim/replay: response CDDL (claim-finish-resp, 24-char root password)",
+      cddl_ok("response", b(cr["response_envelope"])) and len(cbor2.loads(b(cr["response_envelope"]))[3][3]) == 24)
 check("claim/replay: owner-op verb + signature",
       rop[1] == "claim/replay" and es256_ok(b(K["owner_sign_pub"]),
                                             op_input(H_REPLAY, b(cr["nonce_helper"]), rop[1],
@@ -516,12 +534,22 @@ check("CDDL rejects claim/replay with a claim/begin body",
 _er = cbor2.loads(b(env["response_error_reset_reflash"]))
 check("reset: error response CDDL, E_UNSUPPORTED reason 9",
       cddl_ok("response", b(env["response_error_reset_reflash"])) and _er[4] == 6 and _er[5] == {1: "reset", 2: 9})
+lg = v["legacy"]
+check("legacy: info response with state 3 is valid CDDL", cddl_ok("response", b(lg["response_info_legacy"]))
+      and cbor2.loads(b(lg["response_info_legacy"]))[3][7] == 3)
+check("legacy: E_UNSUPPORTED reason 10 (no usable SSH key) is valid CDDL",
+      cddl_ok("response", b(lg["response_error_no_ssh_key"])))
+for _t, _b in [("bulk/open", {1: 0}), ("bulk/close", {}), ("update/prepare", {}), ("update/apply", {}),
+               ("network/leave", {}), ("diag/bundle", {}), ("root_password/reset", {})]:
+    check(f"CDDL rejects {_t} without owner-op", not cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 6, 2: _t, 3: _b})))
+check("CDDL rejects an ssh_keys/set line that is not ssh-ed25519",
+      not cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 5, 2: "ssh_keys/set", 3: {1: ["ssh-rsa AAAA x"], 31: rop}})))
 check("CDDL rejects ssh_keys/set with 9 lines",
       not cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 5, 2: "ssh_keys/set",
-                                          3: {1: ["ssh-ed25519 AAAA"] * 9, 31: rop}})))
+                                          3: {1: ["ssh-ed25519 AAAAC3Nza"] * 9, 31: rop}})))
 check("CDDL accepts ssh_keys/set with 1 line + owner-op",
       cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 5, 2: "ssh_keys/set",
-                                      3: {1: ["ssh-ed25519 AAAA test"], 31: rop}})))
+                                      3: {1: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@phone"], 31: rop}})))
 
 print(f"\n{count} checks: " + ("ALL PASSED" if not fails else f"{len(fails)} FAILED"))
 sys.exit(1 if fails else 0)

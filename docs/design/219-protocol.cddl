@@ -89,11 +89,11 @@ whole-request = (
  // 2 => "ssh_keys/set",    3 => ssh-keys-set-req
  // 2 => "root_password/reset", 3 => op-only-req
  // 2 => "update/check",    3 => update-check-req
- // 2 => "update/prepare",  3 => empty
- // 2 => "update/apply",    3 => empty
+ // 2 => "update/prepare",  3 => op-only-req
+ // 2 => "update/apply",    3 => op-only-req
  // 2 => "update/status",   3 => empty
  // 2 => "bulk/open",       3 => bulk-open-req
- // 2 => "bulk/close",      3 => empty
+ // 2 => "bulk/close",      3 => op-only-req
  // 2 => "reset",           3 => empty      ; v0.7: always answered E_UNSUPPORTED {1: "reset", 2: 9}
 )
 ; The response body type is determined by the request's msg-type (table in §5.3):
@@ -124,6 +124,7 @@ reason-code  = 1 ; update: trial slot active
              / 7 ; parameter not supported by this hardware
              / 8 ; not enough RAM (/tmp)
              / 9 ; not in this stage: reflash the card with the resale tool (v0.7, `reset`)
+             / 10 ; legacy claim refused: no usable SSH key and no dev-open (the operator would be locked out)
 
 msg-type = "info" / "claim/begin" / "claim/finish" / "auth/owner"
          / "owner/add" / "owner/remove" / "settings/get" / "settings/set"
@@ -158,6 +159,7 @@ capability = "halow" / "gps" / "ptt" / "lora" / "se" / "battery" / tstr   ; open
 node-state = 0 ; unclaimed
            / 1 ; claimed, not in a network
            / 2 ; network member
+           / 3 ; legacy (provisioned over SSH before #254): handshake NX like unclaimed; claim needs the legacy gate (§5.3)
 
 claim-begin-req   = { 1 => p256-pub, * uint => any }              ; owner_pub (signing key)
 claim-begin-resp  = { 1 => bytes32, * uint => any }               ; nonce
@@ -199,7 +201,7 @@ network-join-req = {
   2 => members-sign1,
   3 => secrets-sign1,        ; net_secrets for this node
   ? 4 => invite-id,
-  31 => owner-op,           ; v0.7 §5.7 (verb "network/join"; required for the first version, §7.1)
+  31 => owner-op,           ; v0.7 §5.7, always required (verb "network/join"; also the trust anchor of the first version, §7.1)
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 network-join-resp = { 1 => join-result, * uint => any }
@@ -280,7 +282,7 @@ update-phase = 0 ; idle
              / 5 ; committed
              / 6 ; reverted
 
-bulk-open-req  = { 1 => bulk-purpose, * uint => any }
+bulk-open-req  = { 1 => bulk-purpose, 31 => owner-op, * uint => any }
 bulk-purpose   = 0 ; software update
 bulk-open-resp = {
   1 => tstr,                 ; ssid
@@ -292,7 +294,6 @@ bulk-open-resp = {
 }
 
 ; v0.7: `reset` (reset-req / reset-level) removed; stage 1 has no factory reset (U8, resale = reflash)
-            / 2 ; zeroize (tactical only; civil returns E_UNSUPPORTED)
 
 ; ------------------------------------------------------------------ node identity (§3.3)
 node-cert = {
@@ -418,7 +419,8 @@ owner-op = { 1 => tstr .size (1..255), 2 => es256-sig }
 op-only-req      = { 31 => owner-op, * uint => any }
 op-nonce-resp    = { 1 => bytes32, * uint => any }                 ; nonce_helper: one-time, 60 s, bound to h
 claim-replay-req = { 1 => bytes32, 31 => owner-op, * uint => any } ; CheckMac response (§5.4, stored owner_pub)
-ssh-keys-set-req = { 1 => [ 0*8 tstr .size (1..256) ], 31 => owner-op, * uint => any }  ; ssh-ed25519 lines
+ssh-keys-set-req = { 1 => [ 0*8 ssh-ed25519-line ], 31 => owner-op, * uint => any }
+ssh-ed25519-line = tstr .regexp "ssh-ed25519 [A-Za-z0-9+/=]{1,200}( [ -~]{0,40})?"   ; one line, <= 256 B (§5.3)
 root-password-resp = { 1 => tstr, * uint => any }                  ; new 24-char root password, shown once
 settings-set-req = {
   ? 1 => tstr,

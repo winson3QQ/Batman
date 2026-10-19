@@ -165,7 +165,7 @@ platform_check_image(stage 1):只在真的升級時寫 p6 ota-armed.mesh(§6.4)
 | `psks.get()` | 無 | `{psk_owner[≤4], psk_member, psk_replay, adv_owner, adv_member}`(只回 HKDF 導出值,不回 `owner_tag_key`/`net_root`);prov 變更後 provd 重拉 |
 | `claim.verify(h, client_resp, owner_pub, owner_enc_pub, sig_enc)` | helper 以自己發給此 `h` 的 `nonce_node`、自己的 DAC、即將寫入的 `owner_pub` 重算 `ClientChal`(協定 §5.4),`CheckMac` 常數時間;`sig_enc` 以同一把 `owner_pub` 驗;legacy 另需防呆門(§6.1) | §6.1 交易;`legacy\|unclaimed → claimed` |
 | `claim.replay(h, client_resp, owner_pub, owner_op)` | 只接受 `psk_replay` session;state ∈ {claimed, member}、擁有者 1 位、`owner_pub` == 已存;CheckMac(重算)**且** owner-op(`verb=claim/replay`);失敗計數在 helper(每 boot 每小時 10 次) | 回存在 `prov.cbor` 的 `owner_tag_key`、`adv_owner_key`;產新 root 密碼 |
-| `net.apply(net_config, net_secrets[, owner_op])` | `prov.cbor.net` 為空 → 需 owner-op `network/join`(`args_hash = H(net_config ‖ net_secrets)`);否則以上一版 `admins` 驗鏈(版本 +1、不跳號);helper 以 `ecdh.key` 解 `net_secrets`(明文 SAE key / `net_root` 不出 helper) | §4.4 交易 |
+| `net.apply(net_config, net_secrets[, owner_op])` | `prov.cbor.net` 為空 → 需 owner-op `network/join`(`args_hash` 依協定 v0.7 §5.7:helper 收**原始請求 body**,自己嚴格解碼、去掉 key 31、重新編碼取雜湊,只依解碼結果執行;不收 provd 拆好的欄位);否則以上一版 `admins` 驗鏈(版本 +1、不跳號);helper 以 `ecdh.key` 解 `net_secrets`(明文 SAE key / `net_root` 不出 helper) | §4.4 交易 |
 | `owner_op(obj)` | `ES256_owner("batman-owner-op-v1" ‖ h ‖ nonce_helper ‖ u8(len(verb)) ‖ verb ‖ args_hash)`,`args_hash = SHA-256(deterministic CBOR(請求 body 去掉 key 31))`(協定 v0.7 §5.7);`nonce_helper` 一次性、60 s、綁 `h`;verb ∈ `network/join`、`network/leave`、`owner/*`、`settings/*`、`ssh_keys`、`root_password`、`diag`、`claim/replay` | 授權物件 |
 | `root_password.reset(owner_op)` | owner-op | 新 24 字元 → shadow → `--save` → 回傳一次 |
 | `diag.bundle(owner_op)` | owner-op | helper 的私有暫存檔,O_RDONLY fd,讀完刪 |
@@ -212,7 +212,7 @@ type Keystore interface {
 `--prov-get` 以 `ro` 掛(會 replay journal);失敗才退 `ro,noload` 並標 `maybe-stale`(讀到較舊的 gen 時,§4.4 步驟 7「overlay 新 → 以 overlay 為準」會自癒)。`unknown` 每次開機重算。
 
 - `se` 後端(#255):`backend=se` 而 608B 不回應 → helper 拒絕啟動(fail-secure)。焊上 608B = 新身分、新 QR、重新認領。
-- app:鏈長 1 且 CN `dev:` → TOFU pin,畫面標「開發機」;release build 拒絕。鏈長 2 → 製造商根驗證。
+- app:鏈長 1 且 CN `dev:` → **先確認 `device_id == hex(SHA-256(dac_pub)[:9])` 且等於 QR**(協定 v0.7 §3.3)再 TOFU pin,畫面標「開發機」;release build 拒絕。鏈長 2 → 製造商根驗證。階段 1 用**正式** prologue 與標籤(協定 v0.7 §9),隔離靠 `dev:` 憑證。
 - helper 的 CLI 模式:`--boot`、`--apply-state [--firstboot]`(`--firstboot` = 99zz:寫 `prov-state`,並在 unclaimed 時設 AP placeholder;不 reload、不 persist)、`--persist-now`(重新 `--prov-only` 把 overlay 的 prov 寫回 p5;`P5_STALE_HINT` 指向它,A11-m7)、`qr`。`/etc/.batman-prov-restore` 只被 helper 讀來寫 log(這次 fresh 開機 96 做了什麼),不影響判斷。
 - 開發期 QR:`batman-provhelper qr`(root);`claimed|member` 拒;`legacy` 只在 dev-open 存在或 stdin 是實體 console(`/dev/console`、`ttyAMA*`、`tty1`;不收 `pts`)時執行;stdout 不進任何 log。
 
