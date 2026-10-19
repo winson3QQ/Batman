@@ -133,7 +133,8 @@ platform-ab.sh platform_check_image:只在 caller=procd 且 upg=y 時寫 p6 ota-
 同 v5(= v4 + 改動),本輪改動:
 - `claim.replay` 只接受 **`psk_replay` session**(§1.3 新定義);其餘條件同 v5(state ∈ {claimed,member}、單一擁有者、`owner_pub` 相符、CheckMac + owner-op;helper 計數每 boot 每小時 10 次)。
 - `psks.get()` 回 `{psk_owner[≤4], psk_member, psk_replay, adv_owner, adv_member}`;`psk_replay` 由 helper 以 `ecdh.key` 與 `prov.cbor.owner.enc_pub` 在開機與 prov 變更時算出。
-- `sign.*` 額度:**每條連線**各自 0.5/s、全域 2/s;同時連線 ≤ 2(既有)→ 路人最多佔一條,買家那條的額度不被搶(A5-m8)。
+- `sign.*` 額度:**每條連線**各自 0.5/s、全域 2/s;同時連線 ≤ 2(既有);兩個路人 central 可以佔滿 2 條(協定 §8 既有界線),每連線額度只保護**已連上**的買家那條不被搶(A5-m8/A6-m10)。
+- **app 契約(A6-m10/B6-m7)**:app 在送出 `claim/finish` **之前**,必須先持久化 `node_cert`(含 `ecdh_pub`)與 `claim-pending{device_id, owner_pub}`;否則回應遺失時算不出 `psk_replay`,replay 不可用。進 S5 app addendum 與協定 v0.7。
 - **新動詞 `factory_reset.cancel(owner_op)`**:只在 `resetting-pending`(F1–F2)可用;resetting 模式下 provd 對 `status/public` 之外**只放行這一個**(B5-M1)。root 等價:`batman-provhelper --factory-reset-cancel`。
 - 誠實界線(同 v4/v5)。
 - **負測試(依協定 §3.4 改寫,B5-M5)**:沒有正確 PSK 的 central 對已認領節點做 NXpsk0 → 收到格式正確、可解析為 Noise 第 2 則但 payload 為隨機資料的訊息,**解不出 `node_cert`**(不含 `sn`/DAC 結構),連線在交握逾時後才斷;與正確 PSK 的時間分佈在統計上不可分(記錄 50 次的回應時間)。DoS 上限沿用協定 §8(全域 20 次/分):**路人可以吃滿全域額度,這是協定既有的界線**,測試只斷言擁有者在路人停止後 10 s 內可連,並在 §8 列明。
@@ -292,7 +293,7 @@ v4 L1–L39、v5 L40–L47 保留,以下改動:
 | 只看過 QR 的人 | 探測節點是否在附近 / replay | psk_replay 不只靠 QR | §4.1 |
 | BLE 路人 | 吃滿全域交握額度(20/分) | **擋不住,協定 §8 既有界線**;每連線簽章額度保護正在連的買家 | §4.1 |
 | 前任擁有者 | 重置後殘留 | 95 單點 mkfs p6、p5;overlay 含 dot;`apps/` 在可撤銷期就改名 | L16 |
-| 實體 SD | 放標記 / 改意圖檔 | 標記要 device_id;意圖要格式 + p6 marker nonce(實體持有者本來能重燒卡) | |
+| 實體 SD | 放標記 / 改意圖檔 | 標記要 device_id;意圖:batdata-mount 只驗格式 + `slot`;nonce 只在 F3 寫入時與 p6 marker 比對(實體持有者本來能重燒卡,A6-m12) | |
 | 我們自己 | 重置卡住、迴圈、只做一半 | F 階段可撤銷、W 階段單點且天然只做一次、W0 有上限 | (c)–(f) |
 
 ## 9. 測試
