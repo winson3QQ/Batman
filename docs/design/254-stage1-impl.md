@@ -1,9 +1,6 @@
-# Design: #254 階段 1 實作 — BLE 平台、keystore、p5 `prov`、`batman-provd` 程序模型 — **v7**
+# Design: #254 階段 1 實作 — BLE 平台、keystore、p5 `prov`、`batman-provd` 程序模型 — **v8**
 
-狀態:第 6 輪 A **APPROVE-WITH-CHANGES**(0 BLOCKER / 0 MAJOR / 12 MINOR,判定恢復出廠已收斂);B **REJECT(窄)**(0 BLOCKER / 2 MAJOR / 11 MINOR,「形狀已經對了,剩下都在 W 階段的失敗路徑」)。報告 `254-reviews/review-v6-{A,B}.md`,v6 全文 `254-reviews/254-stage1-impl-v6.md`。v7 **不加機制**,只修:
-- **B6-M1 / A6-m2**:W0 的「非 fresh = overlay 沒清」不成立(95 跑一次就被刪,之後 `boot()` 只由 S11 init 呼叫)→ 改成**正面哨兵**:F1 在 overlay 放一個非 dot 的哨兵檔,它還在 = overlay 沒清;attempts 寫不進 p5 就停;停住時不掛舊 p6。
-- **B6-M2 / A6-m6**:有重置意圖時 96 不上鎖(fail-open)→ **有意圖就上鎖**。
-- A6-m1(意圖要記 slot)、A6-m3(helper 在 F3 後 crash 誰完成 F4–F5)與其餘 MINOR。§13 逐條。
+狀態:第 7 輪 A、B 都是 **REJECT(窄)**,都是 0 BLOCKER / 1 MAJOR(A 13 MINOR、B 11 MINOR;`254-reviews/review-v7-{A,B}.md`,v7 全文 `254-reviews/254-stage1-impl-v7.md`)。兩位**獨立**找到同一條 MAJOR:F3 回非 0 不等於意圖沒寫進 p5,v7 照樣撤銷並刪哨兵 → 下次開機只清 p5/p6、overlay 留著前任。v8 只做:**F3 三態**(確定沒寫 / 不確定 / 成功,不確定一律當已提交、絕不刪哨兵)+ 兩位列為 PR-P1 必做的 MINOR(tmpfs overlay、helper 續做不看哨兵、autocommit 見意圖不 commit、sysupgrade 程序判定強化、意圖解析器強化、W0 取鎖、非 fresh 開機的上鎖由 batdata-mount 自己做、W1 紀錄、p6 沒掛 fail-closed、rc 語意)+ 文件矛盾修正。不加新機制。§13 逐條。
 
 **文件結構**:本文件是完整設計;標「同 v4」「同 v5」的小節內容在 `254-reviews/254-stage1-impl-v4.md`、`-v5.md`,v6/v7 沒有改動它們。
 上層:`219-field-provisioning.md` v2.8、`219-protocol.md` v0.6(本文件要求的改動見 §1.3,成為 v0.7)。
@@ -77,7 +74,7 @@ unclaimed ─(claim)─▶ claimed
 | `claimed` | prov.state | 上鎖;AP:`radio_managed=0` 不動 / `=1` 關 | live key ≠ placeholder → 今天規則;否則 0 | 只 `claim/replay` |
 | `member` | prov.state | 上鎖;AP 由網路 | §6.4 | 同上 |
 | `resetting-pending` | p6 有 `factory-reset.inprogress`、p5 **還沒**有意圖 | 不動(執行期,狀態未變) | precheck-node 拒絕 OTA | 無;provd 只 `status/public` + `factory_reset.cancel` |
-| `resetting` | p5 有 `.factory-reset` 意圖(含壞意圖) | **上鎖**(96,B6-M2) | precheck-node 拒絕 OTA | 無;provd 只 `status/public` |
+| `resetting` | p5 有 `.factory-reset` 意圖(含壞意圖) | **上鎖**(fresh:96;非 fresh:batdata-mount,§4.5 L) | precheck-node 拒絕 OTA | 無;provd 只 `status/public` |
 | `unknown` | helper 判決 | p6 `prov-state` 最後的 state ∈ {claimed,member} → 上鎖;否則不動 | 今天的規則 | 無 |
 
 ## 2. 元件
@@ -116,7 +113,7 @@ platform-ab.sh platform_check_image:只在 caller=procd 且 upg=y 時寫 p6 ota-
 | `/opt/batdata/state/mesh-expected`、`mesh-joined` | config-save / joinwatch;helper 在 leave 刪 | autocommit | |
 | `$RUNDIR/joinwatch.lastjoined` | joinwatch | stage 1 | |
 | `/opt/batdata/state/factory-reset.inprogress`(`<nonce> <step> <reason>`;flock 鎖這個檔) | helper(F1 建、F5 前更新、取消時刪) | config-save(存在 → 寫入模式拒寫)、`precheck-node`、guardian 範本 / firstload / dockerd / joinwatch init(存在 → 不啟動) | 只管 F1–F3 的「可撤銷期」;**不是觸發**(p6 會被 W1 清掉) |
-| **`/etc/batman-reset.sentinel`**(overlay,**非 dot**,內容 = nonce) | helper F1 寫(fsync);**消失**只靠 overlay 被清(F4 的 jffs2reset 或 W0) | batdata-mount W0/W1、helper | 正面判斷「overlay 有沒有清掉」(B6-M1);非 dot → fstools 會刪 |
+| **`/etc/batman-reset.sentinel`**(overlay,**非 dot**,內容 = nonce) | helper F1 寫(fsync);**消失**:F4/W0 的 overlay 清除;**或** F3 rc 10(確定沒寫)時的撤銷。**p5 可能有意圖時絕不刪**(A7-M1/B7-M1) | batdata-mount W0/W1、helper | 正面判斷「overlay 有沒有清掉」(B6-M1);非 dot → fstools 會刪 |
 | `/opt/batdata/apps` ↔ `/opt/batdata/apps.reset` | helper(F2 改名、取消時改回);W1 mkfs 一併清掉 | `restore_payload_guardians`(只看 `apps/`) | 讓 p6 上的 tenant 在可撤銷期與任何意外重開後都不會被拉起(B5-M1/A5-M1) |
 | 鎖定欄位 | fresh S10:96;S89 起的轉換:helper(看實際值) | `halow-status` | |
 | `/etc/batman-dev-open` | 操作員 / harness | 96、helper | 對 claimed/member 不生效 |
@@ -150,14 +147,14 @@ platform-ab.sh platform_check_image:只在 caller=procd 且 upg=y 時寫 p6 ota-
 ```
 p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow-root  (不變)
      identity/prov/{7 檔}, prov.cbor, prov.meta
-     .factory-reset   ("reset v=1 nonce=<hex16> attempts=<n>"  ≤ 64 B;只在恢復出廠提交後到下次開機 W2 之間存在)
+     .factory-reset   ("reset v=1 nonce=<hex16> slot=<A|B> attempts=<n>"  ≤ 64 B;只在恢復出廠提交後到下次開機 W2 之間存在;解析一律用 reset-intent.sh)
 ```
 
 | 模式 | 內容 |
 |---|---|
 | `--prov-only …` | 同 v5;`.factory-reset` 存在 → 拒寫(rc 1) |
 | `--prov-get d` | 同 v5;`.factory-reset` 存在 → rc 15 |
-| **`--reset-intent <nonce>`**(新,取代 `--wipe-all`) | 前提:p6 marker 存在且 nonce 相同(否則 rc 1);p5 offset 0 不是 LUKS(rc 1);未掛載(rc 8);rw 掛載(驗 rw)→ 寫 `.factory-reset`(tmp + rename)→ sync → umount → **ro 重掛讀回**內容相同才 rc 0;否則 rc 1。不 mkfs |
+| **`--reset-intent <nonce> --slot <A\|B>`**(新,取代 `--wipe-all`) | **rc 只有 0 / 10 / 11**(§4.5「F3 三態」):寫任何 p5 位元組之前的失敗(marker nonce 不符、LUKS、已掛載、`cfgsave.lock` 忙、rw 掛載失敗)= **10**;rename 之後的任何失敗 = **11**;寫入 + `ro` 讀回相同 = 0。不 mkfs。`--on-join` 等既有寫入模式鎖忙仍回 rc 1(不改) |
 | `--on-join` / `--save` / `--seed` / `--if-healthy` | 同 v5;`.factory-reset`、p6 marker 或 overlay `.txn`(只 `--on-join`)存在 → rc 1 |
 | `--check` | 同 v5;`.factory-reset` → `p5 resetting`(rc 5) |
 | `final_rc` | `root:!` 視為已上鎖(v5) |
@@ -179,62 +176,80 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 - 步驟 6(開機見 `.txn`):gen_from → **在 helper 背景**(不阻塞 `--boot`、不阻塞 provd 啟動)等 `meshjoin_radio_up` 或 120 s,然後以 `halow-setkey`(會 persist)**改回 `.txn` 記錄的變更前值**,刪 `.txn`;gen_to → 補步驟 4–5。期間 `--on-join` 因 `.txn` 讓路。
 - 操作員在 `.txn` 存在期間(秒級)跑的 `halow-setkey` 會被對帳改回:只在交易被斷電打斷時發生,寫進 halow-setkey 的警告與殘項(A5-m9)。
 
-### 4.5 恢復出廠(v6 形狀不變;v7 修 W 階段失敗路徑與上鎖)
+### 4.5 恢復出廠(v6 形狀不變;v7 哨兵 + 上鎖;v8 修 F3 三態與失敗路徑)
 
-**前置條件**(任一不成立 → `E_PRECOND(reason)`;SD 路徑保留標記、log、下次開機再試):committed 槽;tryboot 未 arm;p6 已掛、無 `batman-storage.crit`、p6 非 LUKS、p6 `PARTNAME=data`;p5 是 ext4、非 LUKS、`PARTNAME=config`、ro 掛得起;非 bypass;`batman-slot` 不在執行。**F1 寫好 marker 之後再查一次**:`$RAM_ROOT/sbin/upgraded` 不存在且沒有 `/sbin/sysupgrade` 程序(擋「stage 1 已過、stage 2 還沒開始」的空窗,A6-m1);任一成立 → 撤銷。不宣稱持有 slot_lock;`precheck-node` 見 marker / 意圖拒絕 OTA(`-F` 例外寫明)。**p6 壞掉的節點不能用恢復出廠**(前置拒絕),只能重燒卡(B6-m11)。
+**前置條件**(任一不成立 → `E_PRECOND(reason)`;SD 路徑保留標記、log、下次開機再試):committed 槽;tryboot 未 arm;p6 已掛、無 `batman-storage.crit`、p6 非 LUKS、p6 `PARTNAME=data`;p5 是 ext4、非 LUKS、`PARTNAME=config`、ro 掛得起;**`/overlay` 是 f2fs(不是 tmpfs ramoverlay,A7-m1/B7-m1)**;非 bypass;`batman-slot` 不在執行;`$RAM_ROOT/sbin/upgraded` 不存在(否則 `E_PRECOND(ota-residue)`,app「請先重開機」,B7-m10)。p6 壞掉的節點不能用恢復出廠,只能重燒卡。
 
-**執行期(helper,provd 在、節點仍在網上)**
+**sysupgrade 程序判定**(F1 再查、§6.4 共用,A7-m4/B7-m6):`/proc/<pid>` 中 uid 0、`/proc/<pid>/ns/pid` == `/proc/1/ns/pid`(主機 pid namespace)、`cmdline` 的 argv[1] 剛好是 `/sbin/sysupgrade`;不用 `pgrep -f` 的子字串比對。偽造它需要主機 namespace 的 root,已經是 root。
+
+**互斥**:helper 在執行每個 F 步驟期間 flock marker;`factory_reset.cancel` 取同一把鎖,拿不到 → `E_BUSY`(B7-m10)。
+
+**執行期(helper)**
 
 | 步 | 動作 | 失敗 |
 |---|---|---|
-| F0 | 產 `nonce`(16 hex);記下 `slot=$(batman-slot active)` | — |
-| F1 | 寫 p6 marker(`<nonce> 1 -`,flock);寫 overlay **哨兵** `/etc/batman-reset.sentinel`(內容 nonce,fsync 檔與目錄);provd 進 `resetting-pending`;`/etc/init.d/joinwatch stop`;config-save 寫入模式從此拒寫;再查 sysupgrade 空窗 | 任一失敗 → 撤銷 |
-| F2 | 每個 `/etc/init.d/batman-payload-*` `stop`;`/etc/init.d/dockerd stop`;`mv -T /opt/batdata/apps /opt/batdata/apps.reset` | stop 失敗 → log 繼續;`mv` 失敗 → 撤銷、`E_RESET(apps-busy)` |
-| F2b | `batman-slot invalidate-other` | 失敗 → 撤銷、`E_RESET(other-slot)` |
-| F3 | **提交點**:marker step=3 → `batman-config-save --reset-intent <nonce> --slot <slot>`(寫 p5 意圖並 ro 讀回) | rc 8(鎖忙)→ 每 5 s 重試到 60 s,仍忙 → 撤銷、`E_RESET(p5-busy)`(可重試,**不是**「換卡」,B6-m5/A6-m9);其他 rc → 撤銷、`E_RESET(p5-unwritable)`,app「設定區寫不進去,請換卡」 |
-| F4 | marker step=4;刪 SD 標記(兩個 FAT);`find /overlay/upper -depth -name '.*' -exec rm -rf {} \;`;`rm -f /overlay/sysupgrade.tgz`;`jffs2reset -y`(哨兵是非 dot 檔,會被刪) | 失敗 → log 繼續(W0 補做) |
-| F5 | `sync; reboot` | — |
+| F0 | 產 `nonce`;`slot=$(batman-slot active)` | — |
+| F1 | 寫 p6 marker(flock);寫 overlay 哨兵 `/etc/batman-reset.sentinel`(fsync);provd `resetting-pending`;`joinwatch stop`;config-save 寫入模式拒寫;**再查** sysupgrade 程序 / `upgraded` | 任一失敗 → 撤銷 |
+| F2 | payload `stop`、`dockerd stop`、`mv -T apps apps.reset` | `mv` 失敗 → 撤銷 |
+| F2b | `batman-slot invalidate-other` | 失敗 → 撤銷 |
+| F3 | **提交點**:marker step=3 → `batman-config-save --reset-intent <nonce> --slot <slot>` | **三態**(下表) |
+| F4 | marker step=4;刪 SD 標記;dot sweep;`rm -f /overlay/sysupgrade.tgz`;`jffs2reset -y` | 失敗 → log 繼續(W0 補做) |
+| F5 | `sync; batman-slot reboot committed "factory reset"`(**不用 plain `reboot`**:Pi 4 EEPROM 開錯槽 bug 會開到 F2b 已作廢的槽,B7-m5) | — |
 
-- **撤銷**(F3 之前任一失敗,或 `factory_reset.cancel`):`[ -d apps.reset ] && mv -T apps.reset apps`(`apps/` 已存在 → 不覆蓋、crit、保留 `apps.reset/` 給人工)→ SD 觸發的話刪兩個 FAT 的標記 → 刪哨兵 → 刪 marker → 啟動 dockerd、guardian、joinwatch → provd 回原狀態。後果:F2b 作廢的另一槽沒有回退,直到下一次 OTA。
-- **可取消的時段 = F3 之前**(兩處一致,A6-m9)。F3 之後 app 顯示「已開始,請勿斷電」。
-- **`resetting-pending` 放行的動詞**:`status/public`、`factory_reset.cancel(owner_op)`、`factory_reset(owner_op)`(重新發起,從 F0 冪等重來)(B6-m9)。
-- **helper 在執行期 crash / respawn**(A6-m3):helper 每次啟動(開機或 procd respawn)先看 marker:
-  - marker 在、p5 無意圖 → `resetting-pending`(同開機);
-  - marker 在、p5 有意圖(F3 之後)、哨兵還在 → **從 F4 續做**、F5 重開;
-  - 不會停在「已提交但沒人重開」。
-- F1–F2b 之間斷電:同 v6(dockerd/guardian/joinwatch 見 marker 不啟動、`apps/` 已改名 → 沒有 tenant;helper → `resetting-pending`)。
-- F3 之後斷電:下次開機由 batdata-mount 完成(下表)。
+**F3 三態**(A7-M1/B7-M1):`--reset-intent` 的 rc 只有三種:
 
-**下次開機(batdata-mount `boot()`,只此一處破壞)**
+| rc | 意義 | 何時 | helper |
+|---|---|---|---|
+| 0 | 已寫入且 ro 讀回相同 | | 繼續 F4 |
+| 10 | **確定沒寫**:在寫任何 p5 位元組之前就停了(marker nonce 不符、LUKS、p5 已掛載、`cfgsave.lock` 忙、rw 掛載失敗或不是 rw) | rename 之前 | `cfgsave.lock` 忙 / 已掛載 → 每 5 s 重試到 60 s,仍 10 → 撤銷、`E_RESET(p5-busy)`(可重試);其他 10 → 撤銷、`E_RESET(p5-unwritable)`「請換卡」 |
+| 11 | **不確定**:rename 已執行(或執行到一半)之後的任何失敗(sync、umount、ro 重掛、讀回不符) | rename 之後 | **當作已提交**:**不撤銷、不刪哨兵**,繼續 F4–F5;下次開機由 batdata-mount 判斷(讀得到意圖 → W;讀不到 → 今天的流程,哨兵仍在 → helper 判 `reset-uncertain`,見下) |
 
-95 是一次性 uci-default(`etc/init.d/boot` 跑完 exit 0 就刪,`95:755` 一律 exit 0):**它只在每個槽 overlay 的第一次開機跑**;之後每次開機都由 S11 的 `batdata-mount boot()` 執行(B6-M1/A6-m2 更正 v6「95 再跑」的錯誤假設)。所以 W 階段放在 **INITBODY 的 `boot()` 最前面**,每次開機都會檢查;不靠 `BATMAN_FIRSTBOOT`。95 本體若看到意圖 → 略過自己的步驟 3/3b(對舊 p6 的 e2fsck/resize,B6-m1/A6-m7),直接到步驟 5 呼叫 `boot()`。
+- helper 呼叫 `--reset-intent` 被逾時殺掉 / helper 自己 crash → 一律視為 rc 11。
+- **規則:p5 可能有意圖時,絕不刪哨兵**。§3 哨兵列的刪除者只有:F4/W0 的 overlay 清除、以及 rc 10 的撤銷。
+- `reset-uncertain`(哨兵在、marker 在或不在、p5 讀不到或沒有意圖、且 F3 曾回 11):helper 開 `status/public` 顯示 `reset-uncertain`,允許 owner-op 的 `factory_reset`(重新發起,從 F0 冪等)或 `factory_reset.cancel`(只有 p5 確定可讀且沒有意圖時才可撤銷)。哨兵在、意圖不在的雙重故障因此有人接手(B7-m1)。
 
-`boot()` 最前面(LUKS open 之後、mount p6 之前、once-per-boot 閂之前):用 `reset-intent.sh` 讀 p5 意圖(ro 掛 p5)。沒有 → 今天的流程。有(含壞意圖):
+**撤銷**(只在 rc 10 或 F3 之前):`mv -T apps.reset apps` → SD 觸發則刪標記 → 刪哨兵 → 刪 marker → 啟動 dockerd/guardian/joinwatch。後果:F2b 作廢的另一槽沒有回退。
+
+**helper 啟動(開機或 respawn)的判斷**(A7-m2/B7-m2,**不看哨兵決定續做**):
+
+| marker | p5 意圖 | 意圖 slot == active | helper |
+|---|---|---|---|
+| 在 | 無 | — | `resetting-pending`(或 `reset-uncertain`,見上) |
+| 在 | 有 | 是 | **從 F4 續做**(冪等)→ F5 |
+| 在 | 有 | 否 | 不動;等 autocommit / fw_override 把槽帶回(下表 Wa) |
+| 不在 | 有 | — | p6 已被 W1 清過(W2 沒完成)→ `resetting`,等下次開機 W2 |
+
+**下次開機(batdata-mount)**
+
+W 階段在 INITBODY 的一個函式 `reset_wipe()`,**只從 `boot()` 呼叫**(rc 開機與 95 首次呼叫);`batdata-mount start/restart` 不呼叫它(B7-m9/A7-m12)。放在 `boot()` 最前面:LUKS open 之後、mount p6 之前、閂之前。95 本體見意圖 → 略過步驟 3/3b(e2fsck/resize 舊 p6),**步驟 4(寫 INIT)照做**,再到步驟 5 呼叫 `boot()`(A7-m11)。95 在寫 INIT 之前就 exit(無 p6 等)→ W 不會跑 → 今天的流程,意圖留著 → 96 上鎖、helper `resetting`(A7-m12)。
+
+**意圖解析器** `/usr/lib/batman/reset-intent.sh`(A7-m5/B7-m7):p5 以 `ro,nosuid,nodev,noexec` 掛;`[ -f "$f" ] && [ ! -L "$f" ]`(不收 symlink/FIFO/裝置);`head -c 64`;用 `case` 比對 `reset v=1 nonce=[0-9a-f]{16} slot=[AB] attempts=[0-9]`;**不 eval、不 source**;回傳三種:`none`(p5 可讀、檔案不存在)、`intent <nonce> <slot> <attempts>`、`bad`(存在但不合格式)、另加 `unreadable`(p5 掛不起)。
 
 | 步 | 條件 / 動作 | 失敗 |
 |---|---|---|
-| Wa | 意圖的 `slot` ≠ 本次 `batman_slot`(EEPROM 開錯槽、或其他異常)→ **不清**,但照常開機掛 p6(`apps/` 已改名、沒有 tenant),讓 `fw_override_check` 把槽修正並重開;96 因意圖上鎖 | 修正後下次開機回到意圖槽再判斷 |
-| Wb | 壞意圖(格式不符)→ crit `reset-intent-malformed`,**不清、不掛 p6**;96 上鎖;helper `resetting` 並在 status 顯示(需 bench) | — |
-| W0 | **哨兵 `/etc/batman-reset.sentinel` 存在**(= overlay 沒清掉):rw 掛 p5 把 attempts+1 並讀回 → 成功且 attempts ≤ 3 → `find /overlay/upper -depth -name '.*' -exec rm -rf {} \;` → `jffs2reset -y` → `reboot` → **`boot()` 立即 `return`**(`reboot` 是非同步的,不繼續往下,照 `fw_override_check` 的做法,B6-m3/A6-m8);attempts 寫不進或 > 3 → crit `reset-stuck overlay`,**不清、不掛舊 p6**,繼續開機(無 p6;96 上鎖;helper `resetting`;需要 bench / 重燒卡) | 寫不進 attempts 就停,不會無限重開(B6-M1) |
-| W1 | 哨兵不存在(overlay 已清):守門 `PARTNAME=data`、`assert_not_system`(**複製進 INITBODY,失敗 `return` 不 `exit`**,B6-m2/A6-m7)→ `mkfs.ext4 -F -b 4096 -L <同 95 的 label> -m 0` p6(預設會 discard,對抹除有幫助) | 失敗 → crit `reset p6-mkfs-failed`,**不掛舊 p6**、不做 W2;下次開機重試(意圖還在,哨兵不在 → 再到 W1) |
-| W2 | 守門 `PARTNAME=config`、非 LUKS → `mkfs.ext4 -F -q -L batman-cfg -m 0` p5(與 config-save `do_mkfs` 同參數;**最後做,p5 被格式化 = 意圖消失 = 完成紀錄**) | 失敗 → crit `reset p5-mkfs-failed`;下次開機:意圖可能還在 → W1 再清 p6(冪等)→ W2 |
-| W3 | 照今天的流程:mount 新 p6、閂、pstore 搬移、boot-reasons 行、在新 p6 寫 `log/factory-reset.log` 一行 `completed nonce=<nonce> boot_id=<bid>`(持久紀錄,A6-m8)、`fw_override_check`、`restore_payload_guardians`(空) | — |
+| — | `unreadable` → 今天的流程(96 依 `last_known_state` 上鎖) | — |
+| Wb | `bad` → crit `reset-intent-malformed`;**不清、不掛 p6**;batdata-mount 自己上鎖(見 L) | — |
+| Wa | 意圖 slot ≠ `batman_slot`:不清;照常掛 p6(`apps/` 已改名、無 tenant);**autocommit 見意圖一律不 commit**(trial 到 deadline 會 revert 回意圖槽,A7-m3/B7-m3);非 trial 的開錯槽由 `fw_override_check` 修正;`precheck-node`(`node_checks`)見 marker 或意圖拒絕 OTA | 回到意圖槽再判斷 |
+| Wt | `/overlay` 不是 f2fs(tmpfs ramoverlay)→ crit `reset-stuck tmpfs-overlay`,**不清、不掛舊 p6**;上鎖(A7-m1/B7-m1) | 需 bench |
+| W0 | 哨兵存在:**取 `cfgsave.lock`**(同 config-save 的 mkdir 鎖,A7-m6)→ rw 掛 p5 → attempts+1 → 讀回 → 放鎖 → 成功且 ≤ 3 → dot sweep → `jffs2reset -y` → `batman-slot reboot committed` → `return`;寫不進 / > 3 → crit `reset-stuck overlay`,不清、不掛舊 p6,上鎖 | 不會無限重開 |
+| W1 | 哨兵不存在:p6 上若已有 `state/reset-p6-wiped <nonce>`(同 nonce)→ 略過 W1(A7-m8:W2 一直失敗時不會每次開機都重清 p6、清掉紀錄);否則守門 → mkfs p6 → **掛新 p6、寫 `state/reset-p6-wiped <nonce>`(sync)**、卸載 | 失敗 → crit,不掛舊 p6、不做 W2 |
+| W2 | 守門 → mkfs p5(同 config-save 參數)= 意圖消失 | 失敗 → crit `reset p5-mkfs-failed`;照常掛**新** p6(已空,W1 紀錄在)繼續開機;上鎖(A7-m8/B7-m4:不靠 p6 的 prov-state,batdata-mount 自己鎖) |
+| W3 | 照今天的流程掛新 p6 …;寫 `log/factory-reset.log` completed;**若本 overlay 曾因意圖被上鎖(`/etc/batman-reset.locked` 存在)→ dot sweep + `jffs2reset -y` + `batman-slot reboot committed`,讓終態開機是 fresh overlay(96 走 image 預設),不會停在「unclaimed 但上鎖、沒有 key」**(A7-m7) | 一次;意圖已消失,不會迴圈 |
 
-- **天然只做一次**:W2 一格式化 p5 意圖就消失;fresh 開機時 `boot()` 只被 95 呼叫一次(rcS 只 glob 一次,B6-m10),之後每次開機讀不到意圖。
-- **W2 被打斷**:p5 magic 可能不是 ext4 → 讀不到意圖 → 96 `:71` → `unknown(p5-not-ext4)` + 上鎖(prov-state 的 last_known_state)→ 需要 bench `--seed --reformat`(寫明,極少見)。
-- 之後 96 → 99 → helper(rc 7、overlay 無 identity)→ 新身分 → `prov{unclaimed}`。
-- **F3 之後、下次開機之前 p5 壞掉**:同 v6(雙重故障殘項;tenant 不會起來;96 依 `last_known_state` 上鎖)。
-- **95 的規則與文件同步**:`95-batman-storage` 的「never mkfs a pre-made data partition」改寫為「…除非 p5 有恢復出廠意圖」;`p5-config-partition.md`、`201-firstboot-grow.md`、config-save 的「只有 `--seed` 會 format」註解同步。
-- **時間**:W1 + W2 預估 10–30 s,在 S11 阻塞;⚠️ 實測待 L16。
-- **結果斷言**(L16;在 **04** 跑,Q5):同 v6,另加 `blkid` 看 p5/p6 UUID 都換了、`/etc/batman-reset.sentinel` 不存在、p6 `log/factory-reset.log` 有 completed 行。
-- **負對照**(v6 的 (a)–(d) 保留,(e)(f) 改寫,新增 (g)–(i)):
-  - (e) **白箱**:同一次開機手動再呼叫一次 `batdata-mount boot` → 不再格式化(B6-m10:fresh 開機時不會自然呼叫兩次);
-  - (f) F4 前 `reboot -f` → 哨兵在 → W0 補清後完成;白箱讓 jffs2reset 失敗 → attempts 到 3 後停、不再重開;
-  - (g) **W1 失敗後的下一次開機**:哨兵不在 → 走 W1 不走 W0、**沒有 jffs2reset 也沒有重開**(v6:每次開機都被當 W0,B6-M1);
-  - (h) **p5 唯讀時 W0**:attempts 寫不進 → 停、不重開、**不掛舊 p6**(v6:無限重開);
-  - (i) **W1/W2 失敗的那次開機**:`ssh -o PreferredAuthentications=password root@…` 空密碼被拒、serial 要密碼(v6:96 不上鎖 → 空密碼 root,B6-M2)。
+**L(上鎖,「有意圖就上鎖」的唯一實作)**:由**看到意圖的那一方**套用:fresh overlay 上是 96;非 fresh 開機(W0 卡住、Wb、Wt、W2 失敗)由 batdata-mount 自己 `uci set` dropbear `PasswordAuth=off`/`RootPasswordAuth=off`、`system.ttylogin=1`、root 無 hash → `root:!`、寫 `lock-status=LOCKED`(若 p6 有掛)、touch `/etc/batman-reset.locked`(A7-m7:96 只在 fresh overlay 跑)。
+
+**p6 沒掛的開機**(Wb、Wt、W0 卡住、W1 失敗):guardian 範本、firstload、dockerd、joinwatch 的檢查改成「marker 存在 **或** `/opt/batdata` 不是 mountpoint → 不啟動」(fail-closed,A7-m9/B7-m9;`mountpoint` 在 04/02 都有)。
+
+- **天然只做一次**:同 v7。
+- **結果斷言**(L16,在 04):同 v7。
+- **負對照**:(a)–(i) 同 v7,新增:
+  - (j) **F3 白箱讓 rename 後的讀回失敗** → rc 11 → 不撤銷、哨兵保留、繼續 F4–F5 → 下次開機完成重置(v7:撤銷 + 刪哨兵 → 下次只清 p5/p6、overlay 留著前任,A7-M1/B7-M1);
+  - (k) F4 的 jffs2reset 之後 `kill -9` helper → 新 helper 從 F4 續做並重開(v7:哨兵已不在 → 沒人重開);
+  - (l) 白箱把 `/overlay` 弄成 tmpfs(或用測試 seam)→ Wt 停、不清;
+  - (m) W2 白箱失敗兩次 → p6 只被清一次(`reset-p6-wiped`)、節點上鎖、第三次成功 → W3 再清一次 overlay → 終態 fresh、未上鎖的 image 預設;
+  - (n) 非 root 程序偽造 `sysupgrade` cmdline → F1 不被擋(v7 `pgrep -f` 會被擋)。
 - **SD 標記**:同 v6。
-- **誠實界線**(A6-m11):本槽 overlay 只 unlink(f2fs 掛 nodiscard),另一槽只清 squashfs + 64 MiB 開頭,p5/p6 是 mkfs(預設 discard);**不是安全擦除**,SD 卡上可能讀得回殘留;引用 219 §7「轉賣前恢復出廠,但最安全是換一張新 SD 卡」。
+- **誠實界線**:同 v7,另加(B7-m11):EEPROM `bootloader_config` 若設了 `dropbear_authorized_keys` 類的設定,恢復出廠不會清它(04 目前沒有,實測 `vcgencmd bootloader_config` 無此項);F4 到 F5 之間 overlay 已清,serial console 回到 image 預設(無密碼),窗口數秒。
 
 ### 4.6 BLE 平台、4.7 procd、4.8 GATT
 
@@ -246,7 +261,13 @@ v4 L1–L39、v5 L40–L47 保留,以下改動:
 
 | # | 路徑 | 階段 1 後(v6) | 測試(負對照) |
 |---|---|---|---|
-| L16 | 恢復出廠 | §4.5 v6 | (a)–(f);位置 = Q5 |
+| L16 | 恢復出廠 | §4.5 v8 | (a)–(n);位置 = Q5(04) |
+| L52 | `/overlay` 是 tmpfs ramoverlay 時恢復出廠 | 前置拒絕;W 階段 Wt 停 | (l) |
+| L53 | F 各步驟中 helper respawn | §4.5 helper 啟動判斷表 | (k) |
+| L54 | 執行期 `batdata-mount start/restart` | 不跑 W(只 `boot()` 跑) | 白箱 |
+| L55 | 95 在寫 INIT 前 exit | W 不跑、意圖留著 → 上鎖、`resetting` | 白箱 |
+| L56 | Wa 遇到 trial | autocommit 不 commit → deadline revert 回意圖槽 → W | 白箱 |
+| L57 | 殺掉 app 後 `claim/replay` | app 契約(先存 `node_cert` + claim-pending)| `prov-claim-replay-254` 加 app 被殺的版本 |
 | L35 | reset 前置 | 加 p6 非 LUKS、`batman-slot` 不在執行 | `prov-reset-precond-254` |
 | L37 | reset 步驟失敗 | F 階段失敗 → 撤銷;W 階段失敗 → crit、下次開機重試、有上限 | (c)(d)(f) |
 | L41 | `sysupgrade -T` / LuCI validate | caller ≠ procd → 不寫 `ota-armed.mesh` | `-T` 後檔案不存在(v5 會寫,B5-M4) |
@@ -267,7 +288,7 @@ v4 L1–L39、v5 L40–L47 保留,以下改動:
 
 同 v5,本輪改動:
 - **stage 1 寫 `ota-armed.mesh` 的條件**:`platform_check_image` **rc=0** 且 `caller` 是 `/sbin/procd` 且 `upg=y`(`$RAM_ROOT/sbin/upgraded` 已安裝)**且**有一個活著的 `/sbin/sysupgrade` 程序(`pgrep -f ^/bin/sh /sbin/sysupgrade` 或等價,= 這次 validate 是某個 sysupgrade 的 ubus 呼叫觸發的;擋掉「本次開機 sysupgrade 中止過、RAM_ROOT 殘留 upgraded,之後 LuCI 經 procd validate」,A6-m5/B6-m6;04 的 `-F` 那次 procd validate 是 rc=1 → 不寫);⚠️ bench 上以 `-T`、真 OTA、中止後 LuCI validate 各一次實證;`sysupgrade -T`、LuCI、sysupgrade 自己的第一次 validate(caller = sysupgrade)都不寫(B5-M4/A5-m1)。p6 未掛 → 不寫(讀端 fail-closed)。`rm` 舊檔失敗 → 拒絕 OTA;寫完 rename + `sync`(B5-m11)。
-- D27 改為:「caller=procd 且 upg=y ⇔ 真的升級」,證據 = `platform-ab.sh` 既有的 `caller`/`upg` 欄位 + A5 在 04 ota-trace 看到的兩次 S1 CHECK;⚠️ PR-P1 在 bench 上以 `-T` 與真 OTA 各一次,記錄兩種 caller 實證。
+- D27 改為:「caller=procd 且 upg=y 且有活著的 sysupgrade 程序(uid 0、主機 pid ns、argv[1]=`/sbin/sysupgrade`)→ 視為真的升級」(單向蘊含,不宣稱等價),證據 = `platform-ab.sh` 既有的 `caller`/`upg` 欄位 + A5 在 04 ota-trace 看到的兩次 S1 CHECK;⚠️ PR-P1 在 bench 上以 `-T` 與真 OTA 各一次,記錄兩種 caller 實證。
 - #133 stale-fallback 開機:autocommit 既有邏輯(非真 tryboot → 不 commit 不 revert)不變;`ota-armed.mesh` 只在真 tryboot 被讀(B5-m11)。
 
 ### 6.5 診斷、6.6 改名
@@ -281,8 +302,8 @@ v4 L1–L39、v5 L40–L47 保留,以下改動:
 | D28 | `boot-reasons.log` 倒數第二行 = arm 的那次開機 | R66 | ✅ |
 | D31 | 608B 對 claim_secret 做 KDF | **不再需要**(psk_replay 改用 ECDH) | — |
 | D33 | 608B ECDH 槽可做 `ECDH(node_ecdh_priv, owner_enc_pub)` 並把共享秘密輸出給主機做 HKDF | 協定 §7.3「608B 這端:ECDH 指令可以輸出共享秘密給主機」 | ✅ 文件 / ⚠️ #255 實機 |
-| D34 | `boot()` 能分辨「由 95 uci-default 呼叫(fresh)」與「S11 init 呼叫」 | 95 尾段 `"$INIT" boot`;改成 `BATMAN_FIRSTBOOT=1 "$INIT" boot`(我們的程式) | ✅ 設計 |
-| D35 | 02/04 無 `tune2fs`/`blkid`;UUID 用 hexdump | R72 | ✅ |
+| D34 | W 階段只由 `boot()` 呼叫(rc 開機 + 95 首次),每次開機都檢查意圖;**不需要 `BATMAN_FIRSTBOOT`**(v6 的設計已在 v7 刪除) | 95 尾段 `"$INIT" boot`;`etc/init.d/boot` 刪 uci-default | ✅ |
+| D35 | 02/04 **沒有** `tune2fs`、`timeout`、`stat`;**有** `blkid`、`sgdisk`、`hexdump`、`mountpoint`、`flock`、`pgrep`、`jffs2reset`、`mkfs.ext4` | R72 + A7/B7 實測 | ✅ |
 | D36 | `mv` 同一 ext4 內目錄改名是原子的 | POSIX rename | ✅ |
 
 ## 8. 安全(v5 表保留,改動)
@@ -302,7 +323,7 @@ v4 L1–L39、v5 L40–L47 保留,以下改動:
 
 ## 10. 實作切法
 
-同 v5;PR-P1 改動:config-save `--reset-intent`(取代 `--wipe-all`);95 init body `boot()` 最前面加 W0–W2 + `BATMAN_FIRSTBOOT=1`;helper 的 F0–F5 與撤銷;platform-ab 的 caller/upg 條件;協定 v0.7 的 `psk_replay`(ECDH)與固定 6 次。
+同 v5;PR-P1 改動:config-save `--reset-intent`(取代 `--wipe-all`);INITBODY `reset_wipe()`(只由 `boot()` 呼叫)+ `reset-intent.sh` 解析器 + 非 fresh 上鎖 + autocommit/`node_checks` 見意圖的處理 + guardian/firstload/dockerd/joinwatch 的「marker 或 p6 沒掛 → 不啟動」;helper 的 F0–F5 與撤銷;platform-ab 的 caller/upg 條件;協定 v0.7 的 `psk_replay`(ECDH)與固定 6 次。
 
 ## 11. 殘項
 
@@ -313,29 +334,30 @@ v5 殘項 + F3 後 p5 壞掉的雙重故障殘留(`apps.reset/`);W2 被打斷的
 | # | 題 | 建議 |
 |---|---|---|
 | Q1–Q4 | 同 v4 | 定案 |
-| Q5 | L16 位置與還原 | **定案(使用者 2026-10-19:遠端不能移線,選救得回來的)= 04**(有乙太網;02 重置後離網且無乙太網 = 救不回)。前置:先把 04 p6 要留的東西(OTS DB/憑證/docker image、dv289 備份)備份到主機;還原 = 經乙太網(重置後 image 預設空密碼)重裝 lab 公鑰 → `halow-setkey` 回 fleet → 重新部署 OTS。L16 等 PR-P3 實作完才排,排之前再列副作用給使用者 |
+| Q5 | L16 位置與還原 | **定案(使用者 2026-10-19:遠端不能移線,選救得回來的)= 04**(有乙太網;02 重置後離網且無乙太網 = 救不回)。前置:先把 04 p6 要留的東西(OTS DB/憑證/docker image、dv289 備份)備份到主機;還原 = 經乙太網(重置後 image 預設空密碼)重裝 lab 公鑰 → `halow-setkey` 回 fleet → 重新部署 OTS。L16 等 PR-P3 實作完才排,排之前再列副作用給使用者 |。**v8 後果(A7,依「破壞性測試先列副作用」)**:恢復出廠的 F4 會清掉 04 的 lab 公鑰;若之後 W1/W2 失敗,04 會依「有意圖就上鎖」被鎖住:**沒有 key、沒有密碼 → 遠端救不回,要現場**;重置後 IP 是 image 的開機預設(10.41.254.x 隨機,之後 openmanetd 重保留),不是 10.41.1.3,要用 link-local / `.local` 找。排 L16 之前再請使用者確認
 | Q6 | BLE 認領測試會把 04 上鎖 | **定案並已做(使用者同意,2026-10-19)**:04 `authorized_keys` = 02 同一把 lab ed25519(sha256 5bda8113…),key-only 登入驗過,lock-status 仍 UNPROVISIONED,已進 p5(`--check` fresh)。這也滿足 §6.1 legacy 防呆門 |
 
-## 13. v6 審查 → v7 對應
+## 13. v7 審查 → v8 對應
 
-| v6 發現 | 收法 |
+| v7 發現 | 收法 |
 |---|---|
-| **B6-M1** W0 的「非 fresh」判斷不成立、3 次後掛舊 p6、attempts 在 p5 寫不進就無限重開 | 正面哨兵 `/etc/batman-reset.sentinel`(非 dot,overlay 清掉才消失);W 階段放在 INITBODY `boot()`,每次開機檢查;attempts 寫不進 → 停;停住不掛舊 p6;負對照 (g)(h) |
-| **B6-M2** resetting 不上鎖 | 96:意圖存在(含壞意圖)一律上鎖;§1.4 resetting 列改為上鎖;負對照 (i) |
-| A6-m1 trial 槽 / sysupgrade 空窗 | 意圖記 `slot`;Wa 槽不符不清;F1 後再查 `upgraded`/sysupgrade 程序 |
-| A6-m2 attempts 在 p5、「95 再跑」錯 | 同 B6-M1 |
-| A6-m3 helper F3 後 crash | helper 啟動時看 marker + 意圖 + 哨兵 → 從 F4 續做 |
-| A6-m4 / B6-m8 prov-state 欄位語意 | 拆 `last_known_state` 與 `verdict`;兩個寫者同規則;p6 沒掛 = 沒提示寫明 |
-| A6-m5 / B6-m6 procd validate 殘留 upgraded、rc | rc=0 + caller=procd + upg=y + 活著的 sysupgrade 程序;bench 三種實證 |
-| A6-m6 意圖時不上鎖 | 同 B6-M2 |
-| A6-m7 / B6-m1 / B6-m2 守門、3b、「只有」 | 守門複製進 INITBODY、`return`;p5/p6 `PARTNAME` 守門;mkfs 參數同 config-save;95 本體見意圖略過 3/3b;「只有」改寫 |
-| A6-m8 / B6-m3 W0 reboot 非同步、沒有持久紀錄 | `reboot` 後 `return`;W3 寫 `log/factory-reset.log` |
-| A6-m9 / B6-m5 `mv -T`、取消時段、鎖忙說換卡 | `mv -T`(04 busybox 實測有);取消 = F3 前;rc 8 重試 60 s、`E_RESET(p5-busy)` |
-| A6-m10 / B6-m7 app 要先存 node_cert;連線佔用 | 契約:app 在送 `claim/finish` **之前**持久化 `node_cert`(含 `ecdh_pub`)與 `claim-pending{device_id, owner_pub}`,否則 replay 不可用;刪「路人最多佔一條」:兩個 central 可佔滿 2 條(協定 §8 既有界線),每連線額度只保護已連上的買家 |
-| A6-m11 誠實界線 | §4.5 末段 |
-| A6-m12 / R72 / §8 nonce / 意圖三寫者 | R72 更正(blkid、sgdisk 有);§8 改為「95 只驗格式 + slot;nonce 在 F3 寫入時比對」;意圖寫者依時段列在 §3 |
-| B6-m4 壞意圖讀者不一致 | 共用 `reset-intent.sh`;壞意圖 = 凍結 + 上鎖 + crit(Wb) |
-| B6-m9 resetting-pending 動詞 | 放行 status、cancel、重新發起 |
-| B6-m10 負對照 (e) | 改白箱 |
-| B6-m11 p6 壞不能重置 | 前置拒絕,寫明只能重燒卡 |
-| Q5 / Q6 | 使用者定案(§12):L16 在 04;04 已裝 lab 公鑰 |
+| **A7-M1 / B7-M1** F3 回非 0 ≠ 沒寫,撤銷會刪哨兵 | `--reset-intent` rc 0/10/11;只有 10(rename 之前失敗)才撤銷;11、逾時、crash 一律當已提交、不刪哨兵;`reset-uncertain` 狀態有人接手;負對照 (j) |
+| A7-m1 / B7-m1 tmpfs overlay、哨兵在意圖不在 | 前置要求 `/overlay` 是 f2fs;W 階段 Wt;`reset-uncertain` |
+| A7-m2 / B7-m2 helper 續做表缺格 | 續做不看哨兵:marker + 意圖 + slot 相符 → 從 F4 續做;負對照 (k) |
+| A7-m3 / B7-m3 Wa 與 trial | autocommit 見意圖不 commit;`node_checks` 見 marker/意圖拒絕;表格 Wb 在 Wa 前 |
+| A7-m4 / B7-m6 `pgrep -f` 可偽造 | uid 0 + 主機 pid ns + argv[1] 精確比對;負對照 (n) |
+| A7-m5 / B7-m7 開機解析器 | `reset-intent.sh`:regular file、非 symlink、`head -c 64`、`case` 比對、不 eval;p5 `ro,nosuid,nodev,noexec`;`none`/`bad`/`unreadable` 分開 |
+| A7-m6 W0 寫 attempts 不取鎖 | W0 取 `cfgsave.lock` |
+| A7-m7 非 fresh 開機的上鎖、終態上鎖 | §4.5 L:非 fresh 由 batdata-mount 自己鎖;W3 見 `/etc/batman-reset.locked` 再清一次 overlay 讓終態是 image 預設 |
+| A7-m8 / B7-m4 W2 失敗那次開機、W1 每次重清 | W1 寫 `state/reset-p6-wiped <nonce>`,有就略過;W2 失敗照常掛新 p6、batdata-mount 上鎖 |
+| A7-m9 / B7-m9 p6 沒掛 fail-open;start/restart | 「marker 或 p6 不是 mountpoint → 不啟動」;W 只在 `boot()` |
+| A7-m10 / B7-m8 rc 8 語意 | 新 rc 表 0/10/11;既有模式不改 |
+| A7-m11 / B7-m8 文件矛盾 | §4.3 意圖格式含 slot;prov-state 舊句改;`BATMAN_FIRSTBOOT` 刪(D34、§10);L16 (a)–(n);95「略過 3/3b,步驟 4 照做」;D27 單向;D35 更正 |
+| A7-m12 矩陣缺列 | L52–L57 |
+| A7-m13(可選)procd 整體 invalid 但 platform rc=0 | 不改:`ota-armed.mesh` 綁 boot_id + slot,只在真 trial 被讀;invalid 不會有 trial |
+| B7-m5 plain reboot 撞 EEPROM bug | F5、W0、W3 用 `batman-slot reboot committed` |
+| B7-m10 cancel 互斥、`upgraded` 殘留 | flock;`E_PRECOND(ota-residue)` |
+| B7-m11 誠實界線 | EEPROM bootloader_config、F4–F5 serial 窗口 |
+| A7 Q5 後果 | §12 Q5:W 失敗時 04 遠端救不回、重置後 IP 改變;排 L16 前再請使用者確認 |
+| v5 §10「marker → mkfs p6」經「同 v5」繼承(A7-m11) | **作廢**:p6 的格式化只由 §4.5 W1 依 p5 意圖觸發;v5 §10 那句不再適用 |
+| v5 §6.4 `expected_in_mesh()` 讀 prov-state 欄位(B7-m8) | 改讀 `verdict` 欄(第 4 欄)與 `mesh_expect`(第 6 欄) |
