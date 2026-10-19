@@ -70,6 +70,8 @@ CDDL = re.sub(r"bstr \.cbor [A-Za-z0-9-]+", "bstr",
 # v0.7 idempotency-key rule (§4.2) is checked in Python by idem_ok() below.
 IDEM_TYPES = set(re.findall(r'2 => "([a-z_/]+)",\s+3 => [a-z-]+, \? 7 => bytes16', CDDL))
 CDDL = CDDL.replace(", ? 7 => bytes16\n", "\n").replace("  request-kind,\n", "  request-kind,\n  ? 7 => bytes16,\n", 1)
+CDDL = re.sub(r"chunk = \(.*?\)\s+; other types[^\n]*\n", "chunk = ( 2 => msg-type, 3 => bstr, 6 => part )\n",
+              CDDL, flags=re.S)
 v = json.load(open(sys.argv[1] if len(sys.argv) > 1 else HERE / "vectors.json", encoding="utf-8"))
 b = bytes.fromhex
 K = v["keys"]
@@ -110,23 +112,6 @@ def hkdf(ikm, info, L=32):
     return okm[:L]
 
 
-def deterministic(raw):
-    """RFC 8949 §4.2.1: map keys sorted by their encoded bytes, shortest forms (re-encode must match)."""
-    def walk(o):
-        if isinstance(o, dict):
-            enc = [cbor2.dumps(k) for k in o]
-            if enc != sorted(enc):
-                return False
-            return all(walk(x) for x in o.values())
-        if isinstance(o, (list, tuple)):
-            return all(walk(x) for x in o)
-        if isinstance(o, cbor2.CBORTag):
-            return walk(o.value)
-        return True
-    obj = cbor2.loads(raw)
-    return walk(obj) and cbor2.dumps(obj, canonical=True) == raw
-
-
 def _det(o):
     """RFC 8949 §4.2.1 core deterministic encoding: map keys sorted by their encoded bytes (bytewise)."""
     if isinstance(o, dict):
@@ -144,6 +129,23 @@ def _det(o):
 
 def det_dumps(o) -> bytes:
     return cbor2.dumps(_det(o))     # cbor2 keeps insertion order when canonical=False; ints are always shortest
+
+
+def deterministic(raw):
+    """RFC 8949 §4.2.1: map keys sorted by their encoded bytes, shortest forms (re-encode must match)."""
+    def walk(o):
+        if isinstance(o, dict):
+            enc = [cbor2.dumps(k) for k in o]
+            if enc != sorted(enc):
+                return False
+            return all(walk(x) for x in o.values())
+        if isinstance(o, (list, tuple)):
+            return all(walk(x) for x in o)
+        if isinstance(o, cbor2.CBORTag):
+            return walk(o.value)
+        return True
+    obj = cbor2.loads(raw)
+    return walk(obj) and det_dumps(obj) == raw     # v0.7: RFC 8949 bytewise, not cbor2 length-first
 
 
 def idem_ok(raw):
@@ -408,7 +410,7 @@ for i, f in enumerate(b(x) for x in g["frames"]):
 check("GATT frames reassemble to msg1", re_ == b(v["noise_nx"]["msg1"]))
 
 env = v["envelope"]
-for name in ["request_info", "request_reset_with_idem"]:
+for name in ["request_info", "request_reset", "negative_reset_with_idem"]:
     check(f"CDDL request: {name}", cddl_ok("request", b(env[name])))
 for name in ["response_info", "response_error_unsupported"]:
     check(f"CDDL response: {name}", cddl_ok("response", b(env[name])))
@@ -588,13 +590,16 @@ check("STATUS (status/public): unclaimed with device_id tail is valid CDDL", cdd
 check("STATUS: member (updating) without tail is valid CDDL", cddl_ok("status-public", b(sp["member_updating"])))
 def status_ok(raw):
     """§4.1 STATUS: CDDL shape + the device_id tail (5) only when state is unclaimed (0) or legacy (3).
-    (pycddl 0.6 does not reject extra keys in a closed map, so the tail rule is checked here.)"""
+    (pycddl 0.6 accepts a value for a type choice when an alternative should reject it, so the open/closed
+    split and the key set are checked here.)"""
     o = cbor2.loads(raw)
-    return cddl_ok("status-public", raw) and ((5 in o) == (o.get(3) in (0, 3)))
+    return (cddl_ok("status-public", raw) and set(o) <= {1, 2, 3, 4, 5}
+            and ((5 in o) == (o.get(3) in (0, 3))))
 
 
 check("STATUS: unclaimed and member examples pass the tail rule", status_ok(b(sp["unclaimed"])) and status_ok(b(sp["member_updating"])))
 check("STATUS: a member that exposes the device_id tail is rejected", not status_ok(b(sp["bad_member_with_tail"])))
+check("STATUS: a member with an extra key (full device_id at 6) is rejected", not status_ok(b(sp["bad_member_with_device_id"])))
 for _k in ("claim/finish", "claim/replay", "root_password/reset"):
     _bd = {1: bytes(32), 31: rop} if _k == "claim/replay" else ({31: rop} if _k == "root_password/reset" else
           {1: bytes(32), 2: b(K["owner_enc_pub"]), 3: bytes(64)})
@@ -606,9 +611,20 @@ check("idempotency rule: the allowed set is exactly the owner-op requests + netw
 check("idempotency key on network/leave is accepted (CDDL + rule)",
       cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 8, 2: "network/leave", 3: {31: rop}, 7: bytes(16)}))
       and idem_ok(cbor2.dumps({0: [1, 0], 1: 8, 2: "network/leave", 3: {31: rop}, 7: bytes(16)})))
-for _name in ("request_reset_with_idem",):
-    check(f"idempotency rule: envelope example {_name} (reset carries no secret but is not an owner-op request)",
-          not idem_ok(b(env[_name])))
+check("idempotency rule: negative_reset_with_idem is rejected (reset is not an owner-op request)", not idem_ok(b(env["negative_reset_with_idem"])))
+_all_requests = [env["request_info"], env["request_reset"], v["op_nonce"]["request"], oo["request_network_join"],
+                 cr["request"], v["chunking"]["chunk1"], v["chunking"]["chunk2"]]
+check("idempotency rule holds for every request example in the vectors", all(idem_ok(b(x)) for x in _all_requests))
+check("idempotency rule: a chunked claim/finish carrying key 7 is rejected",
+      not idem_ok(cbor2.dumps({0: [1, 0], 1: 9, 2: "claim/finish", 3: b"\x00" * 8, 6: {1: 1, 2: 2}, 7: bytes(16)})))
+check("RFC 8949 bytewise: {24:0, -1:0} encoded a2 18 18 00 20 00 is deterministic; length-first is not",
+      deterministic(bytes.fromhex("a2181800" "2000")) and not deterministic(bytes.fromhex("a2" "2000" "181800")))
+cbd = v["chunk_boundary"]
+def _cenv(n):
+    return det_dumps({0: [1, 0], 1: 4294967295, 2: "network/update", 3: bytes(n), 6: {1: 65535, 2: 65535}, 7: bytes(16)})
+check("chunk boundary: worst-case envelope at max_body_slice fits max_msg - 16, one more byte does not",
+      len(_cenv(cbd["max_body_slice"])) <= cbd["limit_plaintext"] < len(_cenv(cbd["max_body_slice"] + 1))
+      and len(_cenv(cbd["max_body_slice"])) == cbd["envelope_len_at_max"])
 SSH_RE = re.compile(r"ssh-ed25519 [A-Za-z0-9+/=]{1,200}( [ -~]{0,40})?")
 for _line, _want in [("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@phone", True), ("ssh-ed25519 AAAA\nssh-rsa X", False),
                      ("xssh-ed25519 AAAA", False), ("ssh-ed25519 AAAA\r", False)]:

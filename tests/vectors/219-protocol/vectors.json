@@ -205,11 +205,20 @@
   "status_public": {
     "unclaimed": "a50182010002826568616c6f7763677073030004f4056434646565",
     "member_updating": "a40182010002826568616c6f7763677073030204f5",
-    "bad_member_with_tail": "a50182010002816568616c6f77030204f4056434646565"
+    "bad_member_with_tail": "a50182010002816568616c6f77030204f4056434646565",
+    "bad_member_with_device_id": "a50182010002816568616c6f77030204f40672303132336135663063336531623734646565"
   },
   "legacy": {
     "response_info_legacy": "a3010103a8017230313233613566306333653162373464656502624333036762636d323731310466312e352e31320582010006816568616c6f77070308f50400",
     "response_error_no_ssh_key": "a30103040605a20165636c61696d020a"
+  },
+  "chunk_boundary": {
+    "max_msg": 8192,
+    "limit_plaintext": 8176,
+    "max_body_slice": 8117,
+    "envelope_len_at_max": 8176,
+    "envelope_len_at_max_plus_1": 8177,
+    "rule": "worst-case envelope (id 2^32-1, part 65535/65535, idem key, type network/update)"
   },
   "chunking": {
     "rule": "chunks share id; 3 = bstr slice of the encoded body; 6 = {1: n, 2: total}",
@@ -221,7 +230,8 @@
     "request_info": "a40082010001010264696e666f03a0",
     "response_info": "a3010103a8017230313233613566306333653162373464656502624333036762636d323731300465312e362e300582010006856568616c6f776367707363707474646c6f7261627365070008f50400",
     "response_error_unsupported": "a30107040605a201646c6f72610207",
-    "request_reset_with_idem": "a50082010001090265726573657403a00750f5cfc5298d4e90aaacf4a86c7878b3ad",
+    "request_reset": "a40082010001090265726573657403a0",
+    "negative_reset_with_idem": "a50082010001090265726573657403a00750f5cfc5298d4e90aaacf4a86c7878b3ad",
     "response_error_reset_reflash": "a30109040605a2016572657365740209"
   },
   "fake_msg2_rule": {

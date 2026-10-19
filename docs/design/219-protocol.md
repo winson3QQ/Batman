@@ -1,6 +1,6 @@
 # Spec: 供裝協定 —— 安全通道與訊息協定(#219 B11 / #254)
 
-Status: **DRAFT v0.7(#254 階段 1 實作設計 v19 回寫:`batman-owner-op-v1` 逐動詞授權、首版 `network/join` 需擁有者授權、`device_id` 公式與開發版自簽憑證、`psk_replay` 與固定試 6 次、`claim/replay`、`reset` 改回 `E_UNSUPPORTED`;向量 189 項全部通過)**;v0.6 為上一版
+Status: **DRAFT v0.7(#254 階段 1 實作設計 v19 回寫:`batman-owner-op-v1` 逐動詞授權、首版 `network/join` 需擁有者授權、`device_id` 公式與開發版自簽憑證、`psk_replay` 與固定試 6 次、`claim/replay`、`reset` 改回 `E_UNSUPPORTED`;向量 195 項全部通過)**;v0.6 為上一版
 Parent: #254(階段 1)· 上位設計:`docs/design/219-field-provisioning.md`(PR #253)§3.3、§3.4、§5、§6.5
 範圍:手機 app 與節點 `batman-provd` 之間的**安全通道**、**傳輸分段**、**訊息格式**,以及可以轉送的**簽章物件**。民用版;戰術版沿用同一層,只換成員提供者(上位設計 F2)。
 
@@ -166,7 +166,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 回應:`{ 1: id, 4: status (uint, 0 = ok), 3: body / 5: error, 6: part? }`
 
 - `id`:手機產生,單一 session 內遞增;節點拒絕**完整訊息**的重複或倒退 `id`。成功回應帶 `3: body`,錯誤回應帶 `5: error`,**兩者互斥**。
-- **分塊**(請求與回應都可以):明文超過 `max_msg − 16` B(`CTRL` 4;預設 65535 − 16 = 65519)的訊息,把**編碼後的 body map** 切成多段;每段是一則訊息,`3` = 該段的 **bstr**,`6 = {1: n, 2: total}`,**所有分塊共用同一個 `id`**(與同一個冪等鍵);收到重複的 `(id, n)` 即拒絕;收齊後依序串接再解碼,總大小上限 1 MB。訊息類型與 body 的對應見 CDDL 的 `whole-request`。
+- **分塊**(請求與回應都可以):整則訊息編碼後超過 `max_msg − 16` B(`CTRL` 4;預設 65535 − 16 = 65519)時分塊,**每個分塊的整個信封**(含 key 0/1/2/3/6/7)編碼後都必須 ≤ `max_msg − 16`(向量 `chunk_boundary`:8192 時最壞情況 body 片段上限);把**編碼後的 body map** 切成多段;每段是一則訊息,`3` = 該段的 **bstr**,`6 = {1: n, 2: total}`,**所有分塊共用同一個 `id`**(與同一個冪等鍵);收到重複的 `(id, n)` 即拒絕;收齊後依序串接再解碼,總大小上限 1 MB。訊息類型與 body 的對應見 CDDL 的 `whole-request`。
 - `7: idem_key`(16 B):見 §4.2 的 v0.7 冪等規則。
 - 版本:`major` 不同 → `E_VERSION`,手機只允許 `info`、`status`,並提示「更新 app,或用轉賣工具重燒卡」(階段 1 沒有 `reset`,v0.7);未知 `type` → `E_UNKNOWN_TYPE`;**body 的未知欄位忽略**(簽章物件除外,§7)。
 
@@ -198,7 +198,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | `op/nonce`(v0.7) | 擁有者、擁有者重取 | — | `nonce_helper`(32 B,一次性、60 秒、綁本 session 的 `h`) |
 | `claim/replay`(v0.7) | 擁有者重取 | `response`(32 B,§5.4,以**已存的** `owner_pub` 重算)、owner-op(`claim/replay`) | 同 `claim/finish`(`root_password` 為新產生);session 升為擁有者 |
 | `auth/owner` | 擁有者候選 | `owner_key_id`(32 B = SHA-256(owner_pub 65 B))、`sig` | 目前的 `adv_owner_key` |
-| `owner/add` | 擁有者 | 新擁有者的 `owner_pub`、`owner_enc_pub`、`sig_enc` | 新擁有者的 `owner_tag_key`(由現任擁有者的 app 轉交) |
+| `owner/add` | 擁有者(v0.7:對已存在的 `owner_pub` 重送 = 輪替**該**擁有者的 `owner_tag_key`,新值回給發出請求的擁有者;擁有者彼此對等,任一位本來就能移除另一位,故非新權限;`adv_owner_key` 不變,只在 `owner/remove` 輪替) | 新擁有者的 `owner_pub`、`owner_enc_pub`、`sig_enc` | 新擁有者的 `owner_tag_key`(由現任擁有者的 app 轉交) |
 | `owner/remove` | 擁有者 | `owner_key_id` | —(被移除者的 `owner_tag_key` 與其 `psk_owner` 一併刪除;**廣播用的 `adv_owner_key` 輪替**,其他擁有者下次 `auth/owner` 時取得新值)【依 review】 |
 | `settings/get` / `settings/set` | 擁有者 | 依能力分組 | 目前值 |
 | `network/join` | 擁有者 | `net_config`、`member_list`、`net_secrets`(本機那份)、選填 `invite_id` | `joined` / `pending` |
@@ -210,7 +210,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | `update/check` | 擁有者 | `manifest` | `ok` 或 `E_REJECTED` + 原因、所需 RAM |
 | `bulk/open` / `bulk/close` | 擁有者 | `purpose` | `ssid`、`psk`(一次性)、`ip`、`port`、`expires_in`(相對秒數) |
 | `update/prepare` / `apply` / `status` | 擁有者 | — | 進度 |
-| `ssh_keys/set`(v0.7) | 擁有者 | `keys`(0–8 行,每行 `ssh-ed25519 …`、≤ 256 B)、owner-op | — |
+| `ssh_keys/set`(v0.7) | 擁有者 | `keys`(0–8 行;每行**整行**符合 `ssh-ed25519 [A-Za-z0-9+/=]{1,200}( [ -~]{0,40})?`、不得含 CR / LF、≤ 256 B)、owner-op | — |
 | `root_password/reset`(v0.7) | 擁有者 | owner-op | 新 `root_password`(24 字元,只回一次) |
 | `reset` | 擁有者 | — | **階段 1 一律 `E_UNSUPPORTED`**(`capability` = `reset`、`reason` = 9「用轉賣工具重燒卡」);恢復出廠在 #255 重新設計(v0.7) |
 
@@ -408,10 +408,10 @@ member_list = { net_id, net_version, prev_hash,
 
 **已完成**:`tests/vectors/219-protocol/`(`vectors.json`、`gen.py`、`verify.py`、`README.md`)。
 - `gen.py` 以固定金鑰與決定性 ECDSA(RFC 6979)產生,**可逐位元組重現**。
-- `verify.py` 以**另一份實作**逐項驗證,共 **189 項**(v0.6 為 119 項)(含負向測試:錯的 PSK / prologue、換標籤、high-s、竄改密文、簽章物件內的未知 key、訊息類型與 body 不符、版本鏈以錯誤的網主組驗證):Noise 用 `dissononce` 重跑 `NX` 與 `NXpsk0` 交握(位元組必須與 `noiseprotocol` 產生的完全相同)、ECDSA / ECDH 用 `python-ecdsa`、HKDF 用標準庫 `hmac`、所有物件以 `pycddl` 對 CDDL 驗證結構。
+- `verify.py` 以**另一份實作**逐項驗證,共 **195 項**(v0.6 為 119 項)(含負向測試:錯的 PSK / prologue、換標籤、high-s、竄改密文、簽章物件內的未知 key、訊息類型與 body 不符、版本鏈以錯誤的網主組驗證):Noise 用 `dissononce` 重跑 `NX` 與 `NXpsk0` 交握(位元組必須與 `noiseprotocol` 產生的完全相同)、ECDSA / ECDH 用 `python-ecdsa`、HKDF 用標準庫 `hmac`、所有物件以 `pycddl` 對 CDDL 驗證結構。
 - 涵蓋:測試根憑證與 DAC、`node_cert`、HKDF、兩種 Noise 交握、`auth/owner`、認領 CheckMac(88 B)、`sig_enc`、`peers/challenge`、全部 COSE 物件(含 ECDH 共享秘密、KDF context、CEK)、SAS、QR 大小、GATT 框架、CBOR 信封。
-- **v0.7 新增**:file 後端身分(`sn` / `device_id` 公式、自簽 `dev:` 憑證)、`psk_replay`(節點端與 app 端 ECDH 相等、HKDF、以它跑的 `NXpsk0` 交握且 `psk_owner` 打不開)、owner-op(`args_hash`、簽章輸入、換 verb / 換 `h` / 換 nonce / 簽後增減 body 欄位 / 他人金鑰 / high-s 一律驗不過、缺 key 31 的 `network/join` CDDL 拒絕)、`op/nonce`、`claim/replay`(以 replay session 的 `h` 與已存 `owner_pub` 重算 CheckMac;擁有者 session 的 owner-op 在 replay session 驗不過)、`reset` 的 `E_UNSUPPORTED` reason 9、`ssh_keys/set` 行數與格式;審查後補:偽造的 `dev:` 憑證被 TOFU 前提擋下、`type ≠ verb` 被拒、非擁有者金鑰被拒、`claim/replay` 回應、legacy(`state` = 3、reason 10)、`update/*` / `bulk/*` / `network/leave` / `diag/bundle` / `root_password/reset` 缺 owner-op 被 CDDL 拒絕。測試向量的 `device_id` 改為 `hex(sn)`。`gen.py` 與 `verify.py` 都以 RFC 8949 位元組序編碼(`det_dumps`;換掉 cbor2 長度優先後所有既有向量位元組不變)。第 2 輪補:參考節點規則 `node_accepts`(以信封 type 簽、`type ≠ verb` 向量 `request_type_mismatch` 必須被拒)、`STATUS` 三例(含成員洩漏末碼被拒)、帶秘密回應的請求帶冪等鍵被拒、`ssh-ed25519` 整行規則。**pycddl 0.6 的兩個限制**(group choice 裡的可選成員會誤收、封閉 map 不擋多出的 key)→ 冪等鍵規則(`idem_ok`)與 `STATUS` 末碼規則(`status_ok`)由 `verify.py` 以 Python 另驗;規範 CDDL 照實寫。
-- **尚未**:`flynn/noise`(Go)交叉驗證(PR-H1 / PR-P2,firmware 已有 Go 工具鏈;§12 Q8)、開發版(`-dev`)向量、608B 實機的 CheckMac 交叉驗證(B1)。
+- **v0.7 新增**:file 後端身分(`sn` / `device_id` 公式、自簽 `dev:` 憑證)、`psk_replay`(節點端與 app 端 ECDH 相等、HKDF、以它跑的 `NXpsk0` 交握且 `psk_owner` 打不開)、owner-op(`args_hash`、簽章輸入、換 verb / 換 `h` / 換 nonce / 簽後增減 body 欄位 / 他人金鑰 / high-s 一律驗不過、缺 key 31 的 `network/join` CDDL 拒絕)、`op/nonce`、`claim/replay`(以 replay session 的 `h` 與已存 `owner_pub` 重算 CheckMac;擁有者 session 的 owner-op 在 replay session 驗不過)、`reset` 的 `E_UNSUPPORTED` reason 9、`ssh_keys/set` 行數與格式;審查後補:偽造的 `dev:` 憑證被 TOFU 前提擋下、`type ≠ verb` 被拒、非擁有者金鑰被拒、`claim/replay` 回應、legacy(`state` = 3、reason 10)、`update/*` / `bulk/*` / `network/leave` / `diag/bundle` / `root_password/reset` 缺 owner-op 被 CDDL 拒絕。測試向量的 `device_id` 改為 `hex(sn)`。`gen.py` 與 `verify.py` 都以 RFC 8949 位元組序編碼(`det_dumps`;換掉 cbor2 長度優先後所有既有向量位元組不變)。第 2 輪補:參考節點規則 `node_accepts`(以信封 type 簽、`type ≠ verb` 向量 `request_type_mismatch` 必須被拒)、`STATUS` 三例(含成員洩漏末碼被拒)、帶秘密回應的請求帶冪等鍵被拒、`ssh-ed25519` 整行規則。**pycddl 0.6 的限制**:group choice 裡帶可選成員的替代項、以及 type choice(例如 `status-public = open / closed`)會誤收;封閉 map 本身會正確拒絕多出的 key。→ 冪等鍵規則(`idem_ok`)與 `STATUS` 規則(`status_ok`:末碼只在 0 / 3、key 只限 1–5)由 `verify.py` 以 Python 另驗,並對向量裡**所有**請求範例執行;規範 CDDL 照實寫。**節點與 app 的實作必須在程式碼裡檢查這兩條規則**,不能只靠 CDDL 驗證器。`deterministic()` 以 RFC 8949 位元組序比對(`{24:0, -1:0}` 正向 / 長度優先負向)。
+- **尚未**:PR-H1 的 Go / Rust 驗證器直接以**規範** CDDL(不放寬)當第二份裁判;`flynn/noise`(Go)交叉驗證(PR-H1 / PR-P2,firmware 已有 Go 工具鏈;§12 Q8)、開發版(`-dev`)向量、608B 實機的 CheckMac 交叉驗證(B1)。
 
 ## 12. 待決
 
@@ -498,3 +498,8 @@ SHOULD-FIX 已併入:`verify.py` 從標籤重組簽章輸入、以 pycose 交叉
 冪等:帶秘密回應的請求(含 `owner/add`、`bulk/open`)不得帶冪等鍵(CDDL `idem` 群組)、快取記 `(type, args_hash)`、舊清單刪除;`ssh-ed25519` 整行比對;
 legacy `device_hint`、防呆門在 CheckMac 之後;開發 / 正式隔離句改寫、正式版 app 處處拒絕 `dev:`;`max_msg`(`CTRL` 4)統一分塊門檻與重組上限;
 RFC 8949 位元組序編碼;254 §4.1 所有 owner-op 動詞收原始 body;項數更正。
+
+**v0.7 第 3 輪審查(A:APPROVE-WITH-CHANGES 0 / 0 / 6;B 窄複查:APPROVE-WITH-CHANGES 0 / 0 / 4;`254-reviews/review-docs-v07-r3-A.md`、`-r3-B-delta.md`)**:
+MINOR 已收:`deterministic()` 改位元組序(+ `{24:0,-1:0}` 正 / 負案例)、`idem_ok` 對所有請求範例執行、`request_reset_with_idem` 改為 `negative_reset_with_idem`、
+`chunk` 只對 `idem-type` 允許 key 7(+ 分塊 `claim/finish` 負例)、分塊以整個信封 ≤ `max_msg − 16` 為準(+ `chunk_boundary` 向量)、`status_ok` 限定 key 1–5
+(+ 多帶完整 `device_id` 的負例)、pycddl 限制的描述更正並寫明實作必須在程式碼裡檢查、§5.3 `ssh-ed25519` 整行規則與 `owner/add` 輪替語意。

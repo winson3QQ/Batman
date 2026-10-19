@@ -534,6 +534,7 @@ out["status_public"] = {
     "unclaimed": hx(cb({1: [1, 0], 2: ["halow", "gps"], 3: 0, 4: False, 5: DEVICE_ID[-4:]})),
     "member_updating": hx(cb({1: [1, 0], 2: ["halow", "gps"], 3: 2, 4: True})),
     "bad_member_with_tail": hx(cb({1: [1, 0], 2: ["halow"], 3: 2, 4: False, 5: DEVICE_ID[-4:]})),
+    "bad_member_with_device_id": hx(cb({1: [1, 0], 2: ["halow"], 3: 2, 4: False, 6: DEVICE_ID})),
 }
 out["legacy"] = {
     "response_info_legacy": hx(cb({1: 1, 4: 0, 3: {1: DEVICE_ID, 2: "C3", 3: "bcm2711", 4: "1.5.12", 5: [1, 0],
@@ -545,6 +546,19 @@ out["legacy"] = {
 # ------------------------------------------------------------------ envelope examples (§5.1)
 _upd_body = cb({1: [{1: item(NETCFG), 2: item(MEMBERS), 3: item(SECRETS)}]})
 _half = len(_upd_body) // 2
+# chunk sizing (§5.1, v0.7): every chunk ENVELOPE (keys 0/1/2/3/6/7 included) must encode to <= max_msg - 16
+def _chunk_env(n_body: int) -> bytes:
+    return cb({0: [1, 0], 1: 4294967295, 2: "network/update", 3: bytes(n_body), 6: {1: 65535, 2: 65535},
+               7: seed("idem-upd")[:16]})
+_MAXMSG = 8192
+_n = _MAXMSG - 16
+while len(_chunk_env(_n)) > _MAXMSG - 16:
+    _n -= 1
+out["chunk_boundary"] = {
+    "max_msg": _MAXMSG, "limit_plaintext": _MAXMSG - 16,
+    "max_body_slice": _n, "envelope_len_at_max": len(_chunk_env(_n)), "envelope_len_at_max_plus_1": len(_chunk_env(_n + 1)),
+    "rule": "worst-case envelope (id 2^32-1, part 65535/65535, idem key, type network/update)",
+}
 out["chunking"] = {
     "rule": "chunks share id; 3 = bstr slice of the encoded body; 6 = {1: n, 2: total}",
     "body": hx(_upd_body),
@@ -558,7 +572,8 @@ out["envelope"] = {
     "response_info": hx(cb({1: 1, 4: 0, 3: {1: DEVICE_ID, 2: "C3", 3: "bcm2710", 4: "1.6.0", 5: [1, 0],
                                             6: ["halow", "gps", "ptt", "lora", "se"], 7: 0, 8: True}})),
     "response_error_unsupported": hx(cb({1: 7, 4: 6, 5: {1: "lora", 2: 7}})),
-    "request_reset_with_idem": hx(cb({0: [1, 0], 1: 9, 2: "reset", 3: {}, 7: seed("idem")[:16]})),
+    "request_reset": hx(cb({0: [1, 0], 1: 9, 2: "reset", 3: {}})),
+    "negative_reset_with_idem": hx(cb({0: [1, 0], 1: 9, 2: "reset", 3: {}, 7: seed("idem")[:16]})),
     "response_error_reset_reflash": hx(cb({1: 9, 4: 6, 5: {1: "reset", 2: 9}})),
 }
 

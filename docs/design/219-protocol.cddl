@@ -66,7 +66,10 @@ request = {
   request-kind,
 }
 request-kind = ( whole-request // chunk )
-chunk = ( 2 => msg-type, 3 => bstr, 6 => part, ? 7 => bytes16 )   ; bstr = slice of the encoded body map
+chunk = ( 2 => idem-type, 3 => bstr, 6 => part, ? 7 => bytes16     ; bstr = slice of the encoded body map
+       // 2 => msg-type,  3 => bstr, 6 => part )                   ; other types: no idempotency key (§4.2)
+idem-type = "owner/remove" / "settings/set" / "network/join" / "network/update" / "network/leave"
+          / "diag/bundle" / "ssh_keys/set" / "update/prepare" / "update/apply" / "bulk/close"
 ; v0.7 §4.2: the idempotency key `7` is allowed only where an alternative lists `? 7 => bytes16` (owner-op requests
 ; and network/update); never on requests whose response carries secrets (claim/*, root_password/reset, owner/add, bulk/open)
 whole-request = (

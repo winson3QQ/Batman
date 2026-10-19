@@ -169,7 +169,7 @@ platform_check_image(stage 1):只在真的升級時寫 p6 ota-armed.mesh(§6.4)
 | `owner_op(obj)` | `ES256_owner("batman-owner-op-v1" ‖ h ‖ nonce_helper ‖ u8(len(verb)) ‖ verb ‖ args_hash)`,`args_hash = SHA-256(deterministic CBOR(請求 body 去掉 key 31))`(協定 v0.7 §5.7);`nonce_helper` 一次性、60 s、綁 `h`;verb ∈ `network/join`、`network/leave`、`owner/*`、`settings/*`、`ssh_keys`、`root_password`、`diag`、`claim/replay` | 授權物件 |
 | `root_password.reset(owner_op)` | owner-op | 新 24 字元 → shadow → `--save` → 回傳一次 |
 | `diag.bundle(owner_op)` | owner-op | helper 的私有暫存檔,O_RDONLY fd,讀完刪 |
-| `ssh_keys.set(list, owner_op)` | owner-op;每行 `^ssh-ed25519 [A-Za-z0-9+/=]+( [^\n]*)?$`、單行、≤ 256 B、≤ 8 行 | 只動 `ssh_keys.added` 清單上的行 |
+| `ssh_keys.set(list, owner_op)` | owner-op;每行整行符合 `^ssh-ed25519 [A-Za-z0-9+/=]{1,200}( [ -~]{0,40})?$`(與協定 v0.7 §5.3 / CDDL 同一條)、不得含 CR / LF、≤ 256 B、≤ 8 行 | 只動 `ssh_keys.added` 清單上的行 |
 
 - **所有帶 owner-op 的動詞**(`net.apply`、`claim.replay`、`ssh_keys.set`、`root_password.reset`、`diag.bundle`、`owner.*`、`settings.set`、`network.leave`)都收**原始請求信封**(協定 v0.7 §5.7):helper 自己嚴格解碼(拒絕重複 key 與非 deterministic 編碼)、以信封 `type` 組簽章輸入、去掉 key 31 重新編碼取 `args_hash`,**只依自己解出的欄位執行**;provd 拆好的欄位一律不收。
 - 不認得的動詞 / 多餘欄位 / 長度超限 → `E_SCHEMA`;授權失敗 → `E_FORBIDDEN`;trial → `E_BUSY`。
