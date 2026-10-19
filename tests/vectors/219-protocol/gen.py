@@ -87,8 +87,8 @@ def u32be(n: int) -> bytes:
 
 
 # ------------------------------------------------------------------ fixed inputs
-DEVICE_ID = "BATMAN-TEST01"
 SN = bytes.fromhex("0123a5f0c3e1b74dee")          # 608B serial (9 B): 01 23 .. EE like a real ATECC608; synthetic (#267: must not contain the lab-key literal the leak canary blocks)
+DEVICE_ID = SN.hex()                              # v0.7 §3.3: device_id = lowercase hex(sn), 18 chars
 BOOT_ID = seed("boot_id")[:16]
 NET_ID = seed("net_id")[:16]
 NET_VERSION = 1
@@ -113,7 +113,7 @@ node_e_sk, node_e_pk = x25519_key("node-ephemeral")
 fake_e_sk, fake_e_pk = x25519_key("fake-ephemeral")
 
 out = {"meta": {
-    "spec": "docs/design/219-protocol.md v0.6",
+    "spec": "docs/design/219-protocol.md v0.7",
     "note": "Deterministic test vectors. Keys derive from SHA-256('batman-test-vector/' + name). Not real keys.",
 }}
 
@@ -405,6 +405,105 @@ out["gatt_framing"] = {
     ],
 }
 
+# ------------------------------------------------------------------ v0.7 (#254 stage 1)
+# file backend identity (§3.3, §9): sn = SHA-256(dac_pub)[:9], device_id = hex(sn), self-signed dev cert
+dev_key = p256("dev-node")
+SN_FILE = H(pub65(dev_key))[:9]
+DEVICE_ID_FILE = SN_FILE.hex()
+DEV_T0 = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+DEV_T1 = datetime.datetime(2120, 1, 1, tzinfo=datetime.timezone.utc)
+dev_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "dev:" + DEVICE_ID_FILE),
+                      x509.NameAttribute(NameOID.SERIAL_NUMBER, SN_FILE.hex())])
+dev_cert = (x509.CertificateBuilder()
+            .subject_name(dev_name).issuer_name(dev_name)
+            .public_key(dev_key.public_key()).serial_number(1)
+            .not_valid_before(DEV_T0).not_valid_after(DEV_T1)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .sign(dev_key, hashes.SHA256(), ecdsa_deterministic=True))
+out["identity_file"] = {
+    "dac_pub": hx(pub65(dev_key)),
+    "sn": hx(SN_FILE),
+    "device_id": DEVICE_ID_FILE,
+    "dev_cert_der": hx(dev_cert.public_bytes(serialization.Encoding.DER)),
+    "rule": "sn = SHA-256(SEC1 65 B dac_pub)[:9]; device_id = lowercase hex(sn) (18 chars); "
+            "self-signed, CN = 'dev:' + device_id, serialNumber = hex(sn), 2020-01-01 .. 2120-01-01",
+}
+
+# psk_replay (§6): HKDF over the P-256 ECDH x-coordinate between the node's ECDH key and the owner's
+# encryption key; the app computes the same z from its side
+Z_NODE = node_ecdh.exchange(ec.ECDH(), owner_enc.public_key())
+Z_APP = owner_enc.exchange(ec.ECDH(), node_ecdh.public_key())
+assert Z_NODE == Z_APP
+PSK_REPLAY = hkdf(Z_NODE, b"batman-psk-replay-v1" + DEVICE_ID.encode())
+out["psk_replay"] = {
+    "ecdh_z": hx(Z_NODE),
+    "info": hx(b"batman-psk-replay-v1" + DEVICE_ID.encode()),
+    "psk_replay": hx(PSK_REPLAY),
+    "note": "z = x-coordinate of ECDH(node_ecdh_priv, owner_enc_pub) == ECDH(owner_enc_priv, node ecdh_pub); "
+            "HKDF-SHA256, salt empty, L = 32",
+}
+m1r, m2r, H_REPLAY, t1r = noise_run(b"Noise_NXpsk0_25519_ChaChaPoly_SHA256", PROLOGUE_CLAIMED, PSK_REPLAY,
+                                    NODE_CERT, REQ_INFO)
+out["noise_nxpsk0_replay"] = {
+    "protocol": "Noise_NXpsk0_25519_ChaChaPoly_SHA256",
+    "prologue": hx(PROLOGUE_CLAIMED),
+    "psk": "psk_replay.psk_replay",
+    "msg1": hx(m1r), "msg2": hx(m2r),
+    "handshake_hash": hx(H_REPLAY),
+    "first_transport_message": hx(t1r),
+}
+
+
+# owner-op (§5.7)
+def owner_op(key, h: bytes, nonce_helper: bytes, verb: str, body_wo_op: dict):
+    args_hash = H(cb(body_wo_op))
+    vb = verb.encode()
+    assert 1 <= len(vb) <= 255
+    msg = b"batman-owner-op-v1" + h + nonce_helper + bytes([len(vb)]) + vb + args_hash
+    return {1: verb, 2: es256(key, msg)}, msg, args_hash
+
+
+NONCE_HELPER = seed("nonce-helper")
+join_body = {1: item(NETCFG), 2: item(MEMBERS), 3: item(SECRETS)}
+op_join, op_join_msg, op_join_ah = owner_op(owner_sign, H_PSK, NONCE_HELPER, "network/join", join_body)
+REQ_JOIN = cb({0: [1, 0], 1: 3, 2: "network/join", 3: {**join_body, 31: op_join},
+               7: seed("idem-join")[:16]})
+out["owner_op"] = {
+    "uses": "noise_nxpsk0_owner.handshake_hash",
+    "nonce_helper": hx(NONCE_HELPER),
+    "verb": "network/join",
+    "args_hash": hx(op_join_ah),
+    "input": hx(op_join_msg),
+    "sig": hx(op_join[2]),
+    "request_network_join": hx(REQ_JOIN),
+    "rule": "sig = ES256_owner('batman-owner-op-v1' || h || nonce_helper || u8(len(verb)) || verb || args_hash); "
+            "args_hash = SHA-256(deterministic CBOR of the request body without key 31)",
+}
+out["op_nonce"] = {
+    "request": hx(cb({0: [1, 0], 1: 2, 2: "op/nonce", 3: {}})),
+    "response": hx(cb({1: 2, 4: 0, 3: {1: NONCE_HELPER}})),
+}
+
+# claim/replay (§5.3, §5.4): psk_replay session; ClientChal with this session's h and the STORED owner_pub
+REPLAY_NONCE = seed("replay-claim-nonce")
+NONCE_HELPER_R = seed("nonce-helper-replay")
+chal_r = H(b"batman-claim-v1" + REPLAY_NONCE + H_REPLAY + H(DAC_DER) + pub65(owner_sign))
+inp_r = (CLAIM_SECRET + chal_r + od[0:4] + bytes(8) + od[4:7] + SN[8:9] + od[7:11] + SN[0:2] + od[11:13])
+RESP_R = H(inp_r)
+op_r, op_r_msg, op_r_ah = owner_op(owner_sign, H_REPLAY, NONCE_HELPER_R, "claim/replay", {1: RESP_R})
+out["claim_replay"] = {
+    "uses": "noise_nxpsk0_replay.handshake_hash",
+    "nonce": hx(REPLAY_NONCE),
+    "client_chal": hx(chal_r),
+    "response": hx(RESP_R),
+    "nonce_helper": hx(NONCE_HELPER_R),
+    "owner_op_input": hx(op_r_msg),
+    "owner_op_sig": hx(op_r[2]),
+    "request": hx(cb({0: [1, 0], 1: 4, 2: "claim/replay", 3: {1: RESP_R, 31: op_r},
+                      7: seed("idem-replay")[:16]})),
+}
+
+
 # ------------------------------------------------------------------ envelope examples (§5.1)
 _upd_body = cb({1: [{1: item(NETCFG), 2: item(MEMBERS), 3: item(SECRETS)}]})
 _half = len(_upd_body) // 2
@@ -421,7 +520,8 @@ out["envelope"] = {
     "response_info": hx(cb({1: 1, 4: 0, 3: {1: DEVICE_ID, 2: "C3", 3: "bcm2710", 4: "1.6.0", 5: [1, 0],
                                             6: ["halow", "gps", "ptt", "lora", "se"], 7: 0, 8: True}})),
     "response_error_unsupported": hx(cb({1: 7, 4: 6, 5: {1: "lora", 2: 7}})),
-    "request_reset_with_idem": hx(cb({0: [1, 0], 1: 9, 2: "reset", 3: {1: 1}, 7: seed("idem")[:16]})),
+    "request_reset_with_idem": hx(cb({0: [1, 0], 1: 9, 2: "reset", 3: {}, 7: seed("idem")[:16]})),
+    "response_error_reset_reflash": hx(cb({1: 9, 4: 6, 5: {1: "reset", 2: 9}})),
 }
 
 # fake msg2 for a failed PSK (§3.4): same length, real ephemeral, random payload

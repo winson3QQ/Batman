@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independently verify vectors.json against docs/design/219-protocol.md / .cddl (v0.6).
+"""Independently verify vectors.json against docs/design/219-protocol.md / .cddl (v0.7).
 
 Uses implementations that are DIFFERENT from gen.py wherever possible:
   * Noise: dissononce (gen.py uses noiseprotocol) — reproduces msg1, reads msg2,
@@ -24,6 +24,7 @@ import cbor2
 import ecdsa
 import pycddl
 from cryptography import x509
+from cryptography.hazmat.primitives import serialization   # DER/X962 encoding only (v0.7 dev cert)
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305   # AEAD primitive only
 from dissononce.cipher.chachapoly import ChaChaPolyCipher
 from dissononce.dh.x25519.private import PrivateKey as X25519Priv
@@ -387,8 +388,6 @@ check("chunks: same id, CDDL ok, reassemble to the body",
       c1[1] == c2[1] and cddl_ok("request", b(ch["chunk1"])) and cddl_ok("request", b(ch["chunk2"]))
       and c1[3] + c2[3] == b(ch["body"]))
 # negative: msg-type / body mismatch, error + body together
-check("CDDL rejects 'reset' with a claim/begin body",
-      not cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 1, 2: "reset", 3: {1: b(K["owner_sign_pub"])}})))
 check("CDDL rejects claim/finish with a bad body",
       not cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 1, 2: "claim/finish", 3: {1: "zzz"}})))
 check("CDDL accepts unknown extra keys in a message body",
@@ -397,6 +396,132 @@ check("CDDL accepts unknown extra keys in a message body",
 both = cbor2.dumps({1: 1, 4: 6, 3: {}, 5: {1: "lora"}})
 check("CDDL: no response alternative accepts both body and error",
       not any(cddl_ok(r, both) for r in ["ok-response", "error-response", "chunk-response"]))
+
+# ------------------------------------------------------------------ v0.7 (#254 stage 1)
+# identity, file backend (§3.3, §9)
+idf = v["identity_file"]
+devc = x509.load_der_x509_certificate(b(idf["dev_cert_der"]))
+dev_pub = devc.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+check("file identity: dac_pub in vectors == dev cert key", dev_pub == b(idf["dac_pub"]))
+check("file identity: sn = SHA-256(dac_pub)[:9]", H(dev_pub)[:9].hex() == idf["sn"])
+check("file identity: device_id = hex(sn), 18 lowercase chars",
+      idf["device_id"] == idf["sn"] and len(idf["device_id"]) == 18 and idf["device_id"] == idf["device_id"].lower())
+check("dev cert CN = 'dev:' + device_id",
+      devc.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)[0].value == "dev:" + idf["device_id"])
+check("dev cert serialNumber = hex(sn)",
+      devc.subject.get_attributes_for_oid(x509.oid.NameOID.SERIAL_NUMBER)[0].value == idf["sn"])
+check("dev cert is self-issued, 2020-01-01 .. 2120-01-01",
+      devc.subject == devc.issuer and devc.not_valid_before_utc.year == 2020 and devc.not_valid_after_utc.year == 2120)
+_tbs, _sig = devc.tbs_certificate_bytes, devc.signature
+try:
+    ecdsa.VerifyingKey.from_string(dev_pub, curve=ecdsa.NIST256p).verify(
+        _sig, _tbs, hashfunc=hashlib.sha256, sigdecode=ecdsa.util.sigdecode_der)
+    _ok = True
+except ecdsa.BadSignatureError:
+    _ok = False
+check("dev cert self-signature (python-ecdsa)", _ok)
+check("se identity: device_id = hex(sn) for the 608B serial too (§3.3)", K["device_id"] == K["sn"])
+
+# psk_replay (§6): ECDH from BOTH sides with python-ecdsa, HKDF with hmac
+def _priv(name):
+    d = int.from_bytes(H(b"batman-test-vector/" + name.encode()), "big") % (N - 1) + 1
+    return ecdsa.SigningKey.from_secret_exponent(d, curve=ecdsa.NIST256p)
+
+
+def _ecdh(priv_name, pub65):
+    return ecdsa.ECDH(curve=ecdsa.NIST256p, private_key=_priv(priv_name),
+                      public_key=ecdsa.VerifyingKey.from_string(pub65, curve=ecdsa.NIST256p)).generate_sharedsecret_bytes()
+
+
+pr = v["psk_replay"]
+z_node = _ecdh("node-ecdh", b(K["owner_enc_pub"]))
+z_app = _ecdh("owner-enc", nc[4])          # the app uses node_cert.ecdh_pub
+check("psk_replay: node-side ECDH == app-side ECDH", z_node == z_app and z_node.hex() == pr["ecdh_z"])
+check("psk_replay: HKDF(z, 'batman-psk-replay-v1' || device_id)",
+      hkdf(z_node, b"batman-psk-replay-v1" + did).hex() == pr["psk_replay"])
+check("psk_replay differs from psk_owner and psk_member",
+      pr["psk_replay"] not in (v["hkdf"]["psk_owner"], v["hkdf"]["psk_member"]))
+noise_check("NXpsk0 replay", v["noise_nxpsk0_replay"], b(pr["psk_replay"]))
+st = noise_initiator(b(v["noise_nxpsk0_replay"]["prologue"]), b(v["hkdf"]["psk_owner"]))
+st.write_message(b"", bytearray())
+try:
+    st.read_message(b(v["noise_nxpsk0_replay"]["msg2"]), bytearray())
+    _rej = False
+except Exception:   # noqa: BLE001
+    _rej = True
+check("NXpsk0 replay session does not open with psk_owner", _rej)
+
+# owner-op (§5.7): rebuild args_hash from the request body, rebuild the signed input
+H_REPLAY = b(v["noise_nxpsk0_replay"]["handshake_hash"])
+
+
+def op_input(h, nonce, verb, args_hash):
+    vb = verb.encode()
+    return b"batman-owner-op-v1" + h + nonce + bytes([len(vb)]) + vb + args_hash
+
+
+oo = v["owner_op"]
+jreq_raw = b(oo["request_network_join"])
+jreq = cbor2.loads(jreq_raw)
+jbody = dict(jreq[3])
+jop = jbody.pop(31)
+ah = H(cbor2.dumps(jbody, canonical=True))
+check("owner-op: request CDDL (network/join with key 31)", cddl_ok("request", jreq_raw) and deterministic(jreq_raw))
+check("owner-op: args_hash = SHA-256(body without key 31)", ah.hex() == oo["args_hash"])
+oin = op_input(H_PSK, b(oo["nonce_helper"]), jop[1], ah)
+check("owner-op: input rebuilt", oin.hex() == oo["input"] and jop[1] == "network/join")
+check("owner-op: signature (rebuilt input)", es256_ok(b(K["owner_sign_pub"]), oin, jop[2]))
+check("owner-op: other verb is rejected",
+      not es256_ok(b(K["owner_sign_pub"]), op_input(H_PSK, b(oo["nonce_helper"]), "network/leave", ah), jop[2]))
+check("owner-op: other session h is rejected",
+      not es256_ok(b(K["owner_sign_pub"]), op_input(H_NX, b(oo["nonce_helper"]), jop[1], ah), jop[2]))
+check("owner-op: other nonce_helper is rejected",
+      not es256_ok(b(K["owner_sign_pub"]), op_input(H_PSK, bytes(32), jop[1], ah), jop[2]))
+_tampered = dict(jbody)
+_tampered[4] = b"\x00" * 16          # add an invite_id the owner did not sign
+check("owner-op: a body field added after signing changes args_hash and is rejected",
+      not es256_ok(b(K["owner_sign_pub"]),
+                   op_input(H_PSK, b(oo["nonce_helper"]), jop[1], H(cbor2.dumps(_tampered, canonical=True))), jop[2]))
+check("owner-op: signature by another key is rejected", not es256_ok(b(K["dac_pub"]), oin, jop[2]))
+_hs = jop[2][:32] + (N - int.from_bytes(jop[2][32:], "big")).to_bytes(32, "big")
+check("owner-op: high-s variant is rejected", not es256_ok(b(K["owner_sign_pub"]), oin, _hs))
+check("CDDL rejects network/join without owner-op",
+      not cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 3, 2: "network/join", 3: jbody}, canonical=True)))
+check("op/nonce request + response CDDL",
+      cddl_ok("request", b(v["op_nonce"]["request"])) and cddl_ok("response", b(v["op_nonce"]["response"]))
+      and cbor2.loads(b(v["op_nonce"]["response"]))[3][1] == b(oo["nonce_helper"]))
+
+# claim/replay (§5.3, §5.4)
+cr = v["claim_replay"]
+chal_r = H(b"batman-claim-v1" + b(cr["nonce"]) + H_REPLAY + H(b(K["dac_cert_der"])) + b(K["owner_sign_pub"]))
+inp_r = b(K["claim_secret"]) + chal_r + od[0:4] + bytes(8) + od[4:7] + sn[8:9] + od[7:11] + sn[0:2] + od[11:13]
+check("claim/replay: ClientChal uses the replay session h and the stored owner_pub", chal_r.hex() == cr["client_chal"])
+check("claim/replay: CheckMac response", H(inp_r).hex() == cr["response"])
+rreq_raw = b(cr["request"])
+rreq = cbor2.loads(rreq_raw)
+rbody = dict(rreq[3])
+rop = rbody.pop(31)
+check("claim/replay: request CDDL", cddl_ok("request", rreq_raw) and rbody[1] == b(cr["response"]))
+check("claim/replay: owner-op verb + signature",
+      rop[1] == "claim/replay" and es256_ok(b(K["owner_sign_pub"]),
+                                            op_input(H_REPLAY, b(cr["nonce_helper"]), rop[1],
+                                                     H(cbor2.dumps(rbody, canonical=True))), rop[2]))
+check("claim/replay: owner-op from the owner session does not verify in the replay session",
+      not es256_ok(b(K["owner_sign_pub"]), op_input(H_PSK, b(cr["nonce_helper"]), rop[1],
+                                                     H(cbor2.dumps(rbody, canonical=True))), rop[2]))
+check("CDDL rejects claim/replay with a claim/begin body",
+      not cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 4, 2: "claim/replay", 3: {1: b(K["owner_sign_pub"])}})))
+
+# reset (§5.3): stage 1 answers E_UNSUPPORTED {capability "reset", reason 9}
+_er = cbor2.loads(b(env["response_error_reset_reflash"]))
+check("reset: error response CDDL, E_UNSUPPORTED reason 9",
+      cddl_ok("response", b(env["response_error_reset_reflash"])) and _er[4] == 6 and _er[5] == {1: "reset", 2: 9})
+check("CDDL rejects ssh_keys/set with 9 lines",
+      not cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 5, 2: "ssh_keys/set",
+                                          3: {1: ["ssh-ed25519 AAAA"] * 9, 31: rop}})))
+check("CDDL accepts ssh_keys/set with 1 line + owner-op",
+      cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 5, 2: "ssh_keys/set",
+                                      3: {1: ["ssh-ed25519 AAAA test"], 31: rop}})))
 
 print(f"\n{count} checks: " + ("ALL PASSED" if not fails else f"{len(fails)} FAILED"))
 sys.exit(1 if fails else 0)

@@ -166,7 +166,7 @@ platform_check_image(stage 1):只在真的升級時寫 p6 ota-armed.mesh(§6.4)
 | `claim.verify(h, client_resp, owner_pub, owner_enc_pub, sig_enc)` | helper 以自己發給此 `h` 的 `nonce_node`、自己的 DAC、即將寫入的 `owner_pub` 重算 `ClientChal`(協定 §5.4),`CheckMac` 常數時間;`sig_enc` 以同一把 `owner_pub` 驗;legacy 另需防呆門(§6.1) | §6.1 交易;`legacy\|unclaimed → claimed` |
 | `claim.replay(h, client_resp, owner_pub, owner_op)` | 只接受 `psk_replay` session;state ∈ {claimed, member}、擁有者 1 位、`owner_pub` == 已存;CheckMac(重算)**且** owner-op(`verb=claim/replay`);失敗計數在 helper(每 boot 每小時 10 次) | 回存在 `prov.cbor` 的 `owner_tag_key`、`adv_owner_key`;產新 root 密碼 |
 | `net.apply(net_config, net_secrets[, owner_op])` | `prov.cbor.net` 為空 → 需 owner-op `network/join`(`args_hash = H(net_config ‖ net_secrets)`);否則以上一版 `admins` 驗鏈(版本 +1、不跳號);helper 以 `ecdh.key` 解 `net_secrets`(明文 SAE key / `net_root` 不出 helper) | §4.4 交易 |
-| `owner_op(obj)` | `ES256_owner("batman-owner-op-v1" ‖ h ‖ nonce_helper ‖ verb ‖ args_hash)`;`nonce_helper` 一次性、60 s、綁 `h`;verb ∈ `network/join`、`network/leave`、`owner/*`、`settings/*`、`ssh_keys`、`root_password`、`diag`、`claim/replay` | 授權物件 |
+| `owner_op(obj)` | `ES256_owner("batman-owner-op-v1" ‖ h ‖ nonce_helper ‖ u8(len(verb)) ‖ verb ‖ args_hash)`,`args_hash = SHA-256(deterministic CBOR(請求 body 去掉 key 31))`(協定 v0.7 §5.7);`nonce_helper` 一次性、60 s、綁 `h`;verb ∈ `network/join`、`network/leave`、`owner/*`、`settings/*`、`ssh_keys`、`root_password`、`diag`、`claim/replay` | 授權物件 |
 | `root_password.reset(owner_op)` | owner-op | 新 24 字元 → shadow → `--save` → 回傳一次 |
 | `diag.bundle(owner_op)` | owner-op | helper 的私有暫存檔,O_RDONLY fd,讀完刪 |
 | `ssh_keys.set(list, owner_op)` | owner-op;每行 `^ssh-ed25519 [A-Za-z0-9+/=]+( [^\n]*)?$`、單行、≤ 256 B、≤ 8 行 | 只動 `ssh_keys.added` 清單上的行 |

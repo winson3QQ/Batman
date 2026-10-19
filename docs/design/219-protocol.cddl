@@ -72,28 +72,33 @@ whole-request = (
     2 => "info",            3 => info-req
  // 2 => "claim/begin",     3 => claim-begin-req
  // 2 => "claim/finish",    3 => claim-finish-req
+ // 2 => "claim/replay",    3 => claim-replay-req
+ // 2 => "op/nonce",        3 => empty
  // 2 => "auth/owner",      3 => auth-owner-req
  // 2 => "owner/add",       3 => owner-add-req
  // 2 => "owner/remove",    3 => owner-remove-req
  // 2 => "settings/get",    3 => empty
- // 2 => "settings/set",    3 => settings
+ // 2 => "settings/set",    3 => settings-set-req
  // 2 => "network/join",    3 => network-join-req
  // 2 => "network/update",  3 => network-update-req
- // 2 => "network/leave",   3 => empty
+ // 2 => "network/leave",   3 => op-only-req
  // 2 => "status",          3 => status-req
  // 2 => "peers/challenge", 3 => peers-challenge-req
  // 2 => "diag/summary",    3 => empty
- // 2 => "diag/bundle",     3 => empty
+ // 2 => "diag/bundle",     3 => op-only-req
+ // 2 => "ssh_keys/set",    3 => ssh-keys-set-req
+ // 2 => "root_password/reset", 3 => op-only-req
  // 2 => "update/check",    3 => update-check-req
  // 2 => "update/prepare",  3 => empty
  // 2 => "update/apply",    3 => empty
  // 2 => "update/status",   3 => empty
  // 2 => "bulk/open",       3 => bulk-open-req
  // 2 => "bulk/close",      3 => empty
- // 2 => "reset",           3 => reset-req
+ // 2 => "reset",           3 => empty      ; v0.7: always answered E_UNSUPPORTED {1: "reset", 2: 9}
 )
 ; The response body type is determined by the request's msg-type (table in §5.3):
 ;   info -> info-resp, claim/begin -> claim-begin-resp, claim/finish -> claim-finish-resp,
+;   claim/replay -> claim-finish-resp, op/nonce -> op-nonce-resp, root_password/reset -> root-password-resp,
 ;   auth/owner -> auth-owner-resp, owner/add -> owner-add-resp, settings/* -> settings,
 ;   network/join -> network-join-resp, network/update -> network-update-resp,
 ;   status -> status-resp, peers/challenge -> peers-challenge-resp,
@@ -118,6 +123,7 @@ reason-code  = 1 ; update: trial slot active
              / 6 ; update: downgrade not allowed
              / 7 ; parameter not supported by this hardware
              / 8 ; not enough RAM (/tmp)
+             / 9 ; not in this stage: reflash the card with the resale tool (v0.7, `reset`)
 
 msg-type = "info" / "claim/begin" / "claim/finish" / "auth/owner"
          / "owner/add" / "owner/remove" / "settings/get" / "settings/set"
@@ -125,6 +131,7 @@ msg-type = "info" / "claim/begin" / "claim/finish" / "auth/owner"
          / "status" / "peers/challenge" / "diag/summary" / "diag/bundle"
          / "update/check" / "update/prepare" / "update/apply" / "update/status"
          / "bulk/open" / "bulk/close" / "reset"
+         / "claim/replay" / "op/nonce" / "ssh_keys/set" / "root_password/reset"
 
 ; Message bodies accept (and ignore) unknown integer keys: "* uint => any".
 empty = { * uint => any }
@@ -168,9 +175,9 @@ claim-finish-resp = {
 }
 auth-owner-req  = { 1 => sha256, 2 => es256-sig, * uint => any }  ; owner_key_id, sig over "batman-owner-auth-v1" || h || owner_key_id
 auth-owner-resp = { 1 => bytes32, * uint => any }                 ; current adv_owner_key
-owner-add-req   = { 1 => p256-pub, 2 => p256-pub, 3 => es256-sig, * uint => any }  ; new owner_pub, owner_enc_pub, sig_enc
+owner-add-req   = { 1 => p256-pub, 2 => p256-pub, 3 => es256-sig, 31 => owner-op, * uint => any }  ; new owner_pub, owner_enc_pub, sig_enc
 owner-add-resp  = { 1 => bytes32, * uint => any }                 ; owner_tag_key for the new owner (handed over by the app)
-owner-remove-req = { 1 => sha256, * uint => any }                 ; owner_key_id
+owner-remove-req = { 1 => sha256, 31 => owner-op, * uint => any }                 ; owner_key_id
 
 settings-get-req = empty
 settings = {
@@ -192,6 +199,7 @@ network-join-req = {
   2 => members-sign1,
   3 => secrets-sign1,        ; net_secrets for this node
   ? 4 => invite-id,
+  31 => owner-op,           ; v0.7 §5.7 (verb "network/join"; required for the first version, §7.1)
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 network-join-resp = { 1 => join-result, * uint => any }
@@ -283,9 +291,7 @@ bulk-open-resp = {
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 
-reset-req = { 1 => reset-level, * uint => any }
-reset-level = 0 ; leave network
-            / 1 ; factory reset
+; v0.7: `reset` (reset-req / reset-level) removed; stage 1 has no factory reset (U8, resale = reflash)
             / 2 ; zeroize (tactical only; civil returns E_UNSUPPORTED)
 
 ; ------------------------------------------------------------------ node identity (§3.3)
@@ -402,4 +408,25 @@ qr-fragment = {               ; when one QR is not enough (§12 Q7)
   2 => uint,                 ; total
   3 => sha256,               ; hash of the complete qr-object bytes
   4 => bstr,                 ; slice of the qr-object bytes
+}
+
+; ---------------------------------------------------------------- v0.7 (#254 stage 1)
+; owner-op (§5.7): per-verb owner authorization, always at body key 31 of a state-changing request.
+;   sig = ES256_owner("batman-owner-op-v1" || h || nonce_helper || u8(len(verb)) || verb || args_hash)
+;   args_hash = SHA-256(deterministic CBOR of the request body without key 31)
+owner-op = { 1 => tstr .size (1..255), 2 => es256-sig }
+op-only-req      = { 31 => owner-op, * uint => any }
+op-nonce-resp    = { 1 => bytes32, * uint => any }                 ; nonce_helper: one-time, 60 s, bound to h
+claim-replay-req = { 1 => bytes32, 31 => owner-op, * uint => any } ; CheckMac response (§5.4, stored owner_pub)
+ssh-keys-set-req = { 1 => [ 0*8 tstr .size (1..256) ], 31 => owner-op, * uint => any }  ; ssh-ed25519 lines
+root-password-resp = { 1 => tstr, * uint => any }                  ; new 24-char root password, shown once
+settings-set-req = {
+  ? 1 => tstr,
+  ? 2 => country,
+  ? 10 => halow-settings,
+  ? 11 => ptt-settings,
+  ? 12 => gps-settings,
+  ? 13 => lora-settings,
+  31 => owner-op,
+  * uint => any,
 }

@@ -1,6 +1,6 @@
 # Design: 民用版手機供裝 app —— 認領、組網、狀態、重置(#219)
 
-Status: **DRAFT v2.8(遠端加入改為雙向傳圖片;分期改為三階段 #254 / #255 / #256;遠端加入改用 QR 圖片;v2.3 review 三位 APPROVE-WITH-CHANGES → v2.4 併入並新增維運層與 UX 規格 → v2.4 補充 review(可行性 / 使用性)皆 APPROVE-WITH-CHANGES → 本版併入)**
+Status: **DRAFT v2.9(#254 階段 1 實作設計 v19 回寫:階段 1 沒有恢復出廠,轉賣 = 用轉賣工具重燒卡(U8,#255 重新設計);認領不寫 `authorized_keys`;p5 schema 維持 1、prov 另存;autocommit 的 BLE 健康檢查在階段 1 就加(`ble-ok`);協定 v0.7)**;v2.8 為上一版
 Parent: #219 · 關聯 #13 #14 #92 #103 #127 #128 #131 #137 #196 #202 #208 #225 #240
 戰術版:不在本文件範圍,設計筆記與未決問題記在 **#54**;HAT 相關記在 **#240**。
 **與 PR #220(`181-lora-halow-tak-integration.md` REV2,2026-09-26)的關係**:本文件較新,**衝突處以本文件為準**(使用者 2026-10-06):民用 SKU 也焊 608B(#220 與 Batman-P `hardware/enclosure-v4/boards.py` 的 SKU 表只有 T 系列有 crypto)。沿用 #220:superset 策略、capability-driven、**BLE 為主要傳輸**(W6)、region = TW、LoRa 每台 PKC、W10 共存 go/no-go 關卡。
@@ -54,7 +54,7 @@ SoT: #75
 
 | 介面 | 規則 |
 |---|---|
-| API | 有版本(`/v1/*`);新版本只能**新增**訊息類型,不改既有的語意;app 不認得的版本只允許查狀態與恢復出廠 |
+| API | 有版本(`/v1/*`);新版本只能**新增**訊息類型,不改既有的語意;app 不認得的版本只允許查狀態,並提示更新 app 或用轉賣工具重燒卡(階段 1 沒有恢復出廠,v2.9) |
 | 訊息與傳輸 | 請求 / 回應訊息與傳輸無關(GATT 或 HTTP 都能承載);**安全通道一律在應用層(§3.4)**,走 HTTP 時也在裡面再跑一次,不依賴 TLS |
 | 大量資料 | BLE 只負責控制;大量資料(image、診斷包)由 BLE 指示節點**暫時**開 WiFi 通道傳輸,傳完即關(§6.9) |
 | 簽章 | 所有 DAC / 擁有者 / 網主簽章都對**帶用途標籤的結構**簽(`"batman-hs-v1"`、`"batman-peer-v1"`、`"batman-net-v1"` …),**不直接簽對方提供的值** |
@@ -62,7 +62,7 @@ SoT: #75
 | 能力清單 | 開放集合:app 遇到不認得的能力就提示更新,其他功能照常 |
 | 成員提供者 | 統一介面:`join`、`approve`、`verify(peer)`(非同步)、`remove`、`revoke`(撤銷清單會散播,與 remove 分開)、`rekey`、`renew`、`apply(update, version)`、`persist` / `restore`(OTA 後還原)、`export_invite`、`net_config()`(產生網路層設定:民用 = SAE,戰術 = WireGuard peer);民用與戰術各自實作 |
 | 設定 | 依能力分組的命名空間(`halow.*`、`lora.*` …);兩類推送(擁有者 / 網主簽章);網主設定**簽發端每次只能 +1**,節點接受**簽章鏈**(從目前版本到最新版本的每一版都有網主簽章),不接受跳號 |
-| 重置 | 分級列舉預留 L3(戰術),民用版回報「不支援」 |
+| 重置 | 分級列舉預留 L3(戰術),民用版回報「不支援」;**階段 1 的 `reset` 一律回「不支援,請重燒卡」**(協定 v0.7 §5.3) |
 | 角色 | 擁有者、網路管理者、成員;戰術版加入新角色時不改既有角色的權限 |
 
 ## F3. 配合其他開發線的進度
@@ -127,7 +127,7 @@ SoT: #75
 | 網主同意新成員 | 收到「小明的『客廳』想加入」→ 同意 | 1 |
 | 看狀態 | 打開 app:「**附近**」直接由 BLE 看到;「**全隊**」透過附近任一台經 mesh 查詢(沿用 #131 / #14);每台顯示「最後看到的時間」 | 0 |
 | 離開網路 | 選機台 → 離開網路 → 確認 | 3 |
-| 恢復出廠 | 選機台 → 恢復出廠 → 確認(之後要在機台上按一下按鍵才能重新加入) | 3 |
+| 恢復出廠 | 選機台 → 恢復出廠 → 確認(之後要在機台上按一下按鍵才能重新加入);**階段 1 不提供**,由 #255 重新設計(v2.9) | 3 |
 | 二手機第一次認領 | 在機台上按一下按鍵 → 掃機身 QR → 確認國家 → 取名 | 4 |
 | 移除成員(網主) | 網路頁 → 選成員 → 移除(**自動換密碼**,不另外問) | 3 |
 | 回報遺失 | 機台頁 → 回報遺失 → 確認(自動移除並換密碼) | 3 |
@@ -136,7 +136,7 @@ SoT: #75
 | 更新軟體 | (機台在附近)機台頁「有新版本」→ 更新 → 確認 →(系統:加入機台 WiFi)→ 等待;**傳完之前不要離開畫面**,傳完後可以離開 | 4 |
 | 看診斷 / 匯出診斷包 | 機台頁 → 診斷(白話摘要);「匯出」經藍牙存到手機,之後再分享 | 1–2 |
 | 換手機 / 手機壞了 | 「設定 → 我的手機遺失了」→ 掃機身 QR → 在機台上按一下按鍵 → 確認(「舊手機將不能再管理這台」;**網路設定保留**) | 4 |
-| 轉賣 | 恢復出廠 → 把機台(含機身 QR)交出 | 3 |
+| 轉賣 | 恢復出廠 → 把機台(含機身 QR)交出;**階段 1**:賣方用**轉賣工具**整卡清零後重燒 image,LoRa 模組做 Meshtastic 整機重設,買家自己再燒一次並重設 EEPROM(#254 `docs/design/254-stage1-impl.md` §4.5) | 3 |
 | 機台回不了網 | app 首頁出現「客廳 沒有連上網路」→ 點一下看原因 / 修復(**修復 = 先送出這台還沒收到的新密碼;沒有待送的才重新套用最近一份成功的網路設定**,不行再提示其他做法) | 1–2 |
 | 換網路密碼(擋掉不認識的裝置) | 收到提示 → 換密碼 → 確認 | 2 |
 
@@ -147,7 +147,7 @@ SoT: #75
 - 「客廳 沒有連上網路:<原因>。」(沿用 #127 的加入失敗原因)
 - 「附近有 2 台還沒換到新密碼,要現在更新嗎?」
 - 「這台設定沒有存好,下次更新軟體後可能會遺失。」(p5 寫入失敗,§6.4)
-- 「app 版本太舊 / 太新,只能查看狀態與恢復出廠。」
+- 「app 版本太舊 / 太新,只能查看狀態。請更新 app,或用轉賣工具重燒卡。」(v2.9:階段 1 沒有恢復出廠)
 - 「小華的機台不支援目前的網路設定。要調整整個網路讓他加入嗎?通訊距離可能變短,全部機台會重新連線約 1 分鐘。」(混合能力,§3.2;不出現頻寬、channel 等數字;加入的一方也收到「正在等網主調整網路」)
 - 「這台新機已經被別人加入過了。如果不是你,請在機台上按一下按鍵後重新加入。」
 - 藍牙前置條件(app 逐項檢查並引導):「請允許藍牙權限」「請打開手機藍牙」(iOS 無法由 app 直接打開,引導到「設定」)「請打開定位服務」(Android 11 以下)「找不到機台:確認機台已開機、燈號是藍色慢閃」。
@@ -288,7 +288,7 @@ SoT: #75
 | 機台出廠身分(DAC 私鑰 + 憑證) | 608B,私鑰不可讀 | 只有晶片 |
 | 認領秘密(256 bit) | 608B(`IsSecret=1`、`NoMac=1`、只允許 `CheckMac`;出廠後鎖槽);機身 QR、盒內卡 | 持有 QR 的人 |
 | 換密碼用的 ECDH 私鑰 | 608B,與 DAC 分開 | 只有晶片 |
-| 擁有者金鑰 | 手機 keystore;公鑰在節點 p5 + `authorized_keys` | 擁有者的手機 |
+| 擁有者金鑰 | 手機 keystore;公鑰在節點 p5(認領**不**寫 `authorized_keys`,v2.9;SSH 公鑰由 `ssh_keys/set` 另裝 ed25519) | 擁有者的手機 |
 | 擁有者標記金鑰(類似 IRK,廣播用) | 認領時交換;節點 p5 + 擁有者 app | 擁有者 |
 | 網路管理金鑰 | 網主手機 keystore(+ 備用管理手機) | 網主 |
 | 網路密碼(SAE) | 各成員節點;網主 app | 網路成員 |
@@ -316,13 +316,13 @@ SoT: #75
 | `GET /v1/diag/bundle` | 完整診斷包(經 BLE 分段) | 擁有者 |
 | `POST /v1/report-lost` | 回報遺失(網主 app 對網路執行) | 網主 |
 | `POST /v1/update/check` / `prepare` / `apply`、`GET /v1/update/status` | 軟體更新(§6.9) | 擁有者 |
-| `POST /v1/reset` | 恢復出廠 | 擁有者 |
+| `POST /v1/reset` | 恢復出廠;**階段 1 回 `E_UNSUPPORTED`(reason 9:用轉賣工具重燒卡)** | 擁有者 |
 
 **擁有者身分驗證**:每個請求附 `owner_pubkey_id`、節點先前發的 nonce、與以擁有者私鑰對(`"batman-owner-v1"` ‖ 交握雜湊 ‖ 方法 ‖ 路徑 ‖ body 雜湊 ‖ nonce)的簽章。不依賴時間(P4)。
 
 **同網成員身分驗證**:以網路金鑰導出的挑戰回應(節點出 nonce)。
 
-**版本協商**:`/v1/info` 回報 API 版本;app 不認得時,**只允許查看狀態與恢復出廠**。
+**版本協商**:`/v1/info` 回報 API 版本;app 不認得時,**只允許查看狀態**,並提示更新 app 或用轉賣工具重燒卡(v2.9)。
 
 ## 6. 流程
 
@@ -332,6 +332,7 @@ SoT: #75
 - **從未被認領過的機台,每次開機都開放**(開箱後先充電、隔天才裝 app 也沒問題)【依使用性 review】。
 - 曾被認領、後來恢復出廠的機台:要**在機台上按一下按鍵**(或放 SD 卡標記檔)才開放 N 分鐘。這樣看過機身 QR 的人(修理行、前任擁有者)不能在你恢復出廠後搶先認領。
 - 「是否曾被認領」記在 608B 的單調計數器(不會因重燒卡而重置)。
+- **階段 1(file 後端,v2.9)**:身分在 SD 卡上,**重燒卡 = 新身分**(新 `device_id`、新 QR、舊認領秘密失效);按鍵 / 標記檔 / 單調計數器屬 #255。
 - app 偵測到窗口沒開時,用圖示教使用者按哪裡。
 
 **步驟**(使用者只看到「掃 QR → 確認國家 → 取名」):
@@ -339,7 +340,7 @@ SoT: #75
 2. app 依廣播中的 `device_id` 末碼找到這台(不需切換 WiFi),建立 BLE 連線。
 3. 建立安全通道(§3.4),驗證 DAC 憑證鏈與 `device_id`。
 4. 節點發 nonce,計算 `c = SHA-256(nonce ‖ 交握雜湊 ‖ DAC 雜湊 ‖ 擁有者公鑰)`;app 回 `HMAC(認領秘密, c)`;608B `CheckMac` 比對。**失敗次數只在每個連線內限制、存在記憶體**(256 bit 秘密無法暴力猜測;全機鎖定只會讓旁人把真正的買家鎖在外面,寫 p5 也會磨損 SD 卡)【依 v2.3 review 修正】。
-5. 節點寫入擁有者公鑰與擁有者標記金鑰(§3.3),**就地完成 #137 鎖定**:`authorized_keys`、隨機 root 密碼(經安全通道交給 app 保存)、dropbear / ttylogin 鎖定、寫 `state/lock-status`、`batman-config-save --seed`【依 review 核對 137 / 96 / halow-status】。
+5. 節點寫入擁有者公鑰與擁有者標記金鑰(§3.3),**就地完成 #137 鎖定**:隨機 root 密碼(經安全通道交給 app 保存)、關閉密碼登入、dropbear / ttylogin 鎖定、寫 `state/lock-status`、persist 到 p5【依 review 核對 137 / 96 / halow-status】。**v2.9:認領不寫 `authorized_keys`**;擁有者要 SSH 時以 `ssh_keys/set`(owner-op,ed25519)另裝(#254 `docs/design/254-stage1-impl.md` U3、F1)。認領回應遺失時,擁有者以 `psk_replay` 連回、`claim/replay` 取回金鑰(協定 v0.7 §3.5、§5.3)。
 6. 國家 / 地區**預設台灣 TW**(P13),**畫面顯示國家名稱請使用者確認**,可修改;不可靜默套用【依 review】。
 
 **新機被搶先認領**:從未認領的機台每次開機都開放窗口,開過盒的人(店員、物流)可能先認領 → app 遇到「新機已被認領」時提示(§2.3),擁有者按鍵後以 QR 重新認領即可取回。
@@ -354,7 +355,7 @@ SoT: #75
 
 ### 6.3 狀態在 OTA 後保住【依可行性 review】
 
-- p5 記錄**狀態**(未認領 / 已認領 / 成員)與必要參數(擁有者公鑰、網路參數、成員名單、版本號),**不直接存 firewall 設定**;p5 schema 升到 2,`96` 的 `schema_migrate` 處理舊版。
+- p5 記錄**狀態**(未認領 / 已認領 / 成員)與必要參數(擁有者公鑰、網路參數、成員名單、版本號),**不直接存 firewall 設定**。**v2.9:p5 `schema_version` 維持 1**(`96` 遇到 schema > 1 會丟掉 overrides 改用 lkg),供裝狀態另存在 `prov.cbor` + `prov.meta`,只由 `batman-config-save --prov-only` 寫(#254 `docs/design/254-stage1-impl.md` §4.3)。
 - AP / firewall / dropbear 設定由**一支新的 uci-defaults hook 統一產生**,檔名排在 `99-halow-identity` 之後(例如 `99-zz-*`;放在 `96` 尾段會被 99 改 SSID 蓋掉)、keyguard(S18)之前。uci-defaults 只在 fresh overlay 執行 → **執行期的狀態轉換(認領、入網、離網)由 `batman-provd` 當場套用**,hook 只負責 OTA 後還原。
 - **關 AP 一律以「key = placeholder」表示**:keyguard 在 MARK 存在、但 key 已不是 placeholder 時會刪掉 `disabled`(L40–45),可能把刻意關掉的 AP 重新打開【依 review】。
 - `batman-config-save` 的 PRESERVE 清單加入上述欄位。
@@ -453,7 +454,7 @@ SoT: #75
 
 - **`batman-slot` 要拆成「寫入 + 驗證」與「arm」兩步**(現在寫完驗完就直接 arm,`batman-slot:423-443`)→ 兩板共用檔,列入 §9,兩板實測。
 - `batman-provd` 以非 root 執行(§3.1),寫 `mmcblk0`、`vcmailbox` 需要 root → 經**權限受限的 root helper** 呼叫。
-- **autocommit 的健康檢查加入 BLE**:現在只看 mesh11sd、openmanetd、wpad(`batman-autocommit:164`);新 image 的 BLE 若壞了仍會被 commit,而 3A+ 只能靠 BLE 管理 → 加入 bluetoothd、`batman-provd`、廣播在跑。
+- **autocommit 的健康檢查加入 BLE**:現在只看 mesh11sd、openmanetd、wpad(`batman-autocommit:164`);新 image 的 BLE 若壞了仍會被 commit,而 3A+ 只能靠 BLE 管理 → 加入 bluetoothd、`batman-provd`、廣播在跑。**v2.9:階段 1 就加**,以 `ble-ok` 標記 gating(該節點曾證明 BLE 可用才檢查,否則只記 WARN);不看 provd 當下是否活著,避免路人讓 provd crash 就逼 revert(#254 `docs/design/254-stage1-impl.md` §6.4)。
 - **降版**:預設不允許,除非 image 的 metadata 標記允許降到該版本。
 - **iOS**:app 進背景時本地 WiFi 上傳可能被暫停 →「可以離開畫面」只在傳完之後成立。
 - 新版本由 app 在有網路時**背景自動下載**,使用者不用操作。
@@ -479,6 +480,8 @@ SoT: #75
 - log **不得包含密碼或金鑰**(§7)。
 
 ## 7. 重置
+
+> **階段 1(v2.9,使用者決定 U8)**:只有「離開網路」;**沒有恢復出廠**。轉賣 = 賣方用**轉賣工具**(只收內建清單裡的發行 image、只寫讀卡機上的卡、整卡寫零後寫 image、抽樣驗零)重燒 SD 卡,接著對 LoRa 模組做 Meshtastic 整機重設(`--factory-reset-device`);買家收到後自己再燒一次並重設 EEPROM。原因:app 端恢復出廠(意圖 / 哨兵 / 下次開機格式化)在 SD 卡讀錯與斷電的組合上連續多輪審查都收斂不了,而民用威脅模型裡 SD 卡本身也沒有加密。下表與觸發方式是 **#255** 重新設計的起點(#254 `docs/design/254-stage1-impl.md` §4.5、§11)。
 
 | | 離開網路 | 恢復出廠 |
 |---|---|---|
@@ -525,20 +528,20 @@ SoT: #75
 |---|---|---|
 | 新 `batman-provd` | API、608B 存取、GATT 伺服器(B15)、安全通道、大量傳輸通道、更新與診斷;非 root + 沙箱 | — |
 | 新 uci-defaults hook | 依狀態產生 AP / firewall / dropbear(未認領時不開 AP) | 是 |
-| `96-batman-config-migrate` | schema 2、lkg 版本比對 | 是 |
+| `96-batman-config-migrate` | lkg 版本比對;prov 抄寫、claimed / member 一律上鎖(schema 維持 1,v2.9) | 是 |
 | `batman-config-save` | PRESERVE 欄位、`lkg/` 同步、版本號 | 是 |
 | `batman-autocommit` | `expected_in_mesh()` 依成員資格;單台網路 | 是 |
 | `joinwatch` / `meshjoin.sh` | 設定成功後存 p5;新增「radio 以 mesh point 起來」判斷 | 是 |
 | `batman-slot` | 作廢另一槽 overlay(試用期中拒絕);**拆成「寫入 + 驗證」與「arm」兩步**(§6.9) | 是 |
 | `platform-ab.sh` / `build-ab-payload.sh` | payload 簽章(B18);板子資訊進 metadata | 是 |
-| `batman-autocommit` 健康檢查 | 加入 bluetoothd、`batman-provd`、廣播(§6.9) | 是 |
+| `batman-autocommit` 健康檢查 | 加入 bluetoothd、`batman-provd`、廣播(§6.9);階段 1 起以 `ble-ok` gating | 是 |
 | root helper | `batman-provd` 呼叫寫入 / arm 的受限 helper | — |
 | `/cgi-bin/bundle`(uhttpd) | 民用 image 關閉或加驗證(§6.10) | — |
 | `meshpoint-1.8.0.sh` | AP 所屬網段與 firewall zone(L69、L131–143) | 是(建置) |
 | `halow-status` | 讀 lock-status;未認領提示文字 | 是 |
 | dropbear / LuCI 預設 | `PasswordAuth=off`;未認領時不開 LuCI | 是 |
 | `depersonalise.sh`、`golden-image.md`、#208 | 不烤密碼 | — |
-| `daily-validation.sh` | 回歸:認領 → 入網 → OTA 後狀態保住;離開網路 / 恢復出廠 | — |
+| `daily-validation.sh` | 回歸:認領 → 入網 → OTA 後狀態保住;離開網路;**階段 1 轉賣 = `prov-transfer-tool-254`(轉賣工具)**,恢復出廠回歸在 #255 | — |
 | image | cryptoauthlib 命令列工具與函式庫(#196 ①);Meshtastic 序列埠控制工具(B8);**BlueZ + BT 韌體**(B12),#217 瘦身不得移除 | — |
 | firmware fork 的 kernel config(兩個 subtarget) | `BT_HCIUART_BCM`、`SERIAL_DEV_BUS`(serdev,不需要 hciattach)【依 review】 | — |
 | distroconfig `[pi3]` / `config.txt` | 保留 BT(不用 `disable-bt`);開發期 `miniuart-bt` + 固定 `core_freq`(F3);#105 除錯台隨新 HAT 決定 | — |
@@ -554,12 +557,12 @@ SoT: #75
 
 | 階段 | 目標 | 主要內容 | 依賴 | 子單 |
 |---|---|---|---|---|
-| **1 入網**(只限內部開發,不可出貨) | 使用者只用 app(BLE)完成:**S1** 設定自己的機台(1 台或多台)並組網;**S2** 邀請別人的機台;**S3** 加入別人的網;**S4** 看狀態、log、診斷包;**S5** 軟體更新;**S6** 離開網路 / 恢復出廠、回不了網的修復、移除成員、改名與國家 / 地區 | p5 狀態模型與 OTA 還原(§6.3)、`batman-provd` + 安全通道(**軟體身分**)、兩類設定推送、邀請 QR(當面 / 圖片)、全隊狀態、診斷(BLE)、軟體更新(簽章、`batman-slot` 拆兩步、autocommit 加藍牙)、BlueZ + GATT、`miniuart-bt`、app 骨架 | **#202**、BlueZ 打包(B12、B15)、B4、B11、B18 | #254 |
+| **1 入網**(只限內部開發,不可出貨) | 使用者只用 app(BLE)完成:**S1** 設定自己的機台(1 台或多台)並組網;**S2** 邀請別人的機台;**S3** 加入別人的網;**S4** 看狀態、log、診斷包;**S5** 軟體更新;**S6** 離開網路、回不了網的修復、移除成員、改名與國家 / 地區;**轉賣 = 轉賣工具重燒卡**(v2.9,恢復出廠移到 #255) | p5 狀態模型與 OTA 還原(§6.3)、`batman-provd` + 安全通道(**軟體身分**)、兩類設定推送、邀請 QR(當面 / 圖片)、全隊狀態、診斷(BLE)、軟體更新(簽章、`batman-slot` 拆兩步、autocommit 加藍牙)、BlueZ + GATT、`miniuart-bt`、app 骨架 | **#202**、BlueZ 打包(B12、B15)、B4、B11、B18 | #254 |
 | **2 既有 HAT + 608B**(= P1,內部試用) | 真正的機台身分與認領保護 | 608B 槽位與位址(B1、B9)、cryptoauthlib(#196 ①)、開發用出廠腳本、軟體身分換成 608B、認領與認領窗口、未認領保護(§6.2)、#137 就地鎖定、換手機、BLE 廣播加密摘要與擁有者標記(B16)、不認識裝置偵測與換密碼;LoRa(等 #220 W10) | 階段 1、#196、#220 W10(LoRa) | #255 |
 | **3 新 HAT**(= P2,第一個對外版本) | 實體按鍵、燈號、出廠流程;§2.2 步驟上限開始驗收 | 新 HAT 滿足 H1–H11(§8.5、#240)、bring-up、按鍵與燈號軟體、拿掉 `miniuart-bt`、正式出廠燒錄站與 QR 貼紙、使用性驗收 | 階段 2、#240、#228 | #256 |
 | **之後** | | 經 mesh 整隊分發更新(#116)、背景 BLE 強化(B14)、戰術版(#54) | | |
 
-**階段 1 的風險說明**:軟體身分存在 SD 卡上,未認領時也還沒關閉 AP / 密碼 SSH,所以階段 1 的機台**只能在內部使用**;這些保護在階段 2 補上。
+**階段 1 的風險說明**:軟體身分存在 SD 卡上,所以階段 1 的機台**只能在內部使用**;608B 身分與認領窗口在階段 2 補上。(v2.9:未認領新卡的 AP 在階段 1 就以 placeholder 關掉、EEPROM persistent vars 一律不讀,#254 `docs/design/254-stage1-impl.md` F21、F23。)
 
 ## 11. 阻擋項與待查證
 
@@ -656,3 +659,8 @@ SHOULD-FIX 已併入:診斷包改走 BLE、分享前提示內容、關閉未驗�
 **v2.6(使用者 2026-10-06)**:遠端加入改以**傳送邀請 QR 圖片**為主(不帶預先同意、需網主同意);加入碼降為只能講話時的最後備援,字元集(數字或英數)於 B4 決定。
 
 **v2.8(使用者 2026-10-06)**:遠端加入改為**雙向傳圖片**(邀請 → 申請 → 同意),網主同意前朋友拿不到密碼;朋友 4 步、網主 2 + 2 步。理由:民用版只靠共用密碼,圖片若帶密碼,被轉傳就等於外流(協定 `219-protocol.md` §7.6、Q5)。
+
+**v2.9(2026-10-19,#254 階段 1)**:把 `docs/design/254-stage1-impl.md` v19(兩位審查者核准)與本文件不同之處寫回(該文件 §1.3):
+§6.1 認領不寫 `authorized_keys`、SSH 公鑰由 `ssh_keys/set` 另裝、認領回應遺失時以 `psk_replay` / `claim/replay` 取回;§6.3 p5 schema 維持 1、prov 另存;
+§6.9 BLE 健康檢查階段 1 就加(`ble-ok` gating);§7 階段 1 沒有恢復出廠(U8:轉賣 = 轉賣工具重燒卡,#255 重新設計),任務表、版本協商、API、
+daily-validation 列、§10 S6 一併改;協定升為 v0.7。審查見 PR。
