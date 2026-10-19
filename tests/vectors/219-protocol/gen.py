@@ -68,9 +68,28 @@ def hkdf(ikm: bytes, info: bytes, length: int = 32) -> bytes:
     return HKDF(algorithm=hashes.SHA256(), length=length, salt=None, info=info).derive(ikm)
 
 
+def _det(o):
+    """RFC 8949 §4.2.1 core deterministic encoding: map keys sorted by their encoded bytes (bytewise)."""
+    if isinstance(o, dict):
+        items = [(cbor2.dumps(_det(k)), _det(k), _det(v)) for k, v in o.items()]
+        items.sort(key=lambda t: t[0])
+        return {k: v for _, k, v in items}
+    if isinstance(o, list):
+        return [_det(x) for x in o]
+    if isinstance(o, tuple):
+        return [_det(x) for x in o]
+    if isinstance(o, cbor2.CBORTag):
+        return cbor2.CBORTag(o.tag, _det(o.value))
+    return o
+
+
+def det_dumps(o) -> bytes:
+    return cbor2.dumps(_det(o))     # cbor2 keeps insertion order when canonical=False; ints are always shortest
+
+
 def cb(obj) -> bytes:
-    """Deterministic CBOR (all maps in this protocol use small integer keys)."""
-    return cbor2.dumps(obj, canonical=True)
+    """Deterministic CBOR, RFC 8949 bytewise key order (v0.7; v0.6 used cbor2 length-first, identical for these maps)."""
+    return det_dumps(obj)
 
 
 def item(raw: bytes):
@@ -484,6 +503,7 @@ out["owner_op"] = {
     "input": hx(op_join_msg),
     "sig": hx(op_join[2]),
     "request_network_join": hx(REQ_JOIN),
+    "request_type_mismatch": hx(cb({0: [1, 0], 1: 7, 2: "network/leave", 3: {**join_body, 31: op_join}})),
     "rule": "sig = ES256_owner('batman-owner-op-v1' || h || nonce_helper || u8(len(verb)) || verb || args_hash); "
             "args_hash = SHA-256(deterministic CBOR of the request body without key 31)",
 }
@@ -509,6 +529,11 @@ out["claim_replay"] = {
     "owner_op_sig": hx(op_r[2]),
     "request": hx(cb({0: [1, 0], 1: 4, 2: "claim/replay", 3: {1: RESP_R, 31: op_r}})),
     "response_envelope": hx(cb({1: 4, 4: 0, 3: {1: OWNER_TAG_KEY, 2: ADV_OWNER_KEY, 3: "Vq3x-8RtL2-mN7c-Hy4p-Zk9w"[:24]}})),
+}
+out["status_public"] = {
+    "unclaimed": hx(cb({1: [1, 0], 2: ["halow", "gps"], 3: 0, 4: False, 5: DEVICE_ID[-4:]})),
+    "member_updating": hx(cb({1: [1, 0], 2: ["halow", "gps"], 3: 2, 4: True})),
+    "bad_member_with_tail": hx(cb({1: [1, 0], 2: ["halow"], 3: 2, 4: False, 5: DEVICE_ID[-4:]})),
 }
 out["legacy"] = {
     "response_info_legacy": hx(cb({1: 1, 4: 0, 3: {1: DEVICE_ID, 2: "C3", 3: "bcm2711", 4: "1.5.12", 5: [1, 0],

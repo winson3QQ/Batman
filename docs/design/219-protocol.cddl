@@ -64,10 +64,11 @@ request = {
   0 => proto-ver,
   1 => uint,                 ; id: increasing within a session
   request-kind,
-  ? 7 => bytes16,            ; idem_key: REQUIRED on state-changing requests (§4.2)
 }
 request-kind = ( whole-request // chunk )
-chunk = ( 2 => msg-type, 3 => bstr, 6 => part )   ; bstr = slice of the encoded body map
+chunk = ( 2 => msg-type, 3 => bstr, 6 => part, ? 7 => bytes16 )   ; bstr = slice of the encoded body map
+; v0.7 §4.2: the idempotency key `7` is allowed only where an alternative lists `? 7 => bytes16` (owner-op requests
+; and network/update); never on requests whose response carries secrets (claim/*, root_password/reset, owner/add, bulk/open)
 whole-request = (
     2 => "info",            3 => info-req
  // 2 => "claim/begin",     3 => claim-begin-req
@@ -76,24 +77,24 @@ whole-request = (
  // 2 => "op/nonce",        3 => empty
  // 2 => "auth/owner",      3 => auth-owner-req
  // 2 => "owner/add",       3 => owner-add-req
- // 2 => "owner/remove",    3 => owner-remove-req
+ // 2 => "owner/remove",    3 => owner-remove-req, ? 7 => bytes16
  // 2 => "settings/get",    3 => empty
- // 2 => "settings/set",    3 => settings-set-req
- // 2 => "network/join",    3 => network-join-req
- // 2 => "network/update",  3 => network-update-req
- // 2 => "network/leave",   3 => op-only-req
+ // 2 => "settings/set",    3 => settings-set-req, ? 7 => bytes16
+ // 2 => "network/join",    3 => network-join-req, ? 7 => bytes16
+ // 2 => "network/update",  3 => network-update-req, ? 7 => bytes16
+ // 2 => "network/leave",   3 => op-only-req, ? 7 => bytes16
  // 2 => "status",          3 => status-req
  // 2 => "peers/challenge", 3 => peers-challenge-req
  // 2 => "diag/summary",    3 => empty
- // 2 => "diag/bundle",     3 => op-only-req
- // 2 => "ssh_keys/set",    3 => ssh-keys-set-req
+ // 2 => "diag/bundle",     3 => op-only-req, ? 7 => bytes16
+ // 2 => "ssh_keys/set",    3 => ssh-keys-set-req, ? 7 => bytes16
  // 2 => "root_password/reset", 3 => op-only-req
  // 2 => "update/check",    3 => update-check-req
- // 2 => "update/prepare",  3 => op-only-req
- // 2 => "update/apply",    3 => op-only-req
+ // 2 => "update/prepare",  3 => op-only-req, ? 7 => bytes16
+ // 2 => "update/apply",    3 => op-only-req, ? 7 => bytes16
  // 2 => "update/status",   3 => empty
  // 2 => "bulk/open",       3 => bulk-open-req
- // 2 => "bulk/close",      3 => op-only-req
+ // 2 => "bulk/close",      3 => op-only-req, ? 7 => bytes16
  // 2 => "reset",           3 => empty      ; v0.7: always answered E_UNSUPPORTED {1: "reset", 2: 9}
 )
 ; The response body type is determined by the request's msg-type (table in §5.3):
@@ -138,7 +139,7 @@ msg-type = "info" / "claim/begin" / "claim/finish" / "auth/owner"
 empty = { * uint => any }
 
 ; BLE CTRL characteristic (§4.1), read without encryption
-ctrl = { 1 => uint, 2 => uint, 3 => uint }     ; proto_major, proto_minor, max_frame
+ctrl = { 1 => uint, 2 => uint, 3 => uint, ? 4 => uint }   ; proto_major, proto_minor, max_frame, max_msg (v0.7: largest Noise message, default 65535)
 
 ; ------------------------------------------------------------------ messages (§5.3)
 info-req  = empty
@@ -420,7 +421,7 @@ op-only-req      = { 31 => owner-op, * uint => any }
 op-nonce-resp    = { 1 => bytes32, * uint => any }                 ; nonce_helper: one-time, 60 s, bound to h
 claim-replay-req = { 1 => bytes32, 31 => owner-op, * uint => any } ; CheckMac response (§5.4, stored owner_pub)
 ssh-keys-set-req = { 1 => [ 0*8 ssh-ed25519-line ], 31 => owner-op, * uint => any }
-ssh-ed25519-line = tstr .regexp "ssh-ed25519 [A-Za-z0-9+/=]{1,200}( [ -~]{0,40})?"   ; one line, <= 256 B (§5.3)
+ssh-ed25519-line = tstr .regexp "ssh-ed25519 [A-Za-z0-9+/=]{1,200}( [ -~]{0,40})?"   ; WHOLE-line match, no \n / \r, <= 256 B (§5.3)
 root-password-resp = { 1 => tstr, * uint => any }                  ; new 24-char root password, shown once
 settings-set-req = {
   ? 1 => tstr,
@@ -432,3 +433,9 @@ settings-set-req = {
   31 => owner-op,
   * uint => any,
 }
+
+; STATUS (status/public, v0.7 §4.1): unencrypted GATT Read characteristic, readable before any handshake.
+; The device_id tail is present only for unclaimed (0) and legacy (3) nodes.
+status-public = status-public-open / status-public-closed
+status-public-open   = { 1 => proto-ver, 2 => [* tstr], 3 => (0 / 3), 4 => bool, 5 => tstr .size 4 }   ; 2: capabilities (open set, tstr)
+status-public-closed = { 1 => proto-ver, 2 => [* tstr], 3 => (1 / 2), 4 => bool }   ; 4: updating (trial slot)

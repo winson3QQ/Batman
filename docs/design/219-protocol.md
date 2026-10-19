@@ -1,6 +1,6 @@
 # Spec: 供裝協定 —— 安全通道與訊息協定(#219 B11 / #254)
 
-Status: **DRAFT v0.7(#254 階段 1 實作設計 v19 回寫:`batman-owner-op-v1` 逐動詞授權、首版 `network/join` 需擁有者授權、`device_id` 公式與開發版自簽憑證、`psk_replay` 與固定試 6 次、`claim/replay`、`reset` 改回 `E_UNSUPPORTED`;向量 156 項全部通過)**;v0.6 為上一版
+Status: **DRAFT v0.7(#254 階段 1 實作設計 v19 回寫:`batman-owner-op-v1` 逐動詞授權、首版 `network/join` 需擁有者授權、`device_id` 公式與開發版自簽憑證、`psk_replay` 與固定試 6 次、`claim/replay`、`reset` 改回 `E_UNSUPPORTED`;向量 189 項全部通過)**;v0.6 為上一版
 Parent: #254(階段 1)· 上位設計:`docs/design/219-field-provisioning.md`(PR #253)§3.3、§3.4、§5、§6.5
 範圍:手機 app 與節點 `batman-provd` 之間的**安全通道**、**傳輸分段**、**訊息格式**,以及可以轉送的**簽章物件**。民用版;戰術版沿用同一層,只換成員提供者(上位設計 F2)。
 
@@ -49,7 +49,8 @@ prologue = "batman-prov/1" ‖ 0x00 ‖ transport ‖ 0x00 ‖ device_hint
 transport   = "ble" | "http"
 device_hint = 未認領:QR / 廣播上的 device_id(ASCII);已認領:空字串
 ```
-**開發版**用 `"batman-prov-dev/1"`(§9),與正式版的交握永遠無法互通。
+`"batman-prov-dev/1"` 保留給之後以開發根簽發的 608B 開發機(§9);**階段 1(v0.7)用正式 prologue**,開發機的隔離靠 `dev:` 憑證(§3.3、§9)。
+legacy 節點(v0.7)的 `device_hint` 與未認領相同:廣播 / QR 上的 `device_id`。
 
 ### 3.3 節點身分(`node_cert`)
 
@@ -72,6 +73,7 @@ device_hint = 未認領:QR / 廣播上的 device_id(ASCII);已認領:空字串
   3. `sn` 與 DAC 憑證一致(`sn` 本身未被簽章)。**DAC 憑證的對應方式**:subject `CN` = `device_id`(file 後端為 `"dev:" + device_id`),subject `serialNumber` = `sn` 的小寫十六進位字串;
   4. **DAC 等於預期的目標**:未認領 = 與 QR 的 `device_id` 一致;已認領 = 等於手機本機紀錄的那台 DAC,或封包 / 指令的目標 DAC。**只驗憑證鏈不夠**,否則任何持有 `psk_member` 的成員機台都能冒充別台【依 v0.1 review,MUST】。
 - **`sn` 與 `device_id`(v0.7)**:608B 後端 `sn` = 晶片序號;file 後端(階段 1)`sn = SHA-256(dac_pub 的 SEC1 未壓縮 65 B)[:9]`。一律 `device_id = sn` 的小寫十六進位(18 字元)。未認領 / legacy 節點的廣播帶 `device_id` 末 4 字元;已認領 / 成員不帶。file 後端的 DAC 是**自簽**憑證:subject `CN = "dev:" + device_id`、`serialNumber = hex(sn)`、有效期 2020-01-01 → 2120-01-01,`node_cert` 的 `dac_chain` 只有這一張(向量 `identity_file`)。
+- **正式版 app 在每個看到 `node_cert` 或 DAC 的地方都拒絕 `dev:` 憑證**(交握第 2 則、加入申請、`peers/challenge` 的目標、`net_secrets` 的加密對象)。
 - **開發版 TOFU 的前提(v0.7,MUST)**:app 在 pin 之前必須確認 `device_id == hex(SHA-256(該憑證公鑰的 SEC1 65 B)[:9])` **且**等於 QR 上的 `device_id`;只比 CN / serialNumber 不夠,任何看過 QR 的人都能自簽一張同 CN 的憑證(向量 `identity_file.forged_dev_cert_der` 必須被拒)。
 - 608B 每次開機只簽兩次;`node_cert` 不過期 → 送出換密碼封包前,手機另做一次新鮮的 `peers/challenge`(§5.3)。
 - 限制:拿到 root 的人能讀 `s_node`,在這次開機期間冒充節點;民用威脅模型已涵蓋。
@@ -88,7 +90,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 
 | 角色 | 條件 | 允許的訊息 |
 |---|---|---|
-| 匿名 | 未認領或 legacy 機台上的 `NX` 交握 | `info`、`status/public`、`claim/begin`、`claim/finish`(legacy 另需防呆門,§5.3) |
+| 匿名 | 未認領或 legacy 機台上的 `NX` 交握 | `info`、`claim/begin`、`claim/finish`(legacy 另需防呆門,§5.3) |
 | 擁有者候選 | 用 `psk_owner` 完成交握 | 只有 `info`、`auth/owner` |
 | 擁有者 | `auth/owner` 驗證通過;或在本 session 內 `claim/finish` 成功 | 擁有者的全部訊息 |
 | 成員 | 用 `psk_member` 完成交握 | `status`(狀態部分)、`peers/challenge`、`network/update`(轉送) |
@@ -120,7 +122,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | `batman-joinreq-v1` | 加入申請(COSE) | 加入者的擁有者簽章金鑰 |
 | `batman-sas-v1` | 確認碼 | — |
 
-開發版的標籤一律加 `-dev` 後綴(§9)。
+`-dev` 後綴的標籤保留給之後的 608B 開發機(§9);階段 1 用本表的正式標籤。
 
 ### 3.7 傳輸階段
 
@@ -134,7 +136,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 ### 4.1 BLE GATT
 
 - 服務:Batman service UUID(128-bit,§12 Q1)。
-- 特徵值:`RX`(手機 → 節點,Write Without Response)、`TX`(節點 → 手機,Notify)、`CTRL`(Read,不加密;CDDL `ctrl` = `{1: proto_major, 2: proto_minor, 3: max_frame}`)。
+- 特徵值:`RX`(手機 → 節點,Write Without Response)、`TX`(節點 → 手機,Notify)、`CTRL`(Read,不加密;CDDL `ctrl` = `{1: proto_major, 2: proto_minor, 3: max_frame, 4: max_msg}`)、**`STATUS`(Read,不加密,v0.7)**= `status/public`:CDDL `status-public`(格式版本、能力、`state`、`updating`;`device_id` 末 4 字元**只在** `state` ∈ {未認領 0、legacy 3} 時帶)。任何附近的人都讀得到:它暴露「這台是否已認領 / 正在更新」與能力;已認領 / 成員不帶任何識別。
 - 框架:
 
   | 欄位 | 大小 | 說明 |
@@ -144,16 +146,16 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
   | data | ≤ 框架上限 − 3 | 一則 Noise 訊息的片段 |
 
 - 框架上限:手機端以 iOS `maximumWriteValueLength(.withoutResponse)` / Android 協商後的 MTU − 3 為準。
-- 重組:收到「結尾」才交給 Noise;序號不連續、或累計長度超過 65535 → 中止連線。
+- 重組:收到「結尾」才交給 Noise;序號不連續、或累計長度超過 `max_msg`(`CTRL` 4,預設 65535;階段 1 BLE 為 8192)→ 中止連線。
 - **中止**一律由「斷開 BLE 連線」表示,不設未經認證的中止旗標【依 v0.1 review】。
 - 流量控制:手機等 `peripheralIsReady` / 寫入回呼;節點端用 BlueZ 的 `AcquireNotify` socket,佇列滿時暫停(D-Bus 的 notify 沒有回壓)【依 review】。
 
 ### 4.2 HTTP(備援:大量傳輸通道、開發)
 
-> **v0.7 冪等規則**(取代下文舊清單):冪等鍵 `7: idem_key`(16 B 隨機)只用在**帶 owner-op 的請求**(§5.3)與 `network/update`;快取以 `(擁有者 owner_key_id 或轉送者 session、idem_key)` 為鍵,**只回給同一位擁有者已認證的 session**;節點**先查快取、命中就直接回上次結果,不再驗 owner-op**(否則重送會因 `nonce_helper` 已用掉而失敗),未命中才驗。**回應帶秘密的請求一律不快取**:`claim/finish`、`claim/replay`、`root_password/reset` 沒有冪等鍵,回應遺失時走 `claim/replay` 或重新 `root_password/reset`(會產生新密碼)。`reset` 已不在清單。
+> **v0.7 冪等規則**(取代下文舊清單):冪等鍵 `7: idem_key`(16 B 隨機)只用在**帶 owner-op 的請求**(§5.3)與 `network/update`;快取以 `(擁有者 owner_key_id 或轉送者 session、idem_key)` 為鍵,**只回給同一位擁有者已認證的 session**;節點**先查快取、命中就直接回上次結果,不再驗 owner-op**(否則重送會因 `nonce_helper` 已用掉而失敗),未命中才驗。**回應帶秘密的請求一律不快取、也不得帶冪等鍵**(帶了即 `E_FORBIDDEN`,CDDL 亦拒絕):`claim/finish`、`claim/replay`、`root_password/reset`、`owner/add`(回 `owner_tag_key`)、`bulk/open`(回一次性 PSK)。回應遺失時:`claim/replay`;重新 `root_password/reset`(新密碼);對同一把 `owner_pub` 重送 `owner/add` 會輪替該擁有者的 `owner_tag_key` 並回新值;重新 `bulk/open` 會關掉舊通道、發新 PSK。`reset` 已不在清單。
 
 - `POST /batman/v1/session`:body = 交握訊息;回應 = 交握訊息 + header `X-Batman-Session`(128-bit 隨機,base64url **不加 padding**)。
-- `POST /batman/v1/msg`:body = 一則 Noise 傳輸訊息;**每個 session 一次只能有一個未完成的請求**;回應遺失時,手機**以同一個冪等鍵**重送。**必須帶冪等鍵的請求**:`claim/finish`、`owner/add`、`owner/remove`、`settings/set`、`network/join`、`network/update`、`network/leave`、`update/prepare`、`update/apply`、`bulk/open`、`bulk/close`、`reset`(其餘為唯讀,不需要)。每個這類請求帶 `7: idem_key`(16 B 隨機),節點保留最近 32 個冪等鍵與其結果 10 分鐘,跨 session 有效,重複的請求直接回傳上次的結果,不重複執行(例如 `owner/remove` 不會輪替兩次)【依第二輪 review】。
+- `POST /batman/v1/msg`:body = 一則 Noise 傳輸訊息;**每個 session 一次只能有一個未完成的請求**;回應遺失時,手機以同一個冪等鍵重送(依上方 v0.7 規則)。節點保留最近 32 筆、10 分鐘;快取項記 `(type, args_hash)`,**冪等鍵相同但 type 或 `args_hash` 不同 → `E_FORBIDDEN`**,不回別的請求的結果。
 - HTTP 裡一律跑完整的 §3,不依賴 TLS。
 
 ## 5. 應用訊息
@@ -164,7 +166,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 回應:`{ 1: id, 4: status (uint, 0 = ok), 3: body / 5: error, 6: part? }`
 
 - `id`:手機產生,單一 session 內遞增;節點拒絕**完整訊息**的重複或倒退 `id`。成功回應帶 `3: body`,錯誤回應帶 `5: error`,**兩者互斥**。
-- **分塊**(請求與回應都可以):超過 65519 B 的訊息,把**編碼後的 body map** 切成多段;每段是一則訊息,`3` = 該段的 **bstr**,`6 = {1: n, 2: total}`,**所有分塊共用同一個 `id`**(與同一個冪等鍵);收到重複的 `(id, n)` 即拒絕;收齊後依序串接再解碼,總大小上限 1 MB。訊息類型與 body 的對應見 CDDL 的 `whole-request`。
+- **分塊**(請求與回應都可以):明文超過 `max_msg − 16` B(`CTRL` 4;預設 65535 − 16 = 65519)的訊息,把**編碼後的 body map** 切成多段;每段是一則訊息,`3` = 該段的 **bstr**,`6 = {1: n, 2: total}`,**所有分塊共用同一個 `id`**(與同一個冪等鍵);收到重複的 `(id, n)` 即拒絕;收齊後依序串接再解碼,總大小上限 1 MB。訊息類型與 body 的對應見 CDDL 的 `whole-request`。
 - `7: idem_key`(16 B):見 §4.2 的 v0.7 冪等規則。
 - 版本:`major` 不同 → `E_VERSION`,手機只允許 `info`、`status`,並提示「更新 app,或用轉賣工具重燒卡」(階段 1 沒有 `reset`,v0.7);未知 `type` → `E_UNKNOWN_TYPE`;**body 的未知欄位忽略**(簽章物件除外,§7)。
 
@@ -189,7 +191,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 
 | type | 角色 | 請求 | 回應 |
 |---|---|---|---|
-| `status/public`(v0.7) | 全部(含未交握完成前的匿名) | — | 格式版本、能力位元、`updating`(trial 槽);`legacy` / 未認領時才帶 `device_id` 末 4 字元 |
+| `status/public`(v0.7) | **不是訊息**:未加密的 GATT `STATUS` 特徵值(§4.1),交握前即可讀 | — | CDDL `status-public` |
 | `info` | 全部 | — | `device_id`、`model`、`board`、`fw_version`、`proto_ver`、`capabilities[]`、`state`、`claim_window`、`net_version`(成員以上才有) |
 | `claim/begin` | 匿名、擁有者重取 | `owner_pub`(65 B) | `nonce`(32 B) |
 | `claim/finish` | 匿名 | `response`(32 B,§5.4)、`owner_enc_pub` + `sig_enc`(§6) | `owner_tag_key`(32 B,**每位擁有者各一把**)、`adv_owner_key`、`root_password`;session 升為擁有者 |
@@ -214,7 +216,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 
 **owner-op(v0.7)**:`network/join`、`network/leave`、`owner/add`、`owner/remove`、`settings/set`、`diag/bundle`、`ssh_keys/set`、`root_password/reset`、`claim/replay`、`update/prepare`、`update/apply`、`bulk/open`、`bulk/close` 的 body 必須在 key 31 帶 owner-op(§5.7);缺少或驗不過 → `E_FORBIDDEN`。(`update/*`、`bulk/*` 階段 1 不實作;實作時 MUST 帶 owner-op。)
 
-**legacy(v0.7)**:`info.state` = 3;以 `NX` 認領,`claim/finish` 另要求節點已有可用的 SSH 公鑰或開發旗標(否則操作員會被自己鎖在外),不符回 `E_UNSUPPORTED`(`capability` = `claim`,`reason` = 10)。
+**legacy(v0.7)**:`info.state` = 3;以 `NX` 認領,`claim/finish` 另要求節點已有可用的 SSH 公鑰或開發旗標(否則操作員會被自己鎖在外),不符回 `E_UNSUPPORTED`(`capability` = `claim`,`reason` = 10)。**這道門在 CheckMac 驗證通過之後才判斷**,否則沒有認領秘密的人也能探出「這台沒有 SSH key」。
 
 **沒有網路時的 `network/update`**:回 `E_STALE_VERSION`;第 1 版只能經 `network/join`(§7.1)。`network/update` 是轉送,以版本鏈的 `admins` 驗證(§7.1),不帶 owner-op。
 
@@ -375,7 +377,7 @@ member_list = { net_id, net_version, prev_hash,
 | 認領失敗(每個連線) | 3 次後斷線(只存在記憶體) |
 | `peers/challenge`(608B 簽章,約 100 ms,與 INA226 / RTC 共用 I2C) | 全域每秒 2 次 |
 | 單則應用訊息(分塊後) | 1 MB |
-| 單則 Noise 訊息(階段 1 BLE,v0.7) | 8 KiB(經 `CTRL` `max_frame` / `info` 回報;超過走 §5.1 分塊) |
+| 單則 Noise 訊息(階段 1 BLE,v0.7) | 8192 B(`CTRL` 4 `max_msg`;明文超過 `max_msg − 16` 走 §5.1 分塊) |
 | 同時 BLE 連線(v0.7) | 2 |
 | `claim/replay` 失敗(v0.7,節點全域) | 每次開機每小時 10 次 |
 | 未用的 `nonce_helper`(v0.7) | 每個 session 最多 4 個;超過時最舊的作廢 |
@@ -391,7 +393,7 @@ member_list = { net_id, net_version, prev_hash,
 | 標籤 | 如 §3.6 | 一律加 `-dev`(同上;階段 1 用正式標籤,向量即為階段 1 的格式) |
 | app | 只內建正式根,**拒絕鏈長 1 或 CN 以 `dev:` 開頭的憑證,沒有切換開關** | 認領時 TOFU pin 該台的自簽憑證(與 QR 的 `device_id` 一致),之後只認同一張;畫面標「開發機」 |
 
-協定、訊息、物件結構完全相同;兩邊永遠無法互通,開發機不會混入正式網路【依 review】。**階段 1(v0.7)的隔離靠憑證**:正式版 app 在第 2 則訊息驗 `node_cert` 時就拒絕自簽 `dev:` 憑證,**在送出任何秘密之前**;開發版 app 走 TOFU(§3.3 前提)。
+協定、訊息、物件結構完全相同。v0.6 的「兩邊永遠無法互通」靠 prologue 與標籤;**v0.7 階段 1 改靠憑證**(下句)【依 review】。**階段 1(v0.7)的隔離靠憑證**:正式版 app 在第 2 則訊息驗 `node_cert` 時就拒絕自簽 `dev:` 憑證,**在送出任何秘密之前**;開發版 app 走 TOFU(§3.3 前提)。
 
 ## 10. 實作
 
@@ -406,9 +408,9 @@ member_list = { net_id, net_version, prev_hash,
 
 **已完成**:`tests/vectors/219-protocol/`(`vectors.json`、`gen.py`、`verify.py`、`README.md`)。
 - `gen.py` 以固定金鑰與決定性 ECDSA(RFC 6979)產生,**可逐位元組重現**。
-- `verify.py` 以**另一份實作**逐項驗證,共 **156 項**(v0.6 為 119 項)(含負向測試:錯的 PSK / prologue、換標籤、high-s、竄改密文、簽章物件內的未知 key、訊息類型與 body 不符、版本鏈以錯誤的網主組驗證):Noise 用 `dissononce` 重跑 `NX` 與 `NXpsk0` 交握(位元組必須與 `noiseprotocol` 產生的完全相同)、ECDSA / ECDH 用 `python-ecdsa`、HKDF 用標準庫 `hmac`、所有物件以 `pycddl` 對 CDDL 驗證結構。
+- `verify.py` 以**另一份實作**逐項驗證,共 **189 項**(v0.6 為 119 項)(含負向測試:錯的 PSK / prologue、換標籤、high-s、竄改密文、簽章物件內的未知 key、訊息類型與 body 不符、版本鏈以錯誤的網主組驗證):Noise 用 `dissononce` 重跑 `NX` 與 `NXpsk0` 交握(位元組必須與 `noiseprotocol` 產生的完全相同)、ECDSA / ECDH 用 `python-ecdsa`、HKDF 用標準庫 `hmac`、所有物件以 `pycddl` 對 CDDL 驗證結構。
 - 涵蓋:測試根憑證與 DAC、`node_cert`、HKDF、兩種 Noise 交握、`auth/owner`、認領 CheckMac(88 B)、`sig_enc`、`peers/challenge`、全部 COSE 物件(含 ECDH 共享秘密、KDF context、CEK)、SAS、QR 大小、GATT 框架、CBOR 信封。
-- **v0.7 新增**:file 後端身分(`sn` / `device_id` 公式、自簽 `dev:` 憑證)、`psk_replay`(節點端與 app 端 ECDH 相等、HKDF、以它跑的 `NXpsk0` 交握且 `psk_owner` 打不開)、owner-op(`args_hash`、簽章輸入、換 verb / 換 `h` / 換 nonce / 簽後增減 body 欄位 / 他人金鑰 / high-s 一律驗不過、缺 key 31 的 `network/join` CDDL 拒絕)、`op/nonce`、`claim/replay`(以 replay session 的 `h` 與已存 `owner_pub` 重算 CheckMac;擁有者 session 的 owner-op 在 replay session 驗不過)、`reset` 的 `E_UNSUPPORTED` reason 9、`ssh_keys/set` 行數與格式;審查後補:偽造的 `dev:` 憑證被 TOFU 前提擋下、`type ≠ verb` 被拒、非擁有者金鑰被拒、`claim/replay` 回應、legacy(`state` = 3、reason 10)、`update/*` / `bulk/*` / `network/leave` / `diag/bundle` / `root_password/reset` 缺 owner-op 被 CDDL 拒絕。測試向量的 `device_id` 改為 `hex(sn)`。`verify.py` 依 RFC 8949 位元組序檢查 map key;`gen.py` 用 cbor2 canonical(長度優先),目前所有 map 的 key 兩種排序相同。
+- **v0.7 新增**:file 後端身分(`sn` / `device_id` 公式、自簽 `dev:` 憑證)、`psk_replay`(節點端與 app 端 ECDH 相等、HKDF、以它跑的 `NXpsk0` 交握且 `psk_owner` 打不開)、owner-op(`args_hash`、簽章輸入、換 verb / 換 `h` / 換 nonce / 簽後增減 body 欄位 / 他人金鑰 / high-s 一律驗不過、缺 key 31 的 `network/join` CDDL 拒絕)、`op/nonce`、`claim/replay`(以 replay session 的 `h` 與已存 `owner_pub` 重算 CheckMac;擁有者 session 的 owner-op 在 replay session 驗不過)、`reset` 的 `E_UNSUPPORTED` reason 9、`ssh_keys/set` 行數與格式;審查後補:偽造的 `dev:` 憑證被 TOFU 前提擋下、`type ≠ verb` 被拒、非擁有者金鑰被拒、`claim/replay` 回應、legacy(`state` = 3、reason 10)、`update/*` / `bulk/*` / `network/leave` / `diag/bundle` / `root_password/reset` 缺 owner-op 被 CDDL 拒絕。測試向量的 `device_id` 改為 `hex(sn)`。`gen.py` 與 `verify.py` 都以 RFC 8949 位元組序編碼(`det_dumps`;換掉 cbor2 長度優先後所有既有向量位元組不變)。第 2 輪補:參考節點規則 `node_accepts`(以信封 type 簽、`type ≠ verb` 向量 `request_type_mismatch` 必須被拒)、`STATUS` 三例(含成員洩漏末碼被拒)、帶秘密回應的請求帶冪等鍵被拒、`ssh-ed25519` 整行規則。**pycddl 0.6 的兩個限制**(group choice 裡的可選成員會誤收、封閉 map 不擋多出的 key)→ 冪等鍵規則(`idem_ok`)與 `STATUS` 末碼規則(`status_ok`)由 `verify.py` 以 Python 另驗;規範 CDDL 照實寫。
 - **尚未**:`flynn/noise`(Go)交叉驗證(PR-H1 / PR-P2,firmware 已有 Go 工具鏈;§12 Q8)、開發版(`-dev`)向量、608B 實機的 CheckMac 交叉驗證(B1)。
 
 ## 12. 待決
@@ -490,3 +492,9 @@ SHOULD-FIX 已併入:`verify.py` 從標籤重組簽章輸入、以 pycose 交叉
 | 新增訊息 | `op/nonce`、`claim/replay`、`ssh_keys/set`、`root_password/reset` |
 
 **v0.7 第 1 輪審查(A:0 / 3 / 8;B:0 / 5 / 9,皆 REJECT 窄;`254-reviews/review-docs-v07-{A,B}.md`)**:verb 未綁 type(§5.7 改以信封 type 簽)、開發版 TOFU 可被同 CN 自簽憑證頂替(§3.3 MUST 前提 + 負向向量)、階段 1 用哪套 prologue / 標籤(§9:正式,隔離靠憑證)、HTTP 冪等快取跨 session 回傳秘密(§4.2 v0.7 規則)、`args_hash` 兩種定義(§5.7 原始 body;254 §4.1 同步)、沒有 legacy 狀態(`state` 3、NX、reason 10)、`update/*` / `bulk/*` 不帶 owner-op(改為必帶);MINOR:CDDL 孤兒行、`claim/begin` 角色與已存 `owner_pub`、app 持久化 K、沒有網路的 `network/update`、`ssh_keys/set` 格式、§8 上限、向量缺項;field-provisioning 殘留舊文字。
+
+**v0.7 第 2 輪審查(A:REJECT 窄 0 / 1 / 8;B:APPROVE-WITH-CHANGES 0 / 0 / 8;`254-reviews/review-docs-v07-r2-{A,B}.md`)**:
+`status/public` 沒有線上定義 → §4.1 `STATUS` 未加密 GATT 特徵值 + CDDL `status-public`(末碼只在 0 / 3);`type ≠ verb` 的檢查是恆真式 → `node_accepts` 參考規則 + 負向向量;
+冪等:帶秘密回應的請求(含 `owner/add`、`bulk/open`)不得帶冪等鍵(CDDL `idem` 群組)、快取記 `(type, args_hash)`、舊清單刪除;`ssh-ed25519` 整行比對;
+legacy `device_hint`、防呆門在 CheckMac 之後;開發 / 正式隔離句改寫、正式版 app 處處拒絕 `dev:`;`max_msg`(`CTRL` 4)統一分塊門檻與重組上限;
+RFC 8949 位元組序編碼;254 §4.1 所有 owner-op 動詞收原始 body;項數更正。

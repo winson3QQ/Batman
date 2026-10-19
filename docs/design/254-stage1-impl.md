@@ -171,6 +171,7 @@ platform_check_image(stage 1):只在真的升級時寫 p6 ota-armed.mesh(§6.4)
 | `diag.bundle(owner_op)` | owner-op | helper 的私有暫存檔,O_RDONLY fd,讀完刪 |
 | `ssh_keys.set(list, owner_op)` | owner-op;每行 `^ssh-ed25519 [A-Za-z0-9+/=]+( [^\n]*)?$`、單行、≤ 256 B、≤ 8 行 | 只動 `ssh_keys.added` 清單上的行 |
 
+- **所有帶 owner-op 的動詞**(`net.apply`、`claim.replay`、`ssh_keys.set`、`root_password.reset`、`diag.bundle`、`owner.*`、`settings.set`、`network.leave`)都收**原始請求信封**(協定 v0.7 §5.7):helper 自己嚴格解碼(拒絕重複 key 與非 deterministic 編碼)、以信封 `type` 組簽章輸入、去掉 key 31 重新編碼取 `args_hash`,**只依自己解出的欄位執行**;provd 拆好的欄位一律不收。
 - 不認得的動詞 / 多餘欄位 / 長度超限 → `E_SCHEMA`;授權失敗 → `E_FORBIDDEN`;trial → `E_BUSY`。
 - **沒有** `keystore.ecdh`(解密 oracle)、`persist`(lkg 升級只由 helper 內部在 `meshjoin_joined` 後做)、`keystore.sign(purpose, msg)`(整段 msg 由 provd 給)、**沒有任何恢復出廠動詞**(U8)。
 - **app 契約**:app 在送出 `claim/finish` **之前**,必須先持久化 `node_cert`(含 `ecdh_pub`)與 `claim-pending{device_id, owner_pub}`;否則回應遺失時算不出 `psk_replay`。進 S5 app addendum 與協定 v0.7。

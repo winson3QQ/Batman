@@ -65,6 +65,11 @@ CDDL_NORMATIVE = (HERE / "../../../docs/design/219-protocol.cddl").resolve().rea
 # ".cbor" relaxed to plain bstr; every embedded payload is then validated separately with its strict rule.
 CDDL = re.sub(r"bstr \.cbor [A-Za-z0-9-]+", "bstr",
               re.sub(r"bstr \.cbor \{[^}]*\}", "bstr", CDDL_NORMATIVE))
+# pycddl 0.6 also mis-evaluates group choices whose alternatives carry an optional member (it then accepts a
+# wrong body). The normative per-alternative `? 7 => bytes16` is moved back to the request map here, and the
+# v0.7 idempotency-key rule (§4.2) is checked in Python by idem_ok() below.
+IDEM_TYPES = set(re.findall(r'2 => "([a-z_/]+)",\s+3 => [a-z-]+, \? 7 => bytes16', CDDL))
+CDDL = CDDL.replace(", ? 7 => bytes16\n", "\n").replace("  request-kind,\n", "  request-kind,\n  ? 7 => bytes16,\n", 1)
 v = json.load(open(sys.argv[1] if len(sys.argv) > 1 else HERE / "vectors.json", encoding="utf-8"))
 b = bytes.fromhex
 K = v["keys"]
@@ -120,6 +125,31 @@ def deterministic(raw):
         return True
     obj = cbor2.loads(raw)
     return walk(obj) and cbor2.dumps(obj, canonical=True) == raw
+
+
+def _det(o):
+    """RFC 8949 §4.2.1 core deterministic encoding: map keys sorted by their encoded bytes (bytewise)."""
+    if isinstance(o, dict):
+        items = [(cbor2.dumps(_det(k)), _det(k), _det(v)) for k, v in o.items()]
+        items.sort(key=lambda t: t[0])
+        return {k: v for _, k, v in items}
+    if isinstance(o, list):
+        return [_det(x) for x in o]
+    if isinstance(o, tuple):
+        return [_det(x) for x in o]
+    if isinstance(o, cbor2.CBORTag):
+        return cbor2.CBORTag(o.tag, _det(o.value))
+    return o
+
+
+def det_dumps(o) -> bytes:
+    return cbor2.dumps(_det(o))     # cbor2 keeps insertion order when canonical=False; ints are always shortest
+
+
+def idem_ok(raw):
+    """v0.7 §4.2: key 7 only on the request types whose CDDL alternative allows it."""
+    o = cbor2.loads(raw)
+    return 7 not in o or o.get(2) in IDEM_TYPES
 
 
 def cddl_ok(rule, raw):
@@ -471,7 +501,7 @@ jreq_raw = b(oo["request_network_join"])
 jreq = cbor2.loads(jreq_raw)
 jbody = dict(jreq[3])
 jop = jbody.pop(31)
-ah = H(cbor2.dumps(jbody, canonical=True))
+ah = H(det_dumps(jbody))
 check("owner-op: request CDDL (network/join with key 31)", cddl_ok("request", jreq_raw) and deterministic(jreq_raw))
 check("owner-op: args_hash = SHA-256(body without key 31)", ah.hex() == oo["args_hash"])
 oin = op_input(H_PSK, b(oo["nonce_helper"]), jop[1], ah)
@@ -487,7 +517,7 @@ _tampered = dict(jbody)
 _tampered[4] = b"\x00" * 16          # add an invite_id the owner did not sign
 check("owner-op: a body field added after signing changes args_hash and is rejected",
       not es256_ok(b(K["owner_sign_pub"]),
-                   op_input(H_PSK, b(oo["nonce_helper"]), jop[1], H(cbor2.dumps(_tampered, canonical=True))), jop[2]))
+                   op_input(H_PSK, b(oo["nonce_helper"]), jop[1], H(det_dumps(_tampered))), jop[2]))
 check("owner-op: signature by another key is rejected", not es256_ok(b(K["dac_pub"]), oin, jop[2]))
 _hs = jop[2][:32] + (N - int.from_bytes(jop[2][32:], "big")).to_bytes(32, "big")
 check("owner-op: high-s variant is rejected", not es256_ok(b(K["owner_sign_pub"]), oin, _hs))
@@ -498,6 +528,25 @@ _adm = _priv("admin")
 _adm_sig = _adm.sign_deterministic(oin, hashfunc=hashlib.sha256, sigencode=ecdsa.util.sigencode_string)
 check("owner-op: a signature by a non-owner key (network admin) does not verify as the owner",
       not es256_ok(b(K["owner_sign_pub"]), oin, _adm_sig))
+def node_accepts(env_raw, owner_pubs, h, nonce_helper):
+    """Reference node rule (§5.7): sign over the ENVELOPE type, verb must equal it, args_hash over the raw body
+    re-encoded deterministically without key 31; reject non-deterministic input."""
+    if not deterministic(env_raw):
+        return False
+    env = cbor2.loads(env_raw)
+    body = dict(env[3])
+    op = body.pop(31, None)
+    if not isinstance(op, dict) or op.get(1) != env[2]:
+        return False
+    msg = op_input(h, nonce_helper, env[2], H(det_dumps(body)))
+    return any(es256_ok(pk, msg, op[2]) for pk in owner_pubs)
+
+
+check("node rule: the network/join request is accepted", node_accepts(jreq_raw, [b(K["owner_sign_pub"])], H_PSK, b(oo["nonce_helper"])))
+check("node rule: same body + owner-op under type network/leave is rejected (E_FORBIDDEN)",
+      not node_accepts(b(oo["request_type_mismatch"]), [b(K["owner_sign_pub"])], H_PSK, b(oo["nonce_helper"])))
+check("node rule: rejected when the owner list does not contain the signer",
+      not node_accepts(jreq_raw, [b(K["dac_pub"])], H_PSK, b(oo["nonce_helper"])))
 check("CDDL rejects network/join without owner-op",
       not cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 3, 2: "network/join", 3: jbody}, canonical=True)))
 check("op/nonce request + response CDDL",
@@ -516,17 +565,17 @@ rbody = dict(rreq[3])
 rop = rbody.pop(31)
 check("claim/replay: request CDDL", cddl_ok("request", rreq_raw) and rbody[1] == b(cr["response"]))
 check("claim/replay: owner_op_input and owner_op_sig in the vectors are the rebuilt ones",
-      op_input(H_REPLAY, b(cr["nonce_helper"]), "claim/replay", H(cbor2.dumps(rbody, canonical=True))).hex() == cr["owner_op_input"]
+      op_input(H_REPLAY, b(cr["nonce_helper"]), "claim/replay", H(det_dumps(rbody))).hex() == cr["owner_op_input"]
       and rop[2] == b(cr["owner_op_sig"]))
 check("claim/replay: response CDDL (claim-finish-resp, 24-char root password)",
       cddl_ok("response", b(cr["response_envelope"])) and len(cbor2.loads(b(cr["response_envelope"]))[3][3]) == 24)
 check("claim/replay: owner-op verb + signature",
       rop[1] == "claim/replay" and es256_ok(b(K["owner_sign_pub"]),
                                             op_input(H_REPLAY, b(cr["nonce_helper"]), rop[1],
-                                                     H(cbor2.dumps(rbody, canonical=True))), rop[2]))
+                                                     H(det_dumps(rbody))), rop[2]))
 check("claim/replay: owner-op from the owner session does not verify in the replay session",
       not es256_ok(b(K["owner_sign_pub"]), op_input(H_PSK, b(cr["nonce_helper"]), rop[1],
-                                                     H(cbor2.dumps(rbody, canonical=True))), rop[2]))
+                                                     H(det_dumps(rbody))), rop[2]))
 check("CDDL rejects claim/replay with a claim/begin body",
       not cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 4, 2: "claim/replay", 3: {1: b(K["owner_sign_pub"])}})))
 
@@ -534,6 +583,37 @@ check("CDDL rejects claim/replay with a claim/begin body",
 _er = cbor2.loads(b(env["response_error_reset_reflash"]))
 check("reset: error response CDDL, E_UNSUPPORTED reason 9",
       cddl_ok("response", b(env["response_error_reset_reflash"])) and _er[4] == 6 and _er[5] == {1: "reset", 2: 9})
+sp = v["status_public"]
+check("STATUS (status/public): unclaimed with device_id tail is valid CDDL", cddl_ok("status-public", b(sp["unclaimed"])))
+check("STATUS: member (updating) without tail is valid CDDL", cddl_ok("status-public", b(sp["member_updating"])))
+def status_ok(raw):
+    """§4.1 STATUS: CDDL shape + the device_id tail (5) only when state is unclaimed (0) or legacy (3).
+    (pycddl 0.6 does not reject extra keys in a closed map, so the tail rule is checked here.)"""
+    o = cbor2.loads(raw)
+    return cddl_ok("status-public", raw) and ((5 in o) == (o.get(3) in (0, 3)))
+
+
+check("STATUS: unclaimed and member examples pass the tail rule", status_ok(b(sp["unclaimed"])) and status_ok(b(sp["member_updating"])))
+check("STATUS: a member that exposes the device_id tail is rejected", not status_ok(b(sp["bad_member_with_tail"])))
+for _k in ("claim/finish", "claim/replay", "root_password/reset"):
+    _bd = {1: bytes(32), 31: rop} if _k == "claim/replay" else ({31: rop} if _k == "root_password/reset" else
+          {1: bytes(32), 2: b(K["owner_enc_pub"]), 3: bytes(64)})
+    check(f"idempotency key on {_k} is rejected (its response carries secrets, §4.2)",
+          not idem_ok(cbor2.dumps({0: [1, 0], 1: 8, 2: _k, 3: _bd, 7: bytes(16)})))
+check("idempotency rule: the allowed set is exactly the owner-op requests + network/update",
+      IDEM_TYPES == {"owner/remove", "settings/set", "network/join", "network/update", "network/leave", "diag/bundle",
+                     "ssh_keys/set", "update/prepare", "update/apply", "bulk/close"})
+check("idempotency key on network/leave is accepted (CDDL + rule)",
+      cddl_ok("request", cbor2.dumps({0: [1, 0], 1: 8, 2: "network/leave", 3: {31: rop}, 7: bytes(16)}))
+      and idem_ok(cbor2.dumps({0: [1, 0], 1: 8, 2: "network/leave", 3: {31: rop}, 7: bytes(16)})))
+for _name in ("request_reset_with_idem",):
+    check(f"idempotency rule: envelope example {_name} (reset carries no secret but is not an owner-op request)",
+          not idem_ok(b(env[_name])))
+SSH_RE = re.compile(r"ssh-ed25519 [A-Za-z0-9+/=]{1,200}( [ -~]{0,40})?")
+for _line, _want in [("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@phone", True), ("ssh-ed25519 AAAA\nssh-rsa X", False),
+                     ("xssh-ed25519 AAAA", False), ("ssh-ed25519 AAAA\r", False)]:
+    _ok = SSH_RE.fullmatch(_line) is not None and "\n" not in _line and "\r" not in _line
+    check(f"ssh_keys/set whole-line rule on {_line!r} -> {_want}", _ok == _want)
 lg = v["legacy"]
 check("legacy: info response with state 3 is valid CDDL", cddl_ok("response", b(lg["response_info_legacy"]))
       and cbor2.loads(b(lg["response_info_legacy"]))[3][7] == 3)
