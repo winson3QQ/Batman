@@ -1,6 +1,6 @@
 # Design: #254 階段 1 實作 — BLE 平台、keystore、p5 `prov`、`batman-provd` 程序模型 — **v14(自足版)**
 
-**狀態**:v14。第 13 輪 A:**APPROVE-WITH-CHANGES**(0 BLOCKER / 0 MAJOR / 11 MINOR);B:REJECT(窄)0 BLOCKER / 1 MAJOR / 9 MINOR(`254-reviews/review-v13-{A,B}.md`)。兩位各自重做了 v13 的掃描,F21–F24 成立、shim 與 99zz 順序成立。B 的 MAJOR(A 列為 m8):**轉賣沒有處理接在節點上的 RAK4631(Meshtastic)**,它自己的 flash 留著前任隊伍的 LoRa 頻道 PSK 與隊友位置——我的掃描只看了 image 與 EEPROM,漏了周邊;v14 補上周邊盤點(F25)與賣方 / 買方步驟,並修兩位列的 MINOR。使用者決定 U8 不變。
+**狀態**:v14 **定稿**。第 13 輪 A APPROVE-WITH-CHANGES;B 對 v13→v14 的窄範圍複查(使用者選擇)APPROVE-WITH-CHANGES,0 BLOCKER / 0 MAJOR / 3 MINOR(n1–n3 已改字;`254-reviews/review-v14-B-delta.md`)。以下為 v14 改版說明:第 13 輪 A:**APPROVE-WITH-CHANGES**(0 BLOCKER / 0 MAJOR / 11 MINOR);B:REJECT(窄)0 BLOCKER / 1 MAJOR / 9 MINOR(`254-reviews/review-v13-{A,B}.md`)。兩位各自重做了 v13 的掃描,F21–F24 成立、shim 與 99zz 順序成立。B 的 MAJOR(A 列為 m8):**轉賣沒有處理接在節點上的 RAK4631(Meshtastic)**,它自己的 flash 留著前任隊伍的 LoRa 頻道 PSK 與隊友位置——我的掃描只看了 image 與 EEPROM,漏了周邊;v14 補上周邊盤點(F25)與賣方 / 買方步驟,並修兩位列的 MINOR。使用者決定 U8 不變。
 
 **本文件完全自足**:不再引用前版的任何小節。v1–v13 全文與 25 份審查報告在 `254-reviews/`,只當歷史紀錄。§13 列 v13 審查發現的去向。
 
@@ -258,22 +258,22 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 **轉賣工具契約**(PR-P3 收進 repo:`scripts/transfer-flash.ps1`(Windows,主要)、`scripts/transfer-flash.sh`(原生 Linux 主機);本機 WSL 看不到讀卡機(要 usbipd-win,這台沒裝),不列為支援路徑):
 1. **只接受工具內建清單裡的發行 image**:每次發行時把 image 檔名、**發行出去的 `.img.gz` 檔的 sha256**(工具解壓時另算 raw 的 sha256 並記錄)、board、版本寫進工具內建的清單(PR-P3 的發行流程更新它);image 的 sha256 不在清單 → 拒絕。這同時擋掉上游 / 單槽 image、**沒有 v13 EEPROM shim 的舊 Batman image**(清單只收階段 1 起的版本,B12-M2)與被竄改的 image。board 從清單取得,寫入前與目標使用者選的機型比對;bcm2710 image 有 7 個分割(多 p7),工具不數分割。
 2. **目標必須是讀卡機上的卡**:Windows:`Get-Disk` 的 `BusType=USB` **且** `Win32_DiskDrive.MediaType` 為 `Removable Media` **且** `IsBoot`/`IsSystem` 皆為 false **且** 容量 ≤ 512 GB;顯示型號、容量、目前分割;要使用者輸入確認字串。Linux:`/sys/block/<dev>/removable=1` 或裝置名是 `mmcblk*`(原生 SD 槽 `removable=0`,另外要求 `--internal-sd` 明示);容量上限同上;**目標或其任何分割已掛載 → 拒絕;是執行中系統的根所在裝置 → 拒絕**(在 Pi 上 `--internal-sd` 可能指到自己的系統卡)。
-3. **全卡清零**:Windows 先 `Clear-Disk -RemoveData` 移除分割、確定沒有卷掛在這顆碟(否則原始寫入會被拒),寫入期間防止系統睡眠;再以工具自己的寫零迴圈(對 `\\.\PhysicalDrive<N>` 4 MiB 區塊寫零;Linux `dd if=/dev/zero bs=4M conv=fsync` 或 `blkdiscard -z`;dd 到卡尾的 ENOSPC 以「已寫位元組 ≥ 裝置大小」判定成功)寫到卡尾,顯示進度;任何一步中斷或失敗都**不得回報成功**;不用 `Clear-Disk -RemoveData`(⚠️ 推論不寫零)、不用 diskpart `clean all`(沒有進度)。
+3. **全卡清零**:Windows 先 `Clear-Disk -RemoveData` 移除分割、確定沒有卷掛在這顆碟(否則原始寫入會被拒),寫入期間防止系統睡眠;再以工具自己的寫零迴圈(對 `\\.\PhysicalDrive<N>` 4 MiB 區塊寫零;Linux `dd if=/dev/zero bs=4M conv=fsync` 或 `blkdiscard -z`;dd 到卡尾的 ENOSPC 以「已寫位元組 ≥ 裝置大小」判定成功)寫到卡尾,顯示進度;任何一步中斷或失敗都**不得回報成功**;`Clear-Disk -RemoveData` 只用來移除分割與卷,**不當作清零**(⚠️ 推論它不寫零);不用 diskpart `clean all`(沒有進度)。
 4. **寫 image**,讀回比對頭尾。
 5. **抽樣驗證**:image 結尾之後隨機取 ≥ 64 個 1 MiB 區塊讀回,必須全為零;否則失敗、提示換卡。
 6. 時間:32 GB 卡預估 20–40 分鐘(⚠️ 實測),工具顯示進度。
 7. 測試模式:`--test-target-file <檔>` 只給 harness(L16 工具層)用,**只接受 regular file**(不收區塊裝置),跳過可移除裝置檢查;另有負測試「非可移除裝置被拒」「區塊裝置當 test-target 被拒」。
 
 **節點端**:
-- **PR-F 以 shim 取代 `/sbin/persistent_vars_storage.sh`**(F21 的 9 個讀者一次失效;`31_*` 不必另外刪)。shim 行為:`READ` rc 1、無輸出;`READALL` 每個 key 印 `key=`(空值)、rc 0;`WRITE`/`ERASE` rc 1;每次開機每個 key 只 `logger -p daemon.warn` 一次(標記放 root-only `$RUNDIR`,不放 `/tmp`)。firmware 的 `files/` 目前沒進 git → PR-F 要 `git add files/sbin/persistent_vars_storage.sh`;斷言放進每次 build 都跑的 `check-image-manifest.sh` 並當發行清單的閘門。Batman image 不讀 EEPROM 的任何 persistent var;EEPROM 裡若有殘值也沒有作用。**後果(使用者已接受,Q7)**:Morse 的 EEPROM 硬體區域鎖不再生效,HaLow 國家只由 uci / `halow-setkey` 決定;今天 02/04 的 EEPROM 沒有區域鎖,所以不是回歸。
+- **PR-F 以 shim 取代 `/sbin/persistent_vars_storage.sh`**(F21 的 9 個讀者一次失效;`31_*` 不必另外刪)。shim 行為:`READ` rc 1、無輸出;`READALL` 每個 key 印 `key=`(空值)、rc 0;`WRITE`/`ERASE` rc 1;每次開機每個 key 只 `logger -p daemon.warn` 一次(標記放 root-only `$RUNDIR`,不放 `/tmp`)。firmware 的 `files/` 目前沒進 git → PR-F 要 `git add files/sbin/persistent_vars_storage.sh`;斷言**讀 rootfs**(`check-image-manifest.sh` 只讀套件 manifest,看不到 `files/` 覆蓋):每次 build 對組好的 rootfs 比對 shim 的 sha256,並實跑 `READ default_wifi_key` 確認 rc 1、無輸出;rootfs 讀不到 → FAIL;此斷言是發行清單的閘門。負對照:拿掉 shim → 閘門 FAIL。Batman image 不讀 EEPROM 的任何 persistent var;EEPROM 裡若有殘值也沒有作用。**後果(使用者已接受,Q7)**:Morse 的 EEPROM 硬體區域鎖不再生效,HaLow 國家只由 uci / `halow-setkey` 決定;今天 02/04 的 EEPROM 沒有區域鎖,所以不是回歸。
 - 95 已在每次開機記 `BOOT_ORDER`/`PARTITION_WALK` → 改為與 bootloader 預設比對,不同就 WARN(`halow-status` 顯示),當作「EEPROM 被改過」的訊號。shim 的放法:放在 firmware 樹的 OpenWrt `files/` overlay(`files/sbin/persistent_vars_storage.sh`),它在組 rootfs 時最後複製、蓋過 `persistent-vars-storage-bcm2711` 套件的同名檔;現有 build 已用同一個 overlay 放 `files/etc/batman-build`(`build-board.sh:23`,節點上確有 `/etc/batman-build`)。PR-F 附斷言:image 內 `persistent_vars_storage.sh READ default_wifi_key` rc 1、無輸出;`docs/upgrade-1.8.0.md` 同步。
-- **unclaimed 新卡的 AP**:99zz 在 fresh overlay、p5 未 seed、無 prov 時把所有 `mode=ap` 的 key 設成 `CHANGE-ME-NOW` → S18 keyguard 關 AP(F23;219 §6.2「未認領時不開 WiFi AP」)。
+- **unclaimed 的 AP**:99zz 在 fresh overlay、96 verdict 為 `unseeded` 且(沒有 prov 或 `prov.meta` state=`unclaimed`)時把所有 `mode=ap` 的 key 設成 `CHANGE-ME-NOW` → S18 keyguard 關 AP(F23;219 §6.2「未認領時不開 WiFi AP」)。
 - 節點端不做任何清除機制;`firstboot` / LuCI reset / reset 按鈕只清本槽 overlay,96 會從 p5 還原(F22),不是轉賣用的全清 → UI 文字改為「重新套用設定(不清除擁有者與資料)」,`rc.button/reset` 長按不再呼叫 `firstboot`(PR-P1)。
 - provd 收到協定的 `reset` → `E_UNSUPPORTED(reflash)`,app 轉到說明頁。
 
 **app 說明頁**(PR-P3):
-- **賣方**:⓪**接著 LoRa 模組(RAK4631)的機台:先用 Meshtastic app 或 CLI 對模組做 factory reset**(清頻道 PSK、節點資料庫、位置;F25);①先在 app 把這台從網路移除(`network/leave`),免得網路的成員名單留著它;②需要保留 OTS 等資料時,先用讀卡機把 p6 備份到電腦(擁有者沒裝 SSH key 時沒有別的匯出路徑);③用轉賣工具重燒;④最安全是換一張新卡交給買家。
-- **買家**:收到二手機,**先用 Raspberry Pi Imager 的 bootloader 還原卡重設 EEPROM(還原後以 `vcgencmd bootloader_version` 確認版本不低於本文件驗證過的 2026/09/23 版,⚠️ 其他版本未驗證 A/B 行為),再自己用轉賣工具燒一次;接著 LoRa 模組的機台再對 RAK4631 做一次 factory reset**(不能信任賣方說「已重燒」;賣方也可能動過 EEPROM 以外的東西);新機的 QR 與身分要經 root 取得(`batman-provhelper qr`,接乙太網或 serial;unclaimed 的 image 預設是空密碼)——階段 1 限制,#255 的 608B 會把身分與 QR 固定在晶片上。
+- **賣方**:⓪**接著 LoRa 模組(RAK4631)的機台:先用 Meshtastic CLI `meshtastic --factory-reset-device`(或 app 的「整機重設」)對模組做**整機**重設**(清頻道 PSK、節點資料庫、位置、與賣方手機的 BLE bond;只清設定的 `--factory-reset` 不夠;F25);①先在 app 把這台從網路移除(`network/leave`),免得網路的成員名單留著它;②需要保留 OTS 等資料時,先用讀卡機把 p6 備份到電腦(擁有者沒裝 SSH key 時沒有別的匯出路徑);③用轉賣工具重燒;④最安全是換一張新卡交給買家。
+- **買家**:收到二手機,**先用 Raspberry Pi Imager 的 bootloader 還原卡重設 EEPROM(還原後以 `vcgencmd bootloader_version` 確認版本不低於本文件驗證過的 2026/09/23 版,⚠️ 其他版本未驗證 A/B 行為),再自己用轉賣工具燒一次;接著 LoRa 模組的機台再對 RAK4631 做一次整機重設(`--factory-reset-device`)**(不能信任賣方說「已重燒」;賣方也可能動過 EEPROM 以外的東西);新機的 QR 與身分要經 root 取得(`batman-provhelper qr`,接乙太網或 serial;unclaimed 的 image 預設是空密碼)——階段 1 限制,#255 的 608B 會把身分與 QR 固定在晶片上。
 - **遺失手機或擁有者金鑰**:同賣方 ②③,重燒後重新認領(L59)。
 - 轉賣只能用工具清單裡的階段 1 以後的 image;舊版 image(沒有 provd、還會讀 EEPROM)工具會拒絕。
 
@@ -495,7 +495,7 @@ L23。helper 先 persist → `uci set hostname` + `system reload`;app 顯示「�
 
 ## 11. 殘項(回 #254)
 
-3A+ 全部 + 共用檔 bcm2710 實測;04 I2C 空;SSID / hostname 跨擁有者可串連;`/www/cgi-bin/bundle` 正式驗證;#110 能力偵測接軌;LED 不做;`halow-status:118` 文字;`owner.replace`(L29)進 S3;既有缺口 #13 / #105 / #137;改名探針(U5);`core_freq_min=500` 耗電;RSSI 遮蔽 / 外殼;02 的 p1/p3 `core_freq_min`;`.txn` 期間操作員 setkey 會被改回;`network/update` 從 app 統一改頻道(操作員 setkey 會分歧);D4 / D17 / D20 / D22 實證;**L16 節點層與 Windows 工具要現場實卡**;**app 端恢復出廠在 #255 重新設計**(U8);GPS 模組型號與 BBR 清除方式(F25 ⚠️);RV-3028(之後的 HAT RTC)的持久資料;dpp-handler 是否停用;EEPROM 殘值不清(無讀者);轉賣工具全卡清零的時間(32 GB 約 20–40 分鐘)⚠️ 實測。
+3A+ 全部 + 共用檔 bcm2710 實測;04 I2C 空;SSID / hostname 跨擁有者可串連;`/www/cgi-bin/bundle` 正式驗證;#110 能力偵測接軌;LED 不做;`halow-status:118` 文字;`owner.replace`(L29)進 S3;既有缺口 #13 / #105 / #137;改名探針(U5);`core_freq_min=500` 耗電;RSSI 遮蔽 / 外殼;02 的 p1/p3 `core_freq_min`;`.txn` 期間操作員 setkey 會被改回;`network/update` 從 app 統一改頻道(操作員 setkey 會分歧);D4 / D17 / D20 / D22 實證;**L16 節點層與 Windows 工具要現場實卡**;**app 端恢復出廠在 #255 重新設計**(U8);GPS 模組型號與 BBR 清除方式(F25 ⚠️);96 走 `unseeded` 以外的出口(p5 讀不到等)時 unclaimed 節點的 AP 仍以 95 的隨機 key 開著(接受:key 隨機且不外洩,B13-m1 partial);RV-3028(之後的 HAT RTC)的持久資料;dpp-handler 是否停用;EEPROM 殘值不清(無讀者);轉賣工具全卡清零的時間(32 GB 約 20–40 分鐘)⚠️ 實測。
 
 ## 12. 待決
 
