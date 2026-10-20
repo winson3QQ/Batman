@@ -112,6 +112,7 @@ bchk_ble_rpa_254() {
 		grep -q ' match=yes' <<< "$o" || { echo "FAIL ah() produced no verdict"; rc=1; }
 	fi
 	ble_n "$p" 60 periph snoop-clean >/dev/null
+	case " $BLE_RPA_INJECT " in *" privacyoff "*) ble_n "$p" 90 periph restore >/dev/null || rc=1;; esac	# undo N1 (clears flipped)
 	ble_end "$p" "$c" || rc=1
 	return $rc
 }
