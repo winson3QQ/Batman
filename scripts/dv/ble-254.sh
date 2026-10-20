@@ -75,7 +75,7 @@ bchk_ble_rpa_254() {
 	for ts in $(seq 30 60 $((BLE_RPA_END - 30))); do
 		while rpa_events; [ "$now" -lt "$ts" ]; do sleep 2; done
 		case " $BLE_RPA_INJECT " in *" gap "*) [ "$ts" -ge 1500 ] && [ "$ts" -lt 1750 ] && { echo "EV T0+$ts INJECT no sample (negative control N2)"; continue; };; esac
-		o=$(ble_n "$c" 60 central sample "$name" 10) || echo "SAMPLE-FAILED T0+$ts"
+		o=$(ble_n "$c" 60 central sample "$name" 10) || { echo "FAIL sample on $c failed at T0+$ts: $(tr '\n' ' ' <<< "$o" | cut -c1-200)"; rc=1; }
 		local info; info=$(ble_n "$p" 30 periph info)
 		pid=$(sed -n 's/^PID //p' <<< "$info")
 		[ "$pid" = "$pid0" ] || { echo "FAIL bluetoothd on $p changed pid ($pid0 -> $pid) at T0+$ts — run invalid"; rc=1; }
@@ -98,11 +98,13 @@ bchk_ble_rpa_254() {
 	b_set=$(ble_rpa_seg 0 300); a_set=$(ble_rpa_seg 300 "$BLE_RPA_REREG_C"); c_set=$(ble_rpa_seg "$BLE_RPA_REREG_C" "$BLE_RPA_END")
 	echo "segment b: [$b_set]  a: [$a_set]  c: [$c_set]"
 	for seg in "b 0 300" "a 300 $BLE_RPA_REREG_C" "c $BLE_RPA_REREG_C $BLE_RPA_END"; do set -- $seg; ble_rpa_buckets "$2" "$3" "$1" || rc=1; done
-	[ "$(wc -w <<< "$b_set")" = 1 ] || { echo "FAIL segment b: want exactly 1 address, saw [$b_set]"; rc=1; }
-	[ "$(wc -w <<< "$a_set")" = 1 ] || { echo "FAIL segment a: want exactly 1 address over 30 min, saw [$a_set]"; rc=1; }
-	[ "$(wc -w <<< "$c_set")" = 1 ] || { echo "FAIL segment c: want exactly 1 address, saw [$c_set]"; rc=1; }
-	[ "$a_set" = "$b_set" ] || { echo "FAIL a != b: the RPA changed without a timeout re-registration ([$b_set] -> [$a_set])"; rc=1; }
-	[ -n "$c_set" ] && [ "$c_set" != "$a_set" ] || { echo "FAIL c == a: no new RPA after a re-registration past rpa_timeout"; rc=1; }
+	# an empty segment is "not observed" (never a comparison): a == b / c != a are judged only on observed segments
+	for seg in "b $b_set" "a $a_set" "c $c_set"; do set -- $seg; [ $# -ge 2 ] || { echo "FAIL segment $1: no address observed at all — run invalid"; rc=1; }; done
+	[ -n "$b_set" ] && [ "$(wc -w <<< "$b_set")" != 1 ] && { echo "FAIL segment b: want exactly 1 address, saw [$b_set]"; rc=1; }
+	[ -n "$a_set" ] && [ "$(wc -w <<< "$a_set")" != 1 ] && { echo "FAIL segment a: want exactly 1 address over 30 min, saw [$a_set]"; rc=1; }
+	[ -n "$c_set" ] && [ "$(wc -w <<< "$c_set")" != 1 ] && { echo "FAIL segment c: want exactly 1 address, saw [$c_set]"; rc=1; }
+	[ -n "$a_set" ] && [ -n "$b_set" ] && [ "$a_set" != "$b_set" ] && { echo "FAIL a != b: the RPA changed without a timeout re-registration ([$b_set] -> [$a_set])"; rc=1; }
+	[ -n "$a_set" ] && [ -n "$c_set" ] && [ "$c_set" = "$a_set" ] && { echo "FAIL c == a: no new RPA after a re-registration past rpa_timeout"; rc=1; }
 	addrs=$(printf '%s\n' "${rows[@]}" | awk '{print $2}' | sort -u | tr '\n' ' ')
 	grep -qi "$pub" <<< "$addrs" && { echo "FAIL the public address $pub was seen"; rc=1; }
 	if [ -n "$addrs" ]; then

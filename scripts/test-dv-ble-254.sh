@@ -126,6 +126,10 @@ rpa_case no-new-in-c s_no_c FAIL "c == a"
 rpa_case 4-min-gap s_gap FAIL "no sighting in"
 rpa_case public-seen s_pub FAIL "public address"
 rpa_case guard-only-extra s_guard PASS
+s_none() { :; }
+rpa_case nothing-seen s_none FAIL "no address observed at all"
+o=$(echo 1000 > "$CLK"; SCEN=s_none; bchk_ble_rpa_254 p c 2>&1)
+grep -q 'c == a' <<< "$o" && tbad "rpa nothing-seen: printed the misleading 'c == a'" || tok "rpa nothing-seen: no 'c == a' when nothing was observed (2026-10-21 s15)"
 
 echo "$P passed, $F failed"
 [ "$F" = 0 ] && [ "$P" -gt 0 ]
