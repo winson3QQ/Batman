@@ -42,7 +42,14 @@ lim() {
 }
 
 # ---- current settings: ONLY the `current settings:` line, as tokens (design §4.3 #2; supported settings: lists all)
-settings() { bluetoothctl mgmt.info 2>/dev/null | clean | sed -n 's/^[[:space:]]*current settings:[[:space:]]*//p' | head -1; }
+# mgmt.info segfaults now and then too (04, 2026-10-21 02:08: "Segmentation fault", no output -> a false precondition
+# FAIL in the RPA N5b run): read-only, so up to 3 reads; still nothing = unreadable (the caller FAILs)
+settings() {
+	for _i in 1 2 3; do
+		_s=$(bluetoothctl mgmt.info 2>/dev/null | clean | sed -n 's/^[[:space:]]*current settings:[[:space:]]*//p' | head -1)
+		[ -n "$_s" ] && { echo "$_s"; return 0; }
+	done; return 1
+}
 has_tok() { case " $1 " in *" $2 "*) return 0;; esac; return 1; }
 # non-interactive `bluetoothctl mgmt.advinfo` segfaults now and then without output (E39: 04 4/30, 02 1/31,
 # 2026-10-20; mgmt.info 0/60) -> up to 3 reads; still nothing = unreadable (the caller FAILs). Read-only, so a retry
