@@ -1,6 +1,6 @@
 # Batman HAT v2:新 HAT 規格(Pi 4 與 Pi 3A+ 共用)
 
-狀態:**DRAFT v0.4**(2026-10-20;v0.2 依使用者對 O2、O4–O7 的決定修訂;v0.3 QR 改貼本體底面;v0.4 用 3A+ 官方文件補 §5.5、§6.4、§6.5),**尚未經對抗式審查**。審查依 `docs/design/REVIEW.md`,交給獨立 reviewer 審整份。
+狀態:**DRAFT v0.5**(2026-10-20;v0.2 依使用者對 O2、O4–O7 的決定修訂;v0.3 QR 改貼本體底面;v0.4 用 3A+ 官方文件補 §5.5、§6.4、§6.5;v0.5 依 SLB9673 規格書改 §5.1:TPM 走獨立軟體 I2C、接腳表、證書更正),**尚未經對抗式審查**。審查依 `docs/design/REVIEW.md`,交給獨立 reviewer 審整份。
 主單:#227。決策單:#240。需求來源:#219 §8.5(H1–H11)、#256、#300、#302。外殼:#228。軟體配合:#223(#224–#226)、#239。
 
 > 標記慣例(沿用 `hat-v1-spec.md`):**【事實】** = 本專案實測、原始碼、規格書或 repo 檔案可查證;**【推論】** = 由事實推出、尚未實測;**【決策】** = 使用者已拍板(附日期);**【提案】** = 本文提出、待審查或待使用者拍板;**【待量測】** = 要實物量過才能定;**【搜尋結果】** = 只看到搜尋摘要,原文被本環境的網路代理擋住,要人工下載確認。
@@ -20,7 +20,7 @@
 
 | # | 項目 | v1(`hat-v1-spec.md`) | v2(本文) | 來源 |
 |---|---|---|---|---|
-| D1 | TPM | SLB9672,SPI1(GPIO18–21),RST GPIO16,PIRQ GPIO22 | **SLB9673,I2C1**;RST **GPIO22**;PIRQ 不接(輪詢) | 【決策】使用者 2026-10-20 |
+| D1 | TPM | SLB9672,SPI1(GPIO18–21),RST GPIO16,PIRQ GPIO22 | **SLB9673,獨立軟體 I2C(GPIO12/13)**;RST **GPIO22**;PIRQ 不接(輪詢) | 【決策】改 SLB9673:使用者 2026-10-20;獨立匯流排:【提案,依規格書時脈延展】 |
 | D2 | 安全晶片 | ATECC608C-TFLXTLS(0x36) | **ATECC608B-SSHDA**(未設定版,0x60),所有 SKU 都焊 | 【決策】#107、#240、#219 H1 |
 | D3 | RTC | RV-3028-C7 | 不變,保留 | 【決策】使用者 2026-10-20 |
 | D4 | GNSS 介面 | UART5(GPIO12/13),Pi 4 限定 | **GPIO14/15(兩塊板都是 mini UART)** | 【決策】走 UART、3A+ 用 mini UART(2026-10-20);接腳為【提案】 |
@@ -78,9 +78,10 @@ flowchart LR
     I2C1["I2C1 (GPIO2/3) 100 kHz"]
     MU["mini UART (GPIO14/15)"]
     G["GPIO4/6/16/18/20/21/22/25/26/27"]
+    SW["軟體 I2C (GPIO12/13)"]
   end
   SPI0 --- MPCIE
-  I2C1 --- TPM["SLB9673 (0x2E?)<br/>RST ← GPIO22"]
+  SW --- TPM["SLB9673 (0x2E)<br/>RST ← GPIO22"]
   I2C1 --- SE["608B-SSHDA (0x60)"]
   I2C1 --- RTC["RV-3028 (0x52)"]
   I2C1 --- INA["INA226 0x40 / 0x41"]
@@ -96,14 +97,14 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 | GPIO | 用途 | 開機預設 | 為什麼這樣選 |
 |---|---|---|---|
 | 0 / 1 | 不接 | 上拉 | HAT+ 規格 §2.3:只能接 ID EEPROM【事實,v1】 |
-| 2 / 3 | I2C1:SLB9673、608B 0x60、RV-3028 0x52、INA226 0x40 / 0x41 | 上拉 | 維持 100 kHz(608B 喚醒脈衝,v1 §7) |
+| 2 / 3 | I2C1:608B 0x60、RV-3028 0x52、INA226 0x40 / 0x41 | 上拉 | 維持 100 kHz(608B 喚醒脈衝,v1 §7);Pi 板上已有 1.8 kΩ 上拉 |
 | 4 | BAT_PRESENT(低 = 有電池) | 上拉 | 不變(v1) |
 | 5 | HaLow IRQ | — | 不動 |
 | 6 | GNSS PPS | — | 補上 WM1302 拿不到 PPS 的缺口(#300 B-1) |
 | 7 | **不可用**(SPI0 CE1) | — | 不變(v1) |
 | 8–11 | HaLow SPI0 | — | 不動 |
-| 12 | 保留 | 下拉 | 備案:若 SLB9673 需要時脈延展,TPM 改走 GPIO12/13 的軟體 I2C(O3) |
-| 13 | 保留 | 下拉 | 同上 |
+| **12** | **TPM I2C SDA**(軟體 I2C) | 下拉 | SLB9673 使用時脈延展,3A+ 的硬體 I2C 不支援(§5.1);HAT 加 4.7 kΩ 上拉 |
+| **13** | **TPM I2C SCL**(軟體 I2C) | 下拉 | 同上 |
 | **14 / 15** | **GNSS UART**(TXD → GNSS RX、RXD ← GNSS TX) | — | 3A+ 的 BT 佔 PL011 → 14/15 只能用 mini UART;Pi 4 同接法(D4、§5.4) |
 | **16** | **燈:紅** | 下拉 | #128;下拉 = 開機時不亮 |
 | 17 | HaLow reset | — | 不動 |
@@ -116,7 +117,7 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 | 26 | LTC2955 INT(電源鍵要求關機) | — | 不變(v1) |
 | 27 | 軟關機:N-FET → LTC2955 KILL | — | 不變(v1 §5.5.3) |
 
-- **GPIO12、13、19 保留不用**(GPIO19 保留腳位:使用者 2026-10-20)。GPIO12/13 也是 TPM 軟體 I2C 備案的腳。
+- **GPIO19 保留不用**(使用者 2026-10-20)。
 - **TPM PIRQ 不接**:驅動先用輪詢(v1 已是如此)。省一顆上拉,也少一條要保護的線。
 - **燈的驅動**:GPIO 不直接推 LED。每色一顆 N-FET,或用限流電阻接 LED;面板燈的電流與電壓待外殼選料(#128)【提案】。
 
@@ -124,24 +125,57 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 
 ### 5.1 TPM 2.0 — Infineon SLB9673
 
-- **為什麼是它**:同系列 SLB9672 的 I2C 版,封裝同為 PG-UQFN-32【事實,#227 留言引 Infineon 規格書】。改 I2C 後:
+來源:**SLB9673 TPM 2.0 FW26.xx 規格書 Rev 1.4(2024-11-13)**,以下簡稱「規格書」;使用者 2026-10-20 提供,存於 Batman-P `hardware/datasheets/`。
+
+- **為什麼是它**:同系列 SLB9672 的 I2C 版,封裝同為 PG-UQFN-32(本體 5 × 5 mm,高 ≤ 0.6 mm,底部散熱墊 3.6 × 3.6 mm)【事實,規格書圖 1】。改 I2C 後:
   - SPI1 四條線、CS 上拉都拿掉;
   - GPIO18–21 空出來,#128 的燈與 H4 的按鍵才有腳可用;
   - 上次 G2 預演失敗原因之一(TPM 的 SPI 腳朝插座、打不下過孔,PLAN §13)消失。
-- **認證**【搜尋結果,待人工下載原文確認】:
-  - Common Criteria:BSI 證書 **BSI-DSZ-CC-1178-V4-2023**,涵蓋 SLB9673_2.0 v26 韌體,EAL4 加強(AVA_VAN.4、ALC_FLR.1),有效至 2028-07-31([Common Criteria Portal](https://www.commoncriteriaportal.org/files/epfiles/1178V4a_pdf.pdf))。規格書另列 CC-1245。
-  - FIPS:**140-2 Level 2**;NIST 有 SLB 9673 FW 27.25 的安全政策。
-  - **沒有 FIPS 140-3**:Infineon 論壇回覆「目前產品線沒有 FIPS 140-3 認證的 TPM,140-2 也沒有升級路徑」([Infineon 社群](https://community.infineon.com/t5/OPTIGA-TPM/Looking-for-FIPS-140-3-compliant-TPM/td-p/960207))。
-  - ⚠️ FIPS 140-2 證書在美國 CMVP 已陸續轉入「historical」【推論,依 140-2 停發時程】。**若戰術客戶要求 140-3,這顆不符**,見 O2。
-- **I2C 位址**:0x2E【搜尋結果,NVIDIA 論壇有人在 0x2E 偵測到;待規格書確認】。不與 0x40 / 0x41 / 0x52 / 0x60 衝突。
+- **⚠️ 接腳定義和 SLB9672 不同,不能只換料號**【事實,規格書表 13–15、圖 7】:
+
+  | 腳 | SLB9673 | 接法 | SLB9672 同一腳(v1) |
+  |---|---|---|---|
+  | 29 / 30 | SDA / SCL(開汲極,SCL 延展時會當輸出) | TPM 專用 I2C 匯流排(見下) | NC,必須空接 |
+  | 17 | RST#(低態有效,內建弱上拉) | GPIO22 + 外加 10 kΩ 下拉 | RST# |
+  | 18 | I2C_PIRQ#(開汲極) | 不接,驅動用輪詢 | PIRQ# |
+  | 20 | **TEST#,必須接固定高電位** | 接 VDD | CS# |
+  | 6、19、21、24 | **NC,必須空接** | 空接 | 19 = SCLK、21 = MOSI、24 = MISO |
+  | 1、14、22 | VDD | 3V3_SEC,各 100 nF + 共用 1 µF | 同 |
+  | 2、9、23、32 | GND | 接地 | 同 |
+  | 8 | NCI/VDD(TCG 定義為 VDD) | 建議接 VDD | 同 |
+  | 16 | NCI/GND(TCG 定義為 GND) | 建議接 GND | 同 |
+  | 10 | NCI/GND | 建議經下拉電阻接 GND | 同 |
+  | 3、4、7 | GPIO_00/01/02(內建上拉) | 空接 | 同 |
+  | 5、11–13、15、25–28、31 | NCI(內部不連) | 空接 | — |
+
+  → `gen/design.py` 的 TPM 符號與接線要照這張表**重畫**,不是改料號欄位。
+- **認證**【事實,規格書第 1 頁;證書內容為搜尋結果,原文待讀】:
+  - **Common Criteria**:EAL4+、AVA_VAN.4(中度攻擊能力)、ALC_FLR.1,依 TCG PC Client TPM 保護規範。證書 **BSI-DSZ-CC-1245-2024**(德國 BSI 核發),2024-10-09 生效、**有效至 2029-10-08**。涵蓋 **SLB9673_2.0 韌體 v26.24**(與 SLB9672 v16.24 同一張)【搜尋結果,[BSI](https://www.bsi.bund.de/SharedDocs/Zertifikate_CC/CC/SmartCards_IC_Cryptolib/1245.html)】。
+    - 規格書第 8 頁仍寫「targeted / CERTIFICATE <tbd>」,是發證前的舊文字,以第 1 頁與 BSI 為準。
+    - v0.1 寫的 BSI-DSZ-CC-1178-V4-2023 是**舊韌體**的證書,更正。
+  - **FIPS 140-2 Level 2**:NIST CMVP **證書 #4467**(2023-04-07 首次核發),涵蓋 SLB 9673 **FW 26.25**、FIPS 模式下【搜尋結果,[NIST CMVP #4467](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/4467)】。
+    - ⚠️ 該證書的**到期日(sunset)是 2026-09-21,已經過了**。FIPS 140-2 證書過期後會轉入「historical」清單,不能再用於新的美國聯邦採購【推論,依 CMVP 慣例;待讀 NIST 頁面的即時狀態】。
+    - **沒有 FIPS 140-3**,Infineon 表示 140-2 沒有升級路徑([Infineon 社群](https://community.infineon.com/t5/OPTIGA-TPM/Looking-for-FIPS-140-3-compliant-TPM/td-p/960207))。
+  - **結論**:實際有效的認證只剩 **CC EAL4+(到 2029)**。若客戶要 FIPS,這顆已經不符(O2)。
+  - **韌體版本要對上證書**:CC 是 v26.24、FIPS 是 26.25。訂購時選 FW26.24(見料號),並在 bring-up 讀 `TPM_PT_FIRMWARE_VERSION_2` 確認;第 4 個位元組 0x00 = 已認證模式、0x02 = 未認證【事實,規格書 §3.2 `TPM_PT_FIRMWARE_VERSION_2` 說明】。
+- **I2C 位址**:**0x2E**(7 位元),可改寫暫存器 0x38 調整【事實,規格書 §1.3、§3.2.10】。不與 0x40 / 0x41 / 0x52 / 0x60 衝突。最高 1 MHz(典型)【事實,§1.1】。
+- **⚠️ 時脈延展(clock stretching)是確定的**【事實,規格書 §1.3:「The device uses clock stretching on the I2C interface (this implies that the I2C controller must support this)」;§3.2.8:忙碌時也會用延展拖住主控端】。
+  - BCM2835/2836/2837 的硬體 I2C 不支援時脈延展,BCM2711 的報告不一致【搜尋結果,raspberrypi/linux #4884 等】。**3A+ 是 BCM2837** → TPM **不能**放在 3A+ 的硬體 I2C1 上;放了會讀錯,甚至把整條 I2C1(608B、RTC、INA226)一起卡住。
+  - **v0.5 改法**【提案,依規格書;O3 由規格書決定】:TPM 走**獨立的軟體 I2C**(`i2c-gpio` overlay,GPIO **12 = SDA、13 = SCL**),兩塊板相同。
+    - `i2c-gpio` 由 CPU 直接控制接腳,會等 SCL 真的變高,支援延展【推論,依 Linux `i2c-algo-bit` 的行為;待讀 6.6 原始碼,A12】。
+    - HAT 上加 **SDA、SCL 各一顆上拉**(建議 4.7 kΩ 到 3V3_SEC);Pi 只在 GPIO2/3 有上拉,GPIO12/13 沒有【事實,RP-008332-DS-1】。
+    - 好處:TPM 和 608B、RTC、INA226 分開匯流排,一顆卡住不會拖垮另一邊;TPM 的匯流排上沒有其他晶片可側錄。
+    - 代價:CPU 位元操作,速度約 100 kHz 級,TPM 指令本來就慢(毫秒級),影響不大【推論】;兩個 subtarget 都要打包 `kmod-i2c-gpio`。
+- **輪詢間隔**:輪詢 TPM 狀態暫存器之間至少 1 ms;收到 NACK 時要隔 ≥ 250 µs 重試,至少 50 次【事實,規格書 §3.2.8–3.2.9】→ 交給 `tpm_tis_i2c` 驅動,A7 一起確認。
 - **Linux**:驅動 `tpm_tis_i2c`(`CONFIG_TCG_TIS_I2C`)。DT compatible 依 2022 年的 binding 修補是 `"infineon,slb9673", "tcg,tpm-tis-i2c"`【搜尋結果,LKML;待確認 6.6 核心已合併】。
-- **RST#**:接 GPIO22 + 外加 10 kΩ 下拉,由 overlay 的 `gpio-hog` 拉高釋放。沿用 v1 §5.1 的理由:驅動不處理 `reset-gpios`。這一點在 v1 是針對 `tpm_tis_spi` 查證的,**`tpm_tis_i2c` 要重新查**(A5)。
-- **時脈延展(clock stretching)風險**:BCM2835/2836/2837 的 I2C 硬體不支援時脈延展,BCM2711 的報告不一致【搜尋結果,raspberrypi/linux #4884 等】。**3A+ 是 BCM2837**:若 SLB9673 會延展 SCL,3A+ 上的 TPM 交易可能讀錯,甚至卡住整條 I2C1(608B、RTC 跟著失效)。
-  - 規格書有沒有延展、要多久,**原文未讀到**(A4)。
-  - 備案【提案】:TPM 改走 GPIO12/13 的軟體 I2C(`i2c-gpio` overlay,支援延展)。好處是 TPM 和其他晶片分開匯流排。**這要在 bring-up 前用規格書決定,不能等板子回來再改。**
-- **資安限制**(沿用 v1 §5.1):PCR 封存擋不住「整片 HAT 移到別台 Pi」。金鑰要綁 Pi OTP,做法是 KDF(TPM 秘密, Pi OTP 私鑰);unseal 一律走 salted session(I2C 共用匯流排可側錄)。
+- **RST#**:接 GPIO22 + 外加 10 kΩ 下拉,由 overlay 的 `gpio-hog` 拉高釋放。RST# 內建弱上拉【事實,規格書表 13】,所以外加下拉是必要的。驅動不處理 `reset-gpios` 這一點,v1 是針對 `tpm_tis_spi` 查證的,**`tpm_tis_i2c` 要重新查**(A5)。
+- **資安限制**(沿用 v1 §5.1):PCR 封存擋不住「整片 HAT 移到別台 Pi」。金鑰要綁 Pi OTP,做法是 KDF(TPM 秘密, Pi OTP 私鑰);unseal 一律走 salted session。
   - **Pi 3A+ 的 OTP 私鑰功能未確認**:Pi 4 的做法依 Raspberry Pi 文件,BCM2837 是否有同等功能要查(A8)。
-- **料號**:SLB9673 的戶外溫度版本與料號待規格書(v1 的 SLB9672 有 −40–85 °C 的 XU 版)。
+- **料號**【事實,規格書表 1 與訂購資訊】:
+  - **SLB 9673XU2.0 FW26.24**,訂購碼 **SP006026288**,−40–85 °C(增強溫度)。← 建議,韌體對上 CC 證書。
+  - 備選 SLB 9673AU2.0 FW26.24(SP006026290),−40–105 °C。整機溫度由 Pi 的 0–50 °C 決定(§6.5),不需要 105 °C 版。
+  - FW26.00、26.10 已停產;FW26.13 仍在供貨但不在 CC-1245 範圍【事實 + 推論】。
+  - 待機約 120 µA(典型)【事實】。
 
 ### 5.2 ATECC608B-SSHDA
 
@@ -276,6 +310,7 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 |---|---|
 | 拿掉 SPI1 走線、CS 上拉 R61、PIRQ 上拉 | −10 |
 | SLB9673 取代 SLB9672(同封裝) | 0 |
+| TPM 匯流排上拉 ×2 | +3 |
 | 面板接頭 + ESD | +40–60 |
 | 燈驅動 FET ×3 | +15 |
 | QR 區 | 0(貼在本體底面,§5.8) |
@@ -305,7 +340,8 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 | 資源 | 唯一擁有者(可以改) | 只讀者 |
 |---|---|---|
 | GPIO22(TPM RST#) | overlay 的 `gpio-hog`(開機時拉高一次) | — |
-| I2C1 匯流排 | 核心 `i2c-bcm2835` 驅動 | 各 client 驅動 |
+| I2C1 匯流排 | 核心 `i2c-bcm2835` 驅動 | 608B、RTC、INA226 驅動 |
+| TPM 匯流排(GPIO12/13) | 核心 `i2c-gpio` 驅動 | 只有 `tpm_tis_i2c` |
 | TPM | 核心 `tpm_tis_i2c` → `/dev/tpmrm0`;使用者空間只有開機解鎖腳本(待設計) | — |
 | 608B 設定區與槽位 | 出廠燒錄站(一次性,鎖定後不可改);執行期只有 `batman-provd`(#219) | — |
 | RTC 時間 | **只有一個寫入者**:時間來源(chrony / gpsd)校準後寫 RTC【提案,待決定是哪一個】 | 開機時 `hwclock` 讀 |
@@ -327,7 +363,7 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 |---|---|---|---|---|
 | `config.txt` 的 HAT overlay(TPM、RTC、GNSS、pps、gpio-keys、gpio-poweroff) | 燒卡 image 寫;firmware 讀 | 每塊板各自的段落 `[pi4]` / `[pi3]` | 缺 overlay → 該功能不存在;**TPM 缺 = 解鎖失敗,fail-closed**(不解鎖,不是開放) | root、拿到 SD 卡的人 |
 | `cmdline.txt` 的 console | 燒卡 image 寫 | **不得含 `console=serial0` / `ttyS0` / `ttyAMA0`**(新 HAT 的 image) | 若含 → GNSS 能對登入程式打字(#302)。**fail-open,由燒卡流程擋**(§11);V9 驗證 | 同上 |
-| I2C 位址 | 硬體 | 0x2E(待確認)、0x40、0x41、0x52、0x60 | 位址衝突 = bring-up V2 會抓到 | — |
+| I2C 位址 | 硬體 | I2C1:0x40、0x41、0x52、0x60;TPM 匯流排:0x2E | 位址衝突 = bring-up V2 會抓到 | — |
 | GPIO18 認領鍵 | 硬體 → `gpio-keys` 事件 | 按下 = 高 | 斷線 = 永遠低 = 永遠不開認領窗口(fail-closed) | 實體在場的人 |
 | 面板接頭 | 外殼線材 | §5.6 腳位表 | 接反 → LED 不亮,按鍵無效;ESD 由 TVS 吸收 | 實體在場的人 |
 
@@ -356,17 +392,18 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 |---|---|---|---|
 | A1 | BCM2711 / BCM2837 開機預設 GPIO 9–27 下拉 | #219 §8.5 H4 引述 | 待補一手來源(BCM2711 / BCM2837 周邊規格書) |
 | A2 | 3A+ 的 mini UART 可出到 GPIO14/15,BT 開著時 PL011 被佔 | #219 H7 | 待補 Raspberry Pi「UART configuration」文件原文 |
-| A3 | SLB9673 I2C 位址 0x2E | NVIDIA 論壇【搜尋結果】 | **待規格書** |
-| A4 | SLB9673 是否延展 SCL、守護時間 | 無 | **待規格書;決定 R3 備案** |
+| A3 | SLB9673 I2C 位址 0x2E | 規格書 §1.3 | **已查** |
+| A4 | SLB9673 是否延展 SCL | 規格書 §1.3、§3.2.8:**會**,主控端必須支援 | **已查 → TPM 改走軟體 I2C(§5.1)** |
 | A5 | `tpm_tis_i2c` 不處理 `reset-gpios` | v1 只查了 `tpm_tis_spi` | **待讀 6.6 核心原始碼** |
 | A6 | `i2c-bcm2835` 遇到卡住的匯流排會不會自己復原 | 無 | 待讀原始碼 |
 | A7 | 6.6 核心的 `tpm_tis_i2c` 認得 SLB9673 | 2022 LKML 修補【搜尋結果】 | 待讀 firmware fork 的核心原始碼 |
 | A8 | Pi 3A+ 有可用於 KDF 的 OTP 裝置私鑰 | 無 | **待查;影響 §5.1 對策 1 在 3A+ 上是否成立** |
 | A9 | 3A+ 從 40 針背饋 5 V 的保護與同時接 micro-USB 的後果 | RP-008332-DS-1:40 針 5V 腳在 F1 之後、無防逆流(§5.5 第 3 點) | **已查** |
 | A10 | MAX-M10S 關掉 VCC、V_BCKP 常電時可熱啟動 | 無 | 待讀整合手冊 |
-| A11 | SLB9673 的 CC / FIPS 證書狀態 | 搜尋摘要(§5.1) | 待人工下載證書原文 |
+| A11 | SLB9673 的 CC / FIPS 證書狀態 | 規格書第 1 頁 + BSI / NIST 搜尋結果(§5.1) | CC-1245 有效到 2029;FIPS #4467 已過 sunset(2026-09-21),**待讀 NIST 即時狀態** |
+| A12 | `i2c-gpio`(`i2c-algo-bit`)支援 SCL 延展 | 無 | 待讀 6.6 核心原始碼 |
 
-本環境的網路代理擋住 infineon.com、mouser.com、commoncriteriaportal.org,A3、A4、A11 需要使用者下載規格書放進 repo(同 v1 §10)。
+本環境的網路代理擋住 infineon.com、mouser.com、commoncriteriaportal.org、bsi.bund.de、csrc.nist.gov。SLB9673 規格書已由使用者提供(2026-10-20);證書原文仍待讀。
 
 ## 11. 安全(威脅模型)
 
@@ -392,7 +429,8 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 # config.txt(兩塊板共通部分;Pi 3A+ 放 [pi3]、Pi 4 放 [pi4] 的差異待列)
 dtparam=i2c_arm=on
 dtparam=i2c_arm_baudrate=100000
-dtoverlay=batman-hat-v2            # 自製:SLB9673 在 I2C1、gpio-hog 放開 GPIO22、gpio-keys GPIO18
+dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=12,i2c_gpio_scl=13,i2c_gpio_delay_us=2   # TPM 專用匯流排(bus 編號待定)
+dtoverlay=batman-hat-v2            # 自製:SLB9673 掛在上面那條 i2c-gpio 匯流排(0x2E)、gpio-hog 放開 GPIO22、gpio-keys GPIO18
 dtoverlay=i2c-rtc,rv3028,trickle-resistor-ohms=3000,backup-switchover-mode=3
 enable_uart=1                      # mini UART 到 GPIO14/15;BT 留在 PL011(不載 miniuart-bt、不載 disable-bt)
 dtoverlay=pps-gpio,gpiopin=6
@@ -401,7 +439,7 @@ dtoverlay=gpio-poweroff,gpiopin=27
 ```
 
 - `enable_uart=1` 對兩塊板 core clock 的影響、與 HaLow SPI 的關係:V3。
-- 核心模組:`kmod-tpm-tis-i2c`(`CONFIG_TCG_TIS_I2C`)、`kmod-rtc-rv3028`,**兩個 subtarget 都要打包**,並對照 #217 的瘦身清單。
+- 核心模組:`kmod-tpm-tis-i2c`(`CONFIG_TCG_TIS_I2C`)、`kmod-i2c-gpio`(TPM 專用匯流排)、`kmod-rtc-rv3028`,**兩個 subtarget 都要打包**,並對照 #217 的瘦身清單。
 - `/etc/inittab` 拿掉 `ttyS0` / `ttyAMA0` 的 askfirst。
 - 上面是**燒卡 image** 的改動,OTA 帶不到(§9)。改到 `cmdline` 的建卡腳本在 CLAUDE.md 的「兩板共用 A/B 檔案」清單內 → 兩塊板都要實機驗證。
 
@@ -410,7 +448,7 @@ dtoverlay=gpio-poweroff,gpiopin=27
 | # | 項目 | 方法 | 板子 |
 |---|---|---|---|
 | V1 | TPM 綁定、reboot 後 `TPM2_Startup` 正常 | `/dev/tpm0`、`tpm2_getcap`;連續 reboot 50 次 | 兩塊 |
-| V2 | I2C 位址與匯流排共用 | `i2cdetect -y 1` 應見 0x2E?/0x40/0x41/0x52/0x60;TPM、608B、RTC 交錯存取 1 小時 | 兩塊,**3A+ 為重點**(時脈延展) |
+| V2 | I2C 位址與兩條匯流排 | `i2cdetect -y 1` 應見 0x40/0x41/0x52/0x60;TPM 匯流排應見 0x2E;TPM 與 608B、RTC 同時存取 1 小時無錯;示波器確認 TPM 的 SCL 延展被正確等待 | 兩塊,**3A+ 為重點** |
 | V3 | mini UART + core clock | GNSS NMEA 長時間無亂碼;HaLow SPI 速率與 iperf 不變 | 兩塊 |
 | V4 | GNSS | gpsd 定位、PPS;gpsd 重啟後恢復 | 兩塊 |
 | V5 | 3A+ 的 3.3 V 負載 | 量 3V3_PI 電流,與 3A+ 能供的對照 | 3A+ |
@@ -433,7 +471,7 @@ v1 §9 的 V5–V11(電源、熱、雜訊、GNSS 受干擾)照做,兩塊板都�
 |---|---|---|---|
 | O1 | 加長量:依 G1 面積實算,上限 10 mm | 使用者(依數據) | 外殼本體高度 |
 | O2 | 目標客戶是否要求 FIPS 140-3?SLB9673 只有 140-2 L2 | 使用者:**不確定**(2026-10-20)→ 先照 SLB9673 走,有客戶指定 140-3 再重開 | 列為風險 |
-| O3 | TPM 在 I2C1 共用,或改走 GPIO12/13 軟體 I2C(R3) | 依 A4 規格書 | GPIO 表、佈線 |
+| O3 | TPM 匯流排 | **獨立軟體 I2C(GPIO12/13)**:規格書寫明使用時脈延展(A4)【提案,待審查】 | 已依規格書處理 |
 | O4 | GNSS 電源閘 | **不採用**(使用者 2026-10-20) | 已結案 |
 | O5 | GPIO19 | **保留腳位**(使用者 2026-10-20) | 已結案 |
 | O6 | QR 位置 | **本體底面,被電池盒蓋住**(使用者 2026-10-20) | 已結案;空間待 V15,配對轉 #219(§5.8) |
@@ -443,7 +481,7 @@ v1 §9 的 V5–V11(電源、熱、雜訊、GNSS 受干擾)照做,兩塊板都�
 ## 15. 流程
 
 1. 本文過對抗式審查(`docs/design/REVIEW.md`,審整份),O2–O7 已由使用者處理(2026-10-20)。可以在雲端做。
-2. 使用者提供 SLB9673 規格書與 CC 證書(A3、A4、A11)。3A+ 的機構圖、產品簡介、簡化電路圖已提供(2026-10-20),A9 與 §6.4 已用上。
+2. 資料:SLB9673 規格書、3A+ 機構圖 / 產品簡介 / 簡化電路圖已提供並用上(2026-10-20)。尚缺:CC-1245 與 FIPS #4467 證書原文(A11)、XR77004 規格書(§5.5 第 4 點)。
 3. 改 `hardware/hat-v1/gen/design.py`,跑 `check.py` 與模擬。要 KiCad 7,在本機做。
 4. 擺件、佈線沿用 layout-v2 流程(sketch → G0 → escape → G1 → G2,連續兩次 0 未接),G1 結果決定 O1,通知外殼。在本機做。
 5. 打樣,兩塊板都 bring-up,跑 §13。
