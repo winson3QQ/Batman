@@ -32,6 +32,15 @@ scratch() {
 	done
 }
 
+# lim <secs> <cmd...>: run with a time limit (no `timeout` on the node, E1); a hang is killed and reported — a
+# deadman must never freeze on one stuck tool (2026-10-20: btmgmt hung on stdin=/dev/null inside the deadman)
+lim() {
+	_t=$1; shift; "$@" & _p=$!; _n=0
+	while [ -d "/proc/$_p" ] && [ $_n -lt "$_t" ]; do sleep 1; _n=$((_n + 1)); done
+	if [ -d "/proc/$_p" ]; then kill "$_p" 2>/dev/null; echo "FAIL timeout after ${_t}s: $*"; return 124; fi
+	wait "$_p"
+}
+
 # ---- current settings: ONLY the `current settings:` line, as tokens (design §4.3 #2; supported settings: lists all)
 settings() { bluetoothctl mgmt.info 2>/dev/null | clean | sed -n 's/^[[:space:]]*current settings:[[:space:]]*//p' | head -1; }
 has_tok() { case " $1 " in *" $2 "*) return 0;; esac; return 1; }
@@ -207,6 +216,18 @@ cmd_dm_fire() {
 	role_fire_restore "$run"		# role-specific; may reboot (irk-exposed)
 	rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"
 	[ $got = 1 ] && unlock; exit 0
+}
+# recover (design §4.7 `ble-recover`): under the lock, ignore whose lease it is; stop every harness process group
+# of every run, then the role's restore (a leaked IRK => reboot), drop lease / deadman records / finished run dirs
+cmd_recover() {
+	lock 60 || echo "WARN lock busy for 60 s — recovering without it"
+	for rec in "$ST/dm" "$ST/dm.new"; do dm_rec_alive "$rec" && { set -- $(cat "$rec"); echo "RECOVER kill deadman group $3"; pg_kill "$3"; }; rm -f "$rec"; done
+	for d in "$BT"/*/; do [ -d "$d" ] && kill_run_groups "$(basename "$d")"; done
+	echo "RECOVER state before: $(ls "$ST" 2>/dev/null | tr '\n' ' ') lease=[$(lease_read)]"
+	rm -f "$BT"/*/*.snoop
+	role_fire_restore recover
+	rm -f "$BT/lease"; RUN_ID=recover gc_rundirs
+	unlock 2>/dev/null; echo "RECOVERED"; ble_state
 }
 # kill every process group this run started (recorded as $BT/<run>/*.pg)
 kill_run_groups() { for pgf in "$BT/$1"/*.pg; do [ -f "$pgf" ] && pg_kill "$(cat "$pgf")"; rm -f "$pgf"; done; }

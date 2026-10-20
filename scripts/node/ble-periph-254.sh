@@ -11,7 +11,10 @@ BTMGMT=$DIR/btmgmt; BTMON=$DIR/btmon
 RUN_ID=${RUN_ID:-}
 
 tool_ok() { file_ok "$1" && [ "$(ls -ln "$1" | awk '{print $1}')" = "-rwx------" ]; }
-mg() { "$BTMGMT" "$@" 2>&1 | clean; }
+# btmgmt never exits when its stdin is /dev/null (bluez mainloop cannot poll it; 04, 2026-10-20: the N7 deadman hung
+# on `btmgmt rm-adv 1`). EVERY call goes through bm(): an empty pipe as stdin, it exits after the command.
+bm() { : | "$BTMGMT" "$@"; }
+mg() { bm "$@" 2>&1 | clean; }
 identity() { ls /var/lib/bluetooth/*/identity 2>/dev/null | head -1; }
 
 ad_name() {	# AD structure "Complete Local Name" as hex: len, 0x09, bytes
@@ -23,7 +26,7 @@ cmd_stage_check() {
 	dir_ok "$DIR" drwx------ || die "$DIR is not a root 0700 directory"
 	for t in "$BTMGMT" "$BTMON" "$DIR/ble-lib-254.sh" "$SELF"; do file_ok "$t" || die "$t is not a root regular file with one link"; done
 	tool_ok "$BTMGMT" && tool_ok "$BTMON" || die "btmgmt / btmon are not root 0700"
-	v1=$("$BTMGMT" --version 2>&1 | tail -1 | sed "s/^btmgmt: //"); v2=$("$BTMON" --version 2>&1 | tail -1)
+	v1=$(bm --version 2>&1 | tail -1 | sed "s/^btmgmt: //"); v2=$("$BTMON" --version 2>&1 | tail -1)
 	[ "$v1" = 5.72 ] && [ "$v2" = 5.72 ] || die "tool versions btmgmt=[$v1] btmon=[$v2], want 5.72 (missing library?)"
 	sha256sum "$BTMGMT" "$BTMON" "$DIR/ble-lib-254.sh" "$SELF" | sed "s#$DIR/##"
 	echo "STAGE ok"
@@ -165,13 +168,13 @@ btmon_judge() {	# btmon -r text -> verdict lines. Sections (6-space indent) deci
 
 role_fire_restore() {	# deadman on 04: stop recorders, drop snoops + adv; leaked IRK => reboot (H-U6), else restore
 	rm -f "$BT/$1"/*.snoop
-	"$BTMGMT" rm-adv 1 >/dev/null 2>&1
+	lim 20 bm rm-adv 1 >/dev/null 2>&1
 	if mark_here irk-exposed; then
 		dm_log "$1" "deadman: IRK was exposed and not verified as voided — reboot (H-U6)"
 		rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"
 		batman-slot reboot committed ble-dm-254; exit 0
 	fi
-	"$BTMGMT" power off >/dev/null 2>&1; /etc/init.d/bluetoothd restart >/dev/null 2>&1
+	lim 20 bm power off >/dev/null 2>&1; lim 60 /etc/init.d/bluetoothd restart >/dev/null 2>&1
 	wait_bluetoothd "" >/dev/null && mark_clear flipped
 }
 
@@ -187,6 +190,7 @@ case "$c" in
 	arm) cmd_arm "$@" ;;
 	release) cmd_release ;;
 	state) ble_state ;;
+	recover) cmd_recover ;;
 	info) cmd_info ;;
 	adv-on) cmd_adv_on "$@" ;;
 	adv-off) cmd_adv_off ;;

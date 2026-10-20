@@ -68,7 +68,7 @@ bchk_ble_rpa_254() {
 		fi
 		case " $BLE_RPA_INJECT " in *" powercycle "*) ;; *) done_x=1;; esac
 		if [ $done_x = 0 ] && [ "$now" -ge 1200 ]; then
-			timeout 30 ssh "${BLE_SSHO[@]}" "root@$p" "$BLE_DIR/btmgmt power off >/dev/null; $BLE_DIR/btmgmt power on >/dev/null"
+			timeout 30 ssh "${BLE_SSHO[@]}" "root@$p" ": | $BLE_DIR/btmgmt power off >/dev/null; : | $BLE_DIR/btmgmt power on >/dev/null"
 			ble_n "$p" 60 periph adv-on "$name" >/dev/null; echo "EV $now INJECT power cycle (negative control N5a)"; done_x=1
 		fi
 	}

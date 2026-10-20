@@ -64,5 +64,8 @@ ble_stage() {
 	echo "ok   staged $role on $n ($BLE_RUN_ID)"
 }
 
+# ble_recover <node> <periph|central>: clean up after an interrupted run (preflight P6 points here)
+ble_recover() { ble_stage "$1" "$2" && ble_n "$1" 300 "$2" recover; }
+
 # random advertising name per run: BatmanT-<6 hex>
 ble_name() { echo "BatmanT-$(od -An -tx1 -N3 /dev/urandom | tr -d ' \n')"; }

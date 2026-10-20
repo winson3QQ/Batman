@@ -98,7 +98,7 @@ role_fire_restore() {	# deadman on 02: kill the sessions; a possibly leaked IRK 
 		rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"
 		batman-slot reboot committed ble-dm-254; exit 0
 	fi
-	/etc/init.d/bluetoothd restart >/dev/null 2>&1; wait_bluetoothd "" >/dev/null
+	lim 60 /etc/init.d/bluetoothd restart >/dev/null 2>&1; wait_bluetoothd "" >/dev/null
 }
 
 c=${1:-}; [ $# -gt 0 ] && shift
@@ -112,6 +112,7 @@ case "$c" in
 	arm) cmd_arm "$@" ;;
 	release) cmd_release ;;
 	state) ble_state ;;
+	recover) cmd_recover ;;
 	reset) cmd_reset ;;
 	sample) cmd_sample "$@" ;;
 	round) cmd_round "$@" ;;

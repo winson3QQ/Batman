@@ -57,6 +57,12 @@ o=$(printf '%s\n' '> ACL Data RX: Handle 64 flags 0x02 dlen 11' '      SMP: Pair
 o=$(printf '%s\n' '< ACL Data TX: Handle 64 flags 0x00 dlen 7' '      ATT: Exchange MTU Request (0x02) len 2' '        Client RX MTU: 517' '> HCI Event: LE Meta Event (0x3e) plen 11' '      LE Data Length Change (0x07)' '        Max TX octets: 251' | judge | tr '\n' ';')
 [ "$o" = "UNPARSED 0;" ] && tok "btmon judge: ATT / other LE subevents are outside the verdict (not UNPARSED)" || tbad "non-judged sections: [$o]"
 
+# btmgmt hangs on stdin=/dev/null (found by N7 on 04): every call in the node scripts must go through bm()
+o=$(grep -n '"\$BTMGMT"' "$REPO/scripts/node/ble-periph-254.sh" | grep -v 'bm() {' | grep -v '^[0-9]*:#' | grep -v 'tool_ok\|file_ok\|for t in\|sha256sum')
+[ -z "$o" ] && tok "every btmgmt call goes through bm() (pipe stdin)" || tbad "direct btmgmt calls: $o"
+o=$(sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; lim 1 sleep 5; echo rc=\$?")
+case "$o" in *"FAIL timeout after 1s"*"rc=124"*) tok "lim kills a hung command and reports it";; *) tbad "lim: [$o]";; esac
+
 # ---------------------------------------------------------------- 3. round verdicts (stubbed ble_n)
 DIR=$W; export DIR
 # shellcheck disable=SC1091
