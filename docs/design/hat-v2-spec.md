@@ -1,6 +1,6 @@
 # Batman HAT v2:一塊板、兩種主機——開發插 Pi 4,量產插 CM4
 
-狀態:**DRAFT v0.20**(2026-10-20)。第一、二輪審查皆 REJECT;第三至五輪資安 REJECT;第六至九輪三位皆 APPROVE-WITH-CHANGES、0 BLOCKER;**第九輪電源與資安已只剩 MINOR**,軟體 2 個 MAJOR 已在本版處理。處理見 §17–§25;**第十輪待審**。
+狀態:**DRAFT v0.21**(2026-10-20)。第一、二輪審查皆 REJECT;第三至五輪資安 REJECT;第六至十輪三位皆 APPROVE-WITH-CHANGES、0 BLOCKER;**第十輪電源與資安只剩 MINOR**,軟體 1 個 MAJOR 已在本版處理。處理見 §17–§26;**第十一輪待審**。
 - **審查分兩段**(使用者 2026-10-20):本文審「開發版(插 Pi 4)」與「量產版必須在擺件前定案的銅箔決定」(§7.4 接腳處置表、§7.5 上電與反灌)。量產版其餘部分(簽章開機、燒錄流程、量產生命週期、熱)另寫 `docs/design/hat-v2-production.md`,量產打件前審完。
 - v0.8:拿掉 TPM;量產與民用都用 CM4。
 - v0.9:**同一塊板**,開發期用 40 針插在 Pi 4 上,量產期直接插 CM4 當 IO 板(使用者 2026-10-20);外殼不能大改。依 CM4 規格書 RP-008168-DS-4 定孔位、連接器、堆疊高度(§7)。
@@ -236,7 +236,7 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
    - 板上 5 V 設定 5.17 V(v1,100 k / 24 k 回授,`design.py:186-187` 用 **0.5%** 電阻)【事實】。電阻約 ±0.8%,再加 LMR33640 的 VFB 公差(待查,A12)與負載瞬變過衝,上限會貼到或超過 5.25 V【推論,審查 M1】。超過是違反建議範圍,不會燒毀。
    - **量產版 BOM 改設 5.05–5.10 V,回授用 0.1% 電阻**;開發版維持 5.17 V(Pi 4 端要補排針壓降)。O12 本來就分兩份 BOM。
    - **下限也要分析**(第三輪電源 M2):量產設定點壓低後,到 CM4 端只剩約 0.15 V 餘裕(規格書理想 > 4.9 V,含雜訊【事實】),要吸收設定點公差、LM74700 FET 壓降、1 oz 銅壓降、DF40 接點電阻、HaLow 發射突波(TPS62933F 吃同一條 5 V 軌,v1 `hat-v1-spec.md:262`)。處置【提案】:
-     - LMR33640 的 FB 改 **Kelvin 取樣,取樣點在 DF40 的 +5V 腳**(LM74700 之後)。**取樣線斷掉會讓 FB 被拉到 0、輸出衝向 VSYS(最壞 19.6 V,`design.py:502` 的 eFuse OVP 最壞值),燒掉 CM4 或 Pi 4**(第四輪電源 M1)【推論】→ 分壓電阻留在 IC 旁;10–50 Ω 的**本地備援電阻**從 5V_BUCK 接到**分壓器頂端節點**(0 Ω 選擇之後,兩顆 0 Ω 都漏焊時仍安全);取樣點用 0 Ω 二選一(開發版取本地、量產版取 DF40);**crowbar 放在 5V_BUCK**(降壓 IC 輸出、LM74700 / 旁路**之前**;第八輪電源 M1、m2)(比較器 + SCR,例如 TI 比較器、Littelfuse SCR,皆美國廠;部分 SCR 在中國廠生產,選料查 COO):放在 5V_BUCK 才能涵蓋**旁路跳線開路**的情況(跳線開路時回授隔著備援電阻去穩 CM4 端,5V_BUCK 會升到約 9 V 至 VSYS,而 5V_HOST 一直低於觸發點)【推論】;開發版的 LM74700 擋住 Pi 4 USB-C,只插 USB-C 時 crowbar 不會短路 Pi 的 5 V。**比較器的電源與參考取同一個 VSYS 來源,參考不在 = 不觸發;SCR 閘極加下拉**。**觸發點取視窗中點約 5.56 V**(第九輪電源 m2;5.5 V ±1.5% 的下限 5.4175 V 低於 5.42 V,自相矛盾),**含公差的上限 V_trip,max ≤ 5.7 V**(5.8 V 時 (6.0 − 5.8) / 0.1 = 2 µs、餘量為零);**下限 V_trip,min ≥ V_out,max + 卸載過衝**,開發與量產各列一次:開發 5.17 V 加 0.5% 電阻與 VFB ±1% 約 5.27 V,加過衝 0.1–0.15 V → V_trip,min ≥ 約 5.42 V;量產 = 設定點 5.05–5.10 V **加 5V_BUCK 到 DF40 的 IR 壓降(旁路、L1 → DF40 的 1 oz 銅箔,約 20–40 mV)**加過衝【推論】→ 中點 5.56 V 可容許約 ±2.5% 的總公差。**A12(VFB 公差)要在選比較器與參考 IC 之前查清**:若 VFB 是 ±1.5%,開發版視窗不夠(第九輪電源 m3)。參考 IC 與電阻精度等級寫進 BOM(第八輪電源 m3);**反應時間 t_react ≤ (6.0 − V_trip,max − 餘量) / (dV/dt)max**。5 V 軌電容 6 × 22 µF 0805(`design.py:183-185、202、214-215`)【事實】,扣直流偏壓後約 60 µF、高側限流約 6 A 級【推論,A12】→ dV/dt 約 0.07–0.1 V/µs,**目標 ≤ 1–2 µs**(20 µs 會過衝到約 6.5–7 V,第六輪電源 M1),拆成「比較器 tpd + SCR 的 t_gt」兩段;**比較器的參考電壓不取自故障中的 5 V 軌**(取 VSYS 經 LDO,和比較器電源同一來源;**參考要在 EN_5V 之前穩定**;比較器選**供電低於最低值時輸出為低**的型號,VSYS 上升期間不誤觸發;參考 IC 單獨開路 = 誤觸發(安全方向),參考卡高 = 永遠不觸發(潛伏故障)→ 量產加 crowbar 功能測試點,第九輪電源 m4)。以上 dV/dt 只涵蓋 FB 斷線;上管短路時電流由 eFuse 的暫態反應決定,G1 前補分析【推論,第七輪電源 m3】。觸發後 LMR33640 進 hiccup 限流;**上管短路時 eFuse 是 5.0 A auto-retry、不是斷開**(`design.py:136、142`)→ **SCR 的 I_T(RMS) 與 I_TSM 依 eFuse 5 A auto-retry 的熱循環選定,長期不開路**;另加**電容放電**條件:觸發瞬間約 60 µF(加主機端電容)從 5.7 V 倒進 SCR,峰值可達數十 A,選型要列 di/dt、I²t,必要時加 mΩ 級串聯限流(第八輪電源 m4)【推論】;**C14–C16(10 V X5R,`design.py:183-185`)的耐壓與備援電阻的功率,依「旁路開路」情境重選**(理由:避免電容在 5 A auto-retry 下過壓、短路發熱;**crowbar 是單點保護,沒有第二道**,SCR 燒成開路時 19.6 V 經備援電阻打到主機,電容耐壓救不了主機,第九輪電源 m5);旁路元件也要列**脈衝額定**(SCR 觸發時主機端電容的數十 A 經旁路倒灌)。v0.17 的「串一顆由 crowbar 燒斷的保險絲」**撤回**:保險絲必須長期通過約 3.6 A 正常負載,額定 ≥ 4 A 的保險絲在 5 A 脈衝下不會斷(第七輪電源 M1)【推論】。另一條路是把 eFuse 改 latch 模式,會重開 v1 的決定,不採用。**不用 TVS**:5 V 級 TVS 的崩潰電壓下限約 6.4 V,壓不住 CM4 的 6.0 V 絕對最大值,而且會被 4 A 級電流燒毀(第五輪電源 F1)【推論】;
+     - LMR33640 的 FB 改 **Kelvin 取樣,取樣點在 DF40 的 +5V 腳**(LM74700 之後)。**取樣線斷掉會讓 FB 被拉到 0、輸出衝向 VSYS(最壞 19.6 V,`design.py:502` 的 eFuse OVP 最壞值),燒掉 CM4 或 Pi 4**(第四輪電源 M1)【推論】→ 分壓電阻留在 IC 旁;10–50 Ω 的**本地備援電阻**從 5V_BUCK 接到**分壓器頂端節點**(0 Ω 選擇之後,兩顆 0 Ω 都漏焊時仍安全);取樣點用 0 Ω 二選一(開發版取本地、量產版取 DF40);**crowbar 放在 5V_BUCK**(降壓 IC 輸出、LM74700 / 旁路**之前**;第八輪電源 M1、m2)(比較器 + SCR,例如 TI 比較器、Littelfuse SCR,皆美國廠;部分 SCR 在中國廠生產,選料查 COO):放在 5V_BUCK 才能涵蓋**旁路跳線開路**的情況(跳線開路時回授隔著備援電阻去穩 CM4 端,5V_BUCK 會升到約 9 V 至 VSYS,而 5V_HOST 一直低於觸發點)【推論】;開發版的 LM74700 擋住 Pi 4 USB-C,只插 USB-C 時 crowbar 不會短路 Pi 的 5 V。**比較器的電源與參考取同一個 VSYS 來源,參考不在 = 不觸發;SCR 閘極加下拉**。**觸發點取視窗中點約 5.56 V**(第九輪電源 m2;5.5 V ±1.5% 的下限 5.4175 V 低於 5.42 V,自相矛盾),**含公差的上限 V_trip,max ≤ 5.7 V**(5.8 V 時 (6.0 − 5.8) / 0.1 = 2 µs、餘量為零);**下限 V_trip,min ≥ V_out,max + 卸載過衝**,開發與量產各列一次:開發 5.17 V 加 0.5% 電阻與 VFB ±1% 約 5.27 V,加過衝 0.1–0.15 V → V_trip,min ≥ 約 5.42 V;量產 = 設定點 5.05–5.10 V **加 5V_BUCK 到 DF40 的 IR 壓降(旁路、L1 → DF40 的 1 oz 銅箔,約 20–40 mV)**加過衝【推論】→ 中點 5.56 V 可容許約 ±2.5% 的總公差(5.421–5.699 V,**兩端餘量為零**);**±2.5% 必須涵蓋比較器 offset、遲滯方向、參考初始值與溫漂、分壓電阻**;卸載過衝 0.15 V 是估計,V18 實測,超出就回頭調中點(第十輪電源 #1)。**A12(VFB 公差)要在選比較器與參考 IC 之前查清**:若 VFB 是 ±1.5%,開發版視窗不夠(第九輪電源 m3)。參考 IC 與電阻精度等級寫進 BOM(第八輪電源 m3);**反應時間 t_react ≤ (6.0 − V_trip,max − 餘量) / (dV/dt)max**。5 V 軌電容 6 × 22 µF 0805(`design.py:183-185、202、214-215`)【事實】,扣直流偏壓後約 60 µF、高側限流約 6 A 級【推論,A12】→ dV/dt 約 0.07–0.1 V/µs,**目標 ≤ 1–2 µs**(20 µs 會過衝到約 6.5–7 V,第六輪電源 M1),拆成「比較器 tpd + SCR 的 t_gt」兩段;**比較器的參考電壓不取自故障中的 5 V 軌**(取 VSYS 經 LDO,和比較器電源同一來源;**參考要在 EN_5V 之前穩定**;比較器選**供電低於最低值時輸出為低**的型號,VSYS 上升期間不誤觸發;參考 IC 單獨開路 = 誤觸發(安全方向),參考卡高 = 永遠不觸發(潛伏故障)→ 量產加 crowbar 功能測試點,第九輪電源 m4;出廠測試:在測試點把參考拉低或注入分壓電壓,預期 SCR 導通,列為 AOI 之外的必過項目,第十輪電源 #4)。以上 dV/dt 只涵蓋 FB 斷線;上管短路時電流由 eFuse 的暫態反應決定,G1 前補分析【推論,第七輪電源 m3】。觸發後 LMR33640 進 hiccup 限流;**上管短路時 eFuse 是 5.0 A auto-retry、不是斷開**(`design.py:136、142`)→ **SCR 的 I_T(RMS) 與 I_TSM 依 eFuse 5 A auto-retry 的熱循環選定,長期不開路**;另加**電容放電**條件:觸發瞬間約 60 µF(加主機端電容)從 5.7 V 倒進 SCR,峰值可達數十 A,選型要列 di/dt、I²t,必要時加 mΩ 級串聯限流(第八輪電源 m4)【推論】;**C14–C16(10 V X5R,`design.py:183-185`)的耐壓與備援電阻的功率,依「旁路開路」情境重選**(理由:避免電容在 5 A auto-retry 下過壓、短路發熱;**crowbar 是單點保護,沒有第二道**,SCR 燒成開路時 19.6 V 經備援電阻打到主機,電容耐壓救不了主機,第九輪電源 m5);旁路元件也要列**脈衝額定**(SCR 觸發時主機端電容的數十 A 經旁路倒灌)。v0.17 的「串一顆由 crowbar 燒斷的保險絲」**撤回**:保險絲必須長期通過約 3.6 A 正常負載,額定 ≥ 4 A 的保險絲在 5 A 脈衝下不會斷(第七輪電源 M1)【推論】。另一條路是把 eFuse 改 latch 模式,會重開 v1 的決定,不採用。**不用 TVS**:5 V 級 TVS 的崩潰電壓下限約 6.4 V,壓不住 CM4 的 6.0 V 絕對最大值,而且會被 4 A 級電流燒毀(第五輪電源 F1)【推論】;
      - LM74700 是為了擋 Pi USB-C 倒灌才加的(`hat-v1-spec.md:168`),量產接 CM4 沒有 USB-C → **量產版用 ≥ 4 A 跳線焊位旁路**(§7.9);
      - 評估 HaLow 的 TPS62933F 改從 LM74700 之前取電,突波不直接打在 CM4 輸入;
      - 列出上下限完整視窗表(公差 ± 壓降 ± 瞬變),必須落在 4.9–5.25 V,G0 前完成。VFB 公差以 ±1% 估(A12),4.9–5.25 V 只剩約 ±110 mV 給瞬變【推論】。
@@ -390,6 +390,7 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
     - **寫入順序:先記下「這個來源已用」,再開窗口**;否則開窗口後、記錄前當掉,重啟會再開一次(第九輪資安 #2);
     - 存在且 `boot_id` 相同 = helper 重啟,讀出已用過的來源;
     - `boot_id` 不同 = 舊檔,視同第一次,用 `rename` 覆蓋;
+    - 同一次開機內記下第二個來源:**一律寫同目錄暫存檔再 `rename`**,不原地改寫;暫存檔用 `batman_tmp` 建在 `/tmp/run/batman`,`link` / `rename` 一定在同一檔案系統(第十輪資安 #2);
     - **損毀** = 全部已用過(fail-closed);
     - 只有 root 能刪這個檔(X22 界線內)。v0.18 的「缺檔 = 全部已用過」會讓每次開機都打不開窗口,撤回。
   - 開機時按下、在 helper 起來(S89)之前就放開的按鍵**會遺失**,使用者要再按一次(第八輪軟體 #7)。
@@ -443,7 +444,7 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
 - **和 OTA 的關係**(第五輪軟體 #2、資安 M5):
   - **tryboot 試用期間,發射管制狀態一律不得放寬 mesh 閘門**:狀態是受測的新 image 自己寫的,不能替自己作保;
   - 發射管制程式在 `batman-slot is-trial` 回報已提交之前**不依保存的設定重新套用靜默**;但**實體面板開關照常生效**(第六輪軟體 M3):「受測 image 不能替自己作保」只針對放寬 mesh 閘門,開關撥到靜默時照常切斷,代價只是這次試用失敗、退回(fail-safe)。`is-trial` 回 2(未知)時發射管制**視為已提交**:這是**刻意和 autocommit 不同**(autocommit 回 2 時不提交;只有 DT 的 tryboot 旗標為 1 時才回退,非 tryboot 開機不提交也不回退,`batman-autocommit:70-75、323-327、410`)【事實】,理由是對發射管制來說「當成已提交」= 允許重新套用靜默,是比較安全的一側;
-  - **靜默中時拒絕 OTA**:檢查放在 `node_checks`(`batman-slot:802`,即 `precheck-node`),stage 2 的 apply 也會再跑(`:564`)→ `-F` 繞不過;**靜默中 `batman-slot rollback` 也拒絕**:開發版的擴充 IC 只在上電時重置,回退到沒有發射管制 init 的舊 image 會停在靜默、節點失聯(第六輪軟體 m2);**判斷依據是擴充 IC 的實際輸出**,讀到 HALOW_OFF 或 RAK_OFF 有切斷就拒絕。讀法(第八輪軟體 MAJOR-1、資安 MAJOR-1):**禁止以「輸入」申請 P1 / P2**(TCA6408A 輸出會變高阻抗、被下拉,檢查本身就解除靜默【推論】);**程式活著時**(常態)line 被持有、申請會 EBUSY → **讀 gpiolib debugfs `/sys/kernel/debug/gpio`**(只列已申請的 line,含 out hi / lo,唯讀不改設定【推論,上游 `gpiolib_dbg_show`】)拿實際輸出,再和狀態檔交叉比對,**兩者任一顯示切斷就拒絕**(第九輪資安 #1、軟體 M1);**line 沒人持有**(程式 crash)→ 以 GPIO v2 uAPI **as-is 申請**(不帶方向旗標)讀值【推論:pca953x 的 get 讀的是 input port,也就是腳的實際電位;釋放時可能清掉 desc 旗標 → A31,V25 的「檢查前後 HALOW_OFF 不變」驗證】;**只有「0x20 不存在」才放行**,正面判準 = `/sys/bus/i2c/devices/1-0020` 沒有 DT 節點(非 v2 板);**v2 板上有節點但驅動沒綁、ramfs 缺 `/dev/gpiochip*` 等其他讀取錯誤一律拒絕**(第九輪軟體 m3);讀取由 `batman-hwprobe`(§13 第 15 項,列進 `RAMFS_COPY_BIN`,A28)做。v0.17 的「狀態讀不到 = 沒有東西會被卡住」不成立:程式 crash loop 時擴充 IC 仍保留上次的值(§10)(第七輪資安 m1);擴充 IC 本身讀不到(沒焊、壞掉)才放行;
+  - **靜默中時拒絕 OTA**:檢查放在 `node_checks`(`batman-slot:802`,即 `precheck-node`),stage 2 的 apply 也會再跑(`:564`)→ `-F` 繞不過;**靜默中 `batman-slot rollback` 也拒絕**:開發版的擴充 IC 只在上電時重置,回退到沒有發射管制 init 的舊 image 會停在靜默、節點失聯(第六輪軟體 m2);**判斷依據是擴充 IC 的實際輸出**,讀到 HALOW_OFF 或 RAK_OFF 有切斷就拒絕。讀法(第八輪軟體 MAJOR-1、資安 MAJOR-1):**禁止以「輸入」申請 P1 / P2**(TCA6408A 輸出會變高阻抗、被下拉,檢查本身就解除靜默【推論】);**程式活著時**(常態)line 被持有、申請會 EBUSY → **讀 gpiolib debugfs `/sys/kernel/debug/gpio`**(只列已申請的 line,含 out hi / lo,唯讀不改設定【推論,上游 `gpiolib_dbg_show`】)拿實際輸出,再和狀態檔交叉比對,**兩者任一顯示切斷就拒絕**(第九輪資安 #1、軟體 M1);**狀態檔只在「line 被持有」時拿來交叉比對**;**line 沒人持有**(程式沒裝、crash、或 OTA stage 2 已 `kill_remaining`)時**不看狀態檔**,只以 GPIO v2 uAPI **as-is 申請**(不帶方向旗標)讀實際輸出【推論:pca953x 的 get 讀的是 input port,也就是腳的實際電位;釋放時可能清掉 desc 旗標 → A31,V25 的「檢查前後 HALOW_OFF 不變」驗證】;(第十輪軟體 MAJOR、資安 #1:否則程式還沒裝時沒有狀態檔、stage 2 時心跳已過 60 s,v2 板的 OTA 與 rollback 會永遠被拒,as-is 這條路也永遠用不到;stage 2 從 stage 1 到 `apply` 約 27 s 再加 rootfs 串流,`202-config-survival-closeout.md:114、165`;stage 2 會先 `service delete` 再 `kill_remaining`,`274-payload-converge.md:41、205`)。程式一直 crash 時,as-is 讀到「一般」就放行 OTA,讓 OTA 能修好程式;讀到切斷 → 拒絕,解除程序 = 實體開關撥回一般後重開(preinit 寫回一般)或拔電。**只有「0x20 不存在」才放行**,可執行的判準 = **`/proc/device-tree` 的 I2C1 底下沒有 0x20 節點,且 sysfs 沒有 `1-0020`**(非 v2 板;root 用 `new_device` 建出沒有 `of_node` 的 client 屬 X22 界線,第十輪軟體 m4);**v2 板上有節點但驅動沒綁、ramfs 缺 `/dev/gpiochip*` 等其他讀取錯誤一律拒絕**(第九輪軟體 m3);讀取由 `batman-hwprobe`(§13 第 15 項,列進 `RAMFS_COPY_BIN`,A28)做。v0.17 的「狀態讀不到 = 沒有東西會被卡住」不成立:程式 crash loop 時擴充 IC 仍保留上次的值(§10)(第七輪資安 m1);擴充 IC 本身讀不到(沒焊、壞掉)才放行;
   - **自動回退不經過 `rollback`**(第七輪軟體 #1、資安 m5):autocommit 回退走 `batman-slot reboot committed`(`batman-autocommit:196、245`),試用中 panic=10 也回到已提交槽【事實】→ 上面的 rollback 拒絕擋不到。對策是**發版順序規則**:宣告 `v2 ∈ hats` 的 payload **必須帶擴充 IC 的 init**,`build-board.sh` 檢查;發射管制 init(§13 第 11 項)**不得晚於** `hats=`(§13 第 2 項)上線。這樣 v2 板上任何可被退回的槽都有 init;
   - **靜默可以擋住安全更新**(第七輪資安 m3):誰能下靜默,誰就能讓機器停在有漏洞的版本 → O20 規定**靜默指令需要認證**(若可遠端下達);OTA 因靜默被拒時**告警**;解除程序 = 實體開關撥回一般、清除保存的設定;
   - 發射管制狀態的檔案契約見 §9。
@@ -732,10 +733,10 @@ free -m                     # 平常與 16 支手機連線時的記憶體
 | GPIO18 認領鍵 | 硬體 → **provhelper**(line event,不經 gpio-keys) | 按下 = 高 | 斷線 = 永遠低 = 永遠不開(fail-closed);卡死在高 = 不開並告警;line 被別人申請 = 不開並告警 | 實體在場的人 |
 | 面板接頭 | 外殼線材 | §5.6 腳位表;兩個階段同一塊板 | 接反 → LED 不亮、按鍵無效;ESD 由 TVS 吸收 | 實體在場的人 |
 | 認領鍵 → provhelper | GPIO18 → provhelper 直接讀(line event) | helper 自己打 CLOCK_MONOTONIC 時戳;窗口(來源、時長、計數)只在 helper | provhelper 沒在跑 → 不開窗口(fail-closed);USB HID 送的按鍵碼不算 | 實體在場的人 |
-| 發射管制狀態 | **程式在跑時(常態):gpiolib debugfs 的實際輸出 + 狀態檔交叉比對,任一切斷即切斷;程式不在時:as-is 申請讀實際輸出**(§5.12;禁止以輸入申請)。狀態檔契約見 §8。讀者:`batman-slot` 的 `node_checks`(precheck-node 與 stage 2 apply)、`rollback`;autocommit 不用 | P1 / P2 有切斷 → 拒絕 OTA 與 rollback,並告警 | **只有 `/sys/bus/i2c/devices/1-0020` 沒有 DT 節點 → 放行**;節點在但驅動沒綁、狀態檔缺失或過期、其他讀取錯誤 → 拒絕 | root |
+| 發射管制狀態 | **line 被持有(程式在跑):gpiolib debugfs 的實際輸出 + 狀態檔交叉比對,任一切斷即切斷;line 沒人持有(程式沒裝、crash、stage 2):只看 as-is 讀到的實際輸出,不看狀態檔**(§5.12;禁止以輸入申請)。狀態檔契約見 §8。讀者:`batman-slot` 的 `node_checks`(precheck-node 與 stage 2 apply)、`rollback`;autocommit 不用 | P1 / P2 有切斷 → 拒絕 OTA 與 rollback,並告警 | **只有 device tree 沒有 0x20 節點且 sysfs 沒有 `1-0020` → 放行**;節點在但驅動沒綁、**line 被持有時**狀態檔缺失或過期、其他讀取錯誤 → 拒絕 | root |
 | HAT 前次紀錄 | `batman-autocommit` 在已提交的開機寫(p6 root-only);試用中的 autocommit 讀 | 每項:裝置在不在、驅動有沒有綁上,帶寫入時的 image 版本與 `boot_id` | 比對對象是 **apply 時記下的「來源版本」**(不是試用中的新版本,否則永遠不符、閘門永遠不觸發,第七輪軟體 #6);缺檔或來源版本不符 → 視同不擋 | root |
 | provhelper socket | provd 呼叫;provhelper 執行 | #254 §4.1 動詞表 + §5.11 的交握操作;無 ECDH 匯出 | provhelper 不在 → 認領與換密碼失敗(fail-closed) | provd(`SO_PEERCRED`) |
-| GPIO22 板子識別 → `hats=` | 硬體;`check_image` **與 `do_upgrade`** 都讀(`-F` 會略過 stage1,比照 SoC 閘門 `platform-ab.sh:309-319`) | 本機標籤:GPIO22 = 1 → `v2`;= 0 → `non-v2`(**不等於 WM1302**,Pi 3、空板也讀到 0)。payload 的 `hats=` 寫在 `metadata`,**`metadata` 要納入 SHA256SUMS**(現在沒有,`platform-ab.sh:12`、`build-ab-payload.sh:69、73`)。讀取機制:repo 裡沒有 libgpiod / `gpioget` → 讀 `/sys/kernel/debug/gpio` 或 pinctrl debugfs(先確認核心有、有掛),工具加進 `RAMFS_COPY_BIN`(`:37`) | **缺 `hats=` = `wm1302`**(X28):v2 板拒絕、WM1302 與 Pi 3 照常;**格式錯誤** → 拒絕;**SoC 是 bcm2710 → 直接判 `non-v2`,不讀腳位**(`soc_running`,`platform-ab.sh:201`);**bcm2711 上 GPIO22 讀不到** → 視為 `non-v2` 並寫告警與 OTA 飛行記錄。**已知風險**:v2 板讀不到時會接受舊 payload(降版成功,違反 X7),只靠告警發現(第五輪軟體 #3)。讀取改讀 **pinctrl-bcm2835 debugfs 的 `pins`**(`/sys/kernel/debug/gpio` 很可能只列已被申請的 line【推論】);stage 2 的 ramfs 裡讀不讀得到 debugfs 待查(A28)。**`hats=` 只是防呆,不是資安防線**:payload 沒有簽章(`platform-ab.sh:12、295` 只有 SHA256SUMS),能寫 payload 的人可以改 `metadata` 再重算(第五輪資安 m4)。比對:`v2` 板要 `v2 ∈ hats`;`non-v2` 要 `wm1302 ∈ hats`。`batman-slot status` 顯示本機標籤與 payload 清單 | — |
+| GPIO22 板子識別 → `hats=` | 硬體;`check_image` **與 `do_upgrade`** 都讀(`-F` 會略過 stage1,比照 SoC 閘門 `platform-ab.sh:309-319`) | 本機標籤:GPIO22 = 1 → `v2`;= 0 → `non-v2`(**不等於 WM1302**,Pi 3、空板也讀到 0)。payload 的 `hats=` 寫在 `metadata`,**`metadata` 要納入 SHA256SUMS**(現在沒有,`platform-ab.sh:12`、`build-ab-payload.sh:69、73`)。讀取機制:repo 裡沒有 libgpiod / `gpioget` → 由 `batman-hwprobe` 讀 pinctrl debugfs 的 `pins`(先確認核心有、有掛),工具加進 `RAMFS_COPY_BIN`(`:37`) | **缺 `hats=` = `wm1302`**(X28):v2 板拒絕、WM1302 與 Pi 3 照常;**格式錯誤** → 拒絕;**SoC 是 bcm2710 → 直接判 `non-v2`,不讀腳位**(`soc_running`,`platform-ab.sh:201`);**bcm2711 上 GPIO22 讀不到** → 視為 `non-v2` 並寫告警與 OTA 飛行記錄。**已知風險**:v2 板讀不到時會接受舊 payload(降版成功,違反 X7),只靠告警發現(第五輪軟體 #3)。讀取改讀 **pinctrl-bcm2835 debugfs 的 `pins`**(`/sys/kernel/debug/gpio` 很可能只列已被申請的 line【推論】);stage 2 的 ramfs 裡讀不讀得到 debugfs 待查(A28)。**`hats=` 只是防呆,不是資安防線**:payload 沒有簽章(`platform-ab.sh:12、295` 只有 SHA256SUMS),能寫 payload 的人可以改 `metadata` 再重算(第五輪資安 m4)。比對:`v2` 板要 `v2 ∈ hats`;`non-v2` 要 `wm1302 ∈ hats`。`batman-slot status` 顯示本機標籤與 payload 清單 | — |
 | `.faketime` ↔ 時間程式 | 時間程式寫「時間可信」判決到 root-only run dir(綁 `boot_id` + monotonic 時間,不用牆上時間,不落 p6);`batman-faketime` 讀 | 判決過期 = 不可信 | **時間程式套件沒裝** → faketime 照現行行為;**有裝但判決缺失或過期**(含時間程式重啟期間)→ **不 save**。開機 `restore`(S12,只往前推)時:RTC 未 PORF 且比 `.faketime` 早 → **以 RTC 為準**,不讓被推到未來的 `.faketime` 蓋過(第五輪軟體 #4)【提案】 | root |
 | 發射管制開關 | 面板 → I/O 擴充 IC P0 | 依軟體分級(另開單) | 斷線 / IC 不在 = 一般(fail-open,O17) | 實體在場的人 |
 
@@ -755,7 +756,7 @@ free -m                     # 平常與 16 支手機連線時的記憶體
 | OTA stage 2 apply(`platform_do_upgrade` → `batman-slot apply`,`platform-ab.sh:343`) | — | 再檢查一次 `hats=`;寫非使用中的槽。**cmdline 由正在跑的那份 `batman-slot` 寫**(`:37` 把它帶進 ramfs)【事實,第三輪軟體核對】→ #302 修正後 console 內容改取自 payload 的 `boot/cmdline.console`,不再由正在跑的 image 決定(第三輪軟體 #3b) | V11 |
 | stage 2 apply 途中斷電 | — | `batman-slot` 先作廢目標槽、解除 tryboot,寫完才切換(`batman-slot:381-385`;`boards-and-builds.md` §6 寫入順序)【事實】→ 開回原槽。作廢的槽**一律不帶 console**(作廢的槽沒有 rootfs,不會有登入 shell,剩下的是序列 SysRq 這類核心主控台功能【推論,第五輪軟體 m10 更正理由】) | V11 |
 | tryboot 試用(重開進新槽) | — | 新槽的 `config.txt` 沿用燒卡時的(OTA 不帶);v2 的 overlay 放在 `[gpio22=1]` 條件段落,同一燒卡 image 可服務 WM1302 與 v2【推論,A11】 | V11 |
-| autocommit **提交** | — | mesh 加入閘門通過即提交。HAT 項目(RTC、GNSS、VLM、608B)**只告警、不擋**:硬體缺件和新軟體無關,擋了會讓每次 OTA 都被回退(同「缺 `/etc/batman-build` 永遠無法 commit」那一類事故,`boards-and-builds.md` §2);只有「舊 image 正常、新 image 失敗」的回歸才擋(**這道閘門在 §13 第 14 項實作前不會觸發**,§8);WM1302 與 Pi 3 用 `na`(第四輪軟體 #4)。HAT 項目只看「裝置在不在、驅動有沒有綁上」,不看 GNSS 有沒有定位(室內 600 s 內定不到)。「舊 image 正常」的前次紀錄**只由已提交的開機寫**(受測的新 image 不寫,否則會把紀錄蓋成自己的結果,§8),缺檔 = 視同不擋。**tryboot 試用期間不採用發射管制狀態**,mesh 閘門照常;靜默中拒絕 OTA(§5.12、§9)。`batman-autocommit` 是兩板共用 A/B 檔案,依 CLAUDE.md 雙板實測 | V11、V25 |
+| autocommit **提交** | — | mesh 加入閘門通過即提交。HAT 項目(RTC、GNSS、VLM、608B)**只告警、不擋**:硬體缺件和新軟體無關,擋了會讓每次 OTA 都被回退(同「缺 `/etc/batman-build` 永遠無法 commit」那一類事故,`boards-and-builds.md` §2);只有「舊 image 正常、新 image 失敗」的回歸才擋(**這道閘門在 §13 第 14 項實作前不會觸發**,§8);WM1302 與 Pi 3 上這些 HAT 項目標為「不適用此 HAT」(autocommit 內部標記,不是 `daily-validation.sh` 的 `na`;CLAUDE.md 的 `na` 只用在 SoC 本來就不適用的 suite,第十輪資安 #4)。HAT 項目只看「裝置在不在、驅動有沒有綁上」,不看 GNSS 有沒有定位(室內 600 s 內定不到)。「舊 image 正常」的前次紀錄**只由已提交的開機寫**(受測的新 image 不寫,否則會把紀錄蓋成自己的結果,§8),缺檔 = 視同不擋。**tryboot 試用期間不採用發射管制狀態**,mesh 閘門照常;靜默中拒絕 OTA(§5.12、§9)。`batman-autocommit` 是兩板共用 A/B 檔案,依 CLAUDE.md 雙板實測 | V11、V25 |
 | autocommit **回退** | — | 回到上一槽;回退**不碰 cmdline**(`batman-slot:731-741`),上一槽保留它當初寫的值【事實】→ 第一次修正後的 OTA 只改目標槽,回退會回到**仍開著主控台**的槽;**放行條件 = 兩槽的 cmdline 都已由修正版寫過**(第三輪軟體 #3a) | V9、V11 |
 | 斷電(拔電池、長按 5.3 s) | — | RTC 靠超級電容約 2 天;斷電過程依 §7.5 不反灌 | V6、V18 |
 | 元件自身重啟(gpsd、三色燈程式) | — | gpsd 重啟後重新開 UART5;燈號程式到貨後設計 | V4 |
@@ -784,7 +785,7 @@ free -m                     # 平常與 16 支手機連線時的記憶體
 | 降版到不支援 v2 的 image | — | 經燒卡:不支援(X7),燒卡站檢查 `hats=`(V12)。經 OTA:`hats=` 閘門擋下(舊 payload 沒有 `hats=` = `wm1302`,X28)。GNSS 在 UART5,舊 image 不會在那裡開登入,所以不會重現 #302【推論】 | V11、V12 |
 | Pi 4 | 現行 | 開發版唯一主機 | 全部 |
 | CM4 + 官方 IO Board | — | 開發期選配(§7.8);只能用一個電源:HAT 的 5.17 V 不可和 IO Board 自己的 5 V 並聯【審查 m5】 | V17 |
-| bcm2710(Pi 3A+) | 03 仍在機隊 | v2 板不支援 3A+(X2、X3);但 §13 第 1、2、10、11、14、15 項改的是**兩板共用的 A/B 檔案**(`boards-and-builds.md` §6)→ Pi 3 上讀到「非 v2」時仍要接受原本的 payload,依 CLAUDE.md 做雙板實測 | V11 |
+| bcm2710(Pi 3A+) | 03 仍在機隊 | v2 板不支援 3A+(X2、X3);但 §13 第 1、2、3、8、10、11、13、14、15 項改的是**兩板共用的 A/B 檔案**(`batman-slot:36、648` 的 `CMDLINE_COMMON` 與 overlay 複製、autocommit、`platform-ab.sh`)(`boards-and-builds.md` §6)→ Pi 3 上讀到「非 v2」時仍要接受原本的 payload,依 CLAUDE.md 做雙板實測 | V11 |
 
 ## 11. 依賴的假設與證據
 
@@ -801,7 +802,7 @@ free -m                     # 平常與 16 支手機連線時的記憶體
 | A30 | `modules-boot.d` 的 pca953x 加 preinit hook 能在 mm6108 載入前寫回「一般」;preinit 時 debugfs 有沒有掛、kmodloader 確切時點(`/etc/init.d/boot`);退路 unbind / bind 能讓 mm6108 重新 probe | 無 | bench 機實測(V25) |
 | A29 | 節點上 `kernel.sysrq` 的值 | repo 無設定 | 節點上唯讀 `cat /proc/sys/kernel/sysrq`;若為 0,第七輪資安 M1 降為 MINOR |
 | A27 | CM4 的 nEXTRST 在 `reboot` / watchdog 重置時會拉低 | CM4 規格書只寫冷開機時序 | bench 機 CM4 `reboot` 時示波器量(V25) |
-| A28 | OTA stage 2 的 ramfs 裡讀得到 pinctrl debugfs 與擴充 IC(`batman-hwprobe`) | 無 | 在 bench 機 OTA 時記錄 |
+| A28 | OTA stage 2 的 ramfs 裡讀得到 pinctrl debugfs、gpiolib debugfs 與擴充 IC(`batman-hwprobe`);stage 2 先殺光行程、`/sys` 子掛載跟著移進 ramfs【推論,上游 `stage2` / `supivot` 不在 repo】 | 無 | 在 bench 機 OTA 時記錄 |
 | A26 | 韌體 HMAC(rpifwcrypto)在 CM4 上的裝置節點名稱 | `rpifwcrypto.c:147` 記為 `/dev/vcio_crypto`,未證實 | bench 機 CM4 實測 |
 | A10 | 簽章開機啟用後,rpiboot 能否讀寫 eMMC(是否需要客戶金鑰簽章的 msd) | 無 | 待讀 raspberrypi/usbboot 的 secure-boot 文件(量產設計) |
 | A11 | `[pi4]` 段落的篩選是否也套用到 CM4 | 審查者記憶 | 待讀 Raspberry Pi config.txt 條件篩選原文 |
@@ -887,9 +888,10 @@ dtoverlay=batman-hat-v2              # 自製:gpio-keys 只放 GPIO26(電源鍵 
   10. **#302 修正的放行條件**(§10):第一版改 `batman-slot` 自己;之後要**兩槽都被修正版寫過**,由 `batman-slot status` 回報兩槽 cmdline 的來源(哪一版寫的),V9 檢查兩槽 `cmdline.txt`;`invalidate_slot` 一律不帶 console。
   11. **發射管制程式**(§5.12):另開單,和 #181 一起設計分級、通訊窗口、SOS;init 腳本(非 v2 板上直接不動作)與程式同一套件;`node_checks` 的靜默檢查與 `rollback` 拒絕。
   12. **新增的共用檔案**(`batman-hwprobe`、發射管制 preinit hook、改過的 `node_checks`、`batman-slot apply` 記來源版本、autocommit 寫前次紀錄)要同時加進 `boards-and-builds.md` §6、CI 的 `paths`、CLAUDE.md 的共用 A/B 檔案清單(第五輪軟體 m9)。
-  13. **輸入裝置**:只用 `gpio-button-hotplug`,image 禁帶 `kmod-button-hotplug`、量產核心禁開 `CONFIG_MAGIC_SYSRQ`、`CONFIG_VT`、`CONFIG_KEYBOARD_GPIO`(`build-board.sh` 檢查);cmdline `sysctl.kernel.sysrq=0`;其他輸入裝置 `inhibited=1`,`/dev/uinput` root 0600 或不帶 kmod-uinput;量產核心關 `CONFIG_GPIO_SIM`(§5.11)。
+  13. **輸入裝置**:只用 `gpio-button-hotplug`,image 禁帶 `kmod-button-hotplug`、量產核心禁開 `CONFIG_MAGIC_SYSRQ`、`CONFIG_VT`、`CONFIG_KEYBOARD_GPIO`;**開發核心檢查 `CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE=0`**(開發 HAT 一樣有實體 USB 口,第十輪資安 #3)(`build-board.sh` 兩個 variant 都檢查);cmdline `sysctl.kernel.sysrq=0`;其他輸入裝置 `inhibited=1`,`/dev/uinput` root 0600 或不帶 kmod-uinput;量產核心關 `CONFIG_GPIO_SIM`(§5.11)。
   14. **HAT 前次紀錄的寫入者與來源版本**:`batman-slot apply` 記下來源版本(現行 image 的 `/etc/batman-build`);autocommit 在已提交的開機寫前次紀錄(今天 `:324` 直接 exit,要改)(§8)。
-  15. **`batman-hwprobe`**:一支小工具讀 GPIO22(pinctrl)、擴充 IC 輸出(as-is,禁止輸入申請)、RTC 的 PORF(`RTC_VL_READ`),列進套件與 `RAMFS_COPY_BIN`。
+  15. **`batman-hwprobe`**:一支小工具讀 GPIO22(pinctrl `pins`)、擴充 IC 輸出(line 被持有 → gpiolib debugfs + 狀態檔交叉比對;沒人持有 → as-is 申請,禁止輸入申請)、RTC 的 PORF(`RTC_VL_READ`);preinit hook 也用它把擴充 IC 寫回「一般」(先寫輸出暫存器 0、再設方向)。列進套件與 `RAMFS_COPY_BIN`。
+  16. **`design.py` 移植**:`NET_VMAX` 的 `5V_BUCK`、`5V_PI` 現在是 5.3 V(`design.py:505`),`check.py:171-176` 靠它檢查接腳絕對最大值 → 改成故障最壞值(crowbar 觸發上限 5.7 V、旁路開路時到 VSYS 19.6 V)並寫明檢查規則,否則 crowbar、比較器分壓、TPS62933F 的故障路徑都不會被抓到(第十輪電源 #2)。
 - `/etc/inittab`:量產 image 不在任何序列埠開登入。
 - `config.txt` 是**燒卡 image** 的改動,OTA 帶不到(§10);**cmdline 例外**:每次 OTA 由正在跑的 `batman-slot` 重寫(§13 第 1、10 項)。改到 `cmdline` 的建卡腳本在 CLAUDE.md 的「兩板共用 A/B 檔案」清單內 → 要依該規則實機驗證。
 
@@ -910,14 +912,15 @@ dtoverlay=batman-hat-v2              # 自製:gpio-keys 只放 GPIO26(電源鍵 
 | V15 | QR 實印試掃 | 10 × 10 mm 貼紙印在本體底面,iPhone 與 Android 各試掃;轉電池盒 50 次後再掃 |
 | V16 | 量產版放進外殼 | 外殼(#228)用 `layout3d.py` 加入 CM4(STEP)與板子做干涉檢查,含 12 mm 銅柱與 SoC 散熱銅片 |
 | V17 | 開發期在 CM4 + 官方 IO Board 上 | 同 V2–V9;CM4 eMMC 裝置名;只用一個電源 |
-| V18 | 量產版插 CM4 | **FB 斷線時 5V_HOST 不超過 6.0 V(crowbar 負向測試,量過衝峰值)**;**旁路跳線開路時 crowbar 觸發、5V_BUCK 不超過電容耐壓**;**開發版只插 USB-C 開機不誤觸發**(負向對照);**開發版也做 FB 斷線測試,用假負載、不接真的 Pi 4**;5V_HOST 在 2 A 負載下 > 4.9 V 且瞬變不超過上限;最壞電流(A17)與 5 V 預算(§5.5 第 7 點);§7.5 的上電 / 斷電 / 反灌 / 快速關再開示波器量測,用 GLOBAL_EN 測試焊墊做負向對照;KILL 時序;USB hub 接 RAK + VLM;rpiboot 經陰影區焊墊燒 eMMC;外接天線 RSSI;同 V2–V9 |
+| V18 | 量產版插 CM4 | **FB 斷線時 5V_HOST 不超過 6.0 V(crowbar 負向測試,量過衝峰值)**;**旁路跳線開路時 crowbar 觸發、5V_BUCK 不超過電容耐壓**;5V_HOST 在 2 A 負載下 > 4.9 V 且瞬變不超過上限;最壞電流(A17)與 5 V 預算(§5.5 第 7 點);§7.5 的上電 / 斷電 / 反灌 / 快速關再開示波器量測,用 GLOBAL_EN 測試焊墊做負向對照;KILL 時序;USB hub 接 RAK + VLM;rpiboot 經陰影區焊墊燒 eMMC;外接天線 RSSI;同 V2–V9 |
+| V18d | 開發版電源與 crowbar | **只插 USB-C 開機不誤觸發**(負向對照);**FB 斷線測試用假負載、不接真的 Pi 4**;**VSYS 緩升時量參考電壓與 EN_5V 的先後**(負向對照:參考延遲時比較器輸出維持低);卸載過衝實測 |
 | V19 | 內建 VLM | `openvlm identify` 認得;K 頭 PTT 鍵觸發;錄放音迴路;HaLow 發射時的音訊雜訊 |
 | V20 | 裝置權限負向測試 | §5.11 的四條,每條都有正向對照;USB 白名單外的裝置插上不被授權 |
 | V21 | GNSS 時間欺騙(加:時間程式重啟期間不 save;開機時 `.faketime` 在未來而 RTC 正確 → 以 RTC 為準) | 跳 1 年、慢慢漂移、重開機後、離線且 RTC PORF、`.faketime` 在未來:RTC 與系統時間不得被錯誤寫入;**正向對照**:GNSS 與 ntpd 一致時能寫 RTC;關機後確認 sysfixtime 沒寫 RTC |
 | V23 | 開發 CA 被拒(加:鎖區與 UpdateExtra 之間斷電注入 → 開發工具下次啟動先補寫並讀回) | 正式 App、provd 驗證端拒絕開發 CA 簽的 DAC;正式 CA 的通過(對照);產線 CA 拒簽設定不符的 608B;**UserExtra ≠ 0x00 的晶片被拒簽**;開發工具「鎖區 → UpdateExtra → 讀回」任一步失敗就報錯 |
 | V24 | 換主機 | 608B 沒授權時 Sign、ECDH 被拒;授權後成功(對照);鎖後改寫授權槽被拒;Sleep、Idle、watchdog 1.3 s 後授權失效;**重放錄下的授權交換被拒**;**UpdateExtra 改位址被拒**;未授權也能遞增計數器(正向:只會多要求一次按鍵);在消耗品上做(A14) |
-| V25 | 發射管制硬體 | 擴充 IC 各輸出切斷 HaLow、RAK、Wi-Fi / 藍牙(CM4)並以頻譜儀確認沒有發射;擴充 IC 拔除 / 未設定時一切照常(對照);**設定靜默後 reboot**:回到「一般」、OTA 試開機可提交;**硬體保證版**:軟體反向驅動擴充 IC 時開關仍切得斷;量第 89、91 腳的低電位並確認無線關掉;試用期間撥開關仍切斷,自動回退後的槽寫回「一般」;發射管制程式 crash 但擴充 IC 仍切斷時 `precheck-node` 拒絕 OTA;**程式活著持有 line、靜默中跑 precheck → 拒絕**;**程式持有 line、狀態檔寫一般、輸出實際是切斷 → 拒絕**;**靜默中 reboot → 開機後看得到 mm6108 綁定**;檢查工具執行前後 HALOW_OFF 不變(不得因檢查而解除靜默);**CM4 `reboot` 時示波器量 nEXTRST**(A27);靜默中 `precheck-node` 拒絕 OTA |
-| V26 | 認領鍵與板子識別 | 實按 GPIO18 可開窗口(正向);**偽造 USB 鍵盤送 Alt+SysRq+B → 不重開**(對照只能在**開發核心**做:先設 `kernel.sysrq=1`,同樣送 → 會重開;量產核心沒有 sysrq 可開,改由 build 檢查證明);**偽造鍵盤送 Ctrl+Alt+Del(量產)→ 不重開**(對照:開發核心有 VT → 會重開;procd 收到 SIGINT 會 reboot 待節點實測);**建檔後、開窗口前殺掉 helper → 重啟後不重開該來源**;**開機後第一次啟動能開窗口**(用過的來源檔不存在);開機時按著、10 s 內放開 → 算一次開機按鍵;用過的來源檔損毀 → 不重開窗口;`/sys/kernel/debug/gpio` 顯示 GPIO18 的使用者是 provhelper;GPIO18 已被別的程式申請 → 窗口不開並告警;**USB HID 送 KEY_POWER → 不關機**(對照:實按電源鍵可關機);按鍵卡死在高 → 不開窗口;helper 重啟不重開已用過的來源;**USB HID 送同一按鍵碼 → 窗口不開**;**provd 不理判決、直接送 `claim.verify` → `E_FORBIDDEN`**;窗口過期後被拒;開機按鍵每個 `boot_id` 只算一次;拔掉 GPIO22 上拉後讀到 0、`hats=` 閘門依此判斷;debugfs 卸載時 v2 板對舊 payload 的行為與告警 |
+| V25 | 發射管制硬體 | 擴充 IC 各輸出切斷 HaLow、RAK、Wi-Fi / 藍牙(CM4)並以頻譜儀確認沒有發射;擴充 IC 拔除 / 未設定時一切照常(對照);**設定靜默後 reboot**:回到「一般」、OTA 試開機可提交;**硬體保證版**:軟體反向驅動擴充 IC 時開關仍切得斷;量第 89、91 腳的低電位並確認無線關掉;試用期間撥開關仍切斷,自動回退後的槽寫回「一般」;發射管制程式 crash 但擴充 IC 仍切斷時 `precheck-node` 拒絕 OTA;**程式活著持有 line、靜默中跑 precheck → 拒絕**;**程式持有 line、狀態檔寫一般、輸出實際是切斷 → 拒絕**;**正向對照:v2 板在一般狀態下完整 OTA(含 stage 2 `apply`)成功,程式沒裝時也成功**;**程式 crash、as-is 讀到切斷 → 拒絕;讀到一般 → 放行**;**靜默中 reboot → 開機後看得到 mm6108 綁定**;檢查工具執行前後 HALOW_OFF 不變(不得因檢查而解除靜默);**CM4 `reboot` 時示波器量 nEXTRST**(A27);靜默中 `precheck-node` 拒絕 OTA |
+| V26 | 認領鍵與板子識別 | 實按 GPIO18 可開窗口(正向);**偽造 USB 鍵盤送 Alt+SysRq+B → 不重開**(對照只能在**開發核心**做:先設 `kernel.sysrq=1`,同樣送 → 會重開;量產核心沒有 sysrq 可開,改由 build 檢查證明);**偽造鍵盤送 Ctrl+Alt+Del(量產)→ 不重開**(對照:開發核心有 VT → 會重開;procd 收到 SIGINT 會 reboot 待節點實測);**建檔後、開窗口前殺掉 helper → 重啟後不重開該來源**;**第二個來源寫到一半殺掉 helper → 不損毀、不重開**;**開機後第一次啟動能開窗口**(用過的來源檔不存在);開機時按著、10 s 內放開 → 算一次開機按鍵;用過的來源檔損毀 → 不重開窗口;`/sys/kernel/debug/gpio` 顯示 GPIO18 的使用者是 provhelper;GPIO18 已被別的程式申請 → 窗口不開並告警;**USB HID 送 KEY_POWER → 不關機**(對照:實按電源鍵可關機);按鍵卡死在高 → 不開窗口;helper 重啟不重開已用過的來源;**USB HID 送同一按鍵碼 → 窗口不開**;**provd 不理判決、直接送 `claim.verify` → `E_FORBIDDEN`**;窗口過期後被拒;開機按鍵每個 `boot_id` 只算一次;拔掉 GPIO22 上拉後讀到 0、`hats=` 閘門依此判斷;debugfs 卸載時 v2 板對舊 payload 的行為與告警 |
 | V22 | 熱(量產) | 量產版在最高環境溫度、外殼密閉、OTS 滿載下量 CM4 SoC 溫度與降頻、無線晶片 < 75 °C(CM4 典型約 7 W,今天外殼模型只算 Pi 4 4 W,審查 M5);細節放量產設計 |
 
 v1 §9 的 V5–V11(電源、熱、雜訊、GNSS 受干擾)照做。
@@ -952,7 +955,7 @@ O3–O7 已結案(TPM 匯流排隨 TPM 拿掉而取消;GNSS 電源閘不採用;G
 ## 16. 流程與修訂紀錄
 
 **流程**:
-1. 第十輪對抗式審查(`docs/design/REVIEW.md`,審整份):開發版 + §5.12、§7.4、§7.5、§7.9 的銅箔決定(X10)。可以在雲端做。
+1. 第十一輪對抗式審查(`docs/design/REVIEW.md`,審整份):開發版 + §5.12、§7.4、§7.5、§7.9 的銅箔決定(X10)。可以在雲端做。
 2. 改 `hardware/hat-v1/gen/design.py`:拿掉 TPM、608C → 608B、GNSS 維持 UART5、加面板接頭;依 §7.2 整理分頁。跑 `check.py` 與模擬。要 KiCad 7,在本機做。
 3. 擺件、佈線沿用 layout-v2 流程(sketch → G0 → escape → G1 → G2,連續兩次 0 未接)。在本機做。
 4. 打樣,在 Pi 4(與選配的 CM4 + 官方 IO Board)上 bring-up,跑 §14。
@@ -983,6 +986,7 @@ O3–O7 已結案(TPM 匯流排隨 TPM 拿掉而取消;GNSS 電源閘不採用;G
 | v0.18 | 第七輪審查處理,見 §23:crowbar 撤回保險絲選項、SCR 依 auto-retry 熱循環選定、觸發上限 ≤ 5.7 V;SysRq 關閉;自動回退靠發版順序規則;發射管制判斷改讀擴充 IC 實際輸出;開機按鍵 T 秒判定;SD 標記延後 #255;HAT 前次紀錄比對來源版本 |
 | v0.19 | 第八輪審查處理,見 §24:crowbar 移到 5V_BUCK、觸發上下限、SCR 電容放電條件;旁路改機器打件與 AOI;擴充 IC 讀法(禁輸入申請、EBUSY 改讀狀態檔);preinit 在 mm6108 前寫回一般;用過的來源檔四種情況;量產關 `CONFIG_VT`;cmdline 關 SysRq;HAT 前次紀錄缺口與工作項目 |
 | v0.20 | 第九輪審查處理,見 §25:發射管制狀態檔契約(路徑、原子寫入、寫入順序、心跳過期)與程式在跑時改讀 debugfs 交叉比對;preinit 改以 pca953x 節點為條件;「只有 0x20 不存在」的正面判準;用過的來源檔寫入順序;crowbar 觸發中點 5.56 V、比較器低供電行為;sysrq 實際防線是核心設定;`na` 用法更正 |
+| v0.21 | 第十輪審查處理,見 §26:狀態檔只在 line 被持有時交叉比對(程式沒裝、crash、stage 2 只看 as-is 實際輸出);「0x20 不存在」改可執行判準;開發 variant 的 SysRq build 檢查;用過的來源檔同次開機的 rename;crowbar 公差內容與出廠測試;`NET_VMAX` 移植待辦;V18d 拆出開發版 |
 
 與舊文件的關係:`hat-v1-spec.md` 仍是電源電路的正本;`hardware/hat-v1/HANDOFF.md` 與 `layout-v2/PLAN.md` §12 的「往左延伸 3 mm」已被本文取代。
 
@@ -1194,6 +1198,19 @@ O3–O7 已結案(TPM 匯流排隨 TPM 拿掉而取消;GNSS 電源閘不採用;G
 | 電源 m1–m6 | MINOR | §7.9 的 5V_HOST crowbar、觸發中點、A12、比較器低供電與參考、C14–C16 理由與旁路脈衝額定、開發版 FB 斷線測試 | §5.5、§7.9、V18 |
 | 資安 #2–#6 | MINOR | 用過的來源檔寫入順序、新檔路徑與 socket 位置、V26 對照只能在開發核心、cmdline sysrq 生效時點、`na` 用法 | §5.11、§8、§14、§13 |
 | 軟體 m1–m5 | MINOR | as-is 標推論(A31)、debugfs 用途矛盾、「0x20 不存在」正面判準、共用檔清單、讀者清單與回歸閘門缺口交叉引用 | §5.12、§9、§10、§13、§8、A31 |
+
+---
+
+## 26. 第十輪審查(v0.20)的處理
+
+電源、資安皆 **APPROVE-WITH-CHANGES、只剩 MINOR**;軟體 APPROVE-WITH-CHANGES、1 MAJOR(只需改文字)。不需使用者決定。
+
+| 來源 | 嚴重度 | 問題 | 處理 |
+|---|---|---|---|
+| 軟體 1、資安 #1 | MAJOR / MINOR | 「狀態檔缺失或過期就拒絕」讓程式沒裝時與 stage 2 的 OTA 永遠被拒,as-is 路徑用不到 | §5.12、§9:狀態檔只在 line 被持有時交叉比對;沒人持有只看 as-is 實際輸出;crash loop 解除程序;A28;V25 正向對照 |
+| 軟體 2–5 | MINOR | bcm2710 共用檔清單、GPIO22 列舊文字、「0x20 不存在」判準歧義、`batman-hwprobe` 職責 | §10、§9、§5.12、§13 第 15 項 |
+| 資安 #2–#4 | MINOR | 同次開機第二個來源的寫法、開發 variant 的 SysRq build 檢查、`na` 用詞 | §5.11、§13 第 13 項、§10 |
+| 電源 #1–#5 | MINOR | ±2.5% 涵蓋項目與過衝實測、`NET_VMAX` 5.3 V、參考與 EN_5V 先後的測試、出廠 crowbar 測試、V18 標題 | §5.5、§13 第 16 項、V18 / V18d |
 
 ---
 
