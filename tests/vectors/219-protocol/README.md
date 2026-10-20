@@ -7,14 +7,16 @@
 | `vectors.json` | 測試向量(固定金鑰、決定性簽章,可逐位元組重現) |
 | `gen.py` | 產生 `vectors.json`(`cryptography` + `noiseprotocol` + `cbor2`) |
 | `verify.py` | **用另一份實作**逐項驗證:Noise 用 `dissononce`、ECDSA / ECDH 用 `python-ecdsa`、HKDF 用標準庫 `hmac`、結構用 `pycddl` 對 CDDL 驗證 |
-| `requirements.txt` | 產生與驗證時用的套件版本 |
+| `requirements.txt` | 產生與驗證時用的套件:整個相依閉包釘版本 + sha256(`--require-hashes`) |
+| `ci-check.sh` | CI(`vectors-219`)與手動共用的閘門 |
 
 ## 使用
 
 ```
-python -m venv venv && venv/bin/pip install -r requirements.txt
+python -m venv venv && venv/bin/pip install --require-hashes --no-deps -r requirements.txt
 venv/bin/python gen.py > vectors.json      # 重新產生(輸出應與 repo 內完全相同)
-venv/bin/python verify.py vectors.json     # 156 項檢查(含負向測試),全部 PASS 才算通過
+venv/bin/python verify.py vectors.json     # 195 項檢查(含負向測試),全部 PASS 才算通過
+PY=venv/bin/python bash ci-check.sh         # CI 同一道閘門:檢查數 >= 195、gen.py 逐位元組重現、竄改向量必須被拒絕
 ```
 
 ## 涵蓋範圍
