@@ -104,7 +104,7 @@ rpa_case() {	# <name> <scenario function> <want: PASS|FAIL> [<FAIL text that mus
 	ble_n() { local t=$(( $(cat "$CLK") - 1000 ))
 		case "$3 $4" in
 			"periph info") echo "SETTINGS powered le secure-conn privacy"; echo "PID 100";;
-			"central sample") echo $(( $(cat "$CLK") + 12 )) > "$CLK"; $SCEN "$t";;
+			"central sample") echo $(( $(cat "$CLK") + 12 )) > "$CLK"; $SCEN "$t"; return 0;;	# a real sample that ran is rc 0
 			"periph btmon-stop") echo "UNPARSED 0";;
 			"central reset") echo "RESET done pid 1 -> 2";;
 			*) echo "OK";; esac; }
