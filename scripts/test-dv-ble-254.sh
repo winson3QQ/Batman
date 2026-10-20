@@ -51,7 +51,11 @@ o=$(printf '%s\n' '> ACL Data RX: Handle 64 flags 0x02 dlen 6' '      SMP: Pairi
 o=$(printf '%s\n' '< ACL Data TX: Handle 64 flags 0x00 dlen 17' '      SMP: Identity Information (0x08) len 16' '        Identity resolving key: 00000000000000000000000000000000' | judge | tr '\n' ';')
 [ "$o" = "SMP TX IdentityInformation;UNPARSED 0;" ] && tok "btmon judge: Identity Information TX seen, key value never printed" || tbad "identity: [$o]"
 o=$(printf '%s\n' '< ACL Data TX: Handle 64 flags 0x00 dlen 6' '      SMP: Something New (0x7f) len 1' '        Weird field: 1' | judge | tr '\n' ';')
-case "$o" in *"UNPARSED 2;") tok "btmon judge: unknown SMP opcode and field are counted UNPARSED";; *) tbad "unparsed: [$o]";; esac
+[ "$o" = "UNPARSED 1;" ] && tok "btmon judge: an unknown SMP opcode is UNPARSED (its fields are not judged)" || tbad "unparsed opcode: [$o]"
+o=$(printf '%s\n' '> ACL Data RX: Handle 64 flags 0x02 dlen 11' '      SMP: Pairing Request (0x01) len 6' '        Brand new field: 1' | judge | tr '\n' ';')
+[ "$o" = "SMP RX PairingRequest;UNPARSED 1;" ] && tok "btmon judge: an unknown field INSIDE a known SMP section is UNPARSED" || tbad "unparsed field: [$o]"
+o=$(printf '%s\n' '< ACL Data TX: Handle 64 flags 0x00 dlen 7' '      ATT: Exchange MTU Request (0x02) len 2' '        Client RX MTU: 517' '> HCI Event: LE Meta Event (0x3e) plen 11' '      LE Data Length Change (0x07)' '        Max TX octets: 251' | judge | tr '\n' ';')
+[ "$o" = "UNPARSED 0;" ] && tok "btmon judge: ATT / other LE subevents are outside the verdict (not UNPARSED)" || tbad "non-judged sections: [$o]"
 
 # ---------------------------------------------------------------- 3. round verdicts (stubbed ble_n)
 DIR=$W; export DIR

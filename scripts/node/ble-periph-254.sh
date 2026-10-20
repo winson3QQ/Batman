@@ -114,7 +114,8 @@ cmd_btmon_stop() {
 cmd_btmon_dump_masked() {	# fixture capture (§4.7): headers, event names, Reason/Status kept; every other value masked
 	[ -s "$DIR/$1.snoop" ] || die "no snoop for $1"
 	"$BTMON" -r "$DIR/$1.snoop" 2>/dev/null | clean | awk '
-		/^[<>@=] / { sub(/ +#[0-9]+ \[hci0\] [0-9.]+$/, ""); print; next }
+		{ gsub(/([0-9A-Fa-f][0-9A-Fa-f]:){5}[0-9A-Fa-f][0-9A-Fa-f]/, "00:00:00:00:00:00") }
+		/^[<>@=] / { sub(/ +(#[0-9]+ +)?(\[hci0\] +)?(\{0x[0-9a-f]+\} +)?(\[hci0\] +)?[0-9]+\.[0-9]+$/, ""); print; next }
 		/^ +(SMP|L2CAP|LE [A-Za-z ]*Complete|ATT): / || /^ +LE [A-Za-z ]*Complete/ { print; next }
 		/^ +(Reason|Status): / { print; next }
 		/^ +[A-Za-z][A-Za-z ()\/-]*:/ { match($0, /^ +[A-Za-z][A-Za-z ()\/-]*:/); print substr($0, 1, RLENGTH) " <masked>"; next }
@@ -122,36 +123,41 @@ cmd_btmon_dump_masked() {	# fixture capture (§4.7): headers, event names, Reaso
 }
 cmd_snoop_clean() { held; rm -f "$DIR"/*.snoop; unlock; echo "SNOOP cleaned"; }
 
-btmon_judge() {
+btmon_judge() {	# btmon -r text -> verdict lines. Sections (6-space indent) decide what a deeper line belongs to:
+	# only SMP sections, LE (Enhanced) Connection Complete and Disconnect Complete are judged; ATT / L2CAP / other
+	# LE subevents are not part of the verdict. UNPARSED = unknown lines INSIDE a judged section (design §4.7).
 	awk '
 	function flush() { if (pend != "") { print pend; pend = "" } }
 	BEGIN {
 		split("PairingRequest PairingResponse PairingConfirm PairingRandom PairingFailed EncryptionInformation MasterIdentification CentralIdentification IdentityInformation IdentityAddressInformation SigningInformation PairingPublicKey PairingDHKeyCheck SecurityRequest PairingKeypressNotification", w, " ")
 		for (i in w) WL[w[i]] = 1
-		# known sub-line fields that carry no verdict (never printed; listed so they are not UNPARSED)
-		split("IO capability|OOB data|Authentication requirement|Max encryption key size|Initiator key distribution|Responder key distribution|Confirm value|Random value|Long term key|EDIV|Rand|Identity resolving key|Address type|Address|Signature key|X|Y|E|Notification type|Role|Peer address type|Peer address|Local resolvable private address|Peer resolvable private address|Connection interval|Connection latency|Supervision timeout|Central clock accuracy|Master clock accuracy|Handle|Num completed packets|Count|channel|L2CAP", f, "|")
+		split("IO capability|OOB data|Authentication requirement|Max encryption key size|Initiator key distribution|Responder key distribution|Confirm value|Confim value|Random value|Long term key|EDIV|Rand|Identity resolving key|Address type|Address|Signature key|X|Y|E|Notification type|Role|Peer address type|Peer address|Local resolvable private address|Peer resolvable private address|Connection interval|Connection latency|Supervision timeout|Central clock accuracy|Master clock accuracy|Handle|Status|Reason", f, "|")
 		for (i in f) IGN[f[i]] = 1
 		unparsed = 0
 	}
 	/^[<>@=] / {
-		flush(); dir = (substr($0, 1, 1) == "<") ? "TX" : "RX"; blk = "other"; want = 0
+		flush(); dir = (substr($0, 1, 1) == "<") ? "TX" : "RX"; blk = "other"; sec = ""
 		if ($0 ~ /ACL Data/) blk = "acl"
 		else if ($0 ~ /HCI Event: LE Meta Event/) blk = "lemeta"
-		else if ($0 ~ /HCI Event: Disconnect Complete/) blk = "disc"
+		else if ($0 ~ /HCI Event: Disconnect Complete/) { blk = "disc"; sec = "disc" }
 		next
 	}
-	blk == "acl" && /^ +SMP: / {
-		flush(); s = $0; sub(/^ +SMP: /, "", s); sub(/ \(0x[0-9a-fA-F]+\).*$/, "", s); gsub(/[^A-Za-z]/, "", s)
-		if (!(s in WL)) { unparsed++; next }
-		pend = "SMP " dir " " s; if (s != "PairingFailed") flush(); next
+	blk == "acl" && /^      [^ ]/ {		# a section line of an ACL block
+		flush()
+		if ($0 ~ /^      SMP: /) {
+			s = $0; sub(/^      SMP: /, "", s); sub(/ \(0x[0-9a-fA-F]+\).*$/, "", s); gsub(/[^A-Za-z]/, "", s)
+			if (!(s in WL)) { unparsed++; sec = "other"; next }
+			sec = "smp"; pend = "SMP " dir " " s; if (s != "PairingFailed") flush()
+		} else sec = "other"
+		next
 	}
-	blk == "acl" && /^ +Reason: / && pend ~ /PairingFailed$/ { match($0, /\(0x[0-9a-fA-F]+\)/); pend = pend " reason=" substr($0, RSTART + 1, RLENGTH - 2); flush(); next }
-	blk == "lemeta" && /^ +LE (Enhanced )?Connection Complete/ { want = 1; next }
-	blk == "lemeta" && want && /^ +Status: / { match($0, /\(0x[0-9a-fA-F]+\)/); print "CONN status=" substr($0, RSTART + 1, RLENGTH - 2); want = 0; next }
-	blk == "disc" && /^ +Reason: / { match($0, /\(0x[0-9a-fA-F]+\)/); print "DISC reason=" substr($0, RSTART + 1, RLENGTH - 2); next }
-	(blk == "acl" || blk == "lemeta" || blk == "disc") && /^ +/ {
+	blk == "lemeta" && /^      [^ ]/ { sec = ($0 ~ /^      LE (Enhanced )?Connection Complete/) ? "conn" : "other"; next }
+	sec == "smp" && /^ +Reason: / && pend ~ /PairingFailed$/ { match($0, /\(0x[0-9a-fA-F]+\)/); pend = pend " reason=" substr($0, RSTART + 1, RLENGTH - 2); flush(); next }
+	sec == "conn" && /^ +Status: / { match($0, /\(0x[0-9a-fA-F]+\)/); print "CONN status=" substr($0, RSTART + 1, RLENGTH - 2); next }
+	sec == "disc" && /^ +Reason: / { match($0, /\(0x[0-9a-fA-F]+\)/); print "DISC reason=" substr($0, RSTART + 1, RLENGTH - 2); next }
+	(sec == "smp" || sec == "conn" || sec == "disc") && /^ +/ {
 		k = $0; sub(/^ +/, "", k); sub(/:.*$/, "", k)
-		if (!(k in IGN) && k !~ /^LE [A-Za-z ]+$/ && k != "Status" && k != "Reason") unparsed++
+		if (!(k in IGN)) unparsed++
 		next
 	}
 	END { flush(); print "UNPARSED " unparsed }'
