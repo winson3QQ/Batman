@@ -1,6 +1,6 @@
 # Batman HAT v2:新 HAT 規格(Pi 4 與 Pi 3A+ 共用)
 
-狀態:**DRAFT v0.1**(2026-10-20),**尚未經對抗式審查**。審查依 `docs/design/REVIEW.md`,交給獨立 reviewer 審整份。
+狀態:**DRAFT v0.2**(2026-10-20;v0.1 → v0.2 依使用者對 O2、O4–O7 的決定修訂,見 §14),**尚未經對抗式審查**。審查依 `docs/design/REVIEW.md`,交給獨立 reviewer 審整份。
 主單:#227。決策單:#240。需求來源:#219 §8.5(H1–H11)、#256、#300、#302。外殼:#228。軟體配合:#223(#224–#226)、#239。
 
 > 標記慣例(沿用 `hat-v1-spec.md`):**【事實】** = 本專案實測、原始碼、規格書或 repo 檔案可查證;**【推論】** = 由事實推出、尚未實測;**【決策】** = 使用者已拍板(附日期);**【提案】** = 本文提出、待審查或待使用者拍板;**【待量測】** = 要實物量過才能定;**【搜尋結果】** = 只看到搜尋摘要,原文被本環境的網路代理擋住,要人工下載確認。
@@ -12,7 +12,7 @@
 以 `hat-v1-spec.md`(DRAFT v2)為底,**電源電路原封沿用**。改的是三件事:
 - 安全與 GPIO:TPM 改 I2C 版 SLB9673、安全晶片改 608B-SSHDA、GNSS 改走 mini UART。
 - 讓同一片 HAT **在 Pi 3A+ 也能用**。
-- 加上民用供裝要的按鍵、三色燈、QR 區。
+- 加上民用供裝要的按鍵與三色燈。
 
 板子為此往 SD 卡端加長,長度由面積需求決定,外殼配合。
 
@@ -23,11 +23,11 @@
 | D1 | TPM | SLB9672,SPI1(GPIO18–21),RST GPIO16,PIRQ GPIO22 | **SLB9673,I2C1**;RST **GPIO22**;PIRQ 不接(輪詢) | 【決策】使用者 2026-10-20 |
 | D2 | 安全晶片 | ATECC608C-TFLXTLS(0x36) | **ATECC608B-SSHDA**(未設定版,0x60),所有 SKU 都焊 | 【決策】#107、#240、#219 H1 |
 | D3 | RTC | RV-3028-C7 | 不變,保留 | 【決策】使用者 2026-10-20 |
-| D4 | GNSS 介面 | UART5(GPIO12/13),Pi 4 限定 | **GPIO14/15(兩塊板都是 mini UART)**,加 GNSS 電源閘(§5.4) | 【決策】走 UART、3A+ 用 mini UART(2026-10-20);接腳與電源閘為【提案】 |
+| D4 | GNSS 介面 | UART5(GPIO12/13),Pi 4 限定 | **GPIO14/15(兩塊板都是 mini UART)** | 【決策】走 UART、3A+ 用 mini UART(2026-10-20);接腳為【提案】 |
 | D5 | 序列主控台 | Tag-Connect 引出 UART0 | **HAT 上沒有任何序列主控台**;規則:主控台永遠不和周邊共用 UART | #302;【提案】 |
 | D6 | 適用主機 | 只有 Pi 4 | **Pi 4(bcm2711)與 Pi 3A+(bcm2710)** | #219 H7 |
 | D7 | 按鍵 / 燈 | 只有電源鍵(LTC2955) | 加**認領鍵**(GPIO18)與**三色燈**(GPIO16/20/21),經面板接頭引到外殼 | #219 H2–H5、#128 |
-| D8 | QR | 無 | HAT 上留 QR 貼紙區 | #219 H6、H11 |
+| D8 | QR | 無 | **不在 HAT 上**:QR 印在外殼外面(§5.8) | 【決策】使用者 2026-10-20 |
 | D9 | USB hub | — | **不上 HAT** | 【決策】2026-10-20 |
 | D10 | 外形 | 65 × 56.5 mm | **長邊往 SD 卡端加長,上限 10 mm**;寬、Pi 固定孔、40 針位置不變 | 【決策】外形 2026-10-20;加長量依面積定、外殼配合(2026-10-20) |
 | D11 | 電源 | HAT 上全套(§5.5) | **不變**,電源留在 HAT;外殼 v4 的 Mini560 / INA226 / DS3231 模組改由 HAT 取代 | 【決策】使用者 2026-10-20 |
@@ -40,10 +40,9 @@
 - TPM 2.0 **Infineon SLB9673**(I2C)。
 - **ATECC608B-SSHDA**(SOIC-8)。
 - RTC **RV-3028-C7** + 超級電容。
-- GNSS **u-blox MAX-M10S** + 主動天線偏壓 + 電源閘。
+- GNSS **u-blox MAX-M10S** + 主動天線偏壓。
 - 電源:v1 §5.5 全部,包括 eFuse、5 V 與 3.3 V 降壓、兩顆 INA226、LTC2955 軟開關機、BAT_PRESENT。
 - 面板接頭:電源鍵、認領鍵、三色燈。
-- QR 貼紙區。
 
 ### 2.2 不放上 HAT 的
 - PTT 音訊、LoRa:理由見 v1 §8,不變。
@@ -59,12 +58,12 @@
 | H3 | 凹陷、免工具、戴手套可按、有燈號回饋 | 按鍵本體在**外殼**上(#228);燈號回饋由三色燈 | 外殼負責 |
 | H4 | 接開機預設下拉的 GPIO,按下拉到 3V3 | GPIO18 開機預設下拉(BCM2711 / BCM2837 相同,#219 引述) | 滿足 |
 | H5 | 三色燈 GPIO 16 / 20 / 21 | §4、§5.6 | 滿足 |
-| H6 | 608B 所在的 HAT 上留 QR 區 | §5.8 | 滿足,但和 H11 有張力,見 O6 |
+| H6 | 608B 所在的 HAT 上留 QR 區 | **不採用**:HAT 封在殼裡看不到;QR 改印在外殼外面(§5.8) | 改需求,#219 §8.5 已同步 |
 | H7 | 3A+ 可用,BT 開著 | GNSS 走 GPIO14/15 mini UART,BT 留在 PL011(§5.4) | 滿足,待驗 V3 |
 | H8 | USB hub | 不上 HAT(D9) | 不採用,外殼處理 |
 | H9 | 民用不需要 RTC | RTC 保留給 T 系列與 GNSS 冷啟動;民用設計不依賴它 | 相容 |
 | H10 | 不擋板載藍牙天線 | 兩塊板各自的天線禁佈區(§6.4) | 3A+ 天線位置【待量測】 |
-| H11 | QR 與按鍵不用拆外殼就碰得到 | 按鍵:面板接頭引到外殼;QR:見 O6 | 部分待決 |
+| H11 | QR 與按鍵不用拆外殼就碰得到 | 按鍵:面板接頭引到外殼;QR:印在外殼外面 | 滿足(外殼負責) |
 
 ## 3. 方塊圖
 
@@ -78,7 +77,7 @@ flowchart LR
     SPI0["SPI0 + GPIO5/17/23/24"]
     I2C1["I2C1 (GPIO2/3) 100 kHz"]
     MU["mini UART (GPIO14/15)"]
-    G["GPIO4/6/12/16/18/20/21/22/25/26/27"]
+    G["GPIO4/6/16/18/20/21/22/25/26/27"]
   end
   SPI0 --- MPCIE
   I2C1 --- TPM["SLB9673 (0x2E?)<br/>RST ← GPIO22"]
@@ -86,7 +85,6 @@ flowchart LR
   I2C1 --- RTC["RV-3028 (0x52)"]
   I2C1 --- INA["INA226 0x40 / 0x41"]
   MU --- GNSS["MAX-M10S"]
-  G -->|GPIO12 GNSS_EN| GSW["負載開關"] --> GNSS
   GNSS -->|PPS → GPIO6| G
   G --- PANEL["面板接頭:認領鍵 GPIO18、三色燈 16/20/21、電源鍵"]
 ```
@@ -104,8 +102,8 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 | 6 | GNSS PPS | — | 補上 WM1302 拿不到 PPS 的缺口(#300 B-1) |
 | 7 | **不可用**(SPI0 CE1) | — | 不變(v1) |
 | 8–11 | HaLow SPI0 | — | 不動 |
-| **12** | **GNSS_EN**(高 = GNSS 上電) | 下拉 | 【提案】開機預設下拉 = GNSS 斷電;只有新 image 的 gpsd 啟動腳本會打開(§5.4、§11) |
-| 13 | 保留 | 下拉 | 備案:若 SLB9673 需要時脈延展,TPM 改走 GPIO12/13 的軟體 I2C(R3),GNSS_EN 另找腳 |
+| 12 | 保留 | 下拉 | 備案:若 SLB9673 需要時脈延展,TPM 改走 GPIO12/13 的軟體 I2C(O3) |
+| 13 | 保留 | 下拉 | 同上 |
 | **14 / 15** | **GNSS UART**(TXD → GNSS RX、RXD ← GNSS TX) | — | 3A+ 的 BT 佔 PL011 → 14/15 只能用 mini UART;Pi 4 同接法(D4、§5.4) |
 | **16** | **燈:紅** | 下拉 | #128;下拉 = 開機時不亮 |
 | 17 | HaLow reset | — | 不動 |
@@ -118,7 +116,7 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 | 26 | LTC2955 INT(電源鍵要求關機) | — | 不變(v1) |
 | 27 | 軟關機:N-FET → LTC2955 KILL | — | 不變(v1 §5.5.3) |
 
-- **與 v1 相比空出 GPIO19**,GPIO13 只是保留,沒有使用。
+- **GPIO12、13、19 保留不用**(GPIO19 保留腳位:使用者 2026-10-20)。GPIO12/13 也是 TPM 軟體 I2C 備案的腳。
 - **TPM PIRQ 不接**:驅動先用輪詢(v1 已是如此)。省一顆上拉,也少一條要保護的線。
 - **燈的驅動**:GPIO 不直接推 LED。每色一顆 N-FET,或用限流電阻接 LED;面板燈的電流與電壓待外殼選料(#128)【提案】。
 
@@ -140,7 +138,7 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 - **RST#**:接 GPIO22 + 外加 10 kΩ 下拉,由 overlay 的 `gpio-hog` 拉高釋放。沿用 v1 §5.1 的理由:驅動不處理 `reset-gpios`。這一點在 v1 是針對 `tpm_tis_spi` 查證的,**`tpm_tis_i2c` 要重新查**(A5)。
 - **時脈延展(clock stretching)風險**:BCM2835/2836/2837 的 I2C 硬體不支援時脈延展,BCM2711 的報告不一致【搜尋結果,raspberrypi/linux #4884 等】。**3A+ 是 BCM2837**:若 SLB9673 會延展 SCL,3A+ 上的 TPM 交易可能讀錯,甚至卡住整條 I2C1(608B、RTC 跟著失效)。
   - 規格書有沒有延展、要多久,**原文未讀到**(A4)。
-  - 備案【提案】:TPM 改走 GPIO12/13 的軟體 I2C(`i2c-gpio` overlay,支援延展)。好處是 TPM 和其他晶片分開匯流排;代價是 GNSS_EN 要另找腳(GPIO19)。**這要在 bring-up 前用規格書決定,不能等板子回來再改。**
+  - 備案【提案】:TPM 改走 GPIO12/13 的軟體 I2C(`i2c-gpio` overlay,支援延展)。好處是 TPM 和其他晶片分開匯流排。**這要在 bring-up 前用規格書決定,不能等板子回來再改。**
 - **資安限制**(沿用 v1 §5.1):PCR 封存擋不住「整片 HAT 移到別台 Pi」。金鑰要綁 Pi OTP,做法是 KDF(TPM 秘密, Pi OTP 私鑰);unseal 一律走 salted session(I2C 共用匯流排可側錄)。
   - **Pi 3A+ 的 OTP 私鑰功能未確認**:Pi 4 的做法依 Raspberry Pi 文件,BCM2837 是否有同等功能要查(A8)。
 - **料號**:SLB9673 的戶外溫度版本與料號待規格書(v1 的 SLB9672 有 −40–85 °C 的 XU 版)。
@@ -165,10 +163,8 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 - **mini UART 的鮑率跟著 core clock 走**:要固定 core clock。
   - 3A+ 的 distroconfig `[pi3]` 已有 `core_freq_min`【事實,`boards-and-builds.md:110`】。HaLow SPI0 的時脈也來自 core_freq(`hardware.md`「One thing to verify」)。
   - **兩者要一起驗**(V3):固定後 GNSS 9600 / 38400 鮑率穩定、HaLow SPI 速率不變。
-- **GNSS 電源閘(GNSS_EN,GPIO12)**【提案】:MAX-M10S 的 VCC 經負載開關(TI 料,例如 TPS22917,型號待選),EN 接 GPIO12。GPIO12 開機預設下拉 → **沒有新 image 主動打開,GNSS 就不上電**。
-  - 目的:擋住 #302 那種「GNSS 對登入主控台打字」。見 §11 的「降版」情境:舊 image 的 cmdline 可能還有 `console=serial0`。
-  - V_BCKP 接常電(Pi 3.3 V),Pi 開著時星曆保留,關掉 VCC 也能熱啟動【推論,待讀整合手冊】。
-  - 代價:一顆負載開關、一個電容,約 5 mm²。
+- **不加 GNSS 電源閘**【決策,使用者 2026-10-20】:新 HAT 一律燒新 image,沒有「舊版系統跑在新 HAT 上」這個選項。#302 的防線是 image 本身:`cmdline.txt` 不開序列主控台、`/etc/inittab` 不在 `ttyS0` 開登入(§8、§12)。
+  - 剩下的情況是「有人把舊卡 image 燒到新 HAT」,列為已接受的風險,由燒卡流程擋(§11)。
 - 天線:主動式、LNA 前有 SAW 預濾波,加偏壓,不變(v1 §5.4)。
 - PPS → GPIO6(`pps-gpio`)。
 
@@ -209,11 +205,13 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
   - 誠實的限制:Pi 背面的 40 針焊點就能接到 I2C,拿掉測試點只是不方便,不是保護。真正的保護是 salted session 和 608B 的 IO 保護金鑰(§11)。
 - 電源測試點、INA226、eFuse 燈:不變(v1 §5.6)。
 
-### 5.8 QR 貼紙區
+### 5.8 QR(不在 HAT 上)
 
-- HAT 正面或背面留一塊**淨空、不放零件、不鋪絲印**的區域,尺寸待 #219 定 QR 版本與最小尺寸(暫定 15 × 15 mm)【提案】。
-- 位置要讓外殼開窗看得到(H11),見 O6。
-- 面積計入 §6.3。
+- **QR 印在外殼外面**【決策,使用者 2026-10-20】:HAT 和電池盒內部都封在殼裡,看不到。原本 #219 H6「貼在 608B 所在的 HAT 上」與 #256「貼在電池蓋內側」都不採用。
+- HAT 上**不留 QR 區**,省下約 225 mm²。
+- 留給 #219 的問題(不影響 HAT 電路):
+  - QR 和 608B 不再在同一塊板上 → 出廠時外殼和 HAT 要配對;換 HAT 或換殼要重印 QR。
+  - QR 現在任何人都看得到 → 如果 QR 裡有認領用的秘密,安全性要靠「還得實際按下認領鍵」,要在 #219 重新評估。
 
 ### 5.9 供應鏈
 
@@ -226,7 +224,7 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 | RV-3028-C7 | Micro Crystal(瑞士) | 不變 |
 | MAX-M10S | u-blox(瑞士) | 不變 |
 
-- **新增的 C 級料**:面板接頭、ESD 陣列、GNSS 負載開關。負載開關是 B 級(有邏輯、無韌體)。
+- **新增的 C 級料**:面板接頭、ESD 陣列、燈驅動 FET。
 - 已知例外仍是 Wio-WM6108(Seeed / Quectel,**中國**),見 v1 §5.8。
 - mPCIe 插座 C7498130 是**中國**連欣科技的 C 級料,見 v1 §6.4。
 
@@ -262,13 +260,11 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 |---|---|
 | 拿掉 SPI1 走線、CS 上拉 R61、PIRQ 上拉 | −10 |
 | SLB9673 取代 SLB9672(同封裝) | 0 |
-| GNSS 負載開關 | +5 |
 | 面板接頭 + ESD | +40–60 |
 | 燈驅動 FET ×3 | +15 |
-| QR 區(暫定 15 × 15) | +225 |
+| QR 區 | 0(改印在外殼,§5.8) |
 | v1 已知不足(審查 §13 #5) | +300–600 |
 
-- **QR 區是最大的單項**。若放不下,選項:QR 放 HAT 背面(朝 Pi,外殼看不到)、縮小 QR、或改用 O6 的其他做法。
 - 依 v1 §6.2 的刪減順序處理不夠的部分。
 
 ### 6.4 天線禁佈區
@@ -292,8 +288,7 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 | 608B 設定區與槽位 | 出廠燒錄站(一次性,鎖定後不可改);執行期只有 `batman-provd`(#219) | — |
 | RTC 時間 | **只有一個寫入者**:時間來源(chrony / gpsd)校準後寫 RTC【提案,待決定是哪一個】 | 開機時 `hwclock` 讀 |
 | GNSS UART(`ttyS0`) | gpsd | — |
-| GPIO12(GNSS_EN) | gpsd 的 init 腳本 | — |
-| GPIO16 / 20 / 21(三色燈) | 單一燈號常駐程式(與 `meshled` 的關係待定,O7) | — |
+| GPIO16 / 20 / 21(三色燈) | **新程式**,到貨後設計(O7);只能有一個寫入者 | — |
 | GPIO18(認領鍵) | `gpio-keys` → `batman-provd` | — |
 | GPIO26(電源鍵 INT) | `gpio-keys` → `/etc/rc.button/power`(v1 §7.1) | — |
 | GPIO27(KILL) | `gpio-poweroff` | — |
@@ -302,17 +297,16 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 
 **兩個寫入者的風險**:
 - RTC:chrony 的 `rtcsync` 和 `hwclock -w` 不能同時開。
-- 三色燈:`meshled` 現在驅動的是 Pi 自己的 PWR / ACT 燈,不是 GPIO16/20/21。新燈若也交給它,要確認不和 #219 的認領燈號程式重疊(O7)。
+- 三色燈:`meshled` 現在驅動的是 Pi 自己的 PWR / ACT 燈,不是 GPIO16/20/21。新燈由新程式控制(使用者 2026-10-20),到貨後設計;設計時要規定其他程式(例如 #219 的認領流程)只送狀態、不直接碰 GPIO。
 
 ## 8. 介面契約
 
 | 介面 | 寫 / 讀 | 有效條件與格式 | 缺失或錯誤時 | 誰能碰到 |
 |---|---|---|---|---|
 | `config.txt` 的 HAT overlay(TPM、RTC、GNSS、pps、gpio-keys、gpio-poweroff) | 燒卡 image 寫;firmware 讀 | 每塊板各自的段落 `[pi4]` / `[pi3]` | 缺 overlay → 該功能不存在;**TPM 缺 = 解鎖失敗,fail-closed**(不解鎖,不是開放) | root、拿到 SD 卡的人 |
-| `cmdline.txt` 的 console | 燒卡 image 寫 | **不得含 `console=serial0` / `ttyS0` / `ttyAMA0`**(新 HAT 的 image) | 若含 → GNSS_EN 預設關,舊 image 不開 GNSS,所以不會注入(§11) | 同上 |
+| `cmdline.txt` 的 console | 燒卡 image 寫 | **不得含 `console=serial0` / `ttyS0` / `ttyAMA0`**(新 HAT 的 image) | 若含 → GNSS 能對登入程式打字(#302)。**fail-open,由燒卡流程擋**(§11);V9 驗證 | 同上 |
 | I2C 位址 | 硬體 | 0x2E(待確認)、0x40、0x41、0x52、0x60 | 位址衝突 = bring-up V2 會抓到 | — |
 | GPIO18 認領鍵 | 硬體 → `gpio-keys` 事件 | 按下 = 高 | 斷線 = 永遠低 = 永遠不開認領窗口(fail-closed) | 實體在場的人 |
-| GPIO12 GNSS_EN | gpsd init 寫 | 高 = 上電 | 腳本沒跑 = GNSS 不上電(fail-closed,定位缺失但無注入) | root |
 | 面板接頭 | 外殼線材 | §5.6 腳位表 | 接反 → LED 不亮,按鍵無效;ESD 由 TVS 吸收 | 實體在場的人 |
 
 ## 9. 生命週期矩陣
@@ -321,17 +315,17 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 
 | 情境 | 今天 | 之後 | 驗證 |
 |---|---|---|---|
-| 首次開機 / firstload | GNSS 在 UART0 + 登入主控台(#302) | 沒有序列主控台;GNSS_EN 由 gpsd 打開;TPM 由 gpio-hog 放開 RST | V1、V4、V9 |
+| 首次開機 / firstload | GNSS 在 UART0 + 登入主控台(#302) | 沒有序列主控台;gpsd 讀 `ttyS0`;TPM 由 gpio-hog 放開 RST | V1、V4、V9 |
 | 開機 | — | gpio-hog → TPM 啟動;RTC 讀時間;GNSS 開 | V1、V4 |
 | 正常關機(`poweroff`) | — | `gpio-poweroff` → KILL → LTC2955 斷電(v1) | V8(沿用 v1 V9) |
 | 重開機 | — | GPIO22 回到預設下拉 + 外加下拉 → TPM 被重置;KILL 不動 → 不斷電 | V8、V10 |
 | OTA(sysupgrade) | — | OTA 不帶 `config.txt` / `cmdline.txt`;**新 HAT 要燒卡 image**,不能 OTA 上去(#219 §9 已記) | V11 |
-| autocommit 回退 | — | 回退到不含 `kmod-tpm-tis-i2c` 等套件的 image:TPM 不在 → 解鎖失敗(fail-closed);GNSS_EN 沒人打開 → 無 GNSS。**系統要能開機、可被修復**,不能卡死 | V11 |
+| autocommit 回退 | — | 回退到不含 `kmod-tpm-tis-i2c` 等套件的 image:TPM 不在 → 解鎖失敗(fail-closed)。新 HAT 是燒卡上去的,A/B 兩個槽位都來自新卡【推論,待確認建卡腳本兩槽寫同一版】,所以回退的對象也支援 v2。**系統要能開機、可被修復**,不能卡死 | V11 |
 | 斷電 | — | RTC 靠超級電容約 2 天;TPM 的 NV 寫入由 TPM 本身處理;608B 執行期不寫設定區 | V6 |
-| 元件自身重啟(gpsd / 燈號程式) | — | gpsd 重啟不得關掉 GNSS_EN 後忘記打開【提案:GNSS_EN 由 init 腳本管,不由 gpsd 本身】 | V4 |
+| 元件自身重啟(gpsd / 燈號程式) | — | gpsd 重啟後重新開 `ttyS0`;燈號程式到貨後設計 | V4 |
 | 依賴重啟(I2C 卡住) | — | 一顆 I2C 晶片卡住 SDA → TPM、608B、RTC、INA226 同時失效;`i2c-bcm2835` 的匯流排復原行為待查(A6) | V2 |
 | 當機 / 當機迴圈 | — | 長按電源鍵 5.3 s 硬體斷電(v1);ramoops 留紀錄 | V8 |
-| 降版到不支援 v2 的 image | — | **風險**:舊 image 可能有 `console=serial0` → 主控台在 GPIO14/15。GNSS_EN 預設關 → GNSS 不上電、不會打字;TPM 的 RST 由預設下拉按住 → TPM 不動 | V12(負向測試) |
+| 降版到不支援 v2 的 image | — | **不支援**(使用者 2026-10-20:新 HAT 只跑新 image)。若有人燒了舊卡 image:主控台可能在 GPIO14/15,GNSS 能對它打字(#302);TPM 的 RST 由預設下拉按住 → TPM 不動。**已接受的風險**,由燒卡流程擋 | V12(燒卡流程檢查) |
 | 兩塊板 | 3A+ 的 GNSS 在 PL011,與 BT 衝突(開發期用 `miniuart-bt` 過渡) | 同一片 HAT、同一套接腳;差異只在 `[pi3]` / `[pi4]` 段 | 兩塊板都做 V1–V12 |
 
 ## 10. 依賴的假設與證據
@@ -362,13 +356,13 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 | 本機非 root 程式 | 讀 `/dev/tpmrm0`、`/dev/i2c-1`、`ttyS0`、GPIO | 這些裝置節點只給 root 或專屬群組【提案,權限表待寫】 | 權限表要進審查 |
 | 被入侵的租戶容器 | 同上 | 容器不掛這些裝置 | 依 #274 的容器設定 |
 | **實體取得節點** | ① 側錄 I2C;② 整片 HAT 移到別台 Pi;③ 按認領鍵;④ 從 Pi 背面焊點接 GPIO14/15 | ① TPM 走 salted session,608B 用 IO 保護金鑰;② 金鑰綁 Pi OTP(§5.1,3A+ 待 A8);③ 認領窗口還要 app 端的流程(#219);④ 沒有主控台在聽 | 608B 的 IO 保護擋不住 Sign / MAC(#240 留言);**3A+ 若沒有 OTP 私鑰,② 在 3A+ 上不成立** |
-| **有韌體的周邊**(GNSS、HaLow 卡) | GNSS 對主控台打字(#302);GNSS / 卡片監聽安全晶片 | 主控台不在 UART 上;GNSS 不在 I2C 上;GNSS_EN 預設關;mPCIe 不接 I2C | HaLow 卡在 SPI0,與 I2C 無關 |
+| **有韌體的周邊**(GNSS、HaLow 卡) | GNSS 對主控台打字(#302);GNSS / 卡片監聽安全晶片 | 主控台不在 UART 上;GNSS 不在 I2C 上;mPCIe 不接 I2C | HaLow 卡在 SPI0,與 I2C 無關 |
 | 供應鏈 | A 級零件被換料 | 非中國原產、原廠授權通路、不經中國組裝廠(v1 §5.8–5.9);安全網路不留可選焊位(#300) | WM6108(中國)仍是已知例外 |
-| 我們自己的錯 | 舊 image 燒到新 HAT;608B 槽位鎖錯 | GNSS_EN 預設關、TPM RST 預設按住(降版安全);608B 先在消耗品實驗 | — |
+| 我們自己的錯 | 舊 image 燒到新 HAT;608B 槽位鎖錯 | TPM RST 預設按住;燒卡站只燒新 image;608B 先在消耗品實驗 | **舊卡 image 燒到新 HAT 會重現 #302**(已接受,使用者 2026-10-20) |
 
 **失效模式**:TPM、608B 讀不到 → 解鎖與認領都 fail-closed。GNSS 讀不到 → 只少定位與 PPS。RTC 失效 → 時間靠 GNSS 或網路;民用不依賴(H9)。
 
-**負向測試**(V12):在新 HAT 上燒一張 `cmdline` 含 `console=serial0` 的舊 image,確認 GNSS 沒上電、`ttyS0` 沒有收到任何字元。
+**負向測試**(V9):在新 image 上確認 `cmdline` 沒有序列主控台、`ttyS0` 沒有登入程式,並從 GNSS 端注入 `\r\n` 確認沒有任何程式回應。
 
 ## 12. 軟體影響(草案,未驗證)
 
@@ -396,7 +390,7 @@ dtoverlay=gpio-poweroff,gpiopin=27
 | V1 | TPM 綁定、reboot 後 `TPM2_Startup` 正常 | `/dev/tpm0`、`tpm2_getcap`;連續 reboot 50 次 | 兩塊 |
 | V2 | I2C 位址與匯流排共用 | `i2cdetect -y 1` 應見 0x2E?/0x40/0x41/0x52/0x60;TPM、608B、RTC 交錯存取 1 小時 | 兩塊,**3A+ 為重點**(時脈延展) |
 | V3 | mini UART + core clock | GNSS NMEA 長時間無亂碼;HaLow SPI 速率與 iperf 不變 | 兩塊 |
-| V4 | GNSS_EN | 開機預設 GNSS 無電;gpsd 啟動後定位;gpsd 重啟後仍有電 | 兩塊 |
+| V4 | GNSS | gpsd 定位、PPS;gpsd 重啟後恢復 | 兩塊 |
 | V5 | 3A+ 的 3.3 V 負載 | 量 3V3_PI 電流,與 3A+ 能供的對照 | 3A+ |
 | V6 | RTC 斷電保持 | 斷電 24 / 48 小時後讀時間 | 一塊即可(電路相同) |
 | V7 | 認領鍵、三色燈、ESD | 按鍵事件;燈號;面板接點 ±8 kV 接觸放電【提案】 | 兩塊 |
@@ -404,7 +398,7 @@ dtoverlay=gpio-poweroff,gpiopin=27
 | V9 | 沒有序列主控台 | `cat /proc/cmdline`、`/etc/inittab`、`ps` 確認 | 兩塊 |
 | V10 | reboot 重置 TPM | reboot 前後讀 TPM 的重置計數 | 兩塊 |
 | V11 | OTA 與回退 | 新 HAT 上 OTA、autocommit 回退到舊 image,系統可開機、可修復 | 兩塊 |
-| V12 | 降版負向測試 | §11 | 兩塊 |
+| V12 | 燒卡流程 | 燒卡站拒絕燒舊 image 到新 HAT 的流程檢查(做法待定) | — |
 | V13 | 板載 BT / Wi-Fi 受 HAT 遮蔽 | 有 / 無 HAT 的 RSSI | 兩塊 |
 | V14 | 外殼試裝 | 實物試裝 v4 外殼(加高版) | 兩塊 |
 
@@ -415,17 +409,17 @@ v1 §9 的 V5–V11(電源、熱、雜訊、GNSS 受干擾)照做,兩塊板都�
 | # | 問題 | 誰決定 | 影響 |
 |---|---|---|---|
 | O1 | 加長量:依 G1 面積實算,上限 10 mm | 使用者(依數據) | 外殼本體高度 |
-| O2 | 目標客戶是否要求 FIPS 140-3?SLB9673 只有 140-2 L2 | 使用者 | 若要求 140-3,TPM 選型要重開 |
+| O2 | 目標客戶是否要求 FIPS 140-3?SLB9673 只有 140-2 L2 | 使用者:**不確定**(2026-10-20)→ 先照 SLB9673 走,有客戶指定 140-3 再重開 | 列為風險 |
 | O3 | TPM 在 I2C1 共用,或改走 GPIO12/13 軟體 I2C(R3) | 依 A4 規格書 | GPIO 表、佈線 |
-| O4 | GNSS_EN 電源閘(§5.4)是否採用 | 審查 + 使用者 | 降版安全 |
-| O5 | GPIO19 給 zeroize 開關(#240 提過)還是保留 | 使用者 | 面板接頭腳數 |
-| O6 | QR 位置:HAT 上(H6,綁 608B)與「不拆外殼看得到」(H11)、#256 的「貼在電池蓋內側」三者矛盾 | #219 / 使用者 | 面積、外殼開窗 |
-| O7 | 三色燈由誰驅動:`meshled` 擴充,還是 #219 的認領程式 | 使用者 | 擁有權(§7) |
+| O4 | GNSS 電源閘 | **不採用**(使用者 2026-10-20) | 已結案 |
+| O5 | GPIO19 | **保留腳位**(使用者 2026-10-20) | 已結案 |
+| O6 | QR 位置 | **印在外殼外面**(使用者 2026-10-20) | 已結案;配對與秘密問題轉 #219(§5.8) |
+| O7 | 三色燈由誰驅動 | **新程式,到貨後再設計**(使用者 2026-10-20) | 延後 |
 | O8 | 面板接頭型號、位置 | 外殼 #228 | 面積、高度 |
 
 ## 15. 流程
 
-1. 本文過對抗式審查(`docs/design/REVIEW.md`,審整份),處理 O2–O7。可以在雲端做。
+1. 本文過對抗式審查(`docs/design/REVIEW.md`,審整份),O2–O7 已由使用者處理(2026-10-20)。可以在雲端做。
 2. 使用者提供 SLB9673 規格書、3A+ 機構圖與電路圖(A3、A4、A9、6.4)。
 3. 改 `hardware/hat-v1/gen/design.py`,跑 `check.py` 與模擬。要 KiCad 7,在本機做。
 4. 擺件、佈線沿用 layout-v2 流程(sketch → G0 → escape → G1 → G2,連續兩次 0 未接),G1 結果決定 O1,通知外殼。在本機做。
