@@ -159,8 +159,20 @@ cmd_acquire() {
 			unlock; die "run $2 did not clean up (lease expired, no deadman left): run ble-recover first"
 		fi
 	fi
+	gc_rundirs
 	lease_write "$RUN_ID" "$1"; dm_arm "$RUN_ID" "$(( $1 + 5 ))" "$SELF"; unlock
 	echo "LEASE $RUN_ID until uptime $(( $(up_s) + $1 ))"
+}
+# run dirs of finished runs (no lease of theirs, no live deadman of theirs): printed, then removed (design §4.7)
+gc_rundirs() {
+	for d in "$BT"/*/; do
+		[ -d "$d" ] || continue; r=$(basename "$d"); [ "$r" = "$RUN_ID" ] && continue
+		[ -L "${d%/}" ] && continue
+		set -- $(lease_read); [ "${1:-}" = "$r" ] && [ "${2:-}" = "$(bootid)" ] && continue
+		live=0; for rec in "$ST/dm" "$ST/dm.new"; do [ -f "$rec" ] && set -- $(cat "$rec") && [ "$1" = "$r" ] && dm_rec_alive "$rec" && live=1; done
+		[ $live = 1 ] && continue
+		echo "GC run dir $r: $(ls "$d" | tr '\n' ' ')"; rm -rf "${BT:?}/$r"
+	done
 }
 # arm <secs>: extend lease + replace the deadman (before every state change)
 cmd_arm() {
