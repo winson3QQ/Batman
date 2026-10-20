@@ -1,6 +1,6 @@
 # Batman HAT v2:新 HAT 規格(Pi 4 與 Pi 3A+ 共用)
 
-狀態:**DRAFT v0.6**(2026-10-20;v0.2 依使用者對 O2、O4–O7 的決定修訂;v0.3 QR 改貼本體底面;v0.4 用 3A+ 官方文件補 §5.5、§6.4、§6.5;v0.5 依 SLB9673 規格書改 §5.1:TPM 走獨立軟體 I2C、接腳表、證書更正;v0.6 依 MxL7704 規格書補 3A+ 的 3.3 V 額定),**尚未經對抗式審查**。審查依 `docs/design/REVIEW.md`,交給獨立 reviewer 審整份。
+狀態:**DRAFT v0.7**(2026-10-20;v0.2 依使用者對 O2、O4–O7 的決定修訂;v0.3 QR 改貼本體底面;v0.4 用 3A+ 官方文件補 §5.5、§6.4、§6.5;v0.5 依 SLB9673 規格書改 §5.1:TPM 走獨立軟體 I2C、接腳表、證書更正;v0.6 依 MxL7704 規格書補 3A+ 的 3.3 V 額定;v0.7 依證書頁確認 CC 有效、FIPS 為 Historical,加韌體鎖定規則),**尚未經對抗式審查**。審查依 `docs/design/REVIEW.md`,交給獨立 reviewer 審整份。
 主單:#227。決策單:#240。需求來源:#219 §8.5(H1–H11)、#256、#300、#302。外殼:#228。軟體配合:#223(#224–#226)、#239。
 
 > 標記慣例(沿用 `hat-v1-spec.md`):**【事實】** = 本專案實測、原始碼、規格書或 repo 檔案可查證;**【推論】** = 由事實推出、尚未實測;**【決策】** = 使用者已拍板(附日期);**【提案】** = 本文提出、待審查或待使用者拍板;**【待量測】** = 要實物量過才能定;**【搜尋結果】** = 只看到搜尋摘要,原文被本環境的網路代理擋住,要人工下載確認。
@@ -149,15 +149,19 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
   | 5、11–13、15、25–28、31 | NCI(內部不連) | 空接 | — |
 
   → `gen/design.py` 的 TPM 符號與接線要照這張表**重畫**,不是改料號欄位。
-- **認證**【事實,規格書第 1 頁;證書內容為搜尋結果,原文待讀】:
-  - **Common Criteria**:EAL4+、AVA_VAN.4(中度攻擊能力)、ALC_FLR.1,依 TCG PC Client TPM 保護規範。證書 **BSI-DSZ-CC-1245-2024**(德國 BSI 核發),2024-10-09 生效、**有效至 2029-10-08**。涵蓋 **SLB9673_2.0 韌體 v26.24**(與 SLB9672 v16.24 同一張)【搜尋結果,[BSI](https://www.bsi.bund.de/SharedDocs/Zertifikate_CC/CC/SmartCards_IC_Cryptolib/1245.html)】。
-    - 規格書第 8 頁仍寫「targeted / CERTIFICATE <tbd>」,是發證前的舊文字,以第 1 頁與 BSI 為準。
-    - v0.1 寫的 BSI-DSZ-CC-1178-V4-2023 是**舊韌體**的證書,更正。
-  - **FIPS 140-2 Level 2**:NIST CMVP **證書 #4467**(2023-04-07 首次核發),涵蓋 SLB 9673 **FW 26.25**、FIPS 模式下【搜尋結果,[NIST CMVP #4467](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/4467)】。
-    - ⚠️ 該證書的**到期日(sunset)是 2026-09-21,已經過了**。FIPS 140-2 證書過期後會轉入「historical」清單,不能再用於新的美國聯邦採購【推論,依 CMVP 慣例;待讀 NIST 頁面的即時狀態】。
-    - **沒有 FIPS 140-3**,Infineon 表示 140-2 沒有升級路徑([Infineon 社群](https://community.infineon.com/t5/OPTIGA-TPM/Looking-for-FIPS-140-3-compliant-TPM/td-p/960207))。
-  - **結論**:實際有效的認證只剩 **CC EAL4+(到 2029)**。若客戶要 FIPS,這顆已經不符(O2)。
-  - **韌體版本要對上證書**:CC 是 v26.24、FIPS 是 26.25。訂購時選 FW26.24(見料號),並在 bring-up 讀 `TPM_PT_FIRMWARE_VERSION_2` 確認;第 4 個位元組 0x00 = 已認證模式、0x02 = 未認證【事實,規格書 §3.2 `TPM_PT_FIRMWARE_VERSION_2` 說明】。
+- **認證**【事實,規格書第 1 頁 + 使用者 2026-10-20 提供的 BSI 與 NIST 證書頁截圖】:
+
+  | 認證 | 證書 | 涵蓋的 SLB9673 韌體 | 狀態(2026-10-20) |
+  |---|---|---|---|
+  | **Common Criteria** EAL4+、ALC_FLR.1、AVA_VAN.4;保護規範 PC Client Specific TPM(ANSSI-CC-PP-2021/02);評估單位 TÜV Informationstechnik(德國) | **BSI-DSZ-CC-1245-2024**(德國 BSI 核發,2024-10-09) | **只涵蓋 v26.24.19041.00**(BSI 頁面原文「exclusively comprises」) | **有效,至 2029-10-08** |
+  | FIPS 140-2 Level 2(實體安全與 EMI/EMC 為 Level 3) | NIST CMVP **#4467**(2023-04-07 首次核發) | 26.25.19812 | **Historical**(「Moved to historical list due to sunsetting」):聯邦機關的新採購不應納入 |
+
+  - **FIPS 已確認不成立**:140-2 轉為歷史,140-3 從未取得,Infineon 表示沒有升級路徑([Infineon 社群](https://community.infineon.com/t5/OPTIGA-TPM/Looking-for-FIPS-140-3-compliant-TPM/td-p/960207))。**有效的認證只剩 CC EAL4+**。若客戶要求 FIPS,這顆不符(O2)。
+  - v0.1 寫的 BSI-DSZ-CC-1178-V4-2023 是**舊韌體**的證書,已更正。規格書第 8 頁的「targeted / CERTIFICATE <tbd>」是發證前的舊文字。
+  - **韌體鎖定規則**【提案】:CC 只涵蓋 v26.24.19041.00 →
+    - 訂購 FW26.24(見料號);
+    - bring-up 時讀 `TPM_PT_FIRMWARE_VERSION_1/2` 確認是 26.24.19041,並看第 4 個位元組:0x00 = 已認證模式、0x02 = 未認證【事實,規格書 §3.2 `TPM_PT_FIRMWARE_VERSION_2` 說明】;
+    - **不執行 TPM 韌體升級**(例如升到 26.25),除非新版本也有 CC 證書。升級會讓這台機器離開認證範圍。
 - **I2C 位址**:**0x2E**(7 位元),可改寫暫存器 0x38 調整【事實,規格書 §1.3、§3.2.10】。不與 0x40 / 0x41 / 0x52 / 0x60 衝突。最高 1 MHz(典型)【事實,§1.1】。
 - **⚠️ 時脈延展(clock stretching)是確定的**【事實,規格書 §1.3:「The device uses clock stretching on the I2C interface (this implies that the I2C controller must support this)」;§3.2.8:忙碌時也會用延展拖住主控端】。
   - BCM2835/2836/2837 的硬體 I2C 不支援時脈延展,BCM2711 的報告不一致【搜尋結果,raspberrypi/linux #4884 等】。**3A+ 是 BCM2837** → TPM **不能**放在 3A+ 的硬體 I2C1 上;放了會讀錯,甚至把整條 I2C1(608B、RTC、INA226)一起卡住。
@@ -403,7 +407,7 @@ BCM2711 與 BCM2837 的 40 針 GPIO 編號相同【事實,`docs/hardware.md`「G
 | A8 | Pi 3A+ 有可用於 KDF 的 OTP 裝置私鑰 | 無 | **待查;影響 §5.1 對策 1 在 3A+ 上是否成立** |
 | A9 | 3A+ 從 40 針背饋 5 V 的保護與同時接 micro-USB 的後果 | RP-008332-DS-1:40 針 5V 腳在 F1 之後、無防逆流(§5.5 第 3 點) | **已查** |
 | A10 | MAX-M10S 關掉 VCC、V_BCKP 常電時可熱啟動 | 無 | 待讀整合手冊 |
-| A11 | SLB9673 的 CC / FIPS 證書狀態 | 規格書第 1 頁 + BSI / NIST 搜尋結果(§5.1) | CC-1245 有效到 2029;FIPS #4467 已過 sunset(2026-09-21),**待讀 NIST 即時狀態** |
+| A11 | SLB9673 的 CC / FIPS 證書狀態 | 使用者提供的 BSI、NIST 證書頁截圖(2026-10-20) | **已查**:CC-1245 有效至 2029-10-08,只涵蓋 FW v26.24.19041.00;FIPS #4467 為 Historical |
 | A12 | `i2c-gpio`(`i2c-algo-bit`)支援 SCL 延展 | 無 | 待讀 6.6 核心原始碼 |
 
 本環境的網路代理擋住 infineon.com、mouser.com、commoncriteriaportal.org、bsi.bund.de、csrc.nist.gov。SLB9673 規格書已由使用者提供(2026-10-20);證書原文仍待讀。
@@ -473,7 +477,7 @@ v1 §9 的 V5–V11(電源、熱、雜訊、GNSS 受干擾)照做,兩塊板都�
 | # | 問題 | 誰決定 | 影響 |
 |---|---|---|---|
 | O1 | 加長量:依 G1 面積實算,上限 10 mm | 使用者(依數據) | 外殼本體高度 |
-| O2 | 目標客戶是否要求 FIPS 140-3?SLB9673 只有 140-2 L2 | 使用者:**不確定**(2026-10-20)→ 先照 SLB9673 走,有客戶指定 140-3 再重開 | 列為風險 |
+| O2 | 客戶要的是哪種認證?SLB9673 **只剩 CC EAL4+ 有效,沒有任何有效 FIPS**(§5.1) | 使用者:**不確定**(2026-10-20)→ 先照 SLB9673 走;客戶要 FIPS 時 TPM 選型要重開 | 列為風險 |
 | O3 | TPM 匯流排 | **獨立軟體 I2C(GPIO12/13)**:規格書寫明使用時脈延展(A4)【提案,待審查】 | 已依規格書處理 |
 | O4 | GNSS 電源閘 | **不採用**(使用者 2026-10-20) | 已結案 |
 | O5 | GPIO19 | **保留腳位**(使用者 2026-10-20) | 已結案 |
@@ -484,7 +488,7 @@ v1 §9 的 V5–V11(電源、熱、雜訊、GNSS 受干擾)照做,兩塊板都�
 ## 15. 流程
 
 1. 本文過對抗式審查(`docs/design/REVIEW.md`,審整份),O2–O7 已由使用者處理(2026-10-20)。可以在雲端做。
-2. 資料:SLB9673 規格書、3A+ 機構圖 / 產品簡介 / 簡化電路圖已提供並用上(2026-10-20)。MxL7704(= XR77004)規格書已提供並用上(§5.5 第 4 點)。尚缺:CC-1245 與 FIPS #4467 證書原文(A11)。
+2. 資料:SLB9673 規格書、3A+ 機構圖 / 產品簡介 / 簡化電路圖已提供並用上(2026-10-20)。MxL7704(= XR77004)規格書已提供並用上(§5.5 第 4 點)。CC-1245 與 FIPS #4467 證書頁已確認(A11)。資料面不再缺項。
 3. 改 `hardware/hat-v1/gen/design.py`,跑 `check.py` 與模擬。要 KiCad 7,在本機做。
 4. 擺件、佈線沿用 layout-v2 流程(sketch → G0 → escape → G1 → G2,連續兩次 0 未接),G1 結果決定 O1,通知外殼。在本機做。
 5. 打樣,兩塊板都 bring-up,跑 §13。
