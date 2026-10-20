@@ -247,7 +247,7 @@ bchk_ble_reboot_254() {
 	b0=$(timeout 15 ssh "${BLE_SSHO[@]}" "root@$p" 'cat /proc/sys/kernel/random/boot_id')
 	ble_reboot_committed "$p" || return 1
 	# read the boot log line FIRST, before OTS start-up floods the ring (design §4.6)
-	o=$(timeout 30 ssh "${BLE_SSHO[@]}" "root@$p" 'n=$(logread -e "Generated IRK \(getrandom\)" | wc -l); f=$(ls /var/lib/bluetooth/*/identity | head -1); h=$(sed -n "s/^IdentityResolvingKey=//p" "$f" | tr A-F a-f | sha256sum | cut -c1-8); echo "$n $h $(cat /var/lib/bluetooth/batman-sc)"')
+	o=$(timeout 30 ssh "${BLE_SSHO[@]}" "root@$p" 'n=$(logread | grep -cF "Generated IRK (getrandom)"); f=$(ls /var/lib/bluetooth/*/identity | head -1); h=$(sed -n "s/^IdentityResolvingKey=//p" "$f" | tr A-F a-f | sha256sum | cut -c1-8); echo "$n $h $(cat /var/lib/bluetooth/batman-sc)"')
 	echo "after reboot: $o"
 	set -- $o
 	isint "${1:-}" && [ "$1" -ge 1 ] || { echo "FAIL no 'Generated IRK (getrandom)' line in this boot's log"; rc=1; }
