@@ -112,6 +112,7 @@ dm_arm() {
 		set -- $rec
 		[ "$2" = "$(bootid)" ] && [ "$3" != "$pg" ] && [ -d "/proc/$3" ] && grep -q dm-fire "/proc/$3/cmdline" 2>/dev/null && { pg_kill "$3" || die "old deadman group $3 did not exit"; }
 	done
+	[ "${BLE_TEST_STOP_BEFORE_MV:-0}" = 1 ] && { echo "TEST: stopped before mv dm.new dm (N7b)"; return 0; }
 	mv "$ST/dm.new" "$ST/dm"
 }
 dm_log() {	# one line on p6 before a deadman reboot (design §4.7): root dir, no symlink, link count 1

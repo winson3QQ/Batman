@@ -14,6 +14,10 @@
 #   DV_TEST_NOREBOOT=1 / DV_TEST_FAKETIME_NOSAVE=1   negative controls: the reboot-based checks must FAIL
 #   DV_ONLY      ERE of suite names to run (whole-name match); every other suite is reported SKIP "not
 #                selected", so a partial run can never exit 0 unless ALLOW_SKIP=1. For targeted re-runs.
+#   BLE_PERIPH / BLE_CENTRAL   #254 BLE tier B: the device under test (default DNODE, must be DNODE: it is rebooted
+#                and needs ethernet) and the test central (default BENCH_NODE). DV_BT_TOOLS = btmgmt/btmon dir with
+#                SHA256SUMS (scripts/dv-bt-tools.sh), DV_PY = a Python with `cryptography` (scripts/lib/ble-254.sh).
+#   DV_PREFLIGHT=off   harness self-test only: skips scripts/dv-preflight.sh; such a run can never exit 0.
 #   DV_T263_KO   #263 fault-injection module (built by the firmware's scripts/build-debug-mm6108-fi.sh for
 #                the build the target runs); unset => halow-fi-263 is SKIP. DV_T263_NODE = its target
 #                (default BENCH_NODE). DESTRUCTIVE: the node leaves the mesh for ~3 min and reboots.
@@ -115,6 +119,35 @@ soc_of() {
 
 echo "=== daily validation $STAMP ==="
 
+# 0. Preflight (#290 rule 4, #254 PR-H1 §4.1) — BEFORE any suite. The fleet is known first (every node any suite
+#    may target, the BLE nodes included), then scripts/dv-preflight.sh checks the harness checkout, the nodes
+#    (reachable, committed, one version, no leftover hold flag), roles, the destructive payloads, BLE harness
+#    leftovers and a log flood. A FAIL means no suite runs: the 2026-10-19 runner mistakes each cost a full run.
+FEATURE_MODE=${FEATURE_MODE:---daily}     # --daily | --destructive (adds tier B; also set below, kept identical)
+DNODE0=${DESTRUCTIVE_NODE:-${OTS_NODE:-$MESH_NODE}}
+BLE_PERIPH=${BLE_PERIPH:-$DNODE0}; BLE_CENTRAL=${BLE_CENTRAL:-$BENCH_NODE}
+fssh() { timeout "${2:-60}" ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" "$3"; }
+isint() { case "$1" in ""|*[!0-9]*) return 1;; esac; }
+fleet_init "$BENCH_NODE" "$MESH_NODE" "${OTS_NODE:-$MESH_NODE}" "$DNODE0" "${DV_T263_NODE:-}" "$BLE_PERIPH" "$BLE_CENTRAL"
+PF_BYPASS=0
+if [ "${DV_PREFLIGHT:-on}" = off ]; then
+  PF_BYPASS=1; echo "PREFLIGHT BYPASSED (DV_PREFLIGHT=off) — harness self-test only; this run will exit 1" | tee "$DIR/preflight.txt"
+else
+  REPO="$REPO" BENCH_NODE="$BENCH_NODE" MESH_NODE="$MESH_NODE" OTS_NODE="${OTS_NODE:-$MESH_NODE}" DESTRUCTIVE_NODE="$DNODE0" \
+    IPERF_PEER="$IPERF_PEER" DV_T263_NODE="${DV_T263_NODE:-}" DV_T263_KO="${DV_T263_KO:-}" FI_PAYLOAD="${FI_PAYLOAD:-}" \
+    AB_MODE="$AB_MODE" FEATURE_MODE="$FEATURE_MODE" BLE_PERIPH="$BLE_PERIPH" BLE_CENTRAL="$BLE_CENTRAL" \
+    bash "$REPO/scripts/dv-preflight.sh" 2>&1 | tee "$DIR/preflight.txt"
+  if [ "${PIPESTATUS[0]}" != 0 ]; then
+    { echo "# Batman daily validation — $(date -Is)"; echo
+      echo "**PREFLIGHT FAILED — no suite was run.** Fix the setup and start again (preflight.txt next to this file)."; echo
+      grep 'PREFLIGHT FAIL' "$DIR/preflight.txt" | sed 's/^/- /'; echo
+      echo "Repo: \`$DV_COMMIT\` on \`$DV_BRANCH\` (\`$REPO\`)"; } > "$REPORT"
+    ln -sfn "$DIR" "$OUT/latest"; echo; cat "$REPORT"; exit 1
+  fi
+fi
+# shellcheck source=dv/ble-254.sh
+. "$REPO/scripts/dv/ble-254.sh"
+
 # 1. No hardware needed, but needs Linux tooling: the A/B card invariants build a real card on a
 #    loop device. On a host without losetup/mksquashfs/sudo (e.g. a Windows/Git-Bash operator box
 #    driving the fleet over ssh) it cannot run — gate it to SKIP-with-note instead of a false FAIL;
@@ -147,6 +180,21 @@ chk_tmp_trust_static() { local d p
   timeout 900 bash "$REPO/scripts/check-tmp-trust.sh" && timeout 900 bash "$REPO/scripts/test-tmp-trust.sh"; }
 suite tmp-trust-static   "no decision state / root-executed file in world-writable /tmp on the node; per-hit allowlist, path table, wiring checks + mutation proofs (#280)"   "chk_tmp_trust_static"
 
+# 2d. No hardware needed: the #254 PR-H1 harness self-tests (stub ssh / simulated node). Under Git Bash a
+#     //wsl.localhost repo is tested inside its distro (as tmp-trust above); a hang is a FAIL (timeout).
+self_test() { local d p
+  case "$(uname -o 2>/dev/null)" in
+    Msys) if command -v wsl.exe >/dev/null 2>&1; then case "$REPO" in //wsl.localhost/*)
+            d=${REPO#//wsl.localhost/}; p=/${d#*/}; d=${d%%/*}
+            echo "MSYS: delegated to WSL distro $d, repo $p"
+            timeout 900 wsl.exe -d "$d" -- bash -c "cd '$p' && bash scripts/$1"; return ;;
+          esac; fi ;;
+  esac
+  timeout 900 bash "$REPO/scripts/$1"; }
+suite harness-preflight "dv-preflight negative controls: every misconfiguration FAILs for its own reason (stub ssh, #254 PR-H1 N9)" "self_test test-dv-preflight.sh"
+suite harness-ble-254 "BLE judges offline: settings tokens, btmon judge, pairing verdicts, RPA judge good + bad runs (#254 PR-H1 N10)" "self_test test-dv-ble-254.sh"
+suite harness-negctl-254 "N3 held-trial script vs a simulated node: only guarded rollbacks, flag kept once the OTA is sent (#254 PR-H1)" "self_test test-negctl-old-slot-254.sh"
+
 # 2. No hardware needed: the MAC->IP derivation used by the first-boot hook.
 suite onboarding-ip \
   "first-boot MAC->IP + DHCP-window derivation" \
@@ -156,7 +204,33 @@ suite onboarding-ip \
 # here (again below, identical) because the settle needs them from the first hardware suite on.
 fssh() { timeout "${2:-60}" ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" "$3"; }
 isint() { case "$1" in ""|*[!0-9]*) return 1;; esac; }
-fleet_init "$BENCH_NODE" "$MESH_NODE" "${OTS_NODE:-$MESH_NODE}" "${DESTRUCTIVE_NODE:-${OTS_NODE:-$MESH_NODE}}" "${DV_T263_NODE:-}"
+# (fleet_init ran in section 0, before the preflight — with the BLE nodes)
+
+# 2e. #254 BLE (PR-H1). Tier A on every bcm2711 fleet node (read-only). Tier B (FEATURE_MODE=--destructive) runs
+#     BEFORE any slot-switching or reflashing suite (design §6): rpa -> pair -> reboot; BLE_PERIPH must be DNODE
+#     (it is rebooted and needs ethernet); each suite re-checks its nodes first.
+BLE_A_NODES=""; for n in $FLEET; do [ "$(soc_of "$n")" = bcm2711 ] && BLE_A_NODES="$BLE_A_NODES $n"; done
+BLE_B="ble-rpa-254 ble-pair-sc-only-254 ble-privacy-reboot-254"
+if [ "$FEATURE_MODE" != --destructive ]; then
+  for s in $BLE_B; do suite "$s" "#254 BLE air tier B — needs FEATURE_MODE=--destructive" ""; done
+elif [ -z "$BLE_A_NODES" ]; then
+  for s in $BLE_B; do na "$s" "no bcm2711 node in the fleet (the BLE build is Pi 4 only)"; done
+elif [ "$BLE_PERIPH" != "$DNODE0" ]; then
+  for s in $BLE_B; do suite "$s" "#254 BLE air tier B" "echo 'FAIL BLE_PERIPH $BLE_PERIPH is not DNODE $DNODE0 — it is rebooted and needs ethernet for recovery'; false"; done
+elif ! fssh "$DNODE0" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
+  for s in $BLE_B; do suite "$s" "#254 BLE air tier B — DNODE $DNODE0 has no ethernet carrier (no out-of-band recovery)" ""; done
+else
+  suite ble-rpa-254 "RPA air test, $BLE_PERIPH advertises / $BLE_CENTRAL scans: same RPA before rpa_timeout and over 30 min, new RPA after a re-registration past it, every address resolves with $BLE_PERIPH's IRK, public address never seen (#254 PR-F F28)" "bchk_ble_rpa_254 $BLE_PERIPH $BLE_CENTRAL"
+  suite ble-pair-sc-only-254 "pairing sandwich: legacy pairing BLOCKED by SC-only (04 sends reason 0x03), LEAKS when SC-only is flipped off (discrimination), BLOCKED after a bluetoothd restart, bonding request = other reason; IRK voided + kernel-verified, 02 rebooted (#254 PR-F B1)" "bchk_ble_pair_sc_only_254 $BLE_PERIPH $BLE_CENTRAL" D
+  suite ble-privacy-reboot-254 "bluetoothd restart keeps the IRK (new pid, batman-sc mode 2); a reboot generates a new one via getrandom (#254 PR-F F26)" "bchk_ble_reboot_254 $BLE_PERIPH" D
+fi
+if [ -n "$BLE_A_NODES" ]; then
+  suite ble-privacy-254 "BLE privacy on:$BLE_A_NODES — batman-sc this boot / live pid / SC only; current settings privacy+secure-conn, no bondable; tmpfs root-only store; no AF_ALG; no leftovers of a tier-B run (#254 PR-F)" "chk_ble_privacy_254 $BLE_A_NODES"
+  suite prov-tools-254 "flock (incl. contention), fsync, readlink -f, mountpoint behave on:$BLE_A_NODES (#254)" "chk_prov_tools_254 $BLE_A_NODES"
+else
+  na ble-privacy-254 "no bcm2711 node in the fleet (the BLE build is Pi 4 only)"
+  na prov-tools-254 "no bcm2711 node in the fleet"
+fi
 
 # 3. Hardware: the A/B bench card. Refuses on its own if the target is not an A/B card.
 if [ "$AB_MODE" = --skip ]; then
@@ -2633,6 +2707,7 @@ done
     echo "> ⚠️ **NOT THE CANONICAL HARNESS** — run from \`$REPO\` on \`$DV_BRANCH\` @ \`$DV_COMMIT\` (uncommitted changes under scripts/: ${DV_DIRTY:-?}). Valid for that branch only."
     echo
   fi
+  [ "$PF_BYPASS" = 1 ] && { echo "> ⚠️ **PREFLIGHT BYPASSED** (DV_PREFLIGHT=off) — harness self-test only; this run exits 1."; echo; }
   [ -n "$DV_ONLY" ] && { echo "> ⚠️ **PARTIAL RUN** — only suites matching \`DV_ONLY=$DV_ONLY\`; everything else is SKIP (not selected)."; echo; }
   echo "**$NPASS passed, $NFAIL failed, $NSKIP skipped, $NNA not applicable (by SoC, listed with reason)**"
   echo
@@ -2663,7 +2738,9 @@ cat "$REPORT"
 # test is that the hardware was not plugged in. With both nodes unreachable every hardware
 # suite SKIPs, NFAIL stays 0, and `[ $NFAIL -eq 0 ]` would hand cron a silent success for a run
 # that verified nothing. Set ALLOW_SKIP=1 to opt out deliberately.
-if [ $NFAIL -ne 0 ]; then
+if [ "$PF_BYPASS" = 1 ]; then
+  echo "EXIT 1: the preflight was bypassed (DV_PREFLIGHT=off) — never a validation result"; exit 1
+elif [ $NFAIL -ne 0 ]; then
   exit 1
 elif [ $NSKIP -ne 0 ] && [ "$ALLOW_SKIP" != 1 ]; then
   echo "EXIT 1: $NSKIP suite(s) skipped — nothing verified them. Set ALLOW_SKIP=1 if that is intended."

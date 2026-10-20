@@ -419,3 +419,12 @@ PR-P2 之後 provd 擁有廣播;H3 要決定 harness 測項是停 provd 還是�
 | B-m1 harness 死在翻轉後,02 的 IRK 不作廢 | §4.7 02 的 `irk-exposed` + deadman 重開 02;N7 |
 | B-m2 `back_to_a` 的版本條件反而有害 | 只以 `active = B` 為條件,版本不符照樣回 A 並輸出 `UNEXPECTED VERSION`;stub 6 |
 | B-m3 hold 旗標屬 OTA 狀態 | 檢查移到 P3 |
+
+## 18. 實作時查到的事實(2026-10-20,不改設計,只補證據)
+| # | 事實 | 證據 / 處理 |
+|---|---|---|
+| E37 | 非互動 `bluetoothctl --timeout N scan on`:session 開頭**不**列出 cache 裡的裝置;已知裝置再被收到時只出現 `[CHG] Device <addr> RSSI:` | 02 實測兩次掃描;`sample` 以 `[NEW] … <name>` 或本 session 的 RSSI 行為看見,N2b 驗證 |
+| E38 | 節點上沒有 `stat`、`od`;busybox `flock` 沒有 `-w` | 04 實測;改用 `ls -ldn`、`hexdump`、`flock -n` 有上限重試 |
+| E39 | 非互動 `bluetoothctl mgmt.advinfo` 偶發 segfault、沒有輸出(04 4/30、02 1/31);`mgmt.info` 0/60;只有 1 個 instance 時輸出是單數 `1 item`(`client/mgmt.c:4420`);`btmgmt --version` 印 `btmgmt: 5.72` | 讀取最多 3 次;regex 用 `item`;版本字串去前綴 |
+| E40 | `verify.py` 在 PSK 被竄改時於 `noise_check` 拋出未捕捉的例外(crash)而不是 FAIL | CI 負對照抓到;`noise_check` 改為記一條 FAIL 並返回,正常通過時仍是 195 項 |
+| E41 | preflight 第一次實跑就抓到我準備用的 runner 設定 `IPERF_PEER == MESH_NODE`(`mesh-tput-iperf` 會 SKIP);PR-F 第一次全套用 MESH=02 / IPERF=04,不受影響 | `dv-preflight.sh` P4 |

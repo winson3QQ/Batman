@@ -39,7 +39,8 @@ ble_end() { local p=$1 c=${2:-} rc=0
 # c=[2100,2400) after the re-register at 2100. Samples every 60 s from T0+30; samples within 30 s of a re-register
 # are not counted; every 120-s bucket of every segment must have >= 1 counted sighting.
 BLE_RPA_REREG_B=${BLE_RPA_REREG_B:-150}; BLE_RPA_REREG_C=${BLE_RPA_REREG_C:-2100}; BLE_RPA_END=${BLE_RPA_END:-2400}
-BLE_RPA_INJECT=${BLE_RPA_INJECT:-}		# negative controls only: N5a (power cycle at 1200) / N1 (privacy off)
+BLE_RPA_INJECT=${BLE_RPA_INJECT:-}		# negative controls only (§4.10): powercycle (N5a, at 1200), gap (N2: no samples 1500-1749),
+					# privacyoff (N1: privacy off before T0)
 bchk_ble_rpa_254() {
 	local p=$1 c=$2 rc=0 name pub t0 now ts o pid0 pid op0 oc0 op1 oc1 seg addrs a
 	ble_pre "$p" "$c" || return 1
@@ -47,6 +48,7 @@ bchk_ble_rpa_254() {
 	pub=$(ble_public "$p"); [ -n "$pub" ] || { echo "FAIL public address of $p unreadable"; ble_end "$p" "$c"; return 1; }
 	ble_reset_c "$c" || { ble_end "$p" "$c"; return 1; }
 	ble_n "$p" 90 periph restore || { ble_end "$p" "$c"; return 1; }		# fresh RPA at T0 (design B-m1)
+	case " $BLE_RPA_INJECT " in *" privacyoff "*) ble_n "$p" 60 periph privacy-off; echo "EV INJECT privacy off (negative control N1)";; esac
 	pid0=$(ble_n "$p" 30 periph info | sed -n 's/^PID //p')
 	op0=$(ble_offset "$p"); oc0=$(ble_offset "$c")
 	name=$(ble_name); echo "name $name, $p public $pub, bluetoothd $pid0"
@@ -64,13 +66,15 @@ bchk_ble_rpa_254() {
 			ble_n "$p" 60 periph adv-off >/dev/null && ble_n "$p" 60 periph adv-on "$name" >/dev/null || { echo "FAIL re-register (c) failed"; rc=1; }
 			g2=$(( $(mono) - t0 )); echo "EV $g2 re-register (c)"; done_c=1
 		fi
-		if [ "$BLE_RPA_INJECT" = powercycle ] && [ $done_x = 0 ] && [ "$now" -ge 1200 ]; then
+		case " $BLE_RPA_INJECT " in *" powercycle "*) ;; *) done_x=1;; esac
+		if [ $done_x = 0 ] && [ "$now" -ge 1200 ]; then
 			timeout 30 ssh "${BLE_SSHO[@]}" "root@$p" "$BLE_DIR/btmgmt power off >/dev/null; $BLE_DIR/btmgmt power on >/dev/null"
 			ble_n "$p" 60 periph adv-on "$name" >/dev/null; echo "EV $now INJECT power cycle (negative control N5a)"; done_x=1
 		fi
 	}
 	for ts in $(seq 30 60 $((BLE_RPA_END - 30))); do
 		while rpa_events; [ "$now" -lt "$ts" ]; do sleep 2; done
+		case " $BLE_RPA_INJECT " in *" gap "*) [ "$ts" -ge 1500 ] && [ "$ts" -lt 1750 ] && { echo "EV T0+$ts INJECT no sample (negative control N2)"; continue; };; esac
 		o=$(ble_n "$c" 60 central sample "$name" 10) || echo "SAMPLE-FAILED T0+$ts"
 		local info; info=$(ble_n "$p" 30 periph info)
 		pid=$(sed -n 's/^PID //p' <<< "$info")
@@ -143,6 +147,9 @@ ble_round() {	# <p> <c> <label> <sc> <bondable> <name> <pub> <expect: secure-con
 	ble_n "$p" 60 periph btmon-start "$L" >/dev/null || { echo "VERDICT invalid:btmon"; return; }
 	o=$(ble_n "$c" 120 central round "$L" "$sc" "$bo" "$nm" "$pub"); echo "$o"
 	ev=$(ble_n "$p" 120 periph btmon-stop "$L"); echo "$ev" | sed "s/^/$L 04 /"
+	if [ -n "${BLE_FIXTURE_DIR:-}" ]; then		# fixture capture (design §4.7): masked on the node, canary-checked later
+		ble_n "$p" 120 periph btmon-dump-masked "$L" > "$BLE_FIXTURE_DIR/$L.masked.txt" && echo "fixture $L captured (masked)"
+	fi
 	ble_n "$p" 60 periph adv-off >/dev/null
 	grep -q 'INVALID no-target' <<< "$o" && { echo "VERDICT invalid:no-target"; return; }
 	s=$(sed -n "s/^ROUND $L settings-before-pair: //p" <<< "$o")

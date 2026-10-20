@@ -15,6 +15,12 @@ jobs:
         run: bash scripts/test-harness-265.sh
       - name: nothing root runs on a node trusts world-writable /tmp (#280) — allowlist check + mutation proof
         run: bash scripts/check-tmp-trust.sh && bash scripts/test-tmp-trust.sh
+      - name: dv-preflight negative controls (#254 PR-H1 N9) — every misconfiguration FAILs for its own reason (stub ssh)
+        run: bash scripts/test-dv-preflight.sh
+      - name: BLE judges offline (#254 PR-H1 N10) — settings tokens, btmon judge, pairing verdicts, RPA judge
+        run: bash scripts/test-dv-ble-254.sh
+      - name: N3 held-trial script vs a simulated node (#254 PR-H1) — only guarded rollbacks, flag kept after the OTA
+        run: bash scripts/test-negctl-old-slot-254.sh
       - name: line-endings must be LF
         run: |
           if grep -rlIP '\r$' --include='*.sh' --include='*.py' .; then

@@ -21,7 +21,7 @@ fi
 # 3. the store: /var/lib/bluetooth -> /tmp/lib/bluetooth on tmpfs, root-only
 t=$(readlink -f /var/lib/bluetooth)
 [ "$t" = /tmp/lib/bluetooth ] || { fail "/var/lib/bluetooth resolves to [$t], not /tmp/lib/bluetooth"; rc=1; }
-mountpoint -q /tmp && grep -q '^tmpfs /tmp tmpfs ' /proc/mounts || { fail "/tmp is not a tmpfs mountpoint"; rc=1; }
+mountpoint -q /tmp && grep -q '^tmpfs /tmp tmpfs ' /proc/mounts || { fail "the tmp mount is not a tmpfs mountpoint"; rc=1; }
 set -- $(lsinfo /tmp/lib)
 case "$1" in d????-??-?) [ "$2" = 0 ] || { fail "/tmp/lib owner uid $2"; rc=1; };; *) fail "/tmp/lib mode [$1] (group/world writable or not a dir)"; rc=1;; esac
 set -- $(lsinfo /tmp/lib/bluetooth)
