@@ -1,6 +1,6 @@
 # Batman HAT v2:一塊板、兩種主機——開發插 Pi 4,量產插 CM4
 
-狀態:**DRAFT v0.12**(2026-10-20)。第一輪對抗式審查(v0.10,三位 reviewer 皆 REJECT)的處理見 §17;**第二輪待審**。
+狀態:**DRAFT v0.13**(2026-10-20)。第一輪(v0.10)、第二輪(v0.12)對抗式審查皆 REJECT,處理見 §17、§18;**第三輪待審**。
 - **審查分兩段**(使用者 2026-10-20):本文審「開發版(插 Pi 4)」與「量產版必須在擺件前定案的銅箔決定」(§7.4 接腳處置表、§7.5 上電與反灌)。量產版其餘部分(簽章開機、燒錄流程、量產生命週期、熱)另寫 `docs/design/hat-v2-production.md`,量產打件前審完。
 - v0.8:拿掉 TPM;量產與民用都用 CM4。
 - v0.9:**同一塊板**,開發期用 40 針插在 Pi 4 上,量產期直接插 CM4 當 IO 板(使用者 2026-10-20);外殼不能大改。依 CM4 規格書 RP-008168-DS-4 定孔位、連接器、堆疊高度(§7)。
@@ -37,6 +37,12 @@
 | X11 | CM4 的 Wi-Fi / BLE 天線:**上蓋可加孔**,屆時與外殼一起審 | §7.3 |
 | X12 | **買 bench 機**:不部署的 Pi 4 一台、CM4 + 官方 IO Board 一組,專供 v2 驗證 | §14 |
 | X13 | **開發版不用裝進外殼**(只用在桌上與測試架);量產版必須裝進 v4 外殼 | §6.2 |
+| X14 | **608B 綁主機**:簽章與 ECDH 槽要主機授權才能用,授權秘密只有簽章開機後的 CM4 導得出(第二輪 D1) | §5.2 |
+| X15 | HaLow 卡導熱墊改 **1.5 mm**(第二輪 D2) | §7.2 |
+| X16 | **全板 1 oz 銅、小過孔**,大電流靠鋪銅加寬(第二輪 D3) | §6.2、§5.5 |
+| X17 | **USB 每埠限流依實際裝置壓低**;板上 VLM 不經限流開關(第二輪 D4) | §5.5、§7.4 |
+| X18 | **EEPROM_nWP 經量產必焊的 0 Ω 接地**(第二輪 D5) | §7.4 |
+| X19 | **Wi-Fi / 藍牙硬體關閉腳接到面板**;上蓋開關要重選或重設計(第二輪 D6) | §5.6、§7.4 |
 
 為什麼不用 CM3+【搜尋結果與 repo 事實,2026-10-20 評估】:
 - 沒有無線,民用靠藍牙(#219 P11)會出局。
@@ -130,7 +136,7 @@ Pi 4 與 CM4 是同一顆 BCM2711;CM4 把 GPIO0–27 全部引到連接器上(�
 | **18** | 認領鍵(按下 = 3V3) | 下拉 | H4 |
 | 19 | 保留(使用者 2026-10-20) | 下拉 | — |
 | **20 / 21** | 燈:綠 / 藍(顏色對應以 #128 為準) | 下拉 | #128 |
-| 22 | 保留 | 下拉 | TPM 拿掉後空出 |
+| **22** | **板子識別 strap**:板上 10 kΩ 上拉到主機 3.3 V | 下拉 | 【提案,第二輪軟體 M3】讀到 1 = v2 板;WM1302 等舊板讀到 0(開機預設下拉)。給 OTA 的 `hat=v2` 檢查與健康檢查用(§13) |
 | 23 / 24 | HaLow wake / busy | — | 不動 |
 | 25 | INA226 ALERT | — | 同 v1 |
 | 26 | LTC2955 INT(電源鍵要求關機) | — | 同 v1 |
@@ -155,13 +161,20 @@ Pi 4 與 CM4 是同一顆 BCM2711;CM4 把 GPIO0–27 全部引到連接器上(�
   - 少一顆 A 級零件(約 US$4)和它的周邊。
 - **之後**:量產版若客戶要求認證,再評估加 TPM。SLB9673 的查證結果(接腳、時脈延展、證書、韌體鎖定)整理在**附錄 A**,不用重查。
 
-### 5.2 ATECC608B-SSHDA
+### 5.2 ATECC608B(未設定版)
 
-- 未設定版,I2C **0x60**,SOIC-8;腳位與 608C、TNGLORA 相同【事實,#240、#300】。
-- 設定區鎖定不可逆:**槽位配置先在消耗品上實驗**(#219 §8.5、#240)。
+- 未設定版,I2C **0x60**;腳位與 608C、TNGLORA 相同【事實,#240、#300】。設定區鎖定不可逆:**槽位配置先在消耗品上實驗**(#219 §8.5、#240)。
+- **包裝與擺位**【提案,第二輪資安 B1】:改用 **UDFN 包裝**(未設定版 ATECC608B-MAHDA,待查是否與 SSHDA 同為 0x60、同設定)放在**背面 CM4 陰影區**,I2C 只走內層。量產時 CM4 蓋在上面,測試夾夾不到。SOIC-8 的 SSHDA 是 #219 H1 指定的,換包裝要回寫 #219。
 - I2C 不接到 mPCIe(mPCIe 第 30、32 腳不接,v1 §4.1)【事實】。
+- **綁主機**(X14,使用者 2026-10-20):
+  - 威脅:偷到量產機的人拔掉 CM4,在同一塊板的 40 針孔焊上排針、插到自己的 Pi 4,就能用正式的出廠身分金鑰(DAC)簽章;簽章開機只保護 CM4 上的系統,灌膠或封條擋不住「整台帶走」【推論,第二輪資安 B1】。
+  - 做法【提案】:608B 的 DAC 槽與 ECDH 槽設成**需要授權才能用**(KeyConfig 的 ReqAuth + AuthKey)。授權秘密 = KDF(CM4 OTP 私鑰, 固定標籤),只有簽章開機後的 CM4 讀得到 OTP 私鑰;出廠時由燒錄站在 CM4 上導出並寫入 608B 的授權槽。
+  - 結果:CM4 換掉或換成沒有簽章開機的主機,608B 的簽章與 ECDH 都會被拒絕。
+  - **時程**:必須在 #219 的 608B 槽位實驗(B1)**鎖槽之前**定案,鎖了就不可逆。608B 的 ReqAuth 細節要用 cryptoauthlib 與消耗品驗證(A14)。
+  - 開發版(Pi 4,沒有簽章開機):不綁,用**開發 CA** 與開發授權值(§12)。
+  - 遺失機台:另補 DAC 撤銷流程(#219 的 DAC 黑名單),交給 #219。
 - 出廠初始化由 #219 的燒錄站負責。
-- **TPM 拿掉後,608B 是唯一的安全元件**。它擋不住的事寫在 §11:沒有硬體防猜 PIN;IO 保護金鑰只保護 ECDH / KDF / Verify,不保護 Sign / MAC(#240 留言)。
+- **TPM 拿掉後,608B 是唯一的安全元件**:沒有硬體防猜 PIN;IO 保護金鑰只保護 ECDH / KDF / Verify 的輸出,不保護 Sign / MAC(#240 留言)。
 
 ### 5.3 RTC — RV-3028-C7
 
@@ -173,7 +186,8 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
 
 - **接腳**:GPIO12(UART5 TXD)→ GNSS RXD、GPIO13(UART5 RXD)← GNSS TXD,同 v1【提案:改回 v1 的接法】。
   - v0.1–v0.7 為了 3A+ 改走 GPIO14/15 的 mini UART;3A+ 不再需要(X3),改回 UART5。
-  - 好處:UART5 是 PL011,鮑率不受 core clock 影響;不必為了 mini UART 固定 core_freq,也就不牽動 HaLow SPI0 的時脈(`hardware.md`「One thing to verify」)【推論】。
+  - UART5 是 PL011,GNSS 的鮑率不受 core clock 影響【推論】。但藍牙與開發用主控台總有一個在 mini UART 上,core clock 仍會被固定(#254 要求 `core_freq_min=500`,`254-stage1-impl.md:421`),所以「不牽動 HaLow SPI 時脈」這個好處不成立【事實,第二輪軟體 m9】。
+  - #254 把 `ttyAMA*` 當成實體主控台(`254-stage1-impl.md:218`),而 UART5 也會是 `ttyAMA*` → #254 的判斷要改成看實際 console 設定(O13)。
 - **主控台規則**(#302):主控台永遠不和任何周邊共用 UART。GNSS 專用 UART5;主控台若有,只能在 GPIO14/15(§5.7)。
 - **不加 GNSS 電源閘**(X7)。#302 的防線是**接線**:GNSS 在 UART5,主控台在 serial0(GPIO14/15),兩者不同 UART。
   - 這條防線**不靠 cmdline**。`batman-slot` 把 `console=serial0 console=ttyUSB0,115200 console=tty1` 寫死,且每次 OTA 的 `apply` 都會重寫目標槽的 cmdline【事實,`batman-slot:36`、`:674`;建卡腳本 `build-gpt-ab-card.sh:151`、`build-ab-image.sh:170` 同樣寫法】。所以「量產 image 不開主控台」**不能靠燒卡設定**,要由 #302 的程式修正處理(§13)。
@@ -189,13 +203,17 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
 2. **外殼的 Mini560、INA226、DS3231 模組取消**,由 HAT 取代。保險絲、PTC 留在電池盒(`hardware.md`)。
 3. **主機 5 V**(網路 `5V_HOST`):開發期接 Pi 4 第 2/4 腳;量產期接 CM4 的 +5 V 輸入(第 77、79、81、83、85、87 腳)。
    - CM4 的 +5 V 輸入建議範圍 **4.75–5.25 V**,絕對最大 6.0 V;上電要單調上升,運作中全程 ≥ 4.75 V【事實,CM4 規格書腳位表、表 3、第 25 頁】。
-   - 板上 5 V 設定 5.17 V(v1,100 k / 24 k 回授)。單算兩顆 1% 電阻就有約 ±1.6%(5.09–5.25 V),再加 LMR33640 的 VFB 公差(規格書不在 repo,待查)與負載瞬變過衝,**會超過 5.25 V**【推論,審查 M1】。超過是違反建議範圍,不會燒毀。
+   - 板上 5 V 設定 5.17 V(v1,100 k / 24 k 回授,`design.py:186-187` 用 **0.5%** 電阻)【事實】。電阻約 ±0.8%,再加 LMR33640 的 VFB 公差(待查,A12)與負載瞬變過衝,上限會貼到或超過 5.25 V【推論,審查 M1】。超過是違反建議範圍,不會燒毀。
    - **量產版 BOM 改設 5.05–5.10 V,回授用 0.1% 電阻**;開發版維持 5.17 V(Pi 4 端要補排針壓降)。O12 本來就分兩份 BOM。
    - V18 依 CM4 規格書第 26 頁的方法:2 A 負載下 5V_HOST > 4.9 V、量瞬變上限。
 4. **3V3_SEC**(608B、RTC、GNSS,< 150 mA,v1 §5.5.5 #15):開發期取自 Pi 4 的 3.3 V;量產期取自 CM4 的 `CM4_3.3V` 輸出,可供 **600 mA**(每腳 300 mA)【事實,CM4 規格書】,足夠。
 5. **I2C 上拉**:CM4 模組上 GPIO2/3 已有 1.8 kΩ 上拉【事實】;Pi 4 待對照(A4)。板上不另加。
 6. **GPIO 負載**:CM4 的 28 支 GPIO 合計負載要低於 50 mA【事實】。三色燈用 FET 驅動,不從 GPIO 直接取電(§4)。
-7. **5 V 電流預算**要把 RAK、VLM、USB hub 加進去(v1 §5.5.5 #3 只算了 Pi 4 + HaLow)【推論,審查 M2】:RAK 與 VLM 合計約 0.5 W(Batman-P `boards.py`),仍在 LMR33640 的 4 A 內,但 G1 前重算。
+7. **5 V 電流預算**【推論,第二輪電源 M5】:
+   - `boards.py` 的數字是 RAK19003 0.2 W + RAK4631 0.4 W + VLM 0.3 W = 0.9 W,而且是**平均發熱估計**,不是峰值(v0.12 寫 0.5 W 是誤引)【事實】。
+   - 最壞情況粗估:CM4 約 2 A(規格書只給典型 1.4 A,最大值待查)+ HaLow 換算到 5 V 0.85 A + hub 本身 0.1 A + CM4_3.3V 外部負載約 0.2 A + USB 下游。若 USB 埠照標準 0.5 A 算,合計約 4.2 A,超過 LMR33640 的 4 A。
+   - **處置(X17)**:hub 下游每埠的限流開關設在實際裝置需要的值(RAK 約 0.2 A,待量);板上 VLM 直接由板上電源供電,不經 USB VBUS 限流。這樣最壞約 3.6 A【推論】,擺件前依實測定案(V18)。
+8. **銅厚**(X16):全板改 **1 oz**(原 PLAN §7 為外層 2 oz)。v1 與 PLAN 的大電流路徑寬度、壓降預算(PLAN §1 A1–A8)都是用 2 oz 的 0.246 mΩ/□ 算的,1 oz 約加倍 → **G0 前重算**,不夠就用內層鋪銅並聯或加寬【推論】。
 
 ### 5.6 面板接頭(新)
 
@@ -211,7 +229,11 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
 
 - 接頭建議 JST SH 1.0 mm 側插(日本)【提案】,高度、位置配合外殼 #228。兩個階段是同一塊板,接頭與腳位自然相同,外殼線材不必改。
 - **ESD**:按鍵線拉到外殼面板,是新的外部接觸點 → 每條線加 TVS 或 ESD 陣列。
-- **安全**:CLAIM 是 #219 認領窗口的觸發鍵,實體在場才能按,這是預期的信任邊界;它不碰任何秘密線路。
+- **安全**:CLAIM 是 #219 認領窗口的觸發鍵,實體在場才能按,這是預期的信任邊界;它不碰任何秘密線路。CLAIM 事件怎麼送到 `batman-provd` 見 §9。
+- **無線靜默開關**(X19):量產版的 CM4 有 WL_nDisable(第 89 腳)、BT_nDisable 硬體關閉腳【事實,CM4 規格書】,接到面板接頭,由**上蓋的自鎖式開關**拉低。
+  - 開發版(Pi 4)沒有對應的腳,這兩條只在量產版有作用。
+  - 面板接頭多 2 腳(共 9 腳);**上蓋開關要重選或重設計**:電源鍵改瞬時型(§5.5 第 1 點),另加一個無線靜默的自鎖開關 → 交給外殼 #228。
+  - 開關斷線 = 腳懸空 = 內部上拉 = 無線開著:這是 fail-open,軍用機型若要求「斷線就靜默」要反過來設計(O17)。
 
 ### 5.7 除錯
 
@@ -264,28 +286,49 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
   - 開發(插 Pi 4):Pi 4 的 USB 不在 40 針上 → 板上留一個 USB 上游接頭,用短線接 Pi 4 的 USB-A → 同一顆 hub → CM108B【提案】。所以**有 PTT 的機型,開發版也要焊 hub**。
   - hub 的上游來源(CM4 或接頭)依打件版本選一個,不是安全網路,不受 D12 限制。
 - **授權**:OpenVLM 是 **CERN-OHL-W v2(弱互惠)**【事實,OpenVLM `LICENSE`】。照抄它的電路,出貨時這一塊(含我們的修改)要以 CERN-OHL-W 公開;板子其他部分不受影響【推論,非法律意見,商品化前請專業確認】。另一條路是依 C-Media 規格書自己設計,只沿用 GPIO1 / EEPROM 的識別慣例。
-- **面積與雜訊**【推論】:CM108B 為 LQFP-48,加音訊被動元件約 150–250 mm²;放在背面 CM4 陰影區或遠離兩顆開關降壓與 HaLow 卡的位置;類比地與音訊走線要和開關節點隔開。
+- **面積與雜訊**【推論】:CM108B 為 LQFP-48;OpenVLM 板上另有 27 顆電容、13 顆電阻,加 LDO、FET、EEPROM(`VLMKW0100_top_cpl.csv`)【事實】→ 估約 **250–400 mm²**(v0.12 的 150–250 偏樂觀,第二輪電源 m8)。遠離兩顆開關降壓與 HaLow 卡;類比地與音訊走線和開關節點隔開。
+- **ESD**:K 頭插孔是外部接觸點,MIC、SPK、PTT 三條線都加 ESD 保護(第二輪電源 m9),V7 一起測。
+- **供電**:VLM 由板上電源直接供電,不經 hub 下游的限流開關(X17)。
 - **耗電**:約 0.3 W(Batman-P `boards.py` 的估計)【推論】。
 - **外殼**:原本放在前層的 VLM 板(53 × 26.5 mm)拿掉,空間省下;RAK 的 USB 改接板上。
 - **供應鏈**:CM108B(台灣,B 級,有邏輯、無可改寫韌體【推論,待查 CM108B 是否有可寫的內部韌體】);93C46 選非中國廠(例如 Microchip,美國)。
 
-### 5.11 裝置節點權限(審查 BLOCKER:權限表)
+### 5.11 裝置節點權限
 
-**前提**【事實】:核心沒有 `CONFIG_CGROUP_DEVICE`(`security-profiles.md:35`,#109),容器的裝置白名單沒有強制力。所以**不能靠「容器不掛裝置」**,要靠檔案權限加上容器不給 `CAP_MKNOD`、不跑 privileged。
+**前提**【事實】:
+- 核心沒有 `CONFIG_CGROUP_DEVICE`(`security-profiles.md:35`,#109),容器的裝置白名單沒有強制力。
+- `/dev` 是 devtmpfs,每次開機重建;uci-defaults 只跑一次 → 權限要用 **procd 的 hotplug 規則**在每次開機與每次裝置出現時套用(第二輪軟體 M5)【推論,實作時確認 procd `hotplug.json` 的擁有權】。
+- gpsd 目前以 `nobody` 執行,系統沒有 `gpsd` 群組(`254-reviews/254-stage1-impl-v1.md:29`)→ 要新增專屬的系統使用者與群組【提案】。
+- 已上線的租戶設定都帶 `--cap-drop=ALL`(`deploy/*/*.hardening.env`),但 `payload-lib.sh` 的檢查**只允許、沒有強制**這個參數(`payload-lib.sh:9、41、64`)【事實】→ 新租戶漏掉就會帶著 `CAP_MKNOD` 跑。
 
-| 裝置 | 擁有者 / 權限 | 誰能用 | 說明 |
+| 裝置 | 權限 | 誰能用 | 說明 |
 |---|---|---|---|
-| `/dev/i2c-1` | root:root 0600 | 只有 root | 608B、RTC、INA226 都在這條匯流排;能開它就能叫 608B 用出廠身分金鑰簽章 |
-| 608B 的存取 | 只經一個 root 的 helper(#219 §9 的 root helper),以 root-only socket 提供有限操作 | `batman-provd`(非 root)經 helper | helper 不接受「替任意摘要簽章」;簽章帶用途標籤(#219 §3.4) |
-| `/dev/gpiochip*` | root:root 0600 | 只有 root | 能拉 GPIO27(KILL)直接斷電、GPIO17 重置 HaLow |
-| GNSS 的 tty(UART5) | root:gpsd 0660 | gpsd | 名稱待實測(A5) |
-| `/dev/pps0` | root:gpsd 0660 | gpsd / ntpd | — |
-| `/dev/rtc0` | root:root 0600 | 只有 root | 時間寫入者見 §8 |
-| hidraw / ALSA(VLM) | root:audio 0660 | openmanetd | — |
+| `/dev/i2c-1` | root:root 0600 | 只有 608B helper(root) | 能開它就能叫 608B 簽章、改 RTC |
+| 其他 `/dev/i2c-*`、`/dev/spidev*` | root:root 0600 | root | — |
+| `/dev/gpiomem`、`/dev/mem` | root:root 0600(或核心不提供) | root | 能開 gpiomem 就能把 GPIO2/3 改成輸出,自己模擬 I2C 操作 608B(第二輪資安 M3) |
+| `/dev/vcio`(VideoCore mailbox) | root:root 0600 | 只有 root helper | 能讀 OTP 私鑰(#219 §9 的 helper 用到) |
+| `/dev/gpiochip*`、`/sys/class/gpio` | root:root 0600 | root | 能拉 GPIO27(KILL)斷電、GPIO17 重置 HaLow |
+| `/dev/mmcblk0*` | root:disk 0660 | root | eMMC / SD 全部內容 |
+| GNSS 的 tty(UART5) | root:gpsd 0660 | gpsd(新增的系統使用者) | 名稱待實測(A5) |
+| `/dev/pps0` | root:gpsd 0660 | gpsd / 時間程式 | — |
+| `/dev/rtc0` | root:root 0600 | 只有時間程式(root) | 寫入者見 §8 |
+| RAK 的 tty | root:dialout 0660 | Meshtastic 工具 | — |
+| VLM 的 hidraw / ALSA | root:audio 0660 | openmanetd | — |
 
-- 落實方式:hotplug / 開機腳本設定權限【提案,實作時寫進 uci-defaults,屬兩板共用檔案則照 CLAUDE.md 規則】。
-- 容器:不得 privileged、不得 `CAP_MKNOD`、不掛上述裝置;沿用 #274 / #98 的容器設定。
-- **負向測試**(V20):非 root `open("/dev/i2c-1")` 得到 EACCES;在 `--cap-drop=ALL` 與預設 caps 的容器內 `mknod c 89 1` 後讀 0x60,都要失敗;非 root 寫 `/dev/gpiochip0` 要失敗。
+**608B helper 的契約**【提案,第二輪資安 M1;要同步改 #219】:
+- #219 現在寫的是 `batman-provd` 直接用 cryptoauthlib 存取 608B(`219-field-provisioning.md:200、529`),與本表衝突。改為:**只有 root helper 開 `/dev/i2c-1`**;provd(非 root、經藍牙對外)透過 helper 存取。
+- socket:root:provd 0660,只接受 provd 的 uid(以 `SO_PEERCRED` 檢查)。
+- 操作清單只有:讀 DAC 憑證、讀 `device_id`、認領挑戰比對(CheckMac)、ECDH(換密碼用)、讀「曾被認領」計數器。
+- **helper 自己組要簽的結構**:帶用途標籤、混入 helper 產生的 nonce;不接受「替任意摘要簽章」。
+- 限速:每秒操作次數上限,超過就拒絕並記錄。
+
+**容器**:payload 管理程式的檢查要**強制** `--cap-drop=ALL`,guardian 也要檢查 CapDrop(§13 第 6 項)。
+
+**負向測試**(V20),每條都配正向對照:
+- 非 root `open("/dev/i2c-1")` → EACCES;主機 root → 成功(對照)。
+- 沒有 `--cap-drop=ALL` 的 manifest → payload 管理程式拒絕;有的 → 通過(對照)。
+- 刻意給 `CAP_MKNOD` 的測試容器內 `mknod c 89 1` 讀 0x60 → 能讀(對照,證明測試有效);正式租戶 → 失敗。
+- provd 以外的 uid 連 helper socket → 拒絕;provd 送任意摘要要求簽章 → 拒絕。
 
 ## 6. 外形與機構
 
@@ -304,7 +347,7 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
 
 - 寬 56.5 mm、Pi 四個固定孔、40 針排針位置不變【決策,2026-10-20】。量產時同一塊板裝進外殼,所以**外形受外殼限制**(X4)。**開發版不用裝進外殼**(X13)。
 - 加長方向只能往 SD 卡端,**上限約 3 mm**:再往下是 pogo 接收器與卡扣(z 95),兩側長條可到 5.5 mm【事實,模型座標】。USB 端開發期會撞 Pi 4 的 USB / 網路孔【事實】。
-- **後蓋螺絲柱共 8 個**【事實,`chassis.py:39-40、131-133`;審查 M6】:(4.25, 100 / 128 / 156)、(58.75, 100 / 128 / 156)、(31.5, 95.75)、(31.5, 188.75)。柱底在外殼 y 35.0,只比板面(y 34.5)高 0.5 mm → **量產版**在這些柱的投影範圍內,正面零件 ≤ 0.5 mm,G0 要畫成禁高區。
+- **後蓋螺絲柱共 8 個**【事實,`chassis.py:39-40、131-133`;審查 M6】:(4.25, 100 / 128 / 156)、(58.75, 100 / 128 / 156)、(31.5, 95.75)、(31.5, 188.75)。柱底在外殼 y 35.0;量產版板面改在 y 32.5 起算的正面(板厚 1.6 mm,正面約 y 34.1),淨空約 **0.9 mm** → 這些柱的投影範圍內,正面零件 ≤ 0.9 mm,G0 畫成禁高區。
   - x 58.75 那一排落在板座標 y 約 0–3.75,就是 40 針排針那一邊;開發版的排針焊腳會撞柱,但開發版不裝外殼(X13);量產版不焊排針,所以沒有問題【推論】。
 - **面積**【推論,粗估;G1 用 courtyard 實算】:
 
@@ -315,12 +358,13 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
   | CM4 周邊:USB hub 與晶振、USB 開機電路、接頭(§7.4) | +200–300 |
   | 加長 3 mm(扣掉天線條對齊) | 約 +100(多出) |
   | v1 已知不足(審查 §13 #5) | +300–600 |
-  | DF40 ×2 的扇出過孔(0.4 mm 間距,貫穿正面)、CM4 固定柱 4 處(每處禁放約 Ø6) | 正面與背面都要扣【審查 M3】 |
+  | DF40 ×2 的扇出過孔(0.4 mm 間距,貫穿正面)、CM4 固定柱 4 處(每處禁放約 Ø6) | 正面與背面都要扣【審查 M3】;**1 oz 小過孔**(X16)規格與板廠確認 |
   | USB 上游切換、VBUS 限流開關、USB ESD、RAK 接頭(§7.4) | +40–80 |
-  | VLM(§5.10) | +150–250 |
+  | VLM(§5.10) | +250–400 |
+  | §7.5 雙向隔離緩衝器、放電 FET、3V3_SEC 負載開關、hub 專用 LDO | +40–70 |
 
   → **正面放不下**。背面 CM4 陰影區(3.0 mm 堆疊,CM4 底下淨空 1.5 mm)扣掉連接器、扇出、固定柱,再乘 60–70% 擺件密度,**約 1200 mm² 可用**,不是 v0.10 寫的 2000【推論,審查 M3】。陰影區零件 ≤ **1.2 mm**(留 0.3 mm 餘量)。
-  - **Pi 4 天線條 (0,0)–(6.3,20)**:所有層不鋪銅、不放零件,**兩種打件版本都一樣**(銅箔不分版本)。CM4 外框在 x 5–6.3、y 8–20 和它重疊,但那一角只有 CM4 本體懸空,我們的板子在那裡不放銅【推論,G0 驗證】。
+  - **Pi 4 天線條 (0,0)–(6.3,20)**:所有層不鋪銅、不放零件,**兩種打件版本都一樣**(銅箔不分版本)。CM4 外框在 x 5–6.3、y 8–20 和它重疊;**CM4 固定孔 (8.5, 11.5) 的接地焊墊(禁放約 Ø6)會侵入天線條**(第二輪電源 m7)→ 該孔改用不鍍銅孔、不接地,或 G0 微調 CM4 位置【提案】。
   - **Pi 4 PoE 排針投影**(x 59–63、y 7–12):只是高度問題,背面這一區只放**量產版才焊**的零件(開發版不焊,不會撞 Pi 4)【推論,G0 驗證】。
   - **G0 用 courtyard 實算後才確定放不放得下**;放不下依 v1 §6.2 刪減。
 
@@ -359,8 +403,10 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
   - CM4 是面朝下裝在板子背面,連接器腳位相對 CM4 正視圖要鏡像,畫封裝時照 STEP 檔核對。
 - **開發期(插 Pi 4)**:開發版**不焊 CM4 插座**(O12),背面只有陰影區的矮零件(≤ 1.2 mm),離 Pi 4 最高的零件(約 6.0 mm)還有約 3.8 mm【推論】。若 Pi 4 SoC 加散熱片,依 v1 §6.1 另畫背面禁放區。
 - **量產期(插 CM4,裝進外殼)**:
-  - 板子放在今天 HAT 的位置(外殼 y 32.9),**沿用 Pi 4 的四個固定孔**,鎖在外殼現有的 Pi 固定柱上(柱頂 y 20.5),距離 12.4 mm。12.4 mm 不是標準長度 → 用 12 mm 銅柱,HaLow 卡導熱墊的壓縮量少 0.4 mm,要訂公差【推論,審查 m3】。
-  - CM4 從板子背面往中隔板方向凸出:3.0 mm 堆疊時底面在 y 26.3,離固定柱頂還有 5.8 mm;1.5 mm 堆疊時 y 27.8。
+  - 板子沿用 **Pi 4 的四個固定孔**,用 **12 mm 標準銅柱**鎖在外殼現有的 Pi 固定柱上(柱頂 y 20.5),板面落在 y 32.5(今天 HAT 在 y 32.9)。
+  - **HaLow 卡導熱墊改 1.5 mm**(X15):原 1 mm 導熱墊剛好貼平(y 39.5–40.5,壓縮量 0,`layout3d.json`)【事實】;板子低 0.4 mm 後改 1.5 mm,壓縮約 0.1 mm【推論】。導熱墊的可壓縮範圍要依選料確認(V16)。
+  - 後蓋螺絲柱的淨空因此從 0.5 mm 變成 **0.9 mm**(§6.2 的禁高區跟著改)。
+  - CM4 從板子背面往中隔板方向凸出:3.0 mm 堆疊時底面在 y 25.9(板面 y 32.5 − 6.578),離固定柱頂還有 5.4 mm【推論】。
   - HaLow 卡照舊朝後蓋,導熱墊壓後蓋鋁板,散熱不變。
   - CM4 SoC 朝中隔板,散熱改用銅片導到側壁(今天是 Pi 4 SoC 銅片,`layout3d.json`)。
   - 外殼要拿掉 Pi 4 的 USB 彎頭插頭預留區;RAK / VLM 改接板上的 USB(§7.4)。
@@ -386,30 +432,39 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
 | CM4_1.8V(88、90) | — | 不接 | 不需要 |
 | GPIO0–27 | — | 依 §4 | 兩階段同一張表 |
 | **ID_SD / ID_SC(GPIO0/1)** | HAT EEPROM 用 | **不接**,40 針第 27、28 腳也不連線 | 防止外接 EEPROM 注入 overlay(§12) |
-| **EEPROM_nWP(20)** | 上電前就要是低電位才有效;規格書建議量產拉低 | **O15**:(a)直接接地(現場不能再更新 bootloader EEPROM),或(b)經量產版必焊的 0 Ω 接地 | 量產設計決定;擺件前要選 |
-| **nRPIBOOT(93)** | 拉低 → USB 開機燒錄;要在 +5 V 上升後 2 ms 內就是低 | 只拉到**燒錄治具用的測試焊墊**,板上不放按鍵或跳線 | 治具燒錄;簽章開機啟用後 rpiboot 能做什麼,寫進量產設計(A10) |
-| **USB 2.0(D+/D−)** | 預設關閉,要 `otg_mode=1`;固定當主機時 USB_OTG_ID 接地 | 經 **USB 2.0 類比切換器**:平時接板上 hub(主機),治具拉 nRPIBOOT 時同時把 USB 切到燒錄接點(裝置) | 一組 USB 兼兩種角色(審查 M2) |
-| USB_OTG_ID | 主機模式接地 | 平時接地;燒錄時由切換器 / 治具處理 | 同上 |
-| hub 下游 VBUS | — | 每埠一顆限流開關 | Pi 4 本來就有,CM4 沒有(審查 M2) |
+| **EEPROM_nWP(20)** | 上電前就要是低電位;還要軟體設定 `eeprom_write_protect=1` 才生效(規格書 §2.18) | **經量產版必焊的 0 Ω 接地**(X18),0 Ω 放在背面 CM4 陰影區 | 真正的鎖是簽章開機燒進 CM4 的熔絲;0 Ω 保留日後修補 bootloader 的路(拆殼、拆 CM4 才碰得到)【推論】 |
+| **nRPIBOOT(93)** | 拉低 → USB 開機燒錄;要在 +5 V 上升後 2 ms 內就是低 | 只拉到**燒錄治具用的測試焊墊**,放在**背面 CM4 陰影區**(CM4 裝上後碰不到) | 治具燒錄;簽章開機啟用後 rpiboot 能做什麼,寫進量產設計(A10) |
+| **USB 2.0(D+/D−)** | 預設關閉,要 `otg_mode=1` | 經 **USB 2.0 類比切換器**:平時接板上 hub;治具拉 nRPIBOOT 時,同一條治具線把切換器切到燒錄焊墊(焊墊在陰影區)。切換器的選擇腳由治具焊墊驅動、板上預設下拉 = 接 hub;電源取 CM4_3.3V | 一組 USB 兼兩種用途 |
+| USB_OTG_ID | 固定當主機或固定當裝置都接地(規格書第 6 頁) | **直接接地** | 燒錄時不必切換(第二輪電源 m2) |
+| hub 下游 VBUS | — | RAK 埠一顆限流開關,限流值依實際裝置(X17);VLM 不經 VBUS | Pi 4 本來就有,CM4 沒有 |
+| **hub 本身的電源** | 主機 +5 V 之前任何腳不得加電(第 25 頁) | **hub 專用 LDO**,致能由主機 3.3 V 控制;hub 的 D+ 上拉因此不會早於主機上電(第二輪電源 M6) | — |
 | **RUN_PG(92)** | 拉低可重置 CPU | **不引出**,不放焊墊 | 減少實體攻擊面(§12) |
-| **GLOBAL_EN(99)** | 拉低 = 最低功耗;內部 100 kΩ 上拉到 +5 V | **不接**,電源由 LTC2955 切 5 V 主電源(v1) | 一個電源擁有者(§8) |
-| LED_nPWR / LED_nACT | 要加緩衝才能推 LED | 不接;狀態燈由新的三色燈程式負責(§8) | meshled 在 CM4 上看不到 `/sys/class/leds/PWR`、`ACT`(審查 m3),要和新程式一起設計 |
-| WL_nDisable / BT_nDisable | 可空接(內部上拉) | 空接 | — |
-| Ethernet、HDMI、CSI / DSI、PCIe、SD | — | 不接 | 外殼沒有對應開孔;CM4 有 eMMC |
+| **GLOBAL_EN(99)** | 拉低 = 最低功耗;內部 100 kΩ 上拉到 +5 V | 只拉到**陰影區的測試焊墊**(V18 負向對照用);電源由 LTC2955 切 5 V 主電源(v1) | 一個電源擁有者(§8);CM4 裝上後碰不到 |
+| LED_nPWR | 要加緩衝才能推 LED | 不接 | 狀態燈由新的三色燈程式負責(§8) |
+| **Pi_nLED_Activity(21)** | 可承受 5 V、可吸 20 mA | **和三色燈的紅色線或(開汲極並接)**【提案,第二輪電源 m4】 | 密封的量產機也看得到開機錯誤碼(閃燈) |
+| **WL_nDisable(89)/ BT_nDisable** | 拉低 = 關閉無線 | **接到面板接頭的無線靜默開關**(X19) | §5.6 |
+| Ethernet、HDMI、CSI / DSI、PCIe、SD、SDA0 / SCL0(80、82)、Camera_GPIO(97)、AnalogIP0/1(94、96)、nEXTRST(100)、PCIe_CLK_nREQ(102)、Ethernet_SYNC、SD_VDD_OVERRIDE | — | 不接 | 外殼沒有對應開孔;CM4 有 eMMC |
+| **Reserved(76、104)** | 規格書要求不可接任何東西 | 不接 | — |
 
-- **40 針排針在量產版不焊**,它的焊墊會露出 I2C(608B)、SPI0、GPIO27(KILL)、GPIO14/15 等【事實,接線】。這些焊墊是貫穿孔,不能用防焊漆蓋住。**D12(安全網路不留可選焊位)的例外**:這是「主機介面」的打件版本,不是可選的安全元件;對策是量產版灌膠或防拆封條(§12)【提案,審查 M3】。
-- **打件分兩種**(O12):開發版焊 40 針、不焊 CM4 插座與本表的 USB 切換器、限流開關;量產版相反。VLM 區依 X9 另分有 / 無 PTT。
+- **40 針排針在量產版不焊**,它的焊墊會露出 I2C、SPI0、GPIO27(KILL)、GPIO14/15 等【事實,接線】,而且是貫穿孔,蓋不住。**D12 的例外**:這是「主機介面」的打件版本,不是可選的安全元件。對「換主機」的攻擊,真正的防線是 608B 綁主機(X14、§5.2);灌膠或封條只是事後看得出被拆【推論,第二輪資安 B1】。
+- 打件版本見 §7.9。
 
 ### 7.5 上電、斷電與反灌(審查 BLOCKER)
 
 - **規格書要求**【事實,CM4 規格書第 25 頁】:CM4 斷電時,任何腳都不能被外部加電壓,否則之後可能開不了機;CM4_3.3V 對外供電時,斷電過程中不可以低於 CM4_1.8V;+5 V 單調上升、運作中全程 ≥ 4.75 V。
 - **風險**【推論】:LTC2955 長按斷電或拔電池時,HaLow 3.3 V 軌上約 0.3 mF 電容(`design.py` C60–C62)會撐住數 ms;這段時間 HaLow 卡的 IRQ / BUSY / MISO 可能仍為高,經 GPIO 反灌進已斷電的 CM4。Pi 4 也有同樣的限制,v1 §5.5.5 #8 只分析了穩態。
-- **處置**【提案】:
-  1. HaLow 卡往主機方向的訊號(MISO、IRQ、BUSY)經**有 Ioff(斷電隔離)功能的緩衝器**(例如 TI SN74LVC2G125 一類,非中國廠),緩衝器電源取主機 3.3 V:主機沒電 → 緩衝器輸出高阻抗。
-  2. 3V3_MPCIE 加放電路徑,讓 HaLow 卡在主機斷電後很快歸零。
-  3. 608B、RTC、GNSS 都吃主機 3.3 V(3V3_SEC),和主機一起上下電,不會反灌。
-  4. 面板接頭、VLM、USB 的上拉都接主機那一側的電源。
-- **驗證**(V18):示波器同時量 5V_HOST、CM4_3.3V、CM4_1.8V、3V3_MPCIE、GPIO5 / GPIO24;做長按斷電、拔電池、正常關機;並依規格書第 26 頁的方法確認 GLOBAL_EN 拉低時 3.3 V < 200 mV(負向對照)。
+- **處置**【提案,第二輪電源 M1、M2;軟體 M7】:
+  1. **兩個方向都加有 Ioff(斷電隔離)功能的緩衝器**(例如 TI SN74LVC 系列,非中國廠):
+     - 卡往主機(MISO、IRQ):緩衝器電源取**主機 3.3 V**,主機沒電 → 輸出高阻抗。BUSY 在卡上沒接通(R17 = DNP,v1 §4.1)【事實】,不緩衝。
+     - 主機往卡(SCK、MOSI、CS、RESET_N / GPIO17、WAKE / GPIO23):緩衝器電源取 **3V3_MPCIE**,卡沒電 → 輸出高阻抗,主機的訊號不會灌進還沒上電的卡。
+     - HaLow 的**腳位對應不變**(§4),只在路徑中加緩衝器;MISO 多約 3–5 ns 延遲,SPI 時脈 25–32 MHz(v1 §5.1)時要做時序預算(A15)【推論】。
+     - HaLow 卡不在或沒電時,緩衝器輸入要有上下拉,避免浮接造成假中斷。
+  2. **3V3_MPCIE 放電**:P-MOSFET,源極接 3V3_MPCIE、閘極接主機 3.3 V(主機沒電 → 導通放電),串電阻限流。
+  3. **3V3_SEC 經負載開關**(例如 TI TPS22917),致能取 5V_HOST 的電壓偵測(5 V 先掉 → 先切斷 3.3 V 外部負載),確保「CM4_3.3V 不低於 CM4_1.8V」(規格書第 22 頁要求的額外電路)。開發版同一電路,沒有壞處。
+  4. 608B、RTC、GNSS 都在 3V3_SEC 後面,和主機一起上下電。
+  5. 面板、VLM、USB 的上拉都接主機那一側的電源;hub 用專用 LDO(§7.4)。
+  6. **Tag-Connect 序列線**:板子沒電時接上序列線,線的 TX 會灌進 GPIO15 → 焊墊加串聯電阻,並在使用說明寫明先上電再接線。
+- **驗證**(V18):示波器同時量 5V_HOST、CM4_3.3V、CM4_1.8V、3V3_MPCIE、GPIO5、GPIO17;做長按斷電、拔電池、正常關機、快速關再開;並用陰影區的 GLOBAL_EN 測試焊墊依規格書第 26 頁的方法確認 3.3 V < 200 mV(負向對照)。CM4 的 MxL7704 要先把各路輸出放到 < 200 mV 才會啟動【事實,MxL7704 規格書 Sequencing】,所以反灌就是「開不了機」的實際機制。
 - **KILL 時序**:KILL 與 INT 的上拉在量產版接 CM4_3.3V(`design.py:268-271` 目前接 3V3_PI)。CM4_3.3V 要等 GLOBAL_EN 的 RC 延遲後才起來,必須在 LTC2955 的遮蔽時間(最短 304 ms)內變高,否則按電源鍵後又會斷電 → V18 量測【審查 m4】。
 
 ### 7.6 軟體
@@ -421,7 +476,7 @@ CM4 本身沒有 RTC【事實,v1 §5.3】,量產插 CM4 時同樣用板上這顆
   - bootloader 設定 `BOOT_UART=0`。
 - `config.txt` 不隨 OTA 更新(`batman-slot:663`),eMMC 封在殼裡 → 出廠就要對,之後只能拆殼用 rpiboot 重燒【事實 + 推論】。
 - `DISK=/dev/mmcblk0` 寫死在 `batman-slot:28`、`95-batman-storage:30`;CM4 eMMC 的裝置名要實測(V17)【事實】。
-- EEPROM bootloader 要 ≥ 2025-08-20 才有「FAT 分割有 config.txt 但沒有韌體」的退回保護(`boards-and-builds.md` §1)→ 工廠設好;EEPROM_nWP 拉低後現場不能升級(O15)。
+- EEPROM bootloader 要 ≥ 2025-08-20 才有「FAT 分割有 config.txt 但沒有韌體」的退回保護(`boards-and-builds.md` §1)→ 工廠設好;EEPROM_nWP 經 0 Ω 拉低並設 `eeprom_write_protect=1` 後,現場不能升級;要修只能拆殼拆 CM4、移除 0 Ω(X18)。量產 config 另加 `force_eeprom_read=0`(不讀 HAT ID EEPROM,§4)。
 - 簽章開機要用 `boot.img` / `boot.sig`【推論,待查】,和 `batman-slot` 在節點上寫散檔與 cmdline 的做法不相容 → 量產設計處理。
 - 要加 CM4 的 DTB(`bcm2711-rpi-cm4.dtb` 是否收進 image 待查 firmware fork),並在 CM4 實機上驗證(CLAUDE.md)。
 - 生產保證:CM4 到 2034-01【搜尋結果,Raspberry Pi 官方產品頁】。
@@ -454,30 +509,51 @@ free -m                     # 平常與 16 支手機連線時的記憶體
 
 官方 **CM4 IO Board 有 40 針 HAT 排針**【搜尋結果】→ 開發期可把這塊板當 HAT 插在「CM4 + 官方 IO Board」上,提早在 CM4 上驗證軟體(V17)。板子自己的 CM4 介面要等量產版 BOM 才會用到。
 
+### 7.9 打件版本(第二輪電源 M6)
+
+同一塊 PCB,四種打件:
+
+| | 開發 · 無 PTT | 開發 · 有 PTT | 量產 · 無 PTT | 量產 · 有 PTT |
+|---|---|---|---|---|
+| 40 針排針 | ✅ | ✅ | — | — |
+| CM4 插座 ×2、USB 切換器、nWP 0 Ω、jig 焊墊附近的上下拉 | — | — | ✅ | ✅ |
+| USB hub + hub LDO | — | ✅(上游接 Pi 4 USB-A 的接頭) | ✅ | ✅ |
+| RAK 埠限流開關 | — | ✅ | ✅ | ✅ |
+| VLM 區(§5.10)與 K 頭線材接頭 | — | ✅ | — | ✅ |
+| §7.5 隔離緩衝器、放電 FET、3V3_SEC 負載開關 | ✅ | ✅ | ✅ | ✅ |
+| 開發用 Tag-Connect 主控台焊墊 | 有銅箔 | 有銅箔 | 有銅箔(主控台由 #302 程式修正拿掉) | 同左 |
+
+- 軟體分得出哪一種:主機種類看 device tree 的 model(Pi 4 / CM4);v2 看 GPIO22 strap(§4);有沒有 PTT 看 USB 上有沒有 0D8C:0012【提案】。
+- 「兩種主機介面都焊上」是打件錯誤:CM4 插座焊上而又插 Pi 4 不會有電氣衝突(插座空著),但量產機若誤焊 40 針排針,會多出完整的裸露介面 → 出廠 AOI 檢查(§10)。
+
 ## 8. 擁有權
 
 | 資源 | 唯一擁有者(可以改) | 只讀者 / 說明 |
 |---|---|---|
 | I2C1 匯流排 | 核心 `i2c-bcm2835` 驅動 | 608B helper、RTC、INA226 驅動 |
 | 608B 設定區與槽位 | 出廠燒錄站(一次性);執行期只有 root helper(§5.11),`batman-provd` 經它存取 | — |
-| **系統時間** | 目前有多個寫入者:sysfixtime(關機存、開機還原)、`batman-faketime`(只往前推,上限 2035)、ntpd【事實,`explicit-reboot.md:31`、`batman-reboot:41`、`batman-faketime`】 | **v2 要訂出唯一來源順序**【提案】:GNSS(PPS)> ntpd > RTC > faketime |
+| **系統時間** | 目前有多個寫入者:sysfixtime(關機存、開機還原)、`batman-faketime`(只往前推,上限 2035)、busybox ntpd【事實,`explicit-reboot.md:31`、`batman-reboot:41`、`batman-faketime`】 | **v2 要訂出唯一來源順序**【提案】:GNSS(PPS)> ntpd > RTC > faketime。busybox ntpd 不吃 PPS → 要換時間程式(例如 chrony,英國 / 開源,非中國)或另寫,見 O18 |
 | **RTC 硬體時間** | **只有一個寫入者**【提案】:由時間來源程式在 GNSS 或 ntpd 校準後寫入 | 開機時讀;讀之前先檢查 RV-3028 的 PORF(斷電旗標),失電就不採用,避免 faketime 下限被推到錯誤的未來【審查 M5】 |
-| GNSS UART(UART5) | gpsd | — |
+| GNSS UART(UART5) | gpsd(專屬系統使用者,§5.11) | — |
 | PPS(GPIO6) | 核心 `pps-gpio` | gpsd / ntpd 讀 |
-| BAT_PRESENT(GPIO4) | 硬體 | `batpower` 讀 |
+| BAT_PRESENT(GPIO4) | 硬體 | `batpower` **目前沒讀**;且 `batpower` 取第一顆 `ina2*`、預設 2 串電池(`usr/bin/batpower:50-56`、`init.d/batpower:12`)→ v2 有兩顆 INA226,要指定電池那顆並改串數(§13 第 7 項,第二輪軟體 M4) |
 | INA226 ALERT(GPIO25) | 硬體 | **目前沒有任何程式讀**(v1 §7.2);接手者待定 |
 | GPIO14/15 主控台 | `batman-slot` 寫的 cmdline(`console=serial0`) | #302 修正前,量產不放行 |
 | GPIO16 / 20 / 21(三色燈) | **新程式**,到貨後設計(X8);只能有一個寫入者 | 其他程式只送狀態 |
 | **狀態顯示整體** | 開發期:meshled 管 Pi 的 PWR / ACT 燈,新程式管三色燈;量產期 CM4 沒有拉出 PWR / ACT → meshled 的狀態要併入新程式【提案】 | 兩者不能同時寫同一顆燈 |
-| GPIO18(認領鍵) | `gpio-keys` → `batman-provd` | — |
+| GPIO18(認領鍵) | `gpio-keys` → `/etc/rc.button/claim` → 寫入 provd 的事件 socket(§9) | provd 只信這條路徑 |
+| GPIO22(板子識別) | 硬體 strap | `check_image`、健康檢查讀(§13) |
+| WL_nDisable / BT_nDisable | 面板開關(硬體,X19) | 軟體只讀狀態,不寫 |
 | GPIO26(電源鍵 INT) | `gpio-keys` → `/etc/rc.button/power`(v1 §7.1) | — |
 | GPIO27(KILL) | `gpio-poweroff` | — |
-| **主機電源** | LTC2955(切 5 V 主電源);GLOBAL_EN、RUN_PG 不接(§7.4) | 單一擁有者 |
+| **主機電源** | LTC2955(切 5 V 主電源);GLOBAL_EN 只到陰影區測試焊墊、RUN_PG 不接(§7.4) | 單一擁有者 |
+| 3V3_SEC 負載開關、3V3_MPCIE 放電 | 硬體(§7.5) | — |
 | INA226 ×2 | 核心 `ina2xx` hwmon | `batpower` |
-| USB hub、VBUS 開關 | 硬體;hub 下游裝置由各自的程式使用(openmanetd 用 VLM,Meshtastic 工具用 RAK) | — |
+| USB hub、VBUS 開關 | 硬體;hub 下游裝置由各自的程式使用(openmanetd 用 VLM,Meshtastic 工具用 RAK) | **USB 授權**:`authorized_default=0`,只放行白名單(hub、VLM 0D8C:0012、RAK)【提案,第二輪資安 M4】 |
 | `config.txt` / `distroconfig.txt` | 燒卡 image;**OTA 不帶**(`boards-and-builds.md` §5 #12) | firmware |
 | `cmdline.txt` | **`batman-slot`**(每次 OTA 的 `apply` 重寫,`:674`);建卡腳本(`build-gpt-ab-card.sh:151`、`build-ab-image.sh:170`)寫初值 | 三處要收斂成單一來源(#302) |
-| CM4 bootloader EEPROM 內容與設定 | 工廠(量產設計);`95-batman-storage:418` 會讀它 | O15 |
+| CM4 bootloader EEPROM 內容與設定 | 工廠(量產設計);`95-batman-storage:418` 會讀它 | nWP 0 Ω(X18)+ `eeprom_write_protect=1` |
+| 608B 授權秘密(X14) | 出廠燒錄站寫入 608B;執行期只由 root helper 在簽章開機的 CM4 上從 OTP 導出 | 不落地、不進 log |
 | nRPIBOOT、EEPROM_nWP 狀態 | 硬體處置(§7.4) | — |
 
 ## 9. 介面契約
@@ -489,6 +565,10 @@ free -m                     # 平常與 16 支手機連線時的記憶體
 | I2C1 位址 | 硬體 | 0x40、0x41、0x52、0x60 | 衝突 = bring-up V2 抓到 | — |
 | GPIO18 認領鍵 | 硬體 → `gpio-keys` | 按下 = 高 | 斷線 = 永遠低 = 永遠不開認領窗口(fail-closed) | 實體在場的人 |
 | 面板接頭 | 外殼線材 | §5.6 腳位表;兩個階段同一塊板 | 接反 → LED 不亮、按鍵無效;ESD 由 TVS 吸收 | 實體在場的人 |
+| 認領鍵 → provd | `rc.button/claim`(root)寫;provd 讀 | provd 的事件 socket 只接受 root 的 uid(`SO_PEERCRED`);事件只帶「按下」與時間 | provd 沒在跑 → 事件丟掉,不開窗口(fail-closed)【提案,第二輪軟體 M6】 | root |
+| 608B helper socket | provd 呼叫;root helper 執行 | §5.11 的操作清單 | helper 不在 → 認領與換密碼失敗(fail-closed) | provd(uid 檢查) |
+| GPIO22 板子識別 | 硬體 | 1 = v2 | 讀到 0 → `check_image` 視為非 v2 板,不裝 `hat=v2` image | — |
+| 無線靜默開關 | 面板 → WL/BT_nDisable | 拉低 = 關 | 斷線 = 無線開著(fail-open,O17) | 實體在場的人 |
 
 ## 10. 生命週期矩陣
 
@@ -502,15 +582,21 @@ free -m                     # 平常與 16 支手機連線時的記憶體
 | 開機 | — | RTC 先檢查 PORF 再讀;GNSS、608B、VLM 可用 | V2、V4、V6、V19 |
 | 正常關機(`poweroff`) | — | `gpio-poweroff` → KILL → LTC2955 斷電(v1);斷電過程不反灌(§7.5) | V8、V18 |
 | 重開機 | — | KILL 不動 → 不斷電(v1) | V8 |
-| OTA stage 1(sysupgrade 前半,舊系統還在跑) | — | 只寫非使用中的槽;**`apply` 會重寫目標槽 cmdline 成 `console=serial0`**(`batman-slot:674`)→ 開發版接受,量產前由 #302 修 | V11 |
+| OTA stage 1(sysupgrade 前半,舊系統還在跑) | — | 只寫非使用中的槽;**cmdline 由舊 image 的 `batman-slot` 寫**(`platform-ab.sh:37` 呼叫的是正在跑的那份;`batman-slot:674`)→ #302 的修正**要分兩個版本發**:第一版改 `batman-slot` 本身,第二版之後的 OTA 才會寫出新 cmdline【事實 + 推論,第二輪軟體 M1】 | V11 |
 | OTA stage 2(重開進新槽) | — | 新槽的 `config.txt` 沿用燒卡時的(OTA 不帶);**payload 沒有宣告硬體版本,舊 image 也能裝**(審查 M4)→ 要加 `hat=v2` 宣告與 `check_image` 比對【提案,§13】 | V11 |
 | autocommit **提交** | — | mesh 加入閘門通過即提交;**閘門不看 HAT 功能**(RTC、GNSS、VLM 壞了也會提交)→ 健康檢查加 HAT 項目【提案】 | V11 |
-| autocommit **回退** | — | 回到上一槽;cmdline 由 `batman-slot` 重寫 | V11 |
+| autocommit **回退** | — | 回到上一槽;回退**不碰 cmdline**(`batman-slot:731-741`),上一槽保留它當初寫的值【事實,第二輪軟體 M1】 | V11 |
 | 斷電(拔電池、長按 5.3 s) | — | RTC 靠超級電容約 2 天;斷電過程依 §7.5 不反灌 | V6、V18 |
 | 元件自身重啟(gpsd、三色燈程式) | — | gpsd 重啟後重新開 UART5;燈號程式到貨後設計 | V4 |
 | 依賴重啟:network / procd / hotplug 重送事件 | — | gpsd、gpio-keys 重新綁定;hub 下游重新列舉後 openmanetd 要能重新抓到 VLM【推論,待測】 | V19 |
 | 依賴重啟:I2C 卡住 | — | 一顆晶片卡住 SDA → 608B、RTC、INA226 同時失效;`i2c-bcm2835` 的復原行為待查(A6) | V2 |
 | 當機 / 當機迴圈 | — | 長按電源鍵 5.3 s 硬體斷電(v1);ramoops 留紀錄 | V8 |
+| 只用 Pi 4 的 USB-C 供電、沒接電池 | — | 5V_HOST 由 Pi 4 經 40 針倒送回板上 → 3V3_SEC 負載開關照常導通,608B、RTC、GNSS 可用;HaLow 卡的 3V3_MPCIE 有沒有被倒灌要依 v1 電源樹(LM74700 理想二極體的位置)確認;HAT 電池與 USB-C 不可同時供電(v1 規定)【推論,待確認】 | V18 |
+| 電池欠壓 / 電壓緩降 | — | eFuse 與 LMR33640 欠壓鎖定(v1);RTC 保持 | V8 |
+| 快速關再開(< 1 s) | — | MxL7704 要求各路 < 200 mV 才啟動 → 放電路徑要在時間內放完(§7.5)| V18 |
+| 板上沒插 HaLow 卡 | — | 緩衝器輸入有上下拉,不產生假中斷(§7.5) | V2 |
+| Tag-Connect 序列線在板子沒電時接上 | — | 串聯電阻限流(§7.5 第 6 點) | V18 |
+| 重新開機後 USB 重新列舉 | — | 權限由 hotplug 規則重套(§5.11);USB 授權白名單重新判定 | V20 |
 | 降版到不支援 v2 的 image | — | 經燒卡:不支援(X7)。經 OTA:目前擋不住(見 OTA stage 2)。GNSS 在 UART5,舊 image 不會在那裡開登入,所以不會重現 #302【推論】 | V11、V12 |
 | Pi 4 | 現行 | 開發版唯一主機 | 全部 |
 | CM4 + 官方 IO Board | — | 開發期選配(§7.8);只能用一個電源:HAT 的 5.17 V 不可和 IO Board 自己的 5 V 並聯【審查 m5】 | V17 |
@@ -528,6 +614,10 @@ free -m                     # 平常與 16 支手機連線時的記憶體
 | A11 | `[pi4]` 段落的篩選是否也套用到 CM4 | 審查者記憶 | 待讀 Raspberry Pi config.txt 條件篩選原文 |
 | A12 | LMR33640 的 VFB 公差 | 無 | 待讀 TI 規格書 SNVSB99C |
 | A13 | CM108B 有無可改寫的內部韌體 | 無 | 待讀 C-Media 規格書 |
+| A14 | 608B 的 KeyConfig ReqAuth / AuthKey 能讓 Sign 與 ECDH 在沒授權時被拒;授權狀態在睡眠 / 重置後失效 | 審查者記憶;Microchip 文件需 NDA | 讀 cryptoauthlib 原始碼(`atcacert`、`calib_checkmac`)+ 消耗品實驗;**#219 鎖槽前完成** |
+| A15 | 加了 Ioff 緩衝器後 HaLow SPI 25–32 MHz 時序仍夠 | 無 | 依選定緩衝器的 tpd 算;V3 跑 iperf |
+| A16 | ATECC608B 的 UDFN 版本(MAHDA)與 SSHDA 同位址、同設定、可在原廠通路買到 | 無 | 查 Microchip 料號表 |
+| A17 | CM4 最大電流(非典型) | 規格書只給典型 | 實測(V18) |
 | A4 | Pi 4 在 GPIO2/3 有 1.8 kΩ 上拉 | 3A+ 電路圖同設計(RP-008332-DS-1) | 待對照 Pi 4 簡化電路圖 |
 | A5 | UART5 在 GPIO12/13(ALT4)、`dtoverlay=uart5` 後的 tty 名稱 | ALT4 已由審查者對照 CM4 規格書替代功能表;現行 image 開了 `miniuart-bt`(§4) | ALT4 **已查**;tty 名稱待實測 |
 | A6 | `i2c-bcm2835` 遇到卡住的匯流排會不會自己復原 | 無 | 待讀原始碼 |
@@ -546,13 +636,14 @@ free -m                     # 平常與 16 支手機連線時的記憶體
 | 行為者 | 攻擊 | v2 的處理 | 剩下的風險 |
 |---|---|---|---|
 | **遠端**(mesh / Wi-Fi / 藍牙) | ① **GNSS 訊號欺騙**:騙時間(影響憑證效期、RTC)與位置;② 藍牙晶片(Pi 4 / CM4 的 CYW43455)韌體漏洞 | ① 時間來源順序與合理性檢查(§8),RTC 只由一個寫入者在多來源一致時寫;② 依上游安全更新 | v0.10 寫「沒有新的網路介面」是錯的(審查 M6) |
-| 本機非 root 程式 | 開 `/dev/i2c-1` 叫 608B 簽章、改 RTC;開 gpiochip 斷電 | §5.11 權限表;608B 只經 root helper | 權限表落實前不放行 |
-| 被入侵的租戶容器 | 同上,加上 `mknod` 自建裝置節點 | 核心沒有 `CONFIG_CGROUP_DEVICE` → 靠不給 `CAP_MKNOD`、不跑 privileged(§5.11) | 依 #274 / #98 |
-| **USB 周邊**(RAK、VLM) | 有韌體的 USB 裝置(BadUSB 類) | VLM 在板上、韌體固定【推論,A13】;RAK 是外接模組 | `productization.md:109` 要求無人值守節點在執行期關掉 USB,和 RAK / VLM 衝突 → 量產設計決定 |
-| **實體取得節點**(開發版) | 換卡開機後使用 608B;接 40 針或 GPIO14/15 拿 root 主控台 | 開發版不設防:Pi 4 沒啟用簽章開機 | 開發板的 608B 要用**開發 CA**,不能用正式 CA,否則任何一台開發 Pi 4 都能冒充正牌機台【提案,審查 M4】 |
-| **實體取得節點**(量產版) | ① 40 針裸焊墊夾上自己的 I2C 主控,直接叫 608B 做 Sign / MAC(不需要 SoC 開機);② 在焊墊上焊無線小板,長期冒充這台節點;③ 短接 nRPIBOOT 從 USB 讀寫 eMMC;④ 外接 ID EEPROM 注入 overlay | ① ② **608B 的 Sign / MAC 對實體攻擊者不設防**,只有 ECDH / KDF 的輸出受 IO 保護金鑰保護(#240);對策是灌膠或防拆封條(§7.4);③ 簽章開機與 A10(量產設計);④ GPIO0/1 不連線(§4) | v0.10 寫「量產靠簽章開機」不完整(審查 M3) |
+| 本機非 root 程式 | 開 `/dev/i2c-1` 叫 608B 簽章、改 RTC;開 gpiochip / gpiomem 斷電或自己模擬 I2C;開 vcio 讀 OTP | §5.11 權限表(含 gpiomem、mem、vcio、mmcblk、其他 i2c / spidev);608B 只經 root helper,helper 自己組要簽的結構 | 權限表落實前不放行 |
+| 被入侵的租戶容器 | 同上,加上 `mknod` 自建裝置節點 | 核心沒有 `CONFIG_CGROUP_DEVICE` → payload 管理程式**強制** `--cap-drop=ALL`(今天只允許、不強制,§5.11)、不跑 privileged | 依 #274 / #98 |
+| **USB 周邊**(RAK、VLM、插到 hub 的任何東西) | 有韌體的 USB 裝置假裝成鍵盤,對 tty1 打字;或假裝成網卡 | `authorized_default=0` + 白名單(§8);量產 image 不在 tty1、ttyUSB0 開登入;VLM 在板上、韌體固定【推論,A13】 | 白名單用 VID:PID,可被偽造 → 只擋「隨手插一個」,不擋專門偽造;`productization.md:109` 要求執行期關 USB 和 RAK / VLM 衝突 → 量產設計決定 |
+| **實體取得節點**(開發版) | 換卡開機後使用 608B;接 40 針或 GPIO14/15 拿 root 主控台 | 開發版不設防:Pi 4 沒啟用簽章開機 | 開發板的 608B 用**開發 CA**;**正式的 App、provd 驗證端、TAK 端都要拒絕開發 CA 簽的身分**(V23,第二輪資安 M5) |
+| **實體取得節點**(量產版) | ① 40 針裸焊墊夾上自己的 I2C 主控,直接叫 608B 簽章;② **換主機**:拔掉 CM4、焊上排針插自己的 Pi 4,用正式 DAC 簽章(第二輪 B1);③ 短接 nRPIBOOT 從 USB 讀寫 eMMC;④ 外接 ID EEPROM 注入 overlay | ① ② **608B 綁主機**(X14,§5.2):沒有授權就拒絕簽章與 ECDH,授權只有簽章開機的 CM4 導得出;608B 改 UDFN 放陰影區;③ nRPIBOOT 焊墊在陰影區 + 簽章開機與 A10;④ GPIO0/1 不連線(§4) | X14 依賴 A14;**整台被偷**時攻擊者仍可用原 CM4 開機 → 靠 #219 的 DAC 撤銷;拆 608B 做物理攻擊不在範圍 |
 | **有韌體的周邊**(GNSS、HaLow 卡) | GNSS 對主控台打字(#302);監聽安全晶片 | GNSS 在 UART5,和主控台分開;GNSS 不在 I2C;mPCIe 不接 I2C | 主控台本身要由 #302 的程式修正拿掉 |
-| **CM4 本身**(bootloader EEPROM) | 改 bootloader 設定 | EEPROM_nWP(O15)、`eeprom_write_protect`(量產設計) | — |
+| **CM4 本身**(bootloader EEPROM) | 改 bootloader 設定 | nWP 經必焊 0 Ω 接地(X18)+ `eeprom_write_protect=1`;簽章開機熔絲才是真正的鎖 | 拆 0 Ω 要拆殼與 CM4 |
+| 無線靜默開關 | 有人在場把無線關掉 | 預期行為(實體在場 = 信任);狀態要回報 | 斷線即開(fail-open,O17) |
 | 供應鏈 | A 級零件被換料 | 非中國原產、原廠通路、不經中國組裝廠(v1 §5.8–5.9) | WM6108(中國)仍是例外 |
 | 工廠與物流 | 燒錄站、標籤印表機看到所有認領秘密;換電池的隊友、修理行、物流看到 QR | 工廠不保存秘密(#219 P8);QR 範圍見 §5.8 | O14 |
 | 我們自己的錯 | 開發 image 流到量產機;舊 image 經 OTA 裝上;608B 槽位鎖錯 | 開發與量產用**不同的簽章金鑰與 CA**【提案】;`build-board.sh` 產量產 variant 時發現 console 就失敗【提案】;payload 宣告 `hat=v2`(§10);608B 先在消耗品實驗 | 量產設計 |
@@ -564,7 +655,9 @@ free -m                     # 平常與 16 支手機連線時的記憶體
 **負向測試**:
 - V9:從 GNSS 端(UART5)注入 `\r\n`,沒有任何程式回應;OTA 後與回退後各跑一次,並加進 `daily-validation.sh`。
 - V20:§5.11 的權限負向測試。
-- V21:用 GNSS 模擬器把時間往前跳 1 年,RTC 與系統時間不得被寫入。
+- V21:GNSS 時間欺騙,含跳 1 年、慢慢漂移、重開機後、離線且 RTC PORF 時、`.faketime` 被推到未來。
+- V23:正式 App 拒絕開發 CA 簽的 DAC。
+- V24:換主機:608B 在沒有授權時拒絕 Sign 與 ECDH(對照:授權後成功)。
 
 ## 13. 軟體影響(草案,未驗證)
 
@@ -586,7 +679,12 @@ dtoverlay=batman-hat-v2              # 自製:gpio-keys GPIO18(認領)、GPIO26(
   2. **payload 宣告硬體版本**(`hat=v2`),由 `check_image` 比對;**autocommit 健康檢查加 HAT 項目**。
   3. `apply` 只用 `cp -f` 加 overlay、從不刪除(`batman-slot:648`)→ 會留下不同版本混用的 dtbo,要處理。
   4. 時間來源順序與 RTC 單一寫入者(§8)。
-  5. 和 #254 協調 `miniuart-bt` 與 `ble-ok` 閘門(O13)。
+  5. 和 #254 協調 `miniuart-bt` 與 `ble-ok` 閘門(O13);#254 把 `ttyAMA*` 當實體主控台的判斷要改(§5.4)。
+  6. **payload 管理程式強制 `--cap-drop=ALL`**,guardian 也檢查(§5.11)。
+  7. **batpower**:指定電池那顆 INA226(依 I2C 位址)、依機型設串數、讀 BAT_PRESENT(§8)。
+  8. **權限與 USB 授權**:procd hotplug 規則、gpsd 專屬使用者、`authorized_default=0` 白名單(§5.11、§8)。
+  9. **608B helper**:root helper 與 provd 的 socket 契約(§5.11);同步改 #219。
+  10. **#302 修正分兩個版本發**(§10):第一版改 `batman-slot` 自己,第二版之後的 OTA 才寫出新 cmdline。
 - `/etc/inittab`:量產 image 不在任何序列埠開登入。
 - 以上是**燒卡 image** 的改動,OTA 帶不到(§10)。改到 `cmdline` 的建卡腳本在 CLAUDE.md 的「兩板共用 A/B 檔案」清單內 → 要依該規則實機驗證。
 
@@ -600,17 +698,19 @@ dtoverlay=batman-hat-v2              # 自製:gpio-keys GPIO18(認領)、GPIO26(
 | V6 | RTC 斷電保持 | 斷電 24 / 48 小時後讀時間 |
 | V7 | 認領鍵、三色燈、ESD | 按鍵事件;燈號;面板接點 ±8 kV 接觸放電【提案】 |
 | V8 | 軟開關機 | 沿用 v1 V9 |
-| V9 | GNSS 不接主控台 | GNSS 端(UART5)注入 `\r\n` 無回應;OTA 後與回退後各跑一次;加進 `daily-validation.sh`。量產另驗 `cat /proc/cmdline` 沒有序列主控台(#302 修正後) |
+| V9 | GNSS 不接主控台 | GNSS 端(UART5)注入 `\r\n` 無回應;**正向對照**:同樣注入到開發主控台(GPIO14/15)有 login 提示,證明注入有效;OTA 後與回退後各跑一次;加進 `daily-validation.sh`。量產另驗 `cat /proc/cmdline` 沒有序列主控台(#302 修正後) |
 | V11 | OTA 與回退 | 新 HAT 上 OTA、autocommit 回退,系統可開機、可修復 |
 | V12 | 燒卡流程 | 燒卡站拒絕燒舊 image 的流程檢查(做法待定) |
 | V13 | Pi 4 Wi-Fi / BT 受 HAT 遮蔽 | 有 / 無 HAT 的 RSSI |
 | V15 | QR 實印試掃 | 10 × 10 mm 貼紙印在本體底面,iPhone 與 Android 各試掃;轉電池盒 50 次後再掃 |
 | V16 | 量產版放進外殼 | 外殼(#228)用 `layout3d.py` 加入 CM4(STEP)與板子做干涉檢查,含 12 mm 銅柱與 SoC 散熱銅片 |
 | V17 | 開發期在 CM4 + 官方 IO Board 上 | 同 V2–V9;CM4 eMMC 裝置名;只用一個電源 |
-| V18 | 量產版插 CM4 | 5V_HOST 在 2 A 負載下 > 4.9 V 且瞬變不超過上限;§7.5 的上電 / 斷電 / 反灌示波器量測;KILL 時序;USB hub 接 RAK + VLM;rpiboot 燒 eMMC;外接天線 RSSI;同 V2–V9 |
+| V18 | 量產版插 CM4 | 5V_HOST 在 2 A 負載下 > 4.9 V 且瞬變不超過上限;最壞電流(A17)與 5 V 預算(§5.5 第 7 點);§7.5 的上電 / 斷電 / 反灌 / 快速關再開示波器量測,用 GLOBAL_EN 測試焊墊做負向對照;KILL 時序;USB hub 接 RAK + VLM;rpiboot 經陰影區焊墊燒 eMMC;外接天線 RSSI;同 V2–V9 |
 | V19 | 內建 VLM | `openvlm identify` 認得;K 頭 PTT 鍵觸發;錄放音迴路;HaLow 發射時的音訊雜訊 |
-| V20 | 裝置權限負向測試 | §5.11 |
-| V21 | GNSS 時間欺騙 | 模擬器把時間往前跳 1 年,RTC 與系統時間不得被寫入 |
+| V20 | 裝置權限負向測試 | §5.11 的四條,每條都有正向對照;USB 白名單外的裝置插上不被授權 |
+| V21 | GNSS 時間欺騙 | 跳 1 年、慢慢漂移、重開機後、離線且 RTC PORF、`.faketime` 在未來:RTC 與系統時間不得被錯誤寫入 |
+| V23 | 開發 CA 被拒 | 正式 App、provd 驗證端、TAK 端拒絕開發 CA 簽的 DAC;正式 CA 的通過(對照) |
+| V24 | 換主機 | 608B 沒授權時 Sign、ECDH 被拒;授權後成功(對照);在消耗品上做(A14) |
 | V22 | 熱(量產) | 量產版在最高環境溫度、外殼密閉、OTS 滿載下量 CM4 SoC 溫度與降頻、無線晶片 < 75 °C(CM4 典型約 7 W,今天外殼模型只算 Pi 4 4 W,審查 M5);細節放量產設計 |
 
 v1 §9 的 V5–V11(電源、熱、雜訊、GNSS 受干擾)照做。
@@ -629,7 +729,10 @@ v1 §9 的 V5–V11(電源、熱、雜訊、GNSS 受干擾)照做。
 | O11 | CM4 堆疊高度 | **3.0 mm**(使用者 2026-10-20):新板子背面焊 DF40HC(3.0)-100DS-0.4V ×2 | 已結案 |
 | O13 | 藍牙放 PL011(拿掉 `miniuart-bt`)還是維持現狀 | 拿掉;和 #254 的 `ble-ok` 閘門一起改 | #254 |
 | O14 | 軍用機型是否貼 QR、是否開認領窗口 | 都不要(審查 M5) | #219 |
-| O15 | EEPROM_nWP:直接接地,或經量產必焊的 0 Ω | 量產設計定;**擺件前要選** | 銅箔 |
+| O15 | EEPROM_nWP | **(b)經量產必焊的 0 Ω 接地**(使用者 2026-10-20,X18) | 已結案 |
+| O17 | 無線靜默開關斷線時要開還是關 | 民用:斷線 = 開(現設計);軍用若要求斷線即靜默,改成常閉開關 + 反向邏輯 | #228、軍用規格 |
+| O18 | 時間程式:busybox ntpd 不吃 PPS | 換 chrony(開源,非中國)或用 gpsd 的 SHM 加自寫的校時;另開 PR 前決定 | §8、§13 |
+| O19 | 608B 包裝:SOIC-8(#219 H1)或 UDFN(陰影區) | UDFN(§5.2),待 A16 | #219 |
 | O16 | VLM 照抄 OpenVLM(CERN-OHL-W)或自己設計 | 畫電路圖前決定 | 授權 |
 | O12 | 打件 | **分兩種**(使用者 2026-10-20):開發版焊 40 針、不焊 CM4 插座;量產版相反。另加**有 / 無 PTT**:無 PTT 的機型不焊 VLM 區(X9) | 已結案 |
 
@@ -638,7 +741,7 @@ O3–O7 已結案(TPM 匯流排隨 TPM 拿掉而取消;GNSS 電源閘不採用;G
 ## 16. 流程與修訂紀錄
 
 **流程**:
-1. 第二輪對抗式審查(`docs/design/REVIEW.md`,審整份):開發版 + §7.4、§7.5 的銅箔決定(X10)。可以在雲端做。
+1. 第三輪對抗式審查(`docs/design/REVIEW.md`,審整份):開發版 + §7.4、§7.5、§7.9 的銅箔決定(X10)。可以在雲端做。
 2. 改 `hardware/hat-v1/gen/design.py`:拿掉 TPM、608C → 608B、GNSS 維持 UART5、加面板接頭;依 §7.2 整理分頁。跑 `check.py` 與模擬。要 KiCad 7,在本機做。
 3. 擺件、佈線沿用 layout-v2 流程(sketch → G0 → escape → G1 → G2,連續兩次 0 未接)。在本機做。
 4. 打樣,在 Pi 4(與選配的 CM4 + 官方 IO Board)上 bring-up,跑 §14。
@@ -661,6 +764,7 @@ O3–O7 已結案(TPM 匯流排隨 TPM 拿掉而取消;GNSS 電源閘不採用;G
 | v0.10 | O10–O12 使用者決定:無線版、3.0 mm 堆疊、兩種打件;新增 §7.7 CM4 選型(依實測數據) |
 | v0.11 | VLM 內建(X9,使用者 2026-10-20):新增 §5.10;無 PTT 機型不打件;OpenVLM 授權為 CERN-OHL-W |
 | v0.12 | 第一輪審查(三位皆 REJECT)處理,見 §17;使用者決定 X10–X13(審查分兩段、上蓋可加孔、買 bench 機、開發版不裝外殼);新增 §5.11 權限、§7.4 CM4 接腳處置表、§7.5 上電與反灌 |
+| v0.13 | 第二輪審查(三位皆 REJECT)處理,見 §18;使用者決定 X14–X19(608B 綁主機、1.5 mm 導熱墊、1 oz 銅、USB 限流、nWP 經 0 Ω、無線靜默開關);新增 §7.9 打件版本、GPIO22 板子識別 |
 
 與舊文件的關係:`hat-v1-spec.md` 仍是電源電路的正本;`hardware/hat-v1/HANDOFF.md` 與 `layout-v2/PLAN.md` §12 的「往左延伸 3 mm」已被本文取代。
 
@@ -694,6 +798,46 @@ O3–O7 已結案(TPM 匯流排隨 TPM 拿掉而取消;GNSS 電源閘不採用;G
 | 各 MINOR | MINOR | GPIO 預設、陰影區 1.2 mm、連接器方向、12 mm 銅柱、KILL 時序、IO Board 單一電源、`[cm4]` 段、tryboot 標記、編號 | §4、§6.2、§7.2、§7.5、§7.6、§10 |
 
 生命週期與擁有權的漏項:已補 OTA stage 1 / 2、autocommit 提交、依賴重啟、Pi 4 / CM4 / bcm2710 分列(§10);擁有權補系統時間、PPS、BAT_PRESENT、ALERT、狀態顯示、主機電源、cmdline、bootloader EEPROM(§8)。量產矩陣依 X10 放進量產設計,並在 §10 開頭列出必須涵蓋的列。
+
+---
+
+## 18. 第二輪審查(v0.12)的處理
+
+三位 reviewer 再次皆 **REJECT**。使用者對六個需要拍板的問題做了決定(D1–D6 → X14–X19),其餘直接修。
+
+| 來源 | 嚴重度 | 問題 | 處理 |
+|---|---|---|---|
+| 資安 B1 | BLOCKER | 換主機:拔 CM4、焊排針插 Pi 4,用正式 DAC 簽章 | X14 608B 綁主機(§5.2);V24;A14 要在 #219 鎖槽前驗 |
+| 資安 M1 | MAJOR | root helper 與 #219 的 provd 直接用 cryptoauthlib 衝突 | §5.11 helper 契約;§13 第 9 項同步改 #219 |
+| 資安 M2 | MAJOR | 容器仍可 mknod,payload-lib 沒強制 cap-drop | §5.11、§13 第 6 項;V20 改測「管理程式拒絕」 |
+| 資安 M3 | MAJOR | 權限表漏 gpiomem、mem、vcio、其他 i2c、spidev、mmcblk、sysfs gpio、RAK tty | §5.11 表 |
+| 資安 M4 | MAJOR | USB 裝置偽裝鍵盤對 tty1 打字 | §8 USB 授權白名單;§12;§13 第 8 項 |
+| 資安 M5 | MAJOR | 驗證端要拒開發 CA | §12;V23 |
+| 資安 M6 | MAJOR | 銅箔層級缺:608B 包裝與擺位、nRPIBOOT / USB 焊墊位置、未列的 CM4 腳 | §5.2(UDFN、陰影區,O19)、§7.4(焊墊在陰影區、補齊腳位) |
+| 軟體 M1 | MAJOR | cmdline 生命週期寫錯(舊 image 寫) | §10;§13 第 10 項分兩版發 |
+| 軟體 M2 | MAJOR | RTC / 時間寫入者 | §8(busybox ntpd 不吃 PPS,O18);V21 擴充 |
+| 軟體 M3 | MAJOR | 沒有硬體識別「這是 v2」 | §4 GPIO22 strap;§9 |
+| 軟體 M4 | MAJOR | batpower 取錯 INA226、假設 2 串 | §8;§13 第 7 項 |
+| 軟體 M5 | MAJOR | 權限要 hotplug;沒有 gpsd 群組 | §5.11;§13 第 8 項 |
+| 軟體 M6 | MAJOR | 認領鍵到 provd 的通道沒定義 | §8、§9 |
+| 軟體 M7 | MAJOR | Ioff 緩衝器影響 SPI 時序;反方向沒分析 | §7.5 第 1 點(雙向)、A15 |
+| 電源 M1 | MAJOR | 反灌只做一半:BUSY 沒接、主機往卡方向、放電電路 | §7.5 第 1、2 點 |
+| 電源 M2 | MAJOR | CM4_3.3V 不可低於 1.8V | §7.5 第 3 點負載開關 |
+| 電源 M3 | MAJOR | 12 mm 銅柱使導熱墊多 0.4 mm 空隙 | X15 1.5 mm 導熱墊(§7.2) |
+| 電源 M4 | MAJOR | DF40 0.4 mm 間距與 2 oz / 0.8 mm 過孔規則衝突 | X16 全板 1 oz;§5.5 第 8 點重算 |
+| 電源 M5 | MAJOR | 最壞 5 V 約 4.2 A 超過 4 A | X17 每埠限流、VLM 不經 VBUS;§5.5 第 7 點 |
+| 電源 M6 | MAJOR | 打件版本矛盾;hub 要自己的 LDO | §7.9 四種打件;§7.4 hub LDO |
+| 電源 M7 | MAJOR | O15 未決 | X18 |
+| 電源 m1 | MINOR | GLOBAL_EN 測試焊墊 | §7.4、V18 |
+| 電源 m2 | MINOR | USB_OTG_ID 兩種模式都接地 | §7.4 |
+| 電源 m3 | MINOR | 漏列 CM4 腳 | §7.4 |
+| 電源 m4、m5 | MINOR | `force_eeprom_read=0`;Pi_nLED_Activity | §7.4;`force_eeprom_read` 進量產設計的 config |
+| 電源 m6 | MINOR | design.py 是 0.5% 不是 1% | §5.5 |
+| 電源 m7 | MINOR | CM4 孔焊墊侵入天線條 | §6.2 |
+| 電源 m8、m9 | MINOR | VLM 面積;K 頭 ESD | §5.10 |
+| 軟體 m(多項) | MINOR | KILL 依賴 CM4_3.3V、AUTO-ON 復原、開發版生命週期漏列(只插 USB-C、欠壓、快速關再開、沒插卡、Tag-Connect) | §10 補列;KILL 與 AUTO-ON 留給量產設計的生命週期矩陣 |
+| 軟體 m9 | MINOR | UART5 不牽動 core clock 的好處不成立 | §5.4 |
+| 資安 D6 | — | WL/BT_nDisable | X19;§5.6;O17 |
 
 ---
 
