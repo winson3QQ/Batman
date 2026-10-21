@@ -30,6 +30,15 @@ type Tag struct {
 	V   any
 }
 
+// M builds a Map from alternating keys and values: M(1, x, 3, "y").
+func M(kv ...any) Map {
+	m := make(Map, 0, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		m = append(m, Entry{K: kv[i], V: kv[i+1]})
+	}
+	return m
+}
+
 // Get returns the value for an integer or string key.
 func (m Map) Get(k any) (any, bool) {
 	ek, err := Encode(normKey(k))

@@ -19,20 +19,20 @@ func mustHex(s string) []byte {
 // Strict input: everything core deterministic encoding would not produce is rejected (219-protocol §5.1).
 func TestRejects(t *testing.T) {
 	cases := map[string]string{
-		"non-shortest uint (24 in 1+1)":   "1817",
-		"non-shortest uint16":             "190017",
-		"non-shortest length bstr":        "5801ff",
-		"indefinite array":                "9f01ff",
-		"indefinite bstr":                 "5f4101ff",
-		"duplicate key":                   "a2010101 02",
-		"unsorted keys":                   "a202010101",
-		"float16":                         "f93c00",
-		"float64":                         "fb3ff0000000000000",
-		"undefined":                       "f7",
-		"trailing bytes":                  "0101",
-		"truncated":                       "5820aa",
-		"map key bstr":                    "a1410101",
-		"too deep":                        "818181818181818181818181818181818101",
+		"non-shortest uint (24 in 1+1)": "1817",
+		"non-shortest uint16":           "190017",
+		"non-shortest length bstr":      "5801ff",
+		"indefinite array":              "9f01ff",
+		"indefinite bstr":               "5f4101ff",
+		"duplicate key":                 "a2010101 02",
+		"unsorted keys":                 "a202010101",
+		"float16":                       "f93c00",
+		"float64":                       "fb3ff0000000000000",
+		"undefined":                     "f7",
+		"trailing bytes":                "0101",
+		"truncated":                     "5820aa",
+		"map key bstr":                  "a1410101",
+		"too deep":                      "818181818181818181818181818181818101",
 	}
 	for name, h := range cases {
 		b := mustHex(stripSpaces(h))
