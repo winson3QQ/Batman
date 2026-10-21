@@ -189,3 +189,35 @@ func TestClaimedPlaceholderMeshExpect(t *testing.T) {
 		t.Fatalf("prov-state %q", ps)
 	}
 }
+
+// §4.4 step 6: an interrupted net.apply — decided by the generation p5 actually holds.
+func TestTxnCommittedAndNot(t *testing.T) {
+	// committed: p5 already at gen_to -> overlay completed from p5, .txn gone, nothing to restore
+	f := newFx(t, 0)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Claimed, 4)
+	copyDir(f.e.P.Identity(), filepath.Join(f.p5, "identity"))
+	f.p5Record(provstore.Member, 5)
+	provstore.WriteTxn(f.e.P, "tok", 4, 5, "network/join", "oldkey12", "oldmesh", "28")
+	r := Run(f.e)
+	if r.Verdict != provstore.Member || r.Restore != nil {
+		t.Fatalf("committed: %+v", r)
+	}
+	if _, ok := provstore.ReadTxn(f.e.P); ok {
+		t.Fatal(".txn left after a committed transaction")
+	}
+	// not committed: p5 still at gen_from -> restore requested with the recorded values, .txn kept until done
+	g := newFx(t, 0)
+	g.overlayIdentity()
+	g.overlayRecord(provstore.Claimed, 4)
+	copyDir(g.e.P.Identity(), filepath.Join(g.p5, "identity"))
+	g.p5Record(provstore.Claimed, 4)
+	provstore.WriteTxn(g.e.P, "tok", 4, 5, "network/join", "oldkey12", "oldmesh", "28")
+	r = Run(g.e)
+	if r.Restore == nil || r.Restore.PrevKey != "oldkey12" || r.Restore.PrevID != "oldmesh" || r.Restore.PrevChannel != "28" {
+		t.Fatalf("not committed: %+v", r)
+	}
+	if _, ok := provstore.ReadTxn(g.e.P); !ok {
+		t.Fatal(".txn removed before the wireless restore ran")
+	}
+}

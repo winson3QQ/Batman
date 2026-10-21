@@ -336,7 +336,9 @@ func main() {
 	}
 	switch mode {
 	case "--boot":
-		boot.Run(bootEnv(p))
+		if res := boot.Run(bootEnv(p)); res.Restore != nil {
+			restoreWireless(p, res.Restore, 0)
+		}
 		return
 	case "--apply-state":
 		if err := applyState(p, len(args) > 1 && args[1] == "--firstboot"); err != nil {
@@ -397,6 +399,9 @@ func qr(p provstore.Paths) int {
 func daemon(p provstore.Paths) {
 	os.Remove(filepath.Join(p.RunDir, "prov-txn")) // a marker of a helper that died cannot be live
 	res := boot.Run(bootEnv(p))
+	if res.Restore != nil {
+		go restoreWireless(p, res.Restore, 120*time.Second)
+	}
 	ks, err := keystore.Load(p.Identity())
 	if err != nil {
 		logf("no usable identity (%s): serving nothing", res.Verdict)
@@ -428,6 +433,24 @@ func daemon(p provstore.Paths) {
 	go func() { <-sig; close(stop); srv.Close(); os.Exit(0) }()
 	logf("serving (%s)", res.Verdict)
 	srv.Serve(n.Handle)
+}
+
+// restoreWireless (§4.4 step 6): an interrupted, NOT committed net.apply — put the recorded pre-change wireless values
+// back with halow-setkey (persisting this time), then drop .txn. --on-join yields while .txn exists.
+func restoreWireless(p provstore.Paths, t *provstore.Txn, wait time.Duration) {
+	time.Sleep(wait)
+	args := []string{"--mesh", "-"}
+	if t.PrevID != "" {
+		args = append(args, "--mesh-id", t.PrevID)
+	}
+	if t.PrevChannel != "" {
+		args = append(args, "--channel", t.PrevChannel)
+	}
+	rc, out := run([]byte(t.PrevKey+"\n"), "halow-setkey", args...)
+	logf("txn %s not committed: restored the previous wireless values, setkey rc=%d (%s)", t.Verb, rc, lastLine(out))
+	if rc == 0 {
+		provstore.RemoveTxn(p)
+	}
 }
 
 func btdPid() int {

@@ -1019,19 +1019,19 @@ func (n *Node) applyNet(rec *provstore.Record, p *parsedNet, verb string) (cbor.
 	if err != nil {
 		return nil, fail(EApply, "current wireless: %v", err)
 	}
-	if err := writeTxn(n.P, token, rec.Generation, next.Generation, verb, pk, pid, pch); err != nil {
+	if err := provstore.WriteTxn(n.P, token, rec.Generation, next.Generation, verb, pk, pid, pch); err != nil {
 		return nil, fail(EApply, "txn: %v", err)
 	}
 	// step 2: the fallible side effect
 	if err := n.Sys.SetKeyNoPersist(p.sae, p.meshID, p.channel); err != nil {
-		removeTxn(n.P)
+		provstore.RemoveTxn(n.P)
 		return nil, fail(EApply, "setkey: %v", err)
 	}
 	// step 3-4: persist then rename the overlay record (commit point = p5 prov.meta)
 	if err := n.commitTxn(&next, token); err != nil {
 		return nil, err
 	}
-	removeTxn(n.P)
+	provstore.RemoveTxn(n.P)
 	// step 5
 	if rc, out := n.Sys.Save(); rc != 0 && rc != 6 {
 		n.Log("%s: --save rc=%d (%s) — the next boot's --check reports it", verb, rc, strings.TrimSpace(out))

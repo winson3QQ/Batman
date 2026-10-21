@@ -38,6 +38,9 @@ type Result struct {
 	RC      int    // --prov-get rc that decided
 	Verdict string // legacy|unclaimed|claimed|member|unknown(<why>)
 	Action  string // what was done, for the log and the tests
+	// Restore is set when an interrupted net.apply did NOT commit: the caller puts the recorded wireless values
+	// back (persisting) in the background once the radio is up or after 120 s, then removes .txn (§4.4 step 6).
+	Restore *provstore.Txn
 }
 
 const placeholder = "CHANGE-ME-NOW"
@@ -97,6 +100,34 @@ func run(e Env) Result {
 	// 1) identity mismatch FIRST — before any generation comparison or write
 	if ovIdent && p5Ident && !bytes.Equal(ovSum, p5Sum) {
 		return Result{RC: rc, Verdict: "unknown(identity-mismatch)", Action: "none (frozen: overlay and p5 hold different identities)"}
+	}
+
+	// 2) an interrupted transaction (§4.4 step 6), decided by the generation p5 actually holds
+	if t, ok := provstore.ReadTxn(e.P); ok {
+		var g uint64
+		haveG := false
+		if mb, err := os.ReadFile(filepath.Join(dir, "prov.meta")); err == nil {
+			if m, err := provstore.ParseMeta(mb); err == nil {
+				g, haveG = m.Gen, true
+			}
+		}
+		switch {
+		case haveG && g == t.To && p5Rec != nil:
+			if _, _, err := provstore.WriteOverlay(e.P, p5Rec); err != nil {
+				return Result{RC: rc, Verdict: "unknown(restore-failed)", Action: err.Error()}
+			}
+			provstore.RemoveTxn(e.P)
+			return Result{RC: rc, Verdict: p5Rec.State, Action: fmt.Sprintf("txn %s committed (gen %d): overlay completed from p5", t.Verb, g)}
+		case haveG && g == t.From:
+			st := "unknown(txn)"
+			if ovRec != nil {
+				st = ovRec.State
+			}
+			tt := t
+			return Result{RC: rc, Verdict: st, Action: fmt.Sprintf("txn %s NOT committed (gen %d): wireless to be restored", t.Verb, g), Restore: &tt}
+		default:
+			return Result{RC: rc, Verdict: "unknown(txn-generation)", Action: fmt.Sprintf("txn %d->%d but p5 gen %d (have=%v): left for the operator", t.From, t.To, g, haveG)}
+		}
 	}
 
 	persistAll := func(withIdentity bool) (int, string) {
