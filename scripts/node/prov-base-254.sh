@@ -29,7 +29,9 @@ bootid() { cut -c1-8 /proc/sys/kernel/random/boot_id; }
 
 lock_take() {
 	mkdir -p /tmp/run/batman-dv
-	printf '#!/bin/sh\n# holder of the config-save lock for prov-base-254 (name must contain batman-config-save)\nexec sleep 1800\n' > "$HOLDER"
+	# the holder must KEEP its own argv: config-save takes the lock over from a holder whose cmdline lacks
+	# "batman-config-save" (F34-lock). `exec sleep` replaced it with "sleep 1800" (E1c dry run on 04, 2026-10-21).
+	printf '#!/bin/sh\n# holder of the config-save lock for prov-base-254 (name must contain batman-config-save)\nwhile :; do sleep 5; done\n' > "$HOLDER"
 	chmod 700 "$HOLDER"
 	i=0; until mkdir "$LOCK" 2>/dev/null; do
 		i=$((i + 1)); [ "$i" -ge 30 ] && die "config-save lock busy for 30 s (pid $(cat "$LOCK/pid" 2>/dev/null))"; sleep 1
@@ -39,7 +41,7 @@ lock_take() {
 	echo "$HPID" > "$LOCK/pid"; cut -d. -f1 /proc/uptime > "$LOCK/uptime"
 	tr '\0' ' ' < "/proc/$HPID/cmdline" 2>/dev/null | grep -q batman-config-save || { rm -rf "$LOCK"; kill "$HPID" 2>/dev/null; die "lock holder cmdline does not match"; }
 }
-lock_drop() { [ -n "${HPID:-}" ] && kill "$HPID" 2>/dev/null; rm -rf "$LOCK"; HPID=""; }
+lock_drop() { [ -n "${HPID:-}" ] || return 0; kill "$HPID" 2>/dev/null; rm -rf "$LOCK"; HPID=""; }   # only a lock WE hold
 
 svc() {	# $1 stop|start, rest = services that exist
 	a=$1; shift
@@ -114,6 +116,8 @@ state_cmp() {
 case "$CMD" in
 snap)
 	[ ! -e "$D" ] || die "snapshot $D already exists"
+	# a snap that dies part-way removes what it created and restarts joinwatch (unless told to keep it stopped)
+	trap 'if [ "${SNAP_DONE:-0}" != 1 ]; then [ -d "$D" ] && { echo "snap failed: removing partial $D: $(ls "$D" | tr "\n" " ")"; rm -rf "$D"; rm -f "$MARK"; }; lock_drop; [ "${KEEP_JOINWATCH_STOPPED:-0}" = 1 ] || svc start joinwatch; fi' EXIT
 	[ ! -e "$DIRTY" ] || die "dirty flag present: $(cat "$DIRTY")"
 	[ "$(batman-slot active)" = A ] || die "not on slot A"
 	batman-slot is-trial >/dev/null 2>&1; [ $? = 1 ] || die "slot A is not committed"
@@ -127,6 +131,7 @@ snap)
 	tar -C /overlay/upper -cf "$D/upper.tar" . 2>"$D/tar.err" || { lock_drop; svc start joinwatch; die "upper tar failed: $(head -2 "$D/tar.err")"; }
 	manifests_to "$D/snap"
 	echo "$RUN $(bootid) snap" > "$DIRTY"; sync
+	SNAP_DONE=1
 	lock_drop
 	[ "${KEEP_JOINWATCH_STOPPED:-0}" = 1 ] || svc start joinwatch
 	say "SNAP $RUN p5=$(cat "$D/p5.img.sha" | cut -c1-16) upper_entries=$(wc -l < "$D/snap/upper.manifest") tar=$(wc -c < "$D/upper.tar")B"
