@@ -1,0 +1,24 @@
+#!/bin/bash
+# tests/prov-p1/prov-base-statecmp.sh — CI/WSL test of prov-base compare's p6 state rules (round-7 B-M6): boot_id-only changes pass, real changes fail.
+# $1 = prov-base-254.sh. Runs as root (the script refuses otherwise) under a throwaway PROV_BASE_TEST_ROOT.
+PB=$1; R=$(mktemp -d); export PROV_BASE_TEST_ROOT=$R; fails=0
+D=$R/opt/batdata/dv-prov/t1; mkdir -p $D/snap/state $D/now-x/state
+for f in p5.manifest upper.manifest uci.export identity; do echo same > $D/snap/$f; echo same > $D/now-x/$f; done
+setstate(){ # $1 snap|now-x, $2 name, $3 content or ABSENT
+	rm -f $D/$1/state/$2; [ "$3" = ABSENT ] || printf '%s\n' "$3" > $D/$1/state/$2; }
+base(){ for t in snap now-x; do rm -f $D/$t/state/*
+	setstate $t lock-status UNPROVISIONED; setstate $t mesh-expected "seeded --on-join"; done
+	setstate snap prov-state "aaaa helper legacy legacy - today"; setstate now-x prov-state "bbbb helper legacy legacy - today"
+	setstate snap ble-ok aaaa; setstate now-x ble-ok bbbb; }
+run(){ # $1 want rc, $2 label
+	out=$(sh "$PB" compare t1 x 2>&1); rc=$?
+	if [ "$rc" = "$1" ]; then echo "ok   $2 (rc=$rc)"; else echo "FAIL $2: rc=$rc want=$1 :: $(echo "$out" | grep DIFF | head -3)"; fails=$((fails+1)); fi; }
+base; run 0 "only boot_ids differ (prov-state field 1, ble-ok content)"
+base; setstate now-x prov-state "bbbb helper claimed claimed - 0"; run 1 "prov-state verdict changed"
+base; setstate now-x ble-ok ABSENT; run 1 "ble-ok vanished"
+base; setstate now-x lock-status LOCKED; run 1 "lock-status changed"
+base; setstate snap ota-armed.mesh "aaaa B joined"; run 0 "ota-armed.mesh consumed"
+base; setstate now-x ota-armed.mesh "bbbb B joined"; run 1 "ota-armed.mesh appeared"
+base; setstate snap ota-armed.mesh "aaaa B joined"; setstate now-x ota-armed.mesh "bbbb A radio"; run 1 "ota-armed.mesh slot/mode changed"
+base; setstate now-x mesh-expected ABSENT; run 1 "mesh-expected vanished"
+rm -rf $R; echo "STATECMP fails=$fails"; [ $fails = 0 ]
