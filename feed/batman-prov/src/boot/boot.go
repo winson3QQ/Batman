@@ -286,23 +286,30 @@ func writeProvState(e Env, res Result) {
 	if provstore.ValidState(res.Verdict) {
 		lks = res.Verdict
 	}
-	me := "today"
-	switch res.Verdict {
-	case provstore.Unclaimed:
-		me = "0"
-	case provstore.Member:
-		me = "radio"
-	case provstore.Claimed:
-		if k := e.MeshKey(); k == "" || k == placeholder {
-			me = "0"
-		}
-	}
+	me := MeshExpect(res.Verdict, e.MeshKey)
 	members := "-"
 	line := fmt.Sprintf("%s helper %s %s %s %s\n", e.BootID(), lks, res.Verdict, members, me)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(line), 0o600); err == nil {
 		os.Rename(tmp, path)
 	}
+}
+
+// MeshExpect is the one mesh_expect rule for every prov-state writer (helper boot, --apply-state --firstboot, and the
+// 99zz shell fallback, which mirrors it): unclaimed -> 0; member -> radio; claimed -> 0 when the live mesh key is the
+// placeholder or cannot be read (no real key = nothing to join), otherwise today; anything else -> today.
+func MeshExpect(verdict string, meshKey func() string) string {
+	switch verdict {
+	case provstore.Unclaimed:
+		return "0"
+	case provstore.Member:
+		return "radio"
+	case provstore.Claimed:
+		if k := meshKey(); k == "" || k == placeholder {
+			return "0"
+		}
+	}
+	return "today"
 }
 
 func copyDir(src, dst string) error {

@@ -253,3 +253,21 @@ func TestRc13NeverDowngrades(t *testing.T) {
 		t.Fatalf("same node: %+v persists=%v", r, g.persists)
 	}
 }
+
+// round-6 B-m2: every prov-state writer uses one mesh_expect rule
+func TestMeshExpect(t *testing.T) {
+	k := func(v string) func() string { return func() string { return v } }
+	for _, c := range []struct{ v, key, want string }{
+		{provstore.Unclaimed, "real", "0"},
+		{provstore.Member, placeholder, "radio"},
+		{provstore.Claimed, placeholder, "0"},
+		{provstore.Claimed, "", "0"},
+		{provstore.Claimed, "real", "today"},
+		{provstore.Legacy, placeholder, "today"},
+		{"unknown(no-record)", placeholder, "today"},
+	} {
+		if got := MeshExpect(c.v, k(c.key)); got != c.want {
+			t.Errorf("MeshExpect(%s, %q) = %s, want %s", c.v, c.key, got, c.want)
+		}
+	}
+}

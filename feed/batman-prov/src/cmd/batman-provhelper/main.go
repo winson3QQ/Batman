@@ -293,10 +293,7 @@ func applyState(p provstore.Paths, firstboot bool) error {
 			run(nil, "uci", "commit", "wireless")
 			logf("unclaimed: AP keys set to the placeholder")
 		}
-		me := map[string]string{provstore.Unclaimed: "0", provstore.Member: "radio"}[rec.State]
-		if me == "" {
-			me = "today"
-		}
+		me := boot.MeshExpect(rec.State, bootEnv(p).MeshKey)
 		if fi, err := os.Stat(p.State); err == nil && fi.IsDir() {
 			os.WriteFile(filepath.Join(p.State, "prov-state"), []byte(fmt.Sprintf("%s 99zz %s %s - %s\n", bootID(), rec.State, rec.State, me)), 0o600)
 		}
