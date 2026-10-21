@@ -66,7 +66,7 @@ v4 的主要改動:
 | F10 | `halow-setkey` 每次都 `uci commit` + `wifi reload`,並一律 persist | 讀檔 |
 | F11 | `rc.button/reset`、`reset_override` 屬 base-files;rootfs 組裝沒有 `--force-overwrite` | 讀檔 |
 | F12 | feed 釘 f2f2bf6;`f2f2bf6..f1a1122` 在 `feed/ deploy/` 沒有差異 | `git diff` |
-| F13 | WSL 有 go1.22,**沒有 qemu-aarch64**;CI 沒有 Go、沒有 image;**repo 是 PUBLIC**(GitHub arm64 runner 可用);release v1.5.11 有 bcm2711 / bcm2710 的 `…-ab-payload.tar.gz`(內含 `root.squashfs`) | 讀檔、`gh` |
+| F13 | WSL 系統的 go 是 1.22,**實際編譯用 firmware 樹的 go1.26.4**(`staging_dir/hostpkg/lib/go-1.26`,第 7 輪 A-m9 更正),**沒有 qemu-aarch64**;CI 沒有 Go、沒有 image;**repo 是 PUBLIC**(GitHub arm64 runner 可用);release v1.5.11 有 bcm2711 / bcm2710 的 `…-ab-payload.tar.gz`(內含 `root.squashfs`) | 讀檔、`gh` |
 | F14 | 99zz 排在所有 `9x` 之後 | rootfs |
 | F15 | 已用 uid:101、123、453、514、32768、65534;04 容器 999 / 1000 | 實查 |
 | F16 | 04 overlay-only:`crontabs/root`、`uhttpd.key/crt`、`openmanetd.db*`、Tailscale 狀態;OTS init stub 由 95 重建;p6 有 5 份舊 `dv289-backup-*` | 實查 |
@@ -115,6 +115,9 @@ v4 的主要改動:
 ## 3. 擁有權
 | 資源 | 唯一擁有者 | 唯讀者 / 例外 |
 |---|---|---|
+| dead-man(E1c / 鏈 1):p6 `dv-prov/e1c-deadman.sh`、`e1c.cancel`、`e1c.fired`、`e1c-deadman.log`,B 的 rc.local 那一行與 25 分 timer(第 7 輪) | E1c / 鏈 1 的主機腳本寫入;B 的 rc.local / timer 執行 | 一次性(`e1c.fired`)、只在 slot B、快照超過 6 h 不動作;每個出口確認回到 A committed 就 cancel;brewrite 清掉 B 的 overlay;`finish` 刪 p6 檔 |
+| helper verdict(prov-state 第 4 欄) | helper,每次開機決定一次 | **整次開機固定**(B-m10):owner 的動作改的是 record,下一次開機才反映到 prov-state;autocommit 只讀這次開機的值 |
+| `PROV_BASE_TEST_ROOT`(env,第 7 輪新增輸入) | 只有 CI / WSL 測試設定 | 節點上沒人設:host 端以 `ssh node sh -s -- <cmd>` 呼叫,不帶 env。能控制 root 環境變數的人本來就是 root,所以不是新的權限邊界;空值時路徑與以前相同 |
 | 節點在測項期間的 prov / 槽狀態 | 該 tier B 測項(prov lease) | P9、tier A |
 | 測項之間的狀態(S0) | `prov-base-254.sh restore` | P9 |
 | **p5** | 產品照舊(prov 檔只由 `--prov-only` 寫)。**測試例外寫者**:`restore`(dd)、`strip-p5-prov`,只在 prov lease 內、`cfgsave.lock` 內、helper / provd / joinwatch 停止時 | — |
@@ -386,38 +389,48 @@ E1 的結果寫回本節;重開的時機和預期不同 → 該鏈送回審查�
 4. 以 eth MAC 找到 04,用 `none` 登入,斷言:`unknown(bypass)`、helper 沒有產生身分、persist 被拒、96 exit 1 留著。
 5. `back_to_a` → restore(類別 F;§4.5.4 會重寫 B,cmdline 也一起恢復)。
 
-**鏈 1:firstboot → gate → (2)**(類別 R)
-1. snap。joinwatch 一直停到第 4 步重開。
-2. 斷言沒有寫 p5 的程序在跑。
-3. p5 `mkfs.ext4` → `ro` 斷言沒有 `.seeded`。
-4. `BATMAN_ALLOW_UNSEEDED=1 BATMAN_ALLOW_STALE_P5=1 batman-slot apply <rc>`。
-   - 要 `ALLOW_STALE_P5` 的原因:P1 的 `--check` 在 rc 7 之前就比 prov;overlay 有 legacy prov、p5 剛被 mkfs → rc 5。
-   - 這是直接呼叫,所以沒有 `ota-armed.mesh`,等於 L42 的路徑;不 hold。
-   - 接著以 `ro` 再斷言仍未 seed → 受控重開(§4.5.0)→ 落點斷言。
-5. **B 的 trial**,經 eth 做硬性斷言(連不到 = FAIL):
-   - `iw dev` 沒有 AP 介面;
-   - mesh radio 被 keyguard 關;
-   - helper log `rc=7`;
-   - `prov.meta` = unclaimed;
-   - `identity/` 0700,p5 的 `identity/prov/` 有 7 檔且 sha 正確;
-   - p5 沒有 `.seeded`。
-6. **gate(L44)**:同一個 trial 裡,記下時間 t0 → `BATMAN_ALLOW_TRIAL_APPLY=1 batman-slot precheck-node`。
-   - **正向證據**:`$RUNDIR/p5-check.rc` 的 mtime > t0,內容 = `skip:unseeded`;rc ≠ 0,最後一行 = 「mis-aimed tryboot」(B 還沒 commit,F6)。
-   - **負對照**:tmpfs 上 wsl.9 的 `batman-slot`,同樣方式跑 → rc 1、「not seeded」、`p5-check.rc` 沒有更新。
-   - 注意:`precheck-node` 會寫 `p5-check.rc` 與鎖目錄(F6),不是嚴格唯讀。
-7. **(2) claimed + placeholder**:
-   1. 等 autocommit 依「unclaimed 不需鄰居」commit B(斷言 log `COMMITTED`),這本身就是上層 §6.4 的斷言。
-   2. 依 E1 的結果,處理 openmanetd 重開 / 換 IP,以 MAC 重新找到 04。
-   3. **認領前的守門**(BLOCKER 修正):
-      - root 把 lab 公鑰寫進 B 的 `/etc/dropbear/authorized_keys`(檔案 root 0600、目錄 0700,符合 dropbear 的要求);
-      - 以 `-o PreferredAuthentications=publickey -o IdentitiesOnly=yes` **開一條新連線**,驗證能登入;
-      - 驗證失敗 → 中止(B 還沒上鎖,`none` 仍可用),走 restore。
-   4. provclient 認領 → claimed;認領的 `--save` 會 seed p5,包含 lab key 與 B 的個人化。
-   5. 再開一條新的 publickey 連線驗證(L47)。
-   6. 寫 hold = V → `sysupgrade -n` rc 進 A(§4.5.0;閘依 `.seeded` 放行,因為認領的 `--save` 已經 seed 了 p5)→ 進入 A 的 trial(A 從 B 的 p5 建,位址可能是 `10.41.254.x`,以 MAC 找)→ 斷言 hold 生效,autocommit 判「claimed + placeholder → 不需鄰居」、log `HELD`。
-   7. `batman-autocommit release` → A committed。
-8. restore(類別 R、同槽):p5 寫回 → `firstboot` → A 從原本的 p5 重建 → F16 → B 寫回 V。
+**鏈 1:firstboot → gate → unclaimed OTA → (2)**(類別 R;第 7 輪改寫,依 §13.3 E1c 的結果定稿;E1c 沒過就改走 §13.2 的 (b) 案)
 
+共同做法:
+- 前段(第 1–6 步)和 E1c 相同:快照 + dead-man(一次性、只在 slot B 動作、6 h 到期);
+- 「找到」的判定 = ping 有回應 + ssh 讀到 slot / trial 狀態 + boot_id 是新的;
+- trial 內一律 hold,dead-man 種好並讀回之後才 release;
+- 失敗出口一律走 `abort_to_a`(§13.3)。
+
+1. snap(p5 映像 + A overlay + p6 state 檔)。joinwatch 停到第 4 步重開。把 p6 的 `mesh-joined` / `mesh-expected` **移進快照目錄**:這是第 8 步 (2) 的前提——有這兩個標記,`claimed:0` 不會免鄰居(§13.4 B-M2)。收尾時放回,compare 會驗。
+2. 斷言沒有寫 p5 的程序在跑,p5 也沒被掛載。
+3. p5 `mkfs.ext4 -L batconfig`,以 `ro` 斷言沒有 `.seeded`。
+4. 寫 hold = V → `BATMAN_ALLOW_UNSEEDED=1 BATMAN_ALLOW_STALE_P5=1 batman-slot apply <rc>` → 斷言 armed;以 `ro` 再斷言 p5 仍未 seed → 受控重開 → 落點斷言(slot=B trial、boot_id 是新的)。
+   - 要 `ALLOW_STALE_P5`:P1 的 `--check` 在 rc 7 之前就比 prov,而 overlay 有 legacy prov、p5 剛被 mkfs → rc 5。
+   - 直接呼叫 apply,所以沒有 `ota-armed.mesh`(等於 L42 的路徑)。
+5. **B 的 HELD trial**,經 eth 找,150 s 內(F34)完成硬性斷言:
+   - 沒有 AP 介面;mesh radio 被 keyguard 關;
+   - helper log `rc=7`;`prov.meta` = unclaimed;
+   - `identity/` 是 0700;p5 的 `identity/prov/` 有 7 檔,sha 正確;p5 沒有 `.seeded`;
+   - autocommit log `mesh join required: 0 (prov=unclaimed`、`HELD`。
+6. **gate(L44)**:同一個 trial(HELD,所以不會和自動 commit 競賽;B-M1),記下 t0 → `BATMAN_ALLOW_TRIAL_APPLY=1 batman-slot precheck-node`。
+   - 正向證據:`p5-check.rc` 的 mtime > t0,內容 = `skip:unseeded`;rc ≠ 0,最後一行 = 「mis-aimed tryboot」(F6)。
+   - 負對照:tmpfs 上 wsl.9 的 `batman-slot` → rc 1、「not seeded」、`p5-check.rc` 沒有更新。
+   - 種 dead-man,讀回 → `batman-autocommit release --wait` → 斷言 B committed。
+7. **unclaimed OTA(B-M4 的回歸測項,第 7 輪插入)**:B 是 committed 的 unclaimed 槽。
+   1. **負對照先做**:準備一份 live `/lib/upgrade/platform.sh`(由 98-batman-sysupgrade 從 `platform-ab.sh` 複製)的副本,它的 `RAMFS_COPY_DATA` 少了 `prov-lock.sh`,bind mount 到 `/lib/upgrade/platform.sh`(只在 tmpfs,重開即消失)→ 寫 hold = V → `sysupgrade -n <rc>` → 斷言 sysup log 有 stage 2 的 die、仍在 B committed、A 沒被寫(A 的 `.protected` 不變)→ umount。
+   2. **正向**:同一步,不做 bind mount → 進入 A 的 HELD trial(位址可能是 `10.41.254.x`,用「找到」的判定)→ 斷言:sysup log 沒有 die;A 的 trial 是 unclaimed(p5 仍未 seed、helper `rc=7` 或 `rc=0` + `state=unclaimed`、沒有 AP);`HELD`。
+   3. `back_to_b`:rollback + `reboot committed`,在 deadline 之前,所以沒有 bad-slot → B committed。
+   - 這一步驗的是:unclaimed 節點的 OTA 真的會走過 stage 2 的 `prov-lock.sh` 路徑。拿掉 `RAMFS_COPY_DATA` 那一項,同一步會 FAIL。
+8. **(2) claimed + placeholder**(在 B,committed):
+   1. 經 mDNS / 掃描重新找到 B(E1c 的找法)。
+   2. **認領前的守門**:root 把 lab 公鑰寫進 B 的 `/etc/dropbear/authorized_keys`(檔案 root 0600、目錄 0700)→ 開一條新的 `-o PreferredAuthentications=publickey -o IdentitiesOnly=yes` 連線驗證能登入 → 失敗就中止,走 restore(B 還沒上鎖,`none` 仍可用)。
+   3. provclient 認領 → claimed。認領的 `--save` 會 seed p5,包含 lab key 與 B 的個人化。
+   4. 再開一條新的 publickey 連線(L47)。
+   5. 斷言 p6 沒有 `mesh-joined` / `mesh-expected`(第 1 步已移走;B 的 mesh 被 keyguard 關著,joinwatch 不會寫)。
+   6. 寫 hold = V → `sysupgrade -n <rc>` 進 A(閘依 `.seeded` 放行)→ A 的 HELD trial(從 B 的 p5 建,以「找到」的判定找)→ 斷言 autocommit log 有 `mesh join required: 0 (prov=claimed mesh_expect=0`、`HELD`。
+   7. **負對照**(同一個 trial,真機):把 `mesh-expected` 放回 p6 → `AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_TIMEOUT=<現在 uptime + 60> batman-autocommit run`(`TIMEOUT` 是絕對 uptime,B-m7)(只評估、只印決定,寫自己的 `autocommit-dryrun.log`,不 commit 也不重開;`batman-autocommit:26-28`、`:44`、`:53`)→ 斷言 log 有 `neighbours required (fail-closed)` 和 `mesh join required: 1` → 再把 `mesh-expected` 移回快照目錄。
+   8. `back_to_b` 或 release:release 會讓 A 變成 claimed 的槽,restore 還是會整個蓋回,所以兩者都可以;選 `back_to_b`,少一次 commit。
+9. restore(類別 R、同槽):
+   - p5 寫回(在 B 上,dead-man 的同一支程式)→ rollback 到 A → A 開機;
+   - A 的 overlay 從快照 tar 寫回(`overlay-restore`)→ `reboot committed`;
+   - 放回 `mesh-joined` / `mesh-expected`;
+   - compare(§13.4 B-M6 的規則)→ brewrite B = V → finish。
 **副作用**:04 離開 mesh 約 45–60 分鐘,02 被隔離(lease < 3000 s,超過就把鏈 1 拆成兩個 lease、中間讓 04 回到 mesh);OTS 中斷;B 被覆寫;p5 被 mkfs(有快照)。
 
 ### 5.5 autocommit(上層 §6.4 (1)–(10))
@@ -681,3 +694,290 @@ E1 的結果寫回本節;重開的時機和預期不同 → 該鏈送回審查�
 | B-m5 gate 依 `.seeded` | §5.4 第 7 步 |
 | B-m6 Tailscale | §4.5.2 第 1 步停 tailscaled;overlay 清單斷言 |
 | B-m7 §5.6 缺漏 | 補上不存在動詞列、`settings` 的範圍、§10 第 10、11 點 |
+
+## 13. 實證結果(2026-10-21,§9 第 2 步)
+| 實證 | 結果 | 證據 | 對設計的影響 |
+|---|---|---|---|
+| E6 主機 ↔ WSL 雙向 pipe | ✅ 20/20 往返,最慢 61 ms,CR 已處理 | `scratchpad/h2/e6` | §2.2 成立 |
+| 補 02 p3(P-U11) | ✅ 只在 `[pi4]` 段 `miniuart-bt` 之後加一行;讀回的 sha `2415edfe…` 與 p1 相同;原檔備份在 02 p6 `/opt/batdata/dv-prov/backup/`;04 p3 本來就與 p1 相同 | 指令輸出(對話紀錄) | — |
+| E3 B 寫回 V ×10 | ✅ PASS 10/10:每輪都落在 B 的 trial(DT tryboot=1、hold 生效、沒有 DISCARDED);開機到 `HELD` 為 92–105 s;都在期限前回到 A;沒有 `bad-slot`;`slot-B.protected` = V | `scratchpad/h2/e3/e3.log` | §4.5.0 / §4.5.4 成立;480 s 的上限足夠 |
+| E1a fresh 槽可達性 | ✅ fresh trial 開機 83 s 後在 `10.41.254.160/16`(br-ahwlan,經 eth)以 MAC 找到;`none` 登入成功;`dhcpconfigured=0`;wsl.9 的 fresh 槽有 AP 介面(= 上層 L1 的負對照) | `scratchpad/h2/e1/e1.log` | §5.4 鏈 0 / 鏈 1 第 5 步可行 |
+| E1a fresh 槽自己重開 | ⚠️ 開機後約 **168 s** 以「reboot command」結束;harness 當時沒有送任何重開指令,推論是 openmanetd 保留位址後重開(#11);因為 tryboot 是一次性的,04 直接回到 A | 04 `boot-reasons.log` | **新事實 F34**:fresh trial 內的斷言必須在約 2 分鐘內完成;鏈 0 / 鏈 1 第 5–6 步要依此重排 |
+| E1b commit fresh 槽 | ❌ 沒做成:同一個 fresh overlay 第二次開機時,位址已不在 `10.41.254.x`(推論是 openmanetd 保留的正式位址),harness 找不到;期限到了 revert,並寫了 `bad-slot`(測試殘留,已印出後刪除) | 04 `autocommit.log` `TRIAL-REVERTED … mesh not joined` | **推翻鏈 1 第 7 步的前提**:「commit 一個 fresh 槽之後再經 eth 找到它」沒有可行的找法。第 7 步(autocommit (2))送回審查 |
+| 還原 | ✅ 一輪 E3 把 B 寫回 wsl.9;B 的 cmdline 沒有 bypass;04 回到 S0(A committed、p6 state 乾淨、02 在 mesh) | `scratchpad/h2/e3/e3-after-e1.log` | — |
+| E4 / E5 / E2 | ❌ 尚未:E4 要 04 開機超過 2 h;E5 要等 rc build;E2 要在 H2 PR 的 CI 上跑 | — | — |
+
+**F34**:fresh 槽(`dhcpconfigured=0`)開機後約 168 s 會自己重開(⚠️ 推論為 openmanetd #11)。第二次開機用的是保留後的位址,不在 `10.41.254.x`。
+
+### 13.1 依 E1 修正 §5.4(待審)
+- **找到新槽的方法**,依序:
+  1. mDNS `<hostname>.local`(✅ 實測:Windows 主機可解析 `BCM2711-6c89.local` → 10.41.1.3;hostname 由 MAC 尾碼決定;⚠️ fresh 槽的 hostname 是否相同,下一次新槽實驗時確認);
+  2. ARP 掃 `10.41.254.0/24` 比對 eth MAC(第一次開機用的隨機位址)。
+
+  兩者都找不到 → FAIL,並等 trial 期限讓它自己 revert,絕不盲目送指令。
+- **時間窗**(F34):fresh trial 約 168 s 會被 openmanetd 重開。鏈 0 / 鏈 1 第 5–6 步的斷言,要在找到位址後**一次 ssh 批次**做完(目標 ≤ 60 s),並把結果寫進 p6(`/opt/batdata/dv-prov/<run>/fresh-evidence`)。之後就算 trial 被重開回到 A,也讀得到證據。
+- **鏈 1 第 7 步((2) claimed + placeholder)改法**:不再要求「commit 一個 fresh 槽之後再認領」。改為:
+  1. 在 fresh trial 的時間窗內就完成認領(provclient 經 eth,約 5 s);
+  2. 認領的 `--save` 會 seed p5,這時 p5 就是「claimed + placeholder」;
+  3. 之後回到 A(重開或 revert),再從 A 以 `sysupgrade -n` 寫 rc 進 B(hold)→ B 的 trial 裡,斷言 autocommit 判「claimed + placeholder → 不需鄰居」並記 `HELD`。
+
+  好處是 A 從頭到尾不換身分,只有 p5 換。注意:A 回來時會看到 p5 是「claimed、身分 Y」,而 A 的 overlay 是 legacy、身分 X → `unknown(identity-mismatch)`(P-U6,凍住)。這正是 P-U6 的真機情境,可以順便斷言 A 凍住:不 persist、`--check` 報 `prov-identity`、OTA 被擋。所以「從 A 寫 B」這一步要帶 `ALLOW_STALE_P5`(只在 04、只在測試裡),或者改成先 restore p5 再做。**這段需要審查決定。**
+
+### 13.2 第 6 輪審查 → 處置(§13.1 作廢,改為下列)
+- **B-B1(trial 上認領會 `E_BUSY`)成立,§13.1「在 trial 時間窗內認領」作廢。** 鏈 1 第 7 步改回審查 B 的 (a) 案:
+  1. fresh 槽**不 hold**,讓 P1 的 autocommit 依「unclaimed 不需鄰居」自己 commit(A-M1 指出約 95 s 就會 commit,早於 openmanetd 約 168 s 的重開;這正是 (2) 的前半段斷言);
+  2. openmanetd 重開、換到保留位址之後,以 mDNS `<hostname>.local` 找到它,並以 ARP 比對 eth MAC(A-m3,防 Windows 的 mDNS 快取回舊位址);
+  3. 這時已經是 committed、不是 trial,才認領:先寫入 lab 公鑰並驗證 publickey 登入,再認領;
+  4. mesh 被 keyguard 關著 → joinwatch 不會寫 p5 → p5 維持「claimed + placeholder」;
+  5. 從 B 以 `sysupgrade -n` 寫 A(hold),在 A 的 trial 裡斷言 autocommit 判「claimed + placeholder → 不需鄰居」並記 `HELD`,證據在重開前寫進 p6(A-m2)。
+
+  前提是先做 **E1c**:fresh 槽 commit、被 openmanetd 重開之後,`<hostname>.local` 仍解析得到,而且 MAC 相符;同時確認是誰下的重開(B-m5)。E1c 不過,(2) 就改成 (b):沙箱單元測試 + autocommit DRYRUN,並明列「沒有真機端到端」。
+- **A-M2 / B-M2(凍住不完整)= 產品漏洞,已修**(`feat/254-p1` c392443、b482268):
+  - config-save 每個寫入模式在身分不一致時都拒寫;`--prov-only` 拒收和 p5 不同的身分;
+  - helper 在 verdict 為 `unknown(*)` 時,改狀態的動詞一律回 `E_STATE`(22)。
+
+  ⚠️ 本地 sanity 8/8(x86,負對照有效)、Go 單元測試 PASS;真機驗證要等 wsl.11。
+- **B-M3(rc 13 降級)已修**:只補身分,而且要 `sn` 相符、overlay 的 gen ≥ p5 的 gen;否則 `unknown(identity-lost)`,不寫。附單元測試。
+- **B-M4(stage 2 沒有 `prov-lock.sh`)已修**:加進 `RAMFS_COPY_DATA`。新增測項:unclaimed 節點真的跑一次 `sysupgrade -n`(就是上面第 5 步之前、從 committed 的 unclaimed B 做的 OTA);負對照是拿掉 `RAMFS_COPY_DATA` 那一項 → stage 2 die。
+- **B-m1(`IsTrial` 判不出來時放行)已修**:rc ≠ 1 都算 trial。
+- **B-m3(`--check` 漏掉 p5 沒有身分)已修**:報 `prov-identity-missing`。
+- **A-m6 / B-m4(兩台 committed 在 B,不是 S0)**:04 已正規化(A = rc committed,B 寫回 rc)。02 用同一支腳本(一般 OTA,hold,安全方向),之後補上。
+- **B-m2(三處寫 prov-state 的判法不一致)**:c1e1c72 統一成 `boot.MeshExpect`,**但我把「key 空的或讀不到」也判成 0,這是 fail-open 的錯誤**(第 7 輪 A-M7 / B-M2 抓到)。31b4751 改正,規則見 §13.4。
+
+
+### 13.3 E1c(鏈 1 第 7 步的前提實驗;04;≥ wsl.12)— 以 `scratchpad/h2/e1c/e1c.sh` v2 為準
+目的:用**真的** unclaimed 新槽驗證 (a) 案的三個事實,沒有證據就不寫進鏈 1。E1a/E1b 用的是 `batman_bypass=1`(verdict = `unknown(bypass)`),不是 unclaimed,所以 E1b 的 revert 對 P1 沒有結論力。
+
+**步驟**(每一步都是斷言,失敗走下方的出口):
+1. 前置:A committed、版本 = `VEXP`(= payload 版本)、無 hold / bad-slot;先驗 payload sha 才解壓;記錄 02 的狀態。
+2. `prov-base snap`(p5 映像 + A overlay tar,joinwatch 停到重開);dead-man 寫到 p6,讀回語法。
+3. p5 沒被掛載、沒有 config-save 程序 → `mkfs.ext4 -L batconfig` → 寫 hold = V → `BATMAN_ALLOW_UNSEEDED=1 BATMAN_ALLOW_STALE_P5=1 batman-slot apply` → 斷言 armed,而且 p5 仍未 seed → 受控重開。
+4. **HELD 的 B trial**:掃描 `10.41.254.x` 後,只有「ping 有回應 + 以 `none` ssh 讀到 `slot=B trial_rc=0` + boot_id 是新的」才算找到(A 和 B 同一個 MAC,只比 MAC 沒有鑑別力;A-M2 / B-m1)。在 150 s 內完成(F34:約 168 s 會被重開)。斷言:
+   - log 有 `mesh join required: 0 (prov=unclaimed`;
+   - 有 `HELD`,沒有 `HOLD-COMMIT-DISCARDED`;
+   - 沒有 AP 介面。
+5. 在**還 HELD 的時候**種 dead-man:寫 B 的 rc.local,再加一個 25 分鐘的 timer,外加 p6 的 logread 記錄器;讀回 `rclocal=1 script=y timer≥1` 才 `batman-autocommit release --wait`;斷言 B committed。
+6. 等 B 停止回應(連續 3 次 ssh 失敗)。之後用 mDNS 找;找不到再掃 `10.41.1.x` / `10.41.254.x`。判定「找到」的條件和第 4 步相同(`slot=B trial_rc=1`);boot_id ≠ commit 時的那個,就是「commit 後被重開」。從 p6 讀前一個 boot 的 logread,找出是誰下的重開(B-m5)。找不到就標 ❓。
+7. 收尾:在 B 上用 `setsid` 跑 dead-man,不先刪 rc.local 那行。
+   - dead-man 的步驟是 p5-restore(讀回 sha)→ rollback → `reboot committed`,每一步的 rc 都寫進 p6 的 log。
+   - 回到 A 後斷言:A committed `VEXP`、沒有 hold / bad-slot;dead-man log 有 `P5-RESTORED <run> sha=<快照 sha>`、`p5-restore rc=0`、`rollback rc=0`;A 的 prov-state 是 `helper legacy legacy`;`--check` rc 0;02 可達而且是 committed。
+   - **不比 p5 的原始映像 sha**:A 的 joinwatch 第一次 rw 掛載就會改變它(A-M4 / B-M5)。p5 內容由 dead-man 寫入後讀回的 sha 證明。
+8. 呼叫端接著做:brewrite B = V(同時清掉 B 的 overlay,包括 rc.local 那行),然後 `prov-base finish <run>`。
+
+**dead-man 的契約**(B-M5、A-m2):
+- 寫的人是 E1c;讀的人是 B 的 rc.local 和 timer。
+- 只在 slot B 上動作;一次性(`e1c.fired`);快照超過 6 h 就不動;`e1c.cancel` 存在就不動。
+- 每個出口(trap)只要確認 04 在 A committed,就建立 cancel 檔、刪掉 dead-man 腳本、啟動 joinwatch;否則保留 dead-man,並印出它還在 armed。
+
+**trial 內的失敗出口(`abort_to_a`)**:
+1. 在 B 上 `rollback` + `reboot committed`,不等 deadline,所以不留 bad-slot;
+2. 等 A(最多 900 s);
+3. 在 A 上 p5-restore,並刪掉 hold;
+4. 900 s 內沒回到 A → 印出「需要人處理」,不做還原。
+
+**副作用**:
+- 04 離開 mesh 約 25 分鐘,02 被隔離,遠低於 3000 s 的 lease;OTS 中斷。
+- B 被寫兩次。
+- p5 被 mkfs,再從映像寫回。
+- A 的 overlay 多一個 prov-base 標記檔,`finish` 會刪。
+- p6 留下:`dv-prov/<run>`、`e1c-*`、B 的 prov-state / otalog 行(綁 B 的 boot_id;A 每次開機都重寫 prov-state)、B 的 commit 會刪掉 A 的 `ota-armed.mesh`(B 審查確認過;04 平常沒有這個檔)。
+
+**E1c 沒有涵蓋的**:認領(在鏈 1 第 7 步做);Pi 3(ekh-bcm2710:沒有乙太網,fresh 槽找不到 → 只做沙箱 + DRYRUN,並明列)。
+
+### 13.4 第 7 輪審查 → 處置
+第 7 輪兩位都判 REJECT,0 BLOCKER(A 7 MAJOR / 11 MINOR,B 6 MAJOR / 10 MINOR),報告在 `review-v7-{A,B}.md`。
+
+**產品**(`feat/254-p1` 31b4751,wsl.12):
+- **A-M7 / B-M2(c1e1c72 讓 mesh_expect fail-open)已修,這是我的錯。** 修正後的規則:
+  - 只有 mesh key **等於 placeholder** → `0`;key 空的或讀不到 → `today`;
+  - 另外,autocommit 的 `claimed:0` 只有在 p6 **沒有** `mesh-joined` / `mesh-expected` 時才免鄰居。有標記代表「進過 mesh、現在卻是 placeholder」= 弄丟了 key → fail-closed。這兩個標記由 joinwatch / `--seed` / `--on-join` 寫入,只有 network/leave 會刪。
+  - 負對照:
+    - mutant「空 key → 0」→ `TestMeshExpect` FAIL;
+    - autocommit case 區塊的 stub:舊版有標記仍得 0,新版得 1;
+    - 99zz stub:新版空 key → `today`。
+  - **鏈 1 受影響**:04 的 p6 有 `mesh-expected`,第 7 步的 (2) 要先把它們移進快照目錄,收尾時放回。這件事要寫進鏈 1。
+- **A-M6(凍住的節點每 15 s rw 掛載 p5)已修**:
+  - `--on-join` 遇到身分不一致時,在 run dir 留下 `cfgsave-frozen`,之後的 tick 在掛載前就跳過;其他寫入模式會清掉這個標記。
+  - 測試:loop 裝置加 mount 計數,三個 tick 下來,HEAD 是 1→3,新版是 1→1。
+- **B-M3(`--persist-now` 繞過凍住與 rc 13 規則)已修**:
+  - 改用 `boot.PersistNow`,不跑第二次 `boot.Run`,所以不動 `.stage` / `.txn` / prov-state;
+  - 拒絕的情況:bypass、`.txn` 存在(就算格式壞了也拒絕,fail-closed)、p5 讀不到、身分不一致、p5 gen ≥ overlay gen(不降代)、rc 13 但 sn 不同;
+  - 測試是 `TestPersistNow`,每一條規則各有一個 mutant FAIL。
+- **B-m9(rc 13 的 gen 條件沒有測試)已修**:新增 `TestRc13SameSnOlderGen`,對應的 mutant FAIL。
+- **A-m10 / B-m7(提示文字)已修**:`prov-identity-missing` 的文字現在寫出 rc 13 的條件。
+- **B-m8(99zz 看「任一個」mesh 介面,Go 只看第一個)**:只有 placeholder 會判 0,兩者唯一會不同的情況是「有多個 mesh 介面、其中一個是 placeholder」。現在沒有這種設定。⚠️ 列為已知差異,不改。
+
+**E1c**:A-M1..M5、B-M1/M5、A-m1..m4、B-m1..m6 全部改進 v2,內容見 §13.3。
+- B-m3 改為 `VEXP` 斷言,而且只在 ≥ wsl.12 上跑,因為 A 必須有凍住寫入保護。
+- B-m6 改用 `mktemp`。
+
+**H2 harness**(還沒改,在 H2 PR 裡做,落地前不跑 tier B):
+- **B-M6(S0 比對在重開後不可能成立)**:prov-base 的 compare 要把帶 boot_id 的 p6 檔(`prov-state`、`ble-ok`、`ota-armed.mesh`、health)從「整檔 sha」改成「去掉 boot_id 欄位後再比」,或者列為允許改變的清單,每一項附理由。負對照:加一個真正的差異 → FAIL。
+- **A-M4 / B-M5(p5 原始映像 sha)**:所有測試單位一律比 ro 的檔案清單(§4.5.5),不比原始映像。
+- **B-M4 / A-m5(B-M4 的回歸測項沒有鑑別力)**:鏈 1 在第 6 步和第 7 步之間插一步「unclaimed 的 B 以 `sysupgrade -n` 寫 A(hold)」,這時 stage 2 一定會讀 `prov-lock.sh`(斷言 sysup log 沒有 die、A 的 trial 是 unclaimed)。負對照是同一步用一份 `RAMFS_COPY_DATA` 少了 `prov-lock.sh` 的 `platform-ab.sh`(bind mount 到 tmpfs)→ 斷言 stage 2 die、仍在 B。
+- **A-m8(`prov-claim` 草稿)**:
+  - 認領前先寫入 lab 公鑰,開一條新的 publickey 連線,驗證成功才認領,否則中止(04 平常走 `none`);
+  - 覆蓋範圍補齊 §5.3 的清單;canary 也要掃這次跑的全部輸出與 p6 log。
+- **A-m6**:config-save 的測試補上 `--if-healthy` / `--seed`,並斷言 p5 檔案清單不變。
+
+**文件**:
+- **A-m7**:§5.4 的鏈 1 本文改寫成 §13.2 / §13.3 的 (a) 案,包括 hold、`mesh-expected` 的處理、插入的 unclaimed OTA。
+- **A-m9**:F13 更正為 go1.26.4。
+- **A-m11**:fleet 版本對齊見下面的「現況」。
+- **B-m10**:helper 的 verdict 在整次開機內固定,owner 的動作在下一次開機才會反映到 prov-state。這點要寫進 §3。
+
+**現況(2026-10-21 17:40)**:
+- 02、04 都在 S0,`1.5.12-wsl.11+c1e1c72.fw3db3f36`(ROLL11 PASS:兩台的 OTA tier A 全 PASS,04 正規化回 A,兩台的 B 都寫回 V)。
+- wsl.11 帶著 A-M7 的 fail-open bug,但兩台都是 legacy(mesh_expect = `today`),沒有實際觸發。
+- wsl.12(31b4751)正在編。編好後兩台都升,再跑 E1c。
+- B 審查期間,在 WSL 用 GOTOOLCHAIN=auto 下載了 go1.26.4 的 toolchain。這和我們用的版本相同,沒有影響,記錄在此。
+
+### 13.5 第 8 輪審查 → 處置
+第 8 輪兩位都判 REJECT,0 BLOCKER(A 5 MAJOR / 14 MINOR,B 4 MAJOR / 15 MINOR),報告在 `review-v8-{A,B}.md`。產品 31b4751 沒有 MAJOR:第 7 輪的 5 個 mutant,兩位都各自重跑過。
+
+**E1c → v3**(`e1c/e1c.sh`;§13.3 的步驟不變,以下是修正):
+- **A-M1**:原本用 `pgrep -f`,在 busybox 下會比對到自己(04 上實測回 2)。p5 busy 檢查和 timer 讀回都改成 `ps w | grep -c '[b]atman-config-save'` / `'[s]leep 1500'`。另外新增 **`DRY=1`**:跑完快照、dead-man 的放置與版本檢查後,在 mkfs 之前停下並收尾。**在 04 上先跑一次 DRY。**
+- **A-M2 / B-M1**:HELD 與判定行改成輪詢 `logread` 全文,不用 `tail`,直到 t0+150 s;看到 `HOLD-COMMIT-DISCARDED` 立刻停。
+- **A-M3 / B-m3**:
+  - 重開改用受控重開(停 dockerd、`sync`、`reboot -f`,§4.5.0);
+  - 落點:`find_b` 要求 `dt_try=00000001`,而且不能是舊的 boot;
+  - 落點失敗、apply 沒 arm、p5 不是 unseeded 的出口,都以 `vcmailbox 0x00038064` disarm(跟 `batman-slot` 的 `disarm_tryboot` 同一組呼叫)並還原 p5。
+- **A-M4 / B-M3**:重開前,用唯讀 loop 掛起 payload 的 `root.squashfs`,斷言 `BATMAN_VERSION` == `VEXP`(= A 的版本 = hold 的值)。不符就停,這時還沒有任何改變。
+- **A-M5 / B-m4**:`abort_to_a` 回到 A 之後:
+  1. disarm;
+  2. 印出 bad-slot 再刪除(這是本次測試的殘留);
+  3. 以 `timeout 900` 跑 p5-restore,並斷言 `P5-RESTORED`;
+  4. **重開 A**,用 `a_healthy` 斷言:helper 這次開機寫的 verdict 是 legacy、`--check` rc 0、helper 在跑、沒有 bad-slot。
+- **A-m1**:`e1c.fired` 改成 rollback 成功後才寫,所以中途斷電時,下次進 B 會重試。
+- **A-m2 / B-m5**:dead-man 不再用時間判斷到期(節點沒有 RTC,時鐘靠 faketime)。改為 dirty 旗標仍寫著本次 run 才動作;`finish` 會刪掉 dirty 旗標。
+- **A-m5**:B 的 rc.local 開機時 `ping -c 5 <主機>`,讓主機的 ARP 學到它。`find_b` 依序找:ARP(任何網段、04 的 MAC)→ `10.41.254.x` 掃描 → `10.41.1.x` 掃描。
+- **A-m6 / B-m15**:主機端互斥鎖 `$TEMP/batman-dv-04.lock`。prov lease 在 H2 的 lease 機制落地後改用它(H2 殘項)。
+- **A-m7**:busy 檢查到 mkfs 之間沒有持 `cfgsave.lock`。⚠️ 接受的理由:joinwatch 從 snap 起就停著;helper 只在開機和 owner 動作時寫 p5,這段期間兩者都沒有。
+- **A-m8 / B-m10**:DONE 時刪除 `payload-e1c/` 與 `e1c-*`;dead-man 的 log 搬進 run 目錄,由 `finish` 一起刪。
+- **A-m9**:`FRESHO` 的信任界線已寫進腳本開頭:只在 lab LAN 上對 fresh B 使用,不傳送秘密。§13.3 補同一段。
+- **B-m6**:前置條件加上 `a_healthy`(含 `--check` = 0);BT 為空就 abort;recorder 和 timer 改用 `setsid`;讀回改在另一條 ssh session 做。
+
+**產品**(`feat/254-p1` 6e3a8c1):
+- **A-m10 / B-m1(rc 10 會降代)已修**:
+  - `--prov-get` 在 rc 10 時,交出原始 meta 與 identity,不交 cbor;
+  - `boot.Run` 的 case 10 只在「meta 解析得出 gen、而且 ≤ overlay」時才補寫,否則 `unknown(prov-corrupt)`、不寫;
+  - `PersistNow` 在 gen 讀不到時拒絕。
+  - **這改變了上層 §4.2 第 10 列**(原本是「重寫 overlay 的」),要回報上層原單。
+  - 測試:`TestRc10NeverDowngrades`,2 個 mutant 都 FAIL;loop 裝置測試 `cfgsave-provget-rc10`,舊版 FAIL。
+- **B-m2(`identity_mismatch` 要兩邊都有 sha256 才成立)**:⚠️ 暫不修,理由如下:
+  - p5 身分不完整就是 rc 13 的情況,boot path 已經依 sn 與 gen 處理;
+  - 要在 config-save 擋,就得放行 `--prov-only` 的身分補寫,會和 rc 13 的修復互相牽動。
+  - 列為已知缺口:p5 身分殘缺時,`--on-join` 仍可能把設定寫到殘缺身分旁邊;下一次開機時 helper 會判 identity-lost 並凍住。
+- **B-m12**:同 §13.4 B-m8,已知差異。
+- **B-m13(`--seed` 寫 `mesh-expected`)**:這是刻意的設計:seed 過的節點應該在 mesh 裡。代價是:操作員對一個 claimed + placeholder 的節點做 `--seed` 之後,它之後的 OTA 都要有鄰居才會 commit。要寫進操作文件。
+
+**H2**(`harness/254-h2`):
+- **A-m11 / B-m11**:5 支 shell 回歸測試進了 `tests/prov-p1/`(e48ec83),每支都有舊版 FAIL 的負對照。CI 還沒接上,`go test` 也還不在 CI 裡,這屬於 H2 的 CI 殘項。
+- **A-m12(compare 在 diff 目錄不存在時 fail-open)已修**(d8beab9):建目錄;寫不出來或少了 manifest 就 die。舊版對真實差異回 rc 0,新版 10/10。
+- **A-m13 / B-m14**:`prov-claim` 草稿的殘項(canary 範圍、restore 與重開拆成兩條 ssh、§5.3 覆蓋)放在 H2 的 tier B 實作時一起做。
+- **A-m14 / B-m8**:鏈 1 第 7 步之後,A 已經被重寫,`abort_to_a` 回到的 A 不是已知良好的狀態。鏈 1 實作時要分段,第 7 步之後的 abort 要走 overlay-restore。這點已寫進鏈 1 第 9 步,實作時加斷言。
+
+**鏈 1 文字修正**:
+- **B-M2**:負對照的路徑改為 live 的 `/lib/upgrade/platform.sh`(由 98-batman-sysupgrade 複製)。機制 B 已對照原始碼確認(procd 的 chroot 與 `install_file`)。
+- **B-m7**:
+  - DRYRUN 要帶 `run` 參數;
+  - `AUTOCOMMIT_TIMEOUT` 是絕對 uptime;
+  - 節點 LOCKED 之後,「找到」改用 publickey;
+  - 第 7.2 步套用 F34 的時間預算;
+  - 04 目前有 `ota-armed.mesh`,第 1 步要一起移開。
+- **B-m9**:「拆成兩個 lease」做不到。照實寫:02 隔離超過 3600 s 時,joinwatch 會重開它一次。鏈 1 要控制在 3600 s 內,否則就接受 02 重開一次,並在結果裡記錄。
+
+**B-M4(現場生命週期缺口)→ 需要使用者決定**,見 §13.6。
+
+### 13.6 F34 的成因(openmanetd 原始碼已確認)與 B-M4(待使用者決定)
+openmanetd 1.3.10 原始碼(`build_dir/.../openmanetd-1.3.10`)確認:
+- **誰重開**:`AddressReservationWorker.ReserveAddressIfNeeded`(`internal/mgmt/address_reservation.go:36-176`)。觸發條件是 `!configured || ipConflictDetected`(`:78`);`dhcpconfigured` 為 0 或空時,`configured` = false(`internal/network/uci_openmanet.go:211`)。依序:
+  1. 選 IP;
+  2. 寫 network / dhcp;
+  3. 寫 `dhcpconfigured=1`,commit;
+  4. 刪 `lan`、reload;
+  5. 執行 plain `reboot`(`internal/system/system.go:9-10`)。
+  - **沒有任何 tryboot / 升級檢查**。
+  - Batman feed 裡沒有其他元件會因為位址改變而重開。
+- **時間**:ticker 是 125 s(`internal/mgmt/mgmt.go:21`),第一次觸發就在 openmanetd 啟動後 125 s。openmanetd 的 init 在 bat0 up 時會重啟它,計時從頭算。所以 F34 的 168 s ≈ openmanetd 啟動(約 40 s)+ 125 s。**不需要鄰居**:只要 `batctl mj` 成功(bat0 存在)就會觸發。
+- **新 IP**:非 gateway 模式下,已知節點 ≤ 1 時是**亂數**的 `10.41.<1-252>.<1-254>`(`uci_network.go:724-739`)。所以只能用 mDNS 或 ARP 找(E1c v3 已改成讓 B ping 主機)。
+- **hostname**:由 MAC 末 4 碼決定(`99-halow-identity:9-17` → `morse.sh:8-55`),04 是 `…-6c89`。
+- **開關**:
+  - openmanetd YAML `alfred.dataTypes.addressReservation`(預設 true,`config.go:33,413-416`);
+  - 或 `dhcpconfigured=1`(遇到 IP 衝突時仍會觸發)。
+- **上游 bug**:`ipConflictDetected` 一旦設成 true 就永遠不會清掉(`:39`、`:69`)。之後每個 tick 都會重新保留位址並重開,也就是重開迴圈。要另外回報上游(要先問使用者)。
+
+**B-M4 的現場影響(確認)**:P1 開放了 unclaimed 節點的 OTA(L44)。這種 OTA 一定是 fresh 槽,因為 p5 沒有 seed,96 沒有東西可以還原。
+- trial 裡會發生兩件事,而且互相競賽:
+  - autocommit 約 95–105 s commit(Pi 4 實測);
+  - openmanetd 約 165 s 執行 plain `reboot`。
+- Pi 4 有約 60 s 的餘裕。Pi 3 ❌ 沒有量過,這是民用主力 SKU。
+- 如果 `reboot` 先到:tryboot 是一次性的,節點會回到舊槽,不留 bad-slot,OTA **無聲失敗**。
+- 如果 `reboot` 落在 commit 寫入的期間:⚠️ 推論可能損壞(依 B 引用的 autocommit 註解),沒有實測。
+
+**選項**(需要使用者決定;決定會改變 E1c 的預期,所以在決定之前不跑 E1c 的破壞性部分):
+1. **產品端讓位址保留等 trial 決定之後(建議)**:
+   - 只在 fresh 槽處於 tryboot trial 時,`99-halow-identity` 先寫 `dhcpconfigured=1`,讓 worker 不觸發,並在 p6 留一個標記;
+   - autocommit commit 之後,看到標記就把 `dhcpconfigured` 設回 0 並重啟 openmanetd → 125 s 後保留位址並重開,這時已經 committed,會回到同一槽;
+   - 不改上游。代價是 commit 後多一次 openmanetd 重啟,外加原本就有的那一次重開。
+   - 要新增測項:Pi 4 / Pi 3 都要斷言 trial 內不重開、commit 後才保留位址。
+2. **接受競賽**:Pi 4 有 60 s 餘裕;Pi 3 要用 serial 量。03 目前停用,所以要等硬體。
+3. **只回報上層原單,之後再處理**:P1 照現狀出,並明列「unclaimed OTA 在慢的板子上可能無聲失敗」。
+
+### 13.7 B-M4 修法:trial 內暫停 openmanetd 的位址保留(使用者 2026-10-21 選「產品端先擋住」)
+**要解決的現場問題**(§13.6):unclaimed 節點做 OTA 時,一定開進 fresh 槽。openmanetd 啟動後 125 s 會保留位址並執行 plain `reboot`,不管是不是 trial。這個 `reboot` 若比 commit 早到,OTA 會無聲失敗。
+
+**機制**:用 openmanetd 自己的開關 `alfred.dataTypes.addressReservation: false`(`config.go:413-416`,在 `mgmt.go:122` 啟動時判斷)。不偽造 `dhcpconfigured`。理由:`halow-status`、`joinwatch` 用 `dhcpconfigured` 標示位址狀態;config-save 會把它連同 IP 存進 p5。偽造成 1 會在 p5 留下 bootstrap IP + 已保留,之後從 p5 還原的槽永遠不會再保留位址。
+1. **進入暫停**(`99-halow-identity`,只在 fresh 槽個人化時跑):寫完 `dhcpconfigured=0` 後,若 `batman-slot is-trial` rc = 0(這次開機是未 commit 的 trial),而且 `/etc/openmanetd/config.yml` 沒有頂層的 `alfred:` 鍵,就在檔尾附加一段固定區塊(開頭與結尾各有 `# batman-addr-defer` 註記行),內容是 `alfred: dataTypes: addressReservation: false`;同時寫 p6 標記 `/opt/batdata/state/addr-defer` = `<slot>`。
+   - 已經有 `alfred:` 鍵 → 不暫停(合併 YAML 有風險),記 WARN,行為與今天相同。
+   - `is-trial` ≠ 0(新卡第一次開機、讀不到)→ 不暫停,維持今天的行為。
+2. **解除暫停**(`batman-autocommit` 的 `addr_defer_release`)。呼叫點:
+   - autocommit commit 成功之後(`:537`);
+   - 操作員 commit 之後(`:551`);
+   - 每次開機時,running slot 已是 committed 的路徑(`:326`):這是補救點,處理 commit 後、解除前當機或斷電的情況。
+
+   動作:
+   - 只刪 config.yml 中兩行註記之間的區塊,而且刪除前先比對內容完全等於我們寫的那段(不等就不動,記 WARN);
+   - 刪 p6 標記;
+   - openmanetd 正在跑就 `/etc/init.d/openmanetd restart`。125 s 後它會照常保留位址並重開,這時槽已經 committed,會回到同一槽。
+   - 標記寫的不是這個槽:另一個槽是 trial 失敗被退回的,它的 overlay 只能經由 `apply` 重寫才會再被開,所以只刪標記、不動 config.yml。
+3. `is-trial` = 2(讀不到)→ 不解除(fail-closed)。代價是位址保留延後;節點仍可經 bootstrap IP / mDNS 連到。
+
+**擁有權**:
+- config.yml 的暫停區塊:寫的是 `99-halow-identity`,刪的是 autocommit 的 `addr_defer_release`;openmanetd 只讀。
+- `addr-defer` 標記:寫入者同上,刪除者同上。
+- 其他人都不碰。config-save 不持久化 config.yml,所以不會帶到 p5(✅ 04 實查:`batman-config-save:48-49` 只持久化 uci 的 `openmanetd.config.dhcpconfigured` / `roipconfigured`)。
+
+**契約**:
+- 區塊格式固定,內容必須完全相符才刪。
+- 標記內容 = `A` 或 `B`;缺少或格式不對 → 只看 config.yml 有沒有區塊:有區塊、而且這個槽已 committed → 解除。
+- 能寫的人:只有 root(✅ 04 實查:`/opt/batdata/state` 是 root 0755;config.yml 是 root 0600)。
+
+**生命週期**:
+| 路徑 | 今天 | 改後 | 證明 |
+|---|---|---|---|
+| 新卡第一次開機(不是 trial) | 125 s 後保留位址並重開 | 不變 | stub 測試:is-trial=1 → 不寫區塊 |
+| unclaimed OTA(fresh 槽 trial) | 和 commit 競賽 | trial 內不保留位址;commit 後 openmanetd 重啟,約 125 s 後保留並重開回同一槽 | E1c v4:trial 內 165 s 以上不重開;commit 後保留、重開、`dhcpconfigured=1`、還在 B |
+| legacy / claimed 的 OTA(從 p5 還原) | `99-halow-identity` 跳過 | 不變(跳過,不暫停) | 既有的 OTA tier A |
+| trial 被退回(revert) | 回舊槽 | 回舊槽;舊槽 committed 開機時刪掉別槽的標記 | stub |
+| commit 後、解除前當機或斷電 | — | 下次開機走 `:326` 補救點 | stub:committed + 區塊 → 解除 |
+| 操作員手動 `batman-slot commit` | — | 下次開機走補救點 | stub |
+| 降版到沒有這個改動的版本 | — | 只有新版 fresh 槽才會寫區塊,而那個槽的 autocommit 就是新版;舊版 A 不受影響 | 推論:兩個寫入點都在同一個新版槽 |
+| openmanetd 自己重啟(bat0 up) | — | 仍會讀到區塊 → 仍然暫停,直到解除 | 原始碼:`mgmt.go:122` 在每次 Start 判斷 |
+| Pi 3 / Pi 4 | 相同 feed | 相同 | stub 兩板一致;真機只有 Pi 4(03 停用) |
+
+**依賴的證據**:
+- viper 讀 `/etc/openmanetd/config.yml`(`cmd/root.go:80-88`);
+- `IsSet`/`GetBool`(`config.go:413-416`);
+- worker 只在 Start 時啟動(`mgmt.go:122`);
+- 04 的 config.yml 和 /rom 相同,沒有 `alfred:` 鍵(2026-10-21 實查);
+- `keep.d/openmanetd` 會在一般 sysupgrade 時保留 config.yml,但 `-n` 不保留。
+
+**安全**:
+- 沒有新的對外輸入;寫入者都是 root 的開機腳本。
+- 攻擊者若能寫 config.yml 或 p6 state,本來就已經是 root。
+- fail 方向:讀不到 trial 狀態 → 維持暫停,也就是不重開,這是安全方向;代價只是位址晚一點保留。
+
+**測項**:
+- `tests/prov-p1/addr-defer.sh`(stub):進入暫停的判斷;解除時的精確比對與各條路徑。負對照是舊版 `99-halow-identity` / autocommit。
+- 真機:E1c v4(取代 v3 的 (2)「誰重開」):trial 內不重開;commit 後才保留位址並回到同一槽。
