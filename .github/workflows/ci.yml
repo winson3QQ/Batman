@@ -15,11 +15,32 @@ jobs:
         run: bash scripts/test-harness-265.sh
       - name: nothing root runs on a node trusts world-writable /tmp (#280) — allowlist check + mutation proof
         run: bash scripts/check-tmp-trust.sh && bash scripts/test-tmp-trust.sh
+      - name: dv-preflight negative controls (#254 PR-H1 N9) — every misconfiguration FAILs for its own reason (stub ssh)
+        run: bash scripts/test-dv-preflight.sh
+      - name: BLE judges offline (#254 PR-H1 N10) — settings tokens, btmon judge, pairing verdicts, RPA judge
+        run: bash scripts/test-dv-ble-254.sh
+      - name: N3 held-trial script vs a simulated node (#254 PR-H1) — only guarded rollbacks, flag kept after the OTA
+        run: bash scripts/test-negctl-old-slot-254.sh
       - name: line-endings must be LF
         run: |
           if grep -rlIP '\r$' --include='*.sh' --include='*.py' .; then
             echo "::error::CRLF found in a script (breaks shebangs on the nodes)"; exit 1
           fi
+
+  vectors-219:
+    # #254 PR-H1 §4.2: the provisioning-protocol vectors are re-verified by an independent implementation on
+    # every push; the gate fails on a silently removed check, on vectors.json drifting from gen.py, and its own
+    # negative control (a tampered psk_replay must be REJECTED by verify.py, not crash it).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405   # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: install the hash-pinned closure (no resolver, no unpinned transitive deps)
+        run: python -m pip install --require-hashes --no-deps -r tests/vectors/219-protocol/requirements.txt
+      - name: verify.py >= MIN_CHECKS, gen.py reproduces vectors.json, tampered vector rejected
+        run: PY=python MIN_CHECKS=195 bash tests/vectors/219-protocol/ci-check.sh
 
   ab-card:
     runs-on: ubuntu-latest

@@ -1,0 +1,135 @@
+# 04 btmon -r, pairing segment 'n6' of the PR-H1 sandwich (04 + 02, 1.5.12-wsl.9, 2026-10-20, h1-freeze-1).
+# Masked on the node (every value line), MAC addresses zeroed and header timestamps dropped; canary-checked.
+# expect: CONN status=0x00;SMP RX PairingRequest;SMP TX PairingFailed reason=0x05;DISC reason=0x05;UNPARSED 0;
+<masked>
+= Note: Linux version 6.6.138 (aarch64)
+= Note: Bluetooth subsystem version 2.22
+= New Index: 00:00:00:00:00:00 (Primary,UART,hci0)
+= Open Index: 00:00:00:00:00:00
+= Index Info: 00:00:00:00:00:00 (Cypress Semiconductor)
+@ MGMT Open: bluetoothd (privileged) version 1.22
+> HCI Event: LE Meta Event (0x3e) plen 19
+      LE Connection Complete (0x01)
+        Status: Success (0x00)
+        Handle: <masked>
+        Role: <masked>
+        Peer address type: <masked>
+        Peer address: <masked>
+        Connection interval: <masked>
+        Connection latency: <masked>
+        Supervision timeout: <masked>
+        Central clock accuracy: <masked>
+@ MGMT Event: Device Connected (0x000b) plen 13
+        LE Address: <masked>
+        Flags: <masked>
+        Data length: <masked>
+< HCI Command: LE Read Remote Used... (0x08|0x0016) plen 2
+        Handle: <masked>
+@ RAW Open: btmon (privileged) version 2.22
+@ RAW Close: btmon
+> HCI Event: Vendor (0xff) plen 5
+        <masked>
+> HCI Event: Command Status (0x0f) plen 4
+      <masked>
+        Status: Success (0x00)
+> HCI Event: LE Meta Event (0x3e) plen 12
+      <masked>
+        Status: Success (0x00)
+        Handle: <masked>
+        Features: <masked>
+          <masked>
+          <masked>
+          <masked>
+          <masked>
+          <masked>
+          <masked>
+< ACL Data TX: Handle 64 flags 0x00 dlen 7
+      ATT: Exchange MTU Request (0x02) len 2
+        Client RX MTU: <masked>
+> HCI Event: LE Meta Event (0x3e) plen 11
+      <masked>
+        Handle: <masked>
+        Max TX octets: <masked>
+        Max TX time: <masked>
+        Max RX octets: <masked>
+        Max RX time: <masked>
+> ACL Data RX: Handle 64 flags 0x02 dlen 11
+      SMP: Pairing Request (0x01) len 6
+        IO capability: <masked>
+        OOB data: <masked>
+        Authentication requirement: <masked>
+        Max encryption key size: <masked>
+        Initiator key distribution: <masked>
+        Responder key distribution: <masked>
+@ MGMT Event: Authentication Failed (0x0011) plen 8
+        LE Address: <masked>
+        Status: Authentication Failed (0x05)
+< ACL Data TX: Handle 64 flags 0x00 dlen 6
+      SMP: Pairing Failed (0x05) len 1
+        Reason: Pairing not supported (0x05)
+> ACL Data RX: Handle 64 flags 0x02 dlen 7
+      ATT: Exchange MTU Request (0x02) len 2
+        Client RX MTU: <masked>
+< ACL Data TX: Handle 64 flags 0x00 dlen 7
+      ATT: Exchange MTU Response (0x03) len 2
+        Server RX MTU: <masked>
+> HCI Event: Number of Completed Packets (0x13) plen 5
+        Num handles: <masked>
+        Handle: <masked>
+        Count: <masked>
+        <masked>
+        Latency: <masked>
+        <masked>
+        Latency: <masked>
+< HCI Command: LE Set Advertising.. (0x08|0x0006) plen 15
+        Min advertising interval: <masked>
+        Max advertising interval: <masked>
+        Type: <masked>
+        Own address type: <masked>
+        Direct address type: <masked>
+        Direct address: <masked>
+        Channel map: <masked>
+        Filter policy: <masked>
+> HCI Event: Command Complete (0x0e) plen 4
+      <masked>
+        Status: Success (0x00)
+< HCI Command: LE Set Advertise En.. (0x08|0x000a) plen 1
+        Advertising: <masked>
+> HCI Event: Command Complete (0x0e) plen 4
+      <masked>
+        Status: Success (0x00)
+> HCI Event: Number of Completed Packets (0x13) plen 5
+        Num handles: <masked>
+        Handle: <masked>
+        Count: <masked>
+        <masked>
+        Latency: <masked>
+> HCI Event: Disconnect Complete (0x05) plen 4
+        Status: Success (0x00)
+        Handle: <masked>
+        Reason: Authentication Failure (0x05)
+@ MGMT Event: Device Disconnected (0x000c) plen 8
+        LE Address: <masked>
+        Reason: Unspecified (0x00)
+< HCI Command: LE Set Advertise En.. (0x08|0x000a) plen 1
+        Advertising: <masked>
+> HCI Event: Command Complete (0x0e) plen 4
+      <masked>
+        Status: Success (0x00)
+< HCI Command: LE Set Advertising.. (0x08|0x0006) plen 15
+        Min advertising interval: <masked>
+        Max advertising interval: <masked>
+        Type: <masked>
+        Own address type: <masked>
+        Direct address type: <masked>
+        Direct address: <masked>
+        Channel map: <masked>
+        Filter policy: <masked>
+> HCI Event: Command Complete (0x0e) plen 4
+      <masked>
+        Status: Success (0x00)
+< HCI Command: LE Set Advertise En.. (0x08|0x000a) plen 1
+        Advertising: <masked>
+> HCI Event: Command Complete (0x0e) plen 4
+      <masked>
+        Status: Success (0x00)

@@ -218,7 +218,11 @@ def noise_check(tag, vec, psk):
     st.write_message(b"", buf)
     check(f"{tag}: msg1 byte-identical across implementations (payload empty)", bytes(buf) == b(vec["msg1"]))
     payload = bytearray()
-    cs = st.read_message(b(vec["msg2"]), payload)
+    try:
+        cs = st.read_message(b(vec["msg2"]), payload)
+    except Exception as e:   # noqa: BLE001 — a tampered vector is a FAIL, never a crash (PR-H1 §4.2 negative control)
+        check(f"{tag}: msg2 decrypts with this PSK / prologue ({type(e).__name__})", False)
+        return
     check(f"{tag}: msg2 payload == node_cert", bytes(payload) == NC_RAW)
     check(f"{tag}: handshake hash identical", st.symmetricstate.get_handshake_hash() == b(vec["handshake_hash"]))
     check(f"{tag}: remote static == s_node_pub", st.rs.data == b(K["s_node_pub"]))

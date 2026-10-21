@@ -1,7 +1,50 @@
-cryptography==50.0.2
-cbor2==6.1.5
-noiseprotocol==0.3.1
-dissononce==0.34.3
-ecdsa==0.19.2
-pycddl==0.6.4
-pycose==1.1.0
+# Hash-pinned closure for tests/vectors/219-protocol (CI: pip install --require-hashes --no-deps -r ...).
+# Regenerate after a version bump; keep the venv (pip freeze) and this file identical in versions.
+# Direct: cbor2, cryptography, dissononce, ecdsa, noiseprotocol, pycddl, pycose; the rest are their dependencies.
+asn1crypto==1.5.1 \
+    --hash=sha256:13ae38502be632115abf8a24cbe5f4da52e3b5231990aff31123c805306ccb9c \
+    --hash=sha256:db4e40728b728508912cbb3d44f19ce188f218e9eba635821bb4b68564f8fd67
+attrs==26.1.0 \
+    --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309 \
+    --hash=sha256:d03ceb89cb322a8fd706d4fb91940737b6642aa36998fe130a9bc96c985eff32
+cbor2==6.1.5 \
+    --hash=sha256:6eb06160c42315ac0c4ded461c7d84d92fa18c69d13d17fc1dfc1fae96580c95 \
+    --hash=sha256:b70d7c47ea84d456034d2be02e89d92eef7044cfcedf6f05058e21d4452f0fef
+certvalidator==0.11.1 \
+    --hash=sha256:77520b269f516d4fb0902998d5bd0eb3727fe153b659aa1cb828dcf12ea6b8de \
+    --hash=sha256:922d141c94393ab285ca34338e18dd4093e3ae330b1f278e96c837cb62cffaad
+cffi==2.1.1 \
+    --hash=sha256:c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf \
+    --hash=sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be
+cryptography==50.0.2 \
+    --hash=sha256:1981f1db4630889b9ef7803fadef12b056f428cb6b85c27ba57b774793b6093c \
+    --hash=sha256:4061c0079120205fb760c58acab6443e217307dcf05e3702cf970e0689972856 \
+    --hash=sha256:630ebfea3bf689d075f82316324ff7433dc447fe6bc1bfc76524b74b4a9567d2 \
+    --hash=sha256:7b46165bb56eb4704e2eaaf86f3c940d19154535d9b0ca7d6d590b04060e00d5 \
+    --hash=sha256:9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079 \
+    --hash=sha256:ee247f5c245c9a2fe7c8e2214e295918838e44e00a45a6718451e4004219e767 \
+    --hash=sha256:f21e8a22c8605750c7af886bab299a363721264061b4ac0a30efb73cfd58efc5
+dissononce==0.34.3 \
+    --hash=sha256:1b204e97acfdb043ebbf3c0288f2402394209aa7d8d094a28b820ae2415b7e64 \
+    --hash=sha256:f5240e2554e26449c80a6d6ee0c8aec1c4ac1d22be9078e9ced94ceab876a7cf
+ecdsa==0.19.2 \
+    --hash=sha256:62635b0ac1ca2e027f82122b5b81cb706edc38cd91c63dda28e4f3455a2bf930 \
+    --hash=sha256:840f5dc5e375c68f36c1a7a5b9caad28f95daa65185c9253c0c08dd952bb7399
+noiseprotocol==0.3.1 \
+    --hash=sha256:2e1a603a38439636cf0ffd8b3e8b12cee27d368a28b41be7dbe568b2abb23111 \
+    --hash=sha256:b092a871b60f6a8f07f17950dc9f7098c8fe7d715b049bd4c24ee3752b90d645
+oscrypto==1.3.0 \
+    --hash=sha256:2b2f1d2d42ec152ca90ccb5682f3e051fb55986e1b170ebde472b133713e7085 \
+    --hash=sha256:6f5fef59cb5b3708321db7cca56aed8ad7e662853351e7991fcf60ec606d47a4
+pycddl==0.6.4 \
+    --hash=sha256:39ca675f341a6a77654f4f6759bcb3ce0d47f1a772cb87e99b4e61d86bcb6053 \
+    --hash=sha256:6946ba4377b5470bd637434fa9b26d596de8ff2cc9c5473483b81418a525397a
+pycose==1.1.0 \
+    --hash=sha256:52b524e9d314d6ec89462a7666afdb398a6e7beeede26104617d8246b8c79692 \
+    --hash=sha256:702f73c7d9b865052862407e768515aca1d7c6fb3df3c90d169fecf913ae071f
+pycparser==3.0 \
+    --hash=sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29 \
+    --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+six==1.17.0 \
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \
+    --hash=sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81

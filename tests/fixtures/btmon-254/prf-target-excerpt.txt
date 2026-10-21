@@ -1,0 +1,28 @@
+# PR-F 2026-10-19 target-segment excerpt (grep'ed: no HCI Event headers; key values: none present).
+# expect: SMP RX PairingRequest;SMP TX PairingFailed reason=0x03;SMP RX PairingRequest;SMP TX PairingFailed reason=0x03;UNPARSED 0;
+        Peer address: 00:00:00:00:00:00 (Resolvable)
+< ACL Data TX: Handle 64 flags 0x00 dlen 7                 #14 [hci0] 57.505053
+> ACL Data RX: Handle 64 flags 0x02 dlen 11                #16 [hci0] 57.566269
+      SMP: Pairing Request (0x01) len 6
+        IO capability: NoInputNoOutput (0x03)
+        Authentication requirement: No bonding, No MITM, Legacy, No Keypresses (0x00)
+< ACL Data TX: Handle 64 flags 0x00 dlen 6                 #17 [hci0] 57.566331
+      SMP: Pairing Failed (0x05) len 1
+        Reason: Authentication requirements (0x03)
+> ACL Data RX: Handle 64 flags 0x02 dlen 7                 #18 [hci0] 57.566841
+< ACL Data TX: Handle 64 flags 0x00 dlen 7                 #19 [hci0] 57.566987
+        Reason: Authentication Failure (0x05)
+        Reason: Unspecified (0x00)
+        Peer address: 00:00:00:00:00:00 (Resolvable)
+< ACL Data TX: Handle 64 flags 0x00 dlen 7               #128 [hci0] 256.172603
+> ACL Data RX: Handle 64 flags 0x02 dlen 11              #130 [hci0] 256.331326
+      SMP: Pairing Request (0x01) len 6
+        IO capability: NoInputNoOutput (0x03)
+        Authentication requirement: No bonding, No MITM, Legacy, No Keypresses (0x00)
+< ACL Data TX: Handle 64 flags 0x00 dlen 6               #131 [hci0] 256.331389
+      SMP: Pairing Failed (0x05) len 1
+        Reason: Authentication requirements (0x03)
+> ACL Data RX: Handle 64 flags 0x02 dlen 7               #132 [hci0] 256.331897
+< ACL Data TX: Handle 64 flags 0x00 dlen 7               #133 [hci0] 256.331999
+        Reason: Authentication Failure (0x05)
+        Reason: Unspecified (0x00)

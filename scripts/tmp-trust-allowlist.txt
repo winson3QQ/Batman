@@ -80,3 +80,13 @@ deploy/ots/gateway/batman_eud_gateway/config.py	snapshot_path: str = "/tmp/gatew
 feed/batman-provision/files/usr/sbin/batman-slot	override: touch /tmp/batman-slot\.allow-stale-p5 \(as root\)	message text naming the opf-checked operator flag (#202 C5)
 scripts/node/p5-follows-202.sh	R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/tmp/run/batman	harness resolver for the run dir (#202 D1)
 scripts/node/setkey-persists-202.sh	R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/tmp/run/batman	harness resolver for the run dir (#202 D2)
+# --- #254 PR-H1 BLE harness: bluetoothd's own root-only store and the harness's root-0700 run dirs ---
+scripts/node/ble-*-254.sh	/var/lib/bluetooth|/tmp/lib/bluetooth|/tmp/lib\b	bluetoothd's store: /var/lib/bluetooth -> /tmp/lib/bluetooth, root 0700 made at boot by bluetoothd.init (store_ok, fail-closed); the harness reads it for assertions and deletes only while bluetoothd is stopped, after re-checking owner/mode/symlink (design §3, §4.7)
+scripts/node/prov-tools-254.sh	/var/lib/bluetooth|/tmp/lib/bluetooth|mountpoint -q /tmp	assertions only (readlink / mountpoint on fixed system paths); nothing is written there
+scripts/node/ble-privacy-254.sh	mountpoint -q /tmp|tmpfs /tmp tmpfs	assertion: /tmp is a tmpfs mountpoint (read-only check)
+scripts/dv/ble-254.sh	/var/lib/bluetooth|/tmp/lib/bluetooth	remote read-only probes of bluetoothd's root-0700 store (public address dir name, IRK hash on the node)
+scripts/node/ble-lib-254.sh	/proc/\$\$/stat	procfs of the shell itself (pgid of the deadman), not a file name in /tmp
+scripts/node/ble-central-254.sh	out="\$DIR/sample\.\$\$"	inside the run dir /tmp/run/batman-dv/bt/<run_id> (root 0700, owner-checked at stage time)
+scripts/node/prov-tools-254.sh	t="\$H/prov-tools\.\$\$"	inside /tmp/run/batman-dv (HDS: mkdir -m 700, -O, not a symlink)
+scripts/lib/ble-254.sh	BLE_RUN_ID=\$\{BLE_RUN_ID:-dv\$\(date \+%s\)p\$\$\}	run id = a directory name under the root-0700 bt/ dir on the node; staging refuses an existing one
+scripts/dv-preflight.sh	BLE_RUN_ID=preflight\$\$	same: probe run dir under the root-0700 bt/ dir, refused if it exists, removed after the probe
