@@ -34,9 +34,9 @@ import (
 )
 
 const (
-	provdUID    = 471
-	provdGID    = 471
-	sockDir     = "/tmp/run/batman-prov"
+	provdUID   = 471
+	provdGID   = 471
+	sockDir    = "/tmp/run/batman-prov"
 	placeholder = "CHANGE-ME-NOW"
 )
 
@@ -45,7 +45,8 @@ var logw *syslog.Writer
 func logf(format string, a ...any) {
 	msg := fmt.Sprintf(format, a...)
 	if logw != nil {
-		logw.Info(msg)
+		logw.Info(msg) // procd also captures stderr: write it only when syslog is unavailable (no duplicate lines)
+		return
 	}
 	fmt.Fprintln(os.Stderr, "batman-provhelper: "+msg)
 }
@@ -242,21 +243,12 @@ func lastLine(s string) string {
 func bootEnv(p provstore.Paths) boot.Env {
 	sys := realSys{p}
 	return boot.Env{
-		P:       p,
-		GetP5:   sys.GetP5,
-		Persist: func(r, m, id string) (int, string) { return sys.Persist(r, m, id, "") },
-		Bypass: func() bool {
-			b, _ := os.ReadFile("/proc/cmdline")
-			return strings.Contains(string(b), "batman_bypass=1")
-		},
-		BootID: bootID,
-		MeshKey: func() string {
-			i := meshIface()
-			if i == "" {
-				return ""
-			}
-			return uciGet("wireless." + i + ".key")
-		},
+		P:        p,
+		GetP5:    sys.GetP5,
+		Persist:  func(r, m, id string) (int, string) { return sys.Persist(r, m, id, "") },
+		Bypass:   func() bool { b, _ := os.ReadFile("/proc/cmdline"); return strings.Contains(string(b), "batman_bypass=1") },
+		BootID:   bootID,
+		MeshKey:  func() string { i := meshIface(); if i == "" { return "" }; return uciGet("wireless." + i + ".key") },
 		Log:      logf,
 		Generate: keystore.Generate,
 		Sleep:    time.Sleep,

@@ -41,7 +41,11 @@ fi
 # own rules, radio = member (radio up required; neighbours per ota-armed.mesh)
 if grep -q ' /opt/batdata ' /proc/mounts 2>/dev/null; then
 	prev=$(awk 'NR==1 {print $3}' "$ST" 2>/dev/null); [ -n "$prev" ] || prev=-
-	case "$state" in legacy|unclaimed|claimed|member) lks=$state; v=$state ;; *) lks=$prev; v="unknown(99zz-${state#-})" ;; esac
+	case "$state" in
+		legacy|unclaimed|claimed|member) lks=$state; v=$state ;;
+		bad) lks=$prev; v="unknown(record-bad)" ;;
+		*) lks=$prev; v="unknown(no-record)" ;;   # e.g. a legacy upgrade: the helper creates the record at S89
+	esac
 	[ "$unclaimed" = 1 ] && v=unclaimed
 	case "$v" in
 		unclaimed) me=0 ;;
