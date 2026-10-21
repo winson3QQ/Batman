@@ -221,3 +221,35 @@ func TestTxnCommittedAndNot(t *testing.T) {
 		t.Fatal(".txn removed before the wireless restore ran")
 	}
 }
+
+// round-6 B-M3: rc 13 (p5 identity damaged) never lets an older / other slot's record or identity replace p5's
+func TestRc13NeverDowngrades(t *testing.T) {
+	f := newFx(t, 13)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Legacy, 1) // an old slot, legacy
+	f.p5Record(provstore.Claimed, 5)     // p5: claimed, its identity damaged (rc 13)
+	r := Run(f.e)
+	if r.Verdict != "unknown(identity-lost)" || len(f.persists) != 0 {
+		t.Fatalf("%+v persists=%v", r, f.persists)
+	}
+	// same node (same sn on p5) and the overlay not older -> the identity alone is re-persisted
+	g := newFx(t, 13)
+	g.overlayIdentity()
+	g.overlayRecord(provstore.Claimed, 5)
+	g.p5Record(provstore.Claimed, 5)
+	os.MkdirAll(filepath.Join(g.p5, "identity"), 0o700)
+	sn, _ := os.ReadFile(filepath.Join(g.e.P.Identity(), "sn"))
+	os.WriteFile(filepath.Join(g.p5, "identity", "sn"), sn, 0o600)
+	g.e.GetP5 = func(dir string) (int, string) { // rc 13 with only "sn" left of the identity
+		os.MkdirAll(filepath.Join(dir, "identity"), 0o700)
+		for _, n := range []string{"prov.cbor", "prov.meta"} {
+			b, _ := os.ReadFile(filepath.Join(g.p5, n))
+			os.WriteFile(filepath.Join(dir, n), b, 0o600)
+		}
+		os.WriteFile(filepath.Join(dir, "identity", "sn"), sn, 0o600)
+		return 13, ""
+	}
+	if r := Run(g.e); r.Verdict != provstore.Claimed || len(g.persists) != 1 {
+		t.Fatalf("same node: %+v persists=%v", r, g.persists)
+	}
+}

@@ -34,9 +34,9 @@ import (
 )
 
 const (
-	provdUID   = 471
-	provdGID   = 471
-	sockDir    = "/tmp/run/batman-prov"
+	provdUID    = 471
+	provdGID    = 471
+	sockDir     = "/tmp/run/batman-prov"
 	placeholder = "CHANGE-ME-NOW"
 )
 
@@ -105,7 +105,8 @@ func meshIface() string {
 
 type realSys struct{ p provstore.Paths }
 
-func (s realSys) IsTrial() bool { rc, _ := run(nil, "batman-slot", "is-trial"); return rc == 0 }
+// IsTrial fails closed: anything but "committed" (rc 1) counts as a trial — unknown (rc 2) included (round-6 B-m1)
+func (s realSys) IsTrial() bool { rc, _ := run(nil, "batman-slot", "is-trial"); return rc != 1 }
 func (s realSys) Persist(r, m, id, txn string) (int, string) {
 	return provstore.PersistP5(s.p, r, m, id, txn)
 }
@@ -243,12 +244,21 @@ func lastLine(s string) string {
 func bootEnv(p provstore.Paths) boot.Env {
 	sys := realSys{p}
 	return boot.Env{
-		P:        p,
-		GetP5:    sys.GetP5,
-		Persist:  func(r, m, id string) (int, string) { return sys.Persist(r, m, id, "") },
-		Bypass:   func() bool { b, _ := os.ReadFile("/proc/cmdline"); return strings.Contains(string(b), "batman_bypass=1") },
-		BootID:   bootID,
-		MeshKey:  func() string { i := meshIface(); if i == "" { return "" }; return uciGet("wireless." + i + ".key") },
+		P:       p,
+		GetP5:   sys.GetP5,
+		Persist: func(r, m, id string) (int, string) { return sys.Persist(r, m, id, "") },
+		Bypass: func() bool {
+			b, _ := os.ReadFile("/proc/cmdline")
+			return strings.Contains(string(b), "batman_bypass=1")
+		},
+		BootID: bootID,
+		MeshKey: func() string {
+			i := meshIface()
+			if i == "" {
+				return ""
+			}
+			return uciGet("wireless." + i + ".key")
+		},
 		Log:      logf,
 		Generate: keystore.Generate,
 		Sleep:    time.Sleep,
@@ -415,6 +425,7 @@ func daemon(p provstore.Paths) {
 		os.Exit(1)
 	}
 	n := node.New(p, ks, realSys{p}, logf)
+	n.Verdict = res.Verdict
 	srv := &sock.Server{Path: filepath.Join(sockDir, "helper.sock"), PeerUID: provdUID, GID: provdGID, Idle: 30 * time.Second, Log: logf}
 	if err := srv.Listen(); err != nil {
 		logf("listen: %v", err)

@@ -237,18 +237,18 @@ func run(e Env) Result {
 			return Result{RC: rc, Verdict: ovRec.State, Action: fmt.Sprintf("p5 record corrupt: re-persisted the overlay one, rc=%d", prc)}
 		}
 		return Result{RC: rc, Verdict: "unknown(prov-corrupt)", Action: "none (no generation)"}
-	case 13: // p5 has prov but identity/prov is missing / incomplete
-		if ovIdent {
-			prc, _ := persistAll(true)
-			st := "unknown(identity-lost)"
-			if ovRec != nil {
-				st = ovRec.State
-			} else if p5Rec != nil {
-				st = p5Rec.State
+	case 13: // p5 has prov but identity/prov is missing / incomplete — re-persist ONLY the identity, and only when it is
+		// provably the same node: overlay sn == the sn left on p5, and overlay gen >= p5 gen (round-6 B-M3). Never the
+		// record: p5's (possibly claimed) record must not be replaced by an older / other slot's one.
+		if ovIdent && ovRec != nil && p5Rec != nil && ovRec.Generation >= p5Rec.Generation {
+			ovSN, _ := os.ReadFile(filepath.Join(e.P.Identity(), "sn"))
+			p5SN, err := os.ReadFile(filepath.Join(dir, "identity", "sn"))
+			if err == nil && len(ovSN) > 0 && bytes.Equal(bytes.TrimSpace(ovSN), bytes.TrimSpace(p5SN)) {
+				prc, _ := e.Persist(e.P.Record(), e.P.Meta(), e.P.Identity())
+				return Result{RC: rc, Verdict: ovRec.State, Action: fmt.Sprintf("re-persisted the identity (same sn, overlay gen %d >= p5 gen %d), rc=%d", ovRec.Generation, p5Rec.Generation, prc)}
 			}
-			return Result{RC: rc, Verdict: st, Action: fmt.Sprintf("re-persisted the identity, rc=%d", prc)}
 		}
-		return Result{RC: rc, Verdict: "unknown(identity-lost)", Action: "none (no generation)"}
+		return Result{RC: rc, Verdict: "unknown(identity-lost)", Action: "none (cannot prove the overlay identity is p5's: no write)"}
 	case 1, 8:
 		if ovRec != nil && ovIdent {
 			return Result{RC: rc, Verdict: ovRec.State, Action: "p5 unreadable: kept the overlay (persist will fail E_PERSIST)"}

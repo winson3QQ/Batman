@@ -97,7 +97,9 @@ func newRig(t *testing.T, state string) *rig {
 	sys := &fakeSys{p5: filepath.Join(root, "p5"), now: time.Unix(1000, 0), keys: []string{"ssh-ed25519 AAAAlab lab"}}
 	o, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	e, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	return &rig{t: t, n: New(p, ks, sys, func(string, ...any) {}), sys: sys, ks: ks, ksDir: p.Identity(), owner: o, enc: e, h: make32(7)}
+	n := New(p, ks, sys, func(string, ...any) {})
+	n.Verdict = state
+	return &rig{t: t, n: n, sys: sys, ks: ks, ksDir: p.Identity(), owner: o, enc: e, h: make32(7)}
 }
 
 func make32(c byte) []byte {
@@ -299,5 +301,20 @@ func TestPersistFailureRollsBack(t *testing.T) {
 	rec, _, _ := provstore.LoadOverlay(r.n.P)
 	if rec.State != provstore.Unclaimed || r.sys.locked != "" {
 		t.Fatal("overlay changed / locked although p5 was not written")
+	}
+}
+
+// round-6 B-M2: a node whose boot verdict is unknown(*) (e.g. identity-mismatch) refuses every state change
+func TestFrozenRefusesStateChanges(t *testing.T) {
+	r := newRig(t, provstore.Unclaimed)
+	r.n.Verdict = "unknown(identity-mismatch)"
+	if c, _ := r.claim(); c != EState {
+		t.Fatalf("claim on a frozen node: code %d", c)
+	}
+	if c, _ := r.call("info.state", cbor.M()); c != OK {
+		t.Fatal("read-only verbs must still answer on a frozen node")
+	}
+	if rec, _, _ := provstore.LoadOverlay(r.n.P); rec.State != provstore.Unclaimed || len(r.sys.persisted) != 0 {
+		t.Fatal("a frozen node persisted something")
 	}
 }

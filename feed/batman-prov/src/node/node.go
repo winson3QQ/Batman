@@ -40,6 +40,7 @@ const (
 	ERate         = 12
 	ESchema       = 20
 	EApply        = 21
+	EState        = 22 // this boot's verdict is unknown(*) (e.g. identity-mismatch: frozen, P-U6)
 )
 
 // Error is a coded failure; Reason is for the log only.
@@ -84,6 +85,8 @@ type Node struct {
 	signLog []time.Time
 	replayF []time.Time
 	Log     func(string, ...any)
+	// Verdict is this boot's --boot verdict; unknown(*) freezes every state-changing verb (round-6 B-M2)
+	Verdict string
 }
 
 type nonce struct {
@@ -157,6 +160,9 @@ var stateChanging = map[string]bool{"claim.verify": true, "claim.replay": true, 
 func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 	if stateChanging[verb] && n.Sys.IsTrial() {
 		return nil, fail(EBusy, "trial slot (updating)")
+	}
+	if stateChanging[verb] && (n.Verdict == "" || strings.HasPrefix(n.Verdict, "unknown")) {
+		return nil, fail(EState, "this boot's verdict is %q — state changes refused", n.Verdict)
 	}
 	rec, _, err := provstore.LoadOverlay(n.P)
 	if err != nil || rec == nil {
