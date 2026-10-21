@@ -461,7 +461,13 @@ if [ "$mode" = --prov-get ]; then
 	mt=$(prov_meta_ok "$MNT/prov.meta"); mrc=$?
 	[ "$mrc" = 2 ] && { say "p5 prov too-new"; exit 14; }
 	set -- $mt
-	[ $# = 4 ] && prov_cbor_ok "$MNT/prov.cbor" "$4" || { say "p5 prov corrupt (meta missing/malformed or sha mismatch)"; exit 10; }
+	if ! { [ $# = 4 ] && prov_cbor_ok "$MNT/prov.cbor" "$4"; }; then
+		# round-8 A-m10 / B-m1: hand the reader what is there (raw meta, identity) so it can still refuse a downgrade
+		# or an identity mismatch; the record itself is NOT copied (it failed its sha). The reader validates the meta.
+		[ -f "$MNT/prov.meta" ] && cp -p "$MNT/prov.meta" "$PGET/prov.meta" 2>/dev/null
+		[ -d "$MNT/identity/prov" ] && cp -a "$MNT/identity/prov" "$PGET/identity" 2>/dev/null
+		say "p5 prov corrupt (meta missing/malformed or sha mismatch)"; exit 10
+	fi
 	cp -p "$MNT/prov.cbor" "$MNT/prov.meta" "$PGET/"
 	if ! prov_ident_ok "$MNT/identity/prov"; then
 		[ -d "$MNT/identity/prov" ] && cp -a "$MNT/identity/prov" "$PGET/identity" 2>/dev/null

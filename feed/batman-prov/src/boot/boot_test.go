@@ -395,3 +395,51 @@ func TestPersistNow(t *testing.T) {
 		t.Fatalf("bypass allowed")
 	}
 }
+
+// round-8 A-m10 / B-m1: rc 10 (p5 record corrupt) never lowers a generation and never writes blind
+func TestRc10NeverDowngrades(t *testing.T) {
+	same := func(f *fx) { copyDir(f.e.P.Identity(), filepath.Join(f.p5, "identity")) }
+	// a rolled-back legacy slot (gen 1), p5 claimed gen 5 with a bad cbor (meta still readable): no write
+	f := newFx(t, 10)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Legacy, 1)
+	same(f)
+	f.p5Record(provstore.Claimed, 5)
+	if r := Run(f.e); r.Verdict != "unknown(prov-corrupt)" || len(f.persists) != 0 {
+		t.Fatalf("Run downgraded: %+v %v", r, f.persists)
+	}
+	if rc, why := PersistNow(f.e); rc == 0 || len(f.persists) != 0 {
+		t.Fatalf("PersistNow downgraded: %d %s", rc, why)
+	}
+	// meta unreadable too: unknown generation -> no write
+	f = newFx(t, 10)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Claimed, 6)
+	same(f)
+	f.p5Record(provstore.Claimed, 5)
+	os.WriteFile(filepath.Join(f.p5, "prov.meta"), []byte("garbage"), 0o600)
+	if r := Run(f.e); r.Verdict != "unknown(prov-corrupt)" || len(f.persists) != 0 {
+		t.Fatalf("Run wrote blind: %+v %v", r, f.persists)
+	}
+	if rc, _ := PersistNow(f.e); rc == 0 || len(f.persists) != 0 {
+		t.Fatalf("PersistNow wrote blind")
+	}
+	// p5 gen 3 <= overlay gen 4, same identity: repaired from the overlay, record only
+	f = newFx(t, 10)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Claimed, 4)
+	same(f)
+	f.p5Record(provstore.Claimed, 3)
+	if r := Run(f.e); r.Verdict != provstore.Claimed || len(f.persists) != 1 || f.persists[0] != "id=" {
+		t.Fatalf("Run repair: %+v %v", r, f.persists)
+	}
+	// another identity on p5 (now visible on rc 10): frozen
+	f = newFx(t, 10)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Claimed, 4)
+	f.p5Identity()
+	f.p5Record(provstore.Claimed, 3)
+	if r := Run(f.e); r.Verdict != "unknown(identity-mismatch)" || len(f.persists) != 0 {
+		t.Fatalf("Run on rc 10 with another identity: %+v", r)
+	}
+}

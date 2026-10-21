@@ -232,11 +232,17 @@ func run(e Env) Result {
 		}
 		return Result{RC: rc, Verdict: "unknown(generate-failed)", Action: "none"}
 	case 10: // p5 prov incomplete / sha mismatch / meta missing
+		// round-8 A-m10 / B-m1: re-persist only when p5's generation is KNOWN (its meta still parses) and not newer
+		// than the overlay's — a rolled-back older slot must not replace a claimed record whose cbor went bad. An
+		// unreadable generation is fail-closed: no write, the verdict freezes state-changing verbs (owner / reflash).
+		// (The identity check above already ran: --prov-get rc 10 now copies p5's identity and raw meta.)
 		if ovIdent && ovRec != nil {
-			prc, _ := persistAll(true)
-			return Result{RC: rc, Verdict: ovRec.State, Action: fmt.Sprintf("p5 record corrupt: re-persisted the overlay one, rc=%d", prc)}
+			if g, ok := metaGen(dir); ok && g <= ovRec.Generation {
+				prc, _ := persistAll(!p5Ident)
+				return Result{RC: rc, Verdict: ovRec.State, Action: fmt.Sprintf("p5 record corrupt (p5 gen %d <= overlay %d): re-persisted the overlay one, rc=%d", g, ovRec.Generation, prc)}
+			}
 		}
-		return Result{RC: rc, Verdict: "unknown(prov-corrupt)", Action: "none (no generation)"}
+		return Result{RC: rc, Verdict: "unknown(prov-corrupt)", Action: "none (p5 generation unknown or newer than the overlay: no write)"}
 	case 13: // p5 has prov but identity/prov is missing / incomplete — re-persist ONLY the identity, and only when it is
 		// provably the same node: overlay sn == the sn left on p5, and overlay gen >= p5 gen (round-6 B-M3). Never the
 		// record: p5's (possibly claimed) record must not be replaced by an older / other slot's one.
@@ -295,6 +301,19 @@ func writeProvState(e Env, res Result) {
 	}
 }
 
+// metaGen reads the generation from a --prov-get copy of p5's prov.meta; ok=false when absent or malformed.
+func metaGen(dir string) (uint64, bool) {
+	mb, err := os.ReadFile(filepath.Join(dir, "prov.meta"))
+	if err != nil {
+		return 0, false
+	}
+	m, err := provstore.ParseMeta(mb)
+	if err != nil {
+		return 0, false
+	}
+	return m.Gen, true
+}
+
 // PersistNow is batman-provhelper --persist-now (the P5_STALE_HINT fix, round-7 B-M3): write the overlay record to
 // p5 when that is provably safe, and nothing else. Unlike Run it touches nothing the boot path owns (.stage, .txn,
 // prov-state, the overlay record). It refuses — rc 1, or 7 while a net.apply transaction is open — when:
@@ -329,13 +348,15 @@ func PersistNow(e Env) (int, string) {
 	if p5Ident && !bytes.Equal(ovSum, p5Sum) {
 		return 1, "identity mismatch: frozen (owner action or reflash)"
 	}
-	if mb, err := os.ReadFile(filepath.Join(d, "prov.meta")); err == nil {
-		if m, err := provstore.ParseMeta(mb); err == nil && m.Gen >= ovRec.Generation {
-			if rc == 0 && m.Gen == ovRec.Generation {
-				return 0, "in sync"
-			}
-			return 1, fmt.Sprintf("p5 generation %d >= overlay %d: never lowered", m.Gen, ovRec.Generation)
+	g, haveG := metaGen(d)
+	if haveG && g >= ovRec.Generation {
+		if rc == 0 && g == ovRec.Generation {
+			return 0, "in sync"
 		}
+		return 1, fmt.Sprintf("p5 generation %d >= overlay %d: never lowered", g, ovRec.Generation)
+	}
+	if rc == 10 && !haveG { // round-8 A-m10 / B-m1: a corrupt record of unknown generation could be newer
+		return 1, "p5 record corrupt and its generation unreadable: no write (owner / reflash)"
 	}
 	if rc == 13 {
 		ovSN, _ := os.ReadFile(filepath.Join(e.P.Identity(), "sn"))
