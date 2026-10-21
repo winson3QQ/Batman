@@ -405,7 +405,14 @@ while [ "${pr%% *}" = 99zz ] && [ "$i" -lt 60 ]; do sleep 1; i=$((i + 1)); pr=$(
 if [ -n "$pr" ]; then
 	PROV_V=$(echo "$pr" | cut -d' ' -f2); PROV_ME=$(echo "$pr" | cut -d' ' -f3)
 	case "$PROV_V:$PROV_ME" in
-		unclaimed:*|claimed:0) NEED_MESH=0 ;;
+		unclaimed:*) NEED_MESH=0 ;;
+		claimed:0)
+			# claimed + placeholder mesh key = never given a network — but only if p6 agrees: a node that has been in a
+			# mesh (joinwatch / a seed wrote a marker; network/leave removes them) and now shows the placeholder LOST its
+			# key (a regression, a bad restore): neighbours required, fail-closed (round-7 B-M2)
+			if [ -f "$ST/mesh-joined" ] || [ -f "$ST/mesh-expected" ]; then
+				NEED_MESH=1; log "claimed with the placeholder mesh key, but p6 says this node has been in a mesh — neighbours required (fail-closed)"
+			else NEED_MESH=0; fi ;;
 		member:*)
 			RADIO_REQ=1
 			# ota-armed.mesh: adopted only when it names the arm boot (the second-to-last boot-reasons line) and this slot

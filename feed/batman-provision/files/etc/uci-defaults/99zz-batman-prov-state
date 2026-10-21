@@ -50,9 +50,9 @@ if grep -q ' /opt/batdata ' /proc/mounts 2>/dev/null; then
 	case "$v" in
 		unclaimed) me=0 ;;
 		member) me=radio ;;
-		claimed) me=0   # same rule as the helper's boot.MeshExpect: only a real (non-placeholder, non-empty) mesh key -> today
+		claimed) me=today   # same rule as the helper's boot.MeshExpect: only an explicit placeholder mesh key -> 0 (fail-closed)
 			for s in $(uci -q show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='mesh'$/\1/p"); do
-				k=$(uci -q get "wireless.$s.key"); [ -n "$k" ] && [ "$k" != "$PLACEHOLDER" ] && me=today
+				[ "$(uci -q get "wireless.$s.key")" = "$PLACEHOLDER" ] && me=0
 			done ;;
 		*) me=today ;;
 	esac

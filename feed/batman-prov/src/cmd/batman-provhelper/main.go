@@ -346,17 +346,9 @@ func main() {
 		}
 		return
 	case "--persist-now":
-		r, _, err := provstore.LoadOverlay(p)
-		if err != nil || r == nil {
-			logf("persist-now: no usable overlay record (%v)", err)
-			os.Exit(1)
-		}
-		if res := boot.Run(bootEnv(p)); strings.Contains(res.Verdict, "identity-mismatch") {
-			logf("persist-now refused: node identity mismatch — owner action or reflash needed")
-			os.Exit(1)
-		}
-		rc, out := provstore.PersistP5(p, p.Record(), p.Meta(), p.Identity(), "")
-		logf("persist-now: rc=%d %s", rc, lastLine(out))
+		// round-7 B-M3: a side-effect-free decision, not a second boot.Run (which would race the daemon on .stage/.txn)
+		rc, why := boot.PersistNow(bootEnv(p))
+		logf("persist-now: rc=%d %s", rc, lastLine(why))
 		os.Exit(rc)
 	case "qr":
 		os.Exit(qr(p))

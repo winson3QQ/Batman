@@ -89,11 +89,12 @@ RDOK=0; type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null && RDOK=
 ST=$RUNDIR/cfgsave-onjoin.state          # --on-join fingerprint cache (#263 M0)
 GATEFAIL=$RUNDIR/cfgsave-pi3gate.failed   # Pi 3 factory gate failed this boot
 MNTFAIL=$RUNDIR/cfgsave-mount.failed      # "<uptime> <reason>": the LAST rw mount attempt failed (cleared on success)
+FROZEN=$RUNDIR/cfgsave-frozen           # --on-join met an identity mismatch this boot (#254 P-U6): skip until another write mode or reboot
 LOCK=$RUNDIR/cfgsave.lock                 # one writer at a time (dir: pid, uptime)
 BUSY=$RUNDIR/cfgsave-lock.busy            # --on-join was lock-blocked >= 8 calls in a row (cleared when anyone gets the lock)
 BUSYCNT=$RUNDIR/cfgsave-lock.count
 WRITES=$RUNDIR/cfgsave-writes             # "<n> <uptime>": actual p5 writes this boot (write-amplification guard)
-[ "$RDOK" = 1 ] || { ST=/nonexistent/cfgsave; GATEFAIL=$ST; MNTFAIL=$ST; BUSY=$ST; BUSYCNT=$ST; WRITES=$ST; }
+[ "$RDOK" = 1 ] || { ST=/nonexistent/cfgsave; GATEFAIL=$ST; MNTFAIL=$ST; FROZEN=$ST; BUSY=$ST; BUSYCNT=$ST; WRITES=$ST; }
 
 tmpd() { batman_tmp -d "$1" 2>/dev/null || mktemp -d "/tmp/$1.XXXXXX"; }
 tmpf() { batman_tmp "$1" 2>/dev/null || mktemp "/tmp/$1.XXXXXX"; }
@@ -151,7 +152,7 @@ prov_compare() {	# --check (#254 P1 §4.8): runs BEFORE the unseeded early exit.
 		say "p5 stale: prov-identity (overlay and p5 hold different identities — owner action or reflash needed, not --persist-now)"; exit 5
 	fi
 	if [ -f "$PROVD/identity/sha256" ] && [ ! -f "$1/identity/prov/sha256" ]; then
-		say "p5 stale: prov-identity-missing (p5 lacks the identity this slot has; the helper re-persists it at the next boot)"; exit 5
+		say "p5 stale: prov-identity-missing (p5 lacks the identity this slot has; the helper re-persists it at the next boot only if p5 still shows this node's sn and an older-or-equal generation, otherwise the node stays unknown(identity-lost) until the owner acts)"; exit 5
 	fi
 	cmp -s "$PROVD/prov.meta" "$1/prov.meta" || { say "p5 stale: prov"; exit 5; }
 	return 0
@@ -280,6 +281,8 @@ onjoin_record() {   # $1 = rc; only after p5 provably matches the inputs (writte
 FP=""
 if [ "$mode" = --on-join ]; then
 	[ -f "$GATEFAIL" ] && [ -O "$GATEFAIL" ] && { err "Pi 3 factory check failed earlier this boot — skip (fix the card at the bench)"; exit 1; }
+	# frozen (identity mismatch, #254 P-U6, round-7 A-M6): nothing --on-join may write; do not rw-mount p5 every tick (#263 M0)
+	[ -f "$FROZEN" ] && [ -O "$FROZEN" ] && { err "frozen: this slot and p5 hold different node identities (refused earlier this boot) — skip"; exit 1; }
 	# the last rw mount failed: back off 5 minutes instead of retrying every tick
 	if [ -f "$MNTFAIL" ] && [ -O "$MNTFAIL" ]; then
 		read -r t reason < "$MNTFAIL" 2>/dev/null || t=""; now=$(up)
@@ -294,7 +297,7 @@ if [ "$mode" = --on-join ]; then
 		exit "$crc"
 	fi
 elif [ "$WRITE" = 1 ]; then
-	rm -f "$ST"   # other writers change p5: drop the on-join cache
+	rm -f "$ST" "$FROZEN"   # other writers change p5: drop the on-join cache and the frozen marker
 fi
 
 if [ "$mode" = "--if-healthy" ]; then
@@ -377,6 +380,7 @@ pi3_factory_check() {
 if [ "$WRITE" = 1 ] && identity_mismatch "$MNT"; then
 	err "refusing $mode: this slot and p5 hold different node identities (frozen, #254 P-U6) — owner action or reflash needed"
 	logger -t batman-config-save -p daemon.warn "refused $mode: identity mismatch between this slot and p5 (frozen)" 2>/dev/null
+	[ "$mode" = --on-join ] && ( umask 077; : > "$FROZEN" )
 	exit 1
 fi
 if [ "$mode" = --prov-only ] && [ -n "$PI" ] && [ -f "$MNT/identity/prov/sha256" ] && ! cmp -s "$PI/sha256" "$MNT/identity/prov/sha256"; then

@@ -261,7 +261,7 @@ func TestMeshExpect(t *testing.T) {
 		{provstore.Unclaimed, "real", "0"},
 		{provstore.Member, placeholder, "radio"},
 		{provstore.Claimed, placeholder, "0"},
-		{provstore.Claimed, "", "0"},
+		{provstore.Claimed, "", "today"}, // unreadable key: fail-closed (round-7 A-M7)
 		{provstore.Claimed, "real", "today"},
 		{provstore.Legacy, placeholder, "today"},
 		{"unknown(no-record)", placeholder, "today"},
@@ -269,5 +269,129 @@ func TestMeshExpect(t *testing.T) {
 		if got := MeshExpect(c.v, k(c.key)); got != c.want {
 			t.Errorf("MeshExpect(%s, %q) = %s, want %s", c.v, c.key, got, c.want)
 		}
+	}
+}
+
+// rc13Only makes GetP5 answer rc 13 with p5's record and only the given sn left of its identity.
+func (f *fx) rc13Only(sn []byte) {
+	f.e.GetP5 = func(dir string) (int, string) {
+		os.MkdirAll(filepath.Join(dir, "identity"), 0o700)
+		for _, n := range []string{"prov.cbor", "prov.meta"} {
+			b, _ := os.ReadFile(filepath.Join(f.p5, n))
+			os.WriteFile(filepath.Join(dir, n), b, 0o600)
+		}
+		os.WriteFile(filepath.Join(dir, "identity", "sn"), sn, 0o600)
+		return 13, ""
+	}
+}
+
+// round-7 B-m9: the gen condition of rc 13 on its own (same sn, overlay OLDER than p5) -> no write
+func TestRc13SameSnOlderGen(t *testing.T) {
+	f := newFx(t, 13)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Legacy, 1)
+	f.p5Record(provstore.Claimed, 5)
+	sn, _ := os.ReadFile(filepath.Join(f.e.P.Identity(), "sn"))
+	f.rc13Only(sn)
+	if r := Run(f.e); r.Verdict != "unknown(identity-lost)" || len(f.persists) != 0 {
+		t.Fatalf("%+v persists=%v", r, f.persists)
+	}
+}
+
+// round-7 B-M3: --persist-now never lowers a generation, never crosses identities, never runs over a .txn, and
+// leaves the boot path's files alone
+func TestPersistNow(t *testing.T) {
+	same := func(f *fx) { copyDir(f.e.P.Identity(), filepath.Join(f.p5, "identity")) }
+	// a legacy slot (gen 1) over a claimed p5 (gen 5), same identity: refused
+	f := newFx(t, 0)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Legacy, 1)
+	same(f)
+	f.p5Record(provstore.Claimed, 5)
+	if rc, why := PersistNow(f.e); rc == 0 || len(f.persists) != 0 {
+		t.Fatalf("downgrade allowed: rc=%d %s", rc, why)
+	}
+	// overlay newer (gen 6 > 5), same identity: persisted, record only; .stage and prov-state untouched
+	f = newFx(t, 0)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Claimed, 6)
+	same(f)
+	f.p5Record(provstore.Claimed, 5)
+	os.MkdirAll(f.e.P.Stage(), 0o700)
+	if rc, why := PersistNow(f.e); rc != 0 || len(f.persists) != 1 || f.persists[0] != "id=" {
+		t.Fatalf("newer overlay: rc=%d %s %v", rc, why, f.persists)
+	}
+	if _, err := os.Stat(f.e.P.Stage()); err != nil {
+		t.Fatalf("persist-now removed the boot path's .stage")
+	}
+	if _, err := os.Stat(filepath.Join(f.e.P.State, "prov-state")); err == nil {
+		t.Fatalf("persist-now wrote prov-state")
+	}
+	// equal generation: in sync, nothing written
+	f = newFx(t, 0)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Claimed, 5)
+	same(f)
+	f.p5Record(provstore.Claimed, 5)
+	if rc, _ := PersistNow(f.e); rc != 0 || len(f.persists) != 0 {
+		t.Fatalf("in sync wrote: %v", f.persists)
+	}
+	// identity mismatch: refused
+	f = newFx(t, 0)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Claimed, 6)
+	f.p5Identity()
+	f.p5Record(provstore.Claimed, 5)
+	if rc, _ := PersistNow(f.e); rc == 0 || len(f.persists) != 0 {
+		t.Fatalf("mismatch allowed")
+	}
+	// an open net.apply transaction: refused with 7, .txn untouched
+	f = newFx(t, 0)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Claimed, 6)
+	same(f)
+	f.p5Record(provstore.Claimed, 5)
+	provstore.WriteTxn(f.e.P, "tok", 5, 6, "net.apply", "k", "id", "36")
+	if rc, _ := PersistNow(f.e); rc != 7 || len(f.persists) != 0 {
+		t.Fatalf("txn: rc=%d", rc)
+	}
+	if _, ok := provstore.ReadTxn(f.e.P); !ok {
+		t.Fatalf("persist-now consumed the .txn")
+	}
+	os.WriteFile(f.e.P.Txn(), []byte("garbage"), 0o600) // malformed .txn: still refused
+	if rc, _ := PersistNow(f.e); rc != 7 || len(f.persists) != 0 {
+		t.Fatalf("malformed txn: rc=%d", rc)
+	}
+	// legacy upgrade (rc 9, no record on p5): persisted with the identity
+	f = newFx(t, 9)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Legacy, 1)
+	if rc, _ := PersistNow(f.e); rc != 0 || len(f.persists) != 1 || f.persists[0] == "id=" {
+		t.Fatalf("rc 9: %v", f.persists)
+	}
+	// rc 13: another sn refused; the same sn with a newer overlay persisted with the identity
+	f = newFx(t, 13)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Claimed, 6)
+	f.p5Record(provstore.Claimed, 5)
+	f.rc13Only([]byte("other"))
+	if rc, _ := PersistNow(f.e); rc == 0 || len(f.persists) != 0 {
+		t.Fatalf("rc 13 other sn allowed")
+	}
+	sn, _ := os.ReadFile(filepath.Join(f.e.P.Identity(), "sn"))
+	f.rc13Only(sn)
+	if rc, why := PersistNow(f.e); rc != 0 || len(f.persists) != 1 || f.persists[0] == "id=" {
+		t.Fatalf("rc 13 same sn: rc=%d %s %v", rc, why, f.persists)
+	}
+	// an unreadable p5 and a bypass boot: refused
+	f = newFx(t, 1)
+	f.overlayIdentity()
+	f.overlayRecord(provstore.Claimed, 6)
+	if rc, _ := PersistNow(f.e); rc == 0 {
+		t.Fatalf("unreadable p5 allowed")
+	}
+	f.e.Bypass = func() bool { return true }
+	if rc, _ := PersistNow(f.e); rc == 0 {
+		t.Fatalf("bypass allowed")
 	}
 }

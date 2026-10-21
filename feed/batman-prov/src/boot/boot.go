@@ -295,9 +295,67 @@ func writeProvState(e Env, res Result) {
 	}
 }
 
+// PersistNow is batman-provhelper --persist-now (the P5_STALE_HINT fix, round-7 B-M3): write the overlay record to
+// p5 when that is provably safe, and nothing else. Unlike Run it touches nothing the boot path owns (.stage, .txn,
+// prov-state, the overlay record). It refuses — rc 1, or 7 while a net.apply transaction is open — when:
+// a bypass boot; no complete overlay record + identity; an open .txn; p5 unreadable / not ext4 / too new;
+// overlay and p5 hold different identities (frozen); p5's generation >= the overlay's (a generation is never
+// lowered: a legacy slot cannot overwrite a claimed p5); rc 13 without the same sn on p5.
+func PersistNow(e Env) (int, string) {
+	if e.Bypass() {
+		return 1, "bypass boot: no persist"
+	}
+	ovSum, ovIdent := identSum(e.P.Identity())
+	ovRec, _, err := provstore.LoadOverlay(e.P)
+	if err != nil || ovRec == nil || !ovIdent {
+		return 1, fmt.Sprintf("no usable overlay record + identity (%v)", err)
+	}
+	if _, err := os.Lstat(e.P.Txn()); err == nil { // present at all, even malformed: fail-closed
+		return 7, "a net.apply transaction is open: the helper resolves it at the next boot"
+	}
+	d, err := os.MkdirTemp(e.P.RunDir, "provget.")
+	if err != nil {
+		return 1, "no run dir"
+	}
+	os.Remove(d)
+	rc, _ := e.GetP5(d)
+	defer os.RemoveAll(d)
+	switch rc {
+	case 0, 7, 9, 10, 13:
+	default:
+		return 1, fmt.Sprintf("p5 cannot take the record (--prov-get rc %d)", rc)
+	}
+	p5Sum, p5Ident := identSum(filepath.Join(d, "identity"))
+	if p5Ident && !bytes.Equal(ovSum, p5Sum) {
+		return 1, "identity mismatch: frozen (owner action or reflash)"
+	}
+	if mb, err := os.ReadFile(filepath.Join(d, "prov.meta")); err == nil {
+		if m, err := provstore.ParseMeta(mb); err == nil && m.Gen >= ovRec.Generation {
+			if rc == 0 && m.Gen == ovRec.Generation {
+				return 0, "in sync"
+			}
+			return 1, fmt.Sprintf("p5 generation %d >= overlay %d: never lowered", m.Gen, ovRec.Generation)
+		}
+	}
+	if rc == 13 {
+		ovSN, _ := os.ReadFile(filepath.Join(e.P.Identity(), "sn"))
+		p5SN, err := os.ReadFile(filepath.Join(d, "identity", "sn"))
+		if err != nil || len(ovSN) == 0 || !bytes.Equal(bytes.TrimSpace(ovSN), bytes.TrimSpace(p5SN)) {
+			return 1, "p5 identity damaged and not provably this node's (sn): no write"
+		}
+	}
+	id := ""
+	if !p5Ident {
+		id = e.P.Identity()
+	}
+	prc, out := e.Persist(e.P.Record(), e.P.Meta(), id)
+	return prc, fmt.Sprintf("persisted gen %d (identity too: %v): %s", ovRec.Generation, id != "", out)
+}
+
 // MeshExpect is the one mesh_expect rule for every prov-state writer (helper boot, --apply-state --firstboot, and the
-// 99zz shell fallback, which mirrors it): unclaimed -> 0; member -> radio; claimed -> 0 when the live mesh key is the
-// placeholder or cannot be read (no real key = nothing to join), otherwise today; anything else -> today.
+// 99zz shell fallback, which mirrors it): unclaimed -> 0; member -> radio; claimed -> 0 ONLY when the live mesh key
+// is the placeholder; an empty or unreadable key is NOT proof of "nothing to join" (a broken wireless config on a fleet
+// node must not let it commit without neighbours: fail-closed, round-7 A-M7) -> today; anything else -> today.
 func MeshExpect(verdict string, meshKey func() string) string {
 	switch verdict {
 	case provstore.Unclaimed:
@@ -305,7 +363,7 @@ func MeshExpect(verdict string, meshKey func() string) string {
 	case provstore.Member:
 		return "radio"
 	case provstore.Claimed:
-		if k := meshKey(); k == "" || k == placeholder {
+		if meshKey() == placeholder {
 			return "0"
 		}
 	}
