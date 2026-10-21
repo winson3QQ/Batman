@@ -17,7 +17,7 @@ CMD=${1:-}; RUN=${2:-}
 case "$RUN" in ''|*[!A-Za-z0-9_-]*) echo "FAIL bad run id"; exit 2 ;; esac
 [ "${#RUN}" -le 40 ] || { echo "FAIL run id too long"; exit 2; }
 [ "$(id -u)" = 0 ] || { echo "FAIL root only"; exit 2; }
-BASE=/opt/batdata/dv-prov; D=$BASE/$RUN; ST=/opt/batdata/state
+BASE=${PROV_BASE_TEST_ROOT:-}/opt/batdata/dv-prov; D=$BASE/$RUN; ST=${PROV_BASE_TEST_ROOT:-}/opt/batdata/state
 RUNDIR=/tmp/run/batman; LOCK=$RUNDIR/cfgsave.lock; P5=/dev/mmcblk0p5
 DIRTY=$ST/dv-prov-dirty; MARK=/etc/.dv-prov-mark-$RUN
 STATEFILES="lock-status mesh-expected mesh-joined prov-state prov-counters ble-ok ota-armed.mesh autocommit-hold-commit autocommit-hold-once autocommit-skip-once bad-slot"
@@ -89,6 +89,28 @@ manifests_to() {	# $1 out dir
 	  echo "protB=$(cat "$ST/slot-B.protected" 2>/dev/null)"; } > "$1/identity"
 }
 
+# state_cmp <name> <snap file> <now file>: prints nothing when equal under the file's rule, else "snap=.. now=..".
+# Files that carry a boot_id cannot be byte-equal after any reboot (round-7 B-M6), so each has an explicit rule:
+#   prov-state      "<boot_id> <writer> <lks> <verdict> <members> <mesh_expect>": field 1 dropped (rewritten every boot)
+#   ble-ok          content = the boot_id of the last boot with a healthy BLE stack: presence only
+#   ota-armed.mesh  "<arm boot> <slot> <mode>": autocommit CONSUMES it at its decision (present -> absent is allowed);
+#                   it must never appear, and when both exist slot + mode must match
+#   everything else whole-file sha (prefix only in the output)
+state_cmp() {
+	a=absent; b=absent
+	case "$1" in
+	prov-state|ota-armed.mesh)
+		[ -e "$2" ] && a="$(cut -d' ' -f2- "$2" | head -n 1)"
+		[ -e "$3" ] && b="$(cut -d' ' -f2- "$3" | head -n 1)"
+		[ "$1" = ota-armed.mesh ] && [ -e "$2" ] && [ ! -e "$3" ] && return 0 ;;
+	ble-ok)
+		[ -e "$2" ] && a=present; [ -e "$3" ] && b=present ;;
+	*)
+		[ -e "$2" ] && a=$(sha256sum < "$2" | cut -c1-16); [ -e "$3" ] && b=$(sha256sum < "$3" | cut -c1-16) ;;
+	esac
+	[ "$a" = "$b" ] || echo "snap=[$a] now=[$b]"
+}
+
 case "$CMD" in
 snap)
 	[ ! -e "$D" ] || die "snapshot $D already exists"
@@ -142,9 +164,8 @@ compare)
 	done
 	rm -f "$T/a.$$" "$T/b.$$" "$T/d.$$"
 	for f in $STATEFILES; do
-		a=absent; [ -e "$D/snap/state/$f" ] && a=$(sha256sum < "$D/snap/state/$f" | cut -c1-16)
-		b=absent; [ -e "$D/now-$TAG/state/$f" ] && b=$(sha256sum < "$D/now-$TAG/state/$f" | cut -c1-16)
-		[ "$a" = "$b" ] || { echo "DIFF state $f snap=$a now=$b"; n=$((n + 1)); }
+		d=$(state_cmp "$f" "$D/snap/state/$f" "$D/now-$TAG/state/$f")
+		[ -z "$d" ] || { echo "DIFF state $f $d"; n=$((n + 1)); }
 	done
 	rm -f "/tmp/run/batman-dv/a.$$" "/tmp/run/batman-dv/b.$$"
 	say "COMPARE $RUN $TAG diffs=$n"; [ "$n" = 0 ]
