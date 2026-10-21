@@ -1,0 +1,189 @@
+#!/bin/sh
+# scripts/node/prov-base-254.sh — #254 PR-H2 baseline snapshot / compare / restore on the node
+# (docs/design/254-p1-impl.md §4.5). Runs as root via `ssh node sh -s -- <cmd> <run_id>`; the host side
+# (scripts/dv/prov-254.sh) owns reboots, waits and slot moves. busybox ash; no bashisms.
+#
+#   snap <run>          record S0: p5 image + file manifest, slot-A overlay (tar + manifest + uci export),
+#                       p6 state files (content or "absent"), marker, dirty flag
+#   manifest <run> <tag> write the CURRENT manifests to <run>/now-<tag>/ (no snapshot needed)
+#   compare <run> <tag> compare <run>/now-<tag>/ with the snapshot; prints DIFF lines; rc 0 = none
+#   p5-restore <run>    dd the p5 image back under the config-save lock, verify sha uncached
+#   overlay-restore <run> write the snapshot tar over the live upper, delete extras, restore p6 state
+#   finish <run>        after a passing compare: print and remove snapshot, marker, dirty flag
+# The config-save lock is held by a process whose argv contains "batman-config-save" (F34: config-save
+# takes over a lock whose holder's cmdline does not match), and only while joinwatch / helper are stopped.
+set -u
+CMD=${1:-}; RUN=${2:-}
+case "$RUN" in ''|*[!A-Za-z0-9_-]*) echo "FAIL bad run id"; exit 2 ;; esac
+[ "${#RUN}" -le 40 ] || { echo "FAIL run id too long"; exit 2; }
+[ "$(id -u)" = 0 ] || { echo "FAIL root only"; exit 2; }
+BASE=/opt/batdata/dv-prov; D=$BASE/$RUN; ST=/opt/batdata/state
+RUNDIR=/tmp/run/batman; LOCK=$RUNDIR/cfgsave.lock; P5=/dev/mmcblk0p5
+DIRTY=$ST/dv-prov-dirty; MARK=/etc/.dv-prov-mark-$RUN
+STATEFILES="lock-status mesh-expected mesh-joined prov-state prov-counters ble-ok ota-armed.mesh autocommit-hold-commit autocommit-hold-once autocommit-skip-once bad-slot"
+HOLDER=/tmp/run/batman-dv/batman-config-save-dvhold
+umask 077
+say() { echo "$*"; }
+die() { echo "FAIL $*"; exit 1; }
+bootid() { cut -c1-8 /proc/sys/kernel/random/boot_id; }
+
+lock_take() {
+	mkdir -p /tmp/run/batman-dv
+	printf '#!/bin/sh\n# holder of the config-save lock for prov-base-254 (name must contain batman-config-save)\nexec sleep 1800\n' > "$HOLDER"
+	chmod 700 "$HOLDER"
+	i=0; until mkdir "$LOCK" 2>/dev/null; do
+		i=$((i + 1)); [ "$i" -ge 30 ] && die "config-save lock busy for 30 s (pid $(cat "$LOCK/pid" 2>/dev/null))"; sleep 1
+	done
+	setsid "$HOLDER" </dev/null >/dev/null 2>&1 &
+	HPID=$!
+	echo "$HPID" > "$LOCK/pid"; cut -d. -f1 /proc/uptime > "$LOCK/uptime"
+	tr '\0' ' ' < "/proc/$HPID/cmdline" 2>/dev/null | grep -q batman-config-save || { rm -rf "$LOCK"; kill "$HPID" 2>/dev/null; die "lock holder cmdline does not match"; }
+}
+lock_drop() { [ -n "${HPID:-}" ] && kill "$HPID" 2>/dev/null; rm -rf "$LOCK"; HPID=""; }
+
+svc() {	# $1 stop|start, rest = services that exist
+	a=$1; shift
+	for s in "$@"; do [ -x "/etc/init.d/$s" ] && "/etc/init.d/$s" "$a" >/dev/null 2>&1; done; return 0
+}
+
+# --- manifests -------------------------------------------------------------------------------------
+# one line per entry: <type> <mode> <uid:gid> <sha|target|rdev> <path>; sorted; path relative to the root
+tree_manifest() {	# $1 root dir
+	( cd "$1" || exit 1
+	  # busybox here has no stat / comm (02 probe 2026-10-21): type, mode, owner come from `ls -lnd`
+	  find . -mindepth 1 2>/dev/null | sort | while IFS= read -r p; do
+		set -- $(ls -lnd "$p" 2>/dev/null); m="$1 $3:$4"
+		case "$1" in
+			-*) h=$(sha256sum < "$p" | cut -c1-64) ;;
+			l*) h="->$(readlink "$p")" ;;
+			c*|b*) h="dev=$5$6" ;;
+			*) h="-" ;;
+		esac
+		echo "$m $h ${p#./}"
+	  done )
+}
+uci_exports() {	# normalised: `uci export` per config file, in name order
+	for f in $(ls /etc/config 2>/dev/null | sort); do echo "=== $f"; uci -q export "$f" 2>/dev/null; done
+}
+p5_manifest() {	# $1 out file; mounts p5 ro,noload
+	m=/tmp/run/batman-dv/p5ro.$$; mkdir -p "$m"
+	mount -t ext4 -o ro,noload "$P5" "$m" 2>/dev/null || { rmdir "$m"; return 1; }
+	tree_manifest "$m" > "$1"; r=$?
+	umount "$m"; rmdir "$m"; return $r
+}
+state_record() {	# $1 out dir
+	mkdir -p "$1"
+	for f in $STATEFILES; do
+		if [ -e "$ST/$f" ]; then cp -p "$ST/$f" "$1/$f"; else : > "$1/$f.absent"; fi
+	done
+}
+manifests_to() {	# $1 out dir
+	mkdir -p "$1"
+	p5_manifest "$1/p5.manifest" || echo "p5 unreadable" > "$1/p5.manifest"
+	tree_manifest /overlay/upper > "$1/upper.manifest"
+	uci_exports > "$1/uci.export"
+	state_record "$1/state"
+	{ echo "slot=$(batman-slot active)"; echo "ver=$(sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build)"
+	  echo "hostkey=$(for k in /etc/dropbear/dropbear_*_host_key; do dropbearkey -y -f "$k" 2>/dev/null | sed -n 's/^Fingerprint: //p'; done | sort | tr '\n' ' ')"
+	  echo "ahwlan=$(uci -q get network.ahwlan.ipaddr)"; echo "dhcpconfigured=$(uci -q get openmanetd.config.dhcpconfigured)"
+	  echo "protB=$(cat "$ST/slot-B.protected" 2>/dev/null)"; } > "$1/identity"
+}
+
+case "$CMD" in
+snap)
+	[ ! -e "$D" ] || die "snapshot $D already exists"
+	[ ! -e "$DIRTY" ] || die "dirty flag present: $(cat "$DIRTY")"
+	[ "$(batman-slot active)" = A ] || die "not on slot A"
+	batman-slot is-trial >/dev/null 2>&1; [ $? = 1 ] || die "slot A is not committed"
+	mkdir -p "$D" && chmod 700 "$BASE" "$D"
+	svc stop joinwatch
+	lock_take
+	p5_manifest "$D/p5.manifest" || { lock_drop; svc start joinwatch; die "p5 not mountable ro"; }
+	dd if="$P5" of="$D/p5.img" bs=1M 2>/dev/null || { lock_drop; svc start joinwatch; die "p5 dd failed"; }
+	sha256sum < "$D/p5.img" | cut -c1-64 > "$D/p5.img.sha"
+	: > "$MARK"; chmod 600 "$MARK"			# before the overlay record: the manifest includes it (A-m10)
+	tar -C /overlay/upper -cf "$D/upper.tar" . 2>"$D/tar.err" || { lock_drop; svc start joinwatch; die "upper tar failed: $(head -2 "$D/tar.err")"; }
+	manifests_to "$D/snap"
+	echo "$RUN $(bootid) snap" > "$DIRTY"; sync
+	lock_drop
+	[ "${KEEP_JOINWATCH_STOPPED:-0}" = 1 ] || svc start joinwatch
+	say "SNAP $RUN p5=$(cat "$D/p5.img.sha" | cut -c1-16) upper_entries=$(wc -l < "$D/snap/upper.manifest") tar=$(wc -c < "$D/upper.tar")B"
+	;;
+manifest)
+	TAG=${3:-x}; case "$TAG" in *[!A-Za-z0-9_-]*) die "bad tag" ;; esac
+	[ -d "$D/snap" ] || die "no snapshot $RUN"
+	rm -rf "$D/now-$TAG"; manifests_to "$D/now-$TAG"; say "MANIFEST $RUN $TAG"
+	;;
+compare)
+	TAG=${3:-x}; [ -d "$D/now-$TAG" ] || die "no manifest now-$TAG"
+	ALLOW=${ALLOW_FILE:-/tmp/run/batman-dv/overlay-allow.txt}
+	n=0
+	# allow-list (tests/prov-p1/overlay-allow.txt, pushed by the host): "<kind> <ERE on the relative path> # evidence"
+	# kind content = the entry may differ in content/mode but must exist in both; kind exists = may appear/vanish
+	AC=$(awk '!/^#/ && $1=="content" {printf "%s%s", s, $2; s="|"}' "$ALLOW" 2>/dev/null)
+	AE=$(awk '!/^#/ && $1=="exists"  {printf "%s%s", s, $2; s="|"}' "$ALLOW" 2>/dev/null)
+	T=/tmp/run/batman-dv
+	for f in p5.manifest upper.manifest uci.export identity; do
+		# set difference without comm: "- " = only in the snapshot, "+ " = only now (multiset-aware)
+		awk 'NR==FNR{a[$0]++; next} {if (a[$0]) a[$0]--; else print "+ " $0} END{for (k in a) for (i=0;i<a[k];i++) print "- " k}' \
+			"$D/snap/$f" "$D/now-$TAG/$f" | sort -k2 > "$T/d.$$"
+		if [ "$f" = upper.manifest ]; then
+			# an allowed path drops out only when the rule allows the kind of difference seen
+			awk -v AC="${AC:-^$}" -v AE="${AE:-^$}" '
+				{ p=$NF; side=$1; seen[p]=seen[p] side; line[NR]=$0; path[NR]=p }
+				END { for (i=1;i<=NR;i++) { p=path[i]
+					both=(index(seen[p],"+") && index(seen[p],"-"))
+					if (AE != "^$" && p ~ AE) continue
+					if (both && AC != "^$" && p ~ AC) continue
+					print line[i] } }' "$T/d.$$" > "$T/e.$$"
+			mv "$T/e.$$" "$T/d.$$"
+		fi
+		[ -s "$T/d.$$" ] && { sed "s|^|DIFF $f |" "$T/d.$$"; n=$((n + $(wc -l < "$T/d.$$"))); }
+	done
+	rm -f "$T/a.$$" "$T/b.$$" "$T/d.$$"
+	for f in $STATEFILES; do
+		a=absent; [ -e "$D/snap/state/$f" ] && a=$(sha256sum < "$D/snap/state/$f" | cut -c1-16)
+		b=absent; [ -e "$D/now-$TAG/state/$f" ] && b=$(sha256sum < "$D/now-$TAG/state/$f" | cut -c1-16)
+		[ "$a" = "$b" ] || { echo "DIFF state $f snap=$a now=$b"; n=$((n + 1)); }
+	done
+	rm -f "/tmp/run/batman-dv/a.$$" "/tmp/run/batman-dv/b.$$"
+	say "COMPARE $RUN $TAG diffs=$n"; [ "$n" = 0 ]
+	;;
+p5-restore)
+	[ -f "$D/p5.img" ] || die "no p5 image"
+	want=$(cat "$D/p5.img.sha"); [ "$(sha256sum < "$D/p5.img" | cut -c1-64)" = "$want" ] || die "snapshot image sha mismatch"
+	svc stop joinwatch batman-provhelper batman-provd
+	lock_take
+	grep -q "^$P5 " /proc/mounts && { lock_drop; die "p5 is mounted"; }
+	dd if="$D/p5.img" of="$P5" bs=1M conv=fsync 2>/dev/null || { lock_drop; die "p5 dd write failed"; }
+	sz=$(wc -c < "$D/p5.img"); mb=$(( sz / 1048576 ))
+	# uncached read-back, same method as batman-slot raw_read_mb (direct I/O, else drop caches first)
+	got=$( { dd if="$P5" bs=1M count="$mb" iflag=direct 2>/dev/null || { echo 3 > /proc/sys/vm/drop_caches; dd if="$P5" bs=1M count="$mb" 2>/dev/null; }; } | sha256sum | cut -c1-64)
+	lock_drop
+	[ "$got" = "$want" ] || die "p5 read-back sha $got != $want"
+	say "P5-RESTORED $RUN sha=$(echo "$want" | cut -c1-16)"
+	;;
+overlay-restore)
+	[ -f "$D/upper.tar" ] || die "no upper tar"
+	[ "$(batman-slot active)" = A ] || die "not on slot A"
+	svc stop joinwatch batman-provhelper batman-provd openmanetd tailscale tailscaled cron uhttpd dockerd
+	tar -C /overlay/upper -xpf "$D/upper.tar" 2>"$D/untar.err" || die "untar failed: $(head -2 "$D/untar.err")"
+	# delete what the snapshot did not have (printed first), except allow-listed paths
+	tree_manifest /overlay/upper | awk '{print $NF}' > /tmp/run/batman-dv/now.paths
+	awk '{print $NF}' "$D/snap/upper.manifest" > /tmp/run/batman-dv/snap.paths
+	awk 'NR==FNR{s[$0]=1; next} !($0 in s)' /tmp/run/batman-dv/snap.paths /tmp/run/batman-dv/now.paths | sort -r | while IFS= read -r p; do
+		echo "EXTRA-REMOVED $p"; rm -rf "/overlay/upper/$p"
+	done
+	for f in $STATEFILES; do
+		if [ -e "$D/snap/state/$f" ]; then cp -p "$D/snap/state/$f" "$ST/$f"; else rm -f "$ST/$f"; fi
+	done
+	sync; echo 3 > /proc/sys/vm/drop_caches
+	say "OVERLAY-RESTORED $RUN (reboot now)"
+	;;
+finish)
+	[ -d "$D" ] || die "no snapshot"
+	echo "removing: $(ls "$D" | tr '\n' ' ') $MARK $DIRTY"
+	rm -rf "$D"; rm -f "$MARK" "$DIRTY"; sync; say "FINISHED $RUN"
+	;;
+*) echo "usage: prov-base-254.sh snap|manifest|compare|p5-restore|overlay-restore|finish <run_id> [tag]"; exit 2 ;;
+esac
