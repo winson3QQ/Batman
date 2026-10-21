@@ -138,38 +138,9 @@ sbstamp() { hexdump -s 1072 -n 6 -e '1/4 "%u" " " 1/2 "%u"' "$DEV" 2>/dev/null; 
 
 # ---- #254 provisioning record: formats (254-stage1-impl §4.3) ----------------------------------
 PROVD=/etc/batman-prov                     # overlay copy (owned by batman-provhelper)
-PROV_IDFILES="node.key ecdh.key node.cert claim.secret backend sn"
-PROV_MAX=65536
-meta_ok() {	# $1 meta file; prints "v state gen sha" on a well-formed v=1 meta. rc 2 = v too new
-	[ -f "$1" ] && [ ! -L "$1" ] || return 1
-	[ "$(wc -c < "$1")" -le 256 ] || return 1
-	l=$(head -n 1 "$1"); [ "$(wc -l < "$1")" -le 1 ] || return 1
-	case "$l" in *[!a-z0-9=_\ ]*) return 1 ;; esac
-	mv=""; ms=""; mg=""; mh=""
-	for kv in $l; do
-		case "$kv" in v=*) mv=${kv#v=} ;; state=*) ms=${kv#state=} ;; gen=*) mg=${kv#gen=} ;; sha=*) mh=${kv#sha=} ;; esac
-	done
-	case "$mv" in ''|*[!0-9]*) return 1 ;; esac
-	[ "$mv" -gt 1 ] && return 2
-	[ "$mv" = 1 ] || return 1
-	case "$ms" in legacy|unclaimed|claimed|member) ;; *) return 1 ;; esac
-	case "$mg" in ''|*[!0-9]*) return 1 ;; esac
-	[ "${#mh}" = 64 ] || return 1; case "$mh" in *[!0-9a-f]*) return 1 ;; esac
-	echo "$mv $ms $mg $mh"
-}
-cbor_ok() {	# $1 cbor file, $2 expected sha
-	[ -f "$1" ] && [ ! -L "$1" ] || return 1
-	[ "$(wc -c < "$1")" -le "$PROV_MAX" ] || return 1
-	[ "$(sha256sum < "$1" | cut -c1-64)" = "$2" ]
-}
-ident_ok() {	# $1 identity dir: the 7 files, regular, sha256 lists the first 6 and matches
-	[ -d "$1" ] && [ ! -L "$1" ] || return 1
-	for f in $PROV_IDFILES sha256; do [ -f "$1/$f" ] && [ ! -L "$1/$f" ] || return 1; done
-	[ "$(wc -l < "$1/sha256")" -eq 6 ] || return 1
-	( cd "$1" && sha256sum -c sha256 >/dev/null 2>&1 ) || return 1
-	for f in $PROV_IDFILES; do grep -q "  $f\$" "$1/sha256" || return 1; done
-	return 0
-}
+# shellcheck source=/dev/null
+PROVLIB=0; [ -r /usr/lib/batman/prov-lock.sh ] && . /usr/lib/batman/prov-lock.sh && type prov_meta_ok >/dev/null 2>&1 && PROVLIB=1
+case "$mode" in --prov-only|--prov-get) [ "$PROVLIB" = 1 ] || { echo "batman-config-save: /usr/lib/batman/prov-lock.sh missing — refusing $mode" >&2; exit 1; } ;; esac
 prov_compare() {	# --check (#254 P1 §4.8): runs BEFORE the unseeded early exit. $1 = p5 mount
 	[ -f "$PROVD/prov.meta" ] || return 0              # no overlay prov (pre-P1 slot / no helper): nothing to compare
 	if [ -f "$PROVD/identity/sha256" ] && [ -f "$1/identity/prov/sha256" ] && ! cmp -s "$PROVD/identity/sha256" "$1/identity/prov/sha256"; then
@@ -195,10 +166,10 @@ case "$mode" in
 esac
 # validate the inputs of --prov-only before taking the lock (no p5 access)
 if [ "$mode" = --prov-only ]; then
-	set -- $(meta_ok "$PM"); [ $# = 4 ] || { err "--prov-meta $PM is malformed"; exit 1; }
+	set -- $(prov_meta_ok "$PM"); [ $# = 4 ] || { err "--prov-meta $PM is malformed"; exit 1; }
 	NEWGEN=$3; NEWSHA=$4
-	cbor_ok "$PF" "$NEWSHA" || { err "--prov-file $PF is not a regular file <= $PROV_MAX B matching the meta sha"; exit 1; }
-	[ -z "$PI" ] || ident_ok "$PI" || { err "--prov-identity $PI is not a complete identity (7 files, sha256 list)"; exit 1; }
+	prov_cbor_ok "$PF" "$NEWSHA" || { err "--prov-file $PF is not a regular file <= $PROV_MAX B matching the meta sha"; exit 1; }
+	[ -z "$PI" ] || prov_ident_ok "$PI" || { err "--prov-identity $PI is not a complete identity (7 files, sha256 list)"; exit 1; }
 fi
 if [ "$mode" = --prov-get ]; then
 	case "$PGET" in /*) ;; *) err "--prov-get needs an absolute path"; exit 1 ;; esac
@@ -466,12 +437,12 @@ if [ "$mode" = --prov-get ]; then
 		if [ -f "$MNT/.seeded" ]; then say "p5 prov none (seeded)"; exit 9; fi
 		say "p5 prov none (unseeded)"; exit 7
 	fi
-	mt=$(meta_ok "$MNT/prov.meta"); mrc=$?
+	mt=$(prov_meta_ok "$MNT/prov.meta"); mrc=$?
 	[ "$mrc" = 2 ] && { say "p5 prov too-new"; exit 14; }
 	set -- $mt
-	[ $# = 4 ] && cbor_ok "$MNT/prov.cbor" "$4" || { say "p5 prov corrupt (meta missing/malformed or sha mismatch)"; exit 10; }
+	[ $# = 4 ] && prov_cbor_ok "$MNT/prov.cbor" "$4" || { say "p5 prov corrupt (meta missing/malformed or sha mismatch)"; exit 10; }
 	cp -p "$MNT/prov.cbor" "$MNT/prov.meta" "$PGET/"
-	if ! ident_ok "$MNT/identity/prov"; then
+	if ! prov_ident_ok "$MNT/identity/prov"; then
 		[ -d "$MNT/identity/prov" ] && cp -a "$MNT/identity/prov" "$PGET/identity" 2>/dev/null
 		say "p5 prov identity-lost (state=$2 gen=$3)"; exit 13
 	fi
@@ -482,11 +453,11 @@ fi
 # ---- #254 --prov-only: the provisioning record, written in commit order ---------------------
 if [ "$mode" = --prov-only ]; then
 	rm -rf "$MNT/identity/prov.tmp" "$MNT/prov.cbor.tmp" "$MNT/prov.meta.tmp"
-	if [ -n "$PI" ] && ! ident_ok "$MNT/identity/prov"; then
+	if [ -n "$PI" ] && ! prov_ident_ok "$MNT/identity/prov"; then
 		mkdir -p "$MNT/identity" && mkdir "$MNT/identity/prov.tmp" && chmod 700 "$MNT/identity/prov.tmp" || { err "identity staging failed"; exit 1; }
 		for f in $PROV_IDFILES sha256; do cp "$PI/$f" "$MNT/identity/prov.tmp/$f" || { err "identity copy failed"; exit 1; }; done
 		chmod 600 "$MNT/identity/prov.tmp"/*; chmod 644 "$MNT/identity/prov.tmp/node.cert"
-		ident_ok "$MNT/identity/prov.tmp" || { err "identity copy does not verify"; exit 1; }
+		prov_ident_ok "$MNT/identity/prov.tmp" || { err "identity copy does not verify"; exit 1; }
 		sync; rm -rf "$MNT/identity/prov"; mv "$MNT/identity/prov.tmp" "$MNT/identity/prov" || { err "identity rename failed"; exit 1; }
 		sync
 	fi
