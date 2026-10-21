@@ -33,7 +33,8 @@ while [ $# -gt 0 ]; do
 done
 # #254: `--mesh -` reads the key from stdin (one line) — batman-provhelper never puts a secret on a command line,
 # where any local process could read it from /proc/<pid>/cmdline
-if [ "$MESH" = - ]; then IFS= read -r MESH || true; MESH=$(printf '%s' "$MESH" | tr -d ''); [ -n "$MESH" ] || { echo "--mesh -: no key on stdin"; exit 2; }; fi
+if [ "$MESH" = - ]; then IFS= read -r MESH || true; MESH=$(printf '%s' "$MESH" | tr -d '
+'); [ -n "$MESH" ] || { echo "--mesh -: no key on stdin"; exit 2; }; fi
 # #254 §4.4 step 9: an app-managed node (prov.meta rm=1) — the operator's change is applied, but it is not in the network config
 if [ "$STATUS" = 0 ] && [ "$NOPERSIST" = 0 ] && grep -q '\(^\| \)rm=1\( \|$\)' /etc/batman-prov/prov.meta 2>/dev/null; then
 	echo "WARN: this node is app-managed (member): the change is not in the network config — other members and the app still use the old value; change it from the app" >&2
