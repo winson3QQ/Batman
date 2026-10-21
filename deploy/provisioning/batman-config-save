@@ -141,10 +141,17 @@ PROVD=/etc/batman-prov                     # overlay copy (owned by batman-provh
 # shellcheck source=/dev/null
 PROVLIB=0; [ -r /usr/lib/batman/prov-lock.sh ] && . /usr/lib/batman/prov-lock.sh && type prov_meta_ok >/dev/null 2>&1 && PROVLIB=1
 case "$mode" in --prov-only|--prov-get) [ "$PROVLIB" = 1 ] || { echo "batman-config-save: /usr/lib/batman/prov-lock.sh missing — refusing $mode" >&2; exit 1; } ;; esac
+# identity_mismatch <p5 mount>: overlay and p5 both hold an identity sha list and they differ (P-U6 frozen node)
+identity_mismatch() {
+	[ -f "$PROVD/identity/sha256" ] && [ -f "$1/identity/prov/sha256" ] && ! cmp -s "$PROVD/identity/sha256" "$1/identity/prov/sha256"
+}
 prov_compare() {	# --check (#254 P1 §4.8): runs BEFORE the unseeded early exit. $1 = p5 mount
 	[ -f "$PROVD/prov.meta" ] || return 0              # no overlay prov (pre-P1 slot / no helper): nothing to compare
-	if [ -f "$PROVD/identity/sha256" ] && [ -f "$1/identity/prov/sha256" ] && ! cmp -s "$PROVD/identity/sha256" "$1/identity/prov/sha256"; then
+	if identity_mismatch "$1"; then
 		say "p5 stale: prov-identity (overlay and p5 hold different identities — owner action or reflash needed, not --persist-now)"; exit 5
+	fi
+	if [ -f "$PROVD/identity/sha256" ] && [ ! -f "$1/identity/prov/sha256" ]; then
+		say "p5 stale: prov-identity-missing (p5 lacks the identity this slot has; the helper re-persists it at the next boot)"; exit 5
 	fi
 	cmp -s "$PROVD/prov.meta" "$1/prov.meta" || { say "p5 stale: prov"; exit 5; }
 	return 0
@@ -365,6 +372,16 @@ pi3_factory_check() {
 	[ -z "$err" ] || { [ "$mode" = --on-join ] && ( umask 077; : > "$GATEFAIL" ); err "Pi 3 card not ready to be provisioned:$err — fix at the bench (reflash) before seeding (#209 D2)"; exit 1; }
 	say "Pi 3 factory check passed (hybrid MBR, p6 grown, p7 intact)"
 }
+# #254 P-U6 (round-6 A-M2 / B-M2): a node whose overlay and p5 hold different identities is FROZEN — no write mode may
+# persist this slot's config, keys or shadow over the other identity's record (that is the X/Y mix §4.8 forbids).
+if [ "$WRITE" = 1 ] && identity_mismatch "$MNT"; then
+	err "refusing $mode: this slot and p5 hold different node identities (frozen, #254 P-U6) — owner action or reflash needed"
+	logger -t batman-config-save -p daemon.warn "refused $mode: identity mismatch between this slot and p5 (frozen)" 2>/dev/null
+	exit 1
+fi
+if [ "$mode" = --prov-only ] && [ -n "$PI" ] && [ -f "$MNT/identity/prov/sha256" ] && ! cmp -s "$PI/sha256" "$MNT/identity/prov/sha256"; then
+	err "refusing --prov-only: the identity offered is not the one on p5 (identities are written once)"; exit 1
+fi
 # --save included (#202 G4): it is now a first-seed path too (halow-setkey)
 [ "$WRITE" = 1 ] && [ "$mode" != --if-healthy ] && [ "$mode" != --prov-only ] && [ ! -f "$MNT/.seeded" ] && [ -b /dev/mmcblk0p7 ] && pi3_factory_check
 

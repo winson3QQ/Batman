@@ -31,12 +31,13 @@ REQUIRE_IMAGE_METADATA=0
 #  If a future bench run reports another missing tool, add its path here.)
 # #209 v4.3 adds the uncached read-back verification (sha256sum/head/tail/cut/cmp) and the Pi 3
 # firmware allow-list (RAMFS_COPY_DATA). Prove the set on the bench with a stage2 log, as #89 did.
+# #254 (round-6 B-M4): prov-lock.sh — stage 2 re-runs the #202 gate, whose unclaimed exception needs it.
 # #280: the root-only run dir helper (rundir.sh) and mktemp — every private temp file and the p6 trace
 # mount live in /tmp/run/batman, which crosses into the ramfs with /tmp.
 # shellcheck disable=SC2034
 RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/sbin/batman-reboot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr /usr/bin/sha256sum /usr/bin/head /usr/bin/tail /usr/bin/cut /usr/bin/cmp /bin/mktemp'
 # shellcheck disable=SC2034
-RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256 /usr/lib/batman/otatrace.sh /usr/lib/batman/bootfacts.sh /usr/lib/batman/rundir.sh'
+RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256 /usr/lib/batman/otatrace.sh /usr/lib/batman/bootfacts.sh /usr/lib/batman/rundir.sh /usr/lib/batman/prov-lock.sh'
 
 # OTA flight recorder (#209 S5, docs/design/ota-trace.md). Functions only; a missing or broken lib
 # degrades to no trace, never to a different upgrade decision.
