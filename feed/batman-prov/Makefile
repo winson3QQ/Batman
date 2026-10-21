@@ -27,7 +27,7 @@ include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 define Package/batman-prov
   SECTION:=utils
   CATEGORY:=Utilities
-  TITLE:=Batman provisioning helper (#254)
+  TITLE:=Batman provisioning helper (issue 254)
   DEPENDS:=$(GO_ARCH_DEPENDS) +batman-provision
   USERID:=provd=471:provd=471
 endef
@@ -43,9 +43,8 @@ define Build/Prepare
 endef
 
 define Package/batman-prov/install
-	$(call GoPackage/Package/Install/Bin,$(PKG_INSTALL_DIR))
-	$(INSTALL_DIR) $(1)/usr/bin $(1)/etc/init.d
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/batman-provhelper $(1)/usr/bin/batman-provhelper
+	$(call GoPackage/Package/Install/Bin,$(1))
+	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/batman-provhelper.init $(1)/etc/init.d/batman-provhelper
 endef
 
