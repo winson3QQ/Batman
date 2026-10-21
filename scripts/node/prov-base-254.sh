@@ -144,11 +144,12 @@ compare)
 	# kind content = the entry may differ in content/mode but must exist in both; kind exists = may appear/vanish
 	AC=$(awk '!/^#/ && $1=="content" {printf "%s%s", s, $2; s="|"}' "$ALLOW" 2>/dev/null)
 	AE=$(awk '!/^#/ && $1=="exists"  {printf "%s%s", s, $2; s="|"}' "$ALLOW" 2>/dev/null)
-	T=/tmp/run/batman-dv
+	T=${PROV_BASE_TEST_ROOT:-}/tmp/run/batman-dv; mkdir -p "$T" && : > "$T/d.$$" || die "compare: cannot write $T (fail-closed, round-8 A-m12)"
 	for f in p5.manifest upper.manifest uci.export identity; do
 		# set difference without comm: "- " = only in the snapshot, "+ " = only now (multiset-aware)
 		awk 'NR==FNR{a[$0]++; next} {if (a[$0]) a[$0]--; else print "+ " $0} END{for (k in a) for (i=0;i<a[k];i++) print "- " k}' \
-			"$D/snap/$f" "$D/now-$TAG/$f" | sort -k2 > "$T/d.$$"
+			"$D/snap/$f" "$D/now-$TAG/$f" | sort -k2 > "$T/d.$$" || die "compare: diff of $f failed (fail-closed)"
+		[ -f "$D/snap/$f" ] && [ -f "$D/now-$TAG/$f" ] || die "compare: $f missing on one side (fail-closed)"
 		if [ "$f" = upper.manifest ]; then
 			# an allowed path drops out only when the rule allows the kind of difference seen
 			awk -v AC="${AC:-^$}" -v AE="${AE:-^$}" '
