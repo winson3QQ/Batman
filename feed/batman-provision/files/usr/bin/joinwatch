@@ -128,6 +128,8 @@ run(){
 		live
 		if joined; then
 			echo "JOINED $(up) plinks=$PLINK batman=$BAT" > "$STATE"
+			# #254: "this boot has been JOINED" for the sysupgrade stage-1 ota-armed.mesh decision (§6.4)
+			( umask 077; up > "$RUNDIR/joinwatch.lastjoined" ) 2>/dev/null
 			[ -f "$MESHMARK" ] || { mounted && mkdir -p "${MESHMARK%/*}" && echo "first-joined boot=$me $(ts)" > "$MESHMARK" && sync && note notice "recorded mesh membership ($MESHMARK)"; }
 			# close a diagnosed episode — this boot's, or one left open by an earlier boot that
 			# the user power-cycled out of (otherwise "consecutive unjoined boots" never resets)

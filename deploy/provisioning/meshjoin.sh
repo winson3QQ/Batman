@@ -8,6 +8,8 @@
 #   meshjoin_joined     0 when MJ_PLINK>=1 and MJ_BAT>=1 (call meshjoin_sample first)
 #   meshjoin_reachable  0 when joined AND br-ahwlan has an IPv4 address AND dropbear is running — a node
 #                       an operator can actually reach over the mesh, not just an L2 neighbour
+#   meshjoin_radio_up   0 when the HaLow mesh interface exists, is a mesh point, and its mesh id is the one uci
+#                       holds (#254: a member trial must at least bring its radio up on the configured mesh)
 MJ_IF=wlh0
 MJ_BR=br-ahwlan
 
@@ -24,4 +26,16 @@ meshjoin_reachable() {
 	meshjoin_joined || return 1
 	ip -4 addr show dev "$MJ_BR" 2>/dev/null | grep -q ' inet ' || return 1
 	/etc/init.d/dropbear running >/dev/null 2>&1
+}
+meshjoin_radio_up() {
+	iw dev "$MJ_IF" info 2>/dev/null | grep -q 'type mesh point' || return 1
+	_want=""
+	for _s in $(uci -q show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='mesh'$/\1/p"); do _want=$(uci -q get "wireless.$_s.mesh_id"); [ -n "$_want" ] && break; done
+	[ -n "$_want" ] || return 1
+	# the live mesh id: `iw dev info` does not show it; the s1g wpa_supplicant does (04 probe 2026-10-21:
+	# ssid=<mesh_id> mode=mesh wpa_state=COMPLETED). No control socket / tool -> not up (fail-closed).
+	_st=$(wpa_cli_s1g -p /var/run/wpa_supplicant_s1g -i "$MJ_IF" status 2>/dev/null) || return 1
+	printf '%s\n' "$_st" | grep -qx 'mode=mesh' || return 1
+	printf '%s\n' "$_st" | grep -qx 'wpa_state=COMPLETED' || return 1
+	[ "$(printf '%s\n' "$_st" | sed -n 's/^ssid=//p')" = "$_want" ]
 }

@@ -21,14 +21,20 @@
 MARK=/etc/halow-keyguard.blocked
 PLACEHOLDER=CHANGE-ME-NOW
 REGDB=/usr/share/morse-regdb/channels.csv
-MESH=""; AP=""; MESHID=""; CHAN=""; STATUS=0
-usage() { echo "usage: halow-setkey [--mesh <key>] [--ap <key>] [--mesh-id <id>] [--channel <n>] | --status" >&2; exit 2; }
+MESH=""; AP=""; MESHID=""; CHAN=""; STATUS=0; NOPERSIST=0
+usage() { echo "usage: halow-setkey [--mesh <key>] [--ap <key>] [--mesh-id <id>] [--channel <n>] [--no-persist] | --status" >&2; exit 2; }
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--mesh) MESH=${2:-}; shift 2;; --ap) AP=${2:-}; shift 2;; --mesh-id) MESHID=${2:-}; shift 2;;
-		--channel) CHAN=${2:-}; shift 2;; --status) STATUS=1; shift;; *) usage;;
+		--channel) CHAN=${2:-}; shift 2;; --status) STATUS=1; shift;;
+		--no-persist) NOPERSIST=1; shift;;   # #254: batman-provhelper's transaction persists by itself (§4.4 step 2)
+		*) usage;;
 	esac
 done
+# #254 §4.4 step 9: an app-managed node (prov.meta rm=1) — the operator's change is applied, but it is not in the network config
+if [ "$STATUS" = 0 ] && [ "$NOPERSIST" = 0 ] && grep -q '\(^\| \)rm=1\( \|$\)' /etc/batman-prov/prov.meta 2>/dev/null; then
+	echo "WARN: this node is app-managed (member): the change is not in the network config — other members and the app still use the old value; change it from the app" >&2
+fi
 
 mesh_ifaces(){ uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='mesh'$/\1/p"; }
 ap_ifaces(){ uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='ap'$/\1/p"; }
@@ -138,6 +144,9 @@ else
 fi
 
 # ---- 4. persist (#202) -----------------------------------------------------------------------------
+if [ "$NOPERSIST" = 1 ]; then
+	echo "persist: skipped (--no-persist: the caller persists)"; exit 0
+fi
 if [ ! -b /dev/mmcblk0p5 ]; then
 	echo "persist: n/a (no p5 on this card — single-slot image, nothing to survive a reflash)"; exit 0
 fi

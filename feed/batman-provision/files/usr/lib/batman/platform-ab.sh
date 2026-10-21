@@ -79,7 +79,40 @@ platform_check_image() {
 	[ -n "$out" ] && echo "$out"
 	caller=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null | cut -c1-60)
 	otalog S1 CHECK rc=$rc caller="$caller" ramroot="$RAM_ROOT" upg="$([ -x "$RAM_ROOT/sbin/upgraded" ] && echo y || echo n)" msg="$(echo "$out" | tail -1)"
+	[ "$rc" = 0 ] && { _ab_arm_mesh "$caller" || { echo "REFUSING: cannot clear the previous ota-armed.mesh"; return 1; }; }
 	return $rc
+}
+# #254 §6.4: tell the trial's autocommit whether THIS boot (the arm boot) had been in a mesh. Written only on the
+# real OTA validation: procd's call after stage 1 installed `upgraded`, while a live root sysupgrade in our pid ns
+# (argv[1] resolved against its cwd) is running. `-T`, LuCI and sysupgrade's own first validate never write it;
+# the trial reads a missing / mismatching file as "joined" (fail-closed).
+_ab_live_sysupgrade() {
+	local d p a1 cwd
+	for d in /proc/[0-9]*; do
+		p=${d#/proc/}
+		[ "$(awk '/^Uid:/{print $2}' "$d/status" 2>/dev/null)" = 0 ] || continue
+		[ "$(readlink "$d/ns/pid" 2>/dev/null)" = "$(readlink /proc/1/ns/pid 2>/dev/null)" ] || continue
+		a1=$(tr '\0' '\n' < "$d/cmdline" 2>/dev/null | sed -n 2p)
+		[ -n "$a1" ] || continue
+		case "$a1" in /*) ;; *) cwd=$(readlink "$d/cwd" 2>/dev/null) || continue; a1="$cwd/$a1" ;; esac
+		[ "$(readlink -f "$a1" 2>/dev/null)" = /sbin/sysupgrade ] && return 0
+	done
+	return 1
+}
+_ab_arm_mesh() {
+	local f=/opt/batdata/state/ota-armed.mesh m t
+	grep -q ' /opt/batdata ' /proc/mounts || return 0
+	rm -f "$f" || return 1
+	case "$1" in /sbin/procd*) ;; *) return 0 ;; esac
+	[ -x "$RAM_ROOT/sbin/upgraded" ] || return 0
+	_ab_live_sysupgrade || return 0
+	m=radio
+	if [ -s "$RUNDIR/joinwatch.lastjoined" ]; then m=joined
+	elif [ -r /usr/lib/batman/meshjoin.sh ] && ( . /usr/lib/batman/meshjoin.sh; meshjoin_sample; meshjoin_joined ); then m=joined; fi
+	t=$(batman-slot target 2>/dev/null) || return 0
+	( umask 077; echo "$(cut -c1-8 /proc/sys/kernel/random/boot_id) $t $m" > "$f.tmp" && mv "$f.tmp" "$f" && sync )
+	otalog S1 ARMED-MESH slot="$t" m="$m"
+	return 0
 }
 # #280 review 3: the upgrade's own inputs must be root's. Checks only — nothing is removed (an rm -rf of a tree
 # someone else owns can be steered). Under `sysupgrade -F` a refusal is ignored; RAM_ROOT is safe regardless
