@@ -21,4 +21,6 @@ base; setstate snap ota-armed.mesh "aaaa B joined"; run 0 "ota-armed.mesh consum
 base; setstate now-x ota-armed.mesh "bbbb B joined"; run 1 "ota-armed.mesh appeared"
 base; setstate snap ota-armed.mesh "aaaa B joined"; setstate now-x ota-armed.mesh "bbbb A radio"; run 1 "ota-armed.mesh slot/mode changed"
 base; setstate now-x mesh-expected ABSENT; run 1 "mesh-expected vanished"
+base; echo different > $D/now-x/p5.manifest; run 1 "p5 manifest differs (fresh test root: the diff dir did not exist, A-m12)"; echo same > $D/now-x/p5.manifest
+base; rm -f $D/now-x/upper.manifest; run 1 "upper manifest missing on one side"; echo same > $D/now-x/upper.manifest
 rm -rf $R; echo "STATECMP fails=$fails"; [ $fails = 0 ]
