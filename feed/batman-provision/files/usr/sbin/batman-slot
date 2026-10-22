@@ -735,6 +735,20 @@ cmd_commit() {
 	write_autoboot "$FA" "$FT" commit
 	st COMMITTED slot="$A" all="$FA" try="$FT"
 	echo "batman-slot: committed slot $A as default ([all]=$FA, [tryboot]=$FT)"
+	addr_defer_release
+}
+
+# #254 B-M4 (254-p1-impl.md §13.8.2): inside an uncommitted tryboot trial openmanetd runs with its address
+# reservation deferred (/usr/libexec/batman-addr-defer + openmanetd init hook). After a commit this boot is no
+# longer a trial: record that (the decider's only within-boot input) and re-register openmanetd with a DETACHED
+# `start` — procd then restarts the instance only because its env changed (never a stop+start, which a PTY hangup
+# could cut in half). Its rc never affects the commit; joinwatch reconciles if the start did not get through.
+addr_defer_release() {
+	[ -x /usr/libexec/batman-addr-defer ] || return 0
+	if batman_rundir 2>/dev/null; then ( umask 077; : > "$RUNDIR/slot-committed" ); st ADDR-DEFER-RELEASE flag=written
+	else st ADDR-DEFER-RELEASE flag=NOT-written reason=rundir-unusable; fi
+	env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin setsid /etc/init.d/openmanetd start </dev/null >/dev/null 2>&1 &
+	return 0
 }
 
 cmd_rollback() {
@@ -746,6 +760,7 @@ cmd_rollback() {
 	st ROLLBACK-BEGIN to="$T" was_all="$(ab_section all)" want_all="$FT"
 	write_autoboot "$FT" "$FA" rollback
 	st ROLLED-BACK to="$T" all="$FT" try="$FA"
+	rm -f "$RUNDIR/slot-committed" 2>/dev/null   # #254 §13.8.2: this slot is no longer the committed one
 	echo "batman-slot: rolled back — default is now slot $T ([all]=$FT); reboot to enter it"
 }
 

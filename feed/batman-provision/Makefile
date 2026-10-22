@@ -59,7 +59,8 @@ define Build/Compile
 endef
 
 define Package/batman-provision/install
-	$(INSTALL_DIR) $(1)/etc/uci-defaults $(1)/etc/init.d $(1)/usr/bin $(1)/usr/sbin $(1)/usr/lib/batman $(1)/www/cgi-bin
+	$(INSTALL_DIR) $(1)/etc/uci-defaults $(1)/etc/init.d $(1)/usr/bin $(1)/usr/sbin $(1)/usr/lib/batman $(1)/usr/libexec $(1)/www/cgi-bin
+	$(INSTALL_BIN) ./files/usr/libexec/batman-addr-defer $(1)/usr/libexec/batman-addr-defer
 	# first-boot hooks (0755)
 	$(INSTALL_BIN) ./files/etc/uci-defaults/94-batman-baseline        $(1)/etc/uci-defaults/94-batman-baseline
 	$(INSTALL_BIN) ./files/etc/uci-defaults/92-batman-ramoops-fix        $(1)/etc/uci-defaults/92-batman-ramoops-fix

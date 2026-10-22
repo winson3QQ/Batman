@@ -125,6 +125,9 @@ run(){
 	fi
 	note notice "started t_short=${T_SHORT}s t_full=${T_FULL}s t_reboot=${T_REBOOT}s unjoined_boots_max=$UNJOINED_MAX reboot_gap_boots=$GAP_BOOTS"
 	while :; do
+		# #254 B-M4 (§13.8.2): one idempotent reconcile per tick — a committed boot whose openmanetd still carries the
+		# address-reservation deferral gets one detached `start` (singleton, capped, all inside the decider)
+		[ -x /usr/libexec/batman-addr-defer ] && /usr/libexec/batman-addr-defer reconcile >/dev/null 2>&1
 		live
 		if joined; then
 			echo "JOINED $(up) plinks=$PLINK batman=$BAT" > "$STATE"
