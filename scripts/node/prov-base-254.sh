@@ -36,10 +36,16 @@ lock_take() {
 	i=0; until mkdir "$LOCK" 2>/dev/null; do
 		i=$((i + 1)); [ "$i" -ge 30 ] && die "config-save lock busy for 30 s (pid $(cat "$LOCK/pid" 2>/dev/null))"; sleep 1
 	done
-	setsid "$HOLDER" </dev/null >/dev/null 2>&1 &
+	# plain `&` (no setsid: a forking setsid would make $! the wrong pid); the child's cmdline only becomes
+	# "sh .../batman-config-save-dvhold" once it has exec'd, so the check retries (2026-10-23: p5-restore on 04
+	# read the parent shell's cmdline right after the fork and died)
+	"$HOLDER" </dev/null >/dev/null 2>&1 &
 	HPID=$!
 	echo "$HPID" > "$LOCK/pid"; cut -d. -f1 /proc/uptime > "$LOCK/uptime"
-	tr '\0' ' ' < "/proc/$HPID/cmdline" 2>/dev/null | grep -q batman-config-save || { rm -rf "$LOCK"; kill "$HPID" 2>/dev/null; die "lock holder cmdline does not match"; }
+	i=0; until tr '\0' ' ' < "/proc/$HPID/cmdline" 2>/dev/null | grep -q batman-config-save; do
+		i=$((i + 1)); [ "$i" -ge 4 ] && { rm -rf "$LOCK"; kill "$HPID" 2>/dev/null; die "lock holder cmdline does not match ($(tr '\0' ' ' < "/proc/$HPID/cmdline" 2>/dev/null))"; }
+		sleep 1
+	done
 }
 lock_drop() { [ -n "${HPID:-}" ] || return 0; kill "$HPID" 2>/dev/null; rm -rf "$LOCK"; HPID=""; }   # only a lock WE hold
 
