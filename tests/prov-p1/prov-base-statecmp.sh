@@ -23,4 +23,22 @@ base; setstate snap ota-armed.mesh "aaaa B joined"; setstate now-x ota-armed.mes
 base; setstate now-x mesh-expected ABSENT; run 1 "mesh-expected vanished"
 base; echo different > $D/now-x/p5.manifest; run 1 "p5 manifest differs (fresh test root: the diff dir did not exist, A-m12)"; echo same > $D/now-x/p5.manifest
 base; rm -f $D/now-x/upper.manifest; run 1 "upper manifest missing on one side"; echo same > $D/now-x/upper.manifest
+# overlay allow-list (tests/prov-p1/overlay-allow.txt): runtime churn of openmanetd's SQLite store is allowed as
+# "content" (must exist on both sides); any other path, or the same path vanishing, still fails; no allow-list -> fails
+AL=$(cd "$(dirname "$0")" && pwd)/overlay-allow.txt
+m1="-rw-r--r-- 0:0 aaaa etc/openmanetd/openmanetd.db
+-rw-r--r-- 0:0 bbbb etc/config/wireless"
+m2="-rw-r--r-- 0:0 cccc etc/openmanetd/openmanetd.db
+-rw-r--r-- 0:0 bbbb etc/config/wireless"
+base; printf '%s
+' "$m1" > $D/snap/upper.manifest; printf '%s
+' "$m2" > $D/now-x/upper.manifest
+ALLOW_FILE=$AL run 0 "openmanetd.db content differs -> allowed by overlay-allow.txt"
+ALLOW_FILE=/nonexistent run 1 "same difference without an allow-list -> FAIL"
+printf '%s
+' "-rw-r--r-- 0:0 bbbb etc/config/wireless" > $D/now-x/upper.manifest; ALLOW_FILE=$AL run 1 "openmanetd.db vanished -> not covered by kind content -> FAIL"
+printf '%s
+' "-rw-r--r-- 0:0 aaaa etc/openmanetd/openmanetd.db
+-rw-r--r-- 0:0 dddd etc/config/wireless" > $D/now-x/upper.manifest; ALLOW_FILE=$AL run 1 "etc/config/wireless content differs -> FAIL even with the allow-list"
+echo same > $D/snap/upper.manifest; echo same > $D/now-x/upper.manifest
 rm -rf $R; echo "STATECMP fails=$fails"; [ $fails = 0 ]
