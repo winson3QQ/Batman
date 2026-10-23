@@ -1,0 +1,5 @@
+# tests/prov-p1/overlay-allow.txt — paths of slot A's overlay that may differ between the S0 snapshot and a later
+# compare (prov-base-254.sh compare, 254-p1-impl.md §4.5.5). One line per rule: "<kind> <ERE on the path> # evidence".
+#   content = may differ in content/mode but must exist on both sides      exists = may appear or vanish
+# Every entry needs evidence from a real node; nothing goes here to make a run pass.
+content ^etc/openmanetd/openmanetd\.db(-wal|-shm)?$  # openmanetd's SQLite store is rewritten at runtime: 04 2026-10-23 recover3 compare, 6 DIFFs all these three files, nothing else (F30 runtime churn)
