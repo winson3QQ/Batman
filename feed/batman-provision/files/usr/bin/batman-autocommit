@@ -234,6 +234,7 @@ revert_watchdog(){
 	held && { log "hold present at the deadline — not reverting"; exit 0; }
 	real_tryboot || { log "no longer a real tryboot at the deadline — not reverting"; exit 0; }
 	why=$(cat "$RUNDIR/autocommit.why" 2>/dev/null)
+	rm -f "$ST/ota-armed.mesh"
 	log "TRIAL-REVERTED slot $SLOT after $(( $(up) - START ))s: ${why:-unhealthy}"
 	aclog "TRIAL-REVERTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version) waited=$(( $(up) - START ))s reason=${why:-unhealthy}"
 	if [ "$DRY" = 1 ]; then echo "DRYRUN decision: REVERT (reboot to the committed slot) — reason: ${why:-unhealthy}"; exit 0; fi
@@ -395,7 +396,33 @@ expected_in_mesh(){
 	[ -f "$m/.seeded" ]; r=$?; umount "$m"; rmdir "$m"; return $r
 }
 NEED_MESH=0; expected_in_mesh && NEED_MESH=1
-log "mesh join required: $NEED_MESH"
+# #254 §6.4: the provisioning state refines it. prov-state = "<boot_id> <writer> <last_known_state> <verdict>
+# <members_n> <mesh_expect>"; written this boot by 99zz (S10), then by batman-provhelper (S89) — prefer the helper's.
+PROV_V=""; PROV_ME=""; RADIO_REQ=0
+prov_read(){ awk -v b="$(cat /proc/sys/kernel/random/boot_id)" 'NR==1 && $1==b {print $2, $4, $6}' "$ST/prov-state" 2>/dev/null; }
+pr=$(prov_read); i=0
+while [ "${pr%% *}" = 99zz ] && [ "$i" -lt 60 ]; do sleep 1; i=$((i + 1)); pr=$(prov_read); done
+if [ -n "$pr" ]; then
+	PROV_V=$(echo "$pr" | cut -d' ' -f2); PROV_ME=$(echo "$pr" | cut -d' ' -f3)
+	case "$PROV_V:$PROV_ME" in
+		unclaimed:*) NEED_MESH=0 ;;
+		claimed:0)
+			# claimed + placeholder mesh key = never given a network — but only if p6 agrees: a node that has been in a
+			# mesh (joinwatch / a seed wrote a marker; network/leave removes them) and now shows the placeholder LOST its
+			# key (a regression, a bad restore): neighbours required, fail-closed (round-7 B-M2)
+			if [ -f "$ST/mesh-joined" ] || [ -f "$ST/mesh-expected" ]; then
+				NEED_MESH=1; log "claimed with the placeholder mesh key, but p6 says this node has been in a mesh — neighbours required (fail-closed)"
+			else NEED_MESH=0; fi ;;
+		member:*)
+			RADIO_REQ=1
+			# ota-armed.mesh: adopted only when it names the arm boot (the second-to-last boot-reasons line) and this slot
+			a=$(cat "$ST/ota-armed.mesh" 2>/dev/null); ab=$(tail -n 2 /opt/batdata/log/boot-reasons.log 2>/dev/null | head -n 1 | sed -n 's/.* boot_id=\([0-9a-f]*\).*/\1/p')
+			if [ "$(echo "$a" | wc -w)" = 3 ] && [ "$(echo "$a" | cut -d' ' -f1)" = "$ab" ] && [ "$(echo "$a" | cut -d' ' -f2)" = "$SLOT" ] && [ "$(echo "$a" | cut -d' ' -f3)" = radio ]; then NEED_MESH=0; log "member: armed in radio-only mode (ota-armed.mesh) — no neighbour required"
+			else NEED_MESH=1; [ -n "$a" ] || log "member: no usable ota-armed.mesh — neighbours required (fail-closed)"; fi ;;
+		*) : ;;   # legacy / claimed with a live key / unknown: today's rule
+	esac
+fi
+log "mesh join required: $NEED_MESH (prov=${PROV_V:-none} mesh_expect=${PROV_ME:--} radio_required=$RADIO_REQ)"
 otalog_k AC START slot=$SLOT is_trial_rc=$rc revert=$REVERT unknown=$UNKNOWN deadline=$DEADLINE need_mesh=$NEED_MESH dt_tryboot="$(dt_tryboot && echo 1 || echo 0)"
 
 # 5) start the revert watchdog (see revert_watchdog above)
@@ -463,6 +490,14 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 		if meshjoin_reachable; then jn=$((jn + 1)); jlast=$(up); fi
 	fi
 	if why=$(health_ok); then ok=$((ok + 1)); else [ "$ok" -gt 0 ] && log "health regressed ($why) — resetting dwell"; ok=0; fi
+	# #254: a member trial must bring its radio up on the configured mesh (meshjoin_radio_up), neighbours or not
+	if [ -z "$why" ] && [ "$RADIO_REQ" = 1 ] && ! meshjoin_radio_up; then why="member: HaLow mesh interface not up on the configured mesh id"; ok=0; fi
+	# #254 §6.4 + P-U5: the BLE health gate is WARN-only until the Pi 4 BT UART wedge is fixed — logged, never blocks
+	if [ -f "$ST/ble-ok" ] && [ ! -f "$RUNDIR/autocommit.ble-warned" ]; then
+		bh=$(cat "$RUNDIR/batman-prov.health" 2>/dev/null)
+		case "$bh" in *"bluetoothd=1"*"hci0_powered=1"*"adv_registered_once=1"*) ;; *)
+			log "WARN ble: ble-ok present but BLE health is not good (${bh:-no health file}) — not blocking (P-U5)"; : > "$RUNDIR/autocommit.ble-warned" ;; esac
+	fi
 	if [ "$NEED_MESH" = 1 ]; then
 		if [ "$jn" -lt "$JOIN_NEED" ]; then why="${why:+$why; }mesh not joined/reachable ($jn/$JOIN_NEED samples: plink=${MJ_PLINK:-0} batman(wlh0)=${MJ_BAT:-0})"
 		elif [ $(( $(up) - jlast )) -gt "$JOIN_FRESH" ]; then why="${why:+$why; }mesh lost (last joined $(( $(up) - jlast ))s ago)"; fi
@@ -499,7 +534,7 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 			log "stale claim from a process that is gone — clearing it"; rm -rf "$DECIDED"; sleep "$POLL"; continue
 		fi
 		if batman-slot commit; then
-			: > "$COMMITTED"; log "slot $SLOT committed (services ${NEED}x${POLL}s, mesh samples $jn)"; aclog "COMMITTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version)"; otalog_k AC COMMITTED slot=$SLOT mesh_samples=$jn; rm -f "$ST/bad-slot"; sync; exit 0
+			rm -f "$ST/ota-armed.mesh"; : > "$COMMITTED"; log "slot $SLOT committed (services ${NEED}x${POLL}s, mesh samples $jn)"; aclog "COMMITTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version)"; otalog_k AC COMMITTED slot=$SLOT mesh_samples=$jn; rm -f "$ST/bad-slot"; sync; exit 0
 		else
 			rc=$?; rm -rf "$DECIDED"; log "slot $SLOT healthy but 'batman-slot commit' failed rc=$rc — retrying (v2.2 F)"; ok=0
 		fi

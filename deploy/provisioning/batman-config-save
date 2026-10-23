@@ -12,6 +12,12 @@
 #   batman-config-save --if-healthy          rewrite only if joinwatch health is OK (#127)
 #   batman-config-save --on-join             joinwatch, every tick while JOINED (#202 close-out)
 #   batman-config-save --check               read-only: is p5 what a save would write right now?
+#   batman-config-save --prov-only --prov-file F --prov-meta M [--prov-identity D] [--txn TOK]
+#                                            (#254, batman-provhelper only) write the provisioning record:
+#                                            identity/prov/ (only if p5 lacks a complete one) -> prov.cbor ->
+#                                            prov.meta LAST. Never touches .seeded, overrides, lkg, dropbear
+#                                            identity or shadow; allowed on an unseeded p5.
+#   batman-config-save --prov-get DIR        (#254) read-only: copy prov.cbor, prov.meta, identity/prov/ to DIR
 #
 # Exit codes (docs/design/202-config-survival-closeout.md §4):
 #   0 done (--on-join: p5 == live AND root has a password)        1 error (see stderr)
@@ -19,7 +25,10 @@
 #   4 --on-join: p5 == live but the node is still OPEN (no root password)
 #   5 --check: p5 is STALE vs live (incl. a live value that cannot be persisted)
 #   6 write modes: a live value could not be persisted (forbidden characters) — the rest was written
-#   7 --check: p5 not seeded          8 --check: lock busy (a batman-config-save still runs)
+#   7 --check: p5 not seeded          8 --check / --prov-only / --prov-get: lock busy
+#   --prov-get (#254, 254-stage1-impl §4.2): 0 complete prov + identity   7 ext4, unseeded, no prov
+#     9 seeded, no prov   10 prov incomplete / sha mismatch / meta missing   13 prov but identity/prov incomplete
+#     1 mount failed   3 bypass   11 no p5   12 not ext4   14 prov.meta v too new
 #
 # Writes p5 rw briefly and atomically (stage + rename + sync), keeps two copies (primary + lkg).
 # One writer at a time (cfgsave.lock, #202 T6); the rw mount is VERIFIED rw — a concurrent ro reader
@@ -42,14 +51,30 @@ openmanetd.config.roipconfigured
 UNSAFE='*[`$();|&<>'"'"']*'   # same character set 96-batman-config-migrate's valid_batch rejects
 
 mode=${1:-}; opt=${2:-}
+USAGE="usage: batman-config-save --seed [--reformat] | --save [--promote-lkg] | --if-healthy | --on-join | --check | --prov-only --prov-file F --prov-meta M [--prov-identity D] [--txn TOK] | --prov-get DIR"
 case "$mode" in
-	--seed|--save|--if-healthy|--on-join|--check) ;;
-	*) echo "usage: batman-config-save --seed [--reformat] | --save [--promote-lkg] | --if-healthy | --on-join | --check" >&2; exit 1 ;;
+	--seed|--save|--if-healthy|--on-join|--check|--prov-only|--prov-get) ;;
+	*) echo "$USAGE" >&2; exit 1 ;;
 esac
-REFORMAT=0; PROMOTE=0
-case "$mode:$opt" in
-	--seed:--reformat) REFORMAT=1 ;; --save:--promote-lkg) PROMOTE=1 ;;
-	*:) ;; *) echo "batman-config-save: unknown option $opt for $mode" >&2; exit 1 ;;
+REFORMAT=0; PROMOTE=0; PF=""; PM=""; PI=""; PTXN=""; PGET=""
+case "$mode" in
+--prov-only)
+	shift
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--prov-file) PF=${2:-}; shift 2 ;; --prov-meta) PM=${2:-}; shift 2 ;;
+			--prov-identity) PI=${2:-}; shift 2 ;; --txn) PTXN=${2:-}; shift 2 ;;
+			*) echo "batman-config-save: unknown option $1 for --prov-only" >&2; exit 1 ;;
+		esac
+	done
+	[ -n "$PF" ] && [ -n "$PM" ] || { echo "$USAGE" >&2; exit 1; } ;;
+--prov-get)
+	PGET=$opt; [ -n "$PGET" ] && [ $# -eq 2 ] || { echo "$USAGE" >&2; exit 1; } ;;
+*)
+	case "$mode:$opt" in
+		--seed:--reformat) REFORMAT=1 ;; --save:--promote-lkg) PROMOTE=1 ;;
+		*:) ;; *) echo "batman-config-save: unknown option $opt for $mode" >&2; exit 1 ;;
+	esac ;;
 esac
 [ "$(id -u)" = 0 ] || { echo "batman-config-save: root only" >&2; exit 1; }
 up() { cut -d. -f1 /proc/uptime; }
@@ -64,11 +89,12 @@ RDOK=0; type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null && RDOK=
 ST=$RUNDIR/cfgsave-onjoin.state          # --on-join fingerprint cache (#263 M0)
 GATEFAIL=$RUNDIR/cfgsave-pi3gate.failed   # Pi 3 factory gate failed this boot
 MNTFAIL=$RUNDIR/cfgsave-mount.failed      # "<uptime> <reason>": the LAST rw mount attempt failed (cleared on success)
+FROZEN=$RUNDIR/cfgsave-frozen           # --on-join met an identity mismatch this boot (#254 P-U6): skip until another write mode or reboot
 LOCK=$RUNDIR/cfgsave.lock                 # one writer at a time (dir: pid, uptime)
 BUSY=$RUNDIR/cfgsave-lock.busy            # --on-join was lock-blocked >= 8 calls in a row (cleared when anyone gets the lock)
 BUSYCNT=$RUNDIR/cfgsave-lock.count
 WRITES=$RUNDIR/cfgsave-writes             # "<n> <uptime>": actual p5 writes this boot (write-amplification guard)
-[ "$RDOK" = 1 ] || { ST=/nonexistent/cfgsave; GATEFAIL=$ST; MNTFAIL=$ST; BUSY=$ST; BUSYCNT=$ST; WRITES=$ST; }
+[ "$RDOK" = 1 ] || { ST=/nonexistent/cfgsave; GATEFAIL=$ST; MNTFAIL=$ST; FROZEN=$ST; BUSY=$ST; BUSYCNT=$ST; WRITES=$ST; }
 
 tmpd() { batman_tmp -d "$1" 2>/dev/null || mktemp -d "/tmp/$1.XXXXXX"; }
 tmpf() { batman_tmp "$1" 2>/dev/null || mktemp "/tmp/$1.XXXXXX"; }
@@ -88,11 +114,12 @@ trap cleanup EXIT
 UCIDIR=$(tmpd cfgsave-uci) || UCIDIR=""
 uget() { if [ -n "$UCIDIR" ]; then uci -q -P "$UCIDIR" get "$1"; else uci -q get "$1"; fi; }
 
-WRITE=1; [ "$mode" = --check ] && WRITE=0
+WRITE=1; { [ "$mode" = --check ] || [ "$mode" = --prov-get ]; } && WRITE=0
 bypass=0; grep -q 'batman_bypass=1' /proc/cmdline 2>/dev/null && bypass=1
 
 # ---- applicability --------------------------------------------------------------------------
 if [ ! -b "$DEV" ]; then
+	[ "$mode" = --prov-get ] && { say "p5 SKIP no-p5"; exit 11; }
 	[ "$WRITE" = 1 ] && { err "no $DEV"; exit 1; }
 	say "p5 SKIP no-p5"; exit 3
 fi
@@ -110,6 +137,54 @@ fi
 magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)
 sbstamp() { hexdump -s 1072 -n 6 -e '1/4 "%u" " " 1/2 "%u"' "$DEV" 2>/dev/null; }
 
+# ---- #254 provisioning record: formats (254-stage1-impl §4.3) ----------------------------------
+PROVD=/etc/batman-prov                     # overlay copy (owned by batman-provhelper)
+# shellcheck source=/dev/null
+PROVLIB=0; [ -r /usr/lib/batman/prov-lock.sh ] && . /usr/lib/batman/prov-lock.sh && type prov_meta_ok >/dev/null 2>&1 && PROVLIB=1
+case "$mode" in --prov-only|--prov-get) [ "$PROVLIB" = 1 ] || { echo "batman-config-save: /usr/lib/batman/prov-lock.sh missing — refusing $mode" >&2; exit 1; } ;; esac
+# identity_mismatch <p5 mount>: overlay and p5 both hold an identity sha list and they differ (P-U6 frozen node)
+identity_mismatch() {
+	[ -f "$PROVD/identity/sha256" ] && [ -f "$1/identity/prov/sha256" ] && ! cmp -s "$PROVD/identity/sha256" "$1/identity/prov/sha256"
+}
+prov_compare() {	# --check (#254 P1 §4.8): runs BEFORE the unseeded early exit. $1 = p5 mount
+	[ -f "$PROVD/prov.meta" ] || return 0              # no overlay prov (pre-P1 slot / no helper): nothing to compare
+	if identity_mismatch "$1"; then
+		say "p5 stale: prov-identity (overlay and p5 hold different identities — owner action or reflash needed, not --persist-now)"; exit 5
+	fi
+	if [ -f "$PROVD/identity/sha256" ] && [ ! -f "$1/identity/prov/sha256" ]; then
+		say "p5 stale: prov-identity-missing (p5 lacks the identity this slot has; the helper re-persists it at the next boot only if p5 still shows this node's sn and an older-or-equal generation, otherwise the node stays unknown(identity-lost) until the owner acts)"; exit 5
+	fi
+	cmp -s "$PROVD/prov.meta" "$1/prov.meta" || { say "p5 stale: prov"; exit 5; }
+	return 0
+}
+
+# ---- #254: a provisioning transaction in progress makes the periodic writers yield --------------
+TXN=$RUNDIR/prov-txn
+txn_live() { { [ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ]; } || [ -f "$PROVD/.txn" ]; }
+case "$mode" in
+	--on-join) txn_live && { err "provisioning transaction in progress — next tick"; exit 1; } ;;
+	--save|--if-healthy)
+		i=0; while txn_live; do i=$((i + 1)); [ "$i" -gt 10 ] && { err "provisioning transaction still in progress after 10 s — not saving"; exit 1; }; sleep 1; done ;;
+	--prov-only)
+		if [ -n "$PTXN" ]; then
+			[ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ] && [ "$(head -c 128 "$TXN")" = "$PTXN" ] || { err "--txn $PTXN does not match the live transaction"; exit 1; }
+		elif [ "$RDOK" = 1 ] && [ -f "$TXN" ]; then
+			err "a provisioning transaction is live — --prov-only without its --txn refused"; exit 1
+		fi ;;
+esac
+# validate the inputs of --prov-only before taking the lock (no p5 access)
+if [ "$mode" = --prov-only ]; then
+	set -- $(prov_meta_ok "$PM"); [ $# = 4 ] || { err "--prov-meta $PM is malformed"; exit 1; }
+	NEWGEN=$3; NEWSHA=$4
+	prov_cbor_ok "$PF" "$NEWSHA" || { err "--prov-file $PF is not a regular file <= $PROV_MAX B matching the meta sha"; exit 1; }
+	[ -z "$PI" ] || prov_ident_ok "$PI" || { err "--prov-identity $PI is not a complete identity (7 files, sha256 list)"; exit 1; }
+fi
+if [ "$mode" = --prov-get ]; then
+	case "$PGET" in /*) ;; *) err "--prov-get needs an absolute path"; exit 1 ;; esac
+	[ ! -e "$PGET" ] && [ ! -L "$PGET" ] || { err "--prov-get $PGET already exists"; exit 1; }
+	( umask 077; mkdir "$PGET" ) || { err "cannot create $PGET"; exit 1; }
+fi
+
 # ---- the lock (#202 A2) ----------------------------------------------------------------------
 # Takeover = pid gone OR its cmdline is not a batman-config-save (pids are small and reused).
 lock_try() {
@@ -122,7 +197,7 @@ lock_try() {
 }
 lock_age() { a=$(cat "$LOCK/uptime" 2>/dev/null); case "$a" in ''|*[!0-9]*) echo "?" ;; *) echo $(( $(up) - a )) ;; esac; }
 if [ "$RDOK" = 1 ]; then
-	case "$mode" in --on-join) wait=0 ;; --check) wait=5 ;; *) wait=10 ;; esac
+	case "$mode" in --on-join) wait=0 ;; --check|--prov-get) wait=5 ;; *) wait=10 ;; esac
 	i=0
 	until lock_try; do
 		[ "$i" -ge "$wait" ] && {
@@ -137,6 +212,7 @@ if [ "$RDOK" = 1 ]; then
 					fi
 					exit 1 ;;
 				--check) say "p5 error lock-busy pid=${p:-?} age=$(lock_age)s (kill $p if it is stuck; a D-state holder needs a reboot)"; exit 8 ;;
+				--prov-only|--prov-get) err "lock busy (pid ${p:-?}, age $(lock_age)s)"; exit 8 ;;
 				*) err "lock busy (pid ${p:-?}, age $(lock_age)s) — another batman-config-save is writing p5"; exit 1 ;;
 			esac
 		}
@@ -162,6 +238,8 @@ if [ "$magic" != "53ef" ]; then
 		do_mkfs
 	elif [ "$WRITE" = 1 ]; then
 		err "p5 is not plain ext4 (magic=$magic) — run --seed first (or, on a Secure-tier LUKS p5, open it via #111)"; exit 1
+	elif [ "$mode" = --prov-get ]; then
+		say "p5 SKIP not-ext4"; exit 12
 	else
 		say "p5 SKIP not-ext4"; exit 3
 	fi
@@ -203,6 +281,8 @@ onjoin_record() {   # $1 = rc; only after p5 provably matches the inputs (writte
 FP=""
 if [ "$mode" = --on-join ]; then
 	[ -f "$GATEFAIL" ] && [ -O "$GATEFAIL" ] && { err "Pi 3 factory check failed earlier this boot — skip (fix the card at the bench)"; exit 1; }
+	# frozen (identity mismatch, #254 P-U6, round-7 A-M6): nothing --on-join may write; do not rw-mount p5 every tick (#263 M0)
+	[ -f "$FROZEN" ] && [ -O "$FROZEN" ] && { err "frozen: this slot and p5 hold different node identities (refused earlier this boot) — skip"; exit 1; }
 	# the last rw mount failed: back off 5 minutes instead of retrying every tick
 	if [ -f "$MNTFAIL" ] && [ -O "$MNTFAIL" ]; then
 		read -r t reason < "$MNTFAIL" 2>/dev/null || t=""; now=$(up)
@@ -217,7 +297,7 @@ if [ "$mode" = --on-join ]; then
 		exit "$crc"
 	fi
 elif [ "$WRITE" = 1 ]; then
-	rm -f "$ST"   # other writers change p5: drop the on-join cache
+	rm -f "$ST" "$FROZEN"   # other writers change p5: drop the on-join cache and the frozen marker
 fi
 
 if [ "$mode" = "--if-healthy" ]; then
@@ -249,6 +329,17 @@ if [ "$WRITE" = 1 ]; then
 		err "mount rw failed after $i tries: ${e:-?}"; exit 1
 	fi
 	rm -f "$MNTFAIL"
+elif [ "$mode" = --prov-get ]; then
+	i=0; STALE=""
+	until mount -t ext4 -o ro "$DEV" "$MNT" 2>/dev/null; do
+		i=$((i + 1))
+		if [ "$i" -ge 3 ]; then
+			mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>/dev/null && { STALE=1; break; }
+			say "p5 error mount (ro and ro,noload failed)"; exit 1
+		fi
+		sleep 1
+	done
+	[ -n "$STALE" ] && say "p5 prov maybe-stale (journal not replayed: ro,noload)"
 else
 	i=0
 	until mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>/dev/null; do
@@ -284,11 +375,22 @@ pi3_factory_check() {
 	[ -z "$err" ] || { [ "$mode" = --on-join ] && ( umask 077; : > "$GATEFAIL" ); err "Pi 3 card not ready to be provisioned:$err — fix at the bench (reflash) before seeding (#209 D2)"; exit 1; }
 	say "Pi 3 factory check passed (hybrid MBR, p6 grown, p7 intact)"
 }
+# #254 P-U6 (round-6 A-M2 / B-M2): a node whose overlay and p5 hold different identities is FROZEN — no write mode may
+# persist this slot's config, keys or shadow over the other identity's record (that is the X/Y mix §4.8 forbids).
+if [ "$WRITE" = 1 ] && identity_mismatch "$MNT"; then
+	err "refusing $mode: this slot and p5 hold different node identities (frozen, #254 P-U6) — owner action or reflash needed"
+	logger -t batman-config-save -p daemon.warn "refused $mode: identity mismatch between this slot and p5 (frozen)" 2>/dev/null
+	[ "$mode" = --on-join ] && ( umask 077; : > "$FROZEN" )
+	exit 1
+fi
+if [ "$mode" = --prov-only ] && [ -n "$PI" ] && [ -f "$MNT/identity/prov/sha256" ] && ! cmp -s "$PI/sha256" "$MNT/identity/prov/sha256"; then
+	err "refusing --prov-only: the identity offered is not the one on p5 (identities are written once)"; exit 1
+fi
 # --save included (#202 G4): it is now a first-seed path too (halow-setkey)
-[ "$WRITE" = 1 ] && [ "$mode" != --if-healthy ] && [ ! -f "$MNT/.seeded" ] && [ -b /dev/mmcblk0p7 ] && pi3_factory_check
+[ "$WRITE" = 1 ] && [ "$mode" != --if-healthy ] && [ "$mode" != --prov-only ] && [ ! -f "$MNT/.seeded" ] && [ -b /dev/mmcblk0p7 ] && pi3_factory_check
 
 # ---- stage what a save writes (shared by every mode, --check included) -----------------------
-HAS_SHADOW=0; REJECTED=""
+HAS_SHADOW=0; ROOT_LOCKED=0; REJECTED=""
 stage_overrides() {   # $1 = staging dir
 	s=$1
 	mkdir -p "$s/identity/dropbear"
@@ -302,6 +404,7 @@ stage_overrides() {   # $1 = staging dir
 	rootline=$(grep '^root:' /etc/shadow 2>/dev/null)
 	case "$rootline" in
 		root:\$*) printf '%s\n' "$rootline" > "$s/identity/shadow-root"; chmod 600 "$s/identity/shadow-root"; HAS_SHADOW=1 ;;
+		root:!*) ROOT_LOCKED=1 ;;   # #254: a provisioned node locks root without a hash — that is not "open"
 	esac
 	# per-node delta -> uci batch (scalars only). Single-quote values so spaces survive (N-R6); a value
 	# with shell metacharacters or a quote CANNOT be persisted (96's valid_batch rejects the whole batch
@@ -334,6 +437,7 @@ diff_keys() {   # key names whose `set` line differs between stage and p5 (never
 
 # ---- --check: read-only verdict (#202 C3) ----------------------------------------------------
 if [ "$mode" = --check ]; then
+	prov_compare "$MNT"
 	[ -f "$MNT/.seeded" ] || { say "p5 unseeded"; exit 7; }
 	STAGE=$(tmpd cfgsave-check) || { say "p5 error staging"; exit 1; }
 	stage_overrides "$STAGE"
@@ -344,6 +448,52 @@ if [ "$mode" = --check ]; then
 	if p5_matches; then say "p5 fresh"; exit 0; fi
 	[ -n "$keys" ] || keys="identity-or-schema"
 	say "p5 stale: $keys"; exit 5
+fi
+
+# ---- #254 --prov-get: read-only copy + rc table (254-stage1-impl §4.2) ------------------------
+if [ "$mode" = --prov-get ]; then
+	has_meta=0; [ -e "$MNT/prov.meta" ] || [ -e "$MNT/prov.cbor" ] && has_meta=1
+	if [ "$has_meta" = 0 ]; then
+		[ -d "$MNT/identity/prov" ] && cp -a "$MNT/identity/prov" "$PGET/identity" 2>/dev/null
+		if [ -f "$MNT/.seeded" ]; then say "p5 prov none (seeded)"; exit 9; fi
+		say "p5 prov none (unseeded)"; exit 7
+	fi
+	mt=$(prov_meta_ok "$MNT/prov.meta"); mrc=$?
+	[ "$mrc" = 2 ] && { say "p5 prov too-new"; exit 14; }
+	set -- $mt
+	if ! { [ $# = 4 ] && prov_cbor_ok "$MNT/prov.cbor" "$4"; }; then
+		# round-8 A-m10 / B-m1: hand the reader what is there (raw meta, identity) so it can still refuse a downgrade
+		# or an identity mismatch; the record itself is NOT copied (it failed its sha). The reader validates the meta.
+		[ -f "$MNT/prov.meta" ] && cp -p "$MNT/prov.meta" "$PGET/prov.meta" 2>/dev/null
+		[ -d "$MNT/identity/prov" ] && cp -a "$MNT/identity/prov" "$PGET/identity" 2>/dev/null
+		say "p5 prov corrupt (meta missing/malformed or sha mismatch)"; exit 10
+	fi
+	cp -p "$MNT/prov.cbor" "$MNT/prov.meta" "$PGET/"
+	if ! prov_ident_ok "$MNT/identity/prov"; then
+		[ -d "$MNT/identity/prov" ] && cp -a "$MNT/identity/prov" "$PGET/identity" 2>/dev/null
+		say "p5 prov identity-lost (state=$2 gen=$3)"; exit 13
+	fi
+	cp -a "$MNT/identity/prov" "$PGET/identity"
+	say "p5 prov ok state=$2 gen=$3${STALE:+ maybe-stale}"; exit 0
+fi
+
+# ---- #254 --prov-only: the provisioning record, written in commit order ---------------------
+if [ "$mode" = --prov-only ]; then
+	rm -rf "$MNT/identity/prov.tmp" "$MNT/prov.cbor.tmp" "$MNT/prov.meta.tmp"
+	if [ -n "$PI" ] && ! prov_ident_ok "$MNT/identity/prov"; then
+		mkdir -p "$MNT/identity" && mkdir "$MNT/identity/prov.tmp" && chmod 700 "$MNT/identity/prov.tmp" || { err "identity staging failed"; exit 1; }
+		for f in $PROV_IDFILES sha256; do cp "$PI/$f" "$MNT/identity/prov.tmp/$f" || { err "identity copy failed"; exit 1; }; done
+		chmod 600 "$MNT/identity/prov.tmp"/*; chmod 644 "$MNT/identity/prov.tmp/node.cert"
+		prov_ident_ok "$MNT/identity/prov.tmp" || { err "identity copy does not verify"; exit 1; }
+		sync; rm -rf "$MNT/identity/prov"; mv "$MNT/identity/prov.tmp" "$MNT/identity/prov" || { err "identity rename failed"; exit 1; }
+		sync
+	fi
+	cp "$PF" "$MNT/prov.cbor.tmp" && chmod 600 "$MNT/prov.cbor.tmp" && sync && mv "$MNT/prov.cbor.tmp" "$MNT/prov.cbor" && sync \
+		|| { err "prov.cbor write failed"; exit 1; }
+	cp "$PM" "$MNT/prov.meta.tmp" && chmod 600 "$MNT/prov.meta.tmp" && sync && mv "$MNT/prov.meta.tmp" "$MNT/prov.meta" && sync \
+		|| { err "prov.meta write failed (prov.cbor already updated: --prov-get decides by gen)"; exit 1; }
+	umount "$MNT" 2>/dev/null
+	say "prov saved gen=$NEWGEN -> $DEV"; exit 0
 fi
 
 # ---- write modes -----------------------------------------------------------------------------
@@ -360,7 +510,7 @@ mark_mesh_expected() {
 		[ -f /opt/batdata/state/mesh-expected ] || { mkdir -p /opt/batdata/state && echo "seeded $mode" > /opt/batdata/state/mesh-expected && sync; }
 	fi
 }
-final_rc() { if [ -n "$REJECTED" ]; then echo 6; elif [ "$mode" = --on-join ] && [ "$HAS_SHADOW" = 0 ]; then echo 4; else echo 0; fi; }
+final_rc() { if [ -n "$REJECTED" ]; then echo 6; elif [ "$mode" = --on-join ] && [ "$HAS_SHADOW" = 0 ] && [ "$ROOT_LOCKED" = 0 ]; then echo 4; else echo 0; fi; }
 
 # idempotency for --on-join (bounds re-writes while a node stays open, #104): skip the write when p5
 # already holds exactly what this save would write — overrides, the proven lkg copy (a --save in between

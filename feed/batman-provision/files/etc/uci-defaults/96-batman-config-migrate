@@ -59,16 +59,67 @@ schema_migrate() {
 	done
 }
 
+# ---- #254: provisioning record + the one lock decision, made at EVERY exit (254-stage1-impl §4.3) ----
+PROVDIR=/etc/batman-prov
+# shellcheck source=/dev/null
+if ! . /usr/lib/batman/prov-lock.sh 2>/dev/null || ! type prov_lock_decision >/dev/null 2>&1; then
+	# the library ships in the same package; missing = a broken image. Fail SECURE: any prov.meta on p5, or a
+	# claimed/member last_known_state on p6, locks.
+	prov_meta_status() { if [ -e "$1" ]; then echo bad; else echo absent; fi; }
+	prov_ident_ok() { return 1; }
+	prov_last_known_state() { awk 'NR==1 {print $3}' /opt/batdata/state/prov-state 2>/dev/null || echo -; }
+	prov_lock_decision() { case "$1:$2:$4" in 1:ok:*|1:bad:*|0:*:claimed|0:*:member) echo LOCK ;; *) echo TODAY ;; esac; }
+	prov_apply_lock() { uci set dropbear.@dropbear[0].PasswordAuth='off'; uci set dropbear.@dropbear[0].RootPasswordAuth='off'; uci set system.@system[0].ttylogin='1'; uci commit dropbear; uci commit system; echo LOCKED > /opt/batdata/state/lock-status 2>/dev/null; }
+	log "WARN /usr/lib/batman/prov-lock.sh missing — fail-secure lock rules"
+fi
+P5READ=0; PMS=absent; PST=-; PCOPY=none
+LOCKWORD=""
+# 4b) #137 lockdown (today's rules) — derive the network+serial lock from what THIS boot actually restored (LOCAL
+# uci only, never p5-sourced: a corrupt/hostile p5 cannot push dropbear settings). Gate: a usable operator key AND
+# a real root password must BOTH be present; else stay open + flag UNPROVISIONED (recoverable). A build-time
+# /etc/batman-dev-open keeps a node intentionally open (dev). See docs/design/137-*.
+lockdown_today() {
+	LOCK=/opt/batdata/state/lock-status; mkdir -p "${LOCK%/*}" 2>/dev/null
+	has_pw=0; case "$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)" in \$*) has_pw=1 ;; esac
+	# a USABLE key line, not just a non-empty file (whitespace/comment-only would lock out with no key)
+	has_key=0; grep -Eq '^[[:space:]]*(ssh-(ed25519|rsa|dss)|ecdsa-sha2-|sk-)' /etc/dropbear/authorized_keys 2>/dev/null && has_key=1
+	if [ -f /etc/batman-dev-open ]; then
+		echo DEV-OPEN > "$LOCK" 2>/dev/null; LOCKWORD=DEV-OPEN; log "lockdown: DEV-OPEN marker — node left open (dev, not for field)"
+	elif [ "$has_key" = 1 ] && [ "$has_pw" = 1 ]; then
+		uci set dropbear.@dropbear[0].PasswordAuth='off'
+		uci set dropbear.@dropbear[0].RootPasswordAuth='off'
+		uci set system.@system[0].ttylogin='1'
+		uci commit dropbear; uci commit system
+		echo LOCKED > "$LOCK" 2>/dev/null; LOCKWORD=LOCKED; log "lockdown: LOCKED (network key-only, serial via per-node password)"
+	else
+		echo UNPROVISIONED > "$LOCK" 2>/dev/null; LOCKWORD=UNPROVISIONED
+		log "lockdown: UNPROVISIONED (key=$( [ "$has_key" = 1 ] && echo yes || echo NO ) pw=$( [ "$has_pw" = 1 ] && echo yes || echo NO )) — left open, recoverable"
+	fi
+}
+# every exit goes through here: lock decision, the restore record (read by batman-provhelper and 99zz), unmount
+finish96() {	# $1 verdict, $2 exit code
+	lks=$(prov_last_known_state)
+	if [ "$(prov_lock_decision "$P5READ" "$PMS" "$PST" "$lks")" = LOCK ]; then
+		prov_apply_lock; LOCKWORD=LOCKED
+		log "lockdown: LOCKED by the provisioning record (p5_read=$P5READ meta=$PMS state=$PST last_known=$lks)"
+	else
+		lockdown_today
+	fi
+	( umask 077; echo "$(cat /proc/sys/kernel/random/boot_id) $1 prov=$PCOPY state=$PST lock=$LOCKWORD" > /etc/.batman-prov-restore )
+	grep -q " $MNT " /proc/mounts 2>/dev/null && umount "$MNT" 2>/dev/null
+	exit "$2"
+}
+
 # 1) console-free bypass (F3/N6) — exit NON-zero so the script stays armed (V3-5)
 if grep -q 'batman_bypass=1' /proc/cmdline 2>/dev/null; then
-	log "bypassed (batman_bypass=1) — image defaults, still armed"; exit 1
+	log "bypassed (batman_bypass=1) — image defaults, still armed"; finish96 bypass 1
 fi
 
-[ -b "$DEV" ] || { log "no p5 — image defaults"; exit 0; }
+[ -b "$DEV" ] || { log "no p5 — image defaults"; finish96 no-p5 0; }
 
 # 2) plain-ext4 gate (N3): ext4 magic 0xEF53 at byte 1080 via busybox hexdump (blkid/od absent).
 magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)
-[ "$magic" = "53ef" ] || { log "p5 not plain-ext4 (magic=$magic) — image defaults"; exit 0; }
+[ "$magic" = "53ef" ] || { log "p5 not plain-ext4 (magic=$magic) — image defaults"; finish96 not-ext4 0; }
 
 mkdir -p "$MNT"
 # noload: best-effort read even if the ext4 journal needs replay (ro can't replay) — V3-8
@@ -88,9 +139,33 @@ mkdir -p "$MNT"
 # something a retry can fix, and a healthy slot mounts on the first try.
 if ! merr=$(mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>&1); then
 	log "p5 mount failed — image defaults | dev_exists=$([ -b "$DEV" ] && echo yes || echo no) | mount_err=$merr | existing_mounts=$(mount | grep -F "$DEV" | tr '\n' ';')"
-	exit 0
+	finish96 mount-failed 0
 fi
-[ -f "$MNT/.seeded" ] || { log "p5 not seeded — image defaults"; umount "$MNT" 2>/dev/null; exit 0; }
+P5READ=1
+
+# 2b) #254: copy the provisioning record BEFORE the .seeded gate (an unclaimed new card is unseeded but has one).
+# Only a well-formed, sha-matching record; identity/prov only when its sha list verifies. A too-new or bad meta is
+# not copied (and locks, finish96).
+set -- $(prov_meta_status "$MNT/prov.meta" "$MNT/prov.cbor"); PMS=${1:-bad}; PST=${2:--}
+case "$PMS" in
+	ok)
+		mkdir -p "$PROVDIR" && chmod 700 "$PROVDIR"
+		if cp "$MNT/prov.cbor" "$PROVDIR/prov.cbor" && cp "$MNT/prov.meta" "$PROVDIR/prov.meta" && chmod 600 "$PROVDIR/prov.cbor" "$PROVDIR/prov.meta"; then
+			PCOPY=record
+			if prov_ident_ok "$MNT/identity/prov"; then
+				rm -rf "$PROVDIR/identity.tmp" && cp -a "$MNT/identity/prov" "$PROVDIR/identity.tmp" \
+					&& chmod 700 "$PROVDIR/identity.tmp" && chmod 600 "$PROVDIR/identity.tmp"/* && chmod 644 "$PROVDIR/identity.tmp/node.cert" \
+					&& rm -rf "$PROVDIR/identity" && mv "$PROVDIR/identity.tmp" "$PROVDIR/identity" && PCOPY=full
+			fi
+		else
+			rm -f "$PROVDIR/prov.cbor" "$PROVDIR/prov.meta"; PCOPY=copy-failed
+		fi
+		log "prov: state=$PST copied=$PCOPY" ;;
+	bad) PCOPY=bad; log "prov: p5 prov.meta present but malformed / too new / sha mismatch — not copied (locks)" ;;
+	*) : ;;
+esac
+
+[ -f "$MNT/.seeded" ] || { log "p5 not seeded — image defaults"; finish96 unseeded 0; }
 
 # 3) Lane A: identity restored FIRST and UNCONDITIONALLY (before dropbear, any schema) — V3-2/V3-3.
 if [ -d "$MNT/identity/dropbear" ]; then
@@ -152,34 +227,13 @@ if [ -n "$FRAG" ]; then
 	rm -f "$TMP"
 fi
 
-# 4b) #137 lockdown — derive the network+serial lock from what THIS boot actually restored (LOCAL uci
-# only, never p5-sourced: a corrupt/hostile p5 cannot push dropbear settings). Gate: a usable operator
-# key AND a real root password must BOTH be present; else stay open + flag UNPROVISIONED (recoverable).
-# A build-time /etc/batman-dev-open keeps a node intentionally open (dev). The lock persists in the
-# committed uci config; a factory-reset (overlay wipe) re-runs this hook and re-derives — it never
-# re-locks into a keyless brick. Runs after Lane A (identity+shadow restored). See docs/design/137-*.
-LOCK=/opt/batdata/state/lock-status; mkdir -p "${LOCK%/*}" 2>/dev/null
-has_pw=0; case "$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)" in \$*) has_pw=1 ;; esac
-# a USABLE key line, not just a non-empty file (whitespace/comment-only would lock out with no key)
-has_key=0; grep -Eq '^[[:space:]]*(ssh-(ed25519|rsa|dss)|ecdsa-sha2-|sk-)' /etc/dropbear/authorized_keys 2>/dev/null && has_key=1
-if [ -f /etc/batman-dev-open ]; then
-	echo DEV-OPEN > "$LOCK" 2>/dev/null; log "lockdown: DEV-OPEN marker — node left open (dev, not for field)"
-elif [ "$has_key" = 1 ] && [ "$has_pw" = 1 ]; then
-	uci set dropbear.@dropbear[0].PasswordAuth='off'
-	uci set dropbear.@dropbear[0].RootPasswordAuth='off'
-	uci set system.@system[0].ttylogin='1'
-	uci commit dropbear; uci commit system
-	echo LOCKED > "$LOCK" 2>/dev/null; log "lockdown: LOCKED (network key-only, serial via per-node password)"
-else
-	echo UNPROVISIONED > "$LOCK" 2>/dev/null
-	log "lockdown: UNPROVISIONED (key=$( [ "$has_key" = 1 ] && echo yes || echo NO ) pw=$( [ "$has_pw" = 1 ] && echo yes || echo NO )) — left open, recoverable"
-fi
-
 # 5) persisted marker (F8) — detects a spurious healthy boot with wrong identity.
 # Warn if /opt/batdata (p6) is not mounted, since then the marker lands on the ephemeral overlay
 # and is lost on the next swap (N-R5). 95-batman-storage should have mounted it.
 mount | grep -q ' /opt/batdata ' || echo "config-migrate: WARN /opt/batdata not mounted — marker not persistent" > /dev/kmsg 2>/dev/null
 log "src=${SRC:-none} schema=$schema laneA=$( [ -n "$idfp" ] && echo restored || echo none ) laneB=$applied ed25519=$idfp"
 
-umount "$MNT" 2>/dev/null
-exit 0
+# 4b) lockdown + restore record + unmount (finish96): the lock persists in the committed uci config; a
+# factory-reset (overlay wipe) re-runs this hook and re-derives — it never re-locks into a keyless brick
+# by today's rules; the provisioning record locks a claimed/member node regardless (#254).
+finish96 restored 0

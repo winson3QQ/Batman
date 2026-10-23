@@ -1,0 +1,91 @@
+#!/bin/sh
+# /usr/libexec/batman-addr-defer — #254 B-M4 (docs/design/254-p1-impl.md §13.8 / §13.8.2, P-U13). The ONE
+# implementation of "is openmanetd's address reservation deferred, and should it be".
+#
+# Why: openmanetd's AddressReservationWorker reserves an IP 125 s after openmanetd starts and then runs a plain
+# `reboot` with no tryboot check (openmanetd 1.3.10 internal/mgmt/address_reservation.go:36-176). Inside an
+# uncommitted tryboot trial that reboot races batman-autocommit's commit (~95-105 s on a Pi 4, unmeasured on a
+# Pi 3); when it wins, the OTA silently falls back to the old slot. So the trial runs openmanetd with
+# ALFRED.DATATYPES.ADDRESSRESERVATION=false in its procd environment (viper AutomaticEnv, cmd/root.go:80-92 —
+# config.yml is never touched), and `batman-slot commit` re-registers openmanetd (a detached `start`) so procd
+# restarts it without the variable: the reservation and its reboot then happen on a committed slot.
+#
+#   batman-addr-defer            decision for the openmanetd init hook (board patch 0014), once per `start`:
+#                                rc 0 = defer (the init sets the env), rc 1 = run as stock
+#   batman-addr-defer status     "want=defer|stock env=present|absent|unknown openmanetd=up|down" (halow-status, tests)
+#   batman-addr-defer reconcile  joinwatch, every tick: want=stock but env=present -> one detached `start`
+#                                (singleton; at most 3 per boot; a start still running after 60 s, or a 4th attempt,
+#                                = HUNG, rc 2, logged once per boot); rc 0 nothing to do / start sent
+#
+# Decision: DEFER iff this is a DT tryboot boot AND `batman-slot commit` has not written $RUNDIR/slot-committed
+# this boot. A tryboot boot is one-shot and armed only by `batman-slot apply` (a slot write), so without the flag
+# it is an uncommitted trial; the flag is the only way the state changes within a boot (rollback removes it).
+# Deliberately NO `batman-slot is-trial` (round-11 A11-M1 / B11-M1): on a Pi 3 it mounts p7 read-only and a kill
+# at a timeout would leave that mount behind, after which every commit dies on "p7 is mounted". Nothing here
+# touches a disk, so it runs at every openmanetd start (bat0-up restarts included) on both boards.
+# Fail-closed: no usable run dir = no flag = defer (the node stays reachable on its bootstrap address; the
+# reconcile reports it).
+log(){ logger -t batman-addr-defer "$*" 2>/dev/null; }
+# once <marker> <msg>: log a condition once per boot (markers live in the run dir; no run dir = log every time)
+once(){ m=$1; shift; [ -e "$RUNDIR/addr-defer.said.$m" ] && return 0; ( umask 077; : > "$RUNDIR/addr-defer.said.$m" ) 2>/dev/null; log "$*"; }
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+FLAG=$RUNDIR/slot-committed
+ENVKEY=ALFRED.DATATYPES.ADDRESSRESERVATION
+MAX_STARTS=3
+START_HANG_S=60   # a detached start still running after this long is HUNG (round-12 B12-m1)
+
+dt_tryboot(){ [ "$(hexdump -v -e '1/1 "%02x"' /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null)" = 00000001 ]; }
+want(){ if dt_tryboot && [ ! -e "$FLAG" ]; then echo defer; else echo stock; fi; }
+# the authoritative state is procd's own record of the running instance, not a flag (round-10 A10-M1)
+have(){
+	o=$(ubus -t 5 call service list '{"name":"openmanetd"}' 2>/dev/null) || { echo unknown; return; }
+	case "$o" in *'"instances"'*) ;; *) echo absent; return ;; esac   # registered but no instance: nothing deferred
+	if printf '%s' "$o" | grep -q "\"$ENVKEY\": *\"false\""; then echo present; else echo absent; fi
+}
+omd_up(){ if pidof openmanetd >/dev/null 2>&1; then echo up; else echo down; fi; }
+
+case "${1:-}" in
+"")
+	if [ "$(want)" = defer ]; then
+		log "uncommitted tryboot trial — deferring openmanetd's address reservation until the slot is committed (#254 B-M4)"; exit 0
+	fi
+	exit 1 ;;
+status)
+	echo "want=$(want) env=$(have) openmanetd=$(omd_up)"; exit 0 ;;
+reconcile)
+	w=$(want); h=$(have)
+	if [ "$w" != stock ] || [ "$h" != present ]; then
+		# a trial whose openmanetd is NOT deferred: the hook is missing from this image, or this boot committed and then
+		# rolled back (the commit restarted openmanetd stock). Not fixable at runtime; said once per boot (A12-m4/m7)
+		[ "$w" = defer ] && [ "$h" = absent ] && [ "$(omd_up)" = up ] && once trial-on "WARN: uncommitted trial but openmanetd runs with address reservation ON (hook missing from this image, or rolled back after a commit this boot) — its reservation reboot may cut the trial short"
+		exit 0
+	fi
+	# wrong: a committed (or not-tryboot) boot whose openmanetd still carries the deferral. One detached `start`
+	# re-registers the service; procd restarts the instance only because its env changed (procd instance_update).
+	batman_rundir 2>/dev/null || { log "WARN: openmanetd still deferred and the run dir is unusable — not sending start"; exit 0; }
+	pf=$RUNDIR/addr-defer.start.pid; cf=$RUNDIR/addr-defer.starts; now=$(cut -d. -f1 /proc/uptime)
+	n=$(cat "$cf" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
+	# pid file = "<pid> <uptime when started>": a start still alive after START_HANG_S is HUNG (the procd flock in
+	# /var/lock can be held by anyone, §13.8.2); a dead or stale pid frees the singleton
+	if [ -s "$pf" ]; then
+		read -r ppid pt < "$pf" 2>/dev/null; case "$pt" in ''|*[!0-9]*) pt=$now ;; esac
+		if kill -0 "$ppid" 2>/dev/null; then
+			if [ $((now - pt)) -ge "$START_HANG_S" ]; then once hung "HUNG: the openmanetd start sent $((now - pt)) s ago is still running (attempt $n/$MAX_STARTS) — check /var/lock and 'ubus call service list' (#254 §13.8.2)"; exit 2; fi
+			exit 0   # still within its time: wait
+		fi
+	fi
+	if [ "$n" -ge "$MAX_STARTS" ]; then
+		once hung "HUNG: openmanetd still deferred after $n start attempts this boot — check /var/lock and 'ubus call service list' (#254 §13.8.2)"; exit 2
+	fi
+	( umask 077; echo $((n + 1)) > "$cf" )
+	log "openmanetd still carries the deferral on a committed boot — re-registering it (start $((n + 1))/$MAX_STARTS)"
+	# plain `&`, no setsid here: joinwatch is a daemon (no PTY to hang up on) and a forking setsid would make $! the
+	# wrong pid (round-12 A12-m6); env -i keeps the caller's BATMAN_* out of the init (A11-m5)
+	env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /etc/init.d/openmanetd start </dev/null >/dev/null 2>&1 &
+	( umask 077; echo "$! $now" > "$pf" )
+	exit 0 ;;
+*)
+	echo "usage: batman-addr-defer [status|reconcile]" >&2; exit 2 ;;
+esac

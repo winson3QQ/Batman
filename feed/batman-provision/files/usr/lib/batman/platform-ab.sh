@@ -31,12 +31,13 @@ REQUIRE_IMAGE_METADATA=0
 #  If a future bench run reports another missing tool, add its path here.)
 # #209 v4.3 adds the uncached read-back verification (sha256sum/head/tail/cut/cmp) and the Pi 3
 # firmware allow-list (RAMFS_COPY_DATA). Prove the set on the bench with a stage2 log, as #89 did.
+# #254 (round-6 B-M4): prov-lock.sh — stage 2 re-runs the #202 gate, whose unclaimed exception needs it.
 # #280: the root-only run dir helper (rundir.sh) and mktemp — every private temp file and the p6 trace
 # mount live in /tmp/run/batman, which crosses into the ramfs with /tmp.
 # shellcheck disable=SC2034
 RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/sbin/batman-reboot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr /usr/bin/sha256sum /usr/bin/head /usr/bin/tail /usr/bin/cut /usr/bin/cmp /bin/mktemp'
 # shellcheck disable=SC2034
-RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256 /usr/lib/batman/otatrace.sh /usr/lib/batman/bootfacts.sh /usr/lib/batman/rundir.sh'
+RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256 /usr/lib/batman/otatrace.sh /usr/lib/batman/bootfacts.sh /usr/lib/batman/rundir.sh /usr/lib/batman/prov-lock.sh'
 
 # OTA flight recorder (#209 S5, docs/design/ota-trace.md). Functions only; a missing or broken lib
 # degrades to no trace, never to a different upgrade decision.
@@ -79,7 +80,40 @@ platform_check_image() {
 	[ -n "$out" ] && echo "$out"
 	caller=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null | cut -c1-60)
 	otalog S1 CHECK rc=$rc caller="$caller" ramroot="$RAM_ROOT" upg="$([ -x "$RAM_ROOT/sbin/upgraded" ] && echo y || echo n)" msg="$(echo "$out" | tail -1)"
+	[ "$rc" = 0 ] && { _ab_arm_mesh "$caller" || { echo "REFUSING: cannot clear the previous ota-armed.mesh"; return 1; }; }
 	return $rc
+}
+# #254 §6.4: tell the trial's autocommit whether THIS boot (the arm boot) had been in a mesh. Written only on the
+# real OTA validation: procd's call after stage 1 installed `upgraded`, while a live root sysupgrade in our pid ns
+# (argv[1] resolved against its cwd) is running. `-T`, LuCI and sysupgrade's own first validate never write it;
+# the trial reads a missing / mismatching file as "joined" (fail-closed).
+_ab_live_sysupgrade() {
+	local d p a1 cwd
+	for d in /proc/[0-9]*; do
+		p=${d#/proc/}
+		[ "$(awk '/^Uid:/{print $2}' "$d/status" 2>/dev/null)" = 0 ] || continue
+		[ "$(readlink "$d/ns/pid" 2>/dev/null)" = "$(readlink /proc/1/ns/pid 2>/dev/null)" ] || continue
+		a1=$(tr '\0' '\n' < "$d/cmdline" 2>/dev/null | sed -n 2p)
+		[ -n "$a1" ] || continue
+		case "$a1" in /*) ;; *) cwd=$(readlink "$d/cwd" 2>/dev/null) || continue; a1="$cwd/$a1" ;; esac
+		[ "$(readlink -f "$a1" 2>/dev/null)" = /sbin/sysupgrade ] && return 0
+	done
+	return 1
+}
+_ab_arm_mesh() {
+	local f=/opt/batdata/state/ota-armed.mesh m t
+	grep -q ' /opt/batdata ' /proc/mounts || return 0
+	rm -f "$f" || return 1
+	case "$1" in /sbin/procd*) ;; *) return 0 ;; esac
+	[ -x "$RAM_ROOT/sbin/upgraded" ] || return 0
+	_ab_live_sysupgrade || return 0
+	m=radio
+	if [ -s "$RUNDIR/joinwatch.lastjoined" ]; then m=joined
+	elif [ -r /usr/lib/batman/meshjoin.sh ] && ( . /usr/lib/batman/meshjoin.sh; meshjoin_sample; meshjoin_joined ); then m=joined; fi
+	t=$(batman-slot target 2>/dev/null) || return 0
+	( umask 077; echo "$(cut -c1-8 /proc/sys/kernel/random/boot_id) $t $m" > "$f.tmp" && mv "$f.tmp" "$f" && sync )
+	otalog S1 ARMED-MESH slot="$t" m="$m"
+	return 0
 }
 # #280 review 3: the upgrade's own inputs must be root's. Checks only — nothing is removed (an rm -rf of a tree
 # someone else owns can be steered). Under `sysupgrade -F` a refusal is ignored; RAM_ROOT is safe regardless

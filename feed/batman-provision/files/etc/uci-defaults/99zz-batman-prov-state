@@ -1,0 +1,63 @@
+#!/bin/sh
+# 99zz-batman-prov-state — #254 PR-P1 (docs/design/254-stage1-impl.md §3, §4.4 step 8; 254-p1-impl.md §2.1).
+# Fresh overlay only (a uci-default, S10), sorted after every 9x so 96 (prov copy + lock), 99-halow-identity and
+# 99-batman-chanfix have run. Two jobs, nothing else:
+#   1. write /opt/batdata/state/prov-state (writer=99zz) so autocommit has this boot's provisioning verdict before
+#      batman-provhelper (S89) takes over;
+#   2. an UNCLAIMED node (96 verdict `unseeded` AND (no record OR record state=unclaimed): new card, unclaimed OTA,
+#      overlay wipe) gets every `mode=ap` key set to the placeholder -> S18 halow-keyguard keeps the AP off (F23).
+#      This is 99zz's ONLY uci write. No reload, no persist.
+# The helper does the same with `batman-provhelper --apply-state --firstboot`; without the helper (or if it fails)
+# the shell rules below apply — fail-closed: unclaimed always gets the placeholder.
+PLACEHOLDER=CHANGE-ME-NOW
+ST=/opt/batdata/state/prov-state
+log() { echo "99zz-prov-state: $*" > /dev/kmsg 2>/dev/null; }
+
+if [ -x /usr/bin/batman-provhelper ] && /usr/bin/batman-provhelper --apply-state --firstboot >/dev/null 2>&1; then
+	log "helper --apply-state --firstboot done"; exit 0
+fi
+
+boot=$(cat /proc/sys/kernel/random/boot_id)
+verdict=$(awk 'NR==1 {print $2}' /etc/.batman-prov-restore 2>/dev/null)
+state=-
+if [ -r /usr/lib/batman/prov-lock.sh ]; then
+	# shellcheck source=/dev/null
+	. /usr/lib/batman/prov-lock.sh
+	m=$(prov_meta_status /etc/batman-prov/prov.meta /etc/batman-prov/prov.cbor)
+	case "$m" in "ok "*) state=${m#ok } ;; bad) state=bad ;; esac
+fi
+
+unclaimed=0
+[ "$verdict" = unseeded ] && { [ "$state" = - ] || [ "$state" = unclaimed ]; } && unclaimed=1
+if [ "$unclaimed" = 1 ]; then
+	for s in $(uci -q show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='ap'$/\1/p"); do
+		uci set "wireless.$s.key=$PLACEHOLDER"
+	done
+	uci commit wireless
+	log "unclaimed (verdict=$verdict state=$state): AP keys set to the placeholder (keyguard keeps the AP off)"
+fi
+
+# prov-state: last_known_state only from a definite record; mesh_expect 0 = no mesh needed, today = autocommit's
+# own rules, radio = member (radio up required; neighbours per ota-armed.mesh)
+if grep -q ' /opt/batdata ' /proc/mounts 2>/dev/null; then
+	prev=$(awk 'NR==1 {print $3}' "$ST" 2>/dev/null); [ -n "$prev" ] || prev=-
+	case "$state" in
+		legacy|unclaimed|claimed|member) lks=$state; v=$state ;;
+		bad) lks=$prev; v="unknown(record-bad)" ;;
+		*) lks=$prev; v="unknown(no-record)" ;;   # e.g. a legacy upgrade: the helper creates the record at S89
+	esac
+	[ "$unclaimed" = 1 ] && v=unclaimed
+	case "$v" in
+		unclaimed) me=0 ;;
+		member) me=radio ;;
+		claimed) me=today   # same rule as the helper's boot.MeshExpect: only an explicit placeholder mesh key -> 0 (fail-closed)
+			for s in $(uci -q show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='mesh'$/\1/p"); do
+				[ "$(uci -q get "wireless.$s.key")" = "$PLACEHOLDER" ] && me=0
+			done ;;
+		*) me=today ;;
+	esac
+	mkdir -p "${ST%/*}"
+	( umask 077; echo "$boot 99zz $lks $v - $me" > "$ST.tmp" && mv "$ST.tmp" "$ST" )
+	log "prov-state: $lks $v mesh_expect=$me"
+fi
+exit 0

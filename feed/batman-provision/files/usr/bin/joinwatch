@@ -125,9 +125,14 @@ run(){
 	fi
 	note notice "started t_short=${T_SHORT}s t_full=${T_FULL}s t_reboot=${T_REBOOT}s unjoined_boots_max=$UNJOINED_MAX reboot_gap_boots=$GAP_BOOTS"
 	while :; do
+		# #254 B-M4 (§13.8.2): one idempotent reconcile per tick — a committed boot whose openmanetd still carries the
+		# address-reservation deferral gets one detached `start` (singleton, capped, all inside the decider)
+		[ -x /usr/libexec/batman-addr-defer ] && /usr/libexec/batman-addr-defer reconcile >/dev/null 2>&1
 		live
 		if joined; then
 			echo "JOINED $(up) plinks=$PLINK batman=$BAT" > "$STATE"
+			# #254: "this boot has been JOINED" for the sysupgrade stage-1 ota-armed.mesh decision (§6.4)
+			( umask 077; up > "$RUNDIR/joinwatch.lastjoined" ) 2>/dev/null
 			[ -f "$MESHMARK" ] || { mounted && mkdir -p "${MESHMARK%/*}" && echo "first-joined boot=$me $(ts)" > "$MESHMARK" && sync && note notice "recorded mesh membership ($MESHMARK)"; }
 			# close a diagnosed episode — this boot's, or one left open by an earlier boot that
 			# the user power-cycled out of (otherwise "consecutive unjoined boots" never resets)

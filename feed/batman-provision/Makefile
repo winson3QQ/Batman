@@ -59,7 +59,8 @@ define Build/Compile
 endef
 
 define Package/batman-provision/install
-	$(INSTALL_DIR) $(1)/etc/uci-defaults $(1)/etc/init.d $(1)/usr/bin $(1)/usr/sbin $(1)/usr/lib/batman $(1)/www/cgi-bin
+	$(INSTALL_DIR) $(1)/etc/uci-defaults $(1)/etc/init.d $(1)/usr/bin $(1)/usr/sbin $(1)/usr/lib/batman $(1)/usr/libexec $(1)/www/cgi-bin
+	$(INSTALL_BIN) ./files/usr/libexec/batman-addr-defer $(1)/usr/libexec/batman-addr-defer
 	# first-boot hooks (0755)
 	$(INSTALL_BIN) ./files/etc/uci-defaults/94-batman-baseline        $(1)/etc/uci-defaults/94-batman-baseline
 	$(INSTALL_BIN) ./files/etc/uci-defaults/92-batman-ramoops-fix        $(1)/etc/uci-defaults/92-batman-ramoops-fix
@@ -69,6 +70,7 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/etc/uci-defaults/98-batman-sysupgrade      $(1)/etc/uci-defaults/98-batman-sysupgrade
 	$(INSTALL_BIN) ./files/etc/uci-defaults/99-halow-identity        $(1)/etc/uci-defaults/99-halow-identity
 	$(INSTALL_BIN) ./files/etc/uci-defaults/99-batman-chanfix        $(1)/etc/uci-defaults/99-batman-chanfix
+	$(INSTALL_BIN) ./files/etc/uci-defaults/99zz-batman-prov-state   $(1)/etc/uci-defaults/99zz-batman-prov-state
 	# services
 	$(INSTALL_BIN) ./files/etc/init.d/halow-keyguard $(1)/etc/init.d/halow-keyguard
 	$(INSTALL_BIN) ./files/etc/init.d/batpower       $(1)/etc/init.d/batpower
@@ -109,6 +111,7 @@ define Package/batman-provision/install
 	# shared "in the mesh" test (joinwatch + batman-autocommit OTA gate, #209 S4-5)
 	$(INSTALL_DATA) ./files/usr/lib/batman/meshjoin.sh $(1)/usr/lib/batman/meshjoin.sh
 	$(INSTALL_DATA) ./files/usr/lib/batman/rundir.sh $(1)/usr/lib/batman/rundir.sh
+	$(INSTALL_DATA) ./files/usr/lib/batman/prov-lock.sh $(1)/usr/lib/batman/prov-lock.sh
 	$(INSTALL_DIR) $(1)/etc/sysctl.d
 	$(INSTALL_DATA) ./files/etc/sysctl.d/90-batman.conf $(1)/etc/sysctl.d/90-batman.conf
 	$(INSTALL_DATA) ./files/usr/lib/batman/otatrace.sh $(1)/usr/lib/batman/otatrace.sh

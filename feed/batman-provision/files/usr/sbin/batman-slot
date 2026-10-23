@@ -485,6 +485,9 @@ p5_freshness_gate() {
 			0) p5_verdict_write fresh ;;
 			5) if allowed STALE_P5; then p5_verdict_write stale-allowed; warn "p5 is STALE vs the running config ($keys) — override honoured"
 			   else p5_verdict_write "stale:${keys:-?}"
+				# #254: the provisioning record is written by batman-provhelper, not by --save
+				case "$out" in *"p5 stale: prov-identity"*) die "p5 and this slot hold DIFFERENT node identities — refusing an OTA. This needs the owner (app) or a reflash; it is not fixed by --save or --persist-now (#254 identity-mismatch)." ;; esac
+				case "$out" in *"p5 stale: prov"*) die "p5's provisioning record lags this slot's — batman-provhelper rewrites it at the next boot; if it stays stale, run 'batman-provhelper --persist-now' (as root)." ;; esac
 				case "$out" in *unpersistable*) die "p5 (config) cannot hold the running config: $keys contains forbidden characters (backtick \$ ( ) ; | & < > ') — change that value; '--save' cannot fix this. A reflash now would boot the fresh slot without it." ;; esac
 				die "p5 (config) is STALE vs the running config ($keys) — a reflash now would boot the fresh slot with the OLD settings. $P5_STALE_HINT" ; fi ;;
 			8) p5_verdict_write error:lock-busy; die "a batman-config-save is still running (${out#*lock-busy }) — p5 may be out of date; wait for it or investigate before an OTA." ;;
@@ -540,6 +543,12 @@ node_checks() {
 			while [ "$_i" -lt 3 ]; do mount -t ext4 -o ro,noload "$P5" "$m" 2>/dev/null && { _ok=1; break; }; _i=$((_i + 1)); sleep 1; done
 			if [ "$_ok" = 1 ]; then
 				seeded=1; [ -f "$m/.seeded" ] || seeded=0
+				# #254 L44: an UNCLAIMED node (new card / reflashed) has a valid provisioning record but no per-node
+				# config yet — it has no mesh to strand from. Only a well-formed, sha-matching record with
+				# state=unclaimed counts; claimed / member without .seeded is still refused (its --save failed).
+				if [ "$seeded" = 0 ] && [ -r /usr/lib/batman/prov-lock.sh ] && ( . /usr/lib/batman/prov-lock.sh; [ "$(prov_meta_status "$m/prov.meta" "$m/prov.cbor")" = "ok unclaimed" ] ); then
+					seeded=1; echo "batman-slot: p5 not seeded but holds an unclaimed provisioning record — allowed (#254 L44)"
+				fi
 				umount "$m" 2>/dev/null; rmdir "$m" 2>/dev/null
 				[ "$seeded" = 1 ] || die "p5 (config) is not seeded — a reflash now would boot the fresh slot UNPROVISIONED and, on a mesh-only node, strand it. Seed p5 first (join the mesh so joinwatch saves it, or run 'batman-config-save --on-join'), or override: touch /tmp/batman-slot.allow-unseeded (as root) for sysupgrade, BATMAN_ALLOW_UNSEEDED=1 for a direct batman-slot call."
 			else
@@ -726,6 +735,20 @@ cmd_commit() {
 	write_autoboot "$FA" "$FT" commit
 	st COMMITTED slot="$A" all="$FA" try="$FT"
 	echo "batman-slot: committed slot $A as default ([all]=$FA, [tryboot]=$FT)"
+	addr_defer_release
+}
+
+# #254 B-M4 (254-p1-impl.md §13.8.2): inside an uncommitted tryboot trial openmanetd runs with its address
+# reservation deferred (/usr/libexec/batman-addr-defer + openmanetd init hook). After a commit this boot is no
+# longer a trial: record that (the decider's only within-boot input) and re-register openmanetd with a DETACHED
+# `start` — procd then restarts the instance only because its env changed (never a stop+start, which a PTY hangup
+# could cut in half). Its rc never affects the commit; joinwatch reconciles if the start did not get through.
+addr_defer_release() {
+	[ -x /usr/libexec/batman-addr-defer ] || return 0
+	if batman_rundir 2>/dev/null; then ( umask 077; : > "$RUNDIR/slot-committed" ); st ADDR-DEFER-RELEASE flag=written
+	else st ADDR-DEFER-RELEASE flag=NOT-written reason=rundir-unusable; fi
+	env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin setsid /etc/init.d/openmanetd start </dev/null >/dev/null 2>&1 &
+	return 0
 }
 
 cmd_rollback() {
@@ -737,6 +760,7 @@ cmd_rollback() {
 	st ROLLBACK-BEGIN to="$T" was_all="$(ab_section all)" want_all="$FT"
 	write_autoboot "$FT" "$FA" rollback
 	st ROLLED-BACK to="$T" all="$FT" try="$FA"
+	rm -f "$RUNDIR/slot-committed" 2>/dev/null   # #254 §13.8.2: this slot is no longer the committed one
 	echo "batman-slot: rolled back — default is now slot $T ([all]=$FT); reboot to enter it"
 }
 

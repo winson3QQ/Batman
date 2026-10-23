@@ -119,7 +119,15 @@ case "$(cat /opt/batdata/state/lock-status 2>/dev/null)" in
 esac
 [ "$jstate" != JOINED ] && [ "${cyc:-0}" -ge 3 ] && hc WARN bootloop "$cyc boot(s) without joining — power-cycling won't help"
 echo "$last" | grep -q "^PANIC" && hc INFO boot "last boot recovered from a kernel panic"
-[ "$addr" = bootstrap ] && [ "$u" -ge 300 ] && hc INFO addr "still on bootstrap address (openmanetd reservation pending)"
+# #254 B-M4 (§13.8.2): openmanetd's address reservation is deferred inside an uncommitted trial; the decider is the
+# one source of truth for "should it be" (want) and "is it" (env, from procd's own record)
+ad=$([ -x /usr/libexec/batman-addr-defer ] && /usr/libexec/batman-addr-defer status 2>/dev/null)
+case "$ad" in
+	"want=stock env=present"*) hc WARN addr "openmanetd still defers address reservation on a committed boot — run: /etc/init.d/openmanetd start (joinwatch retries 3x, then reports HUNG)" ;;
+	"want=defer env=present"*) hc INFO addr "address reservation deferred (uncommitted trial) — reserved after the commit" ;;
+	"want=defer env=absent openmanetd=up") hc WARN addr "uncommitted trial but openmanetd reserves addresses (deferral hook missing from this image) — its reboot may cut the trial short" ;;
+esac
+[ "$addr" = bootstrap ] && [ "$u" -ge 300 ] && [ "${ad%% *}" != want=defer ] && hc INFO addr "still on bootstrap address (openmanetd reservation pending)"
 
 case "$WORST" in CRIT) verdict="NOT WORKING — ${SUMMARY}";; WARN) verdict="DEGRADED — ${SUMMARY}";; *) verdict="OK — joined, $nb neighbour(s)${snr:+, SNR ${snr}dB}";; esac
 
