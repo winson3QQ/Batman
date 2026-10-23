@@ -1238,3 +1238,33 @@ openmanetd 1.3.10 原始碼(`build_dir/.../openmanetd-1.3.10`)確認:
 **§8 補:既有的面(不是本改動引入)**:procd 的 per-service flock 放在 1777 的 `/var/lock`,本機任何非 root 程序可以 O_RDONLY + flock 永久持有,讓該服務的 `/etc/init.d/<svc>` 全部卡住。對本改動的可見後果:committed 槽永遠不保留位址(halow-status WARN、tier A FAIL、reconcile HUNG 一次)。屬 #280 那一類,列殘項。
 
 **沒做 / 殘項**:B12-m4 從 PTY(ssh 互動 / 網頁終端機)下 `batman-slot commit` 的真機斷言 — 殘項(目前只有第 11 輪的主機 PTY 實驗);reconcile 路徑在節點上從未被觸發(只有 stub);Pi 3(P-U14)。
+
+### 13.15 最終 rc wsl.14(b938e55 / fw271bea4)的真機驗證(2026-10-23)
+- **ROLL14 PASS**(10:0x–10:56):02、04 OTA tier A 全 PASS,正規化回 A,B 重寫;committed 槽上 `want=stock env=absent openmanetd=up`。
+- **E1c v4 正向 #3,DONE**(10:56–11:15,04):trial 內 `env=1 want=defer env=present`、respawn 後仍暫停、openmanetd 跑到 304 s 沒重開;release(B uptime 400 s)→ committed、openmanetd 換 pid(13131 → 10218)、1 s 內 `env=absent`、`worker_init=1`;commit 後 145 s B 消失(保留位址重開),mDNS 28 s 找回 `10.41.213.30`、committed、`dhcpconfigured=1`;穩定 300 s;dead-man 還原 → A 健康、02 不受影響。收尾:B 重寫 PASS,compare **diffs=0**,finish。
+- **WSL root 半邊**:ab-card invariants bcm2711 / bcm2710 rc=0;prov-p1 loop 測試對 P1 產品(b938e55)全 PASS(identity-freeze 8/8、frozen-nomount、provget-rc10、statecmp 14/14);**對 main 舊產品(H2 checkout 自己的 feed)正確 FAIL**(2/8、FAIL、FAIL)= 負對照 → 寫成 KNOWN(#254)直到 P1 merge,CI 的 prov-p1 job 在 harness PR 上刻意紅(P-U9)。
+- Go:`go vet` + `go test ./...` 9/9 ok(b938e55)。
+- node 半邊全套(dvfull14,從 H2 e23ad77,破壞性含 tier B)11:2x 啟動,結果見 §13.16。
+
+### 13.16 全套第 1 / 2 次(wsl.14,H2 e23ad77)— 兩個 harness bug,依規則停掉
+- 第 1 次(11:24):preflight 擋下 — 我的 runner 少了 `FI_PAYLOAD`(節點上要有正在跑的版本的 payload)與 `DV_T263_KO`(#263 FI 模組要對 wsl.14 編)。補齊:`FI_PAYLOAD=/opt/batdata/ota-wsl14.tar.gz`,`scripts/build-debug-mm6108-fi.sh ekh-bcm2711` 產出 `out/…wsl.14…/debug/mm6108_sdio-fi263.ko`。
+- 第 2 次(11:32):preflight PASS;`tmp-trust-static` FAIL(我新加的腳本有 11 行 #280 不信任:run dir 字面、`$$` 命名、主機端 `/tmp`)、`prov-p1-stubs` FAIL(`chk_prov_p1_stubs` 定義在 `suite` 呼叫之後)。兩個都是 harness 錯 → 依「同一步 harness bug 兩次停」在 11:5x 停掉(INT → TERM,ps 確認 0 殘留;當時在 ble-rpa-254)。
+- 修正 = H2 881ed5f:函式移到 `self_test()` 之後;run dir 經 `rundir.sh` 解析(`PROV_BASE_TEST_ROOT` 也前綴 library 路徑,供 CI/WSL 測試);scratch 用 `mktemp -d` 在 `/tmp/run/batman-dv` 下、裡面用固定名;prov-claim 主機端用自己的 `mktemp -d`;allowlist 兩條(附理由);`rundir-paths.txt` 加 `batman-prov.health`、`slot-committed`、`addr-defer.start.pid`、`addr-defer.starts`、`addr-defer.said.*`。驗證:clone 與 worktree 都 check-tmp-trust 0、test-tmp-trust 26/26、statecmp 15/15、stubs / cfgsave 全 PASS、修過的 addr-defer-254.sh 在 02 8/8。
+- 中斷留下:兩台 `/tmp/run/batman-dv/{ble-state,bt}`(BLE suite 的殘留)→ 第 3 次前清掉(見 §13.17)。
+
+### 13.17 中斷 BLE suite 的清理 + 全套第 3 次
+- `ble_state` 報 FAIL leftover:兩台各有 run `dv1792726405p1397` 的 BLE lease(約 34 分後到期)與 live deadman;04 另有 btmon 程序與 1 個廣播 instance。用 harness 自己的入口 `ble_recover <node> periph|central`(`scripts/lib/ble-254.sh:67-68`,P6 指向它):兩台 `RECOVER kill deadman group …` → GC run dirs → `RECOVERED` → `STATE clean`;沒有觸發 IRK 重開。
+- 全套第 3 次(H2 881ed5f,wsl.14)12:0x 啟動;結果見 §13.18。
+
+### 13.18 全套第 3 次(wsl.14,H2 881ed5f,11:57–17:30)— 結果
+**99 PASS / 2 FAIL / 21 SKIP / 6 N/A**(report:`rc/dvfull14/20261023-115733/report.md`)。
+- FAIL KNOWN(#254):`prov-p1-stubs` — H2 checkout 的產品是 pre-P1,預期;P1 merge 後轉綠。
+- FAIL NEW:`ble-pair-sc-only-254`(401 s)— 第 2 段「翻轉」:第一次連上但配對 `status 0x04 Connect Failed`,重試 `invalid:no-target`(02 掃不到 04)→ suite 判無效。H1 時代的 BLE tier B,P1/H2 沒碰;歸因見 §13.19(單獨重跑)。
+- SKIP 21:#264 系列 17 個(overlay 已拆,由 #289 取代)、`hold-261` ×2(Pi 3,P-U14)、`ab-card-invariants`(WSL root 半邊已 PASS 兩板)、`p5-follows-config-202b`。
+- N/A 6:`p7-209`(Pi 4 無 p7)、#264 的 4 個 gateway-only、`soak-cot-264`。
+- 與 #254 直接相關全 PASS:tier A `addr-defer-254`、`prov-tools-254`、`ble-privacy-254`、`ble-rpa-254`、`ble-privacy-reboot-254`、`tmp-trust-static`(含新腳本)、全部 fault-injection、OTA/A/B(`ab-selftest --destructive`)、#202 四條、#274、#289、soak。
+
+### 13.19 ble-pair-sc-only-254 的歸因(❓)與 H2 收尾
+- 單獨重跑(17:33–17:41):第 2 段 LEAK 正確;第 3 段 `0x08 Timeout` → `0x04 Connect Failed` → invalid。兩次失敗在不同段落、都是連線層;連上時政策判定全對。P1 的 150 個改動檔無 BLE 相關、firmware 無 bluez patch 變動 → **❓ 未歸因,不是 #254 P1**;開 winson3QQ/Batman#305 記錄(含 btmon 追查、與 Pi 4 BT UART 卡死合併看)。
+- harness:`validation-known-failures.txt` 加 `ble-pair-sc-only-254` 一條,只對應連線層的 `VERDICT invalid`(#305);policy 判錯仍 NEW。
+- 全套最終判讀:**99 PASS / 21 SKIP / 6 N/A / 2 FAIL(皆 KNOWN:prov-p1-stubs #254、ble-pair-sc-only-254 #305)**;#254 相關全 PASS。
