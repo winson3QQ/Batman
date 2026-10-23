@@ -4,7 +4,8 @@
 # --prov-get and the sysupgrade backup LIST go to a private dir under the root-only run dir, removed at the end.
 # Every check prints PASS/FAIL; anything that cannot be read is a FAIL, never a skip. Exit 0 only with no FAIL.
 set -u
-RD=/tmp/run/batman-dv/prov-p1.$$
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh || { echo "FAIL no /usr/lib/batman/rundir.sh (pre-#280 image)"; exit 1; }
+mkdir -p "$RUNDIR-dv" && RD=$(mktemp -d "$RUNDIR-dv/prov-p1.XXXXXX") || { echo "FAIL no scratch dir under $RUNDIR-dv"; exit 1; }
 P=/etc/batman-prov
 ST=/opt/batdata/state
 fails=0
@@ -40,7 +41,7 @@ for f in node.key ecdh.key claim.secret; do
 done
 
 # 3) health file: this boot, fresh, every field present, consistent with the live system
-h=$(cat /tmp/run/batman/batman-prov.health 2>/dev/null)
+h=$(cat "$RUNDIR/batman-prov.health" 2>/dev/null)
 hb=$(echo "$h" | sed -n 's/.*boot_id=\([^ ]*\).*/\1/p'); hts=$(echo "$h" | sed -n 's/.* ts=\([0-9]*\).*/\1/p')
 [ "$hb" = "$boot" ] && ok "health boot_id this boot" || no "health boot_id [$hb]"
 [ -n "$hts" ] && [ $((up - hts)) -le 60 ] && ok "health fresh (age $((up - ${hts:-0}))s)" || no "health stale or missing ts [$hts] up=$up"

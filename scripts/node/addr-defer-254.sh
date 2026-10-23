@@ -18,8 +18,9 @@ s=$([ -x "$D" ] && "$D" status 2>/dev/null)
 # the authoritative view, independent of the decider: procd's env of the running instance
 u=$(ubus -t 5 call service list '{"name":"openmanetd"}' 2>/dev/null) || no "ubus service list failed"
 case "$u" in *ADDRESSRESERVATION*) no "procd still carries ALFRED.DATATYPES.ADDRESSRESERVATION for openmanetd on a committed slot";; *) ok "procd env: no deferral variable";; esac
-# 4. no stale reconcile state and no HUNG this boot
-R=/tmp/run/batman
+# 4. no stale reconcile state and no HUNG this boot (run dir resolved through rundir.sh, #280: a #280 image always has it)
+R=""; [ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh && R=$RUNDIR
+[ -n "$R" ] || no "no /usr/lib/batman/rundir.sh on this image (pre-#280?) — run dir unknown"
 [ -e "$R/addr-defer.starts" ] && { n=$(cat "$R/addr-defer.starts"); [ "$n" -ge 3 ] 2>/dev/null && no "reconcile reached its cap this boot ($n starts) — HUNG" || ok "reconcile ran $n start(s) this boot (below the cap)"; } || ok "no reconcile start this boot"
 logread 2>/dev/null | grep -q 'batman-addr-defer: HUNG' && no "HUNG logged this boot" || ok "no HUNG in logread"
 # 5. a settled committed node has reserved its address (openmanetd's own job, but the deferral must not have blocked it)

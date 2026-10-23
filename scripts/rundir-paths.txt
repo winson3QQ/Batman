@@ -83,3 +83,12 @@ p5-check.dv
 tt280
 # verify-profile-ots-record.sh (#289 SEC-11): uptime when the current UNKNOWN streak began; the script itself reads/clears it
 batman-ots-record-unknown-since
+# #254 P1: batman-provhelper health (writer: helper; readers: prov-p1-254.sh tier A)
+batman-prov.health
+# #254 B-M4 address-reservation deferral (254-p1-impl.md §13.8.2): slot-committed (writer: batman-slot commit, removed by
+# rollback; reader: batman-addr-defer), start pid/counter/once-markers (writer+reader: batman-addr-defer reconcile; reader:
+# addr-defer-254.sh tier A)
+slot-committed
+addr-defer.start.pid
+addr-defer.starts
+addr-defer.said.*

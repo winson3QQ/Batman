@@ -2,6 +2,7 @@
 # tests/prov-p1/prov-base-statecmp.sh — CI/WSL test of prov-base compare's p6 state rules (round-7 B-M6): boot_id-only changes pass, real changes fail.
 # $1 = prov-base-254.sh. Runs as root (the script refuses otherwise) under a throwaway PROV_BASE_TEST_ROOT.
 PB=$1; R=$(mktemp -d); export PROV_BASE_TEST_ROOT=$R; fails=0
+mkdir -p "$R/usr/lib/batman" "$R/tmp/run"; printf 'batman_rundir(){ return 0; }\nRUNDIR=%s/tmp/run/batman\n' "$R" > "$R/usr/lib/batman/rundir.sh"   # the fixed prov-base sources it through the test root
 D=$R/opt/batdata/dv-prov/t1; mkdir -p $D/snap/state $D/now-x/state
 for f in p5.manifest upper.manifest uci.export identity; do echo same > $D/snap/$f; echo same > $D/now-x/$f; done
 setstate(){ # $1 snap|now-x, $2 name, $3 content or ABSENT

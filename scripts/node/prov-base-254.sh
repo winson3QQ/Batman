@@ -18,17 +18,23 @@ case "$RUN" in ''|*[!A-Za-z0-9_-]*) echo "FAIL bad run id"; exit 2 ;; esac
 [ "${#RUN}" -le 40 ] || { echo "FAIL run id too long"; exit 2; }
 [ "$(id -u)" = 0 ] || { echo "FAIL root only"; exit 2; }
 BASE=${PROV_BASE_TEST_ROOT:-}/opt/batdata/dv-prov; D=$BASE/$RUN; ST=${PROV_BASE_TEST_ROOT:-}/opt/batdata/state
-RUNDIR=/tmp/run/batman; LOCK=$RUNDIR/cfgsave.lock; P5=/dev/mmcblk0p5
+# the config-save lock lives in the root-only run dir: resolved through rundir.sh (#280), fail-closed when absent.
+# PROV_BASE_TEST_ROOT (CI / WSL tests only, never set on a node) prefixes the library path too.
+RDL=${PROV_BASE_TEST_ROOT:-}/usr/lib/batman/rundir.sh
+# shellcheck source=/dev/null
+[ -r "$RDL" ] && . "$RDL" || { echo "FAIL no $RDL (pre-#280 image)"; exit 2; }
+LOCK=$RUNDIR/cfgsave.lock; P5=/dev/mmcblk0p5
+DVD=$RUNDIR-dv   # harness scratch next to the run dir: /tmp/run/batman-dv (root 0755 /tmp/run, procd)
 DIRTY=$ST/dv-prov-dirty; MARK=/etc/.dv-prov-mark-$RUN
 STATEFILES="lock-status mesh-expected mesh-joined prov-state prov-counters ble-ok ota-armed.mesh autocommit-hold-commit autocommit-hold-once autocommit-skip-once bad-slot"
-HOLDER=/tmp/run/batman-dv/batman-config-save-dvhold
+HOLDER=$DVD/batman-config-save-dvhold
 umask 077
 say() { echo "$*"; }
 die() { echo "FAIL $*"; exit 1; }
 bootid() { cut -c1-8 /proc/sys/kernel/random/boot_id; }
 
 lock_take() {
-	mkdir -p /tmp/run/batman-dv
+	mkdir -p "$DVD"
 	# the holder must KEEP its own argv: config-save takes the lock over from a holder whose cmdline lacks
 	# "batman-config-save" (F34-lock). `exec sleep` replaced it with "sleep 1800" (E1c dry run on 04, 2026-10-21).
 	printf '#!/bin/sh\n# holder of the config-save lock for prov-base-254 (name must contain batman-config-save)\nwhile :; do sleep 5; done\n' > "$HOLDER"
@@ -74,7 +80,7 @@ uci_exports() {	# normalised: `uci export` per config file, in name order
 	for f in $(ls /etc/config 2>/dev/null | sort); do echo "=== $f"; uci -q export "$f" 2>/dev/null; done
 }
 p5_manifest() {	# $1 out file; mounts p5 ro,noload
-	m=/tmp/run/batman-dv/p5ro.$$; mkdir -p "$m"
+	m=$(mktemp -d "$DVD/p5ro.XXXXXX") || return 1
 	mount -t ext4 -o ro,noload "$P5" "$m" 2>/dev/null || { rmdir "$m"; return 1; }
 	tree_manifest "$m" > "$1"; r=$?
 	umount "$m"; rmdir "$m"; return $r
@@ -149,17 +155,17 @@ manifest)
 	;;
 compare)
 	TAG=${3:-x}; [ -d "$D/now-$TAG" ] || die "no manifest now-$TAG"
-	ALLOW=${ALLOW_FILE:-/tmp/run/batman-dv/overlay-allow.txt}
+	ALLOW=${ALLOW_FILE:-$DVD/overlay-allow.txt}
 	n=0
 	# allow-list (tests/prov-p1/overlay-allow.txt, pushed by the host): "<kind> <ERE on the relative path> # evidence"
 	# kind content = the entry may differ in content/mode but must exist in both; kind exists = may appear/vanish
 	AC=$(awk '!/^#/ && $1=="content" {printf "%s%s", s, $2; s="|"}' "$ALLOW" 2>/dev/null)
 	AE=$(awk '!/^#/ && $1=="exists"  {printf "%s%s", s, $2; s="|"}' "$ALLOW" 2>/dev/null)
-	T=${PROV_BASE_TEST_ROOT:-}/tmp/run/batman-dv; mkdir -p "$T" && : > "$T/d.$$" || die "compare: cannot write $T (fail-closed, round-8 A-m12)"
+	mkdir -p "$DVD" && T=$(mktemp -d "$DVD/cmp.XXXXXX") && : > "$T/d" || die "compare: cannot write under $DVD (fail-closed, round-8 A-m12)"
 	for f in p5.manifest upper.manifest uci.export identity; do
 		# set difference without comm: "- " = only in the snapshot, "+ " = only now (multiset-aware)
 		awk 'NR==FNR{a[$0]++; next} {if (a[$0]) a[$0]--; else print "+ " $0} END{for (k in a) for (i=0;i<a[k];i++) print "- " k}' \
-			"$D/snap/$f" "$D/now-$TAG/$f" | sort -k2 > "$T/d.$$" || die "compare: diff of $f failed (fail-closed)"
+			"$D/snap/$f" "$D/now-$TAG/$f" | sort -k2 > "$T/d" || die "compare: diff of $f failed (fail-closed)"
 		[ -f "$D/snap/$f" ] && [ -f "$D/now-$TAG/$f" ] || die "compare: $f missing on one side (fail-closed)"
 		if [ "$f" = upper.manifest ]; then
 			# an allowed path drops out only when the rule allows the kind of difference seen
@@ -169,17 +175,16 @@ compare)
 					both=(index(seen[p],"+") && index(seen[p],"-"))
 					if (AE != "^$" && p ~ AE) continue
 					if (both && AC != "^$" && p ~ AC) continue
-					print line[i] } }' "$T/d.$$" > "$T/e.$$"
-			mv "$T/e.$$" "$T/d.$$"
+					print line[i] } }' "$T/d" > "$T/e"
+			mv "$T/e" "$T/d"
 		fi
-		[ -s "$T/d.$$" ] && { sed "s|^|DIFF $f |" "$T/d.$$"; n=$((n + $(wc -l < "$T/d.$$"))); }
+		[ -s "$T/d" ] && { sed "s|^|DIFF $f |" "$T/d"; n=$((n + $(wc -l < "$T/d"))); }
 	done
-	rm -f "$T/a.$$" "$T/b.$$" "$T/d.$$"
+	rm -rf "$T"
 	for f in $STATEFILES; do
 		d=$(state_cmp "$f" "$D/snap/state/$f" "$D/now-$TAG/state/$f")
 		[ -z "$d" ] || { echo "DIFF state $f $d"; n=$((n + 1)); }
 	done
-	rm -f "/tmp/run/batman-dv/a.$$" "/tmp/run/batman-dv/b.$$"
 	say "COMPARE $RUN $TAG diffs=$n"; [ "$n" = 0 ]
 	;;
 p5-restore)
