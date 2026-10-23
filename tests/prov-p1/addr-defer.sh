@@ -19,6 +19,7 @@ cat $T/dt
 EOF
 cat > "$T/bin/ubus" <<EOF
 #!/bin/sh
+[ "\$1" = -t ] || exit 1          # a call without a timeout is wrong (A12-m5)
 [ -f $T/ubus.fail ] && exit 1
 cat $T/ubus.out
 EOF
@@ -26,12 +27,12 @@ cat > "$T/bin/pidof" <<EOF
 #!/bin/sh
 exit \$(cat $T/pidof.rc)
 EOF
-printf '#!/bin/sh\nexit 0\n' > "$T/bin/logger"
+printf '#!/bin/sh\necho "$*" >> %s/logger.out\n' "$T" > "$T/bin/logger"
 printf '#!/bin/sh\nexec "$@"\n' > "$T/bin/setsid"
 # the fake init: records a start; hangs while $T/hang exists
 cat > "$T/omd.init" <<EOF
 #!/bin/sh
-echo "\$1 \$\$" >> $T/starts
+echo "\$1 \$\$ LEAK=\${BATMAN_FAULT_INJECT:-none}" >> $T/starts
 while [ -f $T/hang ]; do sleep 1; done
 EOF
 chmod +x "$T"/bin/* "$T/omd.init"
@@ -42,11 +43,12 @@ tryboot(){ printf '%s' "$1" > "$T/dt"; }
 envp(){ case "$1" in present) printf '{"openmanetd":{"instances":{"instance1":{"running":true,"pid":5,"env":{"ALFRED.DATATYPES.ADDRESSRESERVATION":"false"}}}}}' > "$T/ubus.out";;
 	absent) printf '{"openmanetd":{"instances":{"instance1":{"running":true,"pid":5}}}}' > "$T/ubus.out";;
 	noinst) printf '{"openmanetd":{}}' > "$T/ubus.out";; esac; rm -f "$T/ubus.fail"; }
-reset(){ rm -f "$T/run"/* "$T/starts" "$T/hang" "$T/nornd"; echo 0 > "$T/pidof.rc"; }
+reset(){ rm -f "$T/run"/* "$T/starts" "$T/hang" "$T/nornd" "$T/logger.out"; echo 0 > "$T/pidof.rc"; }
 
 # --- decision
 reset; tryboot 00000000; "$D" >/dev/null 2>&1; [ $? = 1 ] && ok "tryboot=0 -> stock" || no "tryboot=0 should be stock"
-reset; tryboot 00000001; "$D" >/dev/null 2>&1; [ $? = 0 ] && ok "tryboot=1 -> defer" || no "tryboot=1 should defer"
+reset; tryboot 00000001; e=$("$D" 2>&1 >/dev/null); rc=$?; [ $rc = 0 ] && ok "tryboot=1 -> defer" || no "tryboot=1 should defer"
+[ -z "$e" ] && [ "$(grep -c deferring "$T/logger.out" 2>/dev/null)" = 1 ] && ok "decision logged once via logger, nothing on stderr (procd relays stderr)" || no "decision logging: stderr=[$e] logger=$(grep -c deferring "$T/logger.out" 2>/dev/null)"
 reset; tryboot 00000001; : > "$T/run/slot-committed"; "$D" >/dev/null 2>&1; [ $? = 1 ] && ok "tryboot=1 + slot-committed -> stock" || no "slot-committed should make it stock"
 reset; tryboot 00000001; : > "$T/nornd"; "$D" >/dev/null 2>&1; [ $? = 0 ] && ok "tryboot=1, run dir unusable -> defer (fail-closed)" || no "unusable run dir should defer"
 reset; tryboot ""; "$D" >/dev/null 2>&1; [ $? = 1 ] && ok "no DT node -> stock (an ordinary boot)" || no "missing DT should be stock"
@@ -63,11 +65,19 @@ reset; tryboot 00000000; envp noinst; [ "$("$D" status)" = "want=stock env=absen
 starts(){ if [ -f "$T/starts" ]; then wc -l < "$T/starts"; else echo 0; fi; }
 reset; tryboot 00000000; envp present; "$D" reconcile >/dev/null 2>&1; r=$?; sleep 1; [ "$r" = 0 ] && [ "$(starts)" = 1 ] && ok "stock+present -> one start (rc 0)" || no "stock+present: rc=$r starts=$(starts)"
 "$D" reconcile >/dev/null 2>&1; sleep 1; [ "$(starts)" = 2 ] && ok "second tick, previous start finished -> second start" || no "second start: starts=$(starts)"
-reset; tryboot 00000000; envp present; : > "$T/hang"; "$D" reconcile >/dev/null 2>&1; sleep 1; "$D" reconcile >/dev/null 2>&1; "$D" reconcile >/dev/null 2>&1; sleep 1
-[ "$(starts)" = 1 ] && ok "singleton: a hung start is not stacked" || no "singleton: starts=$(starts)"
+reset; tryboot 00000000; envp present; : > "$T/hang"; "$D" reconcile >/dev/null 2>&1; sleep 1; "$D" reconcile >/dev/null 2>&1; r=$?; "$D" reconcile >/dev/null 2>&1; sleep 1
+[ "$(starts)" = 1 ] && [ "$r" = 0 ] && ok "singleton: a hung start is not stacked (still within its time, rc 0)" || no "singleton: starts=$(starts) rc=$r"
+# the same start, pretended to have been sent long ago -> HUNG rc 2, logged ONCE (B12-m1, A12-m7)
+read -r hp _ < "$T/run/addr-defer.start.pid"; echo "$hp 1" > "$T/run/addr-defer.start.pid"
+"$D" reconcile >/dev/null 2>&1; r1=$?; "$D" reconcile >/dev/null 2>&1; r2=$?; sleep 1
+[ "$r1" = 2 ] && [ "$r2" = 2 ] && [ "$(starts)" = 1 ] && ok "a start still running after 60 s -> HUNG rc 2, no new start" || no "hung start: rc=$r1/$r2 starts=$(starts)"
+[ "$(grep -c HUNG "$T/logger.out" 2>/dev/null)" = 1 ] && ok "HUNG logged once per boot (two ticks, one line)" || no "HUNG log lines: $(grep -c HUNG "$T/logger.out" 2>/dev/null)"
 rm -f "$T/hang"; sleep 2
+grep -q 'LEAK=none' "$T/starts" && ok "reconcile start: caller environment not leaked (env -i)" || no "reconcile env leak: $(cat "$T/starts")"
 reset; tryboot 00000000; envp present; for i in 1 2 3; do "$D" reconcile >/dev/null 2>&1; sleep 1; done; "$D" reconcile >/dev/null 2>&1; r=$?; sleep 1
 [ "$r" = 2 ] && [ "$(starts)" = 3 ] && ok "cap: 3 starts per boot, 4th -> HUNG rc 2" || no "cap: rc=$r starts=$(starts)"
+reset; tryboot 00000001; envp absent; "$D" reconcile >/dev/null 2>&1; "$D" reconcile >/dev/null 2>&1
+[ "$(grep -c 'reservation ON' "$T/logger.out" 2>/dev/null)" = 1 ] && ok "trial without the deferral: WARN once per boot" || no "trial WARN lines: $(grep -c 'reservation ON' "$T/logger.out" 2>/dev/null)"
 reset; tryboot 00000001; envp present; "$D" reconcile >/dev/null 2>&1; r=$?; sleep 1; [ "$r" = 0 ] && [ "$(starts)" = 0 ] && ok "defer+present -> nothing" || no "defer+present: rc=$r starts=$(starts)"
 reset; tryboot 00000000; envp absent; "$D" reconcile >/dev/null 2>&1; r=$?; sleep 1; [ "$r" = 0 ] && [ "$(starts)" = 0 ] && ok "stock+absent -> nothing" || no "stock+absent: starts=$(starts)"
 reset; tryboot 00000000; envp present; : > "$T/ubus.fail"; "$D" reconcile >/dev/null 2>&1; r=$?; sleep 1; [ "$r" = 0 ] && [ "$(starts)" = 0 ] && ok "env unknown -> nothing" || no "env unknown: starts=$(starts)"

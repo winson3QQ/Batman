@@ -42,6 +42,33 @@ jobs:
       - name: verify.py >= MIN_CHECKS, gen.py reproduces vectors.json, tampered vector rejected
         run: PY=python MIN_CHECKS=195 bash tests/vectors/219-protocol/ci-check.sh
 
+  prov-p1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: busybox for the ash runs
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
+      - name: "#254 P1 stub tests (no root): decider / init hook, autocommit prov case, 99zz mesh_expect, batman-slot release"
+        run: |
+          F=feed/batman-provision/files
+          bash tests/prov-p1/addr-defer.sh $F/usr/libexec/batman-addr-defer
+          sed '1s#.*#\#!/usr/bin/busybox sh#' $F/usr/libexec/batman-addr-defer > /tmp/dec.bb && chmod +x /tmp/dec.bb && bash tests/prov-p1/addr-defer.sh /tmp/dec.bb
+          bash tests/prov-p1/autocommit-prov-case.sh $F/usr/bin/batman-autocommit
+          bash tests/prov-p1/99zz-mesh-expect.sh $F/etc/uci-defaults/99zz-batman-prov-state
+          bash tests/prov-p1/batman-slot-addr-defer.sh $F/usr/sbin/batman-slot
+      - name: "#254 P1 loop-device tests (root): config-save identity freeze / frozen no-remount / prov-get rc 10, prov-base compare rules"
+        run: |
+          F=feed/batman-provision/files
+          sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-identity-freeze.sh $F/usr/bin/batman-config-save
+          sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-frozen-nomount.sh $F/usr/bin/batman-config-save
+          sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-provget-rc10.sh $F/usr/bin/batman-config-save
+          sudo bash tests/prov-p1/prov-base-statecmp.sh scripts/node/prov-base-254.sh
+      - name: "#254 P1 Go unit tests (batman-prov helper)"
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: cd feed/batman-prov/src && GOFLAGS=-mod=vendor GOTOOLCHAIN=local go vet ./... && GOFLAGS=-mod=vendor GOTOOLCHAIN=local go test ./...
+
   ab-card:
     runs-on: ubuntu-latest
     steps:
