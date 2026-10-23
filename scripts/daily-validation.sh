@@ -204,7 +204,7 @@ chk_prov_p1_stubs() {      # no hardware: product files from this checkout; root
   local F=$REPO/feed/batman-provision/files r=0
   # the harness lands before the product (#290): until feat/254-p1 is merged this checkout's product is pre-P1 and
   # every stub FAILs on it (that IS the negative control). One explicit FAIL line -> KNOWN (#254, P-U9) in the report.
-  [ -x "$F/usr/libexec/batman-addr-defer" ] || { echo "FAIL prov-p1-stubs: product in this checkout is pre-P1 (no usr/libexec/batman-addr-defer) — KNOWN until feat/254-p1 lands (#254)"; return 1; }
+  [ -f "$F/usr/libexec/batman-addr-defer" ] || { echo "FAIL prov-p1-stubs: product in this checkout is pre-P1 (no usr/libexec/batman-addr-defer) — KNOWN until feat/254-p1 lands (#254)"; return 1; }
   bash "$REPO/tests/prov-p1/addr-defer.sh" "$F/usr/libexec/batman-addr-defer" | tail -1 | grep -q "fails=0" || r=1
   bash "$REPO/tests/prov-p1/autocommit-prov-case.sh" "$F/usr/bin/batman-autocommit" | tail -1 | grep -q "fails=0" || r=1
   bash "$REPO/tests/prov-p1/99zz-mesh-expect.sh" "$F/etc/uci-defaults/99zz-batman-prov-state" | tail -1 | grep -q "fails=0" || r=1
