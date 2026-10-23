@@ -90,3 +90,6 @@ scripts/node/ble-central-254.sh	out="\$DIR/sample\.\$\$"	inside the run dir /tmp
 scripts/node/prov-tools-254.sh	t="\$H/prov-tools\.\$\$"	inside /tmp/run/batman-dv (HDS: mkdir -m 700, -O, not a symlink)
 scripts/lib/ble-254.sh	BLE_RUN_ID=\$\{BLE_RUN_ID:-dv\$\(date \+%s\)p\$\$\}	run id = a directory name under the root-0700 bt/ dir on the node; staging refuses an existing one
 scripts/dv-preflight.sh	BLE_RUN_ID=preflight\$\$	same: probe run dir under the root-0700 bt/ dir, refused if it exists, removed after the probe
+# --- #254 harness scratch: random names under root-only /tmp/run/batman-dv ($DVD, $RUNDIR-dv) or the host's mktemp -d dir ($HT) ---
+scripts/node/*	mktemp -d "?\$(DVD|RUNDIR-dv)/[^ ]*XXXXXX	harness scratch under root-only /tmp/run (procd-created 0755), random name, 0700
+scripts/dv/prov-claim-254.sh	mktemp -d "?\$HT/[^ ]*XXXXXX	host-side (Git Bash) scratch inside the run's own mktemp -d directory

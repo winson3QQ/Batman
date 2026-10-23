@@ -193,6 +193,28 @@ self_test() { local d p
   timeout 900 bash "$REPO/scripts/$1"; }
 suite harness-preflight "dv-preflight negative controls: every misconfiguration FAILs for its own reason (stub ssh, #254 PR-H1 N9)" "self_test test-dv-preflight.sh"
 suite harness-ble-254 "BLE judges offline: settings tokens, btmon judge, pairing verdicts, RPA judge good + bad runs (#254 PR-H1 N10)" "self_test test-dv-ble-254.sh"
+chk_addr_defer_254() {     # tier A, read-only: scripts/node/addr-defer-254.sh on every committed node given
+  local n r=0 o
+  for n in "$@"; do
+    o=$(timeout 90 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$n" sh -s < "$REPO/scripts/node/addr-defer-254.sh" 2>&1); rc=$?
+    echo "$o" | sed "s/^/$n: /"; [ "$rc" = 0 ] && grep -q "^RESULT addr-defer-254 PASS" <<< "$o" || r=1
+  done; return $r
+}
+chk_prov_p1_stubs() {      # no hardware: product files from this checkout; root-only tests only when we are root on Linux
+  local F=$REPO/feed/batman-provision/files r=0
+  # the harness lands before the product (#290): until feat/254-p1 is merged this checkout's product is pre-P1 and
+  # every stub FAILs on it (that IS the negative control). One explicit FAIL line -> KNOWN (#254, P-U9) in the report.
+  [ -x "$F/usr/libexec/batman-addr-defer" ] || { echo "FAIL prov-p1-stubs: product in this checkout is pre-P1 (no usr/libexec/batman-addr-defer) — KNOWN until feat/254-p1 lands (#254)"; return 1; }
+  bash "$REPO/tests/prov-p1/addr-defer.sh" "$F/usr/libexec/batman-addr-defer" | tail -1 | grep -q "fails=0" || r=1
+  bash "$REPO/tests/prov-p1/autocommit-prov-case.sh" "$F/usr/bin/batman-autocommit" | tail -1 | grep -q "fails=0" || r=1
+  bash "$REPO/tests/prov-p1/99zz-mesh-expect.sh" "$F/etc/uci-defaults/99zz-batman-prov-state" | tail -1 | grep -q "fails=0" || r=1
+  bash "$REPO/tests/prov-p1/batman-slot-addr-defer.sh" "$F/usr/sbin/batman-slot" | tail -1 | grep -q "fails=0" || r=1
+  if [ "$(id -u)" = 0 ] && command -v losetup >/dev/null 2>&1; then
+    for t in cfgsave-identity-freeze cfgsave-frozen-nomount cfgsave-provget-rc10; do PROV_SRC=$F bash "$REPO/tests/prov-p1/$t.sh" "$F/usr/bin/batman-config-save" | tail -1 | grep -qE "FAIL=0|PASS$" || r=1; done
+    bash "$REPO/tests/prov-p1/prov-base-statecmp.sh" "$REPO/scripts/node/prov-base-254.sh" | tail -1 | grep -q "fails=0" || r=1
+  else echo "note: loop-device tests (config-save, prov-base compare) skipped here — need root + losetup (CI prov-p1 job runs them)"; fi
+  return $r
+}
 suite harness-negctl-254 "N3 held-trial script vs a simulated node: only guarded rollbacks, flag kept once the OTA is sent (#254 PR-H1)" "self_test test-negctl-old-slot-254.sh"
 # 2e. No hardware needed: #254 P1 product stubs (the decider / init hook of the address-reservation deferral, autocommit's
 #     prov-state case, 99zz mesh_expect, batman-slot's release). Each takes the product file from THIS checkout, so a
@@ -789,28 +811,6 @@ chk_p5churn_263() { local n a b rc=0 tested=0; declare -A A
   [ "$tested" -gt 0 ] || { echo "SKIP-REASON: no joined node to observe"; return 3; }
   return $rc; }
 # #263 M0 feature test on one node: the installed batman-config-save --on-join mounts p5 once per change, not per tick.
-chk_addr_defer_254() {     # tier A, read-only: scripts/node/addr-defer-254.sh on every committed node given
-  local n r=0 o
-  for n in "$@"; do
-    o=$(timeout 90 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$n" sh -s < "$REPO/scripts/node/addr-defer-254.sh" 2>&1); rc=$?
-    echo "$o" | sed "s/^/$n: /"; [ "$rc" = 0 ] && grep -q "^RESULT addr-defer-254 PASS" <<< "$o" || r=1
-  done; return $r
-}
-chk_prov_p1_stubs() {      # no hardware: product files from this checkout; root-only tests only when we are root on Linux
-  local F=$REPO/feed/batman-provision/files r=0
-  # the harness lands before the product (#290): until feat/254-p1 is merged this checkout's product is pre-P1 and
-  # every stub FAILs on it (that IS the negative control). One explicit FAIL line -> KNOWN (#254, P-U9) in the report.
-  [ -x "$F/usr/libexec/batman-addr-defer" ] || { echo "FAIL prov-p1-stubs: product in this checkout is pre-P1 (no usr/libexec/batman-addr-defer) — KNOWN until feat/254-p1 lands (#254)"; return 1; }
-  bash "$REPO/tests/prov-p1/addr-defer.sh" "$F/usr/libexec/batman-addr-defer" | tail -1 | grep -q "fails=0" || r=1
-  bash "$REPO/tests/prov-p1/autocommit-prov-case.sh" "$F/usr/bin/batman-autocommit" | tail -1 | grep -q "fails=0" || r=1
-  bash "$REPO/tests/prov-p1/99zz-mesh-expect.sh" "$F/etc/uci-defaults/99zz-batman-prov-state" | tail -1 | grep -q "fails=0" || r=1
-  bash "$REPO/tests/prov-p1/batman-slot-addr-defer.sh" "$F/usr/sbin/batman-slot" | tail -1 | grep -q "fails=0" || r=1
-  if [ "$(id -u)" = 0 ] && command -v losetup >/dev/null 2>&1; then
-    for t in cfgsave-identity-freeze cfgsave-frozen-nomount cfgsave-provget-rc10; do PROV_SRC=$F bash "$REPO/tests/prov-p1/$t.sh" "$F/usr/bin/batman-config-save" | tail -1 | grep -qE "FAIL=0|PASS$" || r=1; done
-    bash "$REPO/tests/prov-p1/prov-base-statecmp.sh" "$REPO/scripts/node/prov-base-254.sh" | tail -1 | grep -q "fails=0" || r=1
-  else echo "note: loop-device tests (config-save, prov-base compare) skipped here — need root + losetup (CI prov-p1 job runs them)"; fi
-  return $r
-}
 chk_p5onjoin_263() { timeout 120 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8 "root@$1" sh -s < "$REPO/scripts/node/p5-onjoin-263.sh"; }
 # #275: every board patch the image was BUILT with is visible in /rom of the running image — its Batman-Witness,
 # baked by the firmware stamp into /etc/batman-patch-witness (file <glob> <string> | pkg <name> <ver-prefix> |

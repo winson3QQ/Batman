@@ -8,7 +8,7 @@
 set -u
 NODE=${NODE:-10.41.1.3}
 RUN=${RUN:-claim$(date +%m%d%H%M)}
-RUNLOG=$(mktemp /tmp/prov-claim-out.XXXXXX); exec > >(tee "$RUNLOG") 2>&1
+HT=$(mktemp -d); RUNLOG=$HT/out.log; exec > >(tee "$RUNLOG") 2>&1   # host-side scratch (Git Bash): mktemp -d
 H=$(cd "$(dirname "$0")/../.." && pwd)
 TOOLS=${DV_PROV_TOOLS:?DV_PROV_TOOLS = host dir with provclient-arm64 (pushed to the node)}
 TOOLS_WSL=${DV_PROV_TOOLS_WSL:-/home/yello/batman-dv-tools/prov}   # provclient-amd64 (the signer) inside WSL
@@ -40,14 +40,14 @@ OWNER=$(wsl_ cat $WSLK/owner.pub | tr -d '\r'); ENC=$(wsl_ cat $WSLK/enc.pub | t
 
 # --- 2. provclient onto the node: /tmp/run/batman-dvpc.<run>/ root 0711, file root 0755, sha checked (§4.3)
 PCD=/tmp/run/batman-dvpc.$RUN
-scp -q $SSHO "$TOOLS/provclient-arm64" root@$NODE:/tmp/run/pc.$RUN.upload || { no "upload"; exit 1; }
+q "mkdir -p -m 0700 /tmp/run/batman-dv" >/dev/null; scp -q $SSHO "$TOOLS/provclient-arm64" root@$NODE:/tmp/run/batman-dv/pc.$RUN.upload || { no "upload"; exit 1; }
 PSHA=$(sha256sum "$TOOLS/provclient-arm64" | cut -c1-64)
-q "set -e; mkdir -m 0711 $PCD; mv /tmp/run/pc.$RUN.upload $PCD/provclient; chown root:root $PCD $PCD/provclient; chmod 0755 $PCD/provclient; [ \"\$(sha256sum < $PCD/provclient | cut -c1-64)\" = $PSHA ] && echo PCOK" | grep -q PCOK && ok "provclient placed ($PCD, sha checked)" || no "provclient placement"
+q "set -e; mkdir -m 0711 $PCD; mv /tmp/run/batman-dv/pc.$RUN.upload $PCD/provclient; chown root:root $PCD $PCD/provclient; chmod 0755 $PCD/provclient; [ \"\$(sha256sum < $PCD/provclient | cut -c1-64)\" = $PSHA ] && echo PCOK" | grep -q PCOK && ok "provclient placed ($PCD, sha checked)" || no "provclient placement"
 # pc <key> <op> [args]: run provclient on the node; its "SIGN …" lines go to the WSL signer (coproc), each "SIG …"
 # answer goes back to the node's stdin through a FIFO; every other line is the op's output (secrets only as sha prefixes)
 pc(){
 	local key=$1; shift
-	local f; f=$(mktemp -u /tmp/pc-fifo.XXXXXX); mkfifo "$f"
+	local f; f=$(mktemp -d "$HT/fifo.XXXXXX")/p; mkfifo "$f"
 	coproc SIGNP { wsl_ "$TOOLS_WSL/provclient-amd64" sign "$WSLK/$key"; }
 	exec {W}<>"$f"
 	local out="" line sig
@@ -79,19 +79,19 @@ m=$(ssh -v -o BatchMode=yes -o PreferredAuthentications=none -o PubkeyAuthentica
 [ "$m" = publickey ] && ok "sshd offers only: $m" || no "sshd offers [$m] (want publickey only)"
 q 'echo KEYOK' | grep -q KEYOK && ok "key login still works (L47)" || no "key login lost after the claim"
 # p5 carries the claim (gen advanced) and agrees with the overlay
-q 'd=/tmp/run/batman-dv/pg.$$; batman-config-save --prov-get $d >/dev/null 2>&1; cmp -s $d/prov.meta /etc/batman-prov/prov.meta && echo P5SAME; rm -rf $d' | grep -q P5SAME && ok "p5 prov.meta == overlay after the claim" || no "p5 / overlay differ after the claim"
+q 'd=$(mktemp -d /tmp/run/batman-dv/pg.XXXXXX); rmdir $d; batman-config-save --prov-get $d >/dev/null 2>&1; cmp -s $d/prov.meta /etc/batman-prov/prov.meta && echo P5SAME; rm -rf $d' | grep -q P5SAME && ok "p5 prov.meta == overlay after the claim" || no "p5 / overlay differ after the claim"
 # a second claim of a claimed node is refused
 r=$(pc owner.pem claim "$OWNER" "$ENC"); grep -q "RESULT claim.verify code=3 " <<< "$r" && ok "re-claim of a claimed node -> E_FORBIDDEN" || no "re-claim: $r"
 # rename is not offered in P1 (P-U7)
 r=$(pc owner.pem rename); grep -q "code=6" <<< "$r" && ok "settings.set hostname -> E_UNSUPPORTED (P-U7)" || no "rename: $r"
 
 # --- 5. canary: no secret value in the node log ring or this run's output (only sha prefixes may appear)
-q 'logread' > /tmp/prov-claim-$RUN.logread 2>/dev/null
+q 'logread' > "$HT/logread" 2>/dev/null
 cs=$(q 'hexdump -v -e "/1 \"%02x\"" /etc/batman-prov/identity/claim.secret' | cut -c1-16)
-[ -n "$cs" ] && ! grep -qi "$cs" /tmp/prov-claim-$RUN.logread && ok "claim.secret not in logread" || no "claim.secret canary (logread)"
+[ -n "$cs" ] && ! grep -qi "$cs" "$HT/logread" && ok "claim.secret not in logread" || no "claim.secret canary (logread)"
 sync; [ -n "$cs" ] && ! grep -qi "$cs" "$RUNLOG" && ok "claim.secret not in this run's output" || no "claim.secret canary (run output)"
 q "cat /opt/batdata/log/*.log 2>/dev/null" | grep -qi "$cs" && no "claim.secret canary (p6 logs)" || ok "claim.secret not in p6 logs"
-rm -f /tmp/prov-claim-$RUN.logread
+rm -f "$HT/logread"
 
 # --- 6. restore S0: p5 back, overlay back (tar + extras removed + p6 state), reboot committed, compare, finish
 o=$(nb p5-restore "$RUN"); echo "$o" | tail -1; grep -q "^P5-RESTORED" <<< "$o" || no "p5 restore"
@@ -102,4 +102,4 @@ if grep -q "diffs=0" <<< "$o"; then ok "S0 restored (p5 / overlay / uci / identi
 st=$(q 'echo "state=$(sed -n "s/.*state=\([a-z]*\).*/\1/p" /etc/batman-prov/prov.meta) lock=$(cat /opt/batdata/state/lock-status) pw=$(uci -q get dropbear.@dropbear[0].PasswordAuth)"'); say "after restore: $st"
 case "$st" in *"state=legacy lock=UNPROVISIONED pw=on"*) ok "back to legacy / UNPROVISIONED / password auth on";; *) no "not back to legacy: $st";; esac
 q "rm -rf $PCD"; wsl_ rm -rf "$WSLK"
-say "fails=$fails"; rm -f "$RUNLOG"; [ "$fails" = 0 ]
+say "fails=$fails"; rm -rf "$HT"; [ "$fails" = 0 ]
