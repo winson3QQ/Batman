@@ -116,6 +116,9 @@ v4 的主要改動:
 | 資源 | 唯一擁有者 | 唯讀者 / 例外 |
 |---|---|---|
 | dead-man(E1c / 鏈 1):p6 `dv-prov/e1c-deadman.sh`、`e1c.cancel`、`e1c.fired`、`e1c-deadman.log`,B 的 rc.local 那一行與 25 分 timer(第 7 輪) | E1c / 鏈 1 的主機腳本寫入;B 的 rc.local / timer 執行 | 一次性(`e1c.fired`)、只在 slot B、快照超過 6 h 不動作;每個出口確認回到 A committed 就 cancel;brewrite 清掉 B 的 overlay;`finish` 刪 p6 檔 |
+| `$RUNDIR/slot-committed`(§13.8.2) | `batman-slot commit` 寫(經 `batman_rundir`);`rollback` 刪 | 決定者只測存在;tmpfs,隨重開消失 |
+| procd 上 openmanetd instance 的 env `ALFRED.DATATYPES.ADDRESSRESERVATION`(§13.8.2) | openmanetd 的 init(board patch 0014),依決定者的 rc 設定;每次 `start` 重新決定 | 決定者 `status`/`reconcile`、halow-status、tier A 只經 `ubus service list` 讀;`batman-slot commit` 與 joinwatch 只送 detached `start`,不直接改 |
+| `$RUNDIR/addr-defer.start.pid`(`<pid> <uptime>`)、`addr-defer.starts`、`addr-defer.said.*`(§13.8.2) | 決定者 `reconcile` 寫 | 無其他讀者;tmpfs |
 | helper verdict(prov-state 第 4 欄) | helper,每次開機決定一次 | **整次開機固定**(B-m10):owner 的動作改的是 record,下一次開機才反映到 prov-state;autocommit 只讀這次開機的值 |
 | `PROV_BASE_TEST_ROOT`(env,第 7 輪新增輸入) | 只有 CI / WSL 測試設定 | 節點上沒人設:host 端以 `ssh node sh -s -- <cmd>` 呼叫,不帶 env。能控制 root 環境變數的人本來就是 root,所以不是新的權限邊界;空值時路徑與以前相同 |
 | 節點在測項期間的 prov / 槽狀態 | 該 tier B 測項(prov lease) | P9、tier A |
@@ -592,7 +595,8 @@ E1 的結果寫回本節;重開的時機和預期不同 → 該鏈送回審查�
    - **E2**:CI arm64 runner 上 `dv-sbx` 原型,含 §4.10 的負測試(在 H2 PR 的 CI 上跑)。
    - **E3**:04 上 §4.5.4「B 寫回 V」連做 ≥ 10 次(用 wsl.9),10/10 落點正確;之後跑 `chk_slotintegrity_209`、`chk_trybootget`、`chk_otatrace`,並確認沒有 `bad-slot`。
    - **E4**:04 上(snap 之後):(a) 只重開一次、比一次 §4.5.5;(b) 只做一次同槽重建(`firstboot -y`),再比一次;(c) 做一輪「tar 寫回 + 重開」再比一次。快照要在 uptime > 2 h 時拍,而且整個過程做兩次,才能涵蓋 F30 在 3851 s / 6340 s 的改寫(A-m2) → 產生附證據的 `overlay-allow.txt`,同時實證 `firstboot -y` 在 f2fs-on-loop 上的行為(F33)。副作用:04 重開 3 次,OTS 中斷約 10 分。
-   - **E6**(B-m3):Git Bash ↔ `wsl.exe` 的雙向 pipe(coproc 或 FIFO)跑 20 次 `SIGN` / `SIG` 往返,每次 ≤ 20 s,並且處理 ``(A-m7)。
+   - **E6**(B-m3):Git Bash ↔ `wsl.exe` 的雙向 pipe(coproc 或 FIFO)跑 20 次 `SIGN` / `SIG` 往返,每次 ≤ 20 s,並且處理 `
+`(A-m7)。
    - **E5**:`prov-artifact-match` 的可重現性:WSL 上把同一份 helper 原始碼 build 兩次(OpenWrt 一次、獨立一次)比 sha。
 3. P1 實作 → firmware pin → rc(1.5.12-wsl.10)與 `-wbox` 變體。
 4. H2 實作 → 兩台 wsl.9 時跑負對照 → 兩台 OTA rc → rc PASS → 白箱 → 全套(含完整 prov tier B)。
@@ -631,7 +635,8 @@ E1 的結果寫回本節;重開的時機和預期不同 → 該鏈送回審查�
 | A-m4 受控重開 | 比照 stage 2 卸載 / remount ro |
 | A-m5 02 `ble-ok` | 白箱負對照 |
 | A-m6 / B-m7 正規化、02 的 B | §7.4 自動修 B;正規化不做 tar 覆蓋 |
-| A-m7 / B-m5 不一致 | §5 開頭、§7.1、§4.2 `cryptpw`、`` |
+| A-m7 / B-m5 不一致 | §5 開頭、§7.1、§4.2 `cryptpw`、`
+` |
 | A-m8 / B-m8 artifact-match 的界線 | §2.2 |
 | A-m9 480 s | E3 量時間分布 |
 | A-m10 / B-m6 推播 | §7.4 |
@@ -889,7 +894,7 @@ E1 的結果寫回本節;重開的時機和預期不同 → 該鏈送回審查�
 
 **B-M4(現場生命週期缺口)→ 需要使用者決定**,見 §13.6。
 
-### 13.6 F34 的成因(openmanetd 原始碼已確認)與 B-M4(待使用者決定)
+### 13.6 F34 的成因(openmanetd 原始碼已確認)與 B-M4(使用者已決定:P-U13,見 §13.8.1)
 openmanetd 1.3.10 原始碼(`build_dir/.../openmanetd-1.3.10`)確認:
 - **誰重開**:`AddressReservationWorker.ReserveAddressIfNeeded`(`internal/mgmt/address_reservation.go:36-176`)。觸發條件是 `!configured || ipConflictDetected`(`:78`);`dhcpconfigured` 為 0 或空時,`configured` = false(`internal/network/uci_openmanet.go:211`)。依序:
   1. 選 IP;
@@ -924,7 +929,7 @@ openmanetd 1.3.10 原始碼(`build_dir/.../openmanetd-1.3.10`)確認:
 2. **接受競賽**:Pi 4 有 60 s 餘裕;Pi 3 要用 serial 量。03 目前停用,所以要等硬體。
 3. **只回報上層原單,之後再處理**:P1 照現狀出,並明列「unclaimed OTA 在慢的板子上可能無聲失敗」。
 
-### 13.7 B-M4 修法:trial 內暫停 openmanetd 的位址保留(使用者 2026-10-21 選「產品端先擋住」)
+### 13.7 (作廢,見 §13.8)B-M4 修法 v1:改 config.yml 暫停位址保留
 **要解決的現場問題**(§13.6):unclaimed 節點做 OTA 時,一定開進 fresh 槽。openmanetd 啟動後 125 s 會保留位址並執行 plain `reboot`,不管是不是 trial。這個 `reboot` 若比 commit 早到,OTA 會無聲失敗。
 
 **機制**:用 openmanetd 自己的開關 `alfred.dataTypes.addressReservation: false`(`config.go:413-416`,在 `mgmt.go:122` 啟動時判斷)。不偽造 `dhcpconfigured`。理由:`halow-status`、`joinwatch` 用 `dhcpconfigured` 標示位址狀態;config-save 會把它連同 IP 存進 p5。偽造成 1 會在 p5 留下 bootstrap IP + 已保留,之後從 p5 還原的槽永遠不會再保留位址。
@@ -981,3 +986,255 @@ openmanetd 1.3.10 原始碼(`build_dir/.../openmanetd-1.3.10`)確認:
 **測項**:
 - `tests/prov-p1/addr-defer.sh`(stub):進入暫停的判斷;解除時的精確比對與各條路徑。負對照是舊版 `99-halow-identity` / autocommit。
 - 真機:E1c v4(取代 v3 的 (2)「誰重開」):trial 內不重開;commit 後才保留位址並回到同一槽。
+
+### 13.8 B-M4 修法 v2:用環境變數關掉 trial 內的位址保留(取代 §13.7;元件 1、3 與契約的定稿見 §13.8.2)
+**§13.7 作廢**。第 9 輪兩位都 REJECT,根因相同:config.yml 有第二個寫入者(openmanetd 會以 yaml.v3 整檔重寫,`persist.go:19-60`、`frontend/handlers.go:772-814`);改檔不是原子的;壞 YAML 會讓 openmanetd 靜默改用全部預設值(`root.go:96-98`)。改 config.yml 這條路不安全。
+
+**機制**:openmanetd 用全域 viper,`initConfig` 在 `--config` 之後呼叫 `viper.AutomaticEnv()`(`cmd/root.go:80-92`)。所以環境變數 `ALFRED.DATATYPES.ADDRESSRESERVATION=false` 就能關掉 worker,config.yml 一個位元都不動。
+- **✅ 實測**:`scratchpad/h2/src/envprobe.sh` 用 openmanetd 1.3.10 自己的 `internal/config`(viper v1.21.0,離線 module cache)讀 04 的 `/rom` config.yml:
+  - 不設 → `addressReservation=true`;
+  - 設 `…=false` → `false`;
+  - 底線版 `ALFRED_DATATYPES_ADDRESSRESERVATION` → 無效(`true`);
+  - 三種情況下其餘設定(`gnss.enable=true`)都不變。
+
+**元件**:
+1. **(作廢,見 §13.8.2:決定者不呼叫 `is-trial`,也不寫 `addr-deferred`)決定者 `/usr/libexec/batman-addr-defer`**(Batman feed,新檔,root 0755):沒有狀態,每次 openmanetd start 時呼叫一次。
+   - `batman-slot is-trial` rc 0 → 暫停;
+   - rc 2 而且 DT `tryboot=1` → 暫停(fail-closed:判不出的 trial 不讓它被重開);
+   - 其他(rc 1 = committed、rc 2 但不是 tryboot、找不到 `batman-slot`)→ 不暫停,和今天一樣。
+   - 暫停時寫 `/tmp/run/batman/addr-deferred`(tmpfs,只活這次開機;內容是 boot_id),並記 log。
+   - 進入條件**和槽是不是 fresh 無關**(第 9 輪 A-M3、B9-m1):任何未 commit 的 trial 都暫停。對 `dhcpconfigured=1` 的還原槽,暫停沒有副作用,因為 worker 本來就不會觸發。
+2. **掛勾**:board patch `0014-openmanetd-addr-defer-254.patch`(`patches/ekh-bcm2711` 與 `patches/ekh-bcm2710`),改的是 `feeds/openmanet/openmanetd/files/openmanetd.init`:在 `procd_set_param command` 之後加一行
+   `[ -x /usr/libexec/batman-addr-defer ] && /usr/libexec/batman-addr-defer && procd_set_param env ALFRED.DATATYPES.ADDRESSRESERVATION=false`
+   - witness:`file /etc/init.d/openmanetd batman-addr-defer`(#275)。
+   - 上游的版本已釘住(`feeds.conf.default`)。上游改了 init,patch 會在 build 時失敗,不會靜默失效。
+3. **(作廢,見 §13.8.2:無條件 detached `start`,不用旗標判斷、不 `restart`)解除**:`batman-slot commit`(唯一的 commit 實作,autocommit 和操作員都經過它)。commit 成功、`sync` 之後,如果 `/tmp/run/batman/addr-deferred` 存在而且是這次開機寫的,就刪掉它,並 `/etc/init.d/openmanetd restart`。restart 時決定者看到 rc 1 → 不暫停 → worker 125 s 後保留位址並 plain `reboot`,這時已 committed,會回到同一槽。
+
+**(此段的旗標 / `restart` 細節已被 §13.8.2 取代)為什麼不會卡住**(第 9 輪 A-M4、B9-m3):狀態只存在環境變數和 tmpfs 裡,下一次 openmanetd start(bat0 up、重開、手動 restart)一定重新判斷。
+- 唯一會延後的情況:commit 之後、restart 之前,`batman-slot` 被殺掉,而且之後一直沒有 openmanetd restart。
+- 為此 `halow-status` 加一項:已 committed 而且 `addr-deferred` 存在 → **WARN**,寫明原因和處理方法(`/etc/init.d/openmanetd restart`)。
+- daily-validation tier A 加斷言:committed 的槽不能有 `addr-deferred`;settle 之後要 `dhcpconfigured=1`(H2)。
+
+**擁有權**:
+- 環境變數:procd instance,由 init 的掛勾設定,只看決定者的結果。
+- `/tmp/run/batman/addr-deferred`:決定者寫,`batman-slot commit` 刪。
+- `halow-status` 只讀。
+- config.yml:不碰。
+
+**契約**:
+- `addr-deferred` 的內容 = boot_id。內容不符或格式壞掉 → `batman-slot commit` 照樣 restart openmanetd。多一次 restart 沒有壞處,是安全方向。
+- 決定者讀不到 trial 狀態而且是 tryboot → 暫停;不是 tryboot → 不暫停。
+
+**生命週期**:
+| 路徑 | 今天 | 改後 | 證明 |
+|---|---|---|---|
+| 新卡第一次開機(不是 trial) | 125 s 後保留並重開 | 不變 | stub:rc 1 → 不暫停 |
+| fresh 槽 trial(unclaimed OTA) | 和 commit 競賽 | trial 內不保留;commit → restart → 保留 → 重開回同一槽 | E1c v4 + 負對照(wsl.12 上同一流程應在 trial 內重開) |
+| 還原槽 trial、`dhcpconfigured=0`(認領或 `--seed` 發生在保留之前) | 同樣競賽 | 同上 | stub + 鏈 1 |
+| 還原槽 trial、`dhcpconfigured=1` | worker 不觸發 | 暫停,沒有影響 | stub |
+| trial 被退回 | 回舊槽 | 回舊槽;tmpfs 旗標隨重開消失 | 推論:tmpfs |
+| commit 後、restart 前當機 | — | 下一次 openmanetd start 重新判斷;halow-status WARN | stub |
+| 操作員手動 `batman-slot commit` | — | 同一條解除路徑 | stub |
+| openmanetd 自己 restart(bat0 up) | — | 每次 start 都重新判斷 | 原始碼:init 的 `start_service` |
+| 降版到沒有這個改動的版本 | — | 舊 image 沒有掛勾,行為和今天相同 | build:舊 image 沒有 patch |
+| Batman feed 沒有決定者(只有 patch) | — | `[ -x ]` 不成立 → 不暫停 | stub |
+| Pi 3 / Pi 4 | — | 同一個 patch(兩板各一份)、同一個決定者 | witness 檢查兩板;真機只有 Pi 4 |
+
+**現場影響**(B9-m8):暫停期間節點停在 bootstrap IP(`10.41.254.<2-254>`,隨機)。
+- 只會持續到 commit,通常 ≤ 600 s 的 deadline;hold 的 trial 例外,會一直持續到 release。
+- 期間 bootstrap IP 有可能和別的節點碰撞,這和今天 fresh 槽前 125 s 的情況相同。
+- 寫進操作文件:**hold 期間不要按網頁的「重開」**(B9-m7)。那是 openmanetd 自己的另一條 plain reboot 路徑,trial 會無聲退回。
+
+**commit 後的保留重開**(A-m4、B9-m4):約在 commit 後 125–170 s,而這正是操作員最可能去認領的時候。
+- 認領被重開打斷時,由 `.txn` 與 `--apply-state` 收尾(§4.4 第 6 步)。這條路要在鏈 1 加一項測試:在保留重開期間認領。
+- plain `reboot` 在 Pi 4 上可能先落到 partition 0,再由自檢修正(`batman-reboot.c:2-6`)。E1c v4 要記錄,但不判 FAIL。
+
+**安全**(B9-m9):
+- 沒有新的對外輸入。決定者由 root 的 init 呼叫,只讀 DT 和 `batman-slot`。
+- 網頁使用者可以改 config.yml,但改不了 procd 的環境變數,所以這個暫停不受網頁影響。
+- 這比 §13.7 強:§13.7 的狀態放在 config.yml,網頁使用者寫得到。
+
+**測項**:
+- `tests/prov-p1/addr-defer.sh`(stub):
+  - 用 stub 的 `batman-slot` / DT 驅動決定者:rc 0、rc 1、rc 2 有 tryboot、rc 2 沒 tryboot、找不到 `batman-slot`;
+  - `batman-slot commit` 的解除:有旗標才 restart,沒有就不 restart;
+  - 對打過 patch 的 init 做 rc.common 模擬,斷言有暫停時 procd 收到那個 env。
+  - 負對照:沒打 patch 的 init 收不到 env。
+- 真機 E1c v4,斷言照兩位第 9 輪列的清單:
+  - **trial 內**:有 `addr-deferred`;這次開機沒有出現 `AddressReservationWorker initialized`;openmanetd 啟動後撐過 300 s;
+  - **release 之後**:B committed;`addr-deferred` 已刪;openmanetd 換 pid,恰好出現一次 worker initialized;125–200 s 內出現 `Rebooting system to apply new network settings`;
+  - **新的那次開機**:B committed;`dhcpconfigured=1`;IP 不在 `10.41.254.x`;撐過 300 s,沒有第二次保留重開。
+  - **負對照**:同一支 v4 跑在 wsl.12 上,預期 B 在約 165–200 s 時在 trial 內重開並退回 A。這同時是 B-M4 的真機重現,符合「先重現再修」。
+- Pi 3:❌ 沒有硬體(03 停用),只有 stub 與 witness。
+
+**§13.8 的依賴證據(環境變數從 init 到 openmanetd 的整條路)**:
+- `procd_set_param env K=V` → `_procd_add_table_data`(`package/system/procd/files/procd.sh:125-133`)→ `json_add_string "$var"`。jshn 遇到名稱含 `.` 時,shell 變數名換成 `_`,但另存原名 `N_<cur>_<var>=$2`(libubox `jshn.sh:58-59`),所以 JSON 的鍵保留 `ALFRED.DATATYPES.ADDRESSRESERVATION`。
+- procd 依原名 `setenv(blobmsg_name(var->data), …)`(`procd service/instance.c:480-481`)。env 改變會讓 instance 被視為不同(`:960`)。
+- viper 依原名讀(`envprobe.sh` 實測)。
+- ⚠️ 節點上的端對端效果(這次開機沒有出現 `AddressReservationWorker initialized`)要等 rc 上的 E1c v4 證明。
+
+#### 13.8.1 第 10 輪 → 修訂(兩位都是 APPROVE-WITH-CHANGES,各 1 MAJOR,都在「解除」)
+**使用者決定紀錄**:**P-U13**(2026-10-21):B-M4 在產品端擋住,也就是 trial 期間不讓 openmanetd 保留位址。實作方式是 board patch 對上游 init 加一行掛勾:上游檔只多一行呼叫,判斷邏輯全部放在 Batman feed。§13.6 的「待使用者決定」到此結案。
+
+**修訂後的規則**(取代 §13.8 的元件 1、3 與契約):
+1. **決定者 `/usr/libexec/batman-addr-defer`**:只輸出結果,不寫任何檔案。
+   - 判斷順序:
+     1. DT `tryboot` ≠ 1 → 不暫停。#133 stale fallback 和一般開機都屬於這一類(A-m1 / B10-m4)。這也避免 Pi 3 在一般開機時每次都掛載 p7(B10-m2 / A-m2)。
+     2. `$RUNDIR/slot-committed` 存在 → 不暫停。這個旗標由 `batman-slot commit` 寫,用來序列化(A10-M1(b)(c))。
+     3. `batman-slot is-trial`,上限 10 s(✅ 04 實查沒有 `timeout` 指令,改用背景執行 + 輪詢 rc 檔 + 逾時 kill):rc 0 → 暫停;rc 2 或逾時 → 暫停(這時已確定是 tryboot,判不出來就 fail-closed);rc 1 → 不暫停。
+   - 決定者有 10 s 的時間上限(A-m4)。
+2. **權威狀態**:「現在有沒有在暫停」只讀 `ubus call service list '{"name":"openmanetd"}'` 裡 instance 的 env(procd `instance.c:1685-1691`),不讀旗標(A10-M1(a))。
+3. **commit 的契約**(`batman-slot cmd_commit`,A-m3):
+   1. commit 寫完並 `sync` 之後,以 `batman_rundir` 建立 `$RUNDIR/slot-committed`(#280,B10-m3 / A-m9);
+   2. **無條件**執行 `setsid /etc/init.d/openmanetd start </dev/null >/dev/null 2>&1 &`(B10-M1)。`start` 讓 procd 拿新的 instance 定義比對:env 有變就在內部原子地重啟(`instance.c:1564-1575`),沒變就什麼都不做。不先 stop,所以 PTY hangup 殺不到中間狀態;
+   3. 這一步的 rc **不影響** commit 的 rc。
+4. **對帳**(冪等):joinwatch 每個 tick、`halow-status` 每次都做。「不該暫停」的條件 = DT `tryboot` ≠ 1,或 `slot-committed` 存在。
+   - 不該暫停,但 ubus env 有那個變數 → joinwatch 記 WARN,並以同樣的 detached `start` 修正;halow-status 報 WARN。
+   - 這不需要呼叫 `is-trial`,所以 Pi 3 不會每個 tick 都掛 p7。
+5. **daily-validation tier A**(H2,#290):
+   - committed 的槽,ubus env 裡不能有那個變數;
+   - settle 之後要 `dhcpconfigured=1`;
+   - image 裡要同時有 witness 字串和決定者。只有其中一個 = FAIL(A-m5)。wsl.12 沒有這兩者,依 P-U9 標 KNOWN,並寫期限。
+
+**新增或改寫的測項**:
+- `tests/prov-p1/addr-defer.sh`(stub,跑在 busybox ash,用 image 建出的 init,B10-m8)。案例:
+  - tryboot=0 → 不暫停;
+  - tryboot=1 + rc 0 → 暫停;
+  - tryboot=1 + rc 2 → 暫停;
+  - tryboot=1 + `slot-committed` → 不暫停;
+  - (作廢:§13.8.2 的決定者不呼叫 `is-trial`)`is-trial` 卡住 → 10 s 內回來,而且暫停;
+  - commit 後 `start` 被送出,commit 的 rc 不受影響;
+  - 對帳:env 有 + `slot-committed` → 送出 `start`;
+  - stop 之後模擬 SIGHUP:新設計不經過 stop,所以 openmanetd 仍在跑。
+  - 負對照:§13.8 的 v1 規則(只看旗標、用 restart),上面三個 A10-M1 的案例 + SIGHUP 案例都會 FAIL。
+- E1c v4,要有正向證據(B10-m5 / A-m8):
+  - 每個 openmanetd pid 都有 `Alfred Client Started`;
+  - trial 內 ubus env 有變數,`/proc/<pid>/environ` 也有;
+  - trial 內 `kill` openmanetd 一次 → procd respawn → 新 pid 的 env 仍有變數,而且沒有 `AddressReservationWorker initialized`;
+  - release → ubus env 沒有變數、新 pid、恰好一次 worker initialized、125–200 s 內 `Rebooting system to apply new network settings`;
+  - 新的那次開機:B committed、`dhcpconfigured=1`、IP 不在 `10.41.254.x`。
+  - 再從 ssh 直接 `batman-slot commit` 一次(在另一個 trial),斷言 env 被清掉。
+- **wsl.12 負對照的出口**(B10-m6):B 在 trial 內被 openmanetd 重開 → 回到 A,這時 B 已經連不到。`abort_to_a` 的「等 A」分支涵蓋這種情況:rollback 那步會失敗,接著等 A、disarm、印出 bad-slot、還原 p5、重開 A、`a_healthy`。副作用和 E1c 相同,外加一次非預期的重開。這條分支的結果記成「B-M4 已真機重現」,不算 FAIL。
+
+**現場影響,修正 §13.8 的說法**(B10-m7 / A-m10):
+- 暫停期間,openmanetd 的 IP 衝突偵測也是關的。hold 的 trial 沒有上限,所以這不只是「和今天前 125 s 相同」。操作文件要寫:hold 的 trial 不要放著過夜。
+- 操作文件再補兩條 plain reboot 路徑:trial 期間啟用 BLOS(`blos.go:108`),和網頁的「重開」。
+- 只有 trial 才會多一次 openmanetd restart:`start` 在 env 沒變時什麼都不做。
+- **claimed + placeholder 的節點**(A-m6):p5 一直是 `dhcpconfigured=0`,所以每次 OTA 都會拿到新的亂數 IP,commit 後也會多一次重開。這種節點不在任何 mesh 裡,IP 換了沒有人依賴,用 mDNS 找。接受,並寫進操作文件。
+
+#### 13.8.2 第 11 輪 → 定稿(A:APPROVE-WITH-CHANGES 2 MAJOR;B:APPROVE-WITH-CHANGES 1 MAJOR;A10-M1 / B10-M1 兩位都確認已關)
+**§13.8 的元件 1、3 與 §13.8.1 的規則 1–4 以本節為準**(A11-m8:舊文保留作歷史,標作廢)。
+
+- **A11-M1 / B11-M1(決定者逾時 kill `is-trial` 會在 Pi 3 留下 p7 掛載)→ 決定者不再呼叫 `is-trial`。**
+  決定 = DT `tryboot` = 1 **而且** `$RUNDIR/slot-committed` 不存在 → 暫停;否則照 stock。依據:tryboot 是一次性的,只有 `batman-slot apply` 會武裝它(`batman-slot:14`、`:567`);開機內唯一改變狀態的是 commit,而 commit 一定寫旗標。原本第 3 步只在 rc 2 時多給一個「也是暫停」的答案,沒有增加資訊,只有風險。決定者從此不碰任何磁碟。
+- **A11-M2(對帳的 detached `start` 沒有單例、沒有上限)→ 對帳集中在決定者的 `reconcile` 模式**,joinwatch 和 halow-status 都呼叫它,不自己重寫規則(B11-m1):
+  - 單例:`$RUNDIR/addr-defer.start.pid`,前一支還活著就不再送;
+  - 上限:每次開機最多 3 次(`$RUNDIR/addr-defer.starts`);超過 → log `HUNG`、rc 2,halow-status 顯示 WARN「openmanetd 沒有依指示重啟,請檢查 /var/lock」;
+  - 送出的 `start` 用 `env -i PATH=…`(A11-m5:不繼承 `BATMAN_FAULT_INJECT` / `BATMAN_ALLOW_*`),`setsid`、stdio 導向 /dev/null;
+  - 只修「不該暫停卻在暫停」;「該暫停卻沒暫停」只回報 WARN(A11-m2),因為那代表 hook 不在 image 裡,重啟沒有用。
+- **權威狀態的讀法**(A11-m3):`ubus -t 5 call service list '{"name":"openmanetd"}'`,以 grep 找 `"ALFRED.DATATYPES.ADDRESSRESERVATION": "false"` 字串(不用 jsonfilter 的帶點路徑);ubus 失敗或逾時 → `env=unknown`,對帳不動作、只回報。
+- **`rollback` 刪 `slot-committed`**(A11-m1),因為 rollback 之後這個槽不再是 committed。
+- **決定者的 RUNDIR 不可用**(B11-m1):旗標不存在就當「未 commit」→ 暫停(fail-closed);對帳模式在 RUNDIR 不可用時不送 `start`、只回報。
+- **procd 語意,列為依賴證據**(A11-m6,A 已追 c59f2d80):`start` 對執行中的服務 → `service_update` → env 變了才 `instance_restart`(原子、不吃 respawn 額度 `instance_exit:859-864`),沒變 → 不動(`instance_update:1564-1583`);mid-stop → 只設 `restart=true`,程序退出後重啟;未註冊 → 直接啟動;`procd.sh` 在 source 時就拿 per-service flock,決定者與 commit 的 `start` 全部序列化。`term_timeout` 5 s。
+- **既有的面**(A11-M2 的後半):procd 的 per-service flock 放在 1777 的 `/var/lock`,本機任何非 root 程序都能以 O_RDONLY + flock 永久持有,讓所有 `/etc/init.d/<svc>` 卡住。這不是本改動引入的,寫進 §8 並列殘項(屬 #280 那一類)。
+- **B11-m3**:`start` 會拉起操作員刻意 `stop` 的 openmanetd。接受:commit 本來就意味著節點回到正常服務;寫進操作文件。
+- **B11-m5 / A11-m4(Pi 3 時序)**:決定者現在不掛 p7,所以 A11-m4 的「commit 當下與決定者互撞」不再存在;Pi 3 的整體時序仍無量測,殘項。
+- **B11-m7**:降版到沒有 hook 的 image,trial 內會重現 B-M4,這就是 E1c v4 的負對照。
+
+**介面**(`/usr/libexec/batman-addr-defer`,Batman feed,root 0755;唯一的實作):
+| 呼叫 | 誰呼叫 | 輸出 |
+|---|---|---|
+| (無參數) | openmanetd init 的掛勾,每次 `start` | rc 0 = 暫停(init 設 env);rc 1 = stock |
+| `status` | halow-status、測試 | `want=defer|stock env=present|absent|unknown openmanetd=up|down` |
+| `reconcile` | joinwatch 每 tick | rc 0 沒事或已送 `start`;rc 2 HUNG;只回報的情況 rc 0 + log |
+
+**生命週期補列**:
+| 路徑 | 行為 | 證明 |
+|---|---|---|
+| Pi 3,trial 內 bat0 up 讓 openmanetd 重啟 | 決定者只讀 DT 與旗標,不掛 p7 | stub(決定者在 pi3 layout 下沒有任何 mount 呼叫:以 PATH 擋掉 `mount` 斷言) |
+| flock 被卡住、`start` 送不出去 | 第 1–3 次各一個 detached 程序;第 4 次起 HUNG,halow-status WARN;不再堆程序 | stub(假的 `/etc/init.d/openmanetd` 永不結束) |
+| 兩個 `start` 互相覆蓋 | procd.sh 的 flock 序列化;最後一個贏,而且決定者是冪等的 | 原始碼(A) |
+| rollback 後同一次開機 | 旗標被刪;決定者回到「暫停」(仍是 tryboot 開機);openmanetd 不會因此重啟,因為沒有人送 `start` | stub |
+
+**§13.8.2 已實作(2026-10-23)**:`feat/254-p1` d88250b(決定者 `/usr/libexec/batman-addr-defer`、`batman-slot commit/rollback`、joinwatch 對帳、halow-status、Makefile);firmware 51f8f256(board patch 0014,兩板,witness `file /etc/init.d/openmanetd batman-addr-defer`);H2 `tests/prov-p1/addr-defer.sh` 22/22(dash 與 busybox ash;stock init 負對照)。真機證據待 E1c v4(wsl.13)。
+- 實作時的小決定:決定者 `have()` 把「openmanetd 已註冊但沒有 instance」算成 `env=absent`;`reconcile` 在 `want=defer` 但 `env=absent` 且 openmanetd 在跑時只記 WARN(hook 不在 image 裡,重啟無用)。
+
+### 13.9 B-M4 真機重現(E1c v4 NEG=1,04,wsl.12,2026-10-23)
+**✅ 重現成功**(腳本在找到 trial 後因 `find_b` 子 shell bug 當掉,**沒有跑到它自己的 NEG 斷言**;證據是事後從 p6 取的 forensic 紀錄,B12-m5):
+- 04 的 `boot-reasons.log`:B 的那次開機 `boot_id=b4486f5b` → `prev=CLEAN: … uptime=170.45s trigger=reboot/halt command`;同一個 boot 在 `autocommit.log` 是 `HOLD-COMMIT boot=b4486f5b slot=B`。
+- 也就是:一個 **HELD、沒有被 autocommit 動過的 trial,在 170 s 時被 plain `reboot` 退回 A**。這和 §13.6 的 openmanetd 時序(啟動約 40 s + 125 s ticker)吻合;trigger 文字是「reboot/halt command」而不是 openmanetd,原因如 §13.6 所述(`reboot_trigger()` 只看 logread 最後 50 行)。
+- 主機端:08:07:04 時 B 還在 bootstrap 位址 `10.41.254.212`;08:07:51 已經不回應。
+- ⚠️ 關機 dump `shutdown_20250719-112926_b4486f5b.log` 裡有沒有 openmanetd 的「Rebooting system」行,由 recover2 的輸出補上。
+
+**兩個腳本 bug(都已修)**:
+1. E1c v3/v4 的 `FIP=$(find_b …)` 在子 shell 裡執行,`FOUND_HOW` 傳不回父 shell,`set -u` 當掉。發生在找到 trial、種 dead-man **之前**,所以當時 trap 印的「dead-man stays ARMED」不是事實(只是 staged 在 p6,rc.local 沒種)。修法:`find_b` 直接設定父 shell 變數;trap 文字改成只陳述 `PLANTED` 旗標。
+2. prov-base `lock_take` 在 `&` 之後立刻讀 `/proc/$!/cmdline`:子程序還沒 exec 到 holder 腳本時讀到的是父 shell 的 cmdline → `p5-restore` die。昨天的 snap 只是時序剛好。修法:拿掉多餘的 `setsid`(它若 fork,`$!` 就會是錯的 pid),比對改成最多 4 次、每秒重試。
+
+**04 的狀態與還原**:當掉後 B 自己重開回 A(hold 旗標留在 p6,A committed 開機不受影響),p5 被 mkfs 過。還原 = recover-04.sh / recover2-04.sh(等 A → 收證據 → disarm → 刪 hold → p5-restore → `reboot committed` → `a_healthy` → brewrite B → compare → finish)。結果見 §13.9 下方的紀錄。
+- **✅ 歸因確定(recover2,2026-10-23 08:12)**:關機 dump `shutdown_20250719-112926_b4486f5b.log` 內,openmanetd[6283] 在 11:27:12 記 `AddressReservationWorker initialized`,11:29:18(126 s 後)記 `Rebooting system to apply new network settings`;同一份 dump 顯示該 boot `dt_tryboot=00000001`。這就是 §13.6 的時序,不是推論了。
+- **還原**:p5-restore(修過 lock_take 之後)→ `P5-RESTORED e1c10230803 sha=a4571a4f33ded757`;A 重開後 `ps=helper/legacy check_rc=0 helper=up`。B 重寫、compare、finish 見 recover3 的紀錄。
+- **recover3(08:16–08:24)**:B 重寫 PASS(HELD 在 107 s);compare 有 6 個 DIFF,全部是 `etc/openmanetd/openmanetd.db{,-wal,-shm}`(openmanetd 的 SQLite 執行期重寫,F30 那一類)→ 登記到 `tests/prov-p1/overlay-allow.txt`(kind content,附這次的證據)。其餘 p5 / uci / identity / p6 state 全部相同。finish 完成,04 回到 S0。⚠️ recover3 沒有以 diffs=0 當 finish 的條件(救援腳本);正式的 tier B 單位要有。
+
+### 13.10 wsl.13 上線(2026-10-23 08:27–08:58)與 addr-defer 的第一批真機痕跡
+- ROLL13 PASS:02、04 都在 S0,`1.5.12-wsl.13+d88250b.fw9292567`;OTA tier A 34 PASS / 0 FAIL;committed 槽上 `batman-addr-defer status` = `want=stock env=absent openmanetd=up`,init 有 hook,決定者 root 0755。
+- 兩台的 `ota-trace.log` 各有兩行 `SLOT ADDR-DEFER-RELEASE flag=written`(OTA trial 的 commit 與正規化的 commit):`batman-slot commit` 的解除路徑在真機跑過 4 次,沒有影響 commit 的結果(兩個 trial 都 committed)。
+- ⚠️ 這批 trial 是從 p5 還原的 legacy 槽(`dhcpconfigured=1`),所以暫停沒有可見效果(worker 本來就不會觸發);trial 內 openmanetd 有沒有帶 env、commit 後有沒有被 restart,這批沒有量。正式證據 = E1c v4 正向(fresh unclaimed 槽)。
+
+### 13.11 E1c v4 正向,第 1 次(04,wsl.13,2026-10-23 08:59–09:11)
+**✅ 前半段(trial 內)成立,真機證據**:
+- fresh unclaimed 的 HELD trial(`prov … state=unclaimed`、`mesh join required: 0 (prov=unclaimed`、`HELD`、沒有 AP 介面);
+- `batman-addr-defer` 在 S99 記 `uncommitted tryboot trial — deferring …`;openmanetd pid 6282 的 `/proc/<pid>/environ` 有 `ALFRED.DATATYPES.ADDRESSRESERVATION=false`,`status` = `want=defer env=present openmanetd=up`,`alfred_started=1 worker_init=0`;
+- `kill` 之後 procd respawn(pid 13027),env 仍在、worker 仍沒起來;
+- openmanetd 跑到 **uptime 305 s**:`worker_init=0 rebooting=0`,B 的 boot_id 不變。對照 §13.9 沒有 hook 的 wsl.12:126 s 就 `Rebooting system`。
+
+**❌ 後半段沒量到**:腳本在 305 s 的斷言用了 `*" worker_init=0 "*" rebooting=0 "*`,兩段字面搶同一個空格,永遠不成立 → 誤判 ABORT。`abort_to_a` 照設計走完:B 上 rollback + `reboot committed`(沒有 bad-slot)→ A → disarm(flag 0)→ p5-restore(sha 相符)→ A 重開 → `a_healthy`(legacy、`--check` 0、helper up、`want=stock env=absent`)→ dead-man 取消。
+- 收尾:brewrite B 到 wsl.13 PASS;compare **diffs=0**(allow-list 推到節點上,openmanetd.db 的變動被 kind content 擋掉;其他全相同)→ finish。這是第一次在真機上拿到乾淨的 S0 compare。
+- pattern 已修(單一段 `" worker_init=0 rebooting=0 "`);第 2 次正向跑在 09:2x 開始。
+- 小錯:recover4 用 `sed 's/^RUN=…/'` 改 run id,但 `RUN=` 不在行首 → 對舊 run 做 finish 而失敗,且同一行的 rm 把節點上的 prov-base 副本刪掉。救援腳本的教訓:清理步驟要以 finish 成功為條件(§13.9 已註記)。
+
+### 13.12 P-U14(2026-10-23):量產用 CM4,Pi 3 暫不支援
+使用者決定:量產載板是 **CM4**(BCM2711,與 Pi 4 同 target `ekh-bcm2711`),不是 CM3。因此 **Pi 3 / `ekh-bcm2710` 暫時不支援**:
+- 本文件所有標 ⚠️「Pi 3 未實測」的項目(§13.4 B-M4 的 Pi 3 時序、§13.8.2 的 p7 掛載、A11-m4 / B11-m2 / B11-m5、E1c 的 Pi 3 版)一律改為**殘項,不是阻擋**,寫進 #254 的 checklist。
+- 生命週期矩陣的「Pi 3」欄保留,內容標「暫不支援(P-U14)」;board patch 0014 仍放 `patches/ekh-bcm2710`(同一棵樹出兩板,無害)。
+- 出貨判定只認 bcm2711。CM4 載板與 Pi 4 的差異(eMMC / 無 WiFi 版 / EEPROM)待載板定案後另開 reality check。
+
+### 13.13 E1c v4 正向,第 2 次(04,wsl.13,2026-10-23 09:23–09:43)— **DONE,B-M4 修法端到端成立**
+| 階段 | 證據 |
+|---|---|
+| HELD trial(fresh unclaimed,B 10.41.254.143,boot 7cfc636a) | `mesh join required: 0 (prov=unclaimed`、`HELD`、`state=unclaimed`、沒有 AP;`batman-addr-defer: uncommitted tryboot trial — deferring` |
+| openmanetd 在 trial 內 | pid 6269:`/proc/<pid>/environ` 有變數(`env=1`),`status=[want=defer env=present openmanetd=up]`,`alfred_started=1 worker_init=0` |
+| procd respawn | kill 後 pid 13541:env 仍在、`worker_init=0` |
+| 撐過 openmanetd 300 s | `openmanetd up 305s, no worker, no reservation reboot`;B 的 boot_id 不變(沒有 hook 的 wsl.12:126 s 就重開,§13.9) |
+| release(B uptime 415 s) | `release: committed`;`slot_committed=y`;openmanetd 換 pid 13541 → 10915;**1 秒內** `env=0 status=[want=stock env=absent]`;`worker_init=1`(恰好一次) |
+| 保留位址重開(committed 槽上) | recorder 存下 prev-boot:`12:12:53 AddressReservationWorker initialized` → `12:14:58 Static IP 10.41.80.47 and DHCP configured via address reservation` → `12:15:00 Rebooting system`;B 在 commit 後 146 s 消失;boot-reasons `uptime=562.29s trigger=reboot/halt command` |
+| 找回 | mDNS 27 s:`10.41.80.47`,`slot=B trial_rc=1 dt_try=00000000`,`dhcpconfigured=1`,`status=[want=stock env=absent]`,`worker_init=1` |
+| 穩定 | 300 s 沒有第二次重開 |
+| 還原 | dead-man:`P5-RESTORED e1c10230923 sha=7feb94f1…`、`rollback rc=0`、`reboot committed` → A `ps=helper/legacy check_rc=0 helper=up want=stock env=absent`;02 不受影響;dead-man 取消 |
+
+- 腳本訊息 bug(不影響判定):「openmanetd logged the reservation reboot 1 s after the commit」是假的 — `fq '… | grep -q …'` 的結束碼被 `| tr -d '\r'` 蓋掉,永遠成功。已改成 `grep -c` 取值比對。
+- 這一跑同時是 §13.3 (a) 案三個事實的證明:fresh 槽自己 commit(這裡是 release 觸發)、重開成因(openmanetd,§13.6)、重開後找得到(mDNS,位址亂數 `10.41.80.47`)。
+- 收尾(brewrite B、compare、finish)見 finish-04.log。
+- **收尾(09:44–09:58)**:brewrite B PASS;第一次 compare 有 2 個 DIFF = `etc/board.json`(快照 sha 6dc275aaf914、live 6175191bb6ef)。結構 diff:只有 `wlan.phy1.info.bands.{2G,5G}` 的 HT/VHT 能力欄位(快照 HT40/VHT80,live 只有 NOHT);phy1 = **brcmfmac**(Pi 內建 WiFi),不是 morse。**翻轉測試**:plain `batman-slot reboot committed` 一次 → sha 回到 6dc275aaf914、modes 回到 `NOHT,HT20,HT40`。歸因:`/bin/board_detect` 每次 preinit 重寫 board.json(mtime = 開機時間),brcmfmac 能力探測有時序差;與 #254 無關,無功能影響(OpenWrt 只在缺 wireless config 時用它)。登 `overlay-allow.txt`(kind content)附兩次證據。之後 compare diffs=0 → finish。
+
+### 13.14 第 12 輪(程式碼 + 整份設計)→ 處置
+兩位都 APPROVE-WITH-CHANGES,各 1 MAJOR,**同一件事**:回歸保護沒進常規套(A12-M1 / B12-M1)。程式碼本身 0 MAJOR;兩位各自重跑 stub(dash + busybox)與 mutant,重讀 E1c v4 的 log 逐條對上 §13.8.2;節點只讀。
+
+**A12-M1 / B12-M1(進常規套)已做**(H2):
+- CI 新 job `prov-p1`:no-root 的 stub(決定者 dash + busybox、autocommit case、99zz、batman-slot release)、root 的 loop 裝置測試(config-save 三支、prov-base statecmp)、`go vet` + `go test`。
+- daily-validation:`prov-p1-stubs`(無硬體,從本 checkout 的產品檔跑;root 時加 loop 裝置那組)、tier A `addr-defer-254`(`scripts/node/addr-defer-254.sh`:決定者與 hook **同時**在 image、DT tryboot 節點存在(CM4 reality check,A12-m9)、committed 槽 `want=stock env=absent openmanetd=up` **且** procd env 沒有變數、沒有 HUNG、uptime ≥ 300 s 時 `dhcpconfigured=1`)。02 / 04 各 8/8 PASS。
+- `tests/prov-p1/batman-slot-addr-defer.sh`:從真檔抽出 `addr_defer_release` / `cmd_rollback` 的旗標行,stub 下驗旗標、唯一一次 detached start、rc 不受影響、run dir 不可用的分支、`env -i` 不洩漏、沒有決定者時 no-op;負對照 6e3a8c1 FAIL(函式不存在)。
+
+**產品 MINOR,已修**(`feat/254-p1`,下一個 rc):
+- B12-m1 / B12-m2:reconcile 的 pid 檔改為 `<pid> <uptime>`;start 還活著但超過 60 s → HUNG rc 2;死掉或過期的 pid 釋放單例。
+- A12-m6:reconcile 不再用 `setsid`(joinwatch 沒有 PTY;busybox setsid 會 fork 讓 `$!` 錯);commit 那條保留 `setsid`(B10-M1 的 PTY hangup)。
+- A12-m7:HUNG 與 trial-WARN 每次開機只記一次(`addr-defer.said.*` 標記)。
+- B12-m7:決定者的決策只經 `logger` 記一次,不再 echo 到 stderr(procd 會轉送 init 的 stderr → 重複)。
+- A12-m4 / B12-m3:trial 但沒暫停的文案補上「或這次開機 commit 後又 rollback」。
+- A12-m5:stub 補 `ubus` 必帶 `-t`、`env -i` 不洩漏的案例(兩個 mutant 現在會被抓到)。
+- A12-m10:witness 路徑去掉前導 `/`,與其他 patch 一致(兩板)。
+
+**文件,已修**:A12-m1 / B12-m6 §3 新增四個資源列;A12-m2 §13.8 作廢段逐段標記、§13.8.1 的 `is-trial` 測項標作廢;B12-m5 §13.9 註明 forensic;A12-m8 §13.8.2 介面表:halow-status 只呼叫 `status`(程式碼為準);A12-m3 / B12-m6 §8 補 `/var/lock` 既有面(見下)。
+
+**§8 補:既有的面(不是本改動引入)**:procd 的 per-service flock 放在 1777 的 `/var/lock`,本機任何非 root 程序可以 O_RDONLY + flock 永久持有,讓該服務的 `/etc/init.d/<svc>` 全部卡住。對本改動的可見後果:committed 槽永遠不保留位址(halow-status WARN、tier A FAIL、reconcile HUNG 一次)。屬 #280 那一類,列殘項。
+
+**沒做 / 殘項**:B12-m4 從 PTY(ssh 互動 / 網頁終端機)下 `batman-slot commit` 的真機斷言 — 殘項(目前只有第 11 輪的主機 PTY 實驗);reconcile 路徑在節點上從未被觸發(只有 stub);Pi 3(P-U14)。
