@@ -68,6 +68,7 @@ reset; tryboot 00000000; envp present; "$D" reconcile >/dev/null 2>&1; r=$?; sle
 reset; tryboot 00000000; envp present; : > "$T/hang"; "$D" reconcile >/dev/null 2>&1; sleep 1; "$D" reconcile >/dev/null 2>&1; r=$?; "$D" reconcile >/dev/null 2>&1; sleep 1
 [ "$(starts)" = 1 ] && [ "$r" = 0 ] && ok "singleton: a hung start is not stacked (still within its time, rc 0)" || no "singleton: starts=$(starts) rc=$r"
 # the same start, pretended to have been sent long ago -> HUNG rc 2, logged ONCE (B12-m1, A12-m7)
+u=$(cut -d. -f1 /proc/uptime); [ "$u" -lt 61 ] && sleep $((61 - u))   # the decider measures from /proc/uptime (a fresh WSL VM is young)
 read -r hp _ < "$T/run/addr-defer.start.pid"; echo "$hp 1" > "$T/run/addr-defer.start.pid"
 "$D" reconcile >/dev/null 2>&1; r1=$?; "$D" reconcile >/dev/null 2>&1; r2=$?; sleep 1
 [ "$r1" = 2 ] && [ "$r2" = 2 ] && [ "$(starts)" = 1 ] && ok "a start still running after 60 s -> HUNG rc 2, no new start" || no "hung start: rc=$r1/$r2 starts=$(starts)"
