@@ -92,3 +92,8 @@ slot-committed
 addr-defer.start.pid
 addr-defer.starts
 addr-defer.said.*
+# #254 P1 (merged in #307): names the P1 product uses in the run dir
+cfgsave-frozen
+joinwatch.lastjoined
+prov-txn
+autocommit.ble-warned
