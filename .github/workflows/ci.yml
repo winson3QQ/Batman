@@ -51,6 +51,8 @@ jobs:
       - name: "#254 P1 stub tests (no root): decider / init hook, autocommit prov case, 99zz mesh_expect, batman-slot release"
         run: |
           F=feed/batman-provision/files
+          # harness lands first (#290): on a checkout whose product is pre-P1 this job is RED on purpose (P-U9: red, KNOWN #254)
+          [ -x $F/usr/libexec/batman-addr-defer ] || { echo "::error::product in this checkout is pre-P1 (no $F/usr/libexec/batman-addr-defer): expected red until feat/254-p1 lands (#254)"; exit 1; }
           bash tests/prov-p1/addr-defer.sh $F/usr/libexec/batman-addr-defer
           sed '1s#.*#\#!/usr/bin/busybox sh#' $F/usr/libexec/batman-addr-defer > /tmp/dec.bb && chmod +x /tmp/dec.bb && bash tests/prov-p1/addr-defer.sh /tmp/dec.bb
           bash tests/prov-p1/autocommit-prov-case.sh $F/usr/bin/batman-autocommit
