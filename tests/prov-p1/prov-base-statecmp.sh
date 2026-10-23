@@ -40,5 +40,9 @@ printf '%s
 printf '%s
 ' "-rw-r--r-- 0:0 aaaa etc/openmanetd/openmanetd.db
 -rw-r--r-- 0:0 dddd etc/config/wireless" > $D/now-x/upper.manifest; ALLOW_FILE=$AL run 1 "etc/config/wireless content differs -> FAIL even with the allow-list"
+printf '%s
+' "-rw-r--r-- 0:0 aaaa etc/board.json" > $D/snap/upper.manifest; printf '%s
+' "-rw-r--r-- 0:0 bbbb etc/board.json" > $D/now-x/upper.manifest
+ALLOW_FILE=$AL run 0 "etc/board.json content differs (board_detect per-boot probe) -> allowed"
 echo same > $D/snap/upper.manifest; echo same > $D/now-x/upper.manifest
 rm -rf $R; echo "STATECMP fails=$fails"; [ $fails = 0 ]

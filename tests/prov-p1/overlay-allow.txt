@@ -3,3 +3,4 @@
 #   content = may differ in content/mode but must exist on both sides      exists = may appear or vanish
 # Every entry needs evidence from a real node; nothing goes here to make a run pass.
 content ^etc/openmanetd/openmanetd\.db(-wal|-shm)?$  # openmanetd's SQLite store is rewritten at runtime: 04 2026-10-23 recover3 compare, 6 DIFFs all these three files, nothing else (F30 runtime churn)
+content ^etc/board\.json$  # /bin/board_detect rewrites it at every preinit; the wlan.phy1 (brcmfmac) HT/VHT capability fields vary with the probe timing: 04 2026-10-23 one boot had NOHT only, a plain reboot committed restored the snapshot sha 6dc275aaf914 (flip test, bj-flip.log). OpenWrt reads it only to generate a missing wireless config.
