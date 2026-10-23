@@ -481,6 +481,8 @@
 
 ## 12. v3（**備案**，2026-09-29 使用者：先擱置）：板子往左延伸 3 mm、電源區從頭重擺
 
+> **2026-10-20 已被取代**：新 HAT 往 SD 卡端加長，長度依面積定、上限 10 mm，見 `docs/design/hat-v2-spec.md` §6 與 #227。本節保留作為紀錄；§12.7 審查對 VSYS 走法（V1B）的建議仍可參考。
+
 ### 12.0 今天先處理掉的（§11 之後）
 - escape 改用正式 Würth 封裝：`src_board.py` 從主板複製一份、只把 H5 / H6 換成 design.py 的封裝，存成 `src-board.kicad_pcb`；`export_fp.py` / `escape.py` 讀環境變數 `SRC_BOARD`，並印出實際讀的板檔。主板不動。
 - 5.8 courtyard 讓 G0 出現 4 個 FAIL → 最小位移搜尋：C6 / R9 x −0.3、U2 / R6 y +0.1、C34 x +2.0。
