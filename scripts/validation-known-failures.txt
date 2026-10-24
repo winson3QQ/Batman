@@ -12,3 +12,10 @@ p5-follows-config-202	^FAIL (batman-config-save --check unsupported|p5 hostname 
 p5-follows-config-202b	^FAIL (batman-config-save --check unsupported|p5 hostname stale after 60 s|pre-#202 image: .*untestable|writer silently read-only under ro readers|T11 not exercised|T11 reader could not hold p5|lock-busy marker not raised by a stuck holder|stale lock not taken over|lock-busy marker left behind|--check did not report lock-busy|p5 lost an update under concurrent writers)	202
 setkey-persists-202	^FAIL (setkey accepted an unpersistable key|--channel unsupported|p5 key not persisted by setkey|setkey did not report persist: saved|precheck passed with stale p5|--check unsupported on .*untestable|did not rejoin within 180 s after key restore)	202
 ble-pair-sc-only-254	^FAIL (flip|restart|target|n6) segment.*VERDICT invalid:(conn=0|no-target)	305
+# #305 transition (docs/design/305-mini-uart-flow.md §8 pt 4): on a pre-#305 image (no mini-uart-autoflow(#305) in
+# BATMAN_FEATURES) every #305 suite prints ONLY this line and does nothing else. Void once #305 is closed.
+bt-uart-flow-305	^FAIL pre-305 image: test not applicable to this kernel$	305
+bt-uart-rebind-305	^FAIL pre-305 image: test not applicable to this kernel$	305
+bt-uart-load-305	^FAIL pre-305 image: test not applicable to this kernel$	305
+bt-uart-close-305	^FAIL pre-305 image: test not applicable to this kernel$	305
+bt-uart-boot-305	^FAIL pre-305 image: test not applicable to this kernel$	305
