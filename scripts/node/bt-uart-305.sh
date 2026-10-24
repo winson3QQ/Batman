@@ -23,6 +23,7 @@ SER=${BT305_SER:-/proc/tty/driver/serial}
 DTC=${BT305_DTC:-/proc/device-tree/compatible}
 BBUILD=${BT305_BBUILD:-/etc/batman-build}
 KMSG=${BT305_KMSG:-$DIR/kmsg.txt}		# the self-test (scripts/test-dv-bt-uart-305.sh) points these at fixtures
+KDEV=${BT305_KDEV:-/dev/kmsg}			# where markers are written (and read back from)
 DRV=/sys/bus/serial/drivers/hci_uart_bcm
 MARK='mini-uart-autoflow(#305)'
 PROBE=$DIR/btprobe; FLOOD=$DIR/hciflood; RAW=$DIR/r305raw.ko; NOP2=$DIR/hci_uart-noP2.ko
@@ -84,19 +85,20 @@ health_ok() {	# helper health line: bondable=0 privacy=1 sc=1, written this boot
 # ---- kernel log capture from the start of a test (A v5 m1, A v6 m11): start / end marker lines, capture must live --
 kmsg_start() {
 	rm -f "$KMSG"
-	setsid sh -c "exec cat /dev/kmsg" > "$KMSG" 2>&1 < /dev/null &
+	setsid sh -c "exec cat $KDEV" > "$KMSG" 2>&1 < /dev/null &
 	sleep 1; pg=$(cut -d' ' -f5 "/proc/$!/stat" 2>/dev/null); isint "$pg" || die "kmsg capture did not start"
 	echo "$pg" > "$DIR/kmsg.pg"
-	echo "bt305: start $RUN_ID $1" > /dev/kmsg; sleep 1
+	echo "bt305: start $RUN_ID $1" > "$KDEV"; sleep 1
 }
-kmsg_mark() { echo "bt305: mark $RUN_ID $1" > /dev/kmsg; }
+kmsg_mark() { echo "bt305: mark $RUN_ID $1" > "$KDEV"; }
 kmsg_stop() {	# -> KM_OK=1 when both markers are in the capture and the reader was alive to the end
-	echo "bt305: end $RUN_ID" > /dev/kmsg; sleep 1
-	KM_OK=0; alive=0; pg=$(cat "$DIR/kmsg.pg" 2>/dev/null)
-	isint "$pg" && for s in /proc/[0-9]*/stat; do [ "$(cut -d' ' -f5 "$s" 2>/dev/null)" = "$pg" ] && alive=1 && break; done
-	[ "$alive" = 1 ] && pg_kill "$pg"; rm -f "$DIR/kmsg.pg"
-	grep -q "bt305: start $RUN_ID" "$KMSG" && grep -q "bt305: end $RUN_ID" "$KMSG" && [ "$alive" = 1 ] && KM_OK=1
+	echo "bt305: end $RUN_ID" > "$KDEV"; sleep 1
+	KM_OK=0; km_alive=0; pg=$(cat "$DIR/kmsg.pg" 2>/dev/null)
+	isint "$pg" && for s in /proc/[0-9]*/stat; do [ "$(cut -d' ' -f5 "$s" 2>/dev/null)" = "$pg" ] && km_alive=1 && break; done
+	# judge BEFORE pg_kill: pg_kill uses the global $alive / $s / $n of ble-lib-254.sh (it clobbered this verdict)
+	grep -q "bt305: start $RUN_ID" "$KMSG" && grep -q "bt305: end $RUN_ID" "$KMSG" && [ "$km_alive" = 1 ] && KM_OK=1
 	grep -q 'Broken pipe' "$KMSG" && KM_OK=0		# ring overrun: the reader got EPIPE
+	[ "$km_alive" = 1 ] && { pg_kill "$pg" || echo "NOTE kmsg reader group $pg did not exit within 10 s"; }; rm -f "$DIR/kmsg.pg"
 }
 km_count() {	# $1 ERE, [$2 from-marker tag] [$3 to-marker tag]: matching hci0 lines between markers
 	awk -v re="$1" -v a="${2:-}" -v b="${3:-}" -v r="$RUN_ID" '

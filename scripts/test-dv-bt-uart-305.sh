@@ -13,8 +13,8 @@ cp "$REPO/scripts/node/ble-lib-254.sh" "$REPO/scripts/node/bt-uart-305.sh" "$T/"
 # run a snippet inside the node library (busybox-ash compatible code, run here with sh)
 lib() { (cd "$T" && cat > drive.sh <<EOF
 BT305_LIB_ONLY=1
-BT305_AF=$T/af BT305_SER=$T/ser BT305_DTC=$T/dtc BT305_BBUILD=$T/bb BT305_KMSG=$T/kmsg RUN_ID=run1
-export BT305_AF BT305_SER BT305_DTC BT305_BBUILD BT305_KMSG
+BT305_AF=$T/af BT305_SER=$T/ser BT305_DTC=$T/dtc BT305_BBUILD=$T/bb BT305_KMSG=$T/kmsg BT305_KDEV=$T/kdev RUN_ID=run1
+export BT305_AF BT305_SER BT305_DTC BT305_BBUILD BT305_KMSG BT305_KDEV
 . ./bt-uart-305.sh
 $1
 EOF
@@ -68,6 +68,21 @@ cat > "$T/kmsg" <<'EOF'
 3,109,9,-;Bluetooth: hci0: command 0x0c03 tx timeout
 EOF
 o=$(lib 'echo "$(km_count "hci0: .*tx timeout") $(km_count "hci0: Frame reassembly") $(km_count "hci0: .*(tx timeout|failed)" r1 e1)"'); [ "$o" = "2 1 1" ] && ok "km_count: only between start/end; per-iteration window" || bad "km_count: [$o] (want 2 1 1)"
+
+# ---- kmsg_start / kmsg_stop for real (a FIFO stands in for /dev/kmsg; a holder keeps it open read-write) ---------
+# The judge must PASS when the reader lives to the end: pg_kill (ble-lib-254.sh) sets the global $alive, which once
+# made kmsg_stop report "capture incomplete" on every healthy run (found on the nodes, 2026-10-25).
+kfifo() { rm -f "$T/kdev"; mkfifo "$T/kdev"; (exec sleep 30 <> "$T/kdev") & KH=$!; }	# O_RDWR: writes never block (like /dev/kmsg)
+kfifo
+o=$(lib 'kmsg_start t; kmsg_mark a; kmsg_stop; echo "KM_OK=$KM_OK"; [ -e "$DIR/kmsg.pg" ] && echo pg-left'); kill $KH 2>/dev/null
+case "$o" in *KM_OK=1*pg-left*) bad "kmsg_stop: left kmsg.pg behind";; *KM_OK=1*) ok "kmsg_stop: live reader + both markers -> KM_OK=1";; *) bad "kmsg_stop healthy: [$o]";; esac
+grep -q 'bt305: end run1' "$T/kmsg" && ok "kmsg capture holds the end marker" || bad "kmsg capture lacks the end marker"
+kfifo
+o=$(lib 'kmsg_start t; pg_kill "$(cat "$DIR/kmsg.pg")"; kmsg_stop; echo "KM_OK=$KM_OK"'); kill $KH 2>/dev/null
+case "$o" in *KM_OK=0*) ok "kmsg_stop: reader dead before the end -> KM_OK=0";; *) bad "kmsg_stop dead reader: [$o]";; esac
+kfifo
+o=$(lib 'kmsg_start t; echo "cat: read error: Broken pipe" >> "$KMSG"; kmsg_stop; echo "KM_OK=$KM_OK"'); kill $KH 2>/dev/null
+case "$o" in *KM_OK=0*) ok "kmsg_stop: EPIPE in the capture -> KM_OK=0";; *) bad "kmsg_stop EPIPE: [$o]";; esac
 
 # ---- settings -----------------------------------------------------------------------------------------------------
 o=$(lib 'PR="readinfo_powered=1 settings=powered,le,secure-conn,privacy hci_version=status0 ms=1"; settings_ok && echo good'); [ "$o" = good ] && ok "settings_ok: privacy + secure-conn, no bondable" || bad "settings good: [$o]"
