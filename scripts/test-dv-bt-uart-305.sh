@@ -83,11 +83,17 @@ case "$o" in *KM_OK=0*) ok "kmsg_stop: reader dead before the end -> KM_OK=0";; 
 kfifo
 o=$(lib 'kmsg_start t; echo "cat: read error: Broken pipe" >> "$KMSG"; kmsg_stop; echo "KM_OK=$KM_OK"'); kill $KH 2>/dev/null
 case "$o" in *KM_OK=0*) ok "kmsg_stop: EPIPE in the capture -> KM_OK=0";; *) bad "kmsg_stop EPIPE: [$o]";; esac
+kfifo
+o=$(lib 'echo "12,610,24133960,-;tr: write error: Broken pipe" > "$KDEV"; kmsg_start t; kmsg_stop; echo "KM_OK=$KM_OK"'); kill $KH 2>/dev/null
+case "$o" in *KM_OK=1*) ok "kmsg_stop: an old kmsg RECORD saying 'Broken pipe' is not an overrun";; *) bad "kmsg_stop record with Broken pipe: [$o]";; esac
 
 # ---- settings -----------------------------------------------------------------------------------------------------
 o=$(lib 'PR="readinfo_powered=1 settings=powered,le,secure-conn,privacy hci_version=status0 ms=1"; settings_ok && echo good'); [ "$o" = good ] && ok "settings_ok: privacy + secure-conn, no bondable" || bad "settings good: [$o]"
 o=$(lib 'PR="readinfo_powered=1 settings=powered,bondable,le,secure-conn,privacy hci_version=status0 ms=1"; settings_ok; echo rc=$?'); case "$o" in *bondable*rc=1) ok "settings_ok: bondable -> FAIL";; *) bad "settings bondable: [$o]";; esac
 o=$(lib 'PR="readinfo_powered=1 settings=powered,le,secure-conn hci_version=status0 ms=1"; settings_ok; echo rc=$?'); case "$o" in *privacy*rc=1) ok "settings_ok: no privacy -> FAIL";; *) bad "settings privacy: [$o]";; esac
+
+o=$(lib 'PR="readinfo_powered=1 settings=powered,le,secure-conn,privacy hci_version=status0 ms=1"; mgmt_up && echo up'); [ "$o" = up ] && ok "mgmt_up: powered mgmt state -> up" || bad "mgmt_up good: [$o]"
+o=$(lib 'PR="readinfo_powered=err(noreply) settings=unknown hci_version=status0 ms=4"; mgmt_up; echo rc=$?'); [ "$o" = rc=1 ] && ok "mgmt_up: HCI answers but mgmt not yet -> not up" || bad "mgmt_up noreply: [$o]"
 
 # ---- host flip verdict --------------------------------------------------------------------------------------------
 . "$REPO/scripts/dv/bt-uart-305.sh"

@@ -65,6 +65,9 @@ ser_get() {	# the mini UART line of /proc/tty/driver/serial -> S_OE S_FE S_PE S_
 }
 sd_reads() { awk '$3 == "mmcblk0" { print $6 }' /proc/diskstats; }
 probe() { PR=$(lim 10 "$PROBE" 2>&1); case "$PR" in *hci_version=status0*) return 0;; esac; return 1; }
+# mgmt index up: after a bind HCI answers ~2.4 s before mgmt Read Info does ("readinfo_powered=err(noreply)
+# settings=unknown", 02 rc 2026-10-25); the settings are only judged on the first state mgmt can report
+mgmt_up() { case "$PR" in *readinfo_powered=1\ *) return 0;; esac; return 1; }
 settings_ok() {	# from the last probe line
 	s=$(echo "$PR" | sed -n 's/.*settings=\([^ ]*\).*/\1/p')
 	case ",$s," in *,privacy,*) ;; *) echo "settings [$s] without privacy"; return 1;; esac
@@ -97,7 +100,10 @@ kmsg_stop() {	# -> KM_OK=1 when both markers are in the capture and the reader w
 	isint "$pg" && for s in /proc/[0-9]*/stat; do [ "$(cut -d' ' -f5 "$s" 2>/dev/null)" = "$pg" ] && km_alive=1 && break; done
 	# judge BEFORE pg_kill: pg_kill uses the global $alive / $s / $n of ble-lib-254.sh (it clobbered this verdict)
 	grep -q "bt305: start $RUN_ID" "$KMSG" && grep -q "bt305: end $RUN_ID" "$KMSG" && [ "$km_alive" = 1 ] && KM_OK=1
-	grep -q 'Broken pipe' "$KMSG" && KM_OK=0		# ring overrun: the reader got EPIPE
+	# ring overrun = the READER's own error (cat: read error: Broken pipe), i.e. a line without the kmsg record prefix
+	# "<prio>,<seq>,<ts>,<flags>;". A record that merely contains the words (a boot script's "tr: write error: Broken
+	# pipe" still in the ring on a fresh boot) is not an overrun.
+	grep -v '^[0-9]*,[0-9]*,[0-9]*,[^;]*;' "$KMSG" | grep -q 'Broken pipe\|read error' && KM_OK=0
 	[ "$km_alive" = 1 ] && { pg_kill "$pg" || echo "NOTE kmsg reader group $pg did not exit within 10 s"; }; rm -f "$DIR/kmsg.pg"
 }
 km_count() {	# $1 ERE, [$2 from-marker tag] [$3 to-marker tag]: matching hci0 lines between markers
@@ -212,7 +218,7 @@ rebind_once() {	# -> RB_UMS RB_UNB (entries written by unbind) RB_BND (by bind) 
 	t0=$(ms); echo serial0-0 > "$DRV/unbind"; t1=$(ms); RB_UMS=$(( (t1 - t0) * 10 ))
 	af_get || true; w1=$AF_W; RB_UNB=$(tail_k "$AF_LAST" $((w1 - w0)))
 	sleep 2; echo serial0-0 > "$DRV/bind"
-	n=0; RB_UP=0; while [ $n -lt 20 ]; do sleep 1; n=$((n + 1)); probe && { RB_UP=1; break; }; done
+	n=0; RB_UP=0; while [ $n -lt 20 ]; do sleep 1; n=$((n + 1)); probe && mgmt_up && { RB_UP=1; break; }; done; RB_UPS=$n
 	af_get || true; w2=$AF_W; RB_BND=$(tail_k "$AF_LAST" $((w2 - w1)))
 }
 cmd_rebind() {
@@ -226,9 +232,9 @@ cmd_rebind() {
 		lock 30 && { lease_write "$RUN_ID" 180; dm_arm "$RUN_ID" 185 "$SELF"; unlock; }		# deadman per rebind (B v6)
 		kmsg_mark "r$i"; rebind_once; kmsg_mark "e$i"
 		e=$(km_count 'hci0: .*(tx timeout|failed)' "r$i" "e$i")
-		echo "DET rebind $i: unbind=${RB_UMS}ms unbind_writes=[$RB_UNB] bind_writes=[$RB_BND] probe_up=$RB_UP kmsg_err=$e"
+		echo "DET rebind $i: unbind=${RB_UMS}ms unbind_writes=[$RB_UNB] bind_writes=[$RB_BND] probe_up=$RB_UP up_s=$RB_UPS kmsg_err=$e"
 		[ "$RB_UMS" -lt 5000 ] || no "rebind $i: unbind took ${RB_UMS} ms"
-		[ "$RB_UP" = 1 ] || no "rebind $i: no probe answer within 20 s ($PR)"
+		[ "$RB_UP" = 1 ] || no "rebind $i: no HCI + mgmt answer within 20 s ($PR)"
 		[ "$RB_UNB" = 0x03 ] || no "seq-unbind $i: [$RB_UNB] (want [0x03])"
 		[ "$RB_BND" = "0xcf,0x03,0x8b,0xcf" ] || no "seq-bind $i: [$RB_BND] (want [0xcf,0x03,0x8b,0xcf])"
 		r=$(settings_ok) || no "rebind $i: $r"
