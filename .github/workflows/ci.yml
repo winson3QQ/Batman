@@ -21,6 +21,8 @@ jobs:
         run: bash scripts/test-dv-ble-254.sh
       - name: N3 held-trial script vs a simulated node (#254 PR-H1) — only guarded rollbacks, flag kept after the OTA
         run: bash scripts/test-negctl-old-slot-254.sh
+      - name: "#305 mini UART judges offline — gate / serial counters / sysfs sequence / kmsg window / settings / flip verdicts (good + bad cases)"
+        run: bash scripts/test-dv-bt-uart-305.sh
       - name: line-endings must be LF
         run: |
           if grep -rlIP '\r$' --include='*.sh' --include='*.py' .; then

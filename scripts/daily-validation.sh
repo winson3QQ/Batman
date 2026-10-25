@@ -147,6 +147,8 @@ else
 fi
 # shellcheck source=dv/ble-254.sh
 . "$REPO/scripts/dv/ble-254.sh"
+# shellcheck source=dv/bt-uart-305.sh
+. "$REPO/scripts/dv/bt-uart-305.sh"
 
 # 1. No hardware needed, but needs Linux tooling: the A/B card invariants build a real card on a
 #    loop device. On a host without losetup/mksquashfs/sudo (e.g. a Windows/Git-Bash operator box
@@ -193,6 +195,7 @@ self_test() { local d p
   timeout 900 bash "$REPO/scripts/$1"; }
 suite harness-preflight "dv-preflight negative controls: every misconfiguration FAILs for its own reason (stub ssh, #254 PR-H1 N9)" "self_test test-dv-preflight.sh"
 suite harness-ble-254 "BLE judges offline: settings tokens, btmon judge, pairing verdicts, RPA judge good + bad runs (#254 PR-H1 N10)" "self_test test-dv-ble-254.sh"
+suite harness-bt-uart-305 "#305 judges offline: gate, serial counters, sysfs sequences, kmsg window, settings, flip verdicts — good AND bad cases" "self_test test-dv-bt-uart-305.sh"
 chk_addr_defer_254() {     # tier A, read-only: scripts/node/addr-defer-254.sh on every committed node given
   local n r=0 o
   for n in "$@"; do
@@ -258,6 +261,30 @@ if [ -n "$BLE_A_NODES" ]; then
 else
   na ble-privacy-254 "no bcm2711 node in the fleet (the BLE build is Pi 4 only)"
   na prov-tools-254 "no bcm2711 node in the fleet"
+fi
+
+# 2f. #305 mini UART hardware flow control (docs/design/305-mini-uart-flow.md §8). Tier A on every bcm2711 node:
+#     T1 sysfs witness (read-only) and T3 rebinds (under the BLE lease + deadman). Tier B (--destructive): T2 load on
+#     BLE_PERIPH then BLE_CENTRAL, T3b stuck-TX close and T4 loaded reboots on BLE_PERIPH (= DNODE, ethernet).
+#     A pre-#305 image fails with ONE line "FAIL pre-305 image: ..." (KNOWN, #305) and does nothing else.
+#     The negative controls (--flip / --force) are NOT run here: scripts/bt-uart-305-flip.sh, by hand.
+if [ -n "$BLE_A_NODES" ]; then
+  suite bt-uart-flow-305 "mini UART autoflow witness on:$BLE_A_NODES — CNTL hw=cache=0xcf, sysfs 0400, nobody denied (+ positive control), controller answers (#305 T1)" "chk_bt_uart_flow_305 $BLE_A_NODES"
+  suite bt-uart-rebind-305 "10 rebinds on:$BLE_A_NODES — unbind < 5 s, exact CNTL sequence (P1 gate + P2 close), probe, privacy/secure-conn/no bondable, no hci0 error (#305 T3)" "chk_bt_uart_rebind_305 $BLE_A_NODES"
+else
+  na bt-uart-flow-305 "no bcm2711 node in the fleet"; na bt-uart-rebind-305 "no bcm2711 node in the fleet"
+fi
+BT305_B="bt-uart-load-305 bt-uart-close-305 bt-uart-boot-305"
+if [ "$FEATURE_MODE" != --destructive ]; then
+  for s in $BT305_B; do suite "$s" "#305 tier B — needs FEATURE_MODE=--destructive" ""; done
+elif [ -z "$BLE_A_NODES" ]; then
+  for s in $BT305_B; do na "$s" "no bcm2711 node in the fleet"; done
+elif [ "$BLE_PERIPH" != "$DNODE0" ]; then
+  for s in $BT305_B; do suite "$s" "#305 tier B" "echo 'FAIL BLE_PERIPH $BLE_PERIPH is not DNODE $DNODE0 — it is rebooted and needs ethernet for recovery'; false"; done
+else
+  suite bt-uart-load-305 "hciflood + direct SD reads ${BT305_LOAD_SECS}s on $BLE_PERIPH then $BLE_CENTRAL: no oe/fe/pe/bo, no Frame reassembly / tx timeout, probe, health; load guarantees (#305 T2)" "bchk_bt_uart_load_305 $BLE_PERIPH $BLE_CENTRAL"
+  suite bt-uart-close-305 "stuck TX (CNTL 0xcd) then unbind on $BLE_PERIPH: close < 5 s (P2), then reboot + witness (#305 T3b)" "bchk_bt_uart_close_305 $BLE_PERIPH" D
+  suite bt-uart-boot-305 "$BT305_BOOTS loaded reboots of $BLE_PERIPH: witness, probe, settings, no hci0 init error each boot (#305 T4)" "bchk_bt_uart_boot_305 $BLE_PERIPH" D
 fi
 
 # 3. Hardware: the A/B bench card. Refuses on its own if the target is not an A/B card.
