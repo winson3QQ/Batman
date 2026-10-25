@@ -109,6 +109,7 @@ OpenWrt 開了 `CONFIG_TARGET_PER_DEVICE_ROOTFS`,`build_dir/target-*/linux-bcm27
 | firmware fork:`package/kernel/bcm27xx-gpu-fw` | 版本 1.20250915 | `start*.elf` / `bootcode.bin` | `start4*.elf` / `fixup4*.dat`(**Pi 4 也換了**) |
 | firmware fork:`target/linux/bcm27xx/image/boards/ekh01/distroconfig.txt` | 同一個檔案 | `[pi3]` 段(gpu_mem、core_freq_min、ramoops) | `[pi4]` 段(ramoops-pi4)— 位元組重排過,生效設定不變 |
 | firmware fork:memcg DTS patch、cmdline-extra hook、`bcm2710trim` / `onboardradioonly` / `ptt` diffconfig、bcm2710 kernel config | — | 全部 | — |
+| firmware fork:`target/linux/bcm27xx/patches-6.6/999-batman-bcm2835aux-autoflow-305.patch`、`999-batman-hci_bcm-close-flow-305.patch`(#305,1.5.13 起) | 兩板 kernel 都套用、都編(bcm2710 build 已驗) | mini UART 是 console,不設 CRTSCTS → CNTL 照舊(⚠️ 由程式碼推論,未上機) | 藍牙走 mini UART(`miniuart-bt`):termios CRTSCTS 時開 AUTOCTS/AUTORTS(CNTL 0xcf)、`bcm_close` 斷電前關流控(close 30 s → 120 ms);root-only sysfs witness `autoflow`;測試 = daily-validation `bt-uart-*-305` |
 | 主機端:`scripts/ab-selftest.sh`、`scripts/daily-validation.sh`、`tests/ab-card-invariants.sh`、`scripts/build-gpt-ab-card.sh`、`scripts/build-ab-payload.sh` | 依 layout / SoC 分流 | pi3 分支 | pi4 分支 |
 
 ## 5. 1.4.14 之後 Pi 4 的行為變更(都來自 #209)

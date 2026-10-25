@@ -74,3 +74,8 @@ Not every build is promoted. WSL `bin/targets/` holds every build (transient, ov
 - **Never ship a number lower than an rc already built.** 1.5.5-wsl.1..5 were rc's of #275/#263 that shipped as
   1.5.4-wsl.2 — the shipped number was lower than its own rc's. Those five rc numbers are retired: never flash
   or ship them. #274's rc's are 1.5.5-wsl.6.. and it ships as the next 1.5.5-wsl.N.
+- **No rebuild when nothing in the image changed (#305, 2026-10-25).** 1.5.13-wsl.1 (#305) ships as built: the firmware
+  merge (firmware#23 `081e7be1`) has a 0-line diff to the rc's commit `1524084e`, and the feed pin `0328e83` was
+  already a main commit with 0 files changed under `feed/` up to main `a98a82c` (the merges after it were
+  harness/docs only). The rc IS the shipped artifact, validated by the full suite (107 PASS / 0 FAIL).
+  1.5.12-wsl.16 and 1.5.12-wsl.17 were local #305 spikes (kernel patch drafts on wsl.15): retired numbers, never ship them.
