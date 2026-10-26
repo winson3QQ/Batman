@@ -336,10 +336,22 @@ type client struct {
 	signIn *bufio.Scanner
 }
 
+// callTimeout: PROVCLIENT_TIMEOUT_S (default 30). The claim-lock fix's busy path (a held config-save lock) makes one
+// call take ~35 s (--save 10 s + one retry 10 s + the best-effort --save after the restore 10 s + the lock steps).
+func callTimeout() time.Duration {
+	s := 30
+	if v := os.Getenv("PROVCLIENT_TIMEOUT_S"); v != "" {
+		if _, err := fmt.Sscanf(v, "%d", &s); err != nil || s < 1 || s > 600 {
+			die("PROVCLIENT_TIMEOUT_S=%q: want 1..600", v)
+		}
+	}
+	return time.Duration(s) * time.Second
+}
+
 func (cl *client) call(verb string, args cmap) (uint64, cmap) {
 	cl.id++
 	req := cEnc(cmap{{uint64(1), verb}, {uint64(2), cl.id}, {uint64(3), args}})
-	cl.c.SetDeadline(time.Now().Add(30 * time.Second))
+	cl.c.SetDeadline(time.Now().Add(callTimeout()))
 	if _, err := cl.c.Write(req); err != nil {
 		die("write: %v", err)
 	}

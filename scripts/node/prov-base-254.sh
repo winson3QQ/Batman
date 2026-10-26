@@ -3,7 +3,7 @@
 # (docs/design/254-p1-impl.md §4.5). Runs as root via `ssh node sh -s -- <cmd> <run_id>`; the host side
 # (scripts/dv/prov-254.sh) owns reboots, waits and slot moves. busybox ash; no bashisms.
 #
-#   snap <run>          record S0: p5 image + file manifest, slot-A overlay (tar + manifest + uci export),
+#   snap <run>          record S0: p5 image + file manifest, the committed slot's overlay (tar + manifest + uci export),
 #                       p6 state files (content or "absent"), marker, dirty flag
 #   manifest <run> <tag> write the CURRENT manifests to <run>/now-<tag>/ (no snapshot needed)
 #   compare <run> <tag> compare <run>/now-<tag>/ with the snapshot; prints DIFF lines; rc 0 = none
@@ -131,8 +131,8 @@ snap)
 	# a snap that dies part-way removes what it created and restarts joinwatch (unless told to keep it stopped)
 	trap 'if [ "${SNAP_DONE:-0}" != 1 ]; then [ -d "$D" ] && { echo "snap failed: removing partial $D: $(ls "$D" | tr "\n" " ")"; rm -rf "$D"; rm -f "$MARK"; }; lock_drop; [ "${KEEP_JOINWATCH_STOPPED:-0}" = 1 ] || svc start joinwatch; fi' EXIT
 	[ ! -e "$DIRTY" ] || die "dirty flag present: $(cat "$DIRTY")"
-	[ "$(batman-slot active)" = A ] || die "not on slot A"
-	batman-slot is-trial >/dev/null 2>&1; [ $? = 1 ] || die "slot A is not committed"
+	SL=$(batman-slot active); case "$SL" in A|B) ;; *) die "active slot unreadable [$SL]" ;; esac   # either slot (#254 claim-lock: the rc lands on B)
+	batman-slot is-trial >/dev/null 2>&1; [ $? = 1 ] || die "slot $SL is not committed"
 	mkdir -p "$D" && chmod 700 "$BASE" "$D"
 	svc stop joinwatch
 	lock_take
@@ -203,7 +203,7 @@ p5-restore)
 	;;
 overlay-restore)
 	[ -f "$D/upper.tar" ] || die "no upper tar"
-	[ "$(batman-slot active)" = A ] || die "not on slot A"
+	sl=$(sed -n 's/^slot=//p' "$D/snap/identity"); [ -n "$sl" ] && [ "$(batman-slot active)" = "$sl" ] || die "not on the snapshot's slot [$sl] (active $(batman-slot active)) — the live upper is another slot's"
 	svc stop joinwatch batman-provhelper batman-provd openmanetd tailscale tailscaled cron uhttpd dockerd
 	tar -C /overlay/upper -xpf "$D/upper.tar" 2>"$D/untar.err" || die "untar failed: $(head -2 "$D/untar.err")"
 	# delete what the snapshot did not have (printed first), except allow-listed paths

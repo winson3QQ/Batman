@@ -14,3 +14,11 @@ setkey-persists-202	^FAIL (setkey accepted an unpersistable key|--channel unsupp
 # (#305 closed: the five "pre-305 image" transition entries and ble-pair-sc-only-254 (02->04 LE connection lost,
 #  suspected to be the mini UART wedge) were removed. The fleet runs a #305 image, so "pre-305 image" is a NEW failure
 #  again, and so is any ble-pair-sc-only-254 VERDICT invalid - it passed in the rc's full run, but once only.)
+# #254 claim-lock fix (harness first, #290): until fix/254-claim-lock ships, the product in a main checkout and the fleet
+# (1.5.13) predate it. REMOVE these with the product PR / the fleet upgrade (they never turn a FAIL green).
+prov-p1-stubs	^FAIL prov-p1-stubs: product in this checkout predates the claim-lock fix	254
+prov-lock-rest-254	^FAIL [0-9.]+: pre-claim-lock image: 	254
+setsid-race-254	^FAIL pre-claim-lock image: 	254
+prov-claim-254	^FAIL pre-claim-lock image: 	254
+chain1-254	^FAIL 8\.3 want (lock=LOCKED| pw=off |rootpw=off|tty=1|hash=\$6\$|seeded=y|shadowroot=y|metastat=\[ok claimed\])$	254
+prov-p1-stubs	^FAIL L44( \(unseeded \+ unclaimed\): rc 0, stdout is exactly the target device|: the note is on stderr) —	254

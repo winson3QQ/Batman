@@ -60,12 +60,13 @@ jobs:
           bash tests/prov-p1/autocommit-prov-case.sh $F/usr/bin/batman-autocommit
           bash tests/prov-p1/99zz-mesh-expect.sh $F/etc/uci-defaults/99zz-batman-prov-state
           bash tests/prov-p1/batman-slot-addr-defer.sh $F/usr/sbin/batman-slot
-      - name: "#254 claim-lock fix stub tests (no root): prov_apply_lock, S13 batman-prov-lock, rollback lock gate, cross-file lints"
+      - name: "#254 claim-lock fix stub tests (no root): prov_apply_lock, prov_root_hash_ok, S13 batman-prov-lock, rollback lock gate, cross-file lints"
         run: |
           F=feed/batman-provision/files
           # harness lands first (#290): on a checkout whose product is 1.5.13 (no boot-time lock) this step is RED on purpose (KNOWN #254)
           [ -f $F/etc/init.d/batman-prov-lock ] || { echo "::error::product in this checkout predates the #254 claim-lock fix (no $F/etc/init.d/batman-prov-lock): expected red until fix/254-claim-lock lands"; exit 1; }
           bash tests/prov-p1/prov-apply-lock.sh $F/usr/lib/batman/prov-lock.sh
+          bash tests/prov-p1/prov-root-hash.sh $F/usr/lib/batman/prov-lock.sh
           bash tests/prov-p1/prov-lock-init.sh $F/etc/init.d/batman-prov-lock $F/usr/lib/batman/prov-lock.sh
           bash tests/prov-p1/batman-slot-rollback-gate.sh $F/usr/sbin/batman-slot $F/usr/lib/batman/prov-lock.sh
           bash tests/prov-p1/claim-lock-lints.sh .
@@ -92,6 +93,11 @@ jobs:
         run: ./tests/ab-card-invariants.sh
       - name: A/B card invariants, Pi 3 / bcm2710 (#209) — p7 firmware partition + hybrid MBR
         run: SOC=bcm2710 ./tests/ab-card-invariants.sh
+      - name: "#254 claim-lock fix v9.1 §5.6 — batman-slot stage-root stdout is exactly the target device (real card, 4 branches)"
+        run: |
+          F=feed/batman-provision/files
+          # harness lands first (#290): on a product without the fix the L44 branch FAILs — red on purpose (KNOWN #254)
+          sudo bash tests/prov-p1/batman-slot-stage-root.sh $F/usr/sbin/batman-slot $F/usr/lib/batman/prov-lock.sh
 
   security:
     runs-on: ubuntu-latest

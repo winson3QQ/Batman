@@ -81,6 +81,16 @@ mk absent same - "" 0; run -
 expect "p5 unreadable + p6 none: untouched" '! locked'
 mk claimed same "root:$H5:19000:0:99999:7:::" "$H5" 1; : > "$S/uci.commits"; run
 expect "already locked and converged: nothing written (idempotent)" '[ ! -s "$S/uci.commits" ] && [ "$(root)" = "$H5" ]'
+# v8 (§5.3): S13 converges every hash musl can verify ($1$ / $5$ too: busybox passwd defaults to $5$) and only those
+P55='$5$p5p5p5p5p5p5p5p5$'"$(printf '5%.0s' $(seq 43))"; P51='$1$p5p5p5p5$'"$(printf '1%.0s' $(seq 22))"
+mk claimed same "root:$P55:19000:0:99999:7:::" "$HL" 1; run
+expect "p5 \$5\$ (busybox passwd default): converged" 'locked && [ "$(root)" = "$P55" ]'
+mk claimed same "root:$P51:19000:0:99999:7:::" "$HL" 1; run
+expect "p5 \$1\$ (passwd -a md5): converged" 'locked && [ "$(root)" = "$P51" ]'
+mk claimed same "root:\$6\$short\$abc:19000:0:99999:7:::" "" 0; run
+expect "p5 malformed \$6\$ (wrong hash length): locked, NOT converged" 'locked && [ "$(root)" = "!" ]'
+mk claimed same "root:\$6\$rounds=999\$salt\$$(printf 'c%.0s' $(seq 86)):19000:0:99999:7:::" "$HL" 1; run
+expect "p5 rounds=999 (musl rewrites it: never verifies): NOT converged" 'locked && [ "$(root)" = "$HL" ]'
 
 [ "$cases" -ge 14 ] || no "only $cases cases ran"
 echo "prov-lock-init: $cases cases, $fails failed"

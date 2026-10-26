@@ -107,10 +107,20 @@ setup "$HASH"; run --
 expect "no flag: an existing \$ hash is kept" '[ "$(root_field)" = "$HASH" ]'
 
 # 3 invalid root fields are refused, shadow untouched
-for bad in 'plain' '$6$a:b' ''; do
+for bad in 'plain' '$6$a:b' '' '!' '$6$short$abc' '$6$rounds=999$salt$0123456789012345678901234567890123456789012345678901234567890123456789012345678901234/'; do
 	setup ""; printf '%s\n' "$bad" > "$T/bad.in"; STDIN=$T/bad.in run -- --hash-stdin
 	expect "bad field [$bad] -> rc 3, shadow untouched" '[ "$RC" = 3 ] && [ -z "$(root_field)" ]'
 done
+# v8 (§5.3): --hash-stdin takes every hash musl can verify, $5$ / $1$ included
+for good in '$5$abcdefghijklmnop$0123456789012345678901234567890123456789012' '$1$abcdefgh$0123456789012345678901'; do
+	setup ""; printf '%s\n' "$good" > "$T/good.in"; STDIN=$T/good.in run -- --hash-stdin
+	expect "--hash-stdin [${good%%\$0*}…] -> rc 0, written" '[ "$RC" = 0 ] && [ "$(root_field)" = "$good" ]'
+done
+# --restore-stdin writes a $… / !… field back as is, anything else as "!" (same rule as the helper's RestoreRoot)
+setup "$HASH"; printf '%s\n' 'garbage' > "$T/g.in"; STDIN=$T/g.in run -- --restore-stdin --no-reload
+expect "restore-stdin [garbage] -> \"!\"" '[ "$RC" = 0 ] && [ "$(root_field)" = "!" ]'
+setup "$HASH"; printf '%s\n' '$6$short$abc' > "$T/g.in"; STDIN=$T/g.in run -- --restore-stdin --no-reload
+expect "restore-stdin [\$6\$short\$abc] -> written back as is (the previous field, not judged)" '[ "$RC" = 0 ] && [ "$(root_field)" = "\$6\$short\$abc" ]'
 
 # 4 step 1 fails (uci commit) -> rc 1, the given hash is NOT written, empty root -> '!', LOCK-INCOMPLETE
 setup ""; STDIN=$T/hash.in run UCI_COMMIT_FAIL=system -- --hash-stdin
