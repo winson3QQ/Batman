@@ -119,7 +119,8 @@ func TestCrossOpenSSL(t *testing.T) {
 	}
 }
 
-// busybox mkpasswd (the CI job installs busybox): a third implementation, with rounds= too
+// busybox mkpasswd (the CI job installs busybox): a third implementation (default rounds; rounds= is covered by
+// the specification vectors above)
 func TestCrossBusybox(t *testing.T) {
 	if _, err := exec.LookPath("busybox"); err != nil {
 		t.Fatal("busybox not found: the cross-check cannot run")
@@ -138,5 +139,15 @@ func TestCrossBusybox(t *testing.T) {
 		if err != nil || got != want {
 			t.Fatalf("pw %q salt %q: go %q, busybox %q (%v)", pw, salt, got, want, err)
 		}
+	}
+}
+
+// review B-m6: two more settings musl refuses must be errors here too
+func TestMuslRefusals(t *testing.T) {
+	if _, err := Hash512([]byte("x"), "$6$rounds=5000"); err == nil {
+		t.Error("rounds= without a terminating '$' accepted (musl rejects it)")
+	}
+	if _, err := Hash512([]byte("a\x00b"), "$6$abc"); err == nil {
+		t.Error("NUL in the key accepted (musl would hash a shorter key)")
 	}
 }

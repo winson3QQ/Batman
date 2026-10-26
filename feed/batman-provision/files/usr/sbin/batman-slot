@@ -764,8 +764,9 @@ addr_defer_release() {
 rollback_lock_gate() {
 	[ -r /usr/lib/batman/prov-lock.sh ] || return 0
 	# shellcheck disable=SC2046  # "ok claimed" -> two words on purpose
-	s=$( . /usr/lib/batman/prov-lock.sh; set -- $(prov_meta_status /etc/batman-prov/prov.meta /etc/batman-prov/prov.cbor); echo "${2:-}:$(prov_last_known_state)" )
-	case "$s" in claimed:*|member:*|*:claimed|*:member) ;; *) return 0 ;; esac
+	s=$( . /usr/lib/batman/prov-lock.sh; set -- $(prov_meta_status /etc/batman-prov/prov.meta /etc/batman-prov/prov.cbor); echo "${1:-bad}/${2:-}:$(prov_last_known_state)" )
+	# a bad / too-new overlay record may be claimed: gated like one (fail-secure, review A-m2 / B-m4)
+	case "$s" in ok/claimed:*|ok/member:*|bad/*|*:claimed|*:member) ;; *) return 0 ;; esac
 	if allowed UNLOCKED_ROLLBACK; then warn "rollback lock gate overridden (state $s)"; st ROLLBACK-LOCK-GATE override=1; return 0; fi
 	m=$(mktemp -d /tmp/.rbgate.XXXXXX) || die "rollback lock gate: no temp dir"   # mktemp -d: exclusive, 0700
 	mount -t squashfs -o ro "$(slot_rootdev "$1")" "$m" 2>/dev/null || { rmdir "$m"; die "rollback lock gate: cannot read slot $1's rootfs to check that it keeps this claimed node locked — refusing"; }
