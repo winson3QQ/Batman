@@ -69,7 +69,11 @@ if ! . /usr/lib/batman/prov-lock.sh 2>/dev/null || ! type prov_lock_decision >/d
 	prov_ident_ok() { return 1; }
 	prov_last_known_state() { awk 'NR==1 {print $3}' /opt/batdata/state/prov-state 2>/dev/null || echo -; }
 	prov_lock_decision() { case "$1:$2:$4" in 1:ok:*|1:bad:*|0:*:claimed|0:*:member) echo LOCK ;; *) echo TODAY ;; esac; }
-	prov_apply_lock() { uci set dropbear.@dropbear[0].PasswordAuth='off'; uci set dropbear.@dropbear[0].RootPasswordAuth='off'; uci set system.@system[0].ttylogin='1'; uci commit dropbear; uci commit system; echo LOCKED > /opt/batdata/state/lock-status 2>/dev/null; }
+	# the ONE documented exception to the single lock implementation (claim-lock fix §5.3): used only when prov-lock.sh
+	# is missing; it still turns an empty root into "!" and reports LOCK-INCOMPLETE (its uci / dropbear coverage is partial)
+	prov_apply_lock() { uci set dropbear.@dropbear[0].PasswordAuth='off'; uci set dropbear.@dropbear[0].RootPasswordAuth='off'; uci set system.@system[0].ttylogin='1'; uci commit dropbear; uci commit system
+		case "$(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f2)" in \$*|!*) : ;; *) awk '/^root:/ { n = split($0, f, ":"); f[2] = "!"; s = f[1]; for (i = 2; i <= n; i++) s = s ":" f[i]; print s; next } { print }' /etc/shadow > /etc/shadow.96fb && chmod 600 /etc/shadow.96fb && mv /etc/shadow.96fb /etc/shadow ;; esac
+		echo LOCK-INCOMPLETE > /opt/batdata/state/lock-status 2>/dev/null; echo "LOCK fallback rc=1"; return 1; }
 	log "WARN /usr/lib/batman/prov-lock.sh missing — fail-secure lock rules"
 fi
 P5READ=0; PMS=absent; PST=-; PCOPY=none
@@ -100,7 +104,8 @@ lockdown_today() {
 finish96() {	# $1 verdict, $2 exit code
 	lks=$(prov_last_known_state)
 	if [ "$(prov_lock_decision "$P5READ" "$PMS" "$PST" "$lks")" = LOCK ]; then
-		prov_apply_lock; LOCKWORD=LOCKED
+		# the one lock implementation; dropbear is not running yet (uci-defaults) -> --no-reload; the rc is recorded (§5.3)
+		if plo=$(prov_apply_lock --no-reload </dev/null); then LOCKWORD='LOCKED'; else LOCKWORD='LOCK-INCOMPLETE'; log "lockdown: $(echo "$plo" | tail -1)"; fi
 		log "lockdown: LOCKED by the provisioning record (p5_read=$P5READ meta=$PMS state=$PST last_known=$lks)"
 	else
 		lockdown_today

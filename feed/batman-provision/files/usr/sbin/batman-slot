@@ -747,8 +747,32 @@ addr_defer_release() {
 	[ -x /usr/libexec/batman-addr-defer ] || return 0
 	if batman_rundir 2>/dev/null; then ( umask 077; : > "$RUNDIR/slot-committed" ); st ADDR-DEFER-RELEASE flag=written
 	else st ADDR-DEFER-RELEASE flag=NOT-written reason=rundir-unusable; fi
+	# HUP ignored BEFORE the fork (#254 claim-lock fix §5.5): between the fork and the child's setsid() the child is
+	# still in a PTY session's foreground group, and a `batman-slot commit` typed in a PTY ends with a hangup —
+	# measured on 04: the child survived 2-3/50 without this, 50/50 with it. SIG_IGN survives the exec of env and
+	# setsid; openmanetd itself is forked by procd and does not inherit it. batman-slot has no HUP trap of its own.
+	trap '' HUP
 	env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin setsid /etc/init.d/openmanetd start </dev/null >/dev/null 2>&1 &
+	trap - HUP
 	return 0
+}
+
+# #254 claim-lock fix §8: a claimed / member node is never rolled back onto a slot that cannot keep it locked —
+# one without an ENABLED batman-prov-lock (e.g. 1.5.13: no boot-time lock, the old overlay would come up open).
+# Interface (§7): /etc/init.d/batman-prov-lock + /etc/rc.d/S13batman-prov-lock in the target rootfs (squashfs, ro).
+# Operator override: allowed UNLOCKED_ROLLBACK. Legacy / unclaimed nodes are not affected.
+rollback_lock_gate() {
+	[ -r /usr/lib/batman/prov-lock.sh ] || return 0
+	# shellcheck disable=SC2046  # "ok claimed" -> two words on purpose
+	s=$( . /usr/lib/batman/prov-lock.sh; set -- $(prov_meta_status /etc/batman-prov/prov.meta /etc/batman-prov/prov.cbor); echo "${2:-}:$(prov_last_known_state)" )
+	case "$s" in claimed:*|member:*|*:claimed|*:member) ;; *) return 0 ;; esac
+	if allowed UNLOCKED_ROLLBACK; then warn "rollback lock gate overridden (state $s)"; st ROLLBACK-LOCK-GATE override=1; return 0; fi
+	m=$(mktemp -d /tmp/.rbgate.XXXXXX) || die "rollback lock gate: no temp dir"   # mktemp -d: exclusive, 0700
+	mount -t squashfs -o ro "$(slot_rootdev "$1")" "$m" 2>/dev/null || { rmdir "$m"; die "rollback lock gate: cannot read slot $1's rootfs to check that it keeps this claimed node locked — refusing"; }
+	k=0; [ -f "$m/etc/init.d/batman-prov-lock" ] && [ -e "$m/etc/rc.d/S13batman-prov-lock" ] && k=1
+	umount "$m"; rmdir "$m"
+	[ "$k" = 1 ] || die "slot $1 cannot keep this claimed node locked (no enabled batman-prov-lock; state $s) — refusing; override: BATMAN_ALLOW_UNLOCKED_ROLLBACK=1"
+	st ROLLBACK-LOCK-GATE target="$1" ok=1
 }
 
 cmd_rollback() {
@@ -756,6 +780,7 @@ cmd_rollback() {
 	assert_fw_sane
 	A=$(active_slot); T=$(other_slot "$A")
 	slot_is_bad "$T" && die "slot $T carries $BADMARK ($(slot_bad_reason "$T")) — refusing to make it the default"
+	rollback_lock_gate "$T"
 	FA=$(fw_part "$A") && FT=$(fw_part "$T") || die "cannot derive the firmware partitions"
 	st ROLLBACK-BEGIN to="$T" was_all="$(ab_section all)" want_all="$FT"
 	write_autoboot "$FT" "$FA" rollback

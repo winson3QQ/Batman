@@ -78,6 +78,7 @@ define Package/batman-provision/install
 	$(INSTALL_BIN) ./files/etc/init.d/joinwatch      $(1)/etc/init.d/joinwatch
 	$(INSTALL_BIN) ./files/etc/init.d/meshled        $(1)/etc/init.d/meshled
 	$(INSTALL_BIN) ./files/etc/init.d/batman-faketime $(1)/etc/init.d/batman-faketime
+	$(INSTALL_BIN) ./files/etc/init.d/batman-prov-lock $(1)/etc/init.d/batman-prov-lock
 	$(INSTALL_BIN) ./files/etc/init.d/batman-autocommit $(1)/etc/init.d/batman-autocommit
 	$(INSTALL_BIN) ./files/etc/init.d/batman-reboot   $(1)/etc/init.d/batman-reboot
 	$(INSTALL_BIN) ./files/etc/init.d/batman-prestop-payload $(1)/etc/init.d/batman-prestop-payload
@@ -145,7 +146,7 @@ endef
 # flightrec/meshled S99). VERIFY in CI that the symlinks land in the image.
 define Package/batman-provision/postinst
 #!/bin/sh
-for s in halow-keyguard batpower flightrec joinwatch meshled batman-faketime batman-autocommit batman-reboot batman-prestop-payload; do
+for s in halow-keyguard batpower flightrec joinwatch meshled batman-faketime batman-prov-lock batman-autocommit batman-reboot batman-prestop-payload; do
 	if [ -x "$${IPKG_INSTROOT}/etc/init.d/$$s" ]; then
 		"$${IPKG_INSTROOT}/etc/init.d/$$s" enable 2>/dev/null
 	fi
