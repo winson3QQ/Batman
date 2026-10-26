@@ -87,7 +87,7 @@ FIP=""; FOUND_HOW=""; FOUND_STATE=""
 # wait_find <seconds> <pattern> [exclude-boot]  (parent shell only)
 wait_find(){ local t=$SECONDS; FIP=""; while [ $((SECONDS - t)) -lt "$1" ]; do find04 "$2" "${3:-none}" && return 0; sleep 10; done; return 1; }
 bootof(){ echo "$1" | sed -n 's/.*boot=\([0-9a-f]*\).*/\1/p'; }
-STAGED=0; SNAPPED=0; RESULT=FAIL; RESTORING=0; P5DONE=0
+STAGED=0; SNAPPED=0; RESULT=FAIL; RESTORING=0
 mkdir "$LOCKD" 2>/dev/null || { echo "another dv run holds $LOCKD"; exit 1; }
 # an unexpected exit after the snapshot (set -u, a bug) still restores (review A-M1)
 on_exit(){ local rc=$?; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; restore_all "unexpected exit"; fi
@@ -137,13 +137,16 @@ restore_all(){
 	case "$s" in *"slot=B "*)
 		fq "rm -f /opt/batdata/state/autocommit-hold-commit; touch $BASE/ch1.cancel"
 		o=$(fqlong "for m in /tmp/run/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on B): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed — needs a person"; return 1; }
-		P5DONE=1; b=$(bootof "$s"); fq "batman-slot rollback >/dev/null 2>&1 && (batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &) && echo SENT" | sed 's/^/    rollback: /'
+		b=$(bootof "$s"); fq "batman-slot rollback >/dev/null 2>&1 && (batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &) && echo SENT" | sed 's/^/    rollback: /'
 		wait_find 900 "slot=A ver=$V trial_rc=1 " "$b" || { say "RESTORE: A not found after the rollback"; return 1; }; s=$FOUND_STATE; say "on A: $s"
 		land_quiet || { wait_find 900 "slot=A ver=$V trial_rc=1 " || return 1; s=$FOUND_STATE; land_quiet || { say "RESTORE: A keeps rebooting"; return 1; }; } ;;
 	esac
 	case "$s" in *"slot=A ver=$V trial_rc=1 "*) ;; *) say "RESTORE: not on A committed: $s"; return 1;; esac
 	fq "touch $BASE/ch1.cancel; rm -f /opt/batdata/state/autocommit-hold-commit; b=\$(cat /opt/batdata/state/bad-slot 2>/dev/null); [ -n \"\$b\" ] && { echo \"bad-slot was [\$b] (residue of this run) — removing\"; rm -f /opt/batdata/state/bad-slot; }; true" | sed 's/^/    /'
-	if [ "$P5DONE" != 1 ]; then o=$(fqlong "for m in /tmp/run/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on A): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed"; return 1; }; P5DONE=1; fi
+	# p5 again ON A, always (2026-10-26 wsl.3 run: A booted with 8.6's claimed overlay and joinwatch running, and its
+	# --on-join saved A's live root line into the p5 restored on B -> S0 compare diffs=3). p5-restore stops joinwatch /
+	# helper / provd and nothing restarts them before the reboot below, so the overlay restore cannot be undone.
+	o=$(fqlong "for m in /tmp/run/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on A): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed"; return 1; }
 	o=$(fqlong "sh $BASE/prov-base-254.sh overlay-restore $RUN"); echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY" | tail -12 | sed 's/^/    /'
 	grep -q "^OVERLAY-RESTORED $RUN" <<< "$o" || { say "RESTORE: overlay-restore failed"; return 1; }
 	b=$(bootof "$s"); fq "(batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &)" >/dev/null
@@ -270,12 +273,14 @@ case "$P0" in "protA=[$V]"*) ok "7.1 slot-A.protected = V before (so 'unchanged'
 nf=$(fq "$NOFORCE"); [ "$nf" = "allow_unseeded=n allow_stale=n" ] && ok "7.x no override files ($nf)" || abort "override files present: $nf"
 o=$(fq 'set -e; d=/tmp/run/batman-dv; mkdir -p -m 0700 $d; sed "s| /usr/lib/batman/prov-lock.sh'"'"'$|'"'"'|" /lib/upgrade/platform.sh > $d/platform.noprovlock; a=$(grep -c "^RAMFS_COPY_DATA=.*prov-lock.sh" /lib/upgrade/platform.sh); b=$(grep -c "^RAMFS_COPY_DATA=.*prov-lock.sh" $d/platform.noprovlock || true); l0=$(wc -l < /lib/upgrade/platform.sh); l1=$(wc -l < $d/platform.noprovlock); if [ "$a" = 1 ] && [ "$b" = 0 ] && [ "$l0" = "$l1" ]; then mount --bind $d/platform.noprovlock /lib/upgrade/platform.sh; echo "variant=ok binds=$(grep -c " /lib/upgrade/platform.sh " /proc/mounts)"; else echo "variant=bad a=$a b=$b l0=$l0 l1=$l1"; fi')
 say "7.1 variant: $o"; case "$o" in *"variant=ok binds=1"*) ;; *) abort "7.1 variant not built";; esac
-# trace offset on p6 (survives the reboot; review A-M5 / B-2)
-fq "wc -l < /opt/batdata/log/ota-trace.log > $D/otan.71; echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync; setsid sh -c 'sysupgrade -n $PAY >/opt/batdata/sysup-ch1-71.log 2>&1' </dev/null >/dev/null 2>&1 &" >/dev/null
+# the trace lines of THIS OTA, found by the boot id it was started in (stage 1 and stage 2 log that boot id) — not by
+# a line offset: 95-batman-storage trims ota-trace.log to its last 1500 lines at boot when it passes 256 KiB
+# (95:713), which shifted the offset under the 2026-10-26 wsl.3 run (otan.71=1791 > 1579 lines left). Kept on p6.
+fq "cut -c1-8 /proc/sys/kernel/random/boot_id > $D/otab.71; echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync; setsid sh -c 'sysupgrade -n $PAY >/opt/batdata/sysup-ch1-71.log 2>&1' </dev/null >/dev/null 2>&1 &" >/dev/null
 wait_find 900 "slot=B ver=$V trial_rc=1 " "$BB" || abort "7.1: B not back (committed) after the stage-2 failure"
 say "7.1 back: $FIP $FOUND_STATE"; BB=$(bootof "$FOUND_STATE")
-tr=$(fq "n=\$(cat $D/otan.71); tail -n +\$((n + 1)) /opt/batdata/log/ota-trace.log | grep -E 'S2 |SLOT DIE|REFUS'"); echo "$tr" | sed 's/^/    trace: /'
-case "$tr" in *"S2 BEGIN"*) ok "7.1 stage 2 ran (S2 BEGIN after the offset)";; *) no "7.1 no S2 BEGIN after the offset";; esac
+tr=$(fq "b=\$(cat $D/otab.71); [ \${#b} = 8 ] && grep -F \" boot=\$b \" /opt/batdata/log/ota-trace.log | grep -E 'S2 |SLOT DIE|REFUS'"); echo "$tr" | sed 's/^/    trace: /'
+case "$tr" in *"S2 BEGIN"*) ok "7.1 stage 2 ran (S2 BEGIN of this OTA's boot)";; *) no "7.1 no S2 BEGIN for this OTA's boot";; esac
 grep -E "DIE" <<< "$tr" | grep -q "not seeded" && ok "7.1 stage 2 died on 'not seeded' (prov-lock.sh absent from the ramfs)" || no "7.1 no SLOT DIE ... not seeded"
 grep -q "S2 END rc=[1-9]" <<< "$tr" && ok "7.1 S2 END rc != 0" || no "7.1 no failing S2 END"
 P1=$(fq "$PROT"); [ "$P0" = "$P1" ] && ok "7.1 A untouched ($P1)" || no "7.1 .protected changed: $P0 -> $P1"
@@ -283,11 +288,11 @@ fq 'grep -c " /lib/upgrade/platform.sh " /proc/mounts' | grep -qx 0 && ok "7.1 b
 fq 'rm -f /opt/batdata/state/autocommit-hold-commit' >/dev/null
 PH=s7.2
 nf=$(fq "$NOFORCE"); [ "$nf" = "allow_unseeded=n allow_stale=n" ] || abort "override files present: $nf"
-fq "wc -l < /opt/batdata/log/ota-trace.log > $D/otan.72; echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync; setsid sh -c 'sysupgrade -n $PAY >/opt/batdata/sysup-ch1-72.log 2>&1' </dev/null >/dev/null 2>&1 &" >/dev/null
+fq "cut -c1-8 /proc/sys/kernel/random/boot_id > $D/otab.72; echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync; setsid sh -c 'sysupgrade -n $PAY >/opt/batdata/sysup-ch1-72.log 2>&1' </dev/null >/dev/null 2>&1 &" >/dev/null
 wait_find 600 "slot=A ver=$V trial_rc=0 dt_try=00000001 " "$BB" || abort "7.2: A trial not found"
 say "7.2 A trial at $FIP ($FOUND_HOW): $FOUND_STATE"; BA=$(bootof "$FOUND_STATE")
 ev=""; t=$SECONDS; while [ $((SECONDS - t)) -lt 150 ]; do ev=$(fq "logread | grep -E 'batman-autocommit|batman-provhelper'"); grep -q HELD <<< "$ev" && break; sleep 5; done
-x=$(fq "n=\$(cat $D/otan.72); tail -n +\$((n + 1)) /opt/batdata/log/ota-trace.log | grep -E 'S2 END' | tail -1; echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) ifaces=\$(iw dev 2>/dev/null | grep -c Interface) ap=\$(iw dev 2>/dev/null | grep -c 'type AP'); $P5RO")
+x=$(fq "b=\$(cat $D/otab.72); [ \${#b} = 8 ] && grep -F \" boot=\$b \" /opt/batdata/log/ota-trace.log | grep -E 'S2 END' | tail -1; echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) ifaces=\$(iw dev 2>/dev/null | grep -c Interface) ap=\$(iw dev 2>/dev/null | grep -c 'type AP'); $P5RO")
 say "7.2: $(echo $x)"
 case "$x" in *"S2 END rc=0"*) ok "7.2 stage 2 rc=0 (this OTA)";; *) no "7.2 stage 2 rc";; esac
 case "$x" in *"ifaces="[1-9]*) ;; *) no "7.2 iw lists no interface";; esac
@@ -338,8 +343,8 @@ elif wait_find 600 "slot=A ver=$V trial_rc=0 dt_try=00000001 " "$BB"; then
 	grep -q "mesh join required: 0 (prov=claimed mesh_expect=0" <<< "$ev" && grep -q HELD <<< "$ev" && ok "8.6 claimed trial: mesh join required: 0 (prov=claimed mesh_expect=0 + HELD" || no "8.6 claimed trial decision"
 	x=$(fq "echo lock=\$(cat /opt/batdata/state/lock-status) tty=\$(uci -q get system.@system[0].ttylogin) hash=\$(grep ^root: /etc/shadow | cut -d: -f2 | cut -c1-3)")
 	case "$x" in *"lock=LOCKED"*"tty=1"*'hash=$6$'*) ok "8.6 claimed trial is locked, root hash restored from p5 ($x)";; *) no "8.6 claimed trial lock: $x";; esac
-	PH=s8.7
-	o=$(fqlong "cp -p $D/marks/mesh-expected /opt/batdata/state/mesh-expected 2>/dev/null || echo 'ch1 white-box' > /opt/batdata/state/mesh-expected; u=\$(cut -d. -f1 /proc/uptime); AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_TIMEOUT=\$((u + 60)) timeout 90 batman-autocommit run 2>&1 | tail -3; logread | grep -E 'claimed with the placeholder mesh key|mesh join required: 1 ' | tail -2; rm -f /opt/batdata/state/mesh-expected")
+	PH=s8.7   # no `timeout` applet in the node busybox (2026-10-26 wsl.3 run: "ash: timeout: not found"): a sleep + kill watchdog
+	o=$(fqlong "cp -p $D/marks/mesh-expected /opt/batdata/state/mesh-expected 2>/dev/null || echo 'ch1 white-box' > /opt/batdata/state/mesh-expected; u=\$(cut -d. -f1 /proc/uptime); { AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_TIMEOUT=\$((u + 60)) batman-autocommit run 2>&1 & p=\$!; ( sleep 90; kill \$p 2>/dev/null ) & w=\$!; wait \$p; kill \$w 2>/dev/null; } | tail -3; logread | grep -E 'claimed with the placeholder mesh key|mesh join required: 1 ' | tail -2; rm -f /opt/batdata/state/mesh-expected")
 	echo "$o" | sed 's/^/    dry: /'
 	grep -q "claimed with the placeholder mesh key, but p6 says this node has been in a mesh — neighbours required (fail-closed)" <<< "$o" && grep -q "mesh join required: 1 (prov=claimed mesh_expect=0" <<< "$o" \
 		&& ok "8.7 negative: mesh-expected back -> claimed+placeholder needs neighbours, mesh join required: 1 (prov=claimed" || no "8.7 negative control (review B-4 strings)"
