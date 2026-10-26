@@ -41,6 +41,10 @@ const (
 	ESchema       = 20
 	EApply        = 21
 	EState        = 22 // this boot's verdict is unknown(*) (e.g. identity-mismatch: frozen, P-U6)
+	// ELockIncomplete: the request was COMMITTED to p5 but the lock / password step did not complete; no password was
+	// handed out. Only returned after a commit (EApply also covers pre-commit stage failures). provd maps it to
+	// protocol 13 E_LOCK_INCOMPLETE -> the app retries with claim/replay (219-protocol §5.2; claim-lock fix §7).
+	ELockIncomplete = 23
 )
 
 // Error is a coded failure; Reason is for the log only.
@@ -62,7 +66,11 @@ type Sys interface {
 	Save() (int, string)                                      // batman-config-save --save (after a lock/shadow change)
 	SetKeyNoPersist(meshKey, meshID string, channel string) error
 	CurrentWireless() (meshKey, meshID, channel string, err error) // the values a .txn must be able to restore
-	ApplyLock(rootHash string) error                               // PasswordAuth=off, RootPasswordAuth=off, ttylogin=1, shadow root hash, lock-status
+	ApplyLock(rootHash string) error                               // prov_apply_lock --hash-stdin: doors first, the hash last (§5.3)
+	RestoreRoot(prev string) error                                 // prov_apply_lock --restore-stdin: root's previous field back ("" -> "!")
+	RootField() (string, error)                                    // root's current shadow field
+	MarkLockIncomplete()                                           // p6 lock-status LOCK-INCOMPLETE
+	SetLastKnown(state string) error                               // p6 prov-state field 3 only (claim / replay commit)
 	CryptPassword(pw string) (string, error)
 	AuthorizedKeys() ([]string, error)
 	SetAuthorizedKeys(lines []string) error
@@ -366,14 +374,77 @@ func (n *Node) psks(rec *provstore.Record) cbor.Map {
 
 // ---- claim (§6.1) --------------------------------------------------------------------------------------------------
 
+const pwAlpha = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+
+// genPassword: 24 characters from a 56-character set by rejection sampling (bytes >= 224 = 256 - 256%56 are redrawn,
+// so every character is equally likely; ~139 bits).
 func genPassword() string {
-	const alpha = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
-	b := rnd(24)
-	out := make([]byte, 24)
-	for i := range b {
-		out[i] = alpha[int(b[i])%len(alpha)]
+	out := make([]byte, 0, 24)
+	for len(out) < 24 {
+		for _, v := range rnd(32) {
+			if int(v) < 256-256%len(pwAlpha) && len(out) < 24 {
+				out = append(out, pwAlpha[int(v)%len(pwAlpha)])
+			}
+		}
 	}
 	return string(out)
+}
+
+// cfgSaveBusy: batman-config-save --save found another instance writing p5 (it waits 10 s, then exits 1 with this
+// line; batman-config-save:190-224). Retried once (claim-lock fix §5.3).
+func cfgSaveBusy(rc int, out string) bool {
+	return rc == 1 && strings.Contains(out, "another batman-config-save is writing p5")
+}
+
+func (n *Node) saveRetry() (int, string) {
+	rc, out := n.Sys.Save()
+	if cfgSaveBusy(rc, out) {
+		n.Log("--save: p5 busy, retrying once")
+		rc, out = n.Sys.Save()
+	}
+	return rc, out
+}
+
+func lastOf(s string) string {
+	l := strings.Split(strings.TrimSpace(s), "\n")
+	return l[len(l)-1]
+}
+
+// setPassword is the password step shared by claim / claim.replay / root_password.reset (docs/design/
+// 254-claim-lock-fix.md §5.3). The password is handed out only once p5 holds it:
+//   - hash or lock failure (doors first, hash last): shadow keeps its previous value (an empty root became "!");
+//     --save still runs (p5 is already claimed and must be seeded to allow OTAs) -> ELockIncomplete;
+//   - --save failure (busy retried once): root's previous field is written back BEFORE the error — joinwatch's
+//     --on-join would otherwise carry the never-delivered hash into p5 — then one best-effort --save so p5 follows the
+//     restored value; a failed restore -> CRIT + lock-status LOCK-INCOMPLETE -> saveFailCode.
+func (n *Node) setPassword(pw string, saveFailCode int) *Error {
+	prev, perr := n.Sys.RootField()
+	hash, err := n.Sys.CryptPassword(pw)
+	if err == nil {
+		err = n.Sys.ApplyLock(hash)
+	}
+	if err != nil {
+		n.Log("lock step failed: %v — no password handed out", err)
+		if rc, out := n.saveRetry(); rc != 0 {
+			n.Log("--save after the failed lock step: rc=%d (%s)", rc, lastOf(out))
+		}
+		return fail(ELockIncomplete, "lock-incomplete: %v", err)
+	}
+	rc, out := n.saveRetry()
+	if rc == 0 {
+		return nil
+	}
+	n.Log("--save rc=%d (%s) — restoring root's previous shadow field, no password handed out", rc, lastOf(out))
+	if perr != nil {
+		n.Log("CRIT: root's previous shadow field unknown (%v): the live hash was never handed out — recover with claim/replay or root_password/reset", perr)
+		n.Sys.MarkLockIncomplete()
+	} else if rerr := n.Sys.RestoreRoot(prev); rerr != nil {
+		n.Log("CRIT: restoring root's shadow field failed (%v): the live hash was never handed out — recover with claim/replay or root_password/reset", rerr)
+		n.Sys.MarkLockIncomplete()
+	} else if rc2, out2 := n.Sys.Save(); rc2 != 0 {
+		n.Log("best-effort --save after the restore: rc=%d (%s)", rc2, lastOf(out2))
+	}
+	return fail(saveFailCode, "--save rc=%d", rc)
 }
 
 func (n *Node) claimVerify(rec *provstore.Record, a cbor.Map) (cbor.Map, *Error) {
@@ -432,15 +503,14 @@ func (n *Node) claimVerify(rec *provstore.Record, a cbor.Map) (cbor.Map, *Error)
 	if err := n.commit(&next, "claim"); err != nil {
 		return nil, err
 	}
-	// §6.1 step 4: lock (shadow hash + dropbear + ttylogin) then --save
-	hash, err := n.Sys.CryptPassword(pw)
-	if err == nil {
-		err = n.Sys.ApplyLock(hash)
+	// committed: p6 last_known_state follows at once, so batman-prov-lock locks on any slot even if p5 is unreadable
+	if err := n.Sys.SetLastKnown(string(provstore.Claimed)); err != nil {
+		n.Log("claim: p6 last_known_state not updated: %v", err)
 	}
-	if err != nil {
-		n.Log("claim committed but the lock step failed: %v (the next boot completes it)", err)
-	} else if rc, out := n.Sys.Save(); rc != 0 {
-		n.Log("claim: --save rc=%d (%s) — p5 shadow-root not updated; the next boot's --check reports it", rc, strings.TrimSpace(out))
+	// §6.1 step 4 (claim-lock fix §5.3): lock, hash last, --save; the password only once p5 holds it
+	if e := n.setPassword(pw, ELockIncomplete); e != nil {
+		n.Log("claim committed, lock / save incomplete (%s): the owner recovers with claim/replay", e.Reason)
+		return nil, e
 	}
 	return cbor.M(1, tag, 2, adv, 3, pw), nil
 }
@@ -494,12 +564,12 @@ func (n *Node) claimReplay(rec *provstore.Record, a cbor.Map) (cbor.Map, *Error)
 	if nn == nil || !n.KS.CheckMac(proto.ClientChal(nn, h, n.KS.Cert(), owner.Pub), resp) {
 		return failOnce(EForbidden, "CheckMac")
 	}
-	pw := genPassword()
-	if hash, err := n.Sys.CryptPassword(pw); err != nil || n.Sys.ApplyLock(hash) != nil {
-		return nil, fail(EApply, "root password")
+	if err := n.Sys.SetLastKnown(string(rec.State)); err != nil {
+		n.Log("claim.replay: p6 last_known_state not updated: %v", err)
 	}
-	if rc, _ := n.Sys.Save(); rc != 0 {
-		n.Log("claim.replay: --save rc=%d", rc)
+	pw := genPassword()
+	if e := n.setPassword(pw, ELockIncomplete); e != nil {
+		return nil, e
 	}
 	return cbor.M(1, owner.TagKey, 2, rec.AdvOwnerKey, 3, pw), nil
 }
@@ -653,15 +723,9 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 		return cbor.M(), nil
 	case "root_password.reset":
 		pw := genPassword()
-		hash, err := n.Sys.CryptPassword(pw)
-		if err == nil {
-			err = n.Sys.ApplyLock(hash)
-		}
-		if err != nil {
-			return nil, fail(EApply, "%v", err)
-		}
-		if rc, out := n.Sys.Save(); rc != 0 {
-			return nil, fail(EStorage, "--save rc=%d %s", rc, strings.TrimSpace(out))
+		// lock failure -> ELockIncomplete (password unchanged); --save failure -> EStorage with root restored
+		if e := n.setPassword(pw, EStorage); e != nil {
+			return nil, e
 		}
 		return cbor.M(1, pw), nil
 	case "diag.bundle":

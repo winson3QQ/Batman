@@ -30,6 +30,7 @@ import (
 	"batman-prov/keystore"
 	"batman-prov/node"
 	"batman-prov/provstore"
+	"batman-prov/shacrypt"
 	"batman-prov/sock"
 )
 
@@ -130,58 +131,89 @@ func (s realSys) CurrentWireless() (string, string, string, error) {
 	return uciGet("wireless." + i + ".key"), uciGet("wireless." + i + ".mesh_id"), uciGet("wireless." + dev + ".channel"), nil
 }
 
-// ApplyLock: §6.2 — network key-only, serial via the per-node password, lock-status LOCKED. Shadow edited surgically.
-func (s realSys) ApplyLock(hash string) error {
-	if !(strings.HasPrefix(hash, "$") || hash == "!") || strings.ContainsAny(hash, ":\n") {
-		return errors.New("bad hash") // a crypt hash, or "!" = locked without a password (root:!)
+// ---- the lock: ONE implementation, prov_apply_lock in prov-lock.sh (docs/design/254-claim-lock-fix.md §5.3) ----
+
+const provLockLib = "/usr/lib/batman/prov-lock.sh"
+
+// provApplyLock runs `prov_apply_lock <flags>` with field (if any) on stdin and maps its last line
+// "LOCK <step> rc=<n>" to an error naming the step. The hash never goes on a command line.
+func provApplyLock(field string, flags ...string) error {
+	var in []byte
+	if field != "" {
+		in = []byte(field + "\n")
 	}
-	b, err := os.ReadFile("/etc/shadow")
-	if err != nil {
-		return err
-	}
-	var out []string
-	found := false
-	for _, l := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
-		if strings.HasPrefix(l, "root:") {
-			f := strings.Split(l, ":")
-			f[1] = hash
-			l = strings.Join(f, ":")
-			found = true
-		}
-		out = append(out, l)
-	}
-	if !found {
-		return errors.New("no root line in /etc/shadow")
-	}
-	if err := os.WriteFile("/etc/shadow.prov", []byte(strings.Join(out, "\n")+"\n"), 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename("/etc/shadow.prov", "/etc/shadow"); err != nil {
-		return err
-	}
-	for _, kv := range [][2]string{{"dropbear.@dropbear[0].PasswordAuth", "off"}, {"dropbear.@dropbear[0].RootPasswordAuth", "off"}, {"system.@system[0].ttylogin", "1"}} {
-		if rc, o := run(nil, "uci", "set", kv[0]+"="+kv[1]); rc != 0 {
-			return fmt.Errorf("uci set %s: %s", kv[0], o)
-		}
-	}
-	run(nil, "uci", "commit", "dropbear")
-	run(nil, "uci", "commit", "system")
-	run(nil, "/etc/init.d/dropbear", "reload")
-	if fi, err := os.Stat(s.p.State); err == nil && fi.IsDir() {
-		os.WriteFile(filepath.Join(s.p.State, "lock-status"), []byte("LOCKED\n"), 0o644)
+	rc, out := run(in, "sh", append([]string{"-c", `. ` + provLockLib + ` && prov_apply_lock "$@"`, "prov_apply_lock"}, flags...)...)
+	if rc != 0 {
+		return fmt.Errorf("prov_apply_lock %s: %s", strings.Join(flags, " "), lastLine(out))
 	}
 	return nil
 }
 
-// CryptPassword: busybox cryptpw, password on stdin (-s), SHA-512.
-func (s realSys) CryptPassword(pw string) (string, error) {
-	rc, out := run([]byte(pw+"\n"), "cryptpw", "-s", "-m", "sha512")
-	h := strings.TrimSpace(out)
-	if rc != 0 || !strings.HasPrefix(h, "$6$") {
-		return "", fmt.Errorf("cryptpw rc=%d", rc)
+// ApplyLock: lock the doors (every dropbear section key-only, ttylogin=1, dropbear reloaded and read back) and only
+// then write the new root hash; any failure leaves shadow at its previous value (an empty root becomes "!").
+func (s realSys) ApplyLock(hash string) error {
+	if !shacrypt.ValidNew(hash) {
+		return errors.New("ApplyLock: not a $6$ hash of the expected shape")
 	}
-	return h, nil
+	return provApplyLock(hash, "--hash-stdin")
 }
+
+// RestoreRoot writes root's previous shadow field back (after a failed --save, §5.3 restore rule); "" -> "!".
+func (s realSys) RestoreRoot(prev string) error {
+	if prev == "" {
+		prev = "!"
+	}
+	return provApplyLock(prev, "--restore-stdin", "--no-reload")
+}
+
+// RootField: root's current shadow field ("" when empty).
+func (s realSys) RootField() (string, error) {
+	b, err := os.ReadFile("/etc/shadow")
+	if err != nil {
+		return "", err
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "root:") {
+			return strings.Split(l, ":")[1], nil
+		}
+	}
+	return "", errors.New("no root line in /etc/shadow")
+}
+
+// MarkLockIncomplete: p6 lock-status = LOCK-INCOMPLETE (tmp + rename), so a person sees it (halow-status).
+func (s realSys) MarkLockIncomplete() {
+	if fi, err := os.Stat(s.p.State); err != nil || !fi.IsDir() {
+		return
+	}
+	t := filepath.Join(s.p.State, ".lock-status.helper")
+	if os.WriteFile(t, []byte("LOCK-INCOMPLETE\n"), 0o644) == nil {
+		os.Rename(t, filepath.Join(s.p.State, "lock-status"))
+	}
+}
+
+// SetLastKnown rewrites ONLY field 3 (last_known_state) of p6 prov-state after a claim / replay commit, keeping
+// every other field (field 6 mesh_expect is read by autocommit's OTA gate); tmp + rename, 0600. No file, or a
+// malformed one, is left alone (boot.Run writes it at the next start).
+func (s realSys) SetLastKnown(state string) error {
+	f := filepath.Join(s.p.State, "prov-state")
+	b, err := os.ReadFile(f)
+	if err != nil {
+		return err
+	}
+	fl := strings.Fields(strings.SplitN(string(b), "\n", 2)[0])
+	if len(fl) < 6 {
+		return fmt.Errorf("prov-state has %d fields", len(fl))
+	}
+	fl[2] = state
+	t := f + ".helper"
+	if err := os.WriteFile(t, []byte(strings.Join(fl, " ")+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(t, f)
+}
+
+// CryptPassword: SHA-512 crypt in Go (shacrypt), salt from crypto/rand — no external command (§5.1).
+func (s realSys) CryptPassword(pw string) (string, error) { return shacrypt.New512([]byte(pw)) }
 
 const akPath = "/etc/dropbear/authorized_keys"
 
@@ -301,19 +333,16 @@ func applyState(p provstore.Paths, firstboot bool) error {
 	}
 	if rec.State == provstore.Claimed || rec.State == provstore.Member {
 		// a claim interrupted after persist: the lock is judged from the real values, not lock-status
-		if uciGet("dropbear.@dropbear[0].PasswordAuth") != "off" || uciGet("dropbear.@dropbear[0].RootPasswordAuth") != "off" || uciGet("system.@system[0].ttylogin") != "1" {
-			sh, _ := os.ReadFile("/etc/shadow")
-			hash := ""
-			for _, l := range strings.Split(string(sh), "\n") {
-				if strings.HasPrefix(l, "root:") {
-					hash = strings.Split(l, ":")[1]
-				}
+		// through the one implementation, without a hash: a $ hash is kept, an empty root becomes "!" (§5.3);
+		// at firstboot (99zz, uci-defaults) dropbear is not running yet -> --no-reload
+		root, _ := (realSys{p}).RootField()
+		if uciGet("dropbear.@dropbear[0].PasswordAuth") != "off" || uciGet("dropbear.@dropbear[0].RootPasswordAuth") != "off" || uciGet("system.@system[0].ttylogin") != "1" || root == "" {
+			logf("apply-state: completing an interrupted lock (hash present: %v)", strings.HasPrefix(root, "$"))
+			flags := []string{}
+			if firstboot {
+				flags = append(flags, "--no-reload")
 			}
-			if !strings.HasPrefix(hash, "$") {
-				hash = "!"
-			}
-			logf("apply-state: completing an interrupted lock (hash present: %v)", hash != "!")
-			if err := (realSys{p}).ApplyLock(hash); err != nil {
+			if err := provApplyLock("", flags...); err != nil {
 				return err
 			}
 		}
