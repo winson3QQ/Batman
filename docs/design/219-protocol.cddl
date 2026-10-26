@@ -115,7 +115,7 @@ error-response = { 1 => uint, 4 => error-code, 5 => error-detail } ; never carri
 chunk-response = { 1 => uint, 4 => 0, 3 => bstr, 6 => part }       ; one chunk of a large body
 proto-ver    = [ major: uint, minor: uint ]
 part         = { 1 => uint, 2 => uint }        ; 1: n (1-based), 2: total
-error-code   = 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 10 / 11 / 12   ; §5.2
+error-code   = 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 10 / 11 / 12 / 13   ; §5.2 (13 E_LOCK_INCOMPLETE: claim-lock fix)
 error-detail = { ? 1 => tstr,                  ; capability (E_UNSUPPORTED)
                  ? 2 => reason-code,           ; E_REJECTED / E_UNSUPPORTED reason
                  ? 3 => tstr }                 ; free text for logs only, never shown to users
