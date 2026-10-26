@@ -186,6 +186,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | 10 | `E_STORAGE` | 寫入 p5 失敗 |
 | 11 | `E_REJECTED` | 更新被拒(附原因) |
 | 12 | `E_RATE` | 超過限速 |
+| 13 | `E_LOCK_INCOMPLETE` | **已提交、但上鎖 / 換密碼沒有完成,沒有交出密碼**(claim-lock fix,#254)。`claim/finish`、`claim/replay`:節點已是已認領 → app 以 `psk_replay` session 走 `claim/replay` 重試;`root_password/reset`:密碼沒有換,可重試。提交**之前**的失敗仍是 `E_CLAIM_FAILED` / `E_STORAGE` |
 
 ### 5.3 訊息目錄(階段 1 範圍)
 
@@ -236,6 +237,7 @@ response = SHA-256( K(32) ‖ ClientChal(32) ‖ OtherData[0:4] ‖ 0x00×8 ‖ 
 - `SN` = `node_cert` 裡的 608B 序號(不是秘密)。
 - **階段 1 起就用這個格式**(軟體計算同樣的 SHA-256),階段 2 換成 608B 時線上格式不變【依 review,MUST】。
 - **節點自己重算 `ClientChal`(v0.7)**:用自己發給本 session 的 `nonce`、本 session 的 `h`、自己的 DAC、以及**即將寫入的** `owner_pub`(`claim/finish`:本 session `claim/begin` 送來的那把;`claim/replay`:已存的那把);不接受任何外部提供的挑戰值或雜湊。節點內部若分成非 root 的協定行程與 root 的 helper,由 helper 重算(#254),協定行程被攻陷也換不了擁有者。
+- **`E_LOCK_INCOMPLETE`(13,#254 claim-lock fix)**:`claim/finish` 回它 = 節點**已提交**認領,但上鎖或密碼還沒進 p5;節點不交出密碼(交出去的密碼若沒進 p5,下次開機會被改回)。app 照「回應遺失」處理:`psk_replay` + `claim/replay`。`claim/replay` 再回 13 → 稍後重試;持續失敗代表節點儲存有問題,說明頁指向轉賣工具重燒。
 - **app 的義務(v0.7)**:送出 `claim/finish` **之前**,先持久化 `node_cert`(含 `ecdh_pub`)與 `claim-pending{device_id, owner_pub}`;回應遺失時才算得出 `psk_replay`(§6)並以 `claim/replay` 取回金鑰;`claim/replay` 也要認領秘密 K,app 要嘛連 K 一起持久化(存在 keystore 保護的儲存),要嘛請使用者重掃 QR。若節點其實沒有提交(`status/public` / `info` 仍是未認領),app 改走一般的 `NX` 認領。
 
 ### 5.5 確認碼(SAS)
