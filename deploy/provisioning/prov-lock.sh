@@ -72,6 +72,39 @@ prov_lock_decision() {
 	fi
 	echo TODAY
 }
+# prov_root_hash_ok <field>: rc 0 when musl crypt() can verify a password against <field> (claim-lock fix §5.3 v8):
+#   $1$<salt 0-8>$<22>  |  $5$[rounds=N$]<salt 0-16>$<43>  |  $6$[rounds=N$]<salt 0-16>$<86>
+#   N decimal 1000-9999999, no leading zero (musl rewrites anything else in its output: never matches); after it the
+#   rest is salt as in musl (a salt may itself read "rounds=…");
+#   salt without $ : newline; hash part in [./0-9A-Za-z]. Anything else (DES, $2…, empty, !…) -> 1.
+# Used ONLY where a hash is converged to or written (S13, --hash-stdin). "Has the operator set a password" (not open)
+# stays a plain `$…` check in config-save and 96.
+prov_root_hash_ok() {
+	_rh=$1
+	case "$_rh" in *:*|*"
+"*) return 1 ;; esac
+	case "$_rh" in
+		'$1$'*) _rh_sm=8; _rh_hl=22 ;;
+		'$5$'*) _rh_sm=16; _rh_hl=43 ;;
+		'$6$'*) _rh_sm=16; _rh_hl=86 ;;
+		*) return 1 ;;
+	esac
+	_rh_t=${_rh%"${_rh#???}"}; _rh_r=${_rh#???}
+	if [ "$_rh_t" != '$1$' ]; then
+		case "$_rh_r" in rounds=*)
+			_rh_n=${_rh_r#rounds=}; _rh_n=${_rh_n%%\$*}
+			case "$_rh_n" in ''|0*|*[!0-9]*) return 1 ;; esac
+			[ "${#_rh_n}" -le 7 ] && [ "$_rh_n" -ge 1000 ] || return 1
+			_rh_r=${_rh_r#"rounds=$_rh_n\$"}
+		;; esac
+	fi
+	_rh_s=${_rh_r%%\$*}; [ "$_rh_r" != "$_rh_s" ] || return 1
+	[ "${#_rh_s}" -le "$_rh_sm" ] || return 1
+	_rh_x=${_rh_r#"$_rh_s\$"}
+	[ "${#_rh_x}" = "$_rh_hl" ] || return 1
+	case "$_rh_x" in *[!./0-9A-Za-z]*) return 1 ;; esac
+	return 0
+}
 # prov_apply_lock [--hash-stdin | --restore-stdin] [--no-reload] — THE one lock implementation (#254 claim-lock fix
 # §5.3; callers: 96, batman-prov-lock, batman-provhelper). Order "lock the doors first, change the password last":
 #   1 every dropbear section PasswordAuth/RootPasswordAuth=off, system ttylogin=1, uci commit
@@ -79,8 +112,9 @@ prov_lock_decision() {
 #     failure is a step-2 failure (fail-closed). The read-back proves procd's record; procd swaps the master async.
 #   3 root's shadow field: --hash-stdin = the line read from stdin, written only if 1-2 succeeded; --restore-stdin =
 #     written whatever 1-2 did (the helper's restore after a failed --save); otherwise (and when 1-2 failed) only an
-#     EMPTY root field becomes "!". mktemp in /etc + sync + mv + sync. The field must start with $ or ! and hold no
-#     ':' / newline. stdin is read ONLY with one of the two flags.
+#     EMPTY root field becomes "!". mktemp in /etc + sync + mv + sync. --hash-stdin: the field must pass
+#     prov_root_hash_ok, else rc 3 and shadow untouched; --restore-stdin: a $… / !… field without ':' is written
+#     back as is, anything else as "!" (same rule as the helper's RestoreRoot). stdin is read ONLY with a flag.
 #   4 p6 lock-status (tmp + mv): LOCKED when 1-3 succeeded, else LOCK-INCOMPLETE; a write failure is only logged.
 # Last stdout line: "LOCK <ok|uci|dropbear|shadow> rc=<0|1|2|3>". Test hooks (CI only, never set on a node):
 # PROV_SHADOW, PROV_STATE, PROV_DROPBEAR_INIT.
@@ -96,8 +130,9 @@ prov_apply_lock() {
 	_pl_new=""
 	if [ -n "$_pl_in" ]; then
 		IFS= read -r _pl_new || [ -n "$_pl_new" ] || { echo "LOCK shadow rc=3"; return 3; }
-		case "$_pl_new" in \$*|!*) ;; *) echo "prov_apply_lock: refusing a root field that is not \$… or !…"; echo "LOCK shadow rc=3"; return 3 ;; esac
-		case "$_pl_new" in *:*) echo "prov_apply_lock: ':' in the root field"; echo "LOCK shadow rc=3"; return 3 ;; esac
+		if [ "$_pl_in" = hash ]; then
+			prov_root_hash_ok "$_pl_new" || { echo "prov_apply_lock: refusing a hash musl cannot verify (prov_root_hash_ok)"; echo "LOCK shadow rc=3"; return 3; }
+		else case "$_pl_new" in *:*) _pl_new='!' ;; \$*|!*) ;; *) _pl_new='!' ;; esac; fi
 	fi
 	_pl_rc=0; _pl_step=ok
 	# 1 uci
