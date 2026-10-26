@@ -1,6 +1,6 @@
-# Design: #254 認領後的上鎖修正 + commit 放行的 PTY 競態 — v8(核准)
+# Design: #254 認領後的上鎖修正 + commit 放行的 PTY 競態 — v9.1(核准)
 
-**狀態**:**v8 = 核准版**(第 3 輪 A APPROVE-WITH-CHANGES 0 / 0 / 7、B APPROVE-WITH-CHANGES 0 / 0 / 6,MINOR 已併入)。v7 兩位都 REJECT(窄,0 BLOCKER;A 4 MAJOR、B 3 MAJOR)。v6 之後的變更如下。
+**狀態**:**v9.1 = 核准版**(第 6 輪:A APPROVE-WITH-CHANGES 0 / 0 / 3、B APPROVE 0 / 0 / 3,MINOR 已併入)。v9 = v8 + §5.6(鏈 1 在 04 抓到的 stage-root stdout bug)。第 5 輪:A REJECT(窄)0 / 1 / 4,M1 成立的只有 §8 / §11 的過度宣稱(A 另說的「probe 沒做」是誤讀,§9 當時已是 ✅,A 第 6 輪撤回);B APPROVE-WITH-CHANGES 0 / 0 / 3。v8:(第 3 輪 A APPROVE-WITH-CHANGES 0 / 0 / 7、B APPROVE-WITH-CHANGES 0 / 0 / 6,MINOR 已併入)。v7 兩位都 REJECT(窄,0 BLOCKER;A 4 MAJOR、B 3 MAJOR)。v6 之後的變更如下。
 - **產品變更**(§5.3,真機測試審查 A-M6):busybox `passwd` 預設產生 `$5$`,但 S13 收斂只認 `$6$`。
   - v8 新增 `prov_root_hash_ok`(`$1$` / `$5$` / `$6$` 格式正確),只用在 S13 收斂與 `--hash-stdin`。
   - config-save 與 96 判斷「不是開放」的 `$…` **維持原狀**。v7 把「拒收 `$1$`」擴大到這兩處,會讓 legacy 節點在 OTA 後變開放,所以撤回。
@@ -186,6 +186,73 @@ trap - HUP
 ```
 子程序 fork 時就繼承 SIG_IGN,跨 exec 保留(ash 只重設有自訂 handler 的訊號),所以 fork 到 `setsid()` 之間沒有窗口(v1 審查 A-M5:子 shell 內的 trap 仍有窗口)。✅ batman-slot 只有 EXIT trap(`:157`),沒有 HUP trap 會被 `trap - HUP` 蓋掉。openmanetd 由 procd fork,不繼承;openmanetd init 的 hook(`batman-addr-defer`)會繼承 SIG_IGN,無害。
 
+### 5.6 `batman-slot stage-root` 的 stdout 契約(v9,鏈 1 在 04 抓到的 P1 bug)
+**現象**(✅ 04 2026-10-26,1.5.14-wsl.2,鏈 1 第 7.2 步):
+- 情境:B 上的節點是 unclaimed、p5 未 seed、但 p5 有 unclaimed 紀錄,做 OTA 到 A。
+- stage 2 的 trace 依序是:
+  1. `S2 STAGE-ROOT rc=0 dev=batman-slot: p5 not seeded but holds an unclaimed provisioning record — allowed (#254 L44)`;
+  2. 緊接著 `S2 END rc=1`。
+- A 被標成 `BATMAN-BAD (write in progress)`,之後的 rollback 也被拒絕。
+
+**根因**:
+- `platform-ab.sh:364` 用 `troot=$(batman-slot stage-root "$dir")` 取得**目標裝置**。
+- 但 `batman-slot:550`(`node_checks` 的 L44 分支)把說明文字 `echo` 到 **stdout**,於是 `troot` 拿到的是那行文字。
+- `:367` 的 `[ -b "$troot" ]` 不成立 → stage 2 回 1。
+- ✅ main 92f091c(1.5.13)同一行一樣存在,所以這是 P1 就有的 bug,不是 v8 的回歸。
+
+**影響**:每個 p5 未 seed 但有 unclaimed 紀錄的節點(新卡、重燒後還沒入網),只要 OTA 就一定失敗,而且把目標槽寫成 BAD。現場目前沒有這種節點(還沒有 app)。
+
+**範圍(一次掃完,✅ 原始碼;第 4 輪 A / B 各自獨立複核)**:
+- 會把 batman-slot 的輸出當成**值**來擷取的呼叫者,只有 `platform-ab.sh:364`(`stage-root`)。
+  - `active` / `target`(`batman-autocommit`、`platform-ab.sh:113`)是純值;
+  - `precheck-node 2>&1`(`platform-ab.sh:184`)是刻意擷取訊息,改走 stderr 之後照樣抓得到;
+  - `daily-validation.sh` 的 `layout 2>&1`、helper 的 `is-trial` / `verify` 只看 rc 或拿去做 diag。
+- `cmd_stage_root` 在印出 `$TROOT` 之前會經過的完整路徑:
+  - `slot_lock`、`precheck`、`node_checks`;
+  - `assert_fw_sane`、`assert_mbr` / `mbr_load`(pi3)、`detect_layout`、`is_trial`;
+  - `p5_freshness_gate` / `p5_verdict_gate`、`eeprom_floor_warn`、`allowed` / `opf`;
+  - `begin_write`(`disarm_tryboot`、`tboot_open` / `tboot_close`、`invalidate_slot`)、`clear_root`;
+  - 以及被 source 的 `rundir.sh`、`otatrace.sh`、`prov-lock.sh` 的頂層。
+- 這條路徑上**只有 `:550`** 寫到 stdout。其他輸出都已重導(`>&2`、寫檔、`>/dev/null`),或在 `$(...)` 裡當作回傳值。
+
+**修正**:
+- `:550` 改成送到 **stderr**(與 `warn()`、`die()` 一致)。
+- 同時加一行 trace `st L44-ALLOW state=unclaimed`(第 4 輪 B-m2):stage 2 的 stderr 不會進 trace,這樣 ota-trace 才有放行的證據。
+- 在 `cmd_stage_root` 寫明契約:**stdout = 恰好一行,就是目標裝置**;其他訊息一律走 stderr。
+- 讀取端維持 `[ -b "$troot" ]`。不加「取最後一行」那類繞過,也不擴大範圍。
+
+**擁有權 / 契約**(§7 加一列):
+- stage-root 的 stdout 由 batman-slot 寫,只有 platform-ab stage 2 讀。格式 = 一行 `/dev/…`。
+- **失敗語意**(第 4 輪 B-m3):`rc != 0` 或 stdout 不是 block device → stage 2 拒絕(fail-closed)。這時目標槽**已經**被 `begin_write`(BATMAN-BAD)與 `clear_root`(overlay 區清空)動過:
+  - 只能等下一次 OTA 成功才恢復;
+  - commit 與 rollback 都會拒絕它;
+  - 不會開進半寫的槽。
+
+**生命週期**(§8 加兩列):
+- 只影響 stage 2(OTA)的 L44 分支(p5 未 seed、但有 `ok unclaimed` 紀錄)。
+- **從有 bug 的版本升級**(第 4 輪 A-m1 / B-M1):
+  - stage 2 用的是**正在跑的那一槽**的 batman-slot(✅ `platform-ab.sh:38` `RAMFS_COPY_BIN` 含 `/usr/sbin/batman-slot`),所以修正只對「已經在跑修正版」的節點有效。
+  - 在 ≤ 1.5.14-wsl.2 上、處於 unclaimed + 未 seed 狀態的節點,要升級就必須先擇一:
+    1. 讓它入網,由 joinwatch seed p5;
+    2. 先確認 p5 是 `ok unclaimed`,再用 `/tmp/batman-slot.allow-unseeded`。確認方式(v9.1 第 5 輪 B-m3):`batman-config-save --prov-get <一個新的目錄>` 回 rc 0 並印出 `p5 prov ok state=unclaimed`(不用 `precheck-node` 的訊息:修正版之後它走 stderr,文字也可能再變)。這個 override 會連「claimed 但未 seed」的拒絕也一起跳過,所以一定要先確認。override 只有 root 擁有的 `/tmp` 旗標才算數(`opf`),OTA 重開之後就消失;任何 root 都能設它,所以它只是防止操作失誤,**不是安全邊界**。
+  - 寫進操作說明與 #254 checklist。現場目前沒有這種節點。
+  - 新卡或重燒的卡在第一次入網前做 OTA 也屬於這個情境(⚠️ 推論,沒有找到現行工廠流程在入網前做 OTA 的證據)。
+- **降版**到沒有這個修正的版本:同樣的 OTA 仍會失敗,與今天相同。
+
+**測試**:
+- **黑箱 stub**(第 4 輪 B-m1 / A-m2):改成黑箱,不做 v9 原本的靜態 lint。靜態 lint 會誤判 `$(...)` 裡回傳值的 echo,也看不到外部指令寫出的 stdout。
+  - 檔案:`tests/prov-p1/batman-slot-stage-root.sh`,走 harness PR(#290)。
+  - 範圍(v9.1 第 5 輪 A-m1 / B-m1):`cmd_stage_root` 會走到的函式**全部跑真碼**(`precheck`、`node_checks`、`assert_fw_sane`、`p5_freshness_gate`、`begin_write`、`clear_root`……),只 stub 葉節點指令與 sysfs(`mount`、`dd`、`hexdump`、`vcmailbox`、`/proc`、`/sys`、`${DISK}`);`dd` / `clear_root` 指向暫存檔,並斷言沒有碰到任何真的 block device;測試檔頭列出被 stub 的清單。
+  - 誠實界線:被 stub 的外部指令自己寫出的 stdout,stub 看不到;這部分只有鏈 1 第 7.2 步的真 OTA 涵蓋。
+  - 做法:source 整個 batman-slot(只覆寫葉節點指令與 sysfs,見下一條),在 stub 下對 `stage-root` 跑四個分支:L44、已 seed、allow-unseeded、claimed 未 seed(這個要 die)。
+  - 斷言:stdout **恰好一行**,而且就是 stub 的目標 `/dev/…`;說明文字出現在 stderr;claimed 未 seed 的情況 rc ≠ 0、stdout 為空。
+  - 負對照:4ebfd6f 的 batman-slot 必須在 L44 分支 FAIL。
+- **真機回歸** = 鏈 1 第 7.2 步。**前提**:**正在跑的那一槽**必須是修正版,也就是先把修正版 OTA 進去並 commit,再從那一槽出發。
+  - 負對照 = 2026-10-26 從 1.5.14-wsl.2 出發的那次 FAIL(證據是上面的 trace)。
+  - 從舊版出發跑 7.2 會照設計 FAIL,不能為了讓它過而加上 override。
+- §12:這次產品 PR 的範圍加上 `batman-slot:550` + trace;stub 測試放在 harness PR。改的是兩板共用的檔案,所以 PR body 要分 `### bcm2711` / `### bcm2710` 兩節(bcm2710 只 build)。
+
+
 ## 6. 擁有權
 
 | 資源 | 唯一實作 | 呼叫者(時機互斥) | 只讀 |
@@ -209,6 +276,7 @@ claimed / member 節點上,這幾個鍵在**每次開機**被 S13 收斂到鎖�
 | helper 碼 → 協定碼(provd 對應,PR-P2 實作;本次寫進協定) | helper → provd → app | helper `ELockIncomplete`(23)→ 協定 **13 `E_LOCK_INCOMPLETE`**:「已 commit,上鎖未完成 → 以 `psk_replay` session 走 `claim/replay`」(claim / replay);reset 時 = 「密碼沒換,可重試」。commit **之前**的失敗(helper `EApply` / `EStorage`)→ 協定 `E_CLAIM_FAILED`(9)/ `E_STORAGE`(10),維持「不說明原因」 | `219-protocol.md` §5.2 加碼 13、§5.3 寫 claim/finish 與 claim/replay 的語意、CDDL 向量各一;目前沒有 app,無相容問題。單元測試證明:stage 失敗 → 非 23;commit 後上鎖失敗 → 23 |
 | claim / replay / reset 成功回應 | 同上 | `{1: tag, 2: adv, 3: pw}` / `{1: pw}` | — |
 | p5 `prov.meta` / `prov.cbor` / `identity/shadow-root`(S13 ro 讀) | helper(`--prov-only`)/ config-save | `prov_meta_ok`;shadow-root:收斂用 `root:` + `prov_root_hash_ok`(v8:`$1$` / `$5$` / `$6$` 格式正確);96 還原與 config-save 只看 `root:$…`(維持) | meta 壞 → LOCK(fail-secure,同 `prov_lock_decision`);shadow-root 不合法 → 不帶 hash 上鎖(空 → `!`);p5 掛不上 → 依 p6 last_known_state |
+| `batman-slot stage-root` 的 stdout(v9 §5.6) | batman-slot 寫;只有 platform-ab stage 2(`platform-ab.sh:364`)讀 | 恰好一行:目標槽的 `/dev/…`;其他訊息走 stderr | 不是 block device 或 rc ≠ 0 → stage 2 拒絕(fail-closed);目標槽已 BAD、overlay 已清,只能等下一次 OTA 成功 |
 
 ## 8. 生命週期矩陣
 
@@ -218,21 +286,23 @@ claimed / member 節點上,這幾個鍵在**每次開機**被 S13 收斂到鎖�
 | 認領 | 不鎖、假密碼、不 seed | 鎖、密碼可用、seed、p6 last_known=claimed | `prov-claim-254`(tier B);鏈 1 第 8.3 步 |
 | 認領時上鎖失敗(第 1–2 步 / 第 3 步) | 回成功 + 假密碼 | `ELockIncomplete`、`--save`、空 root → `!` | fakeSys + CI loop 對每一步注入 |
 | replay / reset | 一定 `E_APPLY` | 成功 | `prov-claim-254` replay 段;reset 以 socket 測試 |
-| 重開機(已認領,上鎖曾失敗或被改掉) | 一直不鎖 | S13 在 dropbear 前鎖、root 收斂到 p5 | §11.4 |
-| **認領後沒重開就 rollback 到另一槽(同版本)**(v2 B-M1) | — | 另一槽開機時 S13 讀 p5 = claimed → 鎖、root 換成 p5 的 hash(app 的密碼有效) | §11.5:04 上 claim → `batman-slot rollback` → reboot → 斷言 LOCKED + probe MATCH;負對照 = v2 寫法(只看 overlay)|
-| **overlay 寫失敗**(p5 已 commit,`txn.go:36-39`)(v2 A-M3) | — | 下次開機 S13 讀 p5 → 鎖 | §11.4-inj(v7):只把 `prov.meta` / `prov.cbor` 兩個檔案以唯讀副本 bind(不擋 `.stage`)→ helper log「overlay write … failed」→ 解鎖 + p6 改回 legacy → 重開 → S13 log `p5=ok/claimed p6=legacy` + 收斂 |
+| 重開機(已認領,上鎖曾失敗或被改掉) | 一直不鎖 | S13 在 dropbear 前鎖、root 收斂到 p5 | CI stub `prov-lock-init`(S13 決策 + 收斂 18 項);⚠️ 真機端到端未驗(§11.4 未實作,§13) |
+| **認領後沒重開就 rollback 到另一槽(同版本)**(v2 B-M1) | — | 另一槽開機時 S13 讀 p5 = claimed → 鎖、root 換成 p5 的 hash(app 的密碼有效) | CI stub `prov-lock-init`(p5 claimed × p6 × overlay legacy → LOCK);⚠️ 真機未驗(§11.5 未實作,§13) |
+| **overlay 寫失敗**(p5 已 commit,`txn.go:36-39`)(v2 A-M3) | — | 下次開機 S13 讀 p5 → 鎖 | CI stub `prov-lock-init`(p5 claimed、overlay legacy → LOCK + 收斂);⚠️ 真機注入未做(§11.4-inj 未實作,§13) |
 | helper respawn / crash loop | — | 不補鎖(S13 才補);claim 中途 crash:commit 已寫 → replay 接手 | 程式審查 + 既有 L34 killpoint |
-| clean stop / dropbear 重啟 | — | dropbear 重啟讀已鎖 uci | §11.4 讀回 |
+| clean stop / dropbear 重啟 | — | dropbear 重啟讀已鎖 uci | CI loop `prov-apply-lock`(dropbear 讀回、每個 instance 都要 `-s -g`);✅ 真機 `prov-claim-254` 認領後 `dbs=1`(04,1.5.14-wsl.2);⚠️ 重啟後讀回真機未驗(§13) |
 | OTA(已認領) | gate 擋 | 可 OTA;fresh overlay 由 p5 shadow-root 還原、96 鎖定 | 鏈 1 第 8.6 步 |
-| reset 時 `--save` 失敗(暫時性)→ joinwatch 照常 → 重開 | — | 不回密碼(`E_STORAGE`);helper 先把 root 欄還原 → joinwatch 存進 p5 的仍是舊值 → 重開後 app 手上的舊密碼仍有效 | §11.4b(一次性 lock-busy 注入、joinwatch 不停);負對照 = v4 寫法(不還原)以白箱 variant 跑:p5 shadow-root 的 sha 變、舊密碼 NOMATCH |
-| `passwd` → 重開 | — | 已入網:15 s 內進 p5,保留;沒進 p5 → 改回 | 真機:停 joinwatch → `passwd` → 重開 → 改回;`--save` 後重開 → 保留 |
-| p5 存的是 `$5$` / `$1$`(操作員 `passwd` + `--save`)→ 再改一次沒存 → 重開(v8,v7 A-M6) | S13 不收斂(只認 `$6$`)→ 沒存的密碼留著 | S13 收斂到 p5 的值 | §11.4c(v6 產品 FAIL = 負對照) |
+| reset 時 `--save` 失敗(暫時性)→ joinwatch 照常 → 重開 | — | 不回密碼(`E_STORAGE`);helper 先把 root 欄還原 → joinwatch 存進 p5 的仍是舊值 → 重開後 app 手上的舊密碼仍有效 | CI fakeSys(`lock_test.go`:save 失敗 → 還原、不回密碼、E_STORAGE)+ `prov-apply-lock`(--restore-stdin);⚠️ 真機注入未做(§11.4b / 4b' 未實作,§13) |
+| `passwd` → 重開 | — | 已入網:15 s 內進 p5,保留;沒進 p5 → 改回 | ⚠️ 真機未驗(§11.4c 未實作,§13);收斂規則由 CI stub `prov-lock-init` 涵蓋 |
+| p5 存的是 `$5$` / `$1$`(操作員 `passwd` + `--save`)→ 再改一次沒存 → 重開(v8,v7 A-M6) | S13 不收斂(只認 `$6$`)→ 沒存的密碼留著 | S13 收斂到 p5 的值 | CI stub `prov-lock-init`(`$5$` / `$1$` 收斂;wsl.1 FAIL = 負對照)+ `prov-root-hash` 46 項;✅ 04 musl 接受 `$1$` / `$5$` / `$6$`(§9);⚠️ 真機重開流程未驗(§13) |
 | 升級:p5 裡已有 v8 之前存的任何 `root:$…`(含格式壞的) | 96 還原;有 key 就 LOCKED | **不變**:96 與 config-save 仍用 `$…`(第 2 類判斷)→ 沒有開放的路徑;格式壞的值 S13 不收斂,只鎖門 | CI:p5 `root:$1$…` / 格式壞的 × legacy / claimed |
 | 降版到 v8 之前的版本(v6/v7 rc,只在本單的 rc 之間) | — | 舊 S13 只收斂 `$6$`;`$5$` / `$1$` 退回 v6 的行為(不收斂但已鎖) | 不測(rc 之間) |
-| `batman-slot rollback`(claimed / member)到**不能維持鎖定的版本**(例如 1.5.13) | — | **拒絕**(v3 B-m3,這次就做):rollback 前 ro 掛目標槽 rootfs(squashfs),`/etc/init.d/batman-prov-lock` **與** `/etc/rc.d/S13batman-prov-lock`(已啟用)兩者缺一 → die「target slot cannot keep this claimed node locked」;覆寫 `BATMAN_ALLOW_UNLOCKED_ROLLBACK=1`(操作員明示)。這兩個路徑是介面(§7),CI lint 斷言 image 內兩者都在 | 真機:claimed + 目標槽 1.5.13 → 拒絕;覆寫 → 放行;legacy → 不擋。改到兩板共用的 batman-slot → 兩板 CI(bcm2710 只 build) |
+| `batman-slot rollback`(claimed / member)到**不能維持鎖定的版本**(例如 1.5.13) | — | **拒絕**(v3 B-m3,這次就做):rollback 前 ro 掛目標槽 rootfs(squashfs),`/etc/init.d/batman-prov-lock` **與** `/etc/rc.d/S13batman-prov-lock`(已啟用)兩者缺一 → die「target slot cannot keep this claimed node locked」;覆寫 `BATMAN_ALLOW_UNLOCKED_ROLLBACK=1`(操作員明示)。這兩個路徑是介面(§7),CI lint 斷言 image 內兩者都在 | CI stub `batman-slot-rollback-gate` 19 項(含 4 個突變);⚠️ 真機拒絕未驗(§11.4d 未實作,§13) |
 | tryboot 試跑失敗的**自動退回**(不經 `batman-slot rollback`) | — | 試跑期間會改狀態的動詞(含 claim)一律 `E_BUSY`(✅ `node.go:161-162` `IsTrial`),所以已認領的節點不會在試跑中產生 → 自動退回不會讓已認領節點落到沒有 S13 的舊槽(推論,依此證據) | 既有 `prov-p1` 的 trial `E_BUSY` 測項 |
 | 還原本身失敗(`--save` 失敗後寫回舊 root 欄也失敗) | — | 不回密碼;log CRIT;`lock-status` = `LOCK-INCOMPLETE`;live 留著未交出的 hash,joinwatch 可能把它存進 p5 → 恢復路徑只有 replay(claim)或重新 reset(v5 A-m2) | fakeSys 注入「還原失敗」→ 斷言 CRIT log、`LOCK-INCOMPLETE`、不回密碼 |
 | 降版 OTA 到沒有修改的版本 | — | fresh overlay:舊 96 依 p5 claimed → 鎖 | ✅ 原始碼(舊 96 也呼叫 `prov_apply_lock`) |
+| OTA:unclaimed + p5 未 seed(L44)(v9 §5.6) | stage 2 必定失敗(stdout 被 L44 說明污染)、目標槽 BAD | 成功落到試跑 | 鏈 1 7.2(從修正版出發);CI stub `batman-slot-stage-root.sh` |
+| 從 ≤ 1.5.14-wsl.2 升級,節點 unclaimed + 未 seed(v9 §5.6) | — | **仍會失敗**(stage 2 用的是執行中那一槽的舊 batman-slot):先入網 seed,或確認 `ok unclaimed` 後用 allow-unseeded | 操作說明 + #254 checklist;不測(舊版行為 = 今天的負對照) |
 | 斷電 | — | shadow:tmp + sync + mv + sync;uci commit 中斷 → S13 下次開機補 | ⚠️ 只做乾淨重開;真斷電列殘項 |
 | 每個平台 | — | bcm2711 實測;bcm2710(P-U14)只 build;CM4 無硬體 | PR body 兩節 |
 
@@ -267,14 +337,14 @@ claimed / member 節點上,這幾個鍵在**每次開機**被 S13 收斂到鎖�
   - 序列 / login:musl probe 對 shadow 的 hash 與回傳的密碼 → MATCH(錯密碼 → NOMATCH)。
   - 補鎖:白箱寫入**已知測試 hash** + 解鎖 → 重開 → 被鎖回;舊 image 上同樣步驟 → 仍可用該密碼 ssh 登入(負對照成立的前提:不是空密碼)。
 
-## 11. 測試與驗證(全部進常規全套;harness PR 先進 main)
+## 11. 測試與驗證(harness PR 先進 main;§11.4–11.5 的真機項目是規格,未實作,見 §13)
 空結果、0 次執行、工具不在 → 一律 FAIL。
 1. **CI 單元 `shacrypt`**:Drepper 規格向量(含 `rounds=` 下限、長 salt 截斷、多行 key)+ musl 自帶自測向量;與 `openssl passwd -6 -salt`(**只涵蓋預設 rounds**)隨機交叉 200 組(可印字元、無換行、key ≤ 256);第三方再比 busybox `mkpasswd -m sha512`(CI 沒有 → FAIL,不 skip)。**突變負對照自動化**:同一組向量跑一個故意換錯 permutation 表 / rounds 迴圈的 variant,必須 FAIL。
 2. **CI 單元 node / helper**:fakeSys 注入第 1、2、3 步失敗 → claim / replay / reset 回 `ELockIncomplete`、不回密碼、`Save` 被呼叫;**`Save` 失敗 → claim / replay 回 `ELockIncomplete`、reset 回 `E_STORAGE`,都不回密碼,且 root 欄被還原成呼叫前的值(空 → `!`)**;stage 失敗 → 不是 23;claim 成功後 p6 last_known_state = claimed;`genPassword` 分布(卡方)。**CI loop 跑 `prov_apply_lock`**(假 uci / 假 ubus,同 `tests/prov-p1`):步驟順序、每一步 rc、沒帶 `--hash-stdin` 時不讀 stdin(stdin 接一個永不結束的管線也立即返回)、不合法的 root 欄被拒、多個 dropbear section 都被鎖。**CI loop 跑 S13**:p5 claimed / member / bad / unclaimed / legacy / 掛不上 × p6 各值 × overlay 舊或新 × identity 相同或不同 → LOCK / TODAY 與 shadow 是否收斂(p5 unclaimed + p6 claimed → 鎖但不收斂)。**`prov_root_hash_ok`(v8)**:
 - 接受:`$1$` / `$5$` / `$6$`,含 `rounds=1000`、`rounds=9999999`、空 salt、salt 長度上限。
 - 拒絕:`rounds=999`、`rounds=05000`(musl 輸出會改寫成拉高後的值)、`rounds=10000000`、`rounds=`、`rounds=x`、salt 含 `$`/`:`、salt 過長(`$1$` 9 字元、`$5$` / `$6$` 17 字元)、hash 長度不對(截斷)、非法字元、含 `:`、`$2b$`、DES、空、`!…`。
 - 每一類各附一個突變負對照(例如把長度判斷拿掉,必須 FAIL)。
-- 這組向量不只對規格表推導:同一組向量在 tier B(§11.4c 第一步)以節點上的 musl(cryptprobe)交叉驗證(v8 A-m5)。
+- 節點上的 musl 交叉驗證(v8 A-m5):已做的只有 §9 那一次(主機 openssl 產生的 `$1$` / `$5$` / `$6$` 各一組,04 cryptprobe MATCH / NOMATCH)。⚠️ CI 這組向量本身沒有在節點上交叉驗證過(§11.4c 未實作,§13)。
 
 S13 stub:p5 為 `$5$` / `$1$` → 收斂;p5 為格式壞的 `$…` → 只鎖、不收斂。96 與 config-save **不變**(v8 沒有改它們):「升級不變開放」由鏈 1 的真 OTA(8.6:fresh overlay 上 96 從 p5 還原)驗證,不另寫一份 96 的假環境測試(不擴大範圍)。
 3. **真機 tier B `prov-claim-254`**(修正版):LOCKED、` pw=off `、`rootpw=off`、`tty=1`、shadow `$6$`、server 只提供 `publickey`、port 22 `none` → `Permission denied`;publickey 經 2222 臨時 listener(`dropbear -s -g -p 2222`,nft 暫時規則,測完刪除並斷言已刪)證明;**musl probe**(`tools/cryptprobe`,static,與 firmware pin 同次 build;harness 斷言 toolchain musl 版本 == 節點 `/lib/libc.so` 版本,不同 → FAIL;測完刪除 binary 並斷言)MATCH / NOMATCH;replay 段;還原 S0。**負對照**:1.5.13-wsl.1 上同一測試 FAIL(2026-10-26 已取得)。
@@ -406,11 +476,16 @@ S13 stub:p5 為 `$5$` / `$1$` → 收斂;p5 為格式壞的 `$…` → 只鎖、
 8. **reconcile**(已過)與以上全部接進 daily-validation;rc 上跑全套。
 
 ## 12. PR 切法
-1. **harness PR**(先進 main):`prov-claim-254`(修正:推 allowlist、manifest 撞 p5 rw 掛載重試、`pc()` coproc 關閉、2222 publickey 證明、server auth 方法、musl probe、replay 段)、`addr-defer-reconcile-254` + runner、`pty-commit-254`、`setsid-race-254`、`chain1-254`、S13 補鎖與 rollback 測試、`tools/cryptprobe` 與建置腳本、daily-validation 接線;對 1.5.13 的預期 FAIL 進 `validation-known-failures.txt`(格式沒有到期欄位 → **產品 PR 的 checklist 寫明刪除這幾條**)。
-2. **產品 PR**:`shacrypt`、`CryptPassword`、`genPassword`、`prov_apply_lock` 改寫 + Go `ApplyLock` 改呼叫它、`ELockIncomplete` 與 claim / replay / reset 失敗語意、claim / replay 寫 p6 last_known_state、`batman-prov-lock`(S13)、`prov_lock_decision` 的 `any` 參數、`--no-reload`、96 依 rc 記錄與 fallback、`batman-slot rollback` gate、`addr_defer_release`、`219-protocol.md` §5.2 / §5.3 與 CDDL 向量。改到兩板共用檔 → PR body `### bcm2711` / `### bcm2710`。
+1. **harness PR**(先進 main):`prov-claim-254`(修正:推 allowlist、manifest 撞 p5 rw 掛載重試、`pc()` coproc 關閉、2222 publickey 證明、server auth 方法、musl probe、replay 段)、`addr-defer-reconcile-254` + runner、`pty-commit-254`、`setsid-race-254`、`chain1-254`、S13 補鎖與 rollback 測試、`tools/cryptprobe` 與建置腳本、daily-validation 接線;對 1.5.13 的預期 FAIL 進 `validation-known-failures.txt`(格式沒有到期欄位 → **產品 PR 的 checklist 寫明刪除這幾條**)。 v9.1 另加:`tests/prov-p1/prov-root-hash.sh`、`tests/prov-p1/batman-slot-stage-root.sh`、`scripts/dv/` 的 setsid-race / reconcile / pty-commit / chain1 / brewrite、`claim-lock-254.sh` 模組與 daily-validation 接線;`prov-lock-254.sh` 不在內(未實作,§13)。
+2. **產品 PR**:`shacrypt`、`CryptPassword`、`genPassword`、`prov_apply_lock` 改寫 + Go `ApplyLock` 改呼叫它、`ELockIncomplete` 與 claim / replay / reset 失敗語意、claim / replay 寫 p6 last_known_state、`batman-prov-lock`(S13)、`prov_lock_decision` 的 `any` 參數、`--no-reload`、96 依 rc 記錄與 fallback、`batman-slot rollback` gate、`addr_defer_release`、`219-protocol.md` §5.2 / §5.3 與 CDDL 向量。改到兩板共用檔 → PR body `### bcm2711` / `### bcm2710`。 v9.1 另加:`prov_root_hash_ok`(§5.3)、`batman-slot:550` 改 stderr + `L44-ALLOW` trace(§5.6);兩板共用,PR body 要 `### bcm2711` / `### bcm2710`。
 3. **firmware pin**:rc → 04 → 02/04 全套 → merge → 出貨 image 驗收。
 
 ## 13. 殘項(寫進 #254 checklist,不排程)
+- **04 的 S0 無法證明**(2026-10-26):鏈 1 中斷後手動還原時,快照在最後一步(B 重寫)之前就 finish 了。之後只證明了 p5 == 目前的 live(`batman-config-save --check`,不含 `lkg/`)、A 的 `verify` ok、B 能開機(brewrite 試跑)。所以 04 現在的狀態**沒有被證明等於測試前**,下一個破壞性測試必須重新取 S0,不能沿用。
+- **§11.4 的真機 tier B 測試 4 / 4-inj / 4b / 4b' / 4c / 4d / 5 沒有實作**(2026-10-26):真機腳本 `prov-lock-254.sh` 的撰寫被中斷,使用者選擇縮小範圍。目前的覆蓋:
+  - CI stub:S13 決策與收斂 18 項、`prov_apply_lock` 37 項、`prov_root_hash_ok` 46 項、rollback gate 19 項、helper fakeSys(含 `--save` 失敗與還原);
+  - 真機:`prov-claim-254`、`setsid-race-254`、addr-defer reconcile、`pty-commit-254`、鏈 1。
+  - **未在真機驗證**:S13 開機補鎖的端到端、`--save` 暫時性失敗的注入、joinwatch 交錯、`passwd` 改回、真實 rollback 拒絕、認領後 rollback、overlay 寫失敗。設計(§11.4)保留為規格。
 - 互動 shell(有 job control)下 commit 到一半關視窗。
 - 真斷電。
 - CM4 eMMC:重燒路徑(rpiboot)與序列埠誠實界線的前提。
@@ -420,6 +495,17 @@ S13 stub:p5 為 `$5$` / `$1$` → 收斂;p5 為格式壞的 `$…` → 只鎖、
 - 「寫 shadow + `--save`」在同一把 config-save 鎖底下完成(消除 joinwatch 晚讀 shadow 的短暫不一致,v5 B-m2)。
 
 ## 14. 審查摘要與處理
+**v9.1(核准,第 6 輪:A APPROVE-WITH-CHANGES 0 / 0 / 3、B APPROVE 0 / 0 / 3;第 6 輪 MINOR:§8 dropbear 那一列與 §11 的 musl 交叉驗證改成實際覆蓋、§5.6 stub 做法的措辭、狀態行的時機)— 第 5 輪:A REJECT(窄)0 / 1 / 4(M1:§8 測試欄過度宣稱 → 改成實際覆蓋、§11 標題標「未實作」;A 說 §9 的 probe 沒做是誤讀,第 6 輪撤回)、B APPROVE-WITH-CHANGES 0 / 0 / 3(stub 範圍、R1 的 ⚠️ 措辭、override 的確認方式)。第 4 輪:A APPROVE-WITH-CHANGES 0 / 0 / 6、B REJECT(窄)0 / 1 / 4**
+- B-M1 / A-m1(修正只在執行中的版本生效、升級路徑、鏈 1 回歸的前提):§5.6 生命週期、§8 兩列、測試前提、操作說明。
+- MINOR:
+  - 靜態 lint 改黑箱 stub(B-m1 / A-m2);
+  - `L44-ALLOW` trace(B-m2);
+  - 失敗語意寫進契約(B-m3,§7 一列);
+  - 新卡在入網前 OTA 也受影響(B-m4,⚠️);
+  - 完整的函式清單(A-m5);
+  - 讀取端維持 `-b`,不加取最後一行(A-m3:只做驗證,不做繞過;「預期的另一槽」這項檢查列為可選,不做,避免擴大範圍);
+  - §12 / 兩板章節(A-m4 / A-m6)。
+
 **v8(第 3 輪:A APPROVE-WITH-CHANGES 0 / 0 / 7、B APPROVE-WITH-CHANGES 0 / 0 / 6)— 設計核准**。第 3 輪的 MINOR 已併入:
 - rounds 1000–9 999 999、不得有前導零(B-m1,musl 會改寫輸出);
 - salt 0–SALT_MAX,不含 `$` / `:` / 換行(A-m4,musl 接受空 salt);

@@ -547,7 +547,10 @@ node_checks() {
 				# config yet — it has no mesh to strand from. Only a well-formed, sha-matching record with
 				# state=unclaimed counts; claimed / member without .seeded is still refused (its --save failed).
 				if [ "$seeded" = 0 ] && [ -r /usr/lib/batman/prov-lock.sh ] && ( . /usr/lib/batman/prov-lock.sh; [ "$(prov_meta_status "$m/prov.meta" "$m/prov.cbor")" = "ok unclaimed" ] ); then
-					seeded=1; echo "batman-slot: p5 not seeded but holds an unclaimed provisioning record — allowed (#254 L44)"
+					# stderr: stage-root's stdout is the target device and nothing else (claim-lock fix v9 §5.6 — this note on
+					# stdout made platform-ab's `troot=$(batman-slot stage-root …)` a sentence, so every such OTA failed)
+					seeded=1; echo "batman-slot: p5 not seeded but holds an unclaimed provisioning record — allowed (#254 L44)" >&2
+					st L44-ALLOW state=unclaimed
 				fi
 				umount "$m" 2>/dev/null; rmdir "$m" 2>/dev/null
 				[ "$seeded" = 1 ] || die "p5 (config) is not seeded — a reflash now would boot the fresh slot UNPROVISIONED and, on a mesh-only node, strand it. Seed p5 first (join the mesh so joinwatch saves it, or run 'batman-config-save --on-join'), or override: touch /tmp/batman-slot.allow-unseeded (as root) for sysupgrade, BATMAN_ALLOW_UNSEEDED=1 for a direct batman-slot call."
@@ -622,6 +625,10 @@ precheck() {
 # clear the overlay window (kills any stale f2fs superblock at round_up(squashfs,64KiB))
 clear_root() { dd if=/dev/zero of="$TROOT" bs=1M count="$ZERO_MB" conv=fsync 2>/dev/null || die "overlay clear failed"; }
 
+# CONTRACT (claim-lock fix v9 §5.6, §7): stdout = exactly one line, the target root device — platform-ab stage 2
+# captures it (`troot=$(batman-slot stage-root …)`, platform-ab.sh:364). Every other message on this path goes to
+# stderr (warn / die / >&2). A failure leaves the target BATMAN-BAD with its overlay window cleared: only a later
+# successful OTA recovers it.
 cmd_stage_root() {
 	slot_lock
 	precheck "$1"
