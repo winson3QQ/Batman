@@ -1,0 +1,73 @@
+#!/bin/sh /etc/rc.common
+# batman-prov-lock — every boot, BEFORE dropbear (S19): a claimed / member node is locked, and root's password follows
+# p5 (#254, docs/design/254-claim-lock-fix.md §5.4).
+# START=13: after batdata-mount (S11, p6) and batman-faketime (S12), before halow-keyguard (S18) and dropbear (S19) —
+#           so dropbear starts with the locked uci and needs no reload. Not in batman-provhelper: procd respawns the
+#           helper and every start runs boot.Run, which would turn this into a continuous overwrite.
+# The decision is p5's (the ownership source of truth), with the SAME function 96 uses (prov_lock_decision, plus
+# "any": p5 OR p6 claimed/member locks — a ro,noload read does not replay the journal). On LOCK, root converges to
+# p5's identity/shadow-root only when p5 is "ok claimed" / "ok member", the identity matches the overlay's and the
+# line is a valid "root:$6$…" hash; otherwise the lock goes on without a hash (an empty root becomes "!").
+# Idempotent: an already locked node whose root equals p5's is not written. Never blocks boot (always exits 0).
+# shellcheck disable=SC2034  # read by /etc/rc.common
+START=13
+# Test hooks (CI only, never set on a node): PROV_LOCK_TEST_P5 = a directory standing in for the mounted p5,
+# PROV_LOCK_TEST_PROVD = the overlay prov dir, PROV_SHADOW = shadow (also read by prov_apply_lock), LIB override.
+LIB=${PROV_LOCK_TEST_LIB:-/usr/lib/batman/prov-lock.sh}
+DEV=/dev/mmcblk0p5
+PROVD=${PROV_LOCK_TEST_PROVD:-/etc/batman-prov}
+SHADOW=${PROV_SHADOW:-/etc/shadow}
+
+log() { logger -t batman-prov-lock "$*" 2>/dev/null; }
+
+locked_now() {	# every dropbear section key-only, ttylogin=1, root not empty
+	for s in $(uci -q show dropbear | sed -n 's/^dropbear\.\([^.=]*\)=dropbear$/\1/p'); do
+		[ "$(uci -q get "dropbear.$s.PasswordAuth")" = off ] && [ "$(uci -q get "dropbear.$s.RootPasswordAuth")" = off ] || return 1
+	done
+	[ "$(uci -q get system.@system[0].ttylogin)" = 1 ] || return 1
+	[ -n "$(grep '^root:' "$SHADOW" 2>/dev/null | cut -d: -f2)" ]
+}
+
+# p5_view <dir>: mount p5 read-only there (or use the test stand-in); rc 0 = readable
+p5_view() {
+	if [ -n "${PROV_LOCK_TEST_P5:-}" ]; then [ -d "$PROV_LOCK_TEST_P5" ] && P5V=$PROV_LOCK_TEST_P5; return; fi
+	[ -b "$DEV" ] && [ "$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)" = 53ef ] \
+		&& mount -t ext4 -o ro,noload "$DEV" "$1" 2>/dev/null && P5V=$1 && P5M=1
+}
+
+start() {
+	[ -r "$LIB" ] || { log "WARN $LIB missing — not locking at boot (96 locks fresh overlays only)"; return 0; }
+	# shellcheck source=/dev/null
+	. "$LIB"
+	p5read=0; pms=absent; pst=-; want=""; P5V=""; P5M=0
+	m=$(mktemp -d /tmp/.prov-lock.XXXXXX) || m=""
+	if [ -n "$m" ] && p5_view "$m"; then
+		p5read=1
+		# shellcheck disable=SC2046  # "ok claimed" -> two words on purpose
+		set -- $(prov_meta_status "$P5V/prov.meta" "$P5V/prov.cbor"); pms=${1:-bad}; pst=${2:--}
+		# convergence candidate: p5 "ok claimed|member", same identity as the overlay, a valid $6$ root line
+		case "$pms:$pst" in ok:claimed|ok:member)
+			if [ -f "$PROVD/identity/sha256" ] && [ -f "$P5V/identity/prov/sha256" ] && cmp -s "$PROVD/identity/sha256" "$P5V/identity/prov/sha256"; then
+				l=$(head -n 1 "$P5V/identity/shadow-root" 2>/dev/null)
+				case "$l" in root:\$6\$*) f=${l#root:}; f=${f%%:*}; case "$f" in *[!./0-9A-Za-z\$=]*) ;; *) want=$f ;; esac ;; esac
+			else log "p5 identity differs from the overlay's (or is missing): lock only, root not taken from p5"; fi ;;
+		esac
+		[ "$P5M" = 1 ] && umount "$m" 2>/dev/null
+	fi
+	[ -n "$m" ] && rmdir "$m" 2>/dev/null
+	lks=${PROV_LOCK_TEST_LKS:-$(prov_last_known_state)}
+	d=$(prov_lock_decision "$p5read" "$pms" "$pst" "$lks" any)
+	[ "$p5read" = 1 ] && case "$pst:$lks" in claimed:*|member:*|*:-) ;; *:claimed|*:member) log "p5 says $pst but p6 says $lks — locking (any)" ;; esac
+	[ "$d" = LOCK ] || return 0
+	cur=$(grep '^root:' "$SHADOW" 2>/dev/null | cut -d: -f2)
+	if locked_now && { [ -z "$want" ] || [ "$cur" = "$want" ]; }; then return 0; fi
+	if [ -n "$want" ] && [ "$cur" != "$want" ]; then
+		o=$(echo "$want" | prov_apply_lock --hash-stdin --no-reload); rc=$?
+		log "locked at boot, root converged to p5 (p5=$pms/$pst p6=$lks): $(echo "$o" | tail -1)"
+	else
+		o=$(prov_apply_lock --no-reload </dev/null); rc=$?
+		log "locked at boot (p5_read=$p5read p5=$pms/$pst p6=$lks): $(echo "$o" | tail -1)"
+	fi
+	[ "$rc" = 0 ] || log "WARN lock incomplete at boot (rc $rc) — retried at the next boot"
+	return 0
+}
