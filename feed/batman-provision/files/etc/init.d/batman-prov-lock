@@ -7,7 +7,8 @@
 # The decision is p5's (the ownership source of truth), with the SAME function 96 uses (prov_lock_decision, plus
 # "any": p5 OR p6 claimed/member locks — a ro,noload read does not replay the journal). On LOCK, root converges to
 # p5's identity/shadow-root only when p5 is "ok claimed" / "ok member", the identity matches the overlay's and the
-# line is a valid "root:$6$…" hash; otherwise the lock goes on without a hash (an empty root becomes "!").
+# field passes prov_root_hash_ok ($1$ / $5$ / $6$ musl can verify, v8); otherwise the lock goes on without a hash (an
+# empty root becomes "!").
 # Idempotent: an already locked node whose root equals p5's is not written. Never blocks boot (always exits 0).
 # shellcheck disable=SC2034  # read by /etc/rc.common
 START=13
@@ -48,11 +49,11 @@ start() {
 		p5read=1
 		# shellcheck disable=SC2046  # "ok claimed" -> two words on purpose
 		set -- $(prov_meta_status "$P5V/prov.meta" "$P5V/prov.cbor"); pms=${1:-bad}; pst=${2:--}
-		# convergence candidate: p5 "ok claimed|member", same identity as the overlay, a valid $6$ root line
+		# convergence candidate: p5 "ok claimed|member", same identity as the overlay, a root field musl can verify
 		case "$pms:$pst" in ok:claimed|ok:member)
 			if [ -f "$PROVD/identity/sha256" ] && [ -f "$P5V/identity/prov/sha256" ] && cmp -s "$PROVD/identity/sha256" "$P5V/identity/prov/sha256"; then
 				l=$(head -n 1 "$P5V/identity/shadow-root" 2>/dev/null)
-				case "$l" in root:\$6\$*) f=${l#root:}; f=${f%%:*}; case "$f" in *[!./0-9A-Za-z\$=]*) ;; *) want=$f ;; esac ;; esac
+				case "$l" in root:*) f=${l#root:}; f=${f%%:*}; prov_root_hash_ok "$f" && want=$f ;; esac
 			else log "p5 identity differs from the overlay's (or is missing): lock only, root not taken from p5"; fi ;;
 		esac
 		[ "$P5M" = 1 ] && umount "$m" 2>/dev/null

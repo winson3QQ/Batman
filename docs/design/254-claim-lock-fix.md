@@ -96,7 +96,7 @@ sh 端怎麼驗:
 | 前綴 | `rounds=` | salt | hash |
 |---|---|---|---|
 | `$1$`(MD5) | 不可有 | 0–8 字元(✅ `crypt_md5.c:183` SALT_MAX 8、`:214`) | 22 字元 |
-| `$5$`(SHA-256) | 可選;只能出現一次;十進位、無前導零;值 1000–9 999 999 | 0–16 字元(✅ `crypt_sha256.c:251`) | 43 字元 |
+| `$5$`(SHA-256) | 可選;十進位、無前導零;值 1000–9 999 999;之後的部分照 musl 一律當 salt(salt 本身可以是「rounds=…」字樣) | 0–16 字元(✅ `crypt_sha256.c:251`) | 43 字元 |
 | `$6$`(SHA-512) | 同上(✅ `crypt_sha512.c:240-270`、`crypt_sha256.c:212-248`) | 0–16 字元(✅ `crypt_sha512.c:273-277`) | 86 字元 |
 
 `rounds` 的範圍(v8 審查 B-m1,✅ `crypt_sha512.c:263-270`):musl 對 < 1000 或帶前導零的值,會把**拉高 / 正規化後**的值寫進輸出(`sprintf(rounds, "rounds=%u$", r)`,註解「needed when rounds is zero prefixed or out of bounds」)。所以存著 `rounds=999` 或 `rounds=05000` 的 hash,輸出的字串永遠對不上,登不進去。> 9 999 999 musl 直接拒絕。
@@ -272,11 +272,11 @@ claimed / member 節點上,這幾個鍵在**每次開機**被 S13 收斂到鎖�
 1. **CI 單元 `shacrypt`**:Drepper 規格向量(含 `rounds=` 下限、長 salt 截斷、多行 key)+ musl 自帶自測向量;與 `openssl passwd -6 -salt`(**只涵蓋預設 rounds**)隨機交叉 200 組(可印字元、無換行、key ≤ 256);第三方再比 busybox `mkpasswd -m sha512`(CI 沒有 → FAIL,不 skip)。**突變負對照自動化**:同一組向量跑一個故意換錯 permutation 表 / rounds 迴圈的 variant,必須 FAIL。
 2. **CI 單元 node / helper**:fakeSys 注入第 1、2、3 步失敗 → claim / replay / reset 回 `ELockIncomplete`、不回密碼、`Save` 被呼叫;**`Save` 失敗 → claim / replay 回 `ELockIncomplete`、reset 回 `E_STORAGE`,都不回密碼,且 root 欄被還原成呼叫前的值(空 → `!`)**;stage 失敗 → 不是 23;claim 成功後 p6 last_known_state = claimed;`genPassword` 分布(卡方)。**CI loop 跑 `prov_apply_lock`**(假 uci / 假 ubus,同 `tests/prov-p1`):步驟順序、每一步 rc、沒帶 `--hash-stdin` 時不讀 stdin(stdin 接一個永不結束的管線也立即返回)、不合法的 root 欄被拒、多個 dropbear section 都被鎖。**CI loop 跑 S13**:p5 claimed / member / bad / unclaimed / legacy / 掛不上 × p6 各值 × overlay 舊或新 × identity 相同或不同 → LOCK / TODAY 與 shadow 是否收斂(p5 unclaimed + p6 claimed → 鎖但不收斂)。**`prov_root_hash_ok`(v8)**:
 - 接受:`$1$` / `$5$` / `$6$`,含 `rounds=1000`、`rounds=9999999`、空 salt、salt 長度上限。
-- 拒絕:`rounds=999`、`rounds=05000`(musl 輸出會改寫成拉高後的值)、`rounds=10000000`、`rounds=`、`rounds=x`、`rounds=` 出現兩次、salt 含 `$`/`:`、salt 過長(`$1$` 9 字元、`$5$` / `$6$` 17 字元)、hash 長度不對(截斷)、非法字元、含 `:`、`$2b$`、DES、空、`!…`。
+- 拒絕:`rounds=999`、`rounds=05000`(musl 輸出會改寫成拉高後的值)、`rounds=10000000`、`rounds=`、`rounds=x`、salt 含 `$`/`:`、salt 過長(`$1$` 9 字元、`$5$` / `$6$` 17 字元)、hash 長度不對(截斷)、非法字元、含 `:`、`$2b$`、DES、空、`!…`。
 - 每一類各附一個突變負對照(例如把長度判斷拿掉,必須 FAIL)。
 - 這組向量不只對規格表推導:同一組向量在 tier B(§11.4c 第一步)以節點上的 musl(cryptprobe)交叉驗證(v8 A-m5)。
 
-S13 stub:p5 為 `$5$` / `$1$` → 收斂;p5 為格式壞的 `$…` → 只鎖、不收斂。96 與 config-save **不變**,以 stub 斷言:p5 為 `root:$1$…` 與格式壞的 `root:$…`,在 legacy 與 claimed 下都會還原(升級不變開放,v7 A-M1)。
+S13 stub:p5 為 `$5$` / `$1$` → 收斂;p5 為格式壞的 `$…` → 只鎖、不收斂。96 與 config-save **不變**(v8 沒有改它們):「升級不變開放」由鏈 1 的真 OTA(8.6:fresh overlay 上 96 從 p5 還原)驗證,不另寫一份 96 的假環境測試(不擴大範圍)。
 3. **真機 tier B `prov-claim-254`**(修正版):LOCKED、` pw=off `、`rootpw=off`、`tty=1`、shadow `$6$`、server 只提供 `publickey`、port 22 `none` → `Permission denied`;publickey 經 2222 臨時 listener(`dropbear -s -g -p 2222`,nft 暫時規則,測完刪除並斷言已刪)證明;**musl probe**(`tools/cryptprobe`,static,與 firmware pin 同次 build;harness 斷言 toolchain musl 版本 == 節點 `/lib/libc.so` 版本,不同 → FAIL;測完刪除 binary 並斷言)MATCH / NOMATCH;replay 段;還原 S0。**負對照**:1.5.13-wsl.1 上同一測試 FAIL(2026-10-26 已取得)。
 **真機 tier B 共通規則(v7 + v8,真機測試審查 A / B)**
 
