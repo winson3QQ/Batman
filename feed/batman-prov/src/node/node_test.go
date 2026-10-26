@@ -27,6 +27,20 @@ type fakeSys struct {
 	now            time.Time
 	setkeys        []string
 	persistRC      int
+	// claim-lock fix (§5.3) fault seams
+	root       string   // root's live shadow field
+	lockErr    error    // ApplyLock fails (doors first, hash last: root unchanged except "" -> "!")
+	saveOut    []saveRC // Save results in order (then 0)
+	restoreErr error
+	restored   []string
+	marked     bool
+	lastKnown  string
+	cryptErr   error
+}
+
+type saveRC struct {
+	rc  int
+	out string
 }
 
 func (f *fakeSys) IsTrial() bool { return f.trial }
@@ -50,7 +64,15 @@ func (f *fakeSys) GetP5(dir string) (int, string) {
 	os.WriteFile(filepath.Join(dir, "prov.meta"), b, 0o600)
 	return 0, ""
 }
-func (f *fakeSys) Save() (int, string) { f.saves++; return 0, "" }
+func (f *fakeSys) Save() (int, string) {
+	f.saves++
+	if len(f.saveOut) > 0 {
+		r := f.saveOut[0]
+		f.saveOut = f.saveOut[1:]
+		return r.rc, r.out
+	}
+	return 0, ""
+}
 func (f *fakeSys) SetKeyNoPersist(k, id, ch string) error {
 	f.setkeys = append(f.setkeys, id+"/"+ch)
 	return nil
@@ -58,16 +80,44 @@ func (f *fakeSys) SetKeyNoPersist(k, id, ch string) error {
 func (f *fakeSys) CurrentWireless() (string, string, string, error) {
 	return "oldkey123", "oldmesh", "28", nil
 }
-func (f *fakeSys) ApplyLock(h string) error                { f.locked = h; return nil }
-func (f *fakeSys) CryptPassword(pw string) (string, error) { return "$6$x$" + pw, nil }
-func (f *fakeSys) AuthorizedKeys() ([]string, error)       { return f.keys, nil }
-func (f *fakeSys) SetAuthorizedKeys(l []string) error      { f.keys = l; return nil }
-func (f *fakeSys) DevOpen() bool                           { return f.devOpen }
-func (f *fakeSys) WriteTxnMarker(string) error             { return nil }
-func (f *fakeSys) ClearTxnMarker()                         {}
-func (f *fakeSys) DiagBundle() ([]byte, error)             { return []byte("diag"), nil }
-func (f *fakeSys) RemoveMeshMarkers() error                { return nil }
-func (f *fakeSys) Now() time.Time                          { return f.now }
+func (f *fakeSys) ApplyLock(h string) error {
+	if f.lockErr != nil {
+		if f.root == "" {
+			f.root = "!"
+		}
+		return f.lockErr
+	}
+	f.locked, f.root = h, h
+	return nil
+}
+func (f *fakeSys) RestoreRoot(prev string) error {
+	if f.restoreErr != nil {
+		return f.restoreErr
+	}
+	if prev == "" {
+		prev = "!"
+	}
+	f.restored = append(f.restored, prev)
+	f.root = prev
+	return nil
+}
+func (f *fakeSys) RootField() (string, error)  { return f.root, nil }
+func (f *fakeSys) MarkLockIncomplete()         { f.marked = true }
+func (f *fakeSys) SetLastKnown(s string) error { f.lastKnown = s; return nil }
+func (f *fakeSys) CryptPassword(pw string) (string, error) {
+	if f.cryptErr != nil {
+		return "", f.cryptErr
+	}
+	return "$6$x$" + pw, nil
+}
+func (f *fakeSys) AuthorizedKeys() ([]string, error)  { return f.keys, nil }
+func (f *fakeSys) SetAuthorizedKeys(l []string) error { f.keys = l; return nil }
+func (f *fakeSys) DevOpen() bool                      { return f.devOpen }
+func (f *fakeSys) WriteTxnMarker(string) error        { return nil }
+func (f *fakeSys) ClearTxnMarker()                    {}
+func (f *fakeSys) DiagBundle() ([]byte, error)        { return []byte("diag"), nil }
+func (f *fakeSys) RemoveMeshMarkers() error           { return nil }
+func (f *fakeSys) Now() time.Time                     { return f.now }
 
 type rig struct {
 	t     *testing.T
