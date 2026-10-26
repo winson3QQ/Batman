@@ -422,9 +422,19 @@ func (n *Node) setPassword(pw string, saveFailCode int) *Error {
 	hash, err := n.Sys.CryptPassword(pw)
 	if err == nil {
 		err = n.Sys.ApplyLock(hash)
+	} else {
+		n.Sys.ApplyLock("") // no hash could be made: still lock the doors, an empty root becomes "!" (review A-m1)
 	}
 	if err != nil {
 		n.Log("lock step failed: %v — no password handed out", err)
+		// a late failure (after the shadow mv: sync / read-back) can leave the new hash live: put the previous field
+		// back before anything is saved (review B-m2)
+		if cur, cerr := n.Sys.RootField(); cerr == nil && hash != "" && cur == hash {
+			if perr != nil || n.Sys.RestoreRoot(prev) != nil {
+				n.Log("CRIT: the undelivered hash is live and could not be restored — recover with claim/replay or root_password/reset")
+				n.Sys.MarkLockIncomplete()
+			}
+		}
 		if rc, out := n.saveRetry(); rc != 0 {
 			n.Log("--save after the failed lock step: rc=%d (%s)", rc, lastOf(out))
 		}
@@ -557,10 +567,14 @@ func (n *Node) claimReplay(rec *provstore.Record, a cbor.Map) (cbor.Map, *Error)
 		return failOnce(e.Code, e.Reason)
 	}
 	owner := rec.Owners[0]
+	// the node nonce is taken BEFORE the owner-op is verified: verifyOwnerOp consumes every nonce entry it tries
+	// (node half included, takeHelperNonce deletes the entry), so taking it afterwards found nothing or an older one
+	// and claim.replay failed unless map iteration happened to spare it (found by the claim-lock fix tests,
+	// TestReplayOK). One `nonce` call now serves both: node half -> CheckMac, helper half -> owner-op.
+	nn := n.takeNodeNonce(h)
 	if e := n.verifyOwnerOp(h, typ, body, [][]byte{owner.Pub}); e != nil {
 		return failOnce(e.Code, e.Reason)
 	}
-	nn := n.takeNodeNonce(h)
 	if nn == nil || !n.KS.CheckMac(proto.ClientChal(nn, h, n.KS.Cert(), owner.Pub), resp) {
 		return failOnce(EForbidden, "CheckMac")
 	}

@@ -10,6 +10,7 @@
 package shacrypt
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha512"
 	"errors"
@@ -43,9 +44,15 @@ func hash512(key []byte, setting string, p *[21][3]int) (string, error) {
 	if len(key) > keyMax {
 		return "", errors.New("shacrypt: key longer than 256 bytes")
 	}
+	if bytes.IndexByte(key, 0) >= 0 {
+		return "", errors.New("shacrypt: NUL in the key (musl's crypt() would see a shorter key)")
+	}
 	s, ok := strings.CutPrefix(setting, "$6$")
 	if !ok {
 		return "", errors.New("shacrypt: not a $6$ setting")
+	}
+	if strings.HasPrefix(s, "rounds=") && !strings.Contains(s, "$") {
+		return "", errors.New("shacrypt: rounds= without a terminating '$' (musl rejects it)")
 	}
 	rounds, custom := roundsDefault, false
 	if r, rest, found := strings.Cut(s, "$"); found && strings.HasPrefix(r, "rounds=") {

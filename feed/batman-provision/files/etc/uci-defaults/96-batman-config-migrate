@@ -106,7 +106,7 @@ finish96() {	# $1 verdict, $2 exit code
 	if [ "$(prov_lock_decision "$P5READ" "$PMS" "$PST" "$lks")" = LOCK ]; then
 		# the one lock implementation; dropbear is not running yet (uci-defaults) -> --no-reload; the rc is recorded (§5.3)
 		if plo=$(prov_apply_lock --no-reload </dev/null); then LOCKWORD='LOCKED'; else LOCKWORD='LOCK-INCOMPLETE'; log "lockdown: $(echo "$plo" | tail -1)"; fi
-		log "lockdown: LOCKED by the provisioning record (p5_read=$P5READ meta=$PMS state=$PST last_known=$lks)"
+		log "lockdown: $LOCKWORD by the provisioning record (p5_read=$P5READ meta=$PMS state=$PST last_known=$lks)"
 	else
 		lockdown_today
 	fi

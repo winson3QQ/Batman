@@ -102,9 +102,11 @@ prov_apply_lock() {
 	_pl_rc=0; _pl_step=ok
 	# 1 uci
 	_pl_ok=1
+	set -f   # the section names are expanded unquoted: no globbing (review A-m6)
 	for _pl_s in $(uci -q show dropbear 2>/dev/null | sed -n 's/^dropbear\.\([^.=]*\)=dropbear$/\1/p'); do
 		uci set "dropbear.$_pl_s.PasswordAuth=off" && uci set "dropbear.$_pl_s.RootPasswordAuth=off" || _pl_ok=0
 	done
+	set +f
 	uci set 'system.@system[0].ttylogin=1' || _pl_ok=0
 	uci commit dropbear || _pl_ok=0
 	uci commit system || _pl_ok=0
@@ -125,21 +127,27 @@ prov_apply_lock() {
 		fi
 	fi
 	# 3 shadow
+	_pl_shrc=0
 	_pl_cur=$(grep '^root:' "$_pl_sh" 2>/dev/null | cut -d: -f2)
 	if [ "$_pl_in" = restore ] || { [ "$_pl_in" = hash ] && [ "$_pl_rc" = 0 ]; }; then _pl_want=$_pl_new
 	else case "$_pl_cur" in \$*|!*) _pl_want=$_pl_cur ;; *) _pl_want='!' ;; esac; fi
 	if [ "$_pl_want" != "$_pl_cur" ]; then
-		_pl_t=$(mktemp "${_pl_sh%/*}/.shadow.XXXXXX") || { [ "$_pl_rc" = 0 ] && { _pl_rc=3; _pl_step=shadow; }; }
+		_pl_t=$(mktemp "${_pl_sh%/*}/.shadow.XXXXXX") || _pl_shrc=3
 		if [ -n "${_pl_t:-}" ]; then
 			if PL_W="$_pl_want" awk 'BEGIN { w = ENVIRON["PL_W"] } /^root:/ { n = split($0, f, ":"); f[2] = w; s = f[1]; for (i = 2; i <= n; i++) s = s ":" f[i]; print s; next } { print }' "$_pl_sh" > "$_pl_t" \
 				&& [ -s "$_pl_t" ] && chmod 600 "$_pl_t" && sync && mv "$_pl_t" "$_pl_sh" && sync \
 				&& [ "$(grep '^root:' "$_pl_sh" | cut -d: -f2)" = "$_pl_want" ]; then :
-			else rm -f "$_pl_t"; [ "$_pl_rc" = 0 ] && { _pl_rc=3; _pl_step=shadow; }; fi
+			else rm -f "$_pl_t"; _pl_shrc=3; fi
 		fi
 	fi
+	[ "$_pl_shrc" = 3 ] && [ "$_pl_rc" = 0 ] && { _pl_rc=3; _pl_step=shadow; }
+	# --restore-stdin: the caller only asks "is root's field back?" — its rc is step 3's alone (review B-m3); the doors
+	# (steps 1-2) are re-tried by batman-prov-lock at the next boot and lock-status still says LOCK-INCOMPLETE
+	_pl_doors=$_pl_rc
+	[ "$_pl_in" = restore ] && { if [ "$_pl_shrc" = 0 ]; then _pl_rc=0; _pl_step=ok; else _pl_rc=3; _pl_step=shadow; fi; }
 	# 4 lock-status
 	if [ -n "${PROV_STATE:-}" ] || grep -q ' /opt/batdata ' /proc/mounts 2>/dev/null; then
-		_pl_w=LOCKED; [ "$_pl_rc" = 0 ] || _pl_w=LOCK-INCOMPLETE
+		_pl_w=LOCKED; [ "$_pl_rc" = 0 ] && [ "$_pl_doors" = 0 ] || _pl_w=LOCK-INCOMPLETE
 		{ mkdir -p "$_pl_st" && _pl_t=$(mktemp "$_pl_st/.lock-status.XXXXXX") && echo "$_pl_w" > "$_pl_t" && chmod 644 "$_pl_t" && mv "$_pl_t" "$_pl_st/lock-status"; } 2>/dev/null \
 			|| logger -t prov-lock "lock-status not written ($_pl_w)" 2>/dev/null
 	fi

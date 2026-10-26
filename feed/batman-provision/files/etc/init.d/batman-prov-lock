@@ -21,9 +21,12 @@ SHADOW=${PROV_SHADOW:-/etc/shadow}
 log() { logger -t batman-prov-lock "$*" 2>/dev/null; }
 
 locked_now() {	# every dropbear section key-only, ttylogin=1, root not empty
-	for s in $(uci -q show dropbear | sed -n 's/^dropbear\.\([^.=]*\)=dropbear$/\1/p'); do
-		[ "$(uci -q get "dropbear.$s.PasswordAuth")" = off ] && [ "$(uci -q get "dropbear.$s.RootPasswordAuth")" = off ] || return 1
+	secs=$(uci -q show dropbear | sed -n 's/^dropbear\.\([^.=]*\)=dropbear$/\1/p')
+	set -f   # unquoted section names: no globbing (review A-m6)
+	for s in $secs; do
+		[ "$(uci -q get "dropbear.$s.PasswordAuth")" = off ] && [ "$(uci -q get "dropbear.$s.RootPasswordAuth")" = off ] || { set +f; return 1; }
 	done
+	set +f
 	[ "$(uci -q get system.@system[0].ttylogin)" = 1 ] || return 1
 	[ -n "$(grep '^root:' "$SHADOW" 2>/dev/null | cut -d: -f2)" ]
 }

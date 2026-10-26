@@ -151,8 +151,13 @@ func provApplyLock(field string, flags ...string) error {
 
 // ApplyLock: lock the doors (every dropbear section key-only, ttylogin=1, dropbear reloaded and read back) and only
 // then write the new root hash; any failure leaves shadow at its previous value (an empty root becomes "!").
+// ApplyLock("") locks the doors without a hash (an empty root becomes "!") — used when no hash could be made.
 func (s realSys) ApplyLock(hash string) error {
+	if hash == "" {
+		return provApplyLock("")
+	}
 	if !shacrypt.ValidNew(hash) {
+		provApplyLock("") // still lock the doors (fail-secure, review A-m1)
 		return errors.New("ApplyLock: not a $6$ hash of the expected shape")
 	}
 	return provApplyLock(hash, "--hash-stdin")
@@ -160,7 +165,9 @@ func (s realSys) ApplyLock(hash string) error {
 
 // RestoreRoot writes root's previous shadow field back (after a failed --save, §5.3 restore rule); "" -> "!".
 func (s realSys) RestoreRoot(prev string) error {
-	if prev == "" {
+	// a previous field that is neither a hash nor a lock marker ("", "*", "x", ...) comes back as "!" — never the
+	// never-delivered hash and never an empty (open) root (review B-m1)
+	if !strings.HasPrefix(prev, "$") && !strings.HasPrefix(prev, "!") {
 		prev = "!"
 	}
 	return provApplyLock(prev, "--restore-stdin", "--no-reload")
@@ -335,8 +342,21 @@ func applyState(p provstore.Paths, firstboot bool) error {
 		// a claim interrupted after persist: the lock is judged from the real values, not lock-status
 		// through the one implementation, without a hash: a $ hash is kept, an empty root becomes "!" (§5.3);
 		// at firstboot (99zz, uci-defaults) dropbear is not running yet -> --no-reload
+		// every dropbear section (dropbear.init starts one instance per section), not only @dropbear[0] (review A-m8)
+		unlocked := uciGet("system.@system[0].ttylogin") != "1"
+		_, sh := run(nil, "uci", "-q", "show", "dropbear")
+		for _, l := range strings.Split(sh, "\n") {
+			sec, ok := strings.CutSuffix(strings.TrimPrefix(l, "dropbear."), "=dropbear")
+			if !ok || strings.Contains(sec, ".") {
+				continue
+			}
+			// an unset option means "on" in dropbear.init: compare the value, not the presence of a line
+			if uciGet("dropbear."+sec+".PasswordAuth") != "off" || uciGet("dropbear."+sec+".RootPasswordAuth") != "off" {
+				unlocked = true
+			}
+		}
 		root, _ := (realSys{p}).RootField()
-		if uciGet("dropbear.@dropbear[0].PasswordAuth") != "off" || uciGet("dropbear.@dropbear[0].RootPasswordAuth") != "off" || uciGet("system.@system[0].ttylogin") != "1" || root == "" {
+		if unlocked || root == "" {
 			logf("apply-state: completing an interrupted lock (hash present: %v)", strings.HasPrefix(root, "$"))
 			flags := []string{}
 			if firstboot {

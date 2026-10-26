@@ -36,6 +36,7 @@ type fakeSys struct {
 	marked     bool
 	lastKnown  string
 	cryptErr   error
+	lockCalls  []string
 }
 
 type saveRC struct {
@@ -80,8 +81,12 @@ func (f *fakeSys) SetKeyNoPersist(k, id, ch string) error {
 func (f *fakeSys) CurrentWireless() (string, string, string, error) {
 	return "oldkey123", "oldmesh", "28", nil
 }
+
+// ApplyLock mirrors prov_apply_lock's contract: doors first, the hash last; on any failure (or without a hash) only an
+// empty root becomes "!".
 func (f *fakeSys) ApplyLock(h string) error {
-	if f.lockErr != nil {
+	f.lockCalls = append(f.lockCalls, h)
+	if f.lockErr != nil || h == "" {
 		if f.root == "" {
 			f.root = "!"
 		}
