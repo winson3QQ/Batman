@@ -205,37 +205,13 @@ chk_addr_defer_254() {     # tier A, read-only: scripts/node/addr-defer-254.sh o
     echo "$o" | sed "s/^/$n: /"; [ "$rc" = 0 ] && grep -q "^RESULT addr-defer-254 PASS" <<< "$o" || r=1
   done; return $r
 }
-chk_prov_p1_stubs() {      # no hardware: product files from this checkout; root-only tests only when we are root on Linux
-  local F=$REPO/feed/batman-provision/files r=0
-  # the harness lands before the product (#290): until feat/254-p1 is merged this checkout's product is pre-P1 and
-  # every stub FAILs on it (that IS the negative control). One explicit FAIL line -> KNOWN (#254, P-U9) in the report.
-  [ -f "$F/usr/libexec/batman-addr-defer" ] || { echo "FAIL prov-p1-stubs: product in this checkout is pre-P1 (no usr/libexec/batman-addr-defer) — KNOWN until feat/254-p1 lands (#254)"; return 1; }
-  bash "$REPO/tests/prov-p1/addr-defer.sh" "$F/usr/libexec/batman-addr-defer" | tail -1 | grep -q "fails=0" || r=1
-  bash "$REPO/tests/prov-p1/autocommit-prov-case.sh" "$F/usr/bin/batman-autocommit" | tail -1 | grep -q "fails=0" || r=1
-  bash "$REPO/tests/prov-p1/99zz-mesh-expect.sh" "$F/etc/uci-defaults/99zz-batman-prov-state" | tail -1 | grep -q "fails=0" || r=1
-  bash "$REPO/tests/prov-p1/batman-slot-addr-defer.sh" "$F/usr/sbin/batman-slot" | tail -1 | grep -q "fails=0" || r=1
-  # #254 claim-lock fix (docs/design/254-claim-lock-fix.md §11.2): until fix/254-claim-lock lands the product here has no
-  # batman-prov-lock — one explicit FAIL line (KNOWN #254), the P1 stubs above still ran
-  if [ -f "$F/etc/init.d/batman-prov-lock" ]; then
-    bash "$REPO/tests/prov-p1/prov-apply-lock.sh" "$F/usr/lib/batman/prov-lock.sh" | tail -1 | grep -q " 0 failed" || r=1
-    bash "$REPO/tests/prov-p1/prov-root-hash.sh" "$F/usr/lib/batman/prov-lock.sh" | tail -1 | grep -q "fails=0" || r=1
-    bash "$REPO/tests/prov-p1/prov-lock-init.sh" "$F/etc/init.d/batman-prov-lock" "$F/usr/lib/batman/prov-lock.sh" | tail -1 | grep -q " 0 failed" || r=1
-    bash "$REPO/tests/prov-p1/batman-slot-rollback-gate.sh" "$F/usr/sbin/batman-slot" "$F/usr/lib/batman/prov-lock.sh" | tail -1 | grep -q "fails=0" || r=1
-    bash "$REPO/tests/prov-p1/claim-lock-lints.sh" "$REPO" | tail -1 | grep -q "fails=0" || r=1
-  else echo "FAIL prov-p1-stubs: product in this checkout predates the claim-lock fix (no etc/init.d/batman-prov-lock) — KNOWN until fix/254-claim-lock lands (#254)"; r=1; fi
-  if [ "$(id -u)" = 0 ] && command -v losetup >/dev/null 2>&1; then
-    for t in cfgsave-identity-freeze cfgsave-frozen-nomount cfgsave-provget-rc10; do PROV_SRC=$F bash "$REPO/tests/prov-p1/$t.sh" "$F/usr/bin/batman-config-save" | tail -1 | grep -qE "FAIL=0|PASS$" || r=1; done
-    bash "$REPO/tests/prov-p1/prov-base-statecmp.sh" "$REPO/scripts/node/prov-base-254.sh" | tail -1 | grep -q "fails=0" || r=1
-    bash "$REPO/tests/prov-p1/batman-slot-stage-root.sh" "$F/usr/sbin/batman-slot" "$F/usr/lib/batman/prov-lock.sh" | tail -1 | grep -q "fails=0" || r=1
-  else echo "note: loop-device tests (config-save, prov-base compare) skipped here — need root + losetup (CI prov-p1 job runs them)"; fi
-  return $r
-}
 suite harness-negctl-254 "N3 held-trial script vs a simulated node: only guarded rollbacks, flag kept once the OTA is sent (#254 PR-H1)" "self_test test-negctl-old-slot-254.sh"
 # 2e. No hardware needed: #254 P1 product stubs (the decider / init hook of the address-reservation deferral, autocommit's
 #     prov-state case, 99zz mesh_expect, batman-slot's release). Each takes the product file from THIS checkout, so a
 #     product change that breaks them fails here, not on a node. The loop-device ones (config-save, prov-base) need
-#     root: CI runs them (prov-p1 job); here they run only as root under WSL/Linux.
-suite prov-p1-stubs "#254 P1 stubs: addr-defer decider/reconcile/init hook (22+), autocommit prov case, 99zz mesh_expect, batman-slot release; claim-lock fix: prov_apply_lock (37), prov_root_hash_ok (46), S13 (18), rollback gate (19), lints (6); root-only loop-device ones when possible" "chk_prov_p1_stubs"
+#     root: CI runs them (prov-p1 job); here they run only as root under WSL/Linux. Body: scripts/test-prov-p1-stubs.sh,
+#     through self_test (Git Bash -> the WSL distro: the claim-lock stubs need busybox ash).
+suite prov-p1-stubs "#254 P1 stubs: addr-defer decider/reconcile/init hook (22+), autocommit prov case, 99zz mesh_expect, batman-slot release; claim-lock fix: prov_apply_lock (37), prov_root_hash_ok (46), S13 (18), rollback gate (19), lints (6); root-only loop-device ones when possible" "self_test test-prov-p1-stubs.sh"
 
 # 2. No hardware needed: the MAC->IP derivation used by the first-boot hook.
 suite onboarding-ip \
