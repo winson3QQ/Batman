@@ -1,6 +1,6 @@
-# Design: #254 PR-H3 — harness:H2 補完(P1 tier B / 沙箱 / 接縫)+ H3(provd / BLE / `peer.py`)— **v4(審查中)**
+# Design: #254 PR-H3 — harness:H2 補完(P1 tier B / 沙箱 / 接縫)+ H3(provd / BLE / `peer.py`)— **v5(審查中)**
 
-**狀態**:v4,2026-10-28(本版為**乾淨全文**,不再分層)。v3 審查:A APPROVE-WITH-CHANGES(0 / 7 / 10)、B APPROVE-WITH-CHANGES(0 / 6 / 13)(`254-reviews/h23-review-v3-{A,B}.md`);v4 收全部,對應表 §12。歷史:v1 A REJECT 2/8/12、B REJECT 3/17/14;v2 A REJECT 1/6/15、B AWC 0/7/19;v3 如上。使用者決定(2026-10-28):H2 沒做完的部分照 `254-p1-impl.md` §5 補完,與 H3 一份設計、兩段實作;608B(#255)擱置。
+**狀態**:v5,2026-10-28。v4 審查:A APPROVE-WITH-CHANGES(0 / 2 / 14)、B APPROVE-WITH-CHANGES(0 / 3 / 15)(`254-reviews/h23-review-v4-{A,B}.md`);v5 收全部,對應表 §13(v3 → v4 對應表留在 §12)。歷史:v1 A REJECT 2/8/12、B REJECT 3/17/14;v2 A REJECT 1/6/15、B AWC 0/7/19;v3 A AWC 0/7/10、B AWC 0/6/13;v4 如上。使用者決定(2026-10-28):H2 沒做完的部分照 `254-p1-impl.md` §5 補完,與 H3 一份設計、兩段實作;608B(#255)擱置。
 
 上層:`254-stage1-impl.md` v19、`254-p1-impl.md` v5.1、`254-h1-harness.md` v8、`254-claim-lock-fix.md` v9.1、`219-protocol.md` v0.7、`219-protocol.cddl`。
 
@@ -35,7 +35,7 @@
 
 **乙部(H3;等 PR-P2 rc)**:`peer.py`、provd 測項(§6.3)、P2 要開的測試接縫(§4.8.3)。
 
-**不在本 PR(逐條理由)**:P3 測項(H4);bcm2710 真機(P-U14);轉賣工具與 L16 節點層;iPad GATT 自動化(手動);`prov-rename`(U5);真斷電(sysrq 代理);release asset 掃描(release 由 firmware CI 產;供應鏈三層擋:firmware gate、P9、tier A);`docs/validation` 的 P-U10 文字(另 PR);autocommit (5)(上);autocommit (9) 在 P1 只能 characterization(§6.2);txn-4 後 `overrides` 的補寫是產品缺口(§6.2,回 #254)。
+**不在本 PR(逐條理由)**:P3 測項(H4);bcm2710 真機(P-U14);**`prov-unit-bcm2710` CI smoke 也不做**(P-U14:連沙箱底都不維護第二份,日後 Pi 3 恢復時一起加);轉賣工具與 L16 節點層;iPad GATT 自動化(手動);`prov-rename`(U5);真斷電(sysrq 代理);release asset 掃描(Batman 的 release asset 由發版流程手動上傳,tag push 時不存在;供應鏈三層擋:firmware gate、P9、tier A);`docs/validation` 的 P-U10 文字(另 PR);autocommit (5)(上);autocommit (9) 在 P1 只能 characterization(§6.2);txn-4 後 `overrides` 的補寫是產品缺口(§6.2,回 #254);**claim-lock §11.4 的真機 tier B(4 / 4-inj / 4b / 4b' / 4c / 4d / 5)**:使用者 2026-10-26 決定縮小(claim-lock §13、F27),本 PR 不做,仍在 #254 checklist。
 
 ### 1.3 事實(2026-10-28 唯讀實查,main 5914f03;fleet 02/04 = `1.5.14-wsl.4+7fd2124.fw6be516a`)
 | # | 事實 | 證據 |
@@ -54,22 +54,22 @@
 | F12 | autocommit(START=99):REVERT 寫 `bad-slot`;任何 COMMITTED `rm -f bad-slot`(`:361` 是拒絕 commit);字串:`TRIAL-REVERTED boot=… slot=… version=… waited=…s reason=<why>`、`HOLD-COMMIT`、`HOLD-COMMIT-DISCARDED`、`mesh join required: <n> (prov=<v> mesh_expect=<m> radio_required=<r>)`(`:425`)、member 臂:三欄且 boot_id = boot-reasons 倒數第二行且 slot 相符且 `radio` → `NEED_MESH=0` + `member: armed in radio-only mode (ota-armed.mesh) — no neighbour required`(`:420`),否則 `NEED_MESH=1`,檔缺才印 `member: no usable ota-armed.mesh — neighbours required (fail-closed)`(`:421`);`why`:`member: HaLow mesh interface not up on the configured mesh id`(`:494`)、`mesh not joined/reachable (<n>/<JOIN_NEED> samples: …)`(`:502`,**串接在既有 why 之後**)、`mesh lost (…)`(`:503`);`otalog AC UNHEALTHY first_why=<why>`(`:505`);**`WARN ble: ble-ok present but BLE health is not good (<health line \| no health file>) — not blocking (P-U5)`(`:499`)只在 `ble-ok` 存在且 health 行不含三個 `=1` 時印,且本次開機只印一次(`autocommit.ble-warned` latch,`:496-500`;autocommit 開機即 poll,`:487`)**;`is healthy and HELD`(`:513`);`COMMITTED`(`:537`);hold 只擋 commit 不擋 revert(`:233-244,277`);`release --wait`;`AUTOCOMMIT_DRYRUN` | `batman-autocommit`;`init.d/batman-autocommit:6` |
 | F13 | 96 字串:`prov: state=<st> copied=<…>`(`:168`);`/etc/.batman-prov-restore` = `<boot_id> <verdict> prov=<PCOPY> state=<PST> lock=<LOCKWORD>`(`:113`);`root password restored from p5`(`:193`);96 唯一 `exit "$2"`(`:115`),出口以呼叫字串區分;helper:`boot rc=<n> verdict=<v> action=<a>`(`boot.go:59`;`action=txn <verb> NOT committed (gen n): wireless to be restored`,`:127`;`txn <verb> committed (gen n): overlay completed from p5`,`:119`)、`overlay record unusable: …`(`:72`)、`p5 lost a committed prov write (…)`(`:187`);restore 完成 `txn <verb> not committed: restored the previous wireless values, setkey rc=<n> (<out>)`(`main.go:491`) | 原始碼 |
 | F14 | health:stale = ts > 60 s;`Run` 第一件事 `Tick(15)`;P1 固定 `adv_registered_once=0`(`:138`);`ble-ok` 條件 `poweredFor ≥ 600 && Committed && ConfigOK`(程序內計數;**committed 槽的 helper 15 s 內會把刪掉的 `ble-ok` 寫回**;trial 槽 `Committed()` 假 → 不寫) | `health.go:8-9,138,151-157,160-166` |
-| F15 | 99-batman-chanfix:**整段在 `( … ) &` 背景子殼**(等 `wlh0` ≤ 80 s → `sleep 8` → 比 uci 頻道與 p5,不同就 `uci set` + `wifi reload`,最多 6 次);第一次相符(`a=0`)靜默 exit、無 log;子殼沒有可 `pgrep` 的名字;uci-defaults 檔名序只排「啟動」;uci-defaults 由 base-files `uci_apply_defaults` 以子殼 source、依檔名序(⚠️ 樹中未複驗,E-H2 以 boot log 證) | `99-batman-chanfix:18-58` |
-| F16 | 節點沒有 python3 / busctl / unshare / unsquashfs;有 `libdbus-1.so.3`(1.14.10);firmware 樹 `tools/dbus-send` 是 libtool bash wrapper(10004 B),真二進位 `tools/.libs/dbus-send`(ELF aarch64 77424 B);04 的 `bluetooth.conf` 只有 root policy、無 default policy → uid 471 連 Introspect 都 AccessDenied(P1 期) | 04 `ls`;`file`;staging rootfs `etc/dbus-1/system.d/bluetooth.conf` |
+| F15 | 99-batman-chanfix:**整段在 `( … ) &` 背景子殼**(等 `wlh0` ≤ 80 s → `sleep 8` → 比 uci 頻道與 p5,不同就 `uci set` + `wifi reload`,最多 6 次);第一次相符(`a=0`)靜默 exit、無 log;子殼沒有可 `pgrep` 的名字;uci-defaults 由 base-files `/etc/init.d/boot` 以 `files="$(ls)"`(位元組序)逐檔 `( . "./$file" ) && rm -f` 執行 → 檔名序只排「啟動」,`99-batman-chanfix` < `99zz-batman-prov-state` < `99zz-wbox-*` | `99-batman-chanfix:18-58`;`package/base-files/files/etc/init.d/boot:7-17`(B 複驗) |
+| F16 | 節點沒有 python3 / busctl / unshare / unsquashfs;有 `libdbus-1.so.3`(1.14.10);firmware 樹 `tools/dbus-send` 是 libtool bash wrapper(10004 B),真二進位 `tools/.libs/dbus-send`(ELF aarch64 77424 B);04 的 `bluetooth.conf` 只有 root policy、無 default policy → uid 471 連 Introspect 都 AccessDenied(P1 期;**P2 後亦然**:stage1 §4.6 的 provd policy 只放行 `LEAdvertisingManager1.*Advertisement`、`GattManager1.*Application`、`ObjectManager.GetManagedObjects`、`Properties.{Get,GetAll}`、`Device1.Disconnect`,沒有 `Introspectable`) | 04 `ls`;`file`;staging rootfs `etc/dbus-1/system.d/bluetooth.conf`;stage1 §4.6 `:308` |
 | F17 | Windows venv `C:/Users/yello/batman-dv-tools/pyble`:`bleak 0.22.3`、`noiseprotocol 0.3.1`、`dissononce`、`pycose`、`pycddl`、`cbor2`、`ecdsa`、`cryptography` 已裝;MediaTek adapter OK、`bthserv` running、**radio Off** | pip、WinRT |
-| F18 | GitHub `ubuntu-24.04-arm` 公開 repo 免費(2025-01 公開預覽);Batman PUBLIC;firmware repo 可見性 ⚠️ E-H3 | changelog;`gh repo view` |
+| F18 | GitHub `ubuntu-24.04-arm` 公開 repo 免費(2025-01 公開預覽);Batman PUBLIC;**firmware repo PUBLIC,但它唯一的 release 是 Draft `fw-build-108-final`(上游 OpenMANET image);Batman 的 A/B payload 資產在 Batman repo 的 releases(最新 v1.5.11:`batman-1.5.11-rel.1+6a049f2.fw7049fd8-ekh-bcm2711-ab-payload.tar.gz` + `SHA256SUMS`);`1.5.14-wsl.4` 沒有任何 release 資產** | changelog;`gh repo view`;`gh release list / view`(2026-10-28) |
 | F19 | `verify.py` 純腳本,模組層讀向量(`:176-186`);`gen.py` `noiseprotocol` + 注入金鑰(`:225-227`);scalar 規則 `d = (int(SHA-256('batman-test-vector/'+name)) mod (n-1)) + 1`(`:38,184`);`MIN_CHECKS=195`;`requirements.txt` 釘 `noiseprotocol==0.3.1` | 原始碼 |
 | F20 | repo 無 provd / Noise / GATT / UUID;`feed/batman-prov/src/` 有 `proto`、`cbor`、`cose`、`shacrypt`;go.mod 只 `x/crypto`;`sock_test.go:67 TestWrongPeerClosed` 存在**但 `needRoot` 在非 root `t.Skip`,CI `go test ./...` 以非 root 跑 → 今天從未在 CI 跑過** | `go.mod`;`sock_test.go:13-17,67`;`ci.yml:74` |
 | F21 | 04 BLE `powered le secure-conn privacy`;`kernel.sysrq = 502` | 04 |
 | F22 | `ble-periph-254.sh cmd_adv_on` 第一動作 `mg rm-adv 1`;`ble-lib-254.sh`:`dm_arm` 以 `$ST/dm` / `dm.new` 保證每台至多一個 deadman;**`cmd_dm_fire` = `sleep N` → 重讀 `$BT/lease` → lease 不是該 run / 未到期 → `exit 0`,不重排**;延長 = 重新 `dm_arm`(舊 group 被 `pg_kill`) | `ble-periph-254.sh:42-52`;`ble-lib-254.sh:84-134,212-228` |
-| F23 | `prov-lib-254.sh pl_prep`:`mkdir -m 0711 $PCD`(無 `-p`,`set -e`)→ 已存在即 FAIL「tool placement」,但沒有明確訊息與白箱;`brewrite-254.sh`:`NODE` 預設 04、`:21` 前置 `badslot=[]`、`:37` 等 docker ≥ 6 | 原始碼 |
+| F23 | `prov-lib-254.sh pl_prep`:`PCD=/tmp/run/batman-dvpc.$RUN`、`mkdir -m 0711 $PCD`(無 `-p`)`|| no "tool placement"` → 已存在即 FAIL,但沒有白箱;**`chain1-254.sh:112,315` 用固定名 `/tmp/run/batman-dvpc/` + `mkdir -p -m 0711`(已存在 / symlink 不拒 = 放置缺陷),今天靠 tmp-trust 第 13 行無邊界 regex 過關**;`brewrite-254.sh`:`NODE` 預設 04、`:21` 前置 `badslot=[]`、`:37` 等 docker ≥ 6 | `prov-lib-254.sh:20,92`;`chain1-254.sh:112,315` |
 | F24 | 鏈 1:`find04`、deadman、主機鎖、`restore_all` 刪 bad-slot、已 > 3000 s、joinwatch 還原事故註解 | `chain1-254.sh` |
 | F25 | 2e → 2f(#305 tier B,`bt-uart-boot-305` 對 DNODE loaded reboots,不動槽)→ 2g(pty-commit 移槽);`fault-injection` 目標 `$OTS_NODE`、`reflash-202` 目標 `$MESH_NODE`(在呼叫端展開);`suite()` 只收 4 參數;`NEVER_KNOWN`(`:2740`,ERE);`classify` 只抓 `^FAIL `;known-failures `read -r ks pat iss` | `daily-validation.sh:77-99,127,254-296,335,386,2175,2740-2749` |
 | F26 | known-failures #254 過渡條目 7 行;3 欄無到期 | `validation-known-failures.txt:10,19-24` |
 | F27 | claim-lock §11.4 4 / 4-inj / 4b / 4b' / 4c / 4d / 5 只有 CI stub | memory |
 | F28 | 04 S0 = 現況 | 10-27 全套 |
 | F29 | kernel `CONFIG_MAGIC_SYSRQ=y`、`DEFAULT_ENABLE=0x1f6`;**`/proc/sysrq-trigger` 的寫入走 `__handle_sysrq(c, false)`,不看 mask**(mask 只管鍵盤) | `.config`;`drivers/tty/sysrq.c:571,598,1152-1167` |
-| F30 | tmp-trust **有掃 `scripts/dv/*.sh`**(git pathspec `scripts/*.sh` 跨 `/`;allowlist 已有 `scripts/dv/` 條目 `:71,72,75,87,95,97`);`prov-lib-254.sh:20` 的 `/tmp/run/batman-dvpc.$RUN` 今天過關是靠第 13 行 `scripts/*` 的無邊界前綴 `/tmp/run/batman-dv` 切掉;第 99 行 `/tmp/run/batman-prov` 同樣無邊界 | `check-tmp-trust.sh:29`;`tmp-trust-allowlist.txt:13,99` |
+| F30 | tmp-trust **有掃 `scripts/dv/*.sh`**(git pathspec `scripts/*.sh` 跨 `/`;allowlist 已有 `scripts/dv/` 條目 `:71,72,75,87,95,97`);`prov-lib-254.sh:20` 的 `/tmp/run/batman-dvpc.$RUN` 與 `chain1-254.sh:112,315` 的 `/tmp/run/batman-dvpc/` 今天過關都是靠第 13 行 `scripts/*` 的無邊界前綴 `/tmp/run/batman-dv` 以 `sed s///g` 切掉命中;第 99 行 `/tmp/run/batman-prov` 同樣無邊界;Go 原始碼今天只有 `main.go:40`、`sock.go:2` 兩處,後接 `/` 或 `"` | `check-tmp-trust.sh:23,29,55`;`tmp-trust-allowlist.txt:13,99` |
 | F31 | `batman-slot apply` 刪目標槽 `.protected`;95 寫完整版本;rollback gate 只擋 claimed/member | `batman-slot:424-436,771-791`;`95:717` |
 | F32 | wsl.9 有 HOLD-COMMIT;wsl.9 的 96:key 且密碼都在才 LOCKED | `git show f2f2bf6` |
 | F33 | joinwatch `t_reboot 3600`;`$RUNDIR/joinwatch.lastjoined` 由 joinwatch 寫(`:135`)、無刪除者、tmpfs、**已在 `rundir-paths.txt:97`**;stage 1 `_ab_arm_mesh`:caller `/sbin/procd*` + `$RAM_ROOT/sbin/upgraded` + `_ab_live_sysupgrade` 才寫;`lastjoined` 存在 → `m=joined`,否則當下 `meshjoin_joined` → `joined`,否則 `radio`;`batman-slot` 不寫此檔 | `joinwatch:135`;`platform-ab.sh:104-115`;grep |
@@ -80,7 +80,10 @@
 | F38 | `net.apply` 首版要 owner-op;legacy 02 要先 `claim.verify` | `node.go:218-224,996-1000` |
 | F39 | `applyNet` 在 `--save` 後只剩回應;`prov-state` 只在 `boot.Run` 與 claim 寫;**開機後沒有任何程式呼叫 `--save` / `--check` 補 overrides**(`Save` 只在 `applyNet` / claim / owner / ssh_keys 動詞;`--on-join` 要 JOINED) | `node.go:399-454,795,1120`;`boot.go`、`main.go` grep 零命中;`batman-config-save:165-166` |
 | F40 | `claim/replay` 10 / h 計失敗 | `node.go:94,542-549` |
-| F41 | `boot.Run` 開機路徑:有 `.txn` 先走 txn 分支(`g == t.To && p5Rec != nil` → `WriteOverlay(p5Rec)` + `RemoveTxn`,**不看 gen 比對**;`g == t.From` → Restore;其他 → `unknown(txn-generation)`);gen 比對(`p5 > overlay` → 重建)只在無 `.txn` 時 | `boot.go:105-130,178-189` |
+| F41 | `boot.Run` 開機路徑:有 `.txn` 先走 txn 分支(`g == t.To && p5Rec != nil` → `WriteOverlay(p5Rec)` + `RemoveTxn`,**不看 gen 比對**;`g == t.From` → Restore;其他 → `unknown(txn-generation)`);gen 比對只在無 `.txn` 時:`case ovRec == nil \|\| p5Rec.Generation > ovRec.Generation` → 重建(`:180-184`),**下一個 case `ovRec.Generation > p5Rec.Generation`(`:185`)在 `ovRec == nil` 時會 nil 解參考**(mutant 跳過第一個 case 必須自己處理 nil) | `boot.go:105-130,178-190` |
+| F42 | autocommit watchdog:`DEFER_MAX=600`,slot write / first-load / payload converge 進行中時 revert 延後(log `revert deferred: slot write, first-load or payload converge in progress (max 600s)`),最多再 600 s 才寫 bad-slot 與重開;dry-run 接縫:`AUTOCOMMIT_DRYRUN=1` + `AUTOCOMMIT_FORCE_TRIAL=1`(committed 槽也當 trial 評估)印 `DRYRUN decision: COMMIT …` / `DRYRUN decision: REVERT …`;`AUTOCOMMIT_DEFER_MAX` 只在 dry-run 生效;deadline 寫在 `$RUNDIR/autocommit.deadline`,p6 `autocommit.timeout` 可改(04 目前沒有此檔 = 預設 600) | `batman-autocommit:27,35,48,69,162,194,223-228,240,270,323,529`;04 `cat` 2026-10-28 |
+| F43 | BlueZ client 端遠端特徵的 D-Bus `Flags` 只來自 characteristic declaration 的 property 位元(`broadcast`、`read`、`write-without-response`、`write`、`notify`、`indicate`、`authenticated-signed-writes`、`extended-properties`、`reliable-write`、`writable-auxiliaries`);`encrypt-*` / `authenticated-*` 只在 server 端 app 宣告(`gatt-database.c`),central 永遠看不到;安全需求以 ATT 錯誤(0x05 / 0x0F)在存取時才表達 | `bluez-5.72/src/gatt-client.c:814-830`;`src/gatt-database.c:1760-1833`(B 查) |
+| F44 | `unsquashfs`(squashfs-tools 4.6.1)的 FILESYSTEM 參數要能 `lseek`,**不吃 stdin**;payload 內檔名 `root.squashfs` | WSL `unsquashfs -help`;`build-ab-payload.sh:61,73`;`build-board.sh:162` |
 
 ### 1.4 與上層設計不同處(→ §10)
 - p1-impl §4.5.3 同槽重建 = 鏈 1 程序;E4 作廢;`prov-base` 補 whiteout 負對照;opaque 未查(§9)。
@@ -121,8 +124,8 @@
 | `scripts/dv-dbus-tools.sh` | 複製 `tools/.libs/dbus-send`(ELF magic 斷言)+ SHA256SUMS |
 | `scripts/dv-prov-tools.sh` | 主機端 `unsquashfs -cat` 從每個 `-wbox` payload 抽 helper 到 `~/batman-dv-tools/prov-test/<ver>/<name>/` + SHA256SUMS |
 | `tests/prov-p1/eeprom-hooks.sh` | §6.2 |
-| CI | `vectors-219` + `peer.py --selftest` + `provgen.py --selftest`;`prov-sandbox`(arm64,E-H3 前 `continue-on-error` + 最後一步 `::warning::` annotation,PR body 貼結論);`prov-unit-gate`;`prov-p1`:**Go 單元改 `sudo -E … go test -tags prov_test ./...`(root)並斷言 `go test -v` 輸出 `grep -c -- '--- SKIP'` = 0**(F20);killpoint Go 單元;`prov-gate-stubs`;`known-failures-format` |
-| lint | `lint-install`;`lint-wbox`(§4.2);`ab-shared-change.yml` 加 P1b 共用檔;**tmp-trust**(F30):第 13 行收緊 `/tmp/run/batman-dv([^-a-z]\|$)`;新條目:`scripts/dv/prov-lib-254.sh` `/tmp/run/batman-dvpc\.`(root 0711、`mkdir` 無 `-p` → EEXIST 即拒)、`scripts/dv/prov-254.sh` + `scripts/dv/prov-*-254.sh` + `scripts/node/prov-wbox-254.sh` 的 `/tmp/run/batman-prov-test([^-]\|$)`、`/tmp/run/batman-provd-test([^-]\|$)`、`/tmp/run/batman-dv/wbox/`(root 0700 / provd 0700,`mkdir` 非 `-p`);`feed/batman-prov/src/*`:第 99 行收緊 `/tmp/run/batman-prov([^-]\|$)` + killpoint 目錄與 provd 測試 socket 目錄條目;`test-tmp-trust.sh` 加案例:`scripts/dv/x.sh` 含 `/tmp/run/batman-dvpc-evil` → UNTRUSTED;`rundir-paths.txt` 不改(新目錄是 `/tmp/run/` 兄弟) |
+| CI | `vectors-219` + `peer.py --selftest` + `provgen.py --selftest`;`prov-sandbox`(arm64,E-H3 前 `continue-on-error` + 最後一步 `::warning::` annotation,PR body 貼結論);`prov-unit-gate`;`prov-p1`:**Go 單元改以 root 跑**:`sudo -E env PATH="$PATH" GOFLAGS=-mod=vendor GOTOOLCHAIN=local go test -v -tags prov_test ./...`(runner 的 sudo `secure_path` 會重設 PATH,`setup-go` 的 go 不在裡面,v4 A-m7 / B-m1)並斷言 `[ "$(… \| grep -c -- '--- SKIP' \|\| true)" = 0 ]`(`grep -c` 0 命中時 rc 1)(F20);killpoint Go 單元;`prov-gate-stubs`;`known-failures-format` |
+| lint | `lint-install`;`lint-wbox`(§4.2);`ab-shared-change.yml` 加 P1b 共用檔;**tmp-trust**(F30、F23):第 13 行收緊 `/tmp/run/batman-dv([^-a-z]\|$)`;**`chain1-254.sh:112,315` 改走 `prov-lib-254.sh` 的 per-run `$PCD`(`mkdir -m 0711`,無 `-p`,EEXIST 即拒;單位收尾 `rm -rf`)**(本 PR 的 harness 修正,v4 B-M2);新條目:`scripts/dv/prov-lib-254.sh` **與** `scripts/dv/chain1-254.sh` 的 `/tmp/run/batman-dvpc\.`(root 0711、`mkdir` 無 `-p`)、`scripts/dv/prov-254.sh` + `scripts/dv/prov-*-254.sh` + `scripts/node/prov-wbox-254.sh` 的 `/tmp/run/batman-prov-test([^-a-z]\|$)`、`/tmp/run/batman-provd-test([^-a-z]\|$)`、`/tmp/run/batman-dv/wbox/`(root 0700 / provd 0700,`mkdir` 非 `-p`);`feed/batman-prov/src/*`:第 99 行收緊 `/tmp/run/batman-prov([^-a-z]\|$)`(與第 13 行同形,否則 `batman-provd-test` 仍被切掉,v4 B-m13)+ killpoint 目錄與 provd 測試 socket 目錄條目;`test-tmp-trust.sh` 加兩案例:`scripts/dv/x.sh` 含 `/tmp/run/batman-dvpc-evil` → UNTRUSTED;**乾淨樹(含改過的 chain1)→ 0 UNTRUSTED**;`rundir-paths.txt` 不改 |
 | known-failures | 第 4 欄 `expires=YYYY-MM-DD`;缺欄 / 壞格式 → run FAIL;過期 → NEW;`NEVER_KNOWN` 加 `\|NEEDS-PERSON\|blocked: DNODE`;`test-known-failures.sh` 四案例;移除 F26 7 行;新增 `pre-P1b` / `pre-P2` 條目(到期 = 產品 PR 預計 merge + 14 天) |
 
 ## 3. 擁有權
@@ -135,14 +138,15 @@
 | helper 記憶體內 killpoint arm | helper;解除 = restart(`unbind-all` 看 `wbox.list` 的 `armed <name>`) | P9:helper 本次 pid 的 log 無 `killpoint .*: armed` |
 | `/tmp/run/batman-provd-test/`(provd:provd 0700)、`gatt.sock`(provd 0600) | provd init(root)`mkdir` + `chown 471:471` + `chmod 0700`;provd `O_NOFOLLOW` 驗 owner=471、非 symlink 才 bind;在 P2 ujail mount 清單 | `provclient sock-as 471 -- proxy`(owner → 進得去);release 沒有 |
 | bind mount(`/tmp/run/batman-dv/wbox/<run>/`,root 0700) | `prov-wbox-254.sh bind` / `unbind-all`;deadman 還原 | 重開消失;P9 |
-| A 槽 upper 的 `/usr/bin/batman-provhelper` 副本(`upper-helper`) | `prov-wbox-254.sh upper-helper` 放(**在任何 bind 之前**);`overlay-restore` 刪多出(F6:04 upper 無 `usr/bin/`)| P9 標記 grep |
+| A 槽 upper 的 `/usr/bin/batman-provhelper` 副本(`upper-helper`) | `prov-wbox-254.sh upper-helper` 放(**在任何 bind 之前**);`overlay-restore` 刪多出(F6:04 upper 無 `usr/bin/`);**prov deadman 也清**:`/overlay/upper/usr/bin/batman-provhelper` 存在且 sha ≠ `/rom/usr/bin/batman-provhelper` → `rm` + restart helper(只動 harness 自己放的檔,v4 A-m2)| P9 標記 grep |
+| p6 `ble-ok` | helper health(只在 committed 槽,F14);**harness `state-set` 只在 helper 停止狀態或 trial 內寫**((8) 臂 B / C);restore 由 `STATEFILES` 放回 | autocommit 每次 poll 讀 |
 | B 槽 | 單位期間:產品 `sysupgrade -n`(**一律 hold**;預期 REVERT 單位另等 `TRIAL-REVERTED`);收尾:`pr_brewrite`(單位寫過 B,或 B 現在 ≠ V) | P9:**committed 槽**含 wbox → FAIL;另一槽含 wbox → 印 restore 指令 |
 | `bad-slot`(p6) | autocommit 寫;刪:產品任何 COMMITTED,或 harness 在預期 REVERT 單位且內容 = `slot=B version=<wbox ver>` 時(在 `pr_restore` 之前) | brewrite 前置;P9(印內容;`slot=A version=V` 註明可能是 normalise 殘骸) |
 | `autocommit-hold-commit`(p6) | 四個 harness 寫者都在 prov lease 內;autocommit 消費 | P3 |
 | B 槽 overlay `/etc/rc.local`(ch1 deadman 行) | 鏈 1 寫 / brewrite 清 | P9 |
 | `-wbox` payload(`~/out/<VER>/ekh-bcm2711/`) | firmware build 寫;`prov-254.sh` 驗、推 | 只進非 committed 槽 |
 | firmware `feeds/batman` 工作樹 | `build-board.sh --wbox` 套 / 還原(`checkout -- . && clean -fdx`) | gate |
-| prov lease `$BT/lease-prov`(`<run> <boot> <expiry>`) | 取得者;取得 / 延長 / 釋放都在 `$BT/lock` flock 內,**延長 = `lease_write` + 重新 `dm_arm`**(F22);到期由 prov deadman 刪;chain1 / brewrite / pty-commit / `pr_normalise` 也取 | BLE `acquire` 看到有效 `lease-prov` → FAIL,反之亦然;**單位內互斥 = lease(重開前)+ p6 `dv-prov-dirty`(跨重開,snap 寫)+ p6 `dv-prov-normalising`(正規化期間)**;每次 `pr_find` 找到節點後重新 acquire + `dm_arm`(剩餘預算) |
+| prov lease `$BT/lease-prov`(`<run> <boot> <expiry>`) | 取得者;取得 / 延長 / 釋放都在 `$BT/lock` flock 內,**延長 = `lease_write` + 重新 `dm_arm`**(F22);到期由 prov deadman 刪;chain1 / brewrite / pty-commit / `pr_normalise` 也取 | BLE `acquire` 看到有效 `lease-prov` → FAIL,反之亦然;**單位內互斥 = lease(重開前)+ p6 `dv-prov-dirty`(跨重開,snap 寫)+ p6 `dv-prov-normalising`(正規化期間)**;每次 `pr_find` 找到節點後**先重新 stage**(`ble-lib-254.sh` + `prov-base-254.sh` 到 `$DVD/<run>/`,root 0700;`dm_arm` 的第 3 參數要是節點上的檔,`$BT/lock` / `$ST` 在 tmpfs,v4 A-m12 / B-m9)再 acquire + `dm_arm`(剩餘預算) |
 | prov deadman(`$ST/dm`,共用) | `dm_arm <run> <secs> prov-base-254.sh lease-prov`;`dm-fire`:讀 `lease-prov`;動作:`unbind-all`(含 armed → restart helper)、`rm -rf /tmp/run/batman-prov-test`、有 `restoring` 標記時到此為止;否則啟動 joinwatch / openmanetd / tailscaled;留 dirty;不碰槽 / p5 | 與 ch1 deadman 不同時 armed(P9) |
 | `restoring`(`$DVD/restoring.<run>`,tmpfs) | `pr_restore` 開始建;`finish` 刪;**只活到 restore 內的 `reboot committed`**;之後若 harness 死,只剩 dirty(可接受:p5 / overlay 已寫回,compare 待下次) | deadman |
 | `dv-prov-normalising <run> <boot>`(p6) | `pr_normalise` 開始寫、完成刪 | P9:存在 → FAIL「正規化進行中 / 殘骸」+ 清法 |
@@ -156,7 +160,7 @@
 
 ### 4.1 接縫(產品)
 
-#### 4.1.1 `--killpoint`(只在 `prov_test` build)
+#### 4.1.1 killpoint 檔(只在 `prov_test` build;**沒有 CLI 旗標**,helper daemon 啟動時讀檔)
 - 點名封閉:`txn-1`(`prov-txn` + `.txn` 寫完、setkey 前)、`txn-2`(setkey 後、`--prov-only` 前)、`txn-3`(`--prov-only` rc 0 後、overlay rename 前)、`txn-4`(rename 後、`--save` 前)、`txn-5`(`--save` 後、回應前)、`claim-after-persist`、`claim-before-shadow`。
 - 檔案 `/tmp/run/batman-prov-test/killpoint`:目錄 root 0700 非 symlink;檔 root 0600 非 symlink link 1;不符 → log `killpoint: refused (<why>)`;讀完刪;成功 → `killpoint <name>: armed`。
 - 到點:log `killpoint <name>: sysrq reboot` → `echo b > /proc/sysrq-trigger`(F29:不看 mask;無 sync)。保險:`sleep 2` 仍活著(寫入失敗,例如 `/proc` 唯讀)→ log `killpoint <name>: fallback reboot -f` → `sync` → `reboot -f`。harness 只在 `sysrq reboot` 行 + 2 s 內 boot_id 改變時判 L7 PASS;`fallback` = ⚠️。
@@ -166,12 +170,12 @@
 
 #### 4.1.2 `prov_test` build(封閉清單)
 - `BATMAN_PROV_TEST=1` → `GO_PKG_TAGS:=prov_test`(helper;P2 加 provd)。
-- 額外行為全部:(1) `--killpoint`;(2) `--version` 第 2 行 + `--boot` 第一行 log 標記;(3)(P2)provd frame socket;(4)(P2)provd 讀 `provd.env`:`SOCK_ONLY`、`FAST_FAKE_DELAY_MS`、`NO_BRUTE_LIMIT`。沒有 mutant 開關、沒有 fakeSys 模式。
+- 額外行為全部:(1) killpoint 檔;(2) `--version` 第 2 行 + `--boot` 第一行 log 標記;(3)(P2)provd frame socket;(4)(P2)**provd 的 init 測試版**(`batman-provd.init.test`,Makefile 在 `BATMAN_PROV_TEST=1` 時安裝它取代 release init;release init 沒有讀 `provd.env` 的那段;gate 的 `grep -rl` 另加 init 內字串 `BATMAN_PROVD_TEST_INIT_7f3a`,v4 B-m6)讀 `provd.env`:`SOCK_ONLY`、`FAST_FAKE_DELAY_MS`、`NO_BRUTE_LIMIT`、**`GATT_ENCRYPT_CTRL`**(§4.8.3)。沒有 mutant 開關、沒有 fakeSys 模式。
 - 標記字串只在 tag build 的檔案;release 二進位 `grep -c` = 0。
 
 #### 4.1.3 build gate(`check-prov-test-gate.sh <rootfs> [<wbox-name>]`,第 7 步 `$WR/r`)
 - 無 name:helper `go version -m` 的 `-tags` 不含 `prov_test`;`grep -c BATMAN_PROV_TEST_BUILD_7f3a` = 0;`/etc/batman-build` 無 `BATMAN_WBOX=`;rootfs `grep -rl 'WBOX-'` = 0。
-- 有 name:`BATMAN_WBOX=<name>` 行在;VER 含 `.dirty.wbox-<name>`;見證 `grep -rl WBOX-<name>-` ≥ 1;`test` 的見證 = helper 標記;`go version -m` 無輸出(shell 取代)→ 只以見證判。
+- 有 name:`BATMAN_WBOX=<name>` 行在;VER 含 `.dirty.wbox-<name>`;見證 `grep -rl WBOX-<name>-` ≥ 1;`test` 的見證 = helper 標記;`go version -m` 無輸出(shell 取代)→ 只以見證判;**init 類 mutant(`chan`)另斷言 `etc/rc.d/S??wbox-*` 存在**(OpenWrt image build 由 postinst `enable`,v4 A-m11)。
 - 負對照(CI `prov-gate-stubs`):`prov_test` helper → FAIL;release → PASS;含 `WBOX-` 的假 rootfs → FAIL。
 
 ### 4.2 `-wbox` 變體(firmware `build-board.sh --wbox <name>`)
@@ -180,10 +184,10 @@
 - 正常 build:同 stamp 機制;gate 三條擋殘留。
 - 輸出 `~/out/<VER>/ekh-bcm2711/`。
 - **只進非 committed 槽;一律 hold**;P9:committed 槽 `.protected` 缺或含 `wbox`、`/etc/batman-build` 含 `wbox` → run FAIL;另一槽含 `wbox` → 印 restore 指令(brewrite)。
-- 版本與見證斷言(`pr_ota_b`,全在主機端,F6):驗 SHA256SUMS → `tar -xzOf payload root.squashfs | unsquashfs -cat - etc/batman-build` 讀兩行 → `unsquashfs -cat` 見證所在檔 grep 見證 → 推上節點後節點端 `sha256sum` = 主機 sha → 才 `sysupgrade -n`。
+- 版本與見證斷言(`pr_ota_b`,全在主機端,F6、F44):驗 SHA256SUMS → `tar -xzf <payload> -C <mktemp -d> root.squashfs` → `unsquashfs -cat <file> etc/batman-build` 讀兩行(**`unsquashfs` 不吃 stdin**)→ `unsquashfs -cat` 見證所在檔 grep 見證 → 推上節點後節點端 `sha256sum` = 主機 sha → 才 `sysupgrade -n`。**hold 旗標的值 = 這裡讀到的 `BATMAN_VERSION=` 整行值**(autocommit 以 `want == $(version)` 判,否則 `HOLD-COMMIT-DISCARDED` 並刪旗標;member 臂 NEED_MESH=0 時 3×10 s 就 commit,所以 DISCARDED 不能等落點斷言才看,v4 B-m14):trial 內一看到 DISCARDED 行立即 `back_to_a`,不「重試一次」。
 - `helper-exit1`:patch 改 `feed/batman-prov/Makefile` install(`GoPackage/Package/Install/Bin` → `INSTALL_BIN ./files/wbox-helper-exit1.sh`)+ 新增該檔(含見證)。
 - **uci-defaults / init 類 mutant 的檔名規則**:uci-defaults 新檔一律 `99zz-wbox-<name>`(排在 `99zz-batman-prov-state` 之後,免被 96 的 overrides 寫回覆蓋);**只在 fresh overlay 第一次開機執行**(uci-defaults 執行後自刪),單位不得拿同一 B trial 做第二次開機;`lint-wbox` 驗檔名前綴。
-- `chan`(v4 重寫,F15):**不是 uci-defaults**,是 `files/etc/init.d/wbox-chan`(START=99,`start()` 背景化一個迴圈):等 `iw dev wlh0 info` 成立 → 從此每 5 s 讀 `uci get wireless.radio1.channel`,≠ 目標值(p5 值以外的合法頻道)就 `uci set` + commit + `wifi reload`,**持續 ≥ 200 s**(> chanfix 最長 80 + 6×8 s)後 exit;log `wbox-chan: asserted <ch> (<n> times)`(見證字串在這行);chanfix 的 `gave up reasserting` 行若出現 = 旁證,不當判定。trial 內前置斷言 = 「120 s 內 `uci get wireless.radio1.channel` ≠ p5 值 **且** `batctl n` 空」,不成立 → FAIL「mutant 無效」+ `back_to_a`(hold 擋 commit)。
+- `chan`(v4 重寫,F15):**不是 uci-defaults**,是 `files/etc/init.d/wbox-chan`(START=99,`start()` 背景化一個迴圈;image 內要有 `etc/rc.d/S99wbox-chan`):等 `iw dev wlh0 info` 成立 → 從此每 5 s 讀 `uci get wireless.radio1.channel`,≠ 目標值(p5 值以外的合法頻道)就 `uci set` + commit + `wifi reload`,**持續 ≥ 200 s**(> chanfix 最長 80 + 6×8 s)後 exit;log `wbox-chan: asserted <ch> (<n> times)`(見證字串在這行);chanfix 的 `gave up reasserting` 行若出現 = 旁證,不當判定;mutant + chanfix 合計 ≤ 13 次 `wifi reload`,`health_ok` 看 `wpad running`,不受影響。trial 內前置斷言(v4 A-m10 / B-m10:mutant 與 chanfix 交替期間單次取樣可能剛好相等)= 「T+120 s 起連續 3 次(間隔 10 s)`uci get wireless.radio1.channel` 皆 ≠ p5 值 **且** `batctl n` 空」,不成立 → FAIL「mutant 無效」+ `back_to_a`(hold 擋 commit)。`wifi reload` 對 morse 真的換頻道只有 chanfix 自己的註解當證據 → E-H7 必做。
 - 變體清單(17):
 
 | name | mutant | tag | 用在 |
@@ -192,7 +196,7 @@
 | `rc9-unclaimed` | helper `--boot` rc 9 → `prov{unclaimed}` | prov_test | legacy-upgrade 負對照 |
 | `96-noprov` | 96 `PCOPY=none` | — | prov-ota 負對照 |
 | `helper-exit1` | helper = `exit 1` shell | — | lock-failsecure 正向 |
-| `helper-norebuild`(取代 v3 `helper-nogen`,F41) | `--boot` 不以 p5 重建 overlay:跳過 `.txn` 分支的 `g == t.To` 重建、跳過 `ovRec == nil` / `p5 gen > overlay gen` 重建 | prov_test | overlay-corrupt、powerloss txn-3 負對照 |
+| `helper-norebuild`(取代 v3 `helper-nogen`,F41) | `--boot` 不以 p5 重建 overlay:跳過 `.txn` 分支的 `g == t.To` 重建、跳過 `ovRec == nil` / `p5 gen > overlay gen` 重建;**`ovRec == nil` 時回 `unknown(norebuild)` 而不是落到下一個 case**(F41:否則 nil 解參考 → crash loop,負對照變成「helper 沒起來」,v4 A-m3) | prov_test | overlay-corrupt、powerloss txn-3 負對照 |
 | `96-norestore` | 96 + helper 不從 p5 還原 | prov_test | overlay-wipe 負對照 |
 | `helper-nojoinop` | `net.apply` 首版不要 owner-op | prov_test | netjoin 負對照 |
 | `helper-noleave` | leave 不刪 p6 標記 | prov_test | leave-ota 負對照 |
@@ -204,20 +208,20 @@
 | `helper-flap` | helper 在 `serving` 後 5 s `os.Exit(1)`(procd respawn) | — | autocommit (9) |
 | `misc-L38` / `misc-L42` / `misc-L43` / `misc-L51` | §6.2 | 視需要 | prov-misc |
 
-- 成本:17 build / rc;E-H2 量兩次 × 17 寫 §7.3;只在 rc 發版與動到 prov 的 PR 時 build;E-H2 驗收 17 個變體 helper sha 互異。
-- `lint-wbox`:對**套過板 patch 的 feed 樹**做 `git apply --check`(CI clone firmware `patches/ekh-bcm2711/` 先套);patch 不得碰 `board-patch-digest.sh` 列出的檔;至少改一個 `feed/` 檔(`test` 例外);見證 ≥ 2 次且 `.go` hunk 的見證在 `"…"` 內;§6.2 引用的 name 都存在;tag 欄與表一致;uci-defaults 新檔名前綴 `99zz-wbox-`。
+- 成本:17 build / rc;E-H2 量兩次 × 17 寫 §7.3;只在 rc 發版與動到 prov 的 PR 時 build;E-H2 驗收(v4 A-m1):helper 變體(7 個 prov_test + `test` + `helper-exit1` + `helper-flap`)的 helper sha 互異且 ≠ release;其餘 7 個(不碰 helper 的 release-tag 變體)= release helper sha。P9 的 `prov-test` helper 份數同此規則(10 份,不是 17)。
+- `lint-wbox`:對 Batman `feed/` 做 `git apply --check`(板 patch 的目標全在 `feeds/openmanet` / `feeds/packages`,不碰 `feeds/batman`,v4 B-m15 → 不需先套板 patch);至少改一個 `feed/` 檔(`test` 例外);見證 ≥ 2 次且 `.go` hunk 的見證在 `"…"` 內;§6.2 引用的 name 都存在;tag 欄與表一致;uci-defaults 新檔名前綴 `99zz-wbox-`。
 
 ### 4.3 主機端 `prov-254.sh`(Git Bash;簽章與 COSE 在 WSL)
 沿用 p1-impl §4.2–§4.5。
 
 - **單位骨架**:`pr_begin <unit> <secs> [helper=<variant>]` = P9 子集(S0 槽條件、無 dirty / bind / wbox / killpoint 目錄 / normalising、02 在 `batctl n`)→ lease(**初值 3000 s**)+ `dm_arm` → `snap`(寫 dirty)→(`upper-helper` → `push-helper`)→ 步驟 → `pr_end`:
-  1. 預期 REVERT 單位:等 `TRIAL-REVERTED`(≤ 720 s;若反而 `HELD` → FAIL「mutant 無效」+ `back_to_a`)→ `pr_find` 04 在 A committed → **先**讀 / 印 / 斷言 / 刪 `bad-slot`(`slot=B version=<wbox ver>`;不符 → `pr_needs_person`);
+  1. 預期 REVERT 單位:等 `TRIAL-REVERTED`(**上限 = trial 內讀到的 `$RUNDIR/autocommit.deadline` + `DEFER_MAX` 600 + 120 s**,不寫死;看到 `revert deferred:` 行就 `pr_lease_renew +600`,F42、v4 A-M2;若反而 `HELD` → FAIL「mutant 無效」+ `back_to_a`;**逾時但 boot-reasons 顯示 panic / watchdog 硬重開(trial 內 panic → tryboot 一次性 → 直接回 A,無 `TRIAL-REVERTED`、無 bad-slot)→ 判 INVALID「trial panic」而非「mutant 無效」**,v4 B-m12)→ `pr_find` 04 在 A committed → **先**讀 / 印 / 斷言 / 刪 `bad-slot`(`slot=B version=<wbox ver>`;不符 → `pr_needs_person`);
   2. `pr_restore`(前 `pr_lease_renew +1800` + `restoring`)→ compare diffs=0;
   3. `pr_brewrite 04` 只在「單位寫過 B」或「B 的 `.protected` ≠ V」;否則斷言 `.protected` = V 且 mtime 未變;
-  4. `finish` → `rm -rf /tmp/run/batman-prov-test` → lease release → `dm_cancel` → 02 在 `batctl n`(180 s 窗)、02 boot_id 前後相同((7) 與 `prov-netjoin-fleet` 例外:02 回 A committed、`badslot=[]`、在 `batctl n`)。
+  4. `finish` → `rm -rf /tmp/run/batman-prov-test` → lease release → `dm_cancel` → 02 在 `batctl n`(180 s 窗)、02 boot_id 前後相同((7) 與 `prov-netjoin-fleet` 例外:02 回 A committed、`badslot=[]`、在 `batctl n`;**單位超過 3600 s 時 02 可能被 joinwatch 重開(F33):02 重開但回 `batctl n` 且 A committed → WARN 不 FAIL**,同 chain1,v4 A-m13)。
   任一步失敗 → `pr_abort`(restore;再失敗 → `pr_needs_person`)。
 - **lease 規則**:每次 `pr_ota_b` 落點後 `pr_lease_renew +900`;每次 `pr_find` 找到節點(= 重開後 tmpfs 清空)**重新 acquire + `dm_arm`**(剩餘預算);`pr_restore` 前 `+1800`;renew = `lease_write` + `dm_arm`(同一把 flock)。
-- **`pr_normalise`**(prov 區塊開頭;自己 acquire lease **1800 s** + `dm_arm`,寫 p6 `dv-prov-normalising`):04 committed = B、版本 V、無 wbox、無 bad-slot → 在 B 寫 hold = V → `sysupgrade -n` 進 A → 落點後 renew +900 → HELD → `release --wait` → A committed → 刪 normalising → 之後 snap。其他不符 → `pr_needs_person`。白箱:04 留 B committed → 第一單位 PASS;正規化中殺主機 → 下次 P9 FAIL 印清法。
+- **`pr_normalise`**(prov 區塊開頭;自己 acquire lease **1800 s** + `dm_arm`,寫 p6 `dv-prov-normalising`):04 committed = A、版本 V、無 wbox、無 bad-slot → **no-op**;04 committed = B、版本 V、無 wbox、無 bad-slot、**且 02 在 `batctl n`**(04 legacy + p6 `mesh-joined` → A trial `NEED_MESH=1`,02 不在就 600 s revert 成 `bad-slot slot=A version=V`,v4 A-m6)→ 在 B 寫 hold = V → `sysupgrade -n` 進 A → 落點後 renew +900 → HELD → `release --wait` → A committed → 刪 normalising → 之後 snap。其他不符 → `pr_needs_person`。白箱:04 留 B committed → 第一單位 PASS;正規化中殺主機 → 下次 P9 FAIL 印清法。
 - **全套順序**:prov 區塊在 2f 之後、2g 之前。區塊內:`pr_normalise` → `prov-base` → (1)(7-04) revert 型 → hold 型 → killpoint 型 → 鏈 0 → `prov-netjoin-fleet` → (7) → `prov-legacy-upgrade`。
 - **member → OTA 的通則**(F33):`net-apply` 之後、`sysupgrade -n` 之前一律 `batman-slot reboot committed`;trial 內斷言 `:420` 行 + `mesh join required: 0 (prov=member mesh_expect=<m> radio_required=1)`。
 - `pr_ota_b <payload> <sha> <target-slot> [allow-stale]`:一律寫 hold;落點斷言(DT tryboot=1、目標槽、`HOLD-COMMIT` 生效、無 DISCARDED);落空 → disarm、清 hold、重試一次 → `pr_needs_person`。
@@ -233,10 +237,10 @@
 - CI:`timeout-minutes` 不計排隊;E-H3 前 `continue-on-error` + `::warning::`。
 - `prov-artifact-match`(WSL,rc 時手動):F34 整串旗標(E-H4 照 `make V=s` 記);不可重現 → 明列。
 
-#### 4.4.1 底 rootfs 的來源(D-H11)
+#### 4.4.1 底 rootfs 的來源(D-H11,v4 B-M1)
 - `tests/prov-p1/sbx/base.env`:`BASE_VER`、`BASE_URL`、`BASE_SHA256`。
-- 來源 = firmware repo 的 release asset payload tar(`root.squashfs` 從 tar 取);**firmware repo 的可見性 ⚠️ E-H3 查**:公開 → 直接 `curl`;私有 → job 用 `secrets.FIRMWARE_READ_TOKEN`(唯讀 PAT,只給 `prov-sandbox` job)。sha 不符 → job FAIL。
-- PR CI 在 rc 之前用「fleet 現在的版本」(本 PR 時 = 1.5.14-wsl.4 的 release asset);rc 發版後 bump。
+- 來源 = **Batman repo 的 release asset**(F18:payload 不在 firmware repo;`1.5.14-wsl.4` 沒有資產):本 PR 時 = `v1.5.11` 的 `batman-1.5.11-rel.1+6a049f2.fw7049fd8-ekh-bcm2711-ab-payload.tar.gz`,sha 釘該 release `SHA256SUMS` 的那行;公開,直接 `curl`;sha 不符 → job FAIL。沙箱只用它的 busybox / uci / 基底,P1 的 `files/` 由 PR 蓋上、helper 現編,所以 rel.1 當底可用(底與 fleet 版本的 busybox / uci 差異由 `prov-artifact-match` 的工具 sha 比對列出,E-H4)。
+- 之後每次發 rc / release 都上傳 payload 資產(本來就是發版流程的一步)並 bump `base.env`。無 PAT、無 secret。
 
 ### 4.5 節點端新增
 - `prov-base-254.sh`:`lock-hold`、`strip-p5-prov`、`state-set`、`dm-arm` / `dm-cancel`、`restoring`、`normalising`。
@@ -247,7 +251,7 @@
   - `arm-killpoint <name>`(單獨);`set-provd-env`(P2)。
 - **負對照通則**:重開前 → bind;需要 helper 重跑開機邏輯但不重開 → `restart`;重開後 → `upper-helper`;trial 內不能改狀態(F9)、不能重開(tryboot 一次性)→ trial 內只能 restart 類。§6.2 每個負對照標 [bind / restart / upper / wbox-B]。
 - `prov-sock-254.sh`(tier A):`sock-as 471 -- info` 正確;`sock-as 65534` → EACCES;`sock-as 65534 --gid 471` → provclient 印 `CONN-CLOSED`,helper log 前綴 `connection refused: peer uid 65534 (want 471)`;未知動詞 → `E_SCHEMA`(20)。PEERCRED 負對照在 Go 單元(root 跑,F20)。
-- `prov-sec-254.sh`(tier A):`prov-sec-helper-uid-254`;`prov-sec-key-perms-254`(bind 0644 副本 → FAIL);`prov-sec-dvpc-254`(機制已在:`mkdir` 無 `-p` + `set -e`,F23;本 PR 加明確訊息 `FAIL dvpc dir pre-exists` 從 `mkdir` rc 判 + 白箱:root 預建 symlink → FAIL);**`prov-sec-sockdir-254`**(lease 內白箱:停 helper → root 以 `ln -s /tmp/x /tmp/run/batman-prov` 或 `chown 471` 預建 → 啟 helper → log `sock: … refusing to start`、socket 不存在 → 還原 → 啟 helper 正常)。
+- `prov-sec-254.sh`(tier A):`prov-sec-helper-uid-254`;`prov-sec-key-perms-254`(bind 0644 副本 → FAIL);`prov-sec-dvpc-254`(機制在 `pl_prep` 已有:`mkdir -m 0711` 無 `-p`,F23;**chain1 的固定名 `mkdir -p` 在本 PR 改走同一個 per-run `$PCD`**;本 PR 加明確訊息 `FAIL dvpc dir pre-exists` 從 `mkdir` rc 判 + 白箱:root 預建 symlink → FAIL,對 `pl_prep` 與 chain1 各做一次);**`prov-sec-sockdir-254`**(lease 內白箱:停 helper → root 以 `ln -s /tmp/x /tmp/run/batman-prov` 或 `chown 471` 預建 → 啟 helper → log `sock: … refusing to start`、socket 不存在 → 還原 → 啟 helper 正常)。
 
 ### 4.6 `provclient` 擴充與 `provgen.py`
 - `net-apply`、`leave`、`owner-add` / `owner-remove`、`diag`、`sock-as <uid> [--gid g] -- <op>`、`exec <argv…>`(降權後 `execve`,清 env、無 stdin)、`proxy`(stdin/stdout ↔ 指定 socket,一行 hex = 一個 packet)。
@@ -259,7 +263,7 @@
 - `dv-prov-dirty` 不同 run → FAIL + restore 指令;`dv-prov-normalising` → FAIL + 清法。
 - bind 殘留、`/tmp/run/batman-prov-test/` 存在、helper log `killpoint .*: armed`(本次 pid)→ FAIL。
 - ch1 deadman 殘留;`bad-slot` 存在 → FAIL(印內容與清法)。
-- helper state;`--destructive`:WSL 工具、`provgen.py --selftest`、`prov-test` helper 17 份 sha、`-wbox` payload 17 份、`dbus-send` ELF;chain1 兩槽 = V;pre-P1b 偵測(`--version` rc);`kernel.sysrq` 只記錄(F29,不當 FAIL 條件);H3:`peer.py --selftest`、bleak、WinRT radio On、provd release 無測試 socket 目錄。
+- helper state;`--destructive`:WSL 工具、`provgen.py --selftest`、`prov-test` helper 10 份 sha(§4.2 規則)、`-wbox` payload 17 份、`dbus-send` ELF;chain1 兩槽 = V;pre-P1b 偵測(`--version` rc);`kernel.sysrq` 只記錄(F29,不當 FAIL 條件);**04 的 p6 `autocommit.timeout` 存在且 > 600 → 印出**(它改變所有 revert 型單位的預算,F42);H3:`peer.py --selftest`、bleak、WinRT radio On、provd release 無測試 socket 目錄。
 
 ### 4.8 `peer.py`(H3)
 #### 4.8.1 角色與裁判
@@ -275,7 +279,7 @@
 
 #### 4.8.3 P2 要開的 `prov_test` 開關(`provd.env`)
 - 寫者 `prov-wbox-254.sh set-provd-env`(root 0600、非 symlink、link 1,在 `/tmp/run/batman-prov-test/`);讀者 provd init(只 `prov_test`)以 `procd_set_param env` 傳;缺檔 / 壞檔 → 不設;非 root 建不了。
-- `SOCK_ONLY=1`(不碰 dbus / bluetoothd);`FAST_FAKE_DELAY_MS=<n>`;`NO_BRUTE_LIMIT=1`。
+- `SOCK_ONLY=1`(不碰 dbus / bluetoothd);`FAST_FAKE_DELAY_MS=<n>`;`NO_BRUTE_LIMIT=1`;**`GATT_ENCRYPT_CTRL=1`**(provd 把 `CTRL` 特徵宣告成 `encrypt-read`;`prov-gatt-254` 的負對照,v4 B-M3)。
 - CI `peer-vs-provd`:`useradd -u 471 provd`;helper `sudo` root 跑真 `realSys`,`batman-slot` / `batman-config-save` / `halow-setkey` / `prov_apply_lock` PATH stub;provd `sudo -u provd` + `SOCK_ONLY=1`。
 
 ### 4.9 服務 UUID(Q1)與廣播預算
@@ -314,6 +318,8 @@
 | 依賴重啟 | `prov-misc` helper 側;H3 provd 側 | 單位 |
 | CI arm64 / 底 rootfs | 排隊不計;底 sha 不符 → FAIL;E-H3 前不擋 PR(annotation) | PR CI |
 | 02 在 `prov-netjoin-fleet` 認領後還原失敗 | 02 LOCKED、擁有者 = run 金鑰;金鑰保留;無 OOB → 需人 | §7.2 |
+| harness 死於 `prov-netjoin-fleet` 中(02 已認領 + 入測試網,還原未開始) | 02 LOCKED、member 於測試網;joinwatch 3600 s 重開不會改回(p5 已寫);02 的 p6 dirty(02 snap 寫)→ 下次 P9 FAIL;金鑰保留;需人 | 白箱 |
+| trial 內節點 kernel panic / 硬重開(#132 Morse churn) | tryboot 一次性 → 直接回 A committed:無 `TRIAL-REVERTED`、無 bad-slot、hold 旗標已消費;`pr_end` 以 boot-reasons 判 INVALID「trial panic」,重跑一次,不歸因為 mutant 無效 | 白箱(`echo c > /proc/sysrq-trigger` 在 trial 內) |
 | P2 後 provd 擁有廣播 | `adv-on` 先查 | 白箱 |
 
 ## 6. 測項
@@ -352,7 +358,7 @@
 | `prov-leave-ota-254`(L22) | member → leave → 標記刪 → 重開 → OTA V hold → B trial `claimed`、`mesh join required: 0 (prov=claimed mesh_expect=0` | `helper-noleave` [bind] → 標記留 → `mesh join required: 1` | hold / A / F |
 | `prov-ota-254`(L5) | member → 重開 → OTA V hold → B:`:420` 行、`mesh join required: 0 (prov=member`、member、gen 同、wireless 同、上鎖、`.batman-prov-restore` `prov=full`、96 `prov: state=member copied=full` | `-wbox 96-noprov` [wbox-B] → `copied=none` | hold / A / F |
 | `prov-lock-failsecure-254` | `push-helper test killpoint=claim-before-shadow` → claim → sysrq → 重開後(F37)`lock-status=LOCKED`、root 欄 = 注入前、p5 無 `shadow-root` → OTA `-wbox helper-exit1` hold → B:`offered` 只 publickey、LOCKED | 同前置 → OTA wsl.9 hold → UNPROVISIONED(F32) | hold / A / F |
-| `prov-powerloss-254-txn{1..5}`(L7) | `push-helper test killpoint=txn-N` → `net-apply --update` → sysrq → 重開(release helper)→ txn-1:`.txn` 刪、wireless 不變;txn-2:≥ 120 s 後 `txn <verb> not committed: restored …`(`main.go:491`)、`action=txn … NOT committed`(`boot.go:127`)、wireless 回舊值、p5 gen 不前進;txn-3:`action=txn … committed (gen n): overlay completed from p5`(`boot.go:119`)、wireless == prov;txn-4:**`--check` rc 5 `p5 stale:`**、`prov.meta` gen n+1、wireless == prov(**overrides 落後到下次入網才補,F39 → 產品殘項 #254**);txn-5:`--check` rc 0;全部:sysrq 行、key 登入 | txn-2 (a):**重開後 ≤ 120 s 內** `mv .txn .txn.dv` + `restart` helper(殺掉帶 Txn 的 goroutine,F8)→ ≥ 150 s 後無 `not committed: restored` 行、wireless 仍新值、`.txn.dv` 在;txn-2 (b):`helper-notxn` [upper];txn-3:**`helper-norebuild`** [upper](F41:`.txn` 分支不看 gen);txn-1 / 4 / 5:無獨立負對照(明列) | — / A / F |
+| `prov-powerloss-254-txn{1..5}`(L7) | `push-helper test killpoint=txn-N` → `net-apply --update` → sysrq → 重開(release helper)→ txn-1:**≥ 120 s 後**(`RemoveTxn` 在 `restoreWireless` rc 0 之後,`main.go:492-494`)`.txn` 刪、wireless 不變;txn-2:≥ 120 s 後 `txn <verb> not committed: restored …`(`main.go:491`)、`action=txn … NOT committed`(`boot.go:127`)、wireless 回舊值、p5 gen 不前進;txn-3:`action=txn … committed (gen n): overlay completed from p5`(`boot.go:120`)、wireless == prov;txn-4(**killpoint 位置 = `RemoveTxn` 之後、`Save` 之前**,`node.go:1118-1120`;重開走無 `.txn` 的 gen 比對 → `in sync`,v4 A-m5):**`--check` rc 5 `p5 stale:`**、`prov.meta` gen n+1、wireless == prov(**overrides 落後到下次入網才補,F39 → 產品殘項 #254**);txn-5:`--check` rc 0;全部:sysrq 行、key 登入 | txn-2 (a):**重開後 ≤ 120 s 內** 先斷言「`.txn` 在 **且** 本次 pid 的 log 無 `not committed: restored`」(不成立 → INVALID,重跑一次;ssh 可達約在 helper 起後 30–60 s,v4 A-m4)→ `mv .txn .txn.dv` + `restart` helper(殺掉帶 Txn 的 goroutine,F8)→ ≥ 150 s 後無 `not committed: restored` 行、wireless 仍新值、`.txn.dv` 在;txn-2 (b):`helper-notxn` [upper];txn-3:**`helper-norebuild`** [upper](F41);txn-1 / 4 / 5:無獨立負對照(明列) | — / A / F |
 | `prov-netupdate-254`(L25、L26) | bind `halow-setkey` `exit 1` + `--on-join` → p5 overrides 不前進;`killpoint=txn-3` + `--on-join` + sysrq → member | bind 不讓路的 config-save [bind] → p5 overrides 前進 | — / A / F |
 | `prov-trial-busy-254`(L21) | OTA V hold → B trial `claim` → `E_BUSY`(7) | `helper-notrial` [bind 在 B trial + restart] → 被接受 | hold / A / F |
 | `prov-overlay-corrupt-254`(L33) | 寫垃圾進 A `prov.cbor` → 重開 → `overlay record unusable:` + 以 p5 重建、gen 相等 | `helper-norebuild` [wbox-B hold 進 B → B 內寫垃圾 → restart](不重開)→ 不重建 | — / A / F |
@@ -361,11 +367,11 @@
 | 鏈 0(L15) | p1-impl §5.4:apply V 進 B + cmdline `batman_bypass=1`(hold)→ 受控重開 → `none` 登入 → `unknown(bypass)`、不產身分、persist 拒、96 exit 1 → `back_to_a` | 無 bypass → 正常 | hold / A / F(兩個 lease) |
 | autocommit (1) | `-wbox radio1-off` **hold** 進 B → `TRIAL-REVERTED … reason=` 含 `mesh not joined/reachable` 或 `member: HaLow mesh interface not up`(F12 `why` 表);`HELD` 反而出現 → FAIL「mutant 無效」+ `back_to_a`;bad-slot 順序 §4.3 | 本身 | hold+revert / A |
 | (3) | member → 重開 → OTA V hold → `:420` 行 + `mesh join required: 0` + `is healthy and HELD` | 與 (6) 互為對照 | hold / A |
-| (6)(取代 (5)) | 兩臂:(6a) `sysupgrade -T` 後直接 `batman-slot apply`(無 `ota-armed.mesh`)→ `member: no usable ota-armed.mesh — neighbours required (fail-closed)` + `mesh join required: 1`;(6b) 手寫**不等於本次開機**的 boot_id 的 `ota-armed.mesh` 後直接 apply → 無 `no usable` 行、`mesh join required: 1`;兩臂 `otalog AC UNHEALTHY first_why=` 行**含** `mesh not joined/reachable` → 480 s 內 `back_to_a` | 與 (3) 互為對照 | hold + back_to_a / A |
+| (6)(取代 (5)) | **前置:04 = member(只有 `member:*` 分支讀 `ota-armed.mesh`,`:416-421`)**;兩臂:(6a) `sysupgrade -T` 後直接 `batman-slot apply`(無 `ota-armed.mesh`)→ `member: no usable ota-armed.mesh — neighbours required (fail-closed)` + `mesh join required: 1`;(6b) 手寫**不等於本次開機**的 boot_id 的 `ota-armed.mesh` 後直接 apply → 無 `no usable` 行、`mesh join required: 1`;兩臂 `otalog AC UNHEALTHY first_why=` 行**含** `mesh not joined/reachable` → 480 s 內 `back_to_a` | 與 (3) 互為對照 | hold + back_to_a / A |
 | (7)(含 (4)) | 04 在 A 在 mesh;02 hold OTA V 進 B → `HELD` → 02 `back_to_a`;→ 04 `-wbox chan` **hold** 進 B → 前置(§4.2:120 s 內頻道 ≠ p5 且 `batctl n` 空,不成立 → FAIL「mutant 無效」+ `back_to_a`)→ `TRIAL-REVERTED`、otalog `S1 ARMED-MESH … m=joined`;02 全程 committed A | — | 02 hold+back / 04 hold+revert / 兩台 A |
-| (8) | P1 期三臂(F12 latch、F14):臂 A `ble-ok` 在 → 本次開機有一行 `WARN ble:`(括號內容只記錄)+ HELD;臂 B `ble-ok` 不在(**停 helper → `state-set ble-ok absent` → 保持停到 `sysupgrade -n` 送出**;trial 不寫回)→ 無 WARN 行 + HELD;臂 C(`hci0_powered=0` 分支):OTA 前 `ble-ok` 已移除 → trial 內 `btmgmt power off` → 等一個 health tick(≤ 15 s)讀到 `hci0_powered=0` → `state-set ble-ok` 放回 → 下一次 poll 印 `WARN … hci0_powered=0 …` + HELD | 三臂互為對照 | hold / A |
-| (9) | `-wbox helper-flap` hold,04 有 `ble-ok`:health 不 stale(F14)→ WARN 行(內容只記錄)+ HELD;`release` → commit(P-U5)→ 跨槽還原;**characterization**(L39 本意 = provd flap → §6.3) | — | hold→commit / 跨槽 |
-| (10)(L41) | 三個偽造 caller:非 root `sysupgrade -T`、容器 root 以相對路徑 / 假 cmdline 呼叫 `platform_check_image`、`-T` → p6 無 `ota-armed.mesh`、無 `otalog S1 ARMED-MESH`;真 OTA(hold)→ 檔在、三欄格式、`ARMED-MESH` 行 | — | 偽造臂 — / 真 OTA hold / A / F |
+| (8) | P1 期三臂(F12 latch、F14):臂 A `ble-ok` 在 → 本次開機有一行 `WARN ble:`(括號內容只記錄)+ HELD;臂 B `ble-ok` 不在(**停 helper → `state-set ble-ok absent` → 保持停到 `sysupgrade -n` 送出**;trial 不寫回)→ 無 WARN 行 + HELD;臂 C(`hci0_powered=0` 分支):**同臂 B 的移除程序(停 helper → `state-set ble-ok absent` → 保持停到 `sysupgrade -n` 送出**,否則 committed 槽的 helper 15 s 內寫回,v4 B-m3)→ trial 內 `btmgmt power off` → 等一個 health tick(≤ 15 s)讀到 `hci0_powered=0` → `state-set ble-ok` 放回(trial 不寫回)→ 下一次 poll 印 `WARN … hci0_powered=0 …` + HELD | 三臂互為對照 | hold / A |
+| (9) | `-wbox helper-flap` hold,04 有 `ble-ok`:health 不 stale(F14)→ WARN 行(內容只記錄)+ `is healthy and HELD` → **同一 trial 內 `AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=<uptime+60> batman-autocommit run` → 斷言 `DRYRUN decision: COMMIT`(F42)→ `back_to_a`**;不真 commit mutant 槽(v4 A-M1:§4.2 不變量、deadman 不碰槽);**characterization**(L39 本意 = provd flap → §6.3) | — | hold / A |
+| (10)(L41) | 三個偽造 caller:(a) 非 root `sysupgrade -T`;(b) 主機 root 以非 procd 父程序直接呼叫 `platform_check_image`(`:81` 讀 `/proc/$PPID/cmdline`,**這是有鑑別力的偽造臂**);(c) 容器 root:`docker run --rm -v /lib/upgrade:/lib/upgrade:ro -v /opt/batdata:/opt/batdata -v /tmp/run:/tmp/run busybox sh -c '. /lib/upgrade/platform.sh; …'`(容器內 uid 0、pid ns ≠ host;**OTS 容器本身沒有這些 bind(F35),所以這臂是 characterization**,v4 A-m14 / B-m8)→ 三臂皆 p6 無 `ota-armed.mesh`、無 `otalog S1 ARMED-MESH`;真 OTA(hold)→ 檔在、三欄格式、`ARMED-MESH` 行 | — | 偽造臂 — / 真 OTA hold / A / F |
 | `prov-misc-254` | L38(96 superblock 壞出口,以呼叫字串定位)、L42、L43、L51(`sock: unexpected`);L11 / L9 / L10 / L27 / L3 | 各 mutant | hold / A / F |
 | `prov-verbs-254` | p1-impl §5.6 正向含 `settings.set hostname` → 6(`rename-pending`)、未知 key → 20、`owner.*`、`ssh_keys.set`、`diag.bundle`、`qr` | 沙箱 | — / A / F |
 | `prov-eeprom-hooks-254` | 對解出的 rc rootfs:shim 對所有 key `READ` rc 1;PATH 假 `vcgencmd` 回四個 key → 讀者不採用 | 1.5.12 rootfs → 採用 | WSL |
@@ -382,13 +388,13 @@
 | `prov-ble-claim-254` | `peer.py` BLE:NX → claim → 密碼 → `psk_replay` → `claim/replay` 同 `owner_tag_key`;`killpoint=claim-after-persist` → sysrq → replay;10 次錯 response 後第 11 次 `E_RATE`(12),成功不計(F40) | 錯 `owner_pub` → 3;NX 對已認領 → 假第 2 則 | B |
 | `prov-sec-claim-brute-254`(§8 3 次) | 同連線 3 次錯 → 斷;新連線再 3 次 → 斷;`claimed_counter` 不變 | `NO_BRUTE_LIMIT=1` → 4 次仍連著 | A(sock) |
 | `prov-sec-hog-254` / `-oversize-254` | 3 條連線(2 sock + 1 BLE)→ 第 3 條被拒;不交握 10 s → 斷;交握後閒置 30 s → 斷;單則 > 8192 → 斷;分塊超 `max_msg` → 斷 | — | A/B |
-| `prov-sec-psk-timing-254`(§3.4) | sock;節流 ≤ 18 / 分、兩臂交錯、錯臂並行 ≤ 2、`peer.py` 收到假 msg2 即斷(槽立即釋放,§4.8.2 契約);先量正確 PSK 延遲的 MAD;**n ≥ (1.96 · 1.2533 · √2 · 1.4826 · MAD / 門檻)²,下限 30、上限 200**;門檻 = max(2·MAD, 5 ms);PASS = 中位數差 < 門檻且 bootstrap 95% CI 在 ±門檻;明寫不驗「相同次數 DH」 | `FAST_FAKE_DELAY_MS=20` → 差 ≥ 20 ms | A |
-| `prov-sec-dbus-254` | tier A:先證 root 能 `Introspect`(dbus-send 動態連結 OK);`provclient exec dbus-send …`(471)呼叫 `AgentManager1.RegisterAgent`、`Properties.Set Pairable`、`Device1.Pair` + 3 個未列 → AccessDenied;root 對照只用無副作用方法(`Introspect`、`Properties.Get`);tier B(02 連著):`Device1.Disconnect` → 成功;bluetoothd → provd 回呼 → 成功;root `RegisterAgent` 正向只在 tier B 並立即 `UnregisterAgent` | root 對照 | A + B |
+| `prov-sec-psk-timing-254`(§3.4) | sock;節流 ≤ 18 / 分、兩臂交錯、錯臂並行 ≤ 2、`peer.py` 收到假 msg2 即斷(槽立即釋放,§4.8.2 契約);先量正確 PSK 延遲的 MAD;門檻 = max(2·MAD, 5 ms);**n = 30**(公式 n ≥ (1.96 · 1.2533 · √2 · 1.4826 · MAD / 門檻)² 在門檻 = 2·MAD 時 ≈ 6.6,恆被下限 30 綁住;n = 30 時中位數差 95% CI 半寬 ≈ 0.94·MAD < 門檻,夠用;MAD 極端(> 門檻 / 2 以外)才會超過 30,上限 200,v4 B-m5);PASS = 中位數差 < 門檻且 bootstrap 95% CI 在 ±門檻;明寫不驗「相同次數 DH」 | `FAST_FAKE_DELAY_MS=20` → 差 ≥ 20 ms | A |
+| `prov-sec-dbus-254` | tier A:先證 root 能 `Introspect`(dbus-send 動態連結 OK);`provclient exec dbus-send …`(471)呼叫 `AgentManager1.RegisterAgent`、`Properties.Set Pairable`、`Device1.Pair` + 3 個未列 → AccessDenied;**471 的正向對照 = `Properties.Get`(stage1 §4.6 policy 放行的方法;`Introspect` 在 P2 後對 471 仍 AccessDenied,F16,不能當正向)**;root 對照只用無副作用方法(`Introspect`、`Properties.Get`);tier B(02 連著):`Device1.Disconnect` → 成功;bluetoothd → provd 回呼 → 成功;root `RegisterAgent` 正向只在 tier B 並立即 `UnregisterAgent` | root / 471 `Properties.Get` 對照 | A + B |
 | `prov-sec-bond-254`(翻轉;provd 停止模式) | 停 provd → `adv-on` → 04 掛 agent(白箱常駐)→ 02 SC JW → 通過(外洩)→ 收 agent → 擋下 → `rekey` + 04 重開 → 起 provd | 本身 | B |
 | `prov-coex-254`(L28) | AP 客戶端 = Windows 主機 Wi-Fi 連 04 AP;iperf 60 s 基線 → 同時 `peer.py` BLE 連續 `status` 60 s → 記差異 / 斷線數;第一輪記錄,第二輪起門檻 = 基線 − 30% | — | B |
-| `ble-rpa-254`(provd 模式) | 三態(F28 時間條件):無重註冊 → 同 RPA;重註冊且距上次 RPA 改變 < 900 s → 同 RPA;≥ 900 s → 新 RPA;provd log `adv re-registered reason=<rpa_timeout\|connect\|disconnect\|health> nonce=<8hex>`(P2 契約)+ btmon 對齊;N1 = 停 provd + `adv-on` ≥ 30 分 | N1 / N2 / N5a | B |
+| `ble-rpa-254`(provd 模式) | 三態(**stage1 F28** 時間條件:`mgmt.c:1016-1029` `rpa_expired()` 設 `HCI_RPA_EXPIRED` 後 `HCI_ADVERTISING` 未設即 return;不是本文的 F28):無重註冊 → 同 RPA;重註冊且距上次 RPA 改變 < 900 s → 同 RPA;≥ 900 s → 新 RPA;provd log `adv re-registered reason=<rpa_timeout\|connect\|disconnect\|health> nonce=<8hex>`(P2 契約)+ btmon 對齊;N1 = 停 provd + `adv-on` ≥ 30 分 | N1 / N2 / N5a | B |
 | `prov-sock-254` → tier B | 停 provd 才跑 | 同 §4.5 | B |
-| `prov-gatt-254` | `peer.py` BLE:MTU、分段(1 B / 剛好 / 超過)、序號亂 → 斷、notify 回壓 100 則;特徵旗標從 02 `bluetoothctl gatt.attribute-info` 的 `Flags` → 無 `encrypt-*` / `authenticated-*` | 序號亂不斷 = FAIL | B |
+| `prov-gatt-254` | `peer.py` BLE:MTU、分段(1 B / 剛好 / 超過)、序號亂 → 斷、notify 回壓 100 則;**「特徵不帶加密旗標」以行為判(F43:client 端 `Flags` 永遠不含 `encrypt-*`)**:02 未配對、未加密下 `gatt.read` `CTRL` / `STATUS` 回資料、`gatt.write` `RX` 成功,btmon 整段無 `SMP` 交換、無 `LE Start Encryption` | 序號亂不斷 = FAIL;**白箱:`provd.env` `GATT_ENCRYPT_CTRL=1`(§4.8.3)→ 02 `gatt.read` CTRL 得 `org.bluez.Error.NotPermitted` / ATT 0x0F 且 btmon 出現 SMP 請求** | B |
 | iPad GATT 回歸 | ⚠️ 手動:`docs/validation/ble-ipad.md`,結果貼 PR | — | 手動 |
 
 ## 7. 安全
@@ -420,11 +426,10 @@
 |---|---|---|---|
 | `prov-netjoin-fleet` | 02 snap、認領(LOCKED、密碼關、擁有者 = run 金鑰)、`wifi reload` | 02 先還原(經 mesh,無 OOB),再 04 | 02 回 legacy、`batctl n`;失敗 → 金鑰保留 + 需人 |
 | (7) | 02 一次 held trial + `back_to_a` | 自身 | 02 A committed、無 bad-slot |
-| (9) | B 被 commit(mutant 槽)→ 跨槽還原 | 跨槽 | A committed V、B = V |
 
 ### 7.3 成本(⚠️ 推估;E-H2 量後更新)
-- hold 型:snap 1 + net-apply 2 + 重開 3 + OTA 3 + settle 1.5 + HELD ≤ 8 + 斷言 2 + back_to_a 3 + restore 5 + compare 1 + brewrite 14 ≈ 47 分;revert 型 ≈ 37 分 + 600 s;`—` 型 ≈ 20 分。
-- 全套 ≈ 30 單位 + 8 個獨立 held-trial 負對照 × 15 分 + (9) 跨槽 15 分 ≈ **22–23 h**;04 OTS 中斷 ≈ 7.5 h;02 隔離約 3 h;SD 約 45 GiB。
+- hold 型:snap 1 + net-apply 2 + 重開 3 + OTA 3 + settle 1.5 + HELD ≤ 8 + 斷言 2 + back_to_a 3 + restore 5 + compare 1 + brewrite 14 ≈ 47 分;revert 型 ≈ 37 分 + 600 s(+ ≤ 600 s watchdog 延遲,F42);`—` 型 ≈ 20 分。
+- 全套 ≈ 30 單位 + 8 個獨立 held-trial 負對照 × 15 分 ≈ **22–23 h**;04 OTS 中斷 ≈ 7.5 h;02 隔離約 3 h;SD 約 45 GiB。
 - `-wbox` build 17 × ⚠️ ≈ 3 h / rc。
 
 ## 8. 工作順序與 PR
@@ -432,7 +437,7 @@
 2. **實證**(先列副作用):
    - **E-H1**:使用者打開主機藍牙 → 04 lease 內 `adv-on` → 主機 `bleak` scan 看到、記 RSSI、驗 scan response 合併 → `adv-off`;04 `readelf -d`(`LD_TRACE_LOADED_OBJECTS=1`)`.libs/dbus-send` 只需 `libdbus-1.so.3` + musl;root `Introspect` 成功、uid 471 AccessDenied。副作用:04 廣播 ≤ 2 分。
    - **E-H2**:`build-board.sh --wbox test` 與 `--wbox rc9-unclaimed`;量時間;gate 反向;正常 build → gate PASS、helper sha ≠ 變體、樹乾淨;Ctrl-C → 樹乾淨;boot log 證 uci-defaults 順序(F15 ⚠️)。
-   - **E-H3**:CI `ubuntu-24.04-arm` job(負測試 + 底 rootfs 下載 + busybox ash);firmware repo 可見性;排隊時間。
+   - **E-H3**:CI `ubuntu-24.04-arm` job(負測試 + v1.5.11 payload 下載與 sha + busybox ash);排隊時間。
    - **E-H4**:`prov-artifact-match`(F34 整串)。
    - **E-H5**:`lock-hold` + helper `--save` 撞鎖(= `prov-claim` 一單位)。
    - **E-H6**:04 `echo b > /proc/sysrq-trigger` 一次(S0 後)→ 重開、boot-reasons;證 F29。副作用:04 硬重開一次。
@@ -443,12 +448,12 @@
 6. 乙部與 P2 設計一起;H3 測項在 P2 rc 上 PASS 後再 PR(D-H5)。
 
 ## 9. 殘項(回 #254)
-真斷電;bcm2710 真機;iPad GATT 手動;`prov-rename`;opaque 目錄未查;L16 節點層;`prov_test` vs release 差異只靠 gate + tier A/B;release asset 掃描不做;`docs/validation` 文字;B16 nonce 長度;(5) 不可測;(9) P1 characterization;txn-1 / 4 / 5 無獨立負對照;**txn-4 後 overrides 要到下次入網才補(產品缺口)**;`prov-sock` PEERCRED 負對照只在 Go 單元;sock 傳輸的「假第 2 則後立即釋放槽」是 P2 契約。
+claim-lock §11.4 真機 tier B(4 / 4-inj / 4b / 4b' / 4c / 4d / 5)仍未排程(§1.2);真斷電;bcm2710 真機;iPad GATT 手動;`prov-rename`;opaque 目錄未查;L16 節點層;`prov_test` vs release 差異只靠 gate + tier A/B;release asset 掃描不做;`docs/validation` 文字;B16 nonce 長度;(5) 不可測;(9) P1 characterization;txn-1 / 4 / 5 無獨立負對照;**txn-4 後 overrides 要到下次入網才補(產品缺口)**;`prov-sock` PEERCRED 負對照只在 Go 單元;sock 傳輸的「假第 2 則後立即釋放槽」是 P2 契約。
 
 ## 10. 回報上層
 1. p1-impl §4.5.3 同槽重建 = 鏈 1 程序;E4 作廢;§4.5.0 順序改為「2f 之後、2g 之前 + 正規化」。
 2. p1-impl §2.2:`dv-sbx` shell;`-wbox` 真 build + 見證;known-failures 到期欄;放置負測試 = `prov-sec-dvpc-254`;socket 目錄預置 = `prov-sec-sockdir-254`。
-3. stage1 §10:H3 = 本文;P2 設計要收 §4.8.2(sock = BLE 連線、控制包、**假第 2 則後立即釋放槽**)、§4.8.3、§4.9、provd log 契約(`adv re-registered`、`backoff`)、ujail 多掛 `/tmp/run/batman-provd-test`、認領互斥 → `E_BUSY`。
+3. stage1 §10:H3 = 本文;P2 設計要收 §4.8.2(sock = BLE 連線、控制包、**假第 2 則後立即釋放槽**)、§4.8.3(含 `GATT_ENCRYPT_CTRL` 白箱開關與 provd 測試版 init 的安裝機制)、§4.9、provd log 契約(`adv re-registered`、`backoff`)、ujail 多掛 `/tmp/run/batman-provd-test`、認領互斥 → `E_BUSY`;stage1 §8 A-N7「GATT 不帶加密旗標」的斷言改為行為判定(F43)。
 4. 219 §4.1 / §8 / §12:Q1 定案;sock 計入 §8;釋放槽契約。
 5. stage1 §6.4:(3) radio-only 前提 = 本次開機未 JOINED;(4) 併 (7);(5) 由 (6) 取代;(8) P1 期三臂;(9) L39 本意 provd flap;**txn-4 後 overrides 無補寫路徑**(產品缺口,#254 checklist)。
 6. 不要求 P1b 加 txn log 行(F13 既有)。
@@ -467,7 +472,7 @@
 | D-H8 | 主機 bleak RSSI | E-H1 |
 | D-H9 | txn-1 / txn-5 要不要測 | 要 |
 | D-H10 | (9) 保留在甲部 | 保留為 characterization |
-| D-H11 | 沙箱底 rootfs 來源(firmware release asset;私有則唯讀 PAT) | E-H3 後定 |
+| D-H11 | 沙箱底 rootfs 來源 | **定案:Batman repo v1.5.11 release payload(§4.4.1)** |
 
 ## 12. v3 審查 → v4 對應
 | 發現 | 處置 |
@@ -504,3 +509,37 @@
 | B-m11 normalise lease | 1800 + renew |
 | B-m12 continue-on-error 可見 | §2.2 CI |
 | B-m13 chan 只跑一次 | §4.2 uci-defaults 規則 |
+
+## 13. v4 審查 → v5 對應
+| 發現 | 處置 |
+|---|---|
+| A-M1 (9) commit mutant 槽 | §6.2 (9) 改 dry-run(F42);§7.2 / §7.3 刪 (9) 列 |
+| A-M2 revert 等待未計 `DEFER_MAX` | F42;§4.3 步驟 1 上限 = deadline + 600 + 120、`revert deferred` → renew +600;P9 印 `autocommit.timeout`;§7.3 |
+| B-M1 沙箱底來源不存在 | F18;§4.4.1 改 Batman v1.5.11 payload;D-H11 定案;E-H3 |
+| B-M2 tmp-trust / chain1 固定名 | F23、F30;§2.2:chain1 改 per-run `$PCD`、新條目含 chain1、乾淨樹案例;§4.5 dvpc 措辭 |
+| B-M3 GATT Flags 無鑑別力 | F43;§6.3 改行為判定 + `GATT_ENCRYPT_CTRL` 白箱;§4.1.2 / §4.8.3 / §10 |
+| A-m1 helper sha 規則 | §4.2 成本段;§4.7 10 份 |
+| A-m2 deadman 清 upper 副本 | §3 |
+| A-m3 `helper-norebuild` nil | F41;§4.2 表 |
+| A-m4 txn-2 (a) INVALID / txn-1 ≥ 120 s | §6.2 |
+| A-m5 txn-4 位置 | §6.2 |
+| A-m6 normalise 前置 / no-op | §4.3 |
+| A-m7 / B-m1 sudo PATH / grep rc | §2.2 CI |
+| A-m8 範圍(claim-lock §11.4、bcm2710 smoke) | §1.2、§9 |
+| A-m9 / B-m12 §5 缺列 | §5 兩列 |
+| A-m10 / B-m10 chan 取樣 / reload 次數 | §4.2 |
+| A-m11 init mutant enable | §4.1.3、§4.2 |
+| A-m12 / B-m9 dm_arm 前 re-stage | §3 |
+| A-m13 02 boot_id > 3600 s | §4.3 步驟 4 |
+| A-m14 行號 / 命名 / (6) 前置 / (10) 容器臂 | F13 `boot.go:120`;§4.1.1 標題;§6.2 (6)(10) |
+| B-m2 F28 引用 | §6.3 `ble-rpa` |
+| B-m3 (8) 臂 C 停 helper | §6.2 |
+| B-m4 unsquashfs stdin | F44;§4.2 |
+| B-m5 n 公式 | §6.3 |
+| B-m6 provd.env init 機制 | §4.1.2 |
+| B-m7 dbus 471 正向 | F16;§6.3 |
+| B-m8 (10) 容器臂 | §6.2 |
+| B-m11 §3 `ble-ok` 列 | §3 |
+| B-m13 第 99 行 regex | §2.2 |
+| B-m14 hold 值 / DISCARDED | §4.2 |
+| B-m15 F15 ⚠️ 清、lint 簡化、F23 訊息 | F15;§4.2;F23 |
