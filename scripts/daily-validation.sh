@@ -149,6 +149,8 @@ fi
 . "$REPO/scripts/dv/ble-254.sh"
 # shellcheck source=dv/bt-uart-305.sh
 . "$REPO/scripts/dv/bt-uart-305.sh"
+# shellcheck source=dv/claim-lock-254.sh
+. "$REPO/scripts/dv/claim-lock-254.sh"
 
 # 1. No hardware needed, but needs Linux tooling: the A/B card invariants build a real card on a
 #    loop device. On a host without losetup/mksquashfs/sudo (e.g. a Windows/Git-Bash operator box
@@ -212,9 +214,19 @@ chk_prov_p1_stubs() {      # no hardware: product files from this checkout; root
   bash "$REPO/tests/prov-p1/autocommit-prov-case.sh" "$F/usr/bin/batman-autocommit" | tail -1 | grep -q "fails=0" || r=1
   bash "$REPO/tests/prov-p1/99zz-mesh-expect.sh" "$F/etc/uci-defaults/99zz-batman-prov-state" | tail -1 | grep -q "fails=0" || r=1
   bash "$REPO/tests/prov-p1/batman-slot-addr-defer.sh" "$F/usr/sbin/batman-slot" | tail -1 | grep -q "fails=0" || r=1
+  # #254 claim-lock fix (docs/design/254-claim-lock-fix.md §11.2): until fix/254-claim-lock lands the product here has no
+  # batman-prov-lock — one explicit FAIL line (KNOWN #254), the P1 stubs above still ran
+  if [ -f "$F/etc/init.d/batman-prov-lock" ]; then
+    bash "$REPO/tests/prov-p1/prov-apply-lock.sh" "$F/usr/lib/batman/prov-lock.sh" | tail -1 | grep -q " 0 failed" || r=1
+    bash "$REPO/tests/prov-p1/prov-root-hash.sh" "$F/usr/lib/batman/prov-lock.sh" | tail -1 | grep -q "fails=0" || r=1
+    bash "$REPO/tests/prov-p1/prov-lock-init.sh" "$F/etc/init.d/batman-prov-lock" "$F/usr/lib/batman/prov-lock.sh" | tail -1 | grep -q " 0 failed" || r=1
+    bash "$REPO/tests/prov-p1/batman-slot-rollback-gate.sh" "$F/usr/sbin/batman-slot" "$F/usr/lib/batman/prov-lock.sh" | tail -1 | grep -q "fails=0" || r=1
+    bash "$REPO/tests/prov-p1/claim-lock-lints.sh" "$REPO" | tail -1 | grep -q "fails=0" || r=1
+  else echo "FAIL prov-p1-stubs: product in this checkout predates the claim-lock fix (no etc/init.d/batman-prov-lock) — KNOWN until fix/254-claim-lock lands (#254)"; r=1; fi
   if [ "$(id -u)" = 0 ] && command -v losetup >/dev/null 2>&1; then
     for t in cfgsave-identity-freeze cfgsave-frozen-nomount cfgsave-provget-rc10; do PROV_SRC=$F bash "$REPO/tests/prov-p1/$t.sh" "$F/usr/bin/batman-config-save" | tail -1 | grep -qE "FAIL=0|PASS$" || r=1; done
     bash "$REPO/tests/prov-p1/prov-base-statecmp.sh" "$REPO/scripts/node/prov-base-254.sh" | tail -1 | grep -q "fails=0" || r=1
+    bash "$REPO/tests/prov-p1/batman-slot-stage-root.sh" "$F/usr/sbin/batman-slot" "$F/usr/lib/batman/prov-lock.sh" | tail -1 | grep -q "fails=0" || r=1
   else echo "note: loop-device tests (config-save, prov-base compare) skipped here — need root + losetup (CI prov-p1 job runs them)"; fi
   return $r
 }
@@ -223,7 +235,7 @@ suite harness-negctl-254 "N3 held-trial script vs a simulated node: only guarded
 #     prov-state case, 99zz mesh_expect, batman-slot's release). Each takes the product file from THIS checkout, so a
 #     product change that breaks them fails here, not on a node. The loop-device ones (config-save, prov-base) need
 #     root: CI runs them (prov-p1 job); here they run only as root under WSL/Linux.
-suite prov-p1-stubs "#254 P1 stubs: addr-defer decider/reconcile/init hook (22+), autocommit prov case, 99zz mesh_expect, batman-slot release; root-only loop-device ones when possible" "chk_prov_p1_stubs"
+suite prov-p1-stubs "#254 P1 stubs: addr-defer decider/reconcile/init hook (22+), autocommit prov case, 99zz mesh_expect, batman-slot release; claim-lock fix: prov_apply_lock (37), prov_root_hash_ok (46), S13 (18), rollback gate (19), lints (6); root-only loop-device ones when possible" "chk_prov_p1_stubs"
 
 # 2. No hardware needed: the MAC->IP derivation used by the first-boot hook.
 suite onboarding-ip \
@@ -285,6 +297,27 @@ else
   suite bt-uart-load-305 "hciflood + direct SD reads ${BT305_LOAD_SECS}s on $BLE_PERIPH then $BLE_CENTRAL: no oe/fe/pe/bo, no Frame reassembly / tx timeout, probe, health; load guarantees (#305 T2)" "bchk_bt_uart_load_305 $BLE_PERIPH $BLE_CENTRAL"
   suite bt-uart-close-305 "stuck TX (CNTL 0xcd) then unbind on $BLE_PERIPH: close < 5 s (P2), then reboot + witness (#305 T3b)" "bchk_bt_uart_close_305 $BLE_PERIPH" D
   suite bt-uart-boot-305 "$BT305_BOOTS loaded reboots of $BLE_PERIPH: witness, probe, settings, no hci0 init error each boot (#305 T4)" "bchk_bt_uart_boot_305 $BLE_PERIPH" D
+fi
+
+# 2g. #254 claim-lock fix (docs/design/254-claim-lock-fix.md §11; scripts/dv/claim-lock-254.sh). Tier A on every fleet
+#     node (read-only). Tier B (--destructive) on DNODE (ethernet), in this order: setsid-race (no reboot) -> prov-claim
+#     -> addr-defer reconcile -> chain 1 (04 only; needs slot A committed, restores it) -> pty-commit (moves the node
+#     to the other slot, so it runs last).
+#     A pre-fix image fails the fix's own suites with ONE line "FAIL pre-claim-lock image: ..." (KNOWN, #254).
+#     The negative controls (pty-commit flip, the 1.5.13 runs) are NOT run here: by hand. Design §11.4 tests 4 / 4b /
+#     4b' / 4c / 4d / 5 have no on-node script (authoring blocked, #254 checklist): CI stubs only.
+suite prov-lock-rest-254 "batman-prov-lock installed + enabled (S13), rollback gate present, lock-status matches the provisioning state on:$FLEET (#254 claim-lock fix)" "chk_prov_lock_rest_254 $FLEET"
+CL_B="setsid-race-254 prov-claim-254 adr-reconcile-254 chain1-254 pty-commit-254"
+if [ "$FEATURE_MODE" != --destructive ]; then
+  for s in $CL_B; do suite "$s" "#254 claim-lock tier B — needs FEATURE_MODE=--destructive" ""; done
+elif ! fssh "$DNODE0" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
+  for s in $CL_B; do suite "$s" "#254 claim-lock tier B — DNODE $DNODE0 has no ethernet carrier (no out-of-band recovery)" ""; done
+else
+  suite setsid-race-254 "the commit's detached openmanetd start survives a PTY hangup: the image's construct with a ms delay before setsid() N/N under load, as shipped N/N; controls old+delay <= N/10 and no-setsid 0/N on $DNODE0 (§5.5 / §11.7)" "bchk_setsid_race_254 $DNODE0"
+  suite prov-claim-254 "claim a legacy node: LOCKED (uci, dropbear -s -g, publickey only), the returned password matches shadow (musl probe), replay / reset rotate it, refusals, no secret in logs, S0 restored on $DNODE0 (§11.3)" "bchk_prov_claim_254 $DNODE0" D
+  suite adr-reconcile-254 "joinwatch reconciles a committed boot whose openmanetd kept the deferral env (r1) and reports a hung start once (r2), both with flip controls, on $DNODE0 (#254 B-M4)" "bchk_adr_reconcile_254 $DNODE0" D
+  suite chain1-254 "P1 chain 1 on 04: unseeded / unclaimed / claimed OTAs, stage-1 gate + wsl.9 negative control, claimed trial locked from p5, autocommit dry-run negative, full restore (§5.4 chain 1)" "bchk_chain1_254 $DNODE0" D
+  suite pty-commit-254 "\`ssh -tt node batman-slot commit\` on a held trial releases the address deferral within 20 s (joinwatch stopped) on $DNODE0 — smoke; moves the node to the other slot (#254 B12-m4)" "bchk_pty_commit_254 $DNODE0" D
 fi
 
 # 3. Hardware: the A/B bench card. Refuses on its own if the target is not an A/B card.

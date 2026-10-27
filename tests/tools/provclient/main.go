@@ -336,10 +336,22 @@ type client struct {
 	signIn *bufio.Scanner
 }
 
+// callTimeout: PROVCLIENT_TIMEOUT_S (default 30). The claim-lock fix's busy path (a held config-save lock) makes one
+// call take ~35 s (--save 10 s + one retry 10 s + the best-effort --save after the restore 10 s + the lock steps).
+func callTimeout() time.Duration {
+	s := 30
+	if v := os.Getenv("PROVCLIENT_TIMEOUT_S"); v != "" {
+		if _, err := fmt.Sscanf(v, "%d", &s); err != nil || s < 1 || s > 600 {
+			die("PROVCLIENT_TIMEOUT_S=%q: want 1..600", v)
+		}
+	}
+	return time.Duration(s) * time.Second
+}
+
 func (cl *client) call(verb string, args cmap) (uint64, cmap) {
 	cl.id++
 	req := cEnc(cmap{{uint64(1), verb}, {uint64(2), cl.id}, {uint64(3), args}})
-	cl.c.SetDeadline(time.Now().Add(30 * time.Second))
+	cl.c.SetDeadline(time.Now().Add(callTimeout()))
 	if _, err := cl.c.Write(req); err != nil {
 		die("write: %v", err)
 	}
@@ -435,6 +447,25 @@ func cmdNode(args []string) {
 		}
 		claimSecret = b
 	}
+	// #254 claim-lock fix §11.3: PROVCLIENT_PW_FILE = a root-only file (created here, as root, O_EXCL 0600) that
+	// receives the password the helper returned, so a node-side musl crypt() probe can check it against shadow —
+	// the password never reaches stdout, a log or the host. Opened before the privilege drop; written after.
+	var pwOut *os.File
+	if p := os.Getenv("PROVCLIENT_PW_FILE"); p != "" {
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			die("PROVCLIENT_PW_FILE: %v", err)
+		}
+		pwOut = f
+	}
+	savePw := func(pw string) {
+		if pwOut != nil && pw != "" {
+			pwOut.WriteString(pw + "\n")
+		}
+		if pwOut != nil {
+			pwOut.Close()
+		}
+	}
 	dropPrivileges()
 	c, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: sockPath, Net: "unixpacket"})
 	if err != nil {
@@ -483,7 +514,29 @@ func cmdNode(args []string) {
 		tag, _ := r.get(1).([]byte)
 		adv, _ := r.get(2).([]byte)
 		pw, _ := r.get(3).(string)
+		savePw(pw)
 		fmt.Printf("RESULT claim.verify code=%d tag=%s adv=%s pw=%s\n", code, short(tag), short(adv), short([]byte(pw)))
+	case "replay": // claim.replay with the STORED owner_pub (hex arg 1): one nonce gives both the CheckMac nonce and
+		// the owner-op's nonce_helper (a second `nonce` call would make the helper pick the newer node nonce)
+		ownerPub := hexArg(1)
+		code, r := cl.call("info.cert", cmap{})
+		if code != 0 {
+			die("info.cert %d", code)
+		}
+		cert, _ := r.get(1).([]byte)
+		sn, _ := r.get(2).([]byte)
+		nn, nh := cl.nonce()
+		resp := checkMac(claimSecret, clientChal(nn, h, cert, ownerPub), sn)
+		body := cmap{{uint64(1), resp}}
+		sig := cl.sign("owner-op", opInput(h, nh, "claim/replay", sha(cEnc(body))))
+		full := append(cmap{}, body...)
+		full = append(full, kv{uint64(31), cmap{{uint64(1), "claim/replay"}, {uint64(2), sig}}})
+		env := cEnc(cmap{{uint64(0), []any{uint64(1), uint64(0)}}, {uint64(1), uint64(1)}, {uint64(2), "claim/replay"}, {uint64(3), full}})
+		code, r = cl.call("claim.replay", cmap{{uint64(1), h}, {uint64(2), env}})
+		tag, _ := r.get(1).([]byte)
+		pw, _ := r.get(3).(string)
+		savePw(pw)
+		fmt.Printf("RESULT claim.replay code=%d tag=%s pw=%s\n", code, short(tag), short([]byte(pw)))
 	case "ssh-keys":
 		var keys []any
 		for _, k := range args[1:] {
@@ -496,6 +549,7 @@ func cmdNode(args []string) {
 		env := cl.ownerOp("root_password/reset", cmap{})
 		code, r := cl.call("root_password.reset", cmap{{uint64(1), h}, {uint64(2), env}})
 		pw, _ := r.get(1).(string)
+		savePw(pw)
 		fmt.Printf("RESULT root_password.reset code=%d pw=%s\n", code, short([]byte(pw)))
 	case "rename":
 		env := cl.ownerOp("settings/set", cmap{{"hostname", "x"}})

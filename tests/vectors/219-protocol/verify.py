@@ -589,6 +589,12 @@ check("CDDL rejects claim/replay with a claim/begin body",
 _er = cbor2.loads(b(env["response_error_reset_reflash"]))
 check("reset: error response CDDL, E_UNSUPPORTED reason 9",
       cddl_ok("response", b(env["response_error_reset_reflash"])) and _er[4] == 6 and _er[5] == {1: "reset", 2: 9})
+# E_LOCK_INCOMPLETE (13, claim-lock fix §7): committed but the lock / password step did not complete -> claim/replay
+_li = cbor2.loads(b(env["response_error_lock_incomplete"]))
+check("E_LOCK_INCOMPLETE: error response CDDL, code 13, no body",
+      cddl_ok("response", b(env["response_error_lock_incomplete"])) and _li[4] == 13 and 3 not in _li)
+check("CDDL rejects an undefined error code 14 (negative control for the error-code list)",
+      not cddl_ok("error-response", cbor2.dumps({1: 5, 4: 14, 5: {}})))
 sp = v["status_public"]
 check("STATUS (status/public): unclaimed with device_id tail is valid CDDL", cddl_ok("status-public", b(sp["unclaimed"])))
 check("STATUS: member (updating) without tail is valid CDDL", cddl_ok("status-public", b(sp["member_updating"])))

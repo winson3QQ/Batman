@@ -1,0 +1,810 @@
+#!/bin/sh
+# batman-slot — the one audited place for A/B slot operations on the GPT card (#89, #209).
+# Shared by /lib/upgrade/platform.sh (sysupgrade) and scripts/ab-selftest.sh, unit-tested by
+# tests/ab-card-invariants.sh. See docs/design/ab-sysupgrade-platform.md and docs/design/209-ab-on-pi3.md.
+#
+#   batman-slot active                 -> A|B  (slot booted now, from /proc/cmdline)
+#   batman-slot target                 -> A|B  (the inactive slot = upgrade target)
+#   batman-slot layout                 -> pi4|pi3 (card layout, cross-checked against the running SoC)
+#   batman-slot fw-part A|B            -> firmware boot partition number of that slot
+#   batman-slot stage-root <dir>       -> run every apply check, clear the target overlay window and
+#                                         print the target root device (for a streamed rootfs write)
+#   batman-slot apply <payload-dir>    -> write the INACTIVE slot (rootfs unless already streamed, boot
+#                                         payload, per-slot cmdline), VERIFY it uncached against the
+#                                         payload's SHA256SUMS, then arm one-shot tryboot.
+#                                         NEVER touches the running slot or autoboot.txt.
+#   batman-slot commit                 -> make the RUNNING slot the default
+#   batman-slot rollback               -> make the OTHER slot the default
+#   batman-slot is-trial               -> exit 0 trial / 1 committed / 2 unknown
+#
+# Two card layouts, same GPT p1..p6 (bootA rootA bootB rootB config data):
+#   pi4 (bcm2711): pure GPT; autoboot.txt on bootA (/boot); firmware numbers boot partitions by FAT
+#                  count (A=1 B=2); the EEPROM holds the bootloader.
+#   pi3 (bcm2710): + p7 "batfw" (bootcode.bin, autoboot.txt, empty config.txt) and a hybrid MBR
+#                  1=p7 2=bootA 3=bootB 4=ee; the firmware numbers partitions by MBR entry order
+#                  (A=2 B=3). A damaged autoboot.txt on p7 bricks a Pi 3 (#209 E0g), so p7 is never
+#                  written by apply and commit/rollback overwrite ONE sector in place.
+set -u
+DISK=/dev/mmcblk0
+P7=${DISK}p7
+GUID_A=3276af79-0000-4000-8000-000000000002
+GUID_B=3276af79-0000-4000-8000-000000000004
+GUID_NONE=00000000-0000-0000-0000-000000000000
+BOOTMNT=/boot                       # bootA/p1 is mounted here (pi4: holds autoboot.txt + ab.good)
+ALLOWLIST=${BATMAN_FW_ALLOWLIST:-/usr/share/batman/firmware-allowlist-bcm2710.sha256}
+BADMARK=BATMAN-BAD                  # on a slot's boot FAT: apply failed verification, never commit it
+CMDLINE_COMMON="console=serial0 console=ttyUSB0,115200 console=tty1 rootfstype=squashfs,ext4 rootwait=20 panic=10"
+
+# DIE_RC: `is-trial` sets 2 so an internal failure reads as "unknown", never as its 1 = "committed"
+# (#209 S5 review R4: a die() during is-trial used to look exactly like a committed slot).
+die() {
+	echo "batman-slot: $*" >&2
+	[ "${TRACE:-0}" = 1 ] && otalog_k SLOT DIE cmd="${CMD:-?}" msg="$*"
+	exit "${DIE_RC:-1}"
+}
+warn() { echo "batman-slot: WARN: $*" >&2; }
+
+# OTA flight recorder (#209 S5, docs/design/ota-trace.md): only the commands that CHANGE state
+# (stage-root/apply/commit/rollback) trace — read-only ones (is-trial, verify, layout, …) are called
+# often by autocommit/daily-validation and must not write p6. A missing lib degrades to no trace.
+# shellcheck source=/dev/null
+[ -f /usr/lib/batman/otatrace.sh ] && . /usr/lib/batman/otatrace.sh
+type otalog >/dev/null 2>&1 || { otalog() { :; }; otalog_k() { :; }; ota_get() { :; }; ota_thr() { :; }; }
+TRACE=0; CMD=${1:-}
+st() { [ "$TRACE" = 1 ] && otalog SLOT "$@"; return 0; }
+
+# #280: decision state (lock, busy marker, MBR cache, p7 sector images, fw-override, reboot target, power
+# state) lives in the root-only run dir — /tmp is world-writable and a non-root process could pre-create any
+# of those names (docs/design/280-tmp-trust.md). /tmp/run/batman crosses into the sysupgrade ramfs like /tmp
+# itself (platform-ab copies rundir.sh + mktemp there). Slot WRITES refuse without it (fail closed); reads
+# fall back to an unpredictable mktemp in /tmp.
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+RDOK=0; type batman_rundir >/dev/null 2>&1 && batman_rundir 2>/dev/null && RDOK=1
+RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
+need_rundir() { [ "$RDOK" = 1 ] || die "run dir $RUNDIR unusable (#280) — refusing to write a slot"; }
+tmpf() { batman_tmp "$1" 2>/dev/null || mktemp "/tmp/$1.XXXXXX"; }
+tmpd() { batman_tmp -d "$1" 2>/dev/null || mktemp -d "/tmp/$1.XXXXXX"; }
+
+# An operator/test flag in /tmp is honoured only if root-owned, not a symlink and a single link (#280 D2 —
+# a hardlink to any root-owned file would otherwise pass -O); anything else is reported as tamper.
+opf() { type batman_opf >/dev/null 2>&1 || return 1; batman_opf "$1"; }   # rundir.sh: the one opf (#280 D1), logs TAMPER
+# Test-only fault seams: the BATMAN_FAULT_INJECT env (direct calls), or a ROOT-OWNED flag file
+# /tmp/batman-fault.<name> — sysupgrade stage2 and procd services do not inherit the caller's env.
+# Never present on a production node.
+fault() { [ "${BATMAN_FAULT_INJECT:-}" = "$1" ] || opf "/tmp/batman-fault.$1"; }
+# Operator overrides, same two forms (env for direct calls, root-owned /tmp flag for sysupgrade).
+allowed() { [ "$(eval echo "\${BATMAN_ALLOW_$1:-0}")" = 1 ] || opf "/tmp/batman-slot.allow-$(echo "$1" | tr 'A-Z_' 'a-z-')"; }
+
+# One writer at a time (#209 S5 review W6). The run dir is fresh every boot and survives into the sysupgrade
+# ramfs, so a lock left by a SIGKILLed holder is taken over once its pid is gone or is not batman-slot
+# (pids are small and reused in the ramfs — hence the cmdline check, not only kill -0).
+LOCK=$RUNDIR/batman-slot.lock
+LOCK_MINE=0
+slot_lock() {
+	need_rundir
+	if ! mkdir "$LOCK" 2>/dev/null; then
+		p=$(cat "$LOCK/pid" 2>/dev/null)
+		# cmdline is NUL-separated ("/bin/sh\0/usr/sbin/batman-slot\0apply…"): flatten before matching
+		if [ -n "$p" ] && [ "$p" != $$ ] && kill -0 "$p" 2>/dev/null && tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q batman-slot; then
+			die "another batman-slot (pid $p) is writing a slot — refusing to run concurrently"
+		fi
+		warn "taking over a stale slot lock (pid ${p:-?} is gone)"
+		rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || die "cannot take the slot lock $LOCK"
+	fi
+	echo $$ > "$LOCK/pid"; LOCK_MINE=1
+}
+
+active_slot() { sed -n 's/.*batman_slot=\([AB]\).*/\1/p' /proc/cmdline; }
+other_slot()  { [ "$1" = A ] && echo B || echo A; }
+
+# per-slot devices/ids
+slot_rootdev() { [ "$1" = A ] && echo ${DISK}p2 || echo ${DISK}p4; }
+slot_bootdev() { [ "$1" = A ] && echo ${DISK}p1 || echo ${DISK}p3; }
+slot_rootguid(){ [ "$1" = A ] && echo "$GUID_A" || echo "$GUID_B"; }
+slot_gptidx()  { [ "$1" = A ] && echo 1 || echo 3; }   # GPT index of that slot's BOOT partition
+
+sysfs_start() { cat "/sys/class/block/${1##*/}/start" 2>/dev/null; }
+
+# fs type of a partition by magic only (busybox: no blkid/od; matches 95/96's hexdump approach)
+part_fstype() {
+	d=$1
+	[ "$(hexdump -n4 -e '4/1 "%c"' "$d" 2>/dev/null)" = hsqs ] && { echo squashfs; return; }
+	[ "$(hexdump -s 1080 -n2 -e '2/1 "%02x"' "$d" 2>/dev/null)" = 53ef ] && { echo ext4; return; }
+	[ "$(hexdump -s 510 -n2 -e '2/1 "%02x"' "$d" 2>/dev/null)" = 55aa ] && { echo fat; return; }
+	echo unknown
+}
+
+# Read N 512-byte sectors from dev at lba, bypassing the page cache when the dd supports it, so a
+# verification sees what is on the card and not what we just wrote into RAM.
+raw_read() {   # $1 dev, $2 lba, $3 count (512-byte sectors)
+	dd if="$1" bs=512 skip="$2" count="$3" iflag=direct 2>/dev/null || { echo 3 > /proc/sys/vm/drop_caches; dd if="$1" bs=512 skip="$2" count="$3" 2>/dev/null; }
+}
+raw_read_mb() {  # $1 dev, $2 MiB from offset 0 — bulk variant (512-byte direct reads are slow on SD)
+	dd if="$1" bs=1M count="$2" iflag=direct 2>/dev/null || { echo 3 > /proc/sys/vm/drop_caches; dd if="$1" bs=1M count="$2" 2>/dev/null; }
+}
+
+# Running SoC as an OpenWrt subtarget, from the device tree. bcm2837 = Pi 3 = OpenWrt bcm2710.
+soc_running() {
+	fault soc-unknown && { echo ""; return; }   # test only: a node whose DT names no known SoC
+	c=$(cat /proc/device-tree/compatible 2>/dev/null)
+	case "$c" in *bcm2711*) echo bcm2711 ;; *bcm2837*) echo bcm2710 ;; *) echo "" ;; esac
+}
+soc_token() { case "$1" in *bcm2711*) echo bcm2711 ;; *bcm2710*) echo bcm2710 ;; *) echo "" ;; esac; }
+
+# Pi 4 bootloader floor (#209 S5). The EEPROM falls back by itself from a slot that fails at the
+# FIRMWARE level (a FAT boot partition with config.txt but no valid start4.elf) only from bootloader
+# 2025-08-20 on (PARTITION_WALK, default since 2025-08-13, fixed for exactly this case 2025-08-20).
+# An older EEPROM HANGS on such a trial (4 short flashes) until someone pulls power — manet02, EEPROM
+# 2023-01-11, 2026-10-02. Warn only: the uncached read-back below is the guard that keeps a bad slot
+# from ever being tried; on an old EEPROM it is the ONLY one. See docs/boards-and-builds.md §1.
+EEPROM_MIN_TS=1755648000   # 2025-08-20 00:00 UTC
+eeprom_floor_warn() {
+	command -v vcgencmd >/dev/null 2>&1 || return 0          # not in the sysupgrade ramfs: check_image warned
+	t=$(vcgencmd bootloader_version 2>/dev/null | sed -n 's/^timestamp //p' | head -1)
+	case "$t" in ''|*[!0-9]*) warn "cannot read the Pi 4 bootloader version — firmware-level fallback unknown"; return 0 ;; esac
+	[ "$t" -ge "$EEPROM_MIN_TS" ] && return 0
+	warn "Pi 4 bootloader $(vcgencmd bootloader_version 2>/dev/null | head -1) predates 2025-08-20: a slot that fails at the firmware level HANGS instead of falling back — only the read-back verification protects this node. Update the EEPROM (docs/boards-and-builds.md §1)."
+}
+
+# ---- MBR (pi3 only) ---------------------------------------------------------------------------
+# Fixed per-invocation path (created once here, so command substitutions share it), read once uncached.
+MBR_FILE=$(tmpf batman-slot.mbr)
+# One EXIT trap for everything this invocation owns (the MBR read cache, and the busy marker that
+# tells batman-autocommit's revert watchdog not to reboot under a running apply, ab-autocommit v2.2).
+BUSY=$RUNDIR/batman-slot.busy
+BUSY_MINE=0
+trap 'rm -f "$MBR_FILE"; [ "$BUSY_MINE" = 1 ] && rm -f "$BUSY"; [ "$LOCK_MINE" = 1 ] && rm -rf "$LOCK"' EXIT
+mbr_load() {
+	[ -s "$MBR_FILE" ] && return 0
+	raw_read "$DISK" 0 1 > "$MBR_FILE"
+	# test only (#209 S5 §4 row 164): change MBR[3]'s type 0c -> 0b in the CACHED copy — the card is
+	# never written — so every slot op must refuse on "MBR drifted" exactly as for a real drift.
+	if fault mbr-mismatch; then
+		printf '\013' | dd of="$MBR_FILE" bs=1 seek=$((446 + 32 + 4)) conv=notrunc 2>/dev/null
+		warn "FAULT INJECTED: cached MBR[3] type changed to 0b (card untouched)"
+	fi
+}
+mbr_entry() {  # $1 = 1..4 -> "TYPE START FLAG" (hex type, decimal start LBA, hex flag)
+	mbr_load; o=$((446 + 16 * ($1 - 1)))
+	echo "$(hexdump -s $((o + 4)) -n1 -e '1/1 "%02x"' "$MBR_FILE") $(hexdump -s $((o + 8)) -n4 -e '1/4 "%u"' "$MBR_FILE") $(hexdump -s "$o" -n1 -e '1/1 "%02x"' "$MBR_FILE")"
+}
+
+# pi3: the hybrid MBR must be exactly 1=p7 2=bootA 3=bootB (type 0c, 1 active) 4=ee. A drift here
+# mis-aims tryboot/commit, and a lost MBR leaves a Pi 3 unbootable — refuse every slot op instead.
+assert_mbr() {
+	s7=$(sysfs_start "$P7"); sa=$(sysfs_start ${DISK}p1); sb=$(sysfs_start ${DISK}p3)
+	[ "$(mbr_entry 1)" = "0c $s7 80" ] || die "MBR[1] is '$(mbr_entry 1)', want '0c $s7 80' (p7) — refusing"
+	[ "$(mbr_entry 2 | cut -d' ' -f1,2)" = "0c $sa" ] || die "MBR[2] is '$(mbr_entry 2)', want bootA @$sa — refusing"
+	[ "$(mbr_entry 3 | cut -d' ' -f1,2)" = "0c $sb" ] || die "MBR[3] is '$(mbr_entry 3)', want bootB @$sb — refusing"
+	[ "$(mbr_entry 4 | cut -d' ' -f1)" = ee ] || die "MBR[4] is '$(mbr_entry 4)', want the GPT protective entry (ee) — refusing"
+}
+
+# ---- layout ---------------------------------------------------------------------------------------
+# Detected ONCE in the main shell (detect_layout, called by every slot command before anything else)
+# and only read afterwards: a die() inside a $(...) would only end the subshell, and an empty answer
+# must never be mistaken for "pi4" — that is exactly the Pi-3-card-with-Pi-4-logic case.
+LAYOUT=""
+detect_layout() {
+	l=pi4
+	if [ -b "$P7" ] && [ "$(part_fstype "$P7")" = fat ] && [ "$(mbr_entry 1 | cut -d' ' -f2)" = "$(sysfs_start "$P7")" ]; then
+		l=pi3
+	fi
+	s=$(soc_running)
+	# fail-closed (#209 S5 review K5): an unrecognised SoC used to pass as "pi4" for every command
+	# except verify, so a direct apply/commit/rollback ran Pi 4 logic on whatever the card was.
+	[ -n "$s" ] || die "cannot tell the running SoC from the device tree — refusing"
+	case "$l:$s" in
+		pi3:bcm2710|pi4:bcm2711) : ;;
+		*) die "card layout '$l' does not match the running SoC '$s' — refusing" ;;
+	esac
+	LAYOUT=$l
+}
+layout() { [ -n "$LAYOUT" ] || die "internal: layout not detected"; echo "$LAYOUT"; }
+
+# firmware boot partition number of a slot. pi4: count of FAT partitions in GPT order (#133 rationale,
+# build-gpt-ab-card.sh). pi3: the MBR entry whose start is the slot's boot partition (E0f/E0d).
+fw_part() {
+	if [ "$(layout)" = pi3 ]; then
+		st=$(sysfs_start "$(slot_bootdev "$1")")
+		for n in 1 2 3 4; do
+			[ "$(mbr_entry $n | cut -d' ' -f2)" = "$st" ] && { echo "$n"; return 0; }
+		done
+		die "fw_part: no MBR entry starts at slot $1's boot partition ($st)"
+	fi
+	want=$(slot_gptidx "$1"); n=0
+	for d in "${DISK}"p[0-9]; do
+		[ -b "$d" ] || continue
+		idx=${d##*p}
+		[ "$(part_fstype "$d")" = fat ] || continue
+		n=$((n + 1))
+		[ "$idx" = "$want" ] && { echo "$n"; return 0; }
+	done
+	die "fw_part: GPT index $want for slot $1 is not a FAT partition"
+}
+
+count_fats() {
+	n=0
+	for d in "${DISK}"p[0-9]; do
+		[ -b "$d" ] && [ "$(part_fstype "$d")" = fat ] && n=$((n + 1))
+	done
+	echo "$n"
+}
+
+# Sanity before any slot op. The FAT count must match the layout (a blank/corrupt boot FAT would
+# silently mis-index), the pi3 MBR must be intact, and the firmware's own boot partition (DT, a
+# big-endian u32) must be the running slot's. Only a value that IS one of this card's slot numbers
+# and mismatches is fatal; anything else means a different encoding and skips the check.
+assert_fw_sane() {
+	a=$(active_slot); [ -n "$a" ] || die "no batman_slot in /proc/cmdline"
+	l=$(layout)
+	want_fats=2; [ "$l" = pi3 ] && { want_fats=3; assert_mbr; }
+	nf=$(count_fats); [ "$nf" = "$want_fats" ] || die "expected $want_fats FAT partitions on a $l card, found $nf — refusing (corrupt/blank boot slot?)"
+	dt=/proc/device-tree/chosen/bootloader/partition
+	[ -f "$dt" ] || return 0
+	booted=$(printf '%d' "0x$(hexdump -n4 -e '4/1 "%02x"' "$dt" 2>/dev/null)" 2>/dev/null) || booted=""
+	exp=$(fw_part "$a") || die "cannot derive the firmware partition of slot $a"
+	oth=$(fw_part "$(other_slot "$a")") || die "cannot derive the firmware partition of the other slot"
+	if [ "$booted" = "$exp" ] || [ "$booted" != "$oth" ]; then return 0; fi
+	die "firmware booted partition $booted (slot $(other_slot "$a")'s) but cmdline says slot $a — stale autoboot/fallback (#133), refusing"
+}
+
+# ---- autoboot.txt ---------------------------------------------------------------------------------
+# pi4: on bootA (/boot). pi3: on p7, which stays unmounted except for a short read-only look.
+autoboot_read() {
+	if [ "$(layout)" = pi3 ]; then
+		grep -q "^$P7 " /proc/mounts && { cat "$(awk -v d="$P7" '$1==d{print $2; exit}' /proc/mounts)/autoboot.txt"; return; }
+		m=$(tmpd batfw.ro) || return 1
+		mount -t vfat -o ro "$P7" "$m" 2>/dev/null || { rmdir "$m"; return 1; }
+		cat "$m/autoboot.txt" 2>/dev/null; r=$?
+		umount "$m"; rmdir "$m"; return $r
+	fi
+	cat "$BOOTMNT/autoboot.txt" 2>/dev/null
+}
+ab_section() {  # $1 = all|tryboot -> boot_partition of that section
+	autoboot_read | awk -v s="[$1]" '$0==s{f=1;next} /^\[/{f=0} f&&/^boot_partition=/{sub(/.*=/,"");print;exit}'
+}
+committed_fw() { ab_section all; }
+
+# Defer an autoboot.txt write while the supply is sagging: on a Pi 3 a torn autoboot.txt is a site
+# visit (#209 S5 review K2). $1 = commit|rollback.
+#  - under-voltage NOW (get_throttled bit 0) on any of 3 samples 1 s apart -> defer. NOT bit 16
+#    ("since boot"): a marginal supply sets it for good and every commit would then time out/revert.
+#  - Pi 3 commit with no readable vcgencmd -> defer (it ships in bcm27xx-utils on both boards, so a
+#    missing one is a broken image the autocommit gate should revert). Rollback only warns: it is
+#    the recovery path and must not be locked out by the same breakage.
+#  - batpower (only while the service runs, so a stale state file cannot block): CRIT defers on both
+#    boards, WARN on a Pi 3. UNKNOWN (no INA sensor yet, #122) never blocks.
+power_ok() {
+	strict=0; [ "$(layout)" = pi3 ] && [ "$1" = commit ] && strict=1
+	if ! command -v vcgencmd >/dev/null 2>&1; then
+		[ "$strict" = 1 ] && { warn "vcgencmd missing — cannot check the supply"; return 1; }
+		warn "vcgencmd missing — supply not checked"; return 0
+	fi
+	n=0
+	while [ $n -lt 3 ]; do
+		t=$(vcgencmd get_throttled 2>/dev/null | sed -n 's/.*=0x//p')
+		fault undervolt && t=50001
+		case "$t" in ''|*[!0-9a-fA-F]*)
+			[ "$strict" = 1 ] && { warn "get_throttled unreadable ('$t')"; return 1; }
+			warn "get_throttled unreadable — supply not checked"; return 0 ;;
+		esac
+		[ $(( 0x$t & 0x1 )) -eq 0 ] || { warn "under-voltage now (throttled=0x$t)"; return 1; }
+		n=$((n + 1)); [ $n -lt 3 ] && sleep 1
+	done
+	if [ -r "$RUNDIR/batpower.state" ] && /etc/init.d/batpower running >/dev/null 2>&1; then
+		case "$(cut -d' ' -f1 "$RUNDIR/batpower.state")" in
+			CRIT) warn "batpower reports CRIT"; return 1 ;;
+			WARN) [ "$(layout)" = pi3 ] && { warn "batpower reports WARN (Pi 3)"; return 1; } ;;
+		esac
+	fi
+	return 0
+}
+
+# pi3: overwrite autoboot.txt's single data sector on p7 in place — no FAT, no directory entry, no
+# size change — then read it back uncached. The new content must have exactly the old length
+# (one-digit partition numbers keep it constant), else the directory entry's size would lie.
+write_autoboot_pi3() {
+	all=$1; try=$2
+	grep -q "^$P7 " /proc/mounts && die "p7 is mounted — refusing the raw autoboot.txt write"
+	u16(){ hexdump -s "$1" -n2 -e '1/2 "%u"' "$P7"; }; u8(){ hexdump -s "$1" -n1 -e '1/1 "%u"' "$P7"; }
+	bps=$(u16 11); spc=$(u8 13); res=$(u16 14); nfat=$(u8 16); rents=$(u16 17); fsz=$(u16 22)
+	[ "$bps" = 512 ] || die "p7: unexpected sector size $bps"
+	root=$((res + nfat * fsz)); data=$((root + (rents * 32 + 511) / 512))
+	need_rundir   # the sector images below are written to the card: never build them where others can write
+	rt=$(batman_tmp batfw.root) || die "cannot create a private temp file"
+	raw_read "$P7" "$root" $(( (rents * 32 + 511) / 512 )) > "$rt"
+	off=""; i=0
+	while [ $i -lt "$rents" ]; do
+		[ "$(dd if="$rt" bs=1 skip=$((i * 32)) count=11 2>/dev/null)" = AUTOBOOTTXT ] && { off=$((i * 32)); break; }
+		i=$((i + 1))
+	done
+	[ -n "$off" ] || { rm -f "$rt"; die "p7: no AUTOBOOT.TXT directory entry"; }
+	cl=$(hexdump -s $((off + 26)) -n2 -e '1/2 "%u"' "$rt"); sz=$(hexdump -s $((off + 28)) -n4 -e '1/4 "%u"' "$rt")
+	rm -f "$rt"
+	sec=$((data + (cl - 2) * spc))
+	[ "$sz" -gt 0 ] && [ "$sz" -le 512 ] || die "p7: autoboot.txt is $sz bytes, not a single sector — refusing"
+	new=$(batman_tmp batfw.new) && sect=$(batman_tmp batfw.sec) || die "cannot create a private temp file"
+	printf '[all]\ntryboot_a_b=1\nboot_partition=%s\n\n[tryboot]\nboot_partition=%s\n' "$all" "$try" > "$new"
+	[ "$(wc -c < "$new")" -eq "$sz" ] || { rm -f "$new"; die "new autoboot.txt is $(wc -c < "$new") bytes but the file is $sz — refusing (would desync the directory entry)"; }
+	raw_read "$P7" "$sec" 1 > "$sect.old"
+	{ cat "$new"; tail -c $((512 - sz)) "$sect.old"; } > "$sect"
+	[ "$(wc -c < "$sect")" -eq 512 ] || { rm -f "$new" "$sect" "$sect.old"; die "sector build failed"; }
+	n=0
+	while :; do
+		dd if="$sect" of="$P7" bs=512 seek="$sec" count=1 conv=notrunc,fsync 2>/dev/null; sync
+		raw_read "$P7" "$sec" 1 | cmp -s - "$sect" && break
+		n=$((n + 1)); [ $n -lt 2 ] || { rm -f "$new" "$sect" "$sect.old"; die "p7 sector $sec did not read back as written (twice) — CHECK THE CARD"; }
+		warn "p7 sector $sec read back wrong, rewriting once"
+	done
+	rm -f "$new" "$sect" "$sect.old"
+	echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+}
+
+# pi4: stage on the same FAT dir, sync, rename, sync (#89); ab.good is the recovery anchor.
+write_autoboot_pi4() {
+	all=$1; try=$2
+	[ -w "$BOOTMNT" ] || die "$BOOTMNT not writable (bootA not mounted rw?)"
+	tmp="$BOOTMNT/.autoboot.$$"
+	printf '[all]\ntryboot_a_b=1\nboot_partition=%s\n\n[tryboot]\nboot_partition=%s\n' "$all" "$try" > "$tmp" \
+		|| die "staging autoboot failed"
+	sync
+	mv -f "$tmp" "$BOOTMNT/autoboot.txt" || { rm -f "$tmp"; die "rename autoboot failed"; }
+	sync
+	cp -f "$BOOTMNT/autoboot.txt" "$BOOTMNT/ab.good" 2>/dev/null; sync
+}
+
+write_autoboot() {  # $1 [all], $2 [tryboot], $3 commit|rollback
+	power_ok "$3" || die "supply not good enough right now — $3 deferred (a torn autoboot.txt write can brick a Pi 3); retry when the supply is stable"
+	if [ "$(layout)" = pi3 ]; then write_autoboot_pi3 "$1" "$2"; else write_autoboot_pi4 "$1" "$2"; fi
+	[ "$(ab_section all)" = "$1" ] && [ "$(ab_section tryboot)" = "$2" ] || die "autoboot.txt does not read back as [all]=$1 [tryboot]=$2 — CHECK THE CARD"
+}
+
+# ---- slot BAD marker ------------------------------------------------------------------------------
+slot_is_bad() {
+	d=$(slot_bootdev "$1"); m=$(awk -v d="$d" '$1==d{print $2; exit}' /proc/mounts)
+	if [ -n "$m" ]; then [ -f "$m/$BADMARK" ]; return; fi
+	m=$(tmpd slotchk) || return 1; mount -t vfat -o ro "$d" "$m" 2>/dev/null || { rmdir "$m"; return 1; }
+	[ -f "$m/$BADMARK" ]; r=$?; umount "$m"; rmdir "$m"; return $r
+}
+slot_bad_reason() {
+	d=$(slot_bootdev "$1"); m=$(awk -v d="$d" '$1==d{print $2; exit}' /proc/mounts)
+	if [ -n "$m" ]; then cat "$m/$BADMARK" 2>/dev/null; return; fi
+	m=$(tmpd slotchk) || return; mount -t vfat -o ro "$d" "$m" 2>/dev/null || { rmdir "$m"; return; }
+	cat "$m/$BADMARK" 2>/dev/null; umount "$m"; rmdir "$m"
+}
+
+# A slot whose write did not verify must never boot as the new system: its cmdline points at a
+# PARTUUID that does not exist but keeps panic=10, so a stray boot panics and returns to the default
+# slot (deleting the kernel instead would hang with 7 flashes, #209 E0f), and BATMAN-BAD makes
+# commit/rollback refuse it until a later apply succeeds.
+invalidate_slot() {  # $1 slot, $2 mounted boot dir, $3 reason
+	printf '%s root=PARTUUID=%s batman_slot=%s\n' "$CMDLINE_COMMON" "$GUID_NONE" "$1" > "$2/cmdline.txt" \
+		|| die "cannot write $2/cmdline.txt — slot $1 NOT invalidated, refusing to go on"
+	echo "$3 $(date 2>/dev/null)" > "$2/$BADMARK" || die "cannot write $2/$BADMARK"
+	sync
+}
+
+# Clear the one-shot tryboot flag and read it back (#209 S5 review W5). A flag armed earlier in this
+# boot (an apply that succeeded, then a second one that died) would otherwise trial a half-written or
+# invalidated slot at the next reboot — and the sysupgrade stage2 always reboots. On a Pi 3 a slot
+# with a torn start*.elf does not panic back, it hangs: an unreadable flag there is a refusal.
+disarm_tryboot() {
+	command -v vcmailbox >/dev/null 2>&1 || { [ "$(layout)" = pi3 ] && die "vcmailbox missing — cannot disarm tryboot"; warn "vcmailbox missing — tryboot not disarmed"; return 0; }
+	vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1
+	r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null)
+	st DISARM get="$r"
+	# shellcheck disable=SC2086
+	set -- $r
+	if [ "${2:-}" = 0x80000000 ]; then
+		[ "$(( ${6:-1} ))" -eq 0 ] || die "tryboot flag still armed after clearing it (GET ${6:-?}) — refusing to write"
+	else
+		[ "$(layout)" = pi3 ] && die "cannot read the tryboot flag back (vcmailbox: '$r') — refusing to write"
+		warn "cannot read the tryboot flag back on this firmware; cleared blind"
+	fi
+}
+
+# target boot FAT: when target=A it is p1 = the live /boot mount — reuse it (a second rw vfat mount
+# is EBUSY and cache-incoherent). Sets BM MOUNTED_HERE.
+tboot_open() {
+	BM=$(awk -v d="$TBOOT" '$1==d{print $2; exit}' /proc/mounts)
+	if [ -n "$BM" ]; then MOUNTED_HERE=0; else
+		BM=/mnt/slotboot.$$; mkdir -p "$BM"
+		mount -t vfat -o rw "$TBOOT" "$BM" || die "mount $TBOOT failed (nothing written)"
+		MOUNTED_HERE=1
+	fi
+}
+tboot_close() { sync; [ "$MOUNTED_HERE" = 1 ] && { umount "$BM"; rmdir "$BM" 2>/dev/null; }; MOUNTED_HERE=0; }
+
+# Before the FIRST byte of the target is touched (#209 S5 review K3): disarm tryboot, then point the
+# target's cmdline at no rootfs and mark it BATMAN-BAD. Every interruption from here on — a failed
+# stream, a die, a power cut — leaves a slot that commit/rollback refuse and that panics back if
+# booted anyway. Only a fully verified apply restores the real cmdline and clears the mark.
+begin_write() {
+	disarm_tryboot
+	tboot_open
+	invalidate_slot "$T" "$BM" "write in progress (apply not completed)"
+	tboot_close
+	# migration record (#209 S5 D6): slot T no longer holds the image that recorded itself as running
+	# the boot-time self-check; the new image re-records it on its first boot. p6 is at $RUNDIR/p6t in the
+	# sysupgrade stage 2 (platform-ab re-mounts it there), at /opt/batdata otherwise.
+	case "${OTATRACE_FILE:-}" in
+		"$RUNDIR"/p6t/*) rm -f "$RUNDIR/p6t/state/slot-$T.protected" ;;
+		*) grep -q " /opt/batdata " /proc/mounts && rm -f "/opt/batdata/state/slot-$T.protected" ;;
+	esac
+	return 0
+}
+
+# ---- apply ----------------------------------------------------------------------------------------
+sum_of() { awk -v f="$2" '$2==f{print $1; exit}' "$1/SHA256SUMS"; }
+
+# Node-side checks that need no payload and write nothing. Also run on their own as `precheck-node`
+# by platform_check_image (#209 S5 review W3), so a refusal happens in sysupgrade stage 1 — before
+# services are killed and with a visible error — instead of in stage 2 followed by a silent reboot.
+# (Under `sysupgrade -F` stage 1 failures are ignored; stage 2 runs every check again via precheck.)
+# Sets A T TROOT TBOOT TGUID.
+# ---- #202 C5: p5 must be FRESH (equal to the running per-node config) before a slot is written ----
+# A p5 that lags the live config (a key/hostname/channel changed and not yet persisted — the node is
+# not joined, or a raw `uci set`) would hand the fresh slot the OLD settings; on a mesh-only node an
+# old mesh key is unrecoverable. Two stages:
+#   stage 1 (live system, `precheck-node` from platform_check_image — also called a second time by
+#     procd, without the caller's env): run `batman-config-save --check` and ALWAYS write the effective
+#     verdict to $RUNDIR/p5-check.rc as "<verdict> <uptime>" (verdict: fresh | stale:<keys> |
+#     stale-allowed | skip:<why> | error:<why>). Refuse on stale / lock-busy / an evidenced mount failure.
+#   stage 2 (sysupgrade ramfs: no batman-config-save, no uci; `-F` skipped stage 1's refusal): read the
+#     verdict through p5_verdict_gate and refuse on stale, or when there is no verdict younger than
+#     600 s (= someone bypassed stage 1). A direct `batman-slot apply` on the live system runs stage 1.
+# Override (deliberate out-of-sync reflash): BATMAN_ALLOW_STALE_P5=1 (direct call only — stage 2 and
+# procd do not see the env) or a root-owned /tmp/batman-slot.allow-stale-p5 (sysupgrade).
+P5VERDICT=$RUNDIR/p5-check.rc
+P5VERDICT_MAX_AGE=600
+p5_verdict_write() {   # $1 verdict token (no spaces)
+	[ "$RDOK" = 1 ] || return 0
+	( umask 077; echo "$1 $(cut -d. -f1 /proc/uptime)" > "$P5VERDICT" ) 2>/dev/null
+	return 0
+}
+# pure: $1 verdict file (must be inside the run dir), $2 now (uptime s). rc 0 pass, 1 stale, 2 no fresh verdict.
+# Prints one word for the caller's message: fresh|stale:<keys>|stale-allowed|skip:*|error:*|none|expired.
+p5_verdict_gate() {
+	f=$1; now=$2; v=""; t=""
+	case "$f" in "$RUNDIR"/*) ;; *) echo "error:path-outside-rundir"; return 2 ;; esac
+	[ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] && read -r v t < "$f" 2>/dev/null || { echo none; return 2; }
+	case "$t" in ''|*[!0-9]*) echo "error:bad-stamp"; return 2 ;; esac
+	[ $((now - t)) -le "$P5VERDICT_MAX_AGE" ] || { echo "expired:age=$((now - t))s"; return 2; }
+	echo "$v"
+	case "$v" in stale:*) return 1 ;; *) return 0 ;; esac
+}
+P5_STALE_HINT="Run 'batman-config-save --save' (or halow-setkey) to persist the running config, or wait for the mesh join to do it; deliberate override: touch /tmp/batman-slot.allow-stale-p5 (as root) for sysupgrade, BATMAN_ALLOW_STALE_P5=1 for a direct batman-slot call."
+p5_freshness_gate() {
+	now=$(cut -d. -f1 /proc/uptime)
+	if command -v batman-config-save >/dev/null 2>&1 && [ -r /etc/config/wireless ]; then
+		# stage 1 (live system): compute, record, decide
+		out=$(batman-config-save --check 2>&1); rc=$?
+		keys=$(echo "$out" | sed -n 's/^batman-config-save: p5 stale: \([^ ]*\).*/\1/p' | head -1)
+		case "$rc" in
+			0) p5_verdict_write fresh ;;
+			5) if allowed STALE_P5; then p5_verdict_write stale-allowed; warn "p5 is STALE vs the running config ($keys) — override honoured"
+			   else p5_verdict_write "stale:${keys:-?}"
+				case "$out" in *unpersistable*) die "p5 (config) cannot hold the running config: $keys contains forbidden characters (backtick \$ ( ) ; | & < > ') — change that value; '--save' cannot fix this. A reflash now would boot the fresh slot without it." ;; esac
+				die "p5 (config) is STALE vs the running config ($keys) — a reflash now would boot the fresh slot with the OLD settings. $P5_STALE_HINT" ; fi ;;
+			8) p5_verdict_write error:lock-busy; die "a batman-config-save is still running (${out#*lock-busy }) — p5 may be out of date; wait for it or investigate before an OTA." ;;
+			7) p5_verdict_write skip:unseeded ;;             # only reachable under allow-unseeded (the block above died otherwise)
+			3) p5_verdict_write "skip:$(echo "$out" | sed -n 's/^batman-config-save: p5 SKIP \([^ ]*\).*/\1/p' | head -1)" ;;
+			*) # cannot read p5 now: refuse only with evidence that saves are failing this boot
+			   if [ -f "$RUNDIR/cfgsave-mount.failed" ] || [ -f "$RUNDIR/cfgsave-lock.busy" ]; then
+				p5_verdict_write error:mount
+				why=$(cat "$RUNDIR/cfgsave-mount.failed" 2>/dev/null | cut -d' ' -f2-); [ -n "$why" ] || why="save blocked by a stuck batman-config-save"
+				case "$why" in *usy*|*lock*|*stuck*) die "p5 (config) saves are failing this boot ($why) — fix that before an OTA. $P5_STALE_HINT" ;; esac
+				die "p5 (config) could not be mounted rw this boot ($why) — fix p5 before an OTA: if it is really broken, 'batman-config-save --seed --reformat' re-creates it from this slot's running config. $P5_STALE_HINT"
+			   else p5_verdict_write "skip:error"; warn "p5 freshness not checkable now ($out) — not blocking"; fi ;;
+		esac
+	else
+		# stage 2 (ramfs) or a system without the tool: the stage-1 verdict decides, fail-closed
+		v=$(p5_verdict_gate "$P5VERDICT" "$now"); rc=$?
+		case "$rc" in
+			0) ;;
+			1) allowed STALE_P5 && { warn "p5 STALE ($v) — override honoured"; return 0; }
+			   otalog_k S2 REFUSE why=p5-stale verdict="$v"
+			   die "p5 (config) is STALE vs the running config ($v) — refusing to write a slot (stage-1 verdict). $P5_STALE_HINT" ;;
+			*) otalog_k S2 REFUSE why=p5-no-verdict verdict="$v"
+			   die "no fresh stage-1 p5 verdict ($v) — run sysupgrade without -F, or 'batman-slot apply' from the live system (the freshness check needs batman-config-save and uci)." ;;
+		esac
+	fi
+	return 0
+}
+
+node_checks() {
+	# the firmware booted the WRONG slot this boot (#209 S5): the "other" slot is then the committed one
+	[ -f "$RUNDIR/batman-fw-override" ] && die "the firmware booted the wrong slot this boot ($(cat "$RUNDIR/batman-fw-override")) — refusing to write a slot until the node is back on its committed one (batman-slot reboot committed)"
+	# Never write while running a one-shot TRIAL (#209 v3.1 MUST-FIX 1 / ab-autocommit v2.2 G): on a
+	# trial of B the "other" slot is A = the COMMITTED one, so a second OTA here would overwrite the only
+	# known-good slot. Only a real tryboot (DT tryboot=1) is refused; a #133 stale-fallback boot may
+	# still be re-OTA'd to repair the slot that does not boot. Bench override: allowed TRIAL_APPLY.
+	if ! allowed TRIAL_APPLY && [ "$(hexdump -v -e '1/1 "%02x"' /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null)" = 00000001 ]; then
+		is_trial; [ $? -eq 0 ] && die "this boot is an uncommitted TRIAL of slot $(active_slot) — refusing to write slot $(other_slot "$(active_slot)") (the committed one). Commit or revert the trial first."
+	fi
+	assert_fw_sane
+
+	# #202 interlock: refuse to write a slot if the config partition p5 is a plain-ext4 partition
+	# that has never been seeded — a fresh slot would then boot UNPROVISIONED (no mesh key), and on
+	# a mesh-only node (no ethernet) that strands it unrecoverably. Only checkable on a plain-ext4
+	# p5: a Secure-tier LUKS p5 (part_fstype != ext4) or an opaque one is SKIPPED, never blocked
+	# (its seed lives on the opened mapper, #111). Deliberate pre-provision reflash: override with
+	# BATMAN_ALLOW_UNSEEDED=1 (direct call) or a root-owned /tmp/batman-slot.allow-unseeded (sysupgrade).
+	if ! allowed UNSEEDED; then
+		P5="${DISK}p5"
+		if [ -b "$P5" ] && [ "$(part_fstype "$P5")" = ext4 ]; then
+			m="/mnt/p5seed.$$"; mkdir -p "$m"
+			# a concurrent batman-config-save (rw) makes this ro mount EBUSY for a moment (#202 T11): retry
+			_i=0; _ok=0
+			while [ "$_i" -lt 3 ]; do mount -t ext4 -o ro,noload "$P5" "$m" 2>/dev/null && { _ok=1; break; }; _i=$((_i + 1)); sleep 1; done
+			if [ "$_ok" = 1 ]; then
+				seeded=1; [ -f "$m/.seeded" ] || seeded=0
+				umount "$m" 2>/dev/null; rmdir "$m" 2>/dev/null
+				[ "$seeded" = 1 ] || die "p5 (config) is not seeded — a reflash now would boot the fresh slot UNPROVISIONED and, on a mesh-only node, strand it. Seed p5 first (join the mesh so joinwatch saves it, or run 'batman-config-save --on-join'), or override: touch /tmp/batman-slot.allow-unseeded (as root) for sysupgrade, BATMAN_ALLOW_UNSEEDED=1 for a direct batman-slot call."
+			else
+				rmdir "$m" 2>/dev/null   # cannot mount -> cannot verify -> do not block
+			fi
+		fi
+	fi
+	p5_freshness_gate
+
+	A=$(active_slot); T=$(other_slot "$A")
+	TROOT=$(slot_rootdev "$T"); TBOOT=$(slot_bootdev "$T"); TGUID=$(slot_rootguid "$T")
+	[ "$TROOT" = "$(slot_rootdev "$A")" ] && die "refusing: target root == active root"
+	grep -q "^$TROOT " /proc/mounts && die "refusing: target root $TROOT is mounted"
+	# [tryboot] must already aim at the target; apply never edits autoboot.txt
+	ab_try=$(ab_section tryboot); ft=$(fw_part "$T") || die "cannot derive the firmware partition of slot $T"
+	[ "$ab_try" = "$ft" ] || die "autoboot.txt [tryboot]=$ab_try but target slot $T is firmware partition $ft — refusing to arm a mis-aimed tryboot"
+}
+
+# Every check apply needs, BEFORE anything is written. Sets (node_checks +) SQ_BYTES SQ_MB ZERO_MB RSUM.
+precheck() {
+	PAYLOAD=$1; [ -d "$PAYLOAD" ] || die "payload dir '$PAYLOAD' not found"
+	node_checks
+	: > "$BUSY"; BUSY_MINE=1
+	# A real OTA must always be gated: drop any ab-selftest skip-once token a broken selftest run left
+	# on p6, or the trial this write creates would be neither committed nor reverted (#209 S5 review).
+	rm -f /opt/batdata/state/autocommit-skip-once
+	[ "$(layout)" = pi4 ] && eeprom_floor_warn
+	[ -d "$PAYLOAD/boot" ] || die "no $PAYLOAD/boot"
+	[ -f "$PAYLOAD/SHA256SUMS" ] || die "payload has no SHA256SUMS — refusing an unverifiable write"
+	[ -f "$PAYLOAD/boot/kernel8.img" ] || die "payload has no boot/kernel8.img"
+
+	# SoC: payload board vs the running SoC (second layer; platform-ab.sh checks first)
+	want=$(soc_token "$(sed -n 's/^board=//p' "$PAYLOAD/metadata" 2>/dev/null)"); run=$(soc_running)
+	[ -z "$want" ] || [ -z "$run" ] || [ "$want" = "$run" ] || die "payload is for $want but this node is $run — refusing"
+
+	# payload integrity before writing anything
+	for f in $(awk '$2 ~ /^boot\//{print $2}' "$PAYLOAD/SHA256SUMS"); do
+		[ -f "$PAYLOAD/$f" ] || die "payload is missing $f (listed in SHA256SUMS)"
+		[ "$(sha256sum "$PAYLOAD/$f" | cut -d' ' -f1)" = "$(sum_of "$PAYLOAD" "$f")" ] || die "payload $f does not match SHA256SUMS — refusing"
+	done
+	RSUM=$(sum_of "$PAYLOAD" root.squashfs); [ -n "$RSUM" ] || die "SHA256SUMS has no root.squashfs entry"
+	SQ="$PAYLOAD/root.squashfs"
+	if [ -f "$SQ" ]; then
+		[ "$(hexdump -n4 -e '4/1 "%c"' "$SQ" 2>/dev/null)" = hsqs ] || die "payload rootfs is not a squashfs"
+		SQ_BYTES=$(wc -c < "$SQ" | tr -dc '0-9')
+		[ "$(sha256sum "$SQ" | cut -d' ' -f1)" = "$RSUM" ] || die "payload root.squashfs does not match SHA256SUMS — refusing"
+	else
+		SQ_BYTES=$(sed -n 's/^size=//p' "$PAYLOAD/metadata" 2>/dev/null | tr -dc '0-9')   # streamed rootfs
+	fi
+	[ "${SQ_BYTES:-0}" -gt 0 ] 2>/dev/null || die "unknown rootfs size"
+
+	# pi3: the firmware the slot will boot must be the tested set (1.20250430 bricks on MBR p4, #209 D4)
+	if [ "$(layout)" = pi3 ]; then
+		[ -f "$ALLOWLIST" ] || die "firmware allow-list $ALLOWLIST missing — refusing"
+		for f in start.elf start_cd.elf fixup.dat fixup_cd.dat; do
+			[ -f "$PAYLOAD/boot/$f" ] || die "Pi 3 payload lacks boot/$f — refusing"
+		done
+		for f in "$PAYLOAD"/boot/start*.elf "$PAYLOAD"/boot/fixup*.dat; do
+			[ -f "$f" ] || continue
+			case "${f##*/}" in start4*|fixup4*) continue ;; esac
+			grep -v '^#' "$ALLOWLIST" | grep -qx "$(sha256sum "$f" | cut -d' ' -f1)  ${f##*/}" \
+				|| die "firmware ${f##*/} is not in the Pi 3 allow-list — refusing"
+		done
+	fi
+
+	SQ_MB=$(( (SQ_BYTES + 1048575) / 1048576 )); ZERO_MB=$(( SQ_MB + 64 ))
+	TSIZE_KB=$(( $(cat "/sys/class/block/${TROOT##*/}/size" 2>/dev/null || echo 0) / 2 ))
+	[ "$TSIZE_KB" -gt "$(( ZERO_MB * 1024 ))" ] 2>/dev/null || die "squashfs+overlay ($ZERO_MB MiB) does not fit target ($TSIZE_KB KiB)"
+}
+
+# clear the overlay window (kills any stale f2fs superblock at round_up(squashfs,64KiB))
+clear_root() { dd if=/dev/zero of="$TROOT" bs=1M count="$ZERO_MB" conv=fsync 2>/dev/null || die "overlay clear failed"; }
+
+cmd_stage_root() {
+	slot_lock
+	precheck "$1"
+	[ ! -f "$PAYLOAD/root.squashfs" ] || die "stage-root is for a streamed rootfs; this payload carries root.squashfs (use apply)"
+	begin_write
+	clear_root
+	echo "$TROOT"
+}
+
+cmd_apply() {
+	slot_lock
+	precheck "$1"
+	echo "batman-slot: apply -> slot $T root=$TROOT boot=$TBOOT layout=$(layout) (squashfs $SQ_BYTES B)"
+	st APPLY-BEGIN target="$T" layout="$(layout)" sq="$SQ_BYTES" streamed="$([ -f "$PAYLOAD/root.squashfs" ] && echo no || echo yes)"
+	# idempotent after stage-root: the slot is already invalidated, tryboot already disarmed
+	begin_write
+	if [ -f "$PAYLOAD/root.squashfs" ]; then
+		clear_root
+		dd if="$PAYLOAD/root.squashfs" of="$TROOT" bs=1M conv=fsync 2>/dev/null || die "squashfs write failed (slot $T stays invalidated)"
+	else
+		echo "batman-slot: rootfs was streamed by the caller; verifying it"
+	fi
+	sync
+
+	# boot payload -> target boot FAT. kernel/dtb/overlays and EVERY start*.elf / fixup*.dat present
+	# (Pi 4: start4*; Pi 3: start*, start_cd* is what gpu_mem=16 loads). NEVER bootcode.bin (Pi 3: it
+	# lives on p7 and is never rewritten) and NEVER autoboot.txt. cmdline.txt stays the invalidated
+	# one (and BATMAN-BAD stays) until everything below has verified.
+	tboot_open
+	for f in "$PAYLOAD"/boot/kernel8.img "$PAYLOAD"/boot/start*.elf "$PAYLOAD"/boot/fixup*.dat "$PAYLOAD"/boot/*.dtb; do
+		[ -f "$f" ] && cp -f "$f" "$BM/${f##*/}"
+	done
+	[ -d "$PAYLOAD/boot/overlays" ] && { mkdir -p "$BM/overlays"; cp -f "$PAYLOAD/boot/overlays/"* "$BM/overlays/" 2>/dev/null; }
+	sync
+	# fault injection (scripts/fault-injection.sh style, test only): damage one rootfs byte AFTER the
+	# write so the uncached verification below must catch it and invalidate the slot.
+	fault corrupt-after-write && { printf 'X' | dd of="$TROOT" bs=1 seek=4096 conv=notrunc,fsync 2>/dev/null; warn "FAULT INJECTED: 1 byte of $TROOT corrupted"; }
+	# test only: die here, mid-write, as a power cut or a killed stage2 would — the slot must be left
+	# invalidated (BATMAN-BAD + no-rootfs cmdline) and tryboot disarmed
+	fault die-mid-apply && die "FAULT INJECTED: apply stopped mid-write"
+	echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+
+	# VERIFY what is on the card (uncached) before the slot may ever be tried
+	bad=""
+	got=$(raw_read_mb "$TROOT" "$SQ_MB" | head -c "$SQ_BYTES" | sha256sum | cut -d' ' -f1)
+	[ "$got" = "$RSUM" ] || bad="rootfs on $TROOT"
+	for f in $(awk '$2 ~ /^boot\//{print $2}' "$PAYLOAD/SHA256SUMS"); do
+		case "$f" in boot/bootcode.bin|boot/autoboot.txt|boot/cmdline.txt|boot/config.txt|boot/distroconfig.txt) continue ;; esac
+		[ -f "$BM/${f#boot/}" ] && [ "$(sha256sum "$BM/${f#boot/}" | cut -d' ' -f1)" = "$(sum_of "$PAYLOAD" "$f")" ] || bad="$bad ${f#boot/}"
+	done
+	st VERIFY slot="$T" result="${bad:-ok}"
+	if [ -n "$bad" ]; then
+		invalidate_slot "$T" "$BM" "apply verification failed ($bad)"
+		tboot_close
+		disarm_tryboot
+		die "slot $T did not verify after writing ($bad) — slot INVALIDATED, tryboot NOT armed, default slot untouched"
+	fi
+	# verified: only now the real cmdline and no BAD mark, read back uncached
+	printf '%s root=PARTUUID=%s batman_slot=%s\n' "$CMDLINE_COMMON" "$TGUID" "$T" > "$BM/cmdline.txt" || die "cannot write the real cmdline (slot $T stays invalidated)"
+	sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+	grep -q "root=PARTUUID=$TGUID batman_slot=$T\$" "$BM/cmdline.txt" || die "cmdline of slot $T did not read back (slot stays invalidated)"
+	rm -f "$BM/$BADMARK"; sync
+	[ -f "$BM/$BADMARK" ] && die "cannot clear $BADMARK on slot $T"
+	tboot_close
+	echo "batman-slot: slot $T verified (rootfs + boot files match SHA256SUMS, read back uncached)"
+
+	# arm one-shot tryboot and READ IT BACK: a silently unarmed flag means the "trial" reboot just
+	# boots the default slot again and the upgrade quietly never happens.
+	sync
+	command -v vcmailbox >/dev/null 2>&1 || die "vcmailbox missing — cannot arm tryboot"
+	# test only (#209 S5 §4 row 148): skip the SET, as a SET the firmware silently ignored would —
+	# the GET read-back below must then catch it and refuse.
+	if fault tryboot-get; then warn "FAULT INJECTED: tryboot SET skipped"; s="skipped(fault)"
+	else s=$(vcmailbox 0x00038064 4 4 1 2>&1); fi
+	r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null)
+	# the decisive evidence for "armed vs ignored": raw SET + GET, what autoboot aims at, the supply
+	otalog_k SLOT ARM target="$T" fw_t="$(fw_part "$T" 2>/dev/null)" ab_all="$(ab_section all 2>/dev/null)" ab_try="$(ab_section tryboot 2>/dev/null)" set="$s" get="$r" thr="$(ota_thr)"
+	# response: <size> <code> <tag> <len> <reqresp> <value> <end>; code 0x80000000 = success
+	set -- $r
+	if [ "${2:-}" = 0x80000000 ]; then
+		[ "$(( ${6:-0} ))" -eq 1 ] || die "tryboot flag did not arm (GET returned ${6:-?}) — slot $T written and verified, but NOT armed"
+	else
+		[ "$(layout)" = pi3 ] && die "cannot read the tryboot flag back (vcmailbox: '$r') — NOT armed"
+		warn "cannot read the tryboot flag back on this firmware (vcmailbox: '$r'); armed blind as before"
+	fi
+	# don't pollute boot-reasons with a spurious UNCLEAN on the trial's first boot — written only once
+	# the trial is really armed, so a failed arm does not label the next plain boot a trial (S5 review)
+	[ -f "$RUNDIR/shutdown.reason" ] || echo "sysupgrade-trial (slot $T)" > "$RUNDIR/shutdown.reason" 2>/dev/null
+	echo "batman-slot: slot $T armed as one-shot tryboot; reboot to trial it (autoboot.txt untouched)"
+}
+
+# ---- is-trial / commit / rollback -----------------------------------------------------------------
+# exit 0 if the RUNNING slot is NOT the committed default (a sysupgrade trial, or a #133 stale
+# fallback); exit 1 if the running slot IS committed; exit 2 if it can't tell. Used by
+# batman-autocommit (#211) so the autoboot parse lives in this one audited place.
+is_trial() {
+	a=$(active_slot); [ -n "$a" ] || return 2
+	cf=$(committed_fw); [ -n "$cf" ] || return 2
+	# fw_part runs in a command substitution: capture its status, an internal failure is "unknown".
+	fp=$(fw_part "$a") || return 2
+	[ "$cf" = "$fp" ] && return 1 || return 0
+}
+
+cmd_commit() {
+	slot_lock
+	assert_fw_sane
+	A=$(active_slot); T=$(other_slot "$A")
+	slot_is_bad "$A" && die "slot $A carries $BADMARK — refusing to commit it"
+	FA=$(fw_part "$A") && FT=$(fw_part "$T") || die "cannot derive the firmware partitions"
+	st COMMIT-BEGIN slot="$A" was_all="$(ab_section all)" want_all="$FA" want_try="$FT"
+	write_autoboot "$FA" "$FT" commit
+	st COMMITTED slot="$A" all="$FA" try="$FT"
+	echo "batman-slot: committed slot $A as default ([all]=$FA, [tryboot]=$FT)"
+}
+
+cmd_rollback() {
+	slot_lock
+	assert_fw_sane
+	A=$(active_slot); T=$(other_slot "$A")
+	slot_is_bad "$T" && die "slot $T carries $BADMARK ($(slot_bad_reason "$T")) — refusing to make it the default"
+	FA=$(fw_part "$A") && FT=$(fw_part "$T") || die "cannot derive the firmware partitions"
+	st ROLLBACK-BEGIN to="$T" was_all="$(ab_section all)" want_all="$FT"
+	write_autoboot "$FT" "$FA" rollback
+	st ROLLED-BACK to="$T" all="$FT" try="$FA"
+	echo "batman-slot: rolled back — default is now slot $T ([all]=$FT); reboot to enter it"
+}
+
+# ---- controlled reboot (#209 S5, docs/design/explicit-reboot.md) -----------------------------------
+# `batman-slot reboot committed [reason]` — THE way to restart a node back onto its committed slot.
+# On a Pi 4 the bootloader (EEPROM 2026-09-23) may ignore autoboot.txt after a partition-0 restart and
+# walk to partition 1 (5/10 plain reboots on manet02); an explicit partition boots right (10/10). So:
+# procd shuts down as usual, and the K90 hook /etc/init.d/batman-reboot replaces only the final
+# restart with `batman-reboot <[all]>`. Every case we cannot vouch for falls back to a plain reboot
+# (the boot-time self-check in batdata-mount then corrects a wrong landing): a Pi 3 (no such bug,
+# reboot N on its hybrid MBR never verified), an armed tryboot (explicit N + tryboot never verified),
+# an unreadable flag or [all], a missing tool or hook. Never dies: the caller wants a reboot.
+cmd_reboot() {
+	reason=${*:-operator request}
+	# shellcheck source=/dev/null
+	. /usr/lib/batman/bootfacts.sh 2>/dev/null
+	why=""
+	type bf_get >/dev/null 2>&1 || why="no bootfacts lib"
+	[ -z "$why" ] && [ "$(bf_pi4)" != yes ] && why="not a Pi 4 A/B card"
+	[ -z "$why" ] && { g=$(bf_get); [ "$g" = 0 ] || why="tryboot flag is $g"; }
+	[ -z "$why" ] && { n=$(bf_ab_all); case "$n" in 1|2) : ;; *) why="[all] unreadable ('$n')" ;; esac; }
+	[ -z "$why" ] && { [ -x /usr/sbin/batman-reboot ] || why="batman-reboot missing"; }
+	[ -z "$why" ] && { [ -e /etc/rc.d/K90batman-reboot ] || why="K90batman-reboot hook not enabled"; }
+	[ -z "$why" ] && { [ "$RDOK" = 1 ] || why="run dir unusable (#280)"; }
+	echo "$reason" > "$RUNDIR/shutdown.reason" 2>/dev/null
+	if [ -n "$why" ]; then
+		otalog_k SLOT REBOOT mode=plain why="$why" reason="$reason"
+		echo "batman-slot: plain reboot ($why)" >&2
+		exec reboot
+	fi
+	otalog_k SLOT REBOOT mode=explicit to="$n" reason="$reason"
+	echo "$n" > "$RUNDIR/batman-reboot.want"; sync
+	# safety net: if procd's shutdown has not restarted us in 240 s, restart explicitly ourselves
+	setsid sh -c "sleep 240; exec /usr/sbin/batman-reboot $n" </dev/null >/dev/null 2>&1 &
+	echo "batman-slot: rebooting to firmware partition $n (procd shutdown, explicit restart by K90batman-reboot)" >&2
+	exec reboot
+}
+if [ "${1:-}" = reboot ]; then
+	[ "${2:-}" = committed ] || { echo "usage: batman-slot reboot committed [reason]" >&2; exit 2; }
+	shift 2; cmd_reboot "$@"
+fi
+
+[ "${1:-}" = is-trial ] && DIE_RC=2   # any internal failure there = "unknown", never "committed"
+case "${1:-}" in stage-root|apply|commit|rollback) TRACE=1 ;; esac
+case "${1:-}" in
+	layout|fw-part|stage-root|apply|commit|rollback|is-trial|verify|precheck-node) detect_layout ;;
+esac
+case "${1:-}" in
+	active)     active_slot ;;
+	target)     a=$(active_slot); if [ -n "$a" ]; then other_slot "$a"; else die "no batman_slot"; fi ;;
+	layout)     layout ;;
+	fw-part)    [ "${2:-}" = A ] || [ "${2:-}" = B ] || die "usage: fw-part A|B"; fw_part "$2" ;;
+	stage-root) [ -n "${2:-}" ] || die "usage: stage-root <payload-dir>"; cmd_stage_root "$2" ;;
+	apply)      [ -n "${2:-}" ] || die "usage: apply <payload-dir>"; cmd_apply "$2" ;;
+	commit)     cmd_commit ;;
+	rollback)   cmd_rollback ;;
+	is-trial)   is_trial; exit $? ;;
+	# read-only: the same sanity every slot op runs first (layout vs SoC, FAT count, pi3 hybrid MBR,
+	# firmware-booted partition vs cmdline) — for ab-selftest / daily-validation (#209 S5)
+	verify)     [ -n "$(soc_running)" ] || die "cannot tell the running SoC from the device tree — refusing to call the card sane"
+	            assert_fw_sane; echo "batman-slot: verify ok (layout $(layout), slot $(active_slot))" ;;
+	# read-only: the node-side apply checks (no payload needed) — sysupgrade stage 1 (#209 S5 review W3)
+	precheck-node) node_checks; echo "batman-slot: node ready for an OTA into slot $T" ;;
+	# test entry (#202 C5, harness D2-4c): the pure stage-2 verdict function on a file inside the run dir.
+	# Never touches the real verdict file, never consults fault seams. rc 0 pass / 1 stale / 2 no verdict.
+	verdict-gate) [ -n "${2:-}" ] || die "usage: verdict-gate <file-in-run-dir>"
+	              v=$(p5_verdict_gate "$2" "$(cut -d. -f1 /proc/uptime)"); rc=$?
+	              case "$rc" in 0) echo "batman-slot: verdict-gate pass ($v)" ;; 1) echo "batman-slot: verdict-gate STALE ($v)" >&2 ;; *) echo "batman-slot: verdict-gate no fresh stage-1 verdict ($v)" >&2 ;; esac
+	              exit "$rc" ;;
+	*) echo "usage: batman-slot active|target|layout|fw-part A|B|stage-root <dir>|apply <dir>|commit|rollback|is-trial|verify|precheck-node|verdict-gate <file>|reboot committed [reason]" >&2; exit 2 ;;
+esac

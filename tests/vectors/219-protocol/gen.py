@@ -575,6 +575,7 @@ out["envelope"] = {
     "request_reset": hx(cb({0: [1, 0], 1: 9, 2: "reset", 3: {}})),
     "negative_reset_with_idem": hx(cb({0: [1, 0], 1: 9, 2: "reset", 3: {}, 7: seed("idem")[:16]})),
     "response_error_reset_reflash": hx(cb({1: 9, 4: 6, 5: {1: "reset", 2: 9}})),
+    "response_error_lock_incomplete": hx(cb({1: 5, 4: 13, 5: {}})),
 }
 
 # fake msg2 for a failed PSK (§3.4): same length, real ephemeral, random payload
