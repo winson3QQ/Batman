@@ -14,7 +14,10 @@
 # contains it.
 #
 # --- lab credentials (never field; enforcement = first-boot keyguard #103 / #13) ---
-12345678
+# Matched as a whole token (no letter or digit on either side): the lab password written anywhere — "12345678",
+# pw=12345678, a line of its own — still fails; a longer digit run such as the crypt64 alphabet
+# "./0123456789ABC…" (an algorithm constant, #254 shacrypt) is not the credential.
+(^|[^[:alnum:]])12345678([^[:alnum:]]|$)
 # --- turnkey bootstrap-access recipes (redacted in #136; full copies in Batman-P/ops) ---
 ubus.*file *write.*authorized_keys
 tee +-a +/etc/dropbear/authorized_keys
