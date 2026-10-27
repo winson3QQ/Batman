@@ -163,7 +163,7 @@
 #### 4.1.1 killpoint 檔(只在 `prov_test` build;**沒有 CLI 旗標**,helper daemon 啟動時讀檔)
 - 點名封閉:`txn-1`(`prov-txn` + `.txn` 寫完、setkey 前)、`txn-2`(setkey 後、`--prov-only` 前)、`txn-3`(`--prov-only` rc 0 後、overlay rename 前)、`txn-4`(rename 後、`--save` 前)、`txn-5`(`--save` 後、回應前)、`claim-after-persist`、`claim-before-shadow`。
 - 檔案 `/tmp/run/batman-prov-test/killpoint`:目錄 root 0700 非 symlink;檔 root 0600 非 symlink link 1;不符 → log `killpoint: refused (<why>)`;讀完刪;成功 → `killpoint <name>: armed`。
-- 到點:log `killpoint <name>: sysrq reboot` → `echo b > /proc/sysrq-trigger`(F29:不看 mask;無 sync)。保險:`sleep 2` 仍活著(寫入失敗,例如 `/proc` 唯讀)→ log `killpoint <name>: fallback reboot -f` → `sync` → `reboot -f`。harness 只在 `sysrq reboot` 行 + 2 s 內 boot_id 改變時判 L7 PASS;`fallback` = ⚠️。
+- 到點:log `killpoint <name>: sysrq reboot` → `echo b > /proc/sysrq-trigger`(F29:不看 mask;無 sync)。保險:`sleep 2` 仍活著(寫入失敗,例如 `/proc` 唯讀)→ log `killpoint <name>: fallback reboot -f` → `sync` → `reboot -f`。L7 的判定見 §16.1(`sysrq reboot` 行不預期送達主機)。
 - 注入成立四證據:`armed` 行、檔已刪、boot_id 改變、狀態停在該點。
 - release:`armKillpoint()` 回 "";log 無 `killpoint`。
 - 測試(CI,root):Go 單元(`-tags prov_test`,temp dir;`sudo -E go test`,F20):0777 / symlink / link 2 / 非 root 擁有 → refused;正確 → armed + 刪;release no-op;mutant 拿掉 link count → FAIL;**skip = FAIL**(job 斷言無 `--- SKIP`)。
@@ -597,3 +597,30 @@ claim-lock §11.4 真機 tier B(4 / 4-inj / 4b / 4b' / 4c / 4d / 5)仍未排程(
 14. E-H1 的 dbus-send 預期 NEEDED = `libdbus-1.so.3`、`libgcc_s.so.1`、`libc.so`(`readelf -d` 實測),並斷言 04 有 `libgcc_s.so.1`;可改抄同樹 `ipkg-install/usr/bin/dbus-send`(同樣寫死 a72 路徑)。
 
 **未核對(帶進實證)**:CI 實際用 go 1.26(審查用 1.22.2 驗字串佈局);04 的 `libgcc_s.so.1`;dry-run 在 OTS 節點 120 s 內能否完成 pre-commit canary `docker run`(加進 E-H5 量測)。
+
+## 16. P1b 程式碼審查後的修訂(p1b-code-review-A / -B;**與前文衝突時以本節為準**)
+
+**L7 判定(A-M1、B-M2)**
+1. `killpoint <name>: sysrq reboot` 這行**不預期送達主機**:寫完 syslog 後數微秒內就寫 sysrq `b`,這行還在 RAM 的 logd ring 裡,隨重開消失。§4.1.1「只在 `sysrq reboot` 行 + 2 s 內 boot_id 改變時判 L7 PASS」與 §6.2 L7 列的「全部:sysrq 行」**作廢**,改為以下全部成立才 PASS:
+   - (a) `push-helper` 當下收到本次 pid 的 `killpoint <name>: armed`,且 killpoint 檔已刪;
+   - (b) 觸發動作(`net-apply` / claim)**沒有回應**,ssh 斷線;
+   - (c) 整段期間主機端 `logread -f` 串流**沒有** `killpoint <name>: fallback` 行(fallback 前有 2 s 睡眠,串流來得及送出;看到 = ⚠️,不是 PASS);
+   - (d) boot_id 改變;
+   - (e) 重開後的狀態等於該點的預期狀態(§6.2 各列),這一項才是真正有判別力的證據。
+   產品不改:不在 sysrq 前加睡眠(加了會讓別的 goroutine 多跑一段,離「拔電」更遠)。
+2. E-H6 擴充:04 上 `logger -t e-h6 probe-$RANDOM; echo b > /proc/sysrq-trigger`,主機端同時 `logread -f`;記下 probe 行有沒有到主機(只當資訊,不影響上面的判定)。
+
+**點的位置有單元測試(A-M3)**
+3. `node/seam_points_test.go`(`prov_test`):每個點以 `seam.ArmForTest` 截停,斷言當下的 overlay gen / state、`.txn` 有無、p5 寫入次數、setkey 次數、`--save` 次數、root 欄、p6 last_known、lock 呼叫次數;claim.replay、ssh_keys.set、root_password.reset、`commit`(leave / ssh_keys / owner.add / owner.remove)不觸發任何點;claim 不觸發 txn 點,join 不觸發 claim 點。突變負對照(txn-4 移到 RemoveTxn 前、claim 點拿掉、txn-1 放進 commit、claim-before-shadow 移到上鎖後)全紅。
+4. `commit()` 不再由 `what` 字串推出點名;`claimVerify` 直接呼叫 `commitTxn(&next, "", "claim-after-persist")`。
+5. `txn-3` 也在「`--prov-only` rc ≠ 0 但讀回 p5 gen 已前進」的分支觸發(B-m7);§4.1.1 的「`--prov-only` rc 0 後」讀作「p5 已持有新 gen 後」。
+
+**killpoint 檔的讀法(A minor、B-m6)**
+6. 目錄先 `Lstat` 檢查(root、0700、非 symlink);不過 → refused,**不在該目錄內 unlink 任何東西**。過 → 檔以 `O_NOFOLLOW|O_NONBLOCK` 開一次,對 fd `fstat` 檢查(regular、root、mode 位元含 setuid/setgid/sticky 須**恰為** 0600、link 1),讀至多 64 B;檔在可信目錄內一律刪除(不論結果)。`reboot -f` 之後仍活著 → log `reboot did not happen` 再停住。
+
+**wbox build 與 gate(A-M2、B-M1、雙方 minor)**
+7. `build-board.sh` 解析完參數即 `unset BATMAN_WBOX BATMAN_PROV_TEST`;`--wbox` 不得與 `--card-only` / `--update-lock` 併用;`helpers.list` 的 tag 只能是 `prov_test` / `release`;套 patch 前 `git -C feeds/batman status --porcelain --ignored` 必須為空,否則拒絕並列出內容(上次被 SIGKILL 的 build 留下的 mutant、開發者未 commit 的修改都不會被疊加或抹掉);variant 改變時先清兩個套件並把 stamp 寫成 `in-progress:<variant>`,build 成功才寫正式值。
+8. gate:release tag 變體的 Go helper 套用與正常 build 相同的「無 seam」三條(tags / marker / `killpoint`);rootfs 內的 wbox 見證集合必須**恰好**是本變體的那一個(`test` = 空集合),見證格式 `WBOX-<name>-<8 hex>`;見證掃描遇讀不到的檔案 = FAIL,且在 gate 自己的 shell 內執行(之前在 `$(...)` 內,`fail` 只結束子 shell → gate 照樣 PASS,由新自測抓到)。
+9. gate 自測每個 FAIL 案例要對上**原因字串**;新增 marker-only / killpoint-only release helper、讀不到的檔、殘留與疊加見證、release 變體帶 prov_test helper、tag 打錯;路徑從腳本位置推。逐條拿掉 gate 的 5 個檢查 → 自測各自 BAD。firmware CI(`build-firmware.yml`,ekh 兩板)跑 gate 與自測。
+
+**仍是殘項(記在 #254)**:P1b 自己的 CI 要等 harness PR 進 main 後 rebase 才會跑 `prov_test` tag(A minor);`seam_release_test.go` 只是文件性質,真正的保證是 gate 的 `strings` 檢查(B-m5,已在檔頭註明)。
