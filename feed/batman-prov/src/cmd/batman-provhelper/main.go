@@ -7,6 +7,7 @@
 //	batman-provhelper --apply-state [--firstboot]   finish pending transitions (99zz passes --firstboot)
 //	batman-provhelper --persist-now    re-write the overlay record to p5 (P5_STALE_HINT)
 //	batman-provhelper qr               print the claim QR payload (legacy: dev-open or a real console only)
+//	batman-provhelper --version        line 1 "batman-provhelper <BATMAN_VERSION>"; a prov_test build adds the marker line
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/syslog"
 	"os"
 	"os/exec"
@@ -30,6 +32,7 @@ import (
 	"batman-prov/keystore"
 	"batman-prov/node"
 	"batman-prov/provstore"
+	"batman-prov/seam"
 	"batman-prov/shacrypt"
 	"batman-prov/sock"
 )
@@ -371,6 +374,9 @@ func applyState(p provstore.Paths, firstboot bool) error {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		os.Exit(version(os.Stdout, "/etc/batman-build"))
+	}
 	logw, _ = syslog.New(syslog.LOG_DAEMON|syslog.LOG_INFO, "batman-provhelper")
 	if os.Geteuid() != 0 {
 		fmt.Fprintln(os.Stderr, "batman-provhelper: root only")
@@ -384,6 +390,9 @@ func main() {
 	}
 	switch mode {
 	case "--boot":
+		if seam.Marker != "" {
+			logf("%s", seam.Marker)
+		}
 		if res := boot.Run(bootEnv(p)); res.Restore != nil {
 			restoreWireless(p, res.Restore, 0)
 		}
@@ -403,7 +412,7 @@ func main() {
 		os.Exit(qr(p))
 	case "":
 	default:
-		fmt.Fprintln(os.Stderr, "usage: batman-provhelper [--boot | --apply-state [--firstboot] | --persist-now | qr]")
+		fmt.Fprintln(os.Stderr, "usage: batman-provhelper [--boot | --apply-state [--firstboot] | --persist-now | qr | --version]")
 		os.Exit(2)
 	}
 	daemon(p)
@@ -437,6 +446,10 @@ func qr(p provstore.Paths) int {
 }
 
 func daemon(p provstore.Paths) {
+	if seam.Marker != "" {
+		logf("%s", seam.Marker)
+	}
+	seam.Arm(logf)                                 // the killpoint file is read once per daemon start (prov_test builds only)
 	os.Remove(filepath.Join(p.RunDir, "prov-txn")) // a marker of a helper that died cannot be live
 	res := boot.Run(bootEnv(p))
 	if res.Restore != nil {
@@ -549,4 +562,23 @@ func bootConfigOK() bool {
 	_, out := run(nil, "vcgencmd", "get_config", "core_freq_min")
 	v, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "core_freq_min=")))
 	return v >= 500
+}
+
+// version prints "batman-provhelper <BATMAN_VERSION>" (from the image stamp) and, in a prov_test build, the marker on
+// line 2. The preflight uses the exit status to tell a seam-capable image (rc 0) from an older one (usage, rc 2).
+func version(w io.Writer, stamp string) int {
+	v := "unknown"
+	if b, err := os.ReadFile(stamp); err == nil {
+		for l := range strings.Lines(string(b)) {
+			l = strings.TrimSpace(l)
+			if strings.HasPrefix(l, "BATMAN_VERSION=") {
+				v = strings.TrimPrefix(l, "BATMAN_VERSION=")
+			}
+		}
+	}
+	fmt.Fprintln(w, "batman-provhelper "+v)
+	if seam.Marker != "" {
+		fmt.Fprintln(w, seam.Marker)
+	}
+	return 0
 }
