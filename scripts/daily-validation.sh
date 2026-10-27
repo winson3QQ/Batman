@@ -301,12 +301,13 @@ fi
 
 # 2g. #254 claim-lock fix (docs/design/254-claim-lock-fix.md §11; scripts/dv/claim-lock-254.sh). Tier A on every fleet
 #     node (read-only). Tier B (--destructive) on DNODE (ethernet), in this order: setsid-race (no reboot) -> prov-claim
-#     -> addr-defer reconcile -> pty-commit (moves the node to the other slot) -> chain 1 (04 only).
+#     -> addr-defer reconcile -> chain 1 (04 only; needs slot A committed, restores it) -> pty-commit (moves the node
+#     to the other slot, so it runs last).
 #     A pre-fix image fails the fix's own suites with ONE line "FAIL pre-claim-lock image: ..." (KNOWN, #254).
 #     The negative controls (pty-commit flip, the 1.5.13 runs) are NOT run here: by hand. Design §11.4 tests 4 / 4b /
 #     4b' / 4c / 4d / 5 have no on-node script (authoring blocked, #254 checklist): CI stubs only.
 suite prov-lock-rest-254 "batman-prov-lock installed + enabled (S13), rollback gate present, lock-status matches the provisioning state on:$FLEET (#254 claim-lock fix)" "chk_prov_lock_rest_254 $FLEET"
-CL_B="setsid-race-254 prov-claim-254 adr-reconcile-254 pty-commit-254 chain1-254"
+CL_B="setsid-race-254 prov-claim-254 adr-reconcile-254 chain1-254 pty-commit-254"
 if [ "$FEATURE_MODE" != --destructive ]; then
   for s in $CL_B; do suite "$s" "#254 claim-lock tier B — needs FEATURE_MODE=--destructive" ""; done
 elif ! fssh "$DNODE0" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
@@ -315,8 +316,8 @@ else
   suite setsid-race-254 "the commit's detached openmanetd start survives a PTY hangup: the image's construct with a ms delay before setsid() N/N under load, as shipped N/N; controls old+delay <= N/10 and no-setsid 0/N on $DNODE0 (§5.5 / §11.7)" "bchk_setsid_race_254 $DNODE0"
   suite prov-claim-254 "claim a legacy node: LOCKED (uci, dropbear -s -g, publickey only), the returned password matches shadow (musl probe), replay / reset rotate it, refusals, no secret in logs, S0 restored on $DNODE0 (§11.3)" "bchk_prov_claim_254 $DNODE0" D
   suite adr-reconcile-254 "joinwatch reconciles a committed boot whose openmanetd kept the deferral env (r1) and reports a hung start once (r2), both with flip controls, on $DNODE0 (#254 B-M4)" "bchk_adr_reconcile_254 $DNODE0" D
-  suite pty-commit-254 "\`ssh -tt node batman-slot commit\` on a held trial releases the address deferral within 20 s (joinwatch stopped) on $DNODE0 — smoke; moves the node to the other slot (#254 B12-m4)" "bchk_pty_commit_254 $DNODE0" D
   suite chain1-254 "P1 chain 1 on 04: unseeded / unclaimed / claimed OTAs, stage-1 gate + wsl.9 negative control, claimed trial locked from p5, autocommit dry-run negative, full restore (§5.4 chain 1)" "bchk_chain1_254 $DNODE0" D
+  suite pty-commit-254 "\`ssh -tt node batman-slot commit\` on a held trial releases the address deferral within 20 s (joinwatch stopped) on $DNODE0 — smoke; moves the node to the other slot (#254 B12-m4)" "bchk_pty_commit_254 $DNODE0" D
 fi
 
 # 3. Hardware: the A/B bench card. Refuses on its own if the target is not an A/B card.

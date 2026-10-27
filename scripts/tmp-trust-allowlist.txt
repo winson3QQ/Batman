@@ -93,6 +93,8 @@ scripts/dv-preflight.sh	BLE_RUN_ID=preflight\$\$	same: probe run dir under the r
 # --- #254 harness scratch: random names under root-only /tmp/run/batman-dv ($DVD, $RUNDIR-dv) or the host's mktemp -d dir ($HT) ---
 scripts/node/*	mktemp -d "?\$(DVD|RUNDIR-dv)/[^ ]*XXXXXX	harness scratch under root-only /tmp/run (procd-created 0755), random name, 0700
 scripts/dv/prov-claim-254.sh	mktemp -d "?\$HT/[^ ]*XXXXXX	host-side (Git Bash) scratch inside the run's own mktemp -d directory
+scripts/node/addr-defer-reconcile-254.sh	LK=/var/lock/procd_openmanetd\.lock$	procd's own per-service lock (upstream /lib/functions/procd.sh: exec 1000>/var/lock/procd_<name>.lock), the lock the r2 case must hold; refused unless a root-owned regular file with one link, not a symlink (next line)
+scripts/dv/chain1-254.sh	\[ -e /tmp/batman-slot\.allow-(unseeded|stale-p5) \]	fail-closed precondition: ANY file at an operator-flag name, whoever made it, reads "y" and the run refuses (a planted flag can only stop the test, never pass it)
 # --- #254 P1 product (merged in #307): paths the helper and the P1 shell use, each root-only or read-only ---
 feed/batman-prov/src/*	/tmp/run/batman-prov	the helper socket dir under root-only /tmp/run: created by the helper (root) 0750 root:provd, socket 0660, SO_PEERCRED-checked (254-p1-impl.md §2.2)
 feed/batman-prov/src/*	"/tmp/run/batman"	the ONE Go definition of the run dir (provstore.Default) and MkdirTemp inside it (random name, 0700) — the Go twin of rundir.sh

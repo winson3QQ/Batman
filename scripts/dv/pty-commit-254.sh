@@ -23,14 +23,14 @@ bid(){ timeout 20 ssh $SSHO root@$NODE 'cat /proc/sys/kernel/random/boot_id' 2>/
 waitboot(){ local b0=$1 t0=$SECONDS b; while [ $((SECONDS-t0)) -lt 900 ]; do b=$(bid); [ -n "$b" ] && [ "$b" != "$b0" ] && return 0; sleep 10; done; return 1; }
 settle(){ local t0=$SECONDS u; while [ $((SECONDS-t0)) -lt 600 ]; do u=$(q 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge 90 ] && return 0; sleep 10; done; return 1; }
 FP='echo "apkey=$(uci -q get wireless.default_radio0.key | sha256sum | cut -c1-12) meshkey=$(uci -q get wireless.default_radio1.key | sha256sum | cut -c1-12) lock=$(cat /opt/batdata/state/lock-status) ak=$(sha256sum < /etc/dropbear/authorized_keys | cut -c1-12) host=$(uci -q get system.@system[0].hostname) ip=$(uci -q get network.ahwlan.ipaddr) prov=$(sed -n "s/.*state=\([a-z]*\).*/\1/p" /etc/batman-prov/prov.meta)"'
-ST='echo "slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) held=$(ls /tmp/run/batman/autocommit.ctl/hold-commit 2>/dev/null | wc -l) badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime)"'
+ST='echo "slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) held=$(. /usr/lib/batman/rundir.sh; ls $RUNDIR/autocommit.ctl/hold-commit 2>/dev/null | wc -l) badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime)"'
 AD='/usr/libexec/batman-addr-defer status'
 # joinwatch running? from procd's own record (pgrep -f would match the ssh `sh -c` line itself, review B1)
 # ubus failure = JW-UNKNOWN (never "down"); ps with the [/] pattern cross-checks (review round 2 m2)
 JW='o=$(ubus call service list "{\"name\":\"joinwatch\"}" 2>/dev/null) || { echo JW-UNKNOWN; exit 0; }; p=$(ps w | grep -c "[/]usr/bin/joinwatch"); case "$o" in *"\"running\": true"*) echo JW-UP;; *) [ "$p" = 0 ] && echo JW-DOWN || echo JW-UP-ps;; esac'
 EVN='logread | grep -cE "netifd.*bat0|openmanetd.*(start|Starting)"'
 cleanup_node(){	# never leaves a bind mount or a stopped joinwatch behind
-	q 'grep -q " /usr/sbin/batman-slot " /proc/mounts && umount /usr/sbin/batman-slot; /etc/init.d/joinwatch start >/dev/null 2>&1; sleep 2; echo "cleanup: bind=$(grep -c " /usr/sbin/batman-slot " /proc/mounts) starts=$(cat /tmp/run/batman/addr-defer.starts 2>/dev/null)"'
+	q 'grep -q " /usr/sbin/batman-slot " /proc/mounts && umount /usr/sbin/batman-slot; /etc/init.d/joinwatch start >/dev/null 2>&1; sleep 2; echo "cleanup: bind=$(grep -c " /usr/sbin/batman-slot " /proc/mounts) starts=$(. /usr/lib/batman/rundir.sh; cat $RUNDIR/addr-defer.starts 2>/dev/null)"'
 	q "$JW"
 }
 LANDED=0

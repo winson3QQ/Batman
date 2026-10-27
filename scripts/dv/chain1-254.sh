@@ -24,7 +24,7 @@ TOOLS=${DV_PROV_TOOLS:-/c/Users/yello/batman-dv-tools/prov}; TOOLS_WSL=/home/yel
 BREWRITE=${BREWRITE:-$REPO/scripts/dv/brewrite-254.sh}; WSL9_SLOT=${WSL9_SLOT:-$REPO/tests/prov-p1/fixtures/batman-slot.1.5.12-wsl.9}
 LABKEY=${LABKEY:-$HOME/.ssh/id_ed25519}
 RUN=ch1$(date +%m%d%H%M); BASE=/opt/batdata/dv-prov; D=$BASE/$RUN; PDIR=$BASE/payload-ch1; DIRTY=/opt/batdata/state/dv-prov-dirty
-LOCKD=${TEMP:-/tmp}/batman-dv-04.lock; WSLK=/home/yello/.batman-dv/prov-keys/$RUN
+LOCKD=${TEMP:?TEMP unset - the host lock lives in the per-user temp dir, never in a shared tmp}/batman-dv-04.lock; WSLK=/home/yello/.batman-dv/prov-keys/$RUN
 SSHO="-o BatchMode=yes -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o LogLevel=ERROR"
 # any slot of 04 on the lab LAN: host key changes with every fresh slot; `none` until the lab key is in, publickey after
 FRESHO="$SSHO -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=publickey,none -o IdentitiesOnly=yes -i $LABKEY"
@@ -39,12 +39,12 @@ NONEO="-o BatchMode=yes -o ConnectTimeout=6 -o UserKnownHostsFile=/dev/null -o S
 pk_proof(){ local ip=$1 r=1 o
 	# fw4 input policy is drop with per-zone rules; a fresh slot's zones may not pass 2222 -> one temporary, tagged
 	# rule at the top of the input chain (runtime only: gone with any fw reload / reboot; removed by handle below)
-	timeout 30 ssh $FRESHO root@"$ip" 'pid=/tmp/run/ch1-db.pid; [ -s $pid ] && kill $(cat $pid) 2>/dev/null; nft -a list chain inet fw4 input 2>/dev/null | grep -q ch1-pk-proof || nft insert rule inet fw4 input tcp dport 2222 accept comment "ch1-pk-proof" 2>/dev/null; dropbear -s -g -p 2222 -P $pid && sleep 1 && [ -s $pid ] && echo LISTEN' 2>/dev/null | tr -d '\r' | grep -q LISTEN || { echo "    pk_proof: listener did not start on $ip"; return 1; }
+	timeout 30 ssh $FRESHO root@"$ip" 'mkdir -p -m 0700 /tmp/run/batman-dv; pid=/tmp/run/batman-dv/ch1-db.pid; [ -s $pid ] && kill $(cat $pid) 2>/dev/null; nft -a list chain inet fw4 input 2>/dev/null | grep -q ch1-pk-proof || nft insert rule inet fw4 input tcp dport 2222 accept comment "ch1-pk-proof" 2>/dev/null; dropbear -s -g -p 2222 -P $pid && sleep 1 && [ -s $pid ] && echo LISTEN' 2>/dev/null | tr -d '\r' | grep -q LISTEN || { echo "    pk_proof: listener did not start on $ip"; return 1; }
 	o=$(timeout 30 ssh -p 2222 $PKO root@"$ip" 'echo PKOK' 2>&1 | tr -d '\r')
 	if grep -qE 'Authenticated to .* using "publickey"' <<< "$o" && grep -q PKOK <<< "$o"; then
 		timeout 30 ssh -p 2222 $NONEO root@"$ip" 'echo NONEOK' 2>&1 | tr -d '\r' | grep -q "Permission denied" && r=0 || echo "    pk_proof: 'none' was not denied on the publickey-only listener (probe invalid)"
 	else echo "    pk_proof: no publickey authentication on the listener"; fi
-	o=$(timeout 30 ssh $FRESHO root@"$ip" 'pid=/tmp/run/ch1-db.pid; kill $(cat $pid) 2>/dev/null; rm -f $pid; for h in $(nft -a list chain inet fw4 input 2>/dev/null | sed -n "s/.*ch1-pk-proof.*# handle \([0-9]*\).*/\1/p"); do nft delete rule inet fw4 input handle $h; done; echo "left=$(nft -a list chain inet fw4 input 2>/dev/null | grep -c ch1-pk-proof) listen=$(netstat -ltn 2>/dev/null | grep -c ":2222 ")"' 2>/dev/null | tr -d '\r')
+	o=$(timeout 30 ssh $FRESHO root@"$ip" 'pid=/tmp/run/batman-dv/ch1-db.pid; kill $(cat $pid) 2>/dev/null; rm -f $pid; for h in $(nft -a list chain inet fw4 input 2>/dev/null | sed -n "s/.*ch1-pk-proof.*# handle \([0-9]*\).*/\1/p"); do nft delete rule inet fw4 input handle $h; done; echo "left=$(nft -a list chain inet fw4 input 2>/dev/null | grep -c ch1-pk-proof) listen=$(netstat -ltn 2>/dev/null | grep -c ":2222 ")"' 2>/dev/null | tr -d '\r')
 	[ "$o" = "left=0 listen=0" ] || { echo "    pk_proof: cleanup incomplete on $ip ($o)"; r=1; }
 	return $r; }
 # lock assertion on port 22: `none` must be DENIED (a timeout / dead node is not a refusal; review B2-3)
@@ -57,11 +57,11 @@ fqlong(){ timeout 900 ssh $FRESHO root@"$FIP" "$@" 2>/dev/null | tr -d '\r'; }
 macips(){ arp -a | tr -d '\r' | awk -v m="$MACW" 'tolower($2)==m {print $1}'; }
 sweep(){ local i; for i in $(seq 2 254); do ping -n 1 -w 200 $1.$i >/dev/null 2>&1 & [ $((i % 40)) = 0 ] && wait; done; wait; }
 # ST carries the eth MAC: 02 runs the same version, so a stale ARP entry must not let a step act on 02 (review A-m2)
-ST='echo "mac=$(cat /sys/class/net/eth0/address 2>/dev/null) slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) hold=[$(cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null)] held=$(ls /tmp/run/batman/autocommit.ctl/hold-commit 2>/dev/null | wc -l) badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime) boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"'
+ST='echo "mac=$(cat /sys/class/net/eth0/address 2>/dev/null) slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) hold=[$(cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null)] held=$(. /usr/lib/batman/rundir.sh; ls $RUNDIR/autocommit.ctl/hold-commit 2>/dev/null | wc -l) badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime) boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"'
 PROT='echo "protA=[$(cat /opt/batdata/state/slot-A.protected 2>/dev/null)] protB=[$(cat /opt/batdata/state/slot-B.protected 2>/dev/null)]"'
 DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null); set -- $r; echo "tryboot_flag=${6:-?}"'
 # p5 read-only view, with the SAME predicate the gate uses (prov_meta_status) and the identity check (review B-6)
-P5RO='m=$(mktemp -d /tmp/run/ch1.XXXXXX) && mount -o ro,noload /dev/mmcblk0p5 $m && { echo "seeded=$([ -f $m/.seeded ] && echo y || echo n) shadowroot=$([ -s $m/identity/shadow-root ] && echo y || echo n) prov_files=$(ls $m/identity/prov 2>/dev/null | wc -l) metastat=[$(. /usr/lib/batman/prov-lock.sh; prov_meta_status $m/prov.meta $m/prov.cbor)] ident=$(. /usr/lib/batman/prov-lock.sh; prov_ident_ok $m/identity/prov && echo ok || echo bad) idsame=$(cmp -s $m/identity/prov/node.cert /etc/batman-prov/identity/node.cert 2>/dev/null && echo y || echo n)"; umount $m; }; rmdir $m'
+P5RO='mkdir -p -m 0700 /tmp/run/batman-dv && m=$(mktemp -d /tmp/run/batman-dv/ch1.XXXXXX) && mount -o ro,noload /dev/mmcblk0p5 $m && { echo "seeded=$([ -f $m/.seeded ] && echo y || echo n) shadowroot=$([ -s $m/identity/shadow-root ] && echo y || echo n) prov_files=$(ls $m/identity/prov 2>/dev/null | wc -l) metastat=[$(. /usr/lib/batman/prov-lock.sh; prov_meta_status $m/prov.meta $m/prov.cbor)] ident=$(. /usr/lib/batman/prov-lock.sh; prov_ident_ok $m/identity/prov && echo ok || echo bad) idsame=$(cmp -s $m/identity/prov/node.cert /etc/batman-prov/identity/node.cert 2>/dev/null && echo y || echo n)"; umount $m; }; rmdir $m'
 # A's boot FAT (p1) content hash: 7.2 / 8.6 rewrite A's boot files; prov-base covers p5 / upper / p6 only (round 2 m1)
 P1LIST='cd /boot && find . -type f | sort | while IFS= read -r f; do sha256sum "$f"; done'   # per file, so a FAIL names the file (round 3 m3)
 NOFORCE='echo "allow_unseeded=$([ -e /tmp/batman-slot.allow-unseeded ] && echo y || echo n) allow_stale=$([ -e /tmp/batman-slot.allow-stale-p5 ] && echo y || echo n)"'
@@ -136,7 +136,7 @@ restore_all(){
 	# on B: p5 back, then rollback to A
 	case "$s" in *"slot=B "*)
 		fq "rm -f /opt/batdata/state/autocommit-hold-commit; touch $BASE/ch1.cancel"
-		o=$(fqlong "for m in /tmp/run/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on B): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed — needs a person"; return 1; }
+		o=$(fqlong "for m in /tmp/run/batman-dv/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on B): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed — needs a person"; return 1; }
 		b=$(bootof "$s"); fq "batman-slot rollback >/dev/null 2>&1 && (batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &) && echo SENT" | sed 's/^/    rollback: /'
 		wait_find 900 "slot=A ver=$V trial_rc=1 " "$b" || { say "RESTORE: A not found after the rollback"; return 1; }; s=$FOUND_STATE; say "on A: $s"
 		land_quiet || { wait_find 900 "slot=A ver=$V trial_rc=1 " || return 1; s=$FOUND_STATE; land_quiet || { say "RESTORE: A keeps rebooting"; return 1; }; } ;;
@@ -146,7 +146,7 @@ restore_all(){
 	# p5 again ON A, always (2026-10-26 wsl.3 run: A booted with 8.6's claimed overlay and joinwatch running, and its
 	# --on-join saved A's live root line into the p5 restored on B -> S0 compare diffs=3). p5-restore stops joinwatch /
 	# helper / provd and nothing restarts them before the reboot below, so the overlay restore cannot be undone.
-	o=$(fqlong "for m in /tmp/run/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on A): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed"; return 1; }
+	o=$(fqlong "for m in /tmp/run/batman-dv/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on A): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed"; return 1; }
 	o=$(fqlong "sh $BASE/prov-base-254.sh overlay-restore $RUN"); echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY" | tail -12 | sed 's/^/    /'
 	grep -q "^OVERLAY-RESTORED $RUN" <<< "$o" || { say "RESTORE: overlay-restore failed"; return 1; }
 	b=$(bootof "$s"); fq "(batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &)" >/dev/null
@@ -246,14 +246,14 @@ for w in "ap=0" "mesh=0" "meta=unclaimed" "idmode=drwx------" "seeded=n" "prov_f
 case "$x" in *"helper7=[rc=7 "*"persist rc=0]"*) ok "trial: helper boot rc=7 ... persist rc=0";; *) no "trial: helper rc=7 / persist rc=0 not logged";; esac
 # ======== 6. gate (L44) on the same HELD trial + wsl.9 negative control; dead-man on B; release -> committed
 PH=s6
-scp -q $FRESHO "$WSL9_SLOT" root@"$FIP":/tmp/run/batman-slot.wsl9 || abort "upload wsl.9 batman-slot"
-o=$(fq "t0=\$(date +%s); sleep 1; o=\$(BATMAN_ALLOW_TRIAL_APPLY=1 batman-slot precheck-node 2>&1); rc=\$?; echo \"rc=\$rc\"; echo \"\$o\"; echo \"rcfile=[\$(cat /tmp/run/batman/p5-check.rc 2>/dev/null)] newer=\$([ \$(date -r /tmp/run/batman/p5-check.rc +%s 2>/dev/null || echo 0) -ge \$t0 ] && echo y || echo n)\"")
+fq "mkdir -p -m 0700 /tmp/run/batman-dv" >/dev/null; scp -q $FRESHO "$WSL9_SLOT" root@"$FIP":/tmp/run/batman-dv/batman-slot.wsl9 || abort "upload wsl.9 batman-slot"
+o=$(fq ". /usr/lib/batman/rundir.sh; t0=\$(date +%s); sleep 1; o=\$(BATMAN_ALLOW_TRIAL_APPLY=1 batman-slot precheck-node 2>&1); rc=\$?; echo \"rc=\$rc\"; echo \"\$o\"; echo \"rcfile=[\$(cat \$RUNDIR/p5-check.rc 2>/dev/null)] newer=\$([ \$(date -r \$RUNDIR/p5-check.rc +%s 2>/dev/null || echo 0) -ge \$t0 ] && echo y || echo n)\"")
 echo "$o" | sed 's/^/    gate: /'
 case "$o" in "rc=0"*) no "gate: precheck-node passed on an unseeded trial";; *) ok "gate: precheck-node refused (rc ≠ 0)";; esac
 grep -qF "p5 not seeded but holds an unclaimed provisioning record — allowed (#254 L44)" <<< "$o" && ok "gate: the L44 branch ran (review B-3)" || no "gate: L44 line missing"
 grep -q "mis-aimed tryboot" <<< "$o" && ok "gate: ends on mis-aimed tryboot (F6)" || no "gate: no mis-aimed tryboot"
 case "$o" in *"rcfile=[skip:unseeded "*"newer=y"*) ok "gate: p5-check.rc = skip:unseeded, written now";; *) no "gate: p5-check.rc not skip:unseeded / not updated";; esac
-o=$(fq "m0=\$(date -r /tmp/run/batman/p5-check.rc +%s 2>/dev/null); sleep 1; o=\$(BATMAN_ALLOW_TRIAL_APPLY=1 sh /tmp/run/batman-slot.wsl9 precheck-node 2>&1); rc=\$?; echo \"rc=\$rc out=[\$(echo \"\$o\" | tail -1)] same_mtime=\$([ \"\$(date -r /tmp/run/batman/p5-check.rc +%s 2>/dev/null)\" = \"\$m0\" ] && echo y || echo n)\"; rm -f /tmp/run/batman-slot.wsl9")
+o=$(fq ". /usr/lib/batman/rundir.sh; m0=\$(date -r \$RUNDIR/p5-check.rc +%s 2>/dev/null); sleep 1; o=\$(BATMAN_ALLOW_TRIAL_APPLY=1 sh /tmp/run/batman-dv/batman-slot.wsl9 precheck-node 2>&1); rc=\$?; echo \"rc=\$rc out=[\$(echo \"\$o\" | tail -1)] same_mtime=\$([ \"\$(date -r \$RUNDIR/p5-check.rc +%s 2>/dev/null)\" = \"\$m0\" ] && echo y || echo n)\"; rm -f /tmp/run/batman-dv/batman-slot.wsl9")
 say "gate wsl.9 (negative): $o"
 case "$o" in "rc=1 "*"not seeded"*"same_mtime=y"*) ok "gate negative: wsl.9 batman-slot -> rc 1, not seeded, p5-check.rc untouched";; *) no "gate negative control: $o";; esac
 fq "rl=\$(mktemp /tmp/run/ch1-rcl.XXXXXX) && { grep -v '^exit 0' /etc/rc.local; echo '( ping -c 5 $HOSTIP; sleep 1500; sh $BASE/ch1-deadman.sh ) </dev/null >/dev/null 2>&1 & # ch1-deadman'; echo 'exit 0'; } > \$rl && cat \$rl > /etc/rc.local && rm -f \$rl; sync; setsid sh -c 'sleep 1500; sh $BASE/ch1-deadman.sh' </dev/null >/dev/null 2>&1 & echo planted" >/dev/null

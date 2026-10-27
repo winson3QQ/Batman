@@ -15,10 +15,14 @@ set -u
 CASE=${1:-}; FLIP=${2:-}
 case "$CASE" in r1|r2) ;; *) echo "usage: $0 r1|r2 [flip]"; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo "FAIL root only"; exit 2; }
+# LK: procd's own per-service lock (upstream /lib/functions/procd.sh: exec 1000>/var/lock/procd_<name>.lock) — the
+# lock r2 must hold. /var/lock is 1777, so it is used only as procd's root-owned regular file with one link.
 D=/usr/libexec/batman-addr-defer; LK=/var/lock/procd_openmanetd.lock
+# shellcheck disable=SC2012,SC2046  # busybox has no stat
+[ -f "$LK" ] && [ ! -L "$LK" ] && set -- $(ls -ln "$LK") && [ "$2" = 1 ] && [ "$3" = 0 ] || { echo "FAIL $LK is not procd's root-owned lock file (one link, no symlink)"; exit 2; }
 # shellcheck source=/dev/null
 . /usr/lib/batman/rundir.sh 2>/dev/null; [ -n "${RUNDIR:-}" ] && [ -d "$RUNDIR" ] || { echo "FAIL no run dir"; exit 2; }
-W=$RUNDIR-dv/adr.$$; mkdir -p "$W" && chmod 700 "$W" || { echo "FAIL cannot make $W"; exit 2; }
+mkdir -p -m 0700 "$RUNDIR-dv" && W=$(mktemp -d "$RUNDIR-dv/adr.XXXXXX") || { echo "FAIL cannot make a scratch dir in $RUNDIR-dv"; exit 2; }
 TAGN="$CASE${FLIP:+-$FLIP}"
 f=0; ok(){ echo "PASS $*"; }; no(){ echo "FAIL $*"; f=1; }
 # fin [VALID|INVALID]: restore FIRST (a failed restore turns the verdict into FAIL / INVALID), then the verdict, then DONE
@@ -101,7 +105,7 @@ if [ "$CASE" = r2 ]; then
 	HOLD=$!; t=$(upt); while ! locked && [ $(( $(upt) - t )) -lt 5 ]; do sleep 1; done
 	locked && ok "holding $LK (pid $HOLD)" || { no "lock not held"; fin; exit 1; }
 fi
-logmark="adr-$$-$(upt)"; logger -t addr-defer-test "$logmark"
+logmark="adr-$(cut -c1-8 /proc/sys/kernel/random/uuid)-$(upt)"; logger -t addr-defer-test "$logmark"
 t0=$(upt); /etc/init.d/joinwatch start >/dev/null 2>&1
 
 # --- 3. observe (all windows in real seconds from t0)
