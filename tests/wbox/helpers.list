@@ -1,0 +1,7 @@
+# tests/wbox/helpers.list — one source for the -wbox variants (docs/design/254-h23-harness.md v7 §4.2, §15.5)
+# <name> <prov_test|release> <helper|same>
+#   tag:  prov_test when the patch touches feed/batman-prov/src/ (and for "test")
+#   kind: helper when the variant's helper binary differs from release (touches feed/batman-prov/** or is "test")
+# lint-wbox recomputes both columns from the patches and FAILs on any difference. firmware build-board.sh --wbox
+# reads the tag from here; dv-prov-tools.sh reads the kind. Variants are added with their patches.
+test prov_test helper
