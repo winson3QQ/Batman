@@ -1,6 +1,6 @@
-# Design: #254 PR-H3 — harness:H2 補完(P1 tier B / 沙箱 / 接縫)+ H3(provd / BLE / `peer.py`)— **v6(審查中)**
+# Design: #254 PR-H3 — harness:H2 補完(P1 tier B / 沙箱 / 接縫)+ H3(provd / BLE / `peer.py`)— **v7(定稿)**
 
-**狀態**:v6,2026-10-28。v5 審查:A APPROVE-WITH-CHANGES(0 / 0 / 6)、B APPROVE-WITH-CHANGES(0 / 1 / 12)(`254-reviews/h23-review-v5-{A,B}.md`);v6 收全部,對應表 §14(§12、§13 是前兩輪的表)。歷史:v1 A REJECT 2/8/12、B REJECT 3/17/14;v2 A REJECT 1/6/15、B AWC 0/7/19;v3 A AWC 0/7/10、B AWC 0/6/13;v4 A AWC 0/2/14、B AWC 0/3/15;v5 如上。使用者決定(2026-10-28):H2 沒做完的部分照 `254-p1-impl.md` §5 補完,與 H3 一份設計、兩段實作;608B(#255)擱置。
+**狀態**:**v7 定稿**,2026-10-28。v6 審查:A **APPROVE**(0 / 0 / 4)、B **APPROVE-WITH-CHANGES**(0 / 0 / 10)(`254-reviews/h23-review-v6-{A,B}.md`),兩位都表示不需再審整份;v7 = v6 + §15(把 14 個 MINOR 寫成實作規格,**§15 與前文衝突時以 §15 為準**)。v6 之前:v5 審查:A APPROVE-WITH-CHANGES(0 / 0 / 6)、B APPROVE-WITH-CHANGES(0 / 1 / 12)(`254-reviews/h23-review-v5-{A,B}.md`);v6 收全部,對應表 §14(§12、§13 是前兩輪的表)。歷史:v1 A REJECT 2/8/12、B REJECT 3/17/14;v2 A REJECT 1/6/15、B AWC 0/7/19;v3 A AWC 0/7/10、B AWC 0/6/13;v4 A AWC 0/2/14、B AWC 0/3/15;v5 如上。使用者決定(2026-10-28):H2 沒做完的部分照 `254-p1-impl.md` §5 補完,與 H3 一份設計、兩段實作;608B(#255)擱置。
 
 上層:`254-stage1-impl.md` v19、`254-p1-impl.md` v5.1、`254-h1-harness.md` v8、`254-claim-lock-fix.md` v9.1、`219-protocol.md` v0.7、`219-protocol.cddl`。
 
@@ -565,3 +565,35 @@ claim-lock §11.4 真機 tier B(4 / 4-inj / 4b / 4b' / 4c / 4d / 5)仍未排程(
 | B-m9 `peer-vs-provd` 前提 | §4.8.3:P2 設計定 |
 | B-m10 `helper-flap` tag | §4.2:碰 `src/` 一律 `prov_test` |
 | B-m11 / B-m12 GATT 白箱字串 / 前置 | §6.3 `prov-gatt-254` |
+
+## 15. 實作規格補充(v6 審查 MINOR;**與前文衝突時以本節為準**)
+
+**killpoint 與 CI(v6 A-m1、B-m1、B-m7)**
+1. killpoint 的 log 呼叫固定為單一格式字面值 `log.Printf("killpoint %s: armed", name)`;常數只在 `killpoint_provtest.go` 定義;Go 單元對 log 輸出斷言整行。gate 的 `strings | grep -c 'killpoint .*: armed'` 依賴這一點(拋棄式 arm64 `-s -w -trimpath` build 實測:release 0、prov_test 1、實作放 `_test.go` 0、字串串接 0)。
+2. 單元測試檔拆兩個:`killpoint_provtest_test.go`(`//go:build prov_test`,斷言 armed)與 `killpoint_release_test.go`(`//go:build !prov_test`,斷言 no-op)。
+3. CI 的 root Go 步驟**緊接 setup-go**(不放最後;既有「expected-red 步驟放最後」慣例不動),root 跑兩次:`go test -v ./...` 與 `go test -v -tags prov_test ./...`,各自存檔、各自 `PIPESTATUS`、各自數 SKIP = 0,且 `grep -c '^ok ' <log>` ≥ 已知 package 數(對到 0 個測試 = FAIL);`go vet` 同兩次。
+4. 無 name 的 gate 加一條:helper `strings | grep -c 'killpoint'` = 0。`prov-gate-stubs` 的「實作沒進二進位」mutant = 「`killpoint_release.go` 拿掉 build tag 後以 `-tags prov_test` 編出的 helper」(有 `--version` 標記、無 `armed` 字串)。
+
+**`helpers.list`(v6 A-m2、B-m10a)**
+5. `tests/wbox/helpers.list` 入版控,一行 `<name> <prov_test|release> <helper|same>`。`lint-wbox` 從 patch 路徑重算(碰 `feed/batman-prov/src/` → `prov_test`;碰 `feed/batman-prov/**` 或 name = `test` → `helper`),與檔案逐行不等 → FAIL。`build-board.sh --wbox` 讀同一檔決定 `BATMAN_PROV_TEST`,不另設來源。`dv-prov-tools.sh` 雙向斷言:`helper` 者 sha ≠ release 且互異;`same` 者 sha = release;不符 → FAIL「helpers.list 與 payload 不一致(版本錯位?)」。
+
+**hold 值與 DISCARDED(v6 A-m3、B-m10b)**
+6. `cmp` 兩邊:主機 = payload 的 `etc/batman-build` 經 `sed -n 's/^BATMAN_VERSION=//p'`;節點 = 寫入後讀回的 p6 旗標經 `head -c 200 | tr -d '\r\n'`(同 autocommit `:271`)。
+7. DISCARDED 出現 → **先**在 trial 內以 root 建 `$RUNDIR/autocommit.ctl/hold-commit`(`held_commit()` 每輪 poll 讀,`:60,510`,立即擋 commit)→ 再 `batman-slot is-trial`:0(trial)→ `back_to_a`;1(committed)且版本 = V → INVALID + 正常 restore;1 且含 wbox → `pr_needs_person`;**2(unknown)→ `pr_needs_person`**。§5「DISCARDED 且已 commit」的自測只用 V payload。
+
+**tmp-trust(v6 A-m4、B-m4)**
+8. `prov-sec-254.sh` 用**行級** ERE,不用 `.` 整檔豁免:`ln -s /tmp/x /tmp/run/batman-prov( |$)|/tmp/run/batman-prov( |$)|/tmp/run/batman-dvpc\.` + 理由(root 白箱、攻擊模擬,目標只在 root 0755 的 `/tmp/run` 下);dvpc 白箱若在 `scripts/dv/` 另加同條。`test-tmp-trust.sh` 加:`prov-sec-254.sh` 多一行 `cat /tmp/x` → UNTRUSTED(證明不是整檔豁免)。
+
+**白箱可實作性(v6 B-m5、B-m6)**
+9. 建 `$PCD` 的邏輯抽成共用函式 `scripts/lib/dvpc-254.sh dvpc_place <ssh> <dir>`(`mkdir -m 0711` 無 `-p` → EEXIST 即 `FAIL dvpc dir pre-exists`),`prov-lib-254.sh` 與 `chain1-254.sh` 都呼叫它;dvpc 白箱只對這個函式做(chain1 的 `RUN` 寫死,不為一個 `mkdir` 白箱跑整條鏈)。
+10. killpoint 目錄的負測試改為:root 預建後 `chown 65534` / `chmod 0777` / 改成 symlink / 第二個 hardlink → helper log `killpoint: refused (<why>)`;`nobody` 只用來證明 `/tmp/run`(root 0755)本身擋住(一行 EACCES)。§7 第一列照此改讀。
+
+**GATT 與 agent(v6 B-m2、B-m3)**
+11. `prov-gatt-254` 白箱:02 的判定 = bluetoothctl 印 `Failed to read: org.bluez.Error.NotPermitted`(bluetoothctl 只印錯誤**名稱**,`client/gatt.c:835`;`Not paired` 訊息不會出現,v5 B-m11 原文錯);0x0F 與 0x02 的區分交給 btmon(ATT Error Response 0x0F + SMP Pairing Request / Pairing Failed、無 LE Start Encryption);需要訊息時改用 02 上 `dbus-send --print-reply … ReadValue`。
+12. §3 加一列「04 agent 程序(bluetoothctl,pid 檔 `$DVD/<run>/agent.pid`):`prov-sec-bond-254` 起 / 收;prov deadman `kill` + 刪 pid 檔」。`prov-gatt-254` 前置改為「pid 檔不存在 **且** 04 無 harness 起的 bluetoothctl 程序 **且** 02 `bluetoothctl paired-devices` 不含 04」(`AgentManager1` 沒有列舉方法,原文的「斷言無註冊」做不到)。乙部順序在 §4.3 補一行:`prov-gatt` → `prov-sec-bond` → 其餘。
+
+**provd env 與 dbus-send(v6 B-m8、B-m9)**
+13. `set-provd-env` 斷言讀的 pid = `/proc/<pid>/exe` 為 provd 二進位、父程序為 ujail 的那一個(procd 記的 instance pid 是 ujail,它的 environ 一定含所設值 → 讀錯 pid 永遠 PASS);負對照:`provd.env` 寫一個 init 不認的鍵 → 子程序 environ 無它。
+14. E-H1 的 dbus-send 預期 NEEDED = `libdbus-1.so.3`、`libgcc_s.so.1`、`libc.so`(`readelf -d` 實測),並斷言 04 有 `libgcc_s.so.1`;可改抄同樹 `ipkg-install/usr/bin/dbus-send`(同樣寫死 a72 路徑)。
+
+**未核對(帶進實證)**:CI 實際用 go 1.26(審查用 1.22.2 驗字串佈局);04 的 `libgcc_s.so.1`;dry-run 在 OTS 節點 120 s 內能否完成 pre-commit canary `docker run`(加進 E-H5 量測)。
