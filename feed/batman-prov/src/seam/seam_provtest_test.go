@@ -91,6 +91,8 @@ func TestRefusals(t *testing.T) {
 	}{
 		{"dir 0777", func(d, f string) { os.Chmod(d, 0o777) }, "has mode"},
 		{"file 0644", func(d, f string) { os.Chmod(f, 0o644) }, "has mode"},
+		{"file setgid", func(d, f string) { os.Chmod(f, 0o600|os.ModeSetgid) }, "has mode"},
+		{"dir sticky", func(d, f string) { os.Chmod(d, 0o700|os.ModeSticky) }, "has mode"},
 		{"file symlink", func(d, f string) {
 			tgt := filepath.Join(filepath.Dir(d), "elsewhere")
 			os.WriteFile(tgt, []byte("txn-1"), 0o600)
@@ -134,5 +136,22 @@ func TestWrongOwnerRefused(t *testing.T) {
 func TestMarker(t *testing.T) {
 	if Marker != "BATMAN_PROV_TEST_BUILD_7f3a" || !Enabled {
 		t.Fatalf("prov_test build: Marker %q Enabled %v", Marker, Enabled)
+	}
+}
+
+// An untrusted dir is not even unlinked in (root would act on a path someone else controls); a trusted dir loses
+// the file whatever its content.
+func TestUnlinkOnlyInTrustedDir(t *testing.T) {
+	f := setup(t, "txn-1")
+	os.Chmod(Dir, 0o777)
+	var r rec
+	Arm(r.logf)
+	if _, err := os.Lstat(f); err != nil {
+		t.Fatal("file removed from an untrusted dir")
+	}
+	f = setup(t, "txn-9")
+	Arm(r.logf)
+	if _, err := os.Lstat(f); !os.IsNotExist(err) {
+		t.Fatal("refused file in a trusted dir not deleted")
 	}
 }

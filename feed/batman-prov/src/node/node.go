@@ -511,7 +511,7 @@ func (n *Node) claimVerify(rec *provstore.Record, a cbor.Map) (cbor.Map, *Error)
 	next.ClaimedCounter = rec.ClaimedCounter + 1
 	next.Owners = []provstore.Owner{{Pub: ownerPub, EncPub: encPub, TagKey: tag}}
 	next.AdvOwnerKey = adv
-	if err := n.commit(&next, "claim"); err != nil {
+	if err := n.commitTxn(&next, "", "claim-after-persist"); err != nil { // = commit + its killpoint
 		return nil, err
 	}
 	// committed: p6 last_known_state follows at once, so batman-prov-lock locks on any slot even if p5 is unreadable

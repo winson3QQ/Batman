@@ -11,11 +11,7 @@ import (
 
 // commit persists a new record to p5 and then the overlay (no wireless side effect: claim, owners, ssh keys, leave).
 func (n *Node) commit(next *provstore.Record, what string) *Error {
-	pt := "" // the test seam between --prov-only and the overlay rename (claim only, 254-h23 §4.1.1)
-	if what == "claim" {
-		pt = "claim-after-persist"
-	}
-	return n.commitTxn(next, "", pt)
+	return n.commitTxn(next, "", "") // no killpoint: only claimVerify and applyNet name one (254-h23 §4.1.1)
 }
 
 // commitTxn = §4.4 steps 3–4: stage, --prov-only, on rc != 0 read the generation back to decide, then the overlay.
@@ -38,7 +34,7 @@ func (n *Node) commitTxn(next *provstore.Record, token, afterPersist string) *Er
 		}
 		n.Log("--prov-only rc=%d but p5 holds generation %d: committed", rc, g)
 	}
-	seam.At(afterPersist, n.Log) // txn-3 / claim-after-persist: p5 holds the new generation, the overlay does not
+	seam.At(afterPersist, n.Log) // txn-3 / claim-after-persist: p5 holds the new generation (also after rc != 0 + read-back), the overlay does not
 	if _, _, err := provstore.WriteOverlay(n.P, next); err != nil {
 		// p5 is ahead now; the next --boot rebuilds the overlay from it (§4.4 step 7)
 		n.Log("overlay write after a committed p5 write failed: %v", err)

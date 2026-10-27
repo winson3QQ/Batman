@@ -6,9 +6,14 @@
 // Killpoint file: /tmp/run/batman-prov-test/killpoint, one line = one point name. The daemon reads it once at start
 // (Arm), deletes it, and from then on the matching At(name) call reboots the node at once with sysrq "b" — no sync,
 // no unmount: the closest the harness gets to pulling the power at that point of a transaction.
+//
+// The "sysrq reboot" line is logged but is NOT expected to reach the host: the node dies microseconds later, with the
+// line still in RAM. The harness judges a killpoint by the "armed" line (logged at daemon start), the file being gone,
+// a new boot_id and the on-disk state of that point (§4.1.1); a "fallback" line means sysrq did not work = FAIL.
 package seam
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,7 +47,7 @@ var names = map[string]bool{
 
 var armed string
 
-// reboot is the action at an armed point; tests replace it.
+// reboot is the action at an armed point; tests replace it (ArmForTest).
 var reboot = func(name string, logf func(string, ...any)) {
 	logf("killpoint %s: sysrq reboot", name)
 	if f, err := os.OpenFile("/proc/sysrq-trigger", os.O_WRONLY, 0); err == nil {
@@ -53,18 +58,19 @@ var reboot = func(name string, logf func(string, ...any)) {
 	time.Sleep(2 * time.Second)
 	logf("killpoint %s: fallback reboot -f", name)
 	syscall.Sync()
-	exec.Command("reboot", "-f").Run()
+	err := exec.Command("reboot", "-f").Run()
+	time.Sleep(5 * time.Second)
+	logf("killpoint %s: reboot did not happen (%v); stopping here", name, err)
 	select {}
 }
 
 func refuse(logf func(string, ...any), why string) { logf("killpoint: refused (%s)", why) }
 
-// owned checks a path without following a final symlink: exact type, owner wantUID, exact permission bits, link count.
-func owned(p string, dir bool, perm os.FileMode) (string, bool) {
-	fi, err := os.Lstat(p)
-	if err != nil {
-		return err.Error(), false
-	}
+// modeBits = permission bits plus setuid/setgid/sticky: an exact match refuses any special bit.
+const modeBits = os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky
+
+// check: exact type, owner wantUID, exact mode bits (special bits included), link count 1 for a file.
+func check(p string, fi os.FileInfo, dir bool, perm os.FileMode) (string, bool) {
 	if fi.Mode()&os.ModeSymlink != 0 {
 		return p + " is a symlink", false
 	}
@@ -75,8 +81,8 @@ func owned(p string, dir bool, perm os.FileMode) (string, bool) {
 	if !ok || int(st.Uid) != wantUID {
 		return p + " is not owned by root", false
 	}
-	if fi.Mode().Perm() != perm {
-		return p + " has mode " + fi.Mode().Perm().String(), false
+	if fi.Mode()&modeBits != perm {
+		return p + " has mode " + (fi.Mode() & modeBits).String(), false
 	}
 	if !dir && st.Nlink != 1 {
 		return p + " has more than one link", false
@@ -85,22 +91,37 @@ func owned(p string, dir bool, perm os.FileMode) (string, bool) {
 }
 
 // Arm reads and deletes the killpoint file. Absent file = nothing armed, no log line.
+// The file is opened once with O_NOFOLLOW and checked on that descriptor (fstat), so what is checked is what is read.
 func Arm(logf func(string, ...any)) {
 	armed = ""
 	f := filepath.Join(Dir, "killpoint")
 	if _, err := os.Lstat(f); err != nil {
 		return
 	}
-	if why, ok := owned(Dir, true, 0o700); !ok {
+	if fi, err := os.Lstat(Dir); err != nil {
+		refuse(logf, err.Error())
+		return
+	} else if why, ok := check(Dir, fi, true, 0o700); !ok {
+		refuse(logf, why) // an untrusted dir: do not even unlink in it
+		return
+	}
+	defer os.Remove(f) // trusted dir: the file is read once, whatever its outcome (unlink does not follow a symlink)
+	fd, err := os.OpenFile(f, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		refuse(logf, err.Error())
+		return
+	}
+	defer fd.Close()
+	fi, err := fd.Stat()
+	if err != nil {
+		refuse(logf, err.Error())
+		return
+	}
+	if why, ok := check(f, fi, false, 0o600); !ok {
 		refuse(logf, why)
 		return
 	}
-	if why, ok := owned(f, false, 0o600); !ok {
-		refuse(logf, why)
-		return
-	}
-	b, err := os.ReadFile(f)
-	os.Remove(f)
+	b, err := io.ReadAll(io.LimitReader(fd, 64))
 	if err != nil {
 		refuse(logf, err.Error())
 		return
