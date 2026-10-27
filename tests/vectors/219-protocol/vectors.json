@@ -232,7 +232,8 @@
     "response_error_unsupported": "a30107040605a201646c6f72610207",
     "request_reset": "a40082010001090265726573657403a0",
     "negative_reset_with_idem": "a50082010001090265726573657403a00750f5cfc5298d4e90aaacf4a86c7878b3ad",
-    "response_error_reset_reflash": "a30109040605a2016572657365740209"
+    "response_error_reset_reflash": "a30109040605a2016572657365740209",
+    "response_error_lock_incomplete": "a30105040d05a0"
   },
   "fake_msg2_rule": {
     "length_equals_real_msg2": 711,
