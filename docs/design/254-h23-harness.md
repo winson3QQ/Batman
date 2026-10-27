@@ -371,7 +371,7 @@
 | 單位 | 程序與判定 | 負對照 | 型 |
 |---|---|---|---|
 | `prov-base-254` | snap → 改 p5 一檔 / overlay 一檔 / p6 一 state / **刪 lower 檔 `/etc/banner`** → restore → S0(含 banner 回來);restore 的 dd 期間主機送 `echo b > /proc/sysrq-trigger` → 重跑 restore → S0;3 次 `prov-boot`(v3:含刪 lower `/etc/banner`、sysrq 中斷 restore 重跑) | `PROV_BASE_SKIP=p5\|extra` → compare FAIL | — / A / F |
-| `prov-legacy-upgrade-254` | 同 v2:負對照先做(B=wsl.9 上 hold OTA `-wbox rc9-unclaimed` 進 A → trial 內 `boot rc=9 verdict=unclaimed` → rollback)→ 正向(V 進 A 不 hold → commit → `boot rc=9 verdict=legacy`、四項不變) | [wbox-B 型,在 A trial] | hold→commit / A / R |
+| `prov-legacy-upgrade-254` | 釘住 wsl.9(`DV_OLD_PAYLOAD` + sha)apply 進 B 不 hold → B commit → `strip-p5-prov` → **負對照先做**:在 B 上 hold OTA `-wbox rc9-unclaimed` 進 A → A trial 內 helper log `boot rc=9 verdict=unclaimed`(mutant)→ rollback 回 B(期限內,無 bad-slot)→ **正向**:V 進 A 不 hold → A commit → helper log `boot rc=9 verdict=legacy`、AP key / lock-status / authorized_keys / mesh-expected 前後相同(v3:負對照先做(B=wsl.9 上 hold OTA `-wbox rc9-unclaimed` 進 A → trial 內 `boot rc=9 verdict=unclaimed` → rollback)→ 正向(V 進 A 不 hold → commit → `boot rc=9 verdict=legacy`、四項不變) | [wbox-B 型,在 A trial] | hold→commit / A / R |
 | `prov-claim-254` | 既有 + killpoint 段(`push-helper test` + `claim-after-persist` → sysrq → replay 同 `owner_tag_key`)+ 空 `authorized_keys`(同一 ssh 批次 bind) | `helper-clientchal` [bind,重開前] → 攻擊者 ClientChal 被接受 | — / A / F |
 | `prov-netjoin-254` | `net-apply --first` → `code=0`、state=member、wireless == prov.net、overrides == prov、`rm=1`、setkey 警告 | `helper-nojoinop` [bind] → 無 owner-op 的 `--first` code=0 | — / A / F |
 | `prov-netjoin-fleet-254` | **02 先 `claim.verify`**(F38;需 02 lab key,`pk_proof`)→ fleet 值經 fd 3:04 join → 入網(`batctl n` 有 02)→ 02 join → 入網;還原:04 F;02 = p5-restore + overlay-restore + 重開(經 mesh) | — | — / A / F(02 F;副作用 §7.2) |
@@ -383,18 +383,18 @@
 | `prov-trial-busy-254` | OTA V hold → B trial `claim` → `E_BUSY`(7) | `helper-notrial` [bind 在 B trial + restart] → 被接受 | hold / A / F |
 | `prov-overlay-corrupt-254` | 寫垃圾進 A `prov.cbor` → 重開 → `overlay record unusable:` + 以 p5 重建、gen 相等 | `helper-nogen` [wbox-B hold 進 B → B 內寫垃圾 → **restart helper**(不重開)] → 不重建 | — / A / F |
 | `prov-overlay-wipe-254` | 清 upper → 重開 → state、`device_id` 不變 | `-wbox 96-norestore` [wbox-B] | — / A / R |
-| `prov-downgrade-254` | characterization 同 v2 | — | hold / A / F |
-| 鏈 0 | 同 v2 | 無 bypass | hold / A / F |
+| `prov-downgrade-254` | claimed → OTA wsl.9 hold → 還原、LOCKED、`ttylogin=1`、p5 prov 檔不刪(characterization,無鑑別力) | — | hold / A / F |
+| 鏈 0 | p1-impl §5.4:apply V 進 B + cmdline `batman_bypass=1` → 受控重開 → `none` 登入 → `unknown(bypass)`、不產身分、persist 拒、96 exit 1 | 無 bypass | hold / A / F |
 | autocommit (1) | `-wbox radio1-off` revert → `TRIAL-REVERTED … reason=mesh not joined/reachable (0/…)` 或 `member: HaLow mesh interface not up …`(實作時以 `health_ok` 的 `why` 字串表為準);bad-slot 順序 §4.3 | 本身 | revert / A |
 | (3) | member → **重開** → OTA V hold → radio-only 行 + `mesh join required: 0` + `is healthy and HELD` | 與 (6) 互為對照 | hold / A |
 | (6)(取代 (5)) | 兩臂:(6a) `sysupgrade -T` 後直接 `batman-slot apply`(無 `ota-armed.mesh`)→ `member: no usable ota-armed.mesh — neighbours required (fail-closed)` + `mesh join required: 1`;(6b) 手寫舊 boot_id 的 `ota-armed.mesh` 後直接 apply → 無 `no usable` 行、`mesh join required: 1`;兩臂都 `otalog AC UNHEALTHY first_why=mesh not joined/reachable` → **480 s 內 `back_to_a`**(無 bad-slot) | 與 (3) 互為對照 | hold + back_to_a / A |
 | (7) | 04 在 A 在 mesh;02 hold OTA V 進 B → `HELD` → **02 `back_to_a`**(不 release;02 B 已是 V,不 brewrite)→ 04 `-wbox chan` revert → 04 `TRIAL-REVERTED`,04 otalog `S1 ARMED-MESH … m=joined`;02 全程 committed A | — | 02 hold+back / 04 revert / 兩台 A |
 | (8) | P1 三臂(F12、F14):臂 1 `ble-ok` 在 + `btmgmt power off` → `WARN ble: … (boot_id=… hci0_powered=0 …)` + HELD;臂 2 `ble-ok` 在、BT 正常 → `WARN … (… hci0_powered=1 … adv_registered_once=0 …)`(**P1 characterization;P2 後期望無 WARN**);臂 3 `ble-ok` 不在(`state-set`)→ 無 WARN 行 + HELD | 三臂互為對照 | hold / A |
 | (9) | `-wbox helper-flap` hold,04 有 `ble-ok`:health 永不 stale(F14 `Tick` 在啟動)→ WARN 行含 health 內容、HELD;`release` → commit(P-U5)→ 跨槽還原;**P1 期只證「helper flap 不阻擋 HELD / commit」,characterization**;真正的 L39(provd flap)= §6.3 `prov-provd-dos` | — | hold→commit / 跨槽 |
-| (10) | 同 v2 | — | hold / A |
+| (10) | member 單台 → OTA V hold → `is healthy and HELD` | — | hold / A |
 | `prov-misc-254` | L38(96 的 superblock 壞出口 → 以呼叫字串定位,F13)、L42、L43、L51(`sock: unexpected`)、L11 / L9 / L10 / L27 / L3 | 各 mutant | hold / A / F |
 | `prov-verbs-254` | p1-impl §5.6 正向含 `settings.get`、`settings.set hostname` → `E_UNSUPPORTED`(6,reason rename-pending)、未知 key → `E_SCHEMA`(20)、`owner.add / remove`、`ssh_keys.set`、`diag.bundle`、`qr` | 沙箱 | — / A / F |
-| `prov-eeprom-hooks-254` | 同 v2 | 1.5.12 rootfs | WSL |
+| `prov-eeprom-hooks-254` | 對解出的 rc rootfs:shim 對所有 key `READ` rc 1;PATH 假 `vcgencmd` 回 `dropbear_authorized_keys` / `device_password` / `default_wifi_key` / `mm_region` → 讀者(96、95、morse.sh)不採用 | 1.5.12 rootfs | WSL |
 
 ### 6.3 節點(乙部,H3)
 | 單位 | 程序與判定(§8 對應列) | 負對照 | tier |
