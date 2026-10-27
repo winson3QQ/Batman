@@ -58,7 +58,7 @@ cat > "$B/sync" <<'EOF'
 exit 0
 EOF
 chmod +x "$B"/* "$T/dropbear.init"
-HASH='$6$abcdefghijklmnop$0123456789012345678901234567890123456789012345678901234567890123456789012345678901234/'
+HASH='$6$abcdefghijklmnop$0a234567890a234567890a234567890a234567890a234567890a234567890a234567890a2345678901234/'
 
 # setup <root-field> [instances]: fresh state
 setup(){
@@ -107,12 +107,12 @@ setup "$HASH"; run --
 expect "no flag: an existing \$ hash is kept" '[ "$(root_field)" = "$HASH" ]'
 
 # 3 invalid root fields are refused, shadow untouched
-for bad in 'plain' '$6$a:b' '' '!' '$6$short$abc' '$6$rounds=999$salt$0123456789012345678901234567890123456789012345678901234567890123456789012345678901234/'; do
+for bad in 'plain' '$6$a:b' '' '!' '$6$short$abc' '$6$rounds=999$salt$0a234567890a234567890a234567890a234567890a234567890a234567890a234567890a2345678901234/'; do
 	setup ""; printf '%s\n' "$bad" > "$T/bad.in"; STDIN=$T/bad.in run -- --hash-stdin
 	expect "bad field [$bad] -> rc 3, shadow untouched" '[ "$RC" = 3 ] && [ -z "$(root_field)" ]'
 done
 # v8 (§5.3): --hash-stdin takes every hash musl can verify, $5$ / $1$ included
-for good in '$5$abcdefghijklmnop$0123456789012345678901234567890123456789012' '$1$abcdefgh$0123456789012345678901'; do
+for good in '$5$abcdefghijklmnop$0a234567890a234567890a234567890a23456789012' '$1$abcdefgh$0a234567890a2345678901'; do
 	setup ""; printf '%s\n' "$good" > "$T/good.in"; STDIN=$T/good.in run -- --hash-stdin
 	expect "--hash-stdin [${good%%\$0*}…] -> rc 0, written" '[ "$RC" = 0 ] && [ "$(root_field)" = "$good" ]'
 done
