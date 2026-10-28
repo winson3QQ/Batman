@@ -108,3 +108,4 @@ scripts/node/prov-lease-254.sh	rm -rf /tmp/run/batman-prov-test$	prov deadman: r
 scripts/dv/prov-254.sh	/tmp/run/batman-prov-test([^-a-z]|$)	host side: removes the root-only killpoint dir (rm -rf, never follows a top-level symlink) and tests for its existence (P9); nothing reads a decision from it
 scripts/dv/prov-*-254.sh	/tmp/run/batman-prov-test([^-a-z]|$)	unit scripts: same as prov-254.sh (remove / existence test only)
 scripts/node/prov-p9-254.sh	^KPD=\$P9R/tmp/run/batman-prov-test$	preflight P9: the root-only killpoint dir, only tested for existence (read-only judge; P9R is empty on a node)
+scripts/node/prov-sec-254.sh	^D=/tmp/run/batman-prov$	tier-A judge, read only: the helper socket dir under root-only /tmp/run (created root:471 0750 by the helper, PrepareDir); its owner, mode, symlink-ness and contents are what the judge checks
