@@ -469,6 +469,16 @@ pk_proof(){ local r=1 o
 	o=$(q 'pid=/tmp/run/batman-dv/dv-pk.pid; kill $(cat $pid) 2>/dev/null; rm -f $pid; for h in $(nft -a list chain inet fw4 input 2>/dev/null | sed -n "s/.*dv-pk-proof.*# handle \([0-9]*\).*/\1/p"); do nft delete rule inet fw4 input handle $h; done; sleep 1; echo "left=$(nft -a list chain inet fw4 input 2>/dev/null | grep -c dv-pk-proof) listen=$(netstat -ltn 2>/dev/null | grep -c ":2222 ")"')
 	[ "$o" = "left=0 listen=0" ] || { echo "    pk_proof: cleanup incomplete ($o)"; r=1; }
 	return $r; }
+# pk_refused <private key>: on the same publickey-only listener as pk_proof (`none` is refused there, so an OPEN
+# node cannot let any key in by `none`), that key is refused — prov-misc L27's negative control (run 1: against the
+# main dropbear a throwaway key "logged in" by `none`, OpenSSH tries `none` first whatever PreferredAuthentications says)
+pk_refused(){ local r=1 o
+	q 'mkdir -p -m 0700 /tmp/run/batman-dv; pid=/tmp/run/batman-dv/dv-pk.pid; [ -s $pid ] && kill $(cat $pid) 2>/dev/null; nft -a list chain inet fw4 input 2>/dev/null | grep -q dv-pk-proof || nft insert rule inet fw4 input tcp dport 2222 accept comment "dv-pk-proof" 2>/dev/null; dropbear -s -g -p 2222 -P $pid && sleep 1 && [ -s $pid ] && echo LISTEN' | grep -q LISTEN || { echo "    pk_refused: listener did not start"; return 1; }
+	o=$(timeout 30 ssh -p 2222 -o BatchMode=yes -o ConnectTimeout=6 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes -o IdentitiesOnly=yes -i "$1" -o LogLevel=VERBOSE root@$NODE 'echo PKOK' 2>&1 | tr -d '\r')
+	if grep -q 'Permission denied' <<< "$o" && ! grep -q PKOK <<< "$o"; then r=0; else echo "    pk_refused: [$(grep -E 'Authenticated|denied' <<< "$o" | head -2 | tr '\n' ' ')]"; fi
+	o=$(q 'pid=/tmp/run/batman-dv/dv-pk.pid; kill $(cat $pid) 2>/dev/null; rm -f $pid; for h in $(nft -a list chain inet fw4 input 2>/dev/null | sed -n "s/.*dv-pk-proof.*# handle \([0-9]*\).*/\1/p"); do nft delete rule inet fw4 input handle $h; done; sleep 1; echo "left=$(nft -a list chain inet fw4 input 2>/dev/null | grep -c dv-pk-proof) listen=$(netstat -ltn 2>/dev/null | grep -c ":2222 ")"')
+	[ "$o" = "left=0 listen=0" ] || { echo "    pk_refused: cleanup incomplete ($o)"; r=1; }
+	return $r; }
 # pr_claim: legacy -> claimed with this run's owner key (publickey proven first: the claim turns password login off)
 pr_claim(){
 	local r

@@ -127,11 +127,13 @@ svcarms(){
 	if health_wait "$t0"; then ok "bluetoothd back, health ok"; else no "bluetoothd not back: [$HW]"; fi
 	# L27
 	q '/etc/init.d/dropbear restart >/dev/null 2>&1'; sleep 5
-	if pk_proof; then ok "L27: dropbear restarted, the lab key logs in"; else no "L27: the lab key does not log in after the dropbear restart"; fi
+	if [ "$(qr 'echo UP')" = UP ] && pk_proof; then ok "L27: dropbear restarted, the lab key logs in"; else no "L27: the lab key does not log in after the dropbear restart"; fi
 	k=$(mktemp -d); ssh-keygen -q -t ed25519 -N '' -f "$k/k" >/dev/null 2>&1
+	# on the publickey-only listener: the lab key is accepted (pk_proof above) and a throwaway key is refused — against the
+	# main dropbear an OPEN node lets anything in by `none` (run 1 FAIL, 2026-10-28)
 	if [ ! -s "$k/k" ]; then inv "L27 negative control: ssh-keygen made no key"
-	elif timeout 30 ssh -o BatchMode=yes -o LogLevel=ERROR -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$k/k" root@$NODE true 2>/dev/null; then no "L27 negative control: a throwaway key logged in"
-	else ok "L27 negative control: a throwaway key is refused"; fi
+	elif pk_refused "$k/k"; then ok "L27 negative control: a throwaway key is refused (publickey-only listener)"
+	else no "L27 negative control: a throwaway key was not refused"; fi
 	rm -rf "$k"
 	# L3
 	o=$(qr "$ST"); b0=$(field "$o" boot)
