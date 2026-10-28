@@ -52,5 +52,5 @@ if ! qr '/usr/bin/batman-provhelper --version >/dev/null 2>&1'; then
 else
 	half 1 || { pr_abort "negative half"; pr_result; exit 1; }
 fi
-pr_end wrote-b
+pr_end
 pr_result

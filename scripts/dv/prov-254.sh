@@ -23,6 +23,7 @@ set -u
 NODE=${NODE:-10.41.1.3}; PEER=${PEER:-10.41.1.1}; MAC=${MAC:-88:a2:9e:b5:6c:89}
 REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 PR_OUT=${PR_OUT:-//wsl.localhost/Ubuntu-24.04/home/yello/out}; PR_OUT_WSL=${PR_OUT_WSL:-/home/yello/out}
+REPO_WSL=${REPO#//wsl.localhost/Ubuntu-24.04}   # the repo as WSL sees it (scripts/dv/wsl-rootfs.sh runs there)
 PR_UNIT=${PR_UNIT:?PR_UNIT = the unit name (prov-<x>-254)}
 case "$PR_UNIT" in prov-*-254) ;; *) echo "FAIL bad PR_UNIT $PR_UNIT"; exit 2 ;; esac
 RUN=${RUN:-p$(echo "${PR_UNIT#prov-}" | tr -dc 'a-z0-9' | cut -c1-14)$(date +%m%d%H%M%S)}
@@ -112,13 +113,13 @@ pr_payload(){
 	grep -q "^$PSHA  batman-$v-ekh-bcm2711-ab-payload\.tar\.gz\$" "$sums" || { echo "FAIL $PAYF does not match its SHA256SUMS"; return 1; }
 	b=$PR_OUT_WSL/$v/ekh-bcm2711/batman-$v-ekh-bcm2711-ab-payload.tar.gz
 	# the stamp is EXTRACTED and must be a regular file in a real etc/ (no -cat: a symlink is never followed; review r2 B-n4)
-	PSTAMP=$(wsl_ bash -c "t=\$(mktemp -d) && tar -xzf '$b' -C \$t root.squashfs && unsquashfs -q -no-xattrs -d \$t/r \$t/root.squashfs etc/batman-build >/dev/null 2>&1; f=\$t/r/etc/batman-build; [ -d \$t/r/etc ] && [ ! -L \$t/r/etc ] && [ -f \$f ] && [ ! -L \$f ] && cat \$f; r=\$?; rm -rf \$t; exit \$r" | tr -d '\r') \
+	PSTAMP=$(wsl_ bash "$REPO_WSL/scripts/dv/wsl-rootfs.sh" stamp "$b" | tr -d '\r') \
 		&& [ -n "$PSTAMP" ] || { echo "FAIL cannot read etc/batman-build (a regular file) from $v's root.squashfs"; return 1; }
 	[ "$(sed -n 's/^BATMAN_VERSION=//p' <<< "$PSTAMP")" = "$v" ] || { echo "FAIL $v's rootfs says BATMAN_VERSION=$(sed -n 's/^BATMAN_VERSION=//p' <<< "$PSTAMP")"; return 1; }
 	return 0
 }
 # pr_rootfs_cat <version> <path>: one file of the payload's rootfs on stdout (WSL)
-pr_rootfs_cat(){ wsl_ bash -c "t=\$(mktemp -d) && tar -xzf '$PR_OUT_WSL/$1/ekh-bcm2711/batman-$1-ekh-bcm2711-ab-payload.tar.gz' -C \$t root.squashfs && unsquashfs -cat \$t/root.squashfs '$2'; r=\$?; rm -rf \$t; exit \$r"; }
+pr_rootfs_cat(){ wsl_ bash "$REPO_WSL/scripts/dv/wsl-rootfs.sh" cat "$PR_OUT_WSL/$1/ekh-bcm2711/batman-$1-ekh-bcm2711-ab-payload.tar.gz" "$2"; }
 # pr_wbox_checks <version>: a -wbox payload is pushed only when it carries the product gate, its own witness, and the
 # protected set (the slot decision code) byte-equal to the normal build of the same rc (254-h23 §19.3, §22.4)
 PROTSET="usr/sbin/batman-slot usr/bin/batman-autocommit etc/init.d/batman-autocommit usr/lib/batman/otatrace.sh usr/lib/batman/rundir.sh usr/lib/batman/bootfacts.sh usr/lib/batman/meshjoin.sh"
@@ -281,7 +282,7 @@ pr_brewrite(){
 pr_needs_person(){
 	local m="NEEDS-PERSON $PR_UNIT ($RUN): $* — snapshot /opt/batdata/dv-prov/$RUN and the dirty flag are kept on $NODE"
 	echo "$m"; [ -n "${DV_DIR:-}" ] && echo "$m" >> "$DV_DIR/needs-person.txt"
-	DNODE_BLOCKED=1; fails=$((fails + 1)); return 1
+	DNODE_BLOCKED=1; fails=$((fails + 1)); PR_PERSON=1; return 1
 }
 pr_finish_snap(){ local o; o=$(nb finish "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^FINISHED $RUN" <<< "$o" && PR_SNAPPED=0; }
 pr_release(){
@@ -294,7 +295,8 @@ pr_abort(){
 	no "ABORT: $*"
 	if [ "$PR_SNAPPED" = 1 ]; then
 		if pr_restore; then
-			if [ "$PR_WROTE_B" = 1 ]; then pr_brewrite || pr_needs_person "abort ($*): B rewrite failed"; fi
+			# a failed B rewrite keeps the snapshot and the dirty flag for the person (finish only when B is V again)
+			if [ "$PR_WROTE_B" = 1 ] && ! pr_brewrite; then pr_needs_person "abort ($*): B rewrite failed"; pr_release; return 1; fi
 			pr_finish_snap
 		else pr_needs_person "abort ($*): restore failed"; PR_BEGUN=0; pr_unlock; return 1; fi
 	fi
@@ -367,7 +369,8 @@ pr_begin(){
 	return 0
 }
 pr_on_exit(){ local rc=$?
-	if [ "$PR_BEGUN" = 1 ]; then
+	if [ "$PR_BEGUN" = 1 ] && [ "${PR_PERSON:-0}" = 1 ]; then pr_release   # a person takes over: no second restore
+	elif [ "$PR_BEGUN" = 1 ]; then
 		if [ "$PR_SNAPPED" = 1 ] && [ "$PR_RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; pr_abort "unexpected exit"; else pr_release; fi
 	fi
 	pr_unlock; }
@@ -468,3 +471,25 @@ pr_claim(){
 # pr_info: "state=<s> gen=<g> owners=<n> rm=<r>"
 pr_info(){ pr_pc owner.pem -- info | sed -n 's/^RESULT info.state code=0 state=\([a-z]*\) gen=\([0-9]*\) owners=\([0-9]*\) rm=\([a-z0-9]*\).*/state=\1 gen=\2 owners=\3 rm=\4/p'; }
 pr_keys_drop(){ wsl_ rm -rf "$WSLK"; q "rm -rf $PCD"; }
+
+# ---- member on a random test mesh (254-p1-impl §4.4 single node: 04 alone, channel unchanged, never JOINED) ----------
+# pr_member: claim + net-apply --first (key made on the node) -> member; then, as every member -> OTA (§4.3 F33),
+# batman-slot reboot committed. Sets PR_MEMBER_GEN (the generation after the join).
+pr_member(){
+	local mesh r i s b0
+	mesh="dvm-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+	PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$mesh' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\""
+	pr_keys && pr_pc_place && pr_claim || return 1
+	r=$(pr_pc owner.pem FD3="$PR_FD3" -- net-apply --first "$OWNER"); grep -q "RESULT net.apply code=0 " <<< "$r" || { no "join: $r"; return 1; }
+	i=$(pr_info); case " $i " in *" state=member "*) ;; *) no "not member after the join: $i"; return 1 ;; esac
+	PR_MEMBER_GEN=$(sed -n 's/.*gen=\([0-9]*\).*/\1/p' <<< "$i"); PR_MESH=$mesh
+	ok "member of the test mesh $mesh (gen $PR_MEMBER_GEN)"
+	s=$(qr "$ST"); b0=$(field "$s" boot)
+	q "(batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &)"
+	pr_find 900 "$b0" || return 1
+	pr_pc_place || return 1
+	return 0
+}
+# pr_trial_line <ERE> [tries]: the first logread line of this boot matching ERE (polled; the trial's autocommit logs it
+# once at its start)
+pr_trial_line(){ local t=0 r; while [ $t -lt "${2:-30}" ]; do r=$(qr "logread | grep -m1 -E '$1'"); [ -n "$r" ] && { echo "$r"; return 0; }; sleep 10; t=$((t + 1)); done; return 1; }
