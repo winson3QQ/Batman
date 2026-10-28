@@ -17,7 +17,9 @@ PR_UNIT=prov-ac-ble-254
 . "$(dirname "$0")/prov-254.sh"
 BOK=/opt/batdata/state/ble-ok
 HF='. /usr/lib/batman/rundir.sh; cat $RUNDIR/batman-prov.health 2>/dev/null'
-nwarn(){ qr "logread | grep -c 'autocommit.*WARN ble:'"; }
+# autocommit's log() writes each line twice — logger (user.*) and /dev/kmsg (kernel:) — so count the syslog copy only
+# (run 1, 2026-10-28: "2 WARN ble lines" in arms A and C)
+nwarn(){ qr "logread | grep -v ' kernel: ' | grep -c 'batman-autocommit: WARN ble:'"; }
 drop_bok(){
 	q "/etc/init.d/batman-provhelper stop >/dev/null 2>&1; sleep 1; pidof batman-provhelper >/dev/null && echo STILL" | grep -q STILL && { no "the helper did not stop"; return 1; }
 	o=$(nb state-set "$RUN" ble-ok absent); grep -q 'STATE-SET ble-ok=absent' <<< "$o" || { no "state-set absent: $o"; return 1; }
