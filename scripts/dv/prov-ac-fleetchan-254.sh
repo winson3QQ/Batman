@@ -62,7 +62,7 @@ part2(){
 	l=$(qr "grep 'boot=$b0 .*S1 ARMED-MESH slot=B' $TRACE | tail -1")
 	case "$l" in *"m=joined"*) ok "arm boot: ${l#* S1 }";; *) no "arm boot ARMED-MESH: [$l] (want m=joined)";; esac
 	pr_wait_reverted || { [ "$(field "$(qr "$ST")" slot)" = B ] && back_to_a; return 1; }
-	r=$(qr "grep 'TRIAL-REVERTED' /opt/batdata/log/autocommit.log | tail -1")
+	r=$PR_REVERT_LINE   # this trial boot's line only (pr_wait_reverted, §23.9)
 	case "$r" in *"mesh not joined/reachable"*) ok "revert reason: ${r##*reason=}";; *) no "revert reason: [$r]";; esac
 }
 pr_begin 3600 || { pr_result; exit 1; }

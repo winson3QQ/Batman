@@ -17,7 +17,7 @@ pr_begin 3000 || { pr_result; exit 1; }
 pr_ota_b "$PR_V.dirty.wbox-radio1-off" B || { pr_abort "OTA radio1-off"; pr_result; exit 1; }
 r=$(qr 'uci -q get wireless.radio1.disabled'); [ "$r" = 1 ] && ok "B trial: radio1.disabled=1 (the mutant is in effect)" || no "B trial radio1.disabled=[$r]"
 if pr_wait_reverted; then
-	r=$(qr "grep 'TRIAL-REVERTED' /opt/batdata/log/autocommit.log | tail -1")
+	r=$PR_REVERT_LINE   # this trial boot's line only (pr_wait_reverted, §23.9)
 	case "$r" in *"mesh not joined/reachable"*|*"member: HaLow mesh interface not up"*) ok "revert reason names the mesh: ${r##*reason=}";; *) no "revert reason: [$r]";; esac
 	pr_end revert
 else

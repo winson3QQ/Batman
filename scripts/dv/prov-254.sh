@@ -10,7 +10,8 @@
 #            a missed landing: disarm, clear the hold, retry once, then pr_needs_person
 #   pr_find  wait for the node (fixed address + eth MAC), re-stage, re-acquire the lease with the remaining budget
 #   pr_lease_renew <+secs>    lease + deadman, same lock
-#   pr_wait_reverted          (REVERT units) TRIAL-REVERTED within the trial's own deadline + DEFER_MAX + 120 s
+#   pr_wait_reverted          (REVERT units) TRIAL-REVERTED of THIS trial boot within the trial's own deadline +
+#                             DEFER_MAX + 120 s -> PR_REVERT_LINE; a reason naming "wbox test image" = FAIL (§19.3)
 #   back_to_a                 leave a B trial / B committed for A (rollback + reboot committed)
 #   pr_restore                p5 + overlay back, reboot committed, compare diffs=0
 #   pr_brewrite               B back to V (sysupgrade -n V + hold -> HELD -> back_to_a)
@@ -181,6 +182,27 @@ pr_trial_guard(){
 }
 # What it is (review A-m11 / B-m6): a guard against mistakes and simple mutants — the upper is sampled at landing and
 # again here, autoboot.txt by mtime only (a deliberate `touch -d` defeats it); not a tamper-proof monitor.
+# Deadline-revert trials never reach back_to_a, so pr_trial_guard_end never ran for them (§23.9 audit, item 14). The
+# waiting loops call pr_trial_guard_tick <trial boot8> on every round: in ONE ssh it reads the autoboot.txt mtime and the
+# protected paths in the upper FIRST, then whether this boot logged TRIAL-REVERTED. autocommit logs that line before its
+# batman-slot rollback writes autoboot.txt (batman-autocommit:238-239), so a sample taken while it is absent was read
+# before the revert's own write; only such samples count. pr_trial_guard_close judges the last one (none = INVALID).
+pr_trial_guard_tick(){
+	local o
+	[ -n "$PR_AB_MT" ] || return 0
+	o=$(timeout 30 ssh $SSHO root@$NODE "m=\$(date -r /boot/autoboot.txt +%s); u=\$(for x in $PROT_NODE; do [ -e /overlay/upper/\$x ] && echo \$x; done | tr '\n' ' '); r=\$(logread | grep -c 'TRIAL-REVERTED'); echo \"BOOT=\$(cut -c1-8 /proc/sys/kernel/random/boot_id) MT=\$m REV=\$r UP=\$u\"" 2>/dev/null | tr -d '\r')
+	case "$o" in "BOOT=$1 "*" REV=0 "*) PR_TG_LAST=$o ;; esac
+	return 0
+}
+pr_trial_guard_close(){
+	local m u
+	[ -n "$PR_AB_MT" ] || return 0
+	if [ -z "${PR_TG_LAST:-}" ]; then inv "trial guard: no sample of the trial before its revert (end-of-trial check not made)"; PR_AB_MT=""; return 0; fi
+	m=$(sed -n 's/.* MT=\([0-9]*\) .*/\1/p' <<< "$PR_TG_LAST"); u=${PR_TG_LAST#* UP=}
+	if [ -z "$u" ]; then ok "trial: no protected path in /overlay/upper at the last sample before the revert"; else no "trial: protected path(s) in /overlay/upper before the revert: $u"; fi
+	if [ "$m" = "$PR_AB_MT" ]; then ok "trial: /boot/autoboot.txt unchanged up to the last sample before the revert"; else no "trial: /boot/autoboot.txt changed during the trial ($PR_AB_MT -> $m) — not by batman-slot"; fi
+	PR_AB_MT=""; PR_TG_LAST=""
+}
 pr_trial_guard_end(){	# in the trial, before batman-slot's own rollback writes autoboot.txt
 	local m b
 	b=$(qr "for x in $PROT_NODE; do [ -e /overlay/upper/\$x ] && echo \$x; done" | tr '\n' ' ')
@@ -260,19 +282,30 @@ pr_wait_reverted(){
 	case "$dl" in ''|*[!0-9]*) no "no autocommit deadline in the trial"; return 1 ;; esac
 	t0=$(mono); say "waiting for TRIAL-REVERTED (deadline uptime ${dl}s + 600 + 120)"
 	while :; do
-		o=$(timeout 30 ssh $SSHO root@$NODE 'logread | grep -E "is healthy and HELD|revert deferred:" | tail -2' 2>/dev/null | tr -d '\r')
+		# logread is this boot's ring; the boot id comes with it and a line of another boot is not this trial's (§23.9)
+		o=$(timeout 30 ssh $SSHO root@$NODE 'echo "BOOT=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"; logread | grep -E "is healthy and HELD|revert deferred:" | tail -2' 2>/dev/null | tr -d '\r')
+		case "$o" in "BOOT=$b0"*) o=$(tail -n +2 <<< "$o") ;; *) o="" ;; esac
 		grep -q "is healthy and HELD" <<< "$o" && { no "the trial is HELD — the mutant had no effect"; back_to_a; return 1; }
 		if grep -q "revert deferred:" <<< "$o" && [ "$o" != "${dfl:-}" ]; then dfl=$o; pr_lease_renew +600 || return 1; fi   # once per new deferred line (review A-m3)
+		pr_trial_guard_tick "$b0"
 		s=$(timeout 30 ssh $SSHO root@$NODE "$ST" 2>/dev/null | tr -d '\r')
 		[ -n "$s" ] && [ "$(field "$s" boot)" != "$b0" ] && break
 		[ $(( $(mono) - t0 )) -gt $(( dl + 600 + 120 + 300 )) ] && { no "no revert within the budget"; return 1; }
 		sleep 10
 	done
+	pr_trial_guard_close
 	pr_find 900 "$b0" || return 1
-	o=$(qr "grep 'TRIAL-REVERTED' /opt/batdata/log/autocommit.log | tail -1; tail -3 /opt/batdata/log/boot-reasons.log")
-	if grep -q "TRIAL-REVERTED" <<< "$o" && [ "$(field "$PR_STATE" slot)" = A ]; then ok "TRIAL-REVERTED, back on A: $(head -1 <<< "$o")"; return 0; fi
-	grep -qiE 'panic|watchdog' <<< "$o" && { inv "trial panic (hard reboot, no TRIAL-REVERTED): $o"; return 1; }
-	no "no TRIAL-REVERTED after the trial ($o)"; return 1
+	# only THIS trial boot's line counts (§23.9 boot8): an older revert in the log is not this trial's
+	PR_REVERT_LINE=$(qr "grep 'TRIAL-REVERTED boot=$b0 ' /opt/batdata/log/autocommit.log | tail -1")
+	o=$(qr 'tail -3 /opt/batdata/log/boot-reasons.log')
+	if [ -n "$PR_REVERT_LINE" ] && [ "$(field "$PR_STATE" slot)" = A ]; then
+		ok "TRIAL-REVERTED of trial boot $b0, back on A: $PR_REVERT_LINE"
+		# §19.3: an expected revert must not be the wbox gate's (that means the hold was not written / was DISCARDED)
+		case "$PR_REVERT_LINE" in *"wbox test image"*) no "the revert reason is the wbox gate's ($PR_REVERT_LINE) — the hold was not written or was DISCARDED"; return 1 ;; esac
+		return 0
+	fi
+	grep -qiE 'panic|watchdog' <<< "$o" && { inv "trial panic (hard reboot, no TRIAL-REVERTED of boot $b0): $o"; return 1; }
+	no "no TRIAL-REVERTED of trial boot $b0 ($(qr "grep 'TRIAL-REVERTED' /opt/batdata/log/autocommit.log | tail -1"); $o)"; return 1
 }
 
 # ---- restore ----------------------------------------------------------------------------------------------------------

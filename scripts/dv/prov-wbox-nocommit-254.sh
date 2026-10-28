@@ -50,11 +50,13 @@ trial(){
 			return 1 ;;
 		*"revert deferred:"*) pr_lease_renew +600 >/dev/null ;;
 		esac
+		pr_trial_guard_tick "$b0"
 		s=$(timeout 30 ssh $SSHO root@$NODE "$ST" 2>/dev/null | tr -d '\r')
 		[ -n "$s" ] && [ "$(field "$s" boot)" != "$b0" ] && break
 		[ $(( $(mono) - t0 )) -gt $(( dl + 600 + 420 )) ] && { no "no revert within the budget"; return 1; }
 		sleep 10
 	done
+	pr_trial_guard_close
 	pr_find 900 "$b0" || return 1
 	[ "$(field "$PR_STATE" slot)" = A ] && [ "$(field "$PR_STATE" trial_rc)" = 1 ] && ok "back on A committed after the deadline" || { no "after the trial: $PR_STATE"; return 1; }
 	o=$(qr "grep 'boot=$b0 .*AC WBOX-NOCOMMIT' /opt/batdata/log/ota-trace.log | tail -1")

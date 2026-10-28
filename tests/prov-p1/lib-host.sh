@@ -52,4 +52,18 @@ kill $rp 2>/dev/null
 echo 0 > "$T/clk"; o=$(T="$T" timeout 20 bash -c '. "$1"; pr_wait_result "$2/out" "$2/pid" 120 180 rbarm.sh; echo "rc=$?"' _ "$T/fw2.sh" "$T/n" 2>&1)
 want "pr_wait_result: the live rbarm.sh past 180 s -> ALIVE rc 2" "$o" 'ALIVE*rc=2'
 pkill -P $ap 2>/dev/null; kill $ap 2>/dev/null   # the child first: killed after its parent it is orphaned
+# pr_trial_guard_tick / _close (§23.9 item 14): a fake ssh on PATH answers the samples in order; only samples of the
+# trial boot taken before TRIAL-REVERTED count, the last one is judged
+mkdir -p "$T/fb"; printf '#!/bin/sh\nn=$(cat "%s/tick.n"); n=$((n + 1)); echo $n > "%s/tick.n"; sed -n "${n}p" "%s/tick.in"\n' "$T" "$T" "$T" > "$T/fb/ssh"; chmod 755 "$T/fb/ssh"
+tg(){ printf '%s\n' "$@" > "$T/tick.in"; echo 0 > "$T/tick.n"
+	( PATH="$T/fb:$PATH"; fails=0; invalid=0; PR_AB_MT=100; PR_TG_LAST=""
+	  for _ in "$@"; do pr_trial_guard_tick aaaa1111; done; pr_trial_guard_close; echo "F=$fails I=$invalid" ) 2>&1; }
+o=$(tg "BOOT=aaaa1111 MT=100 REV=0 UP=" "BOOT=aaaa1111 MT=200 REV=1 UP=" "BOOT=bbbb2222 MT=300 REV=0 UP=")
+want "guard tick: samples after TRIAL-REVERTED / of another boot ignored -> unchanged" "$o" '*unchanged up to the last sample before the revert*F=0 I=0'
+o=$(tg "BOOT=aaaa1111 MT=100 REV=0 UP=" "BOOT=aaaa1111 MT=150 REV=0 UP=")
+want "guard tick: autoboot.txt changed before the revert -> FAIL" "$o" '*changed during the trial (100 -> 150)*F=1 I=0'
+o=$(tg "BOOT=aaaa1111 MT=100 REV=0 UP=usr/sbin/batman-slot ")
+want "guard tick: a protected path in the upper -> FAIL" "$o" '*protected path(s) in /overlay/upper before the revert: usr/sbin/batman-slot*F=1 I=0'
+o=$(tg "BOOT=bbbb2222 MT=100 REV=0 UP=" "BOOT=aaaa1111 MT=100 REV=1 UP=")
+want "guard tick: no valid sample -> INVALID" "$o" '*no sample of the trial before its revert*F=0 I=1'
 echo "LIB-HOST cases=$n fails=$f"; [ "$n" -gt 0 ] && [ "$f" = 0 ]
