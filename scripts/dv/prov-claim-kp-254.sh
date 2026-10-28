@@ -33,7 +33,9 @@ t1=$(sed -n 's/.*code=0 tag=\([0-9a-f]*\).*/\1/p' <<< "$r1"); t2=$(sed -n 's/.*c
 pr_restore || { pr_abort "restore"; pr_result; exit 1; }
 # ---- 3 negative control: helper-clientchal accepts the attacker's response
 pr_pc_place && pr_push_helper helper-clientchal || { pr_abort "helper-clientchal"; pr_result; exit 1; }
-r=$(pr_pc owner.pem -- claim-attacker "$ATK" "$ENC" "$OWNER"); echo "    $r"
+# claim-attacker-chal also sends the ClientChal the response was made over (key 6) — the only input the mutant adopts;
+# plain claim-attacker never sends it, so the mutant had nothing to take (M6 2026-10-29: code 3, "no effect")
+r=$(pr_pc owner.pem -- claim-attacker-chal "$ATK" "$ENC" "$OWNER"); echo "    $r"
 grep -q "RESULT claim.verify code=0 " <<< "$r" && ok "negative control: helper-clientchal accepts the attacker's response" || no "negative control: [$r] (want code=0) — the mutant had no effect"
 pr_end
 pr_result

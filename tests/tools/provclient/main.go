@@ -10,7 +10,7 @@
 //	                              and read back from stdin ("SIG <hex>"), so the owner key never reaches the node.
 //	provclient sign <keyfile>     on the WSL host: answers SIGN lines with an ES256 (low-s) signature.
 //	provclient keygen <keyfile>   a fresh P-256 owner key (0600) — one per run; prints the public key hex.
-//	                              node ops: info, claim, claim-attacker, replay, ssh-keys, root-reset, rename, verb,
+//	                              node ops: info, claim, claim-attacker, claim-attacker-chal, replay, ssh-keys, root-reset, rename, verb,
 //	                              and (net.go) net-apply --first|--update, leave, owner-add, owner-remove, diag.
 //	provclient selftest <vectors.json>
 //
@@ -487,7 +487,7 @@ func cmdNode(args []string) {
 	op := args[0]
 	// secrets first, as root (never stdin: stdin is the signer channel)
 	var claimSecret []byte
-	if op == "claim" || op == "claim-attacker" || op == "replay" {
+	if op == "claim" || op == "claim-attacker" || op == "claim-attacker-chal" || op == "replay" {
 		b, err := os.ReadFile("/etc/batman-prov/identity/claim.secret")
 		if err != nil || len(b) != 32 {
 			die("claim.secret: %v", err)
@@ -547,7 +547,7 @@ func cmdNode(args []string) {
 		cert, _ := r.get(1).([]byte)
 		sn, _ := r.get(2).([]byte)
 		fmt.Printf("RESULT info.cert code=%d cert_sha=%s sn=%x\n", code, short(cert), sn)
-	case "claim", "claim-attacker":
+	case "claim", "claim-attacker", "claim-attacker-chal":
 		ownerPub := hexArg(1)
 		encPub := hexArg(2)
 		code, r := cl.call("info.cert", cmap{})
@@ -558,12 +558,19 @@ func cmdNode(args []string) {
 		sn, _ := r.get(2).([]byte)
 		nn, _ := cl.nonce()
 		bound := ownerPub
-		if op == "claim-attacker" { // the buyer's response, the attacker's owner_pub (§4.1 negative test)
+		if op != "claim" { // the buyer's response, the attacker's owner_pub (§4.1 negative test)
 			bound = hexArg(3)
 		}
-		resp := checkMac(claimSecret, clientChal(nn, h, cert, bound), sn)
+		chal := clientChal(nn, h, cert, bound)
+		resp := checkMac(claimSecret, chal, sn)
 		sigEnc := cl.sign("owner-enc", append([]byte("batman-owner-enc-v1"), encPub...))
-		code, r = cl.call("claim.verify", cmap{{uint64(1), h}, {uint64(2), resp}, {uint64(3), ownerPub}, {uint64(4), encPub}, {uint64(5), sigEnc}})
+		req := cmap{{uint64(1), h}, {uint64(2), resp}, {uint64(3), ownerPub}, {uint64(4), encPub}, {uint64(5), sigEnc}}
+		if op == "claim-attacker-chal" {
+			// also hand the node the ClientChal the response was made over (key 6): only the helper-clientchal mutant
+			// reads it (prov-claim-kp's negative control); a release helper refuses the unknown key outright
+			req = append(req, kv{uint64(6), chal})
+		}
+		code, r = cl.call("claim.verify", req)
 		tag, _ := r.get(1).([]byte)
 		adv, _ := r.get(2).([]byte)
 		pw, _ := r.get(3).(string)
