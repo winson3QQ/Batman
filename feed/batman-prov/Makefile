@@ -25,6 +25,8 @@ GO_PKG_LDFLAGS:=-s -w
 # the helper binary for the marker and the killpoint strings.
 ifeq ($(BATMAN_PROV_TEST),1)
 GO_PKG_TAGS:=prov_test
+else
+GO_PKG_TAGS:=
 endif
 
 include $(INCLUDE_DIR)/package.mk
