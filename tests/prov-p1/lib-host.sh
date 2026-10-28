@@ -96,4 +96,14 @@ wbc "$WB.dirty.wbox-misc-l38" "a misc-* variant is never pushed" '*is a misc-* v
 PSTAMP="BATMAN_VERSION=$WBT
 BATMAN_WBOX=test"; rm -rf "$T/out/$WB.dirty"
 wbc "$WBT" "no normal build of the same rc -> refused" '*no normal build*rc=1'
+# a non-batman-provision patch (the real tests/wbox/helper-exit1.patch): its witness is looked for where the patch's
+# install line puts the file (/usr/bin/batman-provhelper), not at files/<name> (M6 2026-10-29 FAIL)
+WBH=$WB.dirty.wbox-helper-exit1; rm -rf "$T/out"; mkdir -p "$T/out/$WB.dirty/ekh-bcm2711"; : > "$T/out/$WB.dirty/ekh-bcm2711/SHA256SUMS"
+wtree "$WB.dirty" 1; wtree "$WBH" 1; mkdir -p "$T/rfs/$WBH/usr/bin"
+PSTAMP="BATMAN_VERSION=$WBH
+BATMAN_WBOX=helper-exit1"
+printf '#!/bin/sh\n# WBOX-helper-exit1-9a04be37\nexit 1\n' > "$T/rfs/$WBH/usr/bin/batman-provhelper"
+wbc "$WBH" "helper-exit1: witness found at its install destination usr/bin/batman-provhelper" '*witness ok*rc=0'
+printf '#!/bin/sh\nexit 1\n' > "$T/rfs/$WBH/usr/bin/batman-provhelper"
+wbc "$WBH" "helper-exit1: no witness at the destination -> refused" '*witness WBOX-helper-exit1-9a04be37 not found*usr/bin/batman-provhelper*rc=1'
 echo "LIB-HOST cases=$n fails=$f"; [ "$n" -gt 0 ] && [ "$f" = 0 ]

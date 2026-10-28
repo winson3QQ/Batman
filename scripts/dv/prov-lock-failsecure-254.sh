@@ -13,16 +13,23 @@ PR_UNIT=prov-lock-failsecure-254
 OLD=${DV_OLD_VERSION:-1.5.12-wsl.9+f2f2bf6.fw07f2063}
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
-ROOTF="grep '^root:' /etc/shadow | cut -d: -f2 | sha256sum | cut -c1-16"
+# root's shadow field by kind, never the hash itself: empty / locked-<! or *> / hash-<sha16 of the field> / other
+ROOTF="f=\$(grep '^root:' /etc/shadow | cut -d: -f2); case \"\$f\" in '') echo empty ;; '!'|'*') echo \"locked-\$f\" ;; \\\$*) echo \"hash-\$(printf '%s' \"\$f\" | sha256sum | cut -c1-16)\" ;; *) echo other ;; esac"
 SHROOT='mkdir -p -m 0700 /tmp/run/batman-dv; m=$(mktemp -d /tmp/run/batman-dv/p5s.XXXXXX) && mount -o ro,noload /dev/mmcblk0p5 $m && { [ -s $m/identity/shadow-root ] && echo shadow-root || echo none; umount $m; }; rmdir $m'
 offered(){ timeout 30 ssh -v $NONEO -o LogLevel=DEBUG root@$NODE true 2>&1 | tr -d '\r' | sed -n 's/.*Authentications that can continue: //p' | tail -1; }
 precondition(){	# claim cut at claim-before-shadow by sysrq; the node back shut
-	local r0 o
+	local r0 r1 o
 	pr_keys && pr_pc_place && pk_proof || return 1
 	r0=$(qr "$ROOTF")
 	PR_FD3=""; pr_killpoint claim-before-shadow claim "$OWNER" "$ENC" || return 1
 	o=$(qr 'cat /opt/batdata/state/lock-status'); [ "$o" = LOCKED ] && ok "after the cut claim: LOCKED (F37)" || no "after the cut claim: lock-status [$o]"
-	[ "$(qr "$ROOTF")" = "$r0" ] && ok "root shadow field = before the injection" || no "root shadow field changed by the cut claim"
+	# the cut claim must not have handed out a password: the field is as before, or an EMPTY one was locked to "!" by
+	# the boot lock (F37: prov_apply_lock turns an empty root field into "!", prov-lock.sh:167-168 — 04's S0 is empty,
+	# M6 2026-10-29); a new hash, or anything else, FAILs
+	r1=$(qr "$ROOTF")
+	if [ "$r1" = "$r0" ]; then ok "root shadow field = before the injection ($r1)"
+	elif [ "$r0" = empty ] && [ "$r1" = 'locked-!' ]; then ok "root shadow field: empty before, locked to ! by the boot lock (F37) — no password handed out"
+	else no "root shadow field changed by the cut claim ($r0 -> $r1)"; fi
 	[ "$(qr "$SHROOT")" = none ] && ok "p5 has no identity/shadow-root" || no "p5 has a shadow-root after the cut"
 	return 0
 }

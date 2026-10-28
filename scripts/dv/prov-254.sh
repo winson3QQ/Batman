@@ -157,7 +157,16 @@ pr_wbox_checks(){
 	done
 	if [ "$name" != test ]; then
 		wit=$(sed -n 's/^# wbox-witness: //p' "$REPO/tests/wbox/$name.patch" | head -1)
-		files=$(sed -n 's#^+++ b/feed/[^/]*/files/##p' "$REPO/tests/wbox/$name.patch")
+		# where each patched file lands in the rootfs: batman-provision's files/ mirrors the rootfs; any other package's
+		# files/X goes where the patch's own `$(INSTALL_*) ./files/X $(1)/<dest>` line puts it (helper-exit1 installs
+		# files/wbox-helper-exit1.sh as /usr/bin/batman-provhelper — M6 2026-10-29 searched the wrong path); the helper's
+		# Go source -> the helper binary. A patched file with no known destination = FAIL (never search the wrong place).
+		files=$(sed -n 's#^+++ b/feed/batman-provision/files/##p' "$REPO/tests/wbox/$name.patch")
+		for x in $(sed -n 's#^+++ b/feed/\([^/]*\)/files/\(.*\)$#\1:\2#p' "$REPO/tests/wbox/$name.patch" | grep -v '^batman-provision:'); do
+			d=$(sed -n "s#^+.*\$(INSTALL_[A-Z]*) \./files/${x#*:} \$(1)/\([^ ]*\).*#\1#p" "$REPO/tests/wbox/$name.patch" | head -1)
+			[ -n "$d" ] || { echo "FAIL $v: no install line in $name.patch for feed/${x%%:*}/files/${x#*:} — cannot tell where its witness lands"; return 1; }
+			files="$files $d"
+		done
 		grep -q '^+++ b/feed/batman-prov/src/' "$REPO/tests/wbox/$name.patch" && files="$files usr/bin/batman-provhelper"
 		for f in $files; do n=$(( n + $(pr_rootfs_cat "$v" "$f" 2>/dev/null | grep -ac -- "$wit") )); done
 		[ "$n" -ge 1 ] || { echo "FAIL $v: witness $wit not found in its rootfs ($files)"; return 1; }
