@@ -44,7 +44,7 @@ mono(){ cut -d. -f1 /proc/uptime; }
 q(){ timeout "${QT:-120}" ssh $SSHO root@$NODE "$@" 2>/dev/null | tr -d '\r'; }
 qr(){ local o rc i; for i in 1 2 3 4 5 6; do o=$(timeout 90 ssh $SSHO root@$NODE "$@" 2>/dev/null); rc=$?; case $rc in 255|124) sleep 10 ;; *) printf '%s' "$o" | tr -d '\r'; [ -n "$o" ] && echo; return $rc ;; esac; done; return 255; }
 qp(){ timeout 60 ssh $SSHO root@$PEER "$@" 2>/dev/null | tr -d '\r'; }
-nb02(){ qr "batctl n 2>/dev/null | tail -n +3 | grep -qiw -- $PEERMAC"; }   # 02 (by its wlh0 MAC) is in 04's batman neighbour table
+nb02(){ qr "batctl n -n 2>/dev/null | tail -n +3 | grep -qiw -- $PEERMAC"; }   # 02 (by its wlh0 MAC) is in 04's batman neighbour table; -n: once /etc/bat-hosts is filled after boot, plain `batctl n` prints names (BCM2711-45d7_wlh0), not MACs
 nb(){ timeout 900 ssh $SSHO root@$NODE "${PB_ENV:-}" sh -s -- "$@" < "$PB" 2>&1 | tr -d '\r'; }
 pl(){ q "RUN_ID=$RUN sh $PRD/prov-lease-254.sh $*"; }
 pw(){ QT=${QT:-180} q "RUN_ID=$RUN sh $PRD/prov-wbox-254.sh $*"; }
