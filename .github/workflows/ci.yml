@@ -27,10 +27,10 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
       - name: "#254 preflight P9 node judge on fixtures ([all] / wbox slots / prov leftovers) under busybox ash"
         run: bash tests/prov-p1/p9-judge.sh scripts/node/prov-p9-254.sh
-      - name: "#254 prov-wbox-nocommit rollback arm offline — PASS / INVALID x4 / FAIL-RECOVERED x2 / FAIL-NEEDS-PERSON / other refusal; survives a HUP (+ flip)"
+      - name: "#254 rollback arm / launcher / rbfix offline — every §22.1 precondition, FAIL-RECOVERED (+ openmanetd), FAIL-NEEDS-PERSON, rbfix preconditions, pty drop + plain-& negative control"
         run: bash tests/prov-p1/rbarm.sh
-      - name: "#254 prov-misc dry-run scan under /proc churn — INSLEEP found / NOSLEEP when the group has none"
-        run: bash tests/prov-p1/misc-insleep.sh
+      - name: "#254 prov-misc dry-run arm offline — atomic pid + presence, judge (order / hold / cap / lingering member), node-side INLOOP, session scan under /proc churn"
+        run: bash tests/prov-p1/misc-dry.sh
       - name: "#254 -wbox variants well formed (scope, protected set, witness, sh -n, nohold, helpers.list) — lint-wbox + its negative self-test"
         run: bash scripts/lint-wbox.sh && bash tests/wbox/test-lint-wbox.sh
       - name: "#254 lint-install — every feed/batman-provision file has exactly one Makefile install line (+ its negative self-test)"

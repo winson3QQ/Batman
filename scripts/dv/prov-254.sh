@@ -396,7 +396,7 @@ pr_wait_result(){
 		o=$(qr "grep '^RESULT=' $f 2>/dev/null"); [ -n "$o" ] && { echo "$o"; return 0; }
 		e=$(( $(mono) - t0 ))
 		if [ "$e" -ge "$first" ]; then
-			a=$(qr "p=\$(cat $pf 2>/dev/null); [ -n \"\$p\" ] && kill -0 \"\$p\" 2>/dev/null && tr '\0' ' ' < /proc/\$p/cmdline 2>/dev/null | grep -q '$w' && echo alive || echo dead")
+			a=$(qr "p=\$(cat $pf 2>/dev/null); [ -n \"\$p\" ] && kill -0 \"\$p\" 2>/dev/null && tr '\0' ' ' 2>/dev/null < /proc/\$p/cmdline | grep -q '$w' && echo alive || echo dead")
 			if [ "$a" = dead ]; then	# it may have written the line just before it ended
 				o=$(qr "grep '^RESULT=' $f 2>/dev/null"); [ -n "$o" ] && { echo "$o"; return 0; }
 				echo ""; return 1

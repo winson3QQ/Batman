@@ -18,7 +18,7 @@ b=$(cut -c1-8 "${PRB_BOOTID:-/proc/sys/kernel/random/boot_id}" 2>/dev/null)
 [ -n "${1:-}" ] && [ "$b" = "$1" ] || r "INVALID rebooted since the arm started (boot $1 -> ${b:-unreadable}): no commit here"
 for c in "$P"/[0-9]*/cmdline; do
 	p=${c%/cmdline}; p=${p##*/}; [ "$p" = $$ ] && continue
-	tr '\0' ' ' < "$c" 2>/dev/null | grep -q 'batman-slot' && r "INVALID a batman-slot process is running (pid $p) — its slot_lock"
+	tr '\0' ' ' 2>/dev/null < "$c" | grep -q 'batman-slot' && r "INVALID a batman-slot process is running (pid $p) — its slot_lock"
 done
 fa=$("$BS" fw-part A)
 i=0; while [ $i -lt 3 ]; do "$R/usr/sbin/batman-slot" commit >/dev/null 2>&1 && break; sleep 5; i=$((i + 1)); done

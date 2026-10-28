@@ -1,8 +1,12 @@
 #!/bin/bash
 # scripts/dv/prov-misc-254.sh — #254 tier-B unit prov-misc-254 (docs/design/254-h23-harness.md §17; supersedes §6.2's row):
-#   dry-run arms (§17.3/17.4) on the committed slot — white-box prov-state / ota-armed.mesh, an autocommit dry run killed
-#   at its "mesh join required" line, each arm's state put back:
-#     L38 a (99zz -> helper member/radio while waiting) required: 1; b (99zz only) prov=unclaimed after >= 60 s;
+#   dry-run arms (§17.3/17.4, the method of §19.1 / §20.1 / §21.3 / §22.3 / §23.3) on the committed slot — white-box
+#   prov-state / ota-armed.mesh; an autocommit dry run (DRYRUN + FORCE_TRIAL + TIMEOUT=1, hold-consumed made if absent ->
+#   the revert=0 path, no watchdog) started from a staged dry.<tag>.sh (atomic pid file), judged node-side
+#   (scripts/node/prov-misc-254.sh judge: the verdict line within 90 s (L38) / 30 s, its session empty 15 s later, "hold
+#   present" before "gate until"; any miss = INVALID); each arm's state put back and compared (RESTORED-SAME):
+#     L38 a (99zz -> helper member/radio while waiting: node-side INLOOP = the gate line, then >= 3 s without the
+#         verdict) required: 1; b (99zz only) prov=unclaimed after >= 58 s of node uptime;
 #         c (another boot's line) prov=none; neg: misc-l38 bound -> b answers < 60 s, a stays unclaimed
 #     L42 member/radio, no arm file -> "no usable ota-armed.mesh" + required: 1; a correct radio arm file -> armed in
 #         radio-only mode + required: 0 (so (6a)'s "no file after apply" assertion discriminates); neg: misc-l42 -> 0
@@ -27,28 +31,39 @@ hts(){ local h; h=$(qr "$HEALTH"); h=${h#*ts=}; echo "${h%% *}"; }
 bindac(){	# <misc-lNN>: its autocommit (dv-prov-tools) into W and bound over /usr/bin/batman-autocommit
 	local d=$PR_TOOLS/$PR_V/$1 h o
 	[ -f "$d/batman-autocommit" ] && (cd "$d" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1 || { no "no verified $1 autocommit in $d (scripts/dv-prov-tools.sh)"; return 1; }
-	[ -z "$(qr 'pgrep -f "batman-autocommit run"')" ] || { no "a batman-autocommit run is alive before the bind"; return 1; }
+	case "$(mn precond)" in *acrun*) no "a batman-autocommit run is alive before the bind"; return 1 ;; esac
 	scp -q $SSHO "$d/batman-autocommit" root@$NODE:$W/$1.ac && q "chmod 755 $W/$1.ac" || { no "scp of $1"; return 1; }
 	h=$(sha256sum < "$d/batman-autocommit" | cut -c1-64); o=$(pw bind "$1.ac" "$h" /usr/bin/batman-autocommit); say "$o"
 	[ "$(qr "grep -c 'WBOX-$1-' /usr/bin/batman-autocommit")" -ge 1 ] || { no "$1 not in effect after the bind"; pw unbind-all >/dev/null; return 1; }
 }
 # dr <tag> <misc variant|-> <setps args> <setarm args> [<mid setps args>|<mid setarm args>]: one dry-run arm;
-# sets DOUT (its stdout), DEL (seconds to the judgement) and ARMAFTER (the arm file when it was judged)
+# sets DOUT (its stdout), DEL (node seconds from the start to the verdict line) and ARMAFTER (the arm file when it was
+# judged). Returns 1 only when the unit cannot go on (save / bind / push failed); an arm the node judges INVALID is
+# reported with inv and its judgement lines are then not trusted by the callers (the INVALID makes the unit INVALID).
 dr(){
-	local tag=$1 b=$2 ps=$3 arm=$4 mid=${5:-} o
+	local tag=$1 b=$2 ps=$3 arm=$4 mid=${5:-} o cap=30 j
+	case "$tag" in l38*) cap=90 ;; esac   # §20.1: the L38 arms wait up to 60 s for the helper
 	o=$(mn save); grep -q '^SAVED' <<< "$o" || { no "$tag save: $o"; return 1; }
 	[ "$b" = - ] || bindac "$b" || { mn restore >/dev/null; return 1; }
 	say "$tag: $(mn setps "$ps") / $(mn setarm "$arm")"
-	o=$(mn start "$tag"); grep -q PGID <<< "$o" || { no "$tag: $o"; mn restore >/dev/null; [ "$b" = - ] || pw unbind-all >/dev/null; return 1; }
+	o=$(mn start "$tag")
+	case "$o" in
+		STARTED*) say "$tag: $o" ;;
+		*) inv "$tag: the dry run did not start as required ($o)"; mn stop "$tag" >/dev/null; mn restore >/dev/null; [ "$b" = - ] || pw unbind-all >/dev/null; DOUT=""; DEL=""; return 0 ;;
+	esac
 	if [ -n "$mid" ]; then
-		o=$(mn insleep "$tag"); [ "$o" = INSLEEP ] || inv "$tag: the dry run never reached its wait loop ($o)"
-		say "$tag mid: $(mn setps "${mid%%|*}") / $(mn setarm "${mid#*|}")"
+		o=$(QT=60 mn inloop "$tag")
+		if [ "$o" = INLOOP ]; then say "$tag mid (node-side INLOOP): $(mn setps "${mid%%|*}") / $(mn setarm "${mid#*|}")"
+		else inv "$tag: not in the wait loop when it had to be switched ($o — arm-a.$tag.verdict)"; fi
 	fi
-	o=$(QT=200 mn wait "$tag" 150); DEL=$(sed -n 's/^ELAPSED //p' <<< "$o" | head -1); DOUT=$(grep -v '^ELAPSED' <<< "$o")
-	say "$tag (${DEL}s): $(grep -E 'mesh join required|no usable|armed in radio-only|WBOX-misc' <<< "$DOUT" | sed 's/^batman-autocommit: //' | tr '\n' '|')"
+	o=$(QT=$((cap + 60)) mn judge "$tag" "$cap"); j=$(head -1 <<< "$o"); DOUT=$(tail -n +2 <<< "$o")
+	DEL=$(sed -n 's/.* del=\([0-9]*\)$/\1/p' <<< "$j")
+	say "$tag (${DEL:-?}s): $(grep -E 'mesh join required|no usable|armed in radio-only|WBOX-misc' <<< "$DOUT" | sed 's/^batman-autocommit: //' | tr '\n' '|')"
+	case "$j" in "JUDGE ok "*) ;; *) inv "$tag: ${j#JUDGE }" ;; esac
 	ARMAFTER=$(qr 'cat /opt/batdata/state/ota-armed.mesh 2>/dev/null')
-	o=$(mn stop "$tag"); [ "$o" = STOPPED ] || no "$tag: $o"
+	o=$(mn stop "$tag"); case "$o" in STOPPED|KILLED*) [ "$o" = STOPPED ] || say "$tag stop: $o" ;; *) no "$tag stop: $o" ;; esac
 	o=$(mn restore); say "$tag restore: $(echo $o)"
+	grep -q '^RESTORED-SAME' <<< "$o" || no "$tag: the arm's state did not come back ($(grep '^RESTORED' <<< "$o"))"
 	grep -q HELPER-SAME <<< "$o" || inv "$tag: the helper restarted during the arm ($o) — prov-state may have been rewritten"
 	if [ "$b" != - ]; then
 		o=$(pw unbind-all); grep -q 'UNBIND-ALL ok' <<< "$o" || no "$tag unbind: $o"
@@ -62,19 +77,20 @@ dryarms(){
 	local s o
 	# §23.9 / §21.3: no sysupgrade running, no fw-override this boot (a dry run would end at :315), no p6 hold flag.
 	# "[/]sbin": the plain pattern matched this very ssh shell's command line (rerun 2026-10-28: INVALID sysupgrade-running)
-	o=$(qr 'pgrep -f "[/]sbin/sysupgrade" >/dev/null && echo sysupgrade-running; . /usr/lib/batman/rundir.sh; [ -e "$RUNDIR/batman-fw-override" ] && echo fw-override; [ -e /opt/batdata/state/autocommit-hold-commit ] && echo hold-flag')
-	[ -z "$o" ] || { inv "dry-run preconditions: $(echo $o)"; return 1; }
 	pw prep >/dev/null
 	scp -q $SSHO "$REPO/scripts/node/prov-misc-254.sh" root@$NODE:$W/ && q "chmod 700 $W/prov-misc-254.sh" || { no "push prov-misc-254.sh"; return 1; }
+	# §20.1 / §21.3 / §23.9: no sysupgrade, no fw-override this boot (the dry run would end at :315), no p6 hold flag or
+	# hold-once, no batman-autocommit run alive — found by scanning /proc on the node (no pgrep -f, §19.1)
+	o=$(mn precond); [ -z "$o" ] || { inv "dry-run preconditions: $(echo $o)"; return 1; }
 	# L38
 	dr l38a - "this 99zz unclaimed 0" "none" "this helper member radio|none" || return 1
-	if has "mesh join required: 1 (prov=member mesh_expect=radio radio_required=1)"; then ok "L38 a: switched to the helper's line -> required: 1 (prov=member)"; else no "L38 a: [$(mjr)]"; fi
+	if has "mesh join required: 1 (prov=member mesh_expect=radio radio_required=1)"; then ok "L38 a: switched to the helper's line while waiting (node-side INLOOP) -> required: 1 (prov=member)"; else no "L38 a: [$(mjr)]"; fi
 	dr l38b - "this 99zz unclaimed 0" "none" || return 1
-	if has "mesh join required: 0 (prov=unclaimed" && [ "${DEL:-0}" -ge 60 ]; then ok "L38 b: waited ${DEL}s for the helper, then 99zz's prov=unclaimed"; else no "L38 b: ${DEL}s [$(mjr)]"; fi
+	if has "mesh join required: 0 (prov=unclaimed" && [ "${DEL:-0}" -ge 58 ] 2>/dev/null; then ok "L38 b: waited ${DEL}s (node uptime) for the helper, then 99zz's prov=unclaimed"; else no "L38 b: ${DEL}s [$(mjr)]"; fi
 	dr l38c - "other helper member radio" "none" || return 1
 	if has "(prov=none"; then ok "L38 c: another boot's prov-state -> prov=none"; else no "L38 c: [$(mjr)]"; fi
 	dr l38neg misc-l38 "this 99zz unclaimed 0" "none" || return 1
-	if has "mesh join required: 0 (prov=unclaimed" && [ "${DEL:-99}" -lt 60 ]; then ok "L38 negative control: misc-l38 does not wait (${DEL}s)"; else no "L38 negative control: ${DEL}s [$(mjr)] — the mutant had no effect"; fi
+	if has "mesh join required: 0 (prov=unclaimed" && [ "${DEL:-99}" -lt 58 ] 2>/dev/null; then ok "L38 negative control: misc-l38 does not wait (${DEL}s)"; else no "L38 negative control: ${DEL}s [$(mjr)] — the mutant had no effect"; fi
 	dr l38nega misc-l38 "this 99zz unclaimed 0" "none" "this helper member radio|none" || return 1
 	if has "(prov=unclaimed"; then ok "L38 negative control a: misc-l38 keeps 99zz's unclaimed"; else no "L38 negative a: [$(mjr)]"; fi
 	# L42
