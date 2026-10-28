@@ -21,6 +21,7 @@
 # Every judgement line is "PASS ..." / "FAIL ..." / "INVALID ..." / "NEEDS-PERSON ..."; pr_result prints the verdict.
 set -u
 NODE=${NODE:-10.41.1.3}; PEER=${PEER:-10.41.1.1}; MAC=${MAC:-88:a2:9e:b5:6c:89}
+PEERMAC=${PEERMAC:-a8:dd:9f:4d:c7:60}   # 02's mesh interface (wlh0): the neighbour must be 02, not any node (review A-m6 / B-m5); pr_begin checks it on 02
 REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 PR_OUT=${PR_OUT:-//wsl.localhost/Ubuntu-24.04/home/yello/out}; PR_OUT_WSL=${PR_OUT_WSL:-/home/yello/out}
 REPO_WSL=${REPO#//wsl.localhost/Ubuntu-24.04}   # the repo as WSL sees it (scripts/dv/wsl-rootfs.sh runs there)
@@ -43,6 +44,7 @@ mono(){ cut -d. -f1 /proc/uptime; }
 q(){ timeout "${QT:-120}" ssh $SSHO root@$NODE "$@" 2>/dev/null | tr -d '\r'; }
 qr(){ local o rc i; for i in 1 2 3 4 5 6; do o=$(timeout 90 ssh $SSHO root@$NODE "$@" 2>/dev/null); rc=$?; case $rc in 255|124) sleep 10 ;; *) printf '%s' "$o" | tr -d '\r'; [ -n "$o" ] && echo; return $rc ;; esac; done; return 255; }
 qp(){ timeout 60 ssh $SSHO root@$PEER "$@" 2>/dev/null | tr -d '\r'; }
+nb02(){ qr "batctl n 2>/dev/null | tail -n +3 | grep -qiw -- $PEERMAC"; }   # 02 (by its wlh0 MAC) is in 04's batman neighbour table
 nb(){ timeout 900 ssh $SSHO root@$NODE "${PB_ENV:-}" sh -s -- "$@" < "$PB" 2>&1 | tr -d '\r'; }
 pl(){ q "RUN_ID=$RUN sh $PRD/prov-lease-254.sh $*"; }
 pw(){ QT=${QT:-180} q "RUN_ID=$RUN sh $PRD/prov-wbox-254.sh $*"; }
@@ -368,8 +370,8 @@ pr_end(){	# [revert] [wrote-b]
 PROTB_LS='ls -ln --full-time /opt/batdata/state/slot-B.protected 2>/dev/null || ls -ln /opt/batdata/state/slot-B.protected'
 pr_peer_after(){	# 02: a neighbour of 04 again (180 s window) and not rebooted (in a run over 3600 s a joinwatch reboot = WARN)
 	local t0 b; t0=$(mono)
-	while [ $(( $(mono) - t0 )) -lt 180 ]; do qr 'batctl n 2>/dev/null | tail -n +3 | grep -q .' && break; sleep 10; done
-	qr 'batctl n 2>/dev/null | tail -n +3 | grep -q .' && ok "02 is a mesh neighbour of 04" || no "02 not a neighbour of 04 within 180 s"
+	while [ $(( $(mono) - t0 )) -lt 180 ]; do nb02 && break; sleep 10; done
+	nb02 && ok "02 ($PEERMAC) is a mesh neighbour of 04" || no "02 ($PEERMAC) not a neighbour of 04 within 180 s"
 	b=$(qp 'cut -c1-8 /proc/sys/kernel/random/boot_id')
 	if [ "$b" = "$PR_PEER_BOOT" ]; then ok "02 not rebooted"
 	elif [ $(( $(mono) - PR_T0 )) -gt 3600 ] && [ "$(qp 'echo "$(batman-slot active) $(batman-slot is-trial >/dev/null 2>&1; echo $?)"')" = "A 1" ]; then echo "WARN $PR_UNIT: 02 rebooted during a run over 3600 s (joinwatch, F33) and is back on A committed"
@@ -391,7 +393,7 @@ pr_p9(){	# the P9 subset of pr_begin: S0 slot condition, nothing left of an earl
 	o=$(qr 'echo "dirty=[$(cat /opt/batdata/state/dv-prov-dirty 2>/dev/null)] norm=[$(cat /opt/batdata/state/dv-prov-normalising 2>/dev/null)] binds=$(awk "index(\$4, \"/batman-dv/wbox/\")" /proc/self/mountinfo | wc -l) kpdir=$([ -e /tmp/run/batman-prov-test ] && echo 1 || echo 0) marker=$(/usr/bin/batman-provhelper --version 2>/dev/null | grep -c BATMAN_PROV_TEST_BUILD_7f3a) helper=$(pidof batman-provhelper >/dev/null && echo up || echo down) leases=[$(cat /tmp/run/batman-dv/bt/lease-prov /tmp/run/batman-dv/bt/lease 2>/dev/null | tr "\n" " ")] peers=$(batctl n 2>/dev/null | tail -n +3 | grep -c .)"')
 	say "04: $o"
 	case "$o" in *"dirty=[] norm=[] binds=0 kpdir=0 marker=0 helper=up "*) ;; *) echo "FAIL leftovers of an earlier run / helper not up: $o"; r=1 ;; esac
-	[ "$(field "$o" peers)" -ge 1 ] 2>/dev/null || { echo "FAIL 02 is not a mesh neighbour of 04"; r=1; }
+	nb02 || { echo "FAIL 02 ($PEERMAC) is not a mesh neighbour of 04 (neighbours: $(field "$o" peers))"; r=1; }
 	return $r
 }
 # pr_begin <secs> [upper=<variant-file>:<sha>] [helper=<variant-file>:<sha>[:killpoint=<p>]]
@@ -403,6 +405,7 @@ pr_begin(){
 	PR_V=$(field "$(qr "$ST")" ver); PR_PEER_BOOT=$(qp 'cut -c1-8 /proc/sys/kernel/random/boot_id')
 	PR_PROTB_LS=$(qr "$PROTB_LS")
 	[ -n "$PR_PEER_BOOT" ] || { PR_BEGUN=0; pr_unlock; no "02 unreachable at $PEER"; return 1; }
+	o=$(qp "cat /sys/class/net/wlh0/address"); [ "$o" = "$PEERMAC" ] || { PR_BEGUN=0; pr_unlock; no "02 wlh0 is [$o], not PEERMAC $PEERMAC: the neighbour checks would test the wrong node"; return 1; }
 	PR_DEADLINE=$(( $(mono) + secs )); o=$(pr_acquire "$secs") || { echo "$o"; PR_BEGUN=0; pr_unlock; no "lease"; return 1; }; echo "$o"
 	q "mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
 	o=$(nb snap "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^SNAP $RUN" <<< "$o" || { pr_release; no "snap"; return 1; }
@@ -580,7 +583,7 @@ pr_normalise(){
 		B) ;;
 		*) pr_needs_person "normalise: active slot [$(field "$s" slot)]"; return 1 ;;
 	esac
-	qr 'batctl n 2>/dev/null | tail -n +3 | grep -q .' || { no "normalise: 02 is not a neighbour of 04 (the A trial could need it)"; return 1; }
+	nb02 || { no "normalise: 02 is not a neighbour of 04 (the A trial could need it)"; return 1; }
 	pr_lock; PR_BEGUN=1; PR_SNAPPED=0; trap 'pr_on_exit' EXIT; trap 'say "host interrupted"; exit 130' INT TERM
 	PR_V=$v; PR_DEADLINE=$(( $(mono) + 1800 ))
 	o=$(pr_acquire 1800) || { echo "$o"; no "normalise: lease"; return 1; }; echo "$o"

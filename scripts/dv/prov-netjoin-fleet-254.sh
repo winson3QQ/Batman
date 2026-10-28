@@ -52,7 +52,7 @@ join02(){	# 02 (inside as02): JOIN 04's network — its signed net_config, 02's 
 	if [ "$id" = "$NETID04" ]; then ok "02 joined 04's network (net_id $id)"; else no "02's net_id [$id] != 04's [$NETID04]"; return 1; fi
 	member_ok
 }
-neigh(){ local t=0; while [ $t -lt 18 ]; do qr 'batctl n 2>/dev/null | tail -n +3 | grep -q .' && return 0; sleep 10; t=$((t + 1)); done; return 1; }
+neigh(){ local t=0; while [ $t -lt 18 ]; do nb02 && return 0; sleep 10; t=$((t + 1)); done; return 1; }
 fleet(){
 	local w4 w2 o
 	MAC02=$(qp 'cat /sys/class/net/eth0/address'); [ -n "$MAC02" ] || { no "02 unreachable"; return 1; }

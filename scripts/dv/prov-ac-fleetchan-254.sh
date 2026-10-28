@@ -43,8 +43,8 @@ part1(){
 	qp "rm -f $HOLDF $PR_PAY; sync"
 	[ "$(field "$PS" slot)" = A ] && [ "$(field "$PS" trial_rc)" = 1 ] && [ "$(field "$PS" badslot)" = "[]" ] && ok "02 back on A committed" || { pr_needs_person "02 not A committed after the back-to-A ($PS)"; return 1; }
 	PR_PEER_BOOT=$(field "$PS" boot)   # pr_peer_after: 02 must not reboot again from here
-	t=0; while [ $t -lt 18 ] && ! qr 'batctl n 2>/dev/null | tail -n +3 | grep -q .'; do sleep 10; t=$((t + 1)); done
-	qr 'batctl n 2>/dev/null | tail -n +3 | grep -q .' && ok "02 a neighbour of 04 again" || { no "02 not a neighbour of 04 after part 1"; return 1; }
+	t=0; while [ $t -lt 18 ] && ! nb02; do sleep 10; t=$((t + 1)); done
+	nb02 && ok "02 a neighbour of 04 again" || { no "02 not a neighbour of 04 after part 1"; return 1; }
 }
 part2(){
 	local c0 s b0 i c n bad=0 l
