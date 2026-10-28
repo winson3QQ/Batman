@@ -99,7 +99,7 @@
 ### 2.1 產品接縫(PR-P1b)
 | 元件 | 位置 | 說明 |
 |---|---|---|
-| killpoint 檔 | `cmd/batman-provhelper/killpoint_provtest.go`(`//go:build prov_test`,實作)、`killpoint_release.go`(`//go:build !prov_test`,`armKillpoint()` 回 "");單元測試另放 `killpoint_test.go`(兩種 tag 都編)。**實作檔不得叫 `*_test.go`**:`go build` / `go install` 一律排除 `_test.go`,實作會不進二進位而 `go test` 照樣綠(v5 B-M1) | §4.1.1 |
+| killpoint 檔 | 套件 `batman-prov/seam`(名稱刻意不含 killpoint,§16.10):`points.go`(無 tag,`seam.Point` 整數常數)、`seam_provtest.go`(`//go:build prov_test`,實作)+ `hook_provtest.go`(單元測試用的 `ArmForTest`)、`seam_release.go`(`//go:build !prov_test`,空 `Arm` / `At`);單元測試 `seam_provtest_test.go` / `seam_release_test.go` + `node/seam_points_test.go`。**實作檔不得叫 `*_test.go`**:`go build` / `go install` 一律排除 `_test.go`,實作會不進二進位而 `go test` 照樣綠(v5 B-M1) | §4.1.1 |
 | `--version` | `main.go`:第 1 行 `batman-provhelper <BATMAN_VERSION>`;`prov_test` 第 2 行 `BATMAN_PROV_TEST_BUILD_7f3a`;exit 0 | pre-P1b 偵測 |
 | `prov_test` tag | `feed/batman-prov/Makefile`:`ifeq ($(BATMAN_PROV_TEST),1) GO_PKG_TAGS:=prov_test endif` | §4.1.2 |
 | build gate | firmware `scripts/check-prov-test-gate.sh <rootfs> [<wbox-name>]`,`build-board.sh` 第 7 步 | §4.1.3 |
@@ -162,10 +162,10 @@
 
 #### 4.1.1 killpoint 檔(只在 `prov_test` build;**沒有 CLI 旗標**,helper daemon 啟動時讀檔)
 - 點名封閉:`txn-1`(`prov-txn` + `.txn` 寫完、setkey 前)、`txn-2`(setkey 後、`--prov-only` 前)、`txn-3`(`--prov-only` rc 0 後、overlay rename 前)、`txn-4`(rename 後、`--save` 前)、`txn-5`(`--save` 後、回應前)、`claim-after-persist`、`claim-before-shadow`。
-- 檔案 `/tmp/run/batman-prov-test/killpoint`:目錄 root 0700 非 symlink;檔 root 0600 非 symlink link 1;不符 → log `killpoint: refused (<why>)`;讀完刪;成功 → `killpoint <name>: armed`。
+- 檔案 `/tmp/run/batman-prov-test/killpoint`:目錄 root 0700 非 symlink;檔 root 0600 非 symlink link 1(細則與讀法見 §16.6);不符 → log `killpoint: refused (<why>)`;讀完刪;成功 → `killpoint <name>: armed`。
 - 到點:log `killpoint <name>: sysrq reboot` → `echo b > /proc/sysrq-trigger`(F29:不看 mask;無 sync)。保險:`sleep 2` 仍活著(寫入失敗,例如 `/proc` 唯讀)→ log `killpoint <name>: fallback reboot -f` → `sync` → `reboot -f`。L7 的判定見 §16.1(`sysrq reboot` 行不預期送達主機)。
 - 注入成立四證據:`armed` 行、檔已刪、boot_id 改變、狀態停在該點。
-- release:`armKillpoint()` 回 "";log 無 `killpoint`。
+- release:`seam.Arm` / `seam.At` 是空函式;二進位無 `killpoint`、無點名、無標記(gate 檢查,§16.8)。
 - 測試(CI,root):Go 單元(`-tags prov_test`,temp dir;`sudo -E go test`,F20):0777 / symlink / link 2 / 非 root 擁有 → refused;正確 → armed + 刪;release no-op;mutant 拿掉 link count → FAIL;**skip = FAIL**(job 斷言無 `--- SKIP`)。
 
 #### 4.1.2 `prov_test` build(封閉清單)
@@ -175,7 +175,7 @@
 
 #### 4.1.3 build gate(`check-prov-test-gate.sh <rootfs> [<wbox-name>]`,第 7 步 `$WR/r`)
 - 無 name:helper `go version -m` 的 `-tags` 不含 `prov_test`;`grep -c BATMAN_PROV_TEST_BUILD_7f3a` = 0;`/etc/batman-build` 無 `BATMAN_WBOX=`;rootfs `grep -rl 'WBOX-'` = 0。
-- 有 name:`BATMAN_WBOX=<name>` 行在;VER 含 `.dirty.wbox-<name>`;見證 `grep -rl WBOX-<name>-` ≥ 1;`test` 的見證 = helper 標記;**帶 `prov_test` 的 helper 另斷言 killpoint 實作真的編進去:`strings <helper> | grep -c 'killpoint .*: armed'` ≥ 1**(release = 0,與 §4.1.1「release log 無 `killpoint`」同一字串;擋住實作檔誤命名為 `_test.go` 的情況,v5 B-M1);`go version -m` 無輸出(shell 取代)→ 只以見證判;**init 類 mutant(`chan`)另斷言 `etc/rc.d/S??wbox-*` 存在**(OpenWrt image build 由 postinst `enable`,v4 A-m11)。
+- 有 name:`BATMAN_WBOX=<name>` 行在;VER 含 `.dirty.wbox-<name>`;見證:rootfs 內的見證集合恰為本變體那一個(§16.8);`test` 的見證 = helper 標記;**帶 `prov_test` 的 helper 另斷言 killpoint 實作真的編進去:`strings <helper> | grep -c 'killpoint .*: armed'` ≥ 1**(release = 0,與 §4.1.1「release log 無 `killpoint`」同一字串;擋住實作檔誤命名為 `_test.go` 的情況,v5 B-M1);`go version -m` 無輸出(shell 取代)→ 只以見證判;**init 類 mutant(`chan`)另斷言 `etc/rc.d/S??wbox-*` 存在**(OpenWrt image build 由 postinst `enable`,v4 A-m11)。
 - 負對照(CI `prov-gate-stubs`):`prov_test` helper → FAIL;release → PASS;含 `WBOX-` 的假 rootfs → FAIL;**有 name = `test` 但 helper 以「實作放 `_test.go`」的 mutant 編出(無 `armed` 字串)→ FAIL**。
 
 ### 4.2 `-wbox` 變體(firmware `build-board.sh --wbox <name>`)
@@ -330,7 +330,7 @@
 ### 6.1 CI(無硬體)
 | 測項 | 判定 | 負對照 |
 |---|---|---|
-| `prov-p1-stubs`(擴) | Go 單元以 root 跑(§2.2 CI 那一整串,`PIPESTATUS` + 存檔後數 SKIP),無 SKIP;killpoint 單元(§4.1.1;測試檔 `killpoint_test.go`,實作在 `killpoint_provtest.go`);release no-op | mutant 拿掉 link count;非 root 跑 → SKIP → job FAIL(自測);故意 FAIL 一個單元 → job 紅(管線退出碼自測) |
+| `prov-p1-stubs`(擴) | Go 單元以 root 跑(§2.2 CI 那一整串,`PIPESTATUS` + 存檔後數 SKIP),無 SKIP;killpoint 單元(§4.1.1;`seam` 套件與 `node/seam_points_test.go`,§16.3);release no-op | mutant 拿掉 link count;非 root 跑 → SKIP → job FAIL(自測);故意 FAIL 一個單元 → job 紅(管線退出碼自測) |
 | `prov-gate-stubs` | §4.1.3 四種輸入 | 內建(含「實作放 `_test.go`」mutant → FAIL) |
 | `lint-install`、`lint-wbox` | §2.2、§4.2 | 刪 install 行 / 空 patch / 見證 1 次 / 引用不存在 / tag 不符表 / 檔名前綴錯 → FAIL |
 | `prov-sandbox`(arm64) | §4.4 負測試 → §5.1 案例 | 每案例 `--mutant` |
@@ -359,7 +359,7 @@
 | `prov-leave-ota-254`(L22) | member → leave → 標記刪 → 重開 → OTA V hold → B trial `claimed`、`mesh join required: 0 (prov=claimed mesh_expect=0` | `helper-noleave` [bind] → 標記留 → `mesh join required: 1` | hold / A / F |
 | `prov-ota-254`(L5) | member → 重開 → OTA V hold → B:`:420` 行、`mesh join required: 0 (prov=member`、member、gen 同、wireless 同、上鎖、`.batman-prov-restore` `prov=full`、96 `prov: state=member copied=full` | `-wbox 96-noprov` [wbox-B] → `copied=none` | hold / A / F |
 | `prov-lock-failsecure-254` | `push-helper test killpoint=claim-before-shadow` → claim → sysrq → 重開後(F37)`lock-status=LOCKED`、root 欄 = 注入前、p5 無 `shadow-root` → OTA `-wbox helper-exit1` hold → B:`offered` 只 publickey、LOCKED | 同前置 → OTA wsl.9 hold → UNPROVISIONED(F32) | hold / A / F |
-| `prov-powerloss-254-txn{1..5}`(L7) | `push-helper test killpoint=txn-N` → `net-apply --update` → sysrq → 重開(release helper)→ txn-1:**≥ 120 s 後**(`RemoveTxn` 在 `restoreWireless` rc 0 之後,`main.go:492-494`)`.txn` 刪、wireless 不變;txn-2:≥ 120 s 後 `txn <verb> not committed: restored …`(`main.go:491`)、`action=txn … NOT committed`(`boot.go:127`)、wireless 回舊值、p5 gen 不前進;txn-3:`action=txn … committed (gen n): overlay completed from p5`(`boot.go:120`)、wireless == prov;txn-4(**killpoint 位置 = `RemoveTxn` 之後、`Save` 之前**,`node.go:1118-1120`;重開走無 `.txn` 的 gen 比對 → `in sync`,v4 A-m5):**`--check` rc 5 `p5 stale:`**、`prov.meta` gen n+1、wireless == prov(**overrides 落後到下次入網才補,F39 → 產品殘項 #254**);txn-5:`--check` rc 0;全部:sysrq 行、key 登入 | txn-2 (a):**重開後 ≤ 120 s 內** 先斷言「`.txn` 在 **且** 本次 pid 的 log 無 `not committed: restored`」(不成立 → INVALID,重跑一次;ssh 可達約在 helper 起後 30–60 s,v4 A-m4)→ `mv .txn .txn.dv` + `restart` helper(殺掉帶 Txn 的 goroutine,F8)→ ≥ 150 s 後無 `not committed: restored` 行、wireless 仍新值、`.txn.dv` 在;txn-2 (b):`helper-notxn` [upper];txn-3:**`helper-norebuild`** [upper](F41);txn-1 / 4 / 5:無獨立負對照(明列) | — / A / F |
+| `prov-powerloss-254-txn{1..5}`(L7) | `push-helper test killpoint=txn-N` → `net-apply --update` → sysrq → 重開(release helper)→ txn-1:**≥ 120 s 後**(`RemoveTxn` 在 `restoreWireless` rc 0 之後,`main.go:492-494`)`.txn` 刪、wireless 不變;txn-2:≥ 120 s 後 `txn <verb> not committed: restored …`(`main.go:491`)、`action=txn … NOT committed`(`boot.go:127`)、wireless 回舊值、p5 gen 不前進;txn-3:`action=txn … committed (gen n): overlay completed from p5`(`boot.go:120`)、wireless == prov;txn-4(**killpoint 位置 = `RemoveTxn` 之後、`Save` 之前**,`node.go:1118-1120`;重開走無 `.txn` 的 gen 比對 → `in sync`,v4 A-m5):**`--check` rc 5 `p5 stale:`**、`prov.meta` gen n+1、wireless == prov(**overrides 落後到下次入網才補,F39 → 產品殘項 #254**);txn-5:`--check` rc 0;全部:§16.1 的判定、key 登入 | txn-2 (a):**重開後 ≤ 120 s 內** 先斷言「`.txn` 在 **且** 本次 pid 的 log 無 `not committed: restored`」(不成立 → INVALID,重跑一次;ssh 可達約在 helper 起後 30–60 s,v4 A-m4)→ `mv .txn .txn.dv` + `restart` helper(殺掉帶 Txn 的 goroutine,F8)→ ≥ 150 s 後無 `not committed: restored` 行、wireless 仍新值、`.txn.dv` 在;txn-2 (b):`helper-notxn` [upper];txn-3:**`helper-norebuild`** [upper](F41);txn-1 / 4 / 5:無獨立負對照(明列) | — / A / F |
 | `prov-netupdate-254`(L25、L26) | bind `halow-setkey` `exit 1` + `--on-join` → p5 overrides 不前進;`killpoint=txn-3` + `--on-join` + sysrq → member | bind 不讓路的 config-save [bind] → p5 overrides 前進 | — / A / F |
 | `prov-trial-busy-254`(L21) | OTA V hold → B trial `claim` → `E_BUSY`(7) | `helper-notrial` [bind 在 B trial + restart] → 被接受 | hold / A / F |
 | `prov-overlay-corrupt-254`(L33) | 寫垃圾進 A `prov.cbor` → 重開 → `overlay record unusable:` + 以 p5 重建、gen 相等 | `helper-norebuild` [wbox-B hold 進 B → B 內寫垃圾 → restart](不重開)→ 不重建 | — / A / F |
@@ -569,10 +569,10 @@ claim-lock §11.4 真機 tier B(4 / 4-inj / 4b / 4b' / 4c / 4d / 5)仍未排程(
 ## 15. 實作規格補充(v6 審查 MINOR;**與前文衝突時以本節為準**)
 
 **killpoint 與 CI(v6 A-m1、B-m1、B-m7)**
-1. killpoint 的 log 呼叫固定為單一格式字面值 `log.Printf("killpoint %s: armed", name)`;常數只在 `killpoint_provtest.go` 定義;Go 單元對 log 輸出斷言整行。gate 的 `strings | grep -c 'killpoint .*: armed'` 依賴這一點(拋棄式 arm64 `-s -w -trimpath` build 實測:release 0、prov_test 1、實作放 `_test.go` 0、字串串接 0)。
-2. 單元測試檔拆兩個:`killpoint_provtest_test.go`(`//go:build prov_test`,斷言 armed)與 `killpoint_release_test.go`(`//go:build !prov_test`,斷言 no-op)。
+1. killpoint 的 log 呼叫固定為單一格式字面值 `log.Printf("killpoint %s: armed", name)`;常數只在 `seam/seam_provtest.go` 定義;Go 單元對 log 輸出斷言整行。gate 的 `strings | grep -c 'killpoint .*: armed'` 依賴這一點(拋棄式 arm64 `-s -w -trimpath` build 實測:release 0、prov_test 1、實作放 `_test.go` 0、字串串接 0)。
+2. 單元測試檔拆兩個:`seam/seam_provtest_test.go`(`//go:build prov_test`,斷言 armed)與 `seam/seam_release_test.go`(`//go:build !prov_test`,斷言 no-op)。
 3. CI 的 root Go 步驟**緊接 setup-go**(不放最後;既有「expected-red 步驟放最後」慣例不動),root 跑兩次:`go test -v ./...` 與 `go test -v -tags prov_test ./...`,各自存檔、各自 `PIPESTATUS`、各自數 SKIP = 0,且 `grep -c '^ok ' <log>` ≥ 已知 package 數(對到 0 個測試 = FAIL);`go vet` 同兩次。
-4. 無 name 的 gate 加一條:helper `strings | grep -c 'killpoint'` = 0。`prov-gate-stubs` 的「實作沒進二進位」mutant = 「`killpoint_release.go` 拿掉 build tag 後以 `-tags prov_test` 編出的 helper」(有 `--version` 標記、無 `armed` 字串)。
+4. 無 name 的 gate 加一條:helper `strings | grep -c 'killpoint'` = 0。`prov-gate-stubs` 的「實作沒進二進位」mutant = 「`seam_provtest.go` 改名成 `_test.go`、`seam_release.go` 停用、補一個帶標記的空殼後以 `-tags prov_test` 編出的 helper」(有 `--version` 標記、無 `armed` 字串)。
 
 **`helpers.list`(v6 A-m2、B-m10a)**
 5. `tests/wbox/helpers.list` 入版控,一行 `<name> <prov_test|release> <helper|same>`。`lint-wbox` 從 patch 路徑重算(碰 `feed/batman-prov/src/` → `prov_test`;碰 `feed/batman-prov/**` 或 name = `test` → `helper`),與檔案逐行不等 → FAIL。`build-board.sh --wbox` 讀同一檔決定 `BATMAN_PROV_TEST`,不另設來源。`dv-prov-tools.sh` 雙向斷言:`helper` 者 sha ≠ release 且互異;`same` 者 sha = release;不符 → FAIL「helpers.list 與 payload 不一致(版本錯位?)」。
@@ -624,3 +624,17 @@ claim-lock §11.4 真機 tier B(4 / 4-inj / 4b / 4b' / 4c / 4d / 5)仍未排程(
 9. gate 自測每個 FAIL 案例要對上**原因字串**;新增 marker-only / killpoint-only release helper、讀不到的檔、殘留與疊加見證、release 變體帶 prov_test helper、tag 打錯;路徑從腳本位置推。逐條拿掉 gate 的 5 個檢查 → 自測各自 BAD。firmware CI(`build-firmware.yml`,ekh 兩板)跑 gate 與自測。
 
 **仍是殘項(記在 #254)**:P1b 自己的 CI 要等 harness PR 進 main 後 rebase 才會跑 `prov_test` tag(A minor);`seam_release_test.go` 只是文件性質,真正的保證是 gate 的 `strings` 檢查(B-m5,已在檔頭註明)。
+
+**程式碼審查第 2 輪後的增補(p1b-code-review-r2-A / -B;與前文衝突時以本段為準)**
+
+10. 點名在 release 二進位裡也不能出現(r1 A-m8):呼叫點用 `seam.Point`(`points.go`,`uint8` 常數 `Txn1`…`ClaimBeforeShadow`、`None`),名稱表只在 `seam_provtest.go`。arm64 實測:release 的 `killpoint` / 點名 / 標記 / `/dev/kmsg` 都是 0;gate 的「無 seam」三條加第四條:無點名(`claim-after-persist`、`claim-before-shadow`)。
+11. §16.1 加 (f):重開後的 boot-reasons 記錄為 `UNCLEAN` 且帶 `hints: sysrq`(`95-batman-storage:671`,看 console capture 裡核心自己印的 `sysrq: ` 行),fallback 走 `reboot -f` 不會有這個 hint。helper 在 sysrq 前把 `killpoint <name>: sysrq reboot` 也寫進 `/dev/kmsg`(fallback、`sysrq write failed` 同),console capture 就帶著點名過重開;(c)「串流沒有 fallback」降為輔助證據。⚠️ 04 的 console capture 有沒有開,E-H6 一併確認;沒開時 (f) 判 INVALID(不是 PASS)。
+12. killpoint 檔超過 64 B → refused(不截斷後照讀)。
+13. 回歸測試(r2 A-M1):`--wbox` 的步驟搬到 firmware `scripts/lib-wbox.sh`(`bb_lock`、`wbox_env_reset`、`wbox_apply`、`wbox_stamp_begin` / `_done`),`build-board.sh` 只呼叫它們;`scripts/test-build-board-wbox.sh` source 同一份 lib,在假 feed 上跑 34 個案例(乾淨 / 已改 tracked / untracked / ignored / 殘留 mutant / SIGTERM、SIGINT 中途 / env 繼承 / stamp 四態 / 鎖 / build-board 真的呼叫 lib)。8 個 lib 突變(trap 移到檢查前、拿掉乾淨檢查、拿掉 `--ignored`、不 unset、不寫 in-progress、不鎖、拿掉 tag / 第 3 欄檢查)各自讓測試 BAD。接進 firmware CI。
+14. 一棵樹同時只跑一個 `build-board.sh`(r2 B-m2):`flock -n logs/.build-board.lock`,第二個 exit 2。
+15. `helpers.list` 第 3 欄(r2 B-m3):`helper` = 變體帶自己的 helper;`same` = release helper,gate 要求 tag `release` 且 helper 是無 seam 的 Go 二進位;其他值 = FAIL(build-board 與 gate 都擋)。gate 另拒 symlink 形式的 helper(r2 B-m4:絕對 symlink 會讓 gate 讀到 build 主機的檔);init mutant 的偵測不再寫死 `batman-provision`(r1 A-m4)。
+16. gate 自測(r2 A-m2 / B-m8):先檢查 `BATMAN_SRC` 有 P1b 的 seam 套件,沒有就明說「pin 要指向有 P1b 的 Batman」;每個 mutant helper 先驗它真的是案例假設的樣子再跑案例;37 個案例,gate 的每一條 `fail` 逐條拿掉都要讓自測 BAD(數字以 #254 留言的實跑結果為準,不在這裡寫死)。
+17. **合併順序**:Batman PR-P1b 先 merge,firmware PR 後 merge 且 pin 指向含 P1b 的 Batman commit;firmware CI 的 gate 自測在舊 pin 上會明確失敗,這是刻意的。
+18. **rc 必須是審過的程式碼**(r2 B-M1):rc 的 Batman pin 要含本輪的 P1b commit;每次 P1b 改動後重切 Batman `rc/254-p1b`、firmware pin + `BATMAN_BUILD_N` 加 1,payload 重 build,E-H2 重跑並附 step 7 gate 輸出。舊 payload(`1.5.14-wsl.5+01b12c9…`)只當 build 流程的證據,不上節點。
+
+**殘項(#254 checklist)**:`main.go` 的接線(daemon 啟動 `seam.Arm`、`--boot` 印標記)沒有 Go 單元測試——拿掉 `seam.Arm` 時 linker 會一起丟掉 armed 字面值,gate 會擋;`--boot` 的標記只由 tier A preflight(P9)抓(r2 A-m6)。
