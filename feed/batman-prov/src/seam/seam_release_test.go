@@ -8,7 +8,9 @@ import (
 	"testing"
 )
 
-// A release build never reads, deletes or acts on a killpoint file, and carries no marker.
+// A release build never reads, deletes or acts on a killpoint file, and carries no marker. Documentation more than
+// proof: the release Arm cannot know the test path. The real guarantee is the firmware build gate
+// (check-prov-test-gate.sh: no prov_test tag, no marker, no "killpoint" string in the shipped helper).
 func TestReleaseIsANoOp(t *testing.T) {
 	if Marker != "" || Enabled {
 		t.Fatalf("release build: Marker %q Enabled %v", Marker, Enabled)
@@ -20,7 +22,7 @@ func TestReleaseIsANoOp(t *testing.T) {
 	var lines []string
 	logf := func(string, ...any) { lines = append(lines, "x") }
 	Arm(logf)
-	At("txn-1", logf)
+	At(Txn1, logf)
 	if len(lines) != 0 {
 		t.Fatalf("release build logged %d lines", len(lines))
 	}
