@@ -373,7 +373,7 @@
 | (8) | P1 期三臂(F12 latch、F14):臂 A `ble-ok` 在 → 本次開機有一行 `WARN ble:`(括號內容只記錄)+ HELD;臂 B `ble-ok` 不在(**停 helper → `state-set ble-ok absent` → 保持停到 `sysupgrade -n` 送出**;trial 不寫回)→ 無 WARN 行 + HELD;臂 C(`hci0_powered=0` 分支):**同臂 B 的移除程序(停 helper → `state-set ble-ok absent` → 保持停到 `sysupgrade -n` 送出**,否則 committed 槽的 helper 15 s 內寫回,v4 B-m3)→ trial 內 `btmgmt power off` → 等一個 health tick(≤ 15 s)讀到 `hci0_powered=0` → `state-set ble-ok` 放回(trial 不寫回)→ 下一次 poll 印 `WARN … hci0_powered=0 …` + HELD | 三臂互為對照 | hold / A |
 | (9) | `-wbox helper-flap` hold,04 有 `ble-ok`:health 不 stale(F14)→ **WARN 行與 `is healthy and HELD` 取自真 main 的 `logread`**(內容只記錄)→ **同一 trial 內背景跑 `AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=<uptime+120> batman-autocommit run`,180 s 後 kill(同 chain1 8.7 的寫法 `chain1-254.sh:347`)→ 斷言其 stdout 含 `DRYRUN decision: COMMIT slot B (services 3x10s, mesh samples <n>)`(F42;決定 COMMIT 要 NEED=3 輪 × 10 s + pre-commit canary `docker run`,所以 +120 不是 +60,v5 B-m1)→ `back_to_a`**;dry-run 的 latch 已被真 main 用掉,不會再印 WARN(v5 A-m5),判定不從 dry-run 找 WARN;不真 commit mutant 槽(v4 A-M1);**characterization**(L39 本意 = provd flap → §6.3) | — | hold / A |
 | (10)(L41) | 三個偽造 caller:(a) 非 root `sysupgrade -T`;(b) 主機 root 以非 procd 父程序直接呼叫 `platform_check_image`(`:81` 讀 `/proc/$PPID/cmdline`,**這是有鑑別力的偽造臂**);(c) 容器 root:`docker run --rm -v /lib/upgrade:/lib/upgrade:ro -v /opt/batdata:/opt/batdata -v /tmp/run:/tmp/run busybox sh -c '. /lib/upgrade/platform.sh; …'`(容器內 uid 0、pid ns ≠ host;**OTS 容器本身沒有這些 bind(F35),所以這臂是 characterization**,v4 A-m14 / B-m8)→ 三臂皆 p6 無 `ota-armed.mesh`、無 `otalog S1 ARMED-MESH`;真 OTA(hold)→ 檔在、三欄格式、`ARMED-MESH` 行 | — | 偽造臂 — / 真 OTA hold / A / F |
-| `prov-misc-254` | L38(96 superblock 壞出口,以呼叫字串定位)、L42、L43、L51(`sock: unexpected`);L11 / L9 / L10 / L27 / L3 | 各 mutant | hold / A / F |
+| `prov-misc-254` | 見 §17(L38 / L42 / L43 / L51 / L11 / L9 / L10 / L27 / L3) | 見 §17 | hold / A / F |
 | `prov-verbs-254` | p1-impl §5.6 正向含 `settings.set hostname` → 6(`rename-pending`)、未知 key → 20、`owner.*`、`ssh_keys.set`、`diag.bundle`、`qr` | 沙箱 | — / A / F |
 | `prov-eeprom-hooks-254` | 對解出的 rc rootfs:shim 對所有 key `READ` rc 1;PATH 假 `vcgencmd` 回四個 key → 讀者不採用 | 1.5.12 rootfs → 採用 | WSL |
 
@@ -686,51 +686,97 @@ claim-lock §11.4 真機 tier B(4 / 4-inj / 4b / 4b' / 4c / 4d / 5)仍未排程(
 
 **misc-L38 / -L42 / -L43 / -L51(§4.2 表最後一列)**:§6.2 只寫了 L 編號,沒寫每個 mutant 改哪裡、讓哪條判定失效;L51 在 stage1 設計是「`lastjoined`」、在本設計 §6.2 是「`sock: unexpected`」,兩處不一致。**這 4 個變體先不做**,待補一段設計(每個:mutant 位置、對應的 prov-misc 判定、負對照預期)並過審查後再寫 patch;其餘 13 個變體已在 `tests/wbox/`(harness 5b32fdd)。
 
-## 17. misc 變體的設計(補 §4.2 表最後一列與 §6.2 `prov-misc-254`;**與前文衝突時以本節為準**)
 
-### 17.1 為什麼要補
-§6.2 `prov-misc-254` 只寫「L38(96 superblock 壞出口,以呼叫字串定位)、L42、L43、L51(`sock: unexpected`)」,沒說每個 mutant 改哪裡、讓哪條判定失效。對照原始碼(rc d0643d5):
-- L38 / L42 / L43 / L51 的定義在 `254-stage1-impl.md:368,372,373,379`,機制全在 autocommit 的「mesh join required」決定(`batman-autocommit:399-425`)與 sysupgrade 第 1 段的 arm(`platform-ab.sh:_ab_arm_mesh`)。
-- 「96 superblock 壞出口」與 L38 無關(L38 = helper 晚於 autocommit);本設計前文混用,作廢。
-- 「`sock: unexpected`」是 helper socket 目錄預置的拒絕(`sock/sock.go:74`),已由 tier A `prov-sec-sockdir-254` 測,不屬 L51;L51 = `joinwatch.lastjoined`。
+## 17. misc 變體與 `prov-misc-254`(v9;取代 v8 的 §17;**與前文衝突時以本節為準**)
 
-### 17.2 四個變體(都只改 `feed/batman-provision/`,tag release / kind same;**以 bind 用在 committed 的 A 上**,不 OTA 進槽)
+### 17.1 為什麼要補(v8 審查 A / B 之後重寫)
+§6.2 `prov-misc-254` 原文只寫「L38(96 superblock 壞出口)、L42、L43、L51(`sock: unexpected`)」。對照原始碼(rc d0643d5):
+- L38 / L42 / L43 / L51 的定義在 `254-stage1-impl.md:368,372,373,379`;判定全在 autocommit 的「mesh join required」段(`batman-autocommit:399-425`),arm 的寫入在 sysupgrade 第 1 段的 `_ab_arm_mesh`(sysupgrade source 的是 98 在新 overlay 複製的 `/lib/upgrade/platform.sh`,不是 `/usr/lib/batman/platform-ab.sh`,`98-batman-sysupgrade:7-10`,v8 A-B1 / B-BLOCKER-1)。
+- 「96 superblock 壞出口」與 L38 無關,作廢;「`sock: unexpected`」是 helper socket 目錄的拒絕(`sock/sock.go:74`),移到 L11 / `prov-sec-sockdir-254`(§17.4)。
+- §6.2 `prov-misc-254` 那一列改讀「見 §17」(v8 B-m7)。
 
-| name | mutant(改哪一行) | 讓哪條保護失效 | bind 的檔 |
-|---|---|---|---|
-| `misc-L38` | 拿掉 `batman-autocommit:404` 的等待迴圈(`while [ "${pr%% *}" = 99zz ] …`) | 「writer=99zz 時等 ≤ 60 s 改用 helper 的值」 | `/usr/bin/batman-autocommit` |
-| `misc-L42` | `batman-slot apply` 成功後寫 `ota-armed.mesh`(`<boot8> <target> radio`) | 「直接 `apply`(不經 sysupgrade)沒有 arm 檔 → member 要鄰居」 | `/usr/sbin/batman-slot` |
-| `misc-L43` | `batman-autocommit:420` 不比對 arm 檔的 boot_id(第 1 欄) | 「arm 檔綁 arm 開機的 boot_id,舊檔無效」 | `/usr/bin/batman-autocommit` |
-| `misc-L51` | `_ab_arm_mesh` 一律 `m=radio`(不看 `joinwatch.lastjoined`、不取樣) | 「本次開機入過網 → arm 寫 joined → 要鄰居」 | `/usr/lib/batman/platform-ab.sh` |
+### 17.2 四個變體:全部只改 `batman-autocommit`,只在 dry-run 裡用
+v8 的 `misc-L42`(mutant `batman-slot` 寫 arm 檔)與 `misc-L51`(bind `platform-ab.sh` 跑真 OTA)作廢:前者讓 root 的槽寫入器在 bind 期間若遇真 OTA 會被抄進 ramfs、寫出 `radio`(fail-open,v8 B-m3),後者 bind 目標錯且要在 bind 下跑真 sysupgrade(未經實證)。改為:**每個 L 的「判定」半邊用 autocommit dry-run + 白箱狀態 + autocommit mutant 測;「寫入」半邊用既有的真 trial 斷言或 CI 單元測。**
 
-見證:shell 註解行 `# WBOX-misc-LNN-<8 hex>` + 該 mutant 新增的 log 行(`aclog` / `log` / `otalog` 帶見證字串)。bind 來源 = 該變體 payload 抽出的檔(`dv-prov-tools.sh` 同法,sha 記在 `SHA256SUMS`);bind 期間 `wbox.list` 記錄,`unbind-all` / P9 照 §4.5 處理。
+| name | mutant(`batman-autocommit`) | 讓哪條判定失效 |
+|---|---|---|
+| `misc-L38` | 拿掉 `:404` 的等待迴圈 | writer=99zz 時等 ≤ 60 s 改用 helper 的值 |
+| `misc-L42` | `:421` 缺檔時 `NEED_MESH=0`(不 fail-closed) | member 無 arm 檔 → 要鄰居 |
+| `misc-L43` | `:420` 不比對第 1 欄(boot8) | arm 檔綁 arm 開機,舊檔無效 |
+| `misc-L51` | `:420` 第 3 欄 `joined` 也當 `radio` | arm 開機入過網 → 要鄰居 |
 
-### 17.3 測法(04,`prov-misc-254` 內;每項先正向、後負對照)
+- 見證:mutant 那一行旁加 `log "… WBOX-misc-LNN-<8 hex>"`(dry-run stdout 可見),檔頭註解另一次。tag release / kind same(`lint-wbox` 依規則算)。
+- bind:來源 = 變體 payload 抽出的 `usr/bin/batman-autocommit`(`dv-prov-tools.sh` 同法,root 0755,主機 sha = 節點 sha);目標 = `/usr/bin/batman-autocommit`。**只在 dry-run 臂期間 bind**;bind 前斷言沒有 `batman-autocommit` 程序在跑(committed 槽的真 main 開機即退出,`:326`);bind 後斷言 `grep -c WBOX-misc-LNN /usr/bin/batman-autocommit` = 1;mutant 臂 stdout 沒有見證行 = **INVALID**(mutant 沒被執行),不是「mutant 無效」。臂結束立刻 unbind。不在 bind 下做任何 OTA / apply / reboot。
+- 仍用真 build 出 payload(與其他變體同一條 gate 鏈、E-H2 驗收;成本 4 build / rc,§7.3)。
 
-前置:L42 / L51 需要 04 = member(放在 `prov-netjoin-254` 之後、`prov-leave-ota-254` 之前);L38 / L43 用 dry-run,狀態以白箱寫入 p6 `prov-state` / `ota-armed.mesh`(單位開頭 `snap` 備份,結尾還原)。
+### 17.3 dry-run 臂的共同規則(v8 A-M1 / B-MAJOR-2、A-M3 / B-MAJOR-3)
+- 起法:`setsid env AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=$((uptime+600)) batman-autocommit run`,stdout 存檔;讀到 `mesh join required:` 行(L 臂只需這行)或 150 s 逾時就 `kill -TERM -- -<pgid>`,再斷言 `pgrep -f batman-autocommit` 為空(殘留 → FAIL 並 `kill -KILL -- -<pgid>`;不是硬體持有者)。期限設 600 s,watchdog 在被殺前不會到期。
+- 每臂前快照、臂後還原並斷言:`$ST/prov-state`、`$ST/ota-armed.mesh`(有 / 無與內容)、`$RUNDIR/autocommit.wd`、`$RUNDIR/autocommit.decided`(committed 槽上本來不存在;dry-run 建的由 harness 刪)、`$ST/ota-trace.log` 只增不改(記錄新增行數)。
+- `prov-state` 白箱:只改第 1(= 本次 boot_id,或刻意的別值)、2、4、6 欄,**第 3、5 欄照抄快照**;tmp + `mv`、0600。每臂結束**立即**寫回快照行。整臂期間 helper pid 不變(變了 → INVALID:helper 重啟會重寫 `prov-state`)。
+- `ota-armed.mesh` 白箱:同樣 tmp + `mv`、0600;臂後回到快照。
+- 順序:四個 L 的 dry-run 臂連續做完、每臂殺乾淨;`prov-misc-254` 不做 OTA。
+- 04 是 OTS 節點:dry-run 進到 commit 分支前會跑 canary(`:518-528`);L 臂在 `mesh join required` 行就殺,不會到 canary;仍把「可能 import / prune canary image」列進 §7.2。
 
-- **L38**(dry-run,`AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=<uptime+150>`,同 chain1 8.7 的寫法):
-  - 寫 `prov-state` = `<本次 boot_id> 99zz - unclaimed - 0` → 啟動 dry-run → 20 s 後改寫 `<boot_id> helper member member - radio`,並清掉 `ota-armed.mesh`。
-  - 正向:dry-run 的 `mesh join required: 1 (prov=member mesh_expect=radio` + `member: no usable ota-armed.mesh`。
-  - 第二臂:不改寫 → 60 s 後 `mesh join required: 0 (prov=unclaimed`,且這行出現在啟動後 ≥ 60 s。
-  - 負對照:bind `misc-L38` → 第一臂得到 `prov=unclaimed`(沒等)→ 判定 FAIL = mutant 有效。
-- **L43**(dry-run):
-  - `prov-state` = `<boot_id> helper member member - radio`;`ota-armed.mesh` = `<不是 arm 開機的 boot8> <active slot> radio`。
-  - 正向:`mesh join required: 1`;對照臂:boot8 改成 boot-reasons 倒數第 2 行的 boot_id → `armed in radio-only mode` + `mesh join required: 0`(證明正向不是別的原因)。
-  - 負對照:bind `misc-L43` → 舊 boot_id 也得到 `required: 0` → FAIL。
-- **L42**(真 trial,hold):
-  - member 04 `batman-slot apply <V payload dir>`(不經 sysupgrade)+ hold → 重開進 B trial。
-  - 正向:B 的 autocommit `member: no usable ota-armed.mesh — neighbours required (fail-closed)`、`mesh join required: 1`;p6 無 `ota-armed.mesh`(apply 前先刪,斷言 apply 後仍無)→ `back_to_a`。
-  - 負對照:A 上 bind `misc-L42` 後同流程 → apply 後有 arm 檔(帶見證的 log)、B `armed in radio-only mode` → FAIL → `back_to_a`。
-- **L51**(真 OTA,hold):
-  - member 04 本次開機入過網(`joinwatch.lastjoined` 非空,前置斷言)→ `pr_ota_b` V hold。
-  - 正向:otalog `S1 ARMED-MESH slot=B m=joined`;B `mesh join required: 1` → `back_to_a`。
-  - 負對照:A 上 bind `misc-L51` → `ARMED-MESH m=radio`、B `armed in radio-only mode` → FAIL → `back_to_a`。
+### 17.4 各項測法(04,`prov-misc-254`)
+- **L38**
+  - 臂 a(切換):`prov-state` = `<boot> 99zz <snap3> unclaimed <snap5> 0` → 起 dry-run → 等到它在迴圈裡(其 pgid 下有 `sleep 1` 子程序)→ 改寫 `<boot> helper <snap3> member <snap5> radio`、`ota-armed.mesh` 刪掉 → 斷言 `mesh join required: 1 (prov=member mesh_expect=radio radio_required=1)`。
+  - 臂 b(helper 沒來):不改寫 → 斷言 `mesh join required: 0 (prov=unclaimed` 且該行出現在起始後 ≥ 60 s。**有判別力的是臂 b**(v8 B-m1)。
+  - 臂 c(boot_id 不符 → 今天的規則,v8 B-m2):第 1 欄 = 別的 boot_id → 斷言 `prov=none`。
+  - 負對照:bind `misc-L38` 跑臂 b → 立即得到 `prov=unclaimed`、時間 < 60 s → 判定 FAIL = mutant 有效;臂 a 在 mutant 下得到 `prov=unclaimed`(沒等)。
+- **L42**
+  - 寫入半邊 = §6.2 (6a) 既有的真 trial(直接 `batman-slot apply`):**加一條斷言**「apply 之後 p6 沒有 `ota-armed.mesh`」(apply 前刪除並斷言)。
+  - 判定半邊(dry-run):`prov-state` member/radio、`ota-armed.mesh` 不存在 → 斷言 `member: no usable ota-armed.mesh — neighbours required (fail-closed)` + `required: 1`。負對照:bind `misc-L42` → `required: 0`。
+  - 寫入半邊的判別力:白箱寫一個正確的 radio 檔(boot8 = boot-reasons 倒數第 2 行、slot = active)→ dry-run `armed in radio-only mode` + `required: 0`;證明「apply 後若有檔,保護就失效」,所以 (6a) 的「無檔」斷言是有判別力的。
+- **L43**(dry-run)
+  - 正向:member/radio + `ota-armed.mesh` = `<非 arm 開機的 boot8> <active> radio` → 斷言整行 `mesh join required: 1 (prov=member mesh_expect=radio radio_required=1)`、本次 stdout **沒有** `no usable`、行後讀回 arm 檔內容未變(v8 B-MAJOR-2)。
+  - 對照:boot8 改成 boot-reasons 倒數第 2 行 → `armed in radio-only mode` + `required: 0`。
+  - 負對照:bind `misc-L43` 跑正向臂 → `required: 0` → FAIL = mutant 有效。
+- **L51**
+  - 寫入半邊(`_ab_arm_mesh` 在入過網時寫 `joined`):
+    - CI 新測 `scripts/test-arm-mesh-254.sh`:source `platform-ab.sh` 後以函式覆寫 stub 掉 `_ab_live_sysupgrade`、`batman-slot`、`/proc/mounts` 檢查、`RAM_ROOT`、`RUNDIR`;案例:`lastjoined` 非空 → `joined`;空 + meshjoin stub 未入網 → `radio`;caller 不是 procd → 不寫檔;upgraded 不在 → 不寫。負對照:把 `m=joined` 分支改掉的副本 → BAD。
+    - 節點:§6.2 (7) 既有的 `S1 ARMED-MESH … m=joined` 斷言(04 在 fleet mesh、本次開機入過網)。
+  - 判定半邊(dry-run):member/radio + arm 檔 = `<arm boot8> <active> joined` → `required: 1`;負對照 bind `misc-L51` → `required: 0`。
+- **L11**(helper 重啟,含 `sock: unexpected`,v8 B-m6):`/etc/init.d/batman-provhelper restart` → 新 pid、`helper.sock` 重建且屬主 / 權限照 §4.5、health 檔 15 s 內更新。負對照:root 先在 socket 目錄放一個普通檔再 restart → log `sock: unexpected … refusing to start`、health 15 s 內**不**更新(證明 health 斷言有判別力)→ 刪檔、restart、恢復。
+- **L9 / L10**(`bluetoothd` / `dbus` 重啟):重啟後 15 s 內 health ok;負對照:`bluetoothd` stop(不 start)→ 15 s 後 health 非 ok → start 恢復。
+- **L27**(dropbear 重啟):重啟後 lab key 登入成功;負對照:以不在 `authorized_keys` 的金鑰登入 → 拒絕(證明登入斷言有判別力)。
+- **L3**(clean shutdown):`batman-slot reboot committed` → 新開機 boot-reasons `prev=CLEAN`、helper `boot rc=…` 行;負對照 = E-H6 已證的 sysrq → `UNCLEAN … hints: sysrq`(§16.25),不重做。
 
-### 17.4 成本與副作用
-- L38 / L43:dry-run,無重開;每臂 ≤ 150 s;寫 p6 `prov-state` / `ota-armed.mesh`(白箱,單位結尾自快照還原;真 helper 下次開機會重寫 `prov-state`)。
-- L42 / L51:各 2 次 hold trial(正向 + 負對照)= 4 次 OTA / apply + 4 次 `back_to_a`;04 每次離網約 3–5 分鐘;mesh 在 02 側不中斷。
-- bind 只在 tmpfs 生效,重開即失效;`unbind-all` 在單位結尾與 deadman 都做。
+### 17.5 擁有權、生命週期、副作用(補 §3 / §5 / §7.2,v8 A-m2 / B-m9 / B-m12)
+- §3 增列:
+  - p6 `prov-state`:寫者 = 99zz、helper(產品);`prov-misc-254` 的 dry-run 臂期間 harness 是白箱寫者(lease 內、helper pid 不變時;第 3、5 欄不改;每臂還原)。
+  - p6 `ota-armed.mesh`:寫者 = `_ab_arm_mesh`;刪者 = autocommit commit / revert(**含 dry-run 的 watchdog**,`:237`);harness 白箱寫(dry-run 臂內,每臂還原)。
+  - `/usr/bin/batman-autocommit` bind:`prov-wbox-254.sh bind`;`wbox.list` 記錄;解除 = 臂結束 unbind、`unbind-all`、deadman、重開。
+- §5 增列:harness 在 dry-run 臂中死掉 → deadman:`kill` 該 pgid、unbind、自 `$DVD/<run>` 快照寫回 `prov-state` / `ota-armed.mesh`、刪 dry-run 建的 `autocommit.wd` / `decided`;P9 加檢查:`prov-state` 第 2 欄 ≠ `helper` 且 uptime > 120 s,或第 3 欄 ≠ 快照 → FAIL 並印還原指令;`/proc/mounts` 有 `/usr/bin/batman-autocommit` 的 bind → FAIL。bcm2710 不適用(CM4 決定)。
+- §7.2 增列:dry-run 在 p6 `ota-trace.log` 寫 `AC START` / `UNHEALTHY` 行;OTS 節點上 canary 可能 import / prune;`autocommit.wd` / `decided` 由 harness 清;bind 期間若有人在 04 上跑真 OTA,mutant autocommit 不會被抄進 ramfs(不在 `RAMFS_COPY_BIN`)但會在 trial 外影響 dry-run 以外的手動 `batman-autocommit` 呼叫 → 臂結束立即 unbind。
+- **產品殘項(#254)**:dry-run 的 watchdog 會在 committed 槽上刪 `ota-armed.mesh`、拿真的 `autocommit.decided`(`:207-215,233-240`)— dry-run 接縫的副作用,本 PR 不改產品。
 
-### 17.5 待審查
-本節是 v7 之後新增的設計;實作前送兩位審查(全文審查,§0–§17)。
+### 17.6 成本
+- 不新增 OTA / apply / 重開;dry-run 臂約 12 個 × ≤ 150 s(L38 臂 b ≥ 60 s)≈ 15–20 分鐘;L11 / L9 / L10 / L27 各 ≤ 1 分;L3 一次重開(既有)。
+- 4 個 misc 變體各一次 build(§7.3)。
+- 在使用者核准的 H3-U3 預算內(不增加 trial 次數)。
+
+## 18. 安全審查後的修訂(`254-reviews/p1b-security-review.md`;**與前文衝突時以本節為準**)
+
+### 18.1 F1(MEDIUM):節點自己拒絕 commit `-wbox` image
+**問題**:§4.2「只進非 committed 槽;一律 hold」與 P9 只在 harness 裡;節點上沒有任何東西拒絕 commit 一個 `-wbox` image。拿錯檔、手動 `sysupgrade -n`、harness 忘了 hold → 健康的 trial 被 commit;`helper-nojoinop` / `helper-clientchal` / `rc9-unclaimed` / `helper-notrial` 削弱驗證,P2 BLE 上線後是遠端可達的接管路徑。
+
+**設計**(產品,batman-provision;閘在被 trial 的 image 自己身上):
+- `batman-autocommit`:`wbox_image()` = `/etc/batman-build` 有非空的 `BATMAN_WBOX=` 行。**非 dry-run** 時,健康的 trial 若是 wbox image,`why = "wbox test image (BATMAN_WBOX=<name>) — never auto-committed (deadline revert armed)"`,摺進與 hold 相同的位置(只在其他條件都健康時出現,不搶 `FIRSTWHY`);log 一次 + `otalog AC WBOX-NOCOMMIT`。看門狗照舊在 deadline revert。dry-run 不受影響(§6.2 (9) 的 `DRYRUN decision: COMMIT` 不變;§17 的 dry-run 臂只看 `mesh join required` 行)。
+- `batman-slot commit`(第二層,擋操作員手動 commit):wbox image → 拒絕,除非環境 `BATMAN_SLOT_ALLOW_WBOX=1`(§6.2 目前沒有單位需要)。
+- `/etc/batman-build` 讀不到 → 當成非 wbox(release image 無此行;wbox 由 gate 保證有此行)。
+- 擁有權:`/etc/batman-build` 由 build 寫、rootfs 唯讀;讀者 = autocommit、batman-slot。
+- 生命週期:release image 行為不變;wbox image 永不自動 commit;閘在被 trial 的 image 裡,降級不相關;hold + wbox 兩條都擋。
+- 測試:
+  - CI `scripts/test-autocommit-wbox.sh`:以 stub 的 `/etc/batman-build`、`batman-slot`、健康檢查驅動 autocommit 的決定 → wbox:不 commit、`why` 正確;非 wbox:commit;dry-run + wbox:`DRYRUN decision: COMMIT`;`batman-slot commit` 對 wbox 拒絕、帶 `BATMAN_SLOT_ALLOW_WBOX=1` 放行。負對照:拿掉閘 → BAD。
+  - 節點新單位 `prov-wbox-nocommit-254`(04):OTA 一個 release tag 的 wbox 變體(`96-noprov`)**不設 hold** → B trial 健康 → `WBOX-NOCOMMIT` + deadline revert(`TRIAL-REVERTED … reason=wbox test image`)→ 回 A。負對照:同流程用 wsl.6 的 `--wbox test` payload(本閘之前 build)→ 被 commit → 斷言 COMMITTED 後立刻 `batman-slot rollback` 回 A(副作用:04 commit 過一次 wbox 槽,列入 §7.2)。
+
+### 18.2 其餘
+- **F2**:`local-ab-tar.sh` 打包前對 rootfs 跑 `check-prov-test-gate.sh`(name 取自 stamp 的 `BATMAN_WBOX`);`fast-build.yml` 加與 `build-firmware.yml` 相同的 gate 步驟。關閉殘項 r3 A-m6、r3 B-m6。
+- **F3**:gate 的正常模式對**整個 rootfs** grep marker 與 armed 字面值。
+- **F4**:`wbox_normal_check` 也看 staged 的檔,以 `-z` 讀檔名(非 ASCII)。
+- **F5**:`wbox_env_reset` 另 unset `WBOX_DIR`、`GO`。
+- **F7**:killpoint 拒絕訊息以 `%q` 輸出(已做,P1b 5316813)。
+- F6 / F8–F11:INFO,無改動。
+
+### 18.3 待審查
+§17(v9)與 §18 送兩位全文審查;§18.1 是產品行為改動,過審才實作。
