@@ -25,6 +25,8 @@ jobs:
         run: bash scripts/test-dv-bt-uart-305.sh
       - name: busybox for lint-wbox (sh -n in the node's ash)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
+      - name: "#254 preflight P9 node judge on fixtures ([all] / wbox slots / prov leftovers) under busybox ash"
+        run: bash tests/prov-p1/p9-judge.sh scripts/node/prov-p9-254.sh
       - name: "#254 -wbox variants well formed (scope, protected set, witness, sh -n, nohold, helpers.list) — lint-wbox + its negative self-test"
         run: bash scripts/lint-wbox.sh && bash tests/wbox/test-lint-wbox.sh
       - name: line-endings must be LF

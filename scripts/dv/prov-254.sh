@@ -42,7 +42,7 @@ mono(){ cut -d. -f1 /proc/uptime; }
 q(){ timeout "${QT:-120}" ssh $SSHO root@$NODE "$@" 2>/dev/null | tr -d '\r'; }
 qr(){ local o rc i; for i in 1 2 3 4 5 6; do o=$(timeout 90 ssh $SSHO root@$NODE "$@" 2>/dev/null); rc=$?; case $rc in 255|124) sleep 10 ;; *) printf '%s' "$o" | tr -d '\r'; [ -n "$o" ] && echo; return $rc ;; esac; done; return 255; }
 qp(){ timeout 60 ssh $SSHO root@$PEER "$@" 2>/dev/null | tr -d '\r'; }
-nb(){ timeout 900 ssh $SSHO root@$NODE sh -s -- "$@" < "$PB" 2>&1 | tr -d '\r'; }
+nb(){ timeout 900 ssh $SSHO root@$NODE "${PB_ENV:-}" sh -s -- "$@" < "$PB" 2>&1 | tr -d '\r'; }
 pl(){ q "RUN_ID=$RUN sh $PRD/prov-lease-254.sh $*"; }
 pw(){ QT=${QT:-180} q "RUN_ID=$RUN sh $PRD/prov-wbox-254.sh $*"; }
 wsl_(){ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- "$@"; }
@@ -224,25 +224,39 @@ pr_wait_reverted(){
 }
 
 # ---- restore ----------------------------------------------------------------------------------------------------------
-pr_restore(){
-	local o s b0 i
-	PR_RESTORING=1
+# pr_compare <tag>: manifest + compare against the snapshot (joinwatch stopped meanwhile: p5 is not rw-mounted under the
+# manifest); PR_CMP = the compare output; rc 0 = diffs=0
+pr_compare(){
+	local o="" i
+	q "mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
+	q "/etc/init.d/joinwatch stop >/dev/null 2>&1"
+	for i in 1 2 3; do nb manifest "$RUN" "$1" >/dev/null; o=$(nb compare "$RUN" "$1"); grep -q "p5 unreadable" <<< "$o" || break; sleep 10; done
+	q "/etc/init.d/joinwatch start >/dev/null 2>&1"; PR_CMP=$o
+	grep -q "diffs=0" <<< "$o"
+}
+# pr_restore_cycle [skip]: p5 + overlay back (PROV_BASE_SKIP=<skip> for a negative control), reboot committed, find;
+# PR_RCYCLE_OUT = the restore output. rc 1 = a step failed (not the compare: the caller judges that)
+pr_restore_cycle(){
+	local o s b0 skip=${1:-}
 	s=$(qr "$ST"); if [ "$(field "$s" trial_rc)" = 0 ]; then back_to_a || { pr_needs_person "restore: cannot leave the trial"; return 1; }; s=$PR_STATE; fi
 	[ "$(field "$s" slot)" = A ] && [ "$(field "$s" trial_rc)" = 1 ] || { pr_needs_person "restore: not on A committed ($s)"; return 1; }
 	pr_lease_renew +1800 || return 1
 	pl restoring set >/dev/null
 	o=$(pw unbind-all); say "unbind: $(echo $o)"
 	q "rm -f $HOLDF $PR_PAY; rm -rf /tmp/run/batman-prov-test"
-	o=$(nb p5-restore "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { no "p5 restore"; return 1; }
-	o=$(nb overlay-restore "$RUN"); echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY" | tail -10 | sed 's/^/    /'
+	o=$(PB_ENV=${skip:+PROV_BASE_SKIP=$skip} nb p5-restore "$RUN"); PR_RCYCLE_OUT=$o; say "$(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { no "p5 restore"; return 1; }
+	o=$(PB_ENV=${skip:+PROV_BASE_SKIP=$skip} nb overlay-restore "$RUN"); PR_RCYCLE_OUT="$PR_RCYCLE_OUT
+$o"; echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY|SKIP" | tail -10 | sed 's/^/    /'
 	grep -q "^OVERLAY-RESTORED $RUN" <<< "$o" || { no "overlay restore"; return 1; }
 	b0=$(field "$s" boot); q "(batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &)"
 	pr_find 900 "$b0" || { pr_needs_person "restore: no node after the reboot"; return 1; }
-	q "mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
-	q "/etc/init.d/joinwatch stop >/dev/null 2>&1"
-	o=""; for i in 1 2 3; do nb manifest "$RUN" after >/dev/null; o=$(nb compare "$RUN" after); grep -q "p5 unreadable" <<< "$o" || break; sleep 10; done
-	q "/etc/init.d/joinwatch start >/dev/null 2>&1"; echo "$o" | tail -20 | sed 's/^/    /'
-	grep -q "diffs=0" <<< "$o" || { no "S0 not restored — snapshot and dirty flag kept"; return 1; }
+	return 0
+}
+pr_restore(){
+	PR_RESTORING=1
+	pr_restore_cycle || return 1
+	pr_compare after; echo "$PR_CMP" | tail -20 | sed 's/^/    /'
+	grep -q "diffs=0" <<< "$PR_CMP" || { no "S0 not restored — snapshot and dirty flag kept"; return 1; }
 	ok "S0 restored (p5 / overlay / uci / identity / p6 state)"; PR_RESTORING=0; return 0
 }
 pr_brewrite(){
