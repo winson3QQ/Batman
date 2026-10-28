@@ -52,8 +52,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: busybox for the ash runs
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
+      - name: busybox for the ash runs, squashfs-tools for card-wbox
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox squashfs-tools
       - name: "#254 P1 stub tests (no root): decider / init hook, autocommit prov case, 99zz mesh_expect, batman-slot release"
         run: |
           F=feed/batman-provision/files
@@ -65,7 +65,10 @@ jobs:
           bash tests/prov-p1/autocommit-mesh-arm.sh $F/usr/bin/batman-autocommit
           bash tests/prov-p1/99zz-mesh-expect.sh $F/etc/uci-defaults/99zz-batman-prov-state
           bash tests/prov-p1/batman-slot-addr-defer.sh $F/usr/sbin/batman-slot
+          # P1b's product gate (#254 security review F1) lands after the harness (#290): red on purpose until then
+          grep -q '^wbox_gate_self() {' $F/usr/sbin/batman-slot || { echo "::error::product in this checkout is pre-P1b (no wbox_gate_self in batman-slot): expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
           bash tests/prov-p1/wbox-gate.sh $F/usr/sbin/batman-slot $F/usr/bin/batman-autocommit
+          bash tests/prov-p1/card-wbox.sh .
       - name: "#254 P1 loop-device tests (root): config-save identity freeze / frozen no-remount / prov-get rc 10, prov-base compare rules"
         run: |
           F=feed/batman-provision/files

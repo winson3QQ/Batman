@@ -20,12 +20,12 @@ R=$(cd "${1:-$(dirname "$0")/..}" && pwd)
 D=$R/tests/wbox
 bad=0; n=0
 PROT="usr/sbin/batman-slot usr/bin/batman-autocommit etc/init.d/batman-autocommit usr/lib/batman/otatrace.sh usr/lib/batman/rundir.sh usr/lib/batman/bootfacts.sh usr/lib/batman/meshjoin.sh"
-GATEPAT='wbox_stamp|wbox_gate_|WBOX_STATE|WBOX-NOCOMMIT|STAMP-UNREADABLE|holds a -wbox test image|wbox test image'
+GATEPAT='wbox_stamp|wbox_gate_|WBOX_STATE|WBOX-NOCOMMIT|STAMP-UNREADABLE|holds a -wbox test image|wbox test image|(^|[^A-Za-z0-9_])_wf([^A-Za-z0-9_]|$)'
 say(){ echo "lint-wbox: $*"; }
 err(){ say "FAIL: $*"; bad=$((bad+1)); }
 command -v busybox >/dev/null || { say "FAIL: no busybox (the sh -n check needs the node's ash; apt-get install busybox)"; exit 1; }
 [ -f "$D/helpers.list" ] || { say "FAIL: no $D/helpers.list"; exit 1; }
-want=$(mktemp); trap 'rm -f "$want"' EXIT
+want=$(mktemp); ns=$(mktemp); trap 'rm -f "$want" "$ns"' EXIT
 echo "test prov_test helper" > "$want"
 for p in "$D"/*.patch; do
 	[ -f "$p" ] || continue
@@ -44,9 +44,9 @@ for p in "$D"/*.patch; do
 		if grep -q '^+++ b/.*\.go$' "$p" && [ "$goany" = 0 ]; then err "$name: touches .go files but no .go line carries the witness"; fi
 	fi
 	git -C "$R" apply --check "$p" 2>/dev/null || err "$name: does not apply to this tree"
-	git -C "$R" apply --numstat --summary "$p" > /tmp/lint-wbox.$$ 2>/dev/null || { err "$name: git apply cannot read it"; continue; }
+	git -C "$R" apply --numstat --summary "$p" > "$ns" 2>/dev/null || { err "$name: git apply cannot read it"; continue; }
 	grep -qE '^(rename|copy) (from|to) ' "$p" && err "$name: renames / copies a file (not allowed: a rename's source escapes the scope check)"
-	paths=$(awk -F'\t' 'NF >= 3 {print $3}' /tmp/lint-wbox.$$); rm -f /tmp/lint-wbox.$$
+	paths=$(awk -F'\t' 'NF >= 3 {print $3}' "$ns")
 	[ -n "$paths" ] || err "$name: changes no file"
 	for f in $paths; do
 		case "$f" in feed/batman-prov/*|feed/batman-provision/*) ;; *) err "$name: touches $f (only feed/batman-prov{,ision}/)" ;; esac
@@ -67,9 +67,10 @@ for p in "$D"/*.patch; do
 			echo "$added" | grep -qF -- "$q" && err "$name: an added line names the protected ${q##*/}"
 		done ;;
 	esac
-	# no variant may remove or change a line of the wbox gate itself (a mutant must not take the gate out)
-	gl=$(grep '^-' "$p" | grep -v '^--- ' | grep -E "$GATEPAT" | head -3)
-	[ -z "$gl" ] || err "$name: removes / changes a wbox-gate line: $(echo "$gl" | tr '\n' ' ' | cut -c1-160)"
+	# no variant may remove, change or add a line of the wbox gate itself, its stamp detection (_wf) included
+	# (a mutant must not take the gate out, nor override WBOX_STATE after it is set; review A-m2 / B-m2)
+	gl=$(grep -E '^[-+]' "$p" | grep -vE '^(---|\+\+\+) ' | grep -E "$GATEPAT" | head -3)
+	[ -z "$gl" ] || err "$name: removes / changes / adds a wbox-gate line: $(echo "$gl" | tr '\n' ' ' | cut -c1-160)"
 	# every touched shell file still parses in busybox ash (the node's sh; CI's sh is dash): applied to a scratch copy
 	sx=$(mktemp -d)
 	for f in $paths; do mkdir -p "$sx/$(dirname "$f")"; [ -f "$R/$f" ] && cp "$R/$f" "$sx/$f"; done

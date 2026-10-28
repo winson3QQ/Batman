@@ -65,11 +65,23 @@ R=$(mkrepo prot2); prot $R; mkpatch $R misc-ok "x" WBOX-misc-ok-2b2b2b2b miscok 
 R=$(mkrepo prot3); prot $R; mkpatch $R misc-uci "x" WBOX-misc-uci-2c2c2c2c miscuci $R; lst "test prov_test helper" "misc-uci release same"; want "a misc-* variant touches feed/batman-provision/files/etc/uci-defaults/96-x" "misc-* edits another file"
 R=$(mkrepo prot4); prot $R; mkpatch $R ucin "x" WBOX-ucin-2d2d2d2d ucinames $R; lst "test prov_test helper" "ucin release same"; want "an added line names the protected batman-autocommit" "uci mutant whose added line names /usr/bin/batman-autocommit"
 R=$(mkrepo prot5); prot $R; mkpatch $R ucib "x" WBOX-ucib-2e2e2e2e ucibootf $R; lst "test prov_test helper" "ucib release same"; want "an added line names the protected autoboot.txt" "uci mutant whose added line names autoboot.txt"
-R=$(mkrepo prot6); prot $R; mkpatch $R misc-gate "x" WBOX-misc-gate-2f2f2f2f miscgate $R; lst "test prov_test helper" "misc-gate release same"; want "removes / changes a wbox-gate line" "misc-* removes the WBOX_STATE line"
+R=$(mkrepo prot6); prot $R; mkpatch $R misc-gate "x" WBOX-misc-gate-2f2f2f2f miscgate $R; lst "test prov_test helper" "misc-gate release same"; want "removes / changes / adds a wbox-gate line" "misc-* removes the WBOX_STATE line"
 R=$(mkrepo prot7); prot $R; mkpatch $R misc-syn "x" WBOX-misc-syn-3a3a3a3a miscsyn $R; lst "test prov_test helper" "misc-syn release same"; want "does not parse in busybox sh" "a line inserted after ';;' (busybox sh -n)"
 R=$(mkrepo nobb); prot $R; mkpatch $R misc-ok "x" WBOX-misc-ok-2b2b2b2b miscok $R; lst "test prov_test helper" "misc-ok release same"
 mkdir -p $T/nobb; for d in /usr/local/bin /usr/bin /bin; do for c in $d/*; do b=${c##*/}; [ "$b" = busybox ] || [ -e $T/nobb/$b ] || ln -s $c $T/nobb/$b; done; done
 out=$(PATH=$T/nobb bash $L $R 2>&1); rc=$?; [ $rc != 0 ] && case "$out" in *"no busybox"*) true ;; *) false ;; esac && { pass=$((pass+1)); echo "ok   no busybox on the host -> FAIL"; } || { bad=$((bad+1)); echo "BAD  no busybox: rc=$rc $out"; }
+# review A-m2: a misc patch that ADDS a WBOX_STATE override, and one that disables the stamp detection (_wf)
+miscadd(){ sed -i 's/^log "start"$/log "start"\nWBOX_STATE=release # WBOX-misc-add-3b3b3b3b/' $1/feed/batman-provision/files/usr/bin/batman-autocommit; }
+miscwf(){ sed -i 's/^WBOX_STATE=release$/WBOX_STATE=release\n_wf=\/dev\/null # WBOX-misc-wf-3c3c3c3c/' $1/feed/batman-provision/files/usr/bin/batman-autocommit; }
+R=$(mkrepo prot8); prot $R; mkpatch $R misc-add "x" WBOX-misc-add-3b3b3b3b miscadd $R; lst "test prov_test helper" "misc-add release same"; want "adds a wbox-gate line" "misc-* adds a WBOX_STATE override line"
+R=$(mkrepo prot9); prot $R; mkpatch $R misc-wf "x" WBOX-misc-wf-3c3c3c3c miscwf $R; lst "test prov_test helper" "misc-wf release same"; want "adds a wbox-gate line" "misc-* repoints the stamp detection (_wf)"
+# review A-m2: every member of the protected set, touched by a non-misc variant -> FAIL (one case each)
+for q in usr/sbin/batman-slot usr/bin/batman-autocommit etc/init.d/batman-autocommit usr/lib/batman/otatrace.sh usr/lib/batman/rundir.sh usr/lib/batman/bootfacts.sh usr/lib/batman/meshjoin.sh; do
+	n=pm$(echo "$q" | tr -dc 'a-z' | tail -c 9)
+	R=$(mkrepo "$n"); prot $R; mkdir -p "$R/feed/batman-provision/files/$(dirname $q)"; [ -f "$R/feed/batman-provision/files/$q" ] || { printf '#!/bin/sh\n: base\n' > "$R/feed/batman-provision/files/$q"; git -C $R -c user.email=t@t -c user.name=t add -A; git -C $R -c user.email=t@t -c user.name=t commit -qm "$q"; }
+	pmedit(){ printf ': WBOX-%s-4d4d4d4d\n' "$n" >> "$1/feed/batman-provision/files/$q"; }
+	mkpatch $R "$n" "x" "WBOX-$n-4d4d4d4d" pmedit $R; lst "test prov_test helper" "$n release same"; want "touches the protected $q" "non-misc patch edits the protected $q"
+done
 # nohold: definition exempt, the unit allowed, any other call FAILs
 R=$(mkrepo nh); prot $R; mkpatch $R misc-ok "x" WBOX-misc-ok-2b2b2b2b miscok $R; lst "test prov_test helper" "misc-ok release same"; mkdir -p $R/scripts/dv
 printf 'pr_ota_b() {\n\tcase "$4" in nohold) hold=0 ;; esac\n}\n' > $R/scripts/dv/prov-254.sh
