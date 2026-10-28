@@ -62,6 +62,7 @@ jobs:
           bash tests/prov-p1/autocommit-prov-case.sh $F/usr/bin/batman-autocommit
           bash tests/prov-p1/99zz-mesh-expect.sh $F/etc/uci-defaults/99zz-batman-prov-state
           bash tests/prov-p1/batman-slot-addr-defer.sh $F/usr/sbin/batman-slot
+          bash tests/prov-p1/wbox-gate.sh $F/usr/sbin/batman-slot $F/usr/bin/batman-autocommit
       - name: "#254 P1 loop-device tests (root): config-save identity freeze / frozen no-remount / prov-get rc 10, prov-base compare rules"
         run: |
           F=feed/batman-provision/files

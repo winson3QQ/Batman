@@ -482,6 +482,17 @@ health_ok(){
 	return 0
 }
 
+# #254 security review F1 (docs/design/254-h23-harness.md §18.1, §19.3, §20.4, §21.2): this image's own stamp
+# (/rom/etc/batman-build, squashfs) decides whether it may ever be auto-committed: a -wbox TEST image never is
+# (folded into why AFTER hold, so a held wbox trial still reports HELD); an unreadable stamp is not committed either
+# (fail-closed: every release image has it). Dry-run is unaffected (it never commits).
+WBOX_STATE=release
+_wf=/rom/etc/batman-build
+if [ ! -r "$_wf" ] || ! grep -q '^BATMAN_VERSION=' "$_wf" 2>/dev/null; then WBOX_STATE=unreadable
+elif grep -q '^BATMAN_WBOX=.' "$_wf" || sed -n 's/^BATMAN_VERSION=//p' "$_wf" | grep -q '\.wbox-'; then
+	WBOX_STATE="wbox:$(sed -n 's/^BATMAN_WBOX=//p' "$_wf")"
+fi
+
 # 7) poll: services dwell NEED polls; mesh join latched (>= JOIN_NEED samples, last within JOIN_FRESH)
 ok=0; jn=0; jlast=-100000; why=""
 while [ "$(up)" -lt "$DEADLINE" ]; do
@@ -511,6 +522,12 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 	elif [ -z "$why" ] && held_commit; then
 		why="held for operator acceptance (batman-autocommit release)"
 		[ -n "${HELDLOGGED:-}" ] || { HELDLOGGED=1; log "trial $SLOT is healthy and HELD — waiting for release (deadline ${DEADLINE}s)"; otalog AC HELD slot=$SLOT; }
+	elif [ -z "$why" ] && [ "$DRY" != 1 ] && [ "$WBOX_STATE" != release ]; then
+		case "$WBOX_STATE" in
+			unreadable) why="build stamp unreadable (/rom/etc/batman-build) — not committing (deadline revert armed)"; wtag=STAMP-UNREADABLE ;;
+			*) why="wbox test image (BATMAN_WBOX=${WBOX_STATE#wbox:}) — never auto-committed (deadline revert armed)"; wtag=WBOX-NOCOMMIT ;;
+		esac
+		if [ "$ok" -ge "$NEED" ] && [ -z "${WBOXLOGGED:-}" ]; then WBOXLOGGED=1; log "trial $SLOT is healthy but: $why"; otalog AC "$wtag" slot="$SLOT"; fi
 	fi
 	echo "$why" > "$RUNDIR/autocommit.why"
 	if [ "$ok" -ge "$NEED" ] && [ -z "$why" ]; then
