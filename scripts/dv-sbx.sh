@@ -1,7 +1,8 @@
 #!/bin/bash
 # scripts/dv-sbx.sh — #254 dv-sbx: the provisioning sandbox (docs/design/254-h23-harness.md §4.4; 254-p1-impl §4.10, §5.1).
 # Root on a throw-away Linux host (CI ubuntu-24.04-arm; locally WSL with arm64 binfmt). Never on a node.
-#   dv-sbx.sh [--base <payload.tar.gz>] [--go <go binary>] [--feed <feed dir>] <case>[:<mutant>] ...
+#   dv-sbx.sh [--soc bcm2711|bcm2710] [--base <payload.tar.gz>] [--go <go binary>] [--feed <feed dir>] <case>[:<mutant>] ...
+#     --soc bcm2710: the bcm2710 payload's rootfs as the base (prov-unit-bcm2710, a SMOKE: same cases, other base)
 #     --feed: the product to test (default: this checkout's feed/); e.g. a P1b checkout's while this one is pre-P1b
 #     builds $SBX/root once per call: the pinned base payload's rootfs (tests/prov-p1/sbx/base.env; sha checked) + this
 #     checkout's feed/batman-provision files laid over by their Makefile install lines (lint-install first) + the
@@ -14,7 +15,7 @@
 #   fails = 0. Any other result, or a case that runs nothing, FAILs.
 set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd); SX=$REPO/tests/prov-p1/sbx
-SBX=${SBX:-}; BASE=""; GO=${GO:-go}; FEED=$REPO/feed; fails=0
+SBX=${SBX:-}; BASE=""; GO=${GO:-go}; FEED=$REPO/feed; SOC=bcm2711; fails=0
 no(){ echo "FAIL $*"; fails=$((fails + 1)); }
 die(){ echo "FAIL $*"; cleanup; exit 1; }
 LOOP=""
@@ -23,6 +24,7 @@ trap cleanup EXIT
 while [ $# -gt 0 ]; do case "$1" in
 	--base) BASE=$2; shift 2 ;;
 	--go) GO=$2; shift 2 ;;
+	--soc) SOC=$2; shift 2 ;;
 	--feed) FEED=$(cd "$2" && pwd) || exit 2; shift 2 ;;
 	-*) echo "usage: dv-sbx.sh [--base <payload>] [--go <go>] <case>[:<mutant>] ..."; exit 2 ;;
 	*) break ;;
@@ -32,6 +34,7 @@ esac; done
 for t in unshare capsh chroot losetup unsquashfs mkfs.ext4 tar sha256sum; do command -v "$t" >/dev/null || die "missing host tool $t"; done
 # shellcheck source=tests/prov-p1/sbx/base.env
 . "$SX/base.env"
+case "$SOC" in bcm2711) ;; bcm2710) BASE_URL=$BASE_URL_BCM2710; BASE_SHA256=$BASE_SHA256_BCM2710 ;; *) echo "FAIL --soc $SOC"; exit 2 ;; esac
 
 # ---- build the root ---------------------------------------------------------------------------------------------------
 # the work dir: a fresh private mktemp dir, or SBX = an existing root-owned directory (not a symlink) emptied here —
@@ -42,9 +45,9 @@ else [ -d "$SBX" ] && [ ! -L "$SBX" ] && [ -O "$SBX" ] || die "SBX=$SBX is not a
 RT=$SBX/root; echo "work dir $SBX"
 if [ -n "$BASE" ]; then cp "$BASE" "$SBX/base.tgz" || die "copy $BASE"
 else curl -fsSL --retry 3 -o "$SBX/base.tgz" "$BASE_URL" || die "download $BASE_URL"; fi
-[ "$(sha256sum < "$SBX/base.tgz" | cut -c1-64)" = "$BASE_SHA256" ] || die "base payload sha != BASE_SHA256 ($BASE_VER)"
+[ "$(sha256sum < "$SBX/base.tgz" | cut -c1-64)" = "$BASE_SHA256" ] || die "base payload sha != the pinned $SOC sha ($BASE_VER)"
 tar -xzf "$SBX/base.tgz" -C "$SBX" root.squashfs && unsquashfs -q -d "$RT" "$SBX/root.squashfs" >/dev/null || die "unpack the base rootfs"
-echo "base $BASE_VER unpacked ($(find "$RT" -xdev | wc -l) entries)"
+echo "base $BASE_VER $SOC unpacked ($(find "$RT" -xdev | wc -l) entries)"
 bash "$REPO/scripts/lint-install.sh" "${FEED%/feed}" || die "lint-install"
 F=$FEED/batman-provision
 n=0
