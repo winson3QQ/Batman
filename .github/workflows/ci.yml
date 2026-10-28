@@ -142,7 +142,7 @@ jobs:
       - name: deps
         run: sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools libcap2-bin e2fsprogs
       - name: "dv-sbx: escape negatives, prov-unit-96 (104 cases) + 4 mutants, prov-unit-cfgsave (36 cases) + 3 mutants"
-        run: sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root bash scripts/dv-sbx.sh --go "$(command -v go)" escape 96 96:meta-bad-unlock 96:p6-unlock 96:devopen-exempt 96:skip-decision cfgsave cfgsave:meta-first cfgsave:onjoin-prov cfgsave:check-late
+        run: sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root bash scripts/dv-sbx.sh --go "$(command -v go)" escape 96 96:meta-bad-unlock 96:p6-unlock 96:devopen-exempt 96:skip-decision cfgsave cfgsave:meta-first cfgsave:onjoin-prov cfgsave:check-late armmesh armmesh:no-joined
       - name: "dv-sbx prov-unit-bcm2710 (SMOKE): escape, 96, cfgsave on the bcm2710 payload rootfs"
         run: sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root bash scripts/dv-sbx.sh --soc bcm2710 --go "$(command -v go)" escape 96 cfgsave
 

@@ -23,6 +23,9 @@ mknod -m 0666 "$RT/dev/null" c 1 3 && mknod -m 0666 "$RT/dev/zero" c 1 5 && mkno
 # shellcheck disable=SC2046  # two numbers, split on purpose
 # shellcheck disable=SC2046  # two numbers, split on purpose
 # shellcheck disable=SC2046  # two numbers, split on purpose
+# shellcheck disable=SC2046  # two numbers, split on purpose
+# shellcheck disable=SC2046  # two numbers, split on purpose
+# shellcheck disable=SC2046  # two numbers, split on purpose
 set -- $(stat -L -c '%t %T' "$LOOP"); mknod -m 0600 "$RT/dev/mmcblk0p5" b $((0x$1)) $((0x$2)) || fail "mknod mmcblk0p5 -> $LOOP"
 : > "$RT/dev/kmsg"   # a regular file: nothing reaches the host's kernel log
 mkdir -p "$RT/opt/batdata" "$RT/tmp" && mount -t tmpfs tmpfs "$RT/opt/batdata" && mount -t tmpfs tmpfs "$RT/tmp" \
