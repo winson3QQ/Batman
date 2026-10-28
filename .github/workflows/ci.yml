@@ -60,6 +60,7 @@ jobs:
           bash tests/prov-p1/addr-defer.sh $F/usr/libexec/batman-addr-defer
           sed '1s#.*#\#!/usr/bin/busybox sh#' $F/usr/libexec/batman-addr-defer > /tmp/dec.bb && chmod +x /tmp/dec.bb && bash tests/prov-p1/addr-defer.sh /tmp/dec.bb
           bash tests/prov-p1/autocommit-prov-case.sh $F/usr/bin/batman-autocommit
+          bash tests/prov-p1/autocommit-mesh-arm.sh $F/usr/bin/batman-autocommit
           bash tests/prov-p1/99zz-mesh-expect.sh $F/etc/uci-defaults/99zz-batman-prov-state
           bash tests/prov-p1/batman-slot-addr-defer.sh $F/usr/sbin/batman-slot
           bash tests/prov-p1/wbox-gate.sh $F/usr/sbin/batman-slot $F/usr/bin/batman-autocommit
