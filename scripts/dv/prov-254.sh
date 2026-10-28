@@ -313,6 +313,7 @@ pr_end(){	# [revert] [wrote-b]
 	if [ "$PR_WROTE_B" = 1 ] || [ "$(field "$s" protB)" != "[$PR_V]" ]; then pr_brewrite || { pr_needs_person "pr_end: B rewrite failed"; return 1; }
 	else [ "$(qr "$PROTB_LS")" = "$PR_PROTB_LS" ] && ok "slot-B.protected = V, untouched" || no "slot-B.protected changed"; fi
 	pr_finish_snap || no "finish"
+	if [ -n "${OWNER:-}" ]; then pr_keys_drop; [ "$(wsl_ bash -c "[ -e $WSLK ] && echo left" | tr -d '\r')" = left ] && no "run keys still in $WSLK" || ok "run keys removed"; fi
 	pr_release
 	pr_peer_after
 }
@@ -398,3 +399,72 @@ pr_push_helper(){	# <variant>[:killpoint=<p>]
 	grep -q '^PUSHED' <<< "$o" || { no "push-helper $1: $o"; return 1; }
 	ok "helper $v bound and running${kp:+ ($kp armed)}"; return 0
 }
+
+# ---- owner keys, provclient on the node, claim (254-p1-impl §4.2; the claim-lock unit's prov-lib-254.sh, per run) ------
+TOOLS=${DV_PROV_TOOLS:-/c/Users/yello/batman-dv-tools/prov}; TOOLS_WSL=${DV_PROV_TOOLS_WSL:-/home/yello/batman-dv-tools/prov}
+LABKEY=${LABKEY:-$HOME/.ssh/id_ed25519}
+WSLK=/home/yello/.batman-dv/prov-keys/$RUN      # per-run owner keys (WSL ext4, 0600); pr_release removes them
+PCD=/tmp/run/batman-dvpc.$RUN                    # node: provclient (root 0711; it drops to uid 471)
+# pr_keys: owner / enc / attacker keys for this run in WSL; OWNER / ENC / ATK = their public keys (hex)
+pr_keys(){
+	wsl_ bash -c "umask 077; mkdir -p $WSLK && $TOOLS_WSL/provclient-amd64 keygen $WSLK/owner.pem > $WSLK/owner.pub && $TOOLS_WSL/provclient-amd64 keygen $WSLK/enc.pem > $WSLK/enc.pub && $TOOLS_WSL/provclient-amd64 keygen $WSLK/attacker.pem > $WSLK/attacker.pub" \
+		|| { no "owner key generation"; return 1; }
+	OWNER=$(wsl_ cat $WSLK/owner.pub | tr -d '\r'); ENC=$(wsl_ cat $WSLK/enc.pub | tr -d '\r'); ATK=$(wsl_ cat $WSLK/attacker.pub | tr -d '\r')
+	[ ${#OWNER} = 130 ] && [ ${#ENC} = 130 ] && [ ${#ATK} = 130 ] || { no "owner keys"; return 1; }
+}
+# pr_pc_place: provclient-arm64 into $PCD (root 0711, made without -p: a pre-existing dir is refused), sha checked
+# against the tools' SHA256SUMS. tmpfs: again after every reboot.
+pr_pc_place(){
+	local s
+	(cd "$TOOLS" && sha256sum -c --quiet SHA256SUMS) || { no "$TOOLS/SHA256SUMS does not verify"; return 1; }
+	s=$(sha256sum < "$TOOLS/provclient-arm64" | cut -c1-64)
+	q "mkdir -p -m 0700 /tmp/run/batman-dv"
+	scp -q $SSHO "$TOOLS/provclient-arm64" root@$NODE:/tmp/run/batman-dv/pc.$RUN.upload || { no "provclient upload"; return 1; }
+	[ "$(q "set -e; mkdir -m 0711 $PCD; mv /tmp/run/batman-dv/pc.$RUN.upload $PCD/provclient; chown root:root $PCD $PCD/provclient; chmod 0755 $PCD/provclient; [ \"\$(sha256sum < $PCD/provclient | cut -c1-64)\" = $s ] && echo PCOK")" = PCOK ] \
+		|| { no "provclient placement in $PCD (pre-existing dir / sha)"; return 1; }
+}
+# pr_pc <key> [FD3=<node-side sh producing the fd-3 lines>] [ENV=v ...] -- <op> [args]: provclient on the node; its
+# SIGN lines go to the WSL signer; the fd-3 producer runs ON the node (a mesh key never crosses to the host).
+pr_pc(){
+	local key=$1 fd3="" envs="" f W SIGNP line sig out=""; shift
+	while [ "$1" != -- ]; do case "$1" in FD3=*) fd3=${1#FD3=} ;; *) envs="$envs $1" ;; esac; shift; done; shift
+	f=$(mktemp -d)/p; mkfifo "$f"
+	coproc SIGNP { wsl_ "$TOOLS_WSL/provclient-amd64" sign "$WSLK/$key"; }
+	exec {W}<>"$f"
+	local cmd="$envs $PCD/provclient node $*"
+	[ -n "$fd3" ] && cmd="exec 4<&0; { $fd3; } | $envs $PCD/provclient node $* 3<&0 0<&4"
+	while IFS= read -r line; do
+		line=$(printf '%s' "$line" | tr -d '\r')
+		case "$line" in
+			SIGN\ *) echo "$line" >&"${SIGNP[1]}"; IFS= read -r -t 30 sig <&"${SIGNP[0]}" || sig=ERR; printf '%s\n' "$sig" | tr -d '\r' >&"$W" ;;
+			*) out="$out$line
+" ;;
+		esac
+	done < <(ssh $SSHO root@$NODE "$cmd" < "$f" 2>&1)
+	exec {W}>&-; kill "$SIGNP_PID" 2>/dev/null; rm -rf "${f%/p}"
+	printf '%s' "$out"
+}
+# pk_proof: the lab key authenticates by PUBLICKEY (a claim turns password / none off): proven on a temporary
+# publickey-only listener of the same dropbear (port 2222, a tagged nft rule), removed again and asserted
+PKO="-o BatchMode=yes -o ConnectTimeout=6 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes -o IdentitiesOnly=yes -i $LABKEY -o LogLevel=VERBOSE"
+NONEO="-o BatchMode=yes -o ConnectTimeout=6 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=none -o PubkeyAuthentication=no -o LogLevel=ERROR"
+pk_proof(){ local r=1 o
+	q 'mkdir -p -m 0700 /tmp/run/batman-dv; pid=/tmp/run/batman-dv/dv-pk.pid; [ -s $pid ] && kill $(cat $pid) 2>/dev/null; nft -a list chain inet fw4 input 2>/dev/null | grep -q dv-pk-proof || nft insert rule inet fw4 input tcp dport 2222 accept comment "dv-pk-proof" 2>/dev/null; dropbear -s -g -p 2222 -P $pid && sleep 1 && [ -s $pid ] && echo LISTEN' | grep -q LISTEN || { echo "    pk_proof: listener did not start"; return 1; }
+	o=$(timeout 30 ssh -p 2222 $PKO root@$NODE 'echo PKOK' 2>&1 | tr -d '\r')
+	if grep -qE 'Authenticated to .* using "publickey"' <<< "$o" && grep -q PKOK <<< "$o"; then
+		timeout 30 ssh -p 2222 $NONEO root@$NODE 'echo NONEOK' 2>&1 | grep -q "Permission denied" && r=0 || echo "    pk_proof: 'none' not denied on the publickey-only listener (probe invalid)"
+	else echo "    pk_proof: no publickey authentication on the listener"; fi
+	o=$(q 'pid=/tmp/run/batman-dv/dv-pk.pid; kill $(cat $pid) 2>/dev/null; rm -f $pid; for h in $(nft -a list chain inet fw4 input 2>/dev/null | sed -n "s/.*dv-pk-proof.*# handle \([0-9]*\).*/\1/p"); do nft delete rule inet fw4 input handle $h; done; sleep 1; echo "left=$(nft -a list chain inet fw4 input 2>/dev/null | grep -c dv-pk-proof) listen=$(netstat -ltn 2>/dev/null | grep -c ":2222 ")"')
+	[ "$o" = "left=0 listen=0" ] || { echo "    pk_proof: cleanup incomplete ($o)"; r=1; }
+	return $r; }
+# pr_claim: legacy -> claimed with this run's owner key (publickey proven first: the claim turns password login off)
+pr_claim(){
+	local r
+	pk_proof || { no "publickey not proven — not claiming"; return 1; }
+	r=$(pr_pc owner.pem -- claim "$OWNER" "$ENC"); echo "$r" | sed 's/^/    /'
+	grep -q "RESULT claim.verify code=0 " <<< "$r" || { no "claim: $r"; return 1; }
+	ok "claimed with this run's owner key"
+}
+# pr_info: "state=<s> gen=<g> owners=<n> rm=<r>"
+pr_info(){ pr_pc owner.pem -- info | sed -n 's/^RESULT info.state code=0 state=\([a-z]*\) gen=\([0-9]*\) owners=\([0-9]*\) rm=\([a-z0-9]*\).*/state=\1 gen=\2 owners=\3 rm=\4/p'; }
+pr_keys_drop(){ wsl_ rm -rf "$WSLK"; q "rm -rf $PCD"; }

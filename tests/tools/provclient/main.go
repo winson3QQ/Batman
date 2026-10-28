@@ -31,6 +31,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -372,8 +373,9 @@ func (cl *client) call(verb string, args cmap) (uint64, cmap) {
 	}
 	buf := make([]byte, 1<<17)
 	n, err := cl.c.Read(buf)
-	if err != nil {
-		return 999, nil // connection closed by the helper
+	if err != nil || n == 0 {
+		fmt.Println("CONN-CLOSED") // the helper closed the connection (e.g. a peer uid it refuses)
+		return 999, nil
 	}
 	x, _, err := cDec(buf[:n])
 	if err != nil {
@@ -422,20 +424,23 @@ func (cl *client) ownerOp(typ string, body cmap) []byte {
 }
 
 // dropPrivileges: secrets already read; then uid/gid 471, no supplementary groups, not dumpable (254-p1-impl §2.2).
-func dropPrivileges() {
+func dropPrivileges() { dropTo(471, 471) }
+
+// dropTo: uid / gid (sock-as: another uid, for the socket permission and PEERCRED tests, 254-h23 §4.5)
+func dropTo(uid, gid int) {
 	if os.Geteuid() != 0 {
 		die("node mode starts as root (it reads root-only secrets, then drops)")
 	}
 	if err := syscall.Setgroups([]int{}); err != nil {
 		die("setgroups: %v", err)
 	}
-	if err := syscall.Setgid(471); err != nil {
+	if err := syscall.Setgid(gid); err != nil {
 		die("setgid: %v", err)
 	}
-	if err := syscall.Setuid(471); err != nil {
+	if err := syscall.Setuid(uid); err != nil {
 		die("setuid: %v", err)
 	}
-	if syscall.Getuid() != 471 || syscall.Geteuid() != 471 || syscall.Getgid() != 471 {
+	if syscall.Getuid() != uid || syscall.Geteuid() != uid || syscall.Getgid() != gid {
 		die("privilege drop did not take")
 	}
 	if g, _ := syscall.Getgroups(); len(g) != 0 {
@@ -451,6 +456,33 @@ func dropPrivileges() {
 func cmdNode(args []string) {
 	if len(args) == 0 {
 		die("node: op missing")
+	}
+	// sock-as <uid> [--gid <gid>] -- <op> [args]: the op as another uid / gid (default gid = uid); a refused connect
+	// prints "CONN-ERR <reason>", a connection the helper closes prints "CONN-CLOSED" (254-h23 §4.5 prov-sock-254)
+	uid, gid := 471, 471
+	if args[0] == "sock-as" {
+		if len(args) < 4 {
+			die("usage: sock-as <uid> [--gid <gid>] -- <op> [args]")
+		}
+		u, err := strconv.Atoi(args[1])
+		if err != nil || u <= 0 {
+			die("sock-as: uid %q (never 0)", args[1])
+		}
+		uid, gid = u, u
+		args = args[2:]
+		if args[0] == "--gid" {
+			if len(args) < 2 {
+				die("sock-as: --gid needs a value")
+			}
+			if gid, err = strconv.Atoi(args[1]); err != nil || gid <= 0 {
+				die("sock-as: gid %q", args[1])
+			}
+			args = args[2:]
+		}
+		if len(args) < 2 || args[0] != "--" {
+			die("sock-as: -- <op> missing")
+		}
+		args = args[1:]
 	}
 	op := args[0]
 	// secrets first, as root (never stdin: stdin is the signer channel)
@@ -486,10 +518,11 @@ func cmdNode(args []string) {
 			pwOut.Close()
 		}
 	}
-	dropPrivileges()
+	dropTo(uid, gid)
 	c, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: sockPath, Net: "unixpacket"})
 	if err != nil {
-		die("connect: %v", err)
+		fmt.Printf("CONN-ERR %v\n", err)
+		os.Exit(3)
 	}
 	h := make([]byte, 32)
 	rand.Read(h)

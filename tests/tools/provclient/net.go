@@ -205,7 +205,7 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 	switch op {
 	case "net-apply": // net-apply --first <owner_pub> | net-apply --update <owner_pub> <prev net_config hex>
 		if len(args) < 3 {
-			die("usage: net-apply --first <owner_pub> | --update <owner_pub> <prev-net_config-hex>")
+			die("usage: net-apply --first|--first-noop <owner_pub> | --update <owner_pub> <prev-net_config-hex>")
 		}
 		ownerPub := hexArg(2)
 		switch args[1] {
@@ -217,6 +217,15 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 			code, _ := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
 			fmt.Printf("RESULT net.apply code=%d version=1 net_id=%x mesh_id_sha=%s\n", code, netID, short([]byte(in.meshID)))
 			fmt.Printf("NETCFG %s\n", hex.EncodeToString(cfg)) // not secret: the signed config (no keys)
+		case "--first-noop": // the same join WITHOUT the owner-op (key 31): a release helper must refuse it (E_FORBIDDEN);
+			// helper-nojoinop accepts it (the prov-netjoin-254 negative control)
+			netID := make([]byte, 16)
+			rand.Read(netID)
+			cfg, sec := cl.netObjects(in, ownerPub, netID, 1, nil)
+			env := cEnc(cmap{{uint64(0), []any{uint64(1), uint64(0)}}, {uint64(1), uint64(1)}, {uint64(2), "network/join"},
+				{uint64(3), cmap{{uint64(1), rawCBOR(cfg)}, {uint64(3), rawCBOR(sec)}}}})
+			code, _ := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
+			fmt.Printf("RESULT net.apply(no owner-op) code=%d version=1 net_id=%x mesh_id_sha=%s\n", code, netID, short([]byte(in.meshID)))
 		case "--update":
 			prev := hexArg(3)
 			x, _, err := cDec(prev)
@@ -234,7 +243,7 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 			fmt.Printf("RESULT net.apply(update) code=%d version=%d mesh_id_sha=%s\n", code, ver+1, short([]byte(in.meshID)))
 			fmt.Printf("NETCFG %s\n", hex.EncodeToString(cfg))
 		default:
-			die("net-apply: --first or --update")
+			die("net-apply: --first, --first-noop or --update")
 		}
 	case "leave":
 		env := cl.ownerOp("network/leave", cmap{})
