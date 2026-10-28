@@ -69,7 +69,12 @@ svc() {	# $1 stop|start, rest = services that exist
 tree_manifest() {	# $1 root dir
 	( cd "$1" || exit 1
 	  # busybox here has no stat / comm (02 probe 2026-10-21): type, mode, owner come from `ls -lnd`
-	  find . -mindepth 1 2>/dev/null | sort | while IFS= read -r p; do
+	  # review A-m10: a line is "<fields> <path>" and readers take the LAST field, so a name with a space / tab / newline
+	  # would be read as another path (overlay-restore would rm -rf it). Such a name is a BADNAME line and rc 3 (fail-closed).
+	  find . -mindepth 1 2>/dev/null | sort | { bad=0; while IFS= read -r p; do
+		case "$p" in ./*) ;; *) echo "BADNAME ${p#./}"; bad=1; continue ;; esac   # the tail of a name with a newline
+		case "$p" in *" "*|*"	"*) echo "BADNAME ${p#./}"; bad=1; continue ;; esac
+		[ -e "$p" ] || [ -L "$p" ] || { echo "BADNAME ${p#./}"; bad=1; continue; }   # the head of a name with a newline
 		set -- $(ls -lnd "$p" 2>/dev/null); m="$1 $3:$4"
 		case "$1" in
 			-*) h=$(sha256sum < "$p" | cut -c1-64) ;;
@@ -78,7 +83,7 @@ tree_manifest() {	# $1 root dir
 			*) h="-" ;;
 		esac
 		echo "$m $h ${p#./}"
-	  done )
+	  done; [ "$bad" = 0 ]; } )
 }
 uci_exports() {	# normalised: `uci export` per config file, in name order
 	for f in $(ls /etc/config 2>/dev/null | sort); do echo "=== $f"; uci -q export "$f" 2>/dev/null; done
@@ -98,7 +103,7 @@ state_record() {	# $1 out dir
 manifests_to() {	# $1 out dir
 	mkdir -p "$1"
 	p5_manifest "$1/p5.manifest" || echo "p5 unreadable" > "$1/p5.manifest"
-	tree_manifest /overlay/upper > "$1/upper.manifest"
+	tree_manifest /overlay/upper > "$1/upper.manifest" || die "upper: $(grep -c '^BADNAME' "$1/upper.manifest") path name(s) with whitespace or a newline (BADNAME lines in $1/upper.manifest) — a manifest line cannot represent them (review A-m10)"
 	uci_exports > "$1/uci.export"
 	state_record "$1/state"
 	{ echo "slot=$(batman-slot active)"; echo "ver=$(sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build)"
@@ -212,7 +217,8 @@ overlay-restore)
 	svc stop joinwatch batman-provhelper batman-provd openmanetd tailscale tailscaled cron uhttpd dockerd
 	tar -C /overlay/upper -xpf "$D/upper.tar" 2>"$D/untar.err" || die "untar failed: $(head -2 "$D/untar.err")"
 	# delete what the snapshot did not have (printed first), except allow-listed paths
-	tree_manifest /overlay/upper | awk '{print $NF}' > /tmp/run/batman-dv/now.paths
+	tree_manifest /overlay/upper > /tmp/run/batman-dv/now.manifest || die "overlay-restore: path name(s) with whitespace or a newline in the upper: $(grep -c '^BADNAME' /tmp/run/batman-dv/now.manifest) — extras are NOT removed by name (review A-m10)"
+	awk '{print $NF}' /tmp/run/batman-dv/now.manifest > /tmp/run/batman-dv/now.paths
 	awk '{print $NF}' "$D/snap/upper.manifest" > /tmp/run/batman-dv/snap.paths
 	if [ "${PROV_BASE_SKIP:-}" = extra ]; then say "SKIP extra removal (PROV_BASE_SKIP=extra, negative control)"; else
 	awk 'NR==FNR{s[$0]=1; next} !($0 in s)' /tmp/run/batman-dv/snap.paths /tmp/run/batman-dv/now.paths | sort -r | while IFS= read -r p; do

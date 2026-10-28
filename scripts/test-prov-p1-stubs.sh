@@ -30,6 +30,7 @@ if [ -f "$F/etc/init.d/batman-prov-lock" ]; then
 	stub 'fails=0$' batman-slot-rollback-gate "$F/usr/sbin/batman-slot" "$F/usr/lib/batman/prov-lock.sh"
 	stub 'fails=0$' claim-lock-lints .
 else echo "FAIL prov-p1-stubs: product in this checkout predates the claim-lock fix (no etc/init.d/batman-prov-lock) — KNOWN until fix/254-claim-lock lands (#254)"; r=1; fi
+stub 'fails=0$' prov-base-names scripts/node/prov-base-254.sh   # no root needed (review A-m10)
 if [ "$(id -u)" = 0 ] && command -v losetup >/dev/null 2>&1; then
 	for t in cfgsave-identity-freeze cfgsave-frozen-nomount cfgsave-provget-rc10; do PROV_SRC=$REPO/$F stub 'FAIL=0|PASS$' $t "$F/usr/bin/batman-config-save"; done
 	stub 'fails=0$' prov-base-statecmp scripts/node/prov-base-254.sh
