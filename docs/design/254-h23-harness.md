@@ -1,6 +1,6 @@
-# Design: #254 PR-H3 — harness:H2 補完(P1 tier B / 沙箱 / 接縫)+ H3(provd / BLE / `peer.py`)— **v13(審查中)**
+# Design: #254 PR-H3 — harness:H2 補完(P1 tier B / 沙箱 / 接縫)+ H3(provd / BLE / `peer.py`)— **v14(審查中)**
 
-**狀態**:**v13 審查中**,2026-10-28(§22 = v12 審查的修訂,優先於前文全部;v12:A AWC 0/1/12、B AWC 0/0/9;§21 = v11 的修訂)。v7 定稿之後的增補:§16(P1b 程式碼審查 r1–r4 的修訂)、§17(misc 變體,v9 重寫)、§18(安全審查)、§19(v9 審查)、§20(v10 審查,優先於前文全部)。v8:§17 兩位 REJECT;v9:A AWC 0/3/16、B REJECT 0/4/16;v10:A AWC 0/2/14、B AWC 0/1/11(`254-reviews/h23-review-v{8,9,10}-{A,B}.md`)。以下為 v7 時的狀態:v6 審查:A **APPROVE**(0 / 0 / 4)、B **APPROVE-WITH-CHANGES**(0 / 0 / 10)(`254-reviews/h23-review-v6-{A,B}.md`),兩位都表示不需再審整份;v7 = v6 + §15(把 14 個 MINOR 寫成實作規格,**§15 與前文衝突時以 §15 為準**)。v6 之前:v5 審查:A APPROVE-WITH-CHANGES(0 / 0 / 6)、B APPROVE-WITH-CHANGES(0 / 1 / 12)(`254-reviews/h23-review-v5-{A,B}.md`);v6 收全部,對應表 §14(§12、§13 是前兩輪的表)。歷史:v1 A REJECT 2/8/12、B REJECT 3/17/14;v2 A REJECT 1/6/15、B AWC 0/7/19;v3 A AWC 0/7/10、B AWC 0/6/13;v4 A AWC 0/2/14、B AWC 0/3/15;v5 如上。使用者決定(2026-10-28):H2 沒做完的部分照 `254-p1-impl.md` §5 補完,與 H3 一份設計、兩段實作;608B(#255)擱置。
+**狀態**:**v14 審查中**,2026-10-28(§23 = v13 審查的修訂,優先於前文全部;v13:A AWC 0/1/10、B AWC 0/0/8;§22 = v12 的修訂;v12:A AWC 0/1/12、B AWC 0/0/9;§21 = v11 的修訂)。v7 定稿之後的增補:§16(P1b 程式碼審查 r1–r4 的修訂)、§17(misc 變體,v9 重寫)、§18(安全審查)、§19(v9 審查)、§20(v10 審查,優先於前文全部)。v8:§17 兩位 REJECT;v9:A AWC 0/3/16、B REJECT 0/4/16;v10:A AWC 0/2/14、B AWC 0/1/11(`254-reviews/h23-review-v{8,9,10}-{A,B}.md`)。以下為 v7 時的狀態:v6 審查:A **APPROVE**(0 / 0 / 4)、B **APPROVE-WITH-CHANGES**(0 / 0 / 10)(`254-reviews/h23-review-v6-{A,B}.md`),兩位都表示不需再審整份;v7 = v6 + §15(把 14 個 MINOR 寫成實作規格,**§15 與前文衝突時以 §15 為準**)。v6 之前:v5 審查:A APPROVE-WITH-CHANGES(0 / 0 / 6)、B APPROVE-WITH-CHANGES(0 / 1 / 12)(`254-reviews/h23-review-v5-{A,B}.md`);v6 收全部,對應表 §14(§12、§13 是前兩輪的表)。歷史:v1 A REJECT 2/8/12、B REJECT 3/17/14;v2 A REJECT 1/6/15、B AWC 0/7/19;v3 A AWC 0/7/10、B AWC 0/6/13;v4 A AWC 0/2/14、B AWC 0/3/15;v5 如上。使用者決定(2026-10-28):H2 沒做完的部分照 `254-p1-impl.md` §5 補完,與 H3 一份設計、兩段實作;608B(#255)擱置。
 
 上層:`254-stage1-impl.md` v19、`254-p1-impl.md` v5.1、`254-h1-harness.md` v8、`254-claim-lock-fix.md` v9.1、`219-protocol.md` v0.7、`219-protocol.cddl`。
 
@@ -1019,3 +1019,82 @@ trap '' HUP PIPE; setsid sh -c '<arm>' </dev/null >"$RUNDIR/dv-rbarm.<run>" 2>&1
 - [ ] lint-wbox:受保護集合、misc 範圍、busybox `sh -n`、nohold、各附負對照;firmware CI:`--selftest-` lint
 - [ ] test-dv-preflight:P9 `[all]` 三案;pre-gate stub 一案
 - [ ] E-H5 四項(§22.6)
+
+## 23. v13 審查後的修訂(`h23-review-v13-A` AWC 0/1/10、`-B` AWC 0/0/8;**本節優先於前文全部**)
+
+### 23.1 節點上「撐過斷線」的證明改為有判別力的形式(v13 A-MAJOR-1、B-m1)
+不配 pty 的 `ssh node cmd` 起動後,連沒有任何保護的 `&` 也活得下來(v13 A 沙箱 nopty 四種全 PASS),所以 §22.1「起動後殺 ssh」沒有判別力。改為:
+- **正向**:`ssh -tt node 'sh $DVD/<run>/rbarm-launch.sh; sleep 30'`(pty;launcher 照 §22.1 以 `trap '' HUP PIPE; setsid sh rbarm.sh … &` 起臂),臂開頭 `sleep 10` 並記 `t0 = /proc/uptime`;harness 在第 3 s 殺掉 ssh client,記錄殺的時刻與 session shell 的 pid 已消失;臂在 rollback 前後各記 uptime;斷言:`rbarm.out` 有 `RESULT=PASS`、殺 ssh 的時刻早於臂的 rollback 時間戳。
+- **負對照**(同一條 `ssh -tt` 路徑、同一窗口殺 ssh):起一個**無害**的臂(不呼叫 batman-slot,只 `sleep 10; echo RESULT=PASS`),**不加** `trap` 與 `setsid` → 必須沒有 `RESULT=`(v13 A 沙箱:plain-pty、setsid-only-pty 都死、design 存活)。負對照碰不到任何槽狀態。
+- 若節點上的負對照沒死(例如 dropbear 不送 HUP)→ 該證明判 INVALID,改以 dv-sbx 的 pty 模擬為準並標 ⚠️(不當 PASS)。
+
+### 23.2 rollback 臂的收尾與回補(v13 A-m1、B-m2 / m3)
+- `kill -0` 前比對 `/proc/<pid>/cmdline` 含 `rbarm.sh`(防 pid 重用)。
+- 120 s 無 `RESULT=` 且臂還活著 → 再等最多 60 s;180 s 仍無 → **一律不另起回補**,`pr_needs_person`,附 `bf_ab_all`、`[tryboot]`、程序列表。臂已不在而無 `RESULT=` → 讀 `bf_ab_all`,≠ `fw-part A` → 起 `rbfix.sh`。
+- **`rbfix.sh`**(另 stage,只做回補):前置 = `batman-slot active` = A、boot_id 與臂起動時相同(臂期間重開過 → 不 commit,交給 P9 / §22.1 的「B 上 rollback + `reboot committed`」並 `pr_needs_person`)、沒有任何 cmdline 含 `batman-slot` 的程序(避免撞 `slot_lock`,`batman-slot:61-73`);然後 `/usr/sbin/batman-slot commit` 重試 3 次 → 讀回 `bf_ab_all` = A。
+- 前置的電源檢查:`vcgencmd` 不存在 / 讀不到 → INVALID(fail-closed);batpower 狀態 `CRIT` → INVALID(會讓 `write_autoboot` die,遮住回歸,`:294-298`)。
+- 回補後 openmanetd:`addr_defer_release` 背景 start(`:754-768`)→ ≤ 30 s 內輪詢 `/etc/init.d/openmanetd running`;此斷言只在 dv-sbx 的回歸案被執行到(節點 PASS 路徑不回補),文件註明。
+- `pr_begin` / P9:殘留且仍活著的 `rbarm.pid` / `rbfix.pid` → FAIL(否則下一單位的 sysupgrade 撞 `slot_lock`)。
+- 回歸窗口斷電後開進 committed wbox B 的恢復需要 ssh 進 B:B 是 `96-noprov`(provisioning 不還原),到達方式 = lab key 經乙太網(04 有乙太網)或 `pr_find`;本單位前置斷言 B trial 期間 ssh 可達(`pr_find` 找得到),§5 註明(v13 A-m8)。
+
+### 23.3 dry-run 起法(v13 A-m2、B-m5)
+- 不在單引號內用未 export 的 `$DVD`:dry-run 也 stage 成 `$DVD/<run>/dry.sh`(執行中不改寫),內容寫 `echo $$ > "$D/dry.pid.tmp" && mv "$D/dry.pid.tmp" "$D/dry.pid"; exec env … batman-autocommit run`(`D` 以 stage 時的絕對路徑寫入)。
+- harness 先輪詢到 `dry.pid` 存在且全為數字(v13 B 沙箱:137/200 次第一次讀到空檔),再做 §22.3 的 sid 輪詢;兩者共用 2 s 上限。
+
+### 23.4 P9 `[all]`(取代 §22.2 的判定;v13 A-m3 / m6、B-m4)
+- 前置:A/B 卡(`batman-slot layout` 成功)且 Pi 4;golden 或非 A/B 的 Pi 4(無 `/boot/autoboot.txt`)→ 不適用(不是 FAIL)。A/B 卡上 `bf_ab_all` 空值 / 非 1|2、`batman-slot fw-part` 或 `active` 回空(`detect_layout` die,`:95,98`)→ FAIL。
+- trial 進行中(DT tryboot = 1 且執行中槽 = `[tryboot]` 指的槽)→ INFO「trial 進行中」,只對 `[all]` 指的槽 S 做 wbox 判定;不印 stale fallback WARN。
+- S 的 wbox 判定**一律以唯讀掛載 S 的 squashfs 讀 `etc/batman-build`**(`mktemp -d`);`.protected` 只做交叉核對,兩者不一致 → FAIL(apply 之後、首開之前 `.protected` 是舊版本號,v13 A-m6;apply 會刪目標槽的 `.protected`,`batman-slot:432-433`,屆時以 squashfs 為準)。掛不上 / 讀不到 → FAIL。
+- 非 trial 且 S ≠ 執行中且 S 非 wbox → WARN「stale fallback / EEPROM 開錯槽」。
+- `test-dv-preflight.sh` fixture:`[all]` 指向 wbox 槽 → FAIL;release trial → PASS 且**無 WARN**;stale fallback(非 wbox)→ WARN;`[all]` 讀不到 → FAIL;golden Pi 4 → 不適用。
+
+### 23.5 F5 的負測試改法(取代 §22.5;v13 A-m4、B-m6)
+現行 gate 是 `[ -f "$LIST" ] || fail`(firmware `check-prov-test-gate.sh:68`),FIFO 不是一般檔、舊 gate 不會開它 →「舊 gate 開 FIFO 建 sentinel」不成立(v13 B 沙箱 S2)。改為:
+- `WBOX_DIR`:一般檔誘餌 —— 偽 `helpers.list` 的內容一被採用就會改變判定(v13 B S3:`chan prov_test helper` → `FAIL: prov_test variant but the helper is not a Go binary`);新 gate 的判定與輸出必須和不設 env 時逐位元組相同。
+- `GO`:一執行就 `touch` sentinel 的腳本(v13 B S2b 已證判別力)。
+- 負對照:**新 gate 的 mutant**(把 `WD=${WBOX_DIR:-…}` / `GO=${GO:-…}` 加回去)→ 測試必須 FAIL;不拿舊 gate 當負對照(它不支援 `--selftest-*`,會因別的原因不同)。
+- 不用 FIFO(避免寫者殘留);gate 呼叫仍加 `timeout 30`(GNU timeout 會收孫程序,S4)。
+
+### 23.6 lint 與執行期竄改(v13 A-m5 / m10、B-m7)
+- `lint-wbox` 所在的 CI job 安裝 busybox;找不到 `busybox` → FAIL(不跳過)。
+- 非 `misc-*` patch 的新增行(`+`)出現受保護集合的任一路徑字串或 `autoboot.txt` → FAIL(防 uci-defaults / init mutant 在首開以 root 改寫 overlay 裡的閘);負對照:一個新增 `99zz-wbox-x` 內含 `/usr/bin/batman-autocommit` 字串的假 patch → FAIL。
+- 節點端:B trial 期間斷言 `/overlay/upper` 內沒有受保護集合的路徑、`/boot/autoboot.txt` 的 mtime 未在 trial 內被非 batman-slot 程序改(以 trial 起點記錄的 mtime 比對)。
+
+### 23.7 其他
+- E-H5 第 4 項 `/rom` 原始輸出已貼 #254 留言 6460577320(v13 A-m7、B-m8a)。
+- 兩條殘項與本日其他殘項已寫進 #254 **本體**的「H2 + H3 殘項」checklist(v13 B-m8b)。
+
+### 23.8 v13 全部發現的處理表
+
+| 發現 | 處理 |
+|---|---|
+| A-MAJOR-1 / B-m1 節點斷線證明無判別力 | §23.1(`ssh -tt` + 無害臂負對照;負對照不死 → INVALID 改以 dv-sbx 為準) |
+| A-m1 / B-m2 收尾、pid 重用、`rbfix.sh`、臂中重開 | §23.2 |
+| A-m2 / B-m5 dry-run 引號與 `dry.pid` 空檔 | §23.3 |
+| A-m3 / B-m4 P9 trial 誤 WARN、`fw-part` die、golden Pi 4 | §23.4 |
+| A-m4 / B-m6 F5 FIFO | §23.5 |
+| A-m5 busybox 在 lint job | §23.6 |
+| A-m6 `.protected` 先信 | §23.4 |
+| A-m7 / B-m8a `/rom` 原始輸出 | §23.7(#254 6460577320) |
+| A-m8 B 的可達性 | §23.2 |
+| A-m9 / B-m8c checklist 漏項 | §23.9 |
+| A-m10 / B-m7 執行期改寫 | §23.6 |
+| B-m3 vcgencmd / CRIT / openmanetd 窗口 | §23.2 |
+| B-m8b 殘項進 #254 本體 | §23.7(已寫入本體) |
+
+### 23.9 實作 checklist(取代 §22.8,完整版)
+- [ ] gate 自測加小寫 misc 見證一案
+- [ ] CI `test-autocommit-wbox.sh`:wbox 無 hold / wbox + hold / 非 wbox / 讀不到 / dry-run + wbox / `BATMAN_WBOX=` 空值 / 只有 `.wbox-` / stale fallback + wbox;負對照:閘拿掉、閘在 hold 前
+- [ ] dv-sbx:rollback 臂 PASS / INVALID / FAIL-RECOVERED / FAIL-NEEDS-PERSON、a0 = B → INVALID、pty 下臂中殺 ssh(design 活、無保護死)、`rbfix.sh` 前置(重開過 / active ≠ A / 有 batman-slot 程序)、回補後 openmanetd ≤ 30 s
+- [ ] dv-sbx:`cmd_rollback` 讀不到 → 獨立訊息、無殘留 `/tmp/.rb*`;wbox 檢查在 `rollback_lock_gate` 之前的順序測試
+- [ ] dv-sbx:L51 `_ab_arm_mesh` stub 測試(含 meshjoin fallback)
+- [ ] lint-wbox:受保護集合、misc 只碰 autocommit、非 misc 新增行不得含受保護路徑 / `autoboot.txt`、busybox `sh -n`(job 裝 busybox,缺則 FAIL)、nohold 只在單位與 `prov-254.sh`;各附負對照
+- [ ] firmware CI:`--selftest-` lint(豁免 gate 本身);`build-board.sh` / `local-ab-tar.sh` 不傳 `--selftest-`;F5 誘餌 + `GO` sentinel + gate mutant 負對照
+- [ ] test-dv-preflight:P9 `[all]` 五案(§23.4);pre-gate stub 一案;殘留 `rbarm.pid` 一案
+- [ ] dry-run:`dry.sh` / `dry.pid` 原子寫入、sid 輪詢、在場判定、`hold present` 在 `gate until` 之前、臂 a 節點端 `arm-a.verdict`
+- [ ] 判定行限本次 trial boot8:`WBOX-NOCOMMIT`、`TRIAL-REVERTED`、`COMMITTED`
+- [ ] `/proc` churn 白箱
+- [ ] prov-misc 前置:無 sysupgrade 程序、無 `batman-fw-override`、p6 無 hold 旗標
+- [ ] 文件:`release --wait` 遇 wbox 一定逾時
+- [ ] 節點:§23.1 正向 + 負對照;B trial 期間 overlay / autoboot 竄改斷言(§23.6)
+- [ ] E-H5 四項(B trial 的 `/rom` 搭 `prov-ota-254`)
