@@ -87,6 +87,18 @@ fold unreadable 0 0 3 "";           expect "fold: unreadable stamp -> not commit
 fold wbox:96-noprov 0 0 3 "mesh lost"; expect "fold: unhealthy trial keeps its own reason (wbox not folded, FIRSTWHY untouched)" "[ \"\$W\" = 'mesh lost' ] && ! grep -q 'otalog' $T/log"
 fold wbox:96-noprov 0 0 1 "";       expect "fold: wbox, dwell not reached -> not committing, nothing logged yet" "echo \"\$W\" | grep -q 'wbox test image' && ! grep -q 'otalog' $T/log"
 fold release 1 0 3 "";              expect "fold: release + hold -> HELD (unchanged behaviour)" "echo \"\$W\" | grep -q 'held for operator acceptance'"
+# stale fallback + wbox (§22.6 / v12 A-m9): a non-tryboot boot into an uncommitted wbox slot has REVERT=0 and goes
+# through the SAME poll loop, so the fold holds it too (it never reads REVERT) — and no `batman-slot commit` may
+# exist outside that loop: every one sits after the wbox fold, and the #133 stale-fallback block commits nothing
+fold wbox:96-noprov 0 0 3 "";       expect "fold: stale fallback (REVERT=0) + wbox -> never auto-committed" "echo \"\$W\" | grep -q 'never auto-committed'"
+wl=$(grep -n '^	elif \[ -z "\$why" \] && \[ "\$DRY" != 1 \] && \[ "\$WBOX_STATE" != release \]; then$' "$AC" | head -1 | cut -d: -f1)
+cl=$(grep -nE '(^|[;&|]|[[:space:]](if|then|else|do))[[:space:]]*batman-slot commit([[:space:];]|$)' "$AC" | grep -v '^[0-9]*:[[:space:]]*#' | cut -d: -f1 | tr '\n' ' ')
+early=""; for x in $cl; do [ "$x" -gt "${wl:-999999}" ] || early="$early $x"; done
+: > "$T/log"; echo "wbox fold line=${wl:-none} commit lines=[$cl] before the fold=[$early]" > "$T/log"
+expect "autocommit: every 'batman-slot commit' comes after the wbox fold" "[ -n \"$wl\" ] && [ -n \"$cl\" ] && [ -z \"$early\" ]"
+sf=$(awk '/^# #133 stale fallback, guarded/{f=1} /^# hold \(N3\/R2\)/{f=0} f' "$AC")
+: > "$T/log"; echo "$sf" | grep -n 'commit\|exit' | grep -v '^[0-9]*:[[:space:]]*#' > "$T/log" || true
+expect "autocommit: the stale-fallback block commits nothing (it only exits on NOT-COMMITTED)" "[ -n \"\$sf\" ] && ! echo \"\$sf\" | grep -v '^[[:space:]]*#' | grep -q 'batman-slot commit' && [ \"\$(echo \"\$sf\" | grep -c 'exit 0')\" = 1 ]"
 
 [ "$cases" -gt 0 ] || { echo "FAIL no case ran"; exit 1; }
 echo "WBOX-GATE cases=$cases fails=$fails"; [ "$fails" = 0 ]
