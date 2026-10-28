@@ -5,7 +5,8 @@
 #   batman-slot: wbox_gate_self (commit) / wbox_gate_target (rollback), and that both run before write_autoboot,
 #                the rollback one before rollback_lock_gate (so neither the legacy return nor the override skips it);
 #   autocommit:  the WBOX_STATE detection and the why-folding (HOLDUNSAFE -> held_commit -> wbox), dry-run untouched.
-# No root, no node. A run that executes zero cases FAILs. Negative control: the pre-gate scripts -> FAIL.
+# No root, no node. A run that executes zero cases FAILs. Negative controls: the pre-gate scripts -> FAIL; two fold
+# mutants (gate removed, gate before the hold) built and run at the end -> each FAILs its case.
 set -u
 BS=$(readlink -f "${1:?usage: $0 <batman-slot> <batman-autocommit>}"); AC=$(readlink -f "${2:?}")
 [ -f "$BS" ] && [ -f "$AC" ] || { echo "FAIL missing $BS or $AC"; exit 1; }
@@ -103,5 +104,22 @@ sf=$(awk '/^# #133 stale fallback, guarded/{f=1} /^# hold \(N3\/R2\)/{f=0} f' "$
 : > "$T/log"; echo "$sf" | grep -n 'commit\|exit' | grep -v '^[0-9]*:[[:space:]]*#' > "$T/log" || true
 expect "autocommit: the stale-fallback block commits nothing (it only exits on NOT-COMMITTED)" "[ -n \"\$sf\" ] && ! echo \"\$sf\" | grep -v '^[[:space:]]*#' | grep -q 'batman-slot commit' && [ \"\$(echo \"\$sf\" | grep -c 'exit 0')\" = 1 ]"
 
+# §23.9 negative controls, automated: two mutants of the autocommit fold, each run through this whole test — each must
+# FAIL its own case (WBG_MUT stops the recursion). (a) the gate removed: the wbox branch never taken; (b) the gate before
+# the hold: a wbox branch inserted ahead of held_commit, so a held wbox trial is no longer HELD.
+if [ -z "${WBG_MUT:-}" ]; then
+	gl='	elif [ -z "$why" ] && [ "$DRY" != 1 ] && [ "$WBOX_STATE" != release ]; then'
+	hl='	elif [ -z "$why" ] && held_commit; then'
+	if [ "$(grep -cxF -- "$gl" "$AC")" = 1 ] && [ "$(grep -cxF -- "$hl" "$AC")" = 1 ]; then
+		awk -v g="$gl" '$0 == g { print "\telif false; then"; next } { print }' "$AC" > "$T/ac-gone"
+		awk -v h="$hl" '$0 == h { print "\telif [ -z \"$why\" ] && [ \"$DRY\" != 1 ] && [ \"$WBOX_STATE\" != release ]; then why=\"wbox test image (BATMAN_WBOX=${WBOX_STATE#wbox:}) — never auto-committed (deadline revert armed)\"" } { print }' "$AC" > "$T/ac-first"
+		mo=$(WBG_MUT=1 bash "$0" "$BS" "$T/ac-gone" 2>&1); mr=$?
+		cases=$((cases+1)); if [ $mr != 0 ] && grep -q '^FAIL fold: wbox, no hold -> never auto-committed' <<< "$mo"; then ok "mutant (a) gate removed -> 'wbox, no hold' FAILs"; else no "mutant (a) gate removed was not caught (rc $mr)"; fi
+		mo=$(WBG_MUT=1 bash "$0" "$BS" "$T/ac-first" 2>&1); mr=$?
+		cases=$((cases+1)); if [ $mr != 0 ] && grep -q '^FAIL fold: wbox + hold -> HELD' <<< "$mo"; then ok "mutant (b) gate before the hold -> 'wbox + hold -> HELD' FAILs"; else no "mutant (b) gate before the hold was not caught (rc $mr)"; fi
+	else
+		cases=$((cases+1)); no "mutants: the wbox / held_commit fold lines are not in $AC exactly once — cannot build the negative controls"
+	fi
+fi
 [ "$cases" -gt 0 ] || { echo "FAIL no case ran"; exit 1; }
 echo "WBOX-GATE cases=$cases fails=$fails"; [ "$fails" = 0 ]
