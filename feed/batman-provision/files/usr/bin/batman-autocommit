@@ -488,7 +488,7 @@ health_ok(){
 # (fail-closed: every release image has it). Dry-run is unaffected (it never commits).
 WBOX_STATE=release
 _wf=/rom/etc/batman-build
-if [ ! -f "$_wf" ] || [ -L "$_wf" ] || ! grep -q '^BATMAN_VERSION=' "$_wf" 2>/dev/null; then WBOX_STATE=unreadable
+if [ ! -f "$_wf" ] || [ -L "$_wf" ] || [ -L "${_wf%/*}" ] || ! grep -q '^BATMAN_VERSION=' "$_wf" 2>/dev/null; then WBOX_STATE=unreadable
 elif grep -q '^BATMAN_WBOX=.' "$_wf" || sed -n 's/^BATMAN_VERSION=//p' "$_wf" | grep -q '\.wbox-'; then
 	WBOX_STATE="wbox:$(sed -n 's/^BATMAN_WBOX=//p' "$_wf")"
 fi

@@ -24,7 +24,15 @@ card_wbox_check(){
 		return 0
 	fi
 	rm -rf "$t"
-	if [ "$mode" = lenient ]; then echo "note: $sq has no readable build stamp (a pre-stamp image) — not a wbox image by the stamp rule"; return 0; fi
+	if [ "$mode" = lenient ]; then
+		# no stamp to judge by: the whole image must carry no wbox witness string either (code review r2 B-n5)
+		t=$(mktemp -d) || { echo "refusing: no temp dir"; return 1; }
+		unsquashfs -q -no-xattrs -d "$t/r" "$sq" >/dev/null 2>&1
+		[ -d "$t/r" ] || { rm -rf "$t"; echo "refusing: cannot extract $sq to look for wbox witness strings"; return 1; }
+		s=$(grep -rlaE 'WBOX-[a-z0-9-]+-[0-9a-f]{8}' "$t/r" 2>/dev/null | head -3); rm -rf "$t"
+		[ -z "$s" ] || { echo "refusing: $sq has no build stamp and carries wbox witness strings (${s##*/r/}) — never written to a card"; return 1; }
+		echo "note: $sq has no readable build stamp (a pre-stamp image) and no wbox witness — written"; return 0
+	fi
 	echo "refusing: no readable etc/batman-build in $sq (a regular file with BATMAN_VERSION=) — a card is written only from a stamped image"
 	return 1
 }
