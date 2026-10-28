@@ -18,7 +18,7 @@ set -u
 PR_UNIT=prov-netjoin-fleet-254
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
-RUN04=$RUN; RUN02=${RUN}p; NODE04=$NODE; MAC04=$MAC; MAC02=""; SNAP02=0; IN02=0; NETCFG04=""; NETID04=""
+RUN04=$RUN; RUN02=${RUN}p; NODE04=$NODE; MAC04=$MAC; MAC02=""; WLH04=""; SNAP02=0; IN02=0; NETCFG04=""; NETID04=""
 WSUM='printf "%s|%s|%s" "$(uci -q get wireless.default_radio1.mesh_id)" "$(uci -q get wireless.radio1.channel)" "$(uci -q get wireless.default_radio1.key | sha256sum | cut -c1-16)"'
 # the fleet's own values, read on the node (fd 3 of provclient): nothing secret crosses to the host
 FLEET_FD3="umask 077; printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' \"\$(uci -q get wireless.default_radio1.mesh_id)\" \"\$(uci -q get wireless.radio1.channel)\" \"\$(uci -q get wireless.default_radio1.key)\""
@@ -52,10 +52,11 @@ join02(){	# 02 (inside as02): JOIN 04's network — its signed net_config, 02's 
 	if [ "$id" = "$NETID04" ]; then ok "02 joined 04's network (net_id $id)"; else no "02's net_id [$id] != 04's [$NETID04]"; return 1; fi
 	member_ok
 }
-neigh(){ local t=0; while [ $t -lt 18 ]; do nb02 && return 0; sleep 10; t=$((t + 1)); done; return 1; }
+neigh(){ local t=0; while [ $t -lt 18 ]; do nbmac "$1" && return 0; sleep 10; t=$((t + 1)); done; return 1; }
 fleet(){
 	local w4 w2 o
 	MAC02=$(qp 'cat /sys/class/net/eth0/address'); [ -n "$MAC02" ] || { no "02 unreachable"; return 1; }
+	WLH04=$(qr 'cat /sys/class/net/wlh0/address'); [ -n "$WLH04" ] || { no "04 wlh0 MAC unreadable"; return 1; }   # what 02 must see as its neighbour
 	w4=$(qr "$WSUM"); w2=$(qp "$WSUM"); say "wireless before: 04 [${w4%|*}|…] 02 [${w2%|*}|…]"
 	[ "$w4" = "$w2" ] || { no "02 and 04 are not on the same mesh ($w4 / $w2)"; return 1; }
 	o=$(as02 pr_acquire "$(( PR_DEADLINE - $(mono) ))") || { echo "$o"; no "02 lease"; return 1; }; echo "$o"
@@ -64,9 +65,9 @@ fleet(){
 	pr_keys && pr_pc_place && pr_claim || return 1
 	as02 pr_pc_place && as02 pr_claim || return 1
 	join04 || return 1
-	neigh && ok "04: 02 still a neighbour after 04's join" || { no "04 lost 02 after its join"; return 1; }
+	neigh "$PEERMAC" && ok "04: 02 still a neighbour after 04's join" || { no "04 lost 02 after its join"; return 1; }
 	as02 join02 || return 1
-	as02 neigh && ok "02: 04 a neighbour after 02's join" || { no "02 lost 04 after its join"; return 1; }
+	as02 neigh "$WLH04" && ok "02: 04 a neighbour after 02's join" || { no "02 lost 04 after its join"; return 1; }
 	[ "$(qr 'cat /opt/batdata/state/lock-status')" = LOCKED ] && [ "$(qp 'cat /opt/batdata/state/lock-status')" = LOCKED ] && ok "both LOCKED" || no "lock-status 04 [$(qr 'cat /opt/batdata/state/lock-status')] 02 [$(qp 'cat /opt/batdata/state/lock-status')]"
 	[ "$(qr "$WSUM")" = "$w4" ] && [ "$(qp "$WSUM")" = "$w2" ] && ok "wireless unchanged on both (mesh id, channel, key hash)" || no "wireless changed by the join"
 }
