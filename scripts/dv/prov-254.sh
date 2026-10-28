@@ -429,7 +429,10 @@ pr_begin(){
 	pr_lock; PR_T0=$(mono); PR_BEGUN=1
 	trap 'pr_on_exit' EXIT; trap 'say "host interrupted"; exit 130' INT TERM
 	o=$(pr_p9); echo "$o"; grep -q '^FAIL' <<< "$o" && { PR_BEGUN=0; pr_unlock; no "preconditions"; return 1; }
-	PR_V=$(field "$(qr "$ST")" ver); PR_PEER_BOOT=$(qp 'cut -c1-8 /proc/sys/kernel/random/boot_id')
+	PR_V=$(field "$(qr "$ST")" ver)
+	# 02 is reached through 04: right after the previous unit's restore rebooted 04 the route can lag (2026-10-28 23:43:
+	# 04 up 111 s, 02 up but unreachable for ~16 s, reachable a minute later) — up to 120 s before calling 02 unreachable
+	for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do PR_PEER_BOOT=$(qp 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ -n "$PR_PEER_BOOT" ] && break; sleep 10; done
 	PR_PROTB_LS=$(qr "$PROTB_LS")
 	[ -n "$PR_PEER_BOOT" ] || { PR_BEGUN=0; pr_unlock; no "02 unreachable at $PEER"; return 1; }
 	o=$(qp "cat /sys/class/net/wlh0/address"); [ "$o" = "$PEERMAC" ] || { PR_BEGUN=0; pr_unlock; no "02 wlh0 is [$o], not PEERMAC $PEERMAC: the neighbour checks would test the wrong node"; return 1; }

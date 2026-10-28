@@ -234,10 +234,13 @@ overlay-restore)
 		# lists exactly what /rom lists (an empty, non-opaque copy-up dir: behaviour-neutral). It goes to $D/kept-dirs (p6,
 		# survives the reboot) and compare drops exactly those "+ d" lines. Not neutral (e.g. opaque) -> removed as before.
 		if [ -d "/overlay/upper/$p" ] && [ ! -L "/overlay/upper/$p" ] && [ -d "/rom/$p" ] && [ ! -L "/rom/$p" ]; then
-			if [ "$(ls -A "/$p" 2>/dev/null)" = "$(ls -A "/rom/$p" 2>/dev/null)" ] && [ -z "$(ls -A "/overlay/upper/$p" 2>/dev/null)" ]; then
+			# what is left in its upper copy must be kept directories only (04 rerun 23:45: usr/bin was kept, then usr was
+			# judged "not empty" because of it and rm -rf took usr/bin along — /usr/bin at 0 of 191 again)
+			left=""; for c in $(ls -A "/overlay/upper/$p" 2>/dev/null); do grep -qx "$p/$c" "$D/kept-dirs" 2>/dev/null || left="$left $c"; done
+			if [ "$(ls -A "/$p" 2>/dev/null)" = "$(ls -A "/rom/$p" 2>/dev/null)" ] && [ -z "$left" ]; then
 				echo "EXTRA-DIR-KEPT $p"; echo "$p" >> "$D/kept-dirs"; continue
 			fi
-			echo "EXTRA-DIR-NOT-NEUTRAL $p (the merged view differs from /rom, or the upper dir is not empty): removed"
+			echo "EXTRA-DIR-NOT-NEUTRAL $p (merged view vs /rom differs, or the upper copy holds more than kept dirs:${left:- none}): removed"
 		fi
 		echo "EXTRA-REMOVED $p"; rm -rf "/overlay/upper/$p"
 	done; fi
