@@ -23,6 +23,8 @@ jobs:
         run: bash scripts/test-negctl-old-slot-254.sh
       - name: "#305 mini UART judges offline — gate / serial counters / sysfs sequence / kmsg window / settings / flip verdicts (good + bad cases)"
         run: bash scripts/test-dv-bt-uart-305.sh
+      - name: "#254 -wbox variants well formed (scope, witness, helpers.list) — lint-wbox + its negative self-test"
+        run: bash scripts/lint-wbox.sh && bash tests/wbox/test-lint-wbox.sh
       - name: line-endings must be LF
         run: |
           if grep -rlIP '\r$' --include='*.sh' --include='*.py' .; then
