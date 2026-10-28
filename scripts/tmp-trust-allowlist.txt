@@ -102,3 +102,8 @@ feed/batman-prov/src/*	/var/lib/bluetooth/batman-sc	bluetoothd-side state file u
 */meshjoin.sh	/var/run/wpa_supplicant_s1g	wpa_supplicant control-socket dir (root-only, created by wpa_supplicant_s1g); read-only wpa_cli status query
 feed/batman-provision/files/usr/libexec/batman-addr-defer	check /var/lock and	log text naming procd's per-service lock dir for the operator; never used as a path (254-p1-impl.md §13.8.2)
 feed/batman-prov/src/provstore/provstore.go	// /tmp/run/batman \(root-only	doc comment of the Paths struct naming the run dir (the definition itself is the quoted literal above)
+# --- #254 H2+H3 (254-h23 §2.2): the prov_test killpoint dir /tmp/run/batman-prov-test (root 0700 under root-only /tmp/run) ---
+scripts/node/prov-wbox-254.sh	^KD=/tmp/run/batman-prov-test; 	the killpoint dir: mkdir -m 700 WITHOUT -p; an existing one must be a root 0700 directory, not a symlink (dir_ok) or the harness refuses; the helper re-checks dir + file (owner, mode, one link, O_NOFOLLOW) before reading (seam.Arm)
+scripts/node/prov-lease-254.sh	rm -rf /tmp/run/batman-prov-test$	prov deadman: removes the root-only killpoint dir (rm -rf removes a symlink itself, never its target)
+scripts/dv/prov-254.sh	/tmp/run/batman-prov-test([^-a-z]|$)	host side: removes the root-only killpoint dir (rm -rf, never follows a top-level symlink) and tests for its existence (P9); nothing reads a decision from it
+scripts/dv/prov-*-254.sh	/tmp/run/batman-prov-test([^-a-z]|$)	unit scripts: same as prov-254.sh (remove / existence test only)

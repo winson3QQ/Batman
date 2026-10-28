@@ -34,13 +34,15 @@ slot_rootdev(){ echo "$G_T/slot$1"; }
 mount(){ local _d _s; eval "_d=\${$#}; _s=\${$(($# - 1))}"; [ "$G_MOUNTFAIL" = 1 ] && return 32; cp -a "$_s"/. "$_d"/; }
 umount(){ rm -rf "${1:?}"/* "${1:?}"/.[!.]* 2>/dev/null; }
 STUBS
-# stamp <dir> <kind>: release | wbox | wboxempty | veronly | nover | absent
+# stamp <dir> <kind>: release | wbox | wboxempty | wboxonly | veronly | nover | absent | symlink
 stamp(){ rm -rf "$1"; mkdir -p "$1/etc"; case "$2" in
 	release)   printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb\nBATMAN_BOARD=ekh-bcm2711\n' > "$1/etc/batman-build" ;;
 	wbox)      printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb.dirty.wbox-96-noprov\nBATMAN_WBOX=96-noprov\n' > "$1/etc/batman-build" ;;
 	wboxempty) printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb\nBATMAN_WBOX=\n' > "$1/etc/batman-build" ;;
 	veronly)   printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb.dirty.wbox-chan\n' > "$1/etc/batman-build" ;;
 	nover)     printf 'BATMAN_BOARD=ekh-bcm2711\n' > "$1/etc/batman-build" ;;
+	wboxonly)  printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb\nBATMAN_WBOX=helper-flap\n' > "$1/etc/batman-build" ;;   # the name only (review B-m1)
+	symlink)   printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb\n' > "$T/elsewhere"; ln -s "$T/elsewhere" "$1/etc/batman-build" ;;   # review A-m4
 	absent)    ;;
 esac; }
 slot(){ # $1 self|target, [$2 mountfail]
@@ -51,11 +53,11 @@ passed(){ [ "$RC" = 0 ] && grep -q '^PASSED$' "$T/log"; }
 died(){ [ "$RC" != 0 ] && grep -q "^DIE .*$1" "$T/log" && ! grep -q '^PASSED$' "$T/log"; }
 noleft(){ ! ls -d "$T"/.rbwbox.* >/dev/null 2>&1; }
 for k in release wboxempty; do stamp "$T/rom" $k; slot self; expect "commit: $k stamp -> allowed" passed; done
-for k in wbox veronly; do stamp "$T/rom" $k; slot self; expect "commit: $k stamp -> refused (never committed)" "died 'never committed'"; done
-for k in nover absent; do stamp "$T/rom" $k; slot self; expect "commit: $k stamp -> refused (unreadable)" "died 'build stamp is unreadable'"; done
+for k in wbox veronly wboxonly; do stamp "$T/rom" $k; slot self; expect "commit: $k stamp -> refused (never committed)" "died 'never committed'"; done
+for k in nover absent symlink; do stamp "$T/rom" $k; slot self; expect "commit: $k stamp -> refused (unreadable)" "died 'build stamp is unreadable'"; done
 for k in release wboxempty; do stamp "$T/slotB" $k; slot target; expect "rollback: target $k -> allowed, gate logged, no temp dir left" "passed && grep -q 'ROLLBACK-WBOX-GATE target=B ok=1' $T/log && noleft"; done
-for k in wbox veronly; do stamp "$T/slotB" $k; slot target; expect "rollback: target $k -> refused (holds a -wbox test image), no temp dir left" "died 'holds a -wbox test image' && noleft"; done
-for k in nover absent; do stamp "$T/slotB" $k; slot target; expect "rollback: target $k -> refused (unreadable, NOT the wbox message)" "died 'build stamp unreadable' && ! grep -q 'holds a -wbox' $T/log && noleft"; done
+for k in wbox veronly wboxonly; do stamp "$T/slotB" $k; slot target; expect "rollback: target $k -> refused (holds a -wbox test image), no temp dir left" "died 'holds a -wbox test image' && noleft"; done
+for k in nover absent symlink; do stamp "$T/slotB" $k; slot target; expect "rollback: target $k -> refused (unreadable, NOT the wbox message)" "died 'build stamp unreadable' && ! grep -q 'holds a -wbox' $T/log && noleft"; done
 stamp "$T/slotB" release; slot target 1; expect "rollback: target squashfs cannot be mounted -> refused (unreadable)" "died 'build stamp unreadable' && noleft"
 
 # ---------- batman-autocommit ----------
@@ -63,7 +65,7 @@ st=$(awk '/^WBOX_STATE=release$/,/^fi$/' "$AC")
 cases=$((cases+1)); [ -n "$st" ] && ok "autocommit has the WBOX_STATE block" || no "autocommit: WBOX_STATE block missing"
 echo "$st" | sed "s#/rom/etc/batman-build#$T/rom/etc/batman-build#g" > "$T/acstate.sh"
 acstate(){ stamp "$T/rom" "$1"; env -i PATH=/usr/bin:/bin $SH -c '. "$0"; echo "$WBOX_STATE"' "$T/acstate.sh" 2>/dev/null; }
-for kv in release:release wboxempty:release wbox:wbox:96-noprov veronly:wbox: nover:unreadable absent:unreadable; do
+for kv in release:release wboxempty:release wbox:wbox:96-noprov veronly:wbox: wboxonly:wbox:helper-flap nover:unreadable absent:unreadable symlink:unreadable; do
 	k=${kv%%:*}; want=${kv#*:}; got=$(acstate "$k"); : > "$T/log"; echo "got=$got want=$want" > "$T/log"
 	expect "autocommit WBOX_STATE: $k -> $want" "[ \"$got\" = \"$want\" ]"
 done
@@ -76,8 +78,8 @@ log(){ echo "log $*" >> "$LOG"; }
 otalog(){ echo "otalog $*" >> "$LOG"; }
 held_commit(){ [ "$G_HELD" = 1 ]; }
 STUBS
-# fold <WBOX_STATE> <held 0|1> <DRY> <ok> <why-in>: runs the fold twice (two polls), prints why
-fold(){ : > "$T/log"; W=$(env -i PATH=/usr/bin:/bin LOG="$T/log" G_HELD="$2" WBOX_STATE="$1" DRY="$3" ok="$4" NEED=3 why="$5" HOLDUNSAFE=0 SLOT=B DEADLINE=600 \
+# fold <WBOX_STATE> <held 0|1> <DRY> <ok> <why-in> [REVERT, default 1]: runs the fold twice (two polls), prints why
+fold(){ : > "$T/log"; W=$(env -i PATH=/usr/bin:/bin LOG="$T/log" G_HELD="$2" WBOX_STATE="$1" DRY="$3" ok="$4" NEED=3 why="$5" REVERT="${6:-1}" HOLDUNSAFE=0 SLOT=B DEADLINE=600 \
 	$SH -c '. "$0"; . "$1"; w0=$why; . "$1"; why=$w0; . "$1"; echo "$why"' "$T/acstubs.sh" "$T/fold.sh" 2>>"$T/log"); echo "why=[$W]" >> "$T/log"; }
 fold release 0 0 3 "";              expect "fold: release, healthy, no hold -> nothing folded (commit path open)" "[ -z \"\$W\" ]"
 fold wbox:96-noprov 0 0 3 "";       expect "fold: wbox, no hold -> never auto-committed + WBOX-NOCOMMIT logged once" "echo \"\$W\" | grep -q 'wbox test image (BATMAN_WBOX=96-noprov) — never auto-committed' && [ \$(grep -c 'otalog AC WBOX-NOCOMMIT' $T/log) = 1 ]"
@@ -87,6 +89,18 @@ fold unreadable 0 0 3 "";           expect "fold: unreadable stamp -> not commit
 fold wbox:96-noprov 0 0 3 "mesh lost"; expect "fold: unhealthy trial keeps its own reason (wbox not folded, FIRSTWHY untouched)" "[ \"\$W\" = 'mesh lost' ] && ! grep -q 'otalog' $T/log"
 fold wbox:96-noprov 0 0 1 "";       expect "fold: wbox, dwell not reached -> not committing, nothing logged yet" "echo \"\$W\" | grep -q 'wbox test image' && ! grep -q 'otalog' $T/log"
 fold release 1 0 3 "";              expect "fold: release + hold -> HELD (unchanged behaviour)" "echo \"\$W\" | grep -q 'held for operator acceptance'"
+# stale fallback + wbox (§22.6 / v12 A-m9): a non-tryboot boot into an uncommitted wbox slot has REVERT=0 and goes
+# through the SAME poll loop, so the fold holds it too (it never reads REVERT) — and no `batman-slot commit` may
+# exist outside that loop: every one sits after the wbox fold, and the #133 stale-fallback block commits nothing
+fold wbox:96-noprov 0 0 3 "" 0;     expect "fold: stale fallback (REVERT=0) + wbox -> never auto-committed" "echo \"\$W\" | grep -q 'never auto-committed'"
+wl=$(grep -n '^	elif \[ -z "\$why" \] && \[ "\$DRY" != 1 \] && \[ "\$WBOX_STATE" != release \]; then$' "$AC" | head -1 | cut -d: -f1)
+cl=$(grep -nE '(^|[;&|]|[[:space:]](if|then|else|do))[[:space:]]*batman-slot commit([[:space:];]|$)' "$AC" | grep -v '^[0-9]*:[[:space:]]*#' | cut -d: -f1 | tr '\n' ' ')
+early=""; for x in $cl; do [ "$x" -gt "${wl:-999999}" ] || early="$early $x"; done
+: > "$T/log"; echo "wbox fold line=${wl:-none} commit lines=[$cl] before the fold=[$early]" > "$T/log"
+expect "autocommit: every 'batman-slot commit' comes after the wbox fold" "[ -n \"$wl\" ] && [ -n \"$cl\" ] && [ -z \"$early\" ]"
+sf=$(awk '/^# #133 stale fallback, guarded/{f=1} /^# hold \(N3\/R2\)/{f=0} f' "$AC")
+: > "$T/log"; echo "$sf" | grep -n 'commit\|exit' | grep -v '^[0-9]*:[[:space:]]*#' > "$T/log" || true
+expect "autocommit: the stale-fallback block commits nothing (it only exits on NOT-COMMITTED)" "[ -n \"\$sf\" ] && ! echo \"\$sf\" | grep -v '^[[:space:]]*#' | grep -q 'batman-slot commit' && [ \"\$(echo \"\$sf\" | grep -c 'exit 0')\" = 1 ]"
 
 [ "$cases" -gt 0 ] || { echo "FAIL no case ran"; exit 1; }
 echo "WBOX-GATE cases=$cases fails=$fails"; [ "$fails" = 0 ]

@@ -17,6 +17,10 @@ my %DESC = (
 	'radio1-off' => '99zz-wbox-radio1-off disables radio1 on the slot\'s first boot',
 	'chan' => 'init wbox-chan keeps radio1 off the p5 channel for >= 200 s after the radio exists',
 	'helper-flap' => 'the helper exits 5 s after serving (procd respawns it)',
+	'misc-l38' => 'autocommit does not wait for the helper prov-state when writer=99zz (L38; dry-run bind only)',
+	'misc-l42' => 'autocommit takes a member without ota-armed.mesh as radio-only (L42; dry-run bind only)',
+	'misc-l43' => 'autocommit ignores the arm boot_id of ota-armed.mesh (L43; dry-run bind only)',
+	'misc-l51' => 'autocommit takes an ota-armed.mesh saying joined as radio-only (L51; dry-run bind only)',
 );
 if (@ARGV == 2 && $ARGV[0] eq '--describe') { print $DESC{$ARGV[1]} // die "unknown variant $ARGV[1]\n"; print "\n"; exit 0 }
 my $v = shift or die "usage: edits.pl VARIANT | --describe VARIANT\n";
@@ -25,6 +29,7 @@ my %W = (
 	'96-noprov' => '1d6f72a9', 'helper-exit1' => '9a04be37', 'helper-nojoinop' => '52c9e0f4',
 	'helper-noleave' => 'e3b71d58', 'helper-notrial' => '06ad4c9b', 'helper-clientchal' => 'b8f2316d',
 	'helper-notxn' => '4e9c7a20', 'radio1-off' => '81d5f0c6', 'chan' => '2ac9e47f', 'helper-flap' => 'f4703b1d',
+	'misc-l38' => '6a1c9e30', 'misc-l42' => 'b7e2d915', 'misc-l43' => '0f4a8c62', 'misc-l51' => '93d5e71b',
 );
 my $w = "WBOX-$v-" . ($W{$v} // die "unknown variant $v\n");
 print "$w\n";
@@ -40,6 +45,14 @@ my $NODE = 'feed/batman-prov/src/node/node.go';
 my $MAIN = 'feed/batman-prov/src/cmd/batman-provhelper/main.go';
 my $S96  = 'feed/batman-provision/files/etc/uci-defaults/96-batman-config-migrate';
 my $PMK  = 'feed/batman-provision/Makefile';
+my $AC   = 'feed/batman-provision/files/usr/bin/batman-autocommit';
+
+# misc-*: one autocommit judgement removed each (design 254-h23 §17.2, §20.2 lower-case names, §21.4 witness placement:
+# a header comment + a log line where the shell syntax is safe — l38 in place of the deleted wait loop, l42 / l43 / l51
+# right after `RADIO_REQ=1` on entering the member branch). Used only by binding /usr/bin/batman-autocommit during a
+# dry-run arm, never OTA'd.
+my $acwit = sub { my $w = shift; ed($AC, sub { s{^(# batman-autocommit[^\n]*\n)}{$1# $w — #254 -wbox misc mutant (bind-only, dry-run arms of prov-misc-254)\n}m }) };
+my $acmember = sub { my ($w, $what) = @_; ed($AC, sub { s{(\t\tmember:\*\)\n\t\t\tRADIO_REQ=1\n)}{$1\t\t\tlog "$w: $what (mutant)"\n} }) };
 my $HMK  = 'feed/batman-prov/Makefile';
 
 # 96: the p5 record is not copied (PCOPY=none), the log line keeps its form ("copied=none")
@@ -138,6 +151,22 @@ start() {
 	) </dev/null >/dev/null 2>&1 &
 }
 EOS
+	},
+	'misc-l38' => sub {
+		$acwit->($w);
+		ed($AC, sub { s{^while \[ "\$\{pr%% \*\}" = 99zz \] && \[ "\$i" -lt 60 \]; do sleep 1; i=\$\(\(i \+ 1\)\); pr=\$\(prov_read\); done\n}{log "$w: not waiting for the helper's prov-state (mutant)"\n}m });
+	},
+	'misc-l42' => sub {
+		$acwit->($w); $acmember->($w, 'a missing ota-armed.mesh counts as radio-only');
+		ed($AC, sub { s{\t\t\telse NEED_MESH=1; \[ -n "\$a" \] \|\| log "member: no usable ota-armed.mesh — neighbours required \(fail-closed\)"; fi ;;}{\t\t\telif [ -z "\$a" ]; then NEED_MESH=0\n\t\t\telse NEED_MESH=1; fi ;;} });
+	},
+	'misc-l43' => sub {
+		$acwit->($w); $acmember->($w, 'the arm boot_id of ota-armed.mesh is not checked');
+		ed($AC, sub { s{ && \[ "\$\(echo "\$a" \| cut -d' ' -f1\)" = "\$ab" \]}{} });
+	},
+	'misc-l51' => sub {
+		$acwit->($w); $acmember->($w, 'an ota-armed.mesh saying joined counts as radio-only');
+		ed($AC, sub { s{\[ "\$\(echo "\$a" \| cut -d' ' -f3\)" = radio \]}{case "\$(echo "\$a" | cut -d' ' -f3)" in radio|joined) true ;; *) false ;; esac} });
 	},
 );
 ($do{$v} // die "no edits for $v\n")->();
