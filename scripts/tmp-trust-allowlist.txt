@@ -10,7 +10,7 @@ scripts/daily-validation.sh	^RDR='R=/tmp; if \[ -r /usr/lib/batman/rundir\.sh \]
 scripts/fault-injection.sh	^RDR='R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/tmp/run/batman; '$	harness resolver (missing run dir on a #280 image reads empty, never /tmp)
 scripts/node/p5-onjoin-263.sh	R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/tmp/run/batman; ST=\$R/	harness resolver for the cfgsave cache path
 # --- private dirs under /tmp/run (root 0755, created by procd before any non-root process) ---
-scripts/*	(/tmp/run/batman-dv|/tmp/run/soakprof|/tmp/run/deep-sample\.sh)	harness/dev scratch under root-only /tmp/run, created 0700 and owner-checked
+scripts/*	(/tmp/run/batman-dv([^-a-z]|$)|/tmp/run/soakprof|/tmp/run/deep-sample\.sh)	harness/dev scratch under root-only /tmp/run, created 0700 and owner-checked
 scripts/depersonalise.sh	dbFile: /tmp/run/openmanetd\.db	openmanetd (root) SQLite on tmpfs under root-only /tmp/run (golden images)
 # --- unpredictable temp names: mktemp O_EXCL, random, 0600/0700, root-owned ---
 *	mktemp( -d)? "?/tmp/[^ ]*XXXXXX	mktemp in /tmp: random name, exclusive create, root-only mode
@@ -96,7 +96,7 @@ scripts/dv/prov-claim-254.sh	mktemp -d "?\$HT/[^ ]*XXXXXX	host-side (Git Bash) s
 scripts/node/addr-defer-reconcile-254.sh	LK=/var/lock/procd_openmanetd\.lock$	procd's own per-service lock (upstream /lib/functions/procd.sh: exec 1000>/var/lock/procd_<name>.lock), the lock the r2 case must hold; refused unless a root-owned regular file with one link, not a symlink (next line)
 scripts/dv/chain1-254.sh	\[ -e /tmp/batman-slot\.allow-(unseeded|stale-p5) \]	fail-closed precondition: ANY file at an operator-flag name, whoever made it, reads "y" and the run refuses (a planted flag can only stop the test, never pass it)
 # --- #254 P1 product (merged in #307): paths the helper and the P1 shell use, each root-only or read-only ---
-feed/batman-prov/src/*	/tmp/run/batman-prov	the helper socket dir under root-only /tmp/run: created by the helper (root) 0750 root:provd, socket 0660, SO_PEERCRED-checked (254-p1-impl.md §2.2)
+feed/batman-prov/src/*	/tmp/run/batman-prov([^-a-z]|$)	the helper socket dir under root-only /tmp/run: created by the helper (root) 0750 root:provd, socket 0660, SO_PEERCRED-checked (254-p1-impl.md §2.2)
 feed/batman-prov/src/*	"/tmp/run/batman"	the ONE Go definition of the run dir (provstore.Default) and MkdirTemp inside it (random name, 0700) — the Go twin of rundir.sh
 feed/batman-prov/src/*	/var/lib/bluetooth/batman-sc	bluetoothd-side state file under root-only /var/lib/bluetooth: READ for the health verdict only, never written here (254-stage1 D26)
 */meshjoin.sh	/var/run/wpa_supplicant_s1g	wpa_supplicant control-socket dir (root-only, created by wpa_supplicant_s1g); read-only wpa_cli status query
@@ -113,3 +113,6 @@ scripts/dv/prov-sec-254.sh	.	the attack simulation of prov-sec-dvpc-254 / prov-s
 scripts/node/prov-lease-254.sh	^[[:space:]]*sd=/tmp/run/batman-prov$	prov deadman: the helper socket dir path, only tested (symlink / owner) and removed when foreign so the helper recreates it
 scripts/dv/prov-ac-forge-254.sh	-v /tmp/run:/tmp/run 	autocommit (10) arm c: the root 0755 /tmp/run (procd) bound into a throwaway --network none container as the forged caller's view of the run dir; nothing is read from it to decide anything
 scripts/dv/prov-misc-254.sh	/tmp/run/batman-prov(/helper\.sock|/dv-plant|'\))	L11 (254-h23 §17.4): the helper socket dir under root-only /tmp/run (root:471 0750) — listed, and a file planted in it ON PURPOSE as the negative control (the helper must refuse to start), removed in the same arm; root only, under a prov lease (the prov deadman repairs a foreign socket dir)
+scripts/dv/prov-254.sh	PCD=/tmp/run/batman-dvpc\.\$RUN	the per-run provclient dir under root-only /tmp/run (provclient drops to uid 471, hence 0711): created with mkdir WITHOUT -p, an existing dir / symlink refused (254-h23 F23); random-free but run-unique and gone with every reboot
+scripts/dv/prov-lib-254.sh	PCD=/tmp/run/batman-dvpc\.\$RUN	the per-run provclient dir under root-only /tmp/run (provclient drops to uid 471, hence 0711): created with mkdir WITHOUT -p, an existing dir / symlink refused (254-h23 F23); random-free but run-unique and gone with every reboot
+scripts/dv/chain1-254.sh	PCD=/tmp/run/batman-dvpc\.\$RUN	the per-run provclient dir under root-only /tmp/run (provclient drops to uid 471, hence 0711): created with mkdir WITHOUT -p, an existing dir / symlink refused (254-h23 F23); random-free but run-unique and gone with every reboot
