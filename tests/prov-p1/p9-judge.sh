@@ -18,7 +18,7 @@ cat > "$B/batman-slot" <<'EOS'
 #!/bin/sh
 case "$1" in
 	active) echo "$G_ACT" ;; is-trial) exit "$G_TRIAL" ;; layout) echo "${G_LAYOUT:-pi4}" ;;
-	fw-part) case "$2" in A) echo 1 ;; B) echo 2 ;; esac ;;
+	fw-part) [ "${G_FWEMPTY:-0}" = 1 ] && exit 1; case "$2" in A) echo 1 ;; B) echo 2 ;; esac ;;
 esac
 EOS
 cat > "$B/mount" <<'EOS'
@@ -41,8 +41,8 @@ base(){ rm -rf "$R"; mkdir -p "$R/opt/batdata/state" "$R/boot" "$R/usr/lib/batma
 	printf '#!/bin/sh\n[ "$1" = --version ] && echo "batman-provhelper x" && exit 0\nexit 2\n' > "$R/usr/bin/batman-provhelper"; chmod 755 "$R/usr/bin/batman-provhelper"
 	printf 'wbox_gate_self\necho "holds a -wbox test image"\n' > "$R/usr/sbin/batman-slot"
 	: > "$R/mountinfo"; : > "$R/logread"
-	G_ACT=A G_TRIAL=1 G_DTTRY=00000000 G_LAYOUT=pi4 G_MOUNTFAIL=0; }
-run(){ OUT=$(env -i PATH="$B:/usr/bin:/bin" P9_TEST_ROOT="$R" G_ACT="$G_ACT" G_TRIAL="$G_TRIAL" G_DTTRY="$G_DTTRY" G_LAYOUT="$G_LAYOUT" G_MOUNTFAIL="$G_MOUNTFAIL" sh "$J" 2>&1); RC=$?; }
+	G_ACT=A G_TRIAL=1 G_DTTRY=00000000 G_LAYOUT=pi4 G_MOUNTFAIL=0 G_FWEMPTY=0; }
+run(){ OUT=$(env -i PATH="$B:/usr/bin:/bin" P9_TEST_ROOT="$R" G_ACT="$G_ACT" G_TRIAL="$G_TRIAL" G_DTTRY="$G_DTTRY" G_LAYOUT="$G_LAYOUT" G_MOUNTFAIL="$G_MOUNTFAIL" G_FWEMPTY="$G_FWEMPTY" sh "$J" 2>&1); RC=$?; }
 # want <case> clean|clean-nowarn|warn:<text>|fail:<text>|info:<text>
 want(){ cases=$((cases+1)); local w=$2
 	case "$w" in
@@ -79,5 +79,10 @@ base; mkdir -p "$R/tmp/run/batman-dv/r1"; sleep 300 & sp=$!; echo $sp > "$R/tmp/
 base; mkdir -p "$R/tmp/run/batman-dv/r1"; echo 999999 > "$R/tmp/run/batman-dv/r1/rbarm.pid"; run; want "a dead rbarm.pid is no FAIL" clean
 base; echo "r1 $(cat /proc/sys/kernel/random/boot_id) 99999" > "$R/tmp/run/batman-dv/bt/lease-prov"; run; want "a prov lease of this boot left" "fail:lease-prov of run r1"
 base; echo 900 > "$R/opt/batdata/state/autocommit.timeout"; run; want "autocommit.timeout > 600 is printed" "info:autocommit.timeout=900"
+# §23.4: batman-slot fw-part / active answering nothing (detect_layout died) is a FAIL, not "nothing to judge" (audit item 8)
+base; G_FWEMPTY=1; run; want "batman-slot fw-part unreadable" "fail:fw-part / active unreadable"
+base; G_ACT=""; run; want "batman-slot active unreadable" "fail:fw-part / active unreadable"
+# the recovery script's pid file counts like the arm's (§23.2)
+base; mkdir -p "$R/tmp/run/batman-dv/r1"; sleep 300 & sp=$!; echo $sp > "$R/tmp/run/batman-dv/r1/rbfix.pid"; run; kill $sp; want "a recovery (rbfix.pid) still running" "fail:rollback arm is still running"
 [ "$cases" -gt 0 ] || { echo "FAIL no case ran"; exit 1; }
 echo "P9-JUDGE cases=$cases fails=$fails"; [ "$fails" = 0 ]

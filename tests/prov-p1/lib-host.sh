@@ -66,4 +66,34 @@ o=$(tg "BOOT=aaaa1111 MT=100 REV=0 UP=usr/sbin/batman-slot ")
 want "guard tick: a protected path in the upper -> FAIL" "$o" '*protected path(s) in /overlay/upper before the revert: usr/sbin/batman-slot*F=1 I=0'
 o=$(tg "BOOT=bbbb2222 MT=100 REV=0 UP=" "BOOT=aaaa1111 MT=100 REV=1 UP=")
 want "guard tick: no valid sample -> INVALID" "$o" '*no sample of the trial before its revert*F=0 I=1'
+# pr_wbox_checks (§19.3 / §22.6, audit item 8): what is refused before a -wbox payload is pushed. The rootfs reads are
+# stubbed from fixture trees under $T/rfs/<version>/; the normal build is found through $PR_OUT/<v>/ekh-bcm2711/SHA256SUMS.
+WB=1.5.14-wsl.9+825a239.fw4d19709; WBT=$WB.dirty.wbox-test
+wbc(){	# <case> <want glob> ; fixtures set up by the caller
+	local o; o=$( (pr_rootfs_cat(){ cat "$T/rfs/$1/$2" 2>/dev/null; }; PR_OUT=$T/out; pr_wbox_checks "$1"; echo "rc=$?") 2>&1 )
+	want "pr_wbox_checks: $2" "$o" "$3"; }
+wtree(){	# <version> <gate 0|1>: a rootfs with the protected set (same content for every version) and batman-slot
+	local f; for f in $PROTSET; do mkdir -p "$T/rfs/$1/$(dirname "$f")"; echo "content of $f" > "$T/rfs/$1/$f"; done
+	[ "$2" = 1 ] && echo 'die "slot $1 holds a -wbox test image"' >> "$T/rfs/$1/usr/sbin/batman-slot"; return 0; }
+rm -rf "$T/rfs" "$T/out"; mkdir -p "$T/out/$WB.dirty/ekh-bcm2711"; : > "$T/out/$WB.dirty/ekh-bcm2711/SHA256SUMS"
+wtree "$WB.dirty" 1; wtree "$WBT" 1
+PSTAMP="BATMAN_VERSION=$WBT
+BATMAN_WBOX=test"
+wbc "$WBT" "gate present, protected set equal -> accepted" '*gate present, protected set == *rc=0'
+sed -i '/holds a -wbox test image/d' "$T/rfs/$WBT/usr/sbin/batman-slot"
+wbc "$WBT" "pre-gate image (no wbox gate in its batman-slot) -> refused" '*FAIL pre-gate image*rc=1'
+wtree "$WBT" 1; set -- $PROTSET; echo changed >> "$T/rfs/$WBT/$2"
+wbc "$WBT" "a protected file differs from the normal build -> refused" "*FAIL $WBT: protected $2 differs*rc=1"
+wtree "$WBT" 1; : > "$T/rfs/$WBT/$2"; : > "$T/rfs/$WB.dirty/$2"
+wbc "$WBT" "a protected file empty on both sides -> refused (never equal-by-emptiness)" '*is empty or missing*rc=1'
+wtree "$WB.dirty" 1; wtree "$WBT" 1
+PSTAMP="BATMAN_VERSION=$WBT
+BATMAN_WBOX=chan"
+wbc "$WBT" "version and BATMAN_WBOX disagree -> refused" '*version names wbox variant test but BATMAN_WBOX=?chan?*rc=1'
+PSTAMP="BATMAN_VERSION=$WB.dirty.wbox-misc-l38
+BATMAN_WBOX=misc-l38"
+wbc "$WB.dirty.wbox-misc-l38" "a misc-* variant is never pushed" '*is a misc-* variant*rc=1'
+PSTAMP="BATMAN_VERSION=$WBT
+BATMAN_WBOX=test"; rm -rf "$T/out/$WB.dirty"
+wbc "$WBT" "no normal build of the same rc -> refused" '*no normal build*rc=1'
 echo "LIB-HOST cases=$n fails=$f"; [ "$n" -gt 0 ] && [ "$f" = 0 ]
