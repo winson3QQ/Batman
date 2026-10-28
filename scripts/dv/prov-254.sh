@@ -298,8 +298,14 @@ pr_restore_cycle(){
 	q "rm -f $HOLDF $PR_PAY; rm -rf /tmp/run/batman-prov-test"
 	o=$(PB_ENV=${skip:+PROV_BASE_SKIP=$skip} nb p5-restore "$RUN"); PR_RCYCLE_OUT=$o; say "$(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { no "p5 restore"; return 1; }
 	o=$(PB_ENV=${skip:+PROV_BASE_SKIP=$skip} nb overlay-restore "$RUN"); PR_RCYCLE_OUT="$PR_RCYCLE_OUT
-$o"; echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY|SKIP" | tail -10 | sed 's/^/    /'
+$o"; echo "$o" | grep -E "EXTRA-|OVERLAY|SKIP" | tail -10 | sed 's/^/    /'
 	grep -q "^OVERLAY-RESTORED $RUN" <<< "$o" || { no "overlay restore"; return 1; }
+	# review A-M1: a kept directory must leave the merged view exactly as /rom has it, before the reboot (the 04 repro had
+	# /usr/bin at 0 of 191 entries after the old removal)
+	for d in $(sed -n 's/^EXTRA-DIR-KEPT //p' <<< "$o"); do
+		v=$(qr "[ \"\$(ls -A /$d)\" = \"\$(ls -A /rom/$d)\" ] && echo same || echo differs")
+		[ "$v" = same ] && ok "restore: kept dir /$d lists as /rom (before the reboot)" || no "restore: kept dir /$d lists differently from /rom [$v] before the reboot"
+	done
 	b0=$(field "$s" boot); q "(batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &)"
 	pr_find 900 "$b0" || { pr_needs_person "restore: no node after the reboot"; return 1; }
 	return 0

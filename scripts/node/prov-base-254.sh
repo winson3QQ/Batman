@@ -178,6 +178,11 @@ compare)
 		[ -f "$D/snap/$f" ] && [ -f "$D/now-$TAG/$f" ] || die "compare: $f missing on one side (fail-closed)"
 		if [ "$f" = upper.manifest ]; then
 			# an allowed path drops out only when the rule allows the kind of difference seen
+			# review A-M1: directories overlay-restore kept (EXTRA-DIR-KEPT, $D/kept-dirs) appear as "+ d…" lines: only those drop
+			if [ -s "$D/kept-dirs" ]; then
+				awk 'NR==FNR{k[$0]=1; next} !($1 == "+" && substr($2, 1, 1) == "d" && ($NF in k))' "$D/kept-dirs" "$T/d" > "$T/k"
+				say "KEPT-DIRS ignored: $(( $(wc -l < "$T/d") - $(wc -l < "$T/k") )) of $(wc -l < "$D/kept-dirs") listed"; mv "$T/k" "$T/d"
+			fi
 			awk -v AC="${AC:-^$}" -v AE="${AE:-^$}" '
 				{ p=$NF; side=$1; seen[p]=seen[p] side; line[NR]=$0; path[NR]=p }
 				END { for (i=1;i<=NR;i++) { p=path[i]
@@ -221,7 +226,19 @@ overlay-restore)
 	awk '{print $NF}' /tmp/run/batman-dv/now.manifest > /tmp/run/batman-dv/now.paths
 	awk '{print $NF}' "$D/snap/upper.manifest" > /tmp/run/batman-dv/snap.paths
 	if [ "${PROV_BASE_SKIP:-}" = extra ]; then say "SKIP extra removal (PROV_BASE_SKIP=extra, negative control)"; else
+	rm -f "$D/kept-dirs"
 	awk 'NR==FNR{s[$0]=1; next} !($0 in s)' /tmp/run/batman-dv/snap.paths /tmp/run/batman-dv/now.paths | sort -r | while IFS= read -r p; do
+		# review A-M1: removing a DIRECTORY from the mounted upper emptied the merged view of it (04 2026-10-28: /usr/bin
+		# 191 -> 0 entries until the reboot; had it been /usr/sbin, batman-slot would be gone before its reboot). An extra
+		# directory that /rom also has is KEPT when, its extra children gone (sort -r: children first), the merged view
+		# lists exactly what /rom lists (an empty, non-opaque copy-up dir: behaviour-neutral). It goes to $D/kept-dirs (p6,
+		# survives the reboot) and compare drops exactly those "+ d" lines. Not neutral (e.g. opaque) -> removed as before.
+		if [ -d "/overlay/upper/$p" ] && [ ! -L "/overlay/upper/$p" ] && [ -d "/rom/$p" ] && [ ! -L "/rom/$p" ]; then
+			if [ "$(ls -A "/$p" 2>/dev/null)" = "$(ls -A "/rom/$p" 2>/dev/null)" ] && [ -z "$(ls -A "/overlay/upper/$p" 2>/dev/null)" ]; then
+				echo "EXTRA-DIR-KEPT $p"; echo "$p" >> "$D/kept-dirs"; continue
+			fi
+			echo "EXTRA-DIR-NOT-NEUTRAL $p (the merged view differs from /rom, or the upper dir is not empty): removed"
+		fi
 		echo "EXTRA-REMOVED $p"; rm -rf "/overlay/upper/$p"
 	done; fi
 	for f in $STATEFILES; do
