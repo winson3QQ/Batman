@@ -811,3 +811,47 @@ v8 的 `misc-L42`(mutant `batman-slot` 寫 arm 檔)與 `misc-L51`(bind `platform
 - §6.2 `prov-misc-254` 列的型欄改為 `— / A / F`(不做 OTA,v9 A-m13);§7 actor 表加「操作員誤推 wbox payload」一列 → §18.1;§7.3 build 數 = 13 + 4(misc)+ normal / test = 19 / rc。
 - §10 回報上層(v8 A-m7、v9 A-m13 / B-m12):p1-impl §4 / `:288`、`:377` 的 misc 作法改為 §17(autocommit mutant + dry-run,不 OTA mutant 槽);§18.1 為 P1 新增的產品閘。
 - bcm2710:不適用(CM4 決定);兩個 PR body 照慣例各有 `### bcm2711` / `### bcm2710` 兩節(後者寫明不適用與理由)。
+
+## 20. v10 審查後的修訂(`h23-review-v10-A` AWC 0/2/14、`-B` AWC 0/1/11;**本節優先於前文全部,含 §1.4 / §4.2 / §7 的「一律 hold」與 §17–§19**)
+
+### 20.1 dry-run 臂的結束判定與計時(v10 A-M1、B-m1 / m2)
+- 04 的 busybox 沒開 `CONFIG_DESKTOP`,`ps -o` 不可用(`ps.c:670`),image 無 procps-ng → 判定改為掃 `/proc/[0-9]*/stat`:第 6 欄(session id)= dry-run 的 setsid leader pid 者即為同一組;讀不到 `/proc` 或解析失敗 = **INVALID**(不是「已結束」)。
+- 計時:從 stdout 出現 `mesh join required` 行時起算,其後 15 s 內該 session 必須清空,否則 TERM → 5 s → KILL 整個 session(`kill -- -<pgid>`;setsid leader 的 pgid = sid)→ INVALID。整臂另有硬上限:L38 臂 a / b 90 s,其他臂 30 s(從起動算),超過 → 同上殺法 → INVALID。
+- L38 臂 b 的「≥ 60 s」以**節點 uptime** 量(臂前、判定行出現時各讀一次 `/proc/uptime`),門檻 ≥ 58 s(`:404` 迴圈 60 × `sleep 1` 加讀檔時間;WSL 實測 uptime 60.04 s、`date` 58.13 s)。
+- L38 臂 a:真程式在 `gate until` 行後 3 s 內就出判定行 → INVALID(沒走過切換)。
+- `hold-consumed` 是承重的:臂前斷言 p6 **沒有** hold 旗標(有 → 會建真名 `hold-discarded`,前置失敗)、gate 行含 `revert=0`(由 hold-consumed 造成的不 revert 路徑);stdout 必須有 `hold present` 類行(依 autocommit 實際字串,實作時抓原文)→ 沒有 = INVALID。快照清單再加 `$RUNDIR/autocommit.ctl.dry`、`$RUNDIR/autocommit-dryrun.log`。deadman 也刪 dry-run 建的 `hold-consumed`(否則 `halow-status:136-146` 給操作員誤導訊息)。
+
+### 20.2 變體名一律小寫(v10 A-M2)
+`misc-L38` / `misc-L42` / `misc-L43` / `misc-L51` → **`misc-l38` / `misc-l42` / `misc-l43` / `misc-l51`**;見證 `WBOX-misc-lNN-<8 hex>`。`lint-wbox` 名稱規則 `[a-z0-9-]`、gate 的見證 regex `WBOX-[a-z0-9-]+-[0-9a-f]{8}` 不變。§17 / §19 所有大寫寫法以此為準。
+
+### 20.3 `prov-wbox-nocommit-254` 的 rollback 臂與安全網(v10 B-M1、A-m4 / m5)
+- rollback 臂**整段在一條節點端指令內**完成:記下 `batman-slot` 的預設槽(`[all]`)→ `batman-slot rollback`(目標 = 含 wbox 的 B)→ PASS 條件三者皆真:rc ≠ 0、輸出含 `holds a -wbox test image`、`[all]` 未變。
+  - rc ≠ 0 但訊息不是那句(`assert_fw_sane`、`slot_is_bad`、lock gate、`power_ok` 等)→ **INVALID**。
+  - rc = 0 或 `[all]` 變了(閘回歸)→ **同一條指令內**立刻 `batman-slot commit`(此時跑在 A,A 非 wbox,允許)並讀回 `[all]` = A;仍不是 A → 不重開、`pr_needs_person`(印出手動恢復指令)。之後才回主機判 FAIL。
+- trial 期間若出現 `COMMITTED`(autocommit 閘回歸):harness 立刻在 B 上 `batman-slot rollback`(目標 = A,非 wbox,允許)→ `batman-slot reboot committed` → 斷言回 A;失敗 → `pr_needs_person`。
+- 判定看 `otalog AC WBOX-NOCOMMIT`(只在 `ok ≥ NEED` 時記),不看 `TRIAL-REVERTED reason`(最後一輪可能因 mesh 抖動變成 `mesh lost`);沒有 `WBOX-NOCOMMIT` 而 reason 是 mesh 類 → INVALID(重跑一次)。
+- 「不設 hold」的例外有機制:`pr_ota_b` 的 `nohold` 參數只在單位名 = `prov-wbox-nocommit-254` 時接受,`lint-install` 加規則掃 `scripts/dv/` 確認只此一處使用。
+- 前置:02 在 `batctl n`;p6 無殘留 hold 旗標。
+
+### 20.4 產品閘的細節(v10 B-m3 / m4 / m6 / m7、A 的 MINOR)
+- `cmd_rollback` 的 wbox 檢查是**獨立函式、在 `rollback_lock_gate` 之前無條件執行**:legacy 狀態在 `:775-776` 提早 return、`UNLOCKED_ROLLBACK`(env 或 `/tmp` 旗標)在 `:777` 提早 return,檢查若塞進 lock gate 就會被這兩條繞過(v10 B-m3)。目標槽唯讀掛載以讀 `etc/batman-build`(同 lock gate 的掛載法);掛不上 / 讀不到 → 拒絕。既有 `tests/prov-p1/batman-slot-rollback-gate.sh:61`(legacy 時「目標槽不讀」)同步改為「目標槽一律讀 batman-build、lock 部分仍不讀」。
+- 讀不到 `/rom/etc/batman-build` 用**獨立字串**:`build stamp unreadable (/rom/etc/batman-build) — not committing (deadline revert armed)` + `otalog AC STAMP-UNREADABLE`,不寫成 wbox(v10 B-m4)。failsafe 開機沒有 `/rom`,但 failsafe 不跑 autocommit(不影響)。`cmd_commit` 讀當前槽的 `/rom/etc/batman-build`;`cmd_rollback` 讀目標槽掛載點內的檔。
+- 跨閘降級(v10 B-m6):rollback 的防線在**執行中的槽**的 `batman-slot`;節點若跑不含閘的版本(wsl.4 / wsl.9 等),rollback 到 wbox 槽不會被擋 → §5 增列此路徑;P9 對「另一槽含 wbox」除了印 brewrite 指令外,另印「本槽版本不含 rollback 閘,勿 rollback」提醒。
+- `back_to_a`(`brewrite-254.sh:13`、`negctl-old-slot-254.sh:30`)遇 rollback 被拒時記錄 stderr(原本靜默 rc 0,v10 B-m7);行為不變(trial 期限 revert 是安全結果)。
+- `lint-wbox` 加規則:patch 不得刪改含 `wbox_image`、`WBOX-NOCOMMIT`、`STAMP-UNREADABLE`、`holds a -wbox test image` 的行(mutant 不能拆掉閘);`pr_ota_b` 拒推 `misc-*`(只做 bind 用)。
+
+### 20.5 F5 的機制(v10 A、B-m10)
+環境變數一定被子程序繼承,改名不夠 → gate 的覆寫**只走命令列**:`check-prov-test-gate.sh ROOTFS [NAME] [--selftest-wbox-dir DIR] [--selftest-go GO]`,不讀任何環境變數的 `WBOX_DIR` / `GO`;`test-prov-test-gate.sh` 以參數傳入。負測試:環境設 `WBOX_DIR` 指向偽 helpers.list、`GO=/bin/echo` → gate 仍 FAIL。CI stub `/rom`:在 `dv-sbx` 的 mount namespace 以 tmpfs 提供,**產品不加任何 env 覆寫**。
+
+### 20.6 §17 / §19 的其餘修正(v10 A-m10、B-m8–m11)
+- L9:health ok = `batman-prov.health` 的 `bluetoothd=1`(`health.go:4,138`)、boot_id 本次、時間戳 ≤ 15 s。
+- L11:前置斷言無 `.txn`(crash loop 的 `boot.Run` 會處理 `.txn`)。
+- L3:負對照引用**同一全套**中 `prov-powerloss-254-txn*` 單位產生的 sysrq 開機記錄(`hints: sysrq`),不引用 E-H6。
+- L51 / L38 臂 c 標為「判定半邊」(寫入半邊見 §19.2);見證行位置:autocommit mutant 的 log 行緊接在被改的那一行之後。
+- L42 寫入半邊另加靜態檢查:CI 掃 `feed/batman-provision/files/`,寫 `ota-armed.mesh` 的只能是 `platform-ab.sh` 的 `_ab_arm_mesh`(刪除者另列)。
+- L27 / L10 副作用列入 §7.2(dropbear 重啟斷開既有 ssh 連線、dbus 重啟連帶 bluetoothd / OTS 重連)。
+- §5 增列:L11 crash loop、跨閘降級、rollback 臂閘回歸;§7 actor 表增列「操作員誤推 / 誤 rollback wbox payload」→ §18.1 / §19.3 / §20.3–20.4。
+- 文件標頭(第 1–3 行)更新為 v11。
+
+### 20.7 成本(v10 A-m6;**需使用者重新確認**)
+`prov-wbox-nocommit-254` 照 §7.3 revert 型算法:OTA + 期限 revert(≈ 37 分,含 600 s deadline)+ rollback 臂(≈ 2 分)+ brewrite(≈ 14 分)≈ **47–57 分**,不是 §19.3 寫的 25 分。使用者 2026-10-28 的「做」是依 25 分的估計,需再確認。
