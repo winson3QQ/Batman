@@ -54,27 +54,9 @@ rbarm(){
 	local o t
 	[ -n "$WV" ] || { no "rollback arm: no wbox version"; return 1; }
 	pw prep >/dev/null
-	q "cat > $W/rbarm.sh" <<'ARM'
-#!/bin/sh
-# node side of the rollback arm (254-h23 §21.1): $1 = the wbox version slot B must hold
-trap '' HUP PIPE
-. /usr/lib/batman/bootfacts.sh
-r(){ echo "RESULT=$*"; exit 0; }
-grep -q 'holds a -wbox test image' /usr/sbin/batman-slot || r "INVALID pre-gate image"
-[ "$(cat /opt/batdata/state/slot-B.protected 2>/dev/null)" = "$1" ] || r "INVALID slot-B.protected [$(cat /opt/batdata/state/slot-B.protected 2>/dev/null)] != $1"
-a0=$(bf_ab_all); case "$a0" in 1|2) ;; *) r "INVALID bf_ab_all [$a0]" ;; esac
-[ "$(batman-slot active)" = A ] || r "INVALID not running on A"
-o=$(batman-slot rollback 2>&1); rc=$?
-a1=$(bf_ab_all)
-if [ "$rc" = 0 ] || [ "$a1" != "$a0" ]; then
-	i=0; while [ $i -lt 3 ]; do batman-slot commit >/dev/null 2>&1 && break; sleep 5; i=$((i + 1)); done
-	a2=$(bf_ab_all)
-	[ "$a2" = "$a0" ] && r "FAIL-RECOVERED rc=$rc a0=$a0 a1=$a1 a2=$a2 out=$(echo "$o" | tail -1)"
-	r "FAIL-NEEDS-PERSON rc=$rc a0=$a0 a1=$a1 a2=$a2"
-fi
-case "$o" in *"holds a -wbox test image"*) r "PASS rc=$rc a0=$a0 a1=$a1 msg=$(echo "$o" | tail -1)" ;; esac
-r "INVALID rc=$rc msg=$(echo "$o" | tail -1)"
-ARM
+	# the arm itself: scripts/node/prov-rbarm-254.sh (offline test tests/prov-p1/rbarm.sh)
+	scp -q $SSHO "$REPO/scripts/node/prov-rbarm-254.sh" root@$NODE:$W/rbarm.sh || { no "push the rollback arm"; return 1; }
+	[ "$(qr "sha256sum < $W/rbarm.sh | cut -c1-64")" = "$(sha256sum < "$REPO/scripts/node/prov-rbarm-254.sh" | cut -c1-64)" ] || { no "rollback arm on the node differs"; return 1; }
 	# the arm's pid in /tmp/run/batman-dv/<run>/rbarm.pid: preflight P9 FAILs while it is alive (prov-p9-254.sh, p9-judge)
 	q "chmod 700 $W/rbarm.sh; rm -f $W/rbarm.out; mkdir -p -m 0700 /tmp/run/batman-dv/$RUN; setsid sh $W/rbarm.sh '$WV' > $W/rbarm.out 2>&1 < /dev/null & echo \$! > /tmp/run/batman-dv/$RUN/rbarm.pid"
 	t=0; o=""; while [ $t -lt 24 ]; do o=$(qr "grep '^RESULT=' $W/rbarm.out 2>/dev/null"); [ -n "$o" ] && break; sleep 5; t=$((t + 1)); done
