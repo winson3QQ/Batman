@@ -117,11 +117,15 @@ jobs:
         run: ./tests/ab-card-invariants.sh
       - name: A/B card invariants, Pi 3 / bcm2710 (#209) — p7 firmware partition + hybrid MBR
         run: SOC=bcm2710 ./tests/ab-card-invariants.sh
-      - name: "#254 claim-lock fix v9.1 §5.6 — batman-slot stage-root stdout is exactly the target device (real card, 4 branches)"
+      - name: "#254 claim-lock fix v9.1 §5.6 + prov-unit-gate — stage-root stdout is exactly the target device; .seeded x meta x state matrix (real card, 23 cases)"
         run: |
           F=feed/batman-provision/files
           # harness lands first (#290): on a product without the fix the L44 branch FAILs — red on purpose (KNOWN #254)
           sudo bash tests/prov-p1/batman-slot-stage-root.sh $F/usr/sbin/batman-slot $F/usr/lib/batman/prov-lock.sh
+      - name: "#254 prov-unit-gate negative controls — the allow-claimed mutant and the 1.5.12-wsl.9 batman-slot each FAIL in exactly their cases"
+        run: |
+          F=feed/batman-provision/files
+          sudo bash tests/prov-p1/gate-negatives.sh $F/usr/sbin/batman-slot $F/usr/lib/batman/prov-lock.sh
 
   dv-sbx:
     # 254-h23 §4.4 / p1-impl §4.10, §5.1: the provisioning sandbox — root on a native arm64 runner (unshare + capsh +
