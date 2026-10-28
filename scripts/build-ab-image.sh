@@ -34,6 +34,8 @@ case "$SOC" in bcm2711|bcm2710) ;; *) echo "SOC must be bcm2711 or bcm2710 (got 
 SUDO=""
 # shellcheck source=lib/pi3-fwpart.sh
 . "$(dirname "$0")/lib/pi3-fwpart.sh"
+# shellcheck source=lib/wbox-stamp.sh
+. "$(dirname "$0")/lib/wbox-stamp.sh"
 if [ -n "$SRC_IMG" ] && [ ! -f "$SRC_IMG" ]; then echo "SRC_IMG set but not found: $SRC_IMG"; exit 1; fi
 
 # Deterministic PARTUUIDs (same scheme as build-gpt-ab-card.sh, traceable to the original card).
@@ -116,6 +118,8 @@ else
 	dd if="${SLO}p2" of="$TMP/root.squashfs" bs=1M count="$SQUASH_BYTES" iflag=count_bytes status=none
 fi
 [ -n "${SLO:-}" ] && { losetup -d "$SLO"; SLO=""; } || true
+# #254 (code review B-M2): never a -wbox TEST image on a card — slot A boots committed, past every node-side gate
+card_wbox_check "$TMP/root.squashfs" strict || exit 1
 
 # --- 2. create the output image file and GPT (small p6) ----------------------------------------
 TOTAL_MB=$(( 4016 + P6_MB + 2 ))
