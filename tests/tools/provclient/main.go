@@ -10,6 +10,8 @@
 //	                              and read back from stdin ("SIG <hex>"), so the owner key never reaches the node.
 //	provclient sign <keyfile>     on the WSL host: answers SIGN lines with an ES256 (low-s) signature.
 //	provclient keygen <keyfile>   a fresh P-256 owner key (0600) — one per run; prints the public key hex.
+//	                              node ops: info, claim, claim-attacker, replay, ssh-keys, root-reset, rename, verb,
+//	                              and (net.go) net-apply --first|--update, leave, owner-add, owner-remove, diag.
 //	provclient selftest <vectors.json>
 //
 // Output never contains a secret: secret values are printed as the first 16 hex chars of their SHA-256.
@@ -319,12 +321,25 @@ func cmdSign(keyPath string) {
 		}
 		msg, err := hex.DecodeString(f[2])
 		if err != nil || !(f[1] == "owner-op" && strings.HasPrefix(string(msg), "batman-owner-op-v1") ||
-			f[1] == "owner-enc" && strings.HasPrefix(string(msg), "batman-owner-enc-v1")) {
+			f[1] == "owner-enc" && strings.HasPrefix(string(msg), "batman-owner-enc-v1") ||
+			f[1] == "cose" && isCoseSigStructure(msg)) {
 			fmt.Println("ERR")
 			continue
 		}
 		fmt.Println("SIG " + hex.EncodeToString(signLowS(k, msg)))
 	}
+}
+
+// isCoseSigStructure: the only "cose" messages the signer signs are a COSE Sig_structure for a net_config or a
+// net_secrets object (["Signature1", protected, "batman-netcfg-v1" | "batman-secrets-v1", payload])
+func isCoseSigStructure(msg []byte) bool {
+	x, rest, err := cDec(msg)
+	a, ok := x.([]any)
+	if err != nil || len(rest) != 0 || !ok || len(a) != 4 || a[0] != "Signature1" {
+		return false
+	}
+	l, _ := a[2].([]byte)
+	return string(l) == labelNetcfg || string(l) == labelSecrets
 }
 
 // ---- node side ----------------------------------------------------------------------------------------------------
@@ -447,6 +462,11 @@ func cmdNode(args []string) {
 		}
 		claimSecret = b
 	}
+	// the network values (fd 3) for net-apply: read here, as root, before the drop (254-p1-impl §4.2)
+	var netIn *netInput
+	if op == "net-apply" {
+		netIn = readFd3()
+	}
 	// #254 claim-lock fix §11.3: PROVCLIENT_PW_FILE = a root-only file (created here, as root, O_EXCL 0600) that
 	// receives the password the helper returned, so a node-side musl crypt() probe can check it against shadow —
 	// the password never reaches stdout, a log or the host. Opened before the privilege drop; written after.
@@ -559,7 +579,9 @@ func cmdNode(args []string) {
 		code, _ := cl.call(args[1], cmap{})
 		fmt.Printf("RESULT %s code=%d\n", args[1], code)
 	default:
-		die("unknown op %q", op)
+		if !netOp(cl, op, args, netIn, hexArg) {
+			die("unknown op %q", op)
+		}
 	}
 }
 
