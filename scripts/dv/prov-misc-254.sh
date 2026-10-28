@@ -59,7 +59,10 @@ dr(){
 has(){ grep -qF -- "$1" <<< "$DOUT"; }
 mjr(){ grep 'mesh join required' <<< "$DOUT" | sed 's/^batman-autocommit: //'; }
 dryarms(){
-	local s
+	local s o
+	# §23.9 / §21.3: no sysupgrade running, no fw-override this boot (a dry run would end at :315), no p6 hold flag
+	o=$(qr 'pgrep -f "/sbin/sysupgrade" >/dev/null && echo sysupgrade-running; . /usr/lib/batman/rundir.sh; [ -e "$RUNDIR/batman-fw-override" ] && echo fw-override; [ -e /opt/batdata/state/autocommit-hold-commit ] && echo hold-flag')
+	[ -z "$o" ] || { inv "dry-run preconditions: $(echo $o)"; return 1; }
 	pw prep >/dev/null
 	scp -q $SSHO "$REPO/scripts/node/prov-misc-254.sh" root@$NODE:$W/ && q "chmod 700 $W/prov-misc-254.sh" || { no "push prov-misc-254.sh"; return 1; }
 	# L38

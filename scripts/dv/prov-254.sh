@@ -521,6 +521,8 @@ pr_trial_line(){ local t=0 r; while [ $t -lt "${2:-30}" ]; do r=$(qr "logread | 
 # committed on V, no wbox, no bad-slot, 02 a neighbour (04's A trial may need the mesh, v4 A-m6) -> lease 1800 s + p6
 # dv-prov-normalising -> OTA V into A (hold) -> HELD -> `batman-autocommit release --wait` -> A committed -> marker
 # removed. Anything else -> NEEDS-PERSON. Interrupted: the marker stays and the next P9 FAILs with the clean-up.
+# Never on a wbox build (refused above): `batman-autocommit release --wait` on a -wbox trial always times out — the
+# product gate (WBOX-NOCOMMIT) never commits it (§23.9).
 pr_normalise(){
 	local v=$1 s o
 	s=$(qr "$ST"); say "normalise: $s"

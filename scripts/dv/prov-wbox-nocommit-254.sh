@@ -45,7 +45,7 @@ trial(){
 	pr_find 900 "$b0" || return 1
 	[ "$(field "$PR_STATE" slot)" = A ] && [ "$(field "$PR_STATE" trial_rc)" = 1 ] && ok "back on A committed after the deadline" || { no "after the trial: $PR_STATE"; return 1; }
 	o=$(qr "grep 'boot=$b0 .*AC WBOX-NOCOMMIT' /opt/batdata/log/ota-trace.log | tail -1")
-	r=$(qr "grep 'TRIAL-REVERTED' /opt/batdata/log/autocommit.log | tail -1")
+	r=$(qr "grep 'TRIAL-REVERTED boot=$b0 ' /opt/batdata/log/autocommit.log | tail -1")   # this trial boot only (§23.9)
 	if [ -n "$o" ]; then ok "the trial logged ${o#* AC }"
 	else case "$r" in *mesh*) inv "no WBOX-NOCOMMIT and a mesh revert reason ($r) — run again"; return 1 ;; *) no "no AC WBOX-NOCOMMIT in the trial boot ($r)"; return 1 ;; esac; fi
 	case "$r" in *"reason=wbox test image"*) ok "TRIAL-REVERTED reason=wbox test image" ;; *) say "last TRIAL-REVERTED reason: ${r##*reason=} (judged by WBOX-NOCOMMIT)" ;; esac
@@ -75,9 +75,11 @@ fi
 case "$o" in *"holds a -wbox test image"*) r "PASS rc=$rc a0=$a0 a1=$a1 msg=$(echo "$o" | tail -1)" ;; esac
 r "INVALID rc=$rc msg=$(echo "$o" | tail -1)"
 ARM
-	q "chmod 700 $W/rbarm.sh; rm -f $W/rbarm.out; setsid sh $W/rbarm.sh '$WV' > $W/rbarm.out 2>&1 < /dev/null &"
+	# the arm's pid in /tmp/run/batman-dv/<run>/rbarm.pid: preflight P9 FAILs while it is alive (prov-p9-254.sh, p9-judge)
+	q "chmod 700 $W/rbarm.sh; rm -f $W/rbarm.out; mkdir -p -m 0700 /tmp/run/batman-dv/$RUN; setsid sh $W/rbarm.sh '$WV' > $W/rbarm.out 2>&1 < /dev/null & echo \$! > /tmp/run/batman-dv/$RUN/rbarm.pid"
 	t=0; o=""; while [ $t -lt 24 ]; do o=$(qr "grep '^RESULT=' $W/rbarm.out 2>/dev/null"); [ -n "$o" ] && break; sleep 5; t=$((t + 1)); done
 	say "rollback arm: ${o:-no result}"
+	[ -n "$o" ] && q "rm -f /tmp/run/batman-dv/$RUN/rbarm.pid"   # no result = the arm may still run: P9 must see its pid
 	case "$o" in
 		RESULT=PASS*) ok "rollback to the wbox B refused, [all] unchanged (${o#RESULT=PASS })" ;;
 		RESULT=FAIL-RECOVERED*) no "GATE REGRESSION: rollback to the wbox B was accepted — recovered to A (${o#RESULT=})" ;;
