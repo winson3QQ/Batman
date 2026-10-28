@@ -27,4 +27,16 @@ echo "999999 $(( $(date +%s) - 7200 )) prov-x-254 rX" > "$LOCKD/owner"
 o=$( (pr_lock; echo TAKEN) 2>&1 ); want "pr_lock: a dead owner -> FAIL naming a stale lock + the rm command" "$o" "*pid 999999 is NOT alive: a stale lock*rm -rf*"
 case "$o" in *TAKEN*) n=$((n + 1)); f=$((f + 1)); echo "FAIL a stale lock was taken over silently";; esac
 pr_unlock; [ ! -e "$LOCKD" ] && { n=$((n + 1)); echo "ok   pr_unlock removes the lock and its owner file"; } || { n=$((n + 1)); f=$((f + 1)); echo "FAIL pr_unlock left $LOCKD"; }
+# pr_wait_result (review B-m1): a detached job that outlives the first wait is waited for while alive, never treated as
+# done; gone without a line -> ""; still alive / node silent at max -> ALIVE. qr stubbed from files; mono +100 per call.
+wr(){ echo 0 > "$T/clk"; echo "$1" > "$T/res"; echo "$2" > "$T/alive"; echo "${3:-0}" > "$T/late"
+	o=$(T="$T" timeout 20 bash -c '. "$1"; pr_wait_result /x/out /x/pid 120 600; echo "rc=$?"' _ "$T/fw.sh" 2>&1); }
+qr(){ case "$1" in
+	*RESULT=*) n=$(cat "$T/late"); if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$T/late"; else cat "$T/res"; fi ;;
+	*kill*) cat "$T/alive" ;; esac; }
+declare -f qr mono sleep pr_wait_result > "$T/fw.sh"
+wr "RESULT=PASS x" alive 3; want "pr_wait_result: the line arrives after a few polls" "$o" 'RESULT=PASS x*rc=0'
+wr "" alive; want "pr_wait_result: alive past max -> ALIVE rc 2 (not done, not killed)" "$o" 'ALIVE*rc=2'
+wr "" dead; want "pr_wait_result: gone without a line -> empty rc 1" "$o" '*rc=1'
+wr "" ""; want "pr_wait_result: node silent -> ALIVE rc 2 (unknown is not dead)" "$o" 'ALIVE*rc=2'
 echo "LIB-HOST cases=$n fails=$f"; [ "$n" -gt 0 ] && [ "$f" = 0 ]

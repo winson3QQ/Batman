@@ -51,7 +51,7 @@ trial(){
 	case "$r" in *"reason=wbox test image"*) ok "TRIAL-REVERTED reason=wbox test image" ;; *) say "last TRIAL-REVERTED reason: ${r##*reason=} (judged by WBOX-NOCOMMIT)" ;; esac
 }
 rbarm(){
-	local o t
+	local o rw
 	[ -n "$WV" ] || { no "rollback arm: no wbox version"; return 1; }
 	pw prep >/dev/null
 	# the arm itself: scripts/node/prov-rbarm-254.sh (offline test tests/prov-p1/rbarm.sh)
@@ -59,16 +59,18 @@ rbarm(){
 	[ "$(qr "sha256sum < $W/rbarm.sh | cut -c1-64")" = "$(sha256sum < "$REPO/scripts/node/prov-rbarm-254.sh" | cut -c1-64)" ] || { no "rollback arm on the node differs"; return 1; }
 	# the arm's pid in /tmp/run/batman-dv/<run>/rbarm.pid: preflight P9 FAILs while it is alive (prov-p9-254.sh, p9-judge)
 	q "chmod 700 $W/rbarm.sh; rm -f $W/rbarm.out; mkdir -p -m 0700 /tmp/run/batman-dv/$RUN; setsid sh $W/rbarm.sh '$WV' > $W/rbarm.out 2>&1 < /dev/null & echo \$! > /tmp/run/batman-dv/$RUN/rbarm.pid"
-	t=0; o=""; while [ $t -lt 24 ]; do o=$(qr "grep '^RESULT=' $W/rbarm.out 2>/dev/null"); [ -n "$o" ] && break; sleep 5; t=$((t + 1)); done
+	# review B-m1: past 120 s it is waited for while alive (to 600 s), never killed, and the restore never runs beside it
+	o=$(pr_wait_result "$W/rbarm.out" "/tmp/run/batman-dv/$RUN/rbarm.pid" 120 600); rw=$?
 	say "rollback arm: ${o:-no result}"
-	[ -n "$o" ] && q "rm -f /tmp/run/batman-dv/$RUN/rbarm.pid"   # no result = the arm may still run: P9 must see its pid
+	[ "$rw" = 2 ] || q "rm -f /tmp/run/batman-dv/$RUN/rbarm.pid"   # ALIVE = the arm may still run: P9 must see its pid
 	case "$o" in
 		RESULT=PASS*) ok "rollback to the wbox B refused, [all] unchanged (${o#RESULT=PASS })" ;;
 		RESULT=FAIL-RECOVERED*) no "GATE REGRESSION: rollback to the wbox B was accepted — recovered to A (${o#RESULT=})" ;;
 		RESULT=FAIL-NEEDS-PERSON*) pr_needs_person "rollback arm: [all] not back on A (${o#RESULT=}) — run on 04: batman-slot commit"; return 1 ;;
 		RESULT=INVALID*) inv "rollback arm: ${o#RESULT=INVALID }" ;;
-		*)	o=$(qr '. /usr/lib/batman/bootfacts.sh; bf_ab_all')
-			[ "$o" = 1 ] && no "rollback arm: no result file within 120 s ([all]=1 unchanged)" || { pr_needs_person "rollback arm: no result and [all]=$o — run on 04: batman-slot commit"; return 1; } ;;
+		ALIVE) pr_needs_person "rollback arm still running (or 04 silent) after 600 s — NOT killed: it may be between its rollback and its recovery. On 04: wait for $W/rbarm.out, check bf_ab_all = 1 and batman-slot active = A, then kill the pid in /tmp/run/batman-dv/$RUN/rbarm.pid"; return 1 ;;
+		*)	o=$(qr '. /usr/lib/batman/bootfacts.sh; bf_ab_all')   # the arm ended without a RESULT line
+			[ "$o" = 1 ] && no "rollback arm: ended without a RESULT line ([all]=1 unchanged)" || { pr_needs_person "rollback arm: no result and [all]=$o — run on 04: batman-slot commit"; return 1; } ;;
 	esac
 }
 pr_begin 3600 || { pr_result; exit 1; }

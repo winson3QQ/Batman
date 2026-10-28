@@ -377,6 +377,26 @@ pr_peer_after(){	# 02: a neighbour of 04 again (180 s window) and not rebooted (
 	elif [ $(( $(mono) - PR_T0 )) -gt 3600 ] && [ "$(qp 'echo "$(batman-slot active) $(batman-slot is-trial >/dev/null 2>&1; echo $?)"')" = "A 1" ]; then echo "WARN $PR_UNIT: 02 rebooted during a run over 3600 s (joinwatch, F33) and is back on A committed"
 	else no "02 rebooted (boot $PR_PEER_BOOT -> ${b:-unreachable})"; fi
 }
+# pr_wait_result <result file> <pid file> <first s> <max s> — wait for a detached node job's "RESULT=" line (review B-m1).
+# Prints the RESULT line (rc 0); "" when the job is gone without one (rc 1); "ALIVE" when after <max> s it still runs or
+# the node does not say (rc 2). Never kills it: the rollback arm may be between its rollback and its recovery, and a kill
+# there strands [all] — a live arm is a person's call, and the restore must not run beside it (two writers).
+pr_wait_result(){
+	local f=$1 pf=$2 first=$3 max=$4 t0 o a e; t0=$(mono)
+	while :; do
+		o=$(qr "grep '^RESULT=' $f 2>/dev/null"); [ -n "$o" ] && { echo "$o"; return 0; }
+		e=$(( $(mono) - t0 ))
+		if [ "$e" -ge "$first" ]; then
+			a=$(qr "kill -0 \$(cat $pf 2>/dev/null) 2>/dev/null && echo alive || echo dead")
+			if [ "$a" = dead ]; then	# it may have written the line just before it ended
+				o=$(qr "grep '^RESULT=' $f 2>/dev/null"); [ -n "$o" ] && { echo "$o"; return 0; }
+				echo ""; return 1
+			fi
+			[ "$e" -ge "$max" ] && { echo ALIVE; return 2; }
+		fi
+		sleep 5
+	done
+}
 pr_result(){ say "RESULT fails=$fails invalid=$invalid"
 	if [ "$fails" = 0 ] && [ "$invalid" = 0 ]; then echo "UNIT $PR_UNIT PASS"; return 0; fi
 	[ "$fails" = 0 ] && { echo "UNIT $PR_UNIT INVALID"; return 2; }; echo "UNIT $PR_UNIT FAIL"; return 1; }
