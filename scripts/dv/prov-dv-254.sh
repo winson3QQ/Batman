@@ -59,7 +59,7 @@ prov-powerloss-txn4-254|prov-powerloss-254|4
 prov-powerloss-txn5-254|prov-powerloss-254|5
 prov-lock-failsecure-254|prov-lock-failsecure-254|
 prov-claim-kp-254|prov-claim-kp-254|
-prov-chain0-254|-|
-prov-netjoin-fleet-254|-|
+prov-chain0-254|prov-chain0-254|
+prov-netjoin-fleet-254|prov-netjoin-fleet-254|
 prov-ac-fleetchan-254|prov-ac-fleetchan-254|
 prov-legacy-upgrade-254|prov-legacy-upgrade-254|"
