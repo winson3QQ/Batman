@@ -9,6 +9,7 @@
 #   compare <run> <tag> compare <run>/now-<tag>/ with the snapshot; prints DIFF lines; rc 0 = none
 #   p5-restore <run>    dd the p5 image back under the config-save lock, verify sha uncached
 #   overlay-restore <run> write the snapshot tar over the live upper, delete extras, restore p6 state
+#   strip-p5-prov <run> (prov-legacy-upgrade only) delete p5 prov.* and identity/prov, the rest unchanged (§4.5.6)
 #   finish <run>        after a passing compare: print and remove snapshot, marker, dirty flag
 # PROV_BASE_SKIP=p5 | extra (the prov-base-254 unit's negative controls only, 254-h23 §6.2): p5-restore writes
 # nothing / overlay-restore keeps the extras; each prints a SKIP line, and the following compare must FAIL.
@@ -222,10 +223,34 @@ overlay-restore)
 	sync; echo 3 > /proc/sys/vm/drop_caches
 	say "OVERLAY-RESTORED $RUN (reboot now)"
 	;;
+strip-p5-prov)
+	# 254-p1-impl §4.5.6, prov-legacy-upgrade-254 only: a pre-P1 p5 made from this one — ro check prov.meta is there,
+	# delete ONLY prov.* and identity/prov/, ro assert both gone and every other entry unchanged. Inside a snapshotted
+	# unit (the restore puts p5 back), under the config-save lock, helper / provd / joinwatch stopped.
+	[ -d "$D/snap" ] || die "no snapshot $RUN (strip-p5-prov only inside a snapshotted unit)"
+	svc stop joinwatch batman-provhelper batman-provd
+	lock_take
+	grep -q "^$P5 " /proc/mounts && { lock_drop; die "p5 is mounted"; }
+	m=$(mktemp -d "$DVD/p5w.XXXXXX") || { lock_drop; die "no temp dir"; }
+	mount -t ext4 -o ro,noload "$P5" "$m" 2>/dev/null || { rmdir "$m"; lock_drop; die "p5 not mountable ro"; }
+	[ -f "$m/prov.meta" ] || { umount "$m"; rmdir "$m"; lock_drop; die "p5 has no prov.meta (nothing to strip)"; }
+	others(){ ( cd "$1" && find . | grep -v -e '^\./prov\.' -e '^\./identity/prov$' -e '^\./identity/prov/' | sort ); }
+	b4=$(others "$m"); umount "$m"
+	mount -t ext4 "$P5" "$m" 2>/dev/null || { rmdir "$m"; lock_drop; die "p5 not mountable rw"; }
+	echo "STRIP $(cd "$m" && ls -d prov.* identity/prov 2>/dev/null | tr '\n' ' ')"
+	rm -f "$m"/prov.*; rm -rf "$m/identity/prov"; sync; umount "$m"
+	mount -t ext4 -o ro,noload "$P5" "$m" 2>/dev/null || { rmdir "$m"; lock_drop; die "p5 not mountable ro after the strip"; }
+	left=$(cd "$m" && ls -d prov.* identity/prov 2>/dev/null | tr '\n' ' '); af=$(others "$m"); umount "$m"; rmdir "$m"
+	lock_drop
+	svc start batman-provhelper joinwatch
+	[ -z "$left" ] || die "still on p5 after the strip: $left"
+	[ "$af" = "$b4" ] || die "the strip changed other p5 entries"
+	say "STRIPPED $RUN (prov.* and identity/prov gone, $(echo "$b4" | wc -l) other entries unchanged)"
+	;;
 finish)
 	[ -d "$D" ] || die "no snapshot"
 	echo "removing: $(ls "$D" | tr '\n' ' ') $MARK $DIRTY"
 	rm -rf "$D"; rm -f "$MARK" "$DIRTY"; sync; say "FINISHED $RUN"
 	;;
-*) echo "usage: prov-base-254.sh snap|manifest|compare|p5-restore|overlay-restore|finish <run_id> [tag]"; exit 2 ;;
+*) echo "usage: prov-base-254.sh snap|manifest|compare|p5-restore|overlay-restore|strip-p5-prov|finish <run_id> [tag]"; exit 2 ;;
 esac
