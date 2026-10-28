@@ -103,7 +103,8 @@ exp=$(sort "$want")
 if [ "$have" != "$exp" ]; then err "tests/wbox/helpers.list differs from the patches:"; diff <(echo "$exp") <(echo "$have") | sed 's/^/  /'; fi
 # nohold (§21 / §23.9): `pr_ota_b … nohold` (a trial without the hold flag) only in the unit prov-wbox-nocommit-254.
 # Exempt: the body of pr_ota_b() in scripts/dv/prov-254.sh (its definition). Any other use in scripts/dv/ FAILs; a
-# use counts as in the unit when the nearest function / case arm above it is named prov-wbox-nocommit-254.
+# use counts as in the unit when the nearest function / case arm above it is named prov-wbox-nocommit-254, or when
+# it is in the unit's own file scripts/dv/prov-wbox-nocommit-254.sh (one file per unit).
 if [ -d "$R/scripts/dv" ]; then
 	nh=$(awk '
 		FNR == 1 { infn = 0; owner = "" }
@@ -111,7 +112,7 @@ if [ -d "$R/scripts/dv" ]; then
 		/^[[:space:]]*[a-z0-9-]+\)[[:space:]]/ { owner = $1 }
 		infn && /^}/ { infn = 0; next }
 		/^[[:space:]]*#/ { next }
-		/(^|[^A-Za-z0-9_-])nohold([^A-Za-z0-9_-]|$)/ && !infn && owner !~ /^prov[-_]wbox[-_]nocommit[-_]254/ { print FILENAME ":" FNR }
+		/(^|[^A-Za-z0-9_-])nohold([^A-Za-z0-9_-]|$)/ && !infn && owner !~ /^prov[-_]wbox[-_]nocommit[-_]254/ && FILENAME !~ /\/prov-wbox-nocommit-254\.sh$/ { print FILENAME ":" FNR }
 	' "$R"/scripts/dv/*.sh 2>/dev/null)
 	[ -z "$nh" ] || err "nohold used outside the unit prov-wbox-nocommit-254: $(echo "$nh" | sed "s#$R/##" | tr '\n' ' ')"
 fi

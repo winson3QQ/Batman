@@ -87,6 +87,9 @@ R=$(mkrepo nh); prot $R; mkpatch $R misc-ok "x" WBOX-misc-ok-2b2b2b2b miscok $R;
 printf 'pr_ota_b() {\n\tcase "$4" in nohold) hold=0 ;; esac\n}\n' > $R/scripts/dv/prov-254.sh
 printf 'prov_wbox_nocommit_254() {\n\tpr_ota_b "$pl" "$sha" B nohold\n}\n' > $R/scripts/dv/prov-wbox-254.sh
 want PASS "nohold in pr_ota_b() and in the unit prov_wbox_nocommit_254"
+printf 'trial() {\n\tpr_ota_b "$pl" "$sha" B nohold\n}\n' > $R/scripts/dv/prov-wbox-nocommit-254.sh
+want PASS "nohold in a function of the unit's own file prov-wbox-nocommit-254.sh"
+rm $R/scripts/dv/prov-wbox-nocommit-254.sh
 printf 'prov_other_254() {\n\tpr_ota_b "$pl" "$sha" B nohold\n}\n' > $R/scripts/dv/prov-other-254.sh
 want "nohold used outside the unit prov-wbox-nocommit-254: scripts/dv/prov-other-254.sh:2" "a second nohold call in another unit"
 rm $R/scripts/dv/prov-other-254.sh; printf 'pr_ota_b() {\n\t:\n}\nx() {\n\tpr_ota_b a b B nohold\n}\n' > $R/scripts/dv/prov-254.sh
