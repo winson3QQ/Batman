@@ -4,7 +4,7 @@
 # PR_UNIT and sources this file; then
 #   pr_begin <secs> [upper=<variant>] [helper=<variant>[:killpoint=<p>]]
 #            P9 subset -> host lock -> stage + prov lease <secs> + deadman -> snap (dirty) -> (upper-helper, push-helper)
-#   pr_ota_b <payload-version> <target-slot> [allow-stale] [nohold]
+#   pr_ota_b <payload-version> <target-slot> [nohold]
 #            payload checks on the host -> push + node sha -> hold flag (== the payload's BATMAN_VERSION, cmp) ->
 #            `sysupgrade -n` -> landing assertions (target slot, DT tryboot=1, hold effective, no DISCARDED);
 #            a missed landing: disarm, clear the hold, retry once, then pr_needs_person
@@ -111,8 +111,9 @@ pr_payload(){
 	PSHA=$(sha256sum < "$PAYF" | cut -c1-64)
 	grep -q "^$PSHA  batman-$v-ekh-bcm2711-ab-payload\.tar\.gz\$" "$sums" || { echo "FAIL $PAYF does not match its SHA256SUMS"; return 1; }
 	b=$PR_OUT_WSL/$v/ekh-bcm2711/batman-$v-ekh-bcm2711-ab-payload.tar.gz
-	PSTAMP=$(wsl_ bash -c "t=\$(mktemp -d) && tar -xzf '$b' -C \$t root.squashfs && unsquashfs -cat \$t/root.squashfs etc/batman-build; r=\$?; rm -rf \$t; exit \$r" | tr -d '\r') \
-		|| { echo "FAIL cannot read etc/batman-build from $v's root.squashfs"; return 1; }
+	# the stamp is EXTRACTED and must be a regular file in a real etc/ (no -cat: a symlink is never followed; review r2 B-n4)
+	PSTAMP=$(wsl_ bash -c "t=\$(mktemp -d) && tar -xzf '$b' -C \$t root.squashfs && unsquashfs -q -no-xattrs -d \$t/r \$t/root.squashfs etc/batman-build >/dev/null 2>&1; f=\$t/r/etc/batman-build; [ -d \$t/r/etc ] && [ ! -L \$t/r/etc ] && [ -f \$f ] && [ ! -L \$f ] && cat \$f; r=\$?; rm -rf \$t; exit \$r" | tr -d '\r') \
+		&& [ -n "$PSTAMP" ] || { echo "FAIL cannot read etc/batman-build (a regular file) from $v's root.squashfs"; return 1; }
 	[ "$(sed -n 's/^BATMAN_VERSION=//p' <<< "$PSTAMP")" = "$v" ] || { echo "FAIL $v's rootfs says BATMAN_VERSION=$(sed -n 's/^BATMAN_VERSION=//p' <<< "$PSTAMP")"; return 1; }
 	return 0
 }
@@ -122,8 +123,12 @@ pr_rootfs_cat(){ wsl_ bash -c "t=\$(mktemp -d) && tar -xzf '$PR_OUT_WSL/$1/ekh-b
 # protected set (the slot decision code) byte-equal to the normal build of the same rc (254-h23 §19.3, §22.4)
 PROTSET="usr/sbin/batman-slot usr/bin/batman-autocommit etc/init.d/batman-autocommit usr/lib/batman/otatrace.sh usr/lib/batman/rundir.sh usr/lib/batman/bootfacts.sh usr/lib/batman/meshjoin.sh"
 pr_wbox_checks(){
-	local v=$1 name base f a b c wit files n=0
-	name=$(sed -n 's/^BATMAN_WBOX=//p' <<< "$PSTAMP"); [ -n "$name" ] || return 0
+	local v=$1 name base f a b c wit files n=0 sv
+	# the product's rule (batman-slot wbox_stamp): BATMAN_WBOX=<x> OR a version naming .wbox- is a wbox image; the two
+	# must agree here, or the payload is refused (review r2 A-m4 / B-n4)
+	name=$(sed -n 's/^BATMAN_WBOX=//p' <<< "$PSTAMP"); sv=$(sed -n 's/^BATMAN_VERSION=//p' <<< "$PSTAMP")
+	case "$sv" in *.wbox-*) [ -n "$name" ] && [ "${sv##*.wbox-}" = "$name" ] || { echo "FAIL $v: version names wbox variant ${sv##*.wbox-} but BATMAN_WBOX=[$name]"; return 1; } ;;
+		*) [ -z "$name" ] || { echo "FAIL $v: BATMAN_WBOX=$name but the version does not name it"; return 1; }; return 0 ;; esac
 	case "$name" in misc-*) echo "FAIL $v is a misc-* variant (dry-run only, never installed; §19.3)"; return 1 ;; esac
 	pr_rootfs_cat "$v" usr/sbin/batman-slot | grep -q 'holds a -wbox test image' || { echo "FAIL pre-gate image: $v's batman-slot has no wbox gate"; return 1; }
 	base=${v%.wbox-$name}; [ "$base" != "$v" ] || { echo "FAIL $v does not end in .wbox-$name"; return 1; }
@@ -131,7 +136,10 @@ pr_wbox_checks(){
 	b=""; for c in "$base" "${base%.dirty}"; do [ -f "$PR_OUT/$c/ekh-bcm2711/SHA256SUMS" ] && { b=$c; break; }; done
 	[ -n "$b" ] || { echo "FAIL no normal build $base next to $v (protected-set comparison)"; return 1; }
 	for f in $PROTSET; do
-		a=$(pr_rootfs_cat "$v" "$f" | sha256sum | cut -c1-64); c=$(pr_rootfs_cat "$b" "$f" | sha256sum | cut -c1-64)
+		# each side read in full and non-empty first: two failed reads hash equal (e3b0c442…) — never a pass (r2 A-m3)
+		a=$(set -o pipefail; pr_rootfs_cat "$v" "$f" | sha256sum | cut -c1-64) && c=$(set -o pipefail; pr_rootfs_cat "$b" "$f" | sha256sum | cut -c1-64) \
+			|| { echo "FAIL $v / $b: cannot read the protected $f"; return 1; }
+		case "$a$c" in *e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855*) echo "FAIL $v / $b: the protected $f is empty or missing"; return 1 ;; esac
 		[ "$a" = "$c" ] || { echo "FAIL $v: protected $f differs from the normal build $b"; return 1; }
 	done
 	if [ "$name" != test ]; then
@@ -146,11 +154,11 @@ pr_wbox_checks(){
 }
 
 # ---- OTA into the other slot ----------------------------------------------------------------------------------------
-pr_ota_b(){	# <payload-version> <target-slot> [allow-stale] [nohold]
+pr_ota_b(){	# <payload-version> <target-slot> [nohold]
 	local v=$1 tgt=$2 hold=1 try o s b0 hv
 	shift 2; for o in "$@"; do case "$o" in
 		nohold) [ "$PR_UNIT" = prov-wbox-nocommit-254 ] || { no "nohold is only for prov-wbox-nocommit-254"; return 1; }; hold=0 ;;
-		allow-stale) ;; *) no "pr_ota_b: bad option $o"; return 1 ;; esac; done
+		*) no "pr_ota_b: bad option $o"; return 1 ;; esac; done
 	o=$(pr_payload "$v") || { no "payload $v: $o"; return 1; }
 	pr_payload "$v" >/dev/null
 	o=$(pr_wbox_checks "$v") || { no "$o"; return 1; }; [ -n "$o" ] && { say "$o"; PR_WBOX_VER=$v; }

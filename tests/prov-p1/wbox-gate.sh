@@ -34,7 +34,7 @@ slot_rootdev(){ echo "$G_T/slot$1"; }
 mount(){ local _d _s; eval "_d=\${$#}; _s=\${$(($# - 1))}"; [ "$G_MOUNTFAIL" = 1 ] && return 32; cp -a "$_s"/. "$_d"/; }
 umount(){ rm -rf "${1:?}"/* "${1:?}"/.[!.]* 2>/dev/null; }
 STUBS
-# stamp <dir> <kind>: release | wbox | wboxempty | wboxonly | veronly | nover | absent | symlink
+# stamp <dir> <kind>: release | wbox | wboxempty | wboxonly | veronly | nover | absent | symlink | etclink
 stamp(){ rm -rf "$1"; mkdir -p "$1/etc"; case "$2" in
 	release)   printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb\nBATMAN_BOARD=ekh-bcm2711\n' > "$1/etc/batman-build" ;;
 	wbox)      printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb.dirty.wbox-96-noprov\nBATMAN_WBOX=96-noprov\n' > "$1/etc/batman-build" ;;
@@ -43,6 +43,7 @@ stamp(){ rm -rf "$1"; mkdir -p "$1/etc"; case "$2" in
 	nover)     printf 'BATMAN_BOARD=ekh-bcm2711\n' > "$1/etc/batman-build" ;;
 	wboxonly)  printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb\nBATMAN_WBOX=helper-flap\n' > "$1/etc/batman-build" ;;   # the name only (review B-m1)
 	symlink)   printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb\n' > "$T/elsewhere"; ln -s "$T/elsewhere" "$1/etc/batman-build" ;;   # review A-m4
+	etclink)   rmdir "$1/etc"; mkdir -p "$T/etc-elsewhere"; printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb\n' > "$T/etc-elsewhere/batman-build"; ln -s "$T/etc-elsewhere" "$1/etc" ;;   # review r2 A-m2
 	absent)    ;;
 esac; }
 slot(){ # $1 self|target, [$2 mountfail]
@@ -54,10 +55,10 @@ died(){ [ "$RC" != 0 ] && grep -q "^DIE .*$1" "$T/log" && ! grep -q '^PASSED$' "
 noleft(){ ! ls -d "$T"/.rbwbox.* >/dev/null 2>&1; }
 for k in release wboxempty; do stamp "$T/rom" $k; slot self; expect "commit: $k stamp -> allowed" passed; done
 for k in wbox veronly wboxonly; do stamp "$T/rom" $k; slot self; expect "commit: $k stamp -> refused (never committed)" "died 'never committed'"; done
-for k in nover absent symlink; do stamp "$T/rom" $k; slot self; expect "commit: $k stamp -> refused (unreadable)" "died 'build stamp is unreadable'"; done
+for k in nover absent symlink etclink; do stamp "$T/rom" $k; slot self; expect "commit: $k stamp -> refused (unreadable)" "died 'build stamp is unreadable'"; done
 for k in release wboxempty; do stamp "$T/slotB" $k; slot target; expect "rollback: target $k -> allowed, gate logged, no temp dir left" "passed && grep -q 'ROLLBACK-WBOX-GATE target=B ok=1' $T/log && noleft"; done
 for k in wbox veronly wboxonly; do stamp "$T/slotB" $k; slot target; expect "rollback: target $k -> refused (holds a -wbox test image), no temp dir left" "died 'holds a -wbox test image' && noleft"; done
-for k in nover absent symlink; do stamp "$T/slotB" $k; slot target; expect "rollback: target $k -> refused (unreadable, NOT the wbox message)" "died 'build stamp unreadable' && ! grep -q 'holds a -wbox' $T/log && noleft"; done
+for k in nover absent symlink etclink; do stamp "$T/slotB" $k; slot target; expect "rollback: target $k -> refused (unreadable, NOT the wbox message)" "died 'build stamp unreadable' && ! grep -q 'holds a -wbox' $T/log && noleft"; done
 stamp "$T/slotB" release; slot target 1; expect "rollback: target squashfs cannot be mounted -> refused (unreadable)" "died 'build stamp unreadable' && noleft"
 
 # ---------- batman-autocommit ----------
@@ -65,7 +66,7 @@ st=$(awk '/^WBOX_STATE=release$/,/^fi$/' "$AC")
 cases=$((cases+1)); [ -n "$st" ] && ok "autocommit has the WBOX_STATE block" || no "autocommit: WBOX_STATE block missing"
 echo "$st" | sed "s#/rom/etc/batman-build#$T/rom/etc/batman-build#g" > "$T/acstate.sh"
 acstate(){ stamp "$T/rom" "$1"; env -i PATH=/usr/bin:/bin $SH -c '. "$0"; echo "$WBOX_STATE"' "$T/acstate.sh" 2>/dev/null; }
-for kv in release:release wboxempty:release wbox:wbox:96-noprov veronly:wbox: wboxonly:wbox:helper-flap nover:unreadable absent:unreadable symlink:unreadable; do
+for kv in release:release wboxempty:release wbox:wbox:96-noprov veronly:wbox: wboxonly:wbox:helper-flap nover:unreadable absent:unreadable symlink:unreadable etclink:unreadable; do
 	k=${kv%%:*}; want=${kv#*:}; got=$(acstate "$k"); : > "$T/log"; echo "got=$got want=$want" > "$T/log"
 	expect "autocommit WBOX_STATE: $k -> $want" "[ \"$got\" = \"$want\" ]"
 done

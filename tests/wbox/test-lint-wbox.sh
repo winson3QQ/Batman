@@ -68,7 +68,7 @@ R=$(mkrepo prot5); prot $R; mkpatch $R ucib "x" WBOX-ucib-2e2e2e2e ucibootf $R; 
 R=$(mkrepo prot6); prot $R; mkpatch $R misc-gate "x" WBOX-misc-gate-2f2f2f2f miscgate $R; lst "test prov_test helper" "misc-gate release same"; want "removes / changes / adds a wbox-gate line" "misc-* removes the WBOX_STATE line"
 R=$(mkrepo prot7); prot $R; mkpatch $R misc-syn "x" WBOX-misc-syn-3a3a3a3a miscsyn $R; lst "test prov_test helper" "misc-syn release same"; want "does not parse in busybox sh" "a line inserted after ';;' (busybox sh -n)"
 R=$(mkrepo nobb); prot $R; mkpatch $R misc-ok "x" WBOX-misc-ok-2b2b2b2b miscok $R; lst "test prov_test helper" "misc-ok release same"
-mkdir -p $T/nobb; for d in /usr/local/bin /usr/bin /bin; do for c in $d/*; do b=${c##*/}; [ "$b" = busybox ] || [ -e $T/nobb/$b ] || ln -s $c $T/nobb/$b; done; done
+mkdir -p $T/nobb; for d in /usr/local/bin /usr/bin /bin; do for c in "$d"/*; do [ -e "$c" ] || continue; b=${c##*/}; [ "$b" = busybox ] || [ -e "$T/nobb/$b" ] || ln -s "$c" "$T/nobb/$b"; done; done
 out=$(PATH=$T/nobb bash $L $R 2>&1); rc=$?; [ $rc != 0 ] && case "$out" in *"no busybox"*) true ;; *) false ;; esac && { pass=$((pass+1)); echo "ok   no busybox on the host -> FAIL"; } || { bad=$((bad+1)); echo "BAD  no busybox: rc=$rc $out"; }
 # review A-m2: a misc patch that ADDS a WBOX_STATE override, and one that disables the stamp detection (_wf)
 miscadd(){ sed -i 's/^log "start"$/log "start"\nWBOX_STATE=release # WBOX-misc-add-3b3b3b3b/' $1/feed/batman-provision/files/usr/bin/batman-autocommit; }
