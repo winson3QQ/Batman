@@ -511,14 +511,14 @@ func (n *Node) claimVerify(rec *provstore.Record, a cbor.Map) (cbor.Map, *Error)
 	next.ClaimedCounter = rec.ClaimedCounter + 1
 	next.Owners = []provstore.Owner{{Pub: ownerPub, EncPub: encPub, TagKey: tag}}
 	next.AdvOwnerKey = adv
-	if err := n.commitTxn(&next, "", "claim-after-persist"); err != nil { // = commit + its killpoint
+	if err := n.commitTxn(&next, "", seam.ClaimAfterPersist); err != nil { // = commit + its killpoint
 		return nil, err
 	}
 	// committed: p6 last_known_state follows at once, so batman-prov-lock locks on any slot even if p5 is unreadable
 	if err := n.Sys.SetLastKnown(string(provstore.Claimed)); err != nil {
 		n.Log("claim: p6 last_known_state not updated: %v", err)
 	}
-	seam.At("claim-before-shadow", n.Log) // claimed in p5 + overlay + p6, not locked, no shadow-root
+	seam.At(seam.ClaimBeforeShadow, n.Log) // claimed in p5 + overlay + p6, not locked, no shadow-root
 	// §6.1 step 4 (claim-lock fix §5.3): lock, hash last, --save; the password only once p5 holds it
 	if e := n.setPassword(pw, ELockIncomplete); e != nil {
 		n.Log("claim committed, lock / save incomplete (%s): the owner recovers with claim/replay", e.Reason)
@@ -1108,23 +1108,23 @@ func (n *Node) applyNet(rec *provstore.Record, p *parsedNet, verb string) (cbor.
 	if err := provstore.WriteTxn(n.P, token, rec.Generation, next.Generation, verb, pk, pid, pch); err != nil {
 		return nil, fail(EApply, "txn: %v", err)
 	}
-	seam.At("txn-1", n.Log) // markers + .txn written, wireless untouched
+	seam.At(seam.Txn1, n.Log) // markers + .txn written, wireless untouched
 	// step 2: the fallible side effect
 	if err := n.Sys.SetKeyNoPersist(p.sae, p.meshID, p.channel); err != nil {
 		provstore.RemoveTxn(n.P)
 		return nil, fail(EApply, "setkey: %v", err)
 	}
-	seam.At("txn-2", n.Log) // wireless changed (not persisted), p5 not yet
+	seam.At(seam.Txn2, n.Log) // wireless changed (not persisted), p5 not yet
 	// step 3-4: persist then rename the overlay record (commit point = p5 prov.meta)
-	if err := n.commitTxn(&next, token, "txn-3"); err != nil {
+	if err := n.commitTxn(&next, token, seam.Txn3); err != nil {
 		return nil, err
 	}
 	provstore.RemoveTxn(n.P)
-	seam.At("txn-4", n.Log) // p5 + overlay committed, .txn gone, --save not done
+	seam.At(seam.Txn4, n.Log) // p5 + overlay committed, .txn gone, --save not done
 	// step 5
 	if rc, out := n.Sys.Save(); rc != 0 && rc != 6 {
 		n.Log("%s: --save rc=%d (%s) — the next boot's --check reports it", verb, rc, strings.TrimSpace(out))
 	}
-	seam.At("txn-5", n.Log) // everything written, the reply not sent
+	seam.At(seam.Txn5, n.Log) // everything written, the reply not sent
 	return cbor.M(1, p.version), nil
 }

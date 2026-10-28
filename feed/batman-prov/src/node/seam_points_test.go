@@ -189,3 +189,15 @@ func TestKillpointsNotOnOtherPaths(t *testing.T) {
 		restore()
 	}
 }
+
+// txn-3 fires also when --prov-only fails AFTER p5 was written: commitTxn reads the generation back, finds it
+// committed, and goes on (§16.5) — r2 B-m1.
+func TestKillpointTxn3AfterLateProvOnlyFailure(t *testing.T) {
+	r := claimedRig(t)
+	b := r.snap()
+	r.sys.persistLateRC = 5
+	s := stopAt(t, r, "txn-3", func() { r.join() })
+	if s.persisted != b.persisted+1 || r.sys.persisted[len(r.sys.persisted)-1] != b.gen+1 || s.gen != b.gen || !s.txn {
+		t.Fatalf("txn-3 after a late --prov-only failure: %+v (before %+v)", s, b)
+	}
+}

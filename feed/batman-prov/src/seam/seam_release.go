@@ -14,4 +14,4 @@ const Enabled = false
 func Arm(func(string, ...any)) {}
 
 // At does nothing in a release build.
-func At(string, func(string, ...any)) {}
+func At(Point, func(string, ...any)) {}

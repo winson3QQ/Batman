@@ -22,7 +22,7 @@ func TestReleaseIsANoOp(t *testing.T) {
 	var lines []string
 	logf := func(string, ...any) { lines = append(lines, "x") }
 	Arm(logf)
-	At("txn-1", logf)
+	At(Txn1, logf)
 	if len(lines) != 0 {
 		t.Fatalf("release build logged %d lines", len(lines))
 	}

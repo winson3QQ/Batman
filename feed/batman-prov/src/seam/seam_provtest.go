@@ -1,18 +1,20 @@
 //go:build prov_test
 
-// Package seam holds the test-only seams of batman-provhelper (docs/design/254-h23-harness.md §4.1, §15).
+// Package seam holds the test-only seams of batman-provhelper (docs/design/254-h23-harness.md §4.1, §15, §16).
 // This file is compiled ONLY with -tags prov_test; the release build gets seam_release.go, which has no strings.
 //
 // Killpoint file: /tmp/run/batman-prov-test/killpoint, one line = one point name. The daemon reads it once at start
-// (Arm), deletes it, and from then on the matching At(name) call reboots the node at once with sysrq "b" — no sync,
+// (Arm), deletes it, and from then on the matching At(point) call reboots the node at once with sysrq "b" — no sync,
 // no unmount: the closest the harness gets to pulling the power at that point of a transaction.
 //
-// The "sysrq reboot" line is logged but is NOT expected to reach the host: the node dies microseconds later, with the
-// line still in RAM. The harness judges a killpoint by the "armed" line (logged at daemon start), the file being gone,
-// a new boot_id and the on-disk state of that point (§4.1.1); a "fallback" line means sysrq did not work = FAIL.
+// The syslog "sysrq reboot" line is NOT expected to reach the host: the node dies microseconds later with it still in
+// RAM. The same line goes to /dev/kmsg first, so a console capture (ramoops) carries it over the reboot, and the
+// kernel's own "sysrq: " line makes the next boot-reasons record say "hints: sysrq". The harness judges a killpoint by
+// §16.1 (armed line, no reply, boot_id, the state of that point, boot-reasons); a "fallback" line = sysrq did not work.
 package seam
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -33,32 +35,72 @@ const Enabled = true
 // ONE literal (a concatenated string is not in .rodata as such — §15.1).
 const armedFmt = "killpoint %s: armed"
 
+// maxFile bounds the killpoint file: a point name, a newline, nothing else.
+const maxFile = 64
+
 // Dir is the killpoint directory (root 0700). A var only so the unit tests can point it at a temp dir.
 var Dir = "/tmp/run/batman-prov-test"
 
 // wantUID is the required owner of the dir and the file. Tests set it to their own euid.
 var wantUID = 0
 
-// names is the closed list of points (§4.1.1). Anything else in the file is ignored.
-var names = map[string]bool{
-	"txn-1": true, "txn-2": true, "txn-3": true, "txn-4": true, "txn-5": true,
-	"claim-after-persist": true, "claim-before-shadow": true,
+// names is the closed list of points (§4.1.1) by the name the killpoint file uses.
+var names = map[string]Point{
+	"txn-1": Txn1, "txn-2": Txn2, "txn-3": Txn3, "txn-4": Txn4, "txn-5": Txn5,
+	"claim-after-persist": ClaimAfterPersist, "claim-before-shadow": ClaimBeforeShadow,
 }
 
-var armed string
+func nameOf(p Point) string {
+	for n, q := range names {
+		if q == p {
+			return n
+		}
+	}
+	return fmt.Sprintf("point-%d", p)
+}
 
-// reboot is the action at an armed point; tests replace it (ArmForTest).
-var reboot = func(name string, logf func(string, ...any)) {
-	logf("killpoint %s: sysrq reboot", name)
-	if f, err := os.OpenFile("/proc/sysrq-trigger", os.O_WRONLY, 0); err == nil {
-		f.Write([]byte("b"))
+var armed Point
+
+// kmsg writes one line to the kernel log: it is in the console (and so in a ramoops console capture) at once.
+func kmsg(s string) {
+	if f, err := os.OpenFile(kmsgPath, os.O_WRONLY|os.O_APPEND, 0); err == nil {
+		f.Write([]byte("<4>batman-provhelper: " + s + "\n"))
 		f.Close()
 	}
+}
+
+// The paths, the wait and the fallback are vars only so the unit tests can run fire() without rebooting the host.
+var (
+	kmsgPath  = "/dev/kmsg"
+	sysrqPath = "/proc/sysrq-trigger"
+	settle    = 2 * time.Second
+	fallback  = func() error { syscall.Sync(); return exec.Command("reboot", "-f").Run() }
+)
+
+// reboot is the action at an armed point; ArmForTest replaces it.
+var reboot = fire
+
+// fire: log + kmsg, sysrq "b"; still alive after settle → log + kmsg the fallback, reboot -f; never returns.
+func fire(name string, logf func(string, ...any)) {
+	m := fmt.Sprintf("killpoint %s: sysrq reboot", name)
+	logf("%s", m)
+	kmsg(m)
+	f, err := os.OpenFile(sysrqPath, os.O_WRONLY, 0)
+	if err == nil {
+		_, err = f.Write([]byte("b"))
+		f.Close()
+	}
+	if err != nil {
+		m = fmt.Sprintf("killpoint %s: sysrq write failed: %v", name, err)
+		logf("%s", m)
+		kmsg(m)
+	}
 	// still alive: sysrq unavailable (/proc read-only, no sysrq support) — fall back, and say so
-	time.Sleep(2 * time.Second)
-	logf("killpoint %s: fallback reboot -f", name)
-	syscall.Sync()
-	err := exec.Command("reboot", "-f").Run()
+	time.Sleep(settle)
+	m = fmt.Sprintf("killpoint %s: fallback reboot -f", name)
+	logf("%s", m)
+	kmsg(m)
+	err = fallback()
 	time.Sleep(5 * time.Second)
 	logf("killpoint %s: reboot did not happen (%v); stopping here", name, err)
 	select {}
@@ -91,9 +133,10 @@ func check(p string, fi os.FileInfo, dir bool, perm os.FileMode) (string, bool) 
 }
 
 // Arm reads and deletes the killpoint file. Absent file = nothing armed, no log line.
-// The file is opened once with O_NOFOLLOW and checked on that descriptor (fstat), so what is checked is what is read.
+// The dir is checked first (Lstat); an untrusted dir is not even unlinked in. The file is opened once with O_NOFOLLOW
+// and checked on that descriptor (fstat), so what is checked is what is read.
 func Arm(logf func(string, ...any)) {
-	armed = ""
+	armed = None
 	f := filepath.Join(Dir, "killpoint")
 	if _, err := os.Lstat(f); err != nil {
 		return
@@ -121,23 +164,28 @@ func Arm(logf func(string, ...any)) {
 		refuse(logf, why)
 		return
 	}
-	b, err := io.ReadAll(io.LimitReader(fd, 64))
+	b, err := io.ReadAll(io.LimitReader(fd, maxFile+1))
 	if err != nil {
 		refuse(logf, err.Error())
 		return
 	}
+	if len(b) > maxFile {
+		refuse(logf, "killpoint file longer than 64 bytes")
+		return
+	}
 	name := strings.TrimSpace(string(b))
-	if !names[name] {
+	p, ok := names[name]
+	if !ok {
 		refuse(logf, "unknown point "+name)
 		return
 	}
-	armed = name
+	armed = p
 	logf(armedFmt, name)
 }
 
 // At fires the armed point. Called on every transaction path; a no-op unless this exact point is armed.
-func At(name string, logf func(string, ...any)) {
-	if armed != "" && armed == name {
-		reboot(name, logf)
+func At(p Point, logf func(string, ...any)) {
+	if armed != None && armed == p {
+		reboot(nameOf(p), logf)
 	}
 }

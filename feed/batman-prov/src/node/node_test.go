@@ -27,6 +27,7 @@ type fakeSys struct {
 	now            time.Time
 	setkeys        []string
 	persistRC      int
+	persistLateRC  int // Persist writes p5, then returns this rc (commitTxn reads the generation back)
 	// claim-lock fix (§5.3) fault seams
 	root       string   // root's live shadow field
 	lockErr    error    // ApplyLock fails (doors first, hash last: root unchanged except "" -> "!")
@@ -54,6 +55,9 @@ func (f *fakeSys) Persist(r, m, id, txn string) (int, string) {
 	os.WriteFile(filepath.Join(f.p5, "prov.meta"), b, 0o600)
 	mm, _ := provstore.ParseMeta(b)
 	f.persisted = append(f.persisted, mm.Gen)
+	if f.persistLateRC != 0 {
+		return f.persistLateRC, "late failure"
+	}
 	return 0, ""
 }
 func (f *fakeSys) GetP5(dir string) (int, string) {

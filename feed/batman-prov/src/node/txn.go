@@ -11,11 +11,11 @@ import (
 
 // commit persists a new record to p5 and then the overlay (no wireless side effect: claim, owners, ssh keys, leave).
 func (n *Node) commit(next *provstore.Record, what string) *Error {
-	return n.commitTxn(next, "", "") // no killpoint: only claimVerify and applyNet name one (254-h23 §4.1.1)
+	return n.commitTxn(next, "", seam.None) // no killpoint: only claimVerify and applyNet name one (254-h23 §4.1.1)
 }
 
 // commitTxn = §4.4 steps 3–4: stage, --prov-only, on rc != 0 read the generation back to decide, then the overlay.
-func (n *Node) commitTxn(next *provstore.Record, token, afterPersist string) *Error {
+func (n *Node) commitTxn(next *provstore.Record, token string, afterPersist seam.Point) *Error {
 	stage := n.P.Stage()
 	os.RemoveAll(stage)
 	if err := os.MkdirAll(stage, 0o700); err != nil {
