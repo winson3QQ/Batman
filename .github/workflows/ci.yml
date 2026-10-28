@@ -84,6 +84,15 @@ jobs:
         with:
           go-version: '1.26'
       - run: cd feed/batman-prov/src && GOFLAGS=-mod=vendor GOTOOLCHAIN=local go vet ./... && GOFLAGS=-mod=vendor GOTOOLCHAIN=local go test ./...
+      # the prov_test seams (killpoints, version marker) and the root-only sock tests (SO_PEERCRED, socket-dir chown):
+      # without the tag and root they never ran in CI (they t.Skip). Any SKIP here is a FAIL (254-h23 §23.9 gap review).
+      - name: "#254 P1 Go unit tests as root with -tags prov_test (seams, sock)"
+        run: |
+          cd feed/batman-prov/src
+          o=$(sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root GOFLAGS=-mod=vendor GOTOOLCHAIN=local go test -count=1 -v -tags prov_test ./... 2>&1); rc=$?
+          echo "$o" | grep -E '^(--- (FAIL|SKIP)|ok|FAIL|panic)'
+          [ $rc = 0 ] || exit 1
+          ! echo "$o" | grep -q -- '--- SKIP' || { echo '::error::a Go test skipped under root + prov_test'; exit 1; }
       - name: "#254 claim-lock fix stub tests (no root): prov_apply_lock, prov_root_hash_ok, S13 batman-prov-lock, rollback lock gate, cross-file lints"
         run: |
           F=feed/batman-provision/files
