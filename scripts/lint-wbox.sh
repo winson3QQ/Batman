@@ -19,7 +19,8 @@ set -u
 R=$(cd "${1:-$(dirname "$0")/..}" && pwd)
 D=$R/tests/wbox
 bad=0; n=0
-PROT="usr/sbin/batman-slot usr/bin/batman-autocommit etc/init.d/batman-autocommit usr/lib/batman/otatrace.sh usr/lib/batman/rundir.sh usr/lib/batman/bootfacts.sh usr/lib/batman/meshjoin.sh"
+PROT=$(grep -v '^#' "$(dirname "$0")/lib/protected-set.txt" | tr '\n' ' ')   # the one list (review A-m7)
+[ -n "${PROT// /}" ] || { echo "lint-wbox: FAIL: empty scripts/lib/protected-set.txt"; exit 1; }
 GATEPAT='wbox_stamp|wbox_gate_|WBOX_STATE|WBOX-NOCOMMIT|STAMP-UNREADABLE|holds a -wbox test image|wbox test image|(^|[^A-Za-z0-9_])_wf([^A-Za-z0-9_]|$)'
 say(){ echo "lint-wbox: $*"; }
 err(){ say "FAIL: $*"; bad=$((bad+1)); }

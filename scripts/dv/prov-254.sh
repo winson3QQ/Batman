@@ -129,7 +129,8 @@ pr_payload(){
 pr_rootfs_cat(){ wsl_ bash "$REPO_WSL/scripts/dv/wsl-rootfs.sh" cat "$PR_OUT_WSL/$1/ekh-bcm2711/batman-$1-ekh-bcm2711-ab-payload.tar.gz" "$2"; }
 # pr_wbox_checks <version>: a -wbox payload is pushed only when it carries the product gate, its own witness, and the
 # protected set (the slot decision code) byte-equal to the normal build of the same rc (254-h23 §19.3, §22.4)
-PROTSET="usr/sbin/batman-slot usr/bin/batman-autocommit etc/init.d/batman-autocommit usr/lib/batman/otatrace.sh usr/lib/batman/rundir.sh usr/lib/batman/bootfacts.sh usr/lib/batman/meshjoin.sh"
+PROTSET=$(grep -v '^#' "$REPO/scripts/lib/protected-set.txt" | tr '\n' ' ')   # the one list (review A-m7)
+[ -n "${PROTSET// /}" ] || { echo "FAIL no protected set in $REPO/scripts/lib/protected-set.txt (the guards would check nothing)"; exit 2; }
 pr_wbox_checks(){
 	local v=$1 name base f a b c wit files n=0 sv
 	# the product's rule (batman-slot wbox_stamp): BATMAN_WBOX=<x> OR a version naming .wbox- is a wbox image; the two
@@ -166,7 +167,7 @@ pr_wbox_checks(){
 # the protected set = scripts/lint-wbox.sh PROT: what decides the default slot. In a trial none of it may sit in the
 # overlay upper (a uci-defaults / init mutant running as root at first boot could rewrite the gate there), and
 # /boot/autoboot.txt may only change by batman-slot itself (back_to_a's rollback) — its mtime is taken at landing.
-PROT_NODE="usr/sbin/batman-slot usr/bin/batman-autocommit etc/init.d/batman-autocommit usr/lib/batman/otatrace.sh usr/lib/batman/rundir.sh usr/lib/batman/bootfacts.sh usr/lib/batman/meshjoin.sh"
+PROT_NODE=$(grep -v '^#' "$REPO/scripts/lib/protected-set.txt" | tr '\n' ' ')   # the one list (review A-m7)
 PR_AB_MT=""
 pr_trial_guard(){
 	local o b
