@@ -33,6 +33,7 @@ else echo "FAIL prov-p1-stubs: product in this checkout predates the claim-lock 
 if [ "$(id -u)" = 0 ] && command -v losetup >/dev/null 2>&1; then
 	for t in cfgsave-identity-freeze cfgsave-frozen-nomount cfgsave-provget-rc10; do PROV_SRC=$REPO/$F stub 'FAIL=0|PASS$' $t "$F/usr/bin/batman-config-save"; done
 	stub 'fails=0$' prov-base-statecmp scripts/node/prov-base-254.sh
+	stub 'fails=0$' prov-base-stateset scripts/node/prov-base-254.sh
 	stub 'fails=0$' batman-slot-stage-root "$F/usr/sbin/batman-slot" "$F/usr/lib/batman/prov-lock.sh"
 else echo "note: loop-device tests (config-save, prov-base compare, stage-root) skipped here — need root + losetup (CI prov-p1 / ab-card run them)"; fi
 echo "PROV-P1-STUBS stubs=$n fails=$([ $r = 0 ] && echo 0 || echo some)"; [ "$n" -gt 0 ] && [ $r = 0 ]

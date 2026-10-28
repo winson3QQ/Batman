@@ -78,6 +78,7 @@ jobs:
           sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-frozen-nomount.sh $F/usr/bin/batman-config-save
           sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-provget-rc10.sh $F/usr/bin/batman-config-save
           sudo bash tests/prov-p1/prov-base-statecmp.sh scripts/node/prov-base-254.sh
+          sudo bash tests/prov-p1/prov-base-stateset.sh scripts/node/prov-base-254.sh
       - name: "#254 P1 Go unit tests (batman-prov helper)"
         uses: actions/setup-go@v5
         with:

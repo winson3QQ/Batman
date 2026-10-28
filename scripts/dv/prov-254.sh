@@ -504,6 +504,44 @@ pr_member(){
 # once at its start)
 pr_trial_line(){ local t=0 r; while [ $t -lt "${2:-30}" ]; do r=$(qr "logread | grep -m1 -E '$1'"); [ -n "$r" ] && { echo "$r"; return 0; }; sleep 10; t=$((t + 1)); done; return 1; }
 
+# ---- pr_normalise (254-h23 §4.4 "pr_normalise", head of the prov block) ----------------------------------------------
+# <V>: 04 committed on A with version V before the first unit. A committed on V, no wbox, no bad-slot -> no-op. B
+# committed on V, no wbox, no bad-slot, 02 a neighbour (04's A trial may need the mesh, v4 A-m6) -> lease 1800 s + p6
+# dv-prov-normalising -> OTA V into A (hold) -> HELD -> `batman-autocommit release --wait` -> A committed -> marker
+# removed. Anything else -> NEEDS-PERSON. Interrupted: the marker stays and the next P9 FAILs with the clean-up.
+pr_normalise(){
+	local v=$1 s o
+	s=$(qr "$ST"); say "normalise: $s"
+	[ -n "$s" ] || { no "normalise: $NODE unreachable"; return 1; }
+	case "$(field "$s" ver)" in *.wbox-*) pr_needs_person "normalise: 04 runs a wbox build ($(field "$s" ver))"; return 1 ;; esac
+	[ "$(field "$s" ver)" = "$v" ] || { no "normalise: 04 runs $(field "$s" ver), not V = $v (upgrade the fleet first)"; return 1; }
+	[ "$(field "$s" badslot)" = "[]" ] || { pr_needs_person "normalise: bad-slot $(field "$s" badslot)"; return 1; }
+	[ "$(field "$s" trial_rc)" = 1 ] || { pr_needs_person "normalise: 04 is in an uncommitted trial"; return 1; }
+	o=$(qr 'cat /opt/batdata/state/dv-prov-normalising /opt/batdata/state/dv-prov-dirty 2>/dev/null')
+	[ -z "$o" ] || { no "normalise: a marker is left on 04 [$o] (preflight P9 prints the clean-up)"; return 1; }
+	case "$(field "$s" slot)" in
+		A) ok "normalise: no-op (A committed on V)"; return 0 ;;
+		B) ;;
+		*) pr_needs_person "normalise: active slot [$(field "$s" slot)]"; return 1 ;;
+	esac
+	qr 'batctl n 2>/dev/null | tail -n +3 | grep -q .' || { no "normalise: 02 is not a neighbour of 04 (the A trial could need it)"; return 1; }
+	pr_lock; PR_BEGUN=1; PR_SNAPPED=0; trap 'pr_on_exit' EXIT; trap 'say "host interrupted"; exit 130' INT TERM
+	PR_V=$v; PR_DEADLINE=$(( $(mono) + 1800 ))
+	o=$(pr_acquire 1800) || { echo "$o"; no "normalise: lease"; return 1; }; echo "$o"
+	o=$(pl normalising set); grep -q 'NORMALISING set' <<< "$o" || { no "normalise: marker: $o"; return 1; }
+	pr_ota_b "$v" A || { pr_needs_person "normalise: OTA V into A failed (marker dv-prov-normalising kept)"; return 1; }
+	pr_lease_renew +900 || return 1
+	pr_wait_held 480 || { pr_needs_person "normalise: the A trial is not HELD by uptime 480 s"; return 1; }
+	o=$(q 'batman-autocommit release --wait 2>&1 | tail -1'); say "release: $o"
+	s=$(qr "$ST")
+	[ "$(field "$s" slot)" = A ] && [ "$(field "$s" trial_rc)" = 1 ] && [ "$(field "$s" ver)" = "$v" ] \
+		|| { pr_needs_person "normalise: not A committed on V after the release ($s)"; return 1; }
+	q "rm -f $HOLDF; sync"
+	o=$(pl normalising clear); grep -q 'NORMALISING clear' <<< "$o" || { no "normalise: marker clear: $o"; return 1; }
+	ok "normalise: 04 A committed on V ($s)"
+	return 0
+}
+
 # ---- killpoints (254-h23 §4.1.1, §16.1) -------------------------------------------------------------------------------
 # pr_killpoint <point> <provclient op args...>: the test helper bound with the point armed -> the op (the owner signs) ->
 # the node must die mid-transaction by sysrq "b". Judged by §16.1: (a) armed + file consumed (push-helper asserts it),

@@ -10,6 +10,7 @@
 #   p5-restore <run>    dd the p5 image back under the config-save lock, verify sha uncached
 #   overlay-restore <run> write the snapshot tar over the live upper, delete extras, restore p6 state
 #   strip-p5-prov <run> (prov-legacy-upgrade only) delete p5 prov.* and identity/prov, the rest unchanged (§4.5.6)
+#   state-set <run> ble-ok present|absent  (autocommit (8) only) helper stopped or in a trial; the snapshot restores it
 #   finish <run>        after a passing compare: print and remove snapshot, marker, dirty flag
 # PROV_BASE_SKIP=p5 | extra (the prov-base-254 unit's negative controls only, 254-h23 §6.2): p5-restore writes
 # nothing / overlay-restore keeps the extras; each prints a SKIP line, and the following compare must FAIL.
@@ -247,10 +248,27 @@ strip-p5-prov)
 	[ "$af" = "$b4" ] || die "the strip changed other p5 entries"
 	say "STRIPPED $RUN (prov.* and identity/prov gone, $(echo "$b4" | wc -l) other entries unchanged)"
 	;;
+state-set)
+	# autocommit (8) only (254-h23 §4.4 p6 ble-ok row): set or drop a p6 state file the harness may steer. Only inside a
+	# unit (the snapshot puts it back) and only where nothing writes it back: the helper writes ble-ok on a committed
+	# slot (F14), so there it must be stopped first; a trial never writes it.
+	[ -d "$D" ] || die "no snapshot (state-set only inside a unit)"
+	f=${3:-}; v=${4:-}
+	case "$f" in ble-ok) ;; *) die "state-set: $f is not settable" ;; esac
+	if batman-slot is-trial >/dev/null 2>&1; then :
+	elif pidof batman-provhelper >/dev/null 2>&1; then die "state-set: the helper runs on a committed slot (it would write $f back) — stop it first"; fi
+	case "$v" in
+	absent) rm -f "$ST/$f" ;;
+	present) cat /proc/sys/kernel/random/boot_id > "$ST/$f.dv" && mv "$ST/$f.dv" "$ST/$f" ;;
+	*) die "state-set: value must be present|absent" ;;
+	esac
+	sync; [ "$v" = absent ] && [ -e "$ST/$f" ] && die "state-set: $f still there"
+	say "STATE-SET $f=$v"
+	;;
 finish)
 	[ -d "$D" ] || die "no snapshot"
 	echo "removing: $(ls "$D" | tr '\n' ' ') $MARK $DIRTY"
 	rm -rf "$D"; rm -f "$MARK" "$DIRTY"; sync; say "FINISHED $RUN"
 	;;
-*) echo "usage: prov-base-254.sh snap|manifest|compare|p5-restore|overlay-restore|strip-p5-prov|finish <run_id> [tag]"; exit 2 ;;
+*) echo "usage: prov-base-254.sh snap|manifest|compare|p5-restore|overlay-restore|strip-p5-prov|state-set|finish <run_id> [tag]"; exit 2 ;;
 esac
