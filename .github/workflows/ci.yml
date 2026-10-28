@@ -29,6 +29,8 @@ jobs:
         run: bash tests/prov-p1/p9-judge.sh scripts/node/prov-p9-254.sh
       - name: "#254 -wbox variants well formed (scope, protected set, witness, sh -n, nohold, helpers.list) — lint-wbox + its negative self-test"
         run: bash scripts/lint-wbox.sh && bash tests/wbox/test-lint-wbox.sh
+      - name: "#254 lint-install — every feed/batman-provision file has exactly one Makefile install line (+ its negative self-test)"
+        run: bash scripts/lint-install.sh . && bash tests/prov-p1/test-lint-install.sh .
       - name: line-endings must be LF
         run: |
           if grep -rlIP '\r$' --include='*.sh' --include='*.py' .; then
@@ -120,6 +122,23 @@ jobs:
           F=feed/batman-provision/files
           # harness lands first (#290): on a product without the fix the L44 branch FAILs — red on purpose (KNOWN #254)
           sudo bash tests/prov-p1/batman-slot-stage-root.sh $F/usr/sbin/batman-slot $F/usr/lib/batman/prov-lock.sh
+
+  dv-sbx:
+    # 254-h23 §4.4 / p1-impl §4.10, §5.1: the provisioning sandbox — root on a native arm64 runner (unshare + capsh +
+    # chroot into the pinned base rootfs with this checkout's product laid over it). Its own escape negatives first, then
+    # prov-unit-96 and the four mutants that must FAIL. On a pre-P1b product (no prov_test seams) it is red with that
+    # message (stricter than §4.4's continue-on-error: nothing is hidden).
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools libcap2-bin e2fsprogs
+      - name: "dv-sbx: escape negatives, prov-unit-96 (104 cases) + mutants meta-bad-unlock / p6-unlock / devopen-exempt / skip-decision"
+        run: sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root bash scripts/dv-sbx.sh --go "$(command -v go)" escape 96 96:meta-bad-unlock 96:p6-unlock 96:devopen-exempt 96:skip-decision
 
   security:
     runs-on: ubuntu-latest
