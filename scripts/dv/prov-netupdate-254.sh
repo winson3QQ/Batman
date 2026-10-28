@@ -68,7 +68,7 @@ txn3(){
 	w=$(( 150 - $(qr 'cut -d. -f1 /proc/uptime') )); [ $w -gt 0 ] && { say "waiting ${w}s"; sleep $w; }
 	l=$(qr "logread | grep 'batman-provhelper' | grep -E 'action=txn' | tail -2"); echo "$l" | sed 's/^/    /'
 	grep -q 'action=txn .*committed (gen [0-9]*): overlay completed from p5' <<< "$l" && ok "txn-3: overlay completed from p5" || no "txn-3: no 'overlay completed from p5'"
-	pr_pc_place || return 1
+	# (pr_killpoint already re-placed provclient after the reboot — a second placement refuses: run 2, 2026-10-28)
 	i=$(pr_info); case " $i " in *" state=member "*) ok "txn-3 + tick: state member (L25 final state, p1-impl §10.4)";; *) no "txn-3 + tick: $i";; esac
 	m=$(qr "$MESHID"); [ "$m" = "$NEW" ] && ok "txn-3: wireless == the update ($m)" || no "txn-3: mesh_id $m (want $NEW)"
 	c=$(qr 'batman-config-save --check >/dev/null 2>&1; echo rc=$?'); say "--check after: $c (5 = the F39 overrides lag, product checklist #254)"
