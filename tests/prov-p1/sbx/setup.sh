@@ -20,5 +20,7 @@ mkdir -p "$RT/sbx/run" && mount -t tmpfs tmpfs "$RT/sbx/run" || fail "tmpfs /sbx
 printf 'console=serial0,115200 root=PARTUUID=00000000-0002 rootfstype=squashfs batman_slot=A\n' > "$RT/sbx/run/cmdline"
 mount --bind "$RT/sbx/run/cmdline" "$RT/proc/cmdline" || fail "fake /proc/cmdline"
 [ -z "$(ls -A "$RT/sys" 2>/dev/null)" ] || fail "/sys is not empty in the root"
-exec capsh --drop=cap_sys_boot,cap_sys_module,cap_sys_time,cap_sys_rawio,cap_mknod,cap_sys_chroot -- -c \
-	"exec chroot '$RT' /usr/bin/env -i PATH=/sbx/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root SBX_CASE='$CASE' SBX_MUTANT='$MUT' SBX_MARKER='${SBX_MARKER:-}' SBX_IF='${SBX_IF:-}' /bin/sh /sbx/cases/$CASE.sh"
+# capsh chroots FIRST, then drops (cap_sys_chroot included), then runs the root's own /bin/sh — dropping
+# cap_sys_chroot before an external chroot made the chroot itself fail (CI run 40697211428)
+exec capsh --chroot="$RT" --drop=cap_sys_boot,cap_sys_module,cap_sys_time,cap_sys_rawio,cap_mknod,cap_sys_chroot --shell=/bin/sh -- -c \
+	"exec /usr/bin/env -i PATH=/sbx/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root SBX_CASE='$CASE' SBX_MUTANT='$MUT' SBX_MARKER='${SBX_MARKER:-}' SBX_IF='${SBX_IF:-}' /bin/sh /sbx/cases/$CASE.sh"
