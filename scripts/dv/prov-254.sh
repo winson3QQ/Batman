@@ -262,10 +262,16 @@ $o"; echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY|SKIP" | tail -10 | sed 's/^/    
 	return 0
 }
 pr_restore(){
+	local d
 	PR_RESTORING=1
 	pr_restore_cycle || return 1
 	pr_compare after; echo "$PR_CMP" | tail -20 | sed 's/^/    /'
-	grep -q "diffs=0" <<< "$PR_CMP" || { no "S0 not restored — snapshot and dirty flag kept"; return 1; }
+	# a unit that wrote B: slot B still holds what the unit put there until pr_brewrite (after this restore), so the
+	# protB line of the identity may differ here — only that line; pr_brewrite then asserts slot-B.protected = V
+	# (prov-legacy-upgrade-254 run 1, 2026-10-28: diffs=2, both the protB line)
+	d=$(grep '^DIFF ' <<< "$PR_CMP"); [ "$PR_WROTE_B" = 1 ] && d=$(grep -vE '^DIFF identity [-+] protB=' <<< "$d")
+	[ -z "$d" ] || { no "S0 not restored — snapshot and dirty flag kept"; return 1; }
+	[ "$PR_WROTE_B" = 1 ] && grep -q '^DIFF identity' <<< "$PR_CMP" && say "only slot-B.protected differs (B is rewritten next)"
 	ok "S0 restored (p5 / overlay / uci / identity / p6 state)"; PR_RESTORING=0; return 0
 }
 pr_brewrite(){
