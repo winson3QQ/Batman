@@ -1,24 +1,13 @@
-# Known, tracked failures (#268 C1). Read by daily-validation.sh to split the report into NEW vs KNOWN fails.
-# It never turns a FAIL green: the exit status stays 1 either way. A suite is KNOWN only if EVERY "FAIL ..." line
-# its log printed matches one of its patterns below; one unmatched FAIL line makes the whole suite NEW.
-# Some failures can never be listed (restore failed, cleanup failed, CONNECTION-LOST, reboot did not happen,
-# unreadable/not verified) — the harness refuses those patterns. With `gh` available, a closed issue = NEW.
+# Known, tracked failures (#268 C1). Read by daily-validation.sh (scripts/dv/known-failures.sh) to split the report into
+# NEW vs KNOWN fails. It never turns a FAIL green: the exit status stays 1 either way. A suite is KNOWN only if EVERY
+# "FAIL ..." line its log printed matches one of its UNEXPIRED entries; one unmatched FAIL line makes the whole suite NEW.
+# Some failures can never be listed (restore / cleanup failed, CONNECTION-LOST, reboot did not happen, unreadable /
+# not verified, NEEDS-PERSON, blocked: DNODE) — the harness refuses those. With `gh` available, a closed issue = NEW.
 #
-# suite<TAB>ERE matched against one FAIL line<TAB>issue number (required)
-# (the #264 entries - ots-cot-e2e-264 P2B/P3, soak-cot-264, cleanstop-274 early CoT - were removed with the #264
-#  overlay: a loss there is a NEW failure again)
-prov-p1-stubs	^FAIL prov-p1-stubs: product in this checkout is pre-P1	254
-p5-follows-config-202	^FAIL (batman-config-save --check unsupported|p5 hostname stale after 60 s|pre-#202 image: .*untestable|writer silently read-only under ro readers|T11 not exercised|T11 reader could not hold p5|lock-busy marker not raised by a stuck holder|stale lock not taken over|lock-busy marker left behind|--check did not report lock-busy|p5 lost an update under concurrent writers)	202
-p5-follows-config-202b	^FAIL (batman-config-save --check unsupported|p5 hostname stale after 60 s|pre-#202 image: .*untestable|writer silently read-only under ro readers|T11 not exercised|T11 reader could not hold p5|lock-busy marker not raised by a stuck holder|stale lock not taken over|lock-busy marker left behind|--check did not report lock-busy|p5 lost an update under concurrent writers)	202
-setkey-persists-202	^FAIL (setkey accepted an unpersistable key|--channel unsupported|p5 key not persisted by setkey|setkey did not report persist: saved|precheck passed with stale p5|--check unsupported on .*untestable|did not rejoin within 180 s after key restore)	202
-# (#305 closed: the five "pre-305 image" transition entries and ble-pair-sc-only-254 (02->04 LE connection lost,
-#  suspected to be the mini UART wedge) were removed. The fleet runs a #305 image, so "pre-305 image" is a NEW failure
-#  again, and so is any ble-pair-sc-only-254 VERDICT invalid - it passed in the rc's full run, but once only.)
-# #254 claim-lock fix (harness first, #290): until fix/254-claim-lock ships, the product in a main checkout and the fleet
-# (1.5.13) predate it. REMOVE these with the product PR / the fleet upgrade (they never turn a FAIL green).
-prov-p1-stubs	^FAIL prov-p1-stubs: product in this checkout predates the claim-lock fix	254
-prov-lock-rest-254	^FAIL [0-9.]+: pre-claim-lock image: 	254
-setsid-race-254	^FAIL pre-claim-lock image: 	254
-prov-claim-254	^FAIL pre-claim-lock image: 	254
-chain1-254	^FAIL 8\.3 want (lock=LOCKED| pw=off |rootpw=off|tty=1|hash=\$6\$|seeded=y|shadowroot=y|metastat=\[ok claimed\])$	254
-prov-p1-stubs	^FAIL L44( \(unseeded \+ unclaimed\): rc 0, stdout is exactly the target device|: the note is on stderr) —	254
+# suite<TAB>ERE matched against one FAIL line<TAB>issue number<TAB>expires=YYYY-MM-DD (required: the day after it the
+# entry matches nothing; a missing / malformed 4th column FAILs the run — suite known-failures-file)
+#
+# 2026-10-28 (#254 H2, 254-h23 F26): removed the transition entries of shipped work — the #254 claim-lock block
+# (prov-p1-stubs, prov-lock-rest-254, setsid-race-254, prov-claim-254, chain1-254 8.3, L44) and "pre-P1": the fleet and a
+# main checkout carry them, so those lines are NEW failures again; and the #202 entries (issue closed 2026-10-18).
+# No "pre-P1b" entry: no suite of the run prints one (P9 only notes a pre-gate image as INFO).

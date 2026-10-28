@@ -153,6 +153,8 @@ fi
 . "$REPO/scripts/dv/claim-lock-254.sh"
 # shellcheck source=dv/prov-dv-254.sh
 . "$REPO/scripts/dv/prov-dv-254.sh"
+# shellcheck source=dv/known-failures.sh
+. "$REPO/scripts/dv/known-failures.sh"
 
 # 1. No hardware needed, but needs Linux tooling: the A/B card invariants build a real card on a
 #    loop device. On a host without losetup/mksquashfs/sudo (e.g. a Windows/Git-Bash operator box
@@ -276,6 +278,8 @@ else
   suite bt-uart-close-305 "stuck TX (CNTL 0xcd) then unbind on $BLE_PERIPH: close < 5 s (P2), then reboot + witness (#305 T3b)" "bchk_bt_uart_close_305 $BLE_PERIPH" D
   suite bt-uart-boot-305 "$BT305_BOOTS loaded reboots of $BLE_PERIPH: witness, probe, settings, no hci0 init error each boot (#305 T4)" "bchk_bt_uart_boot_305 $BLE_PERIPH" D
 fi
+
+suite known-failures-file "every scripts/validation-known-failures.txt entry has suite / ERE / issue / expires=YYYY-MM-DD (254-h23 §4)" "kf_check \"$REPO/scripts/validation-known-failures.txt\""
 
 # 2f2. #254 H2 prov units (docs/design/254-h23-harness.md §4.4, §6.2; scripts/dv/prov-dv-254.sh). 04-specific, like
 #     chain1. Tier A (prov-sock, prov-sec: under the prov lease, the node left as it was) on DNODE every run. Tier B
@@ -2766,28 +2770,8 @@ fi
 # whatever the list says: a node left degraded, a cleanup that failed, a dropped connection, a reboot that
 # did not happen, anything unreadable. The exit status is NOT affected — a known failure is still a failure.
 KNOWN_FILE="$REPO/scripts/validation-known-failures.txt"
-NEVER_KNOWN='restore|cleanup|CONNECTION-LOST|CONNLOST|reboot did not happen|unreadable|not verified|rc=3 without|NEEDS-PERSON|blocked: DNODE'
 NEWF=(); KNOWNF=()
-classify() {   # $1 suite -> echoes "known <issues>" or "new <why>"
-  local s=$1 log="$DIR/$1.log" line pat iss hit issues="" st ks
-  local lines; lines=$(grep -E '^[[:space:]]*FAIL ' "$log" 2>/dev/null | sed 's/^[[:space:]]*//')
-  [ -n "$lines" ] || { echo "new (no FAIL lines to match)"; return; }
-  while IFS= read -r line; do
-    echo "$line" | grep -qE "$NEVER_KNOWN" && { echo "new (never-known failure: $line)"; return; }
-    hit=""
-    while IFS=$'\t' read -r ks pat iss; do
-      case "$ks" in ''|'#'*) continue;; esac
-      [ "$ks" = "$s" ] && [ -n "$iss" ] && echo "$line" | grep -qE -- "$pat" && { hit=$iss; break; }
-    done < "$KNOWN_FILE"
-    [ -n "$hit" ] || { echo "new (unmatched: $line)"; return; }
-    case " $issues " in *" #$hit "*) ;; *) issues="$issues #$hit";; esac
-  done <<< "$lines"
-  if command -v gh >/dev/null 2>&1; then
-    for iss in $issues; do st=$(gh issue view "${iss#\#}" -R winson3QQ/Batman --json state --jq .state 2>/dev/null)
-      [ "$st" = CLOSED ] && { echo "new (matches $iss, but $iss is CLOSED)"; return; }
-      [ -z "$st" ] && issues="$issues(state?)"; done
-  else issues="$issues (issue state not checked: no gh)"; fi
-  echo "known$issues"; }
+classify() { kf_classify "$1" "$DIR/$1.log" "$KNOWN_FILE"; }   # scripts/dv/known-failures.sh
 for s in "${FAILED[@]}"; do
   c=$(classify "$s")
   case "$c" in known*) KNOWNF+=("| $s | ${c#known } |");; *) NEWF+=("| $s | ${c#new } |");; esac
