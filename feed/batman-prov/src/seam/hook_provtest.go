@@ -2,6 +2,11 @@
 
 package seam
 
+import (
+	"os"
+	"strings"
+)
+
 // ArmForTest arms the point called name for a unit test in another package and replaces the reboot with fire, which
 // must not return (a real reboot never does): tests panic in it and recover. It returns the function that undoes both.
 // prov_test builds only; the name must be one of the closed list.
@@ -36,4 +41,17 @@ func SafeForTests() {
 	sysrqPath = "/nonexistent/batman-seam-test/sysrq-trigger" // fire() called directly cannot reach the real trigger
 	kmsgPath = "/nonexistent/batman-seam-test/kmsg"
 	fallback = func() error { panic("seam: fallback reboot in a unit test") }
+}
+
+// A Go unit-test binary (".test") is made safe before any test runs, in every package that links this one — a
+// package without its own TestMain included (code review r4 A-m2 / B-m1). The helper binary is not named *.test.
+func init() {
+	if strings.HasSuffix(os.Args[0], ".test") || strings.HasSuffix(os.Args[0], ".test.exe") {
+		SafeForTests()
+	}
+}
+
+// IsSafeForTests reports whether SafeForTests is in force (the unit tests of other packages assert it).
+func IsSafeForTests() bool {
+	return sysrqPath != "/proc/sysrq-trigger" && kmsgPath != "/dev/kmsg"
 }
