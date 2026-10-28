@@ -28,8 +28,11 @@ flap(){
 	[ $((u - r)) -le 60 ] 2>/dev/null && ok "health fresh: ts $r, uptime $u" || no "health stale: ts $r, uptime $u"
 	r=$(qr "logread | grep -m1 'autocommit.*WARN ble:'"); say "real main WARN: ${r##*WARN ble: }"
 	r=$(qr "logread | grep -m1 'is healthy and HELD'"); say "real main: ${r##*autocommit*: }"
-	o=$(QT=260 q "u=\$(cut -d. -f1 /proc/uptime); { AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=\$((u + 120)) batman-autocommit run 2>&1 & p=\$!; ( sleep 180; kill \$p 2>/dev/null ) & w=\$!; wait \$p; kill \$w 2>/dev/null; } | grep -E 'DRYRUN decision|PRECOMMIT|health regressed' | tail -4")
+	# each line stamped with node seconds since the start: E-H5 #2 (§22.6) = the time to the decision, canary included
+	o=$(QT=260 q "u=\$(cut -d. -f1 /proc/uptime); { AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=\$((u + 120)) batman-autocommit run 2>&1 & p=\$!; ( sleep 180; kill \$p 2>/dev/null ) & w=\$!; wait \$p; kill \$w 2>/dev/null; } | while IFS= read -r l; do echo \"+\$(( \$(cut -d. -f1 /proc/uptime) - u ))s \$l\"; done | grep -E 'DRYRUN decision|PRECOMMIT|health regressed' | tail -4")
 	echo "$o" | sed 's/^/    dry: /'
+	t=$(sed -n 's/^+\([0-9]*\)s DRYRUN decision.*/\1/p' <<< "$o" | head -1); say "E-H5 #2: the dry run decided at +${t:-?}s (canary included; bound 180 s)"
+	o=$(sed 's/^+[0-9]*s //' <<< "$o")
 	grep -qE '^DRYRUN decision: COMMIT slot B \(services 3x10s, mesh samples [0-9]+\)' <<< "$o" \
 		&& ok "dry run: $(grep -m1 'DRYRUN decision' <<< "$o")" || no "dry run: no 'DRYRUN decision: COMMIT slot B' within 180 s"
 	back_to_a || return 1

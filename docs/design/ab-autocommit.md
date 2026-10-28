@@ -383,3 +383,18 @@ guardian's container allowlist (#274 D7-6).
 
 Tests: fault-injection `c1` (a crash in a held trial reverts after release), `c1n` (negative control: a 60 s
 window commits), `c2` (a manual commit after the crash stands; COMMITTED-BY-OPERATOR logged).
+
+## v2.7 (#254, 2026-10-29) — a `-wbox` test image is never committed; `release --wait` on it always fails
+
+A `-wbox` image (`BATMAN_WBOX=<non-empty>` or a `.wbox-` version in `/rom/etc/batman-build`, docs/design/254-h23-harness.md
+§18.1 / §19.3) is a harness test build. The commit gate's `why` fold ends with it: HOLDUNSAFE → `held_commit` → **wbox**
+(`batman-autocommit`, the `WBOX_STATE` branch). A healthy wbox trial without a hold logs once
+`trial <slot> is healthy but: wbox test image (BATMAN_WBOX=…) — never auto-committed (deadline revert armed)` and otalog
+`AC WBOX-NOCOMMIT`, then is reverted at its deadline. An unreadable stamp folds the same way (`STAMP-UNREADABLE`).
+`batman-slot commit` (on a wbox `/rom`) and `batman-slot rollback` (to a wbox slot) refuse as well — there is no override.
+
+**Consequence for operators and tooling:** `batman-autocommit release` on a wbox trial only lifts the hold; the next
+fold still says "wbox test image", so the trial is never committed. `release --wait` therefore **always ends with exit 1**
+— at the deadline the trial is reverted and `--wait` reports the run ended without committing (or the slot changed).
+No harness unit releases a wbox trial (`pr_normalise` refuses wbox builds; the held units go back with `back_to_a`).
+A wbox trial reaching its deadline is the expected end; `prov-wbox-nocommit-254` asserts exactly that.

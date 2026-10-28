@@ -4,13 +4,15 @@
 #   positive: member (random test mesh, never JOINED) -> reboot committed -> OTA V into B (hold) -> in the B trial:
 #     autocommit "member: armed in radio-only mode (ota-armed.mesh)" + "mesh join required: 0 (prov=member";
 #     the helper says member, same generation; wireless == A's; locked; /etc/.batman-prov-restore "prov=full";
-#     96 "prov: state=member copied=full"; HELD -> back to A
+#     96 "prov: state=member copied=full"; /rom = the payload's squashfs (E-H5 #4); HELD -> back to A
 #   negative control [wbox-B]: the same with -wbox 96-noprov (96 copies no provisioning) -> "copied=none"
 # Type: hold / A / F. Side effects: 04 off the mesh ~70 min, B rewritten (wbox, then V again), ~9 reboots.
 set -u
 PR_UNIT=prov-ota-254
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
+NL='
+'
 WSUM='printf "%s|%s|%s" "$(uci -q get wireless.default_radio1.mesh_id)" "$(uci -q get wireless.radio1.channel)" "$(uci -q get wireless.default_radio1.key | sha256sum | cut -c1-16)"'
 half(){	# <payload version> <negative 0|1>
 	local v=$1 neg=$2 w0 w1 r i l
@@ -24,6 +26,10 @@ half(){	# <payload version> <negative 0|1>
 		back_to_a; return 0
 	fi
 	grep -q 'prov: state=member copied=full' <<< "$l" && ok "96: prov: state=member copied=full" || no "96 line: $l"
+	# E-H5 #4 (254-h23 §22.6): in the B trial /rom is the payload's squashfs, read-only, and names the payload version —
+	# the wbox gate and the protected-set checks read /rom/etc/batman-build (§19.3); A committed was checked 2026-10-28
+	r=$(qr "grep ' /rom ' /proc/mounts; sed -n 's/^BATMAN_VERSION=//p' /rom/etc/batman-build")
+	case "$r" in *" /rom squashfs ro"*"$NL$v") ok "E-H5 #4: B trial /rom = squashfs ro, BATMAN_VERSION=$v" ;; *) no "E-H5 #4: B trial /rom [$(echo $r)] (want squashfs ro + $v)" ;; esac
 	grep -q 'prov=full' <<< "$l" && ok ".batman-prov-restore prov=full" || no ".batman-prov-restore: $l"
 	r=$(pr_trial_line 'member: armed in radio-only mode') && ok "autocommit: ${r##*autocommit*: }" || no "no 'member: armed in radio-only mode' line in the B trial"
 	r=$(pr_trial_line 'mesh join required:') ; case "$r" in *"mesh join required: 0 (prov=member"*) ok "autocommit: mesh join required: 0 (prov=member …)";; *) no "B trial: [$r] (want mesh join required: 0 (prov=member)";; esac
