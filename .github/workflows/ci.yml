@@ -27,6 +27,8 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
       - name: "#254 preflight P9 node judge on fixtures ([all] / wbox slots / prov leftovers) under busybox ash"
         run: bash tests/prov-p1/p9-judge.sh scripts/node/prov-p9-254.sh
+      - name: "#254 prov-wbox-nocommit rollback arm offline — PASS / INVALID x4 / FAIL-RECOVERED x2 / FAIL-NEEDS-PERSON / other refusal; survives a HUP (+ flip)"
+        run: bash tests/prov-p1/rbarm.sh
       - name: "#254 -wbox variants well formed (scope, protected set, witness, sh -n, nohold, helpers.list) — lint-wbox + its negative self-test"
         run: bash scripts/lint-wbox.sh && bash tests/wbox/test-lint-wbox.sh
       - name: "#254 lint-install — every feed/batman-provision file has exactly one Makefile install line (+ its negative self-test)"
