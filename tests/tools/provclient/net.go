@@ -191,13 +191,18 @@ func (cl *client) netObjects(in *netInput, ownerPub, netID []byte, ver uint64, p
 	payload := cEnc(cmap{{uint64(1), netID}, {uint64(2), ver}, {uint64(3), p3}, {uint64(4), "dv-test"}, {uint64(5), "TW"},
 		{uint64(6), cmap{{uint64(1), in.meshID}, {uint64(2), in.channel}, {uint64(3), in.bw}}}, {uint64(8), []any{ownerPub}}})
 	cfg = cl.sign1("batman/netcfg", labelNetcfg, payload)
+	return cfg, cl.netSecrets(in, netID, ver)
+}
+
+// netSecrets: this node's net_secrets for (netID, version) — the SAE key from fd 3 encrypted ON THE NODE to the
+// helper's ECDH key; the root secret is random per call (P1 checks nothing about it)
+func (cl *client) netSecrets(in *netInput, netID []byte, ver uint64) []byte {
 	ep, dh := cl.nodeKeys()
 	root := make([]byte, 32)
 	rand.Read(root)
 	plain := cEnc(cmap{{uint64(1), in.sae}, {uint64(2), root}})
 	enc, _ := encryptTo(plain, labelSecrets, ep, dh, netID, ver, nil, nil)
-	sec = cl.sign1("batman/secrets", labelSecrets, cEnc(cmap{{uint64(1), netID}, {uint64(2), ver}, {uint64(3), dh}, {uint64(4), enc}}))
-	return cfg, sec
+	return cl.sign1("batman/secrets", labelSecrets, cEnc(cmap{{uint64(1), netID}, {uint64(2), ver}, {uint64(3), dh}, {uint64(4), enc}}))
 }
 
 // netOp runs one of the net / owner operations of cmdNode; returns false for an op it does not know
@@ -205,7 +210,7 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 	switch op {
 	case "net-apply": // net-apply --first <owner_pub> | net-apply --update <owner_pub> <prev net_config hex>
 		if len(args) < 3 {
-			die("usage: net-apply --first|--first-noop <owner_pub> | --update <owner_pub> <prev-net_config-hex>")
+			die("usage: net-apply --first|--first-noop <owner_pub> | --update <owner_pub> <prev-net_config-hex> | --join <owner_pub> <net_config-hex>")
 		}
 		ownerPub := hexArg(2)
 		switch args[1] {
@@ -242,8 +247,26 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 			code, _ := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
 			fmt.Printf("RESULT net.apply(update) code=%d version=%d mesh_id_sha=%s\n", code, ver+1, short([]byte(in.meshID)))
 			fmt.Printf("NETCFG %s\n", hex.EncodeToString(cfg))
+		case "--join": // net-apply --join <owner_pub> <net_config hex>: join ANOTHER node's network — its signed
+			// net_config verbatim (same net_id, same version), this node's own net_secrets (254 review A-M2)
+			cfg := hexArg(3)
+			x, _, err := cDec(cfg)
+			if err != nil {
+				die("net_config: %v", err)
+			}
+			pl, _ := x.(ctag).v.([]any)[2].([]byte)
+			pm, _, _ := cDec(pl)
+			netID, _ := pm.(cmap).get(1).([]byte)
+			ver, _ := pm.(cmap).get(2).(uint64)
+			if len(netID) == 0 || ver == 0 {
+				die("net_config: no net_id / version")
+			}
+			sec := cl.netSecrets(in, netID, ver)
+			env := cl.ownerOp("network/join", cmap{{uint64(1), rawCBOR(cfg)}, {uint64(3), rawCBOR(sec)}})
+			code, _ := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
+			fmt.Printf("RESULT net.apply(join) code=%d version=%d net_id=%x mesh_id_sha=%s\n", code, ver, netID, short([]byte(in.meshID)))
 		default:
-			die("net-apply: --first, --first-noop or --update")
+			die("net-apply: --first, --first-noop, --update or --join")
 		}
 	case "leave":
 		env := cl.ownerOp("network/leave", cmap{})

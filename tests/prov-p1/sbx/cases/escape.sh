@@ -21,7 +21,9 @@ echo "${SBX_MARKER:-SBX-KMSG-none}" > /dev/kmsg && [ -f /dev/kmsg ] && ok "/dev/
 [ -b /dev/mmcblk0p5 ] && ok "p5 is a block device (the sandbox loop)" || no "no /dev/mmcblk0p5"
 [ ! -e /proc/device-tree ] && ok "no /proc/device-tree" || no "/proc/device-tree present"
 grep -q ' /opt/batdata tmpfs ' /proc/mounts && grep -q ' /tmp/run tmpfs ' /proc/mounts && ok "/opt/batdata and /tmp/run are private tmpfs" || no "private tmpfs mounts missing"
-if hostname "${SBX_MARKER:-sbxhost}" 2>/dev/null && [ "$(hostname)" = "${SBX_MARKER:-sbxhost}" ]; then ok "hostname set inside the UTS namespace (the host side checks its own is unchanged)"; else no "could not set the hostname inside the sandbox"; fi
+# setup.sh set the hostname of the sandbox's UTS namespace to the marker (OpenWrt's busybox has no hostname applet and
+# /proc/sys is read-only here); the host side checks its own hostname is unchanged
+if [ "$(cat /proc/sys/kernel/hostname)" = "${SBX_MARKER:-none}" ]; then ok "the UTS namespace has its own hostname (the marker)"; else no "hostname here is not the marker set in this UTS namespace"; fi
 if chroot / /bin/true 2>/dev/null; then no "chroot still possible (cap_sys_chroot not dropped)"; else ok "no chroot (cap_sys_chroot dropped)"; fi
 reboot -f; grep -q '^reboot -f' /tmp/run/sbx-calls.log && ok "plain reboot resolves to the call-logging stub" || no "the reboot stub did not record the call"
 echo "CASE escape cases=$n fails=$f"

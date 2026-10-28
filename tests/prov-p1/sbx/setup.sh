@@ -7,6 +7,7 @@ RT=$1; LOOP=$2; CASE=$3; MUT=$4
 fail(){ echo "FAIL setup: $*"; echo "CASE $CASE cases=0 fails=1"; exit 1; }
 [ $$ = 1 ] || fail "not pid 1 of a new pid namespace (pid $$) — refusing (a reboot -f here would hit the host)"
 mount -t proc proc "$RT/proc" || fail "mount proc"
+[ -n "${SBX_MARKER:-}" ] && { hostname "$SBX_MARKER" || fail "hostname in the new UTS namespace"; }   # escape case: the host must keep its own
 [ -e "$RT/proc/device-tree" ] && fail "/proc/device-tree exists in the sandbox's proc"
 for p in sys sysrq-trigger; do mount --bind "$RT/proc/$p" "$RT/proc/$p" && mount -o remount,bind,ro "$RT/proc/$p" || fail "ro bind /proc/$p"; done
 mount -t tmpfs -o mode=0755 tmpfs "$RT/dev" || fail "tmpfs /dev"

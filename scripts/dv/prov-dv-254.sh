@@ -21,7 +21,7 @@ pv_pre() {
 	local v
 	[ "$1" = 10.41.1.3 ] || { echo "FAIL the prov units are 04-specific (MAC / peer 02 hard-coded in scripts/dv/prov-254.sh) and DNODE is $1"; return 1; }
 	[ -s "$DIR/needs-person.txt" ] && { echo "FAIL blocked: DNODE — NEEDS-PERSON earlier in this run: $(tail -1 "$DIR/needs-person.txt")"; return 1; }
-	v=$(pv_ver "$1"); case "$v" in *.wbox-*) v=${v%%.dirty.wbox-*} ;; esac
+	v=$(pv_ver "$1"); case "$v" in *.wbox-*) v=${v%%.dirty.wbox-*}; v=${v%%.wbox-*} ;; esac   # a bare .wbox- too (review B-m8)
 	[ -n "$v" ] || { echo "FAIL $1 unreachable (no BATMAN_VERSION)"; return 1; }
 	[ -f "$PV_TOOLS/$v/test/batman-provhelper" ] || { echo "FAIL no prov test tools for $v in $PV_TOOLS — run: bash scripts/dv-prov-tools.sh $v"; return 1; }
 	return 0

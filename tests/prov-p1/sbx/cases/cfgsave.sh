@@ -90,7 +90,11 @@ r=$(po $W/r2/prov.cbor $W/r2/prov.meta $W/id2); mnt; chk "same identity + gen 2:
 reset; p5 1 ok 1; mnt; sd=$(ls -ln $MNTP/.seeded; sha256sum < $MNTP/.seeded); umnt; mkdir -p $W/r; rec $W/r claimed 4
 r=$(po $W/r/prov.cbor $W/r/prov.meta); mnt; chk ".seeded of a seeded p5 untouched by --prov-only [$r]" '[ "$r" = 0 ] && [ "$(ls -ln $MNTP/.seeded; sha256sum < $MNTP/.seeded)" = "$sd" ]'; umnt
 # ENOSPC on the cbor: fill p5 so a 60 KiB cbor cannot be written but a meta could
-reset; p5 1 ok 1; mnt; dd if=/dev/zero of=$MNTP/gap bs=1k count=16 2>/dev/null; dd if=/dev/zero of=$MNTP/fill bs=64k 2>/dev/null; sync; rm -f $MNTP/gap; sync
+# a 16 KiB gap file, then fill in 4 KiB files until ENOSPC (synced each round: delayed allocation on the arm64 runner
+# left room after one big dd — CI run 40697592657), then free exactly the gap
+reset; p5 1 ok 1; mnt; dd if=/dev/zero of=$MNTP/gap bs=1k count=16 2>/dev/null; sync
+i=0; while dd if=/dev/zero of=$MNTP/fill.$i bs=4k count=64 2>/dev/null; do sync; i=$((i + 1)); done; sync
+j=0; while dd if=/dev/zero of=$MNTP/top.$j bs=1k count=1 2>/dev/null; do j=$((j + 1)); done; sync; rm -f $MNTP/gap; sync
 head -c 40000 /dev/urandom > $MNTP/probe 2>/dev/null && pr=fits || pr=enospc; rm -f $MNTP/probe; umnt
 chk "ENOSPC setup: a 40 KB file no longer fits on p5 [$pr]" '[ "$pr" = enospc ]'
 mkdir -p $W/r; rec $W/r claimed 9 61440; r=$(po $W/r/prov.cbor $W/r/prov.meta); g=$(pget); m=$(cat $W/g/prov.meta 2>/dev/null)
