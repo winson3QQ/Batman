@@ -229,3 +229,41 @@ func TestFireWritesKmsgThenSysrq(t *testing.T) {
 		t.Fatalf("log %q: want the sysrq failure right after the first line", r.lines)
 	}
 }
+
+// The prov_test unit tests run as root: nothing in them may reach a real reboot (code review r3 B-M1).
+func TestMain(m *testing.M) {
+	SafeForTests()
+	os.Exit(m.Run())
+}
+
+// A point reached without ArmForTest panics at once (no sysrq, no reboot -f), and fire() called with the safe paths
+// cannot reach the real trigger.
+func TestSafeForTestsNeverReboots(t *testing.T) {
+	armed = Txn1
+	defer func() { armed = None }()
+	func() {
+		defer func() {
+			x := recover()
+			if s, ok := x.(string); !ok || !strings.Contains(s, "fired in a unit test that did not arm it") {
+				t.Fatalf("At on an armed point without ArmForTest: recovered %v", x)
+			}
+		}()
+		At(Txn1, func(string, ...any) {})
+		t.Fatal("At returned")
+	}()
+	if sysrqPath == "/proc/sysrq-trigger" || kmsgPath == "/dev/kmsg" {
+		t.Fatalf("real paths still set: %s %s", sysrqPath, kmsgPath)
+	}
+}
+
+// One line, one name: anything after the name is refused, not trimmed away (code review r3 B-m3).
+func TestKillpointFileOneNameOnly(t *testing.T) {
+	for _, c := range []string{"txn-1 x", "txn-1\ntxn-2", "txn-1\tjunk", " txn-1 txn-1"} {
+		setup(t, c)
+		var r rec
+		Arm(r.logf)
+		if armed != None || len(r.lines) != 1 || !strings.HasPrefix(r.lines[0], "killpoint: refused (unknown point ") {
+			t.Fatalf("%q: armed %v log %q", c, armed, r.lines)
+		}
+	}
+}

@@ -24,3 +24,16 @@ func Names() []string {
 	}
 	return out
 }
+
+// SafeForTests makes every way this package can reboot panic instead. The prov_test unit tests run as root (design
+// §2.2): without this, a point reached by a regression (or a mutant run as a negative control) would write sysrq "b"
+// and reset the CI runner or the developer's WSL VM (code review r3 B-M1). Each prov_test test package calls it from
+// TestMain; ArmForTest still replaces reboot per test and restores this one.
+func SafeForTests() {
+	reboot = func(n string, _ func(string, ...any)) {
+		panic("seam: killpoint " + n + " fired in a unit test that did not arm it (ArmForTest)")
+	}
+	sysrqPath = "/nonexistent/batman-seam-test/sysrq-trigger" // fire() called directly cannot reach the real trigger
+	kmsgPath = "/nonexistent/batman-seam-test/kmsg"
+	fallback = func() error { panic("seam: fallback reboot in a unit test") }
+}
