@@ -415,8 +415,10 @@ LABKEY=${LABKEY:-$HOME/.ssh/id_ed25519}
 WSLK=/home/yello/.batman-dv/prov-keys/$RUN      # per-run owner keys (WSL ext4, 0600); pr_release removes them
 PCD=/tmp/run/batman-dvpc.$RUN                    # node: provclient (root 0711; it drops to uid 471)
 # pr_keys: owner / enc / attacker keys for this run in WSL; OWNER / ENC / ATK = their public keys (hex)
+# pr_keys: this run's owner / enc / attacker keys in WSL (made once per run; a second pr_member in the same run — the
+# units with two halves — reuses them: keygen refuses an existing file, netupdate run 1 2026-10-28 "file exists")
 pr_keys(){
-	wsl_ bash -c "umask 077; mkdir -p $WSLK && $TOOLS_WSL/provclient-amd64 keygen $WSLK/owner.pem > $WSLK/owner.pub && $TOOLS_WSL/provclient-amd64 keygen $WSLK/enc.pem > $WSLK/enc.pub && $TOOLS_WSL/provclient-amd64 keygen $WSLK/attacker.pem > $WSLK/attacker.pub" \
+	wsl_ bash -c "umask 077; [ -s $WSLK/owner.pub ] && [ -s $WSLK/enc.pub ] && [ -s $WSLK/attacker.pub ] && exit 0; mkdir -p $WSLK && $TOOLS_WSL/provclient-amd64 keygen $WSLK/owner.pem > $WSLK/owner.pub && $TOOLS_WSL/provclient-amd64 keygen $WSLK/enc.pem > $WSLK/enc.pub && $TOOLS_WSL/provclient-amd64 keygen $WSLK/attacker.pem > $WSLK/attacker.pub" \
 		|| { no "owner key generation"; return 1; }
 	OWNER=$(wsl_ cat $WSLK/owner.pub | tr -d '\r'); ENC=$(wsl_ cat $WSLK/enc.pub | tr -d '\r'); ATK=$(wsl_ cat $WSLK/attacker.pub | tr -d '\r')
 	[ ${#OWNER} = 130 ] && [ ${#ENC} = 130 ] && [ ${#ATK} = 130 ] || { no "owner keys"; return 1; }
