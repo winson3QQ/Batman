@@ -10,4 +10,15 @@
 # 2026-10-28 (#254 H2, 254-h23 F26): removed the transition entries of shipped work — the #254 claim-lock block
 # (prov-p1-stubs, prov-lock-rest-254, setsid-race-254, prov-claim-254, chain1-254 8.3, L44) and "pre-P1": the fleet and a
 # main checkout carry them, so those lines are NEW failures again; and the #202 entries (issue closed 2026-10-18).
-# No "pre-P1b" entry: no suite of the run prints one (P9 only notes a pre-gate image as INFO).
+# pre-P1b (254-h23 §5 "rollback to wsl.4"; review B-m2 — an earlier note here said no suite prints it, which was
+# wrong): until the fleet runs a P1b rc, these units stop with ONE line "pre-P1b image …" because their negative
+# control needs the P1b seams. Expiry = the P1b PR's expected merge + 14 days (2026-11-16 is an ESTIMATE, not a date
+# anyone committed to) -> 2026-11-30; after it the line is NEW again.
+prov-claim-kp-254	^FAIL prov-claim-kp-254: pre-P1b image	254	expires=2026-11-30
+prov-leave-ota-254	^FAIL prov-leave-ota-254: pre-P1b image	254	expires=2026-11-30
+prov-legacy-upgrade-254	^FAIL prov-legacy-upgrade-254: pre-P1b image	254	expires=2026-11-30
+prov-lock-failsecure-254	^FAIL prov-lock-failsecure-254: pre-P1b image	254	expires=2026-11-30
+prov-netjoin-254	^FAIL prov-netjoin-254: pre-P1b image	254	expires=2026-11-30
+prov-overlay-corrupt-254	^FAIL prov-overlay-corrupt-254: pre-P1b image	254	expires=2026-11-30
+prov-overlay-wipe-254	^FAIL prov-overlay-wipe-254: pre-P1b image	254	expires=2026-11-30
+prov-trial-busy-254	^FAIL prov-trial-busy-254: pre-P1b image	254	expires=2026-11-30

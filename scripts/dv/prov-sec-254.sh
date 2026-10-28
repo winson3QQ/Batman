@@ -28,7 +28,11 @@ grep -q '^FAIL .*node.key' <<< "$o" && ok "negative control: a 0644 thing at ide
 # ---- dvpc: the placement refuses a pre-existing dir / symlink
 q "mkdir -m 0711 $PCD"; o=$(pr_pc_place 2>&1); q "rm -rf $PCD"
 grep -q 'FAIL .*provclient placement' <<< "$o" && ok "negative control: a pre-created $PCD -> the placement refuses" || no "dvpc pre-created dir accepted: $o"
-q "ln -s /tmp $PCD"; o=$(pr_pc_place 2>&1); q "rm -f $PCD"
+# the planted links point at a DECOY dir (review A-m1: they pointed at /tmp — a regressed placement / helper that
+# followed the link would have chowned / chmodded /tmp on 04); the decoy's owner + mode must be unchanged afterwards
+DEC=/tmp/run/batman-dv/wbox/$RUN/decoy; DECST='ls -lnd /tmp/run/batman-dv/wbox/'"$RUN"'/decoy | cut -d" " -f1,3,4'
+q "mkdir -m 0700 $DEC"; d0=$(qr "$DECST")
+q "ln -s $DEC $PCD"; o=$(pr_pc_place 2>&1); q "rm -f $PCD"
 grep -q 'FAIL .*provclient placement' <<< "$o" && ok "negative control: a symlink at $PCD -> the placement refuses" || no "dvpc symlink accepted: $o"
 # ---- sockdir: the helper refuses a socket dir it did not make
 sockcase(){	# <name> <setup as root>
@@ -41,7 +45,8 @@ sockcase(){	# <name> <setup as root>
 	q "/etc/init.d/batman-provhelper stop >/dev/null 2>&1; rm -rf /tmp/run/batman-prov; /etc/init.d/batman-provhelper start >/dev/null 2>&1"; sleep 8
 	[ "$(qr '[ -S /tmp/run/batman-prov/helper.sock ] && pidof batman-provhelper >/dev/null && echo up')" = up ] && ok "helper serving again after the $1 case" || no "helper not back after the $1 case"
 }
-sockcase symlinked "ln -s /tmp /tmp/run/batman-prov"
+sockcase symlinked "ln -s $DEC /tmp/run/batman-prov"
+[ "$(qr "$DECST")" = "$d0" ] && ok "the decoy behind the planted links is unchanged ($d0)" || no "the decoy changed: $d0 -> $(qr "$DECST") — something followed a planted link"
 sockcase "uid-471-owned" "mkdir -m 0750 /tmp/run/batman-prov && chown 471:471 /tmp/run/batman-prov"
 o=$(judge); grep -qx 'PROV-SEC fails=0' <<< "$o" && ok "judge PASSes again at the end" || no "judge at the end: $(grep ^FAIL <<< "$o" | tr '\n' '|')"
 pr_release
