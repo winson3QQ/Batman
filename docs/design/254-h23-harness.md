@@ -175,7 +175,7 @@
 
 #### 4.1.3 build gate(`check-prov-test-gate.sh <rootfs> [<wbox-name>]`,第 7 步 `$WR/r`)
 - 無 name:helper `go version -m` 的 `-tags` 不含 `prov_test`;`grep -c BATMAN_PROV_TEST_BUILD_7f3a` = 0;`/etc/batman-build` 無 `BATMAN_WBOX=`;rootfs `grep -rl 'WBOX-'` = 0。
-- 有 name:`BATMAN_WBOX=<name>` 行在;VER 含 `.dirty.wbox-<name>`;見證:rootfs 內的見證集合恰為本變體那一個(§16.8);`test` 的見證 = helper 標記;**帶 `prov_test` 的 helper 另斷言 killpoint 實作真的編進去:`strings <helper> | grep -c 'killpoint .*: armed'` ≥ 1**(release = 0,與 §4.1.1「release log 無 `killpoint`」同一字串;擋住實作檔誤命名為 `_test.go` 的情況,v5 B-M1);`go version -m` 無輸出(shell 取代)→ 只以見證判;**init 類 mutant(`chan`)另斷言 `etc/rc.d/S??wbox-*` 存在**(OpenWrt image build 由 postinst `enable`,v4 A-m11)。
+- 有 name:`BATMAN_WBOX=<name>` 行在;VER 含 `.dirty.wbox-<name>`;見證:rootfs 內的見證集合恰為本變體那一個(§16.8);`test` 的見證集合為空(§16.8、§16.26);**帶 `prov_test` 的 helper 另斷言 killpoint 實作真的編進去:`strings <helper> | grep -c 'killpoint .*: armed'` ≥ 1**(release = 0,與 §4.1.1「release log 無 `killpoint`」同一字串;擋住實作檔誤命名為 `_test.go` 的情況,v5 B-M1);`go version -m` 無輸出(shell 取代)→ 只以見證判;**init 類 mutant(`chan`)另斷言 `etc/rc.d/S??wbox-*` 存在**(OpenWrt image build 由 postinst `enable`,v4 A-m11)。
 - 負對照(CI `prov-gate-stubs`):`prov_test` helper → FAIL;release → PASS;含 `WBOX-` 的假 rootfs → FAIL;**有 name = `test` 但 helper 以「實作放 `_test.go`」的 mutant 編出(無 `armed` 字串)→ FAIL**。
 
 ### 4.2 `-wbox` 變體(firmware `build-board.sh --wbox <name>`)
@@ -638,3 +638,20 @@ claim-lock §11.4 真機 tier B(4 / 4-inj / 4b / 4b' / 4c / 4d / 5)仍未排程(
 18. **rc 必須是審過的程式碼**(r2 B-M1):rc 的 Batman pin 要含本輪的 P1b commit;每次 P1b 改動後重切 Batman `rc/254-p1b`、firmware pin + `BATMAN_BUILD_N` 加 1,payload 重 build,E-H2 重跑並附 step 7 gate 輸出。舊 payload(`1.5.14-wsl.5+01b12c9…`)只當 build 流程的證據,不上節點。
 
 **殘項(#254 checklist)**:`main.go` 的接線(daemon 啟動 `seam.Arm`、`--boot` 印標記)沒有 Go 單元測試——拿掉 `seam.Arm` 時 linker 會一起丟掉 armed 字面值,gate 會擋;`--boot` 的標記只由 tier A preflight(P9)抓(r2 A-m6)。
+
+**程式碼審查第 3 輪後的增補(p1b-code-review-r3-A / -B;與前文衝突時以本段為準)**
+
+19. **單元測試不可能真的重開機**(r3 B-M1):prov_test 單元測試以 root 跑(§2.2),所以 `seam.SafeForTests()`(prov_test only)把 `reboot` 換成 panic、`sysrqPath` / `kmsgPath` 指到不存在的路徑、`fallback` 換成 panic;seam 與 node 的 prov_test 測試各有 `TestMain` 先呼叫它,`ArmForTest` 照舊逐測試替換並還原。負對照:`At` 忽略 arm 的突變 → node 測試 0.04 s 內清楚 FAIL(之前是卡到逾時、root 下會寫 sysrq);拿掉 SafeForTests 的 reboot 替換 → `TestSafeForTestsNeverReboots` FAIL。
+20. killpoint 檔一行一個點名:`"txn-1 x"`、`"txn-1\ntxn-2"` 等一律 refused(r3 B-m3)。
+21. `GO_PKG_TAGS` 只由 `BATMAN_PROV_TEST` 決定(Makefile `else GO_PKG_TAGS:=`),`wbox_env_reset` 另 unset `GO_PKG_TAGS` / `GOFLAGS`(r3 B-m1)。
+22. 正常 build 遇到 feeds/batman 帶 wbox 見證的修改 / untracked / ignored 檔 → 提早拒絕(`wbox_normal_check`;`openmanet_setup.sh -i` 不重設 feeds/batman,r3 B-m4);其他未 commit 的修改照舊允許(標 `.dirty`)。
+23. wbox patch 只能改 `feed/batman-prov/` 與 `feed/batman-provision/`(stamp 步驟會清的兩個套件);碰 `tests/wbox/` 或其他路徑 → 拒絕(r3 A-m5)。
+24. `test-build-board-wbox.sh` 加:build 中產生的 ignored 檔被清掉(`clean -x`,r3 A-m1)、SIGHUP、patch 範圍、正常 build 的殘留檢查、`build-board.sh` 內各步驟的**順序**(r3 B-m2);共 53 案例。gate 拒 symlink 形式的 `/etc/batman-build`(r3 A-m3);自測 46 案例。
+25. **E-H6 已實證(2026-10-28,04)**:`sync` 後 `echo b > /proc/sysrq-trigger` → boot_id 換新、uptime 歸零;boot-reasons `prev=UNCLEAN … hints: sysrq`;ramoops console 檔留著 `<4>` 的 kmsg probe 行與核心的 `sysrq: Resetting`(r3 A-m4 / B-m5 的前提成立);04 回 A wsl.4、鄰居恢復。主機 `logread -f` 收到 syslog probe(該次有 `sync`,時序與 killpoint 不同,只當資訊)。
+26. §4.1.3 舊句「`test` 的見證 = helper 標記」作廢:`test` 的見證集合為空(§16.8),它的身分由 helper 的 tag / 標記 / armed 字面值判定(r3 A-m2)。
+
+**殘項(#254 checklist)**
+- `local-ab-tar.sh` 打包時不跑 gate:要人工偏離流程(wbox build 後手動 stamp → make → local-ab-tar)才會做出「標 normal、帶 seam」的 payload(r3 A-m6)。
+- `fast-build.yml` 產出的 A/B payload 沒有映像 gate(既有,非本 PR,r3 B-m6)。
+- bcm2710 的 wsl.x 沒 build(CM4 決定,r3 B-m7)。
+- 帶 patch 的變體出來後,補一次真 build + Ctrl-C(目前只在假 feed 上證過還原,r3 B-m8)。
