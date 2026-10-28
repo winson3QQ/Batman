@@ -48,4 +48,35 @@ R=$(mkrepo uci); mkpatch $R ucix "x" WBOX-ucix-0d0d0d0d uci99 $R 99-wbox-ucix; l
 R=$(mkrepo uciok); mkpatch $R ucix "x" WBOX-ucix-0d0d0d0d uci99 $R 99zz-wbox-ucix; lst "test prov_test helper" "ucix release same"; want PASS "new uci-defaults 99zz-wbox-ucix"
 R=$(mkrepo init); mkpatch $R initx "x" WBOX-initx-0e0e0e0e initx $R chanx; lst "test prov_test helper" "initx release same"; want "want wbox-*" "new init script without the wbox- prefix"
 R=$(mkrepo hdr); mkpatch $R shv "x" WBOX-shv-0c0c0c0c shgood $R; sed -i '1s/.*/# something else/' $R/tests/wbox/shv.patch; lst "test prov_test helper" "shv release same"; want "first line is not" "missing '# wbox <name>:' header"
+# ---- §23.9: protected set, misc scope, gate lines, busybox sh -n, nohold ----
+prot(){ mkdir -p $1/feed/batman-provision/files/usr/lib/batman $1/feed/batman-provision/files/usr/bin
+	printf '#!/bin/sh\notalog(){ :; }\n' > $1/feed/batman-provision/files/usr/lib/batman/otatrace.sh
+	printf '#!/bin/sh\nWBOX_STATE=release\nlog(){ :; }\nlog "start"\ncase "$1" in\n\ta) echo a ;;\nesac\n' > $1/feed/batman-provision/files/usr/bin/batman-autocommit
+	git -C $1 -c user.email=t@t -c user.name=t add -A; git -C $1 -c user.email=t@t -c user.name=t commit -qm prot; }
+otaedit(){ printf '# WBOX-otav-2a2a2a2a\n' >> $1/feed/batman-provision/files/usr/lib/batman/otatrace.sh; }
+miscok(){ sed -i 's/^log "start"$/log "start"\nlog "WBOX-misc-ok-2b2b2b2b"/' $1/feed/batman-provision/files/usr/bin/batman-autocommit; }
+miscuci(){ printf '#!/bin/sh\n# WBOX-misc-uci-2c2c2c2c\n' > $1/feed/batman-provision/files/etc/uci-defaults/96-x; }
+ucinames(){ printf '#!/bin/sh\n# WBOX-ucin-2d2d2d2d\nsed -i s/x/y/ /usr/bin/batman-autocommit\n' > $1/feed/batman-provision/files/etc/uci-defaults/99zz-wbox-ucin; }
+ucibootf(){ printf '#!/bin/sh\n# WBOX-ucib-2e2e2e2e\necho x >> /boot/autoboot.txt\n' > $1/feed/batman-provision/files/etc/uci-defaults/99zz-wbox-ucib; }
+miscgate(){ sed -i 's/^WBOX_STATE=release$/: WBOX-misc-gate-2f2f2f2f/' $1/feed/batman-provision/files/usr/bin/batman-autocommit; }
+miscsyn(){ sed -i 's/^\ta) echo a ;;$/\ta) echo a ;;\n\techo WBOX-misc-syn-3a3a3a3a/' $1/feed/batman-provision/files/usr/bin/batman-autocommit; }
+R=$(mkrepo prot1); prot $R; mkpatch $R otav "x" WBOX-otav-2a2a2a2a otaedit $R; lst "test prov_test helper" "otav release same"; want "touches the protected usr/lib/batman/otatrace.sh" "non-misc patch edits otatrace.sh (protected)"
+R=$(mkrepo prot2); prot $R; mkpatch $R misc-ok "x" WBOX-misc-ok-2b2b2b2b miscok $R; lst "test prov_test helper" "misc-ok release same"; want PASS "misc-* edits batman-autocommit only"
+R=$(mkrepo prot3); prot $R; mkpatch $R misc-uci "x" WBOX-misc-uci-2c2c2c2c miscuci $R; lst "test prov_test helper" "misc-uci release same"; want "a misc-* variant touches feed/batman-provision/files/etc/uci-defaults/96-x" "misc-* edits another file"
+R=$(mkrepo prot4); prot $R; mkpatch $R ucin "x" WBOX-ucin-2d2d2d2d ucinames $R; lst "test prov_test helper" "ucin release same"; want "an added line names the protected batman-autocommit" "uci mutant whose added line names /usr/bin/batman-autocommit"
+R=$(mkrepo prot5); prot $R; mkpatch $R ucib "x" WBOX-ucib-2e2e2e2e ucibootf $R; lst "test prov_test helper" "ucib release same"; want "an added line names the protected autoboot.txt" "uci mutant whose added line names autoboot.txt"
+R=$(mkrepo prot6); prot $R; mkpatch $R misc-gate "x" WBOX-misc-gate-2f2f2f2f miscgate $R; lst "test prov_test helper" "misc-gate release same"; want "removes / changes a wbox-gate line" "misc-* removes the WBOX_STATE line"
+R=$(mkrepo prot7); prot $R; mkpatch $R misc-syn "x" WBOX-misc-syn-3a3a3a3a miscsyn $R; lst "test prov_test helper" "misc-syn release same"; want "does not parse in busybox sh" "a line inserted after ';;' (busybox sh -n)"
+R=$(mkrepo nobb); prot $R; mkpatch $R misc-ok "x" WBOX-misc-ok-2b2b2b2b miscok $R; lst "test prov_test helper" "misc-ok release same"
+mkdir -p $T/nobb; for d in /usr/local/bin /usr/bin /bin; do for c in $d/*; do b=${c##*/}; [ "$b" = busybox ] || [ -e $T/nobb/$b ] || ln -s $c $T/nobb/$b; done; done
+out=$(PATH=$T/nobb bash $L $R 2>&1); rc=$?; [ $rc != 0 ] && case "$out" in *"no busybox"*) true ;; *) false ;; esac && { pass=$((pass+1)); echo "ok   no busybox on the host -> FAIL"; } || { bad=$((bad+1)); echo "BAD  no busybox: rc=$rc $out"; }
+# nohold: definition exempt, the unit allowed, any other call FAILs
+R=$(mkrepo nh); prot $R; mkpatch $R misc-ok "x" WBOX-misc-ok-2b2b2b2b miscok $R; lst "test prov_test helper" "misc-ok release same"; mkdir -p $R/scripts/dv
+printf 'pr_ota_b() {\n\tcase "$4" in nohold) hold=0 ;; esac\n}\n' > $R/scripts/dv/prov-254.sh
+printf 'prov_wbox_nocommit_254() {\n\tpr_ota_b "$pl" "$sha" B nohold\n}\n' > $R/scripts/dv/prov-wbox-254.sh
+want PASS "nohold in pr_ota_b() and in the unit prov_wbox_nocommit_254"
+printf 'prov_other_254() {\n\tpr_ota_b "$pl" "$sha" B nohold\n}\n' > $R/scripts/dv/prov-other-254.sh
+want "nohold used outside the unit prov-wbox-nocommit-254: scripts/dv/prov-other-254.sh:2" "a second nohold call in another unit"
+rm $R/scripts/dv/prov-other-254.sh; printf 'pr_ota_b() {\n\t:\n}\nx() {\n\tpr_ota_b a b B nohold\n}\n' > $R/scripts/dv/prov-254.sh
+want "nohold used outside the unit prov-wbox-nocommit-254: scripts/dv/prov-254.sh:5" "nohold in prov-254.sh outside pr_ota_b()"
 echo "RESULT lint-wbox self-test: $pass ok, $bad bad"; [ $bad = 0 ] && [ $pass -gt 0 ]
