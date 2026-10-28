@@ -1,6 +1,6 @@
-# Design: #254 PR-H3 — harness:H2 補完(P1 tier B / 沙箱 / 接縫)+ H3(provd / BLE / `peer.py`)— **v11(審查中)**
+# Design: #254 PR-H3 — harness:H2 補完(P1 tier B / 沙箱 / 接縫)+ H3(provd / BLE / `peer.py`)— **v12(審查中)**
 
-**狀態**:**v11 審查中**,2026-10-28。v7 定稿之後的增補:§16(P1b 程式碼審查 r1–r4 的修訂)、§17(misc 變體,v9 重寫)、§18(安全審查)、§19(v9 審查)、§20(v10 審查,優先於前文全部)。v8:§17 兩位 REJECT;v9:A AWC 0/3/16、B REJECT 0/4/16;v10:A AWC 0/2/14、B AWC 0/1/11(`254-reviews/h23-review-v{8,9,10}-{A,B}.md`)。以下為 v7 時的狀態:v6 審查:A **APPROVE**(0 / 0 / 4)、B **APPROVE-WITH-CHANGES**(0 / 0 / 10)(`254-reviews/h23-review-v6-{A,B}.md`),兩位都表示不需再審整份;v7 = v6 + §15(把 14 個 MINOR 寫成實作規格,**§15 與前文衝突時以 §15 為準**)。v6 之前:v5 審查:A APPROVE-WITH-CHANGES(0 / 0 / 6)、B APPROVE-WITH-CHANGES(0 / 1 / 12)(`254-reviews/h23-review-v5-{A,B}.md`);v6 收全部,對應表 §14(§12、§13 是前兩輪的表)。歷史:v1 A REJECT 2/8/12、B REJECT 3/17/14;v2 A REJECT 1/6/15、B AWC 0/7/19;v3 A AWC 0/7/10、B AWC 0/6/13;v4 A AWC 0/2/14、B AWC 0/3/15;v5 如上。使用者決定(2026-10-28):H2 沒做完的部分照 `254-p1-impl.md` §5 補完,與 H3 一份設計、兩段實作;608B(#255)擱置。
+**狀態**:**v12 審查中**,2026-10-28(§21 = v11 審查的修訂,優先於前文全部;v11:A AWC 0/1/12、B AWC 0/0/8)。v7 定稿之後的增補:§16(P1b 程式碼審查 r1–r4 的修訂)、§17(misc 變體,v9 重寫)、§18(安全審查)、§19(v9 審查)、§20(v10 審查,優先於前文全部)。v8:§17 兩位 REJECT;v9:A AWC 0/3/16、B REJECT 0/4/16;v10:A AWC 0/2/14、B AWC 0/1/11(`254-reviews/h23-review-v{8,9,10}-{A,B}.md`)。以下為 v7 時的狀態:v6 審查:A **APPROVE**(0 / 0 / 4)、B **APPROVE-WITH-CHANGES**(0 / 0 / 10)(`254-reviews/h23-review-v6-{A,B}.md`),兩位都表示不需再審整份;v7 = v6 + §15(把 14 個 MINOR 寫成實作規格,**§15 與前文衝突時以 §15 為準**)。v6 之前:v5 審查:A APPROVE-WITH-CHANGES(0 / 0 / 6)、B APPROVE-WITH-CHANGES(0 / 1 / 12)(`254-reviews/h23-review-v5-{A,B}.md`);v6 收全部,對應表 §14(§12、§13 是前兩輪的表)。歷史:v1 A REJECT 2/8/12、B REJECT 3/17/14;v2 A REJECT 1/6/15、B AWC 0/7/19;v3 A AWC 0/7/10、B AWC 0/6/13;v4 A AWC 0/2/14、B AWC 0/3/15;v5 如上。使用者決定(2026-10-28):H2 沒做完的部分照 `254-p1-impl.md` §5 補完,與 H3 一份設計、兩段實作;608B(#255)擱置。
 
 上層:`254-stage1-impl.md` v19、`254-p1-impl.md` v5.1、`254-h1-harness.md` v8、`254-claim-lock-fix.md` v9.1、`219-protocol.md` v0.7、`219-protocol.cddl`。
 
@@ -855,3 +855,79 @@ v8 的 `misc-L42`(mutant `batman-slot` 寫 arm 檔)與 `misc-L51`(bind `platform
 
 ### 20.7 成本(v10 A-m6;**需使用者重新確認**)
 `prov-wbox-nocommit-254` 照 §7.3 revert 型算法:OTA + 期限 revert(≈ 37 分,含 600 s deadline)+ rollback 臂(≈ 2 分)+ brewrite(≈ 14 分)≈ **47–57 分**,不是 §19.3 寫的 25 分。使用者 2026-10-28 的「做」是依 25 分的估計,需再確認。
+
+## 21. v11 審查後的修訂(`h23-review-v11-A` AWC 0/1/12、`-B` AWC 0/0/8;**本節優先於前文全部**)
+
+### 21.1 rollback 臂(`prov-wbox-nocommit-254`)— 撐過斷線、前置、判定順序(v11 B-m1 / m2 / m3、A-m4 / m5 / m12)
+節點端以**一個 detached 程序**執行,harness 只輪詢結果檔:
+```
+trap '' HUP PIPE; setsid sh -c '<arm>' </dev/null >"$RUNDIR/dv-rbarm.<run>" 2>&1
+```
+`<arm>` 的步驟(順序寫死):
+1. 前置(任一不成立 → `RESULT=INVALID <why>`,**不做 rollback**):`grep -q 'holds a -wbox test image' /usr/sbin/batman-slot`(A 帶閘;否則 = pre-gate image,單位在**任何 OTA 之前**就印 `FAIL pre-gate image` 並停,v11 A-m5 / B-m2);p6 `slot-B.protected` = 本次 wbox 版本(B 仍是 wbox,brewrite 之前);`a0 = bf_ab_all`(`bootfacts.sh:43`)是合法值(1 或 2 的 fw 分割區,其餘 → INVALID);uptime 與電源 `power_ok` 正常。
+2. `batman-slot rollback`,記 rc、輸出。
+3. `a1 = bf_ab_all`。**第一件事永遠是回補檢查**:rc = 0 **或** `a1 ≠ a0` → `batman-slot commit`(此時跑在 A;每 5 s 重試、共 3 次,應付 `power_ok` 欠壓 die,`batman-slot:278-300`)→ 讀回 `a2 = bf_ab_all` = A → `RESULT=FAIL-RECOVERED`;仍不是 A → `RESULT=FAIL-NEEDS-PERSON`(不重開)。`write_autoboot` 是先寫後讀回(`:357-361`),「寫了 `[all]` 才失敗、訊息不是 wbox」也會走到這裡(v11 A-m4)。
+4. 回補檢查通過後才分類:rc ≠ 0 且輸出含 `holds a -wbox test image` → `RESULT=PASS`;rc ≠ 0 而訊息是 `build stamp unreadable` 之類或其他 → `RESULT=INVALID <msg>`。
+- harness 輪詢結果檔(最多 120 s);沒有結果檔 → 讀 `bf_ab_all`:≠ A → 立即執行同一回補(另一個 detached 程序)並 `pr_needs_person`。
+- 白箱測試(dv-sbx + 節點一次):臂執行中殺掉 ssh → 結果檔仍寫出 `FAIL-RECOVERED`(以 stub 回歸的 batman-slot 驗回補)。
+- §5 增列:臂中 ssh 斷線 / harness 死 / 斷電 → detached 臂繼續或在下次開機由 P9 抓。
+- **P9 新增**(v11 A MAJOR-1 表、B-m1):`bf_ab_all` ≠ 執行中的槽,且它指向的槽的 `slot-X.protected` 或掛載後的 `etc/batman-build` 含 wbox → run FAIL,印 `batman-slot commit`(在執行中的非 wbox 槽上)恢復指令。
+
+### 21.2 產品閘的字串與清理(v11 B-m3、A-m9)
+- `cmd_rollback` 讀不到目標槽的 batman-build → `die "slot <X> build stamp unreadable — refusing to make it the default"`(與 wbox 那句不同);`cmd_commit` 讀不到 `/rom/etc/batman-build` → `die "this slot's build stamp is unreadable (/rom/etc/batman-build) — not committing"`。
+- 每條路徑都 `umount` + `rmdir`(照 `:778-782` 寫法);dv-sbx CI 斷言沒有殘留 `/tmp/.rb*`。
+- `lint-wbox` 保護字串清單 = `wbox_image`、`WBOX-NOCOMMIT`、`STAMP-UNREADABLE`、`holds a -wbox test image`、`build stamp unreadable`。
+- failsafe 開機:沒有 `/rom` → 操作員 `batman-slot commit` 被拒(訊息如上);failsafe 本來就不做 commit,寫進 §5。
+
+### 21.3 `/proc` 掃描與 dry-run 細節(v11 B-m4、A-m1 / m2 / m3 / m10)
+- 單筆 `/proc/<pid>/stat` 讀不到(程序剛結束)→ 略過該筆;只有 `/proc/self/stat` 讀不到或整輪 0 筆可讀 → INVALID。欄位從最後一個 `) ` 之後解析(`comm` 可含 `)` 與空白)。
+- sid 從 dry-run 程序**自己**的 stat 讀(busybox `setsid` 在呼叫者已是組長時會 fork,launcher 的 pid ≠ sid);起動後第一次掃描必須 ≥ 1 個成員,否則 INVALID(不能把「找不到」當「已結束」)。
+- `comm` 偽裝只造成 DoS(多算成員 → 逾時 → INVALID),fail-safe;記入 §7。
+- `hold present` 行整行比對:`hold present — this trial will not be reverted`(`batman-autocommit:372`;前綴會誤配 watchdog 的 `:190,202,234`)。
+- 臂 b 的時間在**節點端**取(臂內的 shell 迴圈讀 `/proc/uptime`,與判定行一起寫進結果檔),不靠主機輪詢。
+- 前置另加:本次開機沒有 `batman-fw-override`(否則 dry-run 在 `:314` 就結束)。
+- dry-run stdout 與結果檔放 `$DVD/<run>/`(root 0700)。
+- 刪 `hold-consumed` 的理由更正:避免後續真 trial 被誤判已消費(`halow-status` 只在 `autocommit.ctl/hold-commit` 存在時顯示,與此無關)。
+- churn 白箱:dry-run 執行中背景大量起落短命程序,掃描結果仍正確。
+
+### 21.4 見證位置與 mutant 的範圍(v11 A-m3、B-m6)
+- 見證行放在**必經且語法安全**的位置:`misc-l38` 放在被刪的 `:404` 原位(一行 `log`);`misc-l42` / `-l43` / `-l51` 放在 `:417` 之後(member 分支進入時)。`lint-wbox` 對 shell 檔另跑 `sh -n`(實測 `;;` 之後插行 → `syntax error`)。
+- `lint-wbox` 檔案範圍規則:只有 `misc-*` 可以碰 `feed/batman-provision/files/usr/bin/batman-autocommit`;**任何變體都不得碰** `usr/sbin/batman-slot`;`pr_ota_b` 斷言推送 payload 的 rootfs 內這兩檔的 sha 與同一 rc 正常 build 相同(取代只查字串)。
+- nohold 例外的檢查放 `lint-wbox`(不是不存在的 `lint-install`,v11 A-m7 / B-m8):`scripts/dv/` 內 `pr_ota_b … nohold` 只准出現在 `prov-wbox-nocommit-254`。
+
+### 21.5 F5 的負測試(v11 B-m5)
+- sentinel:環境 `GO` / `WBOX_DIR` 指向「一被執行 / 讀取就建檔」的東西 → 斷言 sentinel 檔沒被建,且 gate 輸出與不設 env 時逐位元組相同。
+- gate 先解析 `--selftest-*`,遇未知 `--*` → FAIL(`--selftest-wbox-dir` 能過名字的 `[a-z0-9-]` 檢查,必須先當旗標吃掉)。
+- lint:`--selftest-` 只准出現在 `test-prov-test-gate.sh`。
+
+### 21.6 其他
+- 判定行限定本次 trial(v11 A-m6):`WBOX-NOCOMMIT`、`TRIAL-REVERTED` 只取 `boot=<本次 trial boot8>` 的行(`otatrace.sh:28` 每行帶 `boot=`)。
+- 既有 `tests/prov-p1/batman-slot-rollback-gate.sh:61` **不改**(它只抽 lock gate 一個函式,v11 A-m8);另加順序測試:`cmd_rollback` 內 wbox 檢查行在 `rollback_lock_gate` 呼叫之前。
+- 回補 commit 會觸發 `addr_defer_release`(背景重啟 openmanetd),列 §7.2(v11 A-m12)。
+- §11 待決:成本已由使用者 2026-10-28 再確認(47–57 分,做);§7.3 總成本更新為約 23–24 h(含本單位)。
+
+### 21.7 遺留項目總表(v11 A MAJOR-1、B-m7;**每項標「已改」或「殘項 → #254」**)
+
+| 來源 | 項目 | 處理 |
+|---|---|---|
+| v10 A-M2 | gate 自測加小寫 misc 見證一案 | 已改(實作時加,§21.4) |
+| v10 A-m7 | failsafe 下 commit 被擋、`cmd_commit` 拒絕字串 | 已改 §21.2 |
+| v10 A-m10 / v11 B-m7(3) | L51 正向檔 = L43 對照檔,只改第 3 欄(`radio` → `joined`) | 已改(本表即規格) |
+| v10 A-m10 | L38 臂 c 標 characterization(boot_id 不符 → 今天規則;無 mutant) | 已改(本表即規格) |
+| v10 A-m10 / v11 B-m7(2) | (6a) 的「apply 後無 arm 檔」標 characterization 以外的斷言:保留為斷言,負對照 = §17.4 L42 的白箱 radio 檔臂 | 已改(本表) |
+| v10 A-m10 / v11 B-m7(9) | §5:(6a) 在 apply 與重開之間死掉 → tryboot 已 armed + hold 已寫(§19.2 順序)→ 重開進 held trial → 期限 revert | 已改(本表) |
+| v10 A-m10 / v11 B-m7(8) | §7 actor 表:「bind 覆蓋 root 的 autocommit / 白箱寫 p6」→ 只在 dry-run 臂期間、lease 內;deadman 解除 | 已改(本表) |
+| v10 A-m11 / v11 B-m7(4) | CI 加「`BATMAN_WBOX=` 有但值空 → 非 wbox」、「只有 `BATMAN_VERSION` 含 `.wbox-` → wbox」兩案 | 已改(本表;實作時加) |
+| v10 A-m12 / v11 B-m7(11) | hold-once + wbox:hold-once 消費後仍不 commit(wbox 閘在 hold 之後,hold-once 只影響 hold);`release --wait` 遇 wbox 一定逾時 → 文件註明、harness 不對 wbox 槽用 `release --wait` | 已改(本表) |
+| v10 A-m12 / v11 B-m7(11) | 會讓某槽成為 committed default 的路徑:autocommit commit、`batman-slot commit`、`batman-slot rollback`、`sysupgrade`(apply 不改 default)、firstboot 寫卡 —— 前三者有 wbox 閘;sysupgrade 只寫非 committed 槽;寫卡不帶 wbox(`--card-only --wbox` 被拒) | 已改(本表) |
+| v10 A-m14 / v11 B-m7(12) | §4.2 DISCARDED → 已 committed 的分支:有閘之後只剩「閘回歸」才會發生 → 同 §21.1 回補 + `pr_needs_person` | 已改(本表) |
+| v10 B-MAJOR-1 修法 5 | P9 `[all]` 檢查 | 已改 §21.1 |
+| v10 B-m3 | 「補救 = 對該槽 apply release」 | 已改:P9 的恢復指令 = 在非 wbox 槽上 `batman-slot commit`;另一槽留 wbox 由 brewrite 覆蓋(§4.2) |
+| v10 B-m4 / v11 B-m7(13) | **E-H5 上機確認 `/rom`**:04 A committed 與一次 B trial 都 `grep ' /rom ' /proc/mounts; cat /rom/etc/batman-build` | **實作 §18.1 之前做**(列入 E-H5;不成立 → 改設計) |
+| v10 B-m6 | pre-gate 單位在任何 OTA 前停 | 已改 §21.1 前置 |
+| v10 B-m8 | L9 `hci0_powered=1` | 殘項 → #254(健康欄位語意已足,可接受) |
+| v11 B-m7(1) | dv-sbx 的 L51 stub:`meshjoin.sh`、`_ab_live_sysupgrade`、`RUNDIR` | 已改:§19.2 的 dv-sbx 測試以函式覆寫 stub 這三者(本表即規格) |
+| v11 B-m7(5) | prov-misc 期間不得有 `sysupgrade -T` | 已改:前置斷言無 sysupgrade 程序、單位期間 harness 不呼叫 |
+| v11 B-m7(7) | L27 重連方式與判定 | 已改:dropbear 重啟後新開 ssh(lab key)執行 `true` 成功 = PASS;負對照照 §17.4 |
+| v11 B-m7(10) | failsafe 下操作員 commit 被擋 | 已改 §21.2 |
+| v11 A-m11 | 成本確認與 §7.3 | 已改 §21.6 |
