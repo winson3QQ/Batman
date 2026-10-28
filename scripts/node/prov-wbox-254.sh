@@ -60,9 +60,10 @@ bind)
 	[ $# = 3 ] || die "usage: bind <file> <sha> <dst>"
 	# the targets the §6.2 units bind over; nothing of the slot-decision code but autocommit (misc dry-run arm), never
 	# batman-slot (review r2 A-m5). /etc/banner: the harness smoke test.
-	# identity/node.key: prov-sec-254's key-perms negative control (a harmless dummy, never a key copy)
-	case "$3" in /usr/bin/batman-provhelper|/usr/bin/batman-autocommit|/usr/bin/halow-setkey|/usr/bin/batman-config-save|/etc/banner|/etc/batman-prov/identity/node.key) ;;
-		*) die "bind target $3 is not on the list (provhelper, autocommit, halow-setkey, batman-config-save, banner, identity/node.key)" ;; esac
+	# identity/node.key: prov-sec-254's key-perms negative control (a harmless dummy, never a key copy);
+	# dropbear/authorized_keys: prov-claim-kp-254's empty-keys case (an empty file, for the one claim)
+	case "$3" in /usr/bin/batman-provhelper|/usr/bin/batman-autocommit|/usr/bin/halow-setkey|/usr/bin/batman-config-save|/etc/banner|/etc/batman-prov/identity/node.key|/etc/dropbear/authorized_keys) ;;
+		*) die "bind target $3 is not on the list (provhelper, autocommit, halow-setkey, batman-config-save, banner, identity/node.key, dropbear/authorized_keys)" ;; esac
 	wdir; f=$(wfile "$1" "$2") || { echo "$f"; exit 1; }
 	[ -f "$3" ] && [ ! -L "$3" ] || die "bind target $3 is not a regular file"
 	mount --bind "$f" "$3" || die "mount --bind $f $3 failed"
