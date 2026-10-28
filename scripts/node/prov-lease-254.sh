@@ -43,6 +43,14 @@ role_fire_restore() {	# $1 run (or "recover")
 		[ -n "$p" ] && cmp -s "/proc/$p/exe" /rom/usr/bin/batman-provhelper \
 			|| dm_log "$1" "prov deadman: NEEDS-PERSON — the running helper (pid ${p:-none}) is not the release helper; dirty flag kept"
 	fi
+	# prov-sec-254's sockdir negative control left a foreign socket dir (symlink / not root-owned) and a stopped helper:
+	# remove it (rm of a symlink never follows it) and start the helper, which recreates its dir itself
+	sd=/tmp/run/batman-prov
+	if [ -L "$sd" ] || { [ -e "$sd" ] && [ "$(ls -ldn "$sd" | awk '{print $3}')" != 0 ]; }; then
+		dm_log "$1" "prov deadman: foreign helper socket dir — removing it, starting the helper"
+		rm -rf "$sd"; lim 60 /etc/init.d/batman-provhelper restart >/dev/null 2>&1
+	fi
+	pidof batman-provhelper >/dev/null || lim 60 /etc/init.d/batman-provhelper start >/dev/null 2>&1
 	[ -e "$BT/restoring.$1" ] && { dm_log "$1" "prov deadman: restoring in progress — services left to pr_restore"; return 0; }
 	for s in joinwatch openmanetd tailscaled; do [ -x "/etc/init.d/$s" ] && lim 60 "/etc/init.d/$s" start >/dev/null 2>&1; done
 	return 0
