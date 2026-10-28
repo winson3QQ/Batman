@@ -54,8 +54,15 @@ DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; r=$(vcmailbox 0x00030064 4 4
 field(){ printf ' %s\n' "$1" | sed -n "s/.* $2=\([^ ]*\).*/\1/p" | head -1; }
 
 # ---- host lock (one dv run against 04 at a time; the same lock as chain1) ---------------------------------------------
-pr_lock(){ mkdir "$LOCKD" 2>/dev/null || { echo "FAIL another dv run holds $LOCKD"; exit 1; }; }
-pr_unlock(){ rmdir "$LOCKD" 2>/dev/null; return 0; }
+pr_lock(){
+	if mkdir "$LOCKD" 2>/dev/null; then echo "$$ $(date +%s) $PR_UNIT $RUN" > "$LOCKD/owner"; return 0; fi
+	local o p t a; o=$(cat "$LOCKD/owner" 2>/dev/null); set -- $o; p=${1:-?}; t=${2:-0}; a=$(( $(date +%s) - t ))
+	if [ "$p" != "?" ] && ! kill -0 "$p" 2>/dev/null; then
+		echo "FAIL another dv run holds $LOCKD [$o], age ${a}s — its pid $p is NOT alive: a stale lock (host crash / TaskStop). Check no harness runs, then: rm -rf '$LOCKD'"
+	else echo "FAIL another dv run holds $LOCKD [${o:-no owner file}], age ${a}s"; fi
+	exit 1
+}
+pr_unlock(){ rm -f "$LOCKD/owner"; rmdir "$LOCKD" 2>/dev/null; return 0; }
 
 # ---- staging + lease ------------------------------------------------------------------------------------------------
 pr_stage(){
@@ -168,8 +175,12 @@ pr_trial_guard(){
 	if [ -z "$b" ]; then ok "trial: no protected path in /overlay/upper"; else no "trial: protected path(s) in /overlay/upper: $b"; fi
 	case "$PR_AB_MT" in ''|*[!0-9]*) no "trial: /boot/autoboot.txt mtime unreadable [$PR_AB_MT]"; PR_AB_MT="" ;; esac
 }
+# What it is (review A-m11 / B-m6): a guard against mistakes and simple mutants — the upper is sampled at landing and
+# again here, autoboot.txt by mtime only (a deliberate `touch -d` defeats it); not a tamper-proof monitor.
 pr_trial_guard_end(){	# in the trial, before batman-slot's own rollback writes autoboot.txt
-	local m
+	local m b
+	b=$(qr "for x in $PROT_NODE; do [ -e /overlay/upper/\$x ] && echo \$x; done" | tr '\n' ' ')
+	[ -z "$b" ] || no "trial: protected path(s) in /overlay/upper at the end of the trial: $b"
 	[ -n "$PR_AB_MT" ] || return 0
 	m=$(qr 'date -r /boot/autoboot.txt +%s')
 	if [ "$m" = "$PR_AB_MT" ]; then ok "trial: /boot/autoboot.txt unchanged during the trial"; else no "trial: /boot/autoboot.txt changed during the trial ($PR_AB_MT -> $m) — not by batman-slot"; fi
@@ -229,18 +240,25 @@ back_to_a(){
 	return 0
 }
 # pr_wait_held [max-uptime]: the trial reports HELD (healthy, held for operator acceptance)
-pr_wait_held(){ local max=${1:-480} u; while :; do qr 'logread | grep -q "is healthy and HELD"' && return 0; u=$(qr 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge "$max" ] && return 1; sleep 10; done; }
+pr_wait_held(){ local max=${1:-480} u t0; t0=$(mono)
+	while :; do
+		qr 'logread | grep -q "is healthy and HELD"' && return 0
+		u=$(qr 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge "$max" ] 2>/dev/null && return 1
+		# review A-M5: an unreachable node never reports an uptime — bound by the host clock as well
+		[ $(( $(mono) - t0 )) -gt $(( max + 600 )) ] && { echo "pr_wait_held: no HELD and no node answer within $(( max + 600 ))s (host clock)" >&2; return 1; }
+		sleep 10
+	done; }
 # pr_wait_reverted: (REVERT units) TRIAL-REVERTED; budget = the trial's deadline + DEFER_MAX 600 + 120 s (F42); HELD
 # instead = the mutant had no effect; a hard reboot without TRIAL-REVERTED (trial panic) = INVALID, not "no effect"
 pr_wait_reverted(){
-	local dl b0 t0 o s
+	local dl b0 t0 o s dfl=""
 	dl=$(qr '. /usr/lib/batman/rundir.sh; cat $RUNDIR/autocommit.deadline 2>/dev/null'); b0=$(field "$(qr "$ST")" boot)
 	case "$dl" in ''|*[!0-9]*) no "no autocommit deadline in the trial"; return 1 ;; esac
 	t0=$(mono); say "waiting for TRIAL-REVERTED (deadline uptime ${dl}s + 600 + 120)"
 	while :; do
 		o=$(timeout 30 ssh $SSHO root@$NODE 'logread | grep -E "is healthy and HELD|revert deferred:" | tail -2' 2>/dev/null | tr -d '\r')
 		grep -q "is healthy and HELD" <<< "$o" && { no "the trial is HELD — the mutant had no effect"; back_to_a; return 1; }
-		grep -q "revert deferred:" <<< "$o" && pr_lease_renew +600 >/dev/null
+		if grep -q "revert deferred:" <<< "$o" && [ "$o" != "${dfl:-}" ]; then dfl=$o; pr_lease_renew +600 || return 1; fi   # once per new deferred line (review A-m3)
 		s=$(timeout 30 ssh $SSHO root@$NODE "$ST" 2>/dev/null | tr -d '\r')
 		[ -n "$s" ] && [ "$(field "$s" boot)" != "$b0" ] && break
 		[ $(( $(mono) - t0 )) -gt $(( dl + 600 + 120 + 300 )) ] && { no "no revert within the budget"; return 1; }
@@ -396,6 +414,8 @@ pr_begin(){
 	return 0
 }
 pr_on_exit(){ local rc=$?
+	# review B-M5: an exit DURING a restore leaves a half-restored node — that is a person's job, said so
+	[ "$PR_BEGUN" = 1 ] && [ "${PR_RESTORING:-0}" = 1 ] && [ "${PR_PERSON:-0}" != 1 ] && pr_needs_person "harness exited (rc $rc) during the restore of $NODE (run $RUN)"
 	if [ "$PR_BEGUN" = 1 ] && [ "${PR_PERSON:-0}" = 1 ]; then pr_release   # a person takes over: no second restore
 	elif [ "$PR_BEGUN" = 1 ]; then
 		if [ "$PR_SNAPPED" = 1 ] && [ "$PR_RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; pr_abort "unexpected exit"; else pr_release; fi
@@ -595,7 +615,9 @@ pr_killpoint(){
 	pr_find 900 "$b0" || { kill $lp 2>/dev/null; no "(d) no node after the killpoint"; return 1; }
 	kill $lp 2>/dev/null; wait $lp 2>/dev/null
 	ok "(d) boot_id changed ($b0 -> $(field "$PR_STATE" boot))"
-	grep -q "killpoint $p: fallback" "$lf" && no "(c) 'killpoint $p: fallback' seen — sysrq did not work" || ok "(c) no fallback line in the logread stream ($(wc -l < "$lf") lines)"
+	if grep -q "killpoint $p: fallback" "$lf"; then no "(c) 'killpoint $p: fallback' seen — sysrq did not work"
+	elif ! grep -q "batman-provhelper" "$lf"; then inv "(c) the logread stream captured no helper line ($(wc -l < "$lf") lines) — it proves nothing (review A-m2)"
+	else ok "(c) no fallback line in the logread stream ($(wc -l < "$lf") lines, helper lines present)"; fi
 	rm -f "$lf"
 	o=$(qr 'tail -1 /opt/batdata/log/boot-reasons.log')
 	case "$o" in *UNCLEAN*"hints: sysrq"*) ok "(f) boot-reasons: UNCLEAN, hints: sysrq" ;; *) inv "(f) boot-reasons without the sysrq hint: $o" ;; esac

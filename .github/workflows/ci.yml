@@ -39,6 +39,8 @@ jobs:
         run: bash tests/known-failures.sh
       - name: "#254 NEEDS-PERSON blocks every later D suite on DNODE (dnode_blocked + its call in suite())"
         run: bash tests/dnode-block.sh
+      - name: "#254 prov-254 host helpers offline — pr_wait_held bounded by the host clock, the host lock owner / stale message"
+        run: bash tests/prov-p1/lib-host.sh
       - name: line-endings must be LF
         run: |
           if grep -rlIP '\r$' --include='*.sh' --include='*.py' .; then
