@@ -18,8 +18,9 @@ pr_keys && pr_pc_place && pk_proof || { pr_abort "keys"; pr_result; exit 1; }
 # ---- 2 (first, the node still legacy): an empty authorized_keys refuses the claim
 pw prep >/dev/null; q ": > /tmp/run/batman-dv/wbox/$RUN/empty.keys"
 h=$(qr "sha256sum < /tmp/run/batman-dv/wbox/$RUN/empty.keys | cut -c1-64")
-o=$(pw bind empty.keys "$h" /etc/dropbear/authorized_keys); say "$o"
-r=$(pr_pc owner.pem -- claim "$OWNER" "$ENC"); u=$(pw unbind-all); echo "    $r"; say "unbind: $(echo $u)"
+# bind, claim and unbind in ONE ssh session: had the claim wrongly succeeded, new logins would be locked out
+r=$(pr_pc owner.pem PRE="RUN_ID=$RUN sh $PRD/prov-wbox-254.sh bind empty.keys $h /etc/dropbear/authorized_keys" POST="RUN_ID=$RUN sh $PRD/prov-wbox-254.sh unbind-all" -- claim "$OWNER" "$ENC"); echo "$r" | sed 's/^/    /'
+[ "$(qr "grep -c ' /etc/dropbear/authorized_keys ' /proc/self/mountinfo")" = 0 ] && ok "the empty authorized_keys is unbound again" || no "authorized_keys still bound"
 grep -q "RESULT claim.verify code=0 " <<< "$r" && no "a claim with an empty authorized_keys was accepted (locks the operator out)" || ok "empty authorized_keys: claim refused ($(echo $r | sed 's/.*code=\([0-9]*\).*/code \1/'))"
 i=$(pr_info); case " $i " in *" state=legacy "*) ok "still legacy after the refused claim";; *) no "state after the refused claim: $i";; esac
 # ---- 1 the claim cut at claim-after-persist

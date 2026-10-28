@@ -426,16 +426,19 @@ pr_pc_place(){
 	[ "$(q "set -e; mkdir -m 0711 $PCD; mv /tmp/run/batman-dv/pc.$RUN.upload $PCD/provclient; chown root:root $PCD $PCD/provclient; chmod 0755 $PCD/provclient; [ \"\$(sha256sum < $PCD/provclient | cut -c1-64)\" = $s ] && echo PCOK")" = PCOK ] \
 		|| { no "provclient placement in $PCD (pre-existing dir / sha)"; return 1; }
 }
-# pr_pc <key> [FD3=<node-side sh producing the fd-3 lines>] [ENV=v ...] -- <op> [args]: provclient on the node; its
-# SIGN lines go to the WSL signer; the fd-3 producer runs ON the node (a mesh key never crosses to the host).
+# pr_pc <key> [FD3=<node-side sh producing the fd-3 lines>] [PRE=<sh>] [POST=<sh>] [ENV=v ...] -- <op> [args]:
+# provclient on the node; its SIGN lines go to the WSL signer; the fd-3 producer runs ON the node (a mesh key never
+# crosses to the host). PRE / POST run in the SAME ssh session around it (a bind that must not outlive the op even if
+# the op locks new logins out: prov-claim-kp-254's empty authorized_keys).
 pr_pc(){
-	local key=$1 fd3="" envs="" f W SIGNP line sig out=""; shift
-	while [ "$1" != -- ]; do case "$1" in FD3=*) fd3=${1#FD3=} ;; *) envs="$envs $1" ;; esac; shift; done; shift
+	local key=$1 fd3="" pre="" post="" envs="" f W SIGNP line sig out=""; shift
+	while [ "$1" != -- ]; do case "$1" in FD3=*) fd3=${1#FD3=} ;; PRE=*) pre=${1#PRE=} ;; POST=*) post=${1#POST=} ;; *) envs="$envs $1" ;; esac; shift; done; shift
 	f=$(mktemp -d)/p; mkfifo "$f"
 	coproc SIGNP { wsl_ "$TOOLS_WSL/provclient-amd64" sign "$WSLK/$key"; }
 	exec {W}<>"$f"
 	local cmd="$envs $PCD/provclient node $*"
 	[ -n "$fd3" ] && cmd="exec 4<&0; { $fd3; } | $envs $PCD/provclient node $* 3<&0 0<&4"
+	[ -n "$pre$post" ] && cmd="${pre:+$pre >&2; }$cmd; ${post:+$post >&2}"
 	while IFS= read -r line; do
 		line=$(printf '%s' "$line" | tr -d '\r')
 		case "$line" in
