@@ -82,6 +82,9 @@ suite() {                       # $1 = name, $2 = why-it-matters, $3 = command (
   if [ -z "$cmd" ]; then
     NSKIP=$((NSKIP+1)); ROWS+=("| $name | SKIP | $why |"); echo "SKIP  $name"; return
   fi
+  # a NEEDS-PERSON earlier in the run: every later D suite on DNODE0 FAILs "blocked: DNODE" instead of running
+  # (scripts/dv/prov-dv-254.sh dnode_blocked; never a SKIP — the person must see it)
+  if dnode_blocked "$kind" "$cmd" "$DIR" "${DNODE0:-}" > "$DIR/$name.blocked" 2>/dev/null; then cmd="cat '$DIR/$name.blocked'; false"; else rm -f "$DIR/$name.blocked"; fi
   local t0=$SECONDS
   { echo "# $(date -Is)"; echo "# $cmd"; eval "$cmd"; } > "$log" 2>&1; rc=$?
   local dt=$((SECONDS-t0))

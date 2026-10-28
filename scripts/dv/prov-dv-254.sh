@@ -7,6 +7,15 @@
 # "FAIL blocked: DNODE …" (never a known failure, NEVER_KNOWN).
 PV_TOOLS=${DV_PROV_TEST:-$HOME/batman-dv-tools/prov-test}
 pv_ver() { cl_ssh "$1" 20 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build'; }
+# dnode_blocked <kind> <cmd> <run dir> <dnode>: a D suite aimed at DNODE after a NEEDS-PERSON earlier in the run
+# ($DIR/needs-person.txt) must not run — it would wipe / reboot the state the person is to recover (254-h23 §3 row
+# NEEDS-PERSON; review B-M1: only the prov units checked it). Prints the FAIL line, rc 0 = blocked. The IP must be a
+# whole address in the command (10.41.1.30 is not 10.41.1.3).
+dnode_blocked() {
+	[ "$1" = D ] && [ -n "$4" ] && [ -s "$3/needs-person.txt" ] || return 1
+	case " $2 " in *[!0-9.]"$4"[!0-9.]*) ;; *) return 1 ;; esac
+	echo "FAIL blocked: DNODE $4 was handed to a person earlier in this run — $(tail -1 "$3/needs-person.txt")"
+}
 # pv_pre <dnode>: the prov units' common preconditions
 pv_pre() {
 	local v

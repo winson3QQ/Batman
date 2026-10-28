@@ -1,6 +1,13 @@
 #!/bin/bash
 # scripts/dv-sbx.sh — #254 dv-sbx: the provisioning sandbox (docs/design/254-h23-harness.md §4.4; 254-p1-impl §4.10, §5.1).
-# Root on a throw-away Linux host (CI ubuntu-24.04-arm; locally WSL with arm64 binfmt). Never on a node.
+# ONLY on a throw-away CI runner (ubuntu-24.04-arm; GITHUB_ACTIONS set) — refused anywhere else, a developer machine
+# included (§4.10; review 2026-10-28 A-M4: it had been run as root in WSL). Never on a node.
+# WHAT THE ISOLATION IS (review B-M2): accident isolation, not containment. The cases must mount p5 (ext4 on a loop
+# device), so they keep CAP_SYS_ADMIN in the initial user namespace; a case that WANTS out can get out (mount a new
+# proc and write sysrq, remount, mount host block devices). What is isolated: the pid / net / uts / ipc / mount
+# namespaces, the dropped capabilities, read-only binds of /proc/sys and sysrq-trigger, private /dev, /tmp, /tmp/run,
+# /opt/batdata, stubbed reboot / wifi / ubus / vcmailbox — so an ordinary product script or mutant cannot reboot,
+# touch the network or write the runner's disks BY ACCIDENT. The runner is disposable; that is the real boundary.
 #   dv-sbx.sh [--soc bcm2711|bcm2710] [--base <payload.tar.gz>] [--go <go binary>] [--feed <feed dir>] <case>[:<mutant>] ...
 #     --soc bcm2710: the bcm2710 payload's rootfs as the base (prov-unit-bcm2710, a SMOKE: same cases, other base)
 #     --feed: the product to test (default: this checkout's feed/); e.g. a P1b checkout's while this one is pre-P1b
@@ -9,17 +16,20 @@
 #     helper built from feed/batman-prov/src with -tags prov_test (arm64) + the call-logging stubs + the cases; then
 #     runs each case in `unshare --mount --pid --fork --net --uts --ipc` (tests/prov-p1/sbx/setup.sh: private /dev,
 #     /tmp, /tmp/run, /opt/batdata, a fake /proc/cmdline, read-only /proc/sys and sysrq-trigger, p5 = a loop device
-#     on $SBX/p5.img) and `capsh` without cap_sys_boot / module / time / rawio / mknod, chrooted.
-#   case "escape" = prov-unit-sbx: the sandbox's own negative tests, judged here on the host.
+#     on $SBX/p5.img) and `capsh` without cap_sys_boot / module / time / rawio / mknod / sys_chroot, chrooted.
+#   case "escape" = prov-unit-sbx: the accident-isolation checks (what an ordinary call cannot do), judged here on the
+#   host — NOT a proof of containment (see above).
 #   <case>:<mutant> must FAIL (the mutant is the case's own negative control); a plain case must report cases > 0 and
 #   fails = 0. Any other result, or a case that runs nothing, FAILs.
 set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd); SX=$REPO/tests/prov-p1/sbx
-SBX=${SBX:-}; BASE=""; GO=${GO:-go}; FEED=$REPO/feed; SOC=bcm2711; fails=0
+SBX=""; BASE=""; GO=${GO:-go}; FEED=$REPO/feed; SOC=bcm2711; fails=0
 no(){ echo "FAIL $*"; fails=$((fails + 1)); }
 die(){ echo "FAIL $*"; cleanup; exit 1; }
 LOOP=""
-cleanup(){ [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null; LOOP=""; }
+cleanup(){ [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null; LOOP=""
+	# its own mktemp work dir only, and only when nothing is mounted under it any more
+	case "$SBX" in /tmp/dv-sbx.??????) grep -q " $SBX/" /proc/mounts || rm -rf "$SBX" ;; esac; }
 trap cleanup EXIT
 while [ $# -gt 0 ]; do case "$1" in
 	--base) BASE=$2; shift 2 ;;
@@ -31,17 +41,16 @@ while [ $# -gt 0 ]; do case "$1" in
 esac; done
 [ $# -gt 0 ] || { echo "FAIL no case given"; exit 2; }
 [ "$(id -u)" = 0 ] || { echo "FAIL root only (unshare / mount / losetup)"; exit 2; }
+[ "${GITHUB_ACTIONS:-}" = true ] || { echo "FAIL dv-sbx runs only on a throw-away CI runner (GITHUB_ACTIONS=true): its cases keep CAP_SYS_ADMIN as real root (254-p1-impl §4.10)"; exit 2; }
 for t in unshare capsh chroot losetup unsquashfs mkfs.ext4 tar sha256sum; do command -v "$t" >/dev/null || die "missing host tool $t"; done
 # shellcheck source=tests/prov-p1/sbx/base.env
 . "$SX/base.env"
 case "$SOC" in bcm2711) ;; bcm2710) BASE_URL=$BASE_URL_BCM2710; BASE_SHA256=$BASE_SHA256_BCM2710 ;; *) echo "FAIL --soc $SOC"; exit 2 ;; esac
 
 # ---- build the root ---------------------------------------------------------------------------------------------------
-# the work dir: a fresh private mktemp dir, or SBX = an existing root-owned directory (not a symlink) emptied here —
-# never a predictable /tmp path root would rm -rf or follow (#280 tmp-trust)
-if [ -z "$SBX" ]; then SBX=$(mktemp -d /tmp/dv-sbx.XXXXXX) || die "mktemp"
-else [ -d "$SBX" ] && [ ! -L "$SBX" ] && [ -O "$SBX" ] || die "SBX=$SBX is not a root-owned directory (or is a symlink)"
-	grep -q " $SBX/" /proc/mounts && die "something is still mounted under $SBX"; find "$SBX" -mindepth 1 -maxdepth 1 -exec rm -rf {} +; fi
+# the work dir: always a fresh private mktemp dir of its own — no SBX= override (review B-M3: SBX=/ passed the old
+# checks and its top level would have been rm -rf'd)
+SBX=$(mktemp -d /tmp/dv-sbx.XXXXXX) || die "mktemp"
 RT=$SBX/root; echo "work dir $SBX"
 if [ -n "$BASE" ]; then cp "$BASE" "$SBX/base.tgz" || die "copy $BASE"
 else curl -fsSL --retry 3 -o "$SBX/base.tgz" "$BASE_URL" || die "download $BASE_URL"; fi
@@ -93,15 +102,19 @@ run(){	# <case> <mutant|-> -> the case output on stdout
 }
 escape(){	# prov-unit-sbx: the host side of the sandbox's negative tests
 	local b0 marker o ifn
-	b0=$(cat /proc/sys/kernel/random/boot_id); marker="SBX-KMSG-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+	h0=$(cat /proc/sys/kernel/hostname); b0=$(cat /proc/sys/kernel/random/boot_id); marker="SBX-KMSG-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 	ifn="sbx$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 	ip link show "$ifn" >/dev/null 2>&1 && { no "escape: the host already has $ifn (cannot judge)"; return; }
 	o=$(SBX_MARKER=$marker SBX_IF=$ifn run escape -); echo "$o" | sed 's/^/    /'
 	grep -q '^CASE escape cases=[1-9][0-9]* fails=0$' <<< "$o" || no "escape: the in-sandbox half failed"
 	[ "$(cat /proc/sys/kernel/random/boot_id)" = "$b0" ] && echo "ok   escape: host boot_id unchanged after reboot -f in the sandbox" || no "escape: host boot_id changed"
 	ip link show "$ifn" >/dev/null 2>&1 && { no "escape: $ifn made in the sandbox is visible on the host"; ip link del "$ifn"; } || echo "ok   escape: $ifn (made in the sandbox) not on the host (netns)"
-	dmesg 2>/dev/null | grep -q "$marker" && no "escape: the sandbox's /dev/kmsg write reached the host dmesg" || echo "ok   escape: /dev/kmsg write not in the host dmesg"
-	[ "$(hostname)" != x ] && echo "ok   escape: host hostname unchanged" || no "escape: host hostname changed"
+	# fail-closed: an unreadable dmesg proves nothing (review B-M2: it printed ok)
+	if ! d=$(dmesg 2>/dev/null) || [ -z "$d" ]; then no "escape: host dmesg unreadable — the kmsg check proves nothing"
+	elif grep -q "$marker" <<< "$d"; then no "escape: the sandbox's /dev/kmsg write reached the host dmesg"
+	else echo "ok   escape: /dev/kmsg write not in the host dmesg"; fi
+	# hostname: the case really sets it (inside its UTS namespace) to a marker; the host's must not change
+	h1=$(cat /proc/sys/kernel/hostname); [ "$h1" = "$h0" ] && [ "$h1" != "$marker" ] && echo "ok   escape: host hostname unchanged after the case set its own" || no "escape: host hostname changed ($h0 -> $h1)"
 }
 for c in "$@"; do
 	name=${c%%:*}; mut=-; [ "$c" != "$name" ] && mut=${c#*:}

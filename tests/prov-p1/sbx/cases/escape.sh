@@ -1,6 +1,7 @@
 #!/bin/sh
 # tests/prov-p1/sbx/cases/escape.sh — prov-unit-sbx, the in-sandbox half (254-p1-impl §4.10): each escape attempt must
-# fail or stay inside; scripts/dv-sbx.sh checks the host side (boot_id, dummy0, dmesg marker, hostname).
+# fail or stay inside; scripts/dv-sbx.sh checks the host side (boot_id, the interface, dmesg marker, hostname).
+# Accident isolation only (dv-sbx.sh header): a case running as root that WANTS out can get out.
 n=0; f=0
 ok(){ n=$((n + 1)); echo "ok   $*"; }; no(){ n=$((n + 1)); f=$((f + 1)); echo "FAIL $*"; }
 # reboot -f: busybox's own applet (not the stub): no CAP_SYS_BOOT, and only the pid namespace would go down anyway
@@ -20,5 +21,7 @@ echo "${SBX_MARKER:-SBX-KMSG-none}" > /dev/kmsg && [ -f /dev/kmsg ] && ok "/dev/
 [ -b /dev/mmcblk0p5 ] && ok "p5 is a block device (the sandbox loop)" || no "no /dev/mmcblk0p5"
 [ ! -e /proc/device-tree ] && ok "no /proc/device-tree" || no "/proc/device-tree present"
 grep -q ' /opt/batdata tmpfs ' /proc/mounts && grep -q ' /tmp/run tmpfs ' /proc/mounts && ok "/opt/batdata and /tmp/run are private tmpfs" || no "private tmpfs mounts missing"
+if hostname "${SBX_MARKER:-sbxhost}" 2>/dev/null && [ "$(hostname)" = "${SBX_MARKER:-sbxhost}" ]; then ok "hostname set inside the UTS namespace (the host side checks its own is unchanged)"; else no "could not set the hostname inside the sandbox"; fi
+if chroot / /bin/true 2>/dev/null; then no "chroot still possible (cap_sys_chroot not dropped)"; else ok "no chroot (cap_sys_chroot dropped)"; fi
 reboot -f; grep -q '^reboot -f' /tmp/run/sbx-calls.log && ok "plain reboot resolves to the call-logging stub" || no "the reboot stub did not record the call"
 echo "CASE escape cases=$n fails=$f"
