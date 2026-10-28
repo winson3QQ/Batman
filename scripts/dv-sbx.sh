@@ -60,6 +60,18 @@ echo "product: $FEED"; echo "laid $n batman-provision files + the helper init ov
 ( cd "$FEED/batman-prov/src" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOFLAGS=-mod=vendor GOTOOLCHAIN=local \
 	"$GO" build -tags prov_test -trimpath -ldflags "-s -w" -o "$RT/usr/bin/batman-provhelper" ./cmd/batman-provhelper ) || die "helper build"
 chroot "$RT" /usr/bin/batman-provhelper --version 2>/dev/null | grep -q BATMAN_PROV_TEST_BUILD_7f3a || die "the sandbox helper has no prov_test marker — pre-P1b product (no seams) in $FEED; red until feat/254-p1b-seams lands (#254)"
+# mutant helpers: <case>:<mutant> with tests/prov-p1/sbx/mutants/<case>-<mutant>.sed ("# target: <file under src/>") ->
+# /sbx/helper-<mutant>, built from a patched copy of the source; the sed must change the target, or FAIL
+for c in "$@"; do
+	case "$c" in *:*) ;; *) continue ;; esac
+	ms=$SX/mutants/${c%%:*}-${c#*:}.sed; [ -f "$ms" ] || continue
+	tg=$(sed -n 's/^# target: //p' "$ms" | head -1); [ -n "$tg" ] || die "$ms has no # target: line"
+	md=$SBX/msrc-${c#*:}; rm -rf "$md"; cp -a "$FEED/batman-prov/src" "$md" || die "copy src for $c"
+	sed -i -f "$ms" "$md/$tg" && ! cmp -s "$md/$tg" "$FEED/batman-prov/src/$tg" || die "mutant $c did not change $tg"
+	( cd "$md" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOFLAGS=-mod=vendor GOTOOLCHAIN=local \
+		"$GO" build -tags prov_test -trimpath -ldflags "-s -w" -o "$RT/sbx/helper-${c#*:}" ./cmd/batman-provhelper ) || die "mutant $c build"
+	echo "built mutant helper ${c#*:}"
+done
 mkdir -p "$RT/sbx/bin" "$RT/sbx/cases"
 install -m 0755 "$SX"/stubs/* "$RT/sbx/bin/" && install -m 0644 "$SX"/cases/*.sh "$RT/sbx/cases/" || die "stubs / cases"
 # first boot's config_generate (board.json -> /etc/config/system) never ran on the squashfs: its system section is the
