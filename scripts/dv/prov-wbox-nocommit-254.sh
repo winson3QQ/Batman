@@ -7,17 +7,28 @@
 #     (judged by WBOX-NOCOMMIT, not by the last TRIAL-REVERTED reason; none + a mesh reason = INVALID) -> back on A.
 #     Safety net: a COMMITTED in the trial (gate regression) -> at once `batman-slot rollback` (to A, allowed) +
 #     `batman-slot reboot committed`; not back on A -> NEEDS-PERSON.
-#   rollback arm (B still holds the wbox image, before the B rewrite): one detached node-side arm (survives an ssh drop):
-#     `batman-slot rollback` (target = the wbox B) -> PASS only when rc != 0, the output names "holds a -wbox test
-#     image" and bf_ab_all is unchanged; rc 0 or [all] changed -> `batman-slot commit` on A at once (3 tries, 5 s) ->
-#     FAIL-RECOVERED / FAIL-NEEDS-PERSON; another refusal message -> INVALID.
+#   rollback arm (B still holds the wbox image, before the B rewrite): scripts/node/prov-rbarm-254.sh, started detached
+#     by prov-rbarm-launch-254.sh over `ssh -tt` (§23.1): 3 s in, the session's process group gets SIGHUP and the ssh
+#     client is killed; the arm (asleep 10 s first) then runs `batman-slot rollback` (target = the wbox B) -> PASS only
+#     when rc != 0, the output names "holds a -wbox test image" and bf_ab_all is unchanged; rc 0 or [all] changed ->
+#     `batman-slot commit` on A at once (3 tries, 5 s) -> FAIL-RECOVERED / FAIL-NEEDS-PERSON; another refusal -> INVALID.
+#     Negative control first, same path and window: a harmless arm (no batman-slot) started with a plain `&` must die;
+#     it survives -> the drop proof is INVALID (the arm's own verdict still counts). Proof: the kill (node uptime) is
+#     earlier than the arm's "T rollback". Waiting (§23.2): 120 s, then up to 60 s more while the pid is alive with
+#     rbarm.sh in its cmdline; still alive -> NEEDS-PERSON (never killed, nothing started beside it); gone without a
+#     RESULT and [all] != fw-part A -> prov-rbfix-254.sh (recovery only, its own preconditions) + NEEDS-PERSON.
 # Type: revert / A. Side effects: 04 ~50 min (one deadline revert, B rewritten twice), bad-slot handled by pr_end revert.
 set -u
 PR_UNIT=prov-wbox-nocommit-254
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
 W=/tmp/run/batman-dv/wbox/$RUN
+# the arm, its launcher, the recovery script, their out and pid files: one level under /tmp/run/batman-dv, where
+# preflight P9 looks for a live rbarm.pid / rbfix.pid (prov-p9-254.sh)
+RD=/tmp/run/batman-dv/$RUN
 WV=""
+NL='
+'
 trial(){
 	local s b0 t0 o dl
 	[ "$(qr "grep -c 'holds a -wbox test image' /usr/sbin/batman-slot")" -ge 1 ] 2>/dev/null || { no "pre-gate image: A's batman-slot has no wbox gate"; return 1; }
@@ -28,7 +39,9 @@ trial(){
 	say "B trial of $WV (no hold), deadline uptime ${dl}s"
 	t0=$(mono)
 	while :; do
-		o=$(timeout 30 ssh $SSHO root@$NODE 'logread | grep -E "batman-autocommit.*slot B committed|revert deferred:" | tail -1' 2>/dev/null | tr -d '\r')
+		# logread is this boot's ring only: the boot id comes with it, and a line of another boot is not this trial's (§23.9)
+		o=$(timeout 30 ssh $SSHO root@$NODE 'echo "BOOT=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"; logread | grep -E "batman-autocommit.*slot B committed|revert deferred:" | tail -1' 2>/dev/null | tr -d '\r')
+		case "$o" in "BOOT=$b0"*) o=${o#*$NL} ;; *) o="" ;; esac
 		case "$o" in *"slot B committed"*)
 			no "GATE REGRESSION: the wbox trial was COMMITTED ($o)"
 			o=$(q 'batman-slot rollback >/dev/null 2>&1 && { (batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &); echo SENT; }')
@@ -51,27 +64,62 @@ trial(){
 	case "$r" in *"reason=wbox test image"*) ok "TRIAL-REVERTED reason=wbox test image" ;; *) say "last TRIAL-REVERTED reason: ${r##*reason=} (judged by WBOX-NOCOMMIT)" ;; esac
 }
 rbarm(){
-	local o rw
+	local o rw ab0 fa g kt tr x f
 	[ -n "$WV" ] || { no "rollback arm: no wbox version"; return 1; }
 	pw prep >/dev/null
-	# the arm itself: scripts/node/prov-rbarm-254.sh (offline test tests/prov-p1/rbarm.sh)
-	scp -q $SSHO "$REPO/scripts/node/prov-rbarm-254.sh" root@$NODE:$W/rbarm.sh || { no "push the rollback arm"; return 1; }
-	[ "$(qr "sha256sum < $W/rbarm.sh | cut -c1-64")" = "$(sha256sum < "$REPO/scripts/node/prov-rbarm-254.sh" | cut -c1-64)" ] || { no "rollback arm on the node differs"; return 1; }
-	# the arm's pid in /tmp/run/batman-dv/<run>/rbarm.pid: preflight P9 FAILs while it is alive (prov-p9-254.sh, p9-judge)
-	q "chmod 700 $W/rbarm.sh; rm -f $W/rbarm.out; mkdir -p -m 0700 /tmp/run/batman-dv/$RUN; setsid sh $W/rbarm.sh '$WV' > $W/rbarm.out 2>&1 < /dev/null & echo \$! > /tmp/run/batman-dv/$RUN/rbarm.pid"
-	# review B-m1: past 120 s it is waited for while alive (to 600 s), never killed, and the restore never runs beside it
-	o=$(pr_wait_result "$W/rbarm.out" "/tmp/run/batman-dv/$RUN/rbarm.pid" 120 600); rw=$?
+	q "mkdir -p -m 0700 $RD; rm -f $RD/rbarm.out $RD/rbarm.pid $RD/harm.out $RD/rbfix.out $RD/rbfix.pid"
+	for f in rbarm rbarm-launch rbfix; do
+		scp -q $SSHO "$REPO/scripts/node/prov-$f-254.sh" root@$NODE:$RD/$f.sh || { no "push prov-$f-254.sh"; return 1; }
+		[ "$(qr "sha256sum < $RD/$f.sh | cut -c1-64")" = "$(sha256sum < "$REPO/scripts/node/prov-$f-254.sh" | cut -c1-64)" ] || { no "$f.sh on the node differs"; return 1; }
+	done
+	q "chmod 700 $RD/*.sh; echo 'sleep 10; echo RESULT=PASS harmless' > $RD/harm.sh"
+	ab0=$(qr 'cut -c1-8 /proc/sys/kernel/random/boot_id'); fa=$(qr 'batman-slot fw-part A')
+	# §23.1: start over `ssh -tt`, 3 s later SIGHUP the session's process group (worst case of the hangup) and kill the
+	# client; returns the node uptime right after the kill in kt and the session's pgid in g
+	ptyrun(){
+		local lf sp; lf=$(mktemp -t rblaunch.XXXXXX)   # host side (TMPDIR)
+		timeout 60 ssh -tt $SSHO root@$NODE "sh $RD/rbarm-launch.sh $1 $RD; sleep 30" > "$lf" 2>&1 < /dev/null & sp=$!
+		sleep 3
+		g=$(tr -d '\r' < "$lf" | sed -n 's/.*LAUNCH pid=[0-9]* pgid=\([0-9]*\).*/\1/p'); rm -f "$lf"
+		[ -n "$g" ] && q "kill -HUP -- -$g" >/dev/null
+		kill "$sp" 2>/dev/null; wait "$sp" 2>/dev/null
+		kt=$(qr 'cut -d" " -f1 /proc/uptime')
+		[ -n "$g" ]
+	}
+	# negative control: a harmless arm with a plain `&` through the same path and window must die
+	if ptyrun neg; then
+		sleep 12
+		x=$(qr "grep '^RESULT=' $RD/harm.out 2>/dev/null")
+		if [ -z "$x" ]; then ok "drop proof negative control: a plain & arm died with the session (pgid $g)"
+		else inv "drop proof: the harmless plain & arm survived ($x) — the drop proof does not discriminate on this node (§23.1)"; fi
+	else inv "drop proof negative control: the launcher printed no pgid"; fi
+	ptyrun "$WV" || inv "drop proof: the launcher printed no pgid (the arm still runs; its verdict counts)"
+	say "ssh -tt killed at node uptime $kt (session pgid ${g:-?})"
+	o=$(pr_wait_result "$RD/rbarm.out" "$RD/rbarm.pid" 120 180 rbarm.sh); rw=$?
 	say "rollback arm: ${o:-no result}"
-	[ "$rw" = 2 ] || q "rm -f /tmp/run/batman-dv/$RUN/rbarm.pid"   # ALIVE = the arm may still run: P9 must see its pid
+	[ "$rw" = 2 ] || q "rm -f $RD/rbarm.pid"   # ALIVE = the arm may still run: P9 must see its pid
+	if [ -n "$g" ]; then
+		[ "$(qr "kill -0 $g 2>/dev/null && echo alive || echo gone")" = gone ] && ok "the ssh session shell (pgid $g) is gone" || inv "drop proof: the session shell $g is still alive"
+	fi
+	tr=$(qr "sed -n 's/^T rollback=//p' $RD/rbarm.out")
+	if [ -n "$tr" ] && [ -n "$kt" ] && awk -v a="$kt" -v b="$tr" 'BEGIN { exit !(a < b) }'; then ok "the session was killed (uptime $kt) before the arm's rollback ($tr): the arm outlived it"
+	elif [ -n "$tr" ]; then inv "drop proof: kill at $kt is not before the arm's rollback at $tr"; fi
 	case "$o" in
 		RESULT=PASS*) ok "rollback to the wbox B refused, [all] unchanged (${o#RESULT=PASS })" ;;
 		RESULT=FAIL-RECOVERED*) no "GATE REGRESSION: rollback to the wbox B was accepted — recovered to A (${o#RESULT=})" ;;
-		RESULT=FAIL-NEEDS-PERSON*) pr_needs_person "rollback arm: [all] not back on A (${o#RESULT=}) — run on 04: batman-slot commit"; return 1 ;;
+		RESULT=FAIL-NEEDS-PERSON*) pr_needs_person "rollback arm: ${o#RESULT=}"; return 1 ;;
 		RESULT=INVALID*) inv "rollback arm: ${o#RESULT=INVALID }" ;;
-		ALIVE) pr_needs_person "rollback arm still running (or 04 silent) after 600 s — NOT killed: it may be between its rollback and its recovery. On 04: wait for $W/rbarm.out, check bf_ab_all = 1 and batman-slot active = A, then kill the pid in /tmp/run/batman-dv/$RUN/rbarm.pid"; return 1 ;;
+		ALIVE) pr_needs_person "rollback arm still running (or 04 silent) 180 s after its start — NOT killed, nothing started beside it (slot_lock). On 04: $(qr ". /usr/lib/batman/bootfacts.sh; echo \"[all]=\$(bf_ab_all)\"; sed -n '/^\[tryboot\]/,/^\[/p' /boot/autoboot.txt | tr '\n' ' '; ps w | grep -E '[r]barm|[b]atman-slot' | tr '\n' ';'") — wait for $RD/rbarm.out; [all] must be fw-part A ($fa)"; return 1 ;;
 		*)	o=$(qr '. /usr/lib/batman/bootfacts.sh; bf_ab_all')   # the arm ended without a RESULT line
-			[ "$o" = 1 ] && no "rollback arm: ended without a RESULT line ([all]=1 unchanged)" || { pr_needs_person "rollback arm: no result and [all]=$o — run on 04: batman-slot commit"; return 1; } ;;
+			if [ "$o" = "$fa" ]; then no "rollback arm: ended without a RESULT line ([all]=$o = fw-part A, unchanged)"
+			else
+				# §23.2: the recovery only, with its own preconditions (A, same boot, no batman-slot running)
+				q "trap '' HUP PIPE; setsid sh $RD/rbfix.sh $ab0 $RD > $RD/rbfix.out 2>&1 < /dev/null &"
+				x=$(pr_wait_result "$RD/rbfix.out" "$RD/rbfix.pid" 30 60 rbfix.sh)
+				pr_needs_person "rollback arm ended without a RESULT and [all]=$o != fw-part A ($fa); rbfix: ${x:-no result}"; return 1
+			fi ;;
 	esac
+	[ "$rw" = 2 ] || q "rm -f $RD/rbfix.pid"
 }
 pr_begin 3600 || { pr_result; exit 1; }
 trial || { pr_abort "trial"; pr_result; exit 1; }

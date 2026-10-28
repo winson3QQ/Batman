@@ -30,13 +30,26 @@ pr_unlock; [ ! -e "$LOCKD" ] && { n=$((n + 1)); echo "ok   pr_unlock removes the
 # pr_wait_result (review B-m1): a detached job that outlives the first wait is waited for while alive, never treated as
 # done; gone without a line -> ""; still alive / node silent at max -> ALIVE. qr stubbed from files; mono +100 per call.
 wr(){ echo 0 > "$T/clk"; echo "$1" > "$T/res"; echo "$2" > "$T/alive"; echo "${3:-0}" > "$T/late"
-	o=$(T="$T" timeout 20 bash -c '. "$1"; pr_wait_result /x/out /x/pid 120 600; echo "rc=$?"' _ "$T/fw.sh" 2>&1); }
+	o=$(T="$T" timeout 20 bash -c '. "$1"; pr_wait_result /x/out /x/pid 120 180 rbarm.sh; echo "rc=$?"' _ "$T/fw.sh" 2>&1); }
 qr(){ case "$1" in
 	*RESULT=*) n=$(cat "$T/late"); if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$T/late"; else cat "$T/res"; fi ;;
 	*kill*) cat "$T/alive" ;; esac; }
 declare -f qr mono sleep pr_wait_result > "$T/fw.sh"
-wr "RESULT=PASS x" alive 3; want "pr_wait_result: the line arrives after a few polls" "$o" 'RESULT=PASS x*rc=0'
+wr "RESULT=PASS x" alive 1; want "pr_wait_result: the line arrives on a later poll (steps of 100 s, max 180)" "$o" 'RESULT=PASS x*rc=0'
 wr "" alive; want "pr_wait_result: alive past max -> ALIVE rc 2 (not done, not killed)" "$o" 'ALIVE*rc=2'
 wr "" dead; want "pr_wait_result: gone without a line -> empty rc 1" "$o" '*rc=1'
 wr "" ""; want "pr_wait_result: node silent -> ALIVE rc 2 (unknown is not dead)" "$o" 'ALIVE*rc=2'
+# pr_wait_result's liveness command itself (254-h23 §23.2: a reused pid is not the job), run locally instead of over ssh
+qrl(){ bash -c "$1"; }
+declare -f mono sleep pr_wait_result > "$T/fw2.sh"; echo 'qr(){ bash -c "$1"; }' >> "$T/fw2.sh"
+mkdir -p "$T/n"; : > "$T/n/out"
+/bin/sleep 300 > /dev/null 2>&1 & rp=$!; echo $rp > "$T/n/pid"   # /bin/sleep: `sleep` is stubbed above; never on our stdout
+printf '#!/bin/sh\nsleep 300\n' > "$T/n/rbarm.sh"; chmod 755 "$T/n/rbarm.sh"
+echo 0 > "$T/clk"; o=$(T="$T" timeout 20 bash -c '. "$1"; pr_wait_result "$2/out" "$2/pid" 120 180 rbarm.sh; echo "rc=$?"' _ "$T/fw2.sh" "$T/n" 2>&1)
+want "pr_wait_result: a live pid whose cmdline is not rbarm.sh (reused) -> gone, rc 1" "$o" '*rc=1'
+kill $rp 2>/dev/null
+"$T/n/rbarm.sh" > /dev/null 2>&1 & ap=$!; echo $ap > "$T/n/pid"
+echo 0 > "$T/clk"; o=$(T="$T" timeout 20 bash -c '. "$1"; pr_wait_result "$2/out" "$2/pid" 120 180 rbarm.sh; echo "rc=$?"' _ "$T/fw2.sh" "$T/n" 2>&1)
+want "pr_wait_result: the live rbarm.sh past 180 s -> ALIVE rc 2" "$o" 'ALIVE*rc=2'
+pkill -P $ap 2>/dev/null; kill $ap 2>/dev/null   # the child first: killed after its parent it is orphaned
 echo "LIB-HOST cases=$n fails=$f"; [ "$n" -gt 0 ] && [ "$f" = 0 ]
