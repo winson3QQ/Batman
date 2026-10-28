@@ -483,6 +483,7 @@ pr_member(){
 	r=$(pr_pc owner.pem FD3="$PR_FD3" -- net-apply --first "$OWNER"); grep -q "RESULT net.apply code=0 " <<< "$r" || { no "join: $r"; return 1; }
 	i=$(pr_info); case " $i " in *" state=member "*) ;; *) no "not member after the join: $i"; return 1 ;; esac
 	PR_MEMBER_GEN=$(sed -n 's/.*gen=\([0-9]*\).*/\1/p' <<< "$i"); PR_MESH=$mesh
+	PR_NETCFG=$(sed -n 's/^NETCFG //p' <<< "$r")   # the signed v1 net_config: the prev of a later network/update
 	ok "member of the test mesh $mesh (gen $PR_MEMBER_GEN)"
 	s=$(qr "$ST"); b0=$(field "$s" boot)
 	q "(batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &)"
@@ -493,3 +494,29 @@ pr_member(){
 # pr_trial_line <ERE> [tries]: the first logread line of this boot matching ERE (polled; the trial's autocommit logs it
 # once at its start)
 pr_trial_line(){ local t=0 r; while [ $t -lt "${2:-30}" ]; do r=$(qr "logread | grep -m1 -E '$1'"); [ -n "$r" ] && { echo "$r"; return 0; }; sleep 10; t=$((t + 1)); done; return 1; }
+
+# ---- killpoints (254-h23 §4.1.1, §16.1) -------------------------------------------------------------------------------
+# pr_killpoint <point> <provclient op args...>: the test helper bound with the point armed -> the op (the owner signs) ->
+# the node must die mid-transaction by sysrq "b". Judged by §16.1: (a) armed + file consumed (push-helper asserts it),
+# (b) no reply to the op, (c) no "killpoint <p>: fallback" in a host-side `logread -f` stream, (d) a new boot_id,
+# (f) boot-reasons UNCLEAN with "hints: sysrq" (absent = INVALID: the console capture is off). (e) — the state the node
+# comes back in — is the unit's own judgement.
+pr_killpoint(){
+	local p=$1 b0 lf lp r o; shift
+	pr_push_helper "test:killpoint=$p" || return 1
+	ok "(a) killpoint $p armed by the bound test helper, the file consumed"
+	b0=$(field "$(qr "$ST")" boot)
+	lf=$(mktemp); timeout 900 ssh $SSHO root@$NODE 'logread -f' > "$lf" 2>/dev/null & lp=$!
+	sleep 2
+	r=$(pr_pc owner.pem FD3="$PR_FD3" -- "$@"); say "trigger output: $(echo "$r" | grep -v '^NETCFG' | tr '\n' '|' | cut -c1-200)"
+	grep -q '^RESULT' <<< "$r" && no "(b) the op got a reply — killpoint $p did not fire" || ok "(b) no reply to the op (the node went down)"
+	pr_find 900 "$b0" || { kill $lp 2>/dev/null; no "(d) no node after the killpoint"; return 1; }
+	kill $lp 2>/dev/null; wait $lp 2>/dev/null
+	ok "(d) boot_id changed ($b0 -> $(field "$PR_STATE" boot))"
+	grep -q "killpoint $p: fallback" "$lf" && no "(c) 'killpoint $p: fallback' seen — sysrq did not work" || ok "(c) no fallback line in the logread stream ($(wc -l < "$lf") lines)"
+	rm -f "$lf"
+	o=$(qr 'tail -1 /opt/batdata/log/boot-reasons.log')
+	case "$o" in *UNCLEAN*"hints: sysrq"*) ok "(f) boot-reasons: UNCLEAN, hints: sysrq" ;; *) inv "(f) boot-reasons without the sysrq hint: $o" ;; esac
+	pr_pc_place || return 1
+	return 0
+}
