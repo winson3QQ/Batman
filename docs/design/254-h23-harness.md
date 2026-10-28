@@ -685,3 +685,52 @@ claim-lock §11.4 真機 tier B(4 / 4-inj / 4b / 4b' / 4c / 4d / 5)仍未排程(
 32. 行號更新(r4 A-m3):`main.go:504`(`not committed: restored`)、`:506`(`RemoveTxn`)、`node.go:1122-1123`(txn-4)、`boot.go:120` / `:127` 不變。
 
 **misc-L38 / -L42 / -L43 / -L51(§4.2 表最後一列)**:§6.2 只寫了 L 編號,沒寫每個 mutant 改哪裡、讓哪條判定失效;L51 在 stage1 設計是「`lastjoined`」、在本設計 §6.2 是「`sock: unexpected`」,兩處不一致。**這 4 個變體先不做**,待補一段設計(每個:mutant 位置、對應的 prov-misc 判定、負對照預期)並過審查後再寫 patch;其餘 13 個變體已在 `tests/wbox/`(harness 5b32fdd)。
+
+## 17. misc 變體的設計(補 §4.2 表最後一列與 §6.2 `prov-misc-254`;**與前文衝突時以本節為準**)
+
+### 17.1 為什麼要補
+§6.2 `prov-misc-254` 只寫「L38(96 superblock 壞出口,以呼叫字串定位)、L42、L43、L51(`sock: unexpected`)」,沒說每個 mutant 改哪裡、讓哪條判定失效。對照原始碼(rc d0643d5):
+- L38 / L42 / L43 / L51 的定義在 `254-stage1-impl.md:368,372,373,379`,機制全在 autocommit 的「mesh join required」決定(`batman-autocommit:399-425`)與 sysupgrade 第 1 段的 arm(`platform-ab.sh:_ab_arm_mesh`)。
+- 「96 superblock 壞出口」與 L38 無關(L38 = helper 晚於 autocommit);本設計前文混用,作廢。
+- 「`sock: unexpected`」是 helper socket 目錄預置的拒絕(`sock/sock.go:74`),已由 tier A `prov-sec-sockdir-254` 測,不屬 L51;L51 = `joinwatch.lastjoined`。
+
+### 17.2 四個變體(都只改 `feed/batman-provision/`,tag release / kind same;**以 bind 用在 committed 的 A 上**,不 OTA 進槽)
+
+| name | mutant(改哪一行) | 讓哪條保護失效 | bind 的檔 |
+|---|---|---|---|
+| `misc-L38` | 拿掉 `batman-autocommit:404` 的等待迴圈(`while [ "${pr%% *}" = 99zz ] …`) | 「writer=99zz 時等 ≤ 60 s 改用 helper 的值」 | `/usr/bin/batman-autocommit` |
+| `misc-L42` | `batman-slot apply` 成功後寫 `ota-armed.mesh`(`<boot8> <target> radio`) | 「直接 `apply`(不經 sysupgrade)沒有 arm 檔 → member 要鄰居」 | `/usr/sbin/batman-slot` |
+| `misc-L43` | `batman-autocommit:420` 不比對 arm 檔的 boot_id(第 1 欄) | 「arm 檔綁 arm 開機的 boot_id,舊檔無效」 | `/usr/bin/batman-autocommit` |
+| `misc-L51` | `_ab_arm_mesh` 一律 `m=radio`(不看 `joinwatch.lastjoined`、不取樣) | 「本次開機入過網 → arm 寫 joined → 要鄰居」 | `/usr/lib/batman/platform-ab.sh` |
+
+見證:shell 註解行 `# WBOX-misc-LNN-<8 hex>` + 該 mutant 新增的 log 行(`aclog` / `log` / `otalog` 帶見證字串)。bind 來源 = 該變體 payload 抽出的檔(`dv-prov-tools.sh` 同法,sha 記在 `SHA256SUMS`);bind 期間 `wbox.list` 記錄,`unbind-all` / P9 照 §4.5 處理。
+
+### 17.3 測法(04,`prov-misc-254` 內;每項先正向、後負對照)
+
+前置:L42 / L51 需要 04 = member(放在 `prov-netjoin-254` 之後、`prov-leave-ota-254` 之前);L38 / L43 用 dry-run,狀態以白箱寫入 p6 `prov-state` / `ota-armed.mesh`(單位開頭 `snap` 備份,結尾還原)。
+
+- **L38**(dry-run,`AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=<uptime+150>`,同 chain1 8.7 的寫法):
+  - 寫 `prov-state` = `<本次 boot_id> 99zz - unclaimed - 0` → 啟動 dry-run → 20 s 後改寫 `<boot_id> helper member member - radio`,並清掉 `ota-armed.mesh`。
+  - 正向:dry-run 的 `mesh join required: 1 (prov=member mesh_expect=radio` + `member: no usable ota-armed.mesh`。
+  - 第二臂:不改寫 → 60 s 後 `mesh join required: 0 (prov=unclaimed`,且這行出現在啟動後 ≥ 60 s。
+  - 負對照:bind `misc-L38` → 第一臂得到 `prov=unclaimed`(沒等)→ 判定 FAIL = mutant 有效。
+- **L43**(dry-run):
+  - `prov-state` = `<boot_id> helper member member - radio`;`ota-armed.mesh` = `<不是 arm 開機的 boot8> <active slot> radio`。
+  - 正向:`mesh join required: 1`;對照臂:boot8 改成 boot-reasons 倒數第 2 行的 boot_id → `armed in radio-only mode` + `mesh join required: 0`(證明正向不是別的原因)。
+  - 負對照:bind `misc-L43` → 舊 boot_id 也得到 `required: 0` → FAIL。
+- **L42**(真 trial,hold):
+  - member 04 `batman-slot apply <V payload dir>`(不經 sysupgrade)+ hold → 重開進 B trial。
+  - 正向:B 的 autocommit `member: no usable ota-armed.mesh — neighbours required (fail-closed)`、`mesh join required: 1`;p6 無 `ota-armed.mesh`(apply 前先刪,斷言 apply 後仍無)→ `back_to_a`。
+  - 負對照:A 上 bind `misc-L42` 後同流程 → apply 後有 arm 檔(帶見證的 log)、B `armed in radio-only mode` → FAIL → `back_to_a`。
+- **L51**(真 OTA,hold):
+  - member 04 本次開機入過網(`joinwatch.lastjoined` 非空,前置斷言)→ `pr_ota_b` V hold。
+  - 正向:otalog `S1 ARMED-MESH slot=B m=joined`;B `mesh join required: 1` → `back_to_a`。
+  - 負對照:A 上 bind `misc-L51` → `ARMED-MESH m=radio`、B `armed in radio-only mode` → FAIL → `back_to_a`。
+
+### 17.4 成本與副作用
+- L38 / L43:dry-run,無重開;每臂 ≤ 150 s;寫 p6 `prov-state` / `ota-armed.mesh`(白箱,單位結尾自快照還原;真 helper 下次開機會重寫 `prov-state`)。
+- L42 / L51:各 2 次 hold trial(正向 + 負對照)= 4 次 OTA / apply + 4 次 `back_to_a`;04 每次離網約 3–5 分鐘;mesh 在 02 側不中斷。
+- bind 只在 tmpfs 生效,重開即失效;`unbind-all` 在單位結尾與 deadman 都做。
+
+### 17.5 待審查
+本節是 v7 之後新增的設計;實作前送兩位審查(全文審查,§0–§17)。
