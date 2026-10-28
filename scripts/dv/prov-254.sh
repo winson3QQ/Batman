@@ -155,6 +155,26 @@ pr_wbox_checks(){
 }
 
 # ---- OTA into the other slot ----------------------------------------------------------------------------------------
+# ---- §23.6 runtime tamper guard of a trial ---------------------------------------------------------------------------
+# the protected set = scripts/lint-wbox.sh PROT: what decides the default slot. In a trial none of it may sit in the
+# overlay upper (a uci-defaults / init mutant running as root at first boot could rewrite the gate there), and
+# /boot/autoboot.txt may only change by batman-slot itself (back_to_a's rollback) — its mtime is taken at landing.
+PROT_NODE="usr/sbin/batman-slot usr/bin/batman-autocommit etc/init.d/batman-autocommit usr/lib/batman/otatrace.sh usr/lib/batman/rundir.sh usr/lib/batman/bootfacts.sh usr/lib/batman/meshjoin.sh"
+PR_AB_MT=""
+pr_trial_guard(){
+	local o b
+	o=$(qr "for x in $PROT_NODE; do [ -e /overlay/upper/\$x ] && echo UPPER \$x; done; echo MT=\$(date -r /boot/autoboot.txt +%s)")
+	b=$(grep '^UPPER ' <<< "$o" | cut -d' ' -f2 | tr '\n' ' '); PR_AB_MT=$(sed -n 's/^MT=//p' <<< "$o")
+	if [ -z "$b" ]; then ok "trial: no protected path in /overlay/upper"; else no "trial: protected path(s) in /overlay/upper: $b"; fi
+	case "$PR_AB_MT" in ''|*[!0-9]*) no "trial: /boot/autoboot.txt mtime unreadable [$PR_AB_MT]"; PR_AB_MT="" ;; esac
+}
+pr_trial_guard_end(){	# in the trial, before batman-slot's own rollback writes autoboot.txt
+	local m
+	[ -n "$PR_AB_MT" ] || return 0
+	m=$(qr 'date -r /boot/autoboot.txt +%s')
+	if [ "$m" = "$PR_AB_MT" ]; then ok "trial: /boot/autoboot.txt unchanged during the trial"; else no "trial: /boot/autoboot.txt changed during the trial ($PR_AB_MT -> $m) — not by batman-slot"; fi
+	PR_AB_MT=""
+}
 pr_ota_b(){	# <payload-version> <target-slot> [nohold]
 	local v=$1 tgt=$2 hold=1 try o s b0 hv
 	shift 2; for o in "$@"; do case "$o" in
@@ -181,11 +201,11 @@ pr_ota_b(){	# <payload-version> <target-slot> [nohold]
 		pr_lease_renew +900 || return 1
 		s=$PR_STATE; say "landed: $s"
 		if [ "$(field "$s" slot)" = "$tgt" ] && [ "$(field "$s" ver)" = "$hv" ] && [ "$(field "$s" trial_rc)" = 0 ] && [ "$(field "$s" dt_try)" = 00000001 ]; then
-			[ $hold = 0 ] && { ok "landed in the $tgt trial of $hv (no hold: prov-wbox-nocommit-254)"; return 0; }
+			[ $hold = 0 ] && { ok "landed in the $tgt trial of $hv (no hold: prov-wbox-nocommit-254)"; pr_trial_guard; return 0; }
 			o=$(qr '. /usr/lib/batman/rundir.sh; echo "disc=$([ -e $RUNDIR/autocommit.hold-discarded ] && echo 1 || echo 0) dlog=$(grep -c "HOLD-COMMIT-DISCARDED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)" /opt/batdata/log/autocommit.log 2>/dev/null)"')
 			if [ "$o" = "disc=0 dlog=0" ]; then
 				[ "$(field "$s" held)" = 1 ] && [ "$(field "$s" hold)" = "[]" ] || { no "hold not effective in the trial ($s)"; back_to_a; return 1; }
-				ok "landed in the $tgt trial of $hv, hold effective"; return 0
+				ok "landed in the $tgt trial of $hv, hold effective"; pr_trial_guard; return 0
 			fi
 			no "HOLD-COMMIT-DISCARDED ($o)"
 			if [ "$(qr 'batman-slot is-trial >/dev/null 2>&1; echo $?')" = 0 ]; then back_to_a; else pr_needs_person "the $tgt slot was committed after a discarded hold — run: batman-slot rollback; batman-slot reboot committed"; fi
@@ -200,7 +220,8 @@ pr_ota_b(){	# <payload-version> <target-slot> [nohold]
 # back_to_a: from a B trial (or B committed) to A committed
 back_to_a(){
 	local s b0 o; s=$(qr "$ST"); b0=$(field "$s" boot)
-	[ "$(field "$s" slot)" = B ] || { say "back_to_a: already on $(field "$s" slot)"; PR_STATE=$s; return 0; }
+	[ "$(field "$s" slot)" = B ] || { say "back_to_a: already on $(field "$s" slot)"; PR_STATE=$s; PR_AB_MT=""; return 0; }
+	pr_trial_guard_end
 	o=$(q 'batman-slot rollback >/dev/null 2>&1 && { (batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &); echo SENT; }')
 	say "back_to_a: ${o:-rollback refused}"; grep -q SENT <<< "$o" || return 1
 	pr_find 900 "$b0" || return 1
