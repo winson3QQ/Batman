@@ -735,6 +735,7 @@ is_trial() {
 cmd_commit() {
 	slot_lock
 	assert_fw_sane
+	wbox_gate_self
 	A=$(active_slot); T=$(other_slot "$A")
 	slot_is_bad "$A" && die "slot $A carries $BADMARK — refusing to commit it"
 	FA=$(fw_part "$A") && FT=$(fw_part "$T") || die "cannot derive the firmware partitions"
@@ -764,6 +765,38 @@ addr_defer_release() {
 	return 0
 }
 
+# #254 security review F1 (docs/design/254-h23-harness.md §18.1, §19.3, §20.4, §21.2): a -wbox TEST image is never
+# made the default slot — not by commit, not by rollback, whatever the operator or an override says. The stamp is the
+# image's own /etc/batman-build (squashfs, read-only). wbox_stamp FILE: rc 0 = wbox (BATMAN_WBOX=<non-empty> or a
+# .wbox- version), 1 = release, 2 = unreadable / no BATMAN_VERSION (the callers refuse on 2: fail-closed).
+wbox_stamp() {
+	[ -r "$1" ] && grep -q '^BATMAN_VERSION=' "$1" 2>/dev/null || return 2
+	grep -q '^BATMAN_WBOX=.' "$1" && return 0
+	sed -n 's/^BATMAN_VERSION=//p' "$1" | grep -q '\.wbox-' && return 0
+	return 1
+}
+# the running slot's image (commit)
+wbox_gate_self() {
+	wbox_stamp /rom/etc/batman-build; r=$?
+	[ "$r" = 0 ] && die "this is a -wbox test image ($(sed -n 's/^BATMAN_WBOX=//p' /rom/etc/batman-build)): never committed"
+	[ "$r" = 2 ] && die "this slot's build stamp is unreadable (/rom/etc/batman-build) — not committing"
+	return 0
+}
+# the target slot's image (rollback); runs BEFORE rollback_lock_gate, so neither the legacy early return nor the
+# UNLOCKED_ROLLBACK override skips it
+wbox_gate_target() {
+	m=$(mktemp -d /tmp/.rbwbox.XXXXXX) || die "wbox gate: no temp dir"   # mktemp -d: exclusive, 0700
+	if ! mount -t squashfs -o ro "$(slot_rootdev "$1")" "$m" 2>/dev/null; then
+		rmdir "$m"; die "slot $1 build stamp unreadable — refusing to make it the default"
+	fi
+	wbox_stamp "$m/etc/batman-build"; r=$?
+	n=$(sed -n 's/^BATMAN_WBOX=//p' "$m/etc/batman-build" 2>/dev/null)
+	umount "$m"; rmdir "$m"
+	[ "$r" = 0 ] && die "slot $1 holds a -wbox test image (${n:-version names a wbox variant}): never made the default"
+	[ "$r" = 2 ] && die "slot $1 build stamp unreadable — refusing to make it the default"
+	st ROLLBACK-WBOX-GATE target="$1" ok=1
+}
+
 # #254 claim-lock fix §8: a claimed / member node is never rolled back onto a slot that cannot keep it locked —
 # one without an ENABLED batman-prov-lock (e.g. 1.5.13: no boot-time lock, the old overlay would come up open).
 # Interface (§7): /etc/init.d/batman-prov-lock + /etc/rc.d/S13batman-prov-lock in the target rootfs (squashfs, ro).
@@ -788,6 +821,7 @@ cmd_rollback() {
 	assert_fw_sane
 	A=$(active_slot); T=$(other_slot "$A")
 	slot_is_bad "$T" && die "slot $T carries $BADMARK ($(slot_bad_reason "$T")) — refusing to make it the default"
+	wbox_gate_target "$T"
 	rollback_lock_gate "$T"
 	FA=$(fw_part "$A") && FT=$(fw_part "$T") || die "cannot derive the firmware partitions"
 	st ROLLBACK-BEGIN to="$T" was_all="$(ab_section all)" want_all="$FT"
