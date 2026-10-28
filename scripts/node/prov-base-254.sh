@@ -10,6 +10,8 @@
 #   p5-restore <run>    dd the p5 image back under the config-save lock, verify sha uncached
 #   overlay-restore <run> write the snapshot tar over the live upper, delete extras, restore p6 state
 #   finish <run>        after a passing compare: print and remove snapshot, marker, dirty flag
+# PROV_BASE_SKIP=p5 | extra (the prov-base-254 unit's negative controls only, 254-h23 §6.2): p5-restore writes
+# nothing / overlay-restore keeps the extras; each prints a SKIP line, and the following compare must FAIL.
 # The config-save lock is held by a process whose argv contains "batman-config-save" (F34: config-save
 # takes over a lock whose holder's cmdline does not match), and only while joinwatch / helper are stopped.
 set -u
@@ -191,6 +193,7 @@ p5-restore)
 	[ -f "$D/p5.img" ] || die "no p5 image"
 	want=$(cat "$D/p5.img.sha"); [ "$(sha256sum < "$D/p5.img" | cut -c1-64)" = "$want" ] || die "snapshot image sha mismatch"
 	svc stop joinwatch batman-provhelper batman-provd
+	if [ "${PROV_BASE_SKIP:-}" = p5 ]; then say "SKIP p5 write (PROV_BASE_SKIP=p5, negative control)"; say "P5-RESTORED $RUN sha=SKIPPED"; exit 0; fi
 	lock_take
 	grep -q "^$P5 " /proc/mounts && { lock_drop; die "p5 is mounted"; }
 	dd if="$D/p5.img" of="$P5" bs=1M conv=fsync 2>/dev/null || { lock_drop; die "p5 dd write failed"; }
@@ -209,9 +212,10 @@ overlay-restore)
 	# delete what the snapshot did not have (printed first), except allow-listed paths
 	tree_manifest /overlay/upper | awk '{print $NF}' > /tmp/run/batman-dv/now.paths
 	awk '{print $NF}' "$D/snap/upper.manifest" > /tmp/run/batman-dv/snap.paths
+	if [ "${PROV_BASE_SKIP:-}" = extra ]; then say "SKIP extra removal (PROV_BASE_SKIP=extra, negative control)"; else
 	awk 'NR==FNR{s[$0]=1; next} !($0 in s)' /tmp/run/batman-dv/snap.paths /tmp/run/batman-dv/now.paths | sort -r | while IFS= read -r p; do
 		echo "EXTRA-REMOVED $p"; rm -rf "/overlay/upper/$p"
-	done
+	done; fi
 	for f in $STATEFILES; do
 		if [ -e "$D/snap/state/$f" ]; then cp -p "$D/snap/state/$f" "$ST/$f"; else rm -f "$ST/$f"; fi
 	done

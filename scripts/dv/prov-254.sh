@@ -4,7 +4,7 @@
 # PR_UNIT and sources this file; then
 #   pr_begin <secs> [upper=<variant>] [helper=<variant>[:killpoint=<p>]]
 #            P9 subset -> host lock -> stage + prov lease <secs> + deadman -> snap (dirty) -> (upper-helper, push-helper)
-#   pr_ota_b <payload-version> <target-slot> [allow-stale] [nohold]
+#   pr_ota_b <payload-version> <target-slot> [nohold]
 #            payload checks on the host -> push + node sha -> hold flag (== the payload's BATMAN_VERSION, cmp) ->
 #            `sysupgrade -n` -> landing assertions (target slot, DT tryboot=1, hold effective, no DISCARDED);
 #            a missed landing: disarm, clear the hold, retry once, then pr_needs_person
@@ -42,7 +42,7 @@ mono(){ cut -d. -f1 /proc/uptime; }
 q(){ timeout "${QT:-120}" ssh $SSHO root@$NODE "$@" 2>/dev/null | tr -d '\r'; }
 qr(){ local o rc i; for i in 1 2 3 4 5 6; do o=$(timeout 90 ssh $SSHO root@$NODE "$@" 2>/dev/null); rc=$?; case $rc in 255|124) sleep 10 ;; *) printf '%s' "$o" | tr -d '\r'; [ -n "$o" ] && echo; return $rc ;; esac; done; return 255; }
 qp(){ timeout 60 ssh $SSHO root@$PEER "$@" 2>/dev/null | tr -d '\r'; }
-nb(){ timeout 900 ssh $SSHO root@$NODE sh -s -- "$@" < "$PB" 2>&1 | tr -d '\r'; }
+nb(){ timeout 900 ssh $SSHO root@$NODE "${PB_ENV:-}" sh -s -- "$@" < "$PB" 2>&1 | tr -d '\r'; }
 pl(){ q "RUN_ID=$RUN sh $PRD/prov-lease-254.sh $*"; }
 pw(){ QT=${QT:-180} q "RUN_ID=$RUN sh $PRD/prov-wbox-254.sh $*"; }
 wsl_(){ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- "$@"; }
@@ -111,8 +111,9 @@ pr_payload(){
 	PSHA=$(sha256sum < "$PAYF" | cut -c1-64)
 	grep -q "^$PSHA  batman-$v-ekh-bcm2711-ab-payload\.tar\.gz\$" "$sums" || { echo "FAIL $PAYF does not match its SHA256SUMS"; return 1; }
 	b=$PR_OUT_WSL/$v/ekh-bcm2711/batman-$v-ekh-bcm2711-ab-payload.tar.gz
-	PSTAMP=$(wsl_ bash -c "t=\$(mktemp -d) && tar -xzf '$b' -C \$t root.squashfs && unsquashfs -cat \$t/root.squashfs etc/batman-build; r=\$?; rm -rf \$t; exit \$r" | tr -d '\r') \
-		|| { echo "FAIL cannot read etc/batman-build from $v's root.squashfs"; return 1; }
+	# the stamp is EXTRACTED and must be a regular file in a real etc/ (no -cat: a symlink is never followed; review r2 B-n4)
+	PSTAMP=$(wsl_ bash -c "t=\$(mktemp -d) && tar -xzf '$b' -C \$t root.squashfs && unsquashfs -q -no-xattrs -d \$t/r \$t/root.squashfs etc/batman-build >/dev/null 2>&1; f=\$t/r/etc/batman-build; [ -d \$t/r/etc ] && [ ! -L \$t/r/etc ] && [ -f \$f ] && [ ! -L \$f ] && cat \$f; r=\$?; rm -rf \$t; exit \$r" | tr -d '\r') \
+		&& [ -n "$PSTAMP" ] || { echo "FAIL cannot read etc/batman-build (a regular file) from $v's root.squashfs"; return 1; }
 	[ "$(sed -n 's/^BATMAN_VERSION=//p' <<< "$PSTAMP")" = "$v" ] || { echo "FAIL $v's rootfs says BATMAN_VERSION=$(sed -n 's/^BATMAN_VERSION=//p' <<< "$PSTAMP")"; return 1; }
 	return 0
 }
@@ -122,8 +123,12 @@ pr_rootfs_cat(){ wsl_ bash -c "t=\$(mktemp -d) && tar -xzf '$PR_OUT_WSL/$1/ekh-b
 # protected set (the slot decision code) byte-equal to the normal build of the same rc (254-h23 §19.3, §22.4)
 PROTSET="usr/sbin/batman-slot usr/bin/batman-autocommit etc/init.d/batman-autocommit usr/lib/batman/otatrace.sh usr/lib/batman/rundir.sh usr/lib/batman/bootfacts.sh usr/lib/batman/meshjoin.sh"
 pr_wbox_checks(){
-	local v=$1 name base f a b c wit files n=0
-	name=$(sed -n 's/^BATMAN_WBOX=//p' <<< "$PSTAMP"); [ -n "$name" ] || return 0
+	local v=$1 name base f a b c wit files n=0 sv
+	# the product's rule (batman-slot wbox_stamp): BATMAN_WBOX=<x> OR a version naming .wbox- is a wbox image; the two
+	# must agree here, or the payload is refused (review r2 A-m4 / B-n4)
+	name=$(sed -n 's/^BATMAN_WBOX=//p' <<< "$PSTAMP"); sv=$(sed -n 's/^BATMAN_VERSION=//p' <<< "$PSTAMP")
+	case "$sv" in *.wbox-*) [ -n "$name" ] && [ "${sv##*.wbox-}" = "$name" ] || { echo "FAIL $v: version names wbox variant ${sv##*.wbox-} but BATMAN_WBOX=[$name]"; return 1; } ;;
+		*) [ -z "$name" ] || { echo "FAIL $v: BATMAN_WBOX=$name but the version does not name it"; return 1; }; return 0 ;; esac
 	case "$name" in misc-*) echo "FAIL $v is a misc-* variant (dry-run only, never installed; §19.3)"; return 1 ;; esac
 	pr_rootfs_cat "$v" usr/sbin/batman-slot | grep -q 'holds a -wbox test image' || { echo "FAIL pre-gate image: $v's batman-slot has no wbox gate"; return 1; }
 	base=${v%.wbox-$name}; [ "$base" != "$v" ] || { echo "FAIL $v does not end in .wbox-$name"; return 1; }
@@ -131,7 +136,10 @@ pr_wbox_checks(){
 	b=""; for c in "$base" "${base%.dirty}"; do [ -f "$PR_OUT/$c/ekh-bcm2711/SHA256SUMS" ] && { b=$c; break; }; done
 	[ -n "$b" ] || { echo "FAIL no normal build $base next to $v (protected-set comparison)"; return 1; }
 	for f in $PROTSET; do
-		a=$(pr_rootfs_cat "$v" "$f" | sha256sum | cut -c1-64); c=$(pr_rootfs_cat "$b" "$f" | sha256sum | cut -c1-64)
+		# each side read in full and non-empty first: two failed reads hash equal (e3b0c442…) — never a pass (r2 A-m3)
+		a=$(set -o pipefail; pr_rootfs_cat "$v" "$f" | sha256sum | cut -c1-64) && c=$(set -o pipefail; pr_rootfs_cat "$b" "$f" | sha256sum | cut -c1-64) \
+			|| { echo "FAIL $v / $b: cannot read the protected $f"; return 1; }
+		case "$a$c" in *e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855*) echo "FAIL $v / $b: the protected $f is empty or missing"; return 1 ;; esac
 		[ "$a" = "$c" ] || { echo "FAIL $v: protected $f differs from the normal build $b"; return 1; }
 	done
 	if [ "$name" != test ]; then
@@ -146,11 +154,11 @@ pr_wbox_checks(){
 }
 
 # ---- OTA into the other slot ----------------------------------------------------------------------------------------
-pr_ota_b(){	# <payload-version> <target-slot> [allow-stale] [nohold]
+pr_ota_b(){	# <payload-version> <target-slot> [nohold]
 	local v=$1 tgt=$2 hold=1 try o s b0 hv
 	shift 2; for o in "$@"; do case "$o" in
 		nohold) [ "$PR_UNIT" = prov-wbox-nocommit-254 ] || { no "nohold is only for prov-wbox-nocommit-254"; return 1; }; hold=0 ;;
-		allow-stale) ;; *) no "pr_ota_b: bad option $o"; return 1 ;; esac; done
+		*) no "pr_ota_b: bad option $o"; return 1 ;; esac; done
 	o=$(pr_payload "$v") || { no "payload $v: $o"; return 1; }
 	pr_payload "$v" >/dev/null
 	o=$(pr_wbox_checks "$v") || { no "$o"; return 1; }; [ -n "$o" ] && { say "$o"; PR_WBOX_VER=$v; }
@@ -224,25 +232,39 @@ pr_wait_reverted(){
 }
 
 # ---- restore ----------------------------------------------------------------------------------------------------------
-pr_restore(){
-	local o s b0 i
-	PR_RESTORING=1
+# pr_compare <tag>: manifest + compare against the snapshot (joinwatch stopped meanwhile: p5 is not rw-mounted under the
+# manifest); PR_CMP = the compare output; rc 0 = diffs=0
+pr_compare(){
+	local o="" i
+	q "mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
+	q "/etc/init.d/joinwatch stop >/dev/null 2>&1"
+	for i in 1 2 3; do nb manifest "$RUN" "$1" >/dev/null; o=$(nb compare "$RUN" "$1"); grep -q "p5 unreadable" <<< "$o" || break; sleep 10; done
+	q "/etc/init.d/joinwatch start >/dev/null 2>&1"; PR_CMP=$o
+	grep -q "diffs=0" <<< "$o"
+}
+# pr_restore_cycle [skip]: p5 + overlay back (PROV_BASE_SKIP=<skip> for a negative control), reboot committed, find;
+# PR_RCYCLE_OUT = the restore output. rc 1 = a step failed (not the compare: the caller judges that)
+pr_restore_cycle(){
+	local o s b0 skip=${1:-}
 	s=$(qr "$ST"); if [ "$(field "$s" trial_rc)" = 0 ]; then back_to_a || { pr_needs_person "restore: cannot leave the trial"; return 1; }; s=$PR_STATE; fi
 	[ "$(field "$s" slot)" = A ] && [ "$(field "$s" trial_rc)" = 1 ] || { pr_needs_person "restore: not on A committed ($s)"; return 1; }
 	pr_lease_renew +1800 || return 1
 	pl restoring set >/dev/null
 	o=$(pw unbind-all); say "unbind: $(echo $o)"
 	q "rm -f $HOLDF $PR_PAY; rm -rf /tmp/run/batman-prov-test"
-	o=$(nb p5-restore "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { no "p5 restore"; return 1; }
-	o=$(nb overlay-restore "$RUN"); echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY" | tail -10 | sed 's/^/    /'
+	o=$(PB_ENV=${skip:+PROV_BASE_SKIP=$skip} nb p5-restore "$RUN"); PR_RCYCLE_OUT=$o; say "$(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { no "p5 restore"; return 1; }
+	o=$(PB_ENV=${skip:+PROV_BASE_SKIP=$skip} nb overlay-restore "$RUN"); PR_RCYCLE_OUT="$PR_RCYCLE_OUT
+$o"; echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY|SKIP" | tail -10 | sed 's/^/    /'
 	grep -q "^OVERLAY-RESTORED $RUN" <<< "$o" || { no "overlay restore"; return 1; }
 	b0=$(field "$s" boot); q "(batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &)"
 	pr_find 900 "$b0" || { pr_needs_person "restore: no node after the reboot"; return 1; }
-	q "mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
-	q "/etc/init.d/joinwatch stop >/dev/null 2>&1"
-	o=""; for i in 1 2 3; do nb manifest "$RUN" after >/dev/null; o=$(nb compare "$RUN" after); grep -q "p5 unreadable" <<< "$o" || break; sleep 10; done
-	q "/etc/init.d/joinwatch start >/dev/null 2>&1"; echo "$o" | tail -20 | sed 's/^/    /'
-	grep -q "diffs=0" <<< "$o" || { no "S0 not restored — snapshot and dirty flag kept"; return 1; }
+	return 0
+}
+pr_restore(){
+	PR_RESTORING=1
+	pr_restore_cycle || return 1
+	pr_compare after; echo "$PR_CMP" | tail -20 | sed 's/^/    /'
+	grep -q "diffs=0" <<< "$PR_CMP" || { no "S0 not restored — snapshot and dirty flag kept"; return 1; }
 	ok "S0 restored (p5 / overlay / uci / identity / p6 state)"; PR_RESTORING=0; return 0
 }
 pr_brewrite(){
@@ -291,6 +313,7 @@ pr_end(){	# [revert] [wrote-b]
 	if [ "$PR_WROTE_B" = 1 ] || [ "$(field "$s" protB)" != "[$PR_V]" ]; then pr_brewrite || { pr_needs_person "pr_end: B rewrite failed"; return 1; }
 	else [ "$(qr "$PROTB_LS")" = "$PR_PROTB_LS" ] && ok "slot-B.protected = V, untouched" || no "slot-B.protected changed"; fi
 	pr_finish_snap || no "finish"
+	if [ -n "${OWNER:-}" ]; then pr_keys_drop; [ "$(wsl_ bash -c "[ -e $WSLK ] && echo left" | tr -d '\r')" = left ] && no "run keys still in $WSLK" || ok "run keys removed"; fi
 	pr_release
 	pr_peer_after
 }
@@ -376,3 +399,72 @@ pr_push_helper(){	# <variant>[:killpoint=<p>]
 	grep -q '^PUSHED' <<< "$o" || { no "push-helper $1: $o"; return 1; }
 	ok "helper $v bound and running${kp:+ ($kp armed)}"; return 0
 }
+
+# ---- owner keys, provclient on the node, claim (254-p1-impl §4.2; the claim-lock unit's prov-lib-254.sh, per run) ------
+TOOLS=${DV_PROV_TOOLS:-/c/Users/yello/batman-dv-tools/prov}; TOOLS_WSL=${DV_PROV_TOOLS_WSL:-/home/yello/batman-dv-tools/prov}
+LABKEY=${LABKEY:-$HOME/.ssh/id_ed25519}
+WSLK=/home/yello/.batman-dv/prov-keys/$RUN      # per-run owner keys (WSL ext4, 0600); pr_release removes them
+PCD=/tmp/run/batman-dvpc.$RUN                    # node: provclient (root 0711; it drops to uid 471)
+# pr_keys: owner / enc / attacker keys for this run in WSL; OWNER / ENC / ATK = their public keys (hex)
+pr_keys(){
+	wsl_ bash -c "umask 077; mkdir -p $WSLK && $TOOLS_WSL/provclient-amd64 keygen $WSLK/owner.pem > $WSLK/owner.pub && $TOOLS_WSL/provclient-amd64 keygen $WSLK/enc.pem > $WSLK/enc.pub && $TOOLS_WSL/provclient-amd64 keygen $WSLK/attacker.pem > $WSLK/attacker.pub" \
+		|| { no "owner key generation"; return 1; }
+	OWNER=$(wsl_ cat $WSLK/owner.pub | tr -d '\r'); ENC=$(wsl_ cat $WSLK/enc.pub | tr -d '\r'); ATK=$(wsl_ cat $WSLK/attacker.pub | tr -d '\r')
+	[ ${#OWNER} = 130 ] && [ ${#ENC} = 130 ] && [ ${#ATK} = 130 ] || { no "owner keys"; return 1; }
+}
+# pr_pc_place: provclient-arm64 into $PCD (root 0711, made without -p: a pre-existing dir is refused), sha checked
+# against the tools' SHA256SUMS. tmpfs: again after every reboot.
+pr_pc_place(){
+	local s
+	(cd "$TOOLS" && sha256sum -c --quiet SHA256SUMS) || { no "$TOOLS/SHA256SUMS does not verify"; return 1; }
+	s=$(sha256sum < "$TOOLS/provclient-arm64" | cut -c1-64)
+	q "mkdir -p -m 0700 /tmp/run/batman-dv"
+	scp -q $SSHO "$TOOLS/provclient-arm64" root@$NODE:/tmp/run/batman-dv/pc.$RUN.upload || { no "provclient upload"; return 1; }
+	[ "$(q "set -e; mkdir -m 0711 $PCD; mv /tmp/run/batman-dv/pc.$RUN.upload $PCD/provclient; chown root:root $PCD $PCD/provclient; chmod 0755 $PCD/provclient; [ \"\$(sha256sum < $PCD/provclient | cut -c1-64)\" = $s ] && echo PCOK")" = PCOK ] \
+		|| { no "provclient placement in $PCD (pre-existing dir / sha)"; return 1; }
+}
+# pr_pc <key> [FD3=<node-side sh producing the fd-3 lines>] [ENV=v ...] -- <op> [args]: provclient on the node; its
+# SIGN lines go to the WSL signer; the fd-3 producer runs ON the node (a mesh key never crosses to the host).
+pr_pc(){
+	local key=$1 fd3="" envs="" f W SIGNP line sig out=""; shift
+	while [ "$1" != -- ]; do case "$1" in FD3=*) fd3=${1#FD3=} ;; *) envs="$envs $1" ;; esac; shift; done; shift
+	f=$(mktemp -d)/p; mkfifo "$f"
+	coproc SIGNP { wsl_ "$TOOLS_WSL/provclient-amd64" sign "$WSLK/$key"; }
+	exec {W}<>"$f"
+	local cmd="$envs $PCD/provclient node $*"
+	[ -n "$fd3" ] && cmd="exec 4<&0; { $fd3; } | $envs $PCD/provclient node $* 3<&0 0<&4"
+	while IFS= read -r line; do
+		line=$(printf '%s' "$line" | tr -d '\r')
+		case "$line" in
+			SIGN\ *) echo "$line" >&"${SIGNP[1]}"; IFS= read -r -t 30 sig <&"${SIGNP[0]}" || sig=ERR; printf '%s\n' "$sig" | tr -d '\r' >&"$W" ;;
+			*) out="$out$line
+" ;;
+		esac
+	done < <(ssh $SSHO root@$NODE "$cmd" < "$f" 2>&1)
+	exec {W}>&-; kill "$SIGNP_PID" 2>/dev/null; rm -rf "${f%/p}"
+	printf '%s' "$out"
+}
+# pk_proof: the lab key authenticates by PUBLICKEY (a claim turns password / none off): proven on a temporary
+# publickey-only listener of the same dropbear (port 2222, a tagged nft rule), removed again and asserted
+PKO="-o BatchMode=yes -o ConnectTimeout=6 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes -o IdentitiesOnly=yes -i $LABKEY -o LogLevel=VERBOSE"
+NONEO="-o BatchMode=yes -o ConnectTimeout=6 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=none -o PubkeyAuthentication=no -o LogLevel=ERROR"
+pk_proof(){ local r=1 o
+	q 'mkdir -p -m 0700 /tmp/run/batman-dv; pid=/tmp/run/batman-dv/dv-pk.pid; [ -s $pid ] && kill $(cat $pid) 2>/dev/null; nft -a list chain inet fw4 input 2>/dev/null | grep -q dv-pk-proof || nft insert rule inet fw4 input tcp dport 2222 accept comment "dv-pk-proof" 2>/dev/null; dropbear -s -g -p 2222 -P $pid && sleep 1 && [ -s $pid ] && echo LISTEN' | grep -q LISTEN || { echo "    pk_proof: listener did not start"; return 1; }
+	o=$(timeout 30 ssh -p 2222 $PKO root@$NODE 'echo PKOK' 2>&1 | tr -d '\r')
+	if grep -qE 'Authenticated to .* using "publickey"' <<< "$o" && grep -q PKOK <<< "$o"; then
+		timeout 30 ssh -p 2222 $NONEO root@$NODE 'echo NONEOK' 2>&1 | grep -q "Permission denied" && r=0 || echo "    pk_proof: 'none' not denied on the publickey-only listener (probe invalid)"
+	else echo "    pk_proof: no publickey authentication on the listener"; fi
+	o=$(q 'pid=/tmp/run/batman-dv/dv-pk.pid; kill $(cat $pid) 2>/dev/null; rm -f $pid; for h in $(nft -a list chain inet fw4 input 2>/dev/null | sed -n "s/.*dv-pk-proof.*# handle \([0-9]*\).*/\1/p"); do nft delete rule inet fw4 input handle $h; done; sleep 1; echo "left=$(nft -a list chain inet fw4 input 2>/dev/null | grep -c dv-pk-proof) listen=$(netstat -ltn 2>/dev/null | grep -c ":2222 ")"')
+	[ "$o" = "left=0 listen=0" ] || { echo "    pk_proof: cleanup incomplete ($o)"; r=1; }
+	return $r; }
+# pr_claim: legacy -> claimed with this run's owner key (publickey proven first: the claim turns password login off)
+pr_claim(){
+	local r
+	pk_proof || { no "publickey not proven — not claiming"; return 1; }
+	r=$(pr_pc owner.pem -- claim "$OWNER" "$ENC"); echo "$r" | sed 's/^/    /'
+	grep -q "RESULT claim.verify code=0 " <<< "$r" || { no "claim: $r"; return 1; }
+	ok "claimed with this run's owner key"
+}
+# pr_info: "state=<s> gen=<g> owners=<n> rm=<r>"
+pr_info(){ pr_pc owner.pem -- info | sed -n 's/^RESULT info.state code=0 state=\([a-z]*\) gen=\([0-9]*\) owners=\([0-9]*\) rm=\([a-z0-9]*\).*/state=\1 gen=\2 owners=\3 rm=\4/p'; }
+pr_keys_drop(){ wsl_ rm -rf "$WSLK"; q "rm -rf $PCD"; }

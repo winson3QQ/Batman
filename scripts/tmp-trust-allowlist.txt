@@ -107,3 +107,4 @@ scripts/node/prov-wbox-254.sh	^KD=/tmp/run/batman-prov-test; 	the killpoint dir:
 scripts/node/prov-lease-254.sh	rm -rf /tmp/run/batman-prov-test$	prov deadman: removes the root-only killpoint dir (rm -rf removes a symlink itself, never its target)
 scripts/dv/prov-254.sh	/tmp/run/batman-prov-test([^-a-z]|$)	host side: removes the root-only killpoint dir (rm -rf, never follows a top-level symlink) and tests for its existence (P9); nothing reads a decision from it
 scripts/dv/prov-*-254.sh	/tmp/run/batman-prov-test([^-a-z]|$)	unit scripts: same as prov-254.sh (remove / existence test only)
+scripts/node/prov-p9-254.sh	^KPD=\$P9R/tmp/run/batman-prov-test$	preflight P9: the root-only killpoint dir, only tested for existence (read-only judge; P9R is empty on a node)

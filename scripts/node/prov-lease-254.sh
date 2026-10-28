@@ -22,7 +22,7 @@ SELF=$(readlink -f "$0"); DIR=$(dirname "$SELF")
 LEASE=$BT/lease-prov
 RUN_ID=${RUN_ID:-}
 NORM=/opt/batdata/state/dv-prov-normalising
-UPH=/overlay/upper/usr/bin/batman-provhelper
+UPH=/overlay/upper/usr/bin/batman-provhelper   # read only (cmp); never written or removed here
 
 cmd_stage_check() {
 	for t in "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$SELF"; do file_ok "$t" || die "$t is not a root regular file with one link"; done
@@ -33,9 +33,15 @@ role_fire_restore() {	# $1 run (or "recover")
 	dm_log "$1" "prov deadman: unbind-all, killpoint dir, harness helper copy in the upper"
 	[ -f "$DIR/prov-wbox-254.sh" ] && RUN_ID=$1 lim 120 sh "$DIR/prov-wbox-254.sh" unbind-all >/dev/null 2>&1
 	rm -rf /tmp/run/batman-prov-test
+	# a harness helper copy in the upper: the release helper is written back THROUGH the overlay (never an rm under the
+	# mounted upper — undefined in overlayfs, 2026-10-28 04 needed a reboot after one), then what runs is verified
 	if [ -f "$UPH" ] && ! cmp -s "$UPH" /rom/usr/bin/batman-provhelper; then
-		dm_log "$1" "prov deadman: removing the harness helper copy from the upper"
-		rm -f "$UPH"; sync; echo 3 > /proc/sys/vm/drop_caches; lim 60 /etc/init.d/batman-provhelper restart >/dev/null 2>&1
+		dm_log "$1" "prov deadman: the upper carries a harness helper — writing the release helper back"
+		cp /rom/usr/bin/batman-provhelper /usr/bin/batman-provhelper.dvrel && mv /usr/bin/batman-provhelper.dvrel /usr/bin/batman-provhelper && sync
+		lim 60 /etc/init.d/batman-provhelper restart >/dev/null 2>&1; sleep 3
+		p=$(pidof batman-provhelper | awk '{print $1}')
+		[ -n "$p" ] && cmp -s "/proc/$p/exe" /rom/usr/bin/batman-provhelper \
+			|| dm_log "$1" "prov deadman: NEEDS-PERSON — the running helper (pid ${p:-none}) is not the release helper; dirty flag kept"
 	fi
 	[ -e "$BT/restoring.$1" ] && { dm_log "$1" "prov deadman: restoring in progress — services left to pr_restore"; return 0; }
 	for s in joinwatch openmanetd tailscaled; do [ -x "/etc/init.d/$s" ] && lim 60 "/etc/init.d/$s" start >/dev/null 2>&1; done

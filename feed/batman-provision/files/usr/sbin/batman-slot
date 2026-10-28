@@ -772,7 +772,8 @@ addr_defer_release() {
 wbox_stamp() {
 	# a regular file, not a symlink: an absolute link in the target image would make this read a live-system file
 	# that an unprivileged process may write (code review A-m4); the build gate refuses such an image anyway
-	[ -f "$1" ] && [ ! -L "$1" ] && grep -q '^BATMAN_VERSION=' "$1" 2>/dev/null || return 2
+	# ...and its directory neither: an etc that is a symlink would do the same one level up (code review r2 A-m2)
+	[ -d "${1%/*}" ] && [ ! -L "${1%/*}" ] && [ -f "$1" ] && [ ! -L "$1" ] && grep -q '^BATMAN_VERSION=' "$1" 2>/dev/null || return 2
 	grep -q '^BATMAN_WBOX=.' "$1" && return 0
 	sed -n 's/^BATMAN_VERSION=//p' "$1" | grep -q '\.wbox-' && return 0
 	return 1

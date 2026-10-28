@@ -38,6 +38,9 @@ type fakeSys struct {
 	lastKnown  string
 	cryptErr   error
 	lockCalls  []string
+	// the txn marker ($RUNDIR/prov-txn): batman-config-save --save waits for it and gives up after 10 s
+	txnMarker       bool
+	saveUnderMarker int
 }
 
 type saveRC struct {
@@ -71,6 +74,9 @@ func (f *fakeSys) GetP5(dir string) (int, string) {
 }
 func (f *fakeSys) Save() (int, string) {
 	f.saves++
+	if f.txnMarker {
+		f.saveUnderMarker++
+	}
 	if len(f.saveOut) > 0 {
 		r := f.saveOut[0]
 		f.saveOut = f.saveOut[1:]
@@ -122,8 +128,8 @@ func (f *fakeSys) CryptPassword(pw string) (string, error) {
 func (f *fakeSys) AuthorizedKeys() ([]string, error)  { return f.keys, nil }
 func (f *fakeSys) SetAuthorizedKeys(l []string) error { f.keys = l; return nil }
 func (f *fakeSys) DevOpen() bool                      { return f.devOpen }
-func (f *fakeSys) WriteTxnMarker(string) error        { return nil }
-func (f *fakeSys) ClearTxnMarker()                    {}
+func (f *fakeSys) WriteTxnMarker(string) error        { f.txnMarker = true; return nil }
+func (f *fakeSys) ClearTxnMarker()                    { f.txnMarker = false }
 func (f *fakeSys) DiagBundle() ([]byte, error)        { return []byte("diag"), nil }
 func (f *fakeSys) RemoveMeshMarkers() error           { return nil }
 func (f *fakeSys) Now() time.Time                     { return f.now }

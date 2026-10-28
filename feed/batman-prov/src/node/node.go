@@ -1121,7 +1121,9 @@ func (n *Node) applyNet(rec *provstore.Record, p *parsedNet, verb string) (cbor.
 	}
 	provstore.RemoveTxn(n.P)
 	seam.At(seam.Txn4, n.Log) // p5 + overlay committed, .txn gone, --save not done
-	// step 5
+	// step 5: the marker goes FIRST — batman-config-save --save waits for it and refuses after 10 s, so a --save
+	// under our own marker never saved (04, 2026-10-28: every join left the p5 overrides stale)
+	n.Sys.ClearTxnMarker()
 	if rc, out := n.Sys.Save(); rc != 0 && rc != 6 {
 		n.Log("%s: --save rc=%d (%s) — the next boot's --check reports it", verb, rc, strings.TrimSpace(out))
 	}

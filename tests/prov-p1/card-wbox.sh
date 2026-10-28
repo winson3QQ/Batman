@@ -19,24 +19,25 @@ img(){ local d=$T/$1; rm -rf "$d"; mkdir -p "$d/etc" "$d/usr/bin"; echo x > "$d/
 		veronly)  printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb.dirty.wbox-chan\n' > "$d/etc/batman-build" ;;
 		wboxempty) printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb\nBATMAN_WBOX=\n' > "$d/etc/batman-build" ;;
 		nostamp)  ;;
+		nostampwit) echo 'log "WBOX-chan-2ac9e47f"' > "$d/usr/bin/x" ;;   # no stamp, but a mutant's witness (r2 B-n5)
 		symlink)  printf 'BATMAN_VERSION=1.5.14-wsl.8+aaaaaaa.fwbbbbbbb\n' > "$d/etc/real"; ln -s /etc/real "$d/etc/batman-build" ;;
 	esac
 	mksquashfs "$d" "$T/$1.sq" -all-root -noappend -quiet >/dev/null 2>&1 || { echo "mksquashfs $1 failed"; exit 1; }; }
 want(){ local exp=$1 k=$2 m=$3 o rc; cases=$((cases+1)); o=$(card_wbox_check "$T/$k.sq" "$m" 2>&1); rc=$?
 	if { [ "$exp" = write ] && [ $rc = 0 ]; } || { [ "$exp" != write ] && [ $rc != 0 ] && grep -q -- "$exp" <<< "$o"; }; then ok "$m $k -> ${exp} ($o)"; else no "$m $k: want [$exp], rc=$rc [$o]"; fi; }
-for k in release wbox wboxonly veronly wboxempty nostamp symlink; do img $k; done
+for k in release wbox wboxonly veronly wboxempty nostamp nostampwit symlink; do img $k; done
 for m in strict lenient; do
 	want write release $m; want write wboxempty $m
 	for k in wbox wboxonly veronly; do want "is a -wbox TEST image" $k $m; done
 done
 want "no readable etc/batman-build" nostamp strict; want "no readable etc/batman-build" symlink strict
-want write nostamp lenient; want write symlink lenient
+want write nostamp lenient; want write symlink lenient; want "carries wbox witness strings" nostampwit lenient; want "no readable etc/batman-build" nostampwit strict
 cases=$((cases+1)); o=$(card_wbox_check "$T/none.sq" strict 2>&1) && no "a missing squashfs was accepted" || ok "missing squashfs -> refused ($o)"
 # both writers call it before they write anything
 BA=$R/scripts/build-ab-image.sh; BG=$R/scripts/build-gpt-ab-card.sh
-c=$(grep -n 'card_wbox_check "$TMP/root.squashfs" strict' "$BA" | head -1 | cut -d: -f1); g=$(grep -n '^sgdisk ' "$BA" | head -1 | cut -d: -f1)
+c=$(grep -nE '^card_wbox_check "\$TMP/root\.squashfs" strict \|\| exit 1$' "$BA" | head -1 | cut -d: -f1); g=$(grep -n '^sgdisk ' "$BA" | head -1 | cut -d: -f1)   # the whole call line: "|| true" must not pass
 cases=$((cases+1)); [ -n "$c" ] && [ -n "$g" ] && [ "$c" -lt "$g" ] && ok "build-ab-image checks (line $c) before the GPT (line $g)" || no "build-ab-image: check [$c] not before sgdisk [$g]"
-c=$(grep -n 'card_wbox_check "$SQUASH_SRC" lenient' "$BG" | head -1 | cut -d: -f1); g=$(grep -nE '^[[:space:]]*(sudo +)?(sgdisk|dd|wipefs|mkfs[.a-z0-9]*|parted)[[:space:]]' "$BG" | head -1 | cut -d: -f1)
+c=$(grep -nE '^card_wbox_check "\$SQUASH_SRC" lenient \|\| exit 1$' "$BG" | head -1 | cut -d: -f1); g=$(grep -nE '^[[:space:]]*(sudo +)?(sgdisk|dd|wipefs|mkfs[.a-z0-9]*|parted)[[:space:]]' "$BG" | head -1 | cut -d: -f1)
 cases=$((cases+1)); [ -n "$c" ] && [ -n "$g" ] && [ "$c" -lt "$g" ] && ok "build-gpt-ab-card checks (line $c) before it writes (line $g)" || no "build-gpt-ab-card: check [$c] not before the first write [$g]"
 [ "$cases" -gt 0 ] || { echo "FAIL no case ran"; exit 1; }
 echo "CARD-WBOX cases=$cases fails=$fails"; [ "$fails" = 0 ]

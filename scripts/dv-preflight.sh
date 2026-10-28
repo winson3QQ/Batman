@@ -97,6 +97,18 @@ if [ "$FEATURE_MODE" = --destructive ]; then
 	fi
 fi
 
+# ---- P9 prov leftovers / -wbox slots (#254, docs/design/254-h23-harness.md §4.7, §23.4): every bcm2711 node, before
+#      ANY suite — a prov_test helper or a dirty flag left by an interrupted prov run must stop the whole run (review B n3)
+for n in $ALL; do
+	[ "${SOC[$n]:-}" = bcm2711 ] || continue
+	o=$( { echo ': P9;'; cat "$REPO/scripts/node/prov-p9-254.sh"; } | timeout 90 ssh -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=8 "root@$n" sh -s 2>&1 | tr -d '\r')
+	if grep -q '^FAIL' <<< "$o"; then while read -r l; do f "P9 $n ${l#FAIL }"; done < <(grep '^FAIL' <<< "$o")
+	elif grep -q '^P9 clean$' <<< "$o"; then ok "P9 $n prov / wbox state clean"
+	else f "P9 $n judge gave no verdict ($(tail -1 <<< "$o"))"; fi
+	grep '^WARN ' <<< "$o" | sed "s/^WARN /preflight warn: P9 $n /"
+	grep -E '^INFO (pre-|p6 autocommit|running a -wbox|trial in progress)' <<< "$o" | sed "s/^INFO /preflight ok: P9 $n note: /"
+done
+
 # ---- P7 logread flood: 200 lines in < 60 s by the node's own clock; nodes up < 600 s are waited for (max 10 min)
 for n in $ALL; do
 	w=0
