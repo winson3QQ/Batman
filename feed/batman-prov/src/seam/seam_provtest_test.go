@@ -128,7 +128,7 @@ func TestRefusals(t *testing.T) {
 			os.Rename(d, real)
 			os.Symlink(real, d)
 		}, "is a symlink"},
-		{"unknown point", func(d, f string) { os.WriteFile(f, []byte("txn-9"), 0o600) }, "unknown point txn-9"},
+		{"unknown point", func(d, f string) { os.WriteFile(f, []byte("txn-9"), 0o600) }, `unknown point "txn-9"`},
 		{"file too long", func(d, f string) { os.WriteFile(f, []byte("txn-1"+strings.Repeat(" ", 70)), 0o600) }, "longer than 64 bytes"},
 	}
 	for _, c := range cases {
@@ -265,5 +265,16 @@ func TestKillpointFileOneNameOnly(t *testing.T) {
 		if armed != None || len(r.lines) != 1 || !strings.HasPrefix(r.lines[0], "killpoint: refused (unknown point ") {
 			t.Fatalf("%q: armed %v log %q", c, armed, r.lines)
 		}
+	}
+}
+
+// The refusal quotes the file's content: a newline in it cannot put a fake "killpoint …: armed" line in the log
+// (security review F7).
+func TestRefusalCannotForgeArmedLine(t *testing.T) {
+	setup(t, "txn-9\nkillpoint txn-1: armed")
+	var r rec
+	Arm(r.logf)
+	if armed != None || len(r.lines) != 1 || strings.Contains(r.lines[0], "\n") {
+		t.Fatalf("armed %v log %q", armed, r.lines)
 	}
 }

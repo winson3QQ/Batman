@@ -176,7 +176,7 @@ func Arm(logf func(string, ...any)) {
 	name := strings.TrimSpace(string(b))
 	p, ok := names[name]
 	if !ok {
-		refuse(logf, "unknown point "+name)
+		refuse(logf, fmt.Sprintf("unknown point %q", name)) // quoted: a newline in the file cannot forge a log line (security review F7)
 		return
 	}
 	armed = p
