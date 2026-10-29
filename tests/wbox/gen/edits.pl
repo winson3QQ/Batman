@@ -13,7 +13,9 @@ my %DESC = (
 	'helper-noleave' => 'network.leave keeps the p6 mesh markers',
 	'helper-notrial' => 'state-changing verbs accepted on a trial slot',
 	'helper-clientchal' => "claim.verify takes the client's ClientChal (arg 6) instead of recomputing it",
-	'helper-notxn' => 'helper --boot drops an open .txn without reconciling it',
+	'helper-notxn' => 'the helper drops an unfinished .txn at boot instead of finishing it',
+	'helper-noforget' => 'forgetting the mesh (network/leave, Finish) does nothing and reports success',
+	'helper-alwaysforget' => 'a failed join always forgets instead of restoring the pre-change snapshot',
 	'radio1-off' => '99zz-wbox-radio1-off disables radio1 on the slot\'s first boot',
 	'chan' => 'init wbox-chan keeps radio1 off the p5 channel for >= 200 s after the radio exists',
 	'helper-flap' => 'the helper exits 5 s after serving (procd respawns it)',
@@ -30,6 +32,7 @@ my %W = (
 	'helper-noleave' => 'e3b71d58', 'helper-notrial' => '06ad4c9b', 'helper-clientchal' => 'b8f2316d',
 	'helper-notxn' => '4e9c7a20', 'radio1-off' => '81d5f0c6', 'chan' => '2ac9e47f', 'helper-flap' => 'f4703b1d',
 	'misc-l38' => '6a1c9e30', 'misc-l42' => 'b7e2d915', 'misc-l43' => '0f4a8c62', 'misc-l51' => '93d5e71b',
+	'helper-noforget' => 'd41f8a27', 'helper-alwaysforget' => '5c90e3b6',
 );
 my $w = "WBOX-$v-" . ($W{$v} // die "unknown variant $v\n");
 print "$w\n";
@@ -43,6 +46,7 @@ sub ed { my ($f, @subs) = @_; local $_ = slurp($f);
 my $BOOT = 'feed/batman-prov/src/boot/boot.go';
 my $NODE = 'feed/batman-prov/src/node/node.go';
 my $MAIN = 'feed/batman-prov/src/cmd/batman-provhelper/main.go';
+my $WTXN = 'feed/batman-prov/src/node/wtxn.go';
 my $S96  = 'feed/batman-provision/files/etc/uci-defaults/96-batman-config-migrate';
 my $PMK  = 'feed/batman-provision/Makefile';
 my $AC   = 'feed/batman-provision/files/usr/bin/batman-autocommit';
@@ -67,16 +71,28 @@ my %do = (
 			sub { s{(\tcase 9: .*?)(\tcase 10: )}{ my ($b, $e) = ($1, $2); my $k = ($b =~ s/provstore\.Legacy/provstore.Unclaimed/g); die "no Legacy in case 9\n" unless $k >= 3; $b . $e }se });
 	},
 	'helper-norebuild' => sub {
+		# 254-wireless-txn: --boot's "p5 newer" path AND Finish's resolve() both rebuild the overlay from p5; the
+		# mutant removes both (otherwise the boot Finish would rebuild it and the negative control could not fail)
 		ed($BOOT,
-			sub { s{(\t\tcase haveG && g == t\.To && p5Rec != nil:\n).*?(\t\tcase haveG && g == t\.From:\n)}
-				{$1\t\t\tprovstore.RemoveTxn(e.P)\n\t\t\te.Log("$w: txn committed in p5, overlay NOT rebuilt (mutant)")\n\t\t\tst := "unknown(norebuild)"\n\t\t\tif ovRec != nil {\n\t\t\t\tst = ovRec.State\n\t\t\t}\n\t\t\treturn Result{RC: rc, Verdict: st, Action: fmt.Sprintf("txn %s committed (gen %d): overlay NOT rebuilt (mutant)", t.Verb, g)}\n$2}s },
 			# F41: ovRec == nil must not fall through to ovRec.Generation (nil dereference = crash loop)
 			sub { s{\t\tcase ovRec == nil \|\| p5Rec\.Generation > ovRec\.Generation:\n.*?(\t\tcase ovRec\.Generation > p5Rec\.Generation:\n)}
 				{\t\tcase ovRec == nil:\n\t\t\te.Log("$w: overlay record unusable, NOT rebuilt from p5 (mutant)")\n\t\t\treturn Result{RC: rc, Verdict: "unknown(norebuild)", Action: "none (mutant: no rebuild from p5)"}\n\t\tcase p5Rec.Generation > ovRec.Generation:\n\t\t\te.Log("$w: p5 newer, overlay NOT rebuilt (mutant)")\n\t\t\treturn Result{RC: rc, Verdict: ovRec.State, Action: "none (mutant: no rebuild from p5)"}\n$1}s });
+		ed($WTXN, sub { s~\tswitch \{\n\tcase p5 != nil && \(ov == nil \|\| p5\.Generation > ov\.Generation\):\n~\tif p5 != nil && (ov == nil || p5.Generation > ov.Generation) {\n\t\tn.Log("$w: resolve: p5 newer, overlay NOT rebuilt (mutant)")\n\t}\n\tswitch {\n\tcase false:\n~ });
 	},
 	'helper-notxn' => sub {
-		ed($BOOT, sub { s{\t// 2\) an interrupted transaction .*?\n\tif t, ok := provstore\.ReadTxn\(e\.P\); ok \{\n.*?\n\t\}\n\n(\tpersistAll := )}
-			{\t// 2) MUTANT: an open .txn is dropped, never reconciled against p5\n\tif t, ok := provstore.ReadTxn(e.P); ok {\n\t\tprovstore.RemoveTxn(e.P)\n\t\te.Log("$w: .txn %d->%d dropped, not reconciled (mutant)", t.From, t.To)\n\t}\n\n$1}s });
+		# 254-wireless-txn: the helper drops an unfinished .txn at boot instead of finishing it
+		ed($BOOT, sub { s{\tres\.Unfinished = provstore\.TxnPresent\(e\.P\)\n}
+			{\tif provstore.TxnPresent(e.P) {\n\t\tprovstore.RemoveTxn(e.P)\n\t\te.Log("$w: .txn dropped at boot, never finished (mutant)")\n\t}\n} });
+	},
+	'helper-noforget' => sub {
+		# 254-wireless-txn §8 rejoin row: forgetting the mesh (leave and Finish) does nothing and reports success
+		ed($MAIN, sub { s{\trc, out := run\(nil, "halow-setkey", "--forget-mesh", "--no-persist"\)\n}
+			{\trc, out := 0, "$w: forget-mesh skipped (mutant)"\n\tlogf("%s", out)\n} });
+	},
+	'helper-alwaysforget' => sub {
+		# 254-wireless-txn §8 legacyjoin row (review B r5 m5): a failed join always forgets instead of restoring the
+		# operator's pre-change settings
+		ed($WTXN, sub { s~\tif tx\.PrevKey == "" \|\| tx\.PrevKey == placeholderKey \{\n~\tif true { // mutant: the pre-change snapshot is never restored\n\t\tn.Log("$w: snapshot ignored, forgetting (mutant)")\n~ });
 	},
 	'helper-notrial' => sub {
 		ed($NODE, sub { s{\tif stateChanging\[verb\] && n\.Sys\.IsTrial\(\) \{\n\t\treturn nil, fail\(EBusy, "trial slot \(updating\)"\)\n\t\}}
@@ -92,8 +108,8 @@ my %do = (
 			{\tif verb == "net.apply" {\n\t\tn.Log("$w: network/join without an owner-op check (mutant)")\n\t} else if e := n.verifyOwnerOp(h, typ, body, ownerPubs(rec)); e != nil {\n\t\treturn nil, e\n\t}} });
 	},
 	'helper-noleave' => sub {
-		ed($NODE, sub { s{\t\tif err := n\.Sys\.RemoveMeshMarkers\(\); err != nil \{\n\t\t\tn\.Log\("network\.leave: mesh markers: %v", err\)\n\t\t\}}
-			{\t\tn.Log("$w: p6 mesh markers kept on leave (mutant)")} });
+		ed($NODE, sub { s{\tif err := n\.Sys\.RemoveMeshMarkers\(\); err != nil \{\n\t\tn\.Log\("network\.leave: mesh markers: %v", err\)\n\t\}}
+			{\tn.Log("$w: p6 mesh markers kept on leave (mutant)")} });
 	},
 	'helper-flap' => sub {
 		ed($MAIN, sub { s{(\tlogf\("serving \(%s\)", res\.Verdict\)\n)}
