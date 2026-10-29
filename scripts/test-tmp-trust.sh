@@ -28,6 +28,9 @@ mut "/dev/shm"                                  feed/batman-provision/files/usr/
 mut "/var/lock"                                 feed/batman-provision/files/usr/bin/batpower 'L=/var/lock/batpower'
 mut "harness: root runs a staged /tmp script"   scripts/daily-validation.sh '  fssh "$n" 10 "sh /tmp/x.sh"'
 mut "node script: /tmp output"                  scripts/node/soak-node.sh 'echo 1 > /tmp/dv-x.cnt'
+# 254-h23 F30: the harness prefixes are bounded — a look-alike name next to them is not covered
+mut "a /tmp/run/batman-dv look-alike (bounded prefix)" scripts/dv/prov-ota-254.sh 'q "mkdir -p /tmp/run/batman-dvpc-evil"'
+mut "a /tmp/run/batman-prov look-alike in Go"   feed/batman-prov/src/sock/sock.go '// x := "/tmp/run/batman-provd-evil"'
 mut "a new node file under deploy/"             deploy/provisioning/new-tool.sh 'echo x > /tmp/new-tool.state'
 mut "a decision path sharing a line with an allowed mktemp (per hit)" $A 't=$(mktemp /tmp/a.XXXXXX); cat /tmp/autocommit.decided'
 mut "a \$(date) name in /tmp (D6)"              $A 'L=/tmp/ac.$(date +%s)'

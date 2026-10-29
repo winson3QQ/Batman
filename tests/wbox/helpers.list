@@ -1,0 +1,25 @@
+# tests/wbox/helpers.list — one source for the -wbox variants (docs/design/254-h23-harness.md §4.2, §15.5, §16.15)
+# <name> <prov_test|release> <helper|same>
+#   tag:  prov_test when the patch touches feed/batman-prov/src/ (and for "test"), else release
+#   kind: helper when the variant ships its own helper binary (touches feed/batman-prov/src/, replaces the helper
+#         install, or is "test"); same = the release helper
+# scripts/lint-wbox.sh recomputes both columns from the patches and FAILs on any difference. firmware
+# build-board.sh --wbox reads the tag; the build gate checks both; dv-prov-tools.sh reads the kind.
+test prov_test helper
+rc9-unclaimed prov_test helper
+helper-norebuild prov_test helper
+96-norestore prov_test helper
+96-noprov release same
+helper-exit1 release helper
+helper-nojoinop prov_test helper
+helper-noleave prov_test helper
+helper-notrial prov_test helper
+helper-clientchal prov_test helper
+helper-notxn prov_test helper
+radio1-off release same
+chan release same
+helper-flap prov_test helper
+misc-l38 release same
+misc-l42 release same
+misc-l43 release same
+misc-l51 release same

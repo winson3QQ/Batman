@@ -82,6 +82,9 @@ suite() {                       # $1 = name, $2 = why-it-matters, $3 = command (
   if [ -z "$cmd" ]; then
     NSKIP=$((NSKIP+1)); ROWS+=("| $name | SKIP | $why |"); echo "SKIP  $name"; return
   fi
+  # a NEEDS-PERSON earlier in the run: every later D suite on DNODE0 FAILs "blocked: DNODE" instead of running
+  # (scripts/dv/prov-dv-254.sh dnode_blocked; never a SKIP — the person must see it)
+  if dnode_blocked "$kind" "$cmd" "$DIR" "${DNODE0:-}" > "$DIR/$name.blocked" 2>/dev/null; then cmd="cat '$DIR/$name.blocked'; false"; else rm -f "$DIR/$name.blocked"; fi
   local t0=$SECONDS
   { echo "# $(date -Is)"; echo "# $cmd"; eval "$cmd"; } > "$log" 2>&1; rc=$?
   local dt=$((SECONDS-t0))
@@ -151,6 +154,10 @@ fi
 . "$REPO/scripts/dv/bt-uart-305.sh"
 # shellcheck source=dv/claim-lock-254.sh
 . "$REPO/scripts/dv/claim-lock-254.sh"
+# shellcheck source=dv/prov-dv-254.sh
+. "$REPO/scripts/dv/prov-dv-254.sh"
+# shellcheck source=dv/known-failures.sh
+. "$REPO/scripts/dv/known-failures.sh"
 
 # 1. No hardware needed, but needs Linux tooling: the A/B card invariants build a real card on a
 #    loop device. On a host without losetup/mksquashfs/sudo (e.g. a Windows/Git-Bash operator box
@@ -273,6 +280,35 @@ else
   suite bt-uart-load-305 "hciflood + direct SD reads ${BT305_LOAD_SECS}s on $BLE_PERIPH then $BLE_CENTRAL: no oe/fe/pe/bo, no Frame reassembly / tx timeout, probe, health; load guarantees (#305 T2)" "bchk_bt_uart_load_305 $BLE_PERIPH $BLE_CENTRAL"
   suite bt-uart-close-305 "stuck TX (CNTL 0xcd) then unbind on $BLE_PERIPH: close < 5 s (P2), then reboot + witness (#305 T3b)" "bchk_bt_uart_close_305 $BLE_PERIPH" D
   suite bt-uart-boot-305 "$BT305_BOOTS loaded reboots of $BLE_PERIPH: witness, probe, settings, no hci0 init error each boot (#305 T4)" "bchk_bt_uart_boot_305 $BLE_PERIPH" D
+fi
+
+suite known-failures-file "every scripts/validation-known-failures.txt entry has suite / ERE / issue / expires=YYYY-MM-DD (254-h23 §4)" "kf_check \"$REPO/scripts/validation-known-failures.txt\""
+
+# 2f2. #254 H2 prov units (docs/design/254-h23-harness.md §4.4, §6.2; scripts/dv/prov-dv-254.sh). 04-specific, like
+#     chain1. Tier A (prov-sock, prov-sec: under the prov lease, the node left as it was) on DNODE every run. Tier B
+#     (--destructive) on DNODE (04, ethernet): normalise first, then PROV_B_UNITS in order; a NEEDS-PERSON blocks every
+#     later prov unit ("FAIL blocked: DNODE"). A unit not written yet FAILs with that reason, never SKIPs (#254 checklist).
+#     Needs the prov test tools of the running version: bash scripts/dv-prov-tools.sh <V>.
+if [ "$DNODE0" = 10.41.1.3 ]; then
+  suite prov-sock-254 "who may talk to the helper socket: root / provd uid allowed, others refused, provclient placement (#254 tier A)" "bchk_prov_254 $DNODE0 prov-sock-254"
+  suite prov-sec-254 "helper uid, socket dir root:471 0750, helper.sock 0660, node.key 0600; negative controls — STATE-CHANGING: stops / restarts the helper, plants a socket dir (under the prov lease; review B-m9) (#254)" "bchk_prov_254 $DNODE0 prov-sec-254"
+else
+  na prov-sock-254 "the prov units are 04-specific and DNODE is $DNODE0"; na prov-sec-254 "the prov units are 04-specific and DNODE is $DNODE0"
+fi
+if [ "$FEATURE_MODE" != --destructive ]; then
+  suite prov-normalise-254 "#254 prov tier B — needs FEATURE_MODE=--destructive" ""
+  while IFS='|' read -r n s a <&3; do [ -n "$n" ] && suite "$n" "#254 prov tier B — needs FEATURE_MODE=--destructive" ""; done 3<<< "$PROV_B_UNITS"
+elif ! fssh "$DNODE0" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]'; then
+  suite prov-normalise-254 "#254 prov tier B — DNODE $DNODE0 has no ethernet carrier (no out-of-band recovery)" ""
+  while IFS='|' read -r n s a <&3; do [ -n "$n" ] && suite "$n" "#254 prov tier B — DNODE $DNODE0 has no ethernet carrier" ""; done 3<<< "$PROV_B_UNITS"
+else
+  suite prov-normalise-254 "04 committed on A with its running version V before the prov units (pr_normalise, §4.4)" "bchk_prov_normalise_254 $DNODE0" D
+  # the list on fd 3: a suite's ssh would read fd 0 and eat the rest of the list
+  while IFS='|' read -r n s a <&3; do
+    [ -n "$n" ] || continue
+    if [ "$s" = - ]; then suite "$n" "#254 prov unit (254-h23 §6.2)" "echo 'FAIL $n is not written yet (#254 checklist, 254-h23 §6.2)'; false" D
+    else suite "$n" "#254 prov unit $n (254-h23 §6.2)" "bchk_prov_254 $DNODE0 $s $a" D; fi
+  done 3<<< "$PROV_B_UNITS"
 fi
 
 # 2g. #254 claim-lock fix (docs/design/254-claim-lock-fix.md §11; scripts/dv/claim-lock-254.sh). Tier A on every fleet
@@ -2737,28 +2773,8 @@ fi
 # whatever the list says: a node left degraded, a cleanup that failed, a dropped connection, a reboot that
 # did not happen, anything unreadable. The exit status is NOT affected — a known failure is still a failure.
 KNOWN_FILE="$REPO/scripts/validation-known-failures.txt"
-NEVER_KNOWN='restore|cleanup|CONNECTION-LOST|CONNLOST|reboot did not happen|unreadable|not verified|rc=3 without'
 NEWF=(); KNOWNF=()
-classify() {   # $1 suite -> echoes "known <issues>" or "new <why>"
-  local s=$1 log="$DIR/$1.log" line pat iss hit issues="" st ks
-  local lines; lines=$(grep -E '^[[:space:]]*FAIL ' "$log" 2>/dev/null | sed 's/^[[:space:]]*//')
-  [ -n "$lines" ] || { echo "new (no FAIL lines to match)"; return; }
-  while IFS= read -r line; do
-    echo "$line" | grep -qE "$NEVER_KNOWN" && { echo "new (never-known failure: $line)"; return; }
-    hit=""
-    while IFS=$'\t' read -r ks pat iss; do
-      case "$ks" in ''|'#'*) continue;; esac
-      [ "$ks" = "$s" ] && [ -n "$iss" ] && echo "$line" | grep -qE -- "$pat" && { hit=$iss; break; }
-    done < "$KNOWN_FILE"
-    [ -n "$hit" ] || { echo "new (unmatched: $line)"; return; }
-    case " $issues " in *" #$hit "*) ;; *) issues="$issues #$hit";; esac
-  done <<< "$lines"
-  if command -v gh >/dev/null 2>&1; then
-    for iss in $issues; do st=$(gh issue view "${iss#\#}" -R winson3QQ/Batman --json state --jq .state 2>/dev/null)
-      [ "$st" = CLOSED ] && { echo "new (matches $iss, but $iss is CLOSED)"; return; }
-      [ -z "$st" ] && issues="$issues(state?)"; done
-  else issues="$issues (issue state not checked: no gh)"; fi
-  echo "known$issues"; }
+classify() { kf_classify "$1" "$DIR/$1.log" "$KNOWN_FILE"; }   # scripts/dv/known-failures.sh
 for s in "${FAILED[@]}"; do
   c=$(classify "$s")
   case "$c" in known*) KNOWNF+=("| $s | ${c#known } |");; *) NEWF+=("| $s | ${c#new } |");; esac
