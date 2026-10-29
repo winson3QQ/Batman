@@ -190,35 +190,59 @@ func TestClaimedPlaceholderMeshExpect(t *testing.T) {
 	}
 }
 
-// §4.4 step 6: an interrupted net.apply — decided by the generation p5 actually holds.
-func TestTxnCommittedAndNot(t *testing.T) {
-	// committed: p5 already at gen_to -> overlay completed from p5, .txn gone, nothing to restore
+// docs/design/254-wireless-txn.md §3: --boot no longer decides an unfinished wireless change by generations (the
+// shipped code removed .txn only when a restore succeeded and deadlocked every later save). It reconciles the record as
+// on any boot, keeps .txn, and reports Unfinished + P5Read; the helper's Finish does the rest.
+func TestTxnLeftForFinish(t *testing.T) {
+	// committed: p5 at gen_to -> overlay rebuilt from p5 (the normal "p5 newer" path); .txn kept for Finish
 	f := newFx(t, 0)
 	f.overlayIdentity()
 	f.overlayRecord(provstore.Claimed, 4)
 	copyDir(f.e.P.Identity(), filepath.Join(f.p5, "identity"))
 	f.p5Record(provstore.Member, 5)
-	provstore.WriteTxn(f.e.P, "tok", 4, 5, "network/join", "oldkey12", "oldmesh", "28")
+	provstore.WriteTxn(f.e.P, "tok", 4, 5, "network/join", "oldkey12", "oldmesh", "28", false)
 	r := Run(f.e)
-	if r.Verdict != provstore.Member || r.Restore != nil {
+	if r.Verdict != provstore.Member || !r.Unfinished || !r.P5Read {
 		t.Fatalf("committed: %+v", r)
 	}
-	if _, ok := provstore.ReadTxn(f.e.P); ok {
-		t.Fatal(".txn left after a committed transaction")
+	if ov, _, _ := provstore.LoadOverlay(f.e.P); ov == nil || ov.Generation != 5 {
+		t.Fatalf("committed: overlay not rebuilt from p5: %+v", ov)
 	}
-	// not committed: p5 still at gen_from -> restore requested with the recorded values, .txn kept until done
+	if !provstore.TxnPresent(f.e.P) {
+		t.Fatal("committed: --boot removed .txn (Finish must save first)")
+	}
+	// not committed: p5 still at gen_from -> the overlay's record, .txn kept
 	g := newFx(t, 0)
 	g.overlayIdentity()
 	g.overlayRecord(provstore.Claimed, 4)
 	copyDir(g.e.P.Identity(), filepath.Join(g.p5, "identity"))
 	g.p5Record(provstore.Claimed, 4)
-	provstore.WriteTxn(g.e.P, "tok", 4, 5, "network/join", "oldkey12", "oldmesh", "28")
+	provstore.WriteTxn(g.e.P, "tok", 4, 5, "network/join", "oldkey12", "oldmesh", "28", false)
 	r = Run(g.e)
-	if r.Restore == nil || r.Restore.PrevKey != "oldkey12" || r.Restore.PrevID != "oldmesh" || r.Restore.PrevChannel != "28" {
+	if r.Verdict != provstore.Claimed || !r.Unfinished || !r.P5Read || !provstore.TxnPresent(g.e.P) {
 		t.Fatalf("not committed: %+v", r)
 	}
-	if _, ok := provstore.ReadTxn(g.e.P); !ok {
-		t.Fatal(".txn removed before the wireless restore ran")
+	// a malformed .txn is still unfinished (presence decides, not parsing)
+	os.WriteFile(g.e.P.Txn(), []byte("garbage"), 0o600)
+	if r = Run(g.e); !r.Unfinished {
+		t.Fatalf("malformed .txn: %+v", r)
+	}
+	// p5 unreadable: P5Read false -> the daemon does not Finish against an unconfirmed record
+	h := newFx(t, 1)
+	h.overlayIdentity()
+	h.overlayRecord(provstore.Member, 5)
+	provstore.WriteTxn(h.e.P, "tok", 4, 5, "network/join", "oldkey12", "oldmesh", "28", false)
+	if r = Run(h.e); !r.Unfinished || r.P5Read {
+		t.Fatalf("p5 unreadable: %+v", r)
+	}
+	// no .txn: not unfinished
+	k := newFx(t, 0)
+	k.overlayIdentity()
+	k.overlayRecord(provstore.Claimed, 4)
+	copyDir(k.e.P.Identity(), filepath.Join(k.p5, "identity"))
+	k.p5Record(provstore.Claimed, 4)
+	if r = Run(k.e); r.Unfinished || !r.P5Read {
+		t.Fatalf("no txn: %+v", r)
 	}
 }
 
@@ -351,7 +375,7 @@ func TestPersistNow(t *testing.T) {
 	f.overlayRecord(provstore.Claimed, 6)
 	same(f)
 	f.p5Record(provstore.Claimed, 5)
-	provstore.WriteTxn(f.e.P, "tok", 5, 6, "net.apply", "k", "id", "36")
+	provstore.WriteTxn(f.e.P, "tok", 5, 6, "net.apply", "k", "id", "36", false)
 	if rc, _ := PersistNow(f.e); rc != 7 || len(f.persists) != 0 {
 		t.Fatalf("txn: rc=%d", rc)
 	}

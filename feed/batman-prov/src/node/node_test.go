@@ -41,6 +41,20 @@ type fakeSys struct {
 	// the txn marker ($RUNDIR/prov-txn): batman-config-save --save waits for it and gives up after 10 s
 	txnMarker       bool
 	saveUnderMarker int
+	// the live mesh wireless + radio (docs/design/254-wireless-txn.md): a model, not a list of calls
+	wl            [3]string // key, mesh id, channel; "" key = the default ("oldkey123", "oldmesh", "28")
+	radioOff      bool      // uci disabled=1
+	inMark        bool      // listed in the keyguard mark (the helper / keyguard blocked it)
+	radioErr      error
+	setkeyErrs    []error // SetKeyNoPersist results in order (then nil); a failing call leaves wl unchanged
+	setkeyHalf    bool    // a failing SetKeyNoPersist still changes wl (rc 3 / unknown outcome)
+	forgetErr     error
+	forgets       int
+	saveTxns      []string // tokens SaveTxn was called with
+	saveTxnOut    []saveRC
+	saveTxnNoMark int // SaveTxn called without the marker (config-save would refuse: the shipped deadlock)
+	meshExpect    string
+	p5rc          int // GetP5 returns this rc (p5 unreadable) when set
 }
 
 type saveRC struct {
@@ -56,6 +70,9 @@ func (f *fakeSys) Persist(r, m, id, txn string) (int, string) {
 	b, _ := os.ReadFile(m)
 	os.MkdirAll(f.p5, 0o700)
 	os.WriteFile(filepath.Join(f.p5, "prov.meta"), b, 0o600)
+	if rb, err := os.ReadFile(r); err == nil {
+		os.WriteFile(filepath.Join(f.p5, "prov.cbor"), rb, 0o600)
+	}
 	mm, _ := provstore.ParseMeta(b)
 	f.persisted = append(f.persisted, mm.Gen)
 	if f.persistLateRC != 0 {
@@ -64,12 +81,18 @@ func (f *fakeSys) Persist(r, m, id, txn string) (int, string) {
 	return 0, ""
 }
 func (f *fakeSys) GetP5(dir string) (int, string) {
+	if f.p5rc != 0 {
+		return f.p5rc, ""
+	}
 	os.MkdirAll(dir, 0o700)
 	b, err := os.ReadFile(filepath.Join(f.p5, "prov.meta"))
 	if err != nil {
 		return 9, ""
 	}
 	os.WriteFile(filepath.Join(dir, "prov.meta"), b, 0o600)
+	if rb, err := os.ReadFile(filepath.Join(f.p5, "prov.cbor")); err == nil {
+		os.WriteFile(filepath.Join(dir, "prov.cbor"), rb, 0o600)
+	}
 	return 0, ""
 }
 func (f *fakeSys) Save() (int, string) {
@@ -86,11 +109,47 @@ func (f *fakeSys) Save() (int, string) {
 }
 func (f *fakeSys) SetKeyNoPersist(k, id, ch string) error {
 	f.setkeys = append(f.setkeys, id+"/"+ch)
-	return nil
+	var err error
+	if len(f.setkeyErrs) > 0 {
+		err, f.setkeyErrs = f.setkeyErrs[0], f.setkeyErrs[1:]
+	}
+	if err == nil || f.setkeyHalf {
+		f.wl = [3]string{k, id, ch}
+		if f.inMark { // the keyguard unblocks a radio it blocked once a real key is set
+			f.radioOff, f.inMark = false, false
+		}
+	}
+	return err
 }
 func (f *fakeSys) CurrentWireless() (string, string, string, error) {
-	return "oldkey123", "oldmesh", "28", nil
+	if f.wl[0] == "" {
+		return "oldkey123", "oldmesh", "28", nil
+	}
+	return f.wl[0], f.wl[1], f.wl[2], nil
 }
+func (f *fakeSys) SaveTxn(tok string) (int, string) {
+	f.saveTxns = append(f.saveTxns, tok)
+	if !f.txnMarker {
+		f.saveTxnNoMark++
+	}
+	if len(f.saveTxnOut) > 0 {
+		r := f.saveTxnOut[0]
+		f.saveTxnOut = f.saveTxnOut[1:]
+		return r.rc, r.out
+	}
+	return 0, ""
+}
+func (f *fakeSys) ForgetMesh() error {
+	f.forgets++
+	if f.forgetErr != nil {
+		return f.forgetErr
+	}
+	f.wl = [3]string{placeholderKey, "", ""}
+	f.radioOff, f.inMark = true, true
+	return nil
+}
+func (f *fakeSys) RadioState() (bool, bool, error) { return f.radioOff, f.inMark, f.radioErr }
+func (f *fakeSys) SetMeshExpect(me string) error   { f.meshExpect = me; return nil }
 
 // ApplyLock mirrors prov_apply_lock's contract: doors first, the hash last; on any failure (or without a hash) only an
 // empty root becomes "!".

@@ -56,6 +56,10 @@ type Record struct {
 	Net            *Net
 	Members        []byte
 	SSHKeysAdded   []string
+	// Left: the node left its network (network/leave) — its mesh wireless is forgotten (docs/design/254-wireless-txn.md
+	// §2). Encoded as key 12 ONLY when true, and only on a claimed record without a network: older images' Decode
+	// demands exactly 11 keys, so every other record stays readable by them (review r5 MAJOR-1).
+	Left bool
 }
 
 // MaxRecord is the size limit of prov.cbor (the same as config-save's PROV_MAX).
@@ -87,8 +91,16 @@ func (r *Record) Encode() ([]byte, error) {
 	if r.Members != nil {
 		members = r.Members
 	}
-	b, err := cbor.Encode(cbor.M(1, uint64(1), 2, r.Generation, 3, r.State, 4, r.RadioManaged, 5, r.ClaimedCounter,
-		6, owners, 7, adv, 8, admins, 9, net, 10, members, 11, keys))
+	m := cbor.M(1, uint64(1), 2, r.Generation, 3, r.State, 4, r.RadioManaged, 5, r.ClaimedCounter,
+		6, owners, 7, adv, 8, admins, 9, net, 10, members, 11, keys)
+	if r.Left {
+		// the same rule Decode applies: a record every later read would reject is never written (review r7 MINOR-1)
+		if r.State != Claimed || r.Net != nil {
+			return nil, errors.New("provstore: Left only on a claimed record without a network")
+		}
+		m = append(m, cbor.Entry{K: uint64(12), V: true})
+	}
+	b, err := cbor.Encode(m)
 	if err == nil && len(b) > MaxRecord {
 		return nil, errors.New("provstore: record exceeds 64 KiB")
 	}
@@ -107,7 +119,7 @@ func Decode(b []byte) (*Record, error) {
 		return nil, errSchema
 	}
 	m, ok := x.(cbor.Map)
-	if !ok || len(m) != 11 {
+	if !ok || (len(m) != 11 && len(m) != 12) {
 		return nil, errSchema
 	}
 	get := func(k int) any { v, _ := m.Get(k); return v }
@@ -228,6 +240,14 @@ func Decode(b []byte) (*Record, error) {
 		if len(r.Owners) == 0 || r.Net == nil {
 			return nil, errSchema
 		}
+	}
+	// key 12 (Left): canonical form — absent = false; present must be true, on a claimed record without a network
+	if len(m) == 12 {
+		l, ok := get(12).(bool)
+		if !ok || !l || r.State != Claimed || r.Net != nil {
+			return nil, errSchema
+		}
+		r.Left = true
 	}
 	return r, nil
 }

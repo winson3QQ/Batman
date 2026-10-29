@@ -29,6 +29,10 @@ radio=$(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)\.type='mo
 mesh=$(uci -q get "wireless.default_$radio.mesh_id"); ch=$(uci -q get "wireless.$radio.channel"); cc=$(uci -q get "wireless.$radio.country")
 k=$(uci -q get "wireless.default_$radio.key"); case "$k" in "") key=NONE;; CHANGE-ME-NOW) key=PLACEHOLDER;; *) key=SET;; esac
 guard=none; [ -f /etc/halow-keyguard.blocked ] && guard=$(tr -s ' ' < /etc/halow-keyguard.blocked | sed 's/^ //'); [ -n "$guard" ] || guard=none
+# #254 wireless-txn §4: a network change the helper has not finished (.txn). /etc/batman-prov is root-only 0700, so a
+# non-root caller cannot tell — "unknown", never "no"
+PROVTXN=/etc/batman-prov/.txn
+if [ "$(id -u)" = 0 ]; then if [ -e "$PROVTXN" ] || [ -L "$PROVTXN" ]; then netchg=yes; else netchg=no; fi; else netchg=unknown; fi
 ip=$(uci -q get network.ahwlan.ipaddr); case "$(uci -q get openmanetd.config.dhcpconfigured)" in 1) addr=reserved;; *) addr=bootstrap;; esac
 dump=$(iw dev wlh0 station dump 2>/dev/null)
 plink=$(printf '%s\n' "$dump" | grep -c "plink:.*ESTAB"); nb=$(batctl n 2>/dev/null | grep -cE '[0-9]+\.[0-9]+s')
@@ -171,6 +175,7 @@ POWER     battery=$bat throttled=$thr temp=${temp}C   $cycdesc
 TENANTS   ${fts:-none}
 LAST OTA  $(l=$(grep -v " SKIP-ONCE " /opt/batdata/log/autocommit.log 2>/dev/null | tail -1 | cut -d' ' -f2-); echo "${l:-none recorded}")
 OTA HOLD  ${ohold:-none}
+NETCHANGE unfinished network change: $netchg
 CHECKS
 $(printf '%s' "$CHECKS" | awk -F'|' 'NF==3{printf "    [%s] %s: %s\n",$1,$2,$3}')
 LAST 3 BOOTS

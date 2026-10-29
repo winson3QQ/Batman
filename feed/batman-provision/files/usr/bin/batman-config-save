@@ -8,7 +8,9 @@
 # Everything not listed here takes the new image's default on upgrade (new-default-wins).
 #
 #   batman-config-save --seed [--reformat]   first write at provisioning (--reformat: see below)
-#   batman-config-save --save [--promote-lkg] rewrite now (operator / halow-setkey / provd)
+#   batman-config-save --save [--promote-lkg] [--txn TOK]   rewrite now (operator / halow-setkey / provd);
+#                                            --txn (#254 wireless-txn §7, the helper's Finish only): allowed while the
+#                                            run-dir marker AND /etc/batman-prov/.txn carry TOK
 #   batman-config-save --if-healthy          rewrite only if joinwatch health is OK (#127)
 #   batman-config-save --on-join             joinwatch, every tick while JOINED (#202 close-out)
 #   batman-config-save --check               read-only: is p5 what a save would write right now?
@@ -51,13 +53,24 @@ openmanetd.config.roipconfigured
 UNSAFE='*[`$();|&<>'"'"']*'   # same character set 96-batman-config-migrate's valid_batch rejects
 
 mode=${1:-}; opt=${2:-}
-USAGE="usage: batman-config-save --seed [--reformat] | --save [--promote-lkg] | --if-healthy | --on-join | --check | --prov-only --prov-file F --prov-meta M [--prov-identity D] [--txn TOK] | --prov-get DIR"
+USAGE="usage: batman-config-save --seed [--reformat] | --save [--promote-lkg] [--txn TOK] | --if-healthy | --on-join | --check | --prov-only --prov-file F --prov-meta M [--prov-identity D] [--txn TOK] | --prov-get DIR"
 case "$mode" in
 	--seed|--save|--if-healthy|--on-join|--check|--prov-only|--prov-get) ;;
 	*) echo "$USAGE" >&2; exit 1 ;;
 esac
-REFORMAT=0; PROMOTE=0; PF=""; PM=""; PI=""; PTXN=""; PGET=""
+REFORMAT=0; PROMOTE=0; PF=""; PM=""; PI=""; PTXN=""; PGET=""; STXN=""; STXN_SET=0
 case "$mode" in
+--save)
+	shift
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--promote-lkg) PROMOTE=1; shift ;;
+			--txn) STXN=${2:-}; STXN_SET=1; [ $# -ge 2 ] && shift 2 || shift ;;
+			*) echo "batman-config-save: unknown option $1 for --save" >&2; exit 1 ;;
+		esac
+	done
+	# the helper's token is hex (node.go); anything else (empty, a space, the word "none") can never match a live one
+	[ "$STXN_SET" = 0 ] || case "$STXN" in ''|none|*[!0-9a-f]*) echo "batman-config-save: --txn needs the transaction's hex token" >&2; exit 1 ;; esac ;;
 --prov-only)
 	shift
 	while [ $# -gt 0 ]; do
@@ -161,10 +174,24 @@ prov_compare() {	# --check (#254 P1 §4.8): runs BEFORE the unseeded early exit.
 # ---- #254: a provisioning transaction in progress makes the periodic writers yield --------------
 TXN=$RUNDIR/prov-txn
 txn_live() { { [ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ]; } || [ -f "$PROVD/.txn" ]; }
+# the txn sequence (#254 wireless-txn §7): "<marker token|none> <.txn token|none>". Read before staging and again
+# right before the p5 write: a transaction that started in between makes this save stale -> abort, next tick.
+txn_seq() {
+	m=none; [ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ] && { m=$(head -c 128 "$TXN"); [ -n "$m" ] || m=empty; }
+	t=none; if [ -e "$PROVD/.txn" ] || [ -L "$PROVD/.txn" ]; then t=""; read -r t _ < "$PROVD/.txn" 2>/dev/null; [ -n "$t" ] || t=unreadable; fi
+	printf '%s %s' "$m" "$t"
+}
+SEQ0=""
 case "$mode" in
-	--on-join) txn_live && { err "provisioning transaction in progress — next tick"; exit 1; } ;;
+	--on-join) txn_live && { err "provisioning transaction in progress — next tick"; exit 1; }; SEQ0=$(txn_seq) ;;
 	--save|--if-healthy)
-		i=0; while txn_live; do i=$((i + 1)); [ "$i" -gt 10 ] && { err "provisioning transaction still in progress after 10 s — not saving"; exit 1; }; sleep 1; done ;;
+		if [ -n "$STXN" ]; then
+			# the helper's Finish persists BEFORE it removes .txn (§3): only while the marker and .txn carry its token
+			[ "$(txn_seq)" = "$STXN $STXN" ] || { err "--txn $STXN does not match the live transaction (run-dir marker and .txn)"; exit 1; }
+		else
+			i=0; while txn_live; do i=$((i + 1)); [ "$i" -gt 10 ] && { err "provisioning transaction still in progress after 10 s — not saving"; exit 1; }; sleep 1; done
+		fi
+		SEQ0=$(txn_seq) ;;
 	--prov-only)
 		if [ -n "$PTXN" ]; then
 			[ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ] && [ "$(head -c 128 "$TXN")" = "$PTXN" ] || { err "--txn $PTXN does not match the live transaction"; exit 1; }
@@ -536,6 +563,11 @@ fi
 # --if-healthy / --on-join (this boot joined — the mesh key demonstrably works) and on an explicit
 # --save --promote-lkg (the caller proved it); a bare --save (operator, unproven) must NOT clobber the
 # last proven lkg (N-R8). 219 §6.4 follows this contract.
+# txn sequence re-check, right before the p5 write (#254 wireless-txn §7)
+if [ -n "$SEQ0" ] && [ "$(txn_seq)" != "$SEQ0" ]; then
+	rm -rf "$STAGE"; STAGE=""; umount "$MNT" 2>/dev/null
+	err "provisioning transaction started — next tick"; exit 1
+fi
 mkdir -p "$MNT/identity" "$MNT/lkg"
 cp -a "$STAGE/identity/." "$MNT/identity/" 2>/dev/null
 mv "$STAGE/overrides.uci" "$MNT/overrides.uci"

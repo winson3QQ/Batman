@@ -38,6 +38,26 @@ DEV=/dev/mmcblk0p5
 	i=0
 	while [ "$i" -lt 40 ] && ! iw dev wlh0 info >/dev/null 2>&1; do sleep 2; i=$((i + 1)); done
 
+	# #254 §6: each reassert holds halow-setkey's lock (not the whole loop), so it never interleaves with a helper /
+	# operator radio change. Busy for LOCKWAIT s or the run dir unusable -> reassert ANYWAY (fail open): chanfix runs
+	# only on a fresh slot's first boot (a trial, where the helper refuses changes — EBusy), and skipping would strand
+	# the slot on morse's default channel (see above). fd 9 is closed for `wifi`.
+	LOCKWAIT=90
+	# shellcheck source=/dev/null
+	[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+	lock_take() {   # rc 0 = holding fd 9; otherwise logged and the caller goes on without it
+		if ! type batman_rundir >/dev/null 2>&1 || ! batman_rundir 2>/dev/null || ! command -v flock >/dev/null 2>&1 \
+			|| ! command exec 9>"$RUNDIR/halow-setkey.lock"; then
+			logger -t batman-chanfix "run dir / flock unusable — reasserting without the halow-setkey lock"; return 1
+		fi
+		w=0; until flock -n 9; do
+			w=$((w + 1)); [ "$w" -ge "$LOCKWAIT" ] && { logger -t batman-chanfix "halow-setkey lock busy ${w}s — reasserting anyway"; return 1; }
+			sleep 1
+		done
+		return 0
+	}
+	lock_drop() { command exec 9>&- 2>/dev/null; }
+
 	# reassert until it sticks (bounded ~6 tries); no-op fast path when already correct
 	a=0
 	while [ "$a" -lt 6 ]; do
@@ -47,9 +67,13 @@ DEV=/dev/mmcblk0p5
 			[ "$a" = 0 ] || logger -t batman-chanfix "radio1 channel is $CH (settled after $a reassert)"
 			exit 0
 		fi
+		lock_take
+		cur=$(uci -q get wireless.radio1.channel)   # re-read under the lock: a change may have finished meanwhile
+		if [ "$cur" = "$CH" ]; then lock_drop; continue; fi
 		uci set wireless.radio1.channel="$CH"
 		uci commit wireless
-		wifi reload
+		wifi reload 9>&-
+		lock_drop
 		logger -t batman-chanfix "reassert radio1 channel $cur -> $CH from p5 (try $a) + wifi reload"
 		a=$((a + 1))
 	done

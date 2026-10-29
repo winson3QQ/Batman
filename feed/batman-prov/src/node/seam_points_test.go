@@ -28,6 +28,7 @@ type snap struct {
 	root      string
 	lastKnown string
 	lockCalls int
+	saveTxns  int // batman-config-save --save --txn (254-wireless-txn §3)
 }
 
 func (r *rig) snap() snap {
@@ -37,7 +38,7 @@ func (r *rig) snap() snap {
 	}
 	_, terr := os.Stat(r.n.P.Txn())
 	return snap{rec.Generation, rec.State, terr == nil, len(r.sys.persisted), len(r.sys.setkeys), r.sys.saves,
-		r.sys.root, r.sys.lastKnown, len(r.sys.lockCalls)}
+		r.sys.root, r.sys.lastKnown, len(r.sys.lockCalls), len(r.sys.saveTxns)}
 }
 
 // stopAt arms point, runs op, and returns the state seen at the point; it fails the test if the point never fires.
@@ -121,13 +122,14 @@ func TestKillpointTxnPositions(t *testing.T) {
 	}
 	r, b = base()
 	s = stopAt(t, r, "txn-4", func() { r.join() })
-	if s.txn || s.gen != b.gen+1 || s.state != provstore.Member || s.saves != b.saves {
-		t.Fatalf("txn-4: %+v (before %+v): want overlay member gen %d, .txn gone, no --save yet", s, b, b.gen+1)
+	// 254-wireless-txn §3: .txn goes only AFTER the save under the transaction's token
+	if !s.txn || s.gen != b.gen+1 || s.state != provstore.Member || s.saves != b.saves || s.saveTxns != b.saveTxns {
+		t.Fatalf("txn-4: %+v (before %+v): want overlay member gen %d, .txn kept, no save yet", s, b, b.gen+1)
 	}
 	r, b = base()
 	s = stopAt(t, r, "txn-5", func() { r.join() })
-	if s.txn || s.gen != b.gen+1 || s.state != provstore.Member || s.saves != b.saves+1 {
-		t.Fatalf("txn-5: %+v (before %+v): want --save done", s, b)
+	if s.txn || s.gen != b.gen+1 || s.state != provstore.Member || s.saveTxns != b.saveTxns+1 {
+		t.Fatalf("txn-5: %+v (before %+v): want --save --txn done, .txn gone", s, b)
 	}
 }
 

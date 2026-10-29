@@ -117,13 +117,55 @@ func (s realSys) Persist(r, m, id, txn string) (int, string) {
 func (s realSys) GetP5(dir string) (int, string) { return provstore.GetP5(s.p, dir) }
 func (s realSys) Save() (int, string)            { return run(nil, s.p.ConfigSave, "--save") }
 
-// SetKeyNoPersist: the key goes over stdin (`--mesh -`), never on a command line.
+// SetKeyNoPersist: the key goes over stdin (`--mesh -`), never on a command line. rc 2 = nothing changed.
 func (s realSys) SetKeyNoPersist(key, id, ch string) error {
-	rc, out := run([]byte(key+"\n"), "halow-setkey", "--mesh", "-", "--mesh-id", id, "--channel", ch, "--no-persist")
+	args := []string{"--mesh", "-"}
+	if id != "" {
+		args = append(args, "--mesh-id", id)
+	}
+	if ch != "" {
+		args = append(args, "--channel", ch)
+	}
+	rc, out := run([]byte(key+"\n"), "halow-setkey", append(args, "--no-persist")...)
 	if rc != 0 {
-		return fmt.Errorf("halow-setkey rc=%d: %s", rc, lastLine(out))
+		return &node.SetkeyError{RC: rc, Msg: lastLine(out)}
 	}
 	return nil
+}
+
+// ForgetMesh: placeholder key + the radio blocked by the keyguard, verified down (halow-setkey --forget-mesh).
+func (s realSys) ForgetMesh() error {
+	rc, out := run(nil, "halow-setkey", "--forget-mesh", "--no-persist")
+	if rc != 0 {
+		return &node.SetkeyError{RC: rc, Msg: lastLine(out)}
+	}
+	return nil
+}
+
+// SaveTxn: the p5 save of a wireless transaction, allowed only while the run-dir marker and .txn carry the token.
+func (s realSys) SaveTxn(token string) (int, string) {
+	return run(nil, s.p.ConfigSave, "--save", "--txn", token)
+}
+
+// RadioState: the morse radio's uci `disabled`, and whether the keyguard mark lists it (blocked by us, not by hand).
+func (s realSys) RadioState() (bool, bool, error) {
+	i := meshIface()
+	if i == "" {
+		return false, false, errors.New("no mesh interface")
+	}
+	dev := uciGet("wireless." + i + ".device")
+	if dev == "" {
+		return false, false, errors.New("mesh interface without a radio")
+	}
+	in := false
+	if b, err := os.ReadFile("/etc/halow-keyguard.blocked"); err == nil {
+		for _, f := range strings.Fields(string(b)) {
+			if f == dev {
+				in = true
+			}
+		}
+	}
+	return uciGet("wireless."+dev+".disabled") == "1", in, nil
 }
 func (s realSys) CurrentWireless() (string, string, string, error) {
 	i := meshIface()
@@ -215,6 +257,25 @@ func (s realSys) SetLastKnown(state string) error {
 		return fmt.Errorf("prov-state has %d fields", len(fl))
 	}
 	fl[2] = state
+	t := f + ".helper"
+	if err := os.WriteFile(t, []byte(strings.Join(fl, " ")+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(t, f)
+}
+
+// SetMeshExpect rewrites ONLY field 6 (mesh_expect) of p6 prov-state, like SetLastKnown (254-wireless-txn §3).
+func (s realSys) SetMeshExpect(me string) error {
+	f := filepath.Join(s.p.State, "prov-state")
+	b, err := os.ReadFile(f)
+	if err != nil {
+		return err
+	}
+	fl := strings.Fields(strings.SplitN(string(b), "\n", 2)[0])
+	if len(fl) < 6 {
+		return fmt.Errorf("prov-state has %d fields", len(fl))
+	}
+	fl[5] = me
 	t := f + ".helper"
 	if err := os.WriteFile(t, []byte(strings.Join(fl, " ")+"\n"), 0o600); err != nil {
 		return err
@@ -393,9 +454,7 @@ func main() {
 		if seam.Marker != "" {
 			logf("%s", seam.Marker)
 		}
-		if res := boot.Run(bootEnv(p)); res.Restore != nil {
-			restoreWireless(p, res.Restore, 0)
-		}
+		boot.Run(bootEnv(p)) // an unfinished wireless change is the daemon's (Finish before serving)
 		return
 	case "--apply-state":
 		if err := applyState(p, len(args) > 1 && args[1] == "--firstboot"); err != nil {
@@ -452,9 +511,6 @@ func daemon(p provstore.Paths) {
 	seam.Arm(logf)                                 // the killpoint file is read once per daemon start (prov_test builds only)
 	os.Remove(filepath.Join(p.RunDir, "prov-txn")) // a marker of a helper that died cannot be live
 	res := boot.Run(bootEnv(p))
-	if res.Restore != nil {
-		go restoreWireless(p, res.Restore, 120*time.Second)
-	}
 	ks, err := keystore.Load(p.Identity())
 	if err != nil {
 		logf("no usable identity (%s): serving nothing", res.Verdict)
@@ -477,6 +533,17 @@ func daemon(p provstore.Paths) {
 	}
 	n := node.New(p, ks, realSys{p}, logf)
 	n.Verdict = res.Verdict
+	// docs/design/254-wireless-txn.md §3: an unfinished wireless change is finished BEFORE serving — the previous state
+	// of the record p5 confirmed. Not on an unknown verdict or an unread p5 (then the first saving verb, or the next
+	// boot, finishes it). A network to rejoin waits for the radio (up to 120 s); a forget / blocked radio does not.
+	if res.Unfinished && res.P5Read && !strings.HasPrefix(res.Verdict, "unknown") {
+		if n.FinishWantsRadio() {
+			waitRadioUp(120 * time.Second)
+		}
+		if err := n.Finish("boot"); err != nil {
+			logf("boot finish: %v", err)
+		}
+	}
 	srv := &sock.Server{Path: filepath.Join(sockDir, "helper.sock"), PeerUID: provdUID, GID: provdGID, Idle: 30 * time.Second, Log: logf}
 	if err := srv.Listen(); err != nil {
 		logf("listen: %v", err)
@@ -489,22 +556,16 @@ func daemon(p provstore.Paths) {
 	srv.Serve(n.Handle)
 }
 
-// restoreWireless (§4.4 step 6): an interrupted, NOT committed net.apply — put the recorded pre-change wireless values
-// back with halow-setkey (persisting this time), then drop .txn. --on-join yields while .txn exists.
-func restoreWireless(p provstore.Paths, t *provstore.Txn, wait time.Duration) {
-	time.Sleep(wait)
-	args := []string{"--mesh", "-"}
-	if t.PrevID != "" {
-		args = append(args, "--mesh-id", t.PrevID)
+// waitRadioUp: meshjoin_radio_up (the mesh interface is up on the uci mesh id), polled until true or the deadline.
+func waitRadioUp(max time.Duration) {
+	end := time.Now().Add(max)
+	for time.Now().Before(end) {
+		if rc, _ := run(nil, "sh", "-c", ". /usr/lib/batman/meshjoin.sh && meshjoin_radio_up"); rc == 0 {
+			return
+		}
+		time.Sleep(2 * time.Second)
 	}
-	if t.PrevChannel != "" {
-		args = append(args, "--channel", t.PrevChannel)
-	}
-	rc, out := run([]byte(t.PrevKey+"\n"), "halow-setkey", args...)
-	logf("txn %s not committed: restored the previous wireless values, setkey rc=%d (%s)", t.Verb, rc, lastLine(out))
-	if rc == 0 {
-		provstore.RemoveTxn(p)
-	}
+	logf("boot finish: radio not up after %s — finishing anyway", max)
 }
 
 func btdPid() int {

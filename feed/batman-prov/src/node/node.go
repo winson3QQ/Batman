@@ -61,17 +61,22 @@ func fail(code int, why string, a ...any) *Error {
 
 // Sys is every side effect outside the helper's own files; the real one lives in cmd/, tests fake it.
 type Sys interface {
-	IsTrial() bool                                            // batman-slot is-trial rc 0
-	Persist(record, meta, identity, txn string) (int, string) // batman-config-save --prov-only
-	GetP5(dir string) (int, string)                           // batman-config-save --prov-get
-	Save() (int, string)                                      // batman-config-save --save (after a lock/shadow change)
-	SetKeyNoPersist(meshKey, meshID string, channel string) error
-	CurrentWireless() (meshKey, meshID, channel string, err error) // the values a .txn must be able to restore
-	ApplyLock(rootHash string) error                               // prov_apply_lock --hash-stdin: doors first, the hash last (§5.3)
-	RestoreRoot(prev string) error                                 // prov_apply_lock --restore-stdin: root's previous field back ("" -> "!")
-	RootField() (string, error)                                    // root's current shadow field
-	MarkLockIncomplete()                                           // p6 lock-status LOCK-INCOMPLETE
-	SetLastKnown(state string) error                               // p6 prov-state field 3 only (claim / replay commit)
+	IsTrial() bool                                                 // batman-slot is-trial rc 0
+	Persist(record, meta, identity, txn string) (int, string)      // batman-config-save --prov-only
+	GetP5(dir string) (int, string)                                // batman-config-save --prov-get
+	Save() (int, string)                                           // batman-config-save --save (after a lock/shadow change)
+	SetKeyNoPersist(meshKey, meshID string, channel string) error  // halow-setkey --no-persist; a *SetkeyError on failure
+	CurrentWireless() (meshKey, meshID, channel string, err error) // the live values (the pre-change snapshot in .txn)
+	// docs/design/254-wireless-txn.md
+	SaveTxn(token string) (int, string)                     // batman-config-save --save --txn <token> (while .txn + marker hold it)
+	ForgetMesh() error                                      // halow-setkey --forget-mesh --no-persist; a *SetkeyError on failure
+	RadioState() (disabled, inKeyguardMark bool, err error) // the morse radio's uci disabled; listed in the keyguard mark
+	SetMeshExpect(me string) error                          // p6 prov-state field 6 only
+	ApplyLock(rootHash string) error                        // prov_apply_lock --hash-stdin: doors first, the hash last (§5.3)
+	RestoreRoot(prev string) error                          // prov_apply_lock --restore-stdin: root's previous field back ("" -> "!")
+	RootField() (string, error)                             // root's current shadow field
+	MarkLockIncomplete()                                    // p6 lock-status LOCK-INCOMPLETE
+	SetLastKnown(state string) error                        // p6 prov-state field 3 only (claim / replay commit)
 	CryptPassword(pw string) (string, error)
 	AuthorizedKeys() ([]string, error)
 	SetAuthorizedKeys(lines []string) error
@@ -166,12 +171,27 @@ func (n *Node) Handle(req cbor.Map) cbor.Map {
 var stateChanging = map[string]bool{"claim.verify": true, "claim.replay": true, "net.apply": true, "network.leave": true,
 	"owner.add": true, "owner.remove": true, "settings.set": true, "root_password.reset": true, "ssh_keys.set": true}
 
+// commitOnly: state-changing verbs that only commit the record (no save, no wireless) — 254-wireless-txn §4.1
+var commitOnly = map[string]bool{"owner.add": true, "owner.remove": true}
+
 func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 	if stateChanging[verb] && n.Sys.IsTrial() {
 		return nil, fail(EBusy, "trial slot (updating)")
 	}
 	if stateChanging[verb] && (n.Verdict == "" || strings.HasPrefix(n.Verdict, "unknown")) {
 		return nil, fail(EState, "this boot's verdict is %q — state changes refused", n.Verdict)
+	}
+	// docs/design/254-wireless-txn.md §4.1: an unfinished wireless change is finished before a verb that saves or changes
+	// the wireless; commit-only verbs never Finish (an owner can always remove a co-owner, even with a dead radio) but
+	// never commit on an overlay older than p5 either
+	if commitOnly[verb] {
+		if _, e := n.resolve(); e != nil {
+			n.Log("%s: %s (committing on the overlay)", verb, e.Reason)
+		}
+	} else if stateChanging[verb] && provstore.TxnPresent(n.P) {
+		if e := n.finish("before " + verb); e != nil {
+			return nil, fail(EState, "an earlier network change could not be finished (%s)", e.Reason)
+		}
 	}
 	rec, _, err := provstore.LoadOverlay(n.P)
 	if err != nil || rec == nil {
@@ -205,6 +225,18 @@ func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 			return nil, e
 		}
 		return cbor.M(1, rec.State, 2, rec.Generation, 3, uint64(len(rec.Owners)), 4, rec.RadioManaged), nil
+	case "info.net":
+		// net_id / version / left for the app's "already done" decision (254-wireless-txn §4.1). provd routes this
+		// verb only for the owner role: a stable net_id to any BLE peer would link a fleet (§14).
+		if e := onlyKeys(a); e != nil {
+			return nil, e
+		}
+		var nid any
+		var ver uint64
+		if rec.Net != nil {
+			nid, ver = rec.Net.NetID, rec.Net.Version
+		}
+		return cbor.M(1, nid, 2, ver, 3, rec.Left), nil
 	case "nonce":
 		return n.newNonce(a)
 	case "sign.static", "sign.ecdh_proof", "sign.peer":
@@ -708,20 +740,7 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 	case "net.apply":
 		return n.netJoin(rec, body)
 	case "network.leave":
-		if rec.State != provstore.Member {
-			return nil, fail(EForbidden, "not a member")
-		}
-		next := *rec
-		next.Generation++
-		next.State = provstore.Claimed
-		next.Net, next.Members, next.Admins = nil, nil, nil
-		if err := n.commit(&next, "leave"); err != nil {
-			return nil, err
-		}
-		if err := n.Sys.RemoveMeshMarkers(); err != nil {
-			n.Log("network.leave: mesh markers: %v", err)
-		}
-		return cbor.M(), nil
+		return n.leave(rec)
 	case "owner.add":
 		return n.ownerAdd(rec, body)
 	case "owner.remove":
@@ -870,7 +889,7 @@ func (n *Node) ownerRemove(rec *provstore.Record, body cbor.Map) (cbor.Map, *Err
 
 // netRoot decrypts the stored net_secrets to read net_root (kept inside the helper).
 func (n *Node) netRoot(rec *provstore.Record) []byte {
-	pt := n.openSecrets(rec.Net.Secrets, rec.Admins)
+	pt := n.openStoredSecrets(rec.Net.Secrets) // stored: not re-verified (handover, 254-wireless-txn §2)
 	if pt == nil {
 		return nil
 	}
@@ -886,31 +905,7 @@ func (n *Node) openSecrets(raw []byte, admins [][]byte) cbor.Map {
 	if err != nil {
 		return nil
 	}
-	target, _ := s.Payload.Get(3)
-	dacHash := sha256.Sum256(n.KS.DACPub())
-	tb, ok := target.([]byte)
-	if !ok || subtle.ConstantTimeCompare(tb, dacHash[:]) != 1 {
-		return nil
-	}
-	nid, _ := s.Payload.Get(1)
-	ver, _ := s.Payload.Get(2)
-	nidB, ok1 := nid.([]byte)
-	verU, ok2 := ver.(uint64)
-	if !ok1 || !ok2 || verU > 0xffffffff {
-		return nil
-	}
-	other := append(append([]byte(nil), nidB...), byte(verU>>24), byte(verU>>16), byte(verU>>8), byte(verU))
-	enc, _ := s.Payload.Get(4)
-	pt, err := cose.Decrypt(enc, proto.LabelSecrets, dacHash[:], other, n.KS.ECDH)
-	if err != nil {
-		return nil
-	}
-	m, err := cbor.Decode(pt)
-	if err != nil {
-		return nil
-	}
-	mm, _ := m.(cbor.Map)
-	return mm
+	return n.decryptSecrets(s)
 }
 
 func secretField(m cbor.Map, k int) []byte {
@@ -1051,7 +1046,9 @@ func (n *Node) netUpdate(rec *provstore.Record, body cbor.Map) (cbor.Map, *Error
 	sec, _ := body.Get(2)
 	admins := rec.Admins
 	prevX, _ := cbor.Decode(rec.Net.Config)
-	prevS, err := cose.VerifySign1(prevX, cose.CTNetcfg, proto.LabelNetcfg, rec.Admins)
+	// the STORED config is not re-verified (254-wireless-txn §2): after an admin handover it is signed by admins that
+	// are no longer in rec.Admins, which made every later update fail (review r5 B MAJOR-3); its OBJECT_HASH is the same
+	prevS, err := cose.Sign1Payload(prevX, cose.CTNetcfg, proto.LabelNetcfg)
 	if err != nil {
 		return nil, fail(EBadObject, "stored net_config")
 	}
@@ -1087,16 +1084,24 @@ func (n *Node) adminsOfPrev(chain []any, rec *provstore.Record) [][]byte {
 	return rec.Admins
 }
 
-// applyNet runs the §4.4 transaction: txn markers, setkey --no-persist, --prov-only, overlay rename, --save, prov-state.
+// applyNet runs the wireless transaction of a join / update (docs/design/254-wireless-txn.md §3, §4.2): pre-check,
+// .txn (the pre-change snapshot) + marker, setkey --no-persist, commit (p5 = the commit point), then save under the
+// transaction's token and only then drop .txn. Any failure after the live change -> Finish: the node goes back to the
+// previous state (or forward, if the commit landed — decided by p5, not by generations).
 func (n *Node) applyNet(rec *provstore.Record, p *parsedNet, verb string) (cbor.Map, *Error) {
+	// a radio an operator switched off by hand can neither take the change nor its undo (review r6 A M1)
+	if dis, inMark, err := n.Sys.RadioState(); err == nil && dis && !inMark {
+		return nil, fail(EApply, "the HaLow radio is switched off on this node")
+	}
 	token := hex.EncodeToString(rnd(16))
 	next := *rec
 	next.Generation = rec.Generation + 1
 	next.State = provstore.Member
 	next.RadioManaged = true
+	next.Left = false
 	next.Admins = p.admins
 	next.Net = &provstore.Net{Config: p.cfgRaw, Secrets: p.secRaw, Version: p.version, NetID: p.netID}
-	// step 1: markers, staged record
+	// step 1: marker, .txn with the snapshot of the live wireless (the previous state of a non-member, §2)
 	if err := n.Sys.WriteTxnMarker(token); err != nil {
 		return nil, fail(EApply, "txn marker: %v", err)
 	}
@@ -1105,28 +1110,79 @@ func (n *Node) applyNet(rec *provstore.Record, p *parsedNet, verb string) (cbor.
 	if err != nil {
 		return nil, fail(EApply, "current wireless: %v", err)
 	}
-	if err := provstore.WriteTxn(n.P, token, rec.Generation, next.Generation, verb, pk, pid, pch); err != nil {
+	dis, _, _ := n.Sys.RadioState()
+	if err := provstore.WriteTxn(n.P, token, rec.Generation, next.Generation, verb, pk, pid, pch, dis); err != nil {
 		return nil, fail(EApply, "txn: %v", err)
 	}
-	seam.At(seam.Txn1, n.Log) // markers + .txn written, wireless untouched
-	// step 2: the fallible side effect
+	seam.At(seam.Txn1, n.Log) // marker + .txn written, wireless untouched
+	// step 2: the live change
 	if err := n.Sys.SetKeyNoPersist(p.sae, p.meshID, p.channel); err != nil {
-		provstore.RemoveTxn(n.P)
+		if setkeyRC(err) == 2 { // nothing changed: nothing to undo (review r4 B-M2)
+			provstore.RemoveTxn(n.P)
+			return nil, fail(EApply, "setkey: %v", err)
+		}
+		n.finish("after a failed setkey of " + verb)
 		return nil, fail(EApply, "setkey: %v", err)
 	}
 	seam.At(seam.Txn2, n.Log) // wireless changed (not persisted), p5 not yet
-	// step 3-4: persist then rename the overlay record (commit point = p5 prov.meta)
+	// step 3: commit (p5 prov.meta is the commit point)
 	if err := n.commitTxn(&next, token, seam.Txn3); err != nil {
+		n.finish("after a failed commit of " + verb)
 		return nil, err
 	}
-	provstore.RemoveTxn(n.P)
-	seam.At(seam.Txn4, n.Log) // p5 + overlay committed, .txn gone, --save not done
-	// step 5: the marker goes FIRST — batman-config-save --save waits for it and refuses after 10 s, so a --save
-	// under our own marker never saved (04, 2026-10-28: every join left the p5 overrides stale)
-	n.Sys.ClearTxnMarker()
-	if rc, out := n.Sys.Save(); rc != 0 && rc != 6 {
-		n.Log("%s: --save rc=%d (%s) — the next boot's --check reports it", verb, rc, strings.TrimSpace(out))
+	seam.At(seam.Txn4, n.Log) // committed; .txn and the marker still there, the save not done
+	// step 4: save under this transaction's token BEFORE .txn goes (a power loss in between = Finish again)
+	if rc, out := n.Sys.SaveTxn(token); rc != 0 && rc != 6 {
+		n.Log("%s: save rc=%d (%s) — .txn kept, the next boot finishes it", verb, rc, strings.TrimSpace(out))
+	} else {
+		provstore.RemoveTxn(n.P)
 	}
 	seam.At(seam.Txn5, n.Log) // everything written, the reply not sent
 	return cbor.M(1, p.version), nil
+}
+
+// leave (L22, 254-wireless-txn §5): network/leave = forget the network. A wireless transaction: .txn, commit
+// (claimed, Left), forget (placeholder, radio blocked), markers, save, drop .txn. A power loss before the commit puts the
+// network back (Finish against the member record); after it, Finish forgets.
+func (n *Node) leave(rec *provstore.Record) (cbor.Map, *Error) {
+	if rec.State != provstore.Member {
+		return nil, fail(EForbidden, "not a member")
+	}
+	token := hex.EncodeToString(rnd(16))
+	next := *rec
+	next.Generation = rec.Generation + 1
+	next.State = provstore.Claimed
+	next.Net, next.Members, next.Admins = nil, nil, nil
+	next.Left = true
+	if err := n.Sys.WriteTxnMarker(token); err != nil {
+		return nil, fail(EApply, "txn marker: %v", err)
+	}
+	defer n.Sys.ClearTxnMarker()
+	pk, pid, pch, err := n.Sys.CurrentWireless()
+	if err != nil {
+		return nil, fail(EApply, "current wireless: %v", err)
+	}
+	dis, _, _ := n.Sys.RadioState()
+	if err := provstore.WriteTxn(n.P, token, rec.Generation, next.Generation, "network/leave", pk, pid, pch, dis); err != nil {
+		return nil, fail(EApply, "txn: %v", err)
+	}
+	if err := n.commitTxn(&next, token, seam.None); err != nil {
+		n.finish("after a failed commit of network/leave")
+		return nil, err
+	}
+	if err := n.Sys.ForgetMesh(); err != nil {
+		// committed but not forgotten: .txn stays, the next Finish forgets; the app must not show "left" as complete
+		n.Log("network.leave: committed, forgetting the mesh failed: %v", err)
+		return nil, fail(EApply, "left the network; the radio still has the old settings — retry")
+	}
+	if err := n.Sys.RemoveMeshMarkers(); err != nil {
+		n.Log("network.leave: mesh markers: %v", err)
+	}
+	if rc, out := n.Sys.SaveTxn(token); rc != 0 && rc != 6 {
+		n.Log("network.leave: save rc=%d (%s) — .txn kept, the next boot finishes it", rc, strings.TrimSpace(out))
+	} else {
+		provstore.RemoveTxn(n.P)
+	}
+	n.refreshMeshExpect(&next)
+	return cbor.M(), nil
 }

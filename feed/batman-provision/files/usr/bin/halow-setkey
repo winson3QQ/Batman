@@ -3,7 +3,12 @@
 # (#103/#13/#202): validate -> apply -> read back -> PERSIST to p5.
 #
 #   halow-setkey [--mesh <sae-key>] [--ap <psk>] [--mesh-id <id>] [--channel <n>]   (at least one)
+#   halow-setkey --forget-mesh [--no-persist]   (#254 §6: placeholder key + radio blocked, verified down)
 #   halow-setkey --status
+#
+# One writer at a time (#254 §6): every write mode holds $RUNDIR/halow-setkey.lock (flock; 99-batman-chanfix takes
+# it per reassert). Busy for LOCKWAIT s, or the run dir unusable -> rc 2, nothing changed (fail closed).
+# --status is read-only and takes no lock.
 #
 # Sets the HaLow mesh SAE key and/or the onboarding-AP PSK / mesh id / S1G channel, releases whatever
 # halow-keyguard disabled because a key was still the public placeholder, commits, reloads wifi, reads
@@ -21,16 +26,23 @@
 MARK=/etc/halow-keyguard.blocked
 PLACEHOLDER=CHANGE-ME-NOW
 REGDB=/usr/share/morse-regdb/channels.csv
-MESH=""; AP=""; MESHID=""; CHAN=""; STATUS=0; NOPERSIST=0
-usage() { echo "usage: halow-setkey [--mesh <key>|-] [--ap <key>] [--mesh-id <id>] [--channel <n>] [--no-persist] | --status" >&2; exit 2; }
+LOCKWAIT=90         # s to wait for another writer (#254 §6)
+FORGET_WAIT=30      # s for --forget-mesh to see the radio down (04: both within 2 s, radiooff.sh 2026-10-30)
+MESH=""; AP=""; MESHID=""; CHAN=""; STATUS=0; NOPERSIST=0; FORGET=0
+usage() { echo "usage: halow-setkey [--mesh <key>|-] [--ap <key>] [--mesh-id <id>] [--channel <n>] [--no-persist] | --forget-mesh [--no-persist] | --status" >&2; exit 2; }
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--mesh) MESH=${2:-}; shift 2;; --ap) AP=${2:-}; shift 2;; --mesh-id) MESHID=${2:-}; shift 2;;
 		--channel) CHAN=${2:-}; shift 2;; --status) STATUS=1; shift;;
 		--no-persist) NOPERSIST=1; shift;;   # #254: batman-provhelper's transaction persists by itself (§4.4 step 2)
+		--forget-mesh) FORGET=1; shift;;     # #254 §6: no key input; mesh id / channel unchanged
 		*) usage;;
 	esac
 done
+# --forget-mesh takes no key, id or channel (and never reads stdin): checked before `--mesh -` could read one
+if [ "$FORGET" = 1 ] && { [ "$STATUS" = 1 ] || [ -n "$MESH$AP$MESHID$CHAN" ]; }; then
+	echo "--forget-mesh takes no key, mesh id, channel or --status (only --no-persist)" >&2; exit 2
+fi
 # #254: `--mesh -` reads the key from stdin (one line) — batman-provhelper never puts a secret on a command line,
 # where any local process could read it from /proc/<pid>/cmdline
 if [ "$MESH" = - ]; then IFS= read -r MESH || true; MESH=$(printf '%s' "$MESH" | tr -d '\r'); [ -n "$MESH" ] || { echo "--mesh -: no key on stdin"; exit 2; }; fi
@@ -57,7 +69,82 @@ if [ "$STATUS" = 1 ]; then
 fi
 
 [ "$(id -u)" = 0 ] || { echo "halow-setkey: root only" >&2; exit 2; }
-[ -n "$MESH$AP$MESHID$CHAN" ] || { echo "nothing to set (use --mesh/--ap/--mesh-id/--channel or --status)"; exit 2; }
+[ "$FORGET" = 1 ] || [ -n "$MESH$AP$MESHID$CHAN" ] || { echo "nothing to set (use --mesh/--ap/--mesh-id/--channel, --forget-mesh or --status)"; exit 2; }
+
+# ---- 0. one writer at a time (#254 §6) ------------------------------------------------------------
+# helper (net.apply / Finish), operator and 99-batman-chanfix all write wireless + `wifi reload`; interleaved, one
+# could commit the other's half-staged values. The lock lives in the root-only run dir (#280); fd 9 is closed for
+# `wifi` (nothing it starts may keep the lock). busybox flock has only -n, hence the poll.
+# shellcheck source=/dev/null
+[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+if ! type batman_rundir >/dev/null 2>&1 || ! batman_rundir 2>/dev/null || ! command -v flock >/dev/null 2>&1; then
+	echo "halow-setkey: run dir / flock unusable — refusing (nothing changed)" >&2; exit 2
+fi
+command exec 9>"$RUNDIR/halow-setkey.lock" || { echo "halow-setkey: cannot open the lock — refusing (nothing changed)" >&2; exit 2; }
+w=0; until flock -n 9; do
+	w=$((w + 1)); [ "$w" -ge "$LOCKWAIT" ] && { echo "halow-setkey: busy — another radio change holds the lock (${w}s); nothing changed" >&2; exit 2; }
+	sleep 1
+done
+
+# ---- 4. persist (#202), shared by every write mode -------------------------------------------------
+persist_exit() {
+	if [ "$NOPERSIST" = 1 ]; then
+		echo "persist: skipped (--no-persist: the caller persists)"; exit 0
+	fi
+	if [ ! -b /dev/mmcblk0p5 ]; then
+		echo "persist: n/a (no p5 on this card — single-slot image, nothing to survive a reflash)"; exit 0
+	fi
+	if ! command -v batman-config-save >/dev/null 2>&1; then
+		echo "persist: FAILED (batman-config-save missing) — the setting lives only in this slot and is LOST on the next OTA" >&2; exit 3
+	fi
+	out=$(batman-config-save --save 2>&1); prc=$?
+	case "$prc" in
+		0) echo "persist: saved -> /dev/mmcblk0p5" ;;
+		6) echo "persist: PARTIAL — $(echo "$out" | sed -n 's/.*cannot persist\(.*\)(forbidden.*/\1/p' | head -1) could not be persisted (forbidden characters)" >&2; RC=3 ;;
+		*) echo "persist: FAILED ($(echo "$out" | tail -1)) — the setting lives only in this slot and is LOST on the next OTA" >&2; RC=3 ;;
+	esac
+	exit "$RC"
+}
+RC=0
+
+# ---- --forget-mesh (#254 §6, `network/leave` and Finish) ------------------------------------------
+# Placeholder key on the morse radio's mesh interface(s) AND the keyguard block of that radio (uci disabled=1 + the
+# radio merged into the keyguard mark, as halow-keyguard writes it), staged together and committed ONCE: a committed
+# placeholder on an enabled radio would put the public key on the air. Then verified: no mesh netdev and netifd
+# reports the radio up=false disabled=true.
+radio_down() {   # $1 = radio; netifd's view (the same one `wifi status` prints)
+	st=$(ubus call network.wireless status 2>/dev/null)
+	[ "$(printf '%s' "$st" | jsonfilter -e "@.$1.up" 2>/dev/null)" = false ] && [ "$(printf '%s' "$st" | jsonfilter -e "@.$1.disabled" 2>/dev/null)" = true ]
+}
+if [ "$FORGET" = 1 ]; then
+	RADIO=$(morse_radio)
+	[ -n "$RADIO" ] || { echo "no morse (HaLow) radio in uci — nothing to forget"; exit 2; }
+	ms=""; for s in $(mesh_ifaces); do [ "$(uci -q get "wireless.$s.device")" = "$RADIO" ] && ms="$ms $s"; done
+	[ -n "$ms" ] || { echo "no mesh interface on $RADIO — nothing to forget"; exit 2; }
+	# the mark first (atomic rename; keyguard's entries — blocked APs — are kept): a mark without the commit is harmless
+	# (keyguard / setkey only delete `disabled` of what it lists), a commit without the mark would let setkey's
+	# release logic miss the radio
+	prev=""; [ -f "$MARK" ] && { read -r prev < "$MARK" || true; }
+	new=""; for s in $prev; do [ "$s" = "$RADIO" ] || new="$new $s"; done; new="$new $RADIO"
+	{ echo "$new" > "$MARK.tmp" && mv -f "$MARK.tmp" "$MARK"; } || { rm -f "$MARK.tmp"; echo "cannot write $MARK — nothing changed"; exit 2; }
+	for s in $ms; do uci -q set "wireless.$s.key=$PLACEHOLDER"; done
+	uci -q set "wireless.$RADIO.disabled=1"
+	uci commit wireless
+	logger -t halow-setkey "forget mesh: placeholder key on:$ms, radio $RADIO blocked; reloading wifi"
+	wifi reload >/dev/null 2>&1 9>&- || wifi 9>&-
+	i=0; ok=0
+	while :; do
+		[ -z "$(mesh_netdev)" ] && radio_down "$RADIO" && { ok=1; break; }
+		[ "$i" -ge "$FORGET_WAIT" ] && break
+		sleep 1; i=$((i + 1))
+	done
+	if [ "$ok" != 1 ]; then
+		echo "forget: NOT verified — within ${FORGET_WAIT}s the mesh netdev is '$(mesh_netdev)' and $RADIO is not reported up=false disabled=true" >&2
+		echo "persist: not attempted (forget unverified)"; exit 3
+	fi
+	echo "forgotten: placeholder key on:$ms, $RADIO blocked and down"
+	persist_exit
+fi
 
 # ---- 1. validate everything BEFORE changing anything --------------------------------------------
 for k in "$MESH" "$AP"; do [ -z "$k" ] || [ ${#k} -ge 8 ] || { echo "key must be >= 8 characters"; exit 2; }; done
@@ -107,7 +194,7 @@ if [ -f "$MARK" ]; then
 fi
 uci commit wireless
 logger -t halow-setkey "config updated on:$changed${CHAN:+ channel=$CHAN}; reloading wifi"
-wifi reload >/dev/null 2>&1 || wifi
+wifi reload >/dev/null 2>&1 9>&- || wifi 9>&-
 echo "applied on:$changed"
 [ -f "$MARK" ] && echo "still blocked (placeholder key remains):$(cat "$MARK")"
 
@@ -130,7 +217,7 @@ if [ -n "$CHAN" ]; then
 	if [ "$cur" != "$CHAN" ]; then
 		echo "radio rejected channel $CHAN (uci now holds $cur) — restoring channel ${prev_chan:-<unset>}, NOT persisting" >&2
 		if [ -n "$prev_chan" ]; then uci -q set "wireless.$RADIO.channel=$prev_chan"; else uci -q delete "wireless.$RADIO.channel"; fi
-		uci commit wireless; wifi reload >/dev/null 2>&1 || wifi
+		uci commit wireless; wifi reload >/dev/null 2>&1 9>&- || wifi 9>&-
 		echo "persist: not attempted (channel rejected)"; exit 3
 	fi
 	if [ "$verified" != 1 ]; then
@@ -147,19 +234,4 @@ else
 fi
 
 # ---- 4. persist (#202) -----------------------------------------------------------------------------
-if [ "$NOPERSIST" = 1 ]; then
-	echo "persist: skipped (--no-persist: the caller persists)"; exit 0
-fi
-if [ ! -b /dev/mmcblk0p5 ]; then
-	echo "persist: n/a (no p5 on this card — single-slot image, nothing to survive a reflash)"; exit 0
-fi
-if ! command -v batman-config-save >/dev/null 2>&1; then
-	echo "persist: FAILED (batman-config-save missing) — the setting lives only in this slot and is LOST on the next OTA" >&2; exit 3
-fi
-out=$(batman-config-save --save 2>&1); prc=$?
-case "$prc" in
-	0) echo "persist: saved -> /dev/mmcblk0p5" ;;
-	6) echo "persist: PARTIAL — $(echo "$out" | sed -n 's/.*cannot persist\(.*\)(forbidden.*/\1/p' | head -1) could not be persisted (forbidden characters)" >&2; RC=3 ;;
-	*) echo "persist: FAILED ($(echo "$out" | tail -1)) — the setting lives only in this slot and is LOST on the next OTA" >&2; RC=3 ;;
-esac
-exit $RC
+persist_exit
