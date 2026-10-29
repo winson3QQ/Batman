@@ -31,7 +31,16 @@ if [ -f "$F/etc/init.d/batman-prov-lock" ]; then
 	stub 'fails=0$' claim-lock-lints .
 else echo "FAIL prov-p1-stubs: product in this checkout predates the claim-lock fix (no etc/init.d/batman-prov-lock) — KNOWN until fix/254-claim-lock lands (#254)"; r=1; fi
 stub 'fails=0$' prov-base-names scripts/node/prov-base-254.sh   # no root needed (review A-m10)
+# #254 wireless transactions (docs/design/254-wireless-txn.md §6, §7, §11): the harness lands first (#290), so a product
+# without --forget-mesh fails with one KNOWN line (that IS the negative control)
+if grep -q -- '--forget-mesh' "$F/usr/bin/halow-setkey"; then
+	stub 'fails=0$' setkey-forget-lock "$F/usr/bin/halow-setkey" "$F/usr/lib/batman/rundir.sh"
+	stub 'fails=0$' chanfix-lock "$F/etc/uci-defaults/99-batman-chanfix" "$F/usr/lib/batman/rundir.sh"
+	stub 'fails=0$' halow-status-txn "$F/usr/bin/halow-status"
+else echo "FAIL prov-p1-stubs: product in this checkout predates the wireless transactions (no halow-setkey --forget-mesh) — KNOWN until feat/254-p1b-seams lands (#254)"; r=1; fi
 if [ "$(id -u)" = 0 ] && command -v losetup >/dev/null 2>&1; then
+	if grep -q -- '--save \[--promote-lkg\] \[--txn' "$F/usr/bin/batman-config-save"; then PROV_SRC=$REPO/$F stub 'FAIL=0$' cfgsave-txn-save "$F/usr/bin/batman-config-save"
+	else echo "FAIL prov-p1-stubs: batman-config-save in this checkout has no --save --txn — KNOWN until feat/254-p1b-seams lands (#254)"; r=1; fi
 	for t in cfgsave-identity-freeze cfgsave-frozen-nomount cfgsave-provget-rc10; do PROV_SRC=$REPO/$F stub 'FAIL=0|PASS$' $t "$F/usr/bin/batman-config-save"; done
 	stub 'fails=0$' prov-base-statecmp scripts/node/prov-base-254.sh
 	stub 'fails=0$' prov-base-stateset scripts/node/prov-base-254.sh

@@ -96,4 +96,6 @@ addr-defer.said.*
 cfgsave-frozen
 joinwatch.lastjoined
 prov-txn
+# #254 wireless-txn §6: one radio writer at a time (writers: halow-setkey, 99-batman-chanfix; flock only)
+halow-setkey.lock
 autocommit.ble-warned
