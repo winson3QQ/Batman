@@ -52,6 +52,7 @@ prov-ac-ble-254|prov-ac-ble-254|
 prov-ac-flap-254|prov-ac-flap-254|
 prov-trial-busy-254|prov-trial-busy-254|
 prov-downgrade-254|prov-downgrade-254|
+prov-downgrade-left-254|prov-downgrade-left-254|
 prov-leave-ota-254|prov-leave-ota-254|
 prov-overlay-corrupt-254|prov-overlay-corrupt-254|
 prov-overlay-wipe-254|prov-overlay-wipe-254|
@@ -60,12 +61,15 @@ prov-netupdate-254|prov-netupdate-254|
 prov-misc-254|prov-misc-254|
 prov-powerloss-txn1-254|prov-powerloss-254|1
 prov-powerloss-txn2-254|prov-powerloss-254|2
-prov-powerloss-txn2-neg-a-254|prov-powerloss-254|2 neg-a
 prov-powerloss-txn2-neg-b-254|prov-powerloss-254|2 neg-b
 prov-powerloss-txn3-254|prov-powerloss-254|3
 prov-powerloss-txn3-neg-254|prov-powerloss-254|3 neg
 prov-powerloss-txn4-254|prov-powerloss-254|4
 prov-powerloss-txn5-254|prov-powerloss-254|5
+prov-powerloss-legacyjoin-254|prov-powerloss-legacyjoin-254|
+prov-powerloss-legacyjoin-neg-254|prov-powerloss-legacyjoin-254|neg
+prov-powerloss-rejoin-254|prov-powerloss-rejoin-254|
+prov-powerloss-rejoin-neg-254|prov-powerloss-rejoin-254|neg
 prov-lock-failsecure-254|prov-lock-failsecure-254|
 prov-claim-kp-254|prov-claim-kp-254|
 prov-chain0-254|prov-chain0-254|
