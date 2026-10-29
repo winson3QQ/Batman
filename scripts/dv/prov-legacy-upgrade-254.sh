@@ -5,8 +5,8 @@
 #   DV_OLD_VERSION into B (hold) -> release -> B committed -> strip-p5-prov (a pre-P1 p5) -> record AP key, lock-status,
 #   authorized_keys, mesh-expected -> V into A (hold) -> the trial's helper: "boot rc=9 verdict=legacy" -> release ->
 #   A committed -> the four recorded things unchanged
-#   negative control (after the positive): -wbox rc9-unclaimed into B (hold) -> "boot rc=9 verdict=unclaimed" ->
-#   back to A -> strip-p5-prov again (the mutant may have seeded p5) -> restore
+#   negative control (after the positive): strip-p5-prov again (V's helper seeded p5 on A; rc 9 needs "seeded, no
+#   prov") -> -wbox rc9-unclaimed into B (hold) -> "boot rc=9 verdict=unclaimed" -> back to A -> restore
 # Type: hold -> commit / A / R. Side effects: 04 ~80 min off the mesh, BOTH slots rewritten (old on B and committed,
 # V on A from a fresh overlay; the restore puts A's overlay and p5 back, B is rewritten with V), ~8 reboots.
 set -u
@@ -37,6 +37,10 @@ for f in ap lock ak me; do [ "$(field "$k1" $f)" = "$(field "$k0" $f)" ] && ok "
 if ! qr '/usr/bin/batman-provhelper --version >/dev/null 2>&1'; then
 	no "pre-P1b image — the rc9-unclaimed negative control needs a P1b rc"
 else
+	# the same precondition as the positive arm: rc 9 = "p5 seeded, no prov" (batman-config-save --prov-get,
+	# boot.go case 9). V's helper on A has just seeded p5 with the legacy record, so without a strip the mutant's boot
+	# took the in-sync path and its rc-9 change never ran (M6 2026-10-29: "boot rc=0 verdict=legacy action=in sync")
+	strip || { pr_abort "strip before the negative control"; pr_result; exit 1; }
 	pr_ota_b "$PR_V.dirty.wbox-rc9-unclaimed" B || { pr_abort "OTA rc9-unclaimed"; pr_result; exit 1; }
 	l=$(pr_trial_line 'batman-provhelper.*boot rc=') && say "B trial: ${l##*: }"
 	grep -q 'boot rc=9 verdict=unclaimed' <<< "$l" && ok "negative control: rc9-unclaimed -> rc=9 verdict=unclaimed" || no "negative control: [$l] — the mutant had no effect"
