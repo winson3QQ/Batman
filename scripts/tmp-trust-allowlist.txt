@@ -100,6 +100,7 @@ feed/batman-prov/src/*	/tmp/run/batman-prov([^-a-z]|$)	the helper socket dir und
 feed/batman-prov/src/*	"/tmp/run/batman"	the ONE Go definition of the run dir (provstore.Default) and MkdirTemp inside it (random name, 0700) — the Go twin of rundir.sh
 feed/batman-prov/src/*	/var/lib/bluetooth/batman-sc	bluetoothd-side state file under root-only /var/lib/bluetooth: READ for the health verdict only, never written here (254-stage1 D26)
 */meshjoin.sh	/var/run/wpa_supplicant_s1g	wpa_supplicant control-socket dir (root-only, created by wpa_supplicant_s1g); read-only wpa_cli status query
+scripts/dv/prov-powerloss*-254.sh	/var/run/wpa_supplicant_s1g	the live mesh id (#254 wireless-txn units): the same read-only wpa_cli status query as meshjoin_radio_up
 feed/batman-provision/files/usr/libexec/batman-addr-defer	check /var/lock and	log text naming procd's per-service lock dir for the operator; never used as a path (254-p1-impl.md §13.8.2)
 feed/batman-prov/src/provstore/provstore.go	// /tmp/run/batman \(root-only	doc comment of the Paths struct naming the run dir (the definition itself is the quoted literal above)
 # --- #254 H2+H3 (254-h23 §2.2): the prov_test killpoint dir /tmp/run/batman-prov-test (root 0700 under root-only /tmp/run) ---
