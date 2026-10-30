@@ -22,8 +22,6 @@ case "$NEG" in ''|neg) ;; *) echo "FAIL bad argument [$NEG]"; exit 2 ;; esac
 PR_UNIT=prov-powerloss-rejoin${NEG:+-$NEG}-254
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
-KEYH='uci -q get wireless.default_radio1.key | sha256sum | cut -c1-16'
-PH=$(printf 'CHANGE-ME-NOW\n' | sha256sum | cut -c1-16)
 FORGOT='echo "dis=$(uci -q get wireless.radio1.disabled) mark=$(grep -qw radio1 /etc/halow-keyguard.blocked 2>/dev/null && echo 1 || echo 0) wlh0=$(iw dev wlh0 info >/dev/null 2>&1 && echo 1 || echo 0) me=$(cut -d" " -f6 /opt/batdata/state/prov-state 2>/dev/null)"'
 forgotten(){	# <what>: placeholder key, radio blocked by the keyguard, no mesh netdev, mesh_expect 0
 	local k f

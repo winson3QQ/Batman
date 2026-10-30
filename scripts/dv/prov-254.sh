@@ -41,6 +41,11 @@ say(){ echo "[$(date +%H:%M:%S) $PR_UNIT $RUN] $*"; }
 ok(){ echo "PASS $PR_UNIT: $*"; }; no(){ echo "FAIL $PR_UNIT: $*"; fails=$((fails + 1)); }
 inv(){ echo "INVALID $PR_UNIT: $*"; invalid=$((invalid + 1)); }
 mono(){ cut -d. -f1 /proc/uptime; }
+# mesh key fingerprints (review 4 A m7 / B m8): salted with a per-run random value that is never printed, so a logged
+# fingerprint cannot be guessed offline; "none" when uci has no key (an empty key must never pass as "a new key")
+KSALT=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+KEYH="k=\$(uci -q get wireless.default_radio1.key) && [ -n \"\$k\" ] && printf '%s%s\\n' '$KSALT' \"\$k\" | sha256sum | cut -c1-16 || echo none"
+PH=$(printf '%s%s\n' "$KSALT" 'CHANGE-ME-NOW' | sha256sum | cut -c1-16)
 # q: one ssh (state changes are never retried); qr: read-only, retried on connection errors (255 / timeout)
 q(){ timeout "${QT:-120}" ssh $SSHO root@$NODE "$@" 2>/dev/null | tr -d '\r'; }
 qr(){ local o rc i; for i in 1 2 3 4 5 6; do o=$(timeout 90 ssh $SSHO root@$NODE "$@" 2>/dev/null); rc=$?; case $rc in 255|124) sleep 10 ;; *) printf '%s' "$o" | tr -d '\r'; [ -n "$o" ] && echo; return $rc ;; esac; done; return 255; }

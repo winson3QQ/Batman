@@ -23,9 +23,7 @@ PR_UNIT=prov-powerloss-legacyjoin${NEG:+-$NEG}-254
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
 MESHID='uci -q get wireless.default_radio1.mesh_id'
-KEYH='uci -q get wireless.default_radio1.key | sha256sum | cut -c1-16'
 LIVEID='wpa_cli_s1g -p /var/run/wpa_supplicant_s1g -i wlh0 status 2>/dev/null | sed -n "s/^ssid=//p"'
-PH=$(printf 'CHANGE-ME-NOW\n' | sha256sum | cut -c1-16)
 pr_begin 3000 || { pr_result; exit 1; }
 s=$(pr_info); say "S0: $s"
 pr_keys && pr_pc_place && pr_claim || { pr_abort "claim"; pr_result; exit 1; }

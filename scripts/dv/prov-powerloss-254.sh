@@ -38,7 +38,6 @@ MESHID='uci -q get wireless.default_radio1.mesh_id'
 LIVEID='wpa_cli_s1g -p /var/run/wpa_supplicant_s1g -i wlh0 status 2>/dev/null | sed -n "s/^ssid=//p"'
 P5GEN='d=$(mktemp -d /tmp/run/batman-dv/pg.XXXXXX); rmdir $d; batman-config-save --prov-get $d >/dev/null 2>&1; sed -n "s/.*gen=\([0-9]*\).*/\1/p" $d/prov.meta; rm -rf $d'
 OVGEN='sed -n "s/.*gen=\([0-9]*\).*/\1/p" /etc/batman-prov/prov.meta'
-KEYH='uci -q get wireless.default_radio1.key | sha256sum | cut -c1-16'   # compared, never printed (review 3 B m7)
 upper=""
 case "$N$NEG" in 2neg-b) upper=helper-notxn ;; 3neg) upper=helper-norebuild ;; esac
 pr_begin 3000 ${upper:+upper=$upper} || { pr_result; exit 1; }
@@ -74,8 +73,8 @@ fin=$(grep -E 'txn [^ ]+ finished \(boot\): wireless = .*, (applied|already), sa
 common(){	# $1 = the expected mesh id; the key: the old one with the old mesh id, a different one with the new
 	[ "$txn" = gone ] && ok "txn-$N: .txn gone" || no "txn-$N: .txn $txn"
 	k=$(qr "$KEYH")
-	if [ "$1" = "$old" ]; then [ "$k" = "$k0" ] && ok "txn-$N: mesh key is the old one (sha $k)" || no "txn-$N: mesh key sha $k (want the old $k0)"
-	else [ -n "$k" ] && [ "$k" != "$k0" ] && ok "txn-$N: mesh key is the update's (sha $k)" || no "txn-$N: mesh key sha $k (want != the old $k0)"; fi
+	if [ "$1" = "$old" ]; then [ "$k" = "$k0" ] && [ "$k" != none ] && ok "txn-$N: mesh key is the old one (sha $k)" || no "txn-$N: mesh key sha $k (want the old $k0)"
+	else [ -n "$k" ] && [ "$k" != none ] && [ "$k" != "$k0" ] && ok "txn-$N: mesh key is the update's (sha $k)" || no "txn-$N: mesh key sha $k (want a key != the old $k0)"; fi
 	[ "$m" = "$1" ] && ok "txn-$N: uci mesh id $m" || no "txn-$N: uci mesh id $m (want $1)"
 	[ "$lm" = "$1" ] && ok "txn-$N: live mesh id $lm" || no "txn-$N: live mesh id [$lm] (want $1)"
 	c=$(qr 'batman-config-save --check >/dev/null 2>&1; echo rc=$?'); [ "$c" = rc=0 ] && ok "txn-$N: --check rc 0 (p5 == live)" || no "txn-$N: --check $c"

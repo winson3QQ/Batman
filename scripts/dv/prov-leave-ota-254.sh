@@ -15,8 +15,8 @@ PR_UNIT=prov-leave-ota-254
 . "$(dirname "$0")/prov-254.sh"
 MESH="dvl-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$MESH' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\""
-PH=$(printf 'CHANGE-ME-NOW\n' | sha256sum | cut -c1-16)
-FORGOT='echo "key=$(uci -q get wireless.default_radio1.key | sha256sum | cut -c1-16) dis=$(uci -q get wireless.radio1.disabled) mark=$(grep -qw radio1 /etc/halow-keyguard.blocked 2>/dev/null && echo 1 || echo 0) wlh0=$(iw dev wlh0 info >/dev/null 2>&1 && echo 1 || echo 0) me=$(cut -d" " -f6 /opt/batdata/state/prov-state 2>/dev/null)"'
+FORGOT='echo "key=$(@@KEYH@@) dis=$(uci -q get wireless.radio1.disabled) mark=$(grep -qw radio1 /etc/halow-keyguard.blocked 2>/dev/null && echo 1 || echo 0) wlh0=$(iw dev wlh0 info >/dev/null 2>&1 && echo 1 || echo 0) me=$(cut -d" " -f6 /opt/batdata/state/prov-state 2>/dev/null)"'
+FORGOT=${FORGOT//@@KEYH@@/$KEYH}   # the lib's salted fingerprint (review 4 A m7)
 MARK='echo "exp=$([ -e /opt/batdata/state/mesh-expected ] && echo 1 || echo 0) joined=$([ -e /opt/batdata/state/mesh-joined ] && echo 1 || echo 0)"'
 # half <negative 0|1>: join, leave, markers, reboot, OTA V, trial judgement, back to A
 half(){
