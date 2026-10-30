@@ -565,6 +565,10 @@ pr_pc_place(){
 pr_pc(){
 	local key=$1 fd3="" pre="" post="" envs="" f W SIGNP line sig out=""; shift
 	while [ "$1" != -- ]; do case "$1" in FD3=*) fd3=${1#FD3=} ;; PRE=*) pre=${1#PRE=} ;; POST=*) post=${1#POST=} ;; *) envs="$envs $1" ;; esac; shift; done; shift
+	# #254 wireless-txn §19.4: a verb may run a Finish (setkey <= 180 s + a save) and then its own setkey (<= 180 s);
+	# provclient's 30 s default would time out on a slow node while the helper completes the change -> 240 s unless
+	# the unit says otherwise (a timeout means "outcome unknown", never a verdict on the node)
+	case " $envs " in *" PROVCLIENT_TIMEOUT_S="*) ;; *) envs="$envs PROVCLIENT_TIMEOUT_S=240" ;; esac
 	f=$(mktemp -d)/p; mkfifo "$f"
 	coproc SIGNP { wsl_ "$TOOLS_WSL/provclient-amd64" sign "$WSLK/$key"; }
 	exec {W}<>"$f"
@@ -579,7 +583,7 @@ pr_pc(){
 " ;;
 		esac
 	done < <(ssh $SSHO root@$NODE "$cmd" < "$f" 2>&1)
-	exec {W}>&-; kill "$SIGNP_PID" 2>/dev/null; rm -rf "${f%/p}"
+	exec {W}>&-; kill "${SIGNP_PID:-}" 2>/dev/null; rm -rf "${f%/p}"   # unset when the signer already exited (a WSL failure): no set -u abort
 	printf '%s' "$out"
 }
 # pk_proof: the lab key authenticates by PUBLICKEY (a claim turns password / none off): proven on a temporary

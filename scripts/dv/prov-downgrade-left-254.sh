@@ -36,7 +36,12 @@ pr_pc_place || { pr_abort "provclient"; pr_result; exit 1; }
 MESH="dvd-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$MESH' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\""
 r=$(pr_pc owner.pem FD3="$FD3" -- net-apply --first "$OWNER"); grep -q "RESULT net.apply code=0 " <<< "$r" || { no "join: $r"; pr_abort "join"; pr_result; exit 1; }
-r=$(pr_pc owner.pem -- leave); grep -q "RESULT network.leave code=0" <<< "$r" || { no "leave: $r"; pr_abort "leave"; pr_result; exit 1; }
+r=$(pr_pc owner.pem PROVCLIENT_TIMEOUT_S=120 -- leave)
+if grep -q "RESULT network.leave code=21" <<< "$r"; then	# committed, forget unverified: retry as the app does
+	say "leave: committed, the forget was not verified (code 21) — retrying as the app does"
+	r=$(pr_pc owner.pem PROVCLIENT_TIMEOUT_S=120 -- leave); grep -qE "RESULT network.leave code=3( |$)" <<< "$r" && r="RESULT network.leave code=0 (retry: not a member any more)"
+fi
+grep -q "RESULT network.leave code=0" <<< "$r" || { no "leave: $r"; pr_abort "leave"; pr_result; exit 1; }
 ok "joined $MESH and left (Left committed)"
 trial 2 'unknown(prov-corrupt)' || { pr_abort "arm 2"; pr_result; exit 1; }
 pr_pc_place || { pr_abort "provclient"; pr_result; exit 1; }

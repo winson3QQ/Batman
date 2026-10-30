@@ -26,6 +26,9 @@ grep -q "RESULT net.apply(no owner-op) code=3 " <<< "$r" && ok "join without the
 i=$(pr_info); [ "${i%% *}" = state=claimed ] && ok "still claimed after the refused join ($i)" || no "state after the refused join: $i"
 r=$(pr_pc owner.pem FD3="$FD3" -- net-apply --first "$OWNER"); echo "$r" | grep -v '^NETCFG' | sed 's/^/    /'
 grep -q "RESULT net.apply code=0 " <<< "$r" && ok "net.apply network/join code 0" || no "net.apply --first: $r"
+# #254 wireless-txn §19.2 rule 2: code 0 means netifd reports the radio up on the new network (not pending)
+w=$(qr 'ubus call network.wireless status | jsonfilter -e @.radio1.up -e @.radio1.pending | tr "\n" " "')
+[ "$w" = "true false " ] && ok "after the join netifd reports radio1 up=true pending=false" || no "after the join netifd reports [$w] (want up=true pending=false)"
 i=$(pr_info); say "after join: $i"
 case " $i " in *" state=member "*) ok "state member";; *) no "state after the join: $i";; esac
 case " $i " in *" rm=true "*|*" rm=1 "*) ok "radio managed";; *) no "radio not managed: $i";; esac

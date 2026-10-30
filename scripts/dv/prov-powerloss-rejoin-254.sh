@@ -31,7 +31,7 @@ forgotten(){	# <what>: placeholder key, radio blocked by the keyguard, no mesh n
 }
 pr_begin 3000 || { pr_result; exit 1; }
 pr_member || { pr_abort "member"; pr_result; exit 1; }
-r=$(pr_pc owner.pem -- leave); echo "    $r"
+r=$(pr_pc owner.pem PROVCLIENT_TIMEOUT_S=120 -- leave); echo "    $r"
 grep -q "RESULT network.leave code=0" <<< "$r" || { no "leave: $r"; pr_abort "leave"; pr_result; exit 1; }
 i=$(pr_info); case " $i " in *" state=claimed "*) ok "left: $i" ;; *) no "state after leave: $i" ;; esac
 forgotten "after network/leave"

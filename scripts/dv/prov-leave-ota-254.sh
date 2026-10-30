@@ -16,7 +16,7 @@ PR_UNIT=prov-leave-ota-254
 MESH="dvl-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$MESH' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\""
 FORGOT='echo "key=$(@@KEYH@@) dis=$(uci -q get wireless.radio1.disabled) mark=$(grep -qw radio1 /etc/halow-keyguard.blocked 2>/dev/null && echo 1 || echo 0) wlh0=$(iw dev wlh0 info >/dev/null 2>&1 && echo 1 || echo 0) me=$(cut -d" " -f6 /opt/batdata/state/prov-state 2>/dev/null)"'
-FORGOT=${FORGOT//@@KEYH@@/$KEYH}   # the lib's salted fingerprint (review 4 A m7)
+FORGOT=${FORGOT//@@KEYH@@/"$KEYH"}   # quoted: bash 5.2 patsub_replacement would expand the `&&` of KEYH   # the lib's salted fingerprint (review 4 A m7)
 MARK='echo "exp=$([ -e /opt/batdata/state/mesh-expected ] && echo 1 || echo 0) joined=$([ -e /opt/batdata/state/mesh-joined ] && echo 1 || echo 0)"'
 # half <negative 0|1>: join, leave, markers, reboot, OTA V, trial judgement, back to A
 half(){
@@ -26,7 +26,7 @@ half(){
 	i=$(pr_info); case " $i " in *" state=member "*) ;; *) no "not member after the join: $i"; return 1 ;; esac
 	q 'touch /opt/batdata/state/mesh-expected /opt/batdata/state/mesh-joined; sync'   # as after a real join on the fleet mesh
 	if [ "$neg" = 1 ]; then pr_push_helper helper-noleave || return 1; fi
-	r=$(pr_pc owner.pem -- leave); echo "    $r"
+	r=$(pr_pc owner.pem PROVCLIENT_TIMEOUT_S=120 -- leave); echo "    $r"
 	grep -q "RESULT network.leave code=0" <<< "$r" || { no "leave: $r"; return 1; }
 	i=$(pr_info); m=$(qr "$MARK"); say "after leave: $i $m"
 	case " $i " in *" state=claimed "*) ;; *) no "state after leave: $i"; return 1 ;; esac

@@ -8,7 +8,8 @@
 # observe (mount, umount, logger) are shadowed by shell functions. Negative control: the shipped chanfix FAILs the
 # "lock held at the commit" cases (it takes no lock).
 set -u
-CF=$(readlink -f "${1:?usage: $0 <99-batman-chanfix> <rundir.sh>}"); RD=$(readlink -f "${2:?usage: $0 <99-batman-chanfix> <rundir.sh>}")
+CF=$(readlink -f "${1:?usage: $0 <99-batman-chanfix> <rundir.sh> [wireless-settle.sh]}"); RD=$(readlink -f "${2:?usage: $0 <99-batman-chanfix> <rundir.sh> [wireless-settle.sh]}")
+WS=$(readlink -f "${3:-$(dirname "$RD")/wireless-settle.sh}")   # #254 §19: sourced by chanfix (the settle wait)
 command -v busybox >/dev/null || { echo "FAIL busybox missing"; echo "CHANFIX-LOCK cases=0 fails=1"; exit 1; }
 command -v flock >/dev/null || { echo "FAIL flock missing"; echo "CHANFIX-LOCK cases=0 fails=1"; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -26,13 +27,14 @@ logger(){ echo "\$*" >> "$ST/logger.log"; }
 EOF
 sed -e "1r $T/fns.sh" -e "s#^DEV=/dev/mmcblk0p5#DEV=$ST/p5#" -e 's/\[ -b "\$DEV" \]/[ -e "$DEV" ]/' \
 	-e "s#/usr/lib/batman/rundir.sh#$ST/rundir.sh#g" -e "s#^\([[:space:]]*\)LOCKWAIT=90#\1LOCKWAIT=2#" \
+	-e "s#/usr/lib/batman/wireless-settle.sh#$WS#g" -e 's/wl_wait_settled radio1 30/wl_wait_settled radio1 3/' -e 's/-lt 300 \]/-lt 8 ]/' \
 	-e 's/sleep 8$/sleep 0/' -e 's/^) &$/)/' "$CF" > "$T/cf"
 cases=0; fails=0
 ok(){ cases=$((cases + 1)); echo "PASS $*"; }; no(){ cases=$((cases + 1)); fails=$((fails + 1)); echo "FAIL $*"; }
 reset() {
 	printf 'wireless.radio1.type=morse\nwireless.radio1.channel=42\nwireless.default_radio1.device=radio1\nwireless.default_radio1.mode=mesh\n' > "$ST/live"
 	cp "$ST/live" "$ST/committed"; : > "$ST/commits.log"; : > "$ST/wifi.log"; : > "$ST/logger.log"
-	echo wlh0 > "$ST/netdev"; chmod 755 "$ST/run"
+	echo wlh0 > "$ST/netdev"; chmod 755 "$ST/run"; rm -f "$ST/pending"
 }
 run(){ PATH="$ST/bin:$PATH" STUB_LOCKFILE=$LOCKF timeout 60 busybox sh "$T/cf"; }
 
@@ -82,6 +84,20 @@ reset; printf 'wireless.radio1.type=morse\nwireless.radio1.channel=40\n' > "$ST/
 run >/dev/null 2>&1; rc=$?
 d="already on 40: rc 0 ($rc), no commit, no wifi"
 if [ "$rc" = 0 ] && [ "$(commits)" = 0 ] && [ ! -s "$ST/wifi.log" ]; then ok "$d"; else no "$d"; fi
+
+# 6. #254 §19: netifd pending for 2 s -> exactly one reassert, after it (the reload never lands in netifd's setup)
+reset; touch "$ST/pending"; ( sleep 2; rm -f "$ST/pending" ) &
+t0=$(cut -d. -f1 /proc/uptime); run >/dev/null 2>&1; rc=$?; wait
+wb=$(sed -n 's/^begin .* up=\([0-9]*\)$/\1/p' "$ST/wifi.log" | head -1)
+d="netifd pending 2 s: rc 0 ($rc), one reassert ($(commits) commit) begun >= 2 s after the start (+$(( ${wb:-0} - t0 )) s), channel $(committed_get wireless.radio1.channel)"
+if [ "$rc" = 0 ] && [ "$(commits)" = 1 ] && [ -n "$wb" ] && [ $(( wb - t0 )) -ge 2 ] && [ "$(committed_get wireless.radio1.channel)" = 40 ]; then ok "$d"; else no "$d"; fi
+
+# 7. #254 §19: netifd never settles -> no reassert at all (a reload would orphan the radio), tries not counted, bounded
+reset; touch "$ST/pending"
+run >/dev/null 2>&1; rc=$?
+d="netifd never settles: rc 0 ($rc), no commit ($(commits)), no wifi reload ($(grep -c begin "$ST/wifi.log")), 'not counted' logged $(grep -c 'not counted' "$ST/logger.log")x, bounded by the deadline"
+if [ "$rc" = 0 ] && [ "$(commits)" = 0 ] && [ ! -s "$ST/wifi.log" ] && grep -q 'not counted' "$ST/logger.log"; then ok "$d"; else no "$d"; fi
+rm -f "$ST/pending"
 
 echo "CHANFIX-LOCK cases=$cases fails=$fails"
 [ "$cases" -gt 0 ] && [ "$fails" = 0 ]

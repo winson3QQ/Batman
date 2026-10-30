@@ -12,7 +12,9 @@
 # added to the mark).
 set -u
 # elapsed time from /proc/uptime: the WSL wall clock steps back ~1 s at times (review 4 B m4, 3 of 30 probes)
-SK=$(readlink -f "${1:?usage: $0 <halow-setkey> <rundir.sh>}"); RD=$(readlink -f "${2:?usage: $0 <halow-setkey> <rundir.sh>}")
+SK=$(readlink -f "${1:?usage: $0 <halow-setkey> <rundir.sh> [wireless-settle.sh]}"); RD=$(readlink -f "${2:?usage: $0 <halow-setkey> <rundir.sh> [wireless-settle.sh]}")
+WS=$(readlink -f "${3:-$(dirname "$RD")/wireless-settle.sh}")   # #254 §19: the settle gate's one implementation
+SLEEPX=$(readlink -f "$(command -v sleep)")
 [ -s "$SK" ] && [ -s "$RD" ] || { echo "FAIL product file missing / empty: $SK $RD"; echo "SETKEY-CHECKONLY-TXN cases=0 fails=1"; exit 1; }
 command -v busybox >/dev/null || { echo "FAIL busybox missing"; echo "SETKEY-CHECKONLY-TXN cases=0 fails=1"; exit 1; }
 command -v flock >/dev/null || { echo "FAIL flock missing"; echo "SETKEY-CHECKONLY-TXN cases=0 fails=1"; exit 1; }
@@ -28,6 +30,8 @@ mkdir -p "$ST/prov"; TXNF=$ST/prov/.txn
 printf 'US,1,1,4,40,0,0,922.0\nUS,1,1,2,42,0,0,923.0\nUS,1,1,1,27,0,0,915.5\n' > "$ST/channels.csv"
 mkcopy() {   # $1 = uid the copy sees, $2 = output
 	sed -e "s#/usr/lib/batman/rundir.sh#$ST/rundir.sh#g" -e "s#^MARK=/etc/halow-keyguard.blocked#MARK=$ST/mark#" \
+		-e "s#^WSETTLE=/usr/lib/batman/wireless-settle.sh#WSETTLE=$WS#" -e "s#^IEEE80211=/sys/class/ieee80211; NETCLASS=/sys/class/net; PROC=/proc; S1G_EXE=/usr/sbin/wpa_supplicant_s1g; S1G_UID=0#IEEE80211=$ST/sys/ieee80211; NETCLASS=$ST/sys/net; PROC=/proc; S1G_EXE=$SLEEPX; S1G_UID=$(id -u)#" \
+		-e "s#^SETTLE_WAIT=30#SETTLE_WAIT=3#" -e "s#^READBACK_WAIT=60#READBACK_WAIT=4#" \
 		-e "s#^REGDB=/usr/share/morse-regdb/channels.csv#REGDB=$ST/channels.csv#" -e "s#^PROVTXN=/etc/batman-prov/.txn#PROVTXN=$TXNF#" \
 		-e "s#^LOCKWAIT=90#LOCKWAIT=2#" -e "s#^FORGET_WAIT=30#FORGET_WAIT=2#" -e "s/\$(id -u)/\$(echo $1)/g" \
 		-e "s#-b /dev/mmcblk0p5#-e $ST/p5#" "$SK" > "$2"
