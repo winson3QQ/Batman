@@ -9,6 +9,9 @@ H=/tmp/run/batman-dv
 BT=$H/bt
 ST=$H/ble-state
 DMLOG=/opt/batdata/log/ble-dm-254.log
+# the lease file: $BT/lease for a BLE run, $BT/lease-prov for a prov run (scripts/node/prov-lease-254.sh sets it before
+# any call). The two exclude each other: an acquire FAILs while the OTHER one is live (254-h23 §3). One deadman record.
+LEASE=${LEASE:-$BT/lease}
 
 fail() { echo "FAIL $*"; }
 die() { echo "FAIL $*"; exit 1; }
@@ -82,12 +85,18 @@ lock() {	# $1 = seconds to wait (default 30)
 unlock() { flock -u 9 2>/dev/null; exec 9>&-; }
 
 # ---- lease: "<run_id> <boot_id> <expiry_uptime>" in $BT/lease (design §4.7)
-lease_read() { [ -f "$BT/lease" ] && cat "$BT/lease"; }
+lease_read() { [ -f "$LEASE" ] && cat "$LEASE"; }
 lease_valid_for() {	# $1 run_id: lease is ours, this boot, not expired
 	set -- "$1" $(lease_read)
 	[ "$2" = "$1" ] && [ "$3" = "$(bootid)" ] && isint "$4" && [ "$(up_s)" -lt "$4" ]
 }
-lease_write() { echo "$1 $(bootid) $(( $(up_s) + $2 ))" > "$BT/lease.tmp" && mv "$BT/lease.tmp" "$BT/lease"; }
+lease_write() { echo "$1 $(bootid) $(( $(up_s) + $2 ))" > "$LEASE.tmp" && mv "$LEASE.tmp" "$LEASE"; }
+# other_lease: the lease file of the other kind; other_live: it is held in this boot and not expired (prints it)
+other_lease() { if [ "$LEASE" = "$BT/lease-prov" ]; then echo "$BT/lease"; else echo "$BT/lease-prov"; fi; }
+other_live() {
+	_o=$(other_lease); [ -f "$_o" ] || return 1
+	set -- $(cat "$_o"); [ "${2:-}" = "$(bootid)" ] && isint "${3:-}" && [ "$(up_s)" -lt "$3" ] && echo "${_o##*/} of run $1 until uptime $3"
+}
 
 # ---- markers in $ST (boot-scoped: a marker from an earlier boot is void — tmpfs survives no reboot anyway)
 mark_set() { echo "$(bootid) $2" > "$ST/$1"; }
@@ -118,7 +127,7 @@ dm_arm() {
 	old_dm=""; old_new=""
 	[ -f "$ST/dm" ] && old_dm=$(cat "$ST/dm")
 	[ -f "$ST/dm.new" ] && old_new=$(cat "$ST/dm.new")
-	setsid sh "$3" dm-fire "$1" "$2" </dev/null >/dev/null 2>&1 9>&- &		# 9>&-: the deadman must not inherit the lock fd
+	setsid sh "$3" dm-fire "$1" "$2" "$LEASE" </dev/null >/dev/null 2>&1 9>&- &		# 9>&-: the deadman must not inherit the lock fd
 	np=$!; sleep 1
 	pg=$(cut -d' ' -f5 "/proc/$np/stat" 2>/dev/null)
 	isint "$pg" || die "deadman did not start"
@@ -167,7 +176,8 @@ ble_state() {
 cmd_acquire() {
 	isint "${1:-}" || die "usage: acquire <seconds>"
 	scratch; lock 30 || die "BLE lock busy for 30 s"
-	if [ -f "$BT/lease" ]; then
+	_ol=$(other_live) && { unlock; die "the node is held by another kind of test: $_ol"; }
+	if [ -f "$LEASE" ]; then
 		set -- "$1" $(lease_read)
 		if [ "$2" != "$RUN_ID" ] && [ "$3" = "$(bootid)" ]; then
 			if isint "$4" && [ "$(up_s)" -lt "$4" ]; then unlock; die "another BLE test (run $2) holds the lease until uptime $4"; fi
@@ -203,14 +213,14 @@ cmd_release() {
 	lock 30 || die "BLE lock busy for 30 s"
 	lease_valid_for "$RUN_ID" || { unlock; die "lease is not ours or expired"; }
 	dm_cancel_rec "$ST/dm.new" && dm_cancel_rec "$ST/dm" || { unlock; die "could not cancel the deadman"; }
-	rm -f "$BT/lease"; unlock
+	rm -f "$LEASE"; unlock
 	rm -rf "${BT:?}/$RUN_ID"
 	echo "RELEASED"
 }
 # dm-fire <run_id> <secs>: the deadman body. Acts only if the lease is still that run's, expired, and this group is
 # the recorded deadman (dm or dm.new); waits for the lock up to 10 min, then acts without it (stuck holder).
 cmd_dm_fire() {
-	run=$1; sleep "$2"
+	run=$1; [ -n "${3:-}" ] && LEASE=$3; sleep "$2"
 	me=$(cut -d' ' -f5 /proc/$$/stat)
 	got=0; n=0; while [ $n -lt 20 ]; do lock 30 && { got=1; break; }; n=$((n + 1)); done
 	if [ $got = 0 ]; then dm_log "$run" "deadman: lock stuck 10 min — killing run $run groups, restoring without the lock"; kill_run_groups "$run"; fi
@@ -221,7 +231,7 @@ cmd_dm_fire() {
 	[ $mine = 1 ] || { [ $got = 1 ] && unlock; exit 0; }
 	kill_run_groups "$run"
 	role_fire_restore "$run"		# role-specific; may reboot (irk-exposed)
-	rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"
+	rm -f "$LEASE" "$ST/dm" "$ST/dm.new"
 	[ $got = 1 ] && unlock; exit 0
 }
 # recover (design §4.7 `ble-recover`): under the lock, ignore whose lease it is; stop every harness process group
