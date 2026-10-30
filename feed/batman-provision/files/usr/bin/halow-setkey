@@ -4,7 +4,14 @@
 #
 #   halow-setkey [--mesh <sae-key>] [--ap <psk>] [--mesh-id <id>] [--channel <n>]   (at least one)
 #   halow-setkey --forget-mesh [--no-persist]   (#254 §6: placeholder key + radio blocked, verified down)
+#   halow-setkey --check-only [--mesh <key>|-] [--mesh-id <id>] [--channel <n>]   (#254 §15.1)
 #   halow-setkey --status
+#
+# --check-only runs exactly the validation of the write modes and exits 0 (would be accepted) or 2 (refused, the same
+# message); no lock, no uci write, no wifi, no persist, no root needed beyond reading uci. It takes only --mesh /
+# --mesh-id / --channel (at least one): batman-provhelper asks it whether a snapshot could be put back (#254 §15.1).
+# An operator's write (no --no-persist) is refused, rc 2, while /etc/batman-prov/.txn exists: the helper's next
+# Finish would silently undo it (#254 §15.6). --no-persist (the helper) proceeds.
 #
 # One writer at a time (#254 §6): every write mode holds $RUNDIR/halow-setkey.lock (flock; 99-batman-chanfix takes
 # it per reassert). Busy for LOCKWAIT s, or the run dir unusable -> rc 2, nothing changed (fail closed).
@@ -28,14 +35,16 @@ PLACEHOLDER=CHANGE-ME-NOW
 REGDB=/usr/share/morse-regdb/channels.csv
 LOCKWAIT=90         # s to wait for another writer (#254 §6)
 FORGET_WAIT=30      # s for --forget-mesh to see the radio down (04: both within 2 s, radiooff.sh 2026-10-30)
-MESH=""; AP=""; MESHID=""; CHAN=""; STATUS=0; NOPERSIST=0; FORGET=0
-usage() { echo "usage: halow-setkey [--mesh <key>|-] [--ap <key>] [--mesh-id <id>] [--channel <n>] [--no-persist] | --forget-mesh [--no-persist] | --status" >&2; exit 2; }
+PROVTXN=/etc/batman-prov/.txn   # the helper's "a network change is unfinished" (#254 wireless-txn §3)
+MESH=""; AP=""; MESHID=""; CHAN=""; STATUS=0; NOPERSIST=0; FORGET=0; CHECK=0
+usage() { echo "usage: halow-setkey [--mesh <key>|-] [--ap <key>] [--mesh-id <id>] [--channel <n>] [--no-persist] | --forget-mesh [--no-persist] | --check-only [--mesh <key>|-] [--mesh-id <id>] [--channel <n>] | --status" >&2; exit 2; }
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--mesh) MESH=${2:-}; shift 2;; --ap) AP=${2:-}; shift 2;; --mesh-id) MESHID=${2:-}; shift 2;;
 		--channel) CHAN=${2:-}; shift 2;; --status) STATUS=1; shift;;
 		--no-persist) NOPERSIST=1; shift;;   # #254: batman-provhelper's transaction persists by itself (§4.4 step 2)
 		--forget-mesh) FORGET=1; shift;;     # #254 §6: no key input; mesh id / channel unchanged
+		--check-only) CHECK=1; shift;;       # #254 §15.1: validate only
 		*) usage;;
 	esac
 done
@@ -43,11 +52,15 @@ done
 if [ "$FORGET" = 1 ] && { [ "$STATUS" = 1 ] || [ -n "$MESH$AP$MESHID$CHAN" ]; }; then
 	echo "--forget-mesh takes no key, mesh id, channel or --status (only --no-persist)" >&2; exit 2
 fi
+if [ "$CHECK" = 1 ]; then
+	{ [ "$STATUS$FORGET$NOPERSIST" = 000 ] && [ -z "$AP" ]; } || { echo "--check-only takes only --mesh / --mesh-id / --channel" >&2; exit 2; }
+	[ -n "$MESH$MESHID$CHAN" ] || { echo "--check-only: nothing to check (use --mesh/--mesh-id/--channel)" >&2; exit 2; }
+fi
 # #254: `--mesh -` reads the key from stdin (one line) — batman-provhelper never puts a secret on a command line,
 # where any local process could read it from /proc/<pid>/cmdline
 if [ "$MESH" = - ]; then IFS= read -r MESH || true; MESH=$(printf '%s' "$MESH" | tr -d '\r'); [ -n "$MESH" ] || { echo "--mesh -: no key on stdin"; exit 2; }; fi
 # #254 §4.4 step 9: an app-managed node (prov.meta rm=1) — the operator's change is applied, but it is not in the network config
-if [ "$STATUS" = 0 ] && [ "$NOPERSIST" = 0 ] && grep -q '\(^\| \)rm=1\( \|$\)' /etc/batman-prov/prov.meta 2>/dev/null; then
+if [ "$STATUS" = 0 ] && [ "$CHECK" = 0 ] && [ "$NOPERSIST" = 0 ] && grep -q '\(^\| \)rm=1\( \|$\)' /etc/batman-prov/prov.meta 2>/dev/null; then
 	echo "WARN: this node is app-managed (member): the change is not in the network config — other members and the app still use the old value; change it from the app" >&2
 fi
 
@@ -55,6 +68,30 @@ mesh_ifaces(){ uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='mesh'$/
 ap_ifaces(){ uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='ap'$/\1/p"; }
 morse_radio(){ uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)\.type='morse'$/\1/p" | head -1; }
 mesh_netdev(){ iw dev 2>/dev/null | awk '/^\tInterface/{i=$2} /type mesh point/{print i; exit}'; }
+
+# ---- validation (#254 §15.1: ONE implementation for the write modes and --check-only) --------------
+# exits 2 with the reason; sets RADIO, BW, CENTRE_KHZ
+validate() {
+	for k in "$MESH" "$AP"; do [ -z "$k" ] || [ ${#k} -ge 8 ] || { echo "key must be >= 8 characters"; exit 2; }; done
+	for k in "$MESH" "$AP"; do [ "$k" != "$PLACEHOLDER" ] || { echo "refusing the placeholder as a key"; exit 2; }; done
+	for v in "$MESH" "$AP" "$MESHID"; do
+		case "$v" in *[\`\$\(\)\;\|\&\<\>\']*) echo "refusing: a key / mesh id may not contain any of  \` \$ ( ) ; | & < > '  — p5 (the config that survives a reflash) cannot carry it (#202)"; exit 2 ;; esac
+	done
+	RADIO=$(morse_radio)
+	BW=""; CENTRE_KHZ=""
+	if [ -n "$CHAN" ]; then
+		case "$CHAN" in ''|*[!0-9]*) echo "channel must be an integer"; exit 2 ;; esac
+		[ -n "$RADIO" ] || { echo "no morse (HaLow) radio in uci — cannot set a channel"; exit 2; }
+		CC=$(uci -q get "wireless.$RADIO.country"); [ -n "$CC" ] || { echo "wireless.$RADIO.country is unset — set the country first"; exit 2; }
+		[ -r "$REGDB" ] || { echo "$REGDB missing — cannot validate the channel for $CC"; exit 2; }
+		# columns: country_code,channelizations,default_channelization,bw,s1g_chan,...,centre_freq_mhz(8)
+		row=$(awk -F, -v cc="$CC" -v ch="$CHAN" '$1==cc && $5==ch {print $4, $8; exit}' "$REGDB")
+		[ -n "$row" ] || { echo "channel $CHAN is not a legal S1G channel for country $CC (per $REGDB); legal: $(awk -F, -v cc="$CC" '$1==cc {printf "%s(%sMHz) ", $5, $4}' "$REGDB")"; exit 2; }
+		BW=${row% *}; centre=${row#* }
+		CENTRE_KHZ=$(awk -v c="$centre" 'BEGIN{printf "%d", c*1000+0.5}')
+		echo "channel $CHAN = $BW MHz @ $centre MHz ($CC)"
+	fi
+}
 
 if [ "$STATUS" = 1 ]; then
 	for s in $(mesh_ifaces); do k=$(uci -q get "wireless.$s.key"); r=$(uci -q get "wireless.$s.device")
@@ -68,8 +105,17 @@ if [ "$STATUS" = 1 ]; then
 	exit 0
 fi
 
+if [ "$CHECK" = 1 ]; then
+	validate
+	echo "check: would be accepted"; exit 0
+fi
+
 [ "$(id -u)" = 0 ] || { echo "halow-setkey: root only" >&2; exit 2; }
 [ "$FORGET" = 1 ] || [ -n "$MESH$AP$MESHID$CHAN" ] || { echo "nothing to set (use --mesh/--ap/--mesh-id/--channel, --forget-mesh or --status)"; exit 2; }
+# #254 §15.6: an operator's change while the helper has an unfinished network change would be undone by its Finish
+if [ "$NOPERSIST" = 0 ] && { [ -e "$PROVTXN" ] || [ -L "$PROVTXN" ]; }; then
+	echo "halow-setkey: an unfinished network change — let the helper finish it (any app action or a reboot); nothing changed" >&2; exit 2
+fi
 
 # ---- 0. one writer at a time (#254 §6) ------------------------------------------------------------
 # helper (net.apply / Finish), operator and 99-batman-chanfix all write wireless + `wifi reload`; interleaved, one
@@ -125,8 +171,15 @@ if [ "$FORGET" = 1 ]; then
 	# (keyguard / setkey only delete `disabled` of what it lists), a commit without the mark would let setkey's
 	# release logic miss the radio
 	prev=""; [ -f "$MARK" ] && { read -r prev < "$MARK" || true; }
-	new=""; for s in $prev; do [ "$s" = "$RADIO" ] || new="$new $s"; done; new="$new $RADIO"
-	{ echo "$new" > "$MARK.tmp" && mv -f "$MARK.tmp" "$MARK"; } || { rm -f "$MARK.tmp"; echo "cannot write $MARK — nothing changed"; exit 2; }
+	inmark=0; for s in $prev; do [ "$s" = "$RADIO" ] && inmark=1; done
+	# #254 §15.6 (B m4): a radio switched off by hand (disabled=1, not in the mark) stays the operator's switch — it is
+	# kept off but NOT added to the mark, so a later setkey / join never switches it on behind the operator's back
+	if [ "$(uci -q get "wireless.$RADIO.disabled")" = 1 ] && [ "$inmark" = 0 ]; then
+		echo "$RADIO is switched off by hand — kept off, left out of the keyguard mark"
+	else
+		new=""; for s in $prev; do [ "$s" = "$RADIO" ] || new="$new $s"; done; new="$new $RADIO"
+		{ echo "$new" > "$MARK.tmp" && mv -f "$MARK.tmp" "$MARK"; } || { rm -f "$MARK.tmp"; echo "cannot write $MARK — nothing changed"; exit 2; }
+	fi
 	for s in $ms; do uci -q set "wireless.$s.key=$PLACEHOLDER"; done
 	uci -q set "wireless.$RADIO.disabled=1"
 	uci commit wireless
@@ -146,26 +199,8 @@ if [ "$FORGET" = 1 ]; then
 	persist_exit
 fi
 
-# ---- 1. validate everything BEFORE changing anything --------------------------------------------
-for k in "$MESH" "$AP"; do [ -z "$k" ] || [ ${#k} -ge 8 ] || { echo "key must be >= 8 characters"; exit 2; }; done
-for k in "$MESH" "$AP"; do [ "$k" != "$PLACEHOLDER" ] || { echo "refusing the placeholder as a key"; exit 2; }; done
-for v in "$MESH" "$AP" "$MESHID"; do
-	case "$v" in *[\`\$\(\)\;\|\&\<\>\']*) echo "refusing: a key / mesh id may not contain any of  \` \$ ( ) ; | & < > '  — p5 (the config that survives a reflash) cannot carry it (#202)"; exit 2 ;; esac
-done
-RADIO=$(morse_radio)
-BW=""; CENTRE_KHZ=""
-if [ -n "$CHAN" ]; then
-	case "$CHAN" in ''|*[!0-9]*) echo "channel must be an integer"; exit 2 ;; esac
-	[ -n "$RADIO" ] || { echo "no morse (HaLow) radio in uci — cannot set a channel"; exit 2; }
-	CC=$(uci -q get "wireless.$RADIO.country"); [ -n "$CC" ] || { echo "wireless.$RADIO.country is unset — set the country first"; exit 2; }
-	[ -r "$REGDB" ] || { echo "$REGDB missing — cannot validate the channel for $CC"; exit 2; }
-	# columns: country_code,channelizations,default_channelization,bw,s1g_chan,...,centre_freq_mhz(8)
-	row=$(awk -F, -v cc="$CC" -v ch="$CHAN" '$1==cc && $5==ch {print $4, $8; exit}' "$REGDB")
-	[ -n "$row" ] || { echo "channel $CHAN is not a legal S1G channel for country $CC (per $REGDB); legal: $(awk -F, -v cc="$CC" '$1==cc {printf "%s(%sMHz) ", $5, $4}' "$REGDB")"; exit 2; }
-	BW=${row% *}; centre=${row#* }
-	CENTRE_KHZ=$(awk -v c="$centre" 'BEGIN{printf "%d", c*1000+0.5}')
-	echo "channel $CHAN = $BW MHz @ $centre MHz ($CC)"
-fi
+# ---- 1. validate everything BEFORE changing anything (validate(), shared with --check-only) -------
+validate
 
 # ---- 2. apply --------------------------------------------------------------------------------------
 prev_chan=$(uci -q get "wireless.$RADIO.channel")

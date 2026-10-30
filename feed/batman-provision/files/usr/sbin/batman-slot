@@ -483,7 +483,12 @@ p5_freshness_gate() {
 		keys=$(echo "$out" | sed -n 's/^batman-config-save: p5 stale: \([^ ]*\).*/\1/p' | head -1)
 		case "$rc" in
 			0) p5_verdict_write fresh ;;
-			5) if allowed STALE_P5; then p5_verdict_write stale-allowed; warn "p5 is STALE vs the running config ($keys) — override honoured"
+			5) # #254 wireless-txn §15.3: an unfinished network change (.txn, per slot) must be finished in THIS slot — an OTA
+			   # would drop it (the new slot has no .txn, so nothing would ever reconcile its wireless with the record).
+			   # Never overridable; not fixed by --save (which refuses while .txn exists).
+			   case "$out" in *"p5 stale: an unfinished network change"*) p5_verdict_write stale:txn
+				die "an unfinished network change (.txn) — batman-provhelper finishes it (any app action, or a reboot); an OTA now would leave it unfinished for good. Not overridable." ;; esac
+			   if allowed STALE_P5; then p5_verdict_write stale-allowed; warn "p5 is STALE vs the running config ($keys) — override honoured"
 			   else p5_verdict_write "stale:${keys:-?}"
 				# #254: the provisioning record is written by batman-provhelper, not by --save
 				case "$out" in *"p5 stale: prov-identity"*) die "p5 and this slot hold DIFFERENT node identities — refusing an OTA. This needs the owner (app) or a reflash; it is not fixed by --save or --persist-now (#254 identity-mismatch)." ;; esac

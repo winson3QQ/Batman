@@ -173,7 +173,7 @@ prov_compare() {	# --check (#254 P1 §4.8): runs BEFORE the unseeded early exit.
 
 # ---- #254: a provisioning transaction in progress makes the periodic writers yield --------------
 TXN=$RUNDIR/prov-txn
-txn_live() { { [ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ]; } || [ -f "$PROVD/.txn" ]; }
+txn_live() { { [ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ]; } || [ -e "$PROVD/.txn" ] || [ -L "$PROVD/.txn" ]; }   # .txn by existence, as TxnPresent
 # the txn sequence (#254 wireless-txn §7): "<marker token|none> <.txn token|none>". Read before staging and again
 # right before the p5 write: a transaction that started in between makes this save stale -> abort, next tick.
 txn_seq() {
@@ -198,6 +198,11 @@ case "$mode" in
 		elif [ "$RDOK" = 1 ] && [ -f "$TXN" ]; then
 			err "a provisioning transaction is live — --prov-only without its --txn refused"; exit 1
 		fi ;;
+esac
+# #254 §15.6 (B m1): a mode without --txn writes only while NO transaction exists — one that started between the check
+# above and SEQ0 is caught here (and the re-check before the p5 write compares against this SEQ0 = "none none")
+case "$mode" in --save|--if-healthy|--on-join)
+	[ -n "$STXN" ] || [ "$SEQ0" = "none none" ] || { err "provisioning transaction in progress — next tick"; exit 1; } ;;
 esac
 # validate the inputs of --prov-only before taking the lock (no p5 access)
 if [ "$mode" = --prov-only ]; then
@@ -464,6 +469,9 @@ diff_keys() {   # key names whose `set` line differs between stage and p5 (never
 
 # ---- --check: read-only verdict (#202 C3) ----------------------------------------------------
 if [ "$mode" = --check ]; then
+	# #254 §15.3: an unfinished network change (.txn, per slot) — an OTA now would drop the helper's obligation to
+	# finish it; batman-slot's freshness gate refuses on rc 5
+	if [ -e "$PROVD/.txn" ] || [ -L "$PROVD/.txn" ]; then say "p5 stale: an unfinished network change (.txn) — the helper finishes it at the next app action or reboot"; exit 5; fi
 	prov_compare "$MNT"
 	[ -f "$MNT/.seeded" ] || { say "p5 unseeded"; exit 7; }
 	STAGE=$(tmpd cfgsave-check) || { say "p5 error staging"; exit 1; }
