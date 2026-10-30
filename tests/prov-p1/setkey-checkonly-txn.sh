@@ -11,6 +11,7 @@
 # Negative control: the shipped (pre-v8) halow-setkey FAILs (no --check-only, no .txn refusal, hand-disabled radio
 # added to the mark).
 set -u
+# elapsed time from /proc/uptime: the WSL wall clock steps back ~1 s at times (review 4 B m4, 3 of 30 probes)
 SK=$(readlink -f "${1:?usage: $0 <halow-setkey> <rundir.sh>}"); RD=$(readlink -f "${2:?usage: $0 <halow-setkey> <rundir.sh>}")
 [ -s "$SK" ] && [ -s "$RD" ] || { echo "FAIL product file missing / empty: $SK $RD"; echo "SETKEY-CHECKONLY-TXN cases=0 fails=1"; exit 1; }
 command -v busybox >/dev/null || { echo "FAIL busybox missing"; echo "SETKEY-CHECKONLY-TXN cases=0 fails=1"; exit 1; }
@@ -62,7 +63,7 @@ untouched(){ [ "$(commits)" = 0 ] && [ ! -s "$ST/wifi.log" ] && [ ! -s "$ST/cfgs
 # ---- --check-only ----------------------------------------------------------------------------------------------------
 reset
 flock -o "$LOCKF" sleep 30 & hp=$!; sleep 0.3          # the lock is held: --check-only must not wait for it
-t0=$(date +%s); out=$(printf 'goodkey123\n' | run --check-only --mesh - --mesh-id batmesh --channel 40 2>&1); rc=$?; t1=$(date +%s)
+t0=$(cut -d. -f1 /proc/uptime); out=$(printf 'goodkey123\n' | run --check-only --mesh - --mesh-id batmesh --channel 40 2>&1); rc=$?; t1=$(cut -d. -f1 /proc/uptime)
 d="check-only accepts a valid key / id / channel: rc 0 ($rc) in $((t1 - t0))s with the lock held :: $(echo "$out" | tail -1)"
 if [ "$rc" = 0 ] && [ $((t1 - t0)) -le 1 ] && echo "$out" | grep -q 'would be accepted'; then ok "$d"; else no "$d"; fi
 d="check-only accept: no uci commit, no wifi, no persist, live uci unchanged"

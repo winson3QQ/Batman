@@ -109,8 +109,8 @@ my %do = (
 			sub { s~\tif !n\.KS\.CheckMac\(proto\.ClientChal\(nn, h, n\.KS\.Cert\(\), ownerPub\), resp\) \{~\tchal := proto.ClientChal(nn, h, n.KS.Cert(), ownerPub)\n\tif c, ok := a.Get(6); ok {\n\t\tif b, ok := c.([]byte); ok {\n\t\t\tchal = b\n\t\t\tn.Log("$w: the client's ClientChal adopted (mutant)")\n\t\t}\n\t}\n\tif !n.KS.CheckMac(chal, resp) {~ });
 	},
 	'helper-nojoinop' => sub {
-		ed($NODE, sub { s{\tif e := n\.verifyOwnerOp\(h, typ, body, ownerPubs\(rec\)\); e != nil \{\n\t\treturn nil, e\n\t\}}
-			{\tif verb == "net.apply" {\n\t\tn.Log("$w: network/join without an owner-op check (mutant)")\n\t} else if e := n.verifyOwnerOp(h, typ, body, ownerPubs(rec)); e != nil {\n\t\treturn nil, e\n\t}} });
+		# v11 §18.1: verifyOwnerOp returns the signer; the mutant takes the first owner as the "signer" for net.apply
+		ed($NODE, sub { s~\tsigner, e := n\.verifyOwnerOp\(h, typ, body, ownerPubs\(rec\)\)\n\tif e != nil \{\n\t\treturn nil, e\n\t\}~\tvar signer []byte\n\tif verb == "net.apply" && len(rec.Owners) > 0 {\n\t\tn.Log("$w: network/join without an owner-op check (mutant)")\n\t\tsigner = rec.Owners[0].Pub\n\t} else if s, e := n.verifyOwnerOp(h, typ, body, ownerPubs(rec)); e != nil {\n\t\treturn nil, e\n\t} else {\n\t\tsigner = s\n\t}~ });
 	},
 	'helper-noleave' => sub {
 		ed($NODE, sub { s{\tif err := n\.Sys\.RemoveMeshMarkers\(\); err != nil \{\n\t\tn\.Log\("network\.leave: mesh markers: %v", err\)\n\t\}}

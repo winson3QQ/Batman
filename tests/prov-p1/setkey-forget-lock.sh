@@ -6,6 +6,7 @@
 # Test-only edits of the copy (sed): rundir.sh path, keyguard mark path, LOCKWAIT / FORGET_WAIT shortened, id -u = 0,
 # "p5 present" = a file. Negative control: the same test on the shipped halow-setkey FAILs (no --forget-mesh, no lock).
 set -u
+# elapsed time from /proc/uptime: the WSL wall clock steps back ~1 s at times (review 4 B m4, 3 of 30 probes)
 SK=$(readlink -f "${1:?usage: $0 <halow-setkey> <rundir.sh>}"); RD=$(readlink -f "${2:?usage: $0 <halow-setkey> <rundir.sh>}")
 command -v busybox >/dev/null || { echo "FAIL busybox missing"; echo "SETKEY-FORGET-LOCK cases=0 fails=1"; exit 1; }
 command -v flock >/dev/null || { echo "FAIL flock missing"; echo "SETKEY-FORGET-LOCK cases=0 fails=1"; exit 1; }
@@ -126,13 +127,13 @@ unset STUB_LOCKFILE
 # busy longer than LOCKWAIT -> rc 2, nothing changed
 reset
 flock -o "$LOCKF" sleep 8 & hp=$!; sleep 0.3
-t0=$(date +%s); out=$(printf 'thirdkey123\n' | run --mesh - --no-persist 2>&1); rc=$?; t1=$(date +%s)
+t0=$(cut -d. -f1 /proc/uptime); out=$(printf 'thirdkey123\n' | run --mesh - --no-persist 2>&1); rc=$?; t1=$(cut -d. -f1 /proc/uptime)
 if [ "$rc" = 2 ] && [ $((t1 - t0)) -ge 3 ] && echo "$out" | grep -q busy; then ok "busy: rc 2 ($rc) after ~LOCKWAIT ($((t1 - t0))s) :: $(echo "$out" | tail -1)"; else no "busy: rc 2 ($rc) after ~LOCKWAIT ($((t1 - t0))s) :: $(echo "$out" | tail -1)"; fi
 if [ "$(commits)" = 0 ]; then ok "busy: nothing committed"; else no "busy: nothing committed"; fi
 out=$(run --forget-mesh --no-persist 2>&1); rc=$?
 if [ "$rc" = 2 ] && [ "$(commits)" = 0 ]; then ok "busy: --forget-mesh rc 2 ($rc), nothing committed"; else no "busy: --forget-mesh rc 2 ($rc), nothing committed"; fi
 # --status is read-only: no lock
-t0=$(date +%s); out=$(run --status 2>&1); rc=$?; t1=$(date +%s)
+t0=$(cut -d. -f1 /proc/uptime); out=$(run --status 2>&1); rc=$?; t1=$(cut -d. -f1 /proc/uptime)
 if [ "$rc" = 0 ] && [ $((t1 - t0)) -le 1 ]; then ok "busy: --status rc 0 ($rc) without waiting ($((t1 - t0))s)"; else no "busy: --status rc 0 ($rc) without waiting ($((t1 - t0))s)"; fi
 kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
 # run dir unusable (parent group-writable, #280) -> rc 2 fail closed

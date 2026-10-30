@@ -10,6 +10,7 @@
 # PROV_SRC = product files/ dir. Test-only edits of the copy: p5 = a loop device, PROVD / rundir.sh in the test dir.
 # Negative control: the shipped batman-config-save FAILs the --txn and the re-check cases. Zero cases run = FAIL.
 set -u
+# elapsed time from /proc/uptime: the WSL wall clock steps back ~1 s at times (review 4 B m4, 3 of 30 probes)
 [ "$(id -u)" = 0 ] || { echo "FAIL needs root (loop device)"; echo "PASS=0 FAIL=1"; exit 1; }
 W=$(mktemp -d); LOOP2=""; LOOP3=""
 trap 'grep " $W/" /proc/mounts | cut -d" " -f2 | xargs -r -n1 umount 2>/dev/null; umount $W/m 2>/dev/null; losetup -d $LOOP 2>/dev/null; [ -z "$LOOP2" ] || losetup -d $LOOP2; [ -z "$LOOP3" ] || losetup -d $LOOP3; rm -rf $W' EXIT
@@ -51,7 +52,7 @@ txnf $TOK; t 1 --save --txn                                            # missing
 t 1 --save --txn none                                                  # "none" can never be a live token
 t 1 --save --txn "$TOK x"                                              # not hex
 t 1 --save --bogus                                                     # unknown option still refused
-s0=$(date +%s); t 1 --save; s1=$(date +%s)                             # without --txn a live transaction still blocks
+s0=$(cut -d. -f1 /proc/uptime); t 1 --save; s1=$(cut -d. -f1 /proc/uptime)                             # without --txn a live transaction still blocks
 [ $((s1 - s0)) -ge 9 ] && okk "--save without --txn waited ~10 s ($((s1 - s0)) s)" || bad "--save without --txn did not wait ($((s1 - s0)) s)"
 
 # ---- the txn sequence re-check (right before the p5 write) ------------------------------------------------------------
