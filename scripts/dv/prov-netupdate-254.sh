@@ -38,7 +38,7 @@ arm(){	# <yield|noyield>
 	# the hook also records p5's overrides.uci sha right after the tick: that is the moment the control must judge —
 	# after net-apply returns, the helper's Finish has already put the previous network back into p5 (wireless-txn
 	# §19 made that save reliable, so the before/after manifests look unchanged even when the tick DID write)
-	q "cp -p /usr/bin/halow-setkey $W/setkey.real && chmod 700 $W/setkey.real && printf '#!/bin/sh\n$W/setkey.real \"\$@\"; r=\$?\nbatman-config-save --on-join > $W/onjoin.out 2>&1; echo \"onjoin_rc=\$?\" >> $W/onjoin.out; echo \"setkey_rc=\$r\" >> $W/onjoin.out\nm=\$(mktemp -d /tmp/run/batman-dv/p5h.XXXXXX) && mount -o ro,noload /dev/mmcblk0p5 \$m && { echo \"p5ovr=\$(sha256sum < \$m/overrides.uci | cut -c1-64)\" >> $W/onjoin.out; umount \$m; }; rmdir \$m 2>/dev/null\nexit 1\n' > $W/setkey.hook && chmod 755 $W/setkey.hook"
+	q "cp -p /usr/bin/halow-setkey $W/setkey.real && chmod 700 $W/setkey.real && printf '#!/bin/sh\np5(){ m=\$(mktemp -d /tmp/run/batman-dv/p5h.XXXXXX) && mount -o ro,noload /dev/mmcblk0p5 \$m && { sha256sum < \$m/overrides.uci | cut -c1-64; umount \$m; }; rmdir \$m 2>/dev/null; }\n$W/setkey.real \"\$@\"; r=\$?\npre=\$(p5)\nbatman-config-save --on-join > $W/onjoin.out 2>&1; echo \"onjoin_rc=\$?\" >> $W/onjoin.out; echo \"setkey_rc=\$r\" >> $W/onjoin.out\necho \"p5pre=\$pre p5ovr=\$(p5)\" >> $W/onjoin.out\nexit 1\n' > $W/setkey.hook && chmod 755 $W/setkey.hook"
 	if [ "$w" = noyield ]; then
 		# the mutant removes EVERY yield of --on-join (wireless-txn §7): the txn_live check at the mode switch, the
 		# SEQ0 "none none" gate before staging, and the txn_seq re-check right before the p5 write (2026-10-30: the
@@ -56,8 +56,10 @@ arm(){	# <yield|noyield>
 	b=$(p5f "m1-$w") || { no "p5 manifest after: $b"; return 1; }
 	grep -q 'setkey_rc=0' <<< "$o" || { inv "$w: the real setkey inside the hook failed ($o) — the transaction never reached its wireless change"; return 1; }
 	grep -qE 'RESULT net.apply\(update\) code=[1-9]' <<< "$r" && ok "$w: net-apply --update failed at step 2 (hook exit 1)" || no "$w: net-apply result: $(grep RESULT <<< "$r")"
-	a0=$(awk '/overrides\.uci$/ { print $1 }' <<< "$a"); h=$(sed -n 's/.*p5ovr=\([0-9a-f]*\).*/\1/p' <<< "$(echo $o)")
-	[ -n "$h" ] || { inv "$w: the hook recorded no p5 overrides sha at the tick ($o)"; return 1; }
+	# p5's overrides.uci immediately before and after the tick, both read inside the hook (the manifests a / b are
+	# taken outside the transaction and can lag behind the periodic save, F39)
+	a0=$(sed -n 's/.*p5pre=\([0-9a-f]*\).*/\1/p' <<< "$(echo $o)"); h=$(sed -n 's/.*p5ovr=\([0-9a-f]*\).*/\1/p' <<< "$(echo $o)")
+	[ -n "$h" ] && [ -n "$a0" ] || { inv "$w: the hook recorded no p5 overrides sha around the tick ($o)"; return 1; }
 	if [ "$w" = yield ]; then
 		grep -q 'provisioning transaction in progress' <<< "$o" && grep -q 'onjoin_rc=1' <<< "$o" && ok "yield: the --on-join tick yielded (rc 1, transaction in progress)" || no "yield: tick [$o]"
 		[ "$h" = "$a0" ] && ok "yield: p5 overrides.uci unchanged at the tick" || no "yield: p5 overrides.uci moved at the tick"
