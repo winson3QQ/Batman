@@ -1,6 +1,6 @@
-# #254 — a network change that did not succeed goes back to the previous state; `network/leave` forgets the mesh (design v11, 2026-10-30)
+# #254 — a network change that did not succeed goes back to the previous state; `network/leave` forgets the mesh (design v14, 2026-10-30)
 
-Status: v11 — v7 approved (round 7, §14); code review rounds 1 → §15 (v8), 2 → §16 (v9), 3 → §17 (v10), 4 → §18 (v11). Code frozen after §18 (owner decision 2026-10-30): further MINORs go to the #254 checklist. v1–v3 REJECTED; v4: A REJECT (model sound), B APPROVE-WITH-CHANGES; v5 and v6: both
+Status: v12 — v7 approved (round 7, §14); code review rounds 1 → §15 (v8), 2 → §16 (v9), 3 → §17 (v10), 4 → §18 (v11); node validation finding → §19 (v12 reviewed: A/B APPROVE-WITH-CHANGES; v13 reviewed: A 1 MAJOR / B 2 MAJOR; v14 confirmed: A APPROVE, B APPROVE-WITH-CHANGES 0 MAJOR — converged). Code frozen after §18 (owner decision 2026-10-30): further MINORs go to the #254 checklist; the freeze is lifted for §19 only (owner decision 2026-10-30). v1–v3 REJECTED; v4: A REJECT (model sound), B APPROVE-WITH-CHANGES; v5 and v6: both
 APPROVE-WITH-CHANGES (one MAJOR each in round 6, both one-line contract fixes, §13). §10 round 4, §12 round 5, §13 round 6. **Owner rule: a change that did not succeed returns the node to the previous state — "use the previous
 one".** Owner decisions: L22 → A (leave = forget the network); legacy / operator-keyed node whose join fails → back to
 the operator's own settings (2026-10-30). Product change: helper, `halow-setkey`, `batman-config-save`. Branch
@@ -466,3 +466,277 @@ no flip test was done for that case; it stays on the checklist.
 - B4: m2 the encryption / rc 1 tests, and `uci show` rc 1 (no wireless config) is transient → decide; m3 the
   TestBackoffCap constant; m5 the TERM test's discrimination; m6 the orphan + `satisfied()` race wording; m7
   `--forget-mesh` and the mesh markers in the override recovery; m8 KEYH with an empty key; m9.
+
+## 19. Node validation finding → v12–v14 (2026-10-30): a wireless change is complete only when netifd says so
+
+Found by the DV units on 04 (wsl.15), not by a review. `prov-downgrade-left-254` arm 2 failed twice (batch 1 02:21,
+batch 2 16:36 host time): `network.leave` → `EApply 21` "left the network; the radio still has the old settings", the
+retry → `EState 22`. Reproduced with a 1 Hz sampler and `logread -f` on the node: scratch `prov-reproforget2-254.sh`
+(18:17) and `prov-reproforget3-254.sh` (19:11, with the escalation probe); logs in `scratchpad/core/runs/repro-*/`.
+The owner's decision (2026-10-30): fix now. The code freeze of §18 is lifted for §19 only. v12 was reviewed by two
+reviewers (`254-reviews/wtxn-review-v12-{A,B}.md`, both APPROVE-WITH-CHANGES, 0 BLOCKER, 6 + 3 MAJOR); v13 reviewed (round 2: A 1 MAJOR, B 2 MAJOR, both APPROVE-WITH-CHANGES, `wtxn-review-v13-{A,B}.md`); v14 = this text.
+
+**19.1 What happened (04, node time 04:21:39–04:22:49, repro 2; repro 4 identical at 05:17).**
+```
+04:21:39 halow-setkey: config updated on: default_radio1 ... channel=40; reloading wifi     <- the join (net.apply)
+04:21:39 netifd: radio1 (14310): Configuring morse device   (teardown of the OLD wlh0 / s1g 6459; 3 s on this boot)
+   sampler uptime 87: up=false pend=true meshdev=wlh0 key=<new> txn=1        the old wlh0 still there, netifd pending
+   sampler uptime 88: up=false pend=true meshdev=(none)       txn=0        <- the join's setkey has RETURNED rc 0
+04:21:42 netifd: radio1 (15011): Configuring morse device; wpa_supplicant_s1g[15225]: wlh0 UNINITIALIZED->ENABLED
+04:21:42 halow-setkey: forget mesh: placeholder key on: default_radio1, radio1 blocked; reloading wifi   <- the leave
+04:21:42 wpa_supplicant_s1g[15225]: wlh0: joining mesh dvd-3f4c8f1c ... MESH-GROUP-STARTED
+04:21:52 netifd: Wireless device 'radio1' is now down
+04:22:15 batman-provhelper: network.leave: committed, forgetting the mesh failed: halow-setkey rc=3 (forget unverified)
+04:22:49 batman-provhelper: CRIT finish (before network.leave): back to left (forgotten) failed (rc=3)   <- the retry
+   sampler 100..246: up=false dis=true pend=false BUT meshdev=wlh0  (iw dev: wlh0 type mesh point = the join's mesh)
+joinwatch 04:22:51: radio=up type=mesh point mesh=dvd-3f4c8f1c
+```
+- The join's `halow-setkey` returned rc 0 during netifd's TEARDOWN (uptime 88: no mesh netdev yet, `.txn` already
+  gone). The join carries `--channel 40`, unchanged, and the channel read-back (`halow-setkey:244-253`: the first mesh
+  netdev whose `morse_cli` answers the centre frequency) was satisfied by the OLD wlh0, still on 922000 kHz while netifd
+  was tearing it down (review B m1 — v12 said "the new wlh0"; wrong). With an unchanged channel this read-back is
+  satisfied at once on every node; the non-channel read-back (`:268-271`) checks uci only. Neither asks netifd. The
+  helper answered `net.apply code=0`; the client sent `network.leave`.
+- `--forget-mesh`'s `wifi reload` (uci `disabled=1`) landed inside netifd's SETUP of the join (setup script 15011
+  running, s1g 15225 just started). netifd ended with radio1 `up=false disabled=true`, but that `wpa_supplicant_s1g`
+  and its mesh netdev `wlh0` stayed: **an orphan on the air with the network's key, while p5 says "left"**. Every
+  later `--forget-mesh` is rc 3 (netifd has nothing to do: its radio is "down"), the retry's Finish too (`EState 22`
+  until the backoff, §15.5); only a reboot cleared it. `/var/state` named the netdev (`wireless._phy0.splist=' wlh0 '`,
+  repro 4), so netifd's teardown had it in its list and the orphan survived anyway. ⚠️ The exact point inside netifd
+  / `morse.sh` is not pinned (consistent hypothesis, review B: netifd kills the running setup script; the `-B` s1g and
+  its netdev survive; the device is marked down without a teardown). The fix does not depend on it.
+- The window is netifd's teardown + setup time (3–13 s here); it is timing, not the image. It opened 4 of 5 times
+  after the rollback reboot from the wsl.9 B trial, never on an A→A reboot (`prov-reproforget-254.sh`: the radio was
+  up 2 s before the forget), never for two `wifi reload`s 0 s apart on an up radio (netifd merges them; `race-node.sh`
+  round 1, 3/3 verified in ≤ 1 s), never for `wifi down` → `wifi up` → forget 0–2 s later on an idle node (setup done
+  in ≤ 1 s; round 2). The boot itself reloads radio1 three times within 7 s and cleans up every time
+  (`boot-logread.log`). ⚠️ Why that boot's teardown is slower is not pinned; any load makes it slower.
+- **Escalation evidence (repro 4, 19:20, on the real orphan):** `wifi down radio1` changed nothing (E1);
+  `kill` of the `wpa_supplicant_s1g` whose argv names the netdev (15409) → the process gone, the netdev stayed (E2);
+  `iw dev wlh0 del` → the netdev gone (E3); `--forget-mesh` again → **rc 0, verified** (E4). The node was then
+  restored by the harness (overlay restore + reboot): **a rebuild by `wifi reload` after an escalation was NOT
+  exercised** (review A M5 / B M2) — the orphan unit of §19.6 proves it on hardware. `wifi down <radio>` is also
+  harmful: netifd keeps the radio down through later `wifi reload`s until `wifi up` (orphan probe O5: the restore's
+  read-back got nothing for 60 s; `auto=true` in every sampler line where no `wifi down` ran) — never part of the fix.
+- **netifd's status changes with the reload, not later (A2 N1, probed 19:52 on 04, `probe-node.sh`):** status sampled
+  as fast as ubus answers (≈ 170 samples in ~17 s, ≈ 10 Hz; ⚠️ busybox `date` has no sub-second clock, so the rate
+  is the count over the wall time) across one `wifi reload` with a changed mesh key: every sample up to the reload
+  shows `up=true pending=false` and the old key in `interfaces[0].config.key`; the first sample after it shows
+  `up=false pending=true` AND the new key, in the same sample; pending stays for 17 samples (~1.7 s), then `up=true`
+  (the probe's log keeps a 4-char key prefix — a scratch probe only; a DV unit never records a key field). There is
+  no sample with the old `up=true` after the reload: a read-back that asks netifd right after `wifi reload` sees the
+  change. Rule 2 nevertheless also compares netifd's reported config (below), so it does not depend on this ordering.
+
+**19.2 The principle, applied to `halow-setkey`.** A change to the radio is complete when the layer that owns the
+radio (netifd) reports the final state — not when the chip answers a register read. Three rules:
+
+1. **Settle gate (fail-closed), every write mode including `--forget-mesh`.** Right after the writer lock is taken
+   (`halow-setkey:136`) and BEFORE any uci or mark write: read `ubus call network.wireless status`; the morse radio's
+   section (`morse_radio()`) must be present with `pending=false`. Poll ≤ `SETTLE_WAIT` = 30 s. At the deadline, or
+   when ubus gives no output / no section / no boolean: **rc 2 "netifd is still reconfiguring <radio> after 30 s —
+   nothing changed"** (unreadable status = not settled). Nothing was written, so rc 2 keeps its meaning. v12's "reload
+   anyway" was a fail-open that recreates the orphan — for a join, with the PREVIOUS key on the air (A M2, B M1);
+   dropped. Helper mapping, unchanged code: join rc 2 → `.txn` removed, `EApply` (`node.go:1157-1160`); Finish rc 2 →
+   `.txn` kept, backoff (`wtxn.go:329-331`); leave: forget rc 2 → `EApply 21` (committed, not forgotten), the next
+   Finish forgets. Boot: a boot Finish runs after `waitRadioUp` (≤ 120 s) and then meets the gate; chanfix (§19.5)
+   sources the same function and waits for settle per try, under its lock.
+2. **Read-back = netifd's word, when the write leaves the morse radio enabled.** The predicate is computed in
+   setkey before the commit: enabled ⇔ the staged `uci -q get wireless.$RADIO.disabled` ≠ 1 after the release step
+   (`halow-setkey:220-232`; `uci get` returns the staged, uncommitted value — probed on 04). Then, after
+   `wifi reload`, rc 0 requires netifd to report the morse radio `up=true pending=false` — checked FIRST — with
+   netifd's reported running config equal to what was written (`interfaces[].config.mesh_id` / `.key` and
+   `config.channel` from the same status read, compared in-process with `[ "$a" = "$b" ]` only — never echoed,
+   never logged, no `set -x` (B3 m2): the read-back cannot be satisfied
+   by a status from before the reload, A2 N1), and then, with `--channel`, the mesh netdev's `CENTRE_KHZ` as today;
+   the uci key check of the non-channel path stays. `retry_setup_failed=true` with `pending=false` → rc 3 at once
+   (netifd gave up). Deadline 60 s → rc 3 "unverified", as today (a helper transaction keeps `.txn`, §15.4). One
+   log line `read-back: netifd up after <n> s` (a number only). When the write leaves the radio blocked — the mesh key
+   still the placeholder after the release step (`--ap` alone on a fresh card, `--mesh-id` alone while the key is the
+   placeholder) or the radio switched off by hand (§15.6: `disabled=1` and not in the mark) — netifd will report
+   `up=false` for good: the non-channel path keeps its uci-only rc 0 as today (A M1), and **the channel path keeps
+   its rc 3 "unverified" as today** (B2 N-M2: the helper always passes the snapshot's channel on a restore and §16.5
+   turns rc 3 + hand-off + uci-matches into "applied, not verified"; the §8 premise "setkey with the radio off → rc 3"
+   stands, now "rc 3, or rc 2 when netifd is not settled", A2 N2).
+3. **`--forget-mesh`**: verified as today (no mesh netdev on the morse phy AND `up=false disabled=true`,
+   `FORGET_WAIT` 30 s). At the deadline, when netifd reports the radio `up=false disabled=true pending=false` but a
+   mesh netdev still exists on the morse phy, the forget **escalates** (§19.3) and verifies again (≤ 10 s). rc 3 only
+   after that. netifd `up=true` or `pending=true` at the deadline → rc 3 without escalation (netifd still owns the
+   radio; we do not fight it): the helper keeps `.txn`, replies `EApply 21`, the retry gets `EState 22` within the
+   backoff; the operator's recovery without a reboot is a retry after the backoff (60 s, doubling), which runs the
+   forget again, now on a settled radio.
+
+**19.3 Escalation of an unverified forget — fail-secure: nothing of the network stays on the air.**
+- **The morse phy** (A M3): the `phyN` under `/sys/class/ieee80211/` whose `device` symlink resolves to uci
+  `wireless.<radio>.path` (04: `phy0` → `.../fe204000.spi/spi_master/spi0/spi0.0` = `wireless.radio1.path`; `phy1` =
+  the mmc path of radio0 — probed read-only 2026-10-30). Unresolvable (no such phy, two matches) → no escalation,
+  rc 3. **An orphan** = a `type mesh point` netdev whose `/sys/class/net/<dev>/phy80211` is that phy, while netifd
+  reports the radio down+disabled, not pending. With netifd down, every mesh netdev on that phy is an orphan — an
+  operator's hand-made `iw` mesh netdev on the HaLow phy included: after a leave, nothing of ours stays on the air
+  (stated; B m3). The other phy's netdevs (`phy1-ap0`) are never touched.
+- **E2**, per orphan netdev: candidate pids from `pgrep -f 'wpa_supplicant_s1g .* -i <dev>( |$)'` run directly
+  (never through `sh -c`, which matches itself — seen on 04: pid 27535 `ash`). A pid is accepted only when
+  `/proc/<pid>/exe` → `/usr/sbin/wpa_supplicant_s1g` and `Uid:` 0 (`/proc/<pid>/status`); an argv impostor is
+  not killed (B m4, A m8); an `exe` with a ` (deleted)` suffix is not accepted. No candidate → E3 at once, logged
+  `no s1g for <dev>`. `kill -TERM`, wait ≤ 3 s, then `kill -KILL` after re-checking `exe` (pid reuse). The netdev name
+  comes from `iw dev` (kernel: `[A-Za-z0-9_.-]`); `.` is the only ERE metacharacter and is escaped.
+- **E3**: `iw dev <dev> del` for an orphan netdev that still exists.
+- **Before each kill and each del the netifd status is read again** and must still say `up=false disabled=true
+  pending=false` (B2 N-m3): an operator's `wifi up` in between makes netifd the owner again — setkey stops, rc 3.
+- Then the verify again. Verified → rc 0 and the log line `forgotten after escalation (orphan <dev>, s1g <pid>)`
+  (names and pids only — the ubus status blob carries the key and is never logged, A m9); else rc 3.
+- `/var/state` is not edited: netifd's next setup runs `morse_interface_cleanup` over the splist, which tolerates a
+  name that no longer exists. Verbatim from 04 (`/lib/netifd/wireless/morse.sh`, 2026-10-30; the whole excerpt is
+  archived as `scratchpad/core/runs/morse-sh-2026-10-30.txt`):
+  ```
+  morse_vap_cleanup() {
+  	local service="$1"
+  	local vaps="$2"
+  	for wdev in $vaps; do
+  		[ "$service" != "none" ] && kill_wait $service &> /dev/null
+  		ip link set dev "$wdev" down 2>/dev/null
+  		[ -n "$(iw dev $wdev info | grep "type monitor")" ] && ip link set dev morse0 down
+  		iw dev "$wdev" del 2>/dev/null
+  	done
+  }
+  morse_interface_cleanup() {
+  	local phy="$1"
+  	morse_service_stop
+  	morse_vap_cleanup hostapd_s1g "$(uci -q -P /var/state get wireless._${phy}.aplist)"
+  	morse_vap_cleanup wpa_supplicant_s1g "$(uci -q -P /var/state get wireless._${phy}.splist)"
+  	morse_vap_cleanup none "$(uci -q -P /var/state get wireless._${phy}.umlist)"
+  }
+  ```
+  (`kill_wait`, `/lib/netifd/morse/morse_utils.sh:1`, kills every `pidof $names` — so when netifd's teardown runs at
+  all, no `wpa_supplicant_s1g` survives it: the orphan of §19.1 means the teardown did not run for that setup, which
+  supports the hypothesis there.) ⚠️ That a `wifi reload` after an escalation rebuilds the radio is NOT yet shown
+  on hardware: the orphan unit (§19.6) asserts it, and it is the unit's own negative control that it exists.
+- **Ownership**: netifd owns the radio, its netdevs and its s1g processes. setkey's single exception: a netdev / process
+  on the morse phy that netifd has already released (`up=false disabled=true pending=false`) after a forget whose
+  `disabled=1` is already committed — so netifd will not start a new setup of that radio on its own; the only way
+  in is an operator's `wifi up <radio>` by hand in the milliseconds between the status read and the kill, whose
+  setup then fails and is retried by their next `wifi` (residual, stated). A crash of setkey between E2 and E3 is
+  harmless: the next forget re-escalates (idempotent). A netifd restart ⚠️ does not clear an orphan (inferred: it
+  does not know it); the forget's escalation does.
+- **Security**: new inputs are root-owned — `iw dev` names (kernel), `/sys/class/*` links (kernel), ubus JSON
+  (netifd), `/proc/<pid>/{exe,status,cmdline}` of root processes. A non-root process cannot add a netdev to the phy,
+  start a privileged s1g, or make root kill it (the `exe` + `Uid` check); it can only name itself like one and is
+  then ignored — the negative test of §19.6 (i). Nothing new is world-writable. Failure mode: every unknown is closed
+  (rc 2 before writes, rc 3 after).
+
+**19.4 The helper (Go) does not change.** `SetKeyNoPersist` / `ForgetMesh` keep the rc contract; `net.apply code=0`
+now means "netifd reports the radio up on the new network". Per-command worst cases (A M4, B m5): a write =
+LOCKWAIT 90 + settle 30 + read-back 60 = 180 s; a forget = 90 + 30 + 30 + escalation ~15 = 165 s; both inside the
+helper's 300 s per subprocess. A verb can run a Finish first (one setkey ≤ 180 s + a save ≤ `ConfigSaveTimeout`) and
+then its own setkey: **the client's timeout is not a bound on the node; a timeout means "outcome unknown — re-read
+`info`" (§4.1)**. Harness: `pr_pc` gives every `net-apply` / `leave` ≥ 240 s (today 120 s on leave only, 30 s default
+on net-apply: a slow node would false-FAIL the join; harness PR, #290). P2 contract: the app shows "unfinished" from
+`info` (`.txn` present → checklist: an `unfinished` flag in `info.net`, B m6) and waits for the join to be complete
+before offering leave.
+
+**19.5 Writers of the radio, lifecycle.**
+- `halow-setkey` (helper and operator) — the lock, the settle gate, the read-back, the escalation.
+- `99-batman-chanfix` — sources the settle function from `/usr/lib/batman/wireless-settle.sh` (one implementation,
+  not a copy; B m7, A m10) and waits for settle under the lock, per try, ≤ 30 s (inside the 90 s the next writer
+  waits for the lock); a try that never settles is NOT counted against its 6 reasserts, and the whole loop has a
+  total deadline of 5 min (A2 N3: skipping all six on a slow first boot would strand the slot on ch42, the case
+  chanfix exists for; B2 N-m1: an uncounted skip must not spin forever); lock busy → as today (fail-open, §6, the
+  fresh-slot first boot only). Shell case: pending for 20 s → exactly one reassert, after it.
+- `halow-keyguard` — boot only, before netifd's wifi; no reload.
+- `mesh11sd` — `wifi up` in its init start only; `restart_mesh()` (`wifi`) is defined and never called
+  (`/usr/sbin/mesh11sd:104`, callers grepped on 04 2026-10-30): no runtime reload (A m11).
+- The operator's `wifi` / `wifi reload` by hand — outside the lock (§6 residual). The settle gate sees a reload in
+  flight before ours; an operator's reload landing inside OUR setup is the §19.1 case with roles swapped — the
+  forget's escalation is the backstop for a leave; a join orphaned that way is caught by its read-back (rc 3 →
+  Finish → previous state, whose forget / setkey then settles and verifies).
+- Lifecycle: install / upgrade / rollback / downgrade — setkey is a slot-local script, no state format changes; an
+  older image behaves as today. Crash / power loss — a reboot rebuilds from uci (`disabled=1` + placeholder after a
+  forget), as every S0 restore showed. netifd restart — see §19.3. Pi 3 (bcm2710) — same script, not run (CM4
+  decision); n/a.
+- Updates elsewhere: §6 "both within 2 s" holds on an idle node only (→ this section); §8 gains the two units of
+  §19.6; §15.4 `satisfied()` runs BEFORE a Finish's setkey and short-circuits it (`wtxn.go:317-323`); it judges the
+  live radio by the supplicant's view (`meshjoin_radio_up`), which would say "up" on an orphan while netifd says
+  down. No path produces such an orphan without a reload from outside the lock (rules 1–3), so it is unchanged and
+  goes to the checklist ("`satisfied()` also requires netifd up", A2 N7); §15.2 `waitRadioUp` unchanged. A boot
+  Finish that meets rc 2 (a slow boot) keeps `.txn` until the next verb or boot — `BootFinish` runs once, there is
+  no retry timer (pre-existing, §4.3 reads as if there were; A2 N4, B2 N-m2) → checklist: a bounded retry (helper
+  change, outside this freeze lift); `halow-status` shows netifd's pending state and the rc 2 text names the exit.
+  After a leave's `EApply 21` the FIRST retry runs a Finish at once (the leave's own forget failure is not a Finish
+  failure, `finishFails` = 0); a second retry inside the backoff gets `EState 22` (A2 m13 nit). A netifd that never
+  settles (a hung setup) makes every setkey rc 2 and a committed leave unforgotten: the exit is a reboot, stated in
+  the rc 2 text; a hung netifd is outside this change.
+
+**19.6 Tests.**
+- **Harness, white-box, deterministic (~6 min): `prov-forget-orphan-254`** — the real orphan rebuilt by hand
+  (B M2): the morse phy taken from `/sys/class/net/wlh0/phy80211` BEFORE the teardown; the radio taken down the way a
+  forget does it (uci `disabled=1` + mark, `wifi reload`, netifd `up=false disabled=true pending=false`, netdev gone);
+  then `iw phy <phy> interface add wlh0 type mp`, `uci -q -P /var/state set wireless._<phy>.splist=' wlh0 '` (as
+  `morse.sh:594` writes it), a `wpa_supplicant_s1g -t -D nl80211 -s -i wlh0 -c <conf> -B` on a copy of
+  `/var/run/wpa_supplicant-wlh0.conf` kept in the root-only 0700 run dir and removed at the end (it holds the test
+  key). The unit asserts the orphan exists (netdev + a root s1g pid on it), else **INVALID**. Then `--forget-mesh
+  --no-persist`: on wsl.15 rc 3 (negative control); after the fix rc 0 with the escalation log line, netdev and
+  process gone. Then the rebuild on hardware: `halow-setkey --mesh <lab key> --mesh-id openmanet1 --channel 40
+  --no-persist` → rc 0, netifd `up=true pending=false`, `meshjoin_radio_up`, 02 a neighbour within 180 s — the
+  hardware proof that netifd's next setup tolerates a splist entry whose netdev setkey deleted. The lab key is read
+  from the node's own uci into a root-only 0600 file before the teardown and fed with `--mesh -`; the harness never
+  carries it (B2 N-m5). **Arm 2** (outcome-recording, not a verdict): the same orphan, no forget — the setkey
+  restore alone; records whether netifd's own setup cleans an orphan it has in its splist (A2 N6: the roles-swapped
+  join is "not self-healing" until this says otherwise). Exit discipline (A2 N8): the overlay restore undoes none of
+  the splist line, the netdev or the s1g, so the unit reboots on EVERY exit (INVALID and abort included), and before
+  that kills the s1g by its recorded pid, deletes the netdev and removes the conf copy. Side effects, in the unit
+  header: 04 off the fleet mesh ~3 min; the stray `wlh0` really joins the lab mesh with the lab key (02 sees 04
+  peer / leave / peer; joinwatch and meshled lines) — the same id and key the node beacons every day, nothing new on
+  the air; S0 restore at the end. (The first probe, 19:06, created nothing: it looked for a `morse0` netdev that 04
+  does not have.)
+- **Harness, black-box, real hardware (~25 min, tier B): `prov-leave-after-join-254`** = the repro: OLD image into B
+  (hold), `back_to_a`, claim, join, leave at once, with the 1 Hz sampler. PASS = `network.leave code=0`, no mesh
+  netdev, `up=false disabled=true`, `--check rc 0`. **The window must have opened.** On the fixed code the join's
+  setkey waits through its own reload, so "pending seen" is true on every run (B2 N-M1); the discriminator on 04
+  was the DURATION of netifd's teardown + setup (3 s after the B-rollback boot vs ≤ 1–2 s idle). The unit therefore
+  requires ≥ 3 consecutive 1 Hz samples with the morse radio `pending=true` during the join AND the join's setkey log
+  line `read-back: netifd up after <n> s` with n ≥ 3; otherwise **INVALID "window did not open (pending n samples,
+  read-back n s)"**, not PASS (A M6/N9, B M3/N-M1). A FAIL is final; only INVALID retries the join/leave pair after
+  another `back_to_a` reboot, up to 3 times (tries 2–3 start from a Left node; ~25–30 min budget; expected INVALID
+  rate ≤ 1/5 per try on 04). A forced-window arm (a leave right after a `wifi reload` on a loaded node) is ⚠️ not
+  promised: no deterministic trigger was found (§19.1). Negative control: wsl.15 = 4/5 FAIL.
+- **Harness: `prov-netjoin-254`** gains "after `net.apply code=0`, netifd reports the morse radio `up=true
+  pending=false`" — the contract of rule 2 (it discriminates only when the window opens; stated).
+- **Key canary** (`prov-netjoin-254:40`) extended to the host run dir of the two new units (A m9).
+- **Shell (`tests/prov-p1/setkey-forget-lock.sh`, `lib-wireless-stubs.sh`)**: the stubs gain `pending` (with the
+  OLD netdev still present while pending — the real case, B m1), `retry_setup_failed`, a stubbed
+  `/sys/class/ieee80211` + `phy80211` map, an `orphan` netdev with a fake s1g (pid, `exe`, `Uid`), recording
+  `pgrep` / `kill` / `iw dev del`, and `ubus` failure. Cases, each with its negative control on the shipped setkey
+  (ebb9cf4): (a) read-back waits for `up=true pending=false` first — pending with the old netdev answering the
+  channel → not rc 0; up at 2 s → rc 0 at 2 s; stays pending → rc 3 at the deadline; (b) settle gate: pending clears
+  at 2 s → the reload happens after it (`wifi.log`); never clears → rc 2 and **zero commits**, for `--mesh`, `--ap`
+  and `--forget-mesh`; ubus rc 1 / empty / no section → rc 2; (c) orphan: TERM then `iw dev del`, in that order, then
+  rc 0 with the escalation line; (d) netifd `up=true` or `pending=true` at the deadline → no kill, no del, rc 3;
+  (e) `--ap` alone with the placeholder mesh key, and `--mesh-id` alone → rc 0 without any netifd wait (A M1);
+  (f) `retry_setup_failed` → rc 3 at once; (g) a decoy: a process whose argv names the netdev but whose `exe` is not
+  `wpa_supplicant_s1g` or whose `Uid` is not 0 → not killed; (h) a mesh netdev on the OTHER phy → untouched;
+  (i) the other radio pending → no delay. Mutants: the settle gate removed; the `up=true` check removed; the
+  escalation's netifd-down guard removed; the `exe`/`Uid` check removed; the phy check removed; a reload whose
+  status stays old for 1 s before flipping to pending (the config comparison kills it).
+  Mechanics (B2 N-m4): `kill` is an ash builtin and cannot be stubbed — the fake s1g is a real process (a copy of
+  `/bin/sleep` named `wpa_supplicant_s1g` under `$ST/bin`), the test asserts the effect (process gone, order from the
+  `iw` recording stub), and the test copy's `exe` path and `Uid` check are sed-patched like its other test-only
+  edits; the KILL-after-TERM branch is not modellable without root and is stated as untested. The `wifi` stub flips
+  `pending` / `up` asynchronously (a background sleep), so (a) and (b) model the real sequence.
+
+**19.7 Review v12 → v13 (2026-10-30).** A: M1 → rule 2's scope; M2 → rule 1 fail-closed rc 2 before any write;
+M3 → §19.3 phy definition (probed); M4 → §19.4 budgets + `pr_pc`; M5 → §19.1/§19.3 marked ⚠️ + the orphan unit's
+rebuild assertion; M6 → INVALID. B: M1 = A M2 (+ the chanfix lock note, the boot cases); M2 → the faithful orphan
+(splist, name, restore); M3 = A M6. MINORs taken: A m7 (§19.5 note), m8/B m4 (exe + Uid, TERM/KILL, no `sh -c`),
+m9 (fields only; canary), m10/B m7/m8 (§6, §8, sourced settle), m11 (mesh11sd probed), m12/B m1 (stub cases),
+m13 (recovery stated), B m2 (`retry_setup_failed`), m3 (guard + hand-made netdevs stated), m5 (budgets), m6 →
+P2 checklist (`unfinished` in `info.net`).
+**Round 2 (v13 → v14).** A2: N1 → §19.1 probe + the config comparison in rule 2; N2 → §8 wording; N3 → chanfix per-try
+wait, uncounted skip, total deadline; N4 → §19.5 + checklist; N5 → rule 2's predicate written down, channel rc 3;
+N6 → E2 no-pid / `(deleted)` / ERE note, orphan unit arm 2; N7 → §19.5 sentence + checklist; N8 → exit discipline;
+N9 = B2 N-M1 → the ≥ 3-sample / n ≥ 3 rule. B2: N-M1 (same); N-M2 → rule 2 scope from staged uci, channel path rc 3;
+N-m1 → chanfix counter / deadline; N-m2 → hung netifd stated; N-m3 → status re-read before kill / del; N-m4 → shell
+mechanics; N-m5 → key from the node's uci; N-m6 → FAIL final, INVALID-only retries; N-m7 → the `morse.sh` lines are
+quoted in §19.1/§19.3 from the 2026-10-30 read on 04 (archived in the scratch run dir).
+**Round 3 (v14, confirmation).** A: APPROVE (N1–N9 CLOSED; 3 text minors applied: probe counts 17 / ≈ 170 / ≈ 10 Hz,
+chanfix wording in rule 1, the probe's key-prefix field). B: APPROVE-WITH-CHANGES, 0 MAJOR (N-M1, N-M2, m1–m6 CLOSED;
+N-m7 → the `morse.sh` lines verbatim above + archived; m1 → the key canary covers the scratch run dirs of the new
+units; m2 → the comparison form stated; m3 = A's count fix). **Design converged 2026-10-30; implementation per §19.6.**
