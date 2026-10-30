@@ -9,7 +9,8 @@
 # itself takes its stage-2 path there: the tryboot disarm warns and returns, and the freshness gate reads the stage-1
 # verdict, which this test writes as stage 1 would (skip:unseeded / fresh) — the --check itself is NOT exercised here
 # (chain 1 7.2 on a node covers them). dd / mount / sysfs act on the loop device only.
-# Branches: L44 (unseeded + unclaimed record), seeded, allow-unseeded override, claimed + unseeded (must die).
+# Branches: L44 (unseeded + unclaimed record), seeded, allow-unseeded override, claimed + unseeded (must die); then
+# prov-unit-gate's matrix (18 cases). Negative controls: tests/prov-p1/gate-negatives.sh.
 # Negative control: a batman-slot whose L44 note goes to stdout (4ebfd6f / 1.5.14-wsl.2) FAILs the L44 branch.
 # Root (losetup, mkfs, mount); needs gdisk, dosfstools, squashfs-tools, parted, e2fsprogs. Zero cases -> FAIL.
 set -u
@@ -75,4 +76,21 @@ p5 empty; verdict skip:unseeded; run BATMAN_ALLOW_UNSEEDED=1
 expect "allow-unseeded override: rc 0, stdout is exactly the target device" '[ "$RC" = 0 ] && [ "$(lines)" = 1 ] && [ "$(cat "$T/out")" = "$TGT" ]'
 p5 unseeded-claimed; verdict skip:unseeded; run
 expect "claimed + unseeded: refused (rc != 0), nothing on stdout, 'not seeded' on stderr" '[ "$RC" != 0 ] && [ "$(lines)" = 0 ] && grep -q "is not seeded" "$T/err"'
+# ---- prov-unit-gate (254-p1-impl §5.1): .seeded {0,1} x prov.meta {valid, malformed, sha wrong} x state {unclaimed,
+# claimed, member}. Allowed iff seeded, or the record is valid AND unclaimed (L44); every other unseeded p5 is refused.
+pm(){	# <seeded 0|1> <ok|bad|badsha> <state>
+	mkfs.ext4 -q -F -L batconfig "${LOOP}p5" && mount "${LOOP}p5" "$T/p5" || return 1
+	[ "$1" = 1 ] && : > "$T/p5/.seeded"
+	printf "cbor-%s-%s" "$3" "$2" > "$T/p5/prov.cbor"; h=$(sha256sum < "$T/p5/prov.cbor" | cut -c1-64)
+	case "$2" in ok) echo "v=1 state=$3 gen=2 sha=$h" ;; bad) echo "v=1 state=$3! gen=2 sha=$h" ;; badsha) echo "v=1 state=$3 gen=2 sha=$(printf %064d 0)" ;; esac > "$T/p5/prov.meta"
+	umount "$T/p5"; }
+for sd in 0 1; do for mk in ok bad badsha; do for st in unclaimed claimed member; do
+	pm $sd $mk $st || { no "gate p5 setup"; continue; }
+	if [ $sd = 1 ]; then verdict fresh; else verdict skip:unseeded; fi; run
+	if [ $sd = 1 ] || { [ $mk = ok ] && [ $st = unclaimed ]; }; then
+		expect "gate seeded=$sd meta=$mk state=$st: allowed" '[ "$RC" = 0 ] && [ "$(lines)" = 1 ] && [ "$(cat "$T/out")" = "$TGT" ]'
+	else
+		expect "gate seeded=$sd meta=$mk state=$st: refused" '[ "$RC" != 0 ] && [ "$(lines)" = 0 ] && grep -q "is not seeded" "$T/err"'
+	fi
+done; done; done
 echo "BATMAN-SLOT-STAGE-ROOT cases=$cases fails=$fails"; [ "$cases" -gt 0 ] && [ "$fails" = 0 ]

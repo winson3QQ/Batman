@@ -11,7 +11,7 @@ ST=/opt/batdata/state
 fails=0
 ok() { echo "PASS $*"; }
 no() { echo "FAIL $*"; fails=$((fails + 1)); }
-mkdir -p /tmp/run/batman-dv && chmod 700 /tmp/run/batman-dv && mkdir -m 700 "$RD" || { echo "FAIL cannot make $RD"; exit 1; }
+[ -d "$RD" ] && [ ! -L "$RD" ] && chmod 700 "$RD" || { echo "FAIL cannot make $RD"; exit 1; }   # mktemp -d made it 0700; a second mkdir FAILed every run (prov-base-254 run 1, 2026-10-28)
 trap 'rm -rf "$RD"' EXIT
 boot=$(cat /proc/sys/kernel/random/boot_id)
 up=$(cut -d. -f1 /proc/uptime)

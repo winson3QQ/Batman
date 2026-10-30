@@ -15,6 +15,7 @@ while [ $# -gt 0 ]; do case "$1" in -o) shift 2;; root@*) node=${1#root@}; shift
 [ -n "$cmd" ] && [ "$cmd" != "sh -s" ] || cmd=$(cat)
 ans() { if [ -f "$FAKE_RESP/$node.$1" ]; then cat "$FAKE_RESP/$node.$1"; elif [ -f "$FAKE_RESP/_.$1" ]; then cat "$FAKE_RESP/_.$1"; else exit 255; fi; }
 case "$cmd" in
+	*": P9;"*) ans P9;;
 	*": P3;"*) ans P3;; *": P3b;"*) ans P3b;; *": P5k;"*) ans P5k;; *": P5v;"*) ans P5v;;
 	*": P6;"*) ans P6;; *": P7;"*) ans P7;; *"P=/opt"*|*"payload precheck"*|*"metadata"*) ans PRE;;
 	*) exit 0;;
@@ -27,6 +28,7 @@ base() {
 	echo 'v=1.5.12-wsl.9 t=1 s=A h=[] c=raspberrypi,4-model-b brcm,bcm2711 ' > "$W/resp/_.P3"
 	echo A > "$W/resp/_.P3b"
 	echo STATE clean > "$W/resp/_.P6"
+	printf 'INFO slot=A is_trial=1 ver=x\nP9 clean\n' > "$W/resp/_.P9"
 	echo "900|Wed Jul 16 10:00:00 2025|Wed Jul 16 12:00:00 2025" > "$W/resp/_.P7"
 	printf 'metadata: x\nnode runs v from /dev/mmcblk0p2\nOK\n' > "$W/resp/_.PRE"
 	echo 6.6.138 > "$W/resp/_.P5k"; echo 1.5.12-wsl.9 > "$W/resp/_.P5v"
@@ -60,6 +62,21 @@ case_ "BLE leftover (flipped marker)" "leftover: flipped" "printf 'FAIL leftover
 case_ "BLE_PERIPH is not DNODE (feature destructive)" "must be DNODE" ":" FEATURE_MODE=--destructive BLE_PERIPH=n2 BLE_CENTRAL=n4
 case_ "logread flood" "logread flood" "echo '900|Wed Jul 16 11:59:30 2025|Wed Jul 16 12:00:00 2025' > \$W/resp/n2.P7"
 case_ "node clock went backwards" "clock went backwards" "echo '900|Wed Jul 16 12:10:00 2025|Wed Jul 16 12:00:00 2025' > \$W/resp/n2.P7"
+# P9 (#254 254-h23 §4.7 / §23.4): the node judge's verdict lines (the judge itself: tests/prov-p1/p9-judge.sh)
+case_ "P9 [all] points at a wbox slot" "P9 n4 \[all\] points at slot B, a -wbox image" "printf 'FAIL [all] points at slot B, a -wbox image (x) — on the release slot run: batman-slot commit\nP9 fails=1\n' > \$W/resp/n4.P9"
+case_ "P9 [all] unreadable" "P9 n2 \[all\] boot_partition unreadable" "printf 'FAIL [all] boot_partition unreadable or not 1|2 ([])\nP9 fails=1\n' > \$W/resp/n2.P9"
+case_ "P9 dirty flag (an interrupted prov run)" "P9 n4 dv-prov-dirty" "printf 'FAIL dv-prov-dirty [r1 ab snap]: run restore\nP9 fails=1\n' > \$W/resp/n4.P9"
+case_ "P9 rollback arm still running" "P9 n4 a rollback arm is still running" "printf 'FAIL a rollback arm is still running (x pid 9)\nP9 fails=1\n' > \$W/resp/n4.P9"
+case_ "P9 judge gives no verdict" "P9 n2 judge gave no verdict" "printf 'INFO half a reply\n' > \$W/resp/n2.P9"
+p9note(){	# <name> <P9 reply> <grep for the line that must be printed>: PASS overall and that line present
+	base; printf "$2" > "$W/resp/n4.P9"; o=$(run); r=$?
+	if [ $r = 0 ] && grep -q '^PREFLIGHT PASS' <<< "$o" && grep -q "$3" <<< "$o"; then echo "ok   $1"; P=$((P + 1)); else echo "FAIL $1: rc=$r"; grep -E 'PREFLIGHT|P9' <<< "$o" | head -4; F=$((F + 1)); fi; }
+p9note "P9 release trial: PASS, no warn" 'INFO trial in progress (DT tryboot=1, slot B)\nP9 clean\n' 'P9 n4 note: trial in progress'
+p9note "P9 stale fallback: WARN, still PASS" 'WARN [all] points at slot A, not the running B (stale fallback)\nP9 clean\n' '^preflight warn: P9 n4 \[all\] points at slot A'
+p9note "P9 pre-gate image: a note, still PASS" "INFO pre-gate image (batman-slot has no wbox gate): -wbox units FAIL 'pre-gate image' before any OTA\nP9 clean\n" 'P9 n4 note: pre-gate image'
+p9note "P9 golden Pi 4: not applicable, PASS" 'INFO [all] check not applicable (not a Pi 4 A/B card)\nP9 clean\n' '^preflight ok: P9 n4 prov / wbox state clean'
+base; printf 'INFO trial in progress (DT tryboot=1, slot B)\nP9 clean\n' > "$W/resp/n4.P9"; o=$(run)
+grep -q '^preflight warn' <<< "$o" && { echo "FAIL P9 release trial printed a warn"; F=$((F + 1)); } || { echo "ok   P9 release trial prints no warn"; P=$((P + 1)); }
 case_ "node unreachable" "not reachable" "rm -f \$W/resp/_.P3; echo 'v=1.5.12-wsl.9 t=1 s=A h=[] c=bcm2711 ' > \$W/resp/n4.P3"
 echo "$P passed, $F failed"
 [ "$F" = 0 ] && [ "$P" -gt 0 ]

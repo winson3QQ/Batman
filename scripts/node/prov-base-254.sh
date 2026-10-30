@@ -9,7 +9,11 @@
 #   compare <run> <tag> compare <run>/now-<tag>/ with the snapshot; prints DIFF lines; rc 0 = none
 #   p5-restore <run>    dd the p5 image back under the config-save lock, verify sha uncached
 #   overlay-restore <run> write the snapshot tar over the live upper, delete extras, restore p6 state
+#   strip-p5-prov <run> (prov-legacy-upgrade only) delete p5 prov.* and identity/prov, the rest unchanged (§4.5.6)
+#   state-set <run> ble-ok present|absent  (autocommit (8) only) helper stopped or in a trial; the snapshot restores it
 #   finish <run>        after a passing compare: print and remove snapshot, marker, dirty flag
+# PROV_BASE_SKIP=p5 | extra (the prov-base-254 unit's negative controls only, 254-h23 §6.2): p5-restore writes
+# nothing / overlay-restore keeps the extras; each prints a SKIP line, and the following compare must FAIL.
 # The config-save lock is held by a process whose argv contains "batman-config-save" (F34: config-save
 # takes over a lock whose holder's cmdline does not match), and only while joinwatch / helper are stopped.
 set -u
@@ -65,7 +69,12 @@ svc() {	# $1 stop|start, rest = services that exist
 tree_manifest() {	# $1 root dir
 	( cd "$1" || exit 1
 	  # busybox here has no stat / comm (02 probe 2026-10-21): type, mode, owner come from `ls -lnd`
-	  find . -mindepth 1 2>/dev/null | sort | while IFS= read -r p; do
+	  # review A-m10: a line is "<fields> <path>" and readers take the LAST field, so a name with a space / tab / newline
+	  # would be read as another path (overlay-restore would rm -rf it). Such a name is a BADNAME line and rc 3 (fail-closed).
+	  find . -mindepth 1 2>/dev/null | sort | { bad=0; while IFS= read -r p; do
+		case "$p" in ./*) ;; *) echo "BADNAME ${p#./}"; bad=1; continue ;; esac   # the tail of a name with a newline
+		case "$p" in *" "*|*"	"*) echo "BADNAME ${p#./}"; bad=1; continue ;; esac
+		[ -e "$p" ] || [ -L "$p" ] || { echo "BADNAME ${p#./}"; bad=1; continue; }   # the head of a name with a newline
 		set -- $(ls -lnd "$p" 2>/dev/null); m="$1 $3:$4"
 		case "$1" in
 			-*) h=$(sha256sum < "$p" | cut -c1-64) ;;
@@ -74,7 +83,7 @@ tree_manifest() {	# $1 root dir
 			*) h="-" ;;
 		esac
 		echo "$m $h ${p#./}"
-	  done )
+	  done; [ "$bad" = 0 ]; } )
 }
 uci_exports() {	# normalised: `uci export` per config file, in name order
 	for f in $(ls /etc/config 2>/dev/null | sort); do echo "=== $f"; uci -q export "$f" 2>/dev/null; done
@@ -94,7 +103,7 @@ state_record() {	# $1 out dir
 manifests_to() {	# $1 out dir
 	mkdir -p "$1"
 	p5_manifest "$1/p5.manifest" || echo "p5 unreadable" > "$1/p5.manifest"
-	tree_manifest /overlay/upper > "$1/upper.manifest"
+	tree_manifest /overlay/upper > "$1/upper.manifest" || die "upper: $(grep -c '^BADNAME' "$1/upper.manifest") path name(s) with whitespace or a newline (BADNAME lines in $1/upper.manifest) — a manifest line cannot represent them (review A-m10)"
 	uci_exports > "$1/uci.export"
 	state_record "$1/state"
 	{ echo "slot=$(batman-slot active)"; echo "ver=$(sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build)"
@@ -169,6 +178,11 @@ compare)
 		[ -f "$D/snap/$f" ] && [ -f "$D/now-$TAG/$f" ] || die "compare: $f missing on one side (fail-closed)"
 		if [ "$f" = upper.manifest ]; then
 			# an allowed path drops out only when the rule allows the kind of difference seen
+			# review A-M1: directories overlay-restore kept (EXTRA-DIR-KEPT, $D/kept-dirs) appear as "+ d…" lines: only those drop
+			if [ -s "$D/kept-dirs" ]; then
+				awk 'NR==FNR{k[$0]=1; next} !($1 == "+" && substr($2, 1, 1) == "d" && ($NF in k))' "$D/kept-dirs" "$T/d" > "$T/k"
+				say "KEPT-DIRS ignored: $(( $(wc -l < "$T/d") - $(wc -l < "$T/k") )) of $(wc -l < "$D/kept-dirs") listed"; mv "$T/k" "$T/d"
+			fi
 			awk -v AC="${AC:-^$}" -v AE="${AE:-^$}" '
 				{ p=$NF; side=$1; seen[p]=seen[p] side; line[NR]=$0; path[NR]=p }
 				END { for (i=1;i<=NR;i++) { p=path[i]
@@ -191,6 +205,7 @@ p5-restore)
 	[ -f "$D/p5.img" ] || die "no p5 image"
 	want=$(cat "$D/p5.img.sha"); [ "$(sha256sum < "$D/p5.img" | cut -c1-64)" = "$want" ] || die "snapshot image sha mismatch"
 	svc stop joinwatch batman-provhelper batman-provd
+	if [ "${PROV_BASE_SKIP:-}" = p5 ]; then say "SKIP p5 write (PROV_BASE_SKIP=p5, negative control)"; say "P5-RESTORED $RUN sha=SKIPPED"; exit 0; fi
 	lock_take
 	grep -q "^$P5 " /proc/mounts && { lock_drop; die "p5 is mounted"; }
 	dd if="$D/p5.img" of="$P5" bs=1M conv=fsync 2>/dev/null || { lock_drop; die "p5 dd write failed"; }
@@ -207,21 +222,79 @@ overlay-restore)
 	svc stop joinwatch batman-provhelper batman-provd openmanetd tailscale tailscaled cron uhttpd dockerd
 	tar -C /overlay/upper -xpf "$D/upper.tar" 2>"$D/untar.err" || die "untar failed: $(head -2 "$D/untar.err")"
 	# delete what the snapshot did not have (printed first), except allow-listed paths
-	tree_manifest /overlay/upper | awk '{print $NF}' > /tmp/run/batman-dv/now.paths
+	tree_manifest /overlay/upper > /tmp/run/batman-dv/now.manifest || die "overlay-restore: path name(s) with whitespace or a newline in the upper: $(grep -c '^BADNAME' /tmp/run/batman-dv/now.manifest) — extras are NOT removed by name (review A-m10)"
+	awk '{print $NF}' /tmp/run/batman-dv/now.manifest > /tmp/run/batman-dv/now.paths
 	awk '{print $NF}' "$D/snap/upper.manifest" > /tmp/run/batman-dv/snap.paths
+	if [ "${PROV_BASE_SKIP:-}" = extra ]; then say "SKIP extra removal (PROV_BASE_SKIP=extra, negative control)"; else
+	rm -f "$D/kept-dirs"
 	awk 'NR==FNR{s[$0]=1; next} !($0 in s)' /tmp/run/batman-dv/snap.paths /tmp/run/batman-dv/now.paths | sort -r | while IFS= read -r p; do
+		# review A-M1: removing a DIRECTORY from the mounted upper emptied the merged view of it (04 2026-10-28: /usr/bin
+		# 191 -> 0 entries until the reboot; had it been /usr/sbin, batman-slot would be gone before its reboot). An extra
+		# directory that /rom also has is KEPT when, its extra children gone (sort -r: children first), the merged view
+		# lists exactly what /rom lists (an empty, non-opaque copy-up dir: behaviour-neutral). It goes to $D/kept-dirs (p6,
+		# survives the reboot) and compare drops exactly those "+ d" lines. Not neutral (e.g. opaque) -> removed as before.
+		if [ -d "/overlay/upper/$p" ] && [ ! -L "/overlay/upper/$p" ] && [ -d "/rom/$p" ] && [ ! -L "/rom/$p" ]; then
+			# what is left in its upper copy must be kept directories only (04 rerun 23:45: usr/bin was kept, then usr was
+			# judged "not empty" because of it and rm -rf took usr/bin along — /usr/bin at 0 of 191 again)
+			left=""; for c in $(ls -A "/overlay/upper/$p" 2>/dev/null); do grep -qx "$p/$c" "$D/kept-dirs" 2>/dev/null || left="$left $c"; done
+			if [ "$(ls -A "/$p" 2>/dev/null)" = "$(ls -A "/rom/$p" 2>/dev/null)" ] && [ -z "$left" ]; then
+				echo "EXTRA-DIR-KEPT $p"; echo "$p" >> "$D/kept-dirs"; continue
+			fi
+			echo "EXTRA-DIR-NOT-NEUTRAL $p (merged view vs /rom differs, or the upper copy holds more than kept dirs:${left:- none}): removed"
+		fi
 		echo "EXTRA-REMOVED $p"; rm -rf "/overlay/upper/$p"
-	done
+	done; fi
 	for f in $STATEFILES; do
 		if [ -e "$D/snap/state/$f" ]; then cp -p "$D/snap/state/$f" "$ST/$f"; else rm -f "$ST/$f"; fi
 	done
 	sync; echo 3 > /proc/sys/vm/drop_caches
 	say "OVERLAY-RESTORED $RUN (reboot now)"
 	;;
+strip-p5-prov)
+	# 254-p1-impl §4.5.6, prov-legacy-upgrade-254 only: a pre-P1 p5 made from this one — ro check prov.meta is there,
+	# delete ONLY prov.* and identity/prov/, ro assert both gone and every other entry unchanged. Inside a snapshotted
+	# unit (the restore puts p5 back), under the config-save lock, helper / provd / joinwatch stopped.
+	[ -d "$D/snap" ] || die "no snapshot $RUN (strip-p5-prov only inside a snapshotted unit)"
+	svc stop joinwatch batman-provhelper batman-provd
+	lock_take
+	grep -q "^$P5 " /proc/mounts && { lock_drop; die "p5 is mounted"; }
+	m=$(mktemp -d "$DVD/p5w.XXXXXX") || { lock_drop; die "no temp dir"; }
+	mount -t ext4 -o ro,noload "$P5" "$m" 2>/dev/null || { rmdir "$m"; lock_drop; die "p5 not mountable ro"; }
+	[ -f "$m/prov.meta" ] || { umount "$m"; rmdir "$m"; lock_drop; die "p5 has no prov.meta (nothing to strip)"; }
+	others(){ ( cd "$1" && find . | grep -v -e '^\./prov\.' -e '^\./identity/prov$' -e '^\./identity/prov/' | sort ); }
+	b4=$(others "$m"); umount "$m"
+	mount -t ext4 "$P5" "$m" 2>/dev/null || { rmdir "$m"; lock_drop; die "p5 not mountable rw"; }
+	echo "STRIP $(cd "$m" && ls -d prov.* identity/prov 2>/dev/null | tr '\n' ' ')"
+	rm -f "$m"/prov.*; rm -rf "$m/identity/prov"; sync; umount "$m"
+	mount -t ext4 -o ro,noload "$P5" "$m" 2>/dev/null || { rmdir "$m"; lock_drop; die "p5 not mountable ro after the strip"; }
+	left=$(cd "$m" && ls -d prov.* identity/prov 2>/dev/null | tr '\n' ' '); af=$(others "$m"); umount "$m"; rmdir "$m"
+	lock_drop
+	svc start batman-provhelper joinwatch
+	[ -z "$left" ] || die "still on p5 after the strip: $left"
+	[ "$af" = "$b4" ] || die "the strip changed other p5 entries"
+	say "STRIPPED $RUN (prov.* and identity/prov gone, $(echo "$b4" | wc -l) other entries unchanged)"
+	;;
+state-set)
+	# autocommit (8) only (254-h23 §4.4 p6 ble-ok row): set or drop a p6 state file the harness may steer. Only inside a
+	# unit (the snapshot puts it back) and only where nothing writes it back: the helper writes ble-ok on a committed
+	# slot (F14), so there it must be stopped first; a trial never writes it.
+	[ -d "$D" ] || die "no snapshot (state-set only inside a unit)"
+	f=${3:-}; v=${4:-}
+	case "$f" in ble-ok) ;; *) die "state-set: $f is not settable" ;; esac
+	if batman-slot is-trial >/dev/null 2>&1; then :
+	elif pidof batman-provhelper >/dev/null 2>&1; then die "state-set: the helper runs on a committed slot (it would write $f back) — stop it first"; fi
+	case "$v" in
+	absent) rm -f "$ST/$f" ;;
+	present) cat /proc/sys/kernel/random/boot_id > "$ST/$f.dv" && mv "$ST/$f.dv" "$ST/$f" ;;
+	*) die "state-set: value must be present|absent" ;;
+	esac
+	sync; [ "$v" = absent ] && [ -e "$ST/$f" ] && die "state-set: $f still there"
+	say "STATE-SET $f=$v"
+	;;
 finish)
 	[ -d "$D" ] || die "no snapshot"
 	echo "removing: $(ls "$D" | tr '\n' ' ') $MARK $DIRTY"
 	rm -rf "$D"; rm -f "$MARK" "$DIRTY"; sync; say "FINISHED $RUN"
 	;;
-*) echo "usage: prov-base-254.sh snap|manifest|compare|p5-restore|overlay-restore|finish <run_id> [tag]"; exit 2 ;;
+*) echo "usage: prov-base-254.sh snap|manifest|compare|p5-restore|overlay-restore|strip-p5-prov|state-set|finish <run_id> [tag]"; exit 2 ;;
 esac
