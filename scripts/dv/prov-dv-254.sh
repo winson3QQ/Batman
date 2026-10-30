@@ -55,6 +55,7 @@ prov-downgrade-254|prov-downgrade-254|
 prov-downgrade-left-254|prov-downgrade-left-254|
 prov-leave-ota-254|prov-leave-ota-254|
 prov-forget-orphan-254|prov-forget-orphan-254|
+prov-forget-orphan-noforget-254|prov-forget-orphan-254|noforget
 prov-leave-after-join-254|prov-leave-after-join-254|
 prov-overlay-corrupt-254|prov-overlay-corrupt-254|
 prov-overlay-wipe-254|prov-overlay-wipe-254|

@@ -9,7 +9,9 @@
 # the join's setkey waits through its own reload, so the unit requires that the window OPENED — >= 3 consecutive
 # pending=true samples during the join AND the join's `read-back: netifd up after <n> s` line with n >= 3 — else it
 # reports INVALID "window did not open", never PASS, and retries the pair after another B-trial rollback reboot
-# (up to 3 tries; a FAIL is final). Negative control: wsl.15 = 4/5 FAIL (code 21 then 22, an orphan wlh0 on the air).
+# (up to 3 tries; a FAIL is final). Negative control: wsl.15 = 4/5 FAIL in the scratch repros (code 21 then 22, an orphan
+# wlh0 on the air); the unit itself on wsl.15 (2026-10-30 20:55) = INVALID x3 (netifd's setup took <= 2 s those times;
+# wsl.15's setkey has no read-back line, so it can never PASS there — it is FAIL or INVALID). The INVALID rate is high.
 # Type: hold / A / F. Side effects: 04 ~30-45 min, off the fleet mesh after the join; B rewritten with the old image
 # (per try) then with V; up to ~10 reboots; S0 restore at the end.
 set -u
@@ -23,7 +25,7 @@ OUT=${DV_DIR:-.}/leave-after-join-$RUN; mkdir -p "$OUT"
 # window <join uptime> <leave uptime>: the longest run of pend=true samples in [join, leave) and setkey's read-back n
 window(){
 	local n r
-	r=$(q "awk -v a=$1 -v b=$2 '\$1 >= a && \$1 < b { if (\$3 == \"pend=true\") { c++; if (c > m) m = c } else c = 0 } END { print m + 0 }' $ND/sampler/wl.log")
+	r=$(q "awk -v a=$1 -v b=$2 '\$1 >= a && \$1 < b { if (\$4 == \"pend=true\") { c++; if (c > m) m = c } else c = 0 } END { print m + 0 }' $ND/sampler/wl.log")
 	n=$(q "grep -o 'read-back: netifd up after [0-9]* s' $ND/sampler/logread.log | tail -1 | grep -o '[0-9]*' | head -1")
 	echo "pending=${r:-0} readback=${n:-?}"
 }

@@ -39,6 +39,8 @@ echo "O1 netifd down after ${i}s: $(st)"
 case "$(st)" in *"up=false"*"dis=true"*"pend=false"*"meshdev= "*) ;; *) echo "INVALID netifd did not take the radio down"; exit 2 ;; esac
 # 2. the orphan: the netdev as morse.sh creates it, the splist line, a root wpa_supplicant_s1g on it
 iw phy "$PHY" interface add "$DEV" type mp 2>&1 || { echo "INVALID iw interface add failed"; exit 2; }
+# netifd's teardown may have dropped the whole _phy section (then `uci set` of an option fails, rc 1): recreate it
+uci -q -P /var/state get "wireless._$PHY" >/dev/null 2>&1 || uci -q -P /var/state set "wireless._$PHY=state"
 uci -q -P /var/state set "wireless._$PHY.splist= $DEV "
 /usr/sbin/wpa_supplicant_s1g -t -D nl80211 -s -i "$DEV" -c $D/s1g.conf -B 2>&1; sleep 3
 PID=$(pgrep -f "wpa_supplicant_s1g .*-i $DEV( |\$)" | head -1); echo "$PID" > $D/pid

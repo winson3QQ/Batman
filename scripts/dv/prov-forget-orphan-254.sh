@@ -7,8 +7,11 @@
 #                     rc 0, "forgotten after escalation" logged, netdev + process gone; then the rebuild on hardware:
 #                     setkey puts the node's own network back -> rc 0, netifd up=true pending=false, meshjoin_radio_up,
 #                     02 a neighbour within 180 s (= netifd's next setup tolerates the splist entry setkey deleted)
-#   arm 2 (recorded): the same orphan, NO forget — the setkey rebuild alone: does netifd's own setup clean an orphan it
-#                     has in its splist? (§19.3: the roles-swapped join is "not self-healing" until this says otherwise)
+#   arm 2 (recorded): `prov-forget-orphan-254.sh noforget` — a separate unit run (its own snapshot / restore, so it
+#                     never starts from arm 1's leftovers): the same orphan, NO forget, the setkey rebuild alone: does
+#                     netifd's own setup clean an orphan it has in its splist? (§19.3: the roles-swapped join is "not
+#                     self-healing" until this says otherwise). Verdict: PASS when the orphan was built and the rebuild
+#                     ran (the outcome is in the log); INVALID when the orphan could not be built.
 #   negative control: the same arm 1 on wsl.15 -> forget rc 3 (no escalation), and the unit asserts the orphan exists
 #                     before the forget (else INVALID — the first probe created nothing).
 # Type: — / A / F. Side effects: 04 off the fleet mesh ~4 min; the stray wlh0 really joins the lab mesh with the lab
@@ -16,7 +19,7 @@
 # the key copied into the root-only 0700 run dir (removed by the node script); a /var/state splist line; the node
 # script's cleanup + S0 restore (reboot) on EVERY exit, INVALID and abort included. B untouched.
 set -u
-PR_UNIT=prov-forget-orphan-254
+ARM=${1:-forget}; case "$ARM" in forget) PR_UNIT=prov-forget-orphan-254 ;; noforget) PR_UNIT=prov-forget-orphan-noforget-254 ;; *) echo "usage: $0 [forget|noforget]" >&2; exit 2 ;; esac
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
 ORPH=$REPO/scripts/node/prov-orphan-254.sh
@@ -51,10 +54,7 @@ arm(){   # <forget|noforget>: runs the node script, prints its lines, judges arm
 pr_begin 2400 || { pr_result; exit 1; }
 scp -q $SSHO "$ORPH" root@$NODE:$ND/orphan.sh || { pr_abort "stage"; pr_result; exit 1; }
 q "chmod 700 $ND/orphan.sh"
-arm forget; cleanup
-# arm 2 needs the radio back to the fleet state first: the node script's own rebuild did that when arm 1 worked;
-# otherwise the restore below starts from whatever is there (recorded only)
-arm noforget; cleanup
+arm "$ARM"; cleanup
 # the key never reaches the host: the unit's own log must not carry it (the node script prints no key); and no key in
 # the node logs either (the §19.6 canary: the node's key from uci against logread + p6 logs)
 c=$(qr 'umask 077; k=$(mktemp -p /tmp/run/batman-dv); uci -q get wireless.default_radio1.key > $k; n=0; { logread; cat /opt/batdata/log/*.log 2>/dev/null; } | grep -qF -f $k && n=1; rm -f $k; echo leaks=$n')
