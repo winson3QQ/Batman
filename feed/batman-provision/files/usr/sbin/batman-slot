@@ -475,8 +475,11 @@ p5_verdict_gate() {
 	case "$v" in stale:*) return 1 ;; *) return 0 ;; esac
 }
 P5_STALE_HINT="Run 'batman-config-save --save' (or halow-setkey) to persist the running config, or wait for the mesh join to do it; deliberate override: touch /tmp/batman-slot.allow-stale-p5 (as root) for sysupgrade, BATMAN_ALLOW_STALE_P5=1 for a direct batman-slot call."
-P5_TXN_OVERRIDE_HINT="touch /tmp/batman-slot.allow-unfinished-txn (as root) for sysupgrade, BATMAN_ALLOW_UNFINISHED_TXN=1 for a direct batman-slot call."
-P5_TXN_DROP_WARN="OVERRIDE allow-unfinished-txn: the unfinished network change (.txn) is DROPPED in the new slot — re-push the network from the app after the OTA"
+# #254 review 3 (A m7 / B m2): what to do after the override depends on the change that was dropped — a re-push of the
+# same network is refused (EStaleVersion) and a retried leave too (not a member). The flag is not removed by anyone
+# (as allow-stale-p5): it passes every later OTA of this boot, so the warning says to remove it.
+P5_TXN_OVERRIDE_HINT="touch /tmp/batman-slot.allow-unfinished-txn (as root) for sysupgrade, BATMAN_ALLOW_UNFINISHED_TXN=1 for a direct batman-slot call — the change is then dropped; check the node in the app after the OTA."
+P5_TXN_DROP_WARN="OVERRIDE allow-unfinished-txn: the unfinished network change (.txn) is DROPPED in the new slot. After the OTA check the node in the app: shows the new network but does not join -> network/leave, then network/join again; shows 'left' but still on the old mesh -> halow-setkey --forget-mesh. Remove /tmp/batman-slot.allow-unfinished-txn."
 p5_freshness_gate() {
 	now=$(cut -d. -f1 /proc/uptime)
 	if command -v batman-config-save >/dev/null 2>&1 && [ -r /etc/config/wireless ]; then

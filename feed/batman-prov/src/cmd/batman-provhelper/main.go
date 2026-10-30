@@ -102,8 +102,14 @@ func uciRaw(k string) string {
 
 // meshIface: the mesh interface on the morse (HaLow) radio — the same radio halow-setkey's morse_radio() picks
 // (`type='morse'`, the first one), so the helper and setkey act on one radio (§15.6, A m8 / B m11).
-func meshIface() string {
-	_, out := run(nil, "uci", "-q", "show", "wireless")
+func meshIface() string { i, _ := meshIfaceErr(); return i }
+
+// meshIfaceErr: "" + nil = no mesh interface on the morse radio (the config says so); an error = uci itself failed.
+func meshIfaceErr() (string, error) {
+	rc, out := run(nil, "uci", "-q", "show", "wireless")
+	if rc != 0 {
+		return "", fmt.Errorf("uci show wireless rc=%d", rc)
+	}
 	radio := ""
 	for _, l := range strings.Split(out, "\n") {
 		if strings.HasSuffix(l, ".type='morse'") && radio == "" {
@@ -111,17 +117,17 @@ func meshIface() string {
 		}
 	}
 	if radio == "" {
-		return ""
+		return "", nil
 	}
 	for _, l := range strings.Split(out, "\n") {
 		if strings.HasSuffix(l, ".mode='mesh'") {
 			i := strings.Split(strings.TrimPrefix(l, "wireless."), ".")[0]
 			if uciGet("wireless."+i+".device") == radio {
-				return i
+				return i, nil
 			}
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // ---- the real Sys ----------------------------------------------------------------------------------------------
@@ -202,12 +208,19 @@ func (s realSys) CurrentWireless() (string, string, string, error) {
 // A refusal is definitive (*node.RestoreRefused: Finish forgets); a timeout / exec failure is transient (a plain
 // error: Finish keeps .txn and retries — §16.3, review 2 B m1).
 func (s realSys) CheckRestorable(key, id, ch string) error {
-	i := meshIface()
+	i, err := meshIfaceErr()
+	if err != nil {
+		return err // transient: uci itself failed
+	}
 	if i == "" {
 		return &node.RestoreRefused{Why: "no mesh interface on the morse radio"}
 	}
-	if e := uciGet("wireless." + i + ".encryption"); e != "sae" {
-		return &node.RestoreRefused{Why: fmt.Sprintf("encryption %q is not sae", e)}
+	switch rc, out := run(nil, "uci", "-q", "get", "wireless."+i+".encryption"); {
+	case rc == 0 && strings.TrimSpace(out) == "sae":
+	case rc == 0 || rc == 1: // set to something else, or not set (open)
+		return &node.RestoreRefused{Why: fmt.Sprintf("encryption %q is not sae", strings.TrimSpace(out))}
+	default:
+		return fmt.Errorf("uci get encryption rc=%d", rc) // transient
 	}
 	if key == "" {
 		return &node.RestoreRefused{Why: "no mesh key (open mesh)"}

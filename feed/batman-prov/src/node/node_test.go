@@ -55,8 +55,9 @@ type fakeSys struct {
 	saveTxnOut    []saveRC
 	saveTxnNoMark int // SaveTxn called without the marker (config-save would refuse: the shipped deadlock)
 	meshExpect    string
-	p5rc          int // GetP5 returns this rc (p5 unreadable) when set
-	getP5s        int // GetP5 calls (a p5 mount each)
+	p5rc          int        // GetP5 returns this rc (p5 unreadable) when set
+	getP5s        int        // GetP5 calls (a p5 mount each)
+	setkeyLands   *[3]string // a failing SetKeyNoPersist leaves uci at these values instead of the requested ones
 	// 254-wireless-txn §15: the fake follows the scripts — setkey / forget rc 3 means uci WAS changed (only rc 2 means
 	// nothing changed); config-save --save --txn refuses unless .txn carries the token; the live radio can lag uci
 	txnPath        string // .txn of this rig (SaveTxn checks its token like config-save's txn_seq)
@@ -123,7 +124,9 @@ func (f *fakeSys) SetKeyNoPersist(k, id, ch string) error {
 	if len(f.setkeyErrs) > 0 {
 		err, f.setkeyErrs = f.setkeyErrs[0], f.setkeyErrs[1:]
 	}
-	if err == nil || f.setkeyHalf || setkeyRC(err) != 2 {
+	if err != nil && f.setkeyLands != nil {
+		f.wl = *f.setkeyLands
+	} else if err == nil || f.setkeyHalf || setkeyRC(err) != 2 {
 		f.wl = [3]string{k, id, ch}
 		if f.inMark { // the keyguard unblocks a radio it blocked once a real key is set
 			f.radioOff, f.inMark = false, false

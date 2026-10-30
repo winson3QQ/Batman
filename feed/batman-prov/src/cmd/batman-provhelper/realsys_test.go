@@ -109,3 +109,14 @@ func TestRealSysRadioStateFirstLineOnly(t *testing.T) {
 		t.Fatal("radio1 on the first line: in the mark")
 	}
 }
+
+// review 3 A m1 / B m1: uci itself failing is transient (Finish keeps .txn), not "cannot be restored" (forget)
+func TestRealSysUciFailureIsTransient(t *testing.T) {
+	d := stubs(t, twoMesh, "0")
+	os.WriteFile(filepath.Join(d, "uci"), []byte("#!/bin/sh\nexit 124\n"), 0o755)
+	err := realSys{}.CheckRestorable("operator-key", "halow-mesh", "28")
+	var rr *node.RestoreRefused
+	if err == nil || errors.As(err, &rr) {
+		t.Fatalf("uci rc 124: %v (want a transient, plain error)", err)
+	}
+}

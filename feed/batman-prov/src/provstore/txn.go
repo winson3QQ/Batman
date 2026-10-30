@@ -150,8 +150,8 @@ func TxnToken(p Paths) string {
 	if len(f) == 0 || len(f[0]) != 32 {
 		return ""
 	}
-	if _, err := hex.DecodeString(f[0]); err != nil {
-		return ""
+	if _, err := hex.DecodeString(f[0]); err != nil || strings.ToLower(f[0]) != f[0] {
+		return "" // lowercase only: batman-config-save --txn accepts [0-9a-f]
 	}
 	return f[0]
 }

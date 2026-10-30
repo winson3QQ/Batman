@@ -128,6 +128,12 @@ cleanup() {
 	[ "$LOCK_MINE" = 1 ] && rm -rf "$LOCK"
 }
 trap cleanup EXIT
+# #254 review 3 (B m5 / A m8): busybox ash runs no EXIT trap when a signal kills it, and batman-provhelper's Exec deadline
+# sends TERM to the whole process group. Trap TERM / INT: `exit` from the trap runs the EXIT trap above (unmount p5,
+# remove the stage, release the lock) and returns 143 / 130. Every p5 file is replaced by rename (below), so a child
+# killed mid-copy leaves at most a temp / stage file, never a half-written p5 file.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # committed values only (#202 C0): a `uci set` not yet committed must not reach p5 — the running
 # config after a reboot would then be behind p5. -P <empty dir> hides the pending delta.
@@ -580,10 +586,14 @@ if [ -n "$SEQ0" ] && [ "$(txn_seq)" != "$SEQ0" ]; then
 	err "provisioning transaction started — next tick"; exit 1
 fi
 mkdir -p "$MNT/identity" "$MNT/lkg"
-cp -a "$STAGE/identity/." "$MNT/identity/" 2>/dev/null
+# identity files: renamed from the stage (same filesystem) into place, one by one — never copied over in place
+( cd "$STAGE/identity" && find . -type f ) | while IFS= read -r f; do
+	f=${f#./}; d=${f%/*}; [ "$d" = "$f" ] || mkdir -p "$MNT/identity/$d"
+	mv -f "$STAGE/identity/$f" "$MNT/identity/$f"
+done
 mv "$STAGE/overrides.uci" "$MNT/overrides.uci"
 if [ "$mode" = --seed ] || [ "$mode" = --if-healthy ] || [ "$mode" = --on-join ] || [ "$PROMOTE" = 1 ]; then
-	cp -a "$MNT/overrides.uci" "$MNT/lkg/overrides.uci"
+	cp -a "$MNT/overrides.uci" "$MNT/lkg/overrides.uci.tmp" && mv -f "$MNT/lkg/overrides.uci.tmp" "$MNT/lkg/overrides.uci"
 fi
 mv "$STAGE/schema_version" "$MNT/schema_version"
 rm -rf "$STAGE"; STAGE=""

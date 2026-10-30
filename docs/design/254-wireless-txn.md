@@ -1,6 +1,6 @@
-# #254 — a network change that did not succeed goes back to the previous state; `network/leave` forgets the mesh (design v9, 2026-10-30)
+# #254 — a network change that did not succeed goes back to the previous state; `network/leave` forgets the mesh (design v10, 2026-10-30)
 
-Status: v9 — v7 approved (round 7, §14); code review round 1 → §15 (v8), round 2 → §16 (v9), for review. v1–v3 REJECTED; v4: A REJECT (model sound), B APPROVE-WITH-CHANGES; v5 and v6: both
+Status: v10 — v7 approved (round 7, §14); code review rounds 1 → §15 (v8), 2 → §16 (v9), 3 → §17 (v10), for review. v1–v3 REJECTED; v4: A REJECT (model sound), B APPROVE-WITH-CHANGES; v5 and v6: both
 APPROVE-WITH-CHANGES (one MAJOR each in round 6, both one-line contract fixes, §13). §10 round 4, §12 round 5, §13 round 6. **Owner rule: a change that did not succeed returns the node to the previous state — "use the previous
 one".** Owner decisions: L22 → A (leave = forget the network); legacy / operator-keyed node whose join fails → back to
 the operator's own settings (2026-10-30). Product change: helper, `halow-setkey`, `batman-config-save`. Branch
@@ -17,8 +17,8 @@ previous key is the placeholder (`halow-setkey:64` refuses it); generation match
 | the committed record (resolved from p5, §3) | previous / desired mesh wireless |
 |---|---|
 | member (has a Net) | that network: mesh id, channel, key — **decoded from the record without re-verifying signatures** (it was verified when accepted and lives in root-only `/etc/batman-prov` 0700; re-verifying fails after an admin handover, review A-B1 / B-M3, `node.go:1095` + 219 §7.1) |
-| left (`Left = true`, set by a successful leave) | forgotten: placeholder key, radio blocked (keyguard), mesh markers removed |
-| anything else (legacy, legacy-claimed, claimed never joined, unclaimed) | **the snapshot taken at the start of this change** (`.txn` holds it: key, mesh id, channel, uci `disabled` of the morse radio). Placeholder key → restored with `--forget-mesh`. A real key → restored as key / id / channel; the radio's `disabled` is never written by a restore — a change cannot start on a radio switched off by hand (§4.2 pre-check), and `halow-setkey` releases only radios in the keyguard mark (`:95-107`), so it is unchanged; Finish checks it and, if it changed (an operator switched the radio by hand meanwhile), logs CRIT
+| not a member, and `.txn` is a `network/leave` whose commit landed (§16.2: the transaction decides, not `Left`) | forgotten: placeholder key, radio blocked (keyguard), mesh markers removed |
+| anything else (legacy, legacy-claimed, claimed never joined, unclaimed, and a join after a leave — §16.2) | **the snapshot taken at the start of this change** (`.txn` holds it: key, mesh id, channel, uci `disabled` of the morse radio). Placeholder key → restored with `--forget-mesh`. A real key → restored as key / id / channel; the radio's `disabled` is never written by a restore — a change cannot start on a radio switched off by hand (§4.2 pre-check), and `halow-setkey` releases only radios in the keyguard mark (`:95-107`), so it is unchanged; Finish checks it and, if it changed (an operator switched the radio by hand meanwhile), logs CRIT
 and **continues** — the operator's choice stands, `.txn` does not stay for it (review A r7 m1). The snapshot's
 `disabled` value is kept for that check and the log only; nothing ever restores it (review A r7 m2; A r6 M1, B r6 m2). "Blocked" for the placeholder case = the keyguard mark lists the morse radio (`halow-keyguard:22-27`), never just uci `disabled` |
 Implementation of "decoded without re-verifying": the `cose` package has only `VerifySign1` (`cose/cose.go:36`); add
@@ -87,8 +87,11 @@ review B-M2b).
    state if the commit did not land, forward if it did — decided by `Resolve()`, p5 read). `halow-setkey` rc 2 (nothing
    changed) → RemoveTxn + ClearTxnMarker only (review B-M2 fix 1).
 3. **Boot / helper start with `.txn`**: wait for the mesh radio (`meshjoin_radio_up`) or 120 s — not when the previous
-   state is forgotten / blocked — then Finish, then serve (≈ 5 min worst case before serving, only after an unfinished
-   change; accepted by both reviewers). Finish fails → serve; `.txn` kept; CRIT.
+   state is forgotten / blocked or the radio is off by hand — then Finish. **v8 §15.2: this runs in the background
+   holding the helper mutex taken before the socket listens**: the helper always listens; a verb that arrives meanwhile
+   waits for it. Worst case per Finish attempt (v9 §16.1): radio wait 120 s + setkey 300 s (+20 s) + save 300 s
+   (+20 s) ≈ 13 min; Exec abandons a command it cannot kill, so it is bounded. Finish fails → `.txn` kept, CRIT, the
+   backoff starts (doubling 60 s → 30 min).
 - `halow-status`: "unfinished network change" from `.txn` presence (root); non-root → "unknown" (B-10).
 - `--boot` mode does not Finish (no caller).
 
@@ -137,7 +140,11 @@ block, `:95-107`). After a leave: `MeshExpect` = `0`. **Not a secure erase**: p5
 | commit landed in p5, overlay write failed, p5 flaps, then owner.add | Resolve + rebuild before the commit | Go killpoint |
 | p5 unreadable at boot / after a commit | `.txn` kept, retried next boot | Go (`TestProbeV4P5Flap` as negative control) |
 | admin handover, then reboot with `.txn` | decode without re-verify → Finish ok | Go (rotating chain; today's `parseNet` fails it) |
-| dead HaLow (Finish always fails) | owner.add/remove work; saving verbs `EState` | Go |
+| dead HaLow (Finish always fails) | saving verbs `EState`; owner.add/remove work **between Finish attempts** — a verb that arrives during an attempt waits for it (≤ ≈13 min, §4.3), attempts are one per backoff (60 s doubling to 30 min) | Go (`TestDeadRadioCommitOnlyWorksSavingRefused`, `TestBackoffDoublesAndCountsTheBootFinish`) |
+| setkey / the driver hangs (D state) | Exec abandons the command 10 s after SIGKILL (rc 124), `.txn` kept, backoff; an abandoned setkey may keep its flock (later setkey "busy") until the reboot | Go root (`TestExecAbandonsDState`, CI prov_test root run) |
+| upgrade (OTA) while `.txn` | refused: `--check` rc 5 before any p5 check, batman-slot refuses `stale:txn` in both stages; only `allow-unfinished-txn` passes it (the obligation is dropped, loud warning with the recovery steps) | shell (`cfgsave-txn-save`, `slot-p5gate-txn`) |
+| helper stopped while a command runs | the command's process group is not killed (it finishes or hits its own verify); the next start's Finish reconciles from the record and `.txn` | stated (§17) |
+| operator `halow-setkey` while `.txn` | refused (rc 2) after taking the lock — let the helper finish first | shell (`setkey-checkonly-txn`) |
 | setkey rc 2 | `.txn` removed, nothing else | Go |
 | power loss between Save and RemoveTxn | `.txn` → Finish again (idempotent), p5 already saved | Go |
 | T8 shipped stuck slot | the fixed image goes to the other slot (`.txn` is per slot). Runbook: real previous key → `rm .txn` + `--save` on the old image; fresh card (restore was refused) → the app re-pushes the network (never `rm` + `--save`); verdict `unknown(txn-generation)` → `rm .txn`, restart the helper, then the app re-pushes | stated |
@@ -154,6 +161,12 @@ exposure (review A r5 m6); a local unprivileged process cannot
 write it or `.txn`, the marker (`-O`), or the flock file. Remote (BLE): only owner-signed verbs change anything; no new
 verb. The placeholder is never committed with the radio enabled (`--forget-mesh`, one commit). Fail mode: Finish fails →
 saves stay blocked (the live values may be wrong), commit-only owner verbs still work, CRIT + `halow-status`.
+Later rounds: a verb-triggered Finish still runs before the owner-op check for saving verbs (a `network/update` has
+no owner-op; its chain is verified against the record Finish may rebuild) — bounded to one attempt per backoff, and a
+forget is never taken as done unverified (§15.4); commit-only verbs mount p5 only after the owner-op check (§16.4)
+and refuse when that check used a stale overlay (§17.1). `halow-setkey --check-only` reads values on stdin and writes
+nothing (root-only caller). The operator flag `/tmp/batman-slot.allow-unfinished-txn` is checked with batman-slot's
+`opf` (root-owned regular file, not a link); it is not removed after use (it passes every OTA of that boot).
 
 ## 10. Round-4 findings → v5
 A-B1 / B-M3 admin handover → §2 decode without re-verify · A-M1 / B-M2a legacy join → §2 snapshot (owner decision) ·
@@ -350,3 +363,54 @@ gate let it through.
 - §9: verb-triggered Finish still runs before authentication for saving verbs (a `network/update` has no owner-op).
   The bound is one attempt per backoff, a forget is never taken as done unverified (§15.4), and commit-only verbs no
   longer touch p5 before authentication (16.4).
+
+## 17. Code review round 3 → v10 (2026-10-30)
+Round 3: A APPROVE-WITH-CHANGES (0/1/12), B APPROVE-WITH-CHANGES (0/1/9). Both round-2 MAJORs and B2's MAJOR were
+verified fixed by both reviewers (with their own probes and mutants).
+
+**17.1 An owner-op checked on a stale overlay is refused (B3 MAJOR-1 = A3 m2).** §16.4 checked the owner-op of a
+commit-only verb against the overlay, then resolved p5. If the overlay was stale — p5 committed, the overlay write
+failed — a removed co-owner still passed the check. They could then re-add themselves, or remove someone else, and the
+change was committed on p5's record. Now: when resolve finds a record of another generation than the one the check
+used, the verb gets `EState` "the provisioning record changed — retry", nothing is committed, and the overlay is
+rebuilt. The retry is checked against the current owners. Test `TestRemovedOwnerCannotUseStaleOverlay`; its negative
+control is the mutant without the generation comparison.
+
+**17.2 The D-state regression test is in the regular suite (A3 MAJOR-1).** `TestExecAbandonsDState` (tag `prov_test`,
+root) suspends a device-mapper device, reads it with `dd iflag=direct`, and requires Exec to return rc 124
+"abandoned" while `dd` is still in D state. As root a missing dmsetup / losetup FAILS. It runs in CI's `-tags
+prov_test` root run.
+- ✅ Real tree: PASS (23 s).
+- ✅ Mutant (no abandon after SIGKILL): FAIL, "still waiting after 60 s".
+
+**17.3 Smaller fixes.**
+- **A3/B3 m1:** `uci` itself failing (`uci show` / `uci get` rc ≠ 0, 1) is transient, not "cannot be restored".
+- **A3 m5 tests:**
+  - the whole process group is killed (a grandchild is checked);
+  - the backoff has its cap;
+  - a hand-disabled radio with setkey rc 3 and uci NOT at the previous state is a failure.
+- **B3 m9:** a `.txn` token must be lowercase hex (config-save `--txn` accepts `[0-9a-f]`).
+- **B3 m3:** the boot waits for the radio when the operator set a mesh after a leave.
+- **B3 m5 / A2 m8:** batman-config-save killed by TERM (Exec's deadline) runs its normal cleanup (unmount p5, stage,
+  lock; exit 143). The identity files and lkg are written to a stage / `.tmp` and renamed, so no p5 file is left
+  half-written.
+- **A3 m7 / B3 m2:** the allow-unfinished-txn warning gives the recovery steps:
+  - shows the new network but does not join → leave + join;
+  - shows "left" but is on the old mesh → `halow-setkey --forget-mesh`.
+- **Design text:** §2 (the transaction decides), §4.3 (background Finish, worst case), §8 rows, and §9 brought in line
+  (A3 m9, B3 m8).
+
+**17.4 Stated, not changed.**
+- **A3 m3 / B2 m7:** a helper stopped while a command runs does not kill that command's process group. It finishes or
+  hits its own verify, and the next start's Finish reconciles from the record and `.txn`. Killing it mid-`uci commit`
+  could leave worse state than letting it finish.
+- **A3 m4:** a verb arriving during a Finish attempt waits for it (§8 row).
+- **Unattributed (❓):** cfgsave-txn-save "--save without --txn did not wait (8 s)" seen twice in about 15 runs:
+  - reviewer A round 2, 1 of 4;
+  - the author's agent round 3, 1 of 4, right after a WSL service error.
+
+  All later runs were clean. The case expects ≥ 9 s of a 10 × `sleep 1` wait. It is not attributed; it is listed on the
+  #254 checklist.
+
+**17.5 Tests.** Go +8 tests. **57 mutants** (13 v7, 18 v8, 18 v9, 8 v10, incl. the root D-state one) all killed.
+Shell: cfgsave-txn-save 58, slot-p5gate-txn 16.

@@ -741,10 +741,12 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 	// commit-only verbs never Finish (an owner can always remove a co-owner, even with a dead radio) but never commit
 	// on an overlay older than p5 either — resolved AFTER the owner-op check (§16.4: no p5 mount for anonymous peers)
 	if commitOnly[verb] {
-		if _, e := n.resolve(); e != nil {
+		if r, e := n.resolve(); e != nil {
 			n.Log("%s: %s (committing on the overlay)", verb, e.Reason)
-		} else if r, _, err := provstore.LoadOverlay(n.P); err == nil && r != nil {
-			rec = r
+		} else if r.Generation != rec.Generation {
+			// §17.1 (review 3 B MAJOR-1): the owner-op was verified against a stale overlay — its owners may not be the
+			// record's any more (a removed co-owner re-adding themselves). The overlay is now rebuilt: retry.
+			return nil, fail(EState, "the provisioning record changed (generation %d -> %d) — retry", rec.Generation, r.Generation)
 		}
 	}
 	switch verb {
