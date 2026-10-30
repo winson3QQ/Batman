@@ -12,7 +12,7 @@
 set -u
 [ "$(id -u)" = 0 ] || { echo "FAIL needs root (loop device)"; echo "PASS=0 FAIL=1"; exit 1; }
 W=$(mktemp -d); LOOP2=""; LOOP3=""
-trap 'umount $W/m 2>/dev/null; losetup -d $LOOP 2>/dev/null; [ -z "$LOOP2" ] || losetup -d $LOOP2; [ -z "$LOOP3" ] || losetup -d $LOOP3; rm -rf $W' EXIT
+trap 'grep " $W/" /proc/mounts | cut -d" " -f2 | xargs -r -n1 umount 2>/dev/null; umount $W/m 2>/dev/null; losetup -d $LOOP 2>/dev/null; [ -z "$LOOP2" ] || losetup -d $LOOP2; [ -z "$LOOP3" ] || losetup -d $LOOP3; rm -rf $W' EXIT
 SRC=${PROV_SRC:-$(cd "$(dirname "$1")/../.." && pwd)}   # files/ of the product tree (override for a copied file)
 truncate -s 64M $W/p5.img; LOOP=$(losetup -f --show $W/p5.img); mkfs.ext4 -q -F $W/p5.img
 mkdir -p $W/prov $W/m $W/bin $W/run; chmod 755 $W/run; chmod 700 $W/prov
@@ -119,5 +119,25 @@ for k in raw bad nop5; do
 	if [ $rc = 5 ] && echo "$out" | grep -q '^batman-config-save: p5 stale: an unfinished network change (.txn)'; then okk ".txn + $k p5: --check rc 5 'unfinished network change'"
 	else bad ".txn + $k p5: rc=$rc :: $(echo "$out" | tail -1)"; fi
 done
+
+# ---- review 3 (B m5 / A m8): SIGTERM to the process group while p5 is mounted rw mid-save (batman-provhelper's Exec
+# deadline). Run under busybox ash in its own session (pgid = pid), park it in the hook just before the p5 write.
+clean; sentinel; rm -f $W/at-hook
+setsid busybox sh -c "CS_TEST_HOOK='touch $W/at-hook; sleep 20' exec busybox sh $W/cs --save" > $W/term.out 2>&1 & tp=$!
+i=0; while [ ! -f $W/at-hook ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+[ -f $W/at-hook ] && okk "TERM test: the save reached the hook with p5 mounted rw ($(grep -c " $W/run/batman/cfgsave-mnt" /proc/mounts) mount)" || bad "TERM test: the hook was never reached :: $(tail -2 $W/term.out | tr '\n' ' ')"
+kill -TERM -- -$tp 2>/dev/null; wait $tp; trc=$?
+[ $trc = 143 ] && okk "TERM: exit 143" || bad "TERM: rc=$trc (want 143)"
+grep -q " $W/run/batman/cfgsave-mnt" /proc/mounts && bad "TERM: p5 is STILL mounted ($(grep " $W/run/batman/cfgsave-mnt" /proc/mounts | cut -d' ' -f2))" || okk "TERM: p5 unmounted"
+grep -q "^$LOOP " /proc/mounts && bad "TERM: $LOOP still mounted somewhere" || okk "TERM: $LOOP not mounted anywhere"
+[ -d $W/run/batman/cfgsave.lock ] && bad "TERM: cfgsave.lock left behind" || okk "TERM: lock released"
+mount -o ro $LOOP $W/m; st=$(ls -d $W/m/.stage.* 2>/dev/null | wc -l); tmpf=$(find $W/m -name '*.tmp' | wc -l); umount $W/m
+[ "$st" = 0 ] && okk "TERM: no stage left on p5" || bad "TERM: $st stage dir(s) left on p5"
+[ "$tmpf" = 0 ] && okk "TERM: no temp file left on p5" || bad "TERM: $tmpf temp file(s) on p5"
+has_sentinel && okk "TERM: p5 overrides untouched (killed before the write)" || bad "TERM: p5 overrides changed"
+t 0 --save
+# the identity is renamed into place from the stage (control: the files arrive and the stage is empty afterwards)
+mount -o ro $LOOP $W/m; st=$(ls -d $W/m/.stage.* 2>/dev/null | wc -l); umount $W/m
+[ "$st" = 0 ] && okk "after the next --save: no stage left" || bad "after --save: $st stage dir(s)"
 clean
 echo "PASS=$pass FAIL=$fail"; [ $pass -gt 0 ] && [ $fail = 0 ]

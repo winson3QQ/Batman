@@ -79,6 +79,7 @@ scripts/daily-validation.sh	/tmp/GW(SK|CS)-u1\.(pem|key)	#289 soak-cot-289 / cle
 deploy/ots/gateway/batman_eud_gateway/config.py	snapshot_path: str = "/tmp/gateway/sessions\.json"	#289 M17/§3: the sessions snapshot inside the gateway container's private tmpfs (uid 1000 only), read via docker exec by the suites; nothing on the node decides on it
 feed/batman-provision/files/usr/sbin/batman-slot	override: touch /tmp/batman-slot\.allow-stale-p5 \(as root\)	message text naming the opf-checked operator flag (#202 C5)
 feed/batman-provision/files/usr/sbin/batman-slot	touch /tmp/batman-slot\.allow-unfinished-txn \(as root\)	message text naming the opf-checked operator flag (#254 wireless-txn §16.7)
+feed/batman-provision/files/usr/sbin/batman-slot	Remove /tmp/batman-slot\.allow-unfinished-txn\.	message text naming the opf-checked operator flag (#254 wireless-txn §17.3 recovery warning)
 scripts/node/p5-follows-202.sh	R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/tmp/run/batman	harness resolver for the run dir (#202 D1)
 scripts/node/setkey-persists-202.sh	R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/tmp/run/batman	harness resolver for the run dir (#202 D2)
 # --- #254 PR-H1 BLE harness: bluetoothd's own root-only store and the harness's root-0700 run dirs ---

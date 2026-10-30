@@ -38,11 +38,12 @@ MESHID='uci -q get wireless.default_radio1.mesh_id'
 LIVEID='wpa_cli_s1g -p /var/run/wpa_supplicant_s1g -i wlh0 status 2>/dev/null | sed -n "s/^ssid=//p"'
 P5GEN='d=$(mktemp -d /tmp/run/batman-dv/pg.XXXXXX); rmdir $d; batman-config-save --prov-get $d >/dev/null 2>&1; sed -n "s/.*gen=\([0-9]*\).*/\1/p" $d/prov.meta; rm -rf $d'
 OVGEN='sed -n "s/.*gen=\([0-9]*\).*/\1/p" /etc/batman-prov/prov.meta'
+KEYH='uci -q get wireless.default_radio1.key | sha256sum | cut -c1-16'   # compared, never printed (review 3 B m7)
 upper=""
 case "$N$NEG" in 2neg-b) upper=helper-notxn ;; 3neg) upper=helper-norebuild ;; esac
 pr_begin 3000 ${upper:+upper=$upper} || { pr_result; exit 1; }
 pr_member || { pr_abort "member"; pr_result; exit 1; }
-old=$(qr "$MESHID"); g0=$(qr "$P5GEN"); say "before: mesh_id=$old p5 gen=$g0"
+old=$(qr "$MESHID"); g0=$(qr "$P5GEN"); k0=$(qr "$KEYH"); say "before: mesh_id=$old p5 gen=$g0 key sha=$k0"
 new="dvu-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$new' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\""
 [ $INJ = 1 ] && q '/etc/init.d/batman-provhelper disable; sync'
@@ -70,8 +71,11 @@ l=$(qr "logread | grep 'batman-provhelper' | grep -E 'boot rc=|finished|unfinish
 say "after: mesh_id=$m live=$lm p5 gen=$g1 overlay gen=$og"; echo "$l" | sed 's/^/    /'
 txn=$(qr '[ -e /etc/batman-prov/.txn ] && echo present || echo gone')
 fin=$(grep -E 'txn [^ ]+ finished \(boot\): wireless = .*, (applied|already), save rc=(0|6)$' <<< "$l" | tail -1)
-common(){	# $1 = the expected mesh id
+common(){	# $1 = the expected mesh id; the key: the old one with the old mesh id, a different one with the new
 	[ "$txn" = gone ] && ok "txn-$N: .txn gone" || no "txn-$N: .txn $txn"
+	k=$(qr "$KEYH")
+	if [ "$1" = "$old" ]; then [ "$k" = "$k0" ] && ok "txn-$N: mesh key is the old one (sha $k)" || no "txn-$N: mesh key sha $k (want the old $k0)"
+	else [ -n "$k" ] && [ "$k" != "$k0" ] && ok "txn-$N: mesh key is the update's (sha $k)" || no "txn-$N: mesh key sha $k (want != the old $k0)"; fi
 	[ "$m" = "$1" ] && ok "txn-$N: uci mesh id $m" || no "txn-$N: uci mesh id $m (want $1)"
 	[ "$lm" = "$1" ] && ok "txn-$N: live mesh id $lm" || no "txn-$N: live mesh id [$lm] (want $1)"
 	c=$(qr 'batman-config-save --check >/dev/null 2>&1; echo rc=$?'); [ "$c" = rc=0 ] && ok "txn-$N: --check rc 0 (p5 == live)" || no "txn-$N: --check $c"

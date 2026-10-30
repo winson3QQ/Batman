@@ -43,6 +43,7 @@ if [ ! -r /etc/config/wireless ]; then
 	fn=$(printf '%s\n' "$fn" | sed "s#/etc/config/wireless#$W/wireless#")
 fi
 r=$(run "$TXN" 5 ""); case "$r" in "rc=1 verdict=stale:txn out=DIE: an unfinished network change"*) ok ".txn: refused with its own message [$r]" ;; *) bad ".txn: [$r]" ;; esac
+case "$r" in *"allow-unfinished-txn"*"check the node in the app after the OTA"*) ok ".txn: the refusal names the override and what it costs" ;; *) bad ".txn refusal text: [$r]" ;; esac
 r=$(run "$TXN" 5 STALE_P5); case "$r" in "rc=1 verdict=stale:txn out=DIE: an unfinished network change"*) ok ".txn + stale override: still refused [$r]" ;; *) bad ".txn + override let through: [$r]" ;; esac
 S5="batman-config-save: p5 stale: wireless.radio1.channel"
 r=$(run "$S5" 5 ""); case "$r" in "rc=1 verdict=stale:wireless.radio1.channel out=DIE: p5 (config) is STALE"*) ok "control: an ordinary stale key dies [$r]" ;; *) bad "control stale: [$r]" ;; esac
@@ -51,7 +52,7 @@ r=$(run "batman-config-save: p5 fresh" 0 ""); case "$r" in "rc=0 verdict=fresh o
 # stage 1: the dedicated override
 r=$(run "$TXN" 5 UNFINISHED_TXN); case "$r" in "rc=0 verdict=txn-allowed out=PASSED-GATE"*) ok "stage 1: .txn + allow-unfinished-txn passes [$r]" ;; *) bad "stage 1 allow-unfinished-txn: [$r]" ;; esac
 o=$(PATH="$W/bin:$PATH" busybox ash "$W/t.sh" 2>&1)
-case "$o" in *"WARN: OVERRIDE allow-unfinished-txn: the unfinished network change (.txn) is DROPPED in the new slot — re-push the network from the app after the OTA"*) ok "stage 1: allow-unfinished-txn warns loudly" ;; *) bad "stage 1 override warning missing: $(printf '%s' "$o" | head -2 | tr '\n' ' ')" ;; esac
+case "$o" in *"WARN: OVERRIDE allow-unfinished-txn: the unfinished network change (.txn) is DROPPED in the new slot. After the OTA check the node in the app: shows the new network but does not join -> network/leave, then network/join again; shows 'left' but still on the old mesh -> halow-setkey --forget-mesh. Remove /tmp/batman-slot.allow-unfinished-txn."*) ok "stage 1: allow-unfinished-txn warns loudly, with the leave/join and --forget-mesh steps" ;; *) bad "stage 1 override warning missing: $(printf '%s' "$o" | head -2 | tr '\n' ' ')" ;; esac
 r=$(run "$S5" 5 UNFINISHED_TXN); case "$r" in "rc=1 verdict=stale:wireless.radio1.channel out=DIE: p5 (config) is STALE"*) ok "control: allow-unfinished-txn does not pass an ordinary stale key [$r]" ;; *) bad "allow-unfinished-txn passed an ordinary stale key: [$r]" ;; esac
 
 # ---- stage 2: the verdict written by stage 1 decides (no batman-config-save / wireless in the ramfs) ----------------------
@@ -82,7 +83,7 @@ r=$(run2 stale:txn STALE_P5); case "$r" in "rc=1 out=DIE: an unfinished network 
 run2 stale:txn UNFINISHED_TXN >/dev/null; r=$(run2 stale:txn UNFINISHED_TXN)
 case "$r" in "rc=0 out=PASSED-GATE"*) ok "stage 2: stale:txn + allow-unfinished-txn passes [$r]" ;; *) bad "stage 2 allow-unfinished-txn: [$r]" ;; esac
 o=$(PATH="/usr/bin:/bin" busybox ash "$W/t2.sh" 2>&1)
-case "$o" in *"WARN: OVERRIDE allow-unfinished-txn: the unfinished network change (.txn) is DROPPED in the new slot"*) ok "stage 2: allow-unfinished-txn warns loudly" ;; *) bad "stage 2 override warning missing: $(printf '%s' "$o" | head -2 | tr '\n' ' ')" ;; esac
+case "$o" in *"WARN: OVERRIDE allow-unfinished-txn: the unfinished network change (.txn) is DROPPED in the new slot. After the OTA check the node in the app"*"network/leave, then network/join"*"halow-setkey --forget-mesh"*) ok "stage 2: allow-unfinished-txn warns loudly, with the leave/join and --forget-mesh steps" ;; *) bad "stage 2 override warning missing: $(printf '%s' "$o" | head -2 | tr '\n' ' ')" ;; esac
 r=$(run2 stale:wireless.radio1.channel STALE_P5); case "$r" in "rc=0 out=PASSED-GATE"*) ok "control: stage 2 allow-stale-p5 still passes an ordinary stale key [$r]" ;; *) bad "control stage 2 override: [$r]" ;; esac
 r=$(run2 stale:wireless.radio1.channel UNFINISHED_TXN); case "$r" in "rc=1 out=DIE: p5 (config) is STALE"*) ok "control: stage 2 allow-unfinished-txn does not pass an ordinary stale key [$r]" ;; *) bad "stage 2 allow-unfinished-txn passed stale: [$r]" ;; esac
 r=$(run2 fresh ""); case "$r" in "rc=0 out=PASSED-GATE"*) ok "control: stage 2 fresh passes [$r]" ;; *) bad "control stage 2 fresh: [$r]" ;; esac
