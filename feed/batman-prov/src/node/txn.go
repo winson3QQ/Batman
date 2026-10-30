@@ -26,6 +26,15 @@ func (n *Node) commitTxn(next *provstore.Record, token string, afterPersist seam
 	if _, _, err := provstore.WriteOverlay(sp, next); err != nil {
 		return fail(EApply, "stage: %v", err)
 	}
+	// §18.1: never write over a newer record — a commit built on a stale overlay would undo a committed change (an
+	// owner removal) and p5's --prov-only has no generation check of its own. p5 unreadable / without a record -> the
+	// persist decides as before.
+	if g, ok := n.p5Generation(); ok && g >= next.Generation {
+		if _, e := n.resolve(); e != nil {
+			n.Log("commit: %s", e.Reason)
+		}
+		return fail(EState, "p5 holds generation %d, this change was built on %d — the record changed; retry", g, next.Generation-1)
+	}
 	rc, out := n.Sys.Persist(sp.Record(), sp.Meta(), "", token)
 	if rc != 0 {
 		g, ok := n.p5Generation()

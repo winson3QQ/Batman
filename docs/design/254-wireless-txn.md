@@ -1,6 +1,6 @@
-# #254 — a network change that did not succeed goes back to the previous state; `network/leave` forgets the mesh (design v10, 2026-10-30)
+# #254 — a network change that did not succeed goes back to the previous state; `network/leave` forgets the mesh (design v11, 2026-10-30)
 
-Status: v10 — v7 approved (round 7, §14); code review rounds 1 → §15 (v8), 2 → §16 (v9), 3 → §17 (v10), for review. v1–v3 REJECTED; v4: A REJECT (model sound), B APPROVE-WITH-CHANGES; v5 and v6: both
+Status: v11 — v7 approved (round 7, §14); code review rounds 1 → §15 (v8), 2 → §16 (v9), 3 → §17 (v10), 4 → §18 (v11). Code frozen after §18 (owner decision 2026-10-30): further MINORs go to the #254 checklist. v1–v3 REJECTED; v4: A REJECT (model sound), B APPROVE-WITH-CHANGES; v5 and v6: both
 APPROVE-WITH-CHANGES (one MAJOR each in round 6, both one-line contract fixes, §13). §10 round 4, §12 round 5, §13 round 6. **Owner rule: a change that did not succeed returns the node to the previous state — "use the previous
 one".** Owner decisions: L22 → A (leave = forget the network); legacy / operator-keyed node whose join fails → back to
 the operator's own settings (2026-10-30). Product change: helper, `halow-setkey`, `batman-config-save`. Branch
@@ -368,7 +368,7 @@ gate let it through.
 Round 3: A APPROVE-WITH-CHANGES (0/1/12), B APPROVE-WITH-CHANGES (0/1/9). Both round-2 MAJORs and B2's MAJOR were
 verified fixed by both reviewers (with their own probes and mutants).
 
-**17.1 An owner-op checked on a stale overlay is refused (B3 MAJOR-1 = A3 m2).** §16.4 checked the owner-op of a
+**17.1 An owner-op checked on a stale overlay is refused (B3 MAJOR-1 = A3 m2). — CORRECTION (round 4): this covered owner.add / owner.remove only; the same stale-overlay path stayed open for every other owner-op verb. Superseded by §18.1.** §16.4 checked the owner-op of a
 commit-only verb against the overlay, then resolved p5. If the overlay was stale — p5 committed, the overlay write
 failed — a removed co-owner still passed the check. They could then re-add themselves, or remove someone else, and the
 change was committed on p5's record. Now: when resolve finds a record of another generation than the one the check
@@ -414,3 +414,39 @@ prov_test` root run.
 
 **17.5 Tests.** Go +8 tests. **57 mutants** (13 v7, 18 v8, 18 v9, 8 v10, incl. the root D-state one) all killed.
 Shell: cfgsave-txn-save 58, slot-p5gate-txn 16.
+
+## 18. Code review round 4 → v11 (2026-10-30)
+Round 4: A APPROVE-WITH-CHANGES (0/1/8), B APPROVE-WITH-CHANGES (0/1/9). Both MAJORs are the same finding, shown by
+both reviewers with probes on 57619f8 (and 3993437). It is not a regression of this change: main has it too. §17.1
+claimed the path was closed, but that held for owner.add / owner.remove only; that statement was wrong.
+
+**18.1 Every owner-op verb runs on the record p5 confirms; no commit overwrites a newer record.** The trigger: an
+owner removes co-owner B, p5 commits it, and the overlay write fails. B, still in the overlay's owner list, then sent
+`ssh_keys.set`, `root_password.reset` or `network.leave`. B got code 0, a new root password, its own SSH key, and back
+into p5's owner list. Without an attacker, the owner's own next verb silently undid the removal. Now:
+- **The signer is checked against p5's record.** After the owner-op check, every owner-op verb resolves p5. If p5's
+  record is newer than the overlay, the signer must be an owner of p5's record, else `EForbidden`. The verb then runs
+  on that record, with no "retry". This also fixes B4 m1 (a legitimate owner.remove got EState for good while the
+  overlay was unwritable). p5 unreadable → the overlay, as before.
+- **No commit overwrites a newer record.** `commitTxn` refuses a commit whose base generation is older than p5's
+  (`EState`) and rebuilds the overlay. `--prov-only` has no generation check of its own.
+- **Tests**:
+  - `TestRemovedOwnerCannotUseStaleOverlay`: owner.add / ssh_keys.set / root_password.reset / network.leave by the
+    removed co-owner → `EForbidden`, p5 keeps the removal, keys and root unchanged.
+  - `TestOwnerOnStaleOverlayRunsOnP5Record`.
+  - `TestCommitRefusesAnOlderBase`.
+- **Negative controls**: the mutants without the resolve, without the signer check, and without the generation check
+  are all killed. **58 Go mutants + the root D-state one, all killed.**
+
+**18.2 Attributed test flakes (B4 m4).** setkey-forget-lock failed 2 of 10 runs. Cause, shown by a probe (3 of 30):
+the WSL wall clock steps back about 1 s, and the tests measured elapsed time with `date +%s`. The tests now use
+`/proc/uptime`. The ❓ cfgsave "did not wait (8 s)" used the same measurement. It is ⚠️ very likely the same cause, but
+no flip test was done for that case; it stays on the checklist.
+
+**18.3 To the #254 checklist (MINORs, code frozen).**
+- A4: m1 the `.device` uci rc; m3 test gaps (group SIGKILL, hand-off rc 124, encryption rc classes); m4 identity
+  rename has no negative control; m5 TestGenPasswordUniform's 0.1 % false-positive threshold (pre-existing P1); m6 a
+  net.apply during an OTA; m7 the KEYH comment; m8 DV runs no Go tests, and its non-root skip is silent.
+- B4: m2 the encryption / rc 1 tests, and `uci show` rc 1 (no wireless config) is transient → decide; m3 the
+  TestBackoffCap constant; m5 the TERM test's discrimination; m6 the orphan + `satisfied()` race wording; m7
+  `--forget-mesh` and the mesh markers in the override recovery; m8 KEYH with an empty key; m9.

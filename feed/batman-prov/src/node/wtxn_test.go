@@ -371,15 +371,9 @@ func TestCommitOnlyResolvesStaleOverlay(t *testing.T) {
 	if _, _, err := provstore.WriteOverlay(r.n.P, &stale); err != nil {
 		t.Fatal(err)
 	}
-	// §17.1: the owner-op was checked against the stale overlay -> EState, nothing committed; the overlay is rebuilt
-	if c := r.ownerAdd(); c != EState {
-		t.Fatalf("owner.add on the stale overlay: %d (want EState)", c)
-	}
-	if rec := r.rec(); rec.Generation != p5.Generation || rec.State != provstore.Member {
-		t.Fatalf("after the refusal: %s gen %d (want the rebuilt p5 record, gen %d)", rec.State, rec.Generation, p5.Generation)
-	}
-	if c := r.ownerAdd(); c != OK { // the retry
-		t.Fatalf("owner.add retry: %d", c)
+	// §18.1: the owner's verb runs on p5's record at once (no "retry")
+	if c := r.ownerAdd(); c != OK {
+		t.Fatalf("owner.add on the stale overlay: %d", c)
 	}
 	if rec := r.rec(); rec.State != provstore.Member || rec.Generation != p5.Generation+1 || rec.Net == nil {
 		t.Fatalf("owner.add committed on the stale overlay: %s gen %d", rec.State, rec.Generation)

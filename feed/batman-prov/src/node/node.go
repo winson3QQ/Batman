@@ -608,7 +608,7 @@ func (n *Node) claimReplay(rec *provstore.Record, a cbor.Map) (cbor.Map, *Error)
 	// and claim.replay failed unless map iteration happened to spare it (found by the claim-lock fix tests,
 	// TestReplayOK). One `nonce` call now serves both: node half -> CheckMac, helper half -> owner-op.
 	nn := n.takeNodeNonce(h)
-	if e := n.verifyOwnerOp(h, typ, body, [][]byte{owner.Pub}); e != nil {
+	if _, e := n.verifyOwnerOp(h, typ, body, [][]byte{owner.Pub}); e != nil {
 		return failOnce(e.Code, e.Reason)
 	}
 	if nn == nil || !n.KS.CheckMac(proto.ClientChal(nn, h, n.KS.Cert(), owner.Pub), resp) {
@@ -654,25 +654,25 @@ func decodeEnvelope(raw []byte) (string, cbor.Map, *Error) {
 
 // verifyOwnerOp: owner-op at body key 31, verb == envelope type, signature by one of owners over the input the
 // helper assembles from h, its nonce_helper and the args_hash it computes from the decoded body.
-func (n *Node) verifyOwnerOp(h []byte, typ string, body cbor.Map, owners [][]byte) *Error {
+func (n *Node) verifyOwnerOp(h []byte, typ string, body cbor.Map, owners [][]byte) ([]byte, *Error) {
 	opAny, ok := body.Get(31)
 	if !ok {
-		return fail(EForbidden, "no owner-op")
+		return nil, fail(EForbidden, "no owner-op")
 	}
 	op, ok := opAny.(cbor.Map)
 	if !ok || len(op) != 2 {
-		return fail(EForbidden, "owner-op shape")
+		return nil, fail(EForbidden, "owner-op shape")
 	}
 	va, _ := op.Get(1)
 	sa, _ := op.Get(2)
 	verb, ok1 := va.(string)
 	sig, ok2 := sa.([]byte)
 	if !ok1 || !ok2 || verb != typ {
-		return fail(EForbidden, "owner-op verb != envelope type")
+		return nil, fail(EForbidden, "owner-op verb != envelope type")
 	}
 	ah, err := proto.ArgsHash(body)
 	if err != nil {
-		return fail(EForbidden, "args_hash")
+		return nil, fail(EForbidden, "args_hash")
 	}
 	// the owner-op does not carry nonce_helper: try every unexpired one issued for this h (each attempt consumes)
 	for k, v := range n.nonces {
@@ -684,17 +684,17 @@ func (n *Node) verifyOwnerOp(h []byte, typ string, body cbor.Map, owners [][]byt
 		if err != nil {
 			continue
 		}
-		hit := false
+		var hit []byte
 		for _, o := range owners {
 			if proto.VerifyES256(o, in, sig) {
-				hit = true
+				hit = o
 			}
 		}
-		if n.takeHelperNonce(h, nonceHelper) && hit {
-			return nil
+		if n.takeHelperNonce(h, nonceHelper) && hit != nil {
+			return hit, nil
 		}
 	}
-	return fail(EForbidden, "owner-op signature / nonce")
+	return nil, fail(EForbidden, "owner-op signature / nonce")
 }
 
 func ownerPubs(rec *provstore.Record) [][]byte {
@@ -735,19 +735,23 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 	if rec.State != provstore.Claimed && rec.State != provstore.Member {
 		return nil, fail(EForbidden, "no owner")
 	}
-	if e := n.verifyOwnerOp(h, typ, body, ownerPubs(rec)); e != nil {
+	signer, e := n.verifyOwnerOp(h, typ, body, ownerPubs(rec))
+	if e != nil {
 		return nil, e
 	}
-	// commit-only verbs never Finish (an owner can always remove a co-owner, even with a dead radio) but never commit
-	// on an overlay older than p5 either — resolved AFTER the owner-op check (§16.4: no p5 mount for anonymous peers)
-	if commitOnly[verb] {
-		if r, e := n.resolve(); e != nil {
-			n.Log("%s: %s (committing on the overlay)", verb, e.Reason)
-		} else if r.Generation != rec.Generation {
-			// §17.1 (review 3 B MAJOR-1): the owner-op was verified against a stale overlay — its owners may not be the
-			// record's any more (a removed co-owner re-adding themselves). The overlay is now rebuilt: retry.
-			return nil, fail(EState, "the provisioning record changed (generation %d -> %d) — retry", rec.Generation, r.Generation)
+	// §18.1 (review 4 A/B MAJOR-1): every owner-op verb runs on the record p5 confirms, and its signer must be an owner
+	// of THAT record. The overlay can be older than p5 (p5 committed, the overlay write failed): a co-owner removed in
+	// p5 still passed the check above and could re-add itself, reset the root password or set SSH keys. Resolved AFTER
+	// the owner-op check (§16.4: no p5 mount for anonymous peers). p5 unreadable -> the overlay (as before; a commit
+	// is then refused by the generation check in commitTxn).
+	if r, e := n.resolve(); e != nil {
+		n.Log("%s: %s (on the overlay)", verb, e.Reason)
+	} else if r.Generation != rec.Generation {
+		if !hasPub(ownerPubs(r), signer) || (r.State != provstore.Claimed && r.State != provstore.Member) {
+			return nil, fail(EForbidden, "the signer is not an owner of the current record")
 		}
+		n.Log("%s: the overlay was stale (generation %d -> %d): rebuilt from p5", verb, rec.Generation, r.Generation)
+		rec = r
 	}
 	switch verb {
 	case "net.apply":
@@ -1216,4 +1220,13 @@ func (n *Node) leave(rec *provstore.Record) (cbor.Map, *Error) {
 	}
 	n.refreshMeshExpect(&next)
 	return cbor.M(), nil
+}
+
+func hasPub(set [][]byte, p []byte) bool {
+	for _, q := range set {
+		if subtle.ConstantTimeCompare(q, p) == 1 {
+			return true
+		}
+	}
+	return false
 }

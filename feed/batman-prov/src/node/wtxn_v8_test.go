@@ -265,3 +265,5 @@ func TestStoredSecretsOtherTargetRefused(t *testing.T) {
 		t.Fatal("this node cannot open its own stored secrets")
 	}
 }
+
+func readFile(p string) ([]byte, error) { return os.ReadFile(p) }
