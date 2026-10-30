@@ -35,7 +35,10 @@ arm(){	# <yield|noyield>
 	a=$(p5f "m0-$w") || { no "p5 manifest before: $a"; return 1; }
 	pw prep >/dev/null
 	# the real setkey as it is now (the hook calls it; /rom may differ from the slot's overlay)
-	q "cp -p /usr/bin/halow-setkey $W/setkey.real && chmod 700 $W/setkey.real && printf '#!/bin/sh\n$W/setkey.real \"\$@\"; r=\$?\nbatman-config-save --on-join > $W/onjoin.out 2>&1; echo \"onjoin_rc=\$?\" >> $W/onjoin.out; echo \"setkey_rc=\$r\" >> $W/onjoin.out\nexit 1\n' > $W/setkey.hook && chmod 755 $W/setkey.hook"
+	# the hook also records p5's overrides.uci sha right after the tick: that is the moment the control must judge —
+	# after net-apply returns, the helper's Finish has already put the previous network back into p5 (wireless-txn
+	# §19 made that save reliable, so the before/after manifests look unchanged even when the tick DID write)
+	q "cp -p /usr/bin/halow-setkey $W/setkey.real && chmod 700 $W/setkey.real && printf '#!/bin/sh\n$W/setkey.real \"\$@\"; r=\$?\nbatman-config-save --on-join > $W/onjoin.out 2>&1; echo \"onjoin_rc=\$?\" >> $W/onjoin.out; echo \"setkey_rc=\$r\" >> $W/onjoin.out\nm=\$(mktemp -d /tmp/run/batman-dv/p5h.XXXXXX) && mount -o ro,noload /dev/mmcblk0p5 \$m && { echo \"p5ovr=\$(sha256sum < \$m/overrides.uci | cut -c1-64)\" >> $W/onjoin.out; umount \$m; }; rmdir \$m 2>/dev/null\nexit 1\n' > $W/setkey.hook && chmod 755 $W/setkey.hook"
 	if [ "$w" = noyield ]; then
 		# the mutant removes EVERY yield of --on-join (wireless-txn §7): the txn_live check at the mode switch, the
 		# SEQ0 "none none" gate before staging, and the txn_seq re-check right before the p5 write (2026-10-30: the
@@ -53,13 +56,16 @@ arm(){	# <yield|noyield>
 	b=$(p5f "m1-$w") || { no "p5 manifest after: $b"; return 1; }
 	grep -q 'setkey_rc=0' <<< "$o" || { inv "$w: the real setkey inside the hook failed ($o) — the transaction never reached its wireless change"; return 1; }
 	grep -qE 'RESULT net.apply\(update\) code=[1-9]' <<< "$r" && ok "$w: net-apply --update failed at step 2 (hook exit 1)" || no "$w: net-apply result: $(grep RESULT <<< "$r")"
+	a0=$(awk '/overrides\.uci$/ { print $1 }' <<< "$a"); h=$(sed -n 's/.*p5ovr=\([0-9a-f]*\).*/\1/p' <<< "$(echo $o)")
+	[ -n "$h" ] || { inv "$w: the hook recorded no p5 overrides sha at the tick ($o)"; return 1; }
 	if [ "$w" = yield ]; then
 		grep -q 'provisioning transaction in progress' <<< "$o" && grep -q 'onjoin_rc=1' <<< "$o" && ok "yield: the --on-join tick yielded (rc 1, transaction in progress)" || no "yield: tick [$o]"
-		[ "$(grep overrides.uci <<< "$a")" = "$(grep overrides.uci <<< "$b")" ] && ok "yield: p5 overrides.uci unchanged" || no "yield: p5 overrides.uci moved"
+		[ "$h" = "$a0" ] && ok "yield: p5 overrides.uci unchanged at the tick" || no "yield: p5 overrides.uci moved at the tick"
+		[ "$(grep overrides.uci <<< "$a")" = "$(grep overrides.uci <<< "$b")" ] && ok "yield: p5 overrides.uci unchanged after the arm" || no "yield: p5 overrides.uci moved"
 		[ "$(grep prov.meta <<< "$a")" = "$(grep prov.meta <<< "$b")" ] && ok "yield: p5 prov.meta unchanged" || no "yield: p5 prov.meta moved"
 	else
-		[ "$(grep overrides.uci <<< "$a")" != "$(grep overrides.uci <<< "$b")" ] && ok "negative control: a non-yielding --on-join wrote the half-applied wireless into p5 (rc $(sed -n 's/.*onjoin_rc=\([0-9]*\).*/\1/p' <<< "$(echo $o)"))" \
-			|| no "negative control: p5 overrides unchanged even without the yield — the control had no effect ($o)"
+		[ "$h" != "$a0" ] && ok "negative control: a non-yielding --on-join wrote the half-applied wireless into p5 at the tick (rc $(sed -n 's/.*onjoin_rc=\([0-9]*\).*/\1/p' <<< "$(echo $o)"); the Finish then put the previous network back: after the arm $([ "$(grep overrides.uci <<< "$a")" = "$(grep overrides.uci <<< "$b")" ] && echo unchanged || echo changed))" \
+			|| no "negative control: p5 overrides unchanged at the tick even without the yield — the control had no effect ($o)"
 	fi
 }
 txn3(){
@@ -70,8 +76,9 @@ txn3(){
 	o=$(qr 'echo "txn=$([ -e /etc/batman-prov/.txn ] && echo present || echo gone) up=$(cut -d. -f1 /proc/uptime)"; batman-config-save --on-join 2>&1 | tail -1; echo "onjoin_rc=$?"')
 	say "first --on-join tick after the reboot: $(echo $o)"
 	w=$(( 150 - $(qr 'cut -d. -f1 /proc/uptime') )); [ $w -gt 0 ] && { say "waiting ${w}s"; sleep $w; }
-	l=$(qr "logread | grep 'batman-provhelper' | grep -E 'action=txn' | tail -2"); echo "$l" | sed 's/^/    /'
-	grep -q 'action=txn .*committed (gen [0-9]*): overlay completed from p5' <<< "$l" && ok "txn-3: overlay completed from p5" || no "txn-3: no 'overlay completed from p5'"
+	# the boot line since wireless-txn v8 (as prov-powerloss-254 txn-3 asserts): p5 newer -> the overlay record rebuilt
+	l=$(qr "logread | grep 'batman-provhelper' | grep -E 'boot rc=|finished' | tail -4"); echo "$l" | sed 's/^/    /'
+	grep -q 'action=p5 newer: rebuilt the overlay record' <<< "$l" && ok "txn-3: --boot rebuilt the overlay from p5" || no "txn-3: no 'p5 newer: rebuilt the overlay record'"
 	# (pr_killpoint already re-placed provclient after the reboot — a second placement refuses: run 2, 2026-10-28)
 	i=$(pr_info); case " $i " in *" state=member "*) ok "txn-3 + tick: state member (L25 final state, p1-impl §10.4)";; *) no "txn-3 + tick: $i";; esac
 	m=$(qr "$MESHID"); [ "$m" = "$NEW" ] && ok "txn-3: wireless == the update ($m)" || no "txn-3: mesh_id $m (want $NEW)"
