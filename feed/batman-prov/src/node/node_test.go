@@ -5,8 +5,10 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +57,13 @@ type fakeSys struct {
 	saveTxnNoMark int // SaveTxn called without the marker (config-save would refuse: the shipped deadlock)
 	meshExpect    string
 	p5rc          int // GetP5 returns this rc (p5 unreadable) when set
+	// 254-wireless-txn §15: the fake follows the scripts — setkey / forget rc 3 means uci WAS changed (only rc 2 means
+	// nothing changed); config-save --save --txn refuses unless .txn carries the token; the live radio can lag uci
+	txnPath        string // .txn of this rig (SaveTxn checks its token like config-save's txn_seq)
+	liveDown       bool   // LiveMeshUp false (the radio is not up on the uci mesh id)
+	encryption     string // "" = sae
+	markersRemoved int
+	restorableErr  error // CheckRestorable forced error
 }
 
 type saveRC struct {
@@ -113,7 +122,7 @@ func (f *fakeSys) SetKeyNoPersist(k, id, ch string) error {
 	if len(f.setkeyErrs) > 0 {
 		err, f.setkeyErrs = f.setkeyErrs[0], f.setkeyErrs[1:]
 	}
-	if err == nil || f.setkeyHalf {
+	if err == nil || f.setkeyHalf || setkeyRC(err) != 2 {
 		f.wl = [3]string{k, id, ch}
 		if f.inMark { // the keyguard unblocks a radio it blocked once a real key is set
 			f.radioOff, f.inMark = false, false
@@ -132,6 +141,12 @@ func (f *fakeSys) SaveTxn(tok string) (int, string) {
 	if !f.txnMarker {
 		f.saveTxnNoMark++
 	}
+	if f.txnPath != "" {
+		b, err := os.ReadFile(f.txnPath)
+		if err != nil || !strings.HasPrefix(string(b), tok+" ") {
+			return 1, "--txn does not match the live transaction"
+		}
+	}
 	if len(f.saveTxnOut) > 0 {
 		r := f.saveTxnOut[0]
 		f.saveTxnOut = f.saveTxnOut[1:]
@@ -141,11 +156,30 @@ func (f *fakeSys) SaveTxn(tok string) (int, string) {
 }
 func (f *fakeSys) ForgetMesh() error {
 	f.forgets++
-	if f.forgetErr != nil {
-		return f.forgetErr
+	if f.forgetErr != nil && setkeyRC(f.forgetErr) == 2 {
+		return f.forgetErr // nothing changed
 	}
-	f.wl = [3]string{placeholderKey, "", ""}
+	f.wl = [3]string{placeholderKey, f.wl[1], f.wl[2]} // one commit: placeholder + blocked (rc 3 = committed, unverified)
+	if f.wl[1] == "" {
+		f.wl[1], f.wl[2] = "oldmesh", "28"
+	}
 	f.radioOff, f.inMark = true, true
+	return f.forgetErr
+}
+func (f *fakeSys) LiveMeshUp() bool { return !f.liveDown && !f.radioOff }
+func (f *fakeSys) CheckRestorable(k, id, ch string) error {
+	if f.restorableErr != nil {
+		return f.restorableErr
+	}
+	if f.encryption != "" && f.encryption != "sae" {
+		return errors.New("encryption not sae")
+	}
+	if len(k) < 8 || strings.ContainsAny(k, "`$();|&<>'") || strings.ContainsAny(id, "`$();|&<>'") {
+		return errors.New("halow-setkey would refuse it")
+	}
+	if _, err := strconv.Atoi(ch); ch != "" && err != nil {
+		return errors.New("channel not an integer")
+	}
 	return nil
 }
 func (f *fakeSys) RadioState() (bool, bool, error) { return f.radioOff, f.inMark, f.radioErr }
@@ -190,7 +224,7 @@ func (f *fakeSys) DevOpen() bool                      { return f.devOpen }
 func (f *fakeSys) WriteTxnMarker(string) error        { f.txnMarker = true; return nil }
 func (f *fakeSys) ClearTxnMarker()                    { f.txnMarker = false }
 func (f *fakeSys) DiagBundle() ([]byte, error)        { return []byte("diag"), nil }
-func (f *fakeSys) RemoveMeshMarkers() error           { return nil }
+func (f *fakeSys) RemoveMeshMarkers() error           { f.markersRemoved++; return nil }
 func (f *fakeSys) Now() time.Time                     { return f.now }
 
 type rig struct {
@@ -218,7 +252,7 @@ func newRig(t *testing.T, state string) *rig {
 		t.Fatal(err)
 	}
 	provstore.WriteOverlay(p, &provstore.Record{Generation: 1, State: state})
-	sys := &fakeSys{p5: filepath.Join(root, "p5"), now: time.Unix(1000, 0), keys: []string{"ssh-ed25519 AAAAlab lab"}}
+	sys := &fakeSys{p5: filepath.Join(root, "p5"), now: time.Unix(1000, 0), keys: []string{"ssh-ed25519 AAAAlab lab"}, txnPath: p.Txn()}
 	o, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	e, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	n := New(p, ks, sys, func(string, ...any) {})

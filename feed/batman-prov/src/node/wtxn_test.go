@@ -6,8 +6,11 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
 
@@ -145,6 +148,14 @@ func (r *rig) restart() {
 	r.n = n
 }
 
+// fin runs the boot Finish (the caller of BootFinish holds the mutex the same way)
+func (r *rig) fin() error {
+	if e := r.n.finish("boot"); e != nil {
+		return errors.New(e.Reason)
+	}
+	return nil
+}
+
 func (r *rig) wl() string { k, id, ch, _ := r.sys.CurrentWireless(); return k + "/" + id + "/" + ch }
 
 // memberRig: claimed, joined v1 (mesh m1, channel 28) with real objects through the dispatcher
@@ -179,7 +190,11 @@ func (r *rig) finishedCleanly(want string) {
 	if provstore.TxnPresent(r.n.P) {
 		r.t.Fatal(".txn left after Finish")
 	}
-	if r.wl() != want {
+	if strings.HasSuffix(want, "/*") {
+		if !strings.HasPrefix(r.wl(), strings.TrimSuffix(want, "*")) {
+			r.t.Fatalf("wireless %s, want %s", r.wl(), want)
+		}
+	} else if r.wl() != want {
 		r.t.Fatalf("wireless %s, want %s", r.wl(), want)
 	}
 	if len(r.sys.saveTxns) == 0 || r.sys.saveTxns[len(r.sys.saveTxns)-1] != crashTok {
@@ -199,10 +214,10 @@ func (r *rig) finishedCleanly(want string) {
 func TestFinishMemberBackToRecord(t *testing.T) {
 	r, _ := memberRig(t)
 	r.crashTxn2("sae-v2-pass", "m2", "36")
-	if !r.n.FinishWantsRadio() {
+	if !r.n.finishWantsRadio() {
 		t.Fatal("a network to rejoin must wait for the radio")
 	}
-	if err := r.n.Finish("boot"); err != nil {
+	if err := r.fin(); err != nil {
 		t.Fatal(err)
 	}
 	r.finishedCleanly("sae-v1-pass/m1/28")
@@ -217,7 +232,7 @@ func TestFinishJoinBackToOperatorSnapshot(t *testing.T) {
 	r := claimedRig(t)
 	r.sys.wl = [3]string{"operator-key", "opmesh", "36"}
 	r.crashTxn2("sae-v1-pass", "m1", "28")
-	if err := r.n.Finish("boot"); err != nil {
+	if err := r.fin(); err != nil {
 		t.Fatal(err)
 	}
 	r.finishedCleanly("operator-key/opmesh/36")
@@ -233,16 +248,16 @@ func TestFinishJoinFromPlaceholderForgets(t *testing.T) {
 	r.sys.radioOff, r.sys.inMark = true, true
 	r.crashTxn2("sae-v1-pass", "m1", "28")
 	r.sys.radioOff, r.sys.inMark = false, false // setkey unblocked the radio
-	if r.n.FinishWantsRadio() {
+	if r.n.finishWantsRadio() {
 		t.Fatal("a forget waits for the radio")
 	}
-	if err := r.n.Finish("boot"); err != nil {
+	if err := r.fin(); err != nil {
 		t.Fatal(err)
 	}
 	if r.sys.forgets != 1 || !r.sys.radioOff || !r.sys.inMark {
 		t.Fatalf("not forgotten: forgets=%d off=%v mark=%v", r.sys.forgets, r.sys.radioOff, r.sys.inMark)
 	}
-	r.finishedCleanly(placeholderKey + "//")
+	r.finishedCleanly(placeholderKey + "/*")
 	if r.sys.meshExpect != "0" {
 		t.Fatalf("mesh_expect %q", r.sys.meshExpect)
 	}
@@ -262,7 +277,7 @@ func TestFinishAfterCommitKeepsNew(t *testing.T) {
 	tok := r.sys.saveTxns[0]
 	r.restart()
 	sk := len(r.sys.setkeys)
-	if err := r.n.Finish("boot"); err != nil {
+	if err := r.fin(); err != nil {
 		t.Fatal(err)
 	}
 	if len(r.sys.setkeys) != sk {
@@ -278,7 +293,7 @@ func TestFinishIdempotentAfterSave(t *testing.T) {
 	r, _ := memberRig(t)
 	r.crashTxn2("sae-v1-pass", "m1", "28") // the live wireless already is the record's
 	sk := len(r.sys.setkeys)
-	if err := r.n.Finish("boot"); err != nil {
+	if err := r.fin(); err != nil {
 		t.Fatal(err)
 	}
 	if len(r.sys.setkeys) != sk {
@@ -293,7 +308,7 @@ func TestDeadRadioCommitOnlyWorksSavingRefused(t *testing.T) {
 	r, _ := memberRig(t)
 	r.crashTxn2("sae-v2-pass", "m2", "36")
 	r.sys.setkeyErrs = []error{&SetkeyError{RC: 3, Msg: "unverified"}, &SetkeyError{RC: 3, Msg: "unverified"}}
-	if err := r.n.Finish("boot"); err == nil {
+	if err := r.fin(); err == nil {
 		t.Fatal("Finish succeeded with a dead radio")
 	}
 	if !provstore.TxnPresent(r.n.P) || r.sys.txnMarker {
@@ -305,6 +320,13 @@ func TestDeadRadioCommitOnlyWorksSavingRefused(t *testing.T) {
 	if c := r.sshSet(); c != EState {
 		t.Fatalf("ssh_keys.set with a dead radio: %d (want EState)", c)
 	}
+	// §15.5: within the backoff a verb gets EState at once — no setkey, no save
+	sk, sv := len(r.sys.setkeys), len(r.sys.saveTxns)
+	r.sys.setkeyErrs = nil
+	if c := r.sshSet(); c != EState || len(r.sys.setkeys) != sk || len(r.sys.saveTxns) != sv {
+		t.Fatalf("within the backoff: code %d, setkeys +%d, saves +%d (want EState, none)", c, len(r.sys.setkeys)-sk, len(r.sys.saveTxns)-sv)
+	}
+	r.sys.now = r.sys.now.Add(finishBackoff + time.Second)
 	if c := r.sshSet(); c != OK { // the radio works again: Finish first, then the verb
 		t.Fatalf("ssh_keys.set after the radio came back: %d", c)
 	}
@@ -363,14 +385,14 @@ func TestFinishP5UnreadableKeepsTxn(t *testing.T) {
 	r.crashTxn2("sae-v2-pass", "m2", "36")
 	r.sys.p5rc = 1
 	sk := len(r.sys.setkeys)
-	if err := r.n.Finish("boot"); err == nil {
+	if err := r.fin(); err == nil {
 		t.Fatal("Finish with p5 unreadable")
 	}
 	if !provstore.TxnPresent(r.n.P) || len(r.sys.setkeys) != sk || r.sys.txnMarker {
 		t.Fatalf("txn=%v setkeys=%d marker=%v", provstore.TxnPresent(r.n.P), len(r.sys.setkeys)-sk, r.sys.txnMarker)
 	}
 	r.sys.p5rc = 0
-	if err := r.n.Finish("boot"); err != nil {
+	if err := r.fin(); err != nil {
 		t.Fatal(err)
 	}
 	r.finishedCleanly("sae-v1-pass/m1/28")
@@ -436,7 +458,7 @@ func TestHandoverStoredObjectsNotReverified(t *testing.T) {
 		t.Fatalf("wl %s", r.wl())
 	}
 	r.crashTxn2("sae-v4-pass", "m4", "36")
-	if err := r.n.Finish("boot"); err != nil {
+	if err := r.fin(); err != nil {
 		t.Fatalf("Finish after the handover: %v", err)
 	}
 	r.finishedCleanly("sae-v3-pass/m3/28")
@@ -452,7 +474,7 @@ func TestLeaveForgets(t *testing.T) {
 	if rec.State != provstore.Claimed || !rec.Left || rec.Net != nil || r.sys.forgets != 1 || provstore.TxnPresent(r.n.P) {
 		t.Fatalf("leave: %s left=%v forgets=%d txn=%v", rec.State, rec.Left, r.sys.forgets, provstore.TxnPresent(r.n.P))
 	}
-	if r.wl() != placeholderKey+"//" || r.sys.meshExpect != "0" || r.sys.saveTxnNoMark != 0 || len(r.sys.saveTxns) < 2 {
+	if !strings.HasPrefix(r.wl(), placeholderKey+"/") || r.sys.meshExpect != "0" || r.sys.saveTxnNoMark != 0 || len(r.sys.saveTxns) < 2 {
 		t.Fatalf("wl %s mesh_expect %q saves %v", r.wl(), r.sys.meshExpect, r.sys.saveTxns)
 	}
 	c, res := r.call("info.net", cbor.M())
@@ -481,10 +503,10 @@ func TestLeaveForgetFailsThenFinishForgets(t *testing.T) {
 	}
 	r.sys.forgetErr = nil
 	r.restart()
-	if err := r.n.Finish("boot"); err != nil {
+	if err := r.fin(); err != nil {
 		t.Fatal(err)
 	}
-	if provstore.TxnPresent(r.n.P) || r.wl() != placeholderKey+"//" || r.sys.forgets != 2 {
+	if provstore.TxnPresent(r.n.P) || !strings.HasPrefix(r.wl(), placeholderKey+"/") || r.sys.forgets != 2 {
 		t.Fatalf("txn=%v wl=%s forgets=%d", provstore.TxnPresent(r.n.P), r.wl(), r.sys.forgets)
 	}
 }
@@ -517,21 +539,37 @@ func TestRetryAfterLostReply(t *testing.T) {
 	}
 }
 
-// a .txn without a readable token: Finish refuses (fail-closed), saves stay blocked, commit-only verbs still work
-func TestMalformedTxnFailsClosed(t *testing.T) {
+// §15.1: a .txn without a readable token (here 30 hex, one byte short) has an in-band exit: the record decides (member
+// -> its network), .txn is rewritten with a fresh token, finished, saved, removed; later saving verbs work
+func TestMalformedTokenFinishesByTheRecord(t *testing.T) {
 	r, _ := memberRig(t)
-	if err := provstore.WriteTxn(r.n.P, "short", 1, 2, "x", "", "", "", false); err != nil {
+	if err := provstore.WriteTxn(r.n.P, strings.Repeat("ab", 15), 1, 2, "x", "", "", "", false); err != nil {
 		t.Fatal(err)
 	}
+	r.sys.wl = [3]string{"sae-v2-pass", "m2", "36"}
 	r.restart()
-	if err := r.n.Finish("boot"); err == nil {
-		t.Fatal("Finish accepted a .txn without a valid token")
+	if err := r.fin(); err != nil {
+		t.Fatalf("Finish: %v", err)
 	}
-	if c := r.sshSet(); c != EState {
-		t.Fatalf("ssh_keys.set: %d", c)
+	if provstore.TxnPresent(r.n.P) || r.wl() != "sae-v1-pass/m1/28" || len(r.sys.saveTxns) == 0 || r.sys.saveTxnNoMark != 0 {
+		t.Fatalf("txn=%v wl=%s saves=%v", provstore.TxnPresent(r.n.P), r.wl(), r.sys.saveTxns)
 	}
-	if c := r.ownerAdd(); c != OK {
-		t.Fatalf("owner.add: %d", c)
+	if c := r.sshSet(); c != OK {
+		t.Fatalf("ssh_keys.set after: %d", c)
 	}
-	_ = strings.TrimSpace
+}
+
+// §15.1: a claimed node whose .txn snapshot is unreadable (bad radio line) cannot reach its previous state -> forgotten
+func TestUnreadableSnapshotForgets(t *testing.T) {
+	r := claimedRig(t)
+	tok := strings.Repeat("cd", 16)
+	os.WriteFile(r.n.P.Txn(), []byte(tok+" 2 3 network/join\nprev - - -\nradio disabled=7\n"), 0o600)
+	r.sys.wl = [3]string{"sae-v1-pass", "m1", "28"}
+	r.restart()
+	if err := r.fin(); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if r.sys.forgets != 1 || !strings.HasPrefix(r.wl(), placeholderKey+"/") || provstore.TxnPresent(r.n.P) {
+		t.Fatalf("forgets=%d wl=%s txn=%v", r.sys.forgets, r.wl(), provstore.TxnPresent(r.n.P))
+	}
 }

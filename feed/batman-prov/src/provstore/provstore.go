@@ -16,10 +16,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"batman-prov/cbor"
 )
@@ -454,16 +454,13 @@ func PersistP5(p Paths, recordFile, metaFile, identityDir, txn string) (int, str
 // GetP5 = batman-config-save --prov-get <dir>; dir must not exist. Returns the rc of 254-stage1-impl §4.2.
 func GetP5(p Paths, dir string) (int, string) { return run(p.ConfigSave, "--prov-get", dir) }
 
+// ConfigSaveTimeout bounds one batman-config-save call (a p5 mount + write; 254-wireless-txn §3).
+const ConfigSaveTimeout = 300 * time.Second
+
 func run(bin string, args ...string) (int, string) {
-	c := exec.Command(bin, args...)
-	c.Env = cleanEnv
-	out, err := c.CombinedOutput()
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return ee.ExitCode(), string(out)
-		}
-		return 1, err.Error()
+	rc, out := Exec(ConfigSaveTimeout, cleanEnv, nil, bin, args...)
+	if rc == 127 {
+		rc = 1 // could not start: as before, "p5 unreadable" for --prov-get, a failed persist for --prov-only
 	}
-	return 0, string(out)
+	return rc, out
 }

@@ -3,11 +3,13 @@ package node
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"batman-prov/boot"
 	"batman-prov/cbor"
@@ -149,7 +151,9 @@ func (n *Node) decryptSecrets(s *cose.Sign1) cbor.Map {
 	return mm
 }
 
-// desired = the previous state for this record (§2).
+// desired = the previous state for this record (§2). A snapshot that halow-setkey cannot carry, or an unreadable one,
+// is finished by forgetting (§15.1: the previous state cannot be reached; forgotten is fail-secure and the owner can
+// join again).
 func (n *Node) desired(rec *provstore.Record, tx provstore.Txn, txOK bool) (wantWireless, error) {
 	switch {
 	case rec.State == provstore.Member && rec.Net != nil:
@@ -162,34 +166,54 @@ func (n *Node) desired(rec *provstore.Record, tx provstore.Txn, txOK bool) (want
 		return wantWireless{kind: wantForget, source: "left (forgotten)"}, nil
 	}
 	if !txOK {
-		return wantWireless{}, errors.New("the pre-change snapshot in .txn is unreadable")
+		n.Log("CRIT finish: the pre-change snapshot in .txn is unreadable — forgetting the mesh (the owner can join again)")
+		return wantWireless{kind: wantForget, source: "forgotten (the snapshot is unreadable)", fromSnapshot: true}, nil
 	}
-	if tx.PrevKey == "" || tx.PrevKey == placeholderKey {
+	if tx.PrevKey == placeholderKey {
 		return wantWireless{kind: wantForget, source: "the pre-change snapshot (placeholder)", fromSnapshot: true}, nil
+	}
+	if err := n.Sys.CheckRestorable(tx.PrevKey, tx.PrevID, tx.PrevChannel); err != nil {
+		n.Log("CRIT finish: the pre-change settings cannot be restored by halow-setkey (%v) — forgetting the mesh (the owner can join again)", err)
+		return wantWireless{kind: wantForget, source: "forgotten (the snapshot cannot be restored)", fromSnapshot: true}, nil
 	}
 	return wantWireless{kind: wantNet, key: tx.PrevKey, id: tx.PrevID, ch: tx.PrevChannel,
 		source: "the pre-change snapshot", fromSnapshot: true}, nil
 }
 
-// satisfied: the live wireless already is the wanted one (no re-apply, no wifi reload — review A r4 m1).
+// satisfied: the LIVE wireless already is the wanted one (§15.4) — no re-apply, no wifi reload (review A r4 m1). A
+// forget is never "satisfied": --forget-mesh is idempotent and is the only thing that verifies the radio is down.
+// A network is satisfied only when uci matches, the radio is up on that mesh id, and no apply of this helper's lifetime
+// ended unverified (an update may change only the key, which a live mesh id cannot show).
 func (n *Node) satisfied(w wantWireless) bool {
+	if w.kind == wantForget || n.unverified {
+		return false
+	}
 	key, id, ch, err := n.Sys.CurrentWireless()
 	if err != nil {
 		return false
 	}
-	dis, inMark, err := n.Sys.RadioState()
-	if err != nil {
+	dis, _, err := n.Sys.RadioState()
+	if err != nil || dis {
 		return false
 	}
-	if w.kind == wantForget {
-		return key == placeholderKey && dis && inMark
+	return key == w.key && (w.id == "" || id == w.id) && (w.ch == "" || ch == w.ch) && n.Sys.LiveMeshUp()
+}
+
+// noteApply records whether an apply was verified: rc 0 clears, rc 2 (nothing changed) keeps, anything else sets.
+func (n *Node) noteApply(err error) {
+	switch setkeyRC(err) {
+	case 0:
+		n.unverified = false
+	case 2:
+	default:
+		n.unverified = true
 	}
-	return key == w.key && (w.id == "" || id == w.id) && (w.ch == "" || ch == w.ch) && !(dis && inMark)
 }
 
 // resolve decides the committed record the way --boot does (p5 vs the overlay), with no side effect beyond
-// rewriting a stale overlay from p5. p5 unreadable -> an error: nothing may be finished against a record p5 did not
-// confirm (review B r4 MAJOR-1).
+// rewriting a stale overlay from p5. p5 unreadable — including rc 0 with a record that does not decode (§15.6, like
+// --boot's unknown(prov-corrupt)) — is an error: nothing may be finished against a record p5 did not confirm (review B
+// r4 MAJOR-1).
 func (n *Node) resolve() (*provstore.Record, *Error) {
 	d, err := os.MkdirTemp(n.P.RunDir, "provget.")
 	if err != nil {
@@ -206,9 +230,13 @@ func (n *Node) resolve() (*provstore.Record, *Error) {
 	ov, _, _ := provstore.LoadOverlay(n.P)
 	var p5 *provstore.Record
 	if b, err := os.ReadFile(filepath.Join(d, "prov.cbor")); err == nil {
-		if r, err := provstore.Decode(b); err == nil {
-			p5 = r
+		r, err := provstore.Decode(b)
+		if err != nil {
+			return nil, fail(EStorage, "p5 record does not decode (%v)", err)
 		}
+		p5 = r
+	} else if rc == 0 {
+		return nil, fail(EStorage, "p5 --prov-get rc 0 without a record")
 	}
 	switch {
 	case p5 != nil && (ov == nil || p5.Generation > ov.Generation):
@@ -231,38 +259,45 @@ func (n *Node) finish(why string) *Error {
 	if !provstore.TxnPresent(n.P) {
 		return nil
 	}
+	rec, e := n.resolve()
+	if e != nil {
+		n.Log("finish (%s): %s — the unfinished change is finished later", why, e.Reason)
+		return e
+	}
 	tx, txOK := provstore.ReadTxn(n.P)
 	tok := provstore.TxnToken(n.P)
 	if tok == "" {
-		n.Log("CRIT finish (%s): .txn has no readable token — left for the owner's next network change", why)
-		return fail(EState, ".txn unreadable")
+		// §15.1: an unreadable token. A fresh one carries the same obligation; the snapshot (if the record needs it)
+		// is unreadable too and desired() forgets.
+		tok = hex.EncodeToString(rnd(16))
+		if err := provstore.WriteTxn(n.P, tok, rec.Generation, rec.Generation, "unreadable", "", "", "", false); err != nil {
+			return fail(EApply, "txn rewrite: %v", err)
+		}
+		n.Log("CRIT finish (%s): .txn had no readable token — rewritten with a fresh one", why)
+		tx, txOK = provstore.Txn{}, false
 	}
 	if err := n.Sys.WriteTxnMarker(tok); err != nil {
 		return fail(EApply, "txn marker: %v", err)
 	}
 	defer n.Sys.ClearTxnMarker()
-	rec, e := n.resolve()
-	if e != nil {
-		n.Log("finish (%s): %s — the unfinished change is finished at the next boot", why, e.Reason)
-		return e
-	}
 	w, err := n.desired(rec, tx, txOK)
 	if err != nil {
 		n.Log("CRIT finish (%s): %v — .txn kept, saves stay blocked", why, err)
 		return fail(EState, "%v", err)
 	}
-	src := 0
+	how := "already"
 	if !n.satisfied(w) {
 		if w.kind == wantForget {
 			err = n.Sys.ForgetMesh()
 		} else {
 			err = n.Sys.SetKeyNoPersist(w.key, w.id, w.ch)
 		}
-		src = setkeyRC(err)
+		n.noteApply(err)
 		if err != nil {
 			n.Log("CRIT finish (%s): back to %s failed (%v) — .txn kept, saves stay blocked", why, w.source, err)
 			return fail(EApply, "%v", err)
 		}
+		how = "applied"
 	}
 	if w.kind == wantForget {
 		if err := n.Sys.RemoveMeshMarkers(); err != nil {
@@ -271,13 +306,13 @@ func (n *Node) finish(why string) *Error {
 	}
 	if w.fromSnapshot && txOK && tx.HasRadio {
 		// a restore never writes `disabled` (§2); an operator switching the radio meanwhile is logged, not undone
-		if dis, _, err := n.Sys.RadioState(); err == nil && dis != tx.PrevDisabled {
+		if dis, _, err := n.Sys.RadioState(); err == nil && dis != tx.PrevDisabled && w.kind == wantNet {
 			n.Log("CRIT finish: the radio's disabled flag changed by hand during the change (%v -> %v) — kept", tx.PrevDisabled, dis)
 		}
 	}
 	rc, out := n.Sys.SaveTxn(tok)
 	if rc != 0 && rc != 6 {
-		n.Log("finish (%s): save rc=%d (%s) — .txn kept, finished again at the next boot", why, rc, strings.TrimSpace(out))
+		n.Log("finish (%s): save rc=%d (%s) — .txn kept, finished again later", why, rc, strings.TrimSpace(out))
 		return fail(EStorage, "save rc=%d", rc)
 	}
 	provstore.RemoveTxn(n.P)
@@ -286,7 +321,23 @@ func (n *Node) finish(why string) *Error {
 	if !txOK {
 		verb = "?"
 	}
-	n.Log("txn %s finished (%s): wireless = %s, setkey rc=%d save rc=%d", verb, why, w.source, src, rc)
+	n.Log("txn %s finished (%s): wireless = %s, %s, save rc=%d", verb, why, w.source, how, rc)
+	return nil
+}
+
+// finishGated is the verb-triggered Finish (§15.5): after a failure it is not retried for finishBackoff — the verb
+// gets EState at once, so an unauthenticated peer can cause at most one setkey + one p5 save per backoff.
+const finishBackoff = 60 * time.Second
+
+func (n *Node) finishGated(why string) *Error {
+	if !n.lastFinishFail.IsZero() && n.Sys.Now().Sub(n.lastFinishFail) < finishBackoff {
+		return fail(EState, "retried within %s of a failure", finishBackoff)
+	}
+	if e := n.finish(why); e != nil {
+		n.lastFinishFail = n.Sys.Now()
+		return e
+	}
+	n.lastFinishFail = time.Time{}
 	return nil
 }
 
@@ -298,29 +349,37 @@ func (n *Node) refreshMeshExpect(rec *provstore.Record) {
 	}
 }
 
-// Finish is finish under the node's mutex, for the daemon before it serves (§3).
-func (n *Node) Finish(why string) error {
+// BootFinish (§3, §15.2): the boot's Finish runs in the background holding the helper mutex, which is taken HERE,
+// before the caller starts listening — no verb runs before it ends, and the helper always listens. waitRadio is called
+// (under the mutex) first when the previous state is a network on a radio that is not blocked.
+func (n *Node) BootFinish(waitRadio func()) {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	if e := n.finish(why); e != nil {
-		return errors.New(e.Reason)
-	}
-	return nil
+	go func() {
+		defer n.mu.Unlock()
+		if n.finishWantsRadio() {
+			waitRadio()
+		}
+		if e := n.finish("boot"); e != nil {
+			n.Log("boot finish: %s", e.Reason)
+		}
+	}()
 }
 
-// FinishWantsRadio: Finish will set a network key on a radio that is not blocked (wait for it to come up first).
-func (n *Node) FinishWantsRadio() bool {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+// finishWantsRadio: Finish will set a network key on a radio that is neither blocked nor switched off by hand (a radio
+// that will not come up is not waited for, review B m5).
+func (n *Node) finishWantsRadio() bool {
 	rec, e := n.resolve()
 	if e != nil {
 		return false
 	}
 	tx, ok := provstore.ReadTxn(n.P)
+	if rec.State != provstore.Member && !rec.Left && (!ok || tx.PrevKey == placeholderKey) {
+		return false
+	}
 	w, err := n.desired(rec, tx, ok)
 	if err != nil || w.kind == wantForget {
 		return false
 	}
-	dis, inMark, err := n.Sys.RadioState()
-	return err == nil && !(dis && inMark)
+	dis, _, err := n.Sys.RadioState()
+	return err == nil && !dis
 }

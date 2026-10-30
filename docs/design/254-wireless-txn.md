@@ -1,6 +1,6 @@
-# #254 — a network change that did not succeed goes back to the previous state; `network/leave` forgets the mesh (design v7, 2026-10-30)
+# #254 — a network change that did not succeed goes back to the previous state; `network/leave` forgets the mesh (design v8, 2026-10-30)
 
-Status: v7 for review. v1–v3 REJECTED; v4: A REJECT (model sound), B APPROVE-WITH-CHANGES; v5 and v6: both
+Status: v8 — v7 approved (round 7, §14); code review round 1 changes in §15, for review. v1–v3 REJECTED; v4: A REJECT (model sound), B APPROVE-WITH-CHANGES; v5 and v6: both
 APPROVE-WITH-CHANGES (one MAJOR each in round 6, both one-line contract fixes, §13). §10 round 4, §12 round 5, §13 round 6. **Owner rule: a change that did not succeed returns the node to the previous state — "use the previous
 one".** Owner decisions: L22 → A (leave = forget the network); legacy / operator-keyed node whose join fails → back to
 the operator's own settings (2026-10-30). Product change: helper, `halow-setkey`, `batman-config-save`. Branch
@@ -202,3 +202,84 @@ A: APPROVE (two MINOR wording fixes applied in §2). B: APPROVE-WITH-CHANGES, no
 - §4.2 also states: a `network/update` on a node whose radio is switched off by hand is refused the same way (updates
   enter through `net.apply`).
 Design status: **approved** (round 7). Implementation follows §11 with the tests in §8.
+
+## 15. Code review round 1 → v8 (2026-10-30)
+Code review of the implementation (e940f91 + a21517f): A APPROVE-WITH-CHANGES (0/3/10), B REJECT (1/3/13). The model
+stands. Changes, each with its negative control (Go mutant or a test that fails without it):
+
+**15.1 A snapshot that cannot be restored is refused up front (B BLOCKER-1, B m10).** `halow-setkey` refuses values it
+cannot carry: a key with `` ` $ ( ) ; | & < > ' ``, a key under 8 characters, a non-integer channel, and also an empty
+key (open mesh) or a non-`sae` encryption, which setkey would change. If an operator set such values through uci or
+LuCI and a join then failed, Finish could never restore them, and the M6 lockout would return. So:
+- **Before a join or update whose previous state is the snapshot** (record not member), the helper asks
+  `halow-setkey --check-only` (same validation code, no lock, no write; key on stdin) and checks the encryption. If the
+  snapshot is not a placeholder and cannot be restored → `EApply` "this node's mesh settings were set outside
+  halow-setkey and could not be put back if the change failed — set them with halow-setkey first". Nothing changed.
+- **A `.txn` that already holds such a snapshot** (written by an older helper) is finished by **forgetting** (CRIT log):
+  the previous state cannot be reached, the forgotten state is fail-secure (no unvalidated key on the air), and the
+  owner can join again from the app. Before 15.1 there was no in-band exit.
+- A `.txn` whose token is unreadable (B m9, A m6): if the record decides the previous state (member → its network,
+  `Left` → forget), Finish rewrites `.txn` with a fresh token and continues. Otherwise the snapshot is unreadable too →
+  forget (CRIT). Corrected log text. Runbook entry not needed any more (in-band exit).
+
+**15.2 No subprocess may keep the helper from serving (A MAJOR-2, B MAJOR-1).** Every command the helper runs has a
+deadline: `halow-setkey` 300 s, `batman-config-save` 300 s, anything else 60 s. The command runs in its own process
+group; at the deadline the group gets SIGTERM, then SIGKILL 10 s later. A daemonised grandchild holding the pipe is cut
+off 5 s after the command exits. A timeout returns rc 124, "outcome unknown", so `.txn` is kept.
+- The boot Finish runs **in the background holding the helper mutex**, taken before the socket listens. No verb can run
+  before it ends, and the helper always listens.
+- A Finish triggered by a verb that failed is not retried for 60 s; verbs get `EState` at once (15.5).
+
+**15.3 An OTA while `.txn` exists is refused (B MAJOR-2).** `.txn` is per slot, so an OTA taken before Finish would
+drop the obligation, and the new slot could run a wireless that contradicts the record. `batman-config-save --check`
+reports rc 5 "p5 stale: an unfinished network change (.txn)" while `.txn` exists, and the existing OTA freshness gate
+refuses. New §8 row "upgrade while `.txn`": refused.
+
+**15.4 "Already satisfied" is judged on the live radio (A MAJOR-1).** `halow-setkey` exits 3 only after `uci commit`,
+so uci alone cannot tell "applied" from "applied but not verified".
+- **Forget**: Finish always runs `--forget-mesh`, which is idempotent and verifies the radio is down.
+- **Network**: satisfied only when uci matches, the radio is up on that mesh id (`meshjoin_radio_up`), **and** no
+  setkey / forget in this helper's lifetime ended "changed, not verified" (rc ≠ 0, 2). An update may change only the
+  key, which a live mesh id cannot show, so after an unverified apply the next Finish always re-applies. After a reboot
+  netifd rebuilds the radio from uci, so uci again describes the live state.
+- The Finish log says `applied` or `already` (B m8, A m2).
+
+**15.5 Finish triggered by a request is rate-limited (A m1, B m3).** It still runs before the owner-op check: a
+`network/update` has no owner-op, and its chain is verified against the record that Finish may rebuild. After a failed
+Finish, verb-triggered Finish is not retried for 60 s, so an unauthenticated peer can cause at most one setkey + one p5
+save per minute. With 15.4 a peer can no longer turn an unverified forget into "finished". Stated in §9.
+
+**15.6 Smaller fixes.**
+- **Operator vs. `.txn` (A m5).** `halow-setkey` without `--no-persist` refuses (rc 2) while `/etc/batman-prov/.txn`
+  exists: "an unfinished network change — let the helper finish it (any app action or a reboot)". An operator's change
+  is no longer silently undone by the next Finish.
+- **Hand-disabled radio and leave (B m4).** `--forget-mesh` on a radio that is `disabled=1` and NOT in the keyguard
+  mark keeps it out of the mark. It stays the operator's switch, and a later join still meets applyNet's pre-check.
+- **Ownership (A m7).** The other writers of the keyguard mark and uci wireless (halow-keyguard S18, 96, 99zz) run only
+  at boot, before the helper (S89). A runtime `halow-keyguard restart` is an operator action outside this contract.
+- **Unreadable p5 record (A m3).** `resolve()` treats `--prov-get` rc 0 with an undecodable record as unreadable
+  (error, like `--boot`'s `unknown(prov-corrupt)`).
+- **mesh_expect (A m4, B m12).** applyNet refreshes prov-state `mesh_expect` after a successful change.
+- **Same radio as setkey (A m8, B m11).** The helper finds the mesh interface on the morse radio, the same way
+  `morse_radio()` does in setkey, and reads only the mark's first line, as setkey and keyguard do. The key is read
+  without trimming (B m10).
+- **Closing the save window (B m1).** config-save modes without `--txn` require the sequence `none none` at their check
+  and before the write.
+- **Durable remove (B m6).** `RemoveTxn` fsyncs the directory.
+- **Snapshot outside the setkey lock (B m2): stated residual.** An operator's halow-setkey in flight at the instant of a
+  join can be snapshotted half-staged. The window is the operator's own concurrent change; their persist fails visibly
+  (rc 3).
+- **`info.net` owner-only (A m10, B m13).** Enforced in provd (P2); listed on the #254 checklist with its P2 negative
+  control.
+- **Tests.**
+  - Go: every surviving mutant from both reviews gets a killing test: handover then crash after v2; Finish / leave
+    save failure keeps `.txn`; join commit failure → Finish; mesh markers removed (recorded by the fake); satisfied
+    edges; empty-key snapshot; p5 rc 8/10/14; 30-hex token; malformed radio line.
+  - The fake models the scripts: setkey / forget rc 3 means uci was changed, and `SaveTxn` checks that `.txn` carries
+    the token.
+  - Shell: `--check-only`, `--check` rc 5 with `.txn`, the setkey refusal with `.txn`, the hand-disabled forget; the
+    new shell tests are added to CI's prov-p1 job (A m9).
+  - Node: powerloss txn-2 injects the half-applied state like legacyjoin. Its negative control is the mutant
+    `helper-skipapply` (satisfied always true), which leaves the injected mesh id.
+  - The §8 premise "setkey with the radio off returns rc 3" is the 04 capture `radiooff.sh` (2026-10-30), not a stub
+    test.

@@ -72,6 +72,8 @@ type Sys interface {
 	ForgetMesh() error                                      // halow-setkey --forget-mesh --no-persist; a *SetkeyError on failure
 	RadioState() (disabled, inKeyguardMark bool, err error) // the morse radio's uci disabled; listed in the keyguard mark
 	SetMeshExpect(me string) error                          // p6 prov-state field 6 only
+	CheckRestorable(key, id, ch string) error               // halow-setkey --check-only + sae encryption (§15.1)
+	LiveMeshUp() bool                                       // the radio is up on the uci mesh id (meshjoin_radio_up, §15.4)
 	ApplyLock(rootHash string) error                        // prov_apply_lock --hash-stdin: doors first, the hash last (§5.3)
 	RestoreRoot(prev string) error                          // prov_apply_lock --restore-stdin: root's previous field back ("" -> "!")
 	RootField() (string, error)                             // root's current shadow field
@@ -101,6 +103,11 @@ type Node struct {
 	Log     func(string, ...any)
 	// Verdict is this boot's --boot verdict; unknown(*) freezes every state-changing verb (round-6 B-M2)
 	Verdict string
+	// 254-wireless-txn §15: an apply of this lifetime ended "changed, not verified"; the last verb-triggered Finish
+	// failure; the last commit-only resolve
+	unverified     bool
+	lastFinishFail time.Time
+	lastResolve    time.Time
 }
 
 type nonce struct {
@@ -185,11 +192,15 @@ func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 	// the wireless; commit-only verbs never Finish (an owner can always remove a co-owner, even with a dead radio) but
 	// never commit on an overlay older than p5 either
 	if commitOnly[verb] {
-		if _, e := n.resolve(); e != nil {
-			n.Log("%s: %s (committing on the overlay)", verb, e.Reason)
+		// at most once per 30 s (a p5 mount; §15.5 — reachable before the owner-op check)
+		if n.lastResolve.IsZero() || n.Sys.Now().Sub(n.lastResolve) >= 30*time.Second {
+			n.lastResolve = n.Sys.Now()
+			if _, e := n.resolve(); e != nil {
+				n.Log("%s: %s (committing on the overlay)", verb, e.Reason)
+			}
 		}
 	} else if stateChanging[verb] && provstore.TxnPresent(n.P) {
-		if e := n.finish("before " + verb); e != nil {
+		if e := n.finishGated("before " + verb); e != nil {
 			return nil, fail(EState, "an earlier network change could not be finished (%s)", e.Reason)
 		}
 	}
@@ -1093,6 +1104,19 @@ func (n *Node) applyNet(rec *provstore.Record, p *parsedNet, verb string) (cbor.
 	if dis, inMark, err := n.Sys.RadioState(); err == nil && dis && !inMark {
 		return nil, fail(EApply, "the HaLow radio is switched off on this node")
 	}
+	// §15.1: when the previous state is the snapshot (not a member), it must be restorable — or the change is refused
+	// before anything changes
+	if rec.State != provstore.Member {
+		k, id, ch, err := n.Sys.CurrentWireless()
+		if err != nil {
+			return nil, fail(EApply, "current wireless: %v", err)
+		}
+		if k != placeholderKey {
+			if err := n.Sys.CheckRestorable(k, id, ch); err != nil {
+				return nil, fail(EApply, "this node's mesh settings were set outside halow-setkey and could not be put back if the change failed — set them with halow-setkey first (%v)", err)
+			}
+		}
+	}
 	token := hex.EncodeToString(rnd(16))
 	next := *rec
 	next.Generation = rec.Generation + 1
@@ -1116,7 +1140,9 @@ func (n *Node) applyNet(rec *provstore.Record, p *parsedNet, verb string) (cbor.
 	}
 	seam.At(seam.Txn1, n.Log) // marker + .txn written, wireless untouched
 	// step 2: the live change
-	if err := n.Sys.SetKeyNoPersist(p.sae, p.meshID, p.channel); err != nil {
+	err = n.Sys.SetKeyNoPersist(p.sae, p.meshID, p.channel)
+	n.noteApply(err)
+	if err != nil {
 		if setkeyRC(err) == 2 { // nothing changed: nothing to undo (review r4 B-M2)
 			provstore.RemoveTxn(n.P)
 			return nil, fail(EApply, "setkey: %v", err)
@@ -1137,7 +1163,8 @@ func (n *Node) applyNet(rec *provstore.Record, p *parsedNet, verb string) (cbor.
 	} else {
 		provstore.RemoveTxn(n.P)
 	}
-	seam.At(seam.Txn5, n.Log) // everything written, the reply not sent
+	n.refreshMeshExpect(&next) // §15.6 (A m4)
+	seam.At(seam.Txn5, n.Log)  // everything written, the reply not sent
 	return cbor.M(1, p.version), nil
 }
 
@@ -1170,7 +1197,9 @@ func (n *Node) leave(rec *provstore.Record) (cbor.Map, *Error) {
 		n.finish("after a failed commit of network/leave")
 		return nil, err
 	}
-	if err := n.Sys.ForgetMesh(); err != nil {
+	err = n.Sys.ForgetMesh()
+	n.noteApply(err)
+	if err != nil {
 		// committed but not forgotten: .txn stays, the next Finish forgets; the app must not show "left" as complete
 		n.Log("network.leave: committed, forgetting the mesh failed: %v", err)
 		return nil, fail(EApply, "left the network; the radio still has the old settings — retry")

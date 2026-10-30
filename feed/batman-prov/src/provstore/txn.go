@@ -71,7 +71,17 @@ func undashHex(s string) (string, error) {
 	return string(b), err
 }
 
-func RemoveTxn(p Paths) { os.Remove(p.Txn()) }
+// RemoveTxn removes .txn durably (the directory fsync'd, as WriteTxn does; 254-wireless-txn §15.6, review B m6): a
+// sysrq right after must not bring it back.
+func RemoveTxn(p Paths) {
+	if err := os.Remove(p.Txn()); err != nil {
+		return
+	}
+	if d, err := os.Open(p.Dir); err == nil {
+		d.Sync()
+		d.Close()
+	}
+}
 
 // TxnPresent: a .txn exists (readable or not) — the only thing that decides "a change is unfinished".
 func TxnPresent(p Paths) bool {

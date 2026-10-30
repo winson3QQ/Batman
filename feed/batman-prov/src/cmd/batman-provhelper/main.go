@@ -18,7 +18,6 @@ import (
 	"io"
 	"log/syslog"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -72,21 +71,18 @@ func uptime() int {
 
 var cleanEnv = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C"}
 
+// run: every subprocess has a deadline (254-wireless-txn §3, code review B MAJOR-1) — halow-setkey and
+// batman-config-save may legitimately take minutes (wifi reload + verify, a p5 write); anything else gets 60 s.
+// A timeout returns provstore.RCTimeout (124): outcome unknown, a wireless transaction keeps .txn.
 func run(stdin []byte, name string, args ...string) (int, string) {
-	c := exec.Command(name, args...)
-	c.Env = cleanEnv
-	if stdin != nil {
-		c.Stdin = bytes.NewReader(stdin)
+	t := 60 * time.Second
+	switch filepath.Base(name) {
+	case "halow-setkey":
+		t = 300 * time.Second
+	case "batman-config-save":
+		t = provstore.ConfigSaveTimeout
 	}
-	out, err := c.CombinedOutput()
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return ee.ExitCode(), string(out)
-		}
-		return 127, err.Error()
-	}
-	return 0, string(out)
+	return provstore.Exec(t, cleanEnv, stdin, name, args...)
 }
 
 func uciGet(k string) string {
@@ -94,12 +90,31 @@ func uciGet(k string) string {
 	return strings.TrimSpace(out)
 }
 
+// uciRaw: a value as uci holds it — only the trailing newline is cut (a key may start or end with a blank; §15.6)
+func uciRaw(k string) string {
+	_, out := run(nil, "uci", "-q", "get", k)
+	return strings.TrimSuffix(out, "\n")
+}
+
+// meshIface: the mesh interface on the morse (HaLow) radio — the same radio halow-setkey's morse_radio() picks
+// (`type='morse'`, the first one), so the helper and setkey act on one radio (§15.6, A m8 / B m11).
 func meshIface() string {
 	_, out := run(nil, "uci", "-q", "show", "wireless")
+	radio := ""
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasSuffix(l, ".type='morse'") && radio == "" {
+			radio = strings.Split(strings.TrimPrefix(l, "wireless."), ".")[0]
+		}
+	}
+	if radio == "" {
+		return ""
+	}
 	for _, l := range strings.Split(out, "\n") {
 		if strings.HasSuffix(l, ".mode='mesh'") {
-			p := strings.Split(strings.TrimPrefix(l, "wireless."), ".")
-			return p[0]
+			i := strings.Split(strings.TrimPrefix(l, "wireless."), ".")[0]
+			if uciGet("wireless."+i+".device") == radio {
+				return i
+			}
 		}
 	}
 	return ""
@@ -159,7 +174,8 @@ func (s realSys) RadioState() (bool, bool, error) {
 	}
 	in := false
 	if b, err := os.ReadFile("/etc/halow-keyguard.blocked"); err == nil {
-		for _, f := range strings.Fields(string(b)) {
+		// the first line only, as halow-setkey and halow-keyguard read it (`read -r`)
+		for _, f := range strings.Fields(strings.SplitN(string(b), "\n", 2)[0]) {
 			if f == dev {
 				in = true
 			}
@@ -173,7 +189,40 @@ func (s realSys) CurrentWireless() (string, string, string, error) {
 		return "", "", "", errors.New("no mesh interface")
 	}
 	dev := uciGet("wireless." + i + ".device")
-	return uciGet("wireless." + i + ".key"), uciGet("wireless." + i + ".mesh_id"), uciGet("wireless." + dev + ".channel"), nil
+	return uciRaw("wireless." + i + ".key"), uciGet("wireless." + i + ".mesh_id"), uciGet("wireless." + dev + ".channel"), nil
+}
+
+// CheckRestorable (§15.1): could halow-setkey put these values back? Its own validation (`--check-only`, no lock, no
+// write; the key over stdin) plus the encryption it would force (sae): an operator mesh with another encryption, or
+// an empty key, cannot be restored by it.
+func (s realSys) CheckRestorable(key, id, ch string) error {
+	i := meshIface()
+	if i == "" {
+		return errors.New("no mesh interface")
+	}
+	if e := uciGet("wireless." + i + ".encryption"); e != "sae" {
+		return fmt.Errorf("encryption %q is not sae", e)
+	}
+	if key == "" {
+		return errors.New("no mesh key (open mesh)")
+	}
+	args := []string{"--check-only", "--mesh", "-"}
+	if id != "" {
+		args = append(args, "--mesh-id", id)
+	}
+	if ch != "" {
+		args = append(args, "--channel", ch)
+	}
+	if rc, out := run([]byte(key+"\n"), "halow-setkey", args...); rc != 0 {
+		return fmt.Errorf("halow-setkey --check-only rc=%d: %s", rc, lastLine(out))
+	}
+	return nil
+}
+
+// LiveMeshUp (§15.4): the HaLow radio is up on the uci mesh id (meshjoin_radio_up: wpa_supplicant's ssid).
+func (s realSys) LiveMeshUp() bool {
+	rc, _ := run(nil, "sh", "-c", ". /usr/lib/batman/meshjoin.sh && meshjoin_radio_up")
+	return rc == 0
 }
 
 // ---- the lock: ONE implementation, prov_apply_lock in prov-lock.sh (docs/design/254-claim-lock-fix.md §5.3) ----
@@ -537,12 +586,7 @@ func daemon(p provstore.Paths) {
 	// of the record p5 confirmed. Not on an unknown verdict or an unread p5 (then the first saving verb, or the next
 	// boot, finishes it). A network to rejoin waits for the radio (up to 120 s); a forget / blocked radio does not.
 	if res.Unfinished && res.P5Read && !strings.HasPrefix(res.Verdict, "unknown") {
-		if n.FinishWantsRadio() {
-			waitRadioUp(120 * time.Second)
-		}
-		if err := n.Finish("boot"); err != nil {
-			logf("boot finish: %v", err)
-		}
+		n.BootFinish(func() { waitRadioUp(120 * time.Second) }) // holds the mutex from here until it ends (§15.2)
 	}
 	srv := &sock.Server{Path: filepath.Join(sockDir, "helper.sock"), PeerUID: provdUID, GID: provdGID, Idle: 30 * time.Second, Log: logf}
 	if err := srv.Listen(); err != nil {
