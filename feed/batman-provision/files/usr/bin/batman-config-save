@@ -93,6 +93,13 @@ esac
 up() { cut -d. -f1 /proc/uptime; }
 say() { echo "batman-config-save: $*"; }
 err() { echo "batman-config-save: $*" >&2; }
+PROVD=/etc/batman-prov                     # overlay copy (owned by batman-provhelper)
+# #254 §15.3 (code review 2 B MAJOR-1): an unfinished network change (.txn, per slot) makes --check STALE before anything
+# else — before the no-p5 / bypass / lock / ext4 / mount checks, so an unreadable p5 (the usual reason .txn stays) never
+# turns the OTA gate's verdict into "skip" / "error". An OTA now would drop the helper's obligation to finish it.
+if [ "$mode" = --check ] && { [ -e "$PROVD/.txn" ] || [ -L "$PROVD/.txn" ]; }; then
+	say "p5 stale: an unfinished network change (.txn) — the helper finishes it at the next app action or reboot"; exit 5
+fi
 
 # ---- run dir (#280) and the files that live there --------------------------------------------
 # shellcheck source=/dev/null
@@ -151,7 +158,6 @@ magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)
 sbstamp() { hexdump -s 1072 -n 6 -e '1/4 "%u" " " 1/2 "%u"' "$DEV" 2>/dev/null; }
 
 # ---- #254 provisioning record: formats (254-stage1-impl §4.3) ----------------------------------
-PROVD=/etc/batman-prov                     # overlay copy (owned by batman-provhelper)
 # shellcheck source=/dev/null
 PROVLIB=0; [ -r /usr/lib/batman/prov-lock.sh ] && . /usr/lib/batman/prov-lock.sh && type prov_meta_ok >/dev/null 2>&1 && PROVLIB=1
 case "$mode" in --prov-only|--prov-get) [ "$PROVLIB" = 1 ] || { echo "batman-config-save: /usr/lib/batman/prov-lock.sh missing — refusing $mode" >&2; exit 1; } ;; esac
@@ -469,9 +475,6 @@ diff_keys() {   # key names whose `set` line differs between stage and p5 (never
 
 # ---- --check: read-only verdict (#202 C3) ----------------------------------------------------
 if [ "$mode" = --check ]; then
-	# #254 §15.3: an unfinished network change (.txn, per slot) — an OTA now would drop the helper's obligation to
-	# finish it; batman-slot's freshness gate refuses on rc 5
-	if [ -e "$PROVD/.txn" ] || [ -L "$PROVD/.txn" ]; then say "p5 stale: an unfinished network change (.txn) — the helper finishes it at the next app action or reboot"; exit 5; fi
 	prov_compare "$MNT"
 	[ -f "$MNT/.seeded" ] || { say "p5 unseeded"; exit 7; }
 	STAGE=$(tmpd cfgsave-check) || { say "p5 error staging"; exit 1; }

@@ -5,7 +5,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -57,6 +56,7 @@ type fakeSys struct {
 	saveTxnNoMark int // SaveTxn called without the marker (config-save would refuse: the shipped deadlock)
 	meshExpect    string
 	p5rc          int // GetP5 returns this rc (p5 unreadable) when set
+	getP5s        int // GetP5 calls (a p5 mount each)
 	// 254-wireless-txn §15: the fake follows the scripts — setkey / forget rc 3 means uci WAS changed (only rc 2 means
 	// nothing changed); config-save --save --txn refuses unless .txn carries the token; the live radio can lag uci
 	txnPath        string // .txn of this rig (SaveTxn checks its token like config-save's txn_seq)
@@ -90,6 +90,7 @@ func (f *fakeSys) Persist(r, m, id, txn string) (int, string) {
 	return 0, ""
 }
 func (f *fakeSys) GetP5(dir string) (int, string) {
+	f.getP5s++
 	if f.p5rc != 0 {
 		return f.p5rc, ""
 	}
@@ -172,13 +173,14 @@ func (f *fakeSys) CheckRestorable(k, id, ch string) error {
 		return f.restorableErr
 	}
 	if f.encryption != "" && f.encryption != "sae" {
-		return errors.New("encryption not sae")
+		return &RestoreRefused{Why: "encryption not sae"}
 	}
-	if len(k) < 8 || strings.ContainsAny(k, "`$();|&<>'") || strings.ContainsAny(id, "`$();|&<>'") {
-		return errors.New("halow-setkey would refuse it")
+	// halow-setkey's validate(): length, forbidden characters, the placeholder itself (review 2 B m4)
+	if len(k) < 8 || k == placeholderKey || strings.ContainsAny(k, "`$();|&<>'") || strings.ContainsAny(id, "`$();|&<>'") {
+		return &RestoreRefused{Why: "halow-setkey would refuse it"}
 	}
 	if _, err := strconv.Atoi(ch); ch != "" && err != nil {
-		return errors.New("channel not an integer")
+		return &RestoreRefused{Why: "channel not an integer"}
 	}
 	return nil
 }

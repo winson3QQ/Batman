@@ -69,6 +69,10 @@ func uptime() int {
 	return int(v)
 }
 
+// keyguardMark: what halow-keyguard / halow-setkey blocked (tests point it elsewhere)
+var keyguardMark = "/etc/halow-keyguard.blocked"
+
+// cleanEnv: the environment of every command (tests point PATH at stubs)
 var cleanEnv = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C"}
 
 // run: every subprocess has a deadline (254-wireless-txn §3, code review B MAJOR-1) — halow-setkey and
@@ -173,7 +177,7 @@ func (s realSys) RadioState() (bool, bool, error) {
 		return false, false, errors.New("mesh interface without a radio")
 	}
 	in := false
-	if b, err := os.ReadFile("/etc/halow-keyguard.blocked"); err == nil {
+	if b, err := os.ReadFile(keyguardMark); err == nil {
 		// the first line only, as halow-setkey and halow-keyguard read it (`read -r`)
 		for _, f := range strings.Fields(strings.SplitN(string(b), "\n", 2)[0]) {
 			if f == dev {
@@ -195,16 +199,18 @@ func (s realSys) CurrentWireless() (string, string, string, error) {
 // CheckRestorable (§15.1): could halow-setkey put these values back? Its own validation (`--check-only`, no lock, no
 // write; the key over stdin) plus the encryption it would force (sae): an operator mesh with another encryption, or
 // an empty key, cannot be restored by it.
+// A refusal is definitive (*node.RestoreRefused: Finish forgets); a timeout / exec failure is transient (a plain
+// error: Finish keeps .txn and retries — §16.3, review 2 B m1).
 func (s realSys) CheckRestorable(key, id, ch string) error {
 	i := meshIface()
 	if i == "" {
-		return errors.New("no mesh interface")
+		return &node.RestoreRefused{Why: "no mesh interface on the morse radio"}
 	}
 	if e := uciGet("wireless." + i + ".encryption"); e != "sae" {
-		return fmt.Errorf("encryption %q is not sae", e)
+		return &node.RestoreRefused{Why: fmt.Sprintf("encryption %q is not sae", e)}
 	}
 	if key == "" {
-		return errors.New("no mesh key (open mesh)")
+		return &node.RestoreRefused{Why: "no mesh key (open mesh)"}
 	}
 	args := []string{"--check-only", "--mesh", "-"}
 	if id != "" {
@@ -213,10 +219,14 @@ func (s realSys) CheckRestorable(key, id, ch string) error {
 	if ch != "" {
 		args = append(args, "--channel", ch)
 	}
-	if rc, out := run([]byte(key+"\n"), "halow-setkey", args...); rc != 0 {
+	switch rc, out := run([]byte(key+"\n"), "halow-setkey", args...); rc {
+	case 0:
+		return nil
+	case 2:
+		return &node.RestoreRefused{Why: "halow-setkey --check-only: " + lastLine(out)}
+	default:
 		return fmt.Errorf("halow-setkey --check-only rc=%d: %s", rc, lastLine(out))
 	}
-	return nil
 }
 
 // LiveMeshUp (§15.4): the HaLow radio is up on the uci mesh id (meshjoin_radio_up: wpa_supplicant's ssid).

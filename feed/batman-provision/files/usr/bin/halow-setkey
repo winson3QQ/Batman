@@ -67,7 +67,9 @@ fi
 mesh_ifaces(){ uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='mesh'$/\1/p"; }
 ap_ifaces(){ uci show wireless | sed -n "s/^wireless\.\([^.]*\)\.mode='ap'$/\1/p"; }
 morse_radio(){ uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)\.type='morse'$/\1/p" | head -1; }
-mesh_netdev(){ iw dev 2>/dev/null | awk '/^\tInterface/{i=$2} /type mesh point/{print i; exit}'; }
+# fd 9 (the lock, once held) is closed for the external commands of the verify loops and the persist: a child wedged
+# in D-state must not keep the lock (code review 2 B m6). uci (short file operations) keeps the plain form.
+mesh_netdev(){ iw dev 2>/dev/null 9>&- | awk '/^\tInterface/{i=$2} /type mesh point/{print i; exit}'; }
 
 # ---- validation (#254 §15.1: ONE implementation for the write modes and --check-only) --------------
 # exits 2 with the reason; sets RADIO, BW, CENTRE_KHZ
@@ -112,10 +114,6 @@ fi
 
 [ "$(id -u)" = 0 ] || { echo "halow-setkey: root only" >&2; exit 2; }
 [ "$FORGET" = 1 ] || [ -n "$MESH$AP$MESHID$CHAN" ] || { echo "nothing to set (use --mesh/--ap/--mesh-id/--channel, --forget-mesh or --status)"; exit 2; }
-# #254 §15.6: an operator's change while the helper has an unfinished network change would be undone by its Finish
-if [ "$NOPERSIST" = 0 ] && { [ -e "$PROVTXN" ] || [ -L "$PROVTXN" ]; }; then
-	echo "halow-setkey: an unfinished network change — let the helper finish it (any app action or a reboot); nothing changed" >&2; exit 2
-fi
 
 # ---- 0. one writer at a time (#254 §6) ------------------------------------------------------------
 # helper (net.apply / Finish), operator and 99-batman-chanfix all write wireless + `wifi reload`; interleaved, one
@@ -131,6 +129,11 @@ w=0; until flock -n 9; do
 	w=$((w + 1)); [ "$w" -ge "$LOCKWAIT" ] && { echo "halow-setkey: busy — another radio change holds the lock (${w}s); nothing changed" >&2; exit 2; }
 	sleep 1
 done
+# #254 §15.6: an operator's change while the helper has an unfinished network change would be undone by its Finish.
+# Checked while HOLDING the lock (code review 2 B m8): a helper change that started while we waited is seen here.
+if [ "$NOPERSIST" = 0 ] && { [ -e "$PROVTXN" ] || [ -L "$PROVTXN" ]; }; then
+	echo "halow-setkey: an unfinished network change — let the helper finish it (any app action or a reboot); nothing changed" >&2; exit 2
+fi
 
 # ---- 4. persist (#202), shared by every write mode -------------------------------------------------
 persist_exit() {
@@ -143,7 +146,7 @@ persist_exit() {
 	if ! command -v batman-config-save >/dev/null 2>&1; then
 		echo "persist: FAILED (batman-config-save missing) — the setting lives only in this slot and is LOST on the next OTA" >&2; exit 3
 	fi
-	out=$(batman-config-save --save 2>&1); prc=$?
+	out=$(batman-config-save --save 2>&1 9>&-); prc=$?
 	case "$prc" in
 		0) echo "persist: saved -> /dev/mmcblk0p5" ;;
 		6) echo "persist: PARTIAL — $(echo "$out" | sed -n 's/.*cannot persist\(.*\)(forbidden.*/\1/p' | head -1) could not be persisted (forbidden characters)" >&2; RC=3 ;;
@@ -159,8 +162,8 @@ RC=0
 # placeholder on an enabled radio would put the public key on the air. Then verified: no mesh netdev and netifd
 # reports the radio up=false disabled=true.
 radio_down() {   # $1 = radio; netifd's view (the same one `wifi status` prints)
-	st=$(ubus call network.wireless status 2>/dev/null)
-	[ "$(printf '%s' "$st" | jsonfilter -e "@.$1.up" 2>/dev/null)" = false ] && [ "$(printf '%s' "$st" | jsonfilter -e "@.$1.disabled" 2>/dev/null)" = true ]
+	st=$(ubus call network.wireless status 2>/dev/null 9>&-)
+	[ "$(printf '%s' "$st" | jsonfilter -e "@.$1.up" 2>/dev/null 9>&-)" = false ] && [ "$(printf '%s' "$st" | jsonfilter -e "@.$1.disabled" 2>/dev/null 9>&-)" = true ]
 }
 if [ "$FORGET" = 1 ]; then
 	RADIO=$(morse_radio)
@@ -243,7 +246,7 @@ if [ -n "$CHAN" ]; then
 		if [ "$cur" != "$CHAN" ]; then break; fi
 		dev=$(mesh_netdev)
 		if [ -n "$dev" ]; then
-			khz=$(morse_cli -i "$dev" channel 2>/dev/null | sed -n 's/^[[:space:]]*Operating Frequency:[[:space:]]*\([0-9]*\) kHz.*/\1/p' | head -1)
+			khz=$(morse_cli -i "$dev" channel 2>/dev/null 9>&- | sed -n 's/^[[:space:]]*Operating Frequency:[[:space:]]*\([0-9]*\) kHz.*/\1/p' | head -1)
 			[ "$khz" = "$CENTRE_KHZ" ] && { verified=1; break; }
 		fi
 		sleep 1; i=$((i + 1))

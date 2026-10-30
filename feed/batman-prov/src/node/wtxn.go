@@ -151,18 +151,26 @@ func (n *Node) decryptSecrets(s *cose.Sign1) cbor.Map {
 	return mm
 }
 
-// desired = the previous state for this record (§2). A snapshot that halow-setkey cannot carry, or an unreadable one,
-// is finished by forgetting (§15.1: the previous state cannot be reached; forgotten is fail-secure and the owner can
-// join again).
+// RestoreRefused: halow-setkey's own validation (or the sae rule) refuses a value — definitive. Any other
+// CheckRestorable error (timeout, exec failure) is transient: Finish keeps .txn and retries (§16.3).
+type RestoreRefused struct{ Why string }
+
+func (e *RestoreRefused) Error() string { return "not restorable: " + e.Why }
+
+// desired = the previous state (§2, §16.2). A member's previous state is its committed network. Otherwise the
+// transaction says: a network/leave whose commit landed (the record is not member any more) -> forgotten; any other
+// change (a join, after a leave too) -> the pre-change snapshot, i.e. what was live before it — the placeholder of a
+// fresh / left node, or the settings an operator set in the meantime. A snapshot that halow-setkey refuses, or an
+// unreadable one, is finished by forgetting (§15.1: unreachable; forgotten is fail-secure, the owner can join again).
 func (n *Node) desired(rec *provstore.Record, tx provstore.Txn, txOK bool) (wantWireless, error) {
-	switch {
-	case rec.State == provstore.Member && rec.Net != nil:
+	if rec.State == provstore.Member && rec.Net != nil {
 		id, ch, key, err := n.storedNet(rec)
 		if err != nil {
 			return wantWireless{}, err
 		}
 		return wantWireless{kind: wantNet, key: key, id: id, ch: ch, source: "the committed network"}, nil
-	case rec.Left:
+	}
+	if txOK && tx.Verb == "network/leave" {
 		return wantWireless{kind: wantForget, source: "left (forgotten)"}, nil
 	}
 	if !txOK {
@@ -173,6 +181,10 @@ func (n *Node) desired(rec *provstore.Record, tx provstore.Txn, txOK bool) (want
 		return wantWireless{kind: wantForget, source: "the pre-change snapshot (placeholder)", fromSnapshot: true}, nil
 	}
 	if err := n.Sys.CheckRestorable(tx.PrevKey, tx.PrevID, tx.PrevChannel); err != nil {
+		var rr *RestoreRefused
+		if !errors.As(err, &rr) {
+			return wantWireless{}, fmt.Errorf("cannot check the pre-change settings now (%v)", err)
+		}
 		n.Log("CRIT finish: the pre-change settings cannot be restored by halow-setkey (%v) — forgetting the mesh (the owner can join again)", err)
 		return wantWireless{kind: wantForget, source: "forgotten (the snapshot cannot be restored)", fromSnapshot: true}, nil
 	}
@@ -180,33 +192,49 @@ func (n *Node) desired(rec *provstore.Record, tx provstore.Txn, txOK bool) (want
 		source: "the pre-change snapshot", fromSnapshot: true}, nil
 }
 
+// unverifiedFile: an apply ended "changed, not verified" (rc != 0, 2) since this boot — in the run dir, so it survives
+// a helper restart but not a reboot (after a reboot netifd rebuilds the radio from uci; §15.4, review 2 B m2).
+func (n *Node) unverifiedFile() string { return filepath.Join(n.P.RunDir, "prov-txn-unverified") }
+
+func (n *Node) unverified() bool {
+	_, err := os.Lstat(n.unverifiedFile())
+	return err == nil
+}
+
 // satisfied: the LIVE wireless already is the wanted one (§15.4) — no re-apply, no wifi reload (review A r4 m1). A
 // forget is never "satisfied": --forget-mesh is idempotent and is the only thing that verifies the radio is down.
-// A network is satisfied only when uci matches, the radio is up on that mesh id, and no apply of this helper's lifetime
-// ended unverified (an update may change only the key, which a live mesh id cannot show).
+// A network is satisfied only when uci matches, the radio is up on that mesh id, and no apply since this boot ended
+// unverified (an update may change only the key, which a live mesh id cannot show). A radio switched off by hand
+// (`disabled=1`, not in the keyguard mark) has nothing on the air to check: uci is all there is (§16.5).
 func (n *Node) satisfied(w wantWireless) bool {
-	if w.kind == wantForget || n.unverified {
+	if w.kind == wantForget || n.unverified() {
 		return false
 	}
+	dis, inMark, err := n.Sys.RadioState()
+	if err != nil || (dis && inMark) {
+		return false
+	}
+	if !n.uciIs(w) {
+		return false
+	}
+	return dis || n.Sys.LiveMeshUp()
+}
+
+func (n *Node) uciIs(w wantWireless) bool {
 	key, id, ch, err := n.Sys.CurrentWireless()
-	if err != nil {
-		return false
-	}
-	dis, _, err := n.Sys.RadioState()
-	if err != nil || dis {
-		return false
-	}
-	return key == w.key && (w.id == "" || id == w.id) && (w.ch == "" || ch == w.ch) && n.Sys.LiveMeshUp()
+	return err == nil && key == w.key && (w.id == "" || id == w.id) && (w.ch == "" || ch == w.ch)
 }
 
 // noteApply records whether an apply was verified: rc 0 clears, rc 2 (nothing changed) keeps, anything else sets.
 func (n *Node) noteApply(err error) {
 	switch setkeyRC(err) {
 	case 0:
-		n.unverified = false
+		os.Remove(n.unverifiedFile())
 	case 2:
 	default:
-		n.unverified = true
+		if f, e := os.OpenFile(n.unverifiedFile(), os.O_WRONLY|os.O_CREATE, 0o600); e == nil {
+			f.Close()
+		}
 	}
 }
 
@@ -293,6 +321,11 @@ func (n *Node) finish(why string) *Error {
 			err = n.Sys.SetKeyNoPersist(w.key, w.id, w.ch)
 		}
 		n.noteApply(err)
+		if err != nil && w.kind == wantNet && setkeyRC(err) == 3 && n.handOff() && n.uciIs(w) {
+			// §16.5: the operator switched the radio off meanwhile — the previous state is in uci, nothing is on the air
+			n.Log("finish (%s): the radio is switched off by hand — %s set in uci, not verified on the air", why, w.source)
+			err = nil
+		}
 		if err != nil {
 			n.Log("CRIT finish (%s): back to %s failed (%v) — .txn kept, saves stay blocked", why, w.source, err)
 			return fail(EApply, "%v", err)
@@ -328,17 +361,42 @@ func (n *Node) finish(why string) *Error {
 // finishGated is the verb-triggered Finish (§15.5): after a failure it is not retried for finishBackoff — the verb
 // gets EState at once, so an unauthenticated peer can cause at most one setkey + one p5 save per backoff.
 const finishBackoff = 60 * time.Second
+const finishBackoffMax = 30 * time.Minute
+
+func (n *Node) backoff() time.Duration {
+	d := finishBackoff
+	for i := 1; i < n.finishFails && d < finishBackoffMax; i++ {
+		d *= 2
+	}
+	if d > finishBackoffMax {
+		d = finishBackoffMax
+	}
+	return d
+}
+
+// noteFinish: the backoff state after a Finish (any trigger, the boot's included — review 2 A MAJOR-1).
+func (n *Node) noteFinish(e *Error) {
+	if e != nil {
+		n.finishFails++
+		n.lastFinishFail = n.Sys.Now()
+		return
+	}
+	n.finishFails, n.lastFinishFail = 0, time.Time{}
+}
 
 func (n *Node) finishGated(why string) *Error {
-	if !n.lastFinishFail.IsZero() && n.Sys.Now().Sub(n.lastFinishFail) < finishBackoff {
-		return fail(EState, "retried within %s of a failure", finishBackoff)
+	if n.finishFails > 0 && n.Sys.Now().Sub(n.lastFinishFail) < n.backoff() {
+		return fail(EState, "retried within %s of a failure", n.backoff())
 	}
-	if e := n.finish(why); e != nil {
-		n.lastFinishFail = n.Sys.Now()
-		return e
-	}
-	n.lastFinishFail = time.Time{}
-	return nil
+	e := n.finish(why)
+	n.noteFinish(e)
+	return e
+}
+
+// handOff: the HaLow radio is switched off by hand (disabled, not by the keyguard).
+func (n *Node) handOff() bool {
+	dis, inMark, err := n.Sys.RadioState()
+	return err == nil && dis && !inMark
 }
 
 // refreshMeshExpect: prov-state's mesh_expect follows the finished state (review A r4 m3).
@@ -359,7 +417,9 @@ func (n *Node) BootFinish(waitRadio func()) {
 		if n.finishWantsRadio() {
 			waitRadio()
 		}
-		if e := n.finish("boot"); e != nil {
+		e := n.finish("boot")
+		n.noteFinish(e)
+		if e != nil {
 			n.Log("boot finish: %s", e.Reason)
 		}
 	}()

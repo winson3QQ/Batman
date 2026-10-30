@@ -40,7 +40,13 @@ func Exec(timeout time.Duration, env []string, stdin []byte, name string, args .
 		case <-done:
 		case <-time.After(10 * time.Second):
 			syscall.Kill(-c.Process.Pid, syscall.SIGKILL)
-			<-done
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				// unkillable (uninterruptible sleep, e.g. a wedged driver): abandoned — its Wait goroutine stays, the
+				// caller is free (254-wireless-txn §16.1). Its output is not read: the copier may still be writing.
+				return RCTimeout, filepath.Base(name) + ": timed out after " + timeout.String() + " and could not be killed (abandoned)"
+			}
 		}
 		return RCTimeout, out.String() + "\n" + filepath.Base(name) + ": timed out after " + timeout.String()
 	}

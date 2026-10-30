@@ -105,9 +105,8 @@ type Node struct {
 	Verdict string
 	// 254-wireless-txn §15: an apply of this lifetime ended "changed, not verified"; the last verb-triggered Finish
 	// failure; the last commit-only resolve
-	unverified     bool
 	lastFinishFail time.Time
-	lastResolve    time.Time
+	finishFails    int // consecutive Finish failures (the backoff doubles, §16.1)
 }
 
 type nonce struct {
@@ -191,15 +190,7 @@ func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 	// docs/design/254-wireless-txn.md §4.1: an unfinished wireless change is finished before a verb that saves or changes
 	// the wireless; commit-only verbs never Finish (an owner can always remove a co-owner, even with a dead radio) but
 	// never commit on an overlay older than p5 either
-	if commitOnly[verb] {
-		// at most once per 30 s (a p5 mount; §15.5 — reachable before the owner-op check)
-		if n.lastResolve.IsZero() || n.Sys.Now().Sub(n.lastResolve) >= 30*time.Second {
-			n.lastResolve = n.Sys.Now()
-			if _, e := n.resolve(); e != nil {
-				n.Log("%s: %s (committing on the overlay)", verb, e.Reason)
-			}
-		}
-	} else if stateChanging[verb] && provstore.TxnPresent(n.P) {
+	if !commitOnly[verb] && stateChanging[verb] && provstore.TxnPresent(n.P) {
 		if e := n.finishGated("before " + verb); e != nil {
 			return nil, fail(EState, "an earlier network change could not be finished (%s)", e.Reason)
 		}
@@ -746,6 +737,15 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 	}
 	if e := n.verifyOwnerOp(h, typ, body, ownerPubs(rec)); e != nil {
 		return nil, e
+	}
+	// commit-only verbs never Finish (an owner can always remove a co-owner, even with a dead radio) but never commit
+	// on an overlay older than p5 either — resolved AFTER the owner-op check (§16.4: no p5 mount for anonymous peers)
+	if commitOnly[verb] {
+		if _, e := n.resolve(); e != nil {
+			n.Log("%s: %s (committing on the overlay)", verb, e.Reason)
+		} else if r, _, err := provstore.LoadOverlay(n.P); err == nil && r != nil {
+			rec = r
+		}
 	}
 	switch verb {
 	case "net.apply":

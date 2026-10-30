@@ -475,6 +475,8 @@ p5_verdict_gate() {
 	case "$v" in stale:*) return 1 ;; *) return 0 ;; esac
 }
 P5_STALE_HINT="Run 'batman-config-save --save' (or halow-setkey) to persist the running config, or wait for the mesh join to do it; deliberate override: touch /tmp/batman-slot.allow-stale-p5 (as root) for sysupgrade, BATMAN_ALLOW_STALE_P5=1 for a direct batman-slot call."
+P5_TXN_OVERRIDE_HINT="touch /tmp/batman-slot.allow-unfinished-txn (as root) for sysupgrade, BATMAN_ALLOW_UNFINISHED_TXN=1 for a direct batman-slot call."
+P5_TXN_DROP_WARN="OVERRIDE allow-unfinished-txn: the unfinished network change (.txn) is DROPPED in the new slot — re-push the network from the app after the OTA"
 p5_freshness_gate() {
 	now=$(cut -d. -f1 /proc/uptime)
 	if command -v batman-config-save >/dev/null 2>&1 && [ -r /etc/config/wireless ]; then
@@ -485,9 +487,12 @@ p5_freshness_gate() {
 			0) p5_verdict_write fresh ;;
 			5) # #254 wireless-txn §15.3: an unfinished network change (.txn, per slot) must be finished in THIS slot — an OTA
 			   # would drop it (the new slot has no .txn, so nothing would ever reconcile its wireless with the record).
-			   # Never overridable; not fixed by --save (which refuses while .txn exists).
-			   case "$out" in *"p5 stale: an unfinished network change"*) p5_verdict_write stale:txn
-				die "an unfinished network change (.txn) — batman-provhelper finishes it (any app action, or a reboot); an OTA now would leave it unfinished for good. Not overridable." ;; esac
+			   # Not fixed by --save (which refuses while .txn exists) and NOT passed by allow-stale-p5. Its own deliberate
+			   # override (a dead HaLow whose fix may be this OTA, code review 2): allowed UNFINISHED_TXN.
+			   case "$out" in *"p5 stale: an unfinished network change"*)
+				if allowed UNFINISHED_TXN; then p5_verdict_write txn-allowed; warn "$P5_TXN_DROP_WARN"; return 0; fi
+				p5_verdict_write stale:txn
+				die "an unfinished network change (.txn) — batman-provhelper finishes it (any app action, or a reboot); an OTA now would leave it unfinished for good. allow-stale-p5 does not pass it; for a node whose HaLow is dead: $P5_TXN_OVERRIDE_HINT" ;; esac
 			   if allowed STALE_P5; then p5_verdict_write stale-allowed; warn "p5 is STALE vs the running config ($keys) — override honoured"
 			   else p5_verdict_write "stale:${keys:-?}"
 				# #254: the provisioning record is written by batman-provhelper, not by --save
@@ -511,7 +516,12 @@ p5_freshness_gate() {
 		v=$(p5_verdict_gate "$P5VERDICT" "$now"); rc=$?
 		case "$rc" in
 			0) ;;
-			1) allowed STALE_P5 && { warn "p5 STALE ($v) — override honoured"; return 0; }
+			1) if [ "$v" = stale:txn ]; then   # the unfinished network change: never passed by allow-stale-p5 (as stage 1)
+				allowed UNFINISHED_TXN && { warn "$P5_TXN_DROP_WARN"; return 0; }
+				otalog_k S2 REFUSE why=unfinished-txn verdict="$v"
+				die "an unfinished network change (.txn) — refusing to write a slot (stage-1 verdict); allow-stale-p5 does not pass it. For a node whose HaLow is dead: $P5_TXN_OVERRIDE_HINT"
+			   fi
+			   allowed STALE_P5 && { warn "p5 STALE ($v) — override honoured"; return 0; }
 			   otalog_k S2 REFUSE why=p5-stale verdict="$v"
 			   die "p5 (config) is STALE vs the running config ($v) — refusing to write a slot (stage-1 verdict). $P5_STALE_HINT" ;;
 			*) otalog_k S2 REFUSE why=p5-no-verdict verdict="$v"

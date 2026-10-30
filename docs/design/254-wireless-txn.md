@@ -1,6 +1,6 @@
-# #254 — a network change that did not succeed goes back to the previous state; `network/leave` forgets the mesh (design v8, 2026-10-30)
+# #254 — a network change that did not succeed goes back to the previous state; `network/leave` forgets the mesh (design v9, 2026-10-30)
 
-Status: v8 — v7 approved (round 7, §14); code review round 1 changes in §15, for review. v1–v3 REJECTED; v4: A REJECT (model sound), B APPROVE-WITH-CHANGES; v5 and v6: both
+Status: v9 — v7 approved (round 7, §14); code review round 1 → §15 (v8), round 2 → §16 (v9), for review. v1–v3 REJECTED; v4: A REJECT (model sound), B APPROVE-WITH-CHANGES; v5 and v6: both
 APPROVE-WITH-CHANGES (one MAJOR each in round 6, both one-line contract fixes, §13). §10 round 4, §12 round 5, §13 round 6. **Owner rule: a change that did not succeed returns the node to the previous state — "use the previous
 one".** Owner decisions: L22 → A (leave = forget the network); legacy / operator-keyed node whose join fails → back to
 the operator's own settings (2026-10-30). Product change: helper, `halow-setkey`, `batman-config-save`. Branch
@@ -283,3 +283,70 @@ save per minute. With 15.4 a peer can no longer turn an unverified forget into "
     `helper-skipapply` (satisfied always true), which leaves the injected mesh id.
   - The §8 premise "setkey with the radio off returns rc 3" is the 04 capture `radiooff.sh` (2026-10-30), not a stub
     test.
+
+## 16. Code review round 2 → v9 (2026-10-30)
+Round 2 (whole design + change, on a11c105 / cf9b489): A APPROVE-WITH-CHANGES (0/2/10), B APPROVE-WITH-CHANGES
+(0/1/14). Changes, each with its negative control:
+
+**16.1 A wedged driver cannot hold the helper (A2 MAJOR-1).** A process in uninterruptible sleep survives SIGKILL;
+`Exec` waited for it without bound.
+- Now, 10 s after the SIGKILL it **abandons** the process: its Wait goroutine stays, the caller gets rc 124, and the
+  caller's mutex is released.
+- Evidence (WSL root, reviewer A's method — dm device suspended, `dd iflag=direct` in D-state): before, Exec returned
+  only after the device was resumed (40 s); now it returns at 22 s while `dd` is still in D-state.
+- The backoff of a failed Finish **doubles** per consecutive failure (60 s → 30 min) and **the boot Finish counts**,
+  so a dead radio costs at most one attempt per backoff.
+- Worst case per attempt, holding the mutex: radio wait 120 s + setkey 300 s (+20 s) + save 300 s (+20 s).
+- An abandoned `halow-setkey` may keep its flock (fd 9 is closed for wifi / iw / ubus / jsonfilter / morse_cli /
+  config-save, not for `uci`). Later setkey calls then get "busy" (rc 2) and `.txn` stays. That is the dead-radio
+  case of §8, and it recovers at the reboot.
+
+**16.2 Leave then operator settings (A2 MAJOR-2).** The previous state of a non-member is decided by the transaction,
+not by `Left`:
+- A `network/leave` whose commit landed → forgotten.
+- Any other change (a join after a leave too) → its pre-change snapshot. That is the placeholder as leave left it, or
+  the operator's own settings set in the meantime.
+
+**16.3 Transient vs definitive (B2 m1).** `CheckRestorable` returns `RestoreRefused` only for a definitive refusal:
+setkey `--check-only` rc 2, not `sae`, an empty key, or no mesh interface on the morse radio. A timeout or exec failure
+is transient: Finish keeps `.txn` and retries, and does not forget.
+
+**16.4 Resolve after the owner-op check (B2 minor).** Commit-only verbs resolve p5 inside `ownerOpVerb`, after the
+signature is verified. An anonymous peer can no longer cause a p5 mount, and the 30 s rate limit is gone.
+
+**16.5 A radio switched off by hand during a pending change (A2 minor).**
+- Nothing is on the air to verify, so a network is satisfied when uci matches.
+- A setkey that ends rc 3 (cannot verify a radio that is off) counts as applied when uci then holds the previous
+  state.
+- `finishWantsRadio` does not wait for a radio that will not come up (B1 m5).
+
+**16.6 `--check` decides `.txn` first (B2 MAJOR-1).** The `.txn` → rc 5 check runs before the lock / ext4 / mount
+checks. Before, an unmountable or non-ext4 p5 (the likeliest reason `.txn` is stuck) reported rc 1 / 3, and the OTA
+gate let it through.
+
+**16.7 OTA override for a dead radio (B2 minor).**
+- `stale:txn` is refused in both batman-slot stages, and allow-stale-p5 never passes it.
+- A separate deliberate override exists: `BATMAN_ALLOW_UNFINISHED_TXN=1` or `/tmp/batman-slot.allow-unfinished-txn`.
+  It passes with the warning "the unfinished network change is DROPPED in the new slot — re-push the network from the
+  app after the OTA".
+- This is the only exit when the fix for a dead HaLow is the OTA itself.
+
+**16.8 Smaller fixes.**
+- **"unverified" in the run dir (B2 m2):** it survives a helper restart, not a reboot.
+- **setkey's `.txn` refusal after the lock (B2 TOCTOU).**
+- **The fake follows setkey:** it refuses the placeholder too (B2 m4).
+
+**16.9 Tests.**
+- Go: 13 new tests (wtxn_v9_test.go, txn_v9_test.go; realsys_test.go drives the real Sys against stub `uci` /
+  `halow-setkey`: the morse radio, the untrimmed key, the mark's first line, refused vs transient, key on stdin only).
+- **49 mutants (13 v7 + 18 v8 + 18 v9), all killed.**
+- Shell: setkey-checkonly-txn 30, cfgsave-txn-save 48, slot-p5gate-txn 15, chanfix-lock 10 (lock re-read: mutant).
+- Residual ❓: one cfgsave-txn-save run reported "did not wait (8 s)" once (reviewer A, 3 reruns clean); one earlier
+  setkey-forget-lock `fails=1` (15 reruns clean). Unattributed.
+
+**16.10 §8 / §9 additions.**
+- §8 "upgrade while `.txn`": refused (16.6, 16.7); override = dropped obligation, stated.
+- §8 "setkey / driver hangs": Exec abandons, `.txn` kept, backoff (16.1).
+- §9: verb-triggered Finish still runs before authentication for saving verbs (a `network/update` has no owner-op).
+  The bound is one attempt per backoff, a forget is never taken as done unverified (§15.4), and commit-only verbs no
+  longer touch p5 before authentication (16.4).
