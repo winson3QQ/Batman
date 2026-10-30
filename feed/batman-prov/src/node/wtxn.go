@@ -443,3 +443,9 @@ func (n *Node) finishWantsRadio() bool {
 	dis, _, err := n.Sys.RadioState()
 	return err == nil && !dis
 }
+
+// otaBusy: batman-slot is writing the other slot ($RUNDIR/batman-slot.busy, its precheck .. exit).
+func (n *Node) otaBusy() bool {
+	_, err := os.Lstat(filepath.Join(n.P.RunDir, "batman-slot.busy"))
+	return err == nil
+}

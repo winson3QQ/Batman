@@ -438,6 +438,22 @@ into p5's owner list. Without an attacker, the owner's own next verb silently un
 - **Negative controls**: the mutants without the resolve, without the signer check, and without the generation check
   are all killed. **58 Go mutants + the root D-state one, all killed.**
 
+**18.4 No new wireless change while an OTA is being written (A4 m6 / B4 m9, owner decision to include).** batman-slot's
+freshness gate (`--check`: `.txn` → refused) runs before it writes the other slot. A `net.apply` / `network.leave`
+arriving after the gate, and failing, would leave a `.txn` that the new slot never sees. The helper therefore refuses
+those two verbs with `EBusy` "an OTA is being written" while `$RUNDIR/batman-slot.busy` exists. That marker is
+batman-slot's own, from its precheck to its exit, in the root-only run dir, and gone at the next boot; other verbs
+are not affected.
+- A stage-2 re-check of `.txn` was not chosen: stage 2 runs in a ramfs without the old slot's `/etc`.
+- Residual: the milliseconds between the gate and the marker's creation.
+- Test: `TestNoWirelessChangeDuringOTA`; its negative control (the check removed) fails with "join during an OTA: 0".
+
+**Confirmation of 18.1 (round 4 reviewer B): CONFIRMED.** The three probes now get `EForbidden`, with p5 unchanged.
+Of the reviewer's 10 mutants, 8 were killed; the 2 survivors are listed below. The root `-tags prov_test` run has 0
+skips. Its MINORs go to the checklist: a new owner's first verbs on a stale overlay are refused until it is rebuilt
+(fail-closed); "p5 unreadable → owner-op on the overlay" has no test; `claim.replay` checks against the overlay's single
+owner (very narrow, ⚠️ inferred); the state check on p5's record has no test.
+
 **18.2 Attributed test flakes (B4 m4).** setkey-forget-lock failed 2 of 10 runs. Cause, shown by a probe (3 of 30):
 the WSL wall clock steps back about 1 s, and the tests measured elapsed time with `date +%s`. The tests now use
 `/proc/uptime`. The ❓ cfgsave "did not wait (8 s)" used the same measurement. It is ⚠️ very likely the same cause, but

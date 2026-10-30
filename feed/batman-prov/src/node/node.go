@@ -187,6 +187,12 @@ func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 	if stateChanging[verb] && (n.Verdict == "" || strings.HasPrefix(n.Verdict, "unknown")) {
 		return nil, fail(EState, "this boot's verdict is %q — state changes refused", n.Verdict)
 	}
+	// §18.4 (review 4 A m6 / B m9): no new wireless change while batman-slot writes the other slot — its freshness
+	// gate (`--check`: .txn -> refused) has already run, so a change failing now would leave a .txn the new slot never
+	// sees. The marker is batman-slot's own (root-only run dir; removed on its exit, gone at the next boot).
+	if (verb == "net.apply" || verb == "network.leave") && n.otaBusy() {
+		return nil, fail(EBusy, "an OTA is being written (batman-slot) — retry after it")
+	}
 	// docs/design/254-wireless-txn.md §4.1: an unfinished wireless change is finished before a verb that saves or changes
 	// the wireless; commit-only verbs never Finish (an owner can always remove a co-owner, even with a dead radio) but
 	// never commit on an overlay older than p5 either
