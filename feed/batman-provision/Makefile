@@ -112,6 +112,7 @@ define Package/batman-provision/install
 	# shared "in the mesh" test (joinwatch + batman-autocommit OTA gate, #209 S4-5)
 	$(INSTALL_DATA) ./files/usr/lib/batman/meshjoin.sh $(1)/usr/lib/batman/meshjoin.sh
 	$(INSTALL_DATA) ./files/usr/lib/batman/rundir.sh $(1)/usr/lib/batman/rundir.sh
+	$(INSTALL_DATA) ./files/usr/lib/batman/wireless-settle.sh $(1)/usr/lib/batman/wireless-settle.sh
 	$(INSTALL_DATA) ./files/usr/lib/batman/prov-lock.sh $(1)/usr/lib/batman/prov-lock.sh
 	$(INSTALL_DIR) $(1)/etc/sysctl.d
 	$(INSTALL_DATA) ./files/etc/sysctl.d/90-batman.conf $(1)/etc/sysctl.d/90-batman.conf

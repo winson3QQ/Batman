@@ -8,7 +8,9 @@
 # Everything not listed here takes the new image's default on upgrade (new-default-wins).
 #
 #   batman-config-save --seed [--reformat]   first write at provisioning (--reformat: see below)
-#   batman-config-save --save [--promote-lkg] rewrite now (operator / halow-setkey / provd)
+#   batman-config-save --save [--promote-lkg] [--txn TOK]   rewrite now (operator / halow-setkey / provd);
+#                                            --txn (#254 wireless-txn §7, the helper's Finish only): allowed while the
+#                                            run-dir marker AND /etc/batman-prov/.txn carry TOK
 #   batman-config-save --if-healthy          rewrite only if joinwatch health is OK (#127)
 #   batman-config-save --on-join             joinwatch, every tick while JOINED (#202 close-out)
 #   batman-config-save --check               read-only: is p5 what a save would write right now?
@@ -51,13 +53,24 @@ openmanetd.config.roipconfigured
 UNSAFE='*[`$();|&<>'"'"']*'   # same character set 96-batman-config-migrate's valid_batch rejects
 
 mode=${1:-}; opt=${2:-}
-USAGE="usage: batman-config-save --seed [--reformat] | --save [--promote-lkg] | --if-healthy | --on-join | --check | --prov-only --prov-file F --prov-meta M [--prov-identity D] [--txn TOK] | --prov-get DIR"
+USAGE="usage: batman-config-save --seed [--reformat] | --save [--promote-lkg] [--txn TOK] | --if-healthy | --on-join | --check | --prov-only --prov-file F --prov-meta M [--prov-identity D] [--txn TOK] | --prov-get DIR"
 case "$mode" in
 	--seed|--save|--if-healthy|--on-join|--check|--prov-only|--prov-get) ;;
 	*) echo "$USAGE" >&2; exit 1 ;;
 esac
-REFORMAT=0; PROMOTE=0; PF=""; PM=""; PI=""; PTXN=""; PGET=""
+REFORMAT=0; PROMOTE=0; PF=""; PM=""; PI=""; PTXN=""; PGET=""; STXN=""; STXN_SET=0
 case "$mode" in
+--save)
+	shift
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--promote-lkg) PROMOTE=1; shift ;;
+			--txn) STXN=${2:-}; STXN_SET=1; [ $# -ge 2 ] && shift 2 || shift ;;
+			*) echo "batman-config-save: unknown option $1 for --save" >&2; exit 1 ;;
+		esac
+	done
+	# the helper's token is hex (node.go); anything else (empty, a space, the word "none") can never match a live one
+	[ "$STXN_SET" = 0 ] || case "$STXN" in ''|none|*[!0-9a-f]*) echo "batman-config-save: --txn needs the transaction's hex token" >&2; exit 1 ;; esac ;;
 --prov-only)
 	shift
 	while [ $# -gt 0 ]; do
@@ -80,6 +93,13 @@ esac
 up() { cut -d. -f1 /proc/uptime; }
 say() { echo "batman-config-save: $*"; }
 err() { echo "batman-config-save: $*" >&2; }
+PROVD=/etc/batman-prov                     # overlay copy (owned by batman-provhelper)
+# #254 §15.3 (code review 2 B MAJOR-1): an unfinished network change (.txn, per slot) makes --check STALE before anything
+# else — before the no-p5 / bypass / lock / ext4 / mount checks, so an unreadable p5 (the usual reason .txn stays) never
+# turns the OTA gate's verdict into "skip" / "error". An OTA now would drop the helper's obligation to finish it.
+if [ "$mode" = --check ] && { [ -e "$PROVD/.txn" ] || [ -L "$PROVD/.txn" ]; }; then
+	say "p5 stale: an unfinished network change (.txn) — the helper finishes it at the next app action or reboot"; exit 5
+fi
 
 # ---- run dir (#280) and the files that live there --------------------------------------------
 # shellcheck source=/dev/null
@@ -108,6 +128,12 @@ cleanup() {
 	[ "$LOCK_MINE" = 1 ] && rm -rf "$LOCK"
 }
 trap cleanup EXIT
+# #254 review 3 (B m5 / A m8): busybox ash runs no EXIT trap when a signal kills it, and batman-provhelper's Exec deadline
+# sends TERM to the whole process group. Trap TERM / INT: `exit` from the trap runs the EXIT trap above (unmount p5,
+# remove the stage, release the lock) and returns 143 / 130. Every p5 file is replaced by rename (below), so a child
+# killed mid-copy leaves at most a temp / stage file, never a half-written p5 file.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # committed values only (#202 C0): a `uci set` not yet committed must not reach p5 — the running
 # config after a reboot would then be behind p5. -P <empty dir> hides the pending delta.
@@ -138,7 +164,6 @@ magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)
 sbstamp() { hexdump -s 1072 -n 6 -e '1/4 "%u" " " 1/2 "%u"' "$DEV" 2>/dev/null; }
 
 # ---- #254 provisioning record: formats (254-stage1-impl §4.3) ----------------------------------
-PROVD=/etc/batman-prov                     # overlay copy (owned by batman-provhelper)
 # shellcheck source=/dev/null
 PROVLIB=0; [ -r /usr/lib/batman/prov-lock.sh ] && . /usr/lib/batman/prov-lock.sh && type prov_meta_ok >/dev/null 2>&1 && PROVLIB=1
 case "$mode" in --prov-only|--prov-get) [ "$PROVLIB" = 1 ] || { echo "batman-config-save: /usr/lib/batman/prov-lock.sh missing — refusing $mode" >&2; exit 1; } ;; esac
@@ -160,17 +185,36 @@ prov_compare() {	# --check (#254 P1 §4.8): runs BEFORE the unseeded early exit.
 
 # ---- #254: a provisioning transaction in progress makes the periodic writers yield --------------
 TXN=$RUNDIR/prov-txn
-txn_live() { { [ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ]; } || [ -f "$PROVD/.txn" ]; }
+txn_live() { { [ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ]; } || [ -e "$PROVD/.txn" ] || [ -L "$PROVD/.txn" ]; }   # .txn by existence, as TxnPresent
+# the txn sequence (#254 wireless-txn §7): "<marker token|none> <.txn token|none>". Read before staging and again
+# right before the p5 write: a transaction that started in between makes this save stale -> abort, next tick.
+txn_seq() {
+	m=none; [ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ] && { m=$(head -c 128 "$TXN"); [ -n "$m" ] || m=empty; }
+	t=none; if [ -e "$PROVD/.txn" ] || [ -L "$PROVD/.txn" ]; then t=""; read -r t _ < "$PROVD/.txn" 2>/dev/null; [ -n "$t" ] || t=unreadable; fi
+	printf '%s %s' "$m" "$t"
+}
+SEQ0=""
 case "$mode" in
-	--on-join) txn_live && { err "provisioning transaction in progress — next tick"; exit 1; } ;;
+	--on-join) txn_live && { err "provisioning transaction in progress — next tick"; exit 1; }; SEQ0=$(txn_seq) ;;
 	--save|--if-healthy)
-		i=0; while txn_live; do i=$((i + 1)); [ "$i" -gt 10 ] && { err "provisioning transaction still in progress after 10 s — not saving"; exit 1; }; sleep 1; done ;;
+		if [ -n "$STXN" ]; then
+			# the helper's Finish persists BEFORE it removes .txn (§3): only while the marker and .txn carry its token
+			[ "$(txn_seq)" = "$STXN $STXN" ] || { err "--txn $STXN does not match the live transaction (run-dir marker and .txn)"; exit 1; }
+		else
+			i=0; while txn_live; do i=$((i + 1)); [ "$i" -gt 10 ] && { err "provisioning transaction still in progress after 10 s — not saving"; exit 1; }; sleep 1; done
+		fi
+		SEQ0=$(txn_seq) ;;
 	--prov-only)
 		if [ -n "$PTXN" ]; then
 			[ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ] && [ "$(head -c 128 "$TXN")" = "$PTXN" ] || { err "--txn $PTXN does not match the live transaction"; exit 1; }
 		elif [ "$RDOK" = 1 ] && [ -f "$TXN" ]; then
 			err "a provisioning transaction is live — --prov-only without its --txn refused"; exit 1
 		fi ;;
+esac
+# #254 §15.6 (B m1): a mode without --txn writes only while NO transaction exists — one that started between the check
+# above and SEQ0 is caught here (and the re-check before the p5 write compares against this SEQ0 = "none none")
+case "$mode" in --save|--if-healthy|--on-join)
+	[ -n "$STXN" ] || [ "$SEQ0" = "none none" ] || { err "provisioning transaction in progress — next tick"; exit 1; } ;;
 esac
 # validate the inputs of --prov-only before taking the lock (no p5 access)
 if [ "$mode" = --prov-only ]; then
@@ -536,11 +580,20 @@ fi
 # --if-healthy / --on-join (this boot joined — the mesh key demonstrably works) and on an explicit
 # --save --promote-lkg (the caller proved it); a bare --save (operator, unproven) must NOT clobber the
 # last proven lkg (N-R8). 219 §6.4 follows this contract.
+# txn sequence re-check, right before the p5 write (#254 wireless-txn §7)
+if [ -n "$SEQ0" ] && [ "$(txn_seq)" != "$SEQ0" ]; then
+	rm -rf "$STAGE"; STAGE=""; umount "$MNT" 2>/dev/null
+	err "provisioning transaction started — next tick"; exit 1
+fi
 mkdir -p "$MNT/identity" "$MNT/lkg"
-cp -a "$STAGE/identity/." "$MNT/identity/" 2>/dev/null
+# identity files: renamed from the stage (same filesystem) into place, one by one — never copied over in place
+( cd "$STAGE/identity" && find . -type f ) | while IFS= read -r f; do
+	f=${f#./}; d=${f%/*}; [ "$d" = "$f" ] || mkdir -p "$MNT/identity/$d"
+	mv -f "$STAGE/identity/$f" "$MNT/identity/$f"
+done
 mv "$STAGE/overrides.uci" "$MNT/overrides.uci"
 if [ "$mode" = --seed ] || [ "$mode" = --if-healthy ] || [ "$mode" = --on-join ] || [ "$PROMOTE" = 1 ]; then
-	cp -a "$MNT/overrides.uci" "$MNT/lkg/overrides.uci"
+	cp -a "$MNT/overrides.uci" "$MNT/lkg/overrides.uci.tmp" && mv -f "$MNT/lkg/overrides.uci.tmp" "$MNT/lkg/overrides.uci"
 fi
 mv "$STAGE/schema_version" "$MNT/schema_version"
 rm -rf "$STAGE"; STAGE=""
