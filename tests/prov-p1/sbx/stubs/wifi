@@ -1,0 +1,4 @@
+#!/bin/sh
+# tests/prov-p1/sbx/stubs/<name> — dv-sbx stand-in for reboot / wifi / ubus / vcmailbox: records the call, does nothing.
+echo "$(basename "$0") $*" >> /tmp/run/sbx-calls.log
+exit 0
