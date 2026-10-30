@@ -8,6 +8,7 @@
 #   stuck-ubus  present = the netdev goes away but netifd still reports the radio up=false disabled=false
 #   wifi.sleep  seconds a `wifi` call takes; wifi.log: begin/end per call + whether fd 9 (the lock) was open
 #   lockfile    if set (file path), `uci commit` records UNLOCKED in commits.log when nobody holds that flock
+#   fd9.log     one line "<cmd> fd9=open|closed" per iw / ubus / jsonfilter / morse_cli / batman-config-save call
 # No root needed. The product runs under busybox ash, as on the node.
 stubs_init() {   # $1 = state dir
 	ST=$1; mkdir -p "$ST/bin"; : > "$ST/commits.log"; : > "$ST/wifi.log"; : > "$ST/logger.log"; : > "$ST/cfgsave.log"
@@ -47,6 +48,7 @@ EOF
 	cat > "$ST/bin/iw" <<'EOF'
 #!/bin/bash
 S=${STUB_ST:?}
+echo "iw fd9=$([ -e /proc/$$/fd/9 ] && echo open || echo closed)" >> "$S/fd9.log"
 if [ "$1 ${2:-}" = "dev " ] || [ "$*" = dev ]; then
 	printf 'phy#0\n\tInterface phy0-ap0\n\t\ttype AP\n'
 	[ -f "$S/netdev" ] && printf 'phy#1\n\tInterface wlh0\n\t\ttype mesh point\n'
@@ -58,6 +60,7 @@ EOF
 	cat > "$ST/bin/ubus" <<'EOF'
 #!/bin/bash
 S=${STUB_ST:?}
+echo "ubus fd9=$([ -e /proc/$$/fd/9 ] && echo open || echo closed)" >> "$S/fd9.log"
 [ "$*" = "call network.wireless status" ] || exit 1
 r=$(sed -n 's/^wireless\.\([^.]*\)\.type=morse$/\1/p' "$S/committed" | head -1)
 if [ "$(cat "$S/radio" 2>/dev/null)" = down ]; then u=false; d=true; else u=true; d=false; fi
@@ -66,7 +69,9 @@ EOF
 	cat > "$ST/bin/jsonfilter" <<'EOF'
 #!/usr/bin/env python3
 # subset of OpenWrt jsonfilter: -e @.a.b  (prints JSON booleans as true/false)
-import json, sys
+import json, os, sys
+with open(os.environ["STUB_ST"] + "/fd9.log", "a") as f:
+    f.write("jsonfilter fd9=%s\n" % ("open" if os.path.exists("/proc/self/fd/9") else "closed"))
 a = sys.argv[1:]
 if len(a) != 2 or a[0] != "-e" or not a[1].startswith("@."):
     sys.exit(2)
@@ -83,7 +88,14 @@ echo "$*" >> "${STUB_ST:?}/logger.log"
 EOF
 	cat > "$ST/bin/batman-config-save" <<'EOF'
 #!/bin/bash
+echo "batman-config-save fd9=$([ -e /proc/$$/fd/9 ] && echo open || echo closed)" >> "${STUB_ST:?}/fd9.log"
 echo "$*" >> "${STUB_ST:?}/cfgsave.log"; echo "batman-config-save: saved (--save)"
+EOF
+	cat > "$ST/bin/morse_cli" <<'EOF'
+#!/bin/bash
+echo "morse_cli fd9=$([ -e /proc/$$/fd/9 ] && echo open || echo closed)" >> "${STUB_ST:?}/fd9.log"
+f=$(cat "${STUB_ST:?}/morse.khz" 2>/dev/null); [ -n "$f" ] && echo "	Operating Frequency: $f kHz"
+exit 0
 EOF
 	chmod +x "$ST/bin/"*
 	export STUB_ST=$ST

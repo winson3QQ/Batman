@@ -64,7 +64,7 @@ DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; r=$(vcmailbox 0x00030064 4 4
 P5RO='mkdir -p -m 0700 /tmp/run/batman-dv && m=$(mktemp -d /tmp/run/batman-dv/ch1.XXXXXX) && mount -o ro,noload /dev/mmcblk0p5 $m && { echo "seeded=$([ -f $m/.seeded ] && echo y || echo n) shadowroot=$([ -s $m/identity/shadow-root ] && echo y || echo n) prov_files=$(ls $m/identity/prov 2>/dev/null | wc -l) metastat=[$(. /usr/lib/batman/prov-lock.sh; prov_meta_status $m/prov.meta $m/prov.cbor)] ident=$(. /usr/lib/batman/prov-lock.sh; prov_ident_ok $m/identity/prov && echo ok || echo bad) idsame=$(cmp -s $m/identity/prov/node.cert /etc/batman-prov/identity/node.cert 2>/dev/null && echo y || echo n)"; umount $m; }; rmdir $m'
 # A's boot FAT (p1) content hash: 7.2 / 8.6 rewrite A's boot files; prov-base covers p5 / upper / p6 only (round 2 m1)
 P1LIST='cd /boot && find . -type f | sort | while IFS= read -r f; do sha256sum "$f"; done'   # per file, so a FAIL names the file (round 3 m3)
-NOFORCE='echo "allow_unseeded=$([ -e /tmp/batman-slot.allow-unseeded ] && echo y || echo n) allow_stale=$([ -e /tmp/batman-slot.allow-stale-p5 ] && echo y || echo n)"'
+NOFORCE='echo "allow_unseeded=$([ -e /tmp/batman-slot.allow-unseeded ] && echo y || echo n) allow_stale=$([ -e /tmp/batman-slot.allow-stale-p5 ] && echo y || echo n) allow_txn=$([ -e /tmp/batman-slot.allow-unfinished-txn ] && echo y || echo n)"'
 # is_on <ip> <pattern>: 04 (by MAC) answers there and its state matches the pattern
 is_on(){ ping -n 1 -w 1000 "$1" >/dev/null 2>&1 || return 1; local s; s=$(timeout 30 ssh $FRESHO root@"$1" "$ST" 2>/dev/null | tr -d '\r'); case "$s" in "mac=$MAC "*$2*) echo "$s"; return 0;; esac; return 1; }
 SEEN=""   # every address 04 was found at in this run: tried first (review B-11: the reserved address is not in a swept /24)
@@ -270,7 +270,7 @@ say "B stable: dhcpconfigured/uptime=$d"
 # ======== 7. unclaimed OTA
 PH=s7.1; P0=$(fq "$PROT"); say "before: $P0"
 case "$P0" in "protA=[$V]"*) ok "7.1 slot-A.protected = V before (so 'unchanged' means something)";; *) no "7.1 protA not V: $P0";; esac
-nf=$(fq "$NOFORCE"); [ "$nf" = "allow_unseeded=n allow_stale=n" ] && ok "7.x no override files ($nf)" || abort "override files present: $nf"
+nf=$(fq "$NOFORCE"); [ "$nf" = "allow_unseeded=n allow_stale=n allow_txn=n" ] && ok "7.x no override files ($nf)" || abort "override files present: $nf"
 o=$(fq 'set -e; d=/tmp/run/batman-dv; mkdir -p -m 0700 $d; sed "s| /usr/lib/batman/prov-lock.sh'"'"'$|'"'"'|" /lib/upgrade/platform.sh > $d/platform.noprovlock; a=$(grep -c "^RAMFS_COPY_DATA=.*prov-lock.sh" /lib/upgrade/platform.sh); b=$(grep -c "^RAMFS_COPY_DATA=.*prov-lock.sh" $d/platform.noprovlock || true); l0=$(wc -l < /lib/upgrade/platform.sh); l1=$(wc -l < $d/platform.noprovlock); if [ "$a" = 1 ] && [ "$b" = 0 ] && [ "$l0" = "$l1" ]; then mount --bind $d/platform.noprovlock /lib/upgrade/platform.sh; echo "variant=ok binds=$(grep -c " /lib/upgrade/platform.sh " /proc/mounts)"; else echo "variant=bad a=$a b=$b l0=$l0 l1=$l1"; fi')
 say "7.1 variant: $o"; case "$o" in *"variant=ok binds=1"*) ;; *) abort "7.1 variant not built";; esac
 # the trace lines of THIS OTA, found by the boot id it was started in (stage 1 and stage 2 log that boot id) — not by
@@ -287,7 +287,7 @@ P1=$(fq "$PROT"); [ "$P0" = "$P1" ] && ok "7.1 A untouched ($P1)" || no "7.1 .pr
 fq 'grep -c " /lib/upgrade/platform.sh " /proc/mounts' | grep -qx 0 && ok "7.1 bind gone after the reboot" || no "7.1 bind still present"
 fq 'rm -f /opt/batdata/state/autocommit-hold-commit' >/dev/null
 PH=s7.2
-nf=$(fq "$NOFORCE"); [ "$nf" = "allow_unseeded=n allow_stale=n" ] || abort "override files present: $nf"
+nf=$(fq "$NOFORCE"); [ "$nf" = "allow_unseeded=n allow_stale=n allow_txn=n" ] || abort "override files present: $nf"
 fq "cut -c1-8 /proc/sys/kernel/random/boot_id > $D/otab.72; echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync; setsid sh -c 'sysupgrade -n $PAY >/opt/batdata/sysup-ch1-72.log 2>&1' </dev/null >/dev/null 2>&1 &" >/dev/null
 wait_find 600 "slot=A ver=$V trial_rc=0 dt_try=00000001 " "$BB" || abort "7.2: A trial not found"
 say "7.2 A trial at $FIP ($FOUND_HOW): $FOUND_STATE"; BA=$(bootof "$FOUND_STATE")
@@ -326,7 +326,7 @@ pk_proof "$FIP" && ok "8.4 publickey PROVEN after the claim (L47)" || abort "8.4
 if none_refused "$FIP"; then ok "8.4 'none' refused after the claim (publickey-only)"; else case "$x" in *"lock=LOCKED"*) no "8.4 'none' still accepted on a LOCKED node";; *) warn "8.4 'none' accepted — not discriminating (node not locked, see 8.3)";; esac; fi
 PH=s8.5; fq 'ls /opt/batdata/state/mesh-joined /opt/batdata/state/mesh-expected 2>/dev/null | wc -l' | grep -qx 0 && ok "8.5 no mesh markers on p6" || no "8.5 mesh markers present"
 PH=s8.6
-nf=$(fq "$NOFORCE"); [ "$nf" = "allow_unseeded=n allow_stale=n" ] || abort "override files present: $nf"
+nf=$(fq "$NOFORCE"); [ "$nf" = "allow_unseeded=n allow_stale=n allow_txn=n" ] || abort "override files present: $nf"
 fq "echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync; setsid sh -c 'sysupgrade -n $PAY >/opt/batdata/sysup-ch1-86.log 2>&1' </dev/null >/dev/null 2>&1 &" >/dev/null
 FIP0=$FIP   # wait_find clears FIP on a miss (review round 2 m3)
 if [ "$SEEDED" = n ]; then

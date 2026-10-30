@@ -124,6 +124,28 @@ out=$(printf 'operkey123\n' | run --mesh - 2>&1); rc=$?
 d="control: no .txn + operator --mesh: rc 0 ($rc), persisted"
 if [ "$rc" = 0 ] && [ "$(cat "$ST/cfgsave.log")" = --save ]; then ok "$d"; else no "$d"; fi
 
+# code review 2 (B m8): the .txn check runs while HOLDING the lock — a helper change that starts while the operator's
+# setkey waits for the lock is seen (HEAD checked before the lock -> committed over it)
+reset; touch "$ST/p5"
+flock -o "$LOCKF" sleep 1.2 & hp=$!; sleep 0.2
+( printf 'operkey123\n' | run --mesh - > "$T/w.out" 2>&1; echo $? > "$T/w.rc" ) & wp=$!
+sleep 0.4; printf 'abc 1 2 network/join\nprev - - -\n' > "$TXNF"
+wait "$wp"; wait "$hp" 2>/dev/null
+d=".txn created while the operator waited for the lock: rc 2 ($(cat "$T/w.rc")), nothing changed :: $(tail -1 "$T/w.out" | cut -c1-80)"
+if [ "$(cat "$T/w.rc")" = 2 ] && grep -q 'an unfinished network change' "$T/w.out" && untouched; then ok "$d"; else no "$d"; fi
+rm -f "$TXNF"
+
+# code review 2 (B m6): the lock fd 9 is not inherited by the verify loops' / persist's external commands
+reset; touch "$ST/p5"; : > "$ST/fd9.log"
+out=$(run --forget-mesh 2>&1); rc=$?
+d="forget + persist: rc 0 ($rc); iw / ubus / jsonfilter / config-save ran without fd 9 [$(sort -u "$ST/fd9.log" | tr '\n' ' ')]"
+if [ "$rc" = 0 ] && grep -q '^iw ' "$ST/fd9.log" && grep -q '^ubus ' "$ST/fd9.log" && grep -q '^batman-config-save ' "$ST/fd9.log" && ! grep -q 'fd9=open' "$ST/fd9.log"; then ok "$d"; else no "$d"; fi
+reset; : > "$ST/fd9.log"; echo 922000 > "$ST/morse.khz"
+out=$(printf 'chankey123\n' | run --mesh - --channel 40 --no-persist 2>&1); rc=$?
+d="--channel: rc 0 ($rc); morse_cli / iw ran without fd 9 [$(sort -u "$ST/fd9.log" | tr '\n' ' ')]"
+if [ "$rc" = 0 ] && grep -q '^morse_cli ' "$ST/fd9.log" && ! grep -q 'fd9=open' "$ST/fd9.log"; then ok "$d"; else no "$d"; fi
+rm -f "$ST/morse.khz"
+
 # ---- --forget-mesh on a radio switched off by hand ---------------------------------------------------------------------
 reset
 echo "wireless.radio1.disabled=1" >> "$ST/live"; cp "$ST/live" "$ST/committed"; rm -f "$ST/netdev"; echo down > "$ST/radio"

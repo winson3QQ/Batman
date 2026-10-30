@@ -11,7 +11,8 @@
 # Negative control: the shipped batman-config-save FAILs the --txn and the re-check cases. Zero cases run = FAIL.
 set -u
 [ "$(id -u)" = 0 ] || { echo "FAIL needs root (loop device)"; echo "PASS=0 FAIL=1"; exit 1; }
-W=$(mktemp -d); trap 'umount $W/m 2>/dev/null; losetup -d $LOOP 2>/dev/null; rm -rf $W' EXIT
+W=$(mktemp -d); LOOP2=""; LOOP3=""
+trap 'umount $W/m 2>/dev/null; losetup -d $LOOP 2>/dev/null; [ -z "$LOOP2" ] || losetup -d $LOOP2; [ -z "$LOOP3" ] || losetup -d $LOOP3; rm -rf $W' EXIT
 SRC=${PROV_SRC:-$(cd "$(dirname "$1")/../.." && pwd)}   # files/ of the product tree (override for a copied file)
 truncate -s 64M $W/p5.img; LOOP=$(losetup -f --show $W/p5.img); mkfs.ext4 -q -F $W/p5.img
 mkdir -p $W/prov $W/m $W/bin $W/run; chmod 755 $W/run; chmod 700 $W/prov
@@ -99,5 +100,24 @@ clean; marker $TOK; txnf $TOK; CS_TEST_HOOK0=":" t 0 --save --txn $TOK
 # B m11: .txn counts by existence in the live-transaction check too (a dangling symlink blocks --on-join at once)
 clean; sentinel; ln -s $W/nowhere $TX; t 1 --on-join
 has_sentinel && okk "--on-join with a dangling .txn symlink: refused, p5 untouched" || bad "--on-join with a dangling .txn symlink wrote p5"
+
+# ---- code review 2 (B MAJOR-1): .txn -> rc 5 BEFORE the p5 checks (unmountable / not ext4 / no p5 / bypass) ----------
+# not ext4: a zeroed loop device (HEAD: "p5 SKIP not-ext4" rc 3 -> the OTA gate writes skip:, not blocking)
+truncate -s 8M $W/raw.img; LOOP2=$(losetup -f --show $W/raw.img)
+# unmountable ext4: the magic stays, the superblock counters in front of it are zeroed (HEAD: "p5 error mount" rc 1)
+truncate -s 64M $W/bad.img; mkfs.ext4 -q -F $W/bad.img; dd if=/dev/zero of=$W/bad.img bs=1 seek=1024 count=56 conv=notrunc 2>/dev/null
+LOOP3=$(losetup -f --show $W/bad.img)
+for v in "raw:$LOOP2" "bad:$LOOP3" "nop5:$W/no-such-p5"; do
+	sed "s#^DEV=$LOOP#DEV=${v#*:}#" $W/cs > $W/cs.${v%%:*}; chmod +x $W/cs.${v%%:*}
+done
+cx(){ out=$("$W/cs.$1" --check 2>&1); rc=$?; }
+clean; cx raw; [ $rc = 3 ] && okk "control: not-ext4 p5, no .txn -> rc 3" || bad "control not-ext4: rc=$rc $(echo "$out" | tail -1)"
+clean; cx bad; [ $rc = 1 ] && okk "control: unmountable p5, no .txn -> rc 1" || bad "control unmountable: rc=$rc $(echo "$out" | tail -1)"
+txnf $TOK
+for k in raw bad nop5; do
+	cx $k
+	if [ $rc = 5 ] && echo "$out" | grep -q '^batman-config-save: p5 stale: an unfinished network change (.txn)'; then okk ".txn + $k p5: --check rc 5 'unfinished network change'"
+	else bad ".txn + $k p5: rc=$rc :: $(echo "$out" | tail -1)"; fi
+done
 clean
 echo "PASS=$pass FAIL=$fail"; [ $pass -gt 0 ] && [ $fail = 0 ]

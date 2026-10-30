@@ -9,7 +9,7 @@
 #   the helper does not start -> precondition: .txn present -> FAULT INJECTED (white-box, stated): the half-applied
 #   wireless written into uci as setkey leaves it (a random key, the new mesh id, the radio unblocked: `disabled`
 #   deleted, radio1 out of the mark) — the sysrq loses setkey's unsynced uci write (M6) -> the release helper started ->
-#   Finish -> judged: "txn network/join finished (boot): wireless = left (forgotten), applied, save rc=0";
+#   Finish -> judged: "txn network/join finished (boot): wireless = the pre-change snapshot (placeholder), applied, save rc=0";
 #   placeholder key, radio1 disabled=1 and in the mark, no wlh0; .txn gone; --check rc 0; a later --save rc 0;
 #   mesh_expect 0
 #   negative control [neg]: helper-noforget bound instead of the release helper (forgetting does nothing, reports
@@ -63,7 +63,7 @@ if [ "$NEG" = neg ]; then
 	k=$(qr "$KEYH")
 	[ "$k" = "$ki" ] && [ "$k" != "$PH" ] && ok "negative control: the injected key stays (sha $k), not the placeholder — the positive judgement fails on it" || no "negative control: key sha $k (injected $ki, placeholder $PH) — the mutant had no effect"
 else
-	grep -qE 'txn network/join finished \(boot\): wireless = left \(forgotten\), applied, save rc=(0|6)$' <<< "$l" && ok "finished: forgotten again (the record says Left)" || no "no Finish line 'left (forgotten)'"
+	grep -qE 'txn network/join finished \(boot\): wireless = the pre-change snapshot \(placeholder\), applied, save rc=(0|6)$' <<< "$l" && ok "finished: forgotten again (the snapshot is the placeholder leave left)" || no "no Finish line 'the pre-change snapshot (placeholder)'"
 	forgotten "after Finish"
 	txn=$(qr '[ -e /etc/batman-prov/.txn ] && echo present || echo gone'); [ "$txn" = gone ] && ok ".txn gone" || no ".txn $txn"
 	c=$(qr 'batman-config-save --check >/dev/null 2>&1; echo rc=$?'); [ "$c" = rc=0 ] && ok "--check rc 0 (p5 == live)" || no "--check $c"

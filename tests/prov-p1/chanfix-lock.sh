@@ -67,6 +67,16 @@ d="run dir unusable: logged 'without the halow-setkey lock'"
 if grep -q 'unusable.*without the halow-setkey lock' "$ST/logger.log"; then ok "$d"; else no "$d"; fi
 chmod 755 "$ST/run"
 
+# 5. code review 2 (nit): the channel becomes right WHILE chanfix waits for the lock (a setkey holding it sets it) ->
+# chanfix re-reads under the lock and neither commits nor reloads wifi (without the re-read it reasserts over it)
+reset
+flock -o "$LOCKF" sleep 1.2 & hp=$!; sleep 0.2
+run >/dev/null 2>&1 & cp_=$!
+sleep 0.4; sed -i 's/^wireless.radio1.channel=42$/wireless.radio1.channel=40/' "$ST/live"; cp "$ST/live" "$ST/committed"
+wait "$cp_"; rc=$?; wait "$hp" 2>/dev/null
+d="channel fixed while chanfix waited for the lock: rc 0 ($rc), chanfix made no commit ($(commits)) and no wifi reload ($(grep -c begin "$ST/wifi.log"))"
+if [ "$rc" = 0 ] && [ "$(commits)" = 0 ] && [ ! -s "$ST/wifi.log" ]; then ok "$d"; else no "$d"; fi
+
 # 4. control: channel already right -> nothing committed, no wifi reload
 reset; printf 'wireless.radio1.type=morse\nwireless.radio1.channel=40\n' > "$ST/live"; cp "$ST/live" "$ST/committed"
 run >/dev/null 2>&1; rc=$?
