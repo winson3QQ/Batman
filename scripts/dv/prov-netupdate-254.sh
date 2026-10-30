@@ -37,8 +37,12 @@ arm(){	# <yield|noyield>
 	# the real setkey as it is now (the hook calls it; /rom may differ from the slot's overlay)
 	q "cp -p /usr/bin/halow-setkey $W/setkey.real && chmod 700 $W/setkey.real && printf '#!/bin/sh\n$W/setkey.real \"\$@\"; r=\$?\nbatman-config-save --on-join > $W/onjoin.out 2>&1; echo \"onjoin_rc=\$?\" >> $W/onjoin.out; echo \"setkey_rc=\$r\" >> $W/onjoin.out\nexit 1\n' > $W/setkey.hook && chmod 755 $W/setkey.hook"
 	if [ "$w" = noyield ]; then
-		q "sed 's/^\([[:space:]]*\)--on-join) txn_live && .*;;\$/\1--on-join) ;;   # DV noyield mutant/' /usr/bin/batman-config-save > $W/cfgsave.noyield && chmod 755 $W/cfgsave.noyield"
-		[ "$(qr "grep -c 'DV noyield mutant' $W/cfgsave.noyield")" = 1 ] || { no "noyield: the config-save mutant did not take"; return 1; }
+		# the mutant removes EVERY yield of --on-join (wireless-txn §7): the txn_live check at the mode switch, the
+		# SEQ0 "none none" gate before staging, and the txn_seq re-check right before the p5 write (2026-10-30: the
+		# mutant that only emptied the mode line left SEQ0 unset -> the SEQ0 gate still yielded -> "the control had
+		# no effect" on wsl.16)
+		q "sed -e 's/^\([[:space:]]*\)--on-join) txn_live && .*;;\$/\1--on-join) SEQ0=\"none none\" ;;   # DV noyield mutant/' -e 's/^if \[ -n \"\$SEQ0\" \] && \[ \"\$(txn_seq)\" != \"\$SEQ0\" \]; then\$/if false; then   # DV noyield mutant/' /usr/bin/batman-config-save > $W/cfgsave.noyield && chmod 755 $W/cfgsave.noyield"
+		[ "$(qr "grep -c 'DV noyield mutant' $W/cfgsave.noyield")" = 2 ] || { no "noyield: the config-save mutant did not take ($(qr "grep -c 'DV noyield mutant' $W/cfgsave.noyield") of 2 edits)"; return 1; }
 		bindf cfgsave.noyield /usr/bin/batman-config-save || { no "bind of the noyield config-save"; return 1; }
 	fi
 	bindf setkey.hook /usr/bin/halow-setkey || { no "bind of the setkey hook"; return 1; }
