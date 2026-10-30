@@ -37,6 +37,10 @@ if grep -q -- '--forget-mesh' "$F/usr/bin/halow-setkey"; then
 	stub 'fails=0$' setkey-forget-lock "$F/usr/bin/halow-setkey" "$F/usr/lib/batman/rundir.sh"
 	stub 'fails=0$' chanfix-lock "$F/etc/uci-defaults/99-batman-chanfix" "$F/usr/lib/batman/rundir.sh"
 	stub 'fails=0$' halow-status-txn "$F/usr/bin/halow-status"
+	stub 'fails=0' slot-p5gate-txn "$F/usr/sbin/batman-slot"
+	# v8 (§15.1 / §15.6): --check-only, the operator refusal while .txn exists, the hand-disabled forget
+	if grep -q -- '--check-only' "$F/usr/bin/halow-setkey"; then stub 'fails=0$' setkey-checkonly-txn "$F/usr/bin/halow-setkey" "$F/usr/lib/batman/rundir.sh"
+	else echo "FAIL prov-p1-stubs: halow-setkey in this checkout predates wireless-txn v8 (no --check-only) — KNOWN until feat/254-p1b-seams lands (#254)"; r=1; fi
 else echo "FAIL prov-p1-stubs: product in this checkout predates the wireless transactions (no halow-setkey --forget-mesh) — KNOWN until feat/254-p1b-seams lands (#254)"; r=1; fi
 if [ "$(id -u)" = 0 ] && command -v losetup >/dev/null 2>&1; then
 	if grep -q -- '--save \[--promote-lkg\] \[--txn' "$F/usr/bin/batman-config-save"; then PROV_SRC=$REPO/$F stub 'FAIL=0$' cfgsave-txn-save "$F/usr/bin/batman-config-save"

@@ -125,7 +125,7 @@ if [ "$(committed_get wireless.default_radio1.key)" = secondkey12 ]; then ok "tw
 unset STUB_LOCKFILE
 # busy longer than LOCKWAIT -> rc 2, nothing changed
 reset
-flock "$LOCKF" sleep 8 & hp=$!; sleep 0.3
+flock -o "$LOCKF" sleep 8 & hp=$!; sleep 0.3
 t0=$(date +%s); out=$(printf 'thirdkey123\n' | run --mesh - --no-persist 2>&1); rc=$?; t1=$(date +%s)
 if [ "$rc" = 2 ] && [ $((t1 - t0)) -ge 3 ] && echo "$out" | grep -q busy; then ok "busy: rc 2 ($rc) after ~LOCKWAIT ($((t1 - t0))s) :: $(echo "$out" | tail -1)"; else no "busy: rc 2 ($rc) after ~LOCKWAIT ($((t1 - t0))s) :: $(echo "$out" | tail -1)"; fi
 if [ "$(commits)" = 0 ]; then ok "busy: nothing committed"; else no "busy: nothing committed"; fi

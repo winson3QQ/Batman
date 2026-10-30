@@ -9,7 +9,7 @@
 #   the helper does not start -> precondition: .txn present -> FAULT INJECTED (white-box, stated): the half-applied
 #   wireless written into uci as setkey leaves it (a random key, the new mesh id, the radio unblocked: `disabled`
 #   deleted, radio1 out of the mark) — the sysrq loses setkey's unsynced uci write (M6) -> the release helper started ->
-#   Finish -> judged: "txn network/join finished (boot): wireless = left (forgotten), setkey rc=0 save rc=0";
+#   Finish -> judged: "txn network/join finished (boot): wireless = left (forgotten), applied, save rc=0";
 #   placeholder key, radio1 disabled=1 and in the mark, no wlh0; .txn gone; --check rc 0; a later --save rc 0;
 #   mesh_expect 0
 #   negative control [neg]: helper-noforget bound instead of the release helper (forgetting does nothing, reports
@@ -25,7 +25,6 @@ PR_UNIT=prov-powerloss-rejoin${NEG:+-$NEG}-254
 KEYH='uci -q get wireless.default_radio1.key | sha256sum | cut -c1-16'
 PH=$(printf 'CHANGE-ME-NOW\n' | sha256sum | cut -c1-16)
 FORGOT='echo "dis=$(uci -q get wireless.radio1.disabled) mark=$(grep -qw radio1 /etc/halow-keyguard.blocked 2>/dev/null && echo 1 || echo 0) wlh0=$(iw dev wlh0 info >/dev/null 2>&1 && echo 1 || echo 0) me=$(cut -d" " -f6 /opt/batdata/state/prov-state 2>/dev/null)"'
-SERV="logread | grep 'batman-provhelper' | grep -c 'serving ('"
 forgotten(){	# <what>: placeholder key, radio blocked by the keyguard, no mesh netdev, mesh_expect 0
 	local k f
 	k=$(qr "$KEYH"); f=$(qr "$FORGOT"); say "$1: key sha=$k $f"
@@ -50,12 +49,12 @@ q "uci set wireless.default_radio1.key='dvh-$(head -c 8 /dev/urandom | od -An -t
 ki=$(qr "$KEYH"); fi_=$(qr "$FORGOT")
 case "$ki $fi_" in "$PH "*|*" mark=1 "*) inv "fault injection did not take: key sha=$ki $fi_"; q '/etc/init.d/batman-provhelper enable'; pr_end; pr_result; exit 2 ;; esac
 ok "fault injected: the half-applied wireless (random key sha $ki, mesh id $new, radio unblocked: $fi_)"
-c0=$(qr "$SERV")
 q '/etc/init.d/batman-provhelper enable'
 if [ "$NEG" = neg ]; then pr_push_helper helper-noforget || { pr_abort "mutant"; pr_result; exit 1; }
 else q '/etc/init.d/batman-provhelper start'; fi
-i=0; until [ "$(qr "$SERV")" -gt "${c0:-0}" ] 2>/dev/null || [ $i -ge 60 ]; do sleep 5; i=$((i + 1)); done
-[ $i -ge 60 ] && no "the helper did not reach 'serving' within 300 s"
+# the Finish runs at the helper's start holding its mutex (design §15.2): wait for its line (<= 420 s)
+i=0; until [ -n "$(qr "logread | grep 'batman-provhelper' | grep -E 'finished \\(boot\\)|boot finish:'")" ] || [ $i -ge 84 ]; do sleep 5; i=$((i + 1)); done
+[ $i -ge 84 ] && no "no boot Finish line within 420 s"
 sleep 10
 l=$(qr "logread | grep -E 'batman-provhelper|halow-setkey' | grep -E 'finished|finish|forget|WBOX-' | tail -5")
 echo "$l" | sed 's/^/    /'
@@ -64,7 +63,7 @@ if [ "$NEG" = neg ]; then
 	k=$(qr "$KEYH")
 	[ "$k" = "$ki" ] && [ "$k" != "$PH" ] && ok "negative control: the injected key stays (sha $k), not the placeholder — the positive judgement fails on it" || no "negative control: key sha $k (injected $ki, placeholder $PH) — the mutant had no effect"
 else
-	grep -qE 'txn network/join finished \(boot\): wireless = left \(forgotten\), setkey rc=0 save rc=(0|6)$' <<< "$l" && ok "finished: forgotten again (the record says Left)" || no "no Finish line 'left (forgotten)'"
+	grep -qE 'txn network/join finished \(boot\): wireless = left \(forgotten\), applied, save rc=(0|6)$' <<< "$l" && ok "finished: forgotten again (the record says Left)" || no "no Finish line 'left (forgotten)'"
 	forgotten "after Finish"
 	txn=$(qr '[ -e /etc/batman-prov/.txn ] && echo present || echo gone'); [ "$txn" = gone ] && ok ".txn gone" || no ".txn $txn"
 	c=$(qr 'batman-config-save --check >/dev/null 2>&1; echo rc=$?'); [ "$c" = rc=0 ] && ok "--check rc 0 (p5 == live)" || no "--check $c"

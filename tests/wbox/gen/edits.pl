@@ -16,6 +16,7 @@ my %DESC = (
 	'helper-notxn' => 'the helper drops an unfinished .txn at boot instead of finishing it',
 	'helper-noforget' => 'forgetting the mesh (network/leave, Finish) does nothing and reports success',
 	'helper-alwaysforget' => 'a failed join always forgets instead of restoring the pre-change snapshot',
+	'helper-skipapply' => 'Finish takes every wireless state as already done and never re-applies',
 	'radio1-off' => '99zz-wbox-radio1-off disables radio1 on the slot\'s first boot',
 	'chan' => 'init wbox-chan keeps radio1 off the p5 channel for >= 200 s after the radio exists',
 	'helper-flap' => 'the helper exits 5 s after serving (procd respawns it)',
@@ -32,7 +33,7 @@ my %W = (
 	'helper-noleave' => 'e3b71d58', 'helper-notrial' => '06ad4c9b', 'helper-clientchal' => 'b8f2316d',
 	'helper-notxn' => '4e9c7a20', 'radio1-off' => '81d5f0c6', 'chan' => '2ac9e47f', 'helper-flap' => 'f4703b1d',
 	'misc-l38' => '6a1c9e30', 'misc-l42' => 'b7e2d915', 'misc-l43' => '0f4a8c62', 'misc-l51' => '93d5e71b',
-	'helper-noforget' => 'd41f8a27', 'helper-alwaysforget' => '5c90e3b6',
+	'helper-noforget' => 'd41f8a27', 'helper-alwaysforget' => '5c90e3b6', 'helper-skipapply' => '7e19c4a2',
 );
 my $w = "WBOX-$v-" . ($W{$v} // die "unknown variant $v\n");
 print "$w\n";
@@ -89,10 +90,14 @@ my %do = (
 		ed($MAIN, sub { s{\trc, out := run\(nil, "halow-setkey", "--forget-mesh", "--no-persist"\)\n}
 			{\trc, out := 0, "$w: forget-mesh skipped (mutant)"\n\tlogf("%s", out)\n} });
 	},
+	'helper-skipapply' => sub {
+		# 254-wireless-txn §15.4 / code review B MAJOR-3: Finish takes every state as "already" (never re-applies)
+		ed($WTXN, sub { s~(func \(n \*Node\) satisfied\(w wantWireless\) bool \{\n)~$1\tn.Log("$w: every state taken as already (mutant)")\n\treturn true\n~ });
+	},
 	'helper-alwaysforget' => sub {
 		# 254-wireless-txn §8 legacyjoin row (review B r5 m5): a failed join always forgets instead of restoring the
 		# operator's pre-change settings
-		ed($WTXN, sub { s~\tif tx\.PrevKey == "" \|\| tx\.PrevKey == placeholderKey \{\n~\tif true { // mutant: the pre-change snapshot is never restored\n\t\tn.Log("$w: snapshot ignored, forgetting (mutant)")\n~ });
+		ed($WTXN, sub { s~\tif tx\.PrevKey == placeholderKey \{\n~\tif true { // mutant: the pre-change snapshot is never restored\n\t\tn.Log("$w: snapshot ignored, forgetting (mutant)")\n~ });
 	},
 	'helper-notrial' => sub {
 		ed($NODE, sub { s{\tif stateChanging\[verb\] && n\.Sys\.IsTrial\(\) \{\n\t\treturn nil, fail\(EBusy, "trial slot \(updating\)"\)\n\t\}}

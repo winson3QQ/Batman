@@ -50,7 +50,7 @@ if flock -n "$LOCKF" true; then ok "$d"; else no "$d"; fi
 
 # 2. lock busy (a setkey stuck past LOCKWAIT): reassert anyway, logged
 reset
-flock "$LOCKF" sleep 20 & hp=$!; sleep 0.3
+flock -o "$LOCKF" sleep 20 & hp=$!; sleep 0.3
 run >/dev/null 2>&1; rc=$?
 d="lock busy: rc 0 ($rc), reasserted anyway (channel $(committed_get wireless.radio1.channel))"
 if [ "$rc" = 0 ] && [ "$(committed_get wireless.radio1.channel)" = 40 ]; then ok "$d"; else no "$d"; fi

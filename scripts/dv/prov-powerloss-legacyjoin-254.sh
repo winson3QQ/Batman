@@ -9,7 +9,7 @@
 #   (a random key + the new mesh id) — the sysrq loses setkey's unsynced uci write (M6, 04 wsl.9), so without it the
 #   live state would already be the operator's and Finish would have nothing to undo -> the release helper started ->
 #   Finish -> judged:
-#     "txn network/join finished (boot): wireless = the pre-change snapshot, setkey rc=0 save rc=0"; the mesh key
+#     "txn network/join finished (boot): wireless = the pre-change snapshot, applied, save rc=0"; the mesh key
 #     (compared as a sha256 prefix, never printed), uci AND live mesh id == the operator's; .txn gone; --check rc 0;
 #     a later --save rc 0 (the shipped image kept .txn and refused every save: #254 M6); 02 a neighbour again
 #   negative control [neg]: helper-alwaysforget bound instead of the release helper (a failed join always forgets,
@@ -26,7 +26,6 @@ MESHID='uci -q get wireless.default_radio1.mesh_id'
 KEYH='uci -q get wireless.default_radio1.key | sha256sum | cut -c1-16'
 LIVEID='wpa_cli_s1g -p /var/run/wpa_supplicant_s1g -i wlh0 status 2>/dev/null | sed -n "s/^ssid=//p"'
 PH=$(printf 'CHANGE-ME-NOW\n' | sha256sum | cut -c1-16)
-SERV="logread | grep 'batman-provhelper' | grep -c 'serving ('"
 pr_begin 3000 || { pr_result; exit 1; }
 s=$(pr_info); say "S0: $s"
 pr_keys && pr_pc_place && pr_claim || { pr_abort "claim"; pr_result; exit 1; }
@@ -43,12 +42,12 @@ if [ "$(echo $o)" != TXN ]; then inv "precondition: .txn present and the helper 
 say "after the power loss: mesh_id=$(qr "$MESHID") key sha=$(qr "$KEYH") (sysrq kept setkey's write: $([ "$(qr "$MESHID")" = "$new" ] && echo yes || echo no))"
 q "uci set wireless.default_radio1.key='dvh-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')'; uci set wireless.default_radio1.mesh_id='$new'; uci commit wireless; sync"
 ok "fault injected: the half-applied wireless (random key, mesh id $new) in uci"
-c0=$(qr "$SERV")
 q '/etc/init.d/batman-provhelper enable'
 if [ "$NEG" = neg ]; then pr_push_helper helper-alwaysforget || { pr_abort "mutant"; pr_result; exit 1; }
 else q '/etc/init.d/batman-provhelper start'; fi
-i=0; until [ "$(qr "$SERV")" -gt "${c0:-0}" ] 2>/dev/null || [ $i -ge 60 ]; do sleep 5; i=$((i + 1)); done
-[ $i -ge 60 ] && no "the helper did not reach 'serving' within 300 s"
+# the Finish runs at the helper's start holding its mutex (design §15.2): wait for its line (<= 420 s)
+i=0; until [ -n "$(qr "logread | grep 'batman-provhelper' | grep -E 'finished \\(boot\\)|boot finish:'")" ] || [ $i -ge 84 ]; do sleep 5; i=$((i + 1)); done
+[ $i -ge 84 ] && no "no boot Finish line within 420 s"
 i=0; until [ "$(qr "$LIVEID")" = "$m0" ] || [ $i -ge 24 ]; do sleep 5; i=$((i + 1)); done   # the radio rejoins
 k=$(qr "$KEYH"); m=$(qr "$MESHID"); lm=$(qr "$LIVEID")
 l=$(qr "logread | grep 'batman-provhelper' | grep -E 'finished|finish|WBOX-' | tail -4")
@@ -58,7 +57,7 @@ if [ "$NEG" = neg ]; then
 	grep -q 'WBOX-helper-alwaysforget-[0-9a-f]*: snapshot ignored' <<< "$l" && ok "neg: the mutant ran (witness line)" || no "neg: no witness line — the mutant did not run"
 	[ "$k" = "$PH" ] && [ "$k" != "$k0" ] && ok "negative control: the key is the placeholder, not the operator's — the positive judgement fails on it" || no "negative control: key sha $k (placeholder $PH, operator $k0) — the mutant had no effect"
 else
-	grep -qE 'txn network/join finished \(boot\): wireless = the pre-change snapshot, setkey rc=0 save rc=(0|6)$' <<< "$l" && ok "finished back to the operator's settings (the pre-change snapshot)" || no "no Finish line back to the pre-change snapshot"
+	grep -qE 'txn network/join finished \(boot\): wireless = the pre-change snapshot, applied, save rc=(0|6)$' <<< "$l" && ok "finished back to the operator's settings (the pre-change snapshot)" || no "no Finish line back to the pre-change snapshot"
 	[ "$k" = "$k0" ] && ok "mesh key == the operator's (sha $k)" || no "mesh key sha $k (want the operator's $k0)"
 	[ "$m" = "$m0" ] && ok "uci mesh id == the operator's ($m)" || no "uci mesh id $m (want $m0)"
 	[ "$lm" = "$m0" ] && ok "live mesh id == the operator's ($lm)" || no "live mesh id [$lm] (want $m0)"

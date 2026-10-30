@@ -117,6 +117,27 @@ jobs:
           bash tests/prov-p1/prov-lock-init.sh $F/etc/init.d/batman-prov-lock $F/usr/lib/batman/prov-lock.sh
           bash tests/prov-p1/batman-slot-rollback-gate.sh $F/usr/sbin/batman-slot $F/usr/lib/batman/prov-lock.sh
           bash tests/prov-p1/claim-lock-lints.sh .
+      # #254 wireless transactions (254-wireless-txn §6/§7/§11, v8 §15; review A m9). The harness lands first (#290): on a
+      # product without them these two steps are RED on purpose (KNOWN #254); `!cancelled()` so they run (and the steps
+      # above are never skipped by them) whatever happened before.
+      - name: "#254 wireless-txn shell tests (no root): setkey --forget-mesh + writer lock, --check-only + .txn refusal + hand-disabled forget, chanfix lock, halow-status NETCHANGE, batman-slot refuses an OTA while .txn"
+        if: ${{ !cancelled() }}
+        run: |
+          F=feed/batman-provision/files
+          grep -q -- '--forget-mesh' $F/usr/bin/halow-setkey || { echo "::error::product in this checkout predates the wireless transactions (no halow-setkey --forget-mesh): expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
+          bash tests/prov-p1/setkey-forget-lock.sh $F/usr/bin/halow-setkey $F/usr/lib/batman/rundir.sh
+          bash tests/prov-p1/chanfix-lock.sh $F/etc/uci-defaults/99-batman-chanfix $F/usr/lib/batman/rundir.sh
+          bash tests/prov-p1/halow-status-txn.sh $F/usr/bin/halow-status
+          grep -q -- '--check-only' $F/usr/bin/halow-setkey || { echo "::error::product in this checkout predates wireless-txn v8 (no halow-setkey --check-only): expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
+          bash tests/prov-p1/setkey-checkonly-txn.sh $F/usr/bin/halow-setkey $F/usr/lib/batman/rundir.sh
+          grep -q 'unfinished network change' $F/usr/sbin/batman-slot || { echo "::error::batman-slot in this checkout predates wireless-txn v8 §15.3: expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
+          bash tests/prov-p1/slot-p5gate-txn.sh $F/usr/sbin/batman-slot
+      - name: "#254 wireless-txn loop-device test (root): config-save --save --txn, the txn sequence re-check / none-none rule, --check rc 5 while .txn"
+        if: ${{ !cancelled() }}
+        run: |
+          F=feed/batman-provision/files
+          grep -q -- '--save \[--promote-lkg\] \[--txn' $F/usr/bin/batman-config-save || { echo "::error::batman-config-save in this checkout has no --save --txn: expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
+          sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-txn-save.sh $F/usr/bin/batman-config-save
 
   ab-card:
     runs-on: ubuntu-latest

@@ -61,6 +61,7 @@ prov-netupdate-254|prov-netupdate-254|
 prov-misc-254|prov-misc-254|
 prov-powerloss-txn1-254|prov-powerloss-254|1
 prov-powerloss-txn2-254|prov-powerloss-254|2
+prov-powerloss-txn2-neg-skip-254|prov-powerloss-254|2 neg-skip
 prov-powerloss-txn2-neg-b-254|prov-powerloss-254|2 neg-b
 prov-powerloss-txn3-254|prov-powerloss-254|3
 prov-powerloss-txn3-neg-254|prov-powerloss-254|3 neg
