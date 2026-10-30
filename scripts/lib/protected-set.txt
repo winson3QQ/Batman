@@ -1,0 +1,11 @@
+# scripts/lib/protected-set.txt — the ONE list of the protected set (254-h23 §22.4 / §23.6 / §23.9; review A-m7: it was
+# copied three times): the programs that decide the default slot and the files they source, as rootfs paths. Read by
+# scripts/lint-wbox.sh (a -wbox variant may not touch / name them) and scripts/dv/prov-254.sh (pr_wbox_checks, the
+# trial guard). One path per line; # comments.
+usr/sbin/batman-slot
+usr/bin/batman-autocommit
+etc/init.d/batman-autocommit
+usr/lib/batman/otatrace.sh
+usr/lib/batman/rundir.sh
+usr/lib/batman/bootfacts.sh
+usr/lib/batman/meshjoin.sh

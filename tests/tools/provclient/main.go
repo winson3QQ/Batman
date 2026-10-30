@@ -10,6 +10,8 @@
 //	                              and read back from stdin ("SIG <hex>"), so the owner key never reaches the node.
 //	provclient sign <keyfile>     on the WSL host: answers SIGN lines with an ES256 (low-s) signature.
 //	provclient keygen <keyfile>   a fresh P-256 owner key (0600) — one per run; prints the public key hex.
+//	                              node ops: info, claim, claim-attacker, claim-attacker-chal, replay, ssh-keys, root-reset, rename, verb,
+//	                              and (net.go) net-apply --first|--update, leave, owner-add, owner-remove, diag.
 //	provclient selftest <vectors.json>
 //
 // Output never contains a secret: secret values are printed as the first 16 hex chars of their SHA-256.
@@ -29,6 +31,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -319,12 +322,25 @@ func cmdSign(keyPath string) {
 		}
 		msg, err := hex.DecodeString(f[2])
 		if err != nil || !(f[1] == "owner-op" && strings.HasPrefix(string(msg), "batman-owner-op-v1") ||
-			f[1] == "owner-enc" && strings.HasPrefix(string(msg), "batman-owner-enc-v1")) {
+			f[1] == "owner-enc" && strings.HasPrefix(string(msg), "batman-owner-enc-v1") ||
+			f[1] == "cose" && isCoseSigStructure(msg)) {
 			fmt.Println("ERR")
 			continue
 		}
 		fmt.Println("SIG " + hex.EncodeToString(signLowS(k, msg)))
 	}
+}
+
+// isCoseSigStructure: the only "cose" messages the signer signs are a COSE Sig_structure for a net_config or a
+// net_secrets object (["Signature1", protected, "batman-netcfg-v1" | "batman-secrets-v1", payload])
+func isCoseSigStructure(msg []byte) bool {
+	x, rest, err := cDec(msg)
+	a, ok := x.([]any)
+	if err != nil || len(rest) != 0 || !ok || len(a) != 4 || a[0] != "Signature1" {
+		return false
+	}
+	l, _ := a[2].([]byte)
+	return string(l) == labelNetcfg || string(l) == labelSecrets
 }
 
 // ---- node side ----------------------------------------------------------------------------------------------------
@@ -357,8 +373,9 @@ func (cl *client) call(verb string, args cmap) (uint64, cmap) {
 	}
 	buf := make([]byte, 1<<17)
 	n, err := cl.c.Read(buf)
-	if err != nil {
-		return 999, nil // connection closed by the helper
+	if err != nil || n == 0 {
+		fmt.Println("CONN-CLOSED") // the helper closed the connection (e.g. a peer uid it refuses)
+		return 999, nil
 	}
 	x, _, err := cDec(buf[:n])
 	if err != nil {
@@ -407,20 +424,23 @@ func (cl *client) ownerOp(typ string, body cmap) []byte {
 }
 
 // dropPrivileges: secrets already read; then uid/gid 471, no supplementary groups, not dumpable (254-p1-impl §2.2).
-func dropPrivileges() {
+func dropPrivileges() { dropTo(471, 471) }
+
+// dropTo: uid / gid (sock-as: another uid, for the socket permission and PEERCRED tests, 254-h23 §4.5)
+func dropTo(uid, gid int) {
 	if os.Geteuid() != 0 {
 		die("node mode starts as root (it reads root-only secrets, then drops)")
 	}
 	if err := syscall.Setgroups([]int{}); err != nil {
 		die("setgroups: %v", err)
 	}
-	if err := syscall.Setgid(471); err != nil {
+	if err := syscall.Setgid(gid); err != nil {
 		die("setgid: %v", err)
 	}
-	if err := syscall.Setuid(471); err != nil {
+	if err := syscall.Setuid(uid); err != nil {
 		die("setuid: %v", err)
 	}
-	if syscall.Getuid() != 471 || syscall.Geteuid() != 471 || syscall.Getgid() != 471 {
+	if syscall.Getuid() != uid || syscall.Geteuid() != uid || syscall.Getgid() != gid {
 		die("privilege drop did not take")
 	}
 	if g, _ := syscall.Getgroups(); len(g) != 0 {
@@ -437,15 +457,47 @@ func cmdNode(args []string) {
 	if len(args) == 0 {
 		die("node: op missing")
 	}
+	// sock-as <uid> [--gid <gid>] -- <op> [args]: the op as another uid / gid (default gid = uid); a refused connect
+	// prints "CONN-ERR <reason>", a connection the helper closes prints "CONN-CLOSED" (254-h23 §4.5 prov-sock-254)
+	uid, gid := 471, 471
+	if args[0] == "sock-as" {
+		if len(args) < 4 {
+			die("usage: sock-as <uid> [--gid <gid>] -- <op> [args]")
+		}
+		u, err := strconv.Atoi(args[1])
+		if err != nil || u <= 0 {
+			die("sock-as: uid %q (never 0)", args[1])
+		}
+		uid, gid = u, u
+		args = args[2:]
+		if args[0] == "--gid" {
+			if len(args) < 2 {
+				die("sock-as: --gid needs a value")
+			}
+			if gid, err = strconv.Atoi(args[1]); err != nil || gid <= 0 {
+				die("sock-as: gid %q", args[1])
+			}
+			args = args[2:]
+		}
+		if len(args) < 2 || args[0] != "--" {
+			die("sock-as: -- <op> missing")
+		}
+		args = args[1:]
+	}
 	op := args[0]
 	// secrets first, as root (never stdin: stdin is the signer channel)
 	var claimSecret []byte
-	if op == "claim" || op == "claim-attacker" || op == "replay" {
+	if op == "claim" || op == "claim-attacker" || op == "claim-attacker-chal" || op == "replay" {
 		b, err := os.ReadFile("/etc/batman-prov/identity/claim.secret")
 		if err != nil || len(b) != 32 {
 			die("claim.secret: %v", err)
 		}
 		claimSecret = b
+	}
+	// the network values (fd 3) for net-apply: read here, as root, before the drop (254-p1-impl §4.2)
+	var netIn *netInput
+	if op == "net-apply" {
+		netIn = readFd3()
 	}
 	// #254 claim-lock fix §11.3: PROVCLIENT_PW_FILE = a root-only file (created here, as root, O_EXCL 0600) that
 	// receives the password the helper returned, so a node-side musl crypt() probe can check it against shadow —
@@ -466,10 +518,11 @@ func cmdNode(args []string) {
 			pwOut.Close()
 		}
 	}
-	dropPrivileges()
+	dropTo(uid, gid)
 	c, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: sockPath, Net: "unixpacket"})
 	if err != nil {
-		die("connect: %v", err)
+		fmt.Printf("CONN-ERR %v\n", err)
+		os.Exit(3)
 	}
 	h := make([]byte, 32)
 	rand.Read(h)
@@ -494,7 +547,7 @@ func cmdNode(args []string) {
 		cert, _ := r.get(1).([]byte)
 		sn, _ := r.get(2).([]byte)
 		fmt.Printf("RESULT info.cert code=%d cert_sha=%s sn=%x\n", code, short(cert), sn)
-	case "claim", "claim-attacker":
+	case "claim", "claim-attacker", "claim-attacker-chal":
 		ownerPub := hexArg(1)
 		encPub := hexArg(2)
 		code, r := cl.call("info.cert", cmap{})
@@ -505,12 +558,19 @@ func cmdNode(args []string) {
 		sn, _ := r.get(2).([]byte)
 		nn, _ := cl.nonce()
 		bound := ownerPub
-		if op == "claim-attacker" { // the buyer's response, the attacker's owner_pub (§4.1 negative test)
+		if op != "claim" { // the buyer's response, the attacker's owner_pub (§4.1 negative test)
 			bound = hexArg(3)
 		}
-		resp := checkMac(claimSecret, clientChal(nn, h, cert, bound), sn)
+		chal := clientChal(nn, h, cert, bound)
+		resp := checkMac(claimSecret, chal, sn)
 		sigEnc := cl.sign("owner-enc", append([]byte("batman-owner-enc-v1"), encPub...))
-		code, r = cl.call("claim.verify", cmap{{uint64(1), h}, {uint64(2), resp}, {uint64(3), ownerPub}, {uint64(4), encPub}, {uint64(5), sigEnc}})
+		req := cmap{{uint64(1), h}, {uint64(2), resp}, {uint64(3), ownerPub}, {uint64(4), encPub}, {uint64(5), sigEnc}}
+		if op == "claim-attacker-chal" {
+			// also hand the node the ClientChal the response was made over (key 6): only the helper-clientchal mutant
+			// reads it (prov-claim-kp's negative control); a release helper refuses the unknown key outright
+			req = append(req, kv{uint64(6), chal})
+		}
+		code, r = cl.call("claim.verify", req)
 		tag, _ := r.get(1).([]byte)
 		adv, _ := r.get(2).([]byte)
 		pw, _ := r.get(3).(string)
@@ -559,7 +619,9 @@ func cmdNode(args []string) {
 		code, _ := cl.call(args[1], cmap{})
 		fmt.Printf("RESULT %s code=%d\n", args[1], code)
 	default:
-		die("unknown op %q", op)
+		if !netOp(cl, op, args, netIn, hexArg) {
+			die("unknown op %q", op)
+		}
 	}
 }
 

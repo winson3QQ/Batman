@@ -23,6 +23,24 @@ jobs:
         run: bash scripts/test-negctl-old-slot-254.sh
       - name: "#305 mini UART judges offline — gate / serial counters / sysfs sequence / kmsg window / settings / flip verdicts (good + bad cases)"
         run: bash scripts/test-dv-bt-uart-305.sh
+      - name: busybox for lint-wbox (sh -n in the node's ash)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
+      - name: "#254 preflight P9 node judge on fixtures ([all] / wbox slots / prov leftovers) under busybox ash"
+        run: bash tests/prov-p1/p9-judge.sh scripts/node/prov-p9-254.sh
+      - name: "#254 rollback arm / launcher / rbfix offline — every §22.1 precondition, FAIL-RECOVERED (+ openmanetd), FAIL-NEEDS-PERSON, rbfix preconditions, pty drop + plain-& negative control"
+        run: bash tests/prov-p1/rbarm.sh
+      - name: "#254 prov-misc dry-run arm offline — atomic pid + presence, judge (order / hold / cap / lingering member), node-side INLOOP, session scan under /proc churn"
+        run: bash tests/prov-p1/misc-dry.sh
+      - name: "#254 -wbox variants well formed (scope, protected set, witness, sh -n, nohold, helpers.list) — lint-wbox + its negative self-test"
+        run: bash scripts/lint-wbox.sh && bash tests/wbox/test-lint-wbox.sh
+      - name: "#254 lint-install — every feed/batman-provision file has exactly one Makefile install line (+ its negative self-test)"
+        run: bash scripts/lint-install.sh . && bash tests/prov-p1/test-lint-install.sh .
+      - name: "#254 known-failures expiry — 4-column list, expired entries are NEW, malformed lines FAIL (11 cases)"
+        run: bash tests/known-failures.sh
+      - name: "#254 NEEDS-PERSON blocks every later D suite on DNODE (dnode_blocked + its call in suite())"
+        run: bash tests/dnode-block.sh
+      - name: "#254 prov-254 host helpers offline — pr_wait_held bounded by the host clock, the host lock owner / stale message"
+        run: bash tests/prov-p1/lib-host.sh
       - name: line-endings must be LF
         run: |
           if grep -rlIP '\r$' --include='*.sh' --include='*.py' .; then
@@ -48,8 +66,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: busybox for the ash runs
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
+      - name: busybox for the ash runs, squashfs-tools for card-wbox
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox squashfs-tools
       - name: "#254 P1 stub tests (no root): decider / init hook, autocommit prov case, 99zz mesh_expect, batman-slot release"
         run: |
           F=feed/batman-provision/files
@@ -58,8 +76,13 @@ jobs:
           bash tests/prov-p1/addr-defer.sh $F/usr/libexec/batman-addr-defer
           sed '1s#.*#\#!/usr/bin/busybox sh#' $F/usr/libexec/batman-addr-defer > /tmp/dec.bb && chmod +x /tmp/dec.bb && bash tests/prov-p1/addr-defer.sh /tmp/dec.bb
           bash tests/prov-p1/autocommit-prov-case.sh $F/usr/bin/batman-autocommit
+          bash tests/prov-p1/autocommit-mesh-arm.sh $F/usr/bin/batman-autocommit
           bash tests/prov-p1/99zz-mesh-expect.sh $F/etc/uci-defaults/99zz-batman-prov-state
           bash tests/prov-p1/batman-slot-addr-defer.sh $F/usr/sbin/batman-slot
+          # P1b's product gate (#254 security review F1) lands after the harness (#290): red on purpose until then
+          grep -q '^wbox_gate_self() {' $F/usr/sbin/batman-slot || { echo "::error::product in this checkout is pre-P1b (no wbox_gate_self in batman-slot): expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
+          bash tests/prov-p1/wbox-gate.sh $F/usr/sbin/batman-slot $F/usr/bin/batman-autocommit
+          bash tests/prov-p1/card-wbox.sh .
       - name: "#254 P1 loop-device tests (root): config-save identity freeze / frozen no-remount / prov-get rc 10, prov-base compare rules"
         run: |
           F=feed/batman-provision/files
@@ -67,11 +90,22 @@ jobs:
           sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-frozen-nomount.sh $F/usr/bin/batman-config-save
           sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-provget-rc10.sh $F/usr/bin/batman-config-save
           sudo bash tests/prov-p1/prov-base-statecmp.sh scripts/node/prov-base-254.sh
+          sudo bash tests/prov-p1/prov-base-stateset.sh scripts/node/prov-base-254.sh
+          bash tests/prov-p1/prov-base-names.sh scripts/node/prov-base-254.sh
       - name: "#254 P1 Go unit tests (batman-prov helper)"
         uses: actions/setup-go@v5
         with:
           go-version: '1.26'
       - run: cd feed/batman-prov/src && GOFLAGS=-mod=vendor GOTOOLCHAIN=local go vet ./... && GOFLAGS=-mod=vendor GOTOOLCHAIN=local go test ./...
+      # the prov_test seams (killpoints, version marker) and the root-only sock tests (SO_PEERCRED, socket-dir chown):
+      # without the tag and root they never ran in CI (they t.Skip). Any SKIP here is a FAIL (254-h23 §23.9 gap review).
+      - name: "#254 P1 Go unit tests as root with -tags prov_test (seams, sock)"
+        run: |
+          cd feed/batman-prov/src
+          o=$(sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root GOFLAGS=-mod=vendor GOTOOLCHAIN=local go test -count=1 -v -tags prov_test ./... 2>&1); rc=$?
+          echo "$o" | grep -E '^(--- (FAIL|SKIP)|ok|FAIL|panic)'
+          [ $rc = 0 ] || exit 1
+          ! echo "$o" | grep -q -- '--- SKIP' || { echo '::error::a Go test skipped under root + prov_test'; exit 1; }
       - name: "#254 claim-lock fix stub tests (no root): prov_apply_lock, prov_root_hash_ok, S13 batman-prov-lock, rollback lock gate, cross-file lints"
         run: |
           F=feed/batman-provision/files
@@ -83,6 +117,27 @@ jobs:
           bash tests/prov-p1/prov-lock-init.sh $F/etc/init.d/batman-prov-lock $F/usr/lib/batman/prov-lock.sh
           bash tests/prov-p1/batman-slot-rollback-gate.sh $F/usr/sbin/batman-slot $F/usr/lib/batman/prov-lock.sh
           bash tests/prov-p1/claim-lock-lints.sh .
+      # #254 wireless transactions (254-wireless-txn §6/§7/§11, v8 §15; review A m9). The harness lands first (#290): on a
+      # product without them these two steps are RED on purpose (KNOWN #254); `!cancelled()` so they run (and the steps
+      # above are never skipped by them) whatever happened before.
+      - name: "#254 wireless-txn shell tests (no root): setkey --forget-mesh + writer lock, --check-only + .txn refusal + hand-disabled forget, chanfix lock, halow-status NETCHANGE, batman-slot refuses an OTA while .txn"
+        if: ${{ !cancelled() }}
+        run: |
+          F=feed/batman-provision/files
+          grep -q -- '--forget-mesh' $F/usr/bin/halow-setkey || { echo "::error::product in this checkout predates the wireless transactions (no halow-setkey --forget-mesh): expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
+          bash tests/prov-p1/setkey-forget-lock.sh $F/usr/bin/halow-setkey $F/usr/lib/batman/rundir.sh
+          bash tests/prov-p1/chanfix-lock.sh $F/etc/uci-defaults/99-batman-chanfix $F/usr/lib/batman/rundir.sh
+          bash tests/prov-p1/halow-status-txn.sh $F/usr/bin/halow-status
+          grep -q -- '--check-only' $F/usr/bin/halow-setkey || { echo "::error::product in this checkout predates wireless-txn v8 (no halow-setkey --check-only): expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
+          bash tests/prov-p1/setkey-checkonly-txn.sh $F/usr/bin/halow-setkey $F/usr/lib/batman/rundir.sh
+          grep -q 'unfinished network change' $F/usr/sbin/batman-slot || { echo "::error::batman-slot in this checkout predates wireless-txn v8 §15.3: expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
+          bash tests/prov-p1/slot-p5gate-txn.sh $F/usr/sbin/batman-slot
+      - name: "#254 wireless-txn loop-device test (root): config-save --save --txn, the txn sequence re-check / none-none rule, --check rc 5 while .txn"
+        if: ${{ !cancelled() }}
+        run: |
+          F=feed/batman-provision/files
+          grep -q -- '--save \[--promote-lkg\] \[--txn' $F/usr/bin/batman-config-save || { echo "::error::batman-config-save in this checkout has no --save --txn: expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
+          sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-txn-save.sh $F/usr/bin/batman-config-save
 
   ab-card:
     runs-on: ubuntu-latest
@@ -94,11 +149,34 @@ jobs:
         run: ./tests/ab-card-invariants.sh
       - name: A/B card invariants, Pi 3 / bcm2710 (#209) — p7 firmware partition + hybrid MBR
         run: SOC=bcm2710 ./tests/ab-card-invariants.sh
-      - name: "#254 claim-lock fix v9.1 §5.6 — batman-slot stage-root stdout is exactly the target device (real card, 4 branches)"
+      - name: "#254 claim-lock fix v9.1 §5.6 + prov-unit-gate — stage-root stdout is exactly the target device; .seeded x meta x state matrix (real card, 23 cases)"
         run: |
           F=feed/batman-provision/files
           # harness lands first (#290): on a product without the fix the L44 branch FAILs — red on purpose (KNOWN #254)
           sudo bash tests/prov-p1/batman-slot-stage-root.sh $F/usr/sbin/batman-slot $F/usr/lib/batman/prov-lock.sh
+      - name: "#254 prov-unit-gate negative controls — the allow-claimed mutant and the 1.5.12-wsl.9 batman-slot each FAIL in exactly their cases"
+        run: |
+          F=feed/batman-provision/files
+          sudo bash tests/prov-p1/gate-negatives.sh $F/usr/sbin/batman-slot $F/usr/lib/batman/prov-lock.sh
+
+  dv-sbx:
+    # 254-h23 §4.4 / p1-impl §4.10, §5.1: the provisioning sandbox — root on a native arm64 runner (unshare + capsh +
+    # chroot into the pinned base rootfs with this checkout's product laid over it). Its own escape negatives first, then
+    # prov-unit-96 and the four mutants that must FAIL. On a pre-P1b product (no prov_test seams) it is red with that
+    # message (stricter than §4.4's continue-on-error: nothing is hidden).
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools libcap2-bin e2fsprogs
+      - name: "dv-sbx: escape negatives, prov-unit-96 (104 cases) + 4 mutants, prov-unit-cfgsave (36 cases) + 3 mutants"
+        run: sudo env PATH="$PATH" HOME="$HOME" GITHUB_ACTIONS="$GITHUB_ACTIONS" GOCACHE=/tmp/gocache-root bash scripts/dv-sbx.sh --go "$(command -v go)" escape 96 96:meta-bad-unlock 96:p6-unlock 96:devopen-exempt 96:skip-decision cfgsave cfgsave:meta-first cfgsave:onjoin-prov cfgsave:check-late armmesh armmesh:no-joined helper helper:rc9-gen helper:rc10-gen helper:gen-first
+      - name: "dv-sbx prov-unit-bcm2710 (SMOKE): escape, 96, cfgsave on the bcm2710 payload rootfs"
+        run: sudo env PATH="$PATH" HOME="$HOME" GITHUB_ACTIONS="$GITHUB_ACTIONS" GOCACHE=/tmp/gocache-root bash scripts/dv-sbx.sh --soc bcm2710 --go "$(command -v go)" escape 96 cfgsave helper
 
   security:
     runs-on: ubuntu-latest

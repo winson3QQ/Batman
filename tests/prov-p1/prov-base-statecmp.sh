@@ -46,4 +46,16 @@ printf '%s
 ' "-rw-r--r-- 0:0 bbbb etc/board.json" > $D/now-x/upper.manifest
 ALLOW_FILE=$AL run 0 "etc/board.json content differs (board_detect per-boot probe) -> allowed"
 echo same > $D/snap/upper.manifest; echo same > $D/now-x/upper.manifest
+# review A-M1: overlay-restore keeps an extra directory that /rom has ($D/kept-dirs); compare drops exactly those "+ d" lines
+printf '%s\n' "-rw-r--r-- 0:0 aaaa etc/x" > $D/snap/upper.manifest
+printf '%s\n' "-rw-r--r-- 0:0 aaaa etc/x" "drwxr-xr-x 0:0 - usr" "drwxr-xr-x 0:0 - usr/bin" > $D/now-x/upper.manifest
+base; rm -f $D/kept-dirs; ALLOW_FILE=/nonexistent run 1 "extra upper dirs, no kept-dirs list -> FAIL"
+base; printf 'usr\nusr/bin\n' > $D/kept-dirs; ALLOW_FILE=/nonexistent run 0 "extra upper dirs listed in kept-dirs -> dropped"
+base; printf 'usr\n' > $D/kept-dirs; ALLOW_FILE=/nonexistent run 1 "only one of two extra dirs listed -> the other still FAILs"
+printf '%s\n' "-rw-r--r-- 0:0 aaaa etc/x" "-rw-r--r-- 0:0 cccc usr" > $D/now-x/upper.manifest
+base; printf 'usr\n' > $D/kept-dirs; ALLOW_FILE=/nonexistent run 1 "a FILE at a kept-dirs path -> not dropped (directories only)"
+printf '%s\n' "-rw-r--r-- 0:0 aaaa etc/x" > $D/now-x/upper.manifest
+printf '%s\n' "-rw-r--r-- 0:0 aaaa etc/x" "drwxr-xr-x 0:0 - usr" > $D/snap/upper.manifest
+base; printf 'usr\n' > $D/kept-dirs; ALLOW_FILE=/nonexistent run 1 "a snapshot dir that VANISHED (- d) -> not dropped"
+rm -f $D/kept-dirs; echo same > $D/snap/upper.manifest; echo same > $D/now-x/upper.manifest
 rm -rf $R; echo "STATECMP fails=$fails"; [ $fails = 0 ]

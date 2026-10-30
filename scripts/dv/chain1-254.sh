@@ -23,7 +23,7 @@ REPO=${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}; PB=$REPO/scripts/node/prov-b
 TOOLS=${DV_PROV_TOOLS:-/c/Users/yello/batman-dv-tools/prov}; TOOLS_WSL=/home/yello/batman-dv-tools/prov
 BREWRITE=${BREWRITE:-$REPO/scripts/dv/brewrite-254.sh}; WSL9_SLOT=${WSL9_SLOT:-$REPO/tests/prov-p1/fixtures/batman-slot.1.5.12-wsl.9}
 LABKEY=${LABKEY:-$HOME/.ssh/id_ed25519}
-RUN=ch1$(date +%m%d%H%M); BASE=/opt/batdata/dv-prov; D=$BASE/$RUN; PDIR=$BASE/payload-ch1; DIRTY=/opt/batdata/state/dv-prov-dirty
+RUN=ch1$(date +%m%d%H%M); PCD=/tmp/run/batman-dvpc.$RUN; BASE=/opt/batdata/dv-prov; D=$BASE/$RUN; PDIR=$BASE/payload-ch1; DIRTY=/opt/batdata/state/dv-prov-dirty
 LOCKD=${TEMP:?TEMP unset - the host lock lives in the per-user temp dir, never in a shared tmp}/batman-dv-04.lock; WSLK=/home/yello/.batman-dv/prov-keys/$RUN
 SSHO="-o BatchMode=yes -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o LogLevel=ERROR"
 # any slot of 04 on the lab LAN: host key changes with every fresh slot; `none` until the lab key is in, publickey after
@@ -109,7 +109,7 @@ pc(){
 			*) out="$out$line
 " ;;
 		esac
-	done < <(ssh $FRESHO root@"$FIP" "/tmp/run/batman-dvpc/provclient node $*" < "$f" 2>&1)
+	done < <(ssh $FRESHO root@"$FIP" "$PCD/provclient node $*" < "$f" 2>&1)
 	exec {W}>&-; kill "$SIGNP_PID" 2>/dev/null; rm -rf "${f%/p}"   # stop the signer ({SIGNP[1]}>&- is not valid bash, SC1083)
 	printf '%s' "$out"
 }
@@ -312,7 +312,9 @@ PH=s8.3
 MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- bash -c "umask 077; mkdir -p $WSLK && $TOOLS_WSL/provclient-amd64 keygen $WSLK/owner.pem > $WSLK/owner.pub && $TOOLS_WSL/provclient-amd64 keygen $WSLK/enc.pem > $WSLK/enc.pub"
 OWNER=$(MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- cat $WSLK/owner.pub | tr -d '\r'); ENC=$(MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- cat $WSLK/enc.pub | tr -d '\r')
 [ ${#OWNER} = 130 ] && [ ${#ENC} = 130 ] || abort "owner keys"
-fq "mkdir -p -m 0711 /tmp/run/batman-dvpc" >/dev/null; scp -q $FRESHO "$TOOLS/provclient-arm64" root@"$FIP":/tmp/run/batman-dvpc/provclient && fq "chmod 0755 /tmp/run/batman-dvpc/provclient" >/dev/null || abort "provclient upload"
+# per run, created without -p: an existing dir / symlink there is refused (254-h23 F23; tmpfs: gone with every reboot)
+fq "mkdir -m 0711 $PCD && echo MADE" | grep -q MADE || abort "FAIL dvpc dir pre-exists: $PCD (refusing a planted provclient dir)"
+scp -q $FRESHO "$TOOLS/provclient-arm64" root@"$FIP":$PCD/provclient && fq "chmod 0755 $PCD/provclient" >/dev/null || abort "provclient upload"
 r=$(pc owner.pem claim "$OWNER" "$ENC"); echo "$r" | sed 's/^/    /'
 grep -q "RESULT claim.verify code=0 " <<< "$r" && ok "8.3 claim.verify code 0" || abort "8.3 claim failed"
 x=$(fq "echo state=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) lock=\$(cat /opt/batdata/state/lock-status) pw=\$(uci -q get dropbear.@dropbear[0].PasswordAuth) rootpw=\$(uci -q get dropbear.@dropbear[0].RootPasswordAuth) tty=\$(uci -q get system.@system[0].ttylogin) hash=\$(grep ^root: /etc/shadow | cut -d: -f2 | cut -c1-3); logread | grep 'batman-provhelper' | grep -E 'claim|lock|save' | tail -3; $P5RO")
