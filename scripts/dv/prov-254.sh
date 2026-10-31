@@ -390,6 +390,7 @@ pr_finish_snap(){ local o; o=$(nb finish "$RUN"); say "$(echo "$o" | tail -1)"; 
 pr_release(){
 	local o
 	o=$(pw unbind-all 2>/dev/null); q "rm -rf /tmp/run/batman-prov-test; rm -f $PR_PAY"
+	o=$(pl provd-reset); case "$o" in *"PROVD ok"*|*"PROVD absent"*) say "$(echo "$o" | tail -1)" ;; *) no "provd after the run: $(echo $o)" ;; esac
 	o=$(pl release); grep -q RELEASED <<< "$o" && say "lease released" || say "lease release: $o"
 	PR_BEGUN=0; pr_unlock
 }

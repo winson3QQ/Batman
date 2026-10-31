@@ -147,6 +147,26 @@ dm_log() {	# one line on p6 before a deadman reboot (design §4.7): root dir, no
 	echo "$(date) boot=$(bootid | cut -c1-8) run=$1 $2" >> "$DMLOG"; sync
 }
 
+# ---- batman-provd (254-p2-impl §3, L83): provd owns advertising instance 1 while it runs. The harness stops it only
+# under a BLE lease (acquire) and starts it again at release / deadman / recover; whatever may have removed provd.env
+# restarts it (init reads the env only at start). No provd on the image (pre-P2) = nothing to do.
+PROVD_INIT=/etc/init.d/batman-provd
+PROVD_KEYS='^(SOCK_ONLY|FAST_FAKE_DELAY_MS|NO_BRUTE_LIMIT|GATT_ENCRYPT_CTRL|ADV_LEN_TEST)='
+provd_present() { [ -x "$PROVD_INIT" ]; }
+provd_pid() { pidof batman-provd | awk '{print $1}'; }
+provd_stop() { provd_present || return 0; lim 30 "$PROVD_INIT" stop >/dev/null 2>&1; }
+provd_start() { provd_present || return 0; [ -n "$(provd_pid)" ] || lim 30 "$PROVD_INIT" start >/dev/null 2>&1; }
+provd_restart() { provd_present || return 0; lim 30 "$PROVD_INIT" restart >/dev/null 2>&1; }
+# provd_check: running within 15 s, no test switch in its environment, its advertising instance back within 15 s
+provd_check() {
+	provd_present || { echo "PROVD absent"; return 0; }
+	_n=0; _p=; while [ $_n -lt 15 ]; do _p=$(provd_pid); [ -n "$_p" ] && break; sleep 1; _n=$((_n + 1)); done
+	[ -n "$_p" ] || { fail "provd not running 15 s after the restart"; return 1; }
+	if tr '\0' '\n' < "/proc/$_p/environ" 2>/dev/null | grep -q -E "$PROVD_KEYS"; then fail "provd pid $_p still carries a test switch"; return 1; fi
+	_n=0; while [ $_n -lt 15 ]; do [ "$(adv_instances 2>/dev/null)" = 1 ] && { echo "PROVD ok pid=$_p adv=1"; return 0; }; sleep 1; _n=$((_n + 1)); done
+	fail "provd pid $_p: no advertising instance within 15 s"; return 1
+}
+
 # ---- state summary (preflight P6 / tier A #5): "STATE ..." lines, "FAIL ..." for anything left behind
 ble_state() {
 	r=0
@@ -163,6 +183,9 @@ ble_state() {
 	done
 	if pidof bluetoothd >/dev/null; then
 		a=$(adv_instances 2>/dev/null); if [ -z "$a" ]; then fail "adv instances not readable (bluetoothctl mgmt.advinfo gave no list in 3 tries)"; r=1
+		elif [ -n "$(provd_pid)" ]; then	# provd running: its own instance, or none (not ready / connected / SOCK_ONLY)
+			[ "$a" -le 1 ] || { fail "leftover: $a advertising instance(s) registered (provd owns at most 1)"; r=1; }
+			echo "STATE adv: $a (provd running)"
 		elif [ "$a" != 0 ]; then fail "leftover: $a advertising instance(s) registered"; r=1; fi
 	else
 		echo "STATE adv: not readable (bluetoothd down)"
@@ -186,7 +209,9 @@ cmd_acquire() {
 		fi
 	fi
 	gc_rundirs
-	lease_write "$RUN_ID" "$1"; dm_arm "$RUN_ID" "$(( $1 + 5 ))" "$SELF"; unlock
+	lease_write "$RUN_ID" "$1"; dm_arm "$RUN_ID" "$(( $1 + 5 ))" "$SELF"
+	[ "$LEASE" = "$BT/lease" ] && provd_stop	# a BLE test owns the radio's advertising from here (the deadman restarts provd)
+	unlock
 	echo "LEASE $RUN_ID until uptime $(( $(up_s) + $1 ))"
 }
 # run dirs of finished runs (no lease of theirs, no live deadman of theirs): printed, then removed (design §4.7)
@@ -213,7 +238,9 @@ cmd_release() {
 	lock 30 || die "BLE lock busy for 30 s"
 	lease_valid_for "$RUN_ID" || { unlock; die "lease is not ours or expired"; }
 	dm_cancel_rec "$ST/dm.new" && dm_cancel_rec "$ST/dm" || { unlock; die "could not cancel the deadman"; }
-	rm -f "$LEASE"; unlock
+	rm -f "$LEASE"
+	[ "$LEASE" = "$BT/lease" ] && provd_start
+	unlock
 	rm -rf "${BT:?}/$RUN_ID"
 	echo "RELEASED"
 }
@@ -231,6 +258,7 @@ cmd_dm_fire() {
 	[ $mine = 1 ] || { [ $got = 1 ] && unlock; exit 0; }
 	kill_run_groups "$run"
 	role_fire_restore "$run"		# role-specific; may reboot (irk-exposed)
+	provd_start
 	rm -f "$LEASE" "$ST/dm" "$ST/dm.new"
 	[ $got = 1 ] && unlock; exit 0
 }
@@ -243,6 +271,7 @@ cmd_recover() {
 	echo "RECOVER state before: $(ls "$ST" 2>/dev/null | tr '\n' ' ') lease=[$(lease_read)]"
 	rm -f "$BT"/*/*.snoop
 	role_fire_restore recover
+	provd_start
 	rm -f "$BT/lease"; RUN_ID=recover gc_rundirs
 	unlock 2>/dev/null; echo "RECOVERED"; ble_state
 }

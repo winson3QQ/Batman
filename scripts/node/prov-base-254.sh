@@ -269,7 +269,7 @@ strip-p5-prov)
 	mount -t ext4 -o ro,noload "$P5" "$m" 2>/dev/null || { rmdir "$m"; lock_drop; die "p5 not mountable ro after the strip"; }
 	left=$(cd "$m" && ls -d prov.* identity/prov 2>/dev/null | tr '\n' ' '); af=$(others "$m"); umount "$m"; rmdir "$m"
 	lock_drop
-	svc start batman-provhelper joinwatch
+	svc start batman-provhelper joinwatch batman-provd
 	[ -z "$left" ] || die "still on p5 after the strip: $left"
 	[ "$af" = "$b4" ] || die "the strip changed other p5 entries"
 	say "STRIPPED $RUN (prov.* and identity/prov gone, $(echo "$b4" | wc -l) other entries unchanged)"
