@@ -586,3 +586,10 @@ start_service() {
 | `ctl` 一輪 | `health.get` → `info.state` → `info.boot_id`(helper 重啟換 boot_id → 重簽 `node_cert`,L11) | `provd/server.go` `pollOnce` |
 | `peer.py` | 命令列入口被安全分類器擋兩次 → 使用者決定:H3 的「手機」改由 `provclient` 加 provd 傳輸層承擔;`tests/tools/peer/` 留 `peer_core` / `owner` / `selftest`(29 項過)當向量裁判 | 2026-10-31 對話 |
 | tmp-trust | allowlist 條目隨 H3 harness PR(provd 固定 bus 位址、兩個 init、vendor 註解) | P2 樹以 H3 allowlist 跑 = 0 untrusted |
+| 動態連結(更正 §4.5 的「`file` 斷言 statically linked」) | OpenWrt golang 規則一律 cgo 外部連結 → provd 依賴 `libc.so` + `libgcc_s.so.1`;ujail 自動把 ELF 依賴與 musl 載入器唯讀掛進 jail | 04 wsl.18:`/proc/<pid>/mountinfo` 有三個 lib 掛載,provd 正常跑 |
+| L77(更正):socket 目錄開機時不存在 | ujail 對**不存在的**掛載來源默默略過(不是拒絕啟動)→ provd 啟動時檢查 `/tmp/run/batman-prov`(與非 SOCK_ONLY 的 `/tmp/run/dbus`)在 jail 內,否則 log + 5 s 後退出,procd respawn | 04 wsl.18:每次開機 provd 都早於 helper 建目錄 → 永遠連不上;wsl.19/20:退出一次、10 s 後正常 |
+| §4.4 連線偵測 | 新連入裝置的 `Connected=true` 只在 `InterfacesAdded` 裡(gdbus 把未公告介面的屬性變更併進去,bluez-5.72 `gdbus/object.c:1765`、`src/device.c:3271`)→ 同時處理 `InterfacesAdded` / `InterfacesRemoved` / `PropertiesChanged`,只收 org.bluez 本尊的 | 04 wsl.20:連線時 `ActiveInstances 0` + `withdrawn reason=connect`,斷線 `registered reason=disconnect` |
+| F-P11(更正) | Flags AD 是 **BlueZ** 加的(排在 UUID 之後),不是 kernel 前置;總長仍 21 B | 02 btmon:`Data length: 21`、UUID 列表在前、`Flags: 0x04` 在後 |
+| foreign instance 判定 | 只用「provd 上次註冊 / 撤銷 2 s 之後」讀到的 health 行比 | 04 wsl.18 helper 重啟時誤報一次;wsl.19 後無 |
+
+**04 實機已驗(wsl.18–20,02 為 central)**:jail(uid 471、caps 全 0、NoNewPrivs 1、無測試鍵)、空中 21 B 可連線 RPA 無名稱無 scan response、02 未配對讀 CTRL `{1:1,2:0,3:244,4:8192}` 與 STATUS `{3:3,4:true,5:末4}`、`adv_registered_once` 由 helper 量到 1、helper / bluetoothd / dbus 重啟後 4 / 1 / 8 s 恢復(provd 不需重啟)、bondable → 1.2 s 撤廣播(上限 9.5 s)、L80 provd 重啟 3 s 斷舊連線、連線撤 / 斷線重註冊。
