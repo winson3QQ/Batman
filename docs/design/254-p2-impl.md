@@ -575,3 +575,14 @@ start_service() {
 | 「旁路 gen 變化 → 已認證 session 全斷」+ `expectGen` → `inFlight` / `pendingReconcile` 狀態機 | 規則是為審查情境加的,歸因本質上不可判定(A6 M2 / B6 M3);真正需要的只是「新集合到手後比對」 | §1.3 一條規則:變了就重拉,比對後斷不在集合的;自家動詞不會誤斷 |
 | `QUEUE_WAIT` 與 `ops` 排隊 | 排隊才有「過期請求被送出」的問題 | `ops` 單在飛,第二個直接 `E_BUSY` |
 | 第 7 輪(v7)審查結果 | 只對照 v8 留下的部分;針對已砍機制的發現不再處理 | §13–§18 留作歷史 |
+
+## 20. 實作紀錄(2026-10-31;與前文不同處以本節為準)
+
+| 項目 | 處理 | 證據 |
+|---|---|---|
+| `claimInProgress` 互斥 | **拿掉**(減法):`ops` 一次只准一個請求在飛,並行的第二個 `claim/finish` 已經拿到 `E_BUSY` | 拿掉鎖的 mutant 讓 `TestTwoPhonesClaim` 仍通過 = 鎖無法被任何測試區分 |
+| §4.8 kernel patch 內容 | 直接用 **linux-stable 6.6.y 的 backport** `e98ce4b70bea`(= 47c03902)+ `9174992ee104`(= 6f5fb689),合成一份對 6.6.138 的 diff;fuzz 0 套上,結果與依序套兩個 stable commit 相同 | 2026-10-21 進 6.6.y;firmware 仍 6.6.138。換到含兩者的 6.6.y 時刪這個 patch |
+| sock 控制包回覆 | `0xC0 ‖ CTRL` / `0xC1 ‖ STATUS`;不新鮮 → `0xC2 ‖ 0x0E` | `provd/session.go` `control()`;h23 §4.8.2 未定回覆格式 |
+| `ctl` 一輪 | `health.get` → `info.state` → `info.boot_id`(helper 重啟換 boot_id → 重簽 `node_cert`,L11) | `provd/server.go` `pollOnce` |
+| `peer.py` | 命令列入口被安全分類器擋兩次 → 使用者決定:H3 的「手機」改由 `provclient` 加 provd 傳輸層承擔;`tests/tools/peer/` 留 `peer_core` / `owner` / `selftest`(29 項過)當向量裁判 | 2026-10-31 對話 |
+| tmp-trust | allowlist 條目隨 H3 harness PR(provd 固定 bus 位址、兩個 init、vendor 註解) | P2 樹以 H3 allowlist 跑 = 0 untrusted |

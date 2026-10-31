@@ -157,6 +157,8 @@ info-resp = {
   8 => bool,                 ; claim_window open
   ? 9 => net-version,        ; only for owner / member sessions
   ? 10 => net-id,            ; only for owner / member sessions
+  ? 11 => bool,              ; v0.8: unfinished — a network change (incl. this node's own join in progress) is not
+                             ; complete; owner / member sessions only. The app waits for false or a new net_version
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 capability = "halow" / "gps" / "ptt" / "lora" / "se" / "battery" / tstr   ; open set
@@ -180,7 +182,7 @@ claim-finish-resp = {
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 auth-owner-req  = { 1 => sha256, 2 => es256-sig, * uint => any }  ; owner_key_id, sig over "batman-owner-auth-v1" || h || owner_key_id
-auth-owner-resp = { 1 => bytes32, * uint => any }                 ; current adv_owner_key
+auth-owner-resp = { ? 1 => bytes32, * uint => any }               ; current adv_owner_key (v0.8: stage 1 sends {}, B16 #255)
 owner-add-req   = { 1 => p256-pub, 2 => p256-pub, 3 => es256-sig, 31 => owner-op, * uint => any }  ; new owner_pub, owner_enc_pub, sig_enc
 owner-add-resp  = { 1 => bytes32, * uint => any }                 ; owner_tag_key for the new owner (handed over by the app)
 owner-remove-req = { 1 => sha256, 31 => owner-op, * uint => any }                 ; owner_key_id

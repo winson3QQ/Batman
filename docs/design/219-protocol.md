@@ -505,3 +505,17 @@ RFC 8949 位元組序編碼;254 §4.1 所有 owner-op 動詞收原始 body;項�
 MINOR 已收:`deterministic()` 改位元組序(+ `{24:0,-1:0}` 正 / 負案例)、`idem_ok` 對所有請求範例執行、`request_reset_with_idem` 改為 `negative_reset_with_idem`、
 `chunk` 只對 `idem-type` 允許 key 7(+ 分塊 `claim/finish` 負例)、分塊以整個信封 ≤ `max_msg − 16` 為準(+ `chunk_boundary` 向量)、`status_ok` 限定 key 1–5
 (+ 多帶完整 `device_id` 的負例)、pycddl 限制的描述更正並寫明實作必須在程式碼裡檢查、§5.3 `ssh-ed25519` 整行規則與 `owner/add` 輪替語意。
+
+**v0.8(2026-10-31,#254 P2 實作回寫;`docs/design/254-p2-impl.md` §1.3 / §10 第 3 點)**:
+
+| 項目 | 處理 |
+|---|---|
+| §4.1 服務 UUID(Q1) | `540aa38c-0086-4d58-a9c0-c7c9d1e1bd42`;特徵 RX / TX / CTRL / STATUS = 第 3 組 `4d59` / `4d5a` / `4d5b` / `4d5c` |
+| §4.1 廣播內容 | 只有 128-bit Service UUID 列表(kernel 另加 Flags = 21 B);無 Local Name、無 service data、無 `device_id` 末碼(末碼只在 `STATUS`);B16 仍是 #255 |
+| §3.3 `s_node` | 每次 **provd 啟動**(含 respawn)重新產生;app 不得快取 `s_node_pub`,每次交握重驗 |
+| §3.4 | msg1 長度前置檢查:NX 32 B、NXpsk0 48 B;長度不符與 PSK 錯走同一條假第 2 則路徑 |
+| §3.5 擁有者重取 | 順序 `claim/begin` → `op/nonce` → `claim/replay` 用**同一對** nonce;`claim/replay` 回應後(任何碼)該對作廢,重試要重新 `claim/begin`;`claim/begin` 的 `owner_pub` 由 helper 在 `claim/replay` 以已存的那把重算(錯的在那一步 `E_FORBIDDEN`) |
+| §5.3 `auth/owner` | 階段 1 回 `{}`(CDDL key 1 改選填) |
+| §5.3 `info` | 新 key 11 `unfinished`(擁有者 / 成員);涵蓋本機自己的 join 進行中 |
+| §5.2 `error-detail` | 自由文字只在 key 3;`E_REJECTED` 階段 1 不帶原因 |
+| §8 連線 | 同時連線 2 = BLE + prov_test 測試 socket 合計;第 3 條擠掉最舊的未認證 / 候選 session(交握中 < 10 s 的不擠),否則拒;誠實界線:BLE 空中實際只有 1 條,路人反覆連線可佔住管理面(#255 考慮擁有者優先) |
