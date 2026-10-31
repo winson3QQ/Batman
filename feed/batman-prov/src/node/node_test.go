@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ type fakeSys struct {
 	now            time.Time
 	setkeys        []string
 	persistRC      int
+	persistLateRC  int // Persist writes p5, then returns this rc (commitTxn reads the generation back)
 	// claim-lock fix (§5.3) fault seams
 	root       string   // root's live shadow field
 	lockErr    error    // ApplyLock fails (doors first, hash last: root unchanged except "" -> "!")
@@ -37,6 +39,32 @@ type fakeSys struct {
 	lastKnown  string
 	cryptErr   error
 	lockCalls  []string
+	// the txn marker ($RUNDIR/prov-txn): batman-config-save --save waits for it and gives up after 10 s
+	txnMarker       bool
+	saveUnderMarker int
+	// the live mesh wireless + radio (docs/design/254-wireless-txn.md): a model, not a list of calls
+	wl            [3]string // key, mesh id, channel; "" key = the default ("oldkey123", "oldmesh", "28")
+	radioOff      bool      // uci disabled=1
+	inMark        bool      // listed in the keyguard mark (the helper / keyguard blocked it)
+	radioErr      error
+	setkeyErrs    []error // SetKeyNoPersist results in order (then nil); a failing call leaves wl unchanged
+	setkeyHalf    bool    // a failing SetKeyNoPersist still changes wl (rc 3 / unknown outcome)
+	forgetErr     error
+	forgets       int
+	saveTxns      []string // tokens SaveTxn was called with
+	saveTxnOut    []saveRC
+	saveTxnNoMark int // SaveTxn called without the marker (config-save would refuse: the shipped deadlock)
+	meshExpect    string
+	p5rc          int        // GetP5 returns this rc (p5 unreadable) when set
+	getP5s        int        // GetP5 calls (a p5 mount each)
+	setkeyLands   *[3]string // a failing SetKeyNoPersist leaves uci at these values instead of the requested ones
+	// 254-wireless-txn §15: the fake follows the scripts — setkey / forget rc 3 means uci WAS changed (only rc 2 means
+	// nothing changed); config-save --save --txn refuses unless .txn carries the token; the live radio can lag uci
+	txnPath        string // .txn of this rig (SaveTxn checks its token like config-save's txn_seq)
+	liveDown       bool   // LiveMeshUp false (the radio is not up on the uci mesh id)
+	encryption     string // "" = sae
+	markersRemoved int
+	restorableErr  error // CheckRestorable forced error
 }
 
 type saveRC struct {
@@ -52,21 +80,37 @@ func (f *fakeSys) Persist(r, m, id, txn string) (int, string) {
 	b, _ := os.ReadFile(m)
 	os.MkdirAll(f.p5, 0o700)
 	os.WriteFile(filepath.Join(f.p5, "prov.meta"), b, 0o600)
+	if rb, err := os.ReadFile(r); err == nil {
+		os.WriteFile(filepath.Join(f.p5, "prov.cbor"), rb, 0o600)
+	}
 	mm, _ := provstore.ParseMeta(b)
 	f.persisted = append(f.persisted, mm.Gen)
+	if f.persistLateRC != 0 {
+		return f.persistLateRC, "late failure"
+	}
 	return 0, ""
 }
 func (f *fakeSys) GetP5(dir string) (int, string) {
+	f.getP5s++
+	if f.p5rc != 0 {
+		return f.p5rc, ""
+	}
 	os.MkdirAll(dir, 0o700)
 	b, err := os.ReadFile(filepath.Join(f.p5, "prov.meta"))
 	if err != nil {
 		return 9, ""
 	}
 	os.WriteFile(filepath.Join(dir, "prov.meta"), b, 0o600)
+	if rb, err := os.ReadFile(filepath.Join(f.p5, "prov.cbor")); err == nil {
+		os.WriteFile(filepath.Join(dir, "prov.cbor"), rb, 0o600)
+	}
 	return 0, ""
 }
 func (f *fakeSys) Save() (int, string) {
 	f.saves++
+	if f.txnMarker {
+		f.saveUnderMarker++
+	}
 	if len(f.saveOut) > 0 {
 		r := f.saveOut[0]
 		f.saveOut = f.saveOut[1:]
@@ -76,11 +120,75 @@ func (f *fakeSys) Save() (int, string) {
 }
 func (f *fakeSys) SetKeyNoPersist(k, id, ch string) error {
 	f.setkeys = append(f.setkeys, id+"/"+ch)
-	return nil
+	var err error
+	if len(f.setkeyErrs) > 0 {
+		err, f.setkeyErrs = f.setkeyErrs[0], f.setkeyErrs[1:]
+	}
+	if err != nil && f.setkeyLands != nil {
+		f.wl = *f.setkeyLands
+	} else if err == nil || f.setkeyHalf || setkeyRC(err) != 2 {
+		f.wl = [3]string{k, id, ch}
+		if f.inMark { // the keyguard unblocks a radio it blocked once a real key is set
+			f.radioOff, f.inMark = false, false
+		}
+	}
+	return err
 }
 func (f *fakeSys) CurrentWireless() (string, string, string, error) {
-	return "oldkey123", "oldmesh", "28", nil
+	if f.wl[0] == "" {
+		return "oldkey123", "oldmesh", "28", nil
+	}
+	return f.wl[0], f.wl[1], f.wl[2], nil
 }
+func (f *fakeSys) SaveTxn(tok string) (int, string) {
+	f.saveTxns = append(f.saveTxns, tok)
+	if !f.txnMarker {
+		f.saveTxnNoMark++
+	}
+	if f.txnPath != "" {
+		b, err := os.ReadFile(f.txnPath)
+		if err != nil || !strings.HasPrefix(string(b), tok+" ") {
+			return 1, "--txn does not match the live transaction"
+		}
+	}
+	if len(f.saveTxnOut) > 0 {
+		r := f.saveTxnOut[0]
+		f.saveTxnOut = f.saveTxnOut[1:]
+		return r.rc, r.out
+	}
+	return 0, ""
+}
+func (f *fakeSys) ForgetMesh() error {
+	f.forgets++
+	if f.forgetErr != nil && setkeyRC(f.forgetErr) == 2 {
+		return f.forgetErr // nothing changed
+	}
+	f.wl = [3]string{placeholderKey, f.wl[1], f.wl[2]} // one commit: placeholder + blocked (rc 3 = committed, unverified)
+	if f.wl[1] == "" {
+		f.wl[1], f.wl[2] = "oldmesh", "28"
+	}
+	f.radioOff, f.inMark = true, true
+	return f.forgetErr
+}
+func (f *fakeSys) LiveMeshUp() bool { return !f.liveDown && !f.radioOff }
+func (f *fakeSys) CheckRestorable(k, id, ch string) error {
+	if f.restorableErr != nil {
+		return f.restorableErr
+	}
+	if f.encryption != "" && f.encryption != "sae" {
+		return &RestoreRefused{Why: "encryption not sae"}
+	}
+	// halow-setkey's validate(): length, forbidden characters, the placeholder itself (review 2 B m4)
+	if len(k) < 8 || k == placeholderKey || strings.ContainsAny(k, "`$();|&<>'") || strings.ContainsAny(id, "`$();|&<>'") {
+		return &RestoreRefused{Why: "halow-setkey would refuse it"}
+	}
+	if _, err := strconv.Atoi(ch); ch != "" && err != nil {
+		return &RestoreRefused{Why: "channel not an integer"}
+	}
+	return nil
+}
+func (f *fakeSys) RadioState() (bool, bool, error) { return f.radioOff, f.inMark, f.radioErr }
+func (f *fakeSys) SetMeshExpect(me string) error   { f.meshExpect = me; return nil }
 
 // ApplyLock mirrors prov_apply_lock's contract: doors first, the hash last; on any failure (or without a hash) only an
 // empty root becomes "!".
@@ -118,10 +226,10 @@ func (f *fakeSys) CryptPassword(pw string) (string, error) {
 func (f *fakeSys) AuthorizedKeys() ([]string, error)  { return f.keys, nil }
 func (f *fakeSys) SetAuthorizedKeys(l []string) error { f.keys = l; return nil }
 func (f *fakeSys) DevOpen() bool                      { return f.devOpen }
-func (f *fakeSys) WriteTxnMarker(string) error        { return nil }
-func (f *fakeSys) ClearTxnMarker()                    {}
+func (f *fakeSys) WriteTxnMarker(string) error        { f.txnMarker = true; return nil }
+func (f *fakeSys) ClearTxnMarker()                    { f.txnMarker = false }
 func (f *fakeSys) DiagBundle() ([]byte, error)        { return []byte("diag"), nil }
-func (f *fakeSys) RemoveMeshMarkers() error           { return nil }
+func (f *fakeSys) RemoveMeshMarkers() error           { f.markersRemoved++; return nil }
 func (f *fakeSys) Now() time.Time                     { return f.now }
 
 type rig struct {
@@ -149,7 +257,7 @@ func newRig(t *testing.T, state string) *rig {
 		t.Fatal(err)
 	}
 	provstore.WriteOverlay(p, &provstore.Record{Generation: 1, State: state})
-	sys := &fakeSys{p5: filepath.Join(root, "p5"), now: time.Unix(1000, 0), keys: []string{"ssh-ed25519 AAAAlab lab"}}
+	sys := &fakeSys{p5: filepath.Join(root, "p5"), now: time.Unix(1000, 0), keys: []string{"ssh-ed25519 AAAAlab lab"}, txnPath: p.Txn()}
 	o, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	e, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	n := New(p, ks, sys, func(string, ...any) {})

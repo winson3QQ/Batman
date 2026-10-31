@@ -86,6 +86,51 @@ func VerifySign1(item any, contentType, label string, pubs [][]byte) (*Sign1, er
 	return &Sign1{Payload: pm, ObjectHash: h[:], SignerPub: signer}, nil
 }
 
+// Sign1Payload parses a COSE_Sign1 exactly as VerifySign1 does — the same structure, protected header and content type
+// checks, the same OBJECT_HASH — but does NOT check the signature. Use it ONLY on objects the helper itself verified when
+// it accepted them and stored in its root-only record (docs/design/254-wireless-txn.md §2): after an admin handover the
+// stored object is signed by admins that are no longer in the record's admin set (219 §7.1), so re-verifying it against
+// rec.Admins fails although nothing is wrong. Anything received from outside goes through VerifySign1. SignerPub is nil.
+func Sign1Payload(item any, contentType, label string) (*Sign1, error) {
+	t, ok := item.(cbor.Tag)
+	if !ok || t.Num != 18 {
+		return nil, errBad
+	}
+	a, ok := t.V.([]any)
+	if !ok || len(a) != 4 {
+		return nil, errBad
+	}
+	prot, ok1 := a[0].([]byte)
+	unprot, ok2 := a[1].(cbor.Map)
+	payload, ok3 := a[2].([]byte)
+	sig, ok4 := a[3].([]byte)
+	if !ok1 || !ok2 || !ok3 || !ok4 || len(unprot) != 0 || len(sig) != 64 {
+		return nil, errBad
+	}
+	ph, err := cbor.Decode(prot)
+	if err != nil {
+		return nil, errBad
+	}
+	want, _ := cbor.Encode(cbor.M(1, int64(-7), 3, contentType))
+	if got, _ := cbor.Encode(ph); !bytes.Equal(got, want) {
+		return nil, errBad
+	}
+	ss, err := cbor.Encode([]any{"Signature1", prot, []byte(label), payload})
+	if err != nil {
+		return nil, errBad
+	}
+	pl, err := cbor.Decode(payload)
+	if err != nil {
+		return nil, errBad
+	}
+	pm, ok := pl.(cbor.Map)
+	if !ok {
+		return nil, errBad
+	}
+	h := sha256.Sum256(ss)
+	return &Sign1{Payload: pm, ObjectHash: h[:]}, nil
+}
+
 // ECDHFunc returns the x-coordinate shared secret of the node's ECDH key with a peer public key (the keystore's).
 type ECDHFunc func(peerPub65 []byte) ([]byte, error)
 

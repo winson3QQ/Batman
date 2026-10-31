@@ -16,6 +16,8 @@ case "$SOC" in bcm2711|bcm2710) ;; *) echo "SOC must be bcm2711 or bcm2710 (got 
 SUDO=sudo
 # shellcheck source=lib/pi3-fwpart.sh
 . "$(dirname "$0")/lib/pi3-fwpart.sh"
+# shellcheck source=lib/wbox-stamp.sh
+. "$(dirname "$0")/lib/wbox-stamp.sh"
 SRC=${SRC:?set SRC to the backup dir (see docs/storage-architecture.md B1)}
 EXPECT_SECTORS=${EXPECT_SECTORS:-62333952}
 SQUASH_SRC="$SRC/p2-rootfs-squashfs.img"   # dump of the v1.1 p2; squashfs sits at offset 0
@@ -56,6 +58,8 @@ say(){ echo; echo "=== $* ==="; }
 # wipefs and sgdisk have already destroyed the partition table.
 [[ $DEV =~ [0-9]$ ]] && P=p || P=""
 [[ -f $SQUASH_SRC && -f $BOOTTAR ]] || { echo "backup missing"; exit 1; }
+# #254 (code review B-M2): never a -wbox TEST image on a card (lenient: a v1.1 dump predates the build stamp)
+card_wbox_check "$SQUASH_SRC" lenient || exit 1
 [[ -d $DATA_SRC ]] || { echo "no data source dir $DATA_SRC - refusing (it is needed AFTER the repartition)"; exit 1; }
 # An empty or non-numeric SQUASH_BYTES makes every `count=` below evaluate to 0, so dd writes
 # NOTHING into either root slot and the script still reports BUILD DONE — a card with no

@@ -38,18 +38,51 @@ DEV=/dev/mmcblk0p5
 	i=0
 	while [ "$i" -lt 40 ] && ! iw dev wlh0 info >/dev/null 2>&1; do sleep 2; i=$((i + 1)); done
 
-	# reassert until it sticks (bounded ~6 tries); no-op fast path when already correct
-	a=0
-	while [ "$a" -lt 6 ]; do
+	# #254 §6: each reassert holds halow-setkey's lock (not the whole loop), so it never interleaves with a helper /
+	# operator radio change. Busy for LOCKWAIT s or the run dir unusable -> reassert ANYWAY (fail open): chanfix runs
+	# only on a fresh slot's first boot (a trial, where the helper refuses changes — EBusy), and skipping would strand
+	# the slot on morse's default channel (see above). fd 9 is closed for `wifi`.
+	LOCKWAIT=90
+	# shellcheck source=/dev/null
+	[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
+	lock_take() {   # rc 0 = holding fd 9; otherwise logged and the caller goes on without it
+		if ! type batman_rundir >/dev/null 2>&1 || ! batman_rundir 2>/dev/null || ! command -v flock >/dev/null 2>&1 \
+			|| ! command exec 9>"$RUNDIR/halow-setkey.lock"; then
+			logger -t batman-chanfix "run dir / flock unusable — reasserting without the halow-setkey lock"; return 1
+		fi
+		w=0; until flock -n 9; do
+			w=$((w + 1)); [ "$w" -ge "$LOCKWAIT" ] && { logger -t batman-chanfix "halow-setkey lock busy ${w}s — reasserting anyway"; return 1; }
+			sleep 1
+		done
+		return 0
+	}
+	lock_drop() { command exec 9>&- 2>/dev/null; }
+	# #254 §19.2 rule 1 (one implementation, sourced): netifd's change in flight finishes before our reload
+	# shellcheck source=/dev/null
+	[ -r /usr/lib/batman/wireless-settle.sh ] && . /usr/lib/batman/wireless-settle.sh
+
+	# reassert until it sticks (bounded: 6 reasserts, 5 min in all); no-op fast path when already correct
+	a=0; t0=$(cut -d. -f1 /proc/uptime)
+	while [ "$a" -lt 6 ] && [ $(( $(cut -d. -f1 /proc/uptime) - t0 )) -lt 300 ]; do
 		sleep 8
 		cur=$(uci -q get wireless.radio1.channel)
 		if [ "$cur" = "$CH" ]; then
 			[ "$a" = 0 ] || logger -t batman-chanfix "radio1 channel is $CH (settled after $a reassert)"
 			exit 0
 		fi
+		lock_take
+		# #254 §19.2 rule 1: a reload into netifd's running setup orphans the radio (§19.1). Wait <= 30 s under the
+		# lock (inside the next writer's 90 s); a try that never settles is NOT counted against the 6 (skipping all
+		# six on a slow first boot would strand the slot on ch42 — the case chanfix exists for); the 5 min bound holds.
+		if type wl_wait_settled >/dev/null 2>&1 && ! wl_wait_settled radio1 30; then
+			logger -t batman-chanfix "netifd still reconfiguring radio1 after 30s — this try is not counted"; lock_drop; continue
+		fi
+		cur=$(uci -q get wireless.radio1.channel)   # re-read under the lock: a change may have finished meanwhile
+		if [ "$cur" = "$CH" ]; then lock_drop; continue; fi
 		uci set wireless.radio1.channel="$CH"
 		uci commit wireless
-		wifi reload
+		wifi reload 9>&-
+		lock_drop
 		logger -t batman-chanfix "reassert radio1 channel $cur -> $CH from p5 (try $a) + wifi reload"
 		a=$((a + 1))
 	done

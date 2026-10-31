@@ -475,6 +475,11 @@ p5_verdict_gate() {
 	case "$v" in stale:*) return 1 ;; *) return 0 ;; esac
 }
 P5_STALE_HINT="Run 'batman-config-save --save' (or halow-setkey) to persist the running config, or wait for the mesh join to do it; deliberate override: touch /tmp/batman-slot.allow-stale-p5 (as root) for sysupgrade, BATMAN_ALLOW_STALE_P5=1 for a direct batman-slot call."
+# #254 review 3 (A m7 / B m2): what to do after the override depends on the change that was dropped — a re-push of the
+# same network is refused (EStaleVersion) and a retried leave too (not a member). The flag is not removed by anyone
+# (as allow-stale-p5): it passes every later OTA of this boot, so the warning says to remove it.
+P5_TXN_OVERRIDE_HINT="touch /tmp/batman-slot.allow-unfinished-txn (as root) for sysupgrade, BATMAN_ALLOW_UNFINISHED_TXN=1 for a direct batman-slot call — the change is then dropped; check the node in the app after the OTA."
+P5_TXN_DROP_WARN="OVERRIDE allow-unfinished-txn: the unfinished network change (.txn) is DROPPED in the new slot. After the OTA check the node in the app: shows the new network but does not join -> network/leave, then network/join again; shows 'left' but still on the old mesh -> halow-setkey --forget-mesh. Remove /tmp/batman-slot.allow-unfinished-txn."
 p5_freshness_gate() {
 	now=$(cut -d. -f1 /proc/uptime)
 	if command -v batman-config-save >/dev/null 2>&1 && [ -r /etc/config/wireless ]; then
@@ -483,7 +488,15 @@ p5_freshness_gate() {
 		keys=$(echo "$out" | sed -n 's/^batman-config-save: p5 stale: \([^ ]*\).*/\1/p' | head -1)
 		case "$rc" in
 			0) p5_verdict_write fresh ;;
-			5) if allowed STALE_P5; then p5_verdict_write stale-allowed; warn "p5 is STALE vs the running config ($keys) — override honoured"
+			5) # #254 wireless-txn §15.3: an unfinished network change (.txn, per slot) must be finished in THIS slot — an OTA
+			   # would drop it (the new slot has no .txn, so nothing would ever reconcile its wireless with the record).
+			   # Not fixed by --save (which refuses while .txn exists) and NOT passed by allow-stale-p5. Its own deliberate
+			   # override (a dead HaLow whose fix may be this OTA, code review 2): allowed UNFINISHED_TXN.
+			   case "$out" in *"p5 stale: an unfinished network change"*)
+				if allowed UNFINISHED_TXN; then p5_verdict_write txn-allowed; warn "$P5_TXN_DROP_WARN"; return 0; fi
+				p5_verdict_write stale:txn
+				die "an unfinished network change (.txn) — batman-provhelper finishes it (any app action, or a reboot); an OTA now would leave it unfinished for good. allow-stale-p5 does not pass it; for a node whose HaLow is dead: $P5_TXN_OVERRIDE_HINT" ;; esac
+			   if allowed STALE_P5; then p5_verdict_write stale-allowed; warn "p5 is STALE vs the running config ($keys) — override honoured"
 			   else p5_verdict_write "stale:${keys:-?}"
 				# #254: the provisioning record is written by batman-provhelper, not by --save
 				case "$out" in *"p5 stale: prov-identity"*) die "p5 and this slot hold DIFFERENT node identities — refusing an OTA. This needs the owner (app) or a reflash; it is not fixed by --save or --persist-now (#254 identity-mismatch)." ;; esac
@@ -506,7 +519,12 @@ p5_freshness_gate() {
 		v=$(p5_verdict_gate "$P5VERDICT" "$now"); rc=$?
 		case "$rc" in
 			0) ;;
-			1) allowed STALE_P5 && { warn "p5 STALE ($v) — override honoured"; return 0; }
+			1) if [ "$v" = stale:txn ]; then   # the unfinished network change: never passed by allow-stale-p5 (as stage 1)
+				allowed UNFINISHED_TXN && { warn "$P5_TXN_DROP_WARN"; return 0; }
+				otalog_k S2 REFUSE why=unfinished-txn verdict="$v"
+				die "an unfinished network change (.txn) — refusing to write a slot (stage-1 verdict); allow-stale-p5 does not pass it. For a node whose HaLow is dead: $P5_TXN_OVERRIDE_HINT"
+			   fi
+			   allowed STALE_P5 && { warn "p5 STALE ($v) — override honoured"; return 0; }
 			   otalog_k S2 REFUSE why=p5-stale verdict="$v"
 			   die "p5 (config) is STALE vs the running config ($v) — refusing to write a slot (stage-1 verdict). $P5_STALE_HINT" ;;
 			*) otalog_k S2 REFUSE why=p5-no-verdict verdict="$v"
@@ -735,6 +753,7 @@ is_trial() {
 cmd_commit() {
 	slot_lock
 	assert_fw_sane
+	wbox_gate_self
 	A=$(active_slot); T=$(other_slot "$A")
 	slot_is_bad "$A" && die "slot $A carries $BADMARK — refusing to commit it"
 	FA=$(fw_part "$A") && FT=$(fw_part "$T") || die "cannot derive the firmware partitions"
@@ -764,6 +783,41 @@ addr_defer_release() {
 	return 0
 }
 
+# #254 security review F1 (docs/design/254-h23-harness.md §18.1, §19.3, §20.4, §21.2): a -wbox TEST image is never
+# made the default slot — not by commit, not by rollback, whatever the operator or an override says. The stamp is the
+# image's own /etc/batman-build (squashfs, read-only). wbox_stamp FILE: rc 0 = wbox (BATMAN_WBOX=<non-empty> or a
+# .wbox- version), 1 = release, 2 = unreadable / no BATMAN_VERSION (the callers refuse on 2: fail-closed).
+wbox_stamp() {
+	# a regular file, not a symlink: an absolute link in the target image would make this read a live-system file
+	# that an unprivileged process may write (code review A-m4); the build gate refuses such an image anyway
+	# ...and its directory neither: an etc that is a symlink would do the same one level up (code review r2 A-m2)
+	[ -d "${1%/*}" ] && [ ! -L "${1%/*}" ] && [ -f "$1" ] && [ ! -L "$1" ] && grep -q '^BATMAN_VERSION=' "$1" 2>/dev/null || return 2
+	grep -q '^BATMAN_WBOX=.' "$1" && return 0
+	sed -n 's/^BATMAN_VERSION=//p' "$1" | grep -q '\.wbox-' && return 0
+	return 1
+}
+# the running slot's image (commit)
+wbox_gate_self() {
+	wbox_stamp /rom/etc/batman-build; r=$?
+	[ "$r" = 0 ] && die "this is a -wbox test image ($(sed -n 's/^BATMAN_WBOX=//p' /rom/etc/batman-build)): never committed"
+	[ "$r" = 2 ] && die "this slot's build stamp is unreadable (/rom/etc/batman-build) — not committing"
+	return 0
+}
+# the target slot's image (rollback); runs BEFORE rollback_lock_gate, so neither the legacy early return nor the
+# UNLOCKED_ROLLBACK override skips it
+wbox_gate_target() {
+	m=$(mktemp -d /tmp/.rbwbox.XXXXXX) || die "wbox gate: no temp dir"   # mktemp -d: exclusive, 0700
+	if ! mount -t squashfs -o ro "$(slot_rootdev "$1")" "$m" 2>/dev/null; then
+		rmdir "$m"; die "slot $1 build stamp unreadable — refusing to make it the default"
+	fi
+	wbox_stamp "$m/etc/batman-build"; r=$?
+	n=$(sed -n 's/^BATMAN_WBOX=//p' "$m/etc/batman-build" 2>/dev/null)
+	umount "$m" || warn "wbox gate: umount $m failed (left mounted read-only)"; rmdir "$m" 2>/dev/null
+	[ "$r" = 0 ] && die "slot $1 holds a -wbox test image (${n:-version names a wbox variant}): never made the default"
+	[ "$r" = 2 ] && die "slot $1 build stamp unreadable — refusing to make it the default"
+	st ROLLBACK-WBOX-GATE target="$1" ok=1
+}
+
 # #254 claim-lock fix §8: a claimed / member node is never rolled back onto a slot that cannot keep it locked —
 # one without an ENABLED batman-prov-lock (e.g. 1.5.13: no boot-time lock, the old overlay would come up open).
 # Interface (§7): /etc/init.d/batman-prov-lock + /etc/rc.d/S13batman-prov-lock in the target rootfs (squashfs, ro).
@@ -788,6 +842,7 @@ cmd_rollback() {
 	assert_fw_sane
 	A=$(active_slot); T=$(other_slot "$A")
 	slot_is_bad "$T" && die "slot $T carries $BADMARK ($(slot_bad_reason "$T")) — refusing to make it the default"
+	wbox_gate_target "$T"
 	rollback_lock_gate "$T"
 	FA=$(fw_part "$A") && FT=$(fw_part "$T") || die "cannot derive the firmware partitions"
 	st ROLLBACK-BEGIN to="$T" was_all="$(ab_section all)" want_all="$FT"

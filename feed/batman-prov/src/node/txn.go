@@ -6,15 +6,16 @@ import (
 	"strings"
 
 	"batman-prov/provstore"
+	"batman-prov/seam"
 )
 
 // commit persists a new record to p5 and then the overlay (no wireless side effect: claim, owners, ssh keys, leave).
 func (n *Node) commit(next *provstore.Record, what string) *Error {
-	return n.commitTxn(next, "")
+	return n.commitTxn(next, "", seam.None) // no killpoint: only claimVerify and applyNet name one (254-h23 §4.1.1)
 }
 
 // commitTxn = §4.4 steps 3–4: stage, --prov-only, on rc != 0 read the generation back to decide, then the overlay.
-func (n *Node) commitTxn(next *provstore.Record, token string) *Error {
+func (n *Node) commitTxn(next *provstore.Record, token string, afterPersist seam.Point) *Error {
 	stage := n.P.Stage()
 	os.RemoveAll(stage)
 	if err := os.MkdirAll(stage, 0o700); err != nil {
@@ -25,6 +26,15 @@ func (n *Node) commitTxn(next *provstore.Record, token string) *Error {
 	if _, _, err := provstore.WriteOverlay(sp, next); err != nil {
 		return fail(EApply, "stage: %v", err)
 	}
+	// §18.1: never write over a newer record — a commit built on a stale overlay would undo a committed change (an
+	// owner removal) and p5's --prov-only has no generation check of its own. p5 unreadable / without a record -> the
+	// persist decides as before.
+	if g, ok := n.p5Generation(); ok && g >= next.Generation {
+		if _, e := n.resolve(); e != nil {
+			n.Log("commit: %s", e.Reason)
+		}
+		return fail(EState, "p5 holds generation %d, this change was built on %d — the record changed; retry", g, next.Generation-1)
+	}
 	rc, out := n.Sys.Persist(sp.Record(), sp.Meta(), "", token)
 	if rc != 0 {
 		g, ok := n.p5Generation()
@@ -33,6 +43,7 @@ func (n *Node) commitTxn(next *provstore.Record, token string) *Error {
 		}
 		n.Log("--prov-only rc=%d but p5 holds generation %d: committed", rc, g)
 	}
+	seam.At(afterPersist, n.Log) // txn-3 / claim-after-persist: p5 holds the new generation (also after rc != 0 + read-back), the overlay does not
 	if _, _, err := provstore.WriteOverlay(n.P, next); err != nil {
 		// p5 is ahead now; the next --boot rebuilds the overlay from it (§4.4 step 7)
 		n.Log("overlay write after a committed p5 write failed: %v", err)

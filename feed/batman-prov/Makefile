@@ -20,6 +20,14 @@ PKG_BUILD_FLAGS:=no-mips16
 GO_PKG:=batman-prov
 GO_PKG_BUILD_PKG:=batman-prov/cmd/batman-provhelper
 GO_PKG_LDFLAGS:=-s -w
+# Test-only seams (killpoint file, --version marker): ONLY when the firmware build asks for a -wbox variant
+# (build-board.sh --wbox, docs/design/254-h23-harness.md §4.1.2). A release build never sets this; its gate checks
+# the helper binary for the marker and the killpoint strings.
+ifeq ($(BATMAN_PROV_TEST),1)
+GO_PKG_TAGS:=prov_test
+else
+GO_PKG_TAGS:=
+endif
 
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
