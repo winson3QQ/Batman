@@ -189,7 +189,7 @@ t0=$(up); out=$(printf 'downkey1234\n' | run --mesh - 2>&1); rc=$?; dt=$(( $(up)
 d="19a read-back: netifd settled with the radio down (config in place) -> rc 3 ($rc) at ~READBACK_WAIT (${dt}s), persist not attempted"
 if [ "$rc" = 3 ] && [ "$dt" -ge 4 ] && [ ! -s "$ST/cfgsave.log" ]; then ok "$d"; else no "$d"; fi
 # (a) the §19.1 ordering mutant: ubus keeps the PRE-reload view (up=true, old key) for 2 s -> not rc 0 before 2 s
-reset; echo 2 > "$ST/wifi.stale"; echo 1 > "$ST/wifi.async"
+reset; echo 3 > "$ST/wifi.stale"; echo 1 > "$ST/wifi.async"   # 3 s: the stub's 1-s clock makes a 2 s window 1-2 s (CI 2026-10-30: dt 1 s)
 t0=$(up); out=$(printf 'stalekey123\n' | run --mesh - --no-persist 2>&1); rc=$?; dt=$(( $(up) - t0 ))
 d="19a read-back: a stale pre-reload status (old key, up=true) does not satisfy it -> rc 0 ($rc) only after the real up (${dt}s >= 2)"
 if [ "$rc" = 0 ] && [ "$dt" -ge 2 ]; then ok "$d"; else no "$d"; fi
