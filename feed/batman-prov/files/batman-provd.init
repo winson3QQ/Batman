@@ -1,0 +1,25 @@
+#!/bin/sh /etc/rc.common
+# batman-provd — #254 BLE provisioning protocol process (docs/design/254-p2-impl.md §4.5): uid / gid provd (471) in a
+# ujail with no capabilities and no_new_privs; only its binary, the build stamp and the two socket DIRECTORIES are
+# mounted (read-only: a socket bound read-only can still be connected, and a dir mount survives dbus / helper
+# restarts, F-P29). requirejail: no ujail = no provd (never an unjailed run, F-P19). S92 after the helper (S89) and
+# bluetoothd; K10 before them: it withdraws the advertisement and drops every link itself.
+START=92
+STOP=10
+USE_PROCD=1
+PROG=/usr/bin/batman-provd
+
+start_service() {
+	procd_open_instance
+	procd_set_param command "$PROG"
+	procd_set_param respawn 3600 5 0
+	procd_set_param user provd
+	procd_set_param group provd
+	procd_add_jail batman-provd log requirejail
+	procd_add_jail_mount "$PROG" /etc/batman-build /tmp/run/dbus /tmp/run/batman-prov
+	procd_set_param capabilities /etc/capabilities/batman-provd.json
+	procd_set_param no_new_privs 1
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}

@@ -1,0 +1,54 @@
+#!/bin/sh /etc/rc.common
+# batman-provd — prov_test build only (a -wbox image; installed instead of the release init when BATMAN_PROV_TEST=1,
+# docs/design/254-p2-impl.md §4.5–§4.6, 254-h23-harness.md §4.8.2–§4.8.3). The release init plus:
+#   - /tmp/run/batman-provd-test (provd:provd 0700) mounted read-write for the frame socket gatt.sock;
+#   - the switches in /tmp/run/batman-prov-test/provd.env (root 0600, link count 1, not a symlink, in a root 0700
+#     dir; written by prov-wbox-254.sh set-provd-env), read HERE as root and passed as environment variables — the
+#     file is never mounted into the jail. Anything malformed is ignored (no switch set).
+START=92
+STOP=10
+USE_PROCD=1
+PROG=/usr/bin/batman-provd
+TDIR=/tmp/run/batman-provd-test
+EDIR=/tmp/run/batman-prov-test
+ENVF=$EDIR/provd.env
+
+# owner uid / mode / links of a path as ls -ldn prints them (busybox has no stat)
+_lsn() { ls -ldn "$1" 2>/dev/null | awk '{print $1, $2, $3}'; }
+
+_provd_env() {
+	[ -f "$ENVF" ] && [ ! -L "$ENVF" ] && [ ! -L "$EDIR" ] || return 0
+	[ "$(_lsn "$EDIR" | awk '{print $1, $3}')" = "drwx------ 0" ] || return 0
+	[ "$(_lsn "$ENVF")" = "-rw------- 1 0" ] || return 0
+	local k v out=
+	while IFS='=' read -r k v; do
+		case "$k" in SOCK_ONLY | FAST_FAKE_DELAY_MS | NO_BRUTE_LIMIT | GATT_ENCRYPT_CTRL | ADV_LEN_TEST) ;; *) continue ;; esac
+		case "$v" in '' | *[!0-9]*) continue ;; esac
+		out="$out $k=$v"
+	done <"$ENVF"
+	echo "$out"
+}
+
+start_service() {
+	# /tmp/run is root-only: whatever stands at TDIR is ours to replace
+	if [ -L "$TDIR" ] || { [ -e "$TDIR" ] && [ ! -d "$TDIR" ]; }; then rm -f "$TDIR"; fi
+	[ -d "$TDIR" ] || mkdir -m 0700 "$TDIR"
+	chown 471:471 "$TDIR"
+	chmod 0700 "$TDIR"
+	local env
+	env=$(_provd_env)
+	procd_open_instance
+	procd_set_param command "$PROG"
+	procd_set_param respawn 3600 5 0
+	procd_set_param user provd
+	procd_set_param group provd
+	[ -n "$env" ] && procd_set_param env $env
+	procd_add_jail batman-provd log requirejail
+	procd_add_jail_mount "$PROG" /etc/batman-build /tmp/run/dbus /tmp/run/batman-prov
+	procd_add_jail_mount_rw "$TDIR"
+	procd_set_param capabilities /etc/capabilities/batman-provd.json
+	procd_set_param no_new_privs 1
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
