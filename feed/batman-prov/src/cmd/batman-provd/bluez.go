@@ -658,7 +658,9 @@ func (b *bleSide) run() {
 		case <-b.quit:
 			return
 		case s := <-sig:
-			if s != nil && s.Name == "org.freedesktop.DBus.Properties.PropertiesChanged" {
+			if s != nil && (s.Name == "org.freedesktop.DBus.Properties.PropertiesChanged" ||
+				s.Name == "org.freedesktop.DBus.ObjectManager.InterfacesAdded" ||
+				s.Name == "org.freedesktop.DBus.ObjectManager.InterfacesRemoved") {
 				b.deviceChanged(s)
 			}
 			if s != nil && s.Name == "org.freedesktop.DBus.NameOwnerChanged" {
@@ -679,23 +681,45 @@ func (b *bleSide) run() {
 	}
 }
 
-// deviceChanged records Device1.Connected from org.bluez's own PropertiesChanged (any other sender is ignored: a
-// local process must not be able to pause the advertisement by faking it)
+// deviceChanged records Device1.Connected from org.bluez's own signals (any other sender is ignored: a local process
+// must not be able to pause the advertisement by faking it). A device BlueZ creates for an incoming connection
+// reports Connected=true only inside InterfacesAdded: gdbus folds a property change of an interface not yet announced
+// into that signal (bluez-5.72 gdbus/object.c:1765, src/device.c:3271) — 04, 2026-10-31.
 func (b *bleSide) deviceChanged(s *dbus.Signal) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if string(s.Sender) != b.bluezName || len(s.Body) < 2 {
 		return
 	}
-	if iface, _ := s.Body[0].(string); iface != "org.bluez.Device1" {
-		return
+	set := func(p dbus.ObjectPath, props map[string]dbus.Variant) {
+		if v, ok := props["Connected"]; ok {
+			if on, _ := v.Value().(bool); on {
+				b.devConn[p] = true
+			} else {
+				delete(b.devConn, p)
+			}
+		}
 	}
-	ch, _ := s.Body[1].(map[string]dbus.Variant)
-	if v, ok := ch["Connected"]; ok {
-		if on, _ := v.Value().(bool); on {
-			b.devConn[s.Path] = true
-		} else {
-			delete(b.devConn, s.Path)
+	switch s.Name {
+	case "org.freedesktop.DBus.Properties.PropertiesChanged":
+		if iface, _ := s.Body[0].(string); iface != "org.bluez.Device1" {
+			return
+		}
+		ch, _ := s.Body[1].(map[string]dbus.Variant)
+		set(s.Path, ch)
+	case "org.freedesktop.DBus.ObjectManager.InterfacesAdded":
+		p, _ := s.Body[0].(dbus.ObjectPath)
+		ifs, _ := s.Body[1].(map[string]map[string]dbus.Variant)
+		if d, ok := ifs["org.bluez.Device1"]; ok {
+			set(p, d)
+		}
+	case "org.freedesktop.DBus.ObjectManager.InterfacesRemoved":
+		p, _ := s.Body[0].(dbus.ObjectPath)
+		l, _ := s.Body[1].([]string)
+		for _, i := range l {
+			if i == "org.bluez.Device1" {
+				delete(b.devConn, p)
+			}
 		}
 	}
 	select {
