@@ -496,10 +496,13 @@ func (s *Server) HealthOK() (bool, string) {
 	return true, ""
 }
 
-// KernelInstances: num_instances from the last health.get (-1 = unknown)
-func (s *Server) KernelInstances() int {
+// KernelInstances: num_instances from the last health.get (-1 = unknown) if that line was read after since
+func (s *Server) KernelInstances(since time.Time) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.c.healthAt.After(since) {
+		return -1
+	}
 	v, ok := s.c.health["num_instances"]
 	if !ok {
 		return -1
