@@ -51,15 +51,18 @@ type bleSide struct {
 	appOK     bool
 	advOn     bool
 	links     map[dbus.ObjectPath]*bleLink
+	devConn   map[dbus.ObjectPath]bool // Device1.Connected as BlueZ reports it (a link without Acquire*, e.g. a STATUS read)
 	nextRPA   time.Time
 	foreign   int
+	advAt     time.Time // last register / withdraw
 	lastWhy   string
 	quit      chan struct{}
 	kickc     chan struct{}
 }
 
 func newBLE(srv *provd.Server, te provd.TestEnv, logf func(string, ...any)) *bleSide {
-	return &bleSide{srv: srv, te: te, logf: logf, links: map[dbus.ObjectPath]*bleLink{}, quit: make(chan struct{}),
+	return &bleSide{srv: srv, te: te, logf: logf, links: map[dbus.ObjectPath]*bleLink{}, devConn: map[dbus.ObjectPath]bool{},
+		quit:  make(chan struct{}),
 		kickc: make(chan struct{}, 1)}
 }
 
@@ -464,6 +467,9 @@ func (b *bleSide) connect() error {
 	c.AddMatchSignal(dbus.WithMatchInterface("org.freedesktop.DBus"), dbus.WithMatchMember("NameOwnerChanged"),
 		dbus.WithMatchArg(0, bluez))
 	c.AddMatchSignal(dbus.WithMatchInterface("org.freedesktop.DBus.ObjectManager"), dbus.WithMatchSender(bluez))
+	// §4.4: a connection withdraws the advertisement — also one that never acquires RX / TX (a STATUS read)
+	c.AddMatchSignal(dbus.WithMatchInterface("org.freedesktop.DBus.Properties"), dbus.WithMatchMember("PropertiesChanged"),
+		dbus.WithMatchSender(bluez), dbus.WithMatchArg(0, "org.bluez.Device1"))
 	b.mu.Lock()
 	b.conn, b.appOK, b.advOn = c, false, false
 	b.mu.Unlock()
@@ -482,6 +488,7 @@ func (b *bleSide) refreshOwner() {
 	b.mu.Lock()
 	if owner != b.bluezName {
 		b.appOK, b.advOn = false, false // a new bluetoothd knows neither
+		b.devConn = map[dbus.ObjectPath]bool{}
 	}
 	b.bluezName = owner
 	b.mu.Unlock()
@@ -587,7 +594,7 @@ func (b *bleSide) register(why string) {
 		return
 	}
 	b.mu.Lock()
-	b.advOn, b.nextRPA = true, time.Now().Add(rpaBase+jitter(30, 120))
+	b.advOn, b.nextRPA, b.advAt = true, time.Now().Add(rpaBase+jitter(30, 120)), time.Now()
 	b.mu.Unlock()
 	b.logf("provd: adv registered reason=%s", why)
 }
@@ -596,6 +603,9 @@ func (b *bleSide) withdraw(why string) {
 	b.mu.Lock()
 	c, on := b.conn, b.advOn
 	b.advOn = false
+	if on {
+		b.advAt = time.Now()
+	}
 	b.mu.Unlock()
 	if !on || c == nil {
 		return
@@ -648,6 +658,9 @@ func (b *bleSide) run() {
 		case <-b.quit:
 			return
 		case s := <-sig:
+			if s != nil && s.Name == "org.freedesktop.DBus.Properties.PropertiesChanged" {
+				b.deviceChanged(s)
+			}
 			if s != nil && s.Name == "org.freedesktop.DBus.NameOwnerChanged" {
 				b.refreshOwner()
 				b.mu.Lock()
@@ -666,9 +679,34 @@ func (b *bleSide) run() {
 	}
 }
 
+// deviceChanged records Device1.Connected from org.bluez's own PropertiesChanged (any other sender is ignored: a
+// local process must not be able to pause the advertisement by faking it)
+func (b *bleSide) deviceChanged(s *dbus.Signal) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if string(s.Sender) != b.bluezName || len(s.Body) < 2 {
+		return
+	}
+	if iface, _ := s.Body[0].(string); iface != "org.bluez.Device1" {
+		return
+	}
+	ch, _ := s.Body[1].(map[string]dbus.Variant)
+	if v, ok := ch["Connected"]; ok {
+		if on, _ := v.Value().(bool); on {
+			b.devConn[s.Path] = true
+		} else {
+			delete(b.devConn, s.Path)
+		}
+	}
+	select {
+	case b.kickc <- struct{}{}:
+	default:
+	}
+}
+
 func (b *bleSide) converge(reason *string) {
 	b.mu.Lock()
-	name, appOK, advOn, nlinks, next := b.bluezName, b.appOK, b.advOn, len(b.links), b.nextRPA
+	name, appOK, advOn, nlinks, next := b.bluezName, b.appOK, b.advOn, len(b.links)+len(b.devConn), b.nextRPA
 	b.mu.Unlock()
 	if name == "" {
 		return // bluetoothd not on the bus: wait for NameOwnerChanged
@@ -689,7 +727,10 @@ func (b *bleSide) converge(reason *string) {
 	if advOn {
 		mine = 1
 	}
-	if k := b.srv.KernelInstances(); k > mine {
+	b.mu.Lock()
+	since := b.advAt.Add(2 * time.Second) // the kernel count of a register / withdraw in flight is not foreign
+	b.mu.Unlock()
+	if k := b.srv.KernelInstances(since); k > mine {
 		b.mu.Lock()
 		changed := b.foreign != k-mine
 		b.foreign = k - mine

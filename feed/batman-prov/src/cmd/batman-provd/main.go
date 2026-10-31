@@ -64,6 +64,19 @@ func main() {
 		os.Exit(2)
 	}
 	te := testEnv(logf)
+	need := []string{"/tmp/run/batman-prov"}
+	if !te.SockOnly {
+		need = append(need, "/tmp/run/dbus")
+	}
+	for _, d := range need {
+		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
+			// ujail mounts only what exists when the jail is built: without this dir provd could never reach the
+			// helper / the bus in this jail. Exit; procd respawns 5 s later with a new jail (254-p2-impl L77)
+			logf("provd: %s is not in the jail (not there yet at start) — exiting for a respawn", d)
+			time.Sleep(5 * time.Second)
+			os.Exit(1)
+		}
+	}
 	cfg := provd.Config{HelperPath: helperSock, Log: logf, Model: st["BATMAN_MODEL"],
 		Board: strings.TrimPrefix(st["BATMAN_BOARD"], "ekh-"), FW: st["BATMAN_VERSION"], Test: te}
 	srv, err := provd.NewServer(cfg)
@@ -102,6 +115,5 @@ func main() {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
 	}
-	logf("provd: adv withdrawn reason=stop")
 	os.Exit(0)
 }
