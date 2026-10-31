@@ -124,3 +124,4 @@ feed/batman-prov/src/seam/*	/tmp/run/batman-prov-test([^-a-z]|$)	the prov_test k
 # --- #254 wireless-txn §19.6 prov-forget-orphan-254: the orphan of §19.1 rebuilt by hand on the node (test inputs, no decision) ---
 scripts/node/prov-orphan-254.sh	/var/run/wpa_supplicant-\$DEV\.conf	the conf wpa_supplicant_s1g runs with, written root-only by netifd's morse.sh; copied into the root-only run dir to start the orphan s1g, then removed
 scripts/node/prov-orphan-254.sh	uci -q -P /var/state (set|get) "wireless\._\$PHY[^"]*"	netifd's own state file (root-only /var/state): the splist line written as morse.sh:594 writes it, so the orphan is the real one, and read back for the log; nothing decides on it
+scripts/dv/prov-legacy-upgrade-254.sh	touch /tmp/batman-slot\.allow-stale-p5	batman-slot's documented deliberate override (opf: root-owned, honoured this boot only), set by the negative control after it stripped p5's provisioning record on purpose

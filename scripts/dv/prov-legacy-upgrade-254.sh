@@ -41,6 +41,14 @@ else
 	# boot.go case 9). V's helper on A has just seeded p5 with the legacy record, so without a strip the mutant's boot
 	# took the in-sync path and its rc-9 change never ran (M6 2026-10-29: "boot rc=0 verdict=legacy action=in sync")
 	strip || { pr_abort "strip before the negative control"; pr_result; exit 1; }
+	# strip-p5-prov restarts the helper, whose --boot re-persists the overlay record into a p5 that is "seeded, no prov"
+	# (boot.go case 9; stripwatch 2026-10-31: prov back within 2 s, "re-persisted the whole overlay record") — the
+	# positive arm never met this because its strip ran under the OLD image (no helper). So: helper stopped until the
+	# OTA reboots, p5 asserted "seeded, no prov" (prov-get rc 9) right before the OTA, and batman-slot's documented
+	# allow-stale-p5 override (root-owned /tmp flag, this boot only) since its precheck refuses an OTA on "p5 stale: prov"
+	q '/etc/init.d/batman-provhelper stop >/dev/null 2>&1; sleep 1; touch /tmp/batman-slot.allow-stale-p5'
+	o=$(qr 'd=$(mktemp -d /tmp/run/batman-dv/pg.XXXXXX); batman-config-save --prov-get $d >/dev/null 2>&1; echo "prov-get rc=$? helper=$(pidof batman-provhelper | wc -w)"; rm -rf $d')
+	[ "$o" = "prov-get rc=9 helper=0" ] && ok "negative control precondition: p5 seeded, no prov (rc 9), helper stopped" || { inv "negative control precondition: [$o] (want prov-get rc=9 helper=0)"; pr_abort "precondition"; pr_result; exit 1; }
 	pr_ota_b "$PR_V.dirty.wbox-rc9-unclaimed" B || { pr_abort "OTA rc9-unclaimed"; pr_result; exit 1; }
 	l=$(pr_trial_line 'batman-provhelper.*boot rc=') && say "B trial: ${l##*: }"
 	grep -q 'boot rc=9 verdict=unclaimed' <<< "$l" && ok "negative control: rc9-unclaimed -> rc=9 verdict=unclaimed" || no "negative control: [$l] — the mutant had no effect"
