@@ -47,7 +47,8 @@ else
 	# OTA reboots, p5 asserted "seeded, no prov" (prov-get rc 9) right before the OTA, and batman-slot's documented
 	# allow-stale-p5 override (root-owned /tmp flag, this boot only) since its precheck refuses an OTA on "p5 stale: prov"
 	q '/etc/init.d/batman-provhelper stop >/dev/null 2>&1; sleep 1; touch /tmp/batman-slot.allow-stale-p5'
-	o=$(qr 'd=$(mktemp -d /tmp/run/batman-dv/pg.XXXXXX); batman-config-save --prov-get $d >/dev/null 2>&1; echo "prov-get rc=$? helper=$(pidof batman-provhelper | wc -w)"; rm -rf $d')
+	# prov-get rc 1 = its ro mount of p5 failed (EBUSY right after the strip's own mount / the config-save lock): retry
+	o=$(qr 'for i in 1 2 3 4 5 6 7 8 9 10; do d=$(mktemp -d /tmp/run/batman-dv/pg.XXXXXX); batman-config-save --prov-get $d >/dev/null 2>&1; rc=$?; rm -rf $d; [ "$rc" != 1 ] && [ "$rc" != 8 ] && break; sleep 2; done; echo "prov-get rc=$rc helper=$(pidof batman-provhelper | wc -w)"')
 	[ "$o" = "prov-get rc=9 helper=0" ] && ok "negative control precondition: p5 seeded, no prov (rc 9), helper stopped" || { inv "negative control precondition: [$o] (want prov-get rc=9 helper=0)"; pr_abort "precondition"; pr_result; exit 1; }
 	pr_ota_b "$PR_V.dirty.wbox-rc9-unclaimed" B || { pr_abort "OTA rc9-unclaimed"; pr_result; exit 1; }
 	l=$(pr_trial_line 'batman-provhelper.*boot rc=') && say "B trial: ${l##*: }"
