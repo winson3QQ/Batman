@@ -346,10 +346,11 @@ func isCoseSigStructure(msg []byte) bool {
 // ---- node side ----------------------------------------------------------------------------------------------------
 
 type client struct {
-	c      *net.UnixConn
-	id     uint64
-	h      []byte
-	signIn *bufio.Scanner
+	c       *net.UnixConn
+	id      uint64
+	h       []byte
+	signIn  *bufio.Scanner
+	retried bool // the one reconnect after a close on the first request
 }
 
 // callTimeout: PROVCLIENT_TIMEOUT_S (default 30). The claim-lock fix's busy path (a held config-save lock) makes one
@@ -373,6 +374,17 @@ func (cl *client) call(verb string, args cmap) (uint64, cmap) {
 	}
 	buf := make([]byte, 1<<17)
 	n, err := cl.c.Read(buf)
+	if (err != nil || n == 0) && cl.id == 1 && !cl.retried {
+		// closed on the first request: the helper's accept rate (5 new connections a second, 254-p2-impl §4.3) or its
+		// 4-connection limit — back off and try once more on a new connection (254-h23 §10 point 2)
+		cl.retried = true
+		cl.c.Close()
+		time.Sleep(time.Second)
+		if c, derr := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: sockPath, Net: "unixpacket"}); derr == nil {
+			cl.c, cl.id = c, 0
+			return cl.call(verb, args)
+		}
+	}
 	if err != nil || n == 0 {
 		fmt.Println("CONN-CLOSED") // the helper closed the connection (e.g. a peer uid it refuses)
 		return 999, nil
@@ -519,6 +531,13 @@ func cmdNode(args []string) {
 		}
 	}
 	dropTo(uid, gid)
+	if op == "proxy" {
+		if len(args) != 2 {
+			die("usage: proxy <socket path>")
+		}
+		cmdProxy(args[1])
+		return
+	}
 	c, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: sockPath, Net: "unixpacket"})
 	if err != nil {
 		fmt.Printf("CONN-ERR %v\n", err)
