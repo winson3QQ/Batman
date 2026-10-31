@@ -97,7 +97,7 @@
 | **stage1 §4.1「單連線序列化」(helper socket 一次一條連線)** | **helper `Serve` 改為每條連線一個 goroutine,連線數上限 4**(第 5 條連上即關、log);`n.mu` 仍序列化改狀態動詞;**唯讀動詞(`health.get`、`info.*`)不取 `n.mu`**;**provd 開兩條連線**:`ctl`(`health.get`、`info.state`、`info.boot_id` keepalive)與 `ops`(其餘);`provclient`(root 運維、harness)與 provd 並存 | A2/B2 B1:單連線下任何 `net.apply`(≤ 180 s,最壞 ≈ 960 s,F-P32)把 provd 的輪詢、第二支手機、`provclient` 全排在後面;F-P34 |
 | stage1 §4.1 helper 動詞表 | 新增 `health.get`、`info.owners`;`info.state` 加 key 5 `trial`(**helper 內快取 ≤ 5 s、single-flight、與 health 的 `Committed()` 共用**,F-P27);`info.net` 加 key 4 `unfinished`(**自己的 join 進行中也是 1**,F-P39);`psks.get` **P2 不回 key 4/5**、加 1/s 額度;**唯讀動詞額度:helper 全域 10/s 突發 40(uid 471 單一主體)+ 每連線 5/s 突發 20;accept 速率 ≤ 5 新連線/s(超過關、log 每 60 s 1 行);超過 `ERate` 不關連線、不算失敗**;`LoadOverlay` 遇 meta / record 不符**重讀 ≤ 3 次**(F-P25);「無 record 也放行」名單加 `health.get`;**唯讀動詞集合(列舉,不是 `info.*`)= `{health.get, info.boot_id, info.cert, info.ecdh_pub, info.state, info.net, info.owners}`,其餘一律取鎖;實作點 = `Handle` 在 `node.go:158` `Lock()` 之前分支**(F-P44) | §4.3;B m9;A2 M3 / B3 M3(每連線額度可用重連歸零);A2 M2 / B2 M2(撕裂讀);A3 m11 |
 | stage1 §4.1「所有授權由 helper 驗」 | `auth/owner`(session 角色升級,不改變節點)由 **provd** 以 helper `info.owners` 回的公鑰驗 `ES256_owner("batman-owner-auth-v1" ‖ h ‖ owner_key_id)`;每個改變節點的動詞仍帶 owner-op 由 helper 驗 | 角色是 provd 的狀態;helper 不知道 session;B m10 |
-| 協定 §3.5 / §5.3(`owner/remove`、`network/leave`)沒講「被移除者的既有 session 怎麼辦」 | **一條規則(v8)**:`ctl` 看到 `(state, Generation)` 變(不管誰改的)→ 重拉 `info.owners`(`ctl`)與 `psks.get`(`ops`,single-flight);**新集合到手後逐 session 比對**:擁有者 session 的 `owner_key_id` 不在新集合 → Disconnect(`reason=owner-removed`);候選 session 以它成功的那把 `psk_owner[i]` 值比對;成員 session 的 `psk_member` 版本變 / 消失 → Disconnect(`reason=psk-rotated`;成員自己送的 `network/update` 成功後也會被斷,app 以新版本重連;擁有者不受 update 影響);匿名 session 不動。重拉期間舊集合繼續服務(stale-while-revalidate)。**不分「誰改的」**:擁有者自己的 join / claim 不會把自己的 key 拿掉,所以不會被誤斷;被 root `provclient` 移除的 owner 在新集合到手的那一輪被斷(常態 ≤ 5 s;`psks.get` 排在長動詞後面時到該動詞結束)。log 契約:`provd: session revoked reason=<owner-removed|psk-rotated>`。**誠實界線**:新連線在重拉完成前仍以舊集合放行到「候選 / 擁有者」,只讀得到 `info.net`;改狀態動詞 helper 以已存 owners 拒絕;p5 已 commit 而 overlay 寫入失敗的分支(F-P62)provd 看不到,直到下一個 owner-op 的 `resolve()` / 重開 | A4 m3 / B4 m1 的原始需求;v5–v7 的 `expectGen` / `inFlight` 狀態機是為了「旁路 → 全斷」這條多出來的規則而生,v8 連規則一起砍 |
+| 協定 §3.5 / §5.3(`owner/remove`、`network/leave`)沒講「被移除者的既有 session 怎麼辦」 | **一條規則(v8)**:`ctl` 看到 `(state, Generation)` 變(不管誰改的)→ 重拉 `info.owners`(`ctl`)與 `psks.get`(`ops`,single-flight);**新集合到手後逐 session 比對**:擁有者 session 的 `owner_key_id` 不在新集合 → Disconnect(`reason=owner-removed`);候選 session 以它成功的那把 `psk_owner[i]` **值**比對(`owner_key_id` = SHA-256(owner_pub),與 `info.owners` 回的公鑰以此對應,helper `ownerRemove` 同一個 kid);**擁有者重取 session(`psk_replay`)視同候選,以 `psk_replay` 值比對**(第二位 owner 加入後它消失 → 斷);成員 session 的 `psk_member` 版本變 / 消失 → Disconnect(`reason=psk-rotated`;成員自己送的 `network/update` 成功後也會被斷,app 以新版本重連;擁有者不受 update 影響);匿名 session 不動。重拉期間舊集合繼續服務(stale-while-revalidate)。**不分「誰改的」**:擁有者自己的 join / claim 不會把自己的 key 拿掉,所以不會被誤斷;被 root `provclient` 移除的 owner 在新集合到手的那一輪被斷(常態 ≤ 5 s;擁有者 session 只靠 `ctl` 的 `info.owners`,不受長動詞影響;候選 / 成員靠 `psks.get`,它等長動詞結束才送)。log 契約:`provd: session revoked reason=<owner-removed|psk-rotated>`。**誠實界線**:新連線在重拉完成前仍以舊集合放行到「候選 / 擁有者」,只讀得到 `info.net`;改狀態動詞 helper 以已存 owners 拒絕;p5 已 commit 而 overlay 寫入失敗的分支(F-P62)provd 看不到,直到下一個 owner-op 的 `resolve()` / 重開 | A4 m3 / B4 m1 的原始需求;v5–v7 的 `expectGen` / `inFlight` 狀態機是為了「旁路 → 全斷」這條多出來的規則而生,v8 連規則一起砍 |
 | 協定 §3.5 擁有者重取:`claim/begin` → `op/nonce` → `claim/replay` **用同一對 nonce**;`claim.verify` / `claim.replay` 回應後(任何碼)該 session 的 nonce 對作廢,之後的 `op/nonce`(重取角色)沒有有效對 → `E_FORBIDDEN`,app 重新 `claim/begin` | F-P9 / F-P33(A2 M4) |
 | 協定 §3.3「`s_node` 每次開機產生」 | 每次 **provd 啟動**(含 respawn)重新產生 → `node_cert` 的 `boot_id` 不變、`s_node_pub` 可能變;app 本來就每次交握重驗,不得快取 `s_node_pub` | respawn 後不能留金鑰 |
 | 協定 §3.5 `auth/owner` 回「目前的 `adv_owner_key`」 | 階段 1 回空 map | B16 #255 |
@@ -107,7 +107,7 @@
 | h23 §4.8.3 `provd.env` 開關 | 保留 `SOCK_ONLY / FAST_FAKE_DELAY_MS / NO_BRUTE_LIMIT / GATT_ENCRYPT_CTRL`;**新增 `ADV_LEN_TEST=<n>`**;**目錄照 h23**:`provd.env` 在 `/tmp/run/batman-prov-test/`(root 0700,只 test init 以 root 讀,不掛 jail),`gatt.sock` 在 `/tmp/run/batman-provd-test/`(provd:provd 0700,test init 建、`procd_add_jail_mount_rw`;v3 寫成 root 0700 是錯的,471 bind 不了) | F-P10 負對照;F-P42(B3 M1) |
 | h23 §6.3 L24「兩支手機同時 `claim/finish` → 一個 0、一個 `E_BUSY`」 | 照做;成功後 provd Disconnect 其他所有 session(**含假路徑交握中的**,擠槽的例外不適用這裡) | 協定 §3.1 |
 | h23 §6.3 `ble-rpa-254` log `adv re-registered reason=… nonce=<8hex>` | log 行無 `nonce=`(§4.4) | 無 nonce |
-| h23 §6.3 / §4.8 用 `btmgmt` 當節點端工具 | 節點 release 無 `btmgmt`(F-P4);**`-wbox` 變體 image 加裝 `btmgmt`**(bluez-utils 的單一工具,release gate 斷言 release rootfs 無 `/usr/bin/btmgmt`);harness 既有 `ble-periph-254.sh` 本來就是 scp 自帶 btmgmt / btmon(h1 §4.7)→ 兩種路徑都可 | A M9 / B M6 |
+| h23 §6.3 / §4.8 用 `btmgmt` 當節點端工具 | 節點 image(release 與 `-wbox` 都)無 `btmgmt`;harness 既有 `ble-periph-254.sh` scp 自帶 btmgmt / btmon(h1 §4.7),P2 沿用;**不在 image 裝**(`btmgmt` 在 `bluez-utils-extra`,D9 不做) | A M9 / B M6;v8 |
 | stage1 §6.4 (8)、L6「provd 不起 → UNHEALTHY → revert」 | **今天只 WARN(P-U5,F-P20);P2 不改 autocommit**。L6 改寫為 WARN;把「WARN → FAIL」列為 #254 checklist 的獨立決定(要先有 `adv_registered_once` 的 kernel 求證,本設計提供) | A M6 |
 
 ## 2. 元件
@@ -123,7 +123,7 @@
 
 - **套件 `feed/batman-prov`**:多產 `batman-provd`(`GO_PKG_BUILD_PKG` 加 `batman-prov/cmd/batman-provd`);`files/batman-provd.init`(release)與 `files/batman-provd-test.init`(只在 `BATMAN_PROV_TEST=1` 安裝,多了讀 `provd.env`);`files/batman-provd.json`(安裝到 `/etc/capabilities/batman-provd.json`,`{"bounding": []}`);vendor 加 `flynn/noise v1.1.0`、`godbus/dbus/v5 v5.2.4`(`go mod vendor`;PR 列 `go.sum` 行)。
 - **helper 改動**(§4.3):`sock.Serve` 每連線 goroutine + 上限 4 + accept 速率;唯讀動詞不取 `n.mu` + 全域 / 每連線額度;`health.get`、`info.owners`、`info.state` key 5(trial 快取)、`info.net` key 4、`psks.get` 去 key 4/5 + 1/s;health 加 `Read Advertising Features` latch(atomic);`LoadOverlay` 不符重讀;`dispatch` 無 record 放行名單加 `health.get`。
-- **firmware(同 rc 的 firmware PR)**:`package/batman/batman-ble/files/bluetooth.conf` 加 `<policy user="provd">`(§4.7);**kernel patch `target/linux/bcm27xx/patches-6.6/999-batman-eir-adv-flags-oob-254.patch`**(firmware 樹本體、兩板共用一份,照 #305 的範式,F-P47;**不是** `patches/ekh-*/` board patch)backport CVE-2026-64539 + CVE-2025-38303(§4.8;待決 D3);`-wbox` 變體加 `btmgmt`;pin Batman main。
+- **firmware(同 rc 的 firmware PR)**:`package/batman/batman-ble/files/bluetooth.conf` 加 `<policy user="provd">`(§4.7);**kernel patch `target/linux/bcm27xx/patches-6.6/999-batman-eir-adv-flags-oob-254.patch`**(firmware 樹本體、兩板共用一份,照 #305 的範式,F-P47;**不是** `patches/ekh-*/` board patch)backport CVE-2026-64539 + CVE-2025-38303(§4.8;待決 D3);pin Batman main。
 - **harness(H3,照本契約先 merge)**:`peer.py`、`transport_sock.py` / `transport_ble.py`、**`provclient proxy` 子命令(今天不存在,F-P51)**、`prov-wbox-254.sh set-provd-env`、§6.3 單位 + 本文件 §9 新增。
 
 ## 3. 擁有權
@@ -149,7 +149,7 @@
 
 ### 4.1 GATT(照協定 §4.1;本節定細節)
 
-- 服務 UUID `BATMAN_SVC_UUID`:核准時 `uuidgen` 一次,寫進協定 §4.1、CDDL 註解、`provd/gatt.go`、`peer.py`、`transport_ble.py`;特徵 = base 的第 3 組 16-bit +1…+4(RX / TX / CTRL / STATUS)。待決 D4。
+- 服務 UUID `BATMAN_SVC_UUID` = **`540aa38c-0086-4d58-a9c0-c7c9d1e1bd42`**(D4,2026-10-31 產生一次;寫進協定 §4.1、CDDL 註解、`provd/gatt.go`、`peer.py`、`transport_ble.py`);特徵 = 第 3 組改 `4d59` / `4d5a` / `4d5b` / `4d5c`(RX / TX / CTRL / STATUS)。
 - 特徵旗標:RX `write-without-response`;TX `notify`;CTRL `read`;STATUS `read`;**不帶任何 `encrypt-*` / `authenticated-*` / `secure-*`**(stage1 F43);`GATT_ENCRYPT_CTRL=1`(prov_test)把 CTRL 改 `encrypt-read`。
 - 資料路徑:RX `AcquireWrite`(回 fd + mtu),TX `AcquireNotify`(fd + mtu);每個 fd 一個 goroutine;fd HUP = 該連線結束(F-P16)。`AcquireWrite` 失敗 → 退回 `WriteValue`;`AcquireNotify` 失敗 → 回 `org.bluez.Error.NotSupported`、Disconnect。
 - **連線識別** = `Acquire*` / `ReadValue` options 的 `device` 物件路徑(F-P16);Disconnect 用它。
@@ -190,9 +190,9 @@
   - `ops`:`nonce`、`sign.*`、`psks.get`、`claim.*`、owner-op 動詞;一次一則(= helper 的 `n.mu` 本來就序列化它們);**有請求在飛就不送 keepalive**(helper 在 `h(m)` 內不 `Read`,堆著的 keepalive 動詞結束後會一口氣撞額度);keepalive 的 `ERate` 忽略;**`ops` 重連(EOF / 被當第 5 條拒 → 退避)後:所有 session 的快取 nonce 對作廢、`claimInProgress` 清除**(helper 的 nonces 在記憶體,重啟即空)。
   - 第 3、4 條留給 `provclient`(root 運維、harness,F-P34);provd 跑著時 `provclient sock-as 471 -- info.state` 必須 ≤ 2 s 回(L78);provd 自己的連線被拒(第 5 條)→ §4.5 退避重連。
   - EOF:冪等動詞(`info.*`、`health.get`、`psks.get`、`sign.*`)重連後重送一次;非冪等(`nonce`、`claim.*`、owner-op)不重送 → 回手機 `E_BUSY` 並 log。
-  - **`ops` 一次只准一個在飛**:有請求在飛時再來的改狀態 / 簽章請求直接回 `E_BUSY`(不排隊;B6 M4 的「排隊的 leave 在 900 s 後才被送出」路徑因此不存在);`HELPER_WAIT = 330 s`(從送出起算)→ 到期**不關連線**(最壞 ≈ 960 s,F-P32),只對該 session 回 `E_BUSY` + `error-detail{3: "outcome unknown — re-read info"}`;**到期後 `ops` 仍不送下一個請求,直到真回應抵達(以 `id` 丟棄)或 EOF**;重拉(`psks.get`)回 `ERate` / 錯 → 1 s 後重試,舊集合繼續服務。
+  - **`ops` 一次只准一個在飛**:有請求在飛時 `ops` 上再來的任何請求(含 `nonce` / `claim.*` / `sign.*`)直接回 `E_BUSY`;provd 內部的重拉(`psks.get`)只標記、`ops` 空了才送(不排隊;B6 M4 的「排隊的 leave 在 900 s 後才被送出」路徑因此不存在);`HELPER_WAIT = 330 s`(從送出起算)→ 到期**不關連線**(最壞 ≈ 960 s,F-P32),只對該 session 回 `E_BUSY` + `error-detail{3: "outcome unknown — re-read info"}`;**到期後 `ops` 仍不送下一個請求,直到真回應抵達(以 `id` 丟棄)或 EOF**;重拉(`psks.get`)回 `ERate` / 錯 → 1 s 後重試,舊集合繼續服務。
   - 假時鐘單元:30 s 邊界、keepalive、HELPER_WAIT 丟棄且連線仍在、`ctl` 在 `ops` 卡 30 s 時 ≤ 1 s 回(**負對照 = 單連線 helper → 30 s**)。
-- **快取**(§3):`ctl` 每 4 s `health.get` + `info.state`;`Generation != 上次` → 標記待重拉:`psks.get`(`ops`,single-flight)與 `info.owners`(`ctl`);**重拉期間舊集合繼續服務**(stale-while-revalidate);`info.state` 回錯(含撕裂讀的 `EUnsupported`)→ 保留快取、不改模式,只累計「不新鮮」計時(> 60 s → STATUS 0x0E、撤廣播 `reason=helper`)。**誠實界線(F-P39)**:`net.apply` 在 step 3 就 bump generation,之後 step 4 save 與該動詞可長達 ≤ 180 s 常態 / ≈ 960 s 最壞;期間 `psks.get` 排在它後面 → 新 PSK 集合要等動詞結束才到。影響:`psk_owner` / `psk_replay` 不隨 join 變 → 擁有者斷線重連照常成功(舊集合即可);**`psk_member` 綁 `Net.Version` → 成員手機在網主的 `network/update` 進行中(至動詞結束)以新版本 `psk_member` 交握會走假路徑**,舊版本在 helper 端已不被接受 → 這段時間成員連不上,不是「逾時一次」。`info` / STATUS / 撤廣播不受影響(都在 `ctl`)。殘項(真修):`psks.get` 改為不取鎖(只讀 record + `KS.ECDH`;608B 後需 keystore 自鎖)。**Session 撤銷**:規則正本在 §1.3 該列(變了就重拉、新集合到手逐 session 比對);測試見 §9。
+- **快取**(§3):`ctl` 每 4 s `health.get` + `info.state`;`Generation != 上次` → 標記待重拉:`psks.get`(`ops`,single-flight)與 `info.owners`(`ctl`);**重拉期間舊集合繼續服務**(stale-while-revalidate);`info.state` 回錯(含撕裂讀的 `EUnsupported`)→ 保留快取、不改模式,只累計「不新鮮」計時(> 60 s → STATUS 0x0E、撤廣播 `reason=helper`)。**誠實界線(F-P39)**:`net.apply` 在 step 3 就 bump generation,之後 step 4 save 與該動詞可長達 ≤ 180 s 常態 / ≈ 960 s 最壞;期間 `psks.get` 等動詞結束後才送 → 新 PSK 集合要等動詞結束才到。影響:`psk_owner` / `psk_replay` 不隨 join 變 → 擁有者斷線重連照常成功(舊集合即可);**`psk_member` 綁 `Net.Version` → 成員手機在網主的 `network/update` 進行中(至動詞結束)以新版本 `psk_member` 交握會走假路徑**,舊版本在 helper 端已不被接受 → 這段時間成員連不上,不是「逾時一次」。`info` / STATUS / 撤廣播不受影響(都在 `ctl`)。殘項(真修):`psks.get` 改為不取鎖(只讀 record + `KS.ECDH`;608B 後需 keystore 自鎖)。**Session 撤銷**:規則正本在 §1.3 該列(變了就重拉、新集合到手逐 session 比對);測試見 §9。
 - **請求打包**:owner-op 動詞與 `claim.replay`:`{1: h, 2: 原始信封 bstr}`(分塊時為重組後重編的整封);**`claim.verify`:provd 拆 `claim/finish` body `{1: response, 2: owner_enc_pub, 3: sig_enc}`(CDDL `claim-finish-req`)+ 本 session `claim/begin` 存下的 `owner_pub` → `{1: h, 2: response, 3: owner_pub, 4: owner_enc_pub, 5: sig_enc}`**(F-P8);沒先 `claim/begin` → `E_FORBIDDEN`。
 - **nonce 對(F-P9 / F-P33)**:provd 對每條 session 快取**最近一對** `{nonce_node, nonce_helper}`;`claim/begin` → 呼叫 `nonce(h)`,回 `nonce_node` 給 app,留 `nonce_helper`;**擁有者重取角色的 `op/nonce` 不呼叫 helper**,直接回同一對的 `nonce_helper`(順序 begin → op/nonce → replay;`provclient` 已如此);**`claim.verify` / `claim.replay` 回應後(任何碼)清掉該 session 的對**(helper 端已消耗,F-P33);**快取對自 `nonce(h)` 回應起 55 s 作廢**(helper 端 60 s);之後的 `op/nonce`(重取角色)沒有有效對 → `E_FORBIDDEN`(不計失敗),app 重新 `claim/begin`;擁有者角色的 `op/nonce` 每次都呼叫 `nonce(h)`(同 h ≤ 4 對)。
 - **type → verb**:
@@ -211,7 +211,7 @@
 | `ssh_keys/set`、`root_password/reset` | 擁有者 | `ssh_keys.set` / `root_password.reset` | 回應不快取 |
 | `owner/add|remove`、`settings/*`、`status`、`peers/challenge`、`diag/*`、`update/*`、`bulk/*` | — | — | **P3**:`E_UNSUPPORTED{capability: <type>}`;`reset` → `E_UNSUPPORTED{capability:"reset", reason: 9}` |
 
-- **錯誤碼(helper → 協定),唯一的表**(helper 錯誤回應**沒有 reason 文字**,F-P37;provd 只有碼):`3 → 3`(**`claim.verify` 例外 → 9**);`4 → 4`;`5 → 5`;`6 → 6`,**`claim.verify` 回 6 ⇒ `error-detail{1:"claim", 2: 10}`(推論,F-P38;誠實界線:`dispatch` 的 `LoadOverlay` 失敗(p5 / overlay 執行期讀不到、harness bind 壞檔)也對 `claim.verify` 回 6 → app 會被告知「沒 SSH key」;provd 以 `ctl` 的 `info.state` 最近是否成功當旁證,最近失敗則改回 `{1:"claim"}` 無 reason;真修 = helper 錯誤回應 key 3 加 `{1: reason-code}`,列殘項);其他動詞的 6 → `{1: <type>}` 無 reason**;`7 → 7`;`10 → 10`;`12 → 12`;`21 / 22 → 11 E_REJECTED`(**無 detail 3**;原因在 helper log);`23 → 13`;helper 回 `20`(含 `sock.go:158` 以 id 0 回 20 並關連線)= provd 自己的 bug → 11 + log CRIT,該連線上在飛的非冪等請求回 7;其他未知碼 → 11。provd 自己產生:1(major ≠ 1)、2、3(角色)、7(互斥、helper 逾時、佇列丟棄、擠槽前)、6(P3 / idem)。
+- **錯誤碼(helper → 協定),唯一的表**(helper 錯誤回應**沒有 reason 文字**,F-P37;provd 只有碼):`3 → 3`(**`claim.verify` 例外 → 9**);`4 → 4`;`5 → 5`;`6 → 6`,**`claim.verify` 回 6 ⇒ `error-detail{1:"claim", 2: 10}`(推論,F-P38;誠實界線:`dispatch` 的 `LoadOverlay` 失敗(p5 / overlay 執行期讀不到、harness bind 壞檔)也對 `claim.verify` 回 6 → app 會被告知「沒 SSH key」;provd 以 `ctl` 的 `info.state` 最近是否成功當旁證,最近失敗則改回 `{1:"claim"}` 無 reason;真修 = helper 錯誤回應 key 3 加 `{1: reason-code}`,列殘項);其他動詞的 6 → `{1: <type>}` 無 reason**;`7 → 7`;`10 → 10`;`12 → 12`;`21 / 22 → 11 E_REJECTED`(**無 detail 3**;原因在 helper log);`23 → 13`;helper 回 `20`(含 `sock.go:158` 以 id 0 回 20 並關連線)= provd 自己的 bug → 11 + log CRIT,該連線上在飛的非冪等請求回 7;其他未知碼 → 11。provd 自己產生:1(major ≠ 1)、2、3(角色)、7(互斥、helper 逾時、`ops` 在飛 / `HELPER_WAIT` 到期、擠槽前)、6(P3 / idem)。
 - 帶 `7: idem_key` 的請求:階段 1 不實作快取 → `E_UNSUPPORTED{capability:"idem"}`;帶秘密回應的 type 帶 7 → `E_FORBIDDEN`(協定)。
 - 回應信封 `{1: id, 4: status, 3: body | 5: error}`;`id` 重複 / 倒退 → Disconnect。分塊:見 §1.3 協定 §5.1 列;重組後重編 `{0,1,2,3,(7)}`(deterministic;單元用向量 `chunking` 斷言重組 bytes == 原始整封)。
 
@@ -345,7 +345,7 @@ start_service() {
 | ujail `-C` JSON `{"bounding": []}` 格式 | F-P19 | ✅ |
 | `/etc/batman-build` 0644、無 `BATMAN_MODEL` | F-P23 | ✅ |
 | iOS `scanForPeripherals(withServices:)` 以 UUID 列表比對 | Apple 文件 | ⚠️ app 階段(U9)實證 |
-| 上游 CVE 修法 commit | 待查 | ⚠️ D3 核准後 |
+| 上游 CVE 修法 commit | §4.8:`47c03902…`、`6f5fb689…`(審查員 A7 以 gh api 取得) | ✅ diff 核過;實作時對 linux-stable 再核一次 |
 
 ## 7. 待決
 
@@ -353,7 +353,7 @@ start_service() {
 |---|---|---|
 | D1 / D2 | 函式庫 | 定案 P-U15 / P-U16 |
 | D3 | kernel board patch backport CVE-2025-38303 + CVE-2026-64539 | **做**(P2 firmware PR);正向見證 §4.8;負對照 = F-P10 紀錄 |
-| D4 | 服務 UUID | 核准時 `uuidgen` |
+| D4 | 服務 UUID | **定案 `540aa38c-0086-4d58-a9c0-c7c9d1e1bd42`**(§4.1) |
 | D5 | ADV 只放 UUID 列表 | 定案(§1.3);代價寫明 |
 | D6 | 兩個二進位 | 定案 |
 | D7 | 協定 v0.8 變更(`info-resp` 11、`info.net` 4、`info.state` 5、`health.get` / `info.owners`、`psks.get` 去 4/5、`s_node` 每次 provd 啟動、replay 的 begin/op-nonce 同一對、sock 計入連線數、擠槽規則、`auth/owner` 回空) | 同 PR 的 docs 部分 |
@@ -389,7 +389,7 @@ start_service() {
 - **Go 單元(CI)**:`noise_test`(三組向量逐位元組、`fake_msg2_rule` 長度 == 711、6 次 `ReadMessage` 計數、msg1 長度表)、`frame_test`(`gatt_framing`、`envelope`、`chunking` 重組 bytes == 原封、`chunk_boundary`、8 塊上限)、`status_test`(`status_public` 三例、錯誤名 → 預期 ATT 碼)、`route_test`(type → verb、`claim/finish` 拆欄位、replay 的 nonce 對、角色拒絕、**錯誤碼表全列**、`id` 倒退、擠槽、假時鐘:30 s keepalive、HELPER_WAIT 丟遲到回應)、`adv_test`(28 過 / 29 拒)、`cache_test`(fake helper:gen 1 → `EUnsupported` 一次 → gen 2:只在 gen 2 重拉、中間模式不變;gen 5 → 1 也重拉;**重拉延遲 30 s 期間舊集合仍服務**;single-flight;`ERate` 重拉;`info.net` `ERate` → `info` 無 9/10/11)、`route_test` 加 nonce 對 55 s 到期、`ops` 重連清對、helper 6 → `{1:"claim",2:10}`(mutant 拿掉推論 → 缺 key 2 → FAIL)。每條有 mutant 註解。helper:**`Serve` 多連線(第 2 條連線在第 1 條跑 30 s 動詞時 `health.get` ≤ 1 s 回;負對照 = 今天的 `Serve`)、第 5 條被關、accept 限速**、唯讀動詞額度(churn mutant)、`IsTrial` 快取(stub 睡 20 s → `info.state` ≤ 1 s)、`LoadOverlay` mismatch 重讀、`adv_registered_once` latch 來自假 mgmt 回應(atomic)、`psks.get` 無 4/5 + 1/s。
 - **CI `peer-vs-provd`**(runner 預置):`useradd -u 471 provd`;`mkdir -m 0700 /tmp/run/batman`、`/etc/batman-prov/`、`/opt/batdata/state`;helper root `realSys` + PATH stub(`batman-slot is-trial` rc 1、`batman-config-save --prov-get` rc 11、`halow-setkey`、`prov_apply_lock`、`uci`);無 p5 → helper `unknown(no-p5)` → 改狀態動詞 `EState` → CI 跑交握 / `info` / STATUS / 限制 / `claim/begin` + `op/nonce`,`claim/finish` 預期 11;provd `sudo -u provd` + `SOCK_ONLY=1`。負對照:`peer.py --selftest` 刪比對 → FAIL;`FAST_FAKE_DELAY_MS=20` → timing FAIL。
 - **節點(H3 §6.3 + 本文件)**:§5 各列;新單位 `prov-sec-adv-len-254`(**只有臂 1**:`ADV_LEN_TEST=29` → log + `num_instances=0`;節點端不做 kernel patch 見證,§4.8);`prov-dep-restart-254` 加 dbus 臂與 `kill -9` bluetoothd 臂;`prov-boot-254` 加 latch 兩臂、L70/L71 白箱、「新 nonce 重註冊」斷言改「重註冊」(h23 :392 / :404);`prov-ble-claim-254` 加 begin→op/nonce→replay 與 replay 重試臂(L79);`prov-netjoin-254` 加 L75 臂與「join 回應前擁有者 session 不被斷、收到 0」斷言;`prov-sec-hog-254` 加合法第 3 條臂;`prov-sec-dbus-254` 加 `UpdateActivationEnvironment`;`prov-sock-254` 加「provd 跑著時 `provclient` 成功」臂(L78)與 `gatt.sock` 目錄所有權白箱;L71 白箱四斷言(含 `kill -STOP` helper);`prov-respawn-254` 兩臂(L80,≤ 15 s);L81 白箱;`cache_test`:owners 少一把 → 該 session 下一輪被斷(負對照:不重拉 → 不斷);自家 `net.apply` 在飛時 gen +1 → 不斷;認領 → 立刻 join 背靠背 → 不斷;成員自己 `network/update` 回 0 → `psk-rotated` 斷、擁有者不斷;`ops` 在飛時第二個請求立即 `E_BUSY` 且 fake helper 計數 1;**`ble_state` 改「provd 跑著期望 kernel `num_instances` ≤ 1 / 停著期望 0」(負對照 = 今天的 `ble_state` 在 P2 image 上必 FAIL);stop / start provd 在 BLE lease 取得 / 釋放,兩個 deadman restore 加 `start batman-provd`,白箱 L83;`ble-rpa-254` provd 模式不准 `rm-adv`**;`ERate` 30 s 不撤 / 無回 60 s 撤 / `ERate` 連續 > 120 s 撤。
-- **release gate**:provd 二進位無測試字串;image 無 `/usr/bin/btmgmt`;`/etc/init.d/batman-provd` 無 `provd.env`;`bluetooth.conf` 含 `policy user="provd"`;`-wbox` 變體相反。
+- **release gate**:provd 二進位無測試字串(`-wbox` 變體相反);release 與 `-wbox` 都無 `/usr/bin/btmgmt`;release 的 `/etc/init.d/batman-provd` 無 `provd.env`(`-wbox` 相反);`bluetooth.conf` 含 `policy user="provd"`。
 - **手動**:iPad GATT 回歸(H3 乙部文件)。
 
 ## 10. 回報上層
@@ -410,7 +410,7 @@ start_service() {
 1. 本設計 v8:一位審查員確認被砍的三處(§1.3 撤銷、§4.3 `ops` 單在飛、§4.8 無節點端見證)沒留下洞;D4 `uuidgen`;**D3 commit id 與 patch 內容(正本進 H3 PR)**。
 2. docs:219 v0.8 + CDDL + 向量(`info` 11、`info.net` 4、replay 順序)。
 3. H3 harness(照 §4 契約)→ PR 先 merge。
-4. P2 實作:helper 改動(Go 單元 + mutant)→ provd(先 `SOCK_ONLY` 對 `peer.py`;再 04 prov_test build 驗 `Acquire*`、目錄 bind、dbus 重啟)→ firmware(policy、kernel patch、btmgmt 變體、pin)→ rc → 04 跑 §6.3 → 正式全套。
+4. P2 實作:helper 改動(Go 單元 + mutant)→ provd(先 `SOCK_ONLY` 對 `peer.py`;再 04 prov_test build 驗 `Acquire*`、目錄 bind、dbus 重啟)→ firmware(policy、kernel patch、pin)→ rc → 04 跑 §6.3 → 正式全套。
 
 ## 13. v1 審查 → v2 對應(歷史;v2 審查推翻的項目見 §14)
 
