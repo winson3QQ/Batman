@@ -51,6 +51,7 @@ role_fire_restore() {	# $1 run (or "recover")
 		rm -rf "$sd"; lim 60 /etc/init.d/batman-provhelper restart >/dev/null 2>&1
 	fi
 	pidof batman-provhelper >/dev/null || lim 60 /etc/init.d/batman-provhelper start >/dev/null 2>&1
+	provd_restart	# the killpoint dir (with provd.env) is gone: a provd started with test switches must not stay (L83)
 	[ -e "$BT/restoring.$1" ] && { dm_log "$1" "prov deadman: restoring in progress — services left to pr_restore"; return 0; }
 	for s in joinwatch openmanetd tailscaled; do [ -x "/etc/init.d/$s" ] && lim 60 "/etc/init.d/$s" start >/dev/null 2>&1; done
 	return 0
@@ -71,6 +72,7 @@ case "$c" in
 esac
 case "$c" in
 	stage-check) cmd_stage_check ;;
+	provd-reset) provd_restart; provd_check ;;
 	acquire) cmd_acquire "$@" ;;
 	renew) cmd_arm "$@" ;;
 	release) cmd_release ;;

@@ -42,6 +42,7 @@ cmd_info() {
 cmd_adv_on() {	# <name> [connectable]
 	held; [ -n "${1:-}" ] || die "usage: adv-on <name> [connectable]"
 	c=""; [ "${2:-}" = connectable ] && c="-c"
+	[ -z "$(provd_pid)" ] || { unlock; die "batman-provd is running (instance 1 is its own): acquire stops it"; }
 	mg rm-adv 1 >/dev/null
 	o=$(mg add-adv $c -g -u 181c -d "$(ad_name "$1")" 1)
 	case "$o" in *"nstance added"*|*"Instance: 1"*) ;; *) unlock; die "add-adv failed: $o";; esac
@@ -168,7 +169,7 @@ btmon_judge() {	# btmon -r text -> verdict lines. Sections (6-space indent) deci
 
 role_fire_restore() {	# deadman on 04: stop recorders, drop snoops + adv; leaked IRK => reboot (H-U6), else restore
 	rm -f "$BT/$1"/*.snoop
-	lim 20 bm rm-adv 1 >/dev/null 2>&1
+	[ -n "$(provd_pid)" ] || lim 20 bm rm-adv 1 >/dev/null 2>&1	# never provd's instance
 	if mark_here irk-exposed; then
 		dm_log "$1" "deadman: IRK was exposed and not verified as voided — reboot (H-U6)"
 		rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"
