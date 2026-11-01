@@ -71,7 +71,8 @@ boot-provd)
 		[ "$(plog 'adv withdrawn reason=connect')" -gt "$c0" ] && ok "04 logged the connection 02 made for the read (the link was to 04)" || no "04 logged no connection while 02 read [$a] — 02 read another node?"
 		ok "02 found 04 by UUID + last4 $LAST4 at $a ($(sed -n 's/^ADVERTISERS //p' <<< "$o") advertiser(s) of the UUID in range)"
 		# no Local Name in the advertisement: BlueZ then shows the address (dashes) or nothing as the name
-		case "$nm" in -|"${a//:/-}") ok "no Local Name advertised (02 shows [$nm])" ;; *) no "02 shows a name [$nm] — a Local Name is advertised" ;; esac
+		case "$nm" in -|"${a//:/-}") ok "no Local Name advertised (before connecting 02 knows the name [$nm])" ;; *) no "before connecting 02 knows a name [$nm] — a Local Name is advertised" ;; esac
+		say "after connecting, 02 reads the GAP Device Name [$(sed -n 's/^GAPNAME //p' <<< "$o")] (GATT, main.conf Name — not the advertisement)"
 		[ "$cv" = a4010102000318f404192000 ] && ok "02 read CTRL {1:1,2:0,3:244,4:8192} with no pairing" || no "CTRL [$cv]"
 		case "$sv" in a5*"$(k5 "$LAST4")"*) ok "02 read STATUS with no pairing: a 5-entry map with key 5 = $LAST4 ($sv)" ;; *) no "STATUS [$sv] (want a 5-entry map with key 5 = $LAST4: $(k5 "$LAST4"))" ;; esac
 		[ "$(sed -n 's/^PAIRED //p' <<< "$o")" = no ] && ok "02 not paired after the reads" || no "02 paired [$(sed -n 's/^PAIRED //p' <<< "$o")]"

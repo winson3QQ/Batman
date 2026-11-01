@@ -66,12 +66,15 @@ value() {
 		s = ""; for (i = 1; i <= c; i++) s = s L[i]; print s
 	}' "$T/read"
 }
-# read_one <addr>: connect, read both, drop; sets CV SV PV (empty on failure)
+# read_one <addr>: connect, read both, drop; sets CV SV PV (empty on failure), NV = the name BlueZ knew from the
+# advertisement BEFORE connecting (no Local Name advertised -> none) and GV = the name after connecting (BlueZ then
+# reads the GAP Device Name characteristic: main.conf Name — not the advertisement; 02, 2026-11-01)
 read_one() {
+	NV=$(info_of "$1" | sed -n 's/^[[:space:]]*Name: //p' | head -1)
 	{ echo "connect $1"; sleep 8; echo "menu gatt"; echo list-attributes; sleep 2
 	  echo "select-attribute $CTRL"; sleep 1; echo read; sleep 2
 	  echo "select-attribute $STAT"; sleep 1; echo read; sleep 2; echo back; sleep 1; echo quit; } | bluetoothctl 2>&1 | clean > "$T/read"
-	info_of "$1" > "$T/info"; PV=$(sed -n 's/^[[:space:]]*Paired: //p' "$T/info"); NV=$(sed -n 's/^[[:space:]]*Name: //p' "$T/info" | head -1)
+	info_of "$1" > "$T/info"; PV=$(sed -n 's/^[[:space:]]*Paired: //p' "$T/info"); GV=$(sed -n 's/^[[:space:]]*Name: //p' "$T/info" | head -1)
 	drop "$1"
 	CV=$(value 1); SV=$(value 2)
 }
@@ -101,12 +104,15 @@ read)
 	pick "${2:--}"; r=$?
 	[ $r = 3 ] && exit 3
 	[ $r = 0 ] || { echo "NOADDR (or no value) after 3 tries"; grep -E 'Failed|Error' "$T/read" 2>/dev/null | head -3; exit 1; }
-	echo "ADDR $A"; echo "NAME ${NV:--}"; echo "CTRL $CV"; echo "STATUS $SV"; echo "PAIRED ${PV:-?}"; echo "ADVERTISERS $NADV" ;;
+	echo "ADDR $A"; echo "NAME ${NV:--}"; echo "GAPNAME ${GV:--}"; echo "CTRL $CV"; echo "STATUS $SV"; echo "PAIRED ${PV:-?}"; echo "ADVERTISERS $NADV" ;;
 hold)
 	pick "${2:--}"; r=$?
 	[ $r = 0 ] || { [ $r = 3 ] && exit 3; echo "NOADDR after 3 tries"; exit 1; }
+	# pick's read removed the device: scan again in the same session so BlueZ knows the address (its RPA stays the same
+	# within provd's 900 s rotation), then connect
 	i=0; while [ $i -lt 3 ]; do i=$((i + 1))
-		{ echo "connect $A"; sleep 6; echo quit; } | bluetoothctl >/dev/null 2>&1
+		{ echo "menu scan"; echo "uuids $U"; echo "transport le"; echo back; echo "scan on"; sleep 10; echo "scan off"; sleep 1
+		  echo "connect $A"; sleep 6; echo quit; } | bluetoothctl >/dev/null 2>&1
 		[ "$(conn "$A")" = yes ] && break
 	done
 	echo "HELD $A connected=$(conn "$A")" ;;
