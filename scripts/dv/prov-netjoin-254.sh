@@ -52,6 +52,7 @@ if [ "$(qr '[ -x /etc/init.d/batman-provd ] && echo yes')" = yes ]; then
 	wait $jp; r=$(cat "$jf"); rm -f "$jf"
 	say "unbind: $(pw unbind-all | tr '\n' ' ')"
 else
+	no "L71: pre-P2 image (no batman-provd) — the L71 arm did not run"
 	r=$(pr_pc owner.pem FD3="$FD3" -- net-apply --first "$OWNER")
 fi
 echo "$r" | grep -v '^NETCFG' | sed 's/^/    /'

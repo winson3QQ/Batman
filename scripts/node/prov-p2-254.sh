@@ -23,7 +23,8 @@
 #   sock-only     (prov_test image, after set-provd-env SOCK_ONLY=1) the frame socket line of this pid, no instance
 #                 for 10 s, /tmp/run/batman-provd-test provd 0700 with gatt.sock provd 0600
 #   sockdir-root  (prov_test, SOCK_ONLY running) the socket dir made root:root, provd killed -> procd's respawn (the
-#                 init does not run again) refuses the dir: "refusing to bind" by a new pid, no listener
+#                 init does not run again) refuses the dir: a new "frame socket: <error>" line (as uid 471 the
+#                 open of a root 0700 dir already fails, EACCES, before the owner check), no listener
 #   adv-len       (prov_test, after set-provd-env ADV_LEN_TEST=29) "adv: payload would be 29 B (max 28)" by this pid
 #                 and no instance for 20 s (arm 1 of prov-sec-adv-len-254; no kernel witness on the node, p2 §4.8)
 if [ -r /usr/lib/batman/rundir.sh ]; then . /usr/lib/batman/rundir.sh; else echo "FAIL no /usr/lib/batman/rundir.sh"; exit 1; fi
@@ -207,11 +208,10 @@ sock-only)
 	[ $z = 1 ] && ok "no advertising instance for 10 s (SOCK_ONLY: no BLE)" || no "an advertising instance under SOCK_ONLY"
 	;;
 sockdir-root)
-	p=$(provd_pid); f=$(logread | grep -c 'batman-provd\[[0-9]*\]: frame socket: .*refusing to bind')
+	p=$(provd_pid); f=$(plc 'frame socket: ')
 	chown 0:0 "$TD"; kill -9 "$p"
-	n=0; while [ $n -lt 20 ]; do [ "$(logread | grep -c 'batman-provd\[[0-9]*\]: frame socket: .*refusing to bind')" -gt "$f" ] && break; sleep 1; n=$((n + 1)); done
-	l=$(logread | grep 'batman-provd\[[0-9]*\]: frame socket: .*refusing to bind' | tail -1)
-	[ $n -lt 20 ] && ok "respawned provd refused the root-owned dir: ${l##*frame socket: }" || no "no 'refusing to bind' within 20 s of the respawn"
+	# the error line is "frame socket: <err>" (main.go); the serving line is "provd: frame socket <path> (SOCK_ONLY)"
+	wait_line 'frame socket: ' "$f" 20 && ok "respawned provd refused the root-owned dir: $(lastline ': frame socket: ' | sed 's/.*frame socket: //')" || no "no new 'frame socket: <error>' line within 20 s of the respawn"
 	netstat -lx 2>/dev/null | grep -q "$TD/gatt.sock" && no "something listens on $TD/gatt.sock" || ok "nothing listens on $TD/gatt.sock"
 	;;
 adv-len)

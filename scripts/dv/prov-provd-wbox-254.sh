@@ -48,8 +48,9 @@ zeros(){ printf '%0*d' $(( $1 * 2 )) 0; }   # <n bytes> as hex
 frame(){ printf '%02x%04x%s' "$1" "$2" "$(zeros "$3")"; }   # <flags> <seq> <data bytes>
 tms(){ sed -n 's/^T=\([0-9]*\)ms.*/\1/p' <<< "$1"; }
 
+# before pr_begin: a pre-P2 V would cost a snapshot and a restore reboot for nothing (known-failures pre-P2 line)
+[ "$(qr '[ -x /etc/init.d/batman-provd ] && echo yes')" = yes ] || { no "no batman-provd on 04 ($(qr 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build')): a pre-P2 image"; pr_result; exit 1; }
 pr_begin 3600 || { pr_result; exit 1; }
-[ "$(qr '[ -x /etc/init.d/batman-provd ] && echo yes')" = yes ] || { pr_abort "V = $PR_V has no batman-provd (pre-P2)"; pr_result; exit 1; }
 pr_ota_b "$PR_V.dirty.wbox-test" B || { pr_abort "OTA of the wbox test build"; pr_result; exit 1; }
 
 # ---- L39: provd killed 10 times before the decision, 02 reading meanwhile -> HELD
@@ -108,7 +109,7 @@ o=$(pl provd-reset); grep -q 'PROVD ok' <<< "$o" && ok "switches cleared: $(tail
 l83(){	# <label> <setup>
 	local p0 o
 	eval "$2" || { no "L83 $1: setup"; return 1; }
-	p0=$(qr 'pidof batman-provd'); say "L83 $1: provd pid [${p0:-none}]; no renew from here (lease 40 s + 5 s deadman)"
+	p0=$(qr 'for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && echo $x; done'); say "L83 $1: provd pid [${p0:-none}]; no renew from here (lease 40 s + 5 s deadman)"
 	pr_lease_renew +40 || return 1
 	sleep 75
 	o=$(qr 'echo "lease=[$(cat /tmp/run/batman-dv/bt/lease-prov 2>/dev/null)] pid=$(pidof batman-provd)"; tail -2 /opt/batdata/log/ble-dm-254.log')
