@@ -1,0 +1,57 @@
+From: Batman (#254 P2, docs/design/254-p2-impl.md §21 / D3b)
+Subject: [PATCH] Bluetooth: MGMT: remove advertising instances while powered off
+
+Since d883a4669a1d ("Bluetooth: hci_sync: Only allow hci_cmd_sync_queue if running", v6.4)
+hci_cmd_sync_queue() returns -ENETDOWN while the device is closed. remove_advertising() then frees
+its pending command and returns the error: no reply is sent and the instance stays in
+hdev->adv_instances. Power-off keeps instances without a timeout (hci_power_off_sync ->
+hci_clear_adv_sync(hdev, NULL, false)), so at power on hci_powered_update_adv_sync() enables the
+removed advertisement again — outside the advertiser's control (04, 2026-11-01: btmon showed
+LE Set Advertising Enable 0.07 s after Set Powered on, 3.1 s before batman-provd re-registered).
+ADD_UUID / REMOVE_UUID / SET_CLASS were fixed the same way upstream (6eb5fcc416f1); Remove
+Advertising was missed (still so in torvalds 47493e62e8a8). mgmt-api.txt: Remove Advertising
+"can be used when the controller is not powered".
+
+With HCI_RUNNING clear, remove the instance(s) from the list the way hci_remove_adv_sync() does
+(hdev->lock held; adv_instance_rpa_expired() takes no lock) and complete the command. Nothing is
+sent to the controller: it is off, and power on starts with HCI Reset.
+
+MASTER COPY: Batman scripts/dv/data/999-batman-mgmt-remove-adv-powered-off-254.patch; the firmware's
+target/linux/bcm27xx/patches-6.6/999-batman-mgmt-remove-adv-powered-off-254.patch must equal it byte
+for byte (build-board.sh).
+
+--- a/net/bluetooth/mgmt.c
++++ b/net/bluetooth/mgmt.c
+@@ -9209,6 +9209,32 @@
+ 		goto unlock;
+ 	}
+ 
++	/* Batman #254 D3b: with the device closed (powered off) hci_cmd_sync_queue()
++	 * refuses with -ENETDOWN, the command is dropped without a reply and the
++	 * instance stays in hdev->adv_instances, to be re-enabled at power on.
++	 * Nothing has to reach the controller while it is off: remove the
++	 * instance(s) from the list here, as hci_remove_adv_sync() does, and
++	 * complete the command (mgmt-api.txt: usable when not powered).
++	 */
++	if (!test_bit(HCI_RUNNING, &hdev->flags)) {
++		struct mgmt_rp_remove_advertising rp;
++		struct adv_info *adv, *n;
++
++		list_for_each_entry_safe(adv, n, &hdev->adv_instances, list) {
++			u8 instance = adv->instance;
++
++			if (cp->instance && cp->instance != instance)
++				continue;
++			if (!hci_remove_adv_instance(hdev, instance))
++				mgmt_advertising_removed(sk, hdev, instance);
++		}
++
++		rp.instance = cp->instance;
++		err = mgmt_cmd_complete(sk, hdev->id, MGMT_OP_REMOVE_ADVERTISING,
++					MGMT_STATUS_SUCCESS, &rp, sizeof(rp));
++		goto unlock;
++	}
++
+ 	cmd = mgmt_pending_new(sk, MGMT_OP_REMOVE_ADVERTISING, hdev, data,
+ 			       data_len);
+ 	if (!cmd) {

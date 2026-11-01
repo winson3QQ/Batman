@@ -51,12 +51,8 @@ role_fire_restore() {	# $1 run (or "recover")
 		rm -rf "$sd"; lim 60 /etc/init.d/batman-provhelper restart >/dev/null 2>&1
 	fi
 	pidof batman-provhelper >/dev/null || lim 60 /etc/init.d/batman-provhelper start >/dev/null 2>&1
-	# prov-p2-254.sh arms (H3): a SIGSTOPped helper (helper-stop), bondable left on (flip), hci0 left off (dep-power)
-	for p in $(pidof batman-provhelper); do kill -CONT "$p" 2>/dev/null; done
-	if s=$(settings); then
-		has_tok "$s" bondable && { dm_log "$1" "prov deadman: bondable was on — off"; lim 20 bluetoothctl mgmt.bondable off >/dev/null 2>&1; }
-		has_tok "$s" powered || { dm_log "$1" "prov deadman: hci0 was powered off — on"; lim 20 bluetoothctl power on >/dev/null 2>&1; }
-	fi
+	# the H3 judge arms (prov-p2-254.sh): SIGSTOPped helper, dbus / bluetoothd stopped, bondable / pairable on, hci0 off
+	radio_restore | while IFS= read -r l; do dm_log "$1" "prov deadman: $l"; done
 	provd_restart	# the killpoint dir (with provd.env) is gone: a provd started with test switches must not stay (L83)
 	[ -e "$BT/restoring.$1" ] && { dm_log "$1" "prov deadman: restoring in progress — services left to pr_restore"; return 0; }
 	for s in joinwatch openmanetd tailscaled; do [ -x "/etc/init.d/$s" ] && lim 60 "/etc/init.d/$s" start >/dev/null 2>&1; done
@@ -79,6 +75,8 @@ esac
 case "$c" in
 	stage-check) cmd_stage_check ;;
 	provd-reset) provd_restart; provd_check ;;
+	provd-check) provd_check ;;	# no restart: provd came back on its own (review A-M4)
+	radio-restore) radio_restore; radio_clean && echo "RADIO clean" ;;	# pr_release, before provd-reset (review A-M1)
 	acquire) cmd_acquire "$@" ;;
 	renew) cmd_arm "$@" ;;
 	release) cmd_release ;;

@@ -48,6 +48,7 @@ lim() {
 # mgmt.info segfaults now and then too (04, 2026-10-21 02:08: "Segmentation fault", no output -> a false precondition
 # FAIL in the RPA N5b run): read-only, so up to 3 reads; still nothing = unreadable (the caller FAILs)
 settings() {
+	pidof bluetoothd >/dev/null || return 1	# bluetoothctl waits for bluetoothd forever when it is down (04, 2026-11-01)
 	for _i in 1 2 3; do
 		_s=$(bluetoothctl mgmt.info 2>/dev/null | clean | sed -n 's/^[[:space:]]*current settings:[[:space:]]*//p' | head -1)
 		[ -n "$_s" ] && { echo "$_s"; return 0; }
@@ -58,6 +59,7 @@ has_tok() { case " $1 " in *" $2 "*) return 0;; esac; return 1; }
 # 2026-10-20; mgmt.info 0/60) -> up to 3 reads; still nothing = unreadable (the caller FAILs). Read-only, so a retry
 # cannot change what is read.
 adv_instances() {
+	pidof bluetoothd >/dev/null || return 1	# as settings(): no bluetoothd = unreadable, never a hang
 	for _i in 1 2 3; do
 		_a=$(bluetoothctl mgmt.advinfo 2>/dev/null | clean | sed -n 's/^Instances list with \([0-9][0-9]*\) item.*/\1/p' | head -1)
 		[ -n "$_a" ] && { echo "$_a"; return 0; }
@@ -168,6 +170,53 @@ provd_check() {
 	fail "provd pid $_p: no advertising instance within 15 s"; return 1
 }
 
+# radio_restore: what the H3 judge arms (prov-p2-254.sh) may leave behind if they are cut off before their own
+# restore — a SIGSTOPped helper, dbus / bluetoothd stopped, bondable on, pairable on, hci0 powered off — put back.
+# ONE function for the two callers that need it (review A-M1 / B-M1): the prov deadman (role_fire_restore) and the
+# host's normal release (prov-lease-254.sh radio-restore, from pr_release). Prints one "RESTORED <what>" line per
+# change; "FAIL settings unreadable" when it cannot tell (never a silent skip).
+# H3 judges run as `BATMAN_DV_P2=1 sh -s -- <arm>` (prov-p2-254.sh): their pids, by that environment marker
+p2_judges() {
+	for _q in $(pidof sh); do
+		# not this shell, nor its own subshells ($(...) forks: same marker, parent = $$)
+		[ "$_q" = "$$" ] && continue
+		[ "$(awk '{print $4}' "/proc/$_q/stat" 2>/dev/null)" = "$$" ] && continue
+		tr '\0' '\n' < "/proc/$_q/environ" 2>/dev/null | grep -qx 'BATMAN_DV_P2=1' && echo "$_q"
+	done
+}
+radio_restore() {
+	# a judge still running (its ssh cut off) would change things again behind this restore: stop it first — TERM makes
+	# it exit through its own EXIT restore; up to 15 s, then KILL (a judge holds no hardware)
+	_j=$(p2_judges)
+	if [ -n "$_j" ]; then
+		kill -TERM $_j 2>/dev/null; _n=0
+		while [ $_n -lt 15 ] && [ -n "$(p2_judges)" ]; do sleep 1; _n=$((_n + 1)); done
+		_k=$(p2_judges); [ -n "$_k" ] && kill -KILL $_k 2>/dev/null
+		echo "RESTORED stopped H3 judge(s) $_j${_k:+ (killed $_k)}"
+	fi
+	for _q in $(pidof batman-provhelper); do
+		[ "$(awk '{print $3}' "/proc/$_q/stat" 2>/dev/null)" = T ] && { kill -CONT "$_q"; echo "RESTORED helper $_q SIGCONT"; }
+	done
+	pidof dbus-daemon >/dev/null || { lim 60 /etc/init.d/dbus start >/dev/null 2>&1; echo "RESTORED dbus started"; }
+	pidof bluetoothd >/dev/null || { lim 60 /etc/init.d/bluetoothd start >/dev/null 2>&1; sleep 3; echo "RESTORED bluetoothd started"; }
+	if _s=$(settings); then
+		has_tok "$_s" powered || { lim 20 bluetoothctl power on >/dev/null 2>&1; echo "RESTORED hci0 powered on"; }
+		has_tok "$_s" bondable && { lim 20 bluetoothctl mgmt.bondable off >/dev/null 2>&1; echo "RESTORED bondable off"; }
+	else echo "FAIL settings unreadable (bondable / powered not checked)"; fi
+	case "$(: | bluetoothctl show 2>/dev/null | clean)" in *"Pairable: yes"*) lim 20 bluetoothctl pairable off >/dev/null 2>&1; echo "RESTORED pairable off" ;; esac
+	return 0
+}
+# radio_clean: preflight / judge view of the same resources — FAIL lines for each one left changed
+radio_clean() {
+	_r=0
+	for _q in $(pidof batman-provhelper); do [ "$(awk '{print $3}' "/proc/$_q/stat" 2>/dev/null)" = T ] && { fail "helper $_q is stopped (SIGSTOP)"; _r=1; }; done
+	if _s=$(settings); then
+		has_tok "$_s" powered || { fail "hci0 is powered off"; _r=1; }
+		has_tok "$_s" bondable && { fail "bondable is on"; _r=1; }
+	else fail "settings unreadable"; _r=1; fi
+	return $_r
+}
+
 # ---- state summary (preflight P6 / tier A #5): "STATE ..." lines, "FAIL ..." for anything left behind
 ble_state() {
 	r=0
@@ -191,6 +240,7 @@ ble_state() {
 	else
 		echo "STATE adv: not readable (bluetoothd down)"
 	fi
+	pidof bluetoothd >/dev/null && { radio_clean || r=1; }	# a cut-off H3 arm (review B-M1): SIGSTOPped helper, hci0 off, bondable on
 	[ $r = 0 ] && echo "STATE clean"
 	return $r
 }

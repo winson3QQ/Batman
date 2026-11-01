@@ -29,7 +29,7 @@ if (@ARGV == 2 && $ARGV[0] eq '--describe') { print $DESC{$ARGV[1]} // die "unkn
 # diff context lines (default 3): helper-exit1 edits the package install, whose lines after the helper's init differ
 # between main (pre-P2) and P2 (batman-provd's init + capabilities); 2 lines of context are common to both, and the
 # harness patch must apply to both while the harness merges before P2 (#254 H3, 2026-11-01)
-my %CTX = ('helper-exit1' => 2);
+my %CTX = ('helper-exit1' => 2, 'helper-flap' => 1);
 if (@ARGV == 2 && $ARGV[0] eq '--context') { print $CTX{$ARGV[1]} // 3; print "\n"; exit 0 }
 my $v = shift or die "usage: edits.pl VARIANT | --describe VARIANT\n";
 my %W = (
@@ -122,8 +122,10 @@ my %do = (
 			{\tn.Log("$w: p6 mesh markers kept on leave (mutant)")} });
 	},
 	'helper-flap' => sub {
+		# inserted BEFORE the "serving" log line: the line after it is srv.Serve on main and srv.ServeConns since P2, so
+		# with 1 line of context (%CTX) the patch applies to both (2026-11-01: the old one no longer applied on P2)
 		ed($MAIN, sub { s{(\tlogf\("serving \(%s\)", res\.Verdict\)\n)}
-			{$1\tgo func() {\n\t\ttime.Sleep(5 * time.Second)\n\t\tlogf("$w: exiting 5 s after serving (mutant)")\n\t\tos.Exit(1)\n\t}()\n} });
+			{\tgo func() {\n\t\ttime.Sleep(5 * time.Second)\n\t\tlogf("$w: exiting 5 s after serving (mutant)")\n\t\tos.Exit(1)\n\t}()\n$1} });
 	},
 	'96-noprov' => sub { $s96->($w) },
 	'96-norestore' => sub {
