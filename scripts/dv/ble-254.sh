@@ -209,12 +209,16 @@ bchk_ble_pair_sc_only_254() {
 }
 # prov-sec-bond (h23 §6.3; tier B): with provd stopped (the BLE lease stops it), whether 04 accepts 02's SC Just Works
 # pairing depends on an agent on 04 — the flip is its own negative control: no agent -> refused, an agent -> paired
-# (the method can see a pairing), no agent again -> refused. Then canary, rekey (verified) and a 04 reboot.
-bond_verdict() {	# <label> <round output>: paired / refused:<reason> / invalid:<why>
+# (04 accepts: the method can see an acceptance), no agent again -> refused. Then canary, rekey (verified) and a 04 reboot.
+# The verdict is 04's own SMP (its btmon), the side whose decision is under test: it sent PairingDHKeyCheck = it
+# ACCEPTED the pairing; it sent PairingFailed = refused. Whether 02 then completes the encryption is 02's business
+# (04 wsl.21, 2026-11-01: with the agent 04 sent DHKeyCheck, then 02 "Authentication Failed" and 04 DISC 0x16).
+bond_verdict() {	# <label> <round output>: paired / accepted / refused:<reason> / invalid:<why>
 	local L=$1 o=$2 r rsn
 	grep -q 'INVALID no-target' <<< "$o" && { echo invalid:no-target; return; }
 	r=$(sed -n "s/^ROUND $L pair-result: //p" <<< "$o" | tail -1)
 	case "$r" in *"Paired with"*) echo paired; return ;; esac
+	if grep -q "^$L 04 SMP TX PairingDHKeyCheck" <<< "$o" && ! grep -q "^$L 04 SMP TX PairingFailed" <<< "$o"; then echo accepted; return; fi
 	rsn=$(sed -n "s/^$L 04 SMP TX PairingFailed reason=//p" <<< "$o" | head -1)
 	case "$r" in *"failed with status"*|*"Failed to pair"*|*"failed"*) [ -n "$rsn" ] && echo "refused:$rsn" || echo "invalid:no-PairingFailed-from-04 [$r]"; return ;; esac
 	echo "invalid:[$r]"
@@ -238,7 +242,8 @@ bchk_prov_sec_bond_254() {
 	ble_n "$p" 60 periph agent-on || { echo "FAIL agent-on"; rc=1; }
 	# the agent turns 04 bondable (bluetoothctl's default agent; 04, 2026-11-01): the flip round allows it
 	v=$(bond_round "$p" "$c" agent "$name" "$pub" flip); echo "agent: $v"
-	[ "$v" = paired ] && echo "PASS flip: with an agent 02's SC Just Works pairs" || { echo "FAIL flip: $v (want paired) — no negative control, the refusals above prove nothing"; rc=1; }
+	case "$v" in paired|accepted) echo "PASS flip: with an agent 04 accepts 02's SC Just Works ($v: 04 sent PairingDHKeyCheck)" ;;
+		*) echo "FAIL flip: $v (want accepted / paired) — no negative control, the refusals above prove nothing"; rc=1 ;; esac
 	ble_n "$p" 60 periph agent-off || { echo "FAIL agent-off"; rc=1; }
 	echo "=== 3 the agent gone: refused again"
 	v=$(bond_round "$p" "$c" noagent2 "$name" "$pub"); echo "noagent2: $v"
