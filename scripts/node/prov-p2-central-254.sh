@@ -38,7 +38,9 @@ trap '' PIPE
 # like the next unit's disconnect), and every session ends its own process group 270 s after it got the lock.
 exec 8>"$D/p2c.lock"
 _w=0; until flock -n 8; do _w=$((_w + 1)); [ $_w -ge 200 ] && { echo "FAIL 02: another central session held the lock for 200 s"; exit 1; }; sleep 1; done
-( sleep 270; kill -TERM 0 ) & WD=$!
+# the watchdog must not hold the lock: its `sleep` would inherit fd 8 and keep 02 locked 270 s after this session
+# ended (04 smoke run 2026-11-02: sec-dbus's watch waited 200 s for the lock its own hold had left)
+( exec 8>&-; sleep 270 & s=$!; trap 'kill $s 2>/dev/null; exit 0' TERM; wait $s && kill -TERM 0 ) & WD=$!	# TERM (our EXIT) takes its sleep along
 # a chain1 STATUS reader left on 02 by a run that ended early would keep connecting to 04 and satisfy other units'
 # "04 logged a connection" witnesses: anyone but the reader itself stops it first
 if [ "${BATMAN_DV_C1R:-0}" != 1 ]; then
