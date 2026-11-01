@@ -15,6 +15,10 @@
 #                                   killpoint file (if given) -> bind W/<file> over the helper -> ONE restart -> assert:
 #                                   `--version` line 2 = the prov_test marker, /proc/<pid>/exe sha = <sha>, and (with a
 #                                   killpoint) "killpoint <point>: armed" logged by THIS pid (wbox.list: "armed <point>")
+#   set-provd-env <K=V>... | clear  (prov_test image) the provd switches (254-p2-impl §4.6): write
+#                                   /tmp/run/batman-prov-test/provd.env (dir root 0700, file root 0600), restart provd and
+#                                   assert the new pid carries exactly those keys and logged "provd: test env <K=V…>";
+#                                   clear = remove the file, restart, assert no key (wbox.list: "provd-env <K=V…>")
 # busybox ash; no bashisms.
 SELF=$(readlink -f "$0"); DIR=$(dirname "$SELF")
 . "$DIR/ble-lib-254.sh"
@@ -117,5 +121,36 @@ push-helper)
 	fi
 	echo "PUSHED $1 pid=$p${kp:+ armed=$kp} (restart at $t0)"
 	;;
-*) echo "usage: RUN_ID=<run> prov-wbox-254.sh bind|unbind-all|list|upper-helper|arm-killpoint|push-helper ..."; exit 2 ;;
+set-provd-env)
+	# the keys the test init passes on (batman-provd-test.init _provd_env); a value is digits only
+	[ $# -ge 1 ] || die "usage: set-provd-env <K=V>... | clear"
+	provd_present || die "no batman-provd on this image"
+	grep -q provd.env "$PROVD_INIT" || die "$PROVD_INIT is the release init (no provd.env): not a prov_test image"
+	env=""
+	if [ "$1" = clear ]; then [ $# = 1 ] || die "clear takes no keys"
+	else for kv in "$@"; do
+		case "${kv%%=*}" in SOCK_ONLY|FAST_FAKE_DELAY_MS|NO_BRUTE_LIMIT|GATT_ENCRYPT_CTRL|ADV_LEN_TEST) ;; *) die "unknown provd switch [$kv]" ;; esac
+		case "${kv#*=}" in ""|*[!0-9]*) die "value of [$kv] is not digits" ;; esac
+		env="$env $kv"; done; fi
+	if [ -e "$KD" ] || [ -L "$KD" ]; then dir_ok "$KD" drwx------ || die "$KD exists and is not a root 0700 directory"
+	else mkdir -m 700 "$KD" || die "cannot create $KD"; fi
+	rm -f "$KD/provd.env" "$KD/provd.env.tmp"
+	if [ -n "$env" ]; then
+		( umask 077; for kv in $env; do echo "$kv"; done > "$KD/provd.env.tmp" ) && mv "$KD/provd.env.tmp" "$KD/provd.env" || die "cannot write provd.env"
+		file_ok "$KD/provd.env" && [ "$(ls -ln "$KD/provd.env" | awk '{print $1}')" = "-rw-------" ] || die "provd.env is not root 0600"
+	fi
+	o=$(provd_pid); provd_restart
+	n=0; while [ $n -lt 15 ]; do p=$(provd_pid); [ -n "$p" ] && [ "$p" != "$o" ] && break; sleep 1; n=$((n + 1)); done
+	[ -n "$p" ] && [ "$p" != "$o" ] || die "provd did not restart (old pid ${o:-none}, now ${p:-none})"
+	got=$(tr '\0' '\n' < "/proc/$p/environ" | grep -E "$PROVD_KEYS" | sort | tr '\n' ' ' | sed 's/ $//')
+	want=$(for kv in $env; do echo "$kv"; done | sort | tr '\n' ' ' | sed 's/ $//')
+	[ "$got" = "$want" ] || die "provd pid $p environ has [$got], want [$want]"
+	if [ -n "$env" ]; then
+		n=0; while [ $n -lt 10 ]; do logread | grep -q "batman-provd\[$p\]: provd: test env " && break; sleep 1; n=$((n + 1)); done
+		[ $n -lt 10 ] || die "provd pid $p logged no 'provd: test env' line"
+		echo "provd-env$env" >> "$LIST"
+	fi
+	echo "PROVD-ENV pid=$p [$want]"
+	;;
+*) echo "usage: RUN_ID=<run> prov-wbox-254.sh bind|unbind-all|list|upper-helper|arm-killpoint|push-helper|set-provd-env ..."; exit 2 ;;
 esac

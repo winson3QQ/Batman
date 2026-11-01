@@ -12,6 +12,8 @@
 //	provclient keygen <keyfile>   a fresh P-256 owner key (0600) — one per run; prints the public key hex.
 //	                              node ops: info, claim, claim-attacker, claim-attacker-chal, replay, ssh-keys, root-reset, rename, verb,
 //	                              and (net.go) net-apply --first|--update, leave, owner-add, owner-remove, diag.
+//	                              exec <abs path> [args]: after the drop, execve it as that uid / gid with PATH as the
+//	                              only environment (prov-sec-dbus-254: dbus-send as provd, 254-h23 §6.3).
 //	provclient selftest <vectors.json>
 //
 // Output never contains a secret: secret values are printed as the first 16 hex chars of their SHA-256.
@@ -537,6 +539,13 @@ func cmdNode(args []string) {
 		}
 		cmdProxy(args[1])
 		return
+	}
+	if op == "exec" {
+		if len(args) < 2 || !strings.HasPrefix(args[1], "/") {
+			die("usage: exec <absolute path> [args]")
+		}
+		err := syscall.Exec(args[1], args[1:], []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"})
+		die("exec %s: %v", args[1], err)
 	}
 	c, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: sockPath, Net: "unixpacket"})
 	if err != nil {

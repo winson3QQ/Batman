@@ -5,6 +5,10 @@
 #   positive (release helper): claim -> net.apply network/join WITHOUT the owner-op -> E_FORBIDDEN (3), still claimed ->
 #     net-apply --first -> code 0; member, radio managed; wireless (mesh_id, key, encryption, channel) == the
 #     applied values; overlay prov.meta == p5; --check in sync (overrides == prov); the key in no log
+#   L71 (P2 image, 254-p2-impl §5): the positive join runs through a halow-setkey hook that sleeps 60 s first (the
+#     helper holds its mutex); meanwhile info.state on a third connection <= 2 s, 02 reads STATUS over BLE (claimed:
+#     no key 5), bondable on withdraws <= 9.5 s (judge `flip`); the single-connection helper that would block all
+#     three is the helper Go tests' mutant
 #   negative control: restore -> claim again -> helper-nojoinop bound -> the same join WITHOUT the owner-op is
 #     ACCEPTED (code 0) — this unit would see a helper that skips the owner-op check
 # Type: — / A / F. Side effects: 04 off the mesh ~25 min, 3 reboots (restores), claimed twice, B untouched.
@@ -24,7 +28,33 @@ pr_keys && pr_pc_place && pr_claim || { pr_abort "claim"; pr_result; exit 1; }
 r=$(pr_pc owner.pem FD3="$FD3" -- net-apply --first-noop "$OWNER"); echo "$r" | sed 's/^/    /'
 grep -q "RESULT net.apply(no owner-op) code=3 " <<< "$r" && ok "join without the owner-op -> E_FORBIDDEN" || no "join without the owner-op not refused: $r"
 i=$(pr_info); [ "${i%% *}" = state=claimed ] && ok "still claimed after the refused join ($i)" || no "state after the refused join: $i"
-r=$(pr_pc owner.pem FD3="$FD3" -- net-apply --first "$OWNER"); echo "$r" | grep -v '^NETCFG' | sed 's/^/    /'
+if [ "$(qr '[ -x /etc/init.d/batman-provd ] && echo yes')" = yes ]; then
+	# L71 (254-p2-impl §5, H3): the join holds the helper's mutex ~60 s (a hook over halow-setkey sleeps first, then runs
+	# the real setkey); meanwhile provd's ctl side is not blocked: a third connection (provclient) answers info.state
+	# <= 2 s, 02 reads STATUS over BLE (claimed: no last-4 digits, key 5), bondable on withdraws <= 9.5 s (judge `flip`).
+	# The single-connection helper that would block all three is the helper Go unit tests' mutant (#254 P2).
+	W=/tmp/run/batman-dv/wbox/$RUN
+	pw prep >/dev/null
+	q "cp -p /usr/bin/halow-setkey $W/setkey.real && chmod 700 $W/setkey.real && printf '#!/bin/sh\nsleep 60\nexec $W/setkey.real \"\$@\"\n' > $W/setkey.slow && chmod 755 $W/setkey.slow"
+	o=$(pw bind setkey.slow "$(qr "sha256sum < $W/setkey.slow | cut -c1-64")" /usr/bin/halow-setkey); say "$o"
+	grep -q '^BOUND /usr/bin/halow-setkey' <<< "$o" || { pr_abort "bind of the slow setkey"; pr_result; exit 1; }
+	jf=$(mktemp); ( pr_pc owner.pem FD3="$FD3" -- net-apply --first "$OWNER" > "$jf" ) & jp=$!
+	sleep 15
+	o=$(qr "a=\$(cut -d' ' -f1 /proc/uptime); $PCD/provclient node info 2>&1 | grep '^RESULT'; b=\$(cut -d' ' -f1 /proc/uptime); awk -v a=\$a -v b=\$b 'BEGIN { printf \"T=%dms\n\", (b - a) * 1000 }'")
+	say "L71 info during the join: $(echo $o)"; t=$(sed -n 's/^T=\([0-9]*\)ms$/\1/p' <<< "$o")
+	grep -q '^RESULT info.state code=0 state=claimed ' <<< "$o" && [ "${t:-99999}" -le 2000 ] && ok "L71: info.state on a third connection in ${t} ms while the join holds the helper (<= 2 s)" || no "L71: info.state during the join: $(echo $o)"
+	o=$(timeout 120 ssh $SSHO root@$PEER sh -s -- read < "$REPO/scripts/node/prov-p2-central-254.sh" 2>&1 | tr -d '\r'); sv=$(sed -n 's/^STATUS //p' <<< "$o")
+	case "$sv" in a*) case "$sv" in *0564*) no "L71: STATUS of a claimed node carries key 5 (last-4): $sv" ;; *) ok "L71: 02 read STATUS over BLE during the join ($sv, claimed: no last-4)" ;; esac ;;
+		*) no "L71: 02 could not read STATUS during the join: $(echo $o)" ;; esac
+	o=$(cat "$REPO/scripts/node/ble-lib-254.sh" "$REPO/scripts/node/prov-p2-254.sh" | timeout 120 ssh $SSHO root@$NODE sh -s -- flip 2>&1 | tr -d '\r')
+	while IFS= read -r l; do case "$l" in PASS\ *) ok "L71 flip: ${l#PASS }" ;; FAIL\ *) no "L71 flip: ${l#FAIL }" ;; esac; done <<< "$o"
+	[ "$(qr 'pidof batman-provhelper >/dev/null && ps | grep -c "[s]etkey.slow\|[s]leep 60"')" -ge 1 ] && ok "L71: the join was still in its slow setkey after the three checks" || inv "L71: the join had already left the slow setkey — the checks may not have overlapped it"
+	wait $jp; r=$(cat "$jf"); rm -f "$jf"
+	say "unbind: $(pw unbind-all | tr '\n' ' ')"
+else
+	r=$(pr_pc owner.pem FD3="$FD3" -- net-apply --first "$OWNER")
+fi
+echo "$r" | grep -v '^NETCFG' | sed 's/^/    /'
 grep -q "RESULT net.apply code=0 " <<< "$r" && ok "net.apply network/join code 0" || no "net.apply --first: $r"
 # #254 wireless-txn §19.2 rule 2: code 0 means netifd reports the radio up on the new network (not pending)
 w=$(qr 'ubus call network.wireless status | jsonfilter -e @.radio1.up -e @.radio1.pending | tr "\n" " "')
