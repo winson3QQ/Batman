@@ -45,7 +45,8 @@
 #                 registered again <= 15 s
 #   helper-down   the helper stopped (its socket refuses) for 40 s: provd's "helper ctl: connect failed (…); backoff
 #                 <d>" lines rise 1s, 2s, 4s, 8s and stop at the 10 s cap (server.go ctl MaxBackoff), provd keeps its pid;
-#                 the helper started -> provd advertising <= 30 s (40 s < the 60 s stale limit: it never withdrew)
+#                 the helper started -> provd re-signs (new helper boot_id), withdraws and registers again with
+#                 reason=helper <= 75 s; the arm waits for it so the next arm starts from a settled provd
 #   prov_test image only (after the host's set-provd-env):
 #   sock-only     SOCK_ONLY=1: the serving line is the latest start line, no instance for 10 s, the frame socket dir
 #                 provd 0700, gatt.sock provd 0600
@@ -405,10 +406,14 @@ helper-down)
 		if ($NF != 10) { print "never reached the 10 s cap"; exit } print "ok" }')
 	[ "$r" = ok ] && ok "helper down: ctl backoff rose 1, 2, 4, 8 s to the 10 s cap ($(echo $b | wc -w) lines)" || no "helper down: backoff not 1, 2, 4, 8, 10…: $r [$b]"
 	[ "$(provd_pid)" = "$p" ] && ok "provd kept its pid $p while the helper was down" || no "provd pid changed [$p -> $(provd_pid)] while the helper was down"
+	rh=$(plc 'provd: adv registered reason=helper')
 	lim 60 /etc/init.d/batman-provhelper start >/dev/null 2>&1; trap - EXIT; trap - HUP INT TERM
-	# 40 s is inside the 60 s stale limit: provd stays on the air, so this is the "still / again advertising" state,
-	# not a re-registration measurement (04 wsl.21, 2026-11-01: 0.04 s)
-	if wait_adv 1 30 >/dev/null; then ok "helper started: provd advertising (one instance) within 30 s"; else no "helper started: no instance within 30 s"; fi
+	# the new helper has a new boot_id: provd re-signs node_cert, withdraws (reason=helper) and registers again
+	# (reason=helper) ~5-35 s later. The arm ends only once that is done: the next arm (dep-power) started inside it and
+	# saw no withdraw of its own (04 wsl.21 2026-11-02: "helper boot_id changed" + "withdrawn reason=helper" in the same
+	# second as dep-power's mark, registered 32 s later)
+	if wait_line 'provd: adv registered reason=helper' "$rh" 60 && wait_adv 1 15 >/dev/null; then ok "helper started: provd re-signed and registered again (reason=helper), one instance"
+	else no "helper started: no new 'adv registered reason=helper' + one instance within 75 s (latest: [$(lastline 'provd: adv (registered|withdrawn)' | sed 's/.*provd: //')])"; fi
 	;;
 sock-only)
 	l=$(lastline 'provd: (frame socket|adv registered|test env)')

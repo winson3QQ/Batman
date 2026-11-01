@@ -30,7 +30,11 @@ STAT=540aa38c-0086-4d5c-a9c0-c7c9d1e1bd42
 D=/tmp/run/batman-dv
 [ -d "$D" ] || mkdir -m 700 "$D"
 T=$(mktemp -d "$D/p2c.XXXXXX") || { echo "FAIL no scratch dir"; exit 1; }
-trap 'rm -rf "$T"; [ -n "${WD:-}" ] && kill "$WD" 2>/dev/null' EXIT
+# a session cut off (watchdog, or the TERM of a chain1 reader stop) between connect and drop would leave 02 connected
+# to 04 for good — BlueZ keeps the link after bluetoothctl dies, and 04 stays withdrawn (04 + 02 2026-11-02: reproduced,
+# the link was still up 65 s later; it failed the next dep-restart): the link a read made is dropped on the way out.
+# hold's link is meant to outlive the session and is not recorded.
+trap '[ -n "${CONN_A:-}" ] && drop "$CONN_A"; rm -rf "$T"; [ -n "${WD:-}" ] && kill "$WD" 2>/dev/null' EXIT
 trap 'exit 1' TERM INT HUP
 trap '' PIPE
 # 02 has ONE owner at a time (review A-M3 / B-M4). A session the host's `timeout 300 ssh` cut off keeps running here
@@ -107,13 +111,14 @@ value() {
 # reads the GAP Device Name characteristic: main.conf Name — not the advertisement; 02, 2026-11-01)
 read_one() {
 	NV=$(info_of "$1" | sed -n 's/^[[:space:]]*Name: //p' | head -1)
+	CONN_A=$1
 	{ echo "connect $1"; sleep 8; echo "menu gatt"; echo list-attributes; sleep 2
 	  # CTRL last, with 8 s: a refused read (encrypt-read) first runs SMP and one retry before bluetoothctl prints the
 	  # error (04 wbox, 2026-11-01: with 2 s the error line never came)
 	  echo "select-attribute $STAT"; sleep 1; echo read; sleep 2
 	  echo "select-attribute $CTRL"; sleep 1; echo read; sleep 8; echo back; sleep 1; echo quit; } | bluetoothctl 2>&1 | clean > "$T/read"
 	info_of "$1" > "$T/info"; PV=$(sed -n 's/^[[:space:]]*Paired: //p' "$T/info"); GV=$(sed -n 's/^[[:space:]]*Name: //p' "$T/info" | head -1)
-	drop "$1"
+	drop "$1"; CONN_A=""
 	# STATUS first: a refused CTRL read (prov-gatt's encrypt-read white box) prints no Value and may upset the session
 	SV=$(value 1); CV=$(value 2)
 }
