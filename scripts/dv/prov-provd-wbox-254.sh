@@ -54,7 +54,7 @@ pr_ota_b "$PR_V.dirty.wbox-test" B || { pr_abort "OTA of the wbox test build"; p
 
 # ---- L39: provd killed 10 times before the decision, 02 reading meanwhile -> HELD
 r=$(c02 read | tr '\n' ' '); say "02 read 1: $r"
-for i in 1 2 3 4 5 6 7 8 9 10; do q 'kill -9 $(pidof batman-provd) 2>/dev/null'; [ $i = 5 ] && { r=$(c02 read | tr '\n' ' '); say "02 read 2: $r"; }; sleep 10; done
+for i in 1 2 3 4 5 6 7 8 9 10; do q 'for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && kill -9 $x; done';[ $i = 5 ] && { r=$(c02 read | tr '\n' ' '); say "02 read 2: $r"; }; sleep 10; done
 ok "L39: provd killed 10 times in the trial"
 pr_wait_held 480 && ok "L39: the trial is HELD despite the provd kills" || no "L39: not HELD by uptime 480 s"
 o=$(pl provd-reset); grep -q 'PROVD ok' <<< "$o" && ok "L39: provd advertising again ($(tail -1 <<< "$o"))" || no "L39: provd after the kills: $o"

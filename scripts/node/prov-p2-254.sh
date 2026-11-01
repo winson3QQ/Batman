@@ -37,8 +37,9 @@ info() { echo "INFO $*"; }
 cs() { awk '{printf "%d", $1 * 100}' /proc/uptime; }
 nap() { usleep 250000 2>/dev/null || sleep 1; }
 secs() { echo "$1" | awk '{printf "%.2f", $1 / 100}'; }
-hf() { sed -n "s/.* $1=\([^ ]*\).*/\1/p" "$HF" 2>/dev/null | head -1; }
-# provd log lines (syslog tag batman-provd[pid]) matching $1: how many in the ring
+hf() { [ -r "$HF" ] && echo " $(cat "$HF")" | sed -n "s/.* $1=\([^ ]*\).*/\1/p" | head -1; }
+# provd log lines matching $1: how many in the ring. The tag is batman-provd[1] — provd is pid 1 of its ujail pid
+# namespace (04 wsl.20, 2026-11-01) — so a line is never tied to a host pid: the arms compare counts / the latest line.
 plc() { logread | grep -c "batman-provd\[[0-9]*\]: $1"; }
 connected() { bluetoothctl devices Connected 2>/dev/null | clean | grep -c '^Device '; }
 hpid() { pidof batman-provhelper | awk '{print $1}'; }
@@ -54,6 +55,8 @@ wait_adv() {
 wait_line() {
 	_n=0; while [ $_n -lt "$3" ]; do [ "$(plc "$1")" -gt "$2" ] && return 0; sleep 1; _n=$((_n + 1)); done; return 1
 }
+# lastline <ERE>: the latest provd log line matching ERE
+lastline() { logread | grep "batman-provd\[[0-9]*\]: " | grep -E "$1" | tail -1; }
 # health_fresh <max s> <uptime>: a health line of this boot written at or after <uptime>
 health_fresh() {
 	_n=0; while [ $_n -lt "$1" ]; do
@@ -68,14 +71,15 @@ boot)
 	p=$(provd_pid)
 	if [ -z "$p" ]; then no "provd not running"
 	else
-		[ "$(pidof batman-provd | wc -w)" = 1 ] && ok "one provd (pid $p)" || no "more than one provd: $(pidof batman-provd)"
+		n=0; for x in $(pidof batman-provd); do [ "$(readlink "/proc/$x/exe")" = /usr/bin/batman-provd ] && n=$((n + 1)); done
+		[ "$n" = 1 ] && ok "one provd (pid $p; pidof: $(pidof batman-provd), the other is its ujail)" || no "$n provd processes: $(pidof batman-provd)"
 		u=$(awk '/^Uid:/ {print $2, $3, $4, $5}' "/proc/$p/status"); g=$(awk '/^Gid:/ {print $2, $3, $4, $5}' "/proc/$p/status")
 		[ "$u" = "471 471 471 471" ] && [ "$g" = "471 471 471 471" ] && ok "uid / gid 471 (all four)" || no "uid [$u] gid [$g]"
 		c=$(awk '/^Cap(Inh|Prm|Eff|Bnd|Amb):/ {printf "%s ", $2}' "/proc/$p/status")
 		[ "$c" = "0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 " ] && ok "no capability (Inh Prm Eff Bnd Amb all 0)" || no "capabilities [$c]"
 		nn=$(awk '/^NoNewPrivs:/ {print $2}' "/proc/$p/status"); [ "$nn" = 1 ] && ok "NoNewPrivs 1" || no "NoNewPrivs [$nn]"
-		pp=$(awk '{print $4}' "/proc/$p/stat"); pc=$(cat "/proc/$pp/comm" 2>/dev/null)
-		[ "$pc" = ujail ] && ok "parent is ujail (pid $pp)" || no "parent [$pc] (want ujail)"
+		pp=$(awk '{print $4}' "/proc/$p/stat"); pe=$(readlink "/proc/$pp/exe")
+		[ "$pe" = /sbin/ujail ] && ok "parent is ujail (pid $pp, $pe)" || no "parent exe [$pe] (want /sbin/ujail)"
 		[ ! -e "/proc/$p/root/etc/shadow" ] && ok "jail root has no /etc/shadow" || no "/etc/shadow visible in provd's root"
 		[ -d "/proc/$p/root/tmp/run/batman-prov" ] && ok "helper socket dir mounted in the jail" || no "the helper socket dir is not in provd's root"
 		k=$(tr '\0' '\n' < "/proc/$p/environ" | grep -c -E "$PROVD_KEYS")
@@ -126,11 +130,12 @@ flip)
 respawn)
 	i=1; while [ $i -le 5 ]; do
 		p=$(provd_pid); [ -n "$p" ] || { no "round $i: provd not running"; break; }
-		t0=$(cs); kill -9 "$p"
+		s0=$(plc 'provd: adv registered reason=start'); t0=$(cs); kill -9 "$p"
 		q=""; while [ $(( $(cs) - t0 )) -lt 1500 ]; do q=$(provd_pid); [ -n "$q" ] && [ "$q" != "$p" ] && break; nap; done
 		if [ -n "$q" ] && [ "$q" != "$p" ]; then
 			ok "round $i: kill -9 $p -> new provd $q after $(secs $(( $(cs) - t0 ))) s (<= 15)"
-			if d=$(wait_adv 1 15); then ok "round $i: advertising again $(secs "$d") s after the new pid"; else no "round $i: no instance 15 s after the new pid"; fi
+			if d=$(wait_adv 1 15) && wait_line 'provd: adv registered reason=start' "$s0" 15; then ok "round $i: advertising again $(secs "$d") s after the new pid, with a new 'adv registered reason=start'"
+			else no "round $i: no instance / no new 'adv registered reason=start' within 15 s of the new pid"; fi
 		else no "round $i: no new provd within 15 s of kill -9 $p"; break; fi
 		i=$((i + 1))
 	done
@@ -171,7 +176,10 @@ dep-power)
 	bluetoothctl power off >/dev/null 2>&1
 	t=$(up_s); n=0; while [ $n -lt 30 ]; do health_fresh 20 "$t" && [ "$(hf hci0_powered)" = 0 ] && break; sleep 1; n=$((n + 1)); done
 	[ "$(hf hci0_powered)" = 0 ] && ok "powered off: health hci0_powered=0" || no "powered off: health [$(cat "$HF")]"
-	wait_adv 0 15 >/dev/null && ok "powered off: no advertising instance" || no "powered off: an instance is still listed"
+	# powered off the radio sends nothing, but the kernel keeps its instance list (04 wsl.20, 2026-11-01: 1 listed after
+	# provd's withdraw) -> the verdict is provd's own withdraw; the kernel count is recorded only
+	wait_line 'provd: adv withdrawn' "$w" 15 && ok "powered off: provd withdrew ($(lastline 'provd: adv withdrawn' | sed 's/.*provd: //'))" || no "powered off: no new 'adv withdrawn' line within 15 s"
+	info "powered off: kernel lists $(adv_instances) instance(s) (kept by the kernel while off)"
 	bluetoothctl power on >/dev/null 2>&1; trap - EXIT HUP INT TERM
 	t=$(up_s); n=0; while [ $n -lt 30 ]; do health_fresh 20 "$t" && [ "$(hf hci0_powered)" = 1 ] && break; sleep 1; n=$((n + 1)); done
 	if d=$(wait_adv 1 15); then ok "powered on: advertising again $(secs "$d") s after hci0_powered=1"; else no "powered on: no instance within 15 s of hci0_powered=1"; fi
@@ -191,8 +199,8 @@ helper-stop)
 	if d=$(wait_adv 1 15); then ok "helper continued: registered again after $(secs "$d") s"; else no "helper continued: no instance within 15 s"; fi
 	;;
 sock-only)
-	p=$(provd_pid)
-	logread | grep -q "batman-provd\[$p\]: provd: frame socket $TD/gatt.sock (SOCK_ONLY)" && ok "pid $p serves $TD/gatt.sock (SOCK_ONLY)" || no "pid $p logged no frame socket line"
+	l=$(lastline 'provd: (frame socket|adv registered|test env)')
+	case "$l" in *"provd: frame socket $TD/gatt.sock (SOCK_ONLY)") ok "the running provd serves $TD/gatt.sock (SOCK_ONLY)" ;; *) no "latest provd start line is not the frame socket: [${l##*]: }]" ;; esac
 	l=$(ls -ldn "$TD" 2>/dev/null | awk '{print $1, $3, $4}'); [ "$l" = "drwx------ 471 471" ] && [ ! -L "$TD" ] && ok "$TD provd:provd 0700" || no "$TD [$l]"
 	l=$(ls -ln "$TD/gatt.sock" 2>/dev/null | awk '{print $1, $3}'); [ "$l" = "srw------- 471" ] && ok "gatt.sock provd 0600" || no "gatt.sock [$l]"
 	n=0; z=1; while [ $n -lt 10 ]; do [ "$(adv_instances)" = 0 ] || z=0; sleep 1; n=$((n + 1)); done
@@ -207,9 +215,8 @@ sockdir-root)
 	netstat -lx 2>/dev/null | grep -q "$TD/gatt.sock" && no "something listens on $TD/gatt.sock" || ok "nothing listens on $TD/gatt.sock"
 	;;
 adv-len)
-	p=$(provd_pid)
-	n=0; while [ $n -lt 10 ]; do logread | grep -q "batman-provd\[$p\]: adv: payload would be 29 B (max 28)" && break; sleep 1; n=$((n + 1)); done
-	[ $n -lt 10 ] && ok "pid $p: 'adv: payload would be 29 B (max 28)'" || no "pid $p logged no ADV length refusal"
+	n=0; while [ $n -lt 10 ]; do case "$(lastline 'adv: payload would be|provd: adv registered')" in *"adv: payload would be 29 B (max 28)") break ;; esac; sleep 1; n=$((n + 1)); done
+	[ $n -lt 10 ] && ok "'adv: payload would be 29 B (max 28)' is the latest start line" || no "no ADV length refusal as the latest start line: [$(lastline 'adv: payload would be|provd: adv registered')]"
 	n=0; z=1; while [ $n -lt 20 ]; do [ "$(adv_instances)" = 0 ] || z=0; sleep 1; n=$((n + 1)); done
 	[ $z = 1 ] && ok "no advertising instance for 20 s" || no "an advertising instance despite the length refusal"
 	;;

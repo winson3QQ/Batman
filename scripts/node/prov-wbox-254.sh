@@ -139,15 +139,16 @@ set-provd-env)
 		( umask 077; for kv in $env; do echo "$kv"; done > "$KD/provd.env.tmp" ) && mv "$KD/provd.env.tmp" "$KD/provd.env" || die "cannot write provd.env"
 		file_ok "$KD/provd.env" && [ "$(ls -ln "$KD/provd.env" | awk '{print $1}')" = "-rw-------" ] || die "provd.env is not root 0600"
 	fi
-	o=$(provd_pid); provd_restart
+	o=$(provd_pid); e0=$(logread | grep -c 'batman-provd\[[0-9]*\]: provd: test env '); provd_restart
 	n=0; while [ $n -lt 15 ]; do p=$(provd_pid); [ -n "$p" ] && [ "$p" != "$o" ] && break; sleep 1; n=$((n + 1)); done
 	[ -n "$p" ] && [ "$p" != "$o" ] || die "provd did not restart (old pid ${o:-none}, now ${p:-none})"
 	got=$(tr '\0' '\n' < "/proc/$p/environ" | grep -E "$PROVD_KEYS" | sort | tr '\n' ' ' | sed 's/ $//')
 	want=$(for kv in $env; do echo "$kv"; done | sort | tr '\n' ' ' | sed 's/ $//')
 	[ "$got" = "$want" ] || die "provd pid $p environ has [$got], want [$want]"
 	if [ -n "$env" ]; then
-		n=0; while [ $n -lt 10 ]; do logread | grep -q "batman-provd\[$p\]: provd: test env " && break; sleep 1; n=$((n + 1)); done
-		[ $n -lt 10 ] || die "provd pid $p logged no 'provd: test env' line"
+		# provd logs as batman-provd[1] (its jail's pid namespace): a NEW "test env" line, not one of this pid
+		n=0; while [ $n -lt 10 ]; do [ "$(logread | grep -c 'batman-provd\[[0-9]*\]: provd: test env ')" -gt "$e0" ] && break; sleep 1; n=$((n + 1)); done
+		[ $n -lt 10 ] || die "the restarted provd (pid $p) logged no new 'provd: test env' line"
 		echo "provd-env$env" >> "$LIST"
 	fi
 	echo "PROVD-ENV pid=$p [$want]"

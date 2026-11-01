@@ -32,10 +32,23 @@ find_one() {
 	done
 	[ -n "$A" ]
 }
-# the hex bytes printed after the n-th "Value:" of a bluetoothctl read (lines of "  xx xx ...  ascii")
+# the hex bytes printed after the n-th "Value:" of a bluetoothctl read. bluetoothctl 5.72 (02, 2026-11-01) prefixes
+# every dump line with its prompt ("[Batman:/service…/char…]# … ") and prints the value twice (the [CHG] echo and the
+# read result): strip the prompts, take the leading hex columns (<= 16 a line, the ascii column ignored), and keep
+# one copy when the block is two equal halves.
 value() {
-	awk -v n="$1" '/Value:/ {k++; next} k == n && /^[[:space:]]+([0-9a-f][0-9a-f] )+/ {
-		for (i = 1; i <= NF && i <= 16; i++) if ($i ~ /^[0-9a-f][0-9a-f]$/) printf "%s", $i } k > n {exit}' "$T/read"
+	awk -v n="$1" '
+	/Value:$/ { k++; inb = (k == n); next }
+	inb {
+		l = $0; sub(/^.*\]# */, "", l); m = split(l, f, /[[:space:]]+/); h = ""
+		for (i = 1; i <= m && i <= 16; i++) { if (f[i] ~ /^[0-9a-f][0-9a-f]$/) h = h f[i]; else break }
+		if (h == "") { inb = 0; next }
+		L[++c] = h
+	}
+	END {
+		if (c % 2 == 0) { a = ""; b = ""; for (i = 1; i <= c / 2; i++) { a = a L[i]; b = b L[i + c / 2] } if (a == b) { print a; exit } }
+		s = ""; for (i = 1; i <= c; i++) s = s L[i]; print s
+	}' "$T/read"
 }
 c=${1:-}
 case "$c" in

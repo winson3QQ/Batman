@@ -36,6 +36,12 @@ j(){	# <arm>: the judge on 04; PASS / FAIL lines become this unit's
 }
 c02(){ timeout 120 ssh $SSHO root@$PEER sh -s -- "$@" < "$P2C" 2>&1 | tr -d '\r'; }
 plog(){ qr "logread | grep -c 'batman-provd\[[0-9]*\]: provd: $1'"; }
+# hold02: 02 connects and keeps the link up; 3 tries (02's bluetoothctl connect misses now and then: 04 run 1,
+# 2026-11-01 "connected=no"); prints the address, rc 1 = no link (the caller says INVALID: a precondition, not a verdict)
+hold02(){ local o a i; for i in 1 2 3; do o=$(c02 hold); say "02 hold (try $i): $o" >&2; a=$(sed -n 's/^HELD \([^ ]*\) connected=yes$/\1/p' <<< "$o")
+	[ -n "$a" ] && { echo "$a"; return 0; }; a=$(sed -n 's/^HELD \([^ ]*\) .*/\1/p' <<< "$o"); [ -n "$a" ] && c02 drop "$a" >/dev/null; done; return 1; }
+# the jailed provd only (its ujail parent has the same comm)
+KILLPROVD='for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && kill -9 $x; done'
 lease(){ pr_lock; PR_BEGUN=1; trap 'pr_on_exit' EXIT; PR_DEADLINE=$(( $(mono) + $1 )); local o; o=$(pr_acquire "$1") || { echo "$o"; no "lease"; pr_result; exit 1; }; }
 ver=$(qr 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build'); say "04 runs $ver"
 [ "$(qr '[ -x /etc/init.d/batman-provd ] && echo yes')" = yes ] || { no "no batman-provd on 04 ($ver): a pre-P2 image"; pr_result; exit 1; }
@@ -55,15 +61,14 @@ boot-provd)
 	[ "$(sed -n 's/^PAIRED //p' <<< "$o")" = no ] && ok "02 not paired after the reads" || no "02 paired [$(sed -n 's/^PAIRED //p' <<< "$o")]"
 	lease 1200
 	wc0=$(plog 'adv withdrawn reason=connect'); rd0=$(plog 'adv registered reason=disconnect')
-	o=$(c02 hold); say "02 hold: $o"; a=$(sed -n 's/^HELD \([^ ]*\) .*/\1/p' <<< "$o")
-	if [ -n "$a" ] && grep -q 'connected=yes' <<< "$o"; then
+	if a=$(hold02); then
 		sleep 3
 		[ "$(plog 'adv withdrawn reason=connect')" -gt "$wc0" ] && ok "a held link withdrew the advertisement (reason=connect)" || no "no 'adv withdrawn reason=connect' while 02 holds a link"
 		n=$(qr "bluetoothctl mgmt.advinfo 2>/dev/null | sed -n 's/^Instances list with \([0-9]*\) item.*/\1/p' | head -1")
 		[ "$n" = 0 ] && ok "0 advertising instances while connected" || no "$n advertising instance(s) while connected"
 		o=$(c02 drop "$a"); sleep 5
 		[ "$(plog 'adv registered reason=disconnect')" -gt "$rd0" ] && ok "dropping the link registered again (reason=disconnect)" || no "no 'adv registered reason=disconnect' after the drop"
-	else no "02 could not hold a link: $o"; [ -n "$a" ] && c02 drop "$a" >/dev/null; fi
+	else inv "02 could not hold a link in 3 tries — the connect / withdraw checks did not run"; fi
 	j stop
 	j flip
 	pr_release ;;
@@ -75,13 +80,12 @@ respawn)
 	i1=$(timeout 60 ssh $SSHO root@$NODE "$PCD/provclient node info" 2>&1 | tr -d '\r' | grep '^RESULT info.state')
 	[ -n "$i0" ] && [ "$i0" = "$i1" ] && ok "info.state unchanged by the kills ($i1)" || no "info.state before [$i0] after [$i1]"
 	# L80 arm 1: a link left up across a provd restart is disconnected by the new provd's inventory
-	o=$(c02 hold); say "02 hold: $o"; a=$(sed -n 's/^HELD \([^ ]*\) .*/\1/p' <<< "$o")
-	if [ -n "$a" ] && grep -q 'connected=yes' <<< "$o"; then
-		q 'kill -9 $(pidof batman-provd)'
+	if a=$(hold02); then
+		q "$KILLPROVD"
 		o=$(c02 watch "$a" 30); say "02 watch: $o"
 		n=$(sed -n 's/^GONE .* after \([0-9]*\) s$/\1/p' <<< "$o")
 		[ -n "$n" ] && [ "$n" -le 15 ] && ok "L80: 02 disconnected $n s after the kill (<= 15)" || no "L80: [$o] (want GONE <= 15 s)"
-	else no "L80: 02 could not hold a link: $o"; [ -n "$a" ] && c02 drop "$a" >/dev/null; fi
+	else inv "L80: 02 could not hold a link in 3 tries — the arm did not run"; fi
 	q "rm -rf $PCD"
 	pr_release ;;
 dep-restart)
