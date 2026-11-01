@@ -389,9 +389,9 @@ pr_needs_person(){
 pr_finish_snap(){ local o; o=$(nb finish "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^FINISHED $RUN" <<< "$o" && PR_SNAPPED=0; }
 pr_release(){
 	local o
-	# a person takes over (NEEDS-PERSON): the node is left exactly as it is for them, only the lease goes (review B-M3:
-	# a radio / provd / helper restore here would be a second writer on a half-restored node)
-	# the harness's own binds go either way: a bind over /sbin/ujail would block every jailed daemon for the person, and no
+	# a person takes over (NEEDS-PERSON): no radio / provd / helper restore (review B-M3: a second writer on a
+	# half-restored node); what is left is printed read-only, and the lease goes.
+	# The harness's own binds go either way: a bind over /sbin/ujail would block every jailed daemon for the person, and no
 	# restore resource is a harness bind (round-2 B m2)
 	o=$(pw unbind-all 2>/dev/null); grep -q 'UNBIND-ALL ok' <<< "$o" || no "unbind-all after the run: $(echo $o)"
 	if [ "${PR_PERSON:-0}" = 1 ]; then

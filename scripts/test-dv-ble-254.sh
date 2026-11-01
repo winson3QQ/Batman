@@ -56,6 +56,8 @@ if command -v dash >/dev/null && command -v flock >/dev/null; then
 else tbad "watchdog test needs dash and flock on the host"; fi
 # the helper-down backoff judge on real and broken sequences (tests/judges/helper-down-backoff.py)
 o=$(python3 "$REPO/tests/judges/helper-down-backoff.py" "$REPO/scripts/node/prov-p2-254.sh" 2>&1) && tok "helper-down backoff judge: 7 sequences judged as expected" || tbad "helper-down backoff judge: $(grep FAIL <<< "$o" | head -3 | tr '\n' '|')"
+# the H3 review fixes' negative controls: pr_release / pxok / L71 flip end line / bond_verdict (tests/judges/h3-judges.sh)
+o=$(REPO=$REPO bash "$REPO/tests/judges/h3-judges.sh" 2>&1) && tok "h3 judges: $(tail -1 <<< "$o")" || tbad "h3 judges: $(grep '^FAIL' <<< "$o" | head -3 | tr '\n' '|')"
 
 # ---------------------------------------------------------------- 2. btmon judge (node awk) on fixtures
 judge() { RUN_ID=x sh "$REPO/scripts/node/ble-periph-254.sh" judge; }
