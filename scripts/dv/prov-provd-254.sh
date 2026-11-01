@@ -262,13 +262,12 @@ rpa)
 	# 02's view, segment by segment; scans in the 90 s before an event was seen in the log are left out (it may already
 	# have happened)
 	seg(){ local rw x; for rw in "${rows[@]}"; do x=${rw%% *}; [ "$x" -gt "$1" ] && [ "$x" -lt "$2" ] && echo "${rw#* }"; done; }
-	# shellcheck disable=SC2034  # SA SB1 SB2 SC are read through eval below
 	SA=$(seg -1 $(( ${r1:-99999} - 90 ))); SB1=$(seg "${r1:-99999}" "${ec:-99999}"); SB2=$(seg "${ec:-99999}" $(( ${r2:-99999} - 90 ))); SC=$(seg "${r2:-99999}" 99999)
-	for g in A B1 B2 C; do eval "v=\$S$g"
+	for g in A B1 B2 C; do case $g in A) v=$SA ;; B1) v=$SB1 ;; B2) v=$SB2 ;; C) v=$SC ;; esac
 		u=$(grep -v '^-$' <<< "$v" | awk 'NF == 1' | sort -u); nu=$(grep -c . <<< "$u")
 		say "02 segment $g: $(grep -c . <<< "$v") scan(s), $(grep -c '^-$' <<< "$v") empty, $(awk 'NF > 1' <<< "$v" | grep -c .) with >1 address, distinct: $(echo $u)"
 		[ "$nu" = 1 ] && [ "$(grep -cx "$u" <<< "$v")" -ge 2 ] && ok "02 segment $g: one RPA ($u)" || no "02 segment $g: [$(echo $u)] (want exactly one address, seen at least twice)"
-		[ "$nu" = 1 ] || u=""; eval "U$g=\$u"
+		[ "$nu" = 1 ] || u=""; case $g in A) UA=$u ;; B1) UB1=$u ;; B2) UB2=$u ;; C) UC=$u ;; esac
 	done
 	[ -n "$UA" ] && [ -n "$UB1" ] && [ "$UA" != "$UB1" ] && ok "02: a new RPA after the first rpa_timeout ($UA -> $UB1)" || no "02: no new RPA after the first rpa_timeout [$UA] [$UB1]"
 	[ -n "$UB1" ] && [ "$UB1" = "$UB2" ] && ok "02: the same RPA across 02's connect re-registration < 900 s ($UB1)" || no "02: the RPA across the < 900 s re-registration [$UB1] [$UB2] (want the same)"
