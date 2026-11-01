@@ -85,8 +85,10 @@ value() {
 read_one() {
 	NV=$(info_of "$1" | sed -n 's/^[[:space:]]*Name: //p' | head -1)
 	{ echo "connect $1"; sleep 8; echo "menu gatt"; echo list-attributes; sleep 2
+	  # CTRL last, with 8 s: a refused read (encrypt-read) first runs SMP and one retry before bluetoothctl prints the
+	  # error (04 wbox, 2026-11-01: with 2 s the error line never came)
 	  echo "select-attribute $STAT"; sleep 1; echo read; sleep 2
-	  echo "select-attribute $CTRL"; sleep 1; echo read; sleep 2; echo back; sleep 1; echo quit; } | bluetoothctl 2>&1 | clean > "$T/read"
+	  echo "select-attribute $CTRL"; sleep 1; echo read; sleep 8; echo back; sleep 1; echo quit; } | bluetoothctl 2>&1 | clean > "$T/read"
 	info_of "$1" > "$T/info"; PV=$(sed -n 's/^[[:space:]]*Paired: //p' "$T/info"); GV=$(sed -n 's/^[[:space:]]*Name: //p' "$T/info" | head -1)
 	drop "$1"
 	# STATUS first: a refused CTRL read (prov-gatt's encrypt-read white box) prints no Value and may upset the session
@@ -119,7 +121,9 @@ read)
 	[ $r = 3 ] && exit 3
 	[ $r = 0 ] || { echo "NOADDR (or no value) after 3 tries"; grep -E 'Failed|Error' "$T/read" 2>/dev/null | head -3; exit 1; }
 	echo "ADDR $A"; echo "NAME ${NV:--}"; echo "GAPNAME ${GV:--}"; echo "CTRL $CV"; echo "STATUS $SV"; echo "PAIRED ${PV:-?}"; echo "ADVERTISERS $NADV"
-	e=$(grep -o 'Failed to read: [^ ]*' "$T/read" | sort -u | tr '\n' '|'); echo "ERRS ${e:--}" ;;
+	e=$(grep -o 'Failed to read: [^ ]*' "$T/read" | sort -u | tr '\n' '|'); echo "ERRS ${e:--}"
+	# evidence when there is no such line: the session's last error-looking lines, prompts stripped
+	e=$(grep -iE 'fail|error|not permitted' "$T/read" | sed 's/^.*\]# *//' | tail -3 | tr '\n' '|'); echo "ERRLINES ${e:--}" ;;
 hold)
 	pick "${2:--}"; r=$?
 	[ $r = 0 ] || { [ $r = 3 ] && exit 3; echo "NOADDR after 3 tries"; exit 1; }
