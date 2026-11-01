@@ -218,7 +218,8 @@ bond_verdict() {	# <label> <round output>: paired / accepted / refused:<reason> 
 	grep -q 'INVALID no-target' <<< "$o" && { echo invalid:no-target; return; }
 	r=$(sed -n "s/^ROUND $L pair-result: //p" <<< "$o" | tail -1)
 	case "$r" in *"Paired with"*) echo paired; return ;; esac
-	if grep -q "^$L 04 SMP TX PairingDHKeyCheck" <<< "$o" && ! grep -q "^$L 04 SMP TX PairingFailed" <<< "$o"; then echo accepted; return; fi
+	# DHKeyCheck at all = accepted, whatever came after it (a PairingFailed after it does not undo the acceptance)
+	grep -q "^$L 04 SMP TX PairingDHKeyCheck" <<< "$o" && { echo accepted; return; }
 	rsn=$(sed -n "s/^$L 04 SMP TX PairingFailed reason=//p" <<< "$o" | head -1)
 	case "$r" in *"failed with status"*|*"Failed to pair"*|*"failed"*) [ -n "$rsn" ] && echo "refused:$rsn" || echo "invalid:no-PairingFailed-from-04 [$r]"; return ;; esac
 	echo "invalid:[$r]"

@@ -69,7 +69,8 @@ hold02(){ local o a i; for i in 1 2; do o=$(c02 hold "$LAST4"); say "02 hold: $o
 	[ -n "$a" ] && { echo "$a"; return 0; }; a=$(sed -n 's/^HELD \([^ ]*\) .*/\1/p' <<< "$o"); [ -n "$a" ] && c02 drop "$a" >/dev/null; done; return 1; }
 # the jailed provd only (its ujail parent has the same comm)
 KILLPROVD='for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && kill -9 $x; done'
-lease(){ pr_lock; PR_BEGUN=1; trap 'pr_on_exit' EXIT; PR_DEADLINE=$(( $(mono) + $1 )); local o; o=$(pr_acquire "$1") || { echo "$o"; no "lease"; pr_result; exit 1; }; }
+# PR_BEGUN only once the lease is ours: a failed acquire (another lease live) must not run pr_release (review A-M1)
+lease(){ pr_lock; trap 'pr_on_exit' EXIT; PR_DEADLINE=$(( $(mono) + $1 )); local o; o=$(pr_acquire "$1") || { echo "$o"; no "lease"; pr_result; exit 1; }; PR_BEGUN=1; }
 ver=$(qr 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build'); say "04 runs $ver"
 [ -n "$ver" ] || { no "04 unreachable (no BATMAN_VERSION)"; pr_result; exit 1; }
 [ "$(qr '[ -x /etc/init.d/batman-provd ] && echo yes || echo no')" = yes ] || { no "no batman-provd on 04 ($ver): a pre-P2 image"; pr_result; exit 1; }
@@ -77,6 +78,8 @@ ver=$(qr 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build'); say "04 runs $ver"
 case "$U" in
 boot-provd)
 	lease 1500
+	# the release image only: the boot judge only notes (INFO) a prov_test init, which a wbox image has (review B minor)
+	[ "$(qr 'grep -q provd.env /etc/init.d/batman-provd && echo test || echo release')" = release ] || no "04 runs a prov_test (wbox) init — boot-provd judges the release image"
 	j boot
 	last4 || { pr_release; pr_result; exit 1; }
 	hmark; c0=$(plog 'adv withdrawn reason=connect')
@@ -217,7 +220,7 @@ rpa)
 	hmark
 	# 04 has no nohup, and btmon's text on a non-terminal stdout is buffered (lost at SIGINT): record a snoop with
 	# setsid + -w, decode it afterwards (04 wsl.21, 2026-11-01: the first gatt / rpa runs captured nothing)
-	q "setsid $PCD/btmon -w $PCD/rpa.snoop </dev/null >/dev/null 2>&1 & echo \$! > $PCD/rpa.btmon.pid"
+	q "umask 077; setsid $PCD/btmon -w $PCD/rpa.snoop </dev/null >/dev/null 2>&1 & echo \$! > $PCD/rpa.btmon.pid"
 	[ "$(qr "kill -0 \$(cat $PCD/rpa.btmon.pid) 2>/dev/null && echo y")" = y ] || { no "btmon did not start on 04"; pr_release; pr_result; exit 1; }
 	q "/etc/init.d/batman-provd restart >/dev/null 2>&1"; t0=$(mono); say "T0: provd restarted; 04 public $pub"
 	rows=(); r1=""; r2=""; ec=""
@@ -233,7 +236,7 @@ rpa)
 		o=$(c02 addrs); a=$(sed -n 's/^ADDRS //p' <<< "$o"); x=$(( $(mono) - t0 )); rows+=("$x ${a:--}"); say "SCAN $x ${a:--}"
 		sleep 30
 	done
-	q "kill -INT \$(cat $PCD/rpa.btmon.pid) 2>/dev/null; sleep 1; $PCD/btmon -t -r $PCD/rpa.snoop > $PCD/rpa.btmon 2>&1"
+	q "kill -INT \$(cat $PCD/rpa.btmon.pid) 2>/dev/null; sleep 1; umask 077; $PCD/btmon -t -r $PCD/rpa.snoop > $PCD/rpa.btmon 2>&1"
 	# "<time> <reason>" of every provd registration after the marker (logread: "Sun Jul 27 22:44:15 2025 daemon.info ...")
 	regs=$(qr "logread | sed -n '/batman-dv-p2: mark $HM\$/,\$p' | grep 'batman-provd\[[0-9]*\]: provd: adv registered reason='" | awk '{r = $NF; sub(/.*reason=/, "", r); print $4, r}')
 	# btmon -t header lines end in "[hci0] HH:MM:SS.us"; LE Set Random Address 0x08|0x0005, LE Set Advertising Set Random

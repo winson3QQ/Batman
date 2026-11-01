@@ -37,10 +37,14 @@ scratch() {
 
 # lim <secs> <cmd...>: run with a time limit (no `timeout` on the node, E1); a hang is killed and reported — a
 # deadman must never freeze on one stuck tool (2026-10-20: btmgmt hung on stdin=/dev/null inside the deadman)
+# on a timeout the whole process tree goes, children first: killing only "$@" leaves e.g. the bluetoothctl of an
+# `sh -c ': | bluetoothctl …'` holding the caller's $(…) pipe open, and the caller hangs anyway (review B-M2; the
+# test-dv-ble-254 hang case caught it)
+lim_kill() { local _c; for _c in $(grep -l "^PPid:[[:space:]]*$1\$" /proc/[0-9]*/status 2>/dev/null | cut -d/ -f3); do lim_kill "$_c"; done; kill "$1" 2>/dev/null; }
 lim() {
 	_t=$1; shift; "$@" & _p=$!; _n=0
 	while [ -d "/proc/$_p" ] && [ $_n -lt "$_t" ]; do sleep 1; _n=$((_n + 1)); done
-	if [ -d "/proc/$_p" ]; then kill "$_p" 2>/dev/null; echo "FAIL timeout after ${_t}s: $*"; return 124; fi
+	if [ -d "/proc/$_p" ]; then lim_kill "$_p"; echo "FAIL timeout after ${_t}s: $*"; return 124; fi
 	wait "$_p"
 }
 
@@ -50,7 +54,7 @@ lim() {
 settings() {
 	pidof bluetoothd >/dev/null || return 1	# bluetoothctl waits for bluetoothd forever when it is down (04, 2026-11-01)
 	for _i in 1 2 3; do
-		_s=$(bluetoothctl mgmt.info 2>/dev/null | clean | sed -n 's/^[[:space:]]*current settings:[[:space:]]*//p' | head -1)
+		_s=$(lim 10 sh -c ': | bluetoothctl mgmt.info 2>/dev/null' | clean | sed -n 's/^[[:space:]]*current settings:[[:space:]]*//p' | head -1)
 		[ -n "$_s" ] && { echo "$_s"; return 0; }
 	done; return 1
 }
@@ -61,7 +65,7 @@ has_tok() { case " $1 " in *" $2 "*) return 0;; esac; return 1; }
 adv_instances() {
 	pidof bluetoothd >/dev/null || return 1	# as settings(): no bluetoothd = unreadable, never a hang
 	for _i in 1 2 3; do
-		_a=$(bluetoothctl mgmt.advinfo 2>/dev/null | clean | sed -n 's/^Instances list with \([0-9][0-9]*\) item.*/\1/p' | head -1)
+		_a=$(lim 10 sh -c ': | bluetoothctl mgmt.advinfo 2>/dev/null' | clean | sed -n 's/^Instances list with \([0-9][0-9]*\) item.*/\1/p' | head -1)
 		[ -n "$_a" ] && { echo "$_a"; return 0; }
 	done; return 1
 }
@@ -208,9 +212,11 @@ radio_restore() {
 		has_tok "$_s" powered || { lim 20 bluetoothctl power on >/dev/null 2>&1; echo "RESTORED hci0 powered on"; }
 		has_tok "$_s" bondable && { lim 20 bluetoothctl mgmt.bondable off >/dev/null 2>&1; echo "RESTORED bondable off"; }
 	else echo "FAIL settings unreadable (bondable / powered not checked)"; fi
-	case "$(: | bluetoothctl show 2>/dev/null | clean)" in *"Pairable: yes"*) lim 20 bluetoothctl pairable off >/dev/null 2>&1; echo "RESTORED pairable off" ;; esac
+	case "$(lim 10 sh -c ': | bluetoothctl show 2>/dev/null' | clean)" in *"Pairable: yes"*) lim 20 bluetoothctl pairable off >/dev/null 2>&1; echo "RESTORED pairable off" ;; esac
 	return 0
 }
+# (lim runs the command in the background, whose stdin a non-interactive sh points at /dev/null: each bluetoothctl
+# call gets an explicit empty pipe instead — tools here hung on /dev/null, prov-p2-central-254.sh)
 # radio_clean: preflight / judge view of the same resources — FAIL lines for each one left changed
 radio_clean() {
 	_r=0

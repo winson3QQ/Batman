@@ -93,7 +93,9 @@ bootof(){ echo "$1" | sed -n 's/.*boot=\([0-9a-f]*\).*/\1/p'; }
 STAGED=0; SNAPPED=0; RESULT=FAIL; RESTORING=0
 mkdir "$LOCKD" 2>/dev/null || { echo "another dv run holds $LOCKD"; exit 1; }
 # an unexpected exit after the snapshot (set -u, a bug) still restores (review A-M1)
-on_exit(){ local rc=$?; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; restore_all "unexpected exit"; fi
+# the 02 STATUS reader (step 2-4) goes on every exit; 02 unreachable -> the next central session on 02 stops it
+c1r_stop(){ [ -n "${P02_U0:-}" ] && timeout 20 ssh $SSHO root@$PEER "kill \$(cat $C1R/pid) 2>/dev/null; rm -rf $C1R" >/dev/null 2>&1; P02_U0=""; }
+on_exit(){ local rc=$?; c1r_stop; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; restore_all "unexpected exit"; fi
 	rmdir "$LOCKD" 2>/dev/null; MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- rm -rf "$WSLK" 2>/dev/null; say "CHAIN1 RESULT: $RESULT (fails=$fails)"; }
 trap on_exit EXIT
 trap 'say "host interrupted"; [ "$SNAPPED" = 1 ] && restore_all "interrupted"; RESTORING=1; exit 1' INT TERM
@@ -233,7 +235,7 @@ if [ "$HASPROVD" = y ]; then
 	# 3600 s, then it ends by itself (a run that aborts leaves nothing behind on 02 for long); no state change on 02
 	o=$(timeout 30 ssh $SSHO root@$PEER "mkdir -p -m 0700 /tmp/run/batman-dv && mkdir -m 0700 $C1R && cat > $C1R/c.sh && echo PUT" < "$REPO/scripts/node/prov-p2-central-254.sh" 2>/dev/null | tr -d '\r')
 	[ "$o" = PUT ] || abort "02: could not place the STATUS reader"
-	timeout 30 ssh $SSHO root@$PEER "setsid sh -c 'e=\$((\$(cut -d. -f1 /proc/uptime) + 3600)); while [ \$(cut -d. -f1 /proc/uptime) -lt \$e ]; do o=\$(sh $C1R/c.sh read - 2>/dev/null | sed -n \"s/^STATUS //p\"); echo \"\$(cut -d. -f1 /proc/uptime) \${o:--}\" >> $C1R/status.log; sleep 5; done' </dev/null >/dev/null 2>&1 & echo \$! > $C1R/pid" >/dev/null 2>&1
+	timeout 30 ssh $SSHO root@$PEER "setsid sh -c 'e=\$((\$(cut -d. -f1 /proc/uptime) + 3600)); while [ \$(cut -d. -f1 /proc/uptime) -lt \$e ]; do o=\$(BATMAN_DV_C1R=1 setsid sh $C1R/c.sh read - 2>/dev/null | sed -n \"s/^STATUS //p\"); echo \"\$(cut -d. -f1 /proc/uptime) \${o:--}\" >> $C1R/status.log; sleep 5; done' </dev/null >/dev/null 2>&1 & echo \$! > $C1R/pid" >/dev/null 2>&1
 	P02_U0=$(timeout 15 ssh $SSHO root@$PEER 'cut -d. -f1 /proc/uptime' 2>/dev/null | tr -d '\r'); P02_S0=$SECONDS
 	case "$P02_U0" in ''|*[!0-9]*) abort "02 uptime unreadable (the reader's clock)";; esac
 	say "02 STATUS reader started (02 uptime $P02_U0 = host +$P02_S0 s)"

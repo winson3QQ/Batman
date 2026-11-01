@@ -70,6 +70,9 @@ frame(){ printf '%02x%04x%s' "$1" "$2" "$(zeros "$3")"; }   # <flags> <seq> <dat
 rframe(){ printf '%02x%04x%s' "$1" "$2" "$(head -c "$3" /dev/urandom | od -An -v -tx1 | tr -d ' \n')"; }
 tms(){ sed -n 's/^T=\([0-9]*\)ms.*/\1/p' <<< "$1"; }
 replies(){ grep -c '^[0-9a-f][0-9a-f]*$' <<< "$1"; }   # answer packets in a px output
+# pxok <px output>: the proxy connected and provd closed the socket (proxy rc 0, proxy.go). A failed connect (CONN-ERR,
+# rc 3) or a failed ssh also looks "closed at once / no answer": such a check has measured nothing (review B-M1)
+pxok(){ ! grep -q 'CONN-ERR' <<< "$1" && grep -q '^T=[0-9]*ms rc=0$' <<< "$1"; }
 provd_pid_q(){ qr 'for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && echo $x; done'; }
 
 # before pr_begin: a pre-P2 V would cost a snapshot and a restore reboot for nothing (known-failures pre-P2 line)
@@ -145,13 +148,15 @@ done; rm -f "$tmpa" "$tmpb"
 o=$(px 471 5 "$(frame 1 0 509)"); t=$(tms "$o")
 [ "${t:-0}" -ge 4500 ] && ok "control: a 512 B start frame keeps the connection (${t} ms, closed by our EOF)" || no "control: a 512 B frame closed the connection after ${t} ms"
 o=$(px 471 5 "$(frame 1 0 510)"); t=$(tms "$o")
-[ "${t:-99999}" -lt 2500 ] && ok "a 513 B frame closes the connection at once (${t} ms)" || no "a 513 B frame: closed after ${t} ms (want < 2.5 s)"
+if ! pxok "$o"; then inv "a 513 B frame: the connection itself failed, nothing measured [$(echo $o)]"
+else [ "${t:-99999}" -lt 2500 ] && ok "a 513 B frame closes the connection at once (${t} ms)" || no "a 513 B frame: closed after ${t} ms (want < 2.5 s)"; fi
 fr=("$(frame 1 0 509)"); for s in $(seq 1 15); do fr+=("$(frame 0 "$s" 509)"); done
 o=$(px 471 5 "${fr[@]}"); t=$(tms "$o")
 [ "${t:-0}" -ge 4500 ] && ok "control: 16 frames (8144 B, under 8192) keep the connection (${t} ms)" || no "control: 16 frames closed it after ${t} ms"
 fr+=("$(frame 0 16 509)")
 o=$(px 471 5 "${fr[@]}"); t=$(tms "$o")
-[ "${t:-99999}" -lt 2500 ] && ok "a 17th frame (8653 B > 8192) closes the connection at once (${t} ms)" || no "over 8192 B: closed after ${t} ms (want < 2.5 s)"
+if ! pxok "$o"; then inv "a 17th frame: the connection itself failed, nothing measured [$(echo $o | cut -c1-200)]"
+else [ "${t:-99999}" -lt 2500 ] && ok "a 17th frame (8653 B > 8192) closes the connection at once (${t} ms)" || no "over 8192 B: closed after ${t} ms (want < 2.5 s)"; fi
 
 need_trial "20 handshakes / min. A fresh provd (no f"
 # ---- 20 handshakes / min. A fresh provd (no first message counted yet: control packets and unfinished frames never
@@ -162,7 +167,7 @@ q "logger -t batman-dv-p2 mark rate-$RUN"
 while [ $i -le 21 ]; do
 	o=$(px 471 1 "$(rframe 3 0 32)"); n=$(replies "$o")
 	[ $i = 1 ] && say "rate: first message -> $(echo "$o" | sed 's/\(^[0-9a-f]\{24\}\)[0-9a-f]*/\1…/' | tr '\n' ' ' | cut -c1-200)"
-	if [ $i -le 20 ]; then [ "$n" -ge 1 ] && got=$((got + 1)); else last=$n; fi
+	if [ $i -le 20 ]; then [ "$n" -ge 1 ] && got=$((got + 1)); else last=$n; pxok "$o" || last=connfail; o21=$o; fi
 	i=$((i + 1))
 done
 el=$(( $(mono) - t0 ))
@@ -172,9 +177,15 @@ else
 	if [ $got = 0 ]; then inv "rate: none of the 20 first messages got an answer — a precondition of the arm (provd ready / message accepted), not a verdict on the limit; see the provd lines above"
 	elif [ $got = 20 ]; then ok "rate: the first 20 first-messages in ${el} s were each answered (msg2)"
 	else no "rate: only $got of the first 20 were answered"; fi
-	[ "${last:-1}" = 0 ] && ok "rate: the 21st within the minute was closed with no answer (20/min)" || no "rate: the 21st was answered ($last packet(s)) — no global handshake limit"
+	case "${last:-1}" in
+		0) ok "rate: the 21st within the minute was closed with no answer (20/min)" ;;
+		connfail) inv "rate: the 21st could not connect, nothing measured [$(echo $o21 | cut -c1-200)]" ;;
+		*) no "rate: the 21st was answered ($last packet(s)) — no global handshake limit" ;;
+	esac
 	w=$(( 62 - ( $(mono) - t0 ) )); [ $w -gt 0 ] && sleep $w
-	o=$(px 471 1 "$(rframe 3 0 32)"); [ "$(replies "$o")" -ge 1 ] && ok "rate control: 61 s after the first, a new first message is answered again" || no "rate control: still refused after the minute"
+	o=$(px 471 1 "$(rframe 3 0 32)")
+	if ! pxok "$o"; then inv "rate control: the connection itself failed [$(echo $o | cut -c1-200)]"
+	else [ "$(replies "$o")" -ge 1 ] && ok "rate control: 61 s after the first, a new first message is answered again" || no "rate control: still refused after the minute"; fi
 fi
 
 need_trial "sockdir"
@@ -213,12 +224,12 @@ gatt_wb(){
 	sleep 10
 	# 04 has no nohup, and btmon's text on a non-terminal stdout is buffered (lost at SIGINT): record a snoop with
 	# setsid + -w, decode it afterwards (04 wsl.21, 2026-11-01: the first gatt / rpa runs captured nothing)
-	q "setsid $PCD/btmon -w $PCD/gatt.snoop </dev/null >/dev/null 2>&1 & echo \$! > $PCD/gatt.btmon.pid"
+	q "umask 077; setsid $PCD/btmon -w $PCD/gatt.snoop </dev/null >/dev/null 2>&1 & echo \$! > $PCD/gatt.btmon.pid"
 	[ "$(qr "kill -0 \$(cat $PCD/gatt.btmon.pid) 2>/dev/null && echo y")" = y ] || { no "gatt: btmon did not start on 04"; penv clear; return; }
 	o=$(c02 read "$LAST4"); say "gatt: 02 read: $(tr '\n' ' ' <<< "$o")"
 	q "kill -INT \$(cat $PCD/gatt.btmon.pid) 2>/dev/null; sleep 1; rm -f $PCD/gatt.btmon.pid"
 	bt=$(qr "$PCD/btmon -r $PCD/gatt.snoop 2>&1"); q "rm -f $PCD/gatt.snoop"
-	[ "$(grep -c . <<< "$bt")" -gt 5 ] || inv "gatt: the btmon capture is empty ($(grep -c . <<< "$bt") lines)"
+	btok=1; [ "$(grep -c . <<< "$bt")" -gt 5 ] || { btok=0; inv "gatt: the btmon capture is empty ($(grep -c . <<< "$bt") lines): no btmon verdict"; }
 	e=$(sed -n 's/^ERRS //p' <<< "$o"); el=$(sed -n 's/^ERRLINES //p' <<< "$o")
 	if [ -z "$(sed -n 's/^STATUS //p' <<< "$o")" ]; then inv "gatt: 02 did not read STATUS (not found / unreadable): no verdict on CTRL"
 	else
@@ -230,11 +241,13 @@ gatt_wb(){
 		elif grep -q 'org.bluez.Error.NotPermitted' <<< "$e" || grep -q 'auth failed with status' <<< "$el"; then ok "gatt: CTRL refused, 02: ${e#-}${el}"
 		else no "gatt: CTRL empty but 02 shows no refusal (errors [$e] lines [$el])"; fi
 		grep -q '^PAIRED no' <<< "$o" && ok "gatt: 02 not paired after the read" || no "gatt: 02 $(grep '^PAIRED' <<< "$o")"
-		say "gatt: btmon SMP / ATT error / encryption lines: $(grep -E 'SMP: |Error Response|Error: |Start Encr|0x08\|0x0019' <<< "$bt" | sed 's/^[[:space:]]*//' | tr -s ' ' | head -12 | tr '\n' '|')"
-		grep -q 'SMP: Pairing Request' <<< "$bt" && ok "gatt btmon: SMP Pairing Request" || no "gatt btmon: no SMP Pairing Request"
-		grep -q 'SMP: Pairing Failed' <<< "$bt" && ok "gatt btmon: SMP Pairing Failed" || no "gatt btmon: no SMP Pairing Failed"
-		grep -A3 'ATT: Error Response' <<< "$bt" | grep -qi '(0x0f)' && ok "gatt btmon: ATT Error Response 0x0f (insufficient encryption)" || no "gatt btmon: no ATT Error Response 0x0f"
-		grep -qE 'LE Start Encr|0x08\|0x0019' <<< "$bt" && no "gatt btmon: an LE Start Encryption" || ok "gatt btmon: no LE Start Encryption"
+		if [ $btok = 1 ]; then
+			say "gatt: btmon SMP / ATT error / encryption lines: $(grep -E 'SMP: |Error Response|Error: |Start Encr|0x08\|0x0019' <<< "$bt" | sed 's/^[[:space:]]*//' | tr -s ' ' | head -12 | tr '\n' '|')"
+			grep -q 'SMP: Pairing Request' <<< "$bt" && ok "gatt btmon: SMP Pairing Request" || no "gatt btmon: no SMP Pairing Request"
+			grep -q 'SMP: Pairing Failed' <<< "$bt" && ok "gatt btmon: SMP Pairing Failed" || no "gatt btmon: no SMP Pairing Failed"
+			grep -A3 'ATT: Error Response' <<< "$bt" | grep -qi '(0x0f)' && ok "gatt btmon: ATT Error Response 0x0f (insufficient encryption)" || no "gatt btmon: no ATT Error Response 0x0f"
+			grep -qE 'LE Start Encr|0x08\|0x0019' <<< "$bt" && no "gatt btmon: an LE Start Encryption" || ok "gatt btmon: no LE Start Encryption"
+		fi
 	fi
 	penv clear || no "set-provd-env clear after gatt"
 }
@@ -249,6 +262,7 @@ need_trial "L83"
 # ---- L83: the host dies after it (1) stopped provd, (2) started it with SOCK_ONLY; the deadman puts provd back
 l83(){	# <label> <setup>
 	local p0 o ex p t u x
+	PR_DM_EXPECTED=1	# this arm makes the deadman fire on purpose: pr_release must not count its lines as a failure
 	eval "$2" || { no "L83 $1: setup"; return 1; }
 	p0=$(provd_pid_q); say "L83 $1: provd pid [${p0:-none}]; no renew from here (lease 40 s, deadman at expiry + 5 s)"
 	pr_lease_renew +40 || return 1

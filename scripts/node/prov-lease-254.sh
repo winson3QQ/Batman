@@ -51,10 +51,13 @@ role_fire_restore() {	# $1 run (or "recover")
 		rm -rf "$sd"; lim 60 /etc/init.d/batman-provhelper restart >/dev/null 2>&1
 	fi
 	pidof batman-provhelper >/dev/null || lim 60 /etc/init.d/batman-provhelper start >/dev/null 2>&1
+	# a restore in progress owns the node (pr_restore reboots it): no second writer on the radio / provd (review B-M3)
+	[ -e "$BT/restoring.$1" ] && { dm_log "$1" "prov deadman: restoring in progress — services left to pr_restore"; return 0; }
+	# provd first: the killpoint dir (with provd.env) is gone, a provd started with test switches must not stay (L83) —
+	# before the radio restore, whose bluetoothctl calls could hang on a wedged bluetoothd (review B-M2; each is lim'd)
+	provd_restart
 	# the H3 judge arms (prov-p2-254.sh): SIGSTOPped helper, dbus / bluetoothd stopped, bondable / pairable on, hci0 off
 	radio_restore | while IFS= read -r l; do dm_log "$1" "prov deadman: $l"; done
-	provd_restart	# the killpoint dir (with provd.env) is gone: a provd started with test switches must not stay (L83)
-	[ -e "$BT/restoring.$1" ] && { dm_log "$1" "prov deadman: restoring in progress — services left to pr_restore"; return 0; }
 	for s in joinwatch openmanetd tailscaled; do [ -x "/etc/init.d/$s" ] && lim 60 "/etc/init.d/$s" start >/dev/null 2>&1; done
 	return 0
 }
@@ -74,9 +77,9 @@ case "$c" in
 esac
 case "$c" in
 	stage-check) cmd_stage_check ;;
-	provd-reset) provd_restart; provd_check ;;
+	provd-reset) held; provd_restart; unlock; provd_check ;;	# under our lease only (review A-M1)
 	provd-check) provd_check ;;	# no restart: provd came back on its own (review A-M4)
-	radio-restore) radio_restore; radio_clean && echo "RADIO clean" ;;	# pr_release, before provd-reset (review A-M1)
+	radio-restore) held; radio_restore; radio_clean && echo "RADIO clean"; unlock ;;	# pr_release; under our lease only
 	acquire) cmd_acquire "$@" ;;
 	renew) cmd_arm "$@" ;;
 	release) cmd_release ;;

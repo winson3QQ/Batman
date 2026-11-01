@@ -33,6 +33,14 @@ o=$(PATH="$W/bin:$PATH" sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; has_tok \"
 mkdir -p "$W/nobtd"; printf '#!/bin/sh\nexit 1\n' > "$W/nobtd/pidof"; printf '#!/bin/sh\ntouch "%s"\nsleep 30\n' "$W/called" > "$W/nobtd/bluetoothctl"; chmod +x "$W/nobtd/pidof" "$W/nobtd/bluetoothctl"
 o=$(PATH="$W/nobtd:$PATH" timeout 10 sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; settings; echo rc=\$?")
 [ "$o" = rc=1 ] && [ ! -e "$W/called" ] && tok "settings: no bluetoothd -> rc 1 without calling bluetoothctl" || tbad "settings without bluetoothd gave [$o] called=$([ -e "$W/called" ] && echo yes || echo no)"
+# a wedged bluetoothctl (bluetoothd alive but stuck): settings() gives up — 3 tries of lim 10 — instead of hanging the
+# deadman before it restores provd (review B-M2; main's lib hangs here: the negative control)
+mkdir -p "$W/hang"; printf '#!/bin/sh\n[ "$1" = bluetoothd ] && { echo 4242; exit 0; }\nexit 1\n' > "$W/hang/pidof"; printf '#!/bin/sh\nsleep 120\n' > "$W/hang/bluetoothctl"; chmod +x "$W/hang/pidof" "$W/hang/bluetoothctl"
+t0=$(date +%s); o=$(PATH="$W/hang:$PATH" timeout 60 sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; settings; echo rc=\$?"); t1=$(date +%s)
+case "$o" in *rc=1) [ $((t1 - t0)) -le 45 ] && tok "settings: a hanging bluetoothctl -> rc 1 after $((t1 - t0)) s (no hang)" || tbad "settings with a hanging bluetoothctl took $((t1 - t0)) s" ;; *) tbad "settings with a hanging bluetoothctl: [$o] after $((t1 - t0)) s" ;; esac
+pkill -f "$W/hang/bluetoothctl" 2>/dev/null
+# the helper-down backoff judge on real and broken sequences (tests/judges/helper-down-backoff.py)
+o=$(python3 "$REPO/tests/judges/helper-down-backoff.py" "$REPO/scripts/node/prov-p2-254.sh" 2>&1) && tok "helper-down backoff judge: 7 sequences judged as expected" || tbad "helper-down backoff judge: $(grep FAIL <<< "$o" | head -3 | tr '\n' '|')"
 
 # ---------------------------------------------------------------- 2. btmon judge (node awk) on fixtures
 judge() { RUN_ID=x sh "$REPO/scripts/node/ble-periph-254.sh" judge; }

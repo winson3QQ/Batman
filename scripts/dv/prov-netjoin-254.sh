@@ -33,7 +33,8 @@ i=$(pr_info); [ "${i%% *}" = state=claimed ] && ok "still claimed after the refu
 pv=$(qr '[ -x /etc/init.d/batman-provd ] && echo yes || echo no')
 if [ "$pv" = yes ]; then
 	# L71 (254-p2-impl §5, H3): the join holds the helper's mutex while a hook over halow-setkey sleeps 150 s before the
-	# real setkey (the helper runs setkey with no time limit, cmd/batman-provhelper main.go:146; 150 s < L71's 180 s).
+	# real setkey (the helper gives each halow-setkey call 300 s, cmd/batman-provhelper main.go:78-88 — review A-m6
+	# corrected the earlier "no time limit": 150 s + the real setkey, seen < 1 s and designed <= 180 s, stays inside it).
 	# Each check records its node uptime and must fall inside the hook's window, with the hook not yet done (review
 	# A-M2 / B-m11: with 60 s the checks ran past it). Meanwhile provd's ctl side is not blocked: a connection of its
 	# own (provclient, the helper's 4th: provd ctl + ops + the join + this) answers info.state <= 2 s, 02 reads STATUS
@@ -68,7 +69,9 @@ if [ "$pv" = yes ]; then
 				*) no "L71: STATUS during the join [$sv] (want a 4-entry map, claimed)" ;; esac; fi
 		fi
 		o=$(cat "$REPO/scripts/node/ble-lib-254.sh" "$REPO/scripts/node/prov-p2-254.sh" | timeout 120 ssh $SSHO root@$NODE BATMAN_DV_P2=1 sh -s -- flip 2>&1 | tr -d '\r')
-		if inwin flip; then while IFS= read -r l; do case "$l" in PASS\ *) ok "L71 flip: ${l#PASS }" ;; FAIL\ *) no "L71 flip: ${l#FAIL }" ;; esac; done <<< "$o"; fi
+		if inwin flip; then while IFS= read -r l; do case "$l" in PASS\ *) ok "L71 flip: ${l#PASS }" ;; FAIL\ *) no "L71 flip: ${l#FAIL }" ;; esac; done <<< "$o"
+			# a judge cut off (ssh failed / timed out) prints no end line: its verdict must not just vanish (review B-M6)
+			grep -q '^PROV-P2 flip fails=' <<< "$o" || no "L71 flip: the judge did not finish ($(tail -2 <<< "$o" | tr '\n' '|'))"; fi
 	fi
 	wait $jp; r=$(cat "$jf"); rm -f "$jf"
 	say "the slow hook: $(qr "logread | grep 'batman-dv-slow' | tail -1 | sed 's/.*batman-dv-slow[^:]*: //'")"

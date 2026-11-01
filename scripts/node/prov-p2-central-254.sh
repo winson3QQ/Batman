@@ -30,8 +30,22 @@ STAT=540aa38c-0086-4d5c-a9c0-c7c9d1e1bd42
 D=/tmp/run/batman-dv
 [ -d "$D" ] || mkdir -m 700 "$D"
 T=$(mktemp -d "$D/p2c.XXXXXX") || { echo "FAIL no scratch dir"; exit 1; }
-trap 'rm -rf "$T"' EXIT
+trap 'rm -rf "$T"; [ -n "${WD:-}" ] && kill "$WD" 2>/dev/null' EXIT
+trap 'exit 1' TERM INT HUP
 trap '' PIPE
+# 02 has ONE owner at a time (review A-M3 / B-M4). A session the host's `timeout 300 ssh` cut off keeps running here
+# (no tty, no SIGHUP): the next session waits for its lock instead of interleaving (a leftover `drop` must not look
+# like the next unit's disconnect), and every session ends its own process group 270 s after it got the lock.
+exec 8>"$D/p2c.lock"
+_w=0; until flock -n 8; do _w=$((_w + 1)); [ $_w -ge 200 ] && { echo "FAIL 02: another central session held the lock for 200 s"; exit 1; }; sleep 1; done
+( sleep 270; kill -TERM 0 ) & WD=$!
+# a chain1 STATUS reader left on 02 by a run that ended early would keep connecting to 04 and satisfy other units'
+# "04 logged a connection" witnesses: anyone but the reader itself stops it first
+if [ "${BATMAN_DV_C1R:-0}" != 1 ]; then
+	for _r in "$D"/ch1-*; do [ -d "$_r" ] || continue
+		[ -f "$_r/pid" ] && kill "$(cat "$_r/pid")" 2>/dev/null; rm -rf "$_r"; echo "NOTE stopped a leftover chain1 reader ($_r)" >&2
+	done
+fi
 clean() { sed 's/\x1b\[[0-9;]*m//g; s/\r//g'; }
 up() { cut -d. -f1 /proc/uptime; }
 # 02's one-shot `bluetoothctl info` (empty stdin) segfaults now and then (rc 139, 2 in 10 on 2026-11-01; scan and
