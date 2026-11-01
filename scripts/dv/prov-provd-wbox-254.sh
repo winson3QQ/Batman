@@ -21,7 +21,8 @@
 #     same minute is closed with none; 61 s after the first, a 22nd is answered again (control). Eviction of an older
 #     unauthenticated session and the 30 s idle limit need a finished handshake (anonymous NX): on the app checklist.
 #   sockdir (h23 §4.8.2, F-P42; review A-M3 / B-M5): judge `sockdir-owner` (root:root 0755 — open succeeds, only the
-#     owner / mode check refuses) and `sockdir-link` (a symlink to a provd 0700 decoy — O_NOFOLLOW refuses); each time
+#     owner / mode check refuses) and `sockdir-link` (a symlink to a provd 0700 decoy — the init's start replaces it;
+#     a kill + respawn would bind through it, see prov-p2-254.sh); each time
 #     the init's next start takes the dir back -> CTRL answers again
 #   adv-len arm 1 (prov-sec-adv-len-254): ADV_LEN_TEST=29 -> judge `adv-len`; with provd held off the air, judge
 #     `latch-neg` (L2's negative: a helper started while nothing registered -> adv_registered_once=0); clear
@@ -59,6 +60,9 @@ px(){
 }
 zeros(){ printf '%0*d' $(( $1 * 2 )) 0; }   # <n bytes> as hex
 frame(){ printf '%02x%04x%s' "$1" "$2" "$(zeros "$3")"; }   # <flags> <seq> <data bytes>
+# <flags> <seq> <data bytes> of random data: a first message's ephemeral key must not be all zero — X25519 rejects the
+# low-order point and provd ends the session with no answer (04 wsl.21, 2026-11-01: "bad X25519 remote ECDH input")
+rframe(){ printf '%02x%04x%s' "$1" "$2" "$(head -c "$3" /dev/urandom | od -An -v -tx1 | tr -d ' \n')"; }
 tms(){ sed -n 's/^T=\([0-9]*\)ms.*/\1/p' <<< "$1"; }
 replies(){ grep -c '^[0-9a-f][0-9a-f]*$' <<< "$1"; }   # answer packets in a px output
 provd_pid_q(){ qr 'for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && echo $x; done'; }
@@ -151,7 +155,7 @@ penv SOCK_ONLY=1 || no "set-provd-env SOCK_ONLY=1 before the rate arm"
 t0=$(mono); got=0; i=1
 q "logger -t batman-dv-p2 mark rate-$RUN"
 while [ $i -le 21 ]; do
-	o=$(px 471 1 "$(frame 3 0 32)"); n=$(replies "$o")
+	o=$(px 471 1 "$(rframe 3 0 32)"); n=$(replies "$o")
 	[ $i = 1 ] && say "rate: first message -> $(echo "$o" | sed 's/\(^[0-9a-f]\{24\}\)[0-9a-f]*/\1…/' | tr '\n' ' ' | cut -c1-200)"
 	if [ $i -le 20 ]; then [ "$n" -ge 1 ] && got=$((got + 1)); else last=$n; fi
 	i=$((i + 1))
@@ -165,18 +169,21 @@ else
 	else no "rate: only $got of the first 20 were answered"; fi
 	[ "${last:-1}" = 0 ] && ok "rate: the 21st within the minute was closed with no answer (20/min)" || no "rate: the 21st was answered ($last packet(s)) — no global handshake limit"
 	w=$(( 62 - ( $(mono) - t0 ) )); [ $w -gt 0 ] && sleep $w
-	o=$(px 471 1 "$(frame 3 0 32)"); [ "$(replies "$o")" -ge 1 ] && ok "rate control: 61 s after the first, a new first message is answered again" || no "rate control: still refused after the minute"
+	o=$(px 471 1 "$(rframe 3 0 32)"); [ "$(replies "$o")" -ge 1 ] && ok "rate control: 61 s after the first, a new first message is answered again" || no "rate control: still refused after the minute"
 fi
 
 need_trial "sockdir"
-# ---- sockdir: a respawned provd refuses a dir it does not own (owner check) and a symlinked dir (O_NOFOLLOW); the
-# init's next start takes the dir back each time
-for kind in owner link; do
-	if [ $kind = link ]; then dec=/tmp/run/batman-dv/wbox/$RUN/decoy; q "mkdir -p -m 0700 $dec"; j sockdir-link "$dec"; else j sockdir-owner; fi
-	o=$(px 471 1 c0); grep -qx "$CTRLX" <<< "$o" && no "sockdir $kind: gatt.sock answered" || { grep -q 'CONN-ERR' <<< "$o" && ok "sockdir $kind: no answer on gatt.sock ($(grep CONN-ERR <<< "$o" | head -1))" || no "sockdir $kind: no CONN-ERR reason: [$o]"; }
-	penv SOCK_ONLY=1 || no "set-provd-env SOCK_ONLY=1 after the sockdir $kind arm"
-	o=$(px 471 1 c0); grep -qx "$CTRLX" <<< "$o" && ok "sockdir $kind: the init's start took the dir back, CTRL answers again" || no "after the sockdir $kind arm: [$o]"
-done
+# ---- sockdir: a respawned provd refuses a dir it does not own (owner check); the init's next start takes the dir
+# back. A symlinked dir: the init's start replaces the link (a kill + respawn binds through it: prov-p2-254.sh)
+j sockdir-owner
+o=$(px 471 1 c0); grep -qx "$CTRLX" <<< "$o" && no "sockdir owner: gatt.sock answered" || { grep -q 'CONN-ERR' <<< "$o" && ok "sockdir owner: no answer on gatt.sock ($(grep CONN-ERR <<< "$o" | head -1))" || no "sockdir owner: no CONN-ERR reason: [$o]"; }
+penv SOCK_ONLY=1 || no "set-provd-env SOCK_ONLY=1 after the sockdir owner arm"
+o=$(px 471 1 c0); grep -qx "$CTRLX" <<< "$o" && ok "sockdir owner: the init's start took the dir back, CTRL answers again" || no "after the sockdir owner arm: [$o]"
+# the decoy in this run's wbox dir: prep makes the dir root 0700 first (a mkdir -p would make it 0755 and nojail's
+# precondition then fails: 04 wsl.21, 2026-11-01)
+pw prep >/dev/null; dec=/tmp/run/batman-dv/wbox/$RUN/decoy; q "rm -rf $dec; mkdir -m 0700 $dec"
+j sockdir-link "$dec"
+o=$(px 471 1 c0); grep -qx "$CTRLX" <<< "$o" && ok "sockdir link: CTRL answers on the dir the init made" || no "after the sockdir link arm: [$o]"
 
 need_trial "adv-len arm 1, then L2's negative while "
 # ---- adv-len arm 1, then L2's negative while provd stays off the air
@@ -194,7 +201,7 @@ j nojail "/tmp/run/batman-dv/wbox/$RUN"
 need_trial "L83"
 # ---- L83: the host dies after it (1) stopped provd, (2) started it with SOCK_ONLY; the deadman puts provd back
 l83(){	# <label> <setup>
-	local p0 o ex p t
+	local p0 o ex p t u x
 	eval "$2" || { no "L83 $1: setup"; return 1; }
 	p0=$(provd_pid_q); say "L83 $1: provd pid [${p0:-none}]; no renew from here (lease 40 s, deadman at expiry + 5 s)"
 	pr_lease_renew +40 || return 1
@@ -202,8 +209,9 @@ l83(){	# <label> <setup>
 	case "$ex" in ''|*[!0-9]*) no "L83 $1: no lease expiry readable"; return 1 ;; esac
 	t=""; while :; do
 		o=$(qr 'u=$(cut -d. -f1 /proc/uptime); p=""; for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && p=$x; done; echo "$u $p"')
-		set -- $o; [ -n "${2:-}" ] && [ "${2:-}" != "$p0" ] && [ "${1:-0}" -ge "$ex" ] && { t=$(( $1 - ex )); break; }
-		[ "${1:-0}" -ge $(( ex + 60 )) ] && break; sleep 2
+		# read, not set --: set -- would overwrite the label in $1 (2026-11-01: "L83 790" / "L83 851")
+		read -r u x <<< "$o"; [ -n "${x:-}" ] && [ "${x:-}" != "$p0" ] && [ "${u:-0}" -ge "$ex" ] && { t=$(( u - ex )); break; }
+		[ "${u:-0}" -ge $(( ex + 60 )) ] && break; sleep 2
 	done
 	[ -n "$t" ] && [ "$t" -le 15 ] && ok "L83 $1: a new provd ${t} s after the lease expired (<= 15: deadman at + 5)" || no "L83 $1: no new provd within 15 s of the expiry (${t:-none})"
 	sleep 10

@@ -49,8 +49,12 @@
 #   sockdir-owner the socket dir made root:root 0755 (provd can open it, so only the owner / mode check can refuse),
 #                 provd killed -> procd's respawn (the init does not run again) logs "owner 0 mode 755 (want 471 0700)
 #                 — refusing to bind", and nothing listens
-#   sockdir-link <decoy dir>  the socket dir replaced by a symlink to a provd 0700 decoy, provd killed -> O_NOFOLLOW
-#                 refusal ("too many levels of symbolic links"), nothing listens, nothing created in the decoy
+#   sockdir-link <decoy dir>  the socket dir replaced by a symlink to a provd 0700 decoy, then the test init's
+#                 restart -> the init replaced the link by a real 471 0700 dir, provd bound there (a new "frame socket"
+#                 start line), nothing created in the decoy. NOT a kill + respawn: procd respawns without the init's
+#                 start_service and ujail's bind mount of the rw dir follows the host-side link, so the jail sees a real
+#                 dir and checkSockDir's O_NOFOLLOW cannot see the link (04 wsl.21, 2026-11-01: gatt.sock appeared in the
+#                 decoy). Only root can write /tmp/run, and the frame socket exists only in a prov_test build.
 #   adv-len       ADV_LEN_TEST=29: "adv: payload would be 29 B (max 28)" is the latest start line, no instance 20 s
 #   latch-neg     (while adv-len holds provd off the air) the helper restarted -> two fresh health ticks with
 #                 adv_registered_once=0 (L2's negative: never registered -> 0)
@@ -394,20 +398,24 @@ sock-only)
 	n=0; z=1; while [ $n -lt 10 ]; do [ "$(adv_instances)" = 0 ] || z=0; sleep 1; n=$((n + 1)); done
 	[ $z = 1 ] && ok "no advertising instance for 10 s (SOCK_ONLY: no BLE)" || no "an advertising instance under SOCK_ONLY"
 	;;
-sockdir-owner|sockdir-link)
+sockdir-link)
+	dec=${2:?decoy dir}; [ -d "$dec" ] && [ ! -L "$dec" ] || { no "decoy [$dec] is not a directory"; echo "PROV-P2 $a fails=$fails"; exit 1; }
+	chown 471:471 "$dec"; chmod 0700 "$dec"; f=$(plc 'provd: frame socket ')
+	rm -rf "$TD"; ln -s "$dec" "$TD"; [ -L "$TD" ] || { no "could not place the symlink at $TD"; echo "PROV-P2 $a fails=$fails"; exit 1; }
+	lim 30 "$PROVD_INIT" restart >/dev/null 2>&1
+	wait_line 'provd: frame socket ' "$f" 20 && ok "provd bound again after the init's restart: $(lastline 'provd: frame socket ' | sed 's/.*provd: //')" || no "no new 'provd: frame socket' start line within 20 s of the init's restart"
+	[ -L "$TD" ] && no "$TD is still a symlink after the init's start" || { [ "$(ls -ldn "$TD" | awk '{print $1, $3}')" = "drwx------ 471" ] && ok "the init replaced the link by a real 471 0700 dir" || no "$TD after the init's start: $(ls -ldn "$TD")"; }
+	[ -z "$(ls -A "$dec" 2>/dev/null)" ] && ok "nothing created in the decoy behind the link" || no "the decoy got: $(ls -A "$dec" | tr '\n' ' ')"
+	rm -rf "$dec"
+	;;
+sockdir-owner)
 	p=$(provd_pid); f=$(plc 'frame socket: ')
-	if [ "$a" = sockdir-owner ]; then
-		chown 0:0 "$TD"; chmod 0755 "$TD"; want="owner 0 mode 755 (want 471 0700)"
-	else
-		dec=${2:?decoy dir}; [ -d "$dec" ] && [ ! -L "$dec" ] || { no "decoy [$dec] is not a directory"; echo "PROV-P2 $a fails=$fails"; exit 1; }
-		chown 471:471 "$dec"; chmod 0700 "$dec"; rm -rf "$TD"; ln -s "$dec" "$TD"; want="too many levels of symbolic links"
-	fi
+	chown 0:0 "$TD"; chmod 0755 "$TD"; want="owner 0 mode 755 (want 471 0700)"
 	kill -9 "$p"
 	wait_line 'frame socket: ' "$f" 20 || true
 	l=$(lastline ': frame socket: ' | sed 's/.*frame socket: //')
 	case "$l" in *"$want"*) ok "respawned provd refused the dir: $l" ;; *) no "no refusal naming [$want] within 20 s of the respawn (latest: [$l])" ;; esac
 	listens; case $? in 0) no "something listens on $TD/gatt.sock" ;; 1) ok "nothing listens on $TD/gatt.sock" ;; *) no "listeners unreadable (no netstat -lx)" ;; esac
-	[ "$a" = sockdir-link ] && { [ -z "$(ls -A "$dec" 2>/dev/null)" ] && ok "nothing created in the decoy behind the link" || no "the decoy got: $(ls -A "$dec" | tr '\n' ' ')"; }
 	;;
 adv-len)
 	n=0; while [ $n -lt 10 ]; do case "$(lastline 'adv: payload would be|provd: adv registered')" in *"adv: payload would be 29 B (max 28)") break ;; esac; sleep 1; n=$((n + 1)); done
