@@ -1,4 +1,4 @@
-# #254 PR-P2:`batman-provd` — BLE 上的供裝協定行程(設計 v8.5)
+# #254 PR-P2:`batman-provd` — BLE 上的供裝協定行程(設計 v8.5,定稿:第三輪兩位 APPROVE)
 
 狀態:v8(減法版),2026-10-31。v1–v7 審查歷程見 §13–§18;**使用者 2026-10-31 指示「只針對必要的修改」**:v8 砍掉 v4–v7 為了堵審查情境而加的三個機制(節點端 kernel patch 見證「臂 2」與其閘門、session 撤銷的歸因狀態機、`QUEUE_WAIT`),只留原始碼或現場逼出來的部分。待一位審查員確認被砍的三處沒留下洞(§19)。
 
@@ -671,7 +671,7 @@ firmware `patches/ekh-bcm2711/0015-bluez-adv-reset-254.patch` 加 `feeds/package
 
 ### 22.3 測試
 - **T4**(`dep-bluetoothd` 臂加 btmon,負對照):前置 advinfo = 1(provd 已註冊;不成立 = INVALID,否則 Remove(0) 回 INVALID_PARAMS,失敗在與 D3c 無關處;審查 A m8)→ `/etc/init.d/bluetoothd restart` → btmon:
-  - 舊 bluetoothd(pid)的 `MGMT Command (0x003f)` 早於它的 `MGMT Command (0x0005)`(Set Powered off);
+  - 舊 bluetoothd(pid)的 `MGMT Command (0x003f)` 早於它的 `MGMT Command (0x0005)`(Set Powered off),且其間有該 Remove 的 `Command Complete` status Success;臂改為 stop → advinfo = 0(bluetoothd 停著讀不到時只記 INFO)→ start(第三輪審查 A m11);
   - 最後一個 `Powered: Enabled` 之後,`Advertising: Enabled` 不得早於 provd 的 Add(0x0054 / 0x003e)。
   - 依據:§22.1 的佇列順序(兩位審查員原始碼證實)。負對照 = wsl.20:兩條都 FAIL(先在 04 跑出)。
 - **T5 / T6**(`dep-bluetoothd-kill` / `dep-dbus` 臂加 btmon,**特性量測,不是修復證據**;審查 A M1′ / B MAJOR-1):記錄「kill / dbus 重啟 → 新 bluetoothd 的 Remove」的空窗(INFO),上限斷言 ≤ 15 s;斷言新 bluetoothd 的 Remove 早於 provd 的 Add(回歸)。wsl.20 也會 PASS。
@@ -685,7 +685,7 @@ firmware `patches/ekh-bcm2711/0015-bluez-adv-reset-254.patch` 加 `feeds/package
 | L65 改 | bluetoothd crash / kill -9 | 一直開電、舊 instance 持續發射;新 bluetoothd 的 Reset 在 READ_ADV_FEATURES 回覆後(毫秒級)拔掉 → 空窗 ≈ respawn 5 s + 初始化 | **D3c 無實質改變**(誠實界線) | T5(量測) |
 | L10 改 | dbus 重啟(bluetoothd 隨之退出,不走 shutdown) | 同 L65 | 同 L65(誠實界線) | T6(量測) |
 | L90 | bluetoothd crash loop(每次在 Reset 前掛) | 舊 instance 無限期 | 同左(誠實界線;health `bluetoothd=0`,autocommit 只 WARN) | 原始碼;checklist |
-| L92 | bluetoothd 啟動時 adapter 關著且 kernel 有殘留 instance(本步沒送出 / L89 + crash / 第三寫者) | 開電先啟用舊 instance,直到 Reset | 同左(誠實界線;刪去的 v8.4 第 2 步本可處理) | 原始碼;checklist |
+| L92 | bluetoothd 啟動時 adapter 關著且 kernel 有殘留 instance(本步沒送出 / L89 + crash / 第三寫者 / 停止過程中 provd 重新註冊:斷光連線後 provd 的下一輪在 health 反映關電前 Add,排在 SET_POWERED 0 之後、legacy 控制器關電中直接保留 — 毫秒級窗,由原本的 Reset 收掉;第三輪審查 B m1) | 開電先啟用舊 instance,直到 Reset | 同左(誠實界線;刪去的 v8.4 第 2 步本可處理) | 原始碼;checklist |
 | L93 | 升級到含 0015 / 降級到無 0015 的 image | — | 隨 image;降級回到 wsl.20 的 L9 現象 | 出貨全套 |
 | L91 | bcm2710 | ❌ 無 0012/0013(F-P49) | ❌ 同左(CM4 決定) | — |
 
