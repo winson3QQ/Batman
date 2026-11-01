@@ -262,6 +262,7 @@ rpa)
 	# 02's view, segment by segment; scans in the 90 s before an event was seen in the log are left out (it may already
 	# have happened)
 	seg(){ local rw x; for rw in "${rows[@]}"; do x=${rw%% *}; [ "$x" -gt "$1" ] && [ "$x" -lt "$2" ] && echo "${rw#* }"; done; }
+	# shellcheck disable=SC2034  # SA SB1 SB2 SC are read through eval below
 	SA=$(seg -1 $(( ${r1:-99999} - 90 ))); SB1=$(seg "${r1:-99999}" "${ec:-99999}"); SB2=$(seg "${ec:-99999}" $(( ${r2:-99999} - 90 ))); SC=$(seg "${r2:-99999}" 99999)
 	for g in A B1 B2 C; do eval "v=\$S$g"
 		u=$(grep -v '^-$' <<< "$v" | awk 'NF == 1' | sort -u); nu=$(grep -c . <<< "$u")
