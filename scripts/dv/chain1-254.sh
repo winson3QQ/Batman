@@ -225,14 +225,15 @@ chmod 700 $BASE/ch1-deadman.sh; rm -f $BASE/ch1.cancel $BASE/ch1.fired $BASE/ch1
 STAGED=1; say "dead-man staged (snapshot p5 sha $SNAPSHA)"
 # ======== 2-4. p5 idle -> mkfs -> hold + apply (unseeded) -> controlled reboot
 PH=s2-4
-# the serial's last 4 (STATUS key 5 of the fresh trial; the identity survives: step 5 idsame=y)
+# 04 runs provd? (the fresh trial generates a NEW identity — p5 is mkfs'd — so its serial's last 4 is read in step 5;
+# step 5's idsame=y only compares the new identity with its own p5 copy)
 LAST4=$(q 'tr -d "\n" < /etc/batman-prov/identity/sn | tail -c 4'); HASPROVD=$(q '[ -x /usr/bin/batman-provd ] && echo y || echo n')
 C1R=/tmp/run/batman-dv/ch1-$RUN; P02_U0=""; P02_S0=""
 if [ "$HASPROVD" = y ]; then
 	# 3600 s, then it ends by itself (a run that aborts leaves nothing behind on 02 for long); no state change on 02
 	o=$(timeout 30 ssh $SSHO root@$PEER "mkdir -p -m 0700 /tmp/run/batman-dv && mkdir -m 0700 $C1R && cat > $C1R/c.sh && echo PUT" < "$REPO/scripts/node/prov-p2-central-254.sh" 2>/dev/null | tr -d '\r')
 	[ "$o" = PUT ] || abort "02: could not place the STATUS reader"
-	timeout 30 ssh $SSHO root@$PEER "setsid sh -c 'e=\$((\$(cut -d. -f1 /proc/uptime) + 3600)); while [ \$(cut -d. -f1 /proc/uptime) -lt \$e ]; do o=\$(sh $C1R/c.sh read $LAST4 2>/dev/null | sed -n \"s/^STATUS //p\"); echo \"\$(cut -d. -f1 /proc/uptime) \${o:--}\" >> $C1R/status.log; sleep 5; done' </dev/null >/dev/null 2>&1 & echo \$! > $C1R/pid" >/dev/null 2>&1
+	timeout 30 ssh $SSHO root@$PEER "setsid sh -c 'e=\$((\$(cut -d. -f1 /proc/uptime) + 3600)); while [ \$(cut -d. -f1 /proc/uptime) -lt \$e ]; do o=\$(sh $C1R/c.sh read - 2>/dev/null | sed -n \"s/^STATUS //p\"); echo \"\$(cut -d. -f1 /proc/uptime) \${o:--}\" >> $C1R/status.log; sleep 5; done' </dev/null >/dev/null 2>&1 & echo \$! > $C1R/pid" >/dev/null 2>&1
 	P02_U0=$(timeout 15 ssh $SSHO root@$PEER 'cut -d. -f1 /proc/uptime' 2>/dev/null | tr -d '\r'); P02_S0=$SECONDS
 	case "$P02_U0" in ''|*[!0-9]*) abort "02 uptime unreadable (the reader's clock)";; esac
 	say "02 STATUS reader started (02 uptime $P02_U0 = host +$P02_S0 s)"
@@ -261,8 +262,10 @@ for w in "ap=0" "mesh=0" "meta=unclaimed" "idmode=drwx------" "seeded=n" "prov_f
 case "$x" in *"helper7=[rc=7 "*"persist rc=0]"*) ok "trial: helper boot rc=7 ... persist rc=0";; *) no "trial: helper rc=7 / persist rc=0 not logged";; esac
 # provd side: the exact STATUS (provd server.go Status): {1:[1,0], 2:["halow"], 3:0 unclaimed, 4:true trial, 5:last4}
 if [ "$HASPROVD" = y ]; then
-	case "$LAST4" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) no "trial: the serial's last 4 unreadable before the reboot [$LAST4]";; esac
-	WANT5="a50182010002816568616c6f77030004f50564$(printf '%s' "$LAST4" | od -An -tx1 | tr -d ' \n')"
+	L4N=$(fq 'tr -d "\n" < /etc/batman-prov/identity/sn | tail -c 4')
+	case "$L4N" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) no "trial: the fresh serial's last 4 unreadable [$L4N]";; esac
+	say "trial: fresh serial last 4 = $L4N (before the reboot: $LAST4)"
+	WANT5="a50182010002816568616c6f77030004f50564$(printf '%s' "$L4N" | od -An -tx1 | tr -d ' \n')"
 	say "trial: 02's reader judges STATUS at step 9 (window from the reboot, host +$t0 s, to the release)"
 	# the trial would be released ~130 s after the reboot and a read takes 40-60 s (04 wsl.21 2026-11-02: one read, too
 	# early, in a 20 s window): hold it to reboot + 330 s, well inside the 600 s deadline of a held trial
@@ -394,7 +397,7 @@ if [ "$HASPROVD" = y ] && [ -n "$P02_U0" ]; then
 	echo "$sl" | sed 's/^/    02 read: /'
 	inw=$(awk -v lo="$lo" -v hi="$hi" '$1 >= lo && $1 <= hi' <<< "$sl"); say "02 reads in the window: $(echo $inw | tr -s ' ' | cut -c1-400)"
 	if [ -z "${T5E:-}" ]; then no "5 provd: the run ended before the release — no trial window to judge"
-	elif grep -q " $WANT5\$" <<< "$inw"; then ok "5 provd: 02 read the fresh trial's STATUS over BLE = unclaimed, updating=1, last4 $LAST4 ($WANT5)"
+	elif grep -q " $WANT5\$" <<< "$inw"; then ok "5 provd: 02 read the fresh trial's STATUS over BLE = unclaimed, updating=1, last4 $L4N ($WANT5)"
 	else no "5 provd: no read in the trial window equals $WANT5"; fi
 	awk '$2 != "-"' <<< "$inw" | grep -v " $WANT5\$" | grep -q . && no "5 provd: other STATUS values inside the trial window: $(awk '$2 != "-"' <<< "$inw" | grep -v " $WANT5\$" | head -3 | tr '\n' '|')"
 fi
