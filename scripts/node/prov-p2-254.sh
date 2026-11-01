@@ -73,7 +73,10 @@ secs() { echo "$1" | awk '{printf "%.2f", $1 / 100}'; }
 hf() { [ -r "$HF" ] && echo " $(cat "$HF")" | sed -n "s/.* $1=\([^ ]*\).*/\1/p" | head -1; }
 # provd log lines matching $1: how many in the ring. The tag is batman-provd[1] — provd is pid 1 of its ujail pid
 # namespace (04 wsl.20, 2026-11-01) — so a line is never tied to a host pid: the arms compare counts / the latest line.
-plc() { logread | grep -c "batman-provd\[[0-9]*\]: $1"; }
+# Counted after THIS arm's syslog marker (MK, written at the start): a full ring drops old lines, and a count taken
+# over the whole ring then need not grow (04, 2026-11-01; review A m6). lastline() reads the whole ring: it asks for the
+# latest line, which a wrap cannot hide, and some arms judge a line written just before they started (set-provd-env).
+plc() { logread | sed -n "/batman-dv-p2: mark $MK\$/,\$p" | grep -c "batman-provd\[[0-9]*\]: $1"; }
 connected() { bluetoothctl devices Connected 2>/dev/null | clean | grep -c '^Device '; }
 hpid() { pidof batman-provhelper | awk '{print $1}'; }
 # wait_adv <want> <seconds>: hundredths it took (from the call); rc 1 when not reached
@@ -132,8 +135,9 @@ bm_bluez() {
 		r=$(bm_first "$1" 003f); s=$(bm_first "$1" 0005)
 		[ "$r" -gt 0 ] && [ "$s" -gt 0 ] && [ "$r" -lt "$s" ] && ok "D3c: the old bluetoothd removed its advertising before powering off (capture lines $r < $s)" \
 			|| no "D3c: no Remove Advertising before the old bluetoothd's Set Powered off (remove line $r, power line $s)"
-		# and it took effect: the Command Complete for 0x003f after line r, before line s, says Success (review A m11)
-		c=$(awk -v r="$r" -v s="$s" 'NR > r && NR < s && /Command Complete/ {cc = NR} cc && NR > cc && NR <= cc + 2 && /Remove Advertising \(0x003f\)/ {rm = NR} rm && NR > rm && NR <= rm + 2 && /Status: Success/ {print "ok"; exit}' "$BMF")
+		# and it took effect: the Command Complete for 0x003f after line r, before line s, says Success (review A m11).
+		# btmon without a terminal truncates the event name: "@ MGMT Event: Com.. (0x0001)" (04, 2026-11-01)
+		c=$(awk -v r="$r" -v s="$s" 'NR > r && NR < s && /MGMT Event: Com.*\(0x0001\)/ {cc = NR} cc && NR > cc && NR <= cc + 2 && /Remove Advertising \(0x003f\)/ {rm = NR} rm && NR > rm && NR <= rm + 2 && /Status: Success/ {print "ok"; exit}' "$BMF")
 		[ "$c" = ok ] && ok "D3c: that Remove Advertising completed with Success before the power-off" || no "D3c: no Command Complete Success for the Remove before the power-off"
 		return 0
 	fi
@@ -147,6 +151,7 @@ bm_bluez() {
 }
 
 a=${1:-}
+MK="p2-$a-$$-$(cs)"; logger -t batman-dv-p2 "mark $MK"
 o=$(p2_judges); [ -n "$o" ] && { echo "FAIL another H3 judge is still running (pid $o) — not overlapping it"; echo "PROV-P2 $a fails=1"; exit 1; }
 provd_present || { echo "FAIL no batman-provd on this image (pre-P2)"; echo "PROV-P2 $a fails=1"; exit 1; }
 case "$a" in
@@ -282,6 +287,28 @@ dep-bluetoothd|dep-bluetoothd-kill|dep-dbus)
 		rm -f "$BMF"
 	fi
 	trap - EXIT; trap - HUP INT TERM
+	;;
+adv-data)
+	# what provd puts on the air, read on 04 itself (02's view of the "name" is BlueZ's per-address cache of the GAP
+	# name from an earlier connection — not the advertisement; 2026-11-01): restart provd under btmon and judge the
+	# advertising / scan-response data it registers: BlueZ's MGMT Add Extended Advertising Data (0x0055), the whole data
+	# handed to the kernel. (Not the HCI LE Set Advertising Data: the kernel skips it when the data equals what the
+	# controller already holds, hci_sync.c:1343 memcmp — a provd restart re-registers the same 21 bytes; 2026-11-01.)
+	trap 'bm_stop' EXIT; trap 'exit 1' HUP INT TERM
+	bm_start "${2:-}" || { echo "PROV-P2 $a fails=$fails"; exit 1; }
+	r=$(plc 'provd: adv registered'); provd_restart
+	wait_line 'provd: adv registered' "$r" 20 || no "provd did not register within 20 s of the restart"
+	sleep 2; bm_stop
+	# the last 0x0055 command block: its indented lines up to the next record (a line starting with @ < > =)
+	ad=$(awk '/MGMT Command \(0x0055\)/ {b = ""; f = 1; next} f && /^[@<>=]/ {f = 0; last = b} f {b = b $0 "\n"} END {if (f) last = b; printf "%s", last}' "$BMF")
+	if [ -z "$ad" ]; then no "btmon: no MGMT Add Extended Advertising Data (0x0055) after the restart"
+	else
+		echo "$ad" | grep -q 'Advertising data length: 21' && ok "advertising data: 21 bytes" || no "advertising data length: [$(echo "$ad" | grep -o 'Advertising data length: [0-9]*')] (want 21)"
+		echo "$ad" | grep -q '128-bit Service UUIDs' && ok "advertising data carries the 128-bit service UUID list" || no "no 128-bit service UUID list in the advertising data"
+		echo "$ad" | grep -qiE 'Name' && no "advertising data carries a name: $(echo "$ad" | grep -iE 'Name' | head -1)" || ok "no Local Name in the advertising data"
+		echo "$ad" | grep -q 'Scan response length: 0' && ok "no scan response data" || no "scan response: [$(echo "$ad" | grep -o 'Scan response length: [0-9]*')] (want 0)"
+	fi
+	rm -f "$BMF"; trap - EXIT; trap - HUP INT TERM
 	;;
 power-provdkill)
 	# p2 §21.5 T3 / L87: provd killed while hci0 is off, before its next health poll (<= 4 s) -> BlueZ's Remove for the

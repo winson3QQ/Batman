@@ -11,6 +11,9 @@
 #   overlay-restore <run> write the snapshot tar over the live upper, delete extras, restore p6 state
 #   strip-p5-prov <run> (prov-legacy-upgrade only) delete p5 prov.* and identity/prov, the rest unchanged (§4.5.6)
 #   state-set <run> ble-ok present|absent  (autocommit (8) only) helper stopped or in a trial; the snapshot restores it
+#   state-set <run> autocommit.timeout <600..7200>  a unit whose arms outlast a held trial's default deadline (600 s;
+#                       prov-provd-wbox-254): the operator's p6 setting, read at a trial's start; on a committed slot
+#                       only (it must be set before the OTA); the snapshot restores it
 #   finish <run>        after a passing compare: print and remove snapshot, marker, dirty flag
 # PROV_BASE_SKIP=p5 | extra (the prov-base-254 unit's negative controls only, 254-h23 §6.2): p5-restore writes
 # nothing / overlay-restore keeps the extras; each prints a SKIP line, and the following compare must FAIL.
@@ -30,7 +33,7 @@ RDL=${PROV_BASE_TEST_ROOT:-}/usr/lib/batman/rundir.sh
 LOCK=$RUNDIR/cfgsave.lock; P5=/dev/mmcblk0p5
 DVD=$RUNDIR-dv   # harness scratch next to the run dir: /tmp/run/batman-dv (root 0755 /tmp/run, procd)
 DIRTY=$ST/dv-prov-dirty; MARK=/etc/.dv-prov-mark-$RUN
-STATEFILES="lock-status mesh-expected mesh-joined prov-state prov-counters ble-ok ota-armed.mesh autocommit-hold-commit autocommit-hold-once autocommit-skip-once bad-slot"
+STATEFILES="lock-status mesh-expected mesh-joined prov-state prov-counters ble-ok ota-armed.mesh autocommit-hold-commit autocommit-hold-once autocommit-skip-once bad-slot autocommit.timeout"   # autocommit.timeout: state-set by prov-provd-wbox-254, restored here
 HOLDER=$DVD/batman-config-save-dvhold
 umask 077
 say() { echo "$*"; }
@@ -280,7 +283,15 @@ state-set)
 	# slot (F14), so there it must be stopped first; a trial never writes it.
 	[ -d "$D" ] || die "no snapshot (state-set only inside a unit)"
 	f=${3:-}; v=${4:-}
-	case "$f" in ble-ok) ;; *) die "state-set: $f is not settable" ;; esac
+	case "$f" in ble-ok|autocommit.timeout) ;; *) die "state-set: $f is not settable" ;; esac
+	if [ "$f" = autocommit.timeout ]; then
+		case "$v" in ''|*[!0-9]*) die "state-set: autocommit.timeout needs a number of seconds" ;; esac
+		[ "$v" -ge 600 ] && [ "$v" -le 7200 ] || die "state-set: autocommit.timeout $v outside 600..7200"
+		batman-slot is-trial >/dev/null 2>&1 && die "state-set: autocommit.timeout is read at a trial's start — set it on the committed slot, before the OTA"
+		printf '%s
+' "$v" > "$ST/$f.dv" && mv "$ST/$f.dv" "$ST/$f" && sync
+		echo "STATE-SET $f=$(cat "$ST/$f")"; exit 0
+	fi
 	if batman-slot is-trial >/dev/null 2>&1; then :
 	elif pidof batman-provhelper >/dev/null 2>&1; then die "state-set: the helper runs on a committed slot (it would write $f back) — stop it first"; fi
 	case "$v" in

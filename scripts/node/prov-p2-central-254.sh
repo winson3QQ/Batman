@@ -3,7 +3,7 @@
 # 254-p2-impl §5 L80 / §20). Run as root on 02:  ssh root@02 sh -s -- <cmd> [args] < prov-p2-central-254.sh
 # bluetoothctl reads its commands from a pipe, paced with sleeps; one-shot calls get an empty pipe (`: |`), never the
 # script itself (sh -s) and never /dev/null (02 has no btmgmt; the BLE suites found tools that hang on /dev/null).
-# 02's bluetoothctl segfaults now and then (2026-11-01: 1 in ~5 calls): every connect / read is tried up to 3 times.
+# 02's bluetoothctl segfaults now and then (2026-11-01: 1 in ~5 calls): a scan + read is tried up to 5 times, a connect 3.
 # Every device it found is removed again before it returns (BlueZ keeps temporary devices otherwise).
 #
 # WHICH node: every P2 node advertises the same service UUID, so the target is named by <last4> = the last 4 hex digits
@@ -81,7 +81,7 @@ read_one() {
 # pick <last4|->: sets A (and CV SV PV of the chosen node); rc 1 none / unreadable, rc 3 ambiguous / not found
 pick() {
 	want=$1; A=""; tries=0
-	while [ $tries -lt 3 ]; do
+	while [ $tries -lt 5 ]; do	# 02's bluetoothctl segfaults ~1 call in 5: up to 5 scans
 		tries=$((tries + 1)); scan_all; n=$(wc -l < "$T/addrs"); NADV=$n
 		[ "$n" -gt 0 ] || continue
 		if [ "$want" = - ]; then
@@ -113,9 +113,11 @@ hold)
 	i=0; while [ $i -lt 3 ]; do i=$((i + 1))
 		{ echo "menu scan"; echo "uuids $U"; echo "transport le"; echo back; echo "scan on"; sleep 10; echo "scan off"; sleep 1
 		  echo "connect $A"; sleep 6; echo quit; } | bluetoothctl >/dev/null 2>&1
-		[ "$(conn "$A")" = yes ] && break
+		# a connect on 02 can take longer than the session: poll up to 10 s before the next try
+		k=0; while [ $k -lt 10 ] && [ "$(conn_state "$A")" != yes ]; do sleep 1; k=$((k + 1)); done
+		[ "$(conn_state "$A")" = yes ] && break
 	done
-	echo "HELD $A connected=$(conn "$A")" ;;
+	echo "HELD $A connected=$(conn_state "$A")" ;;
 watch)
 	a=$2; m=${3:-30}; t0=$(up)
 	while [ $(( $(up) - t0 )) -lt "$m" ]; do

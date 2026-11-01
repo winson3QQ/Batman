@@ -70,8 +70,24 @@ ver=$(qr 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build')
 LAST4=$(qr 'tr -d "\n" < /etc/batman-prov/identity/sn | tail -c 4')
 case "$LAST4" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) no "04's serial last4 unreadable [$LAST4]"; pr_result; exit 1 ;; esac
 pr_begin 3600 || { pr_result; exit 1; }
+# the arms take ~25 min in the trial and a held trial is still reverted at its deadline (batman-autocommit:517-524,
+# default 600 s): the operator's p6 autocommit.timeout, read at the trial's start (:380), is raised for this run only —
+# the snapshot puts p6 back (04 wsl.21 2026-11-01: the trial was reverted at 571 s mid-run and every later arm failed)
+o=$(nb state-set "$RUN" autocommit.timeout 3600); say "$o"
+grep -q 'STATE-SET autocommit.timeout=3600' <<< "$o" || { pr_abort "could not raise autocommit.timeout"; pr_result; exit 1; }
 pr_ota_b "$PR_V.dirty.wbox-test" B || { pr_abort "OTA of the wbox test build"; pr_result; exit 1; }
+TB=$(field "$(qr "$ST")" boot)
+# need_trial <section>: the wbox trial this unit landed in is still the running boot, uncommitted, on B; otherwise
+# every later arm would judge a different system — stop them all as INVALID and end the run (review: a cut-off arm
+# must stop, not cascade)
+need_trial(){ local s; s=$(qr "$ST")
+	[ "$(field "$s" boot)" = "$TB" ] && [ "$(field "$s" slot)" = B ] && [ "$(field "$s" trial_rc)" = 0 ] && return 0
+	inv "the wbox trial (boot $TB) is gone before '$1' ($s) — the remaining arms did not run"
+	if [ "$(field "$s" slot)" = B ]; then back_to_a; fi
+	b=$(qr 'cat /opt/batdata/state/bad-slot 2>/dev/null'); if [ -n "$b" ]; then pr_end revert wrote-b; else pr_end wrote-b; fi
+	pr_result; exit 1; }
 
+need_trial "L39"
 # ---- L39: provd killed 10 times before the decision, 02 reading meanwhile -> HELD
 if qr 'logread | grep -q "is healthy and HELD"'; then
 	inv "L39: the trial was already HELD when the kills were to start (uptime $(qr 'cut -d. -f1 /proc/uptime') s) — the arm proves nothing"
@@ -90,9 +106,11 @@ else
 fi
 o=$(c02 read "$LAST4"); sv=$(sed -n 's/^STATUS //p' <<< "$o")
 case "$sv" in a5*04f5*"$(k5 "$LAST4")"*) ok "in the trial 02 reads STATUS with key 4 = true (updating) and key 5 = $LAST4 ($sv; prov-firstboot provd side, L21)" ;;
-	*) no "STATUS in the trial [$sv] (want key 4 = true, key 5 = $LAST4): $(echo $o)" ;; esac
+	'') inv "in the trial 02 could not read STATUS at all (02's bluetoothctl: $(echo $o | cut -c1-120)) — not a verdict" ;;
+	*) no "STATUS in the trial [$sv] (want key 4 = true, key 5 = $LAST4)" ;; esac
 pr_pc_place || { pr_abort "provclient placement"; pr_result; exit 1; }
 
+need_trial "SOCK_ONLY"
 # ---- SOCK_ONLY: the frame socket, CTRL / STATUS without a handshake, who can reach it
 penv SOCK_ONLY=1 || { pr_abort "set-provd-env SOCK_ONLY=1"; pr_result; exit 1; }
 j sock-only
@@ -101,6 +119,7 @@ grep -qx "$CTRLX" <<< "$o" && ok "sock CTRL -> 0xC0 ‖ {1:1,2:0,3:244,4:8192}" 
 grep -q "^c1a5.*$(k5 "$LAST4")" <<< "$o" && ok "sock STATUS -> 0xC1 ‖ 5-entry map with key 5 = $LAST4 ($(grep '^c1' <<< "$o"))" || no "sock STATUS: [$o]"
 o=$(px 65534 0); grep -qi 'CONN-ERR .*permission denied' <<< "$o" && ok "uid 65534 cannot reach gatt.sock (provd 0700 dir)" || no "uid 65534 on gatt.sock: [$o]"
 
+need_trial "sec-hog / oversize, sock part"
 # ---- sec-hog / oversize, sock part
 f0=$(qr "logread | grep -c 'provd: connection refused (2 slots in use) sock'")
 tmpa=$(mktemp); tmpb=$(mktemp)
@@ -125,24 +144,31 @@ fr+=("$(frame 0 16 509)")
 o=$(px 471 5 "${fr[@]}"); t=$(tms "$o")
 [ "${t:-99999}" -lt 2500 ] && ok "a 17th frame (8653 B > 8192) closes the connection at once (${t} ms)" || no "over 8192 B: closed after ${t} ms (want < 2.5 s)"
 
+need_trial "20 handshakes / min. A fresh provd (no f"
 # ---- 20 handshakes / min. A fresh provd (no first message counted yet: control packets and unfinished frames never
 # reach onMsg1) -> 21 one-frame first messages (start+end, 32 B) within the minute
 penv SOCK_ONLY=1 || no "set-provd-env SOCK_ONLY=1 before the rate arm"
 t0=$(mono); got=0; i=1
+q "logger -t batman-dv-p2 mark rate-$RUN"
 while [ $i -le 21 ]; do
 	o=$(px 471 1 "$(frame 3 0 32)"); n=$(replies "$o")
+	[ $i = 1 ] && say "rate: first message -> $(echo "$o" | sed 's/\(^[0-9a-f]\{24\}\)[0-9a-f]*/\1…/' | tr '\n' ' ' | cut -c1-200)"
 	if [ $i -le 20 ]; then [ "$n" -ge 1 ] && got=$((got + 1)); else last=$n; fi
 	i=$((i + 1))
 done
 el=$(( $(mono) - t0 ))
 if [ $el -ge 55 ]; then inv "rate arm: the 21 messages took ${el} s (> 55): the minute window may have rolled"
 else
-	[ $got = 20 ] && ok "rate: the first 20 first-messages in ${el} s were each answered (msg2)" || no "rate: only $got of the first 20 were answered"
+	say "rate: provd during the arm: $(qr "logread | sed -n '/batman-dv-p2: mark rate-$RUN\$/,\$p' | grep 'batman-provd\[' | grep -E 'session ended|connection (refused|sock)|global handshake' | sed 's/.*provd\[1\]: //' | sort | uniq -c | tr '\n' '|'")"
+	if [ $got = 0 ]; then inv "rate: none of the 20 first messages got an answer — a precondition of the arm (provd ready / message accepted), not a verdict on the limit; see the provd lines above"
+	elif [ $got = 20 ]; then ok "rate: the first 20 first-messages in ${el} s were each answered (msg2)"
+	else no "rate: only $got of the first 20 were answered"; fi
 	[ "${last:-1}" = 0 ] && ok "rate: the 21st within the minute was closed with no answer (20/min)" || no "rate: the 21st was answered ($last packet(s)) — no global handshake limit"
 	w=$(( 62 - ( $(mono) - t0 ) )); [ $w -gt 0 ] && sleep $w
 	o=$(px 471 1 "$(frame 3 0 32)"); [ "$(replies "$o")" -ge 1 ] && ok "rate control: 61 s after the first, a new first message is answered again" || no "rate control: still refused after the minute"
 fi
 
+need_trial "sockdir"
 # ---- sockdir: a respawned provd refuses a dir it does not own (owner check) and a symlinked dir (O_NOFOLLOW); the
 # init's next start takes the dir back each time
 for kind in owner link; do
@@ -152,6 +178,7 @@ for kind in owner link; do
 	o=$(px 471 1 c0); grep -qx "$CTRLX" <<< "$o" && ok "sockdir $kind: the init's start took the dir back, CTRL answers again" || no "after the sockdir $kind arm: [$o]"
 done
 
+need_trial "adv-len arm 1, then L2's negative while "
 # ---- adv-len arm 1, then L2's negative while provd stays off the air
 penv ADV_LEN_TEST=29 || no "set-provd-env ADV_LEN_TEST=29"
 j adv-len
@@ -159,10 +186,12 @@ j latch-neg
 penv clear || no "set-provd-env clear"
 o=$(pl provd-check); grep -q 'PROVD ok' <<< "$o" && ok "switches cleared: $(tail -1 <<< "$o")" || no "after clear: $o"
 
+need_trial "L72"
 # ---- L72: no ujail -> requirejail keeps provd from starting
 pw prep >/dev/null
 j nojail "/tmp/run/batman-dv/wbox/$RUN"
 
+need_trial "L83"
 # ---- L83: the host dies after it (1) stopped provd, (2) started it with SOCK_ONLY; the deadman puts provd back
 l83(){	# <label> <setup>
 	local p0 o ex p t

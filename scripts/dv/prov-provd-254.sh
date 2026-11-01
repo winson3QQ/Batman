@@ -41,7 +41,10 @@ j(){
 	grep -q "^PROV-P2 $1 fails=" <<< "$o" || no "$1: the judge did not finish ($(tail -2 <<< "$o" | tr '\n' '|'))"
 }
 c02(){ timeout 300 ssh $SSHO root@$PEER sh -s -- "$@" < "$P2C" 2>&1 | tr -d '\r'; }
-plog(){ qr "logread | grep -c 'batman-provd\[[0-9]*\]: provd: $1'"; }
+# provd log lines after the latest host marker (hmark): counts over the whole ring stop growing once it wraps (04,
+# 2026-11-01: "04 logged no connection" after dep-restart had filled it)
+hmark(){ HM="h-$RUN-$(date +%s%N)"; q "logger -t batman-dv-p2 mark $HM"; }
+plog(){ qr "logread | sed -n '/batman-dv-p2: mark $HM\$/,\$p' | grep -c 'batman-provd\[[0-9]*\]: provd: $1'"; }
 ninst(){ qr "bluetoothctl mgmt.advinfo 2>/dev/null | sed -n 's/^Instances list with \([0-9]*\) item.*/\1/p' | head -1"; }
 # 04's STATUS key 5: the last 4 hex digits of its serial (provd server.go Status: deviceID = hex(sn), sn = 9 bytes)
 LAST4=""
@@ -49,8 +52,8 @@ last4(){ LAST4=$(qr 'tr -d "\n" < /etc/batman-prov/identity/sn | tail -c 4'); ca
 k5(){ printf '0564%s' "$(printf '%s' "$1" | od -An -tx1 | tr -d ' \n')"; }   # CBOR key 5 = text(4) <last4>
 # hold02: 02 connects to 04 and keeps the link up (the central retries its own connects); prints the address;
 # rc 1 = no link (INVALID for the caller: a precondition, not a verdict)
-hold02(){ local o a; o=$(c02 hold "$LAST4"); say "02 hold: $o" >&2; a=$(sed -n 's/^HELD \([^ ]*\) connected=yes$/\1/p' <<< "$o")
-	[ -n "$a" ] && { echo "$a"; return 0; }; a=$(sed -n 's/^HELD \([^ ]*\) .*/\1/p' <<< "$o"); [ -n "$a" ] && c02 drop "$a" >/dev/null; return 1; }
+hold02(){ local o a i; for i in 1 2; do o=$(c02 hold "$LAST4"); say "02 hold: $o" >&2; a=$(sed -n 's/^HELD \([^ ]*\) connected=yes$/\1/p' <<< "$o")
+	[ -n "$a" ] && { echo "$a"; return 0; }; a=$(sed -n 's/^HELD \([^ ]*\) .*/\1/p' <<< "$o"); [ -n "$a" ] && c02 drop "$a" >/dev/null; done; return 1; }
 # the jailed provd only (its ujail parent has the same comm)
 KILLPROVD='for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && kill -9 $x; done'
 lease(){ pr_lock; PR_BEGUN=1; trap 'pr_on_exit' EXIT; PR_DEADLINE=$(( $(mono) + $1 )); local o; o=$(pr_acquire "$1") || { echo "$o"; no "lease"; pr_result; exit 1; }; }
@@ -63,21 +66,21 @@ boot-provd)
 	lease 1500
 	j boot
 	last4 || { pr_release; pr_result; exit 1; }
-	c0=$(plog 'adv withdrawn reason=connect')
+	hmark; c0=$(plog 'adv withdrawn reason=connect')
 	o=$(c02 read "$LAST4"); echo "$o" | sed 's/^/    /'
 	cv=$(sed -n 's/^CTRL //p' <<< "$o"); sv=$(sed -n 's/^STATUS //p' <<< "$o"); nm=$(sed -n 's/^NAME //p' <<< "$o"); a=$(sed -n 's/^ADDR //p' <<< "$o")
 	if [ -z "$a" ]; then inv "02 could not read 04 (no advertiser with key 5 = $LAST4 / reads failed): $(echo $o)"
 	else
 		[ "$(plog 'adv withdrawn reason=connect')" -gt "$c0" ] && ok "04 logged the connection 02 made for the read (the link was to 04)" || no "04 logged no connection while 02 read [$a] — 02 read another node?"
 		ok "02 found 04 by UUID + last4 $LAST4 at $a ($(sed -n 's/^ADVERTISERS //p' <<< "$o") advertiser(s) of the UUID in range)"
-		# no Local Name in the advertisement: BlueZ then shows the address (dashes) or nothing as the name
-		case "$nm" in -|"${a//:/-}") ok "no Local Name advertised (before connecting 02 knows the name [$nm])" ;; *) no "before connecting 02 knows a name [$nm] — a Local Name is advertised" ;; esac
-		say "after connecting, 02 reads the GAP Device Name [$(sed -n 's/^GAPNAME //p' <<< "$o")] (GATT, main.conf Name — not the advertisement)"
+		# the name 02 shows is BlueZ's per-address cache of the GAP name from an earlier connection (the RPA is kept 900 s):
+		# not evidence about the advertisement — that is judged on 04 itself (judge adv-data below)
+		say "02's name for 04: [$nm] before connecting, GAP Device Name [$(sed -n 's/^GAPNAME //p' <<< "$o")] after (GATT, main.conf Name; recorded only)"
 		[ "$cv" = a4010102000318f404192000 ] && ok "02 read CTRL {1:1,2:0,3:244,4:8192} with no pairing" || no "CTRL [$cv]"
 		case "$sv" in a5*"$(k5 "$LAST4")"*) ok "02 read STATUS with no pairing: a 5-entry map with key 5 = $LAST4 ($sv)" ;; *) no "STATUS [$sv] (want a 5-entry map with key 5 = $LAST4: $(k5 "$LAST4"))" ;; esac
 		[ "$(sed -n 's/^PAIRED //p' <<< "$o")" = no ] && ok "02 not paired after the reads" || no "02 paired [$(sed -n 's/^PAIRED //p' <<< "$o")]"
 	fi
-	wc0=$(plog 'adv withdrawn reason=connect'); rd0=$(plog 'adv registered reason=disconnect')   # taken right before the hold (review B-m2)
+	hmark; wc0=$(plog 'adv withdrawn reason=connect'); rd0=$(plog 'adv registered reason=disconnect')   # taken right before the hold (review B-m2)
 	if a=$(hold02); then
 		sleep 3
 		[ "$(plog 'adv withdrawn reason=connect')" -gt "$wc0" ] && ok "a held link withdrew the advertisement (reason=connect)" || no "no 'adv withdrawn reason=connect' while 02 holds a link"
@@ -85,6 +88,12 @@ boot-provd)
 		rd0=$(plog 'adv registered reason=disconnect'); o=$(c02 drop "$a"); sleep 5
 		[ "$(plog 'adv registered reason=disconnect')" -gt "$rd0" ] && ok "dropping the link registered again (reason=disconnect)" || no "no 'adv registered reason=disconnect' after the drop"
 	else inv "02 could not hold a link to 04 — the connect / withdraw checks did not run"; fi
+	# what provd advertises, from 04's own HCI traffic (btmon, the harness's copy)
+	if [ -f "$BTT/btmon" ] && pr_pc_place; then
+		scp -q $SSHO "$BTT/btmon" root@$NODE:$PCD/btmon.up && q "mv $PCD/btmon.up $PCD/btmon && chmod 0700 $PCD/btmon"
+		if [ "$(qr "sha256sum < $PCD/btmon | cut -c1-64")" = "$(awk '{sub(/^\*/, "", $2)} $2 == "btmon" {print $1}' "$BTT/SHA256SUMS")" ]; then j adv-data "$PCD/btmon" 120
+		else no "btmon sha on 04"; fi
+	else no "no btmon in $BTT / provclient dir not placed — the advertising data was not checked"; fi
 	j stop
 	j flip
 	pr_release ;;
@@ -101,7 +110,7 @@ respawn)
 		o=$(c02 watch "$a" 15); say "control (provd untouched): $o"
 		if grep -q '^STILL' <<< "$o"; then ok "L80 control: with provd untouched 02's link stays up 15 s"
 			if a=$(hold02); then
-				d0=$(plog 'disconnected [0-9]* stale link'); q "$KILLPROVD"
+				hmark; d0=$(plog 'disconnected [0-9]* stale link'); q "$KILLPROVD"
 				o=$(c02 watch "$a" 30); say "after the kill: $o"; n=$(sed -n 's/^GONE .* after \([0-9]*\) s.*/\1/p' <<< "$o")
 				[ -n "$n" ] && [ "$n" -le 15 ] && ok "L80: 02 saw Connected=no $n s after the kill (02's clock, <= 15)" || no "L80: [$o] (want GONE <= 15 s)"
 				t=0; while [ $t -lt 10 ] && [ "$(plog 'disconnected [0-9]* stale link')" = "$d0" ]; do sleep 2; t=$((t + 1)); done
