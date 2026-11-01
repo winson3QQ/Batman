@@ -41,10 +41,12 @@ if [ "$pv" = yes ]; then
 	# `flip`). The single-connection helper that would block all three is the helper Go unit tests' mutant (#254 P2).
 	W=/tmp/run/batman-dv/wbox/$RUN
 	pw prep >/dev/null
-	q "cp -p /usr/bin/halow-setkey $W/setkey.real && chmod 700 $W/setkey.real && rm -f $W/slow.t0 $W/slow.done && printf '#!/bin/sh\ncut -d. -f1 /proc/uptime > $W/slow.t0\nsleep 150\n: > $W/slow.done\nexec $W/setkey.real \"\$@\"\n' > $W/setkey.slow && chmod 755 $W/setkey.slow"
+	q "cp -p /usr/bin/halow-setkey $W/setkey.real && chmod 700 $W/setkey.real && rm -f $W/slow.t0 $W/slow.done && printf '#!/bin/sh\ncut -d. -f1 /proc/uptime > $W/slow.t0\nsleep 150\n: > $W/slow.done\n$W/setkey.real \"\$@\"; rc=\$?\nlogger -t batman-dv-slow \"real setkey rc=\$rc at uptime \$(cut -d. -f1 /proc/uptime) (hook start \$(cat $W/slow.t0))\"\nexit \$rc\n' > $W/setkey.slow && chmod 755 $W/setkey.slow"
 	o=$(pw bind setkey.slow "$(qr "sha256sum < $W/setkey.slow | cut -c1-64")" /usr/bin/halow-setkey); say "$o"
 	grep -q '^BOUND /usr/bin/halow-setkey' <<< "$o" || { pr_abort "bind of the slow setkey"; pr_result; exit 1; }
-	jf=$(mktemp); ( pr_pc owner.pem FD3="$FD3" -- net-apply --first "$OWNER" > "$jf" ) & jp=$!
+	# 600 s, not pr_pc's 240: the hook's 150 s + the real setkey (<= 180 s, wireless-txn §19.4) + the save (04 wsl.21,
+	# 2026-11-01: with 240 the call timed out before the join ended and printed CONN-CLOSED)
+	jf=$(mktemp); ( pr_pc owner.pem FD3="$FD3" PROVCLIENT_TIMEOUT_S=600 -- net-apply --first "$OWNER" > "$jf" ) & jp=$!
 	t0=""; for _ in $(seq 1 30); do t0=$(qr "cat $W/slow.t0 2>/dev/null"); [ -n "$t0" ] && break; sleep 2; done
 	inwin(){	# <label>: the node's uptime now is inside the hook's sleep and the hook is not done
 		local u d; u=$(qr 'cut -d. -f1 /proc/uptime'); d=$(qr "[ -e $W/slow.done ] && echo done")
@@ -69,6 +71,7 @@ if [ "$pv" = yes ]; then
 		if inwin flip; then while IFS= read -r l; do case "$l" in PASS\ *) ok "L71 flip: ${l#PASS }" ;; FAIL\ *) no "L71 flip: ${l#FAIL }" ;; esac; done <<< "$o"; fi
 	fi
 	wait $jp; r=$(cat "$jf"); rm -f "$jf"
+	say "the slow hook: $(qr "logread | grep 'batman-dv-slow' | tail -1 | sed 's/.*batman-dv-slow[^:]*: //'")"
 	say "unbind: $(pw unbind-all | tr '\n' ' ')"
 elif [ "$pv" = no ]; then
 	no "L71: pre-P2 image (no batman-provd) — the L71 arm did not run"

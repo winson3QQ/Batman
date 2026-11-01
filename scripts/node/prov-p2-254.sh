@@ -17,8 +17,8 @@
 #   flip          bondable on -> instance withdrawn <= 9.5 s from the command, "adv withdrawn reason=health" (L67);
 #                 bondable off -> registered again <= 15 s
 #   respawn       kill -9 provd x5 (L8): each time a new pid <= 15 s (procd respawn 5 s), its instance and a new
-#                 "adv registered reason=start" <= 15 s later. (h23's "backoff <n>s rising" does not apply: provd logs a
-#                 backoff only for an unreachable bus / helper / identity, p2 §4.5; a kill is procd's fixed 5 s.)
+#                 "adv registered reason=start" <= 15 s later. (h23's "backoff <n>s rising": a kill is procd's fixed
+#                 5 s; provd's own backoff is for an unreachable helper — the helper-down arm.)
 #   dep-helper    helper restarted (L11): provd keeps its pid, and 75 s later (past the 60 s stale limit) it is still
 #                 advertising with no "withdrawn reason=helper" = it reconnected to the new helper; the new helper
 #                 measured adv_registered_once=1
@@ -43,6 +43,9 @@
 #                 exiting for a respawn" and does not advertise; helper started -> advertising <= 30 s
 #   helper-stop   SIGSTOP the helper (L71 last row): withdrawn <= 65 s, "adv withdrawn reason=helper"; SIGCONT ->
 #                 registered again <= 15 s
+#   helper-down   the helper stopped (its socket refuses) for 40 s: provd's "helper ctl: connect failed (…); backoff
+#                 <d>" lines rise 1s, 2s, 4s, 8s and stop at the 10 s cap (server.go ctl MaxBackoff), provd keeps its pid;
+#                 the helper started -> registered again <= 30 s (the next dial waits out the backoff)
 #   prov_test image only (after the host's set-provd-env):
 #   sock-only     SOCK_ONLY=1: the serving line is the latest start line, no instance for 10 s, the frame socket dir
 #                 provd 0700, gatt.sock provd 0600
@@ -390,6 +393,21 @@ helper-stop)
 	kill -CONT "$h"; trap - EXIT; trap - HUP INT TERM
 	if d=$(wait_adv 1 15); then ok "helper continued: registered again after $(secs "$d") s"; else no "helper continued: no instance within 15 s"; fi
 	;;
+helper-down)
+	p=$(provd_pid); [ -n "$p" ] && [ -n "$(hpid)" ] || { no "precondition: provd [$p] / helper [$(hpid)] not running"; echo "PROV-P2 $a fails=$fails"; exit 1; }
+	trap '/etc/init.d/batman-provhelper start >/dev/null 2>&1' EXIT; trap 'exit 1' HUP INT TERM
+	lim 60 /etc/init.d/batman-provhelper stop >/dev/null 2>&1; sleep 40
+	# the backoff values in order, as provd printed them (Go time.Duration: 1s 2s 4s 8s 10s)
+	b=$(logread | sed -n "/batman-dv-p2: mark $MK\$/,\$p" | sed -n 's/.*batman-provd\[[0-9]*\]: helper ctl: connect failed .*; backoff \([0-9]*\)s$/\1/p' | tr '\n' ' ')
+	info "ctl backoffs in 40 s: [$b]"
+	r=$(echo "$b" | awk '{ if (NF < 5) { print "only " NF " lines"; exit } if ($1 != 1) { print "first " $1 " s, not 1"; exit }
+		for (i = 2; i <= NF; i++) { w = ($(i-1) * 2 > 10) ? 10 : $(i-1) * 2; if ($i != w) { print "line " i ": " $i " s after " $(i-1) " s (want " w ")"; exit } }
+		if ($NF != 10) { print "never reached the 10 s cap"; exit } print "ok" }')
+	[ "$r" = ok ] && ok "helper down: ctl backoff rose 1, 2, 4, 8 s to the 10 s cap ($(echo $b | wc -w) lines)" || no "helper down: backoff not 1, 2, 4, 8, 10…: $r [$b]"
+	[ "$(provd_pid)" = "$p" ] && ok "provd kept its pid $p while the helper was down" || no "provd pid changed [$p -> $(provd_pid)] while the helper was down"
+	lim 60 /etc/init.d/batman-provhelper start >/dev/null 2>&1; trap - EXIT; trap - HUP INT TERM
+	if d=$(wait_adv 1 30); then ok "helper started: registered again after $(secs "$d") s"; else no "helper started: no instance within 30 s"; fi
+	;;
 sock-only)
 	l=$(lastline 'provd: (frame socket|adv registered|test env)')
 	case "$l" in *"provd: frame socket $TD/gatt.sock (SOCK_ONLY)") ok "the running provd serves $TD/gatt.sock (SOCK_ONLY)" ;; *) no "latest provd start line is not the frame socket: [${l##*]: }]" ;; esac
@@ -443,7 +461,7 @@ nojail)
 	umount /sbin/ujail; trap - EXIT; trap - HUP INT TERM; rm -f "$W/ujail.noexec"
 	provd_restart; if o=$(provd_check); then ok "ujail back: $o"; else no "ujail back: $o"; fi
 	;;
-*) echo "FAIL usage: prov-p2-254.sh boot|stop|flip|respawn|dep-helper|dep-bluetoothd|dep-bluetoothd-kill|dep-dbus [btmon]|dep-power <btmon>|power-bondable <btmon>|power-provdkill <btmon>|sockdir-missing|helper-stop|sock-only|sockdir-owner|sockdir-link <decoy>|adv-len|latch-neg|nojail <W>"; exit 2 ;;
+*) echo "FAIL usage: prov-p2-254.sh boot|stop|flip|respawn|dep-helper|dep-bluetoothd|dep-bluetoothd-kill|dep-dbus [btmon]|dep-power <btmon>|power-bondable <btmon>|power-provdkill <btmon>|sockdir-missing|helper-stop|helper-down|sock-only|sockdir-owner|sockdir-link <decoy>|adv-len|latch-neg|nojail <W>"; exit 2 ;;
 esac
 echo "PROV-P2 $a fails=$fails"
 [ "$fails" = 0 ]

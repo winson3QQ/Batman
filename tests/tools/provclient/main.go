@@ -376,9 +376,13 @@ func (cl *client) call(verb string, args cmap) (uint64, cmap) {
 	}
 	buf := make([]byte, 1<<17)
 	n, err := cl.c.Read(buf)
-	if (err != nil || n == 0) && cl.id == 1 && !cl.retried {
+	var ne net.Error
+	timedOut := errors.As(err, &ne) && ne.Timeout()
+	if (err != nil || n == 0) && !timedOut && cl.id == 1 && !cl.retried {
 		// closed on the first request: the helper's accept rate (5 new connections a second, 254-p2-impl §4.3) or its
-		// 4-connection limit — back off and try once more on a new connection (254-h23 §10 point 2)
+		// 4-connection limit — back off and try once more on a new connection (254-h23 §10 point 2). Never after a
+		// timeout: the helper got the request and may still be running it, and a verb is not idempotent (a second
+		// net.apply behind a slow first one: 04 wsl.21, 2026-11-01)
 		cl.retried = true
 		cl.c.Close()
 		time.Sleep(time.Second)
@@ -388,6 +392,10 @@ func (cl *client) call(verb string, args cmap) (uint64, cmap) {
 		}
 	}
 	if err != nil || n == 0 {
+		if timedOut {
+			fmt.Println("TIMEOUT") // no answer within PROVCLIENT_TIMEOUT_S: outcome unknown, not a refusal
+			return 998, nil
+		}
 		fmt.Println("CONN-CLOSED") // the helper closed the connection (e.g. a peer uid it refuses)
 		return 999, nil
 	}

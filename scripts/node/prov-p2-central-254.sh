@@ -10,7 +10,8 @@
 # of its serial (STATUS key 5, sent only while unclaimed / legacy). With <last4> "-" (a claimed node: no key 5) the
 # UUID must have exactly ONE advertiser in range, else AMBIGUOUS (rc 3) — the caller adds its own node-side witness.
 #   read <last4|->          find the node, connect, read CTRL and STATUS (no pairing), disconnect, remove:
-#                           "ADDR <a>", "NAME <name|->", "CTRL <hex>", "STATUS <hex>", "PAIRED <yes|no>", "ADVERTISERS <n>"
+#                           "ADDR <a>", "NAME <name|->", "CTRL <hex>", "STATUS <hex>", "PAIRED <yes|no>", "ADVERTISERS <n>",
+#                           "ERRS <bluetoothctl's 'Failed to read: <error name>' lines, | separated, or ->"
 #                           rc 1 = no advertiser / no value after 3 tries; rc 3 = AMBIGUOUS / no advertiser with <last4>
 #   hold <last4|->          as read (identifies the address), then connect again and leave the link up:
 #                           "HELD <addr> connected=<yes|no>"
@@ -19,6 +20,9 @@
 #                           "STILL <addr> after <s> s";
 #                           seconds from 02's /proc/uptime. Then disconnect + remove either way.
 #   drop <addr>             disconnect + remove
+#   addrs                   one 12 s scan: "ADDRS <addr> ..." = the advertisers of the UUID whose advertisements arrived
+#                           in THIS scan ([NEW] / [CHG] lines; `devices` alone also lists BlueZ's cached ones), then
+#                           removes every unpaired device it saw; "ADDRS -" none
 # busybox ash; the 128-bit UUIDs are the D4 values (254-p2-impl §1.3).
 U=540aa38c-0086-4d58-a9c0-c7c9d1e1bd42
 CTRL=540aa38c-0086-4d5b-a9c0-c7c9d1e1bd42
@@ -104,7 +108,8 @@ read)
 	pick "${2:--}"; r=$?
 	[ $r = 3 ] && exit 3
 	[ $r = 0 ] || { echo "NOADDR (or no value) after 3 tries"; grep -E 'Failed|Error' "$T/read" 2>/dev/null | head -3; exit 1; }
-	echo "ADDR $A"; echo "NAME ${NV:--}"; echo "GAPNAME ${GV:--}"; echo "CTRL $CV"; echo "STATUS $SV"; echo "PAIRED ${PV:-?}"; echo "ADVERTISERS $NADV" ;;
+	echo "ADDR $A"; echo "NAME ${NV:--}"; echo "GAPNAME ${GV:--}"; echo "CTRL $CV"; echo "STATUS $SV"; echo "PAIRED ${PV:-?}"; echo "ADVERTISERS $NADV"
+	e=$(grep -o 'Failed to read: [^ ]*' "$T/read" | sort -u | tr '\n' '|'); echo "ERRS ${e:--}" ;;
 hold)
 	pick "${2:--}"; r=$?
 	[ $r = 0 ] || { [ $r = 3 ] && exit 3; echo "NOADDR after 3 tries"; exit 1; }
@@ -126,6 +131,17 @@ watch)
 		sleep 1
 	done
 	echo "STILL $a after $m s"; drop "$a" ;;
+addrs)
+	{ echo "menu scan"; echo "uuids $U"; echo "transport le"; echo back; echo "scan on"; sleep 12; echo "scan off"; sleep 1; } \
+		| bluetoothctl 2>&1 | clean > "$T/scan"
+	l=""; for a in $(sed -n -e 's/.*\[NEW\] Device \([0-9A-F:]\{17\}\).*/\1/p' -e 's/.*\[CHG\] Device \([0-9A-F:]\{17\}\).*/\1/p' "$T/scan" | sort -u); do
+		info_of "$a" | grep -qi "$U" && l="$l $a"
+	done
+	# a paired device is never removed (its bond would go with it)
+	for a in $(grep -o 'Device [0-9A-F:]\{17\}' "$T/scan" | awk '{print $2}' | sort -u); do
+		info_of "$a" | grep -q 'Paired: yes' || { echo "remove $a"; sleep 1; echo quit; } | bluetoothctl >/dev/null 2>&1
+	done
+	echo "ADDRS${l:- -}" ;;
 drop) drop "$2"; echo "DROPPED $2" ;;
-*) echo "usage: prov-p2-central-254.sh read <last4|-> | hold <last4|-> | watch <addr> <s> | drop <addr>"; exit 2 ;;
+*) echo "usage: prov-p2-central-254.sh read <last4|-> | hold <last4|-> | watch <addr> <s> | drop <addr> | addrs"; exit 2 ;;
 esac

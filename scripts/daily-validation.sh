@@ -235,7 +235,7 @@ isint() { case "$1" in ""|*[!0-9]*) return 1;; esac; }
 #     BEFORE any slot-switching or reflashing suite (design §6): rpa -> pair -> reboot; BLE_PERIPH must be DNODE
 #     (it is rebooted and needs ethernet); each suite re-checks its nodes first.
 BLE_A_NODES=""; for n in $FLEET; do [ "$(soc_of "$n")" = bcm2711 ] && BLE_A_NODES="$BLE_A_NODES $n"; done
-BLE_B="ble-rpa-254 ble-pair-sc-only-254 ble-privacy-reboot-254"
+BLE_B="ble-rpa-254 ble-pair-sc-only-254 prov-sec-bond-254 ble-privacy-reboot-254"
 if [ "$FEATURE_MODE" != --destructive ]; then
   for s in $BLE_B; do suite "$s" "#254 BLE air tier B — needs FEATURE_MODE=--destructive" ""; done
 elif [ -z "$BLE_A_NODES" ]; then
@@ -247,6 +247,10 @@ elif ! fssh "$DNODE0" 8 '[ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 
 else
   suite ble-rpa-254 "RPA air test, $BLE_PERIPH advertises / $BLE_CENTRAL scans: same RPA before rpa_timeout and over 30 min, new RPA after a re-registration past it, every address resolves with $BLE_PERIPH's IRK, public address never seen (#254 PR-F F28)" "bchk_ble_rpa_254 $BLE_PERIPH $BLE_CENTRAL"
   suite ble-pair-sc-only-254 "pairing sandwich: legacy pairing BLOCKED by SC-only (04 sends reason 0x03), LEAKS when SC-only is flipped off (discrimination), BLOCKED after a bluetoothd restart, bonding request = other reason; IRK voided + kernel-verified, 02 rebooted (#254 PR-F B1)" "bchk_ble_pair_sc_only_254 $BLE_PERIPH $BLE_CENTRAL" D
+  # provd stopped by the BLE lease; 04 agent on / off (h23 §6.3). Runs before prov-provd-wbox-254 (prov-gatt), not after as
+  # h23 §4.3 orders it: the gatt arm's preconditions (no bluetoothctl on 04, no paired device on 02) hold after this suite
+  # (agent-off, release kills the run's groups, both nodes rebooted) and are checked there
+  suite prov-sec-bond-254 "SC Just Works from 02 with provd stopped: refused with no agent on 04, paired with one (the flip: the method sees a pairing), refused again once it is gone; IRK voided + kernel-verified, 04 and 02 rebooted (#254 H3)" "bchk_prov_sec_bond_254 $BLE_PERIPH $BLE_CENTRAL" D
   suite ble-privacy-reboot-254 "bluetoothd restart keeps the IRK (new pid, batman-sc mode 2); a reboot generates a new one via getrandom (#254 PR-F F26)" "bchk_ble_reboot_254 $BLE_PERIPH" D
 fi
 if [ -n "$BLE_A_NODES" ]; then
@@ -295,8 +299,8 @@ if [ "$DNODE0" = 10.41.1.3 ]; then
   # H3 (254-h23 §6.3): batman-provd on the committed image; STATE-CHANGING but self-restoring, under the prov lease
   suite prov-boot-provd-254 "provd uid 471 in ujail, no caps, no test switch, adv latch, one instance; 02 finds it by UUID with no name, reads CTRL / STATUS unpaired, a link withdraws / re-registers; stop keeps the latch (L2); bondable withdraws <= 9.5 s (L67) (#254 H3)" "bchk_prov_254 $DNODE0 prov-provd-254 boot-provd"
   suite prov-respawn-254 "kill -9 provd x5: procd respawn <= 15 s, instance back, info.state unchanged; a held 02 link is dropped <= 15 s by the new provd (L8, L80) (#254 H3)" "bchk_prov_254 $DNODE0 prov-provd-254 respawn"
-  suite prov-dep-restart-254 "helper / bluetoothd restart / bluetoothd kill -9 / dbus restart / hci0 power: provd advertises again <= 15 s; SIGSTOPped helper -> withdrawn <= 65 s (L9-L11, L65, L71, L73) (#254 H3)" "bchk_prov_254 $DNODE0 prov-provd-254 dep-restart"
-  suite prov-sec-dbus-254 "dbus policy of user provd: Properties.Get allowed, RegisterAgent / Pair / Set Pairable / StartDiscovery / RemoveDevice / Introspect / UpdateActivationEnvironment AccessDenied (needs scripts/dv-dbus-tools.sh) (#254 H3)" "bchk_prov_254 $DNODE0 prov-provd-254 sec-dbus"
+  suite prov-dep-restart-254 "helper / bluetoothd restart / bluetoothd kill -9 / dbus restart / hci0 power: provd advertises again <= 15 s; SIGSTOPped helper -> withdrawn <= 65 s; helper down -> provd backoff 1, 2, 4, 8, 10 s (L9-L11, L65, L71, L73) (#254 H3)" "bchk_prov_254 $DNODE0 prov-provd-254 dep-restart"
+  suite prov-sec-dbus-254 "dbus policy of user provd: Properties.Get allowed, RegisterAgent / Pair / Set Pairable / StartDiscovery / RemoveDevice / Introspect / UpdateActivationEnvironment AccessDenied; with 02 connected: bluetoothd -> provd callback answers, 471 Device1.Disconnect drops the link, root RegisterAgent works and goes with its connection (needs scripts/dv-dbus-tools.sh) (#254 H3)" "bchk_prov_254 $DNODE0 prov-provd-254 sec-dbus"
 else
   na prov-sock-254 "the prov units are 04-specific and DNODE is $DNODE0"; na prov-sec-254 "the prov units are 04-specific and DNODE is $DNODE0"
   for s in prov-boot-provd-254 prov-respawn-254 prov-dep-restart-254 prov-sec-dbus-254; do na "$s" "the prov units are 04-specific and DNODE is $DNODE0"; done

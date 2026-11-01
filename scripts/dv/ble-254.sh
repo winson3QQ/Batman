@@ -205,8 +205,53 @@ bchk_ble_pair_sc_only_254() {
 	ble_reboot_committed "$c" || rc=1
 	return $rc
 }
-ble_canary_both() {	# the log of this suite so far, through each node's canary (IRK never leaves the node)
-	local p=$1 c=$2 f="$DIR/ble-pair-sc-only-254.log" r=0
+# prov-sec-bond (h23 §6.3; tier B): with provd stopped (the BLE lease stops it), whether 04 accepts 02's SC Just Works
+# pairing depends on an agent on 04 — the flip is its own negative control: no agent -> refused, an agent -> paired
+# (the method can see a pairing), no agent again -> refused. Then canary, rekey (verified) and a 04 reboot.
+bond_verdict() {	# <label> <round output>: paired / refused:<reason> / invalid:<why>
+	local L=$1 o=$2 r rsn
+	grep -q 'INVALID no-target' <<< "$o" && { echo invalid:no-target; return; }
+	r=$(sed -n "s/^ROUND $L pair-result: //p" <<< "$o" | tail -1)
+	case "$r" in *"Paired with"*) echo paired; return ;; esac
+	rsn=$(sed -n "s/^$L 04 SMP TX PairingFailed reason=//p" <<< "$o" | head -1)
+	case "$r" in *"failed with status"*|*"Failed to pair"*|*"failed"*) [ -n "$rsn" ] && echo "refused:$rsn" || echo "invalid:no-PairingFailed-from-04 [$r]"; return ;; esac
+	echo "invalid:[$r]"
+}
+bond_round() {	# <p> <c> <label> <name> <pub>; a round whose verdict is invalid is repeated once
+	local o v i
+	for i in 1 2; do o=$(ble_round "$1" "$2" "$3" on off "$4" "$5" yes); echo "$o" >&2; v=$(bond_verdict "$3" "$o"); case "$v" in invalid:*) echo "== $3: $v, repeating" >&2 ;; *) break ;; esac; done
+	echo "$v"
+}
+bchk_prov_sec_bond_254() {
+	local p=$1 c=$2 rc=0 pub name v
+	ble_pre "$p" "$c" || return 1
+	ble_begin 1500 "$p" "$c" || return 1
+	pub=$(ble_public "$p"); [ -n "$pub" ] || { echo "FAIL public address of $p unreadable"; ble_end "$p" "$c"; return 1; }
+	name=$(ble_name); echo "name $name, $p public $pub"
+	echo "=== 1 no agent on 04: 02 SC Just Works -> refused"
+	v=$(bond_round "$p" "$c" noagent "$name" "$pub"); echo "noagent: $v"
+	case "$v" in refused:*) echo "PASS no agent: 02's SC Just Works refused ($v)" ;; *) echo "FAIL no agent: $v (want refused)"; rc=1 ;; esac
+	echo "=== 2 flip: an agent on 04 -> paired (else the method cannot see a pairing: the suite is void)"
+	ble_n "$c" 30 central mark-exposed >/dev/null
+	ble_n "$p" 60 periph agent-on || { echo "FAIL agent-on"; rc=1; }
+	v=$(bond_round "$p" "$c" agent "$name" "$pub"); echo "agent: $v"
+	[ "$v" = paired ] && echo "PASS flip: with an agent 02's SC Just Works pairs" || { echo "FAIL flip: $v (want paired) — no negative control, the refusals above prove nothing"; rc=1; }
+	ble_n "$p" 60 periph agent-off || { echo "FAIL agent-off"; rc=1; }
+	echo "=== 3 the agent gone: refused again"
+	v=$(bond_round "$p" "$c" noagent2 "$name" "$pub"); echo "noagent2: $v"
+	case "$v" in refused:*) echo "PASS agent gone: refused again ($v)" ;; *) echo "FAIL agent gone: $v (want refused)"; rc=1 ;; esac
+	echo "=== cleanup: canary, rekey 04 (verified), release, 04 + 02 reboot"
+	ble_canary_both "$p" "$c" prov-sec-bond-254 || rc=1
+	ble_rekey_verified "$p" "$c" || rc=1
+	ble_n "$p" 60 periph snoop-clean >/dev/null
+	ble_end "$p" "$c" || rc=1
+	ble_reboot_committed "$p" || rc=1
+	ble_reboot_committed "$c" || rc=1
+	[ $rc = 0 ] && echo "PASS prov-sec-bond-254" || echo "FAIL prov-sec-bond-254"
+	return $rc
+}
+ble_canary_both() {	# <p> <c> [suite]: the log of that suite so far, through each node's canary (IRK never leaves the node)
+	local p=$1 c=$2 f="$DIR/${3:-ble-pair-sc-only-254}.log" r=0
 	[ -f "$f" ] || f=/dev/null
 	ble_n "$p" 60 periph canary < "$f" || r=1
 	ble_n "$c" 60 central canary < "$f" || r=1

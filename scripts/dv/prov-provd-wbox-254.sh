@@ -26,6 +26,11 @@
 #     the init's next start takes the dir back -> CTRL answers again
 #   adv-len arm 1 (prov-sec-adv-len-254): ADV_LEN_TEST=29 -> judge `adv-len`; with provd held off the air, judge
 #     `latch-neg` (L2's negative: a helper started while nothing registered -> adv_registered_once=0); clear
+#   prov-gatt white box (h23 §6.3 / §4.8.3, F43): GATT_ENCRYPT_CTRL=1 (provd declares CTRL encrypt-read) -> 02 (no bond;
+#     04 runs no agent, 02 has no paired device: the preconditions) reads CTRL -> bluetoothctl "Failed to read:
+#     org.bluez.Error.NotPermitted", STATUS still read (the control), not paired; 04's btmon (the harness's copy): an SMP
+#     Pairing Request and a Pairing Failed, an ATT Error Response 0x0f, no LE Start Encryption. Without the switch
+#     (every other run of 02 read) CTRL reads unencrypted: boot-provd.
 #   L72: judge `nojail` (ujail made non-executable by a bind from this run's wbox dir -> requirejail: no provd)
 #   L83 (two arms): the host stops renewing (= dies) after (1) stopping provd, (2) setting SOCK_ONLY=1 -> provd running
 #     again with a new pid <= 15 s after the lease's expiry (the deadman fires at expiry + 5 s), no test switch, one
@@ -192,6 +197,39 @@ j adv-len
 j latch-neg
 penv clear || no "set-provd-env clear"
 o=$(pl provd-check); grep -q 'PROVD ok' <<< "$o" && ok "switches cleared: $(tail -1 <<< "$o")" || no "after clear: $o"
+
+need_trial "GATT_ENCRYPT_CTRL"
+# ---- prov-gatt white box: CTRL encrypt-read -> an unpaired 02 is refused, after SMP fails
+BTT=${DV_BT_TOOLS:-$HOME/batman-dv-tools/bluez-5.72}
+gatt_wb(){
+	local o e bt
+	[ -f "$BTT/btmon" ] && (cd "$BTT" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1 || { inv "gatt: no verified btmon in $BTT"; return; }
+	o=$(qr 'pidof bluetoothctl'); [ -z "$o" ] || { no "gatt precondition: a bluetoothctl (an agent?) runs on 04 [$o]"; return; }
+	o=$(timeout 30 ssh $SSHO root@$PEER ': | bluetoothctl devices Paired 2>/dev/null' | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g' | grep -c '^Device ')
+	[ "$o" = 0 ] || { no "gatt precondition: 02 has $o paired device(s)"; return; }
+	scp -q $SSHO "$BTT/btmon" root@$NODE:$PCD/btmon.up && q "mv $PCD/btmon.up $PCD/btmon && chmod 0700 $PCD/btmon" || { no "gatt: btmon upload"; return; }
+	[ "$(qr "sha256sum < $PCD/btmon | cut -c1-64")" = "$(awk '{sub(/^\*/, "", $2)} $2 == "btmon" {print $1}' "$BTT/SHA256SUMS")" ] || { no "gatt: btmon sha on 04"; return; }
+	penv GATT_ENCRYPT_CTRL=1 || { no "set-provd-env GATT_ENCRYPT_CTRL=1"; return; }
+	sleep 10
+	q "nohup $PCD/btmon </dev/null >$PCD/gatt.btmon 2>&1 & echo \$! > $PCD/gatt.btmon.pid"
+	o=$(c02 read "$LAST4"); say "gatt: 02 read: $(tr '\n' ' ' <<< "$o")"
+	q "kill -INT \$(cat $PCD/gatt.btmon.pid) 2>/dev/null; sleep 1; rm -f $PCD/gatt.btmon.pid"
+	bt=$(qr "cat $PCD/gatt.btmon"); q "rm -f $PCD/gatt.btmon"
+	e=$(sed -n 's/^ERRS //p' <<< "$o")
+	if [ -z "$(sed -n 's/^STATUS //p' <<< "$o")" ]; then inv "gatt: 02 did not read STATUS (not found / unreadable): no verdict on CTRL"
+	else
+		ok "gatt: STATUS read without encryption (the control)"
+		[ -z "$(sed -n 's/^CTRL //p' <<< "$o")" ] && grep -q 'org.bluez.Error.NotPermitted' <<< "$e" && ok "gatt: CTRL refused: $e" || no "gatt: CTRL [$(sed -n 's/^CTRL //p' <<< "$o")] errors [$e] (want none / NotPermitted)"
+		grep -q '^PAIRED no' <<< "$o" && ok "gatt: 02 not paired after the read" || no "gatt: 02 $(grep '^PAIRED' <<< "$o")"
+	fi
+	say "gatt: btmon SMP / ATT error / encryption lines: $(grep -E 'SMP: |Error Response|Error: |Start Encr|0x08\|0x0019' <<< "$bt" | sed 's/^[[:space:]]*//' | tr -s ' ' | head -12 | tr '\n' '|')"
+	grep -q 'SMP: Pairing Request' <<< "$bt" && ok "gatt btmon: SMP Pairing Request" || no "gatt btmon: no SMP Pairing Request"
+	grep -q 'SMP: Pairing Failed' <<< "$bt" && ok "gatt btmon: SMP Pairing Failed" || no "gatt btmon: no SMP Pairing Failed"
+	grep -A3 'ATT: Error Response' <<< "$bt" | grep -qi '(0x0f)' && ok "gatt btmon: ATT Error Response 0x0f (insufficient encryption)" || no "gatt btmon: no ATT Error Response 0x0f"
+	grep -qE 'LE Start Encr|0x08\|0x0019' <<< "$bt" && no "gatt btmon: an LE Start Encryption" || ok "gatt btmon: no LE Start Encryption"
+	penv clear || no "set-provd-env clear after gatt"
+}
+gatt_wb
 
 need_trial "L72"
 # ---- L72: no ujail -> requirejail keeps provd from starting

@@ -197,6 +197,8 @@ radio_restore() {
 	for _q in $(pidof batman-provhelper); do
 		[ "$(awk '{print $3}' "/proc/$_q/stat" 2>/dev/null)" = T ] && { kill -CONT "$_q"; echo "RESTORED helper $_q SIGCONT"; }
 	done
+	# a helper the helper-down arm stopped (its restore cut off): start it again
+	pidof batman-provhelper >/dev/null || { [ -x /etc/init.d/batman-provhelper ] && lim 60 /etc/init.d/batman-provhelper start >/dev/null 2>&1; echo "RESTORED helper started"; }
 	pidof dbus-daemon >/dev/null || { lim 60 /etc/init.d/dbus start >/dev/null 2>&1; echo "RESTORED dbus started"; }
 	pidof bluetoothd >/dev/null || { lim 60 /etc/init.d/bluetoothd start >/dev/null 2>&1; sleep 3; echo "RESTORED bluetoothd started"; }
 	if _s=$(settings); then
@@ -289,6 +291,7 @@ cmd_release() {
 	lock 30 || die "BLE lock busy for 30 s"
 	lease_valid_for "$RUN_ID" || { unlock; die "lease is not ours or expired"; }
 	dm_cancel_rec "$ST/dm.new" && dm_cancel_rec "$ST/dm" || { unlock; die "could not cancel the deadman"; }
+	kill_run_groups "$RUN_ID"
 	rm -f "$LEASE"
 	[ "$LEASE" = "$BT/lease" ] && provd_start
 	unlock

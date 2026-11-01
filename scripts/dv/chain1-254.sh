@@ -1,7 +1,8 @@
 #!/bin/bash
 # scripts/dv/chain1-254.sh v3 — #254 P1 residual "鏈 1" (docs/design/254-p1-impl.md §5.4 chain 1, steps 1-9) on 04, from Git Bash.
 #   1 snap (+ mesh markers moved into the snapshot)   2 p5 idle   3 p5 mkfs   4 hold + apply V to B (unseeded) + reboot
-#   5 HELD fresh trial on B: unclaimed assertions     6 gate (L44) + wsl.9 negative control; dead-man; release -> B committed
+#   5 HELD fresh trial on B: unclaimed assertions, and (P2 image) 02 reads STATUS over BLE = unclaimed, updating, the
+#     serial's last 4 (h23 §6.3 prov-firstboot-254, provd side)     6 gate (L44) + wsl.9 negative control; dead-man; release -> B committed
 #   7 unclaimed OTA: 7.1 negative (platform.sh without prov-lock.sh in RAMFS_COPY_DATA -> stage 2 dies on "not seeded",
 #     A untouched)  7.2 positive (A HELD unclaimed trial)  7.3 back_to_b
 #   8 claim on B (lab key first, publickey PROVEN by ssh -v) -> LOCKED + p5 seeded -> claimed OTA into A (HELD,
@@ -222,6 +223,8 @@ chmod 700 $BASE/ch1-deadman.sh; rm -f $BASE/ch1.cancel $BASE/ch1.fired $BASE/ch1
 STAGED=1; say "dead-man staged (snapshot p5 sha $SNAPSHA)"
 # ======== 2-4. p5 idle -> mkfs -> hold + apply (unseeded) -> controlled reboot
 PH=s2-4
+# the serial's last 4 (STATUS key 5 of the fresh trial; the identity survives: step 5 idsame=y)
+LAST4=$(q 'tr -d "\n" < /etc/batman-prov/identity/sn | tail -c 4'); HASPROVD=$(q '[ -x /usr/bin/batman-provd ] && echo y || echo n')
 o=$(q "grep -c ' /dev/mmcblk0p5 ' /proc/mounts; ps w | grep -c '[b]atman-config-save'"); [ "$(echo $o)" = "0 0" ] && ok "p5 idle" || abort "p5 busy: $(echo $o)"
 o=$(q "mkfs.ext4 -F -q -L batconfig /dev/mmcblk0p5 && echo MKFS-OK; $P5RO"); say "p5 after mkfs: $(echo $o)"
 case "$o" in *MKFS-OK*"seeded=n"*) ok "p5 empty, not seeded";; *) abort "mkfs";; esac
@@ -244,6 +247,17 @@ say "trial: $(echo $x)"
 case "$x" in *"ifaces="[1-9]*) ok "trial: iw lists interfaces";; *) no "trial: iw lists no interface (ap/mesh counts meaningless)";; esac
 for w in "ap=0" "mesh=0" "meta=unclaimed" "idmode=drwx------" "seeded=n" "prov_files=7" "metastat=[ok unclaimed]" "ident=ok" "idsame=y"; do case "$x" in *"$w"*) ok "trial: $w";; *) no "trial: want $w";; esac; done
 case "$x" in *"helper7=[rc=7 "*"persist rc=0]"*) ok "trial: helper boot rc=7 ... persist rc=0";; *) no "trial: helper rc=7 / persist rc=0 not logged";; esac
+# provd side: the exact STATUS (provd server.go Status): {1:[1,0], 2:["halow"], 3:0 unclaimed, 4:true trial, 5:last4}
+if [ "$HASPROVD" = y ]; then
+	case "$LAST4" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) no "trial: the serial's last 4 unreadable before the reboot [$LAST4]";; esac
+	want="a50182010002816568616c6f77030004f50564$(printf '%s' "$LAST4" | od -An -tx1 | tr -d ' \n')"
+	o=$(timeout 300 ssh $SSHO root@$PEER sh -s -- read "$LAST4" < "$REPO/scripts/node/prov-p2-central-254.sh" 2>&1 | tr -d '\r')
+	say "trial: 02 BLE read $((SECONDS - t0)) s after the reboot: $(echo $o)"
+	sv=$(sed -n 's/^STATUS //p' <<< "$o")
+	[ "$sv" = "$want" ] && ok "trial: 02 read STATUS over BLE = unclaimed, updating=1, last4 $LAST4 ($sv)" || no "trial: STATUS over BLE [$sv] (want $want)"
+	grep -q '^PAIRED no' <<< "$o" && ok "trial: 02 read it without pairing" || no "trial: 02 $(grep '^PAIRED' <<< "$o")"
+elif [ "$HASPROVD" = n ]; then no "trial: pre-P2 image (no batman-provd) — the provd-side assertions did not run"
+else no "trial: cannot tell whether 04 has batman-provd [$HASPROVD] — the provd-side assertions did not run"; fi
 # ======== 6. gate (L44) on the same HELD trial + wsl.9 negative control; dead-man on B; release -> committed
 PH=s6
 fq "mkdir -p -m 0700 /tmp/run/batman-dv" >/dev/null; scp -q $FRESHO "$WSL9_SLOT" root@"$FIP":/tmp/run/batman-dv/batman-slot.wsl9 || abort "upload wsl.9 batman-slot"
