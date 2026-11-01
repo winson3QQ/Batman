@@ -101,7 +101,9 @@ for p in "$D"/*.patch; do
 	# (helper-exit1 did, 2026-11-01) -> refused; a helper replacement installs over the Go binary instead
 	grep -q '^-.*GoPackage/Package/Install/Bin' "$p" && err "$name: removes the GoPackage/Package/Install/Bin line (that also drops batman-provd) — install over the helper instead"
 	# an added (non-comment) install line onto the helper's path = the helper binary is replaced
-	grep -qE '^\+[[:space:]]*[^#[:space:]].*\$\(INSTALL_BIN\) .* \$\(1\)/usr/bin/batman-provhelper$' "$p" && kind=helper
+	# (no # before $(INSTALL_BIN) = not a comment; f4a0c80's "[^#[:space:]].*" needed a char BEFORE it and missed the
+	# plain line — test-lint-wbox's "installed over the Go helper binary" case went 39/0 -> 38/1)
+	grep -qE '^\+[^#]*\$\(INSTALL_BIN\) .* \$\(1\)/usr/bin/batman-provhelper$' "$p" && kind=helper
 	echo "$name $tag $kind" >> "$want"
 done
 [ "$n" -gt 0 ] || err "no tests/wbox/*.patch at all"
