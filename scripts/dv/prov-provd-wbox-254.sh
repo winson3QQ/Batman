@@ -219,11 +219,16 @@ gatt_wb(){
 	q "kill -INT \$(cat $PCD/gatt.btmon.pid) 2>/dev/null; sleep 1; rm -f $PCD/gatt.btmon.pid"
 	bt=$(qr "$PCD/btmon -r $PCD/gatt.snoop 2>&1"); q "rm -f $PCD/gatt.snoop"
 	[ "$(grep -c . <<< "$bt")" -gt 5 ] || inv "gatt: the btmon capture is empty ($(grep -c . <<< "$bt") lines)"
-	e=$(sed -n 's/^ERRS //p' <<< "$o")
+	e=$(sed -n 's/^ERRS //p' <<< "$o"); el=$(sed -n 's/^ERRLINES //p' <<< "$o")
 	if [ -z "$(sed -n 's/^STATUS //p' <<< "$o")" ]; then inv "gatt: 02 did not read STATUS (not found / unreadable): no verdict on CTRL"
 	else
 		ok "gatt: STATUS read without encryption (the control)"
-		[ -z "$(sed -n 's/^CTRL //p' <<< "$o")" ] && grep -q 'org.bluez.Error.NotPermitted' <<< "$e" && ok "gatt: CTRL refused: $e" || no "gatt: CTRL [$(sed -n 's/^CTRL //p' <<< "$o")] errors [$e] (want none / NotPermitted)"
+		# 02's bluetoothctl 5.72 does not print h23 §600 item 11's "Failed to read: org.bluez.Error.NotPermitted": it prints
+		# the SMP failure ("hci0 <addr> auth failed with status 0x05", 04 wbox 2026-11-01, two runs). Either counts as 02's
+		# refusal; the verdict on the air is 04's btmon below (SMP Pairing Request / Failed, ATT 0x0f, no encryption)
+		if [ -n "$(sed -n 's/^CTRL //p' <<< "$o")" ]; then no "gatt: CTRL read without pairing: [$(sed -n 's/^CTRL //p' <<< "$o")]"
+		elif grep -q 'org.bluez.Error.NotPermitted' <<< "$e" || grep -q 'auth failed with status' <<< "$el"; then ok "gatt: CTRL refused, 02: ${e#-}${el}"
+		else no "gatt: CTRL empty but 02 shows no refusal (errors [$e] lines [$el])"; fi
 		grep -q '^PAIRED no' <<< "$o" && ok "gatt: 02 not paired after the read" || no "gatt: 02 $(grep '^PAIRED' <<< "$o")"
 		say "gatt: btmon SMP / ATT error / encryption lines: $(grep -E 'SMP: |Error Response|Error: |Start Encr|0x08\|0x0019' <<< "$bt" | sed 's/^[[:space:]]*//' | tr -s ' ' | head -12 | tr '\n' '|')"
 		grep -q 'SMP: Pairing Request' <<< "$bt" && ok "gatt btmon: SMP Pairing Request" || no "gatt btmon: no SMP Pairing Request"
