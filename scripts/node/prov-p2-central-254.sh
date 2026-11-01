@@ -40,12 +40,19 @@ exec 8>"$D/p2c.lock"
 _w=0; until flock -n 8; do _w=$((_w + 1)); [ $_w -ge 200 ] && { echo "FAIL 02: another central session held the lock for 200 s"; exit 1; }; sleep 1; done
 # the watchdog must not hold the lock: its `sleep` would inherit fd 8 and keep 02 locked 270 s after this session
 # ended (04 smoke run 2026-11-02: sec-dbus's watch waited 200 s for the lock its own hold had left)
+# kill -TERM 0 = this ssh session's process group (dropbear setsid()s each connection: svr-main.c:334, so its own
+# per-connection child is in it too — harmless, the session is over); a chain1 read runs under setsid: its own group
 ( exec 8>&-; sleep 270 & s=$!; trap 'kill $s 2>/dev/null; exit 0' TERM; wait $s && kill -TERM 0 ) & WD=$!	# TERM (our EXIT) takes its sleep along
 # a chain1 STATUS reader left on 02 by a run that ended early would keep connecting to 04 and satisfy other units'
 # "04 logged a connection" witnesses: anyone but the reader itself stops it first
 if [ "${BATMAN_DV_C1R:-0}" != 1 ]; then
+	# by cmdline, not a pid file (it may be stale and the pid reused): the loop and an in-flight read both name the
+	# reader dir and are setsid group leaders, so their groups (bluetoothctl included) go (round-2 B m4 / m5)
 	for _r in "$D"/ch1-*; do [ -d "$_r" ] || continue
-		[ -f "$_r/pid" ] && kill "$(cat "$_r/pid")" 2>/dev/null; rm -rf "$_r"; echo "NOTE stopped a leftover chain1 reader ($_r)" >&2
+		for _p in $(grep -l "$_r/" /proc/[0-9]*/cmdline 2>/dev/null | cut -d/ -f3); do
+			[ "$_p" = $$ ] && continue; kill -TERM -- "-$_p" 2>/dev/null; kill -TERM "$_p" 2>/dev/null
+		done
+		rm -rf "$_r"; echo "NOTE stopped a leftover chain1 reader ($_r)" >&2
 	done
 fi
 clean() { sed 's/\x1b\[[0-9;]*m//g; s/\r//g'; }

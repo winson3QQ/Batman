@@ -39,6 +39,21 @@ mkdir -p "$W/hang"; printf '#!/bin/sh\n[ "$1" = bluetoothd ] && { echo 4242; exi
 t0=$(date +%s); o=$(PATH="$W/hang:$PATH" timeout 60 sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; settings; echo rc=\$?"); t1=$(date +%s)
 case "$o" in *rc=1) [ $((t1 - t0)) -le 45 ] && tok "settings: a hanging bluetoothctl -> rc 1 after $((t1 - t0)) s (no hang)" || tbad "settings with a hanging bluetoothctl took $((t1 - t0)) s" ;; *) tbad "settings with a hanging bluetoothctl: [$o] after $((t1 - t0)) s" ;; esac
 pkill -f "$W/hang/bluetoothctl" 2>/dev/null
+# 02's central watchdog must not keep the session lock (ed0cf33): the REAL line from prov-p2-central-254.sh (270 s ->
+# 3 s) under dash, whose sleep forks like the node's busybox (no ASH_SLEEP; WSL busybox's builtin sleep hides it).
+# A session that ends at once must leave the lock free; the e4efc29 line must not (the negative control).
+if command -v dash >/dev/null && command -v flock >/dev/null; then
+	wd_try(){	# <watchdog line> -> "free" / "held": is the lock free right after a session that ended at once?
+		printf '%s\n' "trap 'kill \"\$WD\" 2>/dev/null' EXIT" "exec 8>'$W/wd.lock'; flock -n 8 || exit 1" "$1" "sleep 1" > "$W/wd.sh"	# a real session runs >= 1 s: the watchdog's sleep is forked by then
+		dash "$W/wd.sh"; sleep 0.5
+		dash -c "exec 8>'$W/wd.lock'; flock -n 8" && echo free || echo held
+		sleep 4	# let the old line's orphan sleep end before the next case
+	}
+	new=$(grep '^( exec 8>&-; sleep 270' "$REPO/scripts/node/prov-p2-central-254.sh" | sed 's/sleep 270/sleep 3/')
+	[ -n "$new" ] || tbad "watchdog: the line was not found in prov-p2-central-254.sh"
+	[ "$(wd_try "$new")" = free ] && tok "central watchdog: the lock is free right after the session (dash, forking sleep)" || tbad "central watchdog keeps 02's lock after the session"
+	[ "$(wd_try '( sleep 3; kill -TERM 0 ) & WD=$!')" = held ] && tok "central watchdog negative control: the e4efc29 line keeps the lock (the test sees it)" || tbad "watchdog negative control: the e4efc29 line left the lock free — the test cannot see the bug"
+else tbad "watchdog test needs dash and flock on the host"; fi
 # the helper-down backoff judge on real and broken sequences (tests/judges/helper-down-backoff.py)
 o=$(python3 "$REPO/tests/judges/helper-down-backoff.py" "$REPO/scripts/node/prov-p2-254.sh" 2>&1) && tok "helper-down backoff judge: 7 sequences judged as expected" || tbad "helper-down backoff judge: $(grep FAIL <<< "$o" | head -3 | tr '\n' '|')"
 

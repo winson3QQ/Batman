@@ -391,8 +391,12 @@ pr_release(){
 	local o
 	# a person takes over (NEEDS-PERSON): the node is left exactly as it is for them, only the lease goes (review B-M3:
 	# a radio / provd / helper restore here would be a second writer on a half-restored node)
-	if [ "${PR_PERSON:-0}" != 1 ]; then
-		o=$(pw unbind-all 2>/dev/null); grep -q 'UNBIND-ALL ok' <<< "$o" || no "unbind-all after the run: $(echo $o)"
+	# the harness's own binds go either way: a bind over /sbin/ujail would block every jailed daemon for the person, and no
+	# restore resource is a harness bind (round-2 B m2)
+	o=$(pw unbind-all 2>/dev/null); grep -q 'UNBIND-ALL ok' <<< "$o" || no "unbind-all after the run: $(echo $o)"
+	if [ "${PR_PERSON:-0}" = 1 ]; then
+		say "left for the person (read-only): $(pl provd-check | tr '\n' ' ') $(pl state | tr '\n' ' ')"
+	else
 		q "rm -rf /tmp/run/batman-prov-test $PCD; rm -f $PR_PAY"
 		# an H3 judge arm cut off before its own restore (review A-M1 / B-M1): the same restore as the deadman's, here too
 		o=$(pl radio-restore); grep -q '^RESTORED' <<< "$o" && no "radio state left changed by the run, restored: $(grep '^RESTORED' <<< "$o" | tr '\n' '|')"
@@ -401,9 +405,10 @@ pr_release(){
 	fi
 	# a lease that is no longer ours expired mid-run, and the deadman restored the node behind the unit (review A-M2)
 	o=$(pl release); grep -q RELEASED <<< "$o" && say "lease released" || no "lease release failed — it expired during the run? ($(echo $o))"
-	if [ "${PR_DM_EXPECTED:-0}" != 1 ]; then
-		o=$(qr "grep -c 'run=$RUN prov deadman' /opt/batdata/log/ble-dm-254.log 2>/dev/null"); [ "${o:-0}" = 0 ] || no "the prov deadman acted during the run ($o line(s) for run $RUN in ble-dm-254.log)"
-	fi
+	# PR_DM_BASE: deadman lines an arm caused on purpose (the L83 arms set it after their own); only lines beyond it count,
+	# so a deadman that fires later in the run (e.g. during the restore) is still a FAIL (round-2 review A)
+	o=$(qr "grep -c 'run=$RUN prov deadman' /opt/batdata/log/ble-dm-254.log 2>/dev/null")
+	[ "${o:-0}" -le "${PR_DM_BASE:-0}" ] || no "the prov deadman acted during the run ($o line(s) for run $RUN in ble-dm-254.log, ${PR_DM_BASE:-0} expected)"
 	PR_BEGUN=0; pr_unlock
 }
 pr_abort(){
@@ -484,7 +489,7 @@ pr_p9(){	# the P9 subset of pr_begin: S0 slot condition, nothing left of an earl
 	case "$o" in *"dirty=[] norm=[] binds=0 kpdir=0 marker=0 helper=up "*) ;; *) echo "FAIL leftovers of an earlier run / helper not up: $o"; r=1 ;; esac
 	# an H3 judge arm cut off before its restore (review B-M1): SIGSTOPped helper, hci0 off, bondable on
 	o=$( { cat "$REPO/scripts/node/ble-lib-254.sh"; echo 'radio_clean && echo RADIO-CLEAN'; } | timeout 60 ssh $SSHO root@$NODE sh -s 2>&1 | tr -d '\r')
-	grep -qx RADIO-CLEAN <<< "$o" || { echo "FAIL radio / helper left changed by an earlier run (run: RUN_ID=x sh <staged>/prov-lease-254.sh radio-restore): $(grep '^FAIL' <<< "$o" | tr '\n' '|')"; r=1; }
+	grep -qx RADIO-CLEAN <<< "$o" || { echo "FAIL radio / helper left changed by an earlier run (radio-restore needs a lease: RUN_ID=x sh <staged>/prov-lease-254.sh acquire 300, then radio-restore, then release): $(grep '^FAIL' <<< "$o" | tr '\n' '|')"; r=1; }
 	nb02 || { echo "FAIL 02 ($PEERMAC) is not a mesh neighbour of 04 (neighbours: $(field "$o" peers))"; r=1; }
 	return $r
 }

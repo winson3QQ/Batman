@@ -94,7 +94,9 @@ STAGED=0; SNAPPED=0; RESULT=FAIL; RESTORING=0
 mkdir "$LOCKD" 2>/dev/null || { echo "another dv run holds $LOCKD"; exit 1; }
 # an unexpected exit after the snapshot (set -u, a bug) still restores (review A-M1)
 # the 02 STATUS reader (step 2-4) goes on every exit; 02 unreachable -> the next central session on 02 stops it
-c1r_stop(){ [ -n "${P02_U0:-}" ] && timeout 20 ssh $SSHO root@$PEER "kill \$(cat $C1R/pid) 2>/dev/null; rm -rf $C1R" >/dev/null 2>&1; P02_U0=""; }
+# on 02: every process naming the reader dir (the loop and an in-flight read, both setsid group leaders) with its group
+C1RKILL='for p in $(grep -l "@D@/" /proc/[0-9]*/cmdline 2>/dev/null | cut -d/ -f3); do [ "$p" = $$ ] && continue; kill -TERM -- -$p 2>/dev/null; kill -TERM $p 2>/dev/null; done'
+c1r_stop(){ [ -n "${P02_U0:-}" ] && timeout 20 ssh $SSHO root@$PEER "${C1RKILL//@D@/$C1R}; rm -rf $C1R" >/dev/null 2>&1; P02_U0=""; }
 on_exit(){ local rc=$?; c1r_stop; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; restore_all "unexpected exit"; fi
 	rmdir "$LOCKD" 2>/dev/null; MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- rm -rf "$WSLK" 2>/dev/null; say "CHAIN1 RESULT: $RESULT (fails=$fails)"; }
 trap on_exit EXIT
@@ -235,7 +237,7 @@ if [ "$HASPROVD" = y ]; then
 	# 3600 s, then it ends by itself (a run that aborts leaves nothing behind on 02 for long); no state change on 02
 	o=$(timeout 30 ssh $SSHO root@$PEER "mkdir -p -m 0700 /tmp/run/batman-dv && mkdir -m 0700 $C1R && cat > $C1R/c.sh && echo PUT" < "$REPO/scripts/node/prov-p2-central-254.sh" 2>/dev/null | tr -d '\r')
 	[ "$o" = PUT ] || abort "02: could not place the STATUS reader"
-	timeout 30 ssh $SSHO root@$PEER "setsid sh -c 'e=\$((\$(cut -d. -f1 /proc/uptime) + 3600)); while [ \$(cut -d. -f1 /proc/uptime) -lt \$e ]; do o=\$(BATMAN_DV_C1R=1 setsid sh $C1R/c.sh read - 2>/dev/null | sed -n \"s/^STATUS //p\"); echo \"\$(cut -d. -f1 /proc/uptime) \${o:--}\" >> $C1R/status.log; sleep 5; done' </dev/null >/dev/null 2>&1 & echo \$! > $C1R/pid" >/dev/null 2>&1
+	timeout 30 ssh $SSHO root@$PEER "setsid sh -c 'e=\$((\$(cut -d. -f1 /proc/uptime) + 3600)); while [ \$(cut -d. -f1 /proc/uptime) -lt \$e ]; do o=\$(BATMAN_DV_C1R=1 setsid sh $C1R/c.sh read - 2>/dev/null | sed -n \"s/^STATUS //p\"); echo \"\$(cut -d. -f1 /proc/uptime) \${o:--}\" >> $C1R/status.log; sleep 5; done' </dev/null >/dev/null 2>&1 &" >/dev/null 2>&1
 	P02_U0=$(timeout 15 ssh $SSHO root@$PEER 'cut -d. -f1 /proc/uptime' 2>/dev/null | tr -d '\r'); P02_S0=$SECONDS
 	case "$P02_U0" in ''|*[!0-9]*) abort "02 uptime unreadable (the reader's clock)";; esac
 	say "02 STATUS reader started (02 uptime $P02_U0 = host +$P02_S0 s)"
@@ -392,7 +394,7 @@ fi
 restore_all "step 9" || { RESULT="RESTORE FAILED — needs a person"; exit 1; }
 p=$(timeout 30 ssh $SSHO root@$PEER "$ST" 2>/dev/null | tr -d '\r'); say "02 after: [$p]"
 if [ "$HASPROVD" = y ] && [ -n "$P02_U0" ]; then
-	sl=$(timeout 30 ssh $SSHO root@$PEER "kill \$(cat $C1R/pid) 2>/dev/null; cat $C1R/status.log; rm -rf $C1R" 2>/dev/null | tr -d '\r')
+	sl=$(timeout 30 ssh $SSHO root@$PEER "${C1RKILL//@D@/$C1R}; cat $C1R/status.log; rm -rf $C1R" 2>/dev/null | tr -d '\r')
 	# +90 s: a read that started before the reboot may finish (and be logged) just after it, with the old value
 	lo=$((P02_U0 + t0 + 90 - P02_S0)); hi=$((P02_U0 + ${T5E:-0} - P02_S0))
 	say "02 reader: $(grep -c . <<< "$sl") reads; trial window = 02 uptime $lo..$hi"

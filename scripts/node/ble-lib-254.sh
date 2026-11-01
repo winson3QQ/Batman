@@ -40,7 +40,10 @@ scratch() {
 # on a timeout the whole process tree goes, children first: killing only "$@" leaves e.g. the bluetoothctl of an
 # `sh -c ': | bluetoothctl …'` holding the caller's $(…) pipe open, and the caller hangs anyway (review B-M2; the
 # test-dv-ble-254 hang case caught it)
-lim_kill() { local _c; for _c in $(grep -l "^PPid:[[:space:]]*$1\$" /proc/[0-9]*/status 2>/dev/null | cut -d/ -f3); do lim_kill "$_c"; done; kill "$1" 2>/dev/null; }
+# TERM first, then KILL what is still there 2 s later (a bluetoothctl outside its mainloop may ignore TERM: round-2
+# review B m3; nothing in such a tree holds hardware, so the no-SIGKILL rule does not apply)
+lim_tree() { local _c; for _c in $(grep -l "^PPid:[[:space:]]*$1\$" /proc/[0-9]*/status 2>/dev/null | cut -d/ -f3); do lim_tree "$_c"; done; echo "$1"; }
+lim_kill() { local _ps _q; _ps=$(lim_tree "$1"); kill $_ps 2>/dev/null; sleep 2; for _q in $_ps; do [ -d "/proc/$_q" ] && kill -KILL "$_q" 2>/dev/null; done; return 0; }
 lim() {
 	_t=$1; shift; "$@" & _p=$!; _n=0
 	while [ -d "/proc/$_p" ] && [ $_n -lt "$_t" ]; do sleep 1; _n=$((_n + 1)); done
@@ -188,9 +191,10 @@ p2_judges() {
 		tr '\0' '\n' < "/proc/$_q/environ" 2>/dev/null | grep -qx 'BATMAN_DV_P2=1' && echo "$_q"
 	done
 }
-radio_restore() {
-	# a judge still running (its ssh cut off) would change things again behind this restore: stop it first — TERM makes
-	# it exit through its own EXIT restore; up to 15 s, then KILL (a judge holds no hardware)
+# stop_judges: a judge still running (its ssh cut off) would change things again behind any restore: stop it first —
+# TERM makes it exit through its own EXIT restore; up to 15 s, then KILL (a judge holds no hardware); then SIGCONT a
+# helper it left stopped. The deadman calls this before anything else, also when a restore is in progress (m1).
+stop_judges() {
 	_j=$(p2_judges)
 	if [ -n "$_j" ]; then
 		kill -TERM $_j 2>/dev/null; _n=0
@@ -201,6 +205,10 @@ radio_restore() {
 	for _q in $(pidof batman-provhelper); do
 		[ "$(awk '{print $3}' "/proc/$_q/stat" 2>/dev/null)" = T ] && { kill -CONT "$_q"; echo "RESTORED helper $_q SIGCONT"; }
 	done
+	return 0
+}
+radio_restore() {
+	stop_judges
 	# a btmon the H3 units started with setsid from a provclient dir (gatt / rpa capture; the host gone mid-arm): SIGINT
 	for _q in $(pidof btmon); do case "$(readlink "/proc/$_q/exe" 2>/dev/null)" in /tmp/run/batman-dvpc.*/btmon*)
 		kill -INT "$_q"; echo "RESTORED stopped harness btmon $_q" ;; esac; done

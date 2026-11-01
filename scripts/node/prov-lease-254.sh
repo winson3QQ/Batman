@@ -30,6 +30,8 @@ cmd_stage_check() {
 	sha256sum "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$SELF" | sed "s#$DIR/##"
 }
 role_fire_restore() {	# $1 run (or "recover")
+	# a cut-off judge first: it could kill provd / stop bluetoothd / set bondable after anything below (round-2 B m1)
+	stop_judges | while IFS= read -r l; do dm_log "$1" "prov deadman: $l"; done
 	dm_log "$1" "prov deadman: unbind-all, killpoint dir, harness helper copy in the upper"
 	[ -f "$DIR/prov-wbox-254.sh" ] && RUN_ID=$1 lim 120 sh "$DIR/prov-wbox-254.sh" unbind-all >/dev/null 2>&1
 	rm -rf /tmp/run/batman-prov-test

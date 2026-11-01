@@ -262,7 +262,6 @@ need_trial "L83"
 # ---- L83: the host dies after it (1) stopped provd, (2) started it with SOCK_ONLY; the deadman puts provd back
 l83(){	# <label> <setup>
 	local p0 o ex p t u x
-	PR_DM_EXPECTED=1	# this arm makes the deadman fire on purpose: pr_release must not count its lines as a failure
 	eval "$2" || { no "L83 $1: setup"; return 1; }
 	p0=$(provd_pid_q); say "L83 $1: provd pid [${p0:-none}]; no renew from here (lease 40 s, deadman at expiry + 5 s)"
 	pr_lease_renew +40 || return 1
@@ -283,6 +282,8 @@ l83(){	# <label> <setup>
 	case "$o" in *"PROVD ok pid="*) ok "L83 $1: $o (no test switch, one instance)" ;; *) no "L83 $1: $o" ;; esac
 	o=$(pl acquire 1800); grep -q '^LEASE ' <<< "$o" || { no "L83 $1: re-acquire: $o"; return 1; }
 	PR_DEADLINE=$(( $(mono) + 1800 ))
+	# this arm made the deadman fire on purpose: its lines so far are expected, any later one is not (pr_release)
+	PR_DM_BASE=$(qr "grep -c 'run=$RUN prov deadman' /opt/batdata/log/ble-dm-254.log 2>/dev/null"); PR_DM_BASE=${PR_DM_BASE:-0}
 }
 l83 "provd stopped" 'q "/etc/init.d/batman-provd stop" >/dev/null; [ -z "$(provd_pid_q)" ]'
 l83 "SOCK_ONLY" 'penv SOCK_ONLY=1'
