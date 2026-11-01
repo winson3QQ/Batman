@@ -292,8 +292,14 @@ suite known-failures-file "every scripts/validation-known-failures.txt entry has
 if [ "$DNODE0" = 10.41.1.3 ]; then
   suite prov-sock-254 "who may talk to the helper socket: root / provd uid allowed, others refused, provclient placement (#254 tier A)" "bchk_prov_254 $DNODE0 prov-sock-254"
   suite prov-sec-254 "helper uid, socket dir root:471 0750, helper.sock 0660, node.key 0600; negative controls — STATE-CHANGING: stops / restarts the helper, plants a socket dir (under the prov lease; review B-m9) (#254)" "bchk_prov_254 $DNODE0 prov-sec-254"
+  # H3 (254-h23 §6.3): batman-provd on the committed image; STATE-CHANGING but self-restoring, under the prov lease
+  suite prov-boot-provd-254 "provd uid 471 in ujail, no caps, no test switch, adv latch, one instance; 02 finds it by UUID with no name, reads CTRL / STATUS unpaired, a link withdraws / re-registers; stop keeps the latch (L2); bondable withdraws <= 9.5 s (L67) (#254 H3)" "bchk_prov_254 $DNODE0 prov-provd-254 boot-provd"
+  suite prov-respawn-254 "kill -9 provd x5: procd respawn <= 15 s, instance back, info.state unchanged; a held 02 link is dropped <= 15 s by the new provd (L8, L80) (#254 H3)" "bchk_prov_254 $DNODE0 prov-provd-254 respawn"
+  suite prov-dep-restart-254 "helper / bluetoothd restart / bluetoothd kill -9 / dbus restart / hci0 power: provd advertises again <= 15 s; SIGSTOPped helper -> withdrawn <= 65 s (L9-L11, L65, L71, L73) (#254 H3)" "bchk_prov_254 $DNODE0 prov-provd-254 dep-restart"
+  suite prov-sec-dbus-254 "dbus policy of user provd: Properties.Get allowed, RegisterAgent / Pair / Set Pairable / StartDiscovery / RemoveDevice / Introspect / UpdateActivationEnvironment AccessDenied (needs scripts/dv-dbus-tools.sh) (#254 H3)" "bchk_prov_254 $DNODE0 prov-provd-254 sec-dbus"
 else
   na prov-sock-254 "the prov units are 04-specific and DNODE is $DNODE0"; na prov-sec-254 "the prov units are 04-specific and DNODE is $DNODE0"
+  for s in prov-boot-provd-254 prov-respawn-254 prov-dep-restart-254 prov-sec-dbus-254; do na "$s" "the prov units are 04-specific and DNODE is $DNODE0"; done
 fi
 if [ "$FEATURE_MODE" != --destructive ]; then
   suite prov-normalise-254 "#254 prov tier B — needs FEATURE_MODE=--destructive" ""

@@ -1,0 +1,194 @@
+#!/bin/bash
+# scripts/dv/prov-provd-wbox-254.sh — #254 H3 tier-B unit prov-provd-wbox-254: the batman-provd white-box arms that need
+# the prov_test build (docs/design/254-h23-harness.md §6.3, 254-p2-impl.md §4.6 / §5 / §9). V = the P2 release
+# committed on 04; the unit holds V's `-wbox test` build in the B trial and runs, in that trial:
+#   L39 (prov-provd-dos-254): no "HELD" yet when the first kill goes out (else INVALID: the decision was already made);
+#     provd SIGKILLed 10 times, 10 s apart, each kill finding a provd; 02 reads 04 twice meanwhile (recorded: with provd
+#     killed every 10 s a read may miss it) -> the trial still ends "is healthy and HELD" (health does not look at
+#     provd); provd back on its own afterwards (provd_check, no restart). Over BLE the spec's oversize frames are not
+#     sent: 02's bluetoothctl writes are bounded by the ATT MTU — the oversize limits are judged on gatt.sock below,
+#     an over-the-air oversize write is on the app checklist.
+#   STATUS in the trial: 02 reads key 4 = true (updating=1) and key 5 = 04's last4 — the provd side of
+#     prov-firstboot-254 / L21
+#   SOCK_ONLY (set-provd-env SOCK_ONLY=1): judge `sock-only`; over gatt.sock (provclient proxy as 471) CTRL -> 0xC0 ‖
+#     {1:1,2:0,3:244,4:8192} and STATUS -> 0xC1 ‖ map; uid 65534 gets "permission denied" (provd 0700 dir)
+#   sec-hog / sec-oversize, the sock part (L66): two silent connections hold both slots and a third is refused at
+#     once; a silent connection is closed after the 10 s handshake limit (9-14 s); a 513 B frame closes the connection
+#     at once (a 512 B start frame does not: control); a message over 8192 B in 509 B frames closes it at the 17th
+#     frame (16 frames do not: control). "2 sock + 1 BLE": not possible here (SOCK_ONLY has no BLE) — 3 sock.
+#   20 handshakes / min (L66; review A-M9): provd answers every first message with a msg2 (a real one or the fake one,
+#     noise.go Respond) unless the global rate is spent: 20 one-frame messages each get an answer, the 21st within the
+#     same minute is closed with none; 61 s after the first, a 22nd is answered again (control). Eviction of an older
+#     unauthenticated session and the 30 s idle limit need a finished handshake (anonymous NX): on the app checklist.
+#   sockdir (h23 §4.8.2, F-P42; review A-M3 / B-M5): judge `sockdir-owner` (root:root 0755 — open succeeds, only the
+#     owner / mode check refuses) and `sockdir-link` (a symlink to a provd 0700 decoy — O_NOFOLLOW refuses); each time
+#     the init's next start takes the dir back -> CTRL answers again
+#   adv-len arm 1 (prov-sec-adv-len-254): ADV_LEN_TEST=29 -> judge `adv-len`; with provd held off the air, judge
+#     `latch-neg` (L2's negative: a helper started while nothing registered -> adv_registered_once=0); clear
+#   L72: judge `nojail` (ujail made non-executable by a bind from this run's wbox dir -> requirejail: no provd)
+#   L83 (two arms): the host stops renewing (= dies) after (1) stopping provd, (2) setting SOCK_ONLY=1 -> provd running
+#     again with a new pid <= 15 s after the lease's expiry (the deadman fires at expiry + 5 s), no test switch, one
+#     advertising instance (provd_check)
+# then back_to_a and pr_end (restore, B back to V). Negative controls (PR evidence, by hand, using this file's l83):
+# the staged deadman's `provd_restart` replaced by `provd_start` -> arm 2 FAILs; set-provd-env on a release image ->
+# refused. Type: hold / A / F. Side effects: 04 ~55 min (B rewritten twice, 4 reboots), 02 ~4 BLE links to 04.
+set -u
+PR_UNIT=prov-provd-wbox-254
+# shellcheck source=scripts/dv/prov-254.sh
+. "$(dirname "$0")/prov-254.sh"
+P2J="$REPO/scripts/node/prov-p2-254.sh"; P2C="$REPO/scripts/node/prov-p2-central-254.sh"
+GS=/tmp/run/batman-provd-test/gatt.sock
+CTRLX=c0a4010102000318f404192000
+j(){	# <arm> [arg] [ssh limit s]: the judge on 04
+	local o l
+	o=$(cat "$REPO/scripts/node/ble-lib-254.sh" "$P2J" | timeout "${3:-600}" ssh $SSHO root@$NODE BATMAN_DV_P2=1 sh -s -- "$1" ${2:+"$2"} 2>&1 | tr -d '\r')
+	while IFS= read -r l; do case "$l" in
+		PASS\ *) ok "$1: ${l#PASS }" ;; FAIL\ *) no "$1: ${l#FAIL }" ;; INVALID\ *) inv "$1: ${l#INVALID }" ;; INFO\ *) say "$1: ${l#INFO }" ;; esac
+	done <<< "$o"
+	grep -q "^PROV-P2 $1 fails=" <<< "$o" || no "$1: the judge did not finish ($(tail -2 <<< "$o" | tr '\n' '|'))"
+}
+c02(){ timeout 300 ssh $SSHO root@$PEER sh -s -- "$@" < "$P2C" 2>&1 | tr -d '\r'; }
+penv(){ local o; o=$(pw set-provd-env "$@"); say "set-provd-env $*: $o"; grep -q '^PROVD-ENV pid=' <<< "$o"; }
+k5(){ printf '0564%s' "$(printf '%s' "$1" | od -An -tx1 | tr -d ' \n')"; }
+# px <uid> <seconds stdin stays open> <hex lines...>: proxy to gatt.sock; prints the reply lines, then "T=<ms> rc=<rc>"
+# with T timed ON the node from the connect to the socket closing (the host pipeline also waits for its own sleep)
+PXR='a=$(cut -d" " -f1 /proc/uptime); '"$PCD"'/provclient node sock-as @UID@ -- proxy '"$GS"' 2>&1; rc=$?; b=$(cut -d" " -f1 /proc/uptime); awk -v a=$a -v b=$b -v r=$rc "BEGIN { printf \"T=%dms rc=%d\n\", (b - a) * 1000, r }"'
+px(){
+	local u=$1 hold=$2; shift 2
+	{ for x in "$@"; do echo "$x"; done; sleep "$hold"; } | timeout 90 ssh $SSHO root@$NODE "${PXR/@UID@/$u}" 2>&1 | tr -d '\r'
+}
+zeros(){ printf '%0*d' $(( $1 * 2 )) 0; }   # <n bytes> as hex
+frame(){ printf '%02x%04x%s' "$1" "$2" "$(zeros "$3")"; }   # <flags> <seq> <data bytes>
+tms(){ sed -n 's/^T=\([0-9]*\)ms.*/\1/p' <<< "$1"; }
+replies(){ grep -c '^[0-9a-f][0-9a-f]*$' <<< "$1"; }   # answer packets in a px output
+provd_pid_q(){ qr 'for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && echo $x; done'; }
+
+# before pr_begin: a pre-P2 V would cost a snapshot and a restore reboot for nothing (known-failures pre-P2 line)
+ver=$(qr 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build')
+[ -n "$ver" ] || { no "04 unreachable (no BATMAN_VERSION)"; pr_result; exit 1; }
+[ "$(qr '[ -x /etc/init.d/batman-provd ] && echo yes || echo no')" = yes ] || { no "no batman-provd on 04 ($ver): a pre-P2 image"; pr_result; exit 1; }
+LAST4=$(qr 'tr -d "\n" < /etc/batman-prov/identity/sn | tail -c 4')
+case "$LAST4" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) no "04's serial last4 unreadable [$LAST4]"; pr_result; exit 1 ;; esac
+pr_begin 3600 || { pr_result; exit 1; }
+pr_ota_b "$PR_V.dirty.wbox-test" B || { pr_abort "OTA of the wbox test build"; pr_result; exit 1; }
+
+# ---- L39: provd killed 10 times before the decision, 02 reading meanwhile -> HELD
+if qr 'logread | grep -q "is healthy and HELD"'; then
+	inv "L39: the trial was already HELD when the kills were to start (uptime $(qr 'cut -d. -f1 /proc/uptime') s) — the arm proves nothing"
+else
+	k=0
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		n=$(qr 'n=0; for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && kill -9 $x && n=$((n + 1)); done; echo $n')
+		[ "${n:-0}" -ge 1 ] && k=$((k + 1))
+		[ $i = 1 ] && qr 'logread | grep -q "is healthy and HELD"' && inv "L39: HELD appeared before the first kill landed"
+		[ $i = 3 ] || [ $i = 7 ] && { r=$(c02 read "$LAST4" | tr '\n' ' '); say "02 read during the kills (recorded only): $r"; }
+		sleep 10
+	done
+	[ $k = 10 ] && ok "L39: 10 of 10 kills found a provd to kill" || no "L39: only $k of 10 kills found a provd (respawn window) — fewer kills than the arm claims"
+	pr_wait_held 480 && ok "L39: the trial is HELD after the provd kills (no HELD before the first one)" || no "L39: not HELD by uptime 480 s"
+	o=$(pl provd-check); grep -q 'PROVD ok' <<< "$o" && ok "L39: provd back on its own ($(tail -1 <<< "$o"))" || no "L39: provd after the kills (no restart): $o"
+fi
+o=$(c02 read "$LAST4"); sv=$(sed -n 's/^STATUS //p' <<< "$o")
+case "$sv" in a5*04f5*"$(k5 "$LAST4")"*) ok "in the trial 02 reads STATUS with key 4 = true (updating) and key 5 = $LAST4 ($sv; prov-firstboot provd side, L21)" ;;
+	*) no "STATUS in the trial [$sv] (want key 4 = true, key 5 = $LAST4): $(echo $o)" ;; esac
+pr_pc_place || { pr_abort "provclient placement"; pr_result; exit 1; }
+
+# ---- SOCK_ONLY: the frame socket, CTRL / STATUS without a handshake, who can reach it
+penv SOCK_ONLY=1 || { pr_abort "set-provd-env SOCK_ONLY=1"; pr_result; exit 1; }
+j sock-only
+o=$(px 471 1 c0 c1); echo "$o" | sed 's/^/    /'
+grep -qx "$CTRLX" <<< "$o" && ok "sock CTRL -> 0xC0 ‖ {1:1,2:0,3:244,4:8192}" || no "sock CTRL: [$o]"
+grep -q "^c1a5.*$(k5 "$LAST4")" <<< "$o" && ok "sock STATUS -> 0xC1 ‖ 5-entry map with key 5 = $LAST4 ($(grep '^c1' <<< "$o"))" || no "sock STATUS: [$o]"
+o=$(px 65534 0); grep -qi 'CONN-ERR .*permission denied' <<< "$o" && ok "uid 65534 cannot reach gatt.sock (provd 0700 dir)" || no "uid 65534 on gatt.sock: [$o]"
+
+# ---- sec-hog / oversize, sock part
+f0=$(qr "logread | grep -c 'provd: connection refused (2 slots in use) sock'")
+tmpa=$(mktemp); tmpb=$(mktemp)
+px 471 20 > "$tmpa" & pa=$!; px 471 20 > "$tmpb" & pb=$!
+sleep 3
+o=$(px 471 3); t=$(tms "$o"); say "third connection: $(echo $o)"
+[ "$(qr "logread | grep -c 'provd: connection refused (2 slots in use) sock'")" -gt "$f0" ] && [ "${t:-99999}" -lt 2500 ] \
+	&& ok "two silent connections hold both slots: the third is refused at once (${t} ms, 'connection refused (2 slots in use) sock')" \
+	|| no "third connection while two are open: ${t} ms, refusals $f0 -> $(qr "logread | grep -c 'provd: connection refused (2 slots in use) sock'")"
+wait $pa $pb
+for x in "$tmpa" "$tmpb"; do t=$(tms "$(cat "$x")")
+	[ "${t:-0}" -ge 9000 ] && [ "${t:-0}" -le 14000 ] && ok "a silent connection closed after ${t} ms (handshake limit 10 s)" || no "silent connection lifetime ${t} ms (want 9-14 s): $(cat "$x" | tr '\n' ' ')"
+done; rm -f "$tmpa" "$tmpb"
+o=$(px 471 5 "$(frame 1 0 509)"); t=$(tms "$o")
+[ "${t:-0}" -ge 4500 ] && ok "control: a 512 B start frame keeps the connection (${t} ms, closed by our EOF)" || no "control: a 512 B frame closed the connection after ${t} ms"
+o=$(px 471 5 "$(frame 1 0 510)"); t=$(tms "$o")
+[ "${t:-99999}" -lt 2500 ] && ok "a 513 B frame closes the connection at once (${t} ms)" || no "a 513 B frame: closed after ${t} ms (want < 2.5 s)"
+fr=("$(frame 1 0 509)"); for s in $(seq 1 15); do fr+=("$(frame 0 "$s" 509)"); done
+o=$(px 471 5 "${fr[@]}"); t=$(tms "$o")
+[ "${t:-0}" -ge 4500 ] && ok "control: 16 frames (8144 B, under 8192) keep the connection (${t} ms)" || no "control: 16 frames closed it after ${t} ms"
+fr+=("$(frame 0 16 509)")
+o=$(px 471 5 "${fr[@]}"); t=$(tms "$o")
+[ "${t:-99999}" -lt 2500 ] && ok "a 17th frame (8653 B > 8192) closes the connection at once (${t} ms)" || no "over 8192 B: closed after ${t} ms (want < 2.5 s)"
+
+# ---- 20 handshakes / min. A fresh provd (no first message counted yet: control packets and unfinished frames never
+# reach onMsg1) -> 21 one-frame first messages (start+end, 32 B) within the minute
+penv SOCK_ONLY=1 || no "set-provd-env SOCK_ONLY=1 before the rate arm"
+t0=$(mono); got=0; i=1
+while [ $i -le 21 ]; do
+	o=$(px 471 1 "$(frame 3 0 32)"); n=$(replies "$o")
+	if [ $i -le 20 ]; then [ "$n" -ge 1 ] && got=$((got + 1)); else last=$n; fi
+	i=$((i + 1))
+done
+el=$(( $(mono) - t0 ))
+if [ $el -ge 55 ]; then inv "rate arm: the 21 messages took ${el} s (> 55): the minute window may have rolled"
+else
+	[ $got = 20 ] && ok "rate: the first 20 first-messages in ${el} s were each answered (msg2)" || no "rate: only $got of the first 20 were answered"
+	[ "${last:-1}" = 0 ] && ok "rate: the 21st within the minute was closed with no answer (20/min)" || no "rate: the 21st was answered ($last packet(s)) — no global handshake limit"
+	w=$(( 62 - ( $(mono) - t0 ) )); [ $w -gt 0 ] && sleep $w
+	o=$(px 471 1 "$(frame 3 0 32)"); [ "$(replies "$o")" -ge 1 ] && ok "rate control: 61 s after the first, a new first message is answered again" || no "rate control: still refused after the minute"
+fi
+
+# ---- sockdir: a respawned provd refuses a dir it does not own (owner check) and a symlinked dir (O_NOFOLLOW); the
+# init's next start takes the dir back each time
+for kind in owner link; do
+	if [ $kind = link ]; then dec=/tmp/run/batman-dv/wbox/$RUN/decoy; q "mkdir -p -m 0700 $dec"; j sockdir-link "$dec"; else j sockdir-owner; fi
+	o=$(px 471 1 c0); grep -qx "$CTRLX" <<< "$o" && no "sockdir $kind: gatt.sock answered" || { grep -q 'CONN-ERR' <<< "$o" && ok "sockdir $kind: no answer on gatt.sock ($(grep CONN-ERR <<< "$o" | head -1))" || no "sockdir $kind: no CONN-ERR reason: [$o]"; }
+	penv SOCK_ONLY=1 || no "set-provd-env SOCK_ONLY=1 after the sockdir $kind arm"
+	o=$(px 471 1 c0); grep -qx "$CTRLX" <<< "$o" && ok "sockdir $kind: the init's start took the dir back, CTRL answers again" || no "after the sockdir $kind arm: [$o]"
+done
+
+# ---- adv-len arm 1, then L2's negative while provd stays off the air
+penv ADV_LEN_TEST=29 || no "set-provd-env ADV_LEN_TEST=29"
+j adv-len
+j latch-neg
+penv clear || no "set-provd-env clear"
+o=$(pl provd-check); grep -q 'PROVD ok' <<< "$o" && ok "switches cleared: $(tail -1 <<< "$o")" || no "after clear: $o"
+
+# ---- L72: no ujail -> requirejail keeps provd from starting
+pw prep >/dev/null
+j nojail "/tmp/run/batman-dv/wbox/$RUN"
+
+# ---- L83: the host dies after it (1) stopped provd, (2) started it with SOCK_ONLY; the deadman puts provd back
+l83(){	# <label> <setup>
+	local p0 o ex p t
+	eval "$2" || { no "L83 $1: setup"; return 1; }
+	p0=$(provd_pid_q); say "L83 $1: provd pid [${p0:-none}]; no renew from here (lease 40 s, deadman at expiry + 5 s)"
+	pr_lease_renew +40 || return 1
+	ex=$(qr 'set -- $(cat /tmp/run/batman-dv/bt/lease-prov 2>/dev/null); echo ${3:-}')
+	case "$ex" in ''|*[!0-9]*) no "L83 $1: no lease expiry readable"; return 1 ;; esac
+	t=""; while :; do
+		o=$(qr 'u=$(cut -d. -f1 /proc/uptime); p=""; for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && p=$x; done; echo "$u $p"')
+		set -- $o; [ -n "${2:-}" ] && [ "${2:-}" != "$p0" ] && [ "${1:-0}" -ge "$ex" ] && { t=$(( $1 - ex )); break; }
+		[ "${1:-0}" -ge $(( ex + 60 )) ] && break; sleep 2
+	done
+	[ -n "$t" ] && [ "$t" -le 15 ] && ok "L83 $1: a new provd ${t} s after the lease expired (<= 15: deadman at + 5)" || no "L83 $1: no new provd within 15 s of the expiry (${t:-none})"
+	sleep 10
+	o=$(qr 'echo "lease=[$(cat /tmp/run/batman-dv/bt/lease-prov 2>/dev/null)]"; tail -2 /opt/batdata/log/ble-dm-254.log')
+	say "L83 $1 after the deadman: $(echo $o)"
+	grep -q 'lease=\[\]' <<< "$o" || no "L83 $1: the lease is still there"
+	o=$(cat "$REPO/scripts/node/ble-lib-254.sh" - <<< 'provd_check' | timeout 60 ssh $SSHO root@$NODE sh -s 2>&1 | tr -d '\r')
+	case "$o" in *"PROVD ok pid="*) ok "L83 $1: $o (no test switch, one instance)" ;; *) no "L83 $1: $o" ;; esac
+	o=$(pl acquire 1800); grep -q '^LEASE ' <<< "$o" || { no "L83 $1: re-acquire: $o"; return 1; }
+	PR_DEADLINE=$(( $(mono) + 1800 ))
+}
+l83 "provd stopped" 'q "/etc/init.d/batman-provd stop" >/dev/null; [ -z "$(provd_pid_q)" ]'
+l83 "SOCK_ONLY" 'penv SOCK_ONLY=1'
+
+back_to_a || { pr_abort "back_to_a"; pr_result; exit 1; }
+pr_end wrote-b
+pr_result

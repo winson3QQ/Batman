@@ -94,4 +94,19 @@ printf 'prov_other_254() {\n\tpr_ota_b "$pl" "$sha" B nohold\n}\n' > $R/scripts/
 want "nohold used outside the unit prov-wbox-nocommit-254: scripts/dv/prov-other-254.sh:2" "a second nohold call in another unit"
 rm $R/scripts/dv/prov-other-254.sh; printf 'pr_ota_b() {\n\t:\n}\nx() {\n\tpr_ota_b a b B nohold\n}\n' > $R/scripts/dv/prov-254.sh
 want "nohold used outside the unit prov-wbox-nocommit-254: scripts/dv/prov-254.sh:5" "nohold in prov-254.sh outside pr_ota_b()"
+# #254 H3 (2026-11-01): a helper replaced through the package install. Since P2 the GoPackage install line also installs
+# batman-provd, so a variant installs its script OVER the Go binary (kind helper); removing that line is refused, and a
+# comment that merely names the install does not count as one
+R=$(mkrepo mk)
+printf 'define Package/batman-prov/install\n\t$(call GoPackage/Package/Install/Bin,$(1))\n\t$(INSTALL_DIR) $(1)/etc/init.d\nendef\n' > $R/feed/batman-prov/Makefile
+mkdir -p $R/feed/batman-prov/files; git -C $R add -A; git -C $R -c user.email=t@t -c user.name=t commit -qm mk
+exover(){ mkdir -p $1/feed/batman-prov/files; sed -i 's#^\t$(call GoPackage/Package/Install/Bin,$(1))$#&\n\t\# WBOX-exo-2a2a2a2a: mutant\n\t$(INSTALL_BIN) ./files/x.sh $(1)/usr/bin/batman-provhelper#' $1/feed/batman-prov/Makefile; printf '#!/bin/sh\n# WBOX-exo-2a2a2a2a\nexit 1\n' > $1/feed/batman-prov/files/x.sh; }
+excom(){ mkdir -p $1/feed/batman-prov/files; sed -i 's#^\t$(call GoPackage/Package/Install/Bin,$(1))$#&\n\t\# WBOX-exc-2b2b2b2b: $(INSTALL_BIN) ./files/x.sh $(1)/usr/bin/batman-provhelper#' $1/feed/batman-prov/Makefile; printf '#!/bin/sh\n# WBOX-exc-2b2b2b2b\nexit 1\n' > $1/feed/batman-prov/files/x.sh; }
+exrm(){ mkdir -p $1/feed/batman-prov/files; sed -i 's#^\t$(call GoPackage/Package/Install/Bin,$(1))$#\t\# WBOX-exr-2c2c2c2c: mutant\n\t$(INSTALL_BIN) ./files/x.sh $(1)/usr/bin/batman-provhelper#' $1/feed/batman-prov/Makefile; printf '#!/bin/sh\n# WBOX-exr-2c2c2c2c\nexit 1\n' > $1/feed/batman-prov/files/x.sh; }
+mkpatch $R exo "helper over the Go binary" WBOX-exo-2a2a2a2a exover $R
+lst "test prov_test helper" "exo release helper";                             want PASS "a script installed over the Go helper binary = kind helper"
+rm $R/tests/wbox/exo.patch; mkpatch $R exc "comment only" WBOX-exc-2b2b2b2b excom $R
+lst "test prov_test helper" "exc release helper";                             want "helpers.list differs" "a comment naming the helper install is not an install (kind same)"
+rm $R/tests/wbox/exc.patch; mkpatch $R exr "install line removed" WBOX-exr-2c2c2c2c exrm $R
+lst "test prov_test helper" "exr release helper";                             want "removes the GoPackage/Package/Install/Bin line" "removing the GoPackage install line (would drop batman-provd) -> FAIL"
 echo "RESULT lint-wbox self-test: $pass ok, $bad bad"; [ $bad = 0 ] && [ $pass -gt 0 ]

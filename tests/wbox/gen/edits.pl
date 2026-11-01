@@ -26,6 +26,11 @@ my %DESC = (
 	'misc-l51' => 'autocommit takes an ota-armed.mesh saying joined as radio-only (L51; dry-run bind only)',
 );
 if (@ARGV == 2 && $ARGV[0] eq '--describe') { print $DESC{$ARGV[1]} // die "unknown variant $ARGV[1]\n"; print "\n"; exit 0 }
+# diff context lines (default 3): helper-exit1 edits the package install, whose lines after the helper's init differ
+# between main (pre-P2) and P2 (batman-provd's init + capabilities); 2 lines of context are common to both, and the
+# harness patch must apply to both while the harness merges before P2 (#254 H3, 2026-11-01)
+my %CTX = ('helper-exit1' => 2, 'helper-flap' => 1);
+if (@ARGV == 2 && $ARGV[0] eq '--context') { print $CTX{$ARGV[1]} // 3; print "\n"; exit 0 }
 my $v = shift or die "usage: edits.pl VARIANT | --describe VARIANT\n";
 my %W = (
 	'rc9-unclaimed' => '3f1a9c2e', 'helper-norebuild' => '7b2d04e1', '96-norestore' => 'c5e8a113',
@@ -117,8 +122,10 @@ my %do = (
 			{\tn.Log("$w: p6 mesh markers kept on leave (mutant)")} });
 	},
 	'helper-flap' => sub {
+		# inserted BEFORE the "serving" log line: the line after it is srv.Serve on main and srv.ServeConns since P2, so
+		# with 1 line of context (%CTX) the patch applies to both (2026-11-01: the old one no longer applied on P2)
 		ed($MAIN, sub { s{(\tlogf\("serving \(%s\)", res\.Verdict\)\n)}
-			{$1\tgo func() {\n\t\ttime.Sleep(5 * time.Second)\n\t\tlogf("$w: exiting 5 s after serving (mutant)")\n\t\tos.Exit(1)\n\t}()\n} });
+			{\tgo func() {\n\t\ttime.Sleep(5 * time.Second)\n\t\tlogf("$w: exiting 5 s after serving (mutant)")\n\t\tos.Exit(1)\n\t}()\n$1} });
 	},
 	'96-noprov' => sub { $s96->($w) },
 	'96-norestore' => sub {
@@ -127,8 +134,10 @@ my %do = (
 			{$1\t\tif e.Log != nil {\n\t\t\te.Log("$w: not restoring identity / record from p5 (mutant)")\n\t\t\treturn errors.New("mutant: no restore from p5")\n\t\t}\n} });
 	},
 	'helper-exit1' => sub {
-		ed($HMK, sub { s{\t\$\(call GoPackage/Package/Install/Bin,\$\(1\)\)\n}
-			{\t# $w: mutant, the helper is a shell script that exits 1\n\t\$(INSTALL_DIR) \$(1)/usr/bin\n\t\$(INSTALL_BIN) ./files/wbox-helper-exit1.sh \$(1)/usr/bin/batman-provhelper\n} });
+		# installed OVER the Go binary after the package install: since P2 that install line also carries batman-provd,
+		# which must stay in the image (04 wsl.20, 2026-11-01: the old "replace the install line" patch no longer applied)
+		ed($HMK, sub { s{(\t\$\(call GoPackage/Package/Install/Bin,\$\(1\)\)\n)}
+			{$1\t# $w: mutant, the helper is a shell script that exits 1 (installed over the Go\n\t# binary after the package install, so batman-provd stays in the image)\n\t\$(INSTALL_BIN) ./files/wbox-helper-exit1.sh \$(1)/usr/bin/batman-provhelper\n} });
 		spit('feed/batman-prov/files/wbox-helper-exit1.sh', "#!/bin/sh\n# $w — #254 -wbox test variant ONLY (Batman docs/design/254-h23-harness.md §4.2): the provisioning\n# helper replaced by a script that fails, so the lock must hold without it (prov-lock-failsecure).\nlogger -t batman-provhelper \"$w: helper replaced by exit 1 (mutant)\"\nexit 1\n", 0755);
 	},
 	'radio1-off' => sub {
