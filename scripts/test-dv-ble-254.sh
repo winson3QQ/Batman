@@ -39,6 +39,12 @@ mkdir -p "$W/hang"; printf '#!/bin/sh\n[ "$1" = bluetoothd ] && { echo 4242; exi
 t0=$(date +%s); o=$(PATH="$W/hang:$PATH" timeout 60 sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; settings; echo rc=\$?"); t1=$(date +%s)
 case "$o" in *rc=1) [ $((t1 - t0)) -le 45 ] && tok "settings: a hanging bluetoothctl -> rc 1 after $((t1 - t0)) s (no hang)" || tbad "settings with a hanging bluetoothctl took $((t1 - t0)) s" ;; *) tbad "settings with a hanging bluetoothctl: [$o] after $((t1 - t0)) s" ;; esac
 pkill -f "$W/hang/bluetoothctl" 2>/dev/null
+# lim returns when the command ends, not at its next 1 s poll (0.03 s reads took 1.02 s and pushed helper-stop past
+# L71's 65 s, 04 2026-11-02): a 0.3 s command under `lim 10` < 0.8 s; main's polling lim waits for its 1 s poll
+# (the negative control; `true` would end before the first poll and hide it)
+limt(){ dash -c ". '$1'; a=\$(cut -d' ' -f1 /proc/uptime); lim 10 /bin/sleep 0.3; b=\$(cut -d' ' -f1 /proc/uptime); awk -v a=\$a -v b=\$b 'BEGIN{print (b - a < 0.8) ? \"fast\" : \"slow\"}'"; }
+[ "$(limt "$REPO/scripts/node/ble-lib-254.sh")" = fast ] && tok "lim: a 0.3 s command returns in < 0.8 s" || tbad "lim waits for its poll after the command ended"
+if [ -f /home/yello/Batman/scripts/node/ble-lib-254.sh ]; then [ "$(limt /home/yello/Batman/scripts/node/ble-lib-254.sh)" = slow ] && tok "lim negative control: main's polling lim takes >= 0.8 s (the test sees it)" || tbad "lim negative control: main's lim was fast — the test cannot see a polling lim"; fi
 # 02's central watchdog must not keep the session lock (ed0cf33): the REAL line from prov-p2-central-254.sh (270 s ->
 # 3 s) under dash, whose sleep forks like the node's busybox (no ASH_SLEEP; WSL busybox's builtin sleep hides it).
 # A session that ends at once must leave the lock free; the e4efc29 line must not (the negative control).

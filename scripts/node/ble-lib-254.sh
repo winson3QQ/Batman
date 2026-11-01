@@ -44,11 +44,18 @@ scratch() {
 # review B m3; nothing in such a tree holds hardware, so the no-SIGKILL rule does not apply)
 lim_tree() { local _c; for _c in $(grep -l "^PPid:[[:space:]]*$1\$" /proc/[0-9]*/status 2>/dev/null | cut -d/ -f3); do lim_tree "$_c"; done; echo "$1"; }
 lim_kill() { local _ps _q; _ps=$(lim_tree "$1"); kill $_ps 2>/dev/null; sleep 2; for _q in $_ps; do [ -d "/proc/$_q" ] && kill -KILL "$_q" 2>/dev/null; done; return 0; }
+# lim <secs> <cmd...>: returns the moment the command ends (no polling: a 1 s poll added ~1 s to every call — 0.03 s
+# bluetoothctl reads took 1.02 s and pushed helper-stop's L71 timing past 65 s, 04 2026-11-02; the node has neither
+# usleep nor a fractional sleep). A watchdog with no stdout / stderr (it must not hold the caller's $(…) pipe) kills the
+# tree at the deadline (ignoring TERM from then on) and exits 124. When the command ends first, the watchdog's whole
+# tree (its sleep too) is killed — by tree, not by a trap it may not have installed yet (an early TERM left orphan
+# sleeps; a TERM during its kill made it exit 0 and lost the timeout: both seen on 04 with the first version).
 lim() {
-	_t=$1; shift; "$@" & _p=$!; _n=0
-	while [ -d "/proc/$_p" ] && [ $_n -lt "$_t" ]; do sleep 1; _n=$((_n + 1)); done
-	if [ -d "/proc/$_p" ]; then lim_kill "$_p"; echo "FAIL timeout after ${_t}s: $*"; return 124; fi
-	wait "$_p"
+	_t=$1; shift; "$@" & _p=$!
+	( exec >/dev/null 2>&1; trap 'exit 0' TERM; sleep "$_t"; trap '' TERM; lim_kill "$_p"; exit 124 ) & _w=$!
+	wait "$_p"; _r=$?
+	kill $(lim_tree "$_w") 2>/dev/null; wait "$_w"; [ $? = 124 ] && { echo "FAIL timeout after ${_t}s: $*"; return 124; }
+	return $_r
 }
 
 # ---- current settings: ONLY the `current settings:` line, as tokens (design §4.3 #2; supported settings: lists all)
