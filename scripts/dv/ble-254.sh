@@ -139,16 +139,18 @@ ble_rpa_buckets() {	# <from> <to> <seg>: every 120-s bucket needs a counted sigh
 
 # --------------------------------------------------------------------------------------- pairing sandwich (§4.5)
 # one round: prints "VERDICT <leak|blocked|other-blocked:0xNN|invalid:<why>>" as the last line
-ble_round() {	# <p> <c> <label> <sc> <bondable> <name> <pub> <expect: secure-conn on 04 yes|no>
-	local p=$1 c=$2 L=$3 sc=$4 bo=$5 nm=$6 pub=$7 o r s ev
+ble_round() {	# <p> <c> <label> <sc> <bondable> <name> <pub> <expect: secure-conn on 04 yes|no> [flip]
+	# flip (prov-sec-bond only): 04 may be bondable (the agent made it so: the state under test) and 02 confirms
+	local p=$1 c=$2 L=$3 sc=$4 bo=$5 nm=$6 pub=$7 fl=${9:-} o r s ev
 	ble_n "$p" 30 periph arm 900 >/dev/null && ble_n "$c" 30 central arm 900 >/dev/null || { echo "VERDICT invalid:arm"; return; }
 	ble_reset_c "$c" || { echo "VERDICT invalid:02-reset"; return; }
 	ble_n "$p" 60 periph adv-on "$nm" connectable >/dev/null || { echo "VERDICT invalid:adv-on"; return; }
 	s=$(ble_n "$p" 30 periph info | sed -n 's/^SETTINGS //p'); echo "$L 04 settings: $s"
-	has_tok_h "$s" privacy && ! has_tok_h "$s" bondable || { ble_n "$p" 60 periph adv-off >/dev/null; echo "VERDICT invalid:04-settings"; return; }
+	if [ "$fl" = flip ]; then has_tok_h "$s" privacy || { ble_n "$p" 60 periph adv-off >/dev/null; echo "VERDICT invalid:04-settings"; return; }
+	else has_tok_h "$s" privacy && ! has_tok_h "$s" bondable || { ble_n "$p" 60 periph adv-off >/dev/null; echo "VERDICT invalid:04-settings"; return; }; fi
 	[ "$8" = yes ] && ! has_tok_h "$s" secure-conn && { ble_n "$p" 60 periph adv-off >/dev/null; echo "VERDICT invalid:04-no-secure-conn"; return; }
 	ble_n "$p" 60 periph btmon-start "$L" >/dev/null || { echo "VERDICT invalid:btmon"; return; }
-	o=$(ble_n "$c" 120 central round "$L" "$sc" "$bo" "$nm" "$pub"); echo "$o"
+	o=$(ble_n "$c" 120 central round "$L" "$sc" "$bo" "$nm" "$pub" ${fl:+confirm}); echo "$o"
 	ev=$(ble_n "$p" 120 periph btmon-stop "$L"); echo "$ev" | sed "s/^/$L 04 /"
 	if [ -n "${BLE_FIXTURE_DIR:-}" ]; then		# fixture capture (design §4.7): masked on the node, canary-checked later
 		ble_n "$p" 120 periph btmon-dump-masked "$L" > "$BLE_FIXTURE_DIR/$L.masked.txt" && echo "fixture $L captured (masked)"
@@ -217,9 +219,9 @@ bond_verdict() {	# <label> <round output>: paired / refused:<reason> / invalid:<
 	case "$r" in *"failed with status"*|*"Failed to pair"*|*"failed"*) [ -n "$rsn" ] && echo "refused:$rsn" || echo "invalid:no-PairingFailed-from-04 [$r]"; return ;; esac
 	echo "invalid:[$r]"
 }
-bond_round() {	# <p> <c> <label> <name> <pub>; a round whose verdict is invalid is repeated once
-	local o v i
-	for i in 1 2; do o=$(ble_round "$1" "$2" "$3" on off "$4" "$5" yes); echo "$o" >&2; v=$(bond_verdict "$3" "$o"); case "$v" in invalid:*) echo "== $3: $v, repeating" >&2 ;; *) break ;; esac; done
+bond_round() {	# <p> <c> <label> <name> <pub> [flip]; a round whose verdict is invalid is repeated once
+	local o v
+	for _ in 1 2; do o=$(ble_round "$1" "$2" "$3" on off "$4" "$5" yes "${6:-}"); echo "$o" >&2; v=$(bond_verdict "$3" "$o"); case "$v" in invalid:*) echo "== $3: $v, repeating" >&2 ;; *) break ;; esac; done
 	echo "$v"
 }
 bchk_prov_sec_bond_254() {
@@ -234,19 +236,21 @@ bchk_prov_sec_bond_254() {
 	echo "=== 2 flip: an agent on 04 -> paired (else the method cannot see a pairing: the suite is void)"
 	ble_n "$c" 30 central mark-exposed >/dev/null
 	ble_n "$p" 60 periph agent-on || { echo "FAIL agent-on"; rc=1; }
-	v=$(bond_round "$p" "$c" agent "$name" "$pub"); echo "agent: $v"
+	# the agent turns 04 bondable (bluetoothctl's default agent; 04, 2026-11-01): the flip round allows it
+	v=$(bond_round "$p" "$c" agent "$name" "$pub" flip); echo "agent: $v"
 	[ "$v" = paired ] && echo "PASS flip: with an agent 02's SC Just Works pairs" || { echo "FAIL flip: $v (want paired) — no negative control, the refusals above prove nothing"; rc=1; }
 	ble_n "$p" 60 periph agent-off || { echo "FAIL agent-off"; rc=1; }
 	echo "=== 3 the agent gone: refused again"
 	v=$(bond_round "$p" "$c" noagent2 "$name" "$pub"); echo "noagent2: $v"
 	case "$v" in refused:*) echo "PASS agent gone: refused again ($v)" ;; *) echo "FAIL agent gone: $v (want refused)"; rc=1 ;; esac
-	echo "=== cleanup: canary, rekey 04 (verified), release, 04 + 02 reboot"
+	echo "=== cleanup: canary, rekey 04 (verified), release, 02 + 04 reboot"
 	ble_canary_both "$p" "$c" prov-sec-bond-254 || rc=1
 	ble_rekey_verified "$p" "$c" || rc=1
 	ble_n "$p" 60 periph snoop-clean >/dev/null
 	ble_end "$p" "$c" || rc=1
-	ble_reboot_committed "$p" || rc=1
+	# 02 first: the host reaches 02 through 04, so 02's reboot cannot be checked while 04 is down
 	ble_reboot_committed "$c" || rc=1
+	ble_reboot_committed "$p" || rc=1
 	[ $rc = 0 ] && echo "PASS prov-sec-bond-254" || echo "FAIL prov-sec-bond-254"
 	return $rc
 }
@@ -274,6 +278,9 @@ ble_rekey_verified() {	# rekey 04, then prove the KERNEL uses the new IRK: a fre
 ble_reboot_committed() {	# explicit-partition reboot (E30), wait for the new boot
 	local n=$1 b0 b1 t
 	b0=$(timeout 15 ssh "${BLE_SSHO[@]}" "root@$n" 'cat /proc/sys/kernel/random/boot_id')
+	# no boot_id before = no reboot proof after (04, 2026-11-01: 02 unreachable while 04 rebooted -> "boot  -> <same id>"
+	# passed although 02 never rebooted)
+	case "$b0" in ????????-*) ;; *) echo "FAIL $n: boot_id unreadable before the reboot [$b0] — not rebooting blind"; return 1 ;; esac
 	timeout 30 ssh "${BLE_SSHO[@]}" "root@$n" 'batman-slot reboot committed ble-254 </dev/null >/dev/null 2>&1 &' ; sleep 20
 	for t in $(seq 1 60); do b1=$(timeout 10 ssh "${BLE_SSHO[@]}" "root@$n" 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null); [ -n "$b1" ] && [ "$b1" != "$b0" ] && break; sleep 5; done
 	[ -n "$b1" ] && [ "$b1" != "$b0" ] || { echo "FAIL $n did not come back from reboot within ~5 min (reboot did not happen?)"; return 1; }

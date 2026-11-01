@@ -22,11 +22,17 @@ hci0:	Primary controller
 	name BCM2711
 EOF
 mkdir -p "$W/bin"; printf '#!/bin/sh\ncat "%s"\n' "$W/mgmtinfo" > "$W/bin/bluetoothctl"; chmod +x "$W/bin/bluetoothctl"
+# settings() reads only while a bluetoothd runs (bluetoothctl would wait for it forever): a fake pidof says one does
+printf '#!/bin/sh\n[ "$1" = bluetoothd ] && { echo 4242; exit 0; }\nexit 1\n' > "$W/bin/pidof"; chmod +x "$W/bin/pidof"
 o=$(PATH="$W/bin:$PATH" sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; s=\$(settings); has_tok \"\$s\" privacy && echo P; has_tok \"\$s\" bondable && echo B; has_tok \"\$s\" connectable && echo C; has_tok \"\$s\" le && echo L")
 [ "$o" = "$(printf 'P\nL')" ] && tok "settings: current line only; 'le' is a whole token, 'bondable'/'connectable' from 'supported' ignored" || tbad "settings parse gave [$o]"
 sed -i 's/current settings: powered le/current settings: powered bondable le/' "$W/mgmtinfo"
 o=$(PATH="$W/bin:$PATH" sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; has_tok \"\$(settings)\" bondable && echo B")
 [ "$o" = B ] && tok "settings: bondable in the current line is seen" || tbad "bondable in current line missed"
+# no bluetoothd: settings() is unreadable (rc 1, nothing printed) and never calls bluetoothctl
+mkdir -p "$W/nobtd"; printf '#!/bin/sh\nexit 1\n' > "$W/nobtd/pidof"; printf '#!/bin/sh\ntouch "%s"\nsleep 30\n' "$W/called" > "$W/nobtd/bluetoothctl"; chmod +x "$W/nobtd/pidof" "$W/nobtd/bluetoothctl"
+o=$(PATH="$W/nobtd:$PATH" timeout 10 sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; settings; echo rc=\$?")
+[ "$o" = rc=1 ] && [ ! -e "$W/called" ] && tok "settings: no bluetoothd -> rc 1 without calling bluetoothctl" || tbad "settings without bluetoothd gave [$o] called=$([ -e "$W/called" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------- 2. btmon judge (node awk) on fixtures
 judge() { RUN_ID=x sh "$REPO/scripts/node/ble-periph-254.sh" judge; }
