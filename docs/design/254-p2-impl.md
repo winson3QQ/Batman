@@ -1,4 +1,4 @@
-# #254 PR-P2:`batman-provd` — BLE 上的供裝協定行程(設計 v8)
+# #254 PR-P2:`batman-provd` — BLE 上的供裝協定行程(設計 v8.5,定稿:第三輪兩位 APPROVE)
 
 狀態:v8(減法版),2026-10-31。v1–v7 審查歷程見 §13–§18;**使用者 2026-10-31 指示「只針對必要的修改」**:v8 砍掉 v4–v7 為了堵審查情境而加的三個機制(節點端 kernel patch 見證「臂 2」與其閘門、session 撤銷的歸因狀態機、`QUEUE_WAIT`),只留原始碼或現場逼出來的部分。待一位審查員確認被砍的三處沒留下洞(§19)。
 
@@ -586,3 +586,109 @@ start_service() {
 | `ctl` 一輪 | `health.get` → `info.state` → `info.boot_id`(helper 重啟換 boot_id → 重簽 `node_cert`,L11) | `provd/server.go` `pollOnce` |
 | `peer.py` | 命令列入口被安全分類器擋兩次 → 使用者決定:H3 的「手機」改由 `provclient` 加 provd 傳輸層承擔;`tests/tools/peer/` 留 `peer_core` / `owner` / `selftest`(29 項過)當向量裁判 | 2026-10-31 對話 |
 | tmp-trust | allowlist 條目隨 H3 harness PR(provd 固定 bus 位址、兩個 init、vendor 註解) | P2 樹以 H3 allowlist 跑 = 0 untrusted |
+| 動態連結(更正 §4.5 的「`file` 斷言 statically linked」) | OpenWrt golang 規則一律 cgo 外部連結 → provd 依賴 `libc.so` + `libgcc_s.so.1`;ujail 自動把 ELF 依賴與 musl 載入器唯讀掛進 jail | 04 wsl.18:`/proc/<pid>/mountinfo` 有三個 lib 掛載,provd 正常跑 |
+| L77(更正):socket 目錄開機時不存在 | ujail 對**不存在的**掛載來源默默略過(不是拒絕啟動)→ provd 啟動時檢查 `/tmp/run/batman-prov`(與非 SOCK_ONLY 的 `/tmp/run/dbus`)在 jail 內,否則 log + 5 s 後退出,procd respawn | 04 wsl.18:每次開機 provd 都早於 helper 建目錄 → 永遠連不上;wsl.19/20:退出一次、10 s 後正常 |
+| §4.4 連線偵測 | 新連入裝置的 `Connected=true` 只在 `InterfacesAdded` 裡(gdbus 把未公告介面的屬性變更併進去,bluez-5.72 `gdbus/object.c:1765`、`src/device.c:3271`)→ 同時處理 `InterfacesAdded` / `InterfacesRemoved` / `PropertiesChanged`,只收 org.bluez 本尊的 | 04 wsl.20:連線時 `ActiveInstances 0` + `withdrawn reason=connect`,斷線 `registered reason=disconnect` |
+| F-P11(更正) | Flags AD 是 **BlueZ** 加的(排在 UUID 之後),不是 kernel 前置;總長仍 21 B | 02 btmon:`Data length: 21`、UUID 列表在前、`Flags: 0x04` 在後 |
+| foreign instance 判定 | 只用「provd 上次註冊 / 撤銷 2 s 之後」讀到的 health 行比 | 04 wsl.18 helper 重啟時誤報一次;wsl.19 後無 |
+
+**04 實機已驗(wsl.18–20,02 為 central)**:jail(uid 471、caps 全 0、NoNewPrivs 1、無測試鍵)、空中 21 B 可連線 RPA 無名稱無 scan response、02 未配對讀 CTRL `{1:1,2:0,3:244,4:8192}` 與 STATUS `{3:3,4:true,5:末4}`、`adv_registered_once` 由 helper 量到 1、helper / bluetoothd / dbus 重啟後 4 / 1 / 8 s 恢復(provd 不需重啟)、bondable → 1.2 s 撤廣播(上限 9.5 s)、L80 provd 重啟 3 s 斷舊連線、連線撤 / 斷線重註冊。
+
+## 21. D3b:關電時移除廣播 instance(v8.4,2026-11-01;H3 上機發現;v8.3 審查兩位 AWC 後修訂)
+
+### 21.1 發現(✅ 04 wsl.20 實測 + 原始碼)
+- H3 `prov-dep-restart-254` dep-power 臂:hci0 power off → provd 依 health `hci0_powered=0` 撤廣播(`adv withdrawn reason=health`),但 kernel `mgmt.advinfo` 仍列 1 個 instance,provd 印 `1 foreign advertising instance(s) on hci0 (not provd's)`。
+- 04 btmon(2026-11-01 17:09,harness 的 btmon 副本):17:09:26.098 bluetoothd 送 `MGMT Remove Advertising (0x003f) Instance 1`(provd 撤銷)→ **無 MGMT 回覆**;17:09:34.901 `Set Powered: Enabled` → **.970 `LE Set Advertising Data`(provd 的 21 B UUID)、.972 RPA、.973 `ADV_IND` 可連線、.974 `LE Set Advertising Enable: Enabled`**;provd 到 17:09:38.109 才依 health 重新註冊(`0x0054`/`0x0055`)→ **約 3.1 s 的廣播不經 provd 的前置條件**。
+- 原因鏈(linux-6.6.138 firmware build 樹;上游 torvalds HEAD `47493e62e8a8`(2026-10-14)的 `remove_advertising()` 逐字相同):
+  1. 關電:`set_powered_sync` → `hci_power_off_sync`(`hci_sync.c:5735`)→ `hci_clear_adv_sync(hdev, NULL, false)`(`:5749`)**只移除有 timeout 的 instance**;provd 的 `Timeout=0` → 保留(上游有意:mgmt-api.txt Set Powered「time limited advertising instances are not being remembered」)→ `hci_dev_close_sync` 清 `HCI_RUNNING`(`:5350`)。
+  2. 撤銷:`mgmt.c remove_advertising()`(`:9182-9227`)驗完參數一律 `hci_cmd_sync_queue(remove_advertising_sync…)` → `hci_sync.c:769` `!HCI_RUNNING` → `-ENETDOWN` → `mgmt_pending_free`、回傳錯誤 → `hci_sock.c:1716` 不送回覆 → **instance 留在 `hdev->adv_instances`**;bluetoothd 的 `write()` 拿到 -ENETDOWN,`shared/mgmt.c send_request` 以 NULL callback 銷毀請求(`advertising.c:194/209` 的 callback 本就 NULL)——BlueZ 已把 client 釋放(`advertising.c:198-224`),兩邊分歧。
+  3. 開電:`hci_powered_update_sync`(`hci_sync.c:3547`)→ `hci_powered_update_adv_sync` 對整份清單 `hci_schedule_adv_instance_sync(…, true)`(`:3400-3402`)→ 啟用。
+- Regression 來源(v8.3 寫錯,審查 B m4 更正):**torvalds `d883a4669a1d` "Bluetooth: hci_sync: Only allow hci_cmd_sync_queue if running"**(2023-04,v6.4)加了 `-ENETDOWN`。上游已在 `6eb5fcc416f1`(Fixes: d883a4669a1d)把 ADD_UUID / REMOVE_UUID / SET_CLASS 改成 `hci_cmd_sync_submit`(6.6.138 已含,`mgmt.c:2645/2745/2815`),**唯獨 `remove_advertising` 漏了**。mgmt-api.txt 明文 Remove Advertising「can be used when the controller is not powered」→ D3b 是恢復文件上的契約。
+
+### 21.2 影響(現場)
+- **fail-open**:關電期間若有前置條件轉壞(root 在關電時 `mgmt.bondable on`、privacy 關),開電後 kernel 以舊資料發**可連線**廣播;provd 對 foreign instance 只 log(§4.4)→ 持續到有人移除。⚠️ 「條件轉壞後開電」的持續廣播尚未在 04 重現 → §21.5 T2 在 wsl.20 先跑出 FAIL(負對照)再修。
+- 觸發者:root 操作員(power off/on)、rfkill block / `hciconfig hci0 down`(同走 `hci_dev_do_close` → `hci_dev_close_sync`,審查 A M2c)、bluetoothd 乾淨停止(SET_POWERED 0;§22)、hci0 關電期間 provd crash / stop(BlueZ `client_disconnect_cb` → `client_remove` 同一條 Remove,`advertising.c:209`;審查 A M2a)。遠端無法觸發關電。
+- **D3b 不處理(誠實界線)**:快速關→開電短於 provd 一輪輪詢(4 s)時 provd 根本沒撤(例:改 privacy 必須先關電)→ 開電後舊 instance 以當時的條件廣播,直到下一輪 health 撤銷,上限沿用 L67 的 ≤ 9.5 s(審查 B m8 / A M2 末)。D3b 把「無限期」縮成這個有上限的窗,不是全路徑 fail-closed。
+- 不受影響:有電時的撤銷(H3 `flip` / `helper-stop` / 連線三臂都證過 instance 0)。
+
+### 21.3 決策(使用者 2026-11-01:選 (a) kernel patch;同日加做 §22 BlueZ patch)
+- 不選 (b) provd/helper 自己移除:provd 只有 D-Bus;改由 root helper 用 mgmt 移除 = instance 有兩個寫者(§3)。
+- 不選 (c) 誠實界線:fail-closed 是 P2 的安全前提。
+- (a′) 一行版 `hci_cmd_sync_queue` → `hci_cmd_sync_submit`(上游 `6eb5fcc416f1` 的手法;審查 A m3 / B m5):legacy 控制器可行(`hci_remove_adv_sync` 只動清單;`hci_disable_advertising_sync` 因 close 已清 `HCI_LE_ADV`(`hci_core.h:822`)直接回 0),**但 ext-adv 控制器會在已關的裝置送 `LE Remove Adv Set`(`hci_remove_ext_adv_instance_sync`)而失敗、instance 留下**。採用「直接移除清單」不挑控制器;寄上游時兩者都可提。
+
+### 21.4 修法(D3b)
+`target/linux/bcm27xx/patches-6.6/999-batman-mgmt-remove-adv-powered-off-254.patch`(與 D3 同一機制:正本在 Batman `scripts/dv/data/`,H3 PR 帶進來;firmware 複製,`build-board.sh` 第 4 步 `cmp`,不符拒 build)。只動 `net/bluetooth/mgmt.c remove_advertising()`:
+- 既有三個參數檢查之後、`mgmt_pending_new` 之前:**`if (!test_bit(HCI_RUNNING, &hdev->flags))`**(與 `hci_cmd_sync_queue` 失敗的條件相同;不用 `hdev_is_powered()`:AUTO_OFF 與開電初始化期間 RUNNING 已設、可正常排隊,審查 B Q4):
+  - `cp->instance != 0`:`hci_remove_adv_instance(hdev, cp->instance)` + `mgmt_advertising_removed(sk, hdev, cp->instance)`;`cp->instance == 0`:清單上每一個同上(`list_for_each_entry_safe`);
+  - `mgmt_cmd_complete(… MGMT_STATUS_SUCCESS, &rp{instance}, …)`;`goto unlock`。
+- 鎖:已持 `hci_dev_lock`(mutex,sendmsg 為 process context 可睡)——與 kernel 自己的 `hci_remove_adv_sync()`(`hci_sync.c:2111`)同一寫法;`hci_remove_adv_instance` 內 `cancel_delayed_work_sync(rpa_expired_cb)` 持鎖安全,因 `adv_instance_rpa_expired()`(`hci_core.c:1673`)只設旗標;`cur_adv_instance` / `adv_instance_timeout` 由 `hci_remove_adv_instance` 處理(`hci_core.c:1626-1632`)。不建 pending cmd → 不會重複回覆。
+- 與開電並行(審查 A m3):開電路徑不持鎖走訪清單(`hci_sync.c:5142` `hci_adv_instances_set_rpa_expired`、`:3401`),但 RUNNING 先被設(`:5135`),patch 分支只在 RUNNING=0 進入;之後 init 的 `LE Clear Accept List`(`:4449`)其 cc handler 取 `hci_dev_lock`(`hci_event.c:1859`)→ init 等 patch 放鎖才前進(⚠️ 取決於控制器支援該指令)。與既有 `add_advertising` 未開電時直接 `hci_add_adv_instance`(`mgmt.c:8735-8786`)同一種暴露。
+- 不送 HCI(控制器關著;開電時 HCI Reset 也清掉控制器端狀態,btmon `#1 Reset`)。有電時路徑不變。
+- 殘項更正(v8.3 寫得太重;審查 A m4 / B m6):關電進行中、RUNNING 未清前排入的 Remove 會在 close 之後才執行(`hci_cmd_sync_work` `hci_sync.c:313-337` 不查 RUNNING;close 不清佇列,`hci_cmd_sync_clear` 只在 unregister,`hci_core.c:2705`);**legacy 控制器(04、BCM4345C0)上照樣移除並回 Success**;只有 ext-adv 控制器可能留下 ⚠️(推定,我們兩板都不是)。
+
+### 21.5 測試(H3;兩板共用 patch,bcm2710 ❌ 未測同 L13)
+- **T1**(`prov-dep-restart-254` dep-power 臂,tier A,lease 內):btmon(harness 副本,sha 比對)錄 power off → 撤銷 → power on → provd 重新註冊。斷言:
+  - btmon 中 `MGMT Command Complete (0x003f)` status Success(`mgmt_cmd_complete` 一定送一份到 monitor,`mgmt_util.c:196`);**不斷言 `Advertising Removed` 事件**:kernel 跳過送指令的 socket(`mgmt.c:1272` skip_sk、`hci_sock.c:419-447`),04 上唯一常駐的 control socket 就是 bluetoothd,btmon 看不到(審查 A M1 / B M2);
+  - 關電後 kernel advinfo = 0;
+  - **btmon 內部比順序**:最後一個 `Powered: Enabled` 之後,`LE Set Advertising Enable: Enabled` 不得早於 provd 的 `MGMT 0x0055` / `0x003e`(不拿 btmon 時間對 provd log 時間)。
+  - 負對照 = wsl.20:**先在 04 的 wsl.20 跑新臂取得 FAIL 輸出再修**(審查 B M3)。
+- **T2**(新臂 `power-bondable`,tier A,lease 內):power off → `mgmt.bondable on`(關電中)→ power on → 15 s 內 btmon 無 Enable、advinfo 0、provd 不註冊,**期間每秒斷言 settings 仍有 bondable**(BlueZ 的 PairableTimeout / agent 路徑可能改回,`adapter.c:862-875`、`9083-9090`;不成立 = INVALID,審查 A m6)→ bondable off → ≤ 15 s 註冊。負對照 = wsl.20 先跑出 FAIL。
+- **T3**(新臂 `power-provdkill`,hci0 關電期間 provd crash,L87):power off 後**在 provd 依 health 撤銷之前**(< 4 s 輪詢;`adv withdrawn` 行數不變,否則 INVALID:那會重跑 T1 的路徑,審查 A m7)kill -9 provd → BlueZ `client_disconnect_cb` → `client_remove` 的 Remove(`advertising.c:225-229` → `:209`)→ 關電中 advinfo = 0 → power on → btmon 無 Enable 直到新 provd 註冊。負對照 = wsl.20。
+- build:`build-board.sh` 第 4 步 cmp 負對照(改一個位元組 → 拒 build),同 D3。
+
+### 21.6 生命週期(新增列;§22 另有 bluetoothd 列)
+| # | 路徑 | wsl.20 | D3b 後 | 測試 |
+|---|---|---|---|---|
+| L84 | hci0 關電期間撤廣播,再開電 | kernel 保留 instance,開電即以舊資料發可連線廣播 | 關電時清單移除、回 Success;開電無廣播直到 provd 依 health 註冊 | T1 |
+| L85 | 關電期間前置條件轉壞(bondable on),再開電 | ⚠️ 推定:開電即廣播且持續 | 無廣播;恢復後 provd 註冊 | T2 |
+| L86 | 升級到含 D3b 的 image / 降級到 wsl.20 | — | kernel 隨 image;降級回到 L84 現象 | 出貨全套 |
+| L87 | hci0 關電期間 provd crash / stop | instance 殘留(BlueZ 的 Remove 被丟) | 移除 | T3 |
+| L88 | rfkill block / `hciconfig hci0 down` | 同 L84(同一條 close;rfkill 不走 `hci_power_off_sync`,連有 timeout 的都留) | 同 L84 | 原始碼(`hci_dev_do_close`);04 無 rfkill 裝置、無 rfkill / hciconfig 工具(2026-11-01 查)→ 不另測 ⚠️,checklist |
+| L89 | 快速關→開電(< 4 s,provd 沒撤) | 舊 instance 以當時條件廣播 ≤ 9.5 s | 同左(D3b 不處理,上限 L67) | 誠實界線 |
+
+### 21.7 安全
+- 資產:fail-closed 廣播前置條件(bondable=0、privacy、sc)。攻擊面:無新輸入;kernel 在關電時接受一個原本就允許(文件明文)的 mgmt 指令並真正生效。權限:`remove_advertising` 無 `HCI_MGMT_UNTRUSTED`(`mgmt.c:9352`),只有 trusted control socket(CAP_NET_ADMIN)能送,不變。被攻陷的 provd 只有 D-Bus;BlueZ 以 client 對應 instance → 只能讓自己少廣播。失敗模式:fail-secure(移除 = 不廣播)。供應鏈:同 D3 的 `cmp`。
+- 負測試:T1 / T2 / T3 的 wsl.20 實跑 FAIL。
+
+### 21.8 上游
+- v6.4 起的 regression(Fixes: d883a4669a1d);**是否寄 patch 給 linux-bluetooth = 對外發布,等使用者決定**(checklist)。
+
+## 22. D3c:bluetoothd 乾淨停止前清掉廣播 instance(BlueZ patch;使用者 2026-11-01「一起做」;v8.5 依兩位第二輪審查刪去啟動那一步)
+
+### 22.1 發現(✅ BlueZ 5.72 原始碼,兩位審查員逐行核過;實際時序待 btmon,§22.3)
+- **乾淨停止**(SIGTERM / SIGINT → `signal_callback`,`main.c:1227-1240`,10 s grace `main.c:64` → `adapter_shutdown()`,`adapter.c:10915-10938`):對每個**已開電**的 adapter 依序 `clear_discoverable`、`remove_temporary_devices`、`set_mode(SET_POWERED, 0)`,**不先移除廣播**;`btd_adv_manager_destroy` → `manager_destroy` 只 `client_destroy`(`advertising.c:1848-1853`);整個 BlueZ 只有 `advertising.c:194`(remove-all)與 `:209`(client 離開)送 mgmt Remove → kernel 照 §21.1 第 1 點保留 Timeout=0 的 instance。
+- **之後的啟動**:`adapter_register` 同一個同步呼叫內先 `btd_adv_manager_new` → `manager_create` 送 READ_ADV_FEATURES(`adapter.c:9348`、`advertising.c:1963`),再 `load_drivers`(`adapter.c:9380`)→ `policy_adapter_probe`(`policy.c:833-834`;節點 `batman-ble/files/main.conf:22` `AutoEnable = true`,未設時 `policy.c:894-898` 預設 true)→ `btd_adapter_restore_powered` 在 adapter 關著時送 `SET_POWERED(1)`(`adapter.c:7841`);原本的「Reset existing instances」要等 READ_ADV_FEATURES 回覆、在 callback 裡才排入(`advertising.c:1891-1893`);mgmt 佇列 FIFO、一次一個未回覆請求(`shared/mgmt.c:227-247`、`:780-808`)→ **乾淨停止之後的開電先把舊 instance 重新啟用,直到 Reset 才拔掉**(L9)。
+- **kill -9 / crash / D-Bus 斷線**(`disconnected_dbus` → `mainloop_quit`,`main.c:1287-1290`,不走 `adapter_shutdown`):mgmt control socket 關閉不會關電(只有 USER channel,`hci_sock_release`)→ adapter 一直開著、舊 instance 持續發射;新 bluetoothd 的 `btd_adapter_restore_powered` 因已開電 `return 0`(`adapter.c:7838-7839`)不送 SET_POWERED,原本的 Reset 在 READ_ADV_FEATURES 回覆後(毫秒級)就送出,且早於 provd 的任何 Add(D-Bus 介面在同一個 callback 才註冊,`advertising.c:1876`)→ **空窗 = 死掉 → procd respawn(`respawn 3600 5 0`,5 s)→ 初始化**;BlueZ 端無法縮短(v8.4 的「啟動先移除」對這條只差毫秒,審查 A M1′ / B MAJOR-1)。
+
+### 22.2 修法(D3c,只一步)
+firmware `patches/ekh-bcm2711/0015-bluez-adv-reset-254.patch` 加 `feeds/packages/utils/bluez/patches/901-batman-adv-remove-before-poweroff.patch`(與 0012/0013 同機制):
+- `adapter_shutdown()` 在 `set_mode(adapter, MGMT_OP_SET_POWERED, 0x00)` 之前呼叫新的 `btd_adv_manager_remove_all(adapter->adv_manager)`(`advertising.c`:`remove_advertising(manager, 0)` 的匯出包裝,`src/advertising.h` 加宣告);**`adv_manager` 可能是 NULL**(無 LE 或 GATT database 建立失敗,`adapter.c:9336-9348`)→ 包裝內先檢查。同一個 mgmt 佇列先送 Remove(0)、再 SET_POWERED 0 → 送出時有電,今天的 kernel 也成功。清單空時 kernel 回 INVALID_PARAMS(`mgmt.c` `list_empty`),callback NULL,佇列照常前進;`btd_exit` 只由 Powered 轉 off 觸發(`adapter.c:616-629`),不受 Remove 回覆影響。
+- log 一行 `Batman: advertising instances removed before power off (hci%u)` = 0015 **獨有**的 Batman-Witness 字串(不與 0013 的 SC 字串共用,gate 才分得出 0015 有沒有進去;審查 B m3)。
+- patch 產生:**以已套用 900(`900-batman-irk-getrandom.patch`,同改 `src/adapter.c`)的樹為基準**;build 時 quilt 套用不得靠 fuzz(`build-board.sh` 檢查 `patch` 輸出無 `fuzz`/`offset`;審查 A m10)。
+- **不做**(v8.4 的第 2 步,刪除):`btd_adv_manager_new` 後立即 Remove(0)。它唯一有鑑別力的情境是「bluetoothd 啟動時 adapter 關著、kernel 卻有殘留 instance」;有了 D3b + 本步之後只剩不乾淨的前序路徑(本步沒送出:grace 10 s 到期 / shutdown 中途 crash;L89 加 crash;bluetoothd 停著時 root `btmgmt add-adv` 再關電)→ 寫成誠實界線(§22.4 L92),照使用者「只做必要的修改」不加。
+- 擁有權:instance 的寫者仍是 BlueZ(代 provd / 其他 D-Bus client);停止前移除 = BlueZ 本來在 client 離開時就會做的事,提前到關電前,不新增寫者。
+- 停止時 adapter 已關(`adapter_shutdown` 跳過未開電的 adapter,`adapter.c:10926-10927`):本步不送;在 D3b 之下該 instance 通常早已在 provd 撤銷時移除;殘留只可能來自 L89 或第三寫者 → 下次啟動由原本的 Reset 處理(L92)。
+
+### 22.3 測試
+- **T4**(`dep-bluetoothd` 臂加 btmon,負對照):前置 advinfo = 1(provd 已註冊;不成立 = INVALID,否則 Remove(0) 回 INVALID_PARAMS,失敗在與 D3c 無關處;審查 A m8)→ `/etc/init.d/bluetoothd restart` → btmon:
+  - 舊 bluetoothd(pid)的 `MGMT Command (0x003f)` 早於它的 `MGMT Command (0x0005)`(Set Powered off),且其間有該 Remove 的 `Command Complete` status Success;臂改為 stop → advinfo = 0(bluetoothd 停著讀不到時只記 INFO)→ start(第三輪審查 A m11);
+  - 最後一個 `Powered: Enabled` 之後,`Advertising: Enabled` 不得早於 provd 的 Add(0x0054 / 0x003e)。
+  - 依據:§22.1 的佇列順序(兩位審查員原始碼證實)。負對照 = wsl.20:兩條都 FAIL(先在 04 跑出)。
+- **T5 / T6**(`dep-bluetoothd-kill` / `dep-dbus` 臂加 btmon,**特性量測,不是修復證據**;審查 A M1′ / B MAJOR-1):記錄「kill / dbus 重啟 → 新 bluetoothd 的 Remove」的空窗(INFO),上限斷言 ≤ 15 s;斷言新 bluetoothd 的 Remove 早於 provd 的 Add(回歸)。wsl.20 也會 PASS。
+- gate:image 的 bluetoothd `strings` 含 0015 的 Batman-Witness;缺 → build 拒(同 0013)。
+- 降級:同 L86,出貨全套。
+
+### 22.4 生命週期(新增 / 改列)
+| # | 路徑 | wsl.20 | D3b + D3c 後 | 測試 |
+|---|---|---|---|---|
+| L9 改 | bluetoothd 乾淨重啟 | 停止不移除;重啟後先開電再 Reset → 舊 instance 先廣播 | 停止前移除 → 開電時沒有舊 instance | T4 |
+| L65 改 | bluetoothd crash / kill -9 | 一直開電、舊 instance 持續發射;新 bluetoothd 的 Reset 在 READ_ADV_FEATURES 回覆後(毫秒級)拔掉 → 空窗 ≈ respawn 5 s + 初始化 | **D3c 無實質改變**(誠實界線) | T5(量測) |
+| L10 改 | dbus 重啟(bluetoothd 隨之退出,不走 shutdown) | 同 L65 | 同 L65(誠實界線) | T6(量測) |
+| L90 | bluetoothd crash loop(每次在 Reset 前掛) | 舊 instance 無限期 | 同左(誠實界線;health `bluetoothd=0`,autocommit 只 WARN) | 原始碼;checklist |
+| L92 | bluetoothd 啟動時 adapter 關著且 kernel 有殘留 instance(本步沒送出 / L89 + crash / 第三寫者 / 停止過程中 provd 重新註冊:斷光連線後 provd 的下一輪在 health 反映關電前 Add,排在 SET_POWERED 0 之後、legacy 控制器關電中直接保留 — 毫秒級窗,由原本的 Reset 收掉;第三輪審查 B m1) | 開電先啟用舊 instance,直到 Reset | 同左(誠實界線;刪去的 v8.4 第 2 步本可處理) | 原始碼;checklist |
+| L93 | 升級到含 0015 / 降級到無 0015 的 image | — | 隨 image;降級回到 wsl.20 的 L9 現象 | 出貨全套 |
+| L91 | bcm2710 | ❌ 無 0012/0013(F-P49) | ❌ 同左(CM4 決定) | — |
+
+### 22.5 安全
+- 攻擊面:無新輸入;BlueZ 在關電前多送一次既有的 mgmt Remove(0)。權限不變(bluetoothd 本來就是 trusted mgmt client)。失敗模式:fail-secure(多移除 = 少廣播;provd 依 health 重新註冊)。
+- 負測試:T4 的 wsl.20 實跑 FAIL。
