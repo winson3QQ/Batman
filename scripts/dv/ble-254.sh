@@ -223,10 +223,14 @@ bond_verdict() {	# <label> <round output>: paired / accepted / refused:<reason> 
 	case "$r" in *"failed with status"*|*"Failed to pair"*|*"failed"*) [ -n "$rsn" ] && echo "refused:$rsn" || echo "invalid:no-PairingFailed-from-04 [$r]"; return ;; esac
 	echo "invalid:[$r]"
 }
-bond_round() {	# <p> <c> <label> <name> <pub> [flip]; a round whose verdict is invalid is repeated once
-	local o v
-	for _ in 1 2; do o=$(ble_round "$1" "$2" "$3" on off "$4" "$5" yes "${6:-}"); echo "$o" >&2; v=$(bond_verdict "$3" "$o"); case "$v" in invalid:*) echo "== $3: $v, repeating" >&2 ;; *) break ;; esac; done
-	echo "$v"
+bond_round() {	# <p> <c> <label> <name> <pub> [flip]; an invalid round is repeated: up to 4 tries when 02 could not connect
+	# (status 0x04 Connect Failed, 04 saw no connection: 04 wsl.21 2026-11-01, 1-3 in a row, cause not found), else 2
+	local o v n=0 max=2
+	while [ $n -lt $max ]; do n=$((n + 1))
+		o=$(ble_round "$1" "$2" "$3" on off "$4" "$5" yes "${6:-}"); echo "$o" >&2; v=$(bond_verdict "$3" "$o")
+		case "$v" in invalid:*"status 0x04 (Connect Failed)"*) max=4; echo "== $3 try $n: 02 could not connect, repeating" >&2 ;; invalid:*) echo "== $3 try $n: $v, repeating" >&2 ;; *) break ;; esac
+	done
+	echo "$v"; echo "BOND $3 tries=$n verdict=$v" >&2
 }
 bchk_prov_sec_bond_254() {
 	local p=$1 c=$2 rc=0 pub name v
