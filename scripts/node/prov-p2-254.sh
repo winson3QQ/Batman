@@ -45,7 +45,7 @@
 #                 registered again <= 15 s
 #   helper-down   the helper stopped (its socket refuses) for 40 s: provd's "helper ctl: connect failed (…); backoff
 #                 <d>" lines rise 1s, 2s, 4s, 8s and stop at the 10 s cap (server.go ctl MaxBackoff), provd keeps its pid;
-#                 the helper started -> registered again <= 30 s (the next dial waits out the backoff)
+#                 the helper started -> provd advertising <= 30 s (40 s < the 60 s stale limit: it never withdrew)
 #   prov_test image only (after the host's set-provd-env):
 #   sock-only     SOCK_ONLY=1: the serving line is the latest start line, no instance for 10 s, the frame socket dir
 #                 provd 0700, gatt.sock provd 0600
@@ -406,7 +406,9 @@ helper-down)
 	[ "$r" = ok ] && ok "helper down: ctl backoff rose 1, 2, 4, 8 s to the 10 s cap ($(echo $b | wc -w) lines)" || no "helper down: backoff not 1, 2, 4, 8, 10…: $r [$b]"
 	[ "$(provd_pid)" = "$p" ] && ok "provd kept its pid $p while the helper was down" || no "provd pid changed [$p -> $(provd_pid)] while the helper was down"
 	lim 60 /etc/init.d/batman-provhelper start >/dev/null 2>&1; trap - EXIT; trap - HUP INT TERM
-	if d=$(wait_adv 1 30); then ok "helper started: registered again after $(secs "$d") s"; else no "helper started: no instance within 30 s"; fi
+	# 40 s is inside the 60 s stale limit: provd stays on the air, so this is the "still / again advertising" state,
+	# not a re-registration measurement (04 wsl.21, 2026-11-01: 0.04 s)
+	if wait_adv 1 30 >/dev/null; then ok "helper started: provd advertising (one instance) within 30 s"; else no "helper started: no instance within 30 s"; fi
 	;;
 sock-only)
 	l=$(lastline 'provd: (frame socket|adv registered|test env)')

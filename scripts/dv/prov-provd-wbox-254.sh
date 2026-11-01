@@ -211,22 +211,26 @@ gatt_wb(){
 	[ "$(qr "sha256sum < $PCD/btmon | cut -c1-64")" = "$(awk '{sub(/^\*/, "", $2)} $2 == "btmon" {print $1}' "$BTT/SHA256SUMS")" ] || { no "gatt: btmon sha on 04"; return; }
 	penv GATT_ENCRYPT_CTRL=1 || { no "set-provd-env GATT_ENCRYPT_CTRL=1"; return; }
 	sleep 10
-	q "nohup $PCD/btmon </dev/null >$PCD/gatt.btmon 2>&1 & echo \$! > $PCD/gatt.btmon.pid"
+	# 04 has no nohup, and btmon's text on a non-terminal stdout is buffered (lost at SIGINT): record a snoop with
+	# setsid + -w, decode it afterwards (04 wsl.21, 2026-11-01: the first gatt / rpa runs captured nothing)
+	q "setsid $PCD/btmon -w $PCD/gatt.snoop </dev/null >/dev/null 2>&1 & echo \$! > $PCD/gatt.btmon.pid"
+	[ "$(qr "kill -0 \$(cat $PCD/gatt.btmon.pid) 2>/dev/null && echo y")" = y ] || { no "gatt: btmon did not start on 04"; penv clear; return; }
 	o=$(c02 read "$LAST4"); say "gatt: 02 read: $(tr '\n' ' ' <<< "$o")"
 	q "kill -INT \$(cat $PCD/gatt.btmon.pid) 2>/dev/null; sleep 1; rm -f $PCD/gatt.btmon.pid"
-	bt=$(qr "cat $PCD/gatt.btmon"); q "rm -f $PCD/gatt.btmon"
+	bt=$(qr "$PCD/btmon -r $PCD/gatt.snoop 2>&1"); q "rm -f $PCD/gatt.snoop"
+	[ "$(grep -c . <<< "$bt")" -gt 5 ] || inv "gatt: the btmon capture is empty ($(grep -c . <<< "$bt") lines)"
 	e=$(sed -n 's/^ERRS //p' <<< "$o")
 	if [ -z "$(sed -n 's/^STATUS //p' <<< "$o")" ]; then inv "gatt: 02 did not read STATUS (not found / unreadable): no verdict on CTRL"
 	else
 		ok "gatt: STATUS read without encryption (the control)"
 		[ -z "$(sed -n 's/^CTRL //p' <<< "$o")" ] && grep -q 'org.bluez.Error.NotPermitted' <<< "$e" && ok "gatt: CTRL refused: $e" || no "gatt: CTRL [$(sed -n 's/^CTRL //p' <<< "$o")] errors [$e] (want none / NotPermitted)"
 		grep -q '^PAIRED no' <<< "$o" && ok "gatt: 02 not paired after the read" || no "gatt: 02 $(grep '^PAIRED' <<< "$o")"
+		say "gatt: btmon SMP / ATT error / encryption lines: $(grep -E 'SMP: |Error Response|Error: |Start Encr|0x08\|0x0019' <<< "$bt" | sed 's/^[[:space:]]*//' | tr -s ' ' | head -12 | tr '\n' '|')"
+		grep -q 'SMP: Pairing Request' <<< "$bt" && ok "gatt btmon: SMP Pairing Request" || no "gatt btmon: no SMP Pairing Request"
+		grep -q 'SMP: Pairing Failed' <<< "$bt" && ok "gatt btmon: SMP Pairing Failed" || no "gatt btmon: no SMP Pairing Failed"
+		grep -A3 'ATT: Error Response' <<< "$bt" | grep -qi '(0x0f)' && ok "gatt btmon: ATT Error Response 0x0f (insufficient encryption)" || no "gatt btmon: no ATT Error Response 0x0f"
+		grep -qE 'LE Start Encr|0x08\|0x0019' <<< "$bt" && no "gatt btmon: an LE Start Encryption" || ok "gatt btmon: no LE Start Encryption"
 	fi
-	say "gatt: btmon SMP / ATT error / encryption lines: $(grep -E 'SMP: |Error Response|Error: |Start Encr|0x08\|0x0019' <<< "$bt" | sed 's/^[[:space:]]*//' | tr -s ' ' | head -12 | tr '\n' '|')"
-	grep -q 'SMP: Pairing Request' <<< "$bt" && ok "gatt btmon: SMP Pairing Request" || no "gatt btmon: no SMP Pairing Request"
-	grep -q 'SMP: Pairing Failed' <<< "$bt" && ok "gatt btmon: SMP Pairing Failed" || no "gatt btmon: no SMP Pairing Failed"
-	grep -A3 'ATT: Error Response' <<< "$bt" | grep -qi '(0x0f)' && ok "gatt btmon: ATT Error Response 0x0f (insufficient encryption)" || no "gatt btmon: no ATT Error Response 0x0f"
-	grep -qE 'LE Start Encr|0x08\|0x0019' <<< "$bt" && no "gatt btmon: an LE Start Encryption" || ok "gatt btmon: no LE Start Encryption"
 	penv clear || no "set-provd-env clear after gatt"
 }
 gatt_wb

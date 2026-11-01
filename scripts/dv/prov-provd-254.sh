@@ -215,7 +215,9 @@ rpa)
 	pub=$(qr 'bluetoothctl show 2>/dev/null' | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^Controller \([0-9A-F:]\{17\}\).*/\1/p' | head -1)
 	[ -n "$pub" ] || { inv "04's public address unreadable"; pr_release; pr_result; exit 1; }
 	hmark
-	q "nohup $PCD/btmon -t </dev/null >$PCD/rpa.btmon 2>&1 & echo \$! > $PCD/rpa.btmon.pid"
+	# 04 has no nohup, and btmon's text on a non-terminal stdout is buffered (lost at SIGINT): record a snoop with
+	# setsid + -w, decode it afterwards (04 wsl.21, 2026-11-01: the first gatt / rpa runs captured nothing)
+	q "setsid $PCD/btmon -w $PCD/rpa.snoop </dev/null >/dev/null 2>&1 & echo \$! > $PCD/rpa.btmon.pid"
 	[ "$(qr "kill -0 \$(cat $PCD/rpa.btmon.pid) 2>/dev/null && echo y")" = y ] || { no "btmon did not start on 04"; pr_release; pr_result; exit 1; }
 	q "/etc/init.d/batman-provd restart >/dev/null 2>&1"; t0=$(mono); say "T0: provd restarted; 04 public $pub"
 	rows=(); r1=""; r2=""; ec=""
@@ -231,14 +233,14 @@ rpa)
 		o=$(c02 addrs); a=$(sed -n 's/^ADDRS //p' <<< "$o"); x=$(( $(mono) - t0 )); rows+=("$x ${a:--}"); say "SCAN $x ${a:--}"
 		sleep 30
 	done
-	q "kill -INT \$(cat $PCD/rpa.btmon.pid) 2>/dev/null; sleep 1"
+	q "kill -INT \$(cat $PCD/rpa.btmon.pid) 2>/dev/null; sleep 1; $PCD/btmon -t -r $PCD/rpa.snoop > $PCD/rpa.btmon 2>&1"
 	# "<time> <reason>" of every provd registration after the marker (logread: "Sun Jul 27 22:44:15 2025 daemon.info ...")
 	regs=$(qr "logread | sed -n '/batman-dv-p2: mark $HM\$/,\$p' | grep 'batman-provd\[[0-9]*\]: provd: adv registered reason='" | awk '{r = $NF; sub(/.*reason=/, "", r); print $4, r}')
 	# btmon -t header lines end in "[hci0] HH:MM:SS.us"; LE Set Random Address 0x08|0x0005, LE Set Advertising Set Random
 	# Address 0x08|0x0035 (opcodes, since btmon shortens the names without a terminal)
 	ras=$(qr "grep -E '0x08.0x00(05|35)' $PCD/rpa.btmon" | grep '^<' | grep -o '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\.[0-9]*' | cut -d. -f1)
 	say "registrations (node time, reason): $(echo $regs)"; say "btmon random-address sets (node time): $(echo $ras)"
-	q "rm -f $PCD/rpa.btmon $PCD/rpa.btmon.pid"
+	q "rm -f $PCD/rpa.btmon $PCD/rpa.snoop $PCD/rpa.btmon.pid"
 	[ -n "$r2" ] || no "fewer than two rpa_timeout re-registrations within $(( $(mono) - t0 )) s (first at ${r1:-none})"
 	sec(){ awk -F: '{print $1 * 3600 + $2 * 60 + $3}' <<< "$1"; }
 	# provd's own timer: every rpa_timeout registration 930-1020 s after the registration before it (+-5 s: log seconds)

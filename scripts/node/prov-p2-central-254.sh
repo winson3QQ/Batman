@@ -34,7 +34,16 @@ trap 'rm -rf "$T"' EXIT
 trap '' PIPE
 clean() { sed 's/\x1b\[[0-9;]*m//g; s/\r//g'; }
 up() { cut -d. -f1 /proc/uptime; }
-info_of() { : | bluetoothctl info "$1" 2>/dev/null | clean; }
+# 02's one-shot `bluetoothctl info` (empty stdin) segfaults now and then (rc 139, 2 in 10 on 2026-11-01; scan and
+# remove sessions did not): an empty or segfaulted answer is asked again, up to 4 times, so a scan does not drop the node
+info_of() {
+	_i=0; while [ $_i -lt 4 ]; do
+		_o=$(: | bluetoothctl info "$1" 2>/dev/null); _r=$?
+		[ "$_r" != 139 ] && [ -n "$_o" ] && break
+		_i=$((_i + 1))
+	done
+	printf '%s\n' "$_o" | clean
+}
 conn() { info_of "$1" | sed -n 's/^[[:space:]]*Connected: //p'; }
 # conn_state <addr>: yes / no / gone (BlueZ no longer knows the device: "not available") / unknown (no output: a
 # segfault or a hang — retried, never read as disconnected)
@@ -70,17 +79,18 @@ value() {
 		s = ""; for (i = 1; i <= c; i++) s = s L[i]; print s
 	}' "$T/read"
 }
-# read_one <addr>: connect, read both, drop; sets CV SV PV (empty on failure), NV = the name BlueZ knew from the
+# read_one <addr>: connect, read STATUS then CTRL, drop; sets CV SV PV (empty on failure), NV = the name BlueZ knew from the
 # advertisement BEFORE connecting (no Local Name advertised -> none) and GV = the name after connecting (BlueZ then
 # reads the GAP Device Name characteristic: main.conf Name — not the advertisement; 02, 2026-11-01)
 read_one() {
 	NV=$(info_of "$1" | sed -n 's/^[[:space:]]*Name: //p' | head -1)
 	{ echo "connect $1"; sleep 8; echo "menu gatt"; echo list-attributes; sleep 2
-	  echo "select-attribute $CTRL"; sleep 1; echo read; sleep 2
-	  echo "select-attribute $STAT"; sleep 1; echo read; sleep 2; echo back; sleep 1; echo quit; } | bluetoothctl 2>&1 | clean > "$T/read"
+	  echo "select-attribute $STAT"; sleep 1; echo read; sleep 2
+	  echo "select-attribute $CTRL"; sleep 1; echo read; sleep 2; echo back; sleep 1; echo quit; } | bluetoothctl 2>&1 | clean > "$T/read"
 	info_of "$1" > "$T/info"; PV=$(sed -n 's/^[[:space:]]*Paired: //p' "$T/info"); GV=$(sed -n 's/^[[:space:]]*Name: //p' "$T/info" | head -1)
 	drop "$1"
-	CV=$(value 1); SV=$(value 2)
+	# STATUS first: a refused CTRL read (prov-gatt's encrypt-read white box) prints no Value and may upset the session
+	SV=$(value 1); CV=$(value 2)
 }
 # pick <last4|->: sets A (and CV SV PV of the chosen node); rc 1 none / unreadable, rc 3 ambiguous / not found
 pick() {

@@ -197,6 +197,9 @@ radio_restore() {
 	for _q in $(pidof batman-provhelper); do
 		[ "$(awk '{print $3}' "/proc/$_q/stat" 2>/dev/null)" = T ] && { kill -CONT "$_q"; echo "RESTORED helper $_q SIGCONT"; }
 	done
+	# a btmon the H3 units started with setsid from a provclient dir (gatt / rpa capture; the host gone mid-arm): SIGINT
+	for _q in $(pidof btmon); do case "$(readlink "/proc/$_q/exe" 2>/dev/null)" in /tmp/run/batman-dvpc.*/btmon*)
+		kill -INT "$_q"; echo "RESTORED stopped harness btmon $_q" ;; esac; done
 	# a helper the helper-down arm stopped (its restore cut off): start it again
 	pidof batman-provhelper >/dev/null || { [ -x /etc/init.d/batman-provhelper ] && lim 60 /etc/init.d/batman-provhelper start >/dev/null 2>&1; echo "RESTORED helper started"; }
 	pidof dbus-daemon >/dev/null || { lim 60 /etc/init.d/dbus start >/dev/null 2>&1; echo "RESTORED dbus started"; }
