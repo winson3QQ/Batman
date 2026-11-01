@@ -151,7 +151,7 @@ bm_bluez() {
 }
 
 a=${1:-}
-MK="p2-$a-$$-$(cs)"; logger -t batman-dv-p2 "mark $MK"
+MK="p2-$a-$(cs)-$(head -c 4 /dev/urandom | hexdump -v -e '/1 "%02x"')"; logger -t batman-dv-p2 "mark $MK"   # a log marker, not a path
 o=$(p2_judges); [ -n "$o" ] && { echo "FAIL another H3 judge is still running (pid $o) — not overlapping it"; echo "PROV-P2 $a fails=1"; exit 1; }
 provd_present || { echo "FAIL no batman-provd on this image (pre-P2)"; echo "PROV-P2 $a fails=1"; exit 1; }
 case "$a" in
