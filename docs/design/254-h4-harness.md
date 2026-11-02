@@ -1,6 +1,6 @@
-# Design: #254 PR-H4 — P3 的 harness — **v4(審查中)**
+# Design: #254 PR-H4 — P3 的 harness — **v5(審查中)**
 
-**狀態**:v4,2026-11-02,審查中。
+**狀態**:v5,2026-11-03,審查中。v5 是在 v4 上做局部修改:§1.3、§3.1、§4.1、§4.2、§4.4、§4.5、§5.1、§5.7、§8.1、§8.2、§13、附錄 A。v4 審查意見的處理見附錄 D。
 
 **歷程**:
 
@@ -9,7 +9,8 @@
 | v1 | a31489b | REJECT 2 / 8 / 15 | REJECT 2 / 12 / 11 | |
 | v2 | d5cf7ed | REJECT 1 / 9 / 22 | REJECT 1 / 10 / 19 | 整份重寫 |
 | v3 | 282b48b | REJECT 0 / 4 / 17 | REJECT 1 / 3 / 17 | 兩位都說骨架已收斂、不需要重寫 |
-| v4 | (本版) | | | 整份重新寫過,保持一致,結構不變 |
+| v4 | 56dcf42 | REJECT 1 / 3 / 13 | REJECT 1 / 1 / 11 | 兩位都說骨架已收斂;BLOCKER 都是 v4 新加的「用 static key 認目標」 |
+| v5 | (本版) | | | 局部修改;新加的機制都先對照原始碼才寫(附錄 D 每條附 `file:line`) |
 
 - v3 每條意見的處理見附錄 C。
 - 審查報告在 `254-reviews/h4-review-v{1,2,3}-{A,B}.md`。
@@ -108,7 +109,7 @@ bench 的基準狀態分兩段:P3 之前是 **S0-pre**,P3 之後是 **S0**(§3)�
 |---|---|---|
 | F-H1 | 04 的手機 AP 是 `phy1-ap0`,與 `eth0`、`bat0` 同在 `br-ahwlan`;沒有 `isolate`;FORWARD 是 ACCEPT;`br_netfilter` 已載入。⚠️ E-H8 尚未實測 | 04 唯讀;v1-B E6 |
 | F-H2 | 桌機的上網走自己的 Wi-Fi | `Get-NetRoute` |
-| F-H3 | **E-H9(部分)**:bleak 連上 04、02,讀 `STATUS` / `CTRL`;MTU 談到 517;`CTRL` = frame 244、msg 8192;沒有配對提示。這是兩台都是 legacy 時做的 | 2026-11-02 輸出 |
+| F-H3 | **E-H9(部分)**:bleak 連上 04、02,讀 `STATUS` / `CTRL`;MTU 談到 517;`CTRL` = frame 244、msg 8192;沒有配對提示。**這是兩台都是 legacy 時做的,認出 04 靠的是 key 5,不代表 member 狀態也能這樣認**(F-H35) | 2026-11-02 輸出 |
 | F-H4 | 試用中,會改狀態的動詞一律 `EBusy` | `node.go:198-206` |
 | F-H5 | `-wbox` 永遠不會 auto-commit | `batman-autocommit:485-530` |
 | F-H6 | 回到 Unclaimed 只能靠 p5 mkfs;不能移除最後一位擁有者(`EForbidden`) | `node.go:514-539, 890` |
@@ -149,7 +150,18 @@ bench 的基準狀態分兩段:P3 之前是 **S0-pre**,P3 之後是 **S0**(§3)�
 | F-H41 | 04 的 `fs.protected_symlinks=1`、`protected_regular=2` | 04 唯讀 |
 | F-H42 | 新卡入網後,openmanetd 會保留位址並重開一次 → IP 會換 | `99-halow-identity:21-24` |
 | F-H43 | regdb:AU 有 ch 40(4 MHz、922.0 MHz,與 US 相同);DE 沒有 ch 40 | 04 regdb |
-| F-H44 | N0 的 net 物件產生器:repo 裡沒有 `provgen.py`;現有的產生器是 `provclient/net.go:185-269`(Go,在節點上)與 `gen.py:302-330`(`sign1` / `encrypt`) | `find`;原始碼 |
+| F-H44 | N0 的 net 物件產生器:repo 裡沒有 `provgen.py`;現有的產生器是 `provclient/net.go:185-269`(Go,在節點上)與 `gen.py:302-330`(`sign1` / `encrypt`)。`gen.py` 的 `encrypt()` 用模組層的 `NET_ID` / `NET_VERSION`,而且 import 時就會跑一次全部向量,不能直接沿用 | `find`;原始碼;v4-A M1 |
+| F-H45 | **`s_node`(Noise static)每次 provd 啟動都重新產生、只在記憶體**,協定禁止 app 快取它;**member 節點收到 NX msg1 一律回假 msg2**;交握完成後,同一條連線上的新 msg1 會被當成 transport 訊息 → AEAD 失敗 → 斷線 | `noise.go:29, 62-96`;`server.go:104-113, 673-683`;`session.go:300-321`;219 `:57, :515` |
+| F-H46 | **交握第 2 則訊息的 payload = `node_cert`**:`{1: dac_chain, 2: s_node_pub, 3: boot_id, 4: ecdh_pub, 5: sig_static, 6: sig_ecdh, 7: sn}`;手機要驗 DAC 鏈(dev 版 = 自簽 + TOFU pin,而且 `device_id == hex(SHA-256(pub)[:9])`)、`sig_static` 對上交握裡實際的 `s_node`、`sn` 與 DAC 一致,以及 **DAC = 預期的目標**(只驗鏈不夠:任何持有 `psk_member` 的成員都能冒充別台);peer 已經會解析 `node_cert`(`cert[7]`) | 219 §3.3 `:55-78`;`peer_core.py:93` |
+| F-H47 | **net_secrets** = COSE_Sign1,payload `{1: net_id, 2: version, 3: target = SHA-256(DAC pub), 4: 加密給 node_cert 的 ecdh_pub(P-256)}`;解密時 AAD 帶 target,`other` = net_id ‖ version。`network-join-req` 一定帶 key 31 owner-op | `wtxn.go:125-150`;`219-protocol.cddl:205-210` |
+| F-H48 | lease 鎖 = `$BT/lock` 的 fd 9,每個指令各自拿(`lock` / `held`);`dm-fire` 在 lease **過期後**才動作,最多等鎖 10 分,拿到鎖之後**在同一個行程裡**呼叫 `role_fire_restore`;`dm_arm` 會殺掉舊的 dead-man 群組;`cmd_arm` 要求 lease 有效 | `ble-lib-254.sh:96-101, 137-155, 305-343`;`prov-lease-254.sh:30-68` |
+| F-H49 | `batman-slot stage-root <dir>`(payload 不帶 `root.squashfs`)→ `begin_write`:disarm tryboot、invalidate 目標槽(寫 `BATMAN-BAD`)、清空 rootfs,然後印出裝置。`batman-slot` 沒有單獨的 invalidate / disarm 動詞 | `batman-slot:8-14, 423-436, 650-656, 900-917` |
+| F-H50 | provd 的全域交握限速 20 次 / 分,fake path 也算 | `server.go:35, 645-660` |
+| F-H51 | `provd_check` 的 `PROVD_KEYS` 沒有 `BATMAN_FAULT` | `ble-lib-254.sh:170` |
+| F-H52 | 04 的 batman `bridge_loop_avoidance` = enabled、`stp_state` = 0(02 接線後 eth + mesh 兩條路同時存在時,靠它防迴圈) | 04 唯讀(v4-B m4) |
+| F-H53 | 新卡的 bootstrap IP 是 `10.41.254.<隨機>`,入網後 openmanetd 再換一次;host key 每次重燒都重新產生 | `99-halow-identity:22-28` |
+| F-H54 | Linux squashfs 在 mount 時檢查 `s_major`,不等於 4 就拒絕 | `fs/squashfs/super.c:158-166`(6.6;v4-A 核對) |
+| F-H55 | WSL userns 沙箱:宿主上 yello 擁有的檔案在 userns 裡寫得進去;chroot 擋不住 userns 裡的 root;v4 寫的四條逃脫負測試,在沙箱外執行一樣會失敗(沒有鑑別力) | v4-B 實測 |
 
 ### 1.4 回報給 P3(P3 實作的第一個 commit 處理)
 
@@ -161,6 +173,7 @@ bench 的基準狀態分兩段:P3 之前是 **S0-pre**,P3 之後是 **S0**(§3)�
    - provd 的 prov_test 標記;
    - test init 讀 `fault.provd`;
    - helper 的 ro 計數(`info.state` 的一個欄位)。
+   - **完整清單**就是 §5.1、§5.2、§5.4 的三張表(Go fault 17 個、killpoint 3 個、shell fault 14 個)。這些比 P3 §8 凍結時的 10 個接縫多,**屬於凍結設計之外新增的產品程式**;其中 shell fault 會出現在**所有 image,包括 release**。因此 P3 第一個 commit 的程式碼審查與 `/security-review` 必須逐一涵蓋這批程式路徑。信任邊界:`batman_opf` 只接受 root 擁有、regular、非 symlink、link 1 的檔(`rundir.sh:44-52`),加上 `protected_hardlinks=1`(04 sysctl)。
 3. **`BATMAN_FEATURES` 加 `provd-p3(#254)`**。
 4. **pending 綁定驗它的信任集合**:H4 的 `unbind-all` 會刪 pending 與上傳檔。
 5. **autocommit 的 `inet fw4` 檢查以 PATH 呼叫 `nft`**。
@@ -195,20 +208,24 @@ bench 的基準狀態分兩段:P3 之前是 **S0-pre**,P3 之後是 **S0**(§3)�
 | 網路 N0 | 02 + 04;US、ch 40;mesh key 是 `netobj.py` 新產生的測試值 | 同左 |
 | 手機 AP | 04 = C0、02 = C0';由 root 執行 P2 的 `halow-setkey --ap`(值在 argv,這是 P2 的界線,C0 是測試值) | 由 key 20 寫入(journal) |
 | 手機 | 存了 C0 與 ALT 兩個網路,MAC 用「手機 MAC」 | 同左 |
-| 每台記在庫裡的身分 | Noise static 公鑰、deviceID(`info` key 1)、序號末 4 碼 | 同左 |
+| 每台記在庫裡的身分 | **DAC 憑證**(`identity/node.cert`,0644,ssh 讀)、`device_id` / `sn`、eth MAC、ssh host key。**不存 Noise static key**(每次 provd 啟動都會變,F-H45) | 同左 |
 
 C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 
 **S0-pre 的建立步驟**(`prov-bench-s0-254 provision`,每台依序做;寫在 `docs/validation/h4-onsite.md`):
 
-1. 重燒(使用者)。02 暫時接網路線(H4-U7)。
-2. ssh `none` 登入(新卡,認領前),放 lab key。讀 `identity/claim.secret`(root,經 ssh 的 stdout 直接進 `peer.py` 的 stdin,不落地、不進 argv),同時讀 static 公鑰與 deviceID,寫進庫。
-3. BLE 認領(H0):`peer.py claim`(§4.2 依序列號末 4 碼 + static key 認目標;unclaimed 時有 key 5)。
-4. 以 publickey 證明 lab key 登入(沿用 chain1 的 `pk_proof`)。認領後 dropbear 只收 key(F-H37),所以第 2 步一定要先放 key。
-5. `network/join`:
-   - 04 用 `netobj.py` 產生 N0 的 net_config(owner H0 簽)與加密給 04 的 net_secrets;
-   - 02 用同一份 net_config,加上加密給 02 的 net_secrets。
-6. 等 `.txn` 消失,再等 openmanetd 那次重開結束(F-H42)。每一步都重讀 IP。
+1. 重燒(使用者)。02 暫時接網路線(H4-U7)。兩條路同時存在時,靠 batman 的 BLA 避免迴圈(F-H52)。
+2. **找到新卡**:bootstrap IP 是 `10.41.254.<隨機>`(F-H53)→ 沿用 chain1 的「依 eth MAC 做 ARP 掃描」;每次 ssh 都斷言 `identity/sn` 與 eth MAC;重燒後重新 pin host key。
+3. ssh `none` 登入(新卡,認領前):
+   - 放 lab key;
+   - **以 publickey 證明登入成功(chain1 的 `pk_proof`),證明之前不認領**(chain1 `:342` "not claiming");認領之後 dropbear 只收 key(F-H37),先證明可以避免 02 被鎖在外面;
+   - 讀 `identity/node.cert` 與 `sn` 寫進庫;
+   - 讀 `identity/claim.secret`:在節點上以 `hexdump -v -e '1/1 "%02x"'` 輸出 hex,經 ssh stdout 直接進 `peer.py` 的 stdin。不落地、不進 argv,也不會被跨 Git Bash / WSL 的換行處理弄壞(v4-A m5)。
+4. BLE 認領(H0):`peer.py claim`,目標依 §4.2 認證(新卡 = unclaimed,NX 交握的 `node_cert` 必須等於第 3 步記下的 DAC)。
+5. `network/join`(請求依 CDDL `network-join-req`,一定帶 key 31 owner-op;F-H47):
+   - 04:`netobj.py` 產生 N0 的 net_config(H0 簽,國家 US),以及給 04 的 net_secrets:target = SHA-256(04 的 DAC pub),加密給 04 `node_cert` 的 `ecdh_pub`(先驗 `sig_ecdh`);
+   - 02:同一份 net_config,加上給 02 的 net_secrets。
+6. 等 `.txn` 消失,再等 openmanetd 那次重開結束(F-H42)。之後依 eth MAC 重找 IP。
 7. root 執行 `halow-setkey --ap`(值從推到 `/tmp/run/batman-dv/c0` 的 root 0600 檔讀出;用完就刪)。
 8. 等 02 經 mesh 連得上 → **使用者拔掉 02 的網路線** → `s0_assert` 兩台。
 
@@ -260,7 +277,12 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 - **執行**:`~/.batman-dv/peer-venv/bin/python tests/tools/peer/peer.py`。
 - **輸出**:每次呼叫一行 JSON;秘密欄位只印 `short()`(清單寫死在程式裡)。單位的秘密斷言在 WSL 端用原值 grep,必須是 0。節點的 log **在節點上先以原值 grep 過**才拷回主機(§16)。
 - **子命令**:`s0 provision|assert|upgrade`、`claim`、`auth`、`call`、`owner-*`、`settings-*`、`status`、`diag-*`、`update-*`、`bulk-*`、`upload`、`raw`、`load ro <rate> <secs>`(自己計數:ok / `E_RATE` / 其他)、`identify`(§4.2)、`--selftest`。
-- **`netobj.py`**:產生 N0 的 net_config(COSE,owner 簽)與 net_secrets(加密給指定節點的 static key),對 `vectors.json` 逐位元組 selftest。
+- **`netobj.py`**(自己的實作,不 import `gen.py`;F-H44):
+  - 產生 N0 的 net_config(COSE_Sign1,owner 簽;國家、頻道、頻寬依 CDDL);
+  - 產生 net_secrets(F-H47):payload `{1: net_id, 2: version, 3: target = SHA-256(目標 DAC pub), 4: 加密給目標 node_cert 的 ecdh_pub}`,AAD = target、`other` = net_id ‖ version;加密之前先驗 `sig_ecdh`;
+  - 組 `network-join-req`(含 key 31 owner-op)。
+  - **selftest**:用 `vectors.json` 的輸入逐位元組重現 net_config、net_secrets、join 請求;另加負向案例「拿 `s_node` 當加密對象 → 和向量不一樣」。
+- **交握限速**:provd 全域 20 次 / 分,fake path 也算(F-H50)。peer 對每個節點限速 ≤ 15 次 / 分。每個單位結束時在 provd log 斷言沒有 `global handshake rate` 行;出現了 → 那一臂 INVALID(不算 FAIL 也不算 PASS)。BLE 與 sock 共用 2 個 slot;helper 的第 4 條連線不算在內。
 - **傳輸 `--via`**:
   - `sock`:provclient proxy。只用在 `push-provd SOCK_ONLY=1`。
   - `ble`:WSL 以絕對路徑執行 Windows 的 `python.exe -E -P …\blebridge.py`。preflight 檢查:版本、bleak = `requirements-win.txt`、沒有殘留的橋(`Get-CimInstance Win32_Process`)。
@@ -276,19 +298,34 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 - notify 用 `start_notify`;write 用 `response=False`。
 - 出現配對提示 = FAIL。
 
-**認目標**(在 WSL 的 peer 核心,v3-B B1):
+**認目標**(在 WSL 的 peer 核心;v4-A B1 / v4-B B1;依 219 §3.3 的手機驗證,F-H46):
+
+**在這一臂自己的交握裡驗**,不另外做認證交握(一條連線只能交握一次,F-H45):
 1. `SCAN` → 依 RSSI 由強到弱逐一 `CONNECT`。
 2. 讀 `STATUS`:unclaimed / legacy 時有 key 5,不符就立刻 `CLOSE`(只是加速)。
-3. **認證**:做一次 Noise NX 交握的前兩則,取得節點的 static 公鑰,與庫裡目標的值比對;不符就 `CLOSE`。認證通過後,同一條連線再從頭做這一臂要用的交握(NX 匿名 / PSK)。
-4. 全部候選都不符 → INVALID。
+3. 送出這一臂本來就要做的 msg1(NX / psk_owner / psk_member)。收到 msg2 後,**在送出任何請求之前**驗 `node_cert`:
+   - `dac_chain[0]` 必須等於庫裡目標的 DAC。只驗鏈不夠:`psk_member` 是全網共用的,不比 DAC 就分不出是哪一台;
+   - `sig_static` 要對上交握裡實際的 `s_node`,也要對上 `boot_id`;
+   - `sn` 要與 DAC 一致(dev 憑證:`device_id == hex(SHA-256(pub)[:9])`)。
+4. 不符(包括 msg2 解析不出 `node_cert`,也就是 fake path)→ `CLOSE`,換下一個位址。
+5. 全部候選都不符 → INVALID。
 
-**負對照**(`peer.py identify` 的 selftest,以及一次實機臂):在 S0-pre 上要連 04,但把庫裡 04 的 static key 換成 02 的 → 必須 INVALID(或連到 02 被認出不是 04 後放掉),**絕不能**對 02 繼續送任何臂的請求。
+**預期會走 fake path 的負向臂**(例如錯的 PSK、member 收到 NX):這種臂沒有可驗的 `node_cert`,做法如下:
+- 同一臂內先建一條**已認證**的連線,記下目標目前的位址,關掉;
+- 在 RPA 換址窗(約 900 s,F-H12)內重連**同一個位址**,送負向的 msg1;
+- 以 04 端 provd log 的 fake path 行數增加作佐證。
+- 位址在這中間換了(重新掃描找不到)→ INVALID。
+
+**負對照**(`peer.py identify` 的 selftest,以及實機兩臂):
+- (a) 在 S0-pre 上要連 04,但庫裡 04 的 DAC 換成一張**不屬於任何節點**的測試憑證 → 04 與 02 都被認出「不是目標」而放掉 → INVALID;兩台的 provd log 都只有交握、沒有任何請求。
+- (b) 強制候選順序先試 02(忽略 RSSI)→ 02 被放掉、04 被接受;斷言請求只出現在 04 的 log。
+- **絕不能**在認證不符的連線上送出任何請求。
 
 **其他規則**:
 - 連到不是目標的那台會讓它短暫撤廣播。主機鎖底下沒有其他單位在用,列進副作用。
 - **04 的廣播在不在**一律在 04 端判:provd log 的 `withdrawn` / `registered` 行,以及 root `bluetoothctl show` 的 advertising instances 數。
 - key 20 臂的 Closed = outcome unknown → 認證後重連,讀 `settings.get` 判定。
-- **selftest**:假後端,驗證行協定、frame 計算、EOF 退出,以及認目標在「key 不符」時一律放掉。
+- **selftest**:假後端,驗證行協定、frame 計算、EOF 退出;認目標用 `vectors.json` 的 `node_cert`:DAC 不符、`sig_static` 不符、fake path,三種情況都要放掉。
 
 ### 4.3 手機
 
@@ -320,16 +357,18 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 
 ### 4.4 新卡 lib:`fresh-254.sh`
 
-- **範圍**:chain1 的步驟 1–6 與 9。`image` 參數可以是受測 rc,也可以是 wsl.22。restore 之後 B = A 的版本(brewrite),A 做 overlay-restore + compare。新卡由臨時擁有者 HF 認領,序號末 4 碼與 static key 都從節點讀。
-- **期限檔** p6 `fresh-deadline`(tmp + rename;寫者 = 主機續期、B 上的迴圈;同一行由迴圈改寫時保留 run):
-  - 內容:`<run> <boot_id> <剩餘預算秒> <last_seen_uptime>`。
-  - B 上的迴圈每 60 s:
+- **範圍**:chain1 的步驟 1–6 與 9。`image` 參數可以是受測 rc,也可以是 wsl.22。restore 之後 B = A 的版本(brewrite),A 做 overlay-restore + compare。新卡由臨時擁有者 HF 認領;它的 DAC、`sn`、eth MAC 都從節點讀進 `run/`(§3.1 第 2–3 步)。
+- **期限:兩個檔、各一個寫者**(v4-A m2、v4-B m8):
+  - p6 `fresh-grant`:**只有主機寫**(tmp + rename),內容 `<run> <grant_seq> <預算秒>`。每次續期 `grant_seq` + 1,預算 = 30 分。
+  - p6 `fresh-spent`:**只有 B 上的迴圈寫**(tmp + rename),內容 `<run> <grant_seq> <已用秒> <boot_id> <last_uptime>`。
+  - 迴圈的規則:
     - run 不符 → 不動作;
-    - 同一次開機 → 扣掉經過的時間、更新 `last_seen`;
-    - boot_id 變了 → 剩餘預算 = 舊的剩餘 − 0(重開期間不計)+ 5 分,而且**只能延長一次**(檔案記錄延長次數 ≥ 1 → 不再加);
-    - 剩餘 ≤ 0 → 執行 `ch1-deadman.sh`。
-  - 主機續期時才把預算補回 30 分。
-  - 重開迴圈中只要主機不續期,預算一定會耗盡(v3-A m6、v3-B m11)。
+    - **每次開機時,迴圈一啟動就先扣「本次 uptime + 每次開機的固定成本 120 s」**;所以每次開機不到 60 s 就重開的迴圈,預算一樣會減少;
+    - 之後每 60 s 扣一次經過的時間;
+    - 讀到的 `grant_seq` 比 `fresh-spent` 記的大 → 已用歸零(主機續期了);
+    - 已用 ≥ 預算 → 執行 `ch1-deadman.sh`;
+    - 任一個檔讀不懂 → 觸發(fail-secure)。
+  - 只要主機不續期,不論重開迴圈多快,預算一定會耗盡。
 - 每次 B 開機後,主機先斷言 rc.local 那一行與迴圈都在。
 - **LR1 排在 F 的最後**:firstboot 回來後重種 dead-man 並斷言,然後 restore_all。
 - **lease dead-man 與新卡 dead-man 的先後**:dirty flag 指向這個 F run 時,lease dead-man 只做 undo 執行器的段 1(§5.7),不啟動服務。
@@ -338,7 +377,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 - **回歸**:
   - chain1 在 wsl.22 上 59 / 0;
   - dead-man:不續期 → 觸發;有續期 → 不觸發;
-  - B 上連續 sysrq 重開、不續期 → 預算內觸發。
+  - B 上連續 sysrq 重開(包括每次開機 < 60 s 就重開)、不續期 → 預算內觸發。
 
 ### 4.5 eth 側模擬:`prov-ethsim-254.sh`(04,lease 底下)
 
@@ -351,7 +390,12 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 
 **連線端**:`wget -T 2`(uclient-fetch),背景執行。並發上限在 E-H15 先量 RSS 再定(目標 ≥ 120),**速率依 P3 §8 是 50 conn/s**;並發上限可以撐到 50/s 才算達標,否則把實際速率列為誠實界線並回報使用者。每秒斷言行程數 ≤ 上限。
 
-**判定**(在 04 端):named counter 的增量 ≥ 送出的 SYN 數 × 0.9,**而且** `tcpdump -i br-ahwlan` 沒有 SYN-ACK、沒有 RST。
+**判定**(在 04 端):
+- tcpdump 一律在**這一臂的入口介面**擷取:eth / mesh / MAC 偽造 / VLAN 臂在 `br-ahwlan`;lo 臂在 `lo`;docker0 臂在 `docker0`。
+- 要求同時成立:
+  - 看到的 SYN 數 ≥ 送出數 × 0.9。看不到 → INVALID,因為流量根本沒到;
+  - named counter 的增量 ≥ 看到的 SYN 數 × 0.9。增量 < 0(fw reload 讓計數歸零)→ INVALID;
+  - 同一介面上沒有 SYN-ACK、沒有 RST。
 
 **各臂**:
 
@@ -453,8 +497,10 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
   - `exec /rom/sbin/uci "$@"`,argv 與 rc 原樣傳回;
   - argv 記到 `/tmp/run/batman-dv/uci-argv.<run>`(root 0600),只在節點上計數,臂結束就刪;
   - shim 有自己的 selftest(參數含空白、引號、`$`):bind 之前在 04 上與 `/rom/sbin/uci` 的輸出比對。
+- **`/usr/bin/halow-setkey` → `setkey-argv-leak`**(ST9 的 S):一個 setkey 變體,用 `uci set …=$AP` 寫密碼(也就是 P3 F78 之前的寫法);加進 bind 封閉清單,只在 ST9 的 S 臂期間 bind。
 - **假 `nft`**:只在 RD 的 PATH 裡。
 - **autocommit 變體**(h23 §17 的規則):`ac-noprov`、`ac-provd-required`、`ac-helperoff-err`、`ac-nofw4`。
+- **`provd_check` 的 `PROVD_KEYS` 加上 `BATMAN_FAULT`**(本 PR,F-H51)。否則 dead-man 與 `unbind-all` 之後的「provd 沒有測試開關」斷言,檢查不到 fault。
 
 ### 5.6 `provd-stable`(RD)
 
@@ -463,13 +509,17 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 3. 執行 dry-run。
 4. 還原:helper 正常重啟後會重寫;斷言內容是本次的 boot_id。
 
-### 5.7 undo 執行器 `prov-undo-254.sh`(v3-B M3、v3-A m3 / m4 / m5)
+### 5.7 undo 執行器(v3-B M3;v4-A M2 / M3、v4-B M1;鎖的語意見 F-H48)
 
-**同一個執行器**:EXIT trap 與 dead-man 都只呼叫 `prov-undo-254.sh run <run>`。它的做法:
-- 在節點上以 `setsid` 執行;
-- 先 `renew` lease 一個足夠的預算(20 分鐘),全程持有 lease 鎖;
-- 重入時,跳過已標 `done` 的項目;
-- 主機的 EXIT trap 只負責啟動它、等結果。
+**程式形式**:`prov-undo-lib-254.sh` 提供函式 `undo_run <run> <mode>`,與 `ble-lib-254.sh`、`prov-lease-254.sh` 一起 stage(同一套 `stage-check`)。兩種進入方式只差在「鎖從哪裡來」:
+
+- **`host` 模式**(單位正常結束、或主機的 EXIT trap):
+  1. 主機先 `prov-lease-254.sh arm <預算>`(預算 = 最壞情況的還原時間,例如 20 分;`cmd_arm` 要求 lease 有效,這時 lease 還是有效的)。這一步會同時把 dead-man 往後延。
+  2. 呼叫 `prov-lease-254.sh undo <run>`:在 `held` 底下(拿鎖、lease 有效)執行 `undo_run <run> host`。
+  3. 這個指令一開始就 `trap '' HUP PIPE`,ssh 斷線也會跑完;它在 `$BT/undo-doing.<run>` 寫自己的 pid 與 boot_id,結束時刪掉。
+- **`deadman` 模式**:`role_fire_restore` 在 `dm-fire` 裡、**同一個行程**直接呼叫 `undo_run <run> deadman`。這時 `dm-fire` 已經拿著鎖(或已經等了 10 分、照既有規則不拿鎖照做);**不 renew、不 setsid、不 arm**(lease 已過期,`cmd_arm` 一定失敗;`dm_arm` 會殺掉呼叫它的 dm-fire)。
+  - 開始前先看 `undo-doing.<run>`:本次開機、pid 還活著 → 表示 host 模式正在跑 → 只做段 1,段 2 留給它;否則兩段都做。
+- **重入**:兩種模式都跳過已標 `done` 的項目。每個動作都必須冪等(兩邊都執行一次也不會出錯)。
 
 **段 1:去武裝**。不論登記的順序,一律最先做:
 1. 刪除所有 shell fault、`fault.*`、killpoint;
@@ -488,12 +538,29 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 - `svc-start <n>`
 - `svc-enable <n>`
 - `bt-start`
-- `ap-restore`:經 `halow-setkey` 寫回 C0 的 SSID + passphrase,並斷言 hostapd 回到 S0;S0-pre 不會跑 key 20 臂
+- `ap-restore`:經 `halow-setkey` 寫回 C0 的 SSID + passphrase,並斷言 hostapd 回到 S0。C0 從哪來:key 20 臂開始時,把 C0 stage 到 `/tmp/run/batman-dv/c0.<run>`(root 0600,登記 `rm-file`)。重開之後 tmpfs 沒了,改由主機從庫裡以 key 20 重送(journal),節點端不長期存 C0。S0-pre 不會跑 key 20 臂。
 - `pending-del`
 - `p5-save`:執行 `batman-config-save --save`,再用 `--check` 斷言 fresh
-- `rm-file <path>`:例如 dev-open 旗標、`/tmp/run/batman-dv/c0`
+- `rm-file <path>`:例如 dev-open 旗標、`/tmp/run/batman-dv/c0.<run>`
 
-**撐過重開**:會撐過重開的動作(`uci commit`、`disable`、`auto_includes`、p5 的修改)**先在 p6 `dv-undo.<run>`(root 0600)登記,才去改**。開機後,P9 與下一個 run 的 preflight 依它執行段 2。§11 的測法:臂進行中 sysrq → 重開後殘留項被列出並還原。
+**每一行的參數驗證**(v4-A m11):不符就記 CRIT、跳過該行,P9 判 FAIL。
+- `<pkg>` 只能是 `[a-z_]+`;
+- `<dev>` 只能是 `h4*`、`phy9h4`、`q0*`、`phy1-ap0` 這類由 ethsim / HT21 登記的名字(封閉清單);
+- `rm-file` 的路徑只能在 `/tmp/run/batman-dv/` 底下,或是 dev-open 旗標的固定路徑;拒絕 `..` 與 symlink;
+- `uci-restore` 的備份檔只能在本 run 的 p6 目錄裡;
+- `kill-pg` 要帶 boot_id,而且要先驗 cmdline。
+
+**撐過重開**(v4-A M3、v4-B m1):
+- 會撐過重開的動作(`uci commit`、`disable`、`auto_includes`、p5 的修改),**先在 p6 `/opt/batdata/state/dv-undo/<run>/`(root 0700)登記,才去改**。
+- **備份檔(`uci export` 的結果)也放在這個目錄**。
+- 每一項綁定登記時的**槽**與 boot_id:目前的槽與登記的不同(T 換過槽)→ 不在這一槽執行,改印 NEEDS-PERSON。
+- **誰在開機後執行**:P9 與下一個 run 的 preflight 都會先拿 lease,再以 `host` 模式執行段 2。主機不在時**沒有人在開機時重放**,所以下面這些會一直留到主機回來。這一點寫進 §13,而且每一項都是 fail-closed 或只影響可用性:
+  - AC 臂 `disable` 了 provd → BLE 管理通道沒了;
+  - HT18 的 `auto_includes=0` → HTTP 不聽;
+  - ST16 / UD16b 讓 p5 stale → OTA 被擋。
+- §11 的測法:臂進行中 sysrq → 重開後殘留項被列出、在主機那一輪被還原。
+
+**單位如何縮短持久項的窗口**:`disable` 只在 dry-run 的那幾秒存在;`auto_includes` 臂不重開。
 
 **`restoring` 標記存在時**:只做段 1;段 2 交給 pr_restore(它會重開並還原 p5)。
 
@@ -502,7 +569,12 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 - 臂自己的 `fw-start` 執行前,先殺掉這個保險;
 - 保險動作之前,如果 `inet fw4` 已經在,就跳過。
 
-**lease 契約的改寫**:dead-man 不直接寫 slot 或 p5;經 setkey `--save`、`batman-config-save --save` 的寫入,屬於那兩個工具自己的職責。每一類動作都有一個 dead-man 臂(`test-h4-undo.sh`):不續 lease → 等 dead-man → 斷言已還原。
+**lease 契約的改寫**:dead-man 不直接寫 slot 或 p5;經 setkey `--save`、`batman-config-save --save` 的寫入,屬於那兩個工具自己的職責。
+
+**測試**(`test-h4-undo.sh`,在 04 上跑):
+- 每一類動作各一個 dead-man 臂:不續 lease → 等 dead-man → 斷言已還原;
+- host 與 deadman 兩種模式重疊的一臂:host 模式跑到一半時 lease 到期 → deadman 只做段 1、host 跑完段 2 → 每一項只執行一次;
+- 參數驗證的負測試:在 journal 寫一行 `rm-file /etc/passwd` → 被拒、檔案還在。
 
 ## 6. pre-P3、負對照與對表
 
@@ -563,20 +635,32 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
   - `mount -t squashfs` 失敗;
   - offset 1080 不是 ext4 magic,`mount -t ext4` 也失敗。
 - **機制**:kernel 正常 → 掛不上 root → panic → `panic=10` → tryboot 是一次性的 → 回預設槽。這與 F-H16 既有的 invalidate 機制是同一條回程。
-- **E-H13 的前置**(lease 底下,現場之前):在 04 上真的跑 `batman-slot apply`,證明壞 payload 會被收下,但**不重開**;然後 `invalidate` B,並斷言 `BATMAN-BAD` 存在。
-- **E-H13**(現場):apply → 重開 → 觀察 panic 行、ext4 的嘗試、回到 A 的時間。結束後 **brewrite B**,斷言 B = V、沒有 `BATMAN-BAD`,再 `s0_assert`。否則之後任何 rollback 都會讓 04 陷入 panic 迴圈(v3-B M1)。
+- **E-H13 的前置**(lease 底下,現場之前;F-H49):
+  1. 在 04 上跑 `batman-slot apply <壞 payload>`,證明會被收下。`apply` 結尾會 arm tryboot。
+  2. **緊接著、不重開**:用一個不帶 `root.squashfs` 的 payload 目錄跑 `batman-slot stage-root`。它會走 `begin_write`:disarm tryboot、invalidate B(寫 `BATMAN-BAD`)、清空 B 的 rootfs。
+  3. 斷言:tryboot 旗標 = 0、B 有 `BATMAN-BAD`。
+  4. **brewrite B**,斷言 B = V、沒有 `BATMAN-BAD`,再 `s0_assert`。
+  - 第 1 步與第 2 步之間如果意外重開,會進到壞槽 → panic → 回到 A。這個方向是安全的,但前置要重做。
+- **E-H13**(現場):apply → 重開 → 觀察 panic 行、ext4 的嘗試、回到 A 的時間。結束後一樣 **brewrite B**,斷言 B = V、沒有 `BATMAN-BAD`,再 `s0_assert`。否則之後任何 rollback 都會讓 04 陷入 panic 迴圈(v3-B M1)。
 
 ### 8.2 `prov-eeprom-hooks-254`(D11;C 載具;H4-U12)
 
 **沙箱**(`eeprom-sbx-254.sh`):
-- WSL 的一般使用者執行 `unshare --user --map-root-user --mount --pid --fork --net --uts --ipc`,在裡面 chroot;qemu-aarch64 依 binfmt 的 `F` 旗標執行(F-H31)。
+- WSL 的一般使用者執行 `unshare --user --map-root-user --mount --pid --fork --net --uts --ipc`;
+- 在新的 mount namespace 裡:把 rootfs 的目錄 bind 到自己身上 → **`pivot_root`** → `umount -l` 舊根。不用 chroot,因為 chroot 擋不住 userns 裡的 root(F-H55);
+- 新根之內只放 rootfs、一個空的 tmpfs `/tmp`、自己的 `/proc`;**宿主的 `$HOME` 不在新根裡**;
+- qemu-aarch64 依 binfmt 的 `F` 旗標執行(F-H31)。
 - 沒有真 root,也不用 `dv-sbx.sh`(F-H22)。
 
-**逃脫負測試**(每次執行都先跑,任一沒有失敗 → 整個單位 FAIL):
-- 沙箱內 `reboot -f` → WSL 的 boot_id 不變;
-- `mount /dev/sd*` 失敗;
-- 寫 `/proc/sys/kernel/hostname` 失敗;
-- 對宿主的檔案 `mknod` 失敗。
+**逃脫負測試**(每次執行都先跑;每一條都要有「沙箱外會成功」的對照,才算有鑑別力;F-H55):
+
+| 測試 | 沙箱內(必須失敗) | 對照:沙箱外(必須成功) |
+|---|---|---|
+| 金鑰庫 / lab key 這類資產 | 寫宿主 `$HOME/.batman-dv/sbx-canary`(yello 擁有)→ 寫不進去(路徑在新根裡不存在),而且宿主上的 canary 內容不變 | 同一條指令在沙箱外寫得進去 |
+| 宿主的 hostname | 沙箱內 `hostname x` 之後,**宿主**的 hostname 不變(UTS ns 內改了沒關係) | — |
+| reboot | 沙箱內 `reboot -f` → 沙箱的 init 被結束(證明 syscall 有到),而 WSL 的 boot_id 不變 | — |
+
+任一條不成立 → 整個單位 FAIL。
 
 **底**:wsl.22 的 rootfs(sha 釘死)。
 
@@ -609,7 +693,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | HT14 保險行程 | HT14;由 `kill-pg` 收掉 | — |
 | `/tmp/run/batman-dv/c0` | provision 步驟 7;用完 `rm-file` | — |
 | bench 金鑰庫 / journal | `peer.py s0`;`run/` 範圍歸該 run | 單位 |
-| `fresh-deadline` | 主機(續期)與 B 上的迴圈(扣時間);都用 tmp + rename;主機的續期優先(迴圈讀到 run 與 boot_id 相同時,只扣時間、不改預算上限) | — |
+| `fresh-grant` / `fresh-spent` | grant 只有主機寫;spent 只有 B 上的迴圈寫(§4.4,各一個寫者) | 對方唯讀 |
 | 新卡(p5 快照、B、rc.local) | `fresh-254.sh` | lease dead-man(只讀 dirty flag) |
 | netns / veth | `prov-ethsim-254.sh` | P9 |
 | fault 檔,以及帶 fault 的執行中行程 | `set-fault` / `push-*`;關閉 = undo 段 1 | P9 |
@@ -628,7 +712,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | blebridge 行協定 | peer ↔ 橋 | §4.2 | `ERR` / Closed → INVALID;認證不符 → 放掉 | Windows 使用者(看得到密文與公開的 STATUS) |
 | relay 行協定 | peer ↔ relay | §4.3 | 同上 | 有手機 key 的主機 |
 | 金鑰庫 / journal | `s0` → 單位 | CBOR 0600 | INVALID + 重建步驟 | WSL 使用者 |
-| `fresh-deadline` | 主機 / 迴圈 → 迴圈 | §4.4 | run 不符 → 不動;壞檔 → 觸發(fail-secure) | root |
+| `fresh-grant` / `fresh-spent` | 主機 → 迴圈 / 迴圈 → 迴圈 | §4.4 | run 不符 → 不動;任一個讀不懂 → 觸發(fail-secure) | root |
 | undo journal | 單位 → 執行器 | 一行一個動作,封閉清單,帶 `done` 標記 | 不認得的行 → 記 CRIT、跳過、P9 FAIL | root |
 | fault 檔 | `set-fault` → helper / provd init | §5.1 | §5.1 | root |
 | `pre-p3-versions.txt` | harness PR → 單位、known-failures | 一行一個版本 | lint | harness PR |
@@ -704,10 +788,11 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | UP1 / key 20 | AP client 斷線 | `ap-restore` |
 | ST13 | uci 暫存:用一個 commit 了也無害的 key;臂後斷言沒有被別人 commit | `uci-revert` |
 | UD3 的 S(`upd-after-arm`) | 會真的進另一槽的試用 | hold → revert → 回到原槽;`s0_assert` |
-| prov-update | 多次重開、A / B 重寫;壞 rootfs 一次 panic | 回到 S0 的版本、committed;brewrite;`s0_assert` |
-| E-H13 | B 是壞 rootfs | brewrite B(§8.1) |
+| prov-update | 多次重開、A / B 重寫;壞 rootfs 一次 panic;UD11 把 04 降到 wsl.22、UD12 / UD12b 從 wsl.22 升到受測版本(整台 image 改變,S0 → S0-pre → S0) | 回到 S0 的版本、committed(sysupgrade 回 V);brewrite;`upgrade` 之後 `s0_assert` S0 版 |
+| E-H13(前置與本體) | B 是壞 rootfs / 被清空 | brewrite B,斷言 B = V、沒有 `BATMAN-BAD`(§8.1) |
 | prov-upload | 126 MB × 每個接縫一次 | tmpfs 用量回到 0 |
 | AC | 刪 `provd-stable`;`disable` | 重寫;`svc-enable`(p6) |
+| 持久項遇上「臂進行中重開 + 主機不在」 | AC 的 `disable` provd(BLE 管理通道沒了)、HT18 的 `auto_includes=0`(HTTP 不聽)、ST16 / UD16b 的 p5 stale(OTA 被擋)會一直留著;都是 fail-closed 或只影響可用性 | 主機回來後,P9 / preflight 依 p6 `dv-undo` 還原(§5.7) |
 | fw-badinclude | 02 沒有防火牆 ≤ 600 s | 回到 committed |
 | SEC1 | health 變 WARN | 刪檔;排在最後 |
 | 02 | country-join、mesh 臂、認目標時被短暫連線 | 02 的 `s0_assert` |
@@ -788,7 +873,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | OW1 | add | add | R | Hx `auth/owner` 成功 | W(E_U) |
 | OW2 | 重送輪替 | resend | R | 新 tag key ≠ 舊的,舊的失效 | W + P |
 | OW3 | remove 切 BLE + HTTP | remove | RB(T 窗) | 兩條 ≤ 5 s Closed;provd log 的 session 數 = 0;重新交握被拒;`adv_owner_key` 輪替 | W + P |
-| OW4 | 最後一位 | last | R(快照,`run/`) | Hx、H0b 先移除成功;再移除 H0 → `EForbidden "cannot remove the last owner"`;快照還原;`s0_assert` | W |
+| OW4 | 最後一位 | last | R(`run/`) | 依序移除 Hx、H0b → 成功;再移除 H0 → `EForbidden "cannot remove the last owner"`。還原:H0 以 `owner/add` 重新加入 H0b(journal 記新的 tag key),然後 `s0_assert` S0 版。**不用 p5 快照**(那是 pr_restore 的事,v4-A m10) | W |
 | OW5 | remove 重送 | resend-rm | R | `E_FORBIDDEN` | W + P |
 | OW6 | §7 遺失手機:psk 失效 | psk | RB | 被 remove 的 Hx,psk_owner 交握失敗 | W |
 
@@ -804,7 +889,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | ST6 | 已配對注入失敗 → 舊帳密 | k20-fail | RB | hostapd = C0;手機 `authorized` | S(`setkey-norollback`) |
 | ST7 | D-6 | fresh-k20-rbfail | F + RB(`setkey-apply-fail` + `setkey-rbverify-fail`) | rc 6;AP 封鎖、不在空中;CRIT;`status` 回報;13 | S(`setkey-no-reblock` → AP 留在空中)+ P |
 | ST8 | 讀回 | readback | RB(`setkey-apply-fail`) | 失敗被發現 → 13 | S(`setkey-readback-skip`) |
-| ST9 | passphrase 不外洩 | secret | RB(`uci-argv` + cmdline 每 10 ms 取樣) | 節點上的計數 = 0;WSL 原值 grep = 0 | S(bind 一個走 `uci set` 的 setkey 變體) |
+| ST9 | passphrase 不外洩 | secret | RB(`uci-argv` + cmdline 每 10 ms 取樣) | 節點上的計數 = 0;WSL 原值 grep = 0 | S(bind `setkey-argv-leak`,§5.5) |
 | ST10 | 密碼含 `$` → 13 | input | R | 13 | W |
 | ST11 | 持鎖 15 s | lock | R | 成功;總時間 ≥ 15 s(持鎖者的時間戳)且 ≤ 230 s | W + P |
 | ST12 | 殺 helper → setkey 自己完成 | kill-helper | RB(`setkey-apply-fail` + `setkey-pause`) | setkey(另一個 pgid)完成並還原;AP = C0 | S(`setkey-notrap`) |
@@ -855,7 +940,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | HT6 | psk_owner → 候選 → `auth/owner` | roles | RB | 成功 | P(由 HT7 的 S 涵蓋) |
 | HT7 | NX / psk_replay 被拒 | roles-neg | RB | 關閉 | S(`http-allow-nx`) |
 | HT8a | 偽造 MAC + IP + ARP | mesh-a | RB + ethsim | drop 增加、沒有 SYN-ACK | S(兩邊 `http-nofw`,不載 `batman_http_in`)+ P |
-| HT8b | 洪流 50/s × 10 分 + 擁有者傳完 + 廣播在 | mesh-b | RB + ethsim + 手機 | 同上 + 上傳完成 + 04 端廣播在 | 同上 |
+| HT8b | 洪流 50/s × 10 分 + poll 沒有 ERate + 擁有者傳完 + 廣播在 | mesh-b | RB + ethsim + 手機 | 同上 + helper log 沒有 ERate + 上傳完成 + 04 端廣播在 | 同上 |
 | HT9 | lo(目標是 br-ahwlan IP) | lo | RB | drop 增加 | S(同上)+ P |
 | HT10 | VLAN 雙層 | vlan | RB + ethsim | 沒有 SYN-ACK、drop 增加 | S(兩邊 `http-nofw`;v6 規則 → 有 SYN-ACK) |
 | HT11 | docker0 + VLAN | docker | RB + ethsim | 同上 | S(同上) |
@@ -901,12 +986,14 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | UD4 | 新版沒開機成功 → 6 + 18(P3 寫 kernel 壞掉,H4 改成 rootfs superblock 壞掉,§1.4-7) | badroot | RB → T | panic → 回原槽;6 + 18 | W(E_U `update/check`)+ P(panic 行) |
 | UD5 | 舊的 bad-slot 不造成假 6 | oldbad | RB | 5 | W + P |
 | UD6 | worker 失敗的 reason | worker | RB | 1 / 11 / 12 / 17 | W + P |
-| UD7 | 七種拒絕 | reject | RB | reason 逐一相等(min-serial 編在 helper 裡) | W |
-| UD8 | 惡意 | malicious | RB | 11;槽 BAD、不 arm | W |
+| UD7 | 七種拒絕(簽章、serial、板子、降級、min_from、開機設定、版本解析) | reject | RB | reason 逐一相等(min-serial 編在 helper 裡) | W |
+| UD8 | 四包惡意 tar | malicious | RB | 11;槽 BAD、不 arm | W |
+| UD8b | §8「上傳檔換成 FIFO」 | fifo | RB | root 把上傳檔換成 FIFO → worker 以 `O_NONBLOCK` 開檔、fstat 不是 regular → 11;helper 沒有卡住(下一個 `update.status` ≤ 5 s 回應) | W + P(檔案確實是 FIFO) |
+| UD8c | §8「上傳後改 payload」 | mutate | RB | 上傳完成、prepare 之前,以 uid 471 改寫上傳檔的一個 boot 成員 → 讀回不符 → 槽 BAD、不 arm、11 | W + P(改寫確實發生:sha 不同) |
 | UD9 | prepare 中 kill / 斷電 | kill | RB(`upd-write-mid`) | 槽 BAD、仍在舊槽 | P |
 | UD10 | helper 重啟 → phase 3 | rebuild | RB | 3 | W + P |
 | UD10b | 重開 → pending 不在 | reboot | RB | 不在 | P |
-| UD11 | 降級到 wsl.22 | downgrade | R → ssh sysupgrade | 四件事 + S0-pre 的 `s0_assert` | P |
+| UD11 | 回滾臂 / 降級到 wsl.22 | downgrade | R → ssh sysupgrade | 舊槽沒有 P3 動詞;`.txn` 相容;舊版判 stale 直到它自己 `--save`;舊版 96 照樣套用 ssid 行;update-last 留著沒人讀;S0-pre 版的 `s0_assert`。之後 sysupgrade 回 V + `upgrade`(§13) | P |
 | UD12 | 未入網升級 → fresh | upgrade-unjoined | F(wsl.22)→ sysupgrade | fresh | G(H4-U8) |
 | UD12b | 已入網升級 → tick 存檔 | upgrade-joined | R(wsl.22)→ sysupgrade | fresh | P |
 | UD13 | SSID 含 `'` | quote-ssid | RB | 通過 | W + P |
@@ -994,3 +1081,29 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | B-m14 set-fault 前置 | §5.1 |
 | B-m15 QR | §3.2 segno(待同意) |
 | B-m17 dead-man 之後的 restore | §4.4 |
+
+## 附錄 D. v4 審查的處理(每條附查證過的 `file:line`)
+
+| 意見 | 處理 | 查證 |
+|---|---|---|
+| A-B1 / B-B1 static key 不能用來認目標 | §4.2 改在每一臂自己的交握裡驗 `node_cert`(釘選 DAC、`sig_static`、`sn`);庫裡存 DAC,不存 static key;fake path 的負向臂先認證、再重連同一個位址,並以 04 端 log 佐證;負對照改用「不屬於任何節點的 DAC」與「強制先試 02」 | F-H45、F-H46:`noise.go:29, 62-96`;`server.go:104-113, 673-683`;`session.go:300-321`;219 §3.3 |
+| A-M1 / B-m3 netobj 的規格 | §4.1:自己實作;target = SHA-256(DAC pub)、加密給 `ecdh_pub`、先驗 `sig_ecdh`;join 帶 key 31;負向 selftest | F-H47:`wtxn.go:125-150`;CDDL `:205-210` |
+| A-M2 / B-M1 執行器的鎖 | §5.7:`host` 模式(先 `arm`、在 `held` 下、忽略 HUP、`undo-doing` 標記)與 `deadman` 模式(在 `dm-fire` 同一個行程裡、不 renew / arm);重疊時 deadman 只做段 1 | F-H48:`ble-lib-254.sh:96-101, 137-155, 305-343` |
+| A-M3 / B-m1 p6 持久 undo | §5.7:備份檔放 p6、綁槽與 boot_id、由 P9 / preflight 在 lease 底下執行;主機不在時不重放(fail-closed,寫進 §13) | — |
+| A-m1 / B-m9 交握限速 | §4.1:每節點 ≤ 15 次 / 分;出現 `global handshake rate` → INVALID | F-H50:`server.go:35, 645-660` |
+| A-m2 / B-m8 期限檔兩個寫者 / 快速重開 | §4.4:`fresh-grant`(主機)與 `fresh-spent`(迴圈)各一個寫者;每次開機先扣 uptime + 120 s | — |
+| A-m3 / B-m7 tcpdump 介面 | §4.5:在入口介面擷取;看到的 SYN 不足 → INVALID;counter 歸零 → INVALID | — |
+| A-m4 / B-m6 沙箱的逃脫負測試 | §8.2:`pivot_root` + 宿主 `$HOME` 不在新根;canary 負測試附「沙箱外會成功」的對照 | F-H55(v4-B 實測) |
+| A-m5 claim.secret 的管道 | §3.1 第 3 步:節點端 hex | — |
+| A-m6 `ap-restore` 的 C0 | §5.7:臂開始時 stage 到 tmpfs;重開後由主機從庫重送 key 20 | — |
+| A-m7 / B-m5 E-H13 前置 | §8.1:`stage-root` 做 disarm + invalidate,接著 brewrite B | F-H49:`batman-slot:423-436, 650-656` |
+| A-m8 `PROVD_KEYS` | §5.5:加 `BATMAN_FAULT` | F-H51:`ble-lib-254.sh:170` |
+| A-m9 §13 的升降級 | §13 prov-update 列 | — |
+| A-m10 OW4 用快照 | OW4 改用 `owner/add` 加回 H0b | — |
+| A-m11 journal 的參數 | §5.7 的參數驗證 + 負測試 | — |
+| A-m12 ST9 的變體 | §5.5 `setkey-argv-leak` | — |
+| A-m13 §1.3 的事實 | F-H3 註明、F-H45–F-H55 | — |
+| B-m2 `pk_proof` 的順序 | §3.1 第 3 步:先證明登入成功才認領 | `chain1-254.sh:342` |
+| B-m4 新卡的位址與身分 | §3.1 第 2 步:依 MAC 掃描、斷言 `sn` 與 MAC、重新 pin host key;BLA | F-H52、F-H53 |
+| B-m10 漏列的片語 | UD7 註明七種、UD8 / UD8b(FIFO)/ UD8c(上傳後改 payload)、UD11 涵蓋回滾臂、HT8b 加上 poll 沒有 ERate | — |
+| B-m11 接縫清單擴大 | §1.4-2:完整清單即 §5 的三張表;列為凍結設計之外新增的產品程式,P3 的程式碼審查與 `/security-review` 要涵蓋 | `rundir.sh:44-52`;`protected_hardlinks=1` |
