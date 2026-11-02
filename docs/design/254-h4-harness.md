@@ -1089,7 +1089,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 
 | 意見 | 處理 |
 |---|---|
-| B-B1 member 認不出目標 | §4.2 用 static key 認證 + 負對照;§3.1 庫裡記每台的身分;預演 |
+| B-B1 member 認不出目標 | (v4 的做法,已被附錄 D 取代:改驗 node_cert)§4.2 用 static key 認證 + 負對照;§3.1 庫裡記每台的身分;預演 |
 | A-M1 / B-M2 S0-pre 的 02 與工具 | H4-U7 加 02 網路線;§3.1 步驟表(claim.secret 經 stdout → stdin、先放 lab key、pk_proof、netobj、等 `.txn` 與重開、setkey);`netobj.py`;F 上預演;§3.3 加「02 離開 mesh」 |
 | A-M2 / B-M1 壞 rootfs | §8.1 保留 magic、改 `s_major`;loop 驗收;04 上 apply 但不重開的前置;E-H13 後 brewrite B;§1.4-7 |
 | A-M3 EEPROM 沙箱 | H4-U12;§8.2 非 root + 逃脫負測試;F-H22 |
