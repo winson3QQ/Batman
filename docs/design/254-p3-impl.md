@@ -1,6 +1,6 @@
-# #254 PR-P3:擁有者 / 設定 / 狀態 / 診斷 / 更新 / 上傳 / 轉賣工具(設計 v6)
+# #254 PR-P3:擁有者 / 設定 / 狀態 / 診斷 / 更新 / 上傳 / 轉賣工具(設計 v7)
 
-狀態:v6,2026-11-02,定稿候選,送兩位審查;通過後凍結。歷程:v1 96a578d、v2 03963d9(都兩位 REJECT)、v3 6433520(B REJECT;A 的報告被安全分類器擋下)、v4 5d5ebfd(兩位 REJECT)、v5 1ac5fbd(整份重寫;兩位 REJECT,窄、近收斂:主因是三個「其他程式怎麼運作」的假設沒實測 — nft 萬用字元、fw4 單一交易、ujail 的 pid)。v6 在 v5 上做局部修正,附錄 B 回應 v5;**本版每一句修法依賴的外部行為都附實測或原始碼證據,沒有的列在 §9 並寫明查不到時怎麼辦**。各輪審查報告在 `docs/design/254-reviews/p3-review-v*-*.md`。
+狀態:v7,2026-11-02,定稿候選,送兩位審查;通過後凍結。歷程:v1 96a578d、v2 03963d9、v3 6433520、v4 5d5ebfd、v5 1ac5fbd(整份重寫)、v6 c252b3f(A APPROVE-WITH-CHANGES 0/1/9、B REJECT 0/2/14)。v7 在 v6 上局部修正三個 MAJOR 與 MINOR,附錄 C 回應 v6;HTTP 來源規則已在 02 實測(F75)。修法依賴的外部行為都附證據,沒有的列在 §9 並寫明查不到時怎麼辦。各輪審查在 `docs/design/254-reviews/p3-review-v*-*.md`。
 上層:`254-stage1-impl.md` §10.6;協定 `219-protocol.md` v0.8 + `219-protocol.cddl`;P2 = `254-p2-impl.md` v8.5(已出貨 `1.5.14-wsl.22`)。
 原則(使用者):**只做必要的修改**、**失敗就回到之前的狀態**。事實附 `file:line` 或 04 實測;沒有證據的標 ⚠️,並寫明實作前要怎麼查。
 
@@ -34,6 +34,8 @@ provd 仍是唯一入口。P3 補上協定動詞:擁有者增刪、設定(改名
 | D18 | CM4:開發用 Lite(SD 卡),量產用 eMMC → eMMC 的轉賣 / 遺失手機重燒路徑(rpiboot)量產前要做(checklist);本 PR 的轉賣工具只做 SD 卡 |
 | D19 | `/cgi-bin/bundle` 照規格:只在 unclaimed / legacy **且**有 `/etc/batman-dev-open` 時給(現役 legacy 節點要下載時,用 ssh 建旗標) |
 | D20 | **基本沒有 legacy 節點,app 伴隨機台設定**:P3 不為 legacy 設計 — legacy(`RadioManaged = false`)上 `settings/set` key 2、key 20 一律拒絕;legacy 只保留 P1 的最低限度(不掉線、可被認領)。02 / 04 現在是 legacy → H4 / P3 上機前重燒成新卡再認領(破壞性,先列步驟給使用者)(#254 留言 6573253167) |
+| D21 | **不做晶片端的國家實測**:改國家只驗 uci + regdb;「晶片真的換表」是誠實界線,留到 app 階段在合法的國家驗(在台灣的 bench 不能發 EU / JP / KR 的頻道)(#254 留言 6575410512) |
+| D22 | HTTP 來源規則的功能探針在 02(非 DUT)做:非 VLAN 部分已做(F75);VLAN 臂與「AP 上的 client 通過」等使用者在現場 |
 
 ### 1.2 範圍
 
@@ -122,7 +124,12 @@ provd 仍是唯一入口。P3 補上協定動詞:擁有者增刪、設定(改名
 | F71 | `96-batman-config-migrate` 是 uci-default,每個新槽 overlay 只跑一次;一般重開不會再跑(04 `/etc/uci-defaults/` 只剩 `README`)〔A5〕〔B5〕 | `96-batman-config-migrate:2-4`;04 |
 | F72 | helper 的 `run()` 對 setkey / config-save 以外的子程序預設 60 s 期限;`provstore.Exec` 逾時對整個 process group SIGTERM、10 s 後 SIGKILL 〔A5〕〔B5〕 | `cmd/batman-provhelper/main.go:78-91`;`provstore/exec.go:27,37-42` |
 | F73 | `halow-setkey` 現在的 `--ap <psk>` 把密碼放在命令列;只有 `--mesh -` 讀 stdin;setkey 以一般 `uci commit wireless` 提交(會一起提交別人在 `/tmp/.uci/wireless` 的暫存)〔A5〕〔B5〕 | `halow-setkey:51,64-65,228,307,366` |
-| F74 | 未入網、`RadioManaged = true` 的節點 radio1 一定被封鎖:新卡 / 認領後 mesh key 是 placeholder(keyguard 關,F49);離開網路走 `--forget-mesh`(radio 確認關閉,`254-wireless-txn.md`、P1b) | F49;`halow-setkey --forget-mesh`;`node.go:1125`(入網才設 `RadioManaged = true`) |
+| F74 | 未入網、`RadioManaged = true` 的節點 radio1 一定被封鎖:新卡的 mesh key 是 placeholder(keyguard 關,F49),認領時 `RadioManaged` 就設成 true(`node.go:539`:`next.RadioManaged = rec.State == provstore.Unclaimed`),認領不設 mesh key;離開網路走 `--forget-mesh`(radio 確認關閉,P1b) 〔A6〕〔B6〕 | F49;`node.go:539`;`halow-setkey --forget-mesh` |
+| F75 | **02 實測(2026-11-02,使用者同意,非 DUT)**:臨時表 `bridge`(`iifname "phy*" meta mark set meta mark \| 0x01000000`)+ `inet` input priority −10(`tcp dport 8095 meta mark & 0x01000000 == 0 drop`)可以載入(nft 1.1.1,沒有 `kmod-nft-bridge`);04 經 mesh 連 02:8095:沒有規則時 0.40 s 被拒 → 有規則時 4.31 s 逾時(被丟),02 本機 lo 也被丟,drop 計數 7(SYN 重送);刪表後 `nft list tables` 與基準相同、0.36 s 被拒。02 沒有其他 fwmark 使用者(`ip rule` 只有 local / main / default,ruleset 沒有 mark)。**未測**:AP 上的 client 通過(mark 從 bridge 帶到 IP 層)、VLAN 封裝(D22) | 02 / 04 輸出(本 session) |
+| F76 | bridge hook 依外層 ethertype 決定看不看得到 L4:帶 VLAN 封裝的 frame 在 bridge 的 `tcp dport` 比對不到,之後 kernel 可能剝掉標籤交給 IP 層 〔A6〕 | `nft_chain_filter.c:239-248`;`net/core/dev.c` VLAN 處理(⚠️ 推論,VLAN 臂未實測) |
+| F77 | helper 以 pipe 接 setkey 的輸出(`provstore.Exec`,`bytes.Buffer`);helper 不忽略 SIGPIPE、setkey 沒有 `trap` → helper 一死,setkey 下一次輸出就被 SIGPIPE 結束(狀態可能停在一半) 〔A6〕〔B6〕 | `provstore/exec.go`;04 `/proc/<helper>/status` `SigIgn: 0`;`halow-setkey` 無 trap |
+| F78 | `halow-setkey` 用 `uci set …key=$AP` 寫密碼 → 密碼會短暫出現在 `uci` 的 argv 〔B6〕 | `halow-setkey`(`--ap` 路徑) |
+| F79 | morse regdb:channel 40 只在 US / AU / NZ / SG 等(922.0 MHz);EU 只有 1,3,5,7,9,2,6;JP、KR、IN 也沒有 40;新卡預設 channel 40 / US 〔B6〕 | 04 morse regdb;`meshpoint-1.8.0:21,49-50` |
 ## 2. 總體結構
 
 ```
@@ -184,7 +191,7 @@ app ──HTTP :8095(自己的 2 槽、10 交握/分;只有手機 AP port 進得
 8. **錯誤碼**(F38、F39):
    - helper 新碼 `hERejectR = 24`(帶 `reason`)→ `E_REJECTED{2: reason}`;`hEInput = 25`(使用者輸入不合法,帶 `reason`)→ `E_REJECTED{2: reason}`,**不記 CRIT**(`hESchema` 維持「provd 送錯格式 = provd bug」)。
    - helper 錯誤回覆加選填 `reason`(uint);`hEUnsupported` 也帶 `reason` 時 → `E_UNSUPPORTED{1: typ, 2: reason}`(A4-m10);沒有 `reason` → 照 P2 對應(相容)。
-   - 新 reason-code(CDDL 加):**11** 內容與簽章不符 / 版本解析失敗;**12** 有未完成的網路變更(`.txn`);**13** 值不合法;**14** 國家:要在未入網時改 / 入網的國家與節點不同;**15** 這一步的前提不成立(沒有 pending、沒有 prepare、handle 過期、上傳不完整);**16** 節點手機 AP 關著;**17** p5 還沒存到最新(stale,非 `.txn`);**18** 新版沒有開機成功(放在 `update-progress` key 3)。完整對應在 §5.1。
+   - 新 reason-code(CDDL 加):**11** 內容與簽章不符 / 版本解析失敗;**12** 有未完成的網路變更(`.txn`);**13** 值不合法;**14** 國家:要在未入網時改 / 入網的國家與節點不同;**15** 這一步的前提不成立;**16** 節點手機 AP 關著;**17** p5 還沒存到最新(stale);**18** 新版沒有開機成功(`update-progress` key 3);**19** 這個動作只能經 BLE;**20** legacy 節點不支援(D20)。reason **7** 只留給「這台硬體沒有這個能力 / 這個參數」(key 10–13、`status` team)。完整對應在 §5.1。
 9. 每連線額度:`peers/challenge` 0.5/s;`status`、`diag/summary` 每連線 1/s、全域 2/s;`update/check` 每連線 1 / 10 s。
 
 ### 3.2 擁有者增刪
@@ -200,14 +207,14 @@ helper 行為不變(F3)。本 PR:provd 路由;`owner/remove` 後依 P2 的 `inva
 | key | 誰可以 | 驗證 | 經由(現有的門) |
 |---|---|---|---|
 | 1 名稱 | 所有已認領節點 | `[A-Za-z0-9-]{1,32}`,不以 `-` 開頭結尾 | `uci` + `batman-config-save --save`(system 沒有 setkey);commit 前 `/tmp/.uci/system` 非空(別人有暫存,F48)→ `E_BUSY` |
-| 2 國家 | 未入網、`RadioManaged = true`(D20:legacy → `E_UNSUPPORTED{1: typ, 2: 7}`);已入網 → reason 14 | 2 個大寫字母、regdb 有;radio1 目前的頻道在新國家合法 | `halow-setkey --country <cc> --rollback --lockwait 20`(新);`/tmp/.uci/wireless` 非空 → `E_BUSY`(F73) |
-| 20 手機 AP | 已認領、`RadioManaged = true`(D20:legacy → `E_UNSUPPORTED{1: typ, 2: 7}`);**只經 BLE** | SSID 1–32 個 `[A-Za-z0-9 ._~+=,:@%^*-]`、不以空白開頭結尾;passphrase 12–63 個 `[A-Za-z0-9._~+=,:@%^*-]`、≠ `CHANGE-ME-NOW` | `halow-setkey --ap - --ap-ssid <ssid> --ap-section default_radio0 --rollback --lockwait 20`(**新增 `--ap -`(stdin)**、`--ap-ssid`、`--ap-section`、`--rollback`、`--lockwait`;現行 `--ap <psk>` 把密碼放命令列,F73);`/tmp/.uci/wireless` 非空 → `E_BUSY` |
+| 2 國家 | 未入網、`RadioManaged = true`(D20:legacy → `E_UNSUPPORTED{1: typ, 2: 20}`);已入網 → reason 14 | 2 個大寫字母、regdb 有這個國家(**不檢查目前頻道**:新卡預設 ch 40 不在 EU / JP / KR 的表裡,F79,檢查它會讓 key 2 與 D9 互鎖;頻道在 join 時由 setkey 依新國家驗並讀回,`halow-setkey:88-100`) | `halow-setkey --country <cc> --rollback --lockwait 20`(新);`/tmp/.uci/wireless` 非空 → `E_BUSY` |
+| 20 手機 AP | 已認領、`RadioManaged = true`(D20:legacy → `E_UNSUPPORTED{1: typ, 2: 20}`);**只經 BLE**(經 HTTP → `E_UNSUPPORTED{1: typ, 2: 19}`) | SSID 1–32 個 `[A-Za-z0-9 ._~+=,:@%^*-]`、不以空白開頭結尾;passphrase 12–63 個 `[A-Za-z0-9._~+=,:@%^*-]`、≠ `CHANGE-ME-NOW` | `halow-setkey --ap - --ap-ssid <ssid> --ap-section default_radio0 --rollback --lockwait 20`(新增 `--ap -`(stdin)、`--ap-ssid`、`--ap-section`、`--rollback`、`--lockwait`);**setkey 以 `uci batch`(從 stdin)寫密碼,不用 `uci set …=$AP`**(F78:否則密碼會出現在 uci 的 argv);`/tmp/.uci/wireless` 非空 → `E_BUSY` |
 
 - **字元集**(F46):所有會進 p5 的值都不得含 config-save `UNSAFE` 的字元(`` ` $ ( ) ; | & < > ' ``);上表的字元集是它的子集,違反 → reason 13(**不是** `E_STORAGE`)。
 - **`--ap-section default_radio0`**:只寫這一個 section(`--ap` 原本寫每個 `mode=ap` iface,而 PRESERVE 只存 `default_radio0`,F49)。
 - **讀回**:
   - key 20:setkey 的讀回 + `network.wireless status` 的 radio0 up、iface 的 ssid 相符(ifname 從同一個 status 取,F52)。
-  - key 2:**radio1 被封鎖**(未入網、`RadioManaged = true` 的節點一定是,F74;legacy 已被 D20 排除)→ 只驗 uci 值 + regdb,不要求 up;**晶片端的驗證在 join**:setkey `--mesh/--channel` 既有的讀回以 `morse_cli` 的 Operating Frequency 對 regdb centre(`halow-setkey:349-374`)。⚠️ 實作前在 04(重燒成新卡之後)以「封鎖 → 改國家 → join」的順序實測 morse 真的換表(§9-3);**若 morse 要重開才換表** → key 2 改為「寫入 + 回應要求重開」,join 前 app 請使用者重開;若連重開也不換 → 停用 key 2(國家只能由操作員 ssh 設)。
+  - key 2:**radio1 被封鎖**(未入網、`RadioManaged = true` 的節點一定是,F74;legacy 已被 D20 排除)→ 只驗 uci 值 + regdb,不要求 up。**「晶片真的換表」不在 P3 驗**(D21):join 時 setkey 既有的讀回(`morse_cli` Operating Frequency 對 regdb centre,`halow-setkey:349-374`)只在 radio 起來時發生;在台灣 bench 上只能用與 US 同頻率的國家,分辨不出換表 → 誠實界線,app 階段在合法的國家驗。
   - key 1:`uci get` 相符。
 - **`--rollback`(失敗就回到之前的狀態,由 setkey 在同一次呼叫裡做)**:
   - 舊值是正常值 → 寫回舊值並讀回。
@@ -215,6 +222,7 @@ helper 行為不變(F3)。本 PR:provd 路由;`owner/remove` 後依 P2 的 `inva
   - key 1 由 helper 寫回舊值 + `--save`。
   - 回 reason 13(值被拒 / 起不來)或 `E_STORAGE`(persist 失敗)。
 - **時間預算**(F62;helper 對 setkey 的上限 300 s):
+- **setkey 新旗標的結束碼**(helper 依此對應 §5.1;既有模式的結束碼不變):0 成功;2 值不合法、沒有寫入;3 套用了但讀回失敗、已還原;4 persist 失敗、已還原;5 拿不到鎖(`--lockwait` 到期)。對應:2 / 3 → reason 13,4 → `E_STORAGE`,5 → `E_BUSY`。⚠️ 實作時逐行對既有 `halow-setkey` 的結束碼,不撞號。
 
 | 階段 | 秒 |
 |---|---|
@@ -226,7 +234,7 @@ helper 行為不變(F3)。本 PR:provd 路由;`owner/remove` 後依 P2 的 `inva
 | 還原的 persist | 15 |
 | 合計(最壞) | **230** |
 
-  餘裕 70 s。**沒有 `--rollback-only`**(v5 的那個收尾沒有快照契約,B5-M3):helper 若仍逾時(setkey 卡在 D-state 才會發生,F72 會 kill 整個 process group)= outcome unknown,與 P2 `net.apply` 逾時同樣處理 — app 以 `settings.get` 重讀;helper 重啟時若 setkey 子程序仍活著(`Setpgid`,F72),它拿著鎖自己跑完並自己 `--rollback`。
+  餘裕 70 s。沒有 `--rollback-only`。helper 逾時(setkey 卡在 D-state)= outcome unknown,與 P2 `net.apply` 相同 — app 以 `settings.get` 重讀。**helper 中途死掉**:setkey 一開始 `trap '' PIPE`,並把輸出寫到 stdout 失敗時忽略(F77:否則 helper 一死,setkey 下一次 echo 就被 SIGPIPE 結束,停在「已 commit、未讀回、未還原」);setkey 自己的 process group(`Setpgid`)擋 SIGTERM → 它拿著鎖跑完並自己 `--rollback`;helper 重啟後以設定快取的刷新看到結果。
 
 - **PRESERVE 加 `wireless.default_radio0.ssid`**(config-save 與 setkey 的持久化清單,兩板共用;**不加 `radio0.country`**,§1.2)。ssid 的值若含 `UNSAFE` 字元(例如操作員或 openmanetd 設過 `Tom's AP`)→ **這一個 key 不持久化、不算 stale**(與空值同一條「image 預設勝出」規則,`batman-config-save:478`),`status` 回報「SSID 無法保存」;否則這種節點升級後 p5 會永遠 stale、OTA 永遠被擋(B5-m5)。
 - **升級到 P3 後 p5 的 stale**(F63:整檔比對,`diff_keys` 列出每個不同的 key):未入網的節點 p5 沒有 ssid、live 有 → `--check` stale。helper 在**非試用的開機時**與**每次 `update.check` 通過簽章驗證之後**檢查:stale 的 key **全部是 P3 新增的 PRESERVE key**、沒有 `.txn`、不在試用中 → 執行一次 `--save`。其他 stale → `update.check` 回 reason 17。**同值的 `settings.set`** 也會在 `--check` stale 時執行 `--save`(否則 reason 17 在未入網節點上沒有 app 端的出路,A5-m3)。已入網的節點下一個 joinwatch tick 就會存。
@@ -292,7 +300,7 @@ ES256:所有 YubiKey 5 的 PIV 都支援;節點已有 `cose.VerifySign1` / `Veri
 
 - `update-manifest` key 5(`bstr`)= CBOR `[E_i, S]` 的編碼;manifest 的 1–4、6 必須等於 S 的同號欄位,否則 reason 11。
 - **撤銷**:image 內建 `/usr/share/batman/release-min-serial`;serial 小於它的背書被拒。K<sub>i</sub> 外流 → R 背書 K<sub>i+1</sub>,發一版 `min-serial = i+1`。**界線**:沒更新到那版的節點仍接受 K<sub>i</sub>(無線上撤銷);經 key 6 降到較舊版本後,舊 image 的 `min-serial` 較低,已撤銷的 K 又會被接受。只有 R 出事才要重燒。
-- **版本規則**(D12,F40):解析 `<M.m.p>[-<channel>.<N>][+<build-meta>]`,`+` 之後忽略;先比 `M.m.p`;相同時無後綴(正式)> 任何 `-<channel>.N`;同 channel 比 N;不同的開發 channel 不可比 → 只有在 key 6 列出時才可。新 > 目前 → 可;= → 可(重裝);< → 只有目前版本列在 S 的 key 6 才可。解析失敗(例如 `.wbox-` 後綴)→ reason 11;key 7 與目前版本不可比 → reason 4。規則寫進 `docs/VERSIONS.md`。
+解析失敗(例如 `1.5.14-wsl`,少了 build N;`+` 之後的 build metadata 一律忽略)→ reason 11
 
 #### 3.7.2 build / 發行端
 
@@ -317,7 +325,7 @@ ES256:所有 YubiKey 5 的 PIV 都支援;節點已有 `cose.VerifySign1` / `Veri
 |---|---|---|
 | `update.check {1: manifest}` | 1. 驗 E(R;prov_test 另加 T)、serial ≥ min、S(K)— **先驗簽,通過前不寫任何東西**;2. 若 p5 stale 只因 P3 新 PRESERVE key → `--save` 一次(§3.3);3. `batman-slot precheck-node`(試用中、p5 新鮮度、`.txn`、fw override);4. board、版本規則、key 7、key 8(`batman-slot bootcfg-sum`,鎖被佔 → `E_BUSY`);5. RAM 預算;6. 通過 → 寫 **pending**(`/tmp/run/batman/update/pending`,helper RunDir root 0700,`{S, boot_id, 到期 = uptime + 30 min}`);內容相同的 pending 已在 → 不重寫。**helper 端額度**:全域 1 / 10 s(provd 的每連線額度之外,A5-m4) | `{1: false, 2: reason, 3: RAM}`:1 試用中、2 p5 未 seed、3 板子、4 中間版本、5 開機設定、6 降級、8 RAM、11 簽章 / 版本解析、12 `.txn`、17 p5 stale;worker 在跑或上傳窗開著 → `E_BUSY` |
 | `update.prepare {1: sha}` | sha = pending 的 key 4(綁擁有者同意的版本);呼叫者 = 上傳窗擁有者;上傳檔存在且大小 = key 3;啟動 worker,立刻回 phase 2;關上傳窗;**pending 到期延到 worker 結束 + 30 分**(B5-m4) | 無 pending / sha 不符 / 上傳不完整 → reason 15 |
-| `update.apply {1: sha}` | worker 已寫完(phase 3)且 sha 相同 → 寫 **update-last**(p6 `/opt/batdata/state/update-last`,root 0600:`{from_slot, from_version, to_slot, to_version, sha, apply_boot_id, bad_slot_at_apply, armed: false}`)→ `batman-slot arm <sha> <key8 清單檔>`(清單檔在 helper 的 0700 update 目錄,A5-m7)→ rc 0 時改寫 `armed: true` → 回應後 2 s 改寫 `rebooting: true` → `batman-slot reboot committed`。**update-last 只有 `update.apply` 寫**;`update.check` 不碰它 | reason 15;arm 失敗 → reason 11 / 12 / 1 / 5 |
+| `update.apply {1: sha}` | worker 已寫完(phase 3)且 sha 相同;p6 已掛載(否則 `E_STORAGE`,不 arm)→ 寫 **update-last**(p6 `/opt/batdata/state/update-last`,root 0600,格式見 §5.3)`armed: false` → `batman-slot arm <sha> <key8 清單檔>`(清單檔在 helper 的 0700 update 目錄)→ rc 0 時改寫 `armed: true` → 回應後 2 s,**緊接在** `batman-slot reboot committed` 之前改寫 `rebooting: true`。**update-last 只有 `update.apply` 寫** | reason 15;arm 失敗 → reason 11 / 12 / 1 / 5 / 17 |
 | `update.status`(ro) | 見下 | — |
 
 **狀態判讀**(helper 每次啟動只讀 update-last、不刪,F42;以**槽**判讀):
@@ -331,8 +339,8 @@ ES256:所有 YubiKey 5 的 PIV 都支援;節點已有 `cose.VerifySign1` / `Veri
 | update-last:目前槽 = `to_slot` 且 `is-trial` | 4 |
 | 目前槽 = `to_slot` 且已 commit | 5 |
 | 目前槽 = `from_slot`、`armed: true`、boot_id ≠ `apply_boot_id`、`bad-slot` 標記指向 `to_slot` **且與 `bad_slot_at_apply` 不同**(autocommit 這次退回的證據,A5-m6) | 6 |
-| 目前槽 = `from_slot`、`rebooting: true`、boot_id ≠ `apply_boot_id`、沒有新的 `bad-slot` | 6 + `3: 18`(新版沒有開機成功,韌體回到預設槽,B5-m3) |
-| 目前槽 = `from_slot`、`armed: true`、boot_id = `apply_boot_id`(arm 了還沒重開,helper 中途掛了) | helper 啟動時 `batman-slot disarm`,報 3 |
+| 目前槽 = `from_slot`、`rebooting: true`、boot_id ≠ `apply_boot_id`、沒有新的 `bad-slot` | 6 + `3: 18`(新版沒有開機成功,韌體回到預設槽)。界線:在寫 `rebooting` 到真正重開之間的毫秒級斷電也會落到這裡 |
+| boot_id = `apply_boot_id`(apply 之後還沒重開,helper 中途掛了;不論 `armed` 有沒有寫成)| helper 啟動時一律 `batman-slot disarm`,報 3(避免 tryboot 旗標留著,下一次無關的重開才進試用,B6) |
 | 目前槽 = `from_slot`、`armed` 為 false 或 `rebooting` 為 false(arm 前、或 arm 後重開前斷電,tryboot 旗標沒留下) | 0(「沒有更新」— app 不寫成「試用失敗」) |
 | 目前槽的版本 ≠ update-last 記的 `from_version` / `to_version`(之後操作員換過槽) | 0(update-last 過期) |
 
@@ -342,7 +350,7 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 
 #### 3.7.5 worker:驗證、寫入(不 arm)
 
-1. 以 `O_RDONLY|O_NOFOLLOW|O_NONBLOCK` 開上傳檔(§3.8.2;`O_NONBLOCK` 防 FIFO 卡住);fstat:regular、link count 1、uid 471、大小 = key 3,通過後清掉 `O_NONBLOCK`;之後只用這個 fd。`updating` 旗標從開檔起為真。
+1. **先**以 `O_RDONLY|O_NOFOLLOW|O_NONBLOCK` 開上傳檔(§3.8.2;`O_NONBLOCK` 防 FIFO 卡住),**之後**才關上傳窗(順序反過來,helper 的窗外刪檔可能先刪掉它 → 誤報 reason 15);fstat:regular、link count 1、uid 471、大小 = key 3,通過後清掉 `O_NONBLOCK`;之後只用這個 fd。`updating` 旗標從開檔起為真。
 2. **Go `compress/gzip` + `archive/tar` 白名單解析**(不呼叫 busybox tar;root 不在驗證前解析外來的 tar,F47):第 1 個成員必須是 `SHA256SUMS`、第 2 個 `metadata`(都 ≤ 64 KiB、regular);sha256(`SHA256SUMS`)= key 4,否則 reason 11、停。
 3. `metadata` 的 `board=` / `release=` = S 的 2 / 1。
 4. 之後的成員:目錄成員只允許 `boot/`、`boot/overlays/`(忽略 mode / owner,不在檔案系統建立);檔案名字必須符合 `^boot/[A-Za-z0-9._-]+$` 或 `^boot/overlays/[A-Za-z0-9._-]+$` 且**列在 `SHA256SUMS`**,或是最後的 `root.squashfs`(tar header 大小 = `metadata size=` 且 ≤ 目標槽大小);只收 regular file;重複、link、目錄穿越、沒列名 → reason 11、停;boot 成員累計 ≤ key 9,以 `O_CREAT|O_EXCL|O_NOFOLLOW` 寫進 helper 新建的 0700 目錄(`/tmp/run/batman/update/boot/`)。
@@ -357,7 +365,7 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 - **BLE 無線電**(`batman-autocommit:506-511`):health 行的 `boot_id` = 本次開機、`ts`(uptime)距今 ≤ 60 s,否則視同不健康;**仍只 WARN**(P-U5)。
 - **新:`health_ok` 加兩項(會讓試用退回)**:
   - (a) helper 的 procd instance 在跑(`ubus call service list` 的 `batman-provhelper` running)。
-  - (b) **provd 本次開機至少一次連續穩定 ≥ 60 s**:helper 看到 **provd 的 ctl 連線**連續存在 60 s 時寫 `$RUNDIR/provd-stable`(root,內容 = boot_id);autocommit 讀它,boot_id = 本次開機才算。**辨識 provd**(F11:procd 的 instance pid 是 ujail,provd 是它的子行程):SO_PEERCRED 的 peer pid 的 `PPid`(`/proc/<pid>/status`)= `ubus call service list` 的 `batman-provd` instance pid,**且** uid = 471,**且** `readlink /proc/<pid>/exe` = `/usr/bin/batman-provd`;只看 ctl 那一條(provclient 的 PPid 不是 ujail → 不算)。
+  - (b) **provd 本次開機至少一次連續穩定 ≥ 60 s**:helper 看到 **provd 行程的任一條連線**(ctl / ro / ops 從憑證分不出來,只要是 provd 這個行程)連續存在 60 s 時寫 `$RUNDIR/provd-stable`(root,內容 = boot_id);autocommit 讀它,boot_id = 本次開機才算。**辨識 provd**(F11:procd 的 instance pid 是 ujail,provd 是它的子行程):SO_PEERCRED 的 peer pid 的 `PPid`(`/proc/<pid>/status`)= `ubus call service list` 的 `batman-provd` instance pid,**且** uid = 471,**且** `readlink /proc/<pid>/exe` = `/usr/bin/batman-provd`(provclient 的 PPid 不是 ujail → 不算)。
   - **`batman-provd` 被操作員停用**(`/etc/init.d/batman-provd enabled` 為 false)→ (b) 不要求,只 WARN(否則停用 provd 的節點永遠升不上去,B5-m8)。
   - provd 在 bluetoothd 不在時不會結束(F67)→ BT UART 卡住不會讓 (b) 失敗;autocommit 的 MIN_WINDOW 300 s 涵蓋 60 s(F67)。之後 provd 被路人弄當不影響(檔已寫);路人在試用頭幾分鐘一直弄當 provd → 退回 = 更新失敗,不是節點壞掉。
 
@@ -367,11 +375,16 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 
 - **與 BLE 隔離**:HTTP session 池 2 槽(與 BLE 分開);交握額度 10 / 分(只算 HTTP);HTTP 的 fake path 只佔 HTTP 的槽;**撤 BLE 廣播只看 BLE 的 link / session**(`bluez.go:772` 改成只數 BLE)。
 - **來源只收手機 AP 的 client(D15),由防火牆在 L2 擋**:
-  - 規則:nft **bridge** family 表 `batman_http`,`input` hook 鏈:`tcp dport 8095 iifname != "phy*" drop`(IPv4 / IPv6)。nft 只認**結尾**的 `*`(F69),所以用前綴 `phy`:手機 AP 的 bridge port 名是 `phyN-apM`(F52 編號會漂,前綴不變);`eth0`、`bat0`(mesh)、其他節點 AP 的 client(經 `bat0` 進來)、docker0 / br-ots 的 veth 都被丟 — 以 port 判斷,偽造 MAC / ARP 無效。morse 的 mesh 介面 `wlh0` 不是 bridge port。**前提由 helper 驗證**:bridge 上每一個 `phy*` 的 port 都必須是 `network.wireless status` 裡 radio0 的 `mode=ap` iface;有任何例外(例如將來 radio1 上的 AP)→ 不給 `http.2`(fail-closed)。不需要 helper 維護 set。
-  - **載入者 = fw4**(F59):`/usr/share/nftables.d/ruleset-post/batman-http.nft` 隨 image 安裝,fw4 每次 start / reload 都會 include。檔案**先清自己的表**(`table bridge batman_http` / `flush table bridge batman_http` / 再定義,fw4 對 `inet fw4` 的同一手法)→ reload 不會重複加規則(F70)。**這個檔一有錯,fw4 整份交易失敗、開機後整台沒有防火牆**(F70)→ 兩道關:(1) rc 驗收在 bench 節點跑 `fw4 print \| nft -c -f -`(兩板);(2) 常規全套每次開機後斷言 `inet fw4` 與 `bridge batman_http` 都在(§8)。`firewall stop`(`fw4 flush`)會刪掉它 = 操作員動作。
-  - **表不在 = 不聽(fail-closed)**:helper 背景每 4 s 以 `nft -j list chain bridge batman_http input` 確認表、鏈、drop 規則都在,並做上面的 `phy*` 前提檢查;結果放快取,poll 只讀快取(唯讀路徑不跑子程序);快取超過 10 s → 當作不在。**在才給 `http.2`**;provd 沒有 `http.2`、或 poll 失敗 / 過期(helper 掛了、ERate)→ 不 bind,已 bind 的關掉(≤ 4 s)。這對備援與上傳窗都成立。
-  - 不需要 `kmod-nft-bridge`(F60);不用 `br_netfilter`(會讓整座橋、含 mesh 流量,都經過 iptables)。⚠️ 實作前在**非 DUT 節點**、經使用者同意做一次功能實測(建表 = 寫入):手機 AP 的 client 連得上、eth0 / bat0 來的連不上(§9-4)。
-  - 非 bridge 的入口:lo 上的本機行程可以直接連到 8095(不經 bridge hook)→ 只會佔掉 HTTP 的 2 槽 / 10 交握/分(DoS;內容有 Noise 保護)→ 誠實界線(§7)。provd 只 bind `http.2` 給的 `br-ahwlan` 位址。
+  - 規則(兩張表,同一個 include 檔):
+    - `bridge batman_http`,`input` hook:`iifname "phy*" meta mark set meta mark | 0x01000000` — **只替從 `phy*` port(手機 AP)進來的 frame 打一個專屬 bit**(OR,不動其他 bit;02 / 04 沒有其他 fwmark 使用者,F75;tailscale 若啟用用的是 0x00ff0000 範圍,不重疊)。
+    - `inet batman_http_in`,`input` hook priority −10(在 fw4 之前):`tcp dport 8095 meta mark & 0x01000000 == 0 drop`(IPv4 / IPv6)。
+    - 這樣在 **IP 層**判斷:沒有從手機 AP port 進來的封包(mesh `bat0`、`eth0`、docker0 / br-ots 的 veth、**VLAN 封裝後被剝標籤的 frame**(F76)、`wlh0`、本機 lo)都到不了 8095 — fail-closed。v6 在 bridge 層比 `tcp dport`,看不到 VLAN 封裝裡的 L4(A6-M1)。
+    - nft 只認結尾的 `*`(F69),所以用前綴 `phy`;**前提由 helper 驗證**:列出**所有** bridge 的 port,每一個 `phy*` 的 port 都必須是 `network.wireless status` 裡 `default_radio0` 這個 section 的 iface(ifname 也要符合 `phy*`);有任何例外 → 不給 `http.2`(fail-closed)。不需要 helper 維護 set。
+    - **02 實測**(F75):這組規則可載入、mesh 來源與 lo 被丟、刪表後完全回到原狀。⚠️ 未測:AP 上的 client 通過、VLAN 臂(D22,§9-4)。
+  - **載入者 = fw4**(F59):`/usr/share/nftables.d/ruleset-post/batman-http.nft` 隨 image 安裝,fw4 每次 start / reload 都會 include。兩張表都用 fw4 的寫法**先刪再建**(`table X` / `delete table X` / `table X { … }`)→ reload 不會重複規則(F70)。**這個檔一有錯,fw4 整份交易失敗、開機後整台沒有防火牆**(F70)→ 兩道關:(1) rc 驗收在 bench 節點跑 `fw4 print \| nft -c -f -`(兩板);(2) 常規全套每次開機後斷言 `inet fw4`、`bridge batman_http`、`inet batman_http_in` 都在(§8)。操作員把 `firewall.@defaults[0].auto_includes` 設成 0 → include 不載入 → helper 看不到表 → 不給 `http.2`(fail-closed)。`firewall stop`(`fw4 flush`)會刪掉它們 = 操作員動作。
+  - **表不在 = 不聽(fail-closed)**:helper 背景每 4 s 確認兩張表、兩條規則都在,並做上面的 `phy*` 前提檢查;結果放快取,poll 只讀快取(唯讀路徑不跑子程序);快取超過 10 s → 當作不在。**在才給 `http.2`**;provd 沒有 `http.2`、或 poll 失敗 / 過期(helper 掛了、ERate)→ 不 bind,已 bind 的關掉 — 最壞 **≤ 8 s**(4 s 檢查 + 4 s poll)。這對備援與上傳窗都成立。
+  - 不需要 `kmod-nft-bridge`(F60、F75)。04 上 `br_netfilter` 已由 docker 載入(`bridge-nf-call-iptables=1`)— 本設計不依賴它,也不受它影響(判斷在 inet input,本機收的封包都會經過)。
+  - 本機 lo 上的行程也被丟(沒有標記,F75)→ v6 列的「lo 可佔 HTTP 槽」界線拿掉。provd 只 bind `http.2` 給的 `br-ahwlan` 位址。
 - `net/http`:`ReadHeaderTimeout` 5 s、非上傳 `ReadTimeout` 15 s、`IdleTimeout` 30 s、`MaxHeaderBytes` 4 KiB;同時連線上限 8(F43);`/session`、`/msg` body ≤ 9 KiB(`max_msg` 8192 + 封裝)。上傳最低速率 **256 KiB/s**(30 s 平均;126 MB 約 8 分鐘,在 15 分鐘窗與 30 分鐘 pending 之內),低於就關。
 - 端點(協定 §4.2):`POST /batman/v1/session`、`POST /batman/v1/msg`;完整 §3 Noise;角色依 §3.1.2。多塊回應以多次 `POST /batman/v1/msg`(空 body = 取下一塊)取回。**回應遺失 = 這個 session 中止**(沒有冪等快取,重送的 Noise 訊息會 AEAD 失敗):app 重新交握、`auth/owner`,再依 §5.2 重讀狀態;協定 §4.2 同步改。
 - **什麼時候聽**:
@@ -385,7 +398,7 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 - `bulk.open`(owner-op,purpose 0)前提:有 pending;手機 AP 開著(`network.wireless status` 的 radio0 up 且有 AP iface)否則 reason 16(D13,不自動開;剛認領節點被 keyguard 關著的 AP 由 §3.3 的配對打開);**沒有另一位擁有者的上傳窗**(有 → `E_BUSY`);同一位擁有者重送 = 延長同一個窗。`owner/remove` 會一併清掉該擁有者的上傳窗與 pending(B5-m11)。
 - helper 記 `{owner_key_id, 到期}`;回 `{1: 手機 AP 的 ssid, 2: 手機 AP 的 passphrase, 3: 節點在 ahwlan 的 IPv4, 4: 8095, 5: 900}`。key 2 是這台 AP 的現行密碼(擁有者本來就有權知道;配對後 app 已知道,仍回給沒有配對的手機),**不是一次性 PSK**;重送 `bulk/open` = 延長同一個窗、回同樣的值。
 - **上傳**:`PUT /batman/v1/bulk/0`,header `X-Batman-Session` = 一個在 HTTP 上建立、`auth/owner` 後角色擁有者、owner_key_id = 上傳窗擁有者的 session;來源 IP = 建立該 session 的來源 IP;`Content-Length` = `http.5`。`X-Batman-Session` 是明文 bearer:同一台 AP 上知道 AP 密碼的人可以解出來並搶先 PUT — 只造成 DoS(內容由簽章 + 讀回把關)→ 誠實界線。
-- **寫入位置**:`/tmp/run/batman-provd-bulk/payload`。專屬 tmpfs,由 `batman-provd` init(root)在啟動 jail 前掛上:`nodev,nosuid,noexec`、mode 0700、provd:provd、`size=` = **2 × 本板目前的 release payload 大小**(留給下一版變大;實際限制交給 RAM 預算,§3.7.4);**init 先檢查是否已掛載**(`service batman-provd restart` 不得疊掛);rw 掛進 jail(provd 唯一的 rw 掛載)。**helper 在沒有上傳窗時,每個 poll 週期看到上傳檔就刪**(被入侵的 provd 在窗外最多佔用一個 poll 週期);窗內最多佔用 `size=` → 誠實界線(3A+ 與 2 GB 的 TAK 節點列 checklist,B5-m12)。
+- **寫入位置**:`/tmp/run/batman-provd-bulk/payload`。專屬 tmpfs,由 `batman-provd` init(root)在啟動 jail 前掛上:`nodev,nosuid,noexec`、mode 0700、provd:provd、`size=` = **2 × 本板目前的 release payload 大小**(實際限制交給 RAM 預算,§3.7.4);init 先檢查是否已掛載(不疊掛);rw 掛進 jail(provd 唯一的 rw 掛載)。helper 在沒有上傳窗時,每個 poll 週期看到上傳檔就刪 — **但 provd 若還開著那個檔的 fd,刪除不會釋放空間**:被入侵的 provd 可以一直佔用到 `size=`(A6-m2)→ 誠實界線;測試量的是 tmpfs 的用量,不是檔案在不在;3A+ 與 2 GB TAK 節點列 checklist。
 - **上傳完成**:provd 收完回 HTTP 200;app 接著 `update/prepare`(BLE 或同一個 HTTP session);prepare 自己檢查大小(§3.7.4)。
 - **刪除上傳檔的唯一負責者 = helper**:worker 結束、`bulk.close`、窗到期(且沒有 worker)、helper 啟動時(若 `batman-slot.lock` 的持有者還活著就不刪解出目錄)。helper 在上傳中重啟 → 窗消失、檔被刪(provd 寫到已 unlink 的 inode,關檔時釋放)→ fail-closed,擁有者重開窗再傳。
 
@@ -429,7 +442,7 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | `/tmp/run/batman-provd-bulk`(tmpfs)| `batman-provd` init 掛載;provd 寫上傳檔;**helper 刪** | helper worker 讀 fd |
 | `/tmp/run/batman/update/`(pending、解出的 boot 檔)、`/tmp/run/batman/diag/`、helper 的記憶體快取 | helper | — |
 | `$RUNDIR/provd-stable` | helper | autocommit |
-| p6 `state/update-last` | helper | helper |
+| p6 `state/update-last` | helper(**只有 `update.apply`**) | helper |
 | p6 `state/prov-state`(既有) | helper(既有) | `/cgi-bin/bundle`(新讀者) |
 | 目標槽(rootfs、boot、`BATMAN-VERIFIED`、`BATMAN-BAD`)、tryboot 旗標 | `batman-slot`(`write` / `arm` / `disarm` / `apply`),`batman-slot.lock` 互斥(F35):helper worker 與 sysupgrade 不會同時寫 | autocommit、`bootcfg-sum`(鎖內) |
 | `release-root.pub`、`release-min-serial` | build(image 內) | helper |
@@ -443,7 +456,7 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | 解出的 boot 檔 | worker 刪 | worker 刪 | 啟動時刪(`batman-slot.lock` 持有者活著就不刪) | — | tmpfs 消失 |
 | pending | 被下一個 check 覆寫或到期 | 到期(uptime 30 分) | 讀回(同 boot_id 才有效) | — | 消失 |
 | diag bundle | 10 分鐘到期 | 同 | 啟動時清空 | 不影響(純到期) | 消失 |
-| update-last | 下一次 check 通過時覆寫 | 同 | 保留 | — | 保留(p6) |
+| update-last | 下一次 `update.apply` 覆寫 | 同 | 保留 | — | 保留(p6) |
 | `provd-stable` | — | — | 保留(同 boot_id 才有效) | 保留 | 消失(RunDir) |
 
 ## 5. 契約
@@ -461,9 +474,10 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | `settings.set` | 值不合法 / 一次多項 / 文字 key / setkey 套用失敗已還原 | `E_REJECTED{2: 13}` |
 | `settings.set` | `--save` 失敗(已還原) | `E_STORAGE` |
 | `settings.set` key 1 | U5 之前 | `E_UNSUPPORTED`(今天的 `rename-pending`) |
-| `settings.set` key 1 / 2 / 20 | `/tmp/.uci/system`(key 1)或 `/tmp/.uci/wireless`(key 2、20)有別人的暫存 | `E_BUSY` |
+| `settings.set` key 1 / 2 / 20 | `/tmp/.uci/system`(key 1)或 `/tmp/.uci/wireless`(key 2、20)有別人的暫存 | `E_BUSY`;`status` key 15 回報 `uci_staged: [packages]`,app 提示「節點有未提交的設定,請重開或由操作員處理」(否則 app 沒有出路,A6-m7) |
 | `settings.set` key 2 | 已入網 | `E_REJECTED{2: 14}` |
-| `settings.set` key 2 / 20 | legacy 節點(D20);key 20 經 HTTP | `E_UNSUPPORTED{1: typ, 2: 7}` |
+| `settings.set` key 2 / 20 | legacy 節點(D20) | `E_UNSUPPORTED{1: typ, 2: 20}` |
+| `settings.set` key 20 | 經 HTTP | `E_UNSUPPORTED{1: typ, 2: 19}` |
 | `settings.set` key 10–13 | — | `E_UNSUPPORTED{1: typ, 2: 7}` |
 | `network/join` / `network/update` | 國家不符(§3.3) | `E_REJECTED{2: 14}` |
 | `status` scope 1 | — | `E_UNSUPPORTED{1: typ, 2: 7}` |
@@ -496,7 +510,7 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 |---|---|---|---|---|
 | `update-manifest` + `[E, S]` | app → provd → helper | §3.7.1 | 驗不過 → reason 11,fail-closed | 任何擁有者 session;簽章才是權威 |
 | pending | helper → helper | CBOR,root 0700 目錄,綁 boot_id、uptime 30 分 | 缺 / 過期 / 壞 → 當作沒有 | root |
-| update-last(p6) | helper → helper | CBOR `{from_slot, from_version, to_slot, to_version, sha, apply_boot_id, armed}` | 缺 / 壞 / 版本對不上 → phase 0 | root |
+| update-last(p6) | helper → helper | CBOR `{from_slot, from_version, to_slot, to_version, sha, apply_boot_id, bad_slot_at_apply, armed, rebooting}` | 缺 / 壞 / 版本對不上 → phase 0 | root |
 | 上傳檔 | provd → helper | 大小 = key 3 | §3.7.5 步驟 1–4 | provd(不受信任) |
 | `BATMAN-VERIFIED` | `batman-slot write` → `arm` | 一行 sha256 hex | 缺 / 不符 → arm 拒絕 | root |
 | `batman-slot write / arm / disarm / bootcfg-sum` | helper → batman-slot | §3.7.3 | rc ≠ 0 → 依 §5.1 | root |
@@ -530,8 +544,8 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | 依賴重啟:bluetoothd / dbus | P2 | 不變;BLE 不健康 5 分鐘 → HTTP 備援開 | `prov-http-254` |
 | 依賴重啟:hostapd / `wifi reload`(= `network reload`,F51) | — | 防火牆規則以 port 名前綴判斷,iface 重建後仍有效;上傳中的 reload 被 §3.1.7 擋 | `prov-http-254` |
 | 依賴重啟:firewall reload / restart | — | fw4 重建 `batman_http`(檔案先 flush 自己的表,不重複) | `prov-http-254` |
-| `ruleset-post` 檔載入失敗 | — | 整份 fw4 失敗、沒有防火牆(F70)→ rc 驗收的 `nft -c` 閘門與每次開機的斷言抓到 | `prov-fw-boot-254` |
-| `firewall stop` | — | 表被刪 → helper 不給 `http.2` → provd ≤ 4 s 內不聽 | `prov-http-254` |
+| `ruleset-post` 檔載入失敗 | — | 整份 fw4 失敗、沒有防火牆(F70)→ rc 驗收的 `nft -c` 閘門與每次開機的斷言抓到;**`fw-badinclude` 接縫本身會讓那台 bench 節點那次開機沒有防火牆** → 只在非 DUT 節點、經使用者同意、斷開對外網路時跑;還原 = 移除接縫並重開 | `prov-fw-boot-254` |
+| `firewall stop` | — | 表被刪 → helper 不給 `http.2` → provd ≤ 8 s 內不聽 | `prov-http-254` |
 | 平台 bcm2711(Pi 4) | — | 實測 | 全部 |
 | 平台 bcm2710(Pi 3) | — | `batman-slot`、config-save、setkey 兩板共用 → CI 沙箱(P-U14) | CI |
 | 平台 CM4 | — | 開發 Lite / 量產 eMMC(D18);**必須是有無線的型號**;實測與 eMMC 重燒待 CM4 載板 | checklist |
@@ -554,7 +568,7 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | 被入侵的 provd | 自己聽 HTTP | 本來就能(無 netns,> 1024 埠);沒有 PSK 解不開 session、拿不到 owner-op;防火牆仍只收手機 AP port | 誠實界線 |
 | 本機非 root | 讀 AP 密碼 | `/etc/config/wireless`、hostapd conf 0644(F34,與現況相同) | 誠實界線 |
 | 本機非 root | 從 cmdline 或 log 讀 AP 密碼 | passphrase 走 stdin(`--ap -`);不進 log | `prov-settings-254`(`/proc/*/cmdline`、logread、helper / provd log、診斷包都不含) |
-| 本機行程(lo) | 佔掉 HTTP 的 2 槽 | 不經 bridge hook;只造成 DoS,內容有 Noise 保護 | 誠實界線 |
+| 本機行程(lo)、eth0 / docker0 的 VLAN 封裝 frame | 佔掉 HTTP 的 2 槽 | inet input 只收帶「手機 AP port」標記的封包(F75、F76) | `prov-http-254` 的 lo / VLAN 臂 |
 | 本機非 root | 搶建 `/tmp/run/batman-provd-bulk` | `/tmp/run` 只有 root 能建(F33);init 建前檢查 owner / 非 symlink / 是否已掛載 | tmp-trust allowlist + 測試 |
 | 實體奪取(SD 卡) | 從 p5 讀 AP 密碼 → 連 AP → mesh LAN | p5 不加密(既有);AP key 早已在 PRESERVE,P3 加 SSID — **D14 是使用者決定的例外**(「秘密不進 p5」規則下明列);換卡後擁有者換密碼 | 誠實界線 |
 | 供應鏈 / 我們自己的錯 | 簽了壞 image;K 外流 | min-serial;防降級;R 離線兩份;出貨鑰匙鏈 bench 測試 | `prov-update-254` bench 臂 |
@@ -585,37 +599,37 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 |---|---|---|
 | `prov-p3-routes-254` | 每個動詞 × 角色(匿名 / 候選 / 成員 / 擁有者)× owner-op 缺 / 錯 → §5.1 的線上碼;key 20 經 HTTP → `E_UNSUPPORTED` | wsl.22:全部 `E_UNSUPPORTED` |
 | `prov-owner-254` | add / 重送輪替 / remove(BLE 與 HTTP session 都被切)/ 最後一位 | wsl.22 |
-| `prov-settings-254` | get;**新卡 → 認領 → key 20 → 不重開**,30 s 內 AP 起來、新帳密可連、`bulk.open` ≠ 16、p5 有新值、morse plink 不斷;新卡配對注入失敗 → AP 不在空中、`disabled=1`、MARK 有該 iface、p5 不變;已配對節點注入失敗 → 舊帳密回來;passphrase 不在 `/proc/*/cmdline`、logread、helper / provd log、診斷包;密碼含 `$` → 13、live 與 p5 不變;另一程序持 setkey 鎖 15 s 時仍在預算內完成;`/tmp/.uci/wireless` 有暫存 → `E_BUSY`;國家:未入網、radio 被封鎖時改 → 成功、p5 已存;已入網 → 14;legacy key 2 / 20 → 7;同值 `settings.set` 在 p5 stale 時存檔;改名在 U5 前回 `rename-pending` | `setkey-norollback`(注入失敗後狀態不對)、`setkey-readback-skip`(AP 沒起來卻回成功)、wsl.22(key 20 不存在) |
-| `prov-country-join-254` | join / update 國家不符 → 14,`.txn` 不存在、uci 不變;先 key 2 再 join → 成功,morse 頻率 = 該國 regdb | wsl.22(不比對國家) |
+| `prov-settings-254` | get;**新卡 → 認領 → key 20 → 不重開**,30 s 內 AP 起來、新帳密可連、`bulk.open` ≠ 16、p5 有新值;**已入網節點**做 key 20 時 morse plink 不斷(新卡的 radio1 是封鎖的,在那裡量不到;並確認 setkey 的 `wifi reload \|\| wifi` 退路沒有被觸發);新卡配對注入失敗 → AP 不在空中、`disabled=1`、MARK 有該 iface、p5 不變;已配對節點注入失敗 → 舊帳密回來;passphrase 不在 `/proc/*/cmdline`(以 setkey 執行期間每 10 ms 取樣)、logread、helper / provd log、診斷包;密碼含 `$` → 13;另一程序持 setkey 鎖 15 s 時仍在預算內完成;**在 commit 與讀回之間殺掉 helper → setkey 自己跑完並還原**(負對照:沒有 `trap '' PIPE` 的 setkey 停在一半);`/tmp/.uci/wireless` 有暫存 → `E_BUSY` 且 `status` 回報;國家:未入網改 → 成功、p5 已存;已入網 → 14;legacy key 2 / 20 → 20;key 20 經 HTTP → 19;同值 `settings.set` 在 p5 stale 時存檔;改名在 U5 前回 `rename-pending` | `setkey-norollback`、`setkey-readback-skip`、wsl.22(key 20 不存在)、無 trap 的 setkey |
+| `prov-country-join-254` | join / update 國家不符 → 14,`.txn` 不存在、uci 不變;先 key 2(regdb 有的國家,不看目前頻道)再 join(同國家的 net_config)→ 成功;新卡 key 2 = 例如 `DE`(ch 40 不在它的表裡)→ 仍成功(B6-M1);晶片換表不測(D21) | wsl.22(不比對國家) |
 | `prov-status-diag-254` | status 與 halow-status 一致、成員只拿摘要;ro 10 / s × 10 分鐘:`cfgsave-lock.busy` 不出現、poll 沒有 ERate、BLE 廣播在;bundle > 64 KiB 完整取回、tar 可解、**內容**不含秘密;handle 跨 session 被拒 | `ro-on-ctl`(poll 拿到 ERate) |
 | `prov-bundle-gate-254` | claimed → 403;legacy 無旗標 → 403;unclaimed / legacy + dev-open → 200;`status` 仍 200 | wsl.22(全部 200) |
-| `prov-http-254` | **正向**:手機 AP 上的 client TCP 連得上 8095;平常不聽;停 bluetoothd 5 分鐘 → 聽;讓 `sc_file` 失效 5 分鐘 → 聽;恢復 → 不收新連線、既有保留;psk_owner → 候選 → `auth/owner` 成功;NX / psk_replay 被拒;**mesh 臂**(與正向同一臂):另一台節點 eth0 上的主機以手機 MAC + IP(含 ARP 毒化)、50 conn/s、10 分鐘 → TCP 連不上、poll 無 ERate、BLE 廣播在、AP 上的擁有者完成上傳;`nft delete table bridge batman_http` → ≤ 4 s 不聽;firewall reload → 表回來且規則只有一份;helper 停掉 → provd ≤ 4 s 不聽 | `healthok-2field`(sc_file 臂不聽)、`http-nofw`(刪表後 mesh 主機連得上)、以 v5 的 `phy*-ap*` 規則載入(正向斷言 FAIL) |
+| `prov-http-254` | **正向**:手機 AP 上的 client TCP 連得上 8095(⚠️ D22:使用者在現場);平常不聽;停 bluetoothd 5 分鐘 → 聽;讓 `sc_file` 失效 5 分鐘 → 聽;恢復 → 不收新連線、既有保留;psk_owner → 候選 → `auth/owner` 成功;NX / psk_replay 被拒;**mesh 臂**(與正向同一臂):另一台節點 eth0 上的主機以手機 MAC + IP(含 ARP 毒化)、50 conn/s、10 分鐘 → TCP 連不上、poll 無 ERate、BLE 廣播在、AP 上的擁有者完成上傳;**lo 臂**:本機連 8095 被丟;**VLAN 臂**(⚠️ D22):eth0 與 docker0 容器送帶 VLAN 封裝的 SYN → 被丟;刪表 → ≤ 8 s 不聽;firewall reload → 兩張表回來且規則各一份;helper 停掉 → provd ≤ 8 s 不聽 | `healthok-2field`、`http-nofw`、以 v6 的「bridge 層比 `tcp dport`」規則載入(VLAN 臂 FAIL)、以 v5 的 `phy*-ap*` 規則載入(正向 FAIL) |
 | `prov-upload-254` | AP 關 → 16;非窗擁有者的 session → 拒;大小不符 → prepare 15;provd 寫超過 tmpfs → ENOSPC、其他服務正常;窗外的上傳檔一個 poll 週期內被刪;上傳中 `network/update` → `E_BUSY`;上傳中 helper 重啟 → 窗消失、重傳成功;`owner/remove` 清掉窗 | Go 接縫(各關一道:窗擁有者檢查、來源 IP 綁定、`otaBusy` 擴大)+ wsl.22 |
 | `prov-update-254` | T 簽的 image 經 app 路徑 → trial → commit → 5;重裝同版本退回 → 6(不是 5);arm 前斷電 → 0;新版沒開機成功(注入:目標槽 kernel 壞掉)→ 6 + 18;之前退回過同一槽的 `bad-slot` 不造成假 6;worker 失敗的 reason 依類別;簽章錯、serial < min、板子錯、降級、min_from、目標槽開機設定不符、版本解析失敗、四包惡意 tar、上傳檔換成 FIFO、上傳後改 payload、prepare 中 kill helper / 斷電、helper 重啟後 phase 3 重建;回滾臂;**升級臂**:P2 未入網節點 sysupgrade 到 P3 → `--check` fresh;SSID 含 `'` 的節點升級後 OTA 不被擋;**sysupgrade 臂**:未列名的 dtb 不被寫進槽;**bench 臂**:YubiKey K 簽、release 設定節點、T 簽的被拒 | `slot-copy-all`(未列名的 dtb 被寫進去)、`p5-autosave-off`(升級臂 stale) |
 | `prov-autocommit-p3-254` | **正向**:正常的 provd → commit;試用 image 的 provd 壞掉 → revert;helper 不在 → revert;provd 穩定 60 s 後被殺 → 仍 commit;provclient 掛 60 s 不算 provd-stable;`batman-provd` 被停用 → 只 WARN、commit | `autocommit-noprov`(壞 provd 被 commit)、`provd-id-pid`(正常 provd 也被退回) |
 | `prov-transfer-tool-254` | WSL loop 檔(§3.9)+ 真卡(使用者的讀卡機) | 工具的測試旗標 `--test-skip-wipe`(只在 `--test-target-file` 模式可用)→ 特徵字串還在 |
 | `prov-luci-reset-254` | firstboot 後擁有者 / mesh / AP 帳密仍在 | — (行為不變,只驗文字與保留) |
-| `prov-fw-boot-254`(常規全套,每次開機後) | `nft list table inet fw4` 與 `bridge batman_http` 都在;rc 驗收另跑 `fw4 print \| nft -c -f -`(兩板) | `fw-badinclude`(兩道關都 FAIL) |
+| `prov-fw-boot-254`(常規全套,每次開機後) | `inet fw4`、`bridge batman_http`、`inet batman_http_in` 都在;rc 驗收另跑 `fw4 print \| nft -c -f -`(兩板) | `fw-badinclude`(只在非 DUT、使用者同意、斷網) |
 | `prov-eeprom-hooks-254` 補項(D11) | 1.5.12 負對照、fresh-overlay 檢查 | 1.5.12 image |
 
 Go:§3.2 邊界、§3.6、§3.7 每個拒絕分支(mutant)、tar 白名單、版本規則表、§3.8 額度隔離、錯誤碼表(含 `hEUnsupported` 帶 reason)。CYW43455 的 Wi-Fi / BT 共存(key 20 reload 時 BLE 是否斷)在 `prov-settings-254` 量測並記錄。
 
 ## 9. 未決 / 實作前要查的(⚠️)
 
-1. **U5 改名探針**(D8):使用者回現場時跑;結果補 §3.3 改名的副作用、§6「換 IP」列、`prov-settings-254` 的改名斷言。H4 的改名單位等 U5,其他單位不受影響。
+1. **U5 改名探針**(D8):使用者回現場時跑;結果補 §3.3 改名、§6「換 IP」列、`prov-settings-254` 的改名斷言。改名在那之前維持 `rename-pending`。
 2. **YubiKey** 型號 / 韌體與 host 簽章工具鏈(DER → r‖s):使用者在場時實測;節點端只依賴 ES256。
-3. **改國家後 morse 是否真的換表**:在 04(重燒成新卡之後)以「radio 被封鎖 → key 2 → join」的順序實測(會動無線電設定,要使用者同意),結果寫進 F 表;不成立時的出路見 §3.3(要重開 → 「寫入 + 要求重開」;連重開也不換 → 停用 key 2)。
-4. **bridge 規則的功能實測**:kernel 支援已有證據(F60),不加 kmod;在非 DUT 節點、經使用者同意實測一次:手機 AP 的 client 連得上、eth0 / bat0 來的連不上、reload 後規則只有一份。
+3. (關閉,D21)晶片端的國家換表不在 P3 驗。
+4. **HTTP 來源規則的剩餘實測**(D22):非 VLAN 部分已在 02 做(F75);剩「手機 AP 上的 client 通過(mark 從 bridge 帶到 IP 層)」與 VLAN 臂(eth0、docker0 容器),使用者在現場時在非 DUT 節點做,**H4 凍結前完成**;不成立時的出路:mark 帶不過去 → 回到 bridge 層判斷:`iifname != "phy*" tcp dport 8095 drop`,再加 `iifname != "phy*" ether type { 8021q, 8021ad } drop`(本機收的 VLAN 封裝 frame 一律丟;這套網路不用 VLAN),並以 VLAN 臂證明。
 5. (關閉)一般重開時 96 不跑(F71)。
 6. bulk tmpfs `size=` 的實際值(2 × 目前 release payload)與 bcm2710 的值。
-7. `halow-setkey` 新旗標(`--ap -`、`--ap-ssid`、`--ap-section`、`--country`、`--rollback`、`--lockwait`)的讀回與還原:實作時逐行對 `halow-setkey:37-374`。
-9. **02 / 04 重燒成新卡**(D20):H4 / P3 上機前;破壞性,先列步驟與還原給使用者。
+7. `halow-setkey` 新旗標的讀回、還原與結束碼(§3.3):實作時逐行對 `halow-setkey:37-374`,不與既有結束碼撞號。
 8. CYW43455 Wi-Fi / BT 共存(key 20 reload 時 BLE 是否斷):H4 量測。
+9. **02 / 04 重燒成新卡**(D20):H4 / P3 上機前;破壞性,先列步驟與還原給使用者。
 
 ## 10. 要改的文件與檔案(本 PR)
 
 - `219-protocol.md`:`:218` 拿掉「階段 1 不實作」;§4.2:PSK-only、什麼時候聽、`/msg` 多塊取回、上傳端點、**回應遺失 = session 中止(不做冪等快取)**;`:155`、`:212` 的 bulk「一次性 PSK」改為現行 AP 密碼;`:447` 改為輪替 `adv_owner_key`;`:210` 與 field-provisioning `:474` 對齊 D10;§5.2 `E_REJECTED` 改為「被拒(附原因)」不限更新。
-- `219-protocol.cddl`:reason-code 11–18;`update-manifest` key 5(= CBOR `[E, S]`)、key 6 語意、S 的 key 7–9;`update/prepare`、`update/apply` 的 key 1 = sha(由 owner-op 的 `args_hash` 綁定);`status-resp` key 2–4 改選填;settings key 20;`bulk-open-resp` key 2 的註解;`update-phase` 2 的名稱;冪等欄位(`idem-type`、各請求的 `? 7`)註記「保留、P3 不使用(provd 回 `E_UNSUPPORTED{idem}`)」。
+- `219-protocol.cddl`:reason-code 11–20;`update-manifest` key 5(= CBOR `[E, S]`)、key 6 語意、S 的 key 7–9;`update/prepare`、`update/apply` 的 key 1 = sha(由 owner-op 的 `args_hash` 綁定);`status-resp` key 2–4 改選填;settings key 20;`bulk-open-resp` key 2 的註解;`update-phase` 2 的名稱;冪等欄位(`idem-type`、各請求的 `? 7`)註記「保留、P3 不使用(provd 回 `E_UNSUPPORTED{idem}`)」。
 - `219-field-provisioning.md` §6.9:暫時 AP 改為「經這台節點的手機 AP」;B18 寫入兩層鑰匙。
 - `254-stage1-impl.md`:§10.6 / §10.7(D3);`:171`(bundle 用 handle 分頁);`:357` `E_STATE` → `E_BUSY`。
 - `254-p1-impl.md`:`:465`(admins +1 刪)、`:466`(未知 key 忽略)。
@@ -696,3 +710,31 @@ v5 的三個「真機上不成立」都是沒實測的外部行為假設;v6 每�
 | B5-m13 update-last 寫入時機 | 只有 apply 寫(§3.7.4) |
 | B5-m14 CDDL 冪等欄位 | 註記保留、不使用(§10) |
 | B5 §9-3 morse 實測失敗時 | 要重開 → 「寫入 + 要求重開」;連重開也不換 → 停用 key 2(§3.3、§9) |
+
+
+## 附錄 C. v6 審查回應(A6 = `p3-review-v6-A.md` APPROVE-WITH-CHANGES、B6 = `p3-review-v6-B.md` REJECT)
+
+| 項 | 處理 |
+|---|---|
+| A6-M1 bridge 的 `tcp dport` 看不到 VLAN 封裝 | 改成「bridge 層只替手機 AP port 的 frame 打 bit、inet input 沒有 bit 就丟 8095」;lo、VLAN、veth、mesh 都被丟;02 實測非 VLAN 部分(F75);VLAN 臂與正向等使用者在現場(D22、§9-4,含不成立時的出路) |
+| B6-M1 key 2 的頻道檢查讓非美規國家卡死 | 刪掉「目前頻道在新國家合法」;頻道在 join 時由 setkey 驗(F79、§3.3);測試加 `DE` |
+| B6-M2 / A6-m1 helper 死掉時 setkey 被 SIGPIPE 結束 | setkey `trap '' PIPE`、忽略輸出失敗;測試「commit 與讀回之間殺 helper」,負對照 = 沒有 trap 的 setkey(F77、§3.3、§8) |
+| A6-m2 刪檔不釋放 provd 開著的 fd | 寫實:被入侵的 provd 可佔用到 `size=`;測試量 tmpfs 用量(§3.8.2) |
+| A6-m3 舊的 `BATMAN-VERIFIED` | 不需要加 boot_id:phase 3 與 arm 都要求 pending 有效(tmpfs、同 boot_id),舊版 image 的寫者只會在另一次開機出現,pending 已不在 → 不會 arm 到別的內容 |
+| A6-m4 / B6 update-last 寫者、格式、arm 參數、§9 編號 | 只有 `update.apply` 寫;§5.3 格式加 `bad_slot_at_apply`、`rebooting`;arm 一律 `arm <sha> <key8 清單檔>`;§9 重排 |
+| A6-m5 / B6 update-last 的邊角 | apply 之後還沒重開(同 boot_id)→ 一律 disarm;`rebooting` 緊接在 reboot 之前寫,剩下毫秒級的界線寫明(§3.7.4) |
+| A6-m6 / B6 F74 的證據 | 改正為 `node.go:539`(認領時就設 true) |
+| A6-m7 `/tmp/.uci` 暫存讓 key 2 / 20 一直 `E_BUSY` | `status` 回報 `uci_staged`,app 提示(§5.1) |
+| A6-m8 / B6 br_netfilter 已載入、`fw-badinclude` 的副作用 | 改寫(本設計不依賴也不受它影響);`fw-badinclude` 列破壞性副作用與還原(§6) |
+| A6-m9 `.wbox-` 的例子錯 | 換例子;`+` 之後一律忽略(§3.7.1) |
+| B6 `--ap -` 仍經 `uci set` 的 argv | setkey 用 `uci batch` 從 stdin 寫(F78);`/proc/*/cmdline` 以 10 ms 取樣(§3.3、§8) |
+| B6 `phy*` 前提檢查的範圍 | 列出所有 bridge 的 port,綁 `default_radio0` section,ifname 也要符合(§3.8.1) |
+| B6 setkey 的 rc 對應 | 新旗標的結束碼 0 / 2 / 3 / 4 / 5 與對應(§3.3) |
+| B6 「≤ 4 s」 | 改為 ≤ 8 s(4 s 檢查 + 4 s poll) |
+| B6 reason 7 一碼多用 | 新 19(只能經 BLE)、20(legacy 不支援);7 只留給硬體能力(§3.1.8、§5.1) |
+| B6 `update.apply` 缺 reason 17、p6 沒掛 | 加 17;p6 沒掛 → `E_STORAGE`、不 arm |
+| B6 worker 開 fd 與刪檔的順序 | 先開 fd 再關窗(§3.7.5) |
+| B6 provd-stable 只看 ctl | 改為「provd 行程的任一條連線」(§3.7.6) |
+| B6 國家測試分辨不出換表 | 使用者決定 D21:不做晶片端實測,寫成界線 |
+| B6 key 20 的 plink 測試 | 改在已入網節點上量;確認 `wifi reload \|\| wifi` 退路沒被觸發(§8) |
+| B6 include 用 delete table、`auto_includes` | 先刪再建;`auto_includes = 0` → 不給 `http.2`(§3.8.1) |
