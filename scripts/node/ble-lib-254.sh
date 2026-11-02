@@ -167,7 +167,8 @@ dm_log() {	# one line on p6 before a deadman reboot (design §4.7): root dir, no
 # under a BLE lease (acquire) and starts it again at release / deadman / recover; whatever may have removed provd.env
 # restarts it (init reads the env only at start). No provd on the image (pre-P2) = nothing to do.
 PROVD_INIT=/etc/init.d/batman-provd
-PROVD_KEYS='^(SOCK_ONLY|FAST_FAKE_DELAY_MS|NO_BRUTE_LIMIT|GATT_ENCRYPT_CTRL|ADV_LEN_TEST)='
+# BATMAN_FAULT: the H4 Go faults of a prov_test provd (254-h4 §5.1); provd_check must see them too (F-H51)
+PROVD_KEYS='^(SOCK_ONLY|FAST_FAKE_DELAY_MS|NO_BRUTE_LIMIT|GATT_ENCRYPT_CTRL|ADV_LEN_TEST|BATMAN_FAULT)='
 provd_present() { [ -x "$PROVD_INIT" ]; }
 # the jailed provd itself: ujail, its parent, carries the same comm (pidof lists both; 04 wsl.20, 2026-11-01)
 provd_pid() { for _q in $(pidof batman-provd); do [ "$(readlink "/proc/$_q/exe")" = /usr/bin/batman-provd ] && { echo "$_q"; return 0; }; done; }
