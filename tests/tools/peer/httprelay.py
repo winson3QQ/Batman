@@ -7,9 +7,9 @@ It talks to ONE address — the one in argv — and never anything else; it only
 ciphertext) and decides nothing. One line per message on stdin / stdout:
 
   -> REQ <id> <METHOD> <path> <headers-json-hex> <body-hex>
-  <- RSP <id> <status> <body-hex> <connection: keep|close>
+  <- RSP <id> <status> <body-hex> <keep|close> <hdr-hex>     (hdr = JSON of the X-Batman-* response headers, or -)
   -> PUT-FILE <id> <path> <local-file> <headers-json-hex>        (the upload body is a file already on the phone)
-  <- RSP <id> <status> <body-hex> <keep|close>
+  <- RSP <id> <status> <body-hex> <keep|close> <hdr-hex>
   -> RESET                                                        (drop the kept connection; the next REQ opens one)
   <- ERR <id> refused|timeout|unreach|reset|closed|proto          (the host's verdicts never rest on these alone:
                                                                     the node-side capture is the evidence, §4.3)
@@ -69,9 +69,11 @@ class Relay:
             r = c.getresponse()
             data = r.read()
             keep = "close" if r.will_close else "keep"
+            xh = {k: v for k, v in r.getheaders() if k.lower().startswith("x-batman-")}
             if r.will_close:
                 self.reset()
-            self.say("RSP %s %d %s %s" % (rid, r.status, data.hex() or "-", keep))
+            self.say("RSP %s %d %s %s %s" % (rid, r.status, data.hex() or "-", keep,
+                                             json.dumps(xh, sort_keys=True).encode().hex() if xh else "-"))
         except Exception as e:  # noqa: BLE001 — every failure is a classified line, never a crash
             self.reset()
             self.say("ERR %s %s" % (rid, classify(e)))
@@ -145,6 +147,8 @@ def selftest():
                 return
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
+            if self.path == "/batman/v1/session":
+                self.send_header("X-Batman-Session", "c2Vzc2lvbi1pZC10ZXN0")
             self.end_headers()
             self.wfile.write(body[::-1])
 
@@ -171,7 +175,7 @@ def selftest():
     out = io.StringIO()
     r = Relay("127.0.0.1", port, out)
     r.handle("REQ 1 POST /batman/v1/msg - " + b"abc".hex())
-    r.handle("REQ 2 POST /batman/v1/msg - " + b"xyz".hex())
+    r.handle("REQ 2 POST /batman/v1/session - " + b"xyz".hex())
     r.handle("REQ 3 POST http://evil.example/x - 00")
     r.handle("REQ 4 POST /close - " + b"q".hex())
     with tempfile.NamedTemporaryFile(delete=False) as f:
@@ -195,11 +199,12 @@ def selftest():
         if not cond:
             fails.append("%s  (output: %s)" % (name, lines))
 
-    check("REQ relays the body and the response", "RSP 1 200 %s keep" % b"cba".hex() in lines)
-    check("the connection is kept (keep-alive)", "RSP 2 200 %s keep" % b"zyx".hex() in lines)
+    check("REQ relays the body and the response", "RSP 1 200 %s keep -" % b"cba".hex() in lines)
+    sh = json.dumps({"X-Batman-Session": "c2Vzc2lvbi1pZC10ZXN0"}).encode().hex()
+    check("the connection is kept and X-Batman-Session is relayed", "RSP 2 200 %s keep %s" % (b"zyx".hex(), sh) in lines)
     check("a path with a scheme / host is refused (one address only)", "ERR 3 proto" in lines)
-    check("the server closing after its response is reported as close", "RSP 4 200 %s close" % b"q".hex() in lines)
-    check("PUT-FILE sends the whole file with Content-Length", "RSP 5 200 %s keep" % b"100000".hex() in lines)
+    check("the server closing after its response is reported as close", "RSP 4 200 %s close -" % b"q".hex() in lines)
+    check("PUT-FILE sends the whole file with Content-Length", "RSP 5 200 %s keep -" % b"100000".hex() in lines)
     check("a silent peer -> timeout", "ERR 6 timeout" in lines)
     check("nobody listening -> refused", "ERR 7 refused" in lines)
     check("unknown command -> proto", "ERR 8 proto" in lines)
