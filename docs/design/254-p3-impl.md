@@ -1,6 +1,6 @@
-# #254 PR-P3:擁有者 / 設定 / 狀態 / 診斷 / 更新 / 上傳 / 轉賣工具(設計 v7)
+# #254 PR-P3:擁有者 / 設定 / 狀態 / 診斷 / 更新 / 上傳 / 轉賣工具(設計 v7.1 — 凍結)
 
-狀態:v7,2026-11-02,定稿候選,送兩位審查;通過後凍結。歷程:v1 96a578d、v2 03963d9、v3 6433520、v4 5d5ebfd、v5 1ac5fbd(整份重寫)、v6 c252b3f(A APPROVE-WITH-CHANGES 0/1/9、B REJECT 0/2/14)。v7 在 v6 上局部修正三個 MAJOR 與 MINOR,附錄 C 回應 v6;HTTP 來源規則已在 02 實測(F75)。修法依賴的外部行為都附證據,沒有的列在 §9 並寫明查不到時怎麼辦。各輪審查在 `docs/design/254-reviews/p3-review-v*-*.md`。
+狀態:**凍結**(v7.1,2026-11-02)。v7(bfb6703)兩位審查都 **APPROVE-WITH-CHANGES、0 BLOCKER / 0 MAJOR**(A 11 MINOR、B 12 MINOR),都判定已收斂、建議凍結。v7.1 = v7 + 審查要求「凍結時一起改」的文字修正(A7-m7);其餘 MINOR 是實作 PR 的必做清單(附錄 D,每項附測試)。**凍結條件**:§9-4 的現場探針在 H4 凍結前跑完並附原始輸出(D22)。歷程:v1 96a578d、v2 03963d9、v3 6433520、v4 5d5ebfd、v5 1ac5fbd(整份重寫)、v6 c252b3f、v7 bfb6703。各輪審查在 `docs/design/254-reviews/p3-review-v*-*.md`。
 上層:`254-stage1-impl.md` §10.6;協定 `219-protocol.md` v0.8 + `219-protocol.cddl`;P2 = `254-p2-impl.md` v8.5(已出貨 `1.5.14-wsl.22`)。
 原則(使用者):**只做必要的修改**、**失敗就回到之前的狀態**。事實附 `file:line` 或 04 實測;沒有證據的標 ⚠️,並寫明實作前要怎麼查。
 
@@ -436,7 +436,8 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | `wireless.default_radio0.disabled` + `/etc/halow-keyguard.blocked` | keyguard(開機:placeholder 時設 1,key 已設好時解除,F49);`halow-setkey`(執行期解除;`--rollback` 時恢復封鎖) | netifd |
 | `halow-setkey.lock` | `halow-setkey`(chanfix、操作員、helper 的呼叫都經由它) | — |
 | `.txn` | helper(P1b txn,格式不變) | config-save(看存在) |
-| nft 表 `bridge batman_http` | **fw4**(include `ruleset-post/batman-http.nft`,每次 start / reload 重建);`fw4 flush`(`firewall stop`)= 操作員動作會刪掉 | kernel;helper(只檢查存在) |
+| nft 表 `bridge batman_http`、`inet batman_http_in` | **fw4**(include `ruleset-post/batman-http.nft`,每次 start / reload 先刪再建);`fw4 flush`(`firewall stop`)= 操作員動作會刪掉 | kernel;helper(只檢查存在) |
+| fwmark bit `0x01000000`(bit 24) | **只有** `bridge batman_http` 的規則設它(其他 port 的 frame 先清掉這個 bit,附錄 D-8);保留給 P3,lint 檢查 repo 裡沒有別人用 | `inet batman_http_in`(只讀) |
 | HTTP 上傳窗、`http` 欄位 | helper(經 poll 告訴 provd) | provd |
 | HTTP 備援開關 | provd(自己的 `HealthOK`) | — |
 | `/tmp/run/batman-provd-bulk`(tmpfs)| `batman-provd` init 掛載;provd 寫上傳檔;**helper 刪** | helper worker 讀 fd |
@@ -484,7 +485,7 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | `update.check` | 1 / 2 / 3 / 4 / 5 / 6 / 8 / 11 / 12 / 17 | **ok 回應** `{1: false, 2: reason, 3: RAM}` |
 | `update.prepare` / `apply` | 前提不成立 / sha 不符 / 上傳不完整 | `E_REJECTED{2: 15}` |
 | `update.prepare` 的 worker | 失敗 | `update.status` = phase 0 + `3: 1 / 11 / 12 / 17`(依失敗類別) |
-| `update.apply` | arm 失敗 | `E_REJECTED{2: 11 / 12 / 1 / 5}` |
+| `update.apply` | arm 失敗 | `E_REJECTED{2: 11 / 12 / 1 / 5 / 17}` |
 | `bulk.open` | 無 pending | `E_REJECTED{2: 15}` |
 | `bulk.open` | 手機 AP 關著 | `E_REJECTED{2: 16}` |
 | `diag.read` | handle 過期 / 不屬於這個 session | `E_REJECTED{2: 15}` |
@@ -515,7 +516,7 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | `BATMAN-VERIFIED` | `batman-slot write` → `arm` | 一行 sha256 hex | 缺 / 不符 → arm 拒絕 | root |
 | `batman-slot write / arm / disarm / bootcfg-sum` | helper → batman-slot | §3.7.3 | rc ≠ 0 → 依 §5.1 | root |
 | poll 的 `http` 欄位 | helper → provd | §2 | 缺 → 不聽(fail-closed) | helper |
-| nft 表 `bridge batman_http` | fw4 → kernel;helper 檢查 | §3.8.1 | 缺 → helper 不給 `http.2` → 不聽 | root |
+| nft 表 `bridge batman_http`、`inet batman_http_in` | fw4 → kernel;helper 檢查 | §3.8.1 | 任一缺 → helper 不給 `http.2` → 不聽 | root |
 | `$RUNDIR/provd-stable` | helper → autocommit | 一行 boot_id | 缺 / 不是本次開機 → 試用不健康 | root |
 | HTTP `/batman/v1/*` | app → provd | 協定 §4.2 + §3.8 | 交握失敗 → 關;超額 → 關 | 手機 AP 上的 client(防火牆) |
 | `halow-setkey` 新旗標 `--ap -`(stdin)、`--ap-ssid`、`--ap-section`、`--country`、`--rollback`、`--lockwait` | helper → setkey | §3.3 | rc ≠ 0 → §5.1 | root |
@@ -543,11 +544,11 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | 換 IP(改名 / openmanetd) | — | helper 給新的 `http.2`,下一次 poll provd 換 bind | ⚠️ 待 U5 |
 | 依賴重啟:bluetoothd / dbus | P2 | 不變;BLE 不健康 5 分鐘 → HTTP 備援開 | `prov-http-254` |
 | 依賴重啟:hostapd / `wifi reload`(= `network reload`,F51) | — | 防火牆規則以 port 名前綴判斷,iface 重建後仍有效;上傳中的 reload 被 §3.1.7 擋 | `prov-http-254` |
-| 依賴重啟:firewall reload / restart | — | fw4 重建 `batman_http`(檔案先 flush 自己的表,不重複) | `prov-http-254` |
+| 依賴重啟:firewall reload / restart | — | fw4 重建 `batman_http`(檔案先刪再建兩張表,不重複) | `prov-http-254` |
 | `ruleset-post` 檔載入失敗 | — | 整份 fw4 失敗、沒有防火牆(F70)→ rc 驗收的 `nft -c` 閘門與每次開機的斷言抓到;**`fw-badinclude` 接縫本身會讓那台 bench 節點那次開機沒有防火牆** → 只在非 DUT 節點、經使用者同意、斷開對外網路時跑;還原 = 移除接縫並重開 | `prov-fw-boot-254` |
 | `firewall stop` | — | 表被刪 → helper 不給 `http.2` → provd ≤ 8 s 內不聽 | `prov-http-254` |
 | 平台 bcm2711(Pi 4) | — | 實測 | 全部 |
-| 平台 bcm2710(Pi 3) | — | `batman-slot`、config-save、setkey 兩板共用 → CI 沙箱(P-U14) | CI |
+| 平台 bcm2710(Pi 3) | — | `batman-slot`、config-save、setkey 兩板共用 → CI 沙箱(P-U14);`fw4 print \| nft -c` 閘門要真的 kernel → bcm2710 沒有節點可跑 → 只做 bcm2711,bcm2710 列誠實界線 | CI |
 | 平台 CM4 | — | 開發 Lite / 量產 eMMC(D18);**必須是有無線的型號**;實測與 eMMC 重燒待 CM4 載板 | checklist |
 
 ## 7. 安全
@@ -565,7 +566,7 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | 被入侵的 provd | 改 payload、塞沒列名的 boot 檔、tar 穿越 | Go 白名單解析、先驗簽、只寫列名的檔、讀回以 helper 的 `SHA256SUMS` 為準 | `prov-update-254` 惡意 tar 臂 |
 | 被入侵的 provd | 佔 RAM | 專屬 tmpfs `size=` 上限;窗外 helper 每個 poll 週期刪檔;3A+ 與 2 GB TAK 節點列 checklist | `prov-upload-254` |
 | 被入侵的 provd | 偷換 pending 版本 | prepare / apply body 帶 sha,由 owner-op 綁擁有者同意的版本 | Go |
-| 被入侵的 provd | 自己聽 HTTP | 本來就能(無 netns,> 1024 埠);沒有 PSK 解不開 session、拿不到 owner-op;防火牆仍只收手機 AP port | 誠實界線 |
+| 被入侵的 provd | 自己聽 HTTP | 本來就能(無 netns,> 1024 埠);沒有 PSK 解不開 session、拿不到 owner-op;8095 仍只收從手機 AP port 進來的封包(其他埠不在本規則範圍) | 誠實界線 |
 | 本機非 root | 讀 AP 密碼 | `/etc/config/wireless`、hostapd conf 0644(F34,與現況相同) | 誠實界線 |
 | 本機非 root | 從 cmdline 或 log 讀 AP 密碼 | passphrase 走 stdin(`--ap -`);不進 log | `prov-settings-254`(`/proc/*/cmdline`、logread、helper / provd log、診斷包都不含) |
 | 本機行程(lo)、eth0 / docker0 的 VLAN 封裝 frame | 佔掉 HTTP 的 2 槽 | inet input 只收帶「手機 AP port」標記的封包(F75、F76) | `prov-http-254` 的 lo / VLAN 臂 |
@@ -635,7 +636,7 @@ Go:§3.2 邊界、§3.6、§3.7 每個拒絕分支(mutant)、tar 白名單、版
 - `254-p1-impl.md`:`:465`(admins +1 刪)、`:466`(未知 key 忽略)。
 - `docs/VERSIONS.md`:版本比較規則。
 - 新 `docs/`:說明頁文字(§3.10);release note(`/cgi-bin/bundle` 403、P3 之前的 payload 不能經 app 裝)。
-- 檔案:`halow-setkey`(新旗標 + 說明 + deploy 鏡像);`batman-slot`(`write`、`arm`、`disarm`、`bootcfg-sum`、只複製列名的 boot 檔、`begin_write` 刪 VERIFIED);`batman-config-save`(PRESERVE 加 ssid;ssid 不可存時略過);`joinwatch` / `halow-status`(`verdict_code()`、`join.reason_code`,含 deploy 鏡像);`batman-autocommit`(新鮮度、helper、provd-stable、provd 停用時 WARN);`www/cgi-bin/bundle`(+ deploy 鏡像);`/usr/share/nftables.d/ruleset-post/batman-http.nft`(新,先 flush 自己的表);`batman-provd.init`(tmpfs、rw mount、不疊掛);`build-ab-payload.sh`(順序、`release=`);`release-sign.sh`、`release-endorse.sh`(新);`transfer-flash.ps1` / `.sh`(新,含 `--test-skip-wipe`);tmp-trust allowlist 的新路徑照 #290 走 harness PR。
+- 檔案:`halow-setkey`(新旗標 + 說明 + deploy 鏡像);`batman-slot`(`write`、`arm`、`disarm`、`bootcfg-sum`、只複製列名的 boot 檔、`begin_write` 刪 VERIFIED);`batman-config-save`(PRESERVE 加 ssid;ssid 不可存時略過);`joinwatch` / `halow-status`(`verdict_code()`、`join.reason_code`,含 deploy 鏡像);`batman-autocommit`(新鮮度、helper、provd-stable、provd 停用時 WARN);`www/cgi-bin/bundle`(+ deploy 鏡像);`/usr/share/nftables.d/ruleset-post/batman-http.nft`(新,兩張表先刪再建);`batman-provd.init`(tmpfs、rw mount、不疊掛);`build-ab-payload.sh`(順序、`release=`);`release-sign.sh`、`release-endorse.sh`(新);`transfer-flash.ps1` / `.sh`(新,含 `--test-skip-wipe`);tmp-trust allowlist 的新路徑照 #290 走 harness PR。
 - firmware:`flash.js` 文字 patch;**不加** `kmod-nft-bridge`(F60)。
 
 ## 11. 寫進 #254 checklist(不在本 PR)
@@ -738,3 +739,28 @@ v5 的三個「真機上不成立」都是沒實測的外部行為假設;v6 每�
 | B6 國家測試分辨不出換表 | 使用者決定 D21:不做晶片端實測,寫成界線 |
 | B6 key 20 的 plink 測試 | 改在已入網節點上量;確認 `wifi reload \|\| wifi` 退路沒被觸發(§8) |
 | B6 include 用 delete table、`auto_includes` | 先刪再建;`auto_includes = 0` → 不給 `http.2`(§3.8.1) |
+
+
+## 附錄 D. 凍結後的實作必做清單(v7 審查 MINOR;A7 = `p3-review-v7-A.md`、B7 = `p3-review-v7-B.md`)
+
+每一項在實作 PR 裡修,並附一個「沒修會 FAIL」的測試;H4 照這份寫。動工前要先定的(★)在實作 PR 的第一個 commit 裡寫進 §3。
+
+| # | 項目 | 來源 | 做法 |
+|---|---|---|---|
+| D-1 ★ | VLAN 臂的負對照:單層 VLAN 標籤在進 bridge 前就被剝掉(`dev.c:5528-5531`),v6 舊規則也丟得掉;真正能繞過的是外層 VID 0 的雙層標籤 | B7-m1 | §9-4 探針用 VID 0 / VID 0 雙層,並先證明 v6 規則放行它;F76 改寫 |
+| D-2 ★ | §9-4 探針加看 bridge 鏈的 mark 計數器有增加(證明規則真的執行),並以正向臂證明 AP client 通過;若改用 §9-4 的備案規則 → 備案另做一次短審查,lo 那一列退回誠實界線 | B7 F75、B7-m2、A7-m11 | H4 凍結閘門,附原始輸出 |
+| D-3 | 新共用資源:bit 24 與 `inet batman_http_in` 已列入 §4 / §5.3(v7.1);helper 檢查時順便確認 ruleset 裡沒有別人寫 bit 24 | B7-m3 | 檢查 + lint |
+| D-4 | mesh 臂拆兩臂:偽造手機 MAC 只驗「連不上」(bridge 會把手機 MAC 學到 eth0,擁有者會被斷);「擁有者照樣傳完」改用不複製 MAC 的偽造流量;MAC 偽造造成的 DoS 寫進 §7 誠實界線 | B7-m4 | 改 §8 `prov-http-254` |
+| D-5 ★ | setkey 新旗標的結束碼再細分:settle 逾時、run dir 不能用、`.txn` 存在 → 5(`E_BUSY`)或 12,不是 2 / reason 13 | B7-m5、A7-m6 | 結束碼表 |
+| D-6 ★ | 新卡上「還原也驗證失敗」:專屬結束碼(例如 6)+ 加強處理:再以 `--forget` 式的封鎖把 AP 關掉並驗證不在空中;仍失敗 → CRIT、`status` 回報、reason 13 | B7-m6 | setkey + 測試 |
+| D-7 | SSID 存不了時 `--save` 仍回 rc 6 → key 2 會被一律還原:helper 把「只有 ssid 不可存」的 rc 6 當成功;§3.3 引的 `batman-config-save:478` 行號改正 | B7-m7 | helper + 測試 |
+| D-8 | 非 `phy*` port 的 frame 先清掉 bit 24(防 batman-adv `isolation_mark` 之類先設了這個 bit) | A7-m8 | 規則 + 測試 |
+| D-9 | 「只因新 PRESERVE key 而 stale → 存一次」也在試用轉 committed 時做(sysupgrade 後第一次開機是試用,那次不會存) | B7-m8 | helper |
+| D-10 | 同版本重試又失敗:比對 autocommit.log 新出現的 TRIAL-REVERTED,報 6 而不是 6 + 18;`reboot committed` 失敗時 disarm | B7-m9、A7-m4、A7-m5 | helper + 測試 |
+| D-11 | `/proc/*/cmdline` 取樣測試分不出來(舊的 `uci set` 只存在 1–3 ms)→ 在 prov_test image 用記錄 argv 的 `uci` shim | B7-m10 | 改 §8 |
+| D-12 | §3.4 key 15 加 `uci_staged` 與「SSID 無法保存」;§2 寫兩張表;`update.check` 不拿 `n.mu`(寫明) | B7-m11 | 文字 |
+| D-13 | `phy*` 前提加「AP iface 是 br-ahwlan 的 port」(否則擁有者被默默丟掉、無從診斷) | B7-m12、A7-m9 | helper + `status` 回報 |
+| D-14 | `batman-slot write` 被 TERM 殺掉時 `batman-slot.busy` 留下(busybox ash 非互動的 SIGTERM 不跑 EXIT trap,`ash.c:3707-3742`)→ `batman-slot` 加 `trap 'exit 143' TERM`,或 `.busy` 帶 pid、`otaBusy` 檢查持有者 | A7-m1 | 兩板共用檔 + 測試 |
+| D-15 | bulk tmpfs 掛不上時不得退化成一般目錄(沒有 `size=` 上限)→ init 掛載失敗就不啟動上傳(helper 不開窗);路徑用 lstat、拒絕 `.` / `..` | A7-m2 | init + helper |
+| D-16 | autocommit (a) 加「helper 被停用」的例外(只 WARN) | A7-m3 | autocommit |
+| D-17 | autocommit `health_ok` 加「`inet fw4` 在」:否則帶著壞 include 的簽章 image 會在沒有防火牆的情況下被 commit | A7-m10 | autocommit + `fw-badinclude` 測試 |
