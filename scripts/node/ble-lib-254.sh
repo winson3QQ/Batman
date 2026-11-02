@@ -37,19 +37,34 @@ scratch() {
 
 # lim <secs> <cmd...>: run with a time limit (no `timeout` on the node, E1); a hang is killed and reported — a
 # deadman must never freeze on one stuck tool (2026-10-20: btmgmt hung on stdin=/dev/null inside the deadman)
+# on a timeout the whole process tree goes, children first: killing only "$@" leaves e.g. the bluetoothctl of an
+# `sh -c ': | bluetoothctl …'` holding the caller's $(…) pipe open, and the caller hangs anyway (review B-M2; the
+# test-dv-ble-254 hang case caught it)
+# TERM first, then KILL what is still there 2 s later (a bluetoothctl outside its mainloop may ignore TERM: round-2
+# review B m3; nothing in such a tree holds hardware, so the no-SIGKILL rule does not apply)
+lim_tree() { local _c; for _c in $(grep -l "^PPid:[[:space:]]*$1\$" /proc/[0-9]*/status 2>/dev/null | cut -d/ -f3); do lim_tree "$_c"; done; echo "$1"; }
+lim_kill() { local _ps _q; _ps=$(lim_tree "$1"); kill $_ps 2>/dev/null; sleep 2; for _q in $_ps; do [ -d "/proc/$_q" ] && kill -KILL "$_q" 2>/dev/null; done; return 0; }
+# lim <secs> <cmd...>: returns the moment the command ends (no polling: a 1 s poll added ~1 s to every call — 0.03 s
+# bluetoothctl reads took 1.02 s and pushed helper-stop's L71 timing past 65 s, 04 2026-11-02; the node has neither
+# usleep nor a fractional sleep). A watchdog with no stdout / stderr (it must not hold the caller's $(…) pipe) kills the
+# tree at the deadline (ignoring TERM from then on) and exits 124. When the command ends first, the watchdog's whole
+# tree (its sleep too) is killed — by tree, not by a trap it may not have installed yet (an early TERM left orphan
+# sleeps; a TERM during its kill made it exit 0 and lost the timeout: both seen on 04 with the first version).
 lim() {
-	_t=$1; shift; "$@" & _p=$!; _n=0
-	while [ -d "/proc/$_p" ] && [ $_n -lt "$_t" ]; do sleep 1; _n=$((_n + 1)); done
-	if [ -d "/proc/$_p" ]; then kill "$_p" 2>/dev/null; echo "FAIL timeout after ${_t}s: $*"; return 124; fi
-	wait "$_p"
+	_t=$1; shift; "$@" & _p=$!
+	( exec >/dev/null 2>&1; trap 'exit 0' TERM; sleep "$_t"; trap '' TERM; lim_kill "$_p"; exit 124 ) & _w=$!
+	wait "$_p"; _r=$?
+	kill $(lim_tree "$_w") 2>/dev/null; wait "$_w"; [ $? = 124 ] && { echo "FAIL timeout after ${_t}s: $*"; return 124; }
+	return $_r
 }
 
 # ---- current settings: ONLY the `current settings:` line, as tokens (design §4.3 #2; supported settings: lists all)
 # mgmt.info segfaults now and then too (04, 2026-10-21 02:08: "Segmentation fault", no output -> a false precondition
 # FAIL in the RPA N5b run): read-only, so up to 3 reads; still nothing = unreadable (the caller FAILs)
 settings() {
+	pidof bluetoothd >/dev/null || return 1	# bluetoothctl waits for bluetoothd forever when it is down (04, 2026-11-01)
 	for _i in 1 2 3; do
-		_s=$(bluetoothctl mgmt.info 2>/dev/null | clean | sed -n 's/^[[:space:]]*current settings:[[:space:]]*//p' | head -1)
+		_s=$(lim 10 sh -c ': | bluetoothctl mgmt.info 2>/dev/null' | clean | sed -n 's/^[[:space:]]*current settings:[[:space:]]*//p' | head -1)
 		[ -n "$_s" ] && { echo "$_s"; return 0; }
 	done; return 1
 }
@@ -58,8 +73,9 @@ has_tok() { case " $1 " in *" $2 "*) return 0;; esac; return 1; }
 # 2026-10-20; mgmt.info 0/60) -> up to 3 reads; still nothing = unreadable (the caller FAILs). Read-only, so a retry
 # cannot change what is read.
 adv_instances() {
+	pidof bluetoothd >/dev/null || return 1	# as settings(): no bluetoothd = unreadable, never a hang
 	for _i in 1 2 3; do
-		_a=$(bluetoothctl mgmt.advinfo 2>/dev/null | clean | sed -n 's/^Instances list with \([0-9][0-9]*\) item.*/\1/p' | head -1)
+		_a=$(lim 10 sh -c ': | bluetoothctl mgmt.advinfo 2>/dev/null' | clean | sed -n 's/^Instances list with \([0-9][0-9]*\) item.*/\1/p' | head -1)
 		[ -n "$_a" ] && { echo "$_a"; return 0; }
 	done; return 1
 }
@@ -147,6 +163,86 @@ dm_log() {	# one line on p6 before a deadman reboot (design §4.7): root dir, no
 	echo "$(date) boot=$(bootid | cut -c1-8) run=$1 $2" >> "$DMLOG"; sync
 }
 
+# ---- batman-provd (254-p2-impl §3, L83): provd owns advertising instance 1 while it runs. The harness stops it only
+# under a BLE lease (acquire) and starts it again at release / deadman / recover; whatever may have removed provd.env
+# restarts it (init reads the env only at start). No provd on the image (pre-P2) = nothing to do.
+PROVD_INIT=/etc/init.d/batman-provd
+PROVD_KEYS='^(SOCK_ONLY|FAST_FAKE_DELAY_MS|NO_BRUTE_LIMIT|GATT_ENCRYPT_CTRL|ADV_LEN_TEST)='
+provd_present() { [ -x "$PROVD_INIT" ]; }
+# the jailed provd itself: ujail, its parent, carries the same comm (pidof lists both; 04 wsl.20, 2026-11-01)
+provd_pid() { for _q in $(pidof batman-provd); do [ "$(readlink "/proc/$_q/exe")" = /usr/bin/batman-provd ] && { echo "$_q"; return 0; }; done; }
+provd_stop() { provd_present || return 0; lim 30 "$PROVD_INIT" stop >/dev/null 2>&1; }
+provd_start() { provd_present || return 0; [ -n "$(provd_pid)" ] || lim 30 "$PROVD_INIT" start >/dev/null 2>&1; }
+provd_restart() { provd_present || return 0; lim 30 "$PROVD_INIT" restart >/dev/null 2>&1; }
+# provd_check: running within 15 s, no test switch in its environment, its advertising instance back within 15 s
+provd_check() {
+	provd_present || { echo "PROVD absent"; return 0; }
+	_n=0; _p=; while [ $_n -lt 15 ]; do _p=$(provd_pid); [ -n "$_p" ] && break; sleep 1; _n=$((_n + 1)); done
+	[ -n "$_p" ] || { fail "provd not running 15 s after the restart"; return 1; }
+	if tr '\0' '\n' < "/proc/$_p/environ" 2>/dev/null | grep -q -E "$PROVD_KEYS"; then fail "provd pid $_p still carries a test switch"; return 1; fi
+	_n=0; while [ $_n -lt 15 ]; do [ "$(adv_instances 2>/dev/null)" = 1 ] && { echo "PROVD ok pid=$_p adv=1"; return 0; }; sleep 1; _n=$((_n + 1)); done
+	fail "provd pid $_p: no advertising instance within 15 s"; return 1
+}
+
+# radio_restore: what the H3 judge arms (prov-p2-254.sh) may leave behind if they are cut off before their own
+# restore — a SIGSTOPped helper, dbus / bluetoothd stopped, bondable on, pairable on, hci0 powered off — put back.
+# ONE function for the two callers that need it (review A-M1 / B-M1): the prov deadman (role_fire_restore) and the
+# host's normal release (prov-lease-254.sh radio-restore, from pr_release). Prints one "RESTORED <what>" line per
+# change; "FAIL settings unreadable" when it cannot tell (never a silent skip).
+# H3 judges run as `BATMAN_DV_P2=1 sh -s -- <arm>` (prov-p2-254.sh): their pids, by that environment marker
+p2_judges() {
+	for _q in $(pidof sh); do
+		# not this shell, nor its own subshells ($(...) forks: same marker, parent = $$)
+		[ "$_q" = "$$" ] && continue
+		[ "$(awk '{print $4}' "/proc/$_q/stat" 2>/dev/null)" = "$$" ] && continue
+		tr '\0' '\n' < "/proc/$_q/environ" 2>/dev/null | grep -qx 'BATMAN_DV_P2=1' && echo "$_q"
+	done
+}
+# stop_judges: a judge still running (its ssh cut off) would change things again behind any restore: stop it first —
+# TERM makes it exit through its own EXIT restore; up to 15 s, then KILL (a judge holds no hardware); then SIGCONT a
+# helper it left stopped. The deadman calls this before anything else, also when a restore is in progress (m1).
+stop_judges() {
+	_j=$(p2_judges)
+	if [ -n "$_j" ]; then
+		kill -TERM $_j 2>/dev/null; _n=0
+		while [ $_n -lt 15 ] && [ -n "$(p2_judges)" ]; do sleep 1; _n=$((_n + 1)); done
+		_k=$(p2_judges); [ -n "$_k" ] && kill -KILL $_k 2>/dev/null
+		echo "RESTORED stopped H3 judge(s) $_j${_k:+ (killed $_k)}"
+	fi
+	for _q in $(pidof batman-provhelper); do
+		[ "$(awk '{print $3}' "/proc/$_q/stat" 2>/dev/null)" = T ] && { kill -CONT "$_q"; echo "RESTORED helper $_q SIGCONT"; }
+	done
+	return 0
+}
+radio_restore() {
+	stop_judges
+	# a btmon the H3 units started with setsid from a provclient dir (gatt / rpa capture; the host gone mid-arm): SIGINT
+	for _q in $(pidof btmon); do case "$(readlink "/proc/$_q/exe" 2>/dev/null)" in /tmp/run/batman-dvpc.*/btmon*)
+		kill -INT "$_q"; echo "RESTORED stopped harness btmon $_q" ;; esac; done
+	# a helper the helper-down arm stopped (its restore cut off): start it again
+	pidof batman-provhelper >/dev/null || { [ -x /etc/init.d/batman-provhelper ] && lim 60 /etc/init.d/batman-provhelper start >/dev/null 2>&1; echo "RESTORED helper started"; }
+	pidof dbus-daemon >/dev/null || { lim 60 /etc/init.d/dbus start >/dev/null 2>&1; echo "RESTORED dbus started"; }
+	pidof bluetoothd >/dev/null || { lim 60 /etc/init.d/bluetoothd start >/dev/null 2>&1; sleep 3; echo "RESTORED bluetoothd started"; }
+	if _s=$(settings); then
+		has_tok "$_s" powered || { lim 20 bluetoothctl power on >/dev/null 2>&1; echo "RESTORED hci0 powered on"; }
+		has_tok "$_s" bondable && { lim 20 bluetoothctl mgmt.bondable off >/dev/null 2>&1; echo "RESTORED bondable off"; }
+	else echo "FAIL settings unreadable (bondable / powered not checked)"; fi
+	case "$(lim 10 sh -c ': | bluetoothctl show 2>/dev/null' | clean)" in *"Pairable: yes"*) lim 20 bluetoothctl pairable off >/dev/null 2>&1; echo "RESTORED pairable off" ;; esac
+	return 0
+}
+# (lim runs the command in the background, whose stdin a non-interactive sh points at /dev/null: each bluetoothctl
+# call gets an explicit empty pipe instead — tools here hung on /dev/null, prov-p2-central-254.sh)
+# radio_clean: preflight / judge view of the same resources — FAIL lines for each one left changed
+radio_clean() {
+	_r=0
+	for _q in $(pidof batman-provhelper); do [ "$(awk '{print $3}' "/proc/$_q/stat" 2>/dev/null)" = T ] && { fail "helper $_q is stopped (SIGSTOP)"; _r=1; }; done
+	if _s=$(settings); then
+		has_tok "$_s" powered || { fail "hci0 is powered off"; _r=1; }
+		has_tok "$_s" bondable && { fail "bondable is on"; _r=1; }
+	else fail "settings unreadable"; _r=1; fi
+	return $_r
+}
+
 # ---- state summary (preflight P6 / tier A #5): "STATE ..." lines, "FAIL ..." for anything left behind
 ble_state() {
 	r=0
@@ -163,10 +259,14 @@ ble_state() {
 	done
 	if pidof bluetoothd >/dev/null; then
 		a=$(adv_instances 2>/dev/null); if [ -z "$a" ]; then fail "adv instances not readable (bluetoothctl mgmt.advinfo gave no list in 3 tries)"; r=1
+		elif [ -n "$(provd_pid)" ]; then	# provd running: its own instance, or none (not ready / connected / SOCK_ONLY)
+			[ "$a" -le 1 ] || { fail "leftover: $a advertising instance(s) registered (provd owns at most 1)"; r=1; }
+			echo "STATE adv: $a (provd running)"
 		elif [ "$a" != 0 ]; then fail "leftover: $a advertising instance(s) registered"; r=1; fi
 	else
 		echo "STATE adv: not readable (bluetoothd down)"
 	fi
+	pidof bluetoothd >/dev/null && { radio_clean || r=1; }	# a cut-off H3 arm (review B-M1): SIGSTOPped helper, hci0 off, bondable on
 	[ $r = 0 ] && echo "STATE clean"
 	return $r
 }
@@ -186,7 +286,9 @@ cmd_acquire() {
 		fi
 	fi
 	gc_rundirs
-	lease_write "$RUN_ID" "$1"; dm_arm "$RUN_ID" "$(( $1 + 5 ))" "$SELF"; unlock
+	lease_write "$RUN_ID" "$1"; dm_arm "$RUN_ID" "$(( $1 + 5 ))" "$SELF"
+	[ "$LEASE" = "$BT/lease" ] && provd_stop	# a BLE test owns the radio's advertising from here (the deadman restarts provd)
+	unlock
 	echo "LEASE $RUN_ID until uptime $(( $(up_s) + $1 ))"
 }
 # run dirs of finished runs (no lease of theirs, no live deadman of theirs): printed, then removed (design §4.7)
@@ -213,7 +315,10 @@ cmd_release() {
 	lock 30 || die "BLE lock busy for 30 s"
 	lease_valid_for "$RUN_ID" || { unlock; die "lease is not ours or expired"; }
 	dm_cancel_rec "$ST/dm.new" && dm_cancel_rec "$ST/dm" || { unlock; die "could not cancel the deadman"; }
-	rm -f "$LEASE"; unlock
+	kill_run_groups "$RUN_ID"
+	rm -f "$LEASE"
+	[ "$LEASE" = "$BT/lease" ] && provd_start
+	unlock
 	rm -rf "${BT:?}/$RUN_ID"
 	echo "RELEASED"
 }
@@ -231,6 +336,7 @@ cmd_dm_fire() {
 	[ $mine = 1 ] || { [ $got = 1 ] && unlock; exit 0; }
 	kill_run_groups "$run"
 	role_fire_restore "$run"		# role-specific; may reboot (irk-exposed)
+	provd_start
 	rm -f "$LEASE" "$ST/dm" "$ST/dm.new"
 	[ $got = 1 ] && unlock; exit 0
 }
@@ -243,6 +349,7 @@ cmd_recover() {
 	echo "RECOVER state before: $(ls "$ST" 2>/dev/null | tr '\n' ' ') lease=[$(lease_read)]"
 	rm -f "$BT"/*/*.snoop
 	role_fire_restore recover
+	provd_start
 	rm -f "$BT/lease"; RUN_ID=recover gc_rundirs
 	unlock 2>/dev/null; echo "RECOVERED"; ble_state
 }

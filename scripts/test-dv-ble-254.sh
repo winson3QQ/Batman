@@ -22,11 +22,48 @@ hci0:	Primary controller
 	name BCM2711
 EOF
 mkdir -p "$W/bin"; printf '#!/bin/sh\ncat "%s"\n' "$W/mgmtinfo" > "$W/bin/bluetoothctl"; chmod +x "$W/bin/bluetoothctl"
+# settings() reads only while a bluetoothd runs (bluetoothctl would wait for it forever): a fake pidof says one does
+printf '#!/bin/sh\n[ "$1" = bluetoothd ] && { echo 4242; exit 0; }\nexit 1\n' > "$W/bin/pidof"; chmod +x "$W/bin/pidof"
 o=$(PATH="$W/bin:$PATH" sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; s=\$(settings); has_tok \"\$s\" privacy && echo P; has_tok \"\$s\" bondable && echo B; has_tok \"\$s\" connectable && echo C; has_tok \"\$s\" le && echo L")
 [ "$o" = "$(printf 'P\nL')" ] && tok "settings: current line only; 'le' is a whole token, 'bondable'/'connectable' from 'supported' ignored" || tbad "settings parse gave [$o]"
 sed -i 's/current settings: powered le/current settings: powered bondable le/' "$W/mgmtinfo"
 o=$(PATH="$W/bin:$PATH" sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; has_tok \"\$(settings)\" bondable && echo B")
 [ "$o" = B ] && tok "settings: bondable in the current line is seen" || tbad "bondable in current line missed"
+# no bluetoothd: settings() is unreadable (rc 1, nothing printed) and never calls bluetoothctl
+mkdir -p "$W/nobtd"; printf '#!/bin/sh\nexit 1\n' > "$W/nobtd/pidof"; printf '#!/bin/sh\ntouch "%s"\nsleep 30\n' "$W/called" > "$W/nobtd/bluetoothctl"; chmod +x "$W/nobtd/pidof" "$W/nobtd/bluetoothctl"
+o=$(PATH="$W/nobtd:$PATH" timeout 10 sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; settings; echo rc=\$?")
+[ "$o" = rc=1 ] && [ ! -e "$W/called" ] && tok "settings: no bluetoothd -> rc 1 without calling bluetoothctl" || tbad "settings without bluetoothd gave [$o] called=$([ -e "$W/called" ] && echo yes || echo no)"
+# a wedged bluetoothctl (bluetoothd alive but stuck): settings() gives up — 3 tries of lim 10 — instead of hanging the
+# deadman before it restores provd (review B-M2; main's lib hangs here: the negative control)
+mkdir -p "$W/hang"; printf '#!/bin/sh\n[ "$1" = bluetoothd ] && { echo 4242; exit 0; }\nexit 1\n' > "$W/hang/pidof"; printf '#!/bin/sh\nsleep 120\n' > "$W/hang/bluetoothctl"; chmod +x "$W/hang/pidof" "$W/hang/bluetoothctl"
+t0=$(date +%s); o=$(PATH="$W/hang:$PATH" timeout 60 sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; settings; echo rc=\$?"); t1=$(date +%s)
+case "$o" in *rc=1) [ $((t1 - t0)) -le 45 ] && tok "settings: a hanging bluetoothctl -> rc 1 after $((t1 - t0)) s (no hang)" || tbad "settings with a hanging bluetoothctl took $((t1 - t0)) s" ;; *) tbad "settings with a hanging bluetoothctl: [$o] after $((t1 - t0)) s" ;; esac
+pkill -f "$W/hang/bluetoothctl" 2>/dev/null
+# lim returns when the command ends, not at its next 1 s poll (0.03 s reads took 1.02 s and pushed helper-stop past
+# L71's 65 s, 04 2026-11-02): a 0.3 s command under `lim 10` < 0.8 s; main's polling lim waits for its 1 s poll
+# (the negative control; `true` would end before the first poll and hide it)
+limt(){ dash -c ". '$1'; a=\$(cut -d' ' -f1 /proc/uptime); lim 10 /bin/sleep 0.3; b=\$(cut -d' ' -f1 /proc/uptime); awk -v a=\$a -v b=\$b 'BEGIN{print (b - a < 0.8) ? \"fast\" : \"slow\"}'"; }
+[ "$(limt "$REPO/scripts/node/ble-lib-254.sh")" = fast ] && tok "lim: a 0.3 s command returns in < 0.8 s" || tbad "lim waits for its poll after the command ended"
+if [ -f /home/yello/Batman/scripts/node/ble-lib-254.sh ]; then [ "$(limt /home/yello/Batman/scripts/node/ble-lib-254.sh)" = slow ] && tok "lim negative control: main's polling lim takes >= 0.8 s (the test sees it)" || tbad "lim negative control: main's lim was fast — the test cannot see a polling lim"; fi
+# 02's central watchdog must not keep the session lock (ed0cf33): the REAL line from prov-p2-central-254.sh (270 s ->
+# 3 s) under dash, whose sleep forks like the node's busybox (no ASH_SLEEP; WSL busybox's builtin sleep hides it).
+# A session that ends at once must leave the lock free; the e4efc29 line must not (the negative control).
+if command -v dash >/dev/null && command -v flock >/dev/null; then
+	wd_try(){	# <watchdog line> -> "free" / "held": is the lock free right after a session that ended at once?
+		printf '%s\n' "trap 'kill \"\$WD\" 2>/dev/null' EXIT" "exec 8>'$W/wd.lock'; flock -n 8 || exit 1" "$1" "sleep 1" > "$W/wd.sh"	# a real session runs >= 1 s: the watchdog's sleep is forked by then
+		dash "$W/wd.sh"; sleep 0.5
+		dash -c "exec 8>'$W/wd.lock'; flock -n 8" && echo free || echo held
+		sleep 4	# let the old line's orphan sleep end before the next case
+	}
+	new=$(grep '^( exec 8>&-; sleep 270' "$REPO/scripts/node/prov-p2-central-254.sh" | sed 's/sleep 270/sleep 3/')
+	[ -n "$new" ] || tbad "watchdog: the line was not found in prov-p2-central-254.sh"
+	[ "$(wd_try "$new")" = free ] && tok "central watchdog: the lock is free right after the session (dash, forking sleep)" || tbad "central watchdog keeps 02's lock after the session"
+	[ "$(wd_try '( sleep 3; kill -TERM 0 ) & WD=$!')" = held ] && tok "central watchdog negative control: the e4efc29 line keeps the lock (the test sees it)" || tbad "watchdog negative control: the e4efc29 line left the lock free — the test cannot see the bug"
+else tbad "watchdog test needs dash and flock on the host"; fi
+# the helper-down backoff judge on real and broken sequences (tests/judges/helper-down-backoff.py)
+o=$(python3 "$REPO/tests/judges/helper-down-backoff.py" "$REPO/scripts/node/prov-p2-254.sh" 2>&1) && tok "helper-down backoff judge: 7 sequences judged as expected" || tbad "helper-down backoff judge: $(grep FAIL <<< "$o" | head -3 | tr '\n' '|')"
+# the H3 review fixes' negative controls: pr_release / pxok / L71 flip end line / bond_verdict (tests/judges/h3-judges.sh)
+o=$(REPO=$REPO bash "$REPO/tests/judges/h3-judges.sh" 2>&1) && tok "h3 judges: $(tail -1 <<< "$o")" || tbad "h3 judges: $(grep '^FAIL' <<< "$o" | head -3 | tr '\n' '|')"
 
 # ---------------------------------------------------------------- 2. btmon judge (node awk) on fixtures
 judge() { RUN_ID=x sh "$REPO/scripts/node/ble-periph-254.sh" judge; }

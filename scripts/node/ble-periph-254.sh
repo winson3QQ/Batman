@@ -42,6 +42,7 @@ cmd_info() {
 cmd_adv_on() {	# <name> [connectable]
 	held; [ -n "${1:-}" ] || die "usage: adv-on <name> [connectable]"
 	c=""; [ "${2:-}" = connectable ] && c="-c"
+	[ -z "$(provd_pid)" ] || { unlock; die "batman-provd is running (instance 1 is its own): acquire stops it"; }
 	mg rm-adv 1 >/dev/null
 	o=$(mg add-adv $c -g -u 181c -d "$(ad_name "$1")" 1)
 	case "$o" in *"nstance added"*|*"Instance: 1"*) ;; *) unlock; die "add-adv failed: $o";; esac
@@ -126,6 +127,27 @@ cmd_btmon_dump_masked() {	# fixture capture (§4.7): headers, event names, Reaso
 }
 cmd_snoop_clean() { held; rm -f "$DIR"/*.snoop; unlock; echo "SNOOP cleaned"; }
 
+# white-box (prov-sec-bond, h23 §6.3 / v5 B-m12): a bluetoothctl agent (NoInputNoOutput, default) on 04 that accepts
+# every Just Works pairing. A process group of this run (the deadman's kill_run_groups and release stop it); marks
+# irk-exposed (a pairing that succeeds may hand out keys) so the deadman reboots unless rekey-verified ran.
+cmd_agent_on() {
+	held; [ -z "$(provd_pid)" ] || { unlock; die "batman-provd is running: acquire stops it"; }
+	[ -f "$BT/$RUN_ID/agent.pg" ] && { unlock; die "an agent of this run is already up"; }
+	mark_set irk-exposed "$RUN_ID"; o="$BT/$RUN_ID/agent.out"; rm -f "$o"
+	# bluetoothctl's agent asks "Accept pairing (yes/no)" even as NoInputNoOutput; nobody answering held the pairing
+	# (04, 2026-11-01): a yes every 2 s ("Invalid command" when nothing asks) makes it the accepting agent the flip needs
+	bg_start agent sh -c '{ echo "agent NoInputNoOutput"; sleep 2; echo default-agent; while :; do sleep 2; echo yes; done; } | bluetoothctl > "$0" 2>&1' "$o" || { unlock; exit 1; }
+	n=0; while [ $n -lt 10 ] && ! clean < "$o" 2>/dev/null | grep -q 'Default agent request successful'; do sleep 1; n=$((n + 1)); done
+	unlock
+	clean < "$o" | grep -q 'Default agent request successful' || die "agent: no 'Default agent request successful' in 10 s: $(clean < "$o" | tail -3 | tr '\n' '|')"
+	echo "AGENT on (NoInputNoOutput, default; irk-exposed marked)"
+}
+cmd_agent_off() {
+	held; bg_stop agent || { unlock; die "the agent group did not exit"; }; rm -f "$BT/$RUN_ID/agent.out"; unlock
+	n=$(pgrep -f '^bluetoothctl$' 2>/dev/null | wc -l)
+	echo "AGENT off (bluetoothctl processes left: $n)"
+}
+
 btmon_judge() {	# btmon -r text -> verdict lines. Sections (6-space indent) decide what a deeper line belongs to:
 	# only SMP sections, LE (Enhanced) Connection Complete and Disconnect Complete are judged; ATT / L2CAP / other
 	# LE subevents are not part of the verdict. UNPARSED = unknown lines INSIDE a judged section (design §4.7).
@@ -168,7 +190,7 @@ btmon_judge() {	# btmon -r text -> verdict lines. Sections (6-space indent) deci
 
 role_fire_restore() {	# deadman on 04: stop recorders, drop snoops + adv; leaked IRK => reboot (H-U6), else restore
 	rm -f "$BT/$1"/*.snoop
-	lim 20 bm rm-adv 1 >/dev/null 2>&1
+	[ -n "$(provd_pid)" ] || lim 20 bm rm-adv 1 >/dev/null 2>&1	# never provd's instance
 	if mark_here irk-exposed; then
 		dm_log "$1" "deadman: IRK was exposed and not verified as voided — reboot (H-U6)"
 		rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"
@@ -205,6 +227,8 @@ case "$c" in
 	btmon-stop) cmd_btmon_stop "$@" ;;
 	btmon-dump-masked) cmd_btmon_dump_masked "$@" ;;
 	snoop-clean) cmd_snoop_clean ;;
+	agent-on) cmd_agent_on ;;
+	agent-off) cmd_agent_off ;;
 	canary) cmd_canary ;;
 	*) die "unknown command [$c]" ;;
 esac

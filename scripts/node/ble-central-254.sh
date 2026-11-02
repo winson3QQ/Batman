@@ -62,9 +62,11 @@ cmd_sample() {
 	for x in $seen; do echo "SEEN $x"; done
 }
 
-# round <label> <sc on|off> <bondable on|off> <name> <periph public addr>: one pairing attempt (design §4.5 step 3)
+# round <label> <sc on|off> <bondable on|off> <name> <periph public addr> [confirm]: one pairing attempt (design §4.5
+# step 3). confirm (prov-sec-bond's flip only): 02 answers its own "Accept pairing (yes/no)" with yes — without it
+# 02 never confirms an SC Just Works pairing (04, 2026-11-01: the prompt stood unanswered)
 cmd_round() {
-	held; L=$1 SC=$2 BO=$3 NM=$4 PUB=$5; unlock
+	held; L=$1 SC=$2 BO=$3 NM=$4 PUB=$5 CF=${6:-}; unlock
 	F="$DIR/round-$L.fifo"; LOG="$DIR/round-$L.log"; rm -f "$F" "$LOG"; mkfifo -m 600 "$F"
 	bg_start "keep-$L" sh -c "exec sleep 600 > '$F'" || die "keeper"
 	bg_start "ctl-$L" sh -c "bluetoothctl < '$F' 2>&1 | while IFS= read -r l; do echo \"\$(cut -d. -f1 /proc/uptime) \$l\"; done > '$LOG'" || die "session"
@@ -73,7 +75,8 @@ cmd_round() {
 	s "scan on"; sleep 10; s "scan off"; sleep 2
 	A=$(clean < "$LOG" | sed -n "s/.*\[NEW\] Device \([0-9A-F:]\{17\}\) $NM\$/\1/p" | tail -1)
 	if [ -z "$A" ]; then s quit; sleep 1; bg_stop "ctl-$L"; bg_stop "keep-$L"; rm -f "$F"; echo "ROUND $L INVALID no-target"; return 0; fi
-	s "mgmt.info"; sleep 2; s "mgmt.pair -c 3 -t 2 $A"; sleep 25
+	s "mgmt.info"; sleep 2; s "mgmt.pair -c 3 -t 2 $A"
+	if [ "$CF" = confirm ]; then for _y in 1 2 3 4 5; do sleep 3; s yes; done; sleep 10; else sleep 25; fi
 	s "devices"; sleep 1; s quit; sleep 1
 	bg_stop "ctl-$L"; bg_stop "keep-$L"; rm -f "$F"
 	C=$(clean < "$LOG")

@@ -72,6 +72,10 @@ d=$(cat "$ST/dv-prov-dirty" 2>/dev/null); [ -n "$d" ] && no "dv-prov-dirty [$d]:
 n=$(cat "$ST/dv-prov-normalising" 2>/dev/null); [ -n "$n" ] && no "dv-prov-normalising [$n]: pr_normalise was interrupted — check the slots, then rm $ST/dv-prov-normalising"
 b=$(awk 'index($4, "/batman-dv/wbox/") {print $5}' "$MI" | tr '\n' ' '); [ -n "$b" ] && no "harness bind mounts left: $b (prov-wbox-254.sh unbind-all)"
 [ -e "$KPD" ] && no "the killpoint dir $KPD exists (left behind by a prov run)"
+# provd reads provd.env only at start: removing the dir does not take a switch away (254-p2-impl L83)
+if [ -z "$P9R" ]; then for p in $(pidof batman-provd); do
+	tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | grep -q -E '^(SOCK_ONLY|FAST_FAKE_DELAY_MS|NO_BRUTE_LIMIT|GATT_ENCRYPT_CTRL|ADV_LEN_TEST)=' && no "batman-provd pid $p runs with a prov_test switch from an earlier run: /etc/init.d/batman-provd restart"
+done; fi
 [ -f $P9R/opt/batdata/dv-prov/ch1-deadman.sh ] && no "chain-1 dead-man left on p6 (/opt/batdata/dv-prov/ch1-deadman.sh)"
 bs=$(cat "$ST/bad-slot" 2>/dev/null); [ -n "$bs" ] && no "bad-slot [$bs] — $(case "$bs" in *wbox*) echo "a reverted wbox trial: rm $ST/bad-slot after checking";; *) echo "may be a normalise residue; check, then rm $ST/bad-slot";; esac)"
 for f in $(ls -d $P9R/tmp/run/batman-dv/*/rbarm.pid $P9R/tmp/run/batman-dv/*/rbfix.pid 2>/dev/null); do alive "$(cat "$f")" && no "a rollback arm is still running ($f pid $(cat "$f"))"; done

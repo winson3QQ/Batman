@@ -1,0 +1,281 @@
+#!/bin/bash
+# scripts/dv/prov-provd-254.sh <unit> — #254 H3 tier-A units of batman-provd on 04 (docs/design/254-h23-harness.md §6.3,
+# 254-p2-impl.md §5 / §9 / §20 / §21). The node judge is scripts/node/prov-p2-254.sh (sent behind ble-lib-254.sh); 02 is
+# the BLE central (scripts/node/prov-p2-central-254.sh), aimed at 04 by the last 4 hex digits of 04's serial (STATUS
+# key 5; every P2 node advertises the same UUID — review A-M6 / B-M4) and backed by a 04-side witness (04's own log /
+# instance count). Everything, 02's reads included, runs under a prov lease of this run; each arm puts back what it
+# changes, and pr_release + the lease deadman run radio_restore behind it. No reboot, no p5 / slot write.
+# Needs a P2 image (provd) committed on 04; the release image for the environ assertion.
+#   boot-provd   judge `boot`; 02 finds 04 by UUID + last4, no name, reads CTRL = {1:1,2:0,3:244,4:8192} and a STATUS
+#                map carrying key 5 = 04's last4, not paired; a held link withdraws ("withdrawn reason=connect",
+#                0 instances on 04), dropping it registers again ("registered reason=disconnect"); judge `stop` (L2
+#                latch) and `flip` (L67)
+#   respawn      judge `respawn` (L8) with info.state the same before / after; L80 arm 1 with its control: 02 holds a link
+#                and keeps it 15 s with provd untouched (control), then provd is killed -> the new provd logs
+#                "disconnected 1 stale link(s)" and 02 sees Connected=no <= 15 s (02's clock); one instance afterwards
+#   dep-restart  judge dep-helper, dep-bluetoothd / dep-bluetoothd-kill / dep-dbus (with btmon: p2 §22.3 T4–T6, D3c),
+#                sockdir-missing (L77), helper-stop (L71 SIGSTOP row), helper-down (provd's helper backoff), dep-power / power-bondable / power-provdkill
+#                (L84 / L85 / L87, p2 §21.5 T1–T3). btmon = the harness's copy ~/batman-dv-tools/bluez-5.72, pushed with
+#                its sha. On wsl.20 (no D3b / D3c) the btmon assertions FAIL: those runs are the negative controls.
+#   sec-dbus     the policy of user provd (firmware bluetooth.conf, p2 §4.7) with dbus-send (the harness's copy,
+#                scripts/dv-dbus-tools.sh; F16) run as 471 by `provclient exec`: root Introspect + root Properties.Get
+#                work; 471 Properties.Get Adapter1.Powered works (positive control); 471 AccessDenied for
+#                AgentManager1.RegisterAgent / RequestDefaultAgent, Properties.Set Pairable, Device1.Pair, Adapter1.
+#                StartDiscovery / RemoveDevice, Introspect (F16), org.freedesktop.DBus.UpdateActivationEnvironment; a
+#                policy that let Set Pairable through is undone by pr_release's radio_restore (pairable off)
+#                tier B (02 connected, h23 §6.3): bluetoothd's call into provd answers (02's GATT read of CTRL = a
+#                ReadValue bluetoothd sends provd under the root policy's send_interface lines); 471 Device1.Disconnect
+#                of the device 02 holds -> method return and 02 sees the link drop; root RegisterAgent -> method
+#                return, and the agent is gone with its dbus-send connection (UnregisterAgent from a new one ->
+#                DoesNotExist), so nothing is left registered
+#   rpa          (~50 min, tier B; h23 §6.3 ble-rpa-254 provd mode, stage1 F28) provd restarted, nothing else touched:
+#                provd re-registers by itself with reason=rpa_timeout 930-1020 s after its previous registration
+#                (bluez.go rpaBase 900 s + jitter 30-120); 02 scans every ~45 s. Three states: no re-registration ->
+#                the same RPA; a re-registration < 900 s after the RPA changed (02 connects 300 s after the first
+#                rpa_timeout: reason=connect / disconnect) -> the same RPA; rpa_timeout (>= 900 s) -> a new RPA. 04's
+#                btmon (-t: the node clock, as logread) aligns them: every LE Set (Advertising Set) Random Address
+#                follows a registration within 5 s, each rpa_timeout one has one, the disconnect one has none. 04's
+#                public address is never seen. No rm-adv in provd mode (p2 §9).
+# Prints "UNIT prov-<unit>-254 PASS|FAIL|INVALID".
+set -u
+U=${1:-}; case "$U" in boot-provd|respawn|dep-restart|sec-dbus|rpa) ;; *) echo "usage: prov-provd-254.sh boot-provd|respawn|dep-restart|sec-dbus|rpa"; exit 2 ;; esac
+PR_UNIT=prov-$U-254
+# shellcheck source=scripts/dv/prov-254.sh
+. "$(dirname "$0")/prov-254.sh"
+P2J="$REPO/scripts/node/prov-p2-254.sh"; P2C="$REPO/scripts/node/prov-p2-central-254.sh"
+DBT=${DV_DBUS_TOOLS:-$HOME/batman-dv-tools/dbus}; BTT=${DV_BT_TOOLS:-$HOME/batman-dv-tools/bluez-5.72}
+# j <arm> [arg] [ssh limit s]: the judge on 04; PASS / FAIL lines become this unit's
+j(){
+	local o l
+	o=$(cat "$REPO/scripts/node/ble-lib-254.sh" "$P2J" | timeout "${3:-600}" ssh $SSHO root@$NODE BATMAN_DV_P2=1 sh -s -- "$1" ${2:+"$2"} 2>&1 | tr -d '\r')
+	while IFS= read -r l; do case "$l" in
+		PASS\ *) ok "$1: ${l#PASS }" ;; FAIL\ *) no "$1: ${l#FAIL }" ;; INVALID\ *) inv "$1: ${l#INVALID }" ;; INFO\ *) say "$1: ${l#INFO }" ;; esac
+	done <<< "$o"
+	grep -q "^PROV-P2 $1 fails=" <<< "$o" || no "$1: the judge did not finish ($(tail -2 <<< "$o" | tr '\n' '|'))"
+}
+c02(){ timeout 300 ssh $SSHO root@$PEER sh -s -- "$@" < "$P2C" 2>&1 | tr -d '\r'; }
+# provd log lines after the latest host marker (hmark): counts over the whole ring stop growing once it wraps (04,
+# 2026-11-01: "04 logged no connection" after dep-restart had filled it)
+hmark(){ HM="h-$RUN-$(date +%s%N)"; q "logger -t batman-dv-p2 mark $HM"; }
+plog(){ qr "logread | sed -n '/batman-dv-p2: mark $HM\$/,\$p' | grep -c 'batman-provd\[[0-9]*\]: provd: $1'"; }
+ninst(){ qr "bluetoothctl mgmt.advinfo 2>/dev/null | sed -n 's/^Instances list with \([0-9]*\) item.*/\1/p' | head -1"; }
+# 04's STATUS key 5: the last 4 hex digits of its serial (provd server.go Status: deviceID = hex(sn), sn = 9 bytes)
+LAST4=""
+last4(){ LAST4=$(qr 'tr -d "\n" < /etc/batman-prov/identity/sn | tail -c 4'); case "$LAST4" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;; esac; no "04's serial last4 unreadable [$LAST4]"; return 1; }
+k5(){ printf '0564%s' "$(printf '%s' "$1" | od -An -tx1 | tr -d ' \n')"; }   # CBOR key 5 = text(4) <last4>
+# hold02: 02 connects to 04 and keeps the link up (the central retries its own connects); prints the address;
+# rc 1 = no link (INVALID for the caller: a precondition, not a verdict)
+hold02(){ local o a i; for i in 1 2; do o=$(c02 hold "$LAST4"); say "02 hold: $o" >&2; a=$(sed -n 's/^HELD \([^ ]*\) connected=yes$/\1/p' <<< "$o")
+	[ -n "$a" ] && { echo "$a"; return 0; }; a=$(sed -n 's/^HELD \([^ ]*\) .*/\1/p' <<< "$o"); [ -n "$a" ] && c02 drop "$a" >/dev/null; done; return 1; }
+# the jailed provd only (its ujail parent has the same comm)
+KILLPROVD='for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && kill -9 $x; done'
+# PR_BEGUN only once the lease is ours: a failed acquire (another lease live) must not run pr_release (review A-M1)
+lease(){ pr_lock; trap 'pr_on_exit' EXIT; PR_DEADLINE=$(( $(mono) + $1 )); local o; o=$(pr_acquire "$1") || { echo "$o"; no "lease"; pr_result; exit 1; }; PR_BEGUN=1; }
+ver=$(qr 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build'); say "04 runs $ver"
+[ -n "$ver" ] || { no "04 unreachable (no BATMAN_VERSION)"; pr_result; exit 1; }
+[ "$(qr '[ -x /etc/init.d/batman-provd ] && echo yes || echo no')" = yes ] || { no "no batman-provd on 04 ($ver): a pre-P2 image"; pr_result; exit 1; }
+
+case "$U" in
+boot-provd)
+	lease 1500
+	# the release image only: the boot judge only notes (INFO) a prov_test init, which a wbox image has (review B minor)
+	[ "$(qr 'grep -q provd.env /etc/init.d/batman-provd && echo test || echo release')" = release ] || no "04 runs a prov_test (wbox) init — boot-provd judges the release image"
+	j boot
+	last4 || { pr_release; pr_result; exit 1; }
+	hmark; c0=$(plog 'adv withdrawn reason=connect')
+	o=$(c02 read "$LAST4"); echo "$o" | sed 's/^/    /'
+	cv=$(sed -n 's/^CTRL //p' <<< "$o"); sv=$(sed -n 's/^STATUS //p' <<< "$o"); nm=$(sed -n 's/^NAME //p' <<< "$o"); a=$(sed -n 's/^ADDR //p' <<< "$o")
+	if [ -z "$a" ]; then inv "02 could not read 04 (no advertiser with key 5 = $LAST4 / reads failed): $(echo $o)"
+	else
+		[ "$(plog 'adv withdrawn reason=connect')" -gt "$c0" ] && ok "04 logged the connection 02 made for the read (the link was to 04)" || no "04 logged no connection while 02 read [$a] — 02 read another node?"
+		ok "02 found 04 by UUID + last4 $LAST4 at $a ($(sed -n 's/^ADVERTISERS //p' <<< "$o") advertiser(s) of the UUID in range)"
+		# the name 02 shows is BlueZ's per-address cache of the GAP name from an earlier connection (the RPA is kept 900 s):
+		# not evidence about the advertisement — that is judged on 04 itself (judge adv-data below)
+		say "02's name for 04: [$nm] before connecting, GAP Device Name [$(sed -n 's/^GAPNAME //p' <<< "$o")] after (GATT, main.conf Name; recorded only)"
+		[ "$cv" = a4010102000318f404192000 ] && ok "02 read CTRL {1:1,2:0,3:244,4:8192} with no pairing" || no "CTRL [$cv]"
+		case "$sv" in a5*"$(k5 "$LAST4")"*) ok "02 read STATUS with no pairing: a 5-entry map with key 5 = $LAST4 ($sv)" ;; *) no "STATUS [$sv] (want a 5-entry map with key 5 = $LAST4: $(k5 "$LAST4"))" ;; esac
+		[ "$(sed -n 's/^PAIRED //p' <<< "$o")" = no ] && ok "02 not paired after the reads" || no "02 paired [$(sed -n 's/^PAIRED //p' <<< "$o")]"
+	fi
+	hmark; wc0=$(plog 'adv withdrawn reason=connect'); rd0=$(plog 'adv registered reason=disconnect')   # taken right before the hold (review B-m2)
+	if a=$(hold02); then
+		sleep 3
+		[ "$(plog 'adv withdrawn reason=connect')" -gt "$wc0" ] && ok "a held link withdrew the advertisement (reason=connect)" || no "no 'adv withdrawn reason=connect' while 02 holds a link"
+		n=$(ninst); [ "$n" = 0 ] && ok "0 advertising instances on 04 while connected" || no "$n advertising instance(s) while connected"
+		rd0=$(plog 'adv registered reason=disconnect'); o=$(c02 drop "$a"); sleep 5
+		[ "$(plog 'adv registered reason=disconnect')" -gt "$rd0" ] && ok "dropping the link registered again (reason=disconnect)" || no "no 'adv registered reason=disconnect' after the drop"
+	else inv "02 could not hold a link to 04 — the connect / withdraw checks did not run"; fi
+	# what provd advertises, from 04's own HCI traffic (btmon, the harness's copy)
+	if [ -f "$BTT/btmon" ] && pr_pc_place; then
+		scp -q $SSHO "$BTT/btmon" root@$NODE:$PCD/btmon.up && q "mv $PCD/btmon.up $PCD/btmon && chmod 0700 $PCD/btmon"
+		if [ "$(qr "sha256sum < $PCD/btmon | cut -c1-64")" = "$(awk '{sub(/^\*/, "", $2)} $2 == "btmon" {print $1}' "$BTT/SHA256SUMS")" ]; then j adv-data "$PCD/btmon" 120
+		else no "btmon sha on 04"; fi
+	else no "no btmon in $BTT / provclient dir not placed — the advertising data was not checked"; fi
+	j stop
+	j flip
+	pr_release ;;
+respawn)
+	lease 1500
+	last4 || { pr_release; pr_result; exit 1; }
+	pr_pc_place || { pr_release; pr_result; exit 1; }
+	i0=$(timeout 60 ssh $SSHO root@$NODE "$PCD/provclient node info" 2>&1 | tr -d '\r' | grep '^RESULT info.state')
+	j respawn
+	i1=$(timeout 60 ssh $SSHO root@$NODE "$PCD/provclient node info" 2>&1 | tr -d '\r' | grep '^RESULT info.state')
+	[ -n "$i0" ] && [ "$i0" = "$i1" ] && ok "info.state unchanged by the kills ($i1)" || no "info.state before [$i0] after [$i1]"
+	# L80 arm 1 + its control (review A-M5 / B-M3): untouched, the link stays 15 s; killed, the new provd's inventory drops it
+	if a=$(hold02); then
+		o=$(c02 watch "$a" 15); say "control (provd untouched): $o"
+		if grep -q '^STILL' <<< "$o"; then ok "L80 control: with provd untouched 02's link stays up 15 s"
+			if a=$(hold02); then
+				hmark; d0=$(plog 'disconnected [0-9]* stale link'); q "$KILLPROVD"
+				o=$(c02 watch "$a" 30); say "after the kill: $o"; n=$(sed -n 's/^GONE .* after \([0-9]*\) s.*/\1/p' <<< "$o")
+				[ -n "$n" ] && [ "$n" -le 15 ] && ok "L80: 02 saw Connected=no $n s after the kill (02's clock, <= 15)" || no "L80: [$o] (want GONE <= 15 s)"
+				t=0; while [ $t -lt 10 ] && [ "$(plog 'disconnected [0-9]* stale link')" = "$d0" ]; do sleep 2; t=$((t + 1)); done
+				[ "$(plog 'disconnected [0-9]* stale link')" -gt "$d0" ] && ok "L80: the new provd logged '$(qr "logread | grep 'batman-provd\[' | grep 'stale link' | tail -1" | sed 's/.*provd: //')'" || no "L80: the new provd logged no 'disconnected <n> stale link(s)' — the link went down some other way"
+				sleep 5; n=$(ninst); [ "$n" = 1 ] && ok "L80: one instance afterwards" || no "L80: $n instance(s) afterwards"
+			else inv "L80: 02 could not hold the second link — the arm did not run"; fi
+		else inv "L80 control: the link went down with provd untouched ($o) — the arm cannot tell the cause"; fi
+	else inv "L80: 02 could not hold a link to 04 — the arm did not run"; fi
+	pr_release ;;
+dep-restart)
+	lease 900
+	[ -f "$BTT/btmon" ] && (cd "$BTT" && sha256sum -c --quiet --ignore-missing SHA256SUMS) >/dev/null 2>&1 || { no "no verified btmon in $BTT (scripts/dv-bt-tools.sh)"; pr_release; pr_result; exit 1; }
+	pr_pc_place || { pr_release; pr_result; exit 1; }
+	scp -q $SSHO "$BTT/btmon" root@$NODE:$PCD/btmon.up && q "mv $PCD/btmon.up $PCD/btmon && chmod 0700 $PCD/btmon" || { no "btmon upload"; pr_release; pr_result; exit 1; }
+	[ "$(qr "sha256sum < $PCD/btmon | cut -c1-64")" = "$(awk '{sub(/^\*/, "", $2)} $2 == "btmon" {print $1}' "$BTT/SHA256SUMS")" ] || { no "btmon sha on 04"; pr_release; pr_result; exit 1; }
+	# arm | arg | its worst case (s): the lease is renewed to that + 120 before each arm, the ssh limit is that + 60
+	# the list on fd 3: an ssh inside the loop (pr_lease_renew, j) would read fd 0 and eat the rest of it
+	while IFS='|' read -r x arg w <&3; do
+		[ -n "$x" ] || continue
+		pr_lease_renew +$((w + 120)) >/dev/null || { no "lease renew before $x"; break; }
+		j "$x" "$arg" $((w + 60))
+	done 3<<< "dep-helper||140
+dep-bluetoothd|$PCD/btmon|120
+dep-bluetoothd-kill|$PCD/btmon|120
+dep-dbus|$PCD/btmon|200
+sockdir-missing||120
+helper-stop||120
+helper-down||140
+dep-power|$PCD/btmon|160
+power-bondable|$PCD/btmon|160
+power-provdkill|$PCD/btmon|120"
+	pr_release ;;
+sec-dbus)
+	[ -f "$DBT/dbus-send" ] && (cd "$DBT" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1 || { no "no verified dbus-send in $DBT (run scripts/dv-dbus-tools.sh in WSL)"; pr_result; exit 1; }
+	lease 1500
+	pr_pc_place || { pr_release; pr_result; exit 1; }
+	scp -q $SSHO "$DBT/dbus-send" root@$NODE:$PCD/dbus-send.up && q "mv $PCD/dbus-send.up $PCD/dbus-send && chmod 0755 $PCD/dbus-send" || { no "dbus-send upload"; pr_release; pr_result; exit 1; }
+	[ "$(qr "sha256sum < $PCD/dbus-send | cut -c1-64")" = "$(awk '{sub(/^\*/, "", $2)} $2 == "dbus-send" {print $1}' "$DBT/SHA256SUMS")" ] || { no "dbus-send sha on 04"; pr_release; pr_result; exit 1; }
+	DS="$PCD/dbus-send --system --print-reply --reply-timeout=5000"
+	as471(){ timeout 30 ssh $SSHO root@$NODE "$PCD/provclient node exec $DS $*" 2>&1 | tr -d '\r'; }
+	o=$(qr "$DS --dest=org.bluez / org.freedesktop.DBus.Introspectable.Introspect 2>&1 | head -3")
+	grep -q 'string "<!DOCTYPE' <<< "$o" && ok "root Introspect works (the dbus-send copy runs on 04)" || { no "root Introspect: $o"; pr_release; pr_result; exit 1; }
+	o=$(qr "$DS --dest=org.bluez /org/bluez/hci0 org.freedesktop.DBus.Properties.Get string:org.bluez.Adapter1 string:Powered 2>&1")
+	grep -q 'variant *boolean' <<< "$o" && ok "root Properties.Get works (control for the 471 call)" || no "root Properties.Get: $o"
+	o=$(as471 --dest=org.bluez /org/bluez/hci0 org.freedesktop.DBus.Properties.Get string:org.bluez.Adapter1 string:Powered)
+	grep -q 'variant *boolean' <<< "$o" && ok "471 Properties.Get Adapter1.Powered allowed (positive control: $(grep -o 'boolean [a-z]*' <<< "$o"))" || no "471 Properties.Get: $o"
+	deny(){	# <label> <dbus-send args>
+		local l=$1 o; shift; o=$(as471 "$@")
+		grep -q 'org.freedesktop.DBus.Error.AccessDenied' <<< "$o" && ok "471 $l -> AccessDenied" || no "471 $l: [$(head -2 <<< "$o" | tr '\n' ' ')] (want AccessDenied)"
+	}
+	deny AgentManager1.RegisterAgent --dest=org.bluez /org/bluez org.bluez.AgentManager1.RegisterAgent objpath:/dv/agent string:NoInputNoOutput
+	deny AgentManager1.RequestDefaultAgent --dest=org.bluez /org/bluez org.bluez.AgentManager1.RequestDefaultAgent objpath:/dv/agent
+	deny "Properties.Set Pairable" --dest=org.bluez /org/bluez/hci0 org.freedesktop.DBus.Properties.Set string:org.bluez.Adapter1 string:Pairable variant:boolean:true
+	deny Device1.Pair --dest=org.bluez /org/bluez/hci0/dev_00_00_00_00_00_00 org.bluez.Device1.Pair
+	deny Adapter1.StartDiscovery --dest=org.bluez /org/bluez/hci0 org.bluez.Adapter1.StartDiscovery
+	deny Adapter1.RemoveDevice --dest=org.bluez /org/bluez/hci0 org.bluez.Adapter1.RemoveDevice objpath:/org/bluez/hci0/dev_00_00_00_00_00_00
+	deny "Introspect (F16)" --dest=org.bluez / org.freedesktop.DBus.Introspectable.Introspect
+	deny DBus.UpdateActivationEnvironment --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.UpdateActivationEnvironment dict:string:string:DV,1
+	# ---- tier B (02 connected)
+	if last4; then
+		o=$(c02 read "$LAST4"); say "02 read: $(tr '\n' ' ' <<< "$o")"; cv=$(sed -n 's/^CTRL //p' <<< "$o")
+		[ -n "$cv" ] && ok "bluetoothd -> provd: 02's GATT read of CTRL answered ($cv)" || no "bluetoothd -> provd: 02 read of CTRL: [$(tr '\n' ' ' <<< "$o")]"
+		if a=$(hold02); then
+			x=$(qr 'bluetoothctl devices Connected 2>/dev/null' | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^Device \([0-9A-F:]\{17\}\).*/\1/p' | head -1)
+			if [ -n "$x" ]; then
+				o=$(as471 --dest=org.bluez "/org/bluez/hci0/dev_${x//:/_}" org.bluez.Device1.Disconnect)
+				grep -q '^method return' <<< "$o" && ok "471 Device1.Disconnect $x -> method return (allowed: provd's L80 path)" || no "471 Device1.Disconnect $x: [$(head -2 <<< "$o" | tr '\n' ' ')]"
+				o=$(c02 watch "$a" 15); say "02 after the 471 Disconnect: $o"
+				grep -q '^GONE ' <<< "$o" && ok "the link really dropped: $o" || no "02 still connected after the 471 Disconnect: $o"
+			else no "04 lists no connected device while 02 holds [$a]"; c02 drop "$a" >/dev/null; fi
+		else no "02 could not hold a link to 04"; fi
+	fi
+	o=$(qr "$DS --dest=org.bluez /org/bluez org.bluez.AgentManager1.RegisterAgent objpath:/dv/agent string:NoInputNoOutput 2>&1")
+	grep -q '^method return' <<< "$o" && ok "root RegisterAgent -> method return (the 471 deny is policy, not a broken call)" || no "root RegisterAgent: [$o]"
+	o=$(qr "$DS --dest=org.bluez /org/bluez org.bluez.AgentManager1.UnregisterAgent objpath:/dv/agent 2>&1")
+	if grep -q 'org.bluez.Error.DoesNotExist' <<< "$o"; then ok "the root agent went with its connection (UnregisterAgent from a new one: DoesNotExist)"
+	elif grep -q '^method return' <<< "$o"; then no "the root agent outlived its dbus-send connection (a new connection unregistered it)"
+	else no "root UnregisterAgent: [$o]"; fi
+	o=$(qr 'bluetoothctl show 2>/dev/null | grep -E "Pairable|Discoverable"' | tr -s ' \t' ' ')
+	grep -q 'Pairable: no' <<< "$o" && grep -q 'Discoverable: no' <<< "$o" && ok "adapter still not pairable / discoverable" || no "adapter after the calls: $o"
+	pr_release ;;
+rpa)
+	[ -f "$BTT/btmon" ] && (cd "$BTT" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1 || { inv "no verified btmon in $BTT"; pr_result; exit 1; }
+	lease 3300
+	last4 || { pr_release; pr_result; exit 1; }
+	pr_pc_place || { pr_release; pr_result; exit 1; }
+	scp -q $SSHO "$BTT/btmon" root@$NODE:$PCD/btmon.up && q "mv $PCD/btmon.up $PCD/btmon && chmod 0700 $PCD/btmon" || { no "btmon upload"; pr_release; pr_result; exit 1; }
+	[ "$(qr "sha256sum < $PCD/btmon | cut -c1-64")" = "$(awk '{sub(/^\*/, "", $2)} $2 == "btmon" {print $1}' "$BTT/SHA256SUMS")" ] || { no "btmon sha on 04"; pr_release; pr_result; exit 1; }
+	pub=$(qr 'bluetoothctl show 2>/dev/null' | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^Controller \([0-9A-F:]\{17\}\).*/\1/p' | head -1)
+	[ -n "$pub" ] || { inv "04's public address unreadable"; pr_release; pr_result; exit 1; }
+	hmark
+	# 04 has no nohup, and btmon's text on a non-terminal stdout is buffered (lost at SIGINT): record a snoop with
+	# setsid + -w, decode it afterwards (04 wsl.21, 2026-11-01: the first gatt / rpa runs captured nothing)
+	q "umask 077; setsid $PCD/btmon -w $PCD/rpa.snoop </dev/null >/dev/null 2>&1 & echo \$! > $PCD/rpa.btmon.pid"
+	[ "$(qr "kill -0 \$(cat $PCD/rpa.btmon.pid) 2>/dev/null && echo y")" = y ] || { no "btmon did not start on 04"; pr_release; pr_result; exit 1; }
+	q "/etc/init.d/batman-provd restart >/dev/null 2>&1"; t0=$(mono); say "T0: provd restarted; 04 public $pub"
+	rows=(); r1=""; r2=""; ec=""
+	while [ $(( $(mono) - t0 )) -lt 3000 ]; do
+		now=$(( $(mono) - t0 ))
+		n=$(plog 'adv registered reason=rpa_timeout'); n=${n:-0}
+		[ -z "$r1" ] && [ "$n" -ge 1 ] && { r1=$now; say "EV $now the first rpa_timeout re-registration is in the log"; }
+		[ -z "$r2" ] && [ "$n" -ge 2 ] && { r2=$now; say "EV $now the second rpa_timeout re-registration is in the log"; }
+		if [ -n "$r1" ] && [ -z "$ec" ] && [ "$now" -ge $((r1 + 300)) ]; then
+			o=$(c02 read "$LAST4"); ec=$(( $(mono) - t0 )); say "EV $ec 02 connected and read: $(grep -E '^(ADDR|CTRL)' <<< "$o" | tr '\n' ' ')"
+		fi
+		[ -n "$r2" ] && [ "$now" -ge $((r2 + 180)) ] && break
+		o=$(c02 addrs); a=$(sed -n 's/^ADDRS //p' <<< "$o"); x=$(( $(mono) - t0 )); rows+=("$x ${a:--}"); say "SCAN $x ${a:--}"
+		sleep 30
+	done
+	q "kill -INT \$(cat $PCD/rpa.btmon.pid) 2>/dev/null; sleep 1; umask 077; $PCD/btmon -t -r $PCD/rpa.snoop > $PCD/rpa.btmon 2>&1"
+	# "<time> <reason>" of every provd registration after the marker (logread: "Sun Jul 27 22:44:15 2025 daemon.info ...")
+	regs=$(qr "logread | sed -n '/batman-dv-p2: mark $HM\$/,\$p' | grep 'batman-provd\[[0-9]*\]: provd: adv registered reason='" | awk '{r = $NF; sub(/.*reason=/, "", r); print $4, r}')
+	# btmon -t header lines end in "[hci0] HH:MM:SS.us"; LE Set Random Address 0x08|0x0005, LE Set Advertising Set Random
+	# Address 0x08|0x0035 (opcodes, since btmon shortens the names without a terminal)
+	ras=$(qr "grep -E '0x08.0x00(05|35)' $PCD/rpa.btmon" | grep '^<' | grep -o '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\.[0-9]*' | cut -d. -f1)
+	say "registrations (node time, reason): $(echo $regs)"; say "btmon random-address sets (node time): $(echo $ras)"
+	q "rm -f $PCD/rpa.btmon $PCD/rpa.snoop $PCD/rpa.btmon.pid"
+	[ -n "$r2" ] || no "fewer than two rpa_timeout re-registrations within $(( $(mono) - t0 )) s (first at ${r1:-none})"
+	sec(){ awk -F: '{print $1 * 3600 + $2 * 60 + $3}' <<< "$1"; }
+	# provd's own timer: every rpa_timeout registration 930-1020 s after the registration before it (+-5 s: log seconds)
+	prev=""; while read -r tm why; do [ -n "$tm" ] || continue
+		if [ "$why" = rpa_timeout ] && [ -n "$prev" ]; then d=$(( $(sec "$tm") - $(sec "$prev") )); [ $d -lt 0 ] && d=$((d + 86400))
+			[ $d -ge 925 ] && [ $d -le 1025 ] && ok "rpa_timeout at $tm, $d s after the previous registration (930-1020)" || no "rpa_timeout at $tm, $d s after the previous registration (want 930-1020)"; fi
+		prev=$tm
+	done <<< "$regs"
+	grep -q ' disconnect$' <<< "$regs" && ok "02's connect re-registered (reason=disconnect)" || no "no reason=disconnect registration (02's connect did not reach 04)"
+	# btmon: a random address set within 5 s after a registration
+	near(){ local r x; for r in $ras; do x=$(( $(sec "$r") - $(sec "$1") )); [ $x -ge 0 ] && [ $x -le 5 ] && return 0; done; return 1; }
+	while read -r tm why; do [ -n "$tm" ] || continue; case "$why" in
+		rpa_timeout) near "$tm" && ok "btmon: a new random address within 5 s of the rpa_timeout registration at $tm" || no "btmon: no random address set after the rpa_timeout registration at $tm" ;;
+		disconnect) near "$tm" && no "btmon: a random address set after the disconnect re-registration at $tm (< 900 s: want the same RPA)" || ok "btmon: no new random address at the disconnect re-registration at $tm (< 900 s)" ;;
+	esac; done <<< "$regs"
+	for r in $ras; do f=0; while read -r tm why; do [ -n "$tm" ] || continue; x=$(( $(sec "$r") - $(sec "$tm") )); [ $x -ge 0 ] && [ $x -le 5 ] && f=1; done <<< "$regs"
+		[ $f = 1 ] || no "btmon: a random address set at $r with no provd registration just before it"; done
+	[ -n "$ras" ] || no "btmon: no random address set at all (capture empty?)"
+	# 02's view, segment by segment; scans in the 90 s before an event was seen in the log are left out (it may already
+	# have happened)
+	seg(){ local rw x; for rw in "${rows[@]}"; do x=${rw%% *}; [ "$x" -gt "$1" ] && [ "$x" -lt "$2" ] && echo "${rw#* }"; done; }
+	SA=$(seg -1 $(( ${r1:-99999} - 90 ))); SB1=$(seg "${r1:-99999}" "${ec:-99999}"); SB2=$(seg "${ec:-99999}" $(( ${r2:-99999} - 90 ))); SC=$(seg "${r2:-99999}" 99999)
+	for g in A B1 B2 C; do case $g in A) v=$SA ;; B1) v=$SB1 ;; B2) v=$SB2 ;; C) v=$SC ;; esac
+		u=$(grep -v '^-$' <<< "$v" | awk 'NF == 1' | sort -u); nu=$(grep -c . <<< "$u")
+		say "02 segment $g: $(grep -c . <<< "$v") scan(s), $(grep -c '^-$' <<< "$v") empty, $(awk 'NF > 1' <<< "$v" | grep -c .) with >1 address, distinct: $(echo $u)"
+		[ "$nu" = 1 ] && [ "$(grep -cx "$u" <<< "$v")" -ge 2 ] && ok "02 segment $g: one RPA ($u)" || no "02 segment $g: [$(echo $u)] (want exactly one address, seen at least twice)"
+		[ "$nu" = 1 ] || u=""; case $g in A) UA=$u ;; B1) UB1=$u ;; B2) UB2=$u ;; C) UC=$u ;; esac
+	done
+	[ -n "$UA" ] && [ -n "$UB1" ] && [ "$UA" != "$UB1" ] && ok "02: a new RPA after the first rpa_timeout ($UA -> $UB1)" || no "02: no new RPA after the first rpa_timeout [$UA] [$UB1]"
+	[ -n "$UB1" ] && [ "$UB1" = "$UB2" ] && ok "02: the same RPA across 02's connect re-registration < 900 s ($UB1)" || no "02: the RPA across the < 900 s re-registration [$UB1] [$UB2] (want the same)"
+	[ -n "$UB2" ] && [ -n "$UC" ] && [ "$UB2" != "$UC" ] && ok "02: a new RPA after the second rpa_timeout ($UB2 -> $UC)" || no "02: no new RPA after the second rpa_timeout [$UB2] [$UC]"
+	printf '%s\n' "${rows[@]}" | grep -qi "$pub" && no "02 saw 04's public address $pub" || ok "02 never saw 04's public address $pub"
+	pr_release ;;
+esac
+pr_result

@@ -15,8 +15,8 @@ PS=$REPO/scripts/node/prov-sec-254.sh
 judge(){ timeout 120 ssh $SSHO root@$NODE sh -s < "$PS" 2>&1 | tr -d '\r'; }
 o=$(judge); echo "$o" | sed 's/^/    /'
 grep -qx 'PROV-SEC fails=0' <<< "$o" && ok "helper uid / socket dir / key perms as specified" || no "prov-sec judge on the untouched node: $(grep ^FAIL <<< "$o" | tr '\n' '|')"
-pr_lock; PR_BEGUN=1; trap 'pr_on_exit' EXIT
-PR_DEADLINE=$(( $(mono) + 900 )); o=$(pr_acquire 900) || { echo "$o"; no "lease"; pr_result; exit 1; }
+pr_lock; trap 'pr_on_exit' EXIT	# PR_BEGUN only once the lease is ours (round-2 review A, as A-M1)
+PR_DEADLINE=$(( $(mono) + 900 )); o=$(pr_acquire 900) || { echo "$o"; no "lease"; pr_result; exit 1; }; PR_BEGUN=1
 # ---- key-perms: a 0644 dummy over node.key (bind; the helper keeps its loaded key, nothing restarts)
 pw prep >/dev/null
 q "W=/tmp/run/batman-dv/wbox/$RUN; printf 'not a key\n' > \$W/dummy.key && chmod 644 \$W/dummy.key"

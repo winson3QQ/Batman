@@ -389,8 +389,26 @@ pr_needs_person(){
 pr_finish_snap(){ local o; o=$(nb finish "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^FINISHED $RUN" <<< "$o" && PR_SNAPPED=0; }
 pr_release(){
 	local o
-	o=$(pw unbind-all 2>/dev/null); q "rm -rf /tmp/run/batman-prov-test; rm -f $PR_PAY"
-	o=$(pl release); grep -q RELEASED <<< "$o" && say "lease released" || say "lease release: $o"
+	# a person takes over (NEEDS-PERSON): no radio / provd / helper restore (review B-M3: a second writer on a
+	# half-restored node); what is left is printed read-only, and the lease goes.
+	# The harness's own binds go either way: a bind over /sbin/ujail would block every jailed daemon for the person, and no
+	# restore resource is a harness bind (round-2 B m2)
+	o=$(pw unbind-all 2>/dev/null); grep -q 'UNBIND-ALL ok' <<< "$o" || no "unbind-all after the run: $(echo $o)"
+	if [ "${PR_PERSON:-0}" = 1 ]; then
+		say "left for the person (read-only): $(pl provd-check | tr '\n' ' ') $(pl state | tr '\n' ' ')"
+	else
+		q "rm -rf /tmp/run/batman-prov-test $PCD; rm -f $PR_PAY"
+		# an H3 judge arm cut off before its own restore (review A-M1 / B-M1): the same restore as the deadman's, here too
+		o=$(pl radio-restore); grep -q '^RESTORED' <<< "$o" && no "radio state left changed by the run, restored: $(grep '^RESTORED' <<< "$o" | tr '\n' '|')"
+		grep -q '^RADIO clean' <<< "$o" || no "radio state after the restore: $(echo $o)"
+		o=$(pl provd-reset); case "$o" in *"PROVD ok"*|*"PROVD absent"*) say "$(echo "$o" | tail -1)" ;; *) no "provd after the run: $(echo $o)" ;; esac
+	fi
+	# a lease that is no longer ours expired mid-run, and the deadman restored the node behind the unit (review A-M2)
+	o=$(pl release); grep -q RELEASED <<< "$o" && say "lease released" || no "lease release failed — it expired during the run? ($(echo $o))"
+	# PR_DM_BASE: deadman lines an arm caused on purpose (the L83 arms set it after their own); only lines beyond it count,
+	# so a deadman that fires later in the run (e.g. during the restore) is still a FAIL (round-2 review A)
+	o=$(qr "grep -c 'run=$RUN prov deadman' /opt/batdata/log/ble-dm-254.log 2>/dev/null")
+	[ "${o:-0}" -le "${PR_DM_BASE:-0}" ] || no "the prov deadman acted during the run ($o line(s) for run $RUN in ble-dm-254.log, ${PR_DM_BASE:-0} expected)"
 	PR_BEGUN=0; pr_unlock
 }
 pr_abort(){
@@ -469,6 +487,9 @@ pr_p9(){	# the P9 subset of pr_begin: S0 slot condition, nothing left of an earl
 	o=$(qr 'echo "dirty=[$(cat /opt/batdata/state/dv-prov-dirty 2>/dev/null)] norm=[$(cat /opt/batdata/state/dv-prov-normalising 2>/dev/null)] binds=$(awk "index(\$4, \"/batman-dv/wbox/\")" /proc/self/mountinfo | wc -l) kpdir=$([ -e /tmp/run/batman-prov-test ] && echo 1 || echo 0) marker=$(/usr/bin/batman-provhelper --version 2>/dev/null | grep -c BATMAN_PROV_TEST_BUILD_7f3a) helper=$(pidof batman-provhelper >/dev/null && echo up || echo down) leases=[$(cat /tmp/run/batman-dv/bt/lease-prov /tmp/run/batman-dv/bt/lease 2>/dev/null | tr "\n" " ")] peers=$(batctl n 2>/dev/null | tail -n +3 | grep -c .)"')
 	say "04: $o"
 	case "$o" in *"dirty=[] norm=[] binds=0 kpdir=0 marker=0 helper=up "*) ;; *) echo "FAIL leftovers of an earlier run / helper not up: $o"; r=1 ;; esac
+	# an H3 judge arm cut off before its restore (review B-M1): SIGSTOPped helper, hci0 off, bondable on
+	o=$( { cat "$REPO/scripts/node/ble-lib-254.sh"; echo 'radio_clean && echo RADIO-CLEAN'; } | timeout 60 ssh $SSHO root@$NODE sh -s 2>&1 | tr -d '\r')
+	grep -qx RADIO-CLEAN <<< "$o" || { echo "FAIL radio / helper left changed by an earlier run (radio-restore needs a lease: RUN_ID=x sh <staged>/prov-lease-254.sh acquire 300, then radio-restore, then release): $(grep '^FAIL' <<< "$o" | tr '\n' '|')"; r=1; }
 	nb02 || { echo "FAIL 02 ($PEERMAC) is not a mesh neighbour of 04 (neighbours: $(field "$o" peers))"; r=1; }
 	return $r
 }
@@ -667,9 +688,10 @@ pr_normalise(){
 		*) pr_needs_person "normalise: active slot [$(field "$s" slot)]"; return 1 ;;
 	esac
 	nb02 || { no "normalise: 02 is not a neighbour of 04 (the A trial could need it)"; return 1; }
-	pr_lock; PR_BEGUN=1; PR_SNAPPED=0; trap 'pr_on_exit' EXIT; trap 'say "host interrupted"; exit 130' INT TERM
+	pr_lock; PR_SNAPPED=0; trap 'pr_on_exit' EXIT; trap 'say "host interrupted"; exit 130' INT TERM
 	PR_V=$v; PR_DEADLINE=$(( $(mono) + 1800 ))
-	o=$(pr_acquire 1800) || { echo "$o"; no "normalise: lease"; return 1; }; echo "$o"
+	# PR_BEGUN only once the lease is ours: an exit before that must not run pr_release's node writes (review A-M1)
+	o=$(pr_acquire 1800) || { echo "$o"; no "normalise: lease"; return 1; }; echo "$o"; PR_BEGUN=1
 	o=$(pl normalising set); grep -q 'NORMALISING set' <<< "$o" || { no "normalise: marker: $o"; return 1; }
 	pr_ota_b "$v" A || { pr_needs_person "normalise: OTA V into A failed (marker dv-prov-normalising kept)"; return 1; }
 	pr_lease_renew +900 || return 1

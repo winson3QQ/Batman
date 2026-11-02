@@ -12,6 +12,8 @@
 //	provclient keygen <keyfile>   a fresh P-256 owner key (0600) — one per run; prints the public key hex.
 //	                              node ops: info, claim, claim-attacker, claim-attacker-chal, replay, ssh-keys, root-reset, rename, verb,
 //	                              and (net.go) net-apply --first|--update, leave, owner-add, owner-remove, diag.
+//	                              exec <abs path> [args]: after the drop, execve it as that uid / gid with PATH as the
+//	                              only environment (prov-sec-dbus-254: dbus-send as provd, 254-h23 §6.3).
 //	provclient selftest <vectors.json>
 //
 // Output never contains a secret: secret values are printed as the first 16 hex chars of their SHA-256.
@@ -346,10 +348,11 @@ func isCoseSigStructure(msg []byte) bool {
 // ---- node side ----------------------------------------------------------------------------------------------------
 
 type client struct {
-	c      *net.UnixConn
-	id     uint64
-	h      []byte
-	signIn *bufio.Scanner
+	c       *net.UnixConn
+	id      uint64
+	h       []byte
+	signIn  *bufio.Scanner
+	retried bool // the one reconnect after a close on the first request
 }
 
 // callTimeout: PROVCLIENT_TIMEOUT_S (default 30). The claim-lock fix's busy path (a held config-save lock) makes one
@@ -373,7 +376,26 @@ func (cl *client) call(verb string, args cmap) (uint64, cmap) {
 	}
 	buf := make([]byte, 1<<17)
 	n, err := cl.c.Read(buf)
+	var ne net.Error
+	timedOut := errors.As(err, &ne) && ne.Timeout()
+	if (err != nil || n == 0) && !timedOut && cl.id == 1 && !cl.retried {
+		// closed on the first request: the helper's accept rate (5 new connections a second, 254-p2-impl §4.3) or its
+		// 4-connection limit — back off and try once more on a new connection (254-h23 §10 point 2). Never after a
+		// timeout: the helper got the request and may still be running it, and a verb is not idempotent (a second
+		// net.apply behind a slow first one: 04 wsl.21, 2026-11-01)
+		cl.retried = true
+		cl.c.Close()
+		time.Sleep(time.Second)
+		if c, derr := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: sockPath, Net: "unixpacket"}); derr == nil {
+			cl.c, cl.id = c, 0
+			return cl.call(verb, args)
+		}
+	}
 	if err != nil || n == 0 {
+		if timedOut {
+			fmt.Println("TIMEOUT") // no answer within PROVCLIENT_TIMEOUT_S: outcome unknown, not a refusal
+			return 998, nil
+		}
 		fmt.Println("CONN-CLOSED") // the helper closed the connection (e.g. a peer uid it refuses)
 		return 999, nil
 	}
@@ -519,6 +541,20 @@ func cmdNode(args []string) {
 		}
 	}
 	dropTo(uid, gid)
+	if op == "proxy" {
+		if len(args) != 2 {
+			die("usage: proxy <socket path>")
+		}
+		cmdProxy(args[1])
+		return
+	}
+	if op == "exec" {
+		if len(args) < 2 || !strings.HasPrefix(args[1], "/") {
+			die("usage: exec <absolute path> [args]")
+		}
+		err := syscall.Exec(args[1], args[1:], []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"})
+		die("exec %s: %v", args[1], err)
+	}
 	c, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: sockPath, Net: "unixpacket"})
 	if err != nil {
 		fmt.Printf("CONN-ERR %v\n", err)

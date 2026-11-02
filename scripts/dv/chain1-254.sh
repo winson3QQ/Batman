@@ -1,7 +1,10 @@
 #!/bin/bash
 # scripts/dv/chain1-254.sh v3 — #254 P1 residual "鏈 1" (docs/design/254-p1-impl.md §5.4 chain 1, steps 1-9) on 04, from Git Bash.
 #   1 snap (+ mesh markers moved into the snapshot)   2 p5 idle   3 p5 mkfs   4 hold + apply V to B (unseeded) + reboot
-#   5 HELD fresh trial on B: unclaimed assertions     6 gate (L44) + wsl.9 negative control; dead-man; release -> B committed
+#   5 HELD fresh trial on B: unclaimed assertions, and (P2 image) 02 reads STATUS over BLE = unclaimed, updating, the
+#     serial's last 4 (h23 §6.3 prov-firstboot-254, provd side). The host reaches 02 only through 04's mesh, so 02 is
+#     cut off while 04 is off the mesh: a time-limited reader started on 02 before step 4 reads STATUS every ~45 s
+#     (02 uptime + value to a file); step 9 fetches it and judges the reads inside the trial window     6 gate (L44) + wsl.9 negative control; dead-man; release -> B committed
 #   7 unclaimed OTA: 7.1 negative (platform.sh without prov-lock.sh in RAMFS_COPY_DATA -> stage 2 dies on "not seeded",
 #     A untouched)  7.2 positive (A HELD unclaimed trial)  7.3 back_to_b
 #   8 claim on B (lab key first, publickey PROVEN by ssh -v) -> LOCKED + p5 seeded -> claimed OTA into A (HELD,
@@ -90,7 +93,11 @@ bootof(){ echo "$1" | sed -n 's/.*boot=\([0-9a-f]*\).*/\1/p'; }
 STAGED=0; SNAPPED=0; RESULT=FAIL; RESTORING=0
 mkdir "$LOCKD" 2>/dev/null || { echo "another dv run holds $LOCKD"; exit 1; }
 # an unexpected exit after the snapshot (set -u, a bug) still restores (review A-M1)
-on_exit(){ local rc=$?; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; restore_all "unexpected exit"; fi
+# the 02 STATUS reader (step 2-4) goes on every exit; 02 unreachable -> the next central session on 02 stops it
+# on 02: every process naming the reader dir (the loop and an in-flight read, both setsid group leaders) with its group
+C1RKILL='for p in $(grep -l "@D@/" /proc/[0-9]*/cmdline 2>/dev/null | cut -d/ -f3); do [ "$p" = $$ ] && continue; kill -TERM -- -$p 2>/dev/null; kill -TERM $p 2>/dev/null; done'
+c1r_stop(){ [ -n "${P02_U0:-}" ] && timeout 20 ssh $SSHO root@$PEER "${C1RKILL//@D@/$C1R}; rm -rf $C1R" >/dev/null 2>&1; P02_U0=""; }
+on_exit(){ local rc=$?; c1r_stop; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; restore_all "unexpected exit"; fi
 	rmdir "$LOCKD" 2>/dev/null; MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- rm -rf "$WSLK" 2>/dev/null; say "CHAIN1 RESULT: $RESULT (fails=$fails)"; }
 trap on_exit EXIT
 trap 'say "host interrupted"; [ "$SNAPPED" = 1 ] && restore_all "interrupted"; RESTORING=1; exit 1' INT TERM
@@ -222,6 +229,19 @@ chmod 700 $BASE/ch1-deadman.sh; rm -f $BASE/ch1.cancel $BASE/ch1.fired $BASE/ch1
 STAGED=1; say "dead-man staged (snapshot p5 sha $SNAPSHA)"
 # ======== 2-4. p5 idle -> mkfs -> hold + apply (unseeded) -> controlled reboot
 PH=s2-4
+# 04 runs provd? (the fresh trial generates a NEW identity — p5 is mkfs'd — so its serial's last 4 is read in step 5;
+# step 5's idsame=y only compares the new identity with its own p5 copy)
+LAST4=$(q 'tr -d "\n" < /etc/batman-prov/identity/sn | tail -c 4'); HASPROVD=$(q '[ -x /usr/bin/batman-provd ] && echo y || echo n')
+C1R=/tmp/run/batman-dv/ch1-$RUN; P02_U0=""; P02_S0=""
+if [ "$HASPROVD" = y ]; then
+	# 3600 s, then it ends by itself (a run that aborts leaves nothing behind on 02 for long); no state change on 02
+	o=$(timeout 30 ssh $SSHO root@$PEER "mkdir -p -m 0700 /tmp/run/batman-dv && mkdir -m 0700 $C1R && cat > $C1R/c.sh && echo PUT" < "$REPO/scripts/node/prov-p2-central-254.sh" 2>/dev/null | tr -d '\r')
+	[ "$o" = PUT ] || abort "02: could not place the STATUS reader"
+	timeout 30 ssh $SSHO root@$PEER "setsid sh -c 'e=\$((\$(cut -d. -f1 /proc/uptime) + 3600)); while [ \$(cut -d. -f1 /proc/uptime) -lt \$e ]; do o=\$(BATMAN_DV_C1R=1 setsid sh $C1R/c.sh read - 2>/dev/null | sed -n \"s/^STATUS //p\"); echo \"\$(cut -d. -f1 /proc/uptime) \${o:--}\" >> $C1R/status.log; sleep 5; done' </dev/null >/dev/null 2>&1 &" >/dev/null 2>&1
+	P02_U0=$(timeout 15 ssh $SSHO root@$PEER 'cut -d. -f1 /proc/uptime' 2>/dev/null | tr -d '\r'); P02_S0=$SECONDS
+	case "$P02_U0" in ''|*[!0-9]*) abort "02 uptime unreadable (the reader's clock)";; esac
+	say "02 STATUS reader started (02 uptime $P02_U0 = host +$P02_S0 s)"
+fi
 o=$(q "grep -c ' /dev/mmcblk0p5 ' /proc/mounts; ps w | grep -c '[b]atman-config-save'"); [ "$(echo $o)" = "0 0" ] && ok "p5 idle" || abort "p5 busy: $(echo $o)"
 o=$(q "mkfs.ext4 -F -q -L batconfig /dev/mmcblk0p5 && echo MKFS-OK; $P5RO"); say "p5 after mkfs: $(echo $o)"
 case "$o" in *MKFS-OK*"seeded=n"*) ok "p5 empty, not seeded";; *) abort "mkfs";; esac
@@ -244,6 +264,18 @@ say "trial: $(echo $x)"
 case "$x" in *"ifaces="[1-9]*) ok "trial: iw lists interfaces";; *) no "trial: iw lists no interface (ap/mesh counts meaningless)";; esac
 for w in "ap=0" "mesh=0" "meta=unclaimed" "idmode=drwx------" "seeded=n" "prov_files=7" "metastat=[ok unclaimed]" "ident=ok" "idsame=y"; do case "$x" in *"$w"*) ok "trial: $w";; *) no "trial: want $w";; esac; done
 case "$x" in *"helper7=[rc=7 "*"persist rc=0]"*) ok "trial: helper boot rc=7 ... persist rc=0";; *) no "trial: helper rc=7 / persist rc=0 not logged";; esac
+# provd side: the exact STATUS (provd server.go Status): {1:[1,0], 2:["halow"], 3:0 unclaimed, 4:true trial, 5:last4}
+if [ "$HASPROVD" = y ]; then
+	L4N=$(fq 'tr -d "\n" < /etc/batman-prov/identity/sn | tail -c 4')
+	case "$L4N" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) no "trial: the fresh serial's last 4 unreadable [$L4N]";; esac
+	say "trial: fresh serial last 4 = $L4N (before the reboot: $LAST4)"
+	WANT5="a50182010002816568616c6f77030004f50564$(printf '%s' "$L4N" | od -An -tx1 | tr -d ' \n')"
+	say "trial: 02's reader judges STATUS at step 9 (window from the reboot, host +$t0 s, to the release)"
+	# the trial would be released ~130 s after the reboot and a read takes 40-60 s (04 wsl.21 2026-11-02: one read, too
+	# early, in a 20 s window): hold it to reboot + 330 s, well inside the 600 s deadline of a held trial
+	w=$((t0 + 330 - SECONDS)); [ "$w" -gt 0 ] && { say "trial: holding the trial $w s more for 02's reader"; sleep "$w"; }
+elif [ "$HASPROVD" = n ]; then no "trial: pre-P2 image (no batman-provd) — the provd-side assertions did not run"
+else no "trial: cannot tell whether 04 has batman-provd [$HASPROVD] — the provd-side assertions did not run"; fi
 # ======== 6. gate (L44) on the same HELD trial + wsl.9 negative control; dead-man on B; release -> committed
 PH=s6
 fq "mkdir -p -m 0700 /tmp/run/batman-dv" >/dev/null; scp -q $FRESHO "$WSL9_SLOT" root@"$FIP":/tmp/run/batman-dv/batman-slot.wsl9 || abort "upload wsl.9 batman-slot"
@@ -259,7 +291,7 @@ case "$o" in "rc=1 "*"not seeded"*"same_mtime=y"*) ok "gate negative: wsl.9 batm
 fq "rl=\$(mktemp /tmp/run/ch1-rcl.XXXXXX) && { grep -v '^exit 0' /etc/rc.local; echo '( ping -c 5 $HOSTIP; sleep 1500; sh $BASE/ch1-deadman.sh ) </dev/null >/dev/null 2>&1 & # ch1-deadman'; echo 'exit 0'; } > \$rl && cat \$rl > /etc/rc.local && rm -f \$rl; sync; setsid sh -c 'sleep 1500; sh $BASE/ch1-deadman.sh' </dev/null >/dev/null 2>&1 & echo planted" >/dev/null
 pl=$(fq "echo rclocal=\$(grep -c ch1-deadman /etc/rc.local) script=\$([ -x $BASE/ch1-deadman.sh ] && echo y) timer=\$(ps w | grep -c '[s]leep 1500')")
 say "dead-man on B: $pl"; case "$pl" in "rclocal=1 script=y timer="[1-9]*) ;; *) abort "dead-man not armed on B";; esac
-r=$(fq 'batman-autocommit release --wait 2>&1 | tail -1'); say "release: $r"
+T5E=$SECONDS; r=$(fq 'batman-autocommit release --wait 2>&1 | tail -1'); say "release: $r"
 s=$(fq "$ST"); case "$s" in *"slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
 # the reservation reboot follows on the committed slot (E1c: ~145 s); wait for B's next boot and find it again
 PH=s6r; t=$SECONDS; while [ $((SECONDS - t)) -lt 400 ]; do b=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ "$b" = "$BT" ] || break; sleep 10; done
@@ -361,5 +393,17 @@ fi
 # ======== 9. restore
 restore_all "step 9" || { RESULT="RESTORE FAILED — needs a person"; exit 1; }
 p=$(timeout 30 ssh $SSHO root@$PEER "$ST" 2>/dev/null | tr -d '\r'); say "02 after: [$p]"
+if [ "$HASPROVD" = y ] && [ -n "$P02_U0" ]; then
+	sl=$(timeout 30 ssh $SSHO root@$PEER "${C1RKILL//@D@/$C1R}; cat $C1R/status.log; rm -rf $C1R" 2>/dev/null | tr -d '\r')
+	# +90 s: a read that started before the reboot may finish (and be logged) just after it, with the old value
+	lo=$((P02_U0 + t0 + 90 - P02_S0)); hi=$((P02_U0 + ${T5E:-0} - P02_S0))
+	say "02 reader: $(grep -c . <<< "$sl") reads; trial window = 02 uptime $lo..$hi"
+	echo "$sl" | sed 's/^/    02 read: /'
+	inw=$(awk -v lo="$lo" -v hi="$hi" '$1 >= lo && $1 <= hi' <<< "$sl"); say "02 reads in the window: $(echo $inw | tr -s ' ' | cut -c1-400)"
+	if [ -z "${T5E:-}" ]; then no "5 provd: the run ended before the release — no trial window to judge"
+	elif grep -q " $WANT5\$" <<< "$inw"; then ok "5 provd: 02 read the fresh trial's STATUS over BLE = unclaimed, updating=1, last4 $L4N ($WANT5)"
+	else no "5 provd: no read in the trial window equals $WANT5"; fi
+	awk '$2 != "-"' <<< "$inw" | grep -v " $WANT5\$" | grep -q . && no "5 provd: other STATUS values inside the trial window: $(awk '$2 != "-"' <<< "$inw" | grep -v " $WANT5\$" | head -3 | tr '\n' '|')"
+fi
 [ "$(bootof "$peer0")" = "$(bootof "$p")" ] || warn "02 rebooted during the run (boot $(bootof "$peer0") -> $(bootof "$p")) — isolation > joinwatch's window (A-m6)"
 [ "$fails" = 0 ] && RESULT=PASS || RESULT="FAIL ($fails)"

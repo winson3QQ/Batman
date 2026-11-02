@@ -60,6 +60,8 @@ prov-leave-after-join-254|prov-leave-after-join-254|
 prov-overlay-corrupt-254|prov-overlay-corrupt-254|
 prov-overlay-wipe-254|prov-overlay-wipe-254|
 prov-netjoin-254|prov-netjoin-254|
+prov-provd-wbox-254|prov-provd-wbox-254|
+prov-rpa-254|prov-provd-254|rpa
 prov-netupdate-254|prov-netupdate-254|
 prov-misc-254|prov-misc-254|
 prov-powerloss-txn1-254|prov-powerloss-254|1

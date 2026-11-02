@@ -9,7 +9,9 @@
 #     - names a new uci-defaults file 99zz-wbox-* (runs after 99zz-batman-prov-state) and a new init script wbox-*;
 #   tests/wbox/helpers.list == the list derived from the patches: "<name> <tag> <kind>", tag prov_test when the patch
 #   touches feed/batman-prov/src/ (and for `test`), else release; kind helper when it touches feed/batman-prov/src/ or
-#   replaces the helper install (GoPackage/Package/Install/Bin removed), else same; plus "test prov_test helper".
+#   replaces the helper binary (an added, non-comment $(INSTALL_BIN) onto $(1)/usr/bin/batman-provhelper), else same;
+#   plus "test prov_test helper". A patch that removes the GoPackage/Package/Install/Bin line FAILs (it would also drop
+#   batman-provd).
 #   protected set (§23.9): misc-* touch only usr/bin/batman-autocommit, the others none of batman-slot / -autocommit
 #   (+ init) / the otatrace, rundir, bootfacts, meshjoin libs, nor name one (or autoboot.txt) in an added line; no
 #   variant removes a wbox-gate line; every touched shell file parses in busybox sh (missing busybox = FAIL);
@@ -95,7 +97,13 @@ for p in "$D"/*.patch; do
 	done
 	tag=release; kind=same
 	echo "$paths" | grep -q '^feed/batman-prov/src/' && { tag=prov_test; kind=helper; }
-	grep -q '^-.*GoPackage/Package/Install/Bin' "$p" && kind=helper
+	# since P2 the GoPackage install line also installs batman-provd: a patch that removes it drops provd from the image
+	# (helper-exit1 did, 2026-11-01) -> refused; a helper replacement installs over the Go binary instead
+	grep -q '^-.*GoPackage/Package/Install/Bin' "$p" && err "$name: removes the GoPackage/Package/Install/Bin line (that also drops batman-provd) — install over the helper instead"
+	# an added (non-comment) install line onto the helper's path = the helper binary is replaced
+	# (no # before $(INSTALL_BIN) = not a comment; f4a0c80's "[^#[:space:]].*" needed a char BEFORE it and missed the
+	# plain line — test-lint-wbox's "installed over the Go helper binary" case went 39/0 -> 38/1)
+	grep -qE '^\+[^#]*\$\(INSTALL_BIN\) .* \$\(1\)/usr/bin/batman-provhelper$' "$p" && kind=helper
 	echo "$name $tag $kind" >> "$want"
 done
 [ "$n" -gt 0 ] || err "no tests/wbox/*.patch at all"
