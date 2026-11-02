@@ -4,6 +4,7 @@ exit 1 on any failure (CI requires n >= MIN)."""
 import cbor2
 import ecdsa
 
+import nodecert
 import owner
 import peer_core
 import transport_sock as ts
@@ -54,6 +55,13 @@ def run(path=None):
             continue
         check(f"{tag}: node_cert payload", verify.det_dumps(p.cert) == b(v["node_cert"]["cbor"]))
         check(f"{tag}: handshake hash", p.h == b(vec["handshake_hash"]))
+        check(f"{tag}: remote static of this handshake == s_node_pub", p.rs == b(K["s_node_pub"]))
+        check(f"{tag}: identify with the vector DAC pinned", p.identify(b(K["dac_cert_der"])) == K["device_id"])
+        try:
+            p.identify(b(v["identity_file"]["dev_cert_der"]))
+            check(f"{tag}: negative: another pinned DAC is NotTarget", False)
+        except nodecert.NotTarget:
+            check(f"{tag}: negative: another pinned DAC is NotTarget", True)
         lp.sent.clear()
         p.send_env(req_info)
         check(f"{tag}: first transport message", b"".join(f[3:] for f in lp.sent) == b(vec["first_transport_message"]))
