@@ -12,29 +12,42 @@
 #                           services and the reboot)
 #   normalising set|clear   p6 marker dv-prov-normalising "<run> <boot>" (pr_normalise; preflight P9 FAILs on it)
 #   state                   lease, deadman, markers
-# The deadman (dm-fire, after <secs> + 5 without a renew): prov-wbox unbind-all (umount every harness bind, restart an
-# armed helper, rm -rf the killpoint dir), drop a harness helper copy from the upper (sha != /rom), then — unless
-# restoring — start joinwatch / openmanetd / tailscaled again. It never touches a slot or p5; the dirty flag stays (the
+#   undo-add <action> [args] register an undo action for this run (254-h4 §5.7; prov-undo-lib-254.sh picks tmpfs / p6)
+#   undo                    host-mode undo executor for this run, under the lease lock (the host renews first)
+#   undo-pending            read-only: every run's actions not done yet
+#   undo-replay             host mode for every OTHER run with something left (the next run's preflight, own lease)
+# The deadman (dm-fire, after <secs> + 5 without a renew): the undo executor (254-h4 §5.7: segment 1 = faults,
+# killpoint dir, unbind-all, helper / provd back to release, kill-pg; segment 2 = the run's journal unless restoring),
+# drop a harness helper copy from the upper (sha != /rom), then — unless restoring — start joinwatch / openmanetd /
+# tailscaled again. It never touches a slot or p5; the dirty flag stays (the
 # next preflight prints the restore command).
 SELF=$(readlink -f "$0"); DIR=$(dirname "$SELF")
 # shellcheck source=scripts/node/ble-lib-254.sh
 . "$DIR/ble-lib-254.sh"
+# shellcheck source=scripts/node/prov-undo-lib-254.sh
+. "$DIR/prov-undo-lib-254.sh"
 LEASE=$BT/lease-prov
 RUN_ID=${RUN_ID:-}
 NORM=/opt/batdata/state/dv-prov-normalising
 UPH=/overlay/upper/usr/bin/batman-provhelper   # read only (cmp); never written or removed here
 
 cmd_stage_check() {
-	for t in "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$SELF"; do file_ok "$t" || die "$t is not a root regular file with one link"; done
+	for t in "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$DIR/prov-undo-lib-254.sh" "$SELF"; do file_ok "$t" || die "$t is not a root regular file with one link"; done
 	dir_ok "$DIR" drwx------ || die "$DIR is not a root 0700 directory"
-	sha256sum "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$SELF" | sed "s#$DIR/##"
+	sha256sum "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$DIR/prov-undo-lib-254.sh" "$SELF" | sed "s#$DIR/##"
 }
 role_fire_restore() {	# $1 run (or "recover")
 	# a cut-off judge first: it could kill provd / stop bluetoothd / set bondable after anything below (round-2 B m1)
 	stop_judges | while IFS= read -r l; do dm_log "$1" "prov deadman: $l"; done
-	dm_log "$1" "prov deadman: unbind-all, killpoint dir, harness helper copy in the upper"
-	[ -f "$DIR/prov-wbox-254.sh" ] && RUN_ID=$1 lim 120 sh "$DIR/prov-wbox-254.sh" unbind-all >/dev/null 2>&1
-	rm -rf /tmp/run/batman-prov-test
+	# the undo executor in this process (254-h4 §5.7): segment 1 (faults, killpoint dir, unbind-all, helper / provd back to
+	# release, kill-pg), then the run's journal — or, for recover, every run's (its log: dv-undo-<run>.log)
+	if [ "$1" = recover ]; then
+		_s1=0; useg1 recover >/dev/null
+		for _ur_ in $(undo_runs); do undo_run "$_ur_" recover >/dev/null || dm_log recover "prov deadman: undo of run $_ur_ left something (dv-undo-$_ur_.log)"; done
+	else
+		dm_log "$1" "prov deadman: undo executor (segment 1, journal)"
+		undo_run "$1" deadman >/dev/null || dm_log "$1" "prov deadman: undo left something (dv-undo-$1.log)"
+	fi
 	# a harness helper copy in the upper: the release helper is written back THROUGH the overlay (never an rm under the
 	# mounted upper — undefined in overlayfs, 2026-10-28 04 needed a reboot after one), then what runs is verified
 	if [ -f "$UPH" ] && ! cmp -s "$UPH" /rom/usr/bin/batman-provhelper; then
@@ -80,7 +93,11 @@ esac
 case "$c" in
 	stage-check) cmd_stage_check ;;
 	provd-reset) held; provd_restart; unlock; provd_check ;;	# under our lease only (review A-M1)
-	provd-check) provd_check ;;	# no restart: provd came back on its own (review A-M4)
+	provd-check) provd_check ;;
+	undo-add) held; undo_add "$RUN_ID" "$@"; _x=$?; unlock; exit $_x ;;
+	undo) held; undo_run "$RUN_ID" host; _x=$?; unlock; exit $_x ;;
+	undo-pending) undo_pending ;;
+	undo-replay) held; _x=0; for _ur_ in $(undo_runs); do [ "$_ur_" = "$RUN_ID" ] && continue; echo "REPLAY $_ur_"; undo_run "$_ur_" host || _x=1; done; unlock; exit $_x ;;	# no restart: provd came back on its own (review A-M4)
 	radio-restore) held; radio_restore; radio_clean && echo "RADIO clean"; unlock ;;	# pr_release; under our lease only
 	acquire) cmd_acquire "$@" ;;
 	renew) cmd_arm "$@" ;;
@@ -93,5 +110,5 @@ case "$c" in
 			clear) [ ! -f "$NORM" ] || [ "$(cut -d' ' -f1 "$NORM")" = "$RUN_ID" ] || die "normalising marker is another run's: $(cat "$NORM")"
 				rm -f "$NORM"; sync; echo "NORMALISING clear" ;;
 			*) die "usage: normalising set|clear" ;; esac ;;
-	*) echo "usage: RUN_ID=<run> prov-lease-254.sh stage-check|acquire <s>|renew <s>|release|restoring set|clear|normalising set|clear|state"; exit 2 ;;
+	*) echo "usage: RUN_ID=<run> prov-lease-254.sh stage-check|acquire <s>|renew <s>|release|restoring set|clear|normalising set|clear|state|undo-add <a> [args]|undo|undo-pending|undo-replay"; exit 2 ;;
 esac

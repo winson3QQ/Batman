@@ -78,9 +78,9 @@ pr_stage(){
 	local f o h
 	o=$( { cat "$REPO/scripts/node/ble-lib-254.sh"; echo "scratch; d=\$BT/$RUN; [ -e \"\$d\" ] && { echo \"FAIL \$d exists\"; exit 1; }; mkdir -m 700 \"\$d\" && echo STAGED-DIR"; } | timeout 30 ssh $SSHO root@$NODE sh -s 2>&1 | tr -d '\r')
 	grep -q STAGED-DIR <<< "$o" || { echo "FAIL could not create $PRD: $o"; return 1; }
-	scp -q $SSHO "$REPO/scripts/node/ble-lib-254.sh" "$REPO/scripts/node/prov-lease-254.sh" "$REPO/scripts/node/prov-wbox-254.sh" root@$NODE:$PRD/ || { echo "FAIL scp of the node scripts"; return 1; }
+	scp -q $SSHO "$REPO/scripts/node/ble-lib-254.sh" "$REPO/scripts/node/prov-lease-254.sh" "$REPO/scripts/node/prov-wbox-254.sh" "$REPO/scripts/node/prov-undo-lib-254.sh" root@$NODE:$PRD/ || { echo "FAIL scp of the node scripts"; return 1; }
 	q "chmod 700 $PRD/*"; o=$(pl stage-check) || { echo "$o"; return 1; }
-	for f in ble-lib-254.sh prov-lease-254.sh prov-wbox-254.sh; do
+	for f in ble-lib-254.sh prov-lease-254.sh prov-wbox-254.sh prov-undo-lib-254.sh; do
 		h=$(sha256sum < "$REPO/scripts/node/$f" | cut -c1-64)
 		grep -q "^$h  $f\$" <<< "$o" || { echo "FAIL $f on the node differs from the host copy"; return 1; }
 	done
@@ -90,7 +90,15 @@ pr_stage(){
 pr_acquire(){
 	local o; o=$(pr_stage) || { echo "$o"; return 1; }
 	o=$(pl acquire "$1"); grep -q '^LEASE ' <<< "$o" || { echo "FAIL lease: $o"; return 1; }
-	say "$o"; return 0
+	say "$o"
+	# what an earlier run left in its undo journal (a reboot mid-arm, the host gone): replayed in host mode under THIS
+	# lease (254-h4 §5.7); anything still left after that is a FAIL of the preconditions
+	o=$(pl undo-pending)
+	if [ -n "$o" ]; then
+		say "undo left by an earlier run: $(echo $o)"; o=$(QT=1260 pl undo-replay); say "$(echo $o)"
+		o=$(pl undo-pending); [ -z "$o" ] || { echo "FAIL undo still left after the replay: $(echo $o)"; return 1; }
+	fi
+	return 0
 }
 pr_lease_renew(){	# <+secs>: lease and deadman now + secs; the run deadline moves too
 	local s=${1#+} o; o=$(pl renew "$s"); grep -q '^ARMED' <<< "$o" || { no "lease renew +$s: $o"; return 1; }
@@ -397,6 +405,12 @@ pr_release(){
 	if [ "${PR_PERSON:-0}" = 1 ]; then
 		say "left for the person (read-only): $(pl provd-check | tr '\n' ' ') $(pl state | tr '\n' ' ')"
 	else
+		# the run's undo journal, host mode (254-h4 §5.7): the lease covers the worst case first; a lease that is already
+		# gone leaves it to the deadman (its log: dv-undo-<run>.log)
+		if o=$(pl renew "${PR_UNDO_BUDGET:-1200}") && grep -q '^ARMED' <<< "$o"; then
+			o=$(QT=$(( ${PR_UNDO_BUDGET:-1200} + 60 )) pl undo); grep -q 'undo_run host end rc=0' <<< "$o" || no "undo: $(grep -E '^UNDO (FAIL|CRIT|NEEDS|left)' <<< "$o" | tr '
+' '|')"
+		else no "lease gone before the undo — the deadman takes over: $(echo $o)"; fi
 		q "rm -rf /tmp/run/batman-prov-test $PCD; rm -f $PR_PAY"
 		# an H3 judge arm cut off before its own restore (review A-M1 / B-M1): the same restore as the deadman's, here too
 		o=$(pl radio-restore); grep -q '^RESTORED' <<< "$o" && no "radio state left changed by the run, restored: $(grep '^RESTORED' <<< "$o" | tr '\n' '|')"
