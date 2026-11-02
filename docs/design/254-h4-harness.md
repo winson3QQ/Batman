@@ -1,6 +1,6 @@
-# Design: #254 PR-H4 — P3 的 harness — **v8(審查中)**
+# Design: #254 PR-H4 — P3 的 harness — **v8.1(凍結)**
 
-**狀態**:v8,2026-11-03,審查中。v8 在 v7 上做局部修改(附錄 G);v7 在 v6 上做局部修改(附錄 F);v6 在 v5 上做局部修改:§1.1、§3.1、§4.1、§4.2、§4.4、§4.5、§5.7、§8.1、§8.2、§9、§12、§15、§17、附錄 A。v5 審查意見的處理見附錄 E;v4 的處理見附錄 D。
+**狀態**:**凍結**(v8.1,2026-11-03)。v8 兩位審查都是 APPROVE-WITH-CHANGES、0 BLOCKER / 0 MAJOR(A 12 MINOR、B 9 MINOR),都判已收斂;v8.1 = v8 + 兩位的 MINOR(附錄 H)。B 建議不需要再一輪完整審查。凍結條件:§7 探針(D22)在現場完成並附原始輸出之後,才開 harness PR(H4-U7)。v8 在 v7 上做局部修改(附錄 G);v7 在 v6 上做局部修改(附錄 F);v6 在 v5 上做局部修改:§1.1、§3.1、§4.1、§4.2、§4.4、§4.5、§5.7、§8.1、§8.2、§9、§12、§15、§17、附錄 A。v5 審查意見的處理見附錄 E;v4 的處理見附錄 D。
 
 **歷程**:
 
@@ -13,10 +13,11 @@
 | v5 | 40a598d | **AWC 0 / 1 / 9** | REJECT 0 / 2 / 14 | 兩位都判已收斂;v4 的 BLOCKER 已解 |
 | v6 | 1181c75 | **AWC 0 / 2 / 10** | **AWC 0 / 0 / 8** | 兩位都判已收斂 |
 | v7 | c9dac70 | **AWC 0 / 1 / 12** | **AWC 0 / 1 / 9** | 兩位都判已收斂;MAJOR 是同一條(UD8b 到不了 worker) |
-| v8 | (本版) | | | 局部修改(附錄 G) |
+| v8 | 3b2aa32 | **AWC 0 / 0 / 12** | **AWC 0 / 0 / 9** | 收斂 |
+| v8.1 | (本版) | | | 凍結:v8 + MINOR(附錄 H) |
 
 - v3 每條意見的處理見附錄 C。
-- 審查報告在 `254-reviews/h4-review-v{1,2,3,4,5,6,7}-{A,B}.md`。
+- 審查報告在 `254-reviews/h4-review-v{1,2,3,4,5,6,7,8}-{A,B}.md`。
 
 **上層**:
 - `254-p3-impl.md` v7.1(凍結,`feat/254-p3` @ dfedd03),以下稱 P3;
@@ -176,7 +177,8 @@ bench 的基準狀態分兩段:P3 之前是 **S0-pre**,P3 之後是 **S0**(§3)�
    - provd 的 prov_test 標記;
    - test init 讀 `fault.provd`;
    - helper 的 ro 計數(`info.state` 的一個欄位)。
-   - **完整清單**就是 §5.1、§5.2、§5.4 的三張表(Go fault 17 個、killpoint 3 個、shell fault 14 個)。這些比 P3 §8 凍結時的 10 個接縫多,**屬於凍結設計之外新增的產品程式**;其中 shell fault 會出現在**所有 image,包括 release**。因此 P3 第一個 commit 的程式碼審查與 `/security-review` 必須逐一涵蓋這批程式路徑。信任邊界:`batman_opf` 只接受 root 擁有、regular、非 symlink、link 1 的檔(`rundir.sh:44-52`),加上 `protected_hardlinks=1`(04 sysctl)。
+   - **完整清單**就是 §5.1、§5.2、§5.4 的三張表(Go fault 19 個、killpoint 3 個、shell fault 14 個)。這些比 P3 §8 凍結時的 10 個接縫多,**屬於凍結設計之外新增的產品程式**;其中 shell fault 會出現在**所有 image,包括 release**。因此 P3 第一個 commit 的程式碼審查與 `/security-review` 必須逐一涵蓋這批程式路徑,**特別點名 `upd-open-block`**(它拿掉的正是 worker 對 FIFO / 非 regular 檔的防線)。信任邊界:`batman_opf` 只接受 root 擁有、regular、非 symlink、link 1 的檔(`rundir.sh:44-52`),加上 `protected_hardlinks=1`(04 sysctl)。
+   - **worker 的 fstat 檢查不符(不是 regular、link count、uid、大小)→ phase 0 + reason 11**:P3 §3.7.5 只寫了檢查,沒寫 reason;H4 的 UD8b-race 以 11 判定,請 P3 照這個寫進 §3.7.5。
 3. **`BATMAN_FEATURES` 加 `provd-p3(#254)`**。
 4. **pending 綁定驗它的信任集合**:H4 的 `unbind-all` 會刪 pending 與上傳檔。
 5. **autocommit 的 `inet fw4` 檢查以 PATH 呼叫 `nft`**。
@@ -200,7 +202,7 @@ bench 的基準狀態分兩段:P3 之前是 **S0-pre**,P3 之後是 **S0**(§3)�
 
 **pre-P3 上的 RB 前置**:wsl.22 沒有 P3 的 prov_test 產物。所以 `--pre-p3-full` **跳過所有需要 P3 產物的前置**(`push-helper`、T pending、上傳窗),直接打該列的第一個 P3 動詞,以它的 `E_UNSUPPORTED` 當作 W 行。
 
-**「以 uid 471」怎麼做**:04 上沒有 su / setpriv;用 busybox `start-stop-daemon -S -c 471:471 -x <工具> -- <參數>`(v7-B 在 04 唯讀確認有 `-c`)。⚠️ 尚未在 04 實際執行,列入 E-H15 一起驗。
+**「以 uid 471」怎麼做**:04 上沒有 su / setpriv。照 repo 既有的 `NB()` 寫法(`tmp-trust-280.sh:19`):`start-stop-daemon -S -c 471:471 -n <這一臂唯一的名字> -a /bin/sh -- -c "<指令>"`。**不能用 `-x <工具>`**:同名行程已在跑時它只印 `is already running` 並回 rc 1、什麼都不做(v8-A 在 WSL busybox 1.36.1 實跑)。每次都先執行 `id -u` 並斷言 = 471。⚠️ 尚未在 04 實際執行,列入 E-H15 一起驗。
 
 ## 3. Bench 基準狀態
 
@@ -332,8 +334,8 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 **預期會走 fake path 的負向臂**(例如錯的 PSK、member 收到 NX):這種臂沒有可驗的 `node_cert`,做法如下:
 - 同一臂內先建一條**已認證**的連線,記下目標目前的位址,關掉;
 - 在 RPA 換址窗(約 900 s,F-H12)內重連**同一個位址**,送負向的 msg1;peer 端的分類必須是 `fake`;
-- **節點端佐證**(v5-A M1):收到 fake msg2 之後,在連線後 10 s 內再送**一則完整的單 frame 訊息**,provd 一定會寫 `session ended: message on the fake path`(`session.go:300-306` → `:234`)。斷言 04 的這一行增加、02 沒有增加。**HTTP** 的 NX / psk_replay 依 P3 `:492` 是回一個等長的回應後就關閉,不會產生這一行 → HTTP 的 fake path 不能看回應長度(P3 `:492` 規定 fake 回應與真回應等長),改用 tcpdump 看 04 在回應之後**立刻主動送出 FIN**,並對同一個 session 再送一次 `/msg` → 連線已關。
-  - 這一行的限流 key `session` 由所有 session-end 行共用(10 行 / 分)。所以 fake path 的臂之間至少隔 10 s、一個單位每分鐘最多 5 次,臂期間也不做其他會產生 session-end 的動作。
+- **節點端佐證**(v5-A M1):收到 fake msg2 之後,在連線後 10 s 內再送**一則完整的單 frame 訊息**,provd 一定會寫 `session ended: message on the fake path`(`session.go:300-306` → `:234`)。斷言 04 的這一行增加、02 沒有增加。**HTTP** 的 NX / psk_replay 依 P3 `:492` 是回一個等長的回應後就關閉,不會產生這一行 → HTTP 的 fake path 不能看回應長度(P3 `:492` 規定 fake 回應與真回應等長),改用 tcpdump 看 04 在回應之後**立刻主動送出 FIN**,。前提:relay 對這一臂用**持久連線**(不送 `Connection: close`),同一臂先做正向對照:真的 session 回應之後,04 **不會**送 FIN。第二個 `/msg` 只判定「TCP 連線已關」,不判斷回應內容(P3 沒有定義)。
+  - 這一行的限流 key `session` 由所有 session-end 行共用(10 行 / 分)。每個 fake path 臂開始前,先數 04 log 前 60 s 內已有的 `session` 行;要 ≤ 4 才開始,否則等到符合;臂期間不做其他會產生 session-end 的動作。
 - 位址在這中間換了(重新掃描找不到)→ INVALID。
 
 **HTTP 與 sock 也一樣驗 `node_cert`**(v5-B m):被入侵的手機可以把 relay 轉到 02,所以經 HTTP 的每個交握也要比對 DAC。sock 經 provclient proxy 連到指定的節點,一樣要驗。
@@ -341,7 +343,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 **`SCAN` 只回報廣播 provd 服務 UUID 的裝置**,不會去連其他 BLE 裝置。
 
 **負對照**(`peer.py identify` 的 selftest,以及實機兩臂):
-- (a) 在 S0-pre 上要連 04,但庫裡 04 的 DAC 換成一張**不屬於任何節點**的測試憑證 → 04 與 02 都被認出「不是目標」而放掉 → INVALID。佐證(pre-P3 也拿得到;v6-A M1、v6-B m3):blebridge 記的「msg1 之後、由 peer 送出的 frame 數」= 0(只算 msg1 之後;這個計數器在 selftest 有負對照:假後端在 msg2 之後送出一個 frame → 計數 = 1 → 斷言 FAIL);兩台 provd log 的 `adv withdrawn reason=connect` 與 `adv registered reason=disconnect` 時間戳,證明每條連線只存在到交握完成。
+- (a) 在 S0-pre 上要連 04,但庫裡 04 的 DAC 換成一張**不屬於任何節點**的測試憑證 → 04 與 02 都被認出「不是目標」而放掉 → INVALID。佐證(pre-P3 也拿得到;v6-A M1、v6-B m3):blebridge 記的「msg1 之後、由 peer 送出的 frame 數」= 0(只算 msg1 之後;這個計數器在 selftest 有負對照:peer 以測試模式在 msg2 之後多送一個 frame → 計數器 = 1 → 斷言 FAIL;計數器只算 peer 送出的 frame);兩台 provd log 的 `adv withdrawn reason=connect` 與 `adv registered reason=disconnect` 時間戳,證明每條連線只存在到交握完成。
 - (b) 強制候選順序先試 02(忽略 RSSI)→ 02 被放掉、04 被接受。斷言:02 那條連線在 msg1 之後由 peer 送出的 frame 數 = 0;04 那條連線上 `info` 回應的 key 1(device_id)= 庫裡 04 的值。
 - provd 不寫「收到請求」的 log,P3 v7.1 也沒有定義 helper 的請求計數(P3 F65:helper 分不出 provd 的幾條連線),所以這裡不用它們。§1.4-2 原本要求的「helper ro 計數」只留給 SD3,並寫成 P3 的契約:`info.state` 加一個 `ro_served` 欄位 = helper 啟動以來在 ro 連線上回應的動詞數(不分動詞、不含 ctl / ops)。
 - **絕不能**在認證不符的連線上送出任何請求。
@@ -553,9 +555,10 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 - **`deadman` 模式**:`role_fire_restore` 在 `dm-fire` 裡、**同一個行程**呼叫 `undo_run <run> deadman`。位置緊接在 `stop_judges` 之後,取代原本的「unbind-all、刪 killpoint 目錄」那幾步(那些都包含在段 1 裡)。**不 renew、不 setsid**:lease 已經過期,而 `dm_arm` 會殺掉呼叫它的 dm-fire。
   - **正常情況**:host 模式拿著鎖時,`dm-fire` 會等鎖(最多 10 分,`ble-lib-254.sh:334-336`)。分兩種:(i) lease 在 host 做完前一直有效 → host `release` 取消 dead-man,dead-man 不會執行;(ii) lease 在 host 執行途中過期 → `release` 會 die(`:314-316`),取消不了 dead-man → host 做完、鎖放開之後,dm-fire 照常跑 `role_fire_restore`,段 2 的項目都已標 `done` 而跳過。
   - **host 卡住**(等了 10 分還拿不到鎖,F-H48 的既有規則是不拿鎖照做):先讀 `undo-doing.<run>`,驗證那個 pid 的 cmdline 是 undo 執行器,**殺掉它的 pgid**,然後由 deadman 做段 1 與段 2。所以同一時間只會有一個執行器在跑。
-    - 殺之前:先對 host 執行器的 shell 送 `SIGSTOP`,讓它不再開始下一個動作;再等它正在跑的 `halow-setkey` / `batman-config-save` 子行程結束(它們各自持有自己的鎖、各自負責 rollback;最多等它們各自的預算);然後 `TERM` 整個群組,接著補送 `CONT`(否則停住的行程收不到 TERM)。
-    - `pg_kill` 殺不掉(例如 D 狀態)→ 只做段 1,記 NEEDS-PERSON,不做段 2(避免出現兩個寫者)。這一條由 `test-h4-lib.sh` 以 stub 的 `pg_kill`(回失敗)測。
+    - 殺之前:先驗證 pgid 是整數、> 1、不等於自己的群組(04 上監聽中的 dropbear pgid = 1,`pg_kill` 本身只檢查是不是整數;對 `-1` 送 TERM 等於殺掉所有行程)。然後對 host 執行器的**父 shell** 送 `SIGSTOP`,它就不會開始下一個動作;每個工具都在各自的子 shell 裡跑,`done` 只由父 shell 標記,所以停住父 shell 就夠了。接著等它**直接的子 shell**(正在跑的 `halow-setkey` / `batman-config-save`)結束,zombie 視為已結束,最多等那個工具的預算;再 `TERM` 整個群組、**立刻** `CONT`,之後才輪詢 10 s(既有 `pg_kill` 是 TERM 後就輪詢、沒有 CONT,要改)。
+    - `pg_kill` 殺不掉(例如 D 狀態)→ 只做段 1,記 NEEDS-PERSON,不做段 2(避免出現兩個寫者)。由 `test-h4-lib.sh` 以 stub 的 `pg_kill`(回失敗)測;負對照:stub 回「成功」但群組其實還在 → 斷言 FAIL(證明判定看的是群組真的消失,不是回傳值)。
     - host 執行器的 pgid **不登記**在 run 的行程群組裡:`cmd_dm_fire` 在呼叫 `role_fire_restore` 之前就會 `kill_run_groups`(`:333`、`:338`),登記了會在動作中途被殺。
+    - **單位不以 `bg_start` 在背景起 `halow-setkey`**:`cmd_dm_fire` 會在 undo 之前 `kill_run_groups`,而 `halow-setkey` 沒有 TERM trap,會在寫到一半時被打斷(v7-B m2 的後半)。單位要用 setkey 時,一律在前景、包 `lim`;要「另一個程序持有 setkey 鎖」的 ST11 持的是 `flock`,不是 setkey 本身。
     - 被殺的群組是那條 ssh 連線的 dropbear 子行程,不是監聽中的 dropbear 主行程,所以不會切斷遠端存取(v6-B 在 04 唯讀確認)。
   - `role_fire_restore` 其餘的步驟(provd 重啟、`radio_restore`、啟動服務)在 undo 之後照原樣執行。
 - **`ble-recover`(人工的 recover)**:掃 `/tmp/run/batman-dv/undo/` 與 `/opt/batdata/state/dv-undo/`,對每個還有未完成項目的 run 呼叫 `undo_run <run> recover`。行為與 deadman 相同:先處理卡住的 host 執行器,再做兩段。
@@ -969,7 +972,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 |---|---|---|---|---|---|
 | SD1 | status 與 halow-status 一致 | status | R | 逐欄相等 | W |
 | SD2 | 成員只拿摘要 | member | R | 只有摘要的欄位 | W + P(角色) |
-| SD3 | ro 10/s × 10 分 | ro-load | RB(T 窗) | 沒有 `cfgsave-lock.busy`;沒有 ERate;04 端廣播在 | S(`ro-on-ctl`)+ P(ok + E_RATE ≥ 5400,ok ≥ 2500) |
+| SD3 | ro 10/s × 10 分 | ro-load | RB(T 窗) | 沒有 `cfgsave-lock.busy`;沒有 ERate;04 端廣播在 | S(`ro-on-ctl`);另外 helper 的 `ro_served` 增量 ≥ 2700(以 provclient 經 `sock-as 471` 的自己那一條連線讀 `info.state`,不經 ro 連線,所以讀取本身不算進去)+ P(ok + E_RATE ≥ 5400,ok ≥ 2500) |
 | SD4 | bundle | bundle | R | > 64 KiB、`tar t`、原值 grep = 0 | W + P |
 | SD5 | handle 跨 session | handle | R | 15 | W + P |
 
@@ -999,16 +1002,16 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | HT11 | docker0 + VLAN | docker | RB + ethsim | 同上 | S(同上) |
 | HT12 | 刪表 → ≤ 8 s 不聽 | deltable | RB(T 窗) | 前提:誘發前 `netstat` 有 8095 LISTEN(P);刪表後 ≤ 8 s `netstat` 沒有 8095 | S(`http-nofw`) |
 | HT13 | reload → 兩張表、各一份 | reload | R | | W(表不在) |
-| HT14 | `firewall stop` | fwstop | RB(H4-U11) | ≤ 8 s 不聽 | S(`http-nofw`) |
+| HT14 | `firewall stop` | fwstop | RB(T 窗;H4-U11) | 前提:誘發前 8095 LISTEN;≤ 8 s 不聽 | S(`http-nofw`) |
 | HT15 | helper 停 | helper-stop | RB(T 窗) | 前提:誘發前 8095 LISTEN;停 helper 後 ≤ 8 s 不聽 | P |
 | HT16 | provd crash | provd-kill | RB | 斷線;tmpfs = 0 | P |
 | HT16b | provd 正常停止 | provd-stop | RB | 同上 | P |
 | HT16c | provd 每 5 s 重生的迴圈 | provd-loop | RB(`crash-on-start`) | 迴圈期間不聽、helper 正常、上傳檔被刪 | P |
 | HT17 | hostapd / `wifi reload` | wifi-reload | RB | 手機重連後連得上 | P |
-| HT18 | `auto_includes = 0` | autoinc | RB | 不給 `http.2` | S(`http-nofw`) |
-| HT19 | D-3 | bit24 | RB | 不聽;`status` 回報 | S(`http-nofw`) |
+| HT18 | `auto_includes = 0` | autoinc | RB(T 窗) | 前提:誘發前 8095 LISTEN;不給 `http.2`、≤ 8 s 不聽 | S(`http-nofw`) |
+| HT19 | D-3 | bit24 | RB(T 窗) | 前提:誘發前 8095 LISTEN;不聽;`status` 回報 | S(`http-nofw`) |
 | HT20 | D-8 | d8 | RB + ethsim | 仍被丟 | S(兩邊 `http-nofw`,不清 bit 的規則 → 放行) |
-| HT21 | D-13 | d13 | RB | `http.2` 消失;`status` 回報 | S(`http-nofw`) |
+| HT21 | D-13 | d13 | RB(T 窗) | 前提:誘發前 8095 LISTEN;`http.2` 消失;`status` 回報 | S(`http-nofw`) |
 | HT22 | §6 依賴重啟 dbus | dbus | R | BLE 回來 ≤ 15 s;沒有因此開啟 HTTP 備援 | P |
 | HT23 | §3.8.1 `phy*` 前提:bridge 上有不屬於 radio0 的 `phy*` port → 不給 `http.2` | phy-premise | RB(T 窗,**沒有** `http-nofw`)+ ethsim 的 `phy9h4` | 前提:先斷言 8095 LISTEN(P);`phy9h4` 接進 br-ahwlan → ≤ 8 s 內 `http.2` 消失、8095 不聽;刪掉 → 恢復。這也是「`phy9h4` 殘留時 fail-closed」的證據。不斷言 `status` 有回報:P3 沒有定義這一項 | S(`http-nofw` → 照樣給 `http.2`) |
 
@@ -1043,8 +1046,8 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | UD7 | 七種拒絕(簽章、serial、板子、降級、min_from、開機設定、版本解析) | reject | RB | reason 逐一相等(min-serial 編在 helper 裡) | W |
 | UD8 | 四包惡意 tar | malicious | RB | 11;槽 BAD、不 arm | W |
 | UD8b | §8「上傳檔換成 FIFO」(prepare 之前換) | fifo-pre | RB | 以 uid 471 把上傳檔換成 FIFO → `update.prepare` 的大小檢查回 `E_REJECTED{15}`、FIFO 被刪(P3 `:327`、`:456`) | W(E_U)+ P(檔案確實是 FIFO、擁有者是 471) |
-| UD8b-race | §8 同上(prepare 之後、worker 開檔之前換;被入侵的 provd 能贏這個競態) | fifo-race | RB(`upd-open-pause`) | prepare 回 phase 2 之後,在 30 s 暫停窗內以 uid 471 換成 FIFO → worker 以 `O_NONBLOCK` 開檔、fstat 不是 regular → phase 0 + 11;「沒有卡住」= 下一個 `update.status` ≤ 5 s 回應、helper pid 不變 | S(`upd-open-pause` + `upd-open-block` → worker 卡在 open、`update.status` 逾時) |
-| UD8c | §8「上傳後改 payload」 | mutate | RB | 上傳完成、prepare 之前,以 uid 471 把上傳檔整個換成**另一個合法、而且長度相同的 tar.gz**(worker 會先比 fstat 的大小 = key 3,P3 §3.7.5-1)。第一個成員仍是簽過的 `SHA256SUMS`,`metadata`、`boot/` 都不變;`root.squashfs` 保留 `hsqs` magic、長度不變、內容不同(壓縮後的總長用 gzip header 的 `FEXTRA` / `FCOMMENT` 欄位補到與原檔相同;調 tar padding 湊不出精確的壓縮後長度)。gzip 與 tar 解析都會過,讀回時與 `SHA256SUMS` 不符 → B 被 invalidate、不 arm、11 | W + P(換過的檔是合法 tar、總長相同、`root.squashfs` 的 sha 不同) |
+| UD8b-race | §8 同上(prepare 之後、worker 開檔之前換;被入侵的 provd 能贏這個競態) | fifo-race | RB(`upd-open-pause`) | prepare 回 phase 2 之後,在 30 s 暫停窗內以 uid 471 換成 FIFO → 暫停結束後 ≤ 10 s 內 `update.status` = phase 0 + 11、FIFO 已刪、B 不是 BAD、同值的 `settings.set` 不是 `E_BUSY` | S(`upd-open-pause` + `upd-open-block` → 同一時限過後仍是 phase 2;`update.status` 只讀快取(P3 `:347`),所以不會逾時,判定看 phase) |
+| UD8c | §8「上傳後改 payload」 | mutate | RB | 上傳完成、prepare 之前,以 uid 471 **先刪掉原檔、再寫入**(tmpfs 只有 2 × payload,兩份同時在會 ENOSPC)**另一個合法、而且長度相同的 tar.gz**(worker 會先比 fstat 的大小 = key 3,P3 §3.7.5-1)。第一個成員仍是簽過的 `SHA256SUMS`,`metadata`、`boot/` 都不變;`root.squashfs` 保留 `hsqs` magic、長度不變、內容不同(mutant 先做得比原檔短,壓縮後的總長再用 gzip header 的 `FEXTRA` / `FCOMMENT` 欄位補到與原檔相同;比原檔長就補不回來,要重做)。gzip 與 tar 解析都會過,讀回時與 `SHA256SUMS` 不符 → B 被 invalidate、不 arm、11 | W + P(換過的檔是合法 tar、總長相同、`root.squashfs` 的 sha 不同) |
 | UD9 | prepare 中 kill / 斷電 | kill | RB(`upd-write-mid`) | 槽 BAD、仍在舊槽 | P |
 | UD10 | helper 重啟 → phase 3 | rebuild | RB | 3 | W + P |
 | UD10b | 重開 → pending 不在 | reboot | RB | 不在 | P |
@@ -1059,8 +1062,9 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | UD17 | D-10 | d10 | RB | (a) 6 不帶 18;(b) 旗標不在 | S(`d10-no-disarm`) |
 | UD18 | D-14 | — | C | `.busy` 不在 | S(沒有 trap 的變體) |
 | UD19 | D-12 | d12 | RB(`setkey-pause`;provclient 直接打 helper) | ≤ 5 s 回應 | S(`d12-take-mu`) |
-| UD20 | §7「被入侵的 provd 偷換 pending 版本」:owner-op 不符 | swap | RB(provclient 直接打 helper,uid 471) | 資料路徑:provclient `nonce` 取 helper nonce → WSL 的 peer 用 H0 對 X 簽 owner-op → provclient 送 `update.prepare`,body 的 sha 換成 Y。 擁有者的 owner-op 是對 pending 的 sha X 簽的;送 `update.prepare` 時把 body 的 sha 換成 Y → `args_hash` 不符 → `E_FORBIDDEN`,沒有啟動 worker | W(E_U)+ P(用**新的 nonce** 重新簽一個對 X 的 owner-op → 成功。helper 每次驗 owner-op 都會消耗 nonce,失敗也一樣(`node.go:672-690`、`:310-319`),所以不能重用原本那一個)。P 會真的啟動 worker、覆寫 B:**順序固定為 UD20b → UD20 負向 → UD20 的 P(最後)**,之後 brewrite B(§13)。先後的理由:P3 沒規定 helper 先驗 owner-op 還是先比 sha,而 prepare 失敗會刪上傳檔(`:456`),所以每一臂前都重新上傳 |
+| UD20 | §7「被入侵的 provd 偷換 pending 版本」:owner-op 簽的不是 pending | swap | RB(provclient 直接打 helper,uid 471) | 資料路徑:provclient `nonce` 取 helper nonce → WSL 的 peer 用 H0 簽 owner-op → provclient 送 `update.prepare`。pending = X、body 的 sha = X;**負向**:owner-op 是對 Y 簽的 → `args_hash` 不符 → `E_FORBIDDEN`、沒有啟動 worker。**正向**(同一份 pending 與 body,只差被簽的 sha):用新的 nonce 對 X 簽 → 成功。兩者只差一個變數,而且拒絕條件只剩 `args_hash` 一個(v8-A m9) | W(E_U)+ 正向是 flip。helper 每次驗 owner-op 都會消耗 nonce,失敗也一樣(`node.go:672-690`、`:310-319`),所以兩臂各用新的 nonce。正向會真的啟動 worker、覆寫 B:**順序固定為 UD20c → UD20b → UD20 負向 → UD20 正向(最後)**,之後 brewrite B(§13);prepare 失敗會刪上傳檔(`:456`),所以每一臂前都重新上傳 |
 | UD20b | 同上:owner-op 有效、但 sha ≠ pending | swap-sha | RB | 擁有者以新的 nonce 對 Y 簽一個有效的 owner-op,而 pending 是 X → `E_REJECTED{15}`(P3 `:327`) | W(E_U)+ P |
+| UD20c | §7 同上:被入侵的 provd 用**不需要 owner-op** 的 `update.check` 把 pending 換成 Y(v8-B m1) | swap-check | RB(provclient,uid 471) | 擁有者已對 X 做過 `update.check`(pending = X);provclient 以 T 簽的 Y manifest 送 `update.check` → pending 變成 Y;擁有者接著以對 X 簽的 owner-op 送 `update.prepare {sha: X}` → `E_REJECTED{15}`(sha ≠ pending),沒有啟動 worker → 證明換掉 pending 也沒辦法讓 Y 不經擁有者簽章就被寫入 | W(E_U)+ P(pending 確實變成 Y:`update.status`);P3 `:568` 把這條指定給 Go 單元測試,H4 另加這一個黑箱臂 |
 
 ### A.10 `prov-autocommit-p3-254`(§5.6)
 
@@ -1236,3 +1240,25 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | B-m6 mountinfo | 改成白名單 |
 | B-m7 背景行程的 `9>&-` | §4.5 |
 | A-m12 / B-m9 文字 | 審查報告清單、frame 計數定義在 msg1 之後 |
+
+
+## 附錄 H. v8 審查的 MINOR(凍結時一併處理)
+
+| 意見 | 處理 |
+|---|---|
+| A-m1 / B-m8 uid 471 的寫法 | §2:照 `NB()` 用 `-n <唯一名字> -a /bin/sh`,不用 `-x`;斷言 `id -u` = 471 |
+| A-m2 / B-m3 UD8b-race 的判定 | 暫停結束後 ≤ 10 s 的 phase 0 + 11、FIFO 已刪、B 不是 BAD、`settings.set` 不是 `E_BUSY`;S = 同一時限後仍是 phase 2 |
+| A-m3 fstat 不符的 reason;UD8c 的空間 | §1.4-2 請 P3 寫成 reason 11;UD8c 先刪原檔再寫 |
+| A-m4 / B-m4 LISTEN 前提 | HT14、HT18、HT19、HT21 都加 T 窗 + LISTEN |
+| A-m5 子 shell 與 STOP | §5.7:每個工具各自在子 shell;`done` 由父 shell 標;STOP 父 shell |
+| A-m6 pgid 驗證 | §5.7:整數、> 1、不是自己的群組 |
+| A-m7 pg_kill 失敗臂的負對照 | §5.7:stub 回成功但群組還在 → FAIL |
+| A-m8 / B-m5 HTTP FIN 佐證 | 持久連線 + 正向對照;第二個 `/msg` 只看 TCP 已關 |
+| A-m9 / B-m1 UD20 | 只剩 `args_hash` 一個拒絕條件的 flip;新增 UD20c(`update.check` 換 pending) |
+| A-m10 fake path 的額度 | §4.2:先數前 60 s 的 `session` 行 |
+| A-m11 / B-m7 `ro_served` | SD3 用它;讀取走 provclient 自己的連線 |
+| A-m12 / B-m8 文字 | Go fault 19 個;frame 計數器的負對照改在 peer 端 |
+| B-m2 TERM 與 CONT | §5.7:TERM 之後立刻 CONT 再輪詢;等直接子 shell;zombie 視為結束 |
+| B-m6 frame 計數器的負對照 | 同 A-m12 |
+| B-m8 `upd-open-block` 要點名進 P3 的 security review;UD8c mutant 要先變短 | §1.4-2;UD8c |
+| B-m9 背景 setkey 會被 `kill_run_groups` 打斷 | §5.7:單位不以 `bg_start` 起 setkey |
