@@ -166,6 +166,7 @@ bench 的基準狀態分兩段:P3 之前是 **S0-pre**,P3 之後是 **S0**(§3)�
 | F-H53 | 新卡的 bootstrap IP 是 `10.41.254.<隨機>`,入網後 openmanetd 再換一次;host key 每次重燒都重新產生 | `99-halow-identity:22-28` |
 | F-H54 | Linux squashfs 在 mount 時檢查 `s_major`,不等於 4 就拒絕 | `fs/squashfs/super.c:158-166`(6.6;v4-A 核對) |
 | F-H55 | WSL userns 沙箱:宿主上 yello 擁有的檔案在 userns 裡寫得進去;chroot 擋不住 userns 裡的 root;v4 寫的四條逃脫負測試,在沙箱外執行一樣會失敗(沒有鑑別力) | v4-B 實測 |
+| F-H56 | provd 的 session 閒置上限:匿名 30 s、已認證 300 s,請求處理中不計(`server.go:29-30`、`session.go:121, 284-288`)。一則訊息超過 `max_msg` − 16(CTRL key 4 = 8192)時,必須依 §5.1 分塊;不分塊的話 provd 會斷線 | 04 實測 2026-11-03(E-H9) |
 
 ### 1.4 回報給 P3(P3 實作的第一個 commit 處理)
 
@@ -896,7 +897,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 |---|---|---|
 | E-H1 | BLE 掃描 | ✅ |
 | E-H8 | 桌機 ↔ AP 上的手機;relay → :80 | ❌ 現場 |
-| E-H9 | 連線、STATUS / CTRL、MTU | ✅ 部分(legacy);`node_cert` 認證、notify、9 KiB、230 s ❌(§15-2) |
+| E-H9 | 連線、STATUS / CTRL、MTU;`node_cert` 認證、notify、多 frame、閒置計時 | ✅ 2026-11-03(04 legacy,`peer.py eh9`):identify ok(−58 dBm,dev DAC 規則 + `sig_static`);`info` status 0、state 3;7820 B 請求 33 frame、0.43 s;匿名 session 閒置 25 s 仍開、再閒置 40 s 已關(IdleAnon 30 s)。原本列的「230 s」指的是處理中的請求(不計閒置,`session.go:121`),要 P3 的認證 session 才測得到 |
 | E-H10 | 手機在 C0 ↔ ALT 之間切換 | ❌ 現場 |
 | E-H12 | `push-provd` 在 ujail 下 | ❌ §15-3 |
 | E-H13 | 壞 rootfs → panic → 回到原槽 | ❌ 前置 §15-3、本體在現場 |
