@@ -53,7 +53,8 @@ class BleTransport:
     """The peer_core transport interface (send / recv / frame_limit) over the bridge's line protocol."""
 
     def __init__(self, argv=None, popen=None):
-        self.p = popen or subprocess.Popen(argv or [WIN_PY, "-E", "-s", BRIDGE_WIN], stdin=subprocess.PIPE,
+        # -E but not -s: bleak is pinned in the user site (requirements-win.txt is installed with --user)
+        self.p = popen or subprocess.Popen(argv or [WIN_PY, "-E", BRIDGE_WIN], stdin=subprocess.PIPE,
                                            stdout=subprocess.PIPE, text=True, bufsize=1)
         self.q = queue.Queue()
         self.frame_limit = ts.MAX_FRAME
@@ -152,8 +153,14 @@ class BleTransport:
 
     def close_link(self):
         self.cmd("CLOSE")
-        line = self.expect(("CLOSED",), timeout=15)
-        return int(line.rsplit("=", 1)[1])
+        try:
+            line = self.expect(("CLOSED",), timeout=15)
+        except ts.Closed as e:                 # the link was already lost (LOST): nothing to count
+            return -1 if "LOST" in str(e) else -2
+        try:
+            return int(line.rsplit("=", 1)[1])
+        except (IndexError, ValueError):
+            return -1
 
     def quit(self):
         try:
@@ -207,18 +214,23 @@ def cmd_eh9(a):
         st, body = p.request("info")
         out(step="info", status=st, state=body.get(7) if isinstance(body, dict) else None,
             device_id=body.get(1) if isinstance(body, dict) else None)
-        big = {99: b"\0" * 9000}
+        # one message just under max_msg - 16 (CTRL key 4 = 8192): many frames each way, no app-level chunking
+        # (a 9000 B message would need §5.1 chunks; unchunked, provd drops the link — seen on 04, 2026-11-03)
+        big = {99: b"\0" * 7800}
         t0 = time.monotonic()
         st2, body2 = p.request("info", big, timeout=30)
         out(step="info-9k", status=st2, request_bytes=len(p.last_env), frames=-(-len(p.last_env) // (t.frame_limit - 3)),
             seconds=round(time.monotonic() - t0, 2))
-        out(step="hold", seconds=a.hold)
-        time.sleep(a.hold)
-        try:
-            st3, _ = p.request("info", timeout=15)
-            out(step="info-after-hold", status=st3)
-        except (ts.Closed, TimeoutError) as e:
-            out(step="info-after-hold", result="closed", why=str(e)[:80])
+        # provd closes an ANONYMOUS session idle >= 30 s (IdleAnon, server.go:29; authed 300 s; never while a request
+        # is in flight, session.go:121, 284-288): 25 s idle must keep it, a further 40 s idle must not
+        for hold, want in ((25, "open"), (40, "closed")):
+            time.sleep(hold)
+            try:
+                st3, _ = p.request("info", timeout=15)
+                got = "open" if st3 == 0 else "error"
+            except (ts.Closed, TimeoutError) as e:
+                got = "closed"
+            out(step="idle", seconds=hold, expect=want, got=got, ok=(got == want))
         out(step="close", sent_after_msg1=t.close_link())
         out(step="dac", dac_sha256_16=__import__("hashlib").sha256(dac).hexdigest()[:16])
         return 0
