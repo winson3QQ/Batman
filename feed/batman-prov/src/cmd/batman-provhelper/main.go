@@ -592,10 +592,11 @@ func daemon(p provstore.Paths) {
 		logf("apply-state: %v", err)
 	}
 	stop := make(chan struct{})
+	trial := newTrialCache(5*time.Second, execIsTrial) // info.state key 5 + Committed() share it (254-p2-impl §1.3)
 	h := &health.Env{
-		BootID: bootID, Uptime: uptime, ReadInfo: health.ReadInfo, BTDPid: btdPid,
+		BootID: bootID, Uptime: uptime, ReadInfo: health.ReadInfo, ReadAdv: health.ReadAdvInstances, BTDPid: btdPid,
 		ScFile: "/var/lib/bluetooth/batman-sc", Out: filepath.Join(p.RunDir, "batman-prov.health"),
-		Committed: func() bool { rc, _ := run(nil, "batman-slot", "is-trial"); return rc == 1 },
+		Committed: func() bool { return !trial.Trial() },
 		ConfigOK:  bootConfigOK, BleOK: filepath.Join(p.State, "ble-ok"),
 	}
 	go h.Run(stop)
@@ -605,6 +606,7 @@ func daemon(p provstore.Paths) {
 	}
 	n := node.New(p, ks, realSys{p}, logf)
 	n.Verdict = res.Verdict
+	n.Health, n.TrialCached = h.Get, trial.Trial
 	// docs/design/254-wireless-txn.md §3: an unfinished wireless change is finished BEFORE serving — the previous state
 	// of the record p5 confirmed. Not on an unknown verdict or an unread p5 (then the first saving verb, or the next
 	// boot, finishes it). A network to rejoin waits for the radio (up to 120 s); a forget / blocked radio does not.
@@ -620,7 +622,7 @@ func daemon(p provstore.Paths) {
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 	go func() { <-sig; close(stop); srv.Close(); os.Exit(0) }()
 	logf("serving (%s)", res.Verdict)
-	srv.Serve(n.Handle)
+	srv.ServeConns(func() sock.Handler { return n.NewConn() })
 }
 
 // waitRadioUp: meshjoin_radio_up (the mesh interface is up on the uci mesh id), polled until true or the deadline.

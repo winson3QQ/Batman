@@ -1,6 +1,9 @@
 // Package sock is the helper's socket (docs/design/254-stage1-impl.md §3, §4.1): SOCK_SEQPACKET at
 // /tmp/run/batman-prov/helper.sock, dir root 0750 group provd, socket 0660; SO_PEERCRED uid must be provd's or the
-// connection is closed; one connection at a time, requests serialised; a request is <= 64 KiB; 30 s idle timeout.
+// connection is closed; up to MaxConns connections at once (254-p2-impl §1.3: provd's ctl + ops and provclient), each
+// served by its own goroutine, requests within one connection one at a time; at most AcceptPerSec new connections a
+// second (counted once a connection passed SO_PEERCRED and sent its first request); a request is <= 64 KiB; 30 s idle
+// timeout. Serialising state changes is the handler's (node's mutex), not the server's.
 // The directory is created fresh by the helper (O_NOFOLLOW semantics: a pre-existing symlink / foreign-owned path is
 // a refusal to start, never followed).
 package sock
@@ -11,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +23,13 @@ import (
 
 // MaxRequest is the per-packet limit (219-protocol §8 / 254 §4.1).
 const MaxRequest = 65536
+
+// MaxConns connections are served at once; the next one is closed at once (254-p2-impl §3).
+const MaxConns = 4
+
+// AcceptPerSec: new connections admitted per second; more are closed (a churning peer cannot reset a per-connection
+// quota faster than this, 254-p2-impl §4.3).
+const AcceptPerSec = 5
 
 // Handler answers one decoded request map.
 type Handler func(cbor.Map) cbor.Map
@@ -31,6 +42,11 @@ type Server struct {
 	Idle    time.Duration
 	Log     func(string, ...any)
 	ln      *net.UnixListener
+
+	mu       sync.Mutex
+	open     int         // connections holding a slot
+	admitted []time.Time // admissions in the last second
+	rateLog  time.Time   // last "accept rate" log line (one a minute)
 }
 
 // PrepareDir makes the socket dir: removes OUR stale socket, refuses anything that is not a root-owned real dir.
@@ -104,15 +120,59 @@ func (s *Server) Close() error {
 	return s.ln.Close()
 }
 
-// Serve accepts connections one at a time (single-connection serialisation) until the listener closes.
-func (s *Server) Serve(h Handler) error {
+// Serve serves every connection with the same handler.
+func (s *Server) Serve(h Handler) error { return s.ServeConns(func() Handler { return h }) }
+
+// ServeConns accepts until the listener closes; each connection gets its own goroutine and the handler newConn returns
+// for it (per-connection state such as a quota).
+func (s *Server) ServeConns(newConn func() Handler) error {
 	for {
 		c, err := s.ln.AcceptUnix()
 		if err != nil {
 			return err
 		}
-		s.serveConn(c, h)
+		go s.serveConn(c, newConn)
 	}
+}
+
+func (s *Server) takeSlot() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.open >= MaxConns {
+		return false
+	}
+	s.open++
+	return true
+}
+
+func (s *Server) releaseSlot() {
+	s.mu.Lock()
+	s.open--
+	s.mu.Unlock()
+}
+
+// admit counts a connection that passed SO_PEERCRED and sent its first request (dead connections left in the backlog
+// do not count, 254-p2-impl §3); false = over AcceptPerSec.
+func (s *Server) admit() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	keep := s.admitted[:0]
+	for _, t := range s.admitted {
+		if now.Sub(t) < time.Second {
+			keep = append(keep, t)
+		}
+	}
+	s.admitted = keep
+	if len(keep) >= AcceptPerSec {
+		if now.Sub(s.rateLog) >= time.Minute {
+			s.rateLog = now
+			s.Log("connection closed: more than %d new connections a second", AcceptPerSec)
+		}
+		return false
+	}
+	s.admitted = append(s.admitted, now)
+	return true
 }
 
 func peerUID(c *net.UnixConn) (int, error) {
@@ -133,19 +193,34 @@ func peerUID(c *net.UnixConn) (int, error) {
 	return uid, gerr
 }
 
-func (s *Server) serveConn(c *net.UnixConn, h Handler) {
+func (s *Server) serveConn(c *net.UnixConn, newConn func() Handler) {
 	defer c.Close()
 	uid, err := peerUID(c)
 	if err != nil || uid != s.PeerUID {
 		s.Log("connection refused: peer uid %d (want %d) %v", uid, s.PeerUID, err)
 		return
 	}
+	// the slot is freed only when this goroutine ends: a handler still running a long verb for a peer that went away
+	// keeps it (254-p2-impl L81)
+	if !s.takeSlot() {
+		s.Log("connection refused: %d connections open", MaxConns)
+		return
+	}
+	defer s.releaseSlot()
+	h := newConn()
 	buf := make([]byte, MaxRequest+1)
+	first := true
 	for {
 		c.SetReadDeadline(time.Now().Add(s.Idle))
 		n, err := c.Read(buf)
 		if err != nil {
 			return
+		}
+		if first {
+			first = false
+			if !s.admit() {
+				return
+			}
 		}
 		if n > MaxRequest {
 			s.Log("request > 64 KiB: closing")

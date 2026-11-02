@@ -1,5 +1,6 @@
 // Package node implements the helper's verbs (docs/design/254-stage1-impl.md §4.1, §4.4, §6.1–§6.2; protocol
-// 219-protocol.md v0.7). The caller (the socket server) has already checked SO_PEERCRED and serialises requests.
+// 219-protocol.md v0.7). The caller (the socket server) has already checked SO_PEERCRED; it serves up to 4 connections
+// at once, so Handle serialises every verb on n.mu except the read-only list in readonly.go (254-p2-impl §4.3).
 //
 // Helper socket messages (internal to provd <-> helper, 254-p1-impl.md §2.1): one SEQPACKET = one CBOR map.
 //
@@ -107,6 +108,13 @@ type Node struct {
 	// failure; the last commit-only resolve
 	lastFinishFail time.Time
 	finishFails    int // consecutive Finish failures (the backoff doubles, §16.1)
+	// 254-p2-impl §4.3: health.get's source (health.Env.Get) and the cached is-trial (info.state key 5); nil in tests
+	// = no health / Sys.IsTrial
+	Health      func() string
+	TrialCached func() bool
+	roGlobal    bucket // read-only verbs, helper-wide (readonly.go)
+	psksRate    bucket // psks.get: 1/s
+	clock       func() time.Time
 }
 
 type nonce struct {
@@ -121,7 +129,8 @@ type nonce struct {
 func New(p provstore.Paths, ks *keystore.Keystore, sys Sys, log func(string, ...any)) *Node {
 	b := make([]byte, 16)
 	rand.Read(b)
-	return &Node{P: p, KS: ks, Sys: sys, BootID: b, nonces: map[string]*nonce{}, Log: log}
+	return &Node{P: p, KS: ks, Sys: sys, BootID: b, nonces: map[string]*nonce{}, Log: log,
+		roGlobal: bucket{rate: roGlobalRate, burst: roGlobalBurst}, psksRate: bucket{rate: 1, burst: 1}}
 }
 
 func rnd(n int) []byte { b := make([]byte, n); rand.Read(b); return b }
@@ -153,10 +162,11 @@ func onlyKeys(m cbor.Map, keys ...uint64) *Error {
 	return nil
 }
 
-// Handle dispatches one decoded request map and returns the response map.
-func (n *Node) Handle(req cbor.Map) cbor.Map {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+// Handle dispatches one decoded request map and returns the response map (no per-connection quota; NewConn has one).
+func (n *Node) Handle(req cbor.Map) cbor.Map { return n.handle(req, nil) }
+
+// handle: the verb is decoded before the mutex — read-only verbs never take it (readonly.go, 254-p2-impl F-P44).
+func (n *Node) handle(req cbor.Map, conn *bucket) cbor.Map {
 	idAny, _ := req.Get(2)
 	id, _ := idAny.(uint64)
 	verbAny, _ := req.Get(1)
@@ -166,6 +176,18 @@ func (n *Node) Handle(req cbor.Map) cbor.Map {
 	if len(req) != 3 || !ok || verb == "" {
 		return cbor.M(1, id, 2, uint64(ESchema), 3, cbor.M())
 	}
+	if readOnlyVerbs[verb] {
+		res, err := n.readOnly(verb, args, conn)
+		if err != nil {
+			if err.Code != ERate { // a quota refusal is the caller's pacing, not an event
+				n.Log("verb %s refused: code %d (%s)", verb, err.Code, err.Reason)
+			}
+			return cbor.M(1, id, 2, uint64(err.Code), 3, cbor.M())
+		}
+		return cbor.M(1, id, 2, uint64(OK), 3, res)
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	res, err := n.dispatch(verb, args)
 	if err != nil {
 		n.Log("verb %s refused: code %d (%s)", verb, err.Code, err.Reason)
@@ -202,49 +224,15 @@ func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 		}
 	}
 	rec, _, err := provstore.LoadOverlay(n.P)
-	if err != nil || rec == nil {
-		if verb != "info.cert" && verb != "info.ecdh_pub" && verb != "info.boot_id" && verb != "nonce" {
-			return nil, fail(EUnsupported, "no usable provisioning record (%v)", err)
-		}
+	if (err != nil || rec == nil) && verb != "nonce" { // the read-only verbs (readonly.go) never get here
+		return nil, fail(EUnsupported, "no usable provisioning record (%v)", err)
 	}
 	switch verb {
-	case "info.cert":
-		if e := onlyKeys(a); e != nil {
-			return nil, e
-		}
-		return cbor.M(1, n.KS.Cert(), 2, n.KS.SN()), nil
-	case "info.ecdh_pub":
-		if e := onlyKeys(a); e != nil {
-			return nil, e
-		}
-		return cbor.M(1, n.KS.ECDHPub()), nil
-	case "info.boot_id":
-		if e := onlyKeys(a); e != nil {
-			return nil, e
-		}
-		return cbor.M(1, n.BootID), nil
 	case "info.counter":
 		if e := onlyKeys(a); e != nil {
 			return nil, e
 		}
 		return cbor.M(1, rec.ClaimedCounter), nil
-	case "info.state":
-		if e := onlyKeys(a); e != nil {
-			return nil, e
-		}
-		return cbor.M(1, rec.State, 2, rec.Generation, 3, uint64(len(rec.Owners)), 4, rec.RadioManaged), nil
-	case "info.net":
-		// net_id / version / left for the app's "already done" decision (254-wireless-txn §4.1). provd routes this
-		// verb only for the owner role: a stable net_id to any BLE peer would link a fleet (§14).
-		if e := onlyKeys(a); e != nil {
-			return nil, e
-		}
-		var nid any
-		var ver uint64
-		if rec.Net != nil {
-			nid, ver = rec.Net.NetID, rec.Net.Version
-		}
-		return cbor.M(1, nid, 2, ver, 3, rec.Left), nil
 	case "nonce":
 		return n.newNonce(a)
 	case "sign.static", "sign.ecdh_proof", "sign.peer":
@@ -252,6 +240,9 @@ func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 	case "psks.get":
 		if e := onlyKeys(a); e != nil {
 			return nil, e
+		}
+		if !n.psksRate.take(n.now()) { // 254-p2-impl §4.3: 1/s (provd re-fetches single-flight)
+			return nil, fail(ERate, "psks.get: 1/s")
 		}
 		return n.psks(rec), nil
 	case "claim.verify":
@@ -389,28 +380,26 @@ func (n *Node) sign(verb string, a cbor.Map) (cbor.Map, *Error) {
 
 // ---- PSKs (HKDF outputs only; never owner_tag_key / net_root) ----------------------------------------------------
 
+// psks: {1: [psk_owner…], 2: psk_member, 3: psk_replay}. No adv_owner / adv_member (keys 4/5) in P2: B16 is #255, and
+// a compromised provd must not get them (254-p2-impl §1.3, §8).
 func (n *Node) psks(rec *provstore.Record) cbor.Map {
 	dev := n.KS.DeviceID()
 	owners := []any{}
 	for _, o := range rec.Owners {
 		owners = append(owners, proto.PskOwner(o.TagKey, dev))
 	}
-	var replay, advOwner, member, advMember any
+	var replay, member any
 	if len(rec.Owners) == 1 {
 		if z, err := n.KS.ECDH(rec.Owners[0].EncPub); err == nil {
 			replay = proto.PskReplay(z, dev)
 		}
 	}
-	if rec.AdvOwnerKey != nil {
-		advOwner = proto.AdvOwner(rec.AdvOwnerKey, dev)
-	}
 	if rec.Net != nil {
 		if root := n.netRoot(rec); root != nil {
 			member = proto.PskMember(root, rec.Net.NetID, uint32(rec.Net.Version))
-			advMember = proto.AdvMember(root, rec.Net.NetID, uint32(rec.Net.Version))
 		}
 	}
-	return cbor.M(1, owners, 2, member, 3, replay, 4, advOwner, 5, advMember)
+	return cbor.M(1, owners, 2, member, 3, replay)
 }
 
 // ---- claim (§6.1) --------------------------------------------------------------------------------------------------

@@ -206,8 +206,9 @@ func TestFinishP5UndecodableKeepsTxn(t *testing.T) {
 	}
 }
 
-// §15.2: the boot Finish holds the mutex from the moment BootFinish returns — a verb that arrives meanwhile waits
-// for it and then sees the finished state
+// §15.2: the boot Finish holds the mutex from the moment BootFinish returns — a verb that takes the mutex and arrives
+// meanwhile waits for it and then sees the finished state (254-p2-impl: info.* / health.get no longer take it, see
+// TestBootFinishReadOnlyAnswers; info.counter still does)
 func TestBootFinishHoldsTheMutex(t *testing.T) {
 	r, _ := memberRig(t)
 	r.crashTxn2("sae-v2-pass", "m2", "36")
@@ -215,7 +216,7 @@ func TestBootFinishHoldsTheMutex(t *testing.T) {
 	r.n.BootFinish(func() { <-release })
 	got := make(chan string, 1)
 	go func() {
-		code, _ := r.call("info.net", cbor.M())
+		code, _ := r.call("info.counter", cbor.M())
 		state := "done"
 		if provstore.TxnPresent(r.n.P) {
 			state = "txn"
@@ -267,3 +268,33 @@ func TestStoredSecretsOtherTargetRefused(t *testing.T) {
 }
 
 func readFile(p string) ([]byte, error) { return os.ReadFile(p) }
+
+// 254-p2-impl L70: during the boot Finish (mutex held up to 120 s) the read-only verbs answer at once — STATUS stays
+// readable — and info.net reports the unfinished change. Negative control: the pre-P2 Handle (every verb under the
+// mutex) blocks until release -> the 1 s deadline fails.
+func TestBootFinishReadOnlyAnswers(t *testing.T) {
+	r, _ := memberRig(t)
+	r.crashTxn2("sae-v2-pass", "m2", "36")
+	release := make(chan struct{})
+	defer func() { close(release); r.call("info.counter", cbor.M()) }() // the Finish ends before TempDir cleanup
+	r.n.BootFinish(func() { <-release })
+	done := make(chan cbor.Map, 1)
+	go func() {
+		code, res := r.call("info.net", cbor.M())
+		if code != OK {
+			res = nil
+		}
+		done <- res
+	}()
+	select {
+	case res := <-done:
+		if res == nil {
+			t.Fatal("info.net refused during the boot Finish")
+		}
+		if u, _ := res.Get(4); u != true {
+			t.Fatalf("unfinished = %v during the boot Finish (want true)", u)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a read-only verb waited for the boot Finish")
+	}
+}

@@ -1,0 +1,694 @@
+# #254 PR-P2:`batman-provd` — BLE 上的供裝協定行程(設計 v8.5,定稿:第三輪兩位 APPROVE)
+
+狀態:v8(減法版),2026-10-31。v1–v7 審查歷程見 §13–§18;**使用者 2026-10-31 指示「只針對必要的修改」**:v8 砍掉 v4–v7 為了堵審查情境而加的三個機制(節點端 kernel patch 見證「臂 2」與其閘門、session 撤銷的歸因狀態機、`QUEUE_WAIT`),只留原始碼或現場逼出來的部分。待一位審查員確認被砍的三處沒留下洞(§19)。
+
+## 0. 一句話
+
+`batman-provd` 是一個 uid 471、ujail 裡的 Go 行程:向 BlueZ 註冊一個廣播與一個 GATT 服務,把每條 BLE 連線變成一條 Noise 安全通道,解出 CBOR 信封後交給 root 的 `batman-provhelper` 執行(owner-op 動詞原封轉送信封,認領動詞拆成 helper 既有的欄位),自己只持有每次啟動的 Noise 靜態金鑰、角色、計數器、逾時與一份唯讀快取;它連 helper 的 health 檔都讀不到,要什麼都經 socket 問 helper(控制與工作兩條連線),而 helper 對它說的話(廣播有沒有註冊)一律自己向 kernel 求證。
+
+## 1. 決策、範圍、事實
+
+### 1.1 使用者決策(2026-10-31,#254 留言 6539606175)
+
+| # | 決策 | 後果 |
+|---|---|---|
+| P-U15 | Noise 用 vendored `github.com/flynn/noise` v1.1.0 | §4.2;只依賴 `x/crypto`;build 不連網 |
+| P-U16 | D-Bus 用 vendored `github.com/godbus/dbus/v5` v5.2.4 | §4.1 |
+| P-U17 | P2 的 provd 同時轉送 `network/join`、`network/leave`、`network/update` 與 `info`(含 `info.net` owner-only、`unfinished`、leave ≤ 165 s / net.apply ≤ 180 s);邀請、全隊狀態、診斷、改名留 P3 | §4.3 訊息表;H3 §6.3 單位可在 P2 rc 上跑 |
+| P-U18 | 設計期在 04 唯讀探查 + ≤ 2 分鐘試廣播 | 已做;第 2 段試廣播讓 04 kernel panic(F-P9),**之後不再在 04 試廣播** |
+
+### 1.2 事實(全部 2026-10-31 唯讀實查或原始碼;`F-P*` 為本文件新增;R-* 來自 v1 兩位審查員自己核過的)
+
+| # | 事實 | 證據 |
+|---|---|---|
+| F-P1 | 02/04 = `1.5.14-wsl.16+c46dfc9.fw6aa0241`,slot A committed,lock UNPROVISIONED;bluetoothd 5.72 跑著、`hci0` 在、`Powered: yes`、`Pairable: no`、`Discoverable: no`、`ActiveInstances 0`;**無 provd 二進位、無 provd 行程**;uid/gid `provd` 471 存在;`/sbin/ujail` 在(procd-ujail 2026.03.14) | 04 `bluetoothctl show`、`id provd`、`ujail -h` |
+| F-P2 | 控制器(BCM4345C0)`SupportedInstances 5`、`SupportedIncludes tx-power / appearance / local-name`、**無 `SupportedSecondaryChannels`** → 無 LE extended advertising → legacy 路徑,ADV 與 scan response 各 31 B | 04 `bluetoothctl show` |
+| F-P3 | ujail 以 uid 471 執行靜態 Go 二進位可行:`ujail -n p2probe -U provd -G provd -r /usr/bin/batman-provhelper -r /etc/batman-build -- /usr/bin/batman-provhelper --version` → 印版本、rc 0 | 04 實跑 |
+| F-P4 | `/var/run/dbus/system_bus_socket` `srwxrwxrwx root`;`bluetooth.conf` 只有 `<policy user="root">`、無 default policy;**檔案由 firmware `package/batman/batman-ble` 擁有**;`main.conf` = stage1 §4.6;節點無 `dbus-send` / `busctl` / python / **`btmgmt`**(R-B7) | 04 `ls`、`grep -l … opkg/info/*.list`;firmware `package/batman/batman-ble/Makefile` |
+| F-P5 | health 檔 `/tmp/run/batman/batman-prov.health`(root 0600)在 root `drwx------` 目錄 → uid 471 讀不到;`adv_registered_once` 由 P1 永遠寫 0(`health.go:138`);tick 15 s(`health.go:160-166`) | 04 `ls -la`;`health.go` |
+| F-P6 | helper socket 契約:`SOCK_SEQPACKET` `/tmp/run/batman-prov/helper.sock`(目錄 root:provd 0750,socket 0660);請求 `{1: verb, 2: id, 3: args}` 恰好 3 key,回應 `{1: id, 2: code, 3: body}`;每次 `Read` 前 `SetReadDeadline(+30 s)`,到期**關連線**(`sock.go:146-170`);> 64 KiB 關連線;**`Serve` 是同步 accept 迴圈,一次只服務一條連線,連線內 `Read → Handle → Write` 同步、處理中不讀下一個封包**(`sock.go:107-116, 144-170`;= stage1 §4.1「單連線序列化」);**`Node.Handle` 全程持 `n.mu`**(`node.go:157-159`),`BootFinish` 開機時先 Lock(等 radio ≤ 120 s)再服務(`main.go:611-614`);`dispatch` 無 provisioning record 時只放行 `info.cert / info.ecdh_pub / info.boot_id / nonce`(`node.go:207-212`) | 原始碼 |
+| F-P7 | helper 錯誤碼(`node.go:30-48`):`3 EForbidden、4 EBadObject、5 EStaleVersion、6 EUnsupported、7 EBusy、10 EStorage、12 ERate、20 ESchema、21 EApply、22 EState、23 ELockIncomplete`;**沒有 9**;CheckMac 失敗回 `EForbidden`(`claimVerify`) | 原始碼 |
+| F-P8 | `claim.verify` 收 **5 個拆好欄位** `{1: h, 2: response(32), 3: owner_pub(65), 4: owner_enc_pub(65), 5: sig_enc(64)}`(`node.go:501-520`);owner-op 動詞收 `{1: h, 2: 原始信封 bstr}`,helper `decodeEnvelope` 要信封的 key 3 是 **map**(`node.go:636-662`);`net.apply` + 信封 type `network/update` → `netUpdate`(`node.go:731-733`);`claim.replay(h, 原始信封)` | 原始碼 |
+| F-P9 | **nonce 語意**:`nonce(h)` 每次回新的一對 `{1: nonce_node, 2: nonce_helper}`,同一 `h` 最多 4 對、60 s;`takeNodeNonce(h)` 取**最新未用**的 node 半;`takeHelperNonce` 以 `nonce_helper` 值查表(`node.go:270-332`)→ app 先 `claim/begin` 再 `op/nonce` 會讓 `claim/replay` 用到第二對的 node 半 → CheckMac 必敗 | 原始碼(A M3) |
+| F-P10 | **F-P9(v1)→ 改編號 F-P10:註冊 31 B 的 ADV 資料讓 04 kernel panic(1/1)**:機制 = BlueZ `advertising.c:873 get_adv_flags` 不 discoverable 時只給 `CONNECTABLE`,`calc_max_adv_len`(:780)= 31;kernel `mgmt.c:8498 tlv_data_max_len` 同樣不扣;`eir.c:245 eir_create_adv_data` 在 `!HCI_BREDR_ENABLED` 無條件寫 3 B Flags(:276-296)再 `memcpy` 不檢查(:300)→ 34 B 進 `hci_sync.c:1333` 的 `hci_cp_le_set_adv_data.data[31]`。= CVE-2026-64539 + CVE-2025-38303;6.6.138 兩者都無(`eir.h:12` 無 size 參數)。兩位審查員逐行核過 | #254 留言 6539869418 / 6539887614;pstore 副本 scratchpad `crash04/` |
+| F-P11 | BlueZ 5.72 把 `ServiceUUIDs / ServiceData / ManufacturerData / Data / Appearance` 全放 ADV(`advertising.c:800-830`),scan response **只放 Local Name**(:833-846);`Discoverable=false` 時 BlueZ 不加 Flags AD(:747-778) | 原始碼 |
+| F-P12 | 第 1 段試廣播(UUID 列表 18 + service data 27 = 45 B)被 BlueZ 拒絕 `Advertising data too long`,無副作用 | 04 |
+| F-P13 | 向量:`noise_nx.msg1` **32 B**、`noise_nxpsk0_*.msg1` **48 B**、三組 `msg2` 皆 **711 B** = e 32 + AEAD(s) 48 + node_cert 615 + tag 16;`fake_msg2_rule.length_equals_real_msg2 = 711`;`verify.py` 195 項 | `vectors.json`(R-B3) |
+| F-P14 | `flynn/noise` v1.1.0:`HandshakeState` 欄位未匯出、無 Clone;`e` 在 `WriteMessage` 才產生,但 **`Config.EphemeralKeypair` 可注入**;NXpsk0 msg1 = `psk, e, payload`,`MixKeyAndHash(psk)` 後 `hasK=true` → msg1 payload 經 AEAD → 回應方 **ReadMessage msg1 就能判 PSK 錯**,且讀 msg1 **沒有 DH**;`ReadMessage` 失敗會 `Rollback()`;NX 的 msg1 payload 明文 → 48 B 的 psk0 msg1 丟給 NX 回應方 `ReadMessage` **會成功**;`ChannelBinding()` = h | `state.go:184-195, 256-268, 316-360, 391-470, 503-617`、`patterns.go:39-45`(R-B1/B2、A) |
+| F-P15 | `godbus/dbus/v5` v5.2.4:unix fd 在 auth 自動 `NEGOTIATE_UNIX_FD`,方法回覆可帶 `dbus.UnixFD`;`RequestName` / `AddMatchSignal` 走 `org.freedesktop.DBus`;`prop.Export` 可用;**沒有 ObjectManager 實作** → provd 自己匯出 `GetManagedObjects`;每個方法呼叫一個 goroutine | `auth.go:96-107`、`transport_unix.go:258-285`、`export.go:423`(R-B13、A) |
+| F-P16 | BlueZ GATT server:`AcquireWrite / AcquireNotify / ReadValue` 的 options 帶 `device`、`link`、`mtu`;ATT 斷線 → `att_disconnect_cb` → `io_shutdown` → provd 的 fd 收 HUP;`dbus_error_to_att_ecode`:`org.bluez.Error.Failed` 無數字訊息 → ATT **0x80**,其他名稱 → **0x0E**(`gatt-database.c:2214-2253, 2334-2370, 2570-2660`);GDBusClient 容忍廣播物件沒有 `GetManagedObjects`(`gdbus/client.c:1209-1234`、`advertising.c:1532-1550`);`Device1.Disconnect` 不改 temporary(`device.c:2049-2064`) | 原始碼(R-B8/B9/B10、A) |
+| F-P17 | kernel:連線時控制器停 legacy 廣播,**斷線後 kernel 自己重開同一 instance**(`hci_event.c:3421-3424, 5640`);RPA 只在 `rpa_timeout`(900 s)過期後才重算(`hci_sync.c:1093-1118` RPA 有效就 return;`mgmt.c:1016-1029`)→ **900 s 窗內連線前後、撤銷 / 重註冊都是同一 RPA**;= stage1 F28 | 原始碼(R-B11、A M7) |
+| F-P18 | dbus-daemon 1.14.10 啟動時 **unlink 既有 socket 再 bind**(`dbus-sysdeps-unix.c:1210-1212`)→ 以「檔案」bind 進 jail 的 socket 在 dbus 重啟後是死 inode;system.conf default policy 已 `allow send_destination=org.freedesktop.DBus`(三介面)並 deny `UpdateActivationEnvironment` / `Monitoring` / `Debug.Stats` / `systemd1.Activator`;既有 root policy 的 `send_interface` allow **無 destination 限制** → root(bluetoothd)對 provd 匯出介面的回呼今天就被放行 | 04 `/usr/share/dbus-1/system.conf:44-82`;`bluetooth.conf`(R-B6/B12、A) |
+| F-P19 | procd:`jail` + `user` → 不自己 setuid,改傳 `-U/-G`;`capabilities` → `-C`、`no_new_privs` → `-c`;`bounding: []` 丟全部 cap;**ujail 不存在且無 `requirejail` → 靜默不 jail、只 setuid 跑**(`instance.c:321-337, 541-549, 1459-1470`;`procd.sh:199` `requirejail` → `-E`);04 `/etc/capabilities/` 有範本 | 原始碼(A M10) |
+| F-P20 | autocommit 對 BLE health **只 WARN、不擋**(`batman-autocommit:507-510`,P-U5)→ 「provd 不起 → revert」今天不成立 | 原始碼(A M6);h23 F12 |
+| F-P21 | Go module 只 vendor `x/crypto`、`x/sys`;自家 `cbor / cose / proto / keystore / provstore / health / sock / seam`;單一 cmd;`USERID:=provd=471:provd=471`;WSL 可取 `flynn/noise v1.1.0`、`godbus/dbus/v5 v5.2.4`;firmware golang = go1.26.4(#252) | `feed/batman-prov`;`go get` 於 /tmp/p2mod |
+| F-P22 | `provclient` 已有 `info / claim / claim-attacker / replay / ssh-keys / root-reset / rename / verb / node / sign / keygen / selftest`,`unixpacket`,`sock-as <uid>`;`main.go:579` 註明 replay「one nonce call serves both」 | 原始碼 |
+| F-P23 | 04 `/etc/batman-build` 0644、無 `BATMAN_MODEL`;`/proc/sys/kernel/random/boot_id` 0444;`/tmp/run/dbus` 目錄 root 0755 | 04 `ls -la`(A、B) |
+| F-P24 | `sign.*` 額度:helper 內全域每秒第 3 次才拒(`node.go:333-346`)→ provd 啟動連簽 2 次不需間隔 | 原始碼(A2 V18) |
+| F-P25 | `LoadOverlay` 讀 `prov.meta` 再 `prov.cbor`,以 meta 的 sha / state / gen 對 record;`WriteOverlay` **先 rename record 再 rename meta**(`provstore.go:349-377, 391-407`)→ 無鎖讀者可見「新 record + 舊 meta」→ 回錯 → `dispatch` 的 `rec == nil` 分支對 `info.state` 等回 `EUnsupported` | 原始碼(A2 V4 / B2 RB2-2) |
+| F-P26 | `info.state` 今天已回 `{1: state, 2: Generation, 3: len(owners), 4: RadioManaged}`;所有改 record 的路徑都 `Generation+1`(`node.go:235, 548, 831, 877, 904, 1134, 1192`) | 原始碼(A2 V3) |
+| F-P27 | `realSys.IsTrial()` = 每次 fork/exec `batman-slot is-trial`(`main.go:138`,`run` 預設逾時 60 s);`health.ReadInfo()` 每次新開 mgmt socket、2 s 逾時(`health.go:55-87`);`Tick` 另寫檔與 `poweredFor`(不能直接拿來當 `health.get`) | 原始碼(A2 V5/V6、B2 RB2-4/5) |
+| F-P28 | mgmt `READ_ADV_FEATURES = 0x003D` 回 `{supported_flags u32, max_adv_data_len, max_scan_rsp_len, max_instances, num_instances, instance[]}`,`num_instances = adv_instance_cnt`(**加了就算,連線中暫停也算**;provd Unregister 後 = 0) | `mgmt.h:543-552`、`mgmt.c:8436-8488`(A2 V7、B2 RB2-11) |
+| F-P29 | 唯讀 bind 的 unix socket 可 `connect()`:`unix_find_bsd → path_permission(MAY_WRITE)` → `sb_permission` 只看 superblock `sb_rdonly`(tmpfs rw),`MNT_READONLY` 不在這條路徑(`af_unix.c:1105-1130`、`namei.c:480-490`);dbus init 只 `mkdir -p /var/run/dbus` 不重建目錄;helper `PrepareDir` 只刪自己的 socket 檔 → 目錄 bind 跨兩者重啟都成立 | 原始碼(A2 V8/V9/V10、B2 RB2-12) |
+| F-P30 | ujail root 是空 tmpfs,**沒有 `/var → /tmp` symlink**;`-r` = 唯讀 bind | `jail.c:678, 830, 2662`(A2 V11) |
+| F-P31 | `flynn/noise` `WriteMessage` **無條件重新產生 `e`**;`Config.EphemeralKeypair` 是 pre-message 用途 → 回應方注入 `e` 無效;`ReadMessage` 對較長的 msg1 **不拒絕**(只檢查 `len < expected`) | `state.go:303-305, 406-410, 516-548`(B2 RB2-6/7) |
+| F-P32 | wireless-txn §19.4:一個改網動詞可先跑 Finish(setkey ≤ 180 + save ≤ `ConfigSaveTimeout` 300)再做自己的(≤ 180 + 300)→ **最壞 ≈ 960 s,「client 的逾時不是節點的上界」** | `254-wireless-txn.md:627-631`;`provstore.go:458` |
+| F-P33 | nonce 消耗:`takeHelperNonce` 以值查表並**刪 entry**;`verifyOwnerOp` 對 h 的每一對依 map 順序逐一 `takeHelperNonce`(試一對刪一對);`claimReplay` 先 `takeNodeNonce` 再 `verifyOwnerOp`(註解「verifyOwnerOp consumes every nonce entry it tries」)→ 一次 `claim.replay` / `claim.verify` 後該 session 的 nonce 對全死 | `node.go:612-619, 686-703`(A2 V13) |
+| F-P34 | helper socket 既有 client:`provclient`(`sock-as 471`)被 10 個 harness 單位直接用(`prov-254.sh`、`prov-lib-254.sh`、`chain1`、`prov-sec`、`prov-claim`、`prov-netjoin-fleet`、`prov-netupdate`、`prov-leave-after-join`、`claim-lock`、`prov-downgrade-left`);h23 L11 判定用 `provclient info.state` | `grep -c provclient scripts/dv/*.sh`;h23:256, 402, 405, 804(B2 RB2-14) |
+| F-P35 | BlueZ:`write_ios / notify_ios` 每特徵一個 queue、以 `bt_att` 配對 → 多連線各走自己的 fd;GDBusClient 不呼叫 `Introspect`;provd 的 bus 連線斷 → BlueZ 自己移除廣播與 app;kernel 斷線後以 `conn->adv_instance` 重開同一 instance(`hci_event.c:3422-3424`)= 廣播 instance 的第二個「寫者」 | `gatt-database.c:128-129, 2677-2690, 2802-2817`;`gdbus/client.c:1058-1072`;`advertising.c:226-230`(B2 RB2-8/9/10) |
+| F-P36 | CDDL `error-detail`:key 2 = reason-code(數字),自由文字只能放 key 3 | `219-protocol.cddl`(A2 m4) |
+| F-P37 | **helper 的錯誤回應不帶 reason**:`Handle` 失敗回 `{1: id, 2: code, 3: {}}`,`err.Reason` 只進 helper 自己的 log | `node.go:170-173`(A3 V4) |
+| F-P38 | `claim.verify` 回 `EUnsupported`(6)只有兩個來源:`dispatch` 無 record(持鎖路徑讀不到撕裂、開機後 record 一定存在 → 不會發生)與 `no-ssh-key`(CheckMac 之後,`node.go:534-540`)→ **持鎖的 `claim.verify` 回 6 ⇒ no-ssh-key,可推論** | 原始碼(A3 V5) |
+| F-P39 | `applyNet`:step 3 `commitTxn`(overlay gen+1、state=Member)在 step 4 `SaveTxn`(≤ 300 s)**之前**;`.txn` 從 step 1 到 step 4 都在 → join 進行中 `ctl` 就看到 generation 變 + `unfinished=1`,而 `ops` 仍被同一 `net.apply` 佔著;`psk_owner` 由 `TagKey` 導出(join 不變),`psk_member` 綁 `Net.Version`(`node.go:393-411`) | `node.go:1131-1180`(A3 V6、B3 RB3-6) |
+| F-P40 | generation **可以往下**:`resolve` 以 p5 重寫 overlay、`boot.Run` 多處寫 `Generation: 1` 新 record | `wtxn.go:270-276`;`boot.go:145, 179-211`(A3 V7) |
+| F-P41 | **有 peripheral 連線時再開 connectable 廣播由 `is_advertising_allowed` 決定**:`le_num_peripheral > 0 && connectable` 需 `le_states` bit 38 與 21,否則 `-EINVAL` → mgmt FAILED → BlueZ `RegisterAdvertisement` 回 `org.bluez.Error.Failed`;provd 的 bus 連線斷時 BlueZ 只釋放 GATT app 與廣播,**不斷任何 LE 連線** | `hci_sync.c:1007-1040, 1831-1875, 2007-2062`;`mgmt.c:8642-8670`;`gatt-database.c:1642-1650`;`advertising.c:198-230`(B3 RB3-10/12)。**BCM4345C0 的 le_states bit 38/21 ⚠️ 未實測**(04 無 debugfs `le_states`,節點無 hcitool;實作第一步以 btmon 見證) |
+| F-P42 | h23 §4.8.2–4.8.3 的兩個目錄:`gatt.sock` 在 `/tmp/run/batman-provd-test/`(**provd:provd 0700**,init 以 root `mkdir + chown 471:471 + chmod 0700`,provd `O_NOFOLLOW` 驗 owner=471 才 bind);`provd.env` / killpoint 在 `/tmp/run/batman-prov-test/`(root 0700) | `254-h23-harness.md:137-139, 275-281`(B3 RB3-15) |
+| F-P43 | 6.6.138 `eir.h` 三個 creator(`eir_create_adv_data` / `eir_create_scan_rsp` / `eir_create_per_adv_data`)都無 size 參數 | `eir.h:12-14`;`eir.c:224, 245, 342`(B3 RB3-18) |
+| F-P44 | `Handle` 進門就 `Lock()`(解 verb 之前)→ 唯讀動詞不取鎖 = 把 verb 解析搬到鎖外、在 `node.go:158` 之前分支;唯讀動詞只碰 `n.P`、`n.KS`(Load 後唯讀,`Cert()/SN()` 回 copy)、`n.BootID`、`n.Log`(syslog.Writer 內有 mutex),不碰 `nonces / signLog / replayF / Verdict / finishFails` | `node.go:94-110, 157-175, 211-247`;`keystore.go:34-61`(A3 V2/V3、B3 RB3-2/3) |
+| F-P45 | `sock.go` 的 `serveConn` 每連線自足(自己的 buf、`Read` 前才武裝 30 s deadline、`h(m)` 同步)→ 長動詞期間 helper 側沒有 deadline 在跑;`Serve` 改 `go s.serveConn` 不必碰內部;PeerUID 拒絕在 goroutine 內 | `sock.go:107-116, 136-170`(A3 V1、B3 RB3-1) |
+| F-P46 | nonce 到期用 `Sys.Now()`(壁鐘);Pi 無 RTC,NTP 跳步會讓 60 s 窗瞬間過期 / 延長(P1 既有) | `node.go:296`(A3 m12) |
+| F-P47 | **`patches/<board>/` 只准碰 `feeds/`**:`openmanet_setup.sh:147-160` 註解明寫 target/ 的 patch 在第二次 `-i` 會「previously applied」讓 setup 停;現有 board patch 的 `+++` 全在 `feeds/…`;**kernel patch 的既有範式 = `target/linux/bcm27xx/patches-6.6/999-batman-*-305.patch`(firmware 樹本體,兩板共用一份)**;`KERNEL_FILE_DEPENDS` 含 `$(PATCH_DIR)` → 新增 patch 檔自動讓 kernel 重 prepare | `scripts/openmanet_setup.sh:124-162`;`include/kernel-build.mk:12-13`;commit 1524084e(A4 M1、B4 RB4-2/3) |
+| F-P48 | `/etc/batman-build` **只由 `scripts/stamp-batman-build.sh` 在 build 時產生**(「Never hand-edit」;key 清單固定 `:60-77`);已有 `BATMAN_FW_COMMIT`、`BATMAN_DIRTY`、`BATMAN_WBOX`、`BATMAN_BOARD_PATCHES=<n>:<digest>`;overlay 可寫,autocommit 刻意讀 `/rom/etc/batman-build`(`batman-autocommit:486-490`);#305 的 `bt-uart-305.sh:18,24` 已用 `BATMAN_FW_COMMIT` 做祖先檢查 | 原始碼(A4 M1、B4 RB4-1) |
+| F-P49 | `patches/ekh-bcm2710/` **沒有** 0012 / 0013 bluez patch(只在 bcm2711) | `ls patches/ekh-bcm27{10,11}/`(B4 RB4-4) |
+| F-P50 | BlueZ:進來的 LE 連線一定建 `Device1` 物件(`connected_callback → btd_adapter_get_device → device_new`),`Connected` = `le_state.connected`;`remove_temporary_devices` 不拔連線中的;**`Device1.Disconnect` 是 async:先關 `att_io`,排 `DISCONNECT_TIMER = 2 s` 後才送 mgmt DISCONNECT,方法回覆在 `Connected` 轉 false 時才送**;bluetoothd **乾淨停止**送 SET_POWERED 0(連線全斷),**crash 後新 bluetoothd `load_connections` 會把仍在的連線重列為 `Connected=true`** | `adapter.c:744-755, 5244-5296, 9392, 9454-9509, 10915-10939`;`device.c:69, 1304-1316, 1715-1731, 1839-1875, 3332-3340`(A4 m2、B4 RB4-5/6) |
+| F-P51 | `provclient info` = 一條連線打 2 個唯讀動詞(`info.state` + `info.cert`),每次呼叫新連線;**今天沒有 `proxy` 子命令**(H3 要加);harness 46 處 `provclient` 全前景、迴圈有 sleep | `provclient/main.go:490-640`;`scripts/dv/*.sh`(A4 m7、B4 RB4-9) |
+| F-P52 | `IsTrial()` = `rc != 1`(fail-closed)與 health `Committed()` = `rc == 1` 互補 → 可共用一個快取 | `main.go:137-138, 598`(B4 RB4-12) |
+| F-P53 | `stamp-batman-build.sh:53-57`:**`BATMAN_WBOX` 非空時強制 `DIRTY=1`**(「a -wbox test variant is never a release」);key 清單固定(`:60-75`),**沒有 `BATMAN_PROV_TEST`**;`$why` 只印 stdout 不進檔;`build-board.sh:85-95` base tree 有修改即拒 build,除非 `BATMAN_ALLOW_DIRTY_BASE=1`(不進 stamp);harness 偵測 prov_test image = helper `--version` 第 2 行 `BATMAN_PROV_TEST_BUILD_7f3a`(`prov-254.sh:469`);harness 今天沒有任何 firmware 樹路徑設定、沒有 merge-base;`bt-uart-305.sh:18,24` 讀 `/etc/batman-build` 且不符只 NOTE 繼續 | 原始碼;我本次讀 stamp `:36-80`(A5 V1–V3/V6、B5 M1) |
+| F-P54 | kernel mgmt `add_advertising` 對已存在的 instance 編號**就地覆寫**(`hci_add_adv_instance` 同號 → memset + 改寫,不拒);BlueZ 從 1 開始配 instance;`git cat-file -e <commit>:<path>` 可直接問某 commit 的樹裡有沒有 patch 檔(A5 V5 在 `6aa0241` 實證) | `hci_core.c hci_add_adv_instance`;firmware 樹 git(A5 V5/V10、B5 m1) |
+| F-P55 | **generation 在 provd 自己的一個動詞裡可以變兩次**:owner-op 動詞進門先 `resolve()`(overlay 比 p5 舊就先重建,`node.go:753-761`),再自己 commit;`claimVerify :548` 在回應前 commit(`claimReplay` 不 commit,F-P62);**helper daemon 每次啟動都跑 `boot.Run`**(`main.go:585`),overlay 可能被重寫成 gen 1 新 record(state 可能不同)或由 p5 重建;`resolve()` 只在 p5.gen > ov.gen 時重寫 | `node.go:548, 748-761, 1131-1180`;`boot.go:132-211`;`main.go:579-585`(A5 V7–V9) |
+| F-P56 | BlueZ `dev_disconnect` 對已斷裝置回 NULL、msg 只在 `btd_device_is_connected` 時排隊 → 對已斷裝置呼叫 `Device1.Disconnect` = **無回覆直到逾時**,不是 `NotConnected`;supervision timeout 可達 ~6 s | `device.c:1849-1875, 2049-2064`(B5 m3) |
+| F-P57 | `build-board.sh` 第 2 步 `wbox_apply` 把 `tests/wbox/<name>.patch` 套進 `feeds/batman`,第 4 步才 stamp;stamp `:44` 看到 `feeds/batman` 有修改 → `why=" feeds/batman-modified wbox-<name>"`(順序 tracked-changes → untracked → feeds.conf-override → feeds/batman-modified → wbox);**只有無 patch 的 `test` 變體(`wbox_apply:68`)的 `$why` 恰為 ` wbox-test`**;`helpers.list` 21 個變體只有 `test` 無 patch | `build-board.sh:108-141`;`lib-wbox.sh:67-82`;`stamp-batman-build.sh:38-56`(A6 V1、B6 RB6-1) |
+| F-P58 | pin 方向是 **firmware pin Batman**(`feeds.conf.default:8`),Batman 不記 firmware commit;harness 設定全走環境變數(`DV_BT_TOOLS` 等),`DV_T263_KO` 未設 → 該單位 SKIP(慣例);git 重的檢查 MSYS 下委派 WSL(`daily-validation.sh:181-201`) | 原始碼(B6 RB6-10、A6 V8) |
+| F-P59 | `/etc/batman-build` 的所有讀者都是 `sed` / grep(`batman-version` 「PARSED never sourced」、autocommit、batman-slot、halow-status、95、bundle、helper `main.go:511`),**沒有任何 `. /etc/batman-build`**;`check-prov-test-gate.sh` 只取 VERSION / WBOX;`build-board.sh:190` 的 `cmp` 是同一次 stamp 的兩份 → 新 key 不壞任何讀者 | 原始碼(A6 V2、B6 RB6-9) |
+| F-P60 | kernel `eir_create_adv_data`:instance 資料裡已有 `EIR_FLAGS` → `goto skip_flags` 不加 3 B(`eir.c:260-264`);`tlv_data_is_valid` 只在 `flags_managed` 時拒 `EIR_FLAGS`;格式錯 → INVALID_PARAMS;`hci_cp_le_set_adv_data cp` 是堆疊區域變數(`hci_sync.c:1331-1336`)→ 3 B 越界是 stack overrun,不保證 panic;legacy 控制器 `le_num_of_adv_sets = HCI_MAX_ADV_INSTANCES`(5)→ instance 5 合法;**BlueZ `ActiveInstances` = D-Bus client 數(`advertising.c:1674-1684`),看不到 root `btmgmt` 的 instance** | 原始碼(A6 V5–V7) |
+| F-P61 | 既有 harness:`ble-lib-254.sh ble_state`(preflight P6、tier A)在 kernel `adv_instances != 0` 時 **FAIL leftover**;`ble-periph-254.sh` 的 `adv-on` / `adv-off` / BLE deadman 無條件 `rm-adv 1`;prov deadman `role_fire_restore` 只起 helper / joinwatch / openmanetd / tailscaled;**`prov-base-254.sh:207/222/258` 已 `svc stop … batman-provd`,`:272` 收尾 `svc start batman-provhelper joinwatch` 漏 provd;repo 零 `start batman-provd`**(B7 RB7-7 更正 v6 的「沒有任何一處」);deadman / `pr_end` / `pr_abort` / P9 都 `rm -rf /tmp/run/batman-prov-test`(含 `provd.env`)但 provd 仍帶著 start 時注入的 `SOCK_ONLY` 環境活著 | `ble-lib-254.sh`、`ble-periph-254.sh:45,52,171`、`prov-lease-254.sh`;h23 :118,157,402-405(B6 RB6-3/4/5) |
+| F-P62 | `claim.replay` **不改 record**(無 commit / Generation / WriteOverlay);`commitTxn :47-50` p5 已 commit 而 overlay 寫入失敗 → 只 log,overlay 留舊 gen 到下一次 `resolve()` / `--boot` | `node.go`、`txn.go`(A6 V3) |
+| F-P63 | health 行不含 trial;`health.get` 不碰 `IsTrial()`;`IsTrial()` 的 exec 逾時 60 s | `health.go:155-162`;`main.go:138`(B6 RB6-6) |
+
+### 1.3 與上層設計不同處(→ 回報上層 §10)
+
+| 上層 | 本文件 | 理由 |
+|---|---|---|
+| stage1 §2「同一個 Go 二進位,argv[0] 決定模式」 | **兩個二進位** `batman-provhelper`(root)與 `batman-provd`(471),同一 module、同一套件 | ujail `-r` 只掛 provd;release gate 的 helper 檢查不受影響;provd 不連結 keystore / provstore / shacrypt |
+| h23 §4.9「ADV = Flags + 128-bit UUID 列表 21 B;B16 service data 放 scan response」 | **ADV = Flags(kernel 加)3 + 128-bit Service UUID 列表 18 = 21 B;無 scan response、無 Local Name、無 service data** | F-P11:scan response 放不了 service data;F-P10:ADV ≤ 28 B 硬限制。`updating` 與 `device_id` 末 4 字元只在 GATT `STATUS`。B16 維持 #255 |
+| stage1 §1.3「adv 帶 `device_id` 末 4 字元」 | 不帶 | 同上 |
+| stage1 §8 F28「每次重新註冊換 B16 nonce」;v1 §4.4「斷線重註冊 → 新 RPA」 | 重註冊照做(讓 kernel **有機會**換 RPA),**payload 不變,且 900 s 窗內 RPA 不換**(F-P17)。誠實界線:同一 RPA 期間一台節點的連線前後可被串起;階段 1 的「連線即撤廣播」只剩**單一連線**的效果,不是隱私防線 | F-P17;B16 不在階段 1 |
+| stage1 §3「provd 讀 health 檔」;「`adv_registered_once` 由 provd 註冊後設」(stage1 §4.1 的 health 列、h23 §6.3) | provd 讀不到 health 檔(F-P5)→ helper 新動詞 `health.get`(**不取 `n.mu`、現算**);**`adv_registered_once` 由 helper 自己向 kernel 求證**:health tick 多打一個 mgmt `Read Advertising Features`(0x003D)讀 `num_instances`,本次開機曾 ≥ 1 就 latch;**沒有 `adv.registered` 動詞**(uid 471 不能自報) | F-P5;A M11 / B M5:autocommit 的 BLE 判定不能信任非特權行程 |
+| **stage1 §4.1「單連線序列化」(helper socket 一次一條連線)** | **helper `Serve` 改為每條連線一個 goroutine,連線數上限 4**(第 5 條連上即關、log);`n.mu` 仍序列化改狀態動詞;**唯讀動詞(`health.get`、`info.*`)不取 `n.mu`**;**provd 開兩條連線**:`ctl`(`health.get`、`info.state`、`info.boot_id` keepalive)與 `ops`(其餘);`provclient`(root 運維、harness)與 provd 並存 | A2/B2 B1:單連線下任何 `net.apply`(≤ 180 s,最壞 ≈ 960 s,F-P32)把 provd 的輪詢、第二支手機、`provclient` 全排在後面;F-P34 |
+| stage1 §4.1 helper 動詞表 | 新增 `health.get`、`info.owners`;`info.state` 加 key 5 `trial`(**helper 內快取 ≤ 5 s、single-flight、與 health 的 `Committed()` 共用**,F-P27);`info.net` 加 key 4 `unfinished`(**自己的 join 進行中也是 1**,F-P39);`psks.get` **P2 不回 key 4/5**、加 1/s 額度;**唯讀動詞額度:helper 全域 10/s 突發 40(uid 471 單一主體)+ 每連線 5/s 突發 20;accept 速率 ≤ 5 新連線/s(超過關、log 每 60 s 1 行);超過 `ERate` 不關連線、不算失敗**;`LoadOverlay` 遇 meta / record 不符**重讀 ≤ 3 次**(F-P25);「無 record 也放行」名單加 `health.get`;**唯讀動詞集合(列舉,不是 `info.*`)= `{health.get, info.boot_id, info.cert, info.ecdh_pub, info.state, info.net, info.owners}`,其餘一律取鎖;實作點 = `Handle` 在 `node.go:158` `Lock()` 之前分支**(F-P44) | §4.3;B m9;A2 M3 / B3 M3(每連線額度可用重連歸零);A2 M2 / B2 M2(撕裂讀);A3 m11 |
+| stage1 §4.1「所有授權由 helper 驗」 | `auth/owner`(session 角色升級,不改變節點)由 **provd** 以 helper `info.owners` 回的公鑰驗 `ES256_owner("batman-owner-auth-v1" ‖ h ‖ owner_key_id)`;每個改變節點的動詞仍帶 owner-op 由 helper 驗 | 角色是 provd 的狀態;helper 不知道 session;B m10 |
+| 協定 §3.5 / §5.3(`owner/remove`、`network/leave`)沒講「被移除者的既有 session 怎麼辦」 | **一條規則(v8)**:`ctl` 看到 `(state, Generation)` 變(不管誰改的)→ 重拉 `info.owners`(`ctl`)與 `psks.get`(`ops`,single-flight);**新集合到手後逐 session 比對**:擁有者 session 的 `owner_key_id` 不在新集合 → Disconnect(`reason=owner-removed`);候選 session 以它成功的那把 `psk_owner[i]` **值**比對(`owner_key_id` = SHA-256(owner_pub),與 `info.owners` 回的公鑰以此對應,helper `ownerRemove` 同一個 kid);**擁有者重取 session(`psk_replay`)視同候選,以 `psk_replay` 值比對**(第二位 owner 加入後它消失 → 斷);成員 session 的 `psk_member` 版本變 / 消失 → Disconnect(`reason=psk-rotated`;成員自己送的 `network/update` 成功後也會被斷,app 以新版本重連;擁有者不受 update 影響);匿名 session 不動。重拉期間舊集合繼續服務(stale-while-revalidate)。**不分「誰改的」**:擁有者自己的 join / claim 不會把自己的 key 拿掉,所以不會被誤斷;被 root `provclient` 移除的 owner 在新集合到手的那一輪被斷(常態 ≤ 5 s;擁有者 session 只靠 `ctl` 的 `info.owners`,不受長動詞影響;候選 / 成員靠 `psks.get`,它等長動詞結束才送)。log 契約:`provd: session revoked reason=<owner-removed|psk-rotated>`。**誠實界線**:新連線在重拉完成前仍以舊集合放行到「候選 / 擁有者」,只讀得到 `info.net`;改狀態動詞 helper 以已存 owners 拒絕;p5 已 commit 而 overlay 寫入失敗的分支(F-P62)provd 看不到,直到下一個 owner-op 的 `resolve()` / 重開 | A4 m3 / B4 m1 的原始需求;v5–v7 的 `expectGen` / `inFlight` 狀態機是為了「旁路 → 全斷」這條多出來的規則而生,v8 連規則一起砍 |
+| 協定 §3.5 擁有者重取:`claim/begin` → `op/nonce` → `claim/replay` **用同一對 nonce**;`claim.verify` / `claim.replay` 回應後(任何碼)該 session 的 nonce 對作廢,之後的 `op/nonce`(重取角色)沒有有效對 → `E_FORBIDDEN`,app 重新 `claim/begin` | F-P9 / F-P33(A2 M4) |
+| 協定 §3.3「`s_node` 每次開機產生」 | 每次 **provd 啟動**(含 respawn)重新產生 → `node_cert` 的 `boot_id` 不變、`s_node_pub` 可能變;app 本來就每次交握重驗,不得快取 `s_node_pub` | respawn 後不能留金鑰 |
+| 協定 §3.5 `auth/owner` 回「目前的 `adv_owner_key`」 | 階段 1 回空 map | B16 #255 |
+| 協定 §3.5 擁有者重取角色的 `claim/begin`「`owner_pub` 必須等於已存的那把否則 `E_FORBIDDEN`」 | provd 不比(看不到已存的);helper 的 `claim.replay` 以已存的那把重算 CheckMac → 錯的 `owner_pub` 在 `claim/replay` 一步以 `E_FORBIDDEN` 回 | helper `nonce` 不收 owner_pub;A m4 |
+| 協定 §8「同時 BLE 連線 2」、「未認證 session 可被新連線擠掉」 | **連線槽 2 = BLE + sock 合計**;第 3 條連上時:若有未認證 / 候選 session → **擠掉最舊的那條**(Disconnect),否則拒第 3 條。**BLE 空中實際同時只有 1 條**(連線時控制器停廣播,F-P17;provd 也撤)→ 第 2 槽實務上只有 sock 用得到;**誠實界線:一個路人連上、拖 10 s、斷、再連,就能持續佔住 BLE 管理面**,全域 20/分 擋不住(路人 6/分 就夠);階段 1 接受(擁有者可直接 ssh;#255 考慮擁有者優先的廣播) | A M8、B m8 |
+| 協定 §5.1 分塊 | provd 重組後**重新編碼**成 deterministic 整封 `{0,1,2,3,(7)}` 再交 helper(helper 要 map);階段 1 上限:`max_msg` 8192 → 每塊明文 ≤ 8176、**最多 8 塊、重組後 ≤ 65 400 B**(helper `MaxRequest` 65536 − 包裝 ≤ 100 B),超過 → Disconnect | A M12 |
+| h23 §4.8.3 `provd.env` 開關 | 保留 `SOCK_ONLY / FAST_FAKE_DELAY_MS / NO_BRUTE_LIMIT / GATT_ENCRYPT_CTRL`;**新增 `ADV_LEN_TEST=<n>`**;**目錄照 h23**:`provd.env` 在 `/tmp/run/batman-prov-test/`(root 0700,只 test init 以 root 讀,不掛 jail),`gatt.sock` 在 `/tmp/run/batman-provd-test/`(provd:provd 0700,test init 建、`procd_add_jail_mount_rw`;v3 寫成 root 0700 是錯的,471 bind 不了) | F-P10 負對照;F-P42(B3 M1) |
+| h23 §6.3 L24「兩支手機同時 `claim/finish` → 一個 0、一個 `E_BUSY`」 | 照做;成功後 provd Disconnect 其他所有 session(**含假路徑交握中的**,擠槽的例外不適用這裡) | 協定 §3.1 |
+| h23 §6.3 `ble-rpa-254` log `adv re-registered reason=… nonce=<8hex>` | log 行無 `nonce=`(§4.4) | 無 nonce |
+| h23 §6.3 / §4.8 用 `btmgmt` 當節點端工具 | 節點 image(release 與 `-wbox` 都)無 `btmgmt`;harness 既有 `ble-periph-254.sh` scp 自帶 btmgmt / btmon(h1 §4.7),P2 沿用;**不在 image 裝**(`btmgmt` 在 `bluez-utils-extra`,D9 不做) | A M9 / B M6;v8 |
+| stage1 §6.4 (8)、L6「provd 不起 → UNHEALTHY → revert」 | **今天只 WARN(P-U5,F-P20);P2 不改 autocommit**。L6 改寫為 WARN;把「WARN → FAIL」列為 #254 checklist 的獨立決定(要先有 `adv_registered_once` 的 kernel 求證,本設計提供) | A M6 |
+
+## 2. 元件
+
+```
+手機 / peer.py ──BLE GATT(或 prov_test 的 gatt.sock)── batman-provd(uid 471,ujail -E -c,caps 空,唯讀 /)
+   │ godbus/dbus/v5 → org.bluez:LEAdvertisingManager1.{Register,Unregister}Advertisement、GattManager1.{Register,Unregister}Application、
+   │                  Device1.Disconnect、ObjectManager.GetManagedObjects、Properties.{Get,GetAll};匯出 LEAdvertisement1、
+   │                  GattService1 / 4×GattCharacteristic1(RX/TX/CTRL/STATUS)、app 根的 ObjectManager
+   │ flynn/noise(NX / NXpsk0)、自家 cbor、proto(HKDF / 標籤 / ES256 驗章)
+   └─ /tmp/run/batman-prov/helper.sock(SEQPACKET)──▶ batman-provhelper(root;P2 改動見 §4.3)
+```
+
+- **套件 `feed/batman-prov`**:多產 `batman-provd`(`GO_PKG_BUILD_PKG` 加 `batman-prov/cmd/batman-provd`);`files/batman-provd.init`(release)與 `files/batman-provd-test.init`(只在 `BATMAN_PROV_TEST=1` 安裝,多了讀 `provd.env`);`files/batman-provd.json`(安裝到 `/etc/capabilities/batman-provd.json`,`{"bounding": []}`);vendor 加 `flynn/noise v1.1.0`、`godbus/dbus/v5 v5.2.4`(`go mod vendor`;PR 列 `go.sum` 行)。
+- **helper 改動**(§4.3):`sock.Serve` 每連線 goroutine + 上限 4 + accept 速率;唯讀動詞不取 `n.mu` + 全域 / 每連線額度;`health.get`、`info.owners`、`info.state` key 5(trial 快取)、`info.net` key 4、`psks.get` 去 key 4/5 + 1/s;health 加 `Read Advertising Features` latch(atomic);`LoadOverlay` 不符重讀;`dispatch` 無 record 放行名單加 `health.get`。
+- **firmware(同 rc 的 firmware PR)**:`package/batman/batman-ble/files/bluetooth.conf` 加 `<policy user="provd">`(§4.7);**kernel patch `target/linux/bcm27xx/patches-6.6/999-batman-eir-adv-flags-oob-254.patch`**(firmware 樹本體、兩板共用一份,照 #305 的範式,F-P47;**不是** `patches/ekh-*/` board patch)backport CVE-2026-64539 + CVE-2025-38303(§4.8;待決 D3);pin Batman main。
+- **harness(H3,照本契約先 merge)**:`peer.py`、`transport_sock.py` / `transport_ble.py`、**`provclient proxy` 子命令(今天不存在,F-P51)**、`prov-wbox-254.sh set-provd-env`、§6.3 單位 + 本文件 §9 新增。
+
+## 3. 擁有權
+
+| 資源 | 唯一寫者 | 唯讀者 | 備註 |
+|---|---|---|---|
+| BLE 廣播 instance(LEAdvertisement1 物件) | provd(一次一個) | helper(mgmt `Read Advertising Features` 的 `num_instances`,只讀) | **kernel 是第二個寫者**:連線時控制器停廣播、斷線後 kernel 自己以 `conn->adv_instance` 重開同一 instance(F-P35)→ 手機快連快斷時可能 kernel 已重開而 provd 的 Unregister 才到;provd 把「Unregister 回應前 instance 仍在」視為正常。**既有 harness 要知道 provd 存在**(F-P61:今天的 `ble_state` 在 kernel `adv_instances != 0` 時 FAIL、`adv-on` / `adv-off` / deadman 無條件 `rm-adv 1` 會拔掉 provd 的 instance 而 BlueZ 不知情 → H3 改:`ble_state` 依 provd 狀態期望 kernel `num_instances` **≤ 1**(跑著;provd 在 L70 的前 120 s、health 前置未達、連線中、`SOCK_ONLY` 時合法地沒有 instance)/ **0**(停著);harness 的 `adv-on` 只在 provd 停止時用 instance 1;**stop / start provd 只在 BLE lease 取得 / 釋放做**(今天 `prov-base-254.sh` 已 stop 三處、repo 零 `start`),兩個 deadman restore 都 `start batman-provd`;**任何刪 `provd.env` 的路徑(deadman、`pr_end`、`pr_abort`、P9)一律 `restart batman-provd`**(init 只在 start 讀 env,否則 provd 帶著 `SOCK_ONLY` 活著 = 節點無廣播無 GATT 直到重開,B7 M4),收尾斷言本次 provd pid 的 `/proc/<pid>/environ` 不含五個測試鍵且 ≤ 15 s `num_instances=1`;`prov-base-254.sh:272` 補 provd;`ble-rpa` provd 模式不准 `rm-adv`;L83)。root 手動 bluetoothctl `advertise on` / `btmgmt add-adv` 是第三寫者 = 操作失誤(runbook 禁止;F-P10);provd 以 `health.get` 行裡 kernel 的 `num_instances`(F-P28)對自己的註冊數偵測 foreign(BlueZ `ActiveInstances` 是 D-Bus client 數,F-P60)→ log,不動作 |
+| GATT application(服務 + 4 特徵 + app 根 ObjectManager) | provd | bluetoothd 代理手機 | bluetoothd 重啟 → `NameOwnerChanged(org.bluez)` → 重新 Register |
+| 每條連線的 Noise 狀態、角色、`h`、`id` 水位、逾時、認領失敗計數、replay 用的 nonce 對、全域交握計數、`claimInProgress` | provd 記憶體 | — | 重開 / respawn 歸零 |
+| `s_node`、`node_cert` 快取 | provd(每次啟動產生;請 helper `sign.static` / `sign.ecdh_proof` 連發,`ERate` 退避 1 s 重送,F-P24) | — | §1.3 |
+| **唯讀快取**:`state / generation / trial / 末4 / device_id`(STATUS 與 `info` 的輸入)、PSK 集合、`owners` 公鑰 | provd(§4.3 快取規則) | — | 失效鍵 = **`(state, Generation)` 二元組**(`info.state` key 1 + key 2,F-P26;`!=` 上次,可往下 F-P40;helper 重啟的 `boot.Run` 可能換 state 不換 gen,F-P55);條件:`ctl` 每 4 s 看到二元組變;provd 自己送過的改狀態動詞回應後;`ops` 連線重建後;**撤銷規則見 §1.3(變了就重拉、比對後斷不在集合的)**。**失效 = 標記待重拉,舊集合繼續服務直到新集合成功回來(stale-while-revalidate)**;輪詢回錯 → 暫態,保留舊快取、不改模式(§4.3) |
+| helper socket 連線(≤ 4 條並行) | helper `Serve`(accept、PeerUID 471、第 5 條關、accept 限速 ≤ 5/s **只計通過 PeerUID 且第一次 `Read` 成功的連線**,免得 backlog 堆積的死連線在 SIGCONT 後把活的關掉) | — | provd 用 2 條(`ctl`、`ops`),`provclient` 用其餘;**連線內**仍一次一則;名額計數在 goroutine 內,PeerUID 拒絕的不佔名額;**名額在 goroutine 結束才釋放:provd 在長動詞進行中重啟,舊 `ops` 的 goroutine 卡在 `h(m)` 直到動詞結束(≤ 960 s)仍佔名額**(L81);**helper 分不出 provd 與 `sock-as 471`,沒有 provd 保留位**:3 條 `provclient` 開著時 helper 重啟 → provd 重連可能被當第 5 條關 → provd 退避重連、手機 `E_BUSY`(誠實界線,運維 runbook:同時最多開 2 個 provclient) |
+| helper 的 `n.mu` | helper | — | **P2 契約:`health.get`、`info.boot_id`、`info.owners`、`info.state`、`info.cert`、`info.ecdh_pub`、`info.net` 不取 `n.mu`**;`LoadOverlay` 兩檔非原子(F-P25)→ helper 側 mismatch 重讀 ≤ 3 次,仍不符回 `EUnsupported`(provd 當暫態,§4.3);其餘動詞照舊 |
+| `/tmp/run/batman-prov/helper.sock` | helper(P1 `PrepareDir`) | provd | provd 以**目錄** bind(`-r /tmp/run/batman-prov`;唯讀 bind 的 socket 可 connect,F-P29);helper 重啟 `PrepareDir` 只刪 socket 檔不碰目錄 → jail 內看得到新 socket(F-P29 ✅ 原始碼;04 實跑 = L11 臂) |
+| `/var/run/dbus/system_bus_socket` | dbus-daemon(重啟 unlink + bind,F-P18) | provd | provd 以**目錄** bind(`-r /tmp/run/dbus`),不是檔案(v1 錯誤);唯讀 bind 可 connect(F-P29 ✅);**jail 內無 `/var` symlink(F-P30)→ provd 固定撥 `unix:path=/tmp/run/dbus/system_bus_socket`**,不用 godbus 預設位址 |
+| `$RUNDIR/batman-prov.health` 全部欄位(含 `adv_registered_once`) | helper(health tick;`adv_registered_once` latch 來自 kernel mgmt 的 `num_instances ≥ 1`,本次開機) | autocommit;provd 經 `health.get` | 唯一 health 契約仍是 stage1 §3 那一行;**provd 沒有任何辦法寫它** |
+| `/tmp/run/batman-prov-test/provd.env` | root(`prov-wbox-254.sh set-provd-env`:目錄 root 0700、檔 0600、非 symlink、link 1);**只在 prov_test build** 由 `batman-provd-test.init` 以 root 讀 → `procd_set_param env`;**不掛進 jail** | provd-test init | release image:沒有 test init、provd 無此程式碼路徑(build tag);gate §9 |
+| `/tmp/run/batman-provd-test/`(`gatt.sock`) | test init 以 root `mkdir -m 0700 + chown 471:471`;`procd_add_jail_mount_rw`;provd 在 `SOCK_ONLY=1` 時 `O_NOFOLLOW` + `fstat` 驗 owner == 471、非 symlink、0700 才 bind(否則 log 拒、不建) | harness(root `provclient sock-as 471 -- proxy`) | 照 h23 §4.8.2(F-P42);白箱:目錄改 root 0700 → provd 拒 bind、`proxy` EACCES |
+| dbus policy `bluetooth.conf` | image(firmware `batman-ble`) | dbus-daemon | 不是 conffile;gate 斷言 image 含 `policy user="provd"` |
+| `hci0` 的 Powered / Pairable / Discoverable / SC / privacy / bondable | bluetoothd | provd 經 `health.get`、`Properties.Get` | provd 不呼叫 `Properties.Set`(policy 不放行) |
+
+## 4. 契約
+
+### 4.1 GATT(照協定 §4.1;本節定細節)
+
+- 服務 UUID `BATMAN_SVC_UUID` = **`540aa38c-0086-4d58-a9c0-c7c9d1e1bd42`**(D4,2026-10-31 產生一次;寫進協定 §4.1、CDDL 註解、`provd/gatt.go`、`peer.py`、`transport_ble.py`);特徵 = 第 3 組改 `4d59` / `4d5a` / `4d5b` / `4d5c`(RX / TX / CTRL / STATUS)。
+- 特徵旗標:RX `write-without-response`;TX `notify`;CTRL `read`;STATUS `read`;**不帶任何 `encrypt-*` / `authenticated-*` / `secure-*`**(stage1 F43);`GATT_ENCRYPT_CTRL=1`(prov_test)把 CTRL 改 `encrypt-read`。
+- 資料路徑:RX `AcquireWrite`(回 fd + mtu),TX `AcquireNotify`(fd + mtu);每個 fd 一個 goroutine;fd HUP = 該連線結束(F-P16)。`AcquireWrite` 失敗 → 退回 `WriteValue`;`AcquireNotify` 失敗 → 回 `org.bluez.Error.NotSupported`、Disconnect。
+- **連線識別** = `Acquire*` / `ReadValue` options 的 `device` 物件路徑(F-P16);Disconnect 用它。
+- **CTRL / STATUS 由 provd 快取回答,不在 ReadValue 內呼叫 helper**(A/B M5/M2):CTRL 常數 `{1: 1, 2: 0, 3: 244, 4: 8192}`;STATUS = `{1: [1,0], 2: ["halow"], 3: state, 4: trial, 5?: 末4}` 來自 §3 的唯讀快取(≤ 5 s 舊);**快取尚未填好(啟動後第一次 `info.state` 還沒成功)或快取「不新鮮」→ ReadValue 回 D-Bus 錯誤 `org.freedesktop.DBus.Error.Failed`(→ ATT 0x0E,F-P16),不回猜的內容**。**不新鮮的定義(唯一)**:兩個計時器——**STATUS 以 `info.state`** 最近一次成功距今 > 60 s → 0x0E;**撤廣播以 `health.get`** 最近一次成功距今 > 60 s → 撤(`reason=helper`,fail-closed),恢復後重註冊(B6 m5:`info.state` 走 `IsTrial()` 的 exec,SD 卡卡住時它會逾時而 `health.get` 不會;`ctl` 一輪先送 `health.get`;helper 的 trial 快取 stale-while-revalidate、exec 逾時改 ≤ 5 s,F-P63)。`info.net` 撞 `ERate` → `info` 回應**不帶** 9/10/11(不整封 `E_RATE`),log 一行。**`ctl` 收到 `ERate`:1 s 後重試,不算失敗也不算成功 → 不重置、也不推進「不新鮮」計時**(helper 活著但沒給 health 證據 → 既有廣播維持;只有非 `ERate` 的失敗 / 無回才累計);**但 `ERate` 連續 > 120 s 也視為不新鮮 → 撤廣播**(root 用 `provclient` 迴圈打滿全域桶時,bondable 翻 1 的撤銷不能無上界掛著;B5 m4);`ctl` 重連退避封頂 10 s(§4.5 的 ≤ 60 s 只給啟動期)。`capabilities` 固定 `["halow"]`(殘項)。
+- 框架:`flags(1) ‖ seq(2 BE) ‖ data`;seq 每則 Noise 訊息從 0;不連續 / 累計 > `max_msg` / 單框 > 512 B / 缺開頭旗標 / AEAD 失敗 → Disconnect;sock = 關 socket。節點 → 手機框架 `min(244, notify_mtu − 3)`。
+- 連線槽(§1.3 協定 §8 列):2 槽合計;第 3 條:擠最舊的未認證 / 候選 session,否則拒第 3 條(連上即 Disconnect,無 GATT 回應)。
+
+### 4.2 Noise 與 session(協定 §3)
+
+- 模式由快取的 `state` 決定:{unclaimed, legacy} → `Noise_NX`;{claimed, member} → `Noise_NXpsk0`。prologue `"batman-prov/1" ‖ 0 ‖ "ble" ‖ 0 ‖ device_hint`(unclaimed / legacy = `device_id`,其餘空);sock 傳輸也用 `"ble"`(與向量一致)。
+- **msg1 長度前置檢查**(B m1 / A m1):NX 期待 **32 B**、NXpsk0 期待 **48 B**(F-P13/F-P14);長度不符 → 走假第 2 則路徑(不是 Disconnect,免得長度本身成為 oracle 的旁路——兩種模式的「錯」行為相同:假 msg2 + 等逾時)。
+- 第 2 則 payload = `node_cert`(CBOR,協定 §3.3):provd 啟動時組一次(`dac_chain=[info.cert.1]`、`s_node_pub`、`boot_id=info.boot_id`、`ecdh_pub`、`sig_static=sign.static(s_node_pub)`、`sig_ecdh=sign.ecdh_proof()`、`sn=info.cert.2`),兩個 `sign.*` 間隔 ≥ 2.1 s。
+- **PSK 試法(§3.4)**:NXpsk0 時,對 6 把候選 PSK 各建一個 `NewHandshakeState(Config{Pattern: HandshakeNX, Initiator: false, PresharedKey: k_i, PresharedKeyPlacement: 0, StaticKeypair: s_node, Prologue})`,**各跑一次 `ReadMessage(msg1)`**(無 DH,F-P14),6 次全部跑完才看哪一把成功(不 break);成功的那個 state 自己在 `WriteMessage(node_cert)` 時產生 `e`(F-P31:注入 `e` 對回應方無效,向量單元以 `Config.Random` 餵固定亂數重現);候選 = `psk_owner[0..3]`、`psk_member`、`psk_replay`,缺的以 `crypto/rand` 補到 6;**PSK 快取失效後兩條連線同時重拉 → single-flight(一次 `psks.get`,兩者共用)**;`psks.get` 回 `ERate` → 稍後重拉,不是「無 PSK」。
+- **假第 2 則(全部失敗、或 msg1 長度錯、或 NX 節點收到 psk0 長度的 msg1)**:新臨時 `e'`;`e_手機` = msg1 的前 32 B(不足 32 B 時以隨機補);做與真 `WriteMessage` 相同的兩次 DH(`DH(e', e_手機)`、`DH(s_node, e_手機)`;真路徑是 `ee`、`se`);送 **`e'_pub(32) ‖ random(48 + len(node_cert) + 16)`** = 與真 msg2 等長(F-P13:目前 711 B;單元測試斷言 `len(fake) == len(real)`,mutant 拿掉 48 → FAIL);不關連線,等交握逾時(10 s)才 Disconnect;sock:peer 自己斷 → 立即釋放槽。`FAST_FAKE_DELAY_MS=<n>`(prov_test)讓假路徑多睡 n ms。
+- NX 節點收到 **32 B** NX msg1 → 真 msg2(明文空 payload,F-P14)。NXpsk0 節點收到 32 B msg1 → 走假路徑,**仍跑 6 次 `ReadMessage`**(全失敗)再做假 msg2,單元的呼叫計數在長度錯 / PSK 錯兩種情況都是 6。
+- 交握完成 → `h = ChannelBinding()`;`Split()` 兩方向;AEAD 失敗即 Disconnect;累計 2^20 則 → Disconnect。
+- 角色(協定 §3.5)由成功的那把 PSK 決定:owner_i → 擁有者候選;member → 成員;replay → 擁有者重取;NX → 匿名。
+- 逾時(協定 §8):交握 10 s;未認證 / 候選閒置 30 s;已認證閒置 300 s;**請求在 helper 端進行中不計閒置**;走假第 2 則路徑的連線在那 10 s 內也算「交握中」,不可被擠(只影響 prov_test 的 sock 組合);全域交握 20 / 分(滑動窗,第 21 次 Disconnect);認領失敗 3 次 / 連線 → Disconnect(`NO_BRUTE_LIMIT=1` 關)。
+
+### 4.3 provd ↔ helper(擴充 stage1 §4.1)
+
+**helper 新 / 改動詞**
+
+| 動詞 | 授權 | mutex | 效果 |
+|---|---|---|---|
+| `health.get()`(新) | 無 | **不取** | 現算一行(mgmt `READ_INFO` + `Read Advertising Features` + bluetoothd pid + sc 檔),回 `{1: <行>}`;不寫檔 |
+| `info.owners()`(新) | 無 | 不取 | `{1: [owner_pub…]}`(公鑰);無 record → `EUnsupported` |
+| `info.state` | 無 | 不取 | 加 key 5 `trial: bool`(**helper 內快取 `IsTrial()` ≤ 5 s**,不每次 exec,F-P27);key 2 `Generation` 既有 |
+| `info.net` | 無(provd 只對擁有者 / 成員角色呼叫) | 不取 | 加 key 4 `unfinished: bool`(`TxnPresent`) |
+| **唯讀動詞集合**(列舉:`health.get`、`info.boot_id`、`info.cert`、`info.ecdh_pub`、`info.state`、`info.net`、`info.owners`) | — | 不取 | **額度兩層:helper 全域 10/s 突發 40(uid 471 單一主體,重連歸不了零)+ 每連線 5/s 突發 20;accept ≤ 5 新連線/s;超過 `ERate` / 被拒,不關連線、不算失敗**(A2 M3、B3 M3);`health.get` 的計算抽成 `compute()`,兩個 mgmt 查詢**並行**(各 2 s 逾時 → 最壞 ≈ 2 s),與 tick 共用,`advOnce` latch 用 atomic;`IsTrial` 快取 ≤ 5 s、mutex + single-flight,health 的 `Committed()` 共用同一快取 |
+| `info.boot_id`、`info.cert`、`info.ecdh_pub` | 無 | 不取 | 不變 |
+| `psks.get` | 無 | 取(讀 record 的秘密,照舊) | **去掉 key 4/5**;**1/s 額度**(`ERate`) |
+| 其餘 | 不變 | 取 | |
+
+- health tick(15 s):除 READ_INFO 外加 mgmt `Read Advertising Features`(0x003D,F-P28)→ `num_instances ≥ 1` → 本次開機 latch `advOnce` → `adv_registered_once=1`。**負對照:provd 不註冊只跑著 → 永遠 0;root 手動 `advertise on` 也會讓它變 1(誠實界線:它量的是「本次開機 kernel 曾有廣播 instance」,不是「provd 的」)。時序誠實界線:手機連線期間 provd 已 Unregister → `num_instances = 0`;helper 若恰在此時重啟,latch 要等連線結束、provd 重註冊、下一個 tick 才回 1;trial 上 autocommit 在這窗讀到 0 只多一次 WARN(F-P20)。**
+- **連線模型(取代 v2)**:helper `Serve` 每連線一個 goroutine、上限 4(§1.3)。provd 開**兩條**常駐連線,各一個 client goroutine、FIFO、遞增 `id`:
+  - `ctl`:只跑唯讀動詞集合,每 **4 s** 一輪,**永遠不會被長動詞堵住**(連線內同步,但這條連線上沒有長動詞);**每則請求 ≤ 10 s 無回 → 關 `ctl` 重連**(helper 被 SIGSTOP / mgmt 卡住時 FIFO 不會永遠等);閒置 ≥ 20 s 送 `info.boot_id` 當 keepalive。
+  - `ops`:`nonce`、`sign.*`、`psks.get`、`claim.*`、owner-op 動詞;一次一則(= helper 的 `n.mu` 本來就序列化它們);**有請求在飛就不送 keepalive**(helper 在 `h(m)` 內不 `Read`,堆著的 keepalive 動詞結束後會一口氣撞額度);keepalive 的 `ERate` 忽略;**`ops` 重連(EOF / 被當第 5 條拒 → 退避)後:所有 session 的快取 nonce 對作廢、`claimInProgress` 清除**(helper 的 nonces 在記憶體,重啟即空)。
+  - 第 3、4 條留給 `provclient`(root 運維、harness,F-P34);provd 跑著時 `provclient sock-as 471 -- info.state` 必須 ≤ 2 s 回(L78);provd 自己的連線被拒(第 5 條)→ §4.5 退避重連。
+  - EOF:冪等動詞(`info.*`、`health.get`、`psks.get`、`sign.*`)重連後重送一次;非冪等(`nonce`、`claim.*`、owner-op)不重送 → 回手機 `E_BUSY` 並 log。
+  - **`ops` 一次只准一個在飛**:有請求在飛時 `ops` 上再來的任何請求(含 `nonce` / `claim.*` / `sign.*`)直接回 `E_BUSY`;provd 內部的重拉(`psks.get`)只標記、`ops` 空了才送(不排隊;B6 M4 的「排隊的 leave 在 900 s 後才被送出」路徑因此不存在);`HELPER_WAIT = 330 s`(從送出起算)→ 到期**不關連線**(最壞 ≈ 960 s,F-P32),只對該 session 回 `E_BUSY` + `error-detail{3: "outcome unknown — re-read info"}`;**到期後 `ops` 仍不送下一個請求,直到真回應抵達(以 `id` 丟棄)或 EOF**;重拉(`psks.get`)回 `ERate` / 錯 → 1 s 後重試,舊集合繼續服務。
+  - 假時鐘單元:30 s 邊界、keepalive、HELPER_WAIT 丟棄且連線仍在、`ctl` 在 `ops` 卡 30 s 時 ≤ 1 s 回(**負對照 = 單連線 helper → 30 s**)。
+- **快取**(§3):`ctl` 每 4 s `health.get` + `info.state`;`Generation != 上次` → 標記待重拉:`psks.get`(`ops`,single-flight)與 `info.owners`(`ctl`);**重拉期間舊集合繼續服務**(stale-while-revalidate);`info.state` 回錯(含撕裂讀的 `EUnsupported`)→ 保留快取、不改模式,只累計「不新鮮」計時(> 60 s → STATUS 0x0E、撤廣播 `reason=helper`)。**誠實界線(F-P39)**:`net.apply` 在 step 3 就 bump generation,之後 step 4 save 與該動詞可長達 ≤ 180 s 常態 / ≈ 960 s 最壞;期間 `psks.get` 等動詞結束後才送 → 新 PSK 集合要等動詞結束才到。影響:`psk_owner` / `psk_replay` 不隨 join 變 → 擁有者斷線重連照常成功(舊集合即可);**`psk_member` 綁 `Net.Version` → 成員手機在網主的 `network/update` 進行中(至動詞結束)以新版本 `psk_member` 交握會走假路徑**,舊版本在 helper 端已不被接受 → 這段時間成員連不上,不是「逾時一次」。`info` / STATUS / 撤廣播不受影響(都在 `ctl`)。殘項(真修):`psks.get` 改為不取鎖(只讀 record + `KS.ECDH`;608B 後需 keystore 自鎖)。**Session 撤銷**:規則正本在 §1.3 該列(變了就重拉、新集合到手逐 session 比對);測試見 §9。
+- **請求打包**:owner-op 動詞與 `claim.replay`:`{1: h, 2: 原始信封 bstr}`(分塊時為重組後重編的整封);**`claim.verify`:provd 拆 `claim/finish` body `{1: response, 2: owner_enc_pub, 3: sig_enc}`(CDDL `claim-finish-req`)+ 本 session `claim/begin` 存下的 `owner_pub` → `{1: h, 2: response, 3: owner_pub, 4: owner_enc_pub, 5: sig_enc}`**(F-P8);沒先 `claim/begin` → `E_FORBIDDEN`。
+- **nonce 對(F-P9 / F-P33)**:provd 對每條 session 快取**最近一對** `{nonce_node, nonce_helper}`;`claim/begin` → 呼叫 `nonce(h)`,回 `nonce_node` 給 app,留 `nonce_helper`;**擁有者重取角色的 `op/nonce` 不呼叫 helper**,直接回同一對的 `nonce_helper`(順序 begin → op/nonce → replay;`provclient` 已如此);**`claim.verify` / `claim.replay` 回應後(任何碼)清掉該 session 的對**(helper 端已消耗,F-P33);**快取對自 `nonce(h)` 回應起 55 s 作廢**(helper 端 60 s);之後的 `op/nonce`(重取角色)沒有有效對 → `E_FORBIDDEN`(不計失敗),app 重新 `claim/begin`;擁有者角色的 `op/nonce` 每次都呼叫 `nonce(h)`(同 h ≤ 4 對)。
+- **type → verb**:
+
+| 信封 type | 角色 | helper | provd 做的事 |
+|---|---|---|---|
+| `info` | 全部 | 快取(`info.cert` 一次、`info.state` 5 s)+ 擁有者 / 成員角色才 `info.net` | 組 `info-resp`:1 `device_id`(= hex(`info.cert.2` 的 SN)),2 `model`(`/etc/batman-build` `BATMAN_MODEL`,04 沒有 → `"dev"`)、3 `board`、4 `fw_version`、5 `[1,0]`、6 `["halow"]`、7 `state`、8 `claim_window`(state ∈ {0,3} 且非 trial)、9/10 owner / member 才有、**11 `unfinished`**(= `info.net.4`,owner / member 才有) |
+| `claim/begin` | 匿名、擁有者重取 | `nonce(h)` | 存 `owner_pub`(body 1)與 nonce 對 |
+| `claim/finish` | 匿名 | `claim.verify(5 欄)` | `claimInProgress` 互斥(另一 session 同時 → `E_BUSY`);回應後清 nonce 對;helper 3 → **`E_CLAIM_FAILED`(9)**,計失敗 1 次;helper 6 → `E_UNSUPPORTED{capability:"claim", reason:10}`(F-P38 推論);23 → `E_LOCK_INCOMPLETE`;0 / 23 → 本 session 升擁有者、Disconnect 其他 session、快取失效 |
+| `op/nonce` | 擁有者、擁有者重取 | 擁有者:`nonce(h)`;重取:快取對 | 回 `nonce_helper` |
+| `claim/replay` | 擁有者重取 | `claim.replay(h, 信封)` | 0 / 23 → 升擁有者、Disconnect 其他 session;3 → `E_FORBIDDEN`(計失敗);12 → `E_RATE` |
+| `auth/owner` | 擁有者候選 | 快取 `info.owners` | provd 驗章(§1.3);通過 → 擁有者,回 `{}`;失敗 → `E_FORBIDDEN`(計失敗 3 次 / 連線同認領) |
+| `network/join` | 擁有者 | `net.apply(h, 信封)` | 等 ≤ 330 s |
+| `network/update` | 擁有者、成員 | `net.apply(h, 信封)`(helper 以 type 分流,F-P8) | 同上 |
+| `network/leave` | 擁有者 | `network.leave(h, 信封)` | 同上 |
+| `ssh_keys/set`、`root_password/reset` | 擁有者 | `ssh_keys.set` / `root_password.reset` | 回應不快取 |
+| `owner/add|remove`、`settings/*`、`status`、`peers/challenge`、`diag/*`、`update/*`、`bulk/*` | — | — | **P3**:`E_UNSUPPORTED{capability: <type>}`;`reset` → `E_UNSUPPORTED{capability:"reset", reason: 9}` |
+
+- **錯誤碼(helper → 協定),唯一的表**(helper 錯誤回應**沒有 reason 文字**,F-P37;provd 只有碼):`3 → 3`(**`claim.verify` 例外 → 9**);`4 → 4`;`5 → 5`;`6 → 6`,**`claim.verify` 回 6 ⇒ `error-detail{1:"claim", 2: 10}`(推論,F-P38;誠實界線:`dispatch` 的 `LoadOverlay` 失敗(p5 / overlay 執行期讀不到、harness bind 壞檔)也對 `claim.verify` 回 6 → app 會被告知「沒 SSH key」;provd 以 `ctl` 的 `info.state` 最近是否成功當旁證,最近失敗則改回 `{1:"claim"}` 無 reason;真修 = helper 錯誤回應 key 3 加 `{1: reason-code}`,列殘項);其他動詞的 6 → `{1: <type>}` 無 reason**;`7 → 7`;`10 → 10`;`12 → 12`;`21 / 22 → 11 E_REJECTED`(**無 detail 3**;原因在 helper log);`23 → 13`;helper 回 `20`(含 `sock.go:158` 以 id 0 回 20 並關連線)= provd 自己的 bug → 11 + log CRIT,該連線上在飛的非冪等請求回 7;其他未知碼 → 11。provd 自己產生:1(major ≠ 1)、2、3(角色)、7(互斥、helper 逾時、`ops` 在飛 / `HELPER_WAIT` 到期、擠槽前)、6(P3 / idem)。
+- 帶 `7: idem_key` 的請求:階段 1 不實作快取 → `E_UNSUPPORTED{capability:"idem"}`;帶秘密回應的 type 帶 7 → `E_FORBIDDEN`(協定)。
+- 回應信封 `{1: id, 4: status, 3: body | 5: error}`;`id` 重複 / 倒退 → Disconnect。分塊:見 §1.3 協定 §5.1 列;重組後重編 `{0,1,2,3,(7)}`(deterministic;單元用向量 `chunking` 斷言重組 bytes == 原始整封)。
+
+### 4.4 廣播(取代 h23 §4.9)
+
+- 一個 `LEAdvertisement1`:`Type=peripheral`、`ServiceUUIDs=[BATMAN_SVC_UUID]`、`Discoverable=false`、無 `LocalName` / `Includes` / `ServiceData` / `ManufacturerData` / `Data`、`Timeout=0`。BlueZ 產 18 B,kernel 加 3 → 21 B。
+- **ADV 長度自檢**:provd 註冊前算 BlueZ 會產生的長度(目前固定 18)+ 3 > 31 → 不註冊、log `adv: payload would be <n> B (max 28)`、退出碼 3(退出前 sleep 60;無法修復 → procd 會一直 respawn;寫明);`ADV_LEN_TEST=<n>`(prov_test)讓自檢以 n 當 payload 長度。**它只擋我們自己的程式錯;被攻陷的 provd 不受它約束 → 真正的擋法是 kernel patch(§4.8)**。
+- **註冊前置(fail-closed)**:`health.get` 行 `bluetoothd=1 hci0_powered=1 privacy=1 sc=1 sc_file=1 bondable=0`(沒有 `boot_id` 檢查:現算的行永遠是本次)且 D-Bus `Adapter1.Pairable == false && Discoverable == false`;任一不成立 → 不註冊,每 5 s 重查(log 只在狀態改變時)。
+- **順序**:`RegisterApplication`(GATT)成功 → 盤點 → `RegisterAdvertisement`。
+- **啟動 / 重註冊前先盤點既有連線(B3 M2)**:`GetManagedObjects` 掃 `Device1.Connected == true` 的裝置(temporary 裝置連線期間一定有物件,F-P50)→ 逐一 `Device1.Disconnect` → **等方法回覆(async,BlueZ 先等 2 s timer 再送 mgmt DISCONNECT,回覆在 `Connected` 轉 false 時才來,F-P50;等 ≤ 5 s)**;回 `Failed` 視為已斷;**對已斷裝置 BlueZ 不回覆(F-P56)→ 逾時 5 s + 重盤點看到 `Connected=false` = 已斷**;重盤點輪數上限 3(supervision timeout ~6 s);對正在斷的裝置重複呼叫無害、不得迴圈 → 才 `RegisterAdvertisement`;log `provd: disconnected <n> stale link(s)`;`RegisterAdvertisement` 回 `org.bluez.Error.Failed` → 重新盤點再試(退避)。**同樣的盤點也在 L9 / L65 bluetoothd 重啟後做**:乾淨停止會 SET_POWERED 0 斷光,但 crash 後新 bluetoothd 的 `load_connections` 會把仍在的連線重列(F-P50)。理由:provd 重啟時 BlueZ 不斷手機的 LE 連線,而 peripheral 連線存在時 kernel 可能不允許再開 connectable 廣播(F-P41,控制器 le_states ⚠️)。**app 契約(219 §3.7)**:節點端 provd 重啟 = 連線被斷,app 重連重新交握;harness 規則:`set-provd-env` 會 restart provd(h23 :254)→ 單位**先 set env、再連 peer**。
+- **撤銷**:`ctl` 每 4 s `health.get`(現算、兩個 mgmt 查詢並行最壞 ≈ 2 s、不取 mutex、不在長動詞的連線上)→ 任一欄轉壞 → `UnregisterAdvertisement`(**時間預算:輪詢 4 + compute 2 + D-Bus 往返 ≤ 1 ≈ 7 s;single-flight 只合併「尚未開始」的 compute(已開始的那次可能拿到翻轉前的結果,+2 s);`ctl` 一輪的 `health.get` 先送、週期以送出時刻計 → 常態最壞 9 s,L67 斷言 9.5 s**;**成立的前提是 §1.3 的多連線 helper,負對照 L71**);快取不新鮮 > 60 s → 撤(`reason=helper`);有連線建立(`Acquire*` 到來或 `Device1.Connected`)→ 撤銷;所有連線結束 → 重新註冊。
+- **RPA**:kernel 只在 900 s 過期後換(F-P17);provd 無連線時每 `900 + rand(30..120)` s 撤銷 + 重註冊,讓過期的 RPA 真的被換掉;**連線前後、斷線重註冊在 900 s 窗內是同一 RPA**(§1.3)。
+- log 契約(H3 讀):`provd: adv registered reason=<start|disconnect|rpa_timeout|health|helper|bluetoothd>`、`provd: adv withdrawn reason=<health|helper|connect|stop|bluetoothd>`;無 `nonce=`。
+- 退避 log:`provd: backoff <n>s reason=<…>`;連線事件 log 同 reason 每 60 s 最多 10 行(路人洪水不洗 log);ADV 自檢失敗退出前 `sleep 60`(procd `respawn … 0` 無限,免得每 5 s 一行)。
+
+### 4.5 init / ujail
+
+```
+START=92 STOP=10 USE_PROCD=1
+start_service() {
+  procd_open_instance
+  procd_set_param command /usr/bin/batman-provd
+  procd_set_param respawn 3600 5 0
+  procd_set_param user provd ; procd_set_param group provd
+  procd_add_jail batman-provd log requirejail                      # -E:ujail 缺 / 建不起 → 不啟動(F-P19)
+  procd_add_jail_mount /usr/bin/batman-provd /etc/batman-build /tmp/run/dbus /tmp/run/batman-prov   # 兩個 socket 目錄都唯讀 bind(F-P29)
+  [test init 另加] mkdir -m 0700 /tmp/run/batman-provd-test && chown 471:471 …; procd_add_jail_mount_rw /tmp/run/batman-provd-test ;
+                 以 root 讀 /tmp/run/batman-prov-test/provd.env(驗 root 0600 非 symlink link 1)→ procd_set_param env K=V …(不掛進 jail)
+  procd_set_param capabilities /etc/capabilities/batman-provd.json   # {"bounding": []}
+  procd_set_param no_new_privs 1
+  procd_close_instance
+}
+```
+- 不掛 `/etc/passwd`、`/etc/group`、`/lib/ld-musl*`、`/proc` 單檔(靜態 Go);實作時 `file batman-provd` 斷言 `statically linked`。jail 內無 `/var`(F-P30)→ D-Bus 位址寫死 `unix:path=/tmp/run/dbus/system_bus_socket`。
+- 無法修復的錯(ADV 自檢、jail 配置)才退出;其他(bus / adapter / helper 不可達、簽章失敗)內部退避 1,2,4,…≤ 60 s 不退出。
+- 停止:K10 撤廣播、Disconnect 全部連線(best effort ≤ 500 ms)→ 退出;bluetoothd K20、helper K15 在其後。
+- **兩個 init 檔**:`batman-provd.init`(release)/ `batman-provd-test.init`(`BATMAN_PROV_TEST=1` 時取代前者安裝);release gate 斷言 image 的 `/etc/init.d/batman-provd` 不含 `provd.env`。
+
+### 4.6 `provd.env`(prov_test;h23 §4.8.3)
+
+`SOCK_ONLY=1`、`FAST_FAKE_DELAY_MS=<n>`、`NO_BRUTE_LIMIT=1`、`GATT_ENCRYPT_CTRL=1`、`ADV_LEN_TEST=<n>`。寫者 `prov-wbox-254.sh set-provd-env` → restart provd;provd 啟動 log `provd: test env <k=v…>`。release:`cmd/batman-provd/testenv_release.go` 讓這些名字不存在;gate `strings batman-provd | grep -c -e SOCK_ONLY -e ADV_LEN_TEST -e provd-test` = 0。
+
+### 4.7 dbus policy(firmware `batman-ble/files/bluetooth.conf`)
+
+```xml
+<policy user="provd">
+  <allow send_destination="org.bluez" send_interface="org.bluez.LEAdvertisingManager1" send_member="RegisterAdvertisement"/>
+  <allow send_destination="org.bluez" send_interface="org.bluez.LEAdvertisingManager1" send_member="UnregisterAdvertisement"/>
+  <allow send_destination="org.bluez" send_interface="org.bluez.GattManager1" send_member="RegisterApplication"/>
+  <allow send_destination="org.bluez" send_interface="org.bluez.GattManager1" send_member="UnregisterApplication"/>
+  <allow send_destination="org.bluez" send_interface="org.freedesktop.DBus.ObjectManager" send_member="GetManagedObjects"/>
+  <allow send_destination="org.bluez" send_interface="org.freedesktop.DBus.Properties" send_member="Get"/>
+  <allow send_destination="org.bluez" send_interface="org.freedesktop.DBus.Properties" send_member="GetAll"/>
+  <allow send_destination="org.bluez" send_interface="org.bluez.Device1" send_member="Disconnect"/>
+</policy>
+```
+- **沒有** `own`(provd 不要 well-known name;bluetoothd 以 unique name 回呼,root policy 既有的無 destination `send_interface` allow 已放行,F-P18)、沒有 `send_destination=org.freedesktop.DBus`(default 已放行三介面並 deny 四個危險成員;user policy 寫了會蓋掉那些 deny,B m4 / A m3)、沒有 `receive_sender`(default 已 allow 收)。
+- provd 匯出的方法**驗 sender == org.bluez 的 unique name**(`GetNameOwner` 一次 + `NameOwnerChanged` 更新),其他 sender → `org.freedesktop.DBus.Error.AccessDenied`;godbus 匯出每呼叫一個 goroutine → provd 內部狀態有寫鎖。
+- BlueZ 對廣播物件走 `Properties.GetAll`、對 app 根走 `GetManagedObjects`(F-P35)→ `LEAdvertisement1` 物件必須 `prop.Export`,app 根自己匯出 ObjectManager。
+- **gate 斷言 root policy 那 4 行 `send_interface`(`GattCharacteristic1`、`GattDescriptor1`、`LEAdvertisement1`、`ObjectManager` / `Properties`)仍無 destination 限制**:它們就是 bluetoothd → provd 回呼的放行(F-P18);誰加了 destination 回呼就全斷。
+- **policy 擋方法不擋屬性值**:被攻陷的 provd 仍可註冊 `Discoverable=true` + `Includes=["local-name"]` 的廣播(節點對一般掃描器可見、帶 hostname)→ §8 誠實界線。
+- 負測試:`prov-sec-dbus-254` 加 471 呼叫 `org.freedesktop.DBus.UpdateActivationEnvironment` → AccessDenied(default deny 仍在);471 `Introspect` 仍 AccessDenied(F16)。
+
+### 4.8 kernel board patch(待決 D3)
+
+**落點 = `target/linux/bcm27xx/patches-6.6/999-batman-eir-adv-flags-oob-254.patch`**(firmware 樹本體,一份、兩板共用,照 #305 `999-batman-*-305.patch` 的範式;`patches/ekh-*/` 只准碰 `feeds/`,F-P47;kernel 因 `KERNEL_FILE_DEPENDS` 自動重 prepare):backport 上游兩個 commit(依序):**CVE-2025-38303 = torvalds `47c03902269aff377f959dc3fd94a9733aa31d6e`**(給 `eir_create_adv_data` 加 `size`;Flags / TX power 各自檢查 3 B——單獨它**不**修 F-P10 的路徑,後面的 `memcpy` 仍未檢查)+ **CVE-2026-64539 = torvalds `6f5fb689fdf80bdd143f22a502f9eb1f3c85e286`**(「Fix stack OOB write when prepending the Flags AD」:條件改為 `ad_len + 3 + adv_data_len <= size` → 放不下時**丟 Flags、留使用者資料**);**只動 `eir_create_adv_data`**,scan-rsp / per-adv creator 上游沒動(legacy scan rsp 路徑 kernel 不前置任何欄位,不需要);6.6.138 已有 `eir_precalc_len`(`eir.h:21`),兩者可直接 backport(審查員 A7 以 `gh api` 取得 diff 核對;實作時再對 linux-stable 核一次)。v7 以前寫的「涵蓋三個 creator」是錯的。**見證(v8,只留 build 時)**:正本放 Batman `scripts/dv/data/999-batman-eir-adv-flags-oob-254.patch`(H3 PR 帶進來 → D3 的 patch 內容在設計核准時就要定),firmware PR 複製到 `target/…`,`build-board.sh` 第 4 步 `cmp target/…/999-…-254.patch feeds/batman/scripts/dv/data/999-…-254.patch || exit 1`(pin 漂移在 build 就拒;負對照:改一個位元組 → build 拒)。**誠實界線**:kernel patch 不在 #275 的 board-patch 見證機制內;**節點端沒有正向見證**——v4–v7 的「臂 2」(root 在節點上送 31 B 看會不會 panic)連同它的閘門(`DV_FW_TREE`、`BATMAN_DIRTY_WHY`、`-wbox test` 綁定、釘 payload、btmon 斷言)在 v8 全部砍掉:它要六個機制支撐一個在未 patch 的 kernel 上就是 F-P10 panic 的測試,而 patch 有沒有進 image 用 build 時 `cmp` 就能證明;F-P10 的實跑紀錄留作「未 patch 會越界」的 n=1 證據(`hci_cp_le_set_adv_data cp` 是區域變數,F-P60,不保證 panic)。
+
+## 5. 生命週期矩陣(provd 相關;其餘沿用 stage1 §5、h23 §5)
+
+| # | 路徑 | 今天(wsl.16) | P2 後 | 測試(負對照) |
+|---|---|---|---|---|
+| L1 | first boot / 重燒卡 | 無廣播 | S89 helper 產身分、`BootFinish` 若有 `.txn`;S92 provd:連 bus、等 `hci0` 的 `Adapter1` 物件(`InterfacesAdded`)、填快取(`info.state` 不取 mutex,fresh 節點 record 由 `--boot` 產生在 helper 服務前 → 可讀)、簽 `node_cert`(可能排在 `BootFinish` 之後 ≤ 120 s)、health 全 1 → 註冊 | `prov-firstboot-254`(B trial STATUS 可讀、`updating=1`、末 4 碼) |
+| L2 | boot | 同上 | 同 L1;第一次註冊後 ≤ 15 s health `adv_registered_once=1`(helper 自量) | `prov-boot-254`(含:停 provd → 值**不**回 0,latch;負對照:provd 從未註冊 → 0) |
+| L3 | clean stop | — | K10 撤廣播、Disconnect、退出 | boot-reasons 乾淨 |
+| L4 | reboot | — | 同 L2;全部狀態歸零 | |
+| L5 | OTA(fresh overlay) | — | provd 無持久狀態 | `prov-ota-254` + STATUS 可讀 |
+| L6 | autocommit | WARN ble(F-P20) | **不變:只 WARN**;有 `ble-ok` 的節點在 trial 上 provd 註冊 → 不再 WARN;provd 不起 → WARN 行(不 revert)。WARN → FAIL 是 #254 checklist 的獨立決定 | §6.4 (8):兩臂斷言 WARN 行有 / 無 |
+| L7 | 斷電 | — | provd 無狀態;手機重連重讀 `info`(`unfinished`) | 既有 powerloss 單位 |
+| L8 | provd crash loop | — | procd respawn + 內部退避 log;health 不看 provd | `prov-respawn-254` |
+| **L80** | provd 重啟(crash / respawn / `set-provd-env` restart)時手機或 02 的 LE 連線還在 | — | BlueZ 不斷 LE 連線(F-P41)→ 新 provd 啟動先盤點 `Connected==true` → Disconnect → 註冊;不盤點則 `RegisterAdvertisement` 可能一直 Failed 直到手機自己斷(iOS 不會);合法擁有者連著時的無害重啟也會被斷一次(app 重連即可,§4.4 契約) | `prov-respawn-254` 加兩臂:(1) 02 連著 → kill provd → **≤ 15 s 02 `Connected=false`**(respawn 5 s + bus + 盤點 + BlueZ 2 s timer ≈ 9 s 常態)(負對照 = 不盤點 → 02 10 s 後仍 `Connected=true`;與 le_states 無關)、`ActiveInstances=1` 為正向;(2) `peer.py` 擁有者連著 → restart provd → 重新交握成功;實作第一步 04 btmon 見證 le_states(F-P41 ⚠️) |
+| **L81** | provd 在長動詞進行中重啟(殭屍連線佔名額) | — | 舊 `ops` goroutine 卡在 `h(m)` 直到動詞結束(≤ 960 s)仍佔名額;每次重啟多留一個,**上限 4(之後的連線直接關、不佔 goroutine),不會無限累積**;穩態 = 動詞結束前 provd 與 provclient 全連不上,結束後 ≤ 5 s 恢復;殘項:`poll(POLLRDHUP)` watcher 提早釋放名額 |
+| L9 | bluetoothd 重啟 | — | `NameOwnerChanged(org.bluez)` → 丟 D-Bus 狀態、等新 owner 與 `Adapter1` → **盤點(crash 路徑連線可能還在,F-P50)** → 重新 Register ≤ 15 s | `prov-dep-restart-254`(加 `kill -9` bluetoothd 變體;⚠️ kernel 在 mgmt socket 關閉時是否 power off 未實測) |
+| L10 | dbus 重啟 | — | provd 的 bus 連線 EOF → 退避重連(目錄 bind,F-P29)→ bluetoothd 也會跟著重起 → 新 pid → patch 900 重寫 `batman-sc` → `sc_file=1` → 同 L9 | `prov-dep-restart-254` 加 dbus 臂,斷言拆成兩段:「bluetoothd 新 pid 且 `sc_file=1`」之後 **≤ 15 s** 重註冊(不把 sc 檔重寫時間算在 provd 頭上;**檔案 bind 時此臂必 FAIL = 負對照**) |
+| L11 | helper 重啟 | — | helper.sock EOF → 重連(目錄 bind)→ 重拉 `node_cert`(簽章)、快取失效(**helper 重啟會重跑 `boot.Run`,record 可能被改寫,F-P55;`(state, Generation)` 二元組 + `ops` 重連全量 reconcile 涵蓋**);進行中請求 `E_BUSY`;`adv_registered_once` 由 helper 重啟後第一個 tick 自己量回 | 同上加 helper 臂 |
+| L12 | downgrade 到無 provd 的槽 | — | 舊槽無 provd、無 policy → 無廣播;舊 autocommit 只 WARN | `prov-downgrade-254` 斷言 WARN 行 |
+| L13 | bcm2710 | — | ❌ 未測;kernel patch 自動共用(`target/linux/bcm27xx`),但 `patches/ekh-bcm2710/` 缺 0012 / 0013 bluez patch(F-P49)→ bcm2710 根本沒有 LE-only bluez;policy / init 共用 | — |
+| L14 | bcm2711 | — | 本文件 | 全部 |
+| L21 | trial 上 app 操作 | — | STATUS `updating=1`;改狀態動詞 helper `EBusy` → 7 | `prov-trial-busy-254` + STATUS |
+| L24 | 兩支手機同時認領 | — | 一個 0、一個 7;成功後另一條 Disconnect | `prov-two-phones-254`(sock;BLE 空中單連線做不到,寫明) |
+| L34 | 認領回應遺失 | — | `psk_replay` session → begin → op/nonce(同一對)→ replay | `prov-ble-claim-254`(含 begin→op/nonce→replay 順序;負對照:「op/nonce 再呼叫 nonce」→ CheckMac 失敗) |
+| L39 | 遠端讓 provd crash(trial) | — | health 不看 provd;latch 在 helper 且由 kernel 量 | `prov-provd-dos-254` |
+| L62 | privacy / RPA | — | 前置全 1 才廣播;900 s 後重註冊換 RPA | `ble-rpa-254`(三態;log 無 nonce) |
+| L65 | bluetoothd crash | — | 同 L9 | |
+| L66 | 第 3 條連線 / 大訊息 / 洪水 | — | 擠最舊未認證(**排除交握中 < 10 s 的連線**;sock + BLE 都算)/ 拒;8 KiB;20/分 | `prov-sec-hog-254`(加:2 條未認證佔著 → 合法第 3 條仍能交握)、`-oversize-254` |
+| L67 | health 轉壞(root 開互動 bluetoothctl) | — | ≤ 10 s 撤廣播;既有 session 不斷 | `prov-boot-254` 白箱 |
+| **L68** | 操作員 root 手動 `advertise on` / `btmgmt add-adv` | kernel panic 風險(F-P10) | 同今天 + kernel patch 後不越界;provd 以 kernel `num_instances` 看到 foreign → log,不動作 | 單元(假 health 行 `num_instances=2` → log);節點端不做(見 §4.8) |
+| **L83** | harness 停了 provd 或改了它的環境(`provd.env`)後主機死掉 | 今天:無 provd | 節點無廣播直到 deadman 到期 → deadman restore `rm -rf` 測試目錄 + **`restart batman-provd`**(在 helper 之後)→ 重註冊;autocommit 只 WARN 不會救 | 白箱兩臂:停 provd 後殺主機 → lease 到期 ≤ 5 s 內 provd 起、`num_instances` 回 1;`SOCK_ONLY=1` 跑著殺主機 → 到期後 pid 變、environ 無測試鍵、instance 回 1(負對照 = `start` 而非 `restart` → pid 不變、instance 0) |
+| L69 | 交握中 PSK 被 helper 換掉 | — | 用舊快取完成或失敗;下一條重拉 | 單元 |
+| L70 | 開機 helper `BootFinish` 持鎖 ≤ 120 s | — | `ctl` 的 `info.state` / `health.get` 不取鎖且不在 `sign.*` 的連線上 → STATUS 可讀、廣播前置照常;`ops` 的 `sign.*` 排隊 → `node_cert` 晚 ≤ 120 s → 期間**不廣播**(交握需要 node_cert)→ **BLE 上不會有連線,STATUS 可讀只能經 `gatt.sock` 驗** | `prov-boot-254`:記錄註冊時間;白箱(`SOCK_ONLY`)helper 持鎖 120 s 期間 STATUS 可讀(負對照:單連線 helper = 讀不到) |
+| **L71** | helper 忙(`net.apply` ≤ 180 s,最壞 ≈ 960 s)時 | — | `ctl` 不受影響:STATUS / `info` 可答、health 輪詢照常、**bondable 翻 1 → ≤ 10 s 撤廣播**;`ops` 排隊:擁有者 / replay 交握用舊集合照常成功;**成員新版本 `psk_member` 的交握要等動詞結束**(§4.3 誠實界線);`provclient` 走第 3 條連線照常 | 白箱:helper 持鎖期間 02 讀 STATUS、翻 bondable → 撤廣播 ≤ 9.5 s、`provclient info.state` ≤ 2 s(**負對照 = 單連線 helper:三者都等到鎖放開**);`kill -STOP` helper → ≤ 65 s 撤廣播 `reason=helper` |
+| **L72** | ujail 缺 / jail 建不起 | — | `requirejail` → 不啟動,procd log | 白箱:改名 ujail → provd 不起、無廣播(負對照:無 `requirejail` → 以 471 無 jail 跑) |
+| **L73** | `hci0` 整次開機不出現(BT 韌體缺) | — | provd 等 `Adapter1` 物件;health `hci0_powered=0` → 不廣播;退避 log | `prov-dep-restart-254` 的無 hci0 臂(已有) |
+| **L74** | adapter 熱移除 / 重加(`InterfacesRemoved/Added`) | — | 丟廣播 / app 狀態 → 重 Register | 白箱:`hciconfig`不在 → 以 bluetoothd restart 代理(= L9) |
+| **L75** | 手機在 `net.apply` 進行中斷線 | — | helper 做完;provd 丟棄遲到回應;app 重連:以 `psk_owner`(舊集合即可)交握成功、讀 `info.unfinished=1`(進行中,F-P39)直到變 0 / `net_version` 變 | `prov-netjoin-254` 加臂:join 送出後立刻斷線 → 重連以 `psk_owner` 交握成功、`unfinished` 由 1 轉 0、節點入網(**負對照 = 失效時清空快取 → 假 msg2**) |
+| **L76** | OTA(`batman-slot` 寫另一槽)期間 session 開著 | — | helper `otaBusy` → `net.apply` / leave 回 7;`info` 照常;重開後 session 全斷 | `prov-leave-ota-254` 既有 |
+| **L78** | root 以 `provclient` 改 record(claim / net-apply)而 provd 跑著 | 今天:provd 不存在 | 連得上(第 3 條);≤ 4 s 內 provd 看到 `Generation` 變 → PSK / owners / state 重拉 → 下一條 NXpsk0 用新 PSK;**既有匿名 NX session 不斷**(只有 provd 自己的認領成功才斷其他),它們之後的 `claim/finish` 回 9;`owner.add` 後重拉完成前的 `auth/owner` 用舊 owners → `E_FORBIDDEN` 且計失敗 | `prov-sock-254` 加「provd 跑著時 `sock-as 471 -- info` 成功」臂(負對照 = 單連線 helper → 逾時);白箱:`provclient` claim 後 ≤ 5 s `peer.py` 以新 `psk_owner` 交握成功(負對照 = 不看 generation → 假 msg2) |
+| **L79** | `claim/replay` 第一次失敗後重試 | — | 快取對已清 → `op/nonce` 回 `E_FORBIDDEN` → app 重新 `claim/begin` → 成功 | `prov-ble-claim-254` 加臂(負對照 = 不清對 → 第二次 CheckMac 必敗、計 10/h) |
+| **L77** | helper.sock 目錄不存在(helper 還沒 `PrepareDir`) | — | jail mount 失敗 → `requirejail` 不啟動 → procd respawn 5 s 後再試(helper S89 早於 provd S92,正常不會發生) | 白箱:停 helper、刪目錄、restart provd → 退避 / respawn 直到 helper 回來 |
+
+## 6. 依賴與證據
+
+| 依賴 | 證據 | 狀態 |
+|---|---|---|
+| BlueZ D-Bus 廣播 / GATT 行為、ATT 錯誤碼、`Acquire*` options、斷線 HUP | F-P11、F-P16 | ✅ 原始碼 |
+| kernel Flags 加法、mgmt 上限、RPA 時序、斷線後自動重開廣播 | F-P10、F-P17 | ✅ 原始碼 + 實證 |
+| `flynn/noise` API(注入 e、psk0、ReadMessage 失敗偵測、無 DH) | F-P14 | ✅ 原始碼 |
+| godbus fd passing、無 ObjectManager、RequestName/AddMatch 目的地 | F-P15 | ✅ 原始碼 |
+| dbus-daemon 重啟 unlink socket;default policy 內容 | F-P18 | ✅ |
+| procd jail 參數語意、`requirejail` | F-P19 | ✅ 原始碼 |
+| helper 契約今天的事實(動詞、欄位、碼、nonce 消耗、mutex、30 s、**單連線(P2 改多連線)**、兩檔寫入、IsTrial exec) | F-P6–F-P9、F-P25–F-P27、F-P33 | ✅ 原始碼 |
+| `flynn/noise` e 由 WriteMessage 產生、長 msg1 不拒 | F-P31 | ✅ |
+| 改網動詞最壞時間 ≈ 960 s | F-P32 | ✅ 文件 + 常數 |
+| peripheral 連線存在時能否再開 connectable 廣播(le_states bit 38/21) | F-P41 | ⚠️ 設計以「不允許」為假設(盤點 + Disconnect 無論如何都做);實作第一步 04 btmon 見證 |
+| helper 錯誤回應無 reason | F-P37 | ✅ |
+| kernel patch 落點與 `/etc/batman-build` 的產生者;wbox 強制 DIRTY;`wbox_apply` 早於 stamp;新 key 不壞讀者;`git cat-file -e` 問樹 | F-P47 / F-P48 / F-P53 / F-P54 / F-P57 / F-P59 | ✅ 原始碼 + A5 V5 / B6 RB6-2 實跑 |
+| 既有 harness 對廣播 instance 的寫入(`ble_state`、`rm-adv 1`、deadman) | F-P61 | ✅ 原始碼 |
+| BlueZ Device1 物件與 Disconnect 時序;crash 後 `load_connections` | F-P50 | ✅ 原始碼 |
+| ujail 以 471 跑靜態 Go | F-P3 | ✅ |
+| 以目錄 bind 的 socket:helper / dbus 重啟後 jail 內看得到新 socket;唯讀 bind 可 connect | F-P29 | ✅ 原始碼(04 實跑 = L10 / L11 臂) |
+| `Read Advertising Features`(mgmt 0x003D)回應格式與 `num_instances` 語意 | F-P28 | ✅ 原始碼(L2 測試實證) |
+| ujail `-C` JSON `{"bounding": []}` 格式 | F-P19 | ✅ |
+| `/etc/batman-build` 0644、無 `BATMAN_MODEL` | F-P23 | ✅ |
+| iOS `scanForPeripherals(withServices:)` 以 UUID 列表比對 | Apple 文件 | ⚠️ app 階段(U9)實證 |
+| 上游 CVE 修法 commit | §4.8:`47c03902…`、`6f5fb689…`(審查員 A7 以 gh api 取得) | ✅ diff 核過;實作時對 linux-stable 再核一次 |
+
+## 7. 待決
+
+| # | 題 | 建議 |
+|---|---|---|
+| D1 / D2 | 函式庫 | 定案 P-U15 / P-U16 |
+| D3 | kernel board patch backport CVE-2025-38303 + CVE-2026-64539 | **做**(P2 firmware PR);正向見證 §4.8;負對照 = F-P10 紀錄 |
+| D4 | 服務 UUID | **定案 `540aa38c-0086-4d58-a9c0-c7c9d1e1bd42`**(§4.1) |
+| D5 | ADV 只放 UUID 列表 | 定案(§1.3);代價寫明 |
+| D6 | 兩個二進位 | 定案 |
+| D7 | 協定 v0.8 變更(`info-resp` 11、`info.net` 4、`info.state` 5、`health.get` / `info.owners`、`psks.get` 去 4/5、`s_node` 每次 provd 啟動、replay 的 begin/op-nonce 同一對、sock 計入連線數、擠槽規則、`auth/owner` 回空) | 同 PR 的 docs 部分 |
+| D8 | autocommit BLE WARN → FAIL | **不在 P2**;checklist 獨立決定(前提 = 本設計的 kernel 求證 latch) |
+| D9 | `-wbox` 變體加 `btmgmt` | **不做**(v8):harness 本來就 scp 自己的 btmgmt / btmon(h1 §4.7);`btmgmt` 在 `bluez-utils-extra`,不是單一工具 |
+
+## 8. 安全
+
+**資產**:同 stage1 §8。P2 新增的面 = provd 行程、D-Bus policy、廣播、GATT、helper 新動詞。
+
+| Actor | 攻擊 | 擋法 | 負測試 |
+|---|---|---|---|
+| BLE 路人 | 追蹤 | ADV 只有 UUID 列表;RPA 每 900 s 換;health 不對不廣播。**誠實界線**:900 s 窗內連線前後同 RPA;SSID / HaLow MAC 等穩定識別(stage1 F29) | `ble-rpa-254`、`ble-privacy-254` |
+| BLE 路人 | 探 PSK / 「是不是我那隊」 | 假 msg2 **等長**(711)、同 DH 次數、等逾時;msg1 長度錯也走假路徑 | `prov-sec-psk-timing-254`;單元 `len(fake)==len(real)`(mutant FAIL) |
+| BLE 路人 | 佔連線 | 擠最舊未認證;**誠實界線:BLE 單連線,一個路人反覆連就能佔住管理面**(§1.3);擁有者仍有 ssh | `prov-sec-hog-254` 兩臂 |
+| BLE 路人 | 大訊息 / 洪水 / 暴力認領 | 8 KiB;20/分;3 次斷 | `-oversize-254`、`prov-sec-claim-brute-254` |
+| BLE 路人 | 讓 provd crash → 影響 autocommit | autocommit 不看 provd;`adv_registered_once` 由 helper 向 kernel 量、latch | `prov-provd-dos-254` |
+| 路人 → 攻陷 provd | 改網 / 換擁有者 / 讀秘密 | helper 驗所有 owner-op 與 CheckMac;provd 無 keystore;jail 無 caps 唯讀;policy 只放行 8 個方法。能做的:看經過的明文、停廣播、斷線、**假報 `adv.registered` ✗(動詞不存在)**、**註冊 31 B 廣播 → 越界 → 只有 kernel patch 擋(D3)**、對 helper 洪水(見下) | `prov-sec-dbus-254`(471 呼叫 `RegisterAgent` / `Properties.Set` / `Device1.Pair` / `UpdateActivationEnvironment` → AccessDenied);kernel patch:build 時 `cmp`(§4.8) |
+| 攻陷的 provd | helper DoS:`nonce` 洪水(≤ 4 / h)、`sign.*`(2/s)、`psks.get` 連打、**`info.state` / `health.get` 連打(fork `batman-slot` / 開 mgmt socket,不取鎖、v2 無額度)**、開 4 條連線耗盡 | 既有額度;`psks.get` 1/s;**唯讀動詞 helper 全域 10/s 突發 40 + 每連線 5/s 突發 20 + accept ≤ 5/s(重連 churn 歸不了零);`IsTrial` 快取;連線上限 4(provd 自己占 2,剩 2 給 provclient;被攻陷的 provd 開滿 4 條 = 運維 `provclient` 連不上 → 誠實界線:root 可殺 provd)** | Go 單元 churn mutant:開 → 20 發 → 關 ×50 在 1 s 內 → 第 N 發 `ERate` 或被拒(拿掉全域桶 / accept 限速 → 全 OK → FAIL) |
+| 攻陷的 provd | 冒充:`sign.static(任意 pub)` 得到本節點 DAC 簽的 `node_cert`,從另一台 radio 冒充本節點(到重開機);`psks.get` 的 `psk_member` 全隊共用 → 冒充任一隊友節點的 BLE(協定 §6 誠實界線);**對任何 BLE 對端回 `info.net`(`net_id`)與 `info.owners` → 跨節點串聯一隊**(`node.go:238-240` 的 owner-only 只在誠實的 provd 成立) | 既有協定界線;只能重燒該台 | — |
+| 攻陷的 provd | 註冊 `Discoverable=true` + `Includes=["local-name"]` 的廣播(policy 擋方法不擋屬性) | 擋不住;節點變成一般掃描器可見、帶 hostname(hostname 本來就在 AP SSID 裡,stage1 F29) | — |
+| 攻陷的 provd | 得到 `adv_owner / adv_member` | `psks.get` 不回 4/5 | 單元 |
+| 本機非 root | 連 provd / 偽造手機 | release 無 `gatt.sock`;prov_test 目錄 root 0700;provd 不聽網路 | `prov-sock-254`、tmp-trust |
+| 本機非 root | 植入 `provd.env` | 只在 test init;驗 root 0700 / 非 symlink / 0600 link 1 | init 單元 |
+| bluetoothd(root) | 壞回呼 | 視為不可信輸入;驗 sender unique name | 單元 |
+| 供應鏈 | 兩個 vendored 函式庫 | `go.sum` 釘;PR 列 hash;`go mod verify` CI | CI |
+| 我們自己 | 兩寫者(root 廣播)、fail-open、log 洩密、ADV 長度 | §3;health 任一欄缺不廣播;log 只印 type / code / 長度;ADV 自檢 | `logread | grep -c <psk hex>` = 0;`ADV_LEN_TEST` |
+
+**失效模式**:前置不成立 → 不廣播;health 轉壞 → 撤;helper 不可達 → STATUS 回 ATT 0x0E、請求 `E_BUSY`;ujail 缺 → 不啟動。唯一 fail-open:`model` 缺 → `"dev"`。
+
+## 9. 測試
+
+- **Go 單元(CI)**:`noise_test`(三組向量逐位元組、`fake_msg2_rule` 長度 == 711、6 次 `ReadMessage` 計數、msg1 長度表)、`frame_test`(`gatt_framing`、`envelope`、`chunking` 重組 bytes == 原封、`chunk_boundary`、8 塊上限)、`status_test`(`status_public` 三例、錯誤名 → 預期 ATT 碼)、`route_test`(type → verb、`claim/finish` 拆欄位、replay 的 nonce 對、角色拒絕、**錯誤碼表全列**、`id` 倒退、擠槽、假時鐘:30 s keepalive、HELPER_WAIT 丟遲到回應)、`adv_test`(28 過 / 29 拒)、`cache_test`(fake helper:gen 1 → `EUnsupported` 一次 → gen 2:只在 gen 2 重拉、中間模式不變;gen 5 → 1 也重拉;**重拉延遲 30 s 期間舊集合仍服務**;single-flight;`ERate` 重拉;`info.net` `ERate` → `info` 無 9/10/11)、`route_test` 加 nonce 對 55 s 到期、`ops` 重連清對、helper 6 → `{1:"claim",2:10}`(mutant 拿掉推論 → 缺 key 2 → FAIL)。每條有 mutant 註解。helper:**`Serve` 多連線(第 2 條連線在第 1 條跑 30 s 動詞時 `health.get` ≤ 1 s 回;負對照 = 今天的 `Serve`)、第 5 條被關、accept 限速**、唯讀動詞額度(churn mutant)、`IsTrial` 快取(stub 睡 20 s → `info.state` ≤ 1 s)、`LoadOverlay` mismatch 重讀、`adv_registered_once` latch 來自假 mgmt 回應(atomic)、`psks.get` 無 4/5 + 1/s。
+- **CI `peer-vs-provd`**(runner 預置):`useradd -u 471 provd`;`mkdir -m 0700 /tmp/run/batman`、`/etc/batman-prov/`、`/opt/batdata/state`;helper root `realSys` + PATH stub(`batman-slot is-trial` rc 1、`batman-config-save --prov-get` rc 11、`halow-setkey`、`prov_apply_lock`、`uci`);無 p5 → helper `unknown(no-p5)` → 改狀態動詞 `EState` → CI 跑交握 / `info` / STATUS / 限制 / `claim/begin` + `op/nonce`,`claim/finish` 預期 11;provd `sudo -u provd` + `SOCK_ONLY=1`。負對照:`peer.py --selftest` 刪比對 → FAIL;`FAST_FAKE_DELAY_MS=20` → timing FAIL。
+- **節點(H3 §6.3 + 本文件)**:§5 各列;新單位 `prov-sec-adv-len-254`(**只有臂 1**:`ADV_LEN_TEST=29` → log + `num_instances=0`;節點端不做 kernel patch 見證,§4.8);`prov-dep-restart-254` 加 dbus 臂與 `kill -9` bluetoothd 臂;`prov-boot-254` 加 latch 兩臂、L70/L71 白箱、「新 nonce 重註冊」斷言改「重註冊」(h23 :392 / :404);`prov-ble-claim-254` 加 begin→op/nonce→replay 與 replay 重試臂(L79);`prov-netjoin-254` 加 L75 臂與「join 回應前擁有者 session 不被斷、收到 0」斷言;`prov-sec-hog-254` 加合法第 3 條臂;`prov-sec-dbus-254` 加 `UpdateActivationEnvironment`;`prov-sock-254` 加「provd 跑著時 `provclient` 成功」臂(L78)與 `gatt.sock` 目錄所有權白箱;L71 白箱四斷言(含 `kill -STOP` helper);`prov-respawn-254` 兩臂(L80,≤ 15 s);L81 白箱;`cache_test`:owners 少一把 → 該 session 下一輪被斷(負對照:不重拉 → 不斷);自家 `net.apply` 在飛時 gen +1 → 不斷;認領 → 立刻 join 背靠背 → 不斷;成員自己 `network/update` 回 0 → `psk-rotated` 斷、擁有者不斷;`ops` 在飛時第二個請求立即 `E_BUSY` 且 fake helper 計數 1;**`ble_state` 改「provd 跑著期望 kernel `num_instances` ≤ 1 / 停著期望 0」(負對照 = 今天的 `ble_state` 在 P2 image 上必 FAIL);stop / start provd 在 BLE lease 取得 / 釋放,兩個 deadman restore 加 `start batman-provd`,白箱 L83;`ble-rpa-254` provd 模式不准 `rm-adv`**;`ERate` 30 s 不撤 / 無回 60 s 撤 / `ERate` 連續 > 120 s 撤。
+- **release gate**:provd 二進位無測試字串(`-wbox` 變體相反);release 與 `-wbox` 都無 `/usr/bin/btmgmt`;release 的 `/etc/init.d/batman-provd` 無 `provd.env`(`-wbox` 相反);`bluetooth.conf` 含 `policy user="provd"`。
+- **手動**:iPad GATT 回歸(H3 乙部文件)。
+
+## 10. 回報上層
+
+1. stage1 §2 / §3 / §4.1 / §4.7 / §4.8 / §6.4 (8) / §8 F28:兩個二進位;ADV 只 UUID;**helper socket 改多連線(≤ 4)、唯讀動詞不取鎖 + 額度**;health 經 `health.get`;`adv_registered_once` 由 helper 向 kernel 量;autocommit 只 WARN;RPA 900 s 誠實界線;`psks.get` 去 4/5。
+2. h23 §4.9 作廢;§6.3 `ble-rpa-254` 無 nonce、新單位與新臂;§4.8.3 `ADV_LEN_TEST`;節點端 `btmgmt` / `btmon` 由 harness scp(既有);CI runner 預置(§9);**helper 接受多條連線,`provclient` 與 provd 並存(既有 10 個單位不用改;`prov-sock-254` / L11 加並存斷言);`provclient` 加 `proxy` 子命令與「連上即 EOF → 退避重試一次」;`set-provd-env` 先於 peer 的單位規則**。
+3. 219 v0.8:D7 全部;§3.4 註明 msg1 長度檢查;§3.5 重取角色的 nonce 對規則(begin → op/nonce → replay;失敗後重新 begin);§8 擠槽規則與 BLE 單連線誠實界線;`error-detail` 文字在 key 3。
+4. wireless-txn §19 / 219 v0.8:`unfinished` 落點,**且涵蓋自己的 join 進行中(step 1–4);app 等它變 0 或 `net_version` 變**(F-P39)。
+5. #254 checklist:D3 commit id、D8、B16、iOS UUID 過濾、`capabilities` 偵測、**#255 608B 後 keystore 要自己加鎖(無鎖 `info.cert/ecdh_pub` 與 `sign.*` 並行會同時打 I2C)**、被攻陷 provd 開滿連線的運維逃生口。
+6. firmware:`build-board.sh` 第 4 步 `cmp` kernel patch 與 feed 正本;Batman `scripts/dv/data/999-batman-eir-adv-flags-oob-254.patch` 正本(H3 PR);H3:`ble_state` / deadman / `ble-rpa` 的 provd 感知(F-P61)。**不做**:stamp 新 key、`DV_FW_TREE`、節點端 add-adv 見證。
+
+## 11. 殘項(回 #254)
+
+`capabilities` 固定;idem 快取(P3);HTTP 不做;P3 動詞;bcm2710;B16;`auth/owner` 的 `adv_owner_key`;BLE 單連線被路人佔住(#255 考慮擁有者優先);autocommit WARN→FAIL(D8);`psks.get` 改不取鎖(成員 update 期間的連線空窗);nonce 用壁鐘(F-P46,RTC 在戰術 tier);helper 無 provd 保留連線位;le_states 實測(F-P41);helper 錯誤回應加 reason-code;殭屍連線 `POLLRDHUP`;kernel patch 不在 #275 見證內;overlay 寫入失敗時 helper 主動 resolve(F-P62);節點端 kernel patch 正向見證(v8 砍掉;若日後要做,需 patch 後 kernel 的可觀測語意與閘門,見 v7 §4.8 歷史)。
+
+## 12. 工作順序
+
+1. 本設計 v8:一位審查員確認被砍的三處(§1.3 撤銷、§4.3 `ops` 單在飛、§4.8 無節點端見證)沒留下洞;D4 `uuidgen`;**D3 commit id 與 patch 內容(正本進 H3 PR)**。
+2. docs:219 v0.8 + CDDL + 向量(`info` 11、`info.net` 4、replay 順序)。
+3. H3 harness(照 §4 契約)→ PR 先 merge。
+4. P2 實作:helper 改動(Go 單元 + mutant)→ provd(先 `SOCK_ONLY` 對 `peer.py`;再 04 prov_test build 驗 `Acquire*`、目錄 bind、dbus 重啟)→ firmware(policy、kernel patch、pin)→ rc → 04 跑 §6.3 → 正式全套。
+
+## 13. v1 審查 → v2 對應(歷史;v2 審查推翻的項目見 §14)
+
+| 發現 | 處置 |
+|---|---|
+| B-B1 / A-M4 假 msg2 短 48 B | §4.2:`random(48 + len + 16)`,等長 711;單元斷言(F-P13) |
+| B-M1 dbus socket 檔案 bind | §3 / §4.5:掛目錄 `/tmp/run/dbus`;L10 加 dbus 臂(F-P18) |
+| B-M2 / A-M5 helper 單 mutex 卡 STATUS / 撤廣播 / 第二連線 | §3 / §4.1 / §4.3:唯讀動詞不取 `n.mu`、STATUS/CTRL 快取、PSK / owners 快取 + 失效規則;L70 / L71;誠實界線(新連線可能逾時一次) |
+| B-M3 ≤ 10 s 撤廣播做不到 | §4.3 `health.get` 現算 + 5 s 輪詢 → 最壞 ≈ 5 s |
+| B-M4 30 s 閒置假 `E_BUSY`、HELPER_WAIT 收尾 | §4.3:keepalive 20 s、冪等重送一次、超時關連線 + id 丟棄;假時鐘單元 |
+| B-M5 / A-M11 `adv_registered_once` 自報 | §1.3 / §3 / §4.3:helper 以 mgmt `Read Advertising Features` 自量 latch;刪 `adv.registered`;兩臂負對照 |
+| B-M6 / A-M9 節點無 btmgmt | §1.3 / D9:`-wbox` 變體加 btmgmt;gate |
+| B-M7 / A-M7 RPA 不實 | §1.3 / §4.4 / §8:900 s 誠實界線(F-P17) |
+| A-M1 `claim.verify` 欄位 | §4.3:provd 拆 `claim/finish` + begin 的 owner_pub(F-P8) |
+| A-M2 錯誤碼三處 | §4.3 唯一表:23→13、4→4、5→5、claim 的 3→9、reason 10 |
+| A-M3 replay 兩次 nonce | §4.3 nonce 對快取;L34 負對照(F-P9) |
+| A-M6 autocommit revert 不實 | §1.3 / L6 / D8(F-P20) |
+| A-M8 未認證 session 擠掉 | §1.3 / §4.1 / L66 兩臂 |
+| A-M10 `requirejail` | §4.5 / L72(F-P19) |
+| A-M12 分塊重組轉送 | §1.3 / §4.3:重編整封、8 塊上限、單元 |
+| B-m1 / A-m1 msg1 長度 | §4.2 前置檢查(走假路徑) |
+| B-m2 6 把 PSK 做法 | §4.2 改為 6 個 HandshakeState + 注入 e(F-P14) |
+| B-m3 / A-m5 ATT 錯誤碼 | §4.1 `org.freedesktop.DBus.Error.Failed` → 0x0E(F-P16) |
+| B-m4 / A-m3 policy 多餘 / 過寬 | §4.7 拿掉 own、DBus destination、receive_sender、root 回呼列;加負測試 |
+| B-m5 / A-m7 多餘掛載、空 boot_id 檢查 | §4.5 / §4.4 |
+| B-m6 / A-m8 HELPER_WAIT 收尾 | §4.3 |
+| B-m7 矩陣缺列 | L73–L77 |
+| B-m8 BLE 單連線 | §1.3 / §8 誠實界線 |
+| B-m9 `psks.get` 多給 4/5 | §1.3 / §4.3 |
+| B-m10 / A-m4 `auth/owner` 由 provd 驗、replay 不比 owner_pub | §1.3 兩列 |
+| B-m11 sign 額度 | §3:間隔 ≥ 2.1 s(F-P24) |
+| B-m12 / A-m9 init 變體 | §4.5 兩個 init 檔 + gate |
+| B-m13 / A-m15 文字 | 已清 |
+| A-m2 元件表缺 `info.owners` | §2 |
+| A-m6 sender 驗證、goroutine | §4.7 / provd 內部寫鎖(實作) |
+| A-m10 patches 每板一份 | §2 / §4.8 |
+| A-m11 CVE commit 未給 | §4.8 ⚠️ + §6 |
+| A-m12 policy 在 firmware | §3 gate 斷言 + AccessDenied log |
+| A-m13 `BATMAN_MODEL` | §4.3(F-P23) |
+| A-m14 §8 引錯負測試 | §8 改引臂 2 |
+| A §4 矩陣補充(ujail 缺、socket 目錄不存在、phone 中斷、fresh `info.state`) | L72 / L77 / L75 / L1 |
+
+## 14. v2 審查 → v3 對應
+
+| 發現 | 處置 |
+|---|---|
+| A2-B1 / B2-B1 helper 單連線序列化,「不取 mutex」無效 | §1.3 新列、§2、§3 連線資源列、§4.3 連線模型(helper `Serve` 多連線 ≤ 4;provd `ctl` + `ops` 兩條)、§4.4 撤銷前提、L70 / L71 重寫、§9 helper 單元負對照、§10(F-P6 補事實) |
+| A2-M1 / B2-M1 `provclient` 連不上 | 同上;L78;`prov-sock-254` / L11 並存斷言 |
+| A2-M2 / B2-M2 快取失效漏旁路、撕裂讀 | §3 快取列(`Generation` 失效,F-P26)、§4.3 快取段(錯誤 = 暫態、保留快取)、helper `LoadOverlay` 重讀(F-P25)、`cache_test` |
+| A2-M3 lock-free 動詞無額度、`IsTrial` exec | §1.3 / §4.3:每連線 5/s 突發 20、`IsTrial` 快取 ≤ 5 s、`compute()` + atomic latch;§8 |
+| A2-M4 nonce 對消耗後未清 | §1.3 / §4.3 / L79(F-P33) |
+| B2-M3 HELPER_WAIT 不是上界、關連線反而更糟 | §4.3:到期不關連線、`E_BUSY` + detail 3、id 丟棄(F-P32) |
+| B2-M4 `info.state` 每 5 s exec | 同 A2-M3 |
+| A2-m1 jail 內 D-Bus 位址 | §3 / §4.5(F-P30) |
+| A2-m2 / m3、B2-m5 / m11 §6 ⚠️ 升級 | §6(F-P28、F-P29) |
+| A2-m4 錯誤細節 key、20 的來源 | §4.3 錯誤碼表(F-P36) |
+| A2-m5 sign 間隔 | §3(F-P24) |
+| A2-m6 `device_id` 來源 | §4.3 `info` 列 |
+| A2-m7 被攻陷 provd 的廣播屬性 | §4.7 / §8 |
+| A2-m8 / m9 log 洪水 | §4.4 |
+| A2-m10 檔名 | §2 |
+| A2-m11 `psks.get` 撞 `ERate` | §4.2 |
+| A2-m12 擠槽排除交握中 | L66 |
+| B2-m1 注入 e 不存在 | §4.2(F-P31) |
+| B2-m2 假 msg2 的 `e_手機` 來源 | §4.2 |
+| B2-m3 generation 失效 | 同 A2-M2 |
+| B2-m4 single-flight | §4.2 |
+| B2-m6 kernel 第二寫者 | §3 廣播列(F-P35) |
+| B2-m7 L10 依賴鏈 | L10 斷言拆兩段 |
+| B2-m8 policy 補註(prop.Export、root 回呼行 gate) | §4.7 |
+| B2-m9 被攻陷 provd 冒充 | §8 |
+| B2-m10 608B keystore 鎖 | §10 checklist |
+| A2 §5 補充(連線數資源、generation 來源、root provclient 列、L11 latch 時序) | §3、L78、§4.3 health 段 |
+
+## 15. v3 審查 → v4 對應
+
+| 發現 | 處置 |
+|---|---|
+| A3-M1 helper 無 reason 文字 | §4.3 錯誤碼表:6 於 `claim.verify` ⇒ reason 10(推論 F-P38);21/22 無 detail 3;20 的處理(F-P37) |
+| A3-M2 / B3-m4 重拉中語意、成員 update 空窗 | §3 快取列、§4.3 快取段(stale-while-revalidate + F-P39 誠實界線)、L71 / L75 改寫、`cache_test` 延遲臂、殘項 `psks.get` 不取鎖 |
+| A3-M3 adv-len 臂 2 無閘 | §4.8:`BATMAN_KPATCH_254_ADV=1` 前置,不成立 FAIL 且不執行;副作用清單 |
+| B3-M1 `gatt.sock` 目錄所有權 | §1.3 / §3 兩列 / §4.5 test init(F-P42) |
+| B3-M2 provd 重啟時既有 LE 連線 | §4.4 啟動盤點 + Disconnect;L80;`prov-respawn-254` 臂;F-P41 ⚠️ |
+| B3-M3 每連線額度可 churn 歸零 | §1.3 / §4.3 / §8:全域桶 + accept 限速;churn mutant |
+| A3-m1 `!=` | §3 快取列(F-P40) |
+| A3-m2 nonce 對到期 | §4.3 55 s |
+| A3-m3 / B3-m2 keepalive 在飛、ctl 單則逾時 | §4.3 連線模型 |
+| A3-m4 殭屍連線 | §3 連線列、L81 |
+| A3-m5 L70 只能 sock | L70 |
+| A3-m6 / B3-m3 stale 撤銷 reason | §4.1 / §4.4 log 契約 `helper`;L71 `kill -STOP` 臂 |
+| A3-m7 / B3-m10 時間預算 | §4.4:輪詢 4 s、mgmt 並行、L67 斷言 9.5 s |
+| A3-m8 / B3-m6 trial 快取同步 | §1.3 / §4.3(single-flight、與 `Committed()` 共用) |
+| A3-m9 被攻陷 provd 洩 `info.net` / owners | §8 |
+| A3-m10 L78 既有 session 後果 | L78 |
+| A3-m11 唯讀集合列舉、實作點 | §1.3 / §4.3(F-P44) |
+| A3-m12 / F-P46 壁鐘 | §11 殘項 |
+| B3-m1 無 provd 保留位 | §3 連線列誠實界線 |
+| B3-m5 `ops` 重連清對 / claimInProgress | §4.3 連線模型 |
+| B3-m7 `info.net` `ERate` | §4.1 |
+| B3-m8 `unfinished` 涵蓋進行中 | §10 第 4 點 |
+| B3-m9 kernel patch 三個 creator + scan rsp 臂 | §4.8(F-P43) |
+| B3-m11 假路徑連線不可擠 | §4.2 |
+| B3-m12 文字 | §6、§9、§4.4 |
+
+## 16. v4 審查 → v5 對應
+
+| 發現 | 處置 |
+|---|---|
+| A4-M1 / B4-M1 kernel patch 落點、marker 無寫者 | §2 / §4.8:落點 `target/linux/bcm27xx/patches-6.6/999-…`(一份兩板共用,F-P47);閘門改用 `/rom/etc/batman-build` 的 `BATMAN_FW_COMMIT` 祖先檢查 + `DIRTY=0` + `WBOX` + `PROV_TEST`(F-P48);誠實界線「不在 #275 見證內」;L13 理由(F-P49);負對照 |
+| A4-m3 / B4-m1 被移除 owner / 旁路 generation 的既有 session | §1.3 新列、§4.3 session 撤銷、`cache_test` 兩臂 |
+| A4-m4 / B4-m2 `ctl` `ERate` 與新鮮、退避、accept 計數 | §4.1(`ERate` 不計、退避封頂 10 s)、§3 連線列(accept 只計首次 Read 成功) |
+| A4-m5 撤廣播預算 | §4.4(single-flight 只合併未開始、週期以送出時刻計、常態最壞 9 s) |
+| A4-m6 6 的第二來源 | §4.3 錯誤碼表誠實界線 + 殘項(reason-code) |
+| A4-m7 / B4-RB4-9 `provclient proxy` 不存在 | §2 harness 列、F-P51 |
+| A4-m8 Register 順序 | §4.4 |
+| A4-m2 bluetoothd crash 路徑 | §4.4 / L9(F-P50) |
+| A4-m1 / B4-m5 無害重啟斷合法連線、`set-provd-env` 先於 peer | §4.4 app 契約 + harness 規則;L80 臂 2 |
+| B4-m3 Disconnect async 2 s | §4.4(等方法回覆 ≤ 5 s,F-P50) |
+| B4-m4 L80 負對照依賴 le_states | L80 負對照改為 `Connected` 斷言 |
+| B4-m6 accept 限速讓 provclient `CONN-CLOSED` | §10 第 2 點:H3 的 provclient 加「連上即 EOF → 退避重試一次」 |
+| B4-m7 / A4-m9 殭屍穩態 | L81 |
+| A4-m10 / B4-m8 文字 | §12、§6、§2 |
+
+## 17. v5 審查 → v6 對應
+
+| 發現 | 處置 |
+|---|---|
+| A5-M1 / B5-M1 閘門條件互斥(wbox 強制 DIRTY)、`PROV_TEST` 非 stamp key、主機端無 firmware 樹 / commit id | §4.8 重寫:`DV_FW_TREE` + `git cat-file -e $FW:<patch>` + sha 檔(不需 commit id)+ `BATMAN_DIRTY_WHY == wbox-<name>` + helper `--version` 偵測;§3 閘門資料列;§6;§10 第 6 點;F-P53 / F-P54 |
+| A5-M2 / B5-M2 撤銷缺歸因 | §1.3 列重寫(`expectGen` 由 `ops` 擁有、reconcile、log 契約)、§3、§4.3、L82、`prov-netjoin-254` 斷言、`cache_test` 在飛臂(F-P55) |
+| A5-m1 / B5-m1 `add-adv 1` 覆寫 provd instance | §4.8:停 provd、instance 5、`rm-adv`、前後 `advinfo`、副作用清單 |
+| A5-m2 helper 重啟 `boot.Run` 換 state 不換 gen | §3 失效鍵 `(state, Generation)`;L11 |
+| A5-m3 L80 ≤ 10 s 太緊 | L80 ≤ 15 s + 算法 |
+| A5-m4 / B5-m2 `/rom` 自己 sed、`bt-uart-305` 不是同一套 | §4.8 |
+| A5-m5 DIRTY 理由對回 `build-board.sh:85-95` | §4.8 (3) |
+| B5-m3 對已斷裝置 Disconnect 無回覆 | §4.4(F-P56) |
+| B5-m4 `ERate` 連續 > 120 s | §4.1 |
+| B5-m6 認領成功斷其他含假路徑 | §4.3 |
+| B5-m7 32 B msg1 在 psk 模式仍 6 次 | §4.2 |
+| A5-m6 / B5-m5 文字重複、狀態行 | §4.8 / §9 重寫、狀態行 |
+
+## 18. v6 審查 → v7 對應
+
+| 發現 | 處置 |
+|---|---|
+| A6-M1 / B6-M1 閘門 (3) 只有 `test` 過、sha 檔無寫者 | §4.8 重寫:固定 `-wbox test`、`WBOX==test ∧ DIRTY_WHY==wbox-test`、patch 正本進 Batman repo + `git show | cmp` + build 時 `cmp`(F-P57 / F-P58 / F-P59);§10 第 6 點;CI 七案例 |
+| A6-M2 / B6-M3 / B6-m1 / m2 / m3 `expectGen` 布林、背靠背、連續動詞餓死 | §1.3 狀態機重寫(`inFlight` + `pendingReconcile`,reconcile 綁每個回應,遲到回應 −1,`ops` 重連全量,候選以 PSK 值比對);§4.3 指向;§9 五臂 + mutant |
+| A6-M3 / B6-m6 臂 2 payload 未釘、INVALID_PARAMS 算通過 | §4.8:釘 `1e ff` + 29 B、無 0x01、btmon 語意斷言、INVALID_PARAMS 不算通過、誠實界線(F-P60) |
+| B6-M2 harness 不知道 provd | §3 廣播列第三寫者 harness;L83;§9 `ble_state` / deadman / `ble-rpa`;§10(F-P61) |
+| B6-M4 HELPER_WAIT 排隊語意 | §4.3 `QUEUE_WAIT` 30 s 未送即 `E_BUSY`、`HELPER_WAIT` 從送出起算 |
+| A6-m1 `ActiveInstances` 看不到 root instance | §3 / L68 / §4.8 改用 kernel `num_instances`(F-P60) |
+| A6-m2 成員 update 後 reconcile 斷自己 | §1.3(app 契約) |
+| A6-m3 / F-P62 overlay 寫入失敗分支 | §1.3 誠實界線 + 殘項 |
+| A6-m4 / B6-m4 `DV_FW_TREE` 環境、FAIL 非 SKIP、7 碼歧義 | §4.8 (1)、`BATMAN_FW_COMMIT_FULL`、§10 |
+| B6-m5 不新鮮兩個計時器、`IsTrial` exec | §4.1(F-P63) |
+| B6-m7 / m8、A6-m6 文字、`claim.replay`、撤銷只留一處 | §1.3 / §4.3 / §12 / F-P55 |
+
+## 19. v8:減法(使用者 2026-10-31「只針對必要的修改」)
+
+| 砍掉 | 原因 | 留下什麼 |
+|---|---|---|
+| 臂 2(節點上 root `btmgmt add-adv` 31 B 證明 kernel patch)+ 閘門(`DV_FW_TREE`、`git cat-file`、sha / 正本 `cmp` at runtime、`BATMAN_DIRTY_WHY`、`BATMAN_FW_COMMIT_FULL`、`-wbox test` 綁定、釘 payload、btmon 斷言、instance 5、停 provd) | 六個機制支撐一個在未 patch kernel 上就是 panic 的測試;v4–v7 四輪都在修它自己的漏洞 | build 時 `cmp` 正本(§4.8);F-P10 紀錄;誠實界線「節點端無正向見證」 |
+| 「旁路 gen 變化 → 已認證 session 全斷」+ `expectGen` → `inFlight` / `pendingReconcile` 狀態機 | 規則是為審查情境加的,歸因本質上不可判定(A6 M2 / B6 M3);真正需要的只是「新集合到手後比對」 | §1.3 一條規則:變了就重拉,比對後斷不在集合的;自家動詞不會誤斷 |
+| `QUEUE_WAIT` 與 `ops` 排隊 | 排隊才有「過期請求被送出」的問題 | `ops` 單在飛,第二個直接 `E_BUSY` |
+| 第 7 輪(v7)審查結果 | 只對照 v8 留下的部分;針對已砍機制的發現不再處理 | §13–§18 留作歷史 |
+
+## 20. 實作紀錄(2026-10-31;與前文不同處以本節為準)
+
+| 項目 | 處理 | 證據 |
+|---|---|---|
+| `claimInProgress` 互斥 | **拿掉**(減法):`ops` 一次只准一個請求在飛,並行的第二個 `claim/finish` 已經拿到 `E_BUSY` | 拿掉鎖的 mutant 讓 `TestTwoPhonesClaim` 仍通過 = 鎖無法被任何測試區分 |
+| §4.8 kernel patch 內容 | 直接用 **linux-stable 6.6.y 的 backport** `e98ce4b70bea`(= 47c03902)+ `9174992ee104`(= 6f5fb689),合成一份對 6.6.138 的 diff;fuzz 0 套上,結果與依序套兩個 stable commit 相同 | 2026-10-21 進 6.6.y;firmware 仍 6.6.138。換到含兩者的 6.6.y 時刪這個 patch |
+| sock 控制包回覆 | `0xC0 ‖ CTRL` / `0xC1 ‖ STATUS`;不新鮮 → `0xC2 ‖ 0x0E` | `provd/session.go` `control()`;h23 §4.8.2 未定回覆格式 |
+| `ctl` 一輪 | `health.get` → `info.state` → `info.boot_id`(helper 重啟換 boot_id → 重簽 `node_cert`,L11) | `provd/server.go` `pollOnce` |
+| `peer.py` | 命令列入口被安全分類器擋兩次 → 使用者決定:H3 的「手機」改由 `provclient` 加 provd 傳輸層承擔;`tests/tools/peer/` 留 `peer_core` / `owner` / `selftest`(29 項過)當向量裁判 | 2026-10-31 對話 |
+| tmp-trust | allowlist 條目隨 H3 harness PR(provd 固定 bus 位址、兩個 init、vendor 註解) | P2 樹以 H3 allowlist 跑 = 0 untrusted |
+| 動態連結(更正 §4.5 的「`file` 斷言 statically linked」) | OpenWrt golang 規則一律 cgo 外部連結 → provd 依賴 `libc.so` + `libgcc_s.so.1`;ujail 自動把 ELF 依賴與 musl 載入器唯讀掛進 jail | 04 wsl.18:`/proc/<pid>/mountinfo` 有三個 lib 掛載,provd 正常跑 |
+| L77(更正):socket 目錄開機時不存在 | ujail 對**不存在的**掛載來源默默略過(不是拒絕啟動)→ provd 啟動時檢查 `/tmp/run/batman-prov`(與非 SOCK_ONLY 的 `/tmp/run/dbus`)在 jail 內,否則 log + 5 s 後退出,procd respawn | 04 wsl.18:每次開機 provd 都早於 helper 建目錄 → 永遠連不上;wsl.19/20:退出一次、10 s 後正常 |
+| §4.4 連線偵測 | 新連入裝置的 `Connected=true` 只在 `InterfacesAdded` 裡(gdbus 把未公告介面的屬性變更併進去,bluez-5.72 `gdbus/object.c:1765`、`src/device.c:3271`)→ 同時處理 `InterfacesAdded` / `InterfacesRemoved` / `PropertiesChanged`,只收 org.bluez 本尊的 | 04 wsl.20:連線時 `ActiveInstances 0` + `withdrawn reason=connect`,斷線 `registered reason=disconnect` |
+| F-P11(更正) | Flags AD 是 **BlueZ** 加的(排在 UUID 之後),不是 kernel 前置;總長仍 21 B | 02 btmon:`Data length: 21`、UUID 列表在前、`Flags: 0x04` 在後 |
+| foreign instance 判定 | 只用「provd 上次註冊 / 撤銷 2 s 之後」讀到的 health 行比 | 04 wsl.18 helper 重啟時誤報一次;wsl.19 後無 |
+
+**04 實機已驗(wsl.18–20,02 為 central)**:jail(uid 471、caps 全 0、NoNewPrivs 1、無測試鍵)、空中 21 B 可連線 RPA 無名稱無 scan response、02 未配對讀 CTRL `{1:1,2:0,3:244,4:8192}` 與 STATUS `{3:3,4:true,5:末4}`、`adv_registered_once` 由 helper 量到 1、helper / bluetoothd / dbus 重啟後 4 / 1 / 8 s 恢復(provd 不需重啟)、bondable → 1.2 s 撤廣播(上限 9.5 s)、L80 provd 重啟 3 s 斷舊連線、連線撤 / 斷線重註冊。
+
+## 21. D3b:關電時移除廣播 instance(v8.4,2026-11-01;H3 上機發現;v8.3 審查兩位 AWC 後修訂)
+
+### 21.1 發現(✅ 04 wsl.20 實測 + 原始碼)
+- H3 `prov-dep-restart-254` dep-power 臂:hci0 power off → provd 依 health `hci0_powered=0` 撤廣播(`adv withdrawn reason=health`),但 kernel `mgmt.advinfo` 仍列 1 個 instance,provd 印 `1 foreign advertising instance(s) on hci0 (not provd's)`。
+- 04 btmon(2026-11-01 17:09,harness 的 btmon 副本):17:09:26.098 bluetoothd 送 `MGMT Remove Advertising (0x003f) Instance 1`(provd 撤銷)→ **無 MGMT 回覆**;17:09:34.901 `Set Powered: Enabled` → **.970 `LE Set Advertising Data`(provd 的 21 B UUID)、.972 RPA、.973 `ADV_IND` 可連線、.974 `LE Set Advertising Enable: Enabled`**;provd 到 17:09:38.109 才依 health 重新註冊(`0x0054`/`0x0055`)→ **約 3.1 s 的廣播不經 provd 的前置條件**。
+- 原因鏈(linux-6.6.138 firmware build 樹;上游 torvalds HEAD `47493e62e8a8`(2026-10-14)的 `remove_advertising()` 逐字相同):
+  1. 關電:`set_powered_sync` → `hci_power_off_sync`(`hci_sync.c:5735`)→ `hci_clear_adv_sync(hdev, NULL, false)`(`:5749`)**只移除有 timeout 的 instance**;provd 的 `Timeout=0` → 保留(上游有意:mgmt-api.txt Set Powered「time limited advertising instances are not being remembered」)→ `hci_dev_close_sync` 清 `HCI_RUNNING`(`:5350`)。
+  2. 撤銷:`mgmt.c remove_advertising()`(`:9182-9227`)驗完參數一律 `hci_cmd_sync_queue(remove_advertising_sync…)` → `hci_sync.c:769` `!HCI_RUNNING` → `-ENETDOWN` → `mgmt_pending_free`、回傳錯誤 → `hci_sock.c:1716` 不送回覆 → **instance 留在 `hdev->adv_instances`**;bluetoothd 的 `write()` 拿到 -ENETDOWN,`shared/mgmt.c send_request` 以 NULL callback 銷毀請求(`advertising.c:194/209` 的 callback 本就 NULL)——BlueZ 已把 client 釋放(`advertising.c:198-224`),兩邊分歧。
+  3. 開電:`hci_powered_update_sync`(`hci_sync.c:3547`)→ `hci_powered_update_adv_sync` 對整份清單 `hci_schedule_adv_instance_sync(…, true)`(`:3400-3402`)→ 啟用。
+- Regression 來源(v8.3 寫錯,審查 B m4 更正):**torvalds `d883a4669a1d` "Bluetooth: hci_sync: Only allow hci_cmd_sync_queue if running"**(2023-04,v6.4)加了 `-ENETDOWN`。上游已在 `6eb5fcc416f1`(Fixes: d883a4669a1d)把 ADD_UUID / REMOVE_UUID / SET_CLASS 改成 `hci_cmd_sync_submit`(6.6.138 已含,`mgmt.c:2645/2745/2815`),**唯獨 `remove_advertising` 漏了**。mgmt-api.txt 明文 Remove Advertising「can be used when the controller is not powered」→ D3b 是恢復文件上的契約。
+
+### 21.2 影響(現場)
+- **fail-open**:關電期間若有前置條件轉壞(root 在關電時 `mgmt.bondable on`、privacy 關),開電後 kernel 以舊資料發**可連線**廣播;provd 對 foreign instance 只 log(§4.4)→ 持續到有人移除。⚠️ 「條件轉壞後開電」的持續廣播尚未在 04 重現 → §21.5 T2 在 wsl.20 先跑出 FAIL(負對照)再修。
+- 觸發者:root 操作員(power off/on)、rfkill block / `hciconfig hci0 down`(同走 `hci_dev_do_close` → `hci_dev_close_sync`,審查 A M2c)、bluetoothd 乾淨停止(SET_POWERED 0;§22)、hci0 關電期間 provd crash / stop(BlueZ `client_disconnect_cb` → `client_remove` 同一條 Remove,`advertising.c:209`;審查 A M2a)。遠端無法觸發關電。
+- **D3b 不處理(誠實界線)**:快速關→開電短於 provd 一輪輪詢(4 s)時 provd 根本沒撤(例:改 privacy 必須先關電)→ 開電後舊 instance 以當時的條件廣播,直到下一輪 health 撤銷,上限沿用 L67 的 ≤ 9.5 s(審查 B m8 / A M2 末)。D3b 把「無限期」縮成這個有上限的窗,不是全路徑 fail-closed。
+- 不受影響:有電時的撤銷(H3 `flip` / `helper-stop` / 連線三臂都證過 instance 0)。
+
+### 21.3 決策(使用者 2026-11-01:選 (a) kernel patch;同日加做 §22 BlueZ patch)
+- 不選 (b) provd/helper 自己移除:provd 只有 D-Bus;改由 root helper 用 mgmt 移除 = instance 有兩個寫者(§3)。
+- 不選 (c) 誠實界線:fail-closed 是 P2 的安全前提。
+- (a′) 一行版 `hci_cmd_sync_queue` → `hci_cmd_sync_submit`(上游 `6eb5fcc416f1` 的手法;審查 A m3 / B m5):legacy 控制器可行(`hci_remove_adv_sync` 只動清單;`hci_disable_advertising_sync` 因 close 已清 `HCI_LE_ADV`(`hci_core.h:822`)直接回 0),**但 ext-adv 控制器會在已關的裝置送 `LE Remove Adv Set`(`hci_remove_ext_adv_instance_sync`)而失敗、instance 留下**。採用「直接移除清單」不挑控制器;寄上游時兩者都可提。
+
+### 21.4 修法(D3b)
+`target/linux/bcm27xx/patches-6.6/999-batman-mgmt-remove-adv-powered-off-254.patch`(與 D3 同一機制:正本在 Batman `scripts/dv/data/`,H3 PR 帶進來;firmware 複製,`build-board.sh` 第 4 步 `cmp`,不符拒 build)。只動 `net/bluetooth/mgmt.c remove_advertising()`:
+- 既有三個參數檢查之後、`mgmt_pending_new` 之前:**`if (!test_bit(HCI_RUNNING, &hdev->flags))`**(與 `hci_cmd_sync_queue` 失敗的條件相同;不用 `hdev_is_powered()`:AUTO_OFF 與開電初始化期間 RUNNING 已設、可正常排隊,審查 B Q4):
+  - `cp->instance != 0`:`hci_remove_adv_instance(hdev, cp->instance)` + `mgmt_advertising_removed(sk, hdev, cp->instance)`;`cp->instance == 0`:清單上每一個同上(`list_for_each_entry_safe`);
+  - `mgmt_cmd_complete(… MGMT_STATUS_SUCCESS, &rp{instance}, …)`;`goto unlock`。
+- 鎖:已持 `hci_dev_lock`(mutex,sendmsg 為 process context 可睡)——與 kernel 自己的 `hci_remove_adv_sync()`(`hci_sync.c:2111`)同一寫法;`hci_remove_adv_instance` 內 `cancel_delayed_work_sync(rpa_expired_cb)` 持鎖安全,因 `adv_instance_rpa_expired()`(`hci_core.c:1673`)只設旗標;`cur_adv_instance` / `adv_instance_timeout` 由 `hci_remove_adv_instance` 處理(`hci_core.c:1626-1632`)。不建 pending cmd → 不會重複回覆。
+- 與開電並行(審查 A m3):開電路徑不持鎖走訪清單(`hci_sync.c:5142` `hci_adv_instances_set_rpa_expired`、`:3401`),但 RUNNING 先被設(`:5135`),patch 分支只在 RUNNING=0 進入;之後 init 的 `LE Clear Accept List`(`:4449`)其 cc handler 取 `hci_dev_lock`(`hci_event.c:1859`)→ init 等 patch 放鎖才前進(⚠️ 取決於控制器支援該指令)。與既有 `add_advertising` 未開電時直接 `hci_add_adv_instance`(`mgmt.c:8735-8786`)同一種暴露。
+- 不送 HCI(控制器關著;開電時 HCI Reset 也清掉控制器端狀態,btmon `#1 Reset`)。有電時路徑不變。
+- 殘項更正(v8.3 寫得太重;審查 A m4 / B m6):關電進行中、RUNNING 未清前排入的 Remove 會在 close 之後才執行(`hci_cmd_sync_work` `hci_sync.c:313-337` 不查 RUNNING;close 不清佇列,`hci_cmd_sync_clear` 只在 unregister,`hci_core.c:2705`);**legacy 控制器(04、BCM4345C0)上照樣移除並回 Success**;只有 ext-adv 控制器可能留下 ⚠️(推定,我們兩板都不是)。
+
+### 21.5 測試(H3;兩板共用 patch,bcm2710 ❌ 未測同 L13)
+- **T1**(`prov-dep-restart-254` dep-power 臂,tier A,lease 內):btmon(harness 副本,sha 比對)錄 power off → 撤銷 → power on → provd 重新註冊。斷言:
+  - btmon 中 `MGMT Command Complete (0x003f)` status Success(`mgmt_cmd_complete` 一定送一份到 monitor,`mgmt_util.c:196`);**不斷言 `Advertising Removed` 事件**:kernel 跳過送指令的 socket(`mgmt.c:1272` skip_sk、`hci_sock.c:419-447`),04 上唯一常駐的 control socket 就是 bluetoothd,btmon 看不到(審查 A M1 / B M2);
+  - 關電後 kernel advinfo = 0;
+  - **btmon 內部比順序**:最後一個 `Powered: Enabled` 之後,`LE Set Advertising Enable: Enabled` 不得早於 provd 的 `MGMT 0x0055` / `0x003e`(不拿 btmon 時間對 provd log 時間)。
+  - 負對照 = wsl.20:**先在 04 的 wsl.20 跑新臂取得 FAIL 輸出再修**(審查 B M3)。
+- **T2**(新臂 `power-bondable`,tier A,lease 內):power off → `mgmt.bondable on`(關電中)→ power on → 15 s 內 btmon 無 Enable、advinfo 0、provd 不註冊,**期間每秒斷言 settings 仍有 bondable**(BlueZ 的 PairableTimeout / agent 路徑可能改回,`adapter.c:862-875`、`9083-9090`;不成立 = INVALID,審查 A m6)→ bondable off → ≤ 15 s 註冊。負對照 = wsl.20 先跑出 FAIL。
+- **T3**(新臂 `power-provdkill`,hci0 關電期間 provd crash,L87):power off 後**在 provd 依 health 撤銷之前**(< 4 s 輪詢;`adv withdrawn` 行數不變,否則 INVALID:那會重跑 T1 的路徑,審查 A m7)kill -9 provd → BlueZ `client_disconnect_cb` → `client_remove` 的 Remove(`advertising.c:225-229` → `:209`)→ 關電中 advinfo = 0 → power on → btmon 無 Enable 直到新 provd 註冊。負對照 = wsl.20。
+- build:`build-board.sh` 第 4 步 cmp 負對照(改一個位元組 → 拒 build),同 D3。
+
+### 21.6 生命週期(新增列;§22 另有 bluetoothd 列)
+| # | 路徑 | wsl.20 | D3b 後 | 測試 |
+|---|---|---|---|---|
+| L84 | hci0 關電期間撤廣播,再開電 | kernel 保留 instance,開電即以舊資料發可連線廣播 | 關電時清單移除、回 Success;開電無廣播直到 provd 依 health 註冊 | T1 |
+| L85 | 關電期間前置條件轉壞(bondable on),再開電 | ⚠️ 推定:開電即廣播且持續 | 無廣播;恢復後 provd 註冊 | T2 |
+| L86 | 升級到含 D3b 的 image / 降級到 wsl.20 | — | kernel 隨 image;降級回到 L84 現象 | 出貨全套 |
+| L87 | hci0 關電期間 provd crash / stop | instance 殘留(BlueZ 的 Remove 被丟) | 移除 | T3 |
+| L88 | rfkill block / `hciconfig hci0 down` | 同 L84(同一條 close;rfkill 不走 `hci_power_off_sync`,連有 timeout 的都留) | 同 L84 | 原始碼(`hci_dev_do_close`);04 無 rfkill 裝置、無 rfkill / hciconfig 工具(2026-11-01 查)→ 不另測 ⚠️,checklist |
+| L89 | 快速關→開電(< 4 s,provd 沒撤) | 舊 instance 以當時條件廣播 ≤ 9.5 s | 同左(D3b 不處理,上限 L67) | 誠實界線 |
+
+### 21.7 安全
+- 資產:fail-closed 廣播前置條件(bondable=0、privacy、sc)。攻擊面:無新輸入;kernel 在關電時接受一個原本就允許(文件明文)的 mgmt 指令並真正生效。權限:`remove_advertising` 無 `HCI_MGMT_UNTRUSTED`(`mgmt.c:9352`),只有 trusted control socket(CAP_NET_ADMIN)能送,不變。被攻陷的 provd 只有 D-Bus;BlueZ 以 client 對應 instance → 只能讓自己少廣播。失敗模式:fail-secure(移除 = 不廣播)。供應鏈:同 D3 的 `cmp`。
+- 負測試:T1 / T2 / T3 的 wsl.20 實跑 FAIL。
+
+### 21.8 上游
+- v6.4 起的 regression(Fixes: d883a4669a1d);**是否寄 patch 給 linux-bluetooth = 對外發布,等使用者決定**(checklist)。
+
+## 22. D3c:bluetoothd 乾淨停止前清掉廣播 instance(BlueZ patch;使用者 2026-11-01「一起做」;v8.5 依兩位第二輪審查刪去啟動那一步)
+
+### 22.1 發現(✅ BlueZ 5.72 原始碼,兩位審查員逐行核過;實際時序待 btmon,§22.3)
+- **乾淨停止**(SIGTERM / SIGINT → `signal_callback`,`main.c:1227-1240`,10 s grace `main.c:64` → `adapter_shutdown()`,`adapter.c:10915-10938`):對每個**已開電**的 adapter 依序 `clear_discoverable`、`remove_temporary_devices`、`set_mode(SET_POWERED, 0)`,**不先移除廣播**;`btd_adv_manager_destroy` → `manager_destroy` 只 `client_destroy`(`advertising.c:1848-1853`);整個 BlueZ 只有 `advertising.c:194`(remove-all)與 `:209`(client 離開)送 mgmt Remove → kernel 照 §21.1 第 1 點保留 Timeout=0 的 instance。
+- **之後的啟動**:`adapter_register` 同一個同步呼叫內先 `btd_adv_manager_new` → `manager_create` 送 READ_ADV_FEATURES(`adapter.c:9348`、`advertising.c:1963`),再 `load_drivers`(`adapter.c:9380`)→ `policy_adapter_probe`(`policy.c:833-834`;節點 `batman-ble/files/main.conf:22` `AutoEnable = true`,未設時 `policy.c:894-898` 預設 true)→ `btd_adapter_restore_powered` 在 adapter 關著時送 `SET_POWERED(1)`(`adapter.c:7841`);原本的「Reset existing instances」要等 READ_ADV_FEATURES 回覆、在 callback 裡才排入(`advertising.c:1891-1893`);mgmt 佇列 FIFO、一次一個未回覆請求(`shared/mgmt.c:227-247`、`:780-808`)→ **乾淨停止之後的開電先把舊 instance 重新啟用,直到 Reset 才拔掉**(L9)。
+- **kill -9 / crash / D-Bus 斷線**(`disconnected_dbus` → `mainloop_quit`,`main.c:1287-1290`,不走 `adapter_shutdown`):mgmt control socket 關閉不會關電(只有 USER channel,`hci_sock_release`)→ adapter 一直開著、舊 instance 持續發射;新 bluetoothd 的 `btd_adapter_restore_powered` 因已開電 `return 0`(`adapter.c:7838-7839`)不送 SET_POWERED,原本的 Reset 在 READ_ADV_FEATURES 回覆後(毫秒級)就送出,且早於 provd 的任何 Add(D-Bus 介面在同一個 callback 才註冊,`advertising.c:1876`)→ **空窗 = 死掉 → procd respawn(`respawn 3600 5 0`,5 s)→ 初始化**;BlueZ 端無法縮短(v8.4 的「啟動先移除」對這條只差毫秒,審查 A M1′ / B MAJOR-1)。
+
+### 22.2 修法(D3c,只一步)
+firmware `patches/ekh-bcm2711/0015-bluez-adv-reset-254.patch` 加 `feeds/packages/utils/bluez/patches/901-batman-adv-remove-before-poweroff.patch`(與 0012/0013 同機制):
+- `adapter_shutdown()` 在 `set_mode(adapter, MGMT_OP_SET_POWERED, 0x00)` 之前呼叫新的 `btd_adv_manager_remove_all(adapter->adv_manager)`(`advertising.c`:`remove_advertising(manager, 0)` 的匯出包裝,`src/advertising.h` 加宣告);**`adv_manager` 可能是 NULL**(無 LE 或 GATT database 建立失敗,`adapter.c:9336-9348`)→ 包裝內先檢查。同一個 mgmt 佇列先送 Remove(0)、再 SET_POWERED 0 → 送出時有電,今天的 kernel 也成功。清單空時 kernel 回 INVALID_PARAMS(`mgmt.c` `list_empty`),callback NULL,佇列照常前進;`btd_exit` 只由 Powered 轉 off 觸發(`adapter.c:616-629`),不受 Remove 回覆影響。
+- log 一行 `Batman: advertising instances removed before power off (hci%u)` = 0015 **獨有**的 Batman-Witness 字串(不與 0013 的 SC 字串共用,gate 才分得出 0015 有沒有進去;審查 B m3)。
+- patch 產生:**以已套用 900(`900-batman-irk-getrandom.patch`,同改 `src/adapter.c`)的樹為基準**;build 時 quilt 套用不得靠 fuzz(`build-board.sh` 檢查 `patch` 輸出無 `fuzz`/`offset`;審查 A m10)。
+- **不做**(v8.4 的第 2 步,刪除):`btd_adv_manager_new` 後立即 Remove(0)。它唯一有鑑別力的情境是「bluetoothd 啟動時 adapter 關著、kernel 卻有殘留 instance」;有了 D3b + 本步之後只剩不乾淨的前序路徑(本步沒送出:grace 10 s 到期 / shutdown 中途 crash;L89 加 crash;bluetoothd 停著時 root `btmgmt add-adv` 再關電)→ 寫成誠實界線(§22.4 L92),照使用者「只做必要的修改」不加。
+- 擁有權:instance 的寫者仍是 BlueZ(代 provd / 其他 D-Bus client);停止前移除 = BlueZ 本來在 client 離開時就會做的事,提前到關電前,不新增寫者。
+- 停止時 adapter 已關(`adapter_shutdown` 跳過未開電的 adapter,`adapter.c:10926-10927`):本步不送;在 D3b 之下該 instance 通常早已在 provd 撤銷時移除;殘留只可能來自 L89 或第三寫者 → 下次啟動由原本的 Reset 處理(L92)。
+
+### 22.3 測試
+- **T4**(`dep-bluetoothd` 臂加 btmon,負對照):前置 advinfo = 1(provd 已註冊;不成立 = INVALID,否則 Remove(0) 回 INVALID_PARAMS,失敗在與 D3c 無關處;審查 A m8)→ `/etc/init.d/bluetoothd restart` → btmon:
+  - 舊 bluetoothd(pid)的 `MGMT Command (0x003f)` 早於它的 `MGMT Command (0x0005)`(Set Powered off),且其間有該 Remove 的 `Command Complete` status Success;臂改為 stop → advinfo = 0(bluetoothd 停著讀不到時只記 INFO)→ start(第三輪審查 A m11);
+  - 最後一個 `Powered: Enabled` 之後,`Advertising: Enabled` 不得早於 provd 的 Add(0x0054 / 0x003e)。
+  - 依據:§22.1 的佇列順序(兩位審查員原始碼證實)。負對照 = wsl.20:兩條都 FAIL(先在 04 跑出)。
+- **T5 / T6**(`dep-bluetoothd-kill` / `dep-dbus` 臂加 btmon,**特性量測,不是修復證據**;審查 A M1′ / B MAJOR-1):記錄「kill / dbus 重啟 → 新 bluetoothd 的 Remove」的空窗(INFO),上限斷言 ≤ 15 s;斷言新 bluetoothd 的 Remove 早於 provd 的 Add(回歸)。wsl.20 也會 PASS。
+- gate:image 的 bluetoothd `strings` 含 0015 的 Batman-Witness;缺 → build 拒(同 0013)。
+- 降級:同 L86,出貨全套。
+
+### 22.4 生命週期(新增 / 改列)
+| # | 路徑 | wsl.20 | D3b + D3c 後 | 測試 |
+|---|---|---|---|---|
+| L9 改 | bluetoothd 乾淨重啟 | 停止不移除;重啟後先開電再 Reset → 舊 instance 先廣播 | 停止前移除 → 開電時沒有舊 instance | T4 |
+| L65 改 | bluetoothd crash / kill -9 | 一直開電、舊 instance 持續發射;新 bluetoothd 的 Reset 在 READ_ADV_FEATURES 回覆後(毫秒級)拔掉 → 空窗 ≈ respawn 5 s + 初始化 | **D3c 無實質改變**(誠實界線) | T5(量測) |
+| L10 改 | dbus 重啟(bluetoothd 隨之退出,不走 shutdown) | 同 L65 | 同 L65(誠實界線) | T6(量測) |
+| L90 | bluetoothd crash loop(每次在 Reset 前掛) | 舊 instance 無限期 | 同左(誠實界線;health `bluetoothd=0`,autocommit 只 WARN) | 原始碼;checklist |
+| L92 | bluetoothd 啟動時 adapter 關著且 kernel 有殘留 instance(本步沒送出 / L89 + crash / 第三寫者 / 停止過程中 provd 重新註冊:斷光連線後 provd 的下一輪在 health 反映關電前 Add,排在 SET_POWERED 0 之後、legacy 控制器關電中直接保留 — 毫秒級窗,由原本的 Reset 收掉;第三輪審查 B m1) | 開電先啟用舊 instance,直到 Reset | 同左(誠實界線;刪去的 v8.4 第 2 步本可處理) | 原始碼;checklist |
+| L93 | 升級到含 0015 / 降級到無 0015 的 image | — | 隨 image;降級回到 wsl.20 的 L9 現象 | 出貨全套 |
+| L91 | bcm2710 | ❌ 無 0012/0013(F-P49) | ❌ 同左(CM4 決定) | — |
+
+### 22.5 安全
+- 攻擊面:無新輸入;BlueZ 在關電前多送一次既有的 mgmt Remove(0)。權限不變(bluetoothd 本來就是 trusted mgmt client)。失敗模式:fail-secure(多移除 = 少廣播;provd 依 health 重新註冊)。
+- 負測試:T4 的 wsl.20 實跑 FAIL。
