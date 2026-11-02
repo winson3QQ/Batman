@@ -342,7 +342,6 @@ ES256:所有 YubiKey 5 的 PIV 都支援;節點已有 `cose.VerifySign1` / `Veri
 | `ro` 連線(provd → helper) | provd 開 | helper 限速 |
 | `/tmp/run/batman-provd-bulk`(專屬 tmpfs) | `batman-provd` init 掛載 / 建目錄;provd 寫上傳檔 | helper worker 只讀 fd |
 | `/tmp/run/batman/update/`(pending、解出的 boot 檔)、`/tmp/run/batman/diag/`(helper RunDir,root 0700,F53) | helper | — |
-| AP client 快取(記憶體) | helper | provd(唯讀動詞) |
 | p6 `state/update-last` | helper(apply 時寫;下一次 check 通過時覆寫) | helper(status) |
 | p6 `state/prov-state`(既有,F54) | helper(既有) | `/cgi-bin/bundle`(新讀者) |
 | 目標槽(rootfs、boot、`BATMAN-VERIFIED`、`BATMAN-BAD`)與 tryboot 旗標 | `batman-slot`(`write` / `arm` / `apply`),由 `batman-slot.lock` 互斥(F35):helper worker 與 sysupgrade 不會同時寫 | autocommit |
@@ -379,10 +378,9 @@ ES256:所有 YubiKey 5 的 PIV 都支援;節點已有 `cose.VerifySign1` / `Veri
 | `update.prepare` / `apply` | 前提不成立 / sha 不符 | `E_REJECTED{2: 15}` |
 | `update.prepare` worker | 內容不符(之後經 `update.status` 的 key 3) | phase 0 + `3: 11` |
 | `bulk.open` | 無 pending | `E_REJECTED{2: 15}`;AP 關 → `{2: 16}` |
-| HTTP 上傳 | 不是本 AP client | HTTP 403 + body `reason 17` |
+| HTTP 上傳 / 連線 | 不是從手機 AP 的 bridge port 進來 | nft bridge 規則丟棄,到不了 provd(D19);reason 17 保留給 app 端說明 |
 | `diag.read` | handle 過期 / 不屬於這個 session | `E_REJECTED{2: 15}` |
 | HTTP 交握 | NX / psk_replay | 連線關閉(與 fake path 等長回應後關) |
-| HTTP accept | 來源不是本 AP client | 立刻關閉(不讀 header) |
 
 ### 5.2 重送語意(不做冪等快取)
 
