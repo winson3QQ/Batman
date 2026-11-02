@@ -500,7 +500,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
   3. restart;
   4. 斷言 exe sha、標記、environ。
 - `unbind-all` 也會重啟 provd 並斷言。
-- ⚠️ **E-H12**:不成立時退回 `upper-provd`。
+- ✅ **E-H12**(2026-11-03,04):成立,不需 `upper-provd`。
 
 ### 5.4 shell fault(`/tmp/batman-fault.<n>`,`rundir.sh:44` 的 `batman_opf`)
 
@@ -899,7 +899,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | E-H8 | 桌機 ↔ AP 上的手機;relay → :80 | ❌ 現場 |
 | E-H9 | 連線、STATUS / CTRL、MTU;`node_cert` 認證、notify、多 frame、閒置計時 | ✅ 2026-11-03(04 legacy,`peer.py eh9`):identify ok(−58 dBm,dev DAC 規則 + `sig_static`);`info` status 0、state 3;7820 B 請求 33 frame、0.43 s;匿名 session 閒置 25 s 仍開、再閒置 40 s 已關(IdleAnon 30 s)。原本列的「230 s」指的是處理中的請求(不計閒置,`session.go:121`),要 P3 的認證 session 才測得到 |
 | E-H10 | 手機在 C0 ↔ ALT 之間切換 | ❌ 現場 |
-| E-H12 | `push-provd` 在 ujail 下 | ❌ §15-3 |
+| E-H12 | `push-provd` 在 ujail 下 | ✅ 2026-11-03(04 wsl.22,`eh12-push-provd-254.sh`):bind wsl.21 wbox-test 的 provd(95ffa2dc…,release 74dfa1dc…)+ 測試 init → 重啟一次,被 jail 的 pid 17230 `/proc/<pid>/exe` sha = 推上去的;uid 471、父程序 `/sbin/ujail`;provd-check ok adv=1;`unbind-all` 後 pid 20097 = `/rom` 的,無殘留 bind,lease 釋放。fails=0 |
 | E-H13 | 壞 rootfs → panic → 回到原槽 | ❌ 前置 §15-3、本體在現場 |
 | E-H15 | ethsim(mesh、前提檢查、還原、uclient 結束碼、RSS) | ❌ §15-3 |
 | E-H16 | WSL 非 root 沙箱 + 逃脫負測試 | ❌ §15-2 |
