@@ -17,8 +17,9 @@
 - 02 接到實驗室交換器。兩條路同時存在時由 batman 的 BLA 避免迴圈(設計 F-H52)。
 - **檢查點**:主機能直接 ssh 到 02。
 
-## 3. 建 S0-pre(harness)
-- `prov-bench-s0-254 provision`,步驟見設計 §3.1(認領依 H4-U14 用既有的 `provclient`)。
+## 3. 建 S0-pre(使用者用 app,harness 檢查)
+- 認領與加入網路用正式 app 手動做:`docs/validation/h4-manual-cases.md` 的 **M1、M2**(2026-11-03 使用者決定;
+  自動化版本被工具的安全機制擋下)。
 - **檢查點**:`s0_assert`(S0-pre 版)兩台都成立。
 - **最後**:使用者拔掉 02 的網路線,再跑一次 `s0_assert`(含「02 的 eth0 沒有載波」)。
 - **不成立**:INVALID,harness 印出重建步驟;依指示重做,不要手動改節點。
