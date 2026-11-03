@@ -25,7 +25,7 @@
 - **不成立**:INVALID,harness 印出重建步驟;依指示重做,不要手動改節點。
 
 ## 4. 手機設定(使用者,B 段)
-- `docs/validation/s20-setup.md` 的 B 段;C0 用主機上的本機 QR 頁面加入。
+- `docs/validation/s20-setup.md` 的 B 段。
 - C0 由使用者在手機上手動輸入,步驟與檢查見 `docs/validation/h4-manual-cases.md` 的 **M4**。
 - **檢查點**:M4 的 a–d 都通過。
 
