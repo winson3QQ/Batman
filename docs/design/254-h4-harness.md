@@ -158,7 +158,7 @@ bench 的基準狀態分兩段:P3 之前是 **S0-pre**,P3 之後是 **S0**(§3)�
 | F-H45 | **`s_node`(Noise static)每次 provd 啟動都重新產生、只在記憶體**,協定禁止 app 快取它;**member 節點收到 NX msg1 一律回假 msg2**;交握完成後,同一條連線上的新 msg1 會被當成 transport 訊息 → AEAD 失敗 → 斷線 | `noise.go:29, 62-96`;`server.go:104-113, 673-683`;`session.go:300-321`;219 `:57, :515` |
 | F-H46 | **交握第 2 則訊息的 payload = `node_cert`**:`{1: dac_chain, 2: s_node_pub, 3: boot_id, 4: ecdh_pub, 5: sig_static, 6: sig_ecdh, 7: sn}`;手機要驗 DAC 鏈(dev 版 = 自簽 + TOFU pin,而且 `device_id == hex(SHA-256(pub)[:9])`)、`sig_static` 對上交握裡實際的 `s_node`、`sn` 與 DAC 一致,以及 **DAC = 預期的目標**(只驗鏈不夠:任何持有 `psk_member` 的成員都能冒充別台);peer 已經會解析 `node_cert`(`cert[7]`) | 219 §3.3 `:55-78`;`peer_core.py:93` |
 | F-H47 | **net_secrets** = COSE_Sign1,payload `{1: net_id, 2: version, 3: target = SHA-256(DAC pub), 4: 加密給 node_cert 的 ecdh_pub(P-256)}`;解密時 AAD 帶 target,`other` = net_id ‖ version。`network-join-req` 一定帶 key 31 owner-op | `wtxn.go:125-150`;`219-protocol.cddl:205-210` |
-| F-H48 | lease 鎖 = `$BT/lock` 的 fd 9,每個指令各自拿(`lock` / `held`);`dm-fire` 在 lease **過期後**才動作,最多等鎖 10 分,拿到鎖之後**在同一個行程裡**呼叫 `role_fire_restore`;`dm_arm` 會殺掉舊的 dead-man 群組;`cmd_arm` 要求 lease 有效 | `ble-lib-254.sh:96-101, 137-155, 305-343`(`cmd_release` 在 lease 過期時 die:`:314-316`;`cmd_dm_fire`:`:327-340`);`prov-lease-254.sh:30-68` |
+| F-H48 | lease 鎖 = `$BT/lock` 的 fd 9,每個指令各自拿(`lock` / `held`);`dm-fire` 在 lease **過期後**才動作,最多等鎖 10 分,拿到鎖之後**在同一個行程裡**呼叫 `role_fire_restore`;`dm_arm` 會殺掉舊的 dead-man 群組;`cmd_arm` 要求 lease 有效 | `ble-lib-254.sh:96-101, 137-155, 305-343`(`cmd_release` 在 lease 過期時 die:`:314-316`;`cmd_dm_fire`:`:327-340`);`prov-lease-254.sh:30-68` 。**更正(2026-11-03,04 實測)**:`lock()` 與 `cmd_dm_fire` 共用全域 `n`,main(2ecf1cb)上 dm-fire 實際只等 **30 s**;babe108 改成各自的計數器,`test-dv-ble-254` lockt 以 2ecf1cb 當負對照 |
 | F-H49 | `batman-slot stage-root <dir>`(payload 不帶 `root.squashfs`)→ `begin_write`:disarm tryboot、invalidate 目標槽(寫 `BATMAN-BAD`)、清空 rootfs,然後印出裝置。`batman-slot` 沒有單獨的 invalidate / disarm 動詞 | `batman-slot:8-14, 423-436, 650-656, 900-917` |
 | F-H50 | provd 的全域交握限速 20 次 / 分,fake path 也算 | `server.go:35, 645-660` |
 | F-H51 | `provd_check` 的 `PROVD_KEYS` 沒有 `BATMAN_FAULT` | `ble-lib-254.sh:170` |
@@ -901,7 +901,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | E-H10 | 手機在 C0 ↔ ALT 之間切換 | ❌ 現場 |
 | E-H12 | `push-provd` 在 ujail 下 | ✅ 2026-11-03(04 wsl.22,`eh12-push-provd-254.sh`):bind wsl.21 wbox-test 的 provd(95ffa2dc…,release 74dfa1dc…)+ 測試 init → 重啟一次,被 jail 的 pid 17230 `/proc/<pid>/exe` sha = 推上去的;uid 471、父程序 `/sbin/ujail`;provd-check ok adv=1;`unbind-all` 後 pid 20097 = `/rom` 的,無殘留 bind,lease 釋放。fails=0 |
 | E-H13 | 壞 rootfs → panic → 回到原槽 | ❌ 前置 §15-3、本體在現場 |
-| E-H15 | ethsim(mesh、前提檢查、還原、uclient 結束碼、RSS) | ❌ §15-3 |
+| E-H15 | ethsim(mesh、前提檢查、還原、uclient 結束碼、RSS) | ⚠️ 2026-11-03(04 wsl.22,`eh15-ethsim-254.sh` 第 3 輪 12 PASS / 1 FAIL):undo 先登記再建;h4v0 是 br-ahwlan 的 port;netns 的 MAC 出現在 `batctl tl`;uclient 結束碼 :80 = 0、被拒 = 4、沒回應 = 4(**結束碼分不出被拒與逾時 → 判定只靠 tcpdump**);`start-stop-daemon -c 471:471` → uid 471;120 個同時:117 個在跑、MemAvailable −265 MB;VLAN 雙層 10 SYN、沒有 SYN-ACK / RST;docker0 路徑 :80 = 0;拆除後無殘留。**❌ 速率**:60 秒只送出 1326 / 3000(wall 127 s,行程數頂在 120 上限)= 在受測節點上自己產生流量的**誠實界線**(§4.5),tcpdump 1326 SYN / 1326 RST / 0 SYN-ACK。named counter 與 helper 前提檢查要等 P3 |
 | E-H16 | WSL 非 root 沙箱 + 逃脫負測試 | ❌ §15-2 |
 | E-H17 | 在 F 上預演 S0-pre | ❌ §15-4 |
 
