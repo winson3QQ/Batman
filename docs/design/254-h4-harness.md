@@ -229,7 +229,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
    - **以 publickey 證明登入成功(chain1 的 `pk_proof`),證明之前不認領**(chain1 `:342` "not claiming");認領之後 dropbear 只收 key(F-H37),先證明可以避免 02 被鎖在外面;
    - 讀 `identity/node.cert` 與 `sn` 寫進庫;
    - 讀 `identity/claim.secret`:在節點上以 `hexdump -v -e '1/1 "%02x"'` 輸出 hex,經 ssh stdout 直接進 `peer.py` 的 stdin。不落地、不進 argv,也不會被跨 Git Bash / WSL 的換行處理弄壞(v4-A m5)。
-4. BLE 認領(H0):`peer.py claim`,目標依 §4.2 認證(新卡 = unclaimed,NX 交握的 `node_cert` 必須等於第 3 步記下的 DAC)。
+4. 認領(H0):**H4-U14(使用者 2026-11-03)改用既有、已驗證的 `provclient`(sock,經 helper;H3 chain1 / prov-claim 用過)**,不寫 `peer.py claim`(實作時被工具的安全機制擋下)。認領前仍以 `peer.py` 依 §4.2 認證目標(新卡 = unclaimed,NX 交握的 `node_cert` 必須等於第 3 步記下的 DAC);認領後以 `peer.py` 讀 `STATUS` 斷言 state 變成 claimed。**界線**:BLE 上的認領路徑不在 S0-pre 建立時涵蓋,改由 P3 的單位涵蓋(列進 #254 checklist)。
 5. `network/join`(請求依 CDDL `network-join-req`,一定帶 key 31 owner-op;F-H47):
    - 04:`netobj.py` 產生 N0 的 net_config(H0 簽,國家 US),以及給 04 的 net_secrets:target = SHA-256(04 的 DAC pub),加密給 04 `node_cert` 的 `ecdh_pub`(先驗 `sig_ecdh`);
    - 02:同一份 net_config,加上給 02 的 net_secrets。
