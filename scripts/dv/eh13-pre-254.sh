@@ -22,17 +22,13 @@ VCGET='vcmailbox 0x00030064 4 4 0 2>/dev/null | awk "{print \$6}"'
 pr_begin 5400 || exit 1
 V=$PR_V; o=$(pr_payload "$V") || { pr_abort "payload $V: $o"; exit 1; }; pr_payload "$V" >/dev/null
 # 1. the bad payload, in WSL (unsquashfs / the generator run there); not in WSL /tmp: it can be gone by the next wsl call
-TW=$(wsl_ bash -c 'mkdir -p -m 700 "$HOME/.batman-dv" && mktemp -d "$HOME/.batman-dv/e13.XXXXXX"' | tr -d '\r')
-o=$(wsl_ bash -c "set -e; cd '$TW'; mkdir p; tar -xzf '$PR_OUT_WSL/$V/ekh-bcm2711/batman-$V-ekh-bcm2711-ab-payload.tar.gz' -C p
-	bash '$REPO_WSL/scripts/dv/data/p3-payloads.sh' badroot p/root.squashfs bad.sq
-	mv bad.sq p/root.squashfs; n=\$(sha256sum p/root.squashfs | cut -d' ' -f1)
-	awk -v n=\"\$n\" '\$2==\"root.squashfs\"{\$1=n} {print \$1\"  \"\$2}' p/SHA256SUMS > s.new && mv s.new p/SHA256SUMS
-	grep \"^\$n  root.squashfs\$\" p/SHA256SUMS >/dev/null && echo SUMS-OK
-	tar -czf bad.tar.gz -C p . && sha256sum bad.tar.gz" 2>&1 | tr -d '\r')
+TW=$(wsl_ mktemp -d /home/yello/.batman-dv/e13.XXXXXX | tr -d "\r")
+# plain arguments only: shell code given to wsl.exe is expanded twice (2026-11-03: the inline version lost every $)
+o=$(wsl_ bash "$REPO_WSL/scripts/dv/data/p3-payloads.sh" badpayload "$PR_OUT_WSL/$V/ekh-bcm2711/batman-$V-ekh-bcm2711-ab-payload.tar.gz" "$PSHA" "$TW/bad.tar.gz" 2>&1 | tr -d "\r")
 say "$(echo $o)"
-grep -q 'FAIL' <<< "$o" && { pr_abort "badroot acceptance: $o"; exit 1; }
-grep -q SUMS-OK <<< "$o" && grep -q 'ok   unsquashfs -s refuses it' <<< "$o" || { pr_abort "bad payload not built: $o"; exit 1; }
-BSHA=$(tail -1 <<< "$o" | cut -c1-64)
+grep -q "^FAIL" <<< "$o" && { wsl_ rm -rf "$TW"; pr_abort "bad payload: $(grep ^FAIL <<< "$o")"; exit 1; }
+grep -q "ok   unsquashfs -s refuses it" <<< "$o" && grep -q "ok   repacked tar carries the bad rootfs" <<< "$o" || { wsl_ rm -rf "$TW"; pr_abort "bad payload not built: $o"; exit 1; }
+BSHA=$(sed -n "s/^PAYLOAD-SHA //p" <<< "$o")
 ok "bad payload built (offline acceptance PASS), sha ${BSHA:0:16}"
 
 # 2. on 04

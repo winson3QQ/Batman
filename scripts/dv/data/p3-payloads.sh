@@ -32,8 +32,36 @@ cmd_badroot() {
 	return $rc
 }
 
+# badpayload <payload.tar.gz> <its sha256> <out.tar.gz>: the whole E-H13 / UD4 payload — the input checked against the
+# given sha, root.squashfs through badroot, its SHA256SUMS line replaced by the new sha, every other line kept; checked
+# again on the repacked tar. Prints "PAYLOAD-SHA <sha of out>" last. Run in WSL with plain arguments only (shell code
+# passed through wsl.exe is expanded twice: 2026-11-03 the inline version lost every $ and the run aborted).
+cmd_badpayload() ( # a subshell: its EXIT trap removes the work dir on every exit, die included (a RETURN trap fires
+	# when the inner cmd_badroot returns: the first version lost its work dir there)
+	bp_in=$1 bp_want=$2 bp_out=$3	# own names: cmd_badroot sets in / out
+	[ "$(sha256sum "$bp_in" | cut -d' ' -f1)" = "$bp_want" ] || die "$bp_in does not match the given sha"
+	t=$(mktemp -d "$(dirname "$bp_out")/badpayload.XXXXXX") || die "mktemp"
+	trap 'rm -rf "$t"' EXIT
+	mkdir "$t/p" && tar -xzf "$bp_in" -C "$t/p" || die "unpack $bp_in"
+	[ -f "$t/p/root.squashfs" ] && [ -f "$t/p/SHA256SUMS" ] && [ -d "$t/p/boot" ] || die "payload layout: no root.squashfs / SHA256SUMS / boot"
+	old=$(awk '$2=="root.squashfs"{print $1}' "$t/p/SHA256SUMS"); [ -n "$old" ] || die "SHA256SUMS has no root.squashfs line"
+	[ "$(sha256sum "$t/p/root.squashfs" | cut -d' ' -f1)" = "$old" ] || die "root.squashfs does not match its SHA256SUMS line"
+	cmd_badroot "$t/p/root.squashfs" "$t/bad.sq" || die "badroot acceptance"
+	mv "$t/bad.sq" "$t/p/root.squashfs"
+	new=$(sha256sum "$t/p/root.squashfs" | cut -d' ' -f1)
+	cp "$t/p/SHA256SUMS" "$t/sums.orig"
+	awk -v n="$new" '$2=="root.squashfs"{$1=n} {print $1 "  " $2}' "$t/sums.orig" > "$t/p/SHA256SUMS"
+	[ "$(grep -c "^$new  root.squashfs\$" "$t/p/SHA256SUMS")" = 1 ] && echo "ok   SHA256SUMS: root.squashfs line = the bad rootfs" || die "SHA256SUMS not updated"
+	[ "$(awk '$2!="root.squashfs"{print $1, $2}' "$t/sums.orig")" = "$(awk '$2!="root.squashfs"{print $1, $2}' "$t/p/SHA256SUMS")" ] \
+		&& echo "ok   SHA256SUMS: every other line kept ($(grep -vc ' root.squashfs$' "$t/p/SHA256SUMS"))" || die "SHA256SUMS changed other lines"
+	tar -czf "$bp_out" -C "$t/p" . || die "repack"
+	[ "$(tar -xzOf "$bp_out" ./root.squashfs | sha256sum | cut -d' ' -f1)" = "$new" ] && echo "ok   repacked tar carries the bad rootfs" || die "repacked tar"
+	echo "PAYLOAD-SHA $(sha256sum "$bp_out" | cut -d' ' -f1)"
+)
+
 c=${1:-}; [ $# -gt 0 ] && shift
 case "$c" in
 	badroot) [ $# = 2 ] || die "usage: badroot <root.squashfs> <out>"; cmd_badroot "$@" ;;
-	*) die "usage: badroot" ;;
+	badpayload) [ $# = 3 ] || die "usage: badpayload <payload.tar.gz> <sha256> <out.tar.gz>"; cmd_badpayload "$@" ;;
+	*) die "usage: badroot | badpayload" ;;
 esac
