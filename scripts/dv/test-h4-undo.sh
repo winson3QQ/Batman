@@ -52,7 +52,7 @@ d_arm(){
 	grep -q '^UNDO-ADDED' <<< "$o" || { no "D-$1: setup did not register: $o"; pl release >/dev/null; return; }
 	dm_done 60 || { no "D-$1: the deadman did not finish within 5 min"; return; }
 	u=$(ulog_); say "D-$1 undo log: $(grep -E 'done|FAIL|CRIT|NEEDS|seg1' <<< "$u" | sed 's/^.*boot=[0-9a-f]* //' | tr '\n' '|')"
-	grep -q "done [0-9]* $1" <<< "$u" || no "D-$1: no 'done' line for $1"
+	grep -qE "done [0-9]* $1|seg1 $1 [0-9]+ " <<< "$u" || no "D-$1: no 'done' line for $1"	# kill-pg: segment 1 logs "seg1 kill-pg <pg>"
 	grep -qE 'FAIL|CRIT|NEEDS' <<< "$u" && no "D-$1: FAIL / CRIT / NEEDS-PERSON in the undo log"
 	o=$(q "$3 && echo RESTORED-OK"); grep -q RESTORED-OK <<< "$o" && ok "D-$1: the deadman's undo put it back" || no "D-$1: not restored: $o"
 	o=$(qr "[ -e /tmp/run/batman-dv/undo/$RUN ] || [ -e /opt/batdata/state/dv-undo/$RUN ] && echo JOURNAL-LEFT"); [ -z "$o" ] || no "D-$1: journal left"
@@ -120,6 +120,7 @@ if want V-param; then newrun V-param; o=$(pr_acquire 300) || no "V-param lease: 
 	q "rm -rf /tmp/run/batman-dv/undo/$RUN"; o=$(pl release); grep -q RELEASED <<< "$o" || no "V-param: release: $o"
 fi
 
-o=$(pl provd-check 2>&1 | tail -1); say "provd after the arms: $o"; grep -q 'PROVD ok' <<< "$o" || no "provd after the arms: $o"
-o=$(qr 'ls /tmp/run/batman-dv/undo /opt/batdata/state/dv-undo 2>/dev/null'); [ -z "$o" ] && ok "no undo journal left" || no "undo journals left: $(echo $o)"
+o=$( { cat "$REPO/scripts/node/ble-lib-254.sh"; echo provd_check; } | timeout 90 ssh $SSHO root@$NODE sh -s 2>&1 | tr -d '\r' | tail -1)	# every run dir is gone by now: the lib through stdin
+say "provd after the arms: $o"; grep -q 'PROVD ok' <<< "$o" || no "provd after the arms: $o"
+o=$(qr 'ls -A /tmp/run/batman-dv/undo/ /opt/batdata/state/dv-undo/ 2>/dev/null | grep -v -e "^$" -e ":$"'); [ -z "$o" ] && ok "no undo journal left" || no "undo journals left: $(echo $o)"
 say "fails=$fails invalid=$invalid"; [ "$fails" = 0 ] && echo "TEST-H4-UNDO PASS" || echo "TEST-H4-UNDO FAIL"

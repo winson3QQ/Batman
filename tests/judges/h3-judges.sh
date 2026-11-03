@@ -23,7 +23,7 @@ rel(){	# <PR_PERSON> <release answer> <deadman count> <PR_DM_BASE>: run pr_relea
 	  say(){ echo "SAY $*"; }; ok(){ echo "PASS $*"; }; no(){ echo "FAIL $*"; }; pr_unlock(){ :; }
 	  pw(){ echo "pw $*" >> "$W/calls"; echo "UNBIND-ALL ok"; }
 	  q(){ echo "q $*" >> "$W/calls"; }
-	  pl(){ echo "pl $*" >> "$W/calls"; case "$1" in release) echo "$RELA" ;; radio-restore) echo "RADIO clean" ;; provd-reset) echo "PROVD ok pid=1" ;; *) echo "STATE x" ;; esac; }
+	  pl(){ echo "pl $*" >> "$W/calls"; case "$1" in release) echo "$RELA" ;; renew) echo "ARMED $2 s" ;; undo) echo "${UNDOA:-UNDO undo_run host end rc=0}" ;; radio-restore) echo "RADIO clean" ;; provd-reset) echo "PROVD ok pid=1" ;; *) echo "STATE x" ;; esac; }
 	  qr(){ echo "$DMN"; }
 	  RELA=$2 DMN=$3; eval "$src"; pr_release )
 }
@@ -31,8 +31,12 @@ rel(){	# <PR_PERSON> <release answer> <deadman count> <PR_DM_BASE>: run pr_relea
 grep -q '^pl radio-restore' "$W/calls" && grep -q '^pl provd-reset' "$W/calls" && ! grep -q '^FAIL' <<< "$o" \
 	&& tok "pr_release (control): a normal end restores radio + provd, releases, no FAIL" || tbad "pr_release control: [$(echo $o)] calls [$(tr '\n' '|' < "$W/calls")]"
 : > "$W/calls"; o=$(rel 1 RELEASED 0 0)
-! grep -qE '^pl (radio-restore|provd-reset)|^q rm' "$W/calls" && grep -q '^pl release' "$W/calls" && grep -q '^pw unbind-all' "$W/calls" \
+! grep -qE '^pl (radio-restore|provd-reset|renew|undo)|^q rm' "$W/calls" && grep -q '^pl release' "$W/calls" && grep -q '^pw unbind-all' "$W/calls" \
 	&& tok "pr_release NEEDS-PERSON: no radio / provd / rm write, binds and lease go" || tbad "pr_release NEEDS-PERSON calls: [$(tr '\n' '|' < "$W/calls")]"
+# 254-h4 §5.7: the host-mode undo runs under a renewed lease; something it left is a FAIL
+: > "$W/calls"; o=$(rel 0 RELEASED 0 0)
+grep -q '^pl renew 1200' "$W/calls" && grep -q '^pl undo$' "$W/calls" && tok "pr_release: renew + host-mode undo before the release" || tbad "pr_release undo calls: [$(tr '\n' '|' < "$W/calls")]"
+o=$(UNDOA='UNDO FAIL 2 link-del h4v0 (rc 1)' rel 0 RELEASED 0 0); grep -q '^FAIL undo: UNDO FAIL 2 link-del' <<< "$o" && tok "pr_release: an undo that left something FAILs" || tbad "pr_release with a failed undo: [$(echo $o)]"
 o=$(rel 0 "FAIL lease is not ours or expired" 0 0)
 grep -q '^FAIL lease release failed' <<< "$o" && tok "pr_release: a failed lease release FAILs" || tbad "pr_release with a failed release: [$(echo $o)]"
 o=$(rel 0 RELEASED 2 0); grep -q '^FAIL the prov deadman acted' <<< "$o" && tok "pr_release: 2 deadman lines, none expected -> FAIL" || tbad "deadman lines not caught: [$(echo $o)]"

@@ -44,7 +44,11 @@ pkill -f "$W/hang/bluetoothctl" 2>/dev/null
 # (the negative control; `true` would end before the first poll and hide it)
 limt(){ dash -c ". '$1'; a=\$(cut -d' ' -f1 /proc/uptime); lim 10 /bin/sleep 0.3; b=\$(cut -d' ' -f1 /proc/uptime); awk -v a=\$a -v b=\$b 'BEGIN{print (b - a < 0.8) ? \"fast\" : \"slow\"}'"; }
 [ "$(limt "$REPO/scripts/node/ble-lib-254.sh")" = fast ] && tok "lim: a 0.3 s command returns in < 0.8 s" || tbad "lim waits for its poll after the command ended"
-if [ -f /home/yello/Batman/scripts/node/ble-lib-254.sh ]; then [ "$(limt /home/yello/Batman/scripts/node/ble-lib-254.sh)" = slow ] && tok "lim negative control: main's polling lim takes >= 0.8 s (the test sees it)" || tbad "lim negative control: main's lim was fast — the test cannot see a polling lim"; fi
+# the negative controls run fixed commits (git show), not the main checkout: main moves on once a fix lands
+neg(){ git -C "$REPO" -c safe.directory='*' show "$1:scripts/node/ble-lib-254.sh" > "$W/neg-$1.sh" 2>/dev/null && echo "$W/neg-$1.sh"; }
+NEGLIM=$(neg fbb14e4~1); NEGLOCK=$(neg 2ecf1cb)
+[ -n "$NEGLIM" ] && [ -n "$NEGLOCK" ] || tbad "negative controls: the fixed commits are not in this clone"
+if [ -n "$NEGLIM" ]; then [ "$(limt "$NEGLIM")" = slow ] && tok "lim negative control: the polling lim (fbb14e4~1) takes >= 0.8 s (the test sees it)" || tbad "lim negative control: fbb14e4~1's lim was fast — the test cannot see a polling lim"; fi
 # 02's central watchdog must not keep the session lock (ed0cf33): the REAL line from prov-p2-central-254.sh (270 s ->
 # 3 s) under dash, whose sleep forks like the node's busybox (no ASH_SLEEP; WSL busybox's builtin sleep hides it).
 # A session that ends at once must leave the lock free; the e4efc29 line must not (the negative control).
@@ -60,6 +64,13 @@ if command -v dash >/dev/null && command -v flock >/dev/null; then
 	[ "$(wd_try "$new")" = free ] && tok "central watchdog: the lock is free right after the session (dash, forking sleep)" || tbad "central watchdog keeps 02's lock after the session"
 	[ "$(wd_try '( sleep 3; kill -TERM 0 ) & WD=$!')" = held ] && tok "central watchdog negative control: the e4efc29 line keeps the lock (the test sees it)" || tbad "watchdog negative control: the e4efc29 line left the lock free — the test cannot see the bug"
 else tbad "watchdog test needs dash and flock on the host"; fi
+# the deadman waits for a held lock 20 x `lock 30` (F-H48) — lock() must not touch its caller's counter: with a shared
+# `n`, `lock 30` returned n=30 and cmd_dm_fire's `while [ $n -lt 20 ]` gave up after ONE try (30 s, not 10 min; 04
+# 2026-11-03 test-h4-undo H-expire: "lock stuck 10 min" 73 s after the host executor started). Scaled: 3 x `lock 2`
+# against a held lock = 3 tries; main's lib makes 1 (the negative control)
+lockt(){ dash -c ". '$1'; BT='$W'; exec 7>'$W/lock'; flock -n 7 || exit 9; ( exec 7>&-; t=0; n=0; while [ \$n -lt 3 ]; do t=\$((t + 1)); lock 2 && break; n=\$((n + 1)); done; echo tries=\$t )"; }
+[ "$(lockt "$REPO/scripts/node/ble-lib-254.sh")" = tries=3 ] && tok "lock leaves the caller's counter alone: 3 waits of a held lock" || tbad "lock: the caller's retry loop gave up early ($(lockt "$REPO/scripts/node/ble-lib-254.sh"))"
+if [ -n "$NEGLOCK" ]; then [ "$(lockt "$NEGLOCK")" = tries=1 ] && tok "lock negative control: 2ecf1cb's lock() ends the caller's loop after one try (the test sees it)" || tbad "lock negative control: 2ecf1cb's lib waited 3 times — the test cannot see the shared counter"; fi
 # the helper-down backoff judge on real and broken sequences (tests/judges/helper-down-backoff.py)
 o=$(python3 "$REPO/tests/judges/helper-down-backoff.py" "$REPO/scripts/node/prov-p2-254.sh" 2>&1) && tok "helper-down backoff judge: 7 sequences judged as expected" || tbad "helper-down backoff judge: $(grep FAIL <<< "$o" | head -3 | tr '\n' '|')"
 # the H3 review fixes' negative controls: pr_release / pxok / L71 flip end line / bond_verdict (tests/judges/h3-judges.sh)

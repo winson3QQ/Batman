@@ -94,9 +94,11 @@ sc_check() {	# prints "FAIL ..." lines; rc 0 = ok
 }
 
 # ---- lock: busybox flock has no -w -> bounded retries of -n (E38). fd 9 = $BT/lock
+# its own counter (_lk): a shared `n` ended cmd_dm_fire's 20-try wait after one try — 30 s, not 10 min (04 2026-11-03,
+# test-h4-undo H-expire; scripts/test-dv-ble-254.sh lockt)
 lock() {	# $1 = seconds to wait (default 30)
 	exec 9>>"$BT/lock" || die "cannot open $BT/lock"
-	n=0; while ! flock -n 9; do n=$((n + 1)); [ $n -ge "${1:-30}" ] && return 1; sleep 1; done; return 0
+	_lk=0; while ! flock -n 9; do _lk=$((_lk + 1)); [ $_lk -ge "${1:-30}" ] && return 1; sleep 1; done; return 0
 }
 unlock() { flock -u 9 2>/dev/null; exec 9>&-; }
 
@@ -127,9 +129,9 @@ dm_rec_alive() {	# $1 file -> rc 0 if the recorded group is alive in this boot
 pg_kill() {	# $1 pgid: TERM the whole group (busybox kill takes no "--", E25), then wait <= 10 s for every member
 	isint "$1" || return 1
 	kill -TERM "-$1" 2>/dev/null
-	n=0; while [ $n -lt 10 ]; do
+	_pk=0; while [ $_pk -lt 10 ]; do	# its own counter, as lock()
 		alive=0; for s in /proc/[0-9]*/stat; do [ "$(cut -d' ' -f5 "$s" 2>/dev/null)" = "$1" ] && alive=1 && break; done
-		[ $alive = 0 ] && return 0; n=$((n + 1)); sleep 1
+		[ $alive = 0 ] && return 0; _pk=$((_pk + 1)); sleep 1
 	done; return 1
 }
 dm_cancel_rec() {	# $1 file: kill the group it records (if it is a deadman of this boot); remove the record
