@@ -332,7 +332,12 @@ def main():
     e.add_argument("--hold", type=int, default=230)
     a = ap.parse_args()
     if a.selftest:
-        return selftest()
+        # the vectors layer (selftest.py: peer_core / owner byte for byte against gen.py) first — it had no caller
+        # before 2026-11-03, so nothing ran it — then the BLE transport against the fake bridge
+        import selftest as vectors_selftest
+        r1 = vectors_selftest.run()
+        r2 = selftest()
+        return 1 if (r1 or r2) else 0
     if a.cmd == "eh9":
         return cmd_eh9(a)
     ap.print_help()

@@ -43,7 +43,7 @@ sbx() {	# $1 rootfs, $2 mode (strict | keep-old | keep-cwd | keep-fd), $3.. comm
 			unshare --user --map-root-user --mount --pid --fork --net --uts --ipc \
 			bash -c "$(declare -f inner); inner \"\$@\"" inner "$SR" strict "$@" </dev/null 7>>"$FDCANARY"
 	else
-		( for fd in $(ls /proc/$BASHPID/fd); do [ "$fd" -gt 2 ] && eval "exec $fd>&-"; done
+		( for fd in /proc/$BASHPID/fd/*; do fd=${fd##*/}; [ "$fd" -gt 2 ] && eval "exec $fd>&-"; done
 		  exec env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/nonexistent \
 			unshare --user --map-root-user --mount --pid --fork --net --uts --ipc \
 			bash -c "$(declare -f inner); inner \"\$@\"" inner "$SR" "$MODE" "$@" </dev/null )

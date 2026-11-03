@@ -61,6 +61,17 @@ jobs:
         run: python -m pip install --require-hashes --no-deps -r tests/vectors/219-protocol/requirements.txt
       - name: verify.py >= MIN_CHECKS, gen.py reproduces vectors.json, tampered vector rejected
         run: PY=python MIN_CHECKS=195 bash tests/vectors/219-protocol/ci-check.sh
+      - name: "#254 H4 host tools selftests (254-h4 §1.2) — peer (vectors + fake bridge), netobj, nodecert, blebridge, httprelay, benchstore"
+        run: |
+          cd tests/tools/peer
+          python peer.py --selftest
+          python netobj.py --selftest
+          python nodecert.py --selftest
+          python blebridge.py --selftest
+          python httprelay.py --selftest
+          python benchstore.py --selftest
+      - name: "#254 H4 offline judges (254-h4 §16) — cap / hs / secrets, each with its bad-log cases"
+        run: python tests/judges/h4/test-judges.py
 
   prov-p1:
     runs-on: ubuntu-latest
