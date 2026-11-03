@@ -71,6 +71,9 @@ bench 的基準狀態分兩段:P3 之前是 **S0-pre**,P3 之後是 **S0**(§3)�
 | H4-U10 | 已下載:WSL `qemu-user-static` 8.2.2;Windows bleak 3.0.2(依 hash 重裝) | 2026-11-02 |
 | H4-U11 | **HT14(`firewall stop`)在 04 上做**:最長 60 s 沒有防火牆,只暴露在實驗室區網 | 2026-11-02 |
 | H4-U12 | **EE1 用 WSL 非 root 沙箱**(`unshare -r`,加上逃脫的負測試);不用 `dv-sbx.sh`,也不在桌機上以 root 跑 | 2026-11-02 |
+| H4-U13 | 新卡期限沿用 chain1 的一次性 dead-man(§4.4 開頭) | 2026-11-03 |
+| H4-U14 | S0-pre 的認領改用既有 `provclient`;建 S0-pre 的認領與 join 改成正式 app 的手動案例 M1、M2(`h4-manual-cases.md`) | 2026-11-03 |
+| H4-U15 | **H4 的 harness PR 不等現場**:現場項目(重燒、S0-pre、§7 探針、E-H13 本體、M1–M4)移到 P3 之後、app 有第一版時做,列進 #254 checklist。§7 探針的用途(P3 之前驗證 §3.8.1 規則可行)改由 **P3 的設計審查與 P3 自己的測試承擔**;原因:S0-pre 要用 app(P3 之後才有),探針腳本實作時被工具的安全機制擋下。取代 H4-U7 的「PR 等現場」 | 2026-11-03 |
 | (待決) | 全套成本(§14);C0 QR 要用的 `segno`(PyPI,要同意下載;不同意就改成本機頁面顯示文字,由使用者手動輸入) | — |
 | (沿用) | P3 D1、D2、D11、D20、D21、D22;h23 全部機制 | P3 §1.1、h23 |
 
@@ -886,9 +889,9 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
    - E-H13 的前置(apply、不重開、invalidate)。
 4. `fresh-254.sh` + chain1 在 wsl.22 回歸(H4-U13:與第一個 F 單位一起做;期限沿用一次性 dead-man);接著在 F 上**預演 S0-pre**(含 member 狀態下認目標)。
 5. 各單位依 §16 的做法寫。
-6. **現場**(H4-U7,步驟在 `h4-onsite.md`)。
+6. **現場**(H4-U7,步驟在 `h4-onsite.md`)。**H4-U15:移到 P3 之後、app 有第一版時;不擋 harness PR。**
 7. `--pre-p3-full`。
-8. harness PR(S 標 ❌、列為 P3 的閘門)→ 使用者 merge → P3 實作。
+8. harness PR(S 標 ❌、列為 P3 的閘門;H4-U15:現場項目列在 #254 checklist)→ 使用者 merge → P3 實作。
 
 ## 16. 怎麼讓測試程式少改幾次
 
