@@ -385,6 +385,13 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 
 ### 4.4 新卡 lib:`fresh-254.sh`
 
+> **2026-11-03 使用者決定(H4-U13):期限機制沿用 chain1 現有、已驗證的一次性 dead-man,不實作下面「兩個檔」的版本。**
+> - 理由:新寫的期限迴圈在實作時被工具的安全機制擋下;現有機制已在 04 上驗證過(chain1 59 / 0)。
+> - **缺口(列進 #254 checklist)**:主機死掉、而且 B 每次開機不到 25 分鐘就重開時,一次性 dead-man 可能永遠不觸發。這時 04 停在 F 的狀態,要人照 `restore_all` 的步驟處理(實驗室在身邊)。其他情況(主機死、B 正常開著)照舊由 dead-man 帶回 A。
+> - **之後的改進想法(不排程)**:讓 B 在不需要 commit 的步驟保持 tryboot 試開狀態,縮短沒有保險的窗口。
+> - `fresh-254.sh` 的抽出(chain1 步驟 1–6 與 9)延到寫第一個 F 單位時做,當場跑 chain1 回歸;在那之前沒有使用者。
+> - 下面的「期限」與「回歸」中 dead-man 相關的幾條,以這段為準。
+
 - **範圍**:chain1 的步驟 1–6 與 9。`image` 參數可以是受測 rc,也可以是 wsl.22。restore 之後 B = A 的版本(brewrite),A 做 overlay-restore + compare。新卡由臨時擁有者 HF 認領;它的 DAC、`sn`、eth MAC 都從節點讀進 `run/`(§3.1 第 2–3 步)。
 - **期限:兩個檔、各一個寫者**(v4-A m2、v4-B m8):
   - p6 `fresh-grant`:**只有主機寫**(tmp + rename),內容 `<run> <grant_seq> <預算秒>`。每次續期 `grant_seq` + 1,預算 = 30 分。
@@ -877,7 +884,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
    - E-H15;
    - `test-h4-undo.sh`;
    - E-H13 的前置(apply、不重開、invalidate)。
-4. `fresh-254.sh` + chain1 在 wsl.22 回歸;接著在 F 上**預演 S0-pre**(含 member 狀態下認目標)。
+4. `fresh-254.sh` + chain1 在 wsl.22 回歸(H4-U13:與第一個 F 單位一起做;期限沿用一次性 dead-man);接著在 F 上**預演 S0-pre**(含 member 狀態下認目標)。
 5. 各單位依 §16 的做法寫。
 6. **現場**(H4-U7,步驟在 `h4-onsite.md`)。
 7. `--pre-p3-full`。
