@@ -12,19 +12,19 @@ PR_UNIT=prov-eh15-254
 . "$(dirname "$0")/prov-254.sh"
 trap '[ "$PR_BEGUN" = 1 ] && { pe down >/dev/null 2>&1; pr_release; }' EXIT
 pe(){ QT=${QT:-200} q "RUN_ID=$RUN sh $PRD/prov-ethsim-254.sh $*"; }
-MAC=02:48:34:00:00:01; N=$(echo "$RUN" | cksum | awk '{print $1 % 200 + 20}')
+SIMMAC=02:48:34:00:00:01; N=$(echo "$RUN" | cksum | awk '{print $1 % 200 + 20}')
 
 pr_lock
 o=$(pr_p9); echo "$o"; grep -q '^FAIL' <<< "$o" && { no "preconditions"; pr_unlock; exit 1; }
 o=$(pr_acquire 1500) || { echo "$o"; pr_unlock; exit 1; }; PR_BEGUN=1
 BR=$(q "ip -4 -o addr show br-ahwlan | awk '{sub(\"/.*\",\"\",\$4); print \$4; exit}'"); say "br-ahwlan $BR, netns IP 10.41.250.$N"
 
-o=$(pe up "$N" mac=$MAC); say "$o"; grep -q '^UP h4x' <<< "$o" || { no "ethsim up: $o"; exit 1; }
+o=$(pe up "$N" mac=$SIMMAC); say "$o"; grep -q '^UP h4x' <<< "$o" || { no "ethsim up: $o"; exit 1; }
 o=$(pl undo-pending); grep -q 'link-del h4v0' <<< "$o" && grep -q 'netns-del h4x' <<< "$o" && ok "h4v0 / h4x registered in the undo journal before use" || no "undo journal: $o"
 o=$(q "ls /sys/class/net/br-ahwlan/brif/"); grep -qx h4v0 <<< "$o" && ok "h4v0 is a port of br-ahwlan" || no "brif: $(echo $o)"
 o=$(q "ip netns exec h4x ping -c 2 -W 2 $BR >/dev/null && echo PING-OK"); grep -q PING-OK <<< "$o" && ok "netns -> $BR reachable" || no "netns ping $BR"
 t=0; while [ $t -lt 12 ]; do o=$(pe state | grep 'tl h4v1'); case "$o" in *": "[1-9]*) break ;; esac; sleep 5; t=$((t + 1)); done
-say "$o"; case "$o" in *": "[1-9]*) ok "mesh: the netns MAC is in batctl tl (announced into the mesh)" ;; *) no "mesh: $MAC not in batctl tl after 60 s" ;; esac
+say "$o"; case "$o" in *": "[1-9]*) ok "mesh: the netns MAC is in batctl tl (announced into the mesh)" ;; *) no "mesh: $SIMMAC not in batctl tl after 60 s" ;; esac
 
 # exit codes of uclient-fetch: served (:80), refused (:8095 pre-P3: nothing listens), no answer (an absent host)
 o80=$(pe get h4x "http://$BR/"); o95=$(pe get h4x "http://$BR:8095/"); ono=$(pe get h4x "http://10.41.250.$((N + 1)):8095/")
@@ -38,7 +38,7 @@ k=$(sed -n 's/.*RSS running=\([0-9]*\).*/\1/p' <<< "$o"); [ "${k:-0}" -ge 110 ] 
 
 # 50 conn/s for 60 s to the br-ahwlan IP:8095, tcpdump on br-ahwlan
 pe cap-start fl br-ahwlan "10.41.250.$N" >/dev/null
-o=$(QT=300 pe flood h4x 50 60 120 "http://$BR:8095/"); say "$(echo $o)"
+o=$(QT=600 pe flood h4x 50 60 120 "http://$BR:8095/"); say "$(echo $o)"
 c=$(pe cap-stop fl); say "$c"
 sent=$(sed -n 's/.*launched=\([0-9]*\).*/\1/p' <<< "$o"); syn=$(sed -n 's/.* syn=\([0-9]*\).*/\1/p' <<< "$c"); maxr=$(sed -n 's/.*maxrunning=\([0-9]*\).*/\1/p' <<< "$o")
 [ "${sent:-0}" -ge 2700 ] && ok "flood: $sent launched in 60 s (target 3000), max running $maxr <= 120" || no "flood: only ${sent:-0} launched (rate not reached: honest limit)"
@@ -59,6 +59,6 @@ o=$(pe get h4y "http://$BR/"); [ "$o" = "$o80" ] && ok "docker0 path to $BR:80: 
 # teardown through the undo journal (host mode, as pr_release does), then nothing left
 o=$(pe down); say "$(echo $o)"; grep -q 'DOWN clean' <<< "$o" || no "ethsim down: $o"
 pr_release; PR_BEGUN=0
-o=$(qr 'ls /sys/class/net | grep -E "^(h4|phy9h4)"; ip netns list | grep "^h4"; ls /tmp/run/batman-dv/undo /tmp/run/batman-dv/ethsim 2>/dev/null; cat /sys/class/net/docker0/operstate')
+o=$(qr 'ls /sys/class/net | grep -E "^(h4|phy9h4)"; ip netns list | grep "^h4"; ls -A /tmp/run/batman-dv/undo/ /tmp/run/batman-dv/ethsim/ 2>/dev/null | grep -v -e "^$" -e ":$"; pidof uclient-fetch tcpdump; cat /sys/class/net/docker0/operstate')
 say "after: $(echo $o)"; [ "$(echo $o)" = down ] && ok "nothing of ethsim left; docker0 back to down" || no "left after release: $(echo $o)"
 say "fails=$fails invalid=$invalid"; [ "$fails" = 0 ] && echo "E-H15 PASS" || echo "E-H15 FAIL"

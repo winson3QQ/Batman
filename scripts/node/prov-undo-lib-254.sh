@@ -54,7 +54,7 @@ u_name_ok() { case "$1" in ""|*[!$2]*) return 1 ;; esac; return 0; }	# <s> <brac
 uvalid() {	# <run> <action> [args...]
 	_vr=$1; _va=$2; shift 2
 	case "$_va" in
-	fw-start|bt-start|p5-save) [ $# = 0 ] ;;
+	fw-start|bt-start|p5-save|rm-shutdown-reason) [ $# = 0 ] ;;
 	uci-revert) [ $# = 1 ] && u_name_ok "$1" a-z_ ;;
 	uci-restore) [ $# = 2 ] && u_name_ok "$1" a-z_ && u_name_ok "${2##*.}" 0-9 \
 		&& [ "$2" = "$UJP/$_vr/uci.$1.${2##*.}" ] && file_ok "$2" ;;
@@ -133,6 +133,8 @@ uact() {	# <run> <mode> <action> [args...]   (the caller runs it in a subshell w
 		pidof bluetoothd >/dev/null ;;
 	p5-save) batman-config-save --save >/dev/null 2>&1; batman-config-save --check >/dev/null 2>&1 ;;
 	rm-file) rm -f "$1"; [ ! -e "$1" ] ;;
+	rm-shutdown-reason)	# the trial label `batman-slot apply` leaves in the run dir (E-H13 pre-step: no reboot follows)
+		. /usr/lib/batman/rundir.sh || return 1; rm -f "$RUNDIR/shutdown.reason"; [ ! -e "$RUNDIR/shutdown.reason" ] ;;
 	pending-del) rm -f "$U_PENDING"; [ ! -e "$U_PENDING" ] ;;
 	test-count)	# test-h4-undo.sh only: count each execution; "stall" hangs the HOST executor (no lim); "fail" fails;
 			# "slow" takes 90 s in host mode (the lease runs out while the host executor works)

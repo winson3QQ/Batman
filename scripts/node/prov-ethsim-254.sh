@@ -89,24 +89,28 @@ flood)
 	rdir; rc=$ER/flood.rc; : > "$rc"
 	# the loop runs inside the netns (one ip netns exec); each wget in a subshell that appends its rc (O_APPEND)
 	inns "$1" sh -c '
-		rate=$1 secs=$2 cap=$3 url=$4 rc=$5; launched=0 skipped=0 maxc=0 s=0
+		rate=$1 secs=$2 cap=$3 url=$4 rc=$5; launched=0 skipped=0 maxc=0 s=0 t0=$(date +%s)
 		while [ $s -lt $secs ]; do
-			i=0; while [ $i -lt $rate ]; do
-				cur=$(pidof uclient-fetch | wc -w); [ $cur -gt $maxc ] && maxc=$cur
-				if [ $cur -ge $cap ]; then skipped=$((skipped + 1)); else
-					( wget -q -T 2 -O /dev/null "$url" >/dev/null 2>&1; echo $? >> "$rc" ) 9>&- &
-					launched=$((launched + 1)); fi
+			# once a second (254-h4 §4.5 "每秒斷言"): the running count, then at most cap - running launches
+			cur=$(pidof uclient-fetch | wc -w); [ $cur -gt $maxc ] && maxc=$cur
+			n=$((cap - cur)); [ $n -gt $rate ] && n=$rate; [ $n -lt 0 ] && n=0; skipped=$((skipped + rate - n))
+			i=0; while [ $i -lt $n ]; do
+				( wget -q -T 2 -O /dev/null "$url" >/dev/null 2>&1; echo $? >> "$rc" ) 9>&- &
 				i=$((i + 1))
-			done
+			done; launched=$((launched + n))
 			sleep 1; s=$((s + 1))
 		done
-		wait
-		echo "FLOOD launched=$launched skipped=$skipped maxrunning=$maxc cap=$cap secs=$secs rate=$rate"' sh "$2" "$3" "$4" "$5" "$rc"
+		t1=$(date +%s); wait
+		echo "FLOOD launched=$launched skipped=$skipped maxrunning=$maxc cap=$cap secs=$secs rate=$rate wall=$((t1 - t0))"' sh "$2" "$3" "$4" "$5" "$rc"
 	echo "FLOOD rc: $(sort "$rc" | uniq -c | awk '{printf "%s=%s ", $2, $1}')done=$(wc -l < "$rc")"
 	;;
 rss)
 	[ $# = 3 ] || die "usage: rss <ns> <n> <url>"; isint "$2" && [ "$2" -le 400 ] || die "n <= 400"; urlok "$3"
 	ma0=$(awk '/^MemAvailable/{print $2}' /proc/meminfo)
+	# the target must hang (not fail fast): a static neighbour to a MAC nobody has, inside the netns (gone with it)
+	h=${3#http://}; h=${h%%[:/]*}; case "$h" in *[!0-9.]*) die "rss: the url host must be an IPv4 address" ;; esac
+	dv=h4v1; [ "$1" = h4y ] && dv=h4d1
+	ip netns exec "$1" ip neigh replace "$h" lladdr 02:48:34:00:00:fe dev "$dv" nud permanent || die "rss: static neighbour"
 	inns "$1" sh -c 'i=0; while [ $i -lt $1 ]; do wget -q -T 2 -O /dev/null "$2" >/dev/null 2>&1 & i=$((i + 1)); done; sleep 1
 		t=0; k=0; for p in $(pidof uclient-fetch); do r=$(awk "/^VmRSS/{print \$2}" /proc/$p/status 2>/dev/null); [ -n "$r" ] && { t=$((t + r)); k=$((k + 1)); }; done
 		echo "RSS running=$k sum_kB=$t per_kB=$([ $k -gt 0 ] && echo $((t / k)) || echo -) memavail_during_kB=$(awk "/^MemAvailable/{print \$2}" /proc/meminfo)"
