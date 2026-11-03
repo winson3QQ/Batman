@@ -6,7 +6,10 @@
 #   bash scripts/test-h4-offline-254.sh        -> "N passed, M failed", rc 1 on any FAIL
 set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-PY=${H4_PY:-$HOME/.batman-dv/peer-venv/bin/python}
+# the venv lives in the repo owner's home: daily-validation's WSL delegation runs as the distro's default user (root,
+# HOME=/root; 2026-11-03 full run: "no python ... at /root/.batman-dv/...")
+OWNER_HOME=$(getent passwd "$(stat -c %U "$REPO")" | cut -d: -f6)
+PY=${H4_PY:-${OWNER_HOME:-$HOME}/.batman-dv/peer-venv/bin/python}
 P=0; F=0
 tok() { echo "ok   $1"; P=$((P + 1)); }
 tbad() { echo "FAIL $1"; F=$((F + 1)); }

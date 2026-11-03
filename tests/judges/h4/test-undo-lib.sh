@@ -9,6 +9,9 @@ set -u
 REPO=$(cd "$(dirname "$0")/../../.." && pwd)
 BB=$(command -v busybox) || { echo "FAIL no busybox"; exit 1; }
 if [ "${UNDO_T_INNER:-0}" != 1 ]; then
+	# real root (daily-validation's WSL delegation): a private mount namespace is enough, and a user namespace would
+	# lose DAC override on the repo owner's 0750 home ("Permission denied", 2026-11-03 full run)
+	[ "$(id -u)" = 0 ] && exec unshare --mount --propagation private env UNDO_T_INNER=1 bash "$0" "$@"
 	exec unshare --user --map-root-user --mount env UNDO_T_INNER=1 bash "$0" "$@"
 fi
 mount -t tmpfs -o mode=755 none /tmp 2>/dev/null; mkdir -p /tmp/run; mount -t tmpfs -o mode=755 none /opt || { echo "FAIL tmpfs over /opt"; exit 1; }
