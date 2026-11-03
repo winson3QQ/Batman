@@ -32,9 +32,9 @@ NORM=/opt/batdata/state/dv-prov-normalising
 UPH=/overlay/upper/usr/bin/batman-provhelper   # read only (cmp); never written or removed here
 
 cmd_stage_check() {
-	for t in "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$DIR/prov-undo-lib-254.sh" "$SELF"; do file_ok "$t" || die "$t is not a root regular file with one link"; done
+	for t in "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$DIR/prov-undo-lib-254.sh" "$DIR/prov-ethsim-254.sh" "$SELF"; do file_ok "$t" || die "$t is not a root regular file with one link"; done
 	dir_ok "$DIR" drwx------ || die "$DIR is not a root 0700 directory"
-	sha256sum "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$DIR/prov-undo-lib-254.sh" "$SELF" | sed "s#$DIR/##"
+	sha256sum "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$DIR/prov-undo-lib-254.sh" "$DIR/prov-ethsim-254.sh" "$SELF" | sed "s#$DIR/##"
 }
 role_fire_restore() {	# $1 run (or "recover")
 	# a cut-off judge first: it could kill provd / stop bluetoothd / set bondable after anything below (round-2 B m1)

@@ -107,7 +107,10 @@ feed/batman-provision/files/usr/libexec/batman-addr-defer	check /var/lock and	lo
 feed/batman-prov/src/provstore/provstore.go	// /tmp/run/batman \(root-only	doc comment of the Paths struct naming the run dir (the definition itself is the quoted literal above)
 # --- #254 H2+H3 (254-h23 §2.2): the prov_test killpoint dir /tmp/run/batman-prov-test (root 0700 under root-only /tmp/run) ---
 scripts/node/prov-wbox-254.sh	^KD=/tmp/run/batman-prov-test; 	the killpoint dir: mkdir -m 700 WITHOUT -p; an existing one must be a root 0700 directory, not a symlink (dir_ok) or the harness refuses; the helper re-checks dir + file (owner, mode, one link, O_NOFOLLOW) before reading (seam.Arm)
-scripts/node/prov-lease-254.sh	rm -rf /tmp/run/batman-prov-test$	prov deadman: removes the root-only killpoint dir (rm -rf removes a symlink itself, never its target)
+scripts/node/prov-undo-lib-254.sh	^UKD=/tmp/run/batman-prov-test$	H4 undo segment 1 (254-h4 §5.7): the root-only killpoint / fault dir, only tested for existence and removed (rm -rf removes a symlink itself, never its target)
+scripts/node/prov-undo-lib-254.sh	while \[ "\$_p" != /tmp/run \]	rm-file path check: walks up to the root-only /tmp/run refusing any symlink component (a check, never a write)
+scripts/node/prov-undo-lib-254.sh	for _f in /tmp/batman-fault\.\*; do	H4 undo segment 1: removes the shell fault flags (254-h4 §5.4; honoured only via opf); rm -f of a symlink removes the link, never its target
+scripts/node/prov-undo-lib-254.sh	/proc/\$\$/stat	procfs of the shell itself (its pgid: never kill its own group), not a file name in /tmp
 scripts/dv/prov-254.sh	/tmp/run/batman-prov-test([^-a-z]|$)	host side: removes the root-only killpoint dir (rm -rf, never follows a top-level symlink) and tests for its existence (P9); nothing reads a decision from it
 scripts/dv/prov-*-254.sh	/tmp/run/batman-prov-test([^-a-z]|$)	unit scripts: same as prov-254.sh (remove / existence test only)
 scripts/node/prov-p9-254.sh	^KPD=\$P9R/tmp/run/batman-prov-test$	preflight P9: the root-only killpoint dir, only tested for existence (read-only judge; P9R is empty on a node)
@@ -137,3 +140,5 @@ feed/batman-prov/src/cmd/batman-provd/testenv_provtest.go	/tmp/run/batman-provd?
 feed/batman-prov/files/batman-provd*.init	/tmp/run/dbus /tmp/run/batman-prov$	the jail's read-only DIRECTORY mounts of the system bus (dbus-daemon, root 0755) and the helper socket (helper, root:provd 0750) under root-only /tmp/run (254-p2-impl §4.5, F-P29)
 feed/batman-prov/files/batman-provd-test.init	^[TE]DIR=/tmp/run/batman-provd?-test$	prov_test init only: TDIR is made provd:provd 0700 here as root (whatever stands there is replaced: /tmp/run is root-only); EDIR/provd.env is read only when root 0700 / root 0600 one link, never a symlink
 scripts/node/ble-lib-254.sh	pidof btmon.*/tmp/run/batman-dvpc\.\*/btmon	radio_restore stops a btmon whose /proc exe is the harness copy in a provclient dir: /tmp/run is root 0755 (procd), so only root can create /tmp/run/batman-dvpc.<run>; the match picks what to SIGINT, it decides nothing else
+# --- #254 H4: the EEPROM sandbox runs in WSL (rootless user + mount namespace), never on a node ---
+scripts/dv/eeprom-sbx-254.sh	("\$SR/tmp"|/proc\|/tmp\||whitelist \(/ /proc /tmp)	the sandbox's own tmpfs at $SR/tmp inside its private mount namespace, and the mountinfo whitelist text; no node path

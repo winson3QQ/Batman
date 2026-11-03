@@ -68,7 +68,7 @@ uvalid() {	# <run> <action> [args...]
 	kill-pg) [ $# = 2 ] && isint "$1" && [ "$1" -gt 1 ] && u_name_ok "$2" a-z0-9- ;;
 	pending-del) [ $# = 0 ] && [ -n "$U_PENDING" ] ;;
 	ap-restore) false ;;	# P3 (key 20): C0 written back through halow-setkey; refused before P3
-	test-count) [ $# -ge 1 ] && [ $# -le 2 ] && u_name_ok "$1" a-z0-9- && { [ $# = 1 ] || [ "$2" = stall ] || [ "$2" = fail ]; } ;;
+	test-count) [ $# -ge 1 ] && [ $# -le 2 ] && u_name_ok "$1" a-z0-9- && { [ $# = 1 ] || [ "$2" = stall ] || [ "$2" = fail ] || [ "$2" = slow ]; } ;;
 	*) false ;;
 	esac
 }
@@ -103,7 +103,7 @@ umark_done() {	# <journal> <id>
 }
 
 # ---- actions (each idempotent; rc 0 = the state is back and checked) ------------------------------------------------
-ubudget() { case "$1" in fw-start) echo 120 ;; p5-save) echo 180 ;; svc-start|svc-enable|bt-start) echo 60 ;; uci-*) echo 30 ;; test-count) echo 15 ;; *) echo 20 ;; esac; }
+ubudget() { case "$1" in fw-start) echo 120 ;; p5-save) echo 180 ;; svc-start|svc-enable|bt-start) echo 60 ;; uci-*) echo 30 ;; test-count) echo 120 ;; *) echo 20 ;; esac; }
 umaster() { basename "$(readlink "/sys/class/net/$1/master" 2>/dev/null)" 2>/dev/null; }
 uns_has() { ip netns list 2>/dev/null | awk '{print $1}' | grep -qx "$1"; }
 uact() {	# <run> <mode> <action> [args...]   (the caller runs it in a subshell without fd 9)
@@ -134,10 +134,12 @@ uact() {	# <run> <mode> <action> [args...]   (the caller runs it in a subshell w
 	p5-save) batman-config-save --save >/dev/null 2>&1; batman-config-save --check >/dev/null 2>&1 ;;
 	rm-file) rm -f "$1"; [ ! -e "$1" ] ;;
 	pending-del) rm -f "$U_PENDING"; [ ! -e "$U_PENDING" ] ;;
-	test-count)	# test-h4-undo.sh only: count each execution; "stall" hangs the HOST executor (no lim); "fail" fails
+	test-count)	# test-h4-undo.sh only: count each execution; "stall" hangs the HOST executor (no lim); "fail" fails;
+			# "slow" takes 90 s in host mode (the lease runs out while the host executor works)
 		[ -d "$UCNT" ] || mkdir -m 700 "$UCNT"; ( umask 077; echo "$_xm $1" >> "$UCNT/$_xr.count" )
 		[ "${2:-}" = fail ] && return 1
 		[ "${2:-}" = stall ] && [ "$_xm" = host ] && sleep 1500
+		[ "${2:-}" = slow ] && [ "$_xm" = host ] && sleep 90
 		return 0 ;;
 	*) return 1 ;;
 	esac
@@ -228,9 +230,8 @@ undo_run() {	# <run> <mode> -> rc 0 = nothing left; 1 = something left / failed 
 	if [ -e "$BT/restoring.$_ur" ]; then
 		ulog "$_ur" "restoring marker: segment 2 left to pr_restore"
 	else
-		_slot=$(uslot); _res=$UJT.res.$$
+		_slot=$(uslot); _res=$(mktemp "$UJT.res.XXXXXX") || { ulog "$_ur" "FAIL mktemp"; return 1; }
 		for _j in $(ujournals "$_ur"); do awk -v j="$_j" '$2=="todo" && $4!="kill-pg" {print $1, j}' "$_j"; done | sort -rn > "$_res.ids"
-		: > "$_res"
 		while read -r _id _j; do
 			set -- $(awk -v id="$_id" '$1==id' "$_j"); _b=$3; shift 3
 			uvalid "$_ur" "$@" || { ulog "$_ur" "CRIT line $_id refused: $*"; echo CRIT >> "$_res"; continue; }
