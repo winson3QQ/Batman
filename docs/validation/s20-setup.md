@@ -17,11 +17,11 @@
 pkg update -y && pkg install -y openssh python
 ```
 
-放進主機專用的公鑰。公鑰由 `phone-254.sh keygen` 產生並印出(私鑰只在 WSL 的 `~/.ssh/batman_phone_ed25519`);
+放進主機專用的公鑰(主機上 WSL 的 `~/.ssh/batman_phone_ed25519.pub`;私鑰只在主機);
 前面的 `no-...` 限制這把鑰匙只能登入,不能轉送連線:
 
 ```
-mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo 'no-port-forwarding,no-agent-forwarding,no-X11-forwarding <phone-254.sh 印出的公鑰>' > ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo 'no-port-forwarding,no-agent-forwarding,no-X11-forwarding <主機上 batman_phone_ed25519.pub 的內容>' > ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
 ```
 
 只准用鑰匙登入:密碼登入與鍵盤互動登入都關掉。
@@ -62,7 +62,7 @@ sshd -t && kill $(cat $PREFIX/var/run/sshd.pid); sshd
 
 ## B. 到現場才做(步驟在 `docs/validation/h4-onsite.md`)
 - 行動數據關閉;家用 Wi-Fi 刪除或關掉自動連線。
-- 連上 04 的測試熱點 C0:在主機上打開 `phone-254.sh c0-card` 產生的本機 QR 頁面,用手機掃描。密碼不會出現在對話、log 或指令列。
+- 連上 04 的測試熱點 C0:照 `h4-manual-cases.md` 的 **M4** 手動輸入。密碼由使用者保管,不經過對話、log 或指令列。
 - 存好第二個測試網路 ALT。
 - 兩個網路的「MAC 位址類型」都改成「**手機 MAC**」(進階設定)。
 - 手機接上充電器,放在 04 旁邊。

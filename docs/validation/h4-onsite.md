@@ -26,7 +26,8 @@
 
 ## 4. 手機設定(使用者,B 段)
 - `docs/validation/s20-setup.md` 的 B 段;C0 用主機上的本機 QR 頁面加入。
-- **檢查點**:`phone_preflight` 成立(手機在 C0 上、relay 可用)。
+- C0 由使用者在手機上手動輸入,步驟與檢查見 `docs/validation/h4-manual-cases.md` 的 **M4**。
+- **檢查點**:M4 的 a–d 都通過。
 
 ## 5. §7 探針在 04(harness,lease 底下)
 - 設計 §7 的 7 步:基準 → listener → 載入規則 → 正向 → 負向 → 鑑別力 → undo。
