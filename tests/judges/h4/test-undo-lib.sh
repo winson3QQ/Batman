@@ -14,7 +14,7 @@ if [ "${UNDO_T_INNER:-0}" != 1 ]; then
 	[ "$(id -u)" = 0 ] && exec unshare --mount --propagation private env UNDO_T_INNER=1 bash "$0" "$@"
 	exec unshare --user --map-root-user --mount env UNDO_T_INNER=1 bash "$0" "$@"
 fi
-mount -t tmpfs -o mode=755 none /tmp 2>/dev/null; mkdir -p /tmp/run; mount -t tmpfs -o mode=755 none /opt || { echo "FAIL tmpfs over /opt"; exit 1; }
+mount -t tmpfs -o mode=755 none /tmp || { echo "FAIL tmpfs over /tmp"; exit 1; }; mkdir -p /tmp/run; mount -t tmpfs -o mode=755 none /opt || { echo "FAIL tmpfs over /opt"; exit 1; }
 mkdir -p /opt/batdata/log /opt/batdata/state; chmod 755 /opt/batdata/log
 W=$(mktemp -d /tmp/ut.XXXXXX); mkdir "$W/bin"
 cat > "$W/bin/batman-slot" <<'X'

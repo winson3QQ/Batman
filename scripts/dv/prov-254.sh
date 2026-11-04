@@ -408,7 +408,7 @@ pr_release(){
 		# the run's undo journal, host mode (254-h4 §5.7): the lease covers the worst case first; a lease that is already
 		# gone leaves it to the deadman (its log: dv-undo-<run>.log)
 		if o=$(pl renew "${PR_UNDO_BUDGET:-1200}") && grep -q '^ARMED' <<< "$o"; then
-			o=$(QT=$(( ${PR_UNDO_BUDGET:-1200} + 60 )) pl undo); grep -q 'undo_run host end rc=0' <<< "$o" || no "undo: $(grep -E '^UNDO (FAIL|CRIT|NEEDS|left)' <<< "$o" | tr '
+			o=$(QT=$(( ${PR_UNDO_BUDGET:-1200} + 60 )) pl undo); grep -qx 'UNDO undo_run host end rc=0' <<< "$o" || no "undo: $(grep -E '^UNDO (FAIL|CRIT|NEEDS|left)' <<< "$o" | tr '
 ' '|')"
 		else no "lease gone before the undo — the deadman takes over: $(echo $o)"; fi
 		q "rm -rf /tmp/run/batman-prov-test $PCD; rm -f $PR_PAY"

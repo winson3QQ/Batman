@@ -54,7 +54,7 @@ grep -q '^rc=0$' <<< "$o" && grep -qE '^/dev/mmcblk0p4$' <<< "$o" && ok "stage-r
 f=$(qr "$VCGET"); [ "$((f))" = 0 ] && ok "tryboot flag 0 after stage-root (disarmed)" || no "tryboot flag after stage-root: [$f]"
 o=$(qr 'm=$(mktemp -d); mount -o ro /dev/mmcblk0p3 $m && { ls $m | grep -c "^BATMAN-BAD$"; umount $m; }; rmdir $m')
 [ "$o" = 1 ] && ok "B's boot FAT carries BATMAN-BAD" || no "BATMAN-BAD on B: [$o]"
-o=$(QT=200 pl undo); grep -q 'undo_run host end rc=0' <<< "$o" && ok "undo: shutdown.reason removed" || no "undo: $(echo $o)"
+o=$(QT=200 pl undo); grep -qx 'UNDO undo_run host end rc=0' <<< "$o" && ok "undo: shutdown.reason removed" || no "undo: $(echo $o)"
 q "rm -rf $E"
 
 # 5. back to S0: restore cycle, B = V again, finish

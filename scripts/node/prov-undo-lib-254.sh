@@ -152,7 +152,9 @@ useg1() {	# <run>; sets _s1=1 on a failed assertion
 	_r=$1; _hf=0; _pf=0
 	[ -e "$UKD/fault.helper" ] && _hf=1
 	{ [ -e "$UKD/fault.provd" ] || [ -e "$UKD/provd.env" ]; } && _pf=1
-	for _f in /tmp/batman-fault.*; do { [ -e "$_f" ] || [ -L "$_f" ]; } || continue; rm -f "$_f"; ulog "$_r" "seg1 rm $_f"; done
+	for _f in /tmp/batman-fault.*; do { [ -e "$_f" ] || [ -L "$_f" ]; } || continue; rm -f "$_f"
+		# /tmp is world-writable: a name with other characters is not echoed (it could forge an "end rc=0" line)
+		case "$_f" in *[!A-Za-z0-9._/-]*) _f="a fault flag (unsafe name, not printed)" ;; esac; ulog "$_r" "seg1 rm $_f"; done
 	if [ -e "$UKD" ] || [ -L "$UKD" ]; then rm -rf "$UKD"; ulog "$_r" "seg1 rm -rf $UKD (faults, killpoint, provd.env)"; fi
 	if [ -f "$DIR/prov-wbox-254.sh" ]; then
 		_o=$( (RUN_ID=$_r lim 180 sh "$DIR/prov-wbox-254.sh" unbind-all) 9>&- 2>&1 | tr '\n' ' ')

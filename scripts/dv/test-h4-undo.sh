@@ -79,7 +79,7 @@ cnt(){ qr "grep -c '$1' /tmp/run/batman-dv/undo-test/$RUN.count 2>/dev/null || t
 # ---- H-normal ----------------------------------------------------------------------------------------------------
 if want H-normal; then newrun H-normal; o=$(pr_acquire 300) || no "H-normal lease: $o"
 	pl undo-add test-count a >/dev/null; pl undo-add test-count b >/dev/null
-	o=$(QT=200 pl undo); grep -q 'undo_run host end rc=0' <<< "$o" || no "H-normal: host undo: $(echo $o)"
+	o=$(QT=200 pl undo); grep -qx 'UNDO undo_run host end rc=0' <<< "$o" || no "H-normal: host undo: $(echo $o)"
 	o=$(pl release); grep -q RELEASED <<< "$o" || no "H-normal: release: $o"
 	sleep 10; d=$(qr "grep -c 'run=$RUN prov deadman' /opt/batdata/log/ble-dm-254.log 2>/dev/null || true")
 	[ "$(cnt 'host a$')" = 1 ] && [ "$(cnt 'host b$')" = 1 ] && [ "$(cnt deadman)" = 0 ] && [ "${d:-0}" = 0 ] \
@@ -104,7 +104,7 @@ if want H-stuck; then newrun H-stuck; o=$(pr_acquire 60) || no "H-stuck lease: $
 	t=0; while [ $t -lt 240 ]; do qr "grep -q 'undo_run deadman end' /opt/batdata/log/dv-undo-$RUN.log 2>/dev/null" && break; sleep 10; t=$((t + 1)); done
 	wait $hp 2>/dev/null
 	u=$(ulog_); say "H-stuck undo log: $(grep -E 'host executor|done|FAIL|NEEDS|end' <<< "$u" | sed 's/^.*boot=[0-9a-f]* //' | tr '\n' '|')"
-	[ "$(cnt 'a$')" = 1 ] && [ "$(cnt 'b$')" = 2 ] && [ "$(cnt 'c$')" = 1 ] && grep -q 'host executor group .* gone' <<< "$u" && grep -q 'undo_run deadman end rc=0' <<< "$u" \
+	[ "$(cnt 'a$')" = 1 ] && [ "$(cnt 'b$')" = 2 ] && [ "$(cnt 'c$')" = 1 ] && grep -q 'host executor group .* gone' <<< "$u" && grep -q ' undo_run deadman end rc=0$' <<< "$u" \
 		&& ok "H-stuck: the deadman stopped the host executor and finished both segments (a, c once; b twice)" || no "H-stuck: $(qr "cat /tmp/run/batman-dv/undo-test/$RUN.count" | tr '\n' '|')"
 	newrun H-stuck-after; o=$(pr_acquire 60) && grep -q RELEASED <<< "$(pl release)" && ok "H-stuck: the lock is free afterwards (acquire + release)" || no "H-stuck: lease commands after: $o"
 fi

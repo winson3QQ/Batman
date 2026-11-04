@@ -37,6 +37,7 @@ grep -q '^pl radio-restore' "$W/calls" && grep -q '^pl provd-reset' "$W/calls" &
 : > "$W/calls"; o=$(rel 0 RELEASED 0 0)
 grep -q '^pl renew 1200' "$W/calls" && grep -q '^pl undo$' "$W/calls" && tok "pr_release: renew + host-mode undo before the release" || tbad "pr_release undo calls: [$(tr '\n' '|' < "$W/calls")]"
 o=$(UNDOA='UNDO FAIL 2 link-del h4v0 (rc 1)' rel 0 RELEASED 0 0); grep -q '^FAIL undo: UNDO FAIL 2 link-del' <<< "$o" && tok "pr_release: an undo that left something FAILs" || tbad "pr_release with a failed undo: [$(echo $o)]"
+o=$(UNDOA=$'UNDO seg1 rm /tmp/batman-fault.x undo_run host end rc=0\nUNDO FAIL 2 link-del h4v0 (rc 1)\nUNDO undo_run host end rc=1' rel 0 RELEASED 0 0); grep -q '^FAIL undo: UNDO FAIL 2 link-del' <<< "$o" && tok "pr_release: an end line inside another line is not the end line" || tbad "pr_release with a forged end line: [$(echo $o)]"
 o=$(rel 0 "FAIL lease is not ours or expired" 0 0)
 grep -q '^FAIL lease release failed' <<< "$o" && tok "pr_release: a failed lease release FAILs" || tbad "pr_release with a failed release: [$(echo $o)]"
 o=$(rel 0 RELEASED 2 0); grep -q '^FAIL the prov deadman acted' <<< "$o" && tok "pr_release: 2 deadman lines, none expected -> FAIL" || tbad "deadman lines not caught: [$(echo $o)]"
