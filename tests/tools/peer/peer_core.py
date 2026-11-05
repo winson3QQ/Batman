@@ -60,12 +60,22 @@ class Peer:
         c.start_handshake()
         self.send_msg(c.write_message(b""))
         self.msg2 = self.recv_msg()
+        # noiseprotocol 0.3.1 deletes handshake_state once the handshake completes: keep a reference to it so the
+        # remote static of THIS handshake (s_node) can be read afterwards (254-h4 §4.1; checked by nodecert.identify)
+        hs = c.noise_protocol.handshake_state
         try:
             payload = c.read_message(self.msg2)
         except Exception:  # noqa: BLE001 — an unopened msg2 is a result, not a crash
             return False
         self.noise, self.h, self.cert = c, c.get_handshake_hash(), cbor2.loads(payload)
+        self.rs = bytes(hs.rs.public_bytes)
         return True
+
+    def identify(self, pinned_dac_der):
+        """Raise nodecert.NotTarget unless this handshake reached the node whose DAC is pinned (254-h4 §4.2).
+        Call it after handshake() returned True and BEFORE any request."""
+        import nodecert
+        return nodecert.identify(self.cert, self.rs, pinned_dac_der)
 
     def envelope(self, typ, body=None, extra=None):
         self.id += 1

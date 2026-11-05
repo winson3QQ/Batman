@@ -7,7 +7,11 @@
 # its output goes to a file (offline pty test, 2026-10-29), so the harness also sends SIGHUP to the session's process
 # group (the worst case of the hangup reaching it): the plain child dies, the setsid + HUP-ignoring arm does not.
 # pgid = field 5 of our stat (comm is "sh": no spaces): the harness sends the worst-case hangup to this group
-me=$$; echo "LAUNCH pid=$me pgid=$(cut -d' ' -f5 "/proc/$me/stat")"
+# The line also goes to <run dir>/launch.<neg|arm> (the run dir is root 0700): the harness reads it from there — over
+# `ssh -tt` from Git Bash the pty output reached the host's file only when ssh ended, never while the session lived
+# (2026-11-04: two re-runs, "printed after 20 s: []" while the arm itself ran and passed)
+me=$$; l="LAUNCH pid=$me pgid=$(cut -d' ' -f5 "/proc/$me/stat")"; echo "$l"
+t=arm; [ "$1" = neg ] && t=neg; ( umask 077; echo "$l" > "$2/launch.$t.tmp" ) && mv "$2/launch.$t.tmp" "$2/launch.$t"
 if [ "$1" = neg ]; then
 	sh "$2/harm.sh" > "$2/harm.out" 2>&1 < /dev/null &
 else

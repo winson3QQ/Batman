@@ -79,10 +79,20 @@ rbarm(){
 	# §23.1: start over `ssh -tt`, 3 s later SIGHUP the session's process group (worst case of the hangup) and kill the
 	# client; returns the node uptime right after the kill in kt and the session's pgid in g
 	ptyrun(){
-		local lf sp; lf=$(mktemp -t rblaunch.XXXXXX)   # host side (TMPDIR)
+		local lf sp t=arm t0=$SECONDS; [ "$1" = neg ] && t=neg; lf=$(mktemp -t rblaunch.XXXXXX)   # host side (TMPDIR)
+		q "rm -f $RD/launch.$t"
 		timeout 60 ssh -tt $SSHO root@$NODE "sh $RD/rbarm-launch.sh $1 $RD; sleep 30" > "$lf" 2>&1 < /dev/null & sp=$!
-		sleep 3
-		g=$(tr -d '\r' < "$lf" | sed -n 's/.*LAUNCH pid=[0-9]* pgid=\([0-9]*\).*/\1/p'); rm -f "$lf"
+		# the pgid from the launcher's own file on the node: over `ssh -tt` from Git Bash the session's output reached $lf
+		# only when ssh ended (2026-11-04, two re-runs: "printed after 20 s: []" while the arm ran and passed). Then the
+		# 3 s of §23.1, counted from the client's start.
+		g=""
+		while [ $((SECONDS - t0)) -lt 20 ]; do
+			g=$(qr "cat $RD/launch.$t 2>/dev/null" | sed -n 's/.*LAUNCH pid=[0-9]* pgid=\([0-9]*\).*/\1/p'); [ -n "$g" ] && break
+			sleep 1
+		done
+		[ -n "$g" ] && [ $((SECONDS - t0)) -lt 3 ] && sleep $((3 - (SECONDS - t0)))
+		[ -n "$g" ] || say "launcher ($1): no launch.$t on the node after $((SECONDS - t0)) s; ssh printed [$(tr -d '\r' < "$lf" | head -3 | tr '\n' '|')]"
+		rm -f "$lf"
 		[ -n "$g" ] && q "kill -HUP -- -$g" >/dev/null
 		kill "$sp" 2>/dev/null; wait "$sp" 2>/dev/null
 		kt=$(qr 'cut -d" " -f1 /proc/uptime')
