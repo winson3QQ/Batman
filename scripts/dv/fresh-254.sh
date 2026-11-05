@@ -1,7 +1,7 @@
 #!/bin/bash
 # scripts/dv/fresh-254.sh — shared host-side helpers for a node that goes through fresh slots (#254 H4 §15 step 4):
 # sourced by chain1-254.sh and prov-bench-s0-254.sh. Moved here unchanged from chain1-254.sh v3 (its lines 31-92 and
-# 105-126 at be90b00); the comments keep chain1's review references. Git Bash.
+# 106-127 and 129-183 at be90b00); the comments keep chain1's review references. Git Bash.
 # The caller sets, BEFORE sourcing: NODE (the committed address) MAC MACW (eth MAC, colon / Windows dash form) MDNS
 # LABKEY, and before CALLING: V, FIP (set by find04), PCD TOOLS_WSL WSLK (pc), HOSTIP BASE RUN where used.
 # restore_all / abort also need: PAY PSHA BREWRITE REPO D PDIR DIRTY P1_0 and the flags STAGED SNAPPED RESTORING.
