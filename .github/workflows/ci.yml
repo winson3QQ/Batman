@@ -7,6 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  #test-dv-ble-254's negative controls read fixed commits (git show fbb14e4~1 / 2ecf1cb)
       - name: shellcheck (errors block; warnings informational)
         uses: ludeeus/action-shellcheck@master
         with:
