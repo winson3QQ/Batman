@@ -205,6 +205,7 @@ self_test() { local d p
 suite harness-preflight "dv-preflight negative controls: every misconfiguration FAILs for its own reason (stub ssh, #254 PR-H1 N9)" "self_test test-dv-preflight.sh"
 suite harness-ble-254 "BLE judges offline: settings tokens, btmon judge, pairing verdicts, RPA judge good + bad runs (#254 PR-H1 N10)" "self_test test-dv-ble-254.sh"
 suite harness-bt-uart-305 "#305 judges offline: gate, serial counters, sysfs sequences, kmsg window, settings, flip verdicts — good AND bad cases" "self_test test-dv-bt-uart-305.sh"
+suite harness-h4-254 "#254 H4 offline: undo executor (namespace), judges with bad-log cases, host tools selftests (peer / netobj / nodecert / blebridge / httprelay / benchstore)" "self_test test-h4-offline-254.sh"
 chk_addr_defer_254() {     # tier A, read-only: scripts/node/addr-defer-254.sh on every committed node given
   local n r=0 o
   for n in "$@"; do

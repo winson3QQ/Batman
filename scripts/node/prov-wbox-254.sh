@@ -15,6 +15,11 @@
 #                                   killpoint file (if given) -> bind W/<file> over the helper -> ONE restart -> assert:
 #                                   `--version` line 2 = the prov_test marker, /proc/<pid>/exe sha = <sha>, and (with a
 #                                   killpoint) "killpoint <point>: armed" logged by THIS pid (wbox.list: "armed <point>")
+#   push-provd <bin> <bin-sha> <init> <init-sha>
+#                                   (254-h4 §5.3) bind a prov_test provd over /usr/bin/batman-provd and its test init
+#                                   over /etc/init.d/batman-provd -> ONE provd restart -> assert the jailed provd's
+#                                   /proc/<pid>/exe sha = <bin-sha> (ujail binds $PROG from this namespace: E-H12)
+#                                   (wbox.list: "provd <bin>"). unbind-all restarts provd and asserts it is /rom's again
 #   set-provd-env <K=V>... | clear  (prov_test image) the provd switches (254-p2-impl §4.6): write
 #                                   /tmp/run/batman-prov-test/provd.env (dir root 0700, file root 0600), restart provd and
 #                                   assert the new pid carries exactly those keys and logged "provd: test env <K=V…>";
@@ -24,7 +29,7 @@ SELF=$(readlink -f "$0"); DIR=$(dirname "$SELF")
 . "$DIR/ble-lib-254.sh"
 RUN_ID=${RUN_ID:-}
 WB=/tmp/run/batman-dv/wbox; W=$WB/$RUN_ID; LIST=$W/wbox.list
-KD=/tmp/run/batman-prov-test; HB=/usr/bin/batman-provhelper
+KD=/tmp/run/batman-prov-test; HB=/usr/bin/batman-provhelper; PB=/usr/bin/batman-provd; PI=/etc/init.d/batman-provd
 MARKER=BATMAN_PROV_TEST_BUILD_7f3a
 
 harness_binds() { awk 'index($4, "/batman-dv/wbox/") {print $5}' /proc/self/mountinfo; }   # field 4 = the root inside the tmpfs: /run/batman-dv/wbox/<run>/<file>
@@ -76,13 +81,22 @@ bind)
 unbind-all)
 	r=0; restart=0
 	[ -f "$LIST" ] && grep -q '^armed ' "$LIST" && restart=1
+	prestart=0
 	for m in $(harness_binds | sort -r); do
 		umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || { echo "FAIL umount $m"; r=1; continue; }
 		echo "UNBOUND $m"; [ "$m" = "$HB" ] && restart=1
+		{ [ "$m" = "$PB" ] || [ "$m" = "$PI" ]; } && prestart=1
 	done
 	[ -n "$(harness_binds)" ] && { echo "FAIL harness binds left: $(harness_binds | tr '\n' ' ')"; r=1; }
 	rm -rf "$KD"
 	if [ $restart = 1 ]; then p=$(helper_restart) && echo "HELPER-RESTARTED pid=$p" || { echo "FAIL helper did not come back after the unbind"; r=1; }; fi
+	if [ $prestart = 1 ]; then
+		# a pushed provd is gone only once the RUNNING one is /rom's again (the bind alone does not stop the jailed copy)
+		o=$(provd_pid); provd_restart
+		n=0; while [ $n -lt 15 ]; do p=$(provd_pid); [ -n "$p" ] && [ "$p" != "$o" ] && break; sleep 1; n=$((n + 1)); done
+		if [ -n "$p" ] && [ "$p" != "$o" ] && cmp -s "/proc/$p/exe" /rom$PB; then echo "PROVD-RESTARTED pid=$p (= /rom$PB)"
+		else echo "FAIL provd after the unbind is not /rom's (pid ${p:-none})"; r=1; fi
+	fi
 	rm -f "$LIST"
 	[ $r = 0 ] && echo "UNBIND-ALL ok"; exit $r
 	;;
@@ -121,6 +135,22 @@ push-helper)
 	fi
 	echo "PUSHED $1 pid=$p${kp:+ armed=$kp} (restart at $t0)"
 	;;
+push-provd)
+	[ $# = 4 ] || die "usage: push-provd <bin> <bin-sha> <init> <init-sha>"
+	provd_present || die "no batman-provd on this image"
+	wdir; fb=$(wfile "$1" "$2") || { echo "$fb"; exit 1; }; fi_=$(wfile "$3" "$4") || { echo "$fi_"; exit 1; }
+	[ -z "$(harness_binds | grep -x -e "$PB" -e "$PI")" ] || die "provd is already bound"
+	[ "$2" != "$(sha256sum < /rom$PB | cut -c1-64)" ] || die "the pushed provd is the release binary (nothing would be proven)"
+	mount --bind "$fb" "$PB" || die "mount --bind over $PB failed"
+	echo "bind $PB" >> "$LIST"
+	mount --bind "$fi_" "$PI" || die "mount --bind over $PI failed"
+	echo "bind $PI" >> "$LIST"
+	o=$(provd_pid); provd_restart
+	n=0; while [ $n -lt 15 ]; do p=$(provd_pid); [ -n "$p" ] && [ "$p" != "$o" ] && break; sleep 1; n=$((n + 1)); done
+	[ -n "$p" ] && [ "$p" != "$o" ] || die "provd did not restart (old ${o:-none}, now ${p:-none})"
+	[ "$(sha256sum < "/proc/$p/exe" | cut -c1-64)" = "$2" ] || die "/proc/$p/exe (the jailed provd) is not the pushed binary"
+	echo "provd $1" >> "$LIST"; echo "PUSHED-PROVD $1 pid=$p"
+	;;
 set-provd-env)
 	# the keys the test init passes on (batman-provd-test.init _provd_env); a value is digits only
 	[ $# -ge 1 ] || die "usage: set-provd-env <K=V>... | clear"
@@ -153,5 +183,5 @@ set-provd-env)
 	fi
 	echo "PROVD-ENV pid=$p [$want]"
 	;;
-*) echo "usage: RUN_ID=<run> prov-wbox-254.sh bind|unbind-all|list|upper-helper|arm-killpoint|push-helper|set-provd-env ..."; exit 2 ;;
+*) echo "usage: RUN_ID=<run> prov-wbox-254.sh bind|unbind-all|list|upper-helper|arm-killpoint|push-helper|push-provd|set-provd-env ..."; exit 2 ;;
 esac

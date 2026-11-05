@@ -22,7 +22,8 @@ release_commit(){	# the held trial on <slot>: release -> committed
 	[ "$(field "$s" trial_rc)" = 1 ] && [ "$(field "$s" slot)" = "$1" ] || { no "slot $1 not committed after release ($s)"; return 1; }
 	ok "slot $1 committed after the release"
 }
-strip(){ local o; o=$(nb strip-p5-prov "$RUN"); echo "$o" | tail -2 | sed 's/^/    /'; grep -q "^STRIPPED $RUN" <<< "$o" || { no "strip-p5-prov: $(tail -1 <<< "$o")"; return 1; }; }
+# strip [keep]: keep = the helper / provd / joinwatch stay stopped after the strip (prov-base KEEP_HELPER_STOPPED)
+strip(){ local o; o=$(PB_ENV=${1:+KEEP_HELPER_STOPPED=1} nb strip-p5-prov "$RUN"); echo "$o" | tail -2 | sed 's/^/    /'; grep -q "^STRIPPED $RUN" <<< "$o" || { no "strip-p5-prov: $(tail -1 <<< "$o")"; return 1; }; }
 pr_begin 3000 || { pr_result; exit 1; }
 pr_ota_b "$OLD" B || { pr_abort "OTA $OLD"; pr_result; exit 1; }
 release_commit B || { pr_abort "commit $OLD on B"; pr_result; exit 1; }
@@ -40,8 +41,9 @@ else
 	# the same precondition as the positive arm: rc 9 = "p5 seeded, no prov" (batman-config-save --prov-get,
 	# boot.go case 9). V's helper on A has just seeded p5 with the legacy record, so without a strip the mutant's boot
 	# took the in-sync path and its rc-9 change never ran (M6 2026-10-29: "boot rc=0 verdict=legacy action=in sync")
-	strip || { pr_abort "strip before the negative control"; pr_result; exit 1; }
-	# strip-p5-prov restarts the helper, whose --boot re-persists the overlay record into a p5 that is "seeded, no prov"
+	# `keep`: the strip leaves the helper stopped — a stop after its restart lost the race (2026-11-04: prov-get rc 0)
+	strip keep || { pr_abort "strip before the negative control"; pr_result; exit 1; }
+	# strip-p5-prov restarts the helper (without keep), whose --boot re-persists the overlay record into a p5 that is "seeded, no prov"
 	# (boot.go case 9; stripwatch 2026-10-31: prov back within 2 s, "re-persisted the whole overlay record") — the
 	# positive arm never met this because its strip ran under the OLD image (no helper). So: helper stopped until the
 	# OTA reboots, p5 asserted "seeded, no prov" (prov-get rc 9) right before the OTA, and batman-slot's documented

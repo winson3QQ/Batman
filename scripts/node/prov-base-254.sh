@@ -272,7 +272,11 @@ strip-p5-prov)
 	mount -t ext4 -o ro,noload "$P5" "$m" 2>/dev/null || { rmdir "$m"; lock_drop; die "p5 not mountable ro after the strip"; }
 	left=$(cd "$m" && ls -d prov.* identity/prov 2>/dev/null | tr '\n' ' '); af=$(others "$m"); umount "$m"; rmdir "$m"
 	lock_drop
-	svc start batman-provhelper joinwatch batman-provd
+	# KEEP_HELPER_STOPPED=1 (legacy-upgrade's negative control): no restart — the helper's --boot re-persists the
+	# overlay record into the stripped p5 within ~2 s, before the unit could stop it again (2026-11-04 re-run:
+	# prov-get rc 0, want 9); the OTA reboot that follows starts all three
+	if [ "${KEEP_HELPER_STOPPED:-0}" = 1 ]; then say "helper / joinwatch / provd left stopped (KEEP_HELPER_STOPPED)"
+	else svc start batman-provhelper joinwatch batman-provd; fi
 	[ -z "$left" ] || die "still on p5 after the strip: $left"
 	[ "$af" = "$b4" ] || die "the strip changed other p5 entries"
 	say "STRIPPED $RUN (prov.* and identity/prov gone, $(echo "$b4" | wc -l) other entries unchanged)"
