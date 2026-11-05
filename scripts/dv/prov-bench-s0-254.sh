@@ -23,7 +23,11 @@
 # legacy A at the old address. After step 5: `restore <node> keep-<run>` (the same restore_all; not run by fresh).
 # restore_all ends with brewrite-254.sh (B back to V), which wants a mesh neighbour: for a node whose peer has already
 # left the fleet mesh that last part FAILs — the node is then on its legacy A, reachable, with the snapshot and the
-# dirty flag kept; a person checks it and runs `sh /opt/batdata/dv-prov/prov-base-254.sh finish <run>` on the node.
+# dirty flag kept; a person checks it and runs `sh /opt/batdata/dv-prov/prov-base-254.sh finish <run>` on the node
+# (<run> exactly as given to restore, e.g. keep-s004...; the snapshot's own mark /etc/.dv-prov-mark-<id> stays in A's
+# overlay, harmless). restore needs V PAY PSHA too, and finds a kept node by nodes.txt's address (or IP=<address>).
+# The bench store has ONE writer at a time: both nodes' runs take the same host lock as the prov units
+# (batman-dv-04.lock), and a store that is neither complete (n0 + n0.cfg) nor empty is refused, never repaired here.
 # No dead-man here (chain1 has one because it must not leave 04 fresh; this run means to). A host that dies: before the
 # release the held trial's own deadline returns the node to A (legacy overlay, new p5 identity: config-save freezes,
 # the node is reachable at the old address) -> `restore`; after the release the node stays a fresh card, found by its
@@ -32,7 +36,7 @@
 # unseeded after apply", prov_files / idsame, the L44 gate, the unclaimed and claimed OTAs.
 # Side effects: new identity (serial, DAC), new ssh host key, new address (10.41.254.x, then openmanetd's), root
 # password login off (claimed), the fleet mesh key replaced by N0's, 3-4 reboots, dockerd stopped for the first reboot,
-# joinwatch reboots a member with no neighbour once after 3600 s, slot A keeps its legacy overlay until `sysupgrade -n`
+# slot A keeps its legacy overlay until `sysupgrade -n`
 # rewrites it (not done here: a member's trial needs a mesh neighbour, so A is rewritten once both nodes are on N0;
 # a node that falls back to A meanwhile is locked to the lab key, at the old address, on the fleet mesh key, and
 # `batman-slot rollback` brings it back to B).
@@ -52,26 +56,35 @@ TOOLS=${DV_PROV_TOOLS:-/c/Users/yello/batman-dv-tools/prov}; TOOLS_WSL=/home/yel
 BREWRITE=${BREWRITE:-$REPO/scripts/dv/brewrite-254.sh}; LABKEY=${LABKEY:-$HOME/.ssh/id_ed25519}; HOSTIP=${HOSTIP:-10.41.240.10}
 if [ "$MODE" = restore ]; then RUN=${3:?run id}; case "$RUN" in *[!A-Za-z0-9_-]*) echo "bad run id"; exit 2;; esac; else RUN=s0$NN$(date +%m%d%H%M); fi
 PCD=/tmp/run/batman-dvpc.$RUN; BASE=/opt/batdata/dv-prov; D=$BASE/$RUN; PDIR=$BASE/payload-s0; DIRTY=/opt/batdata/state/dv-prov-dirty
-LOCKD=${TEMP:?TEMP unset - the host lock lives in the per-user temp dir, never in a shared tmp}/batman-dv-$NN.lock
+LOCKD=${TEMP:?TEMP unset - the host lock lives in the per-user temp dir, never in a shared tmp}/batman-dv-04.lock   # the prov units' lock (prov-254.sh), whichever node: they use both nodes
 BENCH=/home/yello/.batman-dv/bench; WSLK=$BENCH/h0; N0=$BENCH/n0   # the bench store (254-h4 §3.2): WSL, 0700 / 0600
 # shellcheck source=scripts/dv/fresh-254.sh
 . "$(dirname "$0")/fresh-254.sh" || exit 1
 # never a `$` inside a wsl_ command line: wsl.exe hands it to a login shell that expands it BEFORE the inner command runs
 wsl_(){ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- "$@"; }
-STAGED=0; SNAPPED=0; RESULT=FAIL; RESTORING=0; KEPT=0
+STAGED=0; SNAPPED=0; RESULT=FAIL; RESTORING=0; KEPT=0; PEND_MINE=0
+say "RUN ID $RUN ($MODE $NN)"
 mkdir "$LOCKD" 2>/dev/null || { echo "another dv run holds $LOCKD"; exit 1; }
 pend_drop(){ wsl_ rm -f $N0.pending $N0.cfg.pending; }
 on_exit(){ local rc=$?; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ] && [ "$KEPT" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; restore_all "unexpected exit"; fi
-	[ "$KEPT" = 1 ] || [ "$MODE" = restore ] || pend_drop
-	rmdir "$LOCKD" 2>/dev/null; say "BENCH-S0 $MODE $NN RESULT: $RESULT (fails=$fails)"; }
+	[ "$PEND_MINE" = 1 ] && [ "$KEPT" = 0 ] && pend_drop   # only what THIS run wrote, and only when the node was restored
+	rmdir "$LOCKD" 2>/dev/null; say "BENCH-S0 $MODE $NN RESULT: $RESULT (fails=$fails)"
+	case "$RESULT" in PASS*) exit 0;; *) exit 1;; esac; }
 trap on_exit EXIT
 trap 'say "host interrupted"; [ "$SNAPPED" = 1 ] && [ "$KEPT" = 0 ] && restore_all "interrupted"; RESTORING=1; exit 1' INT TERM
 
 # ======== restore <node> <run>: chain1's restore_all on a snapshot made by an earlier `fresh`
 if [ "$MODE" = restore ]; then
 	PH=restore-pre
-	wait_find 300 "ver=$V " || { say "$NN not found by its eth MAC"; exit 1; }
+	# a kept node's address is openmanetd's, outside the swept /24s: start from nodes.txt (or IP=)
+	SEEN="${IP:-} $(wsl_ grep "^node=$NN " $BENCH/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1)"
+	wait_find 300 "ver=$V " || { say "$NN not found by its eth MAC (tried:$SEEN; give IP=<address>)"; exit 1; }
 	say "$NN at $FIP ($FOUND_HOW): $FOUND_STATE"
+	# nothing is written before these hold: slot A still carries V (restore_all waits for "slot=A ver=$V"), the payload
+	# for the B rewrite is there
+	o=$(fq "$PROT; sha256sum < $PAY | cut -c1-64"); case "$(echo $o)" in "protA=[$V] "*" $PSHA") ;; *) say "restore precondition: slot A is not $V or the payload sha differs: [$(echo $o)] — nothing written"; exit 1;; esac
+	# the legacy A answers at $NODE with its old host key; known_hosts may hold the kept slot's key for that address
+	ssh-keygen -R "$NODE" >/dev/null 2>&1; SSHO="$SSHO -o StrictHostKeyChecking=accept-new"
 	o=$(fq "[ -f $D/p5.img ] && [ -f $D/p1.list ] && echo snap=ok; echo dirty=[\$(cat $DIRTY 2>/dev/null)]"); say "$(echo $o)"
 	case "$o" in *"snap=ok"*) ;; *) say "no snapshot $D on the node"; exit 1;; esac
 	P1_0=$(fq "cat $D/p1.list"); [ "$(echo "$P1_0" | wc -l)" -ge 5 ] || { say "the snapshot's p1 list is unreadable"; exit 1; }
@@ -79,7 +92,7 @@ if [ "$MODE" = restore ]; then
 	fq "[ -s $DIRTY ] || echo '$RUN restore' > $DIRTY; sync"   # chain1's restore expects the dirty flag of a run in progress
 	SNAPPED=1; KEPT=1   # KEPT: a failure in here must not start a second restore from on_exit
 	if restore_all "restore $RUN"; then [ "$fails" = 0 ] && RESULT="PASS — $NN restored to the legacy state of $RUN" || RESULT="RESTORED WITH $fails FAIL"; else RESULT="RESTORE FAILED — needs a person"; fi
-	exit 0
+	exit 1   # on_exit sets the real code from RESULT
 fi
 # pcn <key> [FD3=<producer run ON the node>] -- <provclient node args>: as prov-254.sh pr_pc, at $FIP
 pcn(){
@@ -116,6 +129,7 @@ VPAY=""; for sums in "$OUTS"/*/ekh-bcm2711/SHA256SUMS; do grep -q "^$PSHA  .*-ab
 	d=${sums%/SHA256SUMS}; bs=$(sha256sum < "$d/batman-build.txt" | cut -c1-64); grep -q "^$bs  batman-build\.txt$" "$sums" || { say "batman-build.txt in $d does not match its SHA256SUMS"; exit 1; }
 	VPAY=$(sed -n 's/^BATMAN_VERSION=//p' "$d/batman-build.txt" | tr -d '\r'); break; done
 [ "$VPAY" = "$V" ] || { say "payload BATMAN_VERSION [$VPAY] != V [$V]"; exit 1; }; say "payload version $VPAY (build dir evidence)"
+[ -s "$LABKEY.pub" ] || { say "no $LABKEY.pub"; exit 1; }
 pk_proof $NODE || { say "lab key $LABKEY does not authenticate to A by publickey"; exit 1; }
 [ -f "$TOOLS/provclient-arm64" ] && wsl_ test -x "$TOOLS_WSL/provclient-amd64" || { say "no provclient in $TOOLS"; exit 1; }   # -f: an arm64 binary for the node, never executed on the host
 # bench keys H0: made once, kept (0700 dir / 0600 files); both nodes get the same owner
@@ -123,8 +137,15 @@ wsl_ bash -c "umask 077; mkdir -p $BENCH && chmod 700 $BENCH && { [ -s $WSLK/enc
 OWNER=$(wsl_ cat $WSLK/owner.pub | tr -d '\r'); ENC=$(wsl_ cat $WSLK/enc.pub | tr -d '\r')
 [ ${#OWNER} = 130 ] && [ ${#ENC} = 130 ] || { say "bench owner keys (H0) unreadable in $WSLK"; exit 1; }
 [ "$(wsl_ stat -c %a $BENCH $WSLK/owner.pem | tr -d '\r' | tr '\n' ' ')" = "700 600 " ] || { say "bench store modes are not 700 / 600"; exit 1; }
-pend_drop
-HAVEN0=n; [ "$(wsl_ grep -c '^sae=' $N0 2>/dev/null | tr -d '\r')" = 1 ] && [ -n "$(wsl_ cat $N0.cfg 2>/dev/null | tr -d '\r\n')" ] && HAVEN0=y
+# N0 in the store: complete (n0 + n0.cfg) = this is the second node; nothing at all = the first; anything else
+# (a pending file, half a pair, an unreadable store) is refused — a guess here makes two networks with one name
+lsb=$(wsl_ ls -1 $BENCH | tr -d '\r'); grep -qx h0 <<< "$lsb" || { say "bench store unreadable (no h0 in its listing)"; exit 1; }
+st=$(for f in n0 n0.cfg n0.pending n0.cfg.pending nodes.txt; do grep -qx "$f" <<< "$lsb" && printf '%s ' "$f"; done)
+case "$st" in
+	"n0 n0.cfg nodes.txt ") HAVEN0=y; [ "$(wsl_ grep -c '^sae=' $N0 | tr -d '\r')" = 1 ] && [ -n "$(wsl_ cat $N0.cfg | tr -d '\r\n')" ] || { say "bench store: n0 / n0.cfg are not complete"; exit 1; } ;;
+	"") HAVEN0=n ;;
+	*) say "bench store $BENCH holds [$st]: neither a complete N0 (n0 n0.cfg nodes.txt) nor empty. A pending pair belongs to a run that kept its node but did not promote it (mv n0.pending n0; mv n0.cfg.pending n0.cfg) or to one that died (remove it once the node is restored). Nothing done."; exit 1 ;;
+esac
 say "bench store: H0 ${OWNER:0:10}… N0 present=$HAVEN0"
 P1_0=$(q "$P1LIST"); [ "$(echo "$P1_0" | wc -l)" -ge 5 ] || { say "cannot hash p1"; exit 1; }
 # the channel N0 uses: the first node's own; the second node takes the stored one
@@ -192,6 +213,7 @@ if [ "$HAVEN0" = y ]; then
 else
 	fq "umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=bench-n0\nchannel=%s\nbw=2\nsae=%s\n' '$CHN' \"\$s\" > $PCD/n0" || abort "N0 values not made"
 	# to the store BEFORE the join (the node may reboot after it and $PCD is tmpfs); promoted in step 5 only
+	PEND_MINE=1
 	ssh $FRESHO root@"$FIP" "cat $PCD/n0" 2>/dev/null | wsl_ bash -c "umask 077; cat > $N0.pending" || abort "N0 values to the bench store"
 	[ "$(wsl_ grep -c '^sae=' $N0.pending | tr -d '\r')" = 1 ] && [ "$(wsl_ stat -c %a $N0.pending | tr -d '\r')" = 600 ] || abort "N0 values in the bench store (pending) are not complete / not 0600"
 fi
@@ -213,30 +235,44 @@ fi
 t=$SECONDS; nb=$BJ; while [ $((SECONDS - t)) -lt 240 ]; do nb=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ -n "$nb" ] && [ "$nb" != "$BJ" ] && break; nb=$BJ; sleep 15; done
 if [ "$nb" != "$BJ" ] || ! is_on "$FIP" "slot=B ver=$V trial_rc=1 " >/dev/null; then
 	say "the node rebooted (or moved) after the join: finding it again"
-	wait_find 900 "slot=B ver=$V trial_rc=1 " "$BJ" || abort "node not found after the join"
+	if [ "$nb" != "$BJ" ]; then wait_find 900 "slot=B ver=$V trial_rc=1 " "$BJ"; else wait_find 900 "slot=B ver=$V trial_rc=1 "; fi || abort "node not found after the join"
 	t=$SECONDS; while [ $((SECONDS - t)) -lt 400 ]; do u=$(fq 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge 150 ] && break; sleep 15; done
 	[ "${u:-0}" -ge 150 ] || abort "node not stable after the post-join reboot"
 	fq "[ -e $PCD ] || mkdir -m 0711 $PCD" >/dev/null; pc_place || abort "provclient upload (after the join)"
 else say "no reboot in 240 s after the join (boot $BJ)"; fi
 say "after the join at $FIP: $(fq "$ST")"
-t=$SECONDS; x=""; while [ $((SECONDS - t)) -lt 180 ]; do x=$(fq "ls /etc/batman-prov/*.txn 2>/dev/null | wc -l"); [ "$x" = 0 ] && break; sleep 10; done
-[ "$x" = 0 ] && ok "no .txn left" || abort "a .txn is still there 180 s after the join [$x]"
+# the wireless transaction file is the dot file /etc/batman-prov/.txn (provstore.go); an empty answer is not "gone"
+t=$SECONDS; x=""; while [ $((SECONDS - t)) -lt 180 ]; do x=$(fq '{ [ -e /etc/batman-prov/.txn ] || [ -L /etc/batman-prov/.txn ]; } && echo present || echo gone'); [ "$x" = gone ] && break; sleep 10; done
+[ "$x" = gone ] && ok "no .txn left" || abort "the .txn is still there 180 s after the join [$x]"
 i=$(info); say "info: $i"
 case "$i" in "state=member "*"rm=true"*|"state=member "*"rm=1"*) ok "member, radio managed";; *) abort "not a managed member: [$i]";; esac
-x=$(fq "echo mesh_id=\$(uci -q get wireless.default_radio1.mesh_id) enc=\$(uci -q get wireless.default_radio1.encryption) ch=\$(uci -q get wireless.radio1.channel) same_key=\$([ \"\$(uci -q get wireless.default_radio1.key)\" = \"\$(sed -n 's/^sae=//p' $PCD/n0 2>/dev/null)\" ] && echo y || echo n); batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?")
+# up to 3 reads 15 s apart: --check answers 8 while config-save holds its lock, and a single sample must not restore a good node
+WQ="echo mesh_id=\$(uci -q get wireless.default_radio1.mesh_id) enc=\$(uci -q get wireless.default_radio1.encryption) ch=\$(uci -q get wireless.radio1.channel) keysha=\$(uci -q get wireless.default_radio1.key | tr -d '\r\n' | sha256sum | cut -c1-16); batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?"
+# the key the store holds (pending for the first node), compared by sha: it passes through a pipe only
+if [ "$HAVEN0" = y ]; then KS=$(wsl_ sed -n 's/^sae=//p' $N0 | tr -d '\r\n' | sha256sum | cut -c1-16); else KS=$(wsl_ sed -n 's/^sae=//p' $N0.pending | tr -d '\r\n' | sha256sum | cut -c1-16); fi
+for k in 1 2 3; do x=$(fq "$WQ"); case "$(echo $x) " in *"mesh_id=bench-n0 enc=sae ch=$CHN keysha=$KS check_rc=0 "*) break;; esac; [ "$k" = 3 ] || sleep 15; done
 say "wireless: $(echo $x)"
-for w in "mesh_id=bench-n0 " "enc=sae " "ch=$CHN " "check_rc=0"; do case "$(echo $x) " in *"$w"*) ok "join: $w";; *) abort "join: want $w";; esac; done
-case "$x" in *"same_key=y"*) ok "join: the radio's key is the N0 key";; *) [ "$nb" = "$BJ" ] && abort "join: the radio's key is not the N0 key" || say "join: key comparison skipped (the tmpfs copy went with the reboot)";; esac
+for w in "mesh_id=bench-n0 " "enc=sae " "ch=$CHN " "keysha=$KS " "check_rc=0 "; do case "$(echo $x) " in *"$w"*) ok "join: $w";; *) abort "join: want $w";; esac; done
+if [ "$HAVEN0" = y ]; then	# the second node must SEE the first one: a mesh neighbour within 300 s (not restored when missing: the first node may be the one at fault)
+	t=$SECONDS; nbr=0; while [ $((SECONDS - t)) -lt 300 ]; do nbr=$(fq 'batctl n 2>/dev/null | tail -n +3 | grep -c .'); [ "${nbr:-0}" -ge 1 ] && break; sleep 15; done
+	[ "${nbr:-0}" -ge 1 ] && ok "mesh: $nbr neighbour(s) on N0 ($(fq 'batctl n 2>/dev/null | tail -n +3 | head -2' | tr -s ' ' | tr '\n' '|'))" || no "mesh: no neighbour on N0 after 300 s — the two nodes are NOT one mesh (kept as it is; check the first node)"
+fi
 pk_proof "$FIP" && ok "publickey PROVEN after the join" || abort "lost publickey login after the join"
 # ======== 5. keep: once the snapshot has moved nothing restores
 PH=s5
 o=$(fq "rm -rf $PCD $PDIR; mv $D $BASE/keep-$RUN && rm -f $DIRTY; sync; echo kept=\$(ls -d $BASE/keep-$RUN 2>/dev/null) run=\$(ls -d $D 2>/dev/null) dirty=[\$(cat $DIRTY 2>/dev/null)] sn=\$(tr -d '\n' < /etc/batman-prov/identity/sn) docker=\$(docker ps -q 2>/dev/null | wc -l)")
 say "$o"
-case "$o" in "kept=$BASE/keep-$RUN run= dirty=[] sn="?*) KEPT=1; ok "legacy snapshot kept on p6 as keep-$RUN, dirty flag gone";; *) abort "keep step did not complete: [$o]";; esac
+# the answer may be lost with the ssh although the move happened: read the node again before deciding
+for k in 1 2 3; do case "$o" in "kept=$BASE/keep-$RUN run= dirty=[] sn="[0-9a-f]*) break;; esac; sleep 20; find04 "slot=B ver=$V trial_rc=1 " >/dev/null || true
+	o=$(fq "rm -f $DIRTY; sync; echo kept=\$(ls -d $BASE/keep-$RUN 2>/dev/null) run=\$(ls -d $D 2>/dev/null) dirty=[\$(cat $DIRTY 2>/dev/null)] sn=\$(tr -d '\n' < /etc/batman-prov/identity/sn) docker=\$(docker ps -q 2>/dev/null | wc -l)"); say "again: $o"; done
+case "$o" in "kept=$BASE/keep-$RUN run= dirty=[] sn="[0-9a-f]*) KEPT=1; ok "legacy snapshot kept on p6 as keep-$RUN, dirty flag gone";;
+	"kept= run=$D "*) abort "keep step did not happen: [$o]";;
+	*) KEPT=1; no "keep step: the node's answer is unclear [$o] — NOT restoring; look at $BASE on the node";; esac
 SN=$(echo "$o" | sed -n 's/.* sn=\([^ ]*\) .*/\1/p')
 if [ "$HAVEN0" = n ]; then wsl_ mv $N0.pending $N0 && wsl_ mv $N0.cfg.pending $N0.cfg && [ "$(wsl_ stat -c %a $N0 | tr -d '\r')" = 600 ] && ok "N0 kept in the bench store (0600)" || no "N0 not promoted in the bench store: $N0.pending / $N0.cfg.pending hold it"; fi
 ssh-keygen -R "$FIP" >/dev/null 2>&1; hk=$(timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i "$LABKEY" root@"$FIP" 'cat /sys/class/net/eth0/address' 2>/dev/null | tr -d '\r')
 [ "$hk" = "$MAC" ] && ok "known_hosts: $FIP re-pinned (the node there has eth MAC $MAC)" || no "known_hosts: could not re-pin $FIP [$hk]"
 printf 'node=%s run=keep-%s date=%s ip=%s mac=%s sn=%s version=%s\n' "$NN" "$RUN" "$(date +%F)" "$FIP" "$MAC" "$SN" "$V" | wsl_ bash -c "umask 077; cat >> $BENCH/nodes.txt"
+[ "$(wsl_ grep -c "run=keep-$RUN " $BENCH/nodes.txt | tr -d '\r')" = 1 ] && ok "nodes.txt has this run" || no "nodes.txt was not written"
 say "$NN is a claimed member of N0 at $FIP (was $NODE); $(fq "$ST")"
-[ "$fails" = 0 ] && RESULT="PASS — $NN at $FIP sn $SN, way back: restore $NN keep-$RUN" || RESULT="KEPT WITH $fails FAIL"
+[ "$fails" = 0 ] && RESULT="PASS — $NN at $FIP sn $SN, way back: restore $NN keep-$RUN" || RESULT="KEPT WITH $fails FAIL (way back: restore $NN keep-$RUN)"
