@@ -165,7 +165,30 @@ def main():
             bad = [i for i in range(max(len(a_l), len(b_l))) if (a_l[i] if i < len(a_l) else None) != (b_l[i] if i < len(b_l) else None)]
             sys.stderr.write("gen-p3-units: FAIL p3-units.tsv is not what appendix A gives (%d line(s) differ, first at line %d): run gen-p3-units.py and review the diff\n" % (len(bad), bad[0] + 1))
             return 1
-        print("gen-p3-units: ok, %d rows in %d units" % (len(rows), len({r[0] for r in rows})))
+        # p3-how.tsv: every row says how it is run (h / n / g / m, or a+b), and names no row that is gone
+        hw = {}
+        try:
+            for ln in open(os.path.join(HERE, "data", "p3-how.tsv"), encoding="utf-8"):
+                if ln.startswith("#") or not ln.strip():
+                    continue
+                f = ln.rstrip("\n").split("\t")
+                if len(f) < 3 or not all(p in ("h", "n", "g", "m") for p in f[2].split("+")):
+                    die("p3-how.tsv: bad line: %s" % ln.strip()[:80])
+                if "m" in f[2].split("+") and (len(f) < 4 or not f[3].strip()):
+                    die("p3-how.tsv: %s %s is (partly) manual and has no note saying what is left for a person" % (f[0], f[1]))
+                hw[(f[0], f[1])] = f[2]
+        except OSError:
+            die("scripts/dv/data/p3-how.tsv is missing")
+        have = {(r[0], r[1]) for r in rows}
+        miss, gone = sorted(have - set(hw)), sorted(set(hw) - have)
+        if miss or gone:
+            sys.stderr.write("gen-p3-units: FAIL p3-how.tsv: no entry for %s; entries for rows that do not exist: %s\n" % (miss or "-", gone or "-"))
+            return 1
+        cnt = {}
+        for v in hw.values():
+            k = "manual" if v == "m" else "partly" if "m" in v.split("+") else "auto"
+            cnt[k] = cnt.get(k, 0) + 1
+        print("gen-p3-units: ok, %d rows in %d units; automated %d, partly %d, by hand %d" % (len(rows), len({r[0] for r in rows}), cnt.get("auto", 0), cnt.get("partly", 0), cnt.get("manual", 0)))
         return 0
     if a:
         die("usage: gen-p3-units.py [--check | --list [unit]]")
