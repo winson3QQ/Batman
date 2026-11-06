@@ -81,7 +81,7 @@ on_exit(){ local rc=$?; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ] && [ "$KEP
 	rmdir "$LOCKD" 2>/dev/null; say "BENCH-S0 $MODE $NN RESULT: $RESULT (fails=$fails)"
 	case "$RESULT" in PASS*) exit 0;; *) exit 1;; esac; }
 trap on_exit EXIT
-trap 'say "host interrupted"; [ "$SNAPPED" = 1 ] && [ "$KEPT" = 0 ] && restore_all "interrupted"; RESTORING=1; exit 1' INT TERM
+trap 'say "host interrupted"; [ "$SNAPPED" = 1 ] && [ "$KEPT" = 0 ] && restore_all "interrupted" && RESTORED=1; RESTORING=1; exit 1' INT TERM
 
 # ======== restore <node> <run>: chain1's restore_all on a snapshot made by an earlier `fresh`
 if [ "$MODE" = restore ]; then
@@ -90,6 +90,7 @@ if [ "$MODE" = restore ]; then
 	SEEN="${IP:-} $(wsl_ grep "^node=$NN " $BENCH/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1)"
 	wait_find 300 "ver=$V " || { say "$NN not found by its eth MAC (tried:$SEEN; give IP=<address>)"; exit 1; }
 	say "$NN at $FIP ($FOUND_HOW): $FOUND_STATE"
+	[ "$(fq 'cat /sys/class/net/eth0/carrier 2>/dev/null')" = 1 ] || { say "$NN has no carrier on eth0: the lab cable must be on THIS node (after the rollback it is on the fleet mesh key) — nothing written"; exit 1; }
 	# nothing is written before these hold: slot A still carries V (restore_all waits for "slot=A ver=$V"), the payload
 	# for the B rewrite is there
 	o=$(fq "$PROT; sha256sum < $PAY | cut -c1-64"); case "$(echo $o)" in "protA=[$V] "*" $PSHA") ;; *) say "restore precondition: slot A is not $V or the payload sha differs: [$(echo $o)] — nothing written"; exit 1;; esac
@@ -135,7 +136,7 @@ pc_place(){ scp -q $FRESHO "$TOOLS/provclient-arm64" root@"$FIP":$PCD/provclient
 s=$(q "$ST"); say "start: $s"
 case "$s" in "mac=$MAC slot=A ver=$V trial_rc=1 dt_try="*" hold=[] held=0 badslot=[]"*) ;; *) say "precondition ($NN by MAC, A committed $V, no hold, no bad-slot)"; exit 1;; esac
 a=$(q "awk -v b=\$(cat /proc/sys/kernel/random/boot_id) '\$1==b {print \"ps=\" \$2 \"/\" \$4}' /opt/batdata/state/prov-state; batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?; echo dirty=[\$(cat $DIRTY 2>/dev/null)] undo=\$(ls /opt/batdata/state/dv-undo 2>/dev/null | wc -l)")
-say "A: $(echo $a)"; case "$(echo $a)" in *"ps=helper/legacy"*"check_rc=0"*"dirty=[] undo=0"*) ;; *) say "A is not a healthy legacy node, or a dirty flag / undo journal is present"; exit 1;; esac
+say "A: $(echo $a)"; case "$(echo $a)" in *"ps=helper/legacy"*"check_rc=0"*"dirty=[] undo=0"*) ;; *) say "A is not a healthy legacy node, or a dirty flag / undo journal is present (a dirty flag left by a restore whose B rewrite failed: check the node, then sh $BASE/prov-base-254.sh finish <the flag's first word> on it)"; exit 1;; esac
 [ "$(q "sha256sum < $PAY | cut -c1-64")" = "$PSHA" ] || { say "payload sha"; exit 1; }
 # payload version == V, from the build dir's SHA256SUMS (as chain1: a version mismatch discards the hold, and the fresh
 # slot would commit a version nothing here looks for)
@@ -162,7 +163,8 @@ case "$st" in
 	*) say "bench store $BENCH holds [$st]: neither a complete N0 (n0 n0.cfg nodes.txt) nor empty. A pending pair belongs to a run that kept its node but did not promote it (mv n0.pending n0; mv n0.cfg.pending n0.cfg) or to one that died (remove it once the node is restored). Nothing done."; exit 1 ;;
 esac
 # is the OTHER node on N0 now? (the last nodes.txt line of each node: run=keep-... = on N0, restored=... = left)
-PEERON=n; [ "$HAVEN0" = y ] && wsl_ cat $BENCH/nodes.txt | tr -d '\r' | awk -v me="node=$NN" '$1 != me { last[$1] = $2 } END { for (n in last) if (last[n] ~ /^run=keep-/) f = 1; exit !f }' && PEERON=y
+NT=""; if [ "$HAVEN0" = y ]; then NT=$(wsl_ cat $BENCH/nodes.txt | tr -d '\r'); [ -n "$NT" ] || { say "bench store: nodes.txt unreadable"; exit 1; }; fi
+PEERON=n; [ -n "$NT" ] && printf '%s\n' "$NT" | awk -v me="node=$NN" '$1 != me { last[$1] = $2 } END { for (n in last) if (last[n] ~ /^run=keep-/) f = 1; exit !f }' && PEERON=y
 say "bench store: H0 ${OWNER:0:10}… N0 present=$HAVEN0 peer on N0=$PEERON"
 P1_0=$(q "$P1LIST"); [ "$(echo "$P1_0" | wc -l)" -ge 5 ] || { say "cannot hash p1"; exit 1; }
 # the channel N0 uses: the first node's own; the second node takes the stored one
@@ -221,7 +223,7 @@ x=$(fq "echo state=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov
 say "after claim: $(echo $x)"
 for w in "state=claimed" "lock=LOCKED" "seeded=y" "metastat=[ok claimed]"; do case "$x" in *"$w"*) ok "claim: $w";; *) abort "claim: want $w";; esac; done
 pkp "$FIP" && ok "publickey PROVEN after the claim" || abort "lost publickey login after the claim"
-none_refused "$FIP" && ok "'none' refused after the claim" || abort "'none' still accepted on a LOCKED node"
+{ none_refused "$FIP" || { sleep 15; none_refused "$FIP"; }; } && ok "'none' refused after the claim" || abort "'none' still accepted on a LOCKED node"
 # ======== 4. join N0 (the key never appears in argv or a log: drawn on the node / piped as a file)
 PH=s4
 if [ "$HAVEN0" = y ]; then
@@ -234,7 +236,7 @@ else
 	ssh $FRESHO root@"$FIP" "cat $PCD/n0" 2>/dev/null | wsl_ bash -c "umask 077; cat > $N0.pending" || abort "N0 values to the bench store"
 	[ "$(wsl_ grep -c '^sae=' $N0.pending | tr -d '\r')" = 1 ] && [ "$(wsl_ stat -c %a $N0.pending | tr -d '\r')" = 600 ] || abort "N0 values in the bench store (pending) are not complete / not 0600"
 fi
-[ "$(fq "grep -c '^sae=' $PCD/n0")" = 1 ] || abort "N0 values are not on the node"
+[ "$(fq "grep -cE '^sae=.{8,}\$' $PCD/n0")" = 1 ] || abort "N0 values are not on the node (or the key is shorter than 8)"
 BJ=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id')
 if [ "$HAVEN0" = y ]; then	# the second node JOINS the first one's network: its signed net_config verbatim, its own net_secrets
 	r=$(pcn owner.pem FD3="cat $PCD/n0" -- net-apply --join "$OWNER" "$NETCFG"); echo "$r" | grep RESULT | sed 's/^/    /'
@@ -250,13 +252,17 @@ fi
 # a reboot may follow the join (254-h4 F-H42 says openmanetd reboots a fresh card after it reserves an address; that
 # one already happened in step 2): watch the boot for 240 s; if it changes, find the node again and let it settle
 t=$SECONDS; nb=$BJ; while [ $((SECONDS - t)) -lt 240 ]; do nb=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ -n "$nb" ] && [ "$nb" != "$BJ" ] && break; nb=$BJ; sleep 15; done
-if [ "$nb" != "$BJ" ] || ! is_on "$FIP" "slot=B ver=$V trial_rc=1 " >/dev/null; then
-	say "the node rebooted (or moved) after the join: finding it again"
+# same boot: is it still where it was? three probes (one lost ping must not send a good node through a restore)
+on=y; if [ "$nb" = "$BJ" ]; then on=n; for k in 1 2 3; do is_on "$FIP" "slot=B ver=$V trial_rc=1 " >/dev/null && { on=y; break; }; sleep 10; done; fi
+if [ "$nb" != "$BJ" ] || [ "$on" = n ]; then
+	say "the node rebooted or moved after the join: finding it again"
 	if [ "$nb" != "$BJ" ]; then wait_find 900 "slot=B ver=$V trial_rc=1 " "$BJ"; else wait_find 900 "slot=B ver=$V trial_rc=1 "; fi || abort "node not found after the join"
-	t=$SECONDS; while [ $((SECONDS - t)) -lt 400 ]; do u=$(fq 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge 150 ] && break; sleep 15; done
-	[ "${u:-0}" -ge 150 ] || abort "node not stable after the post-join reboot"
-	fq "mkdir -m 0711 $PCD && echo MADE" | grep -q MADE || abort "dvpc dir pre-exists after the reboot: $PCD"   # tmpfs: gone with the reboot
-	pc_place || abort "provclient upload (after the join)"
+	if [ "$(bootof "$FOUND_STATE")" != "$BJ" ]; then	# a real reboot: let it settle; the tmpfs provclient dir went with it
+		t=$SECONDS; while [ $((SECONDS - t)) -lt 400 ]; do u=$(fq 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge 150 ] && break; sleep 15; done
+		[ "${u:-0}" -ge 150 ] || abort "node not stable after the post-join reboot"
+		fq "mkdir -m 0711 $PCD && echo MADE" | grep -q MADE || abort "dvpc dir pre-exists after the reboot: $PCD"
+		pc_place || abort "provclient upload (after the join)"
+	else say "same boot $BJ, now at $FIP: nothing to set up again"; fi
 else say "no reboot in 240 s after the join (boot $BJ)"; fi
 say "after the join at $FIP: $(fq "$ST")"
 # the wireless transaction file is the dot file /etc/batman-prov/.txn (provstore.go); an empty answer is not "gone"
