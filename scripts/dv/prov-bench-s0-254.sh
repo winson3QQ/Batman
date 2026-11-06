@@ -8,12 +8,12 @@
 #                                                                overlay goes), try it, come back to B
 #   bash scripts/dv/prov-bench-s0-254.sh toa <04|02>             a kept node on B, after slota: make A the committed
 #                                                                slot (the prov units' base state is "A committed")
-# toa: the prov units (prov-254.sh pr_p9, chain1, brewrite) start from A committed and go to B and back. After slota
-# both slots hold the same V with the member's overlay and A was healthy in its trial, so the base moves to A:
-# `batman-slot rollback` on B committed makes A the default (the very effect slota's return must never have by
-# accident; here it is the purpose), then `reboot committed`. Sent only to the boot that passed the preconditions,
-# on slot B, committed. 04 first; 02 only after 04 passed (toa.txt). The way back: the same two commands on A.
-# 02 has no cable: if its A did not mesh after all, it stays on A out of reach until the cable is on it.
+# toa: the prov units (prov-254.sh pr_p9, chain1, brewrite, ~130 places) start from A committed and go to B and back,
+# so the base state moves to A. It is slota with another last step: the healthy, HELD trial on A is committed with
+# `batman-autocommit release --wait` (as fresh's step 2 and prov-254.sh pr_normalise do) instead of being left. A trial
+# that is not healthy is left exactly as in slota: the node is on B again, and the run FAILs - so a 02 whose A does not
+# mesh comes back by itself (the first version used `batman-slot rollback` on B, which has no way back: review
+# 2026-11-06, both reviewers). 04 first; 02 only after 04 passed (toa.txt).
 # slota is chain1's 8.6 + 8.8 (`sysupgrade -n` under the commit hold -> HELD trial on A -> rollback -> B), for a MEMBER:
 # its trial wants a mesh neighbour, so both nodes must be on N0 first. The node ends where it started (B committed);
 # A then holds V with an overlay built from p5 (the member's own configuration). The way back is tied to the trial:
@@ -140,51 +140,12 @@ if [ "$MODE" = restore ]; then
 	else RESULT="RESTORE FAILED — needs a person"; fi
 	exit 1   # on_exit sets the real code from RESULT
 fi
-# ======== toa <node>: B committed -> A committed (after slota); the prov units' base state
-if [ "$MODE" = toa ]; then
-	PH=toa-pre; MJ='. /usr/lib/batman/meshjoin.sh; meshjoin_sample; echo "plink=$MJ_PLINK bat=$MJ_BAT"; meshjoin_joined && echo joined=y'
-	[ "$(wsl_ grep -c "^node=$NN slota=PASS v=$V " $BENCH/slota.txt 2>/dev/null | tr -d '\r')" -ge 1 ] 2>/dev/null || { say "toa $NN runs only after slota $NN passed with $V (A must have been healthy in its trial)"; exit 1; }
-	if [ "$NN" = 02 ]; then [ "$(wsl_ grep -c "^node=04 toa=PASS v=$V " $BENCH/toa.txt 2>/dev/null | tr -d '\r')" -ge 1 ] 2>/dev/null || { say "toa 02 runs only after toa 04 passed with $V (no such line in $BENCH/toa.txt)"; exit 1; }; fi
-	SEEN="${IP:-} $(wsl_ grep "^node=$NN " $BENCH/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1)"
-	wait_find 300 "slot=B ver=$V trial_rc=1 " || { say "$NN not found on B committed $V (tried:$SEEN; give IP=<address>)"; exit 1; }
-	s=$FOUND_STATE; say "$NN at $FIP ($FOUND_HOW): $s"; B0=$(bootof "$s")
-	case "$B0" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) say "boot id unreadable [$B0]"; exit 1;; esac
-	case "$s" in *" hold=[] held=0 badslot=[]"*) ;; *) say "precondition: a hold or a bad-slot mark is present"; exit 1;; esac
-	a=$(fq "echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) lock=\$(cat /opt/batdata/state/lock-status) dirty=[\$(cat $DIRTY 2>/dev/null)] undo=\$(ls /opt/batdata/state/dv-undo 2>/dev/null | wc -l) mesh_id=\$(uci -q get wireless.default_radio1.mesh_id) holdonce=\$([ -e /opt/batdata/state/autocommit-hold-once ] && echo y || echo n) sysup=\$(pgrep -f sysupgrade | wc -l); batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?; $PROT; $MJ")
-	say "B: $(echo $a)"
-	for w in "meta=member " "lock=LOCKED " "dirty=[] " "undo=0 " "mesh_id=bench-n0 " "holdonce=n " "sysup=0 " "check_rc=0 " "protA=[$V] protB=[$V] " "joined=y "; do case " $(echo $a) " in *"$w"*) ;; *) say "precondition: want [$w] (a kept N0 member with a mesh neighbour, p5 in sync, both slots $V, no OTA running) — nothing written"; exit 1;; esac; done
-	pkp "$FIP" || { say "lab key does not authenticate by publickey — nothing written"; exit 1; }
-	DK0=$(fq 'docker ps -q 2>/dev/null | wc -l'); case "$DK0" in ''|*[!0-9]*) say "container count unreadable [$DK0] — nothing written"; exit 1;; esac; say "containers running before: $DK0"
-	# ---- the switch: only in the boot checked above, on B, committed (is-trial rc 1)
-	PH=toa
-	r=$(fq "if [ \"\$(cut -c1-8 /proc/sys/kernel/random/boot_id)\" = $B0 ] && [ \"\$(batman-slot active)\" = B ] && { batman-slot is-trial >/dev/null 2>&1; [ \$? = 1 ]; }; then o=\$(batman-slot rollback 2>&1); rc=\$?; echo \"rollback rc=\$rc [\$(echo \"\$o\" | tail -1)]\"; [ \$rc = 0 ] && { (batman-slot reboot committed s0-toa </dev/null >/dev/null 2>&1 &); echo SENT; }; else echo WRONG-STATE; fi")
-	say "switch: $(echo ${r:-no answer})"
-	case "$r" in *"rollback rc=0 "*SENT*) ;; "") say "no answer to the switch command: looking where the node is" ;; *) no "the switch was not made: [$(echo $r)]"; RESULT="FAIL — $NN unchanged on B"; exit 1;; esac
-	FOUND_STATE=""
-	if ! wait_find 900 "slot=A ver=$V trial_rc=1 " "$B0"; then
-		no "A committed not found after the switch"
-		if wait_find 600 "ver=$V "; then say "now at $FIP: $FOUND_STATE; $(fq "$PROT")"; else say "$NN not found — needs a person (cable on the node; on A: batman-slot rollback; batman-slot reboot committed)"; fi
-		RESULT="FAIL — $NN is not on A committed (state above)"; exit 1
-	fi
-	say "on A at $FIP ($FOUND_HOW): $FOUND_STATE"
-	case "$FOUND_STATE" in *" hold=[] held=0 badslot=[]"*) ok "A committed, no hold, no bad-slot";; *) no "after the switch: $FOUND_STATE";; esac
-	t=$SECONDS; mj=""; while [ $((SECONDS - t)) -lt 300 ]; do mj=$(fq "$MJ"); case "$mj" in *"joined=y"*) break;; esac; sleep 15; done
-	case "$mj" in *"joined=y"*) ok "mesh: joined on A ($(echo $mj))";; *) no "mesh: not joined 300 s after the switch [$(echo $mj)]";; esac
-	x=""; for k in 1 2 3; do x=$(fq "echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) lock=\$(cat /opt/batdata/state/lock-status) mesh_id=\$(uci -q get wireless.default_radio1.mesh_id); $PROT; batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?"); case "$(echo $x) " in "meta=member lock=LOCKED mesh_id=bench-n0 protA=[$V] protB=[$V] check_rc=0 "*) break;; esac; [ "$k" = 3 ] || sleep 15; done
-	case "$(echo $x) " in "meta=member lock=LOCKED mesh_id=bench-n0 protA=[$V] protB=[$V] check_rc=0 "*) ok "A: member, LOCKED, N0, both slots $V, p5 in sync";; *) no "on A: $(echo $x)";; esac
-	t=$SECONDS; dk=""; while [ $((SECONDS - t)) -lt 240 ]; do dk=$(fq 'docker ps -q 2>/dev/null | wc -l'); [ -n "$dk" ] && [ "$dk" -ge "$DK0" ] && break; sleep 15; done
-	[ -n "$dk" ] && [ "$dk" -ge "$DK0" ] && ok "containers running again: $dk (before: $DK0)" || no "containers running: ${dk:-?}, before: $DK0"
-	pkp "$FIP" && ok "publickey PROVEN on A" || no "publickey login on A"
-	if [ "$fails" = 0 ]; then RESULT="PASS — $NN is on A committed at $FIP"
-		printf 'node=%s toa=PASS v=%s run=%s date=%s\n' "$NN" "$V" "$RUN" "$(date +%F)" | wsl_ bash -c "umask 077; cat >> $BENCH/toa.txt"
-	else RESULT="FAIL ($fails) — $NN is on A at $FIP (back: batman-slot rollback; batman-slot reboot committed)"; fi
-	exit 1   # on_exit sets the real code from RESULT
-fi
 # ======== slota <node>: slot A rewritten with V on a kept member (chain1 8.6 + 8.8), the node ends on B again
-if [ "$MODE" = slota ]; then
+# ======== toa <node>:   the same, but a healthy HELD trial is committed: the node ends on A committed
+if [ "$MODE" = slota ] || [ "$MODE" = toa ]; then
 	PH=slota-pre; MJ='. /usr/lib/batman/meshjoin.sh; meshjoin_sample; echo "plink=$MJ_PLINK bat=$MJ_BAT"; meshjoin_joined && echo joined=y'
 	payver
-	if [ "$NN" = 02 ]; then [ "$(wsl_ grep -c "^node=04 slota=PASS v=$V " $BENCH/slota.txt 2>/dev/null | tr -d '\r')" -ge 1 ] 2>/dev/null || { say "slota 02 runs only after slota 04 passed with $V (no such line in $BENCH/slota.txt)"; exit 1; }; fi
+	if [ "$NN" = 02 ]; then [ "$(wsl_ grep -c "^node=04 $MODE=PASS v=$V " $BENCH/$MODE.txt 2>/dev/null | tr -d '\r')" -ge 1 ] 2>/dev/null || { say "$MODE 02 runs only after $MODE 04 passed with $V (no such line in $BENCH/$MODE.txt)"; exit 1; }; fi
 	SEEN="${IP:-} $(wsl_ grep "^node=$NN " $BENCH/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1)"
 	wait_find 300 "slot=B ver=$V trial_rc=1 " || { say "$NN not found on B committed $V (tried:$SEEN; give IP=<address>)"; exit 1; }
 	s=$FOUND_STATE; say "$NN at $FIP ($FOUND_HOW): $s"; B0=$(bootof "$s")
@@ -241,6 +202,31 @@ if [ "$MODE" = slota ]; then
 		fq "logread | grep -E 'batman-autocommit' | grep -E 'mesh join required|HELD' | tail -3" | cut -c1-200 | sed 's/^/    /'
 	elif [ "$INTRIAL" = n ]; then no "the trial ended by itself (the node answers from another boot: $x)"
 	else no "the trial did not answer in 480 s"; fi
+	# ---- toa: commit the healthy, HELD trial (fresh step 2 / pr_normalise); only in that boot, on A, in a trial
+	if [ "$MODE" = toa ] && [ "$INTRIAL" = y ] && [ "$HELDOK" = y ] && [ "$fails" = 0 ]; then
+		r=$(fq "if [ \"\$(cut -c1-8 /proc/sys/kernel/random/boot_id)\" = $BA ] && [ \"\$(batman-slot active)\" = A ] && batman-slot is-trial >/dev/null 2>&1; then batman-autocommit release --wait 2>&1 | tail -1; else echo WRONG-STATE; fi")
+		say "release: ${r:-no answer}"
+		c=""; for k in 1 2 3 4 5 6; do c=$(fq "$ST"); case "$c" in *"slot=A "*"trial_rc=1 "*"boot=$BA"*) break;; esac; sleep 10; done
+		case "$c" in *"slot=A "*"trial_rc=1 "*"boot=$BA"*)
+			ok "A committed, in the trial's own boot ($BA)"
+			case "$c" in *" hold=[] held=0 badslot=[]"*) ok "no hold, no bad-slot";; *) no "after the commit: $c";; esac
+			# let it settle: uptime 150 s in the same boot, the address reservation already done (no reboot follows)
+			t=$SECONDS; d=""; while [ $((SECONDS - t)) -lt 300 ]; do d=$(echo $(fq 'echo "$(cut -c1-8 /proc/sys/kernel/random/boot_id) $(uci -q get openmanetd.config.dhcpconfigured) $(cut -d. -f1 /proc/uptime)"')); set -- $d; [ "${1:-}" = "$BA" ] && [ "${2:-}" = 1 ] && [ "${3:-0}" -ge 150 ] && break; sleep 10; done
+			set -- $d; [ "${1:-}" = "$BA" ] && [ "${2:-}" = 1 ] && [ "${3:-0}" -ge 150 ] && ok "A stable: same boot, dhcpconfigured=1, uptime ${3:-} s" || no "A not stable after the commit: boot/dhcpconfigured/uptime=[$d] (the trial's boot: $BA)"
+			mj=$(fq "$MJ"); case "$mj" in *"joined=y"*) ok "mesh: joined on A ($(echo $mj))";; *) no "mesh: not joined on A [$(echo $mj)]";; esac
+			x=""; for k in 1 2 3; do x=$(fq "echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) lock=\$(cat /opt/batdata/state/lock-status); $PROT; batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?"); case "$(echo $x) " in "meta=member lock=LOCKED protA=[$V] protB=[$V] check_rc=0 "*) break;; esac; [ "$k" = 3 ] || sleep 15; done
+			case "$(echo $x) " in "meta=member lock=LOCKED protA=[$V] protB=[$V] check_rc=0 "*) ok "A: member, LOCKED, both slots $V, p5 in sync";; *) no "on A: $(echo $x)";; esac
+			t=$SECONDS; dk=""; while [ $((SECONDS - t)) -lt 240 ]; do dk=$(fq 'docker ps -q 2>/dev/null | wc -l'); [ -n "$dk" ] && [ "$dk" -ge "$DK0" ] && break; sleep 15; done
+			[ -n "$dk" ] && [ "$dk" -ge "$DK0" ] && ok "containers running again: $dk (before: $DK0)" || no "containers running: ${dk:-?}, before: $DK0"
+			pkp "$FIP" && ok "publickey PROVEN on A" || no "publickey login on A"
+			say "hold flag now: [$(fq 'cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null')]"
+			if [ "$fails" = 0 ]; then RESULT="PASS — $NN is on A committed at $FIP (both slots $V)"
+				printf 'node=%s toa=PASS v=%s run=%s date=%s\n' "$NN" "$V" "$RUN" "$(date +%F)" | wsl_ bash -c "umask 077; cat >> $BENCH/toa.txt"
+			else RESULT="FAIL ($fails) — $NN is on A committed at $FIP (back to B: batman-slot rollback; batman-slot reboot committed)"; fi
+			exit 1 ;;   # on_exit sets the real code from RESULT
+		*) no "A is not committed after the release: [$c] — going back to B (or its deadline does)" ;;
+		esac
+	fi
 	# ---- back to B: the node acts only if it is still in THAT boot on slot A (see the header)
 	r=""; if [ "$INTRIAL" = y ]; then
 		r=$(fq "if [ \"\$(cut -c1-8 /proc/sys/kernel/random/boot_id)\" = $BA ] && [ \"\$(batman-slot active)\" = A ]; then batman-slot is-trial >/dev/null 2>&1 || batman-slot rollback >/dev/null 2>&1; (batman-slot reboot committed s0-slota </dev/null >/dev/null 2>&1 &); echo SENT; else echo WRONG-BOOT; fi")
@@ -261,7 +247,8 @@ if [ "$MODE" = slota ]; then
 	[ -n "$dk" ] && [ "$dk" -ge "${DK0:-0}" ] && ok "containers running again: $dk (before: ${DK0:-?})" || no "containers running: ${dk:-?}, before: ${DK0:-?}"
 	pkp "$FIP" && ok "publickey PROVEN on B after the return" || no "publickey login after the return"
 	say "hold flag now: [$(fq 'cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null')]"
-	if [ "$fails" = 0 ]; then RESULT="PASS — $NN: slot A rewritten with $V, back on B at $FIP"
+	if [ "$MODE" = toa ]; then RESULT="FAIL (${fails}) — $NN was NOT moved to A: it is on B at $FIP"
+	elif [ "$fails" = 0 ]; then RESULT="PASS — $NN: slot A rewritten with $V, back on B at $FIP"
 		printf 'node=%s slota=PASS v=%s run=%s date=%s\n' "$NN" "$V" "$RUN" "$(date +%F)" | wsl_ bash -c "umask 077; cat >> $BENCH/slota.txt"
 	else RESULT="FAIL ($fails) — $NN is on B at $FIP"; fi
 	exit 1   # on_exit sets the real code from RESULT
