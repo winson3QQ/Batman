@@ -21,6 +21,10 @@
 #   pr_needs_person <step>    NEEDS-PERSON line + $DV_DIR/needs-person.txt, DNODE_BLOCKED=1, return 1
 # Every judgement line is "PASS ..." / "FAIL ..." / "INVALID ..." / "NEEDS-PERSON ..."; pr_result prints the verdict.
 set -u
+# the bench nodes' addresses: NODE / PEER, else the bench store's membership log (prov-bench-s0-254.sh, the last
+# "node=<n> run=keep-... ip=<address>" line of each node), else the pre-conversion fleet addresses
+bench_ip(){ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- grep "^node=$1 run=keep-" /home/yello/.batman-dv/bench/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1; }
+[ -n "${NODE:-}" ] || NODE=$(bench_ip 04); [ -n "${PEER:-}" ] || PEER=$(bench_ip 02)
 NODE=${NODE:-10.41.1.3}; PEER=${PEER:-10.41.1.1}; MAC=${MAC:-88:a2:9e:b5:6c:89}
 PEERMAC=${PEERMAC:-a8:dd:9f:4d:c7:60}   # 02's mesh interface (wlh0): the neighbour must be 02, not any node (review A-m6 / B-m5); pr_begin checks it on 02
 REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
@@ -376,7 +380,11 @@ pr_restore(){
 	d=$(grep '^DIFF ' <<< "$PR_CMP"); [ "$PR_WROTE_B" = 1 ] && d=$(grep -vE '^DIFF identity [-+] protB=' <<< "$d")
 	[ -z "$d" ] || { no "S0 not restored — snapshot and dirty flag kept"; return 1; }
 	[ "$PR_WROTE_B" = 1 ] && grep -q '^DIFF identity' <<< "$PR_CMP" && say "only slot-B.protected differs (B is rewritten next)"
-	ok "S0 restored (p5 / overlay / uci / identity / p6 state)"; PR_RESTORING=0; return 0
+	ok "S0 restored (p5 / overlay / uci / identity / p6 state)"; PR_RESTORING=0
+	# a restore in the MIDDLE of a unit (it goes on with a second claim: prov-netjoin's negative control, 2026-11-06
+	# "claim.verify code=3" on the restored member): legacy again; the unit's last restore (pr_end / pr_abort) is not
+	[ "${PR_FINAL:-0}" = 1 ] || [ "${PR_BASE:-legacy}" != legacy ] || pr_make_legacy || return 1
+	return 0
 }
 pr_brewrite(){
 	local s
@@ -428,7 +436,7 @@ pr_release(){
 pr_abort(){
 	no "ABORT: $*"
 	if [ "$PR_SNAPPED" = 1 ]; then
-		if pr_restore; then
+		if PR_FINAL=1 pr_restore; then
 			# a failed B rewrite keeps the snapshot and the dirty flag for the person (finish only when B is V again)
 			if [ "$PR_WROTE_B" = 1 ] && ! pr_brewrite; then pr_needs_person "abort ($*): B rewrite failed"; pr_release; return 1; fi
 			pr_finish_snap
@@ -444,7 +452,7 @@ pr_end(){	# [revert] [wrote-b]
 		if [ "$b" = "slot=B version=$PR_WBOX_VER" ]; then q 'rm -f /opt/batdata/state/bad-slot; sync'; ok "bad-slot = the reverted wbox trial (removed)"
 		else pr_needs_person "bad-slot [$b] is not slot=B version=$PR_WBOX_VER"; return 1; fi
 	fi
-	pr_restore || { pr_needs_person "pr_end: restore failed"; return 1; }
+	PR_FINAL=1 pr_restore || { pr_needs_person "pr_end: restore failed"; return 1; }
 	s=$(qr "$ST")
 	if [ "$PR_WROTE_B" = 1 ] || [ "$(field "$s" protB)" != "[$PR_V]" ]; then pr_brewrite || { pr_needs_person "pr_end: B rewrite failed"; return 1; }
 	else [ "$(qr "$PROTB_LS")" = "$PR_PROTB_LS" ] && ok "slot-B.protected = V, untouched" || no "slot-B.protected changed"; fi
@@ -527,12 +535,30 @@ pr_begin(){
 	q "mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
 	o=$(nb snap "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^SNAP $RUN" <<< "$o" || { pr_release; no "snap"; return 1; }
 	PR_SNAPPED=1
+	# The bench base state is a claimed N0 MEMBER now (254-h4 §3.1, prov-bench-s0-254.sh); these units were written for
+	# a LEGACY start (they claim first). L vehicle (254-h4 §2): inside the snapshot the node is made legacy, the restore
+	# brings the member back. PR_BASE=member: the unit wants the base state as it is.
+	if [ "${PR_BASE:-legacy}" = legacy ]; then pr_make_legacy || { pr_abort "make-legacy"; return 1; }; fi
 	for a in "$@"; do case "$a" in
 		upper=*) pr_upper_helper "${a#upper=}" || { pr_abort "upper-helper"; return 1; } ;;
 		helper=*) pr_push_helper "${a#helper=}" || { pr_abort "push-helper"; return 1; } ;;
 		*) pr_abort "pr_begin: bad argument $a"; return 1 ;;
 	esac; done
 	return 0
+}
+# pr_make_legacy (only inside a snapshotted unit): p5's prov record stripped with the helper stopped (prov-base
+# strip-p5-prov; a running helper would write the overlay's record back), the overlay's record removed, the identity
+# kept -> the helper's boot takes boot.go case 9 (seeded, no prov, overlay identity): a legacy record, generation 1.
+pr_make_legacy(){
+	local st o i
+	st=$(qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta")
+	case "$st" in legacy) say "base state: legacy already"; return 0 ;; member|claimed) ;; *) no "make-legacy: base state unreadable / unexpected [$st]"; return 1 ;; esac
+	o=$(PB_ENV=KEEP_HELPER_STOPPED=1 nb strip-p5-prov "$RUN"); grep -q "^STRIPPED $RUN" <<< "$o" || { no "make-legacy: strip-p5-prov: $(tail -1 <<< "$o")"; return 1; }
+	o=$(q "rm -f /etc/batman-prov/prov.cbor /etc/batman-prov/prov.meta; sync; ls /etc/batman-prov/prov.* 2>/dev/null | wc -l; for s in batman-provhelper joinwatch batman-provd; do [ -x /etc/init.d/\$s ] && /etc/init.d/\$s start >/dev/null 2>&1; done; echo started")
+	case "$(echo $o)" in "0 started") ;; *) no "make-legacy: overlay record not removed / services not started: [$(echo $o)]"; return 1 ;; esac
+	st=""; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do st=$(qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta 2>/dev/null"); [ "$st" = legacy ] && break; sleep 5; done
+	[ "$st" = legacy ] || { no "make-legacy: the helper did not come up legacy [$st]: $(qr "logread | grep batman-provhelper | tail -2" | tr '\n' '|')"; return 1; }
+	say "base state: member -> legacy for this unit ($(qr "logread | grep 'batman-provhelper.*boot rc=.*verdict=legacy' | tail -1 | sed 's/.*boot //'" | cut -c1-120)); the restore brings the member back"
 }
 pr_on_exit(){ local rc=$?
 	# review B-M5: an exit DURING a restore leaves a half-restored node — that is a person's job, said so
