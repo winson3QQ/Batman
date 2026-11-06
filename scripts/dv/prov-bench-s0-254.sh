@@ -13,7 +13,10 @@
 # `batman-autocommit release --wait` (as fresh's step 2 and prov-254.sh pr_normalise do) instead of being left. A trial
 # that is not healthy is left exactly as in slota: the node is on B again, and the run FAILs - so a 02 whose A does not
 # mesh comes back by itself (the first version used `batman-slot rollback` on B, which has no way back: review
-# 2026-11-06, both reviewers). 04 first; 02 only after 04 passed (toa.txt).
+# 2026-11-06, both reviewers). Once the release is sent the product alone decides; 150 s after the commit the node
+# must be in the same boot at the same address; then A is rebooted once on purpose (a committed slot has no deadline
+# to fall back on: its second boot is seen now, while someone is watching). 04 first; 02 only after 04 passed
+# (toa.txt). After toa, `restore` starts from A (restore_all skips its slot-B branch).
 # slota is chain1's 8.6 + 8.8 (`sysupgrade -n` under the commit hold -> HELD trial on A -> rollback -> B), for a MEMBER:
 # its trial wants a mesh neighbour, so both nodes must be on N0 first. The node ends where it started (B committed);
 # A then holds V with an overlay built from p5 (the member's own configuration). The way back is tied to the trial:
@@ -147,7 +150,7 @@ if [ "$MODE" = slota ] || [ "$MODE" = toa ]; then
 	payver
 	if [ "$NN" = 02 ]; then [ "$(wsl_ grep -c "^node=04 $MODE=PASS v=$V " $BENCH/$MODE.txt 2>/dev/null | tr -d '\r')" -ge 1 ] 2>/dev/null || { say "$MODE 02 runs only after $MODE 04 passed with $V (no such line in $BENCH/$MODE.txt)"; exit 1; }; fi
 	SEEN="${IP:-} $(wsl_ grep "^node=$NN " $BENCH/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1)"
-	wait_find 300 "slot=B ver=$V trial_rc=1 " || { say "$NN not found on B committed $V (tried:$SEEN; give IP=<address>)"; exit 1; }
+	wait_find 300 "slot=B ver=$V trial_rc=1 " || { say "$NN not found on B committed $V (tried:$SEEN; give IP=<address>)"; wait_find 120 "ver=$V " && say "it is here: $FOUND_STATE"; exit 1; }
 	s=$FOUND_STATE; say "$NN at $FIP ($FOUND_HOW): $s"; B0=$(bootof "$s")
 	case "$B0" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) say "boot id unreadable [$B0]"; exit 1;; esac
 	case "$s" in *" hold=[] held=0 badslot=[]"*) ;; *) say "precondition: a hold or a bad-slot mark is present"; exit 1;; esac
@@ -185,7 +188,7 @@ if [ "$MODE" = slota ] || [ "$MODE" = toa ]; then
 	# healthy + HELD, sampled in ONE ssh with the boot id: an answer from another boot is not this trial. Ends at the
 	# trial's uptime 420 s (its own deadline is 600 s) or 480 s of host time since its boot, whichever comes first.
 	SQ="echo boot=\$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=\$(batman-slot active) up=\$(cut -d. -f1 /proc/uptime) held=\$(logread | grep -c 'is healthy and HELD') meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) lock=\$(cat /opt/batdata/state/lock-status) mesh_id=\$(uci -q get wireless.default_radio1.mesh_id); $MJ"
-	x=""; xl=""; INTRIAL=y; HELDOK=n
+	x=""; xl=""; INTRIAL=y; HELDOK=n; RELSENT=0
 	while [ $((SECONDS - T0)) -lt 480 ]; do
 		x=$(echo $(fq "$SQ"))
 		# another boot (a complete 8-hex id that is not the trial's) or another slot: the trial is over; anything else
@@ -204,31 +207,62 @@ if [ "$MODE" = slota ] || [ "$MODE" = toa ]; then
 	else no "the trial did not answer in 480 s"; fi
 	# ---- toa: commit the healthy, HELD trial (fresh step 2 / pr_normalise); only in that boot, on A, in a trial
 	if [ "$MODE" = toa ] && [ "$INTRIAL" = y ] && [ "$HELDOK" = y ] && [ "$fails" = 0 ]; then
-		r=$(fq "if [ \"\$(cut -c1-8 /proc/sys/kernel/random/boot_id)\" = $BA ] && [ \"\$(batman-slot active)\" = A ] && batman-slot is-trial >/dev/null 2>&1; then batman-autocommit release --wait 2>&1 | tail -1; else echo WRONG-STATE; fi")
+		# the trial was judged WITH the mesh requirement (a radio-only arm would commit without a neighbour)
+		[ "$(fq "logread | grep -c 'batman-autocommit: mesh join required: 1 '")" -ge 1 ] 2>/dev/null && ok "A trial: judged with 'mesh join required: 1'" || no "A trial: no 'mesh join required: 1' in its log — not committing"
+	fi
+	if [ "$MODE" = toa ] && [ "$INTRIAL" = y ] && [ "$HELDOK" = y ] && [ "$fails" = 0 ]; then
+		# once the release is sent the PRODUCT decides (commit now, later, or its deadline returns to B): this run only
+		# watches. A second writer of the default slot (the manual return below) would race the commit (review 2026-11-06).
+		r=$(fqlong "if [ \"\$(cut -c1-8 /proc/sys/kernel/random/boot_id)\" = $BA ] && [ \"\$(batman-slot active)\" = A ] && batman-slot is-trial >/dev/null 2>&1; then batman-autocommit release --wait 2>&1 | tail -1; else echo WRONG-STATE; fi")
 		say "release: ${r:-no answer}"
-		c=""; for k in 1 2 3 4 5 6; do c=$(fq "$ST"); case "$c" in *"slot=A "*"trial_rc=1 "*"boot=$BA"*) break;; esac; sleep 10; done
+		case "$r" in *WRONG-STATE*) ;; *) RELSENT=1 ;; esac
+		# committed in the trial's boot, or the node is in another boot (the trial is over), or 660 s have passed
+		t=$SECONDS; c=""; while [ $((SECONDS - t)) -lt 660 ]; do c=$(fq "$ST"); case "$c" in *"slot=A "*"trial_rc=1 "*"boot=$BA"*) break;; *"boot=$BA"*|"") ;; *"boot="*) break;; esac; sleep 10; done
 		case "$c" in *"slot=A "*"trial_rc=1 "*"boot=$BA"*)
 			ok "A committed, in the trial's own boot ($BA)"
-			case "$c" in *" hold=[] held=0 badslot=[]"*) ok "no hold, no bad-slot";; *) no "after the commit: $c";; esac
-			# let it settle: uptime 150 s in the same boot, the address reservation already done (no reboot follows)
-			t=$SECONDS; d=""; while [ $((SECONDS - t)) -lt 300 ]; do d=$(echo $(fq 'echo "$(cut -c1-8 /proc/sys/kernel/random/boot_id) $(uci -q get openmanetd.config.dhcpconfigured) $(cut -d. -f1 /proc/uptime)"')); set -- $d; [ "${1:-}" = "$BA" ] && [ "${2:-}" = 1 ] && [ "${3:-0}" -ge 150 ] && break; sleep 10; done
-			set -- $d; [ "${1:-}" = "$BA" ] && [ "${2:-}" = 1 ] && [ "${3:-0}" -ge 150 ] && ok "A stable: same boot, dhcpconfigured=1, uptime ${3:-} s" || no "A not stable after the commit: boot/dhcpconfigured/uptime=[$d] (the trial's boot: $BA)"
-			mj=$(fq "$MJ"); case "$mj" in *"joined=y"*) ok "mesh: joined on A ($(echo $mj))";; *) no "mesh: not joined on A [$(echo $mj)]";; esac
+			case "$c" in *" hold=[] held="[01]" badslot=[]"*) ok "no hold flag left, no bad-slot";; *) no "after the commit: $c";; esac   # held=1 is normal here: the run-dir marker of the hold stays until the next boot
+			# let it settle: the commit restarts openmanetd with its stock environment, and its address-reservation worker
+			# acts ~125 s after a start (batman-addr-defer). 150 s after the commit: the same boot, the same address,
+			# dhcpconfigured=1
+			TC=$SECONDS; say "waiting 150 s after the commit"; while [ $((SECONDS - TC)) -lt 150 ]; do sleep 10; done
+			d=""; for k in 1 2 3; do d=$(echo $(fq 'echo "boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) dhcp=$(uci -q get openmanetd.config.dhcpconfigured) ip=$(uci -q get network.ahwlan.ipaddr) up=$(cut -d. -f1 /proc/uptime)"')); [ -n "$d" ] && break; sleep 10; done
+			case "$d " in "boot=$BA dhcp=1 ip=$FIP up="*) ok "A stable 150 s after the commit: $d";; *) no "A not stable 150 s after the commit: [$d] (want boot=$BA dhcp=1 ip=$FIP)";; esac
+			t=$SECONDS; mj=""; while [ $((SECONDS - t)) -lt 300 ]; do mj=$(fq "$MJ"); case "$mj" in *"joined=y"*) break;; esac; sleep 15; done
+			case "$mj" in *"joined=y"*) ok "mesh: joined on A ($(echo $mj))";; *) no "mesh: not joined on A after 300 s [$(echo $mj)]";; esac
 			x=""; for k in 1 2 3; do x=$(fq "echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) lock=\$(cat /opt/batdata/state/lock-status); $PROT; batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?"); case "$(echo $x) " in "meta=member lock=LOCKED protA=[$V] protB=[$V] check_rc=0 "*) break;; esac; [ "$k" = 3 ] || sleep 15; done
 			case "$(echo $x) " in "meta=member lock=LOCKED protA=[$V] protB=[$V] check_rc=0 "*) ok "A: member, LOCKED, both slots $V, p5 in sync";; *) no "on A: $(echo $x)";; esac
 			t=$SECONDS; dk=""; while [ $((SECONDS - t)) -lt 240 ]; do dk=$(fq 'docker ps -q 2>/dev/null | wc -l'); [ -n "$dk" ] && [ "$dk" -ge "$DK0" ] && break; sleep 15; done
 			[ -n "$dk" ] && [ "$dk" -ge "$DK0" ] && ok "containers running again: $dk (before: $DK0)" || no "containers running: ${dk:-?}, before: $DK0"
 			pkp "$FIP" && ok "publickey PROVEN on A" || no "publickey login on A"
 			say "hold flag now: [$(fq 'cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null')]"
+			c=""; for k in 1 2 3; do c=$(fq "$ST"); [ -n "$c" ] && break; sleep 10; done
+			case "$c" in *"slot=A "*"trial_rc=1 "*"boot=$BA"*) ok "still A committed in the trial's boot after the checks";; *) no "after the checks the node is not A committed in boot $BA: [$c]";; esac
+			# the SECOND boot of A: a committed slot has no deadline to fall back on, so see it come up once more now
+			# (only in that boot, on A, committed)
+			if [ "$fails" = 0 ]; then
+				r2=$(fq "if [ \"\$(cut -c1-8 /proc/sys/kernel/random/boot_id)\" = $BA ] && [ \"\$(batman-slot active)\" = A ] && { batman-slot is-trial >/dev/null 2>&1; [ \$? = 1 ]; }; then (batman-slot reboot committed s0-toa2 </dev/null >/dev/null 2>&1 &); echo SENT; else echo WRONG-STATE; fi")
+				say "second boot of A: ${r2:-no answer}"
+				FOUND_STATE=""
+				if wait_find 900 "slot=A ver=$V trial_rc=1 " "$BA"; then
+					say "A again at $FIP ($FOUND_HOW): $FOUND_STATE"
+					case "$FOUND_STATE" in *" hold=[] held=0 badslot=[]"*) ok "second boot: A committed, no hold, no bad-slot";; *) no "second boot: $FOUND_STATE";; esac
+					t=$SECONDS; mj=""; while [ $((SECONDS - t)) -lt 300 ]; do mj=$(fq "$MJ"); case "$mj" in *"joined=y"*) break;; esac; sleep 15; done
+					case "$mj" in *"joined=y"*) ok "second boot: mesh joined ($(echo $mj))";; *) no "second boot: mesh not joined after 300 s [$(echo $mj)]";; esac
+					t=$SECONDS; dk=""; while [ $((SECONDS - t)) -lt 240 ]; do dk=$(fq 'docker ps -q 2>/dev/null | wc -l'); [ -n "$dk" ] && [ "$dk" -ge "$DK0" ] && break; sleep 15; done
+					[ -n "$dk" ] && [ "$dk" -ge "$DK0" ] && ok "second boot: containers running: $dk (before: $DK0)" || no "second boot: containers running: ${dk:-?}, before: $DK0"
+					pkp "$FIP" && ok "second boot: publickey PROVEN" || no "second boot: publickey login"
+				else no "A committed not found after its second boot — needs a person if it does not show up (cable on the node)"; wait_find 600 "ver=$V " && say "now: $FOUND_STATE"; fi
+			fi
 			if [ "$fails" = 0 ]; then RESULT="PASS — $NN is on A committed at $FIP (both slots $V)"
 				printf 'node=%s toa=PASS v=%s run=%s date=%s\n' "$NN" "$V" "$RUN" "$(date +%F)" | wsl_ bash -c "umask 077; cat >> $BENCH/toa.txt"
+				[ "$(wsl_ grep -c "run=$RUN " $BENCH/toa.txt | tr -d '\r')" = 1 ] || RESULT="$RESULT — but toa.txt was NOT written (the 02 gate reads it)"
 			else RESULT="FAIL ($fails) — $NN is on A committed at $FIP (back to B: batman-slot rollback; batman-slot reboot committed)"; fi
 			exit 1 ;;   # on_exit sets the real code from RESULT
-		*) no "A is not committed after the release: [$c] — going back to B (or its deadline does)" ;;
+		*) no "A is not committed after the release: [${c:-no answer}] — nothing more is sent; the trial's deadline returns the node to B" ;;
 		esac
 	fi
 	# ---- back to B: the node acts only if it is still in THAT boot on slot A (see the header)
-	r=""; if [ "$INTRIAL" = y ]; then
+	r=""; if [ "$INTRIAL" = y ] && [ "$RELSENT" = 0 ]; then
 		r=$(fq "if [ \"\$(cut -c1-8 /proc/sys/kernel/random/boot_id)\" = $BA ] && [ \"\$(batman-slot active)\" = A ]; then batman-slot is-trial >/dev/null 2>&1 || batman-slot rollback >/dev/null 2>&1; (batman-slot reboot committed s0-slota </dev/null >/dev/null 2>&1 &); echo SENT; else echo WRONG-BOOT; fi")
 		[ -n "$r" ] || r="no answer: the trial deadline returns the node"; say "return to B: $r"
 	fi
