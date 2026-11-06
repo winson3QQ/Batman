@@ -40,6 +40,12 @@ while IFS=: read -r verb rows; do
 	esac
 done <<< "$VERBS"
 say "image $V_NOW: $new of $((old + new)) P3 helper verbs exist"
-[ "$old" -gt 0 ] && [ "$new" = 0 ] && say "all of them are missing: a pre-P3 image (254-h4 §6.1)"
+# 254-h4 §6.1: "pre-P3" is said only of a version on the list AND without the feature marker; anything else that
+# lacks the verbs is a plain FAIL (the lines above)
+feat=$(qr "sed -n 's/^BATMAN_FEATURES=//p' /etc/batman-build")
+if grep -qxF "$V_NOW" "$REPO/scripts/dv/pre-p3-versions.txt" && ! grep -q 'provd-p3(#254)' <<< "$feat"; then
+	[ "$old" -gt 0 ] && no "pre-P3 image ($V_NOW)"
+	[ "$new" -gt 0 ] && no "$V_NOW is on the pre-P3 list but $new P3 verb(s) exist: the list (scripts/dv/pre-p3-versions.txt) is wrong"
+elif [ "$old" -gt 0 ]; then say "$V_NOW is not a listed pre-P3 version (or carries provd-p3(#254)): the missing verbs are plain FAILs"; fi
 pr_end
 pr_result
