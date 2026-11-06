@@ -135,24 +135,29 @@ fi
 if [ "$MODE" = slota ]; then
 	PH=slota-pre; MJ='. /usr/lib/batman/meshjoin.sh; meshjoin_sample; echo "plink=$MJ_PLINK bat=$MJ_BAT"; meshjoin_joined && echo joined=y'
 	payver
-	if [ "$NN" = 02 ]; then [ "$(wsl_ grep -c "^node=04 slota=PASS " $BENCH/slota.txt 2>/dev/null | tr -d '\r')" -ge 1 ] 2>/dev/null || { say "slota 02 runs only after slota 04 passed (no such line in $BENCH/slota.txt)"; exit 1; }; fi
+	if [ "$NN" = 02 ]; then [ "$(wsl_ grep -c "^node=04 slota=PASS v=$V " $BENCH/slota.txt 2>/dev/null | tr -d '\r')" -ge 1 ] 2>/dev/null || { say "slota 02 runs only after slota 04 passed with $V (no such line in $BENCH/slota.txt)"; exit 1; }; fi
 	SEEN="${IP:-} $(wsl_ grep "^node=$NN " $BENCH/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1)"
 	wait_find 300 "slot=B ver=$V trial_rc=1 " || { say "$NN not found on B committed $V (tried:$SEEN; give IP=<address>)"; exit 1; }
 	s=$FOUND_STATE; say "$NN at $FIP ($FOUND_HOW): $s"; B0=$(bootof "$s")
+	case "$B0" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) say "boot id unreadable [$B0]"; exit 1;; esac
 	case "$s" in *" hold=[] held=0 badslot=[]"*) ;; *) say "precondition: a hold or a bad-slot mark is present"; exit 1;; esac
-	a=$(fq "echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) lock=\$(cat /opt/batdata/state/lock-status) dirty=[\$(cat $DIRTY 2>/dev/null)] undo=\$(ls /opt/batdata/state/dv-undo 2>/dev/null | wc -l) mesh_id=\$(uci -q get wireless.default_radio1.mesh_id) actimeout=[\$(cat /opt/batdata/state/autocommit.timeout 2>/dev/null)]; batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?; sha256sum < $PAY | cut -c1-64; $NOFORCE; $MJ")
+	a=$(fq "echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) lock=\$(cat /opt/batdata/state/lock-status) dirty=[\$(cat $DIRTY 2>/dev/null)] undo=\$(ls /opt/batdata/state/dv-undo 2>/dev/null | wc -l) mesh_id=\$(uci -q get wireless.default_radio1.mesh_id) actimeout=[\$(cat /opt/batdata/state/autocommit.timeout 2>/dev/null)] holdonce=\$([ -e /opt/batdata/state/autocommit-hold-once ] && echo y || echo n); batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?; sha256sum < $PAY | cut -c1-64; $NOFORCE; $MJ")
 	say "B: $(echo $a)"
-	# actimeout=[]: the held trial's deadline is then the default 600 s, which the 420 s below is measured against
-	for w in "meta=member " "lock=LOCKED " "dirty=[] " "undo=0 " "mesh_id=bench-n0 " "actimeout=[] " "check_rc=0 " " $PSHA " "allow_unseeded=n allow_stale=n allow_txn=n " "joined=y "; do case " $(echo $a) " in *"$w"*) ;; *) say "precondition: want [$w] (a kept N0 member with a mesh neighbour, p5 in sync, the payload, no override files, the default trial deadline) — nothing written"; exit 1;; esac; done
+	# actimeout=[]: the held trial's deadline is then the default 600 s, which the 420 s below is measured against.
+	# holdonce=n: with autocommit-hold-once on p6 a trial is NOT reverted at its deadline (batman-autocommit held()),
+	# and a 02 whose radio did not come up on A would stay there
+	for w in "meta=member " "lock=LOCKED " "dirty=[] " "undo=0 " "mesh_id=bench-n0 " "actimeout=[] " "holdonce=n " "check_rc=0 " " $PSHA " "allow_unseeded=n allow_stale=n allow_txn=n " "joined=y "; do case " $(echo $a) " in *"$w"*) ;; *) say "precondition: want [$w] (a kept N0 member with a mesh neighbour, p5 in sync, the payload, no override files, the default trial deadline) — nothing written"; exit 1;; esac; done
 	pkp "$FIP" || { say "lab key does not authenticate by publickey — nothing written"; exit 1; }
-	DK0=$(fq 'docker ps -q 2>/dev/null | wc -l'); say "containers running before: ${DK0:-?}"
+	DK0=$(fq 'docker ps -q 2>/dev/null | wc -l'); case "$DK0" in ''|*[!0-9]*) say "container count unreadable [$DK0] — nothing written"; exit 1;; esac; say "containers running before: $DK0"
 	# ---- the OTA into A under the commit hold
 	PH=slota
-	fq "echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync; [ \"\$(cat /opt/batdata/state/autocommit-hold-commit)\" = '$V' ] && echo HOLD-SET" | grep -q HOLD-SET || { say "hold flag not confirmed: removing it [$(fq 'rm -f /opt/batdata/state/autocommit-hold-commit; ls /opt/batdata/state/autocommit-hold-commit 2>/dev/null; echo removed')] — nothing else done"; exit 1; }
-	fq "setsid sh -c 'sysupgrade -n $PAY >/opt/batdata/sysup-s0a.log 2>&1' </dev/null >/dev/null 2>&1 &" >/dev/null
+	fq "rm -f /opt/batdata/sysup-s0a.log; echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync; [ ! -e /opt/batdata/sysup-s0a.log ] && [ \"\$(cat /opt/batdata/state/autocommit-hold-commit)\" = '$V' ] && echo HOLD-SET" | grep -q HOLD-SET || { say "hold flag not confirmed: removing it [$(fq 'rm -f /opt/batdata/state/autocommit-hold-commit; ls /opt/batdata/state/autocommit-hold-commit 2>/dev/null; echo removed')] — nothing else done"; exit 1; }
+	# the answer may be lost with the ssh although the OTA started: the hold flag is NOT touched here (removing it
+	# under a running OTA lets the trial commit itself); the loops below see what happened
+	st=$(fq "setsid sh -c 'sysupgrade -n $PAY >/opt/batdata/sysup-s0a.log 2>&1' </dev/null >/dev/null 2>&1 & echo STARTED"); say "sysupgrade -n: ${st:-no answer}"
 	FIP0=$FIP
 	# a stage-1 refusal shows in the log within ~90 s, on the same boot (chain1 8.6)
-	t=$SECONDS; lg=""; while [ $((SECONDS - t)) -lt 90 ]; do lg=$(fq "cut -c1-8 /proc/sys/kernel/random/boot_id; cat /opt/batdata/sysup-s0a.log 2>/dev/null"); case "$lg" in "$B0"*REFUSING*) break;; "$B0"*) ;; *) lg=""; break;; esac; sleep 5; done
+	t=$SECONDS; lg=""; while [ $((SECONDS - t)) -lt 90 ]; do lg=$(fq "cut -c1-8 /proc/sys/kernel/random/boot_id; cat /opt/batdata/sysup-s0a.log 2>/dev/null"); case "$lg" in "$B0"*REFUSING*) break;; "$B0"*|"") lg="" ;; *) lg=""; break;; esac; sleep 5; done   # no answer: again; another boot: stage 2 ran
 	if grep -q REFUSING <<< "$lg"; then
 		no "stage 1 refused the OTA: [$(echo "$lg" | grep REFUSING | tail -1 | cut -c1-200)]"
 		say "hold flag: $(fq 'rm -f /opt/batdata/state/autocommit-hold-commit; ls /opt/batdata/state/autocommit-hold-commit 2>/dev/null; echo removed') ; $(fq "$ST")"
@@ -164,18 +169,23 @@ if [ "$MODE" = slota ]; then
 		else say "$NN not found on B either — needs a person (the hold flag may still be set)"; fi
 		RESULT="FAIL — A not rewritten (state above)"; exit 1
 	fi
-	say "A trial at $FIP ($FOUND_HOW): $FOUND_STATE"; BA=$(bootof "$FOUND_STATE"); T0=$SECONDS
+	say "A trial at $FIP ($FOUND_HOW): $FOUND_STATE"; BA=$(bootof "$FOUND_STATE")
+	up0=$(echo "$FOUND_STATE" | sed -n 's/.* up=\([0-9]*\) .*/\1/p'); T0=$((SECONDS - ${up0:-120}))   # host time at the trial's boot
+	case "$BA" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) no "the trial's boot id is unreadable [$BA]: nothing is sent, its deadline returns the node"; BA=unknown;; esac
 	# healthy + HELD, sampled in ONE ssh with the boot id: an answer from another boot is not this trial. Ends at the
-	# trial's uptime 420 s (its own deadline is 600 s) or 480 s of host time, whichever comes first.
+	# trial's uptime 420 s (its own deadline is 600 s) or 480 s of host time since its boot, whichever comes first.
 	SQ="echo boot=\$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=\$(batman-slot active) up=\$(cut -d. -f1 /proc/uptime) held=\$(logread | grep -c 'is healthy and HELD') meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) lock=\$(cat /opt/batdata/state/lock-status) mesh_id=\$(uci -q get wireless.default_radio1.mesh_id); $MJ"
-	x=""; INTRIAL=y; HELDOK=n
+	x=""; xl=""; INTRIAL=y; HELDOK=n
 	while [ $((SECONDS - T0)) -lt 480 ]; do
 		x=$(echo $(fq "$SQ"))
-		case "$x" in "boot=$BA slot=A "*) ;; "boot="*) INTRIAL=n; break;; *) sleep 10; continue;; esac   # another boot: the trial is over; no answer: try again
+		# another boot (a complete 8-hex id that is not the trial's) or another slot: the trial is over; anything else
+		# (no answer, a cut line): try again
+		case "$x" in "boot=$BA slot=A "*) xl=$x ;; "boot="[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]" slot="[AB]" "*) INTRIAL=n; break;; *) sleep 10; continue;; esac
 		case "$x" in *" held="[1-9]*) HELDOK=y; break;; esac
 		u=$(echo "$x" | sed -n 's/.* up=\([0-9]*\) .*/\1/p'); [ "${u:-0}" -ge 420 ] && break; sleep 10
 	done
-	say "A trial sample: ${x:-no answer}"
+	say "A trial sample: ${x:-no answer} ; last good sample: ${xl:-none}"
+	[ "$INTRIAL" = y ] && x=$xl
 	if [ "$INTRIAL" = y ] && [ -n "$x" ]; then
 		[ "$HELDOK" = y ] && ok "A trial: healthy and HELD" || no "A trial: not healthy and HELD by uptime 420 s / 480 s of waiting"
 		for w in "meta=member " "lock=LOCKED " "mesh_id=bench-n0 " "joined=y "; do case "$x " in *"$w"*) ok "A trial: $w";; *) no "A trial: want $w";; esac; done
@@ -203,7 +213,7 @@ if [ "$MODE" = slota ]; then
 	pkp "$FIP" && ok "publickey PROVEN on B after the return" || no "publickey login after the return"
 	say "hold flag now: [$(fq 'cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null')]"
 	if [ "$fails" = 0 ]; then RESULT="PASS — $NN: slot A rewritten with $V, back on B at $FIP"
-		printf 'node=%s slota=PASS run=%s date=%s\n' "$NN" "$RUN" "$(date +%F)" | wsl_ bash -c "umask 077; cat >> $BENCH/slota.txt"
+		printf 'node=%s slota=PASS v=%s run=%s date=%s\n' "$NN" "$V" "$RUN" "$(date +%F)" | wsl_ bash -c "umask 077; cat >> $BENCH/slota.txt"
 	else RESULT="FAIL ($fails) — $NN is on B at $FIP"; fi
 	exit 1   # on_exit sets the real code from RESULT
 fi
