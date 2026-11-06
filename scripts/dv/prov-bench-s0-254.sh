@@ -4,6 +4,15 @@
 #   bash scripts/dv/prov-bench-s0-254.sh restore <04|02> <run>   back to the legacy state of <run>'s snapshot
 #                                                                (<run> = the id printed by fresh, or keep-<id> after
 #                                                                step 5; nodes.txt in the bench store has it)
+#   bash scripts/dv/prov-bench-s0-254.sh slota <04|02>           a kept node on B: rewrite slot A with V (its legacy
+#                                                                overlay goes), try it, come back to B
+# slota is chain1's 8.6 + 8.8 (`sysupgrade -n` under the commit hold -> HELD trial on A -> rollback -> B), for a MEMBER:
+# its trial wants a mesh neighbour, so both nodes must be on N0 first. The node ends where it started (B committed);
+# A then holds V with an overlay built from p5 (the member's own configuration). A trial that never gets healthy is
+# left by the rollback as well, and FAILs; if the host dies, the trial's own deadline returns the node to B (it then
+# marks A bad: remove /opt/batdata/state/bad-slot after looking). After slota a `restore` can no longer bring the
+# legacy A back: restore_all rolls back to A and writes the snapshot's overlay over it - it still works (same V), but
+# it has not been run from this state.
 # The node must be on the lab cable (a fresh slot has no mesh). User decision 2026-11-06: no card re-flash — the fresh
 # card is made the way chain1-254.sh steps 1-6 and 8.2-8.4 make it (p5 snapshot -> mkfs -> V into B with a new overlay
 # -> B committed unclaimed -> lab key -> claim), then the node joins the bench network N0 and STAYS there:
@@ -49,9 +58,9 @@
 set -u
 MODE=${1:-}
 case "$MODE:${2:-}" in
-	fresh:04|restore:04) NODE=10.41.1.3; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local ;;
-	fresh:02|restore:02) NODE=10.41.1.1; MAC=d8:3a:dd:f8:45:d7; MDNS=BCM2711-45d7.local ;;   # eth0 address read on 02, 2026-11-06
-	*) echo "usage: $0 fresh <04|02> | restore <04|02> <run>"; exit 2 ;;
+	fresh:04|restore:04|slota:04) NODE=10.41.1.3; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local ;;
+	fresh:02|restore:02|slota:02) NODE=10.41.1.1; MAC=d8:3a:dd:f8:45:d7; MDNS=BCM2711-45d7.local ;;   # eth0 address read on 02, 2026-11-06
+	*) echo "usage: $0 fresh <04|02> | restore <04|02> <run> | slota <04|02>"; exit 2 ;;
 esac
 NN=$2; MACW=$(echo "$MAC" | tr : -)
 V=${V:?version}; PAY=${PAY:?payload path on the node}; PSHA=${PSHA:?payload sha256}
@@ -60,6 +69,7 @@ REPO=${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}; PB=$REPO/scripts/node/prov-b
 TOOLS=${DV_PROV_TOOLS:-/c/Users/yello/batman-dv-tools/prov}; TOOLS_WSL=/home/yello/batman-dv-tools/prov
 BREWRITE=${BREWRITE:-$REPO/scripts/dv/brewrite-254.sh}; LABKEY=${LABKEY:-$HOME/.ssh/id_ed25519}; HOSTIP=${HOSTIP:-10.41.240.10}
 if [ "$MODE" = restore ]; then RUN=${3:?run id}; case "$RUN" in *[!A-Za-z0-9_-]*) echo "bad run id"; exit 2;; esac; else RUN=s0$NN$(date +%m%d%H%M); fi
+[ "$MODE" = slota ] && RUN=sa$NN$(date +%m%d%H%M)
 PCD=/tmp/run/batman-dvpc.$RUN; BASE=/opt/batdata/dv-prov; D=$BASE/$RUN; PDIR=$BASE/payload-s0; DIRTY=/opt/batdata/state/dv-prov-dirty
 LOCKD=${TEMP:?TEMP unset - the host lock lives in the per-user temp dir, never in a shared tmp}/batman-dv-04.lock   # the prov units' lock (prov-254.sh), whichever node: they use both nodes
 BENCH=/home/yello/.batman-dv/bench; WSLK=$BENCH/h0; N0=$BENCH/n0   # the bench store (254-h4 §3.2): WSL, 0700 / 0600
@@ -107,6 +117,52 @@ if [ "$MODE" = restore ]; then
 		# the node is off N0 (also when only the B rewrite failed): the membership log says so
 		[ -n "$(wsl_ ls -1 $BENCH/nodes.txt 2>/dev/null)" ] && printf 'node=%s restored=%s date=%s\n' "$NN" "$RUN" "$(date +%F)" | wsl_ bash -c "umask 077; cat >> $BENCH/nodes.txt"
 	else RESULT="RESTORE FAILED — needs a person"; fi
+	exit 1   # on_exit sets the real code from RESULT
+fi
+# ======== slota <node>: slot A rewritten with V on a kept member (chain1 8.6 + 8.8), the node ends on B again
+if [ "$MODE" = slota ]; then
+	PH=slota-pre; MJ='. /usr/lib/batman/meshjoin.sh; meshjoin_sample; echo "plink=$MJ_PLINK bat=$MJ_BAT"; meshjoin_joined && echo joined=y'
+	SEEN="${IP:-} $(wsl_ grep "^node=$NN " $BENCH/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1)"
+	wait_find 300 "slot=B ver=$V trial_rc=1 " || { say "$NN not found on B committed $V (tried:$SEEN; give IP=<address>)"; exit 1; }
+	s=$FOUND_STATE; say "$NN at $FIP ($FOUND_HOW): $s"; B0=$(bootof "$s")
+	case "$s" in *" hold=[] held=0 badslot=[]"*) ;; *) say "precondition: a hold or a bad-slot mark is present"; exit 1;; esac
+	a=$(fq "echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) lock=\$(cat /opt/batdata/state/lock-status) dirty=[\$(cat $DIRTY 2>/dev/null)] undo=\$(ls /opt/batdata/state/dv-undo 2>/dev/null | wc -l) mesh_id=\$(uci -q get wireless.default_radio1.mesh_id); batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?; sha256sum < $PAY | cut -c1-64; $NOFORCE; $MJ")
+	say "B: $(echo $a)"
+	for w in "meta=member " "lock=LOCKED " "dirty=[] " "undo=0 " "mesh_id=bench-n0 " "check_rc=0 " " $PSHA " "allow_unseeded=n allow_stale=n allow_txn=n " "joined=y "; do case " $(echo $a) " in *"$w"*) ;; *) say "precondition: want [$w] (a kept N0 member with a mesh neighbour, p5 in sync, the payload, no override files) — nothing written"; exit 1;; esac; done
+	pkp "$FIP" || { say "lab key does not authenticate by publickey — nothing written"; exit 1; }
+	# ---- the OTA into A under the commit hold
+	PH=slota
+	fq "echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync; [ \"\$(cat /opt/batdata/state/autocommit-hold-commit)\" = '$V' ] && echo HOLD-SET" | grep -q HOLD-SET || { say "hold flag not written — nothing else done"; exit 1; }
+	fq "setsid sh -c 'sysupgrade -n $PAY >/opt/batdata/sysup-s0a.log 2>&1' </dev/null >/dev/null 2>&1 &" >/dev/null
+	FIP0=$FIP
+	if ! wait_find 900 "slot=A ver=$V trial_rc=0 dt_try=00000001 " "$B0"; then
+		FIP=$FIP0; no "the OTA did not land in an A trial: sysupgrade said [$(fq 'tail -3 /opt/batdata/sysup-s0a.log' | tr '\n' ' ')]"
+		wait_find 300 "slot=B ver=$V trial_rc=1 " && fq 'rm -f /opt/batdata/state/autocommit-hold-commit' >/dev/null; say "now: ${FOUND_STATE:-not found}"
+		RESULT="FAIL — A not rewritten (state above)"; exit 1
+	fi
+	say "A trial at $FIP ($FOUND_HOW): $FOUND_STATE"; BA=$(bootof "$FOUND_STATE")
+	case "$FOUND_STATE" in *"held=1 "*) ok "the commit hold is in effect (held=1)";; *) no "the trial is not held: $FOUND_STATE";; esac
+	# healthy + HELD by uptime 420 s (the held trial's own deadline is 600 s: the rollback below must come before it)
+	ev=""; hl=""; while :; do ev=$(fq "logread | grep -E 'batman-autocommit'"); hl=$(grep -m1 "is healthy and HELD" <<< "$ev"); [ -n "$hl" ] && break; u=$(fq 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge 420 ] && break; sleep 10; done
+	echo "$ev" | grep -E "mesh join required|HELD" | tail -3 | cut -c1-200 | sed 's/^/    /'
+	[ -n "$hl" ] && ok "A trial: healthy and HELD" || no "A trial: not healthy by uptime 420 s — going back to B"
+	x=$(fq "echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) lock=\$(cat /opt/batdata/state/lock-status) mesh_id=\$(uci -q get wireless.default_radio1.mesh_id); $MJ")
+	say "A trial: $(echo $x)"
+	for w in "meta=member " "lock=LOCKED " "mesh_id=bench-n0 " "joined=y "; do case "$(echo $x) " in *"$w"*) ok "A trial: $w";; *) no "A trial: want $w";; esac; done
+	# ---- back to B (chain1 8.8)
+	fq "batman-slot rollback >/dev/null 2>&1; (batman-slot reboot committed s0-slota </dev/null >/dev/null 2>&1 &)" >/dev/null
+	if ! wait_find 900 "slot=B ver=$V trial_rc=1 " "$BA"; then
+		no "B not found after the rollback"; wait_find 600 "ver=$V " && say "now: $FOUND_STATE"
+		RESULT="FAIL — not back on B: needs a person (state above; the trial's deadline also returns to B)"; exit 1
+	fi
+	say "back on B at $FIP ($FOUND_HOW): $FOUND_STATE"
+	case "$FOUND_STATE" in *" hold=[] held=0 badslot=[]"*) ok "B committed, no hold, no bad-slot";; *) no "after the return: $FOUND_STATE";; esac
+	t=$SECONDS; mj=""; while [ $((SECONDS - t)) -lt 300 ]; do mj=$(fq "$MJ"); case "$mj" in *"joined=y"*) break;; esac; sleep 15; done
+	case "$mj" in *"joined=y"*) ok "mesh: joined again on B ($(echo $mj))";; *) no "mesh: not joined 300 s after the return [$(echo $mj)]";; esac
+	x=""; for k in 1 2 3; do x=$(fq "$PROT; batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?"); case "$(echo $x) " in "protA=[$V] protB=[$V] check_rc=0 "*) break;; esac; [ "$k" = 3 ] || sleep 15; done
+	case "$(echo $x) " in "protA=[$V] protB=[$V] check_rc=0 "*) ok "both slots hold $V, p5 in sync";; *) no "after the return: $(echo $x)";; esac
+	pkp "$FIP" && ok "publickey PROVEN on B after the return" || no "publickey login after the return"
+	[ "$fails" = 0 ] && RESULT="PASS — $NN: slot A rewritten with $V, back on B at $FIP" || RESULT="FAIL ($fails) — $NN is on B at $FIP"
 	exit 1   # on_exit sets the real code from RESULT
 fi
 # pcn <key> [FD3=<producer run ON the node>] -- <provclient node args>: as prov-254.sh pr_pc, at $FIP
