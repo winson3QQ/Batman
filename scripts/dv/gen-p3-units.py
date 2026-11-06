@@ -146,9 +146,54 @@ def render(rows):
     return head + "".join("\t".join(x.replace("\t", " ") for x in r) + "\n" for r in rows)
 
 
+MANUAL = os.path.join(HERE, "..", "..", "docs", "validation", "p3-manual-rows.md")
+
+
+def read_how():
+    hw = {}
+    for ln in open(os.path.join(HERE, "data", "p3-how.tsv"), encoding="utf-8"):
+        if ln.startswith("#") or not ln.strip():
+            continue
+        f = ln.rstrip("\n").split("\t")
+        hw[(f[0], f[1])] = (f[2], f[3] if len(f) > 3 else "")
+    return hw
+
+
+def manual_doc(rows):
+    """the rows (or parts of rows) a person runs with the app / the phone, as a checklist (generated)"""
+    hw = read_how()
+    out = ["# P3 測項裡由人執行的列(由 `scripts/dv/gen-p3-units.py --manual` 產生,不要手改)", "",
+           "來源:`docs/design/254-h4-harness.md` 附錄 A + `scripts/dv/data/p3-how.tsv`。主機端沒有能經 provd 開擁有者連線的測試",
+           "client(#254 留言 6697703967,使用者 2026-11-07 決定不寫),所以這些列要用**正式的 provisioning app / 手機**執行。",
+           "",
+           "- 執行時機:app 第一版之後,以及每次發版前。前置與記錄格式同 `h4-manual-cases.md` 第 0 節與「紀錄格式」。",
+           "- 「部分」= 該列的自動化部分由測項跑;表中「人要做的」是剩下的那一段。",
+           "- 沒有證據(app 截圖、節點唯讀輸出、時間)= 沒跑,不算 PASS。", ""]
+    cur = None
+    n_m = n_p = 0
+    for r in rows:
+        h, note = hw.get((r[0], r[1]), ("", ""))
+        if "m" not in h.split("+"):
+            continue
+        if r[0] != cur:
+            cur = r[0]
+            out += ["", "## `%s`" % cur, "", "| 列 | 來源 | 全部 / 部分 | 人要做的(為什麼不能自動) | 設計裡的斷言 |", "|---|---|---|---|---|"]
+        part = "全部" if h == "m" else "部分"
+        n_m += h == "m"
+        n_p += h != "m"
+        out.append("| %s | %s | %s | %s | %s |" % (r[1], r[2].replace("|", "\\|"), part, note.replace("|", "\\|"), (r[5] or "—").replace("|", "\\|")))
+    out += ["", "合計:全部由人執行 %d 列,部分 %d 列(共 %d 列中的 %d 列)。" % (n_m, n_p, len(rows), n_m + n_p), ""]
+    return "\n".join(out)
+
+
 def main():
     rows = parse()
     a = sys.argv[1:]
+    if a and a[0] == "--manual":
+        with open(MANUAL, "w", encoding="utf-8", newline="\n") as f:
+            f.write(manual_doc(rows))
+        print("gen-p3-units: wrote %s" % os.path.relpath(MANUAL, os.path.join(HERE, "..", "..")))
+        return 0
     if a and a[0] == "--list":
         for r in rows:
             if len(a) < 2 or r[0] == a[1]:
@@ -184,6 +229,12 @@ def main():
         if miss or gone:
             sys.stderr.write("gen-p3-units: FAIL p3-how.tsv: no entry for %s; entries for rows that do not exist: %s\n" % (miss or "-", gone or "-"))
             return 1
+        try:
+            if open(MANUAL, encoding="utf-8").read() != manual_doc(rows):
+                sys.stderr.write("gen-p3-units: FAIL docs/validation/p3-manual-rows.md is not what the tables give: run gen-p3-units.py --manual\n")
+                return 1
+        except OSError:
+            die("docs/validation/p3-manual-rows.md is missing: run gen-p3-units.py --manual")
         cnt = {}
         for v in hw.values():
             k = "manual" if v == "m" else "partly" if "m" in v.split("+") else "auto"
