@@ -143,3 +143,6 @@ feed/batman-prov/files/batman-provd-test.init	^[TE]DIR=/tmp/run/batman-provd?-te
 scripts/node/ble-lib-254.sh	pidof btmon.*/tmp/run/batman-dvpc\.\*/btmon	radio_restore stops a btmon whose /proc exe is the harness copy in a provclient dir: /tmp/run is root 0755 (procd), so only root can create /tmp/run/batman-dvpc.<run>; the match picks what to SIGINT, it decides nothing else
 # --- #254 H4: the EEPROM sandbox runs in WSL (rootless user + mount namespace), never on a node ---
 scripts/dv/eeprom-sbx-254.sh	("\$SR/tmp"|/proc\|/tmp\||whitelist \(/ /proc /tmp)	the sandbox's own tmpfs at $SR/tmp inside its private mount namespace, and the mountinfo whitelist text; no node path
+scripts/dv/prov-settings-254.sh	ls /tmp/\.uci/wireless 2>/dev/null \| wc -l	ST13: counts uci's own staging file (uci writes /tmp/.uci as root, 0700) to prove a change was staged and later only reverted; a read, never a write
+scripts/dv/prov-settings-254.sh	^x=\$\(qr .echo "staged=	ST13: the same count after the verb, then `uci revert` (uci itself removes its staging file); a read of uci's root-only dir
+scripts/dv/prov-settings-254.sh	grep -h '\^ssid=' /tmp/run/hostapd-\*\.conf	ST4: reads the ssid hostapd runs from its config under root-only /tmp/run (0644 by hostapd, F34); an observation, never a write

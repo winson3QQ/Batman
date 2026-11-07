@@ -359,6 +359,14 @@ func p3Op(cl *client, op string, args []string, fd3 map[string]string, hexArg fu
 				break
 			}
 		}
+		// diag-read <pub> <handle> [<out file>]: the bytes stay on the node for the unit's own checks (tar listing, a
+		// grep of the real secret values) - written after the privilege drop, so the file's directory must be the
+		// drop uid's (the unit makes $PCD/out 471:471 0700)
+		if len(args) > 3 {
+			if err := os.WriteFile(args[3], all, 0o600); err != nil {
+				die("diag-read: write %s: %v", args[3], err)
+			}
+		}
 		fmt.Println(resultLine("diag.read", code, r, fmt.Sprintf(" total=%d bytes=%d sha=%s", total, len(all), short(all))))
 	case "update-check":
 		hexArg(1)
