@@ -23,9 +23,9 @@ const COVERAGE: &[(&str, &str)] = &[
     ("chunking", "tested"),
     ("status_public", "tested"),
     ("legacy", "tested"),
-    ("keys", "pending: nodecert"),
-    ("node_cert", "pending: nodecert"),
-    ("identity_file", "pending: nodecert"),
+    ("keys", "tested"),
+    ("node_cert", "tested"),
+    ("identity_file", "tested"),
     ("hkdf", "tested"),
     ("psk_replay", "tested"),
     ("noise_nx", "tested"),
@@ -277,6 +277,167 @@ fn noise_mismatches_do_not_decrypt() {
     // msg1 lengths: 32 B NX, 48 B NXpsk0 (what the node's length check keys on, noise.go:84)
     assert_eq!(h(&v["noise_nx"]["msg1"]).len(), 32);
     assert_eq!(h(&v["noise_nxpsk0_owner"]["msg1"]).len(), 48);
+}
+
+// ---- nodecert (design §5.1 step 2, §6, §8.2): the vector node_cert (DAC signed by the test root) through the common
+// checks and pinning; one mutation per check must be refused with that check's error; the dev TOFU rule on
+// identity_file (accepted) and its forged certificate (refused); first contact under both build policies.
+use batman_proto::nodecert;
+
+fn rs(v: &J) -> [u8; 32] {
+    h(&v["keys"]["s_node_pub"]).try_into().unwrap()
+}
+
+/// node_cert with field `k` replaced (re-encoded deterministically)
+fn with_field(v: &J, k: u64, val: cbor::Value) -> Vec<u8> {
+    let mut m = cbor::decode(&h(&v["node_cert"]["cbor"])).unwrap();
+    if let cbor::Value::Map(entries) = &mut m {
+        for (key, value) in entries.iter_mut() {
+            if *key == cbor::Value::Uint(k) {
+                *value = val.clone();
+            }
+        }
+    }
+    cbor::encode(&m)
+}
+
+fn flip(mut b: Vec<u8>, i: usize) -> Vec<u8> {
+    b[i] ^= 1;
+    b
+}
+
+#[test]
+fn node_cert_pinned_and_mutations() {
+    let v = vectors();
+    let cert = h(&v["node_cert"]["cbor"]);
+    let dac = h(&v["keys"]["dac_cert_der"]);
+    let got = nodecert::verify_pinned(&cert, &rs(&v), &dac).expect("vector node_cert verifies against its pinned DAC");
+    assert_eq!(got.device_id, DEVICE_ID);
+    assert_eq!(got.ecdh_pub.to_vec(), h(&v["keys"]["node_ecdh_pub"]));
+    assert_eq!(got.dac_pub.to_vec(), h(&v["keys"]["dac_pub"]));
+    // one negative per check
+    let mut other_rs = rs(&v);
+    other_rs[0] ^= 1;
+    assert_eq!(nodecert::verify_pinned(&cert, &other_rs, &dac).err(), Some(nodecert::Error::StaticMismatch));
+    let sig_static = h(&v["node_cert"]["sig_static"]);
+    let c = with_field(&v, 5, cbor::Value::Bytes(flip(sig_static, 10)));
+    assert_eq!(nodecert::verify_pinned(&c, &rs(&v), &dac).err(), Some(nodecert::Error::SigStatic));
+    let c = with_field(&v, 3, cbor::Value::Bytes(vec![0u8; 16])); // another boot_id: sig_static no longer covers it
+    assert_eq!(nodecert::verify_pinned(&c, &rs(&v), &dac).err(), Some(nodecert::Error::SigStatic));
+    let sig_ecdh = h(&v["node_cert"]["sig_ecdh"]);
+    let c = with_field(&v, 6, cbor::Value::Bytes(flip(sig_ecdh, 10)));
+    assert_eq!(nodecert::verify_pinned(&c, &rs(&v), &dac).err(), Some(nodecert::Error::SigEcdh));
+    let c = with_field(&v, 4, cbor::Value::Bytes(h(&v["keys"]["owner_enc_pub"]))); // a substituted ECDH key
+    assert_eq!(nodecert::verify_pinned(&c, &rs(&v), &dac).err(), Some(nodecert::Error::SigEcdh));
+    let c = with_field(&v, 7, cbor::Value::Bytes(flip(hex::decode(DEVICE_ID).unwrap(), 8)));
+    assert_eq!(nodecert::verify_pinned(&c, &rs(&v), &dac).err(), Some(nodecert::Error::SnMismatch));
+    // not the pinned DAC (e.g. the root certificate pinned instead)
+    assert_eq!(
+        nodecert::verify_pinned(&cert, &rs(&v), &h(&v["keys"]["root_ca_cert_der"])).err(),
+        Some(nodecert::Error::NotPinned)
+    );
+}
+
+#[test]
+fn node_cert_first_contact_production_dac_is_untrusted_today() {
+    // the vector DAC is root-signed (not dev:): no production root exists in the app yet -> both policies refuse it
+    let v = vectors();
+    let cert = h(&v["node_cert"]["cbor"]);
+    for p in [nodecert::Policy::DevTofu, nodecert::Policy::Field] {
+        assert_eq!(nodecert::verify_first_contact(&cert, &rs(&v), DEVICE_ID, p).err(), Some(nodecert::Error::Untrusted));
+    }
+    assert_eq!(
+        nodecert::verify_first_contact(&cert, &rs(&v), "0123a5f0c3e1b74def", nodecert::Policy::DevTofu).err(),
+        Some(nodecert::Error::DeviceIdMismatch)
+    );
+}
+
+/// gen.py: dev_key = p256("dev-node"), d = int(seed) mod (n - 1) + 1 (computed with plain integer arithmetic; the test
+/// checks it reproduces identity_file.dac_pub, so a wrong constant fails here, not silently)
+const DEV_NODE_PRIV: &str = "1018ee07c7a494aa6b01e3afc3da234d5f664656dddcbd5f1022c0686f571769";
+
+fn dev_signing_key(v: &J) -> p256::ecdsa::SigningKey {
+    let sk = p256::ecdsa::SigningKey::from_slice(&hex::decode(DEV_NODE_PRIV).unwrap()).unwrap();
+    let pub65 = sk.verifying_key().to_sec1_point(false).as_bytes().to_vec(); // ecdsa 0.17: uncompressed SEC1
+    assert_eq!(pub65, h(&v["identity_file"]["dac_pub"]), "the dev fixture key does not match identity_file.dac_pub");
+    sk
+}
+
+/// a node_cert signed by the dev DAC (the shape a P2 bench node sends: file keystore, self-signed dev: DAC)
+fn dev_node_cert(v: &J) -> Vec<u8> {
+    use p256::ecdsa::signature::Signer;
+    let sk = dev_signing_key(v);
+    let s_node = rs(v);
+    let boot_id = vec![7u8; 16];
+    let ecdh_pub = h(&v["keys"]["node_ecdh_pub"]);
+    let mut m = nodecert::LABEL_STATIC.to_vec();
+    m.extend(s_node);
+    m.extend(&boot_id);
+    let sig_static: p256::ecdsa::Signature = sk.sign(&m);
+    let mut m = nodecert::LABEL_ECDH.to_vec();
+    m.extend(&ecdh_pub);
+    let sig_ecdh: p256::ecdsa::Signature = sk.sign(&m);
+    use cbor::Value as V;
+    cbor::encode(&V::Map(vec![
+        (V::Uint(1), V::Array(vec![V::Bytes(h(&v["identity_file"]["dev_cert_der"]))])),
+        (V::Uint(2), V::Bytes(s_node.to_vec())),
+        (V::Uint(3), V::Bytes(boot_id)),
+        (V::Uint(4), V::Bytes(ecdh_pub)),
+        (V::Uint(5), V::Bytes(sig_static.to_bytes().to_vec())),
+        (V::Uint(6), V::Bytes(sig_ecdh.to_bytes().to_vec())),
+        (V::Uint(7), V::Bytes(h(&v["identity_file"]["sn"]))),
+    ]))
+}
+
+#[test]
+fn identity_file_dev_rule() {
+    let v = vectors();
+    let id = v["identity_file"]["device_id"].as_str().unwrap();
+    let pub65: [u8; 65] = h(&v["identity_file"]["dac_pub"]).try_into().unwrap();
+    let good = nodecert::parse(&h(&v["identity_file"]["dev_cert_der"])).unwrap();
+    assert_eq!(nodecert::dev_rule(&good, &pub65, id), Ok(()));
+    // the forged certificate: same CN / serialNumber, the stranger's own key -> its key does not hash to the id
+    let forged = nodecert::parse(&h(&v["identity_file"]["forged_dev_cert_der"])).unwrap();
+    let forged_pub: [u8; 65] = forged
+        .tbs_certificate()
+        .subject_public_key_info()
+        .subject_public_key
+        .raw_bytes()
+        .try_into()
+        .unwrap();
+    assert!(matches!(nodecert::dev_rule(&forged, &forged_pub, id), Err(nodecert::Error::DevRule(_))));
+    // the right key but the forged certificate's signature (not self-signed by that key)
+    assert!(matches!(nodecert::dev_rule(&forged, &pub65, id), Err(nodecert::Error::DevRule(_))));
+}
+
+#[test]
+fn first_contact_dev_tofu_accepts_and_field_refuses() {
+    let v = vectors();
+    let id = v["identity_file"]["device_id"].as_str().unwrap();
+    let cert = dev_node_cert(&v);
+    let ok = nodecert::verify_first_contact(&cert, &rs(&v), id, nodecert::Policy::DevTofu).expect("dev TOFU accepts");
+    assert_eq!(ok.device_id, id);
+    // the field build refuses every dev certificate (design §6; 219-protocol.md :396)
+    assert_eq!(
+        nodecert::verify_first_contact(&cert, &rs(&v), id, nodecert::Policy::Field).err(),
+        Some(nodecert::Error::Untrusted)
+    );
+    // dev TOFU with the forged certificate in the chain (same id, stranger's key): its signatures do not verify under
+    // the DAC it presents unless the stranger signed them — here the node's signatures were made with the real key
+    let mut m = cbor::decode(&cert).unwrap();
+    if let cbor::Value::Map(entries) = &mut m {
+        entries[0].1 = cbor::Value::Array(vec![cbor::Value::Bytes(h(&v["identity_file"]["forged_dev_cert_der"]))]);
+    }
+    let forged = cbor::encode(&m);
+    assert_eq!(
+        nodecert::verify_first_contact(&forged, &rs(&v), id, nodecert::Policy::DevTofu).err(),
+        Some(nodecert::Error::SigStatic)
+    );
+    // the wrong QR
+    assert_eq!(
+        nodecert::verify_first_contact(&cert, &rs(&v), DEVICE_ID, nodecert::Policy::DevTofu).err(),
+        Some(nodecert::Error::DeviceIdMismatch)
+    );
 }
 
 /// Negative controls (design §8.2 / §8.3): mutated vector encodings must be rejected by the strict decoder.
