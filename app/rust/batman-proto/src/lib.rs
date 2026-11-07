@@ -5,6 +5,8 @@
 //! `tests/vectors/219-protocol/vectors.json`.
 
 pub mod cbor;
+pub mod claim;
+pub mod sig;
 pub mod frame;
 pub mod kdf;
 pub mod nodecert;
