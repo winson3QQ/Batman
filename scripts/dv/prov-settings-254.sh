@@ -20,7 +20,7 @@ PR_BASE=member
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
 pr_begin 1500 || { pr_result; exit 1; }
-pr_keys && pr_pc_place || { pr_abort "provclient"; pr_result; exit 1; }
+pr_h0 && pr_pc_place || { pr_abort "provclient"; pr_result; exit 1; }
 # the node's values the rows compare with (read-only)
 CC=$(qr 'uci -q get wireless.radio1.country'); HN=$(qr 'uci -q get system.@system[0].hostname')
 APIF=$(qr "ubus call network.wireless status 2>/dev/null | sed -n 's/.*\"ifname\": \"\\(phy[0-9]*-ap[0-9]*\\)\".*/\\1/p' | head -1")
@@ -29,35 +29,35 @@ say "node: country=$CC hostname=$HN ap=${APIF:-?} ap_key_sha=$KEYSHA"
 code(){ sed -n 's/.* code=\([0-9]*\).*/\1/p' <<< "$1" | head -1; }
 reason(){ sed -n 's/.* reason=\([0-9]*\).*/\1/p' <<< "$1" | head -1; }
 # ---- ST1 get
-r=$(pr_pc owner.pem -- settings-get "$OWNER" | grep '^RESULT settings.get'); say "ST1: $(cut -c1-160 <<< "$r")"
+r=$(pr_pc h0.pem -- settings-get "$H0" | grep '^RESULT settings.get'); say "ST1: $(cut -c1-160 <<< "$r")"
 if [ "$(code "$r")" = 0 ]; then
 	grep -q " keys=.*\b2\b" <<< "$r" && grep -qF "$CC" <<< "$r" && ok "ST1: settings.get code 0, country $CC present" || no "ST1: settings.get answered but without the country ($CC): [$r]"
 	k=$(qr 'uci -q get wireless.default_radio0.key'); [ -n "$k" ] && grep -qF -- "$k" <<< "$r" && no "ST1: the AP passphrase is in settings.get's output" || ok "ST1: the AP passphrase is not in the output"
 else no "ST1: settings.get code $(code "$r") (want 0): [$r]"; fi
 # ---- ST15 key 2 on a member
-r=$(pr_pc owner.pem -- settings-set "$OWNER" 2 DE | grep '^RESULT settings.set'); say "ST15: $r"
+r=$(pr_pc h0.pem -- settings-set "$H0" 2 DE | grep '^RESULT settings.set'); say "ST15: $r"
 [ "$(code "$r")" = 21 ] && [ "$(reason "$r")" = 14 ] && ok "ST15: key 2 on a member -> E_REJECTED{14}" || no "ST15: key 2 on a member: code $(code "$r") reason $(reason "$r") (want 21 / 14)"
 c=$(qr 'uci -q get wireless.radio1.country'); [ "$c" = "$CC" ] && ok "ST15: country unchanged ($c)" || no "ST15: country changed: $CC -> $c"
 # ---- ST17 key 1
-r=$(pr_pc owner.pem -- settings-set "$OWNER" 1 "dv-rename-$RUN" | grep '^RESULT settings.set'); say "ST17: $r"
+r=$(pr_pc h0.pem -- settings-set "$H0" 1 "dv-rename-$RUN" | grep '^RESULT settings.set'); say "ST17: $r"
 [ "$(code "$r")" = 6 ] && ok "ST17: key 1 -> E_UNSUPPORTED (rename-pending)" || no "ST17: key 1: code $(code "$r") (want 6)"
 h=$(qr 'uci -q get system.@system[0].hostname'); [ "$h" = "$HN" ] && ok "ST17: hostname unchanged" || no "ST17: hostname changed: $HN -> $h"
 # ---- ST10 `$` in the passphrase (made on the node, fd 3; never argv)
-r=$(pr_pc owner.pem FD3="printf 'ssid=%s\npsk=%s\n' 'dv-$RUN' 'bad\$pass-12345678'" -- settings-set "$OWNER" 20 | grep '^RESULT settings.set'); say "ST10: $r"
+r=$(pr_pc h0.pem FD3="printf 'ssid=%s\npsk=%s\n' 'dv-$RUN' 'bad\$pass-12345678'" -- settings-set "$H0" 20 | grep '^RESULT settings.set'); say "ST10: $r"
 [ "$(code "$r")" = 21 ] && [ "$(reason "$r")" = 13 ] && ok "ST10: a passphrase with \$ -> E_REJECTED{13}" || no "ST10: code $(code "$r") reason $(reason "$r") (want 21 / 13)"
 s=$(qr 'uci -q get wireless.default_radio0.key | tr -d "\n" | sha256sum | cut -c1-16'); [ "$s" = "$KEYSHA" ] && ok "ST10: AP key unchanged" || no "ST10: AP key changed"
 # ---- ST13 a staged change of someone else -> E_BUSY, status says so
 q "uci set wireless.default_radio0.ssid='staged-$RUN'" >/dev/null
 st=$(qr 'ls /tmp/.uci/wireless 2>/dev/null | wc -l'); [ "$st" = 1 ] && say "ST13: wireless change staged (not committed)" || no "ST13: could not stage a uci change [$st]"
-r=$(pr_pc owner.pem FD3="umask 077; s=\$(head -c 12 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'ssid=%s\npsk=%s\n' 'dv-$RUN' \"\$s\"" -- settings-set "$OWNER" 20 | grep '^RESULT settings.set'); say "ST13: $r"
+r=$(pr_pc h0.pem FD3="umask 077; s=\$(head -c 12 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'ssid=%s\npsk=%s\n' 'dv-$RUN' \"\$s\"" -- settings-set "$H0" 20 | grep '^RESULT settings.set'); say "ST13: $r"
 [ "$(code "$r")" = 7 ] && ok "ST13: key 20 with a staged wireless change -> E_BUSY" || no "ST13: code $(code "$r") (want 7 E_BUSY)"
-r2=$(pr_pc owner.pem -- status-get "$OWNER" | grep '^RESULT status.get'); say "ST13: $(cut -c1-200 <<< "$r2")"
+r2=$(pr_pc h0.pem -- status-get "$H0" | grep '^RESULT status.get'); say "ST13: $(cut -c1-200 <<< "$r2")"
 grep -q "f15=.*wireless" <<< "$r2" && ok "ST13: status key 15 names the staged package" || no "ST13: status key 15 does not name wireless: [$r2]"
 x=$(qr 'echo "staged=$(ls /tmp/.uci/wireless 2>/dev/null | wc -l) ssid=$(uci -q get wireless.default_radio0.ssid)"; uci revert wireless; echo "after_revert=$(ls /tmp/.uci/wireless 2>/dev/null | wc -l)"'); say "ST13: $(echo $x)"
 case "$(echo $x)" in "staged=1 ssid=staged-$RUN after_revert=0") ok "ST13: the staged change was not committed by anybody, reverted";; *) no "ST13: staging state afterwards: $(echo $x)";; esac
 # ---- ST4(P) key 20 with fresh test credentials (drawn on the node): applied, plink stays
 P0=$(qr 'iw dev wlh0 station dump 2>/dev/null | grep -c "plink:.*ESTAB"')
-r=$(pr_pc owner.pem FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'ssid=%s\npsk=%s\n' 'dv-$RUN' \"\$s\"" PROVCLIENT_TIMEOUT_S=600 -- settings-set "$OWNER" 20 | grep '^RESULT settings.set'); say "ST4(P): $r"
+r=$(pr_pc h0.pem FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'ssid=%s\npsk=%s\n' 'dv-$RUN' \"\$s\"" PROVCLIENT_TIMEOUT_S=600 -- settings-set "$H0" 20 | grep '^RESULT settings.set'); say "ST4(P): $r"
 if [ "$(code "$r")" = 0 ]; then
 	ok "ST4(P): key 20 code 0"
 	x=$(qr "echo ssid=\$(uci -q get wireless.default_radio0.ssid) keysha=\$(uci -q get wireless.default_radio0.key | tr -d '\n' | sha256sum | cut -c1-16) hostapd_ssid=\$(grep -h '^ssid=' /tmp/run/hostapd-*.conf 2>/dev/null | head -1 | cut -d= -f2) plink=\$(iw dev wlh0 station dump 2>/dev/null | grep -c 'plink:.*ESTAB')")

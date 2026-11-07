@@ -611,6 +611,15 @@ pr_keys(){
 	OWNER=$(wsl_ cat $WSLK/owner.pub | tr -d '\r'); ENC=$(wsl_ cat $WSLK/enc.pub | tr -d '\r'); ATK=$(wsl_ cat $WSLK/attacker.pub | tr -d '\r')
 	[ ${#OWNER} = 130 ] && [ ${#ENC} = 130 ] && [ ${#ATK} = 130 ] || { no "owner keys"; return 1; }
 }
+# pr_h0: the BENCH owner's key (prov-bench-s0-254.sh, ~/.batman-dv/bench/h0) for a unit that drives the node as its
+# real owner from the member base state: a 0600 COPY of owner.pem in this run's key dir (pr_keys_drop removes the
+# run dir, never the bench store), H0 = its public key. Use `pr_pc h0.pem ...` and "$H0" where a run-key unit uses
+# `pr_pc owner.pem ...` and "$OWNER".
+pr_h0(){
+	wsl_ bash -c "umask 077; mkdir -p $WSLK && cp /home/yello/.batman-dv/bench/h0/owner.pem $WSLK/h0.pem && chmod 600 $WSLK/h0.pem" || { no "bench owner key H0 not copied"; return 1; }
+	H0=$(wsl_ cat /home/yello/.batman-dv/bench/h0/owner.pub | tr -d ''); [ ${#H0} = 130 ] || { no "bench owner key H0 unreadable"; return 1; }
+	OWNER=${OWNER:-$H0}   # pr_end's key cleanup looks at OWNER
+}
 # pr_pc_place: provclient-arm64 into $PCD (root 0711, made without -p: a pre-existing dir is refused), sha checked
 # against the tools' SHA256SUMS. tmpfs: again after every reboot.
 pr_pc_place(){
