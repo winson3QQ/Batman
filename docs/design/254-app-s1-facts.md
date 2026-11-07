@@ -108,3 +108,26 @@ Roots: S=feed/batman-prov/src, D=docs/design (this repo, = main be90b00; line nu
   network change is in progress (node.go:1129-1165).
 - net_secrets uses ECDH-ES (alg -25) with a sender ephemeral P-256 key (cose.go:164-191); outer Sign1 payload
   {1 net_id, 2 version, 3 SHA256(DAC pub), 4 COSE_Encrypt} (wtxn.go:128-145). halow key 3 = bandwidth in MHz (cddl:325).
+
+## 9. Test phone Keystore probe (2026-11-08, design §9 "first step")
+Phone: Samsung Galaxy S20 5G SM-G9810, Android 13 (API 33), arm64-v8a, BLE; `pm list features`:
+`android.hardware.hardware_keystore=4`, `android.hardware.strongbox_keystore=4` (Keymaster 4 generation, launched on
+Android 10 and upgraded — no KeyMint). Probe: throwaway app `C:\src\batman-probe` (not in the repo), MainActivity.kt
+generates each key with `setIsStrongBoxBacked(true)` then `(false)`, uses it, reads `KeyInfo.securityLevel`. logcat:
+```
+START sdk=33 model=SM-G9810
+strongbox sign: OK level=STRONGBOX gen=131ms sign=69ms/op verify=true
+strongbox ecdh: OK level=SOFTWARE ecdh=5ms len=32 equal=true
+strongbox aesgcm: OK level=STRONGBOX iv=12B roundtrip=true
+tee sign: OK level=TEE gen=28ms sign=8ms/op verify=true
+tee ecdh: OK level=SOFTWARE ecdh=2ms len=32 equal=true
+tee aesgcm: OK level=TEE iv=12B roundtrip=true
+END
+```
+- ✅ EC P-256 signing and AES-256-GCM (Keystore-generated 12 B IV) run in StrongBox and in the TEE.
+- ⚠️ **PURPOSE_AGREE_KEY works but the key is SOFTWARE-level**: keystore2 emulates ECDH in software when the HAL
+  (Keymaster 4) cannot, and does so **silently, even with setIsStrongBoxBacked(true)** — no StrongBoxUnavailableException.
+  Design v8.1 §4 only handles "StrongBox unavailable -> TEE" and "ECDH unavailable -> no claiming"; it does not
+  handle "ECDH available but software". A self-test that checks only that ECDH succeeds would accept a software
+  owner_enc unnoticed -> the self-test must read `KeyInfo.securityLevel` for every key. Decision pending (user).
+- Latency: StrongBox sign 69 ms/op, TEE 8 ms/op; a claim / login / join signs 1-4 times.
