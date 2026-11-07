@@ -32,12 +32,12 @@ const COVERAGE: &[(&str, &str)] = &[
     ("noise_nxpsk0_owner", "tested"),
     ("noise_nxpsk0_replay", "tested"),
     ("fake_msg2_rule", "tested"),
-    ("auth_owner", "pending: sig-inputs"),
-    ("claim_checkmac", "pending: claim"),
-    ("owner_enc", "pending: sig-inputs"),
-    ("owner_op", "pending: sig-inputs"),
-    ("op_nonce", "pending: sig-inputs"),
-    ("claim_replay", "pending: claim"),
+    ("auth_owner", "tested"),
+    ("claim_checkmac", "tested"),
+    ("owner_enc", "tested"),
+    ("owner_op", "tested"),
+    ("op_nonce", "tested"),
+    ("claim_replay", "tested"),
     ("cose", "pending: cose"),
     ("chunk_boundary", "pending: envelope limits"),
     ("peers_challenge", "pending: not in S1 (P2 answers E_UNSUPPORTED; design §1)"),
@@ -438,6 +438,159 @@ fn first_contact_dev_tofu_accepts_and_field_refuses() {
         nodecert::verify_first_contact(&cert, &rs(&v), DEVICE_ID, nodecert::Policy::DevTofu).err(),
         Some(nodecert::Error::DeviceIdMismatch)
     );
+}
+
+// ---- claim / signature inputs: built byte-exact; the vectors' signatures verify under the vector public keys over the
+// bytes WE built (so the input really is what the owner key signs); low-s / DER handling for the Keystore's output
+use batman_proto::{claim, sig};
+
+fn a32(v: &J) -> [u8; 32] {
+    h(v).try_into().unwrap()
+}
+fn a65(v: &J) -> [u8; 65] {
+    h(v).try_into().unwrap()
+}
+fn sn() -> [u8; 9] {
+    hex::decode(DEVICE_ID).unwrap().try_into().unwrap()
+}
+fn es256_ok(pub65: &[u8], msg: &[u8], sig64: &[u8]) -> bool {
+    use p256::ecdsa::signature::Verifier;
+    let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(pub65).unwrap();
+    vk.verify(msg, &p256::ecdsa::Signature::from_slice(sig64).unwrap()).is_ok()
+}
+
+#[test]
+fn claim_checkmac_vector() {
+    let v = vectors();
+    let c = &v["claim_checkmac"];
+    let k: [u8; 32] = seed("claim_secret").try_into().unwrap();
+    let hh = a32(&v["noise_nx"]["handshake_hash"]);
+    let dac = h(&v["keys"]["dac_cert_der"]);
+    let owner = a65(&v["keys"]["owner_sign_pub"]);
+    let chal = claim::client_chal(&a32(&c["nonce"]), &hh, &dac, &owner);
+    assert_eq!(chal.to_vec(), h(&c["client_chal"]));
+    assert_eq!(claim::OTHER_DATA.to_vec(), h(&c["other_data"]));
+    assert_eq!(claim::checkmac_input(&k, &chal, &sn()).to_vec(), h(&c["checkmac_input_88B"]));
+    assert_eq!(claim::response(&k, &a32(&c["nonce"]), &hh, &dac, &owner, &sn()).to_vec(), h(&c["response"]));
+    // negatives: another session's h, another K, another owner key -> another response
+    let other_h = a32(&v["noise_nxpsk0_owner"]["handshake_hash"]);
+    assert_ne!(claim::response(&k, &a32(&c["nonce"]), &other_h, &dac, &owner, &sn()).to_vec(), h(&c["response"]));
+    let mut k2 = k;
+    k2[0] ^= 1;
+    assert_ne!(claim::response(&k2, &a32(&c["nonce"]), &hh, &dac, &owner, &sn()).to_vec(), h(&c["response"]));
+    assert_ne!(
+        claim::response(&k, &a32(&c["nonce"]), &hh, &dac, &a65(&v["keys"]["admin_pub"]), &sn()).to_vec(),
+        h(&c["response"])
+    );
+}
+
+#[test]
+fn owner_enc_and_auth_owner_vectors() {
+    let v = vectors();
+    let owner = a65(&v["keys"]["owner_sign_pub"]);
+    let enc_in = sig::owner_enc_input(&a65(&v["keys"]["owner_enc_pub"]));
+    assert_eq!(enc_in, h(&v["owner_enc"]["sig_enc_input"]));
+    assert!(es256_ok(&owner, &enc_in, &h(&v["owner_enc"]["sig_enc"])));
+    let a = &v["auth_owner"];
+    assert_eq!(sig::owner_key_id(&owner).to_vec(), h(&a["owner_key_id"]));
+    let hh = a32(&v["noise_nxpsk0_owner"]["handshake_hash"]);
+    let ai = sig::auth_owner_input(&hh, &owner);
+    assert_eq!(ai, h(&a["input"]));
+    assert!(es256_ok(&owner, &ai, &h(&a["sig"])));
+    // the auth signature does not verify over another session's h (channel binding)
+    let other = sig::auth_owner_input(&a32(&v["noise_nx"]["handshake_hash"]), &owner);
+    assert!(!es256_ok(&owner, &other, &h(&a["sig"])));
+}
+
+#[test]
+fn op_nonce_vector() {
+    let v = vectors();
+    assert_eq!(sig::request(2, "op/nonce", cbor::Value::Map(vec![])), h(&v["op_nonce"]["request"]));
+    let r = cbor::decode(&h(&v["op_nonce"]["response"])).unwrap();
+    let nonce = r.get(3).and_then(|b| b.get(1)).and_then(|n| n.as_bytes()).unwrap();
+    assert_eq!(nonce.to_vec(), h(&v["owner_op"]["nonce_helper"]));
+}
+
+#[test]
+fn owner_op_network_join_vector() {
+    let v = vectors();
+    let o = &v["owner_op"];
+    let req = cbor::decode(&h(&o["request_network_join"])).unwrap();
+    assert_eq!(req.get(2).and_then(|t| t.as_text()), Some("network/join"));
+    // the body without key 31, re-encoded deterministically, gives the vector's args_hash
+    let body = req.get(3).unwrap();
+    let cbor::Value::Map(entries) = body else { panic!("body is not a map") };
+    let without: Vec<_> = entries.iter().filter(|(k, _)| *k != cbor::Value::Uint(31)).cloned().collect();
+    let body_wo = cbor::Value::Map(without);
+    assert_eq!(sig::args_hash(&body_wo).unwrap().to_vec(), h(&o["args_hash"]));
+    let hh = a32(&v["noise_nxpsk0_owner"]["handshake_hash"]);
+    let input = sig::owner_op_input(&hh, &a32(&o["nonce_helper"]), "network/join", &body_wo).unwrap();
+    assert_eq!(input, h(&o["input"]));
+    assert!(es256_ok(&h(&v["keys"]["owner_sign_pub"]), &input, &h(&o["sig"])));
+    // the vector request's key 31 is exactly {1: verb, 2: sig}
+    let op = body.get(31).unwrap();
+    assert_eq!(op.get(1).and_then(|t| t.as_text()), Some("network/join"));
+    assert_eq!(op.get(2).and_then(|s| s.as_bytes()).map(|s| s.to_vec()), Some(h(&o["sig"])));
+    // the type-mismatch vector cannot be produced by owner_op_request: there, type != op verb
+    let mm = cbor::decode(&h(&o["request_type_mismatch"])).unwrap();
+    let mm_type = mm.get(2).and_then(|t| t.as_text()).unwrap();
+    let mm_verb = mm.get(3).and_then(|b| b.get(31)).and_then(|op| op.get(1)).and_then(|t| t.as_text()).unwrap();
+    assert_ne!(mm_type, mm_verb);
+    // a body that already has key 31 is refused
+    assert_eq!(sig::args_hash(body).err(), Some(sig::Error::BodyHasOwnerOp));
+}
+
+#[test]
+fn claim_replay_vector_byte_exact() {
+    let v = vectors();
+    let c = &v["claim_replay"];
+    let k: [u8; 32] = seed("claim_secret").try_into().unwrap();
+    let hh = a32(&v["noise_nxpsk0_replay"]["handshake_hash"]);
+    let dac = h(&v["keys"]["dac_cert_der"]);
+    let owner = a65(&v["keys"]["owner_sign_pub"]);
+    assert_eq!(claim::client_chal(&a32(&c["nonce"]), &hh, &dac, &owner).to_vec(), h(&c["client_chal"]));
+    let resp = claim::response(&k, &a32(&c["nonce"]), &hh, &dac, &owner, &sn());
+    assert_eq!(resp.to_vec(), h(&c["response"]));
+    let body = cbor::Value::Map(vec![(cbor::Value::Uint(1), cbor::Value::Bytes(resp.to_vec()))]);
+    let input = sig::owner_op_input(&hh, &a32(&c["nonce_helper"]), "claim/replay", &body).unwrap();
+    assert_eq!(input, h(&c["owner_op_input"]));
+    assert!(es256_ok(&owner, &input, &h(&c["owner_op_sig"])));
+    let sig64: [u8; 64] = h(&c["owner_op_sig"]).try_into().unwrap();
+    assert_eq!(sig::owner_op_request(4, "claim/replay", &body, &sig64).unwrap(), h(&c["request"]));
+    // the response: {1: id, 3: {1: owner_tag_key, 2: adv_owner_key, 3: root_password}, 4: 0}
+    let r = cbor::decode(&h(&c["response_envelope"])).unwrap();
+    assert_eq!(r.get(4).and_then(|x| x.as_uint()), Some(0));
+    assert_eq!(r.get(3).and_then(|b| b.get(1)).and_then(|x| x.as_bytes()).map(|x| x.to_vec()), Some(seed("owner_tag_key")));
+}
+
+/// n - s for a 32-byte big-endian s (the high-s twin of a low-s signature)
+fn n_minus(s: &[u8]) -> [u8; 32] {
+    let n = hex::decode("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551").unwrap();
+    let mut out = [0u8; 32];
+    let mut borrow = 0i16;
+    for i in (0..32).rev() {
+        let d = n[i] as i16 - s[i] as i16 - borrow;
+        borrow = if d < 0 { 1 } else { 0 };
+        out[i] = (d + 256 * borrow) as u8;
+    }
+    out
+}
+
+#[test]
+fn low_s_and_der_handling() {
+    let v = vectors();
+    let low: [u8; 64] = h(&v["auth_owner"]["sig"]).try_into().unwrap();
+    assert!(sig::is_low_s(&low), "the vector signature is low-s");
+    let mut high = low;
+    high[32..].copy_from_slice(&n_minus(&low[32..]));
+    assert!(!sig::is_low_s(&high));
+    assert_eq!(sig::normalize_raw(&high).unwrap(), low);
+    // a DER signature (what Keystore returns), in both forms, comes out as the same raw low-s
+    for raw in [low, high] {
+        let der = p256::ecdsa::Signature::from_slice(&raw).unwrap().to_der();
+        assert_eq!(sig::der_to_raw_low_s(der.as_bytes()).unwrap(), low);
+    }
+    assert_eq!(sig::der_to_raw_low_s(&[0x30, 0x02, 0x02, 0x00]).err(), Some(sig::Error::BadDer));
 }
 
 /// Negative controls (design §8.2 / §8.3): mutated vector encodings must be rejected by the strict decoder.
