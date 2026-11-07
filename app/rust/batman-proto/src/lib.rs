@@ -13,6 +13,7 @@ pub mod envelope;
 pub mod flow;
 pub mod sig;
 pub mod frame;
+pub mod joinflow;
 pub mod kdf;
 pub mod loginflow;
 pub mod nodecert;
