@@ -39,7 +39,7 @@ const COVERAGE: &[(&str, &str)] = &[
     ("op_nonce", "tested"),
     ("claim_replay", "tested"),
     ("cose", "tested (net_config, member_list, net_secrets; the invite / join-request / approval objects are not in S1)"),
-    ("chunk_boundary", "pending: envelope limits"),
+    ("chunk_boundary", "tested"),
     ("peers_challenge", "pending: not in S1 (P2 answers E_UNSUPPORTED; design §1)"),
     ("version_chain", "pending: not in S1 (network/update)"),
     ("sas", "pending: not in S1 (invites)"),
@@ -755,4 +755,146 @@ fn mutated_envelopes_are_rejected() {
     let mut t = good.clone();
     t.push(0x00);
     assert_eq!(cbor::decode(&t), Err(cbor::Error::TrailingBytes));
+}
+
+// ---- envelope: chunk_boundary, chunk building, response reader ------------------------------------------------------
+use batman_proto::envelope::{self, Outcome, ResponseReader};
+
+#[test]
+fn chunk_boundary_vector() {
+    let v = vectors();
+    let c = &v["chunk_boundary"];
+    let limit = c["limit_plaintext"].as_u64().unwrap() as usize;
+    assert_eq!(limit, c["max_msg"].as_u64().unwrap() as usize - 16);
+    // worst case: id 2^32-1, part 65535/65535, an idem key, type network/update
+    let (id, verb, idem) = (u32::MAX as u64, "network/update", [0xa5u8; 16]);
+    let s = envelope::max_slice(limit, id, verb, Some(&idem), 65535, 65535).unwrap();
+    assert_eq!(s as u64, c["max_body_slice"].as_u64().unwrap());
+    let at = envelope::chunk_request(id, verb, Some(&idem), &vec![0u8; s], 65535, 65535);
+    let over = envelope::chunk_request(id, verb, Some(&idem), &vec![0u8; s + 1], 65535, 65535);
+    assert_eq!(at.len() as u64, c["envelope_len_at_max"].as_u64().unwrap());
+    assert_eq!(over.len() as u64, c["envelope_len_at_max_plus_1"].as_u64().unwrap());
+}
+
+#[test]
+fn chunking_vector_rebuilt_byte_exact() {
+    let v = vectors();
+    for k in ["chunk1", "chunk2"] {
+        let b = h(&v["chunking"][k]);
+        let c = cbor::decode(&b).unwrap();
+        let idem: Option<[u8; 16]> = c.get(7).map(|x| x.as_bytes().unwrap().try_into().unwrap());
+        let part = c.get(6).unwrap();
+        let rebuilt = envelope::chunk_request(
+            c.get(1).and_then(|x| x.as_uint()).unwrap(),
+            c.get(2).and_then(|x| x.as_text()).unwrap(),
+            idem.as_ref(),
+            c.get(3).and_then(|x| x.as_bytes()).unwrap(),
+            part.get(1).and_then(|x| x.as_uint()).unwrap(),
+            part.get(2).and_then(|x| x.as_uint()).unwrap(),
+        );
+        assert_eq!(rebuilt, b, "{k}");
+    }
+}
+
+#[test]
+fn split_request_whole_or_chunks_within_limit() {
+    let v = vectors();
+    let body = cbor::decode(&h(&v["chunking"]["body"])).unwrap();
+    let enc = h(&v["chunking"]["body"]);
+    // fits: one whole envelope, the same bytes as sig::request
+    let one = envelope::split_request(9, "network/join", body.clone(), 65535).unwrap();
+    assert_eq!(one, vec![batman_proto::sig::request(9, "network/join", body.clone())]);
+    // does not fit: every chunk within max_msg - 16, same id, n = 1..total, the slices join to the encoded body
+    for max_msg in [200usize, 256, 300, 512, 700] {
+        let cs = envelope::split_request(9, "network/join", body.clone(), max_msg).unwrap();
+        assert!(cs.len() >= 2, "{max_msg}");
+        let mut joined: Vec<u8> = Vec::new();
+        for (i, c) in cs.iter().enumerate() {
+            assert!(c.len() <= max_msg - 16, "{max_msg}: chunk {} is {} B", i + 1, c.len());
+            let d = cbor::decode(c).unwrap();
+            assert_eq!(d.get(1).and_then(|x| x.as_uint()), Some(9));
+            assert_eq!(d.get(6).unwrap().get(1).and_then(|x| x.as_uint()), Some(i as u64 + 1));
+            assert_eq!(d.get(6).unwrap().get(2).and_then(|x| x.as_uint()), Some(cs.len() as u64));
+            assert!(d.get(7).is_none(), "no idem key on P2");
+            joined.extend(d.get(3).and_then(|x| x.as_bytes()).unwrap());
+        }
+        assert_eq!(joined, enc, "{max_msg}");
+    }
+    assert_eq!(envelope::split_request(9, "network/join", body, 40), Err(envelope::Error::LimitTooSmall));
+}
+
+fn resp(pairs: Vec<(u64, cbor::Value)>) -> Vec<u8> {
+    cbor::encode(&cbor::Value::Map(pairs.into_iter().map(|(k, v)| (cbor::Value::Uint(k), v)).collect()))
+}
+fn part(n: u64, t: u64) -> cbor::Value {
+    cbor::Value::Map(vec![(cbor::Value::Uint(1), cbor::Value::Uint(n)), (cbor::Value::Uint(2), cbor::Value::Uint(t))])
+}
+
+#[test]
+fn response_reader_vectors_and_negatives() {
+    use cbor::Value as V;
+    let v = vectors();
+    let ok = h(&v["envelope"]["response_info"]);
+    let id = cbor::decode(&ok).unwrap().get(1).and_then(|x| x.as_uint()).unwrap();
+    match ResponseReader::new(id).push(&ok).unwrap() {
+        Some(Outcome::Ok(V::Map(_))) => {}
+        o => panic!("response_info: {o:?}"),
+    }
+    let er = h(&v["envelope"]["response_error_lock_incomplete"]);
+    let eid = cbor::decode(&er).unwrap().get(1).and_then(|x| x.as_uint()).unwrap();
+    assert!(matches!(ResponseReader::new(eid).push(&er).unwrap(), Some(Outcome::Err { code: 13, .. })));
+    // the response to another request
+    assert_eq!(ResponseReader::new(id + 1).push(&ok), Err(envelope::Error::WrongId { want: id + 1, got: id }));
+    // a request-shaped message (key 0) is not a response
+    assert_eq!(ResponseReader::new(1).push(&h(&v["envelope"]["request_info"])), Err(envelope::Error::UnknownKey(0)));
+    // an error with a body / a success with an error detail / a non-map body
+    let det = V::Map(vec![(V::Uint(2), V::Uint(1))]);
+    let empty = V::Map(vec![]);
+    assert_eq!(ResponseReader::new(1).push(&resp(vec![(1, V::Uint(1)), (3, empty.clone()), (4, V::Uint(5)), (5, det.clone())])), Err(envelope::Error::BadStatus));
+    assert_eq!(ResponseReader::new(1).push(&resp(vec![(1, V::Uint(1)), (3, empty.clone()), (4, V::Uint(0)), (5, det)])), Err(envelope::Error::BadStatus));
+    assert_eq!(ResponseReader::new(1).push(&resp(vec![(1, V::Uint(1)), (3, V::Bytes(vec![0xa0])), (4, V::Uint(0))])), Err(envelope::Error::BadStatus));
+
+    // a chunked response: in order, out of order, and the refusals
+    let body = h(&v["chunking"]["body"]);
+    let (a, b) = body.split_at(body.len() / 2);
+    let c = |n: u64, t: u64, s: &[u8]| resp(vec![(1, V::Uint(7)), (3, V::Bytes(s.to_vec())), (4, V::Uint(0)), (6, part(n, t))]);
+    let want = cbor::decode(&body).unwrap();
+    for order in [[1u64, 2], [2, 1]] {
+        let mut r = ResponseReader::new(7);
+        let mut out = None;
+        for n in order {
+            out = r.push(&c(n, 2, if n == 1 { a } else { b })).unwrap();
+            if n == order[0] {
+                assert!(out.is_none());
+            }
+        }
+        assert_eq!(out, Some(Outcome::Ok(want.clone())));
+    }
+    let mut r = ResponseReader::new(7);
+    r.push(&c(1, 2, a)).unwrap();
+    assert_eq!(r.push(&c(1, 2, a)), Err(envelope::Error::DuplicatePart(1)));
+    let mut r = ResponseReader::new(7);
+    r.push(&c(1, 2, a)).unwrap();
+    assert_eq!(r.push(&c(2, 3, b)), Err(envelope::Error::PartTotalChanged));
+    let mut r = ResponseReader::new(7);
+    r.push(&c(1, 2, a)).unwrap();
+    assert_eq!(r.push(&ok_with_id(&ok, 7)), Err(envelope::Error::BadPart), "a whole response in the middle of a chunked one");
+    for (n, t) in [(0u64, 2u64), (3, 2), (1, 1)] {
+        assert_eq!(ResponseReader::new(7).push(&c(n, t, a)), Err(envelope::Error::BadPart), "part {n}/{t}");
+    }
+    // the reassembled size cap
+    let mut r = ResponseReader::new(7);
+    let big = vec![0u8; envelope::MAX_REASSEMBLED / 2 + 1];
+    r.push(&c(1, 3, &big)).unwrap();
+    assert_eq!(r.push(&c(2, 3, &big)), Err(envelope::Error::TooLarge));
+}
+
+fn ok_with_id(ok: &[u8], id: u64) -> Vec<u8> {
+    let cbor::Value::Map(mut m) = cbor::decode(ok).unwrap() else { panic!() };
+    for (k, v) in m.iter_mut() {
+        if *k == cbor::Value::Uint(1) {
+            *v = cbor::Value::Uint(id);
+        }
+    }
+    cbor::encode(&cbor::Value::Map(m))
 }
