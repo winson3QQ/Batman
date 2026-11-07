@@ -402,7 +402,13 @@ pr_needs_person(){
 	echo "$m"; [ -n "${DV_DIR:-}" ] && echo "$m" >> "$DV_DIR/needs-person.txt"
 	DNODE_BLOCKED=1; fails=$((fails + 1)); PR_PERSON=1; return 1
 }
-pr_finish_snap(){ local o; o=$(nb finish "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^FINISHED $RUN" <<< "$o" && PR_SNAPPED=0; }
+# the snapshot is finished only when the prov state is the one pr_begin found: a non-final pr_restore makes the node
+# legacy again, and a unit ending on one left the bench legacy for every later unit (h5-prov 2026-11-07: prov-base,
+# "base state: legacy already" in all 33 units after it)
+pr_finish_snap(){ local o
+	o=$(qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta")
+	[ -z "${PR_S0_STATE:-}" ] || [ "$o" = "$PR_S0_STATE" ] || { no "prov state [$o] at the end, S0 was [$PR_S0_STATE] — snapshot and dirty flag kept"; return 1; }
+	o=$(nb finish "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^FINISHED $RUN" <<< "$o" && PR_SNAPPED=0; }
 pr_release(){
 	local o
 	# a person takes over (NEEDS-PERSON): no radio / provd / helper restore (review B-M3: a second writer on a
@@ -538,6 +544,7 @@ pr_begin(){
 	# The bench base state is a claimed N0 MEMBER now (254-h4 §3.1, prov-bench-s0-254.sh); these units were written for
 	# a LEGACY start (they claim first). L vehicle (254-h4 §2): inside the snapshot the node is made legacy, the restore
 	# brings the member back. PR_BASE=member: the unit wants the base state as it is.
+	PR_S0_STATE=$(qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta")
 	if [ "${PR_BASE:-legacy}" = legacy ]; then pr_make_legacy || { pr_abort "make-legacy"; return 1; }; fi
 	for a in "$@"; do case "$a" in
 		upper=*) pr_upper_helper "${a#upper=}" || { pr_abort "upper-helper"; return 1; } ;;

@@ -67,7 +67,7 @@ pr_find 900 "$b0" || { pr_needs_person "no node after the sysrq reboot"; pr_resu
 br=$(qr 'tail -2 /opt/batdata/log/boot-reasons.log'); say "boot-reasons: $br"
 grep -qi sysrq <<< "$br" && ok "the reboot was the sysrq one (boot-reasons)" || no "boot-reasons does not show the sysrq reboot: $br"
 prov_boot
-pr_restore || { pr_needs_person "restore after the power loss did not reach S0"; pr_result; exit 1; }
+PR_FINAL=1 pr_restore || { pr_needs_person "restore after the power loss did not reach S0"; pr_result; exit 1; }
 prov_boot
 [ "$(qr "head -c 100 /etc/banner | wc -c; [ -e /etc/dv-prov-base-$RUN ] && echo extra-left")" = 100 ] && ok "/etc/banner back, no extra file left" || no "/etc/banner / extra file after the restore"
 # ---- end: nothing was written to B
