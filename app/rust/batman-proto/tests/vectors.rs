@@ -28,10 +28,10 @@ const COVERAGE: &[(&str, &str)] = &[
     ("identity_file", "pending: nodecert"),
     ("hkdf", "tested"),
     ("psk_replay", "tested"),
-    ("noise_nx", "pending: noise"),
-    ("noise_nxpsk0_owner", "pending: noise"),
-    ("noise_nxpsk0_replay", "pending: noise"),
-    ("fake_msg2_rule", "pending: noise"),
+    ("noise_nx", "tested"),
+    ("noise_nxpsk0_owner", "tested"),
+    ("noise_nxpsk0_replay", "tested"),
+    ("fake_msg2_rule", "tested"),
     ("auth_owner", "pending: sig-inputs"),
     ("claim_checkmac", "pending: claim"),
     ("owner_enc", "pending: sig-inputs"),
@@ -201,6 +201,82 @@ fn psk_replay_vector() {
     let mut z2 = z;
     z2[31] ^= 1;
     assert_ne!(kdf::psk_replay(&z2, DEVICE_ID).to_vec(), h(&v["psk_replay"]["psk_replay"]));
+}
+
+// ---- noise: the phone's ephemeral from keys.phone_ephemeral_priv; msg1 byte-exact, msg2 from the node decrypts to the
+// node_cert, the handshake hash and the first transport message match
+fn eph(v: &J) -> [u8; 32] {
+    h(&v["keys"]["phone_ephemeral_priv"]).try_into().unwrap()
+}
+
+/// resolves "group.key" references the vectors use for psk / payload fields
+fn by_ref(v: &J, r: &str) -> Vec<u8> {
+    let (g, k) = r.split_once('.').unwrap();
+    h(&v[g][k])
+}
+
+fn run_noise(v: &J, group: &str, mode: noise::Mode, device_id: Option<&str>) {
+    let g = &v[group];
+    let psk: Option<[u8; 32]> = g.get("psk").map(|r| by_ref(v, r.as_str().unwrap()).try_into().unwrap());
+    assert_eq!(noise::prologue(mode, device_id), h(&g["prologue"]), "{group}: prologue");
+    let mut ini = noise::Initiator::with_fixed_ephemeral_for_vectors(mode, device_id, psk.as_ref(), &eph(v)).unwrap();
+    assert_eq!(ini.msg1().unwrap(), h(&g["msg1"]), "{group}: msg1");
+    let (payload, mut s) = ini.read_msg2(&h(&g["msg2"])).unwrap();
+    assert_eq!(payload, h(&v["node_cert"]["cbor"]), "{group}: msg2 payload = node_cert");
+    assert_eq!(s.h.to_vec(), h(&g["handshake_hash"]), "{group}: handshake hash");
+    let req = h(&v["noise_nx"]["first_transport_plaintext"]);
+    assert_eq!(s.encrypt(&req).unwrap(), h(&g["first_transport_message"]), "{group}: first transport message");
+}
+
+use batman_proto::noise;
+
+#[test]
+fn noise_nx_vector() {
+    run_noise(&vectors(), "noise_nx", noise::Mode::Nx, Some(DEVICE_ID));
+}
+
+#[test]
+fn noise_nxpsk0_owner_vector() {
+    run_noise(&vectors(), "noise_nxpsk0_owner", noise::Mode::NxPsk0, None);
+}
+
+#[test]
+fn noise_nxpsk0_replay_vector() {
+    run_noise(&vectors(), "noise_nxpsk0_replay", noise::Mode::NxPsk0, None);
+}
+
+/// Negatives (design §5.0): a wrong PSK, a mode mismatch or a different device id in the prologue leaves msg2
+/// undecryptable — the phone sees Msg2NotDecryptable, never a payload.
+#[test]
+fn noise_mismatches_do_not_decrypt() {
+    let v = vectors();
+    let e = eph(&v);
+    let owner_psk: [u8; 32] = by_ref(&v, "hkdf.psk_owner").try_into().unwrap();
+    let replay_psk: [u8; 32] = by_ref(&v, "psk_replay.psk_replay").try_into().unwrap();
+    // owner msg2 read with the replay PSK
+    let mut i = noise::Initiator::with_fixed_ephemeral_for_vectors(noise::Mode::NxPsk0, None, Some(&replay_psk), &e).unwrap();
+    i.msg1().unwrap();
+    assert_eq!(i.read_msg2(&h(&v["noise_nxpsk0_owner"]["msg2"])).err(), Some(noise::Error::Msg2NotDecryptable));
+    // NX msg2 read as NXpsk0 (mode mismatch)
+    let mut i = noise::Initiator::with_fixed_ephemeral_for_vectors(noise::Mode::NxPsk0, None, Some(&owner_psk), &e).unwrap();
+    i.msg1().unwrap();
+    assert_eq!(i.read_msg2(&h(&v["noise_nx"]["msg2"])).err(), Some(noise::Error::Msg2NotDecryptable));
+    // NX with another device id in the prologue (a neighbour's unclaimed node answers with a real msg2 we cannot read)
+    let mut i = noise::Initiator::with_fixed_ephemeral_for_vectors(noise::Mode::Nx, Some("0123a5f0c3e1b74def"), None, &e).unwrap();
+    i.msg1().unwrap();
+    assert_eq!(i.read_msg2(&h(&v["noise_nx"]["msg2"])).err(), Some(noise::Error::Msg2NotDecryptable));
+    // fake msg2 (§fake_msg2_rule): same length as the real one, fresh ephemeral + random bytes -> does not decrypt
+    let rule = &v["fake_msg2_rule"];
+    let len = rule["length_equals_real_msg2"].as_u64().unwrap() as usize;
+    assert_eq!(h(&v["noise_nxpsk0_owner"]["msg2"]).len(), len);
+    let mut fake = h(&rule["fake_e_pub"]);
+    fake.extend((0..len - fake.len()).map(|i| (i * 31 % 251) as u8));
+    let mut i = noise::Initiator::with_fixed_ephemeral_for_vectors(noise::Mode::NxPsk0, None, Some(&owner_psk), &e).unwrap();
+    i.msg1().unwrap();
+    assert_eq!(i.read_msg2(&fake).err(), Some(noise::Error::Msg2NotDecryptable));
+    // msg1 lengths: 32 B NX, 48 B NXpsk0 (what the node's length check keys on, noise.go:84)
+    assert_eq!(h(&v["noise_nx"]["msg1"]).len(), 32);
+    assert_eq!(h(&v["noise_nxpsk0_owner"]["msg1"]).len(), 48);
 }
 
 /// Negative controls (design §8.2 / §8.3): mutated vector encodings must be rejected by the strict decoder.
