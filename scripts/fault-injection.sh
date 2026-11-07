@@ -471,7 +471,7 @@ p5_ap_back(){ local o apn b2 st s it
     o=$(timeout 240 ssh $S "root@$NODE" '. /usr/lib/batman/rundir.sh && batman_rundir && exec 9>"$RUNDIR/halow-setkey.lock" || { echo "REFUSED lock unusable"; exit 2; }
       w=0; until flock -n 9; do w=$((w + 1)); [ $w -ge 90 ] && { echo "REFUSED setkey lock busy"; exit 2; }; sleep 1; done
       [ -e /etc/batman-prov/.txn ] && { echo "REFUSED a .txn exists"; exit 2; }
-      [ -s /tmp/.uci/wireless ] && { echo "REFUSED another writer has staged wireless changes (/tmp/.uci/wireless)"; exit 2; }
+      [ -s /tmp/.uci/wireless ] && { echo "REFUSED another writer has staged wireless changes (uci staging)"; exit 2; }
       aps=$(uci -q show wireless | grep "\.mode=.ap.$" | cut -d. -f2); [ -n "$aps" ] || { echo "REFUSED no mode=ap interface"; exit 2; }
       prev=""; [ -f /etc/halow-keyguard.blocked ] && read -r prev < /etc/halow-keyguard.blocked
       new=$prev; for s in $aps; do uci set "wireless.$s.key=CHANGE-ME-NOW"; uci set "wireless.$s.disabled=1"; case " $new " in *" $s "*) ;; *) new="$new $s";; esac; done
