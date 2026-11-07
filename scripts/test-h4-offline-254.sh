@@ -22,4 +22,6 @@ t "offline judges" '^[1-9][0-9]* PASS / 0 FAIL$' "$PY" "$REPO/tests/judges/h4/te
 cd "$REPO/tests/tools/peer" || { tbad "no tests/tools/peer"; exit 1; }
 t "peer.py (vectors + fake bridge)" 'peer.py selftest: [1-9][0-9]* checks, 0 failed' "$PY" peer.py --selftest
 for m in netobj nodecert blebridge httprelay benchstore; do t "$m" "$m selftest: [1-9][0-9]* checks, 0 failed" "$PY" "$m.py" --selftest; done
+# the P3 test table (appendix A -> p3-units.tsv -> p3-how.tsv -> p3-manual-rows.md) is what the design gives now
+t "P3 unit table (gen-p3-units --check)" '^gen-p3-units: ok, [1-9][0-9]* rows in [1-9][0-9]* units' python3 "$REPO/scripts/dv/gen-p3-units.py" --check
 echo "$P passed, $F failed"; [ $F = 0 ]
