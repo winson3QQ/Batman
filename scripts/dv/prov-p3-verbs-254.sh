@@ -29,16 +29,23 @@ V_NOW=$(field "$(qr "$ST")" ver)
 # the call path itself: a verb every helper has must answer 0 (else nothing below means anything)
 r=$(pr_pc owner.pem -- info | grep '^RESULT info.state'); case "$r" in "RESULT info.state code=0 state=member "*) ok "the call path works (info.state code 0, member)";; *) inv "the call path: [$r]";; esac
 old=0; new=0
-while IFS=: read -r verb rows; do
-	[ -n "$verb" ] || continue
+for vr in $VERBS; do	# not `while read` over a here-string: the ssh calls inside would eat it (2026-11-07: one verb judged)
+	verb=${vr%%:*}; rows=${vr#*:}
+	# the code alone does not tell: an unknown verb AND a known verb called without its arguments both answer
+	# ESchema (20; node.go:256 vs :141). The helper's log line does ("verb X refused: code 20 (unknown verb "X")"
+	# vs "(missing arg N)"): read the line this call produced (04 wsl.22 2026-11-07: a first version judged by the
+	# code and called all ten verbs present).
+	u0=$(qr 'cut -d. -f1 /proc/uptime')
 	r=$(pr_pc owner.pem -- verb "$verb" | grep "^RESULT $verb code=")
 	c=$(sed -n 's/.* code=\([0-9]*\).*/\1/p' <<< "$r")
-	case "$c" in
-		6) no "$rows: $verb E_UNSUPPORTED (helper code 6)"; old=$((old + 1)) ;;
-		''|*[!0-9]*) inv "$rows: $verb could not be called [$r]" ;;
-		*) ok "$rows: $verb exists (helper code $c for a bare call)"; new=$((new + 1)) ;;
+	l=$(qr "logread | grep -F 'batman-provhelper' | grep -F 'verb $verb refused' | tail -1")
+	case "$c:$l" in
+		*":"*"unknown verb"*) no "$rows: $verb E_UNSUPPORTED (the helper has no such verb: code $c, '$(sed 's/.*refused: //' <<< "$l" | cut -c1-60)')"; old=$((old + 1)) ;;
+		0:*) ok "$rows: $verb exists (code 0 for a bare call)"; new=$((new + 1)) ;;
+		20:*"missing arg"*|20:*"unexpected arg"*|[1-9]*:*"refused"*) ok "$rows: $verb exists (code $c for a bare call: '$(sed 's/.*refused: //' <<< "$l" | cut -c1-60)')"; new=$((new + 1)) ;;
+		*) inv "$rows: $verb — no RESULT line or no helper log line to judge by [$r] [$l] (uptime at the call: $u0)" ;;
 	esac
-done <<< "$VERBS"
+done
 say "image $V_NOW: $new of $((old + new)) P3 helper verbs exist"
 # 254-h4 §6.1: "pre-P3" is said only of a version on the list AND without the feature marker; anything else that
 # lacks the verbs is a plain FAIL (the lines above)
