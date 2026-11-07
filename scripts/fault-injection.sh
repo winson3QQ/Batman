@@ -447,19 +447,24 @@ c2(){ echo "== C2 trial-crash-274: a manual 'batman-slot commit' after a crash i
 # exits). Runs only on the committed baseline slot: a node left in a trial (ota_boot failed) is first rebooted into
 # its committed slot (the trial slot's overlay is discarded with it); a node that is committed on ANOTHER slot is
 # left alone and FAILs loudly (a person decides). Already at the baseline -> nothing is written.
+# p5_person <msg>: a FAIL of P5's AP restore leaves the node to a person (the AP key / slot not at the baseline, or
+# unknown): the FAIL line, and the NEEDS-PERSON line daily-validation's dnode_blocked reads ($DV_DIR, passed by the
+# suite) so the run's later D suites on this node do not run on top of it (#254 H5 review round 3 B-MAJOR-2)
+p5_person(){ no "$1"; [ -n "${DV_DIR:-}" ] && echo "NEEDS-PERSON reflash-survives-config-202 ($NODE): $1" >> "$DV_DIR/needs-person.txt"; return 0; }
 p5_ap_back(){ local o apn b2 st s it
   # an OTA that timed out (ota_boot) may still be writing: nothing is touched while a sysupgrade runs
   o=$(q 'ps w 2>/dev/null | grep -c "[s]ysupgrade"' | tr -d '\r\n ')
-  [ "$o" = 0 ] || { no "P5: AP restore: a sysupgrade is running (or ps unreadable [$o]) — AP key NOT restored, needs a person"; return; }
+  [ "$o" = 0 ] || { p5_person "P5: AP restore: a sysupgrade is running (or ps unreadable [$o]) — AP key NOT restored, needs a person"; return; }
   s=$(slot); committed; it=$?
   if [ "$it" = 1 ]; then   # a trial: back to the committed slot, not committing the trial
-    b2=$(bootid); [ -n "$b2" ] || { no "P5: AP restore: boot id unreadable on the trial — AP key NOT restored, needs a person"; return; }
+    b2=$(bootid); [ -n "$b2" ] || { p5_person "P5: AP restore: boot id unreadable on the trial — AP key NOT restored, needs a person"; return; }
     n "setsid sh -c 'sleep 2; batman-slot reboot committed p5-ap-restore' </dev/null >/dev/null 2>&1 &"
-    waitboot "$b2" 300 && settle 180 >/dev/null 2>&1 || { no "P5: AP restore: the node did not come back from the trial — AP key NOT restored"; return; }
+    waitboot "$b2" 300 && settle 180 >/dev/null 2>&1 || { p5_person "P5: AP restore: the node did not come back from the trial — AP key NOT restored"; return; }
     s=$(slot); committed; it=$?
   fi
-  [ "$it" = 0 ] && [ "$s" = "$3" ] || { no "P5: AP restore: node on slot [$s] (committed rc $it), baseline slot $3 — AP key NOT restored, needs a person"; return; }
+  [ "$it" = 0 ] && [ "$s" = "$3" ] || { p5_person "P5: AP restore: node on slot [$s] (committed rc $it), baseline slot $3 — AP key NOT restored, needs a person"; return; }
   st=$(q 'halow-setkey --status 2>/dev/null | grep "^ap "' | tr -d '\r'); apn=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r' | md5sum | cut -c1-8)
+  local p5f=n; q 'batman-config-save --check 2>&1' | grep -q 'p5 fresh' && p5f=y   # p5 holds the live config
   if [ "$1" = CHANGE-ME-NOW ]; then
     # a fresh card's baseline AP key is the placeholder (99zz-batman-prov-state, stage1 F23) and halow-setkey refuses
     # the placeholder as a key (halow-setkey:83; h5-full-11062329). Step 1's setkey released keyguard's block (deleted
@@ -467,7 +472,7 @@ p5_ap_back(){ local o apn b2 st s it
     # the mesh (halow-setkey:176-178: "a committed placeholder on an enabled radio would put the public key on the air"):
     # every mode=ap interface key=placeholder + disabled=1, merged into keyguard's mark (/etc/halow-keyguard.blocked,
     # halow-keyguard:23-38), ONE commit, under setkey's lock, no .txn; wifi reload (fd 9 closed), then the save setkey runs.
-    if [ "$apn" = "$2" ] && ! grep -qv 'key=PLACEHOLDER disabled=1' <<< "$st"; then ok "P5 AP key already at the baseline placeholder, blocked — nothing written"; return; fi
+    if [ "$apn" = "$2" ] && [ -n "$st" ] && ! grep -qv 'key=PLACEHOLDER disabled=1' <<< "$st" && [ $p5f = y ]; then ok "P5 AP key already at the baseline placeholder, blocked, p5 fresh — nothing written"; return; fi
     o=$(timeout 240 ssh $S "root@$NODE" '. /usr/lib/batman/rundir.sh && batman_rundir && exec 9>"$RUNDIR/halow-setkey.lock" || { echo "REFUSED lock unusable"; exit 2; }
       w=0; until flock -n 9; do w=$((w + 1)); [ $w -ge 90 ] && { echo "REFUSED setkey lock busy"; exit 2; }; sleep 1; done
       [ -e /etc/batman-prov/.txn ] && { echo "REFUSED a .txn exists"; exit 2; }
@@ -476,31 +481,33 @@ p5_ap_back(){ local o apn b2 st s it
       prev=""; [ -f /etc/halow-keyguard.blocked ] && read -r prev < /etc/halow-keyguard.blocked
       new=$prev; for s in $aps; do uci set "wireless.$s.key=CHANGE-ME-NOW"; uci set "wireless.$s.disabled=1"; case " $new " in *" $s "*) ;; *) new="$new $s";; esac; done
       { echo $new > /etc/halow-keyguard.blocked.tmp && mv -f /etc/halow-keyguard.blocked.tmp /etc/halow-keyguard.blocked; } || { uci revert wireless; echo "REFUSED cannot write the keyguard mark"; exit 2; }
-      uci commit wireless; wifi reload 9>&- >/dev/null 2>&1; sleep 10
-      echo "pre_ifs=$(iw dev 2>/dev/null | grep -c "Interface") pre_apif=$(iw dev 2>/dev/null | grep -c "type AP")"
+      uci commit wireless; wifi reload 9>&- >/dev/null 2>&1; sleep 2
+      w=0; until [ "$(ubus call network.wireless status 2>/dev/null | jsonfilter -e @.radio0.pending 2>/dev/null)" = false ]; do w=$((w + 1)); [ $w -ge 30 ] && break; sleep 1; done
+      if [ $w -ge 30 ]; then echo "pre_ifs=unread pre_apif=unread (radio0 still pending after 30 s)"
+      else echo "pre_ifs=$(iw dev 2>/dev/null | grep -c "Interface") pre_apif=$(iw dev 2>/dev/null | grep -c "type AP")"; fi
       batman-config-save --save 9>&- >/dev/null 2>&1; echo "save_rc=$?"' 2>&1 | tr -d '\r')
     echo "    placeholder back: $(echo $o)"
     # the discriminating check is BEFORE the reboot: after it, keyguard would block a placeholder AP by itself
     # (halow-keyguard:30-33) whether or not this write set disabled=1 (review round 2 A-m2)
-    if grep -q 'pre_apif=0$' <<< "$o" && grep -q 'pre_ifs=[1-9]' <<< "$o"; then ok "P5 AP interface gone right after the placeholder + block write (before any reboot)"
-    else no "P5: after the placeholder + block write the AP is still up or iw unreadable [$(grep pre_ <<< "$o")]"; fi
-    grep -q '^save_rc=0$' <<< "$o" || { no "P5: placeholder restore not done or not persisted [$(echo $o)] — not rebooting; AP state: $(q 'halow-setkey --status 2>/dev/null | grep "^ap "' | tr -d '\r')"; return; }
+    if grep -q 'pre_ifs=[1-9][0-9]* pre_apif=0$' <<< "$o"; then ok "P5 AP interface gone right after the placeholder + block write (before any reboot)"
+    else p5_person "P5: after the placeholder + block write the AP is still up or iw unreadable [$(grep pre_ <<< "$o")]"; fi
+    grep -q '^save_rc=0$' <<< "$o" || { p5_person "P5: placeholder restore not done or not persisted [$(echo $o)] — not rebooting; AP state: $(q 'halow-setkey --status 2>/dev/null | grep "^ap "' | tr -d '\r')"; return; }
     # keyguard at boot is the product's own check of the same state (it re-blocks a placeholder AP every boot)
-    b2=$(bootid); [ -n "$b2" ] || { no "P5: boot id unreadable before the placeholder reboot"; return; }
+    b2=$(bootid); [ -n "$b2" ] || { p5_person "P5: boot id unreadable before the placeholder reboot"; return; }
     n "setsid sh -c 'sleep 2; batman-slot reboot committed p5-ap-placeholder' </dev/null >/dev/null 2>&1 &"
-    waitboot "$b2" 300 && settle 180 >/dev/null 2>&1 || { no "P5: the node did not come back after the placeholder reboot"; return; }
+    waitboot "$b2" 300 && settle 180 >/dev/null 2>&1 || { p5_person "P5: the node did not come back after the placeholder reboot"; return; }
     st=$(q 'halow-setkey --status 2>/dev/null | grep "^ap "' | tr -d '\r'); apn=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r' | md5sum | cut -c1-8)
     o=$(q 'batman-config-save --check 2>&1; echo "ifs=$(iw dev 2>/dev/null | grep -c "Interface") apif=$(iw dev 2>/dev/null | grep -c "type AP") radio0=$(ubus call network.wireless status 2>/dev/null | jsonfilter -e @.radio0.up 2>/dev/null)"' | tr -d '\r')
     [ -n "$st" ] && ! grep -qv 'key=PLACEHOLDER disabled=1' <<< "$st" && [ "$apn" = "$2" ] && grep -q 'p5 fresh' <<< "$o" && grep -q 'apif=0 ' <<< "$o" && grep -q 'ifs=[1-9]' <<< "$o" \
       && ok "P5 AP key back to the placeholder (md5 $apn), blocked (disabled=1), p5 fresh, no AP interface after the reboot" \
-      || no "P5: placeholder restore: [$st] md5 $apn (baseline $2), [$(echo $o)]"
+      || p5_person "P5: placeholder restore: [$st] md5 $apn (baseline $2), [$(echo $o)]"
   else
-    [ "$apn" = "$2" ] && { ok "P5 AP key already at the baseline (md5 $apn) — nothing written"; return; }
+    [ "$apn" = "$2" ] && [ $p5f = y ] && { ok "P5 AP key already at the baseline (md5 $apn), p5 fresh — nothing written"; return; }
     # the key crosses on stdin, never in the host's argv (on the node halow-setkey still takes it as an argument;
     # `--ap -` comes with P3, 254-p3-impl)
     o=$(printf '%s\n' "$1" | timeout 240 ssh $S "root@$NODE" 'IFS= read -r k; halow-setkey --ap "$k" 2>&1; batman-config-save --check 2>&1' | tr -d '\r')
     apn=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r' | md5sum | cut -c1-8)
-    echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' && [ "$apn" = "$2" ] && ok "P5 AP key restored and persisted (live md5 $apn == baseline)" || no "P5: restore of the AP key failed (live md5 $apn, baseline $2; $(echo "$o" | tr '\n' '|'))"
+    echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' && [ "$apn" = "$2" ] && ok "P5 AP key restored and persisted (live md5 $apn == baseline)" || p5_person "P5: restore of the AP key failed (live md5 $apn, baseline $2; $(echo "$o" | tr '\n' '|'))"
   fi
 }
 

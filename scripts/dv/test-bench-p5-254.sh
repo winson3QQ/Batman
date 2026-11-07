@@ -35,7 +35,7 @@ q(){ echo "q $*" >> "$T/calls"
 		*'[s]ysupgrade'*) echo "$SUP" ;;
 		*'halow-setkey --status'*) if [ -e "$T/rebooted" ]; then echo "$POSTSTAT"; else echo "$STAT"; fi ;;
 		*'wireless.default_radio0.key'*) if [ -e "$T/rebooted" ]; then echo "$POSTKEY"; else echo "$KEY"; fi ;;
-		*'batman-config-save --check'*) echo "batman-config-save: p5 fresh"; echo "ifs=2 apif=0 radio0=false" ;;
+		*'batman-config-save --check'*) if [ -e "$T/rebooted" ]; then echo "batman-config-save: p5 fresh"; echo "ifs=2 apif=0 radio0=false"; else echo "$P5CHK"; fi ;;
 	esac; }
 n(){ echo "n $*" >> "$T/calls"; touch "$T/rebooted"; }
 ssh(){ echo "ssh-write" >> "$T/calls"; cat >/dev/null; echo "$WRITE"; }
@@ -49,15 +49,20 @@ bootid(){ echo b1; }
 waitboot(){ return 0; }
 settle(){ return 0; }
 ok(){ echo "PASS $*"; }; no(){ echo "FAIL $*"; }
-run(){ rm -f "$T/calls" "$T/rebooted"; touch "$T/calls"; p5_ap_back CHANGE-ME-NOW "$PH" A; }
+# DV_DIR: the run dir the suite passes; needs-person.txt there is what blocks the run's later D suites
+export DV_DIR=$T/dv; mkdir -p "$DV_DIR"
+run(){ rm -f "$T/calls" "$T/rebooted" "$DV_DIR/needs-person.txt"; touch "$T/calls"; p5_ap_back CHANGE-ME-NOW "$PH" A; }
+np(){ grep -q '^NEEDS-PERSON reflash-survives-config-202' "$DV_DIR/needs-person.txt" 2>/dev/null; }
 base(){ SUP=0 SLOT=A IT=0 STAT="ap   default_radio0   ssid=x key=set disabled=0" KEY=fi202-abc POSTSTAT="ap   default_radio0   ssid=x key=PLACEHOLDER disabled=1" POSTKEY=CHANGE-ME-NOW
-	WRITE=$'pre_ifs=2 pre_apif=0\nsave_rc=0'; }
+	WRITE=$'pre_ifs=2 pre_apif=0\nsave_rc=0' P5CHK="batman-config-save: p5 fresh"; }
 nw(){ ! grep -q '^ssh-write' "$T/calls"; }; nr(){ [ ! -e "$T/rebooted" ]; }
-base; SUP=1; o=$(run); grep -q 'FAIL.*sysupgrade is running' <<< "$o" && nw && nr && tok "p5_ap_back: sysupgrade running -> FAIL, nothing written" || tbad "sysupgrade guard: $o"
-base; SLOT=B; o=$(run); grep -q 'FAIL.*needs a person' <<< "$o" && nw && nr && tok "p5_ap_back: committed on another slot -> FAIL for a person, nothing written" || tbad "other slot: $o"
-base; STAT="ap   default_radio0   ssid=x key=PLACEHOLDER disabled=1" KEY=CHANGE-ME-NOW; o=$(run); grep -q 'PASS.*nothing written' <<< "$o" && nw && nr && tok "p5_ap_back: already at baseline -> nothing written" || tbad "baseline no-op: $o"
-base; WRITE="REFUSED setkey lock busy"; o=$(run); grep -q 'FAIL.*not rebooting' <<< "$o" && nr && tok "p5_ap_back: write refused -> FAIL, no reboot" || tbad "refused write: $o"
-base; o=$(run); [ "$(grep -c '^PASS' <<< "$o")" = 2 ] && ! grep -q '^FAIL' <<< "$o" && ! nr && tok "p5_ap_back: write + AP gone before the reboot + baseline after -> 2 PASS, rebooted once" || tbad "positive: $o"
+base; SUP=1; o=$(run); grep -q 'FAIL.*sysupgrade is running' <<< "$o" && nw && nr && np && tok "p5_ap_back: sysupgrade running -> FAIL, nothing written" || tbad "sysupgrade guard: $o"
+base; SLOT=B; o=$(run); grep -q 'FAIL.*needs a person' <<< "$o" && nw && nr && np && tok "p5_ap_back: committed on another slot -> FAIL + needs-person.txt, nothing written" || tbad "other slot: $o"
+base; STAT="ap   default_radio0   ssid=x key=PLACEHOLDER disabled=1" KEY=CHANGE-ME-NOW; o=$(run); grep -q 'PASS.*nothing written' <<< "$o" && nw && nr && ! np && tok "p5_ap_back: already at baseline (p5 fresh too) -> nothing written" || tbad "baseline no-op: $o"
+base; STAT="ap   default_radio0   ssid=x key=PLACEHOLDER disabled=1" KEY=CHANGE-ME-NOW P5CHK="batman-config-save: p5 STALE"; o=$(run); ! grep -q 'nothing written' <<< "$o" && ! nw && tok "p5_ap_back: live at baseline but p5 stale -> written (the test key in p5 would come back)" || tbad "stale p5 no-op: $o"
+base; WRITE="REFUSED setkey lock busy"; o=$(run); grep -q 'FAIL.*not rebooting' <<< "$o" && nr && np && tok "p5_ap_back: write refused -> FAIL, no reboot" || tbad "refused write: $o"
+base; o=$(run); [ "$(grep -c '^PASS' <<< "$o")" = 2 ] && ! grep -q '^FAIL' <<< "$o" && ! nr && ! np && tok "p5_ap_back: write + AP gone before the reboot + baseline after -> 2 PASS, rebooted once" || tbad "positive: $o"
 base; WRITE=$'pre_ifs=2 pre_apif=1\nsave_rc=0'; o=$(run); grep -q 'FAIL.*AP is still up' <<< "$o" && tok "p5_ap_back negative control: AP still up after the write -> FAIL (keyguard's reboot would hide it)" || tbad "negative control: $o"
 base; WRITE=$'pre_ifs=0 pre_apif=0\nsave_rc=0'; o=$(run); grep -q 'FAIL.*iw unreadable' <<< "$o" && tok "p5_ap_back: iw lists no interface -> FAIL (not read as AP gone)" || tbad "iw unreadable: $o"
+base; WRITE=$'pre_ifs=unread pre_apif=unread (radio0 still pending after 30 s)\nsave_rc=0'; o=$(run); grep -q 'FAIL.*iw unreadable' <<< "$o" && tok "p5_ap_back: radio0 still pending -> FAIL (no fixed-sleep snapshot)" || tbad "pending: $o"
 echo "$P passed, $F failed"; [ "$F" = 0 ]

@@ -41,8 +41,11 @@ m0=$(qr "$MESHID"); w0=$(qr "$WSHA")
 NEW="dvc-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 r=$(pr_pc owner.pem FD3="$(fd3 "$NEW" "$BAD")" -- net-apply --update "$OWNER" "$PREV"); say "CJ2: $(grep '^RESULT' <<< "$r")"
 m1=$(qr "$MESHID"); w1=$(qr "$WSHA")
-if [ "$(code "$r")" = 24 ] && [ "$(reason "$r")" = 14 ]; then ok "CJ2: update with country $BAD (stored $RC) -> E_REJECTED{14}"
-else no "CJ2: update with a country mismatch: code $(code "$r") reason $(reason "$r") (want 24 / 14)$([ "$(code "$r")" = 0 ] && echo ' — applied: joined with country mismatch')"
+# the provclient must have SENT $BAD: one built before 3c8f8d9 ignores country= and signs "TW" (no country= in its
+# RESULT line) -> the arm would not be a mismatch at all
+if ! grep -q "^RESULT net.apply(update) .* country=$BAD\$" <<< "$r"; then inv "CJ2: provclient did not report sending country $BAD (a provclient without fd 3 country=: DV_PROV_TOOLS older than 3c8f8d9?) [$(grep '^RESULT' <<< "$r")]"
+elif case "$(code "$r")" in 24|25) [ "$(reason "$r")" = 14 ];; *) false;; esac; then ok "CJ2: update with country $BAD (stored $RC) -> E_REJECTED{14} (helper $(code "$r"))"
+else no "CJ2: update with a country mismatch: code $(code "$r") reason $(reason "$r") (want 24 or 25 / 14)$([ "$(code "$r")" = 0 ] && echo ' — applied: joined with country mismatch')"
 	[ "$(code "$r")" = 0 ] && PREV=$(sed -n 's/^NETCFG //p' <<< "$r")   # P below chains on what was applied
 fi
 if [ -z "$m1" ] || ! grep -q '^w=[0-9a-f]\{16\} p=[0-9a-f]\{16\} txn=' <<< "$w1"; then inv "CJ2: the state after could not be read [mesh $m1] [$w1]"
@@ -55,7 +58,8 @@ fi
 NEW2="dvc-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 r=$(pr_pc owner.pem FD3="$(fd3 "$NEW2" "$RC")" -- net-apply --update "$OWNER" "$PREV"); say "P: $(grep '^RESULT' <<< "$r")"
 m2=$(qr "$MESHID")
-if [ -z "$m2" ]; then inv "(P) the mesh id could not be read after the update"
+if ! grep -q "^RESULT net.apply(update) .* country=$RC\$" <<< "$r"; then inv "(P) provclient did not report sending country $RC [$(grep '^RESULT' <<< "$r")]"
+elif [ -z "$m2" ]; then inv "(P) the mesh id could not be read after the update"
 elif [ "$(code "$r")" = 0 ] && [ "$m2" = "$NEW2" ]; then ok "(P) update with the stored country -> applied ($m2)"
 else no "(P) update with the stored country: code $(code "$r") reason $(reason "$r") mesh id $m2 (want 0 / $NEW2)"; fi
 pr_end

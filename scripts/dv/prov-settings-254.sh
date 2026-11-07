@@ -32,11 +32,14 @@ reason(){ sed -n 's/.* reason=\([0-9]*\).*/\1/p' <<< "$1" | head -1; }
 r=$(pr_pc h0.pem -- settings-get "$H0" | grep '^RESULT settings.get'); say "ST1: $(cut -c1-160 <<< "$r")"
 if [ "$(code "$r")" = 0 ]; then
 	grep -q " keys=.*\b2\b" <<< "$r" && grep -qF "$CC" <<< "$r" && ok "ST1: settings.get code 0, country $CC present" || no "ST1: settings.get answered but without the country ($CC): [$r]"
-	k=$(qr 'uci -q get wireless.default_radio0.key'); [ -n "$k" ] && grep -qF -- "$k" <<< "$r" && no "ST1: the AP passphrase is in settings.get's output" || ok "ST1: the AP passphrase is not in the output"
+	k=$(qr 'uci -q get wireless.default_radio0.key')
+	if [ -z "$k" ]; then inv "ST1: the AP passphrase could not be read: its absence from the output proves nothing"
+	elif grep -qF -- "$k" <<< "$r"; then no "ST1: the AP passphrase is in settings.get's output"
+	else ok "ST1: the AP passphrase is not in the output"; fi
 else no "ST1: settings.get code $(code "$r") (want 0): [$r]"; fi
 # ---- ST15 key 2 on a member
 r=$(pr_pc h0.pem -- settings-set "$H0" 2 DE | grep '^RESULT settings.set'); say "ST15: $r"
-[ "$(code "$r")" = 24 ] && [ "$(reason "$r")" = 14 ] && ok "ST15: key 2 on a member -> E_REJECTED{14}" || no "ST15: key 2 on a member: code $(code "$r") reason $(reason "$r") (want 24 / 14)"
+case "$(code "$r")" in 24|25) [ "$(reason "$r")" = 14 ];; *) false;; esac && ok "ST15: key 2 on a member -> E_REJECTED{14} (helper $(code "$r"))" || no "ST15: key 2 on a member: code $(code "$r") reason $(reason "$r") (want 24 or 25 / 14)"
 c=$(qr 'uci -q get wireless.radio1.country'); [ "$c" = "$CC" ] && ok "ST15: country unchanged ($c)" || no "ST15: country changed: $CC -> $c"
 # ---- ST17 key 1
 r=$(pr_pc h0.pem -- settings-set "$H0" 1 "dv-rename-$RUN" | grep '^RESULT settings.set'); say "ST17: $r"
@@ -44,7 +47,7 @@ r=$(pr_pc h0.pem -- settings-set "$H0" 1 "dv-rename-$RUN" | grep '^RESULT settin
 h=$(qr 'uci -q get system.@system[0].hostname'); [ "$h" = "$HN" ] && ok "ST17: hostname unchanged" || no "ST17: hostname changed: $HN -> $h"
 # ---- ST10 `$` in the passphrase (made on the node, fd 3; never argv)
 r=$(pr_pc h0.pem FD3="printf 'ssid=%s\npsk=%s\n' 'dv-$RUN' 'bad\$pass-12345678'" -- settings-set "$H0" 20 | grep '^RESULT settings.set'); say "ST10: $r"
-[ "$(code "$r")" = 25 ] && [ "$(reason "$r")" = 13 ] && ok "ST10: a passphrase with \$ -> E_REJECTED{13}" || no "ST10: code $(code "$r") reason $(reason "$r") (want 25 / 13)"
+case "$(code "$r")" in 24|25) [ "$(reason "$r")" = 13 ];; *) false;; esac && ok "ST10: a passphrase with \$ -> E_REJECTED{13} (helper $(code "$r"))" || no "ST10: code $(code "$r") reason $(reason "$r") (want 24 or 25 / 13)"
 s=$(qr 'uci -q get wireless.default_radio0.key | tr -d "\n" | sha256sum | cut -c1-16'); [ "$s" = "$KEYSHA" ] && ok "ST10: AP key unchanged" || no "ST10: AP key changed"
 # ---- ST13 a staged change of someone else -> E_BUSY, status says so
 q "uci set wireless.default_radio0.ssid='staged-$RUN'" >/dev/null

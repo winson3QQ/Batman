@@ -51,10 +51,15 @@ P02ID="echo \"mac=\$(cat /sys/class/net/wlh0/address 2>/dev/null) mid=\$(uci -q 
 p02f(){ sed -n "s/.*\\b$2=\\([^ ]*\\).*/\\1/p" <<< " $1"; }
 # chk02_after: after ANY restore that finished (step 9, or an abort's), the live mesh (compare covers config only,
 # review B-M4): 02 a neighbour of 04 again within 180 s, 02's identity as before. P02_DONE: once per run.
-chk02_after(){ local t nbok=n p02_1
+chk02_after(){ local t nbok=n p02_1 m
 	[ "${P02_DONE:-0}" = 1 ] && return 0; P02_DONE=1
 	t=$SECONDS; while [ $((SECONDS - t)) -lt 180 ]; do q "batctl n -n 2>/dev/null | tail -n +3 | grep -qiw -- $PEERMAC && echo NB" | grep -q NB && { nbok=y; break; }; sleep 10; done
-	[ $nbok = y ] && ok "9 02 ($PEERMAC) is a mesh neighbour of 04 again" || no "9 02 ($PEERMAC) not a neighbour of 04 within 180 s of the restore"
+	if [ $nbok = y ]; then ok "9 02 ($PEERMAC) is a mesh neighbour of 04 again"
+	else no "9 02 ($PEERMAC) not a neighbour of 04 within 180 s of the restore"
+		# 02 off the mesh has no remote way back (no cable, 254-h4 lifecycle row "02 離開 mesh") -> a person
+		m="NEEDS-PERSON chain1-254 ($RUN): 02 ($PEERMAC) is not back on the mesh after the restore"; echo "$m"
+		[ -n "${DV_DIR:-}" ] && echo "$m" >> "$DV_DIR/needs-person.txt"
+	fi
 	p02_1=$(timeout 30 ssh $SSHO root@$PEER "$P02ID" 2>/dev/null | tr -d '\r')
 	[ -n "$(p02f "$p02_1" mid)" ] && [ "$p02_1" = "$p02_0" ] && ok "9 02 unchanged: [$p02_1]" || no "9 02 changed or unreadable: [$p02_0] -> [$p02_1]"
 }
@@ -104,7 +109,18 @@ q "mkdir -p -m 700 $PDIR && cd $PDIR && rm -rf ./* && tar -xzf $PAY && echo extr
 # ======== 1. snapshot; mesh markers into the snapshot dir (step 8's premise); dead-man staged on p6
 PH=s1
 o=$(timeout 900 ssh $SSHO root@$NODE "KEEP_JOINWATCH_STOPPED=1 sh -s -- snap $RUN" < "$PB" 2>&1 | tr -d '\r'); say "$(echo "$o" | tail -1)"
-grep -q "^SNAP $RUN" <<< "$o" || { say "snap failed"; exit 1; }
+# the SNAP line lost (network, the 900 s timeout) does not mean the snapshot was not taken: the node's dirty flag says
+# (prov-base-254.sh:157 writes "<run> <boot> snap" once the snapshot is complete; joinwatch stays stopped meanwhile,
+# KEEP_JOINWATCH_STOPPED) -> this run's flag = snapshot taken, go on as after a snapshot (an abort restores);
+# unreadable -> hand 04 to a person (review round 3 A-m5 / B-7)
+if ! grep -q "^SNAP $RUN" <<< "$o"; then
+	dfl=$(timeout 60 ssh $SSHO root@$NODE "cat $DIRTY 2>/dev/null; echo rc=\$?" 2>/dev/null | tr -d '\r')
+	case "$dfl" in
+		"$RUN "*" snap"*) say "snap: no SNAP line, but the dirty flag is this run's ($(head -1 <<< "$dfl")): the snapshot was taken"; SNAPPED=1; FIP=$NODE; FOUND_STATE=$s; abort "snap result lost (restoring from the taken snapshot)" ;;
+		*rc=*) say "snap failed (dirty flag [$(head -1 <<< "$dfl")]: not this run's)"; q '/etc/init.d/joinwatch start >/dev/null 2>&1'; exit 1 ;;
+		*) SNAPPED=1; RESTORE_PERSON=1; RESTORING=1; say "snap result lost and 04 unreadable: whether a snapshot exists is unknown"; exit 1 ;;
+	esac
+fi
 SNAPPED=1; FIP=$NODE; FOUND_STATE=$s
 SNAPSHA=$(q "cut -c1-16 $D/p5.img.sha")
 scp -q $SSHO "$PB" root@$NODE:$BASE/prov-base-254.sh || abort "copy prov-base"
