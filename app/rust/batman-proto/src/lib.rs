@@ -7,4 +7,5 @@
 pub mod cbor;
 pub mod frame;
 pub mod kdf;
+pub mod nodecert;
 pub mod noise;

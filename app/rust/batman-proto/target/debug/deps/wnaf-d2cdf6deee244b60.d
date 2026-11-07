@@ -1,0 +1,12 @@
+/home/yello/Batman-app/app/rust/batman-proto/target/debug/deps/wnaf-d2cdf6deee244b60.d: /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/lib.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/base.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/limb_buffer.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/scalar.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/traits.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/../README.md
+
+/home/yello/Batman-app/app/rust/batman-proto/target/debug/deps/libwnaf-d2cdf6deee244b60.rlib: /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/lib.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/base.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/limb_buffer.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/scalar.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/traits.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/../README.md
+
+/home/yello/Batman-app/app/rust/batman-proto/target/debug/deps/libwnaf-d2cdf6deee244b60.rmeta: /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/lib.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/base.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/limb_buffer.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/scalar.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/traits.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/../README.md
+
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/lib.rs:
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/base.rs:
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/limb_buffer.rs:
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/scalar.rs:
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/traits.rs:
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wnaf-0.14.1/src/../README.md:

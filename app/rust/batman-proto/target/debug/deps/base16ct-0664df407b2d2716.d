@@ -1,0 +1,12 @@
+/home/yello/Batman-app/app/rust/batman-proto/target/debug/deps/base16ct-0664df407b2d2716.d: /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/lib.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/lower.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/mixed.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/upper.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/display.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/error.rs
+
+/home/yello/Batman-app/app/rust/batman-proto/target/debug/deps/libbase16ct-0664df407b2d2716.rlib: /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/lib.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/lower.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/mixed.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/upper.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/display.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/error.rs
+
+/home/yello/Batman-app/app/rust/batman-proto/target/debug/deps/libbase16ct-0664df407b2d2716.rmeta: /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/lib.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/lower.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/mixed.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/upper.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/display.rs /home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/error.rs
+
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/lib.rs:
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/lower.rs:
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/mixed.rs:
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/upper.rs:
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/display.rs:
+/home/yello/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/base16ct-1.0.0/src/error.rs:
