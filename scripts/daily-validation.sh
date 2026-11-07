@@ -294,7 +294,7 @@ suite known-failures-file "every scripts/validation-known-failures.txt entry has
 #     (--destructive) on DNODE (04, ethernet): normalise first, then PROV_B_UNITS in order; a NEEDS-PERSON blocks every
 #     later prov unit ("FAIL blocked: DNODE"). A unit not written yet FAILs with that reason, never SKIPs (#254 checklist).
 #     Needs the prov test tools of the running version: bash scripts/dv-prov-tools.sh <V>.
-if [ "$DNODE0" = 10.41.1.3 ]; then
+if is_node04 "$DNODE0"; then
   suite prov-sock-254 "who may talk to the helper socket: root / provd uid allowed, others refused, provclient placement (#254 tier A)" "bchk_prov_254 $DNODE0 prov-sock-254"
   suite prov-sec-254 "helper uid, socket dir root:471 0750, helper.sock 0660, node.key 0600; negative controls — STATE-CHANGING: stops / restarts the helper, plants a socket dir (under the prov lease; review B-m9) (#254)" "bchk_prov_254 $DNODE0 prov-sec-254"
   # H3 (254-h23 §6.3): batman-provd on the committed image; STATE-CHANGING but self-restoring, under the prov lease

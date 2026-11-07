@@ -3,6 +3,10 @@
 # (docs/design/254-h23-harness.md §4.4 order, §6.2). Each unit is its own script (scripts/dv/prov-<x>-254.sh) that ends
 # with "UNIT <name> PASS|FAIL|INVALID"; the suite passes only on PASS with no FAIL line (cl_judge).
 # 04-specific (MAC / peer 02 hard-coded in scripts/dv/prov-254.sh), like chain1-254.
+# 04's address: the bench store's membership log (prov-bench-s0-254.sh keep step: "node=04 run=keep-... ip=<a>"),
+# else the pre-conversion fleet address. Read once per run.
+node04_ip(){ [ -n "${NODE04_IP:-}" ] || { NODE04_IP=$(MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- grep "^node=04 run=keep-" /home/yello/.batman-dv/bench/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1); NODE04_IP=${NODE04_IP:-10.41.1.3}; }; echo "$NODE04_IP"; }
+is_node04(){ [ "$1" = "$(node04_ip)" ]; }
 # A unit that hands 04 to a person (NEEDS-PERSON, $DIR/needs-person.txt) blocks every later prov unit of the run:
 # "FAIL blocked: DNODE …" (never a known failure, NEVER_KNOWN).
 PV_TOOLS=${DV_PROV_TEST:-$HOME/batman-dv-tools/prov-test}
@@ -19,7 +23,7 @@ dnode_blocked() {
 # pv_pre <dnode>: the prov units' common preconditions
 pv_pre() {
 	local v
-	[ "$1" = 10.41.1.3 ] || { echo "FAIL the prov units are 04-specific (MAC / peer 02 hard-coded in scripts/dv/prov-254.sh) and DNODE is $1"; return 1; }
+	is_node04 "$1" || { echo "FAIL the prov units are 04-specific (MAC / peer 02 hard-coded in scripts/dv/prov-254.sh) and DNODE is $1 (04 is at $(node04_ip))"; return 1; }
 	[ -s "$DIR/needs-person.txt" ] && { echo "FAIL blocked: DNODE — NEEDS-PERSON earlier in this run: $(tail -1 "$DIR/needs-person.txt")"; return 1; }
 	v=$(pv_ver "$1"); case "$v" in *.wbox-*) v=${v%%.dirty.wbox-*}; v=${v%%.wbox-*} ;; esac   # a bare .wbox- too (review B-m8)
 	[ -n "$v" ] || { echo "FAIL $1 unreachable (no BATMAN_VERSION)"; return 1; }

@@ -44,7 +44,7 @@ bchk_adr_reconcile_254() { bash "$REPO/scripts/dv/addr-defer-reconcile-254.sh" "
 bchk_pty_commit_254() { local v; cl_need DV_OTA_PAYLOAD DV_OTA_PAYLOAD_SHA || return 1
 	v=$(cl_ssh "$1" 20 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build')
 	V=$v PAY=$DV_OTA_PAYLOAD PSH16=${DV_OTA_PAYLOAD_SHA:0:16} bash "$REPO/scripts/dv/pty-commit-254.sh" "$1" normal 2>&1 | cl_judge '^RESULT pty-commit normal PASS$'; }
-bchk_chain1_254() { local v; [ "$1" = 10.41.1.3 ] || { echo "FAIL chain1-254 is 04-specific (IP / MAC / peer 02 hard-coded) and DNODE is $1"; return 1; }
+bchk_chain1_254() { local v; [ "$1" = 10.41.1.3 ] || { echo "FAIL chain1-254 needs the pre-conversion fleet state (04 at 10.41.1.3, legacy; #254 H5 checklist: rework it for the member base) and DNODE is $1"; return 1; }
 	cl_need DV_OTA_PAYLOAD DV_OTA_PAYLOAD_SHA DV_PROV_TOOLS || return 1
 	v=$(cl_ssh "$1" 20 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build')
 	V=$v PAY=$DV_OTA_PAYLOAD PSHA=$DV_OTA_PAYLOAD_SHA bash "$REPO/scripts/dv/chain1-254.sh" 2>&1 | cl_judge 'CHAIN1 RESULT: PASS'; }
