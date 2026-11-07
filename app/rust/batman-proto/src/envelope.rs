@@ -2,9 +2,9 @@
 //! - A request whose whole envelope exceeds `max_msg − 16` is chunked: the ENCODED body is cut into slices, each sent
 //!   as {0, 1: id, 2: type, 3: bstr slice, 6: {1: n, 2: total}[, 7: idem]}, every chunk's whole envelope ≤ max_msg − 16
 //!   (vector chunk_boundary). All chunks share the id.
-//! - Responses: success {1: id, 3: body, 4: 0}; error {1: id, 4: code ≠ 0, 5: detail}, no key 3; chunked success
-//!   {1: id, 3: bstr, 4: 0, 6: {1: n, 2: total}}. No key 0. The app checks id == the request's id; a duplicate (id, n),
-//!   a changed total or an oversized message is refused and the session closed by the caller.
+//! - Responses: success {1: id, 3: body, 4: 0}; error {1: id, 4: code ≠ 0, 5: detail}, no key 3. No key 0. The app
+//!   checks id == the request's id. A chunked response (key 6) is refused in S1 (design §5.5, fail-closed); the
+//!   caller closes the session on any error here.
 
 use crate::cbor::{self, Value};
 use crate::sig;
@@ -22,9 +22,7 @@ pub enum Error {
     UnknownKey(u64),
     WrongId { want: u64, got: u64 },
     BadStatus,
-    BadPart,
-    DuplicatePart(u64),
-    PartTotalChanged,
+    Chunked,
     TooLarge,
 }
 
@@ -102,94 +100,34 @@ pub enum Outcome {
     Err { code: u64, detail: Value },
 }
 
-/// Reassembles one response to request `id`.
-pub struct ResponseReader {
-    id: u64,
-    total: Option<u64>,
-    parts: Vec<Option<Vec<u8>>>,
-    size: usize,
-}
-
-impl ResponseReader {
-    pub fn new(id: u64) -> Self {
-        ResponseReader { id, total: None, parts: Vec::new(), size: 0 }
+/// The response to request uid=1000(yello) gid=1000(yello) groups=1000(yello),989(docker). A chunked response (key 6) is refused: S1 never asks for anything that large
+/// (design §5.5, fail-closed).
+pub fn parse_response(msg: &[u8], id: u64) -> Result<Outcome, Error> {
+    let v = cbor::decode(msg)?;
+    let Value::Map(m) = &v else { return Err(Error::NotAMap) };
+    for (k, _) in m {
+        match k {
+            Value::Uint(1 | 3 | 4 | 5) => {}
+            Value::Uint(6) => return Err(Error::Chunked),
+            Value::Uint(k) => return Err(Error::UnknownKey(*k)),
+            _ => return Err(Error::NotAMap),
+        }
     }
-
-    /// Feed one received message; Some(outcome) when the response is complete.
-    pub fn push(&mut self, msg: &[u8]) -> Result<Option<Outcome>, Error> {
-        let v = cbor::decode(msg)?;
-        let Value::Map(m) = &v else { return Err(Error::NotAMap) };
-        for (k, _) in m {
-            match k {
-                Value::Uint(1 | 3 | 4 | 5 | 6) => {}
-                Value::Uint(k) => return Err(Error::UnknownKey(*k)),
-                _ => return Err(Error::NotAMap),
-            }
-        }
-        let got = v.get(1).and_then(Value::as_uint).ok_or(Error::BadStatus)?;
-        if got != self.id {
-            return Err(Error::WrongId { want: self.id, got });
-        }
-        let status = v.get(4).and_then(Value::as_uint).ok_or(Error::BadStatus)?;
-        if status != 0 {
-            // an error is never chunked and carries no body
-            if self.total.is_some() || v.get(3).is_some() || v.get(6).is_some() {
-                return Err(Error::BadStatus);
-            }
-            let detail = v.get(5).cloned().ok_or(Error::BadStatus)?;
-            if !matches!(detail, Value::Map(_)) {
-                return Err(Error::BadStatus);
-            }
-            return Ok(Some(Outcome::Err { code: status, detail }));
-        }
-        if v.get(5).is_some() {
+    let got = v.get(1).and_then(Value::as_uint).ok_or(Error::BadStatus)?;
+    if got != id {
+        return Err(Error::WrongId { want: id, got });
+    }
+    let status = v.get(4).and_then(Value::as_uint).ok_or(Error::BadStatus)?;
+    if status != 0 {
+        // an error carries a detail map and no body
+        let detail = v.get(5).cloned().ok_or(Error::BadStatus)?;
+        if v.get(3).is_some() || !matches!(detail, Value::Map(_)) {
             return Err(Error::BadStatus);
         }
-        let body = v.get(3).ok_or(Error::BadStatus)?;
-        let Some(part) = v.get(6) else {
-            if self.total.is_some() {
-                return Err(Error::BadPart);
-            }
-            if !matches!(body, Value::Map(_)) {
-                return Err(Error::BadStatus);
-            }
-            return Ok(Some(Outcome::Ok(body.clone())));
-        };
-        let Value::Map(pm) = part else { return Err(Error::BadPart) };
-        if pm.len() != 2 {
-            return Err(Error::BadPart);
-        }
-        let n = part.get(1).and_then(Value::as_uint).ok_or(Error::BadPart)?;
-        let total = part.get(2).and_then(Value::as_uint).ok_or(Error::BadPart)?;
-        let slice = body.as_bytes().ok_or(Error::BadPart)?;
-        if total < 2 || total > 0xffff || n == 0 || n > total {
-            return Err(Error::BadPart);
-        }
-        match self.total {
-            None => {
-                self.total = Some(total);
-                self.parts = vec![None; total as usize];
-            }
-            Some(t) if t != total => return Err(Error::PartTotalChanged),
-            Some(_) => {}
-        }
-        let slot = &mut self.parts[(n - 1) as usize];
-        if slot.is_some() {
-            return Err(Error::DuplicatePart(n));
-        }
-        self.size += slice.len();
-        if self.size > MAX_REASSEMBLED {
-            return Err(Error::TooLarge);
-        }
-        *slot = Some(slice.to_vec());
-        if self.parts.iter().any(Option::is_none) {
-            return Ok(None);
-        }
-        let joined: Vec<u8> = self.parts.iter().flatten().flatten().copied().collect();
-        let body = cbor::decode(&joined)?;
-        if !matches!(body, Value::Map(_)) {
-            return Err(Error::BadStatus);
-        }
-        Ok(Some(Outcome::Ok(body)))
+        return Ok(Outcome::Err { code: status, detail });
+    }
+    match (v.get(3), v.get(5)) {
+        (Some(body @ Value::Map(_)), None) => Ok(Outcome::Ok(body.clone())),
+        _ => Err(Error::BadStatus),
     }
 }
