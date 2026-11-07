@@ -7,6 +7,7 @@
 pub mod cbor;
 pub mod conn;
 pub mod claim;
+pub mod claimflow;
 pub mod cose;
 pub mod envelope;
 pub mod flow;
