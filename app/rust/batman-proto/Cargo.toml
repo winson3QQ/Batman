@@ -20,7 +20,10 @@ hkdf = "=0.13.0"
 sha2 = "=0.11.1"
 # snow: RUSTSEC-2024-0011 (unauthenticated nonce increment) is patched in >= 0.9.5
 #       only the primitives Noise_NX(psk0)_25519_ChaChaPoly_SHA256 needs (no AES-GCM / BLAKE2)
-p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "std"] }
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "ecdh", "std"] }
+# 0.10.1 = the version snow already depends on (one copy in the build)
+chacha20poly1305 = "=0.10.1"
+getrandom = "=0.4.3"
 x509-cert = { version = "=0.3.0", default-features = false, features = ["std"] }
 der = { version = "=0.8.2", features = ["std"] }
 snow = { version = "=0.10.0", default-features = false, features = ["std", "use-curve25519", "use-chacha20poly1305", "use-sha2", "use-getrandom"] }
@@ -30,5 +33,7 @@ batman-proto = { path = ".", features = ["test-vectors"] }
 serde_json = "=1.0.140"
 hex = "=0.4.3"
 sha2 = "=0.11.1"
-# tests only: sign a dev-DAC node_cert fixture (RFC 6979 deterministic signing is p256's default)
-p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "std"] }
+# tests only: sign a dev-DAC node_cert fixture (RFC 6979 deterministic signing is p256's default); the node side of
+# the ECDH-ES / ChaCha20-Poly1305 round trip
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "ecdh", "std"] }
+chacha20poly1305 = "=0.10.1"
