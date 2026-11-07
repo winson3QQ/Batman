@@ -123,6 +123,9 @@ restore_all(){
 	o=$(fqlong "for m in /tmp/run/batman-dv/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on A): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed"; return 1; }
 	o=$(fqlong "sh $BASE/prov-base-254.sh overlay-restore $RUN"); echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY" | tail -12 | sed 's/^/    /'
 	grep -q "^OVERLAY-RESTORED $RUN" <<< "$o" || { say "RESTORE: overlay-restore failed"; return 1; }
+	# the mesh markers step 1 moved into $D/marks go back (a member's autocommit reads them: a joined node with the
+	# placeholder key and no marker would be let through without neighbours, 254-p1-impl §6.4); only where absent
+	fq "for f in $D/marks/mesh-joined $D/marks/mesh-expected; do [ -e \$f ] && [ ! -e /opt/batdata/state/\${f##*/} ] && cp -p \$f /opt/batdata/state/ && echo \"marker back: \${f##*/}\"; done; true" | sed 's/^/    /'
 	b=$(bootof "$s"); fq "(batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &)" >/dev/null
 	local t=$SECONDS; FIP=""; while [ $((SECONDS - t)) -lt 900 ]; do s=$(is_on $NODE "slot=A ver=$V trial_rc=1 ") && case "$s" in *"boot=$b"*) ;; *) FIP=$NODE; break;; esac; sleep 15; done
 	[ -n "$FIP" ] || { say "RESTORE: A not back at $NODE"; return 1; }

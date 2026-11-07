@@ -443,6 +443,33 @@ c2(){ echo "== C2 trial-crash-274: a manual 'batman-slot commit' after a crash i
   [ "$st" = "$tr" ] && [ "$it" = 1 ] && ok "C2 manual commit after a crash stood past deadline + deferral: slot $tr committed, same boot" \
     || no "C2 slot=$st (trial $tr) is-trial rc=$it (want 1)"; }
 
+# p5_ap_back <baseline AP key> <its md5>: put the onboarding-AP key back (P5 step 7 and its early exits)
+p5_ap_back(){ local o apn b2 chk apif
+  if [ "$1" = CHANGE-ME-NOW ]; then
+    # a fresh card's baseline AP key is the placeholder (99zz-batman-prov-state, stage1 F23) and halow-setkey refuses
+    # the placeholder as a key (halow-setkey:83; h5-full-11062329: "refusing the placeholder as a key") -> put it back
+    # the way 99zz writes it (every mode=ap key, uci, under setkey's lock, no .txn), persist it with the save setkey
+    # runs, and reboot once so halow-keyguard closes the AP at boot (the product's own path; no wifi reload here)
+    o=$(q '. /usr/lib/batman/rundir.sh && batman_rundir && exec 9>"$RUNDIR/halow-setkey.lock" || { echo "lock unusable"; exit 2; }
+      w=0; until flock -n 9; do w=$((w + 1)); [ $w -ge 90 ] && { echo "setkey lock busy"; exit 2; }; sleep 1; done
+      [ -e /etc/batman-prov/.txn ] && { echo "a .txn exists"; exit 2; }
+      for s in $(uci -q show wireless | grep "\.mode=.ap.$" | cut -d. -f2); do uci set "wireless.$s.key=CHANGE-ME-NOW"; done
+      uci commit wireless; batman-config-save --save >/dev/null 2>&1; echo "save_rc=$?"' | tr -d '\r')
+    echo "    placeholder back: $(echo $o)"
+    b2=$(bootid); n "setsid sh -c 'sleep 2; batman-slot reboot committed p5-ap-placeholder' </dev/null >/dev/null 2>&1 &"
+    waitboot "$b2" 300 && settle 180 >/dev/null 2>&1 || no "P5: the node did not come back after the placeholder reboot"
+    apn=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r' | md5sum | cut -c1-8)
+    chk=$(q 'batman-config-save --check 2>&1' | tr -d '\r'); apif=$(q 'iw dev 2>/dev/null | grep -c "type AP"' | tr -d '\r\n ')
+    grep -q 'save_rc=0' <<< "$o" && grep -q 'p5 fresh' <<< "$chk" && [ "$apn" = "$2" ] && [ "$apif" = 0 ] \
+      && ok "P5 AP key back to the placeholder (fresh-card baseline, md5 $apn), persisted, no AP interface after the reboot" \
+      || no "P5: placeholder restore: live md5 $apn (baseline $2), [$(echo $o)], check [$(echo "$chk" | tail -1)], AP interfaces $apif"
+  else
+  o=$(q "halow-setkey --ap '$1' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
+  apn=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r' | md5sum | cut -c1-8)
+  echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' && [ "$apn" = "$2" ] && ok "P5 AP key restored and persisted (live md5 $apn == baseline)" || no "P5: restore of the AP key failed (live md5 $apn, baseline $2; $(echo "$o" | tr '\n' '|'))"
+  fi
+}
+
 # ---- #202 D3: reflash-survives-config — a persisted per-node config survives a real A/B reflash ----
 # A black-box proof of #202's DoD 1 on a mesh-only node: change the onboarding-AP key through the supported
 # door (halow-setkey, which persists it), OTA the same build into the other slot, and the fresh slot must come
@@ -467,10 +494,10 @@ p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostna
   aptv="fi202-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"; apt=$(printf '%s\n' "$aptv" | md5sum | cut -c1-8)
   o=$(q "halow-setkey --ap '$aptv' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
   echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' \
-    || { no "P5: setkey --ap did not persist ($(echo "$o" | tr '\n' '|'))"; q "halow-setkey --ap '$ap0v'" >/dev/null 2>&1; return; }
+    || { no "P5: setkey --ap did not persist ($(echo "$o" | tr '\n' '|'))"; p5_ap_back "$ap0v" "$ap0"; return; }
   ok "P5 AP key (md5 $apt) persisted through halow-setkey (p5 fresh)"
   # 2. reflash the same build into the other slot
-  ota_boot P5 "$b0" || { q "halow-setkey --ap '$ap0v'" >/dev/null 2>&1; return; }
+  ota_boot P5 "$b0" || { p5_ap_back "$ap0v" "$ap0"; return; }
   # 3. the fresh slot
   s1=$(slot); v1=$(q 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build' | tr -d '\r')
   hn=$(q 'uci -q get system.@system[0].hostname' | tr -d '\r'); key=$(q 'uci -q get wireless.default_radio1.key' | tr -d '\r')
@@ -507,9 +534,7 @@ p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostna
   fi
   # 7. restore the AP key through the same door — AFTER the return to slot A: that slot's overlay still holds the
   #    test key (set there in step 1), and a rolled-back joined node persists its live key into p5 (seen on 02)
-  o=$(q "halow-setkey --ap '$ap0v' 2>&1; batman-config-save --check 2>&1" | tr -d '\r')
-  apn=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r' | md5sum | cut -c1-8)
-  echo "$o" | grep -q '^persist: saved' && echo "$o" | grep -q 'p5 fresh' && [ "$apn" = "$ap0" ] && ok "P5 AP key restored and persisted (live md5 $apn == baseline)" || no "P5: restore of the AP key failed (live md5 $apn, baseline $ap0; $(echo "$o" | tr '\n' '|'))"
+  p5_ap_back "$ap0v" "$ap0"
   echo "    NOTE: node runs slot $(slot) (committed)"; }
 
 # test seam (scripts/test-harness-265.sh): load the functions only

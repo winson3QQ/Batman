@@ -19,7 +19,9 @@
 # person to run restore (overlay-restore + compare) afterwards.
 # Reviews: 2026-10-26 round 1 A (APPROVE-WITH-CHANGES, 5 MAJOR) / B (REJECT); all findings addressed in v2.
 set -u
-NODE=10.41.1.3; PEER=10.41.1.1; HOSTIP=${HOSTIP:-10.41.240.10}; MACW=88-a2-9e-b5-6c-89; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local
+# 04 / 02 from the bench store's membership log (prov-bench-s0-254.sh keep); 10.41.1.3 / .1 = the pre-conversion fleet
+bench_ip(){ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- grep "^node=$1 run=keep-" /home/yello/.batman-dv/bench/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1; }
+[ -n "${NODE:-}" ] || NODE=$(bench_ip 04); [ -n "${PEER:-}" ] || PEER=$(bench_ip 02); NODE=${NODE:-10.41.1.3}; PEER=${PEER:-10.41.1.1}; HOSTIP=${HOSTIP:-10.41.240.10}; MACW=88-a2-9e-b5-6c-89; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local
 V=${V:?version}; PAY=${PAY:-/opt/batdata/ota-1.5.13-wsl.1.tar.gz}; PSHA=${PSHA:?payload sha256}
 OUTS=${OUTS:-//wsl.localhost/Ubuntu-24.04/home/yello/out}
 REPO=${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}; PB=$REPO/scripts/node/prov-base-254.sh
@@ -51,7 +53,11 @@ trap 'say "host interrupted"; [ "$SNAPPED" = 1 ] && restore_all "interrupted"; R
 s=$(q "$ST"); say "start: $s"
 case "$s" in "mac=$MAC slot=A ver=$V trial_rc=1 dt_try="*" hold=[] held=0 badslot=[]"*) ;; *) say "precondition (04 by MAC, A committed $V, no hold, no bad-slot)"; exit 1;; esac
 a=$(q "awk -v b=\$(cat /proc/sys/kernel/random/boot_id) '\$1==b {print \"ps=\" \$2 \"/\" \$4}' /opt/batdata/state/prov-state; batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?; /usr/libexec/batman-addr-defer status; echo dirty=[\$(cat $DIRTY 2>/dev/null)]")
-say "A: $(echo $a)"; case "$a" in *"ps=helper/legacy"*"check_rc=0"*"want=stock env=absent openmanetd=up"*"dirty=[]"*) ;; *) say "A not healthy / dirty flag present"; exit 1;; esac
+# A = legacy (the pre-conversion fleet) or the bench member (S0-pre, prov-bench-s0-254.sh): the chain runs on B and p5
+# and puts A back from its own snapshot either way
+say "A: $(echo $a)"; A_PS=$(sed -n 's/.*ps=helper\/\([a-z]*\).*/\1/p' <<< "$a")
+case "$A_PS" in legacy|member) ;; *) say "A is neither legacy nor member [$A_PS]"; exit 1;; esac
+case "$a" in *"check_rc=0"*"want=stock env=absent openmanetd=up"*"dirty=[]"*) ;; *) say "A not healthy / dirty flag present"; exit 1;; esac
 [ "$(q "sha256sum < $PAY | cut -c1-64")" = "$PSHA" ] || { say "payload sha"; exit 1; }
 # payload version == V, from the build dir's SHA256SUMS (a version mismatch discards the hold, review A-M2)
 VPAY=""; for sums in "$OUTS"/*/ekh-bcm2711/SHA256SUMS; do grep -q "^$PSHA  .*-ab-payload\.tar\.gz$" "$sums" 2>/dev/null || continue
