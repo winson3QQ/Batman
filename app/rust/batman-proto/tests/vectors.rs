@@ -26,8 +26,8 @@ const COVERAGE: &[(&str, &str)] = &[
     ("keys", "pending: nodecert"),
     ("node_cert", "pending: nodecert"),
     ("identity_file", "pending: nodecert"),
-    ("hkdf", "pending: kdf"),
-    ("psk_replay", "pending: kdf"),
+    ("hkdf", "tested"),
+    ("psk_replay", "tested"),
     ("noise_nx", "pending: noise"),
     ("noise_nxpsk0_owner", "pending: noise"),
     ("noise_nxpsk0_replay", "pending: noise"),
@@ -162,6 +162,45 @@ fn gatt_framing_invalid_cases_abort() {
     // "frame without start flag while idle: abort connection"
     let mut r = frame::Reassembler::new(20, 65535);
     assert_eq!(r.push(&[0x02, 0, 0, 0xaa]), Err(frame::Error::NoStartFlag));
+}
+
+// ---- kdf: inputs recomputed here from gen.py's fixed inputs (seed(name) = SHA-256("batman-test-vector/" + name);
+// device_id = hex(sn) = "0123a5f0c3e1b74dee"; net_id = seed("net_id")[:16], version 1), never read from the vectors
+const DEVICE_ID: &str = "0123a5f0c3e1b74dee";
+
+fn seed(name: &str) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(format!("batman-test-vector/{name}").as_bytes()).to_vec()
+}
+
+#[test]
+fn hkdf_vectors() {
+    use batman_proto::kdf;
+    let v = vectors();
+    let net_id: [u8; 16] = seed("net_id")[..16].try_into().unwrap();
+    let net_root = seed("net_root");
+    assert_eq!(kdf::psk_owner(&seed("owner_tag_key"), DEVICE_ID).to_vec(), h(&v["hkdf"]["psk_owner"]));
+    assert_eq!(kdf::adv_owner(&seed("adv_owner_key"), DEVICE_ID).to_vec(), h(&v["hkdf"]["adv_owner"]));
+    assert_eq!(kdf::psk_member(&net_root, &net_id, 1).to_vec(), h(&v["hkdf"]["psk_member"]));
+    assert_eq!(kdf::adv_member(&net_root, &net_id, 1).to_vec(), h(&v["hkdf"]["adv_member"]));
+    // negative: the owner label on the member inputs (or the wrong device id) must NOT give the vector
+    assert_ne!(kdf::hkdf32(&net_root, b"batman-psk-owner-v1").to_vec(), h(&v["hkdf"]["psk_member"]));
+    assert_ne!(kdf::psk_owner(&seed("owner_tag_key"), "0123a5f0c3e1b74def").to_vec(), h(&v["hkdf"]["psk_owner"]));
+}
+
+#[test]
+fn psk_replay_vector() {
+    use batman_proto::kdf;
+    let v = vectors();
+    let z: [u8; 32] = h(&v["psk_replay"]["ecdh_z"]).try_into().unwrap();
+    // the vector's info is label ‖ device_id: check our construction gives the same bytes
+    let mut info = kdf::LABEL_PSK_REPLAY.to_vec();
+    info.extend(DEVICE_ID.as_bytes());
+    assert_eq!(info, h(&v["psk_replay"]["info"]));
+    assert_eq!(kdf::psk_replay(&z, DEVICE_ID).to_vec(), h(&v["psk_replay"]["psk_replay"]));
+    let mut z2 = z;
+    z2[31] ^= 1;
+    assert_ne!(kdf::psk_replay(&z2, DEVICE_ID).to_vec(), h(&v["psk_replay"]["psk_replay"]));
 }
 
 /// Negative controls (design §8.2 / §8.3): mutated vector encodings must be rejected by the strict decoder.
