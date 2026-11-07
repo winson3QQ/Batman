@@ -3,9 +3,11 @@
 # (docs/design/254-h23-harness.md §4.4 order, §6.2). Each unit is its own script (scripts/dv/prov-<x>-254.sh) that ends
 # with "UNIT <name> PASS|FAIL|INVALID"; the suite passes only on PASS with no FAIL line (cl_judge).
 # 04-specific (MAC / peer 02 hard-coded in scripts/dv/prov-254.sh), like chain1-254.
-# 04's address: the bench store's membership log (prov-bench-s0-254.sh keep step: "node=04 run=keep-... ip=<a>"),
-# else the pre-conversion fleet address. Read once per run.
-node04_ip(){ [ -n "${NODE04_IP:-}" ] || { NODE04_IP=$(MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- grep "^node=04 run=keep-" /home/yello/.batman-dv/bench/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1); NODE04_IP=${NODE04_IP:-10.41.1.3}; }; echo "$NODE04_IP"; }
+# 04's address: the bench store's membership log (bench-254.sh bench_ip: the last line of 04, a keep line), else the
+# pre-conversion fleet address (the units' MAC check refuses a wrong node). Read once per run.
+# shellcheck source=scripts/dv/bench-254.sh
+. "$REPO/scripts/dv/bench-254.sh"
+node04_ip(){ [ -n "${NODE04_IP:-}" ] || { NODE04_IP=$(bench_ip 04); NODE04_IP=${NODE04_IP:-10.41.1.3}; }; echo "$NODE04_IP"; }
 is_node04(){ [ "$1" = "$(node04_ip)" ]; }
 # A unit that hands 04 to a person (NEEDS-PERSON, $DIR/needs-person.txt) blocks every later prov unit of the run:
 # "FAIL blocked: DNODE …" (never a known failure, NEVER_KNOWN).

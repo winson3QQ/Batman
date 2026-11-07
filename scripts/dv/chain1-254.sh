@@ -19,9 +19,14 @@
 # person to run restore (overlay-restore + compare) afterwards.
 # Reviews: 2026-10-26 round 1 A (APPROVE-WITH-CHANGES, 5 MAJOR) / B (REJECT); all findings addressed in v2.
 set -u
-# 04 / 02 from the bench store's membership log (prov-bench-s0-254.sh keep); 10.41.1.3 / .1 = the pre-conversion fleet
-bench_ip(){ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- grep "^node=$1 run=keep-" /home/yello/.batman-dv/bench/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1; }
-[ -n "${NODE:-}" ] || NODE=$(bench_ip 04); [ -n "${PEER:-}" ] || PEER=$(bench_ip 02); NODE=${NODE:-10.41.1.3}; PEER=${PEER:-10.41.1.1}; HOSTIP=${HOSTIP:-10.41.240.10}; MACW=88-a2-9e-b5-6c-89; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local
+# 04 / 02 from the bench store's membership log (bench-254.sh: the last line of each node), or NODE= / PEER= given;
+# no address -> refused (no guess: the pre-conversion fleet's 10.41.1.3 / .1 are gone)
+# shellcheck source=scripts/dv/bench-254.sh
+. "$(dirname "$0")/bench-254.sh"
+[ -n "${NODE:-}" ] || NODE=$(bench_ip 04); [ -n "${PEER:-}" ] || PEER=$(bench_ip 02)
+[ -n "$NODE" ] && [ -n "$PEER" ] || { echo "chain1: no address for 04 [$NODE] / 02 [$PEER] (bench store nodes.txt, or NODE= / PEER=)"; echo "CHAIN1 RESULT: FAIL (no addresses)"; exit 1; }
+PEERMAC=${PEERMAC:-a8:dd:9f:4d:c7:60}   # 02's mesh interface (wlh0), as prov-254.sh: the neighbour must be 02
+HOSTIP=${HOSTIP:-10.41.240.10}; MACW=88-a2-9e-b5-6c-89; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local
 V=${V:?version}; PAY=${PAY:-/opt/batdata/ota-1.5.13-wsl.1.tar.gz}; PSHA=${PSHA:?payload sha256}
 OUTS=${OUTS:-//wsl.localhost/Ubuntu-24.04/home/yello/out}
 REPO=${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}; PB=$REPO/scripts/node/prov-base-254.sh
@@ -70,6 +75,12 @@ pk_proof $NODE || { say "lab key $LABKEY does not authenticate to A by publickey
 w9=$(MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- bash -c "cd /home/yello/Batman && git show f2f2bf6:feed/batman-provision/files/usr/sbin/batman-slot | sha256sum | cut -c1-64" | tr -d '\r')
 [ "$(sha256sum < "$WSL9_SLOT" | cut -c1-64)" = "$w9" ] && ! grep -q '#254 L44' "$WSL9_SLOT" || { say "WSL9_SLOT is not the f2f2bf6 batman-slot (or carries L44)"; exit 1; }
 peer0=$(timeout 30 ssh $SSHO root@$PEER "$ST" 2>/dev/null | tr -d '\r'); say "02 before: [$peer0]"
+# 02 must be the bench peer, reachable, on N0 with 04 as a neighbour BEFORE anything is changed (review B-M4: a wrong
+# PEER would otherwise surface only after the snapshot, as a destructive abort); its mesh id + prov state recorded
+P02ID="cat /sys/class/net/wlh0/address 2>/dev/null; uci -q get wireless.default_radio1.mesh_id; awk -v b=\$(cat /proc/sys/kernel/random/boot_id) '\$1==b {print \$4}' /opt/batdata/state/prov-state"
+p02_0=$(timeout 30 ssh $SSHO root@$PEER "$P02ID" 2>/dev/null | tr -d '\r' | tr '\n' ' '); say "02: wlh0 / mesh id / prov state = [$p02_0]"
+[ -n "$peer0" ] && [ "$(cut -d' ' -f1 <<< "$p02_0")" = "$PEERMAC" ] && [ -n "$(cut -d' ' -f2 <<< "$p02_0")" ] || { say "02 at $PEER is not reachable / not the bench peer ($PEERMAC) / has no mesh id"; exit 1; }
+q "batctl n -n 2>/dev/null | tail -n +3 | grep -qiw -- $PEERMAC && echo NB" | grep -q NB || { say "02 ($PEERMAC) is not a neighbour of 04 before the run"; exit 1; }
 P1_0=$(q "$P1LIST"); say "A boot FAT (p1, /boot) before: $(echo "$P1_0" | wc -l) files, list sha $(echo "$P1_0" | sha256sum | cut -c1-16)"; [ "$(echo "$P1_0" | wc -l)" -ge 5 ] || { say "cannot hash p1"; exit 1; }
 q "mkdir -p -m 700 $PDIR && cd $PDIR && rm -rf ./* && tar -xzf $PAY && echo extracted" | sed 's/^/    /'
 # ======== 1. snapshot; mesh markers into the snapshot dir (step 8's premise); dead-man staged on p6
@@ -264,6 +275,12 @@ fi
 # ======== 9. restore
 restore_all "step 9" || { RESULT="RESTORE FAILED — needs a person"; exit 1; }
 p=$(timeout 30 ssh $SSHO root@$PEER "$ST" 2>/dev/null | tr -d '\r'); say "02 after: [$p]"
+# the mesh after the restore (review B-M4; compare covers config, not the live mesh): 02 a neighbour of 04 again within
+# 180 s, and 02's mesh id / prov state as before
+t=$SECONDS; nbok=n; while [ $((SECONDS - t)) -lt 180 ]; do q "batctl n -n 2>/dev/null | tail -n +3 | grep -qiw -- $PEERMAC && echo NB" | grep -q NB && { nbok=y; break; }; sleep 10; done
+[ $nbok = y ] && ok "9 02 ($PEERMAC) is a mesh neighbour of 04 again" || no "9 02 ($PEERMAC) not a neighbour of 04 within 180 s of the restore"
+p02_1=$(timeout 30 ssh $SSHO root@$PEER "$P02ID" 2>/dev/null | tr -d '\r' | tr '\n' ' ')
+[ -n "$(echo $p02_1)" ] && [ "$p02_1" = "$p02_0" ] && ok "9 02 unchanged: wlh0 / mesh id / prov state [$(echo $p02_1)]" || no "9 02 changed or unreadable: [$(echo $p02_0)] -> [$(echo $p02_1)]"
 if [ "$HASPROVD" = y ] && [ -n "$P02_U0" ]; then
 	sl=$(timeout 30 ssh $SSHO root@$PEER "${C1RKILL//@D@/$C1R}; cat $C1R/status.log; rm -rf $C1R" 2>/dev/null | tr -d '\r')
 	# +90 s: a read that started before the reboot may finish (and be logged) just after it, with the old value
