@@ -21,9 +21,10 @@
 #   pr_needs_person <step>    NEEDS-PERSON line + $DV_DIR/needs-person.txt, DNODE_BLOCKED=1, return 1
 # Every judgement line is "PASS ..." / "FAIL ..." / "INVALID ..." / "NEEDS-PERSON ..."; pr_result prints the verdict.
 set -u
-# the bench nodes' addresses: NODE / PEER, else the bench store's membership log (prov-bench-s0-254.sh, the last
-# "node=<n> run=keep-... ip=<address>" line of each node), else the pre-conversion fleet addresses
-bench_ip(){ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- grep "^node=$1 run=keep-" /home/yello/.batman-dv/bench/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1; }
+# the bench nodes' addresses: NODE / PEER, else the bench store's membership log (bench-254.sh bench_ip: the last line
+# of each node, a keep line), else the pre-conversion fleet addresses (pr_begin's MAC check refuses a wrong node)
+# shellcheck source=scripts/dv/bench-254.sh
+. "$(dirname "${BASH_SOURCE[0]}")/bench-254.sh"
 [ -n "${NODE:-}" ] || NODE=$(bench_ip 04); [ -n "${PEER:-}" ] || PEER=$(bench_ip 02)
 NODE=${NODE:-10.41.1.3}; PEER=${PEER:-10.41.1.1}; MAC=${MAC:-88:a2:9e:b5:6c:89}
 PEERMAC=${PEERMAC:-a8:dd:9f:4d:c7:60}   # 02's mesh interface (wlh0): the neighbour must be 02, not any node (review A-m6 / B-m5); pr_begin checks it on 02
@@ -707,7 +708,8 @@ pr_keys_drop(){ wsl_ rm -rf "$WSLK"; q "rm -rf $PCD"; }
 pr_member(){
 	local mesh r i s b0
 	mesh="dvm-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-	PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$mesh' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\""
+	# net_config key 5 = radio1.country: P3's join refuses any other (254-p3 D9); unread -> provclient's default
+	PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$mesh' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\"; c=\$(uci -q get wireless.radio1.country); [ -n \"\$c\" ] && printf 'country=%s\n' \"\$c\""
 	pr_keys && pr_pc_place && pr_claim || return 1
 	r=$(pr_pc owner.pem FD3="$PR_FD3" -- net-apply --first "$OWNER"); grep -q "RESULT net.apply code=0 " <<< "$r" || { no "join: $r"; return 1; }
 	i=$(pr_info); case " $i " in *" state=member "*) ;; *) no "not member after the join: $i"; return 1 ;; esac

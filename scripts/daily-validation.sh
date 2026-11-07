@@ -2219,7 +2219,7 @@ else
   if up "$DNODE"; then suite setkey-persists-202 "halow-setkey persists to p5 at once; a stale p5 refuses an OTA, also under -F, on DNODE $DNODE (#202 D2, DESTRUCTIVE: off-mesh twice + one refused-OTA reboot)" "bchk_setkey_202 $DNODE" D
   else suite setkey-persists-202 "#202 D2 — DNODE $DNODE did not answer" ""; fi
   if up "$MESH_NODE"; then nt202=""; [ "$MESH_NODE" = "$OTS_NODE" ] || nt202=--no-tenant
-    suite reflash-survives-config-202 "persisted hostname/keys survive a real A/B reflash of MESH_NODE=$MESH_NODE, rejoin + autocommit (#202 D3, DESTRUCTIVE: reflashes the node, leaves it on the other slot)" "$REPO/scripts/fault-injection.sh $MESH_NODE --case p5 $nt202" D
+    suite reflash-survives-config-202 "persisted hostname/keys survive a real A/B reflash of MESH_NODE=$MESH_NODE, rejoin + autocommit (#202 D3, DESTRUCTIVE: reflashes the node, leaves it on the other slot)" "DV_DIR=$DIR $REPO/scripts/fault-injection.sh $MESH_NODE --case p5 $nt202" D
   else suite reflash-survives-config-202 "#202 D3 — MESH_NODE $MESH_NODE did not answer" ""; fi
 fi
 
