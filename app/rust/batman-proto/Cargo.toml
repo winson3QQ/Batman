@@ -1,0 +1,17 @@
+[package]
+name = "batman-proto"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Batman provisioning protocol core for the app (sans-IO; docs/design/254-app-s1.md, 219-protocol.md §10)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+# versions pinned exactly; chosen >= 2 weeks old (docs/design/254-app-s1.md §2)
+serde_json = "=1.0.140"
+hex = "=0.4.3"
