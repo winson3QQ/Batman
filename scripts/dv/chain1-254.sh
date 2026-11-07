@@ -46,7 +46,25 @@ mkdir "$LOCKD" 2>/dev/null || { echo "another dv run holds $LOCKD"; exit 1; }
 # on 02: every process naming the reader dir (the loop and an in-flight read, both setsid group leaders) with its group
 C1RKILL='for p in $(grep -l "@D@/" /proc/[0-9]*/cmdline 2>/dev/null | cut -d/ -f3); do [ "$p" = $$ ] && continue; kill -TERM -- -$p 2>/dev/null; kill -TERM $p 2>/dev/null; done'
 c1r_stop(){ [ -n "${P02_U0:-}" ] && timeout 20 ssh $SSHO root@$PEER "${C1RKILL//@D@/$C1R}; rm -rf $C1R" >/dev/null 2>&1; P02_U0=""; }
-on_exit(){ local rc=$?; c1r_stop; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; restore_all "unexpected exit"; fi
+# 02's identity, labelled (an empty field never shifts another into its place): mac= mid= ps=
+P02ID="echo \"mac=\$(cat /sys/class/net/wlh0/address 2>/dev/null) mid=\$(uci -q get wireless.default_radio1.mesh_id) ps=\$(awk -v b=\$(cat /proc/sys/kernel/random/boot_id) '\$1==b {print \$4}' /opt/batdata/state/prov-state 2>/dev/null)\""
+p02f(){ sed -n "s/.*\\b$2=\\([^ ]*\\).*/\\1/p" <<< " $1"; }
+# chk02_after: after ANY restore that finished (step 9, or an abort's), the live mesh (compare covers config only,
+# review B-M4): 02 a neighbour of 04 again within 180 s, 02's identity as before. P02_DONE: once per run.
+chk02_after(){ local t nbok=n p02_1
+	[ "${P02_DONE:-0}" = 1 ] && return 0; P02_DONE=1
+	t=$SECONDS; while [ $((SECONDS - t)) -lt 180 ]; do q "batctl n -n 2>/dev/null | tail -n +3 | grep -qiw -- $PEERMAC && echo NB" | grep -q NB && { nbok=y; break; }; sleep 10; done
+	[ $nbok = y ] && ok "9 02 ($PEERMAC) is a mesh neighbour of 04 again" || no "9 02 ($PEERMAC) not a neighbour of 04 within 180 s of the restore"
+	p02_1=$(timeout 30 ssh $SSHO root@$PEER "$P02ID" 2>/dev/null | tr -d '\r')
+	[ -n "$(p02f "$p02_1" mid)" ] && [ "$p02_1" = "$p02_0" ] && ok "9 02 unchanged: [$p02_1]" || no "9 02 changed or unreadable: [$p02_0] -> [$p02_1]"
+}
+on_exit(){ local rc=$? m; c1r_stop; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; restore_all "unexpected exit"; fi
+	if [ "$SNAPPED" = 1 ] && [ "${RESTORE_PERSON:-1}" = 1 ]; then
+		# 04 is left to a person (snapshot / dirty flag kept): the run's later D suites on 04 must not touch it
+		# (daily-validation.sh suite(): dnode_blocked reads $DV_DIR/needs-person.txt; review round 2 B-M2)
+		m="NEEDS-PERSON chain1-254 ($RUN): the restore did not finish — snapshot $D and the dirty flag are kept on 04 ($NODE)"
+		echo "$m"; [ -n "${DV_DIR:-}" ] && echo "$m" >> "$DV_DIR/needs-person.txt"; RESULT="RESTORE FAILED — needs a person"
+	elif [ "$SNAPPED" = 1 ] && [ -n "${p02_0:-}" ]; then chk02_after; fi
 	rmdir "$LOCKD" 2>/dev/null; MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- rm -rf "$WSLK" 2>/dev/null; say "CHAIN1 RESULT: $RESULT (fails=$fails)"; }
 trap on_exit EXIT
 trap 'say "host interrupted"; [ "$SNAPPED" = 1 ] && restore_all "interrupted"; RESTORING=1; exit 1' INT TERM
@@ -76,10 +94,10 @@ w9=$(MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- bash -c "cd /home/ye
 [ "$(sha256sum < "$WSL9_SLOT" | cut -c1-64)" = "$w9" ] && ! grep -q '#254 L44' "$WSL9_SLOT" || { say "WSL9_SLOT is not the f2f2bf6 batman-slot (or carries L44)"; exit 1; }
 peer0=$(timeout 30 ssh $SSHO root@$PEER "$ST" 2>/dev/null | tr -d '\r'); say "02 before: [$peer0]"
 # 02 must be the bench peer, reachable, on N0 with 04 as a neighbour BEFORE anything is changed (review B-M4: a wrong
-# PEER would otherwise surface only after the snapshot, as a destructive abort); its mesh id + prov state recorded
-P02ID="cat /sys/class/net/wlh0/address 2>/dev/null; uci -q get wireless.default_radio1.mesh_id; awk -v b=\$(cat /proc/sys/kernel/random/boot_id) '\$1==b {print \$4}' /opt/batdata/state/prov-state"
-p02_0=$(timeout 30 ssh $SSHO root@$PEER "$P02ID" 2>/dev/null | tr -d '\r' | tr '\n' ' '); say "02: wlh0 / mesh id / prov state = [$p02_0]"
-[ -n "$peer0" ] && [ "$(cut -d' ' -f1 <<< "$p02_0")" = "$PEERMAC" ] && [ -n "$(cut -d' ' -f2 <<< "$p02_0")" ] || { say "02 at $PEER is not reachable / not the bench peer ($PEERMAC) / has no mesh id"; exit 1; }
+# PEER would otherwise surface only after the snapshot, as a destructive abort); its identity (P02ID, labelled) recorded
+p02_0=$(timeout 30 ssh $SSHO root@$PEER "$P02ID" 2>/dev/null | tr -d '\r'); say "02: [$p02_0]"
+[ -n "$peer0" ] && [ "$(p02f "$p02_0" mac)" = "$PEERMAC" ] && [ -n "$(p02f "$p02_0" mid)" ] && [ -n "$(p02f "$p02_0" ps)" ] \
+	|| { say "02 at $PEER is not reachable / not the bench peer ($PEERMAC) / has no mesh id or prov state"; p02_0=""; exit 1; }
 q "batctl n -n 2>/dev/null | tail -n +3 | grep -qiw -- $PEERMAC && echo NB" | grep -q NB || { say "02 ($PEERMAC) is not a neighbour of 04 before the run"; exit 1; }
 P1_0=$(q "$P1LIST"); say "A boot FAT (p1, /boot) before: $(echo "$P1_0" | wc -l) files, list sha $(echo "$P1_0" | sha256sum | cut -c1-16)"; [ "$(echo "$P1_0" | wc -l)" -ge 5 ] || { say "cannot hash p1"; exit 1; }
 q "mkdir -p -m 700 $PDIR && cd $PDIR && rm -rf ./* && tar -xzf $PAY && echo extracted" | sed 's/^/    /'
@@ -275,12 +293,7 @@ fi
 # ======== 9. restore
 restore_all "step 9" || { RESULT="RESTORE FAILED — needs a person"; exit 1; }
 p=$(timeout 30 ssh $SSHO root@$PEER "$ST" 2>/dev/null | tr -d '\r'); say "02 after: [$p]"
-# the mesh after the restore (review B-M4; compare covers config, not the live mesh): 02 a neighbour of 04 again within
-# 180 s, and 02's mesh id / prov state as before
-t=$SECONDS; nbok=n; while [ $((SECONDS - t)) -lt 180 ]; do q "batctl n -n 2>/dev/null | tail -n +3 | grep -qiw -- $PEERMAC && echo NB" | grep -q NB && { nbok=y; break; }; sleep 10; done
-[ $nbok = y ] && ok "9 02 ($PEERMAC) is a mesh neighbour of 04 again" || no "9 02 ($PEERMAC) not a neighbour of 04 within 180 s of the restore"
-p02_1=$(timeout 30 ssh $SSHO root@$PEER "$P02ID" 2>/dev/null | tr -d '\r' | tr '\n' ' ')
-[ -n "$(echo $p02_1)" ] && [ "$p02_1" = "$p02_0" ] && ok "9 02 unchanged: wlh0 / mesh id / prov state [$(echo $p02_1)]" || no "9 02 changed or unreadable: [$(echo $p02_0)] -> [$(echo $p02_1)]"
+chk02_after   # the live mesh after the restore (also after an abort's restore: on_exit)
 if [ "$HASPROVD" = y ] && [ -n "$P02_U0" ]; then
 	sl=$(timeout 30 ssh $SSHO root@$PEER "${C1RKILL//@D@/$C1R}; cat $C1R/status.log; rm -rf $C1R" 2>/dev/null | tr -d '\r')
 	# +90 s: a read that started before the reboot may finish (and be logged) just after it, with the old value

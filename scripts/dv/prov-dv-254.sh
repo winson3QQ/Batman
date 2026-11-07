@@ -46,7 +46,8 @@ bchk_prov_normalise_254() {
 	NODE=$1 DV_DIR=$DIR bash "$REPO/scripts/dv/prov-normalise-254.sh" "$v" 2>&1 | cl_judge '^UNIT prov-normalise-254 PASS$'
 }
 # the block, in order: name | script | args (§4.4: normalise -> base -> revert type -> hold type -> killpoint type ->
-# chain 0 -> netjoin-fleet -> (7) -> legacy-upgrade)
+# chain 0 -> netjoin-fleet -> (7) -> legacy-upgrade -> the P3 units, #254 H4 appendix A: on a pre-P3 image their W lines
+# FAIL by design, prov-p3-verbs-254 names the image; they need a provclient with the P3 ops in DV_PROV_TOOLS)
 # shellcheck disable=SC2034  # read by scripts/daily-validation.sh (section 2f2)
 PROV_B_UNITS="prov-base-254|prov-base-254|
 prov-ac-radio1off-254|prov-ac-radio1off-254|
@@ -87,4 +88,13 @@ prov-claim-kp-254|prov-claim-kp-254|
 prov-chain0-254|prov-chain0-254|
 prov-netjoin-fleet-254|prov-netjoin-fleet-254|
 prov-ac-fleetchan-254|prov-ac-fleetchan-254|
-prov-legacy-upgrade-254|prov-legacy-upgrade-254|"
+prov-legacy-upgrade-254|prov-legacy-upgrade-254|
+prov-p3-verbs-254|prov-p3-verbs-254|
+prov-settings-254|prov-settings-254|
+prov-status-diag-254|prov-status-diag-254|
+prov-owner-254|prov-owner-254|
+prov-update-254|prov-update-254|
+prov-bundle-gate-254|prov-bundle-gate-254|
+prov-autocommit-p3-254|prov-autocommit-p3-254|
+prov-country-join-254|prov-country-join-254|
+prov-http-254|prov-http-254|"

@@ -48,4 +48,4 @@ bchk_pty_commit_254() { local v; cl_need DV_OTA_PAYLOAD DV_OTA_PAYLOAD_SHA || re
 bchk_chain1_254() { local v; is_node04 "$1" || { echo "FAIL chain1-254 is 04-only and DNODE $1 is not 04 ($(node04_ip))"; return 1; }
 	cl_need DV_OTA_PAYLOAD DV_OTA_PAYLOAD_SHA DV_PROV_TOOLS || return 1
 	v=$(cl_ssh "$1" 20 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build')
-	NODE=$1 V=$v PAY=$DV_OTA_PAYLOAD PSHA=$DV_OTA_PAYLOAD_SHA bash "$REPO/scripts/dv/chain1-254.sh" 2>&1 | cl_judge 'CHAIN1 RESULT: PASS'; }
+	NODE=$1 DV_DIR=$DIR V=$v PAY=$DV_OTA_PAYLOAD PSHA=$DV_OTA_PAYLOAD_SHA bash "$REPO/scripts/dv/chain1-254.sh" 2>&1 | cl_judge 'CHAIN1 RESULT: PASS'; }

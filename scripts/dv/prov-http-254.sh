@@ -16,7 +16,9 @@
 # Every observation runs DETACHED on the node (setsid, output in $PRD, the staged root-0700 dir) and is fetched with
 # qr: a lost ssh connection is "unreadable" (INVALID), never a product verdict. Advertising is read with ble-lib's
 # adv_instances (the hardened mgmt.advinfo: stdin closed, lim 10, 3 tries; unreadable while bluetoothd is down).
-# Precondition: br-ahwlan has an IPv4 address (provd binds the fallback there, 254-p3 §3.8.1) -> otherwise INVALID.
+# Preconditions (otherwise INVALID): br-ahwlan has an IPv4 address (provd binds the fallback there, 254-p3 §3.8.1);
+# netstat -ltnp names programs (proven on dropbear's :22). HT3 leaves a detached guard on the node that starts
+# bluetoothd again after 900 s if it is still down (the host died mid-arm).
 # The other rows need the RB vehicle (P3's prov_test image with its seams) or a client on the phone AP (manual):
 # docs/validation/p3-manual-rows.md.
 # W (pre-P3 image): no fallback, no tables -> HT3 "not listening after 300 s", HT5's P (listening) not met, HT13 FAIL.
@@ -47,12 +49,18 @@ BR=$(qr "ip -4 -o addr show br-ahwlan 2>/dev/null | sed -n 's/.* inet \([0-9.]*\
 LSN="netstat -ltnp 2>/dev/null | grep -c '$BR:8095 .*LISTEN .*/batman-provd'"
 ANY="netstat -ltn 2>/dev/null | grep -c ':8095 '"
 num "${BR//./}" || { inv "br-ahwlan has no IPv4 address [$BR]: the fallback has nowhere to bind (254-p3 §3.8.1)"; pr_end; pr_result; exit 2; }
+# the listener judge needs netstat -p's program column (busybox FEATURE_NETSTAT_PRG): proven on dropbear's own listener
+d=$(qr "netstat -ltnp 2>/dev/null | grep -c ':22 .*LISTEN .*/dropbear'")
+num "$d" && [ "$d" -ge 1 ] || { inv "netstat -ltnp does not name dropbear's :22 listener [$d]: the batman-provd listener cannot be judged"; pr_end; pr_result; exit 2; }
 n=$(qr ". $PRD/ble-lib-254.sh; adv_instances || echo unreadable"); l=$(qr "$ANY")
 say "before: br-ahwlan $BR, adv instances [$n], 8095 LISTEN (any process) [$l]"
 num "$n" && [ "$n" -ge 1 ] || inv "BLE not advertising before the unit (adv instances [$n])"
-[ "$l" = 0 ] && ok "8095 not LISTEN while BLE is healthy" || no "8095 LISTEN [$l] while BLE is healthy (the fallback must be closed)"
+if ! num "$l"; then inv "8095 listeners could not be read [$l]"
+elif [ "$l" = 0 ]; then ok "8095 not LISTEN while BLE is healthy"
+else no "8095 LISTEN [$l] while BLE is healthy (the fallback must be closed)"; fi
 # ---- HT3 bluetoothd stopped (polled on the node every 2 s, up to 340 s)
-o=$(watch ht3 345 "/etc/init.d/bluetoothd stop >/dev/null 2>&1; sleep 1; echo bt=\$(pidof bluetoothd | wc -w) adv_down=\$(adv_instances || echo unreadable)
+o=$(watch ht3 345 "setsid sh -c 'sleep 900; pidof bluetoothd >/dev/null || /etc/init.d/bluetoothd start' </dev/null >/dev/null 2>&1 &
+	/etc/init.d/bluetoothd stop >/dev/null 2>&1; sleep 1; echo bt=\$(pidof bluetoothd | wc -w) adv_down=\$(adv_instances || echo unreadable)
 	first=none; early=none; while :; do t=\$(( \$(up_s) - T0 )); [ \$t -gt 340 ] && break
 		l=\$($LSN); [ \"\$l\" -ge 1 ] && { [ \$t -le 270 ] && early=\$t; first=\$t; break; }
 		sleep 2; done; echo first=\$first early=\$early listener=\"\$(netstat -ltnp 2>/dev/null | grep ':8095 ' | tr -s ' ' | cut -d' ' -f4,7 | head -1)\"")
@@ -61,7 +69,9 @@ first=$(kv "$o" first); early=$(kv "$o" early)
 if [ "$o" = UNREADABLE ] || ! grep -q 'first=' <<< "$o"; then inv "HT3: the node-side observation could not be read back"; first=unread
 else
 	[ "$(kv "$o" bt)" = 0 ] || inv "HT3: bluetoothd still running after the stop [$o]"
-	case "$(kv "$o" adv_down)" in unreadable|0) ok "HT3: advertising reads $(kv "$o" adv_down) while bluetoothd is stopped (the reader's negative control)";; *) no "HT3: advertising [$(kv "$o" adv_down)] with bluetoothd stopped: the advertising reader does not discriminate";; esac
+	# with bluetoothd gone adv_instances answers "unreadable" from its pidof guard (ble-lib-254.sh:76): this only shows
+	# the reader cannot return a stale count, it is not a negative control of mgmt.advinfo itself
+	case "$(kv "$o" adv_down)" in unreadable|0) say "HT3: advertising reads $(kv "$o" adv_down) while bluetoothd is stopped";; *) no "HT3: advertising [$(kv "$o" adv_down)] with bluetoothd stopped";; esac
 	if [ "$first" = none ]; then no "HT3: not listening after 300 s (batman-provd never LISTEN on $BR:8095 within 340 s of the bluetoothd stop)"
 	else
 		[ "$early" = none ] && ok "HT3: not LISTEN at <= 270 s" || no "HT3: LISTEN already at ${early} s (want > 270 s)"
@@ -84,8 +94,10 @@ else
 	else
 		num "$adv" && ok "HT5: advertising back ${adv} s after bluetoothd start" || no "HT5: advertising not back within 180 s"
 		if num "$gone" && num "$adv"; then
-			[ "$gone" -ge $((adv + 50)) ] && [ "$gone" -le $((adv + 120)) ] && ok "HT5: no new connections ${gone} s after the start = advertising + $((gone - adv)) s (want 50-120: HealthOK true for 1 min first)" \
-				|| no "HT5: the listener went at ${gone} s, advertising back at ${adv} s (want advertising + 50..120 s)"
+			# lower bound from bluetoothd's start (HealthOK cannot be true before it; the advertising timestamp can lag
+			# by up to ~30 s of adv_instances retries, review round 2 B-6); upper bound from advertising back
+			[ "$gone" -ge 50 ] && [ "$gone" -le $((adv + 120)) ] && ok "HT5: no new connections ${gone} s after bluetoothd start, advertising back at ${adv} s (want >= 50 s and <= advertising + 120 s: HealthOK true for 1 min first)" \
+				|| no "HT5: the listener went at ${gone} s, advertising back at ${adv} s (want >= 50 s after the start and <= advertising + 120 s)"
 		else no "HT5: the listener still there 180 s after bluetoothd came back [gone=$gone adv=$adv]"; fi
 	fi
 	say "MANUAL HT5: an HTTP session established during the fallback is kept after recovery — needs a client on the phone AP (p3-manual-rows)"
@@ -95,9 +107,11 @@ tb(){ qr 'nft list tables 2>/dev/null | grep -c "^table bridge batman_http$"; nf
 t=$(tb); say "HT13 before: tables bridge/inet, rules bridge/inet = $t"
 for _ in 1 2; do q '/etc/init.d/firewall reload >/dev/null 2>&1' >/dev/null; sleep 3; done
 t2=$(tb); say "HT13 after 2 reloads: $t2"
-[ -n "$(echo $t2)" ] || inv "HT13: the tables could not be read"
-[ "$(echo $t2)" = "1 1 1 1" ] && ok "HT13: after two reloads both tables present once, one rule each" || no "HT13: after two reloads tables bridge/inet, rules bridge/inet = [$(echo $t2)] (want 1 1 1 1)"
-f=$(qr 'nft list tables 2>/dev/null | grep -c "inet fw4"'); [ "$f" = 1 ] && ok "HT13: inet fw4 present after the reloads" || no "HT13: inet fw4 [$f] after the reloads"
+if [ "$(echo $t2 | wc -w)" != 4 ]; then inv "HT13: the tables could not be read [$(echo $t2)]"
+elif [ "$(echo $t2)" = "1 1 1 1" ]; then ok "HT13: after two reloads both tables present once, one rule each"
+else no "HT13: after two reloads tables bridge/inet, rules bridge/inet = [$(echo $t2)] (want 1 1 1 1)"; fi
+f=$(qr 'nft list tables 2>/dev/null | grep -c "inet fw4"')
+if ! num "$f"; then inv "HT13: inet fw4 could not be read [$f]"; elif [ "$f" = 1 ]; then ok "HT13: inet fw4 present after the reloads"; else no "HT13: inet fw4 [$f] after the reloads"; fi
 # ---- HT22 dbus restart
 n=$(qr ". $PRD/ble-lib-254.sh; adv_instances || echo unreadable"); l=$(qr "$ANY")
 num "$n" && [ "$n" -ge 1 ] || inv "HT22: BLE not advertising before the dbus restart [$n] (P)"

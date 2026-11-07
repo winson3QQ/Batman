@@ -1,16 +1,16 @@
 #!/bin/bash
 # scripts/dv/prov-settings-254.sh — #254 H4 appendix A.3, the R rows (member base state, helper level, p3-how "h"):
 #   ST1  settings.get: code 0, the country / name equal uci, the AP passphrase is not in the output
-#   ST15 key 2 on a member -> E_REJECTED{14} (helper 21 reason=14), uci unchanged
+#   ST15 key 2 on a member -> E_REJECTED{14} (helper hERejectR 24 reason=14), uci unchanged
 #   ST17 key 1 -> E_UNSUPPORTED (6, rename-pending until U5)
-#   ST10 key 20 with `$` in the passphrase -> E_REJECTED{13} (21 reason=13), AP unchanged
+#   ST10 key 20 with `$` in the passphrase -> E_REJECTED{13} (helper hEInput 25 reason=13: a user input that is not allowed), AP unchanged
 #   ST13 another process's staged uci wireless change -> key 20 answers E_BUSY (7), status key 15 names wireless;
 #        the staged change is still only staged afterwards (nobody committed it), then reverted by the unit
 #   ST4(P) key 20 with fresh test credentials, drawn on the node: code 0, uci ssid == the new one, hostapd re-read,
 #        the member's plink stays ESTAB across it (the S arm with the setkey-full-restart seam is in the RB unit)
 # Not here: ST2 / 3 / 5 / 7 / 14 / 20 (F: a fresh card), ST6 / 8 / 9 / 12 / 16 / 19 (RB: seams), ST11 (holding
 # halow-setkey's lock: with the RB unit), ST22 (a measurement). The P3 helper codes: 254-p3-impl §5.1 + provd's
-# mapping (F38): E_REJECTED = 21 + reason, E_BUSY = 7, E_UNSUPPORTED = 6.
+# mapping (F38): E_REJECTED = helper 24 (hERejectR) or 25 (hEInput, user input) + reason (254-p3-impl.md error codes, F38, line ~192), E_BUSY = 7, E_UNSUPPORTED = 6.
 # W (pre-P3 image): settings.get is unknown (20), settings.set takes only the hostname -> every row FAILs with the
 # code it got; prov-p3-verbs-254 names the image pre-P3.
 # Type: R. Side effects: the AP credentials are changed to test values and put back by the restore (one reboot).
@@ -36,7 +36,7 @@ if [ "$(code "$r")" = 0 ]; then
 else no "ST1: settings.get code $(code "$r") (want 0): [$r]"; fi
 # ---- ST15 key 2 on a member
 r=$(pr_pc h0.pem -- settings-set "$H0" 2 DE | grep '^RESULT settings.set'); say "ST15: $r"
-[ "$(code "$r")" = 21 ] && [ "$(reason "$r")" = 14 ] && ok "ST15: key 2 on a member -> E_REJECTED{14}" || no "ST15: key 2 on a member: code $(code "$r") reason $(reason "$r") (want 21 / 14)"
+[ "$(code "$r")" = 24 ] && [ "$(reason "$r")" = 14 ] && ok "ST15: key 2 on a member -> E_REJECTED{14}" || no "ST15: key 2 on a member: code $(code "$r") reason $(reason "$r") (want 24 / 14)"
 c=$(qr 'uci -q get wireless.radio1.country'); [ "$c" = "$CC" ] && ok "ST15: country unchanged ($c)" || no "ST15: country changed: $CC -> $c"
 # ---- ST17 key 1
 r=$(pr_pc h0.pem -- settings-set "$H0" 1 "dv-rename-$RUN" | grep '^RESULT settings.set'); say "ST17: $r"
@@ -44,7 +44,7 @@ r=$(pr_pc h0.pem -- settings-set "$H0" 1 "dv-rename-$RUN" | grep '^RESULT settin
 h=$(qr 'uci -q get system.@system[0].hostname'); [ "$h" = "$HN" ] && ok "ST17: hostname unchanged" || no "ST17: hostname changed: $HN -> $h"
 # ---- ST10 `$` in the passphrase (made on the node, fd 3; never argv)
 r=$(pr_pc h0.pem FD3="printf 'ssid=%s\npsk=%s\n' 'dv-$RUN' 'bad\$pass-12345678'" -- settings-set "$H0" 20 | grep '^RESULT settings.set'); say "ST10: $r"
-[ "$(code "$r")" = 21 ] && [ "$(reason "$r")" = 13 ] && ok "ST10: a passphrase with \$ -> E_REJECTED{13}" || no "ST10: code $(code "$r") reason $(reason "$r") (want 21 / 13)"
+[ "$(code "$r")" = 25 ] && [ "$(reason "$r")" = 13 ] && ok "ST10: a passphrase with \$ -> E_REJECTED{13}" || no "ST10: code $(code "$r") reason $(reason "$r") (want 25 / 13)"
 s=$(qr 'uci -q get wireless.default_radio0.key | tr -d "\n" | sha256sum | cut -c1-16'); [ "$s" = "$KEYSHA" ] && ok "ST10: AP key unchanged" || no "ST10: AP key changed"
 # ---- ST13 a staged change of someone else -> E_BUSY, status says so
 q "uci set wireless.default_radio0.ssid='staged-$RUN'" >/dev/null

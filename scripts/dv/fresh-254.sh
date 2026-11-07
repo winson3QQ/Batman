@@ -93,9 +93,12 @@ pc(){
 land_quiet(){ local b0 b1; b0=$(bootof "$FOUND_STATE"); fq '/etc/init.d/openmanetd stop >/dev/null 2>&1; true'; b1=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ -n "$b1" ] && [ "$b1" = "$b0" ]; }
 
 # ---- restore_all: from ANY state after the snapshot back to S0 (same path as step 9). Idempotent steps, each printed.
+# RESTORE_PERSON=1 from the start of a restore until the snapshot is finished: any return before that (a failed step,
+# compare / B rewrite / p1 FAIL with the snapshot kept) leaves 04 to a person — the caller reports it (needs-person.txt)
 restore_all(){
 	[ "$RESTORING" = 1 ] && return 1; RESTORING=1; PH=restore
 	[ "$SNAPPED" = 1 ] || { say "RESTORE: no snapshot was taken — nothing to restore"; return 0; }
+	RESTORE_PERSON=1
 	say "RESTORE (${1:-step 9})"
 	local s b o i cmp
 	for i in 1 2 3; do
@@ -142,7 +145,7 @@ restore_all(){
 	else cmp=FAIL; no "p1 changed:"; diff <(echo "$P1_0") <(echo "$p1") | grep '^[<>]' | sed 's/^/    p1 /'; fi
 	# finish only when BOTH passed (review A-M4)
 	if [ "$cmp" = PASS ]; then o=$(q "sh $BASE/prov-base-254.sh finish $RUN | tail -1; rm -rf $PDIR $BASE/ch1-deadman.sh $BASE/ch1.cancel $BASE/ch1.fired $BASE/prov-base-254.sh; cat $BASE/ch1-deadman.log > /dev/null 2>&1; rm -f $BASE/ch1-deadman.log")
-		grep -q "^FINISHED $RUN" <<< "$o" && ok "snapshot finished ($o)" || no "finish: $o"
+		grep -q "^FINISHED $RUN" <<< "$o" && { ok "snapshot finished ($o)"; RESTORE_PERSON=0; } || no "finish: $o"
 	else say "finish skipped: snapshot $D and dirty flag kept for a person"; fi
 	say "after restore: $(q "$ST") $(q "$PROT") dirty=[$(q "cat $DIRTY 2>/dev/null")] dv-prov=[$(q "ls $BASE | tr '\n' ' '")] joinwatch=$(q 'ps w | grep -c "[/]usr/bin/joinwatch"')"
 	return 0
