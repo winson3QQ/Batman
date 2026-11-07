@@ -5,6 +5,7 @@
 //! `tests/vectors/219-protocol/vectors.json`.
 
 pub mod cbor;
+pub mod conn;
 pub mod claim;
 pub mod cose;
 pub mod envelope;
