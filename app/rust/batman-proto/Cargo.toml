@@ -10,8 +10,12 @@ description = "Batman provisioning protocol core for the app (sans-IO; docs/desi
 path = "src/lib.rs"
 
 [dependencies]
+# RustCrypto, versions pinned exactly, each >= 2 weeks old at selection (2026-11-07), MIT OR Apache-2.0
+hkdf = "=0.13.0"
+sha2 = "=0.11.1"
 
 [dev-dependencies]
 # versions pinned exactly; chosen >= 2 weeks old (docs/design/254-app-s1.md §2)
 serde_json = "=1.0.140"
+sha2 = "=0.11.1"
 hex = "=0.4.3"
