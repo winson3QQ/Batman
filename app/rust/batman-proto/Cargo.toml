@@ -9,13 +9,21 @@ description = "Batman provisioning protocol core for the app (sans-IO; docs/desi
 [lib]
 path = "src/lib.rs"
 
+[features]
+# test vectors need a fixed Noise ephemeral key; never enabled in a release build (the app's Cargo.toml must not
+# turn it on). Enabled for `cargo test` through the self dev-dependency below, so the vector tests can never be skipped.
+test-vectors = []
+
 [dependencies]
-# RustCrypto, versions pinned exactly, each >= 2 weeks old at selection (2026-11-07), MIT OR Apache-2.0
+# versions pinned exactly, each >= 2 weeks old at selection (2026-11-07), MIT OR Apache-2.0
 hkdf = "=0.13.0"
 sha2 = "=0.11.1"
+# snow: RUSTSEC-2024-0011 (unauthenticated nonce increment) is patched in >= 0.9.5
+#       only the primitives Noise_NX(psk0)_25519_ChaChaPoly_SHA256 needs (no AES-GCM / BLAKE2)
+snow = { version = "=0.10.0", default-features = false, features = ["std", "use-curve25519", "use-chacha20poly1305", "use-sha2", "use-getrandom"] }
 
 [dev-dependencies]
-# versions pinned exactly; chosen >= 2 weeks old (docs/design/254-app-s1.md §2)
+batman-proto = { path = ".", features = ["test-vectors"] }
 serde_json = "=1.0.140"
-sha2 = "=0.11.1"
 hex = "=0.4.3"
+sha2 = "=0.11.1"
