@@ -58,9 +58,11 @@ pub struct Initiator {
     hs: HandshakeState,
 }
 
-/// The established session: encrypt requests, decrypt responses. `h` is the handshake hash.
+/// The established session: encrypt requests, decrypt responses. `h` is the handshake hash; `rs` the node's static
+/// key from msg2, which node_cert must bind (sig_static).
 pub struct Session {
     pub h: [u8; 32],
+    pub rs: [u8; 32],
     t: TransportState,
 }
 
@@ -114,7 +116,12 @@ impl Initiator {
         }
         let hh = self.hs.get_handshake_hash();
         let h: [u8; 32] = hh.try_into().map_err(|_| Error::Protocol("handshake hash is not 32 bytes".into()))?;
-        Ok((buf, Session { h, t: self.hs.into_transport_mode()? }))
+        let rs: [u8; 32] = self
+            .hs
+            .get_remote_static()
+            .and_then(|r| r.try_into().ok())
+            .ok_or_else(|| Error::Protocol("no 32-byte remote static after msg2".into()))?;
+        Ok((buf, Session { h, rs, t: self.hs.into_transport_mode()? }))
     }
 }
 
