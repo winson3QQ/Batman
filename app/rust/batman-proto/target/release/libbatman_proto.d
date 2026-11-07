@@ -1,1 +1,0 @@
-/home/yello/Batman-app/app/rust/batman-proto/target/release/libbatman_proto.rlib: /home/yello/Batman-app/app/rust/batman-proto/src/cbor.rs /home/yello/Batman-app/app/rust/batman-proto/src/frame.rs /home/yello/Batman-app/app/rust/batman-proto/src/kdf.rs /home/yello/Batman-app/app/rust/batman-proto/src/lib.rs /home/yello/Batman-app/app/rust/batman-proto/src/noise.rs
