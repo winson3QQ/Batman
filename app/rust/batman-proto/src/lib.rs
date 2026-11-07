@@ -6,6 +6,7 @@
 
 pub mod cbor;
 pub mod claim;
+pub mod cose;
 pub mod sig;
 pub mod frame;
 pub mod kdf;

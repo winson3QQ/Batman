@@ -38,7 +38,7 @@ const COVERAGE: &[(&str, &str)] = &[
     ("owner_op", "tested"),
     ("op_nonce", "tested"),
     ("claim_replay", "tested"),
-    ("cose", "pending: cose"),
+    ("cose", "tested (net_config, member_list, net_secrets; the invite / join-request / approval objects are not in S1)"),
     ("chunk_boundary", "pending: envelope limits"),
     ("peers_challenge", "pending: not in S1 (P2 answers E_UNSUPPORTED; design §1)"),
     ("version_chain", "pending: not in S1 (network/update)"),
@@ -591,6 +591,142 @@ fn low_s_and_der_handling() {
         assert_eq!(sig::der_to_raw_low_s(der.as_bytes()).unwrap(), low);
     }
     assert_eq!(sig::der_to_raw_low_s(&[0x30, 0x02, 0x02, 0x00]).err(), Some(sig::Error::BadDer));
+}
+
+// ---- cose: payloads built here from gen.py's inputs equal the vector payloads; the Sig_structure we build verifies with
+// the vector signature under admin_pub; the assembled Sign1 is byte-exact; net_secrets' ECDH-ES with the fixed ephemeral
+// / IV gives the vector z, KDF context, CEK and Enc_structure; the random path decrypts with the node's ECDH key.
+use batman_proto::cose;
+
+/// gen.py fixtures (int(seed) mod (n-1) + 1), checked against the vector public keys / z below
+const COSE_EPH_PRIV: &str = "9c6f293ecdd80a1d07769a04ee80140c13f73d0c874a0463670881cc1da442ff";
+const NODE_ECDH_PRIV: &str = "5fc9a2c8dc0c10edeec4d50654765f2d4aee146880e072d036f584e55bbf3764";
+
+/// the signature inside a vector Sign1 (tag 18 [prot, {}, payload, sig])
+fn sign1_sig(raw: &[u8]) -> [u8; 64] {
+    match cbor::decode(raw).unwrap() {
+        cbor::Value::Tag(18, a) => match *a {
+            cbor::Value::Array(x) => x[3].as_bytes().unwrap().try_into().unwrap(),
+            _ => panic!("Sign1 is not an array"),
+        },
+        _ => panic!("not tag 18"),
+    }
+}
+
+fn net_id() -> [u8; 16] {
+    seed("net_id")[..16].try_into().unwrap()
+}
+
+#[test]
+fn cose_net_config_vector() {
+    let v = vectors();
+    let c = &v["cose"]["net_config"];
+    let admin = a65(&v["keys"]["admin_pub"]);
+    let p = cose::net_config_payload(&net_id(), 1, None, "家裡網路", "TW", "batman-test", 40, 4, &[admin]);
+    assert_eq!(p, h(&c["payload"]));
+    let tbs = cose::sign1_tbs(cose::CT_NETCFG, cose::LABEL_NETCFG, &p);
+    assert_eq!(tbs, h(&c["sig_structure"]));
+    let s = sign1_sig(&h(&c["sign1"]));
+    assert!(es256_ok(&admin, &tbs, &s), "the vector signature verifies over our Sig_structure under admin_pub");
+    assert_eq!(cose::sign1(cose::CT_NETCFG, &p, &s), h(&c["sign1"]));
+    // another content type / label is another Sig_structure (the admin signature does not carry over)
+    assert!(!es256_ok(&admin, &cose::sign1_tbs(cose::CT_MEMBERS, cose::LABEL_MEMBERS, &p), &s));
+}
+
+#[test]
+fn cose_member_list_vector() {
+    let v = vectors();
+    let c = &v["cose"]["member_list"];
+    let m = cose::Member {
+        dac_pub_hash: &a32(&v["keys"]["dac_pub_hash"]),
+        ecdh_pub: &a65(&v["keys"]["node_ecdh_pub"]),
+        name: "客廳",
+        owner_pub: &a65(&v["keys"]["owner_sign_pub"]),
+        owner_enc_pub: &a65(&v["keys"]["owner_enc_pub"]),
+    };
+    let p = cose::member_list_payload(&net_id(), 1, None, &[m]);
+    assert_eq!(p, h(&c["payload"]));
+    let tbs = cose::sign1_tbs(cose::CT_MEMBERS, cose::LABEL_MEMBERS, &p);
+    assert_eq!(tbs, h(&c["sig_structure"]));
+    let s = sign1_sig(&h(&c["sign1"]));
+    assert!(es256_ok(&h(&v["keys"]["admin_pub"]), &tbs, &s));
+    assert_eq!(cose::sign1(cose::CT_MEMBERS, &p, &s), h(&c["sign1"]));
+}
+
+#[test]
+fn cose_net_secrets_vector() {
+    let v = vectors();
+    let c = &v["cose"]["net_secrets"];
+    let node_ecdh = a65(&v["keys"]["node_ecdh_pub"]);
+    let dac_hash = a32(&v["keys"]["dac_pub_hash"]);
+    let eph: [u8; 32] = hex::decode(COSE_EPH_PRIV).unwrap().try_into().unwrap();
+    let iv: [u8; 12] = seed("iv-secrets")[..12].try_into().unwrap();
+    let e = cose::encrypt_with_fixed_for_vectors(&h(&c["plaintext"]), cose::LABEL_SECRETS, &node_ecdh, &dac_hash, &net_id(), 1, &eph, &iv)
+        .unwrap();
+    assert_eq!(e.z.to_vec(), h(&c["ecdh_z"]), "ECDH z (also checks the ephemeral fixture)");
+    assert_eq!(e.kdf_context, h(&c["kdf_context"]));
+    assert_eq!(e.cek.to_vec(), h(&c["cek"]));
+    assert_eq!(e.enc_structure, h(&c["enc_structure"]));
+    let p = cose::net_secrets_payload(&net_id(), 1, &dac_hash, &e.object);
+    let s = sign1_sig(&h(&c["sign1"]));
+    let tbs = cose::sign1_tbs(cose::CT_SECRETS, cose::LABEL_SECRETS, &p);
+    assert!(es256_ok(&h(&v["keys"]["admin_pub"]), &tbs, &s));
+    assert_eq!(cose::sign1(cose::CT_SECRETS, &p, &s), h(&c["sign1"]), "net_secrets Sign1 byte-exact");
+    // another target hash -> another KDF context -> another CEK
+    let mut other = dac_hash;
+    other[0] ^= 1;
+    let e2 = cose::encrypt_with_fixed_for_vectors(&h(&c["plaintext"]), cose::LABEL_SECRETS, &node_ecdh, &other, &net_id(), 1, &eph, &iv)
+        .unwrap();
+    assert_ne!(e2.cek.to_vec(), h(&c["cek"]));
+}
+
+/// The release path (fresh ephemeral + IV): two encryptions differ, and the node's ECDH key decrypts both to the
+/// plaintext — the recipient side recomputed here independently of encrypt_inner's code path.
+#[test]
+fn cose_random_path_decrypts_at_the_node() {
+    use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+    let v = vectors();
+    let node_ecdh = a65(&v["keys"]["node_ecdh_pub"]);
+    let node_priv = p256::SecretKey::from_slice(&hex::decode(NODE_ECDH_PRIV).unwrap()).unwrap();
+    {
+        use p256::elliptic_curve::sec1::ToSec1Point;
+        assert_eq!(node_priv.public_key().to_sec1_point(false).as_bytes().to_vec(), node_ecdh.to_vec(), "node-ecdh fixture");
+    }
+    let dac_hash = a32(&v["keys"]["dac_pub_hash"]);
+    let plain = b"{1: sae, 2: net_root} stand-in";
+    let mut cts = vec![];
+    for _ in 0..2 {
+        let e = cose::encrypt_to(plain, cose::LABEL_SECRETS, &node_ecdh, &dac_hash, &net_id(), 1).unwrap();
+        let cbor::Value::Tag(96, arr) = &e.object else { panic!("not tag 96") };
+        let cbor::Value::Array(a) = arr.as_ref() else { panic!() };
+        let iv = a[1].get(5).unwrap().as_bytes().unwrap().to_vec();
+        let ct = a[2].as_bytes().unwrap().to_vec();
+        // recipient: rebuild the ephemeral public key from the COSE_Key and do ECDH with the node's key
+        let cbor::Value::Array(rec) = &a[3] else { panic!() };
+        let cbor::Value::Array(r0) = &rec[0] else { panic!() };
+        let ck = r0[1].get(0).or_else(|| {
+            // the unprotected header key is -1 (Nint(0)); get() only looks up uint keys
+            if let cbor::Value::Map(m) = &r0[1] { m.iter().find(|(k, _)| *k == cbor::Value::Nint(0)).map(|(_, v)| v) } else { None }
+        });
+        let cbor::Value::Map(ckm) = ck.unwrap() else { panic!() };
+        let coord = |n: u64| ckm.iter().find(|(k, _)| *k == cbor::Value::Nint(n)).unwrap().1.as_bytes().unwrap().to_vec();
+        let mut epk = vec![4u8];
+        epk.extend(coord(1));
+        epk.extend(coord(2));
+        let eph_pub = p256::PublicKey::from_sec1_bytes(&epk).unwrap();
+        let z = p256::ecdh::diffie_hellman(node_priv.to_nonzero_scalar(), eph_pub.as_affine());
+        assert_eq!(z.raw_secret_bytes().as_slice(), &e.z[..]);
+        let cek = batman_proto::kdf::hkdf32(&e.z, &e.kdf_context);
+        let pt = chacha20poly1305::ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(&cek))
+            .decrypt(chacha20poly1305::Nonce::from_slice(&iv), Payload { msg: &ct, aad: &e.enc_structure })
+            .expect("the node decrypts the release-path ciphertext");
+        assert_eq!(pt, plain);
+        cts.push((iv, ct));
+    }
+    assert_ne!(cts[0].1, cts[1].1, "fresh ephemeral each time (different ciphertext)");
+    // the IV itself must be fresh too (design §2): a fixed IV would hide behind the fresh ephemeral above
+    assert_ne!(cts[0].0, cts[1].0, "fresh IV each time");
+    assert_ne!(cts[0].0, vec![0u8; 12]);
 }
 
 /// Negative controls (design §8.2 / §8.3): mutated vector encodings must be rejected by the strict decoder.
