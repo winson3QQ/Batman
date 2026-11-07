@@ -197,8 +197,10 @@ struct Platform {
     signed: Vec<Vec<u8>>,
 }
 
+/// the same signature as DER with s = n - s_low, i.e. ALWAYS high-s (p256 may return either form)
 fn high_s_der(s: &p256::ecdsa::Signature) -> Vec<u8> {
     let n = hex::decode("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551").unwrap();
+    let s = s.normalize_s();
     let b = s.to_bytes();
     let (r, lo) = (b[..32].to_vec(), &b[32..]);
     let mut hi = [0u8; 32];
@@ -239,7 +241,20 @@ fn run(node: &mut Node, p: Pending, plat: &mut Platform) -> End {
                 assert!(input.starts_with(b"batman-owner-op-v1"), "the owner key signs only allow-listed prefixes");
                 plat.signed.push(input.clone());
                 let s: p256::ecdsa::Signature = plat.sign.sign(&input);
-                let der = if plat.high_s { high_s_der(&s) } else { s.to_der().as_bytes().to_vec() };
+                let der = if plat.high_s {
+                    let d = high_s_der(&s);
+                    let raw: [u8; 64] = p256::ecdsa::Signature::from_der(&d).map(|x| x.to_bytes().into()).unwrap_or_else(|_| {
+                        // p256 refuses to parse a high-s DER on some versions: check the s integer directly
+                        let mut r = [0u8; 64];
+                        let sl = d[d.len() - 32..].to_vec();
+                        r[32..].copy_from_slice(&sl);
+                        r
+                    });
+                    assert!(!sig::is_low_s(&raw), "the platform hands over a high-s signature");
+                    d
+                } else {
+                    s.to_der().as_bytes().to_vec()
+                };
                 r.signed(&der).unwrap()
             }
             Action::Write(frames) => {
