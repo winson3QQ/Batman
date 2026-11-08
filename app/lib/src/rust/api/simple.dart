@@ -12,6 +12,25 @@ BuildInfo buildInfo() => RustLib.instance.api.crateApiSimpleBuildInfo();
 /// Runs a few core operations on the device and reports them: a strict CBOR round trip and an HKDF output prefix.
 String selftest() => RustLib.instance.api.crateApiSimpleSelftest();
 
+/// The marker's content, or None when there is none.
+Future<String?> storeReadMarker({required String dir}) =>
+    RustLib.instance.api.crateApiSimpleStoreReadMarker(dir: dir);
+
+/// Whether any record exists (then keys are never deleted, even without a marker — design §4.1).
+Future<bool> storeHasRecords({required String dir}) =>
+    RustLib.instance.api.crateApiSimpleStoreHasRecords(dir: dir);
+
+/// Write the marker (atomic, synced). Refused when one already exists.
+Future<void> storeWriteMarker({required String dir, required String content}) =>
+    RustLib.instance.api.crateApiSimpleStoreWriteMarker(
+      dir: dir,
+      content: content,
+    );
+
+/// Remove left-over temp files of a write interrupted by a crash.
+Future<int> storeSweep({required String dir}) =>
+    RustLib.instance.api.crateApiSimpleStoreSweep(dir: dir);
+
 /// What this native library was built with; Dart compares `dev_trust` with the flavor's BuildConfig at startup and
 /// disables the app on a mismatch (design v8.5.1 §4.1).
 class BuildInfo {
