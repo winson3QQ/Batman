@@ -216,7 +216,7 @@ if [ "$PART_NUM" = 6 ] && [ -b "$PART" ] && command -v sgdisk >/dev/null 2>&1; t
 			guid=$(sgdisk -i 6 "$DISK" 2>/dev/null | sed -n 's/^Partition unique GUID: //p')
 			[ "$IS_PI3" = 1 ] && { MBRBAK=$(tmpf 95-mbr.bak) && MBRNOW=$(tmpf 95-mbr.now) && raw_sector0 > "$MBRBAK" && lg "Pi 3 card: sector 0 backed up before the table rewrite"; }
 			# no verified backup on a Pi 3 = no rewrite of the boot-critical sector 0 (#280: the backup must be private)
-			[ "$IS_PI3" = 1 ] && [ "$(wc -c < "${MBRBAK:-/nonexistent}" 2>/dev/null)" != 512 ] && { lg "!!! Pi 3 card: sector 0 backup failed — NOT rewriting the table"; guid=""; }
+			[ "$IS_PI3" = 1 ] && [ "$({ wc -c < "${MBRBAK:-/nonexistent}"; } 2>/dev/null)" != 512 ] && { lg "!!! Pi 3 card: sector 0 backup failed — NOT rewriting the table"; guid=""; }
 			if [ -n "$guid" ]; then
 				lg "growing p6 to fill card: start=$pst old_end=$pend dev_end=$dsz (sectors)"
 				# ONE atomic sgdisk write: -e relocates the backup header to the true disk end,
@@ -408,13 +408,13 @@ boot_facts(){
 	if [ -b /dev/mmcblk0p7 ]; then
 		bm=$(tmpd bm-p7) || return 0
 		if mount -t vfat -o ro /dev/mmcblk0p7 "$bm" 2>/dev/null; then
-			ab=$(tr '\n' ' ' < "$bm/autoboot.txt" 2>/dev/null)
+			ab=$({ tr '\n' ' ' < "$bm/autoboot.txt"; } 2>/dev/null)
 			p7="p7_bootcode=$(sha256sum "$bm/bootcode.bin" 2>/dev/null | cut -c1-12) p7_autoboot=$(sha256sum "$bm/autoboot.txt" 2>/dev/null | cut -c1-12)"
 			umount "$bm"
 		fi
 		rmdir "$bm" 2>/dev/null
 	else
-		ab=$(tr '\n' ' ' < /boot/autoboot.txt 2>/dev/null)
+		ab=$({ tr '\n' ' ' < /boot/autoboot.txt; } 2>/dev/null)
 		extra="eeprom=$(vcgencmd bootloader_version 2>/dev/null | sed -n 's/^timestamp //p') $(vcgencmd bootloader_config 2>/dev/null | grep -E '^(BOOT_ORDER|PARTITION_WALK)=' | tr '\n' ' ')"
 	fi
 	echo "slot=$(sed -n 's/.*batman_slot=\([AB]\).*/\1/p' /proc/cmdline) ver=$(sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build 2>/dev/null) dt_tryboot=$(dt_hex tryboot) dt_partition=$(dt_hex partition) dt_rsts=$(dt_hex rsts) dt_bootmode=$(dt_hex boot-mode) p_req=$(bf_preq 2>/dev/null) get_now=$(ota_get) thr=$(ota_thr) autoboot=\"$ab\" fw=\"$(vclog -m 2>/dev/null | grep -m1 'boot-part')\" devkmsg=$(cat /proc/sys/kernel/printk_devkmsg 2>/dev/null) $p7 $extra"
@@ -710,7 +710,7 @@ boot(){
 	# shellcheck disable=SC2046
 	otalog_k BOOT $(boot_facts) prevslot="${prevslot#batman_slot=}" prev="$(echo "$reason" | cut -c1-100)"
 	tf="$LOG/ota-trace.log"
-	if [ "$(wc -c < "$tf" 2>/dev/null || echo 0)" -gt 262144 ]; then tail -n 1500 "$tf" > "$tf.tmp" && mv "$tf.tmp" "$tf"; fi
+	if [ "$({ wc -c < "$tf"; } 2>/dev/null || echo 0)" -gt 262144 ]; then tail -n 1500 "$tf" > "$tf.tmp" && mv "$tf.tmp" "$tf"; fi
 	# protection record for the migration check (#209 S5 D6): this slot runs an image WITH the
 	# boot-time self-check. batman-slot apply drops the record of the slot it rewrites.
 	mkdir -p "$MOUNT/state"

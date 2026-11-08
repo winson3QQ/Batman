@@ -81,7 +81,7 @@ boot() {
 		LOAD_TIMEOUT='"$LOAD_TIMEOUT"'
 		mkdir -p "$(dirname "$LOG")"
 		# log rotation (#216 M7): keep one generation, cap ~256KiB
-		sz=$(wc -c < "$LOG" 2>/dev/null || echo 0)
+		sz=$({ wc -c < "$LOG"; } 2>/dev/null || echo 0)
 		[ "${sz:-0}" -gt 262144 ] && mv -f "$LOG" "$LOG.1" 2>/dev/null
 		lg(){ echo "$(date) $*" >> "$LOG" 2>&1; }
 		# portable bounded docker load (#216 G2): busybox here has NO `timeout` applet (hardware

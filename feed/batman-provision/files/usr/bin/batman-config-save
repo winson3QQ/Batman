@@ -190,7 +190,7 @@ txn_live() { { [ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ]; } || [ -e "$PR
 # right before the p5 write: a transaction that started in between makes this save stale -> abort, next tick.
 txn_seq() {
 	m=none; [ "$RDOK" = 1 ] && [ -f "$TXN" ] && [ -O "$TXN" ] && { m=$(head -c 128 "$TXN"); [ -n "$m" ] || m=empty; }
-	t=none; if [ -e "$PROVD/.txn" ] || [ -L "$PROVD/.txn" ]; then t=""; read -r t _ < "$PROVD/.txn" 2>/dev/null; [ -n "$t" ] || t=unreadable; fi
+	t=none; if [ -e "$PROVD/.txn" ] || [ -L "$PROVD/.txn" ]; then t=""; { read -r t _ < "$PROVD/.txn"; } 2>/dev/null; [ -n "$t" ] || t=unreadable; fi
 	printf '%s %s' "$m" "$t"
 }
 SEQ0=""
@@ -234,7 +234,7 @@ fi
 lock_try() {
 	mkdir "$LOCK" 2>/dev/null && return 0
 	p=$(cat "$LOCK/pid" 2>/dev/null)
-	if [ -n "$p" ] && [ "$p" != $$ ] && kill -0 "$p" 2>/dev/null && tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q batman-config-save; then
+	if [ -n "$p" ] && [ "$p" != $$ ] && kill -0 "$p" 2>/dev/null && { tr '\0' ' ' < "/proc/$p/cmdline"; } 2>/dev/null | grep -q batman-config-save; then
 		return 1
 	fi
 	err "taking over a stale lock (pid ${p:-?} is gone)"; rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null
@@ -329,7 +329,7 @@ if [ "$mode" = --on-join ]; then
 	[ -f "$FROZEN" ] && [ -O "$FROZEN" ] && { err "frozen: this slot and p5 hold different node identities (refused earlier this boot) — skip"; exit 1; }
 	# the last rw mount failed: back off 5 minutes instead of retrying every tick
 	if [ -f "$MNTFAIL" ] && [ -O "$MNTFAIL" ]; then
-		read -r t reason < "$MNTFAIL" 2>/dev/null || t=""; now=$(up)
+		{ read -r t reason < "$MNTFAIL"; } 2>/dev/null || t=""; now=$(up)
 		case "$t" in ''|*[!0-9]*) ;; *) [ $((now - t)) -lt 300 ] && { err "p5 rw mount failed $((now - t))s ago (${reason:-?}) — backing off"; exit 1; } ;; esac
 	fi
 	FP=$(onjoin_fp); [ "${#FP}" = 64 ] && case "$FP" in *[!0-9a-f]*) FP="" ;; esac || FP=""   # fail-safe: no valid fp -> no cache
@@ -568,7 +568,7 @@ fi
 
 # write-amplification guard (#202 A3): after 20 real writes in one boot, at most one per 60 s
 if [ "$mode" = --on-join ] && [ "$RDOK" = 1 ]; then
-	read -r wn wl < "$WRITES" 2>/dev/null || { wn=0; wl=0; }
+	{ read -r wn wl < "$WRITES"; } 2>/dev/null || { wn=0; wl=0; }
 	case "$wn" in ''|*[!0-9]*) wn=0 ;; esac; case "$wl" in ''|*[!0-9]*) wl=0 ;; esac
 	if [ "$wn" -ge 20 ] && [ $(( $(up) - wl )) -lt 60 ]; then
 		rm -rf "$STAGE"; STAGE=""; umount "$MNT" 2>/dev/null
