@@ -12,6 +12,7 @@ pub mod cose;
 pub mod envelope;
 pub mod flow;
 pub mod sig;
+pub mod store;
 pub mod frame;
 pub mod joinflow;
 pub mod kdf;
