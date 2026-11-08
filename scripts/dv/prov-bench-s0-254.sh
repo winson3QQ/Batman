@@ -73,10 +73,12 @@
 set -u
 MODE=${1:-}
 case "$MODE:${2:-}" in
-	fresh:04|restore:04|slota:04|toa:04) NODE=10.41.1.3; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local ;;
-	fresh:02|restore:02|slota:02|toa:02) NODE=10.41.1.1; MAC=d8:3a:dd:f8:45:d7; MDNS=BCM2711-45d7.local ;;   # eth0 address read on 02, 2026-11-06
+	fresh:04|restore:04|slota:04|toa:04) NODE=${IP:-10.41.1.3}; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local ;;
+	fresh:02|restore:02|slota:02|toa:02) NODE=${IP:-10.41.1.1}; MAC=d8:3a:dd:f8:45:d7; MDNS=BCM2711-45d7.local ;;   # eth0 address read on 02, 2026-11-06
 	*) echo "usage: $0 fresh <04|02> | restore <04|02> <run> | slota <04|02> | toa <04|02>"; exit 2 ;;
 esac
+# IP=<address>: the node's present address when it is not the default one (2026-11-08: 04 left as a hybrid legacy at its
+# openmanetd address, not 10.41.1.3); a wrong address stops at step 0's MAC check, nothing written
 NN=$2; MACW=$(echo "$MAC" | tr : -)
 V=${V:?version}; PAY=${PAY:?payload path on the node}; PSHA=${PSHA:?payload sha256}
 OUTS=${OUTS:-//wsl.localhost/Ubuntu-24.04/home/yello/out}
