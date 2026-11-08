@@ -1,0 +1,18 @@
+[package]
+name = "batman_bridge"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[features]
+# design v8.5.1 §4.1: the dev flavor builds with `dev-trust`, the field flavor without; never a default
+dev-trust = ["batman-proto/dev-trust"]
+
+[dependencies]
+flutter_rust_bridge = "=2.13.0"
+batman-proto = { path = "../batman-proto" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
