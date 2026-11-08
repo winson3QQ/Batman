@@ -4,7 +4,30 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-String greet({required String name}) =>
-    RustLib.instance.api.crateApiSimpleGreet(name: name);
+BuildInfo buildInfo() => RustLib.instance.api.crateApiSimpleBuildInfo();
+
+/// Runs a few core operations on the device and reports them: a strict CBOR round trip and an HKDF output prefix.
+String selftest() => RustLib.instance.api.crateApiSimpleSelftest();
+
+/// What this native library was built with; Dart compares `dev_trust` with the flavor's BuildConfig at startup and
+/// disables the app on a mismatch (design v8.5.1 §4.1).
+class BuildInfo {
+  final bool devTrust;
+  final String crateVersion;
+
+  const BuildInfo({required this.devTrust, required this.crateVersion});
+
+  @override
+  int get hashCode => devTrust.hashCode ^ crateVersion.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BuildInfo &&
+          runtimeType == other.runtimeType &&
+          devTrust == other.devTrust &&
+          crateVersion == other.crateVersion;
+}
