@@ -37,13 +37,9 @@ pub enum Error {
     Untrusted,
 }
 
-/// Which certificates this build accepts on first contact (design §6: field builds reject dev certificates at compile
-/// time; the choice is a constant of the build, never a runtime switch).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Policy {
-    DevTofu,
-    Field,
-}
+/// Whether this build accepts a self-signed `dev:` DAC on first contact: the `dev-trust` Cargo feature, fixed at
+/// compile time (design §4.1 / §6: no runtime switch, nothing a caller across the Dart bridge can pass).
+pub const DEV_TRUST: bool = cfg!(feature = "dev-trust");
 
 /// The parts of a verified node_cert the caller keeps.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,13 +124,8 @@ pub fn verify_pinned(node_cert: &[u8], remote_static: &[u8; 32], pinned_dac_der:
     Ok(v)
 }
 
-/// First contact (claim): the common checks, device_id == the QR's, and the build's trust policy.
-pub fn verify_first_contact(
-    node_cert: &[u8],
-    remote_static: &[u8; 32],
-    qr_device_id: &str,
-    policy: Policy,
-) -> Result<Verified, Error> {
+/// First contact (claim): the common checks, device_id == the QR's, and the build's trust policy (`DEV_TRUST`).
+pub fn verify_first_contact(node_cert: &[u8], remote_static: &[u8; 32], qr_device_id: &str) -> Result<Verified, Error> {
     let (v, c) = common(node_cert, remote_static)?;
     if v.device_id != qr_device_id {
         return Err(Error::DeviceIdMismatch);
@@ -144,13 +135,11 @@ pub fn verify_first_contact(
         // a production DAC needs the production root, which does not exist yet (keystore.go:266-267)
         return Err(Error::Untrusted);
     }
-    match policy {
-        Policy::Field => Err(Error::Untrusted),
-        Policy::DevTofu => {
-            dev_rule(&c, &v.dac_pub, &v.device_id)?;
-            Ok(v)
-        }
+    if !DEV_TRUST {
+        return Err(Error::Untrusted);
     }
+    dev_rule(&c, &v.dac_pub, &v.device_id)?;
+    Ok(v)
 }
 
 /// The dev TOFU rule on a DAC: CN == "dev:<device_id>", device_id == hex(SHA-256(DAC pub)[:9]), self-signed.

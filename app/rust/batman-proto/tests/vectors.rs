@@ -343,11 +343,9 @@ fn node_cert_first_contact_production_dac_is_untrusted_today() {
     // the vector DAC is root-signed (not dev:): no production root exists in the app yet -> both policies refuse it
     let v = vectors();
     let cert = h(&v["node_cert"]["cbor"]);
-    for p in [nodecert::Policy::DevTofu, nodecert::Policy::Field] {
-        assert_eq!(nodecert::verify_first_contact(&cert, &rs(&v), DEVICE_ID, p).err(), Some(nodecert::Error::Untrusted));
-    }
+    assert_eq!(nodecert::verify_first_contact(&cert, &rs(&v), DEVICE_ID).err(), Some(nodecert::Error::Untrusted));
     assert_eq!(
-        nodecert::verify_first_contact(&cert, &rs(&v), "0123a5f0c3e1b74def", nodecert::Policy::DevTofu).err(),
+        nodecert::verify_first_contact(&cert, &rs(&v), "0123a5f0c3e1b74def").err(),
         Some(nodecert::Error::DeviceIdMismatch)
     );
 }
@@ -410,34 +408,35 @@ fn identity_file_dev_rule() {
     assert!(matches!(nodecert::dev_rule(&forged, &pub65, id), Err(nodecert::Error::DevRule(_))));
 }
 
+/// dev build (`--features dev-trust`): the dev TOFU rule accepts a P2 bench node, refuses the forged chain and the wrong QR
+#[cfg(feature = "dev-trust")]
 #[test]
-fn first_contact_dev_tofu_accepts_and_field_refuses() {
+fn first_contact_dev_build_accepts_dev_tofu() {
+    assert!(nodecert::DEV_TRUST);
     let v = vectors();
     let id = v["identity_file"]["device_id"].as_str().unwrap();
     let cert = dev_node_cert(&v);
-    let ok = nodecert::verify_first_contact(&cert, &rs(&v), id, nodecert::Policy::DevTofu).expect("dev TOFU accepts");
+    let ok = nodecert::verify_first_contact(&cert, &rs(&v), id).expect("dev TOFU accepts");
     assert_eq!(ok.device_id, id);
-    // the field build refuses every dev certificate (design §6; 219-protocol.md :396)
-    assert_eq!(
-        nodecert::verify_first_contact(&cert, &rs(&v), id, nodecert::Policy::Field).err(),
-        Some(nodecert::Error::Untrusted)
-    );
-    // dev TOFU with the forged certificate in the chain (same id, stranger's key): its signatures do not verify under
-    // the DAC it presents unless the stranger signed them — here the node's signatures were made with the real key
+    // the forged certificate in the chain (same id, stranger's key): the node's signatures do not verify under it
     let mut m = cbor::decode(&cert).unwrap();
     if let cbor::Value::Map(entries) = &mut m {
         entries[0].1 = cbor::Value::Array(vec![cbor::Value::Bytes(h(&v["identity_file"]["forged_dev_cert_der"]))]);
     }
     let forged = cbor::encode(&m);
-    assert_eq!(
-        nodecert::verify_first_contact(&forged, &rs(&v), id, nodecert::Policy::DevTofu).err(),
-        Some(nodecert::Error::SigStatic)
-    );
+    assert_eq!(nodecert::verify_first_contact(&forged, &rs(&v), id).err(), Some(nodecert::Error::SigStatic));
     // the wrong QR
-    assert_eq!(
-        nodecert::verify_first_contact(&cert, &rs(&v), DEVICE_ID, nodecert::Policy::DevTofu).err(),
-        Some(nodecert::Error::DeviceIdMismatch)
-    );
+    assert_eq!(nodecert::verify_first_contact(&cert, &rs(&v), DEVICE_ID).err(), Some(nodecert::Error::DeviceIdMismatch));
+}
+
+/// field build (default features): every dev certificate is refused — the build cannot be told otherwise
+#[cfg(not(feature = "dev-trust"))]
+#[test]
+fn first_contact_field_build_refuses_dev_certificates() {
+    assert!(!nodecert::DEV_TRUST);
+    let v = vectors();
+    let id = v["identity_file"]["device_id"].as_str().unwrap();
+    assert_eq!(nodecert::verify_first_contact(&dev_node_cert(&v), &rs(&v), id).err(), Some(nodecert::Error::Untrusted));
 }
 
 // ---- claim / signature inputs: built byte-exact; the vectors' signatures verify under the vector public keys over the

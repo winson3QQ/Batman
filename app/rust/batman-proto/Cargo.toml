@@ -13,6 +13,10 @@ path = "src/lib.rs"
 # test vectors need a fixed Noise ephemeral key; never enabled in a release build (the app's Cargo.toml must not
 # turn it on). Enabled for `cargo test` through the self dev-dependency below, so the vector tests can never be skipped.
 test-vectors = []
+# design §4.1 / §6: the trust policy is a constant of the BUILD, never a runtime value. With `dev-trust` (the app's dev
+# flavor only) a self-signed `dev:` DAC is accepted on first contact (TOFU); without it (field flavor) it is refused.
+# Never a default; the field release must not enable it (checked with `cargo tree -e features,no-dev`).
+dev-trust = []
 
 [dependencies]
 # versions pinned exactly, each >= 2 weeks old at selection (2026-11-07), MIT OR Apache-2.0
