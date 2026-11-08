@@ -12,7 +12,7 @@ use crate::conn::{self, Conn};
 use crate::envelope::Outcome;
 use crate::flow::{self, ClaimFinish};
 use crate::frame::{self, Reassembler};
-use crate::nodecert::{self, Policy};
+use crate::nodecert;
 use crate::{claim, noise};
 
 pub struct Input {
@@ -21,7 +21,6 @@ pub struct Input {
     pub owner_pub: [u8; 65],
     pub owner_enc_pub: [u8; 65],
     pub sig_enc: [u8; 64],
-    pub policy: Policy,
     /// min(CTRL key 3, MTU - 3)
     pub frame_limit: usize,
 }
@@ -153,7 +152,7 @@ impl Claim {
             Err(noise::Error::Msg2NotDecryptable) => return self.end(End::Msg2Undecryptable),
             Err(e) => return self.end(End::Broken(format!("{e:?}"))),
         };
-        let v = match nodecert::verify_first_contact(&cert, &s.rs, &self.input.device_id, self.input.policy) {
+        let v = match nodecert::verify_first_contact(&cert, &s.rs, &self.input.device_id) {
             Ok(v) => v,
             Err(e) => return self.end(End::CertRejected(e)),
         };

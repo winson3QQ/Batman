@@ -1,6 +1,7 @@
 //! claimflow: a whole claim attempt against a fake dev node (snow NX responder with the vector node static key, a
 //! node_cert signed by the dev DAC fixture) that checks claim/begin and the CheckMac response as the node does.
 
+#![cfg_attr(not(feature = "dev-trust"), allow(unused_imports, dead_code))]
 use batman_proto::cbor::{self, Value as V};
 use batman_proto::claimflow::{Action, Claim, End, Input};
 use batman_proto::envelope::Outcome;
@@ -138,14 +139,13 @@ impl Node {
     }
 }
 
-fn input(v: &J, device_id: &str, k: [u8; 32], policy: nodecert::Policy) -> Input {
+fn input(v: &J, device_id: &str, k: [u8; 32]) -> Input {
     Input {
         device_id: device_id.into(),
         k,
         owner_pub: h(&v["keys"]["owner_sign_pub"]).try_into().unwrap(),
         owner_enc_pub: h(&v["keys"]["owner_enc_pub"]).try_into().unwrap(),
         sig_enc: [0x51; 64],
-        policy,
         frame_limit: FL,
     }
 }
@@ -189,11 +189,12 @@ fn k(v: &J) -> [u8; 32] {
     h(&v["keys"]["claim_secret"]).try_into().unwrap()
 }
 
+#[cfg(feature = "dev-trust")]
 #[test]
 fn claim_succeeds_and_the_node_accepts_our_checkmac() {
     let v = vectors();
     let mut n = Node::new(v.clone(), &did(&v));
-    let (e, persisted, got) = run(&mut n, input(&v, &did(&v), k(&v), nodecert::Policy::DevTofu), true);
+    let (e, persisted, got) = run(&mut n, input(&v, &did(&v), k(&v)), true);
     assert!(persisted);
     assert_eq!(got, ["msg1", "claim/begin", "claim/finish"]);
     match e {
@@ -203,58 +204,63 @@ fn claim_succeeds_and_the_node_accepts_our_checkmac() {
     assert_eq!(n.owner_pub, h(&v["keys"]["owner_sign_pub"]));
 }
 
+#[cfg(feature = "dev-trust")]
 #[test]
 fn wrong_k_is_refused_by_the_node_and_means_try_replay() {
     let v = vectors();
     let mut n = Node::new(v.clone(), &did(&v));
     let mut bad = k(&v);
     bad[0] ^= 1;
-    let (e, persisted, _) = run(&mut n, input(&v, &did(&v), bad, nodecert::Policy::DevTofu), true);
+    let (e, persisted, _) = run(&mut n, input(&v, &did(&v), bad), true);
     assert!(persisted, "the pending is written before finish, whatever comes after");
     assert_eq!(e, End::Finished(ClaimFinish::TryReplay));
 }
 
+#[cfg(feature = "dev-trust")]
 #[test]
 fn nothing_is_sent_until_the_pending_is_persisted() {
     let v = vectors();
     let mut n = Node::new(v.clone(), &did(&v));
-    let (_, persisted, got) = run(&mut n, input(&v, &did(&v), k(&v), nodecert::Policy::DevTofu), false);
+    let (_, persisted, got) = run(&mut n, input(&v, &did(&v), k(&v)), false);
     assert!(persisted);
     assert_eq!(got, ["msg1"]);
 }
 
+#[cfg(feature = "dev-trust")]
 #[test]
 fn another_nodes_qr_does_not_decrypt() {
     // the phone binds the QR id in the NX prologue; the node uses its own: msg2 does not decrypt (§5.0 row 2)
     let v = vectors();
     let mut n = Node::new(v.clone(), &did(&v));
-    let (e, persisted, _) = run(&mut n, input(&v, "0123a5f0c3e1b74def", k(&v), nodecert::Policy::DevTofu), true);
+    let (e, persisted, _) = run(&mut n, input(&v, "0123a5f0c3e1b74def", k(&v)), true);
     assert_eq!(e, End::Msg2Undecryptable);
     assert!(!persisted);
 }
 
+#[cfg(not(feature = "dev-trust"))]
 #[test]
 fn field_build_refuses_a_dev_node_before_writing_anything() {
     let v = vectors();
     let mut n = Node::new(v.clone(), &did(&v));
-    let (e, persisted, got) = run(&mut n, input(&v, &did(&v), k(&v), nodecert::Policy::Field), true);
+    let (e, persisted, got) = run(&mut n, input(&v, &did(&v), k(&v)), true);
     assert_eq!(e, End::CertRejected(nodecert::Error::Untrusted));
     assert!(!persisted);
     assert_eq!(got, ["msg1"]);
 }
 
+#[cfg(feature = "dev-trust")]
 #[test]
 fn begin_refused_and_finish_codes() {
     let v = vectors();
     let mut n = Node::new(v.clone(), &did(&v));
     n.begin_code = Some(7);
-    let (e, _, got) = run(&mut n, input(&v, &did(&v), k(&v), nodecert::Policy::DevTofu), true);
+    let (e, _, got) = run(&mut n, input(&v, &did(&v), k(&v)), true);
     assert!(matches!(e, End::BeginRefused(Outcome::Err { code: 7, .. })));
     assert_eq!(got, ["msg1", "claim/begin"], "no finish after a refused begin");
     for (code, want) in [(13, ClaimFinish::Committed), (3, ClaimFinish::BeginAgain), (7, ClaimFinish::Unknown)] {
         let mut n = Node::new(v.clone(), &did(&v));
         n.finish = Finish::Code(code);
-        let (e, _, _) = run(&mut n, input(&v, &did(&v), k(&v), nodecert::Policy::DevTofu), true);
+        let (e, _, _) = run(&mut n, input(&v, &did(&v), k(&v)), true);
         assert_eq!(e, End::Finished(want), "finish code {code}");
     }
 }
