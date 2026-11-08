@@ -49,9 +49,10 @@ each is a one-line mechanical edit with the same safety argument. Not in scope: 
 itself) — recorded in #320. `payload-run:164` has the reversed order `2>/dev/null </dev/null` (already silent).
 
 Copies: `deploy/provisioning/batman-config-save`, `deploy/provisioning/joinwatch`,
-`deploy/provisioning/uci-defaults/95-batman-storage` are byte-identical copies of the feed files and are updated
-together (CI `provisioning-sync`). `payload-stop.sh`, `batman-ots-firstload`, `batman-slot`, `platform-ab.sh`,
-`batman-autocommit`, `batman-addr-defer`, `batman-faketime`, `96-batman-config-migrate` have no deploy copy.
+`deploy/provisioning/uci-defaults/95-batman-storage`, `deploy/provisioning/uci-defaults/96-batman-config-migrate`
+are byte-identical copies of the feed files and are updated together (CI `provisioning-sync`, which caught the
+96 copy when v2 had listed it as copy-less). `payload-stop.sh`, `batman-ots-firstload`, `batman-slot`,
+`platform-ab.sh`, `batman-autocommit`, `batman-addr-defer`, `batman-faketime` have no deploy copy.
 
 ## 3. Ownership / contracts / lifecycle
 No shared state is touched: no file, flag, format, exit code, parsed log line, uci key or timing changes. At every
@@ -101,4 +102,4 @@ No new or changed input, path, privilege, secret or failure mode. Same files, sa
   `scripts/validation-known-failures.txt` entry (`prov-p1-stubs`, ERE
   `^FAIL (prov-p1-stubs: )?cfgsave-stderr-quiet: `, #320, expires 2026-11-30 = estimate of PR B merge + 14 d).
 - **PR B (product)** `fix/320-cfgsave-stderr`, stacked on A: the 22 lines + 3 deploy copies. CI on B runs A's test
-  green; both boards' sections in the body (bcm2710 not available — 2026-10-23 decision).
+  green; the 4 deploy copies are checked by provisioning-sync; both boards' sections in the body (bcm2710 not available — 2026-10-23 decision).
