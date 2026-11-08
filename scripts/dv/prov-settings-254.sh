@@ -51,12 +51,14 @@ case "$(code "$r")" in 24|25) [ "$(reason "$r")" = 13 ];; *) false;; esac && ok 
 s=$(qr 'uci -q get wireless.default_radio0.key | tr -d "\n" | sha256sum | cut -c1-16'); [ "$s" = "$KEYSHA" ] && ok "ST10: AP key unchanged" || no "ST10: AP key changed"
 # ---- ST13 a staged change of someone else -> E_BUSY, status says so
 q "uci set wireless.default_radio0.ssid='staged-$RUN'" >/dev/null
-st=$(qr 'ls /tmp/.uci/wireless 2>/dev/null | wc -l'); [ "$st" = 1 ] && say "ST13: wireless change staged (not committed)" || no "ST13: could not stage a uci change [$st]"
+st=$(qr '[ -s /tmp/.uci/wireless ] && echo 1 || echo 0'); [ "$st" = 1 ] && say "ST13: wireless change staged (not committed)" || no "ST13: could not stage a uci change [$st]"
 r=$(pr_pc h0.pem FD3="umask 077; s=\$(head -c 12 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'ssid=%s\npsk=%s\n' 'dv-$RUN' \"\$s\"" -- settings-set "$H0" 20 | grep '^RESULT settings.set'); say "ST13: $r"
 [ "$(code "$r")" = 7 ] && ok "ST13: key 20 with a staged wireless change -> E_BUSY" || no "ST13: code $(code "$r") (want 7 E_BUSY)"
 r2=$(pr_pc h0.pem -- status-get "$H0" | grep '^RESULT status.get'); say "ST13: $(cut -c1-200 <<< "$r2")"
 grep -q "f15=.*wireless" <<< "$r2" && ok "ST13: status key 15 names the staged package" || no "ST13: status key 15 does not name wireless: [$r2]"
-x=$(qr 'echo "staged=$(ls /tmp/.uci/wireless 2>/dev/null | wc -l) ssid=$(uci -q get wireless.default_radio0.ssid)"; uci revert wireless; echo "after_revert=$(ls /tmp/.uci/wireless 2>/dev/null | wc -l)"'); say "ST13: $(echo $x)"
+# OpenWrt keeps an EMPTY /tmp/.uci/<pkg> after a revert / commit (04, 2026-11-08: 0 B file, `uci changes` empty): count
+# only a non-empty delta, as p5_ap_back does
+x=$(qr 'nz(){ [ -s /tmp/.uci/wireless ] && echo 1 || echo 0; }; echo "staged=$(nz) ssid=$(uci -q get wireless.default_radio0.ssid)"; uci revert wireless; echo "after_revert=$(nz)"'); say "ST13: $(echo $x)"
 case "$(echo $x)" in "staged=1 ssid=staged-$RUN after_revert=0") ok "ST13: the staged change was not committed by anybody, reverted";; *) no "ST13: staging state afterwards: $(echo $x)";; esac
 # ---- ST4(P) key 20 with fresh test credentials (drawn on the node): applied, plink stays
 P0=$(qr 'iw dev wlh0 station dump 2>/dev/null | grep -c "plink:.*ESTAB"')
