@@ -96,8 +96,6 @@ jobs:
           grep -q '^wbox_gate_self() {' $F/usr/sbin/batman-slot || { echo "::error::product in this checkout is pre-P1b (no wbox_gate_self in batman-slot): expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
           bash tests/prov-p1/wbox-gate.sh $F/usr/sbin/batman-slot $F/usr/bin/batman-autocommit
           bash tests/prov-p1/card-wbox.sh .
-          # #320 lands harness-first (#290): red on purpose until fix/320-cfgsave-stderr braces the `< file 2>/dev/null` reads
-          bash tests/prov-p1/cfgsave-stderr-quiet.sh . || { echo "::error::unguarded '< file 2>/dev/null' reads in feed/ (busybox prints can't open before 2> applies): expected red until fix/320-cfgsave-stderr lands (#320)"; exit 1; }
       - name: "#254 P1 loop-device tests (root): config-save identity freeze / frozen no-remount / prov-get rc 10, prov-base compare rules"
         run: |
           F=feed/batman-provision/files
@@ -153,6 +151,11 @@ jobs:
           F=feed/batman-provision/files
           grep -q -- '--save \[--promote-lkg\] \[--txn' $F/usr/bin/batman-config-save || { echo "::error::batman-config-save in this checkout has no --save --txn: expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
           sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-txn-save.sh $F/usr/bin/batman-config-save
+      # #320 lands harness-first (#290): on a product that still has `cmd < file 2>/dev/null` reads this step is RED on
+      # purpose (KNOWN #320). Its own LAST step with !cancelled(), so the expected red never skips the steps above.
+      - name: "#320 redirect-read stderr quiet — lint feed/*/files (zero exceptions), #202 A3 block under busybox ash, mutant negative control"
+        if: ${{ !cancelled() }}
+        run: bash tests/prov-p1/cfgsave-stderr-quiet.sh . || { echo "::error::unguarded redirect-reads in feed/ (busybox prints can't open before 2> applies): expected red until fix/320-cfgsave-stderr lands (#320)"; exit 1; }
 
   ab-card:
     runs-on: ubuntu-latest

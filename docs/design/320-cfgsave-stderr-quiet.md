@@ -1,13 +1,17 @@
 # #320 — busybox `< file 2>/dev/null` stderr noise: brace every redirect-read in the product tree
 
-Status: v2, 2026-11-09 (v1 reviewed by two independent reviewers: APPROVE-WITH-CHANGES ×2; the two MAJORs —
-lint heuristic unsound, PR split per #290 — are resolved here; the MINORs are folded in). Issue: #320. Parent: #202 A3.
+Status: v3, 2026-11-09. Round 1 (v1, two reviewers): APPROVE-WITH-CHANGES ×2 — lint heuristic unsound, PR split per
+#290. Round 2 (v2 + code, two reviewers): APPROVE-WITH-CHANGES ×2 — CI step placement would skip the rest of the
+prov-p1 job, lint missed `2> /dev/null` / `>/dev/null 2>&1` / `2>&-`, wrong rationale for excluding scripts/node.
+All folded in here. Issue: #320. Parent: #202 A3.
 
 ## 1. Problem
 busybox ash applies redirections left to right. In `cmd < "$F" 2>/dev/null`, when `$F` cannot be opened the
 shell prints `<script>: line N: can't open <F>: no such file` to stderr *before* `2>/dev/null` takes effect; the
 command is not run and `$?` is 1 (dash: 2, bash: 1 — every POSIX shell prints, the wording and rc differ; the node
-runs busybox ash, the test runs busybox ash). Captured on WSL busybox 1.36.1 and on node 04 (1.5.14-wsl.22).
+runs busybox ash, the test runs busybox ash). Captured on WSL busybox 1.36.1 and on node 04 (image 1.5.14-wsl.22,
+OpenWrt 24.10 busybox). The same happens with `2> /dev/null`, `2>>/dev/null`, `2>&-` and `>/dev/null 2>&1`: all are
+later redirections.
 
 Only the message is wrong. Every site already handles the failed read (`|| { wn=0; wl=0; }`, `|| echo 0`,
 empty-string defaults from `$( )`), so rc and behaviour are unaffected. Where the line is visible: a manual or
@@ -41,25 +45,34 @@ lint finds on main, 2026-11-09), with the trigger that makes the file unreadable
 | `usr/sbin/batman-slot` | 471 | `$f` | race after `[ -f ] && [ ! -L ] && [ -O ]` |
 | `usr/lib/batman/platform-ab.sh` | 330 | `$dir/metadata` | race after `[ -f ]` |
 | `etc/uci-defaults/96-batman-config-migrate` | 221 | `$TMP` | `mktemp` failed (TMP empty) |
-| `usr/bin/batman-config-save` 237, `usr/bin/batman-autocommit` 80, `usr/sbin/batman-slot` 89, `usr/lib/batman/payload-stop.sh` 36, `usr/lib/batman/platform-ab.sh` 81, 96, 126 | | `/proc/<pid>/cmdline` | pid exited between `kill -0` / `-d` and the read |
+| `usr/bin/batman-config-save` 237, `usr/bin/batman-autocommit` 80, `usr/sbin/batman-slot` 89, `usr/lib/batman/platform-ab.sh` 81, 96, 126 | | `/proc/<pid>/cmdline` | pid exited between `kill -0` / `-d` and the read |
+| `usr/lib/batman/payload-stop.sh` | 36 | `/proc/<pid>/cmdline` | the pidfile's pid is dead or reused while another holder has the flock (no `kill -0` there; the lock test is the guard) |
 
 The race / corner-case rows are converted for the same reason (same class, one rule, zero-exception lint) —
-each is a one-line mechanical edit with the same safety argument. Not in scope: harness scripts
-(`scripts/node/*`, `scripts/dv/*`, `tests/*`; #290 one validation set, host side runs bash and captures stderr
-itself) — recorded in #320. `payload-run:164` has the reversed order `2>/dev/null </dev/null` (already silent).
+each is a one-line mechanical edit with the same safety argument. `payload-run:164` has the reversed order
+`2>/dev/null </dev/null` (already silent); six `</dev/null >/dev/null 2>&1` lines read a file that cannot fail to open.
+
+Not in this pair of PRs, recorded as #320 checklist items:
+- `scripts/node/*` (~20 lines of the same class, e.g. prov-undo-lib-254.sh:174/179/190/209, ble-lib-254.sh:185/201/261,
+  prov-base-254.sh:58/59, bt-uart-305.sh:40). These DO run on the node under busybox ash and put the same noise into
+  harness logs; they are excluded only because #290 keeps harness changes in their own PRs. The sweep and the lint
+  path extension (`scripts/node`) are one later harness PR.
+- `scripts/dv/*`, `tests/*`: host side, bash, capture their own stderr.
+- `usr/bin/halow-status:58` `njoin=$(wc -l < "$JL")` after `[ -f "$JL" ]` has no stderr discard at all — prints under
+  the same race, by a different rule (nothing to brace); left as is, noted.
 
 Copies: `deploy/provisioning/batman-config-save`, `deploy/provisioning/joinwatch`,
-`deploy/provisioning/uci-defaults/95-batman-storage`, `deploy/provisioning/uci-defaults/96-batman-config-migrate`
-are byte-identical copies of the feed files and are updated together (CI `provisioning-sync`, which caught the
-96 copy when v2 had listed it as copy-less). `payload-stop.sh`, `batman-ots-firstload`, `batman-slot`,
-`platform-ab.sh`, `batman-autocommit`, `batman-addr-defer`, `batman-faketime` have no deploy copy.
+`deploy/provisioning/uci-defaults/95-batman-storage` are byte-identical copies of the feed files and are updated
+together (CI `provisioning-sync`). `payload-stop.sh`, `batman-ots-firstload`, `batman-slot`, `platform-ab.sh`,
+`batman-autocommit`, `batman-addr-defer`, `batman-faketime`, `96-batman-config-migrate` have no deploy copy.
 
 ## 3. Ownership / contracts / lifecycle
 No shared state is touched: no file, flag, format, exit code, parsed log line, uci key or timing changes. At every
 site the value, rc and control flow on a missing file are identical before and after (verified by both reviewers
 site by site under busybox ash, incl. `set -u` in batman-config-save; no file sets `set -e`). The one observable
 difference is one fewer stderr line per event, and nothing parses that line (repo grep for "can't open": no
-reader; no dv judge asserts on it). REVIEW.md items 1–3 are replaced by this statement. Lifecycle: boot
+reader; no dv judge asserts on it). In the `{ tr … < f; } 2>/dev/null | grep -q …` pipelines the rc is grep's in
+both forms and grep still runs on a missing file (verified under busybox ash: `grep ran rc=1`). REVIEW.md items 1–3 are replaced by this statement. Lifecycle: boot
 (95, 96, firstload, slot), join (config-save, joinwatch), payload stop, OTA stage 2 (platform-ab, slot) — same
 behaviour, one less line. Downgrade: the older image prints it again. Both boards: same shell, same files.
 
@@ -78,28 +91,44 @@ No new or changed input, path, privilege, secret or failure mode. Same files, sa
 /etc, /opt/batdata, p7 mount, /proc). Fail mode unchanged.
 
 ## 6. Test — `tests/prov-p1/cfgsave-stderr-quiet.sh <repo root>` (no root, needs busybox)
-1. **Lint, zero exceptions, whole product tree** `feed/*/files`: a line matching
-   `(^|[^<])<[[:space:]]*["$/A-Za-z_.][^;|&]*[[:space:]]2>/dev/null` (an input redirect, not `<<`, whose operand starts with a quote,
-   `$`, `/`, letter or `.`, followed on the same simple command — no `;`, `|`, `&` in between — by `2>/dev/null`)
-   is a hit. Not matched by construction: the brace form (`; }` intervenes), `<<` here-docs, `<&` dups,
-   `echo "<2>…" > /dev/kmsg 2>/dev/null` (digit operand), the reversed order. Self-test in the test: the old form is
-   a hit, each quiet form is not. The deploy copies are not scanned: `check-provisioning-sync.sh` keeps them identical.
-   Expected: 22 hits on main (that run is the negative control, recorded in the PR), 0 after the product PR.
+1. **Lint, zero exceptions, whole product tree** `feed/*/files`. A hit is a line matching
+   `(^|[[:space:]()])<[[:space:]]*["'~$/A-Za-z_.][^;|&]*[[:space:]](2>>?[[:space:]]*/dev/null|2>&-|>[[:space:]]*/dev/null[[:space:]]+2>&1)`
+   minus lines whose operand is `/dev/null` (`grep -vE '<[[:space:]]*/dev/null'`): a `<` starting a word, an operand
+   that can be a file, then on the same simple command (no `;`, `|`, `&` between) a stderr discard in any spelling
+   (`2>/dev/null`, `2> /dev/null`, `2>>/dev/null`, `2>&-`, `>/dev/null 2>&1`). Quiet by construction: the brace form
+   (`; }` intervenes), `<<`, `<&`, `<2>` kmsg priorities, a `<` glued to the previous character (sed/awk programs,
+   `\<`), the reversed order, `/dev/null` operands. Self-test in the test: 9 noisy spellings hit, 12 quiet forms do
+   not (each a negative control for one arm of the regex). Known false positives a maintainer may meet: a `<` inside a
+   quoted string followed by a blank, or an arithmetic `a < b`, on a line that also discards stderr — the FAIL message
+   says to split the line; a `\`-continued command is scanned per line (accepted). The deploy copies are not scanned:
+   `check-provisioning-sync.sh` keeps them identical. Expected: 22 hits on main (that run is the negative control,
+   recorded in PR A), 0 after PR B. In daily-validation the stub runner keeps only `FAIL` lines, so the FAIL line
+   carries the count and the first `file:line`; CI's direct run shows the full list.
 2. **A3 block under busybox ash**: extract from the unique marker `# write-amplification guard (#202 A3)` to the
-   next `^fi$` (FAIL if empty or without `read -r wn wl`); stubs `up(){ echo 100; }`, `err`, `umount(){ :; }`,
+   next column-0 `fi` (FAIL unless 5–15 lines, last line `fi`, containing `read -r wn wl` — an indented or moved block
+   fails loudly instead of running unrelated code; PR B adds the marker's purpose to the product comment); stubs `up(){ echo 100; }`, `err`, `umount(){ :; }`,
    `STAGE`/`MNT` = empty temp dirs, `mode=--on-join RDOK=1`, `set -u`. Cases: `$WRITES` missing → rc 0, stderr
    empty, `wn=0 wl=0`; `25 90` → rc 1 + "write rate-limited (25 writes this boot)"; `5 90` → rc 0, `wn=5 wl=90`.
 3. **Negative control inside the test**: a mutant of the product file with the old line restored must produce a
    stderr containing `can't open` in case 2a and exactly one lint hit. When the product still carries the old line
-   the mutant equals the product: case 2a itself FAILs with that stderr (noted in the output).
+   the mutant equals the product: case 2a itself FAILs with that stderr (noted in the output). When the mutant equals
+   the product AND the lint is clean, the mutant pattern is stale (the A3 line was reworded) → FAIL, so the control
+   cannot vanish silently.
 4. Zero cases run = FAIL; no busybox = FAIL. Every FAIL line starts `FAIL cfgsave-stderr-quiet:`; last line
    `CFGSAVE-STDERR-QUIET cases=N fails=M`.
 
 ## 7. Delivery (#290: the harness lands first)
 - **PR A (harness)** `harness/320-cfgsave-stderr-quiet`: this doc, the test, its line in
-  `scripts/test-prov-p1-stubs.sh` (`stub 'fails=0$' cfgsave-stderr-quiet .`), its ci.yml step in the P1 stub job
-  (red on purpose on a pre-#320 product, `::error … expected red until fix/320-cfgsave-stderr lands`), and a
-  `scripts/validation-known-failures.txt` entry (`prov-p1-stubs`, ERE
-  `^FAIL (prov-p1-stubs: )?cfgsave-stderr-quiet: `, #320, expires 2026-11-30 = estimate of PR B merge + 14 d).
-- **PR B (product)** `fix/320-cfgsave-stderr`, stacked on A: the 22 lines + 3 deploy copies. CI on B runs A's test
-  green; the 4 deploy copies are checked by provisioning-sync; both boards' sections in the body (bcm2710 not available — 2026-10-23 decision).
+  `scripts/test-prov-p1-stubs.sh` (`stub 'fails=0$' cfgsave-stderr-quiet .`), its own LAST step in the ci.yml
+  `prov-p1` job with `if: ${{ !cancelled() }}` (red on purpose on a pre-#320 product, `::error … expected red until
+  fix/320-cfgsave-stderr lands`; as its own last step it never skips the loop-device / Go / claim-lock steps —
+  the convention the job already states for the claim-lock and wireless-txn steps), and a
+  `scripts/validation-known-failures.txt` entry (`prov-p1-stubs`, ERE `^FAIL (prov-p1-stubs: )?cfgsave-stderr-quiet: `
+  — it matches all three FAIL lines the stub runner prints: lint, A3, summary; #320; expires 2026-11-30 = estimate of
+  PR B merge + 14 d). Verified: `kf_classify` → `known #320` today, `new (expired)` on 2026-12-01.
+- **PR B (product)** `fix/320-cfgsave-stderr`: the 22 lines + 4 deploy copies, the marker note in the A3 comment, and
+  the removal of A's known-failures entry (the own-entry exception of #290: once the product is in, a later
+  cfgsave-stderr-quiet FAIL must be NEW, not masked until the expiry). Opened stacked on A; after A is
+  squash-merged B is rebased onto main before the user merges it. CI on B runs A's test green; provisioning-sync
+  checks the copies; both boards' sections in the body (bcm2710 not available — 2026-10-23 decision). Merging B
+  closes #320 (the scripts/node sweep stays as its checklist line for the later harness PR).
