@@ -1,0 +1,11 @@
+# S1 builds only the dev flavor (design v8.5.1 §4.1; field needs #255). cargokit builds one .so per build type for
+# every flavor, so the Rust feature is set here for all of them: a field APK built from this tree carries a dev-trust
+# library, which the startup cross-check (Rust build_info().dev_trust vs BuildConfig.DEV_TRUST) refuses to run.
+# Per-flavor wiring of the feature is a #255 item.
+cargo:
+  debug:
+    extra_flags: [--features, dev-trust]
+  release:
+    extra_flags: [--features, dev-trust]
+  profile:
+    extra_flags: [--features, dev-trust]

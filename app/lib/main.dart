@@ -1,151 +1,116 @@
-// The original content is temporarily commented out to allow generating a self-contained demo - feel free to uncomment later.
-
-// import 'package:flutter/material.dart';
-// 
-// void main() {
-//   runApp(const MyApp());
-// }
-// 
-// class MyApp extends StatelessWidget {
-//   const MyApp({super.key});
-// 
-//   // This widget is the root of your application.
-//   @override
-//   Widget build(BuildContext context) {
-//     return MaterialApp(
-//       title: 'Flutter Demo',
-//       theme: ThemeData(
-//         // This is the theme of your application.
-//         //
-//         // TRY THIS: Try running your application with "flutter run". You'll see
-//         // the application has a purple toolbar. Then, without quitting the app,
-//         // try changing the seedColor in the colorScheme below to Colors.green
-//         // and then invoke "hot reload" (save your changes or press the "hot
-//         // reload" button in a Flutter-supported IDE, or press "r" if you used
-//         // the command line to start the app).
-//         //
-//         // Notice that the counter didn't reset back to zero; the application
-//         // state is not lost during the reload. To reset the state, use hot
-//         // restart instead.
-//         //
-//         // This works for code too, not just values: Most code changes can be
-//         // tested with just a hot reload.
-//         colorScheme: .fromSeed(seedColor: Colors.deepPurple),
-//       ),
-//       home: const MyHomePage(title: 'Flutter Demo Home Page'),
-//     );
-//   }
-// }
-// 
-// class MyHomePage extends StatefulWidget {
-//   const MyHomePage({super.key, required this.title});
-// 
-//   // This widget is the home page of your application. It is stateful, meaning
-//   // that it has a State object (defined below) that contains fields that affect
-//   // how it looks.
-// 
-//   // This class is the configuration for the state. It holds the values (in this
-//   // case the title) provided by the parent (in this case the App widget) and
-//   // used by the build method of the State. Fields in a Widget subclass are
-//   // always marked "final".
-// 
-//   final String title;
-// 
-//   @override
-//   State<MyHomePage> createState() => _MyHomePageState();
-// }
-// 
-// class _MyHomePageState extends State<MyHomePage> {
-//   int _counter = 0;
-// 
-//   void _incrementCounter() {
-//     setState(() {
-//       // This call to setState tells the Flutter framework that something has
-//       // changed in this State, which causes it to rerun the build method below
-//       // so that the display can reflect the updated values. If we changed
-//       // _counter without calling setState(), then the build method would not be
-//       // called again, and so nothing would appear to happen.
-//       _counter++;
-//     });
-//   }
-// 
-//   @override
-//   Widget build(BuildContext context) {
-//     // This method is rerun every time setState is called, for instance as done
-//     // by the _incrementCounter method above.
-//     //
-//     // The Flutter framework has been optimized to make rerunning build methods
-//     // fast, so that you can just rebuild anything that needs updating rather
-//     // than having to individually change instances of widgets.
-//     return Scaffold(
-//       appBar: AppBar(
-//         // TRY THIS: Try changing the color here to a specific color (to
-//         // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-//         // change color while the other colors stay the same.
-//         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-//         // Here we take the value from the MyHomePage object that was created by
-//         // the App.build method, and use it to set our appbar title.
-//         title: Text(widget.title),
-//       ),
-//       body: Center(
-//         // Center is a layout widget. It takes a single child and positions it
-//         // in the middle of the parent.
-//         child: Column(
-//           // Column is also a layout widget. It takes a list of children and
-//           // arranges them vertically. By default, it sizes itself to fit its
-//           // children horizontally, and tries to be as tall as its parent.
-//           //
-//           // Column has various properties to control how it sizes itself and
-//           // how it positions its children. Here we use mainAxisAlignment to
-//           // center the children vertically; the main axis here is the vertical
-//           // axis because Columns are vertical (the cross axis would be
-//           // horizontal).
-//           //
-//           // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-//           // action in the IDE, or press "p" in the console), to see the
-//           // wireframe for each widget.
-//           mainAxisAlignment: .center,
-//           children: [
-//             const Text('You have pushed the button this many times:'),
-//             Text(
-//               '$_counter',
-//               style: Theme.of(context).textTheme.headlineMedium,
-//             ),
-//           ],
-//         ),
-//       ),
-//       floatingActionButton: FloatingActionButton(
-//         onPressed: _incrementCounter,
-//         tooltip: 'Increment',
-//         child: const Icon(Icons.add),
-//       ),
-//     );
-//   }
-// }
-// 
-
+// #254 app S1 — first slice: the startup flavor cross-check (design v8.5.1 §4.1) and an on-device self-test of the Rust
+// core. No BLE, no keys generated yet.
 import 'package:flutter/material.dart';
-import 'package:batman_app/src/rust/api/simple.dart';
-import 'package:batman_app/src/rust/frb_generated.dart';
+import 'package:flutter/services.dart';
+
+import 'src/rust/api/simple.dart';
+import 'src/rust/frb_generated.dart';
+
+const _platform = MethodChannel('dev.batman/platform');
 
 Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   await RustLib.init();
-  runApp(const MyApp());
+  runApp(const BatmanApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class BatmanApp extends StatelessWidget {
+  const BatmanApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      home: Scaffold(
-        appBar: AppBar(title: const Text('flutter_rust_bridge quickstart')),
-        body: Center(
-          child: Text(
-            'Action: Call Rust `greet("Tom")`\nResult: `${greet(name: "Tom")}`',
-          ),
-        ),
+      title: 'Batman',
+      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
+      home: const StartupCheck(),
+    );
+  }
+}
+
+class StartupCheck extends StatefulWidget {
+  const StartupCheck({super.key});
+
+  @override
+  State<StartupCheck> createState() => _StartupCheckState();
+}
+
+class _StartupCheckState extends State<StartupCheck> {
+  String? _report;
+  bool _ok = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _run();
+  }
+
+  Future<void> _run() async {
+    final info = buildInfo();
+    final flavorDevTrust = await _platform.invokeMethod<bool>('devTrust');
+    // design v8.5.1 §4.1: the Rust library and the flavor must agree, else the app is disabled
+    final agree = flavorDevTrust == info.devTrust;
+    final lines = <String>[
+      'rust dev_trust=${info.devTrust} (batman_bridge ${info.crateVersion})',
+      'flavor DEV_TRUST=$flavorDevTrust',
+      agree ? 'flavor check: OK' : 'flavor check: MISMATCH — app disabled',
+    ];
+    if (agree) {
+      lines.add('selftest: ${selftest()}');
+      lines.addAll(await _install());
+      try {
+        final levels = await _platform.invokeMapMethod<String, dynamic>('keyLevels');
+        lines.add('live: $levels');
+        if (levels?['softOwnerEnc'] == true) {
+          lines.add('NOTE: recovery / member key is software-protected on this phone — development use only');
+        }
+      } on PlatformException catch (e) {
+        lines.add('keys: error ${e.code} ${e.message}');
+      }
+    }
+    debugPrint('BMAPP ${lines.join(' | ')}');
+    setState(() {
+      _ok = agree;
+      _report = lines.join('\n');
+    });
+  }
+
+  /// Design v8.5.1 §4.1: the install marker; the four keys are generated only when there is no marker AND no record.
+  Future<List<String>> _install() async {
+    final out = <String>[];
+    final dir = (await _platform.invokeMethod<String>('filesDir'))!;
+    final swept = await storeSweep(dir: '$dir/records');
+    if (swept > 0) out.add('store: removed $swept interrupted write(s)');
+    final marker = await storeReadMarker(dir: '$dir/records');
+    if (marker != null) {
+      out.add('install marker: $marker');
+      return out;
+    }
+    if (await storeHasRecords(dir: '$dir/records')) {
+      // marker lost but records exist: never delete or regenerate keys
+      out.add('install marker missing but records exist — keys are kept as they are');
+      return out;
+    }
+    try {
+      final levels = await _platform.invokeMapMethod<String, dynamic>('firstRun');
+      final content = levels!.entries.map((e) => '${e.key}=${e.value}').join(' ');
+      await storeWriteMarker(dir: '$dir/records', content: content);
+      out.add('first run: four keys generated and self-tested; marker written: $content');
+    } on PlatformException catch (e) {
+      out.add('first run FAILED (all keys deleted, retried at the next start): ${e.message}');
+    }
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Batman — startup check')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: _report == null
+            ? const Center(child: CircularProgressIndicator())
+            : SelectableText(_report!,
+                style: TextStyle(fontFamily: 'monospace', color: _ok ? null : Colors.red)),
       ),
     );
   }
