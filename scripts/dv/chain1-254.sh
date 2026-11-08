@@ -123,6 +123,9 @@ if ! grep -q "^SNAP $RUN" <<< "$o"; then
 fi
 SNAPPED=1; FIP=$NODE; FOUND_STATE=$s
 SNAPSHA=$(q "cut -c1-16 $D/p5.img.sha")
+# the p1 list into the snapshot (as prov-bench-s0 fresh does): finishing an aborted run with
+# `prov-bench-s0-254.sh restore 04 <run>` needs it (2026-11-08: that restore refused the chain1 snapshot without it)
+printf '%s\n' "$P1_0" | ssh $SSHO root@$NODE "umask 077; cat > $D/p1.list" || abort "p1 list into the snapshot"
 scp -q $SSHO "$PB" root@$NODE:$BASE/prov-base-254.sh || abort "copy prov-base"
 q "mkdir -p $D/marks; for m in mesh-joined mesh-expected; do [ -e /opt/batdata/state/\$m ] && mv /opt/batdata/state/\$m $D/marks/; done; echo marks=[\$(ls $D/marks | tr '\n' ' ')]" | sed 's/^/    /'
 q "cat > $BASE/ch1-deadman.sh <<'DM'
