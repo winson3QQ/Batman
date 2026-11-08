@@ -219,8 +219,8 @@ if [ "$MODE" = slota ] || [ "$MODE" = toa ]; then
 		say "release: ${r:-no answer}"
 		case "$r" in *WRONG-STATE*) ;; *) RELSENT=1 ;; esac
 		# committed in the trial's boot, or the node is in another boot (the trial is over), or 660 s have passed
-		t=$SECONDS; c=""; while [ $((SECONDS - t)) -lt 660 ]; do c=$(fq "$ST"); case "$c" in *"slot=A "*"trial_rc=1 "*"boot=$BA"*) break;; *"boot=$BA"*|"") ;; *"boot="*) break;; esac; sleep 10; done
-		case "$c" in *"slot=A "*"trial_rc=1 "*"boot=$BA"*)
+		t=$SECONDS; c=""; while [ $((SECONDS - t)) -lt 660 ]; do c=$(fq "$ST"); case "$c" in *" slot=A "*"trial_rc=1 "*"boot=$BA"*) break;; *"boot=$BA"*|"") ;; *"boot="*) break;; esac; sleep 10; done
+		case "$c" in *" slot=A "*"trial_rc=1 "*"boot=$BA"*)
 			ok "A committed, in the trial's own boot ($BA)"
 			case "$c" in *" hold=[] held="[01]" badslot=[]"*) ok "no hold flag left, no bad-slot";; *) no "after the commit: $c";; esac   # held=1 is normal here: the run-dir marker of the hold stays until the next boot
 			# let it settle: the commit restarts openmanetd with its stock environment, and its address-reservation worker
@@ -238,7 +238,7 @@ if [ "$MODE" = slota ] || [ "$MODE" = toa ]; then
 			pkp "$FIP" && ok "publickey PROVEN on A" || no "publickey login on A"
 			say "hold flag now: [$(fq 'cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null')]"
 			c=""; for k in 1 2 3; do c=$(fq "$ST"); [ -n "$c" ] && break; sleep 10; done
-			case "$c" in *"slot=A "*"trial_rc=1 "*"boot=$BA"*) ok "still A committed in the trial's boot after the checks";; *) no "after the checks the node is not A committed in boot $BA: [$c]";; esac
+			case "$c" in *" slot=A "*"trial_rc=1 "*"boot=$BA"*) ok "still A committed in the trial's boot after the checks";; *) no "after the checks the node is not A committed in boot $BA: [$c]";; esac
 			# the SECOND boot of A: a committed slot has no deadline to fall back on, so see it come up once more now
 			# (only in that boot, on A, committed)
 			if [ "$fails" = 0 ]; then
@@ -379,7 +379,7 @@ x=$(fq "echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.
 say "trial: $(echo $x)"
 for w in "meta=unclaimed" "ap=0" "mesh=0" "seeded=n" "metastat=[ok unclaimed]" "ident=ok"; do case "$x" in *"$w"*) ok "trial: $w";; *) abort "trial: want $w";; esac; done
 r=$(fq 'batman-autocommit release --wait 2>&1 | tail -1'); say "release: $r"
-s=$(fq "$ST"); case "$s" in *"slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
+s=$(fq "$ST"); case "$s" in *" slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
 # the reservation reboot follows on the committed slot (chain1 s6r)
 t=$SECONDS; while [ $((SECONDS - t)) -lt 400 ]; do b=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ "$b" = "$BT" ] || break; sleep 10; done
 wait_find 600 "slot=B ver=$V trial_rc=1 " "$BT" || abort "B not found after the reservation reboot"

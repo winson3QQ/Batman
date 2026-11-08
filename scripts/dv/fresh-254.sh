@@ -111,7 +111,7 @@ restore_all(){
 		[ "$i" = 3 ] && { say "RESTORE: 04 keeps rebooting under openmanetd — needs a person"; return 1; }
 	done
 	# on B: p5 back, then rollback to A
-	case "$s" in *"slot=B "*)
+	case "$s" in *" slot=B "*)
 		fq "rm -f /opt/batdata/state/autocommit-hold-commit; touch $BASE/ch1.cancel"
 		o=$(fqlong "for m in /tmp/run/batman-dv/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on B): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed — needs a person"; return 1; }
 		b=$(bootof "$s"); fq "batman-slot rollback >/dev/null 2>&1 && (batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &) && echo SENT" | sed 's/^/    rollback: /'

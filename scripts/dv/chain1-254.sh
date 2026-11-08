@@ -208,7 +208,7 @@ fq "rl=\$(mktemp /tmp/run/ch1-rcl.XXXXXX) && { grep -v '^exit 0' /etc/rc.local; 
 pl=$(fq "echo rclocal=\$(grep -c ch1-deadman /etc/rc.local) script=\$([ -x $BASE/ch1-deadman.sh ] && echo y) timer=\$(ps w | grep -c '[s]leep 1500')")
 say "dead-man on B: $pl"; case "$pl" in "rclocal=1 script=y timer="[1-9]*) ;; *) abort "dead-man not armed on B";; esac
 T5E=$SECONDS; r=$(fq 'batman-autocommit release --wait 2>&1 | tail -1'); say "release: $r"
-s=$(fq "$ST"); case "$s" in *"slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
+s=$(fq "$ST"); case "$s" in *" slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
 # the reservation reboot follows on the committed slot (E1c: ~145 s); wait for B's next boot and find it again
 PH=s6r; t=$SECONDS; while [ $((SECONDS - t)) -lt 400 ]; do b=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ "$b" = "$BT" ] || break; sleep 10; done
 wait_find 600 "slot=B ver=$V trial_rc=1 " "$BT" || abort "B not found after the reservation reboot"

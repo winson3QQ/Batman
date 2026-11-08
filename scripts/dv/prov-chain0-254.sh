@@ -25,7 +25,7 @@ MACW=$(echo "$MAC" | tr ':' '-')
 FIP=""
 fq(){ timeout 60 ssh $NONEO root@"$FIP" "$@" 2>/dev/null | tr -d '\r'; }
 # is04 <ip>: 04 (by eth MAC) answers there in the bypass B trial -> prints its state
-is04(){ local s; s=$(timeout 20 ssh $NONEO root@"$1" "$ST" 2>/dev/null | tr -d '\r'); case "$s" in "mac=$MAC "*"slot=B "*) echo "$s"; return 0 ;; esac; return 1; }
+is04(){ local s; s=$(timeout 20 ssh $NONEO root@"$1" "$ST" 2>/dev/null | tr -d '\r'); case "$s" in "mac=$MAC slot=B "*) echo "$s"; return 0 ;; esac; return 1; }
 # find_bypass <secs> <boot to leave>: the node at $NODE, then any lab address whose ARP entry is 04's MAC (after a sweep)
 find_bypass(){
 	local t0 ip s n i
