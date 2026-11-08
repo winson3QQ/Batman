@@ -120,5 +120,60 @@ class Keys(private val prefix: String = "batman") {
         return c.doFinal(sealed, 12, sealed.size - 12)
     }
 
+    /** One use of [role]'s key for its purpose right after generation (design §4): fails -> the phone cannot use it. */
+    fun selfTest(role: KeyRole) {
+        when (role) {
+            KeyRole.OWNER_SIGN, KeyRole.ADMIN_SIGN -> {
+                val input = if (role == KeyRole.OWNER_SIGN) "batman-owner-op-v1".toByteArray() + ByteArray(32) { 1 }
+                            else selfTestSigStructure()
+                val der = sign(role, input)
+                val ok = Signature.getInstance("SHA256withECDSA").run {
+                    initVerify(ks.getCertificate(alias(role)).publicKey); update(input); verify(der)
+                }
+                check(ok) { "$role: signature does not verify" }
+            }
+            KeyRole.OWNER_ENC -> {
+                val peer = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
+                val z = ecdh(peer.public)
+                val z2 = KeyAgreement.getInstance("ECDH").run {
+                    init(peer.private); doPhase(ks.getCertificate(alias(role)).publicKey, true); generateSecret()
+                }
+                val same = z.contentEquals(z2) && z.size == 32
+                z.fill(0); z2.fill(0)
+                check(same) { "OWNER_ENC: ECDH results differ" }
+            }
+            KeyRole.RECORD_AES -> {
+                val aad = "selftest/0".toByteArray()
+                check(open(seal("selftest".toByteArray(), aad), aad).contentEquals("selftest".toByteArray())) { "RECORD_AES: round trip" }
+            }
+        }
+    }
+
+    /** A minimal COSE Sig_structure the admin allow-list accepts (label batman-netcfg-v1, empty protected / payload). */
+    private fun selfTestSigStructure(): ByteArray {
+        val label = "batman-netcfg-v1".toByteArray()
+        return byteArrayOf(0x84.toByte(), 0x6a) + "Signature1".toByteArray() + byteArrayOf(0x40) +
+            byteArrayOf((0x40 or label.size).toByte()) + label + byteArrayOf(0x40)
+    }
+
+    /**
+     * First install (design §4.1): generate all four keys, read each level back, self-test each. All or nothing: any
+     * failure deletes every key generated here. The caller has checked there is no install marker and no record.
+     * Returns role -> read-back level.
+     */
+    fun firstRun(): Map<KeyRole, Int> {
+        val levels = mutableMapOf<KeyRole, Int>()
+        try {
+            for (r in KeyRole.values()) {
+                levels[r] = generate(r)
+                selfTest(r)
+            }
+        } catch (e: Exception) {
+            KeyRole.values().forEach { runCatching { delete(it) } }
+            throw e
+        }
+        return levels
+    }
+
     companion object { const val ANDROID_KS = "AndroidKeyStore" }
 }
