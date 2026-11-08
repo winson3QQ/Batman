@@ -567,6 +567,7 @@ if [ "$mode" = --on-join ] && p5_matches && cmp -s "$STAGE/overrides.uci" "$MNT/
 fi
 
 # write-amplification guard (#202 A3): after 20 real writes in one boot, at most one per 60 s
+# (this comment line and the column-0 `fi` below are the markers tests/prov-p1/cfgsave-stderr-quiet.sh extracts the block by)
 if [ "$mode" = --on-join ] && [ "$RDOK" = 1 ]; then
 	{ read -r wn wl < "$WRITES"; } 2>/dev/null || { wn=0; wl=0; }
 	case "$wn" in ''|*[!0-9]*) wn=0 ;; esac; case "$wl" in ''|*[!0-9]*) wl=0 ;; esac
