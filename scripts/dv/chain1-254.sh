@@ -164,6 +164,12 @@ fi
 o=$(q "grep -c ' /dev/mmcblk0p5 ' /proc/mounts; ps w | grep -c '[b]atman-config-save'"); [ "$(echo $o)" = "0 0" ] && ok "p5 idle" || abort "p5 busy: $(echo $o)"
 o=$(q "mkfs.ext4 -F -q -L batconfig /dev/mmcblk0p5 && echo MKFS-OK; $P5RO"); say "p5 after mkfs: $(echo $o)"
 case "$o" in *MKFS-OK*"seeded=n"*) ok "p5 empty, not seeded";; *) abort "mkfs";; esac
+# a fresh card has an empty p6 too: p6's prov-state is the fail-secure ratchet (batman-prov-lock: "p5 says - but p6
+# says member — locking (any)"), so a member's p6 kept the fresh trial LOCKED -> no `none` login -> find04 never saw it
+# (2026-11-08 chain1 on the member base: trial up at 10.41.254.76, dropbear "Exit before auth", 0 fails). prov-state is
+# one of the snapshot's state files: overlay-restore puts it back, compare checks it
+o=$(q "rm -f /opt/batdata/state/prov-state; sync; [ -e /opt/batdata/state/prov-state ] && echo P6-KEPT || echo P6-CLEARED")
+[ "$o" = P6-CLEARED ] && ok "p6 prov-state cleared (fresh card)" || abort "p6 prov-state not cleared: [$o]"
 q "echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync"
 o=$(timeout 900 ssh $SSHO root@$NODE "BATMAN_ALLOW_UNSEEDED=1 BATMAN_ALLOW_STALE_P5=1 batman-slot apply $PDIR 2>&1 | tail -3" 2>/dev/null | tr -d '\r'); say "apply: $(echo $o)"
 grep -q "armed as one-shot tryboot" <<< "$o" || { q "$DISARM" >/dev/null; abort "apply did not arm"; }
