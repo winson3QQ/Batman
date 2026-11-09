@@ -2,6 +2,8 @@
 // The node record is opened by Kotlin (Keystore record key, AAD from Rust) and handed to Rust, which keeps its secrets;
 // a claimed node's advertising carries no id (RPA, UUID list only), so each nearby provd is tried in turn: msg2 that
 // does not decrypt = not this node (design §5.0), try the next. Nothing secret is logged.
+// Join a second node (254-app-join2 v7.1): a net record opened by Kotlin goes to Rust as is; every net record write
+// is sealed by Kotlin and written by compare-and-swap (storeWriteCas) — the record bytes are never logged or shown.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -10,7 +12,7 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import 'say.dart';
 import 'scan.dart' show provdService;
-import 'src/rust/api/claim.dart' show frameLimit, storeRemove, storeWriteSealed;
+import 'src/rust/api/claim.dart' show frameLimit, storeRemove;
 import 'src/rust/api/owner.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
@@ -19,6 +21,20 @@ final _tx = Uuid.parse('540aa38c-0086-4d5a-a9c0-c7c9d1e1bd42');
 final _ctrl = Uuid.parse('540aa38c-0086-4d5b-a9c0-c7c9d1e1bd42');
 
 void _log(String s) => debugPrint('BMAPP owner $s');
+
+/// An opened net record (join2): its path, plain bytes (secrets inside: never logged), the generation it was read at
+/// and what the screen may show of it.
+class _Net {
+  const _Net(this.rel, this.plain, this.gen, this.view);
+  final String rel;
+  final Uint8List plain;
+  final BigInt gen;
+  final NetView view;
+}
+
+/// join2 §3.3-7: "connected" is looked for during 2 x the measured join -> connected time (T5); 120 s until measured
+const _linkWindow = Duration(seconds: 120);
+const _linkEvery = Duration(seconds: 10);
 
 class NodesPage extends StatefulWidget {
   const NodesPage({super.key});
@@ -49,6 +65,7 @@ class _NodesPageState extends State<NodesPage> {
   // the step loop of the open session (set at login): a request whose first step is not a write runs through it
   Future<void> Function(OwnerStep?)? _run;
   final _sshKey = TextEditingController(); // dev: an ssh-ed25519 public key line to add (ssh_keys/set, P2 owner-op)
+  DateTime? _linkFrom; // set when a join was applied: the link checks that follow count from here
 
   @override
   void initState() {
@@ -123,19 +140,51 @@ class _NodesPageState extends State<NodesPage> {
             final der = (await _platform.invokeMethod<Uint8List>('signOwner', {'input': st.signInput}))!;
             st = s.signed(der: der);
           case OwnerKind.signAdmin:
-            final der = (await _platform.invokeMethod<Uint8List>('signAdmin', {'input': st.signInput}))!;
+            Uint8List der;
+            try {
+              der = (await _platform.invokeMethod<Uint8List>('signAdmin', {'input': st.signInput}))!;
+            } on PlatformException catch (e) {
+              // the admin key could not sign (lost / invalidated): an empty signature stops the flow before any
+              // record write or country change (join2 §6, T8)
+              _log('[REQ_FAIL] 手機的管理者金鑰無法簽章（${e.code}）');
+              der = Uint8List(0);
+            }
             st = s.signed(der: der);
           case OwnerKind.persistNet:
-            // the net record lands (sealed, fsynced) before network/join goes out (design §3); never shown
-            final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': st.record, 'aad': st.aad}))!;
-            await storeWriteSealed(dir: await _dir(), rel: st.rel, generation: st.generation, sealed: sealed);
-            _log('已在手機存下網路資料（${st.rel.substring(0, 8)}…，第 ${st.generation} 版）');
-            st = s.netPersisted();
+            // the net record lands (sealed, fsynced) before anything goes out (design §3), by compare-and-swap from
+            // the generation it was read at (join2 §3.1); never shown
+            final OwnerStep p = st;
+            try {
+              final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
+              await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
+              _log('已在手機存下網路資料（${p.rel.substring(0, 8)}…，第 ${p.generation} 版）');
+              st = s.netPersisted();
+            } catch (e) {
+              _log('[REQ_FAIL] 網路資料沒有存成功（${p.rel.substring(0, 8)}…）：$e');
+              st = s.persistFailed();
+            }
+          case OwnerKind.confirmCountry:
+            _log(st.detail);
+            final question = screenText(st.detail);
+            final yes = mounted
+                ? await showDialog<bool>(
+                    context: context,
+                    builder: (c) => AlertDialog(
+                          title: const Text('要改這台節點的國家嗎？'),
+                          content: Text(question),
+                          actions: [
+                            TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('不要')),
+                            TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('改')),
+                          ],
+                        ))
+                : false;
+            st = s.countryConfirmed(yes: yes == true);
           case OwnerKind.loggedIn:
             _say('[LOGGED_IN] ${st.detail}');
             if (!done.isCompleted) done.complete(true);
             st = null;
           case OwnerKind.answer:
+            if (st.pollLink) _linkFrom = DateTime.now();
             _answer?.complete('[ANSWER] ${st.detail}');
             st = null;
           case OwnerKind.ended:
@@ -265,34 +314,160 @@ class _NodesPageState extends State<NodesPage> {
         wait: const Duration(seconds: 180));
   }
 
-  Future<void> _ask(OwnerStep Function(OwnerSession) req, {Duration wait = const Duration(seconds: 15)}) async {
-    if (_busy) return;
+  /// One request on the owner session; the answer is shown (or with [quiet] only logged) and returned.
+  /// [retry]: a write that fails logs in again and sends the request once more — never for a join / confirm, whose
+  /// record was read before the first try (the record write would refuse a stale generation anyway).
+  Future<String?> _ask(OwnerStep Function(OwnerSession) req,
+      {Duration wait = const Duration(seconds: 15), bool quiet = false, bool retry = true}) async {
+    if (_busy) return null;
     if (_session == null && _lastNode != null) await _login(_lastNode!);
     var s = _session;
-    if (s == null || _busy) return;
+    if (s == null || _busy) return null;
     setState(() => _busy = true);
     try {
       _answer = Completer<String>();
       try {
         await _run!(req(s));
       } on PlatformException catch (e) {
+        if (!retry) rethrow;
         // nothing reached the node (the write itself failed): log in again and send it once more
         _say('[LINK_LOST] 連線斷了（${e.code}），正在重新連線…');
         await _drop();
         setState(() => _busy = false);
         await _login(_lastNode!);
         s = _session;
-        if (s == null) return;
+        if (s == null) return null;
         setState(() => _busy = true);
         _answer = Completer<String>();
         await _run!(req(s));
       }
-      _say(await _answer!.future.timeout(wait, onTimeout: () => '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應'));
+      final a = await _answer!.future.timeout(wait, onTimeout: () => '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應');
+      if (quiet) {
+        _log(a);
+      } else {
+        _say(a);
+      }
+      return a;
     } catch (e) {
       _say('[REQ_FAIL] 操作沒有成功：$e');
+      return null;
     } finally {
       _answer = null;
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// This phone's net records, opened (Kotlin) and summarised (Rust); one is picked (directly when there is only one).
+  Future<_Net?> _pickNet(String title, {bool Function(NetView)? only, bool forJoin = false}) async {
+    final dir = await _dir();
+    final nets = <_Net>[];
+    for (final id in await listNets(dir: dir)) {
+      final rel = 'net/$id';
+      try {
+        final sealed = await storeReadSealed(dir: dir, rel: rel);
+        if (sealed == null) continue;
+        final plain = (await _platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad}))!;
+        final view = netSummary(recordPlain: plain);
+        if (only == null || only(view)) nets.add(_Net(rel, plain, sealed.generation, view));
+      } catch (e) {
+        _say('網路紀錄 ${id.substring(0, 6)}… 打不開（手機的紀錄金鑰可能已遺失）：$e');
+      }
+    }
+    if (nets.isEmpty) {
+      // join2 §6: app reinstalled / record key lost -> no more nodes can be added from this phone
+      _say(forJoin
+          ? '手機裡沒有可用的網路紀錄，不能再加節點。若 App 重裝過：新建網路會讓整隊分成兩個網路，舊節點要重燒'
+          : '手機裡沒有可用的網路紀錄');
+      return null;
+    }
+    if (nets.length == 1 || !mounted) return nets.first;
+    return showDialog<_Net>(
+        context: context,
+        builder: (c) => SimpleDialog(title: Text(title), children: [
+              for (final n in nets)
+                SimpleDialogOption(
+                    onPressed: () => Navigator.pop(c, n),
+                    child: Text('${n.view.meshId}（${n.view.applied ? '已建立' : '建立中'}，${n.view.members.length} 台）')),
+            ]));
+  }
+
+  /// join2 §3.3: this logged-in node joins one of this phone's networks (also "繼續加入": the same flow again)
+  Future<void> _joinNetwork() async {
+    if (_busy) return;
+    final net = await _pickNet('要加入哪個網路？', forJoin: true);
+    if (net == null) return;
+    final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    _say('正在把這台節點加入網路 ${net.view.meshId}，最多可能要等幾分鐘…');
+    _linkFrom = null;
+    await _ask(
+        (s) => s.requestJoinNetwork(
+            recordPlain: net.plain,
+            recordGen: net.gen,
+            adminPub: keys['admin'] as Uint8List,
+            ownerEncPub: keys['ownerEnc'] as Uint8List),
+        wait: const Duration(seconds: 300),
+        retry: false);
+    await _watchLink();
+  }
+
+  /// join2 §3.3-7: after "applied", read status every 10 s until connected or the window is over; one line shown
+  Future<void> _watchLink() async {
+    final from = _linkFrom;
+    _linkFrom = null;
+    if (from == null) return;
+    var last = '[JOINED] 已套用，連線狀態未知';
+    while (mounted && DateTime.now().difference(from) < _linkWindow) {
+      await Future<void>.delayed(_linkEvery);
+      final secs = DateTime.now().difference(from).inSeconds;
+      final a = await _ask((s) => s.requestLinkCheck(secsSinceJoin: BigInt.from(secs)), quiet: true, retry: false);
+      if (a == null) break;
+      last = a.replaceFirst('[ANSWER] ', '');
+      if (last.startsWith('[CONNECTED]')) break;
+    }
+    _say(last);
+  }
+
+  /// join2 §3.2: read info on the logged-in node against one of this phone's net records
+  Future<void> _confirmNetwork() async {
+    if (_busy) return;
+    final net = await _pickNet('要確認哪個網路？');
+    if (net == null) return;
+    await _ask((s) => s.requestConfirmNetwork(recordPlain: net.plain, recordGen: net.gen), retry: false);
+  }
+
+  /// join2 §3.4: forget a joining member (this phone's record only; the node is not changed)
+  Future<void> _forgetJoining() async {
+    if (_busy) return;
+    final net = await _pickNet('在哪個網路裡忘記？', only: (v) => v.members.any((m) => m.joining));
+    if (net == null || !mounted) return;
+    final joining = net.view.members.where((m) => m.joining).toList();
+    String who(MemberView m) => m.last4.isEmpty ? m.name : '${m.name}（…${m.last4}）';
+    final m = joining.length == 1
+        ? joining.first
+        : await showDialog<MemberView>(
+            context: context,
+            builder: (c) => SimpleDialog(title: const Text('要忘記哪一台？'), children: [
+                  for (final x in joining) SimpleDialogOption(onPressed: () => Navigator.pop(c, x), child: Text(who(x))),
+                ]));
+    if (m == null || !mounted) return;
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+              title: Text('要忘記加入中的 ${who(m)} 嗎？'),
+              content: const Text('只改這支手機裡的網路紀錄，節點本身不會被改動。'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+                TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('忘記')),
+              ],
+            ));
+    if (yes != true) return;
+    try {
+      final st = netForgetJoining(recordPlain: net.plain, recordGen: net.gen, dacHash: m.dacHash);
+      final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': st.record, 'aad': st.aad}))!;
+      await storeWriteCas(dir: await _dir(), rel: st.rel, expectedGen: st.expectedGen, sealed: sealed);
+      _say(st.detail);
+    } catch (e) {
+      _say('[REQ_FAIL] 忘記沒有成功：$e');
     }
   }
 
@@ -380,9 +555,14 @@ class _NodesPageState extends State<NodesPage> {
                   child: const Text('建立網路')),
             ]),
           if (logged)
-            Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton(onPressed: _busy ? null : () => _ask((s) => s.checkNetwork()), child: const Text('檢查網路'))),
+            Row(children: [
+              FilledButton(onPressed: _busy ? null : _joinNetwork, child: const Text('加入網路／繼續加入')),
+              const SizedBox(width: 8),
+              OutlinedButton(onPressed: _busy ? null : _confirmNetwork, child: const Text('確認網路')),
+            ]),
+          Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(onPressed: _busy ? null : _forgetJoining, child: const Text('忘記加入中的節點'))),
           const Divider(),
           Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
         ]),
