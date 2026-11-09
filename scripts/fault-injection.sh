@@ -484,13 +484,18 @@ p5_ap_back(){ local o apn b2 st s it
       { echo $new > /etc/halow-keyguard.blocked.tmp && mv -f /etc/halow-keyguard.blocked.tmp /etc/halow-keyguard.blocked; } || { uci revert wireless; echo "REFUSED cannot write the keyguard mark"; exit 2; }
       uci commit wireless; wifi reload 9>&- >/dev/null 2>&1; sleep 2
       w=0; until [ "$(ubus call network.wireless status 2>/dev/null | jsonfilter -e @.radio0.pending 2>/dev/null)" = false ]; do w=$((w + 1)); [ $w -ge 30 ] && break; sleep 1; done
-      if [ $w -ge 30 ]; then echo "pre_ifs=unread pre_apif=unread (radio0 still pending after 30 s)"
-      else echo "pre_ifs=$(iw dev 2>/dev/null | grep -c "Interface") pre_apif=$(iw dev 2>/dev/null | grep -c "type AP")"; fi
+      if [ $w -ge 30 ]; then echo "pre_ifs=unread pre_apif=unread pre_ssid=unread pre_hostapd=unread (radio0 still pending after 30 s)"
+      else echo "pre_ifs=$(iw dev 2>/dev/null | grep -c "Interface") pre_apif=$(iw dev 2>/dev/null | grep -c "type AP") pre_ssid=$(iw dev 2>/dev/null | grep -c "^[[:space:]]*ssid ") pre_hostapd=$(ubus list 2>/dev/null | grep -c "^hostapd\.")"; fi
       batman-config-save --save 9>&- >/dev/null 2>&1; echo "save_rc=$?"' 2>&1 | tr -d '\r')
     echo "    placeholder back: $(echo $o)"
     # the discriminating check is BEFORE the reboot: after it, keyguard would block a placeholder AP by itself
     # (halow-keyguard:30-33) whether or not this write set disabled=1 (review round 2 A-m2)
-    if grep -q 'pre_ifs=[1-9][0-9]* pre_apif=0$' <<< "$o"; then ok "P5 AP interface gone right after the placeholder + block write (before any reboot)"
+    # "AP off" = no SSID on any interface and no per-interface hostapd object. Not "no type-AP interface": on 04
+    # (brcmfmac) the netdev outlives the AP — hostapd logs AP-DISABLED / TERMINATING within 1 s, netifd "radio0 command
+    # failed: I/O error", and iw keeps listing phy1-ap0 as type AP (DOWN, no ssid) until the reboot. Flip test on 04,
+    # 2026-11-09: AP up = link UP + ssid=1 + hostapd.phy1-ap0; 1 s after the write: DOWN, ssid=0, hostapd_if=0, apif=1
+    # for 60 s (reflash-202 ❓ "AP still up", twice, was this harness check).
+    if grep -q 'pre_ifs=[1-9][0-9]* pre_apif=[0-9]* pre_ssid=0 pre_hostapd=0$' <<< "$o"; then ok "P5 AP off right after the placeholder + block write (no SSID, no hostapd interface; before any reboot)"
     else p5_person "P5: after the placeholder + block write the AP is still up or iw unreadable [$(grep pre_ <<< "$o")]"; fi
     grep -q '^save_rc=0$' <<< "$o" || { p5_person "P5: placeholder restore not done or not persisted [$(echo $o)] — not rebooting; AP state: $(q 'halow-setkey --status 2>/dev/null | grep "^ap "' | tr -d '\r')"; return; }
     # keyguard at boot is the product's own check of the same state (it re-blocks a placeholder AP every boot)

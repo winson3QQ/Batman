@@ -54,7 +54,7 @@ export DV_DIR=$T/dv; mkdir -p "$DV_DIR"
 run(){ rm -f "$T/calls" "$T/rebooted" "$DV_DIR/needs-person.txt"; touch "$T/calls"; p5_ap_back CHANGE-ME-NOW "$PH" A; }
 np(){ grep -q '^NEEDS-PERSON reflash-survives-config-202' "$DV_DIR/needs-person.txt" 2>/dev/null; }
 base(){ SUP=0 SLOT=A IT=0 STAT="ap   default_radio0   ssid=x key=set disabled=0" KEY=fi202-abc POSTSTAT="ap   default_radio0   ssid=x key=PLACEHOLDER disabled=1" POSTKEY=CHANGE-ME-NOW
-	WRITE=$'pre_ifs=2 pre_apif=0\nsave_rc=0' P5CHK="batman-config-save: p5 fresh"; }
+	WRITE=$'pre_ifs=2 pre_apif=1 pre_ssid=0 pre_hostapd=0\nsave_rc=0' P5CHK="batman-config-save: p5 fresh"; }
 nw(){ ! grep -q '^ssh-write' "$T/calls"; }; nr(){ [ ! -e "$T/rebooted" ]; }
 base; SUP=1; o=$(run); grep -q 'FAIL.*sysupgrade is running' <<< "$o" && nw && nr && np && tok "p5_ap_back: sysupgrade running -> FAIL, nothing written" || tbad "sysupgrade guard: $o"
 base; SLOT=B; o=$(run); grep -q 'FAIL.*needs a person' <<< "$o" && nw && nr && np && tok "p5_ap_back: committed on another slot -> FAIL + needs-person.txt, nothing written" || tbad "other slot: $o"
@@ -62,7 +62,11 @@ base; STAT="ap   default_radio0   ssid=x key=PLACEHOLDER disabled=1" KEY=CHANGE-
 base; STAT="ap   default_radio0   ssid=x key=PLACEHOLDER disabled=1" KEY=CHANGE-ME-NOW P5CHK="batman-config-save: p5 STALE"; o=$(run); ! grep -q 'nothing written' <<< "$o" && ! nw && tok "p5_ap_back: live at baseline but p5 stale -> written (the test key in p5 would come back)" || tbad "stale p5 no-op: $o"
 base; WRITE="REFUSED setkey lock busy"; o=$(run); grep -q 'FAIL.*not rebooting' <<< "$o" && nr && np && tok "p5_ap_back: write refused -> FAIL, no reboot" || tbad "refused write: $o"
 base; o=$(run); [ "$(grep -c '^PASS' <<< "$o")" = 2 ] && ! grep -q '^FAIL' <<< "$o" && ! nr && ! np && tok "p5_ap_back: write + AP gone before the reboot + baseline after -> 2 PASS, rebooted once" || tbad "positive: $o"
-base; WRITE=$'pre_ifs=2 pre_apif=1\nsave_rc=0'; o=$(run); grep -q 'FAIL.*AP is still up' <<< "$o" && tok "p5_ap_back negative control: AP still up after the write -> FAIL (keyguard's reboot would hide it)" || tbad "negative control: $o"
-base; WRITE=$'pre_ifs=0 pre_apif=0\nsave_rc=0'; o=$(run); grep -q 'FAIL.*iw unreadable' <<< "$o" && tok "p5_ap_back: iw lists no interface -> FAIL (not read as AP gone)" || tbad "iw unreadable: $o"
-base; WRITE=$'pre_ifs=unread pre_apif=unread (radio0 still pending after 30 s)\nsave_rc=0'; o=$(run); grep -q 'FAIL.*iw unreadable' <<< "$o" && tok "p5_ap_back: radio0 still pending -> FAIL (no fixed-sleep snapshot)" || tbad "pending: $o"
+base; WRITE=$'pre_ifs=2 pre_apif=1 pre_ssid=1 pre_hostapd=1\nsave_rc=0'; o=$(run); grep -q 'FAIL.*AP is still up' <<< "$o" && tok "p5_ap_back negative control: AP still up after the write -> FAIL (keyguard's reboot would hide it)" || tbad "negative control: $o"
+base; WRITE=$'pre_ifs=2 pre_apif=1 pre_ssid=0 pre_hostapd=1
+save_rc=0'; o=$(run); grep -q 'FAIL.*AP is still up' <<< "$o" && tok "p5_ap_back: no SSID but hostapd still holds the interface -> FAIL" || tbad "hostapd left: $o"
+base; WRITE=$'pre_ifs=2 pre_apif=1 pre_ssid=1 pre_hostapd=0
+save_rc=0'; o=$(run); grep -q 'FAIL.*AP is still up' <<< "$o" && tok "p5_ap_back: an SSID still on the air -> FAIL" || tbad "ssid left: $o"
+base; WRITE=$'pre_ifs=0 pre_apif=0 pre_ssid=0 pre_hostapd=0\nsave_rc=0'; o=$(run); grep -q 'FAIL.*iw unreadable' <<< "$o" && tok "p5_ap_back: iw lists no interface -> FAIL (not read as AP gone)" || tbad "iw unreadable: $o"
+base; WRITE=$'pre_ifs=unread pre_apif=unread pre_ssid=unread pre_hostapd=unread (radio0 still pending after 30 s)\nsave_rc=0'; o=$(run); grep -q 'FAIL.*iw unreadable' <<< "$o" && tok "p5_ap_back: radio0 still pending -> FAIL (no fixed-sleep snapshot)" || tbad "pending: $o"
 echo "$P passed, $F failed"; [ "$F" = 0 ]
