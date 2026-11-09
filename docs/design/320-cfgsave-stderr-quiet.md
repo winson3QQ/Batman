@@ -1,6 +1,7 @@
 # #320 — busybox `< file 2>/dev/null` stderr noise: brace every redirect-read in the product tree
 
-Status: v4, 2026-11-09. Round 1 (v1, two reviewers): APPROVE-WITH-CHANGES ×2 — lint heuristic unsound, PR split per
+Status: v4.1, 2026-11-09. Round 4 (v4 + code, two reviewers): APPROVE ×2; its MINORs (RDOK=0 case, three
+more known lint gaps) are folded in. Round 1 (v1, two reviewers): APPROVE-WITH-CHANGES ×2 — lint heuristic unsound, PR split per
 #290. Round 2 (v2 + code, two reviewers): APPROVE-WITH-CHANGES ×2 — CI step placement would skip the rest of the
 prov-p1 job, lint missed `2> /dev/null` / `>/dev/null 2>&1` / `2>&-`, wrong rationale for excluding scripts/node.
 Round 3 (v3 + code): APPROVE + APPROVE-WITH-CHANGES — the `/dev/null`-operand filter dropped whole lines, §2 copy
@@ -107,7 +108,11 @@ No new or changed input, path, privilege, secret or failure mode. Same files, sa
    Known gaps, none present in feed today (grep-verified): a digit-start operand (`< 1.txt`), an fd-numbered input
    (`3< f`, `0< f`), a quoted discard (`2>"/dev/null"`), `1>/dev/null 2>&1`, a `>` glued to the operand
    (`<"$F">/dev/null 2>&1`), a `\`-continued command; adding digits to the operand class would false-positive
-   awk/arithmetic comparisons, so these stay documented. Known false positives a maintainer may meet: a `<` inside a
+   awk/arithmetic comparisons, so these stay documented. Also (round 4): a `#`-first line inside a here-doc body is
+   skipped like a comment (feed has no here-doc fed to a shell or `eval`); a trailing `; # cmd < f 2>/dev/null` comment
+   is a hit (split the line); the `/dev/null`-only exclusion counts ANY other `<` on the line as a read, so a
+   `</dev/null >/dev/null 2>&1` line that also has a `<` inside a string or an fd dup (`9<"$1"`) is a hit — none in
+   feed today, 4 in scripts/node (session-264.sh:81/85/93, addr-defer-reconcile-254.sh:104) for the later sweep. Known false positives a maintainer may meet: a `<` inside a
    quoted string followed by a blank, or an arithmetic `a < b`, on a line that also discards stderr — the FAIL message
    says to split the line; a `\`-continued command is scanned per line (accepted). The deploy copies are not scanned:
    `check-provisioning-sync.sh` keeps them identical. Expected: 22 hits on main (that run is the negative control,
@@ -119,8 +124,9 @@ No new or changed input, path, privilege, secret or failure mode. Same files, sa
    `STAGE`/`MNT` = empty temp dirs, `mode=--on-join RDOK=1`, `set -u`. Cases: `$WRITES` missing → rc 0, stderr
    empty, `wn=0 wl=0`; `25 90` → rc 1 + "write rate-limited (25 writes this boot)"; `5 90` → rc 0, `wn=5 wl=90`;
    `20 50` → rc 1 (the threshold is `-ge 20`); `20 40` → rc 0 `wn=20 wl=40` (60 s window, not longer); `abc xyz` → rc 0,
-   stderr empty, `wn=0 wl=0` (the `case` sanitisers). Mutants of the block that drop `|| { wn=0; wl=0; }`, the `exit`,
-   the sanitisers, or change 20 / 60 / `-ge` are each caught by one of these (round-3 reviewer run).
+   stderr empty, `wn=0 wl=0` (the `case` sanitisers); `RDOK=0` with `25 90` → rc 0, stderr empty, `wn= wl=` (the
+   block does not run: run-dir gate). Mutants of the block that drop `|| { wn=0; wl=0; }`, the `exit`, the sanitisers,
+   the `RDOK` test, or change 20 / 60 / `-ge` are each caught by one of these (round-3/4 reviewer runs).
 3. **Negative control inside the test**: a mutant of the product file with the old line restored must produce a
    stderr containing `can't open` in case 2a and exactly one lint hit. When the product still carries the old line
    the mutant equals the product: case 2a itself FAILs with that stderr (noted in the output). When the mutant equals

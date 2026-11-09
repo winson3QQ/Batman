@@ -5,14 +5,15 @@
 #   1. lint, zero exceptions, over feed/*/files: an input redirect followed on the same simple command by a stderr
 #      discard is a hit (self-test: every noisy spelling hits, every quiet form does not);
 #   2. the #202 A3 write-amplification guard, extracted from the product batman-config-save, run under busybox ash:
-#      $WRITES missing -> stderr empty, wn=0 wl=0, rc 0; "25 90" -> rc 1 rate-limited; "5 90" -> counts kept;
+#      $WRITES missing -> stderr empty, wn=0 wl=0, rc 0; "25 90" -> rc 1 rate-limited; "5 90" -> counts kept; RDOK=0 -> block skipped;
 #   3. negative control: a mutant with the old A3 line back -> stderr has "can't open", lint 1 hit.
 # Harness-first (#290): on a product that still has the old lines, part 1 and part 2 FAIL — that run IS the negative
 # control. Zero cases = FAIL. Every FAIL line starts "FAIL cfgsave-stderr-quiet:"; last line "... fails=N".
 # Known limits (design §6): a `<` inside a quoted string followed by a space, or an arithmetic `a < b`, on a line that
 # also discards stderr is a hit too — split that line; a command continued with `\` is not scanned as one line; not
 # matched (none in feed today): a digit-start operand (`< 1.txt`), an fd-numbered input (`3< f`), `2>"/dev/null"`,
-# `1>/dev/null 2>&1`, a `>` glued to the operand.
+# `1>/dev/null 2>&1`, a `>` glued to the operand. Also: a `#`-first here-doc body line is skipped like a comment; a
+# trailing `; # cmd < f 2>/dev/null` comment is a hit; on a `</dev/null` line any other `<` (string, fd dup) is a read.
 set -u
 R=$(cd "${1:?usage: $0 <repo root>}" 2>/dev/null && pwd) || { echo "FAIL cfgsave-stderr-quiet: no such dir $1"; echo "CFGSAVE-STDERR-QUIET cases=0 fails=1"; exit 1; }
 CS=$R/feed/batman-provision/files/usr/bin/batman-config-save
@@ -71,12 +72,13 @@ else printf '%s\n' "$hits" | sed 's/^/       /'; no "lint: $(printf '%s\n' "$hit
 # ---- 2. the A3 block under busybox ash --------------------------------------------------------------------------
 # the product comment line is the marker; the block ends at the next column-0 `fi` and is bounded (<= 15 lines)
 a3(){ awk '/^# write-amplification guard \(#202 A3\)/{p=1} p{print} p&&/^fi$/{exit}' "$1"; }
-# run_a3 <file> <writes content|-> : $T/out $T/err $T/rc
+# run_a3 <file> <writes content|-> [RDOK, default 1] : $T/out $T/err $T/rc
 run_a3(){
-	local blk; blk=$(a3 "$1")
+	local blk rdok=${3:-1}; blk=$(a3 "$1")
 	printf '%s\n' "$blk" | grep -q 'read -r wn wl' || return 9
 	rm -rf "$T/w"; mkdir -p "$T/w/stage" "$T/w/mnt"; [ "$2" = - ] || echo "$2" > "$T/w/cfgsave-writes"
-	{ echo 'set -u; mode=--on-join; RDOK=1; STAGE=$W/stage; MNT=$W/mnt; WRITES=$W/cfgsave-writes'
+	{ echo "set -u; mode=--on-join; RDOK=$rdok; wn=; wl="
+	  echo 'STAGE=$W/stage; MNT=$W/mnt; WRITES=$W/cfgsave-writes'
 	  echo 'up(){ echo 100; }; err(){ echo "batman-config-save: $*" >&2; }; umount(){ :; }'
 	  printf '%s\n' "$blk"; echo 'echo "wn=$wn wl=$wl"'; } > "$T/a3.sh"
 	W=$T/w "$BB" sh "$T/a3.sh" > "$T/out" 2> "$T/err"; echo $? > "$T/rc"
@@ -102,6 +104,11 @@ else no "A3, 20 writes 60 s ago: rc=$(cat "$T/rc") stdout=[$(tr '\n' ' ' < "$T/o
 cases=$((cases+1)); run_a3 "$CS" "abc xyz"
 if [ "$(cat "$T/rc")" = 0 ] && [ ! -s "$T/err" ] && grep -qx 'wn=0 wl=0' "$T/out"; then ok "A3, garbage counter file: rc 0, stderr empty, wn=0 wl=0 (case sanitisers)"
 else no "A3, garbage counter file: rc=$(cat "$T/rc") stdout=[$(tr '\n' ' ' < "$T/out")] stderr=[$(tr '\n' ' ' < "$T/err" | cut -c1-200)] — sanitiser lost"; fi
+cases=$((cases+1)); run_a3 "$CS" "25 90" 0
+if [ "$(cat "$T/rc")" = 0 ] && [ ! -s "$T/err" ] && grep -qx 'wn= wl=' "$T/out"; then ok "A3, RDOK=0 with 25 writes: rc 0, block skipped (run-dir gate)"
+else no "A3, RDOK=0: rc=$(cat "$T/rc") stdout=[$(tr '
+' ' ' < "$T/out")] stderr=[$(tr '
+' ' ' < "$T/err" | cut -c1-200)] — RDOK gate lost"; fi
 
 # ---- 3. negative control: the old A3 line back ------------------------------------------------------------------
 sed 's/{ read -r wn wl < "\$WRITES"; } 2>\/dev\/null/read -r wn wl < "$WRITES" 2>\/dev\/null/' "$CS" > "$T/mutant"
