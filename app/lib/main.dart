@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'scan.dart';
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
 
@@ -109,8 +110,16 @@ class _StartupCheckState extends State<StartupCheck> {
         padding: const EdgeInsets.all(16),
         child: _report == null
             ? const Center(child: CircularProgressIndicator())
-            : SelectableText(_report!,
-                style: TextStyle(fontFamily: 'monospace', color: _ok ? null : Colors.red)),
+            : ListView(children: [
+                SelectableText(_report!,
+                    style: TextStyle(fontFamily: 'monospace', color: _ok ? null : Colors.red)),
+                const SizedBox(height: 16),
+                // only an app that passed the startup check talks to nodes
+                if (_ok)
+                  FilledButton(
+                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ScanPage())),
+                      child: const Text('Nodes nearby (BLE probe)')),
+              ]),
       ),
     );
   }
