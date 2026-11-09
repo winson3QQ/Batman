@@ -150,3 +150,80 @@ mod tests {
         assert_eq!(decode(&no4), Err(Error::Missing(4)));
     }
 }
+
+/// The `status` answer of an owner / member session (CDDL status-resp; node 254-p3-impl §3.4), as one display line:
+/// {1: node-state, ?2: verdict 0 ok / 1 degraded / 2 down, ?3: neighbours, ?4: p5_saved, ?5: {1: reason, 2: text},
+/// ?15: {node, image, uptime_s, temp_c, ...}}. Key 1 is required; the rest is shown when present.
+pub fn decode_owner(v: &Value) -> Result<String, String> {
+    let st = match v.get(1).and_then(Value::as_uint) {
+        Some(0) => "unclaimed",
+        Some(1) => "claimed",
+        Some(2) => "member",
+        Some(3) => "legacy",
+        _ => return Err("no node state (key 1)".into()),
+    };
+    let mut out = vec![format!("state {st}")];
+    if let Some(vd) = v.get(2).and_then(Value::as_uint) {
+        out.push(match vd { 0 => "ok".into(), 1 => "degraded".into(), 2 => "down".into(), n => format!("verdict {n}") });
+    }
+    if let Some(n) = v.get(3).and_then(Value::as_uint) {
+        out.push(format!("{n} neighbour(s)"));
+    }
+    match v.get(4) {
+        Some(Value::Bool(true)) => out.push("config saved".into()),
+        Some(Value::Bool(false)) => out.push("config NOT saved".into()),
+        _ => {}
+    }
+    if let Some(j) = v.get(5) {
+        let c = j.get(1).and_then(Value::as_uint).unwrap_or(0);
+        let t = j.get(2).and_then(Value::as_text).unwrap_or("");
+        out.push(format!("not in the mesh (reason {c}: {t})"));
+    }
+    if let Some(f) = v.get(15) {
+        if let Value::Map(m) = f {
+            for (k, x) in m {
+                if let (Value::Text(k), Value::Text(x)) = (k, x) {
+                    if ["node", "image", "temp_c", "tenants"].contains(&k.as_str()) && !x.is_empty() {
+                        out.push(format!("{k} {x}"));
+                    }
+                }
+                if let (Value::Text(k), Value::Uint(x)) = (k, x) {
+                    if k == "uptime_s" {
+                        out.push(format!("up {x} s"));
+                    }
+                }
+                if let (Value::Text(k), Value::Bool(true)) = (k, x) {
+                    if k == "stale" {
+                        out.push("(the node's status cache is still empty)".into());
+                    }
+                }
+            }
+        }
+    }
+    Ok(out.join(", "))
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::*;
+
+    #[test]
+    fn decode_owner_status() {
+        let v = Value::Map(vec![
+            (Value::Uint(1), Value::Uint(2)),
+            (Value::Uint(2), Value::Uint(2)),
+            (Value::Uint(3), Value::Uint(1)),
+            (Value::Uint(4), Value::Bool(true)),
+            (Value::Uint(15), Value::Map(vec![(Value::Text("node".into()), Value::Text("BCM2711-6c89".into())), (Value::Text("uptime_s".into()), Value::Uint(402))])),
+        ]);
+        assert_eq!(decode_owner(&v).unwrap(), "state member, down, 1 neighbour(s), config saved, node BCM2711-6c89, up 402 s");
+        let nj = Value::Map(vec![
+            (Value::Uint(1), Value::Uint(1)),
+            (Value::Uint(5), Value::Map(vec![(Value::Uint(1), Value::Uint(7)), (Value::Uint(2), Value::Text("SEARCHING".into()))])),
+        ]);
+        assert_eq!(decode_owner(&nj).unwrap(), "state claimed, not in the mesh (reason 7: SEARCHING)");
+        assert!(decode_owner(&Value::Map(vec![])).is_err());
+        let stale = Value::Map(vec![(Value::Uint(1), Value::Uint(1)), (Value::Uint(15), Value::Map(vec![(Value::Text("stale".into()), Value::Bool(true))]))]);
+        assert!(decode_owner(&stale).unwrap().contains("still empty"));
+    }
+}

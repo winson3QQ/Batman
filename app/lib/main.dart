@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'claim.dart';
+import 'nodes.dart';
 import 'scan.dart';
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
@@ -124,6 +125,10 @@ class _StartupCheckState extends State<StartupCheck> {
                   OutlinedButton(
                       onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ClaimPage())),
                       child: const Text('Claim a node (dev)')),
+                if (_ok)
+                  OutlinedButton(
+                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NodesPage())),
+                      child: const Text('My nodes')),
               ]),
       ),
     );

@@ -65,6 +65,11 @@ class MainActivity : FlutterActivity() {
                     val r = runCatching { Keys().sign(KeyRole.OWNER_SIGN, requireNotNull(input) { "no input" }) }
                     runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
                 }.start()
+                "open" -> Thread {
+                    val sealed = call.argument<ByteArray>("sealed"); val aad = call.argument<ByteArray>("aad")
+                    val r = runCatching { Keys().open(requireNotNull(sealed) { "no record" }, requireNotNull(aad) { "no aad" }) }
+                    runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
+                }.start()
                 "seal" -> Thread {
                     val plain = call.argument<ByteArray>("plain"); val aad = call.argument<ByteArray>("aad")
                     val r = runCatching { Keys().seal(requireNotNull(plain) { "no plain" }, requireNotNull(aad) { "no aad" }) }

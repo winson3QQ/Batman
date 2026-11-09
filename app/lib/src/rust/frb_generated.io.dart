@@ -4,6 +4,7 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'api/claim.dart';
+import 'api/owner.dart';
 import 'api/simple.dart';
 
 import 'dart:async';
@@ -26,9 +27,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   get rust_arc_decrement_strong_count_ClaimSessionPtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSessionPtr;
 
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_OwnerSessionPtr => wire
+      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSessionPtr;
+
   @protected
   ClaimSession
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    dynamic raw,
+  );
+
+  @protected
+  OwnerSession
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
     dynamic raw,
   );
 
@@ -39,8 +50,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  OwnerSession
+  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    dynamic raw,
+  );
+
+  @protected
+  OwnerSession
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    dynamic raw,
+  );
+
+  @protected
   ClaimSession
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    dynamic raw,
+  );
+
+  @protected
+  OwnerSession
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
     dynamic raw,
   );
 
@@ -55,6 +84,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ClaimStep dco_decode_box_autoadd_claim_step(dynamic raw);
+
+  @protected
+  OwnerStep dco_decode_box_autoadd_owner_step(dynamic raw);
+
+  @protected
+  SealedRecord dco_decode_box_autoadd_sealed_record(dynamic raw);
 
   @protected
   BuildInfo dco_decode_build_info(dynamic raw);
@@ -90,13 +125,34 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ClaimStep? dco_decode_opt_box_autoadd_claim_step(dynamic raw);
 
   @protected
+  OwnerStep? dco_decode_opt_box_autoadd_owner_step(dynamic raw);
+
+  @protected
+  SealedRecord? dco_decode_opt_box_autoadd_sealed_record(dynamic raw);
+
+  @protected
+  OwnerKind dco_decode_owner_kind(dynamic raw);
+
+  @protected
+  OwnerStep dco_decode_owner_step(dynamic raw);
+
+  @protected
   (ClaimSession, ClaimStep)
   dco_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
     dynamic raw,
   );
 
   @protected
+  (OwnerSession, OwnerStep)
+  dco_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_owner_session_owner_step(
+    dynamic raw,
+  );
+
+  @protected
   SealParams dco_decode_seal_params(dynamic raw);
+
+  @protected
+  SealedRecord dco_decode_sealed_record(dynamic raw);
 
   @protected
   StatusInfo dco_decode_status_info(dynamic raw);
@@ -126,14 +182,38 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  OwnerSession
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ClaimSession
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     SseDeserializer deserializer,
   );
 
   @protected
+  OwnerSession
+  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  OwnerSession
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ClaimSession
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  OwnerSession
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
     SseDeserializer deserializer,
   );
 
@@ -148,6 +228,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ClaimStep sse_decode_box_autoadd_claim_step(SseDeserializer deserializer);
+
+  @protected
+  OwnerStep sse_decode_box_autoadd_owner_step(SseDeserializer deserializer);
+
+  @protected
+  SealedRecord sse_decode_box_autoadd_sealed_record(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BuildInfo sse_decode_build_info(SseDeserializer deserializer);
@@ -187,13 +275,38 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  OwnerStep? sse_decode_opt_box_autoadd_owner_step(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SealedRecord? sse_decode_opt_box_autoadd_sealed_record(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  OwnerKind sse_decode_owner_kind(SseDeserializer deserializer);
+
+  @protected
+  OwnerStep sse_decode_owner_step(SseDeserializer deserializer);
+
+  @protected
   (ClaimSession, ClaimStep)
   sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
     SseDeserializer deserializer,
   );
 
   @protected
+  (OwnerSession, OwnerStep)
+  sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_owner_session_owner_step(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SealParams sse_decode_seal_params(SseDeserializer deserializer);
+
+  @protected
+  SealedRecord sse_decode_sealed_record(SseDeserializer deserializer);
 
   @protected
   StatusInfo sse_decode_status_info(SseDeserializer deserializer);
@@ -225,6 +338,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    OwnerSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     ClaimSession self,
     SseSerializer serializer,
@@ -232,8 +352,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    OwnerSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    OwnerSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     ClaimSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    OwnerSession self,
     SseSerializer serializer,
   );
 
@@ -249,6 +390,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_claim_step(
     ClaimStep self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_owner_step(
+    OwnerStep self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_sealed_record(
+    SealedRecord self,
     SseSerializer serializer,
   );
 
@@ -298,6 +451,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_owner_step(
+    OwnerStep? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_sealed_record(
+    SealedRecord? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_owner_kind(OwnerKind self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_owner_step(OwnerStep self, SseSerializer serializer);
+
+  @protected
   void
   sse_encode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
     (ClaimSession, ClaimStep) self,
@@ -305,7 +476,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void
+  sse_encode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_owner_session_owner_step(
+    (OwnerSession, OwnerStep) self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_seal_params(SealParams self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_sealed_record(SealedRecord self, SseSerializer serializer);
 
   @protected
   void sse_encode_status_info(StatusInfo self, SseSerializer serializer);
@@ -375,5 +556,39 @@ class RustLibWire implements BaseWire {
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSessionPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSessionPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_batman_app_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession',
+      );
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSessionPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSessionPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_batman_app_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession',
+      );
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSessionPtr
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 }
