@@ -155,7 +155,8 @@ jobs:
       # purpose (KNOWN #320). Its own LAST step with !cancelled(), so the expected red never skips the steps above.
       - name: "#320 redirect-read stderr quiet — lint feed/*/files (zero exceptions), #202 A3 block under busybox ash, mutant negative control"
         if: ${{ !cancelled() }}
-        run: bash tests/prov-p1/cfgsave-stderr-quiet.sh . || { echo "::error::unguarded redirect-reads in feed/ (busybox prints can't open before 2> applies): expected red until fix/320-cfgsave-stderr lands (#320)"; exit 1; }
+        run: |
+          bash tests/prov-p1/cfgsave-stderr-quiet.sh . || { echo "::error::unguarded redirect-reads in feed/ (busybox prints can't open before 2> applies): expected red until fix/320-cfgsave-stderr lands (#320)"; exit 1; }
 
   ab-card:
     runs-on: ubuntu-latest

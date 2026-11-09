@@ -76,7 +76,7 @@ run_a3(){
 	W=$T/w "$BB" sh "$T/a3.sh" > "$T/out" 2> "$T/err"; echo $? > "$T/rc"
 }
 cases=$((cases+1)); blk=$(a3 "$CS"); n=$(printf '%s\n' "$blk" | wc -l); last=$(printf '%s\n' "$blk" | tail -1)
-if [ "$n" -ge 5 ] && [ "$n" -le 15 ] && [ "$last" = fi ] && printf '%s\n' "$blk" | grep -q 'read -r wn wl'; then ok "A3 block extracted from the product ($n lines, ends at fi)"
+if [ "$n" -ge 5 ] && [ "$n" -le 15 ] && [ "$last" = "fi" ] && printf '%s\n' "$blk" | grep -q 'read -r wn wl'; then ok "A3 block extracted from the product ($n lines, ends at fi)"
 else no "A3 block not extracted from $CS: $n lines, last=[$last] (marker '# write-amplification guard (#202 A3)' to the next column-0 'fi', 5..15 lines, must contain 'read -r wn wl')"; fin; exit 1; fi
 cases=$((cases+1)); run_a3 "$CS" -
 if [ "$(cat "$T/rc")" = 0 ] && [ ! -s "$T/err" ] && grep -qx 'wn=0 wl=0' "$T/out"; then ok "A3, \$WRITES missing: rc 0, stderr empty, wn=0 wl=0"
