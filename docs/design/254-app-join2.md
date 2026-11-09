@@ -54,7 +54,7 @@ v4 = v3 再**刪兩個東西**(前置「已在網路就擋」、存 secrets + ec
 紀錄升 applied,其中推導 / 既有的建網節點成員項也升 applied(CAS)。key 11 = true(.txn 還在,p5 已是提交點)也算已套用,另顯示「存檔要等這台節點下次開機才完成」。
 其他(key 10 缺 / 不同)→ 不改。**不新增成員項**(防謊報 key 10 的節點混進成員清單)。建網的 ReadInfo / check_network 改走這裡。
 
-### 3.3 加入(`OwnerSession.request_join_network(record_plain, record_gen, admin_pub)`)
+### 3.3 加入(`OwnerSession.request_join_network(record_plain, record_gen, admin_pub, owner_enc_pub)`;owner_enc_pub = 成員項 key 5,session 裡沒有)
 1. 前置,任一不成立 → 停,什麼都不寫、不送:a 紀錄解得開且 state = applied;b 本次登入有 `Verified`;c 紀錄 netcfg key 8 含本機 admin_pub;
    d 成員數(**不算同一個 dac_hash 的舊項**)< 16(app 實務上限;節點無上限)。
    (「這台已在網路」不在前置擋:節點回 5 → info 判定;重燒 / 送修回來的同一台照常加入並取代舊項。)
@@ -138,7 +138,7 @@ v4 = v3 再**刪兩個東西**(前置「已在網路就擋」、存 secrets + ec
 - T6(Rust 假回應):pending → 確認網路(key 10 / key 9 相符)→ applied;key 9 不同 → 不升;key 11 = true → 升 + 提示。負對照:今天的程式 → 仍 pending;拿掉 key 9 比對 → 該臂 FAIL。
 - T7(Rust 假回應):settings/get JP → 先寫 prev_country、再 settings/set {2: netcfg key 5};使用者拒絕 → 沒有 join;回 4 / NotApplied → settings/set 原值;
   斷線且讀不到 info → 不改回;settings/set YY 被拒(reason 14 / 20)→ 刪項、不送 settings/set 原值;**settings/set 回 11 / 11{2:13} / 7(有無 detail)/ 斷線 → settings/get:
-  XX → 刪項,YY → 繼續,讀不到 → 保留項與 prev_country**;改回失敗 → 項與 prev_country 保留、文字含 XX;
+  YY → 繼續,XX / 其他 / 讀不到 → 保留項與 prev_country(§3.3-3 v7.1)**;改回失敗 → 項與 prev_country 保留、文字含 XX;
   改回前 settings/get 已是原值 → 不送 set;**重建 session、只從 store 讀紀錄後回 NotApplied → 仍改回原值**;
   settings/get E_UNSUPPORTED{1:"settings/get"} → 繼續 + 標未驗證;其他錯誤 / reason 20 → 停。負對照:拿掉國家步驟 → FAIL;prev_country 只存記憶體 → 重建臂 FAIL;set 回 11 / 13 就刪項 → 該臂 FAIL;改回失敗就刪項 → 該臂 FAIL。
 - T8(Rust):admin 簽章失敗(國家相同 / 不同兩臂)→ 沒有寫入、沒有 settings/set。負對照:國家步驟在簽章前的版本 → 不同臂 FAIL。
