@@ -6,7 +6,7 @@
 # 04's address: the bench store's membership log (bench-254.sh bench_ip: the last line of 04, a keep line), else the
 # pre-conversion fleet address (the units' MAC check refuses a wrong node). Read once per run.
 # shellcheck source=scripts/dv/bench-254.sh
-. "$REPO/scripts/dv/bench-254.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/bench-254.sh"   # not $REPO: tests/dnode-block.sh sources this without it
 node04_ip(){ [ -n "${NODE04_IP:-}" ] || { NODE04_IP=$(bench_ip 04); NODE04_IP=${NODE04_IP:-10.41.1.3}; }; echo "$NODE04_IP"; }
 is_node04(){ [ "$1" = "$(node04_ip)" ]; }
 # A unit that hands 04 to a person (NEEDS-PERSON, $DIR/needs-person.txt) blocks every later prov unit of the run:
