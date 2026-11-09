@@ -29,6 +29,10 @@ abstract class OwnerSession implements RustOpaqueInterface {
   /// `settings/get` {} — 254-p3-impl §3.3
   OwnerStep requestSettings();
 
+  /// `ssh_keys/set` {1: [lines]} (an owner-op; P2): the node keeps every line it did not add for an app, so this adds
+  /// (or replaces the app-added) keys. op/nonce goes out first; its answer becomes a Sign step.
+  OwnerStep requestSshKeys({required List<String> lines});
+
   /// `status` {1: 0} (self) — design §5.5
   OwnerStep requestStatus();
 

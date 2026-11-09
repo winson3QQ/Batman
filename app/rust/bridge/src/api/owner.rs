@@ -7,7 +7,7 @@ use batman_proto::cbor::{self, Value};
 use batman_proto::conn::Conn;
 use batman_proto::envelope::Outcome;
 use batman_proto::loginflow::{Action, End, Login, NodeRecord};
-use batman_proto::status;
+use batman_proto::{sig, status};
 use batman_proto::store;
 
 /// A sealed record and the AAD Kotlin opens it with.
@@ -80,7 +80,7 @@ impl OwnerStep {
 
 enum St {
     Login(Login),
-    Conn { conn: Conn, asked: &'static str },
+    Conn { conn: Conn, asked: &'static str, op: Option<(&'static str, Value)> },
     Over,
 }
 
@@ -137,11 +137,43 @@ impl OwnerSession {
 
     #[flutter_rust_bridge::frb(sync)]
     pub fn signed(&mut self, der: Vec<u8>) -> Option<OwnerStep> {
+        if let St::Conn { conn, asked, op } = &mut self.st {
+            // the owner-op signature: the operation goes out with key 31 = {1: verb, 2: sig}
+            let (verb, body) = op.take()?;
+            let raw = match sig::der_to_raw_low_s(&der) {
+                Ok(r) => r,
+                Err(e) => return Some(OwnerStep::text(OwnerKind::Answer, format!("signature: {e:?}"))),
+            };
+            let req = sig::with_owner_op(&body, verb, &raw).map_err(|e| format!("{e:?}")).and_then(|b| conn.request(verb, b).map_err(|e| format!("{e:?}")));
+            return Some(match req {
+                Ok((_, f)) => {
+                    *asked = verb;
+                    OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) }
+                }
+                Err(e) => OwnerStep::text(OwnerKind::Answer, format!("{verb}: {e}")),
+            });
+        }
         let a = match &mut self.st {
             St::Login(l) => l.signed(&der),
             _ => None,
         };
         self.login_step(a)
+    }
+
+    /// `ssh_keys/set` {1: [lines]} (an owner-op; P2): the node keeps every line it did not add for an app, so this adds
+    /// (or replaces the app-added) keys. op/nonce goes out first; its answer becomes a Sign step.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_ssh_keys(&mut self, lines: Vec<String>) -> Result<OwnerStep, String> {
+        let body = Value::Map(vec![(Value::Uint(1), Value::Array(lines.into_iter().map(Value::Text).collect()))]);
+        match &mut self.st {
+            St::Conn { conn, asked, op } => {
+                let (_, f) = conn.request("op/nonce", Value::Map(vec![])).map_err(|e| format!("{e:?}"))?;
+                *asked = "op/nonce";
+                *op = Some(("ssh_keys/set", body));
+                Ok(OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) })
+            }
+            _ => Err("not logged in".into()),
+        }
     }
 
     #[flutter_rust_bridge::frb(sync)]
@@ -151,10 +183,25 @@ impl OwnerSession {
                 let a = l.on_frame(&frame);
                 self.login_step(a)
             }
-            St::Conn { conn, asked } => match conn.on_frame(&frame) {
+            St::Conn { conn, asked, op } => match conn.on_frame(&frame) {
                 Ok(None) => None,
+                Ok(Some(Outcome::Ok(b))) if *asked == "op/nonce" => {
+                    // owner-op (design §5.4 pattern): sign "batman-owner-op-v1" ‖ h ‖ nonce_helper ‖ verb ‖ args_hash
+                    let Some((verb, body)) = op.as_ref() else { return Some(OwnerStep::text(OwnerKind::Answer, "op/nonce without an operation".into())) };
+                    let helper: Option<[u8; 32]> = b.get(1).and_then(Value::as_bytes).and_then(|x| x.try_into().ok());
+                    let Some(helper) = helper else { return Some(OwnerStep::text(OwnerKind::Answer, "op/nonce without a 32-byte nonce".into())) };
+                    match sig::owner_op_input(&conn.h(), &helper, verb, body) {
+                        Ok(input) => Some(OwnerStep { sign_input: input, ..OwnerStep::new(OwnerKind::Sign) }),
+                        Err(e) => Some(OwnerStep::text(OwnerKind::Answer, format!("owner-op input: {e:?}"))),
+                    }
+                }
                 Ok(Some(Outcome::Ok(b))) => {
-                    let t = if *asked == "status" { status_text(&b) } else { settings_text(&b) };
+                    let t = match *asked {
+                        "status" => status_text(&b),
+                        "settings/get" => settings_text(&b),
+                        v => format!("{v}: done"),
+                    };
+                    *op = None;
                     Some(OwnerStep::text(OwnerKind::Answer, t))
                 }
                 Ok(Some(Outcome::Err { code, detail })) => Some(OwnerStep::text(OwnerKind::Answer, format!("{asked}: error {code} {detail:?}"))),
@@ -181,7 +228,7 @@ impl OwnerSession {
 
     fn request(&mut self, verb: &'static str, body: Value) -> Result<OwnerStep, String> {
         match &mut self.st {
-            St::Conn { conn, asked } => {
+            St::Conn { conn, asked, .. } => {
                 let (_, f) = conn.request(verb, body).map_err(|e| format!("{e:?}"))?;
                 *asked = verb;
                 Ok(OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) })
@@ -204,7 +251,7 @@ impl OwnerSession {
                 };
                 match login.into_conn() {
                     Some(conn) => {
-                        self.st = St::Conn { conn, asked: "" };
+                        self.st = St::Conn { conn, asked: "", op: None };
                         OwnerStep::text(OwnerKind::LoggedIn, format!("owner session with …{}", self.last4))
                     }
                     None => OwnerStep::text(OwnerKind::Ended, "no connection after login".into()),

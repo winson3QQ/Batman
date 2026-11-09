@@ -38,6 +38,7 @@ class _NodesPageState extends State<NodesPage> {
   StreamSubscription<ConnectionStateUpdate>? _conn;
   StreamSubscription<List<int>>? _notify;
   Completer<String>? _answer;
+  final _sshKey = TextEditingController(); // dev: an ssh-ed25519 public key line to add (ssh_keys/set, P2 owner-op)
 
   @override
   void initState() {
@@ -226,6 +227,18 @@ class _NodesPageState extends State<NodesPage> {
               FilledButton(onPressed: _busy ? null : () => _ask((s) => s.requestStatus()), child: const Text('Status')),
               const SizedBox(width: 8),
               OutlinedButton(onPressed: _busy ? null : () => _ask((s) => s.requestSettings()), child: const Text('Settings')),
+            ]),
+          if (logged)
+            Row(children: [
+              Expanded(
+                  child: TextField(
+                      controller: _sshKey,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      decoration: const InputDecoration(labelText: 'ssh-ed25519 public key (dev)'))),
+              OutlinedButton(
+                  onPressed: _busy ? null : () => _ask((s) => s.requestSshKeys(lines: [_sshKey.text.trim()])),
+                  child: const Text('Add SSH key')),
             ]),
           const Divider(),
           Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
