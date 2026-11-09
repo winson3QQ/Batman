@@ -53,21 +53,20 @@ class _StartupCheckState extends State<StartupCheck> {
     // design v8.5.1 §4.1: the Rust library and the flavor must agree, else the app is disabled
     final agree = flavorDevTrust == info.devTrust;
     final lines = <String>[
-      'rust dev_trust=${info.devTrust} (batman_bridge ${info.crateVersion})',
-      'flavor DEV_TRUST=$flavorDevTrust',
-      agree ? 'flavor check: OK' : 'flavor check: MISMATCH — app disabled',
+      agree ? '啟動檢查：正常' : '啟動檢查：App 內部版本不一致，已停用（請重新安裝 App）',
+      '技術資訊：核心 dev_trust=${info.devTrust}（batman_bridge ${info.crateVersion}），安裝版 DEV_TRUST=$flavorDevTrust',
     ];
     if (agree) {
-      lines.add('selftest: ${selftest()}');
+      lines.add('技術資訊（自我測試）：${selftest()}');
       lines.addAll(await _install());
       try {
         final levels = await _platform.invokeMapMethod<String, dynamic>('keyLevels');
-        lines.add('live: $levels');
+        lines.add('金鑰保護等級：$levels');
         if (levels?['softOwnerEnc'] == true) {
-          lines.add('NOTE: recovery / member key is software-protected on this phone — development use only');
+          lines.add('注意：這支手機的復原／成員金鑰只有軟體保護，只適合開發使用');
         }
       } on PlatformException catch (e) {
-        lines.add('keys: error ${e.code} ${e.message}');
+        lines.add('讀取金鑰失敗（${e.code}）：${e.message}');
       }
     }
     debugPrint('BMAPP ${lines.join(' | ')}');
@@ -82,24 +81,24 @@ class _StartupCheckState extends State<StartupCheck> {
     final out = <String>[];
     final dir = (await _platform.invokeMethod<String>('filesDir'))!;
     final swept = await storeSweep(dir: '$dir/records');
-    if (swept > 0) out.add('store: removed $swept interrupted write(s)');
+    if (swept > 0) out.add('已清除 $swept 個中途中斷的存檔');
     final marker = await storeReadMarker(dir: '$dir/records');
     if (marker != null) {
-      out.add('install marker: $marker');
+      out.add('安裝紀錄：$marker');
       return out;
     }
     if (await storeHasRecords(dir: '$dir/records')) {
       // marker lost but records exist: never delete or regenerate keys
-      out.add('install marker missing but records exist — keys are kept as they are');
+      out.add('找不到安裝紀錄，但手機裡還有節點資料：金鑰保持原樣，不會重建');
       return out;
     }
     try {
       final levels = await _platform.invokeMapMethod<String, dynamic>('firstRun');
       final content = levels!.entries.map((e) => '${e.key}=${e.value}').join(' ');
       await storeWriteMarker(dir: '$dir/records', content: content);
-      out.add('first run: four keys generated and self-tested; marker written: $content');
+      out.add('第一次啟動：已建立並測試四把金鑰，安裝紀錄：$content');
     } on PlatformException catch (e) {
-      out.add('first run FAILED (all keys deleted, retried at the next start): ${e.message}');
+      out.add('第一次啟動失敗（金鑰已全部刪除，下次開 App 會重試）：${e.message}');
     }
     return out;
   }
@@ -107,7 +106,7 @@ class _StartupCheckState extends State<StartupCheck> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Batman — startup check')),
+      appBar: AppBar(title: const Text('Batman — 啟動檢查')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: _report == null
@@ -120,15 +119,15 @@ class _StartupCheckState extends State<StartupCheck> {
                 if (_ok)
                   FilledButton(
                       onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ScanPage())),
-                      child: const Text('Nodes nearby (BLE probe)')),
+                      child: const Text('附近的節點（開發用：藍牙測試）')),
                 if (_ok)
                   OutlinedButton(
                       onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ClaimPage())),
-                      child: const Text('Claim a node (dev)')),
+                      child: const Text('認領節點')),
                 if (_ok)
                   OutlinedButton(
                       onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NodesPage())),
-                      child: const Text('My nodes')),
+                      child: const Text('我的節點')),
               ]),
       ),
     );

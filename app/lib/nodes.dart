@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
+import 'say.dart';
 import 'scan.dart' show provdService;
 import 'src/rust/api/claim.dart' show frameLimit, storeRemove, storeWriteSealed;
 import 'src/rust/api/owner.dart';
@@ -61,9 +62,11 @@ class _NodesPageState extends State<NodesPage> {
     super.dispose();
   }
 
+  /// [s] may start with log markers ("[LOGGED_IN] ", "[ANSWER] [NET_MADE] ", ...; owner.rs puts some on its answers):
+  /// logcat keeps them, the screen does not.
   void _say(String s) {
     _log(s);
-    if (mounted) setState(() => _lines.add(s));
+    if (mounted) setState(() => _lines.add(screenText(s)));
   }
 
   Future<String> _dir() async => '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
@@ -126,19 +129,19 @@ class _NodesPageState extends State<NodesPage> {
             // the net record lands (sealed, fsynced) before network/join goes out (design §3); never shown
             final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': st.record, 'aad': st.aad}))!;
             await storeWriteSealed(dir: await _dir(), rel: st.rel, generation: st.generation, sealed: sealed);
-            _log('net record written (${st.rel.substring(0, 8)}…, generation ${st.generation})');
+            _log('已在手機存下網路資料（${st.rel.substring(0, 8)}…，第 ${st.generation} 版）');
             st = s.netPersisted();
           case OwnerKind.loggedIn:
-            _say(st.detail);
+            _say('[LOGGED_IN] ${st.detail}');
             if (!done.isCompleted) done.complete(true);
             st = null;
           case OwnerKind.answer:
-            _answer?.complete(st.detail);
+            _answer?.complete('[ANSWER] ${st.detail}');
             st = null;
           case OwnerKind.ended:
-            _log('device $id: ${st.detail}');
+            _log('裝置 $id：${st.detail}');
             if (!done.isCompleted) done.complete(false);
-            _answer?.complete('ended: ${st.detail}');
+            _answer?.complete('[REQ_FAIL] 連線已結束：${st.detail}');
             st = null;
         }
       }
@@ -169,18 +172,18 @@ class _NodesPageState extends State<NodesPage> {
     try {
       await _drop();
       if (!(await _platform.invokeMethod<bool>('blePermissions') ?? false)) {
-        _say('Bluetooth permissions refused');
+        _say('[LOGIN_FAIL] 沒有藍牙權限（請在手機設定裡允許）');
         return;
       }
       final dir = await _dir();
       final sealed = await storeReadSealed(dir: dir, rel: 'node/$deviceId');
       if (sealed == null) {
-        _say('no node record for …${deviceId.substring(deviceId.length - 4)}');
+        _say('[LOGIN_FAIL] 手機裡沒有節點 …${deviceId.substring(deviceId.length - 4)} 的資料');
         return;
       }
       final record = (await _platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad}))!;
       final ownerPub = ((await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!['owner']) as Uint8List;
-      _say('looking for …${deviceId.substring(deviceId.length - 4)}');
+      _say('正在找節點 …${deviceId.substring(deviceId.length - 4)}…');
       final tried = <String>{};
       final end = DateTime.now().add(const Duration(seconds: 60));
       final found = <String>[];
@@ -204,19 +207,19 @@ class _NodesPageState extends State<NodesPage> {
           }
           scan.resume();
         }
-        _say('not found in 60 s (a msg2 that does not decrypt right after a claim: wait a few s and try again)');
+        _say('[LOGIN_FAIL] [NOT_FOUND] 60 秒內找不到節點 …${deviceId.substring(deviceId.length - 4)}（剛認領完的話，等幾秒再試一次）');
       } finally {
         await scan.cancel();
       }
     } catch (e) {
-      _say('login stopped: $e');
+      _say('[LOGIN_FAIL] 連線中斷：$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
   void _lost() {
-    _say('link to the node lost');
+    _say('[LINK_LOST] 和節點的連線斷了（下次操作時會自動重新連線）');
     _drop();
     if (mounted) setState(() {});
   }
@@ -229,12 +232,12 @@ class _NodesPageState extends State<NodesPage> {
     final yes = await showDialog<bool>(
         context: context,
         builder: (c) => AlertDialog(
-              title: Text('Forget node …$last4? (dev)'),
-              content: const Text('This phone will no longer be able to log in to this node as its owner. '
-                  'The node itself is not changed.'),
+              title: Text('開發用：要忘記節點 …$last4 嗎？'),
+              content: const Text('忘記之後，這支手機就不能再以擁有者身分管理這台節點。'
+                  '節點本身不會被改動。'),
               actions: [
-                TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
-                TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('Forget')),
+                TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+                TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('忘記')),
               ],
             ));
     if (yes != true) return;
@@ -244,9 +247,9 @@ class _NodesPageState extends State<NodesPage> {
     }
     try {
       await storeRemove(dir: await _dir(), rel: 'node/$deviceId');
-      _say('forgot …$last4');
+      _say('[FORGOT] 已忘記節點 …$last4');
     } catch (e) {
-      _say('forget failed: $e');
+      _say('忘記失敗：$e');
     }
     await _load();
   }
@@ -255,7 +258,7 @@ class _NodesPageState extends State<NodesPage> {
   Future<void> _makeNetwork() async {
     final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
     final name = _netName.text.trim().isEmpty ? 'Batman' : _netName.text.trim();
-    _say('making network "$name" on ch $_channel (US)…');
+    _say('正在建立網路「$name」（頻道 $_channel，美國頻段），最多可能要等 3 分鐘…');
     await _ask(
         (s) => s.requestMakeNetwork(
             netName: name, channel: _channel, ownerEncPub: keys['ownerEnc'] as Uint8List, adminPub: keys['admin'] as Uint8List),
@@ -274,7 +277,7 @@ class _NodesPageState extends State<NodesPage> {
         await _run!(req(s));
       } on PlatformException catch (e) {
         // nothing reached the node (the write itself failed): log in again and send it once more
-        _say('link lost (${e.code}): logging in again');
+        _say('[LINK_LOST] 連線斷了（${e.code}），正在重新連線…');
         await _drop();
         setState(() => _busy = false);
         await _login(_lastNode!);
@@ -284,9 +287,9 @@ class _NodesPageState extends State<NodesPage> {
         _answer = Completer<String>();
         await _run!(req(s));
       }
-      _say(await _answer!.future.timeout(wait, onTimeout: () => 'no answer in ${wait.inSeconds} s'));
+      _say(await _answer!.future.timeout(wait, onTimeout: () => '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應'));
     } catch (e) {
-      _say('request failed: $e');
+      _say('[REQ_FAIL] 操作沒有成功：$e');
     } finally {
       _answer = null;
       if (mounted) setState(() => _busy = false);
@@ -297,23 +300,23 @@ class _NodesPageState extends State<NodesPage> {
   Widget build(BuildContext context) {
     final logged = _session != null || _lastNode != null; // after a lost link a request logs in again
     return Scaffold(
-      appBar: AppBar(title: const Text('My nodes')),
+      appBar: AppBar(title: const Text('我的節點')),
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          if (_nodes.isEmpty) const Text('No node claimed on this phone yet.'),
+          if (_nodes.isEmpty) const Text('這支手機還沒有認領任何節點。'),
           for (final n in _nodes)
             ListTile(
-              title: Text('node …${n.substring(n.length - 4)}'),
-              subtitle: Text(_deviceId == n ? 'owner session open' : 'tap to log in'),
+              title: Text('節點 …${n.substring(n.length - 4)}'),
+              subtitle: Text(_deviceId == n ? '已連線（擁有者）' : '點一下連線（開發用：長按可忘記）'),
               onTap: _busy ? null : () => _login(n),
               onLongPress: _busy ? null : () => _forget(n),
             ),
           if (logged)
             Row(children: [
-              FilledButton(onPressed: _busy ? null : () => _ask((s) => s.requestStatus()), child: const Text('Status')),
+              FilledButton(onPressed: _busy ? null : () => _ask((s) => s.requestStatus()), child: const Text('查看狀態')),
               const SizedBox(width: 8),
-              OutlinedButton(onPressed: _busy ? null : () => _ask((s) => s.requestSettings()), child: const Text('Settings')),
+              OutlinedButton(onPressed: _busy ? null : () => _ask((s) => s.requestSettings()), child: const Text('查看設定')),
             ]),
           if (logged)
             Row(children: [
@@ -322,10 +325,10 @@ class _NodesPageState extends State<NodesPage> {
                       controller: _sshKey,
                       autocorrect: false,
                       enableSuggestions: false,
-                      decoration: const InputDecoration(labelText: 'ssh-ed25519 public key (dev)'))),
+                      decoration: const InputDecoration(labelText: '開發用：SSH 公鑰（ssh-ed25519 開頭的一行）'))),
               OutlinedButton(
                   onPressed: _busy ? null : () => _ask((s) => s.requestSshKeys(lines: [_sshKey.text.trim()])),
-                  child: const Text('Add SSH key')),
+                  child: const Text('加入 SSH 金鑰（開發用）')),
             ]),
           if (logged)
             Row(children: [
@@ -335,14 +338,14 @@ class _NodesPageState extends State<NodesPage> {
                       autocorrect: false,
                       textCapitalization: TextCapitalization.characters,
                       maxLength: 2,
-                      decoration: const InputDecoration(labelText: 'HaLow country (e.g. US)', counterText: ''))),
+                      decoration: const InputDecoration(labelText: 'HaLow 無線電的國家代碼（例如 US）', counterText: ''))),
               OutlinedButton(
                   onPressed: _busy ? null : () => _ask((s) => s.requestSetCountry(country: _country.text.trim().toUpperCase())),
-                  child: const Text('Set country')),
+                  child: const Text('設定國家')),
             ]),
           if (logged)
             Row(children: [
-              Expanded(child: TextField(controller: _apSsid, autocorrect: false, decoration: const InputDecoration(labelText: 'phone AP name'))),
+              Expanded(child: TextField(controller: _apSsid, autocorrect: false, decoration: const InputDecoration(labelText: '給手機連的 Wi-Fi 名稱'))),
               const SizedBox(width: 8),
               Expanded(
                   child: TextField(
@@ -350,7 +353,7 @@ class _NodesPageState extends State<NodesPage> {
                       obscureText: true,
                       autocorrect: false,
                       enableSuggestions: false,
-                      decoration: const InputDecoration(labelText: 'AP passphrase'))),
+                      decoration: const InputDecoration(labelText: 'Wi-Fi 密碼'))),
               OutlinedButton(
                   onPressed: _busy
                       ? null
@@ -359,27 +362,27 @@ class _NodesPageState extends State<NodesPage> {
                           _apPass.clear();
                           _ask((s) => s.requestSetAp(ssid: ssid, passphrase: pass));
                         },
-                  child: const Text('Set AP')),
+                  child: const Text('設定 Wi-Fi')),
             ]),
           if (logged)
             Row(children: [
-              Expanded(child: TextField(controller: _netName, decoration: const InputDecoration(labelText: 'network name'))),
+              Expanded(child: TextField(controller: _netName, decoration: const InputDecoration(labelText: '網路名稱'))),
               const SizedBox(width: 8),
               DropdownButton<int>(
                   value: _channel,
                   items: const [
-                    DropdownMenuItem(value: 40, child: Text('ch 40 · 4 MHz')),
-                    DropdownMenuItem(value: 42, child: Text('ch 42 · 2 MHz')),
+                    DropdownMenuItem(value: 40, child: Text('頻道 40（4 MHz）')),
+                    DropdownMenuItem(value: 42, child: Text('頻道 42（2 MHz）')),
                   ],
                   onChanged: _busy ? null : (v) => setState(() => _channel = v ?? 40)),
               FilledButton(
                   onPressed: _busy ? null : _makeNetwork,
-                  child: const Text('Make network')),
+                  child: const Text('建立網路')),
             ]),
           if (logged)
             Align(
                 alignment: Alignment.centerLeft,
-                child: TextButton(onPressed: _busy ? null : () => _ask((s) => s.checkNetwork()), child: const Text('Check network'))),
+                child: TextButton(onPressed: _busy ? null : () => _ask((s) => s.checkNetwork()), child: const Text('檢查網路'))),
           const Divider(),
           Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
         ]),

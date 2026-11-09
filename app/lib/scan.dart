@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
+import 'say.dart';
 import 'src/rust/api/simple.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
@@ -42,27 +43,27 @@ class _ScanPageState extends State<ScanPage> {
     final ok = await _platform.invokeMethod<bool>('blePermissions') ?? false;
     _log('permissions granted=$ok');
     if (!ok) {
-      setState(() => _note = 'Bluetooth permissions refused — nothing scanned');
+      setState(() => _note = '沒有藍牙權限，無法搜尋（請在手機設定裡允許）');
       return;
     }
     await _scan?.cancel();
     setState(() {
       _found.clear();
-      _note = 'scanning for the provd service…';
+      _note = '正在搜尋附近的節點…';
     });
     _scan = _ble.scanForDevices(withServices: [provdService], scanMode: ScanMode.lowLatency).listen((d) {
       if (!_found.containsKey(d.id)) _log('found id=${d.id} rssi=${d.rssi} name=[${d.name}] uuids=${d.serviceUuids}');
       setState(() => _found[d.id] = d);
     }, onError: (Object e) {
       _log('scan error $e');
-      setState(() => _note = 'scan error: $e');
+      setState(() => _note = '搜尋出錯：$e');
     });
   }
 
   Future<void> _stop() async {
     await _scan?.cancel();
     _scan = null;
-    setState(() => _note = 'scan stopped (${_found.length} found)');
+    setState(() => _note = '已停止搜尋（找到 ${_found.length} 台）');
   }
 
   /// Connect, ask for MTU 517 (design §2), read STATUS once, disconnect. Connecting withdraws the node's
@@ -72,7 +73,7 @@ class _ScanPageState extends State<ScanPage> {
     await _stop();
     setState(() {
       _busy = true;
-      _status[d.id] = 'connecting…';
+      _status[d.id] = '連線中…';
     });
     StreamSubscription<ConnectionStateUpdate>? conn;
     final done = Completer<String>();
@@ -87,25 +88,26 @@ class _ScanPageState extends State<ScanPage> {
           String what;
           try {
             final s = decodeStatus(bytes: raw);
-            what = 'state=${s.state} trial=${s.trial} last4=${s.idLast4 ?? '-'} versions=${s.versions} transports=${s.transports}';
+            what = '${stateText(s.state)}，試用中：${s.trial ? '是' : '否'}，編號末四碼：${s.idLast4 ?? '（不公開）'}'
+                '（技術資訊：state=${s.state} versions=${s.versions} transports=${s.transports}）';
           } catch (e) {
-            what = 'STATUS not understood: $e';
+            what = '看不懂節點的狀態資料：$e';
           }
           _log('read id=${d.id} mtu=$mtu status=$hex $what');
-          done.complete('mtu $mtu\n$what');
+          done.complete('$what\n連線封包大小 MTU $mtu');
         } catch (e) {
           // a stale cache on the node is an ATT error 0x0E (server.go:562-566): no value, not a guess
           _log('read id=${d.id} error $e');
-          done.complete('read failed: $e');
+          done.complete('讀取失敗：$e');
         }
       } else if (u.connectionState == DeviceConnectionState.disconnected && !done.isCompleted) {
-        done.complete('disconnected before the read (${u.failure?.message ?? 'no reason'})');
+        done.complete('還沒讀到就斷線了（${u.failure?.message ?? '原因不明'}）');
       }
     }, onError: (Object e) {
       _log('conn id=${d.id} error $e');
-      if (!done.isCompleted) done.complete('connect error: $e');
+      if (!done.isCompleted) done.complete('連線失敗：$e');
     });
-    final r = await done.future.timeout(const Duration(seconds: 30), onTimeout: () => 'no answer in 30 s');
+    final r = await done.future.timeout(const Duration(seconds: 30), onTimeout: () => '30 秒內沒有回應');
     await conn.cancel(); // drops the link: the node advertises again
     _log('disconnected id=${d.id}');
     setState(() {
@@ -118,14 +120,14 @@ class _ScanPageState extends State<ScanPage> {
   Widget build(BuildContext context) {
     final list = _found.values.toList()..sort((a, b) => b.rssi.compareTo(a.rssi));
     return Scaffold(
-      appBar: AppBar(title: const Text('Nodes nearby (BLE probe)')),
+      appBar: AppBar(title: const Text('附近的節點（開發用：藍牙測試）')),
       body: Column(children: [
         Padding(
           padding: const EdgeInsets.all(8),
           child: Row(children: [
-            FilledButton(onPressed: _busy ? null : _start, child: const Text('Scan')),
+            FilledButton(onPressed: _busy ? null : _start, child: const Text('搜尋')),
             const SizedBox(width: 8),
-            OutlinedButton(onPressed: _scan == null ? null : _stop, child: const Text('Stop')),
+            OutlinedButton(onPressed: _scan == null ? null : _stop, child: const Text('停止')),
             const SizedBox(width: 8),
             Expanded(child: Text(_note)),
           ]),
@@ -134,8 +136,8 @@ class _ScanPageState extends State<ScanPage> {
           child: ListView(children: [
             for (final d in list)
               ListTile(
-                title: Text('${d.id}  rssi ${d.rssi}'),
-                subtitle: Text(_status[d.id] ?? 'tap to read STATUS'),
+                title: Text('${d.id}  訊號 ${d.rssi} dBm'),
+                subtitle: Text(_status[d.id] ?? '點一下讀取狀態'),
                 onTap: _busy ? null : () => _read(d),
               ),
           ]),
