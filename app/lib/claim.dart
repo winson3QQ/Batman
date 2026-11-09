@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
+import 'say.dart';
 import 'scan.dart' show provdService, provdStatus;
 import 'src/rust/api/claim.dart';
 import 'src/rust/api/simple.dart';
@@ -35,15 +36,16 @@ class _ClaimPageState extends State<ClaimPage> {
   bool _busy = false;
   final _typed = TextEditingController(); // dev: the QR hex typed in (e.g. over adb), cleared once read
 
+  /// [s] may start with log markers ("[CLAIMED] ", ...): logcat keeps them, the screen does not.
   void _say(String s) {
     _log(s);
-    if (mounted) setState(() => _lines.add(s));
+    if (mounted) setState(() => _lines.add(screenText(s)));
   }
 
   Future<void> _paste() async {
     final dev = await _platform.invokeMethod<bool>('devTrust') ?? false;
     if (!dev) {
-      _say('pasting a QR is only in the dev build (design §1)');
+      _say('只有開發版可以貼上 QR 碼');
       return;
     }
     String text = _typed.text;
@@ -59,11 +61,11 @@ class _ClaimPageState extends State<ClaimPage> {
         _qr = q;
         _lines
           ..clear()
-          ..add('QR for node …${q.deviceId.substring(14)}');
+          ..add('已讀取節點 …${q.deviceId.substring(14)} 的 QR 碼，可以按「認領」');
       });
-      _log('QR parsed for …${q.deviceId.substring(14)}');
+      _log('已讀取節點 …${q.deviceId.substring(14)} 的 QR 碼');
     } catch (e) {
-      _say('not a claim QR: $e');
+      _say('這不是認領用的 QR 碼：$e');
     }
   }
 
@@ -105,9 +107,9 @@ class _ClaimPageState extends State<ClaimPage> {
           last4 = s.idLast4;
           state = s.state;
         } catch (e) {
-          _log('STATUS of $id not read: $e');
+          _log('讀不到 $id 的狀態：$e');
         }
-        _say('node $id: $state …${last4 ?? '----'}');
+        _say('找到節點（$id）：${stateText(state)}，編號末四碼 …${last4 ?? '----'}');
         if (state == 'unclaimed' && last4 == want) return (id, conn);
         await conn.cancel(); // not ours: its advertising comes back
       }
@@ -125,12 +127,13 @@ class _ClaimPageState extends State<ClaimPage> {
     StreamSubscription<List<int>>? notify;
     try {
       if (!(await _platform.invokeMethod<bool>('blePermissions') ?? false)) {
-        _say('Bluetooth permissions refused');
+        _say('[CLAIM_FAIL] 沒有藍牙權限（請在手機設定裡允許）');
         return;
       }
+      _say('正在找節點 …${q.deviceId.substring(14)}…');
       final found = await _find(q);
       if (found == null) {
-        _say('no unclaimed node with …${q.deviceId.substring(14)} in 60 s');
+        _say('[CLAIM_FAIL] [NOT_FOUND] 60 秒內找不到編號末四碼 …${q.deviceId.substring(14)} 的未認領節點（請確認節點已開機、就在旁邊）');
         return;
       }
       final id = found.$1;
@@ -139,7 +142,7 @@ class _ClaimPageState extends State<ClaimPage> {
       final ctrl = await _ble.readCharacteristic(
           QualifiedCharacteristic(characteristicId: _ctrl, serviceId: provdService, deviceId: id));
       final fl = await frameLimit(ctrl: ctrl, mtu: mtu);
-      _say('link: MTU $mtu, frames $fl B');
+      _say('已連上節點（技術資訊：MTU $mtu，每段 $fl 位元組）');
 
       final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
       final owner = keys['owner'] as Uint8List, ownerEnc = keys['ownerEnc'] as Uint8List;
@@ -150,10 +153,11 @@ class _ClaimPageState extends State<ClaimPage> {
       final (session, first) = ClaimSession.start(qr: q, ownerPub: owner, ownerEncPub: ownerEnc, sigEnc: sigEnc, frameLimit: fl);
       final rx = QualifiedCharacteristic(characteristicId: _rx, serviceId: provdService, deviceId: id);
       final done = Completer<String>();
+      var claimed = false; // set when the node record is written (StepKind.claimed)
       final inbox = StreamController<List<int>>();
       notify = _ble
           .subscribeToCharacteristic(QualifiedCharacteristic(characteristicId: _tx, serviceId: provdService, deviceId: id))
-          .listen(inbox.add, onError: (Object e) => done.isCompleted ? null : done.complete('TX error: $e'));
+          .listen(inbox.add, onError: (Object e) => done.isCompleted ? null : done.complete('接收資料出錯：$e'));
 
       Future<void> seal(String path, Uint8List record) async {
         final p = await storeSealParams(dir: dir, rel: path);
@@ -172,11 +176,12 @@ class _ClaimPageState extends State<ClaimPage> {
               st = null;
             case StepKind.persistPending:
               await seal(st.path, st.record);
-              _say('claim-pending written');
+              _say('已先在手機記下這次認領（還沒完成）');
               st = session.pendingPersisted();
             case StepKind.claimed:
               await seal(st.path, st.record); // the node record first,
               await storeRemove(dir: dir, rel: st.pendingPath); // then the pending (design §5.1)
+              claimed = true;
               done.complete(st.detail);
               st = null;
             case StepKind.ended:
@@ -187,15 +192,15 @@ class _ClaimPageState extends State<ClaimPage> {
       }
 
       await run(first);
-      _say('msg1 sent');
+      _say('已送出認領要求，等待節點回應…');
       final pump = inbox.stream.asyncMap((f) => run(session.onFrame(frame: f))).listen((_) {},
-          onError: (Object e) => done.isCompleted ? null : done.complete('error: $e'));
-      final r = await done.future.timeout(const Duration(seconds: 90), onTimeout: () => 'no answer in 90 s (the pending stays: design §5.2)');
+          onError: (Object e) => done.isCompleted ? null : done.complete('處理出錯：$e'));
+      final r = await done.future.timeout(const Duration(seconds: 90), onTimeout: () => '90 秒內節點沒有回應（這次的紀錄先保留，可以稍後再試）');
       await pump.cancel();
       await inbox.close();
-      _say('result: $r');
+      _say(claimed ? '[CLAIMED] $r' : '[CLAIM_FAIL] 認領沒有完成：$r');
     } catch (e) {
-      _say('claim stopped: $e');
+      _say('[CLAIM_FAIL] 認領中斷：$e');
     } finally {
       await notify?.cancel();
       await conn?.cancel();
@@ -206,7 +211,7 @@ class _ClaimPageState extends State<ClaimPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Claim a node (dev)')),
+      appBar: AppBar(title: const Text('認領節點')),
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -215,11 +220,11 @@ class _ClaimPageState extends State<ClaimPage> {
               obscureText: true,
               autocorrect: false,
               enableSuggestions: false,
-              decoration: const InputDecoration(labelText: 'QR hex (dev) — or leave empty to use the clipboard')),
+              decoration: const InputDecoration(labelText: '開發用：QR 碼內容（16 進位）；留空就從剪貼簿讀取')),
           Row(children: [
-            OutlinedButton(onPressed: _busy ? null : _paste, child: const Text('Paste QR')),
+            OutlinedButton(onPressed: _busy ? null : _paste, child: const Text('貼上 QR 碼（開發用）')),
             const SizedBox(width: 8),
-            FilledButton(onPressed: (_qr == null || _busy) ? null : _claim, child: const Text('Claim')),
+            FilledButton(onPressed: (_qr == null || _busy) ? null : _claim, child: const Text('認領')),
           ]),
           const SizedBox(height: 12),
           Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),

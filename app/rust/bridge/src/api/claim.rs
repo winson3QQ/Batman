@@ -15,19 +15,19 @@ pub struct ClaimQr {
 }
 
 pub fn parse_claim_qr(text: String) -> Result<ClaimQr, String> {
-    let raw = hex_decode(text.trim()).ok_or("QR is not hex")?;
-    let v = cbor::decode(&raw).map_err(|e| format!("QR is not CBOR: {e}"))?;
-    let Value::Map(m) = &v else { return Err("QR is not a map".into()) };
+    let raw = hex_decode(text.trim()).ok_or("QR 碼內容不是 16 進位文字")?;
+    let v = cbor::decode(&raw).map_err(|e| format!("QR 碼內容看不懂（{e}）"))?;
+    let Value::Map(m) = &v else { return Err("QR 碼格式不對（not a map）".into()) };
     if m.len() != 2 {
-        return Err("QR map must have exactly keys 1 and 2".into());
+        return Err("QR 碼格式不對（只能有欄位 1 和 2）".into());
     }
-    let id = v.get(1).and_then(Value::as_text).ok_or("QR key 1 (device id) missing")?;
+    let id = v.get(1).and_then(Value::as_text).ok_or("QR 碼缺少節點編號")?;
     if id.len() != 18 || !id.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) {
-        return Err("QR device id is not 18 lower-case hex".into());
+        return Err("QR 碼裡的節點編號格式不對".into());
     }
-    let k = v.get(2).and_then(Value::as_bytes).ok_or("QR key 2 (K) missing")?;
+    let k = v.get(2).and_then(Value::as_bytes).ok_or("QR 碼缺少認領金鑰")?;
     if k.len() != 32 {
-        return Err("QR K is not 32 bytes".into());
+        return Err("QR 碼裡的認領金鑰長度不對".into());
     }
     Ok(ClaimQr { device_id: id.to_string(), k: k.to_vec() })
 }
@@ -41,18 +41,18 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 
 /// CTRL characteristic {1:1, 2:0, 3: node frame size, 4: max message} -> the frame limit min(CTRL 3, MTU - 3).
 pub fn frame_limit(ctrl: Vec<u8>, mtu: u32) -> Result<u32, String> {
-    let v = cbor::decode(&ctrl).map_err(|e| format!("CTRL: {e}"))?;
-    let n = v.get(3).and_then(Value::as_uint).ok_or("CTRL key 3 missing")?;
+    let v = cbor::decode(&ctrl).map_err(|e| format!("看不懂節點的連線參數（CTRL：{e}）"))?;
+    let n = v.get(3).and_then(Value::as_uint).ok_or("節點的連線參數不完整（CTRL key 3 missing）")?;
     let lim = n.min(mtu.saturating_sub(3) as u64);
     if lim < 20 {
-        return Err(format!("frame limit {lim} too small (CTRL {n}, MTU {mtu})"));
+        return Err(format!("藍牙連線的封包太小，無法傳輸（{lim}：CTRL {n}，MTU {mtu}）"));
     }
     Ok(lim as u32)
 }
 
 /// sig_enc's input ("batman-owner-enc-v1" ‖ owner_enc_pub); Kotlin signs it with the owner key.
 pub fn owner_enc_sign_input(owner_enc_pub: Vec<u8>) -> Result<Vec<u8>, String> {
-    let p: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "owner_enc_pub is not 65 bytes")?;
+    let p: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
     Ok(sig::owner_enc_input(&p))
 }
 
@@ -127,11 +127,14 @@ impl ClaimStep {
     fn new(kind: StepKind) -> ClaimStep {
         ClaimStep { kind, frames: vec![], path: String::new(), record: vec![], pending_path: String::new(), detail: String::new() }
     }
-    fn ended(kind: &str, detail: String) -> ClaimStep {
-        let d = if detail.is_empty() { kind.to_string() } else { format!("{kind}: {detail}") };
+    /// `text`: what happened, for the user; `code`: the design's case (+ detail) in parentheses, for support.
+    fn ended(text: &str, code: &str, detail: String) -> ClaimStep {
+        let d = if detail.is_empty() { format!("{text}（{code}）") } else { format!("{text}（{code}：{detail}）") };
         ClaimStep { detail: d, ..ClaimStep::new(StepKind::Ended) }
     }
 }
+
+const BROKEN: &str = "連線或資料出錯，這次的紀錄先保留";
 
 #[flutter_rust_bridge::frb(opaque)]
 pub struct ClaimSession {
@@ -145,15 +148,15 @@ impl ClaimSession {
     pub fn start(qr: &ClaimQr, owner_pub: Vec<u8>, owner_enc_pub: Vec<u8>, sig_enc: Vec<u8>, frame_limit: u32) -> Result<(ClaimSession, ClaimStep), String> {
         let input = Input {
             device_id: qr.device_id.clone(),
-            k: qr.k.clone().try_into().map_err(|_| "K is not 32 bytes")?,
-            owner_pub: owner_pub.try_into().map_err(|_| "owner_pub is not 65 bytes")?,
-            owner_enc_pub: owner_enc_pub.try_into().map_err(|_| "owner_enc_pub is not 65 bytes")?,
-            sig_enc: sig_enc.try_into().map_err(|_| "sig_enc is not 64 bytes")?,
+            k: qr.k.clone().try_into().map_err(|_| "QR 碼裡的認領金鑰長度不對")?,
+            owner_pub: owner_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_pub is not 65 bytes）")?,
+            owner_enc_pub: owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?,
+            sig_enc: sig_enc.try_into().map_err(|_| "手機簽章格式不對（sig_enc is not 64 bytes）")?,
             frame_limit: frame_limit as usize,
         };
         let (claim, a) = Claim::start(input);
         let mut s = ClaimSession { claim, pending: None };
-        let step = s.step(Some(a)).ok_or("no first step")?;
+        let step = s.step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
         Ok((s, step))
     }
 
@@ -195,17 +198,32 @@ impl ClaimSession {
                         path: node_path(&p.device_id),
                         record: rec,
                         pending_path: pending_path(&p.device_id),
-                        detail: format!("claimed {}", &p.device_id[p.device_id.len() - 4..]),
+                        detail: format!("認領成功：節點 …{} 現在由這支手機管理", &p.device_id[p.device_id.len() - 4..]),
                         ..ClaimStep::new(StepKind::Claimed)
                     }
                 }
-                None => ClaimStep::ended("Broken", "claimed without a pending record".into()),
+                None => ClaimStep::ended(BROKEN, "Broken", "手機沒有這次認領的暫存紀錄".into()),
             },
-            Action::Done(End::Finished(f)) => ClaimStep::ended(&format!("{f:?}"), String::new()),
-            Action::Done(End::Msg2Undecryptable) => ClaimStep::ended("Msg2Undecryptable", String::new()),
-            Action::Done(End::CertRejected(e)) => ClaimStep::ended("CertRejected", format!("{e:?}")),
-            Action::Done(End::BeginRefused(o)) => ClaimStep::ended("BeginRefused", format!("{o:?}")),
-            Action::Done(End::Broken(s)) => ClaimStep::ended("Broken", s),
+            Action::Done(End::Finished(f)) => {
+                let text = match &f {
+                    ClaimFinish::Claimed(_) => "認領成功", // handled above; never reached
+                    ClaimFinish::Committed => "節點已記下認領，但沒有交回登入資料；這次的紀錄先保留，請稍後再試",
+                    ClaimFinish::LegacyNoSshKey => "這是舊版節點，還沒設定 SSH 金鑰，無法用 App 認領",
+                    ClaimFinish::BeginAgain => "認領逾時，請再按一次「認領」",
+                    ClaimFinish::AppBug => "認領要求的格式不對（App 的問題，請回報）",
+                    ClaimFinish::TryReplay => "認領被拒絕：QR 碼不符、節點已被別人認領，或之前的認領其實已經成功",
+                    ClaimFinish::Unknown => "沒有收到明確的結果；這次的紀錄先保留，請稍後再試",
+                };
+                let code = match &f {
+                    ClaimFinish::Claimed(_) => "Claimed".to_string(),
+                    other => format!("{other:?}"),
+                };
+                ClaimStep::ended(text, &code, String::new())
+            }
+            Action::Done(End::Msg2Undecryptable) => ClaimStep::ended("連到的不是這台節點，或 QR 碼不對", "Msg2Undecryptable", String::new()),
+            Action::Done(End::CertRejected(e)) => ClaimStep::ended("節點的身分證明沒有通過檢查，已停止", "CertRejected", format!("{e:?}")),
+            Action::Done(End::BeginRefused(o)) => ClaimStep::ended("節點拒絕開始認領", "BeginRefused", format!("{o:?}")),
+            Action::Done(End::Broken(s)) => ClaimStep::ended(BROKEN, "Broken", s),
         })
     }
 }
@@ -228,7 +246,7 @@ mod tests {
         assert!(parse_claim_qr(qr_hex("E61551410CFD538E24", &[7; 32])).is_err());
         assert!(parse_claim_qr(qr_hex("e61551410cfd538e2", &[7; 32])).is_err());
         assert!(parse_claim_qr(qr_hex("e61551410cfd538e24", &[7; 31])).is_err());
-        assert!(parse_claim_qr("zz".into()).is_err());
+        assert_eq!(parse_claim_qr("zz".into()).err().as_deref(), Some("QR 碼內容不是 16 進位文字"));
         assert!(parse_claim_qr("a0".into()).is_err());
     }
 
@@ -271,7 +289,8 @@ mod tests {
         assert_eq!(first.kind, StepKind::Write);
         let creds = || Creds { owner_tag_key: [5; 32], adv_owner_key: [6; 32], root_password: "pw".into() };
         let st = s.step(Some(Action::Done(End::Finished(ClaimFinish::Claimed(creds()))))).unwrap();
-        assert!(st.kind == StepKind::Ended && st.detail.starts_with("Broken"), "claimed without a pending: {}", st.detail);
+        assert!(st.kind == StepKind::Ended, "claimed without a pending: {}", st.detail);
+        assert_eq!(st.detail, "連線或資料出錯，這次的紀錄先保留（Broken：手機沒有這次認領的暫存紀錄）");
         let p = Pending {
             device_id: q.device_id.clone(), k: [7; 32], node_cert: vec![9; 10], dac_der: vec![8; 5], ecdh_pub: [4; 65],
             owner_pub: [4; 65], owner_enc_pub: [4; 65],
@@ -284,13 +303,18 @@ mod tests {
         assert_eq!(st.kind, StepKind::Claimed);
         assert_eq!(st.path, "node/e61551410cfd538e24");
         assert_eq!(st.pending_path, "claim-pending/e61551410cfd538e24");
-        assert_eq!(st.detail, "claimed 8e24");
+        assert_eq!(st.detail, "認領成功：節點 …8e24 現在由這支手機管理");
         let v = cbor::decode(&st.record).unwrap();
         assert_eq!(v.get(2).and_then(Value::as_bytes), Some(&[7u8; 32][..]), "K");
         assert_eq!(v.get(4).and_then(Value::as_bytes), Some(&[8u8; 5][..]), "pinned DAC");
         assert_eq!(v.get(5).and_then(Value::as_bytes), Some(&[5u8; 32][..]), "owner_tag_key");
         assert_eq!(v.get(7).and_then(Value::as_text), Some("pw"));
         let st = s.step(Some(Action::Done(End::Finished(ClaimFinish::TryReplay)))).unwrap();
-        assert!(st.kind == StepKind::Ended && st.detail == "TryReplay", "{}", st.detail);
+        assert!(st.kind == StepKind::Ended, "{}", st.detail);
+        assert_eq!(st.detail, "認領被拒絕：QR 碼不符、節點已被別人認領，或之前的認領其實已經成功（TryReplay）");
+        let st = s.step(Some(Action::Done(End::Msg2Undecryptable))).unwrap();
+        assert_eq!(st.detail, "連到的不是這台節點，或 QR 碼不對（Msg2Undecryptable）");
+        let st = s.step(Some(Action::Done(End::Broken("lost".into())))).unwrap();
+        assert_eq!(st.detail, "連線或資料出錯，這次的紀錄先保留（Broken：lost）");
     }
 }

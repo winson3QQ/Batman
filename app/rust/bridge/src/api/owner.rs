@@ -43,11 +43,11 @@ struct Rec {
 }
 
 fn parse_record(plain: &[u8]) -> Result<Rec, String> {
-    let v = cbor::decode(plain).map_err(|e| format!("node record: {e}"))?;
+    let v = cbor::decode(plain).map_err(|e| format!("手機裡的節點資料損壞（{e}）"))?;
     Ok(Rec {
-        device_id: v.get(1).and_then(Value::as_text).ok_or("node record: no device id")?.to_string(),
-        owner_tag_key: v.get(5).and_then(Value::as_bytes).and_then(|b| b.try_into().ok()).ok_or("node record: no owner_tag_key")?,
-        dac_der: v.get(4).and_then(Value::as_bytes).ok_or("node record: no DAC")?.to_vec(),
+        device_id: v.get(1).and_then(Value::as_text).ok_or("手機裡的節點資料損壞（no device id）")?.to_string(),
+        owner_tag_key: v.get(5).and_then(Value::as_bytes).and_then(|b| b.try_into().ok()).ok_or("手機裡的節點資料損壞（no owner_tag_key）")?,
+        dac_der: v.get(4).and_then(Value::as_bytes).ok_or("手機裡的節點資料損壞（no DAC）")?.to_vec(),
     })
 }
 
@@ -133,56 +133,110 @@ fn persist_step(r: &NetRecord, generation: u64, state: &str) -> OwnerStep {
     OwnerStep { record: net_record_plain(r, state), aad: store::aad(&rel, generation), rel, generation, ..OwnerStep::new(OwnerKind::PersistNet) }
 }
 
+// Display text (#254 app): plain Traditional Chinese for a non-technical user; protocol codes stay in parentheses for
+// support. An answer's `detail` may start with one ASCII log marker "[TAG] " (NET_MADE, NET_STATE, SSH_DONE, REQ_FAIL)
+// that Dart keeps in logcat and strips from the screen. No text ever carries a secret.
+
+const NOT_LOGGED_IN: &str = "還沒連線到節點";
+const NO_NETWORK: &str = "這次連線還沒有建立過網路";
+
+fn net_made_text(r: &NetRecord) -> String {
+    format!("[NET_MADE] 網路已建立：網路代號 {}，頻道 {}（{} MHz）", r.mesh_id, r.channel, r.bw)
+}
+
+/// Why a login attempt ended (logged; a msg2 that does not decrypt just means "try the next nearby node").
+fn login_end_text(e: &End) -> String {
+    match e {
+        End::LoggedIn => "已登入".into(),
+        End::Msg2Undecryptable => "不是這台節點（或節點剛認領完還沒準備好）".into(),
+        End::CertRejected(c) => format!("節點的身分證明和手機記錄的不同，已中斷（CertRejected: {c:?}）"),
+        End::AuthRefused(o) => format!("節點拒絕登入（AuthRefused: {o:?}）"),
+        End::Broken(s) => format!("連線出錯（{s}）"),
+    }
+}
+
 fn join_state_text(s: &JoinState) -> String {
     match s {
-        JoinState::Applied { save_pending: false } => "network: applied".into(),
-        JoinState::Applied { save_pending: true } => "network: applied (the save completes at the node's next boot)".into(),
-        JoinState::InProgress => "network: still being applied — check again in a minute".into(),
-        JoinState::NotApplied => "network: not applied (or rolled back) — the same network may be sent again".into(),
-        JoinState::OtherNetwork => "network: the node is in ANOTHER network — stopped".into(),
-        JoinState::Unknown => "network: unknown for now — check again later".into(),
+        JoinState::Applied { save_pending: false } => "網路：已套用，節點已加入網路".into(),
+        JoinState::Applied { save_pending: true } => "網路：已套用（節點下次重新開機時會完成存檔）".into(),
+        JoinState::InProgress => "網路：還在設定中，請一分鐘後再按「檢查網路」".into(),
+        JoinState::NotApplied => "網路：沒有套用（或已還原），可以再建立一次同一個網路".into(),
+        JoinState::OtherNetwork => "網路：這台節點已經在「另一個」網路裡，已停止".into(),
+        JoinState::Unknown => "網路：目前還無法確定，請稍後再按「檢查網路」".into(),
     }
 }
 
 fn status_text(b: &Value) -> String {
     match status::decode_owner(b) {
         Ok(t) => t,
-        Err(e) => format!("status not understood: {e}"),
+        Err(e) => format!("看不懂節點回傳的狀態：{e}"),
+    }
+}
+
+/// What the user asked for, in words (a wire verb or an internal tag).
+fn verb_text(verb: &str) -> String {
+    match verb {
+        "status" => "查看狀態".into(),
+        "settings/get" => "查看設定".into(),
+        "settings/set" => "更改設定".into(),
+        "ssh_keys/set" => "加入 SSH 金鑰".into(),
+        "info" | "info-net" => "檢查網路".into(),
+        "network/join" => "建立網路".into(),
+        "op/nonce" => "準備操作".into(),
+        v => format!("操作（{v}）"),
     }
 }
 
 /// An error body's reason-code (CDDL; 254-p3-impl §3.1-8): E_UNSUPPORTED {1: verb, 2: reason} / E_REJECTED {2: reason}.
-/// Only the code and its meaning: an error body never echoes the request.
-fn reason_text(detail: &Value) -> String {
-    let verb = detail.get(1).and_then(Value::as_text).map(|v| format!(" ({v})")).unwrap_or_default();
-    let why = match detail.get(2).and_then(Value::as_uint) {
-        None => String::new(),
-        Some(7) => ": this node has no such setting".into(),
-        Some(13) => ": value refused (the node kept the previous one)".into(),
-        Some(14) => ": the country changes only while the node is not in a network".into(),
-        Some(20) => ": a legacy node (its radio is not managed by the app)".into(),
-        Some(r) => format!(": reason {r}"),
-    };
-    format!("{verb}{why}")
+/// Only the code and its meaning: an error body never echoes the request. None when there is no reason-code.
+fn reason_text(detail: &Value) -> Option<String> {
+    Some(match detail.get(2).and_then(Value::as_uint)? {
+        7 => "這台節點沒有這個設定項目".into(),
+        13 => "節點不接受這個值，仍保留原本的設定".into(),
+        14 => "要先讓節點離開網路才能改國家".into(),
+        20 => "這是舊版節點，它的無線電不由 App 管理".into(),
+        r => format!("節點拒絕了（原因 {r}）"),
+    })
+}
+
+/// The meaning of a protocol error code (S/provd/session.go:39-50; flow.rs).
+fn code_text(code: u64) -> &'static str {
+    match code {
+        flow::E_FORBIDDEN => "節點拒絕了這個操作",
+        flow::E_BAD_OBJECT => "要求的格式不對（App 的問題，請回報）",
+        flow::E_UNSUPPORTED => "這台節點的軟體還不支援這個功能",
+        flow::E_REJECTED => "節點不接受這個值",
+        flow::E_RATE => "嘗試太多次，請稍後再試",
+        flow::E_LOCK_INCOMPLETE => "節點還沒準備好，請稍後再試",
+        _ => "節點回報錯誤",
+    }
+}
+
+/// One error answer as a line: what failed, why, then the codes (and the verb the node named) for support.
+fn error_text(asked: &str, code: u64, detail: &Value) -> String {
+    let why = reason_text(detail).unwrap_or_else(|| code_text(code).into());
+    let reason = detail.get(2).and_then(Value::as_uint).map(|r| format!("，原因 {r}")).unwrap_or_default();
+    let verb = detail.get(1).and_then(Value::as_text).map(|v| format!("，{v}")).unwrap_or_default();
+    format!("[REQ_FAIL] {}沒有成功：{why}（代碼 {code}{reason}{verb}）", verb_text(asked))
 }
 
 fn settings_text(b: &Value) -> String {
     let mut out = vec![];
     if let Some(n) = b.get(1).and_then(Value::as_text) {
-        out.push(format!("name {n}"));
+        out.push(format!("名稱 {n}"));
     }
     if let Some(c) = b.get(2).and_then(Value::as_text) {
-        out.push(format!("country {c}"));
+        out.push(format!("國家 {c}"));
     }
     if let Some(h) = b.get(10) {
         let ch = h.get(1).and_then(Value::as_uint).map(|c| c.to_string()).unwrap_or("?".into());
-        let bw = h.get(2).and_then(Value::as_uint).map(|c| format!(" {c} MHz")).unwrap_or_default();
-        out.push(format!("HaLow ch {ch}{bw}"));
+        let bw = h.get(2).and_then(Value::as_uint).map(|c| format!("（{c} MHz）")).unwrap_or_default();
+        out.push(format!("HaLow 無線電 頻道 {ch}{bw}"));
     }
     if let Some(s) = b.get(20).and_then(|a| a.get(1)).and_then(Value::as_text) {
-        out.push(format!("phone AP \"{s}\""));
+        out.push(format!("給手機連的 Wi-Fi「{s}」"));
     }
-    if out.is_empty() { "settings: (none readable)".into() } else { out.join(", ") }
+    if out.is_empty() { "（讀不到任何設定）".into() } else { out.join("，") }
 }
 
 impl OwnerSession {
@@ -190,12 +244,12 @@ impl OwnerSession {
     #[flutter_rust_bridge::frb(sync)]
     pub fn start(record_plain: Vec<u8>, owner_pub: Vec<u8>, frame_limit: u32) -> Result<(OwnerSession, OwnerStep), String> {
         let r = parse_record(&record_plain)?;
-        let op: [u8; 65] = owner_pub.try_into().map_err(|_| "owner_pub is not 65 bytes")?;
+        let op: [u8; 65] = owner_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_pub is not 65 bytes）")?;
         let nr = NodeRecord { device_id: &r.device_id, owner_tag_key: &r.owner_tag_key, pinned_dac_der: &r.dac_der, owner_pub: &op };
         let (login, a) = Login::start(&nr, frame_limit as usize);
         let last4 = r.device_id[r.device_id.len().saturating_sub(4)..].to_string();
         let mut s = OwnerSession { st: St::Login(login), last4, owner_pub: op, node: None, net_id: None };
-        let step = s.login_step(Some(a)).ok_or("no first step")?;
+        let step = s.login_step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
         Ok((s, step))
     }
 
@@ -215,7 +269,7 @@ impl OwnerSession {
             let (verb, body) = op.take()?;
             let raw = match sig::der_to_raw_low_s(&der) {
                 Ok(r) => r,
-                Err(e) => return Some(OwnerStep::text(OwnerKind::Answer, format!("signature: {e:?}"))),
+                Err(e) => return Some(OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：手機簽章出錯（{e:?}）", verb_text(verb)))),
             };
             let req = sig::with_owner_op(&body, verb, &raw).map_err(|e| format!("{e:?}")).and_then(|b| conn.request(verb, b).map_err(|e| format!("{e:?}")));
             return Some(match req {
@@ -223,7 +277,7 @@ impl OwnerSession {
                     *asked = verb;
                     OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) }
                 }
-                Err(e) => OwnerStep::text(OwnerKind::Answer, format!("{verb}: {e}")),
+                Err(e) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：送不出去（{e}）", verb_text(verb))),
             });
         }
         let a = match &mut self.st {
@@ -264,7 +318,7 @@ impl OwnerSession {
                 *op = Some((verb, body));
                 Ok(OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) })
             }
-            _ => Err("not logged in".into()),
+            _ => Err(NOT_LOGGED_IN.into()),
         }
     }
 
@@ -283,38 +337,45 @@ impl OwnerSession {
                 Ok(None) => None,
                 Ok(Some(Outcome::Ok(b))) if *asked == "op/nonce" => {
                     // owner-op (design §5.4 pattern): sign "batman-owner-op-v1" ‖ h ‖ nonce_helper ‖ verb ‖ args_hash
-                    let Some((verb, body)) = op.as_ref() else { return Some(OwnerStep::text(OwnerKind::Answer, "op/nonce without an operation".into())) };
+                    let Some((verb, body)) = op.as_ref() else {
+                        return Some(OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] 操作沒有成功：App 內部錯誤（op/nonce without an operation）".into()));
+                    };
                     let helper: Option<[u8; 32]> = b.get(1).and_then(Value::as_bytes).and_then(|x| x.try_into().ok());
-                    let Some(helper) = helper else { return Some(OwnerStep::text(OwnerKind::Answer, "op/nonce without a 32-byte nonce".into())) };
+                    let Some(helper) = helper else {
+                        return Some(OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：節點的回應不完整（op/nonce without a 32-byte nonce）", verb_text(verb))));
+                    };
                     match sig::owner_op_input(&conn.h(), &helper, verb, body) {
                         Ok(input) => Some(OwnerStep { sign_input: input, ..OwnerStep::new(OwnerKind::Sign) }),
-                        Err(e) => Some(OwnerStep::text(OwnerKind::Answer, format!("owner-op input: {e:?}"))),
+                        Err(e) => Some(OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：無法準備要求（{e:?}）", verb_text(verb)))),
                     }
                 }
                 Ok(Some(Outcome::Ok(b))) if *asked == "info-net" => {
                     *asked = "";
                     let t = match self.net_id {
-                        Some(id) => join_state_text(&flow::join_state(&b, &id)),
-                        None => "no network made in this session".into(),
+                        Some(id) => format!("[NET_STATE] {}", join_state_text(&flow::join_state(&b, &id))),
+                        None => format!("[NET_STATE] {NO_NETWORK}"),
                     };
                     Some(OwnerStep::text(OwnerKind::Answer, t))
                 }
                 Ok(Some(Outcome::Ok(b))) => {
                     let t = match *asked {
                         "status" => status_text(&b),
-                        "settings/get" | "settings/set" => settings_text(&b),
-                        v => format!("{v}: done"),
+                        "settings/get" => format!("目前設定：{}", settings_text(&b)),
+                        "settings/set" => format!("設定已更新：{}", settings_text(&b)),
+                        "ssh_keys/set" => "[SSH_DONE] 已加入 SSH 金鑰".into(),
+                        v => format!("{}：完成", verb_text(v)),
                     };
                     *op = None;
                     Some(OwnerStep::text(OwnerKind::Answer, t))
                 }
                 Ok(Some(Outcome::Err { code, detail })) => {
-                    *op = None;
-                    Some(OwnerStep::text(OwnerKind::Answer, format!("{asked}: error {code}{}", reason_text(&detail))))
+                    // an owner-op refused at op/nonce is reported as the operation the user asked for
+                    let what = op.take().map(|(v, _)| v).unwrap_or(*asked);
+                    Some(OwnerStep::text(OwnerKind::Answer, error_text(what, code, &detail)))
                 }
                 Err(e) => {
                     self.st = St::Over;
-                    Some(OwnerStep::text(OwnerKind::Ended, format!("connection: {e:?}")))
+                    Some(OwnerStep::text(OwnerKind::Ended, format!("連線出錯（{e:?}）")))
                 }
             },
             St::Join { .. } | St::Over => None,
@@ -326,14 +387,14 @@ impl OwnerSession {
     /// node_cert verified at this login, never from the node's word alone.
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_make_network(&mut self, net_name: String, channel: u32, owner_enc_pub: Vec<u8>, admin_pub: Vec<u8>) -> Result<OwnerStep, String> {
-        let node = self.node.clone().ok_or("no verified node_cert in this session")?;
-        let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "owner_enc_pub is not 65 bytes")?;
-        let adm: [u8; 65] = admin_pub.try_into().map_err(|_| "admin_pub is not 65 bytes")?;
+        let node = self.node.clone().ok_or("這次連線沒有驗證過節點身分，請重新連線")?;
+        let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
+        let adm: [u8; 65] = admin_pub.try_into().map_err(|_| "手機金鑰格式不對（admin_pub is not 65 bytes）")?;
         let conn = match std::mem::replace(&mut self.st, St::Over) {
             St::Conn { conn, .. } => conn,
             other => {
                 self.st = other;
-                return Err("not logged in (or a request is in flight)".into());
+                return Err("還沒連線到節點（或上一個操作還沒結束）".into());
             }
         };
         let inp = joinflow::Input {
@@ -348,7 +409,7 @@ impl OwnerSession {
         };
         let (join, a) = Join::start(conn, inp);
         self.st = St::Join { join, rec: None, applied: false, resent: false };
-        self.join_step(Some(a)).ok_or_else(|| "no first step".into())
+        self.join_step(Some(a)).ok_or_else(|| "App 內部錯誤（no first step）".into())
     }
 
     /// The net record was sealed and written (fsynced): network/join goes out (op/nonce first), or — after "applied" —
@@ -358,7 +419,7 @@ impl OwnerSession {
         if let St::Join { applied: true, .. } = &self.st {
             let St::Join { join, rec, .. } = std::mem::replace(&mut self.st, St::Over) else { return None };
             self.st = St::Conn { conn: join.into_conn(), asked: "", op: None };
-            let t = rec.map(|r| format!("network made: mesh {} ch {} ({} MHz)", r.mesh_id, r.channel, r.bw)).unwrap_or_default();
+            let t = rec.map(|r| net_made_text(&r)).unwrap_or_default();
             return Some(OwnerStep::text(OwnerKind::Answer, t));
         }
         let a = match &mut self.st {
@@ -372,7 +433,7 @@ impl OwnerSession {
     #[flutter_rust_bridge::frb(sync)]
     pub fn check_network(&mut self) -> Result<OwnerStep, String> {
         if self.net_id.is_none() {
-            return Err("no network made in this session".into());
+            return Err(NO_NETWORK.into());
         }
         self.request_tagged("info", "info-net", Value::Map(vec![]))
     }
@@ -410,7 +471,7 @@ impl OwnerSession {
                     Some(r) => persist_step(&r, 2, "applied"),
                     None => {
                         self.back_to_conn();
-                        OwnerStep::text(OwnerKind::Answer, "network/join: applied (no record?)".into())
+                        OwnerStep::text(OwnerKind::Answer, "[NET_MADE] 網路已建立（但手機找不到這個網路的紀錄，請回報）".into())
                     }
                 }
             }
@@ -431,7 +492,7 @@ impl OwnerSession {
                     Some(a) => return self.join_step(Some(a)),
                     None => {
                         self.back_to_conn();
-                        OwnerStep::text(OwnerKind::Answer, "network/join: refused again after a new nonce — not sent a third time".into())
+                        OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] 建立網路沒有成功：節點連續兩次拒絕，不會再送第三次（代碼 3）".into())
                     }
                 }
             }
@@ -440,20 +501,20 @@ impl OwnerSession {
                 self.back_to_conn();
                 match self.request_tagged("info", "info-net", Value::Map(vec![])) {
                     Ok(st) => st,
-                    Err(e) => OwnerStep::text(OwnerKind::Answer, format!("network/join unclear, info not read: {e}")),
+                    Err(e) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 建立網路：結果不明，也讀不到節點的網路狀態，請按「檢查網路」（{e}）")),
                 }
             }
             J::Done(JE::Replied(JoinReply::Rejected)) => {
                 self.back_to_conn();
-                OwnerStep::text(OwnerKind::Answer, "network/join: rejected as malformed (an app bug) — the next try uses a new net_id".into())
+                OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] 建立網路沒有成功：節點說要求格式不對（App 的問題，請回報），下次會用新的網路編號".into())
             }
             J::Done(JE::BadChannel) => {
                 self.back_to_conn();
-                OwnerStep::text(OwnerKind::Answer, "make network: this channel is not offered (US ch 40 / 42)".into())
+                OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] 建立網路沒有成功：不支援這個頻道（只能選頻道 40 或 42）".into())
             }
             J::Done(e) => {
                 self.back_to_conn();
-                OwnerStep::text(OwnerKind::Answer, format!("make network stopped: {e:?}"))
+                OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 建立網路中斷（{e:?}）"))
             }
         })
     }
@@ -485,7 +546,7 @@ impl OwnerSession {
                 *asked = verb;
                 Ok(OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) })
             }
-            _ => Err("not logged in".into()),
+            _ => Err(NOT_LOGGED_IN.into()),
         }
     }
 
@@ -498,21 +559,21 @@ impl OwnerSession {
                     St::Login(l) => l,
                     other => {
                         self.st = other;
-                        return Some(OwnerStep::text(OwnerKind::Ended, "logged in without a login".into()));
+                        return Some(OwnerStep::text(OwnerKind::Ended, "App 內部錯誤（logged in without a login）".into()));
                     }
                 };
                 self.node = login.verified().cloned();
                 match login.into_conn() {
                     Some(conn) => {
                         self.st = St::Conn { conn, asked: "", op: None };
-                        OwnerStep::text(OwnerKind::LoggedIn, format!("owner session with …{}", self.last4))
+                        OwnerStep::text(OwnerKind::LoggedIn, format!("已連線到節點 …{}（擁有者）", self.last4))
                     }
-                    None => OwnerStep::text(OwnerKind::Ended, "no connection after login".into()),
+                    None => OwnerStep::text(OwnerKind::Ended, "登入後沒有連線（no connection after login）".into()),
                 }
             }
             Action::Done(e) => {
                 self.st = St::Over;
-                OwnerStep::text(OwnerKind::Ended, format!("{e:?}"))
+                OwnerStep::text(OwnerKind::Ended, login_end_text(&e))
             }
         })
     }
@@ -540,18 +601,28 @@ mod tests {
             (Value::Uint(10), Value::Map(vec![(Value::Uint(1), Value::Uint(42)), (Value::Uint(2), Value::Uint(2))])),
             (Value::Uint(20), Value::Map(vec![(Value::Uint(1), Value::Text("BCM2711-6c89".into()))])),
         ]);
-        assert_eq!(settings_text(&s), "name BCM2711-6c89, country US, HaLow ch 42 2 MHz, phone AP \"BCM2711-6c89\"");
-        assert_eq!(settings_text(&Value::Map(vec![])), "settings: (none readable)");
+        assert_eq!(settings_text(&s), "名稱 BCM2711-6c89，國家 US，HaLow 無線電 頻道 42（2 MHz），給手機連的 Wi-Fi「BCM2711-6c89」");
+        assert_eq!(settings_text(&Value::Map(vec![])), "（讀不到任何設定）");
+        assert_eq!(status_text(&Value::Map(vec![])), "看不懂節點回傳的狀態：缺少節點狀態（欄位 1）");
     }
 
     #[test]
     fn reasons() {
         let m = |kv: Vec<(u64, Value)>| Value::Map(kv.into_iter().map(|(k, v)| (Value::Uint(k), v)).collect());
-        assert_eq!(reason_text(&m(vec![(2, Value::Uint(14))])), ": the country changes only while the node is not in a network");
-        assert_eq!(reason_text(&m(vec![(1, Value::Text("status".into()))])), " (status)");
-        assert_eq!(reason_text(&m(vec![(1, Value::Text("settings/set".into())), (2, Value::Uint(20))])), " (settings/set): a legacy node (its radio is not managed by the app)");
-        assert_eq!(reason_text(&m(vec![(2, Value::Uint(99))])), ": reason 99");
-        assert_eq!(reason_text(&Value::Map(vec![])), "");
+        assert_eq!(reason_text(&m(vec![(2, Value::Uint(14))])).as_deref(), Some("要先讓節點離開網路才能改國家"));
+        assert_eq!(reason_text(&m(vec![(1, Value::Text("status".into()))])), None);
+        assert_eq!(reason_text(&m(vec![(1, Value::Text("settings/set".into())), (2, Value::Uint(20))])).as_deref(), Some("這是舊版節點，它的無線電不由 App 管理"));
+        assert_eq!(reason_text(&m(vec![(2, Value::Uint(99))])).as_deref(), Some("節點拒絕了（原因 99）"));
+        assert_eq!(reason_text(&Value::Map(vec![])), None);
+        // the whole error line: what failed, why, then the codes
+        assert_eq!(error_text("settings/set", 11, &m(vec![(2, Value::Uint(14))])), "[REQ_FAIL] 更改設定沒有成功：要先讓節點離開網路才能改國家（代碼 11，原因 14）");
+        assert_eq!(error_text("status", 6, &m(vec![(1, Value::Text("status".into()))])), "[REQ_FAIL] 查看狀態沒有成功：這台節點的軟體還不支援這個功能（代碼 6，status）");
+        assert_eq!(
+            error_text("settings/set", 6, &m(vec![(1, Value::Text("settings/set".into())), (2, Value::Uint(20))])),
+            "[REQ_FAIL] 更改設定沒有成功：這是舊版節點，它的無線電不由 App 管理（代碼 6，原因 20，settings/set）"
+        );
+        assert_eq!(error_text("ssh_keys/set", 12, &Value::Map(vec![])), "[REQ_FAIL] 加入 SSH 金鑰沒有成功：嘗試太多次，請稍後再試（代碼 12）");
+        assert_eq!(error_text("x/y", 99, &Value::Map(vec![])), "[REQ_FAIL] 操作（x/y）沒有成功：節點回報錯誤（代碼 99）");
     }
 
     #[test]
@@ -580,7 +651,9 @@ mod tests {
         let a = persist_step(&r, 2, "applied");
         assert_eq!(a.aad, store::aad(&a.rel, 2));
         assert_eq!(cbor::decode(&a.record).unwrap().get(10).and_then(Value::as_text), Some("applied"));
-        assert_eq!(join_state_text(&JoinState::OtherNetwork), "network: the node is in ANOTHER network — stopped");
+        assert_eq!(join_state_text(&JoinState::OtherNetwork), "網路：這台節點已經在「另一個」網路裡，已停止");
+        assert_eq!(net_made_text(&r), "[NET_MADE] 網路已建立：網路代號 bm-abababababab，頻道 40（4 MHz）");
+        assert!(!net_made_text(&r).contains(&r.sae), "the SAE never goes into display text");
     }
 
     #[test]
@@ -592,7 +665,9 @@ mod tests {
         ]));
         let (mut s, _) = OwnerSession::start(rec, vec![4; 65], 244).unwrap();
         assert!(s.request_make_network("n".into(), 40, vec![4; 65], vec![4; 65]).is_err(), "no verified node_cert yet");
-        assert!(s.check_network().is_err());
+        assert_eq!(s.check_network().err().as_deref(), Some("這次連線還沒有建立過網路"));
+        assert_eq!(s.request_status().err().as_deref(), Some("還沒連線到節點"));
+        assert_eq!(login_end_text(&End::Msg2Undecryptable), "不是這台節點（或節點剛認領完還沒準備好）");
     }
 
     #[test]

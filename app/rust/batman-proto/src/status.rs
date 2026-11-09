@@ -154,53 +154,72 @@ mod tests {
 /// The `status` answer of an owner / member session (CDDL status-resp; node 254-p3-impl §3.4), as one display line:
 /// {1: node-state, ?2: verdict 0 ok / 1 degraded / 2 down, ?3: neighbours, ?4: p5_saved, ?5: {1: reason, 2: text},
 /// ?15: {node, image, uptime_s, temp_c, ...}}. Key 1 is required; the rest is shown when present.
+// Display text is plain Traditional Chinese for a non-technical user (#254 app); node-supplied values and codes are kept
+// verbatim, codes in parentheses for support.
 pub fn decode_owner(v: &Value) -> Result<String, String> {
     let st = match v.get(1).and_then(Value::as_uint) {
-        Some(0) => "unclaimed",
-        Some(1) => "claimed",
-        Some(2) => "member",
-        Some(3) => "legacy",
-        _ => return Err("no node state (key 1)".into()),
+        Some(0) => "未認領",
+        Some(1) => "已認領（還沒加入網路）",
+        Some(2) => "已加入網路",
+        Some(3) => "舊版節點",
+        _ => return Err("缺少節點狀態（欄位 1）".into()),
     };
-    let mut out = vec![format!("state {st}")];
+    let mut out = vec![format!("狀態：{st}")];
     if let Some(vd) = v.get(2).and_then(Value::as_uint) {
-        out.push(match vd { 0 => "ok".into(), 1 => "degraded".into(), 2 => "down".into(), n => format!("verdict {n}") });
+        out.push(match vd { 0 => "網路狀況正常".into(), 1 => "網路狀況不穩".into(), 2 => "網路中斷".into(), n => format!("網路狀況代碼 {n}") });
     }
     if let Some(n) = v.get(3).and_then(Value::as_uint) {
-        out.push(format!("{n} neighbour(s)"));
+        out.push(format!("連到 {n} 台鄰近節點"));
     }
     match v.get(4) {
-        Some(Value::Bool(true)) => out.push("config saved".into()),
-        Some(Value::Bool(false)) => out.push("config NOT saved".into()),
+        Some(Value::Bool(true)) => out.push("設定已存檔".into()),
+        Some(Value::Bool(false)) => out.push("設定「尚未」存檔".into()),
         _ => {}
     }
     if let Some(j) = v.get(5) {
         let c = j.get(1).and_then(Value::as_uint).unwrap_or(0);
         let t = j.get(2).and_then(Value::as_text).unwrap_or("");
-        out.push(format!("not in the mesh (reason {c}: {t})"));
+        out.push(format!("還沒連上網路（代碼 {c}：{t}）"));
     }
     if let Some(f) = v.get(15) {
         if let Value::Map(m) = f {
             for (k, x) in m {
                 if let (Value::Text(k), Value::Text(x)) = (k, x) {
-                    if ["node", "image", "temp_c", "tenants"].contains(&k.as_str()) && !x.is_empty() {
-                        out.push(format!("{k} {x}"));
+                    let line = match k.as_str() {
+                        "node" => Some(format!("裝置名稱 {x}")),
+                        "image" => Some(format!("軟體版本 {x}")),
+                        "temp_c" => Some(format!("溫度 {x}°C")),
+                        "tenants" => Some(format!("附加服務 {x}")),
+                        _ => None,
+                    };
+                    if let (Some(l), false) = (line, x.is_empty()) {
+                        out.push(l);
                     }
                 }
                 if let (Value::Text(k), Value::Uint(x)) = (k, x) {
                     if k == "uptime_s" {
-                        out.push(format!("up {x} s"));
+                        out.push(format!("已開機 {}", duration_zh(*x)));
                     }
                 }
                 if let (Value::Text(k), Value::Bool(true)) = (k, x) {
                     if k == "stale" {
-                        out.push("(the node's status cache is still empty)".into());
+                        out.push("節點的狀態資料還沒準備好".into());
                     }
                 }
             }
         }
     }
-    Ok(out.join(", "))
+    Ok(out.join("，"))
+}
+
+/// Seconds as a short Chinese duration: "42 秒", "6 分 42 秒", "3 小時 5 分", "2 天 4 小時".
+pub fn duration_zh(s: u64) -> String {
+    match s {
+        0..=59 => format!("{s} 秒"),
+        60..=3599 => format!("{} 分 {} 秒", s / 60, s % 60),
+        3600..=86399 => format!("{} 小時 {} 分", s / 3600, s % 3600 / 60),
+        _ => format!("{} 天 {} 小時", s / 86400, s % 86400 / 3600),
+    }
 }
 
 #[cfg(test)]
@@ -216,14 +235,30 @@ mod owner_tests {
             (Value::Uint(4), Value::Bool(true)),
             (Value::Uint(15), Value::Map(vec![(Value::Text("node".into()), Value::Text("BCM2711-6c89".into())), (Value::Text("uptime_s".into()), Value::Uint(402))])),
         ]);
-        assert_eq!(decode_owner(&v).unwrap(), "state member, down, 1 neighbour(s), config saved, node BCM2711-6c89, up 402 s");
+        assert_eq!(decode_owner(&v).unwrap(), "狀態：已加入網路，網路中斷，連到 1 台鄰近節點，設定已存檔，裝置名稱 BCM2711-6c89，已開機 6 分 42 秒");
         let nj = Value::Map(vec![
             (Value::Uint(1), Value::Uint(1)),
             (Value::Uint(5), Value::Map(vec![(Value::Uint(1), Value::Uint(7)), (Value::Uint(2), Value::Text("SEARCHING".into()))])),
         ]);
-        assert_eq!(decode_owner(&nj).unwrap(), "state claimed, not in the mesh (reason 7: SEARCHING)");
-        assert!(decode_owner(&Value::Map(vec![])).is_err());
+        assert_eq!(decode_owner(&nj).unwrap(), "狀態：已認領（還沒加入網路），還沒連上網路（代碼 7：SEARCHING）");
+        assert_eq!(decode_owner(&Value::Map(vec![])), Err("缺少節點狀態（欄位 1）".to_string()));
         let stale = Value::Map(vec![(Value::Uint(1), Value::Uint(1)), (Value::Uint(15), Value::Map(vec![(Value::Text("stale".into()), Value::Bool(true))]))]);
-        assert!(decode_owner(&stale).unwrap().contains("still empty"));
+        assert_eq!(decode_owner(&stale).unwrap(), "狀態：已認領（還沒加入網路），節點的狀態資料還沒準備好");
+        let rest = Value::Map(vec![
+            (Value::Uint(1), Value::Uint(0)),
+            (Value::Uint(2), Value::Uint(1)),
+            (Value::Uint(4), Value::Bool(false)),
+            (Value::Uint(15), Value::Map(vec![(Value::Text("image".into()), Value::Text("1.8.0".into())), (Value::Text("temp_c".into()), Value::Text("48".into()))])),
+        ]);
+        assert_eq!(decode_owner(&rest).unwrap(), "狀態：未認領，網路狀況不穩，設定「尚未」存檔，軟體版本 1.8.0，溫度 48°C");
+    }
+
+    #[test]
+    fn durations() {
+        assert_eq!(duration_zh(0), "0 秒");
+        assert_eq!(duration_zh(59), "59 秒");
+        assert_eq!(duration_zh(402), "6 分 42 秒");
+        assert_eq!(duration_zh(3600 * 3 + 5 * 60 + 9), "3 小時 5 分");
+        assert_eq!(duration_zh(86400 * 2 + 3600 * 4 + 1), "2 天 4 小時");
     }
 }
