@@ -9,7 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import 'scan.dart' show provdService;
-import 'src/rust/api/claim.dart' show frameLimit;
+import 'src/rust/api/claim.dart' show frameLimit, storeRemove;
 import 'src/rust/api/owner.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
@@ -207,6 +207,36 @@ class _NodesPageState extends State<NodesPage> {
     if (mounted) setState(() {});
   }
 
+  /// dev: forget this phone's record of a node (long press). The node is not changed; without the record this phone
+  /// cannot log in to it as owner any more. Not in the app design (v8.5.1) — a bench tool for records made stale by a
+  /// bench restore.
+  Future<void> _forget(String deviceId) async {
+    final last4 = deviceId.substring(deviceId.length - 4);
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+              title: Text('Forget node …$last4? (dev)'),
+              content: const Text('This phone will no longer be able to log in to this node as its owner. '
+                  'The node itself is not changed.'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
+                TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('Forget')),
+              ],
+            ));
+    if (yes != true) return;
+    if (_deviceId == deviceId || _lastNode == deviceId) {
+      await _drop();
+      _lastNode = null;
+    }
+    try {
+      await storeRemove(dir: await _dir(), rel: 'node/$deviceId');
+      _say('forgot …$last4');
+    } catch (e) {
+      _say('forget failed: $e');
+    }
+    await _load();
+  }
+
   Future<void> _ask(OwnerStep Function(OwnerSession) req) async {
     if (_busy) return;
     if (_session == null && _lastNode != null) await _login(_lastNode!);
@@ -252,6 +282,7 @@ class _NodesPageState extends State<NodesPage> {
               title: Text('node …${n.substring(n.length - 4)}'),
               subtitle: Text(_deviceId == n ? 'owner session open' : 'tap to log in'),
               onTap: _busy ? null : () => _login(n),
+              onLongPress: _busy ? null : () => _forget(n),
             ),
           if (logged)
             Row(children: [
