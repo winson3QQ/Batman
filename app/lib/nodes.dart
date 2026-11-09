@@ -34,6 +34,8 @@ class _NodesPageState extends State<NodesPage> {
   // the live owner session
   OwnerSession? _session;
   String? _deviceId;
+  // the node of the last owner session: a request after the link dropped (idle BLE disconnects, GATT 133) logs in again
+  String? _lastNode;
   QualifiedCharacteristic? _rxc;
   StreamSubscription<ConnectionStateUpdate>? _conn;
   StreamSubscription<List<int>>? _notify;
@@ -83,7 +85,11 @@ class _NodesPageState extends State<NodesPage> {
   Future<bool> _tryLogin(String id, Uint8List record, Uint8List ownerPub) async {
     final connected = Completer<bool>();
     final conn = _ble.connectToDevice(id: id, connectionTimeout: const Duration(seconds: 15)).listen((u) {
-      if (connected.isCompleted) return;
+      if (connected.isCompleted) {
+        // the link went away after the login: the session is gone with it (the next request logs in again)
+        if (u.connectionState == DeviceConnectionState.disconnected && _rxc?.deviceId == id && _session != null) _lost();
+        return;
+      }
       if (u.connectionState == DeviceConnectionState.connected) connected.complete(true);
       if (u.connectionState == DeviceConnectionState.disconnected) connected.complete(false);
     }, onError: (Object _) => connected.isCompleted ? null : connected.complete(false));
@@ -175,6 +181,7 @@ class _NodesPageState extends State<NodesPage> {
           final ok = await _tryLogin(id, record, ownerPub);
           if (ok) {
             _deviceId = deviceId;
+            _lastNode = deviceId;
             setState(() {});
             return;
           }
@@ -191,13 +198,34 @@ class _NodesPageState extends State<NodesPage> {
     }
   }
 
+  void _lost() {
+    _say('link to the node lost');
+    _drop();
+    if (mounted) setState(() {});
+  }
+
   Future<void> _ask(OwnerStep Function(OwnerSession) req) async {
-    final s = _session;
+    if (_busy) return;
+    if (_session == null && _lastNode != null) await _login(_lastNode!);
+    var s = _session;
     if (s == null || _busy) return;
     setState(() => _busy = true);
     try {
       _answer = Completer<String>();
-      await _write(req(s).frames);
+      try {
+        await _write(req(s).frames);
+      } on PlatformException catch (e) {
+        // nothing reached the node (the write itself failed): log in again and send it once more
+        _say('link lost (${e.code}): logging in again');
+        await _drop();
+        setState(() => _busy = false);
+        await _login(_lastNode!);
+        s = _session;
+        if (s == null) return;
+        setState(() => _busy = true);
+        _answer = Completer<String>();
+        await _write(req(s).frames);
+      }
       _say(await _answer!.future.timeout(const Duration(seconds: 15), onTimeout: () => 'no answer in 15 s'));
     } catch (e) {
       _say('request failed: $e');
@@ -209,7 +237,7 @@ class _NodesPageState extends State<NodesPage> {
 
   @override
   Widget build(BuildContext context) {
-    final logged = _session != null;
+    final logged = _session != null || _lastNode != null; // after a lost link a request logs in again
     return Scaffold(
       appBar: AppBar(title: const Text('My nodes')),
       body: Padding(
