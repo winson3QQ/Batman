@@ -212,6 +212,21 @@ if command -v busybox >/dev/null 2>&1; then
 else no "busybox missing: the node-shell checks cannot run"; fi
 unset -f fq
 
+# ---- find_base (fresh-254.sh): a restore finds the node on the base version V, or on VB when bench-s0 unclaimed put
+# another version into B (2026-11-09); without VB only V. find04 is a stub: the node "is on" $ON, the asked patterns logged
+fb=$(sed -n '/^find_base(){/,/; }$/p' "$ROOT/scripts/dv/fresh-254.sh")
+if [ -n "$fb" ]; then
+	fbt(){ ( eval "$fb"; ASKED=""; find04(){ ASKED="${ASKED}[$1]"; [ "$1" = "ver=$ON " ]; }; sleep(){ :; }
+		if find_base 1; then echo "found $ASKED" | cut -c1-80; else echo "none $(printf '%s' "$ASKED" | tr ']' '
+' | sort -u | tr '
+' ' ')"; fi ); }
+	o=$(V=1.0 ON=1.0 fbt); [ "$o" = "found [ver=1.0 ]" ] && ok "find_base: no VB, node on V -> found by V" || no "find_base no VB on V: [$o]"
+	o=$(V=1.0 ON=2.0 fbt); [ "$o" = "none [ver=1.0  " ] && ok "find_base: no VB, node on another version -> not found, only V asked" || no "find_base no VB other: [$o]"
+	o=$(V=1.0 VB=2.0 ON=2.0 fbt); [ "$o" = "found [ver=1.0 ][ver=2.0 ]" ] && ok "find_base: VB set, node on VB -> found (V asked first)" || no "find_base VB on VB: [$o]"
+	o=$(V=1.0 VB=1.0 ON=2.0 fbt); [ "$o" = "none [ver=1.0  " ] && ok "find_base: VB = V -> only V asked" || no "find_base VB=V: [$o]"
+	o=$(V=1.0 VB=2.0 ON=3.0 fbt); [ "$o" = "none [ver=1.0  [ver=2.0  " ] && ok "find_base: VB set, node on a third version -> not found" || no "find_base third: [$o]"
+else no "find_base not found in $ROOT/scripts/dv/fresh-254.sh"; fi
+
 # ---- the field boundary on the real incident line
 s='mac=88:a2:9e:b5:6c:89 slot=A ver=1.5.14-wsl.22+2ecf1cb.fwce20a68 trial_rc=1 dt_try=00000000 hold=[] held=0 badslot=[slot=B version=1.5.14-wsl.22+2ecf1cb.fwce20a68] up=40 boot=c5faffaa'
 case "$s" in *"slot=B "*) ok "control: the old pattern *\"slot=B \"* does match the A line (the bug)";; *) no "control: old pattern did not match";; esac

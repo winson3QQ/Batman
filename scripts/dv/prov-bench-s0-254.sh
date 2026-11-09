@@ -100,6 +100,12 @@ restore_nodes_line(){	# <snapshot state> <node> <run> <date>
 }
 NN=$2; MACW=$(echo "$MAC" | tr : -)
 V=${V:?version}; PAY=${PAY:?payload path on the node}; PSHA=${PSHA:?payload sha256}
+# VB / PAYB / PSHAB (unclaimed, 2026-11-09): the version written into B when it is not A's (the app's test of a dev
+# image on a fresh B). V / PAY / PSHA stay A's: the precondition and every way back (restore_all, the B rewrite) use
+# them. restore takes the same VB to find a node that is on that B. Unset = V / PAY / PSHA (every other run unchanged).
+VB=${VB:-$V}; PAYB=${PAYB:-$PAY}; PSHAB=${PSHAB:-$PSHA}
+if [ "$VB $PAYB $PSHAB" != "$V $PAY $PSHA" ]; then case "$MODE" in unclaimed|restore) ;; *) echo "VB / PAYB / PSHAB only with unclaimed or restore"; exit 2;; esac
+	[ -n "$VB" ] && [ -n "$PAYB" ] && [ -n "$PSHAB" ] || { echo "VB / PAYB / PSHAB: all three or none"; exit 2; }; fi
 OUTS=${OUTS:-//wsl.localhost/Ubuntu-24.04/home/yello/out}
 REPO=${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}; PB=$REPO/scripts/node/prov-base-254.sh
 TOOLS=${DV_PROV_TOOLS:-/c/Users/yello/batman-dv-tools/prov}; TOOLS_WSL=/home/yello/batman-dv-tools/prov
@@ -119,13 +125,14 @@ say "RUN ID $RUN ($MODE $NN)"
 mkdir "$LOCKD" 2>/dev/null || { echo "another dv run holds $LOCKD"; exit 1; }
 pend_drop(){ wsl_ rm -f $N0.pending $N0.cfg.pending; }
 RESTORED=0
-payver(){
+payver(){   # [sha version]: default PSHA V
+	local psha=${1:-$PSHA} pv=${2:-$V}
 	# payload version == V, from the build dir's SHA256SUMS (as chain1: a version mismatch discards the hold, and the fresh
 	# slot would commit a version nothing here looks for)
-	VPAY=""; for sums in "$OUTS"/*/ekh-bcm2711/SHA256SUMS; do grep -q "^$PSHA  .*-ab-payload\.tar\.gz$" "$sums" 2>/dev/null || continue
+	VPAY=""; for sums in "$OUTS"/*/ekh-bcm2711/SHA256SUMS; do grep -q "^$psha  .*-ab-payload\.tar\.gz$" "$sums" 2>/dev/null || continue
 		d=${sums%/SHA256SUMS}; bs=$(sha256sum < "$d/batman-build.txt" | cut -c1-64); grep -q "^$bs  batman-build\.txt$" "$sums" || { say "batman-build.txt in $d does not match its SHA256SUMS"; exit 1; }
 		VPAY=$(sed -n 's/^BATMAN_VERSION=//p' "$d/batman-build.txt" | tr -d '\r'); break; done
-	[ "$VPAY" = "$V" ] || { say "payload BATMAN_VERSION [$VPAY] != V [$V]"; exit 1; }; say "payload version $VPAY (build dir evidence)"
+	[ "$VPAY" = "$pv" ] || { say "payload BATMAN_VERSION [$VPAY] != [$pv]"; exit 1; }; say "payload version $VPAY (build dir evidence)"
 }
 abort(){ no "ABORT: $*"; restore_all "abort: $*" && RESTORED=1; exit 1; }   # fresh-254.sh's abort + the restore's outcome
 pkp(){ pk_proof "$1" || { sleep 15; pk_proof "$1"; }; }   # one retry: a single dropped ssh must not restore a good node
@@ -143,7 +150,7 @@ if [ "$MODE" = restore ]; then
 	PH=restore-pre
 	# a kept node's address is openmanetd's, outside the swept /24s: start from nodes.txt (or IP=)
 	SEEN="${IP:-} $(wsl_ grep "^node=$NN " $BENCH/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1)"
-	wait_find 300 "ver=$V " || { say "$NN not found by its eth MAC (tried:$SEEN; give IP=<address>)"; exit 1; }
+	find_base 300 || { say "$NN not found by its eth MAC (tried:$SEEN; give IP=<address>)"; exit 1; }
 	say "$NN at $FIP ($FOUND_HOW): $FOUND_STATE"
 	[ "$(fq 'cat /sys/class/net/eth0/carrier 2>/dev/null')" = 1 ] || { say "$NN has no carrier on eth0: the lab cable must be on THIS node (after the rollback it is on the fleet mesh key) — nothing written"; exit 1; }
 	# nothing is written before these hold: slot A still carries V (restore_all waits for "slot=A ver=$V"), the payload
@@ -352,8 +359,9 @@ a=$(q "awk -v b=\$(cat /proc/sys/kernel/random/boot_id) '\$1==b {print \"ps=\" \
 # unclaimed (the app's claim test, 2026-11-09): A may be a member too — chain1 makes the same fresh B from a member A
 a1=$(echo $a); [ "$MODE" = unclaimed ] && a1=${a1/ps=helper\/member/ps=helper\/legacy}
 say "A: $(echo $a)"; case "$a1" in *"ps=helper/legacy"*"check_rc=0"*"dirty=[] undo=0"*) ;; *) say "A is not a healthy legacy node, or a dirty flag / undo journal is present (a dirty flag left by a restore whose B rewrite failed: check the node, then sh $BASE/prov-base-254.sh finish <the flag's first word> on it)"; exit 1;; esac
-[ "$(q "sha256sum < $PAY | cut -c1-64")" = "$PSHA" ] || { say "payload sha"; exit 1; }
-payver
+[ "$(q "sha256sum < $PAYB | cut -c1-64")" = "$PSHAB" ] || { say "payload sha ($PAYB)"; exit 1; }
+payver "$PSHAB" "$VB"
+[ "$VB" = "$V" ] || { [ "$(q "sha256sum < $PAY | cut -c1-64")" = "$PSHA" ] && payver; } || { say "A's payload $PAY (the way back) is not there"; exit 1; }
 [ -s "$LABKEY.pub" ] || { say "no $LABKEY.pub"; exit 1; }
 [ "$(q 'cat /sys/class/net/eth0/carrier 2>/dev/null')" = 1 ] || { say "$NN has no carrier on eth0: the lab cable must be on THIS node (a fresh slot has no mesh)"; exit 1; }
 pk_proof $NODE || { say "lab key $LABKEY does not authenticate to A by publickey"; exit 1; }
@@ -380,7 +388,7 @@ P1_0=$(q "$P1LIST"); [ "$(echo "$P1_0" | wc -l)" -ge 5 ] || { say "cannot hash p
 # the channel N0 uses: the first node's own; the second node takes the stored one
 if [ "$HAVEN0" = y ]; then CHN=$(wsl_ sed -n 's/^channel=//p' $N0 | tr -d '\r'); else CHN=$(q 'uci -q get wireless.radio1.channel'); fi
 case "$CHN" in ''|*[!0-9]*) say "N0 channel unreadable [$CHN]"; exit 1;; esac
-o=$(q "mkdir -p -m 700 $PDIR && cd $PDIR && rm -rf ./* && tar -xzf $PAY && echo extracted; df -m /opt/batdata | awk 'NR==2 {print \"p6_free_mb=\" \$4}'"); say "$(echo $o)"
+o=$(q "mkdir -p -m 700 $PDIR && cd $PDIR && rm -rf ./* && tar -xzf $PAYB && echo extracted; df -m /opt/batdata | awk 'NR==2 {print \"p6_free_mb=\" \$4}'"); say "$(echo $o)"
 case "$(echo $o)" in "extracted p6_free_mb="[0-9]*) ;; *) say "payload not extracted to $PDIR"; exit 1;; esac
 [ "$(echo "$o" | sed -n 's/^p6_free_mb=//p')" -ge 2048 ] || { say "p6 has less than 2 GB free for the snapshot"; exit 1; }
 # ======== 1. snapshot (mesh markers into it: a fresh card has none)
@@ -407,12 +415,12 @@ case "$o" in *MKFS-OK*"seeded=n"*) ok "p5 empty, not seeded";; *) abort "mkfs";;
 # overlay-restore puts it back, compare checks it
 o=$(q "rm -f /opt/batdata/state/prov-state; sync; [ -e /opt/batdata/state/prov-state ] && echo P6-KEPT || echo P6-CLEARED")
 [ "$o" = P6-CLEARED ] && ok "p6 prov-state cleared (fresh card)" || abort "p6 prov-state not cleared: [$o]"
-q "echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync"
+q "echo '$VB' > /opt/batdata/state/autocommit-hold-commit; sync"
 o=$(timeout 900 ssh $SSHO root@$NODE "BATMAN_ALLOW_UNSEEDED=1 BATMAN_ALLOW_STALE_P5=1 batman-slot apply $PDIR 2>&1 | tail -3" 2>/dev/null | tr -d '\r'); say "apply: $(echo $o)"
 grep -q "armed as one-shot tryboot" <<< "$o" || { q "$DISARM" >/dev/null; abort "apply did not arm"; }
 B0=$(q 'cut -c1-8 /proc/sys/kernel/random/boot_id')
 q '(/etc/init.d/dockerd stop >/dev/null 2>&1; sync; sleep 1; reboot -f) </dev/null >/dev/null 2>&1 &'; t0=$SECONDS
-FIP=""; while [ $((SECONDS - t0)) -lt 150 ] && [ -z "$FIP" ]; do sleep 10; find04 "slot=B ver=$V trial_rc=0 dt_try=00000001 " "$B0" || FIP=""; done
+FIP=""; while [ $((SECONDS - t0)) -lt 150 ] && [ -z "$FIP" ]; do sleep 10; find04 "slot=B ver=$VB trial_rc=0 dt_try=00000001 " "$B0" || FIP=""; done
 [ -n "$FIP" ] || abort "held fresh trial not found in 150 s"
 say "held trial at $FIP ($FOUND_HOW) after $((SECONDS - t0)) s: $FOUND_STATE"; BT=$(bootof "$FOUND_STATE")
 dec=""; ev=""; while [ $((SECONDS - t0)) -lt 180 ]; do ev=$(fq "logread | grep -E 'batman-autocommit|batman-provhelper'"); grep -q "mesh join required: 0 (prov=unclaimed" <<< "$ev" && grep -q "HELD" <<< "$ev" && { dec=ok; break; }; grep -q HOLD-COMMIT-DISCARDED <<< "$ev" && break; sleep 5; done
@@ -426,7 +434,7 @@ for k in 1 2 3 4 5 6 7 8 9 10; do s=$(fq "$ST"); case "$s" in *" slot=B "*"trial
 case "$s" in *" slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
 # the reservation reboot follows on the committed slot (chain1 s6r)
 t=$SECONDS; while [ $((SECONDS - t)) -lt 400 ]; do b=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ "$b" = "$BT" ] || break; sleep 10; done
-wait_find 600 "slot=B ver=$V trial_rc=1 " "$BT" || abort "B not found after the reservation reboot"
+wait_find 600 "slot=B ver=$VB trial_rc=1 " "$BT" || abort "B not found after the reservation reboot"
 say "B committed at $FIP ($FOUND_HOW): $FOUND_STATE"
 t=$SECONDS; d=""; while [ $((SECONDS - t)) -lt 300 ]; do d=$(fq 'echo "$(uci -q get openmanetd.config.dhcpconfigured) $(cut -d. -f1 /proc/uptime)"'); [ "${d%% *}" = 1 ] && [ "${d##* }" -ge 150 ] && break; sleep 10; done
 [ "${d%% *}" = 1 ] && [ "${d##* }" -ge 150 ] && ok "B stable: dhcpconfigured=1, uptime ${d##* } s" || abort "B not stable after the reservation reboot: dhcpconfigured/uptime=[$d]"
@@ -434,7 +442,7 @@ t=$SECONDS; d=""; while [ $((SECONDS - t)) -lt 300 ]; do d=$(fq 'echo "$(uci -q 
 # and the dirty flag stay: `restore <node> <run>` brings the node back (p5 from the snapshot undoes the app's claim).
 if [ "$MODE" = unclaimed ]; then
 	KEPT=1   # on_exit must not restore: the node is left unclaimed on purpose
-	RESULT="PASS — $NN is an UNCLAIMED fresh B at $FIP (MAC $MAC); claim QR: ssh root@$FIP batman-provhelper qr; back: restore $NN $RUN"
+	RESULT="PASS — $NN is an UNCLAIMED fresh B at $FIP (MAC $MAC); claim QR: ssh root@$FIP batman-provhelper qr; back: restore $NN $RUN$([ "$VB" = "$V" ] || echo " (with the same VB / PAYB / PSHAB)")"
 	exit 0
 fi
 # ======== 3. lab key (publickey proven BEFORE the claim), claim with H0

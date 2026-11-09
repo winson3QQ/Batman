@@ -99,6 +99,10 @@ land_quiet(){ local b0 b1; b0=$(bootof "$FOUND_STATE"); fq '/etc/init.d/openmane
 # ---- restore_all: from ANY state after the snapshot back to S0 (same path as step 9). Idempotent steps, each printed.
 # RESTORE_PERSON=1 from the start of a restore until the snapshot is finished: any return before that (a failed step,
 # compare / B rewrite / p1 FAIL with the snapshot kept) leaves 04 to a person — the caller reports it (needs-person.txt)
+# find_base <seconds>: the node by its MAC on the base version V, or on VB (prov-bench-s0 unclaimed with another version
+# in B: the node may be on that B when a restore starts). Without VB (or VB = V) exactly wait_find "ver=$V ".
+find_base(){ local t=$SECONDS; FIP=""; while [ $((SECONDS - t)) -lt "$1" ]; do find04 "ver=$V " && return 0
+	[ -n "${VB:-}" ] && [ "$VB" != "$V" ] && find04 "ver=$VB " && return 0; sleep 10; done; return 1; }
 restore_all(){
 	[ "$RESTORING" = 1 ] && return 1; RESTORING=1; PH=restore
 	[ "$SNAPPED" = 1 ] || { say "RESTORE: no snapshot was taken — nothing to restore"; return 0; }
@@ -106,7 +110,7 @@ restore_all(){
 	say "RESTORE (${1:-step 9})"
 	local s b o i cmp
 	for i in 1 2 3; do
-		wait_find 900 "ver=$V " || { say "RESTORE: 04 not found anywhere in 900 s — needs a person (snapshot $D on p6, dead-man staged=$STAGED)"; return 1; }
+		find_base 900 || { say "RESTORE: 04 not found anywhere in 900 s — needs a person (snapshot $D on p6, dead-man staged=$STAGED)"; return 1; }
 		say "04 at $FIP ($FOUND_HOW): $FOUND_STATE"; s=$FOUND_STATE
 		# an uncommitted trial: leave it (reboot -> its committed default slot)
 		case "$s" in *"trial_rc=0 "*) b=$(bootof "$s"); sl=$(slotof "$s"); o=$(fq "$(reboot_guarded "$b" "$sl" 0 ch1-restore)")   # disarms first
