@@ -462,7 +462,7 @@ E1 的結果寫回本節;重開的時機和預期不同 → 該鏈送回審查�
 | `claim.*` | `prov-claim-254` | CheckMac、錯 owner_pub、10 / h、防呆門 |
 | `net.apply` | netjoin / netupdate / powerloss | admins 鏈、首版、COSE 壞、解密失敗 |
 | `network.leave` | `prov-leave-ota` | 非擁有者 |
-| `owner.add / remove` | add → 新擁有者的 owner-op 被接受(psk_owner ≤ 4);remove → `E_FORBIDDEN`;admins +1 | 跳號、降版、移除最後一位;**§10 第 10 點(與 L29 / S3 衝突)** |
+| `owner.add / remove` | add → 新擁有者的 owner-op 被接受(psk_owner ≤ 4);remove → `E_FORBIDDEN`(254-p3-impl §3.2:「admins +1」刪除,owner 增刪不動 admins) | 跳號、降版、移除最後一位;**§10 第 10 點(與 L29 / S3 衝突)** |
 | `settings.get / set` | `get` 依能力分組回目前值;`set` 驗 owner-op 與 schema;**P1 沒有可寫的 key**(上層只定義 hostname,P-U7) | `hostname` → `E_UNSUPPORTED(rename-pending)`;未知 key → `E_SCHEMA` |
 | `root_password.reset` | provclient 在程序內以 crypt 對 fd 4 的 shadow hash 比對(§2.2);p5 `shadow-root` 的 sha 改變;再呼叫一次就換新 | 非擁有者 |
 | `diag.bundle` | fd 是 O_RDONLY、schema 正確、canary = 0、暫存檔讀完就刪 | 非擁有者 |

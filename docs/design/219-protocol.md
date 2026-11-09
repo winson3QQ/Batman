@@ -444,7 +444,7 @@ member_list = { net_id, net_version, prev_hash,
 | 可行性 3 | Dart Noise 套件不可行 | §1、§10 刪除 |
 | 可行性 4 | 編碼未定義 | DER 憑證鏈、raw r‖s、SEC1 未壓縮、固定長度 nonce / boot_id、u32BE、HKDF L=32、deterministic CBOR |
 
-SHOULD-FIX 已併入:拒絕無 PSK 的交握、手機不依廣播選模式;PSK 失敗回等長假訊息並常數時間嘗試;`owner/remove` 輪替 `owner_tag_key`;角色表;`node_cert` 不過期 → 送封包前做新鮮挑戰;AEAD 失敗即中止、HTTP session id 與一次一個請求、請求也能分塊、中止只靠斷線;全域限速與 608B 限速;開發 / 正式隔離(prologue、標籤、app 不給開關);`psk_member` 共用的誠實界線;sans-IO 與簽章回呼;Rust vendoring;明文上限 65519;`AcquireNotify` 與 iOS 寫入長度。
+SHOULD-FIX 已併入:拒絕無 PSK 的交握、手機不依廣播選模式;PSK 失敗回等長假訊息並常數時間嘗試;`owner/remove` 刪除被移除者的 `owner_tag_key` 並輪替廣播用的 `adv_owner_key`(254-p3-impl §3.2:以 `owner/remove` 那一列與程式碼 `ownerRemove` 為準);角色表;`node_cert` 不過期 → 送封包前做新鮮挑戰;AEAD 失敗即中止、HTTP session id 與一次一個請求、請求也能分塊、中止只靠斷線;全域限速與 608B 限速;開發 / 正式隔離(prologue、標籤、app 不給開關);`psk_member` 共用的誠實界線;sans-IO 與簽章回呼;Rust vendoring;明文上限 65519;`AcquireNotify` 與 iOS 寫入長度。
 
 **v0.3 review(2026-10-06,第二輪):安全 APPROVE-WITH-CHANGES、可行性 APPROVE-WITH-CHANGES。** 第一輪項目:安全 4 解決 / 3 部分,可行性 2 解決 / 2 部分。v0.4 的處理:
 
