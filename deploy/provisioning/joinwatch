@@ -62,7 +62,7 @@ radio(){ # config + driver state, only read when a diagnosis is composed
 	info=$(iw dev wlh0 info 2>/dev/null)
 	if [ -n "$info" ]; then RUP=up; RTYPE=$(printf '%s\n' "$info" | sed -n 's/^\s*type \(.*\)$/\1/p'); else RUP=down; RTYPE=none; fi
 	M11=$(uci -q get mesh11sd.setup.enabled); FWD=$(iw dev wlh0 get mesh_param mesh_fwding 2>/dev/null); NOL=$(iw dev wlh0 get mesh_param mesh_nolearn 2>/dev/null)
-	GUARD=$(tr -s ' ' < /etc/halow-keyguard.blocked 2>/dev/null | sed 's/^ //'); [ -n "$GUARD" ] || GUARD=none
+	GUARD=$({ tr -s ' ' < /etc/halow-keyguard.blocked; } 2>/dev/null | sed 's/^ //'); [ -n "$GUARD" ] || GUARD=none
 	IP=$(uci -q get network.ahwlan.ipaddr); case "$(uci -q get openmanetd.config.dhcpconfigured)" in 1) ADDR=reserved;; *) ADDR=bootstrap;; esac
 	PREV=$(tail -1 "$BR" 2>/dev/null | sed 's/^[^ ]* boot_id=[^ ]* prev=//' | cut -c1-60)
 	live

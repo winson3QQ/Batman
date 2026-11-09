@@ -78,7 +78,7 @@ platform_check_image() {
 	local out rc caller
 	out=$( { _ab_ramroot_guard "$@" && _ab_check_image "$@"; } 2>&1); rc=$?
 	[ -n "$out" ] && echo "$out"
-	caller=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null | cut -c1-60)
+	caller=$({ tr '\0' ' ' < "/proc/$PPID/cmdline"; } 2>/dev/null | cut -c1-60)
 	otalog S1 CHECK rc=$rc caller="$caller" ramroot="$RAM_ROOT" upg="$([ -x "$RAM_ROOT/sbin/upgraded" ] && echo y || echo n)" msg="$(echo "$out" | tail -1)"
 	[ "$rc" = 0 ] && { _ab_arm_mesh "$caller" || { echo "REFUSING: cannot clear the previous ota-armed.mesh"; return 1; }; }
 	return $rc
@@ -93,7 +93,7 @@ _ab_live_sysupgrade() {
 		p=${d#/proc/}
 		[ "$(awk '/^Uid:/{print $2}' "$d/status" 2>/dev/null)" = 0 ] || continue
 		[ "$(readlink "$d/ns/pid" 2>/dev/null)" = "$(readlink /proc/1/ns/pid 2>/dev/null)" ] || continue
-		a1=$(tr '\0' '\n' < "$d/cmdline" 2>/dev/null | sed -n 2p)
+		a1=$({ tr '\0' '\n' < "$d/cmdline"; } 2>/dev/null | sed -n 2p)
 		[ -n "$a1" ] || continue
 		case "$a1" in /*) ;; *) cwd=$(readlink "$d/cwd" 2>/dev/null) || continue; a1="$cwd/$a1" ;; esac
 		[ "$(readlink -f "$a1" 2>/dev/null)" = /sbin/sysupgrade ] && return 0
@@ -123,7 +123,7 @@ _ab_ramroot_guard() {
 	# a fresh RAM_ROOT per OTA: install_file never overwrites, so files left by an OTA aborted earlier this boot
 	# would be reused. Only stage 1 (our parent is /sbin/sysupgrade) resets it — procd validates AFTER install_bin.
 	# It is inside the root-only run dir, so this rm cannot be steered by anyone else (unlike /tmp/root).
-	case "$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null)" in *sysupgrade*) case "$RAM_ROOT" in "$RUNDIR"/ramroot) rm -rf "$RAM_ROOT";; esac;; esac
+	case "$({ tr '\0' ' ' < "/proc/$PPID/cmdline"; } 2>/dev/null)" in *sysupgrade*) case "$RAM_ROOT" in "$RUNDIR"/ramroot) rm -rf "$RAM_ROOT";; esac;; esac
 	case "$RAM_ROOT" in "$RUNDIR"/*) ;; *) echo "REFUSING: no root-only run dir for the sysupgrade RAM_ROOT (it would be $RAM_ROOT)"; return 1;; esac
 	# the image itself (stage 1 hands a /tmp copy; LuCI/cgi-io upload to /tmp as root): root's, no link tricks
 	if [ -n "${1:-}" ] && [ "$1" != - ]; then
@@ -327,7 +327,7 @@ _ab_do_upgrade() {
 	echo 'root.squashfs' > "$ex" || { otalog S2 REFUSE why=exclude-write; return 1; }
 	get_image "$@" | tar -xf - -C "$dir" -X "$ex" || { echo "A/B image unpack failed"; otalog S2 REFUSE why=unpack-failed; return 1; }
 	[ -f "$dir/SHA256SUMS" ] && [ -f "$dir/metadata" ] || { echo "image lacks SHA256SUMS/metadata"; otalog S2 REFUSE why=no-sums-or-metadata; return 1; }
-	otalog S2 PAYLOAD "$(tr '\n' ' ' < "$dir/metadata" 2>/dev/null)"
+	otalog S2 PAYLOAD "$({ tr '\n' ' ' < "$dir/metadata"; } 2>/dev/null)"
 
 	# SoC gate, second (and under `sysupgrade -F`, the ONLY) layer. -F makes sysupgrade ignore a
 	# failed platform_check_image and call us anyway; the fleet tooling used -F routinely once

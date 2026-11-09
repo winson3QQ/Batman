@@ -22,7 +22,7 @@ now(){ date +%s; }
 # strict: non-empty, all digits, 9-10 chars (1973..2286), within [FLOOR,CEIL]
 valid(){ case "$1" in ''|*[!0-9]*) return 1;; esac; [ "${#1}" -ge 9 ] && [ "${#1}" -le 10 ] && [ "$1" -ge "$FLOOR" ] && [ "$1" -le "$CEIL" ]; }
 mounted(){ mount 2>/dev/null | grep -q " $DIR "; }
-readfile(){ [ -f "$FILE" ] || return 1; read -r v < "$FILE" 2>/dev/null; echo "$v"; }
+readfile(){ [ -f "$FILE" ] || return 1; { read -r v < "$FILE"; } 2>/dev/null; echo "$v"; }
 
 save(){   # save [--force]  — persist the bound; forward-only unless --force (real-source override)
 	mounted || { log "save skipped: $DIR not mounted"; return 0; }

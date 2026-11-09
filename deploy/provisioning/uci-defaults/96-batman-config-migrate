@@ -218,7 +218,7 @@ applied=skipped
 if [ -n "$FRAG" ]; then
 	TMP=$(mktemp /tmp/overrides.XXXXXX) && cp "$FRAG" "$TMP" 2>/dev/null   # #280: unpredictable, root 0600
 	[ "$SRC" = lkg ] || schema_migrate "$TMP" "$schema" "$SUPPORTED_SCHEMA"
-	if uci batch < "$TMP" 2>/dev/null; then
+	if { uci batch < "$TMP"; } 2>/dev/null; then
 		uci commit 2>/dev/null; applied=ok
 		# NB: the restored wireless channel does NOT reliably key into the morse radio here — a reload
 		# at this point is too early (regdomain/channelization is not settled yet, so morse falls back

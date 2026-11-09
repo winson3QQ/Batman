@@ -33,7 +33,7 @@ pstop_kill(){
 	[ -f "$pidf" ] || return 0
 	if ( exec 8>"$lock"; flock -n 8 ) 2>/dev/null; then rm -f "$pidf"; return 0; fi   # nobody holds it: stale
 	pid=$(cat "$pidf" 2>/dev/null); case "$pid" in ''|*[!0-9]*) return 0 ;; esac
-	tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "payload-run .*$t \?$" || return 0
+	{ tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null | grep -q "payload-run .*$t \?$" || return 0
 	tree=$(pstop_tree "$pid")
 	logger -t "batman-payload-$t" "stop: killing in-flight payload-run (pid $pid, tree:$(echo $tree))"
 	# shellcheck disable=SC2086
@@ -85,7 +85,7 @@ pstop_final(){
 	pstop_early "$t"
 	t9=$(pstop_up)
 	m=$(pstop_manifest "$t"); [ -n "$m" ] || return 0
-	read -r t0 n k08 < "$st" 2>/dev/null || { t0=$t9; n=0; k08=""; }
+	{ read -r t0 n k08 < "$st"; } 2>/dev/null || { t0=$t9; n=0; k08=""; }
 	[ "$k08" = nodocker ] && { rm -f "$st"; return 0; }
 	final=$(pstop_tiers "$m" | awk 'BEGIN{x=0} $2>x{x=$2} END{print x}')
 	# shellcheck disable=SC2046
