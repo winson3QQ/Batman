@@ -159,7 +159,7 @@ func (s realSys) SetKeyNoPersist(key, id, ch string) error {
 }
 
 // SetCountry / SetAP: halow-setkey's P3 mode (--rollback, --lockwait 20; 254-p3-impl §3.3). The passphrase goes over
-// stdin (`--ap -`), never on a command line. The exit code is the answer (0 / 2 / 3 / 4 / 5).
+// stdin (`--ap -`), never on a command line. The exit code is the answer (0 / 2 / 3 / 4 / 5 / 6; §3.3 table).
 func (s realSys) SetCountry(cc string) int {
 	rc, out := run(nil, "halow-setkey", "--country", cc, "--rollback", "--lockwait", "20")
 	if rc != 0 {
@@ -631,7 +631,7 @@ func daemon(p provstore.Paths) {
 	// §3.3 F63: a p5 stale only in P3's new keys is saved once — not on a trial; design D-9: the first boot after a
 	// sysupgrade is a trial, so wait for its commit (checked every 30 s) instead of waiting for the next boot
 	// waits while the boot is a trial or a wireless change is unfinished (.txn: upgradeSave would skip it; A r2 m6)
-	go saveAfterCommit(func() bool { return trial.Trial() || provstore.TxnPresent(p) }, stop, 30*time.Second,
+	go saveAfterCommit(trialOrTxn(trial.Trial, func() bool { return provstore.TxnPresent(p) }), stop, 30*time.Second,
 		func() { upgradeSave(p, false) })
 	go func() {
 		tk := time.NewTicker(time.Second)

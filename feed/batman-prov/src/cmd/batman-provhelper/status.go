@@ -83,8 +83,6 @@ func onlyP3Stale(rc int, out string) bool {
 	return true
 }
 
-// upgradeSave runs once at the daemon start of a committed boot without an unfinished change: when p5 is stale only
-// in keys P3 added, --save once (a joined node's joinwatch would save on its next tick; an unjoined one never would).
 // uciStaged: packages with staged (uncommitted) uci changes — what makes a settings.set answer E_BUSY (design D-12)
 func uciStaged() []string { return uciStagedIn("/tmp/.uci") }
 
@@ -103,6 +101,9 @@ func uciStagedIn(dir string) []string {
 	return out
 }
 
+// trialOrTxn: wait while the boot is a trial or a wireless change is unfinished (.txn) — upgradeSave skips both (A r2 m6)
+func trialOrTxn(trial, txn func() bool) func() bool { return func() bool { return trial() || txn() } }
+
 // saveAfterCommit (design D-9): wait while the boot is a trial (every `every`), then save once; stop ends the wait
 func saveAfterCommit(isTrial func() bool, stop <-chan struct{}, every time.Duration, save func()) {
 	for isTrial() {
@@ -115,6 +116,8 @@ func saveAfterCommit(isTrial func() bool, stop <-chan struct{}, every time.Durat
 	save()
 }
 
+// upgradeSave runs once at the daemon start of a committed boot without an unfinished change: when p5 is stale only
+// in keys P3 added, --save once (a joined node's joinwatch would save on its next tick; an unjoined one never would).
 func upgradeSave(p provstore.Paths, trial bool) {
 	if trial || provstore.TxnPresent(p) {
 		return

@@ -32,6 +32,8 @@ type settingsCache struct {
 	asked    time.Time
 	now      func() time.Time
 	runAsync func(func())
+	// gen: bumped by readNow; a background refresh that started before it does not store its (older) read (A r3 m2)
+	gen uint64
 }
 
 func newSettingsCache(src func() (Settings, error), now func() time.Time) *settingsCache {
@@ -46,12 +48,12 @@ func (c *settingsCache) refresh() chan struct{} {
 		return d
 	}
 	c.busy, c.done = true, make(chan struct{})
-	done := c.done
+	done, start := c.done, c.gen
 	c.mu.Unlock() // the refresh takes c.mu itself
 	c.runAsync(func() {
 		s, err := c.src()
 		c.mu.Lock()
-		if err == nil {
+		if err == nil && c.gen == start {
 			c.val, c.at = &s, c.now()
 		}
 		c.busy = false
@@ -70,6 +72,35 @@ func (c *settingsCache) Tick() {
 	if due {
 		c.refresh()
 	}
+}
+
+// readNow: a read that starts now, on the caller's goroutine (settings.set, a write verb: not the ro request path), and
+// wins over any background read that started earlier
+func (c *settingsCache) readNow() {
+	c.mu.Lock()
+	c.gen++
+	g := c.gen
+	c.mu.Unlock()
+	s, err := c.src()
+	c.mu.Lock()
+	if err == nil && c.gen == g {
+		c.val, c.at = &s, c.now()
+	}
+	c.mu.Unlock()
+}
+
+// settingsReread: after every settings.set (whatever halow-setkey answered) the cache holds what is live now
+func (n *Node) settingsReread() {
+	if n.settings != nil {
+		n.settings.readNow()
+	}
+}
+
+// touch: someone looked at status — keep the settings cache read too (ssid_unsaved comes from it; A r3 m6)
+func (c *settingsCache) touch() {
+	c.mu.Lock()
+	c.asked = c.now()
+	c.mu.Unlock()
 }
 
 // ConfigUnsafe: batman-config-save's UNSAFE set (`batman-config-save:54`), which p5 never keeps

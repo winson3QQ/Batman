@@ -181,12 +181,12 @@ func TestStatusFirstRequestStale(t *testing.T) {
 func TestStatusBadSourceAndP5(t *testing.T) {
 	f := &fakeStatus{js: []byte("{not json"), p5Err: errors.New("cfgsave lock busy"), inline: true}
 	r, now := statusRig(t, f)
-	if m := statusCall(t, r, false); len(m) != 2 {
+	if m := statusCall(t, r, false); len(m) != 1 { // a member's stale answer is key 1 only (B r3 m2)
 		t.Fatalf("invalid json cached: %v", m)
 	}
 	*now = now.Add(time.Second)
 	f.js, f.jsErr = hs04(t), errors.New("halow-status exit 1")
-	if m := statusCall(t, r, false); len(m) != 2 {
+	if m := statusCall(t, r, false); len(m) != 1 {
 		t.Fatalf("an error result was cached: %v", m)
 	}
 	*now = now.Add(time.Second)

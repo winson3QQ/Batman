@@ -131,7 +131,9 @@ reason-code  = 1 ; update: trial slot active
              / 10 ; legacy claim refused: no usable SSH key and no dev-open (the operator would be locked out)
              / 11 ; content does not match its signature / version unparsable (254-p3-impl §3.1-8)
              / 12 ; an unfinished network change (.txn)
-             / 13 ; value not acceptable (refused, or not read back: the node kept / went back to the previous one)
+             / 13 ; value not acceptable: refused, or not read back and the node went back to the previous one — EXCEPT
+                  ; when the owner's status key 15 then says settings_restore "not verified": the way back did not verify
+                  ; either, the radio state is unknown (254-p3-impl §3.3 rc 6); the app re-reads status after a 13
              / 14 ; country: changes only while not in a network / the network's country differs
              / 15 ; a precondition of this step does not hold
              / 16 ; the node's phone AP is off

@@ -47,6 +47,7 @@ MESH=""; AP=""; MESHID=""; CHAN=""; STATUS=0; NOPERSIST=0; FORGET=0; CHECK=0
 COUNTRY=""; APSSID=""; APSEC=""; ROLLBACK=0; P3=0   # #254 P3 settings (254-p3-impl §3.3)
 usage() { echo "usage: halow-setkey [--mesh <key>|-] [--ap <key>] [--mesh-id <id>] [--channel <n>] [--no-persist] | --forget-mesh [--no-persist] | --check-only [--mesh <key>|-] [--mesh-id <id>] [--channel <n>] | --status" >&2; exit 2; }
 while [ $# -gt 0 ]; do
+	case "$1" in --mesh|--ap|--mesh-id|--channel|--country|--ap-ssid|--ap-section|--lockwait) [ $# -ge 2 ] || usage ;; esac
 	case "$1" in
 		--mesh) MESH=${2:-}; shift 2;; --ap) AP=${2:-}; shift 2;; --mesh-id) MESHID=${2:-}; shift 2;;
 		--channel) CHAN=${2:-}; shift 2;; --status) STATUS=1; shift;;
@@ -163,7 +164,7 @@ fi
 # landing inside netifd's setup of the morse radio left a mesh netdev + wpa_supplicant_s1g on the air that netifd no
 # longer knew (04 2026-10-30, §19.1). An unreadable status is not settled. Nothing has been written yet -> rc 2.
 # shellcheck source=/dev/null
-if [ -r "$WSETTLE" ]; then . "$WSETTLE"; else echo "halow-setkey: $WSETTLE missing — refusing (nothing changed)" >&2; exit 2; fi
+if [ -r "$WSETTLE" ]; then . "$WSETTLE"; else echo "halow-setkey: $WSETTLE missing — refusing (nothing changed)" >&2; [ "$P3" = 1 ] && exit 5; exit 2; fi
 GRADIO=$(morse_radio)
 if [ -n "$GRADIO" ] && ! wl_wait_settled "$GRADIO" "$SETTLE_WAIT"; then
 	echo "halow-setkey: netifd is still reconfiguring $GRADIO after ${SETTLE_WAIT}s — nothing changed (a netifd that never settles needs a reboot)" >&2; [ "$P3" = 1 ] && exit 5; exit 2
@@ -199,7 +200,7 @@ RC=0
 # state: the helper logs CRIT and status reports it (design appendix D-5 / D-6). A live restore that verifies but whose
 # save fails again keeps 3 / 4 (p5 not fresh is what status key 4 already says). A real previous AP key / ssid this mode
 # could not write back (a quote, backslash, line break) is refused with 2 before anything changes. A value equal to the
-# current one (AP: on the air with it) is 0 with nothing changed — after p5 is checked fresh or saved (4 if that fails). A value equal to the current one (AP: on the air with it) is 0 with nothing done.
+# current one (AP: on the air with it) is 0 with nothing changed — after p5 is checked fresh or saved (4 if that fails).
 # The AP passphrase comes on stdin (`--ap -`) and goes to uci by `uci batch` on stdin — never in an argv (F78).
 p3_staged(){ [ -s /tmp/.uci/wireless ]; }
 p3_regdb_has(){ [ -r "$REGDB" ] && awk -F, -v cc="$1" '$1==cc {f=1; exit} END {exit !f}' "$REGDB"; }
@@ -275,7 +276,7 @@ if [ "$P3" = 1 ]; then
 	# the passphrase by uci batch on stdin; the allowed set has no ' -> single quotes are safe
 	printf "set wireless.%s.key='%s'\nset wireless.%s.ssid='%s'\ndelete wireless.%s.disabled\n" "$APSEC" "$AP" "$APSEC" "$APSSID" "$APSEC" | uci batch 9>&- >/dev/null 2>&1
 	rest=""; for s in $oldmark; do [ "$s" = "$APSEC" ] || rest="$rest $s"; done
-	if [ -n "$rest" ]; then echo "$rest" > "$MARK"; else rm -f "$MARK"; fi
+	if [ -n "$rest" ]; then echo "$rest" > "$MARK.tmp" && mv -f "$MARK.tmp" "$MARK"; else rm -f "$MARK"; fi
 	uci commit wireless
 	if [ "$(uci -q get "wireless.$APSEC.key")" != "$AP" ] || [ "$(uci -q get "wireless.$APSEC.ssid")" != "$APSSID" ] || [ -n "$(uci -q get "wireless.$APSEC.disabled")" ]; then
 		rc=3; why="uci read back (the new key / ssid did not land)"

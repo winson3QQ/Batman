@@ -48,3 +48,13 @@ func TestSaveAfterCommit(t *testing.T) {
 	close(stop)
 	saveAfterCommit(func() bool { return true }, stop, time.Hour, func() { t.Fatal("saved after stop") })
 }
+
+// A r2 m6 / r3 m5: the D-9 save waits while the boot is a trial OR a wireless change is unfinished (.txn)
+func TestTrialOrTxn(t *testing.T) {
+	f := func(tr, tx bool) bool {
+		return trialOrTxn(func() bool { return tr }, func() bool { return tx })()
+	}
+	if !f(true, false) || !f(false, true) || !f(true, true) || f(false, false) {
+		t.Fatalf("trialOrTxn: %v %v %v %v", f(true, false), f(false, true), f(true, true), f(false, false))
+	}
+}

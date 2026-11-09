@@ -178,7 +178,10 @@ func (c *statusCache) get(state string, full bool) cbor.Map {
 	}
 	var h halowStatus
 	if js == nil || now.Sub(jsAt) > statusStaleAfter || json.Unmarshal(js, &h) != nil {
-		return cbor.M(1, state, 15, cbor.M("stale", true)) // old data is not shown as current (a member gets key 1 only)
+		if !full {
+			return cbor.M(1, state) // a member gets key 1 only (B r3 m2: not left to provd's filter alone)
+		}
+		return cbor.M(1, state, 15, cbor.M("stale", true)) // old data is not shown as current
 	}
 	m := cbor.M(1, state)
 	if v, ok := verdictOf[h.Health.Level]; ok {
@@ -267,6 +270,9 @@ func (n *Node) statusGet(a cbor.Map, now time.Time, conn *bucket) (cbor.Map, *Er
 	rec, err := n.loadOverlayRO()
 	if err != nil || rec == nil {
 		return nil, fail(EUnsupported, "no usable provisioning record (%v)", err)
+	}
+	if full && n.settings != nil {
+		n.settings.touch()
 	}
 	return n.status.get(rec.State, full), nil
 }

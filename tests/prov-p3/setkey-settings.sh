@@ -43,6 +43,7 @@ cat > "$ST/bin/wifi" <<'EOF'
 #!/bin/bash
 S=${STUB_ST:?}
 echo "wifi $*" >> "$S/wifi.log"
+[ $# = 0 ] && [ -f "$S/stuck-until-wifi" ] && rm -f "$S/stuck-on" "$S/stuck-until-wifi"   # a full reconfigure frees it
 g(){ awk -v k="$1" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }' "$S/committed"; }
 apf=n; [ -f "$S/ap-fails" ] && { [ ! -s "$S/ap-fails" ] || [ "$(cat "$S/ap-fails")" = "$(g wireless.default_radio0.ssid)" ]; } && apf=y
 if [ "$(g wireless.default_radio0.disabled)" != 1 ] && [ "$(g wireless.default_radio0.key)" != CHANGE-ME-NOW ] && [ "$apf" = n ]; then
@@ -50,6 +51,7 @@ if [ "$(g wireless.default_radio0.disabled)" != 1 ] && [ "$(g wireless.default_r
 else
 	[ -f "$S/ap" ] && echo linger > "$S/ap"   # brcmfmac keeps a DOWN type-AP netdev
 fi
+exit 0   # `wifi reload` succeeds: setkey's `|| wifi` fallback must not run a full wifi behind the test's back
 EOF
 cat > "$ST/bin/iw" <<'EOF'
 #!/bin/bash
@@ -133,7 +135,7 @@ wireless.default_radio1.device=radio1
 wireless.default_radio1.mode=mesh
 wireless.default_radio1.key=$PL
 EOF
-	cp "$ST/live" "$ST/committed"; echo " radio1 default_radio0" > "$ST/mark"; rm -f "$ST/ap" "$ST/ap.ssid" "$ST/ap-fails" "$ST/ap-noair" "$ST/uci-tmp/wireless" "$ST/batch-fails" "$ST/r1-pending" "$ST/stuck-on" "$ST/iw-ssid" "$ST/txn"
+	cp "$ST/live" "$ST/committed"; echo " radio1 default_radio0" > "$ST/mark"; rm -f "$ST/ap" "$ST/ap.ssid" "$ST/ap-fails" "$ST/ap-noair" "$ST/uci-tmp/wireless" "$ST/batch-fails" "$ST/r1-pending" "$ST/stuck-on" "$ST/iw-ssid" "$ST/txn" "$ST/stuck-until-wifi"
 	: > "$ST/argv.log"; : > "$ST/cfgsave.log"; : > "$ST/p5"
 	printf '#!/bin/bash\necho "$*" >> "$STUB_ST/cfgsave.log"; [ "$1" = --check ] && { [ -f "$STUB_ST/p5-stale" ] && exit 5; exit 0; }; [ -f "$STUB_ST/save-fails" ] && exit 1; rm -f "$STUB_ST/p5-stale"; echo saved\n' > "$ST/bin/batman-config-save"; chmod +x "$ST/bin/batman-config-save"; rm -f "$ST/save-fails" "$ST/p5-stale"
 }
@@ -259,5 +261,18 @@ reset; o=$(printf 'Abcdef\rgh12345\n' | run --ap - --ap-ssid T --ap-section defa
 [ "$rc" = 2 ] && [ "$(get wireless.default_radio0.key)" = "$PL" ] && ok "CR inside the passphrase -> 2" || no "inner CR: rc $rc"
 reset; printf '%s\r\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback >/dev/null 2>&1; rc=$?
 [ "$rc" = 0 ] && [ "$(get wireless.default_radio0.key)" = "$PASS1" ] && ok "trailing CR dropped -> 0, key as sent" || no "trailing CR: rc $rc"
+# 21. A r3 m3: a disabled AP with a real key whose change fails -> verified OFF and rc 3 (not assumed, not 6)
+reset; sed -i -e "s/^wireless.default_radio0.key=.*/wireless.default_radio0.key=Oldkey123456789/" "$ST/live"; cp "$ST/live" "$ST/committed"; : > "$ST/ap-fails"
+printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback >/dev/null 2>&1; rc=$?
+[ "$rc" = 3 ] && [ "$(get wireless.default_radio0.disabled)" = 1 ] && [ "$(get wireless.default_radio0.key)" = Oldkey123456789 ] && ok "disabled AP + real key, change fails -> rc 3, back disabled with the old key" || no "disabled real key: rc $rc"
+# 22. A r3 m4 (D-6): still on the air after the reload, off after one full `wifi` -> verified, rc 3 (not 6)
+reset; : > "$ST/ap-fails"; : > "$ST/stuck-on"; : > "$ST/stuck-until-wifi"
+printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback >/dev/null 2>&1; rc=$?; rm -f "$ST/stuck-on" "$ST/stuck-until-wifi"
+[ "$rc" = 3 ] && ok "D-6: off only after the full wifi -> rc 3 (the second try is what verifies it)" || no "D-6 full wifi: rc $rc"
+# 23. B r3 m1: a value flag with no value -> usage (2) at once, not an endless loop
+for fl in --country --ap-ssid --ap-section --mesh-id; do
+	timeout 10 env PATH="$ST/bin:$PATH" busybox sh "$T/sk" --rollback "$fl" >/dev/null 2>&1; rc=$?
+	[ "$rc" = 2 ] && ok "$fl with no value -> 2" || no "$fl with no value: rc $rc (124 = loop)"
+done
 echo "SETKEY-SETTINGS cases=$cases fails=$fails"
 [ "$cases" -gt 0 ] && [ "$fails" = 0 ]

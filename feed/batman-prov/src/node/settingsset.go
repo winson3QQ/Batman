@@ -9,7 +9,6 @@ package node
 
 import (
 	"strings"
-	"time"
 
 	"batman-prov/cbor"
 	"batman-prov/provstore"
@@ -47,10 +46,14 @@ func (n *Node) setkeyResult(rc int, what string) *Error {
 		if what == "phone AP" { // 0 = the AP verified on the air with its values; a country set verifies nothing of it
 			n.settingsRestoreBad.Store(false)
 		}
+	case 2, 3, 4, 5:
 	case 6:
 		n.settingsRestoreBad.Store(true)
 		n.Log("CRIT settings.set %s: halow-setkey rc 6 — the restore did not verify, the radio state is unknown (status key 15 settings_restore)", what)
 		return failR(EApply, ReasonBadValue, "%s: halow-setkey rc 6 (restore not verified)", what)
+	default: // a timeout (124) or a crash: stopped part-way, the state is as unknown as after rc 6 (A r3 m7)
+		n.settingsRestoreBad.Store(true)
+		n.Log("CRIT settings.set %s: halow-setkey rc %d — stopped part-way, the radio state is unknown (status key 15 settings_restore)", what, rc)
 	}
 	return setkeyErr(rc, what)
 }
@@ -119,7 +122,9 @@ func (n *Node) settingsSet(rec *provstore.Record, body cbor.Map) (cbor.Map, *Err
 		if rec.Net != nil {
 			return nil, failR(EReject, ReasonCountryJoin, "settings.set: the country changes only while not in a network")
 		}
-		if e := n.setkeyResult(n.Sys.SetCountry(cc), "country"); e != nil {
+		rc := n.Sys.SetCountry(cc)
+		n.settingsReread()
+		if e := n.setkeyResult(rc, "country"); e != nil {
 			return nil, e
 		}
 	case 20:
@@ -137,7 +142,9 @@ func (n *Node) settingsSet(rec *provstore.Record, body cbor.Map) (cbor.Map, *Err
 		if !apSSIDOK(ssid) || !apPassOK(pass) {
 			return nil, failR(EInput, ReasonBadValue, "settings.set: the phone AP's ssid / passphrase outside the allowed set or length")
 		}
-		if e := n.setkeyResult(n.Sys.SetAP(ssid, pass), "phone AP"); e != nil {
+		rc := n.Sys.SetAP(ssid, pass)
+		n.settingsReread()
+		if e := n.setkeyResult(rc, "phone AP"); e != nil {
 			return nil, e
 		}
 	}
@@ -150,11 +157,7 @@ func (n *Node) settingsAfterSet() cbor.Map {
 	if n.settings == nil {
 		return cbor.M()
 	}
-	select {
-	case <-n.settings.refresh():
-	case <-time.After(statusFirstWait):
-	}
-	m, e := n.settings.get()
+	m, e := n.settings.get() // fresh: settingsReread ran right after halow-setkey
 	if e != nil {
 		return cbor.M()
 	}

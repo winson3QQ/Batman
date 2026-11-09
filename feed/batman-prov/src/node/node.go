@@ -108,7 +108,7 @@ type Sys interface {
 	ClearTxnMarker()
 	DiagBundle() ([]byte, error)
 	RemoveMeshMarkers() error // p6 mesh-expected / mesh-joined (network/leave)
-	// 254-p3-impl §3.3: halow-setkey --rollback (P3 mode); the exit code (0 / 2 / 3 / 4 / 5, else unknown)
+	// 254-p3-impl §3.3: halow-setkey --rollback (P3 mode); the exit code (0 / 2 / 3 / 4 / 5 / 6, else unknown)
 	SetCountry(cc string) int
 	SetAP(ssid, passphrase string) int // the passphrase over stdin
 	Now() time.Time
