@@ -255,7 +255,7 @@ r1(){ echo "== R1 docker-run-broken trial is NOT committed and reverts (hold -> 
   echo "    breaking runc on trial slot $tr"
   n 'for p in /usr/bin/runc /usr/sbin/runc; do [ -f "$p" ] && { mv "$p" "$p.off"; break; }; done'; R1_BROKE=1; R1_SLOT=$tr
   q 'docker info >/dev/null 2>&1' && echo "    trial: docker engine still answers (docker run cannot)"
-  n 'batman-autocommit release' 2>&1 | sed 's/^/    /'
+  n "$(release_guarded "${HB:0:8}" "$tr" nowait)" 2>&1 | sed 's/^/    /'
   unread_reset; q "$RDR"'[ -f "$R/autocommit.ctl/released" ]'; rm=$?
   undetermined R1 && return
   [ "$rm" = 0 ] || { no "R1: release did not take effect (no released marker) — would revert for 'held', not for the canary"; return; }
@@ -313,7 +313,7 @@ r3(){ echo "== R3 healthy held trial waits for release, then commits (#261) =="
   pre=$(slot); [ -n "$pre" ] || { no "R3 slot unreadable — not verified"; return; }
   held_trial R3 "$pre" || return; tr=$HT
   wait_held R3 "$HB" "$HDL" || return
-  t0=$SECONDS; o=$(n 'batman-autocommit release --wait' 2>&1 | tr -d '\r'); echo "$o" | sed 's/^/    /'
+  t0=$SECONDS; o=$(n "$(release_guarded "${HB:0:8}" "$tr")" 2>&1 | tr -d '\r'); echo "$o" | sed 's/^/    /'
   unread_reset; committed; cm=$?; ots_wait; ou=$?
   undetermined R3 && return
   echo "$o" | grep -q 'release: committed' || [ "$cm" = 0 ] || { no "R3: release --wait did not end committed"; return; }
@@ -391,7 +391,7 @@ c1(){ local neg=${1:-}; echo "== C1${neg:+ negative} trial-crash-274: a crash in
   echo "    crashing $EUDC (SIGKILL of its process)"; crash_ctr $EUDC
   for _ in $(seq 1 12); do ledger_has "crash $EUDC" && break; sleep 5; done
   ledger_has "crash $EUDC" || { no "$tag: the guardian did not record/restart the crash within 60 s"; return; }
-  n 'batman-autocommit release' 2>&1 | sed 's/^/    /'
+  n "$(release_guarded "${HB:0:8}" "$tr" nowait)" 2>&1 | sed 's/^/    /'
   wait_revert "$tag" "$b0" "$dl"; w=$?
   if [ -n "$neg" ]; then
     [ "$w" = 2 ] && ok "$tag negative control: with a 60 s window the crashed trial commits (the 600 s rule is what reverts it)" \

@@ -34,8 +34,28 @@ cat > "$T/bin/ps" <<'STUB'
 #!/bin/sh
 exec "$REALPS" axww
 STUB
-chmod +x "$T/bin/batman-slot" "$T/bin/cut" "$T/bin/ps"
-export REALCUT REALPS; REALCUT=$(command -v cut); REALPS=$(command -v ps)
+# batman-autocommit: logs the release; vcmailbox: the tryboot flag in $T/flag, a disarm (0x00038064) clears it unless
+# STUB_DISARM_FAIL is set; mkdir: with STUB_MKDIR_CANCEL, ch1.cancel appears just before ch1.running is made (the
+# restore's touch landing between the dead-man's first cancel check and its marker)
+cat > "$T/bin/batman-autocommit" <<'STUB'
+#!/bin/sh
+echo "autocommit $*" >> "$STUB_LOG"; echo "release: committed"
+STUB
+cat > "$T/bin/vcmailbox" <<'STUB'
+#!/bin/sh
+case "$1" in
+	0x00038064) echo "disarm" >> "$STUB_LOG"; [ -n "$STUB_DISARM_FAIL" ] || echo 0 > "$STUB_FLAG" ;;
+	0x00030064) echo "0x0000001c 0x80000000 0x00030064 0x00000004 0x80000004 $(cat "$STUB_FLAG")" ;;
+esac
+STUB
+cat > "$T/bin/mkdir" <<'STUB'
+#!/bin/sh
+for d; do case "$d" in */ch1.running) [ -n "$STUB_MKDIR_CANCEL" ] && : > "${d%/ch1.running}/ch1.cancel" ;; esac; done
+exec "$REALMKDIR" "$@"
+STUB
+chmod +x "$T/bin/batman-slot" "$T/bin/cut" "$T/bin/ps" "$T/bin/batman-autocommit" "$T/bin/vcmailbox" "$T/bin/mkdir"
+export REALCUT REALPS REALMKDIR STUB_FLAG=$T/flag STUB_DISARM_FAIL="" STUB_MKDIR_CANCEL=""
+REALCUT=$(command -v cut); REALPS=$(command -v ps); REALMKDIR=$(command -v mkdir); echo 0 > "$T/flag"
 # node <boot> <active> <trial-rc> <rollback-rc>: the stub node's state for nsh
 node(){ NB=$1 NA=$2 NT=$3 NR=$4; : > "$T/log"; }
 nsh(){ PATH="$T/bin:$PATH" STUB_BOOT=$NB STUB_LOG="$T/log" STUB_ACTIVE=$NA STUB_TRIAL_RC=$NT STUB_RB_RC=$NR sh -c "$1"; sleep 0.3; }
@@ -45,12 +65,13 @@ rebooted(){ grep -q '^reboot committed' "$T/log"; }
 
 # ---- rb_guarded
 o=$(run 1201bf8a B 1 0 -- 1201bf8a B 1 ch1-restore); [ "$o" = SENT ] && rolled && rebooted && ok "matching state: SENT, rollback + reboot" || no "matching state: [$o] $(tr '\n' ' ' < "$T/log")"
-o=$(run c5faffaa A 1 0 -- c5faffaa B 1 ch1-restore); case "$o" in "WRONG-STATE boot=c5faffaa active=A trial=1") ! rolled && ok "the 2026-11-08 case (node on A, caller thought B): WRONG-STATE, no rollback" || no "rolled back on A";; *) no "node on A: [$o]";; esac
+o=$(run c5faffaa A 1 0 -- c5faffaa B 1 ch1-restore); case "$o" in "WRONG-STATE boot=c5faffaa active=A trial=1 extra=-")! rolled && ok "the 2026-11-08 case (node on A, caller thought B): WRONG-STATE, no rollback" || no "rolled back on A";; *) no "node on A: [$o]";; esac
 o=$(run aaaaaaaa B 1 0 -- 1201bf8a B 1 x); case "$o" in WRONG-STATE*) ! rolled && ok "another boot (read before a reboot): WRONG-STATE, no rollback" || no "rolled back in another boot";; *) no "another boot: [$o]";; esac
 o=$(run 1201bf8a A 1 0 -- 1201bf8a A 0 ch1-b); case "$o" in WRONG-STATE*) ! rolled && ok "the trial already committed / fell back (want trial): WRONG-STATE" || no "rolled back a committed slot";; *) no "trial mismatch: [$o]";; esac
 o=$(run 1201bf8a A 0 0 -- 1201bf8a A any x); [ "$o" = SENT ] && ok "trial any: SENT" || no "trial any: [$o]"
-o=$(run 1201bf8a B 2 0 -- 1201bf8a B 1 x); case "$o" in *" trial=2") ! rolled && ok "is-trial rc 2 (unknown) is not 'committed': WRONG-STATE" || no "rolled back on rc 2";; *) no "rc 2: [$o]";; esac
-o=$(run 1201bf8a B 1 0 -- 1201bf8a B 1 x "[ -e $T/nonexistent ]"); case "$o" in WRONG-STATE*) ! rolled && ok "extra condition false (e.g. the dead-man acting): WRONG-STATE" || no "rolled back with the extra condition false";; *) no "extra condition: [$o]";; esac
+o=$(run 1201bf8a B 2 0 -- 1201bf8a B 1 x); case "$o" in *" trial=2 extra=-")! rolled && ok "is-trial rc 2 (unknown) is not 'committed': WRONG-STATE" || no "rolled back on rc 2";; *) no "rc 2: [$o]";; esac
+o=$(run 1201bf8a B 1 0 -- 1201bf8a B 1 x "[ -e $T/nonexistent ]"); case "$o" in *" extra=0") ! rolled && ok "extra condition false (e.g. the dead-man acting): WRONG-STATE … extra=0" || no "rolled back with the extra condition false";; *) no "extra condition: [$o]";; esac
+rm -f "$T/ran"; o=$(run aaaaaaaa B 1 0 -- 1201bf8a B 1 x ": > $T/ran"); case "$o" in *" extra=-") [ ! -e "$T/ran" ] && ok "another boot: the extra condition is not run (it may act, e.g. disarm)" || no "the extra condition ran in another boot";; *) no "extra not run: [$o]";; esac
 o=$(run 1201bf8a B 1 1 -- 1201bf8a B 1 x); [ "$o" = REFUSED ] && ! rebooted && ok "batman-slot refuses: REFUSED, no reboot" || no "refused rollback: [$o] $(tr '\n' ' ' < "$T/log")"
 o=$(run 1201bf8a B 1 0 -- "" B 1 x); case "$o" in WRONG-STATE*) ! rolled && ok "empty expected boot: WRONG-STATE (fail-closed)" || no "rolled back with an empty expected boot";; *) no "empty boot: [$o]";; esac
 o=$(run "" B 1 0 -- "" B 1 x); case "$o" in WRONG-STATE*) ! rolled && ok "node boot id unreadable + empty expected boot: WRONG-STATE" || no "rolled back with no boot id on either side";; *) no "unreadable boot: [$o]";; esac
@@ -60,6 +81,20 @@ o=$(run 1201bf8a B 1 0 -- 1201BF8A B 1 x); case "$o" in WRONG-STATE*) ok "boot a
 # ---- reboot_guarded: never a rollback
 node 1201bf8a A 0 0; o=$(nsh "$(reboot_guarded 1201bf8a A 0 s0-slota)"); [ "$o" = SENT ] && rebooted && ! rolled && ok "reboot_guarded: SENT, reboot only" || no "reboot_guarded: [$o] $(tr '\n' ' ' < "$T/log")"
 node 1201bf8a A 1 0; o=$(nsh "$(reboot_guarded 1201bf8a A 0 s0-slota)"); case "$o" in WRONG-STATE*) ! rebooted && ok "reboot_guarded: committed, want trial: nothing" || no "reboot_guarded rebooted a committed slot";; *) no "reboot_guarded mismatch: [$o]";; esac
+# ---- release_guarded: only in that boot, on that slot, in a trial (round 6 B-MINOR-5)
+released(){ grep -q '^autocommit release' "$T/log"; }
+node 1201bf8a B 0 0; o=$(nsh "$(release_guarded 1201bf8a B)"); [ "$o" = "release: committed" ] && grep -q '^autocommit release --wait$' "$T/log" && ok "release_guarded: the trial in that boot: release --wait" || no "release_guarded: [$o] $(tr '\n' ' ' < "$T/log")"
+node 1201bf8a B 0 0; o=$(nsh "$(release_guarded 1201bf8a B nowait)"); case "$o" in *"rc=0") grep -q '^autocommit release$' "$T/log" && ok "release_guarded nowait: release, then rc=" || no "nowait sent --wait";; *) no "release nowait: [$o]";; esac
+node aaaaaaaa B 0 0; o=$(nsh "$(release_guarded 1201bf8a B)"); case "$o" in WRONG-STATE*) ! released && ok "release_guarded: another boot: nothing" || no "released in another boot";; *) no "release other boot: [$o]";; esac
+node 1201bf8a B 1 0; o=$(nsh "$(release_guarded 1201bf8a B)"); case "$o" in WRONG-STATE*) ! released && ok "release_guarded: already committed: nothing" || no "released a committed slot";; *) no "release committed: [$o]";; esac
+node 1201bf8a A 0 0; o=$(nsh "$(release_guarded 1201bf8a B)"); case "$o" in WRONG-STATE*) ! released && ok "release_guarded: a trial on the other slot: nothing" || no "released the other slot's trial";; *) no "release other slot: [$o]";; esac
+# ---- DISARMED (fresh-254.sh): a reboot that would boot an armed tryboot is not sent (round 6 A-MAJOR-1)
+eval "$(grep -E '^(DISARM|DISARMED)=' "$ROOT/scripts/dv/fresh-254.sh")"
+if [ -n "${DISARMED:-}" ]; then
+	echo 1 > "$T/flag"; node 1201bf8a A 1 0; o=$(nsh "$(reboot_guarded 1201bf8a A 1 ch1-restore "$DISARMED")"); [ "$o" = SENT ] && grep -q '^disarm$' "$T/log" && [ "$(cat "$T/flag")" = 0 ] && ok "armed tryboot: disarmed, then the reboot is sent" || no "armed + disarm works: [$o] $(tr '\n' ' ' < "$T/log")"
+	echo 1 > "$T/flag"; node 1201bf8a A 1 0; o=$(STUB_DISARM_FAIL=y; export STUB_DISARM_FAIL; nsh "$(reboot_guarded 1201bf8a A 1 ch1-restore "$DISARMED")"); case "$o" in *" extra=0") ! rebooted && ok "armed tryboot that will not disarm: WRONG-STATE extra=0, no reboot" || no "rebooted with the tryboot still armed";; *) no "armed, disarm fails: [$o]";; esac
+	echo 0 > "$T/flag"
+else no "DISARMED not found in $ROOT/scripts/dv/fresh-254.sh"; fi
 
 # ---- the real call sites, extracted from ROOT and run against the stub node
 fq(){ nsh "$1"; }
@@ -93,8 +128,26 @@ if type back_to_a >/dev/null 2>&1; then
 	ssh(){ local a; for a; do :; done; nsh "$a"; }; q(){ nsh "$*"; }; timeout(){ shift; "$@"; }
 	node 1201bf8a A 1 0; back_to_a; [ $? != 0 ] && ! rolled && ok "brewrite back_to_a: WRONG-STATE returns non-zero" || no "brewrite back_to_a returned 0 on WRONG-STATE"
 	node 1201bf8a B 0 0; back_to_a && rolled && ok "brewrite back_to_a: SENT returns 0" || no "brewrite back_to_a on B: $(tr '\n' ' ' < "$T/log")"
+	# one ssh, no retry: a dropped answer (rc 255) is not followed by a second try that would run in the new boot
+	# (round 6 B-MINOR-4; q retries 6 times on 255, stubbed here as two tries)
+	: > "$T/sshn"; ssh(){ echo ssh >> "$T/sshn"; return 255; }; q(){ echo q >> "$T/sshn"; echo q >> "$T/sshn"; echo "WRONG-STATE boot=x active=A trial=1 extra=-"; }
+	back_to_a; r=$?; [ "$r" != 0 ] && [ "$(tr '\n' ' ' < "$T/sshn")" = "ssh " ] && ok "brewrite back_to_a: a dropped answer is one ssh, no retry, non-zero" || no "brewrite back_to_a on a drop: rc=$r tries=[$(tr '\n' ' ' < "$T/sshn")]"
 	unset -f back_to_a bid say waitboot settle ssh q timeout
 else no "back_to_a not found in $ROOT/scripts/dv/brewrite-254.sh"; fi
+# brewrite's MAC= precondition (round 5 B-MINOR-6 / round 6 B-MINOR-4)
+macl=$(grep '^if \[ -n "${MAC:-}" \]' "$ROOT/scripts/dv/brewrite-254.sh")
+if [ -n "$macl" ]; then
+	o=$(MAC=88:a2:9e:b5:6c:89; NODE=10.0.0.9; q(){ echo 11:22:33:44:55:66; }; eval "$macl"; echo went-on); case "$o" in *"FAIL at it=0"*"not 88:a2:9e:b5:6c:89"*) case "$o" in *went-on*) no "brewrite went on after a MAC mismatch";; *) ok "brewrite: another board at NODE stops before anything is written";; esac;; *) no "brewrite MAC mismatch: [$o]";; esac
+	o=$(MAC=88:a2:9e:b5:6c:89; NODE=10.0.0.9; q(){ echo 88:a2:9e:b5:6c:89; }; eval "$macl"; echo went-on); [ "$o" = went-on ] && ok "brewrite: the right board goes on" || no "brewrite right MAC: [$o]"
+else no "brewrite's MAC= precondition not found in $ROOT/scripts/dv/brewrite-254.sh"; fi
+# prov-254.sh back_to_a: no answer is not "already on A" (round 6 A-MINOR-4)
+eval "$(sed -n '/^field(){/p; /^back_to_a(){/,/^}/p' "$ROOT/scripts/dv/prov-254.sh")"
+if type back_to_a >/dev/null 2>&1; then
+	qr(){ :; }; say(){ :; }; ST=x
+	back_to_a; [ $? != 0 ] && ok "prov back_to_a: an unreadable state returns non-zero" || no "prov back_to_a: an unreadable state counted as 'already on A'"
+	qr(){ echo "mac=x slot=A ver=v trial_rc=1 boot=1201bf8a"; }; back_to_a && ok "prov back_to_a: on A returns 0" || no "prov back_to_a on A"
+	unset -f back_to_a qr say field
+else no "back_to_a not found in $ROOT/scripts/dv/prov-254.sh"; fi
 # restore_all's extra condition (fresh-254.sh): the dead-man's sleeping timer (its cmdline names ch1-deadman.sh) is
 # not "acting"; its ch1.running marker is (round 5 A-MINOR-3)
 cond=$(grep 'ch1-restore "' "$ROOT/scripts/dv/fresh-254.sh" | grep 'rb_guarded' | sed -n 's/.*ch1-restore "\(.*\)")")$/\1/p')
@@ -118,7 +171,18 @@ if [ -n "$dmraw" ]; then
 	dmrun; rolled && [ -d "$BASE/ch1.running" ] && [ -e "$BASE/ch1.fired" ] && ok "dead-man acts: ch1.running made, rollback, ch1.fired" || no "dead-man normal run: running=$([ -d "$BASE/ch1.running" ] && echo y) $(tr '\n' ' ' < "$T/log")"
 	dmrun cancel; ! rolled && [ ! -e "$BASE/ch1.running" ] && ok "dead-man cancelled: nothing, no marker left" || no "dead-man ignored ch1.cancel / left a marker"
 	dmrun run; ! rolled && ok "dead-man: a second instance (ch1.running exists) does nothing" || no "dead-man ran twice"
+	(STUB_MKDIR_CANCEL=y; export STUB_MKDIR_CANCEL; dmrun); ! rolled && [ ! -e "$BASE/ch1.running" ] && ok "dead-man: ch1.cancel landing between its first check and its marker -> stands down, marker removed (round 6)" || no "dead-man acted after a cancel that landed before its marker: $(tr '\n' ' ' < "$T/log")"
 else no "dead-man script not found in $ROOT/scripts/dv/chain1-254.sh"; fi
+# restore_all's side of the handshake (fresh-254.sh), BEFORE its p5-restore: cancel, then the dead-man must be neither
+# acting nor done (round 6 A-MINOR-2 / B-MINOR-2)
+hc=$(grep 'echo CANCELLED")' "$ROOT/scripts/dv/fresh-254.sh" | sed -n 's/.*o=$(fq "\(.*\)")$/\1/p')
+if [ -n "$hc" ]; then
+	BASE=$T/hs; mkdir -p "$BASE"; eval "hcx=\"$hc\""; hcx=${hcx//\/opt\/batdata/$T}
+	hs(){ rm -rf "$BASE"/ch1.*; for f; do case "$f" in run) mkdir "$BASE/ch1.running";; *) : > "$BASE/ch1.$f";; esac; done; node 1201bf8a B 1 0; nsh "$hcx"; }
+	o=$(hs); [ "$o" = CANCELLED ] && [ -e "$BASE/ch1.cancel" ] && ok "restore handshake: ch1.cancel written, dead-man idle -> CANCELLED" || no "restore handshake idle: [$o] cancel=$([ -e "$BASE/ch1.cancel" ] && echo y)"
+	o=$(hs run); [ "$o" != CANCELLED ] && ok "restore handshake: the dead-man acting (ch1.running) -> stop before the p5-restore" || no "restore went on while the dead-man acts"
+	o=$(hs fired); [ "$o" != CANCELLED ] && ok "restore handshake: the dead-man done (ch1.fired) -> stop" || no "restore went on after the dead-man fired"
+else no "restore_all's cancel step not found in $ROOT/scripts/dv/fresh-254.sh"; fi
 unset -f fq
 
 # ---- the field boundary on the real incident line
@@ -159,33 +223,48 @@ scripts/dv/prov-bench-s0-254.sh|RESULT="FAIL ($fails) — $NN is on A committed|
 scripts/dv/prov-wbox-nocommit-254.sh|pr_needs_person "wbox slot B committed|text for a person (NEEDS-PERSON line)
 scripts/dv/prov-254.sh|pr_needs_person "the $tgt slot was committed|text for a person (NEEDS-PERSON line)
 scripts/fault-injection.sh|echo "    NOTE: R1 broke runc|text for a person (NOTE line)
+scripts/fault-injection.sh|HELDWHY="held for operator acceptance (batman-autocommit release)"|the product's log text the R-tests match
 AL
-raw=$(grep -rnE "batman-slot[[:space:]]+[\"']?rollback" "${LS[@]}" --include='*.sh' | rel | nocomment | grep -vE '^scripts/dv/(slot-guard-254|test-slot-guard-254)\.sh:' || true)
+# the slot-changing commands sent from the host: a rollback, and a release (it commits the running trial)
+raw=$(grep -rnE "batman-slot[[:space:]]+[\"']?rollback|batman-autocommit[[:space:]]+[\"']?release" "${LS[@]}" --include='*.sh' | rel | nocomment | grep -vE '^scripts/dv/(slot-guard-254|test-slot-guard-254)\.sh:' || true)
 left=$raw
 while IFS='|' read -r f txt why; do
-	n=$(printf '%s\n' "$raw" | grep "^$f:" | grep -cF -- "$txt")
+	n=$(printf '%s\n' "$raw" | awk -v f="$f:" -v t="$txt" 'index($0, f) == 1 && index($0, t) > 0' | grep -c .)
 	[ "$n" -ge 1 ] || no "lint: allowlist entry no longer found: $f [$txt] ($why)"
-	left=$(printf '%s\n' "$left" | grep -vF -- "$txt" || true)
+	# per file: an allowlisted text hides nothing in another file (round 6 A-MINOR-1 / B-MINOR-1)
+	left=$(printf '%s\n' "$left" | awk -v f="$f:" -v t="$txt" '!(index($0, f) == 1 && index($0, t) > 0)')
 done < "$ALLOW"
 left=$(printf '%s\n' "$left" | grep . || true)
-[ -z "$left" ] && ok "lint: every 'batman-slot rollback' in scope is the guard or allowlisted ($(printf '%s\n' "$raw" | grep -c .) allowlisted lines)" || no "lint: unguarded rollback: $(echo "$left" | cut -d: -f1-2 | tr '\n' ' ')"
-# (2) every guarded call site, arguments pinned (a changed slot / trial / condition is a deliberate edit of this table)
+[ -z "$left" ] && ok "lint: every host-sent 'batman-slot rollback' / 'batman-autocommit release' in scope is the guard or allowlisted ($(printf '%s\n' "$raw" | grep -c .) allowlisted lines)" || no "lint: unguarded rollback / release: $(echo "$left" | cut -d: -f1-2 | tr '\n' ' ')"
+# (2) every guarded call site, arguments pinned (a changed slot / trial / condition is a deliberate edit of this table).
+# Any use of a guard word counts, quoted or not (round 6 A-MINOR-1: `rb_guarded $b A 1 x` was not pinned).
 cat > "$T/sites.want" <<'SITES'
 scripts/dv/brewrite-254.sh:rb_guarded "${b0:0:8}" B any e3-254
 scripts/dv/chain1-254.sh:rb_guarded "$BA" A 0 ch1-b
 scripts/dv/chain1-254.sh:rb_guarded "$BA" A 0 ch1-b
+scripts/dv/chain1-254.sh:release_guarded "$BT" B
 scripts/dv/fresh-254.sh:rb_guarded "$b" B 1 ch1-restore "[ ! -e $BASE/ch1.fired ] && [ ! -e $BASE/ch1.running ]"
+scripts/dv/fresh-254.sh:reboot_guarded "$b" "$sl" 0 ch1-restore "$DISARMED"
+scripts/dv/fresh-254.sh:reboot_guarded "$b" A 1 ch1-restore "$DISARMED"
 scripts/dv/prov-254.sh:rb_guarded "$b0" B any prov-dv-254
+scripts/dv/prov-254.sh:release_guarded "$rb0" A
 scripts/dv/prov-ac-fleetchan-254.sh:rb_guarded "$b0" B any prov-dv-254
 scripts/dv/prov-bench-s0-254.sh:rb_guarded "$BA" A 1 s0-slota
 scripts/dv/prov-bench-s0-254.sh:reboot_guarded "$BA" A 0 s0-slota
 scripts/dv/prov-bench-s0-254.sh:reboot_guarded "$BA" A 1 s0-toa2
+scripts/dv/prov-bench-s0-254.sh:release_guarded "$BA" A
+scripts/dv/prov-bench-s0-254.sh:release_guarded "$BT" B
 scripts/dv/prov-chain0-254.sh:rb_guarded "$b0" B any prov-dv-254
 scripts/dv/prov-chain0-254.sh:reboot_guarded "$b0" B any prov-dv-254
+scripts/dv/prov-legacy-upgrade-254.sh:release_guarded "$rb0" "$1" nowait
 scripts/dv/prov-wbox-nocommit-254.sh:rb_guarded "$b0" B any prov-dv-254
+scripts/fault-injection.sh:release_guarded "${HB:0:8}" "$tr"
+scripts/fault-injection.sh:release_guarded "${HB:0:8}" "$tr" nowait
+scripts/fault-injection.sh:release_guarded "${HB:0:8}" "$tr" nowait
 scripts/fault-injection.sh:rb_guarded "${b1:0:8}" B 1 p5-back-to-A
 SITES
-grep -roE '(rb|reboot)_guarded "[^"]*" [^ ]+ [^ ]+ [^ ")]+( "[^"]*")?' "${LS[@]}" --include='*.sh' | rel | grep -vE '^scripts/dv/(slot-guard-254|test-slot-guard-254)\.sh:' | sort > "$T/sites.got"
+grep -rnE '(rb|reboot|release)_guarded[[:space:]]' "${LS[@]}" --include='*.sh' | rel | nocomment | grep -vE '^scripts/dv/(slot-guard-254|test-slot-guard-254)\.sh:' \
+	| while IFS= read -r l; do f=${l%%:*}; c=${l#*:*:}; printf '%s\n' "$c" | grep -oE '(rb|reboot|release)_guarded[[:space:]]+[^)]*' | sed -E 's/[[:space:]]+$//; s#^#'"$f"':#'; done | sort > "$T/sites.got"
 sort -o "$T/sites.want" "$T/sites.want"
 d=$(diff "$T/sites.want" "$T/sites.got")
 [ -z "$d" ] && ok "lint: $(wc -l < "$T/sites.got") guarded call sites, arguments as pinned" || no "lint: guarded call sites differ (< pinned, > found): $(echo "$d" | grep '^[<>]' | tr '\n' ' ')"

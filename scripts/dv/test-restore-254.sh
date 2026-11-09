@@ -110,5 +110,20 @@ if [ -n "$l" ]; then
 	r=$(MODE=fresh; IP=10.41.80.13; NODE=10.41.1.3; eval "$l"; echo "$NODE"); [ "$r" = 10.41.80.13 ] && ok "fresh: IP= is NODE" || no "fresh: NODE=$r"
 else no "the MODE / IP line not found in $ROOT/scripts/dv/prov-bench-s0-254.sh"; fi
 
+# ---- moved_keep_line (prov-bench-s0): a member A restored at another address keeps its keep line, at the new address
+# (round 6 B-MINOR-6); anything but a keep line, or an address that is not one, is refused
+eval "$(sed -n '/^moved_keep_line(){/,/; }$/p' "$ROOT/scripts/dv/prov-bench-s0-254.sh")"
+if type moved_keep_line >/dev/null 2>&1; then
+	k='node=04 run=keep-s0abc date=2026-11-08 ip=10.41.80.13 mac=88:a2:9e:b5:6c:89 sn=e61551410cfd538e24 version=v1'
+	r=$(moved_keep_line "$k" r9 10.41.1.3 2026-11-09)
+	[ "$r" = 'node=04 run=keep-restore-r9 date=2026-11-09 ip=10.41.1.3 mac=88:a2:9e:b5:6c:89 sn=e61551410cfd538e24 version=v1' ] && ok "moved keep line: same line, new address and run" || no "moved keep line: [$r]"
+	moved_keep_line 'node=04 restored=r1 date=x' r9 10.41.1.3 x >/dev/null && no "moved_keep_line took a restored= line" || ok "moved_keep_line refuses a non-keep line"
+	moved_keep_line "$k" r9 '10.41.1.3; rm -rf x' x >/dev/null && no "moved_keep_line took a bad address" || ok "moved_keep_line refuses a bad address"
+	# what bench_ip then reads (the real awk of bench-254.sh)
+	. "$ROOT/scripts/dv/bench-254.sh"; wsl.exe(){ shift 6; printf '%s\n%s\n' "$k" "$r"; }
+	[ "$(bench_ip 04)" = 10.41.1.3 ] && ok "bench_ip gives the new address after the moved keep line" || no "bench_ip after the move: [$(bench_ip 04)]"
+	unset -f wsl.exe
+else no "moved_keep_line not found in $ROOT/scripts/dv/prov-bench-s0-254.sh"; fi
+
 echo "================ test-restore: $pass passed, $fail failed ================"
 [ "$fail" = 0 ]

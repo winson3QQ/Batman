@@ -41,6 +41,9 @@ sweep(){ local i; for i in $(seq 2 254); do ping -n 1 -w 200 $1.$i >/dev/null 2>
 ST='echo "mac=$(cat /sys/class/net/eth0/address 2>/dev/null) slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) hold=[$(cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null)] held=$(. /usr/lib/batman/rundir.sh; ls $RUNDIR/autocommit.ctl/hold-commit 2>/dev/null | wc -l) badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime) boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"'
 PROT='echo "protA=[$(cat /opt/batdata/state/slot-A.protected 2>/dev/null)] protB=[$(cat /opt/batdata/state/slot-B.protected 2>/dev/null)]"'
 DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null); set -- $r; echo "tryboot_flag=${6:-?}"'
+# a reboot_guarded condition: disarm, then the flag must read 0 (an armed tryboot makes `batman-slot reboot committed` a
+# plain reboot INTO the tryboot slot, batman-slot cmd_reboot; round 6 A-MAJOR-1). Not disarmed -> nothing is sent.
+DISARMED="[ \"\$($DISARM)\" = tryboot_flag=0 ]"
 # p5 read-only view, with the SAME predicate the gate uses (prov_meta_status) and the identity check (review B-6)
 P5RO='mkdir -p -m 0700 /tmp/run/batman-dv && m=$(mktemp -d /tmp/run/batman-dv/ch1.XXXXXX) && mount -o ro,noload /dev/mmcblk0p5 $m && { echo "seeded=$([ -f $m/.seeded ] && echo y || echo n) shadowroot=$([ -s $m/identity/shadow-root ] && echo y || echo n) prov_files=$(ls $m/identity/prov 2>/dev/null | wc -l) metastat=[$(. /usr/lib/batman/prov-lock.sh; prov_meta_status $m/prov.meta $m/prov.cbor)] ident=$(. /usr/lib/batman/prov-lock.sh; prov_ident_ok $m/identity/prov && echo ok || echo bad) idsame=$(cmp -s $m/identity/prov/node.cert /etc/batman-prov/identity/node.cert 2>/dev/null && echo y || echo n)"; umount $m; }; rmdir $m'
 # A's boot FAT (p1) content hash: 7.2 / 8.6 rewrite A's boot files; prov-base covers p5 / upper / p6 only (round 2 m1)
@@ -70,6 +73,7 @@ find04(){
 FIP=""; FOUND_HOW=""; FOUND_STATE=""
 # wait_find <seconds> <pattern> [exclude-boot]  (parent shell only)
 wait_find(){ local t=$SECONDS; FIP=""; while [ $((SECONDS - t)) -lt "$1" ]; do find04 "$2" "${3:-none}" && return 0; sleep 10; done; return 1; }
+slotof(){ echo "$1" | sed -n 's/^mac=[^ ]* slot=\([AB]\) .*/\1/p'; }
 bootof(){ echo "$1" | sed -n 's/.*boot=\([0-9a-f]*\).*/\1/p'; }
 
 # provclient on the node at $FIP; SIGN lines answered by the WSL signer (owner key never on the node) — as prov-claim-254
@@ -108,22 +112,27 @@ restore_all(){
 		wait_find 900 "ver=$V " || { say "RESTORE: 04 not found anywhere in 900 s — needs a person (snapshot $D on p6, dead-man staged=$STAGED)"; return 1; }
 		say "04 at $FIP ($FOUND_HOW): $FOUND_STATE"; s=$FOUND_STATE
 		# an uncommitted trial: leave it (reboot -> its committed default slot)
-		case "$s" in *"trial_rc=0 "*) b=$(bootof "$s"); fq "$DISARM; (batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &)" >/dev/null
+		case "$s" in *"trial_rc=0 "*) b=$(bootof "$s"); sl=$(slotof "$s"); o=$(fq "$(reboot_guarded "$b" "$sl" 0 ch1-restore "$DISARMED")")
+			[ "$o" = SENT ] || { say "RESTORE: leaving the trial not sent ($o) — needs a person"; return 1; }
 			wait_find 900 "trial_rc=1 " "$b" || { say "RESTORE: no committed boot after leaving the trial"; return 1; }; s=$FOUND_STATE; say "committed: $s";; esac
 		land_quiet && break; say "RESTORE: boot changed while quieting openmanetd — finding 04 again ($i/3)"
 		[ "$i" = 3 ] && { say "RESTORE: 04 keeps rebooting under openmanetd — needs a person"; return 1; }
 	done
 	# on B: p5 back, then rollback to A
 	case "$s" in *" slot=B "*)
-		o=$(fq "rm -f /opt/batdata/state/autocommit-hold-commit; touch $BASE/ch1.cancel && echo CANCELLED")
-		[ "$o" = CANCELLED ] || { say "RESTORE: could not write $BASE/ch1.cancel [$o] — needs a person"; return 1; }
+		# the handshake with the dead-man, BEFORE this p5-restore: cancel first, then it must not be acting / done (it makes
+		# ch1.running, then re-checks ch1.cancel; round 6 A-MINOR-2 / B-MINOR-2)
+		o=$(fq "rm -f /opt/batdata/state/autocommit-hold-commit; touch $BASE/ch1.cancel && [ ! -e $BASE/ch1.running ] && [ ! -e $BASE/ch1.fired ] && echo CANCELLED")
+		[ "$o" = CANCELLED ] || { say "RESTORE: dead-man not stood down [$o]: $BASE/ch1.running or ch1.fired exists, or ch1.cancel could not be written — needs a person (read $BASE/ch1-deadman.log on the node: a finished run ends with 'rollback rc=0' and the node on A; a run cut short leaves ch1.running and p5 possibly half-written)"; return 1; }
 		o=$(fqlong "for m in /tmp/run/batman-dv/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on B): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed — needs a person"; return 1; }
 		# guarded on the node: this boot, on B, committed, and chain1's dead-man neither fired nor acting (it does its own
 		# p5-restore + rollback; a second rollback from here would flip the default back to B) — review 2026-11-09 B-MAJOR-1.
 		# "acting" = its ch1.running marker, made only after its cancel check: a ps match also hit its own sleeping timer
 		# (setsid sh -c 'sleep 1500; sh …/ch1-deadman.sh') in the boot that planted it (round 5 A-MINOR-3)
 		b=$(bootof "$s"); o=$(fq "$(rb_guarded "$b" B 1 ch1-restore "[ ! -e $BASE/ch1.fired ] && [ ! -e $BASE/ch1.running ]")")
-		say "    rollback: ${o:-no answer}"; [ "$o" = SENT ] || { say "RESTORE: rollback to A not sent ($o) — needs a person"; return 1; }
+		say "    rollback: ${o:-no answer}"
+		case "$o" in SENT) ;; *" extra=0") say "RESTORE: the dead-man fired or is acting ($BASE/ch1.fired / ch1.running) — needs a person (read $BASE/ch1-deadman.log on the node)"; return 1 ;;
+			*) say "RESTORE: rollback to A not sent ($o) — needs a person"; return 1 ;; esac
 		wait_find 900 "slot=A ver=$V trial_rc=1 " "$b" || { say "RESTORE: A not found after the rollback"; return 1; }; s=$FOUND_STATE; say "on A: $s"
 		land_quiet || { wait_find 900 "slot=A ver=$V trial_rc=1 " || return 1; s=$FOUND_STATE; land_quiet || { say "RESTORE: A keeps rebooting"; return 1; }; } ;;
 	esac
@@ -135,7 +144,8 @@ restore_all(){
 	o=$(fqlong "for m in /tmp/run/batman-dv/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on A): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed"; return 1; }
 	o=$(fqlong "sh $BASE/prov-base-254.sh overlay-restore $RUN"); echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY" | tail -12 | sed 's/^/    /'
 	grep -q "^OVERLAY-RESTORED $RUN" <<< "$o" || { say "RESTORE: overlay-restore failed"; return 1; }
-	b=$(bootof "$s"); fq "(batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &)" >/dev/null
+	b=$(bootof "$s"); o=$(fq "$(reboot_guarded "$b" A 1 ch1-restore "$DISARMED")")
+	[ "$o" = SENT ] || { say "RESTORE: the reboot on A not sent ($o): a tryboot may be armed — needs a person"; return 1; }
 	a_back "$b" || { say "RESTORE: A (slot A committed, a new boot) not found in 900 s (tried $NODE$SEEN)"; return 1; }
 	local t
 	t=$SECONDS; while [ $((SECONDS - t)) -lt 300 ]; do u=$(q 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge 150 ] && break; sleep 10; done
@@ -163,6 +173,8 @@ abort(){ no "ABORT: $*"; restore_all "abort: $*"; exit 1; }
 # a_back <boot before the reboot> [seconds]: A committed in a NEW boot, found by its MAC (NODE first, then the addresses
 # seen, mDNS, ARP, the swept /24s); NODE follows it. A kept member's address (prov-bench-s0 IP=) is not where the legacy
 # A of a snapshot comes back, and restore_all used to poll NODE only (review 2026-11-09 B-MAJOR-3).
+# Trust boundary (round 6 A-MINOR-5): accept-new + the MAC the node reports about itself is trust on first use on the
+# bench LAN, not proof of identity: any LAN peer can print that MAC. The bench LAN is the lab's own.
 # Then the host key at that address is pinned again (q / brewrite check known_hosts strictly): the address may have
 # held B's key, or another board's (round 5 A-MINOR-2 / B-MINOR-6); the pin is taken only if the node there has MAC.
 a_back(){

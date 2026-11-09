@@ -86,6 +86,9 @@ esac
 # member = the node is back on N0 as the keep line says: nothing appended. legacy / unclaimed / claimed / no file = it
 # left N0: "restored=". Anything else: no line, the caller refuses (review 2026-11-09 A-MAJOR-2: a restored= line for a
 # member snapshot emptied bench_ip and sent every later unit to the wrong address).
+# moved_keep_line <last keep line> <run> <new ip> <date>: the same keep line with the new address (refuses anything else)
+moved_keep_line(){ case "$1" in "node="*" run=keep-"*" ip="*" mac="*) ;; *) return 1 ;; esac; case "$3" in *[!0-9.]*|'') return 1 ;; esac
+	printf '%s\n' "$1" | sed -E "s/ run=keep-[^ ]+ / run=keep-restore-$2 /; s/ date=[^ ]+ / date=$4 /; s/ ip=[0-9.]+ / ip=$3 /"; }
 restore_nodes_line(){	# <snapshot state> <node> <run> <date>
 	case "$1" in
 		member) return 0 ;;
@@ -159,7 +162,13 @@ if [ "$MODE" = restore ]; then
 	if restore_all "restore $RUN"; then [ "$fails" = 0 ] && RESULT="PASS — $NN restored to the $SNAPST state of $RUN" || RESULT="RESTORED WITH $fails FAIL"
 		# the membership log follows the snapshot (also when only the B rewrite failed): a member snapshot stays on N0
 		NLINE=$(restore_nodes_line "$SNAPST" "$NN" "$RUN" "$(date +%F)")
-		if [ -z "$NLINE" ]; then say "member snapshot: $NN is on N0 again, nodes.txt unchanged (its keep line holds)"
+		if [ -z "$NLINE" ]; then
+			# a member A that came back at another address (a_back moved NODE): its keep line follows (round 6 B-MINOR-6)
+			last=$(wsl_ cat $BENCH/nodes.txt 2>/dev/null | tr -d '\r' | awk -v me="node=$NN" '$1 == me { l = $0 } END { print l }')
+			bip=$(printf '%s\n' "$last" | sed -n 's/^node=[0-9]* run=keep-.* ip=\([0-9.]*\) .*/\1/p')
+			if [ -n "$bip" ] && [ "$bip" != "$NODE" ] && NLINE=$(moved_keep_line "$last" "$RUN" "$NODE" "$(date +%F)"); then
+				printf '%s\n' "$NLINE" | wsl_ bash -c "umask 077; cat >> $BENCH/nodes.txt"; say "member snapshot: $NN is on N0 again at $NODE (was $bip): keep line moved"
+			else say "member snapshot: $NN is on N0 again, nodes.txt unchanged (its keep line holds)"; fi
 		elif [ -n "$(wsl_ ls -1 $BENCH/nodes.txt 2>/dev/null)" ]; then printf '%s\n' "$NLINE" | wsl_ bash -c "umask 077; cat >> $BENCH/nodes.txt"; fi
 	else RESULT="RESTORE FAILED — needs a person"; fi
 	exit 1   # on_exit sets the real code from RESULT
@@ -234,7 +243,7 @@ if [ "$MODE" = slota ] || [ "$MODE" = toa ]; then
 	if [ "$MODE" = toa ] && [ "$INTRIAL" = y ] && [ "$HELDOK" = y ] && [ "$fails" = 0 ]; then
 		# once the release is sent the PRODUCT decides (commit now, later, or its deadline returns to B): this run only
 		# watches. A second writer of the default slot (the manual return below) would race the commit (review 2026-11-06).
-		r=$(fqlong "if [ \"\$(cut -c1-8 /proc/sys/kernel/random/boot_id)\" = $BA ] && [ \"\$(batman-slot active)\" = A ] && batman-slot is-trial >/dev/null 2>&1; then batman-autocommit release --wait 2>&1 | tail -1; else echo WRONG-STATE; fi")
+		r=$(fqlong "$(release_guarded "$BA" A)" | tail -1)
 		say "release: ${r:-no answer}"
 		case "$r" in *WRONG-STATE*) ;; *) RELSENT=1 ;; esac
 		# committed in the trial's boot, or the node is in another boot (the trial is over), or 660 s have passed
@@ -287,7 +296,7 @@ if [ "$MODE" = slota ] || [ "$MODE" = toa ]; then
 		# committed after all (the release went through): rollback + reboot; still the trial: reboot only (the tryboot is
 		# one-shot, B is the default); is-trial rc 2 (unknown), another boot or slot: nothing (the trial deadline returns it)
 		r=$(fq "$(rb_guarded "$BA" A 1 s0-slota)")
-		[ "$r" = "WRONG-STATE boot=$BA active=A trial=0" ] && r=$(fq "$(reboot_guarded "$BA" A 0 s0-slota)")
+		[ "$r" = "WRONG-STATE boot=$BA active=A trial=0 extra=-" ] && r=$(fq "$(reboot_guarded "$BA" A 0 s0-slota)")
 		[ -n "$r" ] || r="no answer: the trial deadline returns the node"; say "return to B: $r"
 	fi
 	FOUND_STATE=""
@@ -407,7 +416,7 @@ dec=""; ev=""; while [ $((SECONDS - t0)) -lt 180 ]; do ev=$(fq "logread | grep -
 x=$(fq "echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) ap=\$(iw dev 2>/dev/null | grep -c 'type AP') mesh=\$(iw dev 2>/dev/null | grep -c 'type mesh point'); $P5RO")
 say "trial: $(echo $x)"
 for w in "meta=unclaimed" "ap=0" "mesh=0" "seeded=n" "metastat=[ok unclaimed]" "ident=ok"; do case "$x" in *"$w"*) ok "trial: $w";; *) abort "trial: want $w";; esac; done
-r=$(fq 'batman-autocommit release --wait 2>&1 | tail -1'); say "release: $r"
+r=$(fq "$(release_guarded "$BT" B)" | tail -1); say "release: ${r:-no answer}"; case "$r" in WRONG-STATE*|'') abort "release not sent ($r)";; esac
 s=$(fq "$ST"); case "$s" in *" slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
 # the reservation reboot follows on the committed slot (chain1 s6r)
 t=$SECONDS; while [ $((SECONDS - t)) -lt 400 ]; do b=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ "$b" = "$BT" ] || break; sleep 10; done

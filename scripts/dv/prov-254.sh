@@ -285,7 +285,8 @@ pr_ota_b(){	# <payload-version> <target-slot> [nohold]
 # back_to_a: from a B trial (or B committed) to A committed
 back_to_a(){
 	local s b0 o; s=$(qr "$ST"); b0=$(field "$s" boot)
-	[ "$(field "$s" slot)" = B ] || { say "back_to_a: already on $(field "$s" slot)"; PR_STATE=$s; PR_AB_MT=""; return 0; }
+	case "$(field "$s" slot)" in B) ;; A) say "back_to_a: already on A"; PR_STATE=$s; PR_AB_MT=""; return 0 ;;
+		*) say "back_to_a: state unreadable [$s]"; return 1 ;; esac   # round 6 A-MINOR-4: no answer is not "on A"
 	pr_trial_guard_end
 	o=$(q "$(rb_guarded "$b0" B any prov-dv-254)")   # guarded on the node: this boot, still on B
 	say "back_to_a: ${o:-no answer}"; [ "$o" = SENT ] || return 1
@@ -782,7 +783,7 @@ pr_normalise(){
 	pr_ota_b "$v" A || { pr_needs_person "normalise: OTA V into A failed (marker dv-prov-normalising kept)"; return 1; }
 	pr_lease_renew +900 || return 1
 	pr_wait_held 480 || { pr_needs_person "normalise: the A trial is not HELD by uptime 480 s"; return 1; }
-	o=$(q 'batman-autocommit release --wait 2>&1 | tail -1'); say "release: $o"
+	s=$(qr "$ST"); rb0=$(field "$s" boot); o=$(q "$(release_guarded "$rb0" A)" | tail -1); say "release: ${o:-no answer}"
 	s=$(qr "$ST")
 	[ "$(field "$s" slot)" = A ] && [ "$(field "$s" trial_rc)" = 1 ] && [ "$(field "$s" ver)" = "$v" ] \
 		|| { pr_needs_person "normalise: not A committed on V after the release ($s)"; return 1; }
