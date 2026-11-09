@@ -57,3 +57,41 @@ func parseCheck(rc int, out string) (bool, error) {
 	}
 	return false, errors.New("batman-config-save --check: no answer (rc " + fmt.Sprint(rc) + ")")
 }
+
+// p3NewPreserve: the PRESERVE keys P3 added (batman-config-save). A node upgraded to P3 has a p5 without them, so
+// --check says stale and an OTA would be refused (254-p3-impl §3.3, F63).
+var p3NewPreserve = map[string]bool{"wireless.default_radio0.ssid": true}
+
+// onlyP3Stale: --check said "p5 stale: <keys>" (rc 5) and every key is one P3 added — the one case the helper saves by
+// itself. Anything else stale (a real difference, unpersistable, .txn, identity) is left as it is.
+func onlyP3Stale(rc int, out string) bool {
+	if rc != 5 {
+		return false
+	}
+	i := strings.Index(out, "p5 stale: ")
+	if i < 0 {
+		return false
+	}
+	keys := strings.TrimSpace(out[i+len("p5 stale: "):])
+	// every item must be a P3 key: prose ("(unpersistable …)", "(.txn)") never is
+	for _, k := range strings.Split(keys, ",") {
+		if !p3NewPreserve[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// upgradeSave runs once at the daemon start of a committed boot without an unfinished change: when p5 is stale only
+// in keys P3 added, --save once (a joined node's joinwatch would save on its next tick; an unjoined one never would).
+func upgradeSave(p provstore.Paths, trial bool) {
+	if trial || provstore.TxnPresent(p) {
+		return
+	}
+	rc, out := provstore.Exec(provstore.ConfigSaveTimeout, cleanEnv, nil, "batman-config-save", "--check")
+	if !onlyP3Stale(rc, out) {
+		return
+	}
+	rc, out = provstore.Exec(provstore.ConfigSaveTimeout, cleanEnv, nil, "batman-config-save", "--save")
+	logf("p5 stale only in keys P3 added: --save rc %d (%s)", rc, strings.TrimSpace(out))
+}

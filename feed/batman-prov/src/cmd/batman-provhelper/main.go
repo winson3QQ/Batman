@@ -610,6 +610,7 @@ func daemon(p provstore.Paths) {
 	// 254-p3-impl §3.4: status.get's caches, refreshed in the background (only while an app asked in the last 10 min)
 	n.SetStatusSource(node.StatusSource{HalowStatus: halowStatusJSON, P5Fresh: p5Fresh})
 	n.SetSettingsSource(readSettings) // §3.3, ticked by the same ticker
+	go upgradeSave(p, trial.Trial())  // §3.3 F63: a p5 stale only in P3's new keys is saved once (not on a trial)
 	go func() {
 		tk := time.NewTicker(time.Second)
 		defer tk.Stop()

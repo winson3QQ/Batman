@@ -24,3 +24,26 @@ func TestParseCheck(t *testing.T) {
 		}
 	}
 }
+
+// onlyP3Stale: the lines are batman-config-save's own (--check: "p5 stale: <keys>" with the key list from diff_keys)
+func TestOnlyP3Stale(t *testing.T) {
+	cases := []struct {
+		rc   int
+		out  string
+		want bool
+	}{
+		{5, "batman-config-save: p5 stale: wireless.default_radio0.ssid\n", true},
+		{5, "batman-config-save: p5 stale: wireless.default_radio0.ssid,system.@system[0].hostname\n", false},
+		{5, "batman-config-save: p5 stale: wireless.default_radio1.key\n", false},
+		{5, "batman-config-save: p5 stale: wireless.default_radio0.ssid (unpersistable — change the value, --save cannot fix this)\n", false},
+		{5, "batman-config-save: p5 stale: an unfinished network change (.txn) — the helper finishes it at the next app action or reboot\n", false},
+		{5, "batman-config-save: p5 stale: identity-or-schema\n", false},
+		{0, "batman-config-save: p5 fresh\n", false},
+		{8, "batman-config-save: p5 error lock-busy pid=1 age=3s\n", false},
+	}
+	for _, c := range cases {
+		if got := onlyP3Stale(c.rc, c.out); got != c.want {
+			t.Fatalf("rc %d %q -> %v, want %v", c.rc, c.out, got, c.want)
+		}
+	}
+}

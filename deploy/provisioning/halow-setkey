@@ -28,7 +28,7 @@
 #             3 applied but NOT verified / NOT persisted (message says why; "persist:" line is the truth).
 #             3 is not a harness skip code — it means "look at this node".
 # Persisted (PRESERVE in batman-config-save): mesh key, mesh_id, channel, country, hostname, AP key,
-# address flags. NOT persisted: mesh encryption (image default sae), AP ssid (= hostname, 99-halow-identity).
+# address flags, AP ssid (#254 P3; one with an UNSAFE character is not kept). NOT persisted: mesh encryption (image default sae).
 # Keys may not contain  ` $ ( ) ; | & < > '  — p5's uci batch cannot carry them (96 rejects the batch).
 # --channel is validated against the morse regdb for the radio's country: an S1G channel number implies
 # its bandwidth (US: ch40 = 4 MHz @ 922.0 MHz, ch42 = 2 MHz @ 923.0 MHz), the same table netifd uses.
