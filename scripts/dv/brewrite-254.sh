@@ -11,10 +11,13 @@ waitboot(){ local b0=$1 max=$2 t0=$SECONDS b; while [ $((SECONDS-t0)) -lt $max ]
 settle(){ local max=${1:-300} t0=$SECONDS k=0 p="" o b u; while [ $((SECONDS-t0)) -lt $max ]; do o=$(timeout 30 ssh $SSHO root@$NODE 'echo "$(cat /proc/sys/kernel/random/boot_id) $(cut -d. -f1 /proc/uptime)"' 2>/dev/null | tr -d '\r'); b=${o% *}; u=${o##* }; if [ -n "$o" ] && [ "${u:-0}" -ge 60 ] 2>/dev/null && { [ $k = 0 ] || [ "$b" = "$p" ]; }; then k=$((k+1)); p=$b; [ $k -ge 3 ] && return 0; else k=0; fi; sleep 5; done; return 1; }
 ST='echo "slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) hold=[$(cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null)] badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] held=$(. /usr/lib/batman/rundir.sh; ls $RUNDIR/autocommit.ctl/hold-commit 2>/dev/null | wc -l) protB=[$(cat /opt/batdata/state/slot-B.protected 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime) boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"'
 . "$(dirname "$0")/slot-guard-254.sh"
-back_to_a(){ local b0; b0=$(bid); local o; o=$(q "$(rb_guarded "${b0:0:8}" B any e3-254)"); say "back_to_a: $o"; grep -q SENT <<< "$o" || return 0; waitboot "$b0" 600 && settle 300; }
+# one ssh, no retry: a retry after a dropped answer would run in the NEW boot and say WRONG-STATE (round 5 B-MINOR-2)
+back_to_a(){ local b0 o; b0=$(bid); o=$(timeout 90 ssh $SSHO root@$NODE "$(rb_guarded "${b0:0:8}" B any e3-254)" 2>/dev/null | tr -d '\r'); say "back_to_a: ${o:-no answer}"; [ "$o" = SENT ] || return 1; waitboot "$b0" 600 && settle 300; }
 stop(){ say "STOP: $*"; s=$(q "$ST"); say "state: $s"; case "$s" in "slot=B "*) say "on B -> back_to_a"; back_to_a; say "after: $(q "$ST")";; esac; echo "E3 RESULT: FAIL at it=$it ($*) ; held_times=[$TIMES]"; exit 1; }
 V=$(q 'sed -n s/^BATMAN_VERSION=//p /etc/batman-build'); PS=$(q "sha256sum $PAY | cut -c1-64")
 say "node $NODE V=$V payload sha=$PS"
+# MAC= (restore_all passes it): the node at NODE must be that board (round 5 B-MINOR-6: 02 runs the same version)
+if [ -n "${MAC:-}" ]; then m=$(q 'cat /sys/class/net/eth0/address'); [ "$m" = "$MAC" ] || { echo "E3 RESULT: FAIL at it=0 (the node at $NODE has MAC [$m], not $MAC)"; exit 1; }; fi
 [ "$PS" = "$PSHA" ] || { echo "payload sha mismatch"; exit 1; }
 TIMES=""
 for it in $(seq 1 $N); do

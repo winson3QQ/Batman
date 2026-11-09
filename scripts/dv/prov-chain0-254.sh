@@ -74,7 +74,12 @@ chain0(){
 	grep -q 'bypassed (batman_bypass=1)' <<< "$r" && grep -q ARMED <<< "$r" && ok "96: bypassed, still armed (exit 1)" || no "96 on the bypass boot: [$(echo $r)]"
 	b0=$(field "$FS" boot)
 	r=$(fq "$(rb_guarded "$b0" B any prov-dv-254)")
-	[ "$r" = SENT ] || { say "rollback not sent on the bypass boot [$r] — plain reboot (the tryboot is one-shot)"; fq '(sync; reboot) </dev/null >/dev/null 2>&1 &'; }
+	case "$r" in
+		SENT) ;;
+		REFUSED) say "rollback refused on the bypass boot — reboot only (the tryboot is one-shot)"
+			r=$(fq "$(reboot_guarded "$b0" B any prov-dv-254)"); [ "$r" = SENT ] || { pr_needs_person "04 bypass boot: reboot not sent [$r]"; return 1; } ;;
+		*) pr_needs_person "04 bypass boot: rollback not sent [$r] — nothing else sent"; return 1 ;;
+	esac
 	pr_find 900 "$b0" || { pr_needs_person "04 not back on A after the bypass trial"; return 1; }
 	[ "$(field "$PR_STATE" slot)" = A ] && [ "$(field "$PR_STATE" trial_rc)" = 1 ] && ok "back on A committed" || { no "after the bypass trial: $PR_STATE"; return 1; }
 	r=$(qr "logread | grep 'batman-provhelper' | grep -m1 'boot rc='"); case "$r" in *bypass*) no "A's helper line is a bypass verdict: $r" ;; *) ok "control: A's helper ${r##*]: }" ;; esac

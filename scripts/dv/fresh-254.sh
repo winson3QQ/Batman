@@ -115,11 +115,14 @@ restore_all(){
 	done
 	# on B: p5 back, then rollback to A
 	case "$s" in *" slot=B "*)
-		fq "rm -f /opt/batdata/state/autocommit-hold-commit; touch $BASE/ch1.cancel"
+		o=$(fq "rm -f /opt/batdata/state/autocommit-hold-commit; touch $BASE/ch1.cancel && echo CANCELLED")
+		[ "$o" = CANCELLED ] || { say "RESTORE: could not write $BASE/ch1.cancel [$o] — needs a person"; return 1; }
 		o=$(fqlong "for m in /tmp/run/batman-dv/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on B): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed — needs a person"; return 1; }
-		# guarded on the node: this boot, on B, committed, and chain1's dead-man neither fired nor running (it does its own
-		# p5-restore + rollback; a second rollback from here would flip the default back to B) — review 2026-11-09 B-MAJOR-1
-		b=$(bootof "$s"); o=$(fq "$(rb_guarded "$b" B 1 ch1-restore "[ ! -e $BASE/ch1.fired ] && ! ps w | grep -q '[c]h1-deadman.sh'")")
+		# guarded on the node: this boot, on B, committed, and chain1's dead-man neither fired nor acting (it does its own
+		# p5-restore + rollback; a second rollback from here would flip the default back to B) — review 2026-11-09 B-MAJOR-1.
+		# "acting" = its ch1.running marker, made only after its cancel check: a ps match also hit its own sleeping timer
+		# (setsid sh -c 'sleep 1500; sh …/ch1-deadman.sh') in the boot that planted it (round 5 A-MINOR-3)
+		b=$(bootof "$s"); o=$(fq "$(rb_guarded "$b" B 1 ch1-restore "[ ! -e $BASE/ch1.fired ] && [ ! -e $BASE/ch1.running ]")")
 		say "    rollback: ${o:-no answer}"; [ "$o" = SENT ] || { say "RESTORE: rollback to A not sent ($o) — needs a person"; return 1; }
 		wait_find 900 "slot=A ver=$V trial_rc=1 " "$b" || { say "RESTORE: A not found after the rollback"; return 1; }; s=$FOUND_STATE; say "on A: $s"
 		land_quiet || { wait_find 900 "slot=A ver=$V trial_rc=1 " || return 1; s=$FOUND_STATE; land_quiet || { say "RESTORE: A keeps rebooting"; return 1; }; } ;;
@@ -143,14 +146,14 @@ restore_all(){
 	q "/etc/init.d/joinwatch start >/dev/null 2>&1"; echo "$o" | tail -15 | sed 's/^/    /'
 	grep -q "diffs=0" <<< "$o" && { cmp=PASS; ok "S0 restored (p5 / overlay / uci / identity / p6 state)"; } || { cmp=FAIL; no "S0 not restored — snapshot kept"; }
 	# B back to V (its overlay carries the dead-man and the claimed slot): brewrite = sysupgrade -n + hold + back_to_a
-	o=$(NODE=$NODE N=1 PAY=$PAY PSHA=$PSHA bash "$BREWRITE" 2>&1); echo "$o" | grep -E "landed|post|RESULT" | cut -c1-220 | sed 's/^/    /'
+	o=$(NODE=$NODE MAC=$MAC N=1 PAY=$PAY PSHA=$PSHA bash "$BREWRITE" 2>&1); echo "$o" | grep -E "landed|post|RESULT" | cut -c1-220 | sed 's/^/    /'
 	if grep -q "E3 RESULT: PASS" <<< "$o"; then ok "B rewritten with V"; else no "B rewrite"; cmp=FAIL; fi
 	# p1 AFTER the B rewrite (it re-arms / commits through autoboot.txt on p1; round 3 m2); per-file diff names the file
 	p1=$(q "$P1LIST")
 	if [ "$p1" = "$P1_0" ]; then ok "A boot FAT (p1) identical to before ($(echo "$p1" | wc -l) files)"
 	else cmp=FAIL; no "p1 changed:"; diff <(echo "$P1_0") <(echo "$p1") | grep '^[<>]' | sed 's/^/    p1 /'; fi
 	# finish only when BOTH passed (review A-M4)
-	if [ "$cmp" = PASS ]; then o=$(q "sh $BASE/prov-base-254.sh finish $RUN | tail -1; rm -rf $PDIR $BASE/ch1-deadman.sh $BASE/ch1.cancel $BASE/ch1.fired $BASE/prov-base-254.sh; cat $BASE/ch1-deadman.log > /dev/null 2>&1; rm -f $BASE/ch1-deadman.log")
+	if [ "$cmp" = PASS ]; then o=$(q "sh $BASE/prov-base-254.sh finish $RUN | tail -1; rm -rf $PDIR $BASE/ch1-deadman.sh $BASE/ch1.cancel $BASE/ch1.fired $BASE/ch1.running $BASE/prov-base-254.sh; cat $BASE/ch1-deadman.log > /dev/null 2>&1; rm -f $BASE/ch1-deadman.log")
 		grep -q "^FINISHED $RUN" <<< "$o" && { ok "snapshot finished ($o)"; RESTORE_PERSON=0; } || no "finish: $o"
 	else say "finish skipped: snapshot $D and dirty flag kept for a person"; fi
 	say "after restore: $(q "$ST") $(q "$PROT") dirty=[$(q "cat $DIRTY 2>/dev/null")] dv-prov=[$(q "ls $BASE | tr '\n' ' '")] joinwatch=$(q 'ps w | grep -c "[/]usr/bin/joinwatch"')"
@@ -160,7 +163,11 @@ abort(){ no "ABORT: $*"; restore_all "abort: $*"; exit 1; }
 # a_back <boot before the reboot> [seconds]: A committed in a NEW boot, found by its MAC (NODE first, then the addresses
 # seen, mDNS, ARP, the swept /24s); NODE follows it. A kept member's address (prov-bench-s0 IP=) is not where the legacy
 # A of a snapshot comes back, and restore_all used to poll NODE only (review 2026-11-09 B-MAJOR-3).
+# Then the host key at that address is pinned again (q / brewrite check known_hosts strictly): the address may have
+# held B's key, or another board's (round 5 A-MINOR-2 / B-MINOR-6); the pin is taken only if the node there has MAC.
 a_back(){
 	wait_find "${2:-900}" "slot=A ver=$V trial_rc=1 " "$1" || return 1
 	[ "$FIP" = "$NODE" ] || { say "A came back at $FIP ($FOUND_HOW), not $NODE: using $FIP"; NODE=$FIP; }
+	repin "$NODE" || { say "known_hosts: the node at $NODE does not show MAC $MAC under a new pin"; return 1; }
 }
+repin(){ local hk; ssh-keygen -R "$1" >/dev/null 2>&1; hk=$(timeout 30 ssh $SSHO -o StrictHostKeyChecking=accept-new root@"$1" 'cat /sys/class/net/eth0/address' 2>/dev/null | tr -d '[:space:]'); [ -n "$hk" ] && [ "$hk" = "$MAC" ]; }

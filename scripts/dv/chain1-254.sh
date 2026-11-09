@@ -136,6 +136,10 @@ q "cat > $BASE/ch1-deadman.sh <<'DM'
 [ -f $BASE/ch1.fired ] && exit 0
 grep -q '^$RUN ' $DIRTY 2>/dev/null || { logger -t ch1-deadman 'dirty flag does not name $RUN: not acting'; exit 0; }
 [ -f $D/p5.img ] || { logger -t ch1-deadman 'snapshot missing: not acting'; exit 0; }
+# acting from here: the marker first, then the cancel check (restore touches ch1.cancel, then refuses its own rollback
+# while ch1.running exists); a run that stopped half-way leaves the marker and the restore to a person
+mkdir $BASE/ch1.running 2>/dev/null || exit 0
+[ -f $BASE/ch1.cancel ] && { rmdir $BASE/ch1.running; exit 0; }
 logger -t ch1-deadman 'restoring p5 and returning to A'
 L=$BASE/ch1-deadman.log
 /etc/init.d/openmanetd stop >> \$L 2>&1
@@ -144,7 +148,7 @@ batman-slot rollback >> \$L 2>&1; r=\$?; echo \"rollback rc=\$r\" >> \$L
 [ \$r = 0 ] && : > $BASE/ch1.fired; sync
 batman-slot reboot committed ch1-deadman >> \$L 2>&1
 DM
-chmod 700 $BASE/ch1-deadman.sh; rm -f $BASE/ch1.cancel $BASE/ch1.fired $BASE/ch1-deadman.log; sh -n $BASE/ch1-deadman.sh && echo ok" | grep -q '^ok$' || abort "dead-man write"
+chmod 700 $BASE/ch1-deadman.sh; rm -rf $BASE/ch1.cancel $BASE/ch1.fired $BASE/ch1.running $BASE/ch1-deadman.log; sh -n $BASE/ch1-deadman.sh && echo ok" | grep -q '^ok$' || abort "dead-man write"
 STAGED=1; say "dead-man staged (snapshot p5 sha $SNAPSHA)"
 # ======== 2-4. p5 idle -> mkfs -> hold + apply (unseeded) -> controlled reboot
 PH=s2-4

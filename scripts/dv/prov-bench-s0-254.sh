@@ -261,7 +261,7 @@ if [ "$MODE" = slota ] || [ "$MODE" = toa ]; then
 			# the SECOND boot of A: a committed slot has no deadline to fall back on, so see it come up once more now
 			# (only in that boot, on A, committed)
 			if [ "$fails" = 0 ]; then
-				r2=$(fq "if [ \"\$(cut -c1-8 /proc/sys/kernel/random/boot_id)\" = $BA ] && [ \"\$(batman-slot active)\" = A ] && { batman-slot is-trial >/dev/null 2>&1; [ \$? = 1 ]; }; then (batman-slot reboot committed s0-toa2 </dev/null >/dev/null 2>&1 &); echo SENT; else echo WRONG-STATE; fi")
+				r2=$(fq "$(reboot_guarded "$BA" A 1 s0-toa2)")
 				say "second boot of A: ${r2:-no answer}"
 				FOUND_STATE=""
 				if wait_find 900 "slot=A ver=$V trial_rc=1 " "$BA"; then
@@ -284,7 +284,10 @@ if [ "$MODE" = slota ] || [ "$MODE" = toa ]; then
 	fi
 	# ---- back to B: the node acts only if it is still in THAT boot on slot A (see the header)
 	r=""; if [ "$INTRIAL" = y ] && [ "$RELSENT" = 0 ]; then
-		r=$(fq "if [ \"\$(cut -c1-8 /proc/sys/kernel/random/boot_id)\" = $BA ] && [ \"\$(batman-slot active)\" = A ]; then batman-slot is-trial >/dev/null 2>&1 || batman-slot rollback >/dev/null 2>&1; (batman-slot reboot committed s0-slota </dev/null >/dev/null 2>&1 &); echo SENT; else echo WRONG-BOOT; fi")
+		# committed after all (the release went through): rollback + reboot; still the trial: reboot only (the tryboot is
+		# one-shot, B is the default); is-trial rc 2 (unknown), another boot or slot: nothing (the trial deadline returns it)
+		r=$(fq "$(rb_guarded "$BA" A 1 s0-slota)")
+		[ "$r" = "WRONG-STATE boot=$BA active=A trial=0" ] && r=$(fq "$(reboot_guarded "$BA" A 0 s0-slota)")
 		[ -n "$r" ] || r="no answer: the trial deadline returns the node"; say "return to B: $r"
 	fi
 	FOUND_STATE=""

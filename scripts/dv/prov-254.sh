@@ -414,12 +414,17 @@ pr_s0_ok(){ case "$1" in legacy|unclaimed|claimed|member) return 0 ;; esac; retu
 # one more final restore first. An unreadable start state cannot be checked: a person (fail-closed).
 pr_finish_snap(){ local o
 	pr_s0_ok "${PR_S0_STATE:-}" || { pr_needs_person "the start prov state [${PR_S0_STATE:-}] was not read: the end state cannot be checked"; return 1; }
-	o=$(pr_meta_state)
+	# read like the start state: an unreadable read (ssh dropped) is not a wrong state and gets no restore (round 5
+	# B-MINOR-7). One count per end state: a FAIL when a second restore sets it right, else one NEEDS-PERSON (a restore
+	# that already handed the node to a person is not counted again).
+	local a o1; for a in 1 2 3; do o=$(pr_meta_state); pr_s0_ok "$o" && break; sleep 5; done
+	pr_s0_ok "$o" || { pr_needs_person "the end prov state is unreadable [$o]: not checked, nothing restored"; return 1; }
 	if [ "$o" != "$PR_S0_STATE" ]; then
-		no "prov state [$o] at the end, S0 was [$PR_S0_STATE] — one more final restore"
-		PR_FINAL=1 pr_restore && o=$(pr_meta_state)
+		o1=$o; say "prov state [$o] at the end, S0 was [$PR_S0_STATE] — one more final restore"
+		if ! PR_FINAL=1 pr_restore; then [ "${PR_PERSON:-0}" = 1 ] || pr_needs_person "prov state [$o1] at the end, S0 was [$PR_S0_STATE]; the second restore failed"; return 1; fi
+		o=$(pr_meta_state)
 		[ "$o" = "$PR_S0_STATE" ] || { pr_needs_person "prov state [$o] at the end, S0 was [$PR_S0_STATE], also after a second restore"; return 1; }
-		ok "prov state $o after the second restore"
+		no "prov state was [$o1] at the end (S0 [$PR_S0_STATE]); a second restore set it right"
 	fi
 	o=$(nb finish "$RUN"); say "$(echo "$o" | tail -1)"
 	grep -q "^FINISHED $RUN" <<< "$o" || { pr_needs_person "finish refused: $(echo "$o" | tail -1)"; return 1; }
@@ -555,15 +560,16 @@ pr_begin(){
 	o=$(qp "cat /sys/class/net/wlh0/address"); [ "$o" = "$PEERMAC" ] || { PR_BEGUN=0; pr_unlock; no "02 wlh0 is [$o], not PEERMAC $PEERMAC: the neighbour checks would test the wrong node"; return 1; }
 	PR_DEADLINE=$(( $(mono) + secs )); o=$(pr_acquire "$secs") || { echo "$o"; PR_BEGUN=0; pr_unlock; no "lease"; return 1; }; echo "$o"
 	q "mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
+	# the start state, read BEFORE the snapshot until it is one of the four: a failed read must not switch the end check
+	# off (review 2026-11-09 B-MINOR-4 / A-MINOR-3), and it stops the unit before anything on the node changed (round 5
+	# A-MINOR-5: read after the snapshot, it cost a full restore + reboot of an untouched node)
+	PR_S0_STATE=""; for a in 1 2 3; do PR_S0_STATE=$(pr_meta_state); pr_s0_ok "$PR_S0_STATE" && break; sleep 5; done
+	pr_s0_ok "$PR_S0_STATE" || { pr_release; no "start prov state unreadable [$PR_S0_STATE] — no snapshot taken, nothing changed"; return 1; }
 	o=$(nb snap "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^SNAP $RUN" <<< "$o" || { pr_release; no "snap"; return 1; }
 	PR_SNAPPED=1
 	# The bench base state is a claimed N0 MEMBER now (254-h4 §3.1, prov-bench-s0-254.sh); these units were written for
 	# a LEGACY start (they claim first). L vehicle (254-h4 §2): inside the snapshot the node is made legacy, the restore
 	# brings the member back. PR_BASE=member: the unit wants the base state as it is.
-	# the start state, read until it is one of the four (a failed read must not switch the end check off: review
-	# 2026-11-09 B-MINOR-4 / A-MINOR-3)
-	PR_S0_STATE=""; for a in 1 2 3; do PR_S0_STATE=$(pr_meta_state); pr_s0_ok "$PR_S0_STATE" && break; sleep 5; done
-	pr_s0_ok "$PR_S0_STATE" || { pr_abort "start prov state unreadable [$PR_S0_STATE]"; return 1; }
 	if [ "${PR_BASE:-legacy}" = legacy ]; then pr_make_legacy || { pr_abort "make-legacy"; return 1; }; fi
 	for a in "$@"; do case "$a" in
 		upper=*) pr_upper_helper "${a#upper=}" || { pr_abort "upper-helper"; return 1; } ;;

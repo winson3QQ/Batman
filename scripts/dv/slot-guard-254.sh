@@ -1,23 +1,33 @@
 # shellcheck shell=bash
-# scripts/dv/slot-guard-254.sh — every harness `batman-slot rollback` goes through rb_guarded (review 2026-11-09 B-MAJOR-1).
+# scripts/dv/slot-guard-254.sh — every harness `batman-slot rollback` goes through rb_guarded, and every reboot that must
+# land on the other slot through reboot_guarded (reviews 2026-11-09 B-MAJOR-1, round 5 MAJOR-1).
 # 2026-11-08: a rollback decided on a host-side read of the node (a substring match on "badslot=[slot=B …]") went to a
 # node already on A committed; the default became the fresh, keyless B and a person had to edit autoboot.txt on the
 # SD card. A state read on the host can be stale or mis-parsed, so the node checks it again in the SAME command as
-# the rollback: boot id, active slot, trial state, and an optional extra condition.
+# the action: boot id, active slot, trial state, and an optional extra condition.
 #
-# rb_guarded <boot8> <active A|B> <trial 0|1|any> <reason> [extra shell condition]
-#   prints the node-side command; its output is exactly one of
-#     SENT                         rollback done, `batman-slot reboot committed <reason>` started in the background
-#     REFUSED                      every check held, `batman-slot rollback` itself refused (bad-slot, lock gate, …)
-#     WRONG-STATE boot=… active=… trial=…   a check failed: nothing was sent
-#   trial: 0 = an uncommitted trial (`batman-slot is-trial` rc 0), 1 = committed, any = either.
-#   An empty <boot8> can never match (the node's boot id is never empty): fail-closed.
-# Callers: anything but SENT is a failure (abort / NEEDS-PERSON), never "go on as if it had been sent".
-# RB_BOOTID (tests only) replaces /proc/sys/kernel/random/boot_id.
-rb_guarded(){
-	local b=$1 a=$2 t=$3 why=$4 x=${5:-true}
+# rb_guarded     <boot8> <active A|B> <trial 0|1|any> <reason> [extra shell condition]
+# reboot_guarded <boot8> <active A|B> <trial 0|1|any> <reason> [extra shell condition]
+#   print the node-side command; its output is exactly one of
+#     SENT                         rb_guarded: rollback done, then `batman-slot reboot committed <reason>` started in the
+#                                  background; reboot_guarded: only the reboot (an uncommitted trial goes back to its
+#                                  committed slot by itself: the tryboot is one-shot)
+#     REFUSED                      rb_guarded only: every check held, `batman-slot rollback` itself refused
+#     WRONG-STATE boot=… active=… trial=…   a check failed: nothing was done
+#   trial: 0 = an uncommitted trial (`batman-slot is-trial` rc 0), 1 = committed, any = either; rc 2 (unknown) matches
+#   only `any`. <boot8> must be 8 lower-case hex digits (a state line's boot=), anything else can never match.
+# Callers: anything but SENT is a failure (abort / NEEDS-PERSON), never "go on as if it had been sent". No answer at all
+# (ssh dropped) is not SENT either: the action may or may not have run, so the caller does not guess — it stops and says
+# so (a lost SENT costs a person a look; a guessed one can strand the node).
+_sg_cmd(){
+	local b=$1 a=$2 t=$3 why=$4 x=$5 act=$6
+	case "$b" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) b=invalid-boot ;; esac
 	case "$a" in A|B) ;; *) a=invalid-slot ;; esac
 	case "$t" in 0|1|any) ;; *) t=invalid-trial ;; esac
 	case "$why" in *[!A-Za-z0-9._-]*|'') why=invalid-reason ;; esac
-	printf '%s' "b=\$(cut -c1-8 \${RB_BOOTID:-/proc/sys/kernel/random/boot_id} 2>/dev/null); a=\$(batman-slot active 2>/dev/null); batman-slot is-trial >/dev/null 2>&1; t=\$?; if [ -n \"\$b\" ] && [ \"\$b\" = '$b' ] && [ \"\$a\" = '$a' ] && { [ '$t' = any ] || [ \"\$t\" = '$t' ]; } && { $x; }; then if batman-slot rollback >/dev/null 2>&1; then (batman-slot reboot committed $why </dev/null >/dev/null 2>&1 &); echo SENT; else echo REFUSED; fi; else echo \"WRONG-STATE boot=\$b active=\$a trial=\$t\"; fi"
+	local rb="(batman-slot reboot committed $why </dev/null >/dev/null 2>&1 &); echo SENT"
+	[ "$act" = rollback ] && rb="if batman-slot rollback >/dev/null 2>&1; then $rb; else echo REFUSED; fi"
+	printf '%s' "b=\$(cut -c1-8 /proc/sys/kernel/random/boot_id 2>/dev/null); a=\$(batman-slot active 2>/dev/null); batman-slot is-trial >/dev/null 2>&1; t=\$?; if [ -n \"\$b\" ] && [ \"\$b\" = '$b' ] && [ \"\$a\" = '$a' ] && { [ '$t' = any ] || [ \"\$t\" = '$t' ]; } && { $x; }; then $rb; else echo \"WRONG-STATE boot=\$b active=\$a trial=\$t\"; fi"
 }
+rb_guarded(){ _sg_cmd "$1" "$2" "$3" "$4" "${5:-true}" rollback; }
+reboot_guarded(){ _sg_cmd "$1" "$2" "$3" "$4" "${5:-true}" reboot; }

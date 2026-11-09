@@ -42,35 +42,48 @@ eval "$(sed -n '/^pr_meta_state(){/p; /^pr_s0_ok(){/p; /^pr_finish_snap(){/,/^}/
 if type pr_finish_snap >/dev/null 2>&1; then
 	ok "pr_finish_snap extracted"
 	qr(){ cat "$T/meta"; }; nb(){ echo "nb $*" >> "$T/calls"; [ -e "$T/refuse" ] && echo "REFUSED x" || echo "FINISHED $RUN"; }
-	pr_restore(){ echo "restore final=${PR_FINAL:-0}" >> "$T/calls"; [ -e "$T/fixes" ] && echo member > "$T/meta"; return 0; }
+	pr_restore(){ echo "restore final=${PR_FINAL:-0}" >> "$T/calls"; [ -e "$T/rfail" ] && { echo "person restore" >> "$T/calls"; PR_PERSON=1; return 1; }; [ -e "$T/fixes" ] && echo member > "$T/meta"; return 0; }
+	sleep(){ :; }
 	pr_needs_person(){ echo "person $*" >> "$T/calls"; return 1; }
 	no(){ echo "no $*" >> "$T/calls"; }; ok_(){ :; }
 	fs(){ # <S0> <end state> [fixes] [refuse]: runs pr_finish_snap, prints rc and the calls
-		: > "$T/calls"; rm -f "$T/fixes" "$T/refuse"; echo "$2" > "$T/meta"; local a; for a in "${@:3}"; do : > "$T/$a"; done
+		: > "$T/calls"; rm -f "$T/fixes" "$T/refuse" "$T/rfail"; PR_PERSON=0; echo "$2" > "$T/meta"; local a; for a in "${@:3}"; do : > "$T/$a"; done
 		PR_S0_STATE=$1; PR_SNAPPED=1; RUN=r1; ( ok(){ :; }; pr_finish_snap; echo "rc=$? snapped=$PR_SNAPPED" >> "$T/calls" ); tr '\n' '|' < "$T/calls"; }
 	no(){ echo "FAIL $*"; fail=$((fail + 1)); }
 	c=$(no(){ echo "no $*" >> "$T/calls"; }; fs member member)
 	case "$c" in "nb finish r1|rc=0 snapped=0|") ok "end = start: finished" ;; *) no "end = start: [$c]" ;; esac
 	c=$(no(){ echo "no $*" >> "$T/calls"; }; fs member legacy fixes)
-	case "$c" in no*"restore final=1|"*"nb finish r1|rc=0 snapped=0|") ok "end legacy, S0 member: one final restore, then finished" ;; *) no "second restore path: [$c]" ;; esac
+	case "$c" in "restore final=1|no "*"|nb finish r1|rc=0 snapped=0|") ok "end legacy, S0 member: one final restore, one FAIL, then finished" ;; *) no "second restore path: [$c]" ;; esac
 	c=$(no(){ echo "no $*" >> "$T/calls"; }; fs member legacy)
 	case "$c" in *"restore final=1|person "*"rc=1 snapped=1|") case "$c" in *"nb finish"*) no "finished on a wrong state: [$c]" ;; *) ok "still legacy after the second restore: NEEDS-PERSON, not finished" ;; esac ;; *) no "wrong end state: [$c]" ;; esac
 	c=$(no(){ echo "no $*" >> "$T/calls"; }; fs "" member)
 	case "$c" in "person "*"rc=1 snapped=1|") ok "start state unread: NEEDS-PERSON, not finished (fail-closed)" ;; *) no "empty start state: [$c]" ;; esac
 	c=$(no(){ echo "no $*" >> "$T/calls"; }; fs member member refuse)
 	case "$c" in *"nb finish r1|person "*"rc=1 snapped=1|") ok "finish refused: NEEDS-PERSON" ;; *) no "refused finish: [$c]" ;; esac
-	unset -f qr nb pr_restore pr_needs_person fs ok_
+	c=$(no(){ echo "no $*" >> "$T/calls"; }; fs member "")
+	case "$c" in "person "*"rc=1 snapped=1|") ok "end state unreadable: NEEDS-PERSON, no restore (round 5 B-MINOR-7)" ;; *) no "unreadable end state: [$c]" ;; esac
+	c=$(no(){ echo "no $*" >> "$T/calls"; }; fs member legacy rfail)
+	n=$(echo "$c" | tr '|' ' ' | grep -o 'person\|no ' | wc -l)
+	case "$c" in "restore final=1|person restore|rc=1 snapped=1|") ok "second restore fails: counted once (its NEEDS-PERSON), not finished" ;; *) no "failed second restore: [$c] ($n counts)" ;; esac
+	unset -f qr nb pr_restore pr_needs_person fs ok_ sleep
 else no "pr_finish_snap not found in $ROOT/scripts/dv/prov-254.sh"; fi
 # ---- a_back: A answers at 10.0.0.7, NODE is the kept member's address 10.41.80.13
 MAC=88:a2:9e:b5:6c:89; V=1.5.14-wsl.22; ST=x; FRESHO=""; SEEN=""; MDNS=none
 ping(){ return 0; }; timeout(){ shift; "$@"; }; sweep(){ :; }; sleep(){ :; }
 macips(){ echo 10.0.0.7; }
-ssh(){ local a; for a; do case "$a" in root@10.0.0.7) printf '%s\n' "$STATE"; return 0;; esac; done; return 255; }
-eval "$(sed -n '/^is_on(){/p; /^find04(){/,/^}/p; /^wait_find(){/p; /^a_back(){/,/^}/p' "$ROOT/scripts/dv/fresh-254.sh")"
+ssh(){ local a h=""; for a; do case "$a" in root@10.0.0.7) h=y;; esac; done; [ -n "$h" ] || return 255
+	case "${*: -1}" in "cat /sys/class/net/eth0/address") echo "accept-new=$(case "$*" in *StrictHostKeyChecking=accept-new*) echo y;; esac)" >> "$T/pin"; printf '%s\n' "$HKMAC";; *) printf '%s\n' "$STATE";; esac; }
+ssh-keygen(){ echo "keygen $*" >> "$T/pin"; }
+eval "$(sed -n '/^is_on(){/p; /^find04(){/,/^}/p; /^wait_find(){/p; /^a_back(){/,/^}/p; /^repin(){/p' "$ROOT/scripts/dv/fresh-254.sh")"
 if type a_back >/dev/null 2>&1; then
 	ok "a_back extracted"
 	NODE=10.41.80.13; STATE="mac=$MAC slot=A ver=$V trial_rc=1 dt_try=0 hold=[] held=0 badslot=[] up=30 boot=bbbbbbbb"
+	: > "$T/pin"; HKMAC=$MAC; SSHO=""
 	a_back aaaaaaaa 2 && [ "$NODE" = 10.0.0.7 ] && [ "$FIP" = 10.0.0.7 ] && ok "A back at another address: found by MAC, NODE=$NODE" || no "a_back: NODE=$NODE FIP=$FIP"
+	[ "$(tr '\n' ' ' < "$T/pin")" = "keygen -R 10.0.0.7 accept-new=y " ] && ok "a_back: the old host key of 10.0.0.7 removed, pinned again (accept-new) on MAC $MAC (round 5 A-MINOR-2 / B-MINOR-6)" || no "a_back pin: [$(tr '\n' ' ' < "$T/pin")]"
+	NODE=10.41.80.13; HKMAC=11:22:33:44:55:66
+	a_back aaaaaaaa 2 && no "a_back accepted a node whose MAC under the new pin is another board's" || ok "a_back: another MAC under the new pin fails"
+	HKMAC=$MAC
 	NODE=10.41.80.13; STATE="mac=$MAC slot=A ver=$V trial_rc=1 dt_try=0 hold=[] held=0 badslot=[] up=30 boot=aaaaaaaa"
 	a_back aaaaaaaa 2 && no "a_back accepted the boot before the reboot" || { [ "$NODE" = 10.41.80.13 ] && ok "the old boot is not 'back' (NODE unchanged)" || no "NODE changed on a miss: $NODE"; }
 	NODE=10.41.80.13; STATE="mac=$MAC slot=B ver=$V trial_rc=1 dt_try=0 hold=[] held=0 badslot=[slot=A ver=$V trial_rc=1 ] up=30 boot=bbbbbbbb"
@@ -82,7 +95,20 @@ else
 	eval "$(sed -n '/^is_on(){/p' "$ROOT/scripts/dv/fresh-254.sh")"
 	is_on $NODE "slot=A ver=$V trial_rc=1 " >/dev/null && echo "     (old: polling NODE finds A)" || echo "     (old: polling NODE=$NODE misses the A at 10.0.0.7)"
 fi
-unset -f ping timeout sweep sleep macips ssh
+unset -f ping timeout sweep sleep macips ssh ssh-keygen
+# ---- pr_begin reads the start state BEFORE the snapshot (round 5 A-MINOR-5: after it, a failed read cost a full
+# restore of an untouched node). Order check on the real function body (a structural check: the behaviour needs a node).
+pb=$(sed -n '/^pr_begin(){/,/^}/p' "$ROOT/scripts/dv/prov-254.sh")
+l1=$(echo "$pb" | grep -n 'PR_S0_STATE=$(pr_meta_state)' | head -1 | cut -d: -f1); l2=$(echo "$pb" | grep -n 'nb snap' | head -1 | cut -d: -f1)
+[ -n "$l1" ] && [ -n "$l2" ] && [ "$l1" -lt "$l2" ] && ok "pr_begin: start state read (line $l1) before the snapshot (line $l2)" || no "pr_begin: start state read at [$l1], snapshot at [$l2]"
+
+# ---- prov-bench-s0: IP= is the run's address in fresh / slota / toa, not in restore (there the legacy A comes back at
+# its own address, found by MAC; round 5 A-MINOR-2 m5). The real line, run for each mode.
+l=$(grep -n '^\[ "$MODE" = restore \] || NODE=' "$ROOT/scripts/dv/prov-bench-s0-254.sh" | head -1 | cut -d: -f2-)
+if [ -n "$l" ]; then
+	r=$(MODE=restore; IP=10.41.80.13; NODE=10.41.1.3; eval "$l"; echo "$NODE"); [ "$r" = 10.41.1.3 ] && ok "restore: IP= does not replace NODE" || no "restore: NODE=$r"
+	r=$(MODE=fresh; IP=10.41.80.13; NODE=10.41.1.3; eval "$l"; echo "$NODE"); [ "$r" = 10.41.80.13 ] && ok "fresh: IP= is NODE" || no "fresh: NODE=$r"
+else no "the MODE / IP line not found in $ROOT/scripts/dv/prov-bench-s0-254.sh"; fi
 
 echo "================ test-restore: $pass passed, $fail failed ================"
 [ "$fail" = 0 ]
