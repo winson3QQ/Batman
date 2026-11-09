@@ -46,7 +46,7 @@ cat > "$T/bin/vcmailbox" <<'STUB'
 case "$1" in
 	0x00038064) echo "disarm" >> "$STUB_LOG"; [ -n "$STUB_DISARM_FAIL" ] || echo 0 > "$STUB_FLAG" ;;
 	# the real format: every word 0x%08x (trybootget-209.log on 04 / 02: "… 0x80000004 0x00000000"); STUB_RESP = word 2
-	0x00030064) printf '0x0000001c %s 0x00030064 0x00000004 0x80000004 0x%08x\n' "${STUB_RESP:-0x80000000}" "$(cat "$STUB_FLAG")" ;;
+	0x00030064) printf '0x0000001c %s 0x00030064 0x00000004 %s 0x%08x 0x00000000\n' "${STUB_RESP:-0x80000000}" "${STUB_W5:-0x80000004}" "$(cat "$STUB_FLAG")" ;;
 esac
 STUB
 cat > "$T/bin/mkdir" <<'STUB'
@@ -97,6 +97,7 @@ if [ -n "${DISARMED:-}" ]; then
 	echo 1 > "$T/flag"; node 1201bf8a A 1 0; o=$(STUB_DISARM_FAIL=y; export STUB_DISARM_FAIL; nsh "$(reboot_guarded 1201bf8a A 1 ch1-restore "$DISARMED")"); case "$o" in *" extra=0") ! rebooted && ok "armed tryboot that will not disarm: WRONG-STATE extra=0, no reboot" || no "rebooted with the tryboot still armed";; *) no "armed, disarm fails: [$o]";; esac
 	echo 0 > "$T/flag"; node 1201bf8a A 1 0; o=$(nsh "$(reboot_guarded 1201bf8a A 1 ch1-restore "$DISARMED")"); [ "$o" = SENT ] && ok "flag already 0 (0x00000000): the reboot is sent" || no "flag 0: [$o]"
 	echo 0 > "$T/flag"; node 1201bf8a A 1 0; o=$(STUB_RESP=0x80000001; export STUB_RESP; nsh "$(reboot_guarded 1201bf8a A 1 ch1-restore "$DISARMED")"); case "$o" in *" extra=0") ! rebooted && ok "an error response (word 2 not 0x80000000) with value 0: not 'disarmed', no reboot" || no "rebooted on an error response";; *) no "error response: [$o]";; esac
+	echo 0 > "$T/flag"; node 1201bf8a A 1 0; o=$(STUB_W5=0x00000004; export STUB_W5; nsh "$(reboot_guarded 1201bf8a A 1 ch1-restore "$DISARMED")"); case "$o" in *" extra=0") ! rebooted && ok "a firmware that did not answer the tag (word 5 0x00000004, value 0): not 'disarmed' (round 8 B-1)" || no "rebooted on an unanswered tag";; *) no "unanswered tag: [$o]";; esac
 	echo 0 > "$T/flag"
 else no "DISARMED not found in $ROOT/scripts/dv/fresh-254.sh"; fi
 . "$H/scripts/dv/slot-guard-254.sh"   # back to the guard under test (the eval above may have taken ROOT's DISARM)
@@ -175,12 +176,14 @@ dmraw=$(sed -n "/<<'DM'\$/,/^DM\$/p" "$ROOT/scripts/dv/chain1-254.sh" | sed '1d;
 if [ -n "$dmraw" ]; then
 	BASE=$T/dm; RUN=ch1t; D=$BASE/$RUN; DIRTY=$T/dirty; mkdir -p "$D"; : > "$D/p5.img"; echo "$RUN x" > "$DIRTY"
 	echo 'echo "P5-RESTORED $2"' > "$BASE/prov-base-254.sh"; printf '#!/bin/sh\n:\n' > "$T/bin/logger"; chmod +x "$T/bin/logger"
-	eval "dm=\"$dmraw\""; printf '%s\n' "$dm" > "$BASE/ch1-deadman.sh"
+	eval "dm=\"$dmraw\""; dm=${dm//\/usr\/lib\/batman\/bootfacts.sh/$H/feed/batman-provision/files/usr/lib/batman/bootfacts.sh}; printf '%s\n' "$dm" > "$BASE/ch1-deadman.sh"
 	dmrun(){ rm -rf "$BASE/ch1.running" "$BASE/ch1.fired" "$BASE/ch1.cancel"; node 1201bf8a B 1 0; for f; do case "$f" in run) mkdir "$BASE/ch1.running";; *) : > "$BASE/ch1.$f";; esac; done; nsh "sh $BASE/ch1-deadman.sh" >/dev/null 2>&1; }
 	dmrun; rolled && [ ! -e "$BASE/ch1.running" ] && [ -e "$BASE/ch1.fired" ] && ok "dead-man acts: rollback, ch1.fired, its marker removed when done" || no "dead-man normal run: running=$([ -d "$BASE/ch1.running" ] && echo y) $(tr '\n' ' ' < "$T/log")"
 	echo 'echo "P5-RESTORE FAILED"; exit 3' > "$BASE/prov-base-254.sh"
 	dmrun; ! rolled && [ -d "$BASE/ch1.running" ] && [ ! -e "$BASE/ch1.fired" ] && ok "dead-man: a failed p5-restore -> no rollback, ch1.running kept for a person (round 7 B-MINOR-2)" || no "dead-man after a failed p5-restore: $(tr '\n' ' ' < "$T/log") running=$([ -d "$BASE/ch1.running" ] && echo y)"
 	echo 'echo "P5-RESTORED $2"' > "$BASE/prov-base-254.sh"
+	(dmrun_a(){ rm -rf "$BASE"/ch1.*; node 1201bf8a A 1 0; nsh "sh $BASE/ch1-deadman.sh" >/dev/null 2>&1; }; dmrun_a); ! rolled && [ ! -e "$BASE/ch1.running" ] && ok "dead-man: the node on A -> nothing (it acts on slot B only)" || no "dead-man acted on A: $(tr '\n' ' ' < "$T/log")"
+	echo 1 > "$T/flag"; (STUB_DISARM_FAIL=y; export STUB_DISARM_FAIL; dmrun); ! rolled && [ -d "$BASE/ch1.running" ] && ok "dead-man: a tryboot that will not disarm -> no rollback, ch1.running kept (round 8 A-m1)" || no "dead-man rolled back with the tryboot armed: $(tr '\n' ' ' < "$T/log")"; echo 0 > "$T/flag"
 	dmrun cancel; ! rolled && [ ! -e "$BASE/ch1.running" ] && ok "dead-man cancelled: nothing, no marker left" || no "dead-man ignored ch1.cancel / left a marker"
 	dmrun run; ! rolled && ok "dead-man: a second instance (ch1.running exists) does nothing" || no "dead-man ran twice"
 	(STUB_MKDIR_CANCEL=y; export STUB_MKDIR_CANCEL; dmrun); ! rolled && [ ! -e "$BASE/ch1.running" ] && ok "dead-man: ch1.cancel landing between its first check and its marker -> stands down, marker removed (round 6)" || no "dead-man acted after a cancel that landed before its marker: $(tr '\n' ' ' < "$T/log")"
@@ -194,7 +197,19 @@ if [ -n "$hc" ]; then
 	o=$(hs); [ "$o" = CANCELLED ] && [ -e "$BASE/ch1.cancel" ] && ok "restore handshake: ch1.cancel written, dead-man idle -> CANCELLED" || no "restore handshake idle: [$o] cancel=$([ -e "$BASE/ch1.cancel" ] && echo y)"
 	o=$(hs run); [ "$o" != CANCELLED ] && ok "restore handshake: the dead-man acting (ch1.running) -> stop before the p5-restore" || no "restore went on while the dead-man acts"
 	o=$(hs fired); [ "$o" != CANCELLED ] && ok "restore handshake: the dead-man done (ch1.fired) -> stop" || no "restore went on after the dead-man fired"
+	ra=$(sed -n '/^restore_all(){/,/^}/p' "$ROOT/scripts/dv/fresh-254.sh"); lc=$(echo "$ra" | grep -n 'echo CANCELLED' | head -1 | cut -d: -f1); lp=$(echo "$ra" | grep -n 'p5-restore \$RUN' | head -1 | cut -d: -f1)
+	[ -n "$lc" ] && [ -n "$lp" ] && [ "$lc" -lt "$lp" ] && ok "restore_all: the handshake (line $lc) comes before its first p5-restore (line $lp)" || no "restore_all: handshake at [$lc], first p5-restore at [$lp]"
 else no "restore_all's cancel step not found in $ROOT/scripts/dv/fresh-254.sh"; fi
+# ---- the node's shell is busybox ash: the guard commands parse there, and DISARM reads the captured 04 line
+if command -v busybox >/dev/null 2>&1; then
+	for c in "$(rb_guarded 1201bf8a B 1 x "[ -e /x ]")" "$(reboot_guarded 1201bf8a A 0 x)" "$(release_guarded 1201bf8a B nowait)"; do
+		busybox ash -n -c "$c" 2>/dev/null || no "busybox ash cannot parse a guard command: ${c:0:80}"; done; ok "busybox ash parses rb / reboot / release guard commands"
+	mkdir -p "$T/bb"; vm(){ printf '#!/bin/sh\ncase "$1" in 0x00030064) echo "%s";; esac\n' "$1" > "$T/bb/vcmailbox"; chmod +x "$T/bb/vcmailbox"; PATH="$T/bb:$PATH" busybox ash -c "$DISARM"; }
+	[ "$(vm '0x0000001c 0x80000000 0x00030064 0x00000004 0x80000004 0x00000000 0x00000000')" = tryboot_flag=0 ] && ok "busybox ash: DISARM on the line captured from 04 -> tryboot_flag=0" || no "busybox DISARM on the 04 capture: [$(vm '0x0000001c 0x80000000 0x00030064 0x00000004 0x80000004 0x00000000 0x00000000')]"
+	[ "$(vm '0x0000001c 0x80000000 0x00030064 0x00000004 0x80000004 0x00000001 0x00000000')" = tryboot_flag=1 ] && ok "busybox ash: armed -> tryboot_flag=1" || no "busybox DISARM armed"
+	[ "$(vm '0x0000001c 0x80000000 0x00030064 0x00000004 0x00000004 0x00000000 0x00000000')" = tryboot_flag=unknown ] && ok "busybox ash: tag not answered -> unknown" || no "busybox DISARM unanswered tag"
+	[ "$(vm '0x0000001c 0x80000001 0x00030064 0x00000004 0x80000004 0x00000000 0x00000000')" = tryboot_flag=unknown ] && ok "busybox ash: error response -> unknown" || no "busybox DISARM error response"
+else no "busybox missing: the node-shell checks cannot run"; fi
 unset -f fq
 
 # ---- the field boundary on the real incident line

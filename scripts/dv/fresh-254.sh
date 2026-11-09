@@ -128,7 +128,7 @@ restore_all(){
 		# (setsid sh -c 'sleep 1500; sh …/ch1-deadman.sh') in the boot that planted it (round 5 A-MINOR-3)
 		b=$(bootof "$s"); o=$(fq "$(rb_guarded "$b" B 1 ch1-restore "[ ! -e $BASE/ch1.fired ] && [ ! -e $BASE/ch1.running ]")")
 		say "    rollback: ${o:-no answer}"
-		case "$o" in SENT) ;; *" extra=0") say "RESTORE: the dead-man fired or is acting ($BASE/ch1.fired / ch1.running) — needs a person (read $BASE/ch1-deadman.log on the node)"; return 1 ;;
+		case "$o" in SENT) ;; *" extra=0") say "RESTORE: not sent: the dead-man fired or is acting ($BASE/ch1.fired / ch1.running), or the tryboot flag did not read 0 after a disarm — needs a person (on the node: ls $BASE/ch1.*; cat $BASE/ch1-deadman.log; . /usr/lib/batman/bootfacts.sh; bf_get)"; return 1 ;;
 			*) say "RESTORE: rollback to A not sent ($o) — needs a person"; return 1 ;; esac
 		wait_find 900 "slot=A ver=$V trial_rc=1 " "$b" || { say "RESTORE: A not found after the rollback"; return 1; }; s=$FOUND_STATE; say "on A: $s"
 		land_quiet || { wait_find 900 "slot=A ver=$V trial_rc=1 " || return 1; s=$FOUND_STATE; land_quiet || { say "RESTORE: A keeps rebooting"; return 1; }; } ;;

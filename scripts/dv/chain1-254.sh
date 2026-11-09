@@ -146,6 +146,10 @@ L=$BASE/ch1-deadman.log
 sh $BASE/prov-base-254.sh p5-restore $RUN >> \$L 2>&1; p=\$?; echo \"p5-restore rc=\$p\" >> \$L
 # a failed p5-restore: no rollback onto a half-written p5; ch1.running stays, a person takes over (round 7 B-MINOR-2)
 [ \$p = 0 ] || { logger -t ch1-deadman 'p5-restore failed: no rollback, ch1.running kept for a person'; sync; exit 1; }
+# an armed tryboot would make the rollback's reboot a plain one INTO the tryboot slot (batman-slot cmd_reboot): disarm,
+# and read the flag with the product's own reader; not 0 -> nothing more, ch1.running kept for a person (round 8 A-m1)
+vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; . /usr/lib/batman/bootfacts.sh; g=\$(bf_get); echo \"tryboot flag after disarm: \$g\" >> \$L
+[ \"\$g\" = 0 ] || { logger -t ch1-deadman \"tryboot flag \$g after disarm: no rollback, ch1.running kept for a person\"; sync; exit 1; }
 batman-slot rollback >> \$L 2>&1; r=\$?; echo \"rollback rc=\$r\" >> \$L
 # done: ch1.fired, then the marker goes (a ch1.running left behind = a run cut short or failed; round 7 B-MINOR-3)
 [ \$r = 0 ] && { : > $BASE/ch1.fired; rmdir $BASE/ch1.running; }; sync

@@ -30,7 +30,9 @@
 # (bootfacts.sh: response code word 2 must be 0x80000000, the value word 6 is hex, `$(( ))`). vcmailbox prints every
 # word as 0x%08x (trybootget-209.log on the bench nodes: "… 0x80000004 0x00000000"); round 7 B-BLOCKER-1: the old
 # string compare of word 6 with "0" never held on a real node.
-DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; set -- $(vcmailbox 0x00030064 4 4 0 2>/dev/null); if [ "${2:-}" = 0x80000000 ] && [ -n "${6:-}" ]; then echo "tryboot_flag=$(( ${6} ))"; else echo tryboot_flag=unknown; fi'
+DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; set -- $(vcmailbox 0x00030064 4 4 0 2>/dev/null); if [ "${2:-}" = 0x80000000 ] && [ "${5:-}" = 0x80000004 ] && [ -n "${6:-}" ]; then echo "tryboot_flag=$(( ${6} ))"; else echo tryboot_flag=unknown; fi'
+# word 5 = 0x80000004: the firmware answered the tag (a firmware without it leaves the request's 0x00000004 and the
+# value 0, which would read as "disarmed"; round 8 B-1 — bf_get has the same gap: checklist on #254)
 # DISARMED: a reboot_guarded condition: disarm, then the flag must read 0 (an armed tryboot makes `batman-slot reboot
 # committed` a plain reboot INTO the tryboot slot, batman-slot cmd_reboot; round 6 A-MAJOR-1). Else nothing is sent.
 DISARMED="[ \"\$($DISARM)\" = tryboot_flag=0 ]"

@@ -782,8 +782,9 @@ pr_normalise(){
 	pr_ota_b "$v" A || { pr_needs_person "normalise: OTA V into A failed (marker dv-prov-normalising kept)"; return 1; }
 	pr_lease_renew +900 || return 1
 	pr_wait_held 480 || { pr_needs_person "normalise: the A trial is not HELD by uptime 480 s"; return 1; }
-	rb0=$PR_LAND_BOOT; o=$(q "$(release_guarded "$rb0" A)" | tail -1); say "release: ${o:-no answer}"
-	s=$(qr "$ST")
+	rb0=$PR_LAND_BOOT; o=$(QT=900 q "$(release_guarded "$rb0" A)" | tail -1); say "release: ${o:-no answer}"
+	# a commit can land after the answer (or the answer is lost): read for up to 5 min (round 8 A-m3)
+	for _ in 1 2 3 4 5 6 7 8 9 10; do s=$(qr "$ST"); [ "$(field "$s" trial_rc)" = 1 ] && break; case "$o" in WRONG-STATE*) break ;; esac; sleep 30; done
 	[ "$(field "$s" slot)" = A ] && [ "$(field "$s" trial_rc)" = 1 ] && [ "$(field "$s" ver)" = "$v" ] \
 		|| { pr_needs_person "normalise: not A committed on V after the release ($s)"; return 1; }
 	q "rm -f $HOLDF; sync"

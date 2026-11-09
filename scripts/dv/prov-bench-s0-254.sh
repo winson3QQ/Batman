@@ -49,7 +49,9 @@
 # left the fleet mesh that last part FAILs — the node is then on its legacy A, reachable, with the snapshot and the
 # dirty flag kept (this is also where ANY abort of the second node's fresh run ends). Either run `restore` again
 # once the peer is back on the fleet mesh (every step is idempotent, the B rewrite then has its neighbour), or a
-# person checks the node and runs `sh /opt/batdata/dv-prov/prov-base-254.sh finish <run>` on it
+# person checks the node and runs `sh /opt/batdata/dv-prov/prov-base-254.sh finish <run>` on it, then, once
+# /opt/batdata/dv-prov/ch1-deadman.log is read, `rm -rf /opt/batdata/dv-prov/ch1.*` (chain1's dead-man markers are not
+# per run: a leftover ch1.fired / ch1.running stops every later restore that starts on B; round 8 B-3)
 # (<run> exactly as given to restore, e.g. keep-s004...; the snapshot's own mark /etc/.dv-prov-mark-<id> stays in A's
 # overlay, harmless). restore needs V PAY PSHA too, and finds a kept node by nodes.txt's address (or IP=<address>).
 # The bench store has ONE writer at a time: both nodes' runs take the same host lock as the prov units
