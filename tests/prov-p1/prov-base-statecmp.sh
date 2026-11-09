@@ -58,4 +58,22 @@ printf '%s\n' "-rw-r--r-- 0:0 aaaa etc/x" > $D/now-x/upper.manifest
 printf '%s\n' "-rw-r--r-- 0:0 aaaa etc/x" "drwxr-xr-x 0:0 - usr" > $D/snap/upper.manifest
 base; printf 'usr\n' > $D/kept-dirs; ALLOW_FILE=/nonexistent run 1 "a snapshot dir that VANISHED (- d) -> not dropped"
 rm -f $D/kept-dirs; echo same > $D/snap/upper.manifest; echo same > $D/now-x/upper.manifest
+# prov-bench-s0 unclaimed with VB (2026-11-09, review M1): restore compares while B still says VB; only the exact
+# pair named by the host drops
+base; printf 'slot=A
+protB=1.0
+' > $D/snap/identity; printf 'slot=A
+protB=2.0
+' > $D/now-x/identity
+run 1 "protB V -> VB without PROTB_FROM/TO -> FAIL"
+PROTB_FROM=1.0 PROTB_TO=2.0 run 0 "protB V -> VB named by the host -> allowed"
+PROTB_FROM=1.0 PROTB_TO=3.0 run 1 "protB changed to another version than named -> FAIL"
+printf 'slot=B
+protB=2.0
+' > $D/now-x/identity; PROTB_FROM=1.0 PROTB_TO=2.0 run 1 "protB allowed but slot differs too -> FAIL"
+printf 'protB=1.0
+' > $D/snap/identity; printf 'protB=2.0
+protB=2.0
+' > $D/now-x/identity; PROTB_FROM=1.0 PROTB_TO=2.0 run 1 "protB VB twice (a second line) -> FAIL, not both dropped"
+echo same > $D/snap/identity; echo same > $D/now-x/identity
 rm -rf $R; echo "STATECMP fails=$fails"; [ $fails = 0 ]

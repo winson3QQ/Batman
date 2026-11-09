@@ -11,7 +11,9 @@
 //	provclient sign <keyfile>     on the WSL host: answers SIGN lines with an ES256 (low-s) signature.
 //	provclient keygen <keyfile>   a fresh P-256 owner key (0600) — one per run; prints the public key hex.
 //	                              node ops: info, claim, claim-attacker, claim-attacker-chal, replay, ssh-keys, root-reset, rename, verb,
-//	                              and (net.go) net-apply --first|--update, leave, owner-add, owner-remove, diag.
+//	                              and (net.go) net-apply --first|--update, leave, owner-add, owner-remove, diag;
+//	                              (p3.go) settings-get, settings-set, status-get, diag-summary, diag-bundle, diag-read,
+//	                              update-check, update-prepare, update-apply, update-status, bulk-open, bulk-close.
 //	                              exec <abs path> [args]: after the drop, execve it as that uid / gid with PATH as the
 //	                              only environment (prov-sec-dbus-254: dbus-send as provd, 254-h23 §6.3).
 //	provclient selftest <vectors.json>
@@ -521,6 +523,11 @@ func cmdNode(args []string) {
 	if op == "net-apply" {
 		netIn = readFd3()
 	}
+	// settings-set key 20 (phone-AP ssid= / psk=): fd 3 too, read here as root before the drop (p3.go)
+	var p3In map[string]string
+	if p3NeedsFd3(op, args) {
+		p3In = readFd3KV()
+	}
 	// #254 claim-lock fix §11.3: PROVCLIENT_PW_FILE = a root-only file (created here, as root, O_EXCL 0600) that
 	// receives the password the helper returned, so a node-side musl crypt() probe can check it against shadow —
 	// the password never reaches stdout, a log or the host. Opened before the privilege drop; written after.
@@ -655,7 +662,7 @@ func cmdNode(args []string) {
 		code, _ := cl.call(args[1], cmap{})
 		fmt.Printf("RESULT %s code=%d\n", args[1], code)
 	default:
-		if !netOp(cl, op, args, netIn, hexArg) {
+		if !netOp(cl, op, args, netIn, hexArg) && !p3Op(cl, op, args, p3In, hexArg) {
 			die("unknown op %q", op)
 		}
 	}

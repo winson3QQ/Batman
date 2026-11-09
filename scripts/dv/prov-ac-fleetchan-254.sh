@@ -38,7 +38,7 @@ part1(){
 	if qp 'logread | grep -q "is healthy and HELD"'; then ok "02 B trial HELD ($(qp "logread | grep -m1 'mesh join required:'" | sed 's/.*autocommit[^:]*: //'))"
 	else no "02 B trial not HELD: $(qp '. /usr/lib/batman/rundir.sh; cat $RUNDIR/autocommit.why 2>/dev/null')"; fi
 	b0=$(field "$PS" boot)
-	qp 'batman-slot rollback >/dev/null 2>&1 && { (batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &); echo SENT; }' | grep -q SENT || { pr_needs_person "02: rollback refused (in its B trial)"; return 1; }
+	qp "$(rb_guarded "$b0" B any prov-dv-254)" | grep -qx SENT || { pr_needs_person "02: rollback refused (in its B trial)"; return 1; }
 	pwait 900 "$b0" || { pr_needs_person "02 not back after back-to-A"; return 1; }
 	qp "rm -f $HOLDF $PR_PAY; sync"
 	[ "$(field "$PS" slot)" = A ] && [ "$(field "$PS" trial_rc)" = 1 ] && [ "$(field "$PS" badslot)" = "[]" ] && ok "02 back on A committed" || { pr_needs_person "02 not A committed after the back-to-A ($PS)"; return 1; }

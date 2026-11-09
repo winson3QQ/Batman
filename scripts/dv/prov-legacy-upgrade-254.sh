@@ -17,7 +17,7 @@ OLD=${DV_OLD_VERSION:-1.5.12-wsl.9+f2f2bf6.fw07f2063}
 KEEP='echo "ap=$(uci -q get wireless.default_radio0.key | sha256sum | cut -c1-16) lock=$(cat /opt/batdata/state/lock-status 2>/dev/null) ak=$(sha256sum < /etc/dropbear/authorized_keys | cut -c1-16) me=$(cat /opt/batdata/state/mesh-expected 2>/dev/null | sha256sum | cut -c1-16)"'
 release_commit(){	# the held trial on <slot>: release -> committed
 	local s t=0
-	q 'batman-autocommit release >/dev/null 2>&1; echo rc=$?' | sed 's/^/    release: /'
+	rb0=$PR_LAND_BOOT; q "$(release_guarded "$rb0" "$1" nowait)" | sed 's/^/    release: /'
 	while [ $t -lt 40 ]; do s=$(qr "$ST"); [ "$(field "$s" trial_rc)" = 1 ] && [ "$(field "$s" slot)" = "$1" ] && break; sleep 10; t=$((t + 1)); done
 	[ "$(field "$s" trial_rc)" = 1 ] && [ "$(field "$s" slot)" = "$1" ] || { no "slot $1 not committed after release ($s)"; return 1; }
 	ok "slot $1 committed after the release"

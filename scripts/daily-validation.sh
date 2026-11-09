@@ -294,7 +294,7 @@ suite known-failures-file "every scripts/validation-known-failures.txt entry has
 #     (--destructive) on DNODE (04, ethernet): normalise first, then PROV_B_UNITS in order; a NEEDS-PERSON blocks every
 #     later prov unit ("FAIL blocked: DNODE"). A unit not written yet FAILs with that reason, never SKIPs (#254 checklist).
 #     Needs the prov test tools of the running version: bash scripts/dv-prov-tools.sh <V>.
-if [ "$DNODE0" = 10.41.1.3 ]; then
+if is_node04 "$DNODE0"; then
   suite prov-sock-254 "who may talk to the helper socket: root / provd uid allowed, others refused, provclient placement (#254 tier A)" "bchk_prov_254 $DNODE0 prov-sock-254"
   suite prov-sec-254 "helper uid, socket dir root:471 0750, helper.sock 0660, node.key 0600; negative controls — STATE-CHANGING: stops / restarts the helper, plants a socket dir (under the prov lease; review B-m9) (#254)" "bchk_prov_254 $DNODE0 prov-sec-254"
   # H3 (254-h23 §6.3): batman-provd on the committed image; STATE-CHANGING but self-restoring, under the prov lease
@@ -2219,7 +2219,7 @@ else
   if up "$DNODE"; then suite setkey-persists-202 "halow-setkey persists to p5 at once; a stale p5 refuses an OTA, also under -F, on DNODE $DNODE (#202 D2, DESTRUCTIVE: off-mesh twice + one refused-OTA reboot)" "bchk_setkey_202 $DNODE" D
   else suite setkey-persists-202 "#202 D2 — DNODE $DNODE did not answer" ""; fi
   if up "$MESH_NODE"; then nt202=""; [ "$MESH_NODE" = "$OTS_NODE" ] || nt202=--no-tenant
-    suite reflash-survives-config-202 "persisted hostname/keys survive a real A/B reflash of MESH_NODE=$MESH_NODE, rejoin + autocommit (#202 D3, DESTRUCTIVE: reflashes the node, leaves it on the other slot)" "$REPO/scripts/fault-injection.sh $MESH_NODE --case p5 $nt202" D
+    suite reflash-survives-config-202 "persisted hostname/keys survive a real A/B reflash of MESH_NODE=$MESH_NODE, rejoin + autocommit (#202 D3, DESTRUCTIVE: reflashes the node, leaves it on the other slot)" "DV_DIR=$DIR $REPO/scripts/fault-injection.sh $MESH_NODE --case p5 $nt202" D
   else suite reflash-survives-config-202 "#202 D3 — MESH_NODE $MESH_NODE did not answer" ""; fi
 fi
 
