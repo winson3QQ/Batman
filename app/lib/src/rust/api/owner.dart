@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `back_to_conn`, `join_state_text`, `join_step`, `login_step`, `net_record_plain`, `new`, `owner_op`, `parse_record`, `persist_step`, `reason_text`, `request_tagged`, `request`, `settings_text`, `status_text`, `text`
+// These functions are ignored because they are not marked as `pub`: `back_to_conn`, `code_text`, `confirm_text`, `country_question`, `error_text`, `join2_step`, `join2_text`, `join_state_text`, `join_step`, `link_text`, `list_kind`, `login_end_text`, `login_step`, `net_made_text`, `new`, `owner_op`, `parse_record`, `persist_step`, `reason_text`, `request_tagged`, `request`, `settings_text`, `status_text`, `text`, `verb_text`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Rec`, `St`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `eq`, `fmt`
 
@@ -20,10 +20,48 @@ Future<SealedRecord?> storeReadSealed({
 Future<List<String>> listNodes({required String dir}) =>
     RustLib.instance.api.crateApiOwnerListNodes(dir: dir);
 
+/// The net ids (hex) this phone holds a net record for (file names under net/; no record is opened).
+Future<List<String>> listNets({required String dir}) =>
+    RustLib.instance.api.crateApiOwnerListNets(dir: dir);
+
+/// Write a sealed net record by compare-and-swap (join2 §3.1): only when its generation on disk is still
+/// `expected_gen` (the generation it was read at; 0 = new), at `expected_gen + 1` (the generation it was sealed for).
+/// Returns the new generation.
+Future<BigInt> storeWriteCas({
+  required String dir,
+  required String rel,
+  required BigInt expectedGen,
+  required List<int> sealed,
+}) => RustLib.instance.api.crateApiOwnerStoreWriteCas(
+  dir: dir,
+  rel: rel,
+  expectedGen: expectedGen,
+  sealed: sealed,
+);
+
+/// What an opened net record shows (choosing a network to join / confirm / forget in).
+NetView netSummary({required List<int> recordPlain}) =>
+    RustLib.instance.api.crateApiOwnerNetSummary(recordPlain: recordPlain);
+
+/// "Forget joining" (join2 §3.4): the record without that joining member, as a PersistNet step (seal, write by CAS
+/// from `record_gen`); its `detail` is the line to show once written.
+OwnerStep netForgetJoining({
+  required List<int> recordPlain,
+  required BigInt recordGen,
+  required String dacHash,
+}) => RustLib.instance.api.crateApiOwnerNetForgetJoining(
+  recordPlain: recordPlain,
+  recordGen: recordGen,
+  dacHash: dacHash,
+);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>
 abstract class OwnerSession implements RustOpaqueInterface {
-  /// After an unclear join reply: read info and say where the node stands for this session's net_id (§5.4 table).
+  /// After an unclear make-network reply: "confirm network" (join2 §3.2) on the record this session made.
   OwnerStep checkNetwork();
+
+  /// The user's answer to a ConfirmCountry step.
+  OwnerStep? countryConfirmed({required bool yes});
 
   String last4();
 
@@ -32,6 +70,31 @@ abstract class OwnerSession implements RustOpaqueInterface {
   OwnerStep? netPersisted();
 
   OwnerStep? onFrame({required List<int> frame});
+
+  /// The last PersistNet's store_write_cas failed (the record changed elsewhere, or the write itself): stop; nothing
+  /// more is sent (join2 §3.1).
+  OwnerStep? persistFailed();
+
+  /// "Confirm network" (join2 §3.2) for one of this phone's net records (opened by Kotlin; `record_gen` = the
+  /// generation store_read_sealed gave): info key 10 / key 9 against the record; a match makes it applied.
+  OwnerStep requestConfirmNetwork({
+    required List<int> recordPlain,
+    required BigInt recordGen,
+  });
+
+  /// Join this (claimed, verified at this login) node to the network of an opened net record (join2 §3.3).
+  /// `record_gen`: the generation store_read_sealed gave (every record write of the join is a CAS from it).
+  /// admin_pub / owner_enc_pub: this phone's keys (Kotlin publicKeys).
+  OwnerStep requestJoinNetwork({
+    required List<int> recordPlain,
+    required BigInt recordGen,
+    required List<int> adminPub,
+    required List<int> ownerEncPub,
+  });
+
+  /// After an applied join: one `status` read, answered as connected / not yet / unknown (join2 §3.3-7).
+  /// `secs_since_join`: seconds from the join reply to now.
+  OwnerStep requestLinkCheck({required BigInt secsSinceJoin});
 
   /// make-network on this (claimed, not joined) node — design §5.4. The first step is SignAdmin (net_config).
   /// owner_enc_pub / admin_pub: this phone's keys (Kotlin publicKeys). The node's dac_pub / ecdh_pub come from the
@@ -74,6 +137,84 @@ abstract class OwnerSession implements RustOpaqueInterface {
   );
 }
 
+/// One member of a net record, for the screen (no secret).
+class MemberView {
+  final String name;
+
+  /// the device id's last 4 ("" when the record does not know it: a node from before join2)
+  final String last4;
+  final bool joining;
+
+  /// the node's country before this phone changed it ("" = not changed)
+  final String prevCountry;
+
+  /// SHA-256(DAC pub), hex: what `net_forget_joining` names a member by
+  final String dacHash;
+
+  const MemberView({
+    required this.name,
+    required this.last4,
+    required this.joining,
+    required this.prevCountry,
+    required this.dacHash,
+  });
+
+  @override
+  int get hashCode =>
+      name.hashCode ^
+      last4.hashCode ^
+      joining.hashCode ^
+      prevCountry.hashCode ^
+      dacHash.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MemberView &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          last4 == other.last4 &&
+          joining == other.joining &&
+          prevCountry == other.prevCountry &&
+          dacHash == other.dacHash;
+}
+
+/// A net record, for the screen (no secret: no SAE, net_root or signed objects).
+class NetView {
+  final String netId;
+  final String meshId;
+  final bool applied;
+  final String country;
+  final List<MemberView> members;
+
+  const NetView({
+    required this.netId,
+    required this.meshId,
+    required this.applied,
+    required this.country,
+    required this.members,
+  });
+
+  @override
+  int get hashCode =>
+      netId.hashCode ^
+      meshId.hashCode ^
+      applied.hashCode ^
+      country.hashCode ^
+      members.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NetView &&
+          runtimeType == other.runtimeType &&
+          netId == other.netId &&
+          meshId == other.meshId &&
+          applied == other.applied &&
+          country == other.country &&
+          members == other.members;
+}
+
 enum OwnerKind {
   /// write `frames` to RX in order
   write,
@@ -93,9 +234,13 @@ enum OwnerKind {
   /// make-network (§5.4): Kotlin signs `sign_input` (a COSE Sig_structure) with the ADMIN key, then `signed(der)`
   signAdmin,
 
-  /// make-network: seal `record` with `aad`, write it at `rel` / `generation` (store_write_sealed, fsynced), then
-  /// `net_persisted()` — nothing is sent before (§3: the net record lands before network/join)
+  /// make-network / join / confirm: seal `record` with `aad`, write it with store_write_cas(rel, expected_gen) (it
+  /// lands at `generation` = expected_gen + 1, fsynced), then `net_persisted()` — or `persist_failed()` when the
+  /// write fails. Nothing is sent before (§3: the net record lands before network/join)
   persistNet,
+
+  /// join (join2 §3.3-3): ask the user the question in `detail`, then `country_confirmed(yes)`
+  confirmCountry,
 }
 
 class OwnerStep {
@@ -110,6 +255,12 @@ class OwnerStep {
   final BigInt generation;
   final Uint8List aad;
 
+  /// PersistNet: the generation the record must still have on disk (store_write_cas)
+  final BigInt expectedGen;
+
+  /// an Answer after a join was applied: poll `request_link_check` (join2 §3.3-7)
+  final bool pollLink;
+
   const OwnerStep({
     required this.kind,
     required this.frames,
@@ -119,6 +270,8 @@ class OwnerStep {
     required this.rel,
     required this.generation,
     required this.aad,
+    required this.expectedGen,
+    required this.pollLink,
   });
 
   @override
@@ -130,7 +283,9 @@ class OwnerStep {
       record.hashCode ^
       rel.hashCode ^
       generation.hashCode ^
-      aad.hashCode;
+      aad.hashCode ^
+      expectedGen.hashCode ^
+      pollLink.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -144,7 +299,9 @@ class OwnerStep {
           record == other.record &&
           rel == other.rel &&
           generation == other.generation &&
-          aad == other.aad;
+          aad == other.aad &&
+          expectedGen == other.expectedGen &&
+          pollLink == other.pollLink;
 }
 
 /// A sealed record and the AAD Kotlin opens it with.
