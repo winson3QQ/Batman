@@ -71,7 +71,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1267080613;
+  int get rustContentHash => 623721726;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -100,11 +100,25 @@ abstract class RustLibApi extends BaseApi {
     required int frameLimit,
   });
 
+  OwnerStep crateApiOwnerOwnerSessionCheckNetwork({required OwnerSession that});
+
   String crateApiOwnerOwnerSessionLast4({required OwnerSession that});
+
+  OwnerStep? crateApiOwnerOwnerSessionNetPersisted({
+    required OwnerSession that,
+  });
 
   OwnerStep? crateApiOwnerOwnerSessionOnFrame({
     required OwnerSession that,
     required List<int> frame,
+  });
+
+  OwnerStep crateApiOwnerOwnerSessionRequestMakeNetwork({
+    required OwnerSession that,
+    required String netName,
+    required int channel,
+    required List<int> ownerEncPub,
+    required List<int> adminPub,
   });
 
   OwnerStep crateApiOwnerOwnerSessionRequestSetAp({
@@ -329,6 +343,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  OwnerStep crateApiOwnerOwnerSessionCheckNetwork({
+    required OwnerSession that,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_owner_step,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionCheckNetworkConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionCheckNetworkConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_check_network",
+        argNames: ["that"],
+      );
+
+  @override
   String crateApiOwnerOwnerSessionLast4({required OwnerSession that}) {
     return handler.executeSync(
       SyncTask(
@@ -338,7 +383,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -355,6 +400,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "OwnerSession_last4", argNames: ["that"]);
 
   @override
+  OwnerStep? crateApiOwnerOwnerSessionNetPersisted({
+    required OwnerSession that,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionNetPersistedConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionNetPersistedConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_net_persisted",
+        argNames: ["that"],
+      );
+
+  @override
   OwnerStep? crateApiOwnerOwnerSessionOnFrame({
     required OwnerSession that,
     required List<int> frame,
@@ -368,7 +444,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_prim_u_8_loose(frame, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
@@ -388,6 +464,45 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  OwnerStep crateApiOwnerOwnerSessionRequestMakeNetwork({
+    required OwnerSession that,
+    required String netName,
+    required int channel,
+    required List<int> ownerEncPub,
+    required List<int> adminPub,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          sse_encode_String(netName, serializer);
+          sse_encode_u_32(channel, serializer);
+          sse_encode_list_prim_u_8_loose(ownerEncPub, serializer);
+          sse_encode_list_prim_u_8_loose(adminPub, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_owner_step,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionRequestMakeNetworkConstMeta,
+        argValues: [that, netName, channel, ownerEncPub, adminPub],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionRequestMakeNetworkConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_request_make_network",
+        argNames: ["that", "netName", "channel", "ownerEncPub", "adminPub"],
+      );
+
+  @override
   OwnerStep crateApiOwnerOwnerSessionRequestSetAp({
     required OwnerSession that,
     required String ssid,
@@ -403,7 +518,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_String(ssid, serializer);
           sse_encode_String(passphrase, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -436,7 +551,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(country, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -467,7 +582,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -500,7 +615,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_String(lines, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -531,7 +646,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -564,7 +679,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_prim_u_8_loose(der, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
@@ -596,7 +711,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_prim_u_8_loose(recordPlain, serializer);
           sse_encode_list_prim_u_8_loose(ownerPub, serializer);
           sse_encode_u_32(frameLimit, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15)!;
         },
         codec: SseCodec(
           decodeSuccessData:
@@ -622,7 +737,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_build_info,
@@ -645,7 +760,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_prim_u_8_loose(bytes, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_status_info,
@@ -671,7 +786,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 18,
             port: port_,
           );
         },
@@ -703,7 +818,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 19,
             port: port_,
           );
         },
@@ -730,7 +845,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 20,
             port: port_,
           );
         },
@@ -758,7 +873,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 21,
             port: port_,
           );
         },
@@ -786,7 +901,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 22,
             port: port_,
           );
         },
@@ -816,7 +931,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 23,
             port: port_,
           );
         },
@@ -847,7 +962,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 24,
             port: port_,
           );
         },
@@ -875,7 +990,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 25,
             port: port_,
           );
         },
@@ -899,7 +1014,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 23)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 26)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -925,7 +1040,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 27,
             port: port_,
           );
         },
@@ -953,7 +1068,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 28,
             port: port_,
           );
         },
@@ -985,7 +1100,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 29,
             port: port_,
           );
         },
@@ -1020,7 +1135,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 30,
             port: port_,
           );
         },
@@ -1052,7 +1167,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1083,7 +1198,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1115,7 +1230,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1154,7 +1269,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1400,13 +1515,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   OwnerStep dco_decode_owner_step(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return OwnerStep(
       kind: dco_decode_owner_kind(arr[0]),
       frames: dco_decode_list_list_prim_u_8_strict(arr[1]),
       signInput: dco_decode_list_prim_u_8_strict(arr[2]),
       detail: dco_decode_String(arr[3]),
+      record: dco_decode_list_prim_u_8_strict(arr[4]),
+      rel: dco_decode_String(arr[5]),
+      generation: dco_decode_u_64(arr[6]),
+      aad: dco_decode_list_prim_u_8_strict(arr[7]),
     );
   }
 
@@ -1797,11 +1916,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_frames = sse_decode_list_list_prim_u_8_strict(deserializer);
     var var_signInput = sse_decode_list_prim_u_8_strict(deserializer);
     var var_detail = sse_decode_String(deserializer);
+    var var_record = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_rel = sse_decode_String(deserializer);
+    var var_generation = sse_decode_u_64(deserializer);
+    var var_aad = sse_decode_list_prim_u_8_strict(deserializer);
     return OwnerStep(
       kind: var_kind,
       frames: var_frames,
       signInput: var_signInput,
       detail: var_detail,
+      record: var_record,
+      rel: var_rel,
+      generation: var_generation,
+      aad: var_aad,
     );
   }
 
@@ -2189,6 +2316,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_list_prim_u_8_strict(self.frames, serializer);
     sse_encode_list_prim_u_8_strict(self.signInput, serializer);
     sse_encode_String(self.detail, serializer);
+    sse_encode_list_prim_u_8_strict(self.record, serializer);
+    sse_encode_String(self.rel, serializer);
+    sse_encode_u_64(self.generation, serializer);
+    sse_encode_list_prim_u_8_strict(self.aad, serializer);
   }
 
   @protected
@@ -2327,11 +2458,36 @@ class OwnerSessionImpl extends RustOpaque implements OwnerSession {
         RustLib.instance.api.rust_arc_decrement_strong_count_OwnerSessionPtr,
   );
 
+  /// After an unclear join reply: read info and say where the node stands for this session's net_id (§5.4 table).
+  OwnerStep checkNetwork() =>
+      RustLib.instance.api.crateApiOwnerOwnerSessionCheckNetwork(that: this);
+
   String last4() =>
       RustLib.instance.api.crateApiOwnerOwnerSessionLast4(that: this);
 
+  /// The net record was sealed and written (fsynced): network/join goes out (op/nonce first), or — after "applied" —
+  /// the session is an owner session again.
+  OwnerStep? netPersisted() =>
+      RustLib.instance.api.crateApiOwnerOwnerSessionNetPersisted(that: this);
+
   OwnerStep? onFrame({required List<int> frame}) => RustLib.instance.api
       .crateApiOwnerOwnerSessionOnFrame(that: this, frame: frame);
+
+  /// make-network on this (claimed, not joined) node — design §5.4. The first step is SignAdmin (net_config).
+  /// owner_enc_pub / admin_pub: this phone's keys (Kotlin publicKeys). The node's dac_pub / ecdh_pub come from the
+  /// node_cert verified at this login, never from the node's word alone.
+  OwnerStep requestMakeNetwork({
+    required String netName,
+    required int channel,
+    required List<int> ownerEncPub,
+    required List<int> adminPub,
+  }) => RustLib.instance.api.crateApiOwnerOwnerSessionRequestMakeNetwork(
+    that: this,
+    netName: netName,
+    channel: channel,
+    ownerEncPub: ownerEncPub,
+    adminPub: adminPub,
+  );
 
   /// `settings/set` {20: {1: ssid, 2: passphrase}} (an owner-op; §3.3): the phone AP. The passphrase stays in here
   /// and in the encrypted request; it is never part of a step's text.
@@ -2358,7 +2514,6 @@ class OwnerSessionImpl extends RustOpaque implements OwnerSession {
       .api
       .crateApiOwnerOwnerSessionRequestSshKeys(that: this, lines: lines);
 
-  /// `status` {1: 0} (self) — design §5.5
   OwnerStep requestStatus() =>
       RustLib.instance.api.crateApiOwnerOwnerSessionRequestStatus(that: this);
 

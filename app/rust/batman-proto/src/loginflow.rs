@@ -51,6 +51,8 @@ pub struct Login {
     pinned: Vec<u8>,
     frame_limit: usize,
     st: State,
+    /// the node_cert verified against the pinned DAC in this handshake (§5.4: net_secrets go to its ecdh_pub)
+    verified: Option<nodecert::Verified>,
 }
 
 impl Login {
@@ -58,7 +60,8 @@ impl Login {
         let mut psk = kdf::psk_owner(rec.owner_tag_key, rec.device_id);
         let r = noise::Initiator::new(noise::Mode::NxPsk0, None, Some(&psk)).and_then(|mut i| i.msg1().map(|m| (i, m)));
         psk.iter_mut().for_each(|b| *b = 0);
-        let mut l = Login { owner_pub: *rec.owner_pub, pinned: rec.pinned_dac_der.to_vec(), frame_limit, st: State::Over };
+        let mut l =
+            Login { owner_pub: *rec.owner_pub, pinned: rec.pinned_dac_der.to_vec(), frame_limit, st: State::Over, verified: None };
         let a = match r.map_err(|e| format!("{e:?}")).and_then(|(i, m)| frame::split(&m, frame_limit).map(|f| (i, f)).map_err(|e| format!("{e:?}"))) {
             Ok((ini, f)) => {
                 l.st = State::Hello { ini, rx: Reassembler::new(frame_limit, conn::MAX_MESSAGE) };
@@ -70,6 +73,11 @@ impl Login {
     }
 
     /// The owner session after `End::LoggedIn`.
+    /// The node_cert verified in this handshake (pinned DAC, sig_ecdh): its dac_pub / ecdh_pub. None before msg2.
+    pub fn verified(&self) -> Option<&nodecert::Verified> {
+        self.verified.as_ref()
+    }
+
     pub fn into_conn(self) -> Option<Conn> {
         match self.st {
             State::LoggedIn { conn } => Some(conn),
@@ -141,8 +149,9 @@ impl Login {
             Err(noise::Error::Msg2NotDecryptable) => return self.end(End::Msg2Undecryptable),
             Err(e) => return self.end(End::Broken(format!("{e:?}"))),
         };
-        if let Err(e) = nodecert::verify_pinned(&cert, &s.rs, &self.pinned) {
-            return self.end(End::CertRejected(e));
+        match nodecert::verify_pinned(&cert, &s.rs, &self.pinned) {
+            Ok(v) => self.verified = Some(v),
+            Err(e) => return self.end(End::CertRejected(e)),
         }
         let conn = Conn::new(s, self.frame_limit);
         let input = sig::auth_owner_input(&conn.h(), &self.owner_pub);

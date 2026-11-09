@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `login_step`, `new`, `owner_op`, `parse_record`, `reason_text`, `request`, `settings_text`, `status_text`, `text`
+// These functions are ignored because they are not marked as `pub`: `back_to_conn`, `join_state_text`, `join_step`, `login_step`, `net_record_plain`, `new`, `owner_op`, `parse_record`, `persist_step`, `reason_text`, `request_tagged`, `request`, `settings_text`, `status_text`, `text`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Rec`, `St`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `eq`, `fmt`
 
@@ -22,9 +22,26 @@ Future<List<String>> listNodes({required String dir}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>
 abstract class OwnerSession implements RustOpaqueInterface {
+  /// After an unclear join reply: read info and say where the node stands for this session's net_id (§5.4 table).
+  OwnerStep checkNetwork();
+
   String last4();
 
+  /// The net record was sealed and written (fsynced): network/join goes out (op/nonce first), or — after "applied" —
+  /// the session is an owner session again.
+  OwnerStep? netPersisted();
+
   OwnerStep? onFrame({required List<int> frame});
+
+  /// make-network on this (claimed, not joined) node — design §5.4. The first step is SignAdmin (net_config).
+  /// owner_enc_pub / admin_pub: this phone's keys (Kotlin publicKeys). The node's dac_pub / ecdh_pub come from the
+  /// node_cert verified at this login, never from the node's word alone.
+  OwnerStep requestMakeNetwork({
+    required String netName,
+    required int channel,
+    required List<int> ownerEncPub,
+    required List<int> adminPub,
+  });
 
   /// `settings/set` {20: {1: ssid, 2: passphrase}} (an owner-op; §3.3): the phone AP. The passphrase stays in here
   /// and in the encrypted request; it is never part of a step's text.
@@ -41,7 +58,6 @@ abstract class OwnerSession implements RustOpaqueInterface {
   /// (or replaces the app-added) keys. op/nonce goes out first; its answer becomes a Sign step.
   OwnerStep requestSshKeys({required List<String> lines});
 
-  /// `status` {1: 0} (self) — design §5.5
   OwnerStep requestStatus();
 
   OwnerStep? signed({required List<int> der});
@@ -73,6 +89,13 @@ enum OwnerKind {
 
   /// over: `detail` says why (msg2 undecryptable = not this node / PSK not loaded yet — try the next one)
   ended,
+
+  /// make-network (§5.4): Kotlin signs `sign_input` (a COSE Sig_structure) with the ADMIN key, then `signed(der)`
+  signAdmin,
+
+  /// make-network: seal `record` with `aad`, write it at `rel` / `generation` (store_write_sealed, fsynced), then
+  /// `net_persisted()` — nothing is sent before (§3: the net record lands before network/join)
+  persistNet,
 }
 
 class OwnerStep {
@@ -81,16 +104,33 @@ class OwnerStep {
   final Uint8List signInput;
   final String detail;
 
+  /// PersistNet: the plain net record (holds SAE / net_root: sealed by Kotlin, never shown), its path and AAD
+  final Uint8List record;
+  final String rel;
+  final BigInt generation;
+  final Uint8List aad;
+
   const OwnerStep({
     required this.kind,
     required this.frames,
     required this.signInput,
     required this.detail,
+    required this.record,
+    required this.rel,
+    required this.generation,
+    required this.aad,
   });
 
   @override
   int get hashCode =>
-      kind.hashCode ^ frames.hashCode ^ signInput.hashCode ^ detail.hashCode;
+      kind.hashCode ^
+      frames.hashCode ^
+      signInput.hashCode ^
+      detail.hashCode ^
+      record.hashCode ^
+      rel.hashCode ^
+      generation.hashCode ^
+      aad.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -100,7 +140,11 @@ class OwnerStep {
           kind == other.kind &&
           frames == other.frames &&
           signInput == other.signInput &&
-          detail == other.detail;
+          detail == other.detail &&
+          record == other.record &&
+          rel == other.rel &&
+          generation == other.generation &&
+          aad == other.aad;
 }
 
 /// A sealed record and the AAD Kotlin opens it with.

@@ -9,7 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import 'scan.dart' show provdService;
-import 'src/rust/api/claim.dart' show frameLimit, storeRemove;
+import 'src/rust/api/claim.dart' show frameLimit, storeRemove, storeWriteSealed;
 import 'src/rust/api/owner.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
@@ -43,6 +43,10 @@ class _NodesPageState extends State<NodesPage> {
   final _country = TextEditingController(); // settings/set key 2 (two capital letters)
   final _apSsid = TextEditingController(); // settings/set key 20
   final _apPass = TextEditingController(); // obscured; cleared once sent
+  final _netName = TextEditingController(text: 'Batman'); // make-network (design §5.4)
+  int _channel = 40; // US ch 40 (4 MHz, the default) or 42 (2 MHz)
+  // the step loop of the open session (set at login): a request whose first step is not a write runs through it
+  Future<void> Function(OwnerStep?)? _run;
   final _sshKey = TextEditingController(); // dev: an ssh-ed25519 public key line to add (ssh_keys/set, P2 owner-op)
 
   @override
@@ -115,6 +119,15 @@ class _NodesPageState extends State<NodesPage> {
           case OwnerKind.sign:
             final der = (await _platform.invokeMethod<Uint8List>('signOwner', {'input': st.signInput}))!;
             st = s.signed(der: der);
+          case OwnerKind.signAdmin:
+            final der = (await _platform.invokeMethod<Uint8List>('signAdmin', {'input': st.signInput}))!;
+            st = s.signed(der: der);
+          case OwnerKind.persistNet:
+            // the net record lands (sealed, fsynced) before network/join goes out (design §3); never shown
+            final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': st.record, 'aad': st.aad}))!;
+            await storeWriteSealed(dir: await _dir(), rel: st.rel, generation: st.generation, sealed: sealed);
+            _log('net record written (${st.rel.substring(0, 8)}…, generation ${st.generation})');
+            st = s.netPersisted();
           case OwnerKind.loggedIn:
             _say(st.detail);
             if (!done.isCompleted) done.complete(true);
@@ -144,6 +157,7 @@ class _NodesPageState extends State<NodesPage> {
       return false;
     }
     _session = s;
+    _run = run;
     _conn = conn;
     _notify = notify;
     return true;
@@ -237,7 +251,18 @@ class _NodesPageState extends State<NodesPage> {
     await _load();
   }
 
-  Future<void> _ask(OwnerStep Function(OwnerSession) req) async {
+  /// design §5.4: make a network on this (claimed, not joined) node; country US (S1), bandwidth from the channel
+  Future<void> _makeNetwork() async {
+    final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    final name = _netName.text.trim().isEmpty ? 'Batman' : _netName.text.trim();
+    _say('making network "$name" on ch $_channel (US)…');
+    await _ask(
+        (s) => s.requestMakeNetwork(
+            netName: name, channel: _channel, ownerEncPub: keys['ownerEnc'] as Uint8List, adminPub: keys['admin'] as Uint8List),
+        wait: const Duration(seconds: 180));
+  }
+
+  Future<void> _ask(OwnerStep Function(OwnerSession) req, {Duration wait = const Duration(seconds: 15)}) async {
     if (_busy) return;
     if (_session == null && _lastNode != null) await _login(_lastNode!);
     var s = _session;
@@ -246,7 +271,7 @@ class _NodesPageState extends State<NodesPage> {
     try {
       _answer = Completer<String>();
       try {
-        await _write(req(s).frames);
+        await _run!(req(s));
       } on PlatformException catch (e) {
         // nothing reached the node (the write itself failed): log in again and send it once more
         _say('link lost (${e.code}): logging in again');
@@ -257,9 +282,9 @@ class _NodesPageState extends State<NodesPage> {
         if (s == null) return;
         setState(() => _busy = true);
         _answer = Completer<String>();
-        await _write(req(s).frames);
+        await _run!(req(s));
       }
-      _say(await _answer!.future.timeout(const Duration(seconds: 15), onTimeout: () => 'no answer in 15 s'));
+      _say(await _answer!.future.timeout(wait, onTimeout: () => 'no answer in ${wait.inSeconds} s'));
     } catch (e) {
       _say('request failed: $e');
     } finally {
@@ -336,6 +361,25 @@ class _NodesPageState extends State<NodesPage> {
                         },
                   child: const Text('Set AP')),
             ]),
+          if (logged)
+            Row(children: [
+              Expanded(child: TextField(controller: _netName, decoration: const InputDecoration(labelText: 'network name'))),
+              const SizedBox(width: 8),
+              DropdownButton<int>(
+                  value: _channel,
+                  items: const [
+                    DropdownMenuItem(value: 40, child: Text('ch 40 · 4 MHz')),
+                    DropdownMenuItem(value: 42, child: Text('ch 42 · 2 MHz')),
+                  ],
+                  onChanged: _busy ? null : (v) => setState(() => _channel = v ?? 40)),
+              FilledButton(
+                  onPressed: _busy ? null : _makeNetwork,
+                  child: const Text('Make network')),
+            ]),
+          if (logged)
+            Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(onPressed: _busy ? null : () => _ask((s) => s.checkNetwork()), child: const Text('Check network'))),
           const Divider(),
           Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
         ]),
