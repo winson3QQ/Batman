@@ -65,7 +65,7 @@ var knownTypes = map[string]bool{"info": true, "claim/begin": true, "claim/finis
 	"root_password/reset": true}
 
 // P3 types: E_UNSUPPORTED{capability: <type>} (254-p2-impl §4.3)
-var p3Types = map[string]bool{"owner/add": true, "owner/remove": true,
+var p3Types = map[string]bool{
 	"peers/challenge": true, "diag/summary": true, "diag/bundle": true, "update/check": true,
 	"update/prepare": true, "update/apply": true, "update/status": true, "bulk/open": true, "bulk/close": true}
 
@@ -78,6 +78,7 @@ var allowed = map[Role]map[string]bool{
 	RoleCandidate: {"info": true, "auth/owner": true},
 	RoleOwner: {"info": true, "op/nonce": true, "network/join": true, "network/update": true, "network/leave": true,
 		"ssh_keys/set": true, "root_password/reset": true, "status": true, "settings/get": true,
+		"owner/add": true, "owner/remove": true,
 		"settings/set": true},
 	RoleMember:    {"info": true, "network/update": true, "status": true},
 	RoleReacquire: {"info": true, "claim/begin": true, "op/nonce": true, "claim/replay": true},
@@ -86,6 +87,7 @@ var allowed = map[Role]map[string]bool{
 // owner-op verbs forwarded as the whole envelope: type -> helper verb
 var forward = map[string]string{"network/join": "net.apply", "network/update": "net.apply",
 	"network/leave": "network.leave", "ssh_keys/set": "ssh_keys.set", "root_password/reset": "root_password.reset",
+	"owner/add": "owner.add", "owner/remove": "owner.remove",
 	"settings/set": "settings.set",
 	"claim/replay": "claim.replay"}
 
@@ -679,7 +681,15 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 		return okEnv(id, cbor.M(1, v))
 	case "root_password/reset":
 		return okEnv(id, r.Body)
+	case "owner/add":
+		// 254-p3-impl §3.2, CDDL owner-add-resp: only the new owner's owner_tag_key (32 B) goes to the app
+		if t, _ := r.Body.Get(1); func() bool { b, ok := t.([]byte); return ok && len(b) == 32 }() {
+			return okEnv(id, cbor.M(1, t))
+		}
+		ss.logf("provd: owner.add answered OK without a 32-byte tag key")
+		return errEnv(id, ERejected, nil)
 	}
+	// owner/remove: the removed owner's sessions go by invalidate -> reconcile (§1.3), whoever sent it
 	return okEnv(id, nil)
 }
 

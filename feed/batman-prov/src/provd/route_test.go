@@ -69,9 +69,10 @@ func TestTypeAndIdemRules(t *testing.T) {
 	}{
 		{"no/such", nil, EUnknownType, nil},
 		{"reset", nil, EUnsupported, cbor.M(1, "reset", 2, uint64(9))},
-		{"owner/add", nil, EUnsupported, cbor.M(1, "owner/add")},
-		{"status", nil, EForbidden, nil},       // anonymous (P3: owner / member only)
-		{"network/join", nil, EForbidden, nil}, // anonymous
+		{"peers/challenge", nil, EUnsupported, cbor.M(1, "peers/challenge")}, // still P3-later
+		{"owner/add", nil, EForbidden, nil},                                  // P3 §3.2: owners only
+		{"status", nil, EForbidden, nil},                                     // anonymous (P3: owner / member only)
+		{"network/join", nil, EForbidden, nil},                               // anonymous
 		{"info", []any{7, idem}, EUnsupported, cbor.M(1, "idem")},
 		{"claim/finish", []any{7, idem}, EForbidden, nil},
 	}
