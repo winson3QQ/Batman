@@ -40,6 +40,7 @@ type netInput struct {
 	channel uint64
 	bw      uint64
 	sae     string
+	country string // net_config key 5; "TW" unless fd 3 has a country= line (prov-country-join-254: a mismatch)
 }
 
 func readFd3() *netInput {
@@ -52,7 +53,7 @@ func readFd3() *netInput {
 	if err != nil {
 		die("net: fd 3: %v", err)
 	}
-	in := &netInput{bw: 2}
+	in := &netInput{bw: 2, country: "TW"}
 	for _, l := range strings.Split(string(b), "\n") {
 		k, v, ok := strings.Cut(strings.TrimRight(l, "\r"), "=")
 		if !ok {
@@ -67,6 +68,8 @@ func readFd3() *netInput {
 			in.bw, _ = strconv.ParseUint(v, 10, 8)
 		case "sae":
 			in.sae = v
+		case "country":
+			in.country = v
 		}
 	}
 	if in.meshID == "" || in.channel == 0 || len(in.sae) < 8 {
@@ -188,7 +191,7 @@ func (cl *client) netObjects(in *netInput, ownerPub, netID []byte, ver uint64, p
 	if prev != nil {
 		p3 = prev
 	}
-	payload := cEnc(cmap{{uint64(1), netID}, {uint64(2), ver}, {uint64(3), p3}, {uint64(4), "dv-test"}, {uint64(5), "TW"},
+	payload := cEnc(cmap{{uint64(1), netID}, {uint64(2), ver}, {uint64(3), p3}, {uint64(4), "dv-test"}, {uint64(5), in.country},
 		{uint64(6), cmap{{uint64(1), in.meshID}, {uint64(2), in.channel}, {uint64(3), in.bw}}}, {uint64(8), []any{ownerPub}}})
 	cfg = cl.sign1("batman/netcfg", labelNetcfg, payload)
 	return cfg, cl.netSecrets(in, netID, ver)
@@ -244,8 +247,8 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 			cfg, sec := cl.netObjects(in, ownerPub, netID, ver+1, objectHash(prev))
 			// network/update: a version chain; the helper checks it against the stored version's admins (219 §5.3)
 			env := cl.ownerOp("network/update", cmap{{uint64(1), []any{rawCBOR(cfg)}}, {uint64(2), rawCBOR(sec)}})
-			code, _ := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
-			fmt.Printf("RESULT net.apply(update) code=%d version=%d mesh_id_sha=%s\n", code, ver+1, short([]byte(in.meshID)))
+			code, r := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
+			fmt.Println(resultLine("net.apply(update)", code, r, fmt.Sprintf(" version=%d mesh_id_sha=%s country=%s", ver+1, short([]byte(in.meshID)), in.country)))
 			fmt.Printf("NETCFG %s\n", hex.EncodeToString(cfg))
 		case "--join": // net-apply --join <owner_pub> <net_config hex>: join ANOTHER node's network — its signed
 			// net_config verbatim (same net_id, same version), this node's own net_secrets (254 review A-M2)

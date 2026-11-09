@@ -44,8 +44,8 @@ trial(){
 		case "$o" in "BOOT=$b0"*) o=${o#*$NL} ;; *) o="" ;; esac
 		case "$o" in *"slot B committed"*)
 			no "GATE REGRESSION: the wbox trial was COMMITTED ($o)"
-			o=$(q 'batman-slot rollback >/dev/null 2>&1 && { (batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &); echo SENT; }')
-			grep -q SENT <<< "$o" || { pr_needs_person "wbox slot B committed and the rollback to A was refused — run on 04: batman-slot rollback; batman-slot reboot committed"; return 1; }
+			o=$(q "$(rb_guarded "$b0" B any prov-dv-254)")
+			[ "$o" = SENT ] || { pr_needs_person "wbox slot B committed and the rollback to A was refused — run on 04: batman-slot rollback; batman-slot reboot committed"; return 1; }
 			pr_find 900 "$b0" && [ "$(field "$PR_STATE" slot)" = A ] || { pr_needs_person "wbox slot B committed; not back on A after the rollback"; return 1; }
 			return 1 ;;
 		*"revert deferred:"*) pr_lease_renew +600 >/dev/null ;;

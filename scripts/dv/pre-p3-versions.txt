@@ -1,0 +1,7 @@
+# scripts/dv/pre-p3-versions.txt — #254 H4 §6.1: the image versions known to be BEFORE P3 (one BATMAN_VERSION per line).
+# A prov-p3-* unit on one of these, whose /etc/batman-build has no provd-p3(#254) in BATMAN_FEATURES, prints
+#   FAIL <unit>: pre-P3 image (<version>)
+# next to its rows' W lines, and scripts/validation-known-failures.txt matches only these versions. An image that is
+# NOT listed here and has no provd-p3 feature (a P3 rc that lost the marker, a new version nobody added) gets no such
+# line: its FAILs are plain FAILs. Add a line with every pin bump until P3 ships; the list is frozen after that.
+1.5.14-wsl.22+2ecf1cb.fwce20a68

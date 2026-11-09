@@ -73,8 +73,12 @@ fleet(){
 }
 restore02(){
 	local o
-	as02 pr_restore || { pr_needs_person "02 restore failed (run $RUN02) — 02 is LOCKED + member with this run's owner key; keys kept in $WSLK"; return 1; }
+	PR_FINAL=1 as02 pr_restore || { pr_needs_person "02 restore failed (run $RUN02) — 02 is LOCKED + member with this run's owner key; keys kept in $WSLK"; return 1; }
+	# 02's start state is legacy (checked before pr_begin): finish only when it is legacy again and the finish answers
+	# FINISHED; anything else keeps 02's snapshot for a person (review 2026-11-09 A-MINOR-4)
+	o=$(as02 pr_meta_state); [ "$o" = legacy ] || { pr_needs_person "02 prov state [$o] after its restore, not legacy (run $RUN02)"; return 1; }
 	o=$(as02 nb finish "$RUN02"); say "02: $(echo "$o" | tail -1)"
+	grep -q "^FINISHED $RUN02" <<< "$o" || { pr_needs_person "02 finish refused (run $RUN02): $(echo "$o" | tail -1)"; return 1; }
 	o=$(as02 pl release); say "02 lease: $o"
 	SNAP02=0
 	PR_PEER_BOOT=$(qp 'cut -c1-8 /proc/sys/kernel/random/boot_id')   # 02 rebooted on purpose; from here it must not
@@ -86,7 +90,7 @@ recover(){
 	if [ "$SNAP02" = 1 ] && [ -n "$(qp 'echo up')" ]; then restore02; pr_abort "fleet join"; return; fi
 	if [ "$SNAP02" = 1 ]; then
 		say "02 unreachable — restoring 04 first, then retrying 02 for 600 s"
-		if pr_restore; then pr_finish_snap; else pr_needs_person "04 restore failed while 02 was unreachable (run $RUN04)"; fi
+		if PR_FINAL=1 pr_restore; then pr_finish_snap; else pr_needs_person "04 restore failed while 02 was unreachable (run $RUN04)"; fi
 		if wait02 600; then restore02; else pr_needs_person "02 unreachable after 04 was restored (run $RUN02) — 02 is LOCKED + member with this run's owner key; keys kept in $WSLK"; fi
 		pr_release; return
 	fi
@@ -100,6 +104,11 @@ fleet_exit(){
 	[ "$SNAP02" = 1 ] && pr_needs_person "harness exited (rc $rc) with 02 claimed / joined (run $RUN02) — 02 is LOCKED + member with this run's owner key; restore it with prov-base on 02, keys kept in $WSLK"
 	return 0
 }
+# written for a LEGACY 02 (it claims 02 with this run's key; restore02 expects UNPROVISIONED): the bench S0 is an N0
+# member now (254-h4 §3.1), whose claim would be refused and whose restore this unit does not check — refused up front,
+# 02 untouched, until the member version exists (h5-prov 2026-11-07)
+st02=$(qp "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta")
+[ "$st02" = legacy ] || { inv "02's prov state is [$st02], not legacy: this unit is written for a legacy fleet"; pr_result; exit 1; }
 pr_begin 3600 || { pr_result; exit 1; }
 trap 'fleet_exit' EXIT
 if ! fleet; then recover; pr_result; exit 1; fi
