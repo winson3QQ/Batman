@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'claim.dart';
 import 'scan.dart';
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
@@ -119,6 +120,10 @@ class _StartupCheckState extends State<StartupCheck> {
                   FilledButton(
                       onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ScanPage())),
                       child: const Text('Nodes nearby (BLE probe)')),
+                if (_ok)
+                  OutlinedButton(
+                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ClaimPage())),
+                      child: const Text('Claim a node (dev)')),
               ]),
       ),
     );

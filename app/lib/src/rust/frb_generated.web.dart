@@ -6,6 +6,7 @@
 // Static analysis wrongly picks the IO variant, thus ignore this
 // ignore_for_file: argument_type_not_assignable
 
+import 'api/claim.dart';
 import 'api/simple.dart';
 
 import 'dart:async';
@@ -23,6 +24,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     required super.portManager,
   });
 
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_ClaimSessionPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession;
+
+  @protected
+  ClaimSession
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    dynamic raw,
+  );
+
+  @protected
+  ClaimSession
+  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    dynamic raw,
+  );
+
+  @protected
+  ClaimSession
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    dynamic raw,
+  );
+
   @protected
   String dco_decode_String(dynamic raw);
 
@@ -30,10 +53,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
+  ClaimQr dco_decode_box_autoadd_claim_qr(dynamic raw);
+
+  @protected
+  ClaimStep dco_decode_box_autoadd_claim_step(dynamic raw);
+
+  @protected
   BuildInfo dco_decode_build_info(dynamic raw);
 
   @protected
+  ClaimQr dco_decode_claim_qr(dynamic raw);
+
+  @protected
+  ClaimStep dco_decode_claim_step(dynamic raw);
+
+  @protected
+  int dco_decode_i_32(dynamic raw);
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
+  List<Uint8List> dco_decode_list_list_prim_u_8_strict(dynamic raw);
 
   @protected
   Uint64List dco_decode_list_prim_u_64_strict(dynamic raw);
@@ -48,7 +89,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
+  ClaimStep? dco_decode_opt_box_autoadd_claim_step(dynamic raw);
+
+  @protected
+  (ClaimSession, ClaimStep)
+  dco_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
+    dynamic raw,
+  );
+
+  @protected
+  SealParams dco_decode_seal_params(dynamic raw);
+
+  @protected
   StatusInfo dco_decode_status_info(dynamic raw);
+
+  @protected
+  StepKind dco_decode_step_kind(dynamic raw);
 
   @protected
   int dco_decode_u_32(dynamic raw);
@@ -63,16 +119,57 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void dco_decode_unit(dynamic raw);
 
   @protected
+  BigInt dco_decode_usize(dynamic raw);
+
+  @protected
+  ClaimSession
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ClaimSession
+  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ClaimSession
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
+  ClaimQr sse_decode_box_autoadd_claim_qr(SseDeserializer deserializer);
+
+  @protected
+  ClaimStep sse_decode_box_autoadd_claim_step(SseDeserializer deserializer);
+
+  @protected
   BuildInfo sse_decode_build_info(SseDeserializer deserializer);
 
   @protected
+  ClaimQr sse_decode_claim_qr(SseDeserializer deserializer);
+
+  @protected
+  ClaimStep sse_decode_claim_step(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_i_32(SseDeserializer deserializer);
+
+  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+  @protected
+  List<Uint8List> sse_decode_list_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  );
 
   @protected
   Uint64List sse_decode_list_prim_u_64_strict(SseDeserializer deserializer);
@@ -87,7 +184,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
+  ClaimStep? sse_decode_opt_box_autoadd_claim_step(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  (ClaimSession, ClaimStep)
+  sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SealParams sse_decode_seal_params(SseDeserializer deserializer);
+
+  @protected
   StatusInfo sse_decode_status_info(SseDeserializer deserializer);
+
+  @protected
+  StepKind sse_decode_step_kind(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_32(SseDeserializer deserializer);
@@ -102,7 +216,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_decode_unit(SseDeserializer deserializer);
 
   @protected
-  int sse_decode_i_32(SseDeserializer deserializer);
+  BigInt sse_decode_usize(SseDeserializer deserializer);
+
+  @protected
+  void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    ClaimSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    ClaimSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    ClaimSession self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_String(String self, SseSerializer serializer);
@@ -111,10 +246,34 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_claim_qr(ClaimQr self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_claim_step(
+    ClaimStep self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_build_info(BuildInfo self, SseSerializer serializer);
 
   @protected
+  void sse_encode_claim_qr(ClaimQr self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_claim_step(ClaimStep self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_i_32(int self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_list_prim_u_8_strict(
+    List<Uint8List> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_prim_u_64_strict(
@@ -135,7 +294,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_claim_step(
+    ClaimStep? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
+    (ClaimSession, ClaimStep) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_seal_params(SealParams self, SseSerializer serializer);
+
+  @protected
   void sse_encode_status_info(StatusInfo self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_step_kind(StepKind self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);
@@ -150,13 +328,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_unit(void self, SseSerializer serializer);
 
   @protected
-  void sse_encode_i_32(int self, SseSerializer serializer);
+  void sse_encode_usize(BigInt self, SseSerializer serializer);
 }
 
 // Section: wire_class
 
 class RustLibWire implements BaseWire {
   RustLibWire.fromExternalLibrary(ExternalLibrary lib);
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+        ptr,
+      );
 }
 
 @JS('wasm_bindgen')
@@ -164,4 +358,14 @@ external RustLibWasmModule get wasmModule;
 
 @JS()
 @anonymous
-extension type RustLibWasmModule._(JSObject _) implements JSObject {}
+extension type RustLibWasmModule._(JSObject _) implements JSObject {
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    int ptr,
+  );
+}
