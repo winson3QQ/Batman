@@ -58,6 +58,27 @@ pub fn store_sweep(dir: String) -> Result<u32, String> {
     batman_proto::store::Store::new(dir).sweep_temps().map(|n| n as u32).map_err(|e| format!("{e:?}"))
 }
 
+/// The STATUS characteristic, decoded strictly (batman_proto::status; vectors `status_public`).
+pub struct StatusInfo {
+    pub state: String,
+    pub trial: bool,
+    pub id_last4: Option<String>,
+    pub versions: Vec<u64>,
+    pub transports: Vec<String>,
+}
+
+#[flutter_rust_bridge::frb(sync)]
+pub fn decode_status(bytes: Vec<u8>) -> Result<StatusInfo, String> {
+    let s = batman_proto::status::decode(&bytes).map_err(|e| format!("{e:?}"))?;
+    Ok(StatusInfo {
+        state: format!("{:?}", s.state).to_lowercase(),
+        trial: s.trial,
+        id_last4: s.id_last4,
+        versions: s.versions,
+        transports: s.transports,
+    })
+}
+
 #[flutter_rust_bridge::frb(init)]
 pub fn init_app() {
     flutter_rust_bridge::setup_default_user_utils();

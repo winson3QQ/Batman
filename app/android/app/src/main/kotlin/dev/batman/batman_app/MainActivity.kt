@@ -6,8 +6,22 @@ import dev.batman.batman_app.keystore.Keys
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import android.Manifest
+import android.content.pm.PackageManager
 
 class MainActivity : FlutterActivity() {
+    // BLE (design §2 BLE rules): scan + connect only, never pairing; BLUETOOTH_SCAN is declared neverForLocation
+    private val blePerms = arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+    private var blePending: MethodChannel.Result? = null
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == BLE_REQ) {
+            blePending?.success(grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED })
+            blePending = null
+        }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.batman/platform").setMethodCallHandler { call, result ->
@@ -40,8 +54,16 @@ class MainActivity : FlutterActivity() {
                 } catch (e: Exception) {
                     result.error("keystore", e.javaClass.simpleName, null)
                 }
+                // true when both BLE permissions are granted (asks once if not)
+                "blePermissions" -> {
+                    if (blePerms.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) result.success(true)
+                    else if (blePending != null) result.error("ble", "a permission request is already open", null)
+                    else { blePending = result; requestPermissions(blePerms, BLE_REQ) }
+                }
                 else -> result.notImplemented()
             }
         }
     }
 }
+
+private const val BLE_REQ = 4201

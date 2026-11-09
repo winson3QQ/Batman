@@ -31,6 +31,9 @@ Future<void> storeWriteMarker({required String dir, required String content}) =>
 Future<int> storeSweep({required String dir}) =>
     RustLib.instance.api.crateApiSimpleStoreSweep(dir: dir);
 
+StatusInfo decodeStatus({required List<int> bytes}) =>
+    RustLib.instance.api.crateApiSimpleDecodeStatus(bytes: bytes);
+
 /// What this native library was built with; Dart compares `dev_trust` with the flavor's BuildConfig at startup and
 /// disables the app on a mismatch (design v8.5.1 §4.1).
 class BuildInfo {
@@ -49,4 +52,40 @@ class BuildInfo {
           runtimeType == other.runtimeType &&
           devTrust == other.devTrust &&
           crateVersion == other.crateVersion;
+}
+
+/// The STATUS characteristic, decoded strictly (batman_proto::status; vectors `status_public`).
+class StatusInfo {
+  final String state;
+  final bool trial;
+  final String? idLast4;
+  final Uint64List versions;
+  final List<String> transports;
+
+  const StatusInfo({
+    required this.state,
+    required this.trial,
+    this.idLast4,
+    required this.versions,
+    required this.transports,
+  });
+
+  @override
+  int get hashCode =>
+      state.hashCode ^
+      trial.hashCode ^
+      idLast4.hashCode ^
+      versions.hashCode ^
+      transports.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is StatusInfo &&
+          runtimeType == other.runtimeType &&
+          state == other.state &&
+          trial == other.trial &&
+          idLast4 == other.idLast4 &&
+          versions == other.versions &&
+          transports == other.transports;
 }
