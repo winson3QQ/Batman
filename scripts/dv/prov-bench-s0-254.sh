@@ -75,9 +75,9 @@
 set -u
 MODE=${1:-}
 case "$MODE:${2:-}" in
-	fresh:04|restore:04|slota:04|toa:04) NODE=10.41.1.3; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local ;;
-	fresh:02|restore:02|slota:02|toa:02) NODE=10.41.1.1; MAC=d8:3a:dd:f8:45:d7; MDNS=BCM2711-45d7.local ;;   # eth0 address read on 02, 2026-11-06
-	*) echo "usage: $0 fresh <04|02> | restore <04|02> <run> | slota <04|02> | toa <04|02>"; exit 2 ;;
+	fresh:04|unclaimed:04|restore:04|slota:04|toa:04) NODE=10.41.1.3; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local ;;
+	fresh:02|unclaimed:02|restore:02|slota:02|toa:02) NODE=10.41.1.1; MAC=d8:3a:dd:f8:45:d7; MDNS=BCM2711-45d7.local ;;   # eth0 address read on 02, 2026-11-06
+	*) echo "usage: $0 fresh <04|02> | unclaimed <04|02> | restore <04|02> <run> | slota <04|02> | toa <04|02>"; exit 2 ;;
 esac
 # IP=<address>: the node's present address when it is not the default one (2026-11-08: 04 left as a hybrid legacy at its
 # openmanetd address, not 10.41.1.3); a wrong address stops at step 0's MAC check, nothing written. fresh / slota / toa:
@@ -349,7 +349,9 @@ pc_place(){ scp -q $FRESHO "$TOOLS/provclient-arm64" root@"$FIP":$PCD/provclient
 s=$(q "$ST"); say "start: $s"
 case "$s" in "mac=$MAC slot=A ver=$V trial_rc=1 dt_try="*" hold=[] held=0 badslot=[]"*) ;; *) say "precondition ($NN by MAC, A committed $V, no hold, no bad-slot)"; exit 1;; esac
 a=$(q "awk -v b=\$(cat /proc/sys/kernel/random/boot_id) '\$1==b {print \"ps=\" \$2 \"/\" \$4}' /opt/batdata/state/prov-state; batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?; echo dirty=[\$(cat $DIRTY 2>/dev/null)] undo=\$(ls /opt/batdata/state/dv-undo 2>/dev/null | wc -l)")
-say "A: $(echo $a)"; case "$(echo $a)" in *"ps=helper/legacy"*"check_rc=0"*"dirty=[] undo=0"*) ;; *) say "A is not a healthy legacy node, or a dirty flag / undo journal is present (a dirty flag left by a restore whose B rewrite failed: check the node, then sh $BASE/prov-base-254.sh finish <the flag's first word> on it)"; exit 1;; esac
+# unclaimed (the app's claim test, 2026-11-09): A may be a member too — chain1 makes the same fresh B from a member A
+a1=$(echo $a); [ "$MODE" = unclaimed ] && a1=${a1/ps=helper\/member/ps=helper\/legacy}
+say "A: $(echo $a)"; case "$a1" in *"ps=helper/legacy"*"check_rc=0"*"dirty=[] undo=0"*) ;; *) say "A is not a healthy legacy node, or a dirty flag / undo journal is present (a dirty flag left by a restore whose B rewrite failed: check the node, then sh $BASE/prov-base-254.sh finish <the flag's first word> on it)"; exit 1;; esac
 [ "$(q "sha256sum < $PAY | cut -c1-64")" = "$PSHA" ] || { say "payload sha"; exit 1; }
 payver
 [ -s "$LABKEY.pub" ] || { say "no $LABKEY.pub"; exit 1; }
@@ -428,6 +430,13 @@ wait_find 600 "slot=B ver=$V trial_rc=1 " "$BT" || abort "B not found after the 
 say "B committed at $FIP ($FOUND_HOW): $FOUND_STATE"
 t=$SECONDS; d=""; while [ $((SECONDS - t)) -lt 300 ]; do d=$(fq 'echo "$(uci -q get openmanetd.config.dhcpconfigured) $(cut -d. -f1 /proc/uptime)"'); [ "${d%% *}" = 1 ] && [ "${d##* }" -ge 150 ] && break; sleep 10; done
 [ "${d%% *}" = 1 ] && [ "${d##* }" -ge 150 ] && ok "B stable: dhcpconfigured=1, uptime ${d##* } s" || abort "B not stable after the reservation reboot: dhcpconfigured/uptime=[$d]"
+# ======== unclaimed <node>: stop here — B committed, unclaimed, for the phone app to claim (app S1 §8.7). The snapshot
+# and the dirty flag stay: `restore <node> <run>` brings the node back (p5 from the snapshot undoes the app's claim).
+if [ "$MODE" = unclaimed ]; then
+	KEPT=1   # on_exit must not restore: the node is left unclaimed on purpose
+	RESULT="PASS — $NN is an UNCLAIMED fresh B at $FIP (MAC $MAC); claim QR: ssh root@$FIP batman-provhelper qr; back: restore $NN $RUN"
+	exit 0
+fi
 # ======== 3. lab key (publickey proven BEFORE the claim), claim with H0
 PH=s3
 pub=$(cat "$LABKEY.pub"); fq "mkdir -p -m 0700 /etc/dropbear; grep -qxF '$pub' /etc/dropbear/authorized_keys 2>/dev/null || echo '$pub' >> /etc/dropbear/authorized_keys; chmod 0600 /etc/dropbear/authorized_keys; chown root:root /etc/dropbear/authorized_keys" >/dev/null
