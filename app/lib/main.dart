@@ -38,7 +38,9 @@ class StartupCheck extends StatefulWidget {
 }
 
 class _StartupCheckState extends State<StartupCheck> {
+  // what everyone sees (the result, warnings, first-run outcome) / the technical detail, folded away
   String? _report;
+  String _tech = '';
   bool _ok = false;
 
   @override
@@ -52,16 +54,17 @@ class _StartupCheckState extends State<StartupCheck> {
     final flavorDevTrust = await _platform.invokeMethod<bool>('devTrust');
     // design v8.5.1 §4.1: the Rust library and the flavor must agree, else the app is disabled
     final agree = flavorDevTrust == info.devTrust;
-    final lines = <String>[
-      agree ? '啟動檢查：正常' : '啟動檢查：App 內部版本不一致，已停用（請重新安裝 App）',
-      '技術資訊：核心 dev_trust=${info.devTrust}（batman_bridge ${info.crateVersion}），安裝版 DEV_TRUST=$flavorDevTrust',
-    ];
+    final lines = <String>[agree ? '啟動檢查：正常' : '啟動檢查：App 內部版本不一致，已停用（請重新安裝 App）'];
+    final tech = <String>['核心 dev_trust=${info.devTrust}（batman_bridge ${info.crateVersion}），安裝版 DEV_TRUST=$flavorDevTrust'];
     if (agree) {
-      lines.add('技術資訊（自我測試）：${selftest()}');
-      lines.addAll(await _install());
+      tech.add('自我測試：${selftest()}');
+      final inst = await _install();
+      for (final l in inst) {
+        (l.startsWith('安裝紀錄：') ? tech : lines).add(l); // the marker itself is technical; what happened is not
+      }
       try {
         final levels = await _platform.invokeMapMethod<String, dynamic>('keyLevels');
-        lines.add('金鑰保護等級：$levels');
+        tech.add('金鑰保護等級：$levels');
         if (levels?['softOwnerEnc'] == true) {
           lines.add('注意：這支手機的復原／成員金鑰只有軟體保護，只適合開發使用');
         }
@@ -69,10 +72,11 @@ class _StartupCheckState extends State<StartupCheck> {
         lines.add('讀取金鑰失敗（${e.code}）：${e.message}');
       }
     }
-    debugPrint('BMAPP ${lines.join(' | ')}');
+    debugPrint('BMAPP ${[...lines, ...tech].join(' | ')}');
     setState(() {
       _ok = agree;
       _report = lines.join('\n');
+      _tech = tech.join('\n');
     });
   }
 
@@ -106,28 +110,32 @@ class _StartupCheckState extends State<StartupCheck> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Batman — 啟動檢查')),
+      appBar: AppBar(title: const Text('Batman 節點管理')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: _report == null
             ? const Center(child: CircularProgressIndicator())
             : ListView(children: [
-                SelectableText(_report!,
-                    style: TextStyle(fontFamily: 'monospace', color: _ok ? null : Colors.red)),
+                Text(_report!, style: TextStyle(fontSize: 16, color: _ok ? null : Colors.red)),
                 const SizedBox(height: 16),
-                // only an app that passed the startup check talks to nodes
+                // only an app that passed the startup check talks to nodes; the everyday actions first
                 if (_ok)
                   FilledButton(
-                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ScanPage())),
-                      child: const Text('附近的節點（開發用：藍牙測試）')),
+                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NodesPage())),
+                      child: const Text('我的節點')),
                 if (_ok)
                   OutlinedButton(
                       onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ClaimPage())),
                       child: const Text('認領節點')),
                 if (_ok)
-                  OutlinedButton(
-                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NodesPage())),
-                      child: const Text('我的節點')),
+                  TextButton(
+                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ScanPage())),
+                      child: const Text('附近的節點（開發用：藍牙測試）')),
+                const SizedBox(height: 8),
+                ExpansionTile(
+                    title: const Text('技術資訊（給維修人員看）'),
+                    tilePadding: EdgeInsets.zero,
+                    children: [SelectableText(_tech, style: const TextStyle(fontFamily: 'monospace', fontSize: 12))]),
               ]),
       ),
     );
