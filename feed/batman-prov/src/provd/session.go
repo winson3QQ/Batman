@@ -65,7 +65,7 @@ var knownTypes = map[string]bool{"info": true, "claim/begin": true, "claim/finis
 	"root_password/reset": true}
 
 // P3 types: E_UNSUPPORTED{capability: <type>} (254-p2-impl §4.3)
-var p3Types = map[string]bool{"owner/add": true, "owner/remove": true, "settings/get": true, "settings/set": true,
+var p3Types = map[string]bool{"owner/add": true, "owner/remove": true, "settings/set": true,
 	"peers/challenge": true, "diag/summary": true, "diag/bundle": true, "update/check": true,
 	"update/prepare": true, "update/apply": true, "update/status": true, "bulk/open": true, "bulk/close": true}
 
@@ -77,7 +77,7 @@ var allowed = map[Role]map[string]bool{
 	RoleAnon:      {"info": true, "claim/begin": true, "claim/finish": true},
 	RoleCandidate: {"info": true, "auth/owner": true},
 	RoleOwner: {"info": true, "op/nonce": true, "network/join": true, "network/update": true, "network/leave": true,
-		"ssh_keys/set": true, "root_password/reset": true, "status": true},
+		"ssh_keys/set": true, "root_password/reset": true, "status": true, "settings/get": true},
 	RoleMember:    {"info": true, "network/update": true, "status": true},
 	RoleReacquire: {"info": true, "claim/begin": true, "op/nonce": true, "claim/replay": true},
 }
@@ -642,6 +642,8 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 		return ss.authOwner(id, h, body)
 	case "status":
 		return ss.status(id, role, body)
+	case "settings/get":
+		return ss.settingsGet(id, body)
 	}
 	verb := forward[typ]
 	r, e := ss.ops(id, verb, cbor.M(1, h, 2, raw))
@@ -851,6 +853,28 @@ func (ss *Session) status(id uint64, role Role, body cbor.Map) cbor.Map {
 			continue // a member never gets key 15, whatever the helper sent
 		}
 		out = append(out, e)
+	}
+	return okEnv(id, out)
+}
+
+// settings/get (254-p3-impl §3.3, CDDL settings-get-req = empty): the owner reads the node's settings from the helper's
+// cache on the ro connection (no owner-op). Only integer keys are passed on.
+func (ss *Session) settingsGet(id uint64, body cbor.Map) cbor.Map {
+	if len(body) != 0 {
+		return errEnv(id, EBadObject, nil)
+	}
+	r, err := ss.srv.roCall("settings.get", cbor.M())
+	if err != nil {
+		return errEnv(id, EBusy, nil)
+	}
+	if r.Code != hOK {
+		return ss.mapHelper(id, "settings/get", r.Code)
+	}
+	out := cbor.M()
+	for _, e := range r.Body {
+		if _, ok := e.K.(uint64); ok {
+			out = append(out, e)
+		}
 	}
 	return okEnv(id, out)
 }

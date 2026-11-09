@@ -49,7 +49,8 @@ func TestReadOnlyWhileMutexHeld(t *testing.T) {
 // the read-only list is closed: nonce / sign.* / psks.get / claim.* stay under the mutex
 func TestReadOnlyListClosed(t *testing.T) {
 	want := map[string]bool{"health.get": true, "info.boot_id": true, "info.cert": true, "info.ecdh_pub": true,
-		"info.state": true, "info.net": true, "info.owners": true, "status.get": true}
+		"info.state": true, "info.net": true, "info.owners": true, "status.get": true,
+		"settings.get": true}
 	if len(readOnlyVerbs) != len(want) {
 		t.Fatalf("read-only verbs %v", readOnlyVerbs)
 	}

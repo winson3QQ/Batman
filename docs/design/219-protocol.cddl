@@ -195,8 +195,10 @@ settings = {
   ? 11 => ptt-settings,
   ? 12 => gps-settings,
   ? 13 => lora-settings,
+  ? 20 => ap-settings,       ; the node's phone AP (254-p3-impl §3.3); the passphrase is never read back
   * uint => any,           ; unknown keys ignored (§5.1)
 }
+ap-settings    = { ? 1 => tstr, * uint => any }                   ; 1: ssid
 halow-settings = { ? 1 => uint, ? 2 => uint, * uint => any }      ; 1: channel, 2: bandwidth (MHz)
 ptt-settings   = { ? 1 => uint, * uint => any }                   ; 1: talk group
 gps-settings   = { ? 1 => bool, * uint => any }                   ; 1: enabled

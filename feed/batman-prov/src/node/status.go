@@ -208,6 +208,9 @@ func (n *Node) StatusTick() {
 	if n.status != nil {
 		n.status.Tick()
 	}
+	if n.settings != nil {
+		n.settings.Tick()
+	}
 }
 
 func (n *Node) statusGet(a cbor.Map, now time.Time, conn *bucket) (cbor.Map, *Error) {

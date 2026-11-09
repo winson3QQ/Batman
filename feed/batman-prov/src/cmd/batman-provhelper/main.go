@@ -609,6 +609,7 @@ func daemon(p provstore.Paths) {
 	n.Health, n.TrialCached = h.Get, trial.Trial
 	// 254-p3-impl §3.4: status.get's caches, refreshed in the background (only while an app asked in the last 10 min)
 	n.SetStatusSource(node.StatusSource{HalowStatus: halowStatusJSON, P5Fresh: p5Fresh})
+	n.SetSettingsSource(readSettings) // §3.3, ticked by the same ticker
 	go func() {
 		tk := time.NewTicker(time.Second)
 		defer tk.Stop()

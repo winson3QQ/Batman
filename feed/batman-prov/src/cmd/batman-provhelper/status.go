@@ -6,9 +6,11 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
+	"batman-prov/node"
 	"batman-prov/provstore"
 )
 
@@ -20,6 +22,23 @@ func halowStatusJSON() ([]byte, error) {
 		return nil, fmt.Errorf("halow-status json: rc %d", rc)
 	}
 	return []byte(out), nil
+}
+
+const regdbPath = "/usr/share/morse-regdb/channels.csv" // the table halow-setkey and netifd use
+
+// readSettings: settings.get's source (§3.3) — uci values, and the regdb for the bandwidth (read per refresh, not per
+// request). uci prints nothing for a missing option: the cache then omits that key.
+func readSettings() (node.Settings, error) {
+	s := node.Settings{
+		Hostname: uciGet("system.@system[0].hostname"),
+		Country:  uciGet("wireless.radio1.country"),
+		Channel:  uciGet("wireless.radio1.channel"),
+		SSID:     uciGet("wireless.default_radio0.ssid"),
+	}
+	if b, err := os.ReadFile(regdbPath); err == nil {
+		s.RegdbBW = node.RegdbLookup(string(b))
+	}
+	return s, nil
 }
 
 func p5Fresh() (bool, error) {

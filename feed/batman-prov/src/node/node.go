@@ -113,7 +113,9 @@ type Node struct {
 	Health      func() string
 	TrialCached func() bool
 	// 254-p3-impl §3.4: status.get's caches (SetStatusSource; nil = status.get answers E_UNSUPPORTED)
-	status   *statusCache
+	status *statusCache
+	// 254-p3-impl §3.3: settings.get's cache (SetSettingsSource; nil = E_UNSUPPORTED)
+	settings *settingsCache
 	roGlobal bucket // read-only verbs, helper-wide (readonly.go)
 	psksRate bucket // psks.get: 1/s
 	clock    func() time.Time
