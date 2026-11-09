@@ -27,5 +27,6 @@ for m in netobj nodecert blebridge httprelay benchstore signrel; do t "$m" "$m s
 # the P3 test table (appendix A -> p3-units.tsv -> p3-how.tsv -> p3-manual-rows.md) is what the design gives now
 t "bench_ip + p5_ap_back (stubbed node)" '^[1-9][0-9]* passed, 0 failed$' bash "$REPO/scripts/dv/test-bench-p5-254.sh"
 t "rollback guard + field-anchored slot match + lint" '^================ test-slot-guard: [1-9][0-9]* passed, 0 failed' bash "$REPO/scripts/dv/test-slot-guard-254.sh"
+t "restore / finish path (nodes.txt line, A found by MAC, finish NEEDS-PERSON)" '^================ test-restore: [1-9][0-9]* passed, 0 failed' bash "$REPO/scripts/dv/test-restore-254.sh"
 t "P3 unit table (gen-p3-units --check)" '^gen-p3-units: ok, [1-9][0-9]* rows in [1-9][0-9]* units' python3 "$REPO/scripts/dv/gen-p3-units.py" --check
 echo "$P passed, $F failed"; [ $F = 0 ]

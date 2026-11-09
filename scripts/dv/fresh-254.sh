@@ -133,8 +133,8 @@ restore_all(){
 	o=$(fqlong "sh $BASE/prov-base-254.sh overlay-restore $RUN"); echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY" | tail -12 | sed 's/^/    /'
 	grep -q "^OVERLAY-RESTORED $RUN" <<< "$o" || { say "RESTORE: overlay-restore failed"; return 1; }
 	b=$(bootof "$s"); fq "(batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &)" >/dev/null
-	local t=$SECONDS; FIP=""; while [ $((SECONDS - t)) -lt 900 ]; do s=$(is_on $NODE "slot=A ver=$V trial_rc=1 ") && case "$s" in *"boot=$b"*) ;; *) FIP=$NODE; break;; esac; sleep 15; done
-	[ -n "$FIP" ] || { say "RESTORE: A not back at $NODE"; return 1; }
+	a_back "$b" || { say "RESTORE: A (slot A committed, a new boot) not found in 900 s (tried $NODE$SEEN)"; return 1; }
+	local t
 	t=$SECONDS; while [ $((SECONDS - t)) -lt 300 ]; do u=$(q 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge 150 ] && break; sleep 10; done
 	say "A at $NODE: $(q "$ST")"
 	# compare S0 (joinwatch stopped meanwhile so p5 is not rw-mounted under the manifest; review A-m4) — result KEPT
@@ -157,3 +157,10 @@ restore_all(){
 	return 0
 }
 abort(){ no "ABORT: $*"; restore_all "abort: $*"; exit 1; }
+# a_back <boot before the reboot> [seconds]: A committed in a NEW boot, found by its MAC (NODE first, then the addresses
+# seen, mDNS, ARP, the swept /24s); NODE follows it. A kept member's address (prov-bench-s0 IP=) is not where the legacy
+# A of a snapshot comes back, and restore_all used to poll NODE only (review 2026-11-09 B-MAJOR-3).
+a_back(){
+	wait_find "${2:-900}" "slot=A ver=$V trial_rc=1 " "$1" || return 1
+	[ "$FIP" = "$NODE" ] || { say "A came back at $FIP ($FOUND_HOW), not $NODE: using $FIP"; NODE=$FIP; }
+}

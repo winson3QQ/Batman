@@ -28,7 +28,7 @@ chmod +x "$B"/*
 H5='$6$p5p5p5p5p5p5p5p5$5555555555555555555555555555555555555555555555555555555555555555555555555555555555555.'
 HL='$6$livelivelivelive$LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL'
 
-# mk <p5 state|absent|bad> <identity same|diff> <shadow-root line|-> <live root field> <locked 0|1>
+# mk <p5 state|absent|bad|nometa> <identity same|diff> <shadow-root line|-> <live root field> <locked 0|1>
 mk(){
 	S=$T/c$cases; rm -rf "$S"; mkdir -p "$S/p5/identity/prov" "$S/provd/identity" "$S/etc"
 	echo "abc  node.key" > "$S/provd/identity/sha256"
@@ -36,6 +36,7 @@ mk(){
 	case "$1" in
 		absent) rm -rf "$S/p5" ;;
 		bad) echo "garbage" > "$S/p5/prov.meta" ;;
+		nometa) ;;   # p5 readable, no prov.meta (a mkfs'd p5, as chain1 / prov-bench-s0 leave it)
 		*) printf 'cbor-%s' "$1" > "$S/p5/prov.cbor"; echo "v=1 state=$1 gen=2 sha=$(sha256sum < "$S/p5/prov.cbor" | cut -c1-64)" > "$S/p5/prov.meta" ;;
 	esac
 	[ "$3" = - ] || { [ -d "$S/p5" ] && echo "$3" > "$S/p5/identity/shadow-root"; }
@@ -75,6 +76,10 @@ mk legacy same "root:$H5:19000:0:99999:7:::" "$HL" 0; run legacy
 expect "legacy: untouched (dev / operator nodes keep today's rules)" '! locked && [ "$(root)" = "$HL" ]'
 mk bad same - "" 0; run
 expect "p5 meta bad: locked (fail-secure)" 'locked && [ "$(root)" = "!" ]'
+mk nometa same - "" 0; run member
+expect "p5 readable, no meta + p6 member: locked (the 2026-11-08 chain1 trial: \"p5 says - but p6 says member\")" 'locked'
+mk nometa same - "" 0; run -
+expect "p5 readable, no meta + p6 none: untouched (a fresh card)" '! locked'
 mk absent same - "" 0; run claimed
 expect "p5 unreadable + p6 claimed: locked" 'locked && [ "$(root)" = "!" ]'
 mk absent same - "" 0; run -

@@ -74,7 +74,11 @@ fleet(){
 restore02(){
 	local o
 	PR_FINAL=1 as02 pr_restore || { pr_needs_person "02 restore failed (run $RUN02) — 02 is LOCKED + member with this run's owner key; keys kept in $WSLK"; return 1; }
+	# 02's start state is legacy (checked before pr_begin): finish only when it is legacy again and the finish answers
+	# FINISHED; anything else keeps 02's snapshot for a person (review 2026-11-09 A-MINOR-4)
+	o=$(as02 pr_meta_state); [ "$o" = legacy ] || { pr_needs_person "02 prov state [$o] after its restore, not legacy (run $RUN02)"; return 1; }
 	o=$(as02 nb finish "$RUN02"); say "02: $(echo "$o" | tail -1)"
+	grep -q "^FINISHED $RUN02" <<< "$o" || { pr_needs_person "02 finish refused (run $RUN02): $(echo "$o" | tail -1)"; return 1; }
 	o=$(as02 pl release); say "02 lease: $o"
 	SNAP02=0
 	PR_PEER_BOOT=$(qp 'cut -c1-8 /proc/sys/kernel/random/boot_id')   # 02 rebooted on purpose; from here it must not

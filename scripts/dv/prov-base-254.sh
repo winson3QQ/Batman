@@ -71,7 +71,7 @@ PR_FINAL=1 pr_restore || { pr_needs_person "restore after the power loss did not
 prov_boot
 [ "$(qr "head -c 100 /etc/banner | wc -c; [ -e /etc/dv-prov-base-$RUN ] && echo extra-left")" = 100 ] && ok "/etc/banner back, no extra file left" || no "/etc/banner / extra file after the restore"
 # ---- end: nothing was written to B
-pr_finish_snap || no "finish"
+pr_finish_snap || :   # it reports every failure itself (NEEDS-PERSON)
 pr_release
 s=$(qr "$ST"); [ "$(field "$s" protB)" = "[$PR_V]" ] && [ "$(qr "$PROTB_LS")" = "$PR_PROTB_LS" ] && ok "slot B untouched" || no "slot B changed: $s"
 pr_peer_after

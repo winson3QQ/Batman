@@ -407,10 +407,24 @@ pr_needs_person(){
 # the snapshot is finished only when the prov state is the one pr_begin found: a non-final pr_restore makes the node
 # legacy again, and a unit ending on one left the bench legacy for every later unit (h5-prov 2026-11-07: prov-base,
 # "base state: legacy already" in all 33 units after it)
+pr_meta_state(){ qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta"; }
+pr_s0_ok(){ case "$1" in legacy|unclaimed|claimed|member) return 0 ;; esac; return 1; }
+# A refused finish keeps the snapshot and the dirty flag, and every later unit FAILs P9 on them: so each failure here is
+# a NEEDS-PERSON (DNODE_BLOCKED), never a bare FAIL (review 2026-11-09 A-MAJOR-1 / B-MINOR-4). A wrong end state gets
+# one more final restore first. An unreadable start state cannot be checked: a person (fail-closed).
 pr_finish_snap(){ local o
-	o=$(qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta")
-	[ -z "${PR_S0_STATE:-}" ] || [ "$o" = "$PR_S0_STATE" ] || { no "prov state [$o] at the end, S0 was [$PR_S0_STATE] — snapshot and dirty flag kept"; return 1; }
-	o=$(nb finish "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^FINISHED $RUN" <<< "$o" && PR_SNAPPED=0; }
+	pr_s0_ok "${PR_S0_STATE:-}" || { pr_needs_person "the start prov state [${PR_S0_STATE:-}] was not read: the end state cannot be checked"; return 1; }
+	o=$(pr_meta_state)
+	if [ "$o" != "$PR_S0_STATE" ]; then
+		no "prov state [$o] at the end, S0 was [$PR_S0_STATE] — one more final restore"
+		PR_FINAL=1 pr_restore && o=$(pr_meta_state)
+		[ "$o" = "$PR_S0_STATE" ] || { pr_needs_person "prov state [$o] at the end, S0 was [$PR_S0_STATE], also after a second restore"; return 1; }
+		ok "prov state $o after the second restore"
+	fi
+	o=$(nb finish "$RUN"); say "$(echo "$o" | tail -1)"
+	grep -q "^FINISHED $RUN" <<< "$o" || { pr_needs_person "finish refused: $(echo "$o" | tail -1)"; return 1; }
+	PR_SNAPPED=0
+}
 pr_release(){
 	local o
 	# a person takes over (NEEDS-PERSON): no radio / provd / helper restore (review B-M3: a second writer on a
@@ -464,7 +478,7 @@ pr_end(){	# [revert] [wrote-b]
 	s=$(qr "$ST")
 	if [ "$PR_WROTE_B" = 1 ] || [ "$(field "$s" protB)" != "[$PR_V]" ]; then pr_brewrite || { pr_needs_person "pr_end: B rewrite failed"; return 1; }
 	else [ "$(qr "$PROTB_LS")" = "$PR_PROTB_LS" ] && ok "slot-B.protected = V, untouched" || no "slot-B.protected changed"; fi
-	pr_finish_snap || no "finish"
+	pr_finish_snap || :   # it reports every failure itself (NEEDS-PERSON)
 	if [ -n "${OWNER:-}" ]; then pr_keys_drop; [ "$(wsl_ bash -c "[ -e $WSLK ] && echo left" | tr -d '\r')" = left ] && no "run keys still in $WSLK" || ok "run keys removed"; fi
 	pr_release
 	pr_peer_after
@@ -546,7 +560,10 @@ pr_begin(){
 	# The bench base state is a claimed N0 MEMBER now (254-h4 §3.1, prov-bench-s0-254.sh); these units were written for
 	# a LEGACY start (they claim first). L vehicle (254-h4 §2): inside the snapshot the node is made legacy, the restore
 	# brings the member back. PR_BASE=member: the unit wants the base state as it is.
-	PR_S0_STATE=$(qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta")
+	# the start state, read until it is one of the four (a failed read must not switch the end check off: review
+	# 2026-11-09 B-MINOR-4 / A-MINOR-3)
+	PR_S0_STATE=""; for a in 1 2 3; do PR_S0_STATE=$(pr_meta_state); pr_s0_ok "$PR_S0_STATE" && break; sleep 5; done
+	pr_s0_ok "$PR_S0_STATE" || { pr_abort "start prov state unreadable [$PR_S0_STATE]"; return 1; }
 	if [ "${PR_BASE:-legacy}" = legacy ]; then pr_make_legacy || { pr_abort "make-legacy"; return 1; }; fi
 	for a in "$@"; do case "$a" in
 		upper=*) pr_upper_helper "${a#upper=}" || { pr_abort "upper-helper"; return 1; } ;;

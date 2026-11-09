@@ -1,7 +1,7 @@
 #!/bin/bash
 # scripts/dv/prov-bench-s0-254.sh — #254 H4 §3.1: the bench base state S0-pre on ONE node, KEPT (no restore). Git Bash.
 #   bash scripts/dv/prov-bench-s0-254.sh fresh <04|02>           make the node a fresh card, claim it, join N0, keep it
-#   bash scripts/dv/prov-bench-s0-254.sh restore <04|02> <run>   back to the legacy state of <run>'s snapshot
+#   bash scripts/dv/prov-bench-s0-254.sh restore <04|02> <run>   back to the state of <run>'s snapshot (legacy or member)
 #                                                                (<run> = the id printed by fresh, or keep-<id> after
 #                                                                step 5; nodes.txt in the bench store has it)
 #   bash scripts/dv/prov-bench-s0-254.sh slota <04|02>           a kept node on B: rewrite slot A with V (its legacy
@@ -73,12 +73,26 @@
 set -u
 MODE=${1:-}
 case "$MODE:${2:-}" in
-	fresh:04|restore:04|slota:04|toa:04) NODE=${IP:-10.41.1.3}; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local ;;
-	fresh:02|restore:02|slota:02|toa:02) NODE=${IP:-10.41.1.1}; MAC=d8:3a:dd:f8:45:d7; MDNS=BCM2711-45d7.local ;;   # eth0 address read on 02, 2026-11-06
+	fresh:04|restore:04|slota:04|toa:04) NODE=10.41.1.3; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local ;;
+	fresh:02|restore:02|slota:02|toa:02) NODE=10.41.1.1; MAC=d8:3a:dd:f8:45:d7; MDNS=BCM2711-45d7.local ;;   # eth0 address read on 02, 2026-11-06
 	*) echo "usage: $0 fresh <04|02> | restore <04|02> <run> | slota <04|02> | toa <04|02>"; exit 2 ;;
 esac
 # IP=<address>: the node's present address when it is not the default one (2026-11-08: 04 left as a hybrid legacy at its
-# openmanetd address, not 10.41.1.3); a wrong address stops at step 0's MAC check, nothing written
+# openmanetd address, not 10.41.1.3); a wrong address stops at step 0's MAC check, nothing written. fresh / slota / toa:
+# it is the node's address for the whole run. restore: it only helps FIND the node (SEEN); the legacy A of the snapshot
+# comes back at its own address, which restore_all finds by MAC (review 2026-11-09 B-MAJOR-3).
+[ "$MODE" = restore ] || NODE=${IP:-$NODE}
+# restore: the membership line from the snapshot's own p6 prov state (field 3 of prov-state, as prov-lock.sh reads it).
+# member = the node is back on N0 as the keep line says: nothing appended. legacy / unclaimed / claimed / no file = it
+# left N0: "restored=". Anything else: no line, the caller refuses (review 2026-11-09 A-MAJOR-2: a restored= line for a
+# member snapshot emptied bench_ip and sent every later unit to the wrong address).
+restore_nodes_line(){	# <snapshot state> <node> <run> <date>
+	case "$1" in
+		member) return 0 ;;
+		legacy|unclaimed|claimed|absent|-) printf 'node=%s restored=%s date=%s\n' "$2" "$3" "$4" ;;
+		*) return 1 ;;
+	esac
+}
 NN=$2; MACW=$(echo "$MAC" | tr : -)
 V=${V:?version}; PAY=${PAY:?payload path on the node}; PSHA=${PSHA:?payload sha256}
 OUTS=${OUTS:-//wsl.localhost/Ubuntu-24.04/home/yello/out}
@@ -133,15 +147,20 @@ if [ "$MODE" = restore ]; then
 	o=$(fq "[ -f $D/p5.img ] && echo p5img=y; [ -f $D/p1.list ] && echo p1list=y; echo dirty=[\$(cut -d' ' -f1 $DIRTY 2>/dev/null)]"); say "$(echo $o)"
 	case "$o" in *"p5img=y"*"p1list=y"*) ;; *"p5img=y"*) say "snapshot $D has no p1 list: the run died right after its snapshot, the node was not changed — run sh $BASE/prov-base-254.sh finish $RUN on it (prov-base is scripts/node/prov-base-254.sh) and start joinwatch"; exit 1;; *) say "no snapshot $D on the node"; exit 1;; esac
 	case "$o" in *"dirty=[]"*|*"dirty=[$RUN]"*|*"dirty=[${RUN#keep-}]"*) ;; *) say "the dirty flag names another run: $(echo $o) — not touching it"; exit 1;; esac
+	SNAPST=$(fq "if [ -e $D/snap/state/prov-state ]; then awk 'NR==1 {print \$3}' $D/snap/state/prov-state; elif [ -e $D/snap/state/prov-state.absent ]; then echo absent; fi")
+	restore_nodes_line "$SNAPST" "$NN" "$RUN" x >/dev/null || { say "the snapshot's prov state is [$SNAPST] (not member / legacy / unclaimed / claimed / absent) — nothing written"; exit 1; }
+	say "snapshot prov state: $SNAPST"
 	# the legacy A answers at $NODE with its old host key; known_hosts may hold the kept slot's key for that address
 	ssh-keygen -R "$NODE" >/dev/null 2>&1; SSHO="$SSHO -o StrictHostKeyChecking=accept-new"
 	P1_0=$(fq "cat $D/p1.list"); [ "$(echo "$P1_0" | wc -l)" -ge 5 ] || { say "the snapshot's p1 list is unreadable"; exit 1; }
 	scp -q $FRESHO "$PB" root@"$FIP":$BASE/prov-base-254.sh || { say "copy prov-base"; exit 1; }
 	fq "[ -s $DIRTY ] || echo '$RUN restore' > $DIRTY; sync"   # chain1's restore expects the dirty flag of a run in progress
 	SNAPPED=1; KEPT=1   # KEPT: a failure in here must not start a second restore from on_exit
-	if restore_all "restore $RUN"; then [ "$fails" = 0 ] && RESULT="PASS — $NN restored to the legacy state of $RUN" || RESULT="RESTORED WITH $fails FAIL"
-		# the node is off N0 (also when only the B rewrite failed): the membership log says so
-		[ -n "$(wsl_ ls -1 $BENCH/nodes.txt 2>/dev/null)" ] && printf 'node=%s restored=%s date=%s\n' "$NN" "$RUN" "$(date +%F)" | wsl_ bash -c "umask 077; cat >> $BENCH/nodes.txt"
+	if restore_all "restore $RUN"; then [ "$fails" = 0 ] && RESULT="PASS — $NN restored to the $SNAPST state of $RUN" || RESULT="RESTORED WITH $fails FAIL"
+		# the membership log follows the snapshot (also when only the B rewrite failed): a member snapshot stays on N0
+		NLINE=$(restore_nodes_line "$SNAPST" "$NN" "$RUN" "$(date +%F)")
+		if [ -z "$NLINE" ]; then say "member snapshot: $NN is on N0 again, nodes.txt unchanged (its keep line holds)"
+		elif [ -n "$(wsl_ ls -1 $BENCH/nodes.txt 2>/dev/null)" ]; then printf '%s\n' "$NLINE" | wsl_ bash -c "umask 077; cat >> $BENCH/nodes.txt"; fi
 	else RESULT="RESTORE FAILED — needs a person"; fi
 	exit 1   # on_exit sets the real code from RESULT
 fi
@@ -365,10 +384,11 @@ PH=s2
 o=$(q "grep -c '^/dev/mmcblk0p5 ' /proc/mounts; ps w | grep -c '[b]atman-config-save'"); [ "$(echo $o)" = "0 0" ] && ok "p5 idle" || abort "p5 busy: $(echo $o)"
 o=$(q "mkfs.ext4 -F -q -L batconfig /dev/mmcblk0p5 && echo MKFS-OK; $P5RO"); say "p5 after mkfs: $(echo $o)"
 case "$o" in *MKFS-OK*"seeded=n"*) ok "p5 empty, not seeded";; *) abort "mkfs";; esac
-# a fresh card has an empty p6 too: p6's prov-state is the fail-secure ratchet (batman-prov-lock: "p5 says - but p6
-# says member — locking (any)"), so a member's p6 kept the fresh trial LOCKED -> no `none` login -> find04 never saw it
-# (2026-11-08 chain1 on the member base: trial up at 10.41.254.76, dropbear "Exit before auth", 0 fails). prov-state is
-# one of the snapshot's state files: overlay-restore puts it back, compare checks it
+# a fresh card has an empty p6 too: make p6 like a fresh card's. Here (fresh starts from a healthy LEGACY node, step 0's
+# ps=helper/legacy) p6 says legacy, which never locks, so this is for a fresh-like p6, not a fix of a failure seen here.
+# The failure it mirrors was chain1's on the member base (2026-11-08: p6 member kept the fresh trial LOCKED, "p5 says -
+# but p6 says member — locking (any)"; review 2026-11-09 A-MINOR-7). prov-state is one of the snapshot's state files:
+# overlay-restore puts it back, compare checks it
 o=$(q "rm -f /opt/batdata/state/prov-state; sync; [ -e /opt/batdata/state/prov-state ] && echo P6-KEPT || echo P6-CLEARED")
 [ "$o" = P6-CLEARED ] && ok "p6 prov-state cleared (fresh card)" || abort "p6 prov-state not cleared: [$o]"
 q "echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync"
