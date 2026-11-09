@@ -31,6 +31,10 @@ if [ -f "$F/etc/init.d/batman-prov-lock" ]; then
 	stub 'fails=0$' claim-lock-lints .
 else echo "FAIL prov-p1-stubs: product in this checkout predates the claim-lock fix (no etc/init.d/batman-prov-lock) — KNOWN until fix/254-claim-lock lands (#254)"; r=1; fi
 stub 'fails=0$' prov-base-names scripts/node/prov-base-254.sh   # no root needed (review A-m10)
+# #320: every `< file 2>/dev/null` read in feed/*/files is braced (busybox prints "can't open" before 2> applies); harness-first,
+# so on a pre-#320 product this prints 3 FAIL lines (2 from the test: lint count + first hit, A3 stderr; plus the stub
+# summary) — KNOWN #320 until fix/320-cfgsave-stderr lands; the full hit list is in CI's direct run
+stub 'fails=0$' cfgsave-stderr-quiet .
 # #254 wireless transactions (docs/design/254-wireless-txn.md §6, §7, §11): the harness lands first (#290), so a product
 # without --forget-mesh fails with one KNOWN line (that IS the negative control)
 if grep -q -- '--forget-mesh' "$F/usr/bin/halow-setkey"; then

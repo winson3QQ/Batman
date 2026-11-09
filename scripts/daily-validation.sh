@@ -219,7 +219,7 @@ suite harness-negctl-254 "N3 held-trial script vs a simulated node: only guarded
 #     product change that breaks them fails here, not on a node. The loop-device ones (config-save, prov-base) need
 #     root: CI runs them (prov-p1 job); here they run only as root under WSL/Linux. Body: scripts/test-prov-p1-stubs.sh,
 #     through self_test (Git Bash -> the WSL distro: the claim-lock stubs need busybox ash).
-suite prov-p1-stubs "#254 P1 stubs: addr-defer decider/reconcile/init hook (22+), autocommit prov case, 99zz mesh_expect, batman-slot release; claim-lock fix: prov_apply_lock (37), prov_root_hash_ok (46), S13 (18), rollback gate (19), lints (6); root-only loop-device ones when possible" "self_test test-prov-p1-stubs.sh"
+suite prov-p1-stubs "#254 P1 stubs: addr-defer decider/reconcile/init hook (22+), autocommit prov case, 99zz mesh_expect, batman-slot release; claim-lock fix: prov_apply_lock (37), prov_root_hash_ok (46), S13 (18), rollback gate (19), lints (6); #320 cfgsave-stderr-quiet (redirect-read lint + A3 block under busybox ash); root-only loop-device ones when possible" "self_test test-prov-p1-stubs.sh"
 
 # 2. No hardware needed: the MAC->IP derivation used by the first-boot hook.
 suite onboarding-ip \

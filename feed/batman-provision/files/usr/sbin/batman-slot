@@ -86,7 +86,7 @@ slot_lock() {
 	if ! mkdir "$LOCK" 2>/dev/null; then
 		p=$(cat "$LOCK/pid" 2>/dev/null)
 		# cmdline is NUL-separated ("/bin/sh\0/usr/sbin/batman-slot\0apply…"): flatten before matching
-		if [ -n "$p" ] && [ "$p" != $$ ] && kill -0 "$p" 2>/dev/null && tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q batman-slot; then
+		if [ -n "$p" ] && [ "$p" != $$ ] && kill -0 "$p" 2>/dev/null && { tr '\0' ' ' < "/proc/$p/cmdline"; } 2>/dev/null | grep -q batman-slot; then
 			die "another batman-slot (pid $p) is writing a slot — refusing to run concurrently"
 		fi
 		warn "taking over a stale slot lock (pid ${p:-?} is gone)"
@@ -468,7 +468,7 @@ p5_verdict_write() {   # $1 verdict token (no spaces)
 p5_verdict_gate() {
 	f=$1; now=$2; v=""; t=""
 	case "$f" in "$RUNDIR"/*) ;; *) echo "error:path-outside-rundir"; return 2 ;; esac
-	[ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] && read -r v t < "$f" 2>/dev/null || { echo none; return 2; }
+	[ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] && { read -r v t < "$f"; } 2>/dev/null || { echo none; return 2; }
 	case "$t" in ''|*[!0-9]*) echo "error:bad-stamp"; return 2 ;; esac
 	[ $((now - t)) -le "$P5VERDICT_MAX_AGE" ] || { echo "expired:age=$((now - t))s"; return 2; }
 	echo "$v"
