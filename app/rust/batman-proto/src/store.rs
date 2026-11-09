@@ -26,7 +26,12 @@ pub enum Error {
     NotARecord,
     Io(std::io::Error),
     Random,
+    /// write_cas: the record's generation on disk is not the one it was read at (written elsewhere since)
+    Stale { expected: u64, found: u64 },
 }
+
+/// write_cas's read-compare-write runs under this one process-wide lock (join2 design §3.1).
+static CAS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
@@ -122,6 +127,21 @@ impl Store {
         fs::rename(&tmp, &p)?;
         File::open(dir)?.sync_all()?;
         Ok(())
+    }
+
+    /// Compare-and-swap write (join2 design §3.1): only when the header generation on disk is `expected_gen` (0 = no
+    /// record yet), `rel` is replaced with `sealed` at generation `expected_gen + 1` — the generation the caller sealed
+    /// with (`aad(rel, expected_gen + 1)`). `expected_gen` is the generation the record was READ at, never re-read
+    /// here: a write elsewhere in between is `Stale` and nothing is written. Returns the new generation.
+    pub fn write_cas(&self, rel: &str, expected_gen: u64, sealed: &[u8]) -> Result<u64, Error> {
+        let _g = CAS.lock().unwrap_or_else(|p| p.into_inner());
+        let found = self.read(rel)?.map_or(0, |s| s.generation);
+        if found != expected_gen {
+            return Err(Error::Stale { expected: expected_gen, found });
+        }
+        let g = expected_gen + 1;
+        self.write(rel, g, sealed)?;
+        Ok(g)
     }
 
     /// Remove `rel` (e.g. a claim-pending turned into a node record, or forgotten by the user) and sync the directory.
