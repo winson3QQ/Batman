@@ -25,6 +25,7 @@ set -u
 # of each node, a keep line), else the pre-conversion fleet addresses (pr_begin's MAC check refuses a wrong node)
 # shellcheck source=scripts/dv/bench-254.sh
 . "$(dirname "${BASH_SOURCE[0]}")/bench-254.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/slot-guard-254.sh"   # rb_guarded: every rollback checks boot / slot / trial on the node
 [ -n "${NODE:-}" ] || NODE=$(bench_ip 04); [ -n "${PEER:-}" ] || PEER=$(bench_ip 02)
 NODE=${NODE:-10.41.1.3}; PEER=${PEER:-10.41.1.1}; MAC=${MAC:-88:a2:9e:b5:6c:89}
 PEERMAC=${PEERMAC:-a8:dd:9f:4d:c7:60}   # 02's mesh interface (wlh0): the neighbour must be 02, not any node (review A-m6 / B-m5); pr_begin checks it on 02
@@ -286,8 +287,8 @@ back_to_a(){
 	local s b0 o; s=$(qr "$ST"); b0=$(field "$s" boot)
 	[ "$(field "$s" slot)" = B ] || { say "back_to_a: already on $(field "$s" slot)"; PR_STATE=$s; PR_AB_MT=""; return 0; }
 	pr_trial_guard_end
-	o=$(q 'batman-slot rollback >/dev/null 2>&1 && { (batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &); echo SENT; }')
-	say "back_to_a: ${o:-rollback refused}"; grep -q SENT <<< "$o" || return 1
+	o=$(q "$(rb_guarded "$b0" B any prov-dv-254)")   # guarded on the node: this boot, still on B
+	say "back_to_a: ${o:-no answer}"; [ "$o" = SENT ] || return 1
 	pr_find 900 "$b0" || return 1
 	[ "$(field "$PR_STATE" slot)" = A ] && [ "$(field "$PR_STATE" trial_rc)" = 1 ] || { say "back_to_a: not A committed: $PR_STATE"; return 1; }
 	return 0
@@ -625,7 +626,8 @@ pr_keys(){
 # `pr_pc owner.pem ...` and "$OWNER".
 pr_h0(){
 	wsl_ bash -c "umask 077; mkdir -p $WSLK && cp /home/yello/.batman-dv/bench/h0/owner.pem $WSLK/h0.pem && chmod 600 $WSLK/h0.pem" || { no "bench owner key H0 not copied"; return 1; }
-	H0=$(wsl_ cat /home/yello/.batman-dv/bench/h0/owner.pub | tr -d ''); [ ${#H0} = 130 ] || { no "bench owner key H0 unreadable"; return 1; }
+	H0=$(wsl_ cat /home/yello/.batman-dv/bench/h0/owner.pub | tr -d '
+'); [ ${#H0} = 130 ] || { no "bench owner key H0 unreadable"; return 1; }
 	OWNER=${OWNER:-$H0}   # pr_end's key cleanup looks at OWNER
 }
 # pr_pc_place: provclient-arm64 into $PCD (root 0711, made without -p: a pre-existing dir is refused), sha checked

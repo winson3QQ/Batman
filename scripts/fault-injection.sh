@@ -348,6 +348,7 @@ r4(){ echo "== R4 healthy held trial that nobody releases is reverted at the dea
 
 # ---- #274 §12 (v8.2): the OTA start and the trial policy for a crash ----
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/dv/slot-guard-254.sh"   # rb_guarded: every rollback checks boot / slot / trial on the node
 # wait until the tenant's verdict is OK on this boot (the start-up converge is done), max $1 s
 verdict_ok(){ local max=${1:-300} t0=$SECONDS
   while [ $((SECONDS - t0)) -lt "$max" ]; do
@@ -566,9 +567,9 @@ p5(){ echo "== P5 reflash-survives-config (#202 D3): a persisted AP key + hostna
   #    landed on B, roll the default back to A and reboot into it (explicit, committed — no trial).
   if [ "$s1" != A ]; then
     local b1; b1=$(bootid)
-    n "batman-slot rollback >/dev/null 2>&1 && setsid sh -c 'sleep 2; batman-slot reboot committed p5-back-to-A' </dev/null >/dev/null 2>&1 &"
-    if waitboot "$b1" 300 && settle 180 >/dev/null 2>&1 && [ "$(slot)" = A ] && committed; then ok "P5 rolled back to slot A (bench convention), committed"
-    else no "P5: could not return the node to slot A (slot=$(slot))"; fi
+    local rbo; rbo=$(n "$(rb_guarded "${b1:0:8}" B 1 p5-back-to-A)" | tr -d '\r')   # guarded: this boot, on B, committed
+    if [ "$rbo" = SENT ] && waitboot "$b1" 300 && settle 180 >/dev/null 2>&1 && [ "$(slot)" = A ] && committed; then ok "P5 rolled back to slot A (bench convention), committed"
+    else no "P5: could not return the node to slot A (rollback: ${rbo:-no answer}; slot=$(slot))"; fi
     t=0; j=0; while [ $t -lt 240 ]; do case "$(q "$RDR"'cat "$R/joinwatch.state" 2>/dev/null' | tr -d '
 ')" in JOINED*) j=1; break;; esac; sleep 10; t=$((t+10)); done
     [ $j = 1 ] && ok "P5 rejoined after returning to slot A" || no "P5: not JOINED within 240 s after returning to slot A"

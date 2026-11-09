@@ -257,7 +257,8 @@ for w in "meta=unclaimed" "ap=0" "seeded=n" "metastat=[ok unclaimed]"; do case "
 grep -E "batman-provhelper.*boot rc=(7|0) " <<< "$ev" | tail -1 | grep -q "verdict=unclaimed" && ok "7.2 helper boot rc 7/0 + unclaimed" || no "7.2 helper boot line"
 grep -q "mesh join required: 0 (prov=unclaimed" <<< "$ev" && ok "7.2 autocommit: mesh join required: 0 (prov=unclaimed" || no "7.2 autocommit decision"
 grep -q "HELD" <<< "$ev" && ok "7.2 HELD" || no "7.2 not HELD"
-PH=s7.3; fq "batman-slot rollback >/dev/null 2>&1; (batman-slot reboot committed ch1-b </dev/null >/dev/null 2>&1 &)" >/dev/null
+# guarded: still the 7.2 trial (boot BA) on A, still a trial (its deadline may have returned it to B meanwhile)
+PH=s7.3; o=$(fq "$(rb_guarded "$BA" A 0 ch1-b)"); say "7.3 back to B: ${o:-no answer}"; [ "$o" = SENT ] || abort "7.3: rollback to B not sent ($o)"
 wait_find 600 "slot=B ver=$V trial_rc=1 " "$BA" || abort "7.3: B not found after back_to_b"
 say "7.3 B: $FIP $FOUND_STATE"; BB=$(bootof "$FOUND_STATE")
 case "$FOUND_STATE" in *"badslot=[]"*) ok "7.3 back on B committed, no bad-slot";; *) no "7.3 bad-slot: $FOUND_STATE";; esac
@@ -307,7 +308,7 @@ elif wait_find 600 "slot=A ver=$V trial_rc=0 dt_try=00000001 " "$BB"; then
 	echo "$o" | sed 's/^/    dry: /'
 	grep -q "claimed with the placeholder mesh key, but p6 says this node has been in a mesh — neighbours required (fail-closed)" <<< "$o" && grep -q "mesh join required: 1 (prov=claimed mesh_expect=0" <<< "$o" \
 		&& ok "8.7 negative: mesh-expected back -> claimed+placeholder needs neighbours, mesh join required: 1 (prov=claimed" || no "8.7 negative control (review B-4 strings)"
-	PH=s8.8; fq "batman-slot rollback >/dev/null 2>&1; (batman-slot reboot committed ch1-b </dev/null >/dev/null 2>&1 &)" >/dev/null
+	PH=s8.8; o=$(fq "$(rb_guarded "$BA" A 0 ch1-b)"); say "8.8 back to B: ${o:-no answer}"; [ "$o" = SENT ] || abort "8.8: rollback to B not sent ($o)"
 	wait_find 600 "slot=B ver=$V trial_rc=1 " "$BA" || abort "8.8: B not found"
 	say "8.8 B: $FIP $FOUND_STATE"
 else

@@ -4,7 +4,7 @@
 # 106-127 and 129-183 at be90b00); the comments keep chain1's review references. Git Bash.
 # The caller sets, BEFORE sourcing: NODE (the committed address) MAC MACW (eth MAC, colon / Windows dash form) MDNS
 # LABKEY, and before CALLING: V, FIP (set by find04), PCD TOOLS_WSL WSLK (pc), HOSTIP BASE RUN where used.
-# restore_all / abort also need: PAY PSHA BREWRITE REPO D PDIR DIRTY P1_0 and the flags STAGED SNAPPED RESTORING.
+# restore_all / abort also need: BASE PAY PSHA BREWRITE REPO D PDIR DIRTY P1_0 and the flags STAGED SNAPPED RESTORING.
 # Names say 04 (find04) for chain1's sake; the node is whichever NODE / MAC name.
 SSHO="-o BatchMode=yes -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o LogLevel=ERROR"
 # any slot of 04 on the lab LAN: host key changes with every fresh slot; `none` until the lab key is in, publickey after
@@ -47,9 +47,12 @@ P5RO='mkdir -p -m 0700 /tmp/run/batman-dv && m=$(mktemp -d /tmp/run/batman-dv/ch
 P1LIST='cd /boot && find . -type f | sort | while IFS= read -r f; do sha256sum "$f"; done'   # per file, so a FAIL names the file (round 3 m3)
 NOFORCE='echo "allow_unseeded=$([ -e /tmp/batman-slot.allow-unseeded ] && echo y || echo n) allow_stale=$([ -e /tmp/batman-slot.allow-stale-p5 ] && echo y || echo n) allow_txn=$([ -e /tmp/batman-slot.allow-unfinished-txn ] && echo y || echo n)"'
 # is_on <ip> <pattern>: 04 (by MAC) answers there and its state matches the pattern
-is_on(){ ping -n 1 -w 1000 "$1" >/dev/null 2>&1 || return 1; local s; s=$(timeout 30 ssh $FRESHO root@"$1" "$ST" 2>/dev/null | tr -d '\r'); case "$s" in "mac=$MAC "*$2*) echo "$s"; return 0;; esac; return 1; }
+#   <pattern> starts at a field boundary (" $2", literal), so "slot=B ..." never matches inside
+# "badslot=[slot=B ...]" or "hold=[slot=B ...]" (2026-11-08 incident; review 2026-11-09 B-MAJOR-2)
+is_on(){ ping -n 1 -w 1000 "$1" >/dev/null 2>&1 || return 1; local s; s=$(timeout 30 ssh $FRESHO root@"$1" "$ST" 2>/dev/null | tr -d '\r'); case "$s" in "mac=$MAC "*) ;; *) return 1;; esac; case " $s" in *" $2"*) echo "$s"; return 0;; esac; return 1; }
 SEEN=""   # every address 04 was found at in this run: tried first (review B-11: the reserved address is not in a swept /24)
 # find04 <pattern> [exclude-boot]: sets FIP / FOUND_HOW / FOUND_STATE (never call in a subshell)
+. "$(dirname "${BASH_SOURCE[0]}")/slot-guard-254.sh"   # rb_guarded: every rollback checks boot / slot / trial on the node
 find04(){
 	local ip s p ips
 	for p in fixed seen mdns arp 10.41.254 10.41.1; do
@@ -60,7 +63,7 @@ find04(){
 			arp) ips=$(macips) ;;
 			*) sweep $p; ips=$(macips) ;;
 		esac
-		for ip in $ips; do s=$(is_on "$ip" "$1") || continue; case "$s" in *"boot=${2:-none}"*) continue;; esac
+		for ip in $ips; do s=$(is_on "$ip" "$1") || continue; case "$s" in *" boot=${2:-none}"*) continue;; esac
 			FIP=$ip; FOUND_HOW=$p; FOUND_STATE=$s; case " $SEEN " in *" $ip "*) ;; *) SEEN="$SEEN $ip";; esac; return 0; done
 	done; return 1
 }
@@ -114,11 +117,14 @@ restore_all(){
 	case "$s" in *" slot=B "*)
 		fq "rm -f /opt/batdata/state/autocommit-hold-commit; touch $BASE/ch1.cancel"
 		o=$(fqlong "for m in /tmp/run/batman-dv/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on B): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed — needs a person"; return 1; }
-		b=$(bootof "$s"); fq "batman-slot rollback >/dev/null 2>&1 && (batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &) && echo SENT" | sed 's/^/    rollback: /'
+		# guarded on the node: this boot, on B, committed, and chain1's dead-man neither fired nor running (it does its own
+		# p5-restore + rollback; a second rollback from here would flip the default back to B) — review 2026-11-09 B-MAJOR-1
+		b=$(bootof "$s"); o=$(fq "$(rb_guarded "$b" B 1 ch1-restore "[ ! -e $BASE/ch1.fired ] && ! ps w | grep -q '[c]h1-deadman.sh'")")
+		say "    rollback: ${o:-no answer}"; [ "$o" = SENT ] || { say "RESTORE: rollback to A not sent ($o) — needs a person"; return 1; }
 		wait_find 900 "slot=A ver=$V trial_rc=1 " "$b" || { say "RESTORE: A not found after the rollback"; return 1; }; s=$FOUND_STATE; say "on A: $s"
 		land_quiet || { wait_find 900 "slot=A ver=$V trial_rc=1 " || return 1; s=$FOUND_STATE; land_quiet || { say "RESTORE: A keeps rebooting"; return 1; }; } ;;
 	esac
-	case "$s" in *"slot=A ver=$V trial_rc=1 "*) ;; *) say "RESTORE: not on A committed: $s"; return 1;; esac
+	case "$s" in *" slot=A ver=$V trial_rc=1 "*) ;; *) say "RESTORE: not on A committed: $s"; return 1;; esac
 	fq "touch $BASE/ch1.cancel; rm -f /opt/batdata/state/autocommit-hold-commit; b=\$(cat /opt/batdata/state/bad-slot 2>/dev/null); [ -n \"\$b\" ] && { echo \"bad-slot was [\$b] (residue of this run) — removing\"; rm -f /opt/batdata/state/bad-slot; }; true" | sed 's/^/    /'
 	# p5 again ON A, always (2026-10-26 wsl.3 run: A booted with 8.6's claimed overlay and joinwatch running, and its
 	# --on-join saved A's live root line into the p5 restored on B -> S0 compare diffs=3). p5-restore stops joinwatch /

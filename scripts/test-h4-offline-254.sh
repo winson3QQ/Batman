@@ -15,7 +15,9 @@ tok() { echo "ok   $1"; P=$((P + 1)); }
 tbad() { echo "FAIL $1"; F=$((F + 1)); }
 [ -x "$PY" ] || { tbad "no python with the pinned closure at $PY (H4_PY)"; echo "$P passed, $F failed"; exit 1; }
 # <label> <pattern the last line must match> <cmd...>
-t() { local l=$1 want=$2 o; shift 2; o=$("$@" 2>&1); local rc=$?
+# every test gets stdin from /dev/null: a stub that drains stdin (test-bench-p5's ssh) waited forever on an inherited
+# open pipe when the suite ran from a background shell (2026-11-09)
+t() { local l=$1 want=$2 o; shift 2; o=$("$@" 2>&1 </dev/null); local rc=$?
 	if [ $rc = 0 ] && grep -qE "$want" <<< "$(tail -3 <<< "$o")"; then tok "$l: $(tail -1 <<< "$o")"; else tbad "$l (rc $rc): $(tail -2 <<< "$o" | tr '\n' '|')"; fi; }
 t "undo executor (namespace)" '^[1-9][0-9]* PASS / 0 FAIL$' bash "$REPO/tests/judges/h4/test-undo-lib.sh"
 t "offline judges" '^[1-9][0-9]* PASS / 0 FAIL$' "$PY" "$REPO/tests/judges/h4/test-judges.py"
@@ -24,5 +26,6 @@ t "peer.py (vectors + fake bridge)" 'peer.py selftest: [1-9][0-9]* checks, 0 fai
 for m in netobj nodecert blebridge httprelay benchstore signrel; do t "$m" "$m selftest: [1-9][0-9]* checks, 0 failed" "$PY" "$m.py" --selftest; done
 # the P3 test table (appendix A -> p3-units.tsv -> p3-how.tsv -> p3-manual-rows.md) is what the design gives now
 t "bench_ip + p5_ap_back (stubbed node)" '^[1-9][0-9]* passed, 0 failed$' bash "$REPO/scripts/dv/test-bench-p5-254.sh"
+t "rollback guard + field-anchored slot match + lint" '^================ test-slot-guard: [1-9][0-9]* passed, 0 failed' bash "$REPO/scripts/dv/test-slot-guard-254.sh"
 t "P3 unit table (gen-p3-units --check)" '^gen-p3-units: ok, [1-9][0-9]* rows in [1-9][0-9]* units' python3 "$REPO/scripts/dv/gen-p3-units.py" --check
 echo "$P passed, $F failed"; [ $F = 0 ]
