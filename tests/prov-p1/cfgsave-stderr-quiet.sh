@@ -33,7 +33,7 @@ BB=$(command -v busybox 2>/dev/null) || { no "no busybox on this host — the A3
 # has a real read stays a hit). Comment lines are not scanned.
 RE="(^|[[:space:]()])<[[:space:]]*[\"'~\$/A-Za-z_.][^;|&]*[[:space:]](2>>?[[:space:]]*/dev/null|2>&-|>[[:space:]]*/dev/null[[:space:]]+2>&1)"
 ONLY_DEVNULL='^([^<]|<<)*<[[:space:]]*/dev/null([^<]|<<)*$'
-lint(){ grep -nE "$RE" "$@" | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' | grep -vE "$ONLY_DEVNULL"; }
+lint(){ grep -nE "$RE" "$@" | grep -vE '^([^:]*:)?[0-9]+:[[:space:]]*#' | grep -vE "$ONLY_DEVNULL"; }
 cases=$((cases+1))
 noisy='read -r a b < "$F" 2>/dev/null || a=0
 v=$(tr "\n" " " < /etc/x 2>/dev/null | sed 1p)
@@ -64,7 +64,7 @@ grep -q "<title" f 2>/dev/null
 q=$(printf '%s\n' "$quiet" > "$T/quiet"; lint "$T/quiet")
 [ -z "$q" ] && ok "lint self-test: brace form, kmsg priority, here-doc, reversed order, dup, /dev/null operand, glued <, comment are not hits (13/13)" || no "lint self-test: a quiet form is a hit: $(echo "$q" | tr '\n' ' ')"
 cases=$((cases+1))
-hits=$(cd "$R" && grep -rnE "$RE" feed/*/files 2>/dev/null | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' | grep -vE "$ONLY_DEVNULL")
+hits=$(cd "$R" && grep -rnE "$RE" feed/*/files 2>/dev/null | grep -vE '^([^:]*:)?[0-9]+:[[:space:]]*#' | grep -vE "$ONLY_DEVNULL")
 if [ -z "$hits" ]; then ok "lint: no unguarded redirect-read in feed/*/files"
 else printf '%s\n' "$hits" | sed 's/^/       /'; no "lint: $(printf '%s\n' "$hits" | wc -l) unguarded redirect-read(s) in feed/*/files, first $(printf '%s\n' "$hits" | head -1 | cut -d: -f1,2) — busybox ash prints \"can't open\" before 2> applies; write { cmd < f; } 2>/dev/null (a '<' inside a string: split the line) (#320)"; fi
 
