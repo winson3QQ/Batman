@@ -228,9 +228,9 @@ status-scope = 0 ; self
              / 1 ; team (queried over the mesh)
 status-resp = {
   1 => node-state,
-  2 => verdict,
-  3 => uint,                 ; mesh neighbours seen
-  4 => bool,                 ; p5_saved
+  ? 2 => verdict,            ; optional (254-p3-impl §3.4): omitted while the node's status cache is empty
+  ? 3 => uint,               ; mesh neighbours seen (optional, as 2)
+  ? 4 => bool,               ; p5_saved (optional: omitted when never computed or older than 300 s)
   ? 5 => join-failure,       ; when not in the mesh (#127)
   ? 6 => uint,               ; battery percent
   ? 7 => [* team-entry],     ; scope = team
@@ -240,7 +240,17 @@ status-resp = {
 verdict = 0 ; ok
         / 1 ; degraded
         / 2 ; down
-join-failure = { 1 => uint, ? 2 => tstr, * uint => any }          ; 1: reason code (#127), 2: detail for logs
+join-failure = { 1 => join-reason, ? 2 => tstr, * uint => any }   ; 1: reason code (#127), 2: detail for logs
+join-reason = 0 ; not determined
+            / 1 ; radio kept down by keyguard (the mesh / AP key is the placeholder)
+            / 2 ; mesh key missing or the placeholder
+            / 3 ; radio disabled in the configuration
+            / 4 ; HaLow radio not up (driver / firmware / hardware)
+            / 5 ; radio up but not in mesh mode
+            / 6 ; mesh11sd disabled
+            / 7 ; meshing, no peer heard (nobody on this channel / mesh id in range, or their key differs)
+            / 8 ; peers seen, no peer link (key / mesh id mismatch likely)
+            / 9 ; 802.11s linked, batman has no neighbour
 team-entry = {
   1 => sha256,               ; dac_pub_hash
   2 => tstr,                 ; name

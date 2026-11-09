@@ -80,6 +80,20 @@ verdict(){ # one human phrase, the thing a person would report (needs radio)
 	elif [ "$BAT" -eq 0 ]; then echo "802.11s linked but batman has no neighbour (fwding=$FWD nolearn=$NOL)"
 	else echo "joined"; fi
 }
+# verdict_code: the same checks as verdict(), in the same order, as a number for the app (254-p3-impl §3.4; CDDL
+# join-reason). verdict()'s phrases and their readers stay as they are. 0 = joined / not determined.
+verdict_code(){
+	if [ "$GUARD" != none ]; then echo 1
+	elif [ "$KEY" != SET ]; then echo 2
+	elif [ "$RDIS" = 1 ]; then echo 3
+	elif [ "$RUP" = down ]; then echo 4
+	elif [ "$RTYPE" != "mesh point" ]; then echo 5
+	elif [ "$M11" != 1 ]; then echo 6
+	elif [ "$PLINK" -eq 0 ] && [ "$STA" -eq 0 ]; then echo 7
+	elif [ "$PLINK" -eq 0 ]; then echo 8
+	elif [ "$BAT" -eq 0 ]; then echo 9
+	else echo 0; fi
+}
 reboot_helps(){ # a reboot can only fix a stuck driver/stack, never a missing key, a config
 	# choice or an empty site (a lone node — the first one switched on — is NOT a fault)
 	[ "$GUARD" = none ] && [ "$KEY" = SET ] && [ "$RDIS" = 0 ] && [ "$M11" = 1 ] && { [ "$PLINK" -ge 1 ] || [ "$STA" -ge 1 ] || [ "$RUP" = down ] || [ "$RTYPE" != "mesh point" ]; }
@@ -190,5 +204,6 @@ case "$1" in
 	run)    [ "$(cfg enabled 1)" = 1 ] || { note notice "disabled by uci"; exit 0; }; run;;
 	status) if [ -f "$STATE" ]; then cat "$STATE"; else radio; echo "NOT_RUNNING $(up) $(verdict)"; fi;;
 	diag)   radio; diagline "${2:-FULL}";;
-	*)      echo "usage: joinwatch run|status|diag [SHORT|FULL]"; exit 2;;
+	code)   radio; verdict_code;;
+	*)      echo "usage: joinwatch run|status|diag [SHORT|FULL]|code"; exit 2;;
 esac
