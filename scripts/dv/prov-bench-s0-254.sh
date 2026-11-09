@@ -416,8 +416,10 @@ dec=""; ev=""; while [ $((SECONDS - t0)) -lt 180 ]; do ev=$(fq "logread | grep -
 x=$(fq "echo meta=\$(sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta) ap=\$(iw dev 2>/dev/null | grep -c 'type AP') mesh=\$(iw dev 2>/dev/null | grep -c 'type mesh point'); $P5RO")
 say "trial: $(echo $x)"
 for w in "meta=unclaimed" "ap=0" "mesh=0" "seeded=n" "metastat=[ok unclaimed]" "ident=ok"; do case "$x" in *"$w"*) ok "trial: $w";; *) abort "trial: want $w";; esac; done
-r=$(fq "$(release_guarded "$BT" B)" | tail -1); say "release: ${r:-no answer}"; case "$r" in WRONG-STATE*|'') abort "release not sent ($r)";; esac
-s=$(fq "$ST"); case "$s" in *" slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
+r=$(fqlong "$(release_guarded "$BT" B)" | tail -1); say "release: ${r:-no answer}"; case "$r" in WRONG-STATE*) abort "release not sent ($r)";; esac   # no answer: the state check below decides
+# a lost answer: the release may still be committing (its own wait ends by the deadline): read for up to 5 min
+for k in 1 2 3 4 5 6 7 8 9 10; do s=$(fq "$ST"); case "$s" in *" slot=B "*"trial_rc=1 "*) break;; esac; [ -n "$r" ] && break; sleep 30; done
+case "$s" in *" slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
 # the reservation reboot follows on the committed slot (chain1 s6r)
 t=$SECONDS; while [ $((SECONDS - t)) -lt 400 ]; do b=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ "$b" = "$BT" ] || break; sleep 10; done
 wait_find 600 "slot=B ver=$V trial_rc=1 " "$BT" || abort "B not found after the reservation reboot"

@@ -64,7 +64,6 @@ pw(){ QT=${QT:-180} q "RUN_ID=$RUN sh $PRD/prov-wbox-254.sh $*"; }
 wsl_(){ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- "$@"; }
 # the node's state line; mac first, so a stale ARP entry can never make a step act on 02 (same version)
 ST='echo "mac=$(cat /sys/class/net/eth0/address 2>/dev/null) slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) hold=[$(cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null)] held=$(. /usr/lib/batman/rundir.sh; ls $RUNDIR/autocommit.ctl/hold-commit 2>/dev/null | wc -l) badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] protA=[$(cat /opt/batdata/state/slot-A.protected 2>/dev/null)] protB=[$(cat /opt/batdata/state/slot-B.protected 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime) boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"'
-DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null); set -- $r; echo "tryboot_flag=${6:-?}"'
 # field <state line> <key>: the value of key=value (values never contain spaces; bracketed values keep the brackets)
 field(){ printf ' %s\n' "$1" | sed -n "s/.* $2=\([^ ]*\).*/\1/p" | head -1; }
 
@@ -264,7 +263,7 @@ pr_ota_b(){	# <payload-version> <target-slot> [nohold]
 		say "sysupgrade -n sent ($hv, hold=$hold)"
 		pr_find 900 "$b0" || { pr_needs_person "no node after the OTA reboot"; return 1; }
 		pr_lease_renew +900 || return 1
-		s=$PR_STATE; say "landed: $s"
+		s=$PR_STATE; say "landed: $s"; PR_LAND_BOOT=$(field "$s" boot)   # the trial a later guarded release is bound to
 		if [ "$(field "$s" slot)" = "$tgt" ] && [ "$(field "$s" ver)" = "$hv" ] && [ "$(field "$s" trial_rc)" = 0 ] && [ "$(field "$s" dt_try)" = 00000001 ]; then
 			[ $hold = 0 ] && { ok "landed in the $tgt trial of $hv (no hold: prov-wbox-nocommit-254)"; pr_trial_guard; return 0; }
 			o=$(qr '. /usr/lib/batman/rundir.sh; echo "disc=$([ -e $RUNDIR/autocommit.hold-discarded ] && echo 1 || echo 0) dlog=$(grep -c "HOLD-COMMIT-DISCARDED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)" /opt/batdata/log/autocommit.log 2>/dev/null)"')
@@ -783,7 +782,7 @@ pr_normalise(){
 	pr_ota_b "$v" A || { pr_needs_person "normalise: OTA V into A failed (marker dv-prov-normalising kept)"; return 1; }
 	pr_lease_renew +900 || return 1
 	pr_wait_held 480 || { pr_needs_person "normalise: the A trial is not HELD by uptime 480 s"; return 1; }
-	s=$(qr "$ST"); rb0=$(field "$s" boot); o=$(q "$(release_guarded "$rb0" A)" | tail -1); say "release: ${o:-no answer}"
+	rb0=$PR_LAND_BOOT; o=$(q "$(release_guarded "$rb0" A)" | tail -1); say "release: ${o:-no answer}"
 	s=$(qr "$ST")
 	[ "$(field "$s" slot)" = A ] && [ "$(field "$s" trial_rc)" = 1 ] && [ "$(field "$s" ver)" = "$v" ] \
 		|| { pr_needs_person "normalise: not A committed on V after the release ($s)"; return 1; }

@@ -143,9 +143,12 @@ mkdir $BASE/ch1.running 2>/dev/null || exit 0
 logger -t ch1-deadman 'restoring p5 and returning to A'
 L=$BASE/ch1-deadman.log
 /etc/init.d/openmanetd stop >> \$L 2>&1
-sh $BASE/prov-base-254.sh p5-restore $RUN >> \$L 2>&1; echo \"p5-restore rc=\$?\" >> \$L
+sh $BASE/prov-base-254.sh p5-restore $RUN >> \$L 2>&1; p=\$?; echo \"p5-restore rc=\$p\" >> \$L
+# a failed p5-restore: no rollback onto a half-written p5; ch1.running stays, a person takes over (round 7 B-MINOR-2)
+[ \$p = 0 ] || { logger -t ch1-deadman 'p5-restore failed: no rollback, ch1.running kept for a person'; sync; exit 1; }
 batman-slot rollback >> \$L 2>&1; r=\$?; echo \"rollback rc=\$r\" >> \$L
-[ \$r = 0 ] && : > $BASE/ch1.fired; sync
+# done: ch1.fired, then the marker goes (a ch1.running left behind = a run cut short or failed; round 7 B-MINOR-3)
+[ \$r = 0 ] && { : > $BASE/ch1.fired; rmdir $BASE/ch1.running; }; sync
 batman-slot reboot committed ch1-deadman >> \$L 2>&1
 DM
 chmod 700 $BASE/ch1-deadman.sh; rm -rf $BASE/ch1.cancel $BASE/ch1.fired $BASE/ch1.running $BASE/ch1-deadman.log; sh -n $BASE/ch1-deadman.sh && echo ok" | grep -q '^ok$' || abort "dead-man write"
@@ -220,8 +223,10 @@ case "$o" in "rc=1 "*"not seeded"*"same_mtime=y"*) ok "gate negative: wsl.9 batm
 fq "rl=\$(mktemp /tmp/run/ch1-rcl.XXXXXX) && { grep -v '^exit 0' /etc/rc.local; echo '( ping -c 5 $HOSTIP; sleep 1500; sh $BASE/ch1-deadman.sh ) </dev/null >/dev/null 2>&1 & # ch1-deadman'; echo 'exit 0'; } > \$rl && cat \$rl > /etc/rc.local && rm -f \$rl; sync; setsid sh -c 'sleep 1500; sh $BASE/ch1-deadman.sh' </dev/null >/dev/null 2>&1 & echo planted" >/dev/null
 pl=$(fq "echo rclocal=\$(grep -c ch1-deadman /etc/rc.local) script=\$([ -x $BASE/ch1-deadman.sh ] && echo y) timer=\$(ps w | grep -c '[s]leep 1500')")
 say "dead-man on B: $pl"; case "$pl" in "rclocal=1 script=y timer="[1-9]*) ;; *) abort "dead-man not armed on B";; esac
-T5E=$SECONDS; r=$(fq "$(release_guarded "$BT" B)" | tail -1); say "release: ${r:-no answer}"; case "$r" in WRONG-STATE*|'') abort "release not sent ($r)";; esac
-s=$(fq "$ST"); case "$s" in *" slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
+T5E=$SECONDS; r=$(fqlong "$(release_guarded "$BT" B)" | tail -1); say "release: ${r:-no answer}"; case "$r" in WRONG-STATE*) abort "release not sent ($r)";; esac   # no answer: the state check below decides
+# a lost answer: the release may still be committing (its own wait ends by the deadline): read for up to 5 min
+for k in 1 2 3 4 5 6 7 8 9 10; do s=$(fq "$ST"); case "$s" in *" slot=B "*"trial_rc=1 "*) break;; esac; [ -n "$r" ] && break; sleep 30; done
+case "$s" in *" slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
 # the reservation reboot follows on the committed slot (E1c: ~145 s); wait for B's next boot and find it again
 PH=s6r; t=$SECONDS; while [ $((SECONDS - t)) -lt 400 ]; do b=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ "$b" = "$BT" ] || break; sleep 10; done
 wait_find 600 "slot=B ver=$V trial_rc=1 " "$BT" || abort "B not found after the reservation reboot"

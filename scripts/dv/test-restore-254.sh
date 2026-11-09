@@ -81,8 +81,10 @@ if type a_back >/dev/null 2>&1; then
 	: > "$T/pin"; HKMAC=$MAC; SSHO=""
 	a_back aaaaaaaa 2 && [ "$NODE" = 10.0.0.7 ] && [ "$FIP" = 10.0.0.7 ] && ok "A back at another address: found by MAC, NODE=$NODE" || no "a_back: NODE=$NODE FIP=$FIP"
 	[ "$(tr '\n' ' ' < "$T/pin")" = "keygen -R 10.0.0.7 accept-new=y " ] && ok "a_back: the old host key of 10.0.0.7 removed, pinned again (accept-new) on MAC $MAC (round 5 A-MINOR-2 / B-MINOR-6)" || no "a_back pin: [$(tr '\n' ' ' < "$T/pin")]"
-	NODE=10.41.80.13; HKMAC=11:22:33:44:55:66
+	NODE=10.41.80.13; HKMAC=11:22:33:44:55:66; : > "$T/pin"
 	a_back aaaaaaaa 2 && no "a_back accepted a node whose MAC under the new pin is another board's" || ok "a_back: another MAC under the new pin fails"
+	[ "$(grep -c '^keygen -R 10.0.0.7$' "$T/pin")" = 2 ] && ok "a_back: the other board's key just taken is removed again (round 7 A-MINOR-1)" || no "repin mismatch left the key: [$(tr '
+' ' ' < "$T/pin")]"
 	HKMAC=$MAC
 	NODE=10.41.80.13; STATE="mac=$MAC slot=A ver=$V trial_rc=1 dt_try=0 hold=[] held=0 badslot=[] up=30 boot=aaaaaaaa"
 	a_back aaaaaaaa 2 && no "a_back accepted the boot before the reboot" || { [ "$NODE" = 10.41.80.13 ] && ok "the old boot is not 'back' (NODE unchanged)" || no "NODE changed on a miss: $NODE"; }

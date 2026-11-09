@@ -12,6 +12,7 @@
 #     SENT                         rb_guarded: rollback done, then `batman-slot reboot committed <reason>` started in the
 #                                  background; reboot_guarded: only the reboot (an uncommitted trial goes back to its
 #                                  committed slot by itself: the tryboot is one-shot)
+#   Both disarm a one-shot tryboot first (DISARMED, part of the extra condition): not disarmed -> WRONG-STATE extra=0.
 #     REFUSED                      rb_guarded only: every check held, `batman-slot rollback` itself refused
 #     WRONG-STATE boot=… active=… trial=… extra=-|0   a check failed: nothing was done. extra=- : boot / slot / trial
 #                                  did not match (the extra condition was not run: it may act, e.g. disarm a tryboot);
@@ -25,12 +26,23 @@
 # Callers: anything but SENT is a failure (abort / NEEDS-PERSON), never "go on as if it had been sent". No answer at all
 # (ssh dropped) is not SENT either: the action may or may not have run, so the caller does not guess — it stops and says
 # so (a lost SENT costs a person a look; a guessed one can strand the node).
+# DISARM: clear the one-shot tryboot flag, then print tryboot_flag=0|1|unknown, read exactly like the product's bf_get
+# (bootfacts.sh: response code word 2 must be 0x80000000, the value word 6 is hex, `$(( ))`). vcmailbox prints every
+# word as 0x%08x (trybootget-209.log on the bench nodes: "… 0x80000004 0x00000000"); round 7 B-BLOCKER-1: the old
+# string compare of word 6 with "0" never held on a real node.
+DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; set -- $(vcmailbox 0x00030064 4 4 0 2>/dev/null); if [ "${2:-}" = 0x80000000 ] && [ -n "${6:-}" ]; then echo "tryboot_flag=$(( ${6} ))"; else echo tryboot_flag=unknown; fi'
+# DISARMED: a reboot_guarded condition: disarm, then the flag must read 0 (an armed tryboot makes `batman-slot reboot
+# committed` a plain reboot INTO the tryboot slot, batman-slot cmd_reboot; round 6 A-MAJOR-1). Else nothing is sent.
+DISARMED="[ \"\$($DISARM)\" = tryboot_flag=0 ]"
 _sg_cmd(){
 	local b=$1 a=$2 t=$3 why=$4 x=$5 act=$6
 	case "$b" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) b=invalid-boot ;; esac
 	case "$a" in A|B) ;; *) a=invalid-slot ;; esac
 	case "$t" in 0|1|any) ;; *) t=invalid-trial ;; esac
 	case "$why" in *[!A-Za-z0-9._-]*|'') why=invalid-reason ;; esac
+	# a rollback or reboot sent while a tryboot is armed boots the tryboot slot (batman-slot cmd_reboot falls back to a
+	# plain reboot): every one disarms first, and nothing is sent unless the flag then reads 0 (round 7 A-MINOR-4)
+	case "$act" in rollback|reboot) x="{ $x; } && $DISARMED" ;; esac
 	local rb="(batman-slot reboot committed $why </dev/null >/dev/null 2>&1 &); echo SENT"
 	[ "$act" = rollback ] && rb="if batman-slot rollback >/dev/null 2>&1; then $rb; else echo REFUSED; fi"
 	[ "$act" = release ] && rb="batman-autocommit release --wait 2>&1"

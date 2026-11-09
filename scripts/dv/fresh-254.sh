@@ -40,10 +40,7 @@ sweep(){ local i; for i in $(seq 2 254); do ping -n 1 -w 200 $1.$i >/dev/null 2>
 # ST carries the eth MAC: 02 runs the same version, so a stale ARP entry must not let a step act on 02 (review A-m2)
 ST='echo "mac=$(cat /sys/class/net/eth0/address 2>/dev/null) slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) hold=[$(cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null)] held=$(. /usr/lib/batman/rundir.sh; ls $RUNDIR/autocommit.ctl/hold-commit 2>/dev/null | wc -l) badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime) boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"'
 PROT='echo "protA=[$(cat /opt/batdata/state/slot-A.protected 2>/dev/null)] protB=[$(cat /opt/batdata/state/slot-B.protected 2>/dev/null)]"'
-DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null); set -- $r; echo "tryboot_flag=${6:-?}"'
-# a reboot_guarded condition: disarm, then the flag must read 0 (an armed tryboot makes `batman-slot reboot committed` a
-# plain reboot INTO the tryboot slot, batman-slot cmd_reboot; round 6 A-MAJOR-1). Not disarmed -> nothing is sent.
-DISARMED="[ \"\$($DISARM)\" = tryboot_flag=0 ]"
+# DISARM / DISARMED: slot-guard-254.sh (sourced below; used only inside functions)
 # p5 read-only view, with the SAME predicate the gate uses (prov_meta_status) and the identity check (review B-6)
 P5RO='mkdir -p -m 0700 /tmp/run/batman-dv && m=$(mktemp -d /tmp/run/batman-dv/ch1.XXXXXX) && mount -o ro,noload /dev/mmcblk0p5 $m && { echo "seeded=$([ -f $m/.seeded ] && echo y || echo n) shadowroot=$([ -s $m/identity/shadow-root ] && echo y || echo n) prov_files=$(ls $m/identity/prov 2>/dev/null | wc -l) metastat=[$(. /usr/lib/batman/prov-lock.sh; prov_meta_status $m/prov.meta $m/prov.cbor)] ident=$(. /usr/lib/batman/prov-lock.sh; prov_ident_ok $m/identity/prov && echo ok || echo bad) idsame=$(cmp -s $m/identity/prov/node.cert /etc/batman-prov/identity/node.cert 2>/dev/null && echo y || echo n)"; umount $m; }; rmdir $m'
 # A's boot FAT (p1) content hash: 7.2 / 8.6 rewrite A's boot files; prov-base covers p5 / upper / p6 only (round 2 m1)
@@ -112,7 +109,7 @@ restore_all(){
 		wait_find 900 "ver=$V " || { say "RESTORE: 04 not found anywhere in 900 s — needs a person (snapshot $D on p6, dead-man staged=$STAGED)"; return 1; }
 		say "04 at $FIP ($FOUND_HOW): $FOUND_STATE"; s=$FOUND_STATE
 		# an uncommitted trial: leave it (reboot -> its committed default slot)
-		case "$s" in *"trial_rc=0 "*) b=$(bootof "$s"); sl=$(slotof "$s"); o=$(fq "$(reboot_guarded "$b" "$sl" 0 ch1-restore "$DISARMED")")
+		case "$s" in *"trial_rc=0 "*) b=$(bootof "$s"); sl=$(slotof "$s"); o=$(fq "$(reboot_guarded "$b" "$sl" 0 ch1-restore)")   # disarms first
 			[ "$o" = SENT ] || { say "RESTORE: leaving the trial not sent ($o) — needs a person"; return 1; }
 			wait_find 900 "trial_rc=1 " "$b" || { say "RESTORE: no committed boot after leaving the trial"; return 1; }; s=$FOUND_STATE; say "committed: $s";; esac
 		land_quiet && break; say "RESTORE: boot changed while quieting openmanetd — finding 04 again ($i/3)"
@@ -144,7 +141,7 @@ restore_all(){
 	o=$(fqlong "for m in /tmp/run/batman-dv/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on A): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed"; return 1; }
 	o=$(fqlong "sh $BASE/prov-base-254.sh overlay-restore $RUN"); echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY" | tail -12 | sed 's/^/    /'
 	grep -q "^OVERLAY-RESTORED $RUN" <<< "$o" || { say "RESTORE: overlay-restore failed"; return 1; }
-	b=$(bootof "$s"); o=$(fq "$(reboot_guarded "$b" A 1 ch1-restore "$DISARMED")")
+	b=$(bootof "$s"); o=$(fq "$(reboot_guarded "$b" A 1 ch1-restore)")   # disarms first
 	[ "$o" = SENT ] || { say "RESTORE: the reboot on A not sent ($o): a tryboot may be armed — needs a person"; return 1; }
 	a_back "$b" || { say "RESTORE: A (slot A committed, a new boot) not found in 900 s (tried $NODE$SEEN)"; return 1; }
 	local t
@@ -182,4 +179,4 @@ a_back(){
 	[ "$FIP" = "$NODE" ] || { say "A came back at $FIP ($FOUND_HOW), not $NODE: using $FIP"; NODE=$FIP; }
 	repin "$NODE" || { say "known_hosts: the node at $NODE does not show MAC $MAC under a new pin"; return 1; }
 }
-repin(){ local hk; ssh-keygen -R "$1" >/dev/null 2>&1; hk=$(timeout 30 ssh $SSHO -o StrictHostKeyChecking=accept-new root@"$1" 'cat /sys/class/net/eth0/address' 2>/dev/null | tr -d '[:space:]'); [ -n "$hk" ] && [ "$hk" = "$MAC" ]; }
+repin(){ local hk; ssh-keygen -R "$1" >/dev/null 2>&1; hk=$(timeout 30 ssh $SSHO -o StrictHostKeyChecking=accept-new root@"$1" 'cat /sys/class/net/eth0/address' 2>/dev/null | tr -d '[:space:]'); [ -n "$hk" ] && [ "$hk" = "$MAC" ] && return 0; ssh-keygen -R "$1" >/dev/null 2>&1; return 1; }

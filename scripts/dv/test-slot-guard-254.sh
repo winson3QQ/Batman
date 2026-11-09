@@ -45,7 +45,8 @@ cat > "$T/bin/vcmailbox" <<'STUB'
 #!/bin/sh
 case "$1" in
 	0x00038064) echo "disarm" >> "$STUB_LOG"; [ -n "$STUB_DISARM_FAIL" ] || echo 0 > "$STUB_FLAG" ;;
-	0x00030064) echo "0x0000001c 0x80000000 0x00030064 0x00000004 0x80000004 $(cat "$STUB_FLAG")" ;;
+	# the real format: every word 0x%08x (trybootget-209.log on 04 / 02: "… 0x80000004 0x00000000"); STUB_RESP = word 2
+	0x00030064) printf '0x0000001c %s 0x00030064 0x00000004 0x80000004 0x%08x\n' "${STUB_RESP:-0x80000000}" "$(cat "$STUB_FLAG")" ;;
 esac
 STUB
 cat > "$T/bin/mkdir" <<'STUB'
@@ -88,13 +89,21 @@ node 1201bf8a B 0 0; o=$(nsh "$(release_guarded 1201bf8a B nowait)"); case "$o" 
 node aaaaaaaa B 0 0; o=$(nsh "$(release_guarded 1201bf8a B)"); case "$o" in WRONG-STATE*) ! released && ok "release_guarded: another boot: nothing" || no "released in another boot";; *) no "release other boot: [$o]";; esac
 node 1201bf8a B 1 0; o=$(nsh "$(release_guarded 1201bf8a B)"); case "$o" in WRONG-STATE*) ! released && ok "release_guarded: already committed: nothing" || no "released a committed slot";; *) no "release committed: [$o]";; esac
 node 1201bf8a A 0 0; o=$(nsh "$(release_guarded 1201bf8a B)"); case "$o" in WRONG-STATE*) ! released && ok "release_guarded: a trial on the other slot: nothing" || no "released the other slot's trial";; *) no "release other slot: [$o]";; esac
-# ---- DISARMED (fresh-254.sh): a reboot that would boot an armed tryboot is not sent (round 6 A-MAJOR-1)
-eval "$(grep -E '^(DISARM|DISARMED)=' "$ROOT/scripts/dv/fresh-254.sh")"
+# ---- DISARMED (slot-guard-254.sh; fresh-254.sh before round 7): a reboot that would boot an armed tryboot is not sent
+# (round 6 A-MAJOR-1), read in the real vcmailbox format (round 7 B-BLOCKER-1: a decimal stub hid a parse that never held)
+unset DISARM DISARMED; eval "$(grep -hE '^(DISARM|DISARMED)=' "$ROOT/scripts/dv/slot-guard-254.sh" "$ROOT/scripts/dv/fresh-254.sh")"
 if [ -n "${DISARMED:-}" ]; then
 	echo 1 > "$T/flag"; node 1201bf8a A 1 0; o=$(nsh "$(reboot_guarded 1201bf8a A 1 ch1-restore "$DISARMED")"); [ "$o" = SENT ] && grep -q '^disarm$' "$T/log" && [ "$(cat "$T/flag")" = 0 ] && ok "armed tryboot: disarmed, then the reboot is sent" || no "armed + disarm works: [$o] $(tr '\n' ' ' < "$T/log")"
 	echo 1 > "$T/flag"; node 1201bf8a A 1 0; o=$(STUB_DISARM_FAIL=y; export STUB_DISARM_FAIL; nsh "$(reboot_guarded 1201bf8a A 1 ch1-restore "$DISARMED")"); case "$o" in *" extra=0") ! rebooted && ok "armed tryboot that will not disarm: WRONG-STATE extra=0, no reboot" || no "rebooted with the tryboot still armed";; *) no "armed, disarm fails: [$o]";; esac
+	echo 0 > "$T/flag"; node 1201bf8a A 1 0; o=$(nsh "$(reboot_guarded 1201bf8a A 1 ch1-restore "$DISARMED")"); [ "$o" = SENT ] && ok "flag already 0 (0x00000000): the reboot is sent" || no "flag 0: [$o]"
+	echo 0 > "$T/flag"; node 1201bf8a A 1 0; o=$(STUB_RESP=0x80000001; export STUB_RESP; nsh "$(reboot_guarded 1201bf8a A 1 ch1-restore "$DISARMED")"); case "$o" in *" extra=0") ! rebooted && ok "an error response (word 2 not 0x80000000) with value 0: not 'disarmed', no reboot" || no "rebooted on an error response";; *) no "error response: [$o]";; esac
 	echo 0 > "$T/flag"
 else no "DISARMED not found in $ROOT/scripts/dv/fresh-254.sh"; fi
+. "$H/scripts/dv/slot-guard-254.sh"   # back to the guard under test (the eval above may have taken ROOT's DISARM)
+# every guarded rollback / reboot disarms first, with no extra condition from the caller (round 7 A-MINOR-4)
+echo 1 > "$T/flag"; node 1201bf8a B 1 0; o=$(STUB_DISARM_FAIL=y; export STUB_DISARM_FAIL; nsh "$(rb_guarded 1201bf8a B 1 x)"); case "$o" in *" extra=0") ! rolled && ! rebooted && ok "rb_guarded: a tryboot that will not disarm -> no rollback, no reboot" || no "rb_guarded acted with the tryboot armed";; *) no "rb_guarded armed: [$o]";; esac
+echo 1 > "$T/flag"; node 1201bf8a A 1 0; o=$(nsh "$(reboot_guarded 1201bf8a A 1 x)"); [ "$o" = SENT ] && [ "$(cat "$T/flag")" = 0 ] && ok "reboot_guarded (no extra): an armed tryboot is disarmed before the reboot" || no "reboot_guarded armed: [$o] flag=$(cat "$T/flag")"
+echo 0 > "$T/flag"
 
 # ---- the real call sites, extracted from ROOT and run against the stub node
 fq(){ nsh "$1"; }
@@ -168,7 +177,10 @@ if [ -n "$dmraw" ]; then
 	echo 'echo "P5-RESTORED $2"' > "$BASE/prov-base-254.sh"; printf '#!/bin/sh\n:\n' > "$T/bin/logger"; chmod +x "$T/bin/logger"
 	eval "dm=\"$dmraw\""; printf '%s\n' "$dm" > "$BASE/ch1-deadman.sh"
 	dmrun(){ rm -rf "$BASE/ch1.running" "$BASE/ch1.fired" "$BASE/ch1.cancel"; node 1201bf8a B 1 0; for f; do case "$f" in run) mkdir "$BASE/ch1.running";; *) : > "$BASE/ch1.$f";; esac; done; nsh "sh $BASE/ch1-deadman.sh" >/dev/null 2>&1; }
-	dmrun; rolled && [ -d "$BASE/ch1.running" ] && [ -e "$BASE/ch1.fired" ] && ok "dead-man acts: ch1.running made, rollback, ch1.fired" || no "dead-man normal run: running=$([ -d "$BASE/ch1.running" ] && echo y) $(tr '\n' ' ' < "$T/log")"
+	dmrun; rolled && [ ! -e "$BASE/ch1.running" ] && [ -e "$BASE/ch1.fired" ] && ok "dead-man acts: rollback, ch1.fired, its marker removed when done" || no "dead-man normal run: running=$([ -d "$BASE/ch1.running" ] && echo y) $(tr '\n' ' ' < "$T/log")"
+	echo 'echo "P5-RESTORE FAILED"; exit 3' > "$BASE/prov-base-254.sh"
+	dmrun; ! rolled && [ -d "$BASE/ch1.running" ] && [ ! -e "$BASE/ch1.fired" ] && ok "dead-man: a failed p5-restore -> no rollback, ch1.running kept for a person (round 7 B-MINOR-2)" || no "dead-man after a failed p5-restore: $(tr '\n' ' ' < "$T/log") running=$([ -d "$BASE/ch1.running" ] && echo y)"
+	echo 'echo "P5-RESTORED $2"' > "$BASE/prov-base-254.sh"
 	dmrun cancel; ! rolled && [ ! -e "$BASE/ch1.running" ] && ok "dead-man cancelled: nothing, no marker left" || no "dead-man ignored ch1.cancel / left a marker"
 	dmrun run; ! rolled && ok "dead-man: a second instance (ch1.running exists) does nothing" || no "dead-man ran twice"
 	(STUB_MKDIR_CANCEL=y; export STUB_MKDIR_CANCEL; dmrun); ! rolled && [ ! -e "$BASE/ch1.running" ] && ok "dead-man: ch1.cancel landing between its first check and its marker -> stands down, marker removed (round 6)" || no "dead-man acted after a cancel that landed before its marker: $(tr '\n' ' ' < "$T/log")"
@@ -224,9 +236,14 @@ scripts/dv/prov-wbox-nocommit-254.sh|pr_needs_person "wbox slot B committed|text
 scripts/dv/prov-254.sh|pr_needs_person "the $tgt slot was committed|text for a person (NEEDS-PERSON line)
 scripts/fault-injection.sh|echo "    NOTE: R1 broke runc|text for a person (NOTE line)
 scripts/fault-injection.sh|HELDWHY="held for operator acceptance (batman-autocommit release)"|the product's log text the R-tests match
+scripts/dv/pty-commit-254.sh|'batman-slot commit' < <(sleep 90)|the command under test (#305: a commit from a PTY)
+scripts/dv/pty-commit-254.sh|say "sleep 90 | ssh -tt root@$NODE batman-slot commit"|text (the step printed)
+scripts/dv/pty-commit-254.sh|batman-slot is-trial >/dev/null 2>&1 && batman-slot commit|the unit's own landed trial, ended (checklist #254: bind to its boot)
+scripts/fault-injection.sh|n 'batman-slot commit' 2>&1|the command under test (C2: a manual commit after a crash in the trial)
+scripts/fault-injection.sh|c2(){ echo "== C2 trial-crash-274: a manual 'batman-slot commit'|text (the test's title)
 AL
-# the slot-changing commands sent from the host: a rollback, and a release (it commits the running trial)
-raw=$(grep -rnE "batman-slot[[:space:]]+[\"']?rollback|batman-autocommit[[:space:]]+[\"']?release" "${LS[@]}" --include='*.sh' | rel | nocomment | grep -vE '^scripts/dv/(slot-guard-254|test-slot-guard-254)\.sh:' || true)
+# the slot-changing commands sent from the host: a rollback, a release and a commit (both commit the running trial)
+raw=$(grep -rnE "batman-slot[[:space:]]+[\"']?(rollback|commit)|batman-autocommit[[:space:]]+[\"']?release" "${LS[@]}" --include='*.sh' | rel | nocomment | grep -vE '^scripts/dv/(slot-guard-254|test-slot-guard-254)\.sh:' || true)
 left=$raw
 while IFS='|' read -r f txt why; do
 	n=$(printf '%s\n' "$raw" | awk -v f="$f:" -v t="$txt" 'index($0, f) == 1 && index($0, t) > 0' | grep -c .)
@@ -244,8 +261,8 @@ scripts/dv/chain1-254.sh:rb_guarded "$BA" A 0 ch1-b
 scripts/dv/chain1-254.sh:rb_guarded "$BA" A 0 ch1-b
 scripts/dv/chain1-254.sh:release_guarded "$BT" B
 scripts/dv/fresh-254.sh:rb_guarded "$b" B 1 ch1-restore "[ ! -e $BASE/ch1.fired ] && [ ! -e $BASE/ch1.running ]"
-scripts/dv/fresh-254.sh:reboot_guarded "$b" "$sl" 0 ch1-restore "$DISARMED"
-scripts/dv/fresh-254.sh:reboot_guarded "$b" A 1 ch1-restore "$DISARMED"
+scripts/dv/fresh-254.sh:reboot_guarded "$b" "$sl" 0 ch1-restore
+scripts/dv/fresh-254.sh:reboot_guarded "$b" A 1 ch1-restore
 scripts/dv/prov-254.sh:rb_guarded "$b0" B any prov-dv-254
 scripts/dv/prov-254.sh:release_guarded "$rb0" A
 scripts/dv/prov-ac-fleetchan-254.sh:rb_guarded "$b0" B any prov-dv-254
@@ -263,8 +280,8 @@ scripts/fault-injection.sh:release_guarded "${HB:0:8}" "$tr" nowait
 scripts/fault-injection.sh:release_guarded "${HB:0:8}" "$tr" nowait
 scripts/fault-injection.sh:rb_guarded "${b1:0:8}" B 1 p5-back-to-A
 SITES
-grep -rnE '(rb|reboot|release)_guarded[[:space:]]' "${LS[@]}" --include='*.sh' | rel | nocomment | grep -vE '^scripts/dv/(slot-guard-254|test-slot-guard-254)\.sh:' \
-	| while IFS= read -r l; do f=${l%%:*}; c=${l#*:*:}; printf '%s\n' "$c" | grep -oE '(rb|reboot|release)_guarded[[:space:]]+[^)]*' | sed -E 's/[[:space:]]+$//; s#^#'"$f"':#'; done | sort > "$T/sites.got"
+grep -rnE '((rb|reboot|release)_guarded|_sg_cmd)[[:space:]]' "${LS[@]}" --include='*.sh' | rel | nocomment | grep -vE '^scripts/dv/(slot-guard-254|test-slot-guard-254)\.sh:' \
+	| while IFS= read -r l; do f=${l%%:*}; c=${l#*:*:}; printf '%s\n' "$c" | grep -oE '((rb|reboot|release)_guarded|_sg_cmd)[[:space:]]+[^)]*' | sed -E 's/[[:space:]]+$//; s#^#'"$f"':#'; done | sort > "$T/sites.got"
 sort -o "$T/sites.want" "$T/sites.want"
 d=$(diff "$T/sites.want" "$T/sites.got")
 [ -z "$d" ] && ok "lint: $(wc -l < "$T/sites.got") guarded call sites, arguments as pinned" || no "lint: guarded call sites differ (< pinned, > found): $(echo "$d" | grep '^[<>]' | tr '\n' ' ')"
