@@ -27,7 +27,8 @@
 
 // Section: imports
 
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -39,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
                     default_rust_auto_opaque = RustAutoOpaqueMoi,
                 );
                 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -523047453;
+                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -370599008;
             
 
 // Section: executor
@@ -95,6 +96,103 @@ let api_frame_limit = <u32>::sse_decode(&mut deserializer);deserializer.end();
                 transform_result_sse::<_, String>((move || {
                      let output_ok = crate::api::claim::ClaimSession::start(&api_qr, api_owner_pub, api_owner_enc_pub, api_sig_enc, api_frame_limit)?;   std::result::Result::Ok(output_ok)
                 })()) })
+            }fn wire__crate__api__owner__OwnerSession_last4_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "OwnerSession_last4", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>>::sse_decode(&mut deserializer);deserializer.end();
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false)]);
+        for i in decode_indices_ {
+            match i {
+                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                _ => unreachable!(),
+            }
+        }
+        let api_that_guard = api_that_guard.unwrap();
+ let output_ok = Ok::<_, ()>(crate::api::owner::OwnerSession::last4(&*api_that_guard))?;   std::result::Result::Ok(output_ok)
+                })()) })
+            }fn wire__crate__api__owner__OwnerSession_on_frame_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "OwnerSession_on_frame", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>>::sse_decode(&mut deserializer);
+let api_frame = <Vec<u8>>::sse_decode(&mut deserializer);deserializer.end();
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true)]);
+        for i in decode_indices_ {
+            match i {
+                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                _ => unreachable!(),
+            }
+        }
+        let mut api_that_guard = api_that_guard.unwrap();
+ let output_ok = Ok::<_, ()>(crate::api::owner::OwnerSession::on_frame(&mut *api_that_guard, api_frame))?;   std::result::Result::Ok(output_ok)
+                })()) })
+            }fn wire__crate__api__owner__OwnerSession_request_settings_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "OwnerSession_request_settings", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>>::sse_decode(&mut deserializer);deserializer.end();
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true)]);
+        for i in decode_indices_ {
+            match i {
+                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                _ => unreachable!(),
+            }
+        }
+        let mut api_that_guard = api_that_guard.unwrap();
+ let output_ok = crate::api::owner::OwnerSession::request_settings(&mut *api_that_guard)?;   std::result::Result::Ok(output_ok)
+                })()) })
+            }fn wire__crate__api__owner__OwnerSession_request_status_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "OwnerSession_request_status", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>>::sse_decode(&mut deserializer);deserializer.end();
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true)]);
+        for i in decode_indices_ {
+            match i {
+                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                _ => unreachable!(),
+            }
+        }
+        let mut api_that_guard = api_that_guard.unwrap();
+ let output_ok = crate::api::owner::OwnerSession::request_status(&mut *api_that_guard)?;   std::result::Result::Ok(output_ok)
+                })()) })
+            }fn wire__crate__api__owner__OwnerSession_signed_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "OwnerSession_signed", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>>::sse_decode(&mut deserializer);
+let api_der = <Vec<u8>>::sse_decode(&mut deserializer);deserializer.end();
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true)]);
+        for i in decode_indices_ {
+            match i {
+                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                _ => unreachable!(),
+            }
+        }
+        let mut api_that_guard = api_that_guard.unwrap();
+ let output_ok = Ok::<_, ()>(crate::api::owner::OwnerSession::signed(&mut *api_that_guard, api_der))?;   std::result::Result::Ok(output_ok)
+                })()) })
+            }fn wire__crate__api__owner__OwnerSession_start_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "OwnerSession_start", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_record_plain = <Vec<u8>>::sse_decode(&mut deserializer);
+let api_owner_pub = <Vec<u8>>::sse_decode(&mut deserializer);
+let api_frame_limit = <u32>::sse_decode(&mut deserializer);deserializer.end();
+                transform_result_sse::<_, String>((move || {
+                     let output_ok = crate::api::owner::OwnerSession::start(api_record_plain, api_owner_pub, api_frame_limit)?;   std::result::Result::Ok(output_ok)
+                })()) })
             }fn wire__crate__api__simple__build_info_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "build_info", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
@@ -137,6 +235,15 @@ let api_mtu = <u32>::sse_decode(&mut deserializer);deserializer.end(); move |con
             deserializer.end(); move |context|  {
                     transform_result_sse::<_, ()>((move ||  {
                          let output_ok = Ok::<_, ()>({ crate::api::simple::init_app(); })?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
+            }fn wire__crate__api__owner__list_nodes_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "list_nodes", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_dir = <String>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, ()>((move ||  {
+                         let output_ok = Ok::<_, ()>(crate::api::owner::list_nodes(api_dir))?;   std::result::Result::Ok(output_ok)
                     })())
                 } })
             }fn wire__crate__api__claim__node_path_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
@@ -201,6 +308,16 @@ let api_mtu = <u32>::sse_decode(&mut deserializer);deserializer.end(); move |con
                          let output_ok = crate::api::simple::store_read_marker(api_dir)?;   std::result::Result::Ok(output_ok)
                     })())
                 } })
+            }fn wire__crate__api__owner__store_read_sealed_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "store_read_sealed", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_dir = <String>::sse_decode(&mut deserializer);
+let api_rel = <String>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, String>((move ||  {
+                         let output_ok = crate::api::owner::store_read_sealed(api_dir, api_rel)?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
             }fn wire__crate__api__claim__store_remove_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "store_remove", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
@@ -257,6 +374,7 @@ let api_sealed = <Vec<u8>>::sse_decode(&mut deserializer);deserializer.end(); mo
 // Section: related_funcs
 
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>);
+flutter_rust_bridge::frb_generated_moi_arc_impl_value!(flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>);
 
 
 // Section: dart2rust
@@ -268,7 +386,19 @@ flutter_rust_bridge::frb_generated_moi_arc_impl_value!(flutter_rust_bridge::for_
         return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);}
                 }
                 
+                impl SseDecode for OwnerSession {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut inner = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>>::sse_decode(deserializer);
+        return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);}
+                }
+                
                 impl SseDecode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut inner = <usize>::sse_decode(deserializer);
+        return decode_rust_opaque_moi(inner);}
+                }
+                
+                impl SseDecode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>> {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut inner = <usize>::sse_decode(deserializer);
         return decode_rust_opaque_moi(inner);}
@@ -365,10 +495,57 @@ return crate::api::claim::ClaimStep{kind: var_kind, frames: var_frames, path: va
             }}
                 }
                 
+                impl SseDecode for Option<crate::api::owner::OwnerStep> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {if (<bool>::sse_decode(deserializer)) {
+                return Some(<crate::api::owner::OwnerStep>::sse_decode(deserializer));
+            } else {
+                return None;
+            }}
+                }
+                
+                impl SseDecode for Option<crate::api::owner::SealedRecord> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {if (<bool>::sse_decode(deserializer)) {
+                return Some(<crate::api::owner::SealedRecord>::sse_decode(deserializer));
+            } else {
+                return None;
+            }}
+                }
+                
+                impl SseDecode for crate::api::owner::OwnerKind {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::owner::OwnerKind::Write,
+1 => crate::api::owner::OwnerKind::Sign,
+2 => crate::api::owner::OwnerKind::LoggedIn,
+3 => crate::api::owner::OwnerKind::Answer,
+4 => crate::api::owner::OwnerKind::Ended,
+            _ => unreachable!("Invalid variant for OwnerKind: {}", inner),
+        };}
+                }
+                
+                impl SseDecode for crate::api::owner::OwnerStep {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut var_kind = <crate::api::owner::OwnerKind>::sse_decode(deserializer);
+let mut var_frames = <Vec<Vec<u8>>>::sse_decode(deserializer);
+let mut var_signInput = <Vec<u8>>::sse_decode(deserializer);
+let mut var_detail = <String>::sse_decode(deserializer);
+return crate::api::owner::OwnerStep{kind: var_kind, frames: var_frames, sign_input: var_signInput, detail: var_detail};}
+                }
+                
                 impl SseDecode for (ClaimSession,crate::api::claim::ClaimStep,) {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut var_field0 = <ClaimSession>::sse_decode(deserializer);
 let mut var_field1 = <crate::api::claim::ClaimStep>::sse_decode(deserializer);
+return (var_field0, var_field1);}
+                }
+                
+                impl SseDecode for (OwnerSession,crate::api::owner::OwnerStep,) {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut var_field0 = <OwnerSession>::sse_decode(deserializer);
+let mut var_field1 = <crate::api::owner::OwnerStep>::sse_decode(deserializer);
 return (var_field0, var_field1);}
                 }
                 
@@ -377,6 +554,14 @@ return (var_field0, var_field1);}
                     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut var_generation = <u64>::sse_decode(deserializer);
 let mut var_aad = <Vec<u8>>::sse_decode(deserializer);
 return crate::api::claim::SealParams{generation: var_generation, aad: var_aad};}
+                }
+                
+                impl SseDecode for crate::api::owner::SealedRecord {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut var_generation = <u64>::sse_decode(deserializer);
+let mut var_sealed = <Vec<u8>>::sse_decode(deserializer);
+let mut var_aad = <Vec<u8>>::sse_decode(deserializer);
+return crate::api::owner::SealedRecord{generation: var_generation, sealed: var_sealed, aad: var_aad};}
                 }
                 
                 impl SseDecode for crate::api::simple::StatusInfo {
@@ -434,20 +619,22 @@ return crate::api::simple::StatusInfo{state: var_state, trial: var_trial, id_las
                 )  {
                     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
                     match func_id {
-                        6 => wire__crate__api__claim__der_to_raw_impl(port, ptr, rust_vec_len, data_len),
-7 => wire__crate__api__claim__frame_limit_impl(port, ptr, rust_vec_len, data_len),
-8 => wire__crate__api__simple__init_app_impl(port, ptr, rust_vec_len, data_len),
-9 => wire__crate__api__claim__node_path_impl(port, ptr, rust_vec_len, data_len),
-10 => wire__crate__api__claim__owner_enc_sign_input_impl(port, ptr, rust_vec_len, data_len),
-11 => wire__crate__api__claim__parse_claim_qr_impl(port, ptr, rust_vec_len, data_len),
-12 => wire__crate__api__claim__pending_path_impl(port, ptr, rust_vec_len, data_len),
-14 => wire__crate__api__simple__store_has_records_impl(port, ptr, rust_vec_len, data_len),
-15 => wire__crate__api__simple__store_read_marker_impl(port, ptr, rust_vec_len, data_len),
-16 => wire__crate__api__claim__store_remove_impl(port, ptr, rust_vec_len, data_len),
-17 => wire__crate__api__claim__store_seal_params_impl(port, ptr, rust_vec_len, data_len),
-18 => wire__crate__api__simple__store_sweep_impl(port, ptr, rust_vec_len, data_len),
-19 => wire__crate__api__simple__store_write_marker_impl(port, ptr, rust_vec_len, data_len),
-20 => wire__crate__api__claim__store_write_sealed_impl(port, ptr, rust_vec_len, data_len),
+                        12 => wire__crate__api__claim__der_to_raw_impl(port, ptr, rust_vec_len, data_len),
+13 => wire__crate__api__claim__frame_limit_impl(port, ptr, rust_vec_len, data_len),
+14 => wire__crate__api__simple__init_app_impl(port, ptr, rust_vec_len, data_len),
+15 => wire__crate__api__owner__list_nodes_impl(port, ptr, rust_vec_len, data_len),
+16 => wire__crate__api__claim__node_path_impl(port, ptr, rust_vec_len, data_len),
+17 => wire__crate__api__claim__owner_enc_sign_input_impl(port, ptr, rust_vec_len, data_len),
+18 => wire__crate__api__claim__parse_claim_qr_impl(port, ptr, rust_vec_len, data_len),
+19 => wire__crate__api__claim__pending_path_impl(port, ptr, rust_vec_len, data_len),
+21 => wire__crate__api__simple__store_has_records_impl(port, ptr, rust_vec_len, data_len),
+22 => wire__crate__api__simple__store_read_marker_impl(port, ptr, rust_vec_len, data_len),
+23 => wire__crate__api__owner__store_read_sealed_impl(port, ptr, rust_vec_len, data_len),
+24 => wire__crate__api__claim__store_remove_impl(port, ptr, rust_vec_len, data_len),
+25 => wire__crate__api__claim__store_seal_params_impl(port, ptr, rust_vec_len, data_len),
+26 => wire__crate__api__simple__store_sweep_impl(port, ptr, rust_vec_len, data_len),
+27 => wire__crate__api__simple__store_write_marker_impl(port, ptr, rust_vec_len, data_len),
+28 => wire__crate__api__claim__store_write_sealed_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
                 }
@@ -463,9 +650,15 @@ return crate::api::simple::StatusInfo{state: var_state, trial: var_trial, id_las
                         1 => wire__crate__api__claim__ClaimSession_on_frame_impl(ptr, rust_vec_len, data_len),
 2 => wire__crate__api__claim__ClaimSession_pending_persisted_impl(ptr, rust_vec_len, data_len),
 3 => wire__crate__api__claim__ClaimSession_start_impl(ptr, rust_vec_len, data_len),
-4 => wire__crate__api__simple__build_info_impl(ptr, rust_vec_len, data_len),
-5 => wire__crate__api__simple__decode_status_impl(ptr, rust_vec_len, data_len),
-13 => wire__crate__api__simple__selftest_impl(ptr, rust_vec_len, data_len),
+4 => wire__crate__api__owner__OwnerSession_last4_impl(ptr, rust_vec_len, data_len),
+5 => wire__crate__api__owner__OwnerSession_on_frame_impl(ptr, rust_vec_len, data_len),
+6 => wire__crate__api__owner__OwnerSession_request_settings_impl(ptr, rust_vec_len, data_len),
+7 => wire__crate__api__owner__OwnerSession_request_status_impl(ptr, rust_vec_len, data_len),
+8 => wire__crate__api__owner__OwnerSession_signed_impl(ptr, rust_vec_len, data_len),
+9 => wire__crate__api__owner__OwnerSession_start_impl(ptr, rust_vec_len, data_len),
+10 => wire__crate__api__simple__build_info_impl(ptr, rust_vec_len, data_len),
+11 => wire__crate__api__simple__decode_status_impl(ptr, rust_vec_len, data_len),
+20 => wire__crate__api__simple__selftest_impl(ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
                 }
@@ -484,6 +677,21 @@ return crate::api::simple::StatusInfo{state: var_state, trial: var_trial, id_las
 
                 impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<ClaimSession>> for ClaimSession {
             fn into_into_dart(self) -> FrbWrapper<ClaimSession> {
+                self.into()
+            }
+        }
+
+                
+                // Codec=Dco (DartCObject based), see doc to use other codecs
+            impl flutter_rust_bridge::IntoDart for FrbWrapper<OwnerSession> {
+                fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+                    flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0).into_dart()
+                }
+            }
+            impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for FrbWrapper<OwnerSession> {}
+
+                impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<OwnerSession>> for OwnerSession {
+            fn into_into_dart(self) -> FrbWrapper<OwnerSession> {
                 self.into()
             }
         }
@@ -538,6 +746,42 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::claim::ClaimStep> for crate::
             }
         }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+            impl flutter_rust_bridge::IntoDart for crate::api::owner::OwnerKind {
+                fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+                    match self {
+                    Self::Write => 0.into_dart(),
+Self::Sign => 1.into_dart(),
+Self::LoggedIn => 2.into_dart(),
+Self::Answer => 3.into_dart(),
+Self::Ended => 4.into_dart(),
+                    _ => unreachable!(),
+                }
+                }
+            }
+            impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::owner::OwnerKind {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::owner::OwnerKind> for crate::api::owner::OwnerKind {
+            fn into_into_dart(self) -> crate::api::owner::OwnerKind {
+                self
+            }
+        }
+// Codec=Dco (DartCObject based), see doc to use other codecs
+            impl flutter_rust_bridge::IntoDart for crate::api::owner::OwnerStep {
+                fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+                    [
+                    self.kind.into_into_dart().into_dart(),
+self.frames.into_into_dart().into_dart(),
+self.sign_input.into_into_dart().into_dart(),
+self.detail.into_into_dart().into_dart()
+                ].into_dart()
+                }
+            }
+            impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::owner::OwnerStep {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::owner::OwnerStep> for crate::api::owner::OwnerStep {
+            fn into_into_dart(self) -> crate::api::owner::OwnerStep {
+                self
+            }
+        }
+// Codec=Dco (DartCObject based), see doc to use other codecs
             impl flutter_rust_bridge::IntoDart for crate::api::claim::SealParams {
                 fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
                     [
@@ -549,6 +793,22 @@ self.aad.into_into_dart().into_dart()
             impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::claim::SealParams {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::claim::SealParams> for crate::api::claim::SealParams {
             fn into_into_dart(self) -> crate::api::claim::SealParams {
+                self
+            }
+        }
+// Codec=Dco (DartCObject based), see doc to use other codecs
+            impl flutter_rust_bridge::IntoDart for crate::api::owner::SealedRecord {
+                fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+                    [
+                    self.generation.into_into_dart().into_dart(),
+self.sealed.into_into_dart().into_dart(),
+self.aad.into_into_dart().into_dart()
+                ].into_dart()
+                }
+            }
+            impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::owner::SealedRecord {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::owner::SealedRecord> for crate::api::owner::SealedRecord {
+            fn into_into_dart(self) -> crate::api::owner::SealedRecord {
                 self
             }
         }
@@ -594,7 +854,19 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::claim::StepKind> for crate::a
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>>>::sse_encode(flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self), serializer);}
                 }
                 
+                impl SseEncode for OwnerSession {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>>::sse_encode(flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self), serializer);}
+                }
+                
                 impl SseEncode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {let (ptr, size) = self.sse_encode_raw();
+                <usize>::sse_encode(ptr, serializer);
+                <i32>::sse_encode(size, serializer);}
+                }
+                
+                impl SseEncode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>> {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {let (ptr, size) = self.sse_encode_raw();
                 <usize>::sse_encode(ptr, serializer);
@@ -678,15 +950,62 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::claim::StepKind> for crate::a
                 }}
                 }
                 
+                impl SseEncode for Option<crate::api::owner::OwnerStep> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<bool>::sse_encode(self.is_some(), serializer);
+                if let Some(value) = self {
+                    <crate::api::owner::OwnerStep>::sse_encode(value, serializer);
+                }}
+                }
+                
+                impl SseEncode for Option<crate::api::owner::SealedRecord> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<bool>::sse_encode(self.is_some(), serializer);
+                if let Some(value) = self {
+                    <crate::api::owner::SealedRecord>::sse_encode(value, serializer);
+                }}
+                }
+                
+                impl SseEncode for crate::api::owner::OwnerKind {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<i32>::sse_encode(match self {crate::api::owner::OwnerKind::Write => { 0 }
+crate::api::owner::OwnerKind::Sign => { 1 }
+crate::api::owner::OwnerKind::LoggedIn => { 2 }
+crate::api::owner::OwnerKind::Answer => { 3 }
+crate::api::owner::OwnerKind::Ended => { 4 }
+ _ => { unimplemented!(""); }}, serializer);}
+                }
+                
+                impl SseEncode for crate::api::owner::OwnerStep {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<crate::api::owner::OwnerKind>::sse_encode(self.kind, serializer);
+<Vec<Vec<u8>>>::sse_encode(self.frames, serializer);
+<Vec<u8>>::sse_encode(self.sign_input, serializer);
+<String>::sse_encode(self.detail, serializer);}
+                }
+                
                 impl SseEncode for (ClaimSession,crate::api::claim::ClaimStep,) {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<ClaimSession>::sse_encode(self.0, serializer);
 <crate::api::claim::ClaimStep>::sse_encode(self.1, serializer);}
                 }
                 
+                impl SseEncode for (OwnerSession,crate::api::owner::OwnerStep,) {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<OwnerSession>::sse_encode(self.0, serializer);
+<crate::api::owner::OwnerStep>::sse_encode(self.1, serializer);}
+                }
+                
                 impl SseEncode for crate::api::claim::SealParams {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<u64>::sse_encode(self.generation, serializer);
+<Vec<u8>>::sse_encode(self.aad, serializer);}
+                }
+                
+                impl SseEncode for crate::api::owner::SealedRecord {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<u64>::sse_encode(self.generation, serializer);
+<Vec<u8>>::sse_encode(self.sealed, serializer);
 <Vec<u8>>::sse_encode(self.aad, serializer);}
                 }
                 
@@ -746,7 +1065,8 @@ crate::api::claim::StepKind::Ended => { 3 }
 
 // Section: imports
 
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -766,6 +1086,18 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
                 }
             
 
+                #[unsafe(no_mangle)]
+                pub extern "C" fn frbgen_batman_app_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(ptr: *const std::ffi::c_void)  {
+                    MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>::increment_strong_count(ptr as _);
+                }
+            
+
+                #[unsafe(no_mangle)]
+                pub extern "C" fn frbgen_batman_app_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(ptr: *const std::ffi::c_void)  {
+                    MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>::decrement_strong_count(ptr as _);
+                }
+            
+
         }
         #[cfg(not(target_family = "wasm"))]
         pub use io::*;
@@ -781,7 +1113,8 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;
@@ -801,6 +1134,18 @@ flutter_rust_bridge::frb_generated_boilerplate_web!();
                 #[wasm_bindgen]
                 pub  fn rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(ptr: *const std::ffi::c_void)  {
                     MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>>::decrement_strong_count(ptr as _);
+                }
+            
+
+                #[wasm_bindgen]
+                pub  fn rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(ptr: *const std::ffi::c_void)  {
+                    MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>::increment_strong_count(ptr as _);
+                }
+            
+
+                #[wasm_bindgen]
+                pub  fn rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(ptr: *const std::ffi::c_void)  {
+                    MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>::decrement_strong_count(ptr as _);
                 }
             
 

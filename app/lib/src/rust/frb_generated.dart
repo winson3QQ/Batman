@@ -4,6 +4,7 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'api/claim.dart';
+import 'api/owner.dart';
 import 'api/simple.dart';
 
 import 'dart:async';
@@ -70,7 +71,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -523047453;
+  int get rustContentHash => -370599008;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -99,6 +100,32 @@ abstract class RustLibApi extends BaseApi {
     required int frameLimit,
   });
 
+  String crateApiOwnerOwnerSessionLast4({required OwnerSession that});
+
+  OwnerStep? crateApiOwnerOwnerSessionOnFrame({
+    required OwnerSession that,
+    required List<int> frame,
+  });
+
+  OwnerStep crateApiOwnerOwnerSessionRequestSettings({
+    required OwnerSession that,
+  });
+
+  OwnerStep crateApiOwnerOwnerSessionRequestStatus({
+    required OwnerSession that,
+  });
+
+  OwnerStep? crateApiOwnerOwnerSessionSigned({
+    required OwnerSession that,
+    required List<int> der,
+  });
+
+  (OwnerSession, OwnerStep) crateApiOwnerOwnerSessionStart({
+    required List<int> recordPlain,
+    required List<int> ownerPub,
+    required int frameLimit,
+  });
+
   BuildInfo crateApiSimpleBuildInfo();
 
   StatusInfo crateApiSimpleDecodeStatus({required List<int> bytes});
@@ -111,6 +138,8 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<void> crateApiSimpleInitApp();
+
+  Future<List<String>> crateApiOwnerListNodes({required String dir});
 
   Future<String> crateApiClaimNodePath({required String deviceId});
 
@@ -127,6 +156,11 @@ abstract class RustLibApi extends BaseApi {
   Future<bool> crateApiSimpleStoreHasRecords({required String dir});
 
   Future<String?> crateApiSimpleStoreReadMarker({required String dir});
+
+  Future<SealedRecord?> crateApiOwnerStoreReadSealed({
+    required String dir,
+    required String rel,
+  });
 
   Future<void> crateApiClaimStoreRemove({
     required String dir,
@@ -159,6 +193,14 @@ abstract class RustLibApi extends BaseApi {
   get rust_arc_decrement_strong_count_ClaimSession;
 
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_ClaimSessionPtr;
+
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_OwnerSession;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_OwnerSession;
+
+  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_OwnerSessionPtr;
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -271,12 +313,199 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  String crateApiOwnerOwnerSessionLast4({required OwnerSession that}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionLast4ConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionLast4ConstMeta =>
+      const TaskConstMeta(debugName: "OwnerSession_last4", argNames: ["that"]);
+
+  @override
+  OwnerStep? crateApiOwnerOwnerSessionOnFrame({
+    required OwnerSession that,
+    required List<int> frame,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(frame, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionOnFrameConstMeta,
+        argValues: [that, frame],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionOnFrameConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_on_frame",
+        argNames: ["that", "frame"],
+      );
+
+  @override
+  OwnerStep crateApiOwnerOwnerSessionRequestSettings({
+    required OwnerSession that,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_owner_step,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionRequestSettingsConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionRequestSettingsConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_request_settings",
+        argNames: ["that"],
+      );
+
+  @override
+  OwnerStep crateApiOwnerOwnerSessionRequestStatus({
+    required OwnerSession that,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_owner_step,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionRequestStatusConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionRequestStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_request_status",
+        argNames: ["that"],
+      );
+
+  @override
+  OwnerStep? crateApiOwnerOwnerSessionSigned({
+    required OwnerSession that,
+    required List<int> der,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(der, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionSignedConstMeta,
+        argValues: [that, der],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionSignedConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_signed",
+        argNames: ["that", "der"],
+      );
+
+  @override
+  (OwnerSession, OwnerStep) crateApiOwnerOwnerSessionStart({
+    required List<int> recordPlain,
+    required List<int> ownerPub,
+    required int frameLimit,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(recordPlain, serializer);
+          sse_encode_list_prim_u_8_loose(ownerPub, serializer);
+          sse_encode_u_32(frameLimit, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_owner_session_owner_step,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionStartConstMeta,
+        argValues: [recordPlain, ownerPub, frameLimit],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionStartConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_start",
+        argNames: ["recordPlain", "ownerPub", "frameLimit"],
+      );
+
+  @override
   BuildInfo crateApiSimpleBuildInfo() {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_build_info,
@@ -299,7 +528,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_prim_u_8_loose(bytes, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_status_info,
@@ -325,7 +554,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 12,
             port: port_,
           );
         },
@@ -357,7 +586,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 13,
             port: port_,
           );
         },
@@ -384,7 +613,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 14,
             port: port_,
           );
         },
@@ -403,6 +632,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "init_app", argNames: []);
 
   @override
+  Future<List<String>> crateApiOwnerListNodes({required String dir}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(dir, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiOwnerListNodesConstMeta,
+        argValues: [dir],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerListNodesConstMeta =>
+      const TaskConstMeta(debugName: "list_nodes", argNames: ["dir"]);
+
+  @override
   Future<String> crateApiClaimNodePath({required String deviceId}) {
     return handler.executeNormal(
       NormalTask(
@@ -412,7 +669,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 16,
             port: port_,
           );
         },
@@ -442,7 +699,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 17,
             port: port_,
           );
         },
@@ -473,7 +730,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 18,
             port: port_,
           );
         },
@@ -501,7 +758,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 19,
             port: port_,
           );
         },
@@ -525,7 +782,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 20)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -551,7 +808,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 21,
             port: port_,
           );
         },
@@ -579,7 +836,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 22,
             port: port_,
           );
         },
@@ -598,6 +855,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "store_read_marker", argNames: ["dir"]);
 
   @override
+  Future<SealedRecord?> crateApiOwnerStoreReadSealed({
+    required String dir,
+    required String rel,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(dir, serializer);
+          sse_encode_String(rel, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 23,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_sealed_record,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiOwnerStoreReadSealedConstMeta,
+        argValues: [dir, rel],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerStoreReadSealedConstMeta =>
+      const TaskConstMeta(
+        debugName: "store_read_sealed",
+        argNames: ["dir", "rel"],
+      );
+
+  @override
   Future<void> crateApiClaimStoreRemove({
     required String dir,
     required String rel,
@@ -611,7 +903,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 24,
             port: port_,
           );
         },
@@ -643,7 +935,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 25,
             port: port_,
           );
         },
@@ -674,7 +966,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 26,
             port: port_,
           );
         },
@@ -706,7 +998,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 27,
             port: port_,
           );
         },
@@ -745,7 +1037,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 28,
             port: port_,
           );
         },
@@ -774,6 +1066,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get rust_arc_decrement_strong_count_ClaimSession => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession;
 
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_OwnerSession => wire
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_OwnerSession => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession;
+
   @protected
   ClaimSession
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
@@ -781,6 +1081,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ClaimSessionImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  OwnerSession
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return OwnerSessionImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -793,12 +1102,39 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  OwnerSession
+  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return OwnerSessionImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  OwnerSession
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return OwnerSessionImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   ClaimSession
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     dynamic raw,
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return ClaimSessionImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  OwnerSession
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return OwnerSessionImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -823,6 +1159,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ClaimStep dco_decode_box_autoadd_claim_step(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_claim_step(raw);
+  }
+
+  @protected
+  OwnerStep dco_decode_box_autoadd_owner_step(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_owner_step(raw);
+  }
+
+  @protected
+  SealedRecord dco_decode_box_autoadd_sealed_record(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_sealed_record(raw);
   }
 
   @protected
@@ -914,6 +1262,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  OwnerStep? dco_decode_opt_box_autoadd_owner_step(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_owner_step(raw);
+  }
+
+  @protected
+  SealedRecord? dco_decode_opt_box_autoadd_sealed_record(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_sealed_record(raw);
+  }
+
+  @protected
+  OwnerKind dco_decode_owner_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return OwnerKind.values[raw as int];
+  }
+
+  @protected
+  OwnerStep dco_decode_owner_step(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return OwnerStep(
+      kind: dco_decode_owner_kind(arr[0]),
+      frames: dco_decode_list_list_prim_u_8_strict(arr[1]),
+      signInput: dco_decode_list_prim_u_8_strict(arr[2]),
+      detail: dco_decode_String(arr[3]),
+    );
+  }
+
+  @protected
   (ClaimSession, ClaimStep)
   dco_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
     dynamic raw,
@@ -932,6 +1312,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  (OwnerSession, OwnerStep)
+  dco_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_owner_session_owner_step(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2) {
+      throw Exception('Expected 2 elements, got ${arr.length}');
+    }
+    return (
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+        arr[0],
+      ),
+      dco_decode_owner_step(arr[1]),
+    );
+  }
+
+  @protected
   SealParams dco_decode_seal_params(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -940,6 +1338,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return SealParams(
       generation: dco_decode_u_64(arr[0]),
       aad: dco_decode_list_prim_u_8_strict(arr[1]),
+    );
+  }
+
+  @protected
+  SealedRecord dco_decode_sealed_record(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return SealedRecord(
+      generation: dco_decode_u_64(arr[0]),
+      sealed: dco_decode_list_prim_u_8_strict(arr[1]),
+      aad: dco_decode_list_prim_u_8_strict(arr[2]),
     );
   }
 
@@ -1007,6 +1418,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  OwnerSession
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return OwnerSessionImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   ClaimSession
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     SseDeserializer deserializer,
@@ -1019,12 +1442,48 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  OwnerSession
+  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return OwnerSessionImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  OwnerSession
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return OwnerSessionImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   ClaimSession
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return ClaimSessionImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  OwnerSession
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return OwnerSessionImpl.frbInternalSseDecode(
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
@@ -1053,6 +1512,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ClaimStep sse_decode_box_autoadd_claim_step(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_claim_step(deserializer));
+  }
+
+  @protected
+  OwnerStep sse_decode_box_autoadd_owner_step(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_owner_step(deserializer));
+  }
+
+  @protected
+  SealedRecord sse_decode_box_autoadd_sealed_record(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_sealed_record(deserializer));
   }
 
   @protected
@@ -1168,6 +1641,54 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  OwnerStep? sse_decode_opt_box_autoadd_owner_step(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_owner_step(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  SealedRecord? sse_decode_opt_box_autoadd_sealed_record(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_sealed_record(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  OwnerKind sse_decode_owner_kind(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return OwnerKind.values[inner];
+  }
+
+  @protected
+  OwnerStep sse_decode_owner_step(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_kind = sse_decode_owner_kind(deserializer);
+    var var_frames = sse_decode_list_list_prim_u_8_strict(deserializer);
+    var var_signInput = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_detail = sse_decode_String(deserializer);
+    return OwnerStep(
+      kind: var_kind,
+      frames: var_frames,
+      signInput: var_signInput,
+      detail: var_detail,
+    );
+  }
+
+  @protected
   (ClaimSession, ClaimStep)
   sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
     SseDeserializer deserializer,
@@ -1182,11 +1703,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  (OwnerSession, OwnerStep)
+  sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_owner_session_owner_step(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_field0 =
+        sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+          deserializer,
+        );
+    var var_field1 = sse_decode_owner_step(deserializer);
+    return (var_field0, var_field1);
+  }
+
+  @protected
   SealParams sse_decode_seal_params(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_generation = sse_decode_u_64(deserializer);
     var var_aad = sse_decode_list_prim_u_8_strict(deserializer);
     return SealParams(generation: var_generation, aad: var_aad);
+  }
+
+  @protected
+  SealedRecord sse_decode_sealed_record(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_generation = sse_decode_u_64(deserializer);
+    var var_sealed = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_aad = sse_decode_list_prim_u_8_strict(deserializer);
+    return SealedRecord(
+      generation: var_generation,
+      sealed: var_sealed,
+      aad: var_aad,
+    );
   }
 
   @protected
@@ -1257,6 +1805,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    OwnerSession self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as OwnerSessionImpl).frbInternalSseEncode(move: true),
+      serializer,
+    );
+  }
+
+  @protected
+  void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     ClaimSession self,
     SseSerializer serializer,
@@ -1270,6 +1831,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    OwnerSession self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as OwnerSessionImpl).frbInternalSseEncode(move: false),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    OwnerSession self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as OwnerSessionImpl).frbInternalSseEncode(move: false),
+      serializer,
+    );
+  }
+
+  @protected
+  void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     ClaimSession self,
     SseSerializer serializer,
@@ -1277,6 +1864,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as ClaimSessionImpl).frbInternalSseEncode(move: null),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    OwnerSession self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as OwnerSessionImpl).frbInternalSseEncode(move: null),
       serializer,
     );
   }
@@ -1306,6 +1906,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_claim_step(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_owner_step(
+    OwnerStep self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_owner_step(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_sealed_record(
+    SealedRecord self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_sealed_record(self, serializer);
   }
 
   @protected
@@ -1416,6 +2034,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_owner_step(
+    OwnerStep? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_owner_step(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_sealed_record(
+    SealedRecord? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_sealed_record(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_owner_kind(OwnerKind self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_owner_step(OwnerStep self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_owner_kind(self.kind, serializer);
+    sse_encode_list_list_prim_u_8_strict(self.frames, serializer);
+    sse_encode_list_prim_u_8_strict(self.signInput, serializer);
+    sse_encode_String(self.detail, serializer);
+  }
+
+  @protected
   void
   sse_encode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
     (ClaimSession, ClaimStep) self,
@@ -1430,9 +2089,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void
+  sse_encode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_owner_session_owner_step(
+    (OwnerSession, OwnerStep) self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+      self.$1,
+      serializer,
+    );
+    sse_encode_owner_step(self.$2, serializer);
+  }
+
+  @protected
   void sse_encode_seal_params(SealParams self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_64(self.generation, serializer);
+    sse_encode_list_prim_u_8_strict(self.aad, serializer);
+  }
+
+  @protected
+  void sse_encode_sealed_record(SealedRecord self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.generation, serializer);
+    sse_encode_list_prim_u_8_strict(self.sealed, serializer);
     sse_encode_list_prim_u_8_strict(self.aad, serializer);
   }
 
@@ -1508,4 +2189,41 @@ class ClaimSessionImpl extends RustOpaque implements ClaimSession {
   /// The pending record is on disk: claim/begin goes out.
   ClaimStep? pendingPersisted() => RustLib.instance.api
       .crateApiClaimClaimSessionPendingPersisted(that: this);
+}
+
+@sealed
+class OwnerSessionImpl extends RustOpaque implements OwnerSession {
+  // Not to be used by end users
+  OwnerSessionImpl.frbInternalDcoDecode(List<dynamic> wire)
+    : super.frbInternalDcoDecode(wire, _kStaticData);
+
+  // Not to be used by end users
+  OwnerSessionImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
+    : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+  static final _kStaticData = RustArcStaticData(
+    rustArcIncrementStrongCount:
+        RustLib.instance.api.rust_arc_increment_strong_count_OwnerSession,
+    rustArcDecrementStrongCount:
+        RustLib.instance.api.rust_arc_decrement_strong_count_OwnerSession,
+    rustArcDecrementStrongCountPtr:
+        RustLib.instance.api.rust_arc_decrement_strong_count_OwnerSessionPtr,
+  );
+
+  String last4() =>
+      RustLib.instance.api.crateApiOwnerOwnerSessionLast4(that: this);
+
+  OwnerStep? onFrame({required List<int> frame}) => RustLib.instance.api
+      .crateApiOwnerOwnerSessionOnFrame(that: this, frame: frame);
+
+  /// `settings/get` {} — 254-p3-impl §3.3
+  OwnerStep requestSettings() =>
+      RustLib.instance.api.crateApiOwnerOwnerSessionRequestSettings(that: this);
+
+  /// `status` {1: 0} (self) — design §5.5
+  OwnerStep requestStatus() =>
+      RustLib.instance.api.crateApiOwnerOwnerSessionRequestStatus(that: this);
+
+  OwnerStep? signed({required List<int> der}) => RustLib.instance.api
+      .crateApiOwnerOwnerSessionSigned(that: this, der: der);
 }
