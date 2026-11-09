@@ -40,6 +40,9 @@ class _NodesPageState extends State<NodesPage> {
   StreamSubscription<ConnectionStateUpdate>? _conn;
   StreamSubscription<List<int>>? _notify;
   Completer<String>? _answer;
+  final _country = TextEditingController(); // settings/set key 2 (two capital letters)
+  final _apSsid = TextEditingController(); // settings/set key 20
+  final _apPass = TextEditingController(); // obscured; cleared once sent
   final _sshKey = TextEditingController(); // dev: an ssh-ed25519 public key line to add (ssh_keys/set, P2 owner-op)
 
   @override
@@ -267,6 +270,40 @@ class _NodesPageState extends State<NodesPage> {
               OutlinedButton(
                   onPressed: _busy ? null : () => _ask((s) => s.requestSshKeys(lines: [_sshKey.text.trim()])),
                   child: const Text('Add SSH key')),
+            ]),
+          if (logged)
+            Row(children: [
+              Expanded(
+                  child: TextField(
+                      controller: _country,
+                      autocorrect: false,
+                      textCapitalization: TextCapitalization.characters,
+                      maxLength: 2,
+                      decoration: const InputDecoration(labelText: 'HaLow country (e.g. US)', counterText: ''))),
+              OutlinedButton(
+                  onPressed: _busy ? null : () => _ask((s) => s.requestSetCountry(country: _country.text.trim().toUpperCase())),
+                  child: const Text('Set country')),
+            ]),
+          if (logged)
+            Row(children: [
+              Expanded(child: TextField(controller: _apSsid, autocorrect: false, decoration: const InputDecoration(labelText: 'phone AP name'))),
+              const SizedBox(width: 8),
+              Expanded(
+                  child: TextField(
+                      controller: _apPass,
+                      obscureText: true,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      decoration: const InputDecoration(labelText: 'AP passphrase'))),
+              OutlinedButton(
+                  onPressed: _busy
+                      ? null
+                      : () {
+                          final ssid = _apSsid.text.trim(), pass = _apPass.text;
+                          _apPass.clear();
+                          _ask((s) => s.requestSetAp(ssid: ssid, passphrase: pass));
+                        },
+                  child: const Text('Set AP')),
             ]),
           const Divider(),
           Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
