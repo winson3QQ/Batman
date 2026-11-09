@@ -136,7 +136,12 @@ type halowStatus struct {
 	Throttled      string `json:"throttled"`
 	Tenants        string `json:"tenants"`
 	Health         struct {
-		Level string `json:"level"`
+		Level  string `json:"level"`
+		Checks []struct {
+			ID    string `json:"id"`
+			Level string `json:"level"`
+			Msg   string `json:"msg"`
+		} `json:"checks"`
 	} `json:"health"`
 	Join struct {
 		State      string  `json:"state"`
@@ -226,6 +231,64 @@ func (c *statusCache) get(state string, full bool) cbor.Map {
 		m = append(m, cbor.Entry{K: uint64(15), V: f})
 	}
 	return m
+}
+
+// diag answers diag.summary (254-p3-impl §3.5): the cached halow-status health.checks[] -> diag-item {1 id, 2 severity
+// (OK 0 / WARN 1 / CRIT 2; another level -> 1), 4 msg}; the same freshness rule as status (re-read when older than
+// statusStaleAfter, waited for up to statusFirstWait). ok = false: no current read.
+func (c *statusCache) diag() (cbor.Map, bool) {
+	c.mu.Lock()
+	c.asked = c.now()
+	have := c.js != nil && c.asked.Sub(c.jsAt) <= statusStaleAfter
+	c.mu.Unlock()
+	if !have {
+		select {
+		case <-c.refreshJS():
+		case <-time.After(statusFirstWait):
+		}
+	}
+	c.mu.Lock()
+	js, jsAt, now := c.js, c.jsAt, c.now()
+	c.mu.Unlock()
+	var h halowStatus
+	if js == nil || now.Sub(jsAt) > statusStaleAfter || json.Unmarshal(js, &h) != nil {
+		return nil, false
+	}
+	items := []any{}
+	for _, ck := range h.Health.Checks {
+		sev, known := verdictOf[ck.Level]
+		if !known {
+			sev = 1
+		}
+		it := cbor.M(1, ck.ID, 2, sev)
+		if ck.Msg != "" {
+			it = append(it, cbor.Entry{K: uint64(4), V: ck.Msg})
+		}
+		items = append(items, it)
+	}
+	return cbor.M(1, items), true
+}
+
+// diagSummary: diag.summary on the ro connection, under status's quotas (§3.1-9: status and diag/summary 1/s per app
+// connection at provd, 2/s helper-wide here)
+func (n *Node) diagSummary(a cbor.Map, now time.Time, conn *bucket) (cbor.Map, *Error) {
+	if n.status == nil {
+		return nil, fail(EUnsupported, "no status source")
+	}
+	if conn != nil && !conn.take(now) {
+		return nil, fail(ERate, "diag.summary: per-connection quota")
+	}
+	if !n.status.global.take(now) {
+		return nil, fail(ERate, "diag.summary: helper-wide quota")
+	}
+	if e := onlyKeys(a); e != nil {
+		return nil, e
+	}
+	m, ok := n.status.diag()
+	if !ok {
+		return nil, fail(EBusy, "diag.summary: no current health read")
+	}
+	return m, nil
 }
 
 // SetStatusSource wires status.get's caches; the daemon calls StatusTick every second.

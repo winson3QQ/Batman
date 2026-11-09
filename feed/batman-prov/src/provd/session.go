@@ -66,7 +66,7 @@ var knownTypes = map[string]bool{"info": true, "claim/begin": true, "claim/finis
 
 // P3 types: E_UNSUPPORTED{capability: <type>} (254-p2-impl §4.3)
 var p3Types = map[string]bool{
-	"peers/challenge": true, "diag/summary": true, "diag/bundle": true, "update/check": true,
+	"peers/challenge": true, "diag/bundle": true, "update/check": true,
 	"update/prepare": true, "update/apply": true, "update/status": true, "bulk/open": true, "bulk/close": true}
 
 // types whose response carries a secret: an idempotency key is E_FORBIDDEN (219 §4.2)
@@ -78,9 +78,9 @@ var allowed = map[Role]map[string]bool{
 	RoleCandidate: {"info": true, "auth/owner": true},
 	RoleOwner: {"info": true, "op/nonce": true, "network/join": true, "network/update": true, "network/leave": true,
 		"ssh_keys/set": true, "root_password/reset": true, "status": true, "settings/get": true,
-		"owner/add": true, "owner/remove": true,
+		"owner/add": true, "owner/remove": true, "diag/summary": true,
 		"settings/set": true},
-	RoleMember:    {"info": true, "network/update": true, "status": true},
+	RoleMember:    {"info": true, "network/update": true, "status": true, "diag/summary": true}, // D10
 	RoleReacquire: {"info": true, "claim/begin": true, "op/nonce": true, "claim/replay": true},
 }
 
@@ -128,6 +128,7 @@ type Session struct {
 	why        string
 	closeAfter string    // disconnect once the current response is sent (3rd claim / auth failure)
 	statusAt   time.Time // the last status request of this session (254-p3-impl §3.1-9: 1/s per connection)
+	diagAt     time.Time // the last diag/summary request of this session (same rule)
 	done       chan struct{}
 	// chunk reassembly
 	chID    uint64
@@ -649,6 +650,8 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 		return ss.status(id, role, body)
 	case "settings/get":
 		return ss.settingsGet(id, body)
+	case "diag/summary":
+		return ss.diagSummary(id, body)
 	}
 	verb := forward[typ]
 	r, e := ss.ops(id, verb, cbor.M(1, h, 2, raw))
@@ -919,4 +922,35 @@ func (ss *Session) mapHelperR(id uint64, typ string, r Reply) cbor.Map {
 		return errEnv(id, ERejected, nil)
 	}
 	return ss.mapHelper(id, typ, r.Code)
+}
+
+// diag/summary (254-p3-impl §3.5, D10: owner and member; CDDL diag-summary-req = empty): the helper's diag.summary on
+// the ro connection, 1/s per session. Only integer keys are passed on.
+func (ss *Session) diagSummary(id uint64, body cbor.Map) cbor.Map {
+	if len(body) != 0 {
+		return errEnv(id, EBadObject, nil)
+	}
+	ss.mu.Lock()
+	tooSoon := !ss.diagAt.IsZero() && time.Since(ss.diagAt) < time.Second
+	if !tooSoon {
+		ss.diagAt = time.Now()
+	}
+	ss.mu.Unlock()
+	if tooSoon {
+		return errEnv(id, ERate, nil)
+	}
+	r, err := ss.srv.roCall("diag.summary", cbor.M())
+	if err != nil {
+		return errEnv(id, EBusy, nil)
+	}
+	if r.Code != hOK {
+		return ss.mapHelper(id, "diag/summary", r.Code)
+	}
+	out := cbor.M()
+	for _, e := range r.Body {
+		if _, ok := e.K.(uint64); ok {
+			out = append(out, e)
+		}
+	}
+	return okEnv(id, out)
 }

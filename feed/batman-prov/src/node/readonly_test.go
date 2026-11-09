@@ -50,7 +50,7 @@ func TestReadOnlyWhileMutexHeld(t *testing.T) {
 func TestReadOnlyListClosed(t *testing.T) {
 	want := map[string]bool{"health.get": true, "info.boot_id": true, "info.cert": true, "info.ecdh_pub": true,
 		"info.state": true, "info.net": true, "info.owners": true, "status.get": true,
-		"settings.get": true}
+		"settings.get": true, "diag.summary": true} // diag.summary: 254-p3-impl §3.5 (ro, no child process)
 	if len(readOnlyVerbs) != len(want) {
 		t.Fatalf("read-only verbs %v", readOnlyVerbs)
 	}

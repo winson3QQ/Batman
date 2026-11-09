@@ -18,7 +18,7 @@ import (
 // readOnlyVerbs is the closed list; every other verb takes the mutex.
 var readOnlyVerbs = map[string]bool{"health.get": true, "info.boot_id": true, "info.cert": true, "info.ecdh_pub": true,
 	"info.state": true, "info.net": true, "info.owners": true, "status.get": true,
-	"settings.get": true}
+	"settings.get": true, "diag.summary": true}
 
 const (
 	roGlobalRate, roGlobalBurst = 10, 40
@@ -106,6 +106,9 @@ func (n *Node) readOnly(verb string, a cbor.Map, conn, statusConn *bucket) (cbor
 	}
 	if verb == "settings.get" {
 		return n.settingsGet(a)
+	}
+	if verb == "diag.summary" {
+		return n.diagSummary(a, now, statusConn)
 	}
 	if e := onlyKeys(a); e != nil {
 		return nil, e
