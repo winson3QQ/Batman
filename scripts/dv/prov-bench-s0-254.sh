@@ -105,7 +105,9 @@ V=${V:?version}; PAY=${PAY:?payload path on the node}; PSHA=${PSHA:?payload sha2
 # them. restore takes the same VB to find a node that is on that B. Unset = V / PAY / PSHA (every other run unchanged).
 VB=${VB:-$V}; PAYB=${PAYB:-$PAY}; PSHAB=${PSHAB:-$PSHA}
 if [ "$VB $PAYB $PSHAB" != "$V $PAY $PSHA" ]; then case "$MODE" in unclaimed|restore) ;; *) echo "VB / PAYB / PSHAB only with unclaimed or restore"; exit 2;; esac
-	[ -n "$VB" ] && [ -n "$PAYB" ] && [ -n "$PSHAB" ] || { echo "VB / PAYB / PSHAB: all three or none"; exit 2; }; fi
+	[ -n "$VB" ] && [ -n "$PAYB" ] && [ -n "$PSHAB" ] || { echo "VB / PAYB / PSHAB: all three or none"; exit 2; }; VB_ON=1; fi
+# a VB run that does not end PASS is undone by running restore again with the SAME VB / PAYB / PSHAB (02 on N0 for the
+# B rewrite), never by a manual finish: B still holds VB with the phone's claim and the app's settings (review B2-3)
 OUTS=${OUTS:-//wsl.localhost/Ubuntu-24.04/home/yello/out}
 REPO=${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}; PB=$REPO/scripts/node/prov-base-254.sh
 TOOLS=${DV_PROV_TOOLS:-/c/Users/yello/batman-dv-tools/prov}; TOOLS_WSL=/home/yello/batman-dv-tools/prov
@@ -150,7 +152,7 @@ if [ "$MODE" = restore ]; then
 	PH=restore-pre
 	# a kept node's address is openmanetd's, outside the swept /24s: start from nodes.txt (or IP=)
 	SEEN="${IP:-} $(wsl_ grep "^node=$NN " $BENCH/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1)"
-	find_base 300 || { find04 "ver=" && say "$NN is at $FIP on another version: $FOUND_STATE — a node left on another B needs the VB / PAYB / PSHAB of its unclaimed run"; say "$NN not found on ver=$V${VB:+ / $VB} by its eth MAC (tried:$SEEN; give IP=<address>)"; exit 1; }
+	find_base 300 || { [ -n "${IP:-}" ] && ping -n 1 -w 1000 "$IP" >/dev/null 2>&1 && ! pk_proof "$IP" && say "$IP answers ping but the lab key does not log in: a phone claim drops it — add it back with the app (owner, ssh_keys/set) first"; find04 "ver=" && say "$NN is at $FIP on another version: $FOUND_STATE — a node left on another B needs the VB / PAYB / PSHAB of its unclaimed run"; say "$NN not found on ver=$V${VB:+ / $VB} by its eth MAC (tried:$SEEN; give IP=<address>)"; exit 1; }
 	say "$NN at $FIP ($FOUND_HOW): $FOUND_STATE"
 	[ "$(fq 'cat /sys/class/net/eth0/carrier 2>/dev/null')" = 1 ] || { say "$NN has no carrier on eth0: the lab cable must be on THIS node (after the rollback it is on the fleet mesh key) — nothing written"; exit 1; }
 	# nothing is written before these hold: slot A still carries V (restore_all waits for "slot=A ver=$V"), the payload
@@ -359,6 +361,7 @@ a=$(q "awk -v b=\$(cat /proc/sys/kernel/random/boot_id) '\$1==b {print \"ps=\" \
 # unclaimed (the app's claim test, 2026-11-09): A may be a member too — chain1 makes the same fresh B from a member A
 a1=$(echo $a); [ "$MODE" = unclaimed ] && a1=${a1/ps=helper\/member/ps=helper\/legacy}
 say "A: $(echo $a)"; case "$a1" in *"ps=helper/legacy"*"check_rc=0"*"dirty=[] undo=0"*) ;; *) say "A is not a healthy legacy node, or a dirty flag / undo journal is present (a dirty flag left by a restore whose B rewrite failed: check the node, then sh $BASE/prov-base-254.sh finish <the flag's first word> on it)"; exit 1;; esac
+[ "$VB" = "$V" ] || [ "$(q "$PROT")" = "protA=[$V] protB=[$V]" ] || { say "a VB run wants both slots on V now (restore allows exactly protB $V -> $VB): $(q "$PROT")"; exit 1; }
 [ "$(q "sha256sum < $PAYB | cut -c1-64")" = "$PSHAB" ] || { say "payload sha ($PAYB)"; exit 1; }
 payver "$PSHAB" "$VB"
 [ "$PAYB" = "$PAY" ] || { [ "$(q "sha256sum < $PAY | cut -c1-64")" = "$PSHA" ] && payver; } || { say "A's payload $PAY (the way back) is not there"; exit 1; }

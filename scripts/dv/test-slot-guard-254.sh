@@ -216,7 +216,7 @@ unset -f fq
 # another version into B (2026-11-09); without VB only V. find04 is a stub: the node "is on" $ON, the asked patterns logged
 fb=$(sed -n '/^find_base(){/,/; }$/p' "$ROOT/scripts/dv/fresh-254.sh")
 if [ -n "$fb" ]; then
-	fbt(){ ( [ -n "${VBT:-}" ] && VB=$VBT || unset VB; eval "$fb"; ASKED=""; find04(){ ASKED="${ASKED}[$1]"; [ "$1" = "ver=$ON " ]; }; sleep(){ :; }
+	fbt(){ ( [ -n "${VBT:-}" ] && VB=$VBT || unset VB; [ -n "${VBOFF:-}" ] && VB_ON= || VB_ON=1; eval "$fb"; ASKED=""; find04(){ ASKED="${ASKED}[$1]"; [ "$1" = "ver=$ON " ]; }; sleep(){ :; }
 		if find_base 1; then echo "found $ASKED" | cut -c1-80; else echo "none $(printf '%s' "$ASKED" | tr ']' '
 ' | sort -u | tr '
 ' ' ')"; fi ); }
@@ -229,6 +229,9 @@ if [ -n "$fb" ]; then
 	# review m3: both first finds of a restore go through find_base
 	c1=$(sed -n '/^restore_all(){/,/^}/p' "$ROOT/scripts/dv/fresh-254.sh" | grep -c 'find_base 900'); c2=$(sed -n '/^if \[ "\$MODE" = restore \]; then/,/^fi/p' "$ROOT/scripts/dv/prov-bench-s0-254.sh" | grep -c 'find_base 300')
 	[ "$c1" = 1 ] && [ "$c2" = 1 ] && ok "find_base: restore_all and bench-s0 restore both find the node through it" || no "find_base call sites: restore_all=[$c1] restore=[$c2]"
+	c3=$(sed -n '/^restore_all(){/,/^}/p' "$ROOT/scripts/dv/fresh-254.sh" | grep -c "PROTB_FROM='\$V' PROTB_TO='\$VB' \")sh \$BASE/prov-base-254.sh compare")
+	[ "$c3" = 1 ] && ok "restore_all: its compare names protB V -> VB (with VB_ON)" || no "restore_all compare without PROTB_FROM/TO [$c3]"
+	o=$(V=1.0 VBT=2.0 ON=2.0 VBOFF=1 fbt); [ "$o" = "none [ver=1.0  " ] && ok "find_base: VB in the env without VB_ON (chain1) -> only V asked" || no "find_base VB without VB_ON: [$o]"
 else no "find_base not found in $ROOT/scripts/dv/fresh-254.sh"; fi
 
 # ---- the field boundary on the real incident line

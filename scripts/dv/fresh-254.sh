@@ -100,9 +100,10 @@ land_quiet(){ local b0 b1; b0=$(bootof "$FOUND_STATE"); fq '/etc/init.d/openmane
 # RESTORE_PERSON=1 from the start of a restore until the snapshot is finished: any return before that (a failed step,
 # compare / B rewrite / p1 FAIL with the snapshot kept) leaves 04 to a person — the caller reports it (needs-person.txt)
 # find_base <seconds>: the node by its MAC on the base version V, or on VB (prov-bench-s0 unclaimed with another version
-# in B: the node may be on that B when a restore starts). Without VB (or VB = V) exactly wait_find "ver=$V ".
+# in B: the node may be on that B when a restore starts). Only with VB_ON=1 (bench-s0 sets it; chain1 / fresh never
+# read a VB left in the environment); otherwise exactly wait_find "ver=$V ".
 find_base(){ local t=$SECONDS; FIP=""; while [ $((SECONDS - t)) -lt "$1" ]; do find04 "ver=$V " && return 0
-	[ -n "${VB:-}" ] && [ "$VB" != "$V" ] && find04 "ver=$VB " && return 0; sleep 10; done; return 1; }
+	[ "${VB_ON:-}" = 1 ] && [ -n "${VB:-}" ] && [ "$VB" != "$V" ] && find04 "ver=$VB " && return 0; sleep 10; done; return 1; }
 restore_all(){
 	[ "$RESTORING" = 1 ] && return 1; RESTORING=1; PH=restore
 	[ "$SNAPPED" = 1 ] || { say "RESTORE: no snapshot was taken — nothing to restore"; return 0; }
@@ -153,7 +154,7 @@ restore_all(){
 	say "A at $NODE: $(q "$ST")"
 	# compare S0 (joinwatch stopped meanwhile so p5 is not rw-mounted under the manifest; review A-m4) — result KEPT
 	q "/etc/init.d/joinwatch stop >/dev/null 2>&1; mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
-	cmp=""; for i in 1 2 3; do q "sh $BASE/prov-base-254.sh manifest $RUN after" | tail -1; o=$(q "$([ -n "${VB:-}" ] && [ "$VB" != "$V" ] && echo "PROTB_FROM='$V' PROTB_TO='$VB' ")sh $BASE/prov-base-254.sh compare $RUN after"); grep -q "p5 unreadable" <<< "$o" || break; sleep 10; done
+	cmp=""; for i in 1 2 3; do q "sh $BASE/prov-base-254.sh manifest $RUN after" | tail -1; o=$(q "$([ "${VB_ON:-}" = 1 ] && [ -n "${VB:-}" ] && [ "$VB" != "$V" ] && echo "PROTB_FROM='$V' PROTB_TO='$VB' ")sh $BASE/prov-base-254.sh compare $RUN after"); grep -q "p5 unreadable" <<< "$o" || break; sleep 10; done
 	q "/etc/init.d/joinwatch start >/dev/null 2>&1"; echo "$o" | tail -15 | sed 's/^/    /'
 	grep -q "diffs=0" <<< "$o" && { cmp=PASS; ok "S0 restored (p5 / overlay / uci / identity / p6 state)"; } || { cmp=FAIL; no "S0 not restored — snapshot kept"; }
 	# B back to V (its overlay carries the dead-man and the claimed slot): brewrite = sysupgrade -n + hold + back_to_a

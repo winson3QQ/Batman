@@ -71,5 +71,9 @@ PROTB_FROM=1.0 PROTB_TO=3.0 run 1 "protB changed to another version than named -
 printf 'slot=B
 protB=2.0
 ' > $D/now-x/identity; PROTB_FROM=1.0 PROTB_TO=2.0 run 1 "protB allowed but slot differs too -> FAIL"
+printf 'protB=1.0
+' > $D/snap/identity; printf 'protB=2.0
+protB=2.0
+' > $D/now-x/identity; PROTB_FROM=1.0 PROTB_TO=2.0 run 1 "protB VB twice (a second line) -> FAIL, not both dropped"
 echo same > $D/snap/identity; echo same > $D/now-x/identity
 rm -rf $R; echo "STATECMP fails=$fails"; [ $fails = 0 ]
