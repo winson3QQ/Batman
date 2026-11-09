@@ -33,3 +33,7 @@ prov-provd-wbox-254	^FAIL prov-provd-wbox-254: no batman-provd on 04 \([0-9][^)]
 prov-netjoin-254	^FAIL prov-netjoin-254: L71: pre-P2 image \(no batman-provd\) — the L71 arm did not run$	254	expires=2026-11-30
 prov-rpa-254	^FAIL prov-rpa-254: no batman-provd on 04 \([0-9][^)]*\): a pre-P2 image$	254	expires=2026-11-30
 chain1-254	^FAIL \[s5\] trial: pre-P2 image \(no batman-provd\) — the provd-side assertions did not run$	254	expires=2026-11-30
+# #320 (harness-first, #290): until fix/320-cfgsave-stderr ships, prov-p1-stubs prints 3 FAIL lines for
+# cfgsave-stderr-quiet (2 from the test: lint, A3 stderr; plus the stub summary) — all match this ERE. fix/320 removes this entry (own-entry
+# exception) so a later FAIL is NEW. Expiry = ESTIMATE of that PR's merge + 14 days.
+prov-p1-stubs	^FAIL (prov-p1-stubs: )?cfgsave-stderr-quiet: 	320	expires=2026-11-30
