@@ -97,6 +97,21 @@ fn status_text(b: &Value) -> String {
     }
 }
 
+/// An error body's reason-code (CDDL; 254-p3-impl §3.1-8): E_UNSUPPORTED {1: verb, 2: reason} / E_REJECTED {2: reason}.
+/// Only the code and its meaning: an error body never echoes the request.
+fn reason_text(detail: &Value) -> String {
+    let verb = detail.get(1).and_then(Value::as_text).map(|v| format!(" ({v})")).unwrap_or_default();
+    let why = match detail.get(2).and_then(Value::as_uint) {
+        None => String::new(),
+        Some(7) => ": this node has no such setting".into(),
+        Some(13) => ": value refused (the node kept the previous one)".into(),
+        Some(14) => ": the country changes only while the node is not in a network".into(),
+        Some(20) => ": a legacy node (its radio is not managed by the app)".into(),
+        Some(r) => format!(": reason {r}"),
+    };
+    format!("{verb}{why}")
+}
+
 fn settings_text(b: &Value) -> String {
     let mut out = vec![];
     if let Some(n) = b.get(1).and_then(Value::as_text) {
@@ -164,12 +179,31 @@ impl OwnerSession {
     /// (or replaces the app-added) keys. op/nonce goes out first; its answer becomes a Sign step.
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_ssh_keys(&mut self, lines: Vec<String>) -> Result<OwnerStep, String> {
-        let body = Value::Map(vec![(Value::Uint(1), Value::Array(lines.into_iter().map(Value::Text).collect()))]);
+        self.owner_op("ssh_keys/set", Value::Map(vec![(Value::Uint(1), Value::Array(lines.into_iter().map(Value::Text).collect()))]))
+    }
+
+    /// `settings/set` {2: country} (an owner-op; 254-p3-impl §3.3): only while not in a network (else reason 14).
+    /// The answer is the applied settings.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_set_country(&mut self, country: String) -> Result<OwnerStep, String> {
+        self.owner_op("settings/set", Value::Map(vec![(Value::Uint(2), Value::Text(country))]))
+    }
+
+    /// `settings/set` {20: {1: ssid, 2: passphrase}} (an owner-op; §3.3): the phone AP. The passphrase stays in here
+    /// and in the encrypted request; it is never part of a step's text.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_set_ap(&mut self, ssid: String, passphrase: String) -> Result<OwnerStep, String> {
+        let ap = Value::Map(vec![(Value::Uint(1), Value::Text(ssid)), (Value::Uint(2), Value::Text(passphrase))]);
+        self.owner_op("settings/set", Value::Map(vec![(Value::Uint(20), ap)]))
+    }
+
+    /// An owner-op: op/nonce goes out first; its answer becomes a Sign step, `signed` sends the operation with key 31.
+    fn owner_op(&mut self, verb: &'static str, body: Value) -> Result<OwnerStep, String> {
         match &mut self.st {
             St::Conn { conn, asked, op } => {
                 let (_, f) = conn.request("op/nonce", Value::Map(vec![])).map_err(|e| format!("{e:?}"))?;
                 *asked = "op/nonce";
-                *op = Some(("ssh_keys/set", body));
+                *op = Some((verb, body));
                 Ok(OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) })
             }
             _ => Err("not logged in".into()),
@@ -198,13 +232,16 @@ impl OwnerSession {
                 Ok(Some(Outcome::Ok(b))) => {
                     let t = match *asked {
                         "status" => status_text(&b),
-                        "settings/get" => settings_text(&b),
+                        "settings/get" | "settings/set" => settings_text(&b),
                         v => format!("{v}: done"),
                     };
                     *op = None;
                     Some(OwnerStep::text(OwnerKind::Answer, t))
                 }
-                Ok(Some(Outcome::Err { code, detail })) => Some(OwnerStep::text(OwnerKind::Answer, format!("{asked}: error {code} {detail:?}"))),
+                Ok(Some(Outcome::Err { code, detail })) => {
+                    *op = None;
+                    Some(OwnerStep::text(OwnerKind::Answer, format!("{asked}: error {code}{}", reason_text(&detail))))
+                }
                 Err(e) => {
                     self.st = St::Over;
                     Some(OwnerStep::text(OwnerKind::Ended, format!("connection: {e:?}")))
@@ -289,6 +326,16 @@ mod tests {
         ]);
         assert_eq!(settings_text(&s), "name BCM2711-6c89, country US, HaLow ch 42 2 MHz, phone AP \"BCM2711-6c89\"");
         assert_eq!(settings_text(&Value::Map(vec![])), "settings: (none readable)");
+    }
+
+    #[test]
+    fn reasons() {
+        let m = |kv: Vec<(u64, Value)>| Value::Map(kv.into_iter().map(|(k, v)| (Value::Uint(k), v)).collect());
+        assert_eq!(reason_text(&m(vec![(2, Value::Uint(14))])), ": the country changes only while the node is not in a network");
+        assert_eq!(reason_text(&m(vec![(1, Value::Text("status".into()))])), " (status)");
+        assert_eq!(reason_text(&m(vec![(1, Value::Text("settings/set".into())), (2, Value::Uint(20))])), " (settings/set): a legacy node (its radio is not managed by the app)");
+        assert_eq!(reason_text(&m(vec![(2, Value::Uint(99))])), ": reason 99");
+        assert_eq!(reason_text(&Value::Map(vec![])), "");
     }
 
     #[test]

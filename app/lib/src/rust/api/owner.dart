@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `login_step`, `new`, `parse_record`, `request`, `settings_text`, `status_text`, `text`
+// These functions are ignored because they are not marked as `pub`: `login_step`, `new`, `owner_op`, `parse_record`, `reason_text`, `request`, `settings_text`, `status_text`, `text`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Rec`, `St`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `eq`, `fmt`
 
@@ -25,6 +25,14 @@ abstract class OwnerSession implements RustOpaqueInterface {
   String last4();
 
   OwnerStep? onFrame({required List<int> frame});
+
+  /// `settings/set` {20: {1: ssid, 2: passphrase}} (an owner-op; §3.3): the phone AP. The passphrase stays in here
+  /// and in the encrypted request; it is never part of a step's text.
+  OwnerStep requestSetAp({required String ssid, required String passphrase});
+
+  /// `settings/set` {2: country} (an owner-op; 254-p3-impl §3.3): only while not in a network (else reason 14).
+  /// The answer is the applied settings.
+  OwnerStep requestSetCountry({required String country});
 
   /// `settings/get` {} — 254-p3-impl §3.3
   OwnerStep requestSettings();
