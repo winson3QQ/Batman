@@ -10,7 +10,9 @@
 # Harness-first (#290): on a product that still has the old lines, part 1 and part 2 FAIL — that run IS the negative
 # control. Zero cases = FAIL. Every FAIL line starts "FAIL cfgsave-stderr-quiet:"; last line "... fails=N".
 # Known limits (design §6): a `<` inside a quoted string followed by a space, or an arithmetic `a < b`, on a line that
-# also discards stderr is a hit too — split that line; a command continued with `\` is not scanned as one line.
+# also discards stderr is a hit too — split that line; a command continued with `\` is not scanned as one line; not
+# matched (none in feed today): a digit-start operand (`< 1.txt`), an fd-numbered input (`3< f`), `2>"/dev/null"`,
+# `1>/dev/null 2>&1`, a `>` glued to the operand.
 set -u
 R=$(cd "${1:?usage: $0 <repo root>}" 2>/dev/null && pwd) || { echo "FAIL cfgsave-stderr-quiet: no such dir $1"; echo "CFGSAVE-STDERR-QUIET cases=0 fails=1"; exit 1; }
 CS=$R/feed/batman-provision/files/usr/bin/batman-config-save
@@ -27,9 +29,11 @@ BB=$(command -v busybox 2>/dev/null) || { no "no busybox on this host — the A3
 # 2>/dev/null, 2> /dev/null, 2>>/dev/null, 2>&-, or >/dev/null 2>&1 (busybox prints before any of them applies).
 # Quiet by construction: the brace form (`; }` intervenes), `<<` here-docs, `<&` dups, `<2>` kmsg priorities, a `<`
 # glued to the previous char (sed/awk programs, `\<`), and `2>/dev/null </dev/null` (nothing after the redirect).
-# An operand of /dev/null itself cannot fail to open and is excluded.
+# An operand of /dev/null itself cannot fail to open: a line whose ONLY `<` is that one is excluded (a line that also
+# has a real read stays a hit). Comment lines are not scanned.
 RE="(^|[[:space:]()])<[[:space:]]*[\"'~\$/A-Za-z_.][^;|&]*[[:space:]](2>>?[[:space:]]*/dev/null|2>&-|>[[:space:]]*/dev/null[[:space:]]+2>&1)"
-lint(){ grep -nE "$RE" "$@" | grep -vE '<[[:space:]]*/dev/null'; }
+ONLY_DEVNULL='^([^<]|<<)*<[[:space:]]*/dev/null([^<]|<<)*$'
+lint(){ grep -nE "$RE" "$@" | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' | grep -vE "$ONLY_DEVNULL"; }
 cases=$((cases+1))
 noisy='read -r a b < "$F" 2>/dev/null || a=0
 v=$(tr "\n" " " < /etc/x 2>/dev/null | sed 1p)
@@ -39,9 +43,10 @@ cmd < "$F" 2>&-
 cmd < "$F" 2>>/dev/null
 cmd < "$F" >/dev/null 2>&1
 cmd <'"'"'$F'"'"' 2>/dev/null
-x=$(wc -c <~/f 2>/dev/null)'
+x=$(wc -c <~/f 2>/dev/null)
+cmd </dev/null < "$F" 2>/dev/null'
 n=$(printf '%s\n' "$noisy" > "$T/noisy"; lint "$T/noisy" | wc -l)
-[ "$n" = 9 ] && ok "lint self-test: every noisy spelling is a hit (9/9)" || no "lint self-test: $n/9 noisy spellings matched"
+[ "$n" = 10 ] && ok "lint self-test: every noisy spelling is a hit (10/10)" || no "lint self-test: $n/10 noisy spellings matched"
 cases=$((cases+1))
 quiet='{ read -r a b < "$F"; } 2>/dev/null || a=0
 v=$({ tr "\n" " " < /etc/x; } 2>/dev/null | sed 1p)
@@ -54,11 +59,12 @@ exec 3<&0 2>/dev/null
 awk '"'"'$1<2'"'"' f 2>/dev/null
 [ "$a" \< "$b" ] 2>/dev/null
 sed "s/<x/y/" f 2>/dev/null
-grep -q "<title" f 2>/dev/null'
+grep -q "<title" f 2>/dev/null
+	# cmd < "$F" 2>/dev/null'
 q=$(printf '%s\n' "$quiet" > "$T/quiet"; lint "$T/quiet")
-[ -z "$q" ] && ok "lint self-test: brace form, kmsg priority, here-doc, reversed order, dup, /dev/null operand, glued < are not hits (12/12)" || no "lint self-test: a quiet form is a hit: $(echo "$q" | tr '\n' ' ')"
+[ -z "$q" ] && ok "lint self-test: brace form, kmsg priority, here-doc, reversed order, dup, /dev/null operand, glued <, comment are not hits (13/13)" || no "lint self-test: a quiet form is a hit: $(echo "$q" | tr '\n' ' ')"
 cases=$((cases+1))
-hits=$(cd "$R" && grep -rnE "$RE" feed/*/files 2>/dev/null | grep -vE '<[[:space:]]*/dev/null')
+hits=$(cd "$R" && grep -rnE "$RE" feed/*/files 2>/dev/null | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' | grep -vE "$ONLY_DEVNULL")
 if [ -z "$hits" ]; then ok "lint: no unguarded redirect-read in feed/*/files"
 else printf '%s\n' "$hits" | sed 's/^/       /'; no "lint: $(printf '%s\n' "$hits" | wc -l) unguarded redirect-read(s) in feed/*/files, first $(printf '%s\n' "$hits" | head -1 | cut -d: -f1,2) — busybox ash prints \"can't open\" before 2> applies; write { cmd < f; } 2>/dev/null (a '<' inside a string: split the line) (#320)"; fi
 
@@ -87,6 +93,15 @@ else no "A3, 25 writes 10 s ago: rc=$(cat "$T/rc") stderr=[$(tr '\n' ' ' < "$T/e
 cases=$((cases+1)); run_a3 "$CS" "5 90"
 if [ "$(cat "$T/rc")" = 0 ] && [ ! -s "$T/err" ] && grep -qx 'wn=5 wl=90' "$T/out"; then ok "A3, 5 writes: rc 0, counts kept (wn=5 wl=90)"
 else no "A3, 5 writes: rc=$(cat "$T/rc") stdout=[$(tr '\n' ' ' < "$T/out")] stderr=[$(tr '\n' ' ' < "$T/err" | cut -c1-200)]"; fi
+cases=$((cases+1)); run_a3 "$CS" "20 50"
+if [ "$(cat "$T/rc")" = 1 ] && grep -q 'write rate-limited (20 writes this boot)' "$T/err"; then ok "A3, exactly 20 writes 50 s ago: rc 1 (threshold is -ge 20)"
+else no "A3, 20 writes 50 s ago: rc=$(cat "$T/rc") stderr=[$(tr '\n' ' ' < "$T/err" | cut -c1-200)] — threshold changed"; fi
+cases=$((cases+1)); run_a3 "$CS" "20 40"
+if [ "$(cat "$T/rc")" = 0 ] && [ ! -s "$T/err" ] && grep -qx 'wn=20 wl=40' "$T/out"; then ok "A3, 20 writes 60 s ago: rc 0 (window is 60 s)"
+else no "A3, 20 writes 60 s ago: rc=$(cat "$T/rc") stdout=[$(tr '\n' ' ' < "$T/out")] stderr=[$(tr '\n' ' ' < "$T/err" | cut -c1-200)] — window changed"; fi
+cases=$((cases+1)); run_a3 "$CS" "abc xyz"
+if [ "$(cat "$T/rc")" = 0 ] && [ ! -s "$T/err" ] && grep -qx 'wn=0 wl=0' "$T/out"; then ok "A3, garbage counter file: rc 0, stderr empty, wn=0 wl=0 (case sanitisers)"
+else no "A3, garbage counter file: rc=$(cat "$T/rc") stdout=[$(tr '\n' ' ' < "$T/out")] stderr=[$(tr '\n' ' ' < "$T/err" | cut -c1-200)] — sanitiser lost"; fi
 
 # ---- 3. negative control: the old A3 line back ------------------------------------------------------------------
 sed 's/{ read -r wn wl < "\$WRITES"; } 2>\/dev\/null/read -r wn wl < "$WRITES" 2>\/dev\/null/' "$CS" > "$T/mutant"

@@ -1,9 +1,11 @@
 # #320 — busybox `< file 2>/dev/null` stderr noise: brace every redirect-read in the product tree
 
-Status: v3, 2026-11-09. Round 1 (v1, two reviewers): APPROVE-WITH-CHANGES ×2 — lint heuristic unsound, PR split per
+Status: v4, 2026-11-09. Round 1 (v1, two reviewers): APPROVE-WITH-CHANGES ×2 — lint heuristic unsound, PR split per
 #290. Round 2 (v2 + code, two reviewers): APPROVE-WITH-CHANGES ×2 — CI step placement would skip the rest of the
 prov-p1 job, lint missed `2> /dev/null` / `>/dev/null 2>&1` / `2>&-`, wrong rationale for excluding scripts/node.
-All folded in here. Issue: #320. Parent: #202 A3.
+Round 3 (v3 + code): APPROVE + APPROVE-WITH-CHANGES — the `/dev/null`-operand filter dropped whole lines, §2 copy
+list regressed; both fixed here with the MINORs (comment lines skipped, three more A3 cases, known gaps listed).
+Issue: #320. Parent: #202 A3.
 
 ## 1. Problem
 busybox ash applies redirections left to right. In `cmd < "$F" 2>/dev/null`, when `$F` cannot be opened the
@@ -62,9 +64,11 @@ Not in this pair of PRs, recorded as #320 checklist items:
   the same race, by a different rule (nothing to brace); left as is, noted.
 
 Copies: `deploy/provisioning/batman-config-save`, `deploy/provisioning/joinwatch`,
-`deploy/provisioning/uci-defaults/95-batman-storage` are byte-identical copies of the feed files and are updated
-together (CI `provisioning-sync`). `payload-stop.sh`, `batman-ots-firstload`, `batman-slot`, `platform-ab.sh`,
-`batman-autocommit`, `batman-addr-defer`, `batman-faketime`, `96-batman-config-migrate` have no deploy copy.
+`deploy/provisioning/uci-defaults/95-batman-storage`, `deploy/provisioning/uci-defaults/96-batman-config-migrate`
+are byte-identical copies of the feed files and are updated together (CI `provisioning-sync`, which caught the
+96 copy when v2 had listed it as copy-less; v3 regressed that sentence, round 3 caught it). `payload-stop.sh`,
+`batman-ots-firstload`, `batman-slot`, `platform-ab.sh`, `batman-autocommit`, `batman-addr-defer`,
+`batman-faketime` have no deploy copy.
 
 ## 3. Ownership / contracts / lifecycle
 No shared state is touched: no file, flag, format, exit code, parsed log line, uci key or timing changes. At every
@@ -93,12 +97,17 @@ No new or changed input, path, privilege, secret or failure mode. Same files, sa
 ## 6. Test — `tests/prov-p1/cfgsave-stderr-quiet.sh <repo root>` (no root, needs busybox)
 1. **Lint, zero exceptions, whole product tree** `feed/*/files`. A hit is a line matching
    `(^|[[:space:]()])<[[:space:]]*["'~$/A-Za-z_.][^;|&]*[[:space:]](2>>?[[:space:]]*/dev/null|2>&-|>[[:space:]]*/dev/null[[:space:]]+2>&1)`
-   minus lines whose operand is `/dev/null` (`grep -vE '<[[:space:]]*/dev/null'`): a `<` starting a word, an operand
+   minus comment lines and minus lines whose ONLY `<` is a `/dev/null` operand (`grep -vE '^([^<]|<<)*<[[:space:]]*/dev/null([^<]|<<)*$'`,
+   so a line that also carries a real read stays a hit): a `<` starting a word, an operand
    that can be a file, then on the same simple command (no `;`, `|`, `&` between) a stderr discard in any spelling
    (`2>/dev/null`, `2> /dev/null`, `2>>/dev/null`, `2>&-`, `>/dev/null 2>&1`). Quiet by construction: the brace form
    (`; }` intervenes), `<<`, `<&`, `<2>` kmsg priorities, a `<` glued to the previous character (sed/awk programs,
-   `\<`), the reversed order, `/dev/null` operands. Self-test in the test: 9 noisy spellings hit, 12 quiet forms do
-   not (each a negative control for one arm of the regex). Known false positives a maintainer may meet: a `<` inside a
+   `\<`), the reversed order, `/dev/null` operands. Self-test in the test: 10 noisy spellings hit (incl. a `/dev/null`
+   operand next to a real read), 13 quiet forms do not (incl. a comment line) — each a negative control for one arm.
+   Known gaps, none present in feed today (grep-verified): a digit-start operand (`< 1.txt`), an fd-numbered input
+   (`3< f`, `0< f`), a quoted discard (`2>"/dev/null"`), `1>/dev/null 2>&1`, a `>` glued to the operand
+   (`<"$F">/dev/null 2>&1`), a `\`-continued command; adding digits to the operand class would false-positive
+   awk/arithmetic comparisons, so these stay documented. Known false positives a maintainer may meet: a `<` inside a
    quoted string followed by a blank, or an arithmetic `a < b`, on a line that also discards stderr — the FAIL message
    says to split the line; a `\`-continued command is scanned per line (accepted). The deploy copies are not scanned:
    `check-provisioning-sync.sh` keeps them identical. Expected: 22 hits on main (that run is the negative control,
@@ -108,7 +117,10 @@ No new or changed input, path, privilege, secret or failure mode. Same files, sa
    next column-0 `fi` (FAIL unless 5–15 lines, last line `fi`, containing `read -r wn wl` — an indented or moved block
    fails loudly instead of running unrelated code; PR B adds the marker's purpose to the product comment); stubs `up(){ echo 100; }`, `err`, `umount(){ :; }`,
    `STAGE`/`MNT` = empty temp dirs, `mode=--on-join RDOK=1`, `set -u`. Cases: `$WRITES` missing → rc 0, stderr
-   empty, `wn=0 wl=0`; `25 90` → rc 1 + "write rate-limited (25 writes this boot)"; `5 90` → rc 0, `wn=5 wl=90`.
+   empty, `wn=0 wl=0`; `25 90` → rc 1 + "write rate-limited (25 writes this boot)"; `5 90` → rc 0, `wn=5 wl=90`;
+   `20 50` → rc 1 (the threshold is `-ge 20`); `20 40` → rc 0 `wn=20 wl=40` (60 s window, not longer); `abc xyz` → rc 0,
+   stderr empty, `wn=0 wl=0` (the `case` sanitisers). Mutants of the block that drop `|| { wn=0; wl=0; }`, the `exit`,
+   the sanitisers, or change 20 / 60 / `-ge` are each caught by one of these (round-3 reviewer run).
 3. **Negative control inside the test**: a mutant of the product file with the old line restored must produce a
    stderr containing `can't open` in case 2a and exactly one lint hit. When the product still carries the old line
    the mutant equals the product: case 2a itself FAILs with that stderr (noted in the output). When the mutant equals
@@ -124,7 +136,7 @@ No new or changed input, path, privilege, secret or failure mode. Same files, sa
   fix/320-cfgsave-stderr lands`; as its own last step it never skips the loop-device / Go / claim-lock steps —
   the convention the job already states for the claim-lock and wireless-txn steps), and a
   `scripts/validation-known-failures.txt` entry (`prov-p1-stubs`, ERE `^FAIL (prov-p1-stubs: )?cfgsave-stderr-quiet: `
-  — it matches all three FAIL lines the stub runner prints: lint, A3, summary; #320; expires 2026-11-30 = estimate of
+  — it matches all 3 FAIL lines the stub runner prints (2 from the test: lint, A3; plus the stub summary); #320; expires 2026-11-30 = estimate of
   PR B merge + 14 d). Verified: `kf_classify` → `known #320` today, `new (expired)` on 2026-12-01.
 - **PR B (product)** `fix/320-cfgsave-stderr`: the 22 lines + 4 deploy copies, the marker note in the A3 comment, and
   the removal of A's known-failures entry (the own-entry exception of #290: once the product is in, a later
