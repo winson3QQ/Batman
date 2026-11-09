@@ -54,6 +54,22 @@ class MainActivity : FlutterActivity() {
                 } catch (e: Exception) {
                     result.error("keystore", e.javaClass.simpleName, null)
                 }
+                // the claim path (design §5.1): public keys, sig_enc (owner key, allow-listed input only), record sealing.
+                // Keystore work off the UI thread; failures come back as errors, never as a guessed value.
+                "publicKeys" -> Thread {
+                    val r = runCatching { mapOf("owner" to Keys().publicKey65(KeyRole.OWNER_SIGN), "ownerEnc" to Keys().publicKey65(KeyRole.OWNER_ENC)) }
+                    runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
+                }.start()
+                "signOwner" -> Thread {
+                    val input = call.argument<ByteArray>("input")
+                    val r = runCatching { Keys().sign(KeyRole.OWNER_SIGN, requireNotNull(input) { "no input" }) }
+                    runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
+                }.start()
+                "seal" -> Thread {
+                    val plain = call.argument<ByteArray>("plain"); val aad = call.argument<ByteArray>("aad")
+                    val r = runCatching { Keys().seal(requireNotNull(plain) { "no plain" }, requireNotNull(aad) { "no aad" }) }
+                    runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
+                }.start()
                 // true when both BLE permissions are granted (asks once if not)
                 "blePermissions" -> {
                     if (blePerms.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) result.success(true)
