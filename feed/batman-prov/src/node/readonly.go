@@ -17,7 +17,7 @@ import (
 
 // readOnlyVerbs is the closed list; every other verb takes the mutex.
 var readOnlyVerbs = map[string]bool{"health.get": true, "info.boot_id": true, "info.cert": true, "info.ecdh_pub": true,
-	"info.state": true, "info.net": true, "info.owners": true}
+	"info.state": true, "info.net": true, "info.owners": true, "status.get": true}
 
 const (
 	roGlobalRate, roGlobalBurst = 10, 40
@@ -54,7 +54,8 @@ func (b *bucket) take(now time.Time) bool {
 // NewConn returns the handler of one helper-socket connection, with its own read-only quota (sock.ServeConns).
 func (n *Node) NewConn() func(cbor.Map) cbor.Map {
 	b := &bucket{rate: roConnRate, burst: roConnBurst}
-	return func(req cbor.Map) cbor.Map { return n.handle(req, b) }
+	sb := &bucket{rate: statusConnRate, burst: statusConnRate} // status.get: 1/s per connection (254-p3-impl §3.1-9)
+	return func(req cbor.Map) cbor.Map { return n.handleQ(req, b, sb) }
 }
 
 func (n *Node) now() time.Time {
@@ -89,13 +90,16 @@ func (n *Node) loadOverlayRO() (*provstore.Record, error) {
 	return nil, err
 }
 
-func (n *Node) readOnly(verb string, a cbor.Map, conn *bucket) (cbor.Map, *Error) {
+func (n *Node) readOnly(verb string, a cbor.Map, conn, statusConn *bucket) (cbor.Map, *Error) {
 	now := n.now()
 	if conn != nil && !conn.take(now) {
 		return nil, fail(ERate, "read-only verbs: per-connection quota")
 	}
 	if !n.roGlobal.take(now) {
 		return nil, fail(ERate, "read-only verbs: helper-wide quota")
+	}
+	if verb == "status.get" {
+		return n.statusGet(a, now, statusConn)
 	}
 	if e := onlyKeys(a); e != nil {
 		return nil, e

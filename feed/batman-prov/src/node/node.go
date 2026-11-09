@@ -112,9 +112,11 @@ type Node struct {
 	// = no health / Sys.IsTrial
 	Health      func() string
 	TrialCached func() bool
-	roGlobal    bucket // read-only verbs, helper-wide (readonly.go)
-	psksRate    bucket // psks.get: 1/s
-	clock       func() time.Time
+	// 254-p3-impl §3.4: status.get's caches (SetStatusSource; nil = status.get answers E_UNSUPPORTED)
+	status   *statusCache
+	roGlobal bucket // read-only verbs, helper-wide (readonly.go)
+	psksRate bucket // psks.get: 1/s
+	clock    func() time.Time
 }
 
 type nonce struct {
@@ -166,7 +168,9 @@ func onlyKeys(m cbor.Map, keys ...uint64) *Error {
 func (n *Node) Handle(req cbor.Map) cbor.Map { return n.handle(req, nil) }
 
 // handle: the verb is decoded before the mutex — read-only verbs never take it (readonly.go, 254-p2-impl F-P44).
-func (n *Node) handle(req cbor.Map, conn *bucket) cbor.Map {
+func (n *Node) handle(req cbor.Map, conn *bucket) cbor.Map { return n.handleQ(req, conn, nil) }
+
+func (n *Node) handleQ(req cbor.Map, conn, statusConn *bucket) cbor.Map {
 	idAny, _ := req.Get(2)
 	id, _ := idAny.(uint64)
 	verbAny, _ := req.Get(1)
@@ -177,7 +181,7 @@ func (n *Node) handle(req cbor.Map, conn *bucket) cbor.Map {
 		return cbor.M(1, id, 2, uint64(ESchema), 3, cbor.M())
 	}
 	if readOnlyVerbs[verb] {
-		res, err := n.readOnly(verb, args, conn)
+		res, err := n.readOnly(verb, args, conn, statusConn)
 		if err != nil {
 			if err.Code != ERate { // a quota refusal is the caller's pacing, not an event
 				n.Log("verb %s refused: code %d (%s)", verb, err.Code, err.Reason)
