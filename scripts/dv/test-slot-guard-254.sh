@@ -216,15 +216,19 @@ unset -f fq
 # another version into B (2026-11-09); without VB only V. find04 is a stub: the node "is on" $ON, the asked patterns logged
 fb=$(sed -n '/^find_base(){/,/; }$/p' "$ROOT/scripts/dv/fresh-254.sh")
 if [ -n "$fb" ]; then
-	fbt(){ ( eval "$fb"; ASKED=""; find04(){ ASKED="${ASKED}[$1]"; [ "$1" = "ver=$ON " ]; }; sleep(){ :; }
+	fbt(){ ( [ -n "${VBT:-}" ] && VB=$VBT || unset VB; eval "$fb"; ASKED=""; find04(){ ASKED="${ASKED}[$1]"; [ "$1" = "ver=$ON " ]; }; sleep(){ :; }
 		if find_base 1; then echo "found $ASKED" | cut -c1-80; else echo "none $(printf '%s' "$ASKED" | tr ']' '
 ' | sort -u | tr '
 ' ' ')"; fi ); }
 	o=$(V=1.0 ON=1.0 fbt); [ "$o" = "found [ver=1.0 ]" ] && ok "find_base: no VB, node on V -> found by V" || no "find_base no VB on V: [$o]"
 	o=$(V=1.0 ON=2.0 fbt); [ "$o" = "none [ver=1.0  " ] && ok "find_base: no VB, node on another version -> not found, only V asked" || no "find_base no VB other: [$o]"
-	o=$(V=1.0 VB=2.0 ON=2.0 fbt); [ "$o" = "found [ver=1.0 ][ver=2.0 ]" ] && ok "find_base: VB set, node on VB -> found (V asked first)" || no "find_base VB on VB: [$o]"
-	o=$(V=1.0 VB=1.0 ON=2.0 fbt); [ "$o" = "none [ver=1.0  " ] && ok "find_base: VB = V -> only V asked" || no "find_base VB=V: [$o]"
-	o=$(V=1.0 VB=2.0 ON=3.0 fbt); [ "$o" = "none [ver=1.0  [ver=2.0  " ] && ok "find_base: VB set, node on a third version -> not found" || no "find_base third: [$o]"
+	o=$(V=1.0 VBT=2.0 ON=2.0 fbt); [ "$o" = "found [ver=1.0 ][ver=2.0 ]" ] && ok "find_base: VB set, node on VB -> found (V asked first)" || no "find_base VB on VB: [$o]"
+	o=$(V=1.0 VBT=1.0 ON=2.0 fbt); [ "$o" = "none [ver=1.0  " ] && ok "find_base: VB = V -> only V asked" || no "find_base VB=V: [$o]"
+	o=$(V=1.0 VBT=2.0 ON=1.0 fbt); [ "$o" = "found [ver=1.0 ]" ] && ok "find_base: VB set, node on V -> found by V before VB is asked" || no "find_base VB on V: [$o]"
+	o=$(V=1.0 VBT=2.0 ON=3.0 fbt); [ "$o" = "none [ver=1.0  [ver=2.0  " ] && ok "find_base: VB set, node on a third version -> not found" || no "find_base third: [$o]"
+	# review m3: both first finds of a restore go through find_base
+	c1=$(sed -n '/^restore_all(){/,/^}/p' "$ROOT/scripts/dv/fresh-254.sh" | grep -c 'find_base 900'); c2=$(sed -n '/^if \[ "\$MODE" = restore \]; then/,/^fi/p' "$ROOT/scripts/dv/prov-bench-s0-254.sh" | grep -c 'find_base 300')
+	[ "$c1" = 1 ] && [ "$c2" = 1 ] && ok "find_base: restore_all and bench-s0 restore both find the node through it" || no "find_base call sites: restore_all=[$c1] restore=[$c2]"
 else no "find_base not found in $ROOT/scripts/dv/fresh-254.sh"; fi
 
 # ---- the field boundary on the real incident line

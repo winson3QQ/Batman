@@ -153,7 +153,7 @@ restore_all(){
 	say "A at $NODE: $(q "$ST")"
 	# compare S0 (joinwatch stopped meanwhile so p5 is not rw-mounted under the manifest; review A-m4) — result KEPT
 	q "/etc/init.d/joinwatch stop >/dev/null 2>&1; mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
-	cmp=""; for i in 1 2 3; do q "sh $BASE/prov-base-254.sh manifest $RUN after" | tail -1; o=$(q "sh $BASE/prov-base-254.sh compare $RUN after"); grep -q "p5 unreadable" <<< "$o" || break; sleep 10; done
+	cmp=""; for i in 1 2 3; do q "sh $BASE/prov-base-254.sh manifest $RUN after" | tail -1; o=$(q "$([ -n "${VB:-}" ] && [ "$VB" != "$V" ] && echo "PROTB_FROM='$V' PROTB_TO='$VB' ")sh $BASE/prov-base-254.sh compare $RUN after"); grep -q "p5 unreadable" <<< "$o" || break; sleep 10; done
 	q "/etc/init.d/joinwatch start >/dev/null 2>&1"; echo "$o" | tail -15 | sed 's/^/    /'
 	grep -q "diffs=0" <<< "$o" && { cmp=PASS; ok "S0 restored (p5 / overlay / uci / identity / p6 state)"; } || { cmp=FAIL; no "S0 not restored — snapshot kept"; }
 	# B back to V (its overlay carries the dead-man and the claimed slot): brewrite = sysupgrade -n + hold + back_to_a

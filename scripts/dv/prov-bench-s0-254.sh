@@ -100,7 +100,7 @@ restore_nodes_line(){	# <snapshot state> <node> <run> <date>
 }
 NN=$2; MACW=$(echo "$MAC" | tr : -)
 V=${V:?version}; PAY=${PAY:?payload path on the node}; PSHA=${PSHA:?payload sha256}
-# VB / PAYB / PSHAB (unclaimed, 2026-11-09): the version written into B when it is not A's (the app's test of a dev
+# VB / PAYB / PSHAB (unclaimed, 2026-11-09; restore reads only VB, the three go together so one env serves both): the version written into B when it is not A's (the app's test of a dev
 # image on a fresh B). V / PAY / PSHA stay A's: the precondition and every way back (restore_all, the B rewrite) use
 # them. restore takes the same VB to find a node that is on that B. Unset = V / PAY / PSHA (every other run unchanged).
 VB=${VB:-$V}; PAYB=${PAYB:-$PAY}; PSHAB=${PSHAB:-$PSHA}
@@ -150,7 +150,7 @@ if [ "$MODE" = restore ]; then
 	PH=restore-pre
 	# a kept node's address is openmanetd's, outside the swept /24s: start from nodes.txt (or IP=)
 	SEEN="${IP:-} $(wsl_ grep "^node=$NN " $BENCH/nodes.txt 2>/dev/null | tr -d '\r' | sed -n 's/.* ip=\([0-9.]*\) .*/\1/p' | tail -1)"
-	find_base 300 || { say "$NN not found by its eth MAC (tried:$SEEN; give IP=<address>)"; exit 1; }
+	find_base 300 || { find04 "ver=" && say "$NN is at $FIP on another version: $FOUND_STATE — a node left on another B needs the VB / PAYB / PSHAB of its unclaimed run"; say "$NN not found on ver=$V${VB:+ / $VB} by its eth MAC (tried:$SEEN; give IP=<address>)"; exit 1; }
 	say "$NN at $FIP ($FOUND_HOW): $FOUND_STATE"
 	[ "$(fq 'cat /sys/class/net/eth0/carrier 2>/dev/null')" = 1 ] || { say "$NN has no carrier on eth0: the lab cable must be on THIS node (after the rollback it is on the fleet mesh key) — nothing written"; exit 1; }
 	# nothing is written before these hold: slot A still carries V (restore_all waits for "slot=A ver=$V"), the payload
@@ -361,7 +361,7 @@ a1=$(echo $a); [ "$MODE" = unclaimed ] && a1=${a1/ps=helper\/member/ps=helper\/l
 say "A: $(echo $a)"; case "$a1" in *"ps=helper/legacy"*"check_rc=0"*"dirty=[] undo=0"*) ;; *) say "A is not a healthy legacy node, or a dirty flag / undo journal is present (a dirty flag left by a restore whose B rewrite failed: check the node, then sh $BASE/prov-base-254.sh finish <the flag's first word> on it)"; exit 1;; esac
 [ "$(q "sha256sum < $PAYB | cut -c1-64")" = "$PSHAB" ] || { say "payload sha ($PAYB)"; exit 1; }
 payver "$PSHAB" "$VB"
-[ "$VB" = "$V" ] || { [ "$(q "sha256sum < $PAY | cut -c1-64")" = "$PSHA" ] && payver; } || { say "A's payload $PAY (the way back) is not there"; exit 1; }
+[ "$PAYB" = "$PAY" ] || { [ "$(q "sha256sum < $PAY | cut -c1-64")" = "$PSHA" ] && payver; } || { say "A's payload $PAY (the way back) is not there"; exit 1; }
 [ -s "$LABKEY.pub" ] || { say "no $LABKEY.pub"; exit 1; }
 [ "$(q 'cat /sys/class/net/eth0/carrier 2>/dev/null')" = 1 ] || { say "$NN has no carrier on eth0: the lab cable must be on THIS node (a fresh slot has no mesh)"; exit 1; }
 pk_proof $NODE || { say "lab key $LABKEY does not authenticate to A by publickey"; exit 1; }
@@ -442,7 +442,7 @@ t=$SECONDS; d=""; while [ $((SECONDS - t)) -lt 300 ]; do d=$(fq 'echo "$(uci -q 
 # and the dirty flag stay: `restore <node> <run>` brings the node back (p5 from the snapshot undoes the app's claim).
 if [ "$MODE" = unclaimed ]; then
 	KEPT=1   # on_exit must not restore: the node is left unclaimed on purpose
-	RESULT="PASS — $NN is an UNCLAIMED fresh B at $FIP (MAC $MAC); claim QR: ssh root@$FIP batman-provhelper qr; back: restore $NN $RUN$([ "$VB" = "$V" ] || echo " (with the same VB / PAYB / PSHAB)")"
+	RESULT="PASS — $NN is an UNCLAIMED fresh B at $FIP (MAC $MAC); claim QR: ssh root@$FIP batman-provhelper qr; back: IP=$FIP $([ "$VB" = "$V" ] || echo "VB=$VB PAYB=$PAYB PSHAB=$PSHAB ")restore $NN $RUN (the claim drops the lab key: the app adds it back first)"
 	exit 0
 fi
 # ======== 3. lab key (publickey proven BEFORE the claim), claim with H0

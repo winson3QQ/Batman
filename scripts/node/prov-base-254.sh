@@ -195,6 +195,12 @@ compare)
 					print line[i] } }' "$T/d" > "$T/e"
 			mv "$T/e" "$T/d"
 		fi
+		# prov-bench-s0 unclaimed with another version in B (VB): restore compares before the B rewrite, while B still
+		# says VB in slot-B.protected (batman-slot apply / 95-batman-storage write it; not a snapshot state file). Exactly
+		# the pair "- protB=<from>" / "+ protB=<to>" drops, only when the host names both; the B rewrite then asserts protB=[V]
+		if [ "$f" = identity ] && [ -n "${PROTB_FROM:-}" ] && [ -n "${PROTB_TO:-}" ] && grep -qxF -e "- protB=$PROTB_FROM" "$T/d" && grep -qxF -e "+ protB=$PROTB_TO" "$T/d"; then
+			grep -vxF -e "- protB=$PROTB_FROM" -e "+ protB=$PROTB_TO" "$T/d" > "$T/e"; mv "$T/e" "$T/d"; say "identity: protB $PROTB_FROM -> $PROTB_TO allowed (B rewrite checks protB)"
+		fi
 		[ -s "$T/d" ] && { sed "s|^|DIFF $f |" "$T/d"; n=$((n + $(wc -l < "$T/d"))); }
 	done
 	rm -rf "$T"
