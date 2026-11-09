@@ -47,17 +47,36 @@ const (
 	// handed out. Only returned after a commit (EApply also covers pre-commit stage failures). provd maps it to
 	// protocol 13 E_LOCK_INCOMPLETE -> the app retries with claim/replay (219-protocol §5.2; claim-lock fix §7).
 	ELockIncomplete = 23
+	// 254-p3-impl §3.1-8: a refusal with a reason (provd -> E_REJECTED{2: reason}); EInput = the user's input is not
+	// acceptable (not a CRIT: ESchema stays "provd sent a wrong format")
+	EReject = 24
+	EInput  = 25
 )
 
 // Error is a coded failure; Reason is for the log only.
 type Error struct {
 	Code   int
 	Reason string
+	// Why: an optional reason-code (CDDL) sent in the error reply's body as {1: why}; 0 = none
+	Why uint64
 }
 
 func (e *Error) Error() string { return fmt.Sprintf("code %d: %s", e.Code, e.Reason) }
 func fail(code int, why string, a ...any) *Error {
 	return &Error{Code: code, Reason: fmt.Sprintf(why, a...)}
+}
+
+// failR: a failure with a reason-code for the app (254-p3-impl §3.1-8)
+func failR(code int, reason uint64, why string, a ...any) *Error {
+	return &Error{Code: code, Reason: fmt.Sprintf(why, a...), Why: reason}
+}
+
+// errBody: an error reply's body — {1: reason} when there is one, else empty (P2's form)
+func errBody(e *Error) cbor.Map {
+	if e.Why != 0 {
+		return cbor.M(1, e.Why)
+	}
+	return cbor.M()
 }
 
 // Sys is every side effect outside the helper's own files; the real one lives in cmd/, tests fake it.
@@ -88,6 +107,9 @@ type Sys interface {
 	ClearTxnMarker()
 	DiagBundle() ([]byte, error)
 	RemoveMeshMarkers() error // p6 mesh-expected / mesh-joined (network/leave)
+	// 254-p3-impl §3.3: halow-setkey --rollback (P3 mode); the exit code (0 / 2 / 3 / 4 / 5, else unknown)
+	SetCountry(cc string) int
+	SetAP(ssid, passphrase string) int // the passphrase over stdin
 	Now() time.Time
 }
 
@@ -188,7 +210,7 @@ func (n *Node) handleQ(req cbor.Map, conn, statusConn *bucket) cbor.Map {
 			if err.Code != ERate { // a quota refusal is the caller's pacing, not an event
 				n.Log("verb %s refused: code %d (%s)", verb, err.Code, err.Reason)
 			}
-			return cbor.M(1, id, 2, uint64(err.Code), 3, cbor.M())
+			return cbor.M(1, id, 2, uint64(err.Code), 3, errBody(err))
 		}
 		return cbor.M(1, id, 2, uint64(OK), 3, res)
 	}
@@ -197,7 +219,7 @@ func (n *Node) handleQ(req cbor.Map, conn, statusConn *bucket) cbor.Map {
 	res, err := n.dispatch(verb, args)
 	if err != nil {
 		n.Log("verb %s refused: code %d (%s)", verb, err.Code, err.Reason)
-		return cbor.M(1, id, 2, uint64(err.Code), 3, cbor.M())
+		return cbor.M(1, id, 2, uint64(err.Code), 3, errBody(err))
 	}
 	return cbor.M(1, id, 2, uint64(OK), 3, res)
 }
@@ -764,16 +786,7 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 	case "owner.remove":
 		return n.ownerRemove(rec, body)
 	case "settings.set":
-		for _, en := range body {
-			if en.K == uint64(31) {
-				continue
-			}
-			if s, ok := en.K.(string); ok && s == "hostname" || en.K == uint64(1) {
-				return nil, fail(EUnsupported, "rename-pending") // P-U7: no rename in P1
-			}
-			return nil, fail(ESchema, "unknown setting %v", en.K)
-		}
-		return cbor.M(), nil
+		return n.settingsSet(rec, body)
 	case "root_password.reset":
 		pw := genPassword()
 		// lock failure -> ELockIncomplete (password unchanged); --save failure -> EStorage with root restored

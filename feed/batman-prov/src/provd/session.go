@@ -65,7 +65,7 @@ var knownTypes = map[string]bool{"info": true, "claim/begin": true, "claim/finis
 	"root_password/reset": true}
 
 // P3 types: E_UNSUPPORTED{capability: <type>} (254-p2-impl §4.3)
-var p3Types = map[string]bool{"owner/add": true, "owner/remove": true, "settings/set": true,
+var p3Types = map[string]bool{"owner/add": true, "owner/remove": true,
 	"peers/challenge": true, "diag/summary": true, "diag/bundle": true, "update/check": true,
 	"update/prepare": true, "update/apply": true, "update/status": true, "bulk/open": true, "bulk/close": true}
 
@@ -77,7 +77,8 @@ var allowed = map[Role]map[string]bool{
 	RoleAnon:      {"info": true, "claim/begin": true, "claim/finish": true},
 	RoleCandidate: {"info": true, "auth/owner": true},
 	RoleOwner: {"info": true, "op/nonce": true, "network/join": true, "network/update": true, "network/leave": true,
-		"ssh_keys/set": true, "root_password/reset": true, "status": true, "settings/get": true},
+		"ssh_keys/set": true, "root_password/reset": true, "status": true, "settings/get": true,
+		"settings/set": true},
 	RoleMember:    {"info": true, "network/update": true, "status": true},
 	RoleReacquire: {"info": true, "claim/begin": true, "op/nonce": true, "claim/replay": true},
 }
@@ -85,6 +86,7 @@ var allowed = map[Role]map[string]bool{
 // owner-op verbs forwarded as the whole envelope: type -> helper verb
 var forward = map[string]string{"network/join": "net.apply", "network/update": "net.apply",
 	"network/leave": "network.leave", "ssh_keys/set": "ssh_keys.set", "root_password/reset": "root_password.reset",
+	"settings/set": "settings.set",
 	"claim/replay": "claim.replay"}
 
 // MaxChunks / MaxReassembled: stage 1 limits of a chunked request (helper MaxRequest 65536 minus its wrapping).
@@ -658,9 +660,11 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 		if typ == "claim/replay" && r.Code == hEForbidden && ss.failOnce() {
 			ss.markClose("claim failures")
 		}
-		return ss.mapHelper(id, typ, r.Code)
+		return ss.mapHelperR(id, typ, r)
 	}
 	switch typ {
+	case "settings/set":
+		return okEnv(id, r.Body) // the applied settings (§3.3)
 	case "claim/replay":
 		ss.becomeOwner(nil)
 		if r.Code == hELockIncomplete {
@@ -877,4 +881,22 @@ func (ss *Session) settingsGet(id uint64, body cbor.Map) cbor.Map {
 		}
 	}
 	return okEnv(id, out)
+}
+
+// mapHelperR: mapHelper plus the helper's optional reason (body {1: reason}, 254-p3-impl §3.1-8): EUnsupported with a
+// reason -> E_UNSUPPORTED{1: typ, 2: reason}; the new hEReject / hEInput -> E_REJECTED{2: reason} (hEInput is the
+// user's input: no CRIT, unlike hESchema). Without a reason: exactly mapHelper (P2's mapping).
+func (ss *Session) mapHelperR(id uint64, typ string, r Reply) cbor.Map {
+	rv, _ := r.Body.Get(1)
+	reason, has := rv.(uint64)
+	switch {
+	case r.Code == hEUnsupported && has:
+		return errEnv(id, EUnsupported, cbor.M(1, typ, 2, reason))
+	case r.Code == hEReject || r.Code == hEInput:
+		if has {
+			return errEnv(id, ERejected, cbor.M(2, reason))
+		}
+		return errEnv(id, ERejected, nil)
+	}
+	return ss.mapHelper(id, typ, r.Code)
 }

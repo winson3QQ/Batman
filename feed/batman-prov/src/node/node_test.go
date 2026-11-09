@@ -19,6 +19,10 @@ import (
 )
 
 type fakeSys struct {
+	// 254-p3-impl §3.3: SetCountry / SetAP calls and their exit codes
+	setCountry     []string
+	setAP          []string
+	setRC          int
 	trial, devOpen bool
 	keys           []string
 	persisted      []uint64
@@ -480,4 +484,10 @@ func TestFrozenRefusesStateChanges(t *testing.T) {
 	if rec, _, _ := provstore.LoadOverlay(r.n.P); rec.State != provstore.Unclaimed || len(r.sys.persisted) != 0 {
 		t.Fatal("a frozen node persisted something")
 	}
+}
+
+func (f *fakeSys) SetCountry(cc string) int { f.setCountry = append(f.setCountry, cc); return f.setRC }
+func (f *fakeSys) SetAP(ssid, pass string) int {
+	f.setAP = append(f.setAP, ssid+"|"+pass)
+	return f.setRC
 }

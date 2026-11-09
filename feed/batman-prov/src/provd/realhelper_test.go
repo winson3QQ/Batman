@@ -71,6 +71,8 @@ func (s *stubSys) WriteTxnMarker(string) error             { return nil }
 func (s *stubSys) ClearTxnMarker()                         {}
 func (s *stubSys) DiagBundle() ([]byte, error)             { return nil, errors.New("not in this test") }
 func (s *stubSys) RemoveMeshMarkers() error                { return nil }
+func (s *stubSys) SetCountry(string) int                   { return 2 }
+func (s *stubSys) SetAP(string, string) int                { return 2 }
 func (s *stubSys) Now() time.Time                          { return time.Now() }
 
 // realHelper serves node.Node on a SEQPACKET socket (one goroutine per connection, as sock.ServeConns)

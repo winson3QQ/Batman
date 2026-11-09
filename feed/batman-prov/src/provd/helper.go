@@ -23,6 +23,8 @@ const (
 	hEApply          = 21
 	hEState          = 22
 	hELockIncomplete = 23
+	hEReject         = 24 // 254-p3-impl §3.1-8: refused with a reason
+	hEInput          = 25 // the user's input is not acceptable (reason in the body)
 )
 
 var (

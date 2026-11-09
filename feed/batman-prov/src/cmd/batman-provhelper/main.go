@@ -158,6 +158,24 @@ func (s realSys) SetKeyNoPersist(key, id, ch string) error {
 	return nil
 }
 
+// SetCountry / SetAP: halow-setkey's P3 mode (--rollback, --lockwait 20; 254-p3-impl §3.3). The passphrase goes over
+// stdin (`--ap -`), never on a command line. The exit code is the answer (0 / 2 / 3 / 4 / 5).
+func (s realSys) SetCountry(cc string) int {
+	rc, out := run(nil, "halow-setkey", "--country", cc, "--rollback", "--lockwait", "20")
+	if rc != 0 {
+		logf("settings.set country: halow-setkey rc %d (%s)", rc, lastLine(out))
+	}
+	return rc
+}
+
+func (s realSys) SetAP(ssid, pass string) int {
+	rc, out := run([]byte(pass+"\n"), "halow-setkey", "--ap", "-", "--ap-ssid", ssid, "--ap-section", "default_radio0", "--rollback", "--lockwait", "20")
+	if rc != 0 {
+		logf("settings.set phone AP: halow-setkey rc %d (%s)", rc, lastLine(out))
+	}
+	return rc
+}
+
 // ForgetMesh: placeholder key + the radio blocked by the keyguard, verified down (halow-setkey --forget-mesh).
 func (s realSys) ForgetMesh() error {
 	rc, out := run(nil, "halow-setkey", "--forget-mesh", "--no-persist")
