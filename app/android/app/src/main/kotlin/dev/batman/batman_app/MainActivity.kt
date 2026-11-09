@@ -57,12 +57,18 @@ class MainActivity : FlutterActivity() {
                 // the claim path (design §5.1): public keys, sig_enc (owner key, allow-listed input only), record sealing.
                 // Keystore work off the UI thread; failures come back as errors, never as a guessed value.
                 "publicKeys" -> Thread {
-                    val r = runCatching { mapOf("owner" to Keys().publicKey65(KeyRole.OWNER_SIGN), "ownerEnc" to Keys().publicKey65(KeyRole.OWNER_ENC)) }
+                    val r = runCatching { mapOf("owner" to Keys().publicKey65(KeyRole.OWNER_SIGN), "ownerEnc" to Keys().publicKey65(KeyRole.OWNER_ENC), "admin" to Keys().publicKey65(KeyRole.ADMIN_SIGN)) }
                     runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
                 }.start()
                 "signOwner" -> Thread {
                     val input = call.argument<ByteArray>("input")
                     val r = runCatching { Keys().sign(KeyRole.OWNER_SIGN, requireNotNull(input) { "no input" }) }
+                    runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
+                }.start()
+                // make-network (design §5.4): the admin key signs only COSE Sig_structures (SignAllowList.adminMaySign)
+                "signAdmin" -> Thread {
+                    val input = call.argument<ByteArray>("input")
+                    val r = runCatching { Keys().sign(KeyRole.ADMIN_SIGN, requireNotNull(input) { "no input" }) }
                     runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
                 }.start()
                 "open" -> Thread {
