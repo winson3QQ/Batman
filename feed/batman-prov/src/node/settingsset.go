@@ -44,7 +44,9 @@ func setkeyErr(rc int, what string) *Error {
 func (n *Node) setkeyResult(rc int, what string) *Error {
 	switch rc {
 	case 0:
-		n.settingsRestoreBad.Store(false)
+		if what == "phone AP" { // 0 = the AP verified on the air with its values; a country set verifies nothing of it
+			n.settingsRestoreBad.Store(false)
+		}
 	case 6:
 		n.settingsRestoreBad.Store(true)
 		n.Log("CRIT settings.set %s: halow-setkey rc 6 — the restore did not verify, the radio state is unknown (status key 15 settings_restore)", what)

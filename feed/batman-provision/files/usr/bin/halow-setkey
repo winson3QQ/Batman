@@ -66,7 +66,7 @@ if [ "$ROLLBACK" = 1 ] || [ -n "$COUNTRY$APSSID$APSEC" ]; then
 	[ "$STATUS$FORGET$CHECK$NOPERSIST" = 0000 ] && [ -z "$MESH$MESHID$CHAN" ] || { echo "--rollback takes only --country, or --ap - --ap-ssid --ap-section" >&2; exit 2; }
 	if [ -n "$COUNTRY" ]; then [ -z "$AP$APSSID$APSEC" ] || { echo "one setting per call" >&2; exit 2; }
 	else [ "$AP" = - ] && [ -n "$APSSID" ] && [ -n "$APSEC" ] || { echo "--ap - --ap-ssid <ssid> --ap-section <section> (the passphrase on stdin)" >&2; exit 2; }
-		IFS= read -r AP || true; AP=$(printf '%s' "$AP" | tr -d '\r')
+		IFS= read -r AP || true; p3cr=$(printf '\r'); AP=${AP%"$p3cr"}
 		# one line only: a second line would be dropped silently and a different key set than sent (P3 security review m1)
 		if IFS= read -r p3extra || [ -n "${p3extra:-}" ]; then echo "passphrase: one line only"; exit 2; fi; fi
 	P3=1
@@ -195,10 +195,11 @@ RC=0
 # ("失敗就回到之前的狀態"). Exit codes of this mode (the existing modes keep theirs): 0 set + read back + persisted;
 # 2 value refused, nothing written; 3 applied but not read back -> restored; 4 not persisted -> restored; 5 busy (the
 # lock within --lockwait, another writer's staged wireless changes, an unfinished helper change (.txn), netifd not
-# settled, the run dir unusable), nothing written; 6 the live restore itself did not verify (or could not be written: a
-# previous value this mode cannot quote) — the node is in an unknown state: the helper logs CRIT and status reports it
-# (design appendix D-5 / D-6). A live restore that verifies but whose save fails again keeps 3 / 4 (p5 not fresh is
-# what status key 4 already says). A value equal to the current one (AP: on the air with it) is 0 with nothing done.
+# settled, the run dir unusable), nothing written; 6 the live restore itself did not verify — the node is in an unknown
+# state: the helper logs CRIT and status reports it (design appendix D-5 / D-6). A live restore that verifies but whose
+# save fails again keeps 3 / 4 (p5 not fresh is what status key 4 already says). A real previous AP key / ssid this mode
+# could not write back (a quote, backslash, line break) is refused with 2 before anything changes. A value equal to the
+# current one (AP: on the air with it) is 0 with nothing changed — after p5 is checked fresh or saved (4 if that fails). A value equal to the current one (AP: on the air with it) is 0 with nothing done.
 # The AP passphrase comes on stdin (`--ap -`) and goes to uci by `uci batch` on stdin — never in an argv (F78).
 p3_staged(){ [ -s /tmp/.uci/wireless ]; }
 p3_regdb_has(){ [ -r "$REGDB" ] && awk -F, -v cc="$1" '$1==cc {f=1; exit} END {exit !f}' "$REGDB"; }
@@ -219,6 +220,9 @@ p3_ap_off(){   # no ssid on any AP netdev and no per-interface hostapd object
 	return 0
 }
 p3_persist(){ batman-config-save --save >/dev/null 2>&1 9>&-; }
+# p5 fresh already, or saved now (a value equal to the live one may still be missing in p5: power lost between a
+# commit and its save; A r2 MAJOR-2)
+p3_fresh_or_save(){ batman-config-save --check >/dev/null 2>&1 9>&- || p3_persist; }
 # a previous value written back by `uci batch` inside single quotes: no quote, backslash, CR or newline
 P3NL=$(printf '\nx'); P3NL=${P3NL%x}; P3CR=$(printf '\r')
 p3_quotable(){ case "$1" in *"'"*|*\\*|*"$P3NL"*|*"$P3CR"*) return 1 ;; esac; return 0; }
@@ -231,7 +235,10 @@ if [ "$P3" = 1 ]; then
 		[ "$(uci -q get "wireless.$R.disabled")" = 1 ] || { echo "the country is set only while $R is blocked (not in a network)"; exit 2; }
 		p3_staged && { echo "another writer has staged wireless changes — nothing changed" >&2; exit 5; }
 		old=$(uci -q get "wireless.$R.country")
-		[ "$old" = "$COUNTRY" ] && { echo "country already $COUNTRY — nothing changed"; exit 0; }
+		if [ "$old" = "$COUNTRY" ]; then
+			p3_fresh_or_save && { echo "country already $COUNTRY — nothing changed (p5 fresh)"; exit 0; }
+			echo "country already $COUNTRY, but p5 is not fresh and saving failed" >&2; exit 4
+		fi
 		uci -q set "wireless.$R.country=$COUNTRY"; uci commit wireless
 		logger -t halow-setkey "p3: country $old -> $COUNTRY on $R (radio blocked)"
 		if [ "$(uci -q get "wireless.$R.country")" != "$COUNTRY" ]; then rc=3; why="read back"
@@ -241,7 +248,7 @@ if [ "$P3" = 1 ]; then
 		uci commit wireless
 		if [ "$(uci -q get "wireless.$R.country")" != "$old" ]; then
 			echo "country: $why failed — RESTORE NOT VERIFIED (uci $(uci -q get "wireless.$R.country"), was ${old:-<unset>})" >&2; rc=6
-		elif [ "$rc" = 3 ] || p3_persist; then echo "country: $why failed — back to ${old:-<unset>}" >&2
+		elif { [ "$rc" = 3 ] && batman-config-save --check >/dev/null 2>&1 9>&-; } || p3_persist; then echo "country: $why failed — back to ${old:-<unset>}" >&2
 		else echo "country: $why failed — back to ${old:-<unset>} live, saving it failed again (status shows p5 not fresh)" >&2; fi
 		exit "$rc"
 	fi
@@ -257,7 +264,13 @@ if [ "$P3" = 1 ]; then
 	oldkey=$(uci -q get "wireless.$APSEC.key"); oldssid=$(uci -q get "wireless.$APSEC.ssid"); olddis=$(uci -q get "wireless.$APSEC.disabled")
 	oldmark=""; [ -f "$MARK" ] && read -r oldmark < "$MARK"
 	if [ "$oldkey" = "$AP" ] && [ "$oldssid" = "$APSSID" ] && [ "$olddis" != 1 ] && p3_ap_up "$APSEC" "$APSSID"; then
-		echo "AP $APSEC already on the air with this ssid and key — nothing changed"; exit 0
+		p3_fresh_or_save && { echo "AP $APSEC already on the air with this ssid and key — nothing changed (p5 fresh)"; exit 0; }
+		echo "AP already set, but p5 is not fresh and saving failed" >&2; exit 4
+	fi
+	# fail-closed BEFORE anything is written: a real previous key / ssid that `uci batch` cannot take back (a quote,
+	# backslash or line break, set outside the app) could not be restored if this change failed (P3 security r2 m1)
+	if [ -n "$oldkey" ] && [ "$oldkey" != "$PLACEHOLDER" ] && { ! p3_quotable "$oldkey" || ! p3_quotable "$oldssid"; }; then
+		echo "the current AP key / ssid has a quote, backslash or line break (set outside the app): it could not be restored on a failure — nothing changed"; exit 2
 	fi
 	# the passphrase by uci batch on stdin; the allowed set has no ' -> single quotes are safe
 	printf "set wireless.%s.key='%s'\nset wireless.%s.ssid='%s'\ndelete wireless.%s.disabled\n" "$APSEC" "$AP" "$APSEC" "$APSSID" "$APSEC" | uci batch 9>&- >/dev/null 2>&1
@@ -287,19 +300,21 @@ if [ "$P3" = 1 ]; then
 			wifi 9>&-; i=0; while [ "$i" -lt 30 ]; do p3_ap_off && { off=1; break; }; sleep 1; i=$((i + 1)); done
 		fi
 		if [ "$off" != 1 ]; then echo "AP: $why failed — RESTORE NOT VERIFIED (still on the air)" >&2; rc=6
-		elif [ "$rc" = 3 ] || p3_persist; then echo "AP: $why failed — back to blocked (placeholder, off the air)" >&2
+		elif { [ "$rc" = 3 ] && batman-config-save --check >/dev/null 2>&1 9>&-; } || p3_persist; then echo "AP: $why failed — back to blocked (placeholder, off the air)" >&2
 		else echo "AP: $why failed — back to blocked live, saving it failed again (status shows p5 not fresh)" >&2; fi
-	elif ! p3_quotable "$oldkey" || ! p3_quotable "$oldssid"; then
-		echo "AP: $why failed — RESTORE NOT POSSIBLE: the previous key / ssid has a quote, backslash or line break (set outside the app)" >&2; rc=6
-	else
-		printf "set wireless.%s.key='%s'\nset wireless.%s.ssid='%s'\n" "$APSEC" "$oldkey" "$APSEC" "$oldssid" | uci batch 9>&- >/dev/null 2>&1
+	else   # (the previous values are quotable: checked before the change)
+		# an empty previous ssid is deleted, not written as '' (B r2 C1)
+		if [ -n "$oldssid" ]; then printf "set wireless.%s.key='%s'\nset wireless.%s.ssid='%s'\n" "$APSEC" "$oldkey" "$APSEC" "$oldssid"
+		else printf "set wireless.%s.key='%s'\ndelete wireless.%s.ssid\n" "$APSEC" "$oldkey" "$APSEC"; fi | uci batch 9>&- >/dev/null 2>&1
 		[ "$olddis" = 1 ] && uci -q set "wireless.$APSEC.disabled=1"
 		[ -n "$oldmark" ] && { echo "$oldmark" > "$MARK.tmp" && mv -f "$MARK.tmp" "$MARK"; }
 		uci commit wireless; wifi reload >/dev/null 2>&1 9>&- || wifi 9>&-
-		i=0; back=0; while [ "$olddis" != 1 ] && [ "$i" -lt "$READBACK_WAIT" ]; do p3_ap_up "$APSEC" "$oldssid" && { back=1; break; }; sleep 1; i=$((i + 1)); done
-		[ "$olddis" = 1 ] && back=1
-		if [ "$back" != 1 ]; then echo "AP: $why failed — RESTORE NOT VERIFIED (the previous AP is not back on the air)" >&2; rc=6
-		elif [ "$rc" = 3 ] || p3_persist; then echo "AP: $why failed — back to the previous ssid / key" >&2
+		i=0; back=0
+		# disabled, or no ssid (an AP without one is not on the air): verified OFF; else back on the air with its ssid
+		if [ "$olddis" = 1 ] || [ -z "$oldssid" ]; then while [ "$i" -lt 30 ]; do p3_ap_off && { back=1; break; }; sleep 1; i=$((i + 1)); done
+		else while [ "$i" -lt "$READBACK_WAIT" ]; do p3_ap_up "$APSEC" "$oldssid" && { back=1; break; }; sleep 1; i=$((i + 1)); done; fi
+		if [ "$back" != 1 ]; then echo "AP: $why failed — RESTORE NOT VERIFIED (the previous AP state did not come back: disabled=${olddis:-0})" >&2; rc=6
+		elif { [ "$rc" = 3 ] && batman-config-save --check >/dev/null 2>&1 9>&-; } || p3_persist; then echo "AP: $why failed — back to the previous ssid / key" >&2
 		else echo "AP: $why failed — back to the previous ssid / key live, saving it failed again (status shows p5 not fresh)" >&2; fi
 	fi
 	exit "$rc"

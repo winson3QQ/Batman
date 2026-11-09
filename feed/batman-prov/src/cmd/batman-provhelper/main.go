@@ -626,11 +626,13 @@ func daemon(p provstore.Paths) {
 	n.Verdict = res.Verdict
 	n.Health, n.TrialCached = h.Get, trial.Trial
 	// 254-p3-impl §3.4: status.get's caches, refreshed in the background (only while an app asked in the last 10 min)
-	n.SetStatusSource(node.StatusSource{HalowStatus: halowStatusJSON, P5Fresh: p5Fresh, UciStaged: uciStaged, SSIDUnsaved: ssidUnsaved})
+	n.SetStatusSource(node.StatusSource{HalowStatus: halowStatusJSON, P5Fresh: p5Fresh, UciStaged: uciStaged})
 	n.SetSettingsSource(readSettings) // §3.3, ticked by the same ticker
 	// §3.3 F63: a p5 stale only in P3's new keys is saved once — not on a trial; design D-9: the first boot after a
 	// sysupgrade is a trial, so wait for its commit (checked every 30 s) instead of waiting for the next boot
-	go saveAfterCommit(trial.Trial, stop, 30*time.Second, func() { upgradeSave(p, false) })
+	// waits while the boot is a trial or a wireless change is unfinished (.txn: upgradeSave would skip it; A r2 m6)
+	go saveAfterCommit(func() bool { return trial.Trial() || provstore.TxnPresent(p) }, stop, 30*time.Second,
+		func() { upgradeSave(p, false) })
 	go func() {
 		tk := time.NewTicker(time.Second)
 		defer tk.Stop()

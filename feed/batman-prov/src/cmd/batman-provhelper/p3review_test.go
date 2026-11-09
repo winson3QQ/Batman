@@ -24,20 +24,6 @@ func TestUciStagedIn(t *testing.T) {
 	}
 }
 
-// design D-12: an ssid with a config-save UNSAFE character is not kept in p5
-func TestConfigUnsafe(t *testing.T) {
-	for _, v := range []string{"Tom's AP", "a;b", "$x", "a|b", "a&b", "<x>", "(x)", "`x`"} {
-		if !configUnsafe(v) {
-			t.Fatalf("%q not unsafe", v)
-		}
-	}
-	for _, v := range []string{"Team 1", "BCM2711-6c89", "a.b_c~d+e=f,g:h@i%j^k*l-m"} {
-		if configUnsafe(v) {
-			t.Fatalf("%q unsafe", v)
-		}
-	}
-}
-
 // design D-9: on a trial boot the one-off save waits for the commit; stop ends the wait without saving
 func TestSaveAfterCommit(t *testing.T) {
 	var trial atomic.Bool

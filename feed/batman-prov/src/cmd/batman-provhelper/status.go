@@ -103,16 +103,6 @@ func uciStagedIn(dir string) []string {
 	return out
 }
 
-// ssidUnsaved: the phone AP's ssid has a batman-config-save UNSAFE character, so p5 does not keep it (SKIP_UNSAFE;
-// design D-12 "SSID cannot be saved"). Set outside the app: P3's allowed set has none of these.
-func ssidUnsaved() bool {
-	rc, out := provstore.Exec(provstore.ConfigSaveTimeout, cleanEnv, nil, "uci", "-q", "get", "wireless.default_radio0.ssid")
-	return rc == 0 && configUnsafe(strings.TrimRight(out, "\n"))
-}
-
-// configUnsafe: batman-config-save's UNSAFE set (`batman-config-save:54`), which p5 never keeps
-func configUnsafe(v string) bool { return strings.ContainsAny(v, "`$();|&<>'") }
-
 // saveAfterCommit (design D-9): wait while the boot is a trial (every `every`), then save once; stop ends the wait
 func saveAfterCommit(isTrial func() bool, stop <-chan struct{}, every time.Duration, save func()) {
 	for isTrial() {

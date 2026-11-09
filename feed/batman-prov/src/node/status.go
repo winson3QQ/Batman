@@ -36,7 +36,9 @@ type StatusSource struct {
 	HalowStatus func() ([]byte, error) // `halow-status json`
 	P5Fresh     func() (bool, error)   // `batman-config-save --check` says "p5 fresh"
 	// design D-12 / §5.1 (optional; nil = not reported): packages with staged uci changes (/tmp/.uci), the reason a
-	// settings.set answers E_BUSY; the phone AP ssid is not saved to p5 (it has a config-save UNSAFE character)
+	// settings.set answers E_BUSY (a directory listing, no child process); the phone AP ssid is not saved to p5 (it has
+	// a config-save UNSAFE character) — SetStatusSource wires it from the settings cache (A r2 MAJOR-1: the request
+	// path never runs a child process)
 	UciStaged   func() []string
 	SSIDUnsaved func() bool
 	// D-6: the last settings.set's restore did not verify (wired by SetStatusSource from the node)
@@ -227,6 +229,9 @@ func (c *statusCache) get(state string, full bool) cbor.Map {
 func (n *Node) SetStatusSource(src StatusSource) {
 	if src.RestoreBad == nil {
 		src.RestoreBad = n.settingsRestoreBad.Load
+	}
+	if src.SSIDUnsaved == nil {
+		src.SSIDUnsaved = n.ssidUnsavedCached
 	}
 	n.status = newStatusCache(src, n.now)
 }

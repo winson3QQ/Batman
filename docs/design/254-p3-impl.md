@@ -226,12 +226,12 @@ helper 行為不變(F3)。本 PR:provd 路由;`owner/remove` 後依 P2 的 `inva
 
   | rc | 意思 | helper → app |
   |---|---|---|
-  | 0 | 成功(讀回 + persist);值與現值相同 → 什麼都不做也回 0(AP:要在空中且 ssid / key 相同,不 reload) | `OK` + 套用後的 settings |
-  | 2 | 值不合法、沒有寫入(含密碼多於一行) | `E_REJECTED` reason 13 |
-  | 3 | 套用了但讀回失敗(含 `uci batch` 沒落地,reload 前就讀回)→ 執行中的狀態已還原 | `E_REJECTED` reason 13 |
+  | 0 | 成功(讀回 + persist);值與現值相同 → 不改、不 reload,但先 `--check`,p5 不新鮮就 `--save`(斷電在 commit 與存檔之間;審查 A r2 MAJOR-2;存檔失敗 → 4)。AP 要在空中且 ssid / key 相同才算同值 | `OK` + 套用後的 settings |
+  | 2 | 值不合法、沒有寫入(含密碼多於一行、中間有 CR);或現有的 AP key / ssid(app 以外設的)含引號 / 反斜線 / 換行,失敗時寫不回去 → 改之前就拒絕(安全審查 B r2 m1) | `E_REJECTED` reason 13 |
+  | 3 | 套用了但讀回失敗(含 `uci batch` 沒落地,reload 前就讀回)→ 執行中的狀態已還原並驗證(原本關著 / 沒有 ssid 的 AP 驗證不在空中);p5 不新鮮就存 | `E_REJECTED` reason 13 |
   | 4 | persist 失敗 → 執行中的狀態已還原(還原後再存一次也失敗仍是 4:p5 不新鮮由 status key 4 說) | `E_STORAGE` |
   | 5 | 忙:拿不到鎖、別人暫存的 wireless 變更、未完成的 `.txn`、netifd 還沒 settle、run dir 不能用;沒有寫入(D-5) | `E_BUSY` |
-  | 6 | 執行中的狀態還原沒驗證到(新卡:再做一次完整 `wifi` 仍在空中;或舊值含引號 / 反斜線 / 換行,`uci batch` 寫不回去)→ 狀態未知(D-6) | `E_APPLY` reason 13 + CRIT log + status key 15 `settings_restore: "not verified"`(直到下一次成功的 settings.set) |
+  | 6 | 執行中的狀態還原沒驗證到(新卡:再做一次完整 `wifi` 仍在空中)→ 狀態未知(D-6) | 線上 `E_REJECTED{2: 13}`(helper `EApply` + reason;provd 帶 reason 轉出)+ CRIT log + status key 15 `settings_restore: "not verified"`,直到下一次**手機 AP** 的 settings.set 回 0(改國家不算:它沒有驗證 AP)。**誠實界線**:旗標只在 helper 記憶體,重開或 helper 重啟就不見;新卡那條路 uci 已是 placeholder + disabled + MARK,重開後 keyguard 讓 AP 維持關閉 |
 
   ⚠️ 實作時逐行對既有 `halow-setkey` 的結束碼,不撞號(既有模式不會回 6)。
 
@@ -247,7 +247,7 @@ helper 行為不變(F3)。本 PR:provd 路由;`owner/remove` 後依 P2 的 `inva
 
   餘裕 70 s。沒有 `--rollback-only`。helper 逾時(setkey 卡在 D-state)= outcome unknown,與 P2 `net.apply` 相同 — app 以 `settings.get` 重讀。**helper 中途死掉**:setkey 一開始 `trap '' PIPE`,並把輸出寫到 stdout 失敗時忽略(F77:否則 helper 一死,setkey 下一次 echo 就被 SIGPIPE 結束,停在「已 commit、未讀回、未還原」);setkey 自己的 process group(`Setpgid`)擋 SIGTERM → 它拿著鎖跑完並自己 `--rollback`;helper 重啟後以設定快取的刷新看到結果。
 
-- **PRESERVE 加 `wireless.default_radio0.ssid`**(config-save 與 setkey 的持久化清單,兩板共用;**不加 `radio0.country`**,§1.2)。ssid 的值若含 `UNSAFE` 字元(例如操作員或 openmanetd 設過 `Tom's AP`)→ **這一個 key 不持久化、不算 stale**(與空值同一條「image 預設勝出」規則,`batman-config-save:478`),`status` 回報「SSID 無法保存」;否則這種節點升級後 p5 會永遠 stale、OTA 永遠被擋(B5-m5)。
+- **PRESERVE 加 `wireless.default_radio0.ssid`**(config-save 與 setkey 的持久化清單,兩板共用;**不加 `radio0.country`**,§1.2)。ssid 的值若含 `UNSAFE` 字元(例如操作員或 openmanetd 設過 `Tom's AP`)→ **這一個 key 不持久化、不算 stale**(與空值同一條「image 預設勝出」規則,`batman-config-save:466`),`status` 回報「SSID 無法保存」;否則這種節點升級後 p5 會永遠 stale、OTA 永遠被擋(B5-m5)。
 - **升級到 P3 後 p5 的 stale**(F63:整檔比對,`diff_keys` 列出每個不同的 key):未入網的節點 p5 沒有 ssid、live 有 → `--check` stale。helper 在**非試用的開機時**與**每次 `update.check` 通過簽章驗證之後**檢查:stale 的 key **全部是 P3 新增的 PRESERVE key**、沒有 `.txn`、不在試用中 → 執行一次 `--save`。其他 stale → `update.check` 回 reason 17。**同值的 `settings.set`** 也會在 `--check` stale 時執行 `--save`(否則 reason 17 在未入網節點上沒有 app 端的出路,A5-m3)。已入網的節點下一個 joinwatch tick 就會存。
 - **降級**:舊版的整檔比對會判 stale,直到舊版下一次 `--save` / `--on-join`(已入網的節點一個 tick 內自癒;未入網的要 ssh `--save`)(A4-m1)。舊版的 96 照樣套用 p5 多出的 ssid 行(`valid_batch` 接受,B4 ✅)。再升級回 P3 時若 p5 的 ssid 已被舊版拿掉 → SSID 回 hostname,app 以 `settings.get` 發現不符並提示重新配對(誠實界線)。
 - **改名(key 1)在 U5 跑完、改名單位通過之前,繼續回今天的 `rename-pending`**(`node.go:760-766`;D8)— 任何 rc / release 都不會帶著沒驗過的改名出貨。U5 之後才開放上表 key 1 那一列。
@@ -764,7 +764,7 @@ v5 的三個「真機上不成立」都是沒實測的外部行為假設;v6 每�
 | D-4 | mesh 臂拆兩臂:偽造手機 MAC 只驗「連不上」(bridge 會把手機 MAC 學到 eth0,擁有者會被斷);「擁有者照樣傳完」改用不複製 MAC 的偽造流量;MAC 偽造造成的 DoS 寫進 §7 誠實界線 | B7-m4 | 改 §8 `prov-http-254` |
 | D-5 ★ | setkey 新旗標的結束碼再細分:settle 逾時、run dir 不能用、`.txn` 存在 → 5(`E_BUSY`)或 12,不是 2 / reason 13 | B7-m5、A7-m6 | 結束碼表 |
 | D-6 ★ | 新卡上「還原也驗證失敗」:專屬結束碼(例如 6)+ 加強處理:再以 `--forget` 式的封鎖把 AP 關掉並驗證不在空中;仍失敗 → CRIT、`status` 回報、reason 13 | B7-m6 | setkey + 測試 |
-| D-7 | SSID 存不了時 `--save` 仍回 rc 6 → key 2 會被一律還原:helper 把「只有 ssid 不可存」的 rc 6 當成功;§3.3 引的 `batman-config-save:478` 行號改正 | B7-m7 | helper + 測試 |
+| D-7 | SSID 存不了時 `--save` 仍回 rc 6 → key 2 會被一律還原:helper 把「只有 ssid 不可存」的 rc 6 當成功;§3.3 引的 `batman-config-save:466(實作時 :465–466,原文 :478 已過時)` 行號改正 | B7-m7 | helper + 測試 |
 | D-8 | 非 `phy*` port 的 frame 先清掉 bit 24(防 batman-adv `isolation_mark` 之類先設了這個 bit) | A7-m8 | 規則 + 測試 |
 | D-9 | 「只因新 PRESERVE key 而 stale → 存一次」也在試用轉 committed 時做(sysupgrade 後第一次開機是試用,那次不會存) | B7-m8 | helper |
 | D-10 | 同版本重試又失敗:比對 autocommit.log 新出現的 TRIAL-REVERTED,報 6 而不是 6 + 18;`reboot committed` 失敗時 disarm | B7-m9、A7-m4、A7-m5 | helper + 測試 |

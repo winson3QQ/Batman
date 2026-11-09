@@ -72,6 +72,21 @@ func (c *settingsCache) Tick() {
 	}
 }
 
+// ConfigUnsafe: batman-config-save's UNSAFE set (`batman-config-save:54`), which p5 never keeps
+func ConfigUnsafe(v string) bool { return strings.ContainsAny(v, "`$();|&<>'") }
+
+// ssidUnsavedCached: the phone AP ssid of the last settings read has a character p5 does not keep (false when settings
+// were never read: status does not read them itself)
+func (n *Node) ssidUnsavedCached() bool {
+	if n.settings == nil {
+		return false
+	}
+	n.settings.mu.Lock()
+	v := n.settings.val
+	n.settings.mu.Unlock()
+	return v != nil && ConfigUnsafe(v.SSID)
+}
+
 func isCountry(s string) bool {
 	return len(s) == 2 && s[0] >= 'A' && s[0] <= 'Z' && s[1] >= 'A' && s[1] <= 'Z'
 }

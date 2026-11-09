@@ -87,8 +87,8 @@ func TestSettingsSetRestoreNotVerified(t *testing.T) {
 	if s, _ := fm.Get("settings_restore"); s != "not verified" {
 		t.Fatalf("status key 15 settings_restore = %v", s)
 	}
-	r.sys.setRC = 0
-	if c, _ := r.settingsSet(cbor.M(2, "JP")); c != OK {
+	r.sys.setRC = 0 // a phone-AP set verifies the AP again (a country set does not: TestRestoreFlagClearedOnlyByAP)
+	if c, _ := r.settingsSet(cbor.M(20, cbor.M(1, "Team 1", 2, "Abcdefgh1234"))); c != OK {
 		t.Fatalf("set after: %d", c)
 	}
 	v, _ = key(statusCall(t, r, true), 15)

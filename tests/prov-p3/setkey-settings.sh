@@ -5,7 +5,7 @@
 # the air = radio0 lists the section with its ifname + ssid, `iw dev` shows the ssid, `ubus list` has hostapd.<ifname>;
 # blocked = no ssid, no hostapd.<ifname>, while a DOWN type-AP netdev may linger (brcmfmac keeps it).
 # Exit codes checked: 0 / 2 / 3 / 4 / 5 / 6. Zero cases run = FAIL.
-# Hooks (files in $ST): ap-fails (empty: no AP comes up; with an ssid: only that one), batch-fails (uci batch applies nothing), r1-pending (netifd never settles radio1), stuck-on (the
+# Hooks (files in $ST): p5-stale (batman-config-save --check says stale until a --save), ap-fails (empty: no AP comes up; with an ssid: only that one), batch-fails (uci batch applies nothing), r1-pending (netifd never settles radio1), stuck-on (the
 # AP stays on the air whatever is written), iw-ssid (iw shows this ssid instead of the committed one).
 set -u
 SK=$(readlink -f "${1:?usage: $0 <halow-setkey> <rundir.sh>}"); RD=$(readlink -f "${2:?}")
@@ -135,7 +135,7 @@ wireless.default_radio1.key=$PL
 EOF
 	cp "$ST/live" "$ST/committed"; echo " radio1 default_radio0" > "$ST/mark"; rm -f "$ST/ap" "$ST/ap.ssid" "$ST/ap-fails" "$ST/ap-noair" "$ST/uci-tmp/wireless" "$ST/batch-fails" "$ST/r1-pending" "$ST/stuck-on" "$ST/iw-ssid" "$ST/txn"
 	: > "$ST/argv.log"; : > "$ST/cfgsave.log"; : > "$ST/p5"
-	printf '#!/bin/bash\necho "$*" >> "$STUB_ST/cfgsave.log"; [ -f "$STUB_ST/save-fails" ] && exit 1; echo saved\n' > "$ST/bin/batman-config-save"; chmod +x "$ST/bin/batman-config-save"; rm -f "$ST/save-fails"
+	printf '#!/bin/bash\necho "$*" >> "$STUB_ST/cfgsave.log"; [ "$1" = --check ] && { [ -f "$STUB_ST/p5-stale" ] && exit 5; exit 0; }; [ -f "$STUB_ST/save-fails" ] && exit 1; rm -f "$STUB_ST/p5-stale"; echo saved\n' > "$ST/bin/batman-config-save"; chmod +x "$ST/bin/batman-config-save"; rm -f "$ST/save-fails" "$ST/p5-stale"
 }
 PASS1=Abcdefgh1234._~
 # 1. AP pairing: key from stdin, ssid set, the AP's block released, on the air, persisted; the key never in an argv
@@ -207,7 +207,11 @@ rm -f "$ST/stuck-on"
 reset; sed -i -e "s/^wireless.default_radio0.ssid=.*/wireless.default_radio0.ssid=Tom's AP/" -e "s/^wireless.default_radio0.key=.*/wireless.default_radio0.key=Oldkey123456789/" -e '/^wireless.default_radio0.disabled=/d' "$ST/live"; cp "$ST/live" "$ST/committed"
 : > "$ST/ap-fails"; : > "$ST/argv.log"
 o=$(printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback 2>&1); rc=$?
-[ "$rc" = 6 ] && grep -q "RESTORE NOT POSSIBLE" <<< "$o" && ok "unquotable previous ssid -> rc 6, no restore batch" || no "unquotable: rc $rc ($o)"
+[ "$rc" = 2 ] && [ "$(get wireless.default_radio0.ssid)" = "Tom's AP" ] && [ "$(get wireless.default_radio0.key)" = Oldkey123456789 ] && [ -z "$(get wireless.default_radio0.disabled)" ] && ! grep -q "batch" "$ST/argv.log" && ok "unquotable previous ssid -> rc 2 before any change (nothing written)" || no "unquotable: rc $rc ssid [$(get wireless.default_radio0.ssid)] ($o)"
+# the same with the AP disabled before: it stays disabled and in the mark (B r2 m1's scenario)
+reset; sed -i -e "s/^wireless.default_radio0.key=.*/wireless.default_radio0.key=Old'key123456/" "$ST/live"; cp "$ST/live" "$ST/committed"; : > "$ST/ap-fails"
+printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && [ "$(get wireless.default_radio0.disabled)" = 1 ] && grep -q default_radio0 "$ST/mark" && ok "unquotable key on a disabled AP -> rc 2, AP stays disabled + in the mark" || no "unquotable disabled: rc $rc disabled [$(get wireless.default_radio0.disabled)]"
 # 11. a passphrase with a second line is refused, not cut (security m1)
 reset; o=$(printf '%s\nxyz\n' "$PASS1" | run --ap - --ap-ssid T --ap-section default_radio0 --rollback 2>&1); rc=$?
 [ "$rc" = 2 ] && [ "$(get wireless.default_radio0.key)" = "$PL" ] && ok "passphrase with a second line -> rc 2, nothing written" || no "two lines: rc $rc key $(get wireless.default_radio0.key | cut -c1-4)"
@@ -226,9 +230,34 @@ printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Tea.m" --ap-section default_radio
 [ "$rc" = 3 ] && ok "ssid read back literal: Teaxm on the air is not Tea.m -> rc 3" || no "regex read back: rc $rc"
 # 15. the same value again: 0, nothing written, no reload (code review m6)
 reset; run --country US --rollback >/dev/null 2>&1; rc=$?
-[ "$rc" = 0 ] && [ ! -s "$ST/cfgsave.log" ] && ok "country equal to the current one -> 0, nothing saved" || no "same country: rc $rc"
+[ "$rc" = 0 ] && ! grep -qx -- --save "$ST/cfgsave.log" && ok "country equal to the current one, p5 fresh -> 0, nothing saved" || no "same country: rc $rc"
 reset; printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback >/dev/null 2>&1; : > "$ST/wifi.log"; : > "$ST/cfgsave.log"
 o=$(printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback 2>&1); rc=$?
-[ "$rc" = 0 ] && [ ! -s "$ST/wifi.log" ] && [ ! -s "$ST/cfgsave.log" ] && ok "AP equal and on the air -> 0, no reload" || no "same AP: rc $rc wifi [$(tr '\n' ' ' < "$ST/wifi.log")] ($o)"
+[ "$rc" = 0 ] && [ ! -s "$ST/wifi.log" ] && ! grep -qx -- --save "$ST/cfgsave.log" && ok "AP equal and on the air, p5 fresh -> 0, no reload, no save" || no "same AP: rc $rc wifi [$(tr '\n' ' ' < "$ST/wifi.log")] ($o)"
+# 16. A r2 MAJOR-2: the same value with p5 stale (power lost between a commit and its save) -> saved now
+reset; : > "$ST/p5-stale"; run --country US --rollback >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && grep -qx -- --save "$ST/cfgsave.log" && ok "country equal but p5 stale -> saved, 0" || no "same country p5 stale: rc $rc ($(tr '\n' ' ' < "$ST/cfgsave.log"))"
+reset; : > "$ST/p5-stale"; : > "$ST/save-fails"; run --country US --rollback >/dev/null 2>&1; rc=$?
+[ "$rc" = 4 ] && ok "country equal, p5 stale, save fails -> 4" || no "same country save fails: rc $rc"
+reset; printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback >/dev/null 2>&1; : > "$ST/p5-stale"; : > "$ST/cfgsave.log"
+printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && grep -qx -- --save "$ST/cfgsave.log" && ok "AP equal but p5 stale -> saved, 0" || no "same AP p5 stale: rc $rc"
+# 17. A r2 m2: a verified restore after rc 3 with p5 stale (something saved the unverified value) -> saved
+reset; : > "$ST/ap-fails"; : > "$ST/p5-stale"
+printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback >/dev/null 2>&1; rc=$?
+[ "$rc" = 3 ] && grep -qx -- --save "$ST/cfgsave.log" && ok "rc 3 restore with p5 stale -> saved after the restore" || no "rc3 p5 stale: rc $rc ($(tr '\n' ' ' < "$ST/cfgsave.log"))"
+# 18. B r2 C1: a real previous key with no ssid -> restore deletes the ssid (not ''), rc 3
+reset; sed -i -e '/^wireless.default_radio0.ssid=/d' -e "s/^wireless.default_radio0.key=.*/wireless.default_radio0.key=Oldkey123456789/" -e '/^wireless.default_radio0.disabled=/d' "$ST/live"; cp "$ST/live" "$ST/committed"; : > "$ST/ap-fails"
+printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback >/dev/null 2>&1; rc=$?
+[ "$rc" = 3 ] && ! grep -q "^wireless.default_radio0.ssid=" "$ST/committed" && [ "$(get wireless.default_radio0.key)" = Oldkey123456789 ] && ok "real key, no previous ssid -> ssid deleted on restore (rc $rc)" || no "no old ssid: rc $rc ssid [$(get wireless.default_radio0.ssid)]"
+# 19. A r2 m4: a previously disabled AP with a real key is verified off the air: stuck on -> 6
+reset; sed -i -e "s/^wireless.default_radio0.key=.*/wireless.default_radio0.key=Oldkey123456789/" "$ST/live"; cp "$ST/live" "$ST/committed"; : > "$ST/ap-fails"; : > "$ST/stuck-on"
+printf '%s\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback >/dev/null 2>&1; rc=$?; rm -f "$ST/stuck-on"
+[ "$rc" = 6 ] && [ "$(get wireless.default_radio0.disabled)" = 1 ] && ok "disabled AP with a real key, still on the air after the restore -> 6" || no "disabled real key stuck: rc $rc"
+# 20. B r2 A5: a CR inside the passphrase is refused (only a trailing CR is dropped)
+reset; o=$(printf 'Abcdef\rgh12345\n' | run --ap - --ap-ssid T --ap-section default_radio0 --rollback 2>&1); rc=$?
+[ "$rc" = 2 ] && [ "$(get wireless.default_radio0.key)" = "$PL" ] && ok "CR inside the passphrase -> 2" || no "inner CR: rc $rc"
+reset; printf '%s\r\n' "$PASS1" | run --ap - --ap-ssid "Team 1" --ap-section default_radio0 --rollback >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && [ "$(get wireless.default_radio0.key)" = "$PASS1" ] && ok "trailing CR dropped -> 0, key as sent" || no "trailing CR: rc $rc"
 echo "SETKEY-SETTINGS cases=$cases fails=$fails"
 [ "$cases" -gt 0 ] && [ "$fails" = 0 ]

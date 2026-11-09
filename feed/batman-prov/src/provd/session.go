@@ -902,7 +902,7 @@ func (ss *Session) mapHelperR(id uint64, typ string, r Reply) cbor.Map {
 	switch {
 	case r.Code == hEUnsupported && has:
 		return errEnv(id, EUnsupported, cbor.M(1, typ, 2, reason))
-	case r.Code == hEReject || r.Code == hEInput:
+	case r.Code == hEReject || r.Code == hEInput || (r.Code == hEApply && has):
 		if has {
 			return errEnv(id, ERejected, cbor.M(2, reason))
 		}
