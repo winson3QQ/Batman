@@ -88,7 +88,11 @@ type Server struct {
 	cfg      Config
 	ctl, ops *HelperConn
 	ctlMu    sync.Mutex // ctl carries the poll and the sessions' read-only calls, one at a time
-	static   noise.DHKey
+	// ro: the app's read-only P3 verbs (status.get, …), one at a time, so an app reading never pushes the poll on ctl
+	// into the helper's quota (254-p3-impl §2: the poll missing for 120 s would drop HealthOK and the advertising)
+	ro     *HelperConn
+	roMu   sync.Mutex
+	static noise.DHKey
 
 	mu       sync.Mutex
 	c        cache
@@ -117,6 +121,7 @@ func NewServer(cfg Config) (*Server, error) {
 	s := &Server{cfg: cfg, static: st, changed: make(chan struct{}), stop: make(chan struct{}), logLimit: map[string][]time.Time{}}
 	s.ctl = &HelperConn{Path: cfg.HelperPath, Name: "ctl", MaxBackoff: 10 * time.Second, Log: cfg.Log}
 	s.ops = &HelperConn{Path: cfg.HelperPath, Name: "ops", MaxBackoff: 60 * time.Second, Log: cfg.Log}
+	s.ro = &HelperConn{Path: cfg.HelperPath, Name: "ro", MaxBackoff: 10 * time.Second, Log: cfg.Log}
 	return s, nil
 }
 
@@ -175,6 +180,18 @@ func (s *Server) ctlCall(verb string, args cbor.Map) (Reply, error) {
 			s.c.needOwners, s.c.needPSK = true, true
 		}
 		s.mu.Unlock()
+	}
+	return r, err
+}
+
+// roCall: one app-triggered read-only request on ro (serialised); a timeout closes ro (the next call reconnects).
+func (s *Server) roCall(verb string, args cbor.Map) (Reply, error) {
+	s.roMu.Lock()
+	defer s.roMu.Unlock()
+	r, err := s.ro.Call(verb, args, CtlWait)
+	if err == ErrTimeout {
+		s.logf("helper ro: %s unanswered for %s — reconnecting", verb, CtlWait)
+		s.ro.Close()
 	}
 	return r, err
 }

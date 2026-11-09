@@ -607,6 +607,20 @@ func daemon(p provstore.Paths) {
 	n := node.New(p, ks, realSys{p}, logf)
 	n.Verdict = res.Verdict
 	n.Health, n.TrialCached = h.Get, trial.Trial
+	// 254-p3-impl §3.4: status.get's caches, refreshed in the background (only while an app asked in the last 10 min)
+	n.SetStatusSource(node.StatusSource{HalowStatus: halowStatusJSON, P5Fresh: p5Fresh})
+	go func() {
+		tk := time.NewTicker(time.Second)
+		defer tk.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tk.C:
+				n.StatusTick()
+			}
+		}
+	}()
 	// docs/design/254-wireless-txn.md §3: an unfinished wireless change is finished BEFORE serving — the previous state
 	// of the record p5 confirmed. Not on an unknown verdict or an unread p5 (then the first saving verb, or the next
 	// boot, finishes it). A network to rejoin waits for the radio (up to 120 s); a forget / blocked radio does not.

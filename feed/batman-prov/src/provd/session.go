@@ -66,7 +66,7 @@ var knownTypes = map[string]bool{"info": true, "claim/begin": true, "claim/finis
 
 // P3 types: E_UNSUPPORTED{capability: <type>} (254-p2-impl §4.3)
 var p3Types = map[string]bool{"owner/add": true, "owner/remove": true, "settings/get": true, "settings/set": true,
-	"status": true, "peers/challenge": true, "diag/summary": true, "diag/bundle": true, "update/check": true,
+	"peers/challenge": true, "diag/summary": true, "diag/bundle": true, "update/check": true,
 	"update/prepare": true, "update/apply": true, "update/status": true, "bulk/open": true, "bulk/close": true}
 
 // types whose response carries a secret: an idempotency key is E_FORBIDDEN (219 §4.2)
@@ -77,8 +77,8 @@ var allowed = map[Role]map[string]bool{
 	RoleAnon:      {"info": true, "claim/begin": true, "claim/finish": true},
 	RoleCandidate: {"info": true, "auth/owner": true},
 	RoleOwner: {"info": true, "op/nonce": true, "network/join": true, "network/update": true, "network/leave": true,
-		"ssh_keys/set": true, "root_password/reset": true},
-	RoleMember:    {"info": true, "network/update": true},
+		"ssh_keys/set": true, "root_password/reset": true, "status": true},
+	RoleMember:    {"info": true, "network/update": true, "status": true},
 	RoleReacquire: {"info": true, "claim/begin": true, "op/nonce": true, "claim/replay": true},
 }
 
@@ -640,6 +640,8 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 		return ss.claimFinish(id, h, body)
 	case "auth/owner":
 		return ss.authOwner(id, h, body)
+	case "status":
+		return ss.status(id, role, body)
 	}
 	verb := forward[typ]
 	r, e := ss.ops(id, verb, cbor.M(1, h, 2, raw))
@@ -811,4 +813,44 @@ func (ss *Session) authOwner(id uint64, h []byte, body cbor.Map) cbor.Map {
 		ss.markClose("auth failures")
 	}
 	return errEnv(id, EForbidden, nil)
+}
+
+// status (254-p3-impl §3.4, CDDL status-req / status-resp): scope 0 = self from the helper's caches (ro connection,
+// no owner-op); the owner gets key 15, a member keys 1-5 only (the helper drops 15 when full = false). scope 1 = team
+// -> E_UNSUPPORTED{1: typ, 2: 7} (D7). The helper's node state (a string) becomes the CDDL node-state number; an
+// unknown state is not guessed at.
+func (ss *Session) status(id uint64, role Role, body cbor.Map) cbor.Map {
+	sv, ok := body.Get(1)
+	scope, isU := sv.(uint64)
+	switch {
+	case !ok || !isU:
+		return errEnv(id, EBadObject, nil)
+	case scope == 1:
+		return errEnv(id, EUnsupported, cbor.M(1, "status", 2, uint64(7)))
+	case scope != 0:
+		return errEnv(id, EBadObject, nil)
+	}
+	r, err := ss.srv.roCall("status.get", cbor.M(1, role == RoleOwner))
+	if err != nil {
+		return errEnv(id, EBusy, nil)
+	}
+	if r.Code != hOK {
+		return ss.mapHelper(id, "status", r.Code)
+	}
+	st, _ := r.Body.Get(1)
+	name, _ := st.(string)
+	n, known := stateNum[name]
+	if !known {
+		ss.logf("provd: status.get gave an unknown node state %q", name)
+		return errEnv(id, ERejected, nil)
+	}
+	out := cbor.M(1, n)
+	for _, e := range r.Body {
+		k, isKey := e.K.(uint64)
+		if !isKey || k == 1 || (k == 15 && role != RoleOwner) {
+			continue // a member never gets key 15, whatever the helper sent
+		}
+		out = append(out, e)
+	}
+	return okEnv(id, out)
 }
