@@ -33,6 +33,7 @@ class _ClaimPageState extends State<ClaimPage> {
   final _lines = <String>[];
   ClaimQr? _qr;
   bool _busy = false;
+  final _typed = TextEditingController(); // dev: the QR hex typed in (e.g. over adb), cleared once read
 
   void _say(String s) {
     _log(s);
@@ -45,10 +46,15 @@ class _ClaimPageState extends State<ClaimPage> {
       _say('pasting a QR is only in the dev build (design §1)');
       return;
     }
-    final d = await Clipboard.getData(Clipboard.kTextPlain);
-    await Clipboard.setData(const ClipboardData(text: '')); // the claim secret does not stay on the clipboard
+    String text = _typed.text;
+    _typed.clear(); // the claim secret does not stay in the field
+    if (text.trim().isEmpty) {
+      final d = await Clipboard.getData(Clipboard.kTextPlain);
+      await Clipboard.setData(const ClipboardData(text: '')); // nor on the clipboard
+      text = d?.text ?? '';
+    }
     try {
-      final q = await parseClaimQr(text: d?.text ?? '');
+      final q = await parseClaimQr(text: text);
       setState(() {
         _qr = q;
         _lines
@@ -204,6 +210,12 @@ class _ClaimPageState extends State<ClaimPage> {
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          TextField(
+              controller: _typed,
+              obscureText: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: const InputDecoration(labelText: 'QR hex (dev) — or leave empty to use the clipboard')),
           Row(children: [
             OutlinedButton(onPressed: _busy ? null : _paste, child: const Text('Paste QR')),
             const SizedBox(width: 8),
