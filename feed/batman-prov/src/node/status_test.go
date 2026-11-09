@@ -277,11 +277,16 @@ func TestStatusQuotaAndArgs(t *testing.T) {
 		c, _ := h(dec.(cbor.Map)).Get(2)
 		return int(c.(uint64))
 	}
+	// one helper connection (provd's ro, which carries every app session) gets the helper-wide 2/s; the 1/s per app
+	// connection is provd's (code review m1: a 1/s here made two phones share one status a second)
 	if c := call(cbor.M(1, false)); c != OK {
 		t.Fatalf("first %d", c)
 	}
+	if c := call(cbor.M(1, false)); c != OK {
+		t.Fatalf("second within 1 s on one connection: %d, want OK (2/s)", c)
+	}
 	if c := call(cbor.M(1, false)); c != ERate {
-		t.Fatalf("second within 1 s on one connection: %d, want ERate", c)
+		t.Fatalf("third within 1 s on one connection: %d, want ERate", c)
 	}
 	*now = now.Add(time.Second)
 	if c := call(cbor.M(1, false)); c != OK {

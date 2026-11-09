@@ -79,7 +79,7 @@ func isCountry(s string) bool {
 func (c *settingsCache) get() (cbor.Map, *Error) {
 	c.mu.Lock()
 	c.asked = c.now()
-	have := c.val != nil
+	have := c.val != nil && c.asked.Sub(c.at) <= statusStaleAfter
 	c.mu.Unlock()
 	if !have {
 		select {
@@ -88,10 +88,10 @@ func (c *settingsCache) get() (cbor.Map, *Error) {
 		}
 	}
 	c.mu.Lock()
-	v := c.val
+	v, at, now := c.val, c.at, c.now()
 	c.mu.Unlock()
-	if v == nil {
-		return nil, fail(EBusy, "settings not read yet")
+	if v == nil || now.Sub(at) > statusStaleAfter {
+		return nil, fail(EBusy, "settings not read yet (or only an old read)")
 	}
 	m := cbor.M()
 	if v.Hostname != "" {

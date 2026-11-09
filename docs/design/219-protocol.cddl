@@ -129,6 +129,16 @@ reason-code  = 1 ; update: trial slot active
              / 8 ; not enough RAM (/tmp)
              / 9 ; not in this stage: reflash the card with the resale tool (v0.7, `reset`)
              / 10 ; legacy claim refused: no usable SSH key and no dev-open (the operator would be locked out)
+             / 11 ; content does not match its signature / version unparsable (254-p3-impl §3.1-8)
+             / 12 ; an unfinished network change (.txn)
+             / 13 ; value not acceptable (refused, or not read back: the node kept / went back to the previous one)
+             / 14 ; country: changes only while not in a network / the network's country differs
+             / 15 ; a precondition of this step does not hold
+             / 16 ; the node's phone AP is off
+             / 17 ; p5 not saved to the latest (stale)
+             / 18 ; the new version did not boot (update-progress key 3)
+             / 19 ; this action only over BLE
+             / 20 ; not supported on a legacy node (D20)
 
 msg-type = "info" / "claim/begin" / "claim/finish" / "auth/owner"
          / "owner/add" / "owner/remove" / "settings/get" / "settings/set"
@@ -236,7 +246,11 @@ status-resp = {
   ? 5 => join-failure,       ; when not in the mesh (#127)
   ? 6 => uint,               ; battery percent
   ? 7 => [* team-entry],     ; scope = team
-  ? 15 => {* tstr => any},   ; #131 status fields not yet given integer keys
+  ? 15 => {* tstr => any},   ; #131 status fields not yet given integer keys; owner only. 254-p3-impl §3.4 / D-12 / D-6:
+                             ; "stale": true (no current read), "age_s", "uci_staged": [* tstr] (packages with staged
+                             ; uci changes: why settings/set answers E_BUSY), "ssid_unsaved": true (the phone AP ssid has a
+                             ; character p5 does not keep), "settings_restore": "not verified" (the last settings/set
+                             ; could not verify its restore: radio state unknown)
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 verdict = 0 ; ok

@@ -222,7 +222,18 @@ helper 行為不變(F3)。本 PR:provd 路由;`owner/remove` 後依 P2 的 `inva
   - key 1 由 helper 寫回舊值 + `--save`。
   - 回 reason 13(值被拒 / 起不來)或 `E_STORAGE`(persist 失敗)。
 - **時間預算**(F62;helper 對 setkey 的上限 300 s):
-- **setkey 新旗標的結束碼**(helper 依此對應 §5.1;既有模式的結束碼不變):0 成功;2 值不合法、沒有寫入;3 套用了但讀回失敗、已還原;4 persist 失敗、已還原;5 拿不到鎖(`--lockwait` 到期)。對應:2 / 3 → reason 13,4 → `E_STORAGE`,5 → `E_BUSY`。⚠️ 實作時逐行對既有 `halow-setkey` 的結束碼,不撞號。
+- **setkey 新旗標的結束碼**(helper 依此對應 §5.1;既有模式的結束碼不變;附錄 D-5 / D-6 實作時定案,#324):
+
+  | rc | 意思 | helper → app |
+  |---|---|---|
+  | 0 | 成功(讀回 + persist);值與現值相同 → 什麼都不做也回 0(AP:要在空中且 ssid / key 相同,不 reload) | `OK` + 套用後的 settings |
+  | 2 | 值不合法、沒有寫入(含密碼多於一行) | `E_REJECTED` reason 13 |
+  | 3 | 套用了但讀回失敗(含 `uci batch` 沒落地,reload 前就讀回)→ 執行中的狀態已還原 | `E_REJECTED` reason 13 |
+  | 4 | persist 失敗 → 執行中的狀態已還原(還原後再存一次也失敗仍是 4:p5 不新鮮由 status key 4 說) | `E_STORAGE` |
+  | 5 | 忙:拿不到鎖、別人暫存的 wireless 變更、未完成的 `.txn`、netifd 還沒 settle、run dir 不能用;沒有寫入(D-5) | `E_BUSY` |
+  | 6 | 執行中的狀態還原沒驗證到(新卡:再做一次完整 `wifi` 仍在空中;或舊值含引號 / 反斜線 / 換行,`uci batch` 寫不回去)→ 狀態未知(D-6) | `E_APPLY` reason 13 + CRIT log + status key 15 `settings_restore: "not verified"`(直到下一次成功的 settings.set) |
+
+  ⚠️ 實作時逐行對既有 `halow-setkey` 的結束碼,不撞號(既有模式不會回 6)。
 
 | 階段 | 秒 |
 |---|---|

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -84,6 +85,46 @@ func onlyP3Stale(rc int, out string) bool {
 
 // upgradeSave runs once at the daemon start of a committed boot without an unfinished change: when p5 is stale only
 // in keys P3 added, --save once (a joined node's joinwatch would save on its next tick; an unjoined one never would).
+// uciStaged: packages with staged (uncommitted) uci changes — what makes a settings.set answer E_BUSY (design D-12)
+func uciStaged() []string { return uciStagedIn("/tmp/.uci") }
+
+func uciStagedIn(dir string) []string {
+	es, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range es {
+		if fi, err := e.Info(); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
+			out = append(out, e.Name())
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ssidUnsaved: the phone AP's ssid has a batman-config-save UNSAFE character, so p5 does not keep it (SKIP_UNSAFE;
+// design D-12 "SSID cannot be saved"). Set outside the app: P3's allowed set has none of these.
+func ssidUnsaved() bool {
+	rc, out := provstore.Exec(provstore.ConfigSaveTimeout, cleanEnv, nil, "uci", "-q", "get", "wireless.default_radio0.ssid")
+	return rc == 0 && configUnsafe(strings.TrimRight(out, "\n"))
+}
+
+// configUnsafe: batman-config-save's UNSAFE set (`batman-config-save:54`), which p5 never keeps
+func configUnsafe(v string) bool { return strings.ContainsAny(v, "`$();|&<>'") }
+
+// saveAfterCommit (design D-9): wait while the boot is a trial (every `every`), then save once; stop ends the wait
+func saveAfterCommit(isTrial func() bool, stop <-chan struct{}, every time.Duration, save func()) {
+	for isTrial() {
+		select {
+		case <-stop:
+			return
+		case <-time.After(every):
+		}
+	}
+	save()
+}
+
 func upgradeSave(p provstore.Paths, trial bool) {
 	if trial || provstore.TxnPresent(p) {
 		return

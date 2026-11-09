@@ -8,6 +8,7 @@ package node
 // the applied settings are the answer.
 
 import (
+	"strings"
 	"time"
 
 	"batman-prov/cbor"
@@ -22,8 +23,9 @@ const (
 	ReasonLegacy       = 20 // a legacy node (radio not app-managed, D20)
 )
 
-// setkey's P3 exit codes (halow-setkey --rollback): 0 set, 2 refused, 3 not read back (restored), 4 not persisted
-// (restored), 5 busy (lock / staged changes); anything else = outcome unknown
+// setkey's P3 exit codes (halow-setkey --rollback): 0 set (or already that value), 2 refused, 3 not read back
+// (restored), 4 not persisted (restored), 5 busy (lock / staged changes / .txn / netifd not settled), 6 the restore did
+// not verify (design D-6: setkeyResult); anything else = outcome unknown
 func setkeyErr(rc int, what string) *Error {
 	switch rc {
 	case 0:
@@ -37,6 +39,38 @@ func setkeyErr(rc int, what string) *Error {
 	}
 	return fail(EApply, "%s: halow-setkey rc %d (outcome unknown — re-read settings)", what, rc)
 }
+
+// setkeyResult: setkeyErr plus D-6 — rc 6 is CRIT, remembered for status (key 15 settings_restore) until a set succeeds
+func (n *Node) setkeyResult(rc int, what string) *Error {
+	switch rc {
+	case 0:
+		n.settingsRestoreBad.Store(false)
+	case 6:
+		n.settingsRestoreBad.Store(true)
+		n.Log("CRIT settings.set %s: halow-setkey rc 6 — the restore did not verify, the radio state is unknown (status key 15 settings_restore)", what)
+		return failR(EApply, ReasonBadValue, "%s: halow-setkey rc 6 (restore not verified)", what)
+	}
+	return setkeyErr(rc, what)
+}
+
+// the phone AP's values, as halow-setkey checks them (§3.3 F46): ssid 1-32 of [A-Za-z0-9 ._~+=,:@%^*-] without a blank
+// at either end, passphrase 12-63 of the same set without the blank
+const apChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~+=,:@%^*-"
+
+func apCharsOnly(s string, blank bool) bool {
+	for _, c := range s {
+		if !(c == ' ' && blank) && !strings.ContainsRune(apChars, c) {
+			return false
+		}
+	}
+	return true
+}
+
+func apSSIDOK(s string) bool {
+	return len(s) >= 1 && len(s) <= 32 && s[0] != ' ' && s[len(s)-1] != ' ' && apCharsOnly(s, true)
+}
+
+func apPassOK(s string) bool { return len(s) >= 12 && len(s) <= 63 && apCharsOnly(s, false) }
 
 func isCountryCode(s string) bool {
 	return len(s) == 2 && s[0] >= 'A' && s[0] <= 'Z' && s[1] >= 'A' && s[1] <= 'Z'
@@ -83,7 +117,7 @@ func (n *Node) settingsSet(rec *provstore.Record, body cbor.Map) (cbor.Map, *Err
 		if rec.Net != nil {
 			return nil, failR(EReject, ReasonCountryJoin, "settings.set: the country changes only while not in a network")
 		}
-		if e := setkeyErr(n.Sys.SetCountry(cc), "country"); e != nil {
+		if e := n.setkeyResult(n.Sys.SetCountry(cc), "country"); e != nil {
 			return nil, e
 		}
 	case 20:
@@ -98,7 +132,10 @@ func (n *Node) settingsSet(rec *provstore.Record, body cbor.Map) (cbor.Map, *Err
 		if !ok1 || !ok2 {
 			return nil, failR(EInput, ReasonBadValue, "settings.set: key 20 must be {1: ssid, 2: passphrase}")
 		}
-		if e := setkeyErr(n.Sys.SetAP(ssid, pass), "phone AP"); e != nil {
+		if !apSSIDOK(ssid) || !apPassOK(pass) {
+			return nil, failR(EInput, ReasonBadValue, "settings.set: the phone AP's ssid / passphrase outside the allowed set or length")
+		}
+		if e := n.setkeyResult(n.Sys.SetAP(ssid, pass), "phone AP"); e != nil {
 			return nil, e
 		}
 	}

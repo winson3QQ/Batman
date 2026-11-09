@@ -124,7 +124,8 @@ type Session struct {
 	lastActive time.Time
 	killed     bool
 	why        string
-	closeAfter string // disconnect once the current response is sent (3rd claim / auth failure)
+	closeAfter string    // disconnect once the current response is sent (3rd claim / auth failure)
+	statusAt   time.Time // the last status request of this session (254-p3-impl §3.1-9: 1/s per connection)
 	done       chan struct{}
 	// chunk reassembly
 	chID    uint64
@@ -835,6 +836,15 @@ func (ss *Session) status(id uint64, role Role, body cbor.Map) cbor.Map {
 		return errEnv(id, EUnsupported, cbor.M(1, "status", 2, uint64(7)))
 	case scope != 0:
 		return errEnv(id, EBadObject, nil)
+	}
+	ss.mu.Lock()
+	tooSoon := !ss.statusAt.IsZero() && time.Since(ss.statusAt) < time.Second
+	if !tooSoon {
+		ss.statusAt = time.Now()
+	}
+	ss.mu.Unlock()
+	if tooSoon {
+		return errEnv(id, ERate, nil)
 	}
 	r, err := ss.srv.roCall("status.get", cbor.M(1, role == RoleOwner))
 	if err != nil {

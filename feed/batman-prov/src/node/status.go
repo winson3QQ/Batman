@@ -20,19 +20,27 @@ import (
 )
 
 const (
-	statusFresh      = 15 * time.Second
-	statusP5Every    = 120 * time.Second
-	statusP5MaxAge   = 300 * time.Second
-	statusAskWindow  = 10 * time.Minute
-	statusFirstWait  = 2 * time.Second
-	statusConnRate   = 1 // per connection 1/s, helper-wide 2/s (§3.1-9)
-	statusGlobalRate = 2
+	statusFresh     = 15 * time.Second
+	statusP5Every   = 120 * time.Second
+	statusP5MaxAge  = 300 * time.Second
+	statusAskWindow = 10 * time.Minute
+	statusFirstWait = 2 * time.Second
+	// statusStaleAfter: a cache older than this is refreshed (and waited for) before it is answered: inside the ask
+	// window the ticker keeps it <= statusFresh + 1 s; after a quiet spell it may be hours old (code review M2)
+	statusStaleAfter = 2 * statusFresh
+	statusGlobalRate = 2 // helper-wide 2/s; the 1/s per app connection is provd's (§3.1-9)
 )
 
 // StatusSource is what the caches are filled from; the daemon wires the real commands, tests inject.
 type StatusSource struct {
 	HalowStatus func() ([]byte, error) // `halow-status json`
 	P5Fresh     func() (bool, error)   // `batman-config-save --check` says "p5 fresh"
+	// design D-12 / §5.1 (optional; nil = not reported): packages with staged uci changes (/tmp/.uci), the reason a
+	// settings.set answers E_BUSY; the phone AP ssid is not saved to p5 (it has a config-save UNSAFE character)
+	UciStaged   func() []string
+	SSIDUnsaved func() bool
+	// D-6: the last settings.set's restore did not verify (wired by SetStatusSource from the node)
+	RestoreBad func() bool
 }
 
 type statusCache struct {
@@ -146,7 +154,7 @@ var verdictOf = map[string]uint64{"OK": 0, "WARN": 1, "CRIT": 2}
 func (c *statusCache) get(state string, full bool) cbor.Map {
 	c.mu.Lock()
 	c.asked = c.now()
-	have := c.js != nil
+	have := c.js != nil && c.asked.Sub(c.jsAt) <= statusStaleAfter
 	c.mu.Unlock()
 	if !have {
 		done := c.refreshJS()
@@ -167,8 +175,8 @@ func (c *statusCache) get(state string, full bool) cbor.Map {
 		c.refreshP5()
 	}
 	var h halowStatus
-	if js == nil || json.Unmarshal(js, &h) != nil {
-		return cbor.M(1, state, 15, cbor.M("stale", true))
+	if js == nil || now.Sub(jsAt) > statusStaleAfter || json.Unmarshal(js, &h) != nil {
+		return cbor.M(1, state, 15, cbor.M("stale", true)) // old data is not shown as current (a member gets key 1 only)
 	}
 	m := cbor.M(1, state)
 	if v, ok := verdictOf[h.Health.Level]; ok {
@@ -195,13 +203,33 @@ func (c *statusCache) get(state string, full bool) cbor.Map {
 		f := cbor.M("node", h.Node, "image", h.Image, "uptime_s", h.UptimeS, "last_boot_reason", h.LastBootReason,
 			"last_ota", h.LastOTA, "temp_c", h.TempC, "throttled", h.Throttled, "tenants", h.Tenants,
 			"age_s", uint64(now.Sub(jsAt)/time.Second), "join", j)
+		if c.src.UciStaged != nil {
+			if pk := c.src.UciStaged(); len(pk) > 0 {
+				a := make([]any, len(pk))
+				for i, p := range pk {
+					a[i] = p
+				}
+				f = append(f, cbor.Entry{K: "uci_staged", V: a})
+			}
+		}
+		if c.src.SSIDUnsaved != nil && c.src.SSIDUnsaved() {
+			f = append(f, cbor.Entry{K: "ssid_unsaved", V: true})
+		}
+		if c.src.RestoreBad != nil && c.src.RestoreBad() {
+			f = append(f, cbor.Entry{K: "settings_restore", V: "not verified"})
+		}
 		m = append(m, cbor.Entry{K: uint64(15), V: f})
 	}
 	return m
 }
 
 // SetStatusSource wires status.get's caches; the daemon calls StatusTick every second.
-func (n *Node) SetStatusSource(src StatusSource) { n.status = newStatusCache(src, n.now) }
+func (n *Node) SetStatusSource(src StatusSource) {
+	if src.RestoreBad == nil {
+		src.RestoreBad = n.settingsRestoreBad.Load
+	}
+	n.status = newStatusCache(src, n.now)
+}
 
 // StatusTick refreshes the status caches that are due (no-op without a source).
 func (n *Node) StatusTick() {

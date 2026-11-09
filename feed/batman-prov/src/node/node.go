@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"batman-prov/cbor"
@@ -138,9 +139,12 @@ type Node struct {
 	status *statusCache
 	// 254-p3-impl §3.3: settings.get's cache (SetSettingsSource; nil = E_UNSUPPORTED)
 	settings *settingsCache
-	roGlobal bucket // read-only verbs, helper-wide (readonly.go)
-	psksRate bucket // psks.get: 1/s
-	clock    func() time.Time
+	// design D-6: the last settings.set ended with halow-setkey rc 6 (its restore did not verify); status key 15 says so
+	// until a later settings.set succeeds
+	settingsRestoreBad atomic.Bool
+	roGlobal           bucket // read-only verbs, helper-wide (readonly.go)
+	psksRate           bucket // psks.get: 1/s
+	clock              func() time.Time
 }
 
 type nonce struct {
@@ -240,7 +244,7 @@ func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 	// §18.4 (review 4 A m6 / B m9): no new wireless change while batman-slot writes the other slot — its freshness
 	// gate (`--check`: .txn -> refused) has already run, so a change failing now would leave a .txn the new slot never
 	// sees. The marker is batman-slot's own (root-only run dir; removed on its exit, gone at the next boot).
-	if (verb == "net.apply" || verb == "network.leave") && n.otaBusy() {
+	if (verb == "net.apply" || verb == "network.leave" || verb == "settings.set") && n.otaBusy() {
 		return nil, fail(EBusy, "an OTA is being written (batman-slot) — retry after it")
 	}
 	// docs/design/254-wireless-txn.md §4.1: an unfinished wireless change is finished before a verb that saves or changes

@@ -55,7 +55,9 @@ func (b *bucket) take(now time.Time) bool {
 // NewConn returns the handler of one helper-socket connection, with its own read-only quota (sock.ServeConns).
 func (n *Node) NewConn() func(cbor.Map) cbor.Map {
 	b := &bucket{rate: roConnRate, burst: roConnBurst}
-	sb := &bucket{rate: statusConnRate, burst: statusConnRate} // status.get: 1/s per connection (254-p3-impl §3.1-9)
+	// status.get (254-p3-impl §3.1-9): provd keeps the 1/s per app connection (one BLE session); provd's single ro
+	// connection carries every session, so here a connection gets the helper-wide 2/s (code review m1)
+	sb := &bucket{rate: statusGlobalRate, burst: statusGlobalRate}
 	return func(req cbor.Map) cbor.Map { return n.handleQ(req, b, sb) }
 }
 

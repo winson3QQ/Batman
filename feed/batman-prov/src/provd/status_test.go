@@ -108,3 +108,25 @@ func TestStatusScopeAndErrors(t *testing.T) {
 		t.Fatalf("helper ERate: code %d", code)
 	}
 }
+
+// 254-p3-impl §3.1-9 (code review m1): 1 status a second per app connection is provd's; another session is not slowed
+func TestStatusPerSessionRate(t *testing.T) {
+	k, pub := ownerKey(t)
+	f, psks := claimedHelper(t, pub)
+	statusHelper(f, "member", 0)
+	s := startServer(t, f, TestEnv{})
+	o := dial(t, s)
+	o.handshake("", psks[0])
+	o.do("auth/owner", cbor.M(1, kidOf(pub), 2, authSig(t, k, o.h, kidOf(pub))))
+	if code, _ := o.do("status", cbor.M(1, uint64(0))); code != 0 {
+		t.Fatalf("first status %d", code)
+	}
+	if code, _ := o.do("status", cbor.M(1, uint64(0))); code != ERate {
+		t.Fatalf("second status within 1 s on the same session: %d, want E_RATE", code)
+	}
+	m := dial(t, s)
+	m.handshake("", psks[4])
+	if code, _ := m.do("status", cbor.M(1, uint64(0))); code != 0 {
+		t.Fatalf("another session's status right after: %d, want 0", code)
+	}
+}
