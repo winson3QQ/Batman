@@ -38,11 +38,11 @@ const COVERAGE: &[(&str, &str)] = &[
     ("owner_op", "tested"),
     ("op_nonce", "tested"),
     ("claim_replay", "tested"),
-    ("cose", "tested (net_config, member_list, net_secrets; the invite / join-request / approval objects are not in S1)"),
+    ("cose", "tested (net_config, member_list, net_secrets here; invite / join-request / member_secrets / approval / qr objects in tests/member.rs M1)"),
     ("chunk_boundary", "tested"),
     ("peers_challenge", "pending: not in S1 (P2 answers E_UNSUPPORTED; design §1)"),
     ("version_chain", "pending: not in S1 (network/update)"),
-    ("sas", "pending: not in S1 (invites)"),
+    ("sas", "tested (tests/member.rs M1)"),
 ];
 
 #[test]

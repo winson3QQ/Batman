@@ -17,6 +17,12 @@
 //! Every record write is a CAS from the generation the record was read at (the caller: Store::write_cas with
 //! `expected_gen`; the next write of this flow uses the generation the last one made). Step 7 ("connected") is
 //! flow::link_state, polled by the caller.
+//!
+//! Member mode (254-app-member-join §4 step 8): the record is the member phone's `mnet/<net_id>`; a = it opens and
+//! has its own-node entry (key 7; applied is sent too, 5 -> info decides); c = its secrets' key 3 = this login's DAC
+//! hash; d does not apply; the secrets are mnet key 5 as they are (never signed here); every write is PersistMnet
+//! (never PersistNet); 3 -> the same request once more, 3 again -> TwiceRefused; 4 -> the country back first, then
+//! key 7 dropped (the bridge says a new invite is needed). Country, prev_country, reply table, connected: as above.
 
 use crate::cbor::{self, Value};
 use crate::conn::Conn;
@@ -24,6 +30,7 @@ use crate::cose;
 use crate::envelope::Outcome;
 use crate::flow::{self, JoinState};
 use crate::joinflow::join_body;
+use crate::mrec::MNet;
 use crate::netrec::{self, Member, MemberState, NetCfg, NetRec, MAX_MEMBERS};
 use crate::nodecert::Verified;
 use crate::sig;
@@ -43,6 +50,8 @@ pub struct Input {
     pub owner_pub: [u8; 65],
     pub owner_enc_pub: [u8; 65],
     pub admin_pub: [u8; 65],
+    /// member mode: `record_plain` is an mnet record (member-join §4 step 8); the keys above are unused then
+    pub member: bool,
 }
 
 /// a precondition that failed (§3.3-1)
@@ -58,6 +67,10 @@ pub enum Pre {
     NotAdmin,
     /// d
     Full,
+    /// member a: the mnet has no own-node entry (dropped after a definite failure: a new invite is needed)
+    NoEntry,
+    /// member c: the mnet's secrets are for another node than this login's
+    NotThisNode,
 }
 
 /// a definite failure of the join: the country is put back
@@ -129,6 +142,8 @@ pub enum Action {
     /// seal `plain` with aad(net/<hex net_id>, expected_gen + 1) and Store::write_cas(.., expected_gen, ..), then
     /// `net_persisted` (or `persist_failed`). Holds SAE / net_root: never shown or logged.
     PersistNet { net_id: [u8; 16], plain: Vec<u8>, expected_gen: u64 },
+    /// member mode's only write: the mnet record, sealed with aad(mnet/<hex net_id>, expected_gen + 1), write_cas
+    PersistMnet { net_id: [u8; 16], plain: Vec<u8>, expected_gen: u64 },
     /// ask the user: change the node's country from `have` to `want`? -> `country_confirmed`
     ConfirmCountry { have: String, want: String },
     Done(End),
@@ -172,10 +187,63 @@ enum Step {
     Over,
 }
 
+/// The record a join works on: the admin's net record or a member's mnet record.
+#[derive(Clone)]
+enum Rec {
+    Net(NetRec),
+    M(MNet),
+}
+
+impl Rec {
+    fn net_id(&self) -> [u8; 16] {
+        match self {
+            Rec::Net(r) => r.base.net_id,
+            Rec::M(m) => m.net_id,
+        }
+    }
+    fn netcfg(&self) -> &[u8] {
+        match self {
+            Rec::Net(r) => &r.base.netcfg,
+            Rec::M(m) => &m.netcfg,
+        }
+    }
+    fn members(&self) -> &[u8] {
+        match self {
+            Rec::Net(r) => &r.base.members,
+            Rec::M(m) => &m.members,
+        }
+    }
+    fn entry(&self, h: &[u8; 32]) -> Option<Member> {
+        match self {
+            Rec::Net(r) => r.list.as_ref()?.iter().find(|m| m.dac_pub_hash == *h).cloned(),
+            Rec::M(m) => m.me.clone().filter(|x| x.dac_pub_hash == *h),
+        }
+    }
+    /// this record with the node's entry replaced (in place), added, or removed
+    fn with_entry(&self, h: &[u8; 32], e: Option<Member>) -> Rec {
+        match self {
+            Rec::Net(r) => {
+                let mut r = r.clone();
+                let l = r.list.get_or_insert_with(Vec::new);
+                match (l.iter().position(|m| m.dac_pub_hash == *h), e) {
+                    (Some(i), Some(e)) => l[i] = e,
+                    (Some(i), None) => {
+                        l.remove(i);
+                    }
+                    (None, Some(e)) => l.push(e),
+                    (None, None) => {}
+                }
+                Rec::Net(r)
+            }
+            Rec::M(m) => Rec::M(MNet { me: e, ..m.clone() }),
+        }
+    }
+}
+
 pub struct Join2 {
     conn: Conn,
     /// the record as last written (or as read); its key 11 list is filled at the start
-    rec: Option<NetRec>,
+    rec: Option<Rec>,
     gen: u64,
     cfg: Option<NetCfg>,
     /// this node's entry (joining, no prev_country)
@@ -183,7 +251,7 @@ pub struct Join2 {
     /// this node's entry when the flow started (an explicit country refusal puts it back)
     before: Option<Member>,
     secrets: Vec<u8>,
-    pending: Option<NetRec>,
+    pending: Option<Rec>,
     unverified: bool,
     resent: bool,
     st: Step,
@@ -227,6 +295,9 @@ impl Join2 {
     }
 
     fn begin(&mut self, inp: Input) -> Result<Action, End> {
+        if inp.member {
+            return self.begin_member(inp);
+        }
         let mut rec = netrec::decode(&inp.record_plain).map_err(|_| End::Refused(Pre::Record))?;
         let cfg = rec.netcfg().map_err(|_| End::Refused(Pre::Record))?;
         let list = rec.members().map_err(|_| End::Refused(Pre::Record))?;
@@ -253,14 +324,38 @@ impl Join2 {
             prev_country: None,
         });
         rec.list = Some(list);
-        self.rec = Some(rec);
+        self.rec = Some(Rec::Net(rec));
         self.cfg = Some(cfg);
         self.secrets_step(false)
     }
 
+    /// member mode preconditions; then straight to the country step (the secrets are the approval's)
+    fn begin_member(&mut self, inp: Input) -> Result<Action, End> {
+        let m = MNet::decode(&inp.record_plain).map_err(|_| End::Refused(Pre::Record))?;
+        let cfg = m.netcfg().map_err(|_| End::Refused(Pre::Record))?;
+        let entry = m.me.clone().ok_or(End::Refused(Pre::NoEntry))?;
+        let node = inp.node.ok_or(End::Refused(Pre::NotVerified))?;
+        let hash = netrec::dac_hash(&node.dac_pub);
+        let target = netrec::sign1_payload(&m.secrets).ok().and_then(|p| p.get(3).and_then(Value::as_bytes).map(<[u8]>::to_vec));
+        if target.as_deref() != Some(&hash[..]) || entry.dac_pub_hash != hash {
+            return Err(End::Refused(Pre::NotThisNode));
+        }
+        self.before = Some(entry.clone());
+        self.me = Some(Member { state: MemberState::Joining, prev_country: None, ..entry });
+        self.secrets = m.secrets.clone();
+        self.rec = Some(Rec::M(m));
+        self.cfg = Some(cfg);
+        let r = self.request("settings/get", Value::Map(vec![]), Step::Get(Get::Check));
+        r.ok_or_else(|| End::Broken("settings/get".into()))
+    }
+
+    fn member(&self) -> bool {
+        matches!(self.rec, Some(Rec::M(_)))
+    }
+
     /// step 2: net_secrets for THIS node, made afresh
     fn secrets_step(&mut self, resend: bool) -> Result<Action, End> {
-        let (Some(rec), Some(cfg), Some(me)) = (&self.rec, &self.cfg, &self.me) else { return Err(End::Broken("no record".into())) };
+        let (Some(Rec::Net(rec)), Some(cfg), Some(me)) = (&self.rec, &self.cfg, &self.me) else { return Err(End::Broken("no record".into())) };
         let mut plain = cbor::encode(&Value::Map(vec![
             (Value::Uint(1), Value::Text(rec.base.sae.clone())),
             (Value::Uint(2), Value::Bytes(rec.base.net_root.to_vec())),
@@ -293,28 +388,21 @@ impl Join2 {
     /// this node's entry in the record as last written
     fn entry(&self) -> Option<Member> {
         let h = self.me.as_ref()?.dac_pub_hash;
-        self.rec.as_ref()?.list.as_ref()?.iter().find(|m| m.dac_pub_hash == h).cloned()
+        self.rec.as_ref()?.entry(&h)
     }
 
     /// the record with this node's entry replaced (in place), added, or removed
-    fn with_entry(&self, e: Option<Member>) -> Option<NetRec> {
+    fn with_entry(&self, e: Option<Member>) -> Option<Rec> {
         let h = self.me.as_ref()?.dac_pub_hash;
-        let mut r = self.rec.clone()?;
-        let l = r.list.get_or_insert_with(Vec::new);
-        match (l.iter().position(|m| m.dac_pub_hash == h), e) {
-            (Some(i), Some(e)) => l[i] = e,
-            (Some(i), None) => {
-                l.remove(i);
-            }
-            (None, Some(e)) => l.push(e),
-            (None, None) => {}
-        }
-        Some(r)
+        Some(self.rec.as_ref()?.with_entry(&h, e))
     }
 
-    fn persist(&mut self, rec: Option<NetRec>, then: Then) -> Option<Action> {
+    fn persist(&mut self, rec: Option<Rec>, then: Then) -> Option<Action> {
         let Some(rec) = rec else { return self.end(End::Broken("no record".into())) };
-        let a = Action::PersistNet { net_id: rec.base.net_id, plain: netrec::encode(&rec), expected_gen: self.gen };
+        let a = match &rec {
+            Rec::Net(r) => Action::PersistNet { net_id: r.base.net_id, plain: netrec::encode(r), expected_gen: self.gen },
+            Rec::M(m) => Action::PersistMnet { net_id: m.net_id, plain: m.encode(), expected_gen: self.gen },
+        };
         self.pending = Some(rec);
         self.st = Step::Persist(then);
         Some(a)
@@ -355,7 +443,7 @@ impl Join2 {
             }
             Op::Join => {
                 let rec = self.rec.as_ref().ok_or("no record")?;
-                ("network/join", join_body(&rec.base.netcfg, &rec.base.members, &self.secrets).map_err(|e| format!("{e:?}"))?)
+                ("network/join", join_body(rec.netcfg(), rec.members(), &self.secrets).map_err(|e| format!("{e:?}"))?)
             }
         })
     }
@@ -587,6 +675,11 @@ impl Join2 {
             }
             (Op::Join, Outcome::Ok(_)) => self.applied(false),
             (Op::Join, Outcome::Err { code, .. }) => match code {
+                // member mode: the same secrets once more (they are the approval's); admin: made afresh
+                flow::E_FORBIDDEN if !self.resent && self.member() => {
+                    self.resent = true;
+                    self.ask_nonce(Op::Join)
+                }
                 flow::E_FORBIDDEN if !self.resent => {
                     self.resent = true;
                     let r = self.secrets_step(true);
@@ -602,7 +695,7 @@ impl Join2 {
     }
 
     fn on_info(&mut self, why: InfoFor, o: Outcome) -> Option<Action> {
-        let net_id = self.rec.as_ref()?.base.net_id;
+        let net_id = self.rec.as_ref()?.net_id();
         let s = match &o {
             Outcome::Ok(b) => flow::join_state(b, &net_id),
             Outcome::Err { .. } => JoinState::Unknown,

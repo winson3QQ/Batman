@@ -2,7 +2,9 @@
 //!   {1 net_id, 2 mesh_id, 3 channel, 4 bw, 5 SAE, 6 net_root, 7 signed net_config v1, 8 signed members v1,
 //!    9 the first node's net_secrets, 10 state "pending" / "applied", ?11 member list}.
 //! Key 11, one entry per node = {1 dac_pub_hash, 2 ecdh_pub, 3 name, 4 owner_pub, 5 owner_enc_pub, ?6 device_id,
-//! 8 state "joining" / "applied", ?9 prev_country}; keys 1-5 are the members v1 entry keys. A node is its
+//! 8 state "joining" / "applied" / "approved", ?9 prev_country}; keys 1-5 are the members v1 entry keys.
+//! ?12 = the invites this admin phone issued: [{1 invite_hash (OBJECT_HASH), 2 kind, 3 used}] (member-join §3;
+//! "approved" = a remote member this phone approved, member-join §3). A node is its
 //! dac_pub_hash: one entry per node (replaced, never added twice). No net_secrets are kept per member (each join makes
 //! them afresh). A record without key 11 (written by 36e2f57) gets its list from key 8: the members v1 entries, state
 //! applied when key 10 is "applied", else joining.
@@ -29,6 +31,16 @@ pub enum Error {
 pub enum MemberState {
     Joining,
     Applied,
+    /// a remote member's node this admin approved (member-join §3): it joins with the approval, not through this phone
+    Approved,
+}
+
+/// One issued invite (key 12): its OBJECT_HASH, kind (1 = remote) and whether an approval used it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InviteRec {
+    pub hash: [u8; 32],
+    pub kind: u64,
+    pub used: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,15 +63,46 @@ pub struct NetRec {
     pub base: NetRecord,
     pub state: String,
     pub list: Option<Vec<Member>>,
+    /// key 12 as stored (None = never issued one)
+    pub invites: Option<Vec<InviteRec>>,
 }
 
-/// What the signed net_config v1 says (the parts the app checks).
+/// What a signed net_config says (the parts the app checks).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NetCfg {
     pub net_id: [u8; 16],
     pub version: u32,
+    pub prev_hash: Option<[u8; 32]>,
+    pub name: String,
     pub country: String,
     pub admins: Vec<[u8; 65]>,
+}
+
+/// A net_config payload parsed strictly (CDDL net-config; unknown keys refused, the nested halow / lora maps too).
+pub fn netcfg_of(p: &Value) -> Result<NetCfg, Error> {
+    use crate::cose::exact_keys;
+    let bad = |_| Error::Field("net_config keys");
+    exact_keys(p, &[1, 2, 3, 4, 5, 6, 8], &[7]).map_err(bad)?;
+    exact_keys(p.get(6).unwrap_or(&Value::Null), &[1, 2, 3], &[]).map_err(bad)?;
+    if let Some(l) = p.get(7) {
+        exact_keys(l, &[1, 2], &[]).map_err(bad)?;
+    }
+    let admins = match p.get(8) {
+        Some(Value::Array(a)) if !a.is_empty() => a.iter().map(|x| arr(Some(x), "admin")).collect::<Result<Vec<_>, _>>()?,
+        _ => return Err(Error::Field("admins")),
+    };
+    let prev_hash = match p.get(3) {
+        Some(Value::Null) => None,
+        x => Some(arr(x, "netcfg prev_hash")?),
+    };
+    Ok(NetCfg {
+        net_id: arr(p.get(1), "netcfg net_id")?,
+        version: f(p.get(2).and_then(Value::as_uint).and_then(|n| u32::try_from(n).ok()), "netcfg version")?,
+        prev_hash,
+        name: f(p.get(4).and_then(Value::as_text), "netcfg name")?.to_string(),
+        country: f(p.get(5).and_then(Value::as_text), "netcfg country")?.to_string(),
+        admins,
+    })
 }
 
 fn f<T>(o: Option<T>, what: &'static str) -> Result<T, Error> {
@@ -84,10 +127,12 @@ fn state_text(s: MemberState) -> &'static str {
     match s {
         MemberState::Joining => "joining",
         MemberState::Applied => "applied",
+        MemberState::Approved => "approved",
     }
 }
 
-fn member_value(m: &Member) -> Value {
+/// A member entry as stored (key 11 item; also a member's own node in mnet key 7).
+pub fn member_value(m: &Member) -> Value {
     let mut e = vec![
         (Value::Uint(1), Value::Bytes(m.dac_pub_hash.to_vec())),
         (Value::Uint(2), Value::Bytes(m.ecdh_pub.to_vec())),
@@ -119,10 +164,11 @@ fn member_base(v: &Value, state: MemberState) -> Result<Member, Error> {
     })
 }
 
-fn member_of(v: &Value) -> Result<Member, Error> {
+pub fn member_of(v: &Value) -> Result<Member, Error> {
     let state = match v.get(8).and_then(Value::as_text) {
         Some("joining") => MemberState::Joining,
         Some("applied") => MemberState::Applied,
+        Some("approved") => MemberState::Approved,
         _ => return Err(Error::Field("member state")),
     };
     let text = |k: u64, what| match v.get(k) {
@@ -151,6 +197,16 @@ pub fn encode(r: &NetRec) -> Vec<u8> {
     if let Some(l) = &r.list {
         m.push((Value::Uint(11), Value::Array(l.iter().map(member_value).collect())));
     }
+    if let Some(i) = &r.invites {
+        let e = i.iter().map(|x| {
+            Value::Map(vec![
+                (Value::Uint(1), Value::Bytes(x.hash.to_vec())),
+                (Value::Uint(2), Value::Uint(x.kind)),
+                (Value::Uint(3), Value::Bool(x.used)),
+            ])
+        });
+        m.push((Value::Uint(12), Value::Array(e.collect())));
+    }
     cbor::encode(&Value::Map(m))
 }
 
@@ -174,27 +230,35 @@ pub fn decode(plain: &[u8]) -> Result<NetRec, Error> {
         Some(Value::Array(a)) => Some(a.iter().map(member_of).collect::<Result<Vec<_>, _>>()?),
         Some(_) => return Err(Error::Field("member list")),
     };
-    Ok(NetRec { base, state, list })
+    let invites = match v.get(12) {
+        None => None,
+        Some(Value::Array(a)) => Some(
+            a.iter()
+                .map(|x| {
+                    Ok(InviteRec {
+                        hash: arr(x.get(1), "invite hash")?,
+                        kind: f(x.get(2).and_then(Value::as_uint), "invite kind")?,
+                        used: match x.get(3) {
+                            Some(Value::Bool(b)) => *b,
+                            _ => return Err(Error::Field("invite used")),
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Some(_) => return Err(Error::Field("invites")),
+    };
+    Ok(NetRec { base, state, list, invites })
 }
 
 impl NetRec {
     /// make-network's record (254-app-s1 §5.4): no key 11 while pending.
     pub fn made(base: NetRecord) -> NetRec {
-        NetRec { base, state: PENDING.into(), list: None }
+        NetRec { base, state: PENDING.into(), list: None, invites: None }
     }
 
     pub fn netcfg(&self) -> Result<NetCfg, Error> {
-        let p = sign1_payload(&self.base.netcfg)?;
-        let admins = match p.get(8) {
-            Some(Value::Array(a)) => a.iter().map(|x| arr(Some(x), "admin")).collect::<Result<Vec<_>, _>>()?,
-            _ => return Err(Error::Field("admins")),
-        };
-        Ok(NetCfg {
-            net_id: arr(p.get(1), "netcfg net_id")?,
-            version: f(p.get(2).and_then(Value::as_uint).and_then(|n| u32::try_from(n).ok()), "netcfg version")?,
-            country: f(p.get(5).and_then(Value::as_text), "netcfg country")?.to_string(),
-            admins,
-        })
+        netcfg_of(&sign1_payload(&self.base.netcfg)?)
     }
 
     /// The members v1 entries of key 8 (the network's creator first).
@@ -264,19 +328,20 @@ pub fn confirm(rec: &mut NetRec, info: &Value) -> Result<Confirm, Error> {
     Ok(Confirm::Upgraded { save_pending })
 }
 
-/// "Forget joining" (join2 §3.4): removes the joining entry of `dac_pub_hash`. Returns its prev_country (the node may
-/// still have the network's country). An applied entry, an unknown node or the network's creator (joining while the
-/// record is pending: "confirm network" upgrades it) is refused.
-pub fn forget_joining(rec: &mut NetRec, dac_pub_hash: &[u8; 32]) -> Result<Option<String>, Error> {
+/// "Forget joining" (join2 §3.4; member-join §3 also an approved entry): removes that entry. Returns the removed
+/// entry (its prev_country: the node may still have the network's country; approved: it keeps the network keys it
+/// got). An applied entry, an unknown node or the network's creator (joining while the record is pending: "confirm
+/// network" upgrades it) is refused.
+pub fn forget_joining(rec: &mut NetRec, dac_pub_hash: &[u8; 32]) -> Result<Member, Error> {
     if rec.creator()? == *dac_pub_hash {
         return Err(Error::Field("the network's creator is never forgotten"));
     }
     let mut list = rec.members()?;
     let i = list
         .iter()
-        .position(|m| m.dac_pub_hash == *dac_pub_hash && m.state == MemberState::Joining)
-        .ok_or(Error::Field("no joining member with that dac_pub_hash"))?;
+        .position(|m| m.dac_pub_hash == *dac_pub_hash && m.state != MemberState::Applied)
+        .ok_or(Error::Field("no joining / approved member with that dac_pub_hash"))?;
     let m = list.remove(i);
     rec.list = Some(list);
-    Ok(m.prev_country)
+    Ok(m)
 }

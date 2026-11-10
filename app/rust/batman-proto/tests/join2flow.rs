@@ -8,7 +8,8 @@ use batman_proto::cbor::{self, Value as V};
 use batman_proto::conn::Conn;
 use batman_proto::join2flow::{Action, End, Fail, Input, Join2, Keep, Pre, Revert};
 use batman_proto::joinflow::NetRecord;
-use batman_proto::netrec::{self, Member, MemberState, NetRec};
+use batman_proto::mrec::MNet;
+use batman_proto::netrec::{self, InviteRec, Member, MemberState, NetRec};
 use batman_proto::nodecert::Verified;
 use batman_proto::{cose, frame, kdf, noise, sig, store};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -84,7 +85,7 @@ fn record(country: &str, admins: &[[u8; 65]], state: &str, list: Option<Vec<Memb
     );
     let members = cose::sign1(cose::CT_MEMBERS, &mp, &sig::der_to_raw_low_s(&signed(ADMIN, &cose::sign1_tbs(cose::CT_MEMBERS, cose::LABEL_MEMBERS, &mp))).unwrap());
     let base = NetRecord { net_id: NET_ID, mesh_id: mesh, channel: 40, bw: 4, sae: SAE.into(), net_root: [0x77; 32], netcfg, members, secrets: vec![0xd2, 0x84] };
-    NetRec { base, state: state.into(), list }
+    NetRec { base, state: state.into(), list, invites: None }
 }
 fn applied_record(country: &str) -> NetRec {
     record(country, &[pub_of(&key(ADMIN))], "applied", None)
@@ -114,7 +115,18 @@ impl Disk {
     }
     fn mine(&self) -> Option<Member> {
         let h = netrec::dac_hash(&joining_node().dac_pub);
+        if self.rel.starts_with("mnet/") {
+            return MNet::decode(&self.read().0).unwrap().me;
+        }
         self.rec().members().unwrap().into_iter().find(|x| x.dac_pub_hash == h)
+    }
+    /// a member phone's mnet record
+    fn new_mnet(x: &MNet) -> Disk {
+        let d = std::env::temp_dir().join(format!("bp-join2m-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let _ = std::fs::remove_dir_all(&d);
+        let disk = Disk { s: store::Store::new(d), rel: format!("mnet/{}", hex::encode(x.net_id)) };
+        disk.s.write_cas(&disk.rel, 0, &seal(&disk.rel, 1, &x.encode())).unwrap();
+        disk
     }
 }
 fn seal(rel: &str, g: u64, plain: &[u8]) -> Vec<u8> {
@@ -364,6 +376,9 @@ struct Run {
     asked: Vec<(String, String)>,
     /// the node's verbs at each record write
     writes: Vec<Vec<String>>,
+    /// which record each write was: "net" / "mnet"
+    kinds: Vec<&'static str>,
+    admin_signs: usize,
 }
 
 struct Opts {
@@ -385,6 +400,7 @@ fn input(disk: &Disk, node: Option<Verified>) -> Input {
         owner_pub: pub_of(&key(OWNER)),
         owner_enc_pub: pub_of(&key(0x22)),
         admin_pub: pub_of(&key(ADMIN)),
+        member: false,
     }
 }
 
@@ -392,11 +408,14 @@ fn drive(node: &mut Node, disk: &Disk, mut j: Join2, mut a: Action, o: &Opts) ->
     let mut run = Run::default();
     let mut admin = 0;
     loop {
+        // which write the flow asked for (the action's own variant, not the disk it lands on)
+        let mnet_write = matches!(a, Action::PersistMnet { .. });
         a = match a {
             Action::SignAdmin { tbs } => {
                 assert_eq!(tbs[0], 0x84, "a COSE Sig_structure");
                 let der = if o.admin_fail_at == Some(admin) { vec![] } else { signed(ADMIN, &tbs) };
                 admin += 1;
+                run.admin_signs += 1;
                 j.signed(&der).expect("an action after the admin signature")
             }
             Action::SignOwner { input } => {
@@ -407,8 +426,9 @@ fn drive(node: &mut Node, disk: &Disk, mut j: Join2, mut a: Action, o: &Opts) ->
                 run.asked.push((have, want));
                 j.country_confirmed(o.yes).unwrap()
             }
-            Action::PersistNet { net_id, plain, expected_gen } => {
+            Action::PersistNet { net_id, plain, expected_gen } | Action::PersistMnet { net_id, plain, expected_gen } => {
                 assert_eq!(net_id, NET_ID);
+                run.kinds.push(if mnet_write { "mnet" } else { "net" });
                 if o.bump_before == Some(run.writes.len()) {
                     let (p, g) = disk.read();
                     disk.s.write_cas(&disk.rel, g, &seal(&disk.rel, g + 1, &p)).unwrap();
@@ -993,4 +1013,172 @@ fn t7_country_must_be_two_capital_letters() {
         assert_eq!(n.got, ["settings/get"]);
         assert_eq!(disk.read().1, 1, "{bad:?}: nothing written");
     }
+}
+
+// ---- member mode (254-app-member-join §4 step 8, M9) ---------------------------------------------------------------
+
+/// The member phone's mnet for the network of `record("US", ...)`, its secrets admin-signed for the joining node.
+fn mnet(me: Option<Member>) -> MNet {
+    let rec = applied_record("US");
+    let node = joining_node();
+    let dac = netrec::dac_hash(&node.dac_pub);
+    let plain = cbor::encode(&m(vec![(1, V::Text(SAE.into())), (2, V::Bytes(vec![0x77; 32]))]));
+    let e = cose::encrypt_to(&plain, cose::LABEL_SECRETS, &node.ecdh_pub, &dac, &NET_ID, 1).unwrap();
+    let p = cose::net_secrets_payload(&NET_ID, 1, &dac, &e.object);
+    let secrets = cose::sign1(cose::CT_SECRETS, &p, &sig::der_to_raw_low_s(&signed(ADMIN, &cose::sign1_tbs(cose::CT_SECRETS, cose::LABEL_SECRETS, &p))).unwrap());
+    MNet { net_id: NET_ID, version: 1, netcfg: rec.base.netcfg, members: rec.base.members, secrets, net_root: [0x77; 32], me, invite_hash: [1; 32] }
+}
+fn my_entry(state: MemberState) -> Member {
+    Member { device_id: Some("aabbccddeeff00112233".into()), ..member(0x77, 0x42, "node-2233", state) }
+}
+fn member_join(x: &MNet, country: &str, set_up: impl FnOnce(&mut Node)) -> (Run, Node, Disk) {
+    let disk = Disk::new_mnet(x);
+    let (c, mut n) = pair(country);
+    set_up(&mut n);
+    let (plain, g) = disk.read();
+    let inp = Input {
+        record_plain: plain,
+        record_gen: g,
+        node: Some(joining_node()),
+        node_name: String::new(),
+        owner_pub: [0; 65],
+        owner_enc_pub: [0; 65],
+        admin_pub: [0; 65],
+        member: true,
+    };
+    let (j, a) = Join2::start(c, inp);
+    let run = drive(&mut n, &disk, j, a, &YES);
+    (run, n, disk)
+}
+
+#[test]
+fn m9_member_join_sends_the_approvals_secrets_and_writes_only_mnet() {
+    let x = mnet(Some(my_entry(MemberState::Joining)));
+    let (run, n, disk) = member_join(&x, "US", |_| {});
+    assert_eq!(run.end, Some(End::Applied { country_unverified: false, save_pending: false }));
+    assert_eq!(n.got, ["settings/get", "op/nonce", "network/join"]);
+    assert_eq!(run.admin_signs, 0, "the secrets are the approval's: never signed here");
+    assert!(!run.kinds.is_empty() && run.kinds.iter().all(|k| *k == "mnet"), "member mode never writes a net record: {:?}", run.kinds);
+    assert_eq!(n.bodies[0], (x.netcfg.clone(), x.members.clone()));
+    assert_eq!(n.sec_payloads[0], netrec::sign1_payload(&x.secrets).unwrap());
+    assert_eq!(n.secrets, [(SAE.to_string(), vec![0x77; 32])]);
+    let me = disk.mine().unwrap();
+    assert_eq!((me.state, me.prev_country), (MemberState::Applied, None));
+}
+
+#[test]
+fn m9_three_sends_the_same_request_once_more() {
+    let x = mnet(Some(my_entry(MemberState::Joining)));
+    let (run, n, _) = member_join(&x, "US", |n| n.join_r.push_back(R::Err(3, m(vec![]))));
+    assert!(matches!(run.end, Some(End::Applied { .. })));
+    assert_eq!(n.got, ["settings/get", "op/nonce", "network/join", "op/nonce", "network/join"]);
+    assert_eq!(n.sec_payloads[0], n.sec_payloads[1], "the same secrets");
+    assert_eq!(run.admin_signs, 0);
+    let (run, n, disk) = member_join(&x, "US", |n| n.join_r.extend([R::Err(3, m(vec![])), R::Err(3, m(vec![]))]));
+    assert_eq!(run.end, Some(End::Joining(Keep::TwiceRefused)));
+    assert_eq!(n.got.iter().filter(|v| *v == "network/join").count(), 2);
+    assert_eq!(disk.mine().unwrap().state, MemberState::Joining);
+}
+
+#[test]
+fn m9_four_puts_the_country_back_then_drops_key_7() {
+    let x = mnet(Some(my_entry(MemberState::Joining)));
+    let (run, n, disk) = member_join(&x, "JP", |n| n.join_r.push_back(R::Err(4, m(vec![]))));
+    assert_eq!(run.end, Some(End::Failed(Fail::Rejected, Revert::Reverted { country: "JP".into() })));
+    assert_eq!(n.sets, ["US", "JP"]);
+    assert!(disk.mine().is_none(), "key 7 dropped after the country went back");
+    assert!(run.kinds.iter().all(|k| *k == "mnet"));
+    // putting it back fails -> key 7 and prev_country stay
+    let (run, _, disk) = member_join(&x, "JP", |n| {
+        n.join_r.push_back(R::Err(4, m(vec![])));
+        n.set_r.extend([R::Pass, R::Err(11, m(vec![]))]);
+    });
+    assert_eq!(run.end, Some(End::Failed(Fail::Rejected, Revert::NotReverted { now: "US".into(), was: "JP".into() })));
+    let me = disk.mine().unwrap();
+    assert_eq!((me.state, me.prev_country.as_deref()), (MemberState::Joining, Some("JP")));
+}
+
+#[test]
+fn m9_member_preconditions() {
+    // no key 7 -> refused, nothing sent
+    let (run, n, _) = member_join(&mnet(None), "US", |_| {});
+    assert_eq!(run.end, Some(End::Refused(Pre::NoEntry)));
+    assert!(n.got.is_empty() && run.kinds.is_empty());
+    // secrets for another node than this login's -> refused
+    let mut x = mnet(Some(my_entry(MemberState::Joining)));
+    x.secrets = applied_record("US").base.members; // a Sign1 whose key 3 is not this DAC hash
+    let (run, n, _) = member_join(&x, "US", |_| {});
+    assert_eq!(run.end, Some(End::Refused(Pre::NotThisNode)));
+    assert!(n.got.is_empty());
+    // a record that does not open as mnet
+    let disk = Disk::new(&applied_record("US"));
+    let (c, mut n) = pair("US");
+    let (plain, g) = disk.read();
+    let inp = Input { record_plain: plain, record_gen: g, node: Some(joining_node()), node_name: String::new(), owner_pub: [0; 65], owner_enc_pub: [0; 65], admin_pub: [0; 65], member: true };
+    let (j, a) = Join2::start(c, inp);
+    assert_eq!(drive(&mut n, &disk, j, a, &YES).end, Some(End::Refused(Pre::Record)));
+}
+
+#[test]
+fn m9_an_applied_entry_is_sent_too() {
+    // key 7 applied, the node not in the network (re-flashed / restored): sent, 0 -> applied
+    let x = mnet(Some(my_entry(MemberState::Applied)));
+    let (run, n, disk) = member_join(&x, "US", |_| {});
+    assert!(matches!(run.end, Some(End::Applied { .. })));
+    assert!(n.got.contains(&"network/join".to_string()));
+    assert_eq!(disk.mine().unwrap().state, MemberState::Applied);
+}
+
+#[test]
+fn m9_member_reply_table_like_join2() {
+    let x = mnet(Some(my_entry(MemberState::Joining)));
+    // 7 -> info applied -> applied
+    let (run, _, _) = member_join(&x, "US", |n| {
+        n.join_r.push_back(R::Err(7, m(vec![])));
+        n.info_r.push_back(R::Ok(info_applied(false)));
+    });
+    assert!(matches!(run.end, Some(End::Applied { .. })));
+    // 7 -> info not applied -> keep, no revert
+    let (run, n, disk) = member_join(&x, "JP", |n| {
+        n.join_r.push_back(R::Err(7, m(vec![])));
+        n.info_r.push_back(R::Ok(info_absent(false)));
+    });
+    assert_eq!(run.end, Some(End::Joining(Keep::Unclear7)));
+    assert_eq!(n.sets, ["US"]);
+    assert_eq!(disk.mine().unwrap().prev_country.as_deref(), Some("JP"));
+    // 11 -> info not applied -> the country back, key 7 dropped
+    let (run, _, disk) = member_join(&x, "JP", |n| {
+        n.join_r.push_back(R::Err(11, m(vec![])));
+        n.info_r.push_back(R::Ok(info_absent(false)));
+    });
+    assert_eq!(run.end, Some(End::Failed(Fail::NotApplied(11), Revert::Reverted { country: "JP".into() })));
+    assert!(disk.mine().is_none());
+    // 5 -> info ours -> applied
+    let (run, _, _) = member_join(&x, "US", |n| {
+        n.join_r.push_back(R::Err(5, m(vec![])));
+        n.info_r.push_back(R::Ok(info_applied(false)));
+    });
+    assert!(matches!(run.end, Some(End::Applied { .. })));
+}
+
+// ---- M7 / M10 on the admin's join2 path ----------------------------------------------------------------------
+
+#[test]
+fn m7_key_12_survives_an_admin_join() {
+    let mut rec = applied_record("US");
+    let inv = Some(vec![InviteRec { hash: [5; 32], kind: 1, used: true }]);
+    rec.invites = inv.clone();
+    let disk = Disk::new(&rec);
+    let (c, mut n) = pair("US");
+    assert!(matches!(join(&disk, &mut n, c, &YES).end, Some(End::Applied { .. })));
+    assert_eq!(disk.rec().invites, inv);
+}
+
+#[test]
+fn m10_approved_entries_count_toward_16() {
+    let mut l = others(15);
+    l.push(member(0x60, 0x43, "approved", MemberState::Approved));
+    let (run, got, _) = refused(&record("US", &[pub_of(&key(ADMIN))], "applied", Some(l)), Some(joining_node()));
+    assert_eq!(run.end, Some(End::Refused(Pre::Full)));
+    assert!(got.is_empty());
 }

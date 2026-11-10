@@ -6,6 +6,7 @@
 
 pub mod cbor;
 pub mod conn;
+pub mod approve;
 pub mod claim;
 pub mod claimflow;
 pub mod cose;
@@ -14,10 +15,12 @@ pub mod flow;
 pub mod sig;
 pub mod store;
 pub mod frame;
+pub mod invite;
 pub mod join2flow;
 pub mod joinflow;
 pub mod kdf;
 pub mod loginflow;
+pub mod mrec;
 pub mod netrec;
 pub mod nodecert;
 pub mod noise;

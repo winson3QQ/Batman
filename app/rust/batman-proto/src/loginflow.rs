@@ -53,6 +53,8 @@ pub struct Login {
     st: State,
     /// the node_cert verified against the pinned DAC in this handshake (§5.4: net_secrets go to its ecdh_pub)
     verified: Option<nodecert::Verified>,
+    /// that node_cert's bytes, kept only once verify_pinned passed (a join request carries them, member-join §2)
+    node_cert_raw: Option<Vec<u8>>,
 }
 
 impl Login {
@@ -61,7 +63,14 @@ impl Login {
         let r = noise::Initiator::new(noise::Mode::NxPsk0, None, Some(&psk)).and_then(|mut i| i.msg1().map(|m| (i, m)));
         psk.iter_mut().for_each(|b| *b = 0);
         let mut l =
-            Login { owner_pub: *rec.owner_pub, pinned: rec.pinned_dac_der.to_vec(), frame_limit, st: State::Over, verified: None };
+            Login {
+            owner_pub: *rec.owner_pub,
+            pinned: rec.pinned_dac_der.to_vec(),
+            frame_limit,
+            st: State::Over,
+            verified: None,
+            node_cert_raw: None,
+        };
         let a = match r.map_err(|e| format!("{e:?}")).and_then(|(i, m)| frame::split(&m, frame_limit).map(|f| (i, f)).map_err(|e| format!("{e:?}"))) {
             Ok((ini, f)) => {
                 l.st = State::Hello { ini, rx: Reassembler::new(frame_limit, conn::MAX_MESSAGE) };
@@ -76,6 +85,11 @@ impl Login {
     /// The node_cert verified in this handshake (pinned DAC, sig_ecdh): its dac_pub / ecdh_pub. None before msg2.
     pub fn verified(&self) -> Option<&nodecert::Verified> {
         self.verified.as_ref()
+    }
+
+    /// The raw node_cert of this handshake; None unless it verified against the pinned DAC.
+    pub fn node_cert_raw(&self) -> Option<&[u8]> {
+        self.node_cert_raw.as_deref()
     }
 
     pub fn into_conn(self) -> Option<Conn> {
@@ -150,7 +164,10 @@ impl Login {
             Err(e) => return self.end(End::Broken(format!("{e:?}"))),
         };
         match nodecert::verify_pinned(&cert, &s.rs, &self.pinned) {
-            Ok(v) => self.verified = Some(v),
+            Ok(v) => {
+                self.verified = Some(v);
+                self.node_cert_raw = Some(cert.clone());
+            }
             Err(e) => return self.end(End::CertRejected(e)),
         }
         let conn = Conn::new(s, self.frame_limit);
