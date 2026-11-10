@@ -1,5 +1,6 @@
 package dev.batman.batman_app
 
+import dev.batman.batman_app.keystore.EcdhPeer
 import dev.batman.batman_app.keystore.KeyPolicy
 import dev.batman.batman_app.keystore.KeyRole
 import dev.batman.batman_app.keystore.Keys
@@ -71,6 +72,19 @@ class MainActivity : FlutterActivity() {
                     val r = runCatching { Keys().sign(KeyRole.ADMIN_SIGN, requireNotNull(input) { "no input" }) }
                     runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
                 }.start()
+                // remote invites (254-app-member-join §2): ECDH of the owner_enc key with an approval's ephemeral key.
+                // Dev builds only; the peer must be a P-256 point (checked here, not by the provider); z is zeroed
+                // once handed over; any failure is an error and the caller writes nothing.
+                "ecdh" -> {
+                    val pk = EcdhPeer.accept(BuildConfig.DEV_TRUST, call.argument<ByteArray>("peer"))
+                    if (pk == null) result.error("ecdh", if (BuildConfig.DEV_TRUST) "not a P-256 point" else "dev builds only", null)
+                    else Thread {
+                        val r = runCatching { Keys().ecdh(pk).also { check(it.size == 32) { "z is not 32 bytes" } } }
+                        runOnUiThread {
+                            r.fold({ z -> result.success(z); z.fill(0) }, { result.error("ecdh", it.javaClass.simpleName, null) })
+                        }
+                    }.start()
+                }
                 "open" -> Thread {
                     val sealed = call.argument<ByteArray>("sealed"); val aad = call.argument<ByteArray>("aad")
                     val r = runCatching { Keys().open(requireNotNull(sealed) { "no record" }, requireNotNull(aad) { "no aad" }) }

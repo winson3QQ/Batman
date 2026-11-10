@@ -39,6 +39,14 @@ android {
             resValue("string", "app_name", "Batman dev")
             buildConfigField("boolean", "DEV_TRUST", "true")
         }
+        // 254-app-member-join §9: a second dev install on the same phone (the remote member's app in bench tests):
+        // its own applicationId -> its own Keystore aliases and records
+        create("dev2") {
+            dimension = "trust"
+            applicationIdSuffix = ".dev2"
+            resValue("string", "app_name", "Batman dev2")
+            buildConfigField("boolean", "DEV_TRUST", "true")
+        }
         create("field") {
             dimension = "trust"
             resValue("string", "app_name", "Batman")
