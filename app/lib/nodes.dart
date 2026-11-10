@@ -120,8 +120,9 @@ class _NodesPageState extends State<NodesPage> {
   }
 
   Future<void> _write(List<Uint8List> frames) async {
+    final rxc = _rxc!; // one request goes to one device, even if _rxc changes meanwhile
     for (final f in frames) {
-      await _ble.writeCharacteristicWithoutResponse(_rxc!, value: f);
+      await _ble.writeCharacteristicWithoutResponse(rxc, value: f);
     }
   }
 
@@ -208,6 +209,7 @@ class _NodesPageState extends State<NodesPage> {
                           ],
                         ))
                 : false;
+            if (gone()) return;
             _kick();
             st = s.countryConfirmed(yes: yes == true);
           case OwnerKind.loggedIn:
@@ -382,15 +384,22 @@ class _NodesPageState extends State<NodesPage> {
   /// record was read before the first try (the record write would refuse a stale generation anyway).
   /// [unclear]: a join / make-network — a timeout or a lost link says this "outcome unknown" line (or, before any
   /// record write, that nothing was written or sent) and drops the session (it may be mid-flow).
+  /// Any other request that times out drops the session too (its request is still outstanding there): the next
+  /// action logs in again.
+  /// [held]: the caller already holds _busy (the link watch after a join) and keeps it afterwards.
   Future<String?> _ask(OwnerStep Function(OwnerSession) req,
-      {Duration wait = const Duration(seconds: 15), bool quiet = false, bool retry = true, String? unclear}) async {
-    if (_busy) return null;
-    if (_session == null && _lastNode != null) await _login(_lastNode!);
+      {Duration wait = const Duration(seconds: 15),
+      bool quiet = false,
+      bool retry = true,
+      String? unclear,
+      bool held = false}) async {
+    if (_busy && !held) return null;
+    if (_session == null && _lastNode != null && !held) await _login(_lastNode!);
     var s = _session;
-    if (s == null || _busy) return null;
+    if (s == null || (_busy && !held)) return null;
     setState(() => _busy = true);
     _waitFor = wait;
-    _waitLine = '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應';
+    _waitLine = '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應（結果不明；下次操作會重新連線）';
     _unclear = unclear;
     _wrote = false;
     _quiet = quiet;
@@ -400,14 +409,14 @@ class _NodesPageState extends State<NodesPage> {
         await _run!(req(s));
       } on PlatformException catch (e) {
         if (unclear != null) {
-          _say('[LINK_LOST] 連線斷了（${e.code}）');
+          _say('[LINK_LOST] 連線或手機金鑰出錯（${e.code}）');
           _say(_unclearNow());
           await _drop();
           return null;
         }
         if (!retry) rethrow;
         // nothing reached the node (the write itself failed): log in again and send it once more
-        _say('[LINK_LOST] 連線斷了（${e.code}），正在重新連線…');
+        _say('[LINK_LOST] 連線或手機金鑰出錯（${e.code}），正在重新連線…');
         await _drop();
         setState(() => _busy = false);
         await _login(_lastNode!);
@@ -420,6 +429,7 @@ class _NodesPageState extends State<NodesPage> {
       _kick();
       final a = await _answer!.future;
       if (unclear != null && (a == unclear || a == _notSent)) await _drop(); // the session may still be mid-flow
+      if (a == _waitLine) await _drop(); // the request is still outstanding in that session
       if (quiet) {
         _log(a);
       } else {
@@ -433,7 +443,7 @@ class _NodesPageState extends State<NodesPage> {
       _wait?.cancel();
       _answer = null;
       _unclear = null;
-      if (mounted) setState(() => _busy = false);
+      if (mounted && !held) setState(() => _busy = false);
     }
   }
 
@@ -491,22 +501,35 @@ class _NodesPageState extends State<NodesPage> {
     await _watchLink();
   }
 
-  /// join2 §3.3-7: after "applied", read status every 10 s until connected or the window is over; one line shown
+  /// join2 §3.3-7: after "applied", read status every 10 s until connected or the window is over; one line shown.
+  /// The whole window holds _busy (no other action or node can start in between) and reads only the session of the
+  /// node that joined: once that session is gone (link lost / timeout), the result is unknown.
   Future<void> _watchLink() async {
     final from = _linkFrom;
     _linkFrom = null;
-    if (from == null) return;
+    final joined = _session;
+    if (from == null || joined == null || _busy) return;
+    setState(() => _busy = true);
     var last = _linkUnknown;
-    while (mounted && DateTime.now().difference(from) < _linkWindow) {
-      await Future<void>.delayed(_linkEvery);
-      final secs = DateTime.now().difference(from).inSeconds;
-      final a = await _ask((s) => s.requestLinkCheck(secsSinceJoin: BigInt.from(secs)), quiet: true, retry: false);
-      if (a == null) break;
-      // anything but the node's answer (a timeout, a lost link) = unknown (§3.3-7)
-      last = a.startsWith('[ANSWER] ') ? a.replaceFirst('[ANSWER] ', '') : _linkUnknown;
-      if (last.startsWith('[CONNECTED]')) break;
+    try {
+      while (mounted && DateTime.now().difference(from) < _linkWindow) {
+        await Future<void>.delayed(_linkEvery);
+        if (!identical(_session, joined)) {
+          last = _linkUnknown;
+          break;
+        }
+        final secs = DateTime.now().difference(from).inSeconds;
+        final a = await _ask((s) => s.requestLinkCheck(secsSinceJoin: BigInt.from(secs)),
+            quiet: true, retry: false, held: true);
+        if (a == null) break;
+        // anything but the node's answer (a timeout, a lost link) = unknown (§3.3-7)
+        last = a.startsWith('[ANSWER] ') ? a.replaceFirst('[ANSWER] ', '') : _linkUnknown;
+        if (last.startsWith('[CONNECTED]')) break;
+      }
+      _say(last);
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
-    _say(last);
   }
 
   /// join2 §3.2: read info on the logged-in node against one of this phone's net records
