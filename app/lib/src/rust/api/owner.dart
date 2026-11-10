@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `back_to_conn`, `code_text`, `confirm_text`, `country_question`, `error_text`, `join2_step`, `join2_text`, `join_state_text`, `join_step`, `link_text`, `list_kind`, `login_end_text`, `login_step`, `net_made_text`, `new`, `owner_op`, `parse_record`, `persist_step`, `reason_text`, `request_tagged`, `request`, `settings_text`, `status_text`, `text`, `verb_text`
+// These functions are ignored because they are not marked as `pub`: `back_to_conn`, `code_text`, `confirm_text`, `country_question`, `error_text`, `join2_step`, `join2_text`, `join_state_text`, `join_step`, `joinreq_step`, `link_text`, `list_kind`, `login_end_text`, `login_step`, `member_join_text`, `net_made_text`, `new`, `owner_op`, `parse_record`, `persist_at`, `persist_step`, `reason_text`, `request_tagged`, `request`, `settings_text`, `status_text`, `status_view_of`, `text`, `verb_text`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Rec`, `St`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `eq`, `fmt`
 
@@ -92,6 +92,18 @@ abstract class OwnerSession implements RustOpaqueInterface {
     required List<int> ownerEncPub,
   });
 
+  /// member-join §4 step 4: a join request for a pasted invite (`invite_hex`), from this login's verified node.
+  /// `pend_gen` / `pend_plain`: `mpend/<net_id>` as read (0 / None = none, or None = does not open: overwritten from
+  /// `pend_gen`). `owner_enc_pub`: this phone's key (Kotlin publicKeys). Steps: SignOwner (sig_enc) -> SignOwner
+  /// (join request) -> PersistPend -> Answer {hex, sas}; or straight the Answer when the pending one is reused.
+  OwnerStep requestJoinreq({
+    required String inviteHex,
+    required String name,
+    required BigInt pendGen,
+    Uint8List? pendPlain,
+    required List<int> ownerEncPub,
+  });
+
   /// After an applied join: one `status` read, answered as connected / not yet / unknown (join2 §3.3-7).
   /// `secs_since_join`: seconds from the join reply to now.
   OwnerStep requestLinkCheck({required BigInt secsSinceJoin});
@@ -104,6 +116,13 @@ abstract class OwnerSession implements RustOpaqueInterface {
     required int channel,
     required List<int> ownerEncPub,
     required List<int> adminPub,
+  });
+
+  /// member-join §4 step 8: this (own, verified) node joins the network of an imported mnet record (read at
+  /// `mnet_gen`; every write is a CAS PersistMnet). Dev only.
+  OwnerStep requestMemberJoin({
+    required List<int> mnetPlain,
+    required BigInt mnetGen,
   });
 
   /// `settings/set` {20: {1: ssid, 2: passphrase}} (an owner-op; §3.3): the phone AP. The passphrase stays in here
@@ -123,6 +142,9 @@ abstract class OwnerSession implements RustOpaqueInterface {
 
   OwnerStep requestStatus();
 
+  /// member-join §8: status, then info, then an Answer; `status_view` gives the page.
+  OwnerStep requestStatusPage();
+
   OwnerStep? signed({required List<int> der});
 
   /// Login to the node of this (opened) node record; the first step is the msg1 frames.
@@ -135,6 +157,9 @@ abstract class OwnerSession implements RustOpaqueInterface {
     ownerPub: ownerPub,
     frameLimit: frameLimit,
   );
+
+  /// The fields of the last status page read (only what the node sent).
+  StatusView statusView();
 }
 
 /// One member of a net record, for the screen (no secret).
@@ -154,6 +179,9 @@ class MemberView {
   /// the node that made the network (never forgotten)
   final bool creator;
 
+  /// a remote member's node this phone approved (member-join §3)
+  final bool approved;
+
   const MemberView({
     required this.name,
     required this.last4,
@@ -161,6 +189,7 @@ class MemberView {
     required this.prevCountry,
     required this.dacHash,
     required this.creator,
+    required this.approved,
   });
 
   @override
@@ -170,7 +199,8 @@ class MemberView {
       joining.hashCode ^
       prevCountry.hashCode ^
       dacHash.hashCode ^
-      creator.hashCode;
+      creator.hashCode ^
+      approved.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -182,13 +212,17 @@ class MemberView {
           joining == other.joining &&
           prevCountry == other.prevCountry &&
           dacHash == other.dacHash &&
-          creator == other.creator;
+          creator == other.creator &&
+          approved == other.approved;
 }
 
 /// A net record, for the screen (no secret: no SAE, net_root or signed objects).
 class NetView {
   final String netId;
   final String meshId;
+
+  /// netcfg key 4 (member-join §8: the status page's network name)
+  final String netName;
   final bool applied;
   final String country;
   final List<MemberView> members;
@@ -196,6 +230,7 @@ class NetView {
   const NetView({
     required this.netId,
     required this.meshId,
+    required this.netName,
     required this.applied,
     required this.country,
     required this.members,
@@ -205,6 +240,7 @@ class NetView {
   int get hashCode =>
       netId.hashCode ^
       meshId.hashCode ^
+      netName.hashCode ^
       applied.hashCode ^
       country.hashCode ^
       members.hashCode;
@@ -216,6 +252,7 @@ class NetView {
           runtimeType == other.runtimeType &&
           netId == other.netId &&
           meshId == other.meshId &&
+          netName == other.netName &&
           applied == other.applied &&
           country == other.country &&
           members == other.members;
@@ -247,6 +284,12 @@ enum OwnerKind {
 
   /// join (join2 §3.3-3): ask the user the question in `detail`, then `country_confirmed(yes)`
   confirmCountry,
+
+  /// a join request (member-join §4 step 4): seal and write `record` at `rel` exactly like PersistNet
+  persistPend,
+
+  /// a member's network record (member-join §4 steps 7c, 8): seal and write `record` at `rel` exactly like PersistNet
+  persistMnet,
 }
 
 class OwnerStep {
@@ -267,6 +310,10 @@ class OwnerStep {
   /// an Answer after a join was applied: poll `request_link_check` (join2 §3.3-7)
   final bool pollLink;
 
+  /// an Answer carrying a code to hand over (invite / join request / approval, qr-object hex) and its SAS
+  final String hex;
+  final String sas;
+
   const OwnerStep({
     required this.kind,
     required this.frames,
@@ -278,6 +325,8 @@ class OwnerStep {
     required this.aad,
     required this.expectedGen,
     required this.pollLink,
+    required this.hex,
+    required this.sas,
   });
 
   @override
@@ -291,7 +340,9 @@ class OwnerStep {
       generation.hashCode ^
       aad.hashCode ^
       expectedGen.hashCode ^
-      pollLink.hashCode;
+      pollLink.hashCode ^
+      hex.hashCode ^
+      sas.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -307,7 +358,9 @@ class OwnerStep {
           generation == other.generation &&
           aad == other.aad &&
           expectedGen == other.expectedGen &&
-          pollLink == other.pollLink;
+          pollLink == other.pollLink &&
+          hex == other.hex &&
+          sas == other.sas;
 }
 
 /// A sealed record and the AAD Kotlin opens it with.
@@ -333,4 +386,57 @@ class SealedRecord {
           generation == other.generation &&
           sealed == other.sealed &&
           aad == other.aad;
+}
+
+/// The status page (member-join §8): only what the node sends; "" = not given. No battery: the node never sends it.
+class StatusView {
+  /// status key 1 in words, and key 5's reason when not joined
+  final String state;
+  final String reason;
+
+  /// key 3 neighbours / key 2 verdict in words
+  final String neighbours;
+  final String health;
+
+  /// key 15 join.snr_db (owner only)
+  final String snr;
+
+  /// key 15 image, else info key 4
+  final String version;
+
+  /// info key 10 (lowercase hex): the network the node is in; the app maps it to a local record's name
+  final String netId;
+
+  const StatusView({
+    required this.state,
+    required this.reason,
+    required this.neighbours,
+    required this.health,
+    required this.snr,
+    required this.version,
+    required this.netId,
+  });
+
+  @override
+  int get hashCode =>
+      state.hashCode ^
+      reason.hashCode ^
+      neighbours.hashCode ^
+      health.hashCode ^
+      snr.hashCode ^
+      version.hashCode ^
+      netId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is StatusView &&
+          runtimeType == other.runtimeType &&
+          state == other.state &&
+          reason == other.reason &&
+          neighbours == other.neighbours &&
+          health == other.health &&
+          snr == other.snr &&
+          version == other.version &&
+          netId == other.netId;
 }

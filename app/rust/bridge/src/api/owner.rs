@@ -10,6 +10,7 @@ use batman_proto::cbor::{self, Value};
 use batman_proto::conn::Conn;
 use batman_proto::envelope::Outcome;
 use batman_proto::flow::{self, JoinReply, JoinState};
+use batman_proto::invite::{self, JoinReqFlow, JoinReqInput};
 use batman_proto::join2flow::{self, Fail, Join2, Keep, Pre, Revert};
 use batman_proto::joinflow::{self, Join};
 use batman_proto::loginflow::{Action, End, Login, NodeRecord};
@@ -50,7 +51,7 @@ pub fn list_nets(dir: String) -> Vec<String> {
     list_kind(&dir, "net")
 }
 
-const STALE_RECORD: &str = "紀錄已被別處更新，請重新開啟再試";
+pub(crate) const STALE_RECORD: &str = "紀錄已被別處更新，請重新開啟再試";
 
 /// Write a sealed net record by compare-and-swap (join2 §3.1): only when its generation on disk is still
 /// `expected_gen` (the generation it was read at; 0 = new), at `expected_gen + 1` (the generation it was sealed for).
@@ -74,12 +75,16 @@ pub struct MemberView {
     pub dac_hash: String,
     /// the node that made the network (never forgotten)
     pub creator: bool,
+    /// a remote member's node this phone approved (member-join §3)
+    pub approved: bool,
 }
 
 /// A net record, for the screen (no secret: no SAE, net_root or signed objects).
 pub struct NetView {
     pub net_id: String,
     pub mesh_id: String,
+    /// netcfg key 4 (member-join §8: the status page's network name)
+    pub net_name: String,
     pub applied: bool,
     pub country: String,
     pub members: Vec<MemberView>,
@@ -89,7 +94,7 @@ pub struct NetView {
 #[flutter_rust_bridge::frb(sync)]
 pub fn net_summary(record_plain: Vec<u8>) -> Result<NetView, String> {
     let r = netrec::decode(&record_plain).map_err(|_| NET_DAMAGED.to_string())?;
-    let country = r.netcfg().map(|c| c.country).unwrap_or_default();
+    let (country, net_name) = r.netcfg().map(|c| (c.country, c.name)).unwrap_or_default();
     let creator = r.creator().ok();
     let members = r
         .members()
@@ -102,9 +107,10 @@ pub fn net_summary(record_plain: Vec<u8>) -> Result<NetView, String> {
             prev_country: m.prev_country.unwrap_or_default(),
             dac_hash: nodecert::hex_lower(&m.dac_pub_hash),
             creator: creator == Some(m.dac_pub_hash),
+            approved: m.state == MemberState::Approved,
         })
         .collect();
-    Ok(NetView { net_id: nodecert::hex_lower(&r.base.net_id), mesh_id: r.base.mesh_id, applied: r.state == netrec::APPLIED, country, members })
+    Ok(NetView { net_id: nodecert::hex_lower(&r.base.net_id), mesh_id: r.base.mesh_id, net_name, applied: r.state == netrec::APPLIED, country, members })
 }
 
 /// "Forget joining" (join2 §3.4): the record without that joining member, as a PersistNet step (seal, write by CAS
@@ -122,12 +128,14 @@ pub fn net_forget_joining(record_plain: Vec<u8>, record_gen: u64, dac_hash: Stri
         return Err("建立網路的節點不能忘記".into());
     }
     let name = r.members().ok().and_then(|l| l.into_iter().find(|m| m.dac_pub_hash == h)).map(|m| m.name).unwrap_or_default();
-    let prev = netrec::forget_joining(&mut r, &h).map_err(|_| "這台節點不在「加入中」，沒有東西可以忘記".to_string())?;
+    let gone = netrec::forget_joining(&mut r, &h).map_err(|_| "這台節點不在「加入中」，沒有東西可以忘記".to_string())?;
     let want = r.netcfg().map(|c| c.country).unwrap_or_default();
     let mut st = persist_step(&r.base.net_id, netrec::encode(&r), record_gen);
-    st.detail = match prev {
-        Some(p) => format!("[JOIN_STATE] 已忘記加入中的節點 {name}；這台的國家可能仍是 {want}（原本是 {p}）"),
-        None => format!("[JOIN_STATE] 已忘記加入中的節點 {name}"),
+    st.detail = match (gone.state, gone.prev_country) {
+        // member-join §3: forgetting an approved node revokes nothing
+        (MemberState::Approved, _) => format!("[JOIN_STATE] 已從本機清單移除 {name}（只從本機清單移除，不會撤銷這台已拿到的網路金鑰）"),
+        (_, Some(p)) => format!("[JOIN_STATE] 已忘記加入中的節點 {name}；這台的國家可能仍是 {want}（原本是 {p}）"),
+        (_, None) => format!("[JOIN_STATE] 已忘記加入中的節點 {name}"),
     };
     Ok(st)
 }
@@ -167,6 +175,10 @@ pub enum OwnerKind {
     PersistNet,
     /// join (join2 §3.3-3): ask the user the question in `detail`, then `country_confirmed(yes)`
     ConfirmCountry,
+    /// a join request (member-join §4 step 4): seal and write `record` at `rel` exactly like PersistNet
+    PersistPend,
+    /// a member's network record (member-join §4 steps 7c, 8): seal and write `record` at `rel` exactly like PersistNet
+    PersistMnet,
 }
 
 pub struct OwnerStep {
@@ -183,10 +195,13 @@ pub struct OwnerStep {
     pub expected_gen: u64,
     /// an Answer after a join was applied: poll `request_link_check` (join2 §3.3-7)
     pub poll_link: bool,
+    /// an Answer carrying a code to hand over (invite / join request / approval, qr-object hex) and its SAS
+    pub hex: String,
+    pub sas: String,
 }
 
 impl OwnerStep {
-    fn new(kind: OwnerKind) -> OwnerStep {
+    pub(crate) fn new(kind: OwnerKind) -> OwnerStep {
         OwnerStep {
             kind,
             frames: vec![],
@@ -198,9 +213,11 @@ impl OwnerStep {
             aad: vec![],
             expected_gen: 0,
             poll_link: false,
+            hex: String::new(),
+            sas: String::new(),
         }
     }
-    fn text(kind: OwnerKind, d: String) -> OwnerStep {
+    pub(crate) fn text(kind: OwnerKind, d: String) -> OwnerStep {
         OwnerStep { detail: d, ..OwnerStep::new(kind) }
     }
 }
@@ -211,8 +228,8 @@ enum St {
     /// make-network in flight (§5.4); `rec` once persisted (at generation `gen`); `applied` while the applied record
     /// is written; `resent` after the one NewNonce resend
     Join { join: Join, rec: Option<NetRec>, gen: u64, applied: bool, resent: bool },
-    /// a second node joining (join2 §3.3); `mesh_id` for the texts
-    Join2 { flow: Join2, mesh_id: String },
+    /// a second node joining (join2 §3.3); `mesh_id` for the texts; `member` = a member's own node (member-join §4-8)
+    Join2 { flow: Join2, mesh_id: String, member: bool },
     Over,
 }
 
@@ -231,6 +248,36 @@ pub struct OwnerSession {
     persist_then: Option<(NetRec, u64, String)>,
     /// seconds from the join reply to the outstanding link check
     link_secs: u64,
+    /// this login's node_cert bytes (only after verify_pinned passed): a join request carries them
+    node_cert_raw: Option<Vec<u8>>,
+    /// a join request being made (member-join §4 step 4); the connection stays usable meanwhile
+    joinreq: Option<JoinReqFlow>,
+    /// the status page's two reads (member-join §8)
+    page_status: Option<Value>,
+    page_info: Option<Value>,
+}
+
+/// A record write step at any record path (PersistNet / PersistPend / PersistMnet): CAS from `expected_gen`, sealed
+/// for `expected_gen + 1`.
+pub(crate) fn persist_at(kind: OwnerKind, rel: String, record: Vec<u8>, expected_gen: u64) -> OwnerStep {
+    let generation = expected_gen + 1;
+    OwnerStep { record, aad: store::aad(&rel, generation), rel, generation, expected_gen, ..OwnerStep::new(kind) }
+}
+
+/// The status page (member-join §8): only what the node sends; "" = not given. No battery: the node never sends it.
+pub struct StatusView {
+    /// status key 1 in words, and key 5's reason when not joined
+    pub state: String,
+    pub reason: String,
+    /// key 3 neighbours / key 2 verdict in words
+    pub neighbours: String,
+    pub health: String,
+    /// key 15 join.snr_db (owner only)
+    pub snr: String,
+    /// key 15 image, else info key 4
+    pub version: String,
+    /// info key 10 (lowercase hex): the network the node is in; the app maps it to a local record's name
+    pub net_id: String,
 }
 
 /// A PersistNet step for the net record (netrec: the plain CBOR holds SAE / net_root; sealed by Kotlin, never shown):
@@ -301,6 +348,8 @@ fn join2_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
         E::Refused(Pre::NotVerified) => format!("{fail}這次連線沒有驗證過節點身分，請重新連線"),
         E::Refused(Pre::NotAdmin) => format!("{fail}這個網路不是這支手機建立的（手機不是它的管理者）"),
         E::Refused(Pre::Full) => format!("{fail}這個網路已經有 {} 台節點（App 目前的上限）", netrec::MAX_MEMBERS),
+        E::Refused(Pre::NoEntry) => format!("{fail}需要新的邀請"),
+        E::Refused(Pre::NotThisNode) => format!("{fail}這份網路資料是給另一台節點的"),
         E::Applied { country_unverified, save_pending } => format!(
             "[JOINED] 已套用：節點 …{last4} 已加入網路 {mesh_id}{}{}",
             if *save_pending { "（存檔要等這台節點下次開機才完成）" } else { "" },
@@ -357,6 +406,21 @@ fn join2_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
     }
 }
 
+/// A member's own node joining (member-join §4 step 8): as join2, except what is only the member's.
+fn member_join_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
+    use join2flow::End as E;
+    let fail = "[REQ_FAIL] 加入網路沒有成功：";
+    match e {
+        E::Refused(Pre::NoEntry) => format!("{fail}需要新的邀請（手機裡已沒有這台節點的加入資料）"),
+        E::Refused(Pre::NotThisNode) => format!("{fail}這份網路資料是給另一台節點的"),
+        E::Failed(Fail::Rejected, r) => {
+            let t = join2_text(&E::Failed(Fail::Rejected, r.clone()), mesh_id, last4);
+            format!("{t}；需要新的邀請")
+        }
+        e => join2_text(e, mesh_id, last4),
+    }
+}
+
 fn link_text(s: &flow::LinkState) -> String {
     match s {
         flow::LinkState::Connected { neighbours } => format!("[CONNECTED] 已連上：看得到 {neighbours} 台鄰近節點"),
@@ -381,6 +445,7 @@ fn verb_text(verb: &str) -> String {
         "ssh_keys/set" => "加入 SSH 金鑰".into(),
         "info" | "info-net" => "檢查網路".into(),
         "info-confirm" => "確認網路".into(),
+        "status-page" | "info-page" => "查看狀態".into(),
         "status-link" => "查看連線狀態".into(),
         "network/join" => "建立網路".into(),
         "op/nonce" => "準備操作".into(),
@@ -458,6 +523,10 @@ impl OwnerSession {
             confirm: None,
             persist_then: None,
             link_secs: 0,
+            node_cert_raw: None,
+            joinreq: None,
+            page_status: None,
+            page_info: None,
         };
         let step = s.login_step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
         Ok((s, step))
@@ -470,6 +539,10 @@ impl OwnerSession {
 
     #[flutter_rust_bridge::frb(sync)]
     pub fn signed(&mut self, der: Vec<u8>) -> Option<OwnerStep> {
+        if let Some(f) = &mut self.joinreq {
+            let a = f.signed(&der);
+            return self.joinreq_step(a);
+        }
         if let St::Join { join, .. } = &mut self.st {
             let a = join.signed(&der);
             return self.join_step(a);
@@ -583,6 +656,29 @@ impl OwnerSession {
                         Err(_) => Some(OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {NET_DAMAGED}"))),
                     }
                 }
+                Ok(Some(o)) if *asked == "status-page" => {
+                    // member-join §8: status, then info, then the page
+                    *asked = "";
+                    self.page_status = match o {
+                        Outcome::Ok(b) => Some(b),
+                        Outcome::Err { .. } => None,
+                    };
+                    match conn.request("info", Value::Map(vec![])) {
+                        Ok((_, f)) => {
+                            *asked = "info-page";
+                            Some(OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) })
+                        }
+                        Err(e) => Some(OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 查看狀態沒有成功：{e:?}"))),
+                    }
+                }
+                Ok(Some(o)) if *asked == "info-page" => {
+                    *asked = "";
+                    self.page_info = match o {
+                        Outcome::Ok(b) => Some(b),
+                        Outcome::Err { .. } => None,
+                    };
+                    Some(OwnerStep::text(OwnerKind::Answer, "[STATUS] 狀態已更新".into()))
+                }
                 Ok(Some(o)) if *asked == "status-link" => {
                     *asked = "";
                     let s = match &o {
@@ -670,6 +766,10 @@ impl OwnerSession {
             }
             return Some(OwnerStep::text(OwnerKind::Answer, t));
         }
+        if let Some(f) = &mut self.joinreq {
+            let a = f.persisted();
+            return self.joinreq_step(a);
+        }
         if let St::Join2 { flow, .. } = &mut self.st {
             let a = flow.net_persisted();
             return self.join2_step(a);
@@ -687,6 +787,10 @@ impl OwnerSession {
     pub fn persist_failed(&mut self, error: String) -> Option<OwnerStep> {
         let stale = error == STALE_RECORD;
         let why = if stale { STALE_RECORD.to_string() } else { format!("手機儲存失敗（{error}）") };
+        if let Some(f) = &mut self.joinreq {
+            let a = f.persist_failed((!stale).then_some(error));
+            return self.joinreq_step(a);
+        }
         if let St::Join2 { flow, .. } = &mut self.st {
             let a = flow.persist_failed((!stale).then_some(error));
             return self.join2_step(a);
@@ -747,10 +851,102 @@ impl OwnerSession {
             owner_pub: self.owner_pub,
             owner_enc_pub: enc,
             admin_pub: adm,
+            member: false,
         };
         let (flow, a) = Join2::start(conn, inp);
-        self.st = St::Join2 { flow, mesh_id };
+        self.st = St::Join2 { flow, mesh_id, member: false };
         self.join2_step(Some(a)).ok_or_else(|| "App 內部錯誤（no first step）".into())
+    }
+
+    /// member-join §4 step 8: this (own, verified) node joins the network of an imported mnet record (read at
+    /// `mnet_gen`; every write is a CAS PersistMnet). Dev only.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_member_join(&mut self, mnet_plain: Vec<u8>, mnet_gen: u64) -> Result<OwnerStep, String> {
+        super::member::dev_gate()?;
+        let conn = match std::mem::replace(&mut self.st, St::Over) {
+            St::Conn { conn, .. } => conn,
+            other => {
+                self.st = other;
+                return Err("還沒連線到節點（或上一個操作還沒結束）".into());
+            }
+        };
+        let mesh_id = batman_proto::mrec::MNet::decode(&mnet_plain).ok().and_then(|m| m.netcfg().ok()).map(|c| c.name).unwrap_or_default();
+        let inp = join2flow::Input {
+            record_plain: mnet_plain,
+            record_gen: mnet_gen,
+            node: self.node.clone(),
+            node_name: String::new(),
+            owner_pub: self.owner_pub,
+            owner_enc_pub: [0; 65],
+            admin_pub: [0; 65],
+            member: true,
+        };
+        let (flow, a) = Join2::start(conn, inp);
+        self.st = St::Join2 { flow, mesh_id, member: true };
+        self.join2_step(Some(a)).ok_or_else(|| "App 內部錯誤（no first step）".into())
+    }
+
+    /// member-join §4 step 4: a join request for a pasted invite (`invite_hex`), from this login's verified node.
+    /// `pend_gen` / `pend_plain`: `mpend/<net_id>` as read (0 / None = none, or None = does not open: overwritten from
+    /// `pend_gen`). `owner_enc_pub`: this phone's key (Kotlin publicKeys). Steps: SignOwner (sig_enc) -> SignOwner
+    /// (join request) -> PersistPend -> Answer {hex, sas}; or straight the Answer when the pending one is reused.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_joinreq(&mut self, invite_hex: String, name: String, pend_gen: u64, pend_plain: Option<Vec<u8>>, owner_enc_pub: Vec<u8>) -> Result<OwnerStep, String> {
+        super::member::dev_gate()?;
+        if !matches!(self.st, St::Conn { .. }) || self.joinreq.is_some() {
+            return Err("還沒連線到節點（或上一個操作還沒結束）".into());
+        }
+        let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
+        let inp = JoinReqInput {
+            invite_hex,
+            name,
+            node: self.node.clone(),
+            node_cert_raw: self.node_cert_raw.clone(),
+            owner_pub: self.owner_pub,
+            owner_enc_pub: enc,
+            pend_gen,
+            pend_plain,
+        };
+        let (f, a) = JoinReqFlow::start(inp);
+        self.joinreq = Some(f);
+        self.joinreq_step(Some(a)).ok_or_else(|| "App 內部錯誤（no first step）".into())
+    }
+
+    fn joinreq_step(&mut self, a: Option<invite::Action>) -> Option<OwnerStep> {
+        use invite::{Action as A, End as E};
+        let st = match a? {
+            A::SignOwner { input } => return Some(OwnerStep { sign_input: input, ..OwnerStep::new(OwnerKind::Sign) }),
+            A::SignAdmin { .. } => OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] App 內部錯誤".into()),
+            A::Persist { rel, plain, expected_gen } => return Some(persist_at(OwnerKind::PersistPend, rel, plain, expected_gen)),
+            A::Done(E::Out { hex, sas, name, renewed }) => {
+                let t = if renewed {
+                    "[JOINREQ] 申請已換新，要重新核對 SAS".to_string()
+                } else {
+                    format!("[JOINREQ] 這是同一份申請（名稱照原本的「{name}」）")
+                };
+                OwnerStep { hex, sas, ..OwnerStep::text(OwnerKind::Answer, t) }
+            }
+            A::Done(E::Refused(e)) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 申請沒有成功：{}", super::member::invite_err(&e))),
+            A::Done(E::PersistFailed(e)) => {
+                OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 申請沒有存好（{}），請再按一次", e.unwrap_or_else(|| "寫入被打斷".into())))
+            }
+        };
+        self.joinreq = None;
+        Some(st)
+    }
+
+    /// member-join §8: status, then info, then an Answer; `status_view` gives the page.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_status_page(&mut self) -> Result<OwnerStep, String> {
+        self.page_status = None;
+        self.page_info = None;
+        self.request_tagged("status", "status-page", Value::Map(vec![(Value::Uint(1), Value::Uint(0))]))
+    }
+
+    /// The fields of the last status page read (only what the node sent).
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn status_view(&self) -> StatusView {
+        status_view_of(self.page_status.as_ref(), self.page_info.as_ref())
     }
 
     /// The user's answer to a ConfirmCountry step.
@@ -786,14 +982,16 @@ impl OwnerSession {
             A::SignOwner { input } => OwnerStep { sign_input: input, ..OwnerStep::new(OwnerKind::Sign) },
             A::Write(frames) => OwnerStep { frames, ..OwnerStep::new(OwnerKind::Write) },
             A::PersistNet { net_id, plain, expected_gen } => persist_step(&net_id, plain, expected_gen),
+            A::PersistMnet { net_id, plain, expected_gen } => persist_at(OwnerKind::PersistMnet, batman_proto::mrec::mnet_path(&net_id), plain, expected_gen),
             A::ConfirmCountry { have, want } => OwnerStep::text(OwnerKind::ConfirmCountry, country_question(&have, &want)),
             A::Done(e) => {
-                let mesh_id = match &self.st {
-                    St::Join2 { mesh_id, .. } => mesh_id.clone(),
-                    _ => String::new(),
+                let (mesh_id, member) = match &self.st {
+                    St::Join2 { mesh_id, member, .. } => (mesh_id.clone(), *member),
+                    _ => (String::new(), false),
                 };
                 self.back_to_conn();
-                let mut st = OwnerStep::text(OwnerKind::Answer, join2_text(&e, &mesh_id, &self.last4));
+                let t = if member { member_join_text(&e, &mesh_id, &self.last4) } else { join2_text(&e, &mesh_id, &self.last4) };
+                let mut st = OwnerStep::text(OwnerKind::Answer, t);
                 // P2 (country not verified) has no status to read: "applied" only
                 st.poll_link = matches!(e, join2flow::End::Applied { country_unverified: false, .. });
                 st
@@ -929,6 +1127,7 @@ impl OwnerSession {
                     }
                 };
                 self.node = login.verified().cloned();
+                self.node_cert_raw = login.node_cert_raw().map(<[u8]>::to_vec);
                 match login.into_conn() {
                     Some(conn) => {
                         self.st = St::Conn { conn, asked: "", op: None };
@@ -1220,6 +1419,10 @@ mod tests {
             confirm: None,
             persist_then: None,
             link_secs: 0,
+            node_cert_raw: None,
+            joinreq: None,
+            page_status: None,
+            page_info: None,
         };
         (s, FakeNode { t: r.into_transport_mode().unwrap(), rx: frame::Reassembler::new(FL, 8192) })
     }
@@ -1382,5 +1585,109 @@ mod tests {
         assert_eq!(net_forget_joining(netrec::encode(&r), 1, nodecert::hex_lower(&[0xa1; 32])).err().as_deref(), Some("建立網路的節點不能忘記"));
         r.state = netrec::APPLIED.into();
         assert!(!net_summary(netrec::encode(&r)).unwrap().members.iter().any(|m| m.joining));
+    }
+}
+
+/// member-join §8 page fields from the status / info answers (whatever they lack stays "").
+pub(crate) fn status_view_of(st: Option<&Value>, info: Option<&Value>) -> StatusView {
+    let text_key = |m: &Value, k: &str| -> Option<Value> {
+        match m {
+            Value::Map(e) => e.iter().find(|(key, _)| matches!(key, Value::Text(t) if t == k)).map(|(_, v)| v.clone()),
+            _ => None,
+        }
+    };
+    let mut v = StatusView { state: String::new(), reason: String::new(), neighbours: String::new(), health: String::new(), snr: String::new(), version: String::new(), net_id: String::new() };
+    if let Some(s) = st {
+        v.state = match s.get(1).and_then(Value::as_uint) {
+            Some(0) => "未認領".into(),
+            Some(1) => "已認領（還沒加入網路）".into(),
+            Some(2) => "已加入網路".into(),
+            Some(3) => "舊版節點".into(),
+            _ => String::new(),
+        };
+        if let Some(j) = s.get(5) {
+            let c = j.get(1).and_then(Value::as_uint).unwrap_or(0);
+            v.reason = format!("{}（代碼 {c}）", j.get(2).and_then(Value::as_text).unwrap_or(""));
+        }
+        if let Some(n) = s.get(3).and_then(Value::as_uint) {
+            v.neighbours = format!("{n} 台");
+        }
+        v.health = match s.get(2).and_then(Value::as_uint) {
+            Some(0) => "正常".into(),
+            Some(1) => "不穩".into(),
+            Some(2) => "中斷".into(),
+            Some(n) => format!("代碼 {n}"),
+            None => String::new(),
+        };
+        if let Some(f) = s.get(15) {
+            if let Some(Value::Text(t)) = text_key(f, "join").and_then(|j| text_key(&j, "snr_db")) {
+                v.snr = if t.is_empty() { String::new() } else { format!("{t} dB") };
+            }
+            if let Some(Value::Text(t)) = text_key(f, "image") {
+                v.version = t;
+            }
+        }
+    }
+    if let Some(i) = info {
+        if v.version.is_empty() {
+            if let Some(t) = i.get(4).and_then(Value::as_text) {
+                v.version = t.into();
+            }
+        }
+        if let Some(id) = i.get(10).and_then(Value::as_bytes).filter(|b| b.len() == 16) {
+            v.net_id = nodecert::hex_lower(id);
+        }
+    }
+    v
+}
+
+#[cfg(test)]
+mod member_tests {
+    use super::*;
+
+    #[test]
+    fn m18_status_page_fields() {
+        let t = |k: &str| Value::Text(k.into());
+        let st = Value::Map(vec![
+            (Value::Uint(1), Value::Uint(1)),
+            (Value::Uint(3), Value::Uint(2)),
+            (Value::Uint(5), Value::Map(vec![(Value::Uint(1), Value::Uint(7)), (Value::Uint(2), t("SEARCHING"))])),
+            (Value::Uint(15), Value::Map(vec![(t("image"), t("1.8.0")), (t("join"), Value::Map(vec![(t("snr_db"), t("31"))]))])),
+        ]);
+        let info = Value::Map(vec![(Value::Uint(4), t("fw")), (Value::Uint(10), Value::Bytes(vec![0xab; 16]))]);
+        let v = status_view_of(Some(&st), Some(&info));
+        assert_eq!((v.state.as_str(), v.reason.as_str(), v.neighbours.as_str(), v.snr.as_str(), v.version.as_str()), ("已認領（還沒加入網路）", "SEARCHING（代碼 7）", "2 台", "31 dB", "1.8.0"));
+        assert_eq!(v.net_id, "ab".repeat(16));
+        // no key 10 (not in a network, or a member-role answer): no network id, so no name can be shown
+        let v = status_view_of(Some(&st), Some(&Value::Map(vec![(Value::Uint(4), t("fw"))])));
+        assert_eq!(v.net_id, "");
+        let v = status_view_of(None, Some(&Value::Map(vec![(Value::Uint(4), t("fw"))])));
+        assert_eq!(v.version, "fw", "info key 4 when status has no image");
+    }
+
+    #[test]
+    fn m10_forgetting_an_approved_node_says_it_revokes_nothing() {
+        let mut r = NetRec::made(joinflow::NetRecord {
+            net_id: [0xab; 16],
+            mesh_id: "bm".into(),
+            channel: 40,
+            bw: 4,
+            sae: "S".repeat(24),
+            net_root: [7; 32],
+            netcfg: vec![1],
+            members: batman_proto::cose::sign1(
+                batman_proto::cose::CT_MEMBERS,
+                &batman_proto::cose::member_list_payload(&[0xab; 16], 1, None, &[batman_proto::cose::Member { dac_pub_hash: &[0xa1; 32], ecdh_pub: &[4; 65], name: "c", owner_pub: &[4; 65], owner_enc_pub: &[4; 65] }]),
+                &[1; 64],
+            ),
+            secrets: vec![3],
+        });
+        r.state = netrec::APPLIED.into();
+        r.list = Some(vec![netrec::Member { dac_pub_hash: [0xb2; 32], ecdh_pub: [4; 65], name: "隊員".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Approved, prev_country: None }]);
+        let v = net_summary(netrec::encode(&r)).unwrap();
+        assert!(v.members[0].approved && !v.members[0].joining);
+        let st = net_forget_joining(netrec::encode(&r), 3, nodecert::hex_lower(&[0xb2; 32])).unwrap();
+        assert!(st.detail.contains("不會撤銷這台已拿到的網路金鑰"), "{}", st.detail);
+        assert!(!st.detail.contains(&"S".repeat(24)));
     }
 }
