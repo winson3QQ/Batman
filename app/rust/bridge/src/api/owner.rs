@@ -16,7 +16,7 @@ use batman_proto::joinflow::{self, Join};
 use batman_proto::loginflow::{Action, End, Login, NodeRecord};
 use batman_proto::netrec::{self, Confirm, MemberState, NetRec};
 use batman_proto::nodecert::{self, Verified};
-use batman_proto::{sig, status};
+use batman_proto::{sig, status, statuspage};
 use batman_proto::store;
 
 /// A sealed record and the AAD Kotlin opens it with.
@@ -255,9 +255,13 @@ pub struct OwnerSession {
     node_cert_raw: Option<Vec<u8>>,
     /// a join request being made (member-join §4 step 4); the connection stays usable meanwhile
     joinreq: Option<JoinReqFlow>,
-    /// the status page's two reads (member-join §8)
-    page_status: Option<Value>,
+    /// the status page's two reads (member-join §8; status page v8.1 §2): the status answer or its error code
+    page_status: Option<Result<Value, u64>>,
     page_info: Option<Value>,
+    /// the last status-page read produced the shown verdict (false: E_RATE kept the earlier one)
+    page_fresh: bool,
+    /// the last status-page read was refused with E_RATE
+    page_rate: bool,
 }
 
 /// A record write step at any record path (PersistNet / PersistPend / PersistMnet): CAS from `expected_gen`, sealed
@@ -267,20 +271,40 @@ pub(crate) fn persist_at(kind: OwnerKind, rel: String, record: Vec<u8>, expected
     OwnerStep { record, aad: store::aad(&rel, generation), rel, generation, expected_gen, ..OwnerStep::new(kind) }
 }
 
-/// The status page (member-join §8): only what the node sends; "" = not given. No battery: the node never sends it.
+/// The status page (docs/design/254-app-status-page.md v8.1 §2): the verdict of the last status read and the lines
+/// under it; every node string already passed through display_name + 64 characters. "" = no line.
 pub struct StatusView {
-    /// status key 1 in words, and key 5's reason when not joined
-    pub state: String,
-    pub reason: String,
-    /// key 3 neighbours / key 2 verdict in words
-    pub neighbours: String,
-    pub health: String,
-    /// key 15 join.snr_db (owner only)
-    pub snr: String,
-    /// key 15 image, else info key 4
-    pub version: String,
+    /// "grey" | "green" | "yellow" | "red"
+    pub color: String,
+    /// the §3 row label (logs / support)
+    pub row: String,
+    /// one plain sentence with what to do
+    pub sentence: String,
+    /// rows 3 / 4: 「隊員剛離開或關機時，這裡最多約 4 分鐘後才會改變」
+    pub lag_note: String,
+    /// the ⚠️ line
+    pub warning: String,
+    /// status key 1, -1 when unknown (the membership line: `status_membership_line`)
+    pub node_state: i64,
     /// info key 10 (lowercase hex): the network the node is in; the app maps it to a local record's name
     pub net_id: String,
+    /// info key 4 (our image version)
+    pub version: String,
+    /// the collapsed technical list
+    pub tech: Vec<String>,
+    /// false: this read was refused with E_RATE and the earlier verdict (and its read time) is kept
+    pub fresh: bool,
+    /// 「太快了，請稍等一秒」 after an E_RATE, else ""
+    pub rate_note: String,
+}
+
+const RATE_NOTE: &str = "太快了，請稍等一秒";
+
+/// §2-3: the membership line for status key 1 (`node_state`, -1 unknown), info key 10 (`net_id`, "" when not read) and
+/// the name of this phone's record for that network (None: no record matches).
+#[flutter_rust_bridge::frb(sync)]
+pub fn status_membership_line(node_state: i64, net_id: String, name: Option<String>) -> String {
+    statuspage::membership_line(u64::try_from(node_state).ok(), !net_id.is_empty(), name.as_deref())
 }
 
 /// A PersistNet step for the net record (netrec: the plain CBOR holds SAE / net_root; sealed by Kotlin, never shown):
@@ -430,7 +454,7 @@ fn member_join_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
 
 fn link_text(s: &flow::LinkState) -> String {
     match s {
-        flow::LinkState::Connected { neighbours } => format!("[CONNECTED] 已連上：看得到 {neighbours} 台鄰近節點"),
+        flow::LinkState::Connected { .. } => "[CONNECTED] 已連上隊伍網路".into(),
         flow::LinkState::NotYet => "[JOINED] 已套用，還沒看到其他成員（請確認其他節點已開機、在範圍內）".into(),
         flow::LinkState::Unknown => "[JOINED] 已套用，連線狀態未知".into(),
     }
@@ -534,6 +558,8 @@ impl OwnerSession {
             joinreq: None,
             page_status: None,
             page_info: None,
+            page_fresh: false,
+            page_rate: false,
         };
         let step = s.login_step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
         Ok((s, step))
@@ -674,12 +700,20 @@ impl OwnerSession {
                     }
                 }
                 Ok(Some(o)) if *asked == "status-page" => {
-                    // member-join §8: status, then info, then the page
+                    // status page §2-5: status, then info, then the page; E_RATE after an earlier read keeps that read
                     *asked = "";
-                    self.page_status = match o {
-                        Outcome::Ok(b) => Some(b),
-                        Outcome::Err { .. } => None,
-                    };
+                    match o {
+                        Outcome::Err { code: flow::E_RATE, .. } if self.page_status.is_some() => {
+                            self.page_fresh = false;
+                            self.page_rate = true;
+                            return Some(OwnerStep::text(OwnerKind::Answer, format!("[STATUS] {RATE_NOTE}")));
+                        }
+                        Outcome::Ok(b) => self.page_status = Some(Ok(b)),
+                        Outcome::Err { code, .. } => self.page_status = Some(Err(code)),
+                    }
+                    self.page_fresh = true;
+                    self.page_rate = matches!(self.page_status, Some(Err(flow::E_RATE)));
+                    self.page_info = None;
                     match conn.request("info", Value::Map(vec![])) {
                         Ok((_, f)) => {
                             *asked = "info-page";
@@ -971,15 +1005,14 @@ impl OwnerSession {
     /// member-join §8: status, then info, then an Answer; `status_view` gives the page.
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_status_page(&mut self) -> Result<OwnerStep, String> {
-        self.page_status = None;
-        self.page_info = None;
+        // the earlier read stays until this one is answered (an E_RATE keeps it: status page §2-5)
         self.request_tagged("status", "status-page", Value::Map(vec![(Value::Uint(1), Value::Uint(0))]))
     }
 
-    /// The fields of the last status page read (only what the node sent).
+    /// The last status page read as the page shows it (status page v8.1 §2-§3).
     #[flutter_rust_bridge::frb(sync)]
     pub fn status_view(&self) -> StatusView {
-        status_view_of(self.page_status.as_ref(), self.page_info.as_ref())
+        status_view_of(self.page_status.as_ref(), self.page_info.as_ref(), self.page_fresh, self.page_rate)
     }
 
     /// The user's answer to a ConfirmCountry step.
@@ -1317,7 +1350,7 @@ mod tests {
         assert_eq!(join2_text(&E::PersistFailed { applied: false, error: None }, "", ""), "[REQ_FAIL] 紀錄已被別處更新，請重新開啟再試");
         assert_eq!(join2_text(&E::PersistFailed { applied: false, error: Some("seal x".into()) }, "", ""), "[REQ_FAIL] 手機儲存失敗（seal x）");
         assert_eq!(country_question("JP", "US"), "[COUNTRY] 這台的國家是 JP，要改成 US 才能加入。要改嗎？");
-        assert_eq!(link_text(&flow::LinkState::Connected { neighbours: 1 }), "[CONNECTED] 已連上：看得到 1 台鄰近節點");
+        assert_eq!(link_text(&flow::LinkState::Connected { plinks: 3 }), "[CONNECTED] 已連上隊伍網路", "no station count (status page §3)");
     }
 
     #[test]
@@ -1459,6 +1492,8 @@ mod tests {
             joinreq: None,
             page_status: None,
             page_info: None,
+            page_fresh: false,
+            page_rate: false,
         };
         (s, FakeNode { t: r.into_transport_mode().unwrap(), rx: frame::Reassembler::new(FL, 8192) })
     }
@@ -1624,57 +1659,28 @@ mod tests {
     }
 }
 
-/// member-join §8 page fields from the status / info answers (whatever they lack stays "").
-pub(crate) fn status_view_of(st: Option<&Value>, info: Option<&Value>) -> StatusView {
-    let text_key = |m: &Value, k: &str| -> Option<Value> {
-        match m {
-            Value::Map(e) => e.iter().find(|(key, _)| matches!(key, Value::Text(t) if t == k)).map(|(_, v)| v.clone()),
-            _ => None,
-        }
+/// The status page view (status page v8.1 §2-§3) of the last status read (None: never read -> row 2) and info read.
+pub(crate) fn status_view_of(st: Option<&Result<Value, u64>>, info: Option<&Value>, fresh: bool, rate: bool) -> StatusView {
+    let empty = Value::Map(vec![]);
+    let a = match st {
+        Some(Ok(b)) => statuspage::Answer::Body(b),
+        Some(Err(c)) => statuspage::Answer::Error(*c),
+        None => statuspage::Answer::Body(&empty),
     };
-    let mut v = StatusView { state: String::new(), reason: String::new(), neighbours: String::new(), health: String::new(), snr: String::new(), version: String::new(), net_id: String::new() };
-    if let Some(s) = st {
-        v.state = match s.get(1).and_then(Value::as_uint) {
-            Some(0) => "未認領".into(),
-            Some(1) => "已認領（還沒加入網路）".into(),
-            Some(2) => "已加入網路".into(),
-            Some(3) => "舊版節點".into(),
-            _ => String::new(),
-        };
-        if let Some(j) = s.get(5) {
-            let c = j.get(1).and_then(Value::as_uint).unwrap_or(0);
-            v.reason = format!("{}（代碼 {c}）", j.get(2).and_then(Value::as_text).unwrap_or(""));
-        }
-        if let Some(n) = s.get(3).and_then(Value::as_uint) {
-            v.neighbours = format!("{n} 台");
-        }
-        v.health = match s.get(2).and_then(Value::as_uint) {
-            Some(0) => "正常".into(),
-            Some(1) => "不穩".into(),
-            Some(2) => "中斷".into(),
-            Some(n) => format!("代碼 {n}"),
-            None => String::new(),
-        };
-        if let Some(f) = s.get(15) {
-            if let Some(Value::Text(t)) = text_key(f, "join").and_then(|j| text_key(&j, "snr_db")) {
-                v.snr = if t.is_empty() { String::new() } else { format!("{t} dB") };
-            }
-            if let Some(Value::Text(t)) = text_key(f, "image") {
-                v.version = t;
-            }
-        }
+    let v = statuspage::link_verdict(a);
+    StatusView {
+        color: v.color.name().into(),
+        row: v.row.label().into(),
+        sentence: v.sentence,
+        lag_note: v.lag_note.unwrap_or("").into(),
+        warning: v.warning.unwrap_or("").into(),
+        node_state: statuspage::node_state(a).and_then(|n| i64::try_from(n).ok()).unwrap_or(-1),
+        net_id: info.and_then(|i| i.get(10)).and_then(Value::as_bytes).filter(|b| b.len() == 16).map(nodecert::hex_lower).unwrap_or_default(),
+        version: statuspage::version_line(info),
+        tech: statuspage::tech_lines(a),
+        fresh,
+        rate_note: if rate { RATE_NOTE.into() } else { String::new() },
     }
-    if let Some(i) = info {
-        if v.version.is_empty() {
-            if let Some(t) = i.get(4).and_then(Value::as_text) {
-                v.version = t.into();
-            }
-        }
-        if let Some(id) = i.get(10).and_then(Value::as_bytes).filter(|b| b.len() == 16) {
-            v.net_id = nodecert::hex_lower(id);
-        }
-    }
-    v
 }
 
 #[cfg(test)]
@@ -1682,23 +1688,91 @@ mod member_tests {
     use super::*;
 
     #[test]
-    fn m18_status_page_fields() {
+    fn m18_status_page_view() {
         let t = |k: &str| Value::Text(k.into());
+        // a claimed node, not joined (code 7), up 600 s: the verdict, info key 4 as the version (never key 15 image)
         let st = Value::Map(vec![
             (Value::Uint(1), Value::Uint(1)),
+            (Value::Uint(2), Value::Uint(2)),
             (Value::Uint(3), Value::Uint(2)),
-            (Value::Uint(5), Value::Map(vec![(Value::Uint(1), Value::Uint(7)), (Value::Uint(2), t("SEARCHING"))])),
-            (Value::Uint(15), Value::Map(vec![(t("image"), t("1.8.0")), (t("join"), Value::Map(vec![(t("snr_db"), t("31"))]))])),
+            (Value::Uint(5), Value::Map(vec![(Value::Uint(1), Value::Uint(7)), (Value::Uint(2), t("NOT_JOINED SEARCHING"))])),
+            (Value::Uint(15), Value::Map(vec![(t("image"), t("OpenMANET 1.8.0")), (t("uptime_s"), Value::Uint(600)), (t("join"), Value::Map(vec![(t("snr_db"), t("31")), (t("plinks"), Value::Uint(0))]))])),
         ]);
         let info = Value::Map(vec![(Value::Uint(4), t("fw")), (Value::Uint(10), Value::Bytes(vec![0xab; 16]))]);
-        let v = status_view_of(Some(&st), Some(&info));
-        assert_eq!((v.state.as_str(), v.reason.as_str(), v.neighbours.as_str(), v.snr.as_str(), v.version.as_str()), ("已認領（還沒加入網路）", "SEARCHING（代碼 7）", "2 台", "31 dB", "1.8.0"));
+        let v = status_view_of(Some(&Ok(st.clone())), Some(&info), true, false);
+        assert_eq!((v.color.as_str(), v.row.as_str(), v.node_state, v.version.as_str()), ("red", "7", 1, "fw"));
+        assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入隊伍網路」");
+        assert_eq!((v.lag_note.as_str(), v.warning.as_str(), v.rate_note.as_str()), ("", "", ""));
+        assert!(!v.sentence.contains("SEARCHING") && !v.sentence.contains("OpenMANET"), "the main screen has no node English");
+        assert!(v.tech.iter().any(|l| l.contains("SEARCHING")) && v.tech.iter().any(|l| l.contains("OpenMANET 1.8.0")));
         assert_eq!(v.net_id, "ab".repeat(16));
         // no key 10 (not in a network, or a member-role answer): no network id, so no name can be shown
-        let v = status_view_of(Some(&st), Some(&Value::Map(vec![(Value::Uint(4), t("fw"))])));
+        let v = status_view_of(Some(&Ok(st)), Some(&Value::Map(vec![(Value::Uint(4), t("fw"))])), true, false);
         assert_eq!(v.net_id, "");
-        let v = status_view_of(None, Some(&Value::Map(vec![(Value::Uint(4), t("fw"))])));
-        assert_eq!(v.version, "fw", "info key 4 when status has no image");
+        // never read / an error code / E_RATE without an earlier read
+        assert_eq!(status_view_of(None, None, true, false).row, "2");
+        let v = status_view_of(Some(&Err(6)), None, true, false);
+        assert_eq!((v.row.as_str(), v.node_state, v.color.as_str()), ("1", -1, "grey"));
+        let v = status_view_of(Some(&Err(12)), None, true, true);
+        assert_eq!((v.row.as_str(), v.rate_note.as_str()), ("2'", "太快了，請稍等一秒"));
+        // the membership line
+        assert_eq!(status_membership_line(2, "ab".repeat(16), Some("家裡網路".into())), "網路：家裡網路（已是成員）");
+        assert_eq!(status_membership_line(2, "ab".repeat(16), None), "網路：別支手機建立的網路");
+        assert_eq!(status_membership_line(2, String::new(), None), "網路：（讀不到名稱）");
+        assert_eq!(status_membership_line(1, String::new(), None), "已認領，還沒加入網路");
+        assert_eq!(status_membership_line(-1, "ab".repeat(16), Some("x".into())), "");
+    }
+
+    /// one status-page read on `s`: status answered `st`, info answered (unless the status read ends it); the Answer line
+    fn page_read(s: &mut OwnerSession, n: &mut super::tests::FakeNode, st: Result<Value, u64>) -> String {
+        let mut step = s.request_status_page().unwrap();
+        let mut st = Some(st);
+        loop {
+            match step.kind {
+                OwnerKind::Write => {
+                    let (id, verb) = n.request(&step.frames);
+                    let r = match verb.as_str() {
+                        "status" => st.take().unwrap(),
+                        "info" => Ok(Value::Map(vec![(Value::Uint(4), Value::Text("fw".into()))])),
+                        v => panic!("unexpected {v}"),
+                    };
+                    let mut next = None;
+                    for f in n.answer(id, r) {
+                        next = s.on_frame(f).or(next);
+                    }
+                    step = next.unwrap();
+                }
+                OwnerKind::Answer => return step.detail,
+                k => panic!("unexpected step {k:?}"),
+            }
+        }
+    }
+
+    /// status page §2-5: a status read refused with E_RATE keeps the earlier verdict; the first read refused with E_RATE
+    /// is row 2'.
+    #[test]
+    fn status_page_rate_limit_keeps_the_earlier_read() {
+        let t = |k: &str| Value::Text(k.into());
+        let joined = Value::Map(vec![
+            (Value::Uint(1), Value::Uint(2)),
+            (Value::Uint(2), Value::Uint(0)),
+            (Value::Uint(15), Value::Map(vec![(t("uptime_s"), Value::Uint(600)), (t("join"), Value::Map(vec![(t("snr_db"), t("31")), (t("plinks"), Value::Uint(1))]))])),
+        ]);
+        let (mut s, mut n) = super::tests::logged_in();
+        // first read refused: row 2' with the note
+        assert_eq!(page_read(&mut s, &mut n, Err(12)), "[STATUS] 狀態已更新");
+        let v = s.status_view();
+        assert_eq!((v.row.as_str(), v.fresh, v.rate_note.as_str()), ("2'", true, "太快了，請稍等一秒"));
+        // a good read, then E_RATE: the good verdict stays, marked not fresh
+        assert_eq!(page_read(&mut s, &mut n, Ok(joined)), "[STATUS] 狀態已更新");
+        let v = s.status_view();
+        assert_eq!((v.row.as_str(), v.fresh, v.rate_note.as_str(), v.version.as_str()), ("3", true, "", "fw"));
+        assert_eq!(page_read(&mut s, &mut n, Err(12)), "[STATUS] 太快了，請稍等一秒");
+        let v = s.status_view();
+        assert_eq!((v.row.as_str(), v.fresh, v.rate_note.as_str(), v.version.as_str()), ("3", false, "太快了，請稍等一秒", "fw"));
+        // another error code is not kept back: it is shown (row 2')
+        assert_eq!(page_read(&mut s, &mut n, Err(3)), "[STATUS] 狀態已更新");
+        assert_eq!(s.status_view().row, "2'");
     }
 
     #[test]

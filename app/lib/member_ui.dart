@@ -3,7 +3,9 @@
 // - the two SAS screens carry the R22 line and call their action only when the button is pressed, with the SAS
 //   string on the screen;
 // - pasting is refused unless a dev build (the paste field never reads the clipboard otherwise);
-// - the status page shows a network name only when the node's network id matches a record on this phone.
+// - the status page (254-app-status-page v8.1 §2) shows Rust's verdict; a network name only from a record on this
+//   phone; an E_RATE keeps the earlier read time;
+// - My nodes: the controls scroll above the log (f139951).
 import 'package:flutter/material.dart';
 
 /// 219 §5.5 / R22: the SAS is compared over another channel.
@@ -149,39 +151,122 @@ bool forgettable({required bool joining, required bool approved, required bool c
 String forgetNotice({required bool approved}) =>
     approved ? '只從本機清單移除，不會撤銷這台已拿到的網路金鑰。' : '只改這支手機裡的網路紀錄，節點本身不會被改動。';
 
-/// The fields of the status page (§8): only what the node sent ("" = not given).
+/// One status page read (docs/design/254-app-status-page.md v8.1 §2), as Rust made it: every node string already
+/// filtered and cut; "" = no line. [fresh] false: the node answered E_RATE and Rust kept the earlier verdict.
 class StatusFields {
-  const StatusFields({this.state = '', this.reason = '', this.neighbours = '', this.health = '', this.snr = '', this.version = '', this.netId = ''});
-  final String state, reason, neighbours, health, snr, version;
-
-  /// info key 10 (lowercase hex): the network the node is in
-  final String netId;
+  const StatusFields(
+      {this.color = 'grey',
+      this.sentence = '',
+      this.lagNote = '',
+      this.warning = '',
+      this.membership = '',
+      this.version = '',
+      this.tech = const [],
+      this.rateNote = '',
+      this.fresh = true});
+  final String color, sentence, lagNote, warning, membership, version, rateNote;
+  final List<String> tech;
+  final bool fresh;
 }
 
 /// The network name for [netId]: only from a record on this phone (net/ or mnet/), never the id itself.
 String? networkName(String netId, Map<String, String> names) => netId.isEmpty ? null : names[netId];
 
-/// The status page (§8). No battery: the node never sends it.
-class StatusPageView extends StatelessWidget {
-  const StatusPageView({super.key, required this.fields, required this.names});
-  final StatusFields fields;
+/// §2-1 / §2-5: the read time shown — a fresh read is "now"; a read refused with E_RATE keeps the earlier read's time.
+DateTime readTime({required bool fresh, required DateTime now, DateTime? previous}) => fresh || previous == null ? now : previous;
 
-  /// net_id hex -> netcfg name, from this phone's records
-  final Map<String, String> names;
+String _two(int n) => n.toString().padLeft(2, '0');
+
+/// HH:MM:SS (the app's own clock, display only)
+String hms(DateTime t) => '${_two(t.hour)}:${_two(t.minute)}:${_two(t.second)}';
+
+Color verdictColor(String c) => switch (c) {
+      'green' => Colors.green,
+      'yellow' => Colors.amber,
+      'red' => Colors.red,
+      _ => Colors.grey,
+    };
+
+/// The status page (§2), top to bottom: the verdict (colour + sentence), 讀取於, the lag small print (rows 3 / 4), the
+/// ⚠️ line, the membership line, the version, 「重新整理」, and the technical list collapsed. No battery: the node never
+/// sends it.
+class StatusPageView extends StatefulWidget {
+  const StatusPageView({super.key, required this.initial, required this.initialAt, required this.onRefresh, this.clock = DateTime.now});
+  final StatusFields initial;
+  final DateTime initialAt;
+
+  /// reads status + info again; null when nothing was read (the link was lost, or another request runs)
+  final Future<StatusFields?> Function() onRefresh;
+  final DateTime Function() clock;
+
+  @override
+  State<StatusPageView> createState() => _StatusPageViewState();
+}
+
+class _StatusPageViewState extends State<StatusPageView> {
+  late StatusFields _f = widget.initial;
+  late DateTime _at = widget.initialAt;
+  bool _busy = false;
+
+  Future<void> _refresh() async {
+    setState(() => _busy = true);
+    try {
+      final r = await widget.onRefresh();
+      if (r != null && mounted) {
+        setState(() {
+          _at = readTime(fresh: r.fresh, now: widget.clock(), previous: _at);
+          _f = r;
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final f = fields;
-    final name = networkName(f.netId, names);
-    Widget row(String k, String v) => v.isEmpty ? const SizedBox.shrink() : Text('$k：$v', key: Key('status:$k'));
+    final f = _f;
+    const small = TextStyle(fontSize: 12, color: Colors.black54);
     return ListView(padding: const EdgeInsets.all(16), children: [
-      row('狀態', f.state),
-      row('原因', f.reason),
-      row('網路名稱', name ?? (f.netId.isEmpty ? '' : '（不是這支手機的網路）')),
-      row('鄰近節點', f.neighbours),
-      row('網路狀況', f.health),
-      row('訊號', f.snr),
-      row('軟體版本', f.version),
+      Row(key: const Key('verdict'), crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Icon(Icons.circle, key: Key('color:${f.color}'), color: verdictColor(f.color)),
+        const SizedBox(width: 8),
+        Expanded(child: Text(f.sentence, key: const Key('sentence'), style: const TextStyle(fontSize: 18))),
+      ]),
+      Text('讀取於 ${hms(_at)}', key: const Key('readAt'), style: small),
+      if (f.lagNote.isNotEmpty) Text(f.lagNote, key: const Key('lagNote'), style: small),
+      const SizedBox(height: 8),
+      if (f.warning.isNotEmpty) Text('⚠️ ${f.warning}', key: const Key('warning'), style: const TextStyle(color: Colors.deepOrange)),
+      if (f.membership.isNotEmpty) Text(f.membership, key: const Key('membership')),
+      if (f.version.isNotEmpty) Text('軟體版本：${f.version}', key: const Key('version')),
+      const SizedBox(height: 8),
+      Row(children: [
+        FilledButton(key: const Key('refresh'), onPressed: _busy ? null : _refresh, child: const Text('重新整理')),
+        const SizedBox(width: 8),
+        if (f.rateNote.isNotEmpty) Expanded(child: Text(f.rateNote, key: const Key('rateNote'))),
+      ]),
+      ExpansionTile(
+          key: const Key('tech'),
+          title: const Text('技術資訊（給維修人員看）'),
+          expandedCrossAxisAlignment: CrossAxisAlignment.start,
+          children: [for (final l in f.tech) Text(l, style: small)]),
+    ]);
+  }
+}
+
+/// The "My nodes" layout (f139951): the controls scroll on their own above the log — on a phone they are taller than
+/// the screen (found on the S20: 「加入隊伍網路」 was laid out off-screen and could not be reached).
+class ControlsAndLog extends StatelessWidget {
+  const ControlsAndLog({super.key, required this.controls, required this.log});
+  final List<Widget> controls;
+  final List<String> log;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Expanded(flex: 3, child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: controls))),
+      const Divider(),
+      Expanded(flex: 2, child: ListView(children: [for (final l in log) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
     ]);
   }
 }

@@ -55,6 +55,18 @@ OwnerStep netForgetJoining({
   dacHash: dacHash,
 );
 
+/// §2-3: the membership line for status key 1 (`node_state`, -1 unknown), info key 10 (`net_id`, "" when not read) and
+/// the name of this phone's record for that network (None: no record matches).
+String statusMembershipLine({
+  required PlatformInt64 nodeState,
+  required String netId,
+  String? name,
+}) => RustLib.instance.api.crateApiOwnerStatusMembershipLine(
+  nodeState: nodeState,
+  netId: netId,
+  name: name,
+);
+
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>
 abstract class OwnerSession implements RustOpaqueInterface {
   /// After an unclear make-network reply: "confirm network" (join2 §3.2) on the record this session made.
@@ -158,7 +170,7 @@ abstract class OwnerSession implements RustOpaqueInterface {
     frameLimit: frameLimit,
   );
 
-  /// The fields of the last status page read (only what the node sent).
+  /// The last status page read as the page shows it (status page v8.1 §2-§3).
   StatusView statusView();
 }
 
@@ -394,55 +406,84 @@ class SealedRecord {
           aad == other.aad;
 }
 
-/// The status page (member-join §8): only what the node sends; "" = not given. No battery: the node never sends it.
+/// The status page (docs/design/254-app-status-page.md v8.1 §2): the verdict of the last status read and the lines
+/// under it; every node string already passed through display_name + 64 characters. "" = no line.
 class StatusView {
-  /// status key 1 in words, and key 5's reason when not joined
-  final String state;
-  final String reason;
+  /// "grey" | "green" | "yellow" | "red"
+  final String color;
 
-  /// key 3 neighbours / key 2 verdict in words
-  final String neighbours;
-  final String health;
+  /// the §3 row label (logs / support)
+  final String row;
 
-  /// key 15 join.snr_db (owner only)
-  final String snr;
+  /// one plain sentence with what to do
+  final String sentence;
 
-  /// key 15 image, else info key 4
-  final String version;
+  /// rows 3 / 4: 「隊員剛離開或關機時，這裡最多約 4 分鐘後才會改變」
+  final String lagNote;
+
+  /// the ⚠️ line
+  final String warning;
+
+  /// status key 1, -1 when unknown (the membership line: `status_membership_line`)
+  final PlatformInt64 nodeState;
 
   /// info key 10 (lowercase hex): the network the node is in; the app maps it to a local record's name
   final String netId;
 
+  /// info key 4 (our image version)
+  final String version;
+
+  /// the collapsed technical list
+  final List<String> tech;
+
+  /// false: this read was refused with E_RATE and the earlier verdict (and its read time) is kept
+  final bool fresh;
+
+  /// 「太快了，請稍等一秒」 after an E_RATE, else ""
+  final String rateNote;
+
   const StatusView({
-    required this.state,
-    required this.reason,
-    required this.neighbours,
-    required this.health,
-    required this.snr,
-    required this.version,
+    required this.color,
+    required this.row,
+    required this.sentence,
+    required this.lagNote,
+    required this.warning,
+    required this.nodeState,
     required this.netId,
+    required this.version,
+    required this.tech,
+    required this.fresh,
+    required this.rateNote,
   });
 
   @override
   int get hashCode =>
-      state.hashCode ^
-      reason.hashCode ^
-      neighbours.hashCode ^
-      health.hashCode ^
-      snr.hashCode ^
+      color.hashCode ^
+      row.hashCode ^
+      sentence.hashCode ^
+      lagNote.hashCode ^
+      warning.hashCode ^
+      nodeState.hashCode ^
+      netId.hashCode ^
       version.hashCode ^
-      netId.hashCode;
+      tech.hashCode ^
+      fresh.hashCode ^
+      rateNote.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is StatusView &&
           runtimeType == other.runtimeType &&
-          state == other.state &&
-          reason == other.reason &&
-          neighbours == other.neighbours &&
-          health == other.health &&
-          snr == other.snr &&
+          color == other.color &&
+          row == other.row &&
+          sentence == other.sentence &&
+          lagNote == other.lagNote &&
+          warning == other.warning &&
+          nodeState == other.nodeState &&
+          netId == other.netId &&
           version == other.version &&
-          netId == other.netId;
+          tech == other.tech &&
+          fresh == other.fresh &&
+          rateNote == other.rateNote;
 }
