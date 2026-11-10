@@ -456,7 +456,7 @@ class _NodesPageState extends State<NodesPage> {
   }
 
   /// This phone's net records, opened (Kotlin) and summarised (Rust); one is picked (directly when there is only one).
-  Future<_Net?> _pickNet(String title, {bool Function(NetView)? only, bool forJoin = false}) async {
+  Future<_Net?> _pickNet(String title, {bool Function(NetView)? only, bool forJoin = false, String? none}) async {
     final dir = await _dir();
     final nets = <_Net>[];
     for (final id in await listNets(dir: dir)) {
@@ -475,7 +475,7 @@ class _NodesPageState extends State<NodesPage> {
       // join2 §6: app reinstalled / record key lost -> no more nodes can be added from this phone
       _say(forJoin
           ? '手機裡沒有可用的網路紀錄，不能再加節點。若 App 重裝過：新建網路會讓整隊分成兩個網路，舊節點要重燒'
-          : '手機裡沒有可用的網路紀錄');
+          : none ?? '手機裡沒有可用的網路紀錄');
       return null;
     }
     if (nets.length == 1 || !mounted) return nets.first;
@@ -561,7 +561,8 @@ class _NodesPageState extends State<NodesPage> {
   /// join2 §3.4: forget a joining member (this phone's record only; the node is not changed)
   Future<void> _forgetJoining() async {
     if (_busy) return;
-    final net = await _pickNet('在哪個網路裡忘記？', only: (v) => v.members.any((m) => m.joining && !m.creator));
+    final net = await _pickNet('在哪個網路裡忘記？',
+        only: (v) => v.members.any((m) => m.joining && !m.creator), none: '沒有「加入中」的節點可以忘記');
     if (net == null || !mounted) return;
     // the node that made the network is never offered (Rust refuses it too: 建立網路的節點不能忘記)
     final joining = net.view.members.where((m) => m.joining && !m.creator).toList();
