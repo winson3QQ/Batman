@@ -40,11 +40,11 @@ const _linkEvery = Duration(seconds: 10);
 
 /// A join waits longer than provd's helper wait (HelperWait 330 s, S/provd/server.go:22) per node request; the
 /// country question to the user does not count.
-const _joinWait = Duration(seconds: 360);
+const _joinWait = joinWait;
 const _joinUnclear = '[JOIN_STATE] 結果不明，稍後在這台按「繼續加入」';
 const _makeUnclear = '[NET_STATE] 結果不明，稍後在這台按「確認網路」';
 /// a join / make-network that lost the link before any record write: nothing was written or sent
-const _notSent = '[REQ_FAIL] 連線失敗，還沒有寫入或送出，請重試';
+const _notSent = notSentLine;
 const _linkUnknown = '[JOINED] 已套用，連線狀態未知';
 
 class NodesPage extends StatefulWidget {
@@ -74,7 +74,10 @@ class _NodesPageState extends State<NodesPage> {
   String _waitLine = '';
   // a join / make-network in flight: its "outcome unknown" line (null otherwise); whether a record write happened yet
   String? _unclear;
-  bool _wrote = false;
+  // whether the outstanding request may have reached the node (leave v4.1 §3): a record write, or Rust's `sent` step
+  var _track = SendTrack();
+  // network/leave answered 0 in the outstanding request (the page re-reads once)
+  bool _left = false;
   bool _saved = false; // a record write of the current request landed (storeWriteCas succeeded)
   bool _quiet = false; // the last request was a quiet one (a late answer of it is only logged)
   // the status page's last fresh read time (an E_RATE on reopening keeps the earlier verdict and its time)
@@ -174,6 +177,7 @@ class _NodesPageState extends State<NodesPage> {
         }
         switch (st.kind) {
           case OwnerKind.write:
+            _track.write(sent: st.sent);
             await _write(rx, st.frames);
             if (gone()) return;
             _kick();
@@ -203,7 +207,7 @@ class _NodesPageState extends State<NodesPage> {
             // the net / mpend / mnet record lands (sealed, fsynced) before anything goes out (design §3), by compare-and-swap from
             // the generation it was read at (join2 §3.1); never shown
             final OwnerStep p = st;
-            _wrote = true;
+            _track.persisted();
             try {
               final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
               await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
@@ -242,6 +246,7 @@ class _NodesPageState extends State<NodesPage> {
             st = null;
           case OwnerKind.answer:
             if (st.pollLink) _linkFrom = DateTime.now();
+            if (st.left) _left = true;
             _lastHex = st.hex;
             _lastSas = st.sas;
             _lastRenewed = st.renewed;
@@ -347,7 +352,7 @@ class _NodesPageState extends State<NodesPage> {
     if (a != null && !a.isCompleted && _unclear != null) a.complete(_unclearNow());
   }
 
-  String _unclearNow() => _wrote ? _unclear! : _notSent;
+  String _unclearNow() => _track.unclearNow(_unclear!);
 
   void _lost() {
     _say('[LINK_LOST] 和節點的連線斷了（下次操作時會自動重新連線）');
@@ -430,7 +435,8 @@ class _NodesPageState extends State<NodesPage> {
     _waitFor = wait;
     _waitLine = '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應（結果不明；下次操作會重新連線）';
     _unclear = unclear;
-    _wrote = false;
+    _track = SendTrack();
+    _left = false;
     _saved = false;
     _quiet = quiet;
     try {
@@ -902,7 +908,17 @@ class _NodesPageState extends State<NodesPage> {
     await Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => Scaffold(
             appBar: AppBar(title: const Text('節點狀態')),
-            body: StatusPageView(initial: first, initialAt: _readClock.last ?? DateTime.now(), onRefresh: _readStatusPage))));
+            body: StatusPageView(
+                initial: first, initialAt: _readClock.last ?? DateTime.now(), onRefresh: _readStatusPage, onLeave: _leaveNetwork))));
+  }
+
+  /// 254-app-leave v4.1: 「離開網路」 (confirmed on the page); after a reply 0 the page is read once more.
+  Future<(String?, StatusFields?)> _leaveNetwork() async {
+    final a = await sendLeave(({required wait, required retry, required unclear}) =>
+        _ask((s) => s.requestLeaveNetwork(), wait: wait, retry: retry, unclear: unclear));
+    if (a == null) return (null, null);
+    if (!_left) return (a, null);
+    return (a, await _readStatusPage());
   }
 
   /// One status + info read, as the page shows it (null: nothing was read).
@@ -910,9 +926,11 @@ class _NodesPageState extends State<NodesPage> {
     final a = await _ask((s) => s.requestStatusPage(), quiet: true);
     final s = _session;
     if (a == null || s == null || !mounted) return null;
-    final (names, hasNet, hasMnet) = await _netNames();
+    final (names, hasNet, hasMnet, appliedNets, entryMnets) = await _netNames();
     if (!mounted) return null;
     final v = s.statusView(hasNet: hasNet, hasMnet: hasMnet);
+    final dialog = leaveConfirmText(
+        last4: s.last4(), netId: v.netId, adminApplied: appliedNets.contains(v.netId), memberEntry: entryMnets.contains(v.netId));
     _readClock.stamp(fresh: v.fresh, now: DateTime.now());
     _log('status page row ${v.row} fresh ${v.fresh}');
     final membership = statusMembershipLine(nodeState: v.nodeState, netId: v.netId, name: networkName(v.netId, names));
@@ -925,20 +943,28 @@ class _NodesPageState extends State<NodesPage> {
         version: v.version,
         tech: v.tech,
         rateNote: v.rateNote,
-        fresh: v.fresh);
+        fresh: v.fresh,
+        unfinished: v.unfinished,
+        unfinishedUnderVerdict: v.unfinishedUnderVerdict,
+        canLeave: v.canLeave,
+        leaveTitle: dialog[0],
+        leaveBody: dialog[1]);
   }
 
   /// net_id hex -> netcfg name, from this phone's net / mnet records; whether it holds any net/ (admin) and any mnet/
   /// (member) record
-  Future<(Map<String, String>, bool, bool)> _netNames() async {
+  Future<(Map<String, String>, bool, bool, Set<String>, Set<String>)> _netNames() async {
     final names = <String, String>{};
+    final applied = <String>{}, entries = <String>{};
     final dir = await _dir();
     final nets = await listNets(dir: dir), mnets = await listMnets(dir: dir);
     for (final id in nets) {
       final (_, p) = await _readRecord('net/$id');
       if (p != null) {
         try {
-          names[id] = netSummary(recordPlain: p).netName;
+          final nv = netSummary(recordPlain: p);
+          names[id] = nv.netName;
+          if (nv.applied) applied.add(id);
         } catch (_) {}
       }
     }
@@ -946,11 +972,13 @@ class _NodesPageState extends State<NodesPage> {
       final (_, p) = await _readRecord('mnet/$id');
       if (p != null) {
         try {
-          names[id] = mnetSummary(mnetPlain: p).netName;
+          final mv = mnetSummary(mnetPlain: p);
+          names[id] = mv.netName;
+          if (mv.entryState.isNotEmpty) entries.add(id);
         } catch (_) {}
       }
     }
-    return (names, nets.isNotEmpty, mnets.isNotEmpty);
+    return (names, nets.isNotEmpty, mnets.isNotEmpty, applied, entries);
   }
 
   /// join2 §3.2: read info on the logged-in node against one of this phone's net records

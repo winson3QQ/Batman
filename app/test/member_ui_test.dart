@@ -211,6 +211,105 @@ void main() {
     });
   });
 
+  // 254-app-leave v4.1 §6 T3 (the page side; the outcome texts are Rust's, T1 / T2).
+  group('S6 leave', () {
+    const member = StatusFields(
+        color: 'green',
+        sentence: '已連上隊伍網路',
+        warning: '節點回報異常（可能是手機 Wi-Fi 還沒設定）— 設好仍然如此請找維修人員',
+        membership: '網路：家裡網路（已是成員）',
+        canLeave: true,
+        leaveTitle: '要讓節點 …2233 離開隊伍網路嗎？',
+        leaveBody: '離開後這台的 HaLow 無線電會關閉… 之後可以按「加入網路／繼續加入」再加入。');
+    final at = DateTime(2026, 11, 10, 9, 5, 7);
+    Widget page(StatusFields f, {Future<(String?, StatusFields?)> Function()? leave}) => app(StatusPageView(
+        initial: f, initialAt: at, onRefresh: () async => null, onLeave: leave, clock: () => DateTime(2026, 11, 10, 9, 6, 0)));
+
+    testWidgets('the button shows only when the page says it can leave', (t) async {
+      await t.pumpWidget(page(member, leave: () async => (null, null)));
+      expect(find.byKey(const Key('leave')), findsOneWidget);
+      await t.pumpWidget(const SizedBox());
+      await t.pumpWidget(page(const StatusFields(sentence: '這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」'), leave: () async => (null, null)));
+      expect(find.byKey(const Key('leave')), findsNothing);
+      // the k10-absent / k11-true case: Rust says canLeave (bridge view_unfinished_and_leave_button)
+      await t.pumpWidget(const SizedBox());
+      await t.pumpWidget(page(const StatusFields(sentence: '這台還沒加入隊伍網路', canLeave: true, unfinished: 'u', unfinishedUnderVerdict: true),
+          leave: () async => (null, null)));
+      expect(find.byKey(const Key('leave')), findsOneWidget);
+    });
+
+    testWidgets('cancel sends nothing; confirm sends once and shows the answer and the re-read page', (t) async {
+      var calls = 0;
+      await t.pumpWidget(page(member, leave: () async {
+        calls++;
+        return ('[ANSWER] [LEFT] 已離開隊伍網路', const StatusFields(color: 'red', sentence: '這台還沒加入隊伍網路'));
+      }));
+      await t.scrollUntilVisible(find.byKey(const Key('leave')), 100);
+      await t.tap(find.byKey(const Key('leave')));
+      await t.pumpAndSettle();
+      expect(find.text('要讓節點 …2233 離開隊伍網路嗎？'), findsOneWidget);
+      expect(find.textContaining('之後可以按「加入網路／繼續加入」再加入。'), findsOneWidget);
+      await t.tap(find.byKey(const Key('leaveCancel')));
+      await t.pumpAndSettle();
+      expect(calls, 0, reason: 'cancel sends nothing');
+      await t.tap(find.byKey(const Key('leave')));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('leaveConfirm')));
+      await t.pumpAndSettle();
+      expect(calls, 1);
+      expect(find.text('已離開隊伍網路'), findsOneWidget, reason: 'the answer without its markers');
+      expect(find.text('這台還沒加入隊伍網路'), findsOneWidget, reason: 'the page re-read after a reply 0');
+      expect(find.text('讀取於 09:06:00'), findsOneWidget);
+    });
+
+    testWidgets('the unfinished line: under the verdict without key 10, after the ⚠️ line with it', (t) async {
+      double y(Finder f) => t.getTopLeft(f).dy;
+      await t.pumpWidget(page(const StatusFields(sentence: '這台還沒加入隊伍網路', unfinished: '節點上還有沒完成的網路變更', unfinishedUnderVerdict: true)));
+      expect(y(find.byKey(const Key('sentence'))), lessThan(y(find.byKey(const Key('unfinished')))));
+      expect(y(find.byKey(const Key('unfinished'))), lessThan(y(find.byKey(const Key('readAt')))));
+      await t.pumpWidget(const SizedBox());
+      await t.pumpWidget(page(const StatusFields(
+          sentence: '已連上隊伍網路', warning: 'w', membership: 'm', unfinished: '節點上還有沒完成的網路變更', unfinishedUnderVerdict: false)));
+      expect(y(find.byKey(const Key('readAt'))), lessThan(y(find.byKey(const Key('unfinished')))));
+      expect(y(find.byKey(const Key('warning'))), lessThan(y(find.byKey(const Key('unfinished')))));
+      expect(y(find.byKey(const Key('unfinished'))), lessThan(y(find.byKey(const Key('membership')))));
+      await t.pumpWidget(const SizedBox());
+      await t.pumpWidget(page(const StatusFields(sentence: '已連上隊伍網路')));
+      expect(find.byKey(const Key('unfinished')), findsNothing);
+    });
+
+    test('the leave request: wait 360 s, never re-sent, the unclear line', () async {
+      Duration? w;
+      bool? r;
+      String? u;
+      await sendLeave(({required wait, required retry, required unclear}) async {
+        (w, r, u) = (wait, retry, unclear);
+        return null;
+      });
+      expect(w, const Duration(seconds: 360));
+      expect(r, isFalse);
+      expect(u, '[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁');
+    });
+
+    test('SendTrack: only a landed record write or a step Rust marked sent counts', () {
+      // a leave: op/nonce write (not sent), then the network/leave write (sent) -> a lost link is "unknown"
+      final leave = SendTrack()
+        ..write(sent: false)
+        ..write(sent: true);
+      expect(leave.unclearNow(leaveUnclear), leaveUnclear);
+      // lost before the network/leave write: nothing went out
+      final early = SendTrack()..write(sent: false);
+      expect(early.unclearNow(leaveUnclear), notSentLine);
+      // a join that drops after its owner signature but before the record write: still "not sent"
+      final join = SendTrack()
+        ..write(sent: false) // op/nonce
+        ..write(sent: false); // anything before the Persist step
+      expect(join.unclearNow('[JOIN_STATE] 結果不明'), notSentLine);
+      final joined = SendTrack()..persisted();
+      expect(joined.unclearNow('[JOIN_STATE] 結果不明'), '[JOIN_STATE] 結果不明');
+    });
+  });
+
   // §5 T9 (f139951): on a 360 x 640 phone the last control (「加入隊伍網路」) can be scrolled to and pressed.
   group('T9 My nodes layout', () {
     testWidgets('360 x 640: 加入隊伍網路 scrolls into view and is pressed', (t) async {

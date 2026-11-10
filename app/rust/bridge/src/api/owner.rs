@@ -200,6 +200,11 @@ pub struct OwnerStep {
     pub sas: String,
     /// a join request that replaced an existing one of this network: verify the SAS again (member-join §3)
     pub renewed: bool,
+    /// this Write carries network/leave: from here on a lost link means "outcome unknown", not "not sent"
+    /// (254-app-leave v4.1 §3; Dart sets its sent mark only from this flag)
+    pub sent: bool,
+    /// an Answer: network/leave answered 0 (re-read the status page once, §2)
+    pub left: bool,
 }
 
 impl OwnerStep {
@@ -218,6 +223,8 @@ impl OwnerStep {
             hex: String::new(),
             sas: String::new(),
             renewed: false,
+            sent: false,
+            left: false,
         }
     }
     pub(crate) fn text(kind: OwnerKind, d: String) -> OwnerStep {
@@ -262,6 +269,12 @@ pub struct OwnerSession {
     page_fresh: bool,
     /// the last status-page read was refused with E_RATE
     page_rate: bool,
+    /// a leave whose reply was not 0: (sent, code) until its info read answers (254-app-leave v4.1 §3)
+    leave: Option<(bool, Option<u64>)>,
+    /// network/leave answered 0: the next status-page read cuts the k1 = 1 join sentence once (§2)
+    after_left: bool,
+    /// the shown status-page read is that one re-read
+    page_cut_once: bool,
 }
 
 /// A record write step at any record path (PersistNet / PersistPend / PersistMnet): CAS from `expected_gen`, sealed
@@ -296,6 +309,33 @@ pub struct StatusView {
     pub fresh: bool,
     /// 「太快了，請稍等一秒」 after an E_RATE, else ""
     pub rate_note: String,
+    /// info key 11 = true: the unfinished-change line (254-app-leave v4.1 §2), and whether it sits right under the
+    /// verdict (key 10 absent)
+    pub unfinished: String,
+    pub unfinished_under_verdict: bool,
+    /// the leave button shows (key 10, or status key 1 = 2, or key 11 true)
+    pub can_leave: bool,
+}
+
+const LEAVE: &str = "network/leave";
+
+/// leave v4.1 §3: the info read after a leave that did not answer 0 (an unwritable request answers right away)
+fn leave_info(conn: &mut Conn, asked: &mut &'static str, sent: bool, code: Option<u64>) -> OwnerStep {
+    match conn.request("info", Value::Map(vec![])) {
+        Ok((_, f)) => {
+            *asked = "info-leave";
+            OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) }
+        }
+        Err(_) => OwnerStep::text(OwnerKind::Answer, flow::leave_outcome(sent, code, None).text()),
+    }
+}
+
+/// The leave dialog (254-app-leave v4.1 §2): [title, body]. `net_id`: the page's last info key 10 ("" = unknown);
+/// `admin_applied` / `member_entry`: this phone has `net/<net_id>` APPLIED / `mnet/<net_id>` with its own-node entry.
+#[flutter_rust_bridge::frb(sync)]
+pub fn leave_confirm_text(last4: String, net_id: String, admin_applied: bool, member_entry: bool) -> Vec<String> {
+    let (t, b) = flow::leave_confirm(&last4, !net_id.is_empty(), admin_applied, member_entry);
+    vec![t, b]
 }
 
 const RATE_NOTE: &str = "太快了，請稍等一秒";
@@ -560,6 +600,9 @@ impl OwnerSession {
             page_info: None,
             page_fresh: false,
             page_rate: false,
+            leave: None,
+            after_left: false,
+            page_cut_once: false,
         };
         let step = s.login_step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
         Ok((s, step))
@@ -589,13 +632,18 @@ impl OwnerSession {
             let (verb, body) = op.take()?;
             let raw = match sig::der_to_raw_low_s(&der) {
                 Ok(r) => r,
+                // leave v4.1 §3: a signature failure is "not sent" — read info only to pick the wording
+                Err(_) if verb == LEAVE => {
+                    self.leave = Some((false, None));
+                    return Some(leave_info(conn, asked, false, None));
+                }
                 Err(e) => return Some(OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：手機簽章出錯（{e:?}）", verb_text(verb)))),
             };
             let req = sig::with_owner_op(&body, verb, &raw).map_err(|e| format!("{e:?}")).and_then(|b| conn.request(verb, b).map_err(|e| format!("{e:?}")));
             return Some(match req {
                 Ok((_, f)) => {
                     *asked = verb;
-                    OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) }
+                    OwnerStep { frames: f, sent: verb == LEAVE, ..OwnerStep::new(OwnerKind::Write) }
                 }
                 Err(e) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：送不出去（{e}）", verb_text(verb))),
             });
@@ -627,6 +675,14 @@ impl OwnerSession {
     pub fn request_set_ap(&mut self, ssid: String, passphrase: String) -> Result<OwnerStep, String> {
         let ap = Value::Map(vec![(Value::Uint(1), Value::Text(ssid)), (Value::Uint(2), Value::Text(passphrase))]);
         self.owner_op("settings/set", Value::Map(vec![(Value::Uint(20), ap)]))
+    }
+
+    /// 「離開網路」(254-app-leave v4.1 §3): the owner-op `network/leave` {}; a reply other than 0 (and a refused op/nonce or a
+    /// failed signature) reads info and answers with `flow::leave_outcome`. Phone records are never written.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_leave_network(&mut self) -> Result<OwnerStep, String> {
+        self.leave = None;
+        self.owner_op(LEAVE, Value::Map(vec![]))
     }
 
     /// An owner-op: op/nonce goes out first; its answer becomes a Sign step, `signed` sends the operation with key 31.
@@ -662,6 +718,34 @@ impl OwnerSession {
             }
             St::Conn { conn, asked, op } => match conn.on_frame(&frame) {
                 Ok(None) => None,
+                Ok(Some(Outcome::Err { code, .. })) if *asked == "op/nonce" && matches!(op, Some((LEAVE, _))) => {
+                    // leave v4.1 §3: refused before network/leave went out — not sent
+                    *op = None;
+                    self.leave = Some((false, Some(code)));
+                    Some(leave_info(conn, asked, false, Some(code)))
+                }
+                Ok(Some(o)) if *asked == LEAVE => {
+                    *asked = "";
+                    match o {
+                        Outcome::Ok(_) => {
+                            self.after_left = true;
+                            Some(OwnerStep { left: true, ..OwnerStep::text(OwnerKind::Answer, flow::Leave::Left.text()) })
+                        }
+                        Outcome::Err { code, .. } => {
+                            self.leave = Some((true, Some(code)));
+                            Some(leave_info(conn, asked, true, Some(code)))
+                        }
+                    }
+                }
+                Ok(Some(o)) if *asked == "info-leave" => {
+                    *asked = "";
+                    let (sent, code) = self.leave.take().unwrap_or((true, None));
+                    let info = match &o {
+                        Outcome::Ok(b) => Some(b),
+                        Outcome::Err { .. } => None,
+                    };
+                    Some(OwnerStep::text(OwnerKind::Answer, flow::leave_outcome(sent, code, info).text()))
+                }
                 Ok(Some(Outcome::Ok(b))) if *asked == "op/nonce" => {
                     // owner-op (design §5.4 pattern): sign "batman-owner-op-v1" ‖ h ‖ nonce_helper ‖ verb ‖ args_hash
                     let Some((verb, body)) = op.as_ref() else {
@@ -713,6 +797,8 @@ impl OwnerSession {
                     }
                     self.page_fresh = true;
                     self.page_rate = matches!(self.page_status, Some(Err(flow::E_RATE)));
+                    // leave v4.1 §2: the one read right after a leave cuts the k1 = 1 join sentence
+                    self.page_cut_once = std::mem::take(&mut self.after_left);
                     self.page_info = None;
                     match conn.request("info", Value::Map(vec![])) {
                         Ok((_, f)) => {
@@ -1013,7 +1099,7 @@ impl OwnerSession {
     /// a net/ (it made a network) / an mnet/ record — the claimed-node sentence names the matching join button.
     #[flutter_rust_bridge::frb(sync)]
     pub fn status_view(&self, has_net: bool, has_mnet: bool) -> StatusView {
-        let join = statuspage::JoinButton::of(has_net, has_mnet);
+        let join = if self.page_cut_once { statuspage::JoinButton::Leaving } else { statuspage::JoinButton::of(has_net, has_mnet) };
         status_view_of(self.page_status.as_ref(), self.page_info.as_ref(), self.page_fresh, self.page_rate, join)
     }
 
@@ -1496,6 +1582,9 @@ mod tests {
             page_info: None,
             page_fresh: false,
             page_rate: false,
+            leave: None,
+            after_left: false,
+            page_cut_once: false,
         };
         (s, FakeNode { t: r.into_transport_mode().unwrap(), rx: frame::Reassembler::new(FL, 8192) })
     }
@@ -1669,8 +1758,14 @@ pub(crate) fn status_view_of(st: Option<&Result<Value, u64>>, info: Option<&Valu
         Some(Err(c)) => statuspage::Answer::Error(*c),
         None => statuspage::Answer::Body(&empty),
     };
+    // leave v4.1 §2: key 10 absent with key 11 true -> no invitation to join either
+    let unf = statuspage::unfinished_line(info);
+    let join = if matches!(unf, Some((_, true))) { statuspage::JoinButton::Leaving } else { join };
     let v = statuspage::link_verdict_for(a, join);
     StatusView {
+        unfinished: unf.map(|(l, _)| l).unwrap_or("").into(),
+        unfinished_under_verdict: unf.is_some_and(|(_, u)| u),
+        can_leave: statuspage::can_leave(statuspage::node_state(a), info),
         color: v.color.name().into(),
         row: v.row.label().into(),
         sentence: v.sentence,
@@ -1977,5 +2072,181 @@ mod member_review3_tests {
         answer_nonce(&mut s, &mut n, &st, Value::Map(vec![]));
         let r = s.request_joinreq("a1".into(), "x".into(), 0, None, vec![4; 65]).unwrap();
         assert!(r.detail.starts_with("[REQ_FAIL] 申請沒有成功：這不是正確的碼"), "{}", r.detail);
+    }
+}
+
+/// 254-app-leave v4.1 §6 T2: the leave flow over a fake node — verbs, the `sent` flag, the info read on every non-zero
+/// reply and on a signature failure, no record write ever.
+#[cfg(test)]
+mod leave_tests {
+    use super::*;
+    use p256::ecdsa::signature::Signer;
+
+    fn info(k10: bool, k11: Option<bool>) -> Value {
+        let mut m = vec![(Value::Uint(7), Value::Uint(2))];
+        if k10 {
+            m.push((Value::Uint(10), Value::Bytes(vec![0x5a; 16])));
+        }
+        if let Some(b) = k11 {
+            m.push((Value::Uint(11), Value::Bool(b)));
+        }
+        Value::Map(m)
+    }
+
+    struct Run {
+        verbs: Vec<String>,
+        sent: Vec<bool>,
+        answer: String,
+        left: bool,
+    }
+
+    /// one leave: op/nonce answered `nonce`, the owner key signs (or fails), network/leave answered `leave`, info `inf`
+    fn run(nonce: Result<Value, u64>, sign_ok: bool, leave: Result<Value, u64>, inf: Result<Value, u64>) -> (OwnerSession, super::tests::FakeNode, Run) {
+        let (mut s, mut n) = super::tests::logged_in();
+        let mut r = Run { verbs: vec![], sent: vec![], answer: String::new(), left: false };
+        let (mut nonce, mut leave, mut inf) = (Some(nonce), Some(leave), Some(inf));
+        let mut st = s.request_leave_network().unwrap();
+        loop {
+            st = match st.kind {
+                OwnerKind::Write => {
+                    r.sent.push(st.sent);
+                    let (id, verb) = n.request(&st.frames);
+                    let a = match verb.as_str() {
+                        "op/nonce" => nonce.take().unwrap(),
+                        "network/leave" => leave.take().unwrap(),
+                        "info" => inf.take().unwrap(),
+                        v => panic!("unexpected {v}"),
+                    };
+                    r.verbs.push(verb);
+                    let mut next = None;
+                    for f in n.answer(id, a) {
+                        next = s.on_frame(f).or(next);
+                    }
+                    next.expect("a step after the node's answer")
+                }
+                OwnerKind::Sign => {
+                    let der = if sign_ok {
+                        let k = p256::ecdsa::SigningKey::from_slice(&[0x11; 32]).unwrap();
+                        let sg: p256::ecdsa::Signature = k.sign(&st.sign_input);
+                        sg.to_der().as_bytes().to_vec()
+                    } else {
+                        vec![] // the Keystore failed (nodes.dart passes an empty signature)
+                    };
+                    s.signed(der).unwrap()
+                }
+                OwnerKind::Answer => {
+                    r.answer = st.detail;
+                    r.left = st.left;
+                    return (s, n, r);
+                }
+                k => panic!("a leave never writes a record or asks anything else: {k:?}"),
+            };
+        }
+    }
+
+    fn nonce() -> Result<Value, u64> {
+        Ok(Value::Map(vec![(Value::Uint(1), Value::Bytes(vec![0x6d; 32]))]))
+    }
+
+    #[test]
+    fn t2_reply_0_is_left_without_an_info_read() {
+        let (_, _, r) = run(nonce(), true, Ok(Value::Map(vec![])), Ok(info(true, Some(false))));
+        assert_eq!(r.verbs, ["op/nonce", "network/leave"]);
+        assert_eq!(r.sent, [false, true], "only the write carrying network/leave is marked sent");
+        assert_eq!((r.answer.as_str(), r.left), ("[LEFT] 已離開隊伍網路", true));
+    }
+
+    #[test]
+    fn t2_not_sent_reads_info_for_the_wording() {
+        // op/nonce 7 (busy): not sent, no reboot, whatever info says
+        let (_, _, r) = run(Err(7), true, Ok(Value::Map(vec![])), Ok(info(true, Some(true))));
+        assert_eq!(r.verbs, ["op/nonce", "info"]);
+        assert_eq!(r.sent, [false, false]);
+        assert!(r.answer.contains("沒有送出") && !r.answer.contains("重新開機") && !r.answer.contains("還在隊伍網路上"), "{}", r.answer);
+        assert!(!r.left);
+        // op/nonce 3
+        let (_, _, r) = run(Err(3), true, Ok(Value::Map(vec![])), Ok(info(true, Some(false))));
+        assert!(r.answer.contains("代碼 3") && !r.answer.contains("重新開機"), "{}", r.answer);
+        // the signature failed: through info and leave_outcome, not a direct answer
+        let (_, _, r) = run(nonce(), false, Ok(Value::Map(vec![])), Ok(info(true, Some(false))));
+        assert_eq!(r.verbs, ["op/nonce", "info"]);
+        assert!(r.answer.contains("手機簽章失敗") && r.answer.contains("沒有送出") && !r.answer.contains("重新開機"), "{}", r.answer);
+    }
+
+    #[test]
+    fn t2_sent_errors_read_info() {
+        // 7 after a commit (key 10 gone, nothing unfinished): already out — not Busy, not Left
+        let (_, _, r) = run(nonce(), true, Err(7), Ok(info(false, Some(false))));
+        assert_eq!(r.verbs, ["op/nonce", "network/leave", "info"]);
+        assert_eq!(r.answer, "[LEFT] 這台已經不在隊伍網路裡");
+        assert!(!r.left, "not a reply 0: no re-read");
+        // 7 while still a member: what is seen now, never 「沒有離開」
+        let (_, _, r) = run(nonce(), true, Err(7), Ok(info(true, Some(false))));
+        assert!(r.answer.contains("現在還在隊伍網路裡") && !r.answer.contains("沒有離開"), "{}", r.answer);
+        // 11 + unfinished: Unfinished
+        let (_, _, r) = run(nonce(), true, Err(11), Ok(info(false, Some(true))));
+        assert!(r.answer.contains("等一下再按一次「離開網路」，或重新開機一次"), "{}", r.answer);
+        // 3 while a member: press again (re-authorise)
+        let (_, _, r) = run(nonce(), true, Err(3), Ok(info(true, Some(false))));
+        assert!(r.answer.contains("會重新取得授權"), "{}", r.answer);
+        // info refused: unknown
+        let (_, _, r) = run(nonce(), true, Err(11), Err(12));
+        assert_eq!(r.answer, "[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁");
+    }
+
+    /// leave v4.1 §2: the one status-page read right after a reply 0 cuts the k1 = 1 join sentence; the next does not.
+    #[test]
+    fn the_read_after_left_cuts_once() {
+        let t = |k: &str| Value::Text(k.into());
+        let claimed = Value::Map(vec![
+            (Value::Uint(1), Value::Uint(1)),
+            (Value::Uint(5), Value::Map(vec![(Value::Uint(1), Value::Uint(1)), (Value::Uint(2), t("NOT_JOINED"))])),
+            (Value::Uint(15), Value::Map(vec![(t("uptime_s"), Value::Uint(600)), (t("join"), Value::Map(vec![(t("snr_db"), t("")), (t("plinks"), Value::Uint(0))]))])),
+        ]);
+        let (mut s, mut n, r) = run(nonce(), true, Ok(Value::Map(vec![])), Ok(info(true, Some(false))));
+        assert!(r.left);
+        // one status-page read on the same session: status, then info
+        let mut page = |s: &mut OwnerSession| -> String {
+            let mut step = s.request_status_page().unwrap();
+            let mut answers = vec![Ok(info(false, Some(false))), Ok(claimed.clone())];
+            loop {
+                match step.kind {
+                    OwnerKind::Write => {
+                        let (id, _) = n.request(&step.frames);
+                        let mut next = None;
+                        for f in n.answer(id, answers.pop().unwrap()) {
+                            next = s.on_frame(f).or(next);
+                        }
+                        step = next.unwrap();
+                    }
+                    OwnerKind::Answer => return s.status_view(true, false).sentence,
+                    k => panic!("unexpected {k:?}"),
+                }
+            }
+        };
+        assert_eq!(page(&mut s), "這台還沒加入隊伍網路", "the read right after leaving: no invitation to join");
+        assert_eq!(page(&mut s), "這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」", "the next read: normal again");
+    }
+
+    #[test]
+    fn view_unfinished_and_leave_button() {
+        let t = |k: &str| Value::Text(k.into());
+        let claimed = Value::Map(vec![
+            (Value::Uint(1), Value::Uint(1)),
+            (Value::Uint(5), Value::Map(vec![(Value::Uint(1), Value::Uint(1)), (Value::Uint(2), t("NOT_JOINED"))])),
+            (Value::Uint(15), Value::Map(vec![(t("uptime_s"), Value::Uint(600)), (t("join"), Value::Map(vec![(t("snr_db"), t("")), (t("plinks"), Value::Uint(0))]))])),
+        ]);
+        // key 10 absent, key 11 true: the line under the verdict, the join half cut, the button shown
+        let v = status_view_of(Some(&Ok(claimed.clone())), Some(&info(false, Some(true))), true, false, statuspage::JoinButton::Admin);
+        assert!(v.unfinished_under_verdict && v.unfinished.contains("可以再按「離開網路」"), "{}", v.unfinished);
+        assert_eq!(v.sentence, "這台還沒加入隊伍網路");
+        assert!(v.can_leave);
+        // nothing unfinished, not a member: no line, the full sentence, no button
+        let v = status_view_of(Some(&Ok(claimed)), Some(&info(false, Some(false))), true, false, statuspage::JoinButton::Admin);
+        assert_eq!((v.unfinished.as_str(), v.can_leave), ("", false));
+        assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」");
+        // the dialog
+        let d = leave_confirm_text("2233".into(), String::new(), true, true);
+        assert!(d[0].contains("…2233") && d[1].ends_with("讀不到這台目前的網路，無法確認這支手機能不能再加入。"));
     }
 }

@@ -156,6 +156,9 @@ pub enum JoinButton {
     Member,
     /// neither
     NoRecord,
+    /// leaving (254-app-leave v4.1 §2): info key 10 absent with key 11 true, or the one re-read right after a leave —
+    /// every k1 = 1 join sentence is cut at the dash (no invitation to join)
+    Leaving,
 }
 
 impl JoinButton {
@@ -175,6 +178,7 @@ impl JoinButton {
             JoinButton::Member if c34 => "要跟隊伍通訊請按「加入隊伍網路」".into(),
             JoinButton::Member => "請按「加入隊伍網路」".into(),
             JoinButton::NoRecord => NO_RECORD.into(),
+            JoinButton::Leaving => String::new(),
         }
     }
 }
@@ -280,6 +284,7 @@ fn sentence(r: Row, p: Option<&Parsed>, join: JoinButton) -> String {
         Row::Unsupported => S1,
         Row::Unknown => S2,
         Row::Refused => S2P,
+        Row::Linked | Row::LinkedWeak if claimed && join == JoinButton::Leaving => C34_HEAD.trim_end_matches(" — "),
         Row::Linked | Row::LinkedWeak if claimed => return format!("{C34_HEAD}{}", join.tail(true)),
         Row::Linked => S3,
         Row::LinkedWeak if p.and_then(|p| p.snr).is_some() => S4_WEAK,
@@ -290,6 +295,9 @@ fn sentence(r: Row, p: Option<&Parsed>, join: JoinButton) -> String {
         Row::NoKey => S5K,
         Row::RadioFault => S5R,
         Row::UnknownCode => SU,
+        Row::HeardNoLink | Row::NothingHeard | Row::Linking | Row::Lost | Row::GuardedNotLinked | Row::NotLinked if claimed && join == JoinButton::Leaving => {
+            C_JOIN_HEAD.trim_end_matches(" — ")
+        }
         Row::HeardNoLink | Row::NothingHeard | Row::Linking | Row::Lost | Row::GuardedNotLinked | Row::NotLinked if claimed => return format!("{C_JOIN_HEAD}{}", join.tail(false)),
         Row::HeardNoLink => S6,
         Row::NothingHeard => S7,
@@ -376,6 +384,37 @@ pub fn membership_line(k1: Option<u64>, net_id_known: bool, name: Option<&str>) 
 /// §2-4: info key 4 (BATMAN_VERSION); "" when missing.
 pub fn version_line(info: Option<&Value>) -> String {
     info.and_then(|i| i.get(4)).and_then(Value::as_text).filter(|t| !t.is_empty()).map(shown).unwrap_or_default()
+}
+
+/// info key 11 = true (254-app-leave v4.1 §2, cross-doc S4): with key 10 present (after the ⚠️ line) …
+pub const UNFINISHED_MEMBER: &str = "節點上還有沒完成的網路變更（加入中也會這樣）— 等一下再按「重新整理」；超過 10 分鐘仍如此，重新開機一次；仍然如此請找維修人員";
+/// … and with key 10 absent (right under the verdict sentence)
+pub const UNFINISHED_LEFT: &str = "節點上還有沒完成的網路變更（加入中也會這樣）— 等一下再按「重新整理」；離開網路後仍然如此，可以再按「離開網路」；超過 10 分鐘仍如此，重新開機一次；仍然如此請找維修人員";
+
+fn info_k10(info: Option<&Value>) -> bool {
+    info.and_then(|i| i.get(10)).and_then(Value::as_bytes).is_some_and(|b| b.len() == 16)
+}
+
+fn info_k11(info: Option<&Value>) -> Option<bool> {
+    match info.and_then(|i| i.get(11)) {
+        Some(Value::Bool(b)) => Some(*b),
+        _ => None,
+    }
+}
+
+/// The status page's unfinished-change line (info key 11 = true): the line and whether it sits right under the verdict
+/// (key 10 absent). The S4 reboot property is about the verdict sentence only; this line is separate.
+pub fn unfinished_line(info: Option<&Value>) -> Option<(&'static str, bool)> {
+    if info_k11(info) != Some(true) {
+        return None;
+    }
+    Some(if info_k10(info) { (UNFINISHED_MEMBER, false) } else { (UNFINISHED_LEFT, true) })
+}
+
+/// 254-app-leave v4.1 §2: the leave button shows when the last read said member (info key 10, or status key 1 = 2) or
+/// a network change is unfinished (key 11 = true: a second press runs the node's Finish).
+pub fn can_leave(k1: Option<u64>, info: Option<&Value>) -> bool {
+    info_k10(info) || k1 == Some(2) || info_k11(info) == Some(true)
 }
 
 pub const TECH_NOTES: [&str; 3] = [

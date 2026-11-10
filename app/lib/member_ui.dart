@@ -8,6 +8,8 @@
 // - My nodes: the controls scroll above the log (f139951).
 import 'package:flutter/material.dart';
 
+import 'say.dart' show screenText;
+
 /// 219 §5.5 / R22: the SAS is compared over another channel.
 const sasRule = '請用電話或當面核對，不要在傳圖片的同一個聊天裡核對';
 
@@ -163,10 +165,49 @@ class StatusFields {
       this.version = '',
       this.tech = const [],
       this.rateNote = '',
-      this.fresh = true});
+      this.fresh = true,
+      this.unfinished = '',
+      this.unfinishedUnderVerdict = false,
+      this.canLeave = false,
+      this.leaveTitle = '',
+      this.leaveBody = ''});
   final String color, sentence, lagNote, warning, membership, version, rateNote;
   final List<String> tech;
   final bool fresh;
+
+  /// 254-app-leave v4.1 §2: info key 11 = true — the unfinished-change line; right under the verdict when key 10 is
+  /// absent, else after the ⚠️ line
+  final String unfinished;
+  final bool unfinishedUnderVerdict;
+
+  /// the leave button shows; its confirm dialog (title, body) as Rust made it
+  final bool canLeave;
+  final String leaveTitle, leaveBody;
+}
+
+/// 254-app-leave v4.1 §3: a leave waits longer than provd's 330 s helper wait, is never re-sent, and a lost link after it
+/// went out says "outcome unknown"
+const joinWait = Duration(seconds: 360);
+const leaveUnclear = '[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁';
+
+/// The request the leave button makes, with the call policy fixed here ([ask] is the page's owner request).
+Future<String?> sendLeave(Future<String?> Function({required Duration wait, required bool retry, required String unclear}) ask) =>
+    ask(wait: joinWait, retry: false, unclear: leaveUnclear);
+
+/// 「連線失敗，還沒有寫入或送出」: what a lost link says before anything that changes the node went out.
+const notSentLine = '[REQ_FAIL] 連線失敗，還沒有寫入或送出，請重試';
+
+/// Whether a request may have reached the node (leave v4.1 §3 / L9): a record write that landed, or a step Rust marked
+/// `sent` (the write that carries network/leave). Nothing else — a Sign step or another write — counts.
+class SendTrack {
+  bool wrote = false;
+  void persisted() => wrote = true;
+  void write({required bool sent}) {
+    if (sent) wrote = true;
+  }
+
+  /// the line for a lost link / timeout of a request with an [unclear] line
+  String unclearNow(String unclear) => wrote ? unclear : notSentLine;
 }
 
 /// The network name for [netId]: only from a record on this phone (net/ or mnet/), never the id itself.
@@ -203,9 +244,13 @@ Color verdictColor(String c) => switch (c) {
 /// ⚠️ line, the membership line, the version, 「重新整理」, and the technical list collapsed. No battery: the node never
 /// sends it.
 class StatusPageView extends StatefulWidget {
-  const StatusPageView({super.key, required this.initial, required this.initialAt, required this.onRefresh, this.clock = DateTime.now});
+  const StatusPageView(
+      {super.key, required this.initial, required this.initialAt, required this.onRefresh, this.onLeave, this.clock = DateTime.now});
   final StatusFields initial;
   final DateTime initialAt;
+
+  /// 「離開網路」 after the user confirmed (leave v4.1): the answer line, and the page re-read after a reply 0 (null otherwise)
+  final Future<(String?, StatusFields?)> Function()? onLeave;
 
   /// reads status + info again; null when nothing was read (the link was lost, or another request runs)
   final Future<StatusFields?> Function() onRefresh;
@@ -221,6 +266,38 @@ class _StatusPageViewState extends State<StatusPageView> {
   bool _busy = false;
   // the last refresh read nothing (code review B-m3)
   bool _missed = false;
+  // the last leave's answer line
+  String _leaveLine = '';
+
+  Future<void> _leave() async {
+    if (_busy || widget.onLeave == null) return;
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+              title: Text(_f.leaveTitle),
+              content: Text(_f.leaveBody, key: const Key('leaveBody')),
+              actions: [
+                TextButton(key: const Key('leaveCancel'), onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+                TextButton(key: const Key('leaveConfirm'), onPressed: () => Navigator.pop(c, true), child: const Text('離開網路')),
+              ],
+            ));
+    if (yes != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final (line, again) = await widget.onLeave!();
+      if (mounted) {
+        setState(() {
+          _leaveLine = line ?? '';
+          if (again != null) {
+            _at = readTime(fresh: again.fresh, now: widget.clock(), previous: _at);
+            _f = again;
+          }
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
   Future<void> _refresh() async {
     // one read at a time: a second tap before the button is redrawn disabled does nothing (S20 fix 3)
@@ -252,10 +329,12 @@ class _StatusPageViewState extends State<StatusPageView> {
         const SizedBox(width: 8),
         Expanded(child: Text(f.sentence, key: const Key('sentence'), style: const TextStyle(fontSize: 18))),
       ]),
+      if (f.unfinished.isNotEmpty && f.unfinishedUnderVerdict) Text(f.unfinished, key: const Key('unfinished')),
       Text('讀取於 ${hms(_at)}', key: const Key('readAt'), style: small),
       if (f.lagNote.isNotEmpty) Text(f.lagNote, key: const Key('lagNote'), style: small),
       const SizedBox(height: 8),
       if (f.warning.isNotEmpty) Text('⚠️ ${f.warning}', key: const Key('warning'), style: const TextStyle(color: Colors.deepOrange)),
+      if (f.unfinished.isNotEmpty && !f.unfinishedUnderVerdict) Text(f.unfinished, key: const Key('unfinished')),
       if (f.membership.isNotEmpty) Text(f.membership, key: const Key('membership')),
       if (f.version.isNotEmpty) Text('軟體版本：${f.version}', key: const Key('version')),
       const SizedBox(height: 8),
@@ -272,6 +351,16 @@ class _StatusPageViewState extends State<StatusPageView> {
           title: const Text('技術資訊（給維修人員看）'),
           expandedCrossAxisAlignment: CrossAxisAlignment.start,
           children: [for (final l in f.tech) Text(l, style: small)]),
+      if (f.canLeave && widget.onLeave != null) ...[
+        const SizedBox(height: 16),
+        Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+                key: const Key('leave'),
+                onPressed: _busy ? null : _leave,
+                child: const Text('離開網路', style: TextStyle(color: Colors.red)))),
+      ],
+      if (_leaveLine.isNotEmpty) Text(screenText(_leaveLine), key: const Key('leaveLine')),
     ]);
   }
 }
