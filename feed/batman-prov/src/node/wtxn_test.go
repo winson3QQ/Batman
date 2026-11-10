@@ -62,6 +62,16 @@ type netv struct {
 	prev    any                 // the previous config (for key 3)
 	cfg     any
 	secrets any
+	members any // this version's member_list (254-net-update-members §2.2-3)
+	// overrides for the negative tests (zero = the normal object)
+	cc        string            // net_config key 5 ("US" when empty)
+	noCC      bool              // no key 5
+	secNid    []byte            // net_secrets key 1
+	secVer    uint64            // net_secrets key 2
+	root      []byte            // net_root (make32(9) when nil)
+	memSigner *ecdsa.PrivateKey // signs the member_list (signer when nil)
+	memNid    []byte            // member_list key 1
+	memVer    uint64            // member_list key 2
 }
 
 func (r *rig) mkNet(v *netv) *netv {
@@ -70,14 +80,44 @@ func (r *rig) mkNet(v *netv) *netv {
 	for _, k := range v.admins {
 		ad = append(ad, pub(k))
 	}
-	pl := cbor.M(1, v.nid, 2, v.ver, 6, cbor.M(1, v.meshID, 2, v.ch), 8, ad)
+	cc := v.cc
+	if cc == "" {
+		cc = "US"
+	}
+	var prev any
 	if v.prev != nil {
-		pl = cbor.M(1, v.nid, 2, v.ver, 3, objHash(t, v.prev), 6, cbor.M(1, v.meshID, 2, v.ch), 8, ad)
+		prev = objHash(t, v.prev)
+	}
+	pl := cbor.M(1, v.nid, 2, v.ver, 3, prev, 5, cc, 6, cbor.M(1, v.meshID, 2, v.ch), 8, ad)
+	if v.noCC {
+		pl = cbor.M(1, v.nid, 2, v.ver, 3, prev, 6, cbor.M(1, v.meshID, 2, v.ch), 8, ad)
 	}
 	v.cfg = sign1(t, v.signer, cose.CTNetcfg, proto.LabelNetcfg, pl)
+	mnid, mver, ms := v.nid, v.ver, v.signer
+	if v.memNid != nil {
+		mnid = v.memNid
+	}
+	if v.memVer != 0 {
+		mver = v.memVer
+	}
+	if v.memSigner != nil {
+		ms = v.memSigner
+	}
+	v.members = sign1(t, ms, cose.CTMembers, proto.LabelMembers, cbor.M(1, mnid, 2, mver, 3, nil, 4, []any{}, 5, []any{}, 6, []any{}, 7, []any{}))
+	snid, sver := v.nid, v.ver
+	if v.secNid != nil {
+		snid = v.secNid
+	}
+	if v.secVer != 0 {
+		sver = v.secVer
+	}
+	nroot := v.root
+	if nroot == nil {
+		nroot = make32(9)
+	}
 	// net_secrets: COSE_Encrypt to this node (ECDH-ES + HKDF-256, ChaCha20/Poly1305), as cose.Decrypt opens it
 	dacHash := sha256.Sum256(r.ks.DACPub())
-	other := append(append([]byte(nil), v.nid...), byte(v.ver>>24), byte(v.ver>>16), byte(v.ver>>8), byte(v.ver))
+	other := append(append([]byte(nil), snid...), byte(sver>>24), byte(sver>>16), byte(sver>>8), byte(sver))
 	eph, _ := ecdh.P256().GenerateKey(rand.Reader)
 	z, err := proto.ECDHX(eph, r.ks.ECDHPub())
 	if err != nil {
@@ -89,11 +129,11 @@ func (r *rig) mkNet(v *netv) *netv {
 	aad, _ := cbor.Encode([]any{"Encrypt", prot, []byte(proto.LabelSecrets)})
 	aead, _ := chacha20poly1305.New(cek)
 	iv := rnd(chacha20poly1305.NonceSize)
-	pt, _ := cbor.Encode(cbor.M(1, []byte(v.sae), 2, make32(9)))
+	pt, _ := cbor.Encode(cbor.M(1, []byte(v.sae), 2, nroot))
 	ep := eph.PublicKey().Bytes()
 	enc := cbor.Tag{Num: 96, V: []any{prot, cbor.M(5, iv), aead.Seal(nil, iv, pt, aad),
 		[]any{[]any{rprot, cbor.M(int64(-1), cbor.M(1, uint64(2), int64(-1), uint64(1), int64(-2), ep[1:33], int64(-3), ep[33:])), []byte{}}}}}
-	v.secrets = sign1(t, v.signer, cose.CTSecrets, proto.LabelSecrets, cbor.M(1, v.nid, 2, v.ver, 3, dacHash[:], 4, enc))
+	v.secrets = sign1(t, v.signer, cose.CTSecrets, proto.LabelSecrets, cbor.M(1, snid, 2, sver, 3, dacHash[:], 4, enc))
 	return v
 }
 
@@ -109,8 +149,25 @@ func (r *rig) applyJoin(v *netv) int {
 	return c
 }
 
-func (r *rig) applyUpdate(chain []any, sec any) int {
-	raw, _ := cbor.Encode(cbor.M(0, []any{uint64(1), uint64(0)}, 1, uint64(9), 2, "network/update", 3, cbor.M(1, chain, 2, sec)))
+// step: one update step of v (219-protocol.cddl update-step); the last step carries v's secrets
+func step(v *netv, last bool) cbor.Map {
+	if last {
+		return cbor.M(1, v.cfg, 2, v.members, 3, v.secrets)
+	}
+	return cbor.M(1, v.cfg, 2, v.members)
+}
+
+// applyUpdate sends network/update with versions vs (the last one carries its secrets)
+func (r *rig) applyUpdate(vs ...*netv) int {
+	var chain []any
+	for i, v := range vs {
+		chain = append(chain, step(v, i == len(vs)-1))
+	}
+	return r.applyUpdateBody(cbor.M(1, chain))
+}
+
+func (r *rig) applyUpdateBody(body cbor.Map) int {
+	raw, _ := cbor.Encode(cbor.M(0, []any{uint64(1), uint64(0)}, 1, uint64(9), 2, "network/update", 3, body))
 	c, _ := r.call("net.apply", cbor.M(1, r.h, 2, raw))
 	return c
 }
@@ -445,14 +502,14 @@ func TestHandoverStoredObjectsNotReverified(t *testing.T) {
 	r, v1 := memberRig(t)
 	b := newKey()
 	v2 := r.mkNet(&netv{nid: v1.nid, ver: 2, meshID: "m2", ch: 36, sae: "sae-v2-pass", admins: []*ecdsa.PrivateKey{b}, signer: v1.admins[0], prev: v1.cfg})
-	if c := r.applyUpdate([]any{v2.cfg}, v2.secrets); c != OK {
+	if c := r.applyUpdate(v2); c != OK {
 		t.Fatalf("update v2: %d", c)
 	}
 	if r.n.netRoot(r.rec()) == nil {
 		t.Fatal("net_root unreadable after the handover (psks.get would fail)")
 	}
 	v3 := r.mkNet(&netv{nid: v1.nid, ver: 3, meshID: "m3", ch: 28, sae: "sae-v3-pass", admins: []*ecdsa.PrivateKey{b}, signer: b, prev: v2.cfg})
-	if c := r.applyUpdate([]any{v3.cfg}, v3.secrets); c != OK {
+	if c := r.applyUpdate(v3); c != OK {
 		t.Fatalf("update v3 after the handover: %d", c)
 	}
 	if r.wl() != "sae-v3-pass/m3/28" {

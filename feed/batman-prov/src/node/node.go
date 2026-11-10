@@ -931,13 +931,24 @@ func (n *Node) netRoot(rec *provstore.Record) []byte {
 	return secretField(pt, 2)
 }
 
-func (n *Node) openSecrets(raw []byte, admins [][]byte) cbor.Map {
+// openSecrets verifies this node's net_secrets and opens it only when it belongs to the net_config being applied: its
+// net_id / version (the same payload values decryptSecrets uses as the KDF context) must equal netID / version — else a
+// forwarder could pair a new net_config with an older (or another network's) secrets that a removed member knows
+// (254-net-update-members.md §2.2-5, F10).
+func (n *Node) openSecrets(raw []byte, admins [][]byte, netID []byte, version uint64) cbor.Map {
 	x, err := cbor.Decode(raw)
 	if err != nil {
 		return nil
 	}
 	s, err := cose.VerifySign1(x, cose.CTSecrets, proto.LabelSecrets, admins)
 	if err != nil {
+		return nil
+	}
+	nid, _ := s.Payload.Get(1)
+	ver, _ := s.Payload.Get(2)
+	nidB, ok1 := nid.([]byte)
+	verU, ok2 := ver.(uint64)
+	if !ok1 || !ok2 || verU != version || subtle.ConstantTimeCompare(nidB, netID) != 1 {
 		return nil
 	}
 	return n.decryptSecrets(s)
@@ -1004,7 +1015,7 @@ func (n *Node) parseNet(cfgItem, secItem any, signers [][]byte) (*parsedNet, *Er
 	p.channel = fmt.Sprint(chU)
 	p.cfgRaw, _ = cbor.Encode(cfgItem)
 	p.secRaw, _ = cbor.Encode(secItem)
-	pt := n.openSecrets(p.secRaw, signers)
+	pt := n.openSecrets(p.secRaw, signers, p.netID, p.version)
 	if pt == nil {
 		return nil, fail(EBadObject, "net_secrets")
 	}
@@ -1073,12 +1084,15 @@ func (n *Node) netUpdate(rec *provstore.Record, body cbor.Map) (cbor.Map, *Error
 	if rec.Net == nil {
 		return nil, fail(EStaleVersion, "no network yet: first version only via network/join")
 	}
+	// {1: [+ {1: netcfg-sign1, 2: members-sign1, ?3: secrets-sign1}]} (219-protocol.cddl update-step; secrets in the
+	// last step only, and required there). A wrong shape is E_BAD_OBJECT, not ESchema: the body comes from any
+	// forwarding session, and ESchema would reach the app as E_REJECTED{} plus a provd CRIT line
+	// (254-net-update-members.md §2.1)
 	chainAny, _ := body.Get(1)
 	chain, ok := chainAny.([]any)
 	if !ok || len(chain) == 0 {
-		return nil, fail(ESchema, "version chain")
+		return nil, fail(EBadObject, "update shape")
 	}
-	sec, _ := body.Get(2)
 	admins := rec.Admins
 	prevX, _ := cbor.Decode(rec.Net.Config)
 	// the STORED config is not re-verified (254-wireless-txn §2): after an admin handover it is signed by admins that
@@ -1087,10 +1101,24 @@ func (n *Node) netUpdate(rec *provstore.Record, body cbor.Map) (cbor.Map, *Error
 	if err != nil {
 		return nil, fail(EBadObject, "stored net_config")
 	}
+	storedCC, _ := prevS.Payload.Get(5)
+	storedCCS, storedHasCC := storedCC.(string)
 	prevHash, prevVer := prevS.ObjectHash, rec.Net.Version
-	var last any
-	for _, item := range chain {
-		s, err := cose.VerifySign1(item, cose.CTNetcfg, proto.LabelNetcfg, admins) // version v+1 by version v's admins
+	var last, lastSec any
+	var signers [][]byte // the admins the last version (and its secrets) is checked against (§7.1)
+	for i, item := range chain {
+		step, ok := item.(cbor.Map)
+		if !ok {
+			return nil, fail(EBadObject, "update shape")
+		}
+		cfg, hasCfg := step.Get(1)
+		members, hasMembers := step.Get(2)
+		sec, hasSec := step.Get(3)
+		isLast := i == len(chain)-1
+		if !hasCfg || !hasMembers || hasSec != isLast {
+			return nil, fail(EBadObject, "update shape")
+		}
+		s, err := cose.VerifySign1(cfg, cose.CTNetcfg, proto.LabelNetcfg, admins) // version v+1 by version v's admins
 		if err != nil {
 			return nil, fail(EBadObject, "chain link")
 		}
@@ -1101,22 +1129,39 @@ func (n *Node) netUpdate(rec *provstore.Record, body cbor.Map) (cbor.Map, *Error
 		if vU != prevVer+1 || subtle.ConstantTimeCompare(phB, prevHash) != 1 {
 			return nil, fail(EStaleVersion, "chain not contiguous")
 		}
-		admins = n.adminsOf(item)
-		prevHash, prevVer, last = s.ObjectHash, vU, item
+		nid, _ := s.Payload.Get(1)
+		nidB, _ := nid.([]byte)
+		if subtle.ConstantTimeCompare(nidB, rec.Net.NetID) != 1 {
+			return nil, fail(EBadObject, "net_id")
+		}
+		// the country changes only while not in a network (254-p3-impl D9): every step keeps the stored one
+		cc, _ := s.Payload.Get(5)
+		ccS, hasCC := cc.(string)
+		if !hasCC || !storedHasCC || ccS != storedCCS {
+			return nil, failR(EReject, ReasonCountryJoin, "network/update: the country changes only while not in a network")
+		}
+		// member_list of this version: a consistency check with the CDDL (the node neither stores nor reads it, §2.2-3)
+		m, err := cose.VerifySign1(members, cose.CTMembers, proto.LabelMembers, admins)
+		if err != nil {
+			return nil, fail(EBadObject, "member_list")
+		}
+		mnid, _ := m.Payload.Get(1)
+		mver, _ := m.Payload.Get(2)
+		mnidB, _ := mnid.([]byte)
+		mverU, ok := mver.(uint64)
+		if !ok || mverU != vU || subtle.ConstantTimeCompare(mnidB, rec.Net.NetID) != 1 {
+			return nil, fail(EBadObject, "member_list")
+		}
+		signers = admins
+		admins = n.adminsOf(cfg)
+		prevHash, prevVer, last, lastSec = s.ObjectHash, vU, cfg, sec
 	}
 	// the last version's secrets are signed by the admins valid for it (= the previous version's set, §7.1)
-	p, e := n.parseNet(last, sec, n.adminsOfPrev(chain, rec))
+	p, e := n.parseNet(last, lastSec, signers)
 	if e != nil {
 		return nil, e
 	}
 	return n.applyNet(rec, p, "network/update")
-}
-
-func (n *Node) adminsOfPrev(chain []any, rec *provstore.Record) [][]byte {
-	if len(chain) >= 2 {
-		return n.adminsOf(chain[len(chain)-2])
-	}
-	return rec.Admins
 }
 
 // applyNet runs the wireless transaction of a join / update (docs/design/254-wireless-txn.md §3, §4.2): pre-check,

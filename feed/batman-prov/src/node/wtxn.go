@@ -122,7 +122,8 @@ func (n *Node) openStoredSecrets(raw []byte) cbor.Map {
 	return n.decryptSecrets(s)
 }
 
-// decryptSecrets is openSecrets' part after the signature: the DAC target, the net_id / version binding, the decryption.
+// decryptSecrets is openSecrets' part after the signature: the DAC target and the decryption (net_id / version are the
+// KDF context; openSecrets checks they belong to the net_config being applied, 254-net-update-members.md §2.2-5).
 func (n *Node) decryptSecrets(s *cose.Sign1) cbor.Map {
 	target, _ := s.Payload.Get(3)
 	dacHash := sha256.Sum256(n.KS.DACPub())

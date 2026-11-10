@@ -77,6 +77,12 @@ func (s *stubSys) Now() time.Time                          { return time.Now() }
 
 // realHelper serves node.Node on a SEQPACKET socket (one goroutine per connection, as sock.ServeConns)
 func realHelper(t *testing.T) (path string, claimSecret []byte) {
+	path, claimSecret, _ = realHelperSys(t, func(root string) node.Sys { return &stubSys{p5: filepath.Join(root, "p5")} })
+	return path, claimSecret
+}
+
+// realHelperSys: realHelper with the helper's Sys built by mk (root = the test's directory)
+func realHelperSys(t *testing.T, mk func(root string) node.Sys) (path string, claimSecret []byte, ks *keystore.Keystore) {
 	root := t.TempDir()
 	p := provstore.Paths{Dir: filepath.Join(root, "prov"), RunDir: filepath.Join(root, "run")}
 	os.MkdirAll(p.RunDir, 0o700)
@@ -84,12 +90,13 @@ func realHelper(t *testing.T) (path string, claimSecret []byte) {
 	if err := keystore.Generate(p.Identity()); err != nil {
 		t.Fatal(err)
 	}
-	ks, err := keystore.Load(p.Identity())
+	var err error
+	ks, err = keystore.Load(p.Identity())
 	if err != nil {
 		t.Fatal(err)
 	}
 	provstore.WriteOverlay(p, &provstore.Record{Generation: 1, State: provstore.Unclaimed})
-	n := node.New(p, ks, &stubSys{p5: filepath.Join(root, "p5")}, t.Logf)
+	n := node.New(p, ks, mk(root), t.Logf)
 	n.Verdict = provstore.Unclaimed
 	n.Health = func() string {
 		return "boot_id=b ts=1 bluetoothd=1 hci0_powered=1 privacy=1 sc=1 sc_file=1 bondable=0 num_instances=0\n"
@@ -131,5 +138,5 @@ func realHelper(t *testing.T) (path string, claimSecret []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return path, sec
+	return path, sec, ks
 }

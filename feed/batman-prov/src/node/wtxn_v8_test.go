@@ -21,7 +21,7 @@ func TestHandoverThenCrashAfterV2(t *testing.T) {
 	r, v1 := memberRig(t)
 	b := newKey()
 	v2 := r.mkNet(&netv{nid: v1.nid, ver: 2, meshID: "m2", ch: 36, sae: "sae-v2-pass", admins: []*ecdsa.PrivateKey{b}, signer: v1.admins[0], prev: v1.cfg})
-	if c := r.applyUpdate([]any{v2.cfg}, v2.secrets); c != OK {
+	if c := r.applyUpdate(v2); c != OK {
 		t.Fatalf("update v2: %d", c)
 	}
 	r.crashTxn2("sae-v3-pass", "m3", "28")

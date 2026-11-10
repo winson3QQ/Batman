@@ -124,7 +124,7 @@ v1 → v2:第 1 輪 A(1 B / 3 M / 10 m)、B(1 B / 2 M / 8 m),見 §8。v2 → v3
 - update 也是全網改頻道 / 名稱的路(net_config 的其他欄位),同一套流程。
 - 國碼:app 絕不產生改國碼的版本。
 
-大小:每一步 ≈ net_config(300–560 B,1–4 位網主)+ member_list(≈ 300 B + 每位成員 ≈ 290 B + 每筆 removed 32 B / invite 16 B);最後一步再加 secrets(≈ 250 B)。⚠️ 估算:app 上限 16 位成員(F19)時每步 ≈ 5.5 KB → 約 11 版;10 位 ≈ 17 版。實作時以真物件量測(U13),量測值寫回這裡。
+大小:每一步 ≈ net_config(300–560 B,1–4 位網主)+ member_list(≈ 300 B + 每位成員 ≈ 290 B + 每筆 removed 32 B / invite 16 B);最後一步再加 secrets(≈ 250 B)。✅ 實測(U13,`provd/realhelper_update_test.go`,真 helper + provd 真分塊):16 位成員時一步(net_config + member_list)= **4378 B**;以每塊 8000 B 切,**14 步 = 61 627 B = 8 塊**可套用,再多一步需第 9 塊 → session 結束、版本不變。也就是 16 位成員的網路,落後 ≤ 13 版的節點一次補得上(第 1 版是節點目前版本的下一版起算)。
 
 ## 4. 生命週期
 
@@ -174,7 +174,7 @@ Go 單元(`node/`;`rig.applyUpdate` 與其呼叫者 F4 改新形狀;每項斷言
 - U7 國碼:兩步鏈**中間步** key 5 ≠ 已存、最後一步同國碼 → `EReject` reason 14(provd 層 `E_REJECTED{2: 14}`;證明每一步都比);同國碼 → 0;新的缺 key 5 → 14;已存的缺 key 5 → 14。
 - U15 形狀錯(非陣列、步不是 map、缺 key、secrets 位置錯)經 provd → `E_BAD_OBJECT`,且 provd log 沒有 CRIT 行。
 - U8 provd `route_test` 的 update 改新形狀;member session 轉送照樣通(只證明路由,假 helper 碰不到 `netUpdate`)。
-- U9 **新增**經 `netUpdate` 的斷電 seam 測試(既有 seam 測試只走 join):在 txn2 / txn3 停 → Finish → 退回時紀錄是舊版、無線是舊值;txn4 停 → Finish → 前進,紀錄與無線都是新版。
+- U9 **新增**經 `netUpdate` 的斷電 seam 測試(既有 seam 測試只走 join):在 txn-2 停 → Finish → 退回,紀錄是舊版、無線是舊值;txn-3(p5 已是新版,p5 是 commit 點)/ txn-4 停 → Finish → 前進,紀錄與無線都是新版。(實作時更正:v4.1 原文把 txn-3 寫成退回,與  的定義不符)
 - **U11 新版 net_config + 這台節點的舊版 secrets → `E_BAD_OBJECT "net_secrets"`**,紀錄 / `.txn` / setkey 不變(這是兩位審查 PoC 的反轉:修正前 code 0)。
 - **U12 別的 net_id 的 secrets(同網主、目標是這台)→ 拒絕**;join 帶版本不符的 secrets → 拒絕(`parseNet` 共用)。
 - U13 大小(provd 層、真分塊、MaxMsg 8192):16 位成員的真物件鏈,剛好 8 塊 → 0;多一步變 9 塊 → session 結束、紀錄不變;量測每步大小,回填 §3。
