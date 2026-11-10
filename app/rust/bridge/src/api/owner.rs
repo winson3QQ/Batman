@@ -1623,7 +1623,7 @@ mod tests {
         ]));
         let (mut s, _) = OwnerSession::start(rec, vec![4; 65], 244).unwrap();
         assert!(s.request_make_network("n".into(), 40, vec![4; 65], vec![4; 65]).is_err(), "no verified node_cert yet");
-        assert!(s.request_join_network(vec![], 1, vec![4; 65], vec![4; 65]).is_err(), "not logged in yet");
+        assert!(s.request_join_network(vec![], 1, vec![4; 65], vec![4; 65], false).is_err(), "not logged in yet");
         assert!(s.request_link_check(10).is_err());
         assert_eq!(s.check_network().err().as_deref(), Some("這次連線還沒有建立過網路"));
         assert_eq!(s.request_status().err().as_deref(), Some("還沒連線到節點"));
@@ -1721,6 +1721,7 @@ mod tests {
             leave: None,
             after_left: false,
             page_cut_once: false,
+            removed_q: String::new(),
         };
         (s, FakeNode { t: r.into_transport_mode().unwrap(), rx: frame::Reassembler::new(FL, 8192) })
     }
@@ -1849,7 +1850,7 @@ mod tests {
             (STALE_RECORD, "[REQ_FAIL] 紀錄已被別處更新，請重新開啟再試"),
         ] {
             let (mut s, mut n) = logged_in();
-            let mut st = s.request_join_network(netrec::encode(&r), 1, pub65(0x66).to_vec(), pub65(0x22).to_vec()).unwrap();
+            let mut st = s.request_join_network(netrec::encode(&r), 1, pub65(0x66).to_vec(), pub65(0x22).to_vec(), false).unwrap();
             let t = loop {
                 st = match st.kind {
                     OwnerKind::SignAdmin => s.signed(der(0x66, &st.sign_input)).unwrap(),
@@ -2029,12 +2030,13 @@ mod member_tests {
             secrets: vec![3],
         });
         r.state = netrec::APPLIED.into();
-        r.list = Some(vec![netrec::Member { dac_pub_hash: [0xb2; 32], ecdh_pub: [4; 65], name: "隊員".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Approved, prev_country: None }]);
+        r.list = Some(vec![netrec::Member { known: None, dac_pub_hash: [0xb2; 32], ecdh_pub: [4; 65], name: "隊員".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Approved, prev_country: None }]);
         let v = net_summary(netrec::encode(&r)).unwrap();
         assert!(v.members[0].approved && !v.members[0].joining);
-        let st = net_forget_joining(netrec::encode(&r), 3, nodecert::hex_lower(&[0xb2; 32])).unwrap();
-        assert!(st.detail.contains("不會撤銷這台已拿到的網路金鑰"), "{}", st.detail);
-        assert!(!st.detail.contains(&"S".repeat(24)));
+        // remove-member §3.6 (T39): another person's approved node is removed with the person, never forgotten
+        let e = net_forget_joining(netrec::encode(&r), 3, nodecert::hex_lower(&[0xb2; 32])).err().unwrap();
+        assert!(e.contains("不會撤銷他已拿到的網路金鑰") && e.contains("移除這個人"), "{e}");
+        assert!(!e.contains(&"S".repeat(24)));
     }
 }
 
@@ -2085,7 +2087,7 @@ mod member_review_tests {
         busy(sess.request_set_country("JP".into()), "settings/set");
         busy(sess.request_status_page(), "status page");
         busy(sess.request_make_network("n".into(), 40, vec![4; 65], vec![4; 65]), "make network");
-        busy(sess.request_join_network(vec![0xa0], 1, vec![4; 65], vec![4; 65]), "join network");
+        busy(sess.request_join_network(vec![0xa0], 1, vec![4; 65], vec![4; 65], false), "join network");
         busy(sess.request_member_join(vec![0xa0], 1), "member join");
         busy(sess.request_joinreq("a1".into(), "x".into(), 0, None, vec![4; 65]), "a second request");
     }
@@ -2456,5 +2458,215 @@ mod leave_tests {
         // the dialog
         let d = leave_confirm_text("2233".into(), String::new(), true, true);
         assert!(d[0].contains("…2233") && d[1].ends_with("讀不到這台目前的網路，無法確認這支手機能不能再加入。"));
+    }
+}
+
+#[cfg(test)]
+mod rm_tests {
+    //! remove-member (docs/design/254-app-remove-member.md v6.4) through the bridge: T32 / T39 (forget), T38 A-m2
+    //! (net_summary's creator flag), §3.5 (the status line), §2.0 rule 2 (the question), §3.2 (request_send_update
+    //! over a session, its Wait step)
+    use super::*;
+    use batman_proto::cose;
+    use batman_proto::rekey::{self, Rekey, Target};
+    use p256::ecdsa::signature::Signer;
+
+    fn key(b: u8) -> p256::ecdsa::SigningKey {
+        p256::ecdsa::SigningKey::from_slice(&[b; 32]).unwrap()
+    }
+    fn pub65(b: u8) -> [u8; 65] {
+        key(b).verifying_key().to_sec1_point(false).as_bytes().try_into().unwrap()
+    }
+    fn der(b: u8, input: &[u8]) -> Vec<u8> {
+        let s: p256::ecdsa::Signature = key(b).sign(input);
+        s.to_der().as_bytes().to_vec()
+    }
+    fn sign1(ct: &str, p: &[u8]) -> Vec<u8> {
+        cose::sign1(ct, p, &sig::der_to_raw_low_s(&der(0x66, &cose::sign1_tbs(ct, cose::label_of(ct).unwrap(), p))).unwrap())
+    }
+    fn entry(dac: u8, ecdh: u8, owner: u8, state: MemberState) -> netrec::Member {
+        netrec::Member {
+            dac_pub_hash: netrec::dac_hash(&pub65(dac)),
+            ecdh_pub: pub65(ecdh),
+            name: format!("n{dac:02x}"),
+            owner_pub: pub65(owner),
+            owner_enc_pub: pub65(0x22),
+            device_id: Some(format!("aabbccddeeff00{dac:02x}{ecdh:02x}")),
+            state,
+            prev_country: None,
+            known: None,
+        }
+    }
+    /// v1 (the session's node 0x55 / 0x43 the creator, this phone's owner 0x11, admin 0x66) with key 11 = `list`
+    fn record(list: Vec<netrec::Member>, state: &str) -> NetRec {
+        let id = [0x5a; 16];
+        let c = entry(0x55, 0x43, 0x11, MemberState::Applied);
+        let m = cose::Member { dac_pub_hash: &c.dac_pub_hash, ecdh_pub: &c.ecdh_pub, name: &c.name, owner_pub: &c.owner_pub, owner_enc_pub: &c.owner_enc_pub };
+        let base = joinflow::NetRecord {
+            net_id: id,
+            mesh_id: "bm-5a5a5a5a5a5a".into(),
+            channel: 40,
+            bw: 4,
+            sae: "S".repeat(24),
+            net_root: [7; 32],
+            netcfg: sign1(cose::CT_NETCFG, &cose::net_config_payload(&id, 1, None, "t", "US", "bm-5a5a5a5a5a5a", 40, 4, &[pub65(0x66)])),
+            members: sign1(cose::CT_MEMBERS, &cose::member_list_payload(&id, 1, None, &[m])),
+            secrets: vec![3],
+        };
+        NetRec { base, state: state.into(), list: Some(list), invites: None, versions: None }
+    }
+    fn rekeyed(r: &NetRec, t: Target) -> NetRec {
+        let (mut f, mut a) = Rekey::start(&netrec::encode(r), 1, &pub65(0x66), &pub65(0x11), &t, &[]);
+        loop {
+            a = match a {
+                rekey::Action::SignAdmin { tbs } => f.signed(&der(0x66, &tbs)).unwrap(),
+                rekey::Action::Persist { plain, .. } => return netrec::decode(&plain).unwrap(),
+                rekey::Action::Done(e) => panic!("{e:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn t39_another_persons_approved_node_is_never_forgotten() {
+        let r = record(vec![entry(0x55, 0x43, 0x11, MemberState::Applied), entry(0x57, 0x44, 0x31, MemberState::Approved)], "applied");
+        let e = net_forget_joining(netrec::encode(&r), 1, nodecert::hex_lower(&netrec::dac_hash(&pub65(0x57)))).err().unwrap();
+        assert!(e.contains("移除這個人"), "{e}");
+    }
+
+    #[test]
+    fn t32_the_creators_joining_entry_is_forgotten_only_once_applied() {
+        let h = nodecert::hex_lower(&netrec::dac_hash(&pub65(0x55)));
+        let r = record(vec![entry(0x55, 0x43, 0x11, MemberState::Joining)], "applied");
+        assert!(net_forget_joining(netrec::encode(&r), 1, h.clone()).is_ok());
+        let p = record(vec![entry(0x55, 0x43, 0x11, MemberState::Joining)], "pending");
+        assert_eq!(net_forget_joining(netrec::encode(&p), 1, h).err().unwrap(), "建立網路的節點不能忘記");
+    }
+
+    #[test]
+    fn t38_net_summary_names_the_creator_only_while_pending_and_never_fails_on_an_empty_key_8() {
+        let p = record(vec![entry(0x55, 0x43, 0x11, MemberState::Joining)], "pending");
+        assert!(net_summary(netrec::encode(&p)).unwrap().members[0].creator, "pending: the forget button is withheld");
+        let a = record(vec![entry(0x55, 0x43, 0x11, MemberState::Applied)], "applied");
+        assert!(!net_summary(netrec::encode(&a)).unwrap().members[0].creator);
+        // the last own node excluded: key 8 empty, the summary still opens
+        let gone = rekeyed(&a, Target::Node(netrec::dac_hash(&pub65(0x55))));
+        assert!(gone.creator().is_err(), "negative control: creator() fails on it");
+        assert!(net_summary(netrec::encode(&gone)).unwrap().members.is_empty());
+    }
+
+    fn info(ver: u64, id: [u8; 16]) -> Value {
+        Value::Map(vec![
+            (Value::Uint(4), Value::Text("1.5.14-wsl.25+x".into())),
+            (Value::Uint(9), Value::Uint(ver)),
+            (Value::Uint(10), Value::Bytes(id.to_vec())),
+            (Value::Uint(11), Value::Bool(false)),
+        ])
+    }
+    fn node() -> Verified {
+        Verified { device_id: "aabbccddeeff00112233".into(), dac_der: vec![], dac_pub: pub65(0x55), ecdh_pub: pub65(0x43), sn: [0; 9] }
+    }
+
+    #[test]
+    fn status_line_rules() {
+        let r = record(vec![entry(0x55, 0x43, 0x11, MemberState::Applied), entry(0x57, 0x44, 0x31, MemberState::Approved)], "applied");
+        let v2 = rekeyed(&r, Target::Person(pub65(0x31)));
+        let plain = netrec::encode(&v2);
+        // the admin: listed and behind -> the button
+        let h = update_hint_of(Some(&info(1, [0x5a; 16])), Some(&node()), &pub65(0x11), &plain, false);
+        assert!(h.button && h.line.contains("把新密碼送給節點"));
+        // current -> nothing; another network -> nothing
+        assert!(update_hint_of(Some(&info(2, [0x5a; 16])), Some(&node()), &pub65(0x11), &plain, false).line.is_empty());
+        assert!(update_hint_of(Some(&info(1, [0x99; 16])), Some(&node()), &pub65(0x11), &plain, false).line.is_empty());
+        // excluded (not in key 11) -> rule 1's sentence, no button
+        let v3 = rekeyed(&v2, Target::Node(netrec::dac_hash(&pub65(0x55))));
+        let h = update_hint_of(Some(&info(2, [0x5a; 16])), Some(&node()), &pub65(0x11), &netrec::encode(&v3), false);
+        assert_eq!((h.line.as_str(), h.button), (super::super::rekey::NOT_LISTED, false));
+        // a member phone without this node's current secrets -> the "ask the admin" line, no button (T37)
+        let m = batman_proto::mrec::MNet {
+            net_id: [0x5a; 16],
+            version: 2,
+            netcfg: v2.base.netcfg.clone(),
+            members: v2.base.members.clone(),
+            secrets: vec![],
+            net_root: [7; 32],
+            me: None,
+            invite_hash: [0; 32],
+            versions: None,
+            node_secrets: vec![],
+        };
+        let h = update_hint_of(Some(&info(1, [0x5a; 16])), Some(&node()), &pub65(0x31), &m.encode(), true);
+        assert!(!h.button && h.line.contains("請網主重新產生你的更新包"), "{}", h.line);
+        // negative control: the admin phone never shows the member line for an excluded node
+        assert!(!update_hint_of(Some(&info(2, [0x5a; 16])), Some(&node()), &pub65(0x11), &netrec::encode(&v3), false).line.contains("請網主"));
+    }
+
+    #[test]
+    fn t35_the_removed_before_question() {
+        let r = record(vec![entry(0x55, 0x43, 0x11, MemberState::Applied), entry(0x57, 0x44, 0x31, MemberState::Approved)], "applied");
+        let v2 = rekeyed(&r, Target::Person(pub65(0x31)));
+        let b = Verified { dac_pub: pub65(0x57), ecdh_pub: pub65(0x44), ..node() };
+        // B was approved after v1 and removed at v2: no kept version's members ever listed it -> 「不明」
+        // (a design gap found here: reported, see #254)
+        let q = removed_question(&netrec::encode(&v2), Some(&b), "4457");
+        assert!(q.contains("…4457") && q.contains("之前被排除") && q.ends_with("不明"), "{q}");
+        // listed by some version (D approved, then another person removed: v3 lists D; v4 removes D): named
+        let mut v2d = v2.clone();
+        v2d.list.as_mut().unwrap().push(entry(0x59, 0x46, 0x33, MemberState::Approved));
+        v2d.list.as_mut().unwrap().push(entry(0x5b, 0x48, 0x35, MemberState::Approved));
+        let v3 = rekeyed(&v2d, Target::Person(pub65(0x35)));
+        let v4 = rekeyed(&v3, Target::Person(pub65(0x33)));
+        let d = Verified { dac_pub: pub65(0x59), ecdh_pub: pub65(0x46), ..node() };
+        let q = removed_question(&netrec::encode(&v4), Some(&d), "5946");
+        assert!(q.contains(&super::super::rekey::fpr(&pub65(0x33))), "{q}");
+        assert!(removed_question(&netrec::encode(&v2), Some(&node()), "2233").is_empty(), "never removed: no question");
+    }
+
+    #[test]
+    fn send_update_over_a_session_waits_and_sends() {
+        let r = record(vec![entry(0x55, 0x43, 0x11, MemberState::Applied), entry(0x57, 0x44, 0x31, MemberState::Approved)], "applied");
+        let v2 = rekeyed(&r, Target::Person(pub65(0x31)));
+        let (mut s, mut n) = tests::logged_in();
+        let mut st = s.request_send_update(netrec::encode(&v2), false, pub65(0x66).to_vec()).unwrap();
+        let (mut verbs, mut waits, mut infos) = (vec![], 0, 0);
+        let t = loop {
+            st = match st.kind {
+                OwnerKind::SignAdmin => s.signed(der(0x66, &st.sign_input)).unwrap(),
+                OwnerKind::Wait => {
+                    assert_eq!(st.wait_ms, 2000);
+                    waits += 1;
+                    s.resume_update().unwrap()
+                }
+                OwnerKind::Write => {
+                    let (id, verb) = n.request(&st.frames);
+                    let a = match verb.as_str() {
+                        // the first info is rate-limited (empty body = Unknown), then v1, after the update v2
+                        "info" => {
+                            infos += 1;
+                            Ok(match infos {
+                                1 => Value::Map(vec![]),
+                                2 => info(1, [0x5a; 16]),
+                                _ => info(2, [0x5a; 16]),
+                            })
+                        }
+                        "network/update" => Ok(Value::Map(vec![(Value::Uint(1), Value::Uint(2))])),
+                        v => panic!("unexpected {v}"),
+                    };
+                    verbs.push(verb);
+                    let mut next = None;
+                    for f in n.answer(id, a) {
+                        next = s.on_frame(f).or(next);
+                    }
+                    next.unwrap()
+                }
+                OwnerKind::Answer => break st.detail,
+                k => panic!("unexpected {k:?}"),
+            };
+        };
+        assert_eq!(verbs, ["info", "info", "network/update", "info"]);
+        assert_eq!(waits, 1);
+        assert_eq!(t, "[UPDATED] 節點 …2233 已換成新密碼");
+        assert!(!t.contains(&"S".repeat(24)));
+        // the session is an owner session again
+        assert!(s.request_status().is_ok());
     }
 }

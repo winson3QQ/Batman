@@ -7,7 +7,9 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `back_to_conn`, `code_text`, `confirm_text`, `country_question`, `error_text`, `join2_step`, `join2_text`, `join_state_text`, `join_step`, `joinreq_step`, `leave_info`, `link_text`, `list_kind`, `login_end_text`, `login_step`, `member_join_text`, `net_made_text`, `new`, `owner_op`, `parse_record`, `persist_at`, `persist_step`, `reason_text`, `request_tagged`, `request`, `settings_text`, `status_text`, `status_view_of`, `text`, `verb_text`
+import 'rekey.dart';
+
+// These functions are ignored because they are not marked as `pub`: `back_to_conn`, `code_text`, `confirm_text`, `country_question`, `error_text`, `join2_step`, `join2_text`, `join_state_text`, `join_step`, `joinreq_step`, `leave_info`, `link_text`, `list_kind`, `login_end_text`, `login_step`, `member_join_text`, `net_made_text`, `new`, `owner_op`, `parse_record`, `persist_at`, `persist_step`, `reason_text`, `request_tagged`, `request`, `settings_text`, `status_text`, `status_view_of`, `text`, `update_step`, `verb_text`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Rec`, `St`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `eq`, `fmt`
 
@@ -95,6 +97,9 @@ abstract class OwnerSession implements RustOpaqueInterface {
   /// the session is an owner session again.
   OwnerStep? netPersisted();
 
+  /// The SHA-256 of this login's verified DAC (lowercase hex; "" = not verified): which own node this session is.
+  String nodeDacHash();
+
   OwnerStep? onFrame({required List<int> frame});
 
   /// The last PersistNet failed (sealing or store_write_cas): stop; nothing more is sent (join2 §3.1). `error`: what
@@ -108,14 +113,19 @@ abstract class OwnerSession implements RustOpaqueInterface {
     required BigInt recordGen,
   });
 
+  /// remove-member §2.4: one info read whose body comes back as is (OwnerStep.info; empty = could not be read).
+  OwnerStep requestInfo();
+
   /// Join this (claimed, verified at this login) node to the network of an opened net record (join2 §3.3).
   /// `record_gen`: the generation store_read_sealed gave (every record write of the join is a CAS from it).
   /// admin_pub / owner_enc_pub: this phone's keys (Kotlin publicKeys).
+  /// `removed_confirmed`: the user answered yes to the ConfirmRemoved question (remove-member §2.0 rule 2).
   OwnerStep requestJoinNetwork({
     required List<int> recordPlain,
     required BigInt recordGen,
     required List<int> adminPub,
     required List<int> ownerEncPub,
+    required bool removedConfirmed,
   });
 
   /// member-join §4 step 4: a join request for a pasted invite (`invite_hex`), from this login's verified node.
@@ -155,6 +165,15 @@ abstract class OwnerSession implements RustOpaqueInterface {
     required BigInt mnetGen,
   });
 
+  /// 「把新密碼送給節點」(remove-member §3.2) to this (own, verified) node from an opened record: the admin's net
+  /// record (`member` false; `admin_pub` signs the node's fresh secrets) or a member's mnet (`member` true). Never
+  /// called on its own: only from the button (or right after a join whose node is behind, §3.5).
+  OwnerStep requestSendUpdate({
+    required List<int> recordPlain,
+    required bool member,
+    required List<int> adminPub,
+  });
+
   /// `settings/set` {20: {1: ssid, 2: passphrase}} (an owner-op; §3.3): the phone AP. The passphrase stays in here
   /// and in the encrypted request; it is never part of a step's text.
   OwnerStep requestSetAp({required String ssid, required String passphrase});
@@ -175,6 +194,9 @@ abstract class OwnerSession implements RustOpaqueInterface {
   /// member-join §8: status, then info, then an Answer; `status_view` gives the page.
   OwnerStep requestStatusPage();
 
+  /// After a Wait step.
+  OwnerStep? resumeUpdate();
+
   OwnerStep? signed({required List<int> der});
 
   /// Login to the node of this (opened) node record; the first step is the msg1 frames.
@@ -191,6 +213,11 @@ abstract class OwnerSession implements RustOpaqueInterface {
   /// The last status page read as the page shows it (status page v8.1 §2-§3). `has_net` / `has_mnet`: this phone holds
   /// a net/ (it made a network) / an mnet/ record — the claimed-node sentence names the matching join button.
   StatusView statusView({required bool hasNet, required bool hasMnet});
+
+  /// remove-member §3.5: the status page's line about this node's secrets, from the record of the network info key
+  /// 10 names (`record_plain`: net/ when `member` false, mnet/ when true) and the last status-page read. "" = none;
+  /// `button` = show 「把新密碼送給節點」.
+  UpdateHint updateHint({required List<int> recordPlain, required bool member});
 }
 
 /// One member of a net record, for the screen (no secret).
@@ -321,6 +348,13 @@ enum OwnerKind {
 
   /// a member's network record (member-join §4 steps 7c, 8): seal and write `record` at `rel` exactly like PersistNet
   persistMnet,
+
+  /// 「把新密碼送給節點」(remove-member §3.2): wait `wait_ms`, then `resume_update()`
+  wait,
+
+  /// join a node of this network (remove-member §2.0 rule 2): it was removed before — ask the question in `detail`;
+  /// yes = request_join_network again with `removed_confirmed`
+  confirmRemoved,
 }
 
 class OwnerStep {
@@ -355,6 +389,16 @@ class OwnerStep {
   /// an Answer: network/leave answered 0 (re-read the status page once, §2)
   final bool left;
 
+  /// Wait: how long
+  final BigInt waitMs;
+
+  /// an Answer after a join: the node is behind the phone's version — send the new secrets now (request_send_update,
+  /// remove-member §3.5)
+  final bool sendUpdate;
+
+  /// an Answer of `request_info`: the info body (CBOR) for the removal's version check (§2.4)
+  final Uint8List info;
+
   const OwnerStep({
     required this.kind,
     required this.frames,
@@ -371,6 +415,9 @@ class OwnerStep {
     required this.renewed,
     required this.sent,
     required this.left,
+    required this.waitMs,
+    required this.sendUpdate,
+    required this.info,
   });
 
   @override
@@ -389,7 +436,10 @@ class OwnerStep {
       sas.hashCode ^
       renewed.hashCode ^
       sent.hashCode ^
-      left.hashCode;
+      left.hashCode ^
+      waitMs.hashCode ^
+      sendUpdate.hashCode ^
+      info.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -410,7 +460,10 @@ class OwnerStep {
           sas == other.sas &&
           renewed == other.renewed &&
           sent == other.sent &&
-          left == other.left;
+          left == other.left &&
+          waitMs == other.waitMs &&
+          sendUpdate == other.sendUpdate &&
+          info == other.info;
 }
 
 /// A sealed record and the AAD Kotlin opens it with.

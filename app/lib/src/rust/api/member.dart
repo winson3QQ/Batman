@@ -35,11 +35,13 @@ ImportPrep memberImportPrepare({
   required BigInt pendGen,
   Uint8List? pendPlain,
   Uint8List? mnetPlain,
+  required bool replace,
 }) => RustLib.instance.api.crateApiMemberMemberImportPrepare(
   hex: hex,
   pendGen: pendGen,
   pendPlain: pendPlain,
   mnetPlain: mnetPlain,
+  replace: replace,
 );
 
 /// §4 step 7c: after the user pressed the confirm button on the SAS screen (`confirmed_sas` = the string shown),
@@ -55,6 +57,7 @@ OwnerStep memberImportApproval({
   required BigInt mnetGen,
   required List<int> z,
   required String confirmedSas,
+  required bool replace,
 }) => RustLib.instance.api.crateApiMemberMemberImportApproval(
   hex: hex,
   pendGen: pendGen,
@@ -64,6 +67,7 @@ OwnerStep memberImportApproval({
   mnetGen: mnetGen,
   z: z,
   confirmedSas: confirmedSas,
+  replace: replace,
 );
 
 /// "Show the request again" (§3): the hex and SAS from the pending request (Answer with hex / sas).
@@ -84,19 +88,22 @@ Future<List<String>> listMnets({required String dir}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NetOp>>
 abstract class NetOp implements RustOpaqueInterface {
-  /// §4 step 6: approve the join request the admin checked (`joinreq_hash` from net_check_joinreq).
+  /// §4 step 6: approve the join request the admin checked (`joinreq_hash` from net_check_joinreq);
+  /// `previous_confirmed`: the user answered yes to JoinReqView.previous (remove-member §3.6).
   static (NetOp, OwnerStep) approve({
     required List<int> recordPlain,
     required BigInt recordGen,
     required String hex,
     required String joinreqHash,
     required List<int> adminPub,
+    required bool previousConfirmed,
   }) => RustLib.instance.api.crateApiMemberNetOpApprove(
     recordPlain: recordPlain,
     recordGen: recordGen,
     hex: hex,
     joinreqHash: joinreqHash,
     adminPub: adminPub,
+    previousConfirmed: previousConfirmed,
   );
 
   /// §4 step 1: a remote invite from this (applied) net record; `admin_pub` = this phone's admin key.
@@ -159,6 +166,10 @@ enum ImportState {
   ready,
   alreadyImported,
   needsNewInvite,
+
+  /// remove-member §3.6-2: ask `detail` (replace the stored network?); yes = member_import_prepare again with
+  /// `replace`
+  replace,
 }
 
 /// What a pasted invite says (§4 step 2).
@@ -197,12 +208,21 @@ class JoinReqView {
   final bool replacesApproved;
   final String joinreqHash;
 
+  /// remove-member §3.6: "" or the question to confirm before approving (removed before) — `approve` then needs
+  /// `previous_confirmed`
+  final String previous;
+
+  /// the person still lacks a version: 「請他先貼更新包，再貼這份同意」
+  final bool updateFirst;
+
   const JoinReqView({
     required this.sas,
     required this.name,
     required this.deviceSuffix,
     required this.replacesApproved,
     required this.joinreqHash,
+    required this.previous,
+    required this.updateFirst,
   });
 
   @override
@@ -211,7 +231,9 @@ class JoinReqView {
       name.hashCode ^
       deviceSuffix.hashCode ^
       replacesApproved.hashCode ^
-      joinreqHash.hashCode;
+      joinreqHash.hashCode ^
+      previous.hashCode ^
+      updateFirst.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -222,7 +244,9 @@ class JoinReqView {
           name == other.name &&
           deviceSuffix == other.deviceSuffix &&
           replacesApproved == other.replacesApproved &&
-          joinreqHash == other.joinreqHash;
+          joinreqHash == other.joinreqHash &&
+          previous == other.previous &&
+          updateFirst == other.updateFirst;
 }
 
 /// A member's stored network, for the screen (no secret).
