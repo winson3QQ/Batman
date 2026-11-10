@@ -405,3 +405,12 @@ mod review2_tests {
         assert_eq!(invite::display_name("ok 名稱"), "ok 名稱");
     }
 }
+
+
+#[cfg(test)]
+mod review3_tests {
+    #[test]
+    fn separators_are_filtered_in_shown_names() {
+        assert_eq!(batman_proto::invite::display_name("家\u{2028}裡\u{2029}網"), "家\u{FFFD}裡\u{FFFD}網");
+    }
+}

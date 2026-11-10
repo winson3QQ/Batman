@@ -500,6 +500,9 @@ impl Join2 {
             Err(_) if matches!(self.st, Step::Secrets { resend: false, .. }) => return self.end(End::AdminSignFailed),
             // the resend after 3: the entry (and maybe the country) changed already -> unclear, keep joining
             Err(_) if matches!(self.st, Step::Secrets { resend: true, .. }) => return self.end(End::Joining(Keep::Unclear)),
+            // an owner-op signature failed (settings.set / network/join / put back not sent): the entry and its
+            // prev_country stay as written -> unclear, "繼續加入"
+            Err(_) if matches!(self.st, Step::Owner { .. }) => return self.end(End::Joining(Keep::Unclear)),
             Err(e) => return self.end(End::Broken(format!("{e:?}"))),
         };
         match std::mem::replace(&mut self.st, Step::Over) {
