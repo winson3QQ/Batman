@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"batman-prov/cbor"
+	"batman-prov/cose"
+	"batman-prov/proto"
 	"batman-prov/provstore"
 )
 
@@ -237,6 +239,7 @@ func TestUpdateCountry(t *testing.T) {
 	}
 	sb := s.nuSnap()
 	s.refused(t, "stored config without a country", s.applyUpdate(s.next(old, 2, nil)), EReject, sb, "sae-v1-pass/m1/28")
+	s.refused(t, "both without a country", s.applyUpdate(s.next(old, 2, func(v *netv) { v.noCC = true })), EReject, sb, "sae-v1-pass/m1/28")
 }
 
 // U14: a resend after the update applied — E_STALE_VERSION; across an admin handover — E_BAD_OBJECT (F17, fixed
@@ -283,7 +286,18 @@ func mustEnc(m cbor.Map) []byte { b, _ := cbor.Encode(m); return b }
 func TestUpdateNoPanic(t *testing.T) {
 	r, v1 := memberRig(t)
 	v2 := r.next(v1, 2, nil)
-	for i, body := range malformedBodies(v1, v2) {
+	a := v1.admins[0]
+	sMem := func(pl cbor.Map) any { return sign1(t, a, cose.CTMembers, proto.LabelMembers, pl) }
+	sSec := func(pl cbor.Map) any { return sign1(t, a, cose.CTSecrets, proto.LabelSecrets, pl) }
+	signedWrong := []cbor.Map{ // signed by the admin, every field of the wrong type
+		cbor.M(1, []any{cbor.M(1, v2.cfg, 2, sMem(cbor.M(1, uint64(1), 2, "two")), 3, v2.secrets)}),
+		cbor.M(1, []any{cbor.M(1, v2.cfg, 2, sMem(cbor.M(1, v1.nid, 2, []any{})), 3, v2.secrets)}),
+		cbor.M(1, []any{cbor.M(1, v2.cfg, 2, sMem(cbor.M()), 3, v2.secrets)}),
+		cbor.M(1, []any{cbor.M(1, v2.cfg, 2, v2.members, 3, sSec(cbor.M(1, uint64(1), 2, "two", 3, uint64(3), 4, "x")))}),
+		cbor.M(1, []any{cbor.M(1, v2.cfg, 2, v2.members, 3, sSec(cbor.M(1, v1.nid, 2, uint64(2), 3, []byte{1}, 4, uint64(4))))}),
+		cbor.M(1, []any{cbor.M(1, v2.cfg, 2, v2.members, 3, sSec(cbor.M()))}),
+	}
+	for i, body := range append(malformedBodies(v1, v2), signedWrong...) {
 		if _, e := r.n.netUpdate(r.rec(), body); e == nil {
 			t.Fatalf("malformed body %d applied", i)
 		}
@@ -291,14 +305,13 @@ func TestUpdateNoPanic(t *testing.T) {
 }
 
 func FuzzNetUpdate(f *testing.F) {
-	r, v1 := memberRig(&testing.T{})
+	r, v1 := memberRig(f)
 	v2 := r.next(v1, 2, nil)
 	v3 := r.next(v2, 3, nil)
 	for _, b := range append(malformedBodies(v1, v2), cbor.M(1, []any{step(v2, false), step(v3, true)}),
 		cbor.M(1, []any{cbor.M(1, v2.cfg, 2, v2.members, 3, v1.secrets)})) {
 		f.Add(mustEnc(b))
 	}
-	rec := r.rec()
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		x, err := cbor.Decode(raw)
 		if err != nil {
@@ -308,6 +321,6 @@ func FuzzNetUpdate(f *testing.F) {
 		if !ok {
 			return
 		}
-		r.n.netUpdate(rec, body) // must return, never panic; a valid chain cannot be forged without the admin key
+		r.n.netUpdate(r.rec(), body) // must return, never panic; a valid chain cannot be forged without the admin key
 	})
 }

@@ -26,7 +26,7 @@ import (
 
 // ---- real signed / encrypted network objects (219 §7) ----------------------------------------------------------------
 
-func sign1(t *testing.T, key *ecdsa.PrivateKey, ct, label string, payload cbor.Map) any {
+func sign1(t testing.TB, key *ecdsa.PrivateKey, ct, label string, payload cbor.Map) any {
 	t.Helper()
 	prot, _ := cbor.Encode(cbor.M(1, int64(-7), 3, ct))
 	pl, _ := cbor.Encode(payload)
@@ -43,7 +43,7 @@ func sign1(t *testing.T, key *ecdsa.PrivateKey, ct, label string, payload cbor.M
 	return x
 }
 
-func objHash(t *testing.T, item any) []byte {
+func objHash(t testing.TB, item any) []byte {
 	s, err := cose.Sign1Payload(item, cose.CTNetcfg, proto.LabelNetcfg)
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func (r *rig) fin() error {
 func (r *rig) wl() string { k, id, ch, _ := r.sys.CurrentWireless(); return k + "/" + id + "/" + ch }
 
 // memberRig: claimed, joined v1 (mesh m1, channel 28) with real objects through the dispatcher
-func memberRig(t *testing.T) (*rig, *netv) {
+func memberRig(t testing.TB) (*rig, *netv) {
 	r := claimedRig(t)
 	v1 := r.v1Net()
 	if c := r.applyJoin(v1); c != OK {

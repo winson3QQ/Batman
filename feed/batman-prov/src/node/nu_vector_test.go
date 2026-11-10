@@ -82,7 +82,13 @@ func vecItemOf(t *testing.T, h string) any {
 }
 
 func TestUpdateProtocolVector(t *testing.T) {
-	raw, err := os.ReadFile("../../../../tests/vectors/219-protocol/vectors.json")
+	// tests/vectors is the validation set: the network_update vector lands through the harness PR first (#290);
+	// VECTORS points this test at another vectors.json (as keystore_test)
+	vp := os.Getenv("VECTORS")
+	if vp == "" {
+		vp = "../../../../tests/vectors/219-protocol/vectors.json"
+	}
+	raw, err := os.ReadFile(vp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,6 +122,9 @@ func TestUpdateProtocolVector(t *testing.T) {
 		t.Fatalf("after join: %s", r.wl())
 	}
 	nu := v["network_update"]
+	if nu == nil {
+		t.Fatal("vectors.json has no network_update section (the harness PR adds it, #290)")
+	}
 	stale, _ := vecItem(t, v, "network_update", "stale_body_v2").(cbor.Map)
 	b := r.nuSnap()
 	r.refused(t, "vector stale_body_v2", r.applyUpdateBody(stale), EBadObject, b, "correct-horse-battery/batman-test/40")

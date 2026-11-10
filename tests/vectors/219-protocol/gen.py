@@ -183,7 +183,7 @@ out["keys"] = {
     "device_id": DEVICE_ID,
     "p256_private_scalars_note": "d = (int(SHA-256('batman-test-vector/'+name)) mod (n-1)) + 1 for names "
                                  "dev-root-ca, dac, node-ecdh, owner-sign, owner-enc, admin, cose-ephemeral, "
-                                 "cose-ephemeral-member, admin2, cose-ephemeral-v2",
+                                 "cose-ephemeral-member",
 }
 
 # ------------------------------------------------------------------ node_cert (§3.3)
@@ -311,13 +311,13 @@ def object_hash(raw: bytes) -> bytes:
     return H(cb(["Signature1", prot, label, payload]))
 
 
-def encrypt(plain: bytes, label: bytes, target_pub_key, target_hash: bytes, eph_key, iv: bytes, version: int = 1):
+def encrypt(plain: bytes, label: bytes, target_pub_key, target_hash: bytes, eph_key, iv: bytes):
     body_prot = cb({1: 24})
     rec_prot = cb({1: -25})
     epk = pub65(eph_key)
     cose_key = {1: 2, -1: 1, -2: epk[1:33], -3: epk[33:65]}
     z = eph_key.exchange(ec.ECDH(), target_pub_key)
-    ctx = cb([24, [None, None, None], [target_hash, None, None], [256, rec_prot, NET_ID + u32be(version)]])
+    ctx = cb([24, [None, None, None], [target_hash, None, None], [256, rec_prot, NET_ID + u32be(NET_VERSION)]])
     cek = hkdf(z, ctx)
     aad = cb(["Encrypt", body_prot, label])
     ct = ChaCha20Poly1305(cek).encrypt(iv, plain, aad)
@@ -382,28 +382,6 @@ out["version_chain"] = {
     "v2": hx(NETCFG_V2), "v2_object_hash": hx(object_hash(NETCFG_V2)),
     "v3": hx(NETCFG_V3),
     "note": "v3 is valid (admin2 is in v2.admins) but would be INVALID if checked against v1.admins",
-}
-
-# ------------------------------------------------------------------ network/update, one step (docs/design/254-net-update-members.md)
-MEMBERS_V2_PAYLOAD = cb({1: NET_ID, 2: 2, 3: object_hash(MEMBERS),
-                         4: [{1: DAC_PUB_HASH, 2: pub65(node_ecdh), 3: "客廳", 4: pub65(owner_sign),
-                              5: pub65(owner_enc)}],
-                         5: [], 6: [], 7: []})
-MEMBERS_V2, _ = sign1(admin_key, MEMBERS_V2_PAYLOAD, "batman/members", b"batman-members-v1")   # by a v1 admin
-SECRETS_V2_PLAIN = cb({1: "correct-horse-battery-v2", 2: seed("net_root_v2"), 4: "team-ap-pass"})
-enc_v2, _ = encrypt(SECRETS_V2_PLAIN, b"batman-secrets-v1", node_ecdh.public_key(), DAC_PUB_HASH,
-                    p256("cose-ephemeral-v2"), seed("iv-secrets-v2")[:12], version=2)
-SECRETS_V2, _ = sign1(admin_key, cb({1: NET_ID, 2: 2, 3: DAC_PUB_HASH, 4: enc_v2}), "batman/secrets", b"batman-secrets-v1")
-out["network_update"] = {
-    "rule": "network/update body {1: [+ {1: net_config, 2: member_list, ?3: net_secrets}]}; net_secrets in the last "
-            "step only, with the net_id / version of that step's net_config; every step's objects verified against "
-            "the previous version's admins",
-    "applies_after": "network/join with cose.net_config.sign1 + cose.net_secrets.sign1 (version 1)",
-    "body_v2": hx(cb({1: [{1: item(NETCFG_V2), 2: item(MEMBERS_V2), 3: item(SECRETS_V2)}]})),
-    "stale_body_v2": hx(cb({1: [{1: item(NETCFG_V2), 2: item(MEMBERS_V2), 3: item(SECRETS)}]})),
-    "sae_v2": "correct-horse-battery-v2",
-    "net_root_v2": hx(seed("net_root_v2")),
-    "note": "stale_body_v2 pairs v2's net_config with the version-1 secrets: a node must refuse it (E_BAD_OBJECT)",
 }
 
 out["cose"] = {

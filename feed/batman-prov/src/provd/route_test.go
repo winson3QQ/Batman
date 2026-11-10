@@ -369,10 +369,10 @@ func TestOwnerOpsForwardAndBusy(t *testing.T) {
 	p.do("auth/owner", cbor.M(1, kidOf(pub), 2, authSig(t, k, p.h, kidOf(pub))))
 	m := dial(t, s)
 	m.handshake("", psks[4])
-	env := p.env("network/update", cbor.M(1, []any{}))
+	env := p.env("network/update", cbor.M(1, []any{cbor.M()}))
 	p.sendEnv(env)
 	time.Sleep(200 * time.Millisecond)
-	if code, _ := m.do("network/update", cbor.M(1, []any{})); code != EBusy {
+	if code, _ := m.do("network/update", cbor.M(1, []any{cbor.M()})); code != EBusy {
 		t.Fatalf("second request while ops busy: %d", code)
 	}
 	close(release)

@@ -124,7 +124,7 @@ v1 → v2:第 1 輪 A(1 B / 3 M / 10 m)、B(1 B / 2 M / 8 m),見 §8。v2 → v3
 - update 也是全網改頻道 / 名稱的路(net_config 的其他欄位),同一套流程。
 - 國碼:app 絕不產生改國碼的版本。
 
-大小:每一步 ≈ net_config(300–560 B,1–4 位網主)+ member_list(≈ 300 B + 每位成員 ≈ 290 B + 每筆 removed 32 B / invite 16 B);最後一步再加 secrets(≈ 250 B)。✅ 實測(U13,`provd/realhelper_update_test.go`,真 helper + provd 真分塊):16 位成員時一步(net_config + member_list)= **4378 B**;以每塊 8000 B 切,**14 步 = 61 627 B = 8 塊**可套用,再多一步需第 9 塊 → session 結束、版本不變。也就是 16 位成員的網路,落後 ≤ 13 版的節點一次補得上(第 1 版是節點目前版本的下一版起算)。
+大小:每一步 ≈ net_config(300–560 B,1–4 位網主)+ member_list(≈ 300 B + 每位成員 ≈ 290 B + 每筆 removed 32 B / invite 16 B);最後一步再加 secrets(≈ 250 B)。✅ 實測(U13,`provd/realhelper_update_test.go`,真 helper + provd 真分塊):16 位成員時一步(net_config + member_list)= **4378 B**;以每塊 8000 B 切,**14 步 = 61 627 B = 8 塊**可套用,再多一步需第 9 塊 → 第 1 塊(宣告 9 塊)就讓 session 結束(有判別力的是這一點;事後讀到的「版本不變」不可能失敗,只當紀錄)。也就是 16 位成員的網路,落後 ≤ 13 版的節點一次補得上(第 1 版是節點目前版本的下一版起算)。
 
 ## 4. 生命週期
 
@@ -184,7 +184,7 @@ Go 單元(`node/`;`rig.applyUpdate` 與其呼叫者 F4 改新形狀;每項斷言
 - 換網主後再 update(以 `TestHandoverStoredObjectsNotReverified` 為底):v2 交給新網主 → v3 由新網主簽 → 0(國碼比對用 `Sign1Payload` 不重驗)。
 - 負對照(mutation,每個 mutant 新的 GOCACHE):§2.2-1 net_id、§2.2-2 國碼(含缺 key、只比最後一步)、§2.2-3 members 的簽章 / net_id / 版本各一、members 改用這一步 admins 驗、§2.1 秘密位置與形狀錯的錯誤碼、**§2.2-5 secrets 的 net_id 與版本各一**、國碼取值改成 `VerifySign1` → 各自至少一個 U 失敗。
 
-跨語言:`tests/vectors/219-protocol/gen.py` 已是 CDDL 形狀(第 1 輪 A 查證);加一個「update 一步」的完整向量:先 join v1、再 update 到 v2 的一步(cfg v2、members v2、secrets v2);向量內含一把**僅供測試**的節點 DAC / ECDH 私鑰,Go 測試用它建 fake keystore 並套用(Python 產、Go 讀)。現有的 `_upd_body` 只是分塊用的向量,不是可套用的 update。provclient 的 objectHash label 表補上 members。
+跨語言(實作時:依使用者決定,向量走 harness PR,#290;節點測試以 `VECTORS` 指向它,缺 `network_update` 段即 FAIL):`tests/vectors/219-protocol/gen.py` 已是 CDDL 形狀(第 1 輪 A 查證);加一個「update 一步」的完整向量:先 join v1、再 update 到 v2 的一步(cfg v2、members v2、secrets v2);向量內含一把**僅供測試**的節點 DAC / ECDH 私鑰,Go 測試用它建 fake keystore 並套用(Python 產、Go 讀)。現有的 `_upd_body` 只是分塊用的向量,不是可套用的 update。provclient 的 objectHash label 表補上 members。
 
 Harness(#290 測項只有一套;依使用者決定 A,與 wsl.25 一起合、先合 harness):`provclient --update` 改送新形狀(每步附 members-sign1,版本 = net_config 版本;secrets 用同一版),並加 `--update-stale-secrets`(新版 net_config 配一份**新產、但版本 = 目前版本**的 secrets;provclient 拿不到節點上存的那份,這樣構造等價);`prov-netupdate-254` 加一臂斷言它回 `E_BAD_OBJECT`、版本與無線都沒變:證明出貨 image 拒絕它(硬體上沒有修正前的對照;修正前會接受的證據是第 1–3 輪審查在 /tmp 複本的探針與 U11 的 mutant)。真機只在 wsl.25 上跑 `prov-netupdate-254`(含這一臂)、`prov-powerloss-254`、`prov-country-join-254`(CJ2 + P)。
 時序(條件):**harness PR 只在 wsl.25 rc 已燒到 04 / 02 之後才合**;完整 validation 在那之後、PR 合併之前跑(驗證產物 = 出貨產物),所以合併時節點已是 wsl.25,每日全套不會對著 wsl.24 跑這幾個單元。若 rc 還沒上機就要合,先問使用者。

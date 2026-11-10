@@ -169,7 +169,7 @@ func (r *rig) reset() (int, interface{ Get(any) (any, bool) }) {
 	return c, res
 }
 
-func claimedRig(t *testing.T) *rig {
+func claimedRig(t testing.TB) *rig {
 	r := newRig(t, provstore.Unclaimed)
 	if c, _ := r.claim(); c != OK {
 		t.Fatalf("claim %d", c)

@@ -237,7 +237,7 @@ func (f *fakeSys) RemoveMeshMarkers() error           { f.markersRemoved++; retu
 func (f *fakeSys) Now() time.Time                     { return f.now }
 
 type rig struct {
-	t     *testing.T
+	t     testing.TB
 	n     *Node
 	sys   *fakeSys
 	ks    *keystore.Keystore
@@ -248,7 +248,7 @@ type rig struct {
 	id    uint64
 }
 
-func newRig(t *testing.T, state string) *rig {
+func newRig(t testing.TB, state string) *rig {
 	root := t.TempDir()
 	p := provstore.Paths{Dir: filepath.Join(root, "prov"), RunDir: filepath.Join(root, "run")}
 	os.MkdirAll(p.RunDir, 0o700)
