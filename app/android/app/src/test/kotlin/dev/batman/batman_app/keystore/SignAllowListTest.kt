@@ -35,10 +35,24 @@ class SignAllowListTest {
         assertTrue("short payload", SignAllowList.adminMaySign(tbs("batman-netcfg-v1", ByteArray(5))))
     }
 
+    // member-join M11: the admin key's remote-invite labels; the owner key's join request (and nothing else of COSE)
+    @Test fun remoteInviteLabels() {
+        for (l in listOf("batman-invite-v1", "batman-msecrets-v1")) {
+            assertTrue("admin $l", SignAllowList.adminMaySign(tbs(l)))
+            assertFalse("owner $l", SignAllowList.ownerMaySign(tbs(l)))
+        }
+        assertTrue("owner joinreq", SignAllowList.ownerMaySign(tbs("batman-joinreq-v1")))
+        assertFalse("admin joinreq", SignAllowList.adminMaySign(tbs("batman-joinreq-v1")))
+        for (l in listOf("batman-netcfg-v1", "batman-members-v1", "batman-secrets-v1", "batman-joinreq-v2", "batman-joinreq-v1x", ""))
+            assertFalse("owner $l", SignAllowList.ownerMaySign(tbs(l)))
+        val t = tbs("batman-joinreq-v1")
+        assertFalse("owner trailing byte", SignAllowList.ownerMaySign(t + byteArrayOf(0)))
+    }
+
     @Test fun adminRefusesEverythingElse() {
         val h = ByteArray(64) { 1 }
         assertFalse("owner input", SignAllowList.adminMaySign(a("batman-owner-op-v1") + h))
-        assertFalse("other aad", SignAllowList.adminMaySign(tbs("batman-invite-v1")))
+        assertFalse("join request aad", SignAllowList.adminMaySign(tbs("batman-joinreq-v1")))
         assertFalse("empty aad", SignAllowList.adminMaySign(tbs("")))
         assertFalse("Signature context", SignAllowList.adminMaySign(tbs("batman-netcfg-v1", ctx = "Signature")))
         assertFalse("array of 3", SignAllowList.adminMaySign(tbs("batman-netcfg-v1", head = 0x83)))

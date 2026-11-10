@@ -2,24 +2,33 @@ package dev.batman.batman_app.keystore
 
 // Design §2: every Keystore key signs only the formats it exists for (proto.go:26-33). Purpose separation only — it
 // does not stop an attacker inside the app process (honest boundary, design §2). Kotlin never parses records; this
-// check looks only at the bytes it is asked to sign.
+// check looks only at the bytes it is asked to sign. Remote invites (254-app-member-join §2): the admin key also signs
+// invite / member_secrets Sig_structures; the owner key also signs a Sig_structure whose aad is exactly the join
+// request label.
 object SignAllowList {
     private val OWNER_PREFIXES = listOf("batman-owner-enc-v1", "batman-owner-auth-v1", "batman-owner-op-v1")
         .map { it.toByteArray(Charsets.US_ASCII) }
-    private val ADMIN_LABELS = listOf("batman-netcfg-v1", "batman-members-v1", "batman-secrets-v1")
+    private val ADMIN_LABELS = listOf("batman-netcfg-v1", "batman-members-v1", "batman-secrets-v1", "batman-invite-v1", "batman-msecrets-v1")
         .map { it.toByteArray(Charsets.US_ASCII) }
+    private val OWNER_SIG_LABEL = "batman-joinreq-v1".toByteArray(Charsets.US_ASCII)
 
     private fun startsWith(b: ByteArray, p: ByteArray) = b.size > p.size && b.copyOfRange(0, p.size).contentEquals(p)
 
-    /** The owner key signs only inputs that start with one of its three labels (and carry something after it). */
-    fun ownerMaySign(input: ByteArray): Boolean = OWNER_PREFIXES.any { startsWith(input, it) }
+    /**
+     * The owner key signs only inputs that start with one of its three labels (and carry something after it), or a
+     * COSE Sig_structure whose external_aad is exactly batman-joinreq-v1 (a join request).
+     */
+    fun ownerMaySign(input: ByteArray): Boolean =
+        OWNER_PREFIXES.any { startsWith(input, it) } || sigStructureAad(input)?.contentEquals(OWNER_SIG_LABEL) == true
+
+    /** The admin key signs only a COSE Sig_structure whose external_aad is exactly one of its labels. */
+    fun adminMaySign(tbs: ByteArray): Boolean = sigStructureAad(tbs)?.let { aad -> ADMIN_LABELS.any { it.contentEquals(aad) } } ?: false
 
     /**
-     * The admin key signs only a COSE Sig_structure: CBOR array(4) ["Signature1", protected bstr, external_aad bstr,
-     * payload bstr] whose external_aad is exactly one of the three labels. Parsed strictly enough to find the aad;
-     * anything else is refused.
+     * The external_aad of a COSE Sig_structure: CBOR array(4) ["Signature1", protected bstr, external_aad bstr, payload
+     * bstr], nothing after it. Parsed strictly enough to find the aad; anything else is null (refused).
      */
-    fun adminMaySign(tbs: ByteArray): Boolean {
+    fun sigStructureAad(tbs: ByteArray): ByteArray? {
         var i = 0
         fun byte(): Int = if (i < tbs.size) tbs[i++].toInt() and 0xff else -1
         // a definite-length major-type-2/3 head; returns the length, or -1
@@ -34,16 +43,16 @@ object SignAllowList {
                 else -> -1
             }
         }
-        if (byte() != 0x84) return false
-        val ctx = len(3); if (ctx != 10L || i + 10 > tbs.size) return false
-        if (!tbs.copyOfRange(i, i + 10).contentEquals("Signature1".toByteArray(Charsets.US_ASCII))) return false
+        if (byte() != 0x84) return null
+        val ctx = len(3); if (ctx != 10L || i + 10 > tbs.size) return null
+        if (!tbs.copyOfRange(i, i + 10).contentEquals("Signature1".toByteArray(Charsets.US_ASCII))) return null
         i += 10
-        val prot = len(2); if (prot < 0 || i + prot > tbs.size) return false
+        val prot = len(2); if (prot < 0 || i + prot > tbs.size) return null
         i += prot.toInt()
-        val aadLen = len(2); if (aadLen < 0 || i + aadLen > tbs.size) return false
+        val aadLen = len(2); if (aadLen < 0 || i + aadLen > tbs.size) return null
         val aad = tbs.copyOfRange(i, i + aadLen.toInt())
         i += aadLen.toInt()
-        val pl = len(2); if (pl < 0 || i + pl != tbs.size.toLong()) return false
-        return ADMIN_LABELS.any { it.contentEquals(aad) }
+        val pl = len(2); if (pl < 0 || i + pl != tbs.size.toLong()) return null
+        return aad
     }
 }
