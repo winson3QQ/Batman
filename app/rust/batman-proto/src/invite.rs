@@ -48,6 +48,8 @@ pub enum Error {
     /// the node is already in the record (other than an approved entry of the same owner)
     AlreadyMember,
     HashMismatch,
+    /// remove-member §3.6: the node / person was removed before and the admin has not confirmed it
+    NeedsConfirm,
     // import (approve.rs)
     NoRequest,
     TooOld,
@@ -140,14 +142,19 @@ pub struct Invite {
     pub hash: [u8; 32],
 }
 
-/// A net_config Sign1 verified as version 1 self-signed by one of its own admins (node.go adminsOf(cfg)).
-pub fn open_netcfg_v1(netcfg: &[u8]) -> Result<NetCfg, Error> {
+/// A net_config Sign1 of any version (remove-member §3.6: invites go on after a removal), signed by `admin_pub`,
+/// which must be one of its own admins (node.go adminsOf(cfg)); version 1 has no prev_hash, later ones have one.
+/// No freshness: an older real invite still opens (key 12 `used` handles that on the admin side).
+pub fn open_netcfg_current(netcfg: &[u8], admin_pub: &[u8; 65]) -> Result<NetCfg, Error> {
     let p = netrec::sign1_payload(netcfg).map_err(|_| Error::Invalid("netcfg"))?;
     let cfg = netrec::netcfg_of(&p).map_err(|_| Error::Invalid("netcfg keys"))?;
-    let s = cose::verify_sign1(netcfg, cose::CT_NETCFG, cose::LABEL_NETCFG, &cfg.admins)?;
+    if !cfg.admins.contains(admin_pub) {
+        return Err(Error::Invalid("admin_pub is not one of the network's admins"));
+    }
+    let s = cose::verify_sign1(netcfg, cose::CT_NETCFG, cose::LABEL_NETCFG, &[*admin_pub])?;
     let cfg = netrec::netcfg_of(&s.payload).map_err(|_| Error::Invalid("netcfg keys"))?;
-    if cfg.version != 1 || cfg.prev_hash.is_some() {
-        return Err(Error::Invalid("netcfg is not version 1"));
+    if cfg.version == 0 || (cfg.version == 1) != cfg.prev_hash.is_none() {
+        return Err(Error::Invalid("netcfg version / prev_hash"));
     }
     Ok(cfg)
 }
@@ -164,10 +171,7 @@ pub fn open_invite(sign1: &[u8]) -> Result<Invite, Error> {
     }
     let item = p.get(4).filter(|x| matches!(x, Value::Tag(18, _))).ok_or(Error::Invalid("netcfg is not an embedded Sign1"))?;
     let netcfg = cbor::encode(item);
-    let cfg = open_netcfg_v1(&netcfg)?;
-    if !cfg.admins.contains(&admin_pub) {
-        return Err(Error::Invalid("admin_pub is not one of the network's admins"));
-    }
+    let cfg = open_netcfg_current(&netcfg, &admin_pub)?;
     let net_id: [u8; 16] = p.get(1).and_then(Value::as_bytes).and_then(|b| b.try_into().ok()).ok_or(Error::Invalid("net_id"))?;
     if net_id != cfg.net_id {
         return Err(Error::Invalid("invite net_id is not the netcfg's"));
@@ -194,13 +198,25 @@ pub fn admin_preconditions(rec: &NetRec, admin_pub: &[u8; 65], dac: Option<&[u8;
 }
 
 /// What an admin / joiner flow asks for next.
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub enum Action {
     SignAdmin { tbs: Vec<u8> },
     SignOwner { input: Vec<u8> },
     /// seal `plain` with aad(`rel`, expected_gen + 1), write_cas(rel, expected_gen), then `persisted` / `persist_failed`
+    /// (`plain` holds SAE / net_root: never formatted — remove-member §6)
     Persist { rel: String, plain: Vec<u8>, expected_gen: u64 },
     Done(End),
+}
+
+impl std::fmt::Debug for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::SignAdmin { tbs } => write!(f, "SignAdmin({} B)", tbs.len()),
+            Action::SignOwner { input } => write!(f, "SignOwner({} B)", input.len()),
+            Action::Persist { rel, plain, expected_gen } => write!(f, "Persist {{ rel: {rel:?}, plain: <{} B>, expected_gen: {expected_gen} }}", plain.len()),
+            Action::Done(e) => write!(f, "Done({e:?})"),
+        }
+    }
 }
 
 /// What a flow produced.

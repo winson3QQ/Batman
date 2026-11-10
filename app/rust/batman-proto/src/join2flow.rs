@@ -52,6 +52,9 @@ pub struct Input {
     pub admin_pub: [u8; 65],
     /// member mode: `record_plain` is an mnet record (member-join §4 step 8); the keys above are unused then
     pub member: bool,
+    /// remove-member §2.0 rule 2: the admin answered yes to "this node was removed before (lost / captured)"; without
+    /// it such a node stops at the start (Pre::RemovedBefore: nothing written, nothing signed)
+    pub removed_confirmed: bool,
 }
 
 /// a precondition that failed (§3.3-1)
@@ -71,6 +74,8 @@ pub enum Pre {
     NoEntry,
     /// member c: the mnet's secrets are for another node than this login's
     NotThisNode,
+    /// remove-member §2.0 rule 2: the node is in some version's removed list and the admin has not confirmed
+    RemovedBefore,
 }
 
 /// a definite failure of the join: the country is put back
@@ -132,7 +137,7 @@ pub enum End {
     Broken(String),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub enum Action {
     /// the admin key over a COSE Sig_structure; feed the DER to `signed` (an empty DER = the platform failed)
     SignAdmin { tbs: Vec<u8> },
@@ -147,6 +152,21 @@ pub enum Action {
     /// ask the user: change the node's country from `have` to `want`? -> `country_confirmed`
     ConfirmCountry { have: String, want: String },
     Done(End),
+}
+
+/// The record writes hold SAE / net_root: never formatted (remove-member §6).
+impl std::fmt::Debug for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::SignAdmin { tbs } => write!(f, "SignAdmin({} B)", tbs.len()),
+            Action::SignOwner { input } => write!(f, "SignOwner({} B)", input.len()),
+            Action::Write(fr) => write!(f, "Write({} frames)", fr.len()),
+            Action::PersistNet { expected_gen, plain, .. } => write!(f, "PersistNet {{ plain: <{} B>, expected_gen: {expected_gen} }}", plain.len()),
+            Action::PersistMnet { expected_gen, plain, .. } => write!(f, "PersistMnet {{ plain: <{} B>, expected_gen: {expected_gen} }}", plain.len()),
+            Action::ConfirmCountry { have, want } => write!(f, "ConfirmCountry({have} -> {want})"),
+            Action::Done(e) => write!(f, "Done({e:?})"),
+        }
+    }
 }
 
 enum Then {
@@ -254,6 +274,8 @@ pub struct Join2 {
     pending: Option<Rec>,
     unverified: bool,
     resent: bool,
+    /// info key 9 when the join ended applied through an info read (5 / 7 / other): the node may be behind (§3.5)
+    node_version: Option<u64>,
     st: Step,
 }
 
@@ -281,6 +303,7 @@ impl Join2 {
             pending: None,
             unverified: false,
             resent: false,
+            node_version: None,
             st: Step::Over,
         };
         let a = match j.begin(inp) {
@@ -292,6 +315,17 @@ impl Join2 {
 
     pub fn into_conn(self) -> Conn {
         self.conn
+    }
+
+    /// remove-member §3.5: the join ended applied but the node is at an older version than the record (it was
+    /// already a member, reply 5): the caller sends the new secrets right away (updflow, the same session).
+    pub fn node_behind(&self) -> bool {
+        let cur = match self.rec.as_ref() {
+            Some(Rec::Net(r)) => r.netcfg().ok().map(|c| c.version),
+            Some(Rec::M(m)) => Some(m.version),
+            None => None,
+        };
+        matches!((self.node_version, cur), (Some(n), Some(c)) if n < c as u64)
     }
 
     fn begin(&mut self, inp: Input) -> Result<Action, End> {
@@ -312,6 +346,10 @@ impl Join2 {
         if list.iter().filter(|m| m.dac_pub_hash != hash).count() >= MAX_MEMBERS {
             return Err(End::Refused(Pre::Full));
         }
+        // §2.0 rule 2: before the first SignAdmin and any write
+        if !inp.removed_confirmed && rec.removed_ever().map_err(|_| End::Refused(Pre::Record))?.contains(&hash) {
+            return Err(End::Refused(Pre::RemovedBefore));
+        }
         self.before = list.iter().find(|m| m.dac_pub_hash == hash).cloned();
         self.me = Some(Member {
             dac_pub_hash: hash,
@@ -322,6 +360,7 @@ impl Join2 {
             device_id: Some(node.device_id),
             state: MemberState::Joining,
             prev_country: None,
+            known: None,
         });
         rec.list = Some(list);
         self.rec = Some(Rec::Net(rec));
@@ -703,6 +742,9 @@ impl Join2 {
             Outcome::Ok(b) => flow::join_state(b, &net_id),
             Outcome::Err { .. } => JoinState::Unknown,
         };
+        if let (JoinState::Applied { .. }, Outcome::Ok(b)) = (&s, &o) {
+            self.node_version = b.get(9).and_then(Value::as_uint);
+        }
         match (s, why) {
             (JoinState::Applied { save_pending }, _) => self.applied(save_pending),
             (_, InfoFor::After7) => self.end(End::Joining(Keep::Unclear7)),
