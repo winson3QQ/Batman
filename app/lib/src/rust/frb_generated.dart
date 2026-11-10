@@ -6,6 +6,7 @@
 import 'api/claim.dart';
 import 'api/member.dart';
 import 'api/owner.dart';
+import 'api/rekey.dart';
 import 'api/simple.dart';
 
 import 'dart:async';
@@ -72,7 +73,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 330050246;
+  int get rustContentHash => -165227706;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -107,6 +108,7 @@ abstract class RustLibApi extends BaseApi {
     required String hex,
     required String joinreqHash,
     required List<int> adminPub,
+    required bool previousConfirmed,
   });
 
   (NetOp, OwnerStep) crateApiMemberNetOpMakeInvite({
@@ -140,6 +142,8 @@ abstract class RustLibApi extends BaseApi {
     required OwnerSession that,
   });
 
+  String crateApiOwnerOwnerSessionNodeDacHash({required OwnerSession that});
+
   OwnerStep? crateApiOwnerOwnerSessionOnFrame({
     required OwnerSession that,
     required List<int> frame,
@@ -156,12 +160,15 @@ abstract class RustLibApi extends BaseApi {
     required BigInt recordGen,
   });
 
+  OwnerStep crateApiOwnerOwnerSessionRequestInfo({required OwnerSession that});
+
   OwnerStep crateApiOwnerOwnerSessionRequestJoinNetwork({
     required OwnerSession that,
     required List<int> recordPlain,
     required BigInt recordGen,
     required List<int> adminPub,
     required List<int> ownerEncPub,
+    required bool removedConfirmed,
   });
 
   OwnerStep crateApiOwnerOwnerSessionRequestJoinreq({
@@ -196,6 +203,13 @@ abstract class RustLibApi extends BaseApi {
     required BigInt mnetGen,
   });
 
+  OwnerStep crateApiOwnerOwnerSessionRequestSendUpdate({
+    required OwnerSession that,
+    required List<int> recordPlain,
+    required bool member,
+    required List<int> adminPub,
+  });
+
   OwnerStep crateApiOwnerOwnerSessionRequestSetAp({
     required OwnerSession that,
     required String ssid,
@@ -224,6 +238,10 @@ abstract class RustLibApi extends BaseApi {
     required OwnerSession that,
   });
 
+  OwnerStep? crateApiOwnerOwnerSessionResumeUpdate({
+    required OwnerSession that,
+  });
+
   OwnerStep? crateApiOwnerOwnerSessionSigned({
     required OwnerSession that,
     required List<int> der,
@@ -239,6 +257,42 @@ abstract class RustLibApi extends BaseApi {
     required OwnerSession that,
     required bool hasNet,
     required bool hasMnet,
+  });
+
+  UpdateHint crateApiOwnerOwnerSessionUpdateHint({
+    required OwnerSession that,
+    required List<int> recordPlain,
+    required bool member,
+  });
+
+  OwnerStep? crateApiRekeyRemoveOpNetPersisted({required RemoveOp that});
+
+  OwnerStep? crateApiRekeyRemoveOpPersistFailed({
+    required RemoveOp that,
+    required String error,
+  });
+
+  OwnerStep? crateApiRekeyRemoveOpSigned({
+    required RemoveOp that,
+    required List<int> der,
+  });
+
+  (RemoveOp, OwnerStep) crateApiRekeyRemoveOpStartBundle({
+    required List<int> recordPlain,
+    required List<int> adminPub,
+    required List<int> ownerPub,
+    required String person,
+  });
+
+  (RemoveOp, OwnerStep) crateApiRekeyRemoveOpStartRemove({
+    required List<int> recordPlain,
+    required BigInt recordGen,
+    required List<int> adminPub,
+    required List<int> ownerPub,
+    required String person,
+    required String node,
+    required List<NodeInfo> reads,
+    required bool ticked,
   });
 
   String crateApiMemberApprovalNetId({required String hex});
@@ -280,6 +334,7 @@ abstract class RustLibApi extends BaseApi {
     required BigInt mnetGen,
     required List<int> z,
     required String confirmedSas,
+    required bool replace,
   });
 
   ImportPrep crateApiMemberMemberImportPrepare({
@@ -287,9 +342,28 @@ abstract class RustLibApi extends BaseApi {
     required BigInt pendGen,
     Uint8List? pendPlain,
     Uint8List? mnetPlain,
+    required bool replace,
   });
 
   OwnerStep crateApiMemberMemberPendView({required List<int> pendPlain});
+
+  OwnerStep crateApiRekeyMemberUpdateImport({
+    required String hex,
+    Uint8List? mnetPlain,
+    required BigInt mnetGen,
+    required BigInt expectedGen,
+    required List<Uint8List> nodeRecords,
+    required List<int> ownerEncPub,
+    required List<int> z,
+  });
+
+  UpdatePrep crateApiRekeyMemberUpdatePrepare({
+    required String hex,
+    Uint8List? mnetPlain,
+    required BigInt mnetGen,
+    required List<Uint8List> nodeRecords,
+    required List<int> ownerEncPub,
+  });
 
   MnetView crateApiMemberMnetSummary({required List<int> mnetPlain});
 
@@ -302,6 +376,16 @@ abstract class RustLibApi extends BaseApi {
     required List<int> recordPlain,
     required BigInt recordGen,
     required String dacHash,
+  });
+
+  List<PersonView> crateApiRekeyNetPeople({
+    required List<int> recordPlain,
+    required List<int> ownerPub,
+  });
+
+  List<RecipientView> crateApiRekeyNetRecipients({
+    required List<int> recordPlain,
+    required List<int> ownerPub,
   });
 
   NetView crateApiOwnerNetSummary({required List<int> recordPlain});
@@ -317,6 +401,24 @@ abstract class RustLibApi extends BaseApi {
   InviteView crateApiMemberParseInvite({required String hex});
 
   Future<String> crateApiClaimPendingPath({required String deviceId});
+
+  RemovePlanView crateApiRekeyRemoveCheck({
+    required List<int> recordPlain,
+    required List<int> adminPub,
+    required List<int> ownerPub,
+    required String person,
+    required String node,
+    required List<NodeInfo> reads,
+  });
+
+  List<OwnNodeView> crateApiRekeyRemoveOwnNodes({
+    required List<int> recordPlain,
+    required List<int> ownerPub,
+    required String person,
+    required String node,
+  });
+
+  String crateApiRekeyRemoveTickText();
 
   String crateApiSimpleSelftest();
 
@@ -366,6 +468,8 @@ abstract class RustLibApi extends BaseApi {
     required List<int> sealed,
   });
 
+  String crateApiRekeyUpdateNetId({required String hex});
+
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_ClaimSession;
 
@@ -387,6 +491,14 @@ abstract class RustLibApi extends BaseApi {
   get rust_arc_decrement_strong_count_OwnerSession;
 
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_OwnerSessionPtr;
+
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_RemoveOp;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_RemoveOp;
+
+  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_RemoveOpPtr;
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -505,6 +617,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String hex,
     required String joinreqHash,
     required List<int> adminPub,
+    required bool previousConfirmed,
   }) {
     return handler.executeSync(
       SyncTask(
@@ -515,6 +628,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(hex, serializer);
           sse_encode_String(joinreqHash, serializer);
           sse_encode_list_prim_u_8_loose(adminPub, serializer);
+          sse_encode_bool(previousConfirmed, serializer);
           return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4)!;
         },
         codec: SseCodec(
@@ -523,7 +637,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiMemberNetOpApproveConstMeta,
-        argValues: [recordPlain, recordGen, hex, joinreqHash, adminPub],
+        argValues: [
+          recordPlain,
+          recordGen,
+          hex,
+          joinreqHash,
+          adminPub,
+          previousConfirmed,
+        ],
         apiImpl: this,
       ),
     );
@@ -531,7 +652,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiMemberNetOpApproveConstMeta => const TaskConstMeta(
     debugName: "NetOp_approve",
-    argNames: ["recordPlain", "recordGen", "hex", "joinreqHash", "adminPub"],
+    argNames: [
+      "recordPlain",
+      "recordGen",
+      "hex",
+      "joinreqHash",
+      "adminPub",
+      "previousConfirmed",
+    ],
   );
 
   @override
@@ -778,6 +906,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  String crateApiOwnerOwnerSessionNodeDacHash({required OwnerSession that}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionNodeDacHashConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionNodeDacHashConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_node_dac_hash",
+        argNames: ["that"],
+      );
+
+  @override
   OwnerStep? crateApiOwnerOwnerSessionOnFrame({
     required OwnerSession that,
     required List<int> frame,
@@ -791,7 +948,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_prim_u_8_loose(frame, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
@@ -824,7 +981,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(error, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
@@ -859,7 +1016,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_list_prim_u_8_loose(recordPlain, serializer);
           sse_encode_u_64(recordGen, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -879,12 +1036,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  OwnerStep crateApiOwnerOwnerSessionRequestInfo({required OwnerSession that}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_owner_step,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionRequestInfoConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionRequestInfoConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_request_info",
+        argNames: ["that"],
+      );
+
+  @override
   OwnerStep crateApiOwnerOwnerSessionRequestJoinNetwork({
     required OwnerSession that,
     required List<int> recordPlain,
     required BigInt recordGen,
     required List<int> adminPub,
     required List<int> ownerEncPub,
+    required bool removedConfirmed,
   }) {
     return handler.executeSync(
       SyncTask(
@@ -898,14 +1085,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_64(recordGen, serializer);
           sse_encode_list_prim_u_8_loose(adminPub, serializer);
           sse_encode_list_prim_u_8_loose(ownerEncPub, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
+          sse_encode_bool(removedConfirmed, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 18)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiOwnerOwnerSessionRequestJoinNetworkConstMeta,
-        argValues: [that, recordPlain, recordGen, adminPub, ownerEncPub],
+        argValues: [
+          that,
+          recordPlain,
+          recordGen,
+          adminPub,
+          ownerEncPub,
+          removedConfirmed,
+        ],
         apiImpl: this,
       ),
     );
@@ -920,6 +1115,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "recordGen",
           "adminPub",
           "ownerEncPub",
+          "removedConfirmed",
         ],
       );
 
@@ -945,7 +1141,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_64(pendGen, serializer);
           sse_encode_opt_list_prim_u_8_strict(pendPlain, serializer);
           sse_encode_list_prim_u_8_loose(ownerEncPub, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 19)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -983,7 +1179,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 18)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 20)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1016,7 +1212,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_u_64(secsSinceJoin, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 19)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 21)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1055,7 +1251,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_32(channel, serializer);
           sse_encode_list_prim_u_8_loose(ownerEncPub, serializer);
           sse_encode_list_prim_u_8_loose(adminPub, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 20)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 22)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1090,7 +1286,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_list_prim_u_8_loose(mnetPlain, serializer);
           sse_encode_u_64(mnetGen, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 21)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 23)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1110,6 +1306,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  OwnerStep crateApiOwnerOwnerSessionRequestSendUpdate({
+    required OwnerSession that,
+    required List<int> recordPlain,
+    required bool member,
+    required List<int> adminPub,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(recordPlain, serializer);
+          sse_encode_bool(member, serializer);
+          sse_encode_list_prim_u_8_loose(adminPub, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 24)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_owner_step,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionRequestSendUpdateConstMeta,
+        argValues: [that, recordPlain, member, adminPub],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionRequestSendUpdateConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_request_send_update",
+        argNames: ["that", "recordPlain", "member", "adminPub"],
+      );
+
+  @override
   OwnerStep crateApiOwnerOwnerSessionRequestSetAp({
     required OwnerSession that,
     required String ssid,
@@ -1125,7 +1358,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_String(ssid, serializer);
           sse_encode_String(passphrase, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 22)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 25)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1158,7 +1391,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(country, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 23)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 26)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1189,7 +1422,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 24)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 27)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1222,7 +1455,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_String(lines, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 25)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 28)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1253,7 +1486,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 26)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 29)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1284,7 +1517,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 27)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 30)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1304,6 +1537,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  OwnerStep? crateApiOwnerOwnerSessionResumeUpdate({
+    required OwnerSession that,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 31)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionResumeUpdateConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionResumeUpdateConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_resume_update",
+        argNames: ["that"],
+      );
+
+  @override
   OwnerStep? crateApiOwnerOwnerSessionSigned({
     required OwnerSession that,
     required List<int> der,
@@ -1317,7 +1581,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_prim_u_8_loose(der, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 28)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 32)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
@@ -1349,7 +1613,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_prim_u_8_loose(recordPlain, serializer);
           sse_encode_list_prim_u_8_loose(ownerPub, serializer);
           sse_encode_u_32(frameLimit, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 29)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 33)!;
         },
         codec: SseCodec(
           decodeSuccessData:
@@ -1385,7 +1649,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_bool(hasNet, serializer);
           sse_encode_bool(hasMnet, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 30)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 34)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_status_view,
@@ -1405,13 +1669,239 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  UpdateHint crateApiOwnerOwnerSessionUpdateHint({
+    required OwnerSession that,
+    required List<int> recordPlain,
+    required bool member,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(recordPlain, serializer);
+          sse_encode_bool(member, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 35)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_update_hint,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiOwnerOwnerSessionUpdateHintConstMeta,
+        argValues: [that, recordPlain, member],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerOwnerSessionUpdateHintConstMeta =>
+      const TaskConstMeta(
+        debugName: "OwnerSession_update_hint",
+        argNames: ["that", "recordPlain", "member"],
+      );
+
+  @override
+  OwnerStep? crateApiRekeyRemoveOpNetPersisted({required RemoveOp that}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 36)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiRekeyRemoveOpNetPersistedConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyRemoveOpNetPersistedConstMeta =>
+      const TaskConstMeta(
+        debugName: "RemoveOp_net_persisted",
+        argNames: ["that"],
+      );
+
+  @override
+  OwnerStep? crateApiRekeyRemoveOpPersistFailed({
+    required RemoveOp that,
+    required String error,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+            that,
+            serializer,
+          );
+          sse_encode_String(error, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 37)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiRekeyRemoveOpPersistFailedConstMeta,
+        argValues: [that, error],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyRemoveOpPersistFailedConstMeta =>
+      const TaskConstMeta(
+        debugName: "RemoveOp_persist_failed",
+        argNames: ["that", "error"],
+      );
+
+  @override
+  OwnerStep? crateApiRekeyRemoveOpSigned({
+    required RemoveOp that,
+    required List<int> der,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(der, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 38)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_owner_step,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiRekeyRemoveOpSignedConstMeta,
+        argValues: [that, der],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyRemoveOpSignedConstMeta =>
+      const TaskConstMeta(
+        debugName: "RemoveOp_signed",
+        argNames: ["that", "der"],
+      );
+
+  @override
+  (RemoveOp, OwnerStep) crateApiRekeyRemoveOpStartBundle({
+    required List<int> recordPlain,
+    required List<int> adminPub,
+    required List<int> ownerPub,
+    required String person,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(recordPlain, serializer);
+          sse_encode_list_prim_u_8_loose(adminPub, serializer);
+          sse_encode_list_prim_u_8_loose(ownerPub, serializer);
+          sse_encode_String(person, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 39)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_remove_op_owner_step,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiRekeyRemoveOpStartBundleConstMeta,
+        argValues: [recordPlain, adminPub, ownerPub, person],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyRemoveOpStartBundleConstMeta =>
+      const TaskConstMeta(
+        debugName: "RemoveOp_start_bundle",
+        argNames: ["recordPlain", "adminPub", "ownerPub", "person"],
+      );
+
+  @override
+  (RemoveOp, OwnerStep) crateApiRekeyRemoveOpStartRemove({
+    required List<int> recordPlain,
+    required BigInt recordGen,
+    required List<int> adminPub,
+    required List<int> ownerPub,
+    required String person,
+    required String node,
+    required List<NodeInfo> reads,
+    required bool ticked,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(recordPlain, serializer);
+          sse_encode_u_64(recordGen, serializer);
+          sse_encode_list_prim_u_8_loose(adminPub, serializer);
+          sse_encode_list_prim_u_8_loose(ownerPub, serializer);
+          sse_encode_String(person, serializer);
+          sse_encode_String(node, serializer);
+          sse_encode_list_node_info(reads, serializer);
+          sse_encode_bool(ticked, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 40)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_remove_op_owner_step,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiRekeyRemoveOpStartRemoveConstMeta,
+        argValues: [
+          recordPlain,
+          recordGen,
+          adminPub,
+          ownerPub,
+          person,
+          node,
+          reads,
+          ticked,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyRemoveOpStartRemoveConstMeta =>
+      const TaskConstMeta(
+        debugName: "RemoveOp_start_remove",
+        argNames: [
+          "recordPlain",
+          "recordGen",
+          "adminPub",
+          "ownerPub",
+          "person",
+          "node",
+          "reads",
+          "ticked",
+        ],
+      );
+
+  @override
   String crateApiMemberApprovalNetId({required String hex}) {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(hex, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 31)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 41)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -1433,7 +1923,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 32)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 42)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_build_info,
@@ -1456,7 +1946,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_prim_u_8_loose(bytes, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 33)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 43)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_status_info,
@@ -1482,7 +1972,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 44,
             port: port_,
           );
         },
@@ -1514,7 +2004,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 45,
             port: port_,
           );
         },
@@ -1541,7 +2031,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 46,
             port: port_,
           );
         },
@@ -1574,7 +2064,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(netId, serializer);
           sse_encode_bool(adminApplied, serializer);
           sse_encode_bool(memberEntry, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 37)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 47)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_list_String,
@@ -1603,7 +2093,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 48,
             port: port_,
           );
         },
@@ -1631,7 +2121,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 49,
             port: port_,
           );
         },
@@ -1659,7 +2149,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 50,
             port: port_,
           );
         },
@@ -1687,7 +2177,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 51,
             port: port_,
           );
         },
@@ -1715,6 +2205,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required BigInt mnetGen,
     required List<int> z,
     required String confirmedSas,
+    required bool replace,
   }) {
     return handler.executeSync(
       SyncTask(
@@ -1728,7 +2219,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_64(mnetGen, serializer);
           sse_encode_list_prim_u_8_loose(z, serializer);
           sse_encode_String(confirmedSas, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 42)!;
+          sse_encode_bool(replace, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 52)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1744,6 +2236,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           mnetGen,
           z,
           confirmedSas,
+          replace,
         ],
         apiImpl: this,
       ),
@@ -1762,6 +2255,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           "mnetGen",
           "z",
           "confirmedSas",
+          "replace",
         ],
       );
 
@@ -1771,6 +2265,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required BigInt pendGen,
     Uint8List? pendPlain,
     Uint8List? mnetPlain,
+    required bool replace,
   }) {
     return handler.executeSync(
       SyncTask(
@@ -1780,14 +2275,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_u_64(pendGen, serializer);
           sse_encode_opt_list_prim_u_8_strict(pendPlain, serializer);
           sse_encode_opt_list_prim_u_8_strict(mnetPlain, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 43)!;
+          sse_encode_bool(replace, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 53)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_import_prep,
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiMemberMemberImportPrepareConstMeta,
-        argValues: [hex, pendGen, pendPlain, mnetPlain],
+        argValues: [hex, pendGen, pendPlain, mnetPlain, replace],
         apiImpl: this,
       ),
     );
@@ -1796,7 +2292,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiMemberMemberImportPrepareConstMeta =>
       const TaskConstMeta(
         debugName: "member_import_prepare",
-        argNames: ["hex", "pendGen", "pendPlain", "mnetPlain"],
+        argNames: ["hex", "pendGen", "pendPlain", "mnetPlain", "replace"],
       );
 
   @override
@@ -1806,7 +2302,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_prim_u_8_loose(pendPlain, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 44)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 54)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1826,13 +2322,105 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  OwnerStep crateApiRekeyMemberUpdateImport({
+    required String hex,
+    Uint8List? mnetPlain,
+    required BigInt mnetGen,
+    required BigInt expectedGen,
+    required List<Uint8List> nodeRecords,
+    required List<int> ownerEncPub,
+    required List<int> z,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(hex, serializer);
+          sse_encode_opt_list_prim_u_8_strict(mnetPlain, serializer);
+          sse_encode_u_64(mnetGen, serializer);
+          sse_encode_u_64(expectedGen, serializer);
+          sse_encode_list_list_prim_u_8_strict(nodeRecords, serializer);
+          sse_encode_list_prim_u_8_loose(ownerEncPub, serializer);
+          sse_encode_list_prim_u_8_loose(z, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 55)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_owner_step,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiRekeyMemberUpdateImportConstMeta,
+        argValues: [
+          hex,
+          mnetPlain,
+          mnetGen,
+          expectedGen,
+          nodeRecords,
+          ownerEncPub,
+          z,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyMemberUpdateImportConstMeta =>
+      const TaskConstMeta(
+        debugName: "member_update_import",
+        argNames: [
+          "hex",
+          "mnetPlain",
+          "mnetGen",
+          "expectedGen",
+          "nodeRecords",
+          "ownerEncPub",
+          "z",
+        ],
+      );
+
+  @override
+  UpdatePrep crateApiRekeyMemberUpdatePrepare({
+    required String hex,
+    Uint8List? mnetPlain,
+    required BigInt mnetGen,
+    required List<Uint8List> nodeRecords,
+    required List<int> ownerEncPub,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(hex, serializer);
+          sse_encode_opt_list_prim_u_8_strict(mnetPlain, serializer);
+          sse_encode_u_64(mnetGen, serializer);
+          sse_encode_list_list_prim_u_8_strict(nodeRecords, serializer);
+          sse_encode_list_prim_u_8_loose(ownerEncPub, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 56)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_update_prep,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiRekeyMemberUpdatePrepareConstMeta,
+        argValues: [hex, mnetPlain, mnetGen, nodeRecords, ownerEncPub],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyMemberUpdatePrepareConstMeta =>
+      const TaskConstMeta(
+        debugName: "member_update_prepare",
+        argNames: ["hex", "mnetPlain", "mnetGen", "nodeRecords", "ownerEncPub"],
+      );
+
+  @override
   MnetView crateApiMemberMnetSummary({required List<int> mnetPlain}) {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_prim_u_8_loose(mnetPlain, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 45)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 57)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_mnet_view,
@@ -1859,7 +2447,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_prim_u_8_loose(recordPlain, serializer);
           sse_encode_String(hex, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 46)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 58)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_join_req_view,
@@ -1891,7 +2479,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_prim_u_8_loose(recordPlain, serializer);
           sse_encode_u_64(recordGen, serializer);
           sse_encode_String(dacHash, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 47)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 59)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_owner_step,
@@ -1911,13 +2499,71 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  List<PersonView> crateApiRekeyNetPeople({
+    required List<int> recordPlain,
+    required List<int> ownerPub,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(recordPlain, serializer);
+          sse_encode_list_prim_u_8_loose(ownerPub, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 60)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_person_view,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiRekeyNetPeopleConstMeta,
+        argValues: [recordPlain, ownerPub],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyNetPeopleConstMeta => const TaskConstMeta(
+    debugName: "net_people",
+    argNames: ["recordPlain", "ownerPub"],
+  );
+
+  @override
+  List<RecipientView> crateApiRekeyNetRecipients({
+    required List<int> recordPlain,
+    required List<int> ownerPub,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(recordPlain, serializer);
+          sse_encode_list_prim_u_8_loose(ownerPub, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 61)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_recipient_view,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiRekeyNetRecipientsConstMeta,
+        argValues: [recordPlain, ownerPub],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyNetRecipientsConstMeta => const TaskConstMeta(
+    debugName: "net_recipients",
+    argNames: ["recordPlain", "ownerPub"],
+  );
+
+  @override
   NetView crateApiOwnerNetSummary({required List<int> recordPlain}) {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_list_prim_u_8_loose(recordPlain, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 48)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 62)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_net_view,
@@ -1943,7 +2589,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 63,
             port: port_,
           );
         },
@@ -1973,7 +2619,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 64,
             port: port_,
           );
         },
@@ -2004,7 +2650,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 51,
+            funcId: 65,
             port: port_,
           );
         },
@@ -2029,7 +2675,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(hex, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 52)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 66)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_invite_view,
@@ -2055,7 +2701,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 53,
+            funcId: 67,
             port: port_,
           );
         },
@@ -2074,12 +2720,112 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "pending_path", argNames: ["deviceId"]);
 
   @override
+  RemovePlanView crateApiRekeyRemoveCheck({
+    required List<int> recordPlain,
+    required List<int> adminPub,
+    required List<int> ownerPub,
+    required String person,
+    required String node,
+    required List<NodeInfo> reads,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(recordPlain, serializer);
+          sse_encode_list_prim_u_8_loose(adminPub, serializer);
+          sse_encode_list_prim_u_8_loose(ownerPub, serializer);
+          sse_encode_String(person, serializer);
+          sse_encode_String(node, serializer);
+          sse_encode_list_node_info(reads, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 68)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_remove_plan_view,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiRekeyRemoveCheckConstMeta,
+        argValues: [recordPlain, adminPub, ownerPub, person, node, reads],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyRemoveCheckConstMeta => const TaskConstMeta(
+    debugName: "remove_check",
+    argNames: [
+      "recordPlain",
+      "adminPub",
+      "ownerPub",
+      "person",
+      "node",
+      "reads",
+    ],
+  );
+
+  @override
+  List<OwnNodeView> crateApiRekeyRemoveOwnNodes({
+    required List<int> recordPlain,
+    required List<int> ownerPub,
+    required String person,
+    required String node,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(recordPlain, serializer);
+          sse_encode_list_prim_u_8_loose(ownerPub, serializer);
+          sse_encode_String(person, serializer);
+          sse_encode_String(node, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 69)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_own_node_view,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiRekeyRemoveOwnNodesConstMeta,
+        argValues: [recordPlain, ownerPub, person, node],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyRemoveOwnNodesConstMeta =>
+      const TaskConstMeta(
+        debugName: "remove_own_nodes",
+        argNames: ["recordPlain", "ownerPub", "person", "node"],
+      );
+
+  @override
+  String crateApiRekeyRemoveTickText() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 70)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiRekeyRemoveTickTextConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyRemoveTickTextConstMeta =>
+      const TaskConstMeta(debugName: "remove_tick_text", argNames: []);
+
+  @override
   String crateApiSimpleSelftest() {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 54)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 71)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -2108,7 +2854,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_i_64(nodeState, serializer);
           sse_encode_String(netId, serializer);
           sse_encode_opt_String(name, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 55)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 72)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -2137,7 +2883,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 56,
+            funcId: 73,
             port: port_,
           );
         },
@@ -2165,7 +2911,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 57,
+            funcId: 74,
             port: port_,
           );
         },
@@ -2197,7 +2943,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 58,
+            funcId: 75,
             port: port_,
           );
         },
@@ -2232,7 +2978,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 59,
+            funcId: 76,
             port: port_,
           );
         },
@@ -2264,7 +3010,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 60,
+            funcId: 77,
             port: port_,
           );
         },
@@ -2295,7 +3041,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 61,
+            funcId: 78,
             port: port_,
           );
         },
@@ -2331,7 +3077,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 62,
+            funcId: 79,
             port: port_,
           );
         },
@@ -2365,7 +3111,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 63,
+            funcId: 80,
             port: port_,
           );
         },
@@ -2404,7 +3150,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 64,
+            funcId: 81,
             port: port_,
           );
         },
@@ -2424,6 +3170,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         debugName: "store_write_sealed",
         argNames: ["dir", "rel", "generation", "sealed"],
       );
+
+  @override
+  String crateApiRekeyUpdateNetId({required String hex}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(hex, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 82)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiRekeyUpdateNetIdConstMeta,
+        argValues: [hex],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiRekeyUpdateNetIdConstMeta =>
+      const TaskConstMeta(debugName: "update_net_id", argNames: ["hex"]);
 
   RustArcIncrementStrongCountFnType
   get rust_arc_increment_strong_count_ClaimSession => wire
@@ -2448,6 +3217,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RustArcDecrementStrongCountFnType
   get rust_arc_decrement_strong_count_OwnerSession => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession;
+
+  RustArcIncrementStrongCountFnType
+  get rust_arc_increment_strong_count_RemoveOp => wire
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp;
+
+  RustArcDecrementStrongCountFnType
+  get rust_arc_decrement_strong_count_RemoveOp => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp;
 
   @protected
   ClaimSession
@@ -2477,6 +3254,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RemoveOp
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return RemoveOpImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   ClaimSession
   dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     dynamic raw,
@@ -2501,6 +3287,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return OwnerSessionImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  RemoveOp
+  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return RemoveOpImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -2537,6 +3332,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return OwnerSessionImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  RemoveOp
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return RemoveOpImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -2665,14 +3469,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   JoinReqView dco_decode_join_req_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return JoinReqView(
       sas: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
       deviceSuffix: dco_decode_String(arr[2]),
       replacesApproved: dco_decode_bool(arr[3]),
       joinreqHash: dco_decode_String(arr[4]),
+      previous: dco_decode_String(arr[5]),
+      updateFirst: dco_decode_bool(arr[6]),
     );
   }
 
@@ -2695,6 +3501,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<NodeInfo> dco_decode_list_node_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_node_info).toList();
+  }
+
+  @protected
+  List<OwnNodeView> dco_decode_list_own_node_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_own_node_view).toList();
+  }
+
+  @protected
+  List<PersonNode> dco_decode_list_person_node(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_person_node).toList();
+  }
+
+  @protected
+  List<PersonView> dco_decode_list_person_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_person_view).toList();
+  }
+
+  @protected
   Uint64List dco_decode_list_prim_u_64_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dcoDecodeUint64List(raw);
@@ -2710,6 +3540,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as Uint8List;
+  }
+
+  @protected
+  List<RecipientView> dco_decode_list_recipient_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_recipient_view).toList();
   }
 
   @protected
@@ -2760,6 +3596,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  NodeInfo dco_decode_node_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return NodeInfo(
+      dacHash: dco_decode_String(arr[0]),
+      info: dco_decode_list_prim_u_8_strict(arr[1]),
+    );
+  }
+
+  @protected
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
@@ -2790,6 +3638,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  OwnNodeView dco_decode_own_node_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return OwnNodeView(
+      deviceId: dco_decode_String(arr[0]),
+      dacHash: dco_decode_String(arr[1]),
+    );
+  }
+
+  @protected
   OwnerKind dco_decode_owner_kind(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return OwnerKind.values[raw as int];
@@ -2799,8 +3659,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   OwnerStep dco_decode_owner_step(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 15)
-      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
+    if (arr.length != 18)
+      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
     return OwnerStep(
       kind: dco_decode_owner_kind(arr[0]),
       frames: dco_decode_list_list_prim_u_8_strict(arr[1]),
@@ -2817,6 +3677,53 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       renewed: dco_decode_bool(arr[12]),
       sent: dco_decode_bool(arr[13]),
       left: dco_decode_bool(arr[14]),
+      waitMs: dco_decode_u_64(arr[15]),
+      sendUpdate: dco_decode_bool(arr[16]),
+      info: dco_decode_list_prim_u_8_strict(arr[17]),
+    );
+  }
+
+  @protected
+  PersonNode dco_decode_person_node(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return PersonNode(
+      last4: dco_decode_String(arr[0]),
+      dacHash: dco_decode_String(arr[1]),
+      state: dco_decode_String(arr[2]),
+    );
+  }
+
+  @protected
+  PersonView dco_decode_person_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return PersonView(
+      owner: dco_decode_String(arr[0]),
+      fpr: dco_decode_String(arr[1]),
+      name: dco_decode_String(arr[2]),
+      isSelf: dco_decode_bool(arr[3]),
+      nodes: dco_decode_list_person_node(arr[4]),
+      sameName: dco_decode_list_String(arr[5]),
+    );
+  }
+
+  @protected
+  RecipientView dco_decode_recipient_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return RecipientView(
+      owner: dco_decode_String(arr[0]),
+      fpr: dco_decode_String(arr[1]),
+      name: dco_decode_String(arr[2]),
+      nodes: dco_decode_list_String(arr[3]),
+      note: dco_decode_String(arr[4]),
     );
   }
 
@@ -2871,6 +3778,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         arr[0],
       ),
       dco_decode_owner_step(arr[1]),
+    );
+  }
+
+  @protected
+  (RemoveOp, OwnerStep)
+  dco_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_remove_op_owner_step(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2) {
+      throw Exception('Expected 2 elements, got ${arr.length}');
+    }
+    return (
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+        arr[0],
+      ),
+      dco_decode_owner_step(arr[1]),
+    );
+  }
+
+  @protected
+  RemovePlanView dco_decode_remove_plan_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return RemovePlanView(
+      ok: dco_decode_bool(arr[0]),
+      text: dco_decode_String(arr[1]),
+      unverified: dco_decode_bool(arr[2]),
+      nodes: dco_decode_u_32(arr[3]),
     );
   }
 
@@ -2969,6 +3908,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UpdateHint dco_decode_update_hint(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return UpdateHint(
+      line: dco_decode_String(arr[0]),
+      button: dco_decode_bool(arr[1]),
+    );
+  }
+
+  @protected
+  UpdatePrep dco_decode_update_prep(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return UpdatePrep(
+      state: dco_decode_update_state(arr[0]),
+      ephPub: dco_decode_list_prim_u_8_strict(arr[1]),
+      mnetGen: dco_decode_u_64(arr[2]),
+      detail: dco_decode_String(arr[3]),
+    );
+  }
+
+  @protected
+  UpdateState dco_decode_update_state(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return UpdateState.values[raw as int];
+  }
+
+  @protected
   BigInt dco_decode_usize(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dcoDecodeU64(raw);
@@ -3011,6 +3982,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  RemoveOp
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return RemoveOpImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
   ClaimSession
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     SseDeserializer deserializer,
@@ -3041,6 +4024,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return OwnerSessionImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  RemoveOp
+  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return RemoveOpImpl.frbInternalSseDecode(
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
@@ -3089,6 +4084,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return OwnerSessionImpl.frbInternalSseDecode(
+      sse_decode_usize(deserializer),
+      sse_decode_i_32(deserializer),
+    );
+  }
+
+  @protected
+  RemoveOp
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return RemoveOpImpl.frbInternalSseDecode(
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
@@ -3225,12 +4232,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_deviceSuffix = sse_decode_String(deserializer);
     var var_replacesApproved = sse_decode_bool(deserializer);
     var var_joinreqHash = sse_decode_String(deserializer);
+    var var_previous = sse_decode_String(deserializer);
+    var var_updateFirst = sse_decode_bool(deserializer);
     return JoinReqView(
       sas: var_sas,
       name: var_name,
       deviceSuffix: var_deviceSuffix,
       replacesApproved: var_replacesApproved,
       joinreqHash: var_joinreqHash,
+      previous: var_previous,
+      updateFirst: var_updateFirst,
     );
   }
 
@@ -3273,6 +4284,56 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<NodeInfo> sse_decode_list_node_info(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <NodeInfo>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_node_info(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<OwnNodeView> sse_decode_list_own_node_view(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <OwnNodeView>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_own_node_view(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<PersonNode> sse_decode_list_person_node(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <PersonNode>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_person_node(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<PersonView> sse_decode_list_person_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <PersonView>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_person_view(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   Uint64List sse_decode_list_prim_u_64_strict(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
@@ -3291,6 +4352,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
     return deserializer.buffer.getUint8List(len_);
+  }
+
+  @protected
+  List<RecipientView> sse_decode_list_recipient_view(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <RecipientView>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_recipient_view(deserializer));
+    }
+    return ans_;
   }
 
   @protected
@@ -3346,6 +4421,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       country: var_country,
       members: var_members,
     );
+  }
+
+  @protected
+  NodeInfo sse_decode_node_info(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_dacHash = sse_decode_String(deserializer);
+    var var_info = sse_decode_list_prim_u_8_strict(deserializer);
+    return NodeInfo(dacHash: var_dacHash, info: var_info);
   }
 
   @protected
@@ -3410,6 +4493,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  OwnNodeView sse_decode_own_node_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_deviceId = sse_decode_String(deserializer);
+    var var_dacHash = sse_decode_String(deserializer);
+    return OwnNodeView(deviceId: var_deviceId, dacHash: var_dacHash);
+  }
+
+  @protected
   OwnerKind sse_decode_owner_kind(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
@@ -3434,6 +4525,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_renewed = sse_decode_bool(deserializer);
     var var_sent = sse_decode_bool(deserializer);
     var var_left = sse_decode_bool(deserializer);
+    var var_waitMs = sse_decode_u_64(deserializer);
+    var var_sendUpdate = sse_decode_bool(deserializer);
+    var var_info = sse_decode_list_prim_u_8_strict(deserializer);
     return OwnerStep(
       kind: var_kind,
       frames: var_frames,
@@ -3450,6 +4544,54 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       renewed: var_renewed,
       sent: var_sent,
       left: var_left,
+      waitMs: var_waitMs,
+      sendUpdate: var_sendUpdate,
+      info: var_info,
+    );
+  }
+
+  @protected
+  PersonNode sse_decode_person_node(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_last4 = sse_decode_String(deserializer);
+    var var_dacHash = sse_decode_String(deserializer);
+    var var_state = sse_decode_String(deserializer);
+    return PersonNode(last4: var_last4, dacHash: var_dacHash, state: var_state);
+  }
+
+  @protected
+  PersonView sse_decode_person_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_owner = sse_decode_String(deserializer);
+    var var_fpr = sse_decode_String(deserializer);
+    var var_name = sse_decode_String(deserializer);
+    var var_isSelf = sse_decode_bool(deserializer);
+    var var_nodes = sse_decode_list_person_node(deserializer);
+    var var_sameName = sse_decode_list_String(deserializer);
+    return PersonView(
+      owner: var_owner,
+      fpr: var_fpr,
+      name: var_name,
+      isSelf: var_isSelf,
+      nodes: var_nodes,
+      sameName: var_sameName,
+    );
+  }
+
+  @protected
+  RecipientView sse_decode_recipient_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_owner = sse_decode_String(deserializer);
+    var var_fpr = sse_decode_String(deserializer);
+    var var_name = sse_decode_String(deserializer);
+    var var_nodes = sse_decode_list_String(deserializer);
+    var var_note = sse_decode_String(deserializer);
+    return RecipientView(
+      owner: var_owner,
+      fpr: var_fpr,
+      name: var_name,
+      nodes: var_nodes,
+      note: var_note,
     );
   }
 
@@ -3493,6 +4635,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         );
     var var_field1 = sse_decode_owner_step(deserializer);
     return (var_field0, var_field1);
+  }
+
+  @protected
+  (RemoveOp, OwnerStep)
+  sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_remove_op_owner_step(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_field0 =
+        sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+          deserializer,
+        );
+    var var_field1 = sse_decode_owner_step(deserializer);
+    return (var_field0, var_field1);
+  }
+
+  @protected
+  RemovePlanView sse_decode_remove_plan_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_ok = sse_decode_bool(deserializer);
+    var var_text = sse_decode_String(deserializer);
+    var var_unverified = sse_decode_bool(deserializer);
+    var var_nodes = sse_decode_u_32(deserializer);
+    return RemovePlanView(
+      ok: var_ok,
+      text: var_text,
+      unverified: var_unverified,
+      nodes: var_nodes,
+    );
   }
 
   @protected
@@ -3599,6 +4770,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UpdateHint sse_decode_update_hint(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_line = sse_decode_String(deserializer);
+    var var_button = sse_decode_bool(deserializer);
+    return UpdateHint(line: var_line, button: var_button);
+  }
+
+  @protected
+  UpdatePrep sse_decode_update_prep(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_state = sse_decode_update_state(deserializer);
+    var var_ephPub = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_mnetGen = sse_decode_u_64(deserializer);
+    var var_detail = sse_decode_String(deserializer);
+    return UpdatePrep(
+      state: var_state,
+      ephPub: var_ephPub,
+      mnetGen: var_mnetGen,
+      detail: var_detail,
+    );
+  }
+
+  @protected
+  UpdateState sse_decode_update_state(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return UpdateState.values[inner];
+  }
+
+  @protected
   BigInt sse_decode_usize(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getBigUint64();
@@ -3645,6 +4846,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    RemoveOp self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as RemoveOpImpl).frbInternalSseEncode(move: true),
+      serializer,
+    );
+  }
+
+  @protected
+  void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     ClaimSession self,
     SseSerializer serializer,
@@ -3678,6 +4892,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as OwnerSessionImpl).frbInternalSseEncode(move: false),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    RemoveOp self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as RemoveOpImpl).frbInternalSseEncode(move: false),
       serializer,
     );
   }
@@ -3730,6 +4957,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as OwnerSessionImpl).frbInternalSseEncode(move: null),
+      serializer,
+    );
+  }
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    RemoveOp self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+      (self as RemoveOpImpl).frbInternalSseEncode(move: null),
       serializer,
     );
   }
@@ -3848,6 +5088,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.deviceSuffix, serializer);
     sse_encode_bool(self.replacesApproved, serializer);
     sse_encode_String(self.joinreqHash, serializer);
+    sse_encode_String(self.previous, serializer);
+    sse_encode_bool(self.updateFirst, serializer);
   }
 
   @protected
@@ -3884,6 +5126,54 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_node_info(
+    List<NodeInfo> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_node_info(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_own_node_view(
+    List<OwnNodeView> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_own_node_view(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_person_node(
+    List<PersonNode> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_person_node(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_person_view(
+    List<PersonView> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_person_view(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_prim_u_64_strict(
     Uint64List self,
     SseSerializer serializer,
@@ -3916,6 +5206,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_recipient_view(
+    List<RecipientView> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_recipient_view(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_member_view(MemberView self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.name, serializer);
@@ -3945,6 +5247,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.applied, serializer);
     sse_encode_String(self.country, serializer);
     sse_encode_list_member_view(self.members, serializer);
+  }
+
+  @protected
+  void sse_encode_node_info(NodeInfo self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.dacHash, serializer);
+    sse_encode_list_prim_u_8_strict(self.info, serializer);
   }
 
   @protected
@@ -4010,6 +5319,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_own_node_view(OwnNodeView self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.deviceId, serializer);
+    sse_encode_String(self.dacHash, serializer);
+  }
+
+  @protected
   void sse_encode_owner_kind(OwnerKind self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
@@ -4033,6 +5349,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.renewed, serializer);
     sse_encode_bool(self.sent, serializer);
     sse_encode_bool(self.left, serializer);
+    sse_encode_u_64(self.waitMs, serializer);
+    sse_encode_bool(self.sendUpdate, serializer);
+    sse_encode_list_prim_u_8_strict(self.info, serializer);
+  }
+
+  @protected
+  void sse_encode_person_node(PersonNode self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.last4, serializer);
+    sse_encode_String(self.dacHash, serializer);
+    sse_encode_String(self.state, serializer);
+  }
+
+  @protected
+  void sse_encode_person_view(PersonView self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.owner, serializer);
+    sse_encode_String(self.fpr, serializer);
+    sse_encode_String(self.name, serializer);
+    sse_encode_bool(self.isSelf, serializer);
+    sse_encode_list_person_node(self.nodes, serializer);
+    sse_encode_list_String(self.sameName, serializer);
+  }
+
+  @protected
+  void sse_encode_recipient_view(RecipientView self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.owner, serializer);
+    sse_encode_String(self.fpr, serializer);
+    sse_encode_String(self.name, serializer);
+    sse_encode_list_String(self.nodes, serializer);
+    sse_encode_String(self.note, serializer);
   }
 
   @protected
@@ -4075,6 +5423,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       serializer,
     );
     sse_encode_owner_step(self.$2, serializer);
+  }
+
+  @protected
+  void
+  sse_encode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_remove_op_owner_step(
+    (RemoveOp, OwnerStep) self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+      self.$1,
+      serializer,
+    );
+    sse_encode_owner_step(self.$2, serializer);
+  }
+
+  @protected
+  void sse_encode_remove_plan_view(
+    RemovePlanView self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.ok, serializer);
+    sse_encode_String(self.text, serializer);
+    sse_encode_bool(self.unverified, serializer);
+    sse_encode_u_32(self.nodes, serializer);
   }
 
   @protected
@@ -4148,6 +5522,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_encode_unit(void self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+  }
+
+  @protected
+  void sse_encode_update_hint(UpdateHint self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.line, serializer);
+    sse_encode_bool(self.button, serializer);
+  }
+
+  @protected
+  void sse_encode_update_prep(UpdatePrep self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_update_state(self.state, serializer);
+    sse_encode_list_prim_u_8_strict(self.ephPub, serializer);
+    sse_encode_u_64(self.mnetGen, serializer);
+    sse_encode_String(self.detail, serializer);
+  }
+
+  @protected
+  void sse_encode_update_state(UpdateState self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected
@@ -4251,6 +5647,10 @@ class OwnerSessionImpl extends RustOpaque implements OwnerSession {
   OwnerStep? netPersisted() =>
       RustLib.instance.api.crateApiOwnerOwnerSessionNetPersisted(that: this);
 
+  /// The SHA-256 of this login's verified DAC (lowercase hex; "" = not verified): which own node this session is.
+  String nodeDacHash() =>
+      RustLib.instance.api.crateApiOwnerOwnerSessionNodeDacHash(that: this);
+
   OwnerStep? onFrame({required List<int> frame}) => RustLib.instance.api
       .crateApiOwnerOwnerSessionOnFrame(that: this, frame: frame);
 
@@ -4270,20 +5670,27 @@ class OwnerSessionImpl extends RustOpaque implements OwnerSession {
     recordGen: recordGen,
   );
 
+  /// remove-member §2.4: one info read whose body comes back as is (OwnerStep.info; empty = could not be read).
+  OwnerStep requestInfo() =>
+      RustLib.instance.api.crateApiOwnerOwnerSessionRequestInfo(that: this);
+
   /// Join this (claimed, verified at this login) node to the network of an opened net record (join2 §3.3).
   /// `record_gen`: the generation store_read_sealed gave (every record write of the join is a CAS from it).
   /// admin_pub / owner_enc_pub: this phone's keys (Kotlin publicKeys).
+  /// `removed_confirmed`: the user answered yes to the ConfirmRemoved question (remove-member §2.0 rule 2).
   OwnerStep requestJoinNetwork({
     required List<int> recordPlain,
     required BigInt recordGen,
     required List<int> adminPub,
     required List<int> ownerEncPub,
+    required bool removedConfirmed,
   }) => RustLib.instance.api.crateApiOwnerOwnerSessionRequestJoinNetwork(
     that: this,
     recordPlain: recordPlain,
     recordGen: recordGen,
     adminPub: adminPub,
     ownerEncPub: ownerEncPub,
+    removedConfirmed: removedConfirmed,
   );
 
   /// member-join §4 step 4: a join request for a pasted invite (`invite_hex`), from this login's verified node.
@@ -4345,6 +5752,20 @@ class OwnerSessionImpl extends RustOpaque implements OwnerSession {
     mnetGen: mnetGen,
   );
 
+  /// 「把新密碼送給節點」(remove-member §3.2) to this (own, verified) node from an opened record: the admin's net
+  /// record (`member` false; `admin_pub` signs the node's fresh secrets) or a member's mnet (`member` true). Never
+  /// called on its own: only from the button (or right after a join whose node is behind, §3.5).
+  OwnerStep requestSendUpdate({
+    required List<int> recordPlain,
+    required bool member,
+    required List<int> adminPub,
+  }) => RustLib.instance.api.crateApiOwnerOwnerSessionRequestSendUpdate(
+    that: this,
+    recordPlain: recordPlain,
+    member: member,
+    adminPub: adminPub,
+  );
+
   /// `settings/set` {20: {1: ssid, 2: passphrase}} (an owner-op; §3.3): the phone AP. The passphrase stays in here
   /// and in the encrypted request; it is never part of a step's text.
   OwnerStep requestSetAp({required String ssid, required String passphrase}) =>
@@ -4377,6 +5798,10 @@ class OwnerSessionImpl extends RustOpaque implements OwnerSession {
   OwnerStep requestStatusPage() => RustLib.instance.api
       .crateApiOwnerOwnerSessionRequestStatusPage(that: this);
 
+  /// After a Wait step.
+  OwnerStep? resumeUpdate() =>
+      RustLib.instance.api.crateApiOwnerOwnerSessionResumeUpdate(that: this);
+
   OwnerStep? signed({required List<int> der}) => RustLib.instance.api
       .crateApiOwnerOwnerSessionSigned(that: this, der: der);
 
@@ -4388,4 +5813,45 @@ class OwnerSessionImpl extends RustOpaque implements OwnerSession {
         hasNet: hasNet,
         hasMnet: hasMnet,
       );
+
+  /// remove-member §3.5: the status page's line about this node's secrets, from the record of the network info key
+  /// 10 names (`record_plain`: net/ when `member` false, mnet/ when true) and the last status-page read. "" = none;
+  /// `button` = show 「把新密碼送給節點」.
+  UpdateHint updateHint({
+    required List<int> recordPlain,
+    required bool member,
+  }) => RustLib.instance.api.crateApiOwnerOwnerSessionUpdateHint(
+    that: this,
+    recordPlain: recordPlain,
+    member: member,
+  );
+}
+
+@sealed
+class RemoveOpImpl extends RustOpaque implements RemoveOp {
+  // Not to be used by end users
+  RemoveOpImpl.frbInternalDcoDecode(List<dynamic> wire)
+    : super.frbInternalDcoDecode(wire, _kStaticData);
+
+  // Not to be used by end users
+  RemoveOpImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
+    : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+  static final _kStaticData = RustArcStaticData(
+    rustArcIncrementStrongCount:
+        RustLib.instance.api.rust_arc_increment_strong_count_RemoveOp,
+    rustArcDecrementStrongCount:
+        RustLib.instance.api.rust_arc_decrement_strong_count_RemoveOp,
+    rustArcDecrementStrongCountPtr:
+        RustLib.instance.api.rust_arc_decrement_strong_count_RemoveOpPtr,
+  );
+
+  OwnerStep? netPersisted() =>
+      RustLib.instance.api.crateApiRekeyRemoveOpNetPersisted(that: this);
+
+  OwnerStep? persistFailed({required String error}) => RustLib.instance.api
+      .crateApiRekeyRemoveOpPersistFailed(that: this, error: error);
+
+  OwnerStep? signed({required List<int> der}) =>
+      RustLib.instance.api.crateApiRekeyRemoveOpSigned(that: this, der: der);
 }
