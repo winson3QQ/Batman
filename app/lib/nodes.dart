@@ -893,12 +893,39 @@ class _NodesPageState extends State<NodesPage> {
     return pick;
   }
 
-  /// §8: a readable status page of the logged-in node.
+  /// status page v8.1 §2: the logged-in node's readable status page; 「重新整理」 reads it again.
   Future<void> _statusPage() async {
+    final first = await _readStatusPage();
+    if (first == null || !mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => Scaffold(
+            appBar: AppBar(title: const Text('節點狀態')),
+            body: StatusPageView(initial: first, initialAt: DateTime.now(), onRefresh: _readStatusPage))));
+  }
+
+  /// One status + info read, as the page shows it (null: nothing was read).
+  Future<StatusFields?> _readStatusPage() async {
     final a = await _ask((s) => s.requestStatusPage(), quiet: true);
     final s = _session;
-    if (a == null || s == null || !mounted) return;
+    if (a == null || s == null || !mounted) return null;
     final v = s.statusView();
+    _log('status page row ${v.row} fresh ${v.fresh}');
+    final names = await _netNames();
+    final membership = statusMembershipLine(nodeState: v.nodeState, netId: v.netId, name: networkName(v.netId, names));
+    return StatusFields(
+        color: v.color,
+        sentence: v.sentence,
+        lagNote: v.lagNote,
+        warning: v.warning,
+        membership: membership,
+        version: v.version,
+        tech: v.tech,
+        rateNote: v.rateNote,
+        fresh: v.fresh);
+  }
+
+  /// net_id hex -> netcfg name, from this phone's net / mnet records
+  Future<Map<String, String>> _netNames() async {
     final names = <String, String>{};
     final dir = await _dir();
     for (final id in await listNets(dir: dir)) {
@@ -917,11 +944,7 @@ class _NodesPageState extends State<NodesPage> {
         } catch (_) {}
       }
     }
-    if (!mounted) return;
-    final f = StatusFields(
-        state: v.state, reason: v.reason, neighbours: v.neighbours, health: v.health, snr: v.snr, version: v.version, netId: v.netId);
-    await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => Scaffold(appBar: AppBar(title: const Text('節點狀態')), body: StatusPageView(fields: f, names: names))));
+    return names;
   }
 
   /// join2 §3.2: read info on the logged-in node against one of this phone's net records
@@ -979,10 +1002,8 @@ class _NodesPageState extends State<NodesPage> {
       appBar: AppBar(title: const Text('我的節點')),
       body: Padding(
         padding: const EdgeInsets.all(12),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          // the controls scroll on their own: on a phone they are taller than the screen (found on the S20:
-          // 「加入隊伍網路」 was laid out off-screen and could not be reached)
-          Expanded(flex: 3, child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        // the controls scroll on their own above the log (f139951; T9 checks it at 360 x 640)
+        child: ControlsAndLog(log: _lines, controls: [
           if (_nodes.isEmpty) const Text('這支手機還沒有認領任何節點。'),
           for (final n in _nodes)
             ListTile(
@@ -1084,9 +1105,6 @@ class _NodesPageState extends State<NodesPage> {
             ]),
           TextButton(onPressed: _busy ? null : _showPending, child: const Text('再顯示申請')),
           if (logged) Align(alignment: Alignment.centerLeft, child: OutlinedButton(onPressed: _busy ? null : _memberJoin, child: const Text('加入隊伍網路'))),
-          ]))),
-          const Divider(),
-          Expanded(flex: 2, child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
         ]),
       ),
     );

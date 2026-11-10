@@ -1,4 +1,5 @@
-//! netrec / flow::link_state / Store::write_cas (docs/design/254-app-join2.md v7.1, tests T6, T9, T10, T11).
+//! netrec / flow::link_state / Store::write_cas (docs/design/254-app-join2.md v7.2, tests T6, T9, T10, T11; T11 is the
+//! status page design's T7, docs/design/254-app-status-page.md v8.1).
 
 use batman_proto::cbor::{self, Value as V};
 use batman_proto::flow::{self, JoinState, LinkState};
@@ -183,6 +184,15 @@ fn t10_forget_joining_removes_the_entry() {
 
 // ---- T11 ----------------------------------------------------------------------------------------------------------
 
+/// key 3 = n3, key 15 age_s / join.plinks, key 5 {1: code} when `code` is Some (not JOINED)
+fn status_c(n3: Option<u64>, age: Option<u64>, plinks: Option<u64>, stale: bool, code: Option<u64>) -> V {
+    let V::Map(mut e) = status(n3, age, plinks, stale) else { unreachable!() };
+    if let Some(c) = code {
+        e.insert(1, (V::Uint(5), m(vec![(1, V::Uint(c)), (2, V::Text("NOT_JOINED".into()))])));
+    }
+    V::Map(e)
+}
+
 fn status(n3: Option<u64>, age: Option<u64>, plinks: Option<u64>, stale: bool) -> V {
     let mut f = vec![];
     if stale {
@@ -205,17 +215,24 @@ fn status(n3: Option<u64>, age: Option<u64>, plinks: Option<u64>, stale: bool) -
 }
 
 #[test]
-fn t11_connected_needs_one_fresh_sample_with_links_and_neighbours() {
-    assert_eq!(flow::link_state(&status(Some(1), Some(5), Some(1), false), 30), LinkState::Connected { neighbours: 1 });
+fn t11_connected_is_the_nodes_own_joined_with_plinks_in_a_fresh_sample() {
+    // JOINED (key 5 absent) + plinks >= 1 in a sample younger than the join -> connected {plinks}; key 3 is not read
+    assert_eq!(flow::link_state(&status(Some(1), Some(5), Some(1), false), 30), LinkState::Connected { plinks: 1 });
+    assert_eq!(flow::link_state(&status(None, Some(5), Some(2), false), 30), LinkState::Connected { plinks: 2 }, "key 3 missing counts");
+    assert_eq!(flow::link_state(&status(Some(0), Some(5), Some(1), false), 30), LinkState::Connected { plinks: 1 }, "key 3 = 0 counts");
     // each missing / false part
     assert_eq!(flow::link_state(&status(Some(1), Some(5), Some(1), true), 30), LinkState::Unknown, "stale");
     assert_eq!(flow::link_state(&m(vec![(1, V::Uint(2)), (3, V::Uint(1)), (15, t(vec![("stale", V::Bool(true))]))]), 30), LinkState::Unknown);
     assert_eq!(flow::link_state(&status(Some(1), Some(31), Some(1), false), 30), LinkState::NotYet, "sampled before the join");
-    assert_eq!(flow::link_state(&status(Some(1), Some(5), None, false), 30), LinkState::Unknown, "plinks missing");
-    assert_eq!(flow::link_state(&status(Some(1), Some(5), Some(0), false), 30), LinkState::NotYet, "plinks 0");
-    assert_eq!(flow::link_state(&status(None, Some(5), Some(1), false), 30), LinkState::Unknown, "key 3 missing");
-    assert_eq!(flow::link_state(&status(Some(0), Some(5), Some(1), false), 30), LinkState::NotYet, "key 3 = 0");
+    assert_eq!(flow::link_state(&status(Some(1), Some(30), Some(1), false), 30), LinkState::NotYet, "sampled at the join");
+    assert_eq!(flow::link_state(&status(Some(1), Some(5), None, false), 30), LinkState::Unknown, "plinks missing (row 2)");
+    assert_eq!(flow::link_state(&status(Some(1), Some(5), Some(0), false), 30), LinkState::NotYet, "plinks 0 (JOINED lags)");
+    assert_eq!(flow::link_state(&status(Some(1), None, Some(1), false), 30), LinkState::Unknown, "age_s missing");
     assert_eq!(flow::link_state(&m(vec![(1, V::Uint(2)), (3, V::Uint(1))]), 30), LinkState::Unknown, "no key 15 (P2 / member)");
+    // key 5 present: never connected, whatever key 3 / plinks say (code 9 = plink but no batman neighbour on wlh0)
+    assert_eq!(flow::link_state(&status_c(Some(3), Some(5), Some(1), false, Some(9)), 30), LinkState::NotYet, "code 9 + k3 + plinks");
+    assert_eq!(flow::link_state(&status_c(Some(1), Some(5), Some(1), false, Some(0)), 30), LinkState::NotYet, "code 0 + plinks (8a)");
+    assert_eq!(flow::link_state(&status_c(Some(1), Some(5), Some(0), false, Some(7)), 30), LinkState::NotYet);
 }
 
 #[test]

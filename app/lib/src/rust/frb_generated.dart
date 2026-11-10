@@ -72,7 +72,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -2071033104;
+  int get rustContentHash => -354618818;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -304,6 +304,12 @@ abstract class RustLibApi extends BaseApi {
   Future<String> crateApiClaimPendingPath({required String deviceId});
 
   String crateApiSimpleSelftest();
+
+  String crateApiOwnerStatusMembershipLine({
+    required PlatformInt64 nodeState,
+    required String netId,
+    String? name,
+  });
 
   Future<bool> crateApiSimpleStoreHasRecords({required String dir});
 
@@ -2004,6 +2010,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "selftest", argNames: []);
 
   @override
+  String crateApiOwnerStatusMembershipLine({
+    required PlatformInt64 nodeState,
+    required String netId,
+    String? name,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_i_64(nodeState, serializer);
+          sse_encode_String(netId, serializer);
+          sse_encode_opt_String(name, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 53)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiOwnerStatusMembershipLineConstMeta,
+        argValues: [nodeState, netId, name],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiOwnerStatusMembershipLineConstMeta =>
+      const TaskConstMeta(
+        debugName: "status_membership_line",
+        argNames: ["nodeState", "netId", "name"],
+      );
+
+  @override
   Future<bool> crateApiSimpleStoreHasRecords({required String dir}) {
     return handler.executeNormal(
       NormalTask(
@@ -2013,7 +2051,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 53,
+            funcId: 54,
             port: port_,
           );
         },
@@ -2041,7 +2079,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 54,
+            funcId: 55,
             port: port_,
           );
         },
@@ -2073,7 +2111,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 55,
+            funcId: 56,
             port: port_,
           );
         },
@@ -2108,7 +2146,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 56,
+            funcId: 57,
             port: port_,
           );
         },
@@ -2140,7 +2178,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 57,
+            funcId: 58,
             port: port_,
           );
         },
@@ -2171,7 +2209,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 58,
+            funcId: 59,
             port: port_,
           );
         },
@@ -2207,7 +2245,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 59,
+            funcId: 60,
             port: port_,
           );
         },
@@ -2241,7 +2279,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 60,
+            funcId: 61,
             port: port_,
           );
         },
@@ -2280,7 +2318,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 61,
+            funcId: 62,
             port: port_,
           );
         },
@@ -2495,6 +2533,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   int dco_decode_i_32(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as int;
+  }
+
+  @protected
+  PlatformInt64 dco_decode_i_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dcoDecodeI64(raw);
   }
 
   @protected
@@ -2786,16 +2830,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   StatusView dco_decode_status_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return StatusView(
-      state: dco_decode_String(arr[0]),
-      reason: dco_decode_String(arr[1]),
-      neighbours: dco_decode_String(arr[2]),
-      health: dco_decode_String(arr[3]),
-      snr: dco_decode_String(arr[4]),
-      version: dco_decode_String(arr[5]),
+      color: dco_decode_String(arr[0]),
+      row: dco_decode_String(arr[1]),
+      sentence: dco_decode_String(arr[2]),
+      lagNote: dco_decode_String(arr[3]),
+      warning: dco_decode_String(arr[4]),
+      nodeState: dco_decode_i_64(arr[5]),
       netId: dco_decode_String(arr[6]),
+      version: dco_decode_String(arr[7]),
+      tech: dco_decode_list_String(arr[8]),
+      fresh: dco_decode_bool(arr[9]),
+      rateNote: dco_decode_String(arr[10]),
     );
   }
 
@@ -3033,6 +3081,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   int sse_decode_i_32(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getInt32();
+  }
+
+  @protected
+  PlatformInt64 sse_decode_i_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getPlatformInt64();
   }
 
   @protected
@@ -3387,21 +3441,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   StatusView sse_decode_status_view(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_state = sse_decode_String(deserializer);
-    var var_reason = sse_decode_String(deserializer);
-    var var_neighbours = sse_decode_String(deserializer);
-    var var_health = sse_decode_String(deserializer);
-    var var_snr = sse_decode_String(deserializer);
-    var var_version = sse_decode_String(deserializer);
+    var var_color = sse_decode_String(deserializer);
+    var var_row = sse_decode_String(deserializer);
+    var var_sentence = sse_decode_String(deserializer);
+    var var_lagNote = sse_decode_String(deserializer);
+    var var_warning = sse_decode_String(deserializer);
+    var var_nodeState = sse_decode_i_64(deserializer);
     var var_netId = sse_decode_String(deserializer);
+    var var_version = sse_decode_String(deserializer);
+    var var_tech = sse_decode_list_String(deserializer);
+    var var_fresh = sse_decode_bool(deserializer);
+    var var_rateNote = sse_decode_String(deserializer);
     return StatusView(
-      state: var_state,
-      reason: var_reason,
-      neighbours: var_neighbours,
-      health: var_health,
-      snr: var_snr,
-      version: var_version,
+      color: var_color,
+      row: var_row,
+      sentence: var_sentence,
+      lagNote: var_lagNote,
+      warning: var_warning,
+      nodeState: var_nodeState,
       netId: var_netId,
+      version: var_version,
+      tech: var_tech,
+      fresh: var_fresh,
+      rateNote: var_rateNote,
     );
   }
 
@@ -3645,6 +3707,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_i_32(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putInt32(self);
+  }
+
+  @protected
+  void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putPlatformInt64(self);
   }
 
   @protected
@@ -3934,13 +4002,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   void sse_encode_status_view(StatusView self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.state, serializer);
-    sse_encode_String(self.reason, serializer);
-    sse_encode_String(self.neighbours, serializer);
-    sse_encode_String(self.health, serializer);
-    sse_encode_String(self.snr, serializer);
-    sse_encode_String(self.version, serializer);
+    sse_encode_String(self.color, serializer);
+    sse_encode_String(self.row, serializer);
+    sse_encode_String(self.sentence, serializer);
+    sse_encode_String(self.lagNote, serializer);
+    sse_encode_String(self.warning, serializer);
+    sse_encode_i_64(self.nodeState, serializer);
     sse_encode_String(self.netId, serializer);
+    sse_encode_String(self.version, serializer);
+    sse_encode_list_String(self.tech, serializer);
+    sse_encode_bool(self.fresh, serializer);
+    sse_encode_String(self.rateNote, serializer);
   }
 
   @protected
@@ -4197,7 +4269,7 @@ class OwnerSessionImpl extends RustOpaque implements OwnerSession {
   OwnerStep? signed({required List<int> der}) => RustLib.instance.api
       .crateApiOwnerOwnerSessionSigned(that: this, der: der);
 
-  /// The fields of the last status page read (only what the node sent).
+  /// The last status page read as the page shows it (status page v8.1 §2-§3).
   StatusView statusView() =>
       RustLib.instance.api.crateApiOwnerOwnerSessionStatusView(that: this);
 }

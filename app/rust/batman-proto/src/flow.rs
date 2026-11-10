@@ -149,14 +149,15 @@ pub fn join_state(info: &Value, our_net_id: &[u8; 16]) -> JoinState {
     }
 }
 
-/// "Connected" after a join (254-app-join2 §3.3-7), from ONE `status` answer of the owner session.
+/// "Connected" after a join (254-app-join2 v7.2 §3.3-7), from ONE `status` answer of the owner session.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LinkState {
-    /// key 15 fresh, sampled after the join reply, plinks > 0 and key 3 (batman neighbours) > 0
-    Connected { neighbours: u64 },
-    /// the status is usable but shows no other member yet (0 links / 0 neighbours, or sampled before the join)
+    /// key 15 fresh, sampled after the join reply, and the status page's rows 3 / 4: the node's own JOINED (key 5
+    /// absent) with plinks > 0
+    Connected { plinks: u64 },
+    /// the status is usable but shows no other member yet (any other row, or sampled before the join)
     NotYet,
-    /// stale, key 15 / age_s / plinks / key 3 missing: the link state is unknown
+    /// stale, key 15 / age_s missing, or the status page's rows 1-2: the link state is unknown
     Unknown,
 }
 
@@ -167,22 +168,25 @@ fn text_key<'a>(m: &'a Value, k: &str) -> Option<&'a Value> {
     }
 }
 
-/// `secs_since_join`: seconds from the network/join reply to this status request. key 3 and key 15's join.plinks come
-/// from the same halow-status cache (≤ 30 s old, its age in key 15 age_s), so both must be in this one answer and
-/// the cache must be younger than the join (never "JOINED" alone: it lags).
+/// `secs_since_join`: seconds from the network/join reply to this status request. The halow-status cache behind the
+/// answer must be younger than the join (key 15 age_s); then the verdict is the status page's (statuspage §3): rows
+/// 1-2 unknown, rows 3-4 connected, any other row not yet. key 3 is not read (all hardifs, stale entries included).
 pub fn link_state(status: &Value, secs_since_join: u64) -> LinkState {
     let Some(f) = status.get(15) else { return LinkState::Unknown };
     if text_key(f, "stale") == Some(&Value::Bool(true)) {
         return LinkState::Unknown;
     }
-    let age = text_key(f, "age_s").and_then(Value::as_uint);
-    let plinks = text_key(f, "join").and_then(|j| text_key(j, "plinks")).and_then(Value::as_uint);
-    let (Some(age), Some(plinks), Some(n)) = (age, plinks, status.get(3).and_then(Value::as_uint)) else {
-        return LinkState::Unknown;
-    };
-    if age < secs_since_join && plinks > 0 && n > 0 {
-        LinkState::Connected { neighbours: n }
-    } else {
-        LinkState::NotYet
+    let Some(age) = text_key(f, "age_s").and_then(Value::as_uint) else { return LinkState::Unknown };
+    if age >= secs_since_join {
+        return LinkState::NotYet;
+    }
+    use crate::statuspage::{self as sp, Row};
+    match sp::link_verdict(sp::Answer::Body(status)).row {
+        Row::Unsupported | Row::Unknown | Row::Refused => LinkState::Unknown,
+        Row::Linked | Row::LinkedWeak => {
+            let plinks = text_key(f, "join").and_then(|j| text_key(j, "plinks")).and_then(Value::as_uint).unwrap_or(0);
+            LinkState::Connected { plinks }
+        }
+        _ => LinkState::NotYet,
     }
 }
