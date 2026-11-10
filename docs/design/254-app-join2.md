@@ -1,6 +1,6 @@
 # #254 app — second node joins the phone's network (S1.5)
 
-狀態:**凍結 v7.2(2026-11-10)**。v7.2 = v7.1 + §3.3-7「已連上」改用節點自己的 JOINED(S4 狀態頁設計 v4 審查 v3 M5;附錄 A「v7.2」)。審查七輪,每輪兩位:v1 A 4 / B 3 MAJOR;v2 A 3 / B 3;v3 A 2 / B 1;v4 A 1 / B 0;v5 A 1 / B 0;v6 A 1 / B 1;**v7 A APPROVE / B APPROVE(0 MAJOR)**。v7.1 = v7 + 第 7 輪 MINOR(附錄 A「v7 輪」)。
+狀態:**凍結 v7.2(2026-11-10)**。v7.2 = v7.1 + §3.3-7「已連上」改用節點自己的 JOINED(S4 狀態頁設計審查 v3 M5、v4 M2;附錄 A「v7.2」)。審查七輪,每輪兩位:v1 A 4 / B 3 MAJOR;v2 A 3 / B 3;v3 A 2 / B 1;v4 A 1 / B 0;v5 A 1 / B 0;v6 A 1 / B 1;**v7 A APPROVE / B APPROVE(0 MAJOR)**。v7.1 = v7 + 第 7 輪 MINOR(附錄 A「v7 輪」)。
 v4 = v3 再**刪兩個東西**(前置「已在網路就擋」、存 secrets + ecdh 比對)並把 CAS 世代、確認網路、國家改回、已連上的判定寫清楚;處理見附錄 A。
 方針:少一個機制比多一個好(使用者規則「只做必要的修改」)。
 上層:`254-app-s1.md` v8.5.1(凍結;§1 列為不做,§5.4 已定格式)。使用者:接著做第二台入網;只有一支 Android 手機。
@@ -84,9 +84,11 @@ v4 = v3 再**刪兩個東西**(前置「已在網路就擋」、存 secrets + ec
 7. **已連上**(owner 的 P3 節點):join 回 0 後每 10 s 讀 `status`,直到視窗結束;**已連上 = 同一次回覆中 key 15 不是 stale、`age_s` < 自 join 回覆起的秒數、
    key 5 不存在(節點自己的 JOINED = plink ≥ 1 且 wlh0 上有 batman 鄰居,meshjoin.sh:22-24)、plinks 存在且 > 0**;判定與 S4 狀態頁共用
    (`254-app-status-page.md` §3:列 1–2 → 未知、列 3–4 → 已連上 {P = plinks}、其餘 → 還沒)。v7.2 改用 JOINED 的理由:key 3 是 `batctl n` 所有 hardif、
-   含過期項目的計數(halow-status:38),會給出假的「已連上」;JOINED 由 joinwatch 每 15 s 更新(會落後 ≤ 15 s,接受),plinks 每次即時讀,age_s 照舊把關。
+   含過期項目的計數(halow-status:38),會給出假的「已連上」;JOINED 由 joinwatch 每 15 s 更新,plinks 來自 ≤ 30 s 的快取,age_s 照舊把關。
+   誠實界線:802.11s plink 不逾時、batman 約 200 s 才移除鄰居(Batman-p3 181-survival-strategy.md:26),所以隊員離開後「已連上」最多還會維持約 200 s + 15 s + age_s;
+   本步驟只在 join 之後的視窗內用,這個落後不影響「加入之後連上了」的判定。
    視窗 = T5 以此規則實測「加入 → 已連上」時間的 2 倍(實測前暫定 120 s)。
-   視窗內未成立 → 「已套用,還沒看到其他成員(請確認其他節點已開機、在範圍內)」;stale / plinks 缺 / key 3 缺 / 讀不到 → 「已套用,連線狀態未知」。P2 → 只「已套用」。
+   視窗內未成立 → 「已套用,還沒看到其他成員(請確認其他節點已開機、在範圍內)」;stale / plinks 缺 / 讀不到 → 「已套用,連線狀態未知」。P2 → 只「已套用」。
 
 ### 3.4 繼續加入 / 忘記
 - 「繼續加入」= 從步驟 2 再走一次(國家已改的不會再改,secrets 重新產生)。
@@ -107,7 +109,7 @@ v4 = v3 再**刪兩個東西**(前置「已在網路就擋」、存 secrets + ec
 | `network/join` | app → provd → helper | CDDL net-join | 節點驗 F2、F4;錯 → 4 |
 | net_secrets | app → 被加入節點 | F4;net_id / version = netcfg 的 | 給錯台 → 4 |
 | info 9 / 10 / 11 | 節點 → app | CDDL info | 缺 → 不改紀錄 / 保持 joining |
-| status key 3 / 15 | 節點 → app(owner) | P3 status | stale / plinks 缺 → 「連線狀態未知」 |
+| status key 5 / 15 | 節點 → app(owner) | P3 status | stale / plinks 缺 → 「連線狀態未知」 |
 
 ## 6. 生命週期
 | 路徑 | 之後 | 證明 |
@@ -233,3 +235,4 @@ v4 = v3 再**刪兩個東西**(前置「已在網路就擋」、存 secrets + ec
 | 項目 | 處理 |
 |---|---|
 | §3.3-7「已連上」用 key 3 會誤判(所有 hardif、過期項目) | 改用 key 5 不存在(JOINED)+ plinks > 0 + age_s;JOINED 落後 ≤ 15 s 接受;T11 改寫、T5 以新規則量視窗 |
+| 隊員離開後的落後(plink 不逾時、batman 約 200 s) | §3.3-7 寫明誠實界線(只用在 join 後的視窗);刪「key 3 缺」;§5 契約列改為 status key 5 / 15 |
