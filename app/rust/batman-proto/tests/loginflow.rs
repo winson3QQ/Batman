@@ -203,12 +203,15 @@ fn run(node: &mut Node, tag: [u8; 32], pinned: Vec<u8>, sign: p256::ecdsa::Signi
         // a cert that did not verify is never kept (§5.4: net_secrets go only to a verified ecdh_pub)
         if matches!(end, End::CertRejected(_) | End::Msg2Undecryptable) {
             assert!(l.verified().is_none(), "{end:?} kept a node_cert");
+            // member-join §2 / M4: the raw node_cert is kept only after verify_pinned passed
+            assert!(l.node_cert_raw().is_none(), "{end:?} kept the raw node_cert");
         }
         assert!(l.into_conn().is_none());
         return (end, None);
     }
     // the node_cert verified in this login is kept for what follows (make-network): the pinned DAC, a 65-byte ecdh_pub
     let ver = l.verified().expect("a logged-in session keeps its verified node_cert").clone();
+    assert_eq!(l.node_cert_raw(), Some(&dev_node_cert(&v)[..]), "the raw node_cert of this handshake");
     assert_eq!(ver.dac_der, pinned);
     assert_eq!(ver.ecdh_pub[0], 0x04);
     let mut c = l.into_conn().expect("the owner session");

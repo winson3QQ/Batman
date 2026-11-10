@@ -22,7 +22,7 @@ pub const LABEL_ECDH: &[u8] = b"batman-node-ecdh-v1";
 const OID_CN: &str = "2.5.4.3";
 const OID_SERIAL_NUMBER: &str = "2.5.4.5";
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     Malformed(&'static str),
     StaticMismatch,
@@ -78,8 +78,9 @@ fn dac_pub65(c: &Certificate) -> Result<[u8; 65], Error> {
     pk.try_into().map_err(|_| Error::Malformed("DAC public key is not a 65-byte P-256 point"))
 }
 
-/// Common checks; `remote_static` is the handshake's rs (32 B).
-fn common(node_cert: &[u8], remote_static: &[u8; 32]) -> Result<(Verified, Certificate), Error> {
+/// Common checks; `remote_static` is the handshake's rs (32 B), None offline (verify_offline: no handshake, so only
+/// freshness is lost).
+fn common(node_cert: &[u8], remote_static: Option<&[u8; 32]>) -> Result<(Verified, Certificate), Error> {
     let m = cbor::decode(node_cert).map_err(|_| Error::Malformed("node_cert is not deterministic CBOR"))?;
     let chain = match m.get(1) {
         Some(Value::Array(a)) if !a.is_empty() => a,
@@ -94,7 +95,7 @@ fn common(node_cert: &[u8], remote_static: &[u8; 32]) -> Result<(Verified, Certi
     let sig_static = bytes(&m, 5, "sig_static")?;
     let sig_ecdh = bytes(&m, 6, "sig_ecdh")?;
     let sn: [u8; 9] = bytes(&m, 7, "sn")?.try_into().map_err(|_| Error::Malformed("sn is not 9 B"))?;
-    if s_node != remote_static {
+    if remote_static.is_some_and(|rs| s_node != rs) {
         return Err(Error::StaticMismatch);
     }
     let mut msg = LABEL_STATIC.to_vec();
@@ -117,7 +118,7 @@ fn common(node_cert: &[u8], remote_static: &[u8; 32]) -> Result<(Verified, Certi
 
 /// A claimed node: the common checks and the DAC equal to the one pinned at claim time.
 pub fn verify_pinned(node_cert: &[u8], remote_static: &[u8; 32], pinned_dac_der: &[u8]) -> Result<Verified, Error> {
-    let (v, _) = common(node_cert, remote_static)?;
+    let (v, _) = common(node_cert, Some(remote_static))?;
     if v.dac_der != pinned_dac_der {
         return Err(Error::NotPinned);
     }
@@ -126,11 +127,18 @@ pub fn verify_pinned(node_cert: &[u8], remote_static: &[u8; 32], pinned_dac_der:
 
 /// First contact (claim): the common checks, device_id == the QR's, and the build's trust policy (`DEV_TRUST`).
 pub fn verify_first_contact(node_cert: &[u8], remote_static: &[u8; 32], qr_device_id: &str) -> Result<Verified, Error> {
-    let (v, c) = common(node_cert, remote_static)?;
+    let (v, c) = common(node_cert, Some(remote_static))?;
     if v.device_id != qr_device_id {
         return Err(Error::DeviceIdMismatch);
     }
-    let cn = subject_attr(&c, OID_CN).unwrap_or_default();
+    trust_gate(&c, &v)?;
+    Ok(v)
+}
+
+/// The build's trust policy on a DAC, shared by first contact and offline checks: a non-`dev:` DAC needs the
+/// production root (none yet: Untrusted); a `dev:` DAC only in a dev-trust build, then the dev TOFU rule.
+fn trust_gate(c: &Certificate, v: &Verified) -> Result<(), Error> {
+    let cn = subject_attr(c, OID_CN).unwrap_or_default();
     if !cn.starts_with("dev:") {
         // a production DAC needs the production root, which does not exist yet (keystore.go:266-267)
         return Err(Error::Untrusted);
@@ -138,7 +146,20 @@ pub fn verify_first_contact(node_cert: &[u8], remote_static: &[u8; 32], qr_devic
     if !DEV_TRUST {
         return Err(Error::Untrusted);
     }
-    dev_rule(&c, &v.dac_pub, &v.device_id)?;
+    dev_rule(c, &v.dac_pub, &v.device_id)
+}
+
+/// A node_cert met outside a handshake (a join request, 254-app-member-join §2): parsed strictly (unknown keys
+/// refused, §5.6 signed-object rule for an embedded node_cert), sig_static / sig_ecdh / sn checked, and the same trust
+/// gate as first contact. Only s_node == rs cannot be checked (freshness).
+pub fn verify_offline(node_cert: &[u8]) -> Result<Verified, Error> {
+    let m = cbor::decode(node_cert).map_err(|_| Error::Malformed("node_cert is not deterministic CBOR"))?;
+    let Value::Map(e) = &m else { return Err(Error::Malformed("node_cert is not a map")) };
+    if e.len() != 7 || !(1..=7).all(|k| m.get(k).is_some()) {
+        return Err(Error::Malformed("node_cert keys are not exactly 1-7"));
+    }
+    let (v, c) = common(node_cert, None)?;
+    trust_gate(&c, &v)?;
     Ok(v)
 }
 

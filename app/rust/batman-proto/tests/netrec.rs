@@ -173,7 +173,7 @@ fn t10_forget_joining_removes_the_entry() {
     s.write_cas(rel, 0, &netrec::encode(&r)).unwrap();
     let read = s.read(rel).unwrap().unwrap();
     let mut back = netrec::decode(&read.sealed).unwrap();
-    assert_eq!(netrec::forget_joining(&mut back, &[0xb2; 32]).unwrap(), Some("JP".into()));
+    assert_eq!(netrec::forget_joining(&mut back, &[0xb2; 32]).unwrap().prev_country, Some("JP".into()));
     assert_eq!(s.write_cas(rel, read.generation, &netrec::encode(&back)).unwrap(), read.generation + 1);
     let after = netrec::decode(&s.read(rel).unwrap().unwrap().sealed).unwrap();
     assert_eq!(after.members().unwrap().len(), 1);
