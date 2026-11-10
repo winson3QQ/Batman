@@ -518,6 +518,7 @@ fn verb_text(verb: &str) -> String {
         "info-confirm" => "確認網路".into(),
         "status-page" | "info-page" => "查看狀態".into(),
         "status-link" => "查看連線狀態".into(),
+        "network/leave" => "離開網路".into(),
         "network/join" => "建立網路".into(),
         "op/nonce" => "準備操作".into(),
         v => format!("操作（{v}）"),
@@ -841,8 +842,15 @@ impl OwnerSession {
                     Some(OwnerStep::text(OwnerKind::Answer, error_text(what, code, &detail)))
                 }
                 Err(e) => {
+                    // leave v4.1 §3: a transport error while the leave (or its info read) is outstanding ends with the
+                    // leave's own line (Unknown once it was sent), not a bare "the link ended"
+                    let d = match (*asked, self.leave.take()) {
+                        (LEAVE, _) => flow::Leave::Unknown.text(),
+                        ("info-leave", Some((sent, code))) => flow::leave_outcome(sent, code, None).text(),
+                        _ => format!("連線出錯（{e:?}）"),
+                    };
                     self.st = St::Over;
-                    Some(OwnerStep::text(OwnerKind::Ended, format!("連線出錯（{e:?}）")))
+                    Some(OwnerStep::text(OwnerKind::Ended, d))
                 }
             },
             St::Join { .. } | St::Join2 { .. } | St::Over => None,
@@ -2226,6 +2234,78 @@ mod leave_tests {
         };
         assert_eq!(page(&mut s), "這台還沒加入隊伍網路", "the read right after leaving: no invitation to join");
         assert_eq!(page(&mut s), "這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」", "the next read: normal again");
+    }
+
+    /// a transport error while the leave (or its info read) is outstanding (code review A-m2)
+    #[test]
+    fn a_broken_link_mid_leave_ends_with_the_leave_line() {
+        // the network/leave write went out; the answer arrives corrupted
+        let (mut s, mut n) = super::tests::logged_in();
+        let st = s.request_leave_network().unwrap();
+        let (id, _) = n.request(&st.frames);
+        let mut next = None;
+        for f in n.answer(id, nonce()) {
+            next = s.on_frame(f).or(next);
+        }
+        let st = next.unwrap();
+        assert_eq!(st.kind, OwnerKind::Sign);
+        let k = p256::ecdsa::SigningKey::from_slice(&[0x11; 32]).unwrap();
+        let sg: p256::ecdsa::Signature = k.sign(&st.sign_input);
+        let st = s.signed(sg.to_der().as_bytes().to_vec()).unwrap();
+        assert!(st.sent);
+        let (id, verb) = n.request(&st.frames);
+        assert_eq!(verb, "network/leave");
+        let mut frames = n.answer(id, Ok(Value::Map(vec![])));
+        let last = frames.last_mut().unwrap();
+        let x = last.len() - 1;
+        last[x] ^= 0xff; // the AEAD tag no longer matches
+        let mut end = None;
+        for f in frames {
+            end = s.on_frame(f).or(end);
+        }
+        let end = end.expect("a step");
+        assert_eq!((end.kind, end.detail.as_str()), (OwnerKind::Ended, "[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁"));
+        // not sent (op/nonce refused) and the info read breaks: still "not sent"
+        let (mut s, mut n) = super::tests::logged_in();
+        let st = s.request_leave_network().unwrap();
+        let (id, _) = n.request(&st.frames);
+        let mut next = None;
+        for f in n.answer(id, Err(7)) {
+            next = s.on_frame(f).or(next);
+        }
+        let st = next.unwrap();
+        let (id, verb) = n.request(&st.frames);
+        assert_eq!(verb, "info");
+        let mut frames = n.answer(id, Ok(info(true, Some(false))));
+        let last = frames.last_mut().unwrap();
+        let x = last.len() - 1;
+        last[x] ^= 0xff;
+        let mut end = None;
+        for f in frames {
+            end = s.on_frame(f).or(end);
+        }
+        let end = end.unwrap();
+        assert_eq!(end.kind, OwnerKind::Ended);
+        assert!(end.detail.starts_with("[REQ_FAIL] 節點正在處理別的請求") && end.detail.contains("沒有送出"), "{}", end.detail);
+        // any other request keeps the plain end
+        assert_eq!(verb_text("network/leave"), "離開網路");
+    }
+
+    /// S4 §3 / T1 (code review A-m5): through status_view_of — row 6 of a member with info key 11 true: the verdict
+    /// sentence has no reboot; the key 11 line (separate) has its 10-minute fallback.
+    #[test]
+    fn s4_reboot_property_through_the_view() {
+        let t = |k: &str| Value::Text(k.into());
+        let row6 = Value::Map(vec![
+            (Value::Uint(1), Value::Uint(2)),
+            (Value::Uint(2), Value::Uint(2)),
+            (Value::Uint(5), Value::Map(vec![(Value::Uint(1), Value::Uint(8)), (Value::Uint(2), t("NOT_JOINED"))])),
+            (Value::Uint(15), Value::Map(vec![(t("uptime_s"), Value::Uint(600)), (t("join"), Value::Map(vec![(t("snr_db"), t("31")), (t("plinks"), Value::Uint(0))]))])),
+        ]);
+        let v = status_view_of(Some(&Ok(row6)), Some(&info(true, Some(true))), true, false, statuspage::JoinButton::Admin);
+        assert_eq!(v.row, "6");
+        assert!(!v.sentence.contains("重新開機"), "{}", v.sentence);
+        assert!(v.unfinished.contains("重新開機") && !v.unfinished_under_verdict, "{}", v.unfinished);
     }
 
     #[test]

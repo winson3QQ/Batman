@@ -6,6 +6,8 @@
 // - the status page (254-app-status-page v8.1 §2) shows Rust's verdict; a network name only from a record on this
 //   phone; an E_RATE keeps the earlier read time;
 // - My nodes: the controls scroll above the log (f139951).
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import 'say.dart' show screenText;
@@ -190,6 +192,43 @@ class StatusFields {
 const joinWait = Duration(seconds: 360);
 const leaveUnclear = '[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁';
 
+/// Frames the run loop may write; made only by [SendTrack.outgoing].
+class Outgoing {
+  Outgoing._(this.frames);
+  final List<Uint8List> frames;
+}
+
+/// What the leave button got back (leave v4.1 §2-§3): the line to show, the page re-read after a reply 0, and whether
+/// that re-read read nothing (the page is then marked stale).
+class LeaveResult {
+  const LeaveResult(this.line, this.fields, {this.stale = false});
+  final String? line;
+  final StatusFields? fields;
+  final bool stale;
+}
+
+/// The leave line when the owner request ended without an answer and said nothing either (busy, …).
+const leaveNotAsked = '[REQ_FAIL] 沒有送出 — 請再按一次';
+
+/// The leave button's request (leave v4.1 §3): [ask] is the owner request; when it returns no answer (a write that
+/// threw, a failed re-login, …) the line it last said is shown on the page instead (code review B-M1) — never nothing.
+/// [left]: network/leave answered 0 in that request; then the page is read once more ([reread]).
+Future<LeaveResult> leaveFlow(
+    {required Future<String?> Function({required Duration wait, required bool retry, required String unclear}) ask,
+    required String? Function() lastSaid,
+    required bool Function() left,
+    required Future<StatusFields?> Function() reread}) async {
+  final a = await sendLeave(ask);
+  if (a == null) return LeaveResult(lastSaid() ?? leaveNotAsked, null);
+  if (!left()) return LeaveResult(a, null);
+  final again = await reread();
+  return LeaveResult(a, again, stale: again == null);
+}
+
+/// An Ended step's answer line: a detail that is already a marked line (the bridge's leave Unknown, code review A-m2)
+/// is shown as it is; any other end says the link ended.
+String endedLine(String detail) => detail.startsWith('[') ? detail : '[REQ_FAIL] 連線已結束：$detail';
+
 /// The request the leave button makes, with the call policy fixed here ([ask] is the page's owner request).
 Future<String?> sendLeave(Future<String?> Function({required Duration wait, required bool retry, required String unclear}) ask) =>
     ask(wait: joinWait, retry: false, unclear: leaveUnclear);
@@ -204,6 +243,13 @@ class SendTrack {
   void persisted() => wrote = true;
   void write({required bool sent}) {
     if (sent) wrote = true;
+  }
+
+  /// The only way to get frames the run loop may write (nodes.dart `_write` takes an [Outgoing]): the sent mark is
+  /// taken BEFORE the frames go out, so a write that throws half-way is "possibly sent" (code review B-M1 / A-m1).
+  Outgoing outgoing({required bool sent, required List<Uint8List> frames}) {
+    write(sent: sent);
+    return Outgoing._(frames);
   }
 
   /// the line for a lost link / timeout of a request with an [unclear] line
@@ -249,8 +295,8 @@ class StatusPageView extends StatefulWidget {
   final StatusFields initial;
   final DateTime initialAt;
 
-  /// 「離開網路」 after the user confirmed (leave v4.1): the answer line, and the page re-read after a reply 0 (null otherwise)
-  final Future<(String?, StatusFields?)> Function()? onLeave;
+  /// 「離開網路」 after the user confirmed (leave v4.1): see [leaveFlow]
+  final Future<LeaveResult> Function()? onLeave;
 
   /// reads status + info again; null when nothing was read (the link was lost, or another request runs)
   final Future<StatusFields?> Function() onRefresh;
@@ -284,14 +330,17 @@ class _StatusPageViewState extends State<StatusPageView> {
     if (yes != true || !mounted) return;
     setState(() => _busy = true);
     try {
-      final (line, again) = await widget.onLeave!();
+      final r = await widget.onLeave!();
       if (mounted) {
         setState(() {
-          _leaveLine = line ?? '';
+          _leaveLine = r.line ?? '';
+          final again = r.fields;
           if (again != null) {
             _at = readTime(fresh: again.fresh, now: widget.clock(), previous: _at);
             _f = again;
           }
+          // left, but the re-read read nothing: the page is stale (code review A-m4)
+          _missed = r.stale;
         });
       }
     } finally {
@@ -311,6 +360,7 @@ class _StatusPageViewState extends State<StatusPageView> {
           if (r != null) {
             _at = readTime(fresh: r.fresh, now: widget.clock(), previous: _at);
             _f = r;
+            _leaveLine = ''; // the leave answer belonged to the earlier read
           }
         });
       }
