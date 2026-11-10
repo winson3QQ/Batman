@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:batman_app/member_ui.dart';
+import 'package:batman_app/src/rust/api/owner.dart' show OwnerStep, OwnerKind;
 
 Widget app(Widget w) => MaterialApp(home: Scaffold(body: w));
 
@@ -214,6 +215,23 @@ void main() {
 
   // 254-app-leave v4.1 §6 T3 (the page side; the outcome texts are Rust's, T1 / T2).
   group('S6 leave', () {
+    // a Write step as Rust makes it (only `sent` and `frames` matter to the run loop's bookkeeping)
+    OwnerStep step({required bool sent}) => OwnerStep(
+        kind: OwnerKind.write,
+        frames: [Uint8List(3)],
+        signInput: Uint8List(0),
+        detail: '',
+        record: Uint8List(0),
+        rel: '',
+        generation: BigInt.zero,
+        aad: Uint8List(0),
+        expectedGen: BigInt.zero,
+        pollLink: false,
+        hex: '',
+        sas: '',
+        renewed: false,
+        sent: sent,
+        left: false);
     const member = StatusFields(
         color: 'green',
         sentence: '已連上隊伍網路',
@@ -286,8 +304,8 @@ void main() {
       String? said;
       Future<String?> ask({required Duration wait, required bool retry, required String unclear}) async {
         try {
-          track.outgoing(sent: false, frames: [Uint8List(3)]); // op/nonce
-          track.outgoing(sent: true, frames: [Uint8List(3)]); // network/leave: marked before it goes out
+          stepFrames(track, step(sent: false)); // op/nonce
+          stepFrames(track, step(sent: true)); // network/leave: marked before it goes out
           throw Exception('GATT write failed half-way');
         } catch (_) {
           said = track.unclearNow(unclear); // what _ask says on a throw with an unclear line
@@ -296,7 +314,7 @@ void main() {
       }
 
       await t.pumpWidget(page(member,
-          leave: () => leaveFlow(ask: ask, lastSaid: () => said, left: () => false, reread: () async => null)));
+          leave: () => leaveFlow(ask: ask, askEnd: () => said, left: () => false, reread: () async => null)));
       await t.scrollUntilVisible(find.byKey(const Key('leave')), 100);
       await t.tap(find.byKey(const Key('leave')));
       await t.pumpAndSettle();
@@ -308,17 +326,23 @@ void main() {
 
     test('leaveFlow: no answer and nothing said -> not sent; left but the re-read failed -> stale', () async {
       Future<String?> none({required Duration wait, required bool retry, required String unclear}) async => null;
-      final r = await leaveFlow(ask: none, lastSaid: () => null, left: () => false, reread: () async => null);
+      final r = await leaveFlow(ask: none, askEnd: () => null, left: () => false, reread: () async => null);
       expect(r.line, leaveNotAsked);
       Future<String?> ok({required Duration wait, required bool retry, required String unclear}) async => '[ANSWER] [LEFT] 已離開隊伍網路';
       var reads = 0;
-      final s = await leaveFlow(ask: ok, lastSaid: () => null, left: () => true, reread: () async {
+      final s = await leaveFlow(ask: ok, askEnd: () => null, left: () => true, reread: () async {
         reads++;
         return null;
       });
       expect((s.line, s.fields, s.stale, reads), ('[ANSWER] [LEFT] 已離開隊伍網路', null, true, 1));
-      final n = await leaveFlow(ask: ok, lastSaid: () => null, left: () => false, reread: () async => const StatusFields());
+      final n = await leaveFlow(ask: ok, askEnd: () => null, left: () => false, reread: () async => const StatusFields());
       expect((n.stale, n.fields), (false, null), reason: 'not a reply 0: no re-read');
+      // r2 B-m1: a re-read that throws (a corrupt record) still shows the leave line, page stale
+      final x = await leaveFlow(ask: ok, askEnd: () => null, left: () => true, reread: () async => throw Exception('corrupt record'));
+      expect((x.line, x.fields, x.stale), ('[ANSWER] [LEFT] 已離開隊伍網路', null, true));
+      // r2 A-m2: the request's own end line, not some later line
+      final e = await leaveFlow(ask: none, askEnd: () => askNoLink, left: () => false, reread: () async => null);
+      expect(e.line, askNoLink);
     });
 
     testWidgets('left but the re-read failed: the page is marked stale; the next good refresh clears the leave line', (t) async {
@@ -340,6 +364,47 @@ void main() {
       await t.pumpAndSettle();
       expect(find.text('已離開隊伍網路'), findsNothing);
       expect(find.text('沒有讀到，請再按一次'), findsNothing);
+    });
+
+    test("stepFrames: the step's own sent flag is marked before its frames go out (r2 A-m1 = B-m4)", () {
+      final a = SendTrack();
+      stepFrames(a, step(sent: false));
+      expect(a.unclearNow(leaveUnclear), notSentLine);
+      stepFrames(a, step(sent: true));
+      expect(a.unclearNow(leaveUnclear), leaveUnclear);
+      final b = SendTrack();
+      expect(stepFrames(b, step(sent: true)).frames.single.length, 3, reason: 'the frames of the step');
+      expect(b.wrote, isTrue);
+    });
+
+    testWidgets('a leave without a re-read keeps the stale marker (r2 A-m3 = B-m2)', (t) async {
+      await t.pumpWidget(app(StatusPageView(
+          initial: member,
+          initialAt: at,
+          onRefresh: () async => null,
+          onLeave: () async => const LeaveResult('[ANSWER] [LEFT] 這台已經不在隊伍網路裡', null),
+          clock: () => DateTime(2026, 11, 10, 9, 6, 0))));
+      await t.tap(find.byKey(const Key('refresh')));
+      await t.pumpAndSettle();
+      expect(find.text('沒有讀到，請再按一次'), findsOneWidget);
+      await t.scrollUntilVisible(find.byKey(const Key('leave')), 100);
+      await t.tap(find.byKey(const Key('leave')));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('leaveConfirm')));
+      await t.pumpAndSettle();
+      expect(find.text('這台已經不在隊伍網路裡'), findsOneWidget);
+      await t.scrollUntilVisible(find.byKey(const Key('refresh')), -100);
+      expect(find.text('沒有讀到，請再按一次'), findsOneWidget, reason: 'still stale: nothing was read');
+    });
+
+    testWidgets('a double tap opens one dialog (r2 B-m3)', (t) async {
+      await t.pumpWidget(page(member, leave: () async => const LeaveResult(null, null)));
+      await t.scrollUntilVisible(find.byKey(const Key('leave')), 100);
+      await t.tap(find.byKey(const Key('leave')));
+      // the second tap of a double tap: the button's handler runs again while the first dialog is opening / open
+      t.widget<TextButton>(find.byKey(const Key('leave'))).onPressed!();
+      await t.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsOneWidget);
     });
 
     test('an Ended step: the bridge leave line as is, anything else = the link ended', () {
