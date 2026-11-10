@@ -151,7 +151,8 @@ struct Node {
     set_r: VecDeque<R>,
     join_r: VecDeque<R>,
     info_r: VecDeque<R>,
-    nonce_code: Option<u64>,
+    /// op/nonce answers in order: Some(code) = refused, None (or none left) = a nonce
+    nonce_r: VecDeque<Option<u64>>,
     /// the node is in the network (after a join it accepted)
     in_net: bool,
     /// what the node decrypted: (sae, net_root), and the decoded secrets payload
@@ -184,7 +185,7 @@ fn pair(country: &str) -> (Conn, Node) {
         set_r: VecDeque::new(),
         join_r: VecDeque::new(),
         info_r: VecDeque::new(),
-        nonce_code: None,
+        nonce_r: VecDeque::new(),
         in_net: false,
         secrets: vec![],
         sec_payloads: vec![],
@@ -295,7 +296,7 @@ impl Node {
         self.got.push(verb.clone());
         let country = |c: &str| m(vec![(2, V::Text(c.into()))]);
         let r = match verb.as_str() {
-            "op/nonce" => match self.nonce_code {
+            "op/nonce" => match self.nonce_r.pop_front().flatten() {
                 Some(c) => R::Err(c, m(vec![])),
                 None => {
                     self.helper = Some([0x6d; 32]);
@@ -367,11 +368,12 @@ struct Run {
 
 struct Opts {
     yes: bool,
-    admin_fails: bool,
+    /// the n-th (0-based) admin signature of the run fails
+    admin_fail_at: Option<usize>,
     /// a write elsewhere just before the n-th (0-based) PersistNet of this run
     bump_before: Option<usize>,
 }
-const YES: Opts = Opts { yes: true, admin_fails: false, bump_before: None };
+const YES: Opts = Opts { yes: true, admin_fail_at: None, bump_before: None };
 
 fn input(disk: &Disk, node: Option<Verified>) -> Input {
     let (plain, g) = disk.read();
@@ -388,11 +390,13 @@ fn input(disk: &Disk, node: Option<Verified>) -> Input {
 
 fn drive(node: &mut Node, disk: &Disk, mut j: Join2, mut a: Action, o: &Opts) -> Run {
     let mut run = Run::default();
+    let mut admin = 0;
     loop {
         a = match a {
             Action::SignAdmin { tbs } => {
                 assert_eq!(tbs[0], 0x84, "a COSE Sig_structure");
-                let der = if o.admin_fails { vec![] } else { signed(ADMIN, &tbs) };
+                let der = if o.admin_fail_at == Some(admin) { vec![] } else { signed(ADMIN, &tbs) };
+                admin += 1;
                 j.signed(&der).expect("an action after the admin signature")
             }
             Action::SignOwner { input } => {
@@ -415,7 +419,7 @@ fn drive(node: &mut Node, disk: &Disk, mut j: Join2, mut a: Action, o: &Opts) ->
                         assert_eq!(g, expected_gen + 1);
                         j.net_persisted().unwrap()
                     }
-                    Err(store::Error::Stale { .. }) => j.persist_failed().unwrap(),
+                    Err(store::Error::Stale { .. }) => j.persist_failed(None).unwrap(),
                     Err(e) => panic!("{e:?}"),
                 }
             }
@@ -832,7 +836,7 @@ fn t8_admin_signature_fails_before_any_write_or_country_change() {
     for country in ["US", "JP"] {
         let disk = Disk::new(&applied_record("US"));
         let (c, mut n) = pair(country);
-        let run = join(&disk, &mut n, c, &Opts { admin_fails: true, ..YES });
+        let run = join(&disk, &mut n, c, &Opts { admin_fail_at: Some(0), ..YES });
         assert_eq!(run.end, Some(End::AdminSignFailed), "{country}");
         assert!(run.writes.is_empty(), "{country}: nothing written");
         assert!(n.sets.is_empty() && !n.got.contains(&"settings/set".to_string()), "{country}: country untouched");
@@ -848,14 +852,14 @@ fn t10_record_changed_after_reading_stops_the_join() {
     let disk = Disk::new(&applied_record("US"));
     let (c, mut n) = pair("US");
     let run = join(&disk, &mut n, c, &Opts { bump_before: Some(0), ..YES });
-    assert_eq!(run.end, Some(End::PersistFailed { applied: false }));
+    assert_eq!(run.end, Some(End::PersistFailed { applied: false, error: None }));
     assert!(!n.got.contains(&"network/join".to_string()) && !n.got.contains(&"op/nonce".to_string()), "nothing sent");
     assert!(disk.mine().is_none());
     // the applied write losing its race is recoverable (the node did apply)
     let disk = Disk::new(&applied_record("US"));
     let (c, mut n) = pair("US");
     let run = join(&disk, &mut n, c, &Opts { bump_before: Some(1), ..YES });
-    assert_eq!(run.end, Some(End::PersistFailed { applied: true }));
+    assert_eq!(run.end, Some(End::PersistFailed { applied: true, error: None }));
 }
 
 #[test]
@@ -867,4 +871,58 @@ fn t10_each_write_chains_the_generation() {
     // joining+prev (2), joining (3), applied (4): each opened with aad(rel, its generation)
     assert_eq!(run.writes.len(), 3);
     assert_eq!(disk.read().1, 4);
+}
+
+// ---- code review round 1 ----------------------------------------------------------------------------------------
+
+#[test]
+fn t8_resend_signature_failure_is_unclear_not_nothing_done() {
+    // reply 3 -> the resend's admin signature fails: by then the entry (and the country) changed -> keep joining
+    let disk = Disk::new(&applied_record("US"));
+    let (c, mut n) = pair("JP");
+    n.join_r.push_back(R::Err(3, m(vec![])));
+    let run = join(&disk, &mut n, c, &Opts { admin_fail_at: Some(1), ..YES });
+    assert_eq!(run.end, Some(End::Joining(Keep::Unclear)));
+    assert_eq!(n.sets, ["US"]);
+    let me = disk.mine().unwrap();
+    assert_eq!((me.state, me.prev_country.as_deref()), (MemberState::Joining, Some("JP")));
+}
+
+#[test]
+fn t7_nonce_refused_before_settings_set_restores_the_entry() {
+    let (run, n, disk) = join_with("JP", |n| n.nonce_r.push_back(Some(12)));
+    assert_eq!(run.end, Some(End::Joining(Keep::NonceRefused(12))));
+    assert!(n.sets.is_empty() && !n.got.contains(&"settings/set".to_string()));
+    assert!(disk.mine().is_none(), "no entry before -> none after");
+    assert_eq!(n.got, ["settings/get", "op/nonce"]);
+}
+
+#[test]
+fn t3_nonce_refused_before_join_is_a_definite_failure() {
+    // country changed first -> put back, then the entry goes
+    let (run, n, disk) = join_with("JP", |n| {
+        n.nonce_r.push_back(None);
+        n.nonce_r.push_back(Some(12));
+    });
+    assert_eq!(run.end, Some(End::Failed(Fail::NotSent(12), Revert::Reverted { country: "JP".into() })));
+    assert_eq!(n.sets, ["US", "JP"]);
+    assert!(!n.got.contains(&"network/join".to_string()));
+    assert!(disk.mine().is_none());
+    // country never changed -> the entry goes directly
+    let (run, n, disk) = join_with("US", |n| n.nonce_r.push_back(Some(12)));
+    assert_eq!(run.end, Some(End::Failed(Fail::NotSent(12), Revert::NoChange)));
+    assert!(n.sets.is_empty());
+    assert!(disk.mine().is_none());
+}
+
+#[test]
+fn t7_nonce_refused_before_revert_keeps_the_entry_and_prev_country() {
+    let (run, n, disk) = join_with("JP", |n| {
+        n.join_r.push_back(R::Err(4, m(vec![])));
+        n.nonce_r.extend([None, None, Some(12)]);
+    });
+    assert_eq!(run.end, Some(End::Failed(Fail::Rejected, Revert::NotReverted { now: "US".into(), was: "JP".into() })));
+    assert_eq!(n.sets, ["US"]);
+    let me = disk.mine().unwrap();
+    assert_eq!((me.state, me.prev_country.as_deref()), (MemberState::Joining, Some("JP")));
 }

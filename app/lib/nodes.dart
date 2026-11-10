@@ -36,6 +36,11 @@ class _Net {
 const _linkWindow = Duration(seconds: 120);
 const _linkEvery = Duration(seconds: 10);
 
+/// A join waits longer than provd's helper wait (HelperWait 330 s, S/provd/server.go:22) per node request; the
+/// country question to the user does not count.
+const _joinWait = Duration(seconds: 360);
+const _joinUnclear = '[JOIN_STATE] 結果不明，稍後在這台按「繼續加入」';
+
 class NodesPage extends StatefulWidget {
   const NodesPage({super.key});
 
@@ -57,6 +62,10 @@ class _NodesPageState extends State<NodesPage> {
   StreamSubscription<ConnectionStateUpdate>? _conn;
   StreamSubscription<List<int>>? _notify;
   Completer<String>? _answer;
+  // the outstanding request's wait: restarted on every write to the node, stopped while the user is asked
+  Timer? _wait;
+  Duration _waitFor = const Duration(seconds: 15);
+  String _waitLine = '';
   final _country = TextEditingController(); // settings/set key 2 (two capital letters)
   final _apSsid = TextEditingController(); // settings/set key 20
   final _apPass = TextEditingController(); // obscured; cleared once sent
@@ -135,6 +144,7 @@ class _NodesPageState extends State<NodesPage> {
         switch (st.kind) {
           case OwnerKind.write:
             await _write(st.frames);
+            _kick();
             st = null;
           case OwnerKind.sign:
             final der = (await _platform.invokeMethod<Uint8List>('signOwner', {'input': st.signInput}))!;
@@ -160,12 +170,16 @@ class _NodesPageState extends State<NodesPage> {
               _log('已在手機存下網路資料（${p.rel.substring(0, 8)}…，第 ${p.generation} 版）');
               st = s.netPersisted();
             } catch (e) {
-              _log('[REQ_FAIL] 網路資料沒有存成功（${p.rel.substring(0, 8)}…）：$e');
-              st = s.persistFailed();
+              // storeWriteCas throws its reason as a String (exactly the "changed elsewhere" line for a generation
+              // mismatch); anything else (sealing, storage) is passed on as what failed
+              final why = e is String ? e : (e is PlatformException ? 'seal ${e.code}' : '${e.runtimeType}');
+              _log('[REQ_FAIL] 網路資料沒有存成功（${p.rel.substring(0, 8)}…）：$why');
+              st = s.persistFailed(error: why);
             }
           case OwnerKind.confirmCountry:
             _log(st.detail);
             final question = screenText(st.detail);
+            _wait?.cancel(); // the user's time does not count against the node's answer
             final yes = mounted
                 ? await showDialog<bool>(
                     context: context,
@@ -178,6 +192,7 @@ class _NodesPageState extends State<NodesPage> {
                           ],
                         ))
                 : false;
+            _kick();
             st = s.countryConfirmed(yes: yes == true);
           case OwnerKind.loggedIn:
             _say('[LOGGED_IN] ${st.detail}');
@@ -185,7 +200,12 @@ class _NodesPageState extends State<NodesPage> {
             st = null;
           case OwnerKind.answer:
             if (st.pollLink) _linkFrom = DateTime.now();
-            _answer?.complete('[ANSWER] ${st.detail}');
+            final a = _answer;
+            if (a != null && !a.isCompleted) {
+              a.complete('[ANSWER] ${st.detail}');
+            } else {
+              _say('[ANSWER] ${st.detail}'); // an answer after its wait ended is still shown
+            }
             st = null;
           case OwnerKind.ended:
             _log('裝置 $id：${st.detail}');
@@ -314,21 +334,40 @@ class _NodesPageState extends State<NodesPage> {
         wait: const Duration(seconds: 180));
   }
 
+  /// Restart the outstanding request's wait (each write to the node).
+  void _kick() {
+    _wait?.cancel();
+    final a = _answer, line = _waitLine;
+    _wait = Timer(_waitFor, () {
+      if (a != null && !a.isCompleted) a.complete(line);
+    });
+  }
+
   /// One request on the owner session; the answer is shown (or with [quiet] only logged) and returned.
+  /// [wait] runs from each write to the node, not from the start.
   /// [retry]: a write that fails logs in again and sends the request once more — never for a join / confirm, whose
   /// record was read before the first try (the record write would refuse a stale generation anyway).
+  /// [unclear]: a join — a timeout or a lost link says "結果不明" and drops the session (it may be mid-flow).
   Future<String?> _ask(OwnerStep Function(OwnerSession) req,
-      {Duration wait = const Duration(seconds: 15), bool quiet = false, bool retry = true}) async {
+      {Duration wait = const Duration(seconds: 15), bool quiet = false, bool retry = true, bool unclear = false}) async {
     if (_busy) return null;
     if (_session == null && _lastNode != null) await _login(_lastNode!);
     var s = _session;
     if (s == null || _busy) return null;
     setState(() => _busy = true);
+    _waitFor = wait;
+    _waitLine = unclear ? _joinUnclear : '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應';
     try {
       _answer = Completer<String>();
       try {
         await _run!(req(s));
       } on PlatformException catch (e) {
+        if (unclear) {
+          _say('[LINK_LOST] 連線斷了（${e.code}）');
+          _say(_joinUnclear);
+          await _drop();
+          return null;
+        }
         if (!retry) rethrow;
         // nothing reached the node (the write itself failed): log in again and send it once more
         _say('[LINK_LOST] 連線斷了（${e.code}），正在重新連線…');
@@ -341,7 +380,9 @@ class _NodesPageState extends State<NodesPage> {
         _answer = Completer<String>();
         await _run!(req(s));
       }
-      final a = await _answer!.future.timeout(wait, onTimeout: () => '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應');
+      _kick();
+      final a = await _answer!.future;
+      if (unclear && a == _joinUnclear) await _drop(); // the session may still be inside the join flow
       if (quiet) {
         _log(a);
       } else {
@@ -352,6 +393,7 @@ class _NodesPageState extends State<NodesPage> {
       _say('[REQ_FAIL] 操作沒有成功：$e');
       return null;
     } finally {
+      _wait?.cancel();
       _answer = null;
       if (mounted) setState(() => _busy = false);
     }
@@ -405,8 +447,9 @@ class _NodesPageState extends State<NodesPage> {
             recordGen: net.gen,
             adminPub: keys['admin'] as Uint8List,
             ownerEncPub: keys['ownerEnc'] as Uint8List),
-        wait: const Duration(seconds: 300),
-        retry: false);
+        wait: _joinWait,
+        retry: false,
+        unclear: true);
     await _watchLink();
   }
 

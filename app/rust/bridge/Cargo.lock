@@ -129,6 +129,8 @@ version = "0.1.0"
 dependencies = [
  "batman-proto",
  "flutter_rust_bridge",
+ "p256",
+ "snow",
 ]
 
 [[package]]

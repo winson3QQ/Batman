@@ -27,8 +27,8 @@
 
 // Section: imports
 
-use crate::api::claim::*;
-use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -187,7 +187,8 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "OwnerSession_persist_failed", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
             let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>>::sse_decode(&mut deserializer);deserializer.end();
+            let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>>>::sse_decode(&mut deserializer);
+let api_error = <String>::sse_decode(&mut deserializer);deserializer.end();
                 transform_result_sse::<_, ()>((move || {
                     let mut api_that_guard = None;
 let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true)]);
@@ -198,7 +199,7 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
             }
         }
         let mut api_that_guard = api_that_guard.unwrap();
- let output_ok = Ok::<_, ()>(crate::api::owner::OwnerSession::persist_failed(&mut *api_that_guard))?;   std::result::Result::Ok(output_ok)
+ let output_ok = Ok::<_, ()>(crate::api::owner::OwnerSession::persist_failed(&mut *api_that_guard, api_error))?;   std::result::Result::Ok(output_ok)
                 })()) })
             }fn wire__crate__api__owner__OwnerSession_request_confirm_network_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "OwnerSession_request_confirm_network", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
@@ -1437,8 +1438,8 @@ crate::api::claim::StepKind::Ended => { 3 }
 
 // Section: imports
 
-use crate::api::claim::*;
-use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -1485,8 +1486,8 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::claim::*;
-use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;
