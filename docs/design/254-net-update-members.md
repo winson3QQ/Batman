@@ -174,7 +174,7 @@ Go 單元(`node/`;`rig.applyUpdate` 與其呼叫者 F4 改新形狀;每項斷言
 - U7 國碼:兩步鏈**中間步** key 5 ≠ 已存、最後一步同國碼 → `EReject` reason 14(provd 層 `E_REJECTED{2: 14}`;證明每一步都比);同國碼 → 0;新的缺 key 5 → 14;已存的缺 key 5 → 14。
 - U15 形狀錯(非陣列、步不是 map、缺 key、secrets 位置錯)經 provd → `E_BAD_OBJECT`,且 provd log 沒有 CRIT 行。
 - U8 provd `route_test` 的 update 改新形狀;member session 轉送照樣通(只證明路由,假 helper 碰不到 `netUpdate`)。
-- U9 **新增**經 `netUpdate` 的斷電 seam 測試(既有 seam 測試只走 join):在 txn-2 停 → Finish → 退回,紀錄是舊版、無線是舊值;txn-3(p5 已是新版,p5 是 commit 點)/ txn-4 停 → Finish → 前進,紀錄與無線都是新版。(實作時更正:v4.1 原文把 txn-3 寫成退回,與  的定義不符)
+- U9 **新增**經 `netUpdate` 的斷電 seam 測試(既有 seam 測試只走 join):在 txn-2 停 → Finish → 退回,紀錄是舊版、無線是舊值;txn-3(p5 已是新版,p5 是 commit 點)/ txn-4 停 → Finish → 前進,紀錄與無線都是新版。(實作時更正:v4.1 原文把 txn-3 寫成退回,與 `seam/points.go:13` 的定義不符)
 - **U11 新版 net_config + 這台節點的舊版 secrets → `E_BAD_OBJECT "net_secrets"`**,紀錄 / `.txn` / setkey 不變(這是兩位審查 PoC 的反轉:修正前 code 0)。
 - **U12 別的 net_id 的 secrets(同網主、目標是這台)→ 拒絕**;join 帶版本不符的 secrets → 拒絕(`parseNet` 共用)。
 - U13 大小(provd 層、真分塊、MaxMsg 8192):16 位成員的真物件鏈,剛好 8 塊 → 0;多一步變 9 塊 → session 結束、紀錄不變;量測每步大小,回填 §3。

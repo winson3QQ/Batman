@@ -68,7 +68,6 @@ type netv struct {
 	noCC      bool              // no key 5
 	secNid    []byte            // net_secrets key 1
 	secVer    uint64            // net_secrets key 2
-	root      []byte            // net_root (make32(9) when nil)
 	memSigner *ecdsa.PrivateKey // signs the member_list (signer when nil)
 	memNid    []byte            // member_list key 1
 	memVer    uint64            // member_list key 2
@@ -111,10 +110,7 @@ func (r *rig) mkNet(v *netv) *netv {
 	if v.secVer != 0 {
 		sver = v.secVer
 	}
-	nroot := v.root
-	if nroot == nil {
-		nroot = make32(9)
-	}
+	nroot := make32(9)
 	// net_secrets: COSE_Encrypt to this node (ECDH-ES + HKDF-256, ChaCha20/Poly1305), as cose.Decrypt opens it
 	dacHash := sha256.Sum256(r.ks.DACPub())
 	other := append(append([]byte(nil), snid...), byte(sver>>24), byte(sver>>16), byte(sver>>8), byte(sver))

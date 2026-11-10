@@ -108,8 +108,10 @@ func saeOf(pt cbor.Map) string {
 	return ""
 }
 
-// openStoredSecrets opens the STORED net_secrets: the signature is not re-checked (§2, §9), the DAC-target check and
-// the net_id / version binding of the decryption stay exactly as in openSecrets.
+// openStoredSecrets opens the STORED net_secrets: the signature is not re-checked (§2, §9) and neither is the
+// net_id / version against the stored net_config (that binding is checked once, when the secrets are applied:
+// openSecrets, 254-net-update-members.md §2.2-5); the DAC target and the decryption (net_id / version as the KDF
+// context) are as in decryptSecrets. A record written by wsl.24 with mismatched secrets is replaced by the next update.
 func (n *Node) openStoredSecrets(raw []byte) cbor.Map {
 	x, err := cbor.Decode(raw)
 	if err != nil {

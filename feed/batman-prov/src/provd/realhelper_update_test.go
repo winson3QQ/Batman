@@ -99,6 +99,7 @@ type tNet struct {
 	sae       string
 	ksTarget  *keystore.Keystore
 	adminPubs []any
+	cc        string // net_config key 5 ("US" when empty)
 }
 
 func (n *tNet) build(t *testing.T) *tNet {
@@ -110,7 +111,11 @@ func (n *tNet) build(t *testing.T) *tNet {
 		}
 		prev = s.ObjectHash
 	}
-	n.cfg = tSign1(t, n.admin, cose.CTNetcfg, proto.LabelNetcfg, cbor.M(1, n.nid, 2, n.ver, 3, prev, 4, "team", 5, "US",
+	cc := n.cc
+	if cc == "" {
+		cc = "US"
+	}
+	n.cfg = tSign1(t, n.admin, cose.CTNetcfg, proto.LabelNetcfg, cbor.M(1, n.nid, 2, n.ver, 3, prev, 4, "team", 5, cc,
 		6, cbor.M(1, n.meshID, 2, uint64(28), 3, uint64(2)), 8, n.adminPubs))
 	var ms []any
 	for i := 0; i < n.nMembers; i++ {
@@ -248,6 +253,15 @@ func TestRealHelperNetworkUpdate(t *testing.T) {
 	if lc.has("CRIT") {
 		t.Fatal("a malformed update logged a provd CRIT line")
 	}
+	// U7 at the provd layer: a version with another country -> E_REJECTED{2: 14} (D9), the version unchanged
+	jp := (&tNet{nid: v1.nid, ver: 2, root: randB(32), admin: adm, adminPubs: admPub, nMembers: 1, prevCfg: v1.cfg,
+		meshID: "mjp", sae: "sae-jp-pass", ksTarget: ks, cc: "JP"}).build(t)
+	if code, b := q.do("network/update", updateBody(jp)); code != ERejected || func() bool { r, _ := b.Get(2); return r != uint64(14) }() {
+		t.Fatalf("update with another country: %d %v, want E_REJECTED{2: 14}", code, b)
+	}
+	if v := infoVersion(t, q); v != 1 {
+		t.Fatalf("after the refused country change: version %d", v)
+	}
 
 	// update v2 (new net_root)
 	v2 := v1.next(t, 1)
@@ -274,8 +288,9 @@ func TestRealHelperNetworkUpdate(t *testing.T) {
 	o.c.Close()
 	waitFor(t, "slot freed", func() bool { return s.Sessions() == 0 })
 
-	// U13: 16 members per step; as many steps as fit 8 chunks -> applies; one more step (9 chunks) -> the session ends,
-	// the version unchanged
+	// U13: 16 members per step; as many steps as fit 8 chunks -> applies; one more step (9 chunks) -> the session ends.
+	// The discriminating check is the session ending at the first chunk (it declares 9 parts); "the version unchanged"
+	// afterwards cannot fail (only 1 of 9 chunks was sent) and is kept only as the record of the end state.
 	const slice = 8000
 	chain := []*tNet{v2.next(t, 16)}
 	for {

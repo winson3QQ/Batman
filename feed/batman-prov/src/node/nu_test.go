@@ -125,7 +125,35 @@ func TestUpdateNetIDAndMembers(t *testing.T) {
 		bad := r.next(v1, 2, tc.mod)
 		r.refused(t, tc.name+" (only step)", r.applyUpdate(bad), EBadObject, b, wl)
 		good3 := r.next(bad, 3, func(v *netv) { v.nid = v1.nid })
-		r.refused(t, tc.name+" (middle step)", r.applyUpdate(bad, good3), EBadObject, b, wl)
+		r.refused(t, tc.name+" (first of two steps)", r.applyUpdate(bad, good3), EBadObject, b, wl)
+		good2 := r.next(v1, 2, nil)
+		bad3 := r.next(good2, 3, func(v *netv) {
+			tc.mod(v)
+			if v.memNid != nil && v.nid[0] != v1.nid[0] { // the net_id case: keep the members on the stored network
+				v.memNid = v1.nid
+			}
+		})
+		r.refused(t, tc.name+" (second of two steps)", r.applyUpdate(good2, bad3), EBadObject, b, wl)
+	}
+	// members of an OLDER version (v1's own list) carried in step v2 (review A R08)
+	v2 := r.next(v1, 2, nil)
+	r.refused(t, "v1 members in step v2", r.applyUpdateBody(cbor.M(1, []any{cbor.M(1, v2.cfg, 2, v1.members, 3, v2.secrets)})), EBadObject, b, wl)
+}
+
+// a handover INSIDE one request (review A R11): v2 hands the network to nb (signed by v1's admin), v3 is signed by nb
+// with its members by nb -> applies; members always checked with the stored admins would refuse v3
+func TestUpdateHandoverInsideOneRequest(t *testing.T) {
+	r, v1 := memberRig(t)
+	nb := newKey()
+	v2 := r.mkNet(&netv{nid: v1.nid, ver: 2, meshID: "m2", ch: 36, sae: "sae-v2-pass", admins: []*ecdsa.PrivateKey{nb},
+		signer: v1.admins[0], prev: v1.cfg})
+	v3 := r.mkNet(&netv{nid: v1.nid, ver: 3, meshID: "m3", ch: 28, sae: "sae-v3-pass", admins: []*ecdsa.PrivateKey{nb},
+		signer: nb, prev: v2.cfg})
+	if c := r.applyUpdate(v2, v3); c != OK {
+		t.Fatalf("v2 (handover) + v3 in one request: %d", c)
+	}
+	if r.wl() != "sae-v3-pass/m3/28" {
+		t.Fatalf("wl %s", r.wl())
 	}
 }
 
@@ -162,6 +190,9 @@ func TestUpdateShape(t *testing.T) {
 		"no chain":                   cbor.M(),
 	} {
 		r.refused(t, name, r.applyUpdateBody(body), EBadObject, b, wl)
+		if _, e := r.n.netUpdate(r.rec(), body); e == nil || e.Reason != "update shape" {
+			t.Fatalf("%s: refused by %v, want the shape check (\"update shape\")", name, e)
+		}
 	}
 }
 
@@ -184,6 +215,14 @@ func TestUpdateCountry(t *testing.T) {
 	if c, why := reason(cbor.M(1, []any{step(jp, false), step(us3, true)})); c != EReject || why != ReasonCountryJoin {
 		t.Fatalf("JP in the middle step: %d reason %d", c, why)
 	}
+	// the other country in the SECOND of two steps (code review R02: a check limited to step 0 survived)
+	us2 := r.next(v1, 2, nil)
+	jp3 := r.next(us2, 3, func(v *netv) { v.cc = "JP" })
+	if c, why := reason(cbor.M(1, []any{step(us2, false), step(jp3, true)})); c != EReject || why != ReasonCountryJoin {
+		t.Fatalf("JP in the second step: %d reason %d", c, why)
+	}
+	lower := r.next(v1, 2, func(v *netv) { v.cc = "us" })
+	r.refused(t, "lower-case country", r.applyUpdate(lower), EReject, b, wl)
 	none := r.next(v1, 2, func(v *netv) { v.noCC = true })
 	r.refused(t, "no country", r.applyUpdate(none), EReject, b, wl)
 	if c := r.applyUpdate(r.next(v1, 2, nil)); c != OK {
