@@ -90,6 +90,7 @@ class _NodesPageState extends State<NodesPage> {
   InviteView? _invite;
   final _memberName = TextEditingController();
   String _lastHex = '', _lastSas = '';
+  bool _lastRenewed = false;
   DateTime? _linkFrom; // set when a join was applied: the link checks that follow count from here
 
   @override
@@ -229,6 +230,7 @@ class _NodesPageState extends State<NodesPage> {
             if (st.pollLink) _linkFrom = DateTime.now();
             _lastHex = st.hex;
             _lastSas = st.sas;
+            _lastRenewed = st.renewed;
             final a = _answer;
             if (a != null && !a.isCompleted) {
               a.complete('[ANSWER] ${st.detail}');
@@ -571,8 +573,8 @@ class _NodesPageState extends State<NodesPage> {
     return d?.text;
   }
 
-  Widget _paste(String label, void Function(String) onText) =>
-      PasteButton(label: label, devTrust: _devTrust, readClipboard: _takeClipboard, onText: onText, onRefused: (w) => _say('[REQ_FAIL] $w'));
+  Widget _paste(String label, void Function(String) onText) => PasteButton(
+      label: label, enabled: !_busy, devTrust: _devTrust, readClipboard: _takeClipboard, onText: onText, onRefused: (w) => _say('[REQ_FAIL] $w'));
 
   /// A sealed record as read: (generation, plain); plain null = none, or it does not open.
   Future<(BigInt, Uint8List?)> _readRecord(String rel) async {
@@ -623,14 +625,17 @@ class _NodesPageState extends State<NodesPage> {
   /// §4 step 1 (admin): a remote invite for one of this phone's networks.
   Future<void> _makeInvite() async {
     if (_busy) return;
-    final net = await _pickNet('要邀請隊員加入哪個網路？', only: (v) => v.applied);
-    if (net == null) return;
-    final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    setState(() => _busy = true); // one thing at a time
     try {
+      final net = await _pickNet('要邀請隊員加入哪個網路？', only: (v) => v.applied);
+      if (net == null) return;
+      final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
       final (op, st) = NetOp.makeInvite(recordPlain: net.plain, recordGen: net.gen, adminPub: keys['admin'] as Uint8List);
       await _runOp(op, st);
     } catch (e) {
       _say('[REQ_FAIL] 邀請沒有成功：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -699,23 +704,34 @@ class _NodesPageState extends State<NodesPage> {
   Future<void> _showRequest() async {
     if (_lastHex.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: _lastHex));
-    final sas = _lastSas;
+    final sas = _lastSas, renewed = _lastRenewed;
     _lastHex = '';
     if (!mounted) return;
     await showDialog<void>(
         context: context,
         builder: (c) => AlertDialog(
               title: const Text('申請已複製到剪貼簿，請傳給管理者'),
-              content: SasShowView(sas: sas),
+              content: SasShowView(sas: sas, notice: renewed ? '申請已換新，要重新核對 SAS' : null),
               actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('好'))],
             ));
   }
 
-  /// "Show the request again" (§3): from the pending request on this phone.
+  /// "Show the request again" (§3): from a pending request on this phone (also after a restart: mpend/ is listed).
   Future<void> _showPending() async {
-    final inv = _invite;
-    if (inv == null) return;
-    final (_, plain) = await _readRecord('mpend/${inv.netIdHex}');
+    final ids = _invite != null ? [_invite!.netIdHex] : await listPends(dir: await _dir());
+    if (ids.isEmpty) {
+      _say('[REQ_FAIL] 這支手機沒有待處理的申請');
+      return;
+    }
+    final id = ids.length == 1 || !mounted
+        ? ids.first
+        : await showDialog<String>(
+            context: context,
+            builder: (c) => SimpleDialog(title: const Text('哪一個網路的申請？'), children: [
+                  for (final x in ids) SimpleDialogOption(onPressed: () => Navigator.pop(c, x), child: Text('網路 ${x.substring(0, 12)}…')),
+                ]));
+    if (id == null) return;
+    final (_, plain) = await _readRecord('mpend/$id');
     if (plain == null) {
       _say('[REQ_FAIL] 這支手機沒有這個網路的申請');
       return;
@@ -724,6 +740,7 @@ class _NodesPageState extends State<NodesPage> {
       final st = memberPendView(pendPlain: plain);
       _lastHex = st.hex;
       _lastSas = st.sas;
+      _lastRenewed = false;
       await _showRequest();
     } catch (e) {
       _say('[REQ_FAIL] $e');
@@ -804,6 +821,23 @@ class _NodesPageState extends State<NodesPage> {
   /// §4 step 8 (member, logged in to the own node): join the imported network.
   Future<void> _memberJoin() async {
     if (_busy) return;
+    setState(() => _busy = true); // a second tap while the network is being picked does nothing
+    final (String, MnetView)? pick;
+    try {
+      pick = await _pickMnet();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    if (pick == null || !mounted) return;
+    final (gen, plain) = await _readRecord('mnet/${pick.$1}');
+    if (plain == null) return;
+    _say('正在把這台節點加入隊伍網路「${pick.$2.netName}」，最多可能要等幾分鐘…');
+    _linkFrom = null;
+    await _ask((s) => s.requestMemberJoin(mnetPlain: plain, mnetGen: gen), wait: _joinWait, retry: false, unclear: _joinUnclear);
+    await _watchLink();
+  }
+
+  Future<(String, MnetView)?> _pickMnet() async {
     final dir = await _dir();
     final ids = listMnets(dir: dir);
     final views = <(String, MnetView)>[];
@@ -816,7 +850,7 @@ class _NodesPageState extends State<NodesPage> {
     }
     if (views.isEmpty) {
       _say('[REQ_FAIL] 手機裡沒有匯入過的隊伍網路（先貼上同意碼）');
-      return;
+      return null;
     }
     final pick = views.length == 1 || !mounted
         ? views.first
@@ -825,13 +859,7 @@ class _NodesPageState extends State<NodesPage> {
             builder: (c) => SimpleDialog(title: const Text('要加入哪個隊伍網路？'), children: [
                   for (final v in views) SimpleDialogOption(onPressed: () => Navigator.pop(c, v), child: Text(v.$2.netName)),
                 ]));
-    if (pick == null) return;
-    final (gen, plain) = await _readRecord('mnet/${pick.$1}');
-    if (plain == null) return;
-    _say('正在把這台節點加入隊伍網路「${pick.$2.netName}」，最多可能要等幾分鐘…');
-    _linkFrom = null;
-    await _ask((s) => s.requestMemberJoin(mnetPlain: plain, mnetGen: gen), wait: _joinWait, retry: false, unclear: _joinUnclear);
-    await _watchLink();
+    return pick;
   }
 
   /// §8: a readable status page of the logged-in node.
@@ -877,10 +905,11 @@ class _NodesPageState extends State<NodesPage> {
   Future<void> _forgetJoining() async {
     if (_busy) return;
     final net = await _pickNet('在哪個網路裡忘記？',
-        only: (v) => v.members.any((m) => m.joining && !m.creator), none: '沒有「加入中」的節點可以忘記');
+        only: (v) => v.members.any((m) => forgettable(joining: m.joining, approved: m.approved, creator: m.creator)),
+        none: '沒有「加入中」或「已同意」的節點可以忘記');
     if (net == null || !mounted) return;
     // the node that made the network is never offered (Rust refuses it too: 建立網路的節點不能忘記)
-    final joining = net.view.members.where((m) => m.joining && !m.creator).toList();
+    final joining = net.view.members.where((m) => forgettable(joining: m.joining, approved: m.approved, creator: m.creator)).toList();
     String who(MemberView m) => m.last4.isEmpty ? m.name : '${m.name}（…${m.last4}）';
     final m = joining.length == 1
         ? joining.first
@@ -893,8 +922,8 @@ class _NodesPageState extends State<NodesPage> {
     final yes = await showDialog<bool>(
         context: context,
         builder: (c) => AlertDialog(
-              title: Text('要忘記加入中的 ${who(m)} 嗎？'),
-              content: const Text('只改這支手機裡的網路紀錄，節點本身不會被改動。'),
+              title: Text(m.approved ? '要從清單移除 ${who(m)} 嗎？' : '要忘記加入中的 ${who(m)} 嗎？'),
+              content: Text(forgetNotice(approved: m.approved)),
               actions: [
                 TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
                 TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('忘記')),
@@ -1007,7 +1036,7 @@ class _NodesPageState extends State<NodesPage> {
           // remote invites (dev / dev2 only; the paste buttons refuse in a field build)
           const Text('遠端邀請（開發版）', style: TextStyle(fontWeight: FontWeight.bold)),
           Wrap(spacing: 8, children: [
-            OutlinedButton(onPressed: _busy ? null : _makeInvite, child: const Text('邀請隊員')),
+            DevOnlyButton(label: '邀請隊員', enabled: !_busy, devTrust: _devTrust, onPressed: _makeInvite, onRefused: (w) => _say('[REQ_FAIL] $w')),
             _paste('貼上隊員的申請', (t) => _checkRequest(t)),
             _paste('貼上邀請', _takeInvite),
             _paste('貼上同意碼', (t) => _takeApproval(t)),
@@ -1017,8 +1046,8 @@ class _NodesPageState extends State<NodesPage> {
             Row(children: [
               Expanded(child: TextField(controller: _memberName, maxLength: 32, decoration: const InputDecoration(labelText: '這台節點的名稱（給管理者看）', counterText: ''))),
               OutlinedButton(onPressed: _busy ? null : _requestJoin, child: const Text('申請加入')),
-              TextButton(onPressed: _busy ? null : _showPending, child: const Text('再顯示申請')),
             ]),
+          TextButton(onPressed: _busy ? null : _showPending, child: const Text('再顯示申請')),
           if (logged) Align(alignment: Alignment.centerLeft, child: OutlinedButton(onPressed: _busy ? null : _memberJoin, child: const Text('加入隊伍網路'))),
           const Divider(),
           Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),

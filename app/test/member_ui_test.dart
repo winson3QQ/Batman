@@ -89,8 +89,11 @@ void main() {
     });
   });
 
-  group('log interceptor', () {
-    // what the remote-invite screens log must never carry a secret: the interceptor sees every debugPrint line
+  // HONEST SCOPE: this covers only the SAS widgets of member_ui.dart. The flows that carry z / net_root (nodes.dart:
+  // ECDH, import, records) call Rust and the platform channel and are not run by `flutter test`; their log lines were
+  // checked by reading them (no record bytes, z, ephemeral key or code is ever passed to _log / _say).
+  group('log interceptor (SAS widgets only)', () {
+    // what the SAS widgets log must never carry a secret: the interceptor sees every debugPrint line
     const secrets = ['b4d6cea19858b3a7e30115b5ca07f1138233b1e48e683c0caaa802737a647c4b', 'correct-horse-battery'];
     List<String> capture(void Function() body) {
       final lines = <String>[];

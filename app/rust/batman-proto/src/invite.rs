@@ -72,7 +72,8 @@ impl From<cose::Error> for Error {
 
 pub fn from_hex(s: &str) -> Result<Vec<u8>, Error> {
     let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if s.is_empty() || s.len() % 2 != 0 {
+    // only ASCII hex digits (then every byte index below is a char boundary)
+    if s.is_empty() || s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::Format("not hex"));
     }
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| Error::Format("not hex"))).collect()
@@ -198,7 +199,8 @@ pub enum Action {
 /// What a flow produced.
 #[derive(Debug, PartialEq)]
 pub enum End {
-    /// the qr-object hex to hand over; `sas` / `name` for a join request; `renewed` = a new request (verify again)
+    /// the qr-object hex to hand over; `sas` / `name` for a join request; `renewed` = an existing request of this
+    /// network was replaced (verify the SAS again)
     Out { hex: String, sas: String, name: String, renewed: bool },
     Refused(Error),
     /// the record write failed: None = written elsewhere since it was read, else why; nothing is handed out
@@ -404,7 +406,9 @@ impl JoinReqFlow {
                     device_id,
                     joinreq: joinreq.clone(),
                 };
-                let out = End::Out { hex: qr_hex(QR_JOINREQ, &joinreq), sas: sas(&inv.hash, &joinreq_hash), name: self.inp.name.clone(), renewed: true };
+                // "renewed" = a request of this network was there and is replaced (verify the SAS again)
+                let renewed = self.inp.pend_gen > 0;
+                let out = End::Out { hex: qr_hex(QR_JOINREQ, &joinreq), sas: sas(&inv.hash, &joinreq_hash), name: self.inp.name.clone(), renewed };
                 self.st = JStep::Persist { out };
                 Some(Action::Persist { rel: mrec::pend_path(&inv.net_id), plain: pend.encode(), expected_gen: self.inp.pend_gen })
             }
