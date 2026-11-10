@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `back_to_conn`, `code_text`, `confirm_text`, `country_question`, `error_text`, `join2_step`, `join2_text`, `join_state_text`, `join_step`, `joinreq_step`, `link_text`, `list_kind`, `login_end_text`, `login_step`, `member_join_text`, `net_made_text`, `new`, `owner_op`, `parse_record`, `persist_at`, `persist_step`, `reason_text`, `request_tagged`, `request`, `settings_text`, `status_text`, `status_view_of`, `text`, `verb_text`
+// These functions are ignored because they are not marked as `pub`: `back_to_conn`, `code_text`, `confirm_text`, `country_question`, `error_text`, `join2_step`, `join2_text`, `join_state_text`, `join_step`, `joinreq_step`, `leave_info`, `link_text`, `list_kind`, `login_end_text`, `login_step`, `member_join_text`, `net_made_text`, `new`, `owner_op`, `parse_record`, `persist_at`, `persist_step`, `reason_text`, `request_tagged`, `request`, `settings_text`, `status_text`, `status_view_of`, `text`, `verb_text`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Rec`, `St`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `eq`, `fmt`
 
@@ -53,6 +53,20 @@ OwnerStep netForgetJoining({
   recordPlain: recordPlain,
   recordGen: recordGen,
   dacHash: dacHash,
+);
+
+/// The leave dialog (254-app-leave v4.1 §2): [title, body]. `net_id`: the page's last info key 10 ("" = unknown);
+/// `admin_applied` / `member_entry`: this phone has `net/<net_id>` APPLIED / `mnet/<net_id>` with its own-node entry.
+List<String> leaveConfirmText({
+  required String last4,
+  required String netId,
+  required bool adminApplied,
+  required bool memberEntry,
+}) => RustLib.instance.api.crateApiOwnerLeaveConfirmText(
+  last4: last4,
+  netId: netId,
+  adminApplied: adminApplied,
+  memberEntry: memberEntry,
 );
 
 /// §2-3: the membership line for status key 1 (`node_state`, -1 unknown), info key 10 (`net_id`, "" when not read) and
@@ -115,6 +129,10 @@ abstract class OwnerSession implements RustOpaqueInterface {
     Uint8List? pendPlain,
     required List<int> ownerEncPub,
   });
+
+  /// 「離開網路」(254-app-leave v4.1 §3): the owner-op `network/leave` {}; a reply other than 0 (and a refused op/nonce or a
+  /// failed signature) reads info and answers with `flow::leave_outcome`. Phone records are never written.
+  OwnerStep requestLeaveNetwork();
 
   /// After an applied join: one `status` read, answered as connected / not yet / unknown (join2 §3.3-7).
   /// `secs_since_join`: seconds from the join reply to now.
@@ -330,6 +348,13 @@ class OwnerStep {
   /// a join request that replaced an existing one of this network: verify the SAS again (member-join §3)
   final bool renewed;
 
+  /// this Write carries network/leave: from here on a lost link means "outcome unknown", not "not sent"
+  /// (254-app-leave v4.1 §3; Dart sets its sent mark only from this flag)
+  final bool sent;
+
+  /// an Answer: network/leave answered 0 (re-read the status page once, §2)
+  final bool left;
+
   const OwnerStep({
     required this.kind,
     required this.frames,
@@ -344,6 +369,8 @@ class OwnerStep {
     required this.hex,
     required this.sas,
     required this.renewed,
+    required this.sent,
+    required this.left,
   });
 
   @override
@@ -360,7 +387,9 @@ class OwnerStep {
       pollLink.hashCode ^
       hex.hashCode ^
       sas.hashCode ^
-      renewed.hashCode;
+      renewed.hashCode ^
+      sent.hashCode ^
+      left.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -379,7 +408,9 @@ class OwnerStep {
           pollLink == other.pollLink &&
           hex == other.hex &&
           sas == other.sas &&
-          renewed == other.renewed;
+          renewed == other.renewed &&
+          sent == other.sent &&
+          left == other.left;
 }
 
 /// A sealed record and the AAD Kotlin opens it with.
@@ -443,6 +474,14 @@ class StatusView {
   /// 「太快了，請稍等一秒」 after an E_RATE, else ""
   final String rateNote;
 
+  /// info key 11 = true: the unfinished-change line (254-app-leave v4.1 §2), and whether it sits right under the
+  /// verdict (key 10 absent)
+  final String unfinished;
+  final bool unfinishedUnderVerdict;
+
+  /// the leave button shows (key 10, or status key 1 = 2, or key 11 true)
+  final bool canLeave;
+
   const StatusView({
     required this.color,
     required this.row,
@@ -455,6 +494,9 @@ class StatusView {
     required this.tech,
     required this.fresh,
     required this.rateNote,
+    required this.unfinished,
+    required this.unfinishedUnderVerdict,
+    required this.canLeave,
   });
 
   @override
@@ -469,7 +511,10 @@ class StatusView {
       version.hashCode ^
       tech.hashCode ^
       fresh.hashCode ^
-      rateNote.hashCode;
+      rateNote.hashCode ^
+      unfinished.hashCode ^
+      unfinishedUnderVerdict.hashCode ^
+      canLeave.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -486,5 +531,8 @@ class StatusView {
           version == other.version &&
           tech == other.tech &&
           fresh == other.fresh &&
-          rateNote == other.rateNote;
+          rateNote == other.rateNote &&
+          unfinished == other.unfinished &&
+          unfinishedUnderVerdict == other.unfinishedUnderVerdict &&
+          canLeave == other.canLeave;
 }

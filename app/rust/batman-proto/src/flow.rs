@@ -149,6 +149,107 @@ pub fn join_state(info: &Value, our_net_id: &[u8; 16]) -> JoinState {
     }
 }
 
+/// The outcome of 「離開網路」 (docs/design/254-app-leave.md v4.1 §3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Leave {
+    /// network/leave answered 0
+    Left,
+    /// sent; info: key 10 absent, key 11 false
+    AlreadyOut,
+    /// not sent (op/nonce refused / the signature failed); `out`: info said key 10 absent, key 11 false
+    NotSentBusy { out: bool },
+    NotSentAuth { out: bool },
+    /// `code` None = the phone's signature failed
+    NotSent { code: Option<u64>, out: bool },
+    /// sent, 7: key 10 present, key 11 false (the leave may still be running)
+    BusyMember,
+    /// sent, 7: key 11 true
+    BusyChanging,
+    /// sent, 11: key 11 true (forget / Finish failed)
+    Unfinished,
+    /// sent, any other code: key 11 true
+    Changing,
+    /// sent, 11 / 3 / other: key 10 present, key 11 false
+    NotLeft,
+    NotLeftAuth,
+    NotLeftOther(u64),
+    /// info unreadable / key 11 missing / key 10 malformed
+    Unknown,
+}
+
+/// §3: what a leave that did not answer 0 means. `sent`: network/leave was written (else op/nonce or the signature
+/// failed); `code`: the error code (None = signature failure); `info`: the info answer read afterwards (None =
+/// unreadable). Only the fresh keys 10 / 11 count (key 7 is provd's 4 s cache).
+pub fn leave_outcome(sent: bool, code: Option<u64>, info: Option<&Value>) -> Leave {
+    let k11 = match info.and_then(|i| i.get(11)) {
+        Some(Value::Bool(b)) => Some(*b),
+        _ => None,
+    };
+    let k10 = match info.and_then(|i| i.get(10)) {
+        None => Some(false),
+        Some(v) => v.as_bytes().filter(|b| b.len() == 16).map(|_| true),
+    };
+    if !sent {
+        let out = info.is_some() && k10 == Some(false) && k11 == Some(false);
+        return match code {
+            Some(7) => Leave::NotSentBusy { out },
+            Some(3) => Leave::NotSentAuth { out },
+            c => Leave::NotSent { code: c, out },
+        };
+    }
+    let (Some(k10), Some(k11), Some(code)) = (k10, k11, code) else { return Leave::Unknown };
+    match (k10, k11, code) {
+        (false, false, _) => Leave::AlreadyOut,
+        (true, false, 7) => Leave::BusyMember,
+        (_, true, 7) => Leave::BusyChanging,
+        (_, true, 11) => Leave::Unfinished,
+        (_, true, _) => Leave::Changing,
+        (true, false, 11) => Leave::NotLeft,
+        (true, false, 3) => Leave::NotLeftAuth,
+        (true, false, c) => Leave::NotLeftOther(c),
+    }
+}
+
+const STILL_OUT: &str = "（這台目前不在隊伍網路裡）";
+
+impl Leave {
+    /// The answer line (an ASCII log marker first, as every owner answer).
+    pub fn text(&self) -> String {
+        let tail = |out: bool| if out { STILL_OUT } else { "" };
+        match self {
+            Leave::Left => "[LEFT] 已離開隊伍網路".into(),
+            Leave::AlreadyOut => "[LEFT] 這台已經不在隊伍網路裡".into(),
+            Leave::NotSentBusy { out } => format!("[REQ_FAIL] 節點正在處理別的請求（可能正在加入網路或更新）— 沒有送出；等它結束、按「重新整理」看狀態頁後再決定{}", tail(*out)),
+            Leave::NotSentAuth { out } => format!("[REQ_FAIL] 沒有送出（代碼 3：這支手機的權限或連線有問題）— 請重新連線；仍然如此請找維修人員{}", tail(*out)),
+            Leave::NotSent { code: Some(c), out } => format!("[REQ_FAIL] 沒有送出（代碼 {c}）— 請再按一次；仍然如此請找維修人員{}", tail(*out)),
+            Leave::NotSent { code: None, out } => format!("[REQ_FAIL] 沒有送出（手機簽章失敗）— 請再按一次；仍然如此請找維修人員{}", tail(*out)),
+            Leave::BusyMember => "[REQ_FAIL] 節點正在忙，現在還在隊伍網路裡 — 稍後按「重新整理」看狀態；仍在網路裡再按一次「離開網路」".into(),
+            Leave::BusyChanging => "[REQ_FAIL] 節點正在處理網路變更 — 稍後按「重新整理」看狀態頁；不要在處理中重新開機".into(),
+            Leave::Unfinished => "[REQ_FAIL] 節點上還有沒完成的網路變更（加入中也會這樣）— 等一下再按一次「離開網路」，或重新開機一次；仍然如此請找維修人員。完成之前這台可能還在隊伍網路上".into(),
+            Leave::Changing => "[REQ_FAIL] 節點上還有沒完成的網路變更（加入中也會這樣）— 稍後按「重新整理」看狀態頁，仍然如此再按一次「離開網路」；超過 10 分鐘仍如此，重新開機一次；仍然如此請找維修人員".into(),
+            Leave::NotLeft => "[REQ_FAIL] 沒有離開網路（節點仍在隊伍網路裡，代碼 11）— 請再按一次，或重新開機一次；仍然如此請找維修人員".into(),
+            Leave::NotLeftAuth => "[REQ_FAIL] 沒有離開網路（節點仍在隊伍網路裡，代碼 3）— 請再按一次（會重新取得授權）".into(),
+            Leave::NotLeftOther(c) => format!("[REQ_FAIL] 沒有離開網路（節點仍在隊伍網路裡，代碼 {c}）— 請再按一次；仍然如此請找維修人員"),
+            Leave::Unknown => "[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁".into(),
+        }
+    }
+}
+
+/// §2: the confirm dialog (title, body). `k10_known`: the page's last info had key 10; `admin_applied`: this phone has
+/// net/<k10> in APPLIED; `member_entry`: mnet/<k10> with key 7.
+pub fn leave_confirm(last4: &str, k10_known: bool, admin_applied: bool, member_entry: bool) -> (String, String) {
+    let rejoin = match (k10_known, admin_applied, member_entry) {
+        (false, _, _) => "讀不到這台目前的網路，無法確認這支手機能不能再加入。",
+        (true, true, _) => "之後可以按「加入網路／繼續加入」再加入。",
+        (true, false, true) => "之後可以按「加入隊伍網路」再加入。",
+        (true, false, false) => "這支手機沒有這個隊伍網路可用的紀錄：離開後要再加入，需要向管理者要新的邀請。",
+    };
+    (
+        format!("要讓節點 …{last4} 離開隊伍網路嗎？"),
+        format!("離開後這台的 HaLow 無線電會關閉，直到再加入網路。其他節點仍留在網路裡；如果有節點靠這台轉送，它們可能會斷線。離開不會把這台從管理者的成員名單移除，也不會撤銷任何東西；要把節點交給別人是轉賣（另案 #255）。手機裡的網路紀錄不會改變。{rejoin}"),
+    )
+}
+
 /// "Connected" after a join (254-app-join2 v7.2 §3.3-7), from ONE `status` answer of the owner session.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LinkState {
