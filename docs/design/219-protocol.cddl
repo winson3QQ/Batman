@@ -399,17 +399,25 @@ join-request = {              ; signed by the joining OWNER key; content type "b
 ; ------------------------------------------------------------------ QR images (§7.6)
 qr-object = {
   1 => qr-kind,
-  2 => bstr,                 ; encoded object: invite-sign1, joinreq-sign1 or approval-bundle
+  2 => bstr,                 ; encoded object: invite-sign1, joinreq-sign1, approval-bundle or update-bundle
 }
 qr-kind = 1 ; invite
         / 2 ; join request
         / 3 ; approval
+        / 4 ; update (254-app-remove-member: new versions for one member, handed over by that member)
 approval-bundle = {
   ? 1 => netcfg-sign1,       ; omitted when identical to the one in the invite (saves QR space)
   2 => members-sign1,
   3 => secrets-sign1,        ; for the joining node
   4 => msecrets-sign1,       ; for the joining owner app
 }
+update-bundle = {             ; 254-app-remove-member v6.4 §2.3 (dev-trust builds; at most 128 KiB decoded)
+  1 => bstr .size 16,         ; net_id
+  2 => [1*16 update-version], ; contiguous, up to the current version
+  3 => [+ secrets-sign1],     ; the current version, one per node of that member (key 3 = its DAC hash)
+  4 => msecrets-sign1,        ; the current version, for that member's owner_enc_pub
+}
+update-version = { 1 => netcfg-sign1, 2 => members-sign1 }
 qr-fragment = {               ; when one QR is not enough (§12 Q7)
   1 => uint,                 ; index (1-based)
   2 => uint,                 ; total

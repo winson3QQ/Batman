@@ -16,6 +16,7 @@ import 'scan.dart' show provdService;
 import 'src/rust/api/claim.dart' show frameLimit, storeRemove;
 import 'src/rust/api/member.dart';
 import 'src/rust/api/owner.dart';
+import 'src/rust/api/rekey.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
 final _rx = Uuid.parse('540aa38c-0086-4d59-a9c0-c7c9d1e1bd42');
@@ -46,6 +47,10 @@ const _makeUnclear = '[NET_STATE] 結果不明，稍後在這台按「確認網�
 /// a join / make-network that lost the link before any record write: nothing was written or sent
 const _notSent = notSentLine;
 const _linkUnknown = '[JOINED] 已套用，連線狀態未知';
+/// 「把新密碼送給節點」 whose link went away after it went out (remove-member §3.2-4: info decides, read it later)
+const _sendUnclear = '[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁';
+/// store_write_cas's "changed elsewhere" text (owner.rs STALE_RECORD)
+const staleRecordLine = '紀錄已被別處更新，請重新開啟再試';
 
 class NodesPage extends StatefulWidget {
   const NodesPage({super.key});
@@ -102,6 +107,15 @@ class _NodesPageState extends State<NodesPage> {
   bool _lastRenewed = false;
   bool _joinreqInFlight = false; // a join request is being made (a lost link ends it with its own line)
   DateTime? _linkFrom; // set when a join was applied: the link checks that follow count from here
+  // remove-member (254-app-remove-member v6.4): the last info body read for the removal's version check (§2.4), the
+  // question of a join refused as "removed before" (§2.0 rule 2), a join that ended applied but behind (§3.5), the
+  // people whose update was copied in this run of the app (a screen mark only, §3.3), and the record the status
+  // page's 「把新密碼送給節點」 sends from
+  Uint8List _lastInfo = Uint8List(0);
+  String? _removedQ;
+  bool _sendAfter = false;
+  final _copied = <String>{};
+  (String, bool)? _hintRec;
 
   @override
   void initState() {
@@ -243,6 +257,19 @@ class _NodesPageState extends State<NodesPage> {
             if (gone()) return;
             _kick();
             st = s.countryConfirmed(yes: yes == true);
+          case OwnerKind.wait:
+            // 「把新密碼送給節點」: info was unreadable, read again in a moment (§3.2-1)
+            _wait?.cancel();
+            await Future<void>.delayed(Duration(milliseconds: st.waitMs.toInt()));
+            if (gone()) return;
+            _kick();
+            st = s.resumeUpdate();
+          case OwnerKind.confirmRemoved:
+            // §2.0 rule 2: nothing was written or signed; the caller asks and starts the join again
+            _removedQ = st.detail;
+            final a = _answer;
+            if (a != null && !a.isCompleted) a.complete('[ANSWER] ${st.detail}');
+            st = null;
           case OwnerKind.loggedIn:
             _say('[LOGGED_IN] ${st.detail}');
             if (!done.isCompleted) done.complete(true);
@@ -250,6 +277,8 @@ class _NodesPageState extends State<NodesPage> {
           case OwnerKind.answer:
             if (st.pollLink) _linkFrom = DateTime.now();
             if (st.left) _left = true;
+            if (st.sendUpdate) _sendAfter = true;
+            _lastInfo = st.info;
             _lastHex = st.hex;
             _lastSas = st.sas;
             _lastRenewed = st.renewed;
@@ -549,17 +578,49 @@ class _NodesPageState extends State<NodesPage> {
     final n = net; // non-null from here (the request closure below cannot promote `net`)
     final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
     _say('正在把這台節點加入網路 ${net.view.meshId}，最多可能要等幾分鐘…');
-    _linkFrom = null;
-    await _ask(
+    Future<void> go(Uint8List plain, BigInt gen, bool confirmed) => _ask(
         (s) => s.requestJoinNetwork(
-            recordPlain: n.plain,
-            recordGen: n.gen,
+            recordPlain: plain,
+            recordGen: gen,
             adminPub: keys['admin'] as Uint8List,
-            ownerEncPub: keys['ownerEnc'] as Uint8List),
+            ownerEncPub: keys['ownerEnc'] as Uint8List,
+            removedConfirmed: confirmed),
         wait: _joinWait,
         retry: false,
         unclear: _joinUnclear);
+    _linkFrom = null;
+    _removedQ = null;
+    _sendAfter = false;
+    await go(n.plain, n.gen, false);
+    final q = _removedQ;
+    _removedQ = null;
+    if (q != null) {
+      // remove-member §2.0 rule 2: this node was excluded before (lost / captured) — the admin decides
+      if (!await _yesNo('這台之前被排除過', screenText(q), '確定，加回')) {
+        _say('[JOIN_STATE] 已取消：沒有寫入、沒有送出');
+        return;
+      }
+      final (gen, plain) = await _readRecord(n.rel); // nothing was written by the first try; read it again anyway
+      if (plain == null) return;
+      await go(plain, gen, true);
+    }
+    if (_sendAfter) {
+      // §3.5: it was already a member at an older version: the new secrets go out right away
+      _sendAfter = false;
+      await _sendUpdateFor(n.rel, member: false, confirm: false);
+    }
     await _watchLink();
+  }
+
+  Future<bool> _yesNo(String title, String body, String yes) async {
+    if (!mounted) return false;
+    return await showDialog<bool>(
+            context: context,
+            builder: (c) => AlertDialog(title: Text(title), content: SingleChildScrollView(child: Text(body)), actions: [
+                  TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+                  TextButton(onPressed: () => Navigator.pop(c, true), child: Text(yes)),
+                ])) ==
+        true;
   }
 
   /// join2 §3.3-7: after "applied", read status every 10 s until connected or the window is over; one line shown.
@@ -685,6 +746,16 @@ class _NodesPageState extends State<NodesPage> {
       return;
     }
     final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    // remove-member §3.6: removed before -> the admin answers first (Rust refuses without the yes, before signing)
+    var previousOk = false;
+    if (jr.previous.isNotEmpty) {
+      previousOk = await _yesNo('這台或這個人之前被移出過', jr.previous, '確定，繼續核對');
+      if (!previousOk) {
+        _say('[REQ_FAIL] 沒有同意（之前被移出過）');
+        return;
+      }
+    }
+    if (jr.updateFirst) _say('[NOTE] 這個人還有沒換的版本：請他先貼更新包，再貼這份同意');
     if (!mounted) return;
     await Navigator.of(context).push(MaterialPageRoute(
         builder: (c) => SasConfirmView(
@@ -698,7 +769,13 @@ class _NodesPageState extends State<NodesPage> {
                   _say('[REQ_FAIL] 手機裡的網路資料打不開');
                 } else {
                   try {
-                    final (op, st) = NetOp.approve(recordPlain: plain, recordGen: gen, hex: hex, joinreqHash: jr.joinreqHash, adminPub: keys['admin'] as Uint8List);
+                    final (op, st) = NetOp.approve(
+                        recordPlain: plain,
+                        recordGen: gen,
+                        hex: hex,
+                        joinreqHash: jr.joinreqHash,
+                        adminPub: keys['admin'] as Uint8List,
+                        previousConfirmed: previousOk);
                     await _runOp(op, st);
                   } catch (e) {
                     _say('[REQ_FAIL] 同意沒有成功：$e');
@@ -809,10 +886,20 @@ class _NodesPageState extends State<NodesPage> {
       return;
     }
     final (pendGen, pend) = await _readRecord('mpend/$id');
-    final (mnetGen, mnet) = await _readRecord('mnet/$id');
-    final ImportPrep prep;
+    final (_, mnet) = await _readRecord('mnet/$id');
+    ImportPrep prep;
+    var replace = false;
     try {
-      prep = memberImportPrepare(hex: hex, pendGen: pendGen, pendPlain: pend, mnetPlain: mnet);
+      prep = memberImportPrepare(hex: hex, pendGen: pendGen, pendPlain: pend, mnetPlain: mnet, replace: false);
+      if (prep.state == ImportState.replace) {
+        // remove-member §3.6-2: this phone's record of the network is 2+ versions behind (re-invited after a removal)
+        if (!await _yesNo('要換成新的網路紀錄嗎？', prep.detail, '換成新的')) {
+          _say('[REQ_FAIL] 沒有匯入：保留舊紀錄');
+          return;
+        }
+        replace = true;
+        prep = memberImportPrepare(hex: hex, pendGen: pendGen, pendPlain: pend, mnetPlain: mnet, replace: true);
+      }
     } catch (e) {
       _say('[REQ_FAIL] 同意碼不能匯入：$e');
       return;
@@ -828,13 +915,13 @@ class _NodesPageState extends State<NodesPage> {
               sas: prep.sas,
               confirmLabel: '確認碼相同，匯入',
               onConfirm: (sas) async {
-                await _importApproval(hex, id, prep, sas);
+                await _importApproval(hex, id, prep, sas, replace);
                 if (c.mounted) Navigator.of(c).pop();
               },
             )));
   }
 
-  Future<void> _importApproval(String hex, String id, ImportPrep prep, String confirmedSas) async {
+  Future<void> _importApproval(String hex, String id, ImportPrep prep, String confirmedSas, bool replace) async {
     Uint8List? z;
     try {
       z = await _platform.invokeMethod<Uint8List>('ecdh', {'peer': prep.ephPub});
@@ -850,7 +937,8 @@ class _NodesPageState extends State<NodesPage> {
           mnetPlain: mnet,
           mnetGen: mnetGen,
           z: z,
-          confirmedSas: confirmedSas);
+          confirmedSas: confirmedSas,
+          replace: replace);
       final err = await _writeRecord(st);
       if (err != null) {
         _say('[REQ_FAIL] 沒有匯入：$err');
@@ -885,7 +973,13 @@ class _NodesPageState extends State<NodesPage> {
     if (plain == null) return;
     _say('正在把這台節點加入隊伍網路「${pick.$2.netName}」，最多可能要等幾分鐘…');
     _linkFrom = null;
+    _sendAfter = false;
     await _ask((s) => s.requestMemberJoin(mnetPlain: plain, mnetGen: gen), wait: _joinWait, retry: false, unclear: _joinUnclear);
+    if (_sendAfter) {
+      // remove-member §3.5: already a member at an older version: the new secrets go out right away
+      _sendAfter = false;
+      await _sendUpdateFor('mnet/${pick.$1}', member: true, confirm: false);
+    }
     await _watchLink();
   }
 
@@ -922,7 +1016,20 @@ class _NodesPageState extends State<NodesPage> {
         builder: (_) => Scaffold(
             appBar: AppBar(title: const Text('節點狀態')),
             body: StatusPageView(
-                initial: first, initialAt: _readClock.last ?? DateTime.now(), onRefresh: _readStatusPage, onLeave: _leaveNetwork))));
+                initial: first,
+                initialAt: _readClock.last ?? DateTime.now(),
+                onRefresh: _readStatusPage,
+                onLeave: _leaveNetwork,
+                onSendUpdate: _sendFromPage))));
+  }
+
+  /// The status page's 「把新密碼送給節點」 (§3.5): from the record of the network the node is in; then the page is
+  /// read again.
+  Future<StatusFields?> _sendFromPage() async {
+    final r = _hintRec;
+    if (r == null) return null;
+    await _sendUpdateFor(r.$1, member: r.$2);
+    return _readStatusPage();
   }
 
   /// 254-app-leave v4.1: 「離開網路」 (confirmed on the page); after a reply 0 the page is read once more.
@@ -938,9 +1045,22 @@ class _NodesPageState extends State<NodesPage> {
     final a = await _ask((s) => s.requestStatusPage(), quiet: true);
     final s = _session;
     if (a == null || s == null || !mounted) return null;
-    final (names, hasNet, hasMnet, appliedNets, entryMnets) = await _netNames();
+    final (names, hasNet, hasMnet, appliedNets, entryMnets) = await _netNames(s.last4());
     if (!mounted) return null;
     final v = s.statusView(hasNet: hasNet, hasMnet: hasMnet);
+    // remove-member §3.5: the line about this node's secrets, from the record of the network info key 10 names
+    var hint = const (line: '', button: false);
+    _hintRec = null;
+    if (v.netId.isNotEmpty) {
+      for (final (rel, member) in [('net/${v.netId}', false), ('mnet/${v.netId}', true)]) {
+        final (_, p) = await _readRecord(rel);
+        if (p == null) continue;
+        final h = s.updateHint(recordPlain: p, member: member);
+        hint = (line: h.line, button: h.button);
+        if (h.button) _hintRec = (rel, member);
+        break;
+      }
+    }
     final dialog = leaveConfirmText(
         last4: s.last4(), netId: v.netId, adminApplied: appliedNets.contains(v.netId), memberEntry: entryMnets.contains(v.netId));
     _readClock.stamp(fresh: v.fresh, now: DateTime.now());
@@ -960,12 +1080,15 @@ class _NodesPageState extends State<NodesPage> {
         unfinishedUnderVerdict: v.unfinishedUnderVerdict,
         canLeave: v.canLeave,
         leaveTitle: dialog[0],
-        leaveBody: dialog[1]);
+        leaveBody: dialog[1],
+        updateLine: hint.line,
+        canSendUpdate: hint.button);
   }
 
   /// net_id hex -> netcfg name, from this phone's net / mnet records; whether it holds any net/ (admin) and any mnet/
-  /// (member) record
-  Future<(Map<String, String>, bool, bool, Set<String>, Set<String>)> _netNames() async {
+  /// (member) record. `entries`: the mnets whose own-node entry (key 7) is THIS node (`last4`; remove-member §3.5:
+  /// the member's 「之後可以按加入網路」 line only for the key 7 node).
+  Future<(Map<String, String>, bool, bool, Set<String>, Set<String>)> _netNames(String last4) async {
     final names = <String, String>{};
     final applied = <String>{}, entries = <String>{};
     final dir = await _dir();
@@ -986,7 +1109,7 @@ class _NodesPageState extends State<NodesPage> {
         try {
           final mv = mnetSummary(mnetPlain: p);
           names[id] = mv.netName;
-          if (mv.entryState.isNotEmpty) entries.add(id);
+          if (mv.entryState.isNotEmpty && mv.deviceLast4 == last4) entries.add(id);
         } catch (_) {}
       }
     }
@@ -1009,7 +1132,8 @@ class _NodesPageState extends State<NodesPage> {
         only: (v) => v.members.any((m) => forgettable(joining: m.joining, approved: m.approved, creator: m.creator)),
         none: '沒有「加入中」或「已同意」的節點可以忘記');
     if (net == null || !mounted) return;
-    // the node that made the network is never offered (Rust refuses it too: 建立網路的節點不能忘記)
+    // the node that made the network is never offered while pending (Rust refuses it too: 建立網路的節點不能忘記);
+    // another person's approved node is removed with the person (remove-member §3.6)
     final joining = net.view.members.where((m) => forgettable(joining: m.joining, approved: m.approved, creator: m.creator)).toList();
     String who(MemberView m) => m.last4.isEmpty ? m.name : '${m.name}（…${m.last4}）';
     final m = joining.length == 1
@@ -1020,17 +1144,25 @@ class _NodesPageState extends State<NodesPage> {
                   for (final x in joining) SimpleDialogOption(onPressed: () => Navigator.pop(c, x), child: Text(who(x))),
                 ]));
     if (m == null || !mounted) return;
-    final yes = await showDialog<bool>(
+    final dev = await _devTrust();
+    if (!mounted) return;
+    final pick = await showDialog<String>(
         context: context,
         builder: (c) => AlertDialog(
-              title: Text(m.approved ? '要從清單移除 ${who(m)} 嗎？' : '要忘記加入中的 ${who(m)} 嗎？'),
-              content: Text(forgetNotice(approved: m.approved)),
+              title: Text('要忘記加入中的 ${who(m)} 嗎？'),
+              content: Text(forgetNotice(approved: false, offerExclude: dev)),
               actions: [
-                TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
-                TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('忘記')),
+                TextButton(onPressed: () => Navigator.pop(c), child: const Text('取消')),
+                // remove-member §3.6 (dev-trust only): a stuck own node that may be lost / captured is excluded instead
+                if (dev) TextButton(onPressed: () => Navigator.pop(c, 'exclude'), child: const Text('排除這台（換密碼）')),
+                TextButton(onPressed: () => Navigator.pop(c, 'forget'), child: const Text('忘記')),
               ],
             ));
-    if (yes != true) return;
+    if (pick == 'exclude') {
+      _pendingExclude = (net, m.dacHash);
+      return;
+    }
+    if (pick != 'forget') return;
     try {
       final st = netForgetJoining(recordPlain: net.plain, recordGen: net.gen, dacHash: m.dacHash);
       final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': st.record, 'aad': st.aad}))!;
@@ -1039,6 +1171,298 @@ class _NodesPageState extends State<NodesPage> {
     } catch (e) {
       _say('[REQ_FAIL] 忘記沒有成功：$e');
     }
+  }
+
+  // ---- remove a member (254-app-remove-member v6.4; dev-trust only, every entry refuses in a field build) ----
+
+  /// a forget dialog chose 「排除這台」: run after _busy is released (the removal logs in to the own nodes)
+  (_Net, String)? _pendingExclude;
+
+  Future<void> _forgetOrExclude() async {
+    await _forgetJoining();
+    final x = _pendingExclude;
+    _pendingExclude = null;
+    if (x != null) await _remove(x.$1, node: x.$2);
+  }
+
+  /// §3.1: the member list by person -> 「移除這個人」 / 「排除這台」
+  Future<void> _members() async {
+    if (_busy) return;
+    final net = await _pickNet('哪個網路的成員？', only: (v) => v.applied);
+    if (net == null || !mounted) return;
+    final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    final List<PersonView> people;
+    try {
+      people = netPeople(recordPlain: net.plain, ownerPub: keys['owner'] as Uint8List);
+    } catch (e) {
+      _say('[REQ_FAIL] $e');
+      return;
+    }
+    if (!mounted) return;
+    String nodes(PersonView p) => p.nodes.map((n) => '…${n.last4}${n.state == 'joining' ? '（加入中）' : ''}').join('、');
+    final choice = await showDialog<(String, String)>(
+        context: context,
+        builder: (c) => SimpleDialog(title: const Text('成員（以人分組）'), children: [
+              for (final p in people) ...[
+                ListTile(
+                    title: Text('${p.name}（${p.fpr}）${p.isSelf ? '：你自己' : ''}'),
+                    subtitle: Text([nodes(p), if (p.sameName.isNotEmpty) '另有同名的一組：${p.sameName.join('、')}'].join('\n'))),
+                if (!p.isSelf) SimpleDialogOption(onPressed: () => Navigator.pop(c, (p.owner, '')), child: const Text('　移除這個人（換全隊密碼）')),
+                if (p.isSelf)
+                  for (final n in p.nodes)
+                    SimpleDialogOption(onPressed: () => Navigator.pop(c, ('', n.dacHash)), child: Text('　排除 …${n.last4}（遺失 / 被抓；換全隊密碼）')),
+              ],
+            ]));
+    if (choice == null) return;
+    await _remove(net, person: choice.$1, node: choice.$2);
+  }
+
+  /// §3.1 / §2.4: read the own nodes' info, check, confirm (with the tick), commit, then the updates (§3.3).
+  Future<void> _remove(_Net net, {String person = '', String node = ''}) async {
+    final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    final admin = keys['admin'] as Uint8List, owner = keys['owner'] as Uint8List;
+    final List<OwnNodeView> own;
+    try {
+      own = removeOwnNodes(recordPlain: net.plain, ownerPub: owner, person: person, node: node);
+    } catch (e) {
+      _say('[REQ_FAIL] $e');
+      return;
+    }
+    // §2.4: every own node this phone can reach vouches for the record (an unreachable one is not checked)
+    final reads = <NodeInfo>[];
+    for (final o in own) {
+      final l4 = o.deviceId.substring(o.deviceId.length - 4);
+      var info = Uint8List(0);
+      if (_nodes.contains(o.deviceId)) {
+        _say('正在讀節點 …$l4 的網路版本（確認手機紀錄是最新的）…');
+        await _login(o.deviceId);
+        if (_session != null && _deviceId == o.deviceId) {
+          _lastInfo = Uint8List(0);
+          await _ask((s) => s.requestInfo(), quiet: true, retry: false);
+          info = _lastInfo;
+        }
+        if (info.isEmpty) _say('節點 …$l4 讀不到（不檢查這台）');
+      }
+      reads.add(NodeInfo(dacHash: o.dacHash, info: info));
+    }
+    final (gen0, plain0) = await _readRecord(net.rel);
+    if (plain0 == null) return;
+    final RemovePlanView plan;
+    try {
+      plan = removeCheck(recordPlain: plain0, adminPub: admin, ownerPub: owner, person: person, node: node, reads: reads);
+    } catch (e) {
+      _say('[REQ_FAIL] $e');
+      return;
+    }
+    if (!plan.ok) {
+      _say('[REQ_FAIL] 沒有開始：${plan.text}');
+      return;
+    }
+    if (!mounted) return;
+    var ticked = false;
+    final go = await showDialog<bool>(
+        context: context,
+        builder: (c) => StatefulBuilder(
+            builder: (c, set) => AlertDialog(
+                  title: Text(node.isEmpty ? '移除這個人' : '排除這台'),
+                  content: SingleChildScrollView(
+                      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(plan.text),
+                    CheckboxListTile(value: ticked, onChanged: (v) => set(() => ticked = v ?? false), title: Text(removeTickText())),
+                  ])),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+                    TextButton(onPressed: ticked ? () => Navigator.pop(c, true) : null, child: const Text('換密碼')),
+                  ],
+                )));
+    if (go != true) return;
+    // read again: the removal's checks run on what is on disk now (the commit is a CAS from this generation)
+    final (gen, plain) = await _readRecord(net.rel);
+    if (plain == null) return;
+    var committed = false;
+    await _holding(() async {
+      try {
+        final (op, st) = RemoveOp.startRemove(
+            recordPlain: plain, recordGen: gen, adminPub: admin, ownerPub: owner, person: person, node: node, reads: reads, ticked: ticked);
+        committed = await _runRemove(op, st);
+      } catch (e) {
+        _say('[REQ_FAIL] $e');
+      }
+    });
+    if (committed) await _updates(net.rel);
+  }
+
+  /// SignAdmin -> PersistNet -> the answer (removal), or SignAdmin x N -> the hex (an update, copied). True = the
+  /// removal committed / the update was made.
+  Future<bool> _runRemove(RemoveOp op, OwnerStep? st) async {
+    while (st != null) {
+      switch (st.kind) {
+        case OwnerKind.signAdmin:
+          Uint8List der;
+          try {
+            der = (await _platform.invokeMethod<Uint8List>('signAdmin', {'input': st.signInput}))!;
+          } on PlatformException catch (e) {
+            _log('[REQ_FAIL] 手機的管理者金鑰無法簽章（${e.code}）');
+            der = Uint8List(0);
+          }
+          st = op.signed(der: der);
+        case OwnerKind.persistNet:
+          final err = await _writeRecord(st);
+          st = err == null ? op.netPersisted() : op.persistFailed(error: err);
+        default:
+          if (st.hex.isNotEmpty) await Clipboard.setData(ClipboardData(text: st.hex));
+          _say(st.detail);
+          return st.detail.startsWith('[REKEY]') || st.hex.isNotEmpty;
+      }
+    }
+    return false;
+  }
+
+  Future<void> _makeUpdates() async {
+    if (_busy) return;
+    final net = await _pickNet('哪個網路的更新包？', only: (v) => v.applied);
+    if (net != null) await _updates(net.rel);
+  }
+
+  /// §3.3: who may still need an update; one at a time, each from the record read when its button is pressed.
+  Future<void> _updates(String rel) async {
+    final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    final admin = keys['admin'] as Uint8List, owner = keys['owner'] as Uint8List;
+    while (mounted) {
+      final (_, plain) = await _readRecord(rel);
+      if (plain == null) return;
+      final List<RecipientView> people;
+      try {
+        people = netRecipients(recordPlain: plain, ownerPub: owner);
+      } catch (e) {
+        _say('[REQ_FAIL] $e');
+        return;
+      }
+      if (!mounted) return;
+      final who = await showDialog<String>(
+          context: context,
+          builder: (c) => SimpleDialog(title: const Text('給每位隊員更新包'), children: [
+                const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 24),
+                    child: Text('已複製 ≠ 已換好。對方要在他的 App 匯入，他的節點才會換；這支手機看不到對方節點的狀態。'
+                        '包都交出去之後，再到狀態頁把你自己的節點換成新密碼。')),
+                if (people.isEmpty) const Padding(padding: EdgeInsets.all(24), child: Text('沒有需要更新包的隊員。')),
+                for (final p in people)
+                  SimpleDialogOption(
+                      onPressed: () => Navigator.pop(c, p.owner),
+                      child: Text([
+                        '${p.name}（${p.fpr}）…${p.nodes.join('、…')}　${_copied.contains(p.owner) ? '這次已複製' : '未複製'}',
+                        if (p.note.isNotEmpty) p.note,
+                      ].join('\n'))),
+                SimpleDialogOption(onPressed: () => Navigator.pop(c), child: const Text('關閉')),
+              ]));
+      if (who == null) return;
+      // the record read at the press (§2.3 recipient contract): Rust takes the person from ITS key 11 only
+      final (_, now) = await _readRecord(rel);
+      if (now == null) return;
+      try {
+        final (op, st) = RemoveOp.startBundle(recordPlain: now, adminPub: admin, ownerPub: owner, person: who);
+        if (await _runRemove(op, st)) _copied.add(who);
+      } catch (e) {
+        _say('[REQ_FAIL] $e');
+      }
+    }
+  }
+
+  /// §3.4 (member): a pasted update -> the checks -> Kotlin ECDH -> the checks again -> mnet. Never sent to a node
+  /// here (the status page's button does that, once the admin says everyone has theirs).
+  Future<void> _takeUpdate(String hex) async {
+    final String id;
+    try {
+      id = updateNetId(hex: hex);
+    } catch (e) {
+      _say('[REQ_FAIL] 更新包不能用：$e');
+      return;
+    }
+    final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    final enc = keys['ownerEnc'] as Uint8List;
+    // rule 4: the own nodes = this phone's node records
+    final nodes = <Uint8List>[];
+    for (final d in _nodes) {
+      final (_, p) = await _readRecord('node/$d');
+      if (p != null) nodes.add(p);
+    }
+    Uint8List? z;
+    try {
+      final (mnetGen, mnet) = await _readRecord('mnet/$id');
+      final prep = memberUpdatePrepare(hex: hex, mnetPlain: mnet, mnetGen: mnetGen, nodeRecords: nodes, ownerEncPub: enc);
+      if (prep.state == UpdateState.alreadyImported) {
+        _say(prep.detail);
+        return;
+      }
+      if (prep.state == UpdateState.advance) z = await _platform.invokeMethod<Uint8List>('ecdh', {'peer': prep.ephPub});
+      // read again: the second part checks the generation the first saw (CAS)
+      final (gen2, mnet2) = await _readRecord('mnet/$id');
+      final st = memberUpdateImport(
+          hex: hex, mnetPlain: mnet2, mnetGen: gen2, expectedGen: prep.mnetGen, nodeRecords: nodes, ownerEncPub: enc, z: z ?? Uint8List(0));
+      final err = await _writeRecord(st);
+      _say(err == null ? st.detail : '[REQ_FAIL] 沒有匯入：${err == staleRecordLine ? '請網主再複製一次你的包，再貼上' : err}');
+    } on PlatformException catch (e) {
+      _say('[REQ_FAIL] 沒有匯入：手機金鑰出錯（${e.code}）');
+    } catch (e) {
+      _say('[REQ_FAIL] 沒有匯入：$e');
+    } finally {
+      z?.fillRange(0, z.length, 0);
+    }
+  }
+
+  /// 「把新密碼送給節點」 (§3.2) from the main page: which of this phone's networks.
+  Future<void> _sendUpdate() async {
+    if (_busy) return;
+    final dir = await _dir();
+    final picks = <(String, bool, String)>[];
+    for (final id in await listNets(dir: dir)) {
+      final (_, p) = await _readRecord('net/$id');
+      if (p == null) continue;
+      try {
+        final v = netSummary(recordPlain: p);
+        if (v.applied) picks.add(('net/$id', false, '${v.netName}（我建立的）'));
+      } catch (_) {}
+    }
+    for (final id in await listMnets(dir: dir)) {
+      final (_, p) = await _readRecord('mnet/$id');
+      if (p == null) continue;
+      try {
+        picks.add(('mnet/$id', true, mnetSummary(mnetPlain: p).netName));
+      } catch (_) {}
+    }
+    if (picks.isEmpty) {
+      _say('[REQ_FAIL] 手機裡沒有隊伍網路的紀錄');
+      return;
+    }
+    final pick = picks.length == 1 || !mounted
+        ? picks.first
+        : await showDialog<(String, bool, String)>(
+            context: context,
+            builder: (c) => SimpleDialog(title: const Text('送哪個網路的新密碼？'), children: [
+                  for (final p in picks) SimpleDialogOption(onPressed: () => Navigator.pop(c, p), child: Text(p.$3)),
+                ]));
+    if (pick == null) return;
+    await _sendUpdateFor(pick.$1, member: pick.$2);
+  }
+
+  /// §3.2 on the logged-in node from the record at [rel] (read now). [confirm]: the admin is reminded of the order
+  /// first (§3.1: hand out every update before changing the own nodes).
+  Future<void> _sendUpdateFor(String rel, {required bool member, bool confirm = true}) async {
+    if (confirm &&
+        !member &&
+        !await _yesNo('把新密碼送給這台節點？', '包都交給隊員了嗎？你的節點一換，就和還沒換的人斷線，之後很難再把包傳出去。', '送出')) {
+      return;
+    }
+    final (_, plain) = await _readRecord(rel);
+    if (plain == null) {
+      _say('[REQ_FAIL] 手機裡的網路紀錄打不開');
+      return;
+    }
+    final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    _say('正在把新密碼送給節點，最多可能要等幾分鐘…');
+    await _ask((s) => s.requestSendUpdate(recordPlain: plain, member: member, adminPub: keys['admin'] as Uint8List),
+        wait: _joinWait, retry: false, unclear: _sendUnclear);
   }
 
   @override
@@ -1133,8 +1557,19 @@ class _NodesPageState extends State<NodesPage> {
             ]),
           Align(
               alignment: Alignment.centerLeft,
-              child: TextButton(onPressed: _busy ? null : _forgetJoining, child: const Text('忘記加入中的節點'))),
-          if (logged) TextButton(onPressed: _busy ? null : _statusPage, child: const Text('狀態頁')),
+              child: TextButton(onPressed: _busy ? null : _forgetOrExclude, child: const Text('忘記加入中的節點'))),
+          if (logged)
+            Row(children: [
+              TextButton(onPressed: _busy ? null : _statusPage, child: const Text('狀態頁')),
+              TextButton(onPressed: _busy ? null : _sendUpdate, child: const Text('把新密碼送給節點')),
+            ]),
+          // remove a member (dev / dev2 only; every entry refuses in a field build)
+          const Text('移除成員（開發版）', style: TextStyle(fontWeight: FontWeight.bold)),
+          Wrap(spacing: 8, children: [
+            DevOnlyButton(label: '成員名單／移除', enabled: !_busy, devTrust: _devTrust, onPressed: _members, onRefused: (w) => _say('[REQ_FAIL] $w')),
+            DevOnlyButton(label: '產生更新包', enabled: !_busy, devTrust: _devTrust, onPressed: _makeUpdates, onRefused: (w) => _say('[REQ_FAIL] $w')),
+            _paste('貼上更新包', (t) => _takeUpdate(t)),
+          ]),
           // remote invites (dev / dev2 only; the paste buttons refuse in a field build)
           const Text('遠端邀請（開發版）', style: TextStyle(fontWeight: FontWeight.bold)),
           Wrap(spacing: 8, children: [

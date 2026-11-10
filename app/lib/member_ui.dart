@@ -149,12 +149,15 @@ class DevOnlyButton extends StatelessWidget {
 String joinreqLostLine({required bool saved}) =>
     saved ? '[REQ_FAIL] 連線斷了；申請已存，按「再顯示申請」' : '[REQ_FAIL] 連線斷了，申請沒有存，請再按一次';
 
-/// Which members "forget" offers (member-join §3): joining or approved ones, never the network's creator.
-bool forgettable({required bool joining, required bool approved, required bool creator}) => (joining || approved) && !creator;
+/// Which members "forget" offers: joining ones, never the network's creator while pending (Rust's flag). Another
+/// person's approved node is removed with the person instead (254-app-remove-member §3.6; Rust refuses it too).
+bool forgettable({required bool joining, required bool approved, required bool creator}) => joining && !creator;
 
-/// The confirm text of "forget": an approved node keeps what it was given.
-String forgetNotice({required bool approved}) =>
-    approved ? '只從本機清單移除，不會撤銷這台已拿到的網路金鑰。' : '只改這支手機裡的網路紀錄，節點本身不會被改動。';
+/// The confirm text of "forget"; [offerExclude] (dev-trust): the dialog also offers 「排除這台」 (remove-member §3.6).
+String forgetNotice({required bool approved, bool offerExclude = false}) => [
+      approved ? '只從本機清單移除，不會撤銷這台已拿到的網路金鑰。' : '只改這支手機裡的網路紀錄，節點本身不會被改動。',
+      if (offerExclude) '只忘記不會撤銷它已拿到的密碼；這台若可能遺失或被抓，請改按「排除這台」（會換全隊的密碼）。',
+    ].join('\n');
 
 /// One status page read (docs/design/254-app-status-page.md v8.1 §2), as Rust made it: every node string already
 /// filtered and cut; "" = no line. [fresh] false: the node answered E_RATE and Rust kept the earlier verdict.
@@ -173,7 +176,9 @@ class StatusFields {
       this.unfinishedUnderVerdict = false,
       this.canLeave = false,
       this.leaveTitle = '',
-      this.leaveBody = ''});
+      this.leaveBody = '',
+      this.updateLine = '',
+      this.canSendUpdate = false});
   final String color, sentence, lagNote, warning, membership, version, rateNote;
   final List<String> tech;
   final bool fresh;
@@ -186,6 +191,10 @@ class StatusFields {
   /// the leave button shows; its confirm dialog (title, body) as Rust made it
   final bool canLeave;
   final String leaveTitle, leaveBody;
+
+  /// 254-app-remove-member §3.5: the line about this node's secrets ("" = none) and whether 「把新密碼送給節點」 shows
+  final String updateLine;
+  final bool canSendUpdate;
 }
 
 /// 254-app-leave v4.1 §3: a leave waits longer than provd's 330 s helper wait, is never re-sent, and a lost link after it
@@ -306,9 +315,12 @@ Color verdictColor(String c) => switch (c) {
 /// sends it.
 class StatusPageView extends StatefulWidget {
   const StatusPageView(
-      {super.key, required this.initial, required this.initialAt, required this.onRefresh, this.onLeave, this.clock = DateTime.now});
+      {super.key, required this.initial, required this.initialAt, required this.onRefresh, this.onLeave, this.onSendUpdate, this.clock = DateTime.now});
   final StatusFields initial;
   final DateTime initialAt;
+
+  /// remove-member §3.5: 「把新密碼送給節點」, then the page as read again (null = nothing read)
+  final Future<StatusFields?> Function()? onSendUpdate;
 
   /// 「離開網路」 after the user confirmed (leave v4.1): see [leaveFlow]
   final Future<LeaveResult> Function()? onLeave;
@@ -372,6 +384,23 @@ class _StatusPageViewState extends State<StatusPageView> {
     }
   }
 
+  Future<void> _send() async {
+    if (_busy || widget.onSendUpdate == null) return;
+    setState(() => _busy = true);
+    try {
+      final r = await widget.onSendUpdate!();
+      if (mounted && r != null) {
+        setState(() {
+          _at = readTime(fresh: r.fresh, now: widget.clock(), previous: _at);
+          _f = r;
+          _missed = false;
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _refresh() async {
     // one read at a time: a second tap before the button is redrawn disabled does nothing (S20 fix 3)
     if (_busy) return;
@@ -410,6 +439,11 @@ class _StatusPageViewState extends State<StatusPageView> {
       if (f.warning.isNotEmpty) Text('⚠️ ${f.warning}', key: const Key('warning'), style: const TextStyle(color: Colors.deepOrange)),
       if (f.unfinished.isNotEmpty && !f.unfinishedUnderVerdict) Text(f.unfinished, key: const Key('unfinished')),
       if (f.membership.isNotEmpty) Text(f.membership, key: const Key('membership')),
+      if (f.updateLine.isNotEmpty) Text(f.updateLine, key: const Key('updateLine')),
+      if (f.canSendUpdate && widget.onSendUpdate != null)
+        Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton(key: const Key('sendUpdate'), onPressed: _busy ? null : _send, child: const Text('把新密碼送給節點'))),
       if (f.version.isNotEmpty) Text('軟體版本：${f.version}', key: const Key('version')),
       const SizedBox(height: 8),
       Row(children: [
