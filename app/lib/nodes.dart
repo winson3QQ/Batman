@@ -78,6 +78,8 @@ class _NodesPageState extends State<NodesPage> {
   var _track = SendTrack();
   // network/leave answered 0 in the outstanding request (the page re-reads once)
   bool _left = false;
+  // the last line _say showed (a leave whose request ended without an answer shows it on the page: review B-M1)
+  String? _lastSaid;
   bool _saved = false; // a record write of the current request landed (storeWriteCas succeeded)
   bool _quiet = false; // the last request was a quiet one (a late answer of it is only logged)
   // the status page's last fresh read time (an E_RATE on reopening keeps the earlier verdict and its time)
@@ -115,6 +117,7 @@ class _NodesPageState extends State<NodesPage> {
   /// [s] may start with log markers ("[LOGGED_IN] ", "[ANSWER] [NET_MADE] ", ...; owner.rs puts some on its answers):
   /// logcat keeps them, the screen does not.
   void _say(String s) {
+    _lastSaid = s;
     _log(s);
     if (mounted) setState(() => _lines.add(screenText(s)));
   }
@@ -136,8 +139,9 @@ class _NodesPageState extends State<NodesPage> {
   }
 
   /// [rxc]: the RX characteristic of the login attempt that owns the frames (never another candidate's)
-  Future<void> _write(QualifiedCharacteristic rxc, List<Uint8List> frames) async {
-    for (final f in frames) {
+  /// [o]: frames from `_track.outgoing` (the sent mark is taken before they go out)
+  Future<void> _write(QualifiedCharacteristic rxc, Outgoing o) async {
+    for (final f in o.frames) {
       await _ble.writeCharacteristicWithoutResponse(rxc, value: f);
     }
   }
@@ -177,8 +181,7 @@ class _NodesPageState extends State<NodesPage> {
         }
         switch (st.kind) {
           case OwnerKind.write:
-            _track.write(sent: st.sent);
-            await _write(rx, st.frames);
+            await _write(rx, _track.outgoing(sent: st.sent, frames: st.frames));
             if (gone()) return;
             _kick();
             st = null;
@@ -263,7 +266,7 @@ class _NodesPageState extends State<NodesPage> {
             _log('裝置 $id：${st.detail}');
             if (!done.isCompleted) done.complete(false);
             final a = _answer;
-            if (a != null && !a.isCompleted) a.complete('[REQ_FAIL] 連線已結束：${st.detail}');
+            if (a != null && !a.isCompleted) a.complete(endedLine(st.detail));
             // Rust ended this session: the next action logs in again (only if it still is the current one)
             if (identical(_session, s)) _drop();
             st = null;
@@ -427,6 +430,7 @@ class _NodesPageState extends State<NodesPage> {
       bool retry = true,
       String? unclear,
       bool held = false}) async {
+    _lastSaid = null;
     if (_busy && !held) return null;
     if (_session == null && _lastNode != null && !held) await _login(_lastNode!);
     var s = _session;
@@ -913,13 +917,12 @@ class _NodesPageState extends State<NodesPage> {
   }
 
   /// 254-app-leave v4.1: 「離開網路」 (confirmed on the page); after a reply 0 the page is read once more.
-  Future<(String?, StatusFields?)> _leaveNetwork() async {
-    final a = await sendLeave(({required wait, required retry, required unclear}) =>
-        _ask((s) => s.requestLeaveNetwork(), wait: wait, retry: retry, unclear: unclear));
-    if (a == null) return (null, null);
-    if (!_left) return (a, null);
-    return (a, await _readStatusPage());
-  }
+  Future<LeaveResult> _leaveNetwork() => leaveFlow(
+      ask: ({required wait, required retry, required unclear}) =>
+          _ask((s) => s.requestLeaveNetwork(), wait: wait, retry: retry, unclear: unclear),
+      lastSaid: () => _lastSaid,
+      left: () => _left,
+      reread: _readStatusPage);
 
   /// One status + info read, as the page shows it (null: nothing was read).
   Future<StatusFields?> _readStatusPage() async {

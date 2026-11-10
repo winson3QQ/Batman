@@ -1,6 +1,7 @@
 // 254-app-member-join v6.1 §7: M14 (paste refused in a field build), M17 (SAS screens), M18 (network name), and the
 // log interceptor; 254-app-status-page v8.1 §5: T8 (status page) and T9 (My nodes layout). The widgets get their actions passed in, so nothing here needs BLE, Rust or the platform channel.
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -222,19 +223,19 @@ void main() {
         leaveTitle: '要讓節點 …2233 離開隊伍網路嗎？',
         leaveBody: '離開後這台的 HaLow 無線電會關閉… 之後可以按「加入網路／繼續加入」再加入。');
     final at = DateTime(2026, 11, 10, 9, 5, 7);
-    Widget page(StatusFields f, {Future<(String?, StatusFields?)> Function()? leave}) => app(StatusPageView(
+    Widget page(StatusFields f, {Future<LeaveResult> Function()? leave}) => app(StatusPageView(
         initial: f, initialAt: at, onRefresh: () async => null, onLeave: leave, clock: () => DateTime(2026, 11, 10, 9, 6, 0)));
 
     testWidgets('the button shows only when the page says it can leave', (t) async {
-      await t.pumpWidget(page(member, leave: () async => (null, null)));
+      await t.pumpWidget(page(member, leave: () async => const LeaveResult(null, null)));
       expect(find.byKey(const Key('leave')), findsOneWidget);
       await t.pumpWidget(const SizedBox());
-      await t.pumpWidget(page(const StatusFields(sentence: '這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」'), leave: () async => (null, null)));
+      await t.pumpWidget(page(const StatusFields(sentence: '這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」'), leave: () async => const LeaveResult(null, null)));
       expect(find.byKey(const Key('leave')), findsNothing);
       // the k10-absent / k11-true case: Rust says canLeave (bridge view_unfinished_and_leave_button)
       await t.pumpWidget(const SizedBox());
       await t.pumpWidget(page(const StatusFields(sentence: '這台還沒加入隊伍網路', canLeave: true, unfinished: 'u', unfinishedUnderVerdict: true),
-          leave: () async => (null, null)));
+          leave: () async => const LeaveResult(null, null)));
       expect(find.byKey(const Key('leave')), findsOneWidget);
     });
 
@@ -242,7 +243,7 @@ void main() {
       var calls = 0;
       await t.pumpWidget(page(member, leave: () async {
         calls++;
-        return ('[ANSWER] [LEFT] 已離開隊伍網路', const StatusFields(color: 'red', sentence: '這台還沒加入隊伍網路'));
+        return const LeaveResult('[ANSWER] [LEFT] 已離開隊伍網路', StatusFields(color: 'red', sentence: '這台還沒加入隊伍網路'));
       }));
       await t.scrollUntilVisible(find.byKey(const Key('leave')), 100);
       await t.tap(find.byKey(const Key('leave')));
@@ -276,6 +277,74 @@ void main() {
       await t.pumpWidget(const SizedBox());
       await t.pumpWidget(page(const StatusFields(sentence: '已連上隊伍網路')));
       expect(find.byKey(const Key('unfinished')), findsNothing);
+    });
+
+    // code review B-M1: the run loop's write throws AFTER the network/leave write was marked sent; _ask says the unclear
+    // line and returns null; the page shows that line (it used to show nothing — the line was under the pushed route)
+    testWidgets('a write that throws after the leave went out: the page says 結果不明', (t) async {
+      final track = SendTrack();
+      String? said;
+      Future<String?> ask({required Duration wait, required bool retry, required String unclear}) async {
+        try {
+          track.outgoing(sent: false, frames: [Uint8List(3)]); // op/nonce
+          track.outgoing(sent: true, frames: [Uint8List(3)]); // network/leave: marked before it goes out
+          throw Exception('GATT write failed half-way');
+        } catch (_) {
+          said = track.unclearNow(unclear); // what _ask says on a throw with an unclear line
+          return null;
+        }
+      }
+
+      await t.pumpWidget(page(member,
+          leave: () => leaveFlow(ask: ask, lastSaid: () => said, left: () => false, reread: () async => null)));
+      await t.scrollUntilVisible(find.byKey(const Key('leave')), 100);
+      await t.tap(find.byKey(const Key('leave')));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('leaveConfirm')));
+      await t.pumpAndSettle();
+      expect(find.text('結果不明 — 請重新連線後看狀態頁'), findsOneWidget);
+      expect(find.textContaining('還沒有寫入或送出'), findsNothing);
+    });
+
+    test('leaveFlow: no answer and nothing said -> not sent; left but the re-read failed -> stale', () async {
+      Future<String?> none({required Duration wait, required bool retry, required String unclear}) async => null;
+      final r = await leaveFlow(ask: none, lastSaid: () => null, left: () => false, reread: () async => null);
+      expect(r.line, leaveNotAsked);
+      Future<String?> ok({required Duration wait, required bool retry, required String unclear}) async => '[ANSWER] [LEFT] 已離開隊伍網路';
+      var reads = 0;
+      final s = await leaveFlow(ask: ok, lastSaid: () => null, left: () => true, reread: () async {
+        reads++;
+        return null;
+      });
+      expect((s.line, s.fields, s.stale, reads), ('[ANSWER] [LEFT] 已離開隊伍網路', null, true, 1));
+      final n = await leaveFlow(ask: ok, lastSaid: () => null, left: () => false, reread: () async => const StatusFields());
+      expect((n.stale, n.fields), (false, null), reason: 'not a reply 0: no re-read');
+    });
+
+    testWidgets('left but the re-read failed: the page is marked stale; the next good refresh clears the leave line', (t) async {
+      await t.pumpWidget(app(StatusPageView(
+          initial: member,
+          initialAt: at,
+          onRefresh: () async => const StatusFields(sentence: '這台還沒加入隊伍網路'),
+          onLeave: () async => const LeaveResult('[ANSWER] [LEFT] 已離開隊伍網路', null, stale: true),
+          clock: () => DateTime(2026, 11, 10, 9, 6, 0))));
+      await t.scrollUntilVisible(find.byKey(const Key('leave')), 100);
+      await t.tap(find.byKey(const Key('leave')));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('leaveConfirm')));
+      await t.pumpAndSettle();
+      expect(find.text('已離開隊伍網路'), findsOneWidget);
+      expect(find.text('沒有讀到，請再按一次'), findsOneWidget, reason: 'stale');
+      await t.scrollUntilVisible(find.byKey(const Key('refresh')), -100);
+      await t.tap(find.byKey(const Key('refresh')));
+      await t.pumpAndSettle();
+      expect(find.text('已離開隊伍網路'), findsNothing);
+      expect(find.text('沒有讀到，請再按一次'), findsNothing);
+    });
+
+    test('an Ended step: the bridge leave line as is, anything else = the link ended', () {
+      expect(endedLine('[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁'), '[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁');
+      expect(endedLine('連線出錯（Decrypt）'), '[REQ_FAIL] 連線已結束：連線出錯（Decrypt）');
     });
 
     test('the leave request: wait 360 s, never re-sent, the unclear line', () async {
