@@ -15,11 +15,14 @@ void main() {
 
   test('forget offers joining and approved nodes, never the creator', () {
     expect(forgettable(joining: true, approved: false, creator: false), isTrue);
-    expect(forgettable(joining: false, approved: true, creator: false), isTrue, reason: 'an app reinstall needs it');
+    expect(forgettable(joining: false, approved: true, creator: false), isFalse,
+        reason: 'remove-member §3.6 (T39): remove the person instead');
     expect(forgettable(joining: false, approved: false, creator: false), isFalse, reason: 'applied');
     expect(forgettable(joining: true, approved: false, creator: true), isFalse);
     expect(forgetNotice(approved: true), contains('不會撤銷這台已拿到的網路金鑰'));
     expect(forgetNotice(approved: false), isNot(contains('不會撤銷')));
+    expect(forgetNotice(approved: false, offerExclude: true), contains('排除這台'), reason: 'remove-member T39: dev offers exclude');
+    expect(forgetNotice(approved: false), isNot(contains('排除這台')));
   });
 
   testWidgets('a disabled paste button does nothing', (t) async {

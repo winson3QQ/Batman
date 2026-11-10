@@ -231,7 +231,10 @@ void main() {
         sas: '',
         renewed: false,
         sent: sent,
-        left: false);
+        left: false,
+        waitMs: BigInt.zero,
+        sendUpdate: false,
+        info: Uint8List(0));
     const member = StatusFields(
         color: 'green',
         sentence: '已連上隊伍網路',
@@ -517,6 +520,34 @@ void main() {
         debugPrint = old;
       }
       expect(leaks(lines), isFalse);
+    });
+  });
+
+  // 254-app-remove-member v6.4 §3.5 (the page side; the line and the button come from Rust: bridge status_line_rules)
+  group('S6 remove member', () {
+    final at = DateTime(2026, 11, 11, 9, 5, 7);
+    testWidgets('the send button shows only when the page says so, sends once and shows the re-read page', (t) async {
+      var calls = 0;
+      Widget page(StatusFields f) => app(StatusPageView(
+          initial: f,
+          initialAt: at,
+          onRefresh: () async => null,
+          onSendUpdate: () async {
+            calls++;
+            return const StatusFields(sentence: '已連上隊伍網路');
+          },
+          clock: () => DateTime(2026, 11, 11, 9, 6, 0)));
+      await t.pumpWidget(page(const StatusFields(sentence: 's', updateLine: '這台還在舊密碼 — 把新密碼送給節點', canSendUpdate: true)));
+      expect(find.text('這台還在舊密碼 — 把新密碼送給節點'), findsOneWidget);
+      await t.tap(find.byKey(const Key('sendUpdate')));
+      await t.pumpAndSettle();
+      expect(calls, 1);
+      expect(find.byKey(const Key('sendUpdate')), findsNothing, reason: 'the re-read page has no button');
+      // a line without the button (the member phone lacks this node's secrets / an excluded node)
+      await t.pumpWidget(const SizedBox());
+      await t.pumpWidget(page(const StatusFields(sentence: 's', updateLine: '這台還在舊密碼，這支手機沒有它的新密碼 — 請網主重新產生你的更新包')));
+      expect(find.byKey(const Key('updateLine')), findsOneWidget);
+      expect(find.byKey(const Key('sendUpdate')), findsNothing);
     });
   });
 }
