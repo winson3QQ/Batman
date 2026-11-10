@@ -980,6 +980,9 @@ class _NodesPageState extends State<NodesPage> {
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          // the controls scroll on their own: on a phone they are taller than the screen (found on the S20:
+          // 「加入隊伍網路」 was laid out off-screen and could not be reached)
+          Expanded(flex: 3, child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           if (_nodes.isEmpty) const Text('這支手機還沒有認領任何節點。'),
           for (final n in _nodes)
             ListTile(
@@ -1081,8 +1084,9 @@ class _NodesPageState extends State<NodesPage> {
             ]),
           TextButton(onPressed: _busy ? null : _showPending, child: const Text('再顯示申請')),
           if (logged) Align(alignment: Alignment.centerLeft, child: OutlinedButton(onPressed: _busy ? null : _memberJoin, child: const Text('加入隊伍網路'))),
+          ]))),
           const Divider(),
-          Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
+          Expanded(flex: 2, child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
         ]),
       ),
     );
