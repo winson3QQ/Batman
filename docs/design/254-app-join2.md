@@ -210,3 +210,17 @@ v4 = v3 再**刪兩個東西**(前置「已在網路就擋」、存 secrets + ec
 | A m2 7 的文字 | 統一「結果不明」 |
 | B m1 settings/get 讀到 XX 也可能是舊值 | 結果不明時一律保留項與 prev_country |
 | B m3 沒有 prev_country 時 | 確定失敗直接刪項 |
+
+### v7.1 實作(code review 1–3 輪,app efd1af9 / 75fa055 / 本輪)
+設計不變;實作時定下的細節:
+| 項目 | 決定 |
+|---|---|
+| 「建網節點不會被忘記」 | 只限 §3.4「忘記加入中」這個動作(Rust 與畫面都拒絕);重燒的建網節點**確定**加入失敗時,§3.3-6 照常刪它的項(它確實不在網路裡) |
+| network/join 前 op/nonce 回 7(provd 還在等上一次 helper) | 結果不明 = Unclear7:保留項與 prev_country,不改回 |
+| network/join 前 op/nonce 其他拒絕 | 送出前放棄(NotSent)= 確定失敗:國家先改回,再把被取代的舊項(`before`)放回 |
+| settings.set 前 op/nonce 被拒 | 什麼都沒送:項回到寫入前(同 reason 14 / 20) |
+| settings/get 的國家 | 只認剛好兩個 ASCII 大寫字母,否則當讀不到(停,不寫) |
+| 等待 | join / 建網每個節點請求 360 s(> provd HelperWait 330 s),問使用者國家時不計;逾時 / 斷線 → 「結果不明」並重新連線;其他請求逾時也重新連線 |
+| 還沒寫任何紀錄就斷線 | 「連線失敗，還沒有寫入或送出，請重試」 |
+| 已連上檢查 | 整個視窗鎖住其他操作,只讀剛加入那台的 session;換掉 / 斷線 → 「已套用，連線狀態未知」 |
+| 畫面 | `MemberView.creator` 標出建網節點,不列入「忘記」清單 |
