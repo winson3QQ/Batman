@@ -518,7 +518,7 @@ fn m4_same_node_same_invite_shows_the_stored_request() {
     let inv = invite(&v, &ad);
     let (hex1, sas1, r1) = request(&v, &md, &inv, "客廳");
     assert_eq!(r1.signs, ["owner", "owner"], "sig_enc, then the request");
-    assert!(matches!(r1.end, Some(End::Out { renewed: true, .. })));
+    assert!(matches!(r1.end, Some(End::Out { renewed: false, .. })), "a first request replaced nothing");
     // again with another name: the same hex / SAS / stored name, nothing signed or written
     let (f, a) = JoinReqFlow::start(jr_input(&v, &inv, "書房", md.get(PEND)));
     let r2 = drive(&md, f, a, false);
@@ -1188,4 +1188,140 @@ fn records_round_trip() {
     let x = MNet { net_id: [1; 16], version: 1, netcfg: vec![2], members: vec![3], secrets: vec![4], net_root: [5; 32], me: None, invite_hash: [6; 32] };
     assert!(MNet::decode(&x.encode()).unwrap() == x);
     assert_eq!(mrec::pend_path(&[0xab; 16]), format!("mpend/{}", "ab".repeat(16)));
+}
+
+// ---- code review round 1 ----------------------------------------------------------------------------------------
+
+#[test]
+fn r1_approve_checks_the_admin_preconditions() {
+    // N33: a pending record, another admin key, a full record -> no SignAdmin, no write
+    let v = vectors();
+    let (ad, md) = (Disk::new(), Disk::new());
+    let inv = invite(&v, &ad);
+    let (jr_hex, _, _) = request(&v, &md, &inv, "客廳");
+    let (g, p) = ad.get(REL).unwrap();
+    let rec = netrec::decode(&p).unwrap();
+    let hash = approve::check_joinreq(&rec, &invite::qr_object(&jr_hex, 2).unwrap()).unwrap().jr.hash;
+    let mut pending = rec.clone();
+    pending.state = "pending".into();
+    let mut full = rec.clone();
+    full.list = Some((0..16u8).map(|i| Member { dac_pub_hash: [i; 32], ecdh_pub: [4; 65], name: "x".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Approved, prev_country: None }).collect());
+    for (what, r, admin_pub, want) in [
+        ("pending", pending, pub65(&admin()), Error::NotApplied),
+        ("not an admin", rec.clone(), pub65(&owner()), Error::NotAdmin),
+        ("16 members", full, pub65(&admin()), Error::Full),
+    ] {
+        let (f, a) = ApproveFlow::start(&netrec::encode(&r), g, &jr_hex, &hash, &admin_pub);
+        let run = drive(&ad, f, a, false);
+        assert_eq!(refused(&run), want, "{what}");
+        assert!(run.signs.is_empty() && run.writes.is_empty(), "{what}: nothing signed or written");
+    }
+}
+
+#[test]
+fn r1_check_joinreq_refuses_bad_names() {
+    // N32: a request whose name has a bidi override or a control character (the joiner's own app would not make it)
+    let v = vectors();
+    let ad = Disk::new();
+    let inv = invite(&v, &ad);
+    let ih = invite::open_invite(&invite::qr_object(&inv, 1).unwrap()).unwrap().hash;
+    let rec = netrec::decode(&ad.get(REL).unwrap().1).unwrap();
+    let sig_enc = raw(&owner(), &sig::owner_enc_input(&owner_enc_pub()));
+    for name in ["客\u{202E}廳", "a\u{7}b"] {
+        let p = invite::joinreq_payload(&ih, cbor::decode(&dev_node_cert(&v)).unwrap(), &pub65(&owner()), &owner_enc_pub(), &sig_enc, name);
+        let jr = sign1(&owner(), cose::CT_JOINREQ, &p);
+        assert_eq!(approve::check_joinreq(&rec, &jr), Err(Error::Name), "{name:?}");
+    }
+}
+
+#[test]
+fn r1_a_pending_request_of_another_node_is_replaced() {
+    // N31: mpend for the same invite but another DAC -> signed afresh and written at the generation read
+    let v = vectors();
+    let (ad, md) = (Disk::new(), Disk::new());
+    let inv = invite(&v, &ad);
+    request(&v, &md, &inv, "客廳");
+    let (g, p) = md.get(PEND).unwrap();
+    let mut pend = Pend::decode(&p).unwrap();
+    pend.dac_hash = [9; 32];
+    md.cas(PEND, g, &pend.encode()).unwrap();
+    let (g, _) = md.get(PEND).unwrap();
+    let (f, a) = JoinReqFlow::start(jr_input(&v, &inv, "客廳", md.get(PEND)));
+    let r = drive(&md, f, a, false);
+    assert_eq!(r.signs, ["owner", "owner"]);
+    assert_eq!(r.writes, [(PEND.to_string(), g)]);
+    assert!(matches!(r.end, Some(End::Out { renewed: true, .. })));
+}
+
+#[test]
+fn r1_non_ascii_paste_is_refused_without_panicking() {
+    for t in ["aéb", "aé", "éé", "a201é0"] {
+        assert_eq!(invite::from_hex(t), Err(Error::Format("not hex")), "{t}");
+        assert!(invite::open_invite(&[]).is_err());
+        assert!(approve::approval_net_id(t).is_err());
+    }
+}
+
+#[test]
+fn r1_protected_header_must_be_exact() {
+    // a validly signed Sign1 whose protected header has one more field: refused for the header, not the signature
+    let v = vectors();
+    let payload = h(&v["cose"]["net_config"]["payload"]);
+    let prot = cbor::encode(&m(vec![(1, V::Nint(6)), (3, V::Text(cose::CT_NETCFG.into())), (4, V::Bytes(vec![1]))]));
+    let tbs = cbor::encode(&V::Array(vec![V::Text("Signature1".into()), V::Bytes(prot.clone()), V::Bytes(cose::LABEL_NETCFG.to_vec()), V::Bytes(payload.clone())]));
+    let obj = tagged(vec![V::Bytes(prot), m(vec![]), V::Bytes(payload), V::Bytes(raw(&admin(), &tbs).to_vec())]);
+    assert_eq!(
+        cose::verify_sign1(&obj, cose::CT_NETCFG, cose::LABEL_NETCFG, &[pub65(&admin())]),
+        Err(cose::Error::Malformed("protected header is not {1: -7, 3: content type}"))
+    );
+}
+
+/// the vectors' netcfg payload edited by `f`, self-signed by the vectors' admin
+fn netcfg_edited(f: impl FnOnce(&mut Vec<(V, V)>)) -> V {
+    let mut p = cbor::decode(&h(&vectors()["cose"]["net_config"]["payload"])).unwrap();
+    let V::Map(e) = &mut p else { panic!() };
+    f(e);
+    item(&sign1(&admin(), cose::CT_NETCFG, &cbor::encode(&p)))
+}
+
+#[test]
+fn r1_open_invite_more_refusals() {
+    let v = vectors();
+    let net_id: [u8; 16] = h(&v["keys"]["net_id"]).try_into().unwrap();
+    let inv_with = |cfg: V| sign1(&admin(), cose::CT_INVITE, &invite::invite_payload(&net_id, &[1; 16], cfg, &pub65(&admin())));
+    // the embedded netcfg must be version 1 with a null prev_hash
+    let v2 = netcfg_edited(|e| {
+        set(e, 2, V::Uint(2));
+        set(e, 3, V::Bytes(vec![1; 32]));
+    });
+    assert_eq!(invite::open_invite(&inv_with(v2)), Err(Error::Invalid("netcfg is not version 1")));
+    let v1_prev = netcfg_edited(|e| set(e, 3, V::Bytes(vec![1; 32])));
+    assert_eq!(invite::open_invite(&inv_with(v1_prev)), Err(Error::Invalid("netcfg is not version 1")));
+    // an unknown key inside the halow map (key 6)
+    let halow = netcfg_edited(|e| set(e, 6, m(vec![(1, V::Text("s".into())), (2, V::Uint(40)), (3, V::Uint(4)), (4, V::Uint(1))])));
+    assert_eq!(invite::open_invite(&inv_with(halow)), Err(Error::Invalid("netcfg keys")));
+    // kind 0 without key 6 (no SAE): refused for the kind
+    let mut p = cbor::decode(&invite::invite_payload(&net_id, &[1; 16], cbor::decode(&h(&v["cose"]["net_config"]["sign1"])).unwrap(), &pub65(&admin()))).unwrap();
+    if let V::Map(e) = &mut p {
+        set(e, 3, V::Uint(0));
+    }
+    let k0 = sign1(&admin(), cose::CT_INVITE, &cbor::encode(&p));
+    assert_eq!(invite::open_invite(&k0), Err(Error::Invalid("not a remote invite")));
+}
+
+#[test]
+fn r1_approval_members_checked_nested() {
+    let v = vectors();
+    let (_, md, ap, _) = to_approval(&v);
+    // members of another network (admin-signed)
+    let other = resign(&ap, 2, cose::CT_MEMBERS, &admin(), |e| set(e, 1, V::Bytes(vec![9; 16])));
+    assert_eq!(prepare(&md, &other), Err(Error::Invalid("another net_id / version")));
+    // a member entry with an unknown key
+    let extra = resign(&ap, 2, cose::CT_MEMBERS, &admin(), |e| {
+        let (_, l) = e.iter_mut().find(|(k, _)| *k == V::Uint(4)).unwrap();
+        let V::Array(l) = l else { panic!() };
+        let V::Map(me) = &mut l[0] else { panic!() };
+        me.push((V::Uint(9), V::Uint(1)));
+    });
+    assert_eq!(prepare(&md, &extra), Err(Error::Invalid("member entry keys")));
 }

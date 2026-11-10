@@ -77,9 +77,13 @@ class SasShowView extends StatelessWidget {
 /// A paste button for the dev build's hex codes (§5-1, the same rule as the claim QR): refused unless [devTrust];
 /// the clipboard is read only then, and cleared after reading.
 class PasteButton extends StatelessWidget {
-  const PasteButton({super.key, required this.label, required this.devTrust, required this.readClipboard, required this.onText, required this.onRefused});
+  const PasteButton(
+      {super.key, required this.label, required this.devTrust, required this.readClipboard, required this.onText, required this.onRefused, this.enabled = true});
 
   final String label;
+
+  /// false while another operation runs (one at a time)
+  final bool enabled;
   final Future<bool> Function() devTrust;
   final Future<String?> Function() readClipboard;
   final void Function(String text) onText;
@@ -89,7 +93,9 @@ class PasteButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return OutlinedButton(
         key: Key('paste:$label'),
-        onPressed: () async {
+        onPressed: !enabled
+            ? null
+            : () async {
           if (!await devTrust()) {
             onRefused('只有開發版可以貼上');
             return;
@@ -104,6 +110,40 @@ class PasteButton extends StatelessWidget {
         child: Text(label));
   }
 }
+
+/// A remote-invite action that is not a paste (邀請隊員): refused unless a dev build, like the paste buttons.
+class DevOnlyButton extends StatelessWidget {
+  const DevOnlyButton({super.key, required this.label, required this.devTrust, required this.onPressed, required this.onRefused, this.enabled = true});
+
+  final String label;
+  final bool enabled;
+  final Future<bool> Function() devTrust;
+  final Future<void> Function() onPressed;
+  final void Function(String why) onRefused;
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton(
+        key: Key('dev:$label'),
+        onPressed: !enabled
+            ? null
+            : () async {
+                if (!await devTrust()) {
+                  onRefused('只有開發版可以使用遠端邀請');
+                  return;
+                }
+                await onPressed();
+              },
+        child: Text(label));
+  }
+}
+
+/// Which members "forget" offers (member-join §3): joining or approved ones, never the network's creator.
+bool forgettable({required bool joining, required bool approved, required bool creator}) => (joining || approved) && !creator;
+
+/// The confirm text of "forget": an approved node keeps what it was given.
+String forgetNotice({required bool approved}) =>
+    approved ? '只從本機清單移除，不會撤銷這台已拿到的網路金鑰。' : '只改這支手機裡的網路紀錄，節點本身不會被改動。';
 
 /// The fields of the status page (§8): only what the node sent ("" = not given).
 class StatusFields {

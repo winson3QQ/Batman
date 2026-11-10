@@ -247,6 +247,14 @@ pub fn approval_net_id(hex: &str) -> Result<String, Error> {
 fn same_net(p: &Value, cfg: &NetCfg, members: bool) -> Result<(), Error> {
     if members {
         cose::exact_keys(p, &[1, 2, 3, 4, 5, 6, 7], &[]).map_err(|_| Error::Invalid("members keys"))?;
+        // nested: every member entry (CDDL member) and the three lists
+        let Some(Value::Array(list)) = p.get(4) else { return Err(Error::Invalid("members keys")) };
+        for m in list {
+            cose::exact_keys(m, &[1, 2, 3, 4, 5], &[6]).map_err(|_| Error::Invalid("member entry keys"))?;
+        }
+        if ![5, 6, 7].iter().all(|k| matches!(p.get(*k), Some(Value::Array(_)))) {
+            return Err(Error::Invalid("members keys"));
+        }
     } else {
         cose::exact_keys(p, &[1, 2, 3, 4], &[]).map_err(|_| Error::Invalid("secrets keys"))?;
     }

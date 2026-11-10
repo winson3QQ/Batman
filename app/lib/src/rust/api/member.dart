@@ -73,6 +73,11 @@ OwnerStep memberPendView({required List<int> pendPlain}) =>
 MnetView mnetSummary({required List<int> mnetPlain}) =>
     RustLib.instance.api.crateApiMemberMnetSummary(mnetPlain: mnetPlain);
 
+/// The member phone's pending join requests (file names under mpend/: the net ids; no record opened), for "show
+/// the request again" after a restart.
+Future<List<String>> listPends({required String dir}) =>
+    RustLib.instance.api.crateApiMemberListPends(dir: dir);
+
 /// The member phone's stored networks (file names under mnet/; no record opened).
 Future<List<String>> listMnets({required String dir}) =>
     RustLib.instance.api.crateApiMemberListMnets(dir: dir);

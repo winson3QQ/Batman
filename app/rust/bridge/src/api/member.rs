@@ -291,6 +291,16 @@ pub fn mnet_summary(mnet_plain: Vec<u8>) -> Result<MnetView, String> {
     Ok(MnetView { net_id: hex_lower(&m.net_id), net_name: name, entry_state: state.into(), device_last4: last4 })
 }
 
+/// The member phone's pending join requests (file names under mpend/: the net ids; no record opened), for "show
+/// the request again" after a restart.
+pub fn list_pends(dir: String) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(std::path::Path::new(&dir).join("mpend"))
+        .map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| !n.starts_with('.')).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
 /// The member phone's stored networks (file names under mnet/; no record opened).
 pub fn list_mnets(dir: String) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(std::path::Path::new(&dir).join("mnet"))
@@ -352,5 +362,32 @@ mod tests {
         let v = mnet_summary(m.encode()).unwrap();
         assert_eq!((v.net_id.as_str(), v.entry_state.as_str()), ("ab".repeat(16).as_str(), ""));
         assert!(!format!("{} {} {}", v.net_id, v.net_name, v.device_last4).contains(&"5e".repeat(32)));
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    #[test]
+    fn pending_requests_are_listed_after_a_restart() {
+        let d = std::env::temp_dir().join(format!("bm-pends-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let dir = d.to_string_lossy().to_string();
+        assert!(list_pends(dir.clone()).is_empty());
+        batman_proto::store::Store::new(&d).write("mpend/ab", 1, b"s").unwrap();
+        batman_proto::store::Store::new(&d).write("mnet/cd", 1, b"s").unwrap();
+        assert_eq!(list_pends(dir.clone()), vec!["ab".to_string()]);
+        assert_eq!(list_mnets(dir), vec!["cd".to_string()]);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[cfg(feature = "dev-trust")]
+    #[test]
+    fn non_ascii_paste_is_an_error_not_a_panic() {
+        for t in ["aéb", "a201é0"] {
+            assert!(parse_invite(t.into()).err().unwrap().starts_with("這不是正確的碼"), "{t}");
+            assert!(approval_net_id(t.into()).is_err(), "{t}");
+        }
     }
 }

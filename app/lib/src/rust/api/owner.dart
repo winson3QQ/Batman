@@ -314,6 +314,9 @@ class OwnerStep {
   final String hex;
   final String sas;
 
+  /// a join request that replaced an existing one of this network: verify the SAS again (member-join §3)
+  final bool renewed;
+
   const OwnerStep({
     required this.kind,
     required this.frames,
@@ -327,6 +330,7 @@ class OwnerStep {
     required this.pollLink,
     required this.hex,
     required this.sas,
+    required this.renewed,
   });
 
   @override
@@ -342,7 +346,8 @@ class OwnerStep {
       expectedGen.hashCode ^
       pollLink.hashCode ^
       hex.hashCode ^
-      sas.hashCode;
+      sas.hashCode ^
+      renewed.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -360,7 +365,8 @@ class OwnerStep {
           expectedGen == other.expectedGen &&
           pollLink == other.pollLink &&
           hex == other.hex &&
-          sas == other.sas;
+          sas == other.sas &&
+          renewed == other.renewed;
 }
 
 /// A sealed record and the AAD Kotlin opens it with.
