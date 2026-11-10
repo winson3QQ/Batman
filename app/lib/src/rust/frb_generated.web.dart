@@ -7,6 +7,7 @@
 // ignore_for_file: argument_type_not_assignable
 
 import 'api/claim.dart';
+import 'api/member.dart';
 import 'api/owner.dart';
 import 'api/simple.dart';
 
@@ -29,6 +30,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   get rust_arc_decrement_strong_count_ClaimSessionPtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession;
 
+  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_NetOpPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp;
+
   CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_OwnerSessionPtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession;
@@ -36,6 +40,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ClaimSession
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    dynamic raw,
+  );
+
+  @protected
+  NetOp
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
     dynamic raw,
   );
 
@@ -48,6 +58,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ClaimSession
   dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    dynamic raw,
+  );
+
+  @protected
+  NetOp
+  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
     dynamic raw,
   );
 
@@ -66,6 +82,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ClaimSession
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    dynamic raw,
+  );
+
+  @protected
+  NetOp
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
     dynamic raw,
   );
 
@@ -106,6 +128,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int dco_decode_i_32(dynamic raw);
 
   @protected
+  ImportPrep dco_decode_import_prep(dynamic raw);
+
+  @protected
+  ImportState dco_decode_import_state(dynamic raw);
+
+  @protected
+  InviteView dco_decode_invite_view(dynamic raw);
+
+  @protected
+  JoinReqView dco_decode_join_req_view(dynamic raw);
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
@@ -127,6 +161,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MemberView dco_decode_member_view(dynamic raw);
 
   @protected
+  MnetView dco_decode_mnet_view(dynamic raw);
+
+  @protected
   NetView dco_decode_net_view(dynamic raw);
 
   @protected
@@ -142,6 +179,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SealedRecord? dco_decode_opt_box_autoadd_sealed_record(dynamic raw);
 
   @protected
+  Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
+
+  @protected
   OwnerKind dco_decode_owner_kind(dynamic raw);
 
   @protected
@@ -150,6 +190,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   (ClaimSession, ClaimStep)
   dco_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
+    dynamic raw,
+  );
+
+  @protected
+  (NetOp, OwnerStep)
+  dco_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_net_op_owner_step(
     dynamic raw,
   );
 
@@ -167,6 +213,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   StatusInfo dco_decode_status_info(dynamic raw);
+
+  @protected
+  StatusView dco_decode_status_view(dynamic raw);
 
   @protected
   StepKind dco_decode_step_kind(dynamic raw);
@@ -193,6 +242,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  NetOp
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   OwnerSession
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
     SseDeserializer deserializer,
@@ -201,6 +256,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ClaimSession
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  NetOp
+  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
     SseDeserializer deserializer,
   );
 
@@ -219,6 +280,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   ClaimSession
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  NetOp
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
     SseDeserializer deserializer,
   );
 
@@ -261,6 +328,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
+  ImportPrep sse_decode_import_prep(SseDeserializer deserializer);
+
+  @protected
+  ImportState sse_decode_import_state(SseDeserializer deserializer);
+
+  @protected
+  InviteView sse_decode_invite_view(SseDeserializer deserializer);
+
+  @protected
+  JoinReqView sse_decode_join_req_view(SseDeserializer deserializer);
+
+  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
@@ -284,6 +363,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MemberView sse_decode_member_view(SseDeserializer deserializer);
 
   @protected
+  MnetView sse_decode_mnet_view(SseDeserializer deserializer);
+
+  @protected
   NetView sse_decode_net_view(SseDeserializer deserializer);
 
   @protected
@@ -305,6 +387,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
   OwnerKind sse_decode_owner_kind(SseDeserializer deserializer);
 
   @protected
@@ -313,6 +398,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   (ClaimSession, ClaimStep)
   sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  (NetOp, OwnerStep)
+  sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_net_op_owner_step(
     SseDeserializer deserializer,
   );
 
@@ -330,6 +421,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   StatusInfo sse_decode_status_info(SseDeserializer deserializer);
+
+  @protected
+  StatusView sse_decode_status_view(SseDeserializer deserializer);
 
   @protected
   StepKind sse_decode_step_kind(SseDeserializer deserializer);
@@ -358,6 +452,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
+    NetOp self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
     OwnerSession self,
     SseSerializer serializer,
@@ -367,6 +468,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     ClaimSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
+    NetOp self,
     SseSerializer serializer,
   );
 
@@ -388,6 +496,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     ClaimSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
+    NetOp self,
     SseSerializer serializer,
   );
 
@@ -438,6 +553,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
+  void sse_encode_import_prep(ImportPrep self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_import_state(ImportState self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_invite_view(InviteView self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_join_req_view(JoinReqView self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
@@ -471,6 +598,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_member_view(MemberView self, SseSerializer serializer);
 
   @protected
+  void sse_encode_mnet_view(MnetView self, SseSerializer serializer);
+
+  @protected
   void sse_encode_net_view(NetView self, SseSerializer serializer);
 
   @protected
@@ -495,6 +625,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_list_prim_u_8_strict(
+    Uint8List? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_owner_kind(OwnerKind self, SseSerializer serializer);
 
   @protected
@@ -504,6 +640,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_claim_session_claim_step(
     (ClaimSession, ClaimStep) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_net_op_owner_step(
+    (NetOp, OwnerStep) self,
     SseSerializer serializer,
   );
 
@@ -522,6 +665,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_status_info(StatusInfo self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_status_view(StatusView self, SseSerializer serializer);
 
   @protected
   void sse_encode_step_kind(StepKind self, SseSerializer serializer);
@@ -564,6 +710,22 @@ class RustLibWire implements BaseWire {
       );
 
   void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
+        ptr,
+      );
+
+  void
   rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
     int ptr,
   ) => wasmModule
@@ -593,6 +755,16 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
   rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNetOp(
     int ptr,
   );
 

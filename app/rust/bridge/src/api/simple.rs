@@ -27,7 +27,8 @@ pub fn selftest() -> String {
 // ---- install marker (design v8.5.1 §3 / §4.1): `meta/install-v1` in the record store, plaintext (aliases + read-back
 // levels, no secrets), display-only. Written once, after all four keys passed; before any record exists.
 const MARKER: &str = "meta/install-v1";
-const RECORD_KINDS: [&str; 3] = ["node", "claim-pending", "net"];
+// member-join §3 (R20): a member phone's mpend / mnet are records too: they keep the keys from being regenerated
+const RECORD_KINDS: [&str; 5] = ["node", "claim-pending", "net", "mnet", "mpend"];
 
 /// The marker's content, or None when there is none.
 pub fn store_read_marker(dir: String) -> Result<Option<String>, String> {
@@ -40,6 +41,7 @@ pub fn store_read_marker(dir: String) -> Result<Option<String>, String> {
 
 /// Whether any record exists (then keys are never deleted, even without a marker — design §4.1).
 pub fn store_has_records(dir: String) -> bool {
+    // (member-join M15: tests below)
     let root = std::path::Path::new(&dir);
     RECORD_KINDS.iter().any(|k| std::fs::read_dir(root.join(k)).map(|mut d| d.any(|e| e.is_ok_and(|e| !e.file_name().to_string_lossy().starts_with('.')))).unwrap_or(false))
 }
@@ -82,4 +84,24 @@ pub fn decode_status(bytes: Vec<u8>) -> Result<StatusInfo, String> {
 #[flutter_rust_bridge::frb(init)]
 pub fn init_app() {
     flutter_rust_bridge::setup_default_user_utils();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M15 (member-join §3, R20): a phone holding only a member record (mnet / mpend) and no marker has records: its
+    /// keys are never regenerated.
+    #[test]
+    fn m15_member_records_count_as_records() {
+        for kind in ["mnet", "mpend"] {
+            let d = std::env::temp_dir().join(format!("bm-kinds-{kind}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            let dir = d.to_string_lossy().to_string();
+            assert!(!store_has_records(dir.clone()));
+            batman_proto::store::Store::new(&d).write(&format!("{kind}/x"), 1, b"s").unwrap();
+            assert!(store_has_records(dir), "{kind}");
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
 }
