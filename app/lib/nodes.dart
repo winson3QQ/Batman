@@ -40,6 +40,10 @@ const _linkEvery = Duration(seconds: 10);
 /// country question to the user does not count.
 const _joinWait = Duration(seconds: 360);
 const _joinUnclear = '[JOIN_STATE] 結果不明，稍後在這台按「繼續加入」';
+const _makeUnclear = '[NET_STATE] 結果不明，稍後在這台按「確認網路」';
+/// a join / make-network that lost the link before any record write: nothing was written or sent
+const _notSent = '[REQ_FAIL] 連線失敗，還沒有寫入或送出，請重試';
+const _linkUnknown = '[JOINED] 已套用，連線狀態未知';
 
 class NodesPage extends StatefulWidget {
   const NodesPage({super.key});
@@ -66,6 +70,10 @@ class _NodesPageState extends State<NodesPage> {
   Timer? _wait;
   Duration _waitFor = const Duration(seconds: 15);
   String _waitLine = '';
+  // a join / make-network in flight: its "outcome unknown" line (null otherwise); whether a record write happened yet
+  String? _unclear;
+  bool _wrote = false;
+  bool _quiet = false; // the last request was a quiet one (a late answer of it is only logged)
   final _country = TextEditingController(); // settings/set key 2 (two capital letters)
   final _apSsid = TextEditingController(); // settings/set key 20
   final _apPass = TextEditingController(); // obscured; cleared once sent
@@ -139,11 +147,18 @@ class _NodesPageState extends State<NodesPage> {
     _rxc = QualifiedCharacteristic(characteristicId: _rx, serviceId: provdService, deviceId: id);
     final (s, first) = OwnerSession.start(recordPlain: record, ownerPub: ownerPub, frameLimit: fl);
     final done = Completer<bool>();
+    // after login, a run belongs to session s only: once the session was dropped or replaced it stops
+    bool gone() => done.isCompleted && !identical(_session, s);
     Future<void> run(OwnerStep? st) async {
       while (st != null) {
+        if (gone()) {
+          _log('裝置 $id：連線已換掉，舊的步驟不再執行');
+          return;
+        }
         switch (st.kind) {
           case OwnerKind.write:
             await _write(st.frames);
+            if (gone()) return;
             _kick();
             st = null;
           case OwnerKind.sign:
@@ -164,6 +179,7 @@ class _NodesPageState extends State<NodesPage> {
             // the net record lands (sealed, fsynced) before anything goes out (design §3), by compare-and-swap from
             // the generation it was read at (join2 §3.1); never shown
             final OwnerStep p = st;
+            _wrote = true;
             try {
               final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
               await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
@@ -203,6 +219,8 @@ class _NodesPageState extends State<NodesPage> {
             final a = _answer;
             if (a != null && !a.isCompleted) {
               a.complete('[ANSWER] ${st.detail}');
+            } else if (_quiet) {
+              _log('[ANSWER] ${st.detail}'); // a late link check stays quiet
             } else {
               _say('[ANSWER] ${st.detail}'); // an answer after its wait ended is still shown
             }
@@ -210,7 +228,8 @@ class _NodesPageState extends State<NodesPage> {
           case OwnerKind.ended:
             _log('裝置 $id：${st.detail}');
             if (!done.isCompleted) done.complete(false);
-            _answer?.complete('[REQ_FAIL] 連線已結束：${st.detail}');
+            final a = _answer;
+            if (a != null && !a.isCompleted) a.complete('[REQ_FAIL] 連線已結束：${st.detail}');
             st = null;
         }
       }
@@ -220,7 +239,10 @@ class _NodesPageState extends State<NodesPage> {
     final notify = _ble
         .subscribeToCharacteristic(QualifiedCharacteristic(characteristicId: _tx, serviceId: provdService, deviceId: id))
         .listen(inbox.add, onError: (Object e) => done.isCompleted ? null : done.complete(false));
-    inbox.stream.asyncMap((f) => run(s.onFrame(frame: f))).listen((_) {});
+    inbox.stream.asyncMap((f) => run(s.onFrame(frame: f))).listen((_) {}, onError: (Object e) {
+      _log('裝置 $id：步驟沒有完成（$e）');
+      _endUnclear();
+    });
     await run(first);
     final ok = await done.future.timeout(const Duration(seconds: 20), onTimeout: () => false);
     if (!ok) {
@@ -287,8 +309,18 @@ class _NodesPageState extends State<NodesPage> {
     }
   }
 
+  /// A join / make-network whose link went away: its pending answer becomes "outcome unknown" (or "nothing was
+  /// written or sent" before any record write).
+  void _endUnclear() {
+    final a = _answer;
+    if (a != null && !a.isCompleted && _unclear != null) a.complete(_unclearNow());
+  }
+
+  String _unclearNow() => _wrote ? _unclear! : _notSent;
+
   void _lost() {
     _say('[LINK_LOST] 和節點的連線斷了（下次操作時會自動重新連線）');
+    _endUnclear();
     _drop();
     if (mounted) setState(() {});
   }
@@ -331,7 +363,8 @@ class _NodesPageState extends State<NodesPage> {
     await _ask(
         (s) => s.requestMakeNetwork(
             netName: name, channel: _channel, ownerEncPub: keys['ownerEnc'] as Uint8List, adminPub: keys['admin'] as Uint8List),
-        wait: const Duration(seconds: 180));
+        wait: _joinWait,
+        unclear: _makeUnclear);
   }
 
   /// Restart the outstanding request's wait (each write to the node).
@@ -339,7 +372,7 @@ class _NodesPageState extends State<NodesPage> {
     _wait?.cancel();
     final a = _answer, line = _waitLine;
     _wait = Timer(_waitFor, () {
-      if (a != null && !a.isCompleted) a.complete(line);
+      if (a != null && !a.isCompleted) a.complete(_unclear != null ? _unclearNow() : line);
     });
   }
 
@@ -347,24 +380,28 @@ class _NodesPageState extends State<NodesPage> {
   /// [wait] runs from each write to the node, not from the start.
   /// [retry]: a write that fails logs in again and sends the request once more — never for a join / confirm, whose
   /// record was read before the first try (the record write would refuse a stale generation anyway).
-  /// [unclear]: a join — a timeout or a lost link says "結果不明" and drops the session (it may be mid-flow).
+  /// [unclear]: a join / make-network — a timeout or a lost link says this "outcome unknown" line (or, before any
+  /// record write, that nothing was written or sent) and drops the session (it may be mid-flow).
   Future<String?> _ask(OwnerStep Function(OwnerSession) req,
-      {Duration wait = const Duration(seconds: 15), bool quiet = false, bool retry = true, bool unclear = false}) async {
+      {Duration wait = const Duration(seconds: 15), bool quiet = false, bool retry = true, String? unclear}) async {
     if (_busy) return null;
     if (_session == null && _lastNode != null) await _login(_lastNode!);
     var s = _session;
     if (s == null || _busy) return null;
     setState(() => _busy = true);
     _waitFor = wait;
-    _waitLine = unclear ? _joinUnclear : '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應';
+    _waitLine = '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應';
+    _unclear = unclear;
+    _wrote = false;
+    _quiet = quiet;
     try {
       _answer = Completer<String>();
       try {
         await _run!(req(s));
       } on PlatformException catch (e) {
-        if (unclear) {
+        if (unclear != null) {
           _say('[LINK_LOST] 連線斷了（${e.code}）');
-          _say(_joinUnclear);
+          _say(_unclearNow());
           await _drop();
           return null;
         }
@@ -382,7 +419,7 @@ class _NodesPageState extends State<NodesPage> {
       }
       _kick();
       final a = await _answer!.future;
-      if (unclear && a == _joinUnclear) await _drop(); // the session may still be inside the join flow
+      if (unclear != null && (a == unclear || a == _notSent)) await _drop(); // the session may still be mid-flow
       if (quiet) {
         _log(a);
       } else {
@@ -395,6 +432,7 @@ class _NodesPageState extends State<NodesPage> {
     } finally {
       _wait?.cancel();
       _answer = null;
+      _unclear = null;
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -449,7 +487,7 @@ class _NodesPageState extends State<NodesPage> {
             ownerEncPub: keys['ownerEnc'] as Uint8List),
         wait: _joinWait,
         retry: false,
-        unclear: true);
+        unclear: _joinUnclear);
     await _watchLink();
   }
 
@@ -458,13 +496,14 @@ class _NodesPageState extends State<NodesPage> {
     final from = _linkFrom;
     _linkFrom = null;
     if (from == null) return;
-    var last = '[JOINED] 已套用，連線狀態未知';
+    var last = _linkUnknown;
     while (mounted && DateTime.now().difference(from) < _linkWindow) {
       await Future<void>.delayed(_linkEvery);
       final secs = DateTime.now().difference(from).inSeconds;
       final a = await _ask((s) => s.requestLinkCheck(secsSinceJoin: BigInt.from(secs)), quiet: true, retry: false);
       if (a == null) break;
-      last = a.replaceFirst('[ANSWER] ', '');
+      // anything but the node's answer (a timeout, a lost link) = unknown (§3.3-7)
+      last = a.startsWith('[ANSWER] ') ? a.replaceFirst('[ANSWER] ', '') : _linkUnknown;
       if (last.startsWith('[CONNECTED]')) break;
     }
     _say(last);
@@ -481,9 +520,10 @@ class _NodesPageState extends State<NodesPage> {
   /// join2 §3.4: forget a joining member (this phone's record only; the node is not changed)
   Future<void> _forgetJoining() async {
     if (_busy) return;
-    final net = await _pickNet('在哪個網路裡忘記？', only: (v) => v.members.any((m) => m.joining));
+    final net = await _pickNet('在哪個網路裡忘記？', only: (v) => v.members.any((m) => m.joining && !m.creator));
     if (net == null || !mounted) return;
-    final joining = net.view.members.where((m) => m.joining).toList();
+    // the node that made the network is never offered (Rust refuses it too: 建立網路的節點不能忘記)
+    final joining = net.view.members.where((m) => m.joining && !m.creator).toList();
     String who(MemberView m) => m.last4.isEmpty ? m.name : '${m.name}（…${m.last4}）';
     final m = joining.length == 1
         ? joining.first

@@ -189,8 +189,9 @@ pub struct Join2 {
     st: Step,
 }
 
+/// settings key 2: exactly two ASCII capital letters; anything else counts as unreadable (fail-closed)
 fn country_of(b: &Value) -> Option<&str> {
-    b.get(2).and_then(Value::as_text)
+    b.get(2).and_then(Value::as_text).filter(|c| c.len() == 2 && c.bytes().all(|x| x.is_ascii_uppercase()))
 }
 
 /// P2's answer to settings/get: E_UNSUPPORTED {1: "settings/get"} and no reason
@@ -359,15 +360,27 @@ impl Join2 {
         })
     }
 
-    /// a definite failure (4 / another network / not applied): put the country back first; the entry goes only when
-    /// that worked (or there was nothing to put back)
+    /// a definite failure (4 / another network / not applied / not sent): put the country back first; the entry goes
+    /// only when that worked (or there was nothing to put back)
     fn fail(&mut self, f: Fail) -> Option<Action> {
         match self.entry().and_then(|e| e.prev_country) {
             Some(_) => self.request("settings/get", Value::Map(vec![]), Step::Get(Get::Revert(f))),
             None => {
-                let r = self.with_entry(None);
+                let r = self.with_entry(self.after_fail(&f));
                 self.persist(r, Then::End(End::Failed(f, Revert::NoChange)))
             }
+        }
+    }
+
+    /// this node's entry after a definite failure whose country is the original: none — except when network/join
+    /// was never sent (NotSent): then the entry this flow replaced (e.g. an applied one) comes back
+    fn after_fail(&self, f: &Fail) -> Option<Member> {
+        match f {
+            Fail::NotSent(_) => self.before.clone().map(|mut b| {
+                b.prev_country = None;
+                b
+            }),
+            _ => None,
         }
     }
 
@@ -378,7 +391,7 @@ impl Join2 {
 
     fn reverted(&mut self, f: Fail) -> Option<Action> {
         let country = self.entry().and_then(|e| e.prev_country).unwrap_or_default();
-        let r = self.with_entry(None);
+        let r = self.with_entry(self.after_fail(&f));
         self.persist(r, Then::End(End::Failed(f, Revert::Reverted { country })))
     }
 
@@ -528,6 +541,9 @@ impl Join2 {
                         let rec = self.with_entry(b);
                         self.persist(rec, Then::End(End::Joining(Keep::NonceRefused(*code))))
                     }
+                    // 7 = busy (provd still waiting for a previous helper call, possibly our earlier join): the outcome
+                    // is unknown -> keep the entry and prev_country (§3.3-6)
+                    Op::Join if *code == 7 => self.end(End::Joining(Keep::Unclear7)),
                     // network/join never went out: a definite failure, the country goes back
                     Op::Join => self.fail(Fail::NotSent(*code)),
                     Op::Revert(f) => {
