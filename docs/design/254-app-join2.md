@@ -1,6 +1,6 @@
 # #254 app — second node joins the phone's network (S1.5)
 
-狀態:**凍結 v7.1(2026-11-10)**。審查七輪,每輪兩位:v1 A 4 / B 3 MAJOR;v2 A 3 / B 3;v3 A 2 / B 1;v4 A 1 / B 0;v5 A 1 / B 0;v6 A 1 / B 1;**v7 A APPROVE / B APPROVE(0 MAJOR)**。v7.1 = v7 + 第 7 輪 MINOR(附錄 A「v7 輪」)。
+狀態:**凍結 v7.2(2026-11-10)**。v7.2 = v7.1 + §3.3-7「已連上」改用節點自己的 JOINED(S4 狀態頁設計 v4 審查 v3 M5;附錄 A「v7.2」)。審查七輪,每輪兩位:v1 A 4 / B 3 MAJOR;v2 A 3 / B 3;v3 A 2 / B 1;v4 A 1 / B 0;v5 A 1 / B 0;v6 A 1 / B 1;**v7 A APPROVE / B APPROVE(0 MAJOR)**。v7.1 = v7 + 第 7 輪 MINOR(附錄 A「v7 輪」)。
 v4 = v3 再**刪兩個東西**(前置「已在網路就擋」、存 secrets + ecdh 比對)並把 CAS 世代、確認網路、國家改回、已連上的判定寫清楚;處理見附錄 A。
 方針:少一個機制比多一個好(使用者規則「只做必要的修改」)。
 上層:`254-app-s1.md` v8.5.1(凍結;§1 列為不做,§5.4 已定格式)。使用者:接著做第二台入網;只有一支 Android 手機。
@@ -82,7 +82,10 @@ v4 = v3 再**刪兩個東西**(前置「已在網路就擋」、存 secrets + ec
    - 11 / 其他 / 斷線 / 逾時 → 讀 info(`join_state`):Applied → 已套用;**NotApplied → 「節點沒有套用這個網路(回覆碼 N)。常見原因:國家或頻道不合、
      無線電被關、手動改過網路設定、節點剛更新完還沒穩定」,國家改回(改回成功才刪成員項)**;InProgress(key 10 缺、key 11 true)/ Unknown / 讀不到 info → 保持 joining。
 7. **已連上**(owner 的 P3 節點):join 回 0 後每 10 s 讀 `status`,直到視窗結束;**已連上 = 同一次回覆中 key 15 不是 stale、`age_s` < 自 join 回覆起的秒數、
-   plinks 存在且 > 0、key 3 存在且 > 0**(不靠 JOINED)。視窗 = T5 實測「加入 → 已連上」時間的 2 倍(實測前暫定 120 s)。
+   key 5 不存在(節點自己的 JOINED = plink ≥ 1 且 wlh0 上有 batman 鄰居,meshjoin.sh:22-24)、plinks 存在且 > 0**;判定與 S4 狀態頁共用
+   (`254-app-status-page.md` §3:列 1–2 → 未知、列 3–4 → 已連上 {P = plinks}、其餘 → 還沒)。v7.2 改用 JOINED 的理由:key 3 是 `batctl n` 所有 hardif、
+   含過期項目的計數(halow-status:38),會給出假的「已連上」;JOINED 由 joinwatch 每 15 s 更新(會落後 ≤ 15 s,接受),plinks 每次即時讀,age_s 照舊把關。
+   視窗 = T5 以此規則實測「加入 → 已連上」時間的 2 倍(實測前暫定 120 s)。
    視窗內未成立 → 「已套用,還沒看到其他成員(請確認其他節點已開機、在範圍內)」;stale / plinks 缺 / key 3 缺 / 讀不到 → 「已套用,連線狀態未知」。P2 → 只「已套用」。
 
 ### 3.4 繼續加入 / 忘記
@@ -144,7 +147,8 @@ v4 = v3 再**刪兩個東西**(前置「已在網路就擋」、存 secrets + ec
 - T8(Rust):admin 簽章失敗(國家相同 / 不同兩臂)→ 沒有寫入、沒有 settings/set。負對照:國家步驟在簽章前的版本 → 不同臂 FAIL。
 - T9(Rust):36e2f57 產生的舊紀錄(pending 與 applied 各一)→ 推導出第一台,state 對應正確。負對照:pending 對應成 applied → FAIL。
 - T10(Rust):`write_cas`:讀紀錄後、PersistNet 前,另一次寫入改了紀錄 → 這次加入停止、不送出;寫入後以 aad(rel, expected + 1) 讀回解得開。負對照:在寫入時才取世代 → 該臂 FAIL。忘記加入中 → 刪項、世代 +1。
-- T11(Rust 假回應):已連上 —— stale、age_s 早於 join、plinks 缺 / 0、key 3 缺 / 0 → 不判已連上。負對照:只看 key 3 → FAIL。
+- T11(Rust 假回應,v7.2):已連上 —— stale、age_s 早於 join、plinks 缺 / 0、key 5 存在(含代碼 9 + key 3 ≥ 1)→ 不判已連上;JOINED + plinks ≥ 1(key 3 缺也算)→ 已連上 {plinks}。
+  負對照:舊規則(key 3 與 plinks)、只看 JOINED → FAIL。
 
 ## 8. 安全
 - 資產:SAE / net_root。只在手機 net 紀錄(Keystore 封裝)與加密給本次登入驗過 node_cert 的節點的 net_secrets;**v4 起紀錄的成員項不再存 secrets**。
@@ -224,3 +228,8 @@ v4 = v3 再**刪兩個東西**(前置「已在網路就擋」、存 secrets + ec
 | 還沒寫任何紀錄就斷線 | 「連線失敗，還沒有寫入或送出，請重試」 |
 | 已連上檢查 | 整個視窗鎖住其他操作,只讀剛加入那台的 session;換掉 / 斷線 → 「已套用，連線狀態未知」 |
 | 畫面 | `MemberView.creator` 標出建網節點,不列入「忘記」清單 |
+
+### v7.2(S4 狀態頁設計審查 v3 M5)
+| 項目 | 處理 |
+|---|---|
+| §3.3-7「已連上」用 key 3 會誤判(所有 hardif、過期項目) | 改用 key 5 不存在(JOINED)+ plinks > 0 + age_s;JOINED 落後 ≤ 15 s 接受;T11 改寫、T5 以新規則量視窗 |
