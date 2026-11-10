@@ -18,7 +18,8 @@
 #     on-hardware control before the fix (wsl.24 refuses the new shape for another reason); the fix's negative control
 #     is the Go mutant (node: M11 / M12) and the review probes.
 #   L26's BLE half (provd acks before it applies) is H3.
-# Type: — / A / F. Side effects: 04 ~40 min off the mesh, 1 sysrq reboot + restores, claimed in between.
+# Type: — / A / F. Side effects: 04 ~50 min off the mesh (yield, noyield, stale-secrets, txn-3: 4 pr_member joins,
+# each with its reboot), 1 sysrq reboot + restores after each arm, claimed in between.
 set -u
 PR_UNIT=prov-netupdate-254
 # shellcheck source=scripts/dv/prov-254.sh
@@ -96,14 +97,17 @@ txn3(){
 	pk_proof && ok "the lab key still logs in" || no "the lab key does not log in after txn-3"
 }
 stale(){
-	local r m0 m1 t i l
+	local r m0 m1 t i l cc
 	pr_member || return 1
-	m0=$(qr "$MESHID")
+	m0=$(qr "$MESHID"); cc=$(qr 'uci -q get wireless.radio1.country')
 	newfd3
+	# a marker in the log first: the reason below is read only from lines after it (this request's, review r2 B-m4)
+	q "logger -t batman-dv 'dv-stale-marker $RUN'"
 	r=$(pr_pc owner.pem FD3="$PR_FD3" -- net-apply --update-stale-secrets "$OWNER" "$PR_NETCFG"); echo "$r" | grep -v '^NETCFG' | sed 's/^/    /'
 	grep -q 'RESULT net.apply(update-stale-secrets) code=4 ' <<< "$r" && ok "stale-secrets: refused with E_BAD_OBJECT" || no "stale-secrets: $(grep RESULT <<< "$r")"
+	[ -n "$cc" ] && grep -q " country=$cc\$" <<< "$(grep '^RESULT' <<< "$r")" && ok "stale-secrets: sent with the stored country ($cc)" || no "stale-secrets: country [$cc] vs $(grep RESULT <<< "$r")"
 	# refused by the secrets binding, not by an earlier check with the same code (the helper logs the reason)
-	l=$(qr "logread | grep 'verb net.apply refused: code 4' | tail -1"); say "helper: $l"
+	l=$(qr "logread | sed -n '/dv-stale-marker $RUN/,\$p' | grep 'verb net.apply refused: code 4' | tail -1"); say "helper: $l"
 	grep -q '(net_secrets)' <<< "$l" && ok "stale-secrets: the refusal is the net_secrets binding" || no "stale-secrets: refusal reason [$l]"
 	m1=$(qr "$MESHID"); t=$(qr '[ -e /etc/batman-prov/.txn ] && echo present || echo gone')
 	[ -n "$m0" ] && [ "$m1" = "$m0" ] && ok "stale-secrets: mesh id unchanged ($m1)" || no "stale-secrets: mesh id $m0 -> $m1"
