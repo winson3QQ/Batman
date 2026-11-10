@@ -117,7 +117,7 @@ fn admin_record(v: &J) -> NetRec {
         members: h(&c["member_list"]["sign1"]),
         secrets: h(&c["net_secrets"]["sign1"]),
     };
-    NetRec { base, state: "applied".into(), list: None, invites: None }
+    NetRec { base, state: "applied".into(), list: None, invites: None, versions: None }
 }
 
 /// The real store with a fake seal: sealed = SHA-256(aad) ‖ plain.
@@ -282,7 +282,7 @@ fn request(v: &J, mdisk: &Disk, invite_hex: &str, name: &str) -> (String, String
 fn approve(disk: &Disk, jr_hex: &str) -> Run {
     let (g, p) = disk.get(REL).unwrap();
     let c = approve::check_joinreq(&netrec::decode(&p).unwrap(), &invite::qr_object(jr_hex, invite::QR_JOINREQ).unwrap()).unwrap();
-    let (f, a) = ApproveFlow::start(&p, g, jr_hex, &c.jr.hash, &pub65(&admin()));
+    let (f, a) = ApproveFlow::start(&p, g, jr_hex, &c.jr.hash, &pub65(&admin()), false);
     drive(disk, f, a, false)
 }
 
@@ -298,7 +298,7 @@ fn to_approval(v: &J) -> (Disk, Disk, String, String) {
 fn prepare(md: &Disk, ap: &str) -> Result<Prepared, Error> {
     let pend = md.get(PEND);
     let mnet = md.get(MNET).map(|x| x.1);
-    approve::prepare_import(ap, pend.as_ref().map(|(g, p)| (*g, &p[..])), mnet.as_deref())
+    approve::prepare_import(ap, pend.as_ref().map(|(g, p)| (*g, &p[..])), mnet.as_deref(), false)
 }
 
 fn import(md: &Disk, ap: &str, pend_gen: u64, sas: &str) -> Result<(Vec<u8>, [u8; 16], u64), Error> {
@@ -309,7 +309,7 @@ fn import(md: &Disk, ap: &str, pend_gen: u64, sas: &str) -> Result<(Vec<u8>, [u8
         x => panic!("{x:?}"),
     };
     let z = ecdh_z(OWNER_ENC_PRIV, &eph);
-    approve::import(ap, (g, &p), pend_gen, mnet.as_ref().map(|(g, p)| (&p[..], *g)), &z, sas)
+    approve::import(ap, (g, &p), pend_gen, mnet.as_ref().map(|(g, p)| (&p[..], *g)), &z, sas, false)
 }
 
 fn import_all(md: &Disk, ap: &str) -> MNet {
@@ -610,6 +610,7 @@ fn m5_check_joinreq_refusals() {
         device_id: None,
         state,
         prev_country: None,
+        known: None,
     };
     for state in [MemberState::Applied, MemberState::Joining, MemberState::Approved] {
         let mut r2 = rec.clone();
@@ -700,6 +701,7 @@ fn m7_admin_preconditions() {
         device_id: None,
         state: if i % 2 == 0 { MemberState::Approved } else { MemberState::Applied },
         prev_country: None,
+        known: None,
     }).collect());
     let (f, a) = InviteFlow::start(&netrec::encode(&full), 1, &pub65(&admin()));
     assert_eq!(refused(&drive(&ad, f, a, false)), Error::Full);
@@ -713,12 +715,12 @@ fn m7_approve_reruns_the_checks_and_writes_before_output() {
     let (jr_hex, _, _) = request(&v, &md, &inv, "客廳");
     let (g, p) = ad.get(REL).unwrap();
     // a hash other than the one the admin saw -> no output, nothing signed
-    let (f, a) = ApproveFlow::start(&p, g, &jr_hex, &[0; 32], &pub65(&admin()));
+    let (f, a) = ApproveFlow::start(&p, g, &jr_hex, &[0; 32], &pub65(&admin()), false);
     let r = drive(&ad, f, a, false);
     assert_eq!((refused(&r), r.signs.len()), (Error::HashMismatch, 0));
     // the record changed between reading and writing -> no output
     let c = approve::check_joinreq(&netrec::decode(&p).unwrap(), &invite::qr_object(&jr_hex, 2).unwrap()).unwrap();
-    let (f, a) = ApproveFlow::start(&p, g, &jr_hex, &c.jr.hash, &pub65(&admin()));
+    let (f, a) = ApproveFlow::start(&p, g, &jr_hex, &c.jr.hash, &pub65(&admin()), false);
     let r = drive(&ad, f, a, true);
     assert_eq!(r.end, Some(End::PersistFailed(None)));
     // the real thing: 2 admin signatures, key 12 used, an approved entry
@@ -730,7 +732,7 @@ fn m7_approve_reruns_the_checks_and_writes_before_output() {
     assert_eq!((me.state, me.owner_pub, me.name.as_str()), (MemberState::Approved, pub65(&owner()), "客廳"));
     // the used invite -> a second approval of the same request is refused
     let (g, p) = ad.get(REL).unwrap();
-    let (f, a) = ApproveFlow::start(&p, g, &jr_hex, &c.jr.hash, &pub65(&admin()));
+    let (f, a) = ApproveFlow::start(&p, g, &jr_hex, &c.jr.hash, &pub65(&admin()), false);
     let r = drive(&ad, f, a, false);
     assert_eq!((refused(&r), r.signs.len(), r.writes.len()), (Error::InviteUsed, 0, 0));
 }
@@ -749,7 +751,7 @@ fn m7_key_12_survives_confirm_and_forget() {
     let mut rec = netrec::decode(&netrec::encode(&rec)).unwrap();
     assert_eq!(rec.invites, inv, "confirm keeps key 12");
     let mut l = rec.members().unwrap();
-    l.push(Member { dac_pub_hash: [7; 32], ecdh_pub: [4; 65], name: "x".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Joining, prev_country: None });
+    l.push(Member { dac_pub_hash: [7; 32], ecdh_pub: [4; 65], name: "x".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Joining, prev_country: None, known: None });
     rec.list = Some(l);
     netrec::forget_joining(&mut rec, &[7; 32]).unwrap();
     assert_eq!(netrec::decode(&netrec::encode(&rec)).unwrap().invites, inv, "forget keeps key 12");
@@ -822,7 +824,7 @@ fn m8_refusals_write_nothing() {
     ];
     for (what, bad) in arms {
         assert!(prepare(&md, &bad).is_err(), "7a: {what}");
-        let r = approve::import(&bad, (1, &md.get(PEND).unwrap().1), 1, None, &[0; 32], &sas);
+        let r = approve::import(&bad, (1, &md.get(PEND).unwrap().1), 1, None, &[0; 32], &sas, false);
         assert!(r.is_err(), "7c: {what}");
     }
     assert!(md.get(MNET).is_none());
@@ -843,7 +845,7 @@ fn m8_7c_needs_the_7a_generation_the_confirmed_sas_a_curve_point_and_the_aead() 
     assert_eq!(import(&md, &ap, g, "000000").map(|_| ()), Err(Error::SasMismatch));
     // a wrong z -> AEAD fails
     let (gp, pp) = md.get(PEND).unwrap();
-    assert_eq!(approve::import(&ap, (gp, &pp), gp, None, &[7; 32], &sas).map(|_| ()), Err(Error::Aead));
+    assert_eq!(approve::import(&ap, (gp, &pp), gp, None, &[7; 32], &sas, false).map(|_| ()), Err(Error::Aead));
     // an ephemeral key that is not on the curve
     let bad_eph = resign(&ap, 4, cose::CT_MSECRETS, &admin(), |e| {
         let (_, enc) = e.iter_mut().find(|(k, _)| *k == V::Uint(4)).unwrap();
@@ -860,7 +862,7 @@ fn m8_7c_needs_the_7a_generation_the_confirmed_sas_a_curve_point_and_the_aead() 
         }
     });
     assert!(prepare(&md, &bad_eph).is_err());
-    assert!(approve::import(&bad_eph, (gp, &pp), gp, None, &[0; 32], &sas).is_err());
+    assert!(approve::import(&bad_eph, (gp, &pp), gp, None, &[0; 32], &sas, false).is_err());
     // a plaintext with another key than {2: net_root}
     let ms_extra = {
         let pend = Pend::decode(&pp).unwrap();
@@ -875,13 +877,15 @@ fn m8_7c_needs_the_7a_generation_the_confirmed_sas_a_curve_point_and_the_aead() 
         x => panic!("{x:?}"),
     };
     let z = ecdh_z(OWNER_ENC_PRIV, &eph);
-    assert!(matches!(approve::import(&extra, (gp, &pp), gp, None, &z, &sas), Err(Error::Invalid(_))));
+    assert!(matches!(approve::import(&extra, (gp, &pp), gp, None, &z, &sas, false), Err(Error::Invalid(_))));
     assert!(md.get(MNET).is_none());
 }
 
 /// an mnet already there, built from `cfg` (netcfg Sign1) with own entry `me`
 fn stored_mnet(md: &Disk, cfg: Vec<u8>, version: u32, me: Option<Member>) {
-    let x = MNet { net_id: h(&vectors()["keys"]["net_id"]).try_into().unwrap(), version, netcfg: cfg, members: vec![], secrets: vec![], net_root: [1; 32], me, invite_hash: [0; 32] };
+    // the stored members = the vectors' v1 member_list (the next version's members chain to it, remove-member §2.2)
+    let members = h(&vectors()["cose"]["member_list"]["sign1"]);
+    let x = MNet { net_id: h(&vectors()["keys"]["net_id"]).try_into().unwrap(), version, netcfg: cfg, members, secrets: vec![], net_root: [1; 32], me, invite_hash: [0; 32], versions: None, node_secrets: vec![] };
     md.put(MNET, &x.encode());
 }
 
@@ -928,7 +932,11 @@ fn m8_existing_mnet_chain_rules() {
 
 /// the approval's three Sign1s re-signed (admin) at `ver`
 fn approval_at(ap: &str, ver: u64) -> String {
-    let a = resign(ap, 2, cose::CT_MEMBERS, &admin(), |e| set(e, 2, V::Uint(ver)));
+    let prev = cose::object_hash(&h(&vectors()["cose"]["member_list"]["sign1"])).unwrap();
+    let a = resign(ap, 2, cose::CT_MEMBERS, &admin(), |e| {
+        set(e, 2, V::Uint(ver));
+        set(e, 3, V::Bytes(prev.to_vec()));
+    });
     let a = resign(&a, 3, cose::CT_SECRETS, &admin(), |e| set(e, 2, V::Uint(ver)));
     resign(&a, 4, cose::CT_MSECRETS, &admin(), |e| set(e, 2, V::Uint(ver)))
 }
@@ -941,7 +949,20 @@ fn m8_two_or_more_versions_ahead_is_too_old() {
     let (_, md, ap, _) = to_approval(&v);
     stored_mnet(&md, v1.clone(), 1, None);
     pend_with_cfg(&md, cfg_v(3, Some([1; 32]), id, &admin()));
-    assert_eq!(prepare(&md, &approval_at(&ap, 3)), Err(Error::TooOld));
+    // remove-member §3.6-2: signed by the stored admins -> the user is asked; replace confirmed -> the import goes on
+    assert_eq!(prepare(&md, &approval_at(&ap, 3)), Ok(Prepared::Replace { stored: 1 }));
+    let pend = md.get(PEND).unwrap();
+    let mnet = md.get(MNET).unwrap().1;
+    assert!(matches!(approve::prepare_import(&approval_at(&ap, 3), Some((pend.0, &pend.1[..])), Some(&mnet[..]), true), Ok(Prepared::Ready { .. })));
+    // signed by another key than the stored admins: too old, never replaceable
+    let (_, md, ap, _) = to_approval(&v);
+    stored_mnet(&md, v1.clone(), 1, None);
+    pend_with_cfg(&md, cfg_v(3, Some([1; 32]), id, &owner()));
+    let pend = md.get(PEND).unwrap();
+    let mnet = md.get(MNET).unwrap().1;
+    for replace in [false, true] {
+        assert!(approve::prepare_import(&approval_at(&ap, 3), Some((pend.0, &pend.1[..])), Some(&mnet[..]), replace).is_err(), "{replace}");
+    }
 }
 
 #[test]
@@ -1002,6 +1023,7 @@ fn m8_own_entry_carry_rules() {
         device_id: None,
         state,
         prev_country: prev.map(str::to_string),
+        known: None,
     };
     // the same DAC -> state and prev_country carried
     let (_, md, ap, _) = to_approval(&v);
@@ -1050,7 +1072,7 @@ fn m8_forged_invite_and_old_requests() {
     let jr_hex = invite::qr_hex(2, &Pend::decode(&md.get(PEND).unwrap().1).unwrap().joinreq);
     let (g, p) = ad2.get(REL).unwrap();
     let c = approve::check_joinreq(&netrec::decode(&p).unwrap(), &invite::qr_object(&jr_hex, 2).unwrap()).unwrap();
-    let (mut f, mut a) = ApproveFlow::start(&p, g, &jr_hex, &c.jr.hash, &pub65(&evil));
+    let (mut f, mut a) = ApproveFlow::start(&p, g, &jr_hex, &c.jr.hash, &pub65(&evil), false);
     let ap_forged = loop {
         a = match a {
             Action::SignAdmin { tbs } => f.signed(&der(&evil, &tbs)).unwrap(),
@@ -1120,10 +1142,9 @@ fn m10_approved_entries() {
     netrec::confirm(&mut rec, &info).unwrap();
     let st = |r: &NetRec| r.members().unwrap().into_iter().find(|m| m.dac_pub_hash == dev_dac_hash(&v)).map(|m| m.state);
     assert_eq!(st(&rec), Some(MemberState::Approved));
-    // forget accepts it
-    let gone = netrec::forget_joining(&mut rec, &dev_dac_hash(&v)).unwrap();
-    assert_eq!(gone.state, MemberState::Approved);
-    assert_eq!(st(&rec), None);
+    // remove-member §3.6 (T39): another person's approved entry is never forgotten ("remove this person" instead)
+    assert!(netrec::forget_joining(&mut rec, &dev_dac_hash(&v)).is_err());
+    assert_eq!(st(&rec), Some(MemberState::Approved));
 }
 
 // ---- M12 lifecycle ----------------------------------------------------------------------------------------------
@@ -1185,7 +1206,7 @@ fn m13_names() {
 fn records_round_trip() {
     let p = Pend { invite_hash: [1; 32], netcfg: vec![2], joinreq_hash: [3; 32], dac_hash: [4; 32], owner_enc_hash: [5; 32], device_id: "d".into(), joinreq: vec![7] };
     assert_eq!(Pend::decode(&p.encode()).unwrap(), p);
-    let x = MNet { net_id: [1; 16], version: 1, netcfg: vec![2], members: vec![3], secrets: vec![4], net_root: [5; 32], me: None, invite_hash: [6; 32] };
+    let x = MNet { net_id: [1; 16], version: 1, netcfg: vec![2], members: vec![3], secrets: vec![4], net_root: [5; 32], me: None, invite_hash: [6; 32], versions: None, node_secrets: vec![] };
     assert!(MNet::decode(&x.encode()).unwrap() == x);
     assert_eq!(mrec::pend_path(&[0xab; 16]), format!("mpend/{}", "ab".repeat(16)));
 }
@@ -1205,13 +1226,13 @@ fn r1_approve_checks_the_admin_preconditions() {
     let mut pending = rec.clone();
     pending.state = "pending".into();
     let mut full = rec.clone();
-    full.list = Some((0..16u8).map(|i| Member { dac_pub_hash: [i; 32], ecdh_pub: [4; 65], name: "x".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Approved, prev_country: None }).collect());
+    full.list = Some((0..16u8).map(|i| Member { dac_pub_hash: [i; 32], ecdh_pub: [4; 65], name: "x".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Approved, prev_country: None, known: None }).collect());
     for (what, r, admin_pub, want) in [
         ("pending", pending, pub65(&admin()), Error::NotApplied),
         ("not an admin", rec.clone(), pub65(&owner()), Error::NotAdmin),
         ("16 members", full, pub65(&admin()), Error::Full),
     ] {
-        let (f, a) = ApproveFlow::start(&netrec::encode(&r), g, &jr_hex, &hash, &admin_pub);
+        let (f, a) = ApproveFlow::start(&netrec::encode(&r), g, &jr_hex, &hash, &admin_pub, false);
         let run = drive(&ad, f, a, false);
         assert_eq!(refused(&run), want, "{what}");
         assert!(run.signs.is_empty() && run.writes.is_empty(), "{what}: nothing signed or written");
@@ -1289,14 +1310,25 @@ fn r1_open_invite_more_refusals() {
     let v = vectors();
     let net_id: [u8; 16] = h(&v["keys"]["net_id"]).try_into().unwrap();
     let inv_with = |cfg: V| sign1(&admin(), cose::CT_INVITE, &invite::invite_payload(&net_id, &[1; 16], cfg, &pub65(&admin())));
-    // the embedded netcfg must be version 1 with a null prev_hash
+    // remove-member §3.6 (open_netcfg_current): any version signed by admin_pub; version 1 has no prev_hash, later
+    // ones have one
     let v2 = netcfg_edited(|e| {
         set(e, 2, V::Uint(2));
         set(e, 3, V::Bytes(vec![1; 32]));
     });
-    assert_eq!(invite::open_invite(&inv_with(v2)), Err(Error::Invalid("netcfg is not version 1")));
+    assert_eq!(invite::open_invite(&inv_with(v2)).map(|i| i.cfg.version), Ok(2));
     let v1_prev = netcfg_edited(|e| set(e, 3, V::Bytes(vec![1; 32])));
-    assert_eq!(invite::open_invite(&inv_with(v1_prev)), Err(Error::Invalid("netcfg is not version 1")));
+    assert_eq!(invite::open_invite(&inv_with(v1_prev)), Err(Error::Invalid("netcfg version / prev_hash")));
+    let v2_null = netcfg_edited(|e| set(e, 2, V::Uint(2)));
+    assert_eq!(invite::open_invite(&inv_with(v2_null)), Err(Error::Invalid("netcfg version / prev_hash")));
+    // a v2 netcfg signed by a key that is not the invite's admin_pub
+    let mut p = cbor::decode(&h(&v["cose"]["net_config"]["payload"])).unwrap();
+    if let V::Map(e) = &mut p {
+        set(e, 2, V::Uint(2));
+        set(e, 3, V::Bytes(vec![1; 32]));
+    }
+    let other = item(&sign1(&owner(), cose::CT_NETCFG, &cbor::encode(&p)));
+    assert_eq!(invite::open_invite(&inv_with(other)), Err(Error::Invalid("signature")));
     // an unknown key inside the halow map (key 6)
     let halow = netcfg_edited(|e| set(e, 6, m(vec![(1, V::Text("s".into())), (2, V::Uint(40)), (3, V::Uint(4)), (4, V::Uint(1))])));
     assert_eq!(invite::open_invite(&inv_with(halow)), Err(Error::Invalid("netcfg keys")));
@@ -1332,4 +1364,141 @@ fn r3_line_and_paragraph_separators_are_refused_in_names() {
     assert_eq!(invite::check_name("a\u{2028}b"), Err(Error::Name));
     assert_eq!(invite::check_name("a\u{2029}b"), Err(Error::Name));
     assert_eq!(invite::display_name("a\u{2028}b\u{2029}c"), "a\u{FFFD}b\u{FFFD}c");
+}
+
+// ---- remove-member (docs/design/254-app-remove-member.md v6.4 §2.2, §3.6; T17, T28, T38) ---------------------------
+
+/// the next version's approval (v2, chained netcfg in the pend) whose members list `removed`
+fn next_version(md: &Disk, ap: &str, removed: Vec<[u8; 32]>) -> String {
+    let v = vectors();
+    let id: [u8; 16] = h(&v["keys"]["net_id"]).try_into().unwrap();
+    let v1 = h(&v["cose"]["net_config"]["sign1"]);
+    pend_with_cfg(md, cfg_v(2, Some(cose::object_hash(&v1).unwrap()), id, &admin()));
+    let a = approval_at(ap, 2);
+    let a = resign(&a, 2, cose::CT_MEMBERS, &admin(), |e| set(e, 5, V::Array(removed.iter().map(|d| V::Bytes(d.to_vec())).collect())));
+    // member_secrets made at version 2 (the KDF context binds the version: a re-signed v1 one would not decrypt)
+    let target: [u8; 32] = Sha256::digest(owner_enc_pub()).into();
+    let plain = cbor::encode(&m(vec![(2, V::Bytes(h(&v["keys"]["net_root"])))]));
+    let enc = cose::encrypt_to(&plain, cose::LABEL_MSECRETS, &owner_enc_pub(), &target, &id, 2).unwrap();
+    let ms = sign1(&admin(), cose::CT_MSECRETS, &cose::net_secrets_payload(&id, 2, &target, &enc.object));
+    edit_bundle(&a, |e| set(e, 4, item(&ms)))
+}
+
+#[test]
+fn rm_t28_the_import_keeps_mnet_keys_9_and_10() {
+    let v = vectors();
+    let v1 = h(&v["cose"]["net_config"]["sign1"]);
+    let ns = || vec![batman_proto::mrec::NodeSecrets { dac_hash: [3; 32], secrets: vec![1] }];
+    // the same version: key 9 / key 10 carried
+    let (_, md, ap, _) = to_approval(&v);
+    let (_, mn) = {
+        stored_mnet(&md, v1.clone(), 1, None);
+        md.get(MNET).unwrap()
+    };
+    let mut x = MNet::decode(&mn).unwrap();
+    x.versions = Some(vec![netrec::Version { version: 1, netcfg: v1.clone(), members: x.members.clone() }]);
+    x.node_secrets = ns();
+    md.put(MNET, &x.encode());
+    let y = import_all(&md, &ap);
+    assert_eq!((y.versions.is_some(), y.node_secrets.len()), (true, 1), "same version: kept");
+    // the next version: key 9 = the stored version (from keys 3 / 4) + the new one, key 10 cleared
+    let (_, md, ap, _) = to_approval(&v);
+    stored_mnet(&md, v1.clone(), 1, None);
+    let (_, mn) = md.get(MNET).unwrap();
+    let mut x = MNet::decode(&mn).unwrap();
+    x.node_secrets = ns();
+    md.put(MNET, &x.encode());
+    let a2 = next_version(&md, &ap, vec![]);
+    let y = import_all(&md, &a2);
+    assert_eq!(y.history().iter().map(|x| x.version).collect::<Vec<_>>(), vec![1, 2]);
+    assert_eq!(y.history()[0].netcfg, v1, "the stored v1 carried as the first version");
+    assert!(y.node_secrets.is_empty(), "the previous version's secrets would be refused by a node");
+    // the next version whose members do not chain to the stored ones: refused, nothing written
+    let (_, md, ap, _) = to_approval(&v);
+    stored_mnet(&md, v1.clone(), 1, None);
+    let a2 = next_version(&md, &ap, vec![]);
+    let bad = resign(&a2, 2, cose::CT_MEMBERS, &admin(), |e| set(e, 3, V::Bytes(vec![7; 32])));
+    assert_eq!(prepare(&md, &bad), Err(Error::Invalid("members are not the next version of the stored ones")));
+}
+
+#[test]
+fn rm_t17_an_own_entry_the_new_members_removed_is_not_carried() {
+    let v = vectors();
+    let v1 = h(&v["cose"]["net_config"]["sign1"]);
+    let me = Member {
+        dac_pub_hash: dev_dac_hash(&v),
+        ecdh_pub: [4; 65],
+        name: "old".into(),
+        owner_pub: [4; 65],
+        owner_enc_pub: [4; 65],
+        device_id: None,
+        state: MemberState::Applied,
+        prev_country: Some("JP".into()),
+        known: None,
+    };
+    // the new members list this very node as removed (re-invited after a removal): a fresh joining entry
+    let (_, md, ap, _) = to_approval(&v);
+    stored_mnet(&md, v1.clone(), 1, Some(me.clone()));
+    let a2 = next_version(&md, &ap, vec![dev_dac_hash(&v)]);
+    let got = import_all(&md, &a2).me.unwrap();
+    assert_eq!((got.state, got.prev_country, got.name.as_str()), (MemberState::Joining, None, "客廳"));
+    // negative control: not removed -> carried as before
+    let (_, md, ap, _) = to_approval(&v);
+    stored_mnet(&md, v1.clone(), 1, Some(me.clone()));
+    let a2 = next_version(&md, &ap, vec![]);
+    let got = import_all(&md, &a2).me.unwrap();
+    assert_eq!((got.state, got.name.as_str()), (MemberState::Applied, "old"));
+    // another node of the old phone, joining (PreviousNode) — but removed in the new members: it no longer blocks
+    let other = Member { dac_pub_hash: [9; 32], state: MemberState::Joining, ..me };
+    let (_, md, ap, _) = to_approval(&v);
+    stored_mnet(&md, v1.clone(), 1, Some(other.clone()));
+    let a2 = next_version(&md, &ap, vec![[9; 32]]);
+    assert!(matches!(prepare(&md, &a2), Ok(Prepared::Ready { .. })));
+    let (_, md, ap, _) = to_approval(&v);
+    stored_mnet(&md, v1, 1, Some(other));
+    let a2 = next_version(&md, &ap, vec![]);
+    assert_eq!(prepare(&md, &a2), Err(Error::PreviousNode), "negative control");
+}
+
+#[test]
+fn rm_t38_a_node_or_person_removed_before_needs_the_admins_yes() {
+    let v = vectors();
+    let (ad, md) = (Disk::new(), Disk::new());
+    let inv = invite(&v, &ad);
+    let (jr, _, _) = request(&v, &md, &inv, "客廳");
+    // the record lists the dev node as removed (some earlier removal)
+    let (g, p) = ad.get(REL).unwrap();
+    let mut rec = netrec::decode(&p).unwrap();
+    let mut mp = netrec::sign1_payload(&rec.base.members).unwrap();
+    if let V::Map(e) = &mut mp {
+        set(e, 5, V::Array(vec![V::Bytes(dev_dac_hash(&v).to_vec())]));
+    }
+    rec.base.members = sign1(&admin(), cose::CT_MEMBERS, &cbor::encode(&mp));
+    ad.cas(REL, g, &netrec::encode(&rec)).unwrap();
+    let (g, p) = ad.get(REL).unwrap();
+    let c = approve::check_joinreq(&netrec::decode(&p).unwrap(), &invite::qr_object(&jr, 2).unwrap()).unwrap();
+    let prev = c.previous.clone().expect("removed before");
+    assert!(prev.node);
+    // no yes: refused before the first SignAdmin, nothing written
+    let (f, a) = ApproveFlow::start(&p, g, &jr, &c.jr.hash, &pub65(&admin()), false);
+    let run = drive(&ad, f, a, false);
+    assert_eq!((refused(&run), run.signs.len(), run.writes.len()), (Error::NeedsConfirm, 0, 0));
+    // yes: approved, the entry's key 10 = the current version
+    let (f, a) = ApproveFlow::start(&p, g, &jr, &c.jr.hash, &pub65(&admin()), true);
+    let run = drive(&ad, f, a, false);
+    assert_eq!(run.signs.len(), 2);
+    let r = netrec::decode(&ad.get(REL).unwrap().1).unwrap();
+    let e = r.members().unwrap().into_iter().find(|m| m.dac_pub_hash == dev_dac_hash(&v)).unwrap();
+    assert_eq!((e.state, e.known), (MemberState::Approved, Some(1)));
+    // by owner_pub: a person listed in a kept version and not in key 11 now, with a never-removed node
+    let mut gone = r.clone();
+    gone.list = Some(vec![]);
+    let creator = netrec::sign1_payload(&gone.base.members).unwrap();
+    let V::Array(l) = creator.get(4).unwrap() else { panic!() };
+    let owner_pub: [u8; 65] = l[0].get(4).and_then(V::as_bytes).unwrap().try_into().unwrap();
+    let p2 = approve::previous_of(&gone, &[0xee; 32], &owner_pub).unwrap().expect("the person was listed before");
+    assert!(!p2.node);
+    assert_eq!(p2.owner_pub, Some(owner_pub));
+    // negative control: the same person in key 11 now -> no question
+    assert_eq!(approve::previous_of(&r, &[0xee; 32], &owner_pub).unwrap(), None);
 }

@@ -68,6 +68,7 @@ fn member(dac: u8, ecdh: u8, name: &str, state: MemberState) -> Member {
         device_id: None,
         state,
         prev_country: None,
+        known: None,
     }
 }
 
@@ -85,7 +86,7 @@ fn record(country: &str, admins: &[[u8; 65]], state: &str, list: Option<Vec<Memb
     );
     let members = cose::sign1(cose::CT_MEMBERS, &mp, &sig::der_to_raw_low_s(&signed(ADMIN, &cose::sign1_tbs(cose::CT_MEMBERS, cose::LABEL_MEMBERS, &mp))).unwrap());
     let base = NetRecord { net_id: NET_ID, mesh_id: mesh, channel: 40, bw: 4, sae: SAE.into(), net_root: [0x77; 32], netcfg, members, secrets: vec![0xd2, 0x84] };
-    NetRec { base, state: state.into(), list, invites: None }
+    NetRec { base, state: state.into(), list, invites: None, versions: None }
 }
 fn applied_record(country: &str) -> NetRec {
     record(country, &[pub_of(&key(ADMIN))], "applied", None)
@@ -403,10 +404,16 @@ fn input(disk: &Disk, node: Option<Verified>) -> Input {
         owner_enc_pub: pub_of(&key(0x22)),
         admin_pub: pub_of(&key(ADMIN)),
         member: false,
+        removed_confirmed: false,
     }
 }
 
-fn drive(node: &mut Node, disk: &Disk, mut j: Join2, mut a: Action, o: &Opts) -> Run {
+fn drive(node: &mut Node, disk: &Disk, j: Join2, a: Action, o: &Opts) -> Run {
+    drive_keep(node, disk, j, a, o).0
+}
+
+/// `drive`, and the flow afterwards (remove-member: `node_behind`)
+fn drive_keep(node: &mut Node, disk: &Disk, mut j: Join2, mut a: Action, o: &Opts) -> (Run, Join2) {
     let mut run = Run::default();
     let mut admin = 0;
     let mut owner = 0;
@@ -451,7 +458,7 @@ fn drive(node: &mut Node, disk: &Disk, mut j: Join2, mut a: Action, o: &Opts) ->
             Action::Write(f) => {
                 let back = node.on(&f);
                 if back.is_empty() {
-                    return run; // silence: the caller's timeout / link loss
+                    return (run, j); // silence: the caller's timeout / link loss
                 }
                 let mut next = None;
                 for x in &back {
@@ -461,7 +468,7 @@ fn drive(node: &mut Node, disk: &Disk, mut j: Join2, mut a: Action, o: &Opts) ->
             }
             Action::Done(e) => {
                 run.end = Some(e);
-                return run;
+                return (run, j);
             }
         };
     }
@@ -1031,7 +1038,7 @@ fn mnet(me: Option<Member>) -> MNet {
     let e = cose::encrypt_to(&plain, cose::LABEL_SECRETS, &node.ecdh_pub, &dac, &NET_ID, 1).unwrap();
     let p = cose::net_secrets_payload(&NET_ID, 1, &dac, &e.object);
     let secrets = cose::sign1(cose::CT_SECRETS, &p, &sig::der_to_raw_low_s(&signed(ADMIN, &cose::sign1_tbs(cose::CT_SECRETS, cose::LABEL_SECRETS, &p))).unwrap());
-    MNet { net_id: NET_ID, version: 1, netcfg: rec.base.netcfg, members: rec.base.members, secrets, net_root: [0x77; 32], me, invite_hash: [1; 32] }
+    MNet { net_id: NET_ID, version: 1, netcfg: rec.base.netcfg, members: rec.base.members, secrets, net_root: [0x77; 32], me, invite_hash: [1; 32], versions: None, node_secrets: vec![] }
 }
 fn my_entry(state: MemberState) -> Member {
     Member { device_id: Some("aabbccddeeff00112233".into()), ..member(0x77, 0x42, "node-2233", state) }
@@ -1050,6 +1057,7 @@ fn member_join(x: &MNet, country: &str, set_up: impl FnOnce(&mut Node)) -> (Run,
         owner_enc_pub: [0; 65],
         admin_pub: [0; 65],
         member: true,
+        removed_confirmed: false,
     };
     let (j, a) = Join2::start(c, inp);
     let run = drive(&mut n, &disk, j, a, &YES);
@@ -1119,7 +1127,7 @@ fn m9_member_preconditions() {
     let disk = Disk::new(&applied_record("US"));
     let (c, mut n) = pair("US");
     let (plain, g) = disk.read();
-    let inp = Input { record_plain: plain, record_gen: g, node: Some(joining_node()), node_name: String::new(), owner_pub: [0; 65], owner_enc_pub: [0; 65], admin_pub: [0; 65], member: true };
+    let inp = Input { record_plain: plain, record_gen: g, node: Some(joining_node()), node_name: String::new(), owner_pub: [0; 65], owner_enc_pub: [0; 65], admin_pub: [0; 65], member: true, removed_confirmed: false };
     let (j, a) = Join2::start(c, inp);
     assert_eq!(drive(&mut n, &disk, j, a, &YES).end, Some(End::Refused(Pre::Record)));
 }
@@ -1206,4 +1214,72 @@ fn r3_an_owner_signature_failure_is_unclear_and_keeps_prev_country() {
     let run = join(&disk, &mut n, c, &Opts { owner_fail_at: Some(0), ..YES });
     assert_eq!(run.end, Some(End::Joining(Keep::Unclear)));
     assert!(!n.got.contains(&"network/join".to_string()));
+}
+
+// ---- remove-member (docs/design/254-app-remove-member.md v6.4) ------------------------------------------------------
+
+fn signed_by_admin(ct: &str, p: &[u8]) -> Vec<u8> {
+    cose::sign1(ct, p, &sig::der_to_raw_low_s(&signed(ADMIN, &cose::sign1_tbs(ct, cose::label_of(ct).unwrap(), p))).unwrap())
+}
+
+/// T27 rule 2: a node in some version's removed list joins only with the admin's yes (a parameter of the start),
+/// checked before the first SignAdmin and any write
+#[test]
+fn rm_t27_rule2_a_node_removed_before_needs_the_admins_yes() {
+    let mut rec = applied_record("US");
+    let first = member(0x55, 0x43, "node-0001", MemberState::Applied);
+    let mut mp = cbor::decode(&cose::member_list_payload(
+        &NET_ID,
+        1,
+        None,
+        &[cose::Member { dac_pub_hash: &first.dac_pub_hash, ecdh_pub: &first.ecdh_pub, name: &first.name, owner_pub: &first.owner_pub, owner_enc_pub: &first.owner_enc_pub }],
+    ))
+    .unwrap();
+    if let V::Map(e) = &mut mp {
+        for (k, v) in e.iter_mut() {
+            if *k == V::Uint(5) {
+                *v = V::Array(vec![V::Bytes(netrec::dac_hash(&joining_node().dac_pub).to_vec())]);
+            }
+        }
+    }
+    rec.base.members = signed_by_admin(cose::CT_MEMBERS, &cbor::encode(&mp));
+    let disk = Disk::new(&rec);
+    let (conn, node) = pair("US");
+    let (_, a) = Join2::start(conn, input(&disk, Some(joining_node())));
+    assert_eq!(a, Action::Done(End::Refused(Pre::RemovedBefore)));
+    assert!(node.got.is_empty());
+    assert_eq!(disk.read().1, 1, "nothing written");
+    // yes -> today's join2
+    let (conn, mut node) = pair("US");
+    let mut inp = input(&disk, Some(joining_node()));
+    inp.removed_confirmed = true;
+    let (j, a) = Join2::start(conn, inp);
+    assert!(matches!(a, Action::SignAdmin { .. }));
+    let run = drive(&mut node, &disk, j, a, &YES);
+    assert!(matches!(run.end, Some(End::Applied { .. })), "{:?}", run.end);
+    // negative control: a node that was never removed needs no yes (t1 joins with removed_confirmed false)
+}
+
+/// T23: the node answered 5 (already a member) and info says an older version -> node_behind (the bridge sends the
+/// new secrets right away); a join the node applied (0) is never behind
+#[test]
+fn rm_t23_a_member_node_behind_after_reply_5() {
+    let mut rec = applied_record("US");
+    let mesh = format!("bm-{}", hex::encode(&NET_ID[..6]));
+    let prev = cose::object_hash(&rec.base.netcfg).unwrap();
+    rec.base.netcfg = signed_by_admin(cose::CT_NETCFG, &cose::net_config_payload(&NET_ID, 2, Some(&prev), "home", "US", &mesh, 40, 4, &[pub_of(&key(ADMIN))]));
+    let disk = Disk::new(&rec);
+    let (conn, mut node) = pair("US");
+    node.join_r.push_back(R::Err(5, m(vec![])));
+    node.in_net = true;
+    let (j, a) = Join2::start(conn, input(&disk, Some(joining_node())));
+    let (run, j) = drive_keep(&mut node, &disk, j, a, &YES);
+    assert!(matches!(run.end, Some(End::Applied { .. })), "{:?}", run.end);
+    assert!(j.node_behind(), "info key 9 = 1 < the record's 2");
+    let disk = Disk::new(&rec);
+    let (conn, mut node) = pair("US");
+    let (j, a) = Join2::start(conn, input(&disk, Some(joining_node())));
+    let (run, j) = drive_keep(&mut node, &disk, j, a, &YES);
+    assert!(matches!(run.end, Some(End::Applied { .. })));
+    assert!(!j.node_behind(), "reply 0: the node took the record's version");
 }

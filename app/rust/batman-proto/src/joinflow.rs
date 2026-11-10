@@ -50,8 +50,9 @@ pub struct Input {
     pub admin_pub: [u8; 65],
 }
 
-/// The net record (design §3): persisted BEFORE network/join is sent. Holds secrets: the caller encrypts it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The net record (design §3): persisted BEFORE network/join is sent. Holds secrets: the caller encrypts it. Its Debug
+/// names no secret (remove-member §6: SAE / net_root never formatted).
+#[derive(Clone, PartialEq, Eq)]
 pub struct NetRecord {
     pub net_id: [u8; 16],
     pub mesh_id: String,
@@ -62,6 +63,12 @@ pub struct NetRecord {
     pub netcfg: Vec<u8>,
     pub members: Vec<u8>,
     pub secrets: Vec<u8>,
+}
+
+impl std::fmt::Debug for NetRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NetRecord {{ net_id: {}, mesh_id: {:?}, channel: {}, bw: {}, <secrets> }}", crate::nodecert::hex_lower(&self.net_id), self.mesh_id, self.channel, self.bw)
+    }
 }
 
 #[derive(Debug, PartialEq)]

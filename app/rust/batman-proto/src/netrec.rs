@@ -8,6 +8,10 @@
 //! dac_pub_hash: one entry per node (replaced, never added twice). No net_secrets are kept per member (each join makes
 //! them afresh). A record without key 11 (written by 36e2f57) gets its list from key 8: the members v1 entries, state
 //! applied when key 10 is "applied", else joining.
+//! Remove member (254-app-remove-member v6.4 §2.1): ?13 = the versions [{1 version, 2 netcfg Sign1, 3 members Sign1}]
+//! (increasing, contiguous, the last 32; absent = one version made from keys 7 / 8); keys 5-8 are the current version.
+//! A key 11 entry's ?10 = the version its owner surely holds (set when this phone approved it; absent = the oldest
+//! version of key 13 − 1). Key 10 is in key 11 only, never in a member's mnet key 7. Key 9 is no longer read.
 //! The record holds SAE / net_root: it leaves Rust only to be sealed by the platform; nothing here formats it.
 
 use sha2::{Digest, Sha256};
@@ -20,6 +24,8 @@ use crate::joinflow::NetRecord;
 pub const MAX_MEMBERS: usize = 16;
 pub const PENDING: &str = "pending";
 pub const APPLIED: &str = "applied";
+/// key 13 keeps the last this many versions (§2.1, §2.5)
+pub const HISTORY_KEEP: usize = 32;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -55,6 +61,16 @@ pub struct Member {
     /// the node's country before this phone changed it for the join (join2 §3.3-3); kept until it is put back or the
     /// join is applied
     pub prev_country: Option<String>,
+    /// key 10 (net records only): the version this node's owner surely holds (remove-member §2.1)
+    pub known: Option<u32>,
+}
+
+/// One version of the network (net key 13 / mnet key 9): the signed netcfg and members.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Version {
+    pub version: u32,
+    pub netcfg: Vec<u8>,
+    pub members: Vec<u8>,
 }
 
 /// A decoded net record. `list` is key 11 as stored (None = an old record: `members()` derives it).
@@ -65,6 +81,8 @@ pub struct NetRec {
     pub list: Option<Vec<Member>>,
     /// key 12 as stored (None = never issued one)
     pub invites: Option<Vec<InviteRec>>,
+    /// key 13 as stored (None = an older record: `history()` derives one version from keys 7 / 8)
+    pub versions: Option<Vec<Version>>,
 }
 
 /// What a signed net_config says (the parts the app checks).
@@ -131,7 +149,16 @@ fn state_text(s: MemberState) -> &'static str {
     }
 }
 
-/// A member entry as stored (key 11 item; also a member's own node in mnet key 7).
+/// A key 11 item: the member entry and its key 10.
+fn list_value(m: &Member) -> Value {
+    let Value::Map(mut e) = member_value(m) else { unreachable!("member_value is a map") };
+    if let Some(k) = m.known {
+        e.push((Value::Uint(10), Value::Uint(k as u64)));
+    }
+    Value::Map(e)
+}
+
+/// A member entry as stored (key 11 item without key 10; a member's own node in mnet key 7).
 pub fn member_value(m: &Member) -> Value {
     let mut e = vec![
         (Value::Uint(1), Value::Bytes(m.dac_pub_hash.to_vec())),
@@ -161,6 +188,7 @@ fn member_base(v: &Value, state: MemberState) -> Result<Member, Error> {
         device_id: None,
         state,
         prev_country: None,
+        known: None,
     })
 }
 
@@ -176,7 +204,38 @@ pub fn member_of(v: &Value) -> Result<Member, Error> {
         Some(Value::Text(t)) => Ok(Some(t.clone())),
         Some(_) => Err(Error::Field(what)),
     };
-    Ok(Member { device_id: text(6, "member device_id")?, prev_country: text(9, "member prev_country")?, ..member_base(v, state)? })
+    let known = match v.get(10) {
+        None => None,
+        Some(x) => Some(f(x.as_uint().and_then(|n| u32::try_from(n).ok()), "member known version")?),
+    };
+    Ok(Member { device_id: text(6, "member device_id")?, prev_country: text(9, "member prev_country")?, known, ..member_base(v, state)? })
+}
+
+pub fn version_value(x: &Version) -> Value {
+    Value::Map(vec![
+        (Value::Uint(1), Value::Uint(x.version as u64)),
+        (Value::Uint(2), Value::Bytes(x.netcfg.clone())),
+        (Value::Uint(3), Value::Bytes(x.members.clone())),
+    ])
+}
+
+/// Key 13 / mnet key 9: non-empty, increasing by one.
+pub fn versions_of(v: &Value) -> Result<Vec<Version>, Error> {
+    let Value::Array(a) = v else { return Err(Error::Field("versions")) };
+    let out = a
+        .iter()
+        .map(|x| {
+            Ok(Version {
+                version: f(x.get(1).and_then(Value::as_uint).and_then(|n| u32::try_from(n).ok()), "version number")?,
+                netcfg: f(x.get(2).and_then(Value::as_bytes), "version netcfg")?.to_vec(),
+                members: f(x.get(3).and_then(Value::as_bytes), "version members")?.to_vec(),
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    if out.is_empty() || out.windows(2).any(|w| w[1].version != w[0].version.wrapping_add(1)) {
+        return Err(Error::Field("versions are not contiguous"));
+    }
+    Ok(out)
 }
 
 /// The stored form; key 11 only when `r.list` is Some (make-network's pending record has none, join2 §3.1).
@@ -195,7 +254,7 @@ pub fn encode(r: &NetRec) -> Vec<u8> {
         (Value::Uint(10), Value::Text(r.state.clone())),
     ];
     if let Some(l) = &r.list {
-        m.push((Value::Uint(11), Value::Array(l.iter().map(member_value).collect())));
+        m.push((Value::Uint(11), Value::Array(l.iter().map(list_value).collect())));
     }
     if let Some(i) = &r.invites {
         let e = i.iter().map(|x| {
@@ -206,6 +265,9 @@ pub fn encode(r: &NetRec) -> Vec<u8> {
             ])
         });
         m.push((Value::Uint(12), Value::Array(e.collect())));
+    }
+    if let Some(h) = &r.versions {
+        m.push((Value::Uint(13), Value::Array(h.iter().map(version_value).collect())));
     }
     cbor::encode(&Value::Map(m))
 }
@@ -248,13 +310,17 @@ pub fn decode(plain: &[u8]) -> Result<NetRec, Error> {
         ),
         Some(_) => return Err(Error::Field("invites")),
     };
-    Ok(NetRec { base, state, list, invites })
+    let versions = match v.get(13) {
+        None => None,
+        Some(x) => Some(versions_of(x)?),
+    };
+    Ok(NetRec { base, state, list, invites, versions })
 }
 
 impl NetRec {
     /// make-network's record (254-app-s1 §5.4): no key 11 while pending.
     pub fn made(base: NetRecord) -> NetRec {
-        NetRec { base, state: PENDING.into(), list: None, invites: None }
+        NetRec { base, state: PENDING.into(), list: None, invites: None, versions: None }
     }
 
     pub fn netcfg(&self) -> Result<NetCfg, Error> {
@@ -277,9 +343,74 @@ impl NetRec {
         }
     }
 
-    /// The node that made the network: the first members v1 entry.
+    /// The node that made the network: the first members v1 entry. Only meaningful while the record is pending
+    /// (remove-member §2.1: once applied, key 8 is the current version and may name another node or nobody).
     pub fn creator(&self) -> Result<[u8; 32], Error> {
         self.v1_members(MemberState::Joining)?.first().map(|m| m.dac_pub_hash).ok_or(Error::Field("members v1 empty"))
+    }
+
+    /// The creator while pending; None when applied (no caller may use it then, §2.1).
+    pub fn pending_creator(&self) -> Result<Option<[u8; 32]>, Error> {
+        if self.state == APPLIED {
+            Ok(None)
+        } else {
+            self.creator().map(Some)
+        }
+    }
+
+    /// Key 13, or — an older record — one version made from keys 7 / 8 (its number = key 7's key 2).
+    pub fn history(&self) -> Result<Vec<Version>, Error> {
+        match &self.versions {
+            Some(h) => Ok(h.clone()),
+            None => Ok(vec![Version { version: self.netcfg()?.version, netcfg: self.base.netcfg.clone(), members: self.base.members.clone() }]),
+        }
+    }
+
+    /// The version a member entry's owner surely holds (key 10; absent = the oldest kept version − 1).
+    pub fn known_of(&self, m: &Member) -> Result<u32, Error> {
+        match m.known {
+            Some(k) => Ok(k),
+            None => Ok(self.history()?.first().map(|x| x.version).unwrap_or(1).saturating_sub(1)),
+        }
+    }
+
+    /// The DAC hashes some kept version or the current members list as removed (key 5): "removed before" (§2.0-2).
+    pub fn removed_ever(&self) -> Result<Vec<[u8; 32]>, Error> {
+        let mut out: Vec<[u8; 32]> = vec![];
+        let mut all = self.history()?.into_iter().map(|x| x.members).collect::<Vec<_>>();
+        all.push(self.base.members.clone());
+        for m in all {
+            for d in removed_of(&sign1_payload(&m)?)? {
+                if !out.contains(&d) {
+                    out.push(d);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The newest kept version's members entry `pick` matches (§3.6: "the previous owner" — its name / owner_pub).
+    pub fn last_listed(&self, pick: impl Fn(&Member) -> bool) -> Result<Option<Member>, Error> {
+        for x in self.history()?.iter().rev() {
+            if let Some(Value::Array(a)) = sign1_payload(&x.members)?.get(4) {
+                for e in a {
+                    let m = member_base(e, MemberState::Applied)?;
+                    if pick(&m) {
+                        return Ok(Some(m));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// A members payload's key 5 (removed DAC hashes).
+pub fn removed_of(p: &Value) -> Result<Vec<[u8; 32]>, Error> {
+    match p.get(5) {
+        Some(Value::Array(a)) => a.iter().map(|x| arr(Some(x), "removed dac_hash")).collect(),
+        None => Ok(vec![]),
+        Some(_) => Err(Error::Field("removed")),
     }
 }
 
@@ -303,7 +434,8 @@ pub enum Confirm {
 
 /// key 10 == the record's net_id AND key 9 == the netcfg version -> the record and the creator's entry become applied
 /// (key 11 == true counts too: p5 is the commit point). No member entry is ever added here (a node lying about key 10
-/// must not get into the list).
+/// must not get into the list). An applied record: both checks first as ever, then Already — the creator step is
+/// skipped (remove-member §2.1: key 8 may name another node then, or nobody).
 pub fn confirm(rec: &mut NetRec, info: &Value) -> Result<Confirm, Error> {
     let cfg = rec.netcfg()?;
     let save_pending = match flow::join_state(info, &rec.base.net_id) {
@@ -312,6 +444,9 @@ pub fn confirm(rec: &mut NetRec, info: &Value) -> Result<Confirm, Error> {
     };
     if info.get(9).and_then(Value::as_uint) != Some(cfg.version as u64) {
         return Ok(Confirm::OtherVersion);
+    }
+    if rec.state == APPLIED {
+        return Ok(Confirm::Already { save_pending });
     }
     let creator = rec.creator()?;
     let mut list = rec.members()?;
@@ -328,19 +463,19 @@ pub fn confirm(rec: &mut NetRec, info: &Value) -> Result<Confirm, Error> {
     Ok(Confirm::Upgraded { save_pending })
 }
 
-/// "Forget joining" (join2 §3.4; member-join §3 also an approved entry): removes that entry. Returns the removed
-/// entry (its prev_country: the node may still have the network's country; approved: it keeps the network keys it
-/// got). An applied entry, an unknown node or the network's creator (joining while the record is pending: "confirm
-/// network" upgrades it) is refused.
+/// "Forget joining" (join2 §3.4): removes a joining entry. Returns the removed entry (its prev_country: the node may
+/// still have the network's country). Refused: an applied entry, an unknown node, the network's creator while the
+/// record is pending ("confirm network" upgrades it), and an approved entry — another person's node: "remove this
+/// person" instead (remove-member §3.6; forgetting revokes nothing and keeps it out of the next removal).
 pub fn forget_joining(rec: &mut NetRec, dac_pub_hash: &[u8; 32]) -> Result<Member, Error> {
-    if rec.creator()? == *dac_pub_hash {
+    if rec.pending_creator()? == Some(*dac_pub_hash) {
         return Err(Error::Field("the network's creator is never forgotten"));
     }
     let mut list = rec.members()?;
     let i = list
         .iter()
-        .position(|m| m.dac_pub_hash == *dac_pub_hash && m.state != MemberState::Applied)
-        .ok_or(Error::Field("no joining / approved member with that dac_pub_hash"))?;
+        .position(|m| m.dac_pub_hash == *dac_pub_hash && m.state == MemberState::Joining)
+        .ok_or(Error::Field("no joining member with that dac_pub_hash"))?;
     let m = list.remove(i);
     rec.list = Some(list);
     Ok(m)
