@@ -324,6 +324,7 @@ fn join2_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
                 Fail::NotApplied(c) => format!(
                     "節點沒有套用這個網路（回覆碼 {c}）。常見原因：國家或頻道不合、無線電被關、手動改過網路設定、節點剛更新完還沒穩定"
                 ),
+                Fail::NotSent(c) => format!("還沒送出：節點拒絕準備操作（代碼 {c}）"),
             };
             let tail = match r {
                 Revert::NoChange => String::new(),
@@ -337,9 +338,13 @@ fn join2_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
         E::AdminSignFailed => format!(
             "{fail}手機的管理者金鑰無法簽章，沒有寫入、沒有改國家、也沒有送出。若 App 重裝過，這支手機不能再加節點；新建網路會讓整隊分成兩個網路，舊節點要重燒"
         ),
-        E::PersistFailed { applied: false } => format!("[REQ_FAIL] {STALE_RECORD}"),
-        E::PersistFailed { applied: true } => {
+        E::PersistFailed { applied: false, error: None } => format!("[REQ_FAIL] {STALE_RECORD}"),
+        E::PersistFailed { applied: true, error: None } => {
             format!("[REQ_FAIL] {STALE_RECORD}（節點已套用；重新開啟後在這台按「繼續加入」就會補上紀錄）")
+        }
+        E::PersistFailed { applied: false, error: Some(why) } => format!("[REQ_FAIL] 手機儲存失敗（{why}）"),
+        E::PersistFailed { applied: true, error: Some(why) } => {
+            format!("[REQ_FAIL] 節點已套用，手機紀錄沒存好（手機儲存失敗：{why}），請在這台按「繼續加入」補上紀錄")
         }
         E::Broken(e) => format!("[REQ_FAIL] 加入網路中斷（{e}）"),
     }
@@ -368,6 +373,8 @@ fn verb_text(verb: &str) -> String {
         "settings/set" => "更改設定".into(),
         "ssh_keys/set" => "加入 SSH 金鑰".into(),
         "info" | "info-net" => "檢查網路".into(),
+        "info-confirm" => "確認網路".into(),
+        "status-link" => "查看連線狀態".into(),
         "network/join" => "建立網路".into(),
         "op/nonce" => "準備操作".into(),
         v => format!("操作（{v}）"),
@@ -667,19 +674,27 @@ impl OwnerSession {
         self.join_step(a)
     }
 
-    /// The last PersistNet's store_write_cas failed (the record changed elsewhere, or the write itself): stop; nothing
-    /// more is sent (join2 §3.1).
+    /// The last PersistNet failed (sealing or store_write_cas): stop; nothing more is sent (join2 §3.1). `error`: what
+    /// failed — exactly store_write_cas's "changed elsewhere" line for a generation mismatch, else the reason.
     #[flutter_rust_bridge::frb(sync)]
-    pub fn persist_failed(&mut self) -> Option<OwnerStep> {
+    pub fn persist_failed(&mut self, error: String) -> Option<OwnerStep> {
+        let stale = error == STALE_RECORD;
+        let why = if stale { STALE_RECORD.to_string() } else { format!("手機儲存失敗（{error}）") };
         if let St::Join2 { flow, .. } = &mut self.st {
-            let a = flow.persist_failed();
+            let a = flow.persist_failed((!stale).then_some(error));
             return self.join2_step(a);
         }
-        if let St::Join { .. } = &self.st {
+        if let St::Join { applied, .. } = &self.st {
+            let t = if *applied {
+                // the node applied; only the phone's "applied" copy is missing (the record stays pending on disk)
+                format!("[REQ_FAIL] 節點已套用，手機紀錄沒存好（{why}），請按「確認網路」")
+            } else {
+                format!("[REQ_FAIL] 建立網路沒有成功：{why}")
+            };
             self.back_to_conn();
-            return Some(OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 建立網路沒有成功：{STALE_RECORD}")));
+            return Some(OwnerStep::text(OwnerKind::Answer, t));
         }
-        self.persist_then.take().map(|_| OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {STALE_RECORD}")))
+        self.persist_then.take().map(|_| OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {why}")))
     }
 
     /// After an unclear make-network reply: "confirm network" (join2 §3.2) on the record this session made.
@@ -978,7 +993,17 @@ mod tests {
             sae: SAE.into(),
             net_root: [7; 32],
             netcfg: vec![1],
-            members: vec![2],
+            // a members v1 Sign1 whose creator is [0xa1; 32] (the signature is not checked on the phone's own record)
+            members: batman_proto::cose::sign1(
+                batman_proto::cose::CT_MEMBERS,
+                &batman_proto::cose::member_list_payload(
+                    &[0xab; 16],
+                    1,
+                    None,
+                    &[batman_proto::cose::Member { dac_pub_hash: &[0xa1; 32], ecdh_pub: &[4; 65], name: "node-0001", owner_pub: &[4; 65], owner_enc_pub: &[4; 65] }],
+                ),
+                &[1; 64],
+            ),
             secrets: vec![3],
         }
     }
@@ -1030,8 +1055,10 @@ mod tests {
             E::Failed(Fail::OtherNetwork, Revert::Reverted { country: "JP".into() }),
             E::Failed(Fail::NotApplied(11), Revert::NotReverted { now: "US".into(), was: "JP".into() }),
             E::AdminSignFailed,
-            E::PersistFailed { applied: false },
-            E::PersistFailed { applied: true },
+            E::PersistFailed { applied: false, error: None },
+            E::PersistFailed { applied: true, error: None },
+            E::PersistFailed { applied: true, error: Some("Io(StorageFull)".into()) },
+            E::Failed(Fail::NotSent(12), Revert::NoChange),
             E::Broken("Closed".into()),
         ];
         for e in &ends {
@@ -1045,7 +1072,8 @@ mod tests {
             "[JOIN_STATE] 節點沒有套用這個網路（回覆碼 11）。常見原因：國家或頻道不合、無線電被關、手動改過網路設定、節點剛更新完還沒穩定；國家可能仍是 US，原本是 JP，未能改回；稍後在這台按「繼續加入」或手動改回"
         );
         assert_eq!(join2_text(&E::Joining(Keep::Unclear7), "", ""), "[JOIN_STATE] 結果不明（節點可能正在更新或連線中斷），稍後在這台按「繼續加入」");
-        assert_eq!(join2_text(&E::PersistFailed { applied: false }, "", ""), "[REQ_FAIL] 紀錄已被別處更新，請重新開啟再試");
+        assert_eq!(join2_text(&E::PersistFailed { applied: false, error: None }, "", ""), "[REQ_FAIL] 紀錄已被別處更新，請重新開啟再試");
+        assert_eq!(join2_text(&E::PersistFailed { applied: false, error: Some("seal x".into()) }, "", ""), "[REQ_FAIL] 手機儲存失敗（seal x）");
         assert_eq!(country_question("JP", "US"), "[COUNTRY] 這台的國家是 JP，要改成 US 才能加入。要改嗎？");
         assert_eq!(link_text(&flow::LinkState::Connected { neighbours: 1 }), "[CONNECTED] 已連上：看得到 1 台鄰近節點");
     }
@@ -1116,5 +1144,226 @@ mod tests {
         assert_eq!(r.sealed, vec![1, 2, 3]);
         assert!(store_read_sealed(dir, "node/nope".into()).unwrap().is_none());
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    // ---- make-network: pending (CAS from 0) -> unclear reply -> confirm network (CAS from 1) -> check_network ----
+
+    use batman_proto::{frame, noise};
+    use p256::ecdsa::signature::Signer;
+
+    const FL: usize = 244;
+
+    struct FakeNode {
+        t: snow::TransportState,
+        rx: frame::Reassembler,
+    }
+
+    impl FakeNode {
+        /// the request in `frames`: (id, verb)
+        fn request(&mut self, frames: &[Vec<u8>]) -> (u64, String) {
+            let mut msg = None;
+            for f in frames {
+                msg = self.rx.push(f).unwrap();
+            }
+            let mut buf = vec![0u8; 65535];
+            let n = self.t.read_message(&msg.expect("a whole request"), &mut buf).unwrap();
+            let req = cbor::decode(&buf[..n]).unwrap();
+            (req.get(1).and_then(Value::as_uint).unwrap(), req.get(2).and_then(Value::as_text).unwrap().to_string())
+        }
+        fn answer(&mut self, id: u64, r: Result<Value, u64>) -> Vec<Vec<u8>> {
+            let m = |kv: Vec<(u64, Value)>| Value::Map(kv.into_iter().map(|(k, v)| (Value::Uint(k), v)).collect());
+            let env = match r {
+                Ok(b) => m(vec![(1, Value::Uint(id)), (3, b), (4, Value::Uint(0))]),
+                Err(c) => m(vec![(1, Value::Uint(id)), (4, Value::Uint(c)), (5, Value::Map(vec![]))]),
+            };
+            let mut buf = vec![0u8; 65535];
+            let n = self.t.write_message(&cbor::encode(&env), &mut buf).unwrap();
+            frame::split(&buf[..n], FL).unwrap()
+        }
+    }
+
+    fn key(b: u8) -> p256::ecdsa::SigningKey {
+        p256::ecdsa::SigningKey::from_slice(&[b; 32]).unwrap()
+    }
+    fn pub65(b: u8) -> [u8; 65] {
+        key(b).verifying_key().to_sec1_point(false).as_bytes().try_into().unwrap()
+    }
+    fn der(b: u8, input: &[u8]) -> Vec<u8> {
+        let s: p256::ecdsa::Signature = key(b).sign(input);
+        s.to_der().as_bytes().to_vec()
+    }
+
+    fn logged_in() -> (OwnerSession, FakeNode) {
+        let p: snow::params::NoiseParams = "Noise_NX_25519_ChaChaPoly_SHA256".parse().unwrap();
+        let kp = snow::Builder::new(p.clone()).generate_keypair().unwrap();
+        let pro = noise::prologue(noise::Mode::Nx, Some("x"));
+        let mut r = snow::Builder::new(p).prologue(&pro).unwrap().local_private_key(&kp.private).unwrap().build_responder().unwrap();
+        let mut i = noise::Initiator::new(noise::Mode::Nx, Some("x"), None).unwrap();
+        let mut buf = vec![0u8; 65535];
+        r.read_message(&i.msg1().unwrap(), &mut buf).unwrap();
+        let n = r.write_message(b"cert", &mut buf).unwrap();
+        let (_, sess) = i.read_msg2(&buf[..n]).unwrap();
+        let node = Verified { device_id: "aabbccddeeff00112233".into(), dac_der: vec![], dac_pub: pub65(0x55), ecdh_pub: pub65(0x43), sn: [0; 9] };
+        let s = OwnerSession {
+            st: St::Conn { conn: Conn::new(sess, FL), asked: "", op: None },
+            last4: "2233".into(),
+            owner_pub: pub65(0x11),
+            node: Some(node),
+            made: None,
+            confirm: None,
+            persist_then: None,
+            link_secs: 0,
+        };
+        (s, FakeNode { t: r.into_transport_mode().unwrap(), rx: frame::Reassembler::new(FL, 8192) })
+    }
+
+    /// drives steps until an Answer; network/join answers `join_code`, info answers ours applied
+    fn drive(s: &mut OwnerSession, n: &mut FakeNode, mut st: OwnerStep, verbs: &mut Vec<String>, persists: &mut Vec<(u64, u64)>) -> String {
+        loop {
+            st = match st.kind {
+                OwnerKind::SignAdmin => s.signed(der(0x66, &st.sign_input)).unwrap(),
+                OwnerKind::Sign => s.signed(der(0x11, &st.sign_input)).unwrap(),
+                OwnerKind::PersistNet => {
+                    persists.push((st.expected_gen, st.generation));
+                    assert_eq!(st.aad, store::aad(&st.rel, st.generation));
+                    s.net_persisted().unwrap()
+                }
+                OwnerKind::Write => {
+                    let (id, verb) = n.request(&st.frames);
+                    let net_id = s.made.as_ref().map(|(r, _)| r.base.net_id.to_vec()).unwrap_or_default();
+                    let r = match verb.as_str() {
+                        "op/nonce" => Ok(Value::Map(vec![(Value::Uint(1), Value::Bytes(vec![0x6d; 32]))])),
+                        "network/join" => Err(11),
+                        "info" => Ok(Value::Map(vec![
+                            (Value::Uint(9), Value::Uint(1)),
+                            (Value::Uint(10), Value::Bytes(net_id)),
+                            (Value::Uint(11), Value::Bool(false)),
+                        ])),
+                        v => panic!("unexpected {v}"),
+                    };
+                    verbs.push(verb);
+                    let mut next = None;
+                    for f in n.answer(id, r) {
+                        next = s.on_frame(f).or(next);
+                    }
+                    next.expect("a step after the node's answer")
+                }
+                OwnerKind::Answer => return st.detail,
+                k => panic!("unexpected step {k:?}"),
+            };
+        }
+    }
+
+    #[test]
+    fn make_network_unclear_reply_confirms_with_chained_generations() {
+        let (mut s, mut n) = logged_in();
+        let (mut verbs, mut persists) = (vec![], vec![]);
+        let st = s.request_make_network("home".into(), 40, pub65(0x22).to_vec(), pub65(0x66).to_vec()).unwrap();
+        let t = drive(&mut s, &mut n, st, &mut verbs, &mut persists);
+        // pending: a new record (CAS from 0 -> 1); join answers 11 -> confirm network: info -> applied (CAS 1 -> 2)
+        assert_eq!(verbs, ["op/nonce", "network/join", "info"]);
+        assert_eq!(persists, [(0, 1), (1, 2)]);
+        assert_eq!(t, "[NET_STATE] 網路已確認：手機紀錄改為「已建立」");
+        let (rec, g) = s.made.clone().unwrap();
+        assert_eq!((g, rec.state.as_str()), (2, "applied"));
+        assert_eq!(rec.members().unwrap()[0].state, MemberState::Applied);
+        // check_network afterwards reads info against the made record at generation 2: nothing more to write
+        let (mut verbs, mut persists) = (vec![], vec![]);
+        let st = s.check_network().unwrap();
+        let t = drive(&mut s, &mut n, st, &mut verbs, &mut persists);
+        assert_eq!(verbs, ["info"]);
+        assert!(persists.is_empty());
+        assert_eq!(t, "[NET_STATE] 網路已確認（手機紀錄本來就是「已建立」）");
+        assert_eq!(s.made.as_ref().unwrap().1, 2);
+    }
+
+    #[test]
+    fn make_network_applied_write_failure_says_confirm_network() {
+        let (mut s, mut n) = logged_in();
+        let mut st = s.request_make_network("home".into(), 40, pub65(0x22).to_vec(), pub65(0x66).to_vec()).unwrap();
+        let mut writes = 0;
+        let t = loop {
+            st = match st.kind {
+                OwnerKind::SignAdmin => s.signed(der(0x66, &st.sign_input)).unwrap(),
+                OwnerKind::Sign => s.signed(der(0x11, &st.sign_input)).unwrap(),
+                // the pending write lands; the applied write (after the node applied) fails in storage
+                OwnerKind::PersistNet if writes == 0 => {
+                    writes += 1;
+                    s.net_persisted().unwrap()
+                }
+                OwnerKind::PersistNet => s.persist_failed("Io(StorageFull)".into()).unwrap(),
+                OwnerKind::Write => {
+                    let (id, verb) = n.request(&st.frames);
+                    let r = match verb.as_str() {
+                        "op/nonce" => Ok(Value::Map(vec![(Value::Uint(1), Value::Bytes(vec![0x6d; 32]))])),
+                        _ => Ok(Value::Map(vec![(Value::Uint(1), Value::Uint(0))])),
+                    };
+                    let mut next = None;
+                    for f in n.answer(id, r) {
+                        next = s.on_frame(f).or(next);
+                    }
+                    next.unwrap()
+                }
+                OwnerKind::Answer => break st.detail,
+                k => panic!("unexpected step {k:?}"),
+            };
+        };
+        assert_eq!(t, "[REQ_FAIL] 節點已套用，手機紀錄沒存好（手機儲存失敗（Io(StorageFull)）），請按「確認網路」");
+        assert_eq!(s.made.as_ref().unwrap().1, 1, "the pending record (generation 1) is what is on disk");
+        assert!(matches!(s.st, St::Conn { .. }), "an owner session again");
+        assert_eq!(verb_text("info-confirm"), "確認網路");
+    }
+
+    #[test]
+    fn join_record_write_failure_says_why() {
+        use batman_proto::cose;
+        let payload = cose::net_config_payload(&[0x5a; 16], 1, None, "home", "US", "bm-5a5a5a5a5a5a", 40, 4, &[pub65(0x66)]);
+        let members = cose::member_list_payload(
+            &[0x5a; 16],
+            1,
+            None,
+            &[cose::Member { dac_pub_hash: &[0xa1; 32], ecdh_pub: &pub65(0x43), name: "node-0001", owner_pub: &pub65(0x11), owner_enc_pub: &pub65(0x22) }],
+        );
+        let mut r = NetRec::made(joinflow::NetRecord {
+            net_id: [0x5a; 16],
+            mesh_id: "bm-5a5a5a5a5a5a".into(),
+            channel: 40,
+            bw: 4,
+            sae: SAE.into(),
+            net_root: [7; 32],
+            netcfg: cose::sign1(cose::CT_NETCFG, &payload, &[1; 64]),
+            members: cose::sign1(cose::CT_MEMBERS, &members, &[1; 64]),
+            secrets: vec![3],
+        });
+        r.state = netrec::APPLIED.into();
+        for (error, want) in [
+            ("Io(StorageFull)", "[REQ_FAIL] 手機儲存失敗（Io(StorageFull)）"),
+            (STALE_RECORD, "[REQ_FAIL] 紀錄已被別處更新，請重新開啟再試"),
+        ] {
+            let (mut s, mut n) = logged_in();
+            let mut st = s.request_join_network(netrec::encode(&r), 1, pub65(0x66).to_vec(), pub65(0x22).to_vec()).unwrap();
+            let t = loop {
+                st = match st.kind {
+                    OwnerKind::SignAdmin => s.signed(der(0x66, &st.sign_input)).unwrap(),
+                    OwnerKind::Write => {
+                        let (id, verb) = n.request(&st.frames);
+                        assert_eq!(verb, "settings/get");
+                        let mut next = None;
+                        for f in n.answer(id, Ok(Value::Map(vec![(Value::Uint(2), Value::Text("US".into()))]))) {
+                            next = s.on_frame(f).or(next);
+                        }
+                        next.unwrap()
+                    }
+                    OwnerKind::PersistNet => {
+                        assert_eq!((st.expected_gen, st.generation), (1, 2));
+                        s.persist_failed(error.into()).unwrap()
+                    }
+                    OwnerKind::Answer => break st.detail,
+                    k => panic!("unexpected step {k:?}"),
+                };
+            };
+            assert_eq!(t, want);
+            assert!(matches!(s.st, St::Conn { .. }), "an owner session again");
+        }
     }
 }

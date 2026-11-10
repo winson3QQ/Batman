@@ -71,9 +71,9 @@ abstract class OwnerSession implements RustOpaqueInterface {
 
   OwnerStep? onFrame({required List<int> frame});
 
-  /// The last PersistNet's store_write_cas failed (the record changed elsewhere, or the write itself): stop; nothing
-  /// more is sent (join2 §3.1).
-  OwnerStep? persistFailed();
+  /// The last PersistNet failed (sealing or store_write_cas): stop; nothing more is sent (join2 §3.1). `error`: what
+  /// failed — exactly store_write_cas's "changed elsewhere" line for a generation mismatch, else the reason.
+  OwnerStep? persistFailed({required String error});
 
   /// "Confirm network" (join2 §3.2) for one of this phone's net records (opened by Kotlin; `record_gen` = the
   /// generation store_read_sealed gave): info key 10 / key 9 against the record; a match makes it applied.

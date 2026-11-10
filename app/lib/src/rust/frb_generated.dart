@@ -120,6 +120,7 @@ abstract class RustLibApi extends BaseApi {
 
   OwnerStep? crateApiOwnerOwnerSessionPersistFailed({
     required OwnerSession that,
+    required String error,
   });
 
   OwnerStep crateApiOwnerOwnerSessionRequestConfirmNetwork({
@@ -544,6 +545,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @override
   OwnerStep? crateApiOwnerOwnerSessionPersistFailed({
     required OwnerSession that,
+    required String error,
   }) {
     return handler.executeSync(
       SyncTask(
@@ -553,6 +555,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
+          sse_encode_String(error, serializer);
           return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9)!;
         },
         codec: SseCodec(
@@ -560,7 +563,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: null,
         ),
         constMeta: kCrateApiOwnerOwnerSessionPersistFailedConstMeta,
-        argValues: [that],
+        argValues: [that, error],
         apiImpl: this,
       ),
     );
@@ -569,7 +572,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiOwnerOwnerSessionPersistFailedConstMeta =>
       const TaskConstMeta(
         debugName: "OwnerSession_persist_failed",
-        argNames: ["that"],
+        argNames: ["that", "error"],
       );
 
   @override
@@ -2942,10 +2945,10 @@ class OwnerSessionImpl extends RustOpaque implements OwnerSession {
   OwnerStep? onFrame({required List<int> frame}) => RustLib.instance.api
       .crateApiOwnerOwnerSessionOnFrame(that: this, frame: frame);
 
-  /// The last PersistNet's store_write_cas failed (the record changed elsewhere, or the write itself): stop; nothing
-  /// more is sent (join2 §3.1).
-  OwnerStep? persistFailed() =>
-      RustLib.instance.api.crateApiOwnerOwnerSessionPersistFailed(that: this);
+  /// The last PersistNet failed (sealing or store_write_cas): stop; nothing more is sent (join2 §3.1). `error`: what
+  /// failed — exactly store_write_cas's "changed elsewhere" line for a generation mismatch, else the reason.
+  OwnerStep? persistFailed({required String error}) => RustLib.instance.api
+      .crateApiOwnerOwnerSessionPersistFailed(that: this, error: error);
 
   /// "Confirm network" (join2 §3.2) for one of this phone's net records (opened by Kotlin; `record_gen` = the
   /// generation store_read_sealed gave): info key 10 / key 9 against the record; a match makes it applied.

@@ -14,5 +14,10 @@ dev-trust = ["batman-proto/dev-trust"]
 flutter_rust_bridge = "=2.13.0"
 batman-proto = { path = "../batman-proto" }
 
+[dev-dependencies]
+# tests only: a fake node over a real Noise session (same versions / features as batman-proto)
+snow = { version = "=0.10.0", default-features = false, features = ["std", "use-curve25519", "use-chacha20poly1305", "use-sha2", "use-getrandom"] }
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "ecdh", "std"] }
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

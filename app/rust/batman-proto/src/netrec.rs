@@ -265,8 +265,12 @@ pub fn confirm(rec: &mut NetRec, info: &Value) -> Result<Confirm, Error> {
 }
 
 /// "Forget joining" (join2 §3.4): removes the joining entry of `dac_pub_hash`. Returns its prev_country (the node may
-/// still have the network's country). An applied entry or an unknown node is refused.
+/// still have the network's country). An applied entry, an unknown node or the network's creator (joining while the
+/// record is pending: "confirm network" upgrades it) is refused.
 pub fn forget_joining(rec: &mut NetRec, dac_pub_hash: &[u8; 32]) -> Result<Option<String>, Error> {
+    if rec.creator()? == *dac_pub_hash {
+        return Err(Error::Field("the network's creator is never forgotten"));
+    }
     let mut list = rec.members()?;
     let i = list
         .iter()

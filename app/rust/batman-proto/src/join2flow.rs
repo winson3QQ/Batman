@@ -69,6 +69,8 @@ pub enum Fail {
     OtherNetwork,
     /// info: not applied after this join reply code
     NotApplied(u64),
+    /// op/nonce refused before network/join: nothing was sent (§3.3-3 "送出前放棄")
+    NotSent(u64),
 }
 
 /// what happened to the country and the entry after a definite failure
@@ -93,7 +95,7 @@ pub enum Keep {
     CountryUnknown,
     /// 3 twice
     TwiceRefused,
-    /// op/nonce refused: network/join was not sent
+    /// op/nonce refused before settings.set: nothing was sent, the entry is back to what it was before this flow
     NonceRefused(u64),
 }
 
@@ -111,8 +113,9 @@ pub enum End {
     Failed(Fail, Revert),
     /// the admin key did not sign net_secrets (lost / invalidated): before any write, country change or send
     AdminSignFailed,
-    /// a CAS write found the record changed elsewhere; `applied`: the node had already applied
-    PersistFailed { applied: bool },
+    /// a record write failed; `error` None = the record changed elsewhere (generation mismatch), else why;
+    /// `applied`: the node had already applied
+    PersistFailed { applied: bool, error: Option<String> },
     Broken(String),
 }
 
@@ -393,7 +396,9 @@ impl Join2 {
         }
         let s = match sig::der_to_raw_low_s(der) {
             Ok(s) => s,
-            Err(_) if matches!(self.st, Step::Secrets { .. }) => return self.end(End::AdminSignFailed),
+            Err(_) if matches!(self.st, Step::Secrets { resend: false, .. }) => return self.end(End::AdminSignFailed),
+            // the resend after 3: the entry (and maybe the country) changed already -> unclear, keep joining
+            Err(_) if matches!(self.st, Step::Secrets { resend: true, .. }) => return self.end(End::Joining(Keep::Unclear)),
             Err(e) => return self.end(End::Broken(format!("{e:?}"))),
         };
         match std::mem::replace(&mut self.st, Step::Over) {
@@ -445,11 +450,12 @@ impl Join2 {
         }
     }
 
-    /// The last PersistNet's write_cas failed (the record changed elsewhere): stop, nothing more is sent.
-    pub fn persist_failed(&mut self) -> Option<Action> {
+    /// The last PersistNet's write failed: stop, nothing more is sent. `error` None = write_cas found another
+    /// generation (the record changed elsewhere); Some = any other failure (sealing, storage), for the text.
+    pub fn persist_failed(&mut self, error: Option<String>) -> Option<Action> {
         let Step::Persist(then) = std::mem::replace(&mut self.st, Step::Over) else { return None };
         self.pending = None;
-        self.end(End::PersistFailed { applied: matches!(then, Then::Applied { .. }) })
+        self.end(End::PersistFailed { applied: matches!(then, Then::Applied { .. }), error })
     }
 
     pub fn on_frame(&mut self, f: &[u8]) -> Option<Action> {
@@ -516,8 +522,14 @@ impl Join2 {
             Outcome::Err { code, .. } => {
                 // nothing went out: the operation was not sent
                 return match op {
-                    Op::SetCountry => self.request("settings/get", Value::Map(vec![]), Step::Get(Get::AfterSet)),
-                    Op::Join => self.end(End::Joining(Keep::NonceRefused(*code))),
+                    // settings.set never went out: the entry goes back to what it was (as for reason 14 / 20)
+                    Op::SetCountry => {
+                        let b = self.before.clone();
+                        let rec = self.with_entry(b);
+                        self.persist(rec, Then::End(End::Joining(Keep::NonceRefused(*code))))
+                    }
+                    // network/join never went out: a definite failure, the country goes back
+                    Op::Join => self.fail(Fail::NotSent(*code)),
                     Op::Revert(f) => {
                         let e = self.not_reverted(f);
                         self.end(e)

@@ -229,3 +229,12 @@ fn records_carry_no_secret_outside_keys_5_6_9() {
     let keys: Vec<V> = e.iter().map(|(k, _)| k.clone()).collect();
     assert_eq!(keys, [1, 2, 3, 4, 5, 8].map(V::Uint));
 }
+
+#[test]
+fn t10_forget_never_the_creator() {
+    // a pending record derives its creator as joining: forgetting it would leave an applied record without it
+    let mut r = netrec::decode(&old_record_plain("pending")).unwrap();
+    assert_eq!(r.members().unwrap()[0].state, MemberState::Joining);
+    assert!(netrec::forget_joining(&mut r, &[0xa1; 32]).is_err());
+    assert!(r.list.is_none(), "nothing changed");
+}
