@@ -153,6 +153,31 @@ void main() {
       expect(find.text('太快了，請稍等一秒'), findsOneWidget);
     });
 
+    testWidgets('a refresh that reads nothing says so; the next read clears it', (t) async {
+      StatusFields? next;
+      await t.pumpWidget(page(joined, refresh: () async => next));
+      expect(find.text('沒有讀到，請再按一次'), findsNothing);
+      await t.tap(find.byKey(const Key('refresh')));
+      await t.pumpAndSettle();
+      expect(find.text('沒有讀到，請再按一次'), findsOneWidget);
+      expect(find.text('已連上隊伍網路'), findsOneWidget, reason: 'the earlier verdict stays');
+      expect(find.text('讀取於 09:05:07'), findsOneWidget);
+      next = const StatusFields(color: 'red', sentence: '之前連上的隊員現在收不到');
+      await t.tap(find.byKey(const Key('refresh')));
+      await t.pumpAndSettle();
+      expect(find.text('沒有讀到，請再按一次'), findsNothing);
+    });
+
+    test('reopening within the quota keeps the last fresh read time (ReadClock)', () {
+      final c = ReadClock();
+      final t1 = DateTime(2026, 11, 10, 9, 0, 0), t2 = DateTime(2026, 11, 10, 9, 0, 1), t3 = DateTime(2026, 11, 10, 9, 0, 5);
+      expect(c.stamp(fresh: true, now: t1), t1);
+      expect(c.stamp(fresh: false, now: t2), t1, reason: 'E_RATE on reopening: the earlier verdict keeps its time');
+      expect(c.last, t1);
+      expect(c.stamp(fresh: true, now: t3), t3);
+      expect(ReadClock().stamp(fresh: false, now: t2), t2, reason: 'no earlier read to keep');
+    });
+
     test('readTime', () {
       final now = DateTime(2026, 1, 1, 1, 1, 1);
       expect(readTime(fresh: true, now: now, previous: at), now);

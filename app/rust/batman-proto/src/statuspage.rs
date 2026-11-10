@@ -152,6 +152,16 @@ pub fn shown(s: &str) -> String {
     display_name(s).chars().take(NODE_TEXT_MAX).collect()
 }
 
+/// The technical list's value for a node string: `shown`, or 「（讀不到）」 when the node sent "" (code review B-m2).
+pub const UNREAD: &str = "（讀不到）";
+fn value(s: &str) -> String {
+    if s.trim().is_empty() {
+        UNREAD.into()
+    } else {
+        shown(s)
+    }
+}
+
 fn text_key<'a>(m: &'a Value, k: &str) -> Option<&'a Value> {
     match m {
         Value::Map(e) => e.iter().find(|(key, _)| matches!(key, Value::Text(t) if t == k)).map(|(_, v)| v),
@@ -362,14 +372,14 @@ pub fn tech_lines(a: Answer) -> Vec<String> {
                 if text_key(f, "stale") == Some(&Value::Bool(true)) {
                     out.push("節點的狀態資料過期（stale）".into());
                 }
-                let txt = |k: &str| text_of(f, k).map(shown);
+                let txt = |k: &str| text_of(f, k).map(value);
                 let jn = text_key(f, "join");
-                let jt = |k: &str| jn.and_then(|j| text_of(j, k)).map(shown);
+                let jt = |k: &str| jn.and_then(|j| text_of(j, k)).map(value);
                 if let Some(s) = txt("image") {
                     out.push(format!("上游映像（image）：{s}"));
                 }
                 if let Some(s) = jt("snr_db") {
-                    out.push(format!("SNR：{s} dB"));
+                    out.push(if s == UNREAD { format!("SNR：{s}") } else { format!("SNR：{s} dB") });
                 }
                 if let Some(n) = jn.and_then(|j| text_key(j, "plinks")).and_then(Value::as_uint) {
                     out.push(format!("直接連到的站台數 P（plinks）：{n}"));
@@ -394,7 +404,7 @@ pub fn tech_lines(a: Answer) -> Vec<String> {
                 }
                 if let Some(Value::Array(a)) = text_key(f, "uci_staged") {
                     for x in a {
-                        out.push(format!("未套用的設定（uci_staged）：{}", shown(x.as_text().unwrap_or("?"))));
+                        out.push(format!("未套用的設定（uci_staged）：{}", value(x.as_text().unwrap_or(""))));
                     }
                 }
                 if text_key(f, "ssid_unsaved") == Some(&Value::Bool(true)) {

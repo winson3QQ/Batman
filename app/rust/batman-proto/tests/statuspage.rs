@@ -455,3 +455,28 @@ fn tech_lines_list_every_field() {
     }
     assert_eq!(sp::tech_lines(Answer::Error(12))[0], "錯誤碼：12");
 }
+
+/// code review B-m2: a node string the node sent as "" is 「（讀不到）」, never a bare label like 「SNR： dB」.
+#[test]
+fn tech_lines_say_unread_for_empty_node_strings() {
+    let x = St { snr: "", temp: "", throttled: "", ..St::joined() }.v();
+    let mut x = x;
+    let V::Map(m) = &mut x else { unreachable!() };
+    let (_, f) = m.iter_mut().find(|(k, _)| *k == V::Uint(15)).unwrap();
+    let V::Map(f) = f else { unreachable!() };
+    for (k, v) in f.iter_mut() {
+        if *k == V::Text("join".into()) {
+            *v = t(vec![("state", s("JOINED")), ("channel", s("")), ("country", s(" ")), ("snr_db", s("")), ("plinks", V::Uint(1))]);
+        }
+    }
+    let tech = sp::tech_lines(Answer::Body(&x));
+    for want in ["SNR：（讀不到）", "頻道：（讀不到）", "國家：（讀不到）", "溫度（temp_c）：（讀不到）", "throttled：（讀不到）"] {
+        assert!(tech.iter().any(|l| l == want), "{want} in {tech:?}");
+    }
+    for l in &tech {
+        assert!(!l.ends_with('：') && !l.contains("： ") && !l.contains("SNR： dB"), "a bare label: {l:?}");
+    }
+    // a value that is there is shown as is
+    let tech = sp::tech_lines(Answer::Body(&St::joined().v()));
+    assert!(tech.iter().any(|l| l == "SNR：31 dB") && tech.iter().any(|l| l == "頻道：40"), "{tech:?}");
+}

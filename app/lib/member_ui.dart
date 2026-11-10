@@ -175,6 +175,18 @@ String? networkName(String netId, Map<String, String> names) => netId.isEmpty ? 
 /// §2-1 / §2-5: the read time shown — a fresh read is "now"; a read refused with E_RATE keeps the earlier read's time.
 DateTime readTime({required bool fresh, required DateTime now, DateTime? previous}) => fresh || previous == null ? now : previous;
 
+/// The time of the last fresh status-page read of this session, kept across closing and reopening the page: reopening
+/// within the node's 1 / s quota answers E_RATE with the earlier verdict, which keeps its own time (code review A-m1).
+class ReadClock {
+  DateTime? last;
+
+  /// the read time to show for a read that just ended ([fresh] false: E_RATE kept the earlier verdict)
+  DateTime stamp({required bool fresh, required DateTime now}) => last = readTime(fresh: fresh, now: now, previous: last);
+}
+
+/// The line under 「重新整理」 when a refresh read nothing (timeout, link lost, another request running).
+const refreshMissed = '沒有讀到，請再按一次';
+
 String _two(int n) => n.toString().padLeft(2, '0');
 
 /// HH:MM:SS (the app's own clock, display only)
@@ -207,15 +219,20 @@ class _StatusPageViewState extends State<StatusPageView> {
   late StatusFields _f = widget.initial;
   late DateTime _at = widget.initialAt;
   bool _busy = false;
+  // the last refresh read nothing (code review B-m3)
+  bool _missed = false;
 
   Future<void> _refresh() async {
     setState(() => _busy = true);
     try {
       final r = await widget.onRefresh();
-      if (r != null && mounted) {
+      if (mounted) {
         setState(() {
-          _at = readTime(fresh: r.fresh, now: widget.clock(), previous: _at);
-          _f = r;
+          _missed = r == null;
+          if (r != null) {
+            _at = readTime(fresh: r.fresh, now: widget.clock(), previous: _at);
+            _f = r;
+          }
         });
       }
     } finally {
@@ -243,7 +260,10 @@ class _StatusPageViewState extends State<StatusPageView> {
       Row(children: [
         FilledButton(key: const Key('refresh'), onPressed: _busy ? null : _refresh, child: const Text('重新整理')),
         const SizedBox(width: 8),
-        if (f.rateNote.isNotEmpty) Expanded(child: Text(f.rateNote, key: const Key('rateNote'))),
+        if (_missed)
+          const Expanded(child: Text(refreshMissed, key: Key('missed')))
+        else if (f.rateNote.isNotEmpty)
+          Expanded(child: Text(f.rateNote, key: const Key('rateNote'))),
       ]),
       ExpansionTile(
           key: const Key('tech'),

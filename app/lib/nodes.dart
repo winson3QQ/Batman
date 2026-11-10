@@ -77,6 +77,8 @@ class _NodesPageState extends State<NodesPage> {
   bool _wrote = false;
   bool _saved = false; // a record write of the current request landed (storeWriteCas succeeded)
   bool _quiet = false; // the last request was a quiet one (a late answer of it is only logged)
+  // the status page's last fresh read time (an E_RATE on reopening keeps the earlier verdict and its time)
+  final _readClock = ReadClock();
   final _country = TextEditingController(); // settings/set key 2 (two capital letters)
   final _apSsid = TextEditingController(); // settings/set key 20
   final _apPass = TextEditingController(); // obscured; cleared once sent
@@ -900,7 +902,7 @@ class _NodesPageState extends State<NodesPage> {
     await Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => Scaffold(
             appBar: AppBar(title: const Text('節點狀態')),
-            body: StatusPageView(initial: first, initialAt: DateTime.now(), onRefresh: _readStatusPage))));
+            body: StatusPageView(initial: first, initialAt: _readClock.last ?? DateTime.now(), onRefresh: _readStatusPage))));
   }
 
   /// One status + info read, as the page shows it (null: nothing was read).
@@ -909,6 +911,7 @@ class _NodesPageState extends State<NodesPage> {
     final s = _session;
     if (a == null || s == null || !mounted) return null;
     final v = s.statusView();
+    _readClock.stamp(fresh: v.fresh, now: DateTime.now());
     _log('status page row ${v.row} fresh ${v.fresh}');
     final names = await _netNames();
     final membership = statusMembershipLine(nodeState: v.nodeState, netId: v.netId, name: networkName(v.netId, names));
