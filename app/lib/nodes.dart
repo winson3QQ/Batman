@@ -78,8 +78,9 @@ class _NodesPageState extends State<NodesPage> {
   var _track = SendTrack();
   // network/leave answered 0 in the outstanding request (the page re-reads once)
   bool _left = false;
-  // the last line _say showed (a leave whose request ended without an answer shows it on the page: review B-M1)
-  String? _lastSaid;
+  // the line the last _ask ended with when it returned no answer (null: it ended without one of its own) — the leave
+  // page shows it (review B-M1, r2 A-m2)
+  String? _askEnd;
   bool _saved = false; // a record write of the current request landed (storeWriteCas succeeded)
   bool _quiet = false; // the last request was a quiet one (a late answer of it is only logged)
   // the status page's last fresh read time (an E_RATE on reopening keeps the earlier verdict and its time)
@@ -117,7 +118,6 @@ class _NodesPageState extends State<NodesPage> {
   /// [s] may start with log markers ("[LOGGED_IN] ", "[ANSWER] [NET_MADE] ", ...; owner.rs puts some on its answers):
   /// logcat keeps them, the screen does not.
   void _say(String s) {
-    _lastSaid = s;
     _log(s);
     if (mounted) setState(() => _lines.add(screenText(s)));
   }
@@ -181,7 +181,7 @@ class _NodesPageState extends State<NodesPage> {
         }
         switch (st.kind) {
           case OwnerKind.write:
-            await _write(rx, _track.outgoing(sent: st.sent, frames: st.frames));
+            await _write(rx, stepFrames(_track, st));
             if (gone()) return;
             _kick();
             st = null;
@@ -430,11 +430,15 @@ class _NodesPageState extends State<NodesPage> {
       bool retry = true,
       String? unclear,
       bool held = false}) async {
-    _lastSaid = null;
+    _askEnd = null;
     if (_busy && !held) return null;
     if (_session == null && _lastNode != null && !held) await _login(_lastNode!);
     var s = _session;
-    if (s == null || (_busy && !held)) return null;
+    if (s == null) {
+      _askEnd = askNoLink;
+      return null;
+    }
+    if (_busy && !held) return null;
     if (mounted) setState(() => _busy = true);
     _waitFor = wait;
     _waitLine = '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應（結果不明；下次操作會重新連線）';
@@ -455,7 +459,8 @@ class _NodesPageState extends State<NodesPage> {
         final code = e is PlatformException ? e.code : '$e';
         if (unclear != null) {
           _say('[LINK_LOST] 連線或手機金鑰出錯（$code）');
-          _say(_unclearNow());
+          _askEnd = _unclearNow();
+          _say(_askEnd!);
           await _drop();
           return null;
         }
@@ -466,7 +471,10 @@ class _NodesPageState extends State<NodesPage> {
         setState(() => _busy = false);
         await _login(_lastNode!);
         s = _session;
-        if (s == null) return null;
+        if (s == null) {
+          _askEnd = askNoLink;
+          return null;
+        }
         setState(() => _busy = true);
         _answer = Completer<String>();
         await _run!(req(s));
@@ -482,7 +490,8 @@ class _NodesPageState extends State<NodesPage> {
       }
       return a;
     } catch (e) {
-      _say('[REQ_FAIL] 操作沒有成功：$e');
+      _askEnd = '[REQ_FAIL] 操作沒有成功：$e';
+      _say(_askEnd!);
       return null;
     } finally {
       _wait?.cancel();
@@ -920,7 +929,7 @@ class _NodesPageState extends State<NodesPage> {
   Future<LeaveResult> _leaveNetwork() => leaveFlow(
       ask: ({required wait, required retry, required unclear}) =>
           _ask((s) => s.requestLeaveNetwork(), wait: wait, retry: retry, unclear: unclear),
-      lastSaid: () => _lastSaid,
+      askEnd: () => _askEnd,
       left: () => _left,
       reread: _readStatusPage);
 

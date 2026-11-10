@@ -11,6 +11,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'say.dart' show screenText;
+import 'src/rust/api/owner.dart' show OwnerStep;
 
 /// 219 §5.5 / R22: the SAS is compared over another channel.
 const sasRule = '請用電話或當面核對，不要在傳圖片的同一個聊天裡核對';
@@ -192,7 +193,11 @@ class StatusFields {
 const joinWait = Duration(seconds: 360);
 const leaveUnclear = '[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁';
 
-/// Frames the run loop may write; made only by [SendTrack.outgoing].
+/// The run loop's Write step (nodes.dart): the only way to get frames it may write; the step's own `sent` flag is
+/// marked before the frames go out (code review r2 A-m1 = B-m4: the call site cannot pass another flag).
+Outgoing stepFrames(SendTrack t, OwnerStep st) => t._outgoing(sent: st.sent, frames: st.frames);
+
+/// Frames the run loop may write; made only by [stepFrames].
 class Outgoing {
   Outgoing._(this.frames);
   final List<Uint8List> frames;
@@ -207,21 +212,31 @@ class LeaveResult {
   final bool stale;
 }
 
-/// The leave line when the owner request ended without an answer and said nothing either (busy, …).
+/// The leave line when the owner request ended without an answer and without a line of its own (busy, …).
 const leaveNotAsked = '[REQ_FAIL] 沒有送出 — 請再按一次';
 
+/// An owner request's end when no owner session could be had (the login said why): nothing was sent.
+const askNoLink = '[REQ_FAIL] 沒有連上節點，沒有送出 — 請靠近一點再按一次';
+
 /// The leave button's request (leave v4.1 §3): [ask] is the owner request; when it returns no answer (a write that
-/// threw, a failed re-login, …) the line it last said is shown on the page instead (code review B-M1) — never nothing.
-/// [left]: network/leave answered 0 in that request; then the page is read once more ([reread]).
+/// threw, a failed re-login, …) the request's own end line ([askEnd], recorded by `_ask` itself, never a global "last
+/// line" another `_say` could overwrite: r2 A-m2) is shown on the page instead (code review B-M1) — never nothing.
+/// [left]: network/leave answered 0 in that request; then the page is read once more ([reread]); a re-read that
+/// reads nothing or throws marks the page stale (r2 B-m1).
 Future<LeaveResult> leaveFlow(
     {required Future<String?> Function({required Duration wait, required bool retry, required String unclear}) ask,
-    required String? Function() lastSaid,
+    required String? Function() askEnd,
     required bool Function() left,
     required Future<StatusFields?> Function() reread}) async {
   final a = await sendLeave(ask);
-  if (a == null) return LeaveResult(lastSaid() ?? leaveNotAsked, null);
+  if (a == null) return LeaveResult(askEnd() ?? leaveNotAsked, null);
   if (!left()) return LeaveResult(a, null);
-  final again = await reread();
+  StatusFields? again;
+  try {
+    again = await reread();
+  } catch (_) {
+    again = null;
+  }
   return LeaveResult(a, again, stale: again == null);
 }
 
@@ -247,7 +262,7 @@ class SendTrack {
 
   /// The only way to get frames the run loop may write (nodes.dart `_write` takes an [Outgoing]): the sent mark is
   /// taken BEFORE the frames go out, so a write that throws half-way is "possibly sent" (code review B-M1 / A-m1).
-  Outgoing outgoing({required bool sent, required List<Uint8List> frames}) {
+  Outgoing _outgoing({required bool sent, required List<Uint8List> frames}) {
     write(sent: sent);
     return Outgoing._(frames);
   }
@@ -314,10 +329,15 @@ class _StatusPageViewState extends State<StatusPageView> {
   bool _missed = false;
   // the last leave's answer line
   String _leaveLine = '';
+  // the leave dialog is open (a second tap before it shows opens no second one: r2 B-m3)
+  bool _confirming = false;
 
   Future<void> _leave() async {
-    if (_busy || widget.onLeave == null) return;
-    final yes = await showDialog<bool>(
+    if (_busy || _confirming || widget.onLeave == null) return;
+    _confirming = true;
+    final bool? yes;
+    try {
+      yes = await showDialog<bool>(
         context: context,
         builder: (c) => AlertDialog(
               title: Text(_f.leaveTitle),
@@ -327,6 +347,9 @@ class _StatusPageViewState extends State<StatusPageView> {
                 TextButton(key: const Key('leaveConfirm'), onPressed: () => Navigator.pop(c, true), child: const Text('離開網路')),
               ],
             ));
+    } finally {
+      _confirming = false;
+    }
     if (yes != true || !mounted) return;
     setState(() => _busy = true);
     try {
@@ -339,8 +362,9 @@ class _StatusPageViewState extends State<StatusPageView> {
             _at = readTime(fresh: again.fresh, now: widget.clock(), previous: _at);
             _f = again;
           }
-          // left, but the re-read read nothing: the page is stale (code review A-m4)
-          _missed = r.stale;
+          // left, but the re-read read nothing: the page is stale (code review A-m4); a leave without a re-read keeps
+          // whatever the page already said about its freshness (r2 A-m3 = B-m2)
+          if (r.fields != null || r.stale) _missed = r.stale;
         });
       }
     } finally {
