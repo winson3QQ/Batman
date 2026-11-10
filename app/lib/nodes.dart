@@ -10,9 +10,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
+import 'member_ui.dart';
 import 'say.dart';
 import 'scan.dart' show provdService;
 import 'src/rust/api/claim.dart' show frameLimit, storeRemove;
+import 'src/rust/api/member.dart';
 import 'src/rust/api/owner.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
@@ -82,6 +84,12 @@ class _NodesPageState extends State<NodesPage> {
   // the step loop of the open session (set at login): a request whose first step is not a write runs through it
   Future<void> Function(OwnerStep?)? _run;
   final _sshKey = TextEditingController(); // dev: an ssh-ed25519 public key line to add (ssh_keys/set, P2 owner-op)
+  // remote invites (254-app-member-join; dev / dev2 only): the pasted invite (public), the node name for a request,
+  // and the code / SAS of the last answer that carried one
+  String? _inviteHex;
+  InviteView? _invite;
+  final _memberName = TextEditingController();
+  String _lastHex = '', _lastSas = '';
   DateTime? _linkFrom; // set when a join was applied: the link checks that follow count from here
 
   @override
@@ -177,8 +185,8 @@ class _NodesPageState extends State<NodesPage> {
               der = Uint8List(0);
             }
             st = s.signed(der: der);
-          case OwnerKind.persistNet:
-            // the net record lands (sealed, fsynced) before anything goes out (design §3), by compare-and-swap from
+          case OwnerKind.persistNet || OwnerKind.persistPend || OwnerKind.persistMnet:
+            // the net / mpend / mnet record lands (sealed, fsynced) before anything goes out (design §3), by compare-and-swap from
             // the generation it was read at (join2 §3.1); never shown
             final OwnerStep p = st;
             _wrote = true;
@@ -219,6 +227,8 @@ class _NodesPageState extends State<NodesPage> {
             st = null;
           case OwnerKind.answer:
             if (st.pollLink) _linkFrom = DateTime.now();
+            _lastHex = st.hex;
+            _lastSas = st.sas;
             final a = _answer;
             if (a != null && !a.isCompleted) {
               a.complete('[ANSWER] ${st.detail}');
@@ -550,6 +560,311 @@ class _NodesPageState extends State<NodesPage> {
     }
   }
 
+  // ---- remote invites (254-app-member-join §4); every entry refuses in a field build (Rust, Kotlin and here) ----
+
+  Future<bool> _devTrust() async => await _platform.invokeMethod<bool>('devTrust') ?? false;
+
+  /// The clipboard's text, then the clipboard cleared (R12: as the claim QR).
+  Future<String?> _takeClipboard() async {
+    final d = await Clipboard.getData(Clipboard.kTextPlain);
+    await Clipboard.setData(const ClipboardData(text: ''));
+    return d?.text;
+  }
+
+  Widget _paste(String label, void Function(String) onText) =>
+      PasteButton(label: label, devTrust: _devTrust, readClipboard: _takeClipboard, onText: onText, onRefused: (w) => _say('[REQ_FAIL] $w'));
+
+  /// A sealed record as read: (generation, plain); plain null = none, or it does not open.
+  Future<(BigInt, Uint8List?)> _readRecord(String rel) async {
+    final sealed = await storeReadSealed(dir: await _dir(), rel: rel);
+    if (sealed == null) return (BigInt.zero, null);
+    try {
+      return (sealed.generation, await _platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad}));
+    } on PlatformException {
+      return (sealed.generation, null);
+    }
+  }
+
+  /// Seal a record step's plain bytes and write them by CAS; the error text is store_write_cas's (or the sealing's).
+  Future<String?> _writeRecord(OwnerStep p) async {
+    try {
+      final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
+      await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
+      return null;
+    } catch (e) {
+      return e is String ? e : (e is PlatformException ? 'seal ${e.code}' : '${e.runtimeType}');
+    }
+  }
+
+  /// Run an admin operation (invite / approve): SignAdmin -> PersistNet -> the code, copied to the clipboard.
+  Future<void> _runOp(NetOp op, OwnerStep? st) async {
+    while (st != null) {
+      switch (st.kind) {
+        case OwnerKind.signAdmin:
+          Uint8List der;
+          try {
+            der = (await _platform.invokeMethod<Uint8List>('signAdmin', {'input': st.signInput}))!;
+          } on PlatformException catch (e) {
+            _log('[REQ_FAIL] 手機的管理者金鑰無法簽章（${e.code}）');
+            der = Uint8List(0);
+          }
+          st = op.signed(der: der);
+        case OwnerKind.persistNet:
+          final err = await _writeRecord(st);
+          st = err == null ? op.netPersisted() : op.persistFailed(error: err);
+        default:
+          if (st.hex.isNotEmpty) await Clipboard.setData(ClipboardData(text: st.hex));
+          _say(st.detail);
+          st = null;
+      }
+    }
+  }
+
+  /// §4 step 1 (admin): a remote invite for one of this phone's networks.
+  Future<void> _makeInvite() async {
+    if (_busy) return;
+    final net = await _pickNet('要邀請隊員加入哪個網路？', only: (v) => v.applied);
+    if (net == null) return;
+    final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    try {
+      final (op, st) = NetOp.makeInvite(recordPlain: net.plain, recordGen: net.gen, adminPub: keys['admin'] as Uint8List);
+      await _runOp(op, st);
+    } catch (e) {
+      _say('[REQ_FAIL] 邀請沒有成功：$e');
+    }
+  }
+
+  /// §4 steps 5-6 (admin): a pasted join request -> its SAS screen -> approve -> the approval code.
+  Future<void> _checkRequest(String hex) async {
+    final net = await _pickNet('這份申請是哪個網路的？', only: (v) => v.applied);
+    if (net == null || !mounted) return;
+    final JoinReqView jr;
+    try {
+      jr = netCheckJoinreq(recordPlain: net.plain, hex: hex);
+    } catch (e) {
+      _say('[REQ_FAIL] 申請不能用：$e');
+      return;
+    }
+    final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    if (!mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+        builder: (c) => SasConfirmView(
+              title: '核對隊員的申請：${jr.name}（…${jr.deviceSuffix}）${jr.replacesApproved ? '，重新同意' : ''}',
+              sas: jr.sas,
+              confirmLabel: '確認碼相同，同意',
+              onConfirm: (_) async {
+                // the record is read again: approve re-runs every check on what is on disk now
+                final (gen, plain) = await _readRecord(net.rel);
+                if (plain == null) {
+                  _say('[REQ_FAIL] 手機裡的網路資料打不開');
+                } else {
+                  try {
+                    final (op, st) = NetOp.approve(recordPlain: plain, recordGen: gen, hex: hex, joinreqHash: jr.joinreqHash, adminPub: keys['admin'] as Uint8List);
+                    await _runOp(op, st);
+                  } catch (e) {
+                    _say('[REQ_FAIL] 同意沒有成功：$e');
+                  }
+                }
+                if (c.mounted) Navigator.of(c).pop();
+              },
+            )));
+  }
+
+  /// §4 step 2 (member): a pasted invite, checked and kept (public data).
+  void _takeInvite(String hex) {
+    try {
+      final v = parseInvite(hex: hex);
+      setState(() {
+        _inviteHex = hex;
+        _invite = v;
+      });
+      _say('[INVITE] 收到網路「${v.netName}」的邀請：登入自己的節點後按「申請加入」');
+    } catch (e) {
+      _say('[REQ_FAIL] 邀請不能用：$e');
+    }
+  }
+
+  /// §4 step 4 (member, logged in to the own node): the join request; its code is copied, its SAS shown.
+  Future<void> _requestJoin() async {
+    final hex = _inviteHex, inv = _invite;
+    if (hex == null || inv == null) return;
+    final (gen, plain) = await _readRecord('mpend/${inv.netIdHex}');
+    final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
+    _lastHex = '';
+    await _ask((s) => s.requestJoinreq(
+        inviteHex: hex, name: _memberName.text.trim(), pendGen: gen, pendPlain: plain, ownerEncPub: keys['ownerEnc'] as Uint8List));
+    await _showRequest();
+  }
+
+  Future<void> _showRequest() async {
+    if (_lastHex.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: _lastHex));
+    final sas = _lastSas;
+    _lastHex = '';
+    if (!mounted) return;
+    await showDialog<void>(
+        context: context,
+        builder: (c) => AlertDialog(
+              title: const Text('申請已複製到剪貼簿，請傳給管理者'),
+              content: SasShowView(sas: sas),
+              actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('好'))],
+            ));
+  }
+
+  /// "Show the request again" (§3): from the pending request on this phone.
+  Future<void> _showPending() async {
+    final inv = _invite;
+    if (inv == null) return;
+    final (_, plain) = await _readRecord('mpend/${inv.netIdHex}');
+    if (plain == null) {
+      _say('[REQ_FAIL] 這支手機沒有這個網路的申請');
+      return;
+    }
+    try {
+      final st = memberPendView(pendPlain: plain);
+      _lastHex = st.hex;
+      _lastSas = st.sas;
+      await _showRequest();
+    } catch (e) {
+      _say('[REQ_FAIL] $e');
+    }
+  }
+
+  /// §4 step 7 (member): a pasted approval -> 7a checks -> the SAS screen -> (pressed) Kotlin ECDH -> 7c -> mnet.
+  Future<void> _takeApproval(String hex) async {
+    final String id;
+    try {
+      id = approvalNetId(hex: hex);
+    } catch (e) {
+      _say('[REQ_FAIL] 同意碼不能用：$e');
+      return;
+    }
+    final (pendGen, pend) = await _readRecord('mpend/$id');
+    final (mnetGen, mnet) = await _readRecord('mnet/$id');
+    final ImportPrep prep;
+    try {
+      prep = memberImportPrepare(hex: hex, pendGen: pendGen, pendPlain: pend, mnetPlain: mnet);
+    } catch (e) {
+      _say('[REQ_FAIL] 同意碼不能匯入：$e');
+      return;
+    }
+    if (prep.state != ImportState.ready || pend == null) {
+      _say(prep.detail);
+      return;
+    }
+    if (!mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+        builder: (c) => SasConfirmView(
+              title: '核對管理者的同意',
+              sas: prep.sas,
+              confirmLabel: '確認碼相同，匯入',
+              onConfirm: (sas) async {
+                await _importApproval(hex, id, prep, sas);
+                if (c.mounted) Navigator.of(c).pop();
+              },
+            )));
+  }
+
+  Future<void> _importApproval(String hex, String id, ImportPrep prep, String confirmedSas) async {
+    Uint8List? z;
+    try {
+      z = await _platform.invokeMethod<Uint8List>('ecdh', {'peer': prep.ephPub});
+      // read again: 7c checks the same generation 7a saw
+      final (pendGen, pend) = await _readRecord('mpend/$id');
+      final (mnetGen, mnet) = await _readRecord('mnet/$id');
+      if (z == null || pend == null) throw '找不到申請';
+      final st = memberImportApproval(
+          hex: hex,
+          pendGen: pendGen,
+          pendPlain: pend,
+          expectedPendGen: prep.pendGen,
+          mnetPlain: mnet,
+          mnetGen: mnetGen,
+          z: z,
+          confirmedSas: confirmedSas);
+      final err = await _writeRecord(st);
+      if (err != null) {
+        _say('[REQ_FAIL] 沒有匯入：$err');
+        return;
+      }
+      // accepted fail-closed (§3): a request written meanwhile is removed too; a failed removal is harmless
+      try {
+        await storeRemove(dir: await _dir(), rel: 'mpend/$id');
+      } catch (_) {}
+      _say(st.detail);
+    } on PlatformException catch (e) {
+      _say('[REQ_FAIL] 沒有匯入：手機金鑰出錯（${e.code}）');
+    } catch (e) {
+      _say('[REQ_FAIL] 沒有匯入：$e');
+    } finally {
+      z?.fillRange(0, z.length, 0);
+    }
+  }
+
+  /// §4 step 8 (member, logged in to the own node): join the imported network.
+  Future<void> _memberJoin() async {
+    if (_busy) return;
+    final dir = await _dir();
+    final ids = listMnets(dir: dir);
+    final views = <(String, MnetView)>[];
+    for (final id in await ids) {
+      final (_, plain) = await _readRecord('mnet/$id');
+      if (plain == null) continue;
+      try {
+        views.add((id, mnetSummary(mnetPlain: plain)));
+      } catch (_) {}
+    }
+    if (views.isEmpty) {
+      _say('[REQ_FAIL] 手機裡沒有匯入過的隊伍網路（先貼上同意碼）');
+      return;
+    }
+    final pick = views.length == 1 || !mounted
+        ? views.first
+        : await showDialog<(String, MnetView)>(
+            context: context,
+            builder: (c) => SimpleDialog(title: const Text('要加入哪個隊伍網路？'), children: [
+                  for (final v in views) SimpleDialogOption(onPressed: () => Navigator.pop(c, v), child: Text(v.$2.netName)),
+                ]));
+    if (pick == null) return;
+    final (gen, plain) = await _readRecord('mnet/${pick.$1}');
+    if (plain == null) return;
+    _say('正在把這台節點加入隊伍網路「${pick.$2.netName}」，最多可能要等幾分鐘…');
+    _linkFrom = null;
+    await _ask((s) => s.requestMemberJoin(mnetPlain: plain, mnetGen: gen), wait: _joinWait, retry: false, unclear: _joinUnclear);
+    await _watchLink();
+  }
+
+  /// §8: a readable status page of the logged-in node.
+  Future<void> _statusPage() async {
+    final a = await _ask((s) => s.requestStatusPage(), quiet: true);
+    final s = _session;
+    if (a == null || s == null || !mounted) return;
+    final v = s.statusView();
+    final names = <String, String>{};
+    final dir = await _dir();
+    for (final id in await listNets(dir: dir)) {
+      final (_, p) = await _readRecord('net/$id');
+      if (p != null) {
+        try {
+          names[id] = netSummary(recordPlain: p).netName;
+        } catch (_) {}
+      }
+    }
+    for (final id in await listMnets(dir: dir)) {
+      final (_, p) = await _readRecord('mnet/$id');
+      if (p != null) {
+        try {
+          names[id] = mnetSummary(mnetPlain: p).netName;
+        } catch (_) {}
+      }
+    }
+    if (!mounted) return;
+    final f = StatusFields(
+        state: v.state, reason: v.reason, neighbours: v.neighbours, health: v.health, snr: v.snr, version: v.version, netId: v.netId);
+    await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => Scaffold(appBar: AppBar(title: const Text('節點狀態')), body: StatusPageView(fields: f, names: names))));
+  }
+
   /// join2 §3.2: read info on the logged-in node against one of this phone's net records
   Future<void> _confirmNetwork() async {
     if (_busy) return;
@@ -688,6 +1003,23 @@ class _NodesPageState extends State<NodesPage> {
           Align(
               alignment: Alignment.centerLeft,
               child: TextButton(onPressed: _busy ? null : _forgetJoining, child: const Text('忘記加入中的節點'))),
+          if (logged) TextButton(onPressed: _busy ? null : _statusPage, child: const Text('狀態頁')),
+          // remote invites (dev / dev2 only; the paste buttons refuse in a field build)
+          const Text('遠端邀請（開發版）', style: TextStyle(fontWeight: FontWeight.bold)),
+          Wrap(spacing: 8, children: [
+            OutlinedButton(onPressed: _busy ? null : _makeInvite, child: const Text('邀請隊員')),
+            _paste('貼上隊員的申請', (t) => _checkRequest(t)),
+            _paste('貼上邀請', _takeInvite),
+            _paste('貼上同意碼', (t) => _takeApproval(t)),
+          ]),
+          if (_invite != null) Text('邀請：網路「${_invite!.netName}」'),
+          if (logged && _invite != null)
+            Row(children: [
+              Expanded(child: TextField(controller: _memberName, maxLength: 32, decoration: const InputDecoration(labelText: '這台節點的名稱（給管理者看）', counterText: ''))),
+              OutlinedButton(onPressed: _busy ? null : _requestJoin, child: const Text('申請加入')),
+              TextButton(onPressed: _busy ? null : _showPending, child: const Text('再顯示申請')),
+            ]),
+          if (logged) Align(alignment: Alignment.centerLeft, child: OutlinedButton(onPressed: _busy ? null : _memberJoin, child: const Text('加入隊伍網路'))),
           const Divider(),
           Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
         ]),
