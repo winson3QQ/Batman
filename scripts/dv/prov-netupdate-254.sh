@@ -12,7 +12,9 @@
 #     member, "overlay completed from p5", wireless == the update, --check rc 0 or 5 (F39 lag, recorded)
 #   arm stale-secrets (docs/design/254-net-update-members.md §6): member -> net-apply --update-stale-secrets (the new
 #     net_config with net_secrets of the CURRENT version — the pairing a forwarder could send to keep an old SAE a
-#     removed member knows) -> E_BAD_OBJECT (code 4), the mesh id unchanged, no .txn, the state still member. No
+#     removed member knows) -> E_BAD_OBJECT (code 4) with the helper's reason "(net_secrets)" (the binding, not an
+#     earlier check), the mesh id unchanged, no .txn, the state still member. provclient cannot read the node's stored
+#     secrets, so it builds FRESH ones with the current version (a new SAE): the same check refuses both. No
 #     on-hardware control before the fix (wsl.24 refuses the new shape for another reason); the fix's negative control
 #     is the Go mutant (node: M11 / M12) and the review probes.
 #   L26's BLE half (provd acks before it applies) is H3.
@@ -27,9 +29,10 @@ p5f(){	# <tag>: the p5 manifest lines of overrides.uci and prov.meta (prov-base 
 	local o; o=$(nb manifest "$RUN" "$1"); grep -q "^MANIFEST $RUN $1" <<< "$o" || { echo "ERR $o"; return 1; }
 	qr "grep -E ' (overrides\.uci|prov\.meta)\$' /opt/batdata/dv-prov/$RUN/now-$1/p5.manifest"
 }
-newfd3(){
+newfd3(){	# the update's net_config keeps the country pr_member's join stored (= radio1.country, prov-254.sh pr_member):
+	# a P3 helper refuses an update that changes it (E_REJECTED reason 14, 254-net-update-members §2.2-2)
 	NEW="dvu-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-	PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$NEW' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\""
+	PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$NEW' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\"; c=\$(uci -q get wireless.radio1.country); [ -n \"\$c\" ] && printf 'country=%s\n' \"\$c\""
 }
 bindf(){	# <name in W> <target>
 	local h o; h=$(qr "sha256sum < $W/$1 | cut -c1-64"); o=$(pw bind "$1" "$h" "$2"); say "$o"; grep -q "^BOUND $2" <<< "$o"
@@ -93,12 +96,15 @@ txn3(){
 	pk_proof && ok "the lab key still logs in" || no "the lab key does not log in after txn-3"
 }
 stale(){
-	local r m0 m1 t i
+	local r m0 m1 t i l
 	pr_member || return 1
 	m0=$(qr "$MESHID")
 	newfd3
 	r=$(pr_pc owner.pem FD3="$PR_FD3" -- net-apply --update-stale-secrets "$OWNER" "$PR_NETCFG"); echo "$r" | grep -v '^NETCFG' | sed 's/^/    /'
-	grep -q 'RESULT net.apply(update-stale-secrets) code=4' <<< "$r" && ok "stale-secrets: refused with E_BAD_OBJECT" || no "stale-secrets: $(grep RESULT <<< "$r")"
+	grep -q 'RESULT net.apply(update-stale-secrets) code=4 ' <<< "$r" && ok "stale-secrets: refused with E_BAD_OBJECT" || no "stale-secrets: $(grep RESULT <<< "$r")"
+	# refused by the secrets binding, not by an earlier check with the same code (the helper logs the reason)
+	l=$(qr "logread | grep 'verb net.apply refused: code 4' | tail -1"); say "helper: $l"
+	grep -q '(net_secrets)' <<< "$l" && ok "stale-secrets: the refusal is the net_secrets binding" || no "stale-secrets: refusal reason [$l]"
 	m1=$(qr "$MESHID"); t=$(qr '[ -e /etc/batman-prov/.txn ] && echo present || echo gone')
 	[ -n "$m0" ] && [ "$m1" = "$m0" ] && ok "stale-secrets: mesh id unchanged ($m1)" || no "stale-secrets: mesh id $m0 -> $m1"
 	[ "$t" = gone ] && ok "stale-secrets: no .txn" || no "stale-secrets: .txn $t"

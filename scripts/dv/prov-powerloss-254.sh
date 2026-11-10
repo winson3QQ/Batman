@@ -44,7 +44,8 @@ pr_begin 3000 ${upper:+upper=$upper} || { pr_result; exit 1; }
 pr_member || { pr_abort "member"; pr_result; exit 1; }
 old=$(qr "$MESHID"); g0=$(qr "$P5GEN"); k0=$(qr "$KEYH"); say "before: mesh_id=$old p5 gen=$g0 key sha=$k0"
 new="dvu-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$new' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\""
+# the stored country (pr_member's join = radio1.country): a P3 helper refuses an update that changes it (reason 14)
+PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$new' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\"; c=\$(uci -q get wireless.radio1.country); [ -n \"\$c\" ] && printf 'country=%s\n' \"\$c\""
 [ $INJ = 1 ] && q '/etc/init.d/batman-provhelper disable; sync'
 pr_killpoint "txn-$N" net-apply --update "$OWNER" "$PR_NETCFG" || { pr_abort "killpoint txn-$N"; pr_result; exit 1; }
 if [ $INJ = 1 ]; then
