@@ -10,6 +10,11 @@
 #   arm txn-3: member -> killpoint txn-3 (p5 has the new generation, the overlay not) on net-apply --update -> sysrq ->
 #     first thing after the reboot: an --on-join tick (recorded with whether .txn was still there) -> >= 150 s ->
 #     member, "overlay completed from p5", wireless == the update, --check rc 0 or 5 (F39 lag, recorded)
+#   arm stale-secrets (docs/design/254-net-update-members.md §6): member -> net-apply --update-stale-secrets (the new
+#     net_config with net_secrets of the CURRENT version — the pairing a forwarder could send to keep an old SAE a
+#     removed member knows) -> E_BAD_OBJECT (code 4), the mesh id unchanged, no .txn, the state still member. No
+#     on-hardware control before the fix (wsl.24 refuses the new shape for another reason); the fix's negative control
+#     is the Go mutant (node: M11 / M12) and the review probes.
 #   L26's BLE half (provd acks before it applies) is H3.
 # Type: — / A / F. Side effects: 04 ~40 min off the mesh, 1 sysrq reboot + restores, claimed in between.
 set -u
@@ -87,11 +92,25 @@ txn3(){
 	c=$(qr 'batman-config-save --check >/dev/null 2>&1; echo rc=$?'); say "--check after: $c (5 = the F39 overrides lag, product checklist #254)"
 	pk_proof && ok "the lab key still logs in" || no "the lab key does not log in after txn-3"
 }
+stale(){
+	local r m0 m1 t i
+	pr_member || return 1
+	m0=$(qr "$MESHID")
+	newfd3
+	r=$(pr_pc owner.pem FD3="$PR_FD3" -- net-apply --update-stale-secrets "$OWNER" "$PR_NETCFG"); echo "$r" | grep -v '^NETCFG' | sed 's/^/    /'
+	grep -q 'RESULT net.apply(update-stale-secrets) code=4' <<< "$r" && ok "stale-secrets: refused with E_BAD_OBJECT" || no "stale-secrets: $(grep RESULT <<< "$r")"
+	m1=$(qr "$MESHID"); t=$(qr '[ -e /etc/batman-prov/.txn ] && echo present || echo gone')
+	[ -n "$m0" ] && [ "$m1" = "$m0" ] && ok "stale-secrets: mesh id unchanged ($m1)" || no "stale-secrets: mesh id $m0 -> $m1"
+	[ "$t" = gone ] && ok "stale-secrets: no .txn" || no "stale-secrets: .txn $t"
+	i=$(pr_info); case " $i " in *" state=member "*) ok "stale-secrets: still member";; *) no "stale-secrets: $i";; esac
+}
 pr_begin 3600 || { pr_result; exit 1; }
 arm yield || { pr_abort "arm yield"; pr_result; exit 1; }
 pr_restore || { pr_abort "restore after arm yield"; pr_result; exit 1; }
 arm noyield || { pr_abort "arm noyield"; pr_result; exit 1; }
 pr_restore || { pr_abort "restore after arm noyield"; pr_result; exit 1; }
+stale || { pr_abort "arm stale-secrets"; pr_result; exit 1; }
+pr_restore || { pr_abort "restore after arm stale-secrets"; pr_result; exit 1; }
 txn3 || { pr_abort "arm txn-3"; pr_result; exit 1; }
 pr_end
 pr_result

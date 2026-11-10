@@ -32,6 +32,7 @@ import (
 const (
 	labelNetcfg  = "batman-netcfg-v1"
 	labelSecrets = "batman-secrets-v1"
+	labelMembers = "batman-members-v1"
 )
 
 // netInput: the values read from fd 3 (before the drop)
@@ -109,7 +110,7 @@ func objectHash(raw []byte) []byte {
 	payload, _ := a[2].([]byte)
 	pm, _, _ := cDec(prot)
 	ct, _ := pm.(cmap).get(3).(string)
-	label := map[string]string{"batman/netcfg": labelNetcfg, "batman/secrets": labelSecrets}[ct]
+	label := map[string]string{"batman/netcfg": labelNetcfg, "batman/secrets": labelSecrets, "batman/members": labelMembers}[ct]
 	if label == "" {
 		die("object hash: content type %q", ct)
 	}
@@ -197,6 +198,13 @@ func (cl *client) netObjects(in *netInput, ownerPub, netID []byte, ver uint64, p
 	return cfg, cl.netSecrets(in, netID, ver)
 }
 
+// memberList: the version's member_list (219 §7.5; the helper checks only the admin signature, net_id and version —
+// docs/design/254-net-update-members.md §2.2-3), empty lists
+func (cl *client) memberList(netID []byte, ver uint64) []byte {
+	return cl.sign1("batman/members", labelMembers, cEnc(cmap{{uint64(1), netID}, {uint64(2), ver}, {uint64(3), nil},
+		{uint64(4), []any{}}, {uint64(5), []any{}}, {uint64(6), []any{}}, {uint64(7), []any{}}}))
+}
+
 // netSecrets: this node's net_secrets for (netID, version) — the SAE key from fd 3 encrypted ON THE NODE to the
 // helper's ECDH key; the root secret is random per call (P1 checks nothing about it)
 func (cl *client) netSecrets(in *netInput, netID []byte, ver uint64) []byte {
@@ -213,7 +221,7 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 	switch op {
 	case "net-apply": // net-apply --first <owner_pub> | net-apply --update <owner_pub> <prev net_config hex>
 		if len(args) < 3 {
-			die("usage: net-apply --first|--first-noop <owner_pub> | --update <owner_pub> <prev-net_config-hex> | --join <owner_pub> <net_config-hex>")
+			die("usage: net-apply --first|--first-noop <owner_pub> | --update|--update-stale-secrets <owner_pub> <prev-net_config-hex> | --join <owner_pub> <net_config-hex>")
 		}
 		ownerPub := hexArg(2)
 		switch args[1] {
@@ -234,7 +242,9 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 				{uint64(3), cmap{{uint64(1), rawCBOR(cfg)}, {uint64(3), rawCBOR(sec)}}}})
 			code, _ := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
 			fmt.Printf("RESULT net.apply(no owner-op) code=%d version=1 net_id=%x mesh_id_sha=%s\n", code, netID, short([]byte(in.meshID)))
-		case "--update":
+		case "--update", "--update-stale-secrets":
+			// --update-stale-secrets: the new net_config with net_secrets of the CURRENT version (a fresh one: the
+			// stored one is not readable here) — the helper must refuse it (E_BAD_OBJECT), 254-net-update-members §2.2-5
 			prev := hexArg(3)
 			x, _, err := cDec(prev)
 			if err != nil {
@@ -245,10 +255,16 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 			netID, _ := pm.(cmap).get(1).([]byte)
 			ver, _ := pm.(cmap).get(2).(uint64)
 			cfg, sec := cl.netObjects(in, ownerPub, netID, ver+1, objectHash(prev))
-			// network/update: a version chain; the helper checks it against the stored version's admins (219 §5.3)
-			env := cl.ownerOp("network/update", cmap{{uint64(1), []any{rawCBOR(cfg)}}, {uint64(2), rawCBOR(sec)}})
+			what := "net.apply(update)"
+			if args[1] == "--update-stale-secrets" {
+				sec, what = cl.netSecrets(in, netID, ver), "net.apply(update-stale-secrets)"
+			}
+			// network/update: one step of the CDDL shape {1: [{1: net_config, 2: member_list, 3: net_secrets}]}; the
+			// helper checks it against the stored version's admins (219 §5.3)
+			step := cmap{{uint64(1), rawCBOR(cfg)}, {uint64(2), rawCBOR(cl.memberList(netID, ver+1))}, {uint64(3), rawCBOR(sec)}}
+			env := cl.ownerOp("network/update", cmap{{uint64(1), []any{step}}})
 			code, r := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
-			fmt.Println(resultLine("net.apply(update)", code, r, fmt.Sprintf(" version=%d mesh_id_sha=%s country=%s", ver+1, short([]byte(in.meshID)), in.country)))
+			fmt.Println(resultLine(what, code, r, fmt.Sprintf(" version=%d mesh_id_sha=%s country=%s", ver+1, short([]byte(in.meshID)), in.country)))
 			fmt.Printf("NETCFG %s\n", hex.EncodeToString(cfg))
 		case "--join": // net-apply --join <owner_pub> <net_config hex>: join ANOTHER node's network — its signed
 			// net_config verbatim (same net_id, same version), this node's own net_secrets (254 review A-M2)
@@ -269,7 +285,7 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 			code, _ := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
 			fmt.Printf("RESULT net.apply(join) code=%d version=%d net_id=%x mesh_id_sha=%s\n", code, ver, netID, short([]byte(in.meshID)))
 		default:
-			die("net-apply: --first, --first-noop, --update or --join")
+			die("net-apply: --first, --first-noop, --update, --update-stale-secrets or --join")
 		}
 	case "leave":
 		env := cl.ownerOp("network/leave", cmap{})
