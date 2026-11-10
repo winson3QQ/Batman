@@ -72,6 +72,8 @@ pub struct MemberView {
     pub prev_country: String,
     /// SHA-256(DAC pub), hex: what `net_forget_joining` names a member by
     pub dac_hash: String,
+    /// the node that made the network (never forgotten)
+    pub creator: bool,
 }
 
 /// A net record, for the screen (no secret: no SAE, net_root or signed objects).
@@ -88,6 +90,7 @@ pub struct NetView {
 pub fn net_summary(record_plain: Vec<u8>) -> Result<NetView, String> {
     let r = netrec::decode(&record_plain).map_err(|_| NET_DAMAGED.to_string())?;
     let country = r.netcfg().map(|c| c.country).unwrap_or_default();
+    let creator = r.creator().ok();
     let members = r
         .members()
         .map_err(|_| NET_DAMAGED.to_string())?
@@ -98,6 +101,7 @@ pub fn net_summary(record_plain: Vec<u8>) -> Result<NetView, String> {
             joining: m.state == MemberState::Joining,
             prev_country: m.prev_country.unwrap_or_default(),
             dac_hash: nodecert::hex_lower(&m.dac_pub_hash),
+            creator: creator == Some(m.dac_pub_hash),
         })
         .collect();
     Ok(NetView { net_id: nodecert::hex_lower(&r.base.net_id), mesh_id: r.base.mesh_id, applied: r.state == netrec::APPLIED, country, members })
@@ -114,6 +118,9 @@ pub fn net_forget_joining(record_plain: Vec<u8>, record_gen: u64, dac_hash: Stri
         .collect::<Option<Vec<u8>>>()
         .and_then(|v| v.try_into().ok())
         .ok_or("App 內部錯誤（dac_hash is not 32 bytes of hex）")?;
+    if r.creator().ok() == Some(h) {
+        return Err("建立網路的節點不能忘記".into());
+    }
     let name = r.members().ok().and_then(|l| l.into_iter().find(|m| m.dac_pub_hash == h)).map(|m| m.name).unwrap_or_default();
     let prev = netrec::forget_joining(&mut r, &h).map_err(|_| "這台節點不在「加入中」，沒有東西可以忘記".to_string())?;
     let want = r.netcfg().map(|c| c.country).unwrap_or_default();
@@ -1365,5 +1372,15 @@ mod tests {
             assert_eq!(t, want);
             assert!(matches!(s.st, St::Conn { .. }), "an owner session again");
         }
+    }
+
+    #[test]
+    fn the_creator_is_marked_and_never_forgotten() {
+        let mut r = NetRec::made(base()); // pending: the creator ([0xa1; 32]) is derived as joining
+        let v = net_summary(netrec::encode(&r)).unwrap();
+        assert_eq!((v.members.len(), v.members[0].joining, v.members[0].creator), (1, true, true));
+        assert_eq!(net_forget_joining(netrec::encode(&r), 1, nodecert::hex_lower(&[0xa1; 32])).err().as_deref(), Some("建立網路的節點不能忘記"));
+        r.state = netrec::APPLIED.into();
+        assert!(!net_summary(netrec::encode(&r)).unwrap().members.iter().any(|m| m.joining));
     }
 }

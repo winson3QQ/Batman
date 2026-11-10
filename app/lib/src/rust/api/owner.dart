@@ -151,12 +151,16 @@ class MemberView {
   /// SHA-256(DAC pub), hex: what `net_forget_joining` names a member by
   final String dacHash;
 
+  /// the node that made the network (never forgotten)
+  final bool creator;
+
   const MemberView({
     required this.name,
     required this.last4,
     required this.joining,
     required this.prevCountry,
     required this.dacHash,
+    required this.creator,
   });
 
   @override
@@ -165,7 +169,8 @@ class MemberView {
       last4.hashCode ^
       joining.hashCode ^
       prevCountry.hashCode ^
-      dacHash.hashCode;
+      dacHash.hashCode ^
+      creator.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -176,7 +181,8 @@ class MemberView {
           last4 == other.last4 &&
           joining == other.joining &&
           prevCountry == other.prevCountry &&
-          dacHash == other.dacHash;
+          dacHash == other.dacHash &&
+          creator == other.creator;
 }
 
 /// A net record, for the screen (no secret: no SAE, net_root or signed objects).

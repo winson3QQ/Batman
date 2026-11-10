@@ -1837,14 +1837,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MemberView dco_decode_member_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return MemberView(
       name: dco_decode_String(arr[0]),
       last4: dco_decode_String(arr[1]),
       joining: dco_decode_bool(arr[2]),
       prevCountry: dco_decode_String(arr[3]),
       dacHash: dco_decode_String(arr[4]),
+      creator: dco_decode_bool(arr[5]),
     );
   }
 
@@ -2256,12 +2257,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_joining = sse_decode_bool(deserializer);
     var var_prevCountry = sse_decode_String(deserializer);
     var var_dacHash = sse_decode_String(deserializer);
+    var var_creator = sse_decode_bool(deserializer);
     return MemberView(
       name: var_name,
       last4: var_last4,
       joining: var_joining,
       prevCountry: var_prevCountry,
       dacHash: var_dacHash,
+      creator: var_creator,
     );
   }
 
@@ -2708,6 +2711,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.joining, serializer);
     sse_encode_String(self.prevCountry, serializer);
     sse_encode_String(self.dacHash, serializer);
+    sse_encode_bool(self.creator, serializer);
   }
 
   @protected

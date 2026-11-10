@@ -926,3 +926,71 @@ fn t7_nonce_refused_before_revert_keeps_the_entry_and_prev_country() {
     let me = disk.mine().unwrap();
     assert_eq!((me.state, me.prev_country.as_deref()), (MemberState::Joining, Some("JP")));
 }
+
+// ---- code review round 2 ----------------------------------------------------------------------------------------
+
+#[test]
+fn t3_nonce_busy_before_join_keeps_entry_and_prev_country() {
+    // run 1: JP -> US, the join answer is unclear (7) and stays joining
+    let disk = Disk::new(&applied_record("US"));
+    let (c, mut n) = pair("JP");
+    n.join_r.push_back(R::Err(7, m(vec![])));
+    n.info_r.push_back(R::Ok(info_absent(true)));
+    assert_eq!(join(&disk, &mut n, c, &YES).end, Some(End::Joining(Keep::Unclear7)));
+    // run 2 ("繼續加入"): op/nonce answers 7 (busy with the previous apply) -> outcome unknown, nothing changes
+    let (c2, mut n2) = pair("US");
+    n2.nonce_r.push_back(Some(7));
+    let run = join(&disk, &mut n2, c2, &YES);
+    assert_eq!(run.end, Some(End::Joining(Keep::Unclear7)));
+    assert!(n2.sets.is_empty(), "no revert");
+    let me = disk.mine().unwrap();
+    assert_eq!((me.state, me.prev_country.as_deref()), (MemberState::Joining, Some("JP")));
+}
+
+fn with_mine(country_prev: Option<&str>, state: MemberState) -> (NetRec, Member) {
+    let mut me = member(0x77, 0x42, "node-old", state);
+    me.device_id = Some("old".into());
+    me.prev_country = country_prev.map(str::to_string);
+    let first = member(0x55, 0x43, "node-0001", MemberState::Applied);
+    (record("US", &[pub_of(&key(ADMIN))], "applied", Some(vec![first, me.clone()])), me)
+}
+
+#[test]
+fn t3_nonce_refused_before_join_brings_back_the_replaced_entry() {
+    // a re-flashed applied member: no country change, op/nonce refused -> the applied entry is back
+    let (rec, before) = with_mine(None, MemberState::Applied);
+    let disk = Disk::new(&rec);
+    let (c, mut n) = pair("US");
+    n.nonce_r.push_back(Some(12));
+    assert_eq!(join(&disk, &mut n, c, &YES).end, Some(End::Failed(Fail::NotSent(12), Revert::NoChange)));
+    assert_eq!(disk.mine(), Some(before.clone()));
+    // with a country change: put back first, then the applied entry is back
+    let disk = Disk::new(&rec);
+    let (c, mut n) = pair("JP");
+    n.nonce_r.extend([None, Some(12)]);
+    assert_eq!(join(&disk, &mut n, c, &YES).end, Some(End::Failed(Fail::NotSent(12), Revert::Reverted { country: "JP".into() })));
+    assert_eq!(n.sets, ["US", "JP"]);
+    assert_eq!(disk.mine(), Some(before));
+}
+
+#[test]
+fn t7_nonce_refused_before_settings_set_restores_a_joining_entry_with_prev_country() {
+    let (rec, before) = with_mine(Some("JP"), MemberState::Joining);
+    let disk = Disk::new(&rec);
+    let (c, mut n) = pair("JP");
+    n.nonce_r.push_back(Some(12));
+    let run = join(&disk, &mut n, c, &YES);
+    assert_eq!(run.end, Some(End::Joining(Keep::NonceRefused(12))));
+    assert!(n.sets.is_empty());
+    assert_eq!(disk.mine(), Some(before), "the earlier joining entry and its prev_country are kept");
+}
+
+#[test]
+fn t7_country_must_be_two_capital_letters() {
+    for bad in ["us", "USA", "", "U1"] {
+        let (run, n, disk) = join_with("JP", |n| n.get_r.push_back(R::Ok(country_of(bad))));
+        assert!(matches!(run.end, Some(End::SettingsError(_))), "{bad:?}: {:?}", run.end);
+        assert_eq!(n.got, ["settings/get"]);
+        assert_eq!(disk.read().1, 1, "{bad:?}: nothing written");
+    }
+}

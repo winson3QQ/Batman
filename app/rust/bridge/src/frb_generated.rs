@@ -27,8 +27,8 @@
 
 // Section: imports
 
-use crate::api::owner::*;
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -735,7 +735,8 @@ let mut var_last4 = <String>::sse_decode(deserializer);
 let mut var_joining = <bool>::sse_decode(deserializer);
 let mut var_prevCountry = <String>::sse_decode(deserializer);
 let mut var_dacHash = <String>::sse_decode(deserializer);
-return crate::api::owner::MemberView{name: var_name, last4: var_last4, joining: var_joining, prev_country: var_prevCountry, dac_hash: var_dacHash};}
+let mut var_creator = <bool>::sse_decode(deserializer);
+return crate::api::owner::MemberView{name: var_name, last4: var_last4, joining: var_joining, prev_country: var_prevCountry, dac_hash: var_dacHash, creator: var_creator};}
                 }
                 
                 impl SseDecode for crate::api::owner::NetView {
@@ -1048,7 +1049,8 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::claim::ClaimStep> for crate::
 self.last4.into_into_dart().into_dart(),
 self.joining.into_into_dart().into_dart(),
 self.prev_country.into_into_dart().into_dart(),
-self.dac_hash.into_into_dart().into_dart()
+self.dac_hash.into_into_dart().into_dart(),
+self.creator.into_into_dart().into_dart()
                 ].into_dart()
                 }
             }
@@ -1286,7 +1288,8 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::claim::StepKind> for crate::a
 <String>::sse_encode(self.last4, serializer);
 <bool>::sse_encode(self.joining, serializer);
 <String>::sse_encode(self.prev_country, serializer);
-<String>::sse_encode(self.dac_hash, serializer);}
+<String>::sse_encode(self.dac_hash, serializer);
+<bool>::sse_encode(self.creator, serializer);}
                 }
                 
                 impl SseEncode for crate::api::owner::NetView {
@@ -1438,8 +1441,8 @@ crate::api::claim::StepKind::Ended => { 3 }
 
 // Section: imports
 
-use crate::api::owner::*;
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -1486,8 +1489,8 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::owner::*;
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;
