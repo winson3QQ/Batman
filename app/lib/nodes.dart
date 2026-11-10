@@ -910,10 +910,11 @@ class _NodesPageState extends State<NodesPage> {
     final a = await _ask((s) => s.requestStatusPage(), quiet: true);
     final s = _session;
     if (a == null || s == null || !mounted) return null;
-    final v = s.statusView();
+    final (names, hasNet, hasMnet) = await _netNames();
+    if (!mounted) return null;
+    final v = s.statusView(hasNet: hasNet, hasMnet: hasMnet);
     _readClock.stamp(fresh: v.fresh, now: DateTime.now());
     _log('status page row ${v.row} fresh ${v.fresh}');
-    final names = await _netNames();
     final membership = statusMembershipLine(nodeState: v.nodeState, netId: v.netId, name: networkName(v.netId, names));
     return StatusFields(
         color: v.color,
@@ -927,11 +928,13 @@ class _NodesPageState extends State<NodesPage> {
         fresh: v.fresh);
   }
 
-  /// net_id hex -> netcfg name, from this phone's net / mnet records
-  Future<Map<String, String>> _netNames() async {
+  /// net_id hex -> netcfg name, from this phone's net / mnet records; whether it holds any net/ (admin) and any mnet/
+  /// (member) record
+  Future<(Map<String, String>, bool, bool)> _netNames() async {
     final names = <String, String>{};
     final dir = await _dir();
-    for (final id in await listNets(dir: dir)) {
+    final nets = await listNets(dir: dir), mnets = await listMnets(dir: dir);
+    for (final id in nets) {
       final (_, p) = await _readRecord('net/$id');
       if (p != null) {
         try {
@@ -939,7 +942,7 @@ class _NodesPageState extends State<NodesPage> {
         } catch (_) {}
       }
     }
-    for (final id in await listMnets(dir: dir)) {
+    for (final id in mnets) {
       final (_, p) = await _readRecord('mnet/$id');
       if (p != null) {
         try {
@@ -947,7 +950,7 @@ class _NodesPageState extends State<NodesPage> {
         } catch (_) {}
       }
     }
-    return names;
+    return (names, nets.isNotEmpty, mnets.isNotEmpty);
   }
 
   /// join2 §3.2: read info on the logged-in node against one of this phone's net records

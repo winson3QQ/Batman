@@ -1009,10 +1009,12 @@ impl OwnerSession {
         self.request_tagged("status", "status-page", Value::Map(vec![(Value::Uint(1), Value::Uint(0))]))
     }
 
-    /// The last status page read as the page shows it (status page v8.1 §2-§3).
+    /// The last status page read as the page shows it (status page v8.1 §2-§3). `has_net` / `has_mnet`: this phone holds
+    /// a net/ (it made a network) / an mnet/ record — the claimed-node sentence names the matching join button.
     #[flutter_rust_bridge::frb(sync)]
-    pub fn status_view(&self) -> StatusView {
-        status_view_of(self.page_status.as_ref(), self.page_info.as_ref(), self.page_fresh, self.page_rate)
+    pub fn status_view(&self, has_net: bool, has_mnet: bool) -> StatusView {
+        let join = statuspage::JoinButton::of(has_net, has_mnet);
+        status_view_of(self.page_status.as_ref(), self.page_info.as_ref(), self.page_fresh, self.page_rate, join)
     }
 
     /// The user's answer to a ConfirmCountry step.
@@ -1660,14 +1662,14 @@ mod tests {
 }
 
 /// The status page view (status page v8.1 §2-§3) of the last status read (None: never read -> row 2) and info read.
-pub(crate) fn status_view_of(st: Option<&Result<Value, u64>>, info: Option<&Value>, fresh: bool, rate: bool) -> StatusView {
+pub(crate) fn status_view_of(st: Option<&Result<Value, u64>>, info: Option<&Value>, fresh: bool, rate: bool, join: statuspage::JoinButton) -> StatusView {
     let empty = Value::Map(vec![]);
     let a = match st {
         Some(Ok(b)) => statuspage::Answer::Body(b),
         Some(Err(c)) => statuspage::Answer::Error(*c),
         None => statuspage::Answer::Body(&empty),
     };
-    let v = statuspage::link_verdict(a);
+    let v = statuspage::link_verdict_for(a, join);
     StatusView {
         color: v.color.name().into(),
         row: v.row.label().into(),
@@ -1699,21 +1701,24 @@ mod member_tests {
             (Value::Uint(15), Value::Map(vec![(t("image"), t("OpenMANET 1.8.0")), (t("uptime_s"), Value::Uint(600)), (t("join"), Value::Map(vec![(t("snr_db"), t("31")), (t("plinks"), Value::Uint(0))]))])),
         ]);
         let info = Value::Map(vec![(Value::Uint(4), t("fw")), (Value::Uint(10), Value::Bytes(vec![0xab; 16]))]);
-        let v = status_view_of(Some(&Ok(st.clone())), Some(&info), true, false);
+        let v = status_view_of(Some(&Ok(st.clone())), Some(&info), true, false, statuspage::JoinButton::Member);
         assert_eq!((v.color.as_str(), v.row.as_str(), v.node_state, v.version.as_str()), ("red", "7", 1, "fw"));
         assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入隊伍網路」");
+        // S20 fix 1: the admin phone's button
+        let v = status_view_of(Some(&Ok(st.clone())), Some(&info), true, false, statuspage::JoinButton::of(true, false));
+        assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」");
         assert_eq!((v.lag_note.as_str(), v.warning.as_str(), v.rate_note.as_str()), ("", "", ""));
         assert!(!v.sentence.contains("SEARCHING") && !v.sentence.contains("OpenMANET"), "the main screen has no node English");
         assert!(v.tech.iter().any(|l| l.contains("SEARCHING")) && v.tech.iter().any(|l| l.contains("OpenMANET 1.8.0")));
         assert_eq!(v.net_id, "ab".repeat(16));
         // no key 10 (not in a network, or a member-role answer): no network id, so no name can be shown
-        let v = status_view_of(Some(&Ok(st)), Some(&Value::Map(vec![(Value::Uint(4), t("fw"))])), true, false);
+        let v = status_view_of(Some(&Ok(st)), Some(&Value::Map(vec![(Value::Uint(4), t("fw"))])), true, false, statuspage::JoinButton::Member);
         assert_eq!(v.net_id, "");
         // never read / an error code / E_RATE without an earlier read
-        assert_eq!(status_view_of(None, None, true, false).row, "2");
-        let v = status_view_of(Some(&Err(6)), None, true, false);
+        assert_eq!(status_view_of(None, None, true, false, statuspage::JoinButton::Member).row, "2");
+        let v = status_view_of(Some(&Err(6)), None, true, false, statuspage::JoinButton::Member);
         assert_eq!((v.row.as_str(), v.node_state, v.color.as_str()), ("1", -1, "grey"));
-        let v = status_view_of(Some(&Err(12)), None, true, true);
+        let v = status_view_of(Some(&Err(12)), None, true, true, statuspage::JoinButton::Member);
         assert_eq!((v.row.as_str(), v.rate_note.as_str()), ("2'", "太快了，請稍等一秒"));
         // the membership line
         assert_eq!(status_membership_line(2, "ab".repeat(16), Some("家裡網路".into())), "網路：家裡網路（已是成員）");
@@ -1761,18 +1766,18 @@ mod member_tests {
         let (mut s, mut n) = super::tests::logged_in();
         // first read refused: row 2' with the note
         assert_eq!(page_read(&mut s, &mut n, Err(12)), "[STATUS] 狀態已更新");
-        let v = s.status_view();
+        let v = s.status_view(false, true);
         assert_eq!((v.row.as_str(), v.fresh, v.rate_note.as_str()), ("2'", true, "太快了，請稍等一秒"));
         // a good read, then E_RATE: the good verdict stays, marked not fresh
         assert_eq!(page_read(&mut s, &mut n, Ok(joined)), "[STATUS] 狀態已更新");
-        let v = s.status_view();
+        let v = s.status_view(false, true);
         assert_eq!((v.row.as_str(), v.fresh, v.rate_note.as_str(), v.version.as_str()), ("3", true, "", "fw"));
         assert_eq!(page_read(&mut s, &mut n, Err(12)), "[STATUS] 太快了，請稍等一秒");
-        let v = s.status_view();
+        let v = s.status_view(false, true);
         assert_eq!((v.row.as_str(), v.fresh, v.rate_note.as_str(), v.version.as_str()), ("3", false, "太快了，請稍等一秒", "fw"));
         // another error code is not kept back: it is shown (row 2')
         assert_eq!(page_read(&mut s, &mut n, Err(3)), "[STATUS] 狀態已更新");
-        assert_eq!(s.status_view().row, "2'");
+        assert_eq!(s.status_view(false, true).row, "2'");
     }
 
     #[test]

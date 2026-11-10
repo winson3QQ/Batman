@@ -223,6 +223,8 @@ class _StatusPageViewState extends State<StatusPageView> {
   bool _missed = false;
 
   Future<void> _refresh() async {
+    // one read at a time: a second tap before the button is redrawn disabled does nothing (S20 fix 3)
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       final r = await widget.onRefresh();
@@ -258,7 +260,7 @@ class _StatusPageViewState extends State<StatusPageView> {
       if (f.version.isNotEmpty) Text('軟體版本：${f.version}', key: const Key('version')),
       const SizedBox(height: 8),
       Row(children: [
-        FilledButton(key: const Key('refresh'), onPressed: _busy ? null : _refresh, child: const Text('重新整理')),
+        FilledButton(key: const Key('refresh'), onPressed: _busy ? null : _refresh, child: Text(_busy ? '讀取中…' : '重新整理')),
         const SizedBox(width: 8),
         if (_missed)
           const Expanded(child: Text(refreshMissed, key: Key('missed')))

@@ -142,9 +142,42 @@ const S8: &str = "之前連上的隊員現在收不到（可能走遠或關機�
 const S8_GUARDED: &str = "之前連上的隊員現在收不到（可能走遠或關機），或還在連線中 — 請確認隊員在附近、已開機；等一分鐘按「重新整理」；隊員就在旁邊仍然如此，請重新開機一次；仍然如此請找維修人員";
 const S9A: &str = "還沒連上其他隊員 — 請確認隊員的節點已開機、在附近、網路名稱和隊長的相同（看下面「網路：」）；隊員就在旁邊仍然如此，請重新開機一次；仍然如此請找維修人員";
 const S9C: &str = "還沒連上其他隊員 — 請確認隊員的節點已開機、在附近；等一分鐘再按「重新整理」，仍然如此請重新開機；仍然如此請找維修人員";
-// k1 = 1 (claimed, not in the team network; legacy too)
-const C34: &str = "已連上附近的節點，但這台還沒加入隊伍網路 — 要跟隊伍通訊請按「加入隊伍網路」";
-const C_JOIN: &str = "這台還沒加入隊伍網路 — 請按「加入隊伍網路」";
+// k1 = 1 (claimed, not in the team network; legacy too): the action names the button this phone has (S20 fix 1)
+const C34_HEAD: &str = "已連上附近的節點，但這台還沒加入隊伍網路 — ";
+const C_JOIN_HEAD: &str = "這台還沒加入隊伍網路 — ";
+const NO_RECORD: &str = "這支手機還沒有隊伍網路：可按「建立網路」，或向管理者要邀請";
+
+/// Which "join" button this phone shows (My nodes): the k1 = 1 sentences name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinButton {
+    /// this phone holds a net/ record (it made a network): 「加入網路／繼續加入」
+    Admin,
+    /// only mnet/ records (an imported team network): 「加入隊伍網路」
+    Member,
+    /// neither
+    NoRecord,
+}
+
+impl JoinButton {
+    /// net/ wins over mnet/ (the admin's own button)
+    pub fn of(has_net: bool, has_mnet: bool) -> JoinButton {
+        match (has_net, has_mnet) {
+            (true, _) => JoinButton::Admin,
+            (false, true) => JoinButton::Member,
+            (false, false) => JoinButton::NoRecord,
+        }
+    }
+
+    fn tail(self, c34: bool) -> String {
+        match self {
+            JoinButton::Admin if c34 => "要跟隊伍通訊請按「加入網路／繼續加入」".into(),
+            JoinButton::Admin => "請按「加入網路／繼續加入」".into(),
+            JoinButton::Member if c34 => "要跟隊伍通訊請按「加入隊伍網路」".into(),
+            JoinButton::Member => "請按「加入隊伍網路」".into(),
+            JoinButton::NoRecord => NO_RECORD.into(),
+        }
+    }
+}
 const C_B_TAIL: &str = "；還沒加入隊伍網路";
 
 /// A node string for the screen: control / format characters replaced (display_name), then at most 64 characters.
@@ -240,14 +273,14 @@ fn color_of(r: Row) -> Color {
     }
 }
 
-fn sentence(r: Row, p: Option<&Parsed>) -> String {
+fn sentence(r: Row, p: Option<&Parsed>, join: JoinButton) -> String {
     let claimed = p.is_some_and(|p| p.k1 == 1);
     let guarded = p.is_some_and(|p| p.k1 == 2 && p.code == Some(1));
     let s = match r {
         Row::Unsupported => S1,
         Row::Unknown => S2,
         Row::Refused => S2P,
-        Row::Linked | Row::LinkedWeak if claimed => C34,
+        Row::Linked | Row::LinkedWeak if claimed => return format!("{C34_HEAD}{}", join.tail(true)),
         Row::Linked => S3,
         Row::LinkedWeak if p.and_then(|p| p.snr).is_some() => S4_WEAK,
         Row::LinkedWeak => S4_UNKNOWN,
@@ -257,7 +290,7 @@ fn sentence(r: Row, p: Option<&Parsed>) -> String {
         Row::NoKey => S5K,
         Row::RadioFault => S5R,
         Row::UnknownCode => SU,
-        Row::HeardNoLink | Row::NothingHeard | Row::Linking | Row::Lost | Row::GuardedNotLinked | Row::NotLinked if claimed => C_JOIN,
+        Row::HeardNoLink | Row::NothingHeard | Row::Linking | Row::Lost | Row::GuardedNotLinked | Row::NotLinked if claimed => return format!("{C_JOIN_HEAD}{}", join.tail(false)),
         Row::HeardNoLink => S6,
         Row::NothingHeard => S7,
         Row::Linking => S8A,
@@ -296,6 +329,11 @@ fn warning(p: &Parsed) -> Option<&'static str> {
 
 /// §3: the verdict of one status result.
 pub fn link_verdict(a: Answer) -> Verdict {
+    link_verdict_for(a, JoinButton::Member)
+}
+
+/// §3 with the k1 = 1 sentences naming `join`, the button this phone shows.
+pub fn link_verdict_for(a: Answer, join: JoinButton) -> Verdict {
     let (row, p) = match a {
         Answer::Error(E_UNSUPPORTED) => (Row::Unsupported, None),
         Answer::Error(_) => (Row::Refused, None),
@@ -307,7 +345,7 @@ pub fn link_verdict(a: Answer) -> Verdict {
     Verdict {
         row,
         color: color_of(row),
-        sentence: sentence(row, p.as_ref()),
+        sentence: sentence(row, p.as_ref(), join),
         lag_note: matches!(row, Row::Linked | Row::LinkedWeak).then_some(LAG_NOTE),
         warning: p.as_ref().and_then(warning),
     }
@@ -343,7 +381,7 @@ pub fn version_line(info: Option<&Value>) -> String {
 pub const TECH_NOTES: [&str; 3] = [
     "SNR 門檻暫定；SNR 是最強那個站台的訊號（不一定是隊員，也可能是已離開的站台），雜訊讀不到時可能偏高",
     "隊員離開或關機後，『已連上』最多還會維持約 4 分鐘（節點約 200 秒才移除鄰居，再加上判定與快取）；站台數可能包含已離開的隊員",
-    "joinwatch 停掉時節點會留著最後的狀態（少見），判定可能停在 🟢 或列 8",
+    "joinwatch 停掉時節點會留著最後的狀態（少見），判定可能停在 🟢 或「之前連上的隊員現在收不到」",
 ];
 
 /// §2-6: the collapsed technical list (every node string through `shown`), then the three notes.

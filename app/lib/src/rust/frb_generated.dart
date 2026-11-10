@@ -231,7 +231,11 @@ abstract class RustLibApi extends BaseApi {
     required int frameLimit,
   });
 
-  StatusView crateApiOwnerOwnerSessionStatusView({required OwnerSession that});
+  StatusView crateApiOwnerOwnerSessionStatusView({
+    required OwnerSession that,
+    required bool hasNet,
+    required bool hasMnet,
+  });
 
   String crateApiMemberApprovalNetId({required String hex});
 
@@ -1324,7 +1328,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  StatusView crateApiOwnerOwnerSessionStatusView({required OwnerSession that}) {
+  StatusView crateApiOwnerOwnerSessionStatusView({
+    required OwnerSession that,
+    required bool hasNet,
+    required bool hasMnet,
+  }) {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
@@ -1333,6 +1341,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
+          sse_encode_bool(hasNet, serializer);
+          sse_encode_bool(hasMnet, serializer);
           return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 29)!;
         },
         codec: SseCodec(
@@ -1340,7 +1350,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: null,
         ),
         constMeta: kCrateApiOwnerOwnerSessionStatusViewConstMeta,
-        argValues: [that],
+        argValues: [that, hasNet, hasMnet],
         apiImpl: this,
       ),
     );
@@ -1349,7 +1359,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiOwnerOwnerSessionStatusViewConstMeta =>
       const TaskConstMeta(
         debugName: "OwnerSession_status_view",
-        argNames: ["that"],
+        argNames: ["that", "hasNet", "hasMnet"],
       );
 
   @override
@@ -4269,7 +4279,12 @@ class OwnerSessionImpl extends RustOpaque implements OwnerSession {
   OwnerStep? signed({required List<int> der}) => RustLib.instance.api
       .crateApiOwnerOwnerSessionSigned(that: this, der: der);
 
-  /// The last status page read as the page shows it (status page v8.1 §2-§3).
-  StatusView statusView() =>
-      RustLib.instance.api.crateApiOwnerOwnerSessionStatusView(that: this);
+  /// The last status page read as the page shows it (status page v8.1 §2-§3). `has_net` / `has_mnet`: this phone holds
+  /// a net/ (it made a network) / an mnet/ record — the claimed-node sentence names the matching join button.
+  StatusView statusView({required bool hasNet, required bool hasMnet}) =>
+      RustLib.instance.api.crateApiOwnerOwnerSessionStatusView(
+        that: this,
+        hasNet: hasNet,
+        hasMnet: hasMnet,
+      );
 }
