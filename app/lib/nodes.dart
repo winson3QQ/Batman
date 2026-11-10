@@ -119,8 +119,8 @@ class _NodesPageState extends State<NodesPage> {
     _deviceId = null;
   }
 
-  Future<void> _write(List<Uint8List> frames) async {
-    final rxc = _rxc!; // one request goes to one device, even if _rxc changes meanwhile
+  /// [rxc]: the RX characteristic of the login attempt that owns the frames (never another candidate's)
+  Future<void> _write(QualifiedCharacteristic rxc, List<Uint8List> frames) async {
     for (final f in frames) {
       await _ble.writeCharacteristicWithoutResponse(rxc, value: f);
     }
@@ -148,6 +148,7 @@ class _NodesPageState extends State<NodesPage> {
     _rxc = QualifiedCharacteristic(characteristicId: _rx, serviceId: provdService, deviceId: id);
     final (s, first) = OwnerSession.start(recordPlain: record, ownerPub: ownerPub, frameLimit: fl);
     final done = Completer<bool>();
+    final rx = _rxc!; // this attempt's device: its run writes only here
     // after login, a run belongs to session s only: once the session was dropped or replaced it stops
     bool gone() => done.isCompleted && !identical(_session, s);
     Future<void> run(OwnerStep? st) async {
@@ -158,7 +159,7 @@ class _NodesPageState extends State<NodesPage> {
         }
         switch (st.kind) {
           case OwnerKind.write:
-            await _write(st.frames);
+            await _write(rx, st.frames);
             if (gone()) return;
             _kick();
             st = null;
@@ -232,6 +233,8 @@ class _NodesPageState extends State<NodesPage> {
             if (!done.isCompleted) done.complete(false);
             final a = _answer;
             if (a != null && !a.isCompleted) a.complete('[REQ_FAIL] 連線已結束：${st.detail}');
+            // Rust ended this session: the next action logs in again (only if it still is the current one)
+            if (identical(_session, s)) _drop();
             st = null;
         }
       }
@@ -397,7 +400,7 @@ class _NodesPageState extends State<NodesPage> {
     if (_session == null && _lastNode != null && !held) await _login(_lastNode!);
     var s = _session;
     if (s == null || (_busy && !held)) return null;
-    setState(() => _busy = true);
+    if (mounted) setState(() => _busy = true);
     _waitFor = wait;
     _waitLine = '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應（結果不明；下次操作會重新連線）';
     _unclear = unclear;
@@ -407,16 +410,21 @@ class _NodesPageState extends State<NodesPage> {
       _answer = Completer<String>();
       try {
         await _run!(req(s));
-      } on PlatformException catch (e) {
+      } catch (e) {
+        // a Rust refusal (thrown as a String) is the operation's own answer, not a link problem
+        if (e is String) rethrow;
+        // a write / platform failure: flutter_reactive_ble reports GATT write errors as a plain Exception,
+        // Kotlin as PlatformException
+        final code = e is PlatformException ? e.code : '$e';
         if (unclear != null) {
-          _say('[LINK_LOST] 連線或手機金鑰出錯（${e.code}）');
+          _say('[LINK_LOST] 連線或手機金鑰出錯（$code）');
           _say(_unclearNow());
           await _drop();
           return null;
         }
         if (!retry) rethrow;
         // nothing reached the node (the write itself failed): log in again and send it once more
-        _say('[LINK_LOST] 連線或手機金鑰出錯（${e.code}），正在重新連線…');
+        _say('[LINK_LOST] 連線或手機金鑰出錯（$code），正在重新連線…');
         await _drop();
         setState(() => _busy = false);
         await _login(_lastNode!);
@@ -484,15 +492,22 @@ class _NodesPageState extends State<NodesPage> {
   /// join2 §3.3: this logged-in node joins one of this phone's networks (also "繼續加入": the same flow again)
   Future<void> _joinNetwork() async {
     if (_busy) return;
-    final net = await _pickNet('要加入哪個網路？', forJoin: true);
-    if (net == null) return;
+    setState(() => _busy = true); // a second tap while the network is being picked does nothing
+    final _Net? net;
+    try {
+      net = await _pickNet('要加入哪個網路？', forJoin: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    if (net == null || !mounted) return;
+    final n = net; // non-null from here (the request closure below cannot promote `net`)
     final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
     _say('正在把這台節點加入網路 ${net.view.meshId}，最多可能要等幾分鐘…');
     _linkFrom = null;
     await _ask(
         (s) => s.requestJoinNetwork(
-            recordPlain: net.plain,
-            recordGen: net.gen,
+            recordPlain: n.plain,
+            recordGen: n.gen,
             adminPub: keys['admin'] as Uint8List,
             ownerEncPub: keys['ownerEnc'] as Uint8List),
         wait: _joinWait,
@@ -508,7 +523,7 @@ class _NodesPageState extends State<NodesPage> {
     final from = _linkFrom;
     _linkFrom = null;
     final joined = _session;
-    if (from == null || joined == null || _busy) return;
+    if (from == null || joined == null || _busy || !mounted) return;
     setState(() => _busy = true);
     var last = _linkUnknown;
     try {
@@ -521,7 +536,10 @@ class _NodesPageState extends State<NodesPage> {
         final secs = DateTime.now().difference(from).inSeconds;
         final a = await _ask((s) => s.requestLinkCheck(secsSinceJoin: BigInt.from(secs)),
             quiet: true, retry: false, held: true);
-        if (a == null) break;
+        if (a == null) {
+          last = _linkUnknown; // the read failed (§3.3-7)
+          break;
+        }
         // anything but the node's answer (a timeout, a lost link) = unknown (§3.3-7)
         last = a.startsWith('[ANSWER] ') ? a.replaceFirst('[ANSWER] ', '') : _linkUnknown;
         if (last.startsWith('[CONNECTED]')) break;
