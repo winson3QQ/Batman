@@ -16,8 +16,11 @@ use batman_proto::joinflow::{self, Join};
 use batman_proto::loginflow::{Action, End, Login, NodeRecord};
 use batman_proto::netrec::{self, Confirm, MemberState, NetRec};
 use batman_proto::nodecert::{self, Verified};
+use batman_proto::updflow::{self, SendUpdate};
 use batman_proto::{sig, status, statuspage};
 use batman_proto::store;
+
+use super::rekey::{removed_question, update_hint_of, update_text, UpdateHint};
 
 /// A sealed record and the AAD Kotlin opens it with.
 pub struct SealedRecord {
@@ -95,7 +98,8 @@ pub struct NetView {
 pub fn net_summary(record_plain: Vec<u8>) -> Result<NetView, String> {
     let r = netrec::decode(&record_plain).map_err(|_| NET_DAMAGED.to_string())?;
     let (country, net_name) = r.netcfg().map(|c| (c.country, c.name)).unwrap_or_default();
-    let creator = r.creator().ok();
+    // remove-member §2.1: the creator only while pending (key 8 may be empty / another node once applied)
+    let creator = r.pending_creator().ok().flatten();
     let members = r
         .members()
         .map_err(|_| NET_DAMAGED.to_string())?
@@ -124,10 +128,15 @@ pub fn net_forget_joining(record_plain: Vec<u8>, record_gen: u64, dac_hash: Stri
         .collect::<Option<Vec<u8>>>()
         .and_then(|v| v.try_into().ok())
         .ok_or("App 內部錯誤（dac_hash is not 32 bytes of hex）")?;
-    if r.creator().ok() == Some(h) {
+    if r.pending_creator().ok().flatten() == Some(h) {
         return Err("建立網路的節點不能忘記".into());
     }
-    let name = r.members().ok().and_then(|l| l.into_iter().find(|m| m.dac_pub_hash == h)).map(|m| m.name).unwrap_or_default();
+    let entry = r.members().ok().and_then(|l| l.into_iter().find(|m| m.dac_pub_hash == h));
+    if entry.as_ref().is_some_and(|m| m.state == MemberState::Approved) {
+        // remove-member §3.6: another person's node is removed with the person (forgetting revokes nothing)
+        return Err("這是別人的節點，請用「移除這個人」（只從清單忘記不會撤銷他已拿到的網路金鑰）".into());
+    }
+    let name = entry.map(|m| m.name).unwrap_or_default();
     let gone = netrec::forget_joining(&mut r, &h).map_err(|_| "這台節點不在「加入中」，沒有東西可以忘記".to_string())?;
     let want = r.netcfg().map(|c| c.country).unwrap_or_default();
     let mut st = persist_step(&r.base.net_id, netrec::encode(&r), record_gen);
@@ -179,6 +188,11 @@ pub enum OwnerKind {
     PersistPend,
     /// a member's network record (member-join §4 steps 7c, 8): seal and write `record` at `rel` exactly like PersistNet
     PersistMnet,
+    /// 「把新密碼送給節點」(remove-member §3.2): wait `wait_ms`, then `resume_update()`
+    Wait,
+    /// join a node of this network (remove-member §2.0 rule 2): it was removed before — ask the question in `detail`;
+    /// yes = request_join_network again with `removed_confirmed`
+    ConfirmRemoved,
 }
 
 pub struct OwnerStep {
@@ -205,6 +219,13 @@ pub struct OwnerStep {
     pub sent: bool,
     /// an Answer: network/leave answered 0 (re-read the status page once, §2)
     pub left: bool,
+    /// Wait: how long
+    pub wait_ms: u64,
+    /// an Answer after a join: the node is behind the phone's version — send the new secrets now (request_send_update,
+    /// remove-member §3.5)
+    pub send_update: bool,
+    /// an Answer of `request_info`: the info body (CBOR) for the removal's version check (§2.4)
+    pub info: Vec<u8>,
 }
 
 impl OwnerStep {
@@ -225,6 +246,9 @@ impl OwnerStep {
             renewed: false,
             sent: false,
             left: false,
+            wait_ms: 0,
+            send_update: false,
+            info: vec![],
         }
     }
     pub(crate) fn text(kind: OwnerKind, d: String) -> OwnerStep {
@@ -240,6 +264,8 @@ enum St {
     Join { join: Join, rec: Option<NetRec>, gen: u64, applied: bool, resent: bool },
     /// a second node joining (join2 §3.3); `mesh_id` for the texts; `member` = a member's own node (member-join §4-8)
     Join2 { flow: Join2, mesh_id: String, member: bool },
+    /// 「把新密碼送給節點」 (remove-member §3.2)
+    Update { flow: SendUpdate, member: bool },
     Over,
 }
 
@@ -275,6 +301,8 @@ pub struct OwnerSession {
     after_left: bool,
     /// the shown status-page read is that one re-read
     page_cut_once: bool,
+    /// remove-member §2.0 rule 2: the question for a node removed before (asked when join2 refuses RemovedBefore)
+    removed_q: String,
 }
 
 /// A record write step at any record path (PersistNet / PersistPend / PersistMnet): CAS from `expected_gen`, sealed
@@ -419,6 +447,7 @@ fn join2_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
         E::Refused(Pre::Full) => format!("{fail}這個網路已經有 {} 台節點（App 目前的上限）", netrec::MAX_MEMBERS),
         E::Refused(Pre::NoEntry) => format!("{fail}需要新的邀請"),
         E::Refused(Pre::NotThisNode) => format!("{fail}這份網路資料是給另一台節點的"),
+        E::Refused(Pre::RemovedBefore) => format!("{fail}這台之前被排除過，需要你確認"),
         E::Applied { country_unverified, save_pending } => format!(
             "[JOINED] 已套用：節點 …{last4} 已加入網路 {mesh_id}{}{}",
             if *save_pending { "（存檔要等這台節點下次開機才完成）" } else { "" },
@@ -604,6 +633,7 @@ impl OwnerSession {
             leave: None,
             after_left: false,
             page_cut_once: false,
+            removed_q: String::new(),
         };
         let step = s.login_step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
         Ok((s, step))
@@ -627,6 +657,10 @@ impl OwnerSession {
         if let St::Join2 { flow, .. } = &mut self.st {
             let a = flow.signed(&der);
             return self.join2_step(a);
+        }
+        if let St::Update { flow, .. } = &mut self.st {
+            let a = flow.signed(&der);
+            return self.update_step(a);
         }
         if let St::Conn { conn, asked, op } = &mut self.st {
             // the owner-op signature: the operation goes out with key 31 = {1: verb, 2: sig}
@@ -711,6 +745,10 @@ impl OwnerSession {
         if let St::Join2 { flow, .. } = &mut self.st {
             let a = flow.on_frame(&frame);
             return self.join2_step(a);
+        }
+        if let St::Update { flow, .. } = &mut self.st {
+            let a = flow.on_frame(&frame);
+            return self.update_step(a);
         }
         match &mut self.st {
             St::Login(l) => {
@@ -817,6 +855,15 @@ impl OwnerSession {
                     };
                     Some(OwnerStep::text(OwnerKind::Answer, "[STATUS] 狀態已更新".into()))
                 }
+                Ok(Some(o)) if *asked == "info-raw" => {
+                    // remove-member §2.4: the body as it came (an error / E_RATE = could not be read)
+                    *asked = "";
+                    let info = match o {
+                        Outcome::Ok(b) => cbor::encode(&b),
+                        Outcome::Err { .. } => vec![],
+                    };
+                    Some(OwnerStep { info, ..OwnerStep::text(OwnerKind::Answer, "[INFO] 已讀取".into()) })
+                }
                 Ok(Some(o)) if *asked == "status-link" => {
                     *asked = "";
                     let s = match &o {
@@ -853,8 +900,76 @@ impl OwnerSession {
                     Some(OwnerStep::text(OwnerKind::Ended, d))
                 }
             },
-            St::Join { .. } | St::Join2 { .. } | St::Over => None,
+            St::Join { .. } | St::Join2 { .. } | St::Update { .. } | St::Over => None,
         }
+    }
+
+    /// remove-member §2.4: one info read whose body comes back as is (OwnerStep.info; empty = could not be read).
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_info(&mut self) -> Result<OwnerStep, String> {
+        self.request_tagged("info", "info-raw", Value::Map(vec![]))
+    }
+
+    /// The SHA-256 of this login's verified DAC (lowercase hex; "" = not verified): which own node this session is.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn node_dac_hash(&self) -> String {
+        self.node.as_ref().map(|n| nodecert::hex_lower(&netrec::dac_hash(&n.dac_pub))).unwrap_or_default()
+    }
+
+    /// 「把新密碼送給節點」(remove-member §3.2) to this (own, verified) node from an opened record: the admin's net
+    /// record (`member` false; `admin_pub` signs the node's fresh secrets) or a member's mnet (`member` true). Never
+    /// called on its own: only from the button (or right after a join whose node is behind, §3.5).
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_send_update(&mut self, record_plain: Vec<u8>, member: bool, admin_pub: Vec<u8>) -> Result<OwnerStep, String> {
+        if self.joinreq.is_some() {
+            return Err(JOINREQ_BUSY.into());
+        }
+        let adm: [u8; 65] = if member { [0; 65] } else { admin_pub.try_into().map_err(|_| "手機金鑰格式不對（admin_pub is not 65 bytes）")? };
+        let conn = match std::mem::replace(&mut self.st, St::Over) {
+            St::Conn { conn, op: None, .. } if !conn.busy() => conn,
+            other => {
+                self.st = other;
+                return Err("還沒連線到節點（或上一個操作還沒結束）".into());
+            }
+        };
+        let inp = updflow::Input { record_plain, member, node: self.node.clone(), owner_pub: self.owner_pub, admin_pub: adm };
+        let (flow, a) = SendUpdate::start(conn, inp);
+        self.st = St::Update { flow, member };
+        self.update_step(Some(a)).ok_or_else(|| "App 內部錯誤（no first step）".into())
+    }
+
+    /// After a Wait step.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn resume_update(&mut self) -> Option<OwnerStep> {
+        let a = match &mut self.st {
+            St::Update { flow, .. } => flow.resume(),
+            _ => None,
+        };
+        self.update_step(a)
+    }
+
+    fn update_step(&mut self, a: Option<updflow::Action>) -> Option<OwnerStep> {
+        use updflow::Action as U;
+        Some(match a? {
+            U::Write(frames) => OwnerStep { frames, ..OwnerStep::new(OwnerKind::Write) },
+            U::SignAdmin { tbs } => OwnerStep { sign_input: tbs, ..OwnerStep::new(OwnerKind::SignAdmin) },
+            U::Wait { ms } => OwnerStep { wait_ms: ms, ..OwnerStep::new(OwnerKind::Wait) },
+            U::Done(e) => {
+                let member = matches!(self.st, St::Update { member: true, .. });
+                if let St::Update { flow, .. } = std::mem::replace(&mut self.st, St::Over) {
+                    self.st = St::Conn { conn: flow.into_conn(), asked: "", op: None };
+                }
+                OwnerStep::text(OwnerKind::Answer, update_text(&e, member, &self.last4))
+            }
+        })
+    }
+
+    /// remove-member §3.5: the status page's line about this node's secrets, from the record of the network info key
+    /// 10 names (`record_plain`: net/ when `member` false, mnet/ when true) and the last status-page read. "" = none;
+    /// `button` = show 「把新密碼送給節點」.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn update_hint(&self, record_plain: Vec<u8>, member: bool) -> UpdateHint {
+        update_hint_of(self.page_info.as_ref(), self.node.as_ref(), &self.owner_pub, &record_plain, member)
     }
 
     /// make-network on this (claimed, not joined) node — design §5.4. The first step is SignAdmin (net_config).
@@ -983,7 +1098,8 @@ impl OwnerSession {
     /// `record_gen`: the generation store_read_sealed gave (every record write of the join is a CAS from it).
     /// admin_pub / owner_enc_pub: this phone's keys (Kotlin publicKeys).
     #[flutter_rust_bridge::frb(sync)]
-    pub fn request_join_network(&mut self, record_plain: Vec<u8>, record_gen: u64, admin_pub: Vec<u8>, owner_enc_pub: Vec<u8>) -> Result<OwnerStep, String> {
+    /// `removed_confirmed`: the user answered yes to the ConfirmRemoved question (remove-member §2.0 rule 2).
+    pub fn request_join_network(&mut self, record_plain: Vec<u8>, record_gen: u64, admin_pub: Vec<u8>, owner_enc_pub: Vec<u8>, removed_confirmed: bool) -> Result<OwnerStep, String> {
         if self.joinreq.is_some() {
             return Err(JOINREQ_BUSY.into());
         }
@@ -997,6 +1113,7 @@ impl OwnerSession {
             }
         };
         let mesh_id = netrec::decode(&record_plain).map(|r| r.base.mesh_id).unwrap_or_default();
+        self.removed_q = removed_question(&record_plain, self.node.as_ref(), &self.last4);
         let inp = join2flow::Input {
             record_plain,
             record_gen,
@@ -1006,6 +1123,7 @@ impl OwnerSession {
             owner_enc_pub: enc,
             admin_pub: adm,
             member: false,
+            removed_confirmed,
         };
         let (flow, a) = Join2::start(conn, inp);
         self.st = St::Join2 { flow, mesh_id, member: false };
@@ -1037,6 +1155,7 @@ impl OwnerSession {
             owner_enc_pub: [0; 65],
             admin_pub: [0; 65],
             member: true,
+            removed_confirmed: false,
         };
         let (flow, a) = Join2::start(conn, inp);
         self.st = St::Join2 { flow, mesh_id, member: true };
@@ -1133,6 +1252,7 @@ impl OwnerSession {
         match std::mem::replace(&mut self.st, St::Over) {
             St::Join { join, .. } => self.st = St::Conn { conn: join.into_conn(), asked: "", op: None },
             St::Join2 { flow, .. } => self.st = St::Conn { conn: flow.into_conn(), asked: "", op: None },
+            St::Update { flow, .. } => self.st = St::Conn { conn: flow.into_conn(), asked: "", op: None },
             other => self.st = other,
         }
     }
@@ -1146,16 +1266,23 @@ impl OwnerSession {
             A::PersistNet { net_id, plain, expected_gen } => persist_step(&net_id, plain, expected_gen),
             A::PersistMnet { net_id, plain, expected_gen } => persist_at(OwnerKind::PersistMnet, batman_proto::mrec::mnet_path(&net_id), plain, expected_gen),
             A::ConfirmCountry { have, want } => OwnerStep::text(OwnerKind::ConfirmCountry, country_question(&have, &want)),
+            A::Done(join2flow::End::Refused(Pre::RemovedBefore)) => {
+                self.back_to_conn();
+                OwnerStep::text(OwnerKind::ConfirmRemoved, std::mem::take(&mut self.removed_q))
+            }
             A::Done(e) => {
-                let (mesh_id, member) = match &self.st {
-                    St::Join2 { mesh_id, member, .. } => (mesh_id.clone(), *member),
-                    _ => (String::new(), false),
+                let (mesh_id, member, behind) = match &self.st {
+                    St::Join2 { mesh_id, member, flow } => (mesh_id.clone(), *member, flow.node_behind()),
+                    _ => (String::new(), false, false),
                 };
                 self.back_to_conn();
                 let t = if member { member_join_text(&e, &mesh_id, &self.last4) } else { join2_text(&e, &mesh_id, &self.last4) };
                 let mut st = OwnerStep::text(OwnerKind::Answer, t);
+                let applied = matches!(e, join2flow::End::Applied { .. });
                 // P2 (country not verified) has no status to read: "applied" only
-                st.poll_link = matches!(e, join2flow::End::Applied { country_unverified: false, .. });
+                st.poll_link = matches!(e, join2flow::End::Applied { country_unverified: false, .. }) && !behind;
+                // remove-member §3.5: already a member but behind -> the new secrets go out right away
+                st.send_update = applied && behind;
                 st
             }
         })
@@ -1462,6 +1589,7 @@ mod tests {
             device_id: Some("aabbccddeeff00112233".into()),
             state: MemberState::Joining,
             prev_country: Some("JP".into()),
+            known: None,
         };
         r.list = Some(vec![joining]);
         let plain = netrec::encode(&r);

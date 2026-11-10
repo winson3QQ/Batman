@@ -34,13 +34,16 @@ pub(crate) fn invite_err(e: &Error) -> String {
         Error::NodeCert(c) => format!("申請裡的節點身分沒有通過檢查（{c:?}）"),
         Error::NoNodeCert => "這次連線沒有驗證過節點身分，請重新連線".into(),
         Error::UnknownInvite => "這份申請不是回覆這個網路發出的邀請".into(),
-        Error::InviteUsed => "這張邀請已經用過了".into(),
+        // remove-member §3.6: a removal makes every unused invite used too
+        Error::InviteUsed => "這張邀請已用過或已作廢，請重新邀請".into(),
         Error::DuplicateInvite => "邀請重複了，請再按一次".into(),
         Error::AlreadyMember => "這台節點已經在這個網路的紀錄裡（屬於其他擁有者或已加入）".into(),
         Error::HashMismatch => "申請和剛才核對的不是同一份，請重新貼上".into(),
-        Error::NoRequest => "找不到這個網路的申請".into(),
+        Error::NeedsConfirm => "這台節點（或這個人）之前被移出過，要先確認才能同意".into(),
+        // remove-member §3.4: an approval pasted after a newer update (its secrets are not the stored ones any more)
+        Error::NoRequest => "找不到這個網路的申請（若你已匯入較新的更新包：這份同意已經過時）".into(),
         Error::TooOld => "這支手機的網路資料太舊".into(),
-        Error::SameVersionDifferent => "同編號的不同網路".into(),
+        Error::SameVersionDifferent => "同編號的不同網路（若這份同意在換密碼前產生：請網主重新邀請這台）".into(),
         Error::PreviousNode => "先完成或忘記前一台".into(),
         Error::Stale => "申請已換新，請重新貼上同意碼".into(),
         Error::SasMismatch => "確認碼不符，沒有匯入".into(),
@@ -71,6 +74,11 @@ pub struct JoinReqView {
     pub device_suffix: String,
     pub replaces_approved: bool,
     pub joinreq_hash: String,
+    /// remove-member §3.6: "" or the question to confirm before approving (removed before) — `approve` then needs
+    /// `previous_confirmed`
+    pub previous: String,
+    /// the person still lacks a version: 「請他先貼更新包，再貼這份同意」
+    pub update_first: bool,
 }
 
 #[flutter_rust_bridge::frb(sync)]
@@ -80,12 +88,25 @@ pub fn net_check_joinreq(record_plain: Vec<u8>, hex: String) -> Result<JoinReqVi
     let jr = invite::qr_object(&hex, invite::QR_JOINREQ).map_err(|e| invite_err(&e))?;
     let c = approve::check_joinreq(&rec, &jr).map_err(|e| invite_err(&e))?;
     let d = &c.jr.node.device_id;
+    let previous = match &c.previous {
+        None => String::new(),
+        Some(p) => {
+            let who = match (&p.owner_name, &p.owner_pub) {
+                (Some(n), Some(o)) => format!("{}（{}）", invite::display_name(n), super::rekey::fpr(o)),
+                _ => "不明".into(),
+            };
+            let what = if p.node { format!("這台節點（…{}）之前被排除（遺失 / 被抓）", &d[d.len().saturating_sub(4)..]) } else { "申請的人之前被移出過這個網路（換了一台節點來申請）".into() };
+            format!("{what}，確定要讓它回來嗎？之前的擁有者：{who}")
+        }
+    };
     Ok(JoinReqView {
         sas: c.sas,
         name: c.jr.name,
         device_suffix: d[d.len().saturating_sub(6)..].to_string(),
         replaces_approved: c.replaces_approved,
         joinreq_hash: hex_lower(&c.jr.hash),
+        previous,
+        update_first: c.update_first,
     })
 }
 
@@ -139,11 +160,12 @@ impl NetOp {
         Ok((NetOp { op: Op::Invite(f) }, st))
     }
 
-    /// §4 step 6: approve the join request the admin checked (`joinreq_hash` from net_check_joinreq).
+    /// §4 step 6: approve the join request the admin checked (`joinreq_hash` from net_check_joinreq);
+    /// `previous_confirmed`: the user answered yes to JoinReqView.previous (remove-member §3.6).
     #[flutter_rust_bridge::frb(sync)]
-    pub fn approve(record_plain: Vec<u8>, record_gen: u64, hex: String, joinreq_hash: String, admin_pub: Vec<u8>) -> Result<(NetOp, OwnerStep), String> {
+    pub fn approve(record_plain: Vec<u8>, record_gen: u64, hex: String, joinreq_hash: String, admin_pub: Vec<u8>, previous_confirmed: bool) -> Result<(NetOp, OwnerStep), String> {
         dev_gate()?;
-        let (f, a) = ApproveFlow::start(&record_plain, record_gen, &hex, &hash32(&joinreq_hash)?, &key65(admin_pub)?);
+        let (f, a) = ApproveFlow::start(&record_plain, record_gen, &hex, &hash32(&joinreq_hash)?, &key65(admin_pub)?, previous_confirmed);
         let st = op_step(Some(a), "approve").ok_or("App 內部錯誤（no first step）")?;
         Ok((NetOp { op: Op::Approve(f) }, st))
     }
@@ -202,6 +224,9 @@ pub enum ImportState {
     Ready,
     AlreadyImported,
     NeedsNewInvite,
+    /// remove-member §3.6-2: ask `detail` (replace the stored network?); yes = member_import_prepare again with
+    /// `replace`
+    Replace,
 }
 
 pub struct ImportPrep {
@@ -215,10 +240,17 @@ pub struct ImportPrep {
 /// §4 step 7a: the approval checked against this network's pending request (mpend, read at `pend_gen`) and its
 /// stored network (mnet), everything but the ECDH / AEAD.
 #[flutter_rust_bridge::frb(sync)]
-pub fn member_import_prepare(hex: String, pend_gen: u64, pend_plain: Option<Vec<u8>>, mnet_plain: Option<Vec<u8>>) -> Result<ImportPrep, String> {
+pub fn member_import_prepare(hex: String, pend_gen: u64, pend_plain: Option<Vec<u8>>, mnet_plain: Option<Vec<u8>>, replace: bool) -> Result<ImportPrep, String> {
     dev_gate()?;
-    let r = approve::prepare_import(&hex, pend_plain.as_deref().map(|p| (pend_gen, p)), mnet_plain.as_deref()).map_err(|e| invite_err(&e))?;
+    let r = approve::prepare_import(&hex, pend_plain.as_deref().map(|p| (pend_gen, p)), mnet_plain.as_deref(), replace).map_err(|e| invite_err(&e))?;
     Ok(match r {
+        Prepared::Replace { stored } => ImportPrep {
+            state: ImportState::Replace,
+            sas: String::new(),
+            eph_pub: vec![],
+            pend_gen,
+            detail: format!("這支手機有這個網路的舊紀錄（v{stored}），要換成新的嗎？（若你手上還有網主給的更新包，先貼更新包）"),
+        },
         Prepared::Ready { sas, eph_pub, pend_gen } => ImportPrep { state: ImportState::Ready, sas, eph_pub: eph_pub.to_vec(), pend_gen, detail: String::new() },
         Prepared::AlreadyImported => ImportPrep { state: ImportState::AlreadyImported, sas: String::new(), eph_pub: vec![], pend_gen, detail: "[IMPORT] 已匯入過了".into() },
         Prepared::NeedsNewInvite => ImportPrep { state: ImportState::NeedsNewInvite, sas: String::new(), eph_pub: vec![], pend_gen, detail: "[IMPORT] 需要新的邀請".into() },
@@ -240,12 +272,13 @@ pub fn member_import_approval(
     mnet_gen: u64,
     mut z: Vec<u8>,
     confirmed_sas: String,
+    replace: bool,
 ) -> Result<OwnerStep, String> {
     dev_gate()?;
     let zz: Option<[u8; 32]> = z.as_slice().try_into().ok();
     z.iter_mut().for_each(|b| *b = 0);
     let mut zz = zz.ok_or("App 內部錯誤（z is not 32 bytes）")?;
-    let r = approve::import(&hex, (pend_gen, &pend_plain), expected_pend_gen, mnet_plain.as_deref().map(|p| (p, mnet_gen)), &zz, &confirmed_sas);
+    let r = approve::import(&hex, (pend_gen, &pend_plain), expected_pend_gen, mnet_plain.as_deref().map(|p| (p, mnet_gen)), &zz, &confirmed_sas, replace);
     zz.iter_mut().for_each(|b| *b = 0);
     let (plain, net_id, expected) = r.map_err(|e| invite_err(&e))?;
     let name = MNet::decode(&plain).ok().and_then(|m| m.netcfg().ok()).map(|c| invite::display_name(&c.name)).unwrap_or_default();
@@ -323,9 +356,9 @@ mod tests {
         refused(parse_invite("a201".into()).map(|_| ()), "parse_invite");
         refused(net_check_joinreq(vec![0xa0], "a2".into()).map(|_| ()), "net_check_joinreq");
         refused(NetOp::make_invite(vec![0xa0], 1, vec![4; 65]).map(|_| ()), "net_make_invite");
-        refused(NetOp::approve(vec![0xa0], 1, "a2".into(), "00".repeat(32), vec![4; 65]).map(|_| ()), "net_approve");
-        refused(member_import_prepare("a2".into(), 1, Some(vec![0xa0]), None).map(|_| ()), "member_import_prepare");
-        refused(member_import_approval("a2".into(), 1, vec![0xa0], 1, None, 0, vec![0; 32], "000000".into()).map(|_| ()), "member_import_approval");
+        refused(NetOp::approve(vec![0xa0], 1, "a2".into(), "00".repeat(32), vec![4; 65], false).map(|_| ()), "net_approve");
+        refused(member_import_prepare("a2".into(), 1, Some(vec![0xa0]), None, false).map(|_| ()), "member_import_prepare");
+        refused(member_import_approval("a2".into(), 1, vec![0xa0], 1, None, 0, vec![0; 32], "000000".into(), false).map(|_| ()), "member_import_approval");
         refused(member_pend_view(vec![0xa0]).map(|_| ()), "member_pend_view");
         // the session entries: a session that has not even logged in still answers the gate first
         let rec = batman_proto::cbor::encode(&batman_proto::cbor::Value::Map(vec![
@@ -343,22 +376,22 @@ mod tests {
     fn entries_work_past_the_gate_in_a_dev_build() {
         // past the gate: the answer is about the input, not the build
         assert!(parse_invite("zz".into()).err().unwrap().starts_with("這不是正確的碼"));
-        assert_eq!(member_import_prepare("a2".into(), 1, None, None).err().map(|e| e.starts_with("這不是正確的碼")), Some(true));
+        assert_eq!(member_import_prepare("a2".into(), 1, None, None, false).err().map(|e| e.starts_with("這不是正確的碼")), Some(true));
     }
 
     #[test]
     fn every_refusal_has_words() {
-        for e in [Error::Format("x"), Error::Invalid("x"), Error::NotApplied, Error::NotAdmin, Error::Full, Error::Name, Error::NoNodeCert, Error::UnknownInvite, Error::InviteUsed, Error::DuplicateInvite, Error::AlreadyMember, Error::HashMismatch, Error::NoRequest, Error::TooOld, Error::SameVersionDifferent, Error::PreviousNode, Error::Stale, Error::SasMismatch, Error::Aead] {
+        for e in [Error::Format("x"), Error::Invalid("x"), Error::NotApplied, Error::NotAdmin, Error::Full, Error::Name, Error::NoNodeCert, Error::UnknownInvite, Error::InviteUsed, Error::DuplicateInvite, Error::AlreadyMember, Error::HashMismatch, Error::NeedsConfirm, Error::NoRequest, Error::TooOld, Error::SameVersionDifferent, Error::PreviousNode, Error::Stale, Error::SasMismatch, Error::Aead] {
             assert!(!invite_err(&e).is_empty());
         }
         assert_eq!(invite_err(&Error::TooOld), "這支手機的網路資料太舊");
-        assert_eq!(invite_err(&Error::SameVersionDifferent), "同編號的不同網路");
+        assert!(invite_err(&Error::SameVersionDifferent).starts_with("同編號的不同網路"));
         assert_eq!(invite_err(&Error::PreviousNode), "先完成或忘記前一台");
     }
 
     #[test]
     fn mnet_summary_shows_no_secret() {
-        let m = MNet { net_id: [0xab; 16], version: 1, netcfg: vec![], members: vec![], secrets: vec![], net_root: [0x5e; 32], me: None, invite_hash: [0; 32] };
+        let m = MNet { net_id: [0xab; 16], version: 1, netcfg: vec![], members: vec![], secrets: vec![], net_root: [0x5e; 32], me: None, invite_hash: [0; 32], versions: None, node_secrets: vec![] };
         let v = mnet_summary(m.encode()).unwrap();
         assert_eq!((v.net_id.as_str(), v.entry_state.as_str()), ("ab".repeat(16).as_str(), ""));
         assert!(!format!("{} {} {}", v.net_id, v.net_name, v.device_last4).contains(&"5e".repeat(32)));
@@ -400,7 +433,7 @@ mod review2_tests {
     fn network_names_are_shown_filtered() {
         use batman_proto::cose;
         let cfg = cose::sign1(cose::CT_NETCFG, &cose::net_config_payload(&[0xab; 16], 1, None, "家\u{202E}裡\n網", "US", "m", 40, 4, &[[4; 65]]), &[1; 64]);
-        let m = MNet { net_id: [0xab; 16], version: 1, netcfg: cfg, members: vec![], secrets: vec![], net_root: [0; 32], me: None, invite_hash: [0; 32] };
+        let m = MNet { net_id: [0xab; 16], version: 1, netcfg: cfg, members: vec![], secrets: vec![], net_root: [0; 32], me: None, invite_hash: [0; 32], versions: None, node_secrets: vec![] };
         assert_eq!(mnet_summary(m.encode()).unwrap().net_name, "家\u{FFFD}裡\u{FFFD}網");
         assert_eq!(invite::display_name("ok 名稱"), "ok 名稱");
     }

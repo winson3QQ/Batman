@@ -78,6 +78,12 @@ fn dac_pub65(c: &Certificate) -> Result<[u8; 65], Error> {
     pk.try_into().map_err(|_| Error::Malformed("DAC public key is not a 65-byte P-256 point"))
 }
 
+/// The DAC public key of a stored DAC (a node record's key 4): which node a record is (remove-member §3.4 rule 4).
+pub fn dac_pub_of_der(der: &[u8]) -> Result<[u8; 65], Error> {
+    let c = Certificate::from_der(der).map_err(|_| Error::Malformed("DAC is not X.509 DER"))?;
+    dac_pub65(&c)
+}
+
 /// Common checks; `remote_static` is the handshake's rs (32 B), None offline (verify_offline: no handshake, so only
 /// freshness is lost).
 fn common(node_cert: &[u8], remote_static: Option<&[u8; 32]>) -> Result<(Verified, Certificate), Error> {

@@ -71,6 +71,11 @@ pub struct Plan {
     pub unverified: bool,
 }
 
+/// A person's fingerprint for the screen (§3.1): the first 8 hex digits of SHA-256(owner_pub).
+pub fn fingerprint(owner_pub: &[u8; 65]) -> String {
+    hex_lower(&Sha256::digest(owner_pub)[..4])
+}
+
 fn last4(m: &Member) -> String {
     m.device_id.as_deref().map(|d| d[d.len().saturating_sub(4)..].to_string()).unwrap_or_default()
 }
