@@ -52,6 +52,11 @@ impl Conn {
         self.closed
     }
 
+    /// A request is outstanding (its answer has not come yet).
+    pub fn busy(&self) -> bool {
+        self.outstanding.is_some()
+    }
+
     fn fail<T>(&mut self, e: Error) -> Result<T, Error> {
         self.closed = true;
         Err(e)

@@ -8,6 +8,11 @@ import 'package:batman_app/member_ui.dart';
 Widget app(Widget w) => MaterialApp(home: Scaffold(body: w));
 
 void main() {
+  test('a join request cut by a lost link says whether it was saved', () {
+    expect(joinreqLostLine(saved: false), contains('申請沒有存，請再按一次'));
+    expect(joinreqLostLine(saved: true), contains('申請已存'));
+  });
+
   test('forget offers joining and approved nodes, never the creator', () {
     expect(forgettable(joining: true, approved: false, creator: false), isTrue);
     expect(forgettable(joining: false, approved: true, creator: false), isTrue, reason: 'an app reinstall needs it');

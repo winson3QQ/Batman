@@ -138,6 +138,10 @@ class DevOnlyButton extends StatelessWidget {
   }
 }
 
+/// The line a join request ends with when the link went away during it: whether the request was already saved.
+String joinreqLostLine({required bool saved}) =>
+    saved ? '[REQ_FAIL] 連線斷了；申請已存，按「再顯示申請」' : '[REQ_FAIL] 連線斷了，申請沒有存，請再按一次';
+
 /// Which members "forget" offers (member-join §3): joining or approved ones, never the network's creator.
 bool forgettable({required bool joining, required bool approved, required bool creator}) => (joining || approved) && !creator;
 
