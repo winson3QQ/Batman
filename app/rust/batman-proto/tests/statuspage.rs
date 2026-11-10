@@ -437,6 +437,29 @@ fn t6_node_strings_are_filtered_and_cut() {
     assert!(!v.sentence.contains('\u{202E}') && !v.sentence.contains("龘"), "no node string in the sentence");
 }
 
+/// S20 fix 1: a claimed node's sentence names the join button this phone really has.
+#[test]
+fn claimed_wording_names_this_phones_button() {
+    use sp::JoinButton as J;
+    let s = |x: &St, j| sp::link_verdict_for(Answer::Body(&x.v()), j).sentence;
+    let claimed = St::code(1).k1(1);
+    let joined = St::joined().k1(1);
+    assert_eq!(s(&claimed, J::Admin), "這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」", "the admin phone");
+    assert_eq!(s(&joined, J::Admin), "已連上附近的節點，但這台還沒加入隊伍網路 — 要跟隊伍通訊請按「加入網路／繼續加入」");
+    assert_eq!(s(&claimed, J::Member), "這台還沒加入隊伍網路 — 請按「加入隊伍網路」", "the member phone");
+    assert_eq!(s(&joined, J::Member), "已連上附近的節點，但這台還沒加入隊伍網路 — 要跟隊伍通訊請按「加入隊伍網路」");
+    assert_eq!(s(&claimed, J::NoRecord), "這台還沒加入隊伍網路 — 這支手機還沒有隊伍網路：可按「建立網路」，或向管理者要邀請");
+    assert!(!s(&claimed, J::Admin).contains("「加入隊伍網路」"), "never the member's button on the admin phone");
+    // net/ wins: a phone that made a network shows the admin button
+    assert_eq!(J::of(true, true), J::Admin);
+    assert_eq!(J::of(false, true), J::Member);
+    assert_eq!(J::of(false, false), J::NoRecord);
+    // a member (k1 = 2) never gets a join sentence, whatever the phone holds
+    for j in [J::Admin, J::Member, J::NoRecord] {
+        assert!(!s(&St::code(8), j).contains("請按「加入"), "{j:?}");
+    }
+}
+
 #[test]
 fn tech_lines_list_every_field() {
     let mut x = St::code(7).v();
@@ -452,7 +475,10 @@ fn tech_lines_list_every_field() {
     }
     for n in sp::TECH_NOTES {
         assert!(tech.iter().any(|l| l == n));
+        // S20 fix 2: no design-internal row ids on the screen
+        assert!(!n.contains("列 ") && !n.contains("row "), "{n}");
     }
+    assert!(sp::TECH_NOTES[2].ends_with("判定可能停在 🟢 或「之前連上的隊員現在收不到」"));
     assert_eq!(sp::tech_lines(Answer::Error(12))[0], "錯誤碼：12");
 }
 

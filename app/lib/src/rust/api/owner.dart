@@ -170,8 +170,9 @@ abstract class OwnerSession implements RustOpaqueInterface {
     frameLimit: frameLimit,
   );
 
-  /// The last status page read as the page shows it (status page v8.1 §2-§3).
-  StatusView statusView();
+  /// The last status page read as the page shows it (status page v8.1 §2-§3). `has_net` / `has_mnet`: this phone holds
+  /// a net/ (it made a network) / an mnet/ record — the claimed-node sentence names the matching join button.
+  StatusView statusView({required bool hasNet, required bool hasMnet});
 }
 
 /// One member of a net record, for the screen (no secret).

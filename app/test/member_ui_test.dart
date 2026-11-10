@@ -1,5 +1,7 @@
 // 254-app-member-join v6.1 §7: M14 (paste refused in a field build), M17 (SAS screens), M18 (network name), and the
 // log interceptor; 254-app-status-page v8.1 §5: T8 (status page) and T9 (My nodes layout). The widgets get their actions passed in, so nothing here needs BLE, Rust or the platform channel.
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -166,6 +168,28 @@ void main() {
       await t.tap(find.byKey(const Key('refresh')));
       await t.pumpAndSettle();
       expect(find.text('沒有讀到，請再按一次'), findsNothing);
+    });
+
+    testWidgets('a second tap while a read is in flight does nothing; the button shows it is busy', (t) async {
+      final pending = Completer<StatusFields?>();
+      var calls = 0;
+      await t.pumpWidget(page(joined, refresh: () {
+        calls++;
+        return pending.future;
+      }));
+      // two taps before the frame that redraws the button
+      await t.tap(find.byKey(const Key('refresh')));
+      await t.tap(find.byKey(const Key('refresh')));
+      await t.pump();
+      expect(calls, 1, reason: 'one read at a time');
+      expect(t.widget<FilledButton>(find.byKey(const Key('refresh'))).onPressed, isNull, reason: 'visibly disabled');
+      expect(find.text('讀取中…'), findsOneWidget);
+      expect(find.text('沒有讀到，請再按一次'), findsNothing, reason: 'the second tap is not a missed read');
+      pending.complete(const StatusFields(color: 'red', sentence: '之前連上的隊員現在收不到'));
+      await t.pumpAndSettle();
+      expect(t.widget<FilledButton>(find.byKey(const Key('refresh'))).onPressed, isNotNull);
+      expect(find.text('重新整理'), findsOneWidget);
+      expect(find.byKey(const Key('color:red')), findsOneWidget);
     });
 
     test('reopening within the quota keeps the last fresh read time (ReadClock)', () {
