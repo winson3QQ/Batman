@@ -642,12 +642,19 @@ impl OwnerSession {
                         return Some(OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] 操作沒有成功：App 內部錯誤（op/nonce without an operation）".into()));
                     };
                     let helper: Option<[u8; 32]> = b.get(1).and_then(Value::as_bytes).and_then(|x| x.try_into().ok());
+                    // an unusable answer ends the owner-op (op taken, like a refused op/nonce)
                     let Some(helper) = helper else {
-                        return Some(OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：節點的回應不完整（op/nonce without a 32-byte nonce）", verb_text(verb))));
+                        let t = format!("[REQ_FAIL] {}沒有成功：節點的回應不完整（op/nonce without a 32-byte nonce）", verb_text(verb));
+                        *op = None;
+                        return Some(OwnerStep::text(OwnerKind::Answer, t));
                     };
                     match sig::owner_op_input(&conn.h(), &helper, verb, body) {
                         Ok(input) => Some(OwnerStep { sign_input: input, ..OwnerStep::new(OwnerKind::Sign) }),
-                        Err(e) => Some(OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：無法準備要求（{e:?}）", verb_text(verb)))),
+                        Err(e) => {
+                            let t = format!("[REQ_FAIL] {}沒有成功：無法準備要求（{e:?}）", verb_text(verb));
+                            *op = None;
+                            Some(OwnerStep::text(OwnerKind::Answer, t))
+                        }
                     }
                 }
                 Ok(Some(Outcome::Ok(b))) if *asked == "info-confirm" => {
@@ -1395,7 +1402,7 @@ mod tests {
 
     impl FakeNode {
         /// the request in `frames`: (id, verb)
-        fn request(&mut self, frames: &[Vec<u8>]) -> (u64, String) {
+        pub(super) fn request(&mut self, frames: &[Vec<u8>]) -> (u64, String) {
             let mut msg = None;
             for f in frames {
                 msg = self.rx.push(f).unwrap();
@@ -1405,7 +1412,7 @@ mod tests {
             let req = cbor::decode(&buf[..n]).unwrap();
             (req.get(1).and_then(Value::as_uint).unwrap(), req.get(2).and_then(Value::as_text).unwrap().to_string())
         }
-        fn answer(&mut self, id: u64, r: Result<Value, u64>) -> Vec<Vec<u8>> {
+        pub(super) fn answer(&mut self, id: u64, r: Result<Value, u64>) -> Vec<Vec<u8>> {
             let m = |kv: Vec<(u64, Value)>| Value::Map(kv.into_iter().map(|(k, v)| (Value::Uint(k), v)).collect());
             let env = match r {
                 Ok(b) => m(vec![(1, Value::Uint(id)), (3, b), (4, Value::Uint(0))]),
@@ -1843,5 +1850,53 @@ mod member_review2_tests {
         }));
         assert_eq!(s.request_confirm_network(rec, 1).err().as_deref(), Some(JOINREQ_BUSY));
         assert!(s.confirm.is_none(), "no stale confirm");
+    }
+}
+
+#[cfg(test)]
+mod member_review3_tests {
+    use super::*;
+
+    fn answer_nonce(s: &mut OwnerSession, n: &mut super::tests::FakeNode, st: &OwnerStep, body: Value) -> OwnerStep {
+        let (id, verb) = n.request(&st.frames);
+        assert_eq!(verb, "op/nonce");
+        let mut next = None;
+        for f in n.answer(id, Ok(body)) {
+            next = s.on_frame(f).or(next);
+        }
+        next.unwrap()
+    }
+
+    #[test]
+    fn a_bad_nonce_answer_ends_the_owner_op() {
+        let (mut s, mut n) = super::tests::logged_in();
+        let st = s.request_set_country("JP".into()).unwrap();
+        let a = answer_nonce(&mut s, &mut n, &st, Value::Map(vec![]));
+        assert!(a.detail.contains("節點的回應不完整"), "{}", a.detail);
+        assert!(matches!(&s.st, St::Conn { op: None, .. }), "the owner-op is over");
+    }
+
+    #[cfg(feature = "dev-trust")]
+    #[test]
+    fn join_request_guards_each_condition() {
+        // an owner-op whose nonce came back (connection idle, op still set) -> refused
+        let (mut s, mut n) = super::tests::logged_in();
+        s.node_cert_raw = Some(vec![0xa0]);
+        let st = s.request_set_country("JP".into()).unwrap();
+        let a = answer_nonce(&mut s, &mut n, &st, Value::Map(vec![(Value::Uint(1), Value::Bytes(vec![0x6d; 32]))]));
+        assert_eq!(a.kind, OwnerKind::Sign);
+        assert!(s.request_joinreq("a1".into(), "x".into(), 0, None, vec![4; 65]).err().unwrap().starts_with("還沒連線到節點"), "op set");
+        // a plain request outstanding (op None) -> refused
+        let (mut s, _n) = super::tests::logged_in();
+        s.node_cert_raw = Some(vec![0xa0]);
+        s.request_status().unwrap();
+        assert!(s.request_joinreq("a1".into(), "x".into(), 0, None, vec![4; 65]).err().unwrap().starts_with("還沒連線到節點"), "outstanding");
+        // after a bad nonce answer the request is possible again (the gate passes; this hex is not an invite)
+        let (mut s, mut n) = super::tests::logged_in();
+        s.node_cert_raw = Some(vec![0xa0]);
+        let st = s.request_set_country("JP".into()).unwrap();
+        answer_nonce(&mut s, &mut n, &st, Value::Map(vec![]));
+        let r = s.request_joinreq("a1".into(), "x".into(), 0, None, vec![4; 65]).unwrap();
+        assert!(r.detail.starts_with("[REQ_FAIL] 申請沒有成功：這不是正確的碼"), "{}", r.detail);
     }
 }

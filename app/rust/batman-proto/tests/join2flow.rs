@@ -385,10 +385,12 @@ struct Opts {
     yes: bool,
     /// the n-th (0-based) admin signature of the run fails
     admin_fail_at: Option<usize>,
+    /// the n-th (0-based) owner signature of the run fails
+    owner_fail_at: Option<usize>,
     /// a write elsewhere just before the n-th (0-based) PersistNet of this run
     bump_before: Option<usize>,
 }
-const YES: Opts = Opts { yes: true, admin_fail_at: None, bump_before: None };
+const YES: Opts = Opts { yes: true, admin_fail_at: None, owner_fail_at: None, bump_before: None };
 
 fn input(disk: &Disk, node: Option<Verified>) -> Input {
     let (plain, g) = disk.read();
@@ -407,6 +409,7 @@ fn input(disk: &Disk, node: Option<Verified>) -> Input {
 fn drive(node: &mut Node, disk: &Disk, mut j: Join2, mut a: Action, o: &Opts) -> Run {
     let mut run = Run::default();
     let mut admin = 0;
+    let mut owner = 0;
     loop {
         // which write the flow asked for (the action's own variant, not the disk it lands on)
         let mnet_write = matches!(a, Action::PersistMnet { .. });
@@ -420,7 +423,9 @@ fn drive(node: &mut Node, disk: &Disk, mut j: Join2, mut a: Action, o: &Opts) ->
             }
             Action::SignOwner { input } => {
                 assert!(input.starts_with(b"batman-owner-op-v1"));
-                j.signed(&signed(OWNER, &input)).unwrap()
+                let der = if o.owner_fail_at == Some(owner) { vec![] } else { signed(OWNER, &input) };
+                owner += 1;
+                j.signed(&der).unwrap()
             }
             Action::ConfirmCountry { have, want } => {
                 run.asked.push((have, want));
@@ -1181,4 +1186,24 @@ fn m10_approved_entries_count_toward_16() {
     let (run, got, _) = refused(&record("US", &[pub_of(&key(ADMIN))], "applied", Some(l)), Some(joining_node()));
     assert_eq!(run.end, Some(End::Refused(Pre::Full)));
     assert!(got.is_empty());
+}
+
+// ---- member-join review round 3 -------------------------------------------------------------------------------
+
+#[test]
+fn r3_an_owner_signature_failure_is_unclear_and_keeps_prev_country() {
+    // the settings.set owner-op cannot be signed (country not changed yet, the entry already joining + JP)
+    let disk = Disk::new(&applied_record("US"));
+    let (c, mut n) = pair("JP");
+    let run = join(&disk, &mut n, c, &Opts { owner_fail_at: Some(0), ..YES });
+    assert_eq!(run.end, Some(End::Joining(Keep::Unclear)));
+    assert!(n.sets.is_empty() && !n.got.contains(&"settings/set".to_string()));
+    let me = disk.mine().unwrap();
+    assert_eq!((me.state, me.prev_country.as_deref()), (MemberState::Joining, Some("JP")));
+    // the network/join owner-op cannot be signed
+    let disk = Disk::new(&applied_record("US"));
+    let (c, mut n) = pair("US");
+    let run = join(&disk, &mut n, c, &Opts { owner_fail_at: Some(0), ..YES });
+    assert_eq!(run.end, Some(End::Joining(Keep::Unclear)));
+    assert!(!n.got.contains(&"network/join".to_string()));
 }

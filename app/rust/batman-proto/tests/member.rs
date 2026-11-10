@@ -1325,3 +1325,11 @@ fn r1_approval_members_checked_nested() {
     });
     assert_eq!(prepare(&md, &extra), Err(Error::Invalid("member entry keys")));
 }
+
+
+#[test]
+fn r3_line_and_paragraph_separators_are_refused_in_names() {
+    assert_eq!(invite::check_name("a\u{2028}b"), Err(Error::Name));
+    assert_eq!(invite::check_name("a\u{2029}b"), Err(Error::Name));
+    assert_eq!(invite::display_name("a\u{2028}b\u{2029}c"), "a\u{FFFD}b\u{FFFD}c");
+}

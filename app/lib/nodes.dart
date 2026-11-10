@@ -75,6 +75,7 @@ class _NodesPageState extends State<NodesPage> {
   // a join / make-network in flight: its "outcome unknown" line (null otherwise); whether a record write happened yet
   String? _unclear;
   bool _wrote = false;
+  bool _saved = false; // a record write of the current request landed (storeWriteCas succeeded)
   bool _quiet = false; // the last request was a quiet one (a late answer of it is only logged)
   final _country = TextEditingController(); // settings/set key 2 (two capital letters)
   final _apSsid = TextEditingController(); // settings/set key 20
@@ -166,7 +167,7 @@ class _NodesPageState extends State<NodesPage> {
         if (gone()) {
           _log('裝置 $id：連線已換掉，舊的步驟不再執行');
           final a = _answer;
-          if (_joinreqInFlight && a != null && !a.isCompleted) a.complete(joinreqLostLine(saved: _wrote));
+          if (_joinreqInFlight && a != null && !a.isCompleted) a.complete(joinreqLostLine(saved: _saved));
           return;
         }
         switch (st.kind) {
@@ -204,6 +205,7 @@ class _NodesPageState extends State<NodesPage> {
             try {
               final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
               await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
+              _saved = true;
               _log('已在手機存下網路資料（${p.rel.substring(0, 8)}…，第 ${p.generation} 版）');
               st = s.netPersisted();
             } catch (e) {
@@ -427,6 +429,7 @@ class _NodesPageState extends State<NodesPage> {
     _waitLine = '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應（結果不明；下次操作會重新連線）';
     _unclear = unclear;
     _wrote = false;
+    _saved = false;
     _quiet = quiet;
     try {
       _answer = Completer<String>();
