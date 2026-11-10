@@ -1,0 +1,18 @@
+[package]
+name = "synth-joinreq"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Bench only: a synthetic third person's join request (docs/design/254-app-remove-member.md §7 T13); never part of an app build"
+
+# standalone: not a member of the bridge's (or any) workspace (review B-m8)
+[workspace]
+
+[dependencies]
+# the app's own checks run on what it makes; dev-trust: the only build that accepts a dev: DAC (the gate is the app's)
+batman-proto = { path = "../../rust/batman-proto", features = ["dev-trust"] }
+# the same pinned versions as batman-proto (one copy each)
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "std"] }
+getrandom = "=0.4.3"
+sha2 = "=0.11.1"
