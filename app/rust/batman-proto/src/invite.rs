@@ -102,6 +102,12 @@ fn is_format(c: char) -> bool {
         | 0x13430..=0x1343F | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A | 0xE0001 | 0xE0020..=0xE007F)
 }
 
+/// A name from a signed object (a network name: netcfg key 4) for the screen: control / format characters (incl.
+/// bidi overrides and newlines) replaced with U+FFFD, so it cannot reorder or break the text around it.
+pub fn display_name(s: &str) -> String {
+    s.chars().map(|c| if c.is_control() || is_format(c) { '\u{FFFD}' } else { c }).collect()
+}
+
 /// A device name: ≤ 32 UTF-8 bytes, no Cc / Cf (incl. bidi) — display only, never part of a decision.
 pub fn check_name(name: &str) -> Result<(), Error> {
     if name.len() > NAME_MAX || name.chars().any(|c| c.is_control() || is_format(c)) {

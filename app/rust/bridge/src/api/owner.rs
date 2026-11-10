@@ -418,8 +418,9 @@ fn member_join_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
     match e {
         E::Refused(Pre::NoEntry) => format!("{fail}需要新的邀請（手機裡已沒有這台節點的加入資料）"),
         E::Refused(Pre::NotThisNode) => format!("{fail}這份網路資料是給另一台節點的"),
-        // a definite failure that dropped key 7 (country back, or never changed): a new invite is needed
-        E::Failed(f, r @ (Revert::Reverted { .. } | Revert::NoChange)) => {
+        // a definite failure that dropped key 7 (country back, or never changed): a new invite is needed. NotSent
+        // puts the entry back (join2flow after_fail): a plain retry works
+        E::Failed(f, r @ (Revert::Reverted { .. } | Revert::NoChange)) if !matches!(f, Fail::NotSent(_)) => {
             let t = join2_text(&E::Failed(f.clone(), r.clone()), mesh_id, last4);
             format!("{t}；需要新的邀請")
         }
@@ -833,6 +834,9 @@ impl OwnerSession {
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_confirm_network(&mut self, record_plain: Vec<u8>, record_gen: u64) -> Result<OwnerStep, String> {
         let rec = netrec::decode(&record_plain).map_err(|_| NET_DAMAGED.to_string())?;
+        if self.joinreq.is_some() {
+            return Err(JOINREQ_BUSY.into());
+        }
         if !matches!(self.st, St::Conn { .. }) {
             return Err(NOT_LOGGED_IN.into());
         }
@@ -888,7 +892,7 @@ impl OwnerSession {
                 return Err("還沒連線到節點（或上一個操作還沒結束）".into());
             }
         };
-        let mesh_id = batman_proto::mrec::MNet::decode(&mnet_plain).ok().and_then(|m| m.netcfg().ok()).map(|c| c.name).unwrap_or_default();
+        let mesh_id = batman_proto::mrec::MNet::decode(&mnet_plain).ok().and_then(|m| m.netcfg().ok()).map(|c| invite::display_name(&c.name)).unwrap_or_default();
         let inp = join2flow::Input {
             record_plain: mnet_plain,
             record_gen: mnet_gen,
@@ -914,8 +918,9 @@ impl OwnerSession {
         if self.joinreq.is_some() {
             return Err(JOINREQ_BUSY.into());
         }
-        if !matches!(self.st, St::Conn { .. }) {
-            return Err("還沒連線到節點（或上一個操作還沒結束）".into());
+        match &self.st {
+            St::Conn { conn, op: None, .. } if !conn.busy() => {}
+            _ => return Err("還沒連線到節點（或上一個操作還沒結束）".into()),
         }
         let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
         let inp = JoinReqInput {
@@ -1726,12 +1731,14 @@ mod member_review_tests {
         for (f, r) in [
             (Fail::NotApplied(11), Revert::Reverted { country: "JP".into() }),
             (Fail::OtherNetwork, Revert::NoChange),
-            (Fail::NotSent(12), Revert::NoChange),
             (Fail::Rejected, Revert::Reverted { country: "JP".into() }),
         ] {
             let t = member_join_text(&E::Failed(f.clone(), r), "n", "2233");
             assert!(t.ends_with("；需要新的邀請"), "{f:?}: {t}");
         }
+        // NotSent puts the entry back (join2flow after_fail): a retry, not a new invite
+        let t = member_join_text(&E::Failed(Fail::NotSent(12), Revert::NoChange), "n", "2233");
+        assert!(!t.contains("需要新的邀請"), "{t}");
         // the entry stays (the country could not be put back): no new invite yet
         let t = member_join_text(&E::Failed(Fail::Rejected, Revert::NotReverted { now: "US".into(), was: "JP".into() }), "n", "2233");
         assert!(!t.contains("需要新的邀請"), "{t}");
@@ -1764,5 +1771,77 @@ mod member_review_tests {
         busy(sess.request_join_network(vec![0xa0], 1, vec![4; 65], vec![4; 65]), "join network");
         busy(sess.request_member_join(vec![0xa0], 1), "member join");
         busy(sess.request_joinreq("a1".into(), "x".into(), 0, None, vec![4; 65]), "a second request");
+    }
+}
+
+#[cfg(test)]
+mod member_review2_tests {
+    use super::*;
+
+    #[test]
+    fn not_sent_keeps_the_entry_so_no_new_invite() {
+        use join2flow::End as E;
+        for r in [Revert::NoChange, Revert::Reverted { country: "JP".into() }] {
+            let t = member_join_text(&E::Failed(Fail::NotSent(12), r), "n", "2233");
+            assert!(!t.contains("需要新的邀請") && t.contains("還沒送出"), "{t}");
+        }
+        for f in [Fail::Rejected, Fail::OtherNetwork, Fail::NotApplied(11)] {
+            assert!(member_join_text(&E::Failed(f.clone(), Revert::NoChange), "n", "2233").ends_with("；需要新的邀請"), "{f:?}");
+        }
+    }
+
+    /// a logged-in session and a valid invite hex (admin key 0x66, network "n")
+    #[cfg(feature = "dev-trust")]
+    fn session_and_invite() -> (OwnerSession, String) {
+        use batman_proto::{cose, invite as inv, sig as s};
+        let k = p256::ecdsa::SigningKey::from_slice(&[0x66; 32]).unwrap();
+        let admin: [u8; 65] = k.verifying_key().to_sec1_point(false).as_bytes().try_into().unwrap();
+        let sign = |ct: &str, p: &[u8]| {
+            use p256::ecdsa::signature::Signer;
+            let sg: p256::ecdsa::Signature = k.sign(&cose::sign1_tbs(ct, cose::label_of(ct).unwrap(), p));
+            cose::sign1(ct, p, &s::der_to_raw_low_s(sg.to_der().as_bytes()).unwrap())
+        };
+        let net_id = [0x5a; 16];
+        let cfg = sign(cose::CT_NETCFG, &cose::net_config_payload(&net_id, 1, None, "n", "US", "bm-5a", 40, 4, &[admin]));
+        let invite = sign(cose::CT_INVITE, &inv::invite_payload(&net_id, &[1; 16], cbor::decode(&cfg).unwrap(), &admin));
+        let (mut sess, _) = super::tests::logged_in();
+        sess.node_cert_raw = Some(vec![0xa0]);
+        (sess, inv::qr_hex(inv::QR_INVITE, &invite))
+    }
+
+    #[cfg(feature = "dev-trust")]
+    #[test]
+    fn a_failed_owner_signature_ends_the_request() {
+        let (mut s, hex) = session_and_invite();
+        assert_eq!(s.request_joinreq(hex, "x".into(), 0, None, vec![4; 65]).unwrap().kind, OwnerKind::Sign);
+        // the Keystore failed: Dart passes an empty signature
+        let st = s.signed(vec![]).unwrap();
+        assert!(st.detail.starts_with("[REQ_FAIL] 申請沒有成功"), "{}", st.detail);
+        assert!(s.request_status().is_ok(), "the session is usable again");
+    }
+
+    #[cfg(feature = "dev-trust")]
+    #[test]
+    fn no_join_request_while_an_owner_op_or_confirm_is_open() {
+        let (mut s, hex) = session_and_invite();
+        s.request_set_country("JP".into()).unwrap(); // op/nonce outstanding, owner-op pending
+        assert!(s.request_joinreq(hex.clone(), "x".into(), 0, None, vec![4; 65]).is_err());
+        assert!(s.joinreq.is_none());
+        // and a confirm-network refused during a join request leaves nothing behind
+        let (mut s, hex) = session_and_invite();
+        s.request_joinreq(hex, "x".into(), 0, None, vec![4; 65]).unwrap();
+        let rec = netrec::encode(&NetRec::made(joinflow::NetRecord {
+            net_id: [1; 16],
+            mesh_id: String::new(),
+            channel: 40,
+            bw: 4,
+            sae: String::new(),
+            net_root: [0; 32],
+            netcfg: vec![],
+            members: vec![],
+            secrets: vec![],
+        }));
+        assert_eq!(s.request_confirm_network(rec, 1).err().as_deref(), Some(JOINREQ_BUSY));
+        assert!(s.confirm.is_none(), "no stale confirm");
     }
 }

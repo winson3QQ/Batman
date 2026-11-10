@@ -91,6 +91,7 @@ class _NodesPageState extends State<NodesPage> {
   final _memberName = TextEditingController();
   String _lastHex = '', _lastSas = '';
   bool _lastRenewed = false;
+  bool _joinreqInFlight = false; // a join request is being made (a lost link ends it with its own line)
   DateTime? _linkFrom; // set when a join was applied: the link checks that follow count from here
 
   @override
@@ -164,6 +165,8 @@ class _NodesPageState extends State<NodesPage> {
       while (st != null) {
         if (gone()) {
           _log('裝置 $id：連線已換掉，舊的步驟不再執行');
+          final a = _answer;
+          if (_joinreqInFlight && a != null && !a.isCompleted) a.complete(joinreqLostLine(saved: _wrote));
           return;
         }
         switch (st.kind) {
@@ -173,7 +176,14 @@ class _NodesPageState extends State<NodesPage> {
             _kick();
             st = null;
           case OwnerKind.sign:
-            final der = (await _platform.invokeMethod<Uint8List>('signOwner', {'input': st.signInput}))!;
+            Uint8List der;
+            try {
+              der = (await _platform.invokeMethod<Uint8List>('signOwner', {'input': st.signInput}))!;
+            } on PlatformException catch (e) {
+              // the owner key could not sign: an empty signature ends whatever asked (login, owner-op, join, request)
+              _log('[REQ_FAIL] 手機的擁有者金鑰無法簽章（${e.code}）');
+              der = Uint8List(0);
+            }
             st = s.signed(der: der);
           case OwnerKind.signAdmin:
             Uint8List der;
@@ -696,8 +706,13 @@ class _NodesPageState extends State<NodesPage> {
     final (gen, plain) = await _readRecord('mpend/${inv.netIdHex}');
     final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
     _lastHex = '';
-    await _ask((s) => s.requestJoinreq(
-        inviteHex: hex, name: _memberName.text.trim(), pendGen: gen, pendPlain: plain, ownerEncPub: keys['ownerEnc'] as Uint8List));
+    _joinreqInFlight = true;
+    try {
+      await _ask((s) => s.requestJoinreq(
+          inviteHex: hex, name: _memberName.text.trim(), pendGen: gen, pendPlain: plain, ownerEncPub: keys['ownerEnc'] as Uint8List));
+    } finally {
+      _joinreqInFlight = false;
+    }
     await _showRequest();
   }
 
@@ -716,8 +731,21 @@ class _NodesPageState extends State<NodesPage> {
             ));
   }
 
+  /// [body] while holding _busy (pickers and dialogs included): nothing else starts meanwhile.
+  Future<void> _holding(Future<void> Function() body) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await body();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _showPending() => _holding(_showPendingBody);
+
   /// "Show the request again" (§3): from a pending request on this phone (also after a restart: mpend/ is listed).
-  Future<void> _showPending() async {
+  Future<void> _showPendingBody() async {
     final ids = _invite != null ? [_invite!.netIdHex] : await listPends(dir: await _dir());
     if (ids.isEmpty) {
       _say('[REQ_FAIL] 這支手機沒有待處理的申請');
@@ -902,8 +930,9 @@ class _NodesPageState extends State<NodesPage> {
   }
 
   /// join2 §3.4: forget a joining member (this phone's record only; the node is not changed)
-  Future<void> _forgetJoining() async {
-    if (_busy) return;
+  Future<void> _forgetJoining() => _holding(_forgetJoiningBody);
+
+  Future<void> _forgetJoiningBody() async {
     final net = await _pickNet('在哪個網路裡忘記？',
         only: (v) => v.members.any((m) => forgettable(joining: m.joining, approved: m.approved, creator: m.creator)),
         none: '沒有「加入中」或「已同意」的節點可以忘記');

@@ -60,7 +60,7 @@ pub struct InviteView {
 pub fn parse_invite(hex: String) -> Result<InviteView, String> {
     dev_gate()?;
     let o = invite::open_invite(&invite::qr_object(&hex, invite::QR_INVITE).map_err(|e| invite_err(&e))?).map_err(|e| invite_err(&e))?;
-    Ok(InviteView { net_name: o.cfg.name, net_id_hex: hex_lower(&o.net_id), invite_hash_hex: hex_lower(&o.hash) })
+    Ok(InviteView { net_name: invite::display_name(&o.cfg.name), net_id_hex: hex_lower(&o.net_id), invite_hash_hex: hex_lower(&o.hash) })
 }
 
 /// What a pasted join request says, after every check (§4 step 5); `joinreq_hash` binds the approval to it.
@@ -248,7 +248,7 @@ pub fn member_import_approval(
     let r = approve::import(&hex, (pend_gen, &pend_plain), expected_pend_gen, mnet_plain.as_deref().map(|p| (p, mnet_gen)), &zz, &confirmed_sas);
     zz.iter_mut().for_each(|b| *b = 0);
     let (plain, net_id, expected) = r.map_err(|e| invite_err(&e))?;
-    let name = MNet::decode(&plain).ok().and_then(|m| m.netcfg().ok()).map(|c| c.name).unwrap_or_default();
+    let name = MNet::decode(&plain).ok().and_then(|m| m.netcfg().ok()).map(|c| invite::display_name(&c.name)).unwrap_or_default();
     let mut st = persist_at(OwnerKind::PersistMnet, mrec::mnet_path(&net_id), plain, expected);
     st.detail = format!("[IMPORT] 已匯入網路「{name}」，可以登入自己的節點按「加入隊伍網路」");
     Ok(st)
@@ -288,7 +288,7 @@ pub fn mnet_summary(mnet_plain: Vec<u8>) -> Result<MnetView, String> {
         ),
         None => ("", String::new()),
     };
-    Ok(MnetView { net_id: hex_lower(&m.net_id), net_name: name, entry_state: state.into(), device_last4: last4 })
+    Ok(MnetView { net_id: hex_lower(&m.net_id), net_name: invite::display_name(&name), entry_state: state.into(), device_last4: last4 })
 }
 
 /// The member phone's pending join requests (file names under mpend/: the net ids; no record opened), for "show
@@ -389,5 +389,19 @@ mod review_tests {
             assert!(parse_invite(t.into()).err().unwrap().starts_with("這不是正確的碼"), "{t}");
             assert!(approval_net_id(t.into()).is_err(), "{t}");
         }
+    }
+}
+
+#[cfg(test)]
+mod review2_tests {
+    use super::*;
+
+    #[test]
+    fn network_names_are_shown_filtered() {
+        use batman_proto::cose;
+        let cfg = cose::sign1(cose::CT_NETCFG, &cose::net_config_payload(&[0xab; 16], 1, None, "家\u{202E}裡\n網", "US", "m", 40, 4, &[[4; 65]]), &[1; 64]);
+        let m = MNet { net_id: [0xab; 16], version: 1, netcfg: cfg, members: vec![], secrets: vec![], net_root: [0; 32], me: None, invite_hash: [0; 32] };
+        assert_eq!(mnet_summary(m.encode()).unwrap().net_name, "家\u{FFFD}裡\u{FFFD}網");
+        assert_eq!(invite::display_name("ok 名稱"), "ok 名稱");
     }
 }
