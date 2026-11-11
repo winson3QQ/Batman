@@ -185,6 +185,10 @@ impl SendUpdate {
 
     fn end(&mut self, e: End) -> Option<Action> {
         self.st = Step::Over;
+        // the admin record copy (SAE / net_root) is not needed any more (code review r2 A-m1)
+        if let Some(Who::Admin { rec, .. }) = self.who.as_mut() {
+            crate::rekey::clear_secrets(rec);
+        }
         Some(Action::Done(e))
     }
 

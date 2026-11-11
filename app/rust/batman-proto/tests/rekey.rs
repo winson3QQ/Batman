@@ -1309,3 +1309,49 @@ fn t38_key_14_outlives_the_pruned_versions() {
     pruned.departed = None;
     assert!(!pruned.removed_ever().unwrap().contains(&dac(B.dac)), "negative control: without key 14");
 }
+
+/// T18 (code review r2 A-m2): the other writers keep key 14
+#[test]
+fn t18_other_writers_keep_key_14() {
+    let v2 = removed(&team(), Target::Person(pk(P)));
+    assert!(v2.departed.is_some());
+    let (mut f, act) = batman_proto::invite::InviteFlow::start(&netrec::encode(&v2), 1, &pk(ADMIN));
+    let batman_proto::invite::Action::SignAdmin { tbs } = act else { panic!("{act:?}") };
+    let Some(batman_proto::invite::Action::Persist { plain, .. }) = f.signed(&der(ADMIN, &tbs)) else { panic!() };
+    assert_eq!(netrec::decode(&plain).unwrap().departed, v2.departed, "invite");
+    let mut j = v2.clone();
+    j.list.as_mut().unwrap().push(entry(A2, MemberState::Joining, None));
+    netrec::forget_joining(&mut j, &dac(A2.dac)).unwrap();
+    assert_eq!(netrec::decode(&netrec::encode(&j)).unwrap().departed, v2.departed, "forget");
+    let mut c = v2.clone();
+    netrec::confirm(&mut c, &applied_info(2)).unwrap();
+    assert_eq!(c.departed, v2.departed, "confirm");
+}
+
+/// code review r2 B-m1: the record's admins without this phone's key -> NotAdmin, nothing signed or sent
+#[test]
+fn t27_not_the_admin_sends_nothing() {
+    let mut rec = record(vec![entry(A, MemberState::Applied, None)]);
+    rec.base.netcfg = sign1(0x67, cose::CT_NETCFG, &cose::net_config_payload(&NET_ID, 1, None, "t", "TW", "bm-5a5a5a5a5a5a", 40, 4, &[pk(0x67)]));
+    let (conn, mut node) = pair(A);
+    let s = send(&mut node, conn, netrec::encode(&rec), false, Some(verified(A)));
+    assert_eq!((s.end, s.signs, node.got.len()), (updflow::End::NotAdmin, 0, 0));
+}
+
+/// code review r2 B-m2: a malformed key 14 makes the whole record refuse to open (fail-closed: the confirmation can
+/// never silently vanish); unknown keys inside an entry are ignored
+#[test]
+fn t38_a_malformed_key_14_is_fail_closed() {
+    let v2 = removed(&team(), Target::Person(pk(P)));
+    let plain = netrec::encode(&v2);
+    let mut v = cbor::decode(&plain).unwrap();
+    let V::Map(e) = &mut v else { panic!() };
+    for bad in [V::Uint(1), V::Array(vec![m(vec![(1, V::Bytes(vec![1; 31])), (2, V::Bytes(pk(P).to_vec())), (3, V::Text("x".into()))])]), V::Array(vec![m(vec![(1, V::Bytes(dac(B.dac).to_vec())), (2, V::Bytes(pk(P).to_vec()))])])] {
+        let mut e2 = e.clone();
+        set(&mut e2, 14, bad);
+        assert!(netrec::decode(&cbor::encode(&V::Map(e2))).is_err());
+    }
+    let mut e3 = e.clone();
+    set(&mut e3, 14, V::Array(vec![m(vec![(1, V::Bytes(dac(B.dac).to_vec())), (2, V::Bytes(pk(P).to_vec())), (3, V::Text("n57".into())), (9, V::Uint(1))])]));
+    assert_eq!(netrec::decode(&cbor::encode(&V::Map(e3))).unwrap().departed, v2.departed);
+}

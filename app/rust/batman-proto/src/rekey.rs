@@ -329,6 +329,7 @@ impl Rekey {
                 }
                 let rel = format!("net/{}", hex_lower(&rec.base.net_id));
                 let plain = netrec::encode(&rec);
+                clear_secrets(&mut rec);
                 self.st = RStep::Persist { version: plan.version };
                 Some(Action::Persist { rel, plain, expected_gen: self.gen })
             }
@@ -355,7 +356,7 @@ impl Drop for Rekey {
         let mut b = std::mem::take(&mut self.sae).into_bytes();
         b.iter_mut().for_each(|x| *x = 0);
         if let Some(r) = self.rec.as_mut() {
-            r.base.net_root = [0; 32];
+            clear_secrets(r);
         }
     }
 }
@@ -467,7 +468,11 @@ pub(crate) fn secrets_payload(rec: &NetRec, version: u32, to: &[u8; 65], target:
         for (_, x) in e.iter_mut() {
             match x {
                 Value::Bytes(b) => b.iter_mut().for_each(|y| *y = 0),
-                Value::Text(t) => *t = String::new(),
+                Value::Text(t) => {
+                    // overwrite the bytes themselves, not only drop the buffer (code review r2 A-m1)
+                    let mut b = std::mem::take(t).into_bytes();
+                    b.iter_mut().for_each(|y| *y = 0);
+                }
                 _ => {}
             }
         }
@@ -477,6 +482,22 @@ pub(crate) fn secrets_payload(rec: &NetRec, version: u32, to: &[u8; 65], target:
     plain.iter_mut().for_each(|b| *b = 0);
     let enc = enc.map_err(|e| format!("{e:?}"))?;
     Ok(cose::net_secrets_payload(&rec.base.net_id, version, target, &enc.object))
+}
+
+/// SAE / net_root of a record copy overwritten (code review r2 A-m1: best effort, the copies this crate holds)
+pub(crate) fn clear_secrets(r: &mut NetRec) {
+    r.base.net_root = [0; 32];
+    let mut b = std::mem::take(&mut r.base.sae).into_bytes();
+    b.iter_mut().for_each(|y| *y = 0);
+}
+
+impl Drop for UpdateBundle {
+    /// the record copy is cleared when the bundle is dropped before it finished
+    fn drop(&mut self) {
+        if let Some(r) = self.rec.as_mut() {
+            clear_secrets(r);
+        }
+    }
 }
 
 /// §2.3 for one person: N net_secrets + 1 member_secrets, each signed, then the hex.
@@ -565,6 +586,9 @@ impl UpdateBundle {
 
     fn done(&mut self, e: BundleEnd) -> Option<BundleAction> {
         self.over = true;
+        if let Some(r) = self.rec.as_mut() {
+            clear_secrets(r);
+        }
         self.rec = None;
         Some(BundleAction::Done(e))
     }
