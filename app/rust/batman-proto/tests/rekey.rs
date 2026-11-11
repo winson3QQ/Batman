@@ -1103,3 +1103,44 @@ fn t24_no_secret_in_any_debug_text() {
         assert!(!t.contains(&bytes[1..40]), "{t}");
     }
 }
+
+/// the last step's netcfg (1) or members (2) replaced by `by`'s signature over the edited payload
+fn edit_step(hex: &str, k: u64, by: u8, ct: &str, f: impl FnOnce(&mut Vec<(V, V)>)) -> String {
+    let v = cbor::decode(&batman_proto::invite::qr_object(hex, 4).unwrap()).unwrap();
+    let V::Array(st) = v.get(2).unwrap() else { panic!() };
+    let mut p = netrec::sign1_payload(&cbor::encode(st.last().unwrap().get(k).unwrap())).unwrap();
+    let V::Map(e) = &mut p else { panic!() };
+    f(e);
+    let obj = sign1(by, ct, &cbor::encode(&p));
+    edit(hex, |e| {
+        let V::Array(st) = &mut e.iter_mut().find(|(kk, _)| *kk == V::Uint(2)).unwrap().1 else { panic!() };
+        let V::Map(se) = st.last_mut().unwrap() else { panic!() };
+        set(se, k, cbor::decode(&obj).unwrap());
+    })
+}
+
+/// mutation negative controls R03-R06, R08 (each check of §3.4 rules 2 / 3 on its own; nothing written)
+#[test]
+fn t12_every_chain_check_on_its_own() {
+    let v2 = removed(&team(), Target::Person(pk(Q)));
+    let hex = bundle(&v2, P).unwrap();
+    let x = p_mnet(B);
+    let r = |h: &str| import(&x, h, &[B]).map(|r| r.0);
+    assert!(r(&hex).is_ok(), "the update as made imports");
+    // R03: a v2 that names its own signer as admin and is signed by it (not by v1 admins)
+    let h = edit_step(&hex, 1, 0x67, cose::CT_NETCFG, |e| set(e, 8, V::Array(vec![V::Bytes(pk(0x67).to_vec())])));
+    assert_eq!(r(&h), Err(mupdate::Refusal::Invalid("signature")));
+    // R04: prev_hash not v1's
+    let h = edit_step(&hex, 1, ADMIN, cose::CT_NETCFG, |e| set(e, 3, V::Bytes(vec![9; 32])));
+    assert_eq!(r(&h), Err(mupdate::Refusal::Invalid("not the next version")));
+    // R05: the country changed in the chain
+    let h = edit_step(&hex, 1, ADMIN, cose::CT_NETCFG, |e| set(e, 5, V::Text("US".into())));
+    assert_eq!(r(&h), Err(mupdate::Refusal::Invalid("country changed")));
+    // R06: members not chained to v1's
+    let h = edit_step(&hex, 2, ADMIN, cose::CT_MEMBERS, |e| set(e, 3, V::Bytes(vec![9; 32])));
+    assert_eq!(r(&h), Err(mupdate::Refusal::Invalid("members prev_hash")));
+    // R08: the node's secrets of v1 (signed by the admin) in a v2 update
+    let old = node_secrets(1, SAE1, &ROOT1, B);
+    let h = edit(&hex, |e| set(e, 3, V::Array(vec![cbor::decode(&old).unwrap()])));
+    assert_eq!(r(&h), Err(mupdate::Refusal::Invalid("secrets net_id / version")));
+}
