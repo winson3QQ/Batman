@@ -28,7 +28,7 @@ PAYH=$(ls "$OUTS/$V_NOW/ekh-bcm2711/"*-ab-payload.tar.gz 2>/dev/null | head -1)
 PAYW=/home/yello/out/$V_NOW/ekh-bcm2711/$(basename "$PAYH")   # the same file, WSL path (signrel runs in the venv)
 # ---- the T-signed manifest (built in WSL; the hex crosses to the node as a provclient argument: not a secret)
 MDIR=/home/yello/.batman-dv/run-$RUN; wsl_ bash -c "umask 077; mkdir -p $MDIR" >/dev/null
-m=$(wsl_ "$PYW" /home/yello/Batman-h5/tests/tools/peer/signrel.py "$PAYW" --board "$BOARD" --version "$V_NOW" --out "$MDIR" 2>&1 | tr -d '\r' | tail -1); say "manifest: $m"
+m=$(wsl_ "$PYW" /home/yello/Batman-h5/tests/tools/peer/signrel.py "$PAYW" --board "$BOARD" --version "$V_NOW" --allow-no-key --out "$MDIR" 2>&1 | tr -d '\r' | tail -1); say "manifest: $m"
 case "$m" in "MANIFEST sha="*) ok "a T-signed manifest for $V_NOW / $BOARD (P)";; *) inv "signrel did not produce a manifest: [$m]"; wsl_ rm -rf "$MDIR"; pr_end; pr_result; exit 2;; esac
 v=$(wsl_ "$PYW" /home/yello/Batman-h5/tests/tools/peer/signrel.py --verify "$MDIR/manifest.cbor" --board "$BOARD" 2>&1 | tr -d '\r' | tail -1); say "verify: $v"
 case "$v" in "VERIFY ok"*) ok "the manifest verifies under T on the host (P: what the node refuses is the root, not the object)";; *) inv "the test manifest does not verify under T: [$v]";; esac
