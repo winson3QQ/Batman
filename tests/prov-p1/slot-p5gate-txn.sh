@@ -23,6 +23,7 @@ run(){
 	printf '#!/bin/sh\nprintf "%%s\\n" "%s"\nexit %s\n' "$1" "$2" > "$W/bin/batman-config-save"; chmod +x "$W/bin/batman-config-save"
 	cat > "$W/t.sh" <<EOF
 die(){ echo "DIE: \$*"; exit 1; }
+die_c(){ shift; echo "DIE: \$*"; exit 1; }   # #254 S5: the exit-class form of die (rc first)
 warn(){ echo "WARN: \$*"; }
 allowed(){ case " $3 " in *" \$1 "*) return 0 ;; esac; return 1; }
 p5_verdict_write(){ echo "\$1" > "$W/verdict"; }
@@ -66,6 +67,7 @@ run2(){
 	echo "$1 $(cut -d. -f1 /proc/uptime)" > "$W/rd/p5-check.rc"
 	cat > "$W/t2.sh" <<EOF
 die(){ echo "DIE: \$*"; exit 1; }
+die_c(){ shift; echo "DIE: \$*"; exit 1; }   # #254 S5: the exit-class form of die (rc first)
 warn(){ echo "WARN: \$*"; }
 otalog_k(){ :; }
 allowed(){ case " $2 " in *" \$1 "*) return 0 ;; esac; return 1; }

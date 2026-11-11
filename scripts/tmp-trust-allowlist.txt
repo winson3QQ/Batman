@@ -12,6 +12,9 @@ scripts/node/p5-onjoin-263.sh	R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/
 # --- private dirs under /tmp/run (root 0755, created by procd before any non-root process) ---
 scripts/*	(/tmp/run/batman-dv([^-a-z]|$)|/tmp/run/soakprof|/tmp/run/deep-sample\.sh)	harness/dev scratch under root-only /tmp/run, created 0700 and owner-checked
 scripts/depersonalise.sh	dbFile: /tmp/run/openmanetd\.db	openmanetd (root) SQLite on tmpfs under root-only /tmp/run (golden images)
+# --- #254 P3 S5 §3.8.2: provd's upload tmpfs (uid 471 writes the upload; root only takes it over after checks) ---
+feed/batman-prov/src/provstore/exec.go	^const BulkDir = "/tmp/run/batman-provd-bulk"$	the one literal: a tmpfs root mounts (init) under root-only /tmp/run before the jail; the helper opens it O_NOFOLLOW, requires fstatfs tmpfs + its own mount point, then unlinks / chowns / leases the file before reading it
+feed/batman-prov/files/batman-provd*.init	^BDIR=/tmp/run/batman-provd-bulk$	the init (root) mounts the tmpfs there: never stacked, never through a symlink, mode 0700 provd; only then put rw into provd's jail (not mounted = not in the jail, the helper refuses bulk.open)
 # --- unpredictable temp names: mktemp O_EXCL, random, 0600/0700, root-owned ---
 *	mktemp( -d)? "?/tmp/[^ ]*XXXXXX	mktemp in /tmp: random name, exclusive create, root-only mode
 feed/batman-provision/files/www/cgi-bin/bundle	^tar -C /tmp -czf - "\$name"$	tars the private mktemp report dir by its basename
