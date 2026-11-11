@@ -8,6 +8,7 @@ package provd
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -172,7 +173,8 @@ type httpT struct {
 func newHTTPT() *httpT {
 	b := make([]byte, 16)
 	rand.Read(b)
-	return &httpT{id: hex.EncodeToString(b), in: make(chan []byte, 32), out: make(chan []byte, 16),
+	// 219 §4.2: X-Batman-Session = 128 bit random, base64url without padding
+	return &httpT{id: base64.RawURLEncoding.EncodeToString(b), in: make(chan []byte, 32), out: make(chan []byte, 16),
 		rej: make(chan struct{}, 1), closed: make(chan struct{})}
 }
 

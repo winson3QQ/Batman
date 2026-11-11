@@ -2,6 +2,7 @@ package provd
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"io"
 	"net"
@@ -295,7 +296,7 @@ func TestHTTPOwnerSession(t *testing.T) {
 	})
 	r.waitListening(true, "window")
 	p := r.owner()
-	if p.id == "" || len(p.id) != 32 {
+	if b, err := base64.RawURLEncoding.DecodeString(p.id); err != nil || len(b) != 16 {
 		t.Fatalf("X-Batman-Session %q", p.id)
 	}
 	st, _, _ := r.post("/batman/v1/msg", p.id, bytes.Repeat([]byte{1}, 64))
@@ -307,7 +308,7 @@ func TestHTTPOwnerSession(t *testing.T) {
 	}
 	if code, d := p.do("settings/set", cbor.M(20, cbor.M(1, "x"))); code != EUnsupported {
 		t.Fatalf("settings/set key 20 over HTTP: %d %v", code, d)
-	} else if v, _ := d.Get(2); v != uint64(7) {
+	} else if v, _ := d.Get(2); v != uint64(19) {
 		t.Fatalf("key 20 reason %v", d)
 	}
 	if st, _, _ := r.post("/batman/v1/msg", "00000000000000000000000000000000", nil); st != http.StatusNotFound {

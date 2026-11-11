@@ -202,7 +202,12 @@ RC=0
 # could not write back (a quote, backslash, line break) is refused with 2 before anything changes. A value equal to the
 # current one (AP: on the air with it) is 0 with nothing changed — after p5 is checked fresh or saved (4 if that fails).
 # The AP passphrase comes on stdin (`--ap -`) and goes to uci by `uci batch` on stdin — never in an argv (F78).
-p3_staged(){ [ -s /tmp/.uci/wireless ]; }
+# uci's save dir is root's 0700 directory under the world-writable tmp (uci makes it at boot). A save dir that is not
+# that — another owner, another mode, a symlink, not a directory — is not trusted: counted as staged (refuse), never
+# read (#280 rule: a decision input in a world-writable path is owner-checked)
+p3_staged(){ d=/tmp/.uci; [ -e "$d" ] || [ -L "$d" ] || return 1
+	[ -d "$d" ] && [ ! -L "$d" ] && [ "$(ls -ldn "$d" 2>/dev/null | awk '{print $1, $3}')" = "drwx------ 0" ] || return 0
+	[ -s "$d/wireless" ]; }
 p3_regdb_has(){ [ -r "$REGDB" ] && awk -F, -v cc="$1" '$1==cc {f=1; exit} END {exit !f}' "$REGDB"; }
 # the AP of section $1 on the air with ssid $2: netifd lists the section with that ssid on an ifname and iw shows the
 # ssid on that netdev (the ssid and hostapd.<if> come and go together on 04: the ssid is the check) (04 2026-11-09: a blocked AP leaves a DOWN type-AP netdev without ssid /

@@ -71,9 +71,16 @@ SQ_BYTES=$(wc -c < "$SQ" | tr -dc '0-9')
 # app path refuses it (the node's worker wants metadata release = S's version).
 US=${UNSQUASHFS:-unsquashfs}
 command -v "$US" >/dev/null 2>&1 || fail "no unsquashfs ($US): cannot read the rootfs's BATMAN_VERSION for metadata release= (set UNSQUASHFS=)"
-REL=$("$US" -cat "$SQ" etc/batman-build 2>/dev/null | sed -n 's/^BATMAN_VERSION=//p' | head -1)
+lst=$("$US" -l "$SQ" 2>/dev/null) || fail "cannot list $SQ with $US"
+REL=""
+if printf '%s
+' "$lst" | grep -qx 'squashfs-root/etc/batman-build'; then
+	# the rootfs has its stamp: release= is then required (review r2 A-m3 / B-m4) — an unreadable one is an error
+	REL=$("$US" -cat "$SQ" etc/batman-build 2>/dev/null | sed -n 's/^BATMAN_VERSION=//p' | head -1)
+	[ -n "$REL" ] || fail "$SQ has etc/batman-build but no readable BATMAN_VERSION"
+fi
 case "$REL" in *[!A-Za-z0-9.+_-]*) fail "BATMAN_VERSION '$REL' in the rootfs has characters a version cannot have" ;; esac
-[ -n "$REL" ] || echo "WARN: no BATMAN_VERSION in $SQ — metadata has no release= (installable by ssh sysupgrade only)" >&2
+[ -n "$REL" ] || echo "WARN: $SQ has no etc/batman-build — metadata has no release= (installable by ssh sysupgrade only)" >&2
 { printf 'board=%s\nversion=%s\nsize=%s\n' "$BOARD" "$(date +%Y%m%d-%H%M%S)" "$SQ_BYTES"; [ -n "$REL" ] && printf 'release=%s\n' "$REL"; } > "$T/metadata"
 # SHA256SUMS: root.squashfs + every boot/ file, relative paths (batman-slot verifies before AND after writing)
 ( cd "$T" && sha256sum root.squashfs && find boot -type f | sort | while read -r f; do sha256sum "$f"; done ) > "$T/SHA256SUMS"

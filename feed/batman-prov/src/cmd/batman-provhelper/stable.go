@@ -31,13 +31,14 @@ func (w *stableWriter) onPeer(pid, uid int, closed <-chan struct{}) {
 	if w.done.Load() || uid != provdUID {
 		return
 	}
+	after, exe := stableAfter, provdExe // taken now: the goroutine never reads a setting that may change under it
 	go func() {
 		select {
 		case <-closed:
 			return
-		case <-time.After(stableAfter):
+		case <-time.After(after):
 		}
-		if w.done.Load() || !isProvd(pid) {
+		if w.done.Load() || !isProvdExe(pid, exe) {
 			return
 		}
 		if err := writeStable(w.path, bootID()); err != nil {
@@ -45,14 +46,16 @@ func (w *stableWriter) onPeer(pid, uid int, closed <-chan struct{}) {
 			return
 		}
 		w.done.Store(true)
-		logf("provd stable for %s: %s written", stableAfter, w.path)
+		logf("provd stable for %s: %s written", after, w.path)
 	}()
 }
 
 // isProvd: exe = /usr/bin/batman-provd and PPid = the batman-provd instance pid procd reports
-func isProvd(pid int) bool {
+func isProvd(pid int) bool { return isProvdExe(pid, provdExe) }
+
+func isProvdExe(pid int, want string) bool {
 	exe, err := os.Readlink(filepath.Join(procDir, strconv.Itoa(pid), "exe"))
-	if err != nil || exe != provdExe {
+	if err != nil || exe != want {
 		return false
 	}
 	b, err := os.ReadFile(filepath.Join(procDir, strconv.Itoa(pid), "status"))

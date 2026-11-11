@@ -93,8 +93,8 @@ whole-request = (
  // 2 => "ssh_keys/set",    3 => ssh-keys-set-req, ? 7 => bytes16
  // 2 => "root_password/reset", 3 => op-only-req
  // 2 => "update/check",    3 => update-check-req
- // 2 => "update/prepare",  3 => op-only-req, ? 7 => bytes16
- // 2 => "update/apply",    3 => op-only-req, ? 7 => bytes16
+ // 2 => "update/prepare",  3 => update-sha-req, ? 7 => bytes16
+ // 2 => "update/apply",    3 => update-sha-req, ? 7 => bytes16
  // 2 => "update/status",   3 => empty
  // 2 => "bulk/open",       3 => bulk-open-req
  // 2 => "bulk/close",      3 => op-only-req, ? 7 => bytes16
@@ -138,9 +138,13 @@ reason-code  = 1 ; update: trial slot active
              / 15 ; a precondition of this step does not hold
              / 16 ; the node's phone AP is off
              / 17 ; p5 not saved to the latest (stale)
-             / 18 ; the new version did not boot (update-progress key 3)
+             / 18 ; the new version did not complete its trial (it did not boot, or the trial was cut)
              / 19 ; this action only over BLE
              / 20 ; not supported on a legacy node (D20)
+             / 21 ; the node cannot write a slot now (254-p3-impl §3.7.3: lock / card / layout / tool)
+             / 22 ; the last write did not complete: the other slot is not usable
+             / 23 ; written but not applied (the pending is gone: check again)
+             / 24 ; this image trusts no release root key: it cannot be updated through the app
 
 msg-type = "info" / "claim/begin" / "claim/finish" / "auth/owner"
          / "owner/add" / "owner/remove" / "settings/get" / "settings/set"
@@ -252,7 +256,9 @@ status-resp = {
                              ; "stale": true (no current read), "age_s", "uci_staged": [* tstr] (packages with staged
                              ; uci changes: why settings/set answers E_BUSY), "ssid_unsaved": true (the phone AP ssid has a
                              ; character p5 does not keep), "settings_restore": "not verified" (the last settings/set
-                             ; could not verify its restore: radio state unknown)
+                             ; could not verify its restore: radio state unknown); 254-p3-impl §3.7.4 / §3.8.1:
+                             ; "trust": "none" / "bad" / 16 hex (the image's release root key fingerprint, first 8 B;
+                             ; "none" = not updatable through the app), "http_bind_failed": true
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 verdict = 0 ; ok
@@ -297,15 +303,18 @@ update-manifest = {
   2 => tstr,                 ; board
   3 => uint,                 ; payload size in bytes
   4 => sha256,               ; SHA-256 of SHA256SUMS
-  5 => bstr,                 ; detached signature over metadata + SHA256SUMS (format: B18)
-  ? 6 => [* tstr],           ; versions this image may be downgraded to
+  5 => bstr,                 ; the CBOR array [E, S] (two bstr, each an encoded COSE_Sign1; 254-p3-impl §3.7.1)
+  ? 6 => [* tstr],           ; versions this release may be installed from across channels / downgrades (= S key 6)
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 update-check-resp = { 1 => bool, ? 2 => reason-code, 3 => uint, * uint => any }   ; ok, reason, RAM needed (bytes)
+update-sha-req = { 1 => sha256, 31 => owner-op, * uint => any }   ; sha256(SHA256SUMS) of the pending update
 update-progress = {
   1 => update-phase,
   2 => uint,                 ; percent 0..100
   ? 3 => reason-code,        ; failure reason
+  ? 4 => sha256,             ; the update this progress is about
+  ? 5 => tstr,               ; its version
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 update-phase = 0 ; idle
@@ -316,14 +325,15 @@ update-phase = 0 ; idle
              / 5 ; committed
              / 6 ; reverted
 
-bulk-open-req  = { 1 => bulk-purpose, 31 => owner-op, * uint => any }
+bulk-open-req  = { 1 => bulk-purpose, 2 => sha256, 31 => owner-op, * uint => any }   ; 2 = the pending update's sha
 bulk-purpose   = 0 ; software update
 bulk-open-resp = {
   1 => tstr,                 ; ssid
-  2 => tstr,                 ; one-time WPA passphrase
+  2 => tstr,                 ; the phone AP's current passphrase (not one-time)
   3 => tstr,                 ; node IP
   4 => uint,                 ; port
   5 => uint,                 ; expires_in (seconds, relative)
+  6 => bytes16,              ; upload bearer: X-Batman-Upload = its 32 lowercase hex (PUT /batman/v1/bulk/0)
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -245,7 +246,7 @@ type rig struct {
 	owner *ecdsa.PrivateKey
 	enc   *ecdsa.PrivateKey
 	h     []byte
-	id    uint64
+	id    atomic.Uint64 // calls may run concurrently (TestStatusSingleFlight)
 }
 
 func newRig(t testing.TB, state string) *rig {
@@ -279,9 +280,9 @@ func make32(c byte) []byte {
 func pub(k *ecdsa.PrivateKey) []byte { b, _ := k.PublicKey.Bytes(); return b }
 
 func (r *rig) call(verb string, args cbor.Map) (int, cbor.Map) {
-	r.id++
+	id := r.id.Add(1)
 	// through the wire format, as the socket server does: encode, then strict decode
-	raw, err := cbor.Encode(cbor.M(1, verb, 2, r.id, 3, args))
+	raw, err := cbor.Encode(cbor.M(1, verb, 2, id, 3, args))
 	if err != nil {
 		r.t.Fatal(err)
 	}

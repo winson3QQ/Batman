@@ -35,7 +35,7 @@ const (
 type StatusSource struct {
 	HalowStatus func() ([]byte, error) // `halow-status json`
 	P5Fresh     func() (bool, error)   // `batman-config-save --check` says "p5 fresh"
-	// design D-12 / §5.1 (optional; nil = not reported): packages with staged uci changes (/tmp/.uci), the reason a
+	// design D-12 / §5.1 (optional; nil = not reported): packages with staged uci changes (uci's save dir), the reason a
 	// settings.set answers E_BUSY (a directory listing, no child process); the phone AP ssid is not saved to p5 (it has
 	// a config-save UNSAFE character) — SetStatusSource wires it from the settings cache (A r2 MAJOR-1: the request
 	// path never runs a child process)

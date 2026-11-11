@@ -45,6 +45,7 @@ const (
 )
 
 var retryWait = 10 * time.Second  // tests shorten it
+const disarmTries = 5             // the tick's disarm: failures other than the lock before it stops for this boot
 var rebootDelay = 2 * time.Second // the reply first, then batman-slot reboot committed
 var firstPassDone = func() {}     // tests: hold the worker between its two passes
 var firstPassStart = func() {}    // tests: act as the first pass begins
@@ -413,6 +414,16 @@ func (n *Node) work(r *release.Release, cancel chan struct{}) (uint64, string) {
 	}
 }
 
+// paxSparse: archive/tar turns a PAX GNU-sparse member into TypeReg; §3.7.5-4 refuses sparse members (review r2 A-m2)
+func paxSparse(h *tar.Header) bool {
+	for k := range h.PAXRecords {
+		if strings.HasPrefix(k, "GNU.sparse.") {
+			return true
+		}
+	}
+	return false
+}
+
 // errWriter records the first write error (the pipe to batman-slot write closed under us)
 type errWriter struct {
 	w   io.Writer
@@ -536,7 +547,7 @@ func (n *Node) scan(f io.Reader, r *release.Release, wd string, root io.Writer, 
 		switch {
 		case h.Typeflag == tar.TypeDir && (h.Name == "boot/" || h.Name == "boot/overlays/"):
 			continue
-		case h.Typeflag != tar.TypeReg:
+		case h.Typeflag != tar.TypeReg || paxSparse(h):
 			return bad("member " + h.Name + " is not a regular file")
 		case seen[h.Name]:
 			return bad("member " + h.Name + " repeats")
@@ -718,9 +729,18 @@ func (n *Node) updateApply(signer []byte, body cbor.Map) (cbor.Map, *Error) {
 		return nil, fail(EStorage, "update-last: %v", err)
 	}
 	u.updMu.Unlock()
-	rc, out := u.sys.Slot(60*time.Second, "arm", hex.EncodeToString(sha), k8)
-	if rc != 0 {
+	rc, out := u.sys.Slot(tArm, "arm", hex.EncodeToString(sha), k8)
+	if rc >= 10 && rc <= 18 {
+		// batman-slot refused before the tryboot SET (its exit classes, §3.7.3): the flag is untouched — no disarm,
+		// which could cancel an operator's own arm of a moment ago (review r2 A-m5)
+		u.updMu.Lock()
+		ul.ApplyBootID = ""
+		u.writeUL(ul)
+		u.updMu.Unlock()
+	} else if rc != 0 {
 		n.disarmClear(ul)
+	}
+	if rc != 0 {
 		reason, busy := slotReason(rc)
 		if busy {
 			return nil, fail(EBusy, "batman-slot busy")
@@ -753,10 +773,10 @@ func (n *Node) updateApply(signer []byte, body cbor.Map) (cbor.Map, *Error) {
 }
 
 // disarmClear: disarm; only after it returned 0 is apply_boot_id cleared (A12-m2). Caller holds slotMu.
-func (n *Node) disarmClear(ul *updateLast) {
+func (n *Node) disarmClear(ul *updateLast) int {
 	u := n.upd
 	if rc, _ := u.sys.Slot(30*time.Second, "disarm"); rc != 0 {
-		return
+		return rc
 	}
 	u.updMu.Lock()
 	ul.ApplyBootID = ""
@@ -764,6 +784,7 @@ func (n *Node) disarmClear(ul *updateLast) {
 		u.disarmedBoot = u.sys.BootID()
 	}
 	u.updMu.Unlock()
+	return 0
 }
 
 func writeKey8(path string, lines []string) error {
@@ -912,7 +933,12 @@ func (n *Node) UpdateTick() {
 		boot := u.sys.BootID()
 		if ul != nil && ul.ApplyBootID == boot && !ul.Rebooting && u.disarmedBoot != boot {
 			n.Log("update: an apply of this boot did not reach its reboot — disarming")
-			n.disarmClear(ul)
+			if rc := n.disarmClear(ul); rc != 0 && rc != 14 { // 14 = the lock: next tick (§3.7.4)
+				if u.disarmFails++; u.disarmFails >= disarmTries {
+					n.Log("update: disarm failed %d times (last rc %d) — not retried this boot", u.disarmFails, rc)
+					u.disarmedBoot = boot
+				}
+			}
 		}
 		for _, s := range []string{"A", "B"} {
 			if u.slotStale(s) {

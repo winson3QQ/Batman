@@ -671,7 +671,9 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 		return ss.updateStatus(id, body)
 	}
 	if _, ap := body.Get(20); typ == "settings/set" && ap && ss.t.Kind() == "http" {
-		return errEnv(id, EUnsupported, cbor.M(1, typ, 2, uint64(7))) // changing the AP would cut this very request (§3.1-2)
+		// changing the AP would cut this very request: reason 19 = "this action only over BLE" (§3.3 table, §5.1; 7 is
+		// only for a capability the hardware lacks)
+		return errEnv(id, EUnsupported, cbor.M(1, typ, 2, uint64(19)))
 	}
 	verb := forward[typ]
 	r, e := ss.ops(id, verb, cbor.M(1, h, 2, raw))

@@ -9,9 +9,13 @@ import (
 	"time"
 )
 
-// design D-12: the staged packages are the non-empty regular files in /tmp/.uci, sorted
+// design D-12: the staged packages are the non-empty regular files in uci's save dir, sorted
 func TestUciStagedIn(t *testing.T) {
+	old := uciOwner
+	uciOwner = uint32(os.Getuid()) // the test's own dir stands in for root's
+	t.Cleanup(func() { uciOwner = old })
 	d := t.TempDir()
+	os.Chmod(d, 0o700)
 	os.WriteFile(filepath.Join(d, "wireless"), []byte("x"), 0o600)
 	os.WriteFile(filepath.Join(d, "network"), []byte("y"), 0o600)
 	os.WriteFile(filepath.Join(d, "system"), nil, 0o600) // empty: nothing staged
@@ -21,6 +25,27 @@ func TestUciStagedIn(t *testing.T) {
 	}
 	if got := uciStagedIn(filepath.Join(d, "none")); got != nil {
 		t.Fatalf("no dir: %v", got)
+	}
+	// #280: a save dir that is not the owner's 0700 directory is not trusted: counted as staged, never read
+	untrusted := []string{"uci-savedir-untrusted"}
+	os.Chmod(d, 0o755)
+	if got := uciStagedIn(d); !reflect.DeepEqual(got, untrusted) {
+		t.Fatalf("0755 save dir: %v", got)
+	}
+	os.Chmod(d, 0o700)
+	ln := filepath.Join(t.TempDir(), "link")
+	os.Symlink(d, ln)
+	if got := uciStagedIn(ln); !reflect.DeepEqual(got, untrusted) {
+		t.Fatalf("a symlinked save dir: %v", got)
+	}
+	f := filepath.Join(t.TempDir(), "file")
+	os.WriteFile(f, nil, 0o700)
+	if got := uciStagedIn(f); !reflect.DeepEqual(got, untrusted) {
+		t.Fatalf("a file as the save dir: %v", got)
+	}
+	uciOwner = uint32(os.Getuid()) + 1
+	if got := uciStagedIn(d); !reflect.DeepEqual(got, untrusted) {
+		t.Fatalf("another owner's save dir: %v", got)
 	}
 }
 

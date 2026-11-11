@@ -39,6 +39,7 @@ const (
 	slotInfoRetry   = 600 // s: a broken bootinfo is re-read at most every 10 minutes
 	tBootinfo       = 30 * time.Second
 	tPrecheck       = 120 * time.Second // precheck-node runs batman-config-save --check
+	tArm            = 180 * time.Second // arm runs the same node checks (config-save --check, 120 s) before the SET
 )
 
 // slot-op exit classes (batman-slot header, §3.7.3) -> reason codes; 14 is E_BUSY (busy = true)
@@ -142,7 +143,8 @@ type updater struct {
 	workPct      uint64
 	uploaded     uint64        // bytes provd reported for the open window (slice 3)
 	cancel       chan struct{} // closed by owner/remove of the worker's owner
-	disarmedBoot string        // the tick's disarm succeeded but update-last could not be rewritten (p6 read-only)
+	disarmedBoot string        // the tick's disarm succeeded but update-last could not be rewritten (p6 read-only), or gave up
+	disarmFails  int           // the tick's disarm failures (not the lock) this helper lifetime
 
 	sigCache  map[string]*release.Release // manifest sha256 -> verified release (pure, §3.7.4)
 	lastCheck time.Time

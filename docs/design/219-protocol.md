@@ -152,11 +152,18 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 
 ### 4.2 HTTP(備援:大量傳輸通道、開發)
 
-> **v0.7 冪等規則**(取代下文舊清單):冪等鍵 `7: idem_key`(16 B 隨機)只用在**帶 owner-op 的請求**(§5.3)與 `network/update`;快取以 `(擁有者 owner_key_id 或轉送者 session、idem_key)` 為鍵,**只回給同一位擁有者已認證的 session**;節點**先查快取、命中就直接回上次結果,不再驗 owner-op**(否則重送會因 `nonce_helper` 已用掉而失敗),未命中才驗。**回應帶秘密的請求一律不快取、也不得帶冪等鍵**(帶了即 `E_FORBIDDEN`,CDDL 亦拒絕):`claim/finish`、`claim/replay`、`root_password/reset`、`owner/add`(回 `owner_tag_key`)、`bulk/open`(回一次性 PSK)。回應遺失時:`claim/replay`;重新 `root_password/reset`(新密碼);對同一把 `owner_pub` 重送 `owner/add` 會輪替該擁有者的 `owner_tag_key` 並回新值;重新 `bulk/open` 會關掉舊通道、發新 PSK。`reset` 已不在清單。
+> **v0.7 冪等規則**(取代下文舊清單):冪等鍵 `7: idem_key`(16 B 隨機)只用在**帶 owner-op 的請求**(§5.3)與 `network/update`;快取以 `(擁有者 owner_key_id 或轉送者 session、idem_key)` 為鍵,**只回給同一位擁有者已認證的 session**;節點**先查快取、命中就直接回上次結果,不再驗 owner-op**(否則重送會因 `nonce_helper` 已用掉而失敗),未命中才驗。**回應帶秘密的請求一律不快取、也不得帶冪等鍵**(帶了即 `E_FORBIDDEN`,CDDL 亦拒絕):`claim/finish`、`claim/replay`、`root_password/reset`、`owner/add`(回 `owner_tag_key`)、`bulk/open`(回 AP 的現行密碼與上傳 bearer)。回應遺失時:`claim/replay`;重新 `root_password/reset`(新密碼);對同一把 `owner_pub` 重送 `owner/add` 會輪替該擁有者的 `owner_tag_key` 並回新值;同一位擁有者重送 `bulk/open` = 延長同一個上傳窗、回同一個 bearer(P3 §3.8.2)。`reset` 已不在清單。
 
 - `POST /batman/v1/session`:body = 交握訊息;回應 = 交握訊息 + header `X-Batman-Session`(128-bit 隨機,base64url **不加 padding**)。
 - `POST /batman/v1/msg`:body = 一則 Noise 傳輸訊息;**每個 session 一次只能有一個未完成的請求**;回應遺失時,手機以同一個冪等鍵重送(依上方 v0.7 規則)。節點保留最近 32 筆、10 分鐘;快取項記 `(type, args_hash)`,**冪等鍵相同但 type 或 `args_hash` 不同 → `E_FORBIDDEN`**,不回別的請求的結果。
 - HTTP 裡一律跑完整的 §3,不依賴 TLS。
+- **P3 實作(254-p3-impl §3.8,取代上面的冪等重送)**:
+  - 只收 `psk_owner`(→ 候選 → `auth/owner`)與 `psk_member`;不收 NX 與 `psk_replay`(認領、重取都要人在旁邊、走 BLE)。上傳窗開著時只收擁有者。
+  - 什麼時候聽:節點的 BLE 不健康 5 分鐘(備援),或擁有者開了上傳窗;只 bind 手機 AP 那個 bridge 的位址、埠 8095;防火牆只放行從手機 AP 進來的封包。
+  - **回應遺失 = 這個 session 中止**(不做冪等快取):重新交握、`auth/owner`,再重讀狀態。
+  - 多塊回應:第一塊是那個請求的 HTTP 回應;之後每個**空 body** 的 `POST /batman/v1/msg` 取下一塊。空 body 而 2 s 內沒有排隊的回應 → **204**,session 不動。
+  - 偽造的 `/msg`(AEAD 失敗)→ 400,session 照常。同一個 session 同時第二個請求 → 409。
+  - 上傳:`PUT /batman/v1/bulk/0`,header `X-Batman-Upload` = `bulk/open` 回的 bearer(正好 32 個小寫 hex),`Content-Length` = 簽章的 payload 大小;409:沒有窗、正在寫入、已有 PUT、窗剩的時間 < 大小 ÷ 256 KiB/s + 60 s;低於 256 KiB/s(30 s 平均)就切斷;檔案關好才回 200。
 
 ## 5. 應用訊息
 
@@ -209,13 +216,14 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | `peers/challenge` | 成員 | `nonce_app`(32 B) | `nonce_node`(32 B)、`sig = ES256_DAC("batman-peer-v1" ‖ nonce_app ‖ nonce_node ‖ h)` |
 | `diag/summary`、`diag/bundle` | 擁有者 | — | 摘要 / 分塊回應 |
 | `update/check` | 擁有者 | `manifest` | `ok` 或 `E_REJECTED` + 原因、所需 RAM |
-| `bulk/open` / `bulk/close` | 擁有者 | `purpose` | `ssid`、`psk`(一次性)、`ip`、`port`、`expires_in`(相對秒數) |
-| `update/prepare` / `apply` / `status` | 擁有者 | — | 進度 |
+| `bulk/open` / `bulk/close` | 擁有者 | `purpose`、`sha`(= pending 的 sha256(SHA256SUMS)) | `ssid`、手機 AP 的**現行**密碼、`ip`、`port`、`expires_in`(相對秒數)、上傳 bearer(16 B) |
+| `update/prepare` / `apply` | 擁有者 | `sha`(key 1,由 owner-op 的 `args_hash` 綁定) | 進度(`update-progress`) |
+| `update/status` | 擁有者 | — | 進度(`update-progress`) |
 | `ssh_keys/set`(v0.7) | 擁有者 | `keys`(0–8 行;每行**整行**符合 `ssh-ed25519 [A-Za-z0-9+/=]{1,200}( [ -~]{0,40})?`、不得含 CR / LF、≤ 256 B)、owner-op | — |
 | `root_password/reset`(v0.7) | 擁有者 | owner-op | 新 `root_password`(24 字元,只回一次) |
 | `reset` | 擁有者 | — | **階段 1 一律 `E_UNSUPPORTED`**(`capability` = `reset`、`reason` = 9「用轉賣工具重燒卡」);恢復出廠在 #255 重新設計(v0.7) |
 
-**owner-op(v0.7)**:`network/join`、`network/leave`、`owner/add`、`owner/remove`、`settings/set`、`diag/bundle`、`ssh_keys/set`、`root_password/reset`、`claim/replay`、`update/prepare`、`update/apply`、`bulk/open`、`bulk/close` 的 body 必須在 key 31 帶 owner-op(§5.7);缺少或驗不過 → `E_FORBIDDEN`。(`update/*`、`bulk/*` 階段 1 不實作;實作時 MUST 帶 owner-op。)
+**owner-op(v0.7)**:`network/join`、`network/leave`、`owner/add`、`owner/remove`、`settings/set`、`diag/bundle`、`ssh_keys/set`、`root_password/reset`、`claim/replay`、`update/prepare`、`update/apply`、`bulk/open`、`bulk/close` 的 body 必須在 key 31 帶 owner-op(§5.7);缺少或驗不過 → `E_FORBIDDEN`。(P3 起實作,見 254-p3-impl §3.7 / §3.8。)
 
 **legacy(v0.7)**:`info.state` = 3;以 `NX` 認領,`claim/finish` 另要求節點已有可用的 SSH 公鑰或開發旗標(否則操作員會被自己鎖在外),不符回 `E_UNSUPPORTED`(`capability` = `claim`,`reason` = 10)。**這道門在 CheckMac 驗證通過之後才判斷**,否則沒有認領秘密的人也能探出「這台沒有 SSH key」。
 

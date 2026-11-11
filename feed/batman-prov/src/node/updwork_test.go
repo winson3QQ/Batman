@@ -14,6 +14,7 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -179,12 +180,18 @@ type fakeFS struct {
 	reboots   int
 	rebootErr error
 	cutWrite  chan struct{} // non-nil: the write marks the target BAD, closes this, waits for the cancel, rc 125
+	uid       int           // provd's uid the worker expects (0 = this test's own)
 	earlyExit bool          // like the real batman-slot: a refusal (rc != 0) before it reads a byte of stdin
 }
 
-func (f *fakeFS) BulkDir() string         { return f.bulk }
-func (f *fakeFS) WorkDir() string         { return f.wd }
-func (f *fakeFS) ProvdUID() int           { return os.Getuid() }
+func (f *fakeFS) BulkDir() string { return f.bulk }
+func (f *fakeFS) WorkDir() string { return f.wd }
+func (f *fakeFS) ProvdUID() int {
+	if f.uid != 0 {
+		return f.uid
+	}
+	return os.Getuid()
+}
 func (f *fakeFS) P6State() (string, bool) { return f.p6, f.p6ok }
 func (f *fakeFS) AutocommitLog() string   { return f.aclog }
 func (f *fakeFS) SlotBusy() bool          { return f.busy }
@@ -378,12 +385,26 @@ func TestUpdateApplyArmFails(t *testing.T) {
 	w.checkAndUpload(t)
 	w.prepare(t)
 	w.waitWorker(t)
+	// rc 15: refused before the tryboot SET — the flag is untouched: no disarm (an operator's arm would be
+	// cancelled), apply_boot_id cleared (review r2 A-m5)
 	w.f.rc["arm"] = 15
 	if _, e := w.n.updateApply(w.owner, wire(t, cbor.M(1, w.sumSha))); e == nil || e.Why != release.ReasonBootCfg {
 		t.Fatalf("arm rc 15: %v", e)
 	}
+	if c := w.f.calls[len(w.f.calls)-1]; c == "disarm" {
+		t.Fatalf("disarmed after an arm that never set the flag: %v", w.f.calls)
+	}
+	if ul := w.n.upd.readUL(); ul == nil || ul.ApplyBootID != "" {
+		t.Fatalf("apply_boot_id not cleared after a refused arm: %+v", ul)
+	}
+	// rc 1: failed after the SET (the read-back) — disarm, then apply_boot_id cleared
+	*w.clk = w.clk.Add(time.Minute)
+	w.f.rc["arm"] = 1
+	if _, e := w.n.updateApply(w.owner, wire(t, cbor.M(1, w.sumSha))); e == nil {
+		t.Fatal("arm rc 1 accepted")
+	}
 	if c := w.f.calls[len(w.f.calls)-1]; c != "disarm" {
-		t.Fatalf("after a failed arm: %s (want disarm)", c)
+		t.Fatalf("after an arm that failed past the SET: %s (want disarm)", c)
 	}
 	if ul := w.n.upd.readUL(); ul == nil || ul.ApplyBootID != "" {
 		t.Fatalf("apply_boot_id not cleared after a successful disarm: %+v", ul)
@@ -1052,5 +1073,103 @@ func TestUpdateCheckRereadsTarget(t *testing.T) {
 	}
 	if before != 1 || after != 2 {
 		t.Fatalf("bootinfo B calls: %d then %d (want 1 then 2: every check reads the slot)", before, after)
+	}
+}
+
+// review r2 A-m6: the tick's disarm stops after 5 failures that are not the lock (14 is retried without a limit)
+func TestUpdateTickDisarmGivesUp(t *testing.T) {
+	w := newWorkRig(t, defaultPayload())
+	u := w.n.upd
+	ul := &updateLast{Sha: w.sumSha, FromSlot: "A", FromVersion: w.f.ver, ToSlot: "B", ToVersion: testRel, ApplyBootID: w.f.boot}
+	u.updMu.Lock()
+	u.writeUL(ul)
+	u.updMu.Unlock()
+	count := func() int {
+		n := 0
+		for _, c := range w.f.calls {
+			if c == "disarm" {
+				n++
+			}
+		}
+		return n
+	}
+	w.f.rc["disarm"] = 14
+	for i := 0; i < 8; i++ {
+		w.n.UpdateTick()
+	}
+	if count() != 8 {
+		t.Fatalf("rc 14 (the lock): %d disarms in 8 ticks (want every tick)", count())
+	}
+	w.f.rc["disarm"] = 18
+	for i := 0; i < 8; i++ {
+		w.n.UpdateTick()
+	}
+	if got := count() - 8; got != disarmTries {
+		t.Fatalf("rc 18: %d disarms in 8 ticks (want %d, then it stops)", got, disarmTries)
+	}
+}
+
+// review r2 A-m2: a PAX GNU-sparse member (GNU tar --format=pax --sparse) is read by archive/tar as a regular file
+// with GNU.sparse.* records — refused (§3.7.5-4). The payload is made by GNU tar itself (the one that writes them).
+func TestUpdatePAXSparseRefused(t *testing.T) {
+	gt, err := exec.LookPath("tar")
+	if err != nil {
+		t.Fatal("GNU tar needed to make a PAX sparse member")
+	}
+	for _, ver := range []string{"1.0", "0.1"} {
+		d := t.TempDir()
+		os.MkdirAll(filepath.Join(d, "boot"), 0o755)
+		k := filepath.Join(d, "boot", "kernel8.img")
+		f, _ := os.Create(k)
+		f.Truncate(1 << 20)
+		f.Seek(0, 2)
+		f.Write([]byte("tail"))
+		f.Close()
+		root := append([]byte("hsqs"), bytes.Repeat([]byte{7}, 5000)...)
+		os.WriteFile(filepath.Join(d, "root.squashfs"), root, 0o644)
+		kb, _ := os.ReadFile(k)
+		hk, hr := sha256.Sum256(kb), sha256.Sum256(root)
+		sums := []byte(hex.EncodeToString(hk[:]) + "  boot/kernel8.img\n" + hex.EncodeToString(hr[:]) + "  root.squashfs\n")
+		os.WriteFile(filepath.Join(d, "SHA256SUMS"), sums, 0o644)
+		meta := fmt.Sprintf("board=ekh-bcm2711\nversion=x\nsize=%d\nrelease=%s\n", len(root), testRel)
+		os.WriteFile(filepath.Join(d, "metadata"), []byte(meta), 0o644)
+		out := filepath.Join(d, "p.tar.gz")
+		if o, err := exec.Command(gt, "-C", d, "--format=pax", "--sparse", "--sparse-version="+ver, "-czf", out,
+			"SHA256SUMS", "metadata", "boot/kernel8.img", "root.squashfs").CombinedOutput(); err != nil {
+			t.Fatalf("tar: %v %s", err, o)
+		}
+		tgz, _ := os.ReadFile(out)
+		w := newWorkRig(t, defaultPayload())
+		w.tgz, w.mf = tgz, signedManifest(t, uint64(len(tgz)), sums, uint64(len(kb)))
+		sh := sha256.Sum256(sums)
+		w.sumSha = sh[:]
+		w.checkAndUpload(t)
+		w.prepare(t)
+		w.waitWorker(t)
+		if ph, r := phaseOf(t, w.n); ph != 0 || r != release.ReasonBad || len(w.fs.writes) != 0 {
+			t.Fatalf("sparse %s: %d/%d, %d writes (want 0/11, no write)", ver, ph, r, len(w.fs.writes))
+		}
+	}
+}
+
+// review r2 B-m2: the takeover refuses an upload with a second hard link, or not owned by provd (target untouched)
+func TestUpdateTakeoverRefusals(t *testing.T) {
+	w := newWorkRig(t, defaultPayload())
+	w.checkAndUpload(t)
+	if err := os.Link(filepath.Join(w.fs.bulk, "payload"), filepath.Join(w.fs.bulk, "second")); err != nil {
+		t.Fatal(err)
+	}
+	w.prepare(t)
+	w.waitWorker(t)
+	if ph, r := phaseOf(t, w.n); ph != 0 || r != 15 || len(w.fs.writes) != 0 {
+		t.Fatalf("an upload with two links: %d/%d, %d writes (want 0/15)", ph, r, len(w.fs.writes))
+	}
+	w2 := newWorkRig(t, defaultPayload())
+	w2.fs.uid = os.Getuid() + 1
+	w2.checkAndUpload(t)
+	w2.prepare(t)
+	w2.waitWorker(t)
+	if ph, r := phaseOf(t, w2.n); ph != 0 || r != 15 || len(w2.fs.writes) != 0 {
+		t.Fatalf("an upload not owned by provd: %d/%d, %d writes (want 0/15)", ph, r, len(w2.fs.writes))
 	}
 }

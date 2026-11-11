@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"batman-prov/node"
@@ -86,7 +87,19 @@ func onlyP3Stale(rc int, out string) bool {
 // uciStaged: packages with staged (uncommitted) uci changes — what makes a settings.set answer E_BUSY (design D-12)
 func uciStaged() []string { return uciStagedIn("/tmp/.uci") }
 
+// uciStagedIn: the save dir must be root's 0700 directory (not a symlink); anything else is not trusted and counts as
+// staged (settings.set answers E_BUSY), never read — a decision input in a world-writable path is owner-checked (#280)
+var uciOwner uint32 = 0 // root; tests use their own uid
+
 func uciStagedIn(dir string) []string {
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return nil
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !fi.IsDir() || fi.Mode().Perm() != 0o700 || !ok || st.Uid != uciOwner {
+		return []string{"uci-savedir-untrusted"}
+	}
 	es, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
