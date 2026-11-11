@@ -673,7 +673,9 @@ func daemon(p provstore.Paths) {
 	if res.Unfinished && res.P5Read && !strings.HasPrefix(res.Verdict, "unknown") {
 		n.BootFinish(func() { waitRadioUp(120 * time.Second) }) // holds the mutex from here until it ends (§15.2)
 	}
-	srv := &sock.Server{Path: filepath.Join(sockDir, "helper.sock"), PeerUID: provdUID, GID: provdGID, Idle: 30 * time.Second, Log: logf}
+	sw := &stableWriter{path: filepath.Join(p.RunDir, "provd-stable")}
+	srv := &sock.Server{Path: filepath.Join(sockDir, "helper.sock"), PeerUID: provdUID, GID: provdGID, Idle: 30 * time.Second, Log: logf,
+		OnPeer: sw.onPeer}
 	if err := srv.Listen(); err != nil {
 		logf("listen: %v", err)
 		os.Exit(1)
