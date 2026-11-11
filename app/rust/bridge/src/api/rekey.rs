@@ -349,8 +349,16 @@ fn mupdate_text(e: &mupdate::Refusal) -> String {
     }
 }
 
-/// This phone's own nodes from their opened node records (key 1 device id, key 4 DAC DER).
-fn own_of(node_records: &[Vec<u8>]) -> Vec<OwnNode> {
+/// The network an info body (OwnerStep.info) says the node is in (key 10, lowercase hex; "" = none / unreadable):
+/// which record 「把新密碼送給節點」 sends from (code review r1 A-F6).
+#[flutter_rust_bridge::frb(sync)]
+pub fn info_net_id(info: Vec<u8>) -> String {
+    cbor::decode(&info).ok().and_then(|v| v.get(10).and_then(Value::as_bytes).map(hex_lower)).unwrap_or_default()
+}
+
+/// This phone's own nodes from their opened node records (key 1 device id, key 4 DAC DER). A record that does not
+/// parse is skipped (it names no node this phone could prove it owns).
+pub(crate) fn own_of(node_records: &[Vec<u8>]) -> Vec<OwnNode> {
     node_records
         .iter()
         .filter_map(|p| {
@@ -421,6 +429,7 @@ pub(crate) fn update_text(e: &updflow::End, member: bool, last4: &str) -> String
         E::Record => format!("{fail}{NET_DAMAGED}"),
         E::NotVerified => format!("{fail}這次連線沒有驗證過節點身分，請重新連線"),
         E::NotListed => format!("{fail}{NOT_LISTED}"),
+        E::NotAdmin => format!("{fail}這支手機不是這個網路的管理者"),
         E::NoSecrets => format!("{fail}{NO_SECRETS}"),
         E::Unknown => format!("{fail}讀不到節點的網路狀態，稍後再試"),
         E::InProgress => format!("{fail}節點正在加入，稍後再按"),
@@ -530,12 +539,29 @@ mod tests {
             E::Record, E::NotVerified, E::NotListed, E::NoSecrets, E::Unknown, E::InProgress, E::OtherNetwork,
             E::NotApplied { rejoin: true }, E::NotApplied { rejoin: false }, E::Unfinished, E::NeedsSoftware, E::AlreadyCurrent,
             E::NodeNewer, E::TooFar { rejoin: true }, E::TooFar { rejoin: false }, E::Updated, E::Applying, E::AppBug, E::NotChanged,
-            E::SignFailed,
+            E::SignFailed, E::NotAdmin,
         ] {
             for member in [false, true] {
                 assert!(!update_text(&e, member, "2233").is_empty());
             }
         }
         assert_eq!(update_text(&E::NotListed, false, "x"), format!("[REQ_FAIL] 沒有送出：{NOT_LISTED}"));
+    }
+
+    #[test]
+    fn own_nodes_from_node_records_and_info_net_id() {
+        // a record whose key 4 is not a DAC names no node; one with a real DAC does (the 219 vectors dev DAC)
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../tests/vectors/219-protocol/vectors.json");
+        let v = std::fs::read_to_string(p).unwrap();
+        let k = "\"dev_cert_der\": \"";
+        let i = v.find(k).unwrap() + k.len();
+        let der = batman_proto::invite::from_hex(&v[i..i + v[i..].find('"').unwrap()]).unwrap();
+        let rec = |d: Vec<u8>| cbor::encode(&Value::Map(vec![(Value::Uint(1), Value::Text("83422ee6d5f586ed95".into())), (Value::Uint(4), Value::Bytes(d))]));
+        let got = own_of(&[rec(der.clone()), rec(vec![1, 2, 3]), vec![0xff]]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].dac_hash, netrec::dac_hash(&nodecert::dac_pub_of_der(&der).unwrap()));
+        let info = cbor::encode(&Value::Map(vec![(Value::Uint(10), Value::Bytes(vec![0x5a; 16]))]));
+        assert_eq!(info_net_id(info), "5a".repeat(16));
+        assert_eq!(info_net_id(vec![]), "");
     }
 }

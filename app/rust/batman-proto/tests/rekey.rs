@@ -116,7 +116,7 @@ fn record(list: Vec<Member>) -> NetRec {
         members: members_v1(),
         secrets: vec![1, 2, 3],
     };
-    NetRec { base, state: "applied".into(), list: Some(list), invites: None, versions: None }
+    NetRec { base, state: "applied".into(), list: Some(list), invites: None, versions: None, departed: None }
 }
 fn team() -> NetRec {
     record(vec![entry(A, MemberState::Applied, None), entry(B, MemberState::Approved, None), entry(D, MemberState::Approved, None)])
@@ -1143,4 +1143,156 @@ fn t12_every_chain_check_on_its_own() {
     let old = node_secrets(1, SAE1, &ROOT1, B);
     let h = edit(&hex, |e| set(e, 3, V::Array(vec![cbor::decode(&old).unwrap()])));
     assert_eq!(r(&h), Err(mupdate::Refusal::Invalid("secrets net_id / version")));
+}
+
+/// code review r1 F2 / B MAJOR-2: the remaining chain / secrets checks, each on its own
+#[test]
+fn t12_more_checks_on_their_own() {
+    let v2 = removed(&team(), Target::Person(pk(Q)));
+    let hex = bundle(&v2, P).unwrap();
+    let x = p_mnet(B);
+    let r = |h: &str| import(&x, h, &[B]).map(|r| r.0);
+    // members of v2 signed by another key
+    let h = edit_step(&hex, 2, 0x67, cose::CT_MEMBERS, |_| {});
+    assert_eq!(r(&h), Err(mupdate::Refusal::Invalid("signature")));
+    // members naming another version
+    let h = edit_step(&hex, 2, ADMIN, cose::CT_MEMBERS, |e| set(e, 2, V::Uint(3)));
+    assert_eq!(r(&h), Err(mupdate::Refusal::Invalid("members net_id / version")));
+    // a netcfg of another net_id (signed by the admin, chained)
+    let h = edit_step(&hex, 1, ADMIN, cose::CT_NETCFG, |e| set(e, 1, V::Bytes(vec![0x99; 16])));
+    assert_eq!(r(&h), Err(mupdate::Refusal::Invalid("not the next version")));
+    // member_secrets signed by another key (ECDH-ES does not name the sender: only the signature does)
+    let ms = {
+        let v = cbor::decode(&batman_proto::invite::qr_object(&hex, 4).unwrap()).unwrap();
+        netrec::sign1_payload(&cbor::encode(v.get(4).unwrap())).unwrap()
+    };
+    let forged = sign1(0x67, cose::CT_MSECRETS, &cbor::encode(&ms));
+    let h = edit(&hex, |e| set(e, 4, cbor::decode(&forged).unwrap()));
+    assert_eq!(r(&h), Err(mupdate::Refusal::Invalid("signature")));
+    // member_secrets of v1
+    let mut ms1 = ms.clone();
+    if let V::Map(e) = &mut ms1 {
+        set(e, 2, V::Uint(1));
+    }
+    let old = sign1(ADMIN, cose::CT_MSECRETS, &cbor::encode(&ms1));
+    let h = edit(&hex, |e| set(e, 4, cbor::decode(&old).unwrap()));
+    assert_eq!(r(&h), Err(mupdate::Refusal::Invalid("secrets net_id / version")));
+    // an UNSIGNED edit of a version the phone holds is invalid, not "another history" (B-m3)
+    let (_, x2) = import(&x, &hex, &[B]).unwrap();
+    let h = edit_step(&hex, 1, 0x67, cose::CT_NETCFG, |e| set(e, 4, V::Text("x".into())));
+    assert_eq!(import(&x2, &h, &[B]).map(|r| r.0), Err(mupdate::Refusal::Invalid("signature")));
+    // the size limit on the pasted text, before any decoding (B-m4)
+    let huge = "a".repeat(2 * (rekey::MAX_BUNDLE + 16) + 2);
+    assert_eq!(mupdate::update_net_id(&huge), Err(mupdate::Refusal::Format("too large")));
+}
+
+/// T37 core (code review r1 F3): the same version, an update with only the second node secrets: rule 4 does not
+/// ask for the key 7 node (it is not advancing)
+#[test]
+fn t37_the_same_version_does_not_need_the_key_7_node() {
+    let mut rec = team();
+    rec.list.as_mut().unwrap().push(entry(B2, MemberState::Approved, None));
+    let v2 = removed(&rec, Target::Person(pk(Q)));
+    let hex = bundle(&v2, P).unwrap();
+    let (_, x) = import(&p_mnet(B), &hex, &[B, B2]).unwrap();
+    let only_b2 = edit(&hex, |e| {
+        let V::Array(se) = e.iter().find(|(k, _)| *k == V::Uint(3)).unwrap().1.clone() else { panic!() };
+        let keep: Vec<V> = se.into_iter().filter(|s| netrec::sign1_payload(&cbor::encode(s)).unwrap().get(3).and_then(V::as_bytes) == Some(&dac(B2.dac)[..])).collect();
+        set(e, 3, V::Array(keep));
+    });
+    let mut lacking = x.clone();
+    lacking.node_secrets.clear();
+    assert_eq!(import(&lacking, &only_b2, &[B, B2]).map(|r| r.0), Ok(Imp::Added));
+    // advancing with only the B2 secrets: the key 7 node secrets are required
+    assert_eq!(import(&p_mnet(B), &only_b2, &[B, B2]).map(|r| r.0), Err(mupdate::Refusal::MissingOwn(dev(B)[16..].to_string())));
+}
+
+/// code review r1 F4: an own node at a key 9 older than every kept version does not vouch (§2.4)
+#[test]
+fn t15_a_node_older_than_the_kept_versions_does_not_vouch() {
+    let rec = record(vec![entry(A, MemberState::Applied, None), entry(B, MemberState::Approved, None), entry(D, MemberState::Approved, None)]);
+    let v2 = removed(&rec, Target::Person(pk(Q)));
+    let mut cut = v2.clone();
+    cut.versions.as_mut().unwrap().remove(0); // keeps v2 only
+    let p = rekey::precheck(&cut, &pk(ADMIN), &pk(OWNER), &Target::Person(pk(P)), &reads(&[(A, Some(applied_info(1)))])).unwrap();
+    assert!(p.unverified, "k9 = 1 is not kept: not vouched");
+    let p = rekey::precheck(&v2, &pk(ADMIN), &pk(OWNER), &Target::Person(pk(P)), &reads(&[(A, Some(applied_info(1)))])).unwrap();
+    assert!(!p.unverified, "negative control: kept -> vouched");
+}
+
+/// code review r1 F4 / B-m5: rule 1 needs this phone owner_pub and the ecdh_pub the login verified
+#[test]
+fn t27_rule1_owner_and_ecdh() {
+    let mut other = entry(A, MemberState::Applied, None);
+    other.owner_pub = pk(P);
+    let rec = record(vec![other]);
+    let (conn, mut node) = pair(A);
+    assert_eq!(send(&mut node, conn, netrec::encode(&rec), false, Some(verified(A))).end, updflow::End::NotListed);
+    let mut wrong = entry(A, MemberState::Applied, None);
+    wrong.ecdh_pub = pk(0x48);
+    let rec = record(vec![wrong]);
+    let (conn, mut node) = pair(A);
+    let s = send(&mut node, conn, netrec::encode(&rec), false, Some(verified(A)));
+    assert_eq!((s.end, s.signs, node.got.len()), (updflow::End::NotListed, 0, 0));
+}
+
+/// v6.5 (code review r1 MAJOR): key 14 keeps who left; the real path approve -> remove -> come back
+#[test]
+fn t38_removed_before_on_the_real_path() {
+    let v2 = removed(&team(), Target::Person(pk(P)));
+    let d = v2.departed.clone().unwrap();
+    assert_eq!(d.iter().map(|x| (x.dac_hash, x.owner_pub, x.name.clone())).collect::<Vec<_>>(), vec![(dac(B.dac), pk(P), "n57".to_string())]);
+    // the same person with a brand-new node: asked, named
+    let p = batman_proto::approve::previous_of(&v2, &[0xee; 32], &pk(P)).unwrap().expect("asked");
+    assert_eq!((p.node, p.owner_name.as_deref(), p.owner_pub), (false, Some("n57"), Some(pk(P))));
+    // the removed node itself (under anyone): asked, the previous owner named
+    let p = batman_proto::approve::previous_of(&v2, &dac(B.dac), &pk(0x70)).unwrap().expect("asked");
+    assert_eq!((p.node, p.owner_name.as_deref()), (true, Some("n57")));
+    // an own node excluded: its name too
+    let mut r = team();
+    r.list.as_mut().unwrap().push(entry(A2, MemberState::Applied, None));
+    let v2b = removed(&r, Target::Node(dac(A2.dac)));
+    assert_eq!(v2b.last_listed(|m| m.dac_pub_hash == dac(A2.dac)).unwrap().map(|m| m.name), Some("n56".into()));
+    // removed twice: one entry per node, the newest
+    let mut back = v2.clone();
+    back.list.as_mut().unwrap().push(entry(B, MemberState::Approved, Some(2)));
+    let v3 = removed(&back, Target::Person(pk(P)));
+    assert_eq!(v3.departed.unwrap().len(), 1);
+    // negative control: an older app wrote the record back without key 14 -> the members lists only
+    let mut old = v2.clone();
+    old.departed = None;
+    assert_eq!(batman_proto::approve::previous_of(&old, &[0xee; 32], &pk(P)).unwrap(), None);
+    // key 14 survives the codec
+    assert_eq!(netrec::decode(&netrec::encode(&v2)).unwrap().departed, v2.departed);
+}
+
+/// T10 (code review r1 F5): an older app write drops keys 13 / 14 / 10; the record still opens and the next update
+/// starts from what is left
+#[test]
+fn t10_after_a_downgrade_and_upgrade() {
+    let v2 = removed(&team(), Target::Person(pk(Q)));
+    let mut old = v2.clone();
+    old.versions = None;
+    old.departed = None;
+    old.list.as_mut().unwrap().iter_mut().for_each(|m| m.known = None);
+    let back = netrec::decode(&netrec::encode(&old)).unwrap();
+    assert_eq!(back.history().unwrap().iter().map(|x| x.version).collect::<Vec<_>>(), vec![2]);
+    let r = rekey::recipients(&back, &pk(OWNER)).unwrap();
+    assert!(r[0].unknown_before, "the unknown-before line");
+    let hex = bundle(&back, P).unwrap();
+    // P still at v1: the update has only v2 and imports (exactly one behind)
+    assert_eq!(import(&p_mnet(B), &hex, &[B]).map(|r| r.0), Ok(Imp::Advanced(2)));
+}
+
+/// T24 negative control: a derived Debug over the same bytes would show them
+#[test]
+fn t24_a_derived_debug_would_leak() {
+    #[derive(Debug)]
+    #[allow(dead_code)]
+    struct Leaky {
+        net_root: [u8; 32],
+    }
+    let t = format!("{:?}", Leaky { net_root: [0xab; 32] });
+    assert!(t.contains("171, 171"), "{t}");
+    assert!(!format!("{:?}", team().base).contains("119, 119"), "the redacted Debug of the record (net_root 0x77)");
 }

@@ -86,6 +86,10 @@ fn version_of(netcfg: &[u8]) -> Result<u32, Refusal> {
 
 /// Rule 1: hex -> qr-object kind 4 -> exact shape, ≤ 16 steps, ≤ 128 KiB decoded (before any signature).
 fn parse(hex: &str) -> Result<Parsed, Refusal> {
+    // the size first, on the pasted text itself (code review r1 B-m4): 2 hex digits a byte + the qr-object wrapping
+    if hex.bytes().filter(|b| !b.is_ascii_whitespace()).count() > 2 * (MAX_BUNDLE + 16) {
+        return Err(Refusal::Format("too large"));
+    }
     let raw = qr_object(hex, QR_UPDATE).map_err(|_| Refusal::Format("not an update"))?;
     if raw.len() > MAX_BUNDLE {
         return Err(Refusal::Format("too large"));
@@ -181,7 +185,14 @@ fn check(p: &Parsed, x: &MNet, own: &[OwnNode], owner_enc_pub: &[u8; 65]) -> Res
             }
             match held.iter().find(|h| h.version == s.version) {
                 Some(h) if h.netcfg == s.netcfg && h.members == s.members => {}
-                Some(_) => return Err(Refusal::Fork),
+                // another history only when it is signed (by the stored admins: the invariant); an unsigned edit is
+                // just invalid, no fork warning (code review r1 B-m3)
+                Some(_) => {
+                    let admins = x.netcfg().map_err(|_| Refusal::Invalid("stored netcfg"))?.admins;
+                    cose::verify_sign1(&s.netcfg, cose::CT_NETCFG, cose::LABEL_NETCFG, &admins)?;
+                    cose::verify_sign1(&s.members, cose::CT_MEMBERS, cose::LABEL_MEMBERS, &admins)?;
+                    return Err(Refusal::Fork);
+                }
                 None => continue,
             }
         } else {
@@ -311,9 +322,19 @@ pub fn import(hex: &str, mnet: Option<&[u8]>, mnet_gen: u64, expected_gen: u64, 
     let mut pt = cose::decrypt(&c.ms_enc, cose::LABEL_MSECRETS, &c.ms_target, &x.net_id, c.cur, z)?;
     let parsed = cbor::decode(&pt).ok();
     pt.iter_mut().for_each(|b| *b = 0);
-    let v = parsed.ok_or(Refusal::Invalid("member secrets plaintext"))?;
-    cose::exact_keys(&v, &[2], &[]).map_err(|_| Refusal::Invalid("member secrets plaintext is not {2: net_root}"))?;
-    let net_root: [u8; 32] = v.get(2).and_then(Value::as_bytes).and_then(|b| b.try_into().ok()).ok_or(Refusal::Invalid("net_root"))?;
+    let mut v = parsed.ok_or(Refusal::Invalid("member secrets plaintext"))?;
+    let shape = cose::exact_keys(&v, &[2], &[]).map_err(|_| Refusal::Invalid("member secrets plaintext is not {2: net_root}"));
+    let net_root: Option<[u8; 32]> = v.get(2).and_then(Value::as_bytes).and_then(|b| b.try_into().ok());
+    // the decoded copy is cleared too (code review r1 B-m2)
+    if let Value::Map(e) = &mut v {
+        for (_, x) in e.iter_mut() {
+            if let Value::Bytes(b) = x {
+                b.iter_mut().for_each(|y| *y = 0);
+            }
+        }
+    }
+    shape?;
+    let net_root = net_root.ok_or(Refusal::Invalid("net_root"))?;
     let mut h = x.history();
     h.extend(c.new.iter().cloned());
     let cut = h.len().saturating_sub(HISTORY_KEEP);

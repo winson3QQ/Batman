@@ -2513,7 +2513,7 @@ mod rm_tests {
             members: sign1(cose::CT_MEMBERS, &cose::member_list_payload(&id, 1, None, &[m])),
             secrets: vec![3],
         };
-        NetRec { base, state: state.into(), list: Some(list), invites: None, versions: None }
+        NetRec { base, state: state.into(), list: Some(list), invites: None, versions: None, departed: None }
     }
     fn rekeyed(r: &NetRec, t: Target) -> NetRec {
         let (mut f, mut a) = Rekey::start(&netrec::encode(r), 1, &pub65(0x66), &pub65(0x11), &t, &[]);
@@ -2605,10 +2605,13 @@ mod rm_tests {
         let r = record(vec![entry(0x55, 0x43, 0x11, MemberState::Applied), entry(0x57, 0x44, 0x31, MemberState::Approved)], "applied");
         let v2 = rekeyed(&r, Target::Person(pub65(0x31)));
         let b = Verified { dac_pub: pub65(0x57), ecdh_pub: pub65(0x44), ..node() };
-        // B was approved after v1 and removed at v2: no kept version's members ever listed it -> 「不明」
-        // (a design gap found here: reported, see #254)
+        // B was approved after v1 and removed at v2 (in no members list): named from key 14 (v6.5)
         let q = removed_question(&netrec::encode(&v2), Some(&b), "4457");
-        assert!(q.contains("…4457") && q.contains("之前被排除") && q.ends_with("不明"), "{q}");
+        assert!(q.contains("…4457") && q.contains("之前被排除") && q.contains(&super::super::rekey::fpr(&pub65(0x31))), "{q}");
+        // negative control: the same record written back by an older app (no key 14) -> 「不明」
+        let mut old = v2.clone();
+        old.departed = None;
+        assert!(removed_question(&netrec::encode(&old), Some(&b), "4457").ends_with("不明"));
         // listed by some version (D approved, then another person removed: v3 lists D; v4 removes D): named
         let mut v2d = v2.clone();
         v2d.list.as_mut().unwrap().push(entry(0x59, 0x46, 0x33, MemberState::Approved));

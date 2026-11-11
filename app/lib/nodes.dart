@@ -1200,6 +1200,10 @@ class _NodesPageState extends State<NodesPage> {
     }
     if (!mounted) return;
     String nodes(PersonView p) => p.nodes.map((n) => '…${n.last4}${n.state == 'joining' ? '（加入中）' : ''}').join('、');
+    String sameOf(String owner) {
+      final p = people.where((x) => x.owner == owner).toList();
+      return p.isEmpty || p.first.sameName.isEmpty ? '' : '另有同名的一組：${p.first.sameName.join('、')}（要一起移除得各按一次）';
+    }
     final choice = await showDialog<(String, String)>(
         context: context,
         builder: (c) => SimpleDialog(title: const Text('成員（以人分組）'), children: [
@@ -1214,11 +1218,12 @@ class _NodesPageState extends State<NodesPage> {
               ],
             ]));
     if (choice == null) return;
-    await _remove(net, person: choice.$1, node: choice.$2);
+    await _remove(net, person: choice.$1, node: choice.$2, sameName: choice.$1.isEmpty ? '' : sameOf(choice.$1));
   }
 
   /// §3.1 / §2.4: read the own nodes' info, check, confirm (with the tick), commit, then the updates (§3.3).
-  Future<void> _remove(_Net net, {String person = '', String node = ''}) async {
+  /// [sameName]: the 「另有同名的一組」 line for the dialog (B-m4).
+  Future<void> _remove(_Net net, {String person = '', String node = '', String sameName = ''}) async {
     final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
     final admin = keys['admin'] as Uint8List, owner = keys['owner'] as Uint8List;
     final List<OwnNodeView> own;
@@ -1268,6 +1273,7 @@ class _NodesPageState extends State<NodesPage> {
                   content: SingleChildScrollView(
                       child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(plan.text),
+                    if (sameName.isNotEmpty) Text(sameName, style: const TextStyle(color: Colors.deepOrange)),
                     CheckboxListTile(value: ticked, onChanged: (v) => set(() => ticked = v ?? false), title: Text(removeTickText())),
                   ])),
                   actions: [
@@ -1411,39 +1417,25 @@ class _NodesPageState extends State<NodesPage> {
     }
   }
 
-  /// 「把新密碼送給節點」 (§3.2) from the main page: which of this phone's networks.
+  /// 「把新密碼送給節點」 (§3.2) from the main page: from the record of the network the node says it is in (info key
+  /// 10; code review r1 A-F6: never a guessed one).
   Future<void> _sendUpdate() async {
     if (_busy) return;
-    final dir = await _dir();
-    final picks = <(String, bool, String)>[];
-    for (final id in await listNets(dir: dir)) {
-      final (_, p) = await _readRecord('net/$id');
-      if (p == null) continue;
-      try {
-        final v = netSummary(recordPlain: p);
-        if (v.applied) picks.add(('net/$id', false, '${v.netName}（我建立的）'));
-      } catch (_) {}
-    }
-    for (final id in await listMnets(dir: dir)) {
-      final (_, p) = await _readRecord('mnet/$id');
-      if (p == null) continue;
-      try {
-        picks.add(('mnet/$id', true, mnetSummary(mnetPlain: p).netName));
-      } catch (_) {}
-    }
-    if (picks.isEmpty) {
-      _say('[REQ_FAIL] 手機裡沒有隊伍網路的紀錄');
+    _lastInfo = Uint8List(0);
+    await _ask((s) => s.requestInfo(), quiet: true, retry: true);
+    final id = infoNetId(info: _lastInfo);
+    if (id.isEmpty) {
+      _say('[REQ_FAIL] 讀不到這台節點在哪個隊伍網路（不在網路裡，或稍後再試）');
       return;
     }
-    final pick = picks.length == 1 || !mounted
-        ? picks.first
-        : await showDialog<(String, bool, String)>(
-            context: context,
-            builder: (c) => SimpleDialog(title: const Text('送哪個網路的新密碼？'), children: [
-                  for (final p in picks) SimpleDialogOption(onPressed: () => Navigator.pop(c, p), child: Text(p.$3)),
-                ]));
-    if (pick == null) return;
-    await _sendUpdateFor(pick.$1, member: pick.$2);
+    for (final (rel, member) in [('net/$id', false), ('mnet/$id', true)]) {
+      final (_, p) = await _readRecord(rel);
+      if (p != null) {
+        await _sendUpdateFor(rel, member: member);
+        return;
+      }
+    }
+    _say('[REQ_FAIL] 這台節點所在的隊伍網路不在這支手機的紀錄裡');
   }
 
   /// §3.2 on the logged-in node from the record at [rel] (read now). [confirm]: the admin is reminded of the order

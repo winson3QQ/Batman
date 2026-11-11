@@ -86,7 +86,7 @@ fn record(country: &str, admins: &[[u8; 65]], state: &str, list: Option<Vec<Memb
     );
     let members = cose::sign1(cose::CT_MEMBERS, &mp, &sig::der_to_raw_low_s(&signed(ADMIN, &cose::sign1_tbs(cose::CT_MEMBERS, cose::LABEL_MEMBERS, &mp))).unwrap());
     let base = NetRecord { net_id: NET_ID, mesh_id: mesh, channel: 40, bw: 4, sae: SAE.into(), net_root: [0x77; 32], netcfg, members, secrets: vec![0xd2, 0x84] };
-    NetRec { base, state: state.into(), list, invites: None, versions: None }
+    NetRec { base, state: state.into(), list, invites: None, versions: None, departed: None }
 }
 fn applied_record(country: &str) -> NetRec {
     record(country, &[pub_of(&key(ADMIN))], "applied", None)
