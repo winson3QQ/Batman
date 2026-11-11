@@ -67,9 +67,9 @@ pub fn open_joinreq(sign1: &[u8]) -> Result<JoinReq, Error> {
 /// A node / person this network removed before (remove-member §3.6): the admin confirms before approving.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Previous {
-    /// true: the node itself is in some version's removed list; false: its owner (owner_pub) was listed before
+    /// true: the node itself left (key 14 / some version removed list); false: its owner (owner_pub) was listed before
     pub node: bool,
-    /// the previous owner as the newest kept version listing the node / person names it (None: pruned, "不明")
+    /// the previous owner as key 14 (or else the newest kept version listing the node / person) names it (None: "不明")
     pub owner_name: Option<String>,
     pub owner_pub: Option<[u8; 65]>,
 }
