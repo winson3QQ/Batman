@@ -583,9 +583,9 @@ SoT: #75
 | B15 | GATT 伺服器實作:BlueZ D-Bus API(要另加 dbus-daemon,OpenWrt 用 ubus)或 BTstack(HCI user channel,不需 bluetoothd);`batman-provd` 用什麼語言寫 | P0 |
 | B16 | BLE 廣播逐 byte 預算(§3.3):scan response 內容、短計數器 nonce、截短 MAC / tag 的安全強度、廣播間隔與耗電 | P1 |
 | B17 | `/dev/ttyACM0` 由誰獨佔、其他程式如何代理(與 #220 W2 LoRa gateway 協調) | P2 |
-| B2 | brcmfmac(CYW43455)能否同時開兩個 AP(大量傳輸通道 + 隊伍 AP);不能就暫時取代隊伍 AP | P2 |
+| ~~B2~~ | ~~brcmfmac(CYW43455)能否同時開兩個 AP(大量傳輸通道 + 隊伍 AP);不能就暫時取代隊伍 AP~~ **關閉(2026-11-12 使用者決定)**:P3 不開暫時 AP,上傳走節點原本的手機 AP(`254-p3-impl.md` §3.8、D5),這題不存在 | — |
 | B18 | image 簽章格式、簽章金鑰保管(離線)、app 內建的驗簽公鑰 | P2 |
-| B19 | 手機端加入暫時 WiFi:iOS `NEHotspotConfiguration` / Android `WifiNetworkSpecifier` 的對話框、綁定無網際網路的本地網路、iOS 背景暫停 | P2 |
+| B19 | 手機端加入**這台節點的手機 AP**(P3 起不再有暫時 WiFi;2026-11-12 改寫):手機已連著自己的節點就不用切換;否則 iOS `NEHotspotConfiguration` / Android `WifiNetworkSpecifier` 的對話框、綁定無網際網路的本地網路、iOS 背景暫停 | app 更新流程(#254 P3) |
 
 ## 12. 不做的事(民用版)
 
