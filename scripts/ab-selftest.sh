@@ -67,12 +67,16 @@ is_slot() { [[ ${1:-} =~ ^[AB]$ ]]; }
 # mount the busy p1 (already at /boot) -> mount fails -> read nothing; for want=B it cat'd
 # /boot (which is bootA) -> wrong file. Every static invariant then FAILed although the card
 # was fine — caught on manet01 (running slot B) during #173 validation.
+# #254 S5 (254-p3-impl §3.7.3): a boot FAT is mounted only under the slot lock (the flock batman-slot write / arm /
+# bootinfo hold), or a concurrent slot write meets EBUSY mid-write. The node's run dir from its rundir.sh; an image
+# without it (or without flock) predates the lock: nothing to take. The remote shell holds fd 9 until it exits.
+SLOTLK='[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh && command -v flock >/dev/null 2>&1 && exec 9>>"$RUNDIR/batman-slot.flock" && flock 9; '
 boot_cat() {                         # $1 = A|B, $2 = filename
   local want=$1 f=$2
   if [ "$want" = A ]; then sshn "cat /boot/$f"; return; fi
-  sshn "mkdir -p /mnt/_ab; mount -t vfat -o ro /dev/mmcblk0p3 /mnt/_ab >/dev/null 2>&1; cat /mnt/_ab/$f; umount /mnt/_ab"
+  sshn "${SLOTLK}mkdir -p /mnt/_ab; mount -t vfat -o ro /dev/mmcblk0p3 /mnt/_ab >/dev/null 2>&1; cat /mnt/_ab/$f; umount /mnt/_ab"
 }
-bootb_rw() { sshn "mkdir -p /mnt/_ab; mount -t vfat /dev/mmcblk0p3 /mnt/_ab && { $1 ; }; sync; umount /mnt/_ab"; }
+bootb_rw() { sshn "${SLOTLK}mkdir -p /mnt/_ab; mount -t vfat /dev/mmcblk0p3 /mnt/_ab && { $1 ; }; sync; umount /mnt/_ab"; }
 
 reboot_wait() {                      # $1 = tryboot|plain ; $2 = max seconds
   local mode=$1 max=${2:-180} i before after
