@@ -1,0 +1,18 @@
+{
+ "ok": {
+  "board": "ekh-bcm2711",
+  "boot_total": 150,
+  "bootcfg": [
+   "e67d23e7820c49a8051dac2831f38290f5e72f66c8db5079eeb60d82f14894c0"
+  ],
+  "downgrade_from": [
+   "1.5.15-wsl.1"
+  ],
+  "min_from": "1.5.10-wsl.1",
+  "serial": 2,
+  "size": 446,
+  "sums_sha": "023a7092c6353c3d733df1b264e081c70e16703943c24a1dae29ca08311a9ac6",
+  "version": "1.5.14-wsl.30+abcdef1.fw0123456"
+ },
+ "plain_serial": 2
+}
