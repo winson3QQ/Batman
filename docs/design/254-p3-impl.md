@@ -1,6 +1,6 @@
-# #254 PR-P3:擁有者 / 設定 / 狀態 / 診斷 / 更新 / 上傳 / 轉賣工具(設計 v7.7 — S5 實作前核對 + 審查修正,審查中)
+# #254 PR-P3:擁有者 / 設定 / 狀態 / 診斷 / 更新 / 上傳 / 轉賣工具(設計 v7.8 — S5 實作前核對 + 審查修正,審查中)
 
-狀態:v7.7(2026-11-11)= v7.6 + v7.6 審查修正(A12 0 / 0 / 18、B12 0 / 1 / 6;鎖改用 `flock` 拿掉整組持有者規則;發布檢查搬到資產真正出去的地方;回應見附錄 I),送兩位整份重審。v7.6 = v7.5 + v7.5 審查修正(A11 0 / 1 / 15、B11 0 / 2 / 7,回應見附錄 H)與使用者三項決定(§12.5.18),送兩位整份重審。v7.5 = v7.4 + v7.4 審查修正(A10 0 / 3 / 17、B10 0 / 0 / 14;多數修法是拿掉機制,回應見附錄 G),送兩位整份重審。v7.4 = v7.3 + v7.3 審查修正(A9 0 / 2 MAJOR、B9 0 / 0;兩個 MAJOR 都是 v7.3 新機制帶進來的,v7.4 以拿掉機制修正)並把 §12 / §12.5 的決定**併回 §3.7 / §3.8**(回應見附錄 F),送兩位整份重審。v7.3 = v7.2 + **§12.5 審查修正**(v7.2 審查 A8 / B8 都 APPROVE-WITH-CHANGES、0 BLOCKER、各 2 MAJOR;回應見附錄 E),送兩位整份重審。v7.2 = v7.1 + **§12 S5 實作前核對**(事實更正與 8 項設計沒寫到的決定;只動 §3.7 / §3.8 / §3.11 的範圍),送兩位審查。v7.1 原狀態:**凍結**(v7.1,2026-11-02)。v7(bfb6703)兩位審查都 **APPROVE-WITH-CHANGES、0 BLOCKER / 0 MAJOR**(A 11 MINOR、B 12 MINOR),都判定已收斂、建議凍結。v7.1 = v7 + 審查要求「凍結時一起改」的文字修正(A7-m7);其餘 MINOR 是實作 PR 的必做清單(附錄 D,每項附測試)。**凍結條件**:§9-4 的現場探針在 H4 凍結前跑完並附原始輸出(D22)。歷程:v1 96a578d、v2 03963d9、v3 6433520、v4 5d5ebfd、v5 1ac5fbd(整份重寫)、v6 c252b3f、v7 bfb6703。各輪審查在 `docs/design/254-reviews/p3-review-v*-*.md`。
+狀態:v7.8(2026-11-11)= v7.7 + v7.7 審查修正(A13 0 / 1 / 15、B13 0 / 1 / 5)+ 使用者選 A:一般開發版 image 不放根鑰匙、只有 bench build 放 T,發布檢查整套拿掉(回應見附錄 J),送兩位整份重審。v7.7 = v7.6 + v7.6 審查修正(A12 0 / 0 / 18、B12 0 / 1 / 6;鎖改用 `flock` 拿掉整組持有者規則;發布檢查搬到資產真正出去的地方;回應見附錄 I),送兩位整份重審。v7.6 = v7.5 + v7.5 審查修正(A11 0 / 1 / 15、B11 0 / 2 / 7,回應見附錄 H)與使用者三項決定(§12.5.18),送兩位整份重審。v7.5 = v7.4 + v7.4 審查修正(A10 0 / 3 / 17、B10 0 / 0 / 14;多數修法是拿掉機制,回應見附錄 G),送兩位整份重審。v7.4 = v7.3 + v7.3 審查修正(A9 0 / 2 MAJOR、B9 0 / 0;兩個 MAJOR 都是 v7.3 新機制帶進來的,v7.4 以拿掉機制修正)並把 §12 / §12.5 的決定**併回 §3.7 / §3.8**(回應見附錄 F),送兩位整份重審。v7.3 = v7.2 + **§12.5 審查修正**(v7.2 審查 A8 / B8 都 APPROVE-WITH-CHANGES、0 BLOCKER、各 2 MAJOR;回應見附錄 E),送兩位整份重審。v7.2 = v7.1 + **§12 S5 實作前核對**(事實更正與 8 項設計沒寫到的決定;只動 §3.7 / §3.8 / §3.11 的範圍),送兩位審查。v7.1 原狀態:**凍結**(v7.1,2026-11-02)。v7(bfb6703)兩位審查都 **APPROVE-WITH-CHANGES、0 BLOCKER / 0 MAJOR**(A 11 MINOR、B 12 MINOR),都判定已收斂、建議凍結。v7.1 = v7 + 審查要求「凍結時一起改」的文字修正(A7-m7);其餘 MINOR 是實作 PR 的必做清單(附錄 D,每項附測試)。**凍結條件**:§9-4 的現場探針在 H4 凍結前跑完並附原始輸出(D22)。歷程:v1 96a578d、v2 03963d9、v3 6433520、v4 5d5ebfd、v5 1ac5fbd(整份重寫)、v6 c252b3f、v7 bfb6703。各輪審查在 `docs/design/254-reviews/p3-review-v*-*.md`。
 上層:`254-stage1-impl.md` §10.6;協定 `219-protocol.md` v0.8 + `219-protocol.cddl`;P2 = `254-p2-impl.md` v8.5(已出貨 `1.5.14-wsl.22`)。
 原則(使用者):**只做必要的修改**、**失敗就回到之前的狀態**。事實附 `file:line` 或 04 實測;沒有證據的標 ⚠️,並寫明實作前要怎麼查。
 
@@ -293,9 +293,9 @@ v7.4:本節已併入 v7.2 §12、v7.3 §12.5 與 v7.3 審查的所有決定;§12
 |---|---|---|---|
 | 根鑰匙 R(prod) | ES256 | 離線產生;私鑰只在兩支加密 USB(不同地點);公鑰內建 `rel` 通道 image 的 `/usr/share/batman/release-root.pub`,指紋另外釘在 Batman repo 與 app repo(§3.7.2) | 只簽背書 |
 | 簽章鑰匙 K<sub>i</sub> | ES256 | 使用者的 YubiKey PIV slot 9c(裝置內產生、不可匯出) | 簽每個發行版本 |
-| 測試根鑰匙 T | ES256 | repo `tests/keys/`(公開) | `wsl` / `ci` 通道(DEV)與 prov_test image 信任;`rel` 通道 image 不得含 T(§3.7.2 gate) |
+| 測試根鑰匙 T | ES256 | repo `tests/keys/`(公開) | 只有 **bench build**(`BATMAN_BENCH_TRUST=T`,給 02 / 04 這類 bench 節點)與 prov_test image 信任;一般 `wsl` / `ci` image 不放任何根鑰匙;`rel` 只放 R(§3.7.2) |
 
-一個 image 只信任**一把**根鑰匙。ES256:所有 YubiKey 5 的 PIV 都支援;節點已有 `cose.VerifySign1` / `VerifyES256`(F22)。YubiKey 回 DER 簽章,`release-sign.sh` 轉成 64 B `r‖s`(low-s)。⚠️ YubiKey 型號與 host 工具鏈待使用者在場時實測(§9)。
+一個 image 最多信任**一把**根鑰匙;沒有鑰匙檔 = 不能經 app 更新(reason 21)。ES256:所有 YubiKey 5 的 PIV 都支援;節點已有 `cose.VerifySign1` / `VerifyES256`(F22)。YubiKey 回 DER 簽章,`release-sign.sh` 轉成 64 B `r‖s`(low-s)。⚠️ YubiKey 型號與 host 工具鏈待使用者在場時實測(§9)。
 
 - **背書** E<sub>i</sub> = COSE_Sign1(根鑰匙),content type `batman/relkey`,標籤 `batman-relkey-v1`,payload `{1: K_i 公鑰 65 B, 2: serial(uint ≥ 1)}`。
 - **發行物件** S = COSE_Sign1(K<sub>i</sub>),content type `batman/release`,標籤 `batman-release-v1`;payload 的 key 與 `update-manifest` 同號:
@@ -331,25 +331,27 @@ v7.4:本節已併入 v7.2 §12、v7.3 §12.5 與 v7.3 審查的所有決定;§12
 #### 3.7.2 build / 發行端
 
 - `scripts/build-ab-payload.sh`:tar 順序改為 **`SHA256SUMS metadata boot root.squashfs`**(現在是 `root.squashfs boot metadata SHA256SUMS`,`:73`;F27);`metadata` 加 `release=<BATMAN_VERSION>`(`version=` 時間戳不動)。sysupgrade 路徑以名字取成員,與順序無關(F57)。**界線**:P3 之前建的 payload 不能經 app 安裝(Go 解析要求 `SHA256SUMS` 是第一個成員),包括經 key 6 降到 P3 之前的版本 → 只能 ssh sysupgrade。現行兩板 payload 的 SUMS 只列 kernel、start、fixup、dtb 與 overlays(bcm2711 361 列、bcm2710 364 列,約 35 KB),SUMS 上限定 256 KiB。
-- **誰把哪把根鑰匙放進 image**:firmware `scripts/stamp-batman-build.sh`(寫 `/etc/batman-build` 的同一步,`BATMAN_CHANNEL` 來自 `batman-release.env`)依通道放 `files/usr/share/batman/release-root.pub` 與 `release-min-serial`(與 `files/etc/batman-build` 一樣加進 firmware `.gitignore`,否則每次 build 都變 DIRTY;`BATMAN_CHANNEL` 必須 ∈ {`wsl`, `ci`, `rel`},否則 stamp 失敗 —— 現在只檢查非空,`stamp-batman-build.sh:23-24`):`wsl` / `ci` → Batman feed 釘選 commit 的 `tests/keys/T.pub`、min-serial 1;`rel` → `keys/release-root.pub` 與 `keys/release-min-serial`(#255 產生前不存在)。
+- **誰把哪把根鑰匙放進 image**:firmware `scripts/stamp-batman-build.sh`(寫 `/etc/batman-build` 的同一步)依下表放 `files/usr/share/batman/release-root.pub` 與 `release-min-serial`(兩個都加進 firmware `.gitignore`,否則每次 build 都變 DIRTY;`BATMAN_CHANNEL` 必須 ∈ {`wsl`, `ci`, `rel`},否則 stamp 失敗 —— 現在只檢查非空,`stamp-batman-build.sh:23-24`):
+
+  | build | 放什麼 | 經 app 更新 |
+  |---|---|---|
+  | `rel` | `keys/release-root.pub` = R 與 `keys/release-min-serial`(#255 產生前不存在 → `rel` build 失敗) | 可以(R → K 簽) |
+  | `wsl` / `ci` + `BATMAN_BENCH_TRUST=T`(bench build,只給 02 / 04 這類 bench 節點) | Batman feed 釘選 commit 的 `tests/keys/T.pub`、min-serial 1;`/etc/batman-build` 寫 `BATMAN_BENCH_TRUST=T` | 可以(T → K_test 簽) |
+  | `wsl` / `ci`(一般) | 不放 | 不行:`update.check` 回 reason 21;只能 ssh sysupgrade / 重燒 |
+
+  `rel` 加 `BATMAN_BENCH_TRUST` → stamp 失敗。**結果**:不小心公開發布的一般開發版沒有「任何人都能簽」的風險(使用者 2026-11-11 選 A,取代「R 產生前不發公開 release」)。
 - **release gate** = 獨立腳本 `scripts/check-release-key-gate.sh`(放在 Batman repo,firmware 經 `feeds/batman/` 呼叫同一支;image 組好之後),由 `build-board.sh` 第 7 步**與** `.github/workflows/build-firmware.yml`(和 `check-prov-test-gate.sh` 同一段,`:227-230`)各自呼叫 —— CI 的出貨路徑 `build-release.yml` → `build-firmware.yml` 不經 `build-board.sh`:
   - `rel`:`release-root.pub` 的指紋必須等於 Batman repo `scripts/release-root.fpr` 釘的 R 指紋,`release-min-serial` 合格式;釘選檔不存在(R 產生前)→ FAIL(R 之前不出 `rel`)。
-  - `wsl` / `ci`:`release-root.pub` 必須等於 T(防放錯);這兩個通道永不出貨。
-  - 負測試:`rel` + T.pub → FAIL;`rel` 沒有釘選檔 → FAIL;`wsl` 放了別把鑰匙 → FAIL。
+  - bench build:`release-root.pub` 必須等於 T,且 stamp 有 `BATMAN_BENCH_TRUST=T`;一般 `wsl` / `ci`:不得有 `release-root.pub`。
+  - 負測試:`rel` + T.pub → FAIL;`rel` 沒有釘選檔 → FAIL;`rel` + `BATMAN_BENCH_TRUST` → FAIL;一般 `wsl` 放了任何鑰匙 → FAIL;bench build 放了 T 以外的鑰匙 → FAIL。
   - **界線**:能同時寫 Batman 與 firmware repo 的人可以一起換掉鑰匙與指紋 → gate 擋的是我們自己的錯,不是被入侵的 repo;app repo 另外釘同一個指紋(第二道,不同 repo)。
-- **簽章**:`rel` 用 `scripts/release-sign.sh <payload>`:讀 `SHA256SUMS` / `metadata` / 開機設定清單,組 S,用 YubiKey 簽,與 `release-keys/relkey-<i>.cbor` 寫成 `<payload>.sig.cbor`;**拒絕簽** `BATMAN_WBOX` 非空、版本含 `.wbox-` 或 `.dirty`、通道 ≠ `rel` 的 build(讀 stamp 時就停),並在要簽的那份 payload 的 squashfs 上(`unsquashfs -cat`)重跑 stamp 檢查、`check-release-key-gate.sh` 與 prov-test gate(避免用 K 簽出內建 T 的 `rel` image)。`release-endorse.sh`(離線用 R,換鑰匙時)。DEV(`wsl` / `ci`)用 harness 的 `signrel.py` 以 T → K_test 簽。發行流程加這兩步與轉賣工具清單(§3.9)。
-- **DEV → PROD 的出口**:R 產生之後(#255),DEV 節點要換信任,只能用一份 **T 簽、內建 R(不再含 T)的過渡版**,或 ssh sysupgrade / 重燒。02 / 04 目前都是 `wsl` 通道。過渡版的通道是 `rel`(內建 R,gate 要求 `rel`),用 `release-sign.sh --test-key` 簽(全部檢查照跑:dirty / wbox / 通道 / 在 payload 上重跑 gate,只把簽章換成 T → K_test 的軟體鑰匙)—— 它是所有 PROD 節點的起點,不能跳過檢查;它的 REL 與節點現行 DEV 版相同時是跨通道 → S key 6 要列出那個 DEV 版本。
-- **發布點**(使用者 2026-11-11 決定:**R 產生之前不發任何公開 release**)。公開 release 實際上是**手動上傳**到 `winson3QQ/Batman`(v1.5.11 的資產就是 `-rel.1` 的 payload 與 img;repo 沒有發布腳本,`254-h23-harness.md:60` F18),所以檢查放在資產出去的地方:
-  1. Batman `scripts/publish-release.sh`:唯一的發布方式;對每個要附上的 image / payload 以 `unsquashfs -cat` 讀 `etc/batman-build` 與 `usr/share/batman/release-root.pub`,呼叫 `check-release-key-gate.sh --publish`(只接受 `rel` + R 指紋)通過才 `gh release create`。
-  2. Batman `.github/workflows/release-guard.yml`(`release: published / edited`):下載資產做同一個檢查,不過 → 把 release 改回 draft 並開 issue。從網頁手動上傳也擋得到(事後幾分鐘內)。
-  3. firmware `build-release.yml`:gate 改成獨立 job,`release` 與 `publish-packages` 都 `needs` 它;artifact 一併帶 `release-root.pub`。`github-release.yml` 只建空 draft,不在範圍。
-  - R 產生前沒有釘選檔 → 所有公開發布都 FAIL(= 使用者的決定)。內部經 ssh 裝到 bench 節點不受影響。
-  - **界線**:有 Batman repo 管理權的人可以停用 workflow 或直接改;guard 擋的是我們自己的錯,不是被入侵的帳號。
-  - 負測試:`--publish` + `wsl` / `ci` / 未知通道 → FAIL;guard 在測試 repo 對含 `wsl` image 的 release → 改回 draft;`release` / `publish-packages` 沒有 `needs` gate → lint FAIL。
+- **簽章**:`rel` 用 `scripts/release-sign.sh <payload>`:讀 `SHA256SUMS` / `metadata` / 開機設定清單,組 S,用 YubiKey 簽,與 `release-keys/relkey-<i>.cbor` 寫成 `<payload>.sig.cbor`;**拒絕簽** `BATMAN_WBOX` 或 `BATMAN_BENCH_TRUST` 非空、版本含 `.wbox-` 或 `.dirty`、通道 ≠ `rel` 的 build(讀 stamp 時就停),並在要簽的那份 payload 的 squashfs 上(`unsquashfs -cat`)重跑 stamp 檢查、`check-release-key-gate.sh` 與 prov-test gate(避免用 K 簽出內建 T 的 `rel` image)。`release-endorse.sh`(離線用 R,換鑰匙時)。bench build 用 harness 的 `signrel.py` 以 T → K_test 簽。發行流程加這兩步與轉賣工具清單(§3.9)。
+- **DEV → PROD 的出口**:R 產生之後(#255),bench 節點要換信任,只能用一份 **T 簽、內建 R(不再含 T)的過渡版**,或 ssh sysupgrade / 重燒。02 / 04 目前都是 `wsl` 通道(之後以 bench build 燒;一般 DEV 節點沒有鑰匙,只能 ssh / 重燒)。過渡版的通道是 `rel`(內建 R,gate 要求 `rel`),用 `release-sign.sh --test-key` 簽(全部檢查照跑:dirty / wbox / 通道 / 在 payload 上重跑 gate,只把簽章換成 T → K_test 的軟體鑰匙)—— 它是所有 PROD 節點的起點,不能跳過檢查;它的 REL 與節點現行 DEV 版相同時是跨通道 → S key 6 要列出那個 DEV 版本。
+- **公開發布**:不另設檢查(使用者 2026-11-11 選 A):一般開發版不含根鑰匙,公開了也不能經 app 更新;bench build 不得公開發布(stamp 有 `BATMAN_BENCH_TRUST=T`,`release-sign.sh` 拒簽)—— 有人手動把 bench image 公開仍擋不住,列 §7 誠實界線。
 
 #### 3.7.3 `batman-slot`(兩板共用)
 
-**新動詞**(都加進 `detect_layout` 與 TRACE 的 dispatch,`:895-898`):
+**新動詞**(都加進 `detect_layout` 的 dispatch,`:895-898`;寫入的 `write` / `arm` / `disarm` 加進 TRACE,唯讀的 `bootinfo` 不加):
 
 | 動詞 | 做什麼 |
 |---|---|
@@ -363,7 +365,7 @@ v7.4:本節已併入 v7.2 §12、v7.3 §12.5 與 v7.3 審查的所有決定;§12
 
 **複製的 boot 檔** = `SHA256SUMS` 列出的 ∩ 現行類別白名單(`kernel8.img`、`start*.elf`、`fixup*.dat`、`*.dtb`、`overlays/*`,`:677-683`);「NEVER `bootcode.bin` / `autoboot.txt`」不變。`SHA256SUMS` **每一列**都要符合 `^(root\.squashfs|boot/[A-Za-z0-9_-][A-Za-z0-9._-]*|boot/overlays/[A-Za-z0-9_-][A-Za-z0-9._-]*)$`;名字轉小寫後是 `autoboot.txt`、`config.txt`、`distroconfig.txt`、`cmdline.txt`、`bootcode.bin` 或以 `batman-` 開頭 → rc 13;轉小寫後重複的名字(FAT 不分大小寫)→ rc 13。helper 端做同樣的檢查(reason 11)。sysupgrade 也受益。
 
-**鎖 = `flock`**(取代現行 mkdir 鎖 `:84-95`、`.busy` 檔 `:155`,以及 v7.4–v7.6 的持有者規則):每個動詞(`write`、`arm`、`disarm`、`bootinfo`、`apply`、`stage-root`、`commit`、`rollback`、`precheck-node`)開頭 `exec 9>>$RUNDIR/batman-slot.flock`(root 0600,RunDir root 0700)+ `flock -n 9`,拿不到 → rc 14。fd 9 由子程序繼承(`dd` 等):**持有者與它所有子程序都結束,kernel 才放鎖** —— 只殺掉 shell、`dd` 還在寫時鎖仍在。沒有 pid / starttime / zombie / 接手 / TAMPER 判斷:行程死了鎖就沒了,原子、不可能兩個寫者,`sh -x` 或別的路徑跑的副本照樣互斥。「寫入進行中」(現行 `.busy`)= 這把鎖被持有:讀者(Go `otaBusy` `node/wtxn.go:450-454`、autocommit `:226` 的 `.busy` 與 `slot_writer_alive`)以 `flock -n`(Go `syscall.Flock(LOCK_EX|LOCK_NB)`)試拿、拿到立刻放 → 拿不到 = 忙;`bootinfo` 持鎖的短時間也會讓 `otaBusy` 回忙 → `E_BUSY`(可重試)。`busybox flock` 已在兩板 build 的 rootfs(`/usr/bin/flock` → busybox;⚠️ 節點上待確認)。EXIT trap 加 `tboot_close`;加 `trap 'exit 143' TERM`。升級 / 降級:新舊 `batman-slot` 不會在同一節點同時跑(sysupgrade stage 2 用的是執行中 image 的那支);harness 的舊版副本只跑 `precheck-node`(唯讀)。app 的 `write` 在跑時,sysupgrade stage 1 的 `precheck-node` 拿不到鎖 → 拒絕;`-F` 照舊可強制。
+**鎖 = `flock`**(取代現行 mkdir 鎖 `:84-95`、`.busy` 檔 `:155`,以及 v7.4–v7.6 的持有者規則):每個動詞(`write`、`arm`、`disarm`、`bootinfo`、`apply`、`stage-root`、`commit`、`rollback`、`precheck-node`)開頭 `exec 9>>$RUNDIR/batman-slot.flock`(root 0600,RunDir root 0700)+ `flock -n 9`;拿不到時每 0.2 s 重試、共約 3 s(照 `halow-setkey:152-155`;busybox flock 沒有 `-w`),仍拿不到 → rc 14;`flock` 不存在(127)→ rc 18。fd 9 由子程序繼承(`dd` 等):**持有者與它所有子程序都結束,kernel 才放鎖** —— 只殺掉 shell、`dd` 還在寫時鎖仍在。沒有 pid / starttime / zombie / 接手 / TAMPER 判斷:行程死了鎖就沒了,原子、不可能兩個寫者,`sh -x` 或別的路徑跑的副本照樣互斥。「寫入進行中」(現行 `.busy`)= 這把鎖被持有:讀者(Go `otaBusy` `node/wtxn.go:450-454`、autocommit `:226` 的 `.busy` 與 `slot_writer_alive`,後者也被 `:213` 的認領接手使用)以**共享**鎖試拿(`flock -s -n`;Go `syscall.Flock(LOCK_SH|LOCK_NB)`)、拿到立刻放 → 拿不到 = 忙(試拿的瞬間寫者多等一下,由寫者的 3 s 重試吸收);鎖檔不存在 = 開機後沒有寫者 = 不忙;開不了(權限等)= 忙 + log(fail-closed);`bootinfo` 持鎖的短時間也會讓 `otaBusy` 回忙 → `E_BUSY`(可重試)。`busybox flock` 已在兩板 build 的 rootfs(`/usr/bin/flock` → busybox;⚠️ 節點上待確認)。EXIT trap 加 `tboot_close`;加 `trap 'exit 143' TERM`。持鎖期間起的背景子程序(例如 `commit` 的 `addr_defer_release` `setsid /etc/init.d/openmanetd start &`,`:781`)一律 `9>&-`,否則它繼承 fd 9、`commit` 回來後鎖還在;lint 檢查每個 `&` 都有 `9>&-`。`reboot committed` 不開 fd 9。升級 / 降級:新舊 `batman-slot` 不會在同一節點同時跑(sysupgrade stage 2 用的是執行中 image 的那支)。**sysupgrade stage 2 在 ramfs 裡跑**,ramfs 只有 stock 清單加 `RAMFS_COPY_BIN`(firmware `lib/upgrade/stage2:39-55`、`platform-ab.sh:38`),busybox 沒開 `SH_STANDALONE`(`.config:1198`)→ `RAMFS_COPY_BIN` 加 `/usr/bin/flock`;否則每次 ssh sysupgrade 都 rc 18 失敗、重開回舊槽(同類事故:#89 ramfs 缺 `tr`,`platform-ab.sh:24-30`);harness 的舊版副本只跑 `precheck-node`(唯讀)。app 的 `write` 在跑時,sysupgrade stage 1 的 `precheck-node` 拿不到鎖 → 拒絕;`-F` 照舊可強制。
 
 **結束碼**(定義在 `node_checks` 層,所有動詞共用;既有呼叫者只看 rc ≠ 0:`platform-ab.sh:184-186,364-366,375-379`、`daily-validation.sh:2068`、`chain1-254.sh:220`;`is-trial` 的 `DIE_RC=2` 不變):
 
@@ -374,7 +376,7 @@ v7.4:本節已併入 v7.2 §12、v7.3 §12.5 與 v7.3 審查的所有決定;§12
 | 11 | 有 `.txn`(`:498`、`:525`) | reason 12 |
 | 12 | p5 不新鮮 / 身分不符 / 沒有新鮮的 stage-1 判定(`:502-505`、`:529`、`:531`) | reason 17 |
 | 13 | 內容、讀回、`BATMAN-VERIFIED` 不符;SUMS 名字不允許(`:601-618`、`:705`) | reason 11 |
-| 14 | 另一個 `batman-slot` 持 flock;config-save 在跑(`:506`);目標分割(major:minor)在 `/boot` 以外被掛著(`write` / `arm` / `bootinfo` 都適用);上一個 helper 的孤兒 worker 還占著 `/tmp/run/batman/update/boot/` | `E_BUSY`(可重試) |
+| 14 | 另一個 `batman-slot` 持 flock;config-save 在跑(`:506`);目標分割(major:minor)在 `/boot` 以外被掛著(`write` / `arm` / `bootinfo` 都適用);上一個 helper 的孤兒 `write` 仍持 flock(新 worker 建 boot 目錄前先試拿鎖,拿不到 → `E_BUSY`) | `E_BUSY`(可重試) |
 | 15 | 開機設定不在 key 8 清單 | reason 5 |
 | 16 | p5 未 seed(`:574`) | reason 2 |
 | 17 | 韌體開錯槽(`:249`、`:539`) | reason 21 |
@@ -385,7 +387,7 @@ reason 21(新)=「節點端現在無法寫入槽」,log 帶 rc;**reason 11 只�
 
 #### 3.7.4 helper:動詞、序列化、狀態
 
-**序列化**:helper 對 `batman-slot` 的所有呼叫(worker 的 `write`、apply 的 `arm`、`disarm`、`bootinfo`)都經過**同一個 mutex `slotMu`**;update-last 與 pending 的所有寫入經過 `updMu`,update-last 以 tmp → fsync → rename → fsync(目錄)寫。health tick 以 TryLock 取 `slotMu`,拿不到就跳過這一輪(不在 `write` 的 600 s 期間阻塞)。
+**序列化**:helper 對 `batman-slot` 的所有呼叫(worker 的 `write`、apply 的 `arm`、`disarm`、`bootinfo`、`precheck-node`;`update.apply` 從 arm 到寫好 `rebooting` 全程持有)都經過**同一個 mutex `slotMu`**;update-last 與 pending 的所有寫入經過 `updMu`,update-last 以 tmp → fsync → rename → fsync(目錄)寫。health tick 以 TryLock 取 `slotMu`,拿不到就跳過這一輪(不在 `write` 的 600 s 期間阻塞)。
 
 **槽資訊快取**:helper 對兩槽跑 `bootinfo`,只在:啟動時、自己的 `write` / `arm` / `disarm` 之後、`update.check` 時(目標槽)、上一次拿到 rc 14(60 s 後重讀,例如前一個 helper 的孤兒 `write` 還持鎖)或輸出壞掉 / rc 18(最多每 10 分鐘重試一次)。**不定期跑**。`bootinfo` 只解析 stdout(`ExecReader` 分開 stdout / stderr);header 每行正好一次、在 `--` 之前、hex 格式對,否則當作讀不到。`bootConfigOK`(`main.go:713-733`,原本每 15 s 在鎖外 ro 掛 p3)改用這份快取,同一個 `sectionOK` 規則;本次開機從沒讀到 → false。
 
@@ -398,7 +400,7 @@ reason 21(新)=「節點端現在無法寫入槽」,log 帶 rc;**reason 11 只�
 
 **update-last**(p6 `/opt/batdata/state/update-last`,root 0600):CBOR `{0: format = 1, sha, from_slot, from_version, to_slot, to_version, apply_boot_id, aclog_off, rebooting}`;未知 format / 壞 → 當作沒有。寫者 = helper(`update.prepare` 寫嘗試紀錄、`update.apply`、`reboot committed` 失敗)。保留到下一次 `update.prepare` 覆寫。
 
-**helper 啟動時**:若 update-last 的 `apply_boot_id` = 本次開機而且 `rebooting` 為 false(arm 可能完成也可能沒有:arm 有自己的 process group,helper 被殺時它照樣跑完) → `batman-slot disarm`(拿鎖,rc 14 → 下一個 tick 重試),disarm 回 0 之後才清掉 `apply_boot_id`(同一次開機不再重複 disarm;disarm 失敗就保留,下一個 tick 再試)。這只對應「helper crash、沒有斷電」;斷電後是新的開機,tryboot 旗標本來就沒了(⚠️ 依 Pi 公開行為推論,未量測)。**界線**:已寫 `rebooting: true` 而 helper 在呼叫 `reboot committed` 之前掛掉 → 旗標保持 arm、沒有重開;下一次任何重開會進試用(擁有者已同意的版本);status 在 pending 有效時報 3(app 可再 apply 觸發重開),pending 到期後報 23。其他情況不 disarm(操作員手動 `apply` 等自己重開時不被取消)。
+**disarm 的 tick 規則**(helper 啟動時與之後每個 tick 都套用):update-last 的 `apply_boot_id` = 本次開機、`rebooting` 為 false、而且 `slotMu` 沒有被 `update.apply` 持有 → `batman-slot disarm`;回 0 之後才清掉 `apply_boot_id`,回 14 → 下一個 tick 再試。涵蓋:helper 在 apply 中 crash(沒斷電)、arm 失敗後 disarm 回 14。`update.apply` 從 arm 到寫好 `rebooting` 全程持 `slotMu` → tick 不會在中間取消擁有者的 apply。操作員手動 `apply`(沒有 `apply_boot_id`)不受影響。斷電後是新的開機,tryboot 旗標本來就沒了(⚠️ 依 Pi 公開行為推論,未量測)。**界線**:已寫 `rebooting: true` 而 helper 在呼叫 `reboot committed` 之前掛掉 → 旗標保持 arm、沒有重開;下一次任何重開會進試用(擁有者已同意的版本);status 在 pending 有效時報 3(app 可再 apply 觸發重開),pending 到期後報 23。
 
 **判讀**(`update.status` 只讀快取;依序取**第一個**成立的;每個 phase 都帶 `4: sha`、`5: to_version`,取自 pending 或 update-last):
 
@@ -426,7 +428,7 @@ reason 21(新)=「節點端現在無法寫入槽」,log 帶 rc;**reason 11 只�
 
 #### 3.7.5 worker:驗證、寫入(不 arm)
 
-1. 以 `O_RDONLY|O_NOFOLLOW|O_NONBLOCK` 開上傳檔(`O_NONBLOCK` 防 FIFO 卡住);fstat:regular、link count 1、uid 471、大小 = key 3;通過後清掉 `O_NONBLOCK`,**立刻 `unlinkat(dirfd, "payload")`**,接著 `fchown(fd, 0, 0)`、`fchmod(fd, 0400)`(provd 的 jail 沒有 `/proc`,`batman-provd.init:19`;權限改掉是第二道),再 `fcntl(fd, F_SETLEASE, F_RDLCK)`:kernel 只在**沒有任何寫入 fd / 可寫共享 mmap** 時給讀取租約(kernel 6.6 `fs/locks.c:1695-1696`;tmpfs 走 `generic_setlease`,`:1957-1960`)→ `EAGAIN` = 還有人開著它準備寫(被入侵的 provd 保留 fd,或 PUT 還沒關檔)→ reason 15(上傳檔已 unlink,app 重傳),**目標槽沒動**;拿到租約後再 fstat(regular、link count 0、大小 = key 3)。租約持有到第二遍結束(拿到之後非 root 不可能再出現寫者:inode 是 root 0400,權限檢查在 `break_lease` 之前,`fs/open.c:920`;不另外處理 SIGIO,Go 預設忽略)。provd 的 PUT 必須在回 200 **之前**關檔。之後只用這個 fd。上傳窗與 `updating` 旗標在 `update.prepare` 回應前就處理好(§3.1-5);步驟 1 任何檢查失敗(含租約拿不到)→ reason 15。⚠️ NEEDS-NODE:`/proc/sys/fs/leases-enable` = 1(預設)。
+1. 以 `O_RDONLY|O_NOFOLLOW|O_NONBLOCK` 開上傳檔(`O_NONBLOCK` 防 FIFO 卡住);fstat:regular、link count 1、uid 471、大小 = key 3;通過後清掉 `O_NONBLOCK`,**立刻 `unlinkat(dirfd, "payload")`**,接著 `fchown(fd, 0, 0)`、`fchmod(fd, 0400)`(provd 的 jail 沒有 `/proc`,`batman-provd.init:19`;權限改掉是第二道),再 `fcntl(fd, F_SETLEASE, F_RDLCK)`:kernel 只在**沒有任何寫入 fd / 可寫共享 mmap** 時給讀取租約(kernel 6.6 `fs/locks.c:1695-1696`;tmpfs 走 `generic_setlease`,`:1957-1960`)→ `EAGAIN` = 還有人開著它準備寫(被入侵的 provd 保留 fd,或 PUT 還沒關檔)→ reason 15(上傳檔已 unlink,app 重傳),**目標槽沒動**;拿到租約後再 fstat(regular、link count 0、大小 = key 3)。租約持有到第二遍結束(拿到之後非 root 不可能再出現寫者:inode 是 root 0400,權限檢查在 `break_lease` 之前,`fs/open.c:920`;不另外處理 SIGIO,Go 預設忽略)。provd 的 PUT 必須在回 200 **之前**關檔。之後只用這個 fd。上傳窗與 `updating` 旗標在 `update.prepare` 回應前就處理好(§3.1-5);步驟 1 任何檢查失敗 → reason 15;租約拿不到:`EAGAIN` 第一次 → 15(app 重傳),同一份 sha 第二次 → 21(避免被入侵的 provd 讓 app 無限重傳);`EINVAL`(`leases-enable` = 0)→ 21。⚠️ NEEDS-NODE:`/proc/sys/fs/leases-enable` = 1(預設)。
 2. **Go `compress/gzip`(`Multistream(false)`)+ `archive/tar` 白名單解析**(不呼叫 busybox tar;root 不在驗證前解析外來的 tar,F47):第 1 個成員必須是 `SHA256SUMS`(≤ 256 KiB)、第 2 個 `metadata`(≤ 64 KiB),都是 `TypeReg`;sha256(`SHA256SUMS`)= key 4,否則 reason 11、停。`SHA256SUMS` 每一列照 §3.7.3 的名字規則檢查。
 3. `metadata` 的 `board=` = S key 2 = `BATMAN_BOARD`;`release=` = S key 1。
 4. 之後的成員:`TypeDir` 只允許 `boot/`、`boot/overlays/`(忽略 mode / owner,不在檔案系統建立);其他成員必須是 `TypeReg`(PAX global、GNU sparse 等一律拒絕),名字列在 `SHA256SUMS` 且符合 §3.7.3 的複製集合,或是最後的 `root.squashfs`(tar header 大小 = `metadata size=` 且 ≤ 目標槽大小)。`root.squashfs` 之後 `Next()` 必須是 `io.EOF`,gzip 串流之後不得有尾端資料;成員數 ≤ SUMS 列數 + 4;解壓總量 ≤ 256 KiB + 64 KiB + key 9 + 目標槽大小 + 1 MiB。重複、link、目錄穿越、沒列名、超量 → reason 11、停。boot 成員累計 ≤ key 9,以 `O_CREAT|O_EXCL|O_NOFOLLOW` 寫進 helper 新建的 0700 目錄 `/tmp/run/batman/update/boot/`;驗過的 `SHA256SUMS`、`metadata` 也寫在 `/tmp/run/batman/update/`(`batman-slot` 的 precheck 會讀,`:609-627`)。
@@ -441,7 +443,7 @@ reason 21(新)=「節點端現在無法寫入槽」,log 帶 rc;**reason 11 只�
 #### 3.7.6 autocommit(D6、D16)
 
 - **BLE 無線電**(`batman-autocommit:506-511`):health 行的 `boot_id` = 本次開機、`ts`(uptime)距今 ≤ 60 s,否則視同不健康;**仍只 WARN**(P-U5)。
-- **`.busy`**:改用 §3.7.3 的持有者規則(`:226`)。
+- **寫入中**:`:226` 的 `.busy` 與 `slot_writer_alive`(也被 `:213` 的認領接手使用)改用 §3.7.3 的 flock 共享鎖試拿。
 - **新:`health_ok` 加兩項(會讓試用退回)**:
   - (a) helper 的 procd instance 在跑(`ubus call service list` 的 `batman-provhelper` running);helper 被操作員停用 → 只 WARN(D-16)。
   - (b) **provd 本次開機至少一次連續穩定 ≥ 60 s**:helper 看到 **provd 行程的任一條連線**連續存在 60 s 時寫 `$RUNDIR/provd-stable`(root,內容 = boot_id);autocommit 讀它,boot_id = 本次開機才算。**辨識 provd**(F11:procd 的 instance pid 是 ujail,provd 是它的子行程):sock 層保留 SO_PEERCRED 的 pid 與 uid 並傳給 handler 工廠(現在 `sock.peerUID` 丟掉 pid,`sock/sock.go:178-194`;只改 Go 內部介面);peer pid 的 `PPid` = `ubus call service list` 的 `batman-provd` instance pid,**且** uid = 471,**且** `readlink /proc/<pid>/exe` = `/usr/bin/batman-provd`。04 實測:provd pid 8072、`PPid` 8041 = ujail、uid 471。
@@ -484,7 +486,7 @@ reason 21(新)=「節點端現在無法寫入槽」,log 帶 rc;**reason 11 只�
 - **每個 PUT 從頭寫**:`O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW`,不續傳。手機斷 Wi-Fi / 上傳中斷 → provd 關檔;prepare 會發現大小不符(reason 15);app 重新 PUT。
 - **寫入位置**:`/tmp/run/batman-provd-bulk/payload`。專屬 tmpfs,由 init(root)在啟動 jail 前掛上:`nodev,nosuid,noexec,mode=0700,nr_inodes=16`、provd:provd、`size=` = **2 × 本板當次 build 的 payload 大小**(bcm2711 = 2 × 126,309,765 B ≈ 241 MiB;實際限制交給 RAM 預算);**`batman-provd.init` 與 `batman-provd-test.init` 兩個檔都加**(Makefile 依 `BATMAN_PROV_TEST` 二選一安裝);init 先檢查是否已掛載(不疊掛)、路徑 lstat、非 symlink;掛不上 → 不開上傳(D-15),**而且不把它 rw 掛進 jail**(否則 `/tmp` 上的普通目錄會讓被入侵的 provd 塞滿 `/tmp`);掛上了才 rw 掛進 jail(provd 唯一的 rw 掛載)。被入侵的 provd 開著 fd 時刪除不會釋放空間 → 最多佔到 `size=`(A6-m2)→ 誠實界線;3A+ 與 2 GB TAK 節點列 checklist。
 - **上傳完成**:provd 收完、**關檔**後才回 HTTP 200;app 接著 `update/prepare`(BLE,或手機已有的 HTTP session)。
-- **刪除上傳檔的唯一負責者 = helper**,規則只有一條:每個 poll 週期,沒有窗且沒有 worker → 刪;helper 啟動時刪;worker 開檔驗完後立刻 unlink(§3.7.5-1)。prepare 被拒時**不**刪、窗保持開著(app 直接重 PUT,PUT 本來就從頭寫)。窗關前就在跑的 PUT(poll 延遲 ≤ 4 s)若在 worker 期間寫完,那個新檔在 worker 結束後依同一條規則刪;tmpfs `size=` = 2 × payload 已涵蓋。
+- **刪除上傳檔的唯一負責者 = helper**,規則只有一條:helper 每 4 s 的背景 tick(不依賴 provd 的 poll),沒有窗且沒有 worker → 刪;helper 啟動時刪;worker 開檔驗完後立刻 unlink(§3.7.5-1)。prepare 被拒時**不**刪、窗保持開著(app 直接重 PUT,PUT 本來就從頭寫)。窗關前就在跑的 PUT(poll 延遲 ≤ 4 s)若在 worker 期間寫完,那個新檔在 worker 結束後依同一條規則刪;tmpfs `size=` = 2 × payload 已涵蓋。
 - **poll 的 `http` 欄位**(helper → provd,§2):既有 `2` = bind 位址、`5` = 上傳大小;新增 `6` = 上傳 bearer(16 bytes)、`7` = 窗到期(uptime 秒)、`8` = worker 在跑。provd → helper(poll 請求)新增:已收 bytes(phase 1 百分比)、bind 失敗。缺欄位 = 沒有窗、不收 PUT(fail-closed)。只用 `unlinkat(dirfd, "payload")`;目錄裡其他名字以 dirfd + `O_NOFOLLOW` 列舉後 `unlinkat`,不用 `RemoveAll`、不跟隨 symlink。helper 在上傳中重啟 → 窗消失、檔被刪 → fail-closed,擁有者重開窗再傳。
 
 ### 3.9 轉賣工具
@@ -535,14 +537,14 @@ reason 21(新)=「節點端現在無法寫入槽」,log 帶 rc;**reason 11 只�
 | 槽第一次開機時的 `distroconfig.txt` | `92-batman-ramoops-fix`(uci-defaults,helper 啟動前、鎖外,`:19-40`) | key 8 清單要列改前與改後 |
 | 上傳 bearer | helper(`bulk.open` 產生),經 poll 交給 provd | provd 比對 |
 | pending | helper(`updMu`) | — |
-| `release-root.pub`、`release-min-serial` | firmware `stamp-batman-build.sh` 依通道放(§3.7.2);gate = `check-release-key-gate.sh`(`build-board.sh`、`build-firmware.yml`;發布點 `--publish`) | helper |
+| `release-root.pub`、`release-min-serial` | firmware `stamp-batman-build.sh` 依 build 種類放(§3.7.2:`rel` = R、bench = T、一般 DEV = 不放);gate = `check-release-key-gate.sh`(`build-board.sh`、`build-firmware.yml`) | helper |
 | provd ↔ helper 的 ctl / ro / ops 連線 | provd 開 | helper 限速 |
 
 **清理表**:
 
 | 東西 | 正常結束 | 失敗 / 到期 | helper 重啟 | provd 重啟 | 開機 |
 |---|---|---|---|---|---|
-| 上傳檔 | worker 開檔驗完立刻 unlink | helper 每個 poll 週期:沒有窗且沒有 worker → 刪(prepare 被拒不刪) | 啟動時刪 | 不刪(helper 是唯一刪除者;init 不疊掛) | tmpfs 消失 |
+| 上傳檔 | worker 開檔驗完立刻 unlink | helper 每 4 s tick:沒有窗且沒有 worker → 刪(prepare 被拒不刪) | 啟動時刪 | 不刪(helper 是唯一刪除者;init 不疊掛) | tmpfs 消失 |
 | 解出的 boot 檔 | worker 刪 | worker 刪 | 啟動時刪(`batman-slot.lock` 持有者活著就不刪) | — | tmpfs 消失 |
 | pending | 被下一個 check 覆寫或到期 | 到期(uptime 30 分) | 讀回(同 boot_id 才有效) | — | 消失 |
 | diag bundle | 10 分鐘到期 | 同 | 啟動時清空 | 不影響(純到期) | 消失 |
@@ -643,7 +645,9 @@ reason 21(新)=「節點端現在無法寫入槽」,log 帶 rc;**reason 11 只�
 | 同時 ssh sysupgrade | — | app `write` 在跑時 stage 1 rc 14 拒絕;`-F` 照舊可強制(§3.7.3) | `prov-update-254` |
 | p6 壞 / 滿 / 唯讀 | — | update-last 寫不進 → prepare / apply 回 `E_STORAGE`,不寫槽、不 arm;status 讀不到 update-last → 0 | `prov-update-254` |
 | 非 helper 的 `batman-slot` 被殺、留下掛載 | — | 之後的寫入 rc 14,直到操作員卸載或重開(helper 的呼叫在自己的 mount namespace,不會留下) | 誠實界線 |
-| DEV → PROD 換信任 | — | 只能用 T 簽、內建 R 的過渡版,或 ssh / 重燒(§12.5.10) | #255 |
+| 子程序卡在 D 狀態(SD 卡壞) | — | 鎖跟著 `dd` 留到重開;之後的寫入 rc 14、`otaBusy` 為忙 | 誠實界線 |
+| ssh sysupgrade(stage 2 在 ramfs) | — | `RAMFS_COPY_BIN` 帶 flock,`stage-root` / `apply` 照常拿鎖 | sysupgrade 臂 |
+| DEV → PROD 換信任 | — | bench 節點:T 簽、內建 R 的過渡版(`release-sign.sh --test-key`),或 ssh / 重燒;一般 DEV 節點(沒有鑰匙):只能 ssh / 重燒(§3.7.2) | #255 |
 | 斷電 | — | prepare 中:槽 BAD、仍跑舊槽;apply 後:tryboot 一次性 | `prov-update-254` 斷電臂 |
 | 換 IP(改名 / openmanetd) | — | helper 給新的 `http.2`,下一次 poll provd 換 bind | ⚠️ 待 U5 |
 | 依賴重啟:bluetoothd / dbus | P2 | 不變;BLE 不健康 5 分鐘 → HTTP 備援開 | `prov-http-254` |
@@ -670,15 +674,15 @@ reason 21(新)=「節點端現在無法寫入槽」,log 帶 rc;**reason 11 只�
 | 被入侵的 provd | 改 payload、塞沒列名的 boot 檔、tar 穿越 | Go 白名單解析、先驗簽、只寫列名的檔、讀回以 helper 的 `SHA256SUMS` 為準 | `prov-update-254` 惡意 tar 臂 |
 | 被入侵的 provd | 保留寫入 fd,在 worker 兩遍之間改內容,讓 `begin_write` 毀掉退路 | unlink 後 `F_SETLEASE F_RDLCK`:有寫入 fd 就拿不到 → reason 21、目標槽沒動(§3.7.5-1) | `prov-update-254` 保留 fd 臂 |
 | 其他 mount namespace 的 root(特權容器) | 掛著目標 FAT,major:minor 檢查看不到 | 只有 root 做得到;同一 superblock 快取一致,另起 superblock 時讀回失敗 → fail-closed | 誠實界線 |
-| 供應鏈 / 我們自己的錯 | 用 `wsl` / `ci` 發公開 release(內建公開的 T) | 發布點 `--publish` 只收 `rel`;R 產生前不發公開 release(使用者 2026-11-11) | workflow lint + gate 測試 |
-| 被入侵的 provd | 佔 RAM | 專屬 tmpfs `size=` 上限;窗外 helper 每個 poll 週期刪檔;3A+ 與 2 GB TAK 節點列 checklist | `prov-upload-254` |
+| 供應鏈 / 我們自己的錯 | 公開發布了開發版 | 一般 `wsl` / `ci` image 不含根鑰匙 → 不能經 app 更新;bench build(含 T)不得公開發布:stamp 有 `BATMAN_BENCH_TRUST=T`、`release-sign.sh` 拒簽、gate 要求 bench build 才能放 T —— 有人手動把 bench image 公開仍擋不住 → 誠實界線 | gate 負測試 |
+| 被入侵的 provd | 佔 RAM | 專屬 tmpfs `size=` 上限;窗外 helper 每 4 s 刪檔;3A+ 與 2 GB TAK 節點列 checklist | `prov-upload-254` |
 | 被入侵的 provd | 偷換 pending 版本 | prepare / apply body 帶 sha,由 owner-op 綁擁有者同意的版本 | Go |
 | 被入侵的 provd | 自己聽 HTTP | 本來就能(無 netns,> 1024 埠);沒有 PSK 解不開 session、拿不到 owner-op;8095 仍只收從手機 AP port 進來的封包(其他埠不在本規則範圍) | 誠實界線 |
 | 本機非 root | 讀 AP 密碼 | `/etc/config/wireless`、hostapd conf 0644(F34,與現況相同) | 誠實界線 |
 | 本機非 root | 從 cmdline 或 log 讀 AP 密碼 | passphrase 走 stdin(`--ap -`);不進 log | `prov-settings-254`(`/proc/*/cmdline`、logread、helper / provd log、診斷包都不含) |
 | 本機行程(lo)、eth0 / docker0 的 VLAN 封裝 frame | 佔掉 HTTP 的 2 槽 | inet input 只收 `iifname br-ahwlan` 且帶「手機 AP port」標記的封包(F75、F76;有 CAP_NET_RAW 的行程可設 `SO_MARK`,所以加 iifname,§12.5.11) | `prov-http-254` 的 lo / `SO_MARK` / VLAN 臂 |
 | 本機非特權行程 | 先佔住 8095 | provd bind 失敗經 `status` 回報;只造成 DoS(Noise 擋冒充) | 誠實界線 + `prov-http-254` |
-| 下載來源被換掉(DEV) | 擁有者同意一份 T 簽的惡意 image | T 公開:DEV 的信任根 = app 拿 payload 的來源;DEV 只用於 bench(§12.5.10) | 誠實界線 |
+| 下載來源被換掉(bench) | 擁有者同意一份 T 簽的惡意 image | T 公開:bench 節點的信任根 = app 拿 payload 的來源;bench build 只用於 02 / 04 這類 bench 節點;一般 DEV 節點不含鑰匙 | 誠實界線 |
 | 實體奪取 | 換 rootfs 上的 `release-root.pub` | 沒有 secure boot 前擋不住 | 誠實界線 |
 | 本機非 root | 搶建 `/tmp/run/batman-provd-bulk` | `/tmp/run` 只有 root 能建(F33);init 建前檢查 owner / 非 symlink / 是否已掛載 | tmp-trust allowlist + 測試 |
 | 實體奪取(SD 卡) | 從 p5 讀 AP 密碼 → 連 AP → mesh LAN | p5 不加密(既有);AP key 早已在 PRESERVE,P3 加 SSID — **D14 是使用者決定的例外**(「秘密不進 p5」規則下明列);換卡後擁有者換密碼 | 誠實界線 |
@@ -741,18 +745,19 @@ Go:§3.2 邊界、§3.6、§3.7 每個拒絕分支(mutant)、tar 白名單、版
 
 - `219-protocol.md`:`:218` 拿掉「階段 1 不實作」;§4.2:PSK-only、什麼時候聽、`/msg` 多塊取回、上傳端點、**回應遺失 = session 中止(不做冪等快取)**;`:155`、`:212` 的 bulk「一次性 PSK」改為現行 AP 密碼;`:447` 改為輪替 `adv_owner_key`;`:210` 與 field-provisioning `:474` 對齊 D10;§5.2 `E_REJECTED` 改為「被拒(附原因)」不限更新。
 - firmware(另一個 repo、另一個 PR):`scripts/stamp-batman-build.sh`(依通道放鑰匙檔、通道白名單)、`scripts/check-release-key-gate.sh`(新)、`build-board.sh` 第 7 步與 `.github/workflows/build-firmware.yml` 呼叫它、`.gitignore`。
-- harness(#290,先進 main):`tests/keys/README.md` 與 `tests/tools/peer/signrel.py:4` 的「T 只給 prov_test」改為 DEV + prov_test;鎖外掛 boot FAT 的腳本改在鎖內或用 `bootinfo`。
+- harness(#290,先進 main):`tests/keys/README.md` 與 `tests/tools/peer/signrel.py:4` 的「T 只給 prov_test」改為 DEV + prov_test;鎖外掛 boot FAT 的腳本改在鎖內或用 `bootinfo`;讀 `.busy` 或依 rc 1 判斷的測試改成 flock / rc 14(`daily-validation.sh:2067`、`setkey-persists-202.sh:65`、`p5-follows-202.sh:121`、`negctl-old-slot-254.sh:29`;Go `wtxn_v10b_test.go:59`、`p3review_test.go:147`)。
 - `219-protocol.cddl`:reason-code 11–23;`update-manifest` key 5(= CBOR `[E, S]`)、key 6 語意、S 的 key 7–9;`update/prepare`、`update/apply` 的 key 1 = sha(由 owner-op 的 `args_hash` 綁定);`status-resp` key 2–4 改選填;settings key 20;`bulk-open-resp` key 2 的註解;`update-phase` 2 的名稱;冪等欄位(`idem-type`、各請求的 `? 7`)註記「保留、P3 不使用(provd 回 `E_UNSUPPORTED{idem}`)」。
 - `219-field-provisioning.md` §6.9:暫時 AP 改為「經這台節點的手機 AP」;B18 寫入兩層鑰匙。
 - `254-stage1-impl.md`:§10.6 / §10.7(D3);`:171`(bundle 用 handle 分頁);`:357` `E_STATE` → `E_BUSY`。
 - `254-p1-impl.md`:`:465`(admins +1 刪)、`:466`(未知 key 忽略)。
 - `docs/VERSIONS.md`:版本比較規則。
 - 新 `docs/`:說明頁文字(§3.10);release note(`/cgi-bin/bundle` 403、P3 之前的 payload 不能經 app 裝)。
-- 檔案:`halow-setkey`(新旗標 + 說明 + deploy 鏡像);`batman-slot`(`write`(含 `clear_root`)、`arm`、`disarm`、`bootinfo`、複製集合與名字規則、`begin_write` 刪 VERIFIED、`flock` 鎖(取代 mkdir 鎖與 `.busy`)、TERM trap、結束碼表、`tboot_open` 只重用 `/boot`、別處掛著 → rc 14);`batman-autocommit`(以 `flock -n` 判斷寫入中,`:79-86`、`:226`);Go(`otaBusy` 改用 `flock` 試拿 `node/wtxn.go:450-454`、`provstore.ExecReader`、`sock` 的 peer pid、worker 的租約);`scripts/release-root.fpr`(#255 產生);Batman `scripts/check-release-key-gate.sh`、`scripts/publish-release.sh`、`.github/workflows/release-guard.yml`;`batman-config-save`(PRESERVE 加 ssid;ssid 不可存時略過);`joinwatch` / `halow-status`(`verdict_code()`、`join.reason_code`,含 deploy 鏡像);`batman-autocommit`(新鮮度、helper、provd-stable、provd 停用時 WARN);`www/cgi-bin/bundle`(+ deploy 鏡像);`/usr/share/nftables.d/ruleset-post/batman-http.nft`(新,兩張表先刪再建);`batman-provd.init`(tmpfs、rw mount、不疊掛);`build-ab-payload.sh`(順序、`release=`);`release-sign.sh`、`release-endorse.sh`(新);`transfer-flash.ps1` / `.sh`(新,含 `--test-skip-wipe`);tmp-trust allowlist 的新路徑照 #290 走 harness PR。
+- 檔案:`halow-setkey`(新旗標 + 說明 + deploy 鏡像);`batman-slot`(`write`(含 `clear_root`)、`arm`、`disarm`、`bootinfo`、複製集合與名字規則、`begin_write` 刪 VERIFIED、`flock` 鎖(取代 mkdir 鎖與 `.busy`)、TERM trap、結束碼表、`tboot_open` 只重用 `/boot`、別處掛著 → rc 14);`batman-autocommit`(以 `flock -n` 判斷寫入中,`:79-86`、`:226`);Go(`otaBusy` 改用 `flock` 試拿 `node/wtxn.go:450-454`、`provstore.ExecReader`、`sock` 的 peer pid、worker 的租約);`scripts/release-root.fpr`(#255 產生);Batman `scripts/check-release-key-gate.sh`;firmware `RAMFS_COPY_BIN` 加 `/usr/bin/flock`(`platform-ab.sh:38`)、stamp 的 `BATMAN_BENCH_TRUST`;`batman-config-save`(PRESERVE 加 ssid;ssid 不可存時略過);`joinwatch` / `halow-status`(`verdict_code()`、`join.reason_code`,含 deploy 鏡像);`batman-autocommit`(新鮮度、helper、provd-stable、provd 停用時 WARN);`www/cgi-bin/bundle`(+ deploy 鏡像);`/usr/share/nftables.d/ruleset-post/batman-http.nft`(新,兩張表先刪再建);`batman-provd.init`(tmpfs、rw mount、不疊掛);`build-ab-payload.sh`(順序、`release=`);`release-sign.sh`、`release-endorse.sh`(新);`transfer-flash.ps1` / `.sh`(新,含 `--test-skip-wipe`);tmp-trust allowlist 的新路徑照 #290 走 harness PR。
 - firmware:`flash.js` 文字 patch;**不加** `kmod-nft-bridge`(F60)。
 
 ## 11. 寫進 #254 checklist(不在本 PR)
 
+- 既有問題:joinwatch 的 3600 s 自動重開不看 slot 寫入(`joinwatch:171-196`);app 的 `write` 中被它重開 → 槽 BAD、status 22(fail-closed,但退路沒了)(A13-m10)。
 - 既有問題:`slot_is_bad` 在目標 boot 分割掛不上時回「不是 BAD」(`batman-slot:364-369`),rollback 會照做(B10-m14)。
 
 `status` team(`dac_pub_hash`、最後看到時間);EMCON(手機 AP 平常關 / 功率;刻意關 BLE 時也要關 HTTP 備援);autocommit BLE 無線電擋 commit(#305 後);CM4 eMMC 的轉賣 / 遺失手機重燒路徑(量產前,D18);未簽章更新路徑(ssh / LuCI / openmanetd local upgrade、`PerformFactoryReset`)要不要收;app 端的靜默模式;整個網路一起改國家(D9);3A+ 上 bulk tmpfs 的常駐佔用;P3 之前建的 payload 不能經 app 裝;5 GHz 手機 AP 的國家合規。
@@ -792,7 +797,7 @@ Go:§3.2 邊界、§3.6、§3.7 每個拒絕分支(mutant)、tar 白名單、版
 3. **provd 行程辨識需要 peer pid**:`sock.peerUID` 只取 uid、丟掉 pid(`sock/sock.go:178-194`),handler 工廠拿不到連線資訊(`main.go:663`)。**做法**:sock 層保留 SO_PEERCRED 的 pid 與 uid,傳給 handler 工廠;§3.7.6(b) 照原設計用 pid 判斷。只改 Go 內部介面,不改協定。04 實測 F11 成立:provd pid 8072、`PPid` 8041 = ujail(procd instance pid)、uid 471、`exe=/usr/bin/batman-provd`。
 4. **board 字串比哪個**:payload `metadata` 是 `board=ekh-bcm2711`(`build-ab-payload.sh:69`),provd 的 `Config.Board` 去掉了 `ekh-`(`cmd/batman-provd/main.go:81`)。**做法**:S key 2 與 `metadata board=` 都和 `/etc/batman-build` 的 `BATMAN_BOARD`(全串,例 `ekh-bcm2711`)比;provd 的短字串只用於顯示。
 5. **信任哪把根鑰匙**(使用者 2026-11-11 決定:先用測試根鑰匙 T):
-   - DEV 通道(`BATMAN_CHANNEL=wsl`)的 image 內建 `release-root.pub` = **T**(`tests/keys/T.pub`),`release-min-serial` = 1;wbox / prov_test image 同樣信任 T(原設計)。
+   - **v7.8 取代**:只有 bench build(`BATMAN_BENCH_TRUST=T`)內建 T;一般 DEV image 不放鑰匙(§3.7.2)。
    - 正式根鑰匙 R 與 YubiKey(§3.7.1、§9-2)在正式版(#255)時產生、實測;**release gate**:見 §3.7.2(v7.5 起:`rel` 正向釘 R 指紋;`wsl` / `ci` 信任 T、不能發布)。
    - 因此 §8 `prov-update-254` 的「T 簽 → 試用 → commit → phase 5」用一般 DEV image(會 commit);wbox image 永不 commit(`batman-autocommit:489-494`、`batman-slot:800-805`)不能當目標。
    - **界線**:DEV image 信任的是公開的 T,任何人都能簽出 DEV image 能裝的 payload —— DEV 只在 bench / 開發用,與 dev-trust app 同一條界線。
@@ -821,7 +826,7 @@ reason-code 11–20 已加(`219-protocol.cddl:132-143`);仍要改:`update-manife
 
 ### 12.5 審查修正索引與負對照(v7.3、v7.4;A8 / B8 = v7.2 審查、A9 / B9 = v7.3 審查)
 
-v7.3 的修正(§12.5.1–12.5.15)與 v7.3、v7.4 審查的修正都已**直接寫進 §3.7 / §3.8**(v7.4 審查的回應見附錄 G、v7.5 審查見附錄 H);實作只看 §3。本節保留編號作為索引,加上負對照表。
+v7.3 的修正(§12.5.1–12.5.15)與 v7.3、v7.4 審查的修正都已**直接寫進 §3.7 / §3.8**(v7.4 審查的回應見附錄 G、v7.5 審查見附錄 H、v7.7 審查見附錄 J);實作只看 §3。本節保留編號作為索引,加上負對照表。
 
 | 原編號 | 內容 | 現在在哪 |
 |---|---|---|
@@ -862,7 +867,7 @@ v7.3 的修正(§12.5.1–12.5.15)與 v7.3、v7.4 審查的修正都已**直接�
 | `bulk.open` sha | 錯的 sha → 15 | 不比對 |
 | 版本規則 | 相等重裝、`+meta` 不同、跨通道同 REL(沒有 / 有 key 6)、降級(沒有 / 有 key 6) | 拿掉跨通道規則 |
 | gate | `rel` + T → FAIL;`rel` 無釘選 → FAIL;`wsl` 放別把 → FAIL | 只檢查「不含 T」 |
-| `release-sign.sh` | 對 wbox / dirty / `wsl` / `ci` / 未知通道的 payload、`rel` 但內建 T → 拒簽 | 拿掉檢查 |
+| `release-sign.sh` | 對 wbox / dirty / bench(`BATMAN_BENCH_TRUST`)/ `wsl` / `ci` / 未知通道的 payload、`rel` 但內建 T → 拒簽 | 拿掉檢查 |
 | 鑰匙檔 | 缺、多行、壞點、min-serial 0 → reason 21 | 預設 min-serial 0 |
 | iifname | root 開 `SO_MARK=0x01000000` 的 socket 連 8095 → 丟 | 只有 mark 的規則 |
 | 8095 搶占 | 一般使用者先佔 8095 → `status` 報 `http_bind_failed` | 不回報 |
@@ -872,7 +877,13 @@ v7.3 的修正(§12.5.1–12.5.15)與 v7.3、v7.4 審查的修正都已**直接�
 | tmpfs | provd 建第 17 個 inode → ENOSPC;`payload` 換成指向 `/etc/shadow` 的 symlink → helper 刪的是 symlink 本身 | 沒有 `nr_inodes`;`RemoveAll` |
 | tar | 每一包惡意 tar(型別、尾端成員、尾端 gzip、成員數、總量) | 拿掉該項檢查 |
 | 串流 | worker 期間 helper RSS 不隨 payload 大小成長 | 用 `[]byte` 的 `Exec` → 長約 111 MiB |
-| 同時 sysupgrade | `write-hang` 中跑 sysupgrade → stage 1 拒絕 | 拿掉 `.busy` 檢查 |
+| 同時 sysupgrade | `write-hang` 中跑 sysupgrade → stage 1 拿不到 flock → 拒絕 | 拿掉鎖檢查 |
+| ramfs 有 flock | ssh sysupgrade 走完 stage 2(`stage-root` + `apply` 在 ramfs 裡拿得到 flock) | `RAMFS_COPY_BIN` 沒有 flock → stage 2 rc 18、重開回舊槽 |
+| 背景子程序不帶鎖 | `commit` 回來後立刻另一個 `batman-slot` 拿得到鎖 | `addr_defer_release` 沒有 `9>&-` → rc 14 |
+| 讀者用共享鎖 | 讀者每 10 ms 試拿,同時寫者 200 次 → 0 次 rc 14 | 讀者用排他鎖、寫者不重試 |
+| 一般 DEV image 沒有鑰匙 | 一般 `wsl` image 的 `update.check` → reason 21;bench build → 通過 | 一般 DEV 也放 T |
+| disarm tick | arm 失敗後 disarm 回 14 → 下一個 tick 成功並清 `apply_boot_id` | 只在啟動時重試 |
+| 租約重複失敗 | 同一份 sha 第二次 `EAGAIN` → 21 | 一律 15 |
 | sock peer pid | `provd-id-pid`(既有) | — |
 | board 全串 | S key 2 = `bcm2711` → reason 3;`metadata board=` ≠ S → 11 | 用 provd 短字串比 |
 | 格式契約 | `signrel.py` 正向物件 Go 接受;`--bad-sig`、`--wrong-board`、`--unparsable-version`、`--mismatch-size`、`--key other` Go 都拒絕 | 拿掉 Go 任一檢查 |
@@ -889,9 +900,8 @@ v7.3 的修正(§12.5.1–12.5.15)與 v7.3、v7.4 審查的修正都已**直接�
 | `rebooting` 寫不進 | p6 唯讀 → apply 回 `E_STORAGE`、tryboot 旗標 0、不重開 | 照樣重開 |
 | 第一遍中移除擁有者 | 第一遍中 `owner/remove` → status 0、目標槽沒有 BAD | 一律報 22 |
 | tmpfs 沒掛上 | init 掛載失敗 → jail 裡沒有 rw 的 bulk 目錄 | 照樣 rw 掛普通目錄 |
-| 讀取租約 | uid 471 行程持有 `O_RDWR` fd → prepare → reason 21、目標槽沒有 BAD;fd 在 prepare 前關掉 → 正常完成 | 拿掉租約 → 翻 1 byte → 目標槽 BAD(0 + 22) |
+| 讀取租約 | uid 471 行程持有 `O_RDWR` fd → prepare → reason 15、目標槽沒有 BAD;fd 在 prepare 前關掉 → 正常完成 | 拿掉租約 → 翻 1 byte → 目標槽 BAD(0 + 22) |
 | `write` 清 overlay | v2 退回後重裝同一份 v2 → 第二次試用的 overlay 是新的 | `write` 不做 `clear_root` → 標記檔還在 |
-| 發布點 | `--publish` + `wsl` / `ci` / 未知通道 → FAIL;guard 對含 `wsl` image 的 release → 改回 draft;`release` / `publish-packages` 沒有 `needs` gate → lint FAIL | 只在 build 時檢查 |
 | arm 失敗後 | arm 失敗 → 操作員手動 apply → 重啟 helper → tryboot 旗標仍是 1 | 不清 `apply_boot_id` |
 | `rebooting` 時機 | arm 成功後、回應前被重開且試用 panic → 6 + 18 | 回應後 2 s 才寫 → 23 |
 | bearer 格式 | 窗開、bearer 缺 → 空 header PUT 被拒 | 空字串進 constant-time 比對 |
@@ -908,9 +918,9 @@ v7.3 的修正(§12.5.1–12.5.15)與 v7.3、v7.4 審查的修正都已**直接�
 
 #### 12.5.18 使用者決定(2026-11-11)
 
-1. DEV(`wsl`)信任公開的 T —— 照預設,不改用 R_dev(B8-m1)。
-2. `ci` 與 `wsl` 相同:信任 T、永不出貨(B9-m9a)。
-3. R 產生之前不發任何公開 release;發布點以 `check-release-key-gate.sh --publish` 擋(§3.7.2,B11-MAJOR-2)。
+1. 只有 bench build(`BATMAN_BENCH_TRUST=T`,給 02 / 04)信任公開的 T;一般 `wsl` image 不放鑰匙(2026-11-11 選 A,取代「DEV 信任 T」);不改用 R_dev。
+2. `ci` 與一般 `wsl` 相同:不放鑰匙。
+3. 公開發布不另設檢查(選 A 後取代「R 產生前不發公開 release」):一般開發版不含鑰匙,公開了也不能經 app 更新。
 
 ## 附錄 A. v4 審查回應(A4 = `p3-review-v4-A.md`、B4 = `p3-review-v4-B.md`)
 
@@ -1185,3 +1195,28 @@ v5 的三個「真機上不成立」都是沒實測的外部行為假設;v6 每�
 | B12-m4 過渡版繞過拒簽檢查 | §3.7.2:`release-sign.sh --test-key`,檢查照跑 |
 | B12-m5 tmpfs 沒掛上仍 rw 進 jail | §3.8.2:不掛進 jail |
 | B12-m6 文字 | §4 清理表;rc 14 只在 `precheck`(§3.7.3) |
+
+## 附錄 J. v7.7 審查回應(A13 = `p3-review-v77-A.md` 0 / 1 / 15、B13 = `p3-review-v77-B.md` 0 / 1 / 5)
+
+使用者 2026-11-11 選 A:危險從 image 拿掉,不在發布點擋 —— 一般開發版不放根鑰匙,只有 bench build 放 T;publish 腳本、release-guard、firmware 發布 job 整套拿掉。
+
+| 發現 | 處理 |
+|---|---|
+| B13-MAJOR-1 / A13-m12 release-guard 的繞過 | 選 A:guard 整套拿掉;一般開發版公開了也不能經 app 更新(§3.7.2) |
+| A13-MAJOR-1 sysupgrade ramfs 沒有 flock | §3.7.3:`RAMFS_COPY_BIN` 加 `/usr/bin/flock`;flock 不存在 → rc 18;sysupgrade 臂負對照 |
+| A13-m1 / B13-m1 讀者試拿讓寫者偶發 rc 14 | 讀者用共享鎖;寫者重試約 3 s |
+| A13-m2 / B13-m1 背景子程序繼承 fd 9 | `9>&-` + lint |
+| A13-m3 disarm 失敗沒人重試 | §3.7.4 disarm 的 tick 規則;apply 全程持 `slotMu` |
+| A13-m4 / B13-m2 舊文字 | §3.7.5-1、§3.7.6、§4、§12.5 |
+| A13-m5 / B13-m3 租約失敗的 reason | `EAGAIN` 第一次 15、同 sha 第二次 21;`EINVAL` 21;§12.5 對齊 |
+| A13-m6 rc 14 列的孤兒 | 孤兒 `write` 仍持 flock |
+| A13-m7 刪檔綁 provd 的 poll | helper 自己每 4 s 的 tick |
+| A13-m8 鎖檔不存在 / 開不了 | 不存在 = 不忙;開不了 = 忙 + log |
+| A13-m9 harness / Go 測試的新 rc 14 | §10 harness 清單 |
+| A13-m10 joinwatch 自動重開 | §11 checklist(既有問題) |
+| A13-m11 D 狀態子程序 | §6 |
+| A13-m13 非 bcm 板子的 gate | 隨選 A 簡化:沒有 A/B payload 的板子不放鑰匙,不經 app 更新 |
+| A13-m14 TRACE 含 `bootinfo` | 唯讀的不加 |
+| A13-m15 `precheck-node` 不在 `slotMu` | 加入 |
+| B13-m4 `--publish` 沒驗簽章鏈 | 隨 `--publish` 拿掉 |
+| B13-m5 `.img` 解析契約 | 隨 guard 拿掉 |
