@@ -144,7 +144,8 @@ func TestSettingsSetAPValuesCheckedFirst(t *testing.T) {
 // review A m5: no settings.set while batman-slot writes the other slot
 func TestSettingsSetDuringOTA(t *testing.T) {
 	r := claimedRig(t)
-	writeFile(t, r.n.P.RunDir+"/batman-slot.busy", nil)
+	release := holdSlotLock(t, r.n.P.RunDir)
+	defer release()
 	if c, _ := r.settingsSet(cbor.M(2, "JP")); c != EBusy {
 		t.Fatalf("settings.set during an OTA: %d (want EBusy)", c)
 	}

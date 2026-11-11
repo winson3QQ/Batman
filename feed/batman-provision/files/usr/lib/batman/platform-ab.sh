@@ -34,8 +34,10 @@ REQUIRE_IMAGE_METADATA=0
 # #254 (round-6 B-M4): prov-lock.sh — stage 2 re-runs the #202 gate, whose unclaimed exception needs it.
 # #280: the root-only run dir helper (rundir.sh) and mktemp — every private temp file and the p6 trace
 # mount live in /tmp/run/batman, which crosses into the ramfs with /tmp.
+# #254 S5: batman-slot locks with flock (busybox applet, /usr/bin/flock) — not in the stock ramfs and busybox has no
+# SH_STANDALONE, so without it every stage 2 would fail (rc 18) and reboot into the old slot.
 # shellcheck disable=SC2034
-RAMFS_COPY_BIN='/usr/sbin/batman-slot /usr/sbin/batman-reboot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr /usr/bin/sha256sum /usr/bin/head /usr/bin/tail /usr/bin/cut /usr/bin/cmp /bin/mktemp'
+RAMFS_COPY_BIN='/usr/bin/flock /usr/sbin/batman-slot /usr/sbin/batman-reboot /usr/bin/vcmailbox /usr/bin/hexdump /usr/bin/tr /usr/bin/sha256sum /usr/bin/head /usr/bin/tail /usr/bin/cut /usr/bin/cmp /bin/mktemp'
 # shellcheck disable=SC2034
 RAMFS_COPY_DATA='/usr/share/batman/firmware-allowlist-bcm2710.sha256 /usr/lib/batman/otatrace.sh /usr/lib/batman/bootfacts.sh /usr/lib/batman/rundir.sh /usr/lib/batman/prov-lock.sh'
 

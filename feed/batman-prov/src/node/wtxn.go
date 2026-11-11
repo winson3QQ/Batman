@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"batman-prov/boot"
@@ -447,8 +448,18 @@ func (n *Node) finishWantsRadio() bool {
 	return err == nil && !dis
 }
 
-// otaBusy: batman-slot is writing the other slot ($RUNDIR/batman-slot.busy, its precheck .. exit).
+// otaBusy: a batman-slot holds the slot lock — a kernel flock on $RUNDIR/batman-slot.flock (254-p3-impl §3.7.3).
+// A shared, non-blocking try on a fresh fd that is closed again at once (never kept: a held shared lock would make
+// batman-slot's own exclusive lock fail). No lock file = no writer this boot; cannot tell = busy (fail-closed).
 func (n *Node) otaBusy() bool {
-	_, err := os.Lstat(filepath.Join(n.P.RunDir, "batman-slot.busy"))
-	return err == nil
+	f, err := os.OpenFile(filepath.Join(n.P.RunDir, "batman-slot.flock"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return !errors.Is(err, os.ErrNotExist)
+	}
+	defer f.Close()
+	if syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) != nil {
+		return true
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false
 }

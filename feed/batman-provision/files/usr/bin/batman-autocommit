@@ -83,7 +83,8 @@ main_alive(){ pid_is "$(cat "$RUN/pid" 2>/dev/null)" 'batman-autocommit run'; }
 # The one claim (N1) records its owner, so a claim whose owner died can be told from a live one.
 claim(){ mkdir "$DECIDED" 2>/dev/null || return 1; echo $$ > "$DECIDED/pid"; }
 claim_owner_alive(){ pid_is "$(cat "$DECIDED/pid" 2>/dev/null)" batman-autocommit; }
-slot_writer_alive(){ pid_is "$(cat "$RUNDIR/batman-slot.lock/pid" 2>/dev/null)" batman-slot; }
+# a batman-slot holds the slot flock (rundir.sh slot_busy; #254 S5). Without rundir.sh: cannot tell = busy.
+slot_writer_alive(){ type slot_busy >/dev/null 2>&1 || return 0; slot_busy; }
 # A hold cancels the revert (#209 S5 review R2): the operator's /tmp hold (root-owned: /tmp is world-
 # writable), a hold-once on p6 (consumed here, and remembered in $HOLDC so a restarted main and the
 # watchdog both still see it), or one already consumed this boot. Checked by main at start AND by the
@@ -223,7 +224,7 @@ revert_watchdog(){
 	while [ $d -lt $DEFER_MAX ]; do
 		# #274: also while a payload guardian converges its stack (post-OTA a changed config is rebuilt once)
 		# — bounded by DEFER_MAX like the rest, never a hold.
-		if [ -e "$RUNDIR/batman-slot.busy" ] || slot_writer_alive || { ls "$RUNDIR"/batman-firstload-*.latch >/dev/null 2>&1 && pgrep -f "docker load" >/dev/null 2>&1; } \
+		if slot_writer_alive || { ls "$RUNDIR"/batman-firstload-*.latch >/dev/null 2>&1 && pgrep -f "docker load" >/dev/null 2>&1; } \
 			|| { ls "$RUNDIR"/batman-payload-*.converging >/dev/null 2>&1 && pgrep -f "payload-run --worker" >/dev/null 2>&1; }; then
 			[ $d -eq 0 ] && log "revert deferred: slot write, first-load or payload converge in progress (max ${DEFER_MAX}s)"
 			sleep 10; d=$((d + 10))
