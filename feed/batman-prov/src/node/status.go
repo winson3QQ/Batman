@@ -45,6 +45,8 @@ type StatusSource struct {
 	RestoreBad func() bool
 	// §3.8.1: provd could not bind 8095 (wired by SetStatusSource from the node)
 	HTTPBindFailed func() bool
+	// §3.7.4: the image's root key: "none" / "bad" / the first 8 bytes of its fingerprint, hex (wired from the node)
+	Trust func() string
 }
 
 type statusCache struct {
@@ -228,6 +230,9 @@ func (c *statusCache) get(state string, full bool) cbor.Map {
 		if c.src.HTTPBindFailed != nil && c.src.HTTPBindFailed() {
 			f = append(f, cbor.Entry{K: "http_bind_failed", V: true})
 		}
+		if c.src.Trust != nil {
+			f = append(f, cbor.Entry{K: "trust", V: c.src.Trust()})
+		}
 		m = append(m, cbor.Entry{K: uint64(15), V: f})
 	}
 	return m
@@ -244,7 +249,19 @@ func (n *Node) SetStatusSource(src StatusSource) {
 	if src.HTTPBindFailed == nil {
 		src.HTTPBindFailed = n.httpBindFailed.Load
 	}
+	if src.Trust == nil {
+		src.Trust = n.trustState
+	}
 	n.status = newStatusCache(src, n.now)
+}
+
+// trustState: the image's root key as status key 15 shows it; a node without the update verbs (not an A/B card) =
+// "none" — it cannot be updated through the app either
+func (n *Node) trustState() string {
+	if u := n.upd; u != nil && u.sys != nil {
+		return u.sys.Trust().State
+	}
+	return "none"
 }
 
 // StatusTick refreshes the status caches that are due (no-op without a source).

@@ -755,11 +755,11 @@ write_slot() {
 		die_c 13 "slot $T did not verify after writing ($bad) — slot INVALIDATED, tryboot NOT armed, default slot untouched"
 	fi
 	# verified: only now the real cmdline and no BAD mark, read back uncached
-	printf '%s root=PARTUUID=%s batman_slot=%s\n' "$CMDLINE_COMMON" "$TGUID" "$T" > "$BM/cmdline.txt" || die "cannot write the real cmdline (slot $T stays invalidated)"
+	printf '%s root=PARTUUID=%s batman_slot=%s\n' "$CMDLINE_COMMON" "$TGUID" "$T" > "$BM/cmdline.txt" || die_c 18 "cannot write the real cmdline (slot $T stays invalidated)"
 	sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
-	grep -q "root=PARTUUID=$TGUID batman_slot=$T\$" "$BM/cmdline.txt" || die "cmdline of slot $T did not read back (slot stays invalidated)"
+	grep -q "root=PARTUUID=$TGUID batman_slot=$T\$" "$BM/cmdline.txt" || die_c 13 "cmdline of slot $T did not read back (slot stays invalidated)"
 	rm -f "$BM/$BADMARK"; sync
-	[ -f "$BM/$BADMARK" ] && die "cannot clear $BADMARK on slot $T"
+	[ -f "$BM/$BADMARK" ] && die_c 13 "cannot clear $BADMARK on slot $T"
 	# still mounted: VERIFIED must land on the FAT, not in an unmounted mount point
 	PSUM=$(sha256sum "$PAYLOAD/SHA256SUMS" | cut -d' ' -f1)
 	echo "$PSUM $(cat /proc/sys/kernel/random/boot_id)" > "$BM/BATMAN-VERIFIED" || die_c 18 "cannot write BATMAN-VERIFIED on slot $T"

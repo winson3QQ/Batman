@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/flynn/noise"
@@ -55,7 +56,7 @@ type Config struct {
 	Test       TestEnv
 	Rand       func([]byte) // tests; crypto/rand otherwise
 	HTTPPort   int          // tests; 0 = 8095
-	BulkDir    string       // tests; "" = /tmp/run/batman-provd-bulk
+	BulkDir    string       // tests; "" = provstore.BulkDir
 }
 
 // node-state numbers (CDDL node-state)
@@ -106,7 +107,9 @@ type Server struct {
 	changed  chan struct{} // closed + replaced when readiness / health may have changed (BLE side waits on it)
 	stop     chan struct{}
 	logLimit map[string][]time.Time
-	http     httpSide // 254-p3-impl §3.8
+	http     httpSide      // 254-p3-impl §3.8
+	httpDone chan struct{} // closed when httpLoop has closed the listener and the HTTP sessions (Stop waits)
+	running  atomic.Bool
 }
 
 // NewServer makes the per-start Noise static key (219 §3.3) and the two helper connections.
@@ -121,7 +124,8 @@ func NewServer(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, static: st, changed: make(chan struct{}), stop: make(chan struct{}), logLimit: map[string][]time.Time{}}
+	s := &Server{cfg: cfg, static: st, changed: make(chan struct{}), stop: make(chan struct{}), logLimit: map[string][]time.Time{},
+		httpDone: make(chan struct{})}
 	s.ctl = &HelperConn{Path: cfg.HelperPath, Name: "ctl", MaxBackoff: 10 * time.Second, Log: cfg.Log}
 	s.ops = &HelperConn{Path: cfg.HelperPath, Name: "ops", MaxBackoff: 60 * time.Second, Log: cfg.Log}
 	s.ro = &HelperConn{Path: cfg.HelperPath, Name: "ro", MaxBackoff: 10 * time.Second, Log: cfg.Log}
@@ -232,6 +236,7 @@ func (s *Server) opsIdem(verb string, args cbor.Map, wait time.Duration) (Reply,
 
 // Run fetches the identity, builds node_cert, then polls until Stop. It never returns early on helper errors (backoff).
 func (s *Server) Run() {
+	s.running.Store(true)
 	go s.pollLoop()
 	go s.opsLoop()
 	go s.httpLoop()
@@ -250,6 +255,12 @@ func (s *Server) Stop() {
 	case <-s.stop:
 	default:
 		close(s.stop)
+	}
+	if s.running.Load() { // HTTP is closed (listener, sessions) before Stop returns (K10 has 500 ms)
+		select {
+		case <-s.httpDone:
+		case <-time.After(2 * time.Second):
+		}
 	}
 }
 

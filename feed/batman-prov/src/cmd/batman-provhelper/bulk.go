@@ -160,9 +160,23 @@ var lanIPv4 = func() (string, error) {
 	return "", errors.New(lanBridge + " has no IPv4 address")
 }
 
-// BulkTmpfs: provd's upload dir is a tmpfs mounted there itself (D-15): a plain directory on /tmp would let a
-// compromised provd fill /tmp.
+// BulkTmpfs: provd's upload dir is a tmpfs mounted there itself (D-15): a plain directory would let a compromised
+// provd fill the shared tmpfs under it.
 func (b *realBulk) BulkTmpfs() error { return bulkTmpfsAt(bulkDir) }
+
+// BulkCapacity: the upload tmpfs's size (only when it is the tmpfs BulkTmpfs accepts)
+func (b *realBulk) BulkCapacity() (uint64, bool) { return bulkCapacityAt(bulkDir) }
+
+func bulkCapacityAt(dir string) (uint64, bool) {
+	if bulkTmpfsAt(dir) != nil {
+		return 0, false
+	}
+	var fs syscall.Statfs_t
+	if syscall.Statfs(dir, &fs) != nil {
+		return 0, false
+	}
+	return fs.Blocks * uint64(fs.Bsize), true
+}
 
 func bulkTmpfsAt(dir string) error {
 	fd, err := syscall.Open(dir, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)

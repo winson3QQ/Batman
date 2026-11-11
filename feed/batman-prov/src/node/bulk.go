@@ -26,6 +26,8 @@ type BulkSys interface {
 	// BulkTmpfs: the bulk dir is provd's tmpfs and a mount point of its own (fstatfs on a fresh dirfd, st_dev != the
 	// parent's), else nil means OK
 	BulkTmpfs() error
+	// BulkCapacity: the tmpfs's size in bytes (update.check: smaller than the payload = reason 8, §3.7.4)
+	BulkCapacity() (uint64, bool)
 }
 
 // SetBulkSource wires bulk.open / bulk.close and the poll's http field (nil = E_UNSUPPORTED, no http field).

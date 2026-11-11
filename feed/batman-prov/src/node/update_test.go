@@ -15,18 +15,19 @@ import (
 
 // fakeUpd: a scripted UpdateSys (254-p3-impl §3.7.4).
 type fakeUpd struct {
-	trust   release.Trust
-	ver     string
-	board   string
-	mem     uint64
-	up      int
-	boot    string
-	active  string
-	rc      map[string]int    // batman-slot verb -> rc
-	out     map[string]string // batman-slot verb -> stdout
-	calls   []string
-	presave int
-	onSlot  func(verb string)
+	rootBytes int64 // 0 = 8 GiB; < 0 = unknown
+	trust     release.Trust
+	ver       string
+	board     string
+	mem       uint64
+	up        int
+	boot      string
+	active    string
+	rc        map[string]int    // batman-slot verb -> rc
+	out       map[string]string // batman-slot verb -> stdout
+	calls     []string
+	presave   int
+	onSlot    func(verb string)
 }
 
 func (f *fakeUpd) Trust() release.Trust         { return f.trust }
@@ -36,6 +37,12 @@ func (f *fakeUpd) Uptime() int                  { return f.up }
 func (f *fakeUpd) BootID() string               { return f.boot }
 func (f *fakeUpd) ActiveSlot() string           { return f.active }
 func (f *fakeUpd) PreSave()                     { f.presave++ }
+func (f *fakeUpd) RootBytes(string) (int64, bool) {
+	if f.rootBytes != 0 {
+		return f.rootBytes, f.rootBytes > 0
+	}
+	return 1 << 33, true
+}
 func (f *fakeUpd) Slot(_ time.Duration, args ...string) (int, string) {
 	f.calls = append(f.calls, strings.Join(args, " "))
 	if f.onSlot != nil {
@@ -113,7 +120,8 @@ func TestUpdateCheckAccepts(t *testing.T) {
 	if ram != 446+150 {
 		t.Fatalf("ram %d, want payload + boot total", ram)
 	}
-	if f.presave != 1 || len(f.calls) != 1 || f.calls[0] != "precheck-node" {
+	// §3.7.4: check runs precheck-node, then re-reads the target slot (B) — with or without key 8 (review r1 A-m8)
+	if f.presave != 1 || len(f.calls) != 2 || f.calls[0] != "precheck-node" || f.calls[1] != "bootinfo B" {
 		t.Fatalf("calls %v presave %d", f.calls, f.presave)
 	}
 	if p := n.upd.validPending(); p == nil || p.R.Version != "1.5.14-wsl.30+abcdef1.fw0123456" || p.Expiry != 100+pendingTTL {

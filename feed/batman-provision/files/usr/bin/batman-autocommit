@@ -459,17 +459,19 @@ health_ok(){
 	# #254 P3 §3.7.6 D-17: a build whose firewall did not load (e.g. a broken ruleset-post include) is not committed
 	nft list table inet fw4 >/dev/null 2>&1 || { echo "no firewall (nft table inet fw4 missing)"; return 1; }
 	# §3.7.6 (a): the provisioning helper runs — unless the operator disabled it (D-16: then WARN only)
+	helper=0
 	if /etc/init.d/batman-provhelper enabled 2>/dev/null; then
 		running batman-provhelper || { echo "svc batman-provhelper down"; return 1; }
+		helper=1
 	else
 		warn_once provhelper-disabled "batman-provhelper is disabled: not required for the commit"
 	fi
 	# §3.7.6 (b): provd was up >= 60 s at least once this boot (the helper writes the boot_id; B5-m8: a disabled
-	# provd is not required)
-	if /etc/init.d/batman-provd enabled 2>/dev/null; then
+	# provd is not required; nor is it with the helper disabled — nothing else writes provd-stable)
+	if [ "$helper" = 1 ] && /etc/init.d/batman-provd enabled 2>/dev/null; then
 		[ "$(cat "$RUNDIR/provd-stable" 2>/dev/null)" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ] ||
 			{ echo "batman-provd not stable for 60 s yet this boot"; return 1; }
-	else
+	elif [ "$helper" = 1 ]; then
 		warn_once provd-disabled "batman-provd is disabled: not required for the commit"
 	fi
 	# #209 S5 review K1: with tenants on p6 this rootfs MUST be able to run them. A missing docker, a
@@ -525,8 +527,13 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 	# #254 §6.4 + P-U5: the BLE health gate is WARN-only until the Pi 4 BT UART wedge is fixed — logged, never blocks
 	if [ -f "$ST/ble-ok" ] && [ ! -f "$RUNDIR/autocommit.ble-warned" ]; then
 		bh=$(cat "$RUNDIR/batman-prov.health" 2>/dev/null)
+		hb=$(echo "$bh" | sed -n 's/^boot_id=\([^ ]*\) .*/\1/p'); hts=$(echo "$bh" | sed -n 's/.* ts=\([0-9]*\) .*/\1/p')
+		# §3.7.6: the line must be this boot's and at most 60 s old — a stale "good" line is not good
+		bho=${bh:-no health file}
+		[ "$hb" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ] && [ -n "$hts" ] && [ $(( $(up) - hts )) -le 60 ] ||
+			{ bh=""; bho="stale or another boot's: $bho"; }
 		case "$bh" in *"bluetoothd=1"*"hci0_powered=1"*"adv_registered_once=1"*) ;; *)
-			log "WARN ble: ble-ok present but BLE health is not good (${bh:-no health file}) — not blocking (P-U5)"; : > "$RUNDIR/autocommit.ble-warned" ;; esac
+			log "WARN ble: ble-ok present but BLE health is not good ($bho) — not blocking (P-U5)"; : > "$RUNDIR/autocommit.ble-warned" ;; esac
 	fi
 	if [ "$NEED_MESH" = 1 ]; then
 		if [ "$jn" -lt "$JOIN_NEED" ]; then why="${why:+$why; }mesh not joined/reachable ($jn/$JOIN_NEED samples: plink=${MJ_PLINK:-0} batman(wlh0)=${MJ_BAT:-0})"
@@ -566,7 +573,10 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 		# claim (N1); if a LIVE watchdog won it, it is reverting — stand down. A claim whose owner is
 		# gone (a main killed by `restart` mid-commit, code review F2) is cleared and retried next poll.
 		if ! claim; then
-			if claim_owner_alive || slot_writer_alive; then log "revert (or a slot write) in progress — not committing"; exit 0; fi
+			if claim_owner_alive; then log "revert in progress — not committing"; exit 0; fi
+			# the slot lock is held (a slot write, or only the helper's short read-only bootinfo / precheck-node): the
+			# claim's owner is gone, so this main is the one that decides — wait a poll (review r1 A-m10)
+			if slot_writer_alive; then log "the slot lock is held — not committing yet"; ok=0; sleep "$POLL"; continue; fi
 			log "stale claim from a process that is gone — clearing it"; rm -rf "$DECIDED"; sleep "$POLL"; continue
 		fi
 		if batman-slot commit; then

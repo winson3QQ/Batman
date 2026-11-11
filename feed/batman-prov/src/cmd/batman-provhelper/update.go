@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,8 +19,7 @@ import (
 
 const (
 	romKeys    = "/rom/usr/share/batman" // the image's root key: read from the squashfs only (§3.7.1)
-	bulkDir    = "/tmp/run/batman-provd-bulk"
-	workDir    = "/tmp/run/batman/update"
+	bulkDir    = provstore.BulkDir
 	p6Mount    = "/opt/batdata"
 	slotWriteT = 600 * time.Second
 )
@@ -82,12 +82,33 @@ func (u *realUpdate) Uptime() int                  { return uptime() }
 func (u *realUpdate) BootID() string               { return bootID() }
 func (u *realUpdate) ActiveSlot() string           { return u.active }
 func (u *realUpdate) PreSave()                     { upgradeSave(u.p, u.trial()) }
-func (u *realUpdate) BulkDir() string              { return bulkDir }
-func (u *realUpdate) WorkDir() string              { return workDir }
-func (u *realUpdate) ProvdUID() int                { return provdUID }
-func (u *realUpdate) AutocommitLog() string        { return p6Mount + "/log/autocommit.log" }
-func (u *realUpdate) SlotBusy() bool               { return node.SlotLockHeld(u.p.RunDir) }
-func (u *realUpdate) IsTrial() bool                { return u.trial() }
+
+// RootBytes: the slot's root partition (batman-slot's layout: A = p2, B = p4 of mmcblk0) from sysfs, 512 B sectors
+func (u *realUpdate) RootBytes(slot string) (int64, bool) { return rootBytesIn(sysBlock, slot) }
+
+var sysBlock = "/sys/class/block"
+
+func rootBytesIn(dir, slot string) (int64, bool) {
+	part := map[string]string{"A": "mmcblk0p2", "B": "mmcblk0p4"}[slot]
+	if part == "" {
+		return 0, false
+	}
+	b, err := os.ReadFile(dir + "/" + part + "/size")
+	if err != nil {
+		return 0, false
+	}
+	s, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil || s <= 0 || s > 1<<40 {
+		return 0, false
+	}
+	return s * 512, true
+}
+func (u *realUpdate) BulkDir() string       { return bulkDir }
+func (u *realUpdate) WorkDir() string       { return filepath.Join(u.p.RunDir, "update") } // root 0700 run dir
+func (u *realUpdate) ProvdUID() int         { return provdUID }
+func (u *realUpdate) AutocommitLog() string { return p6Mount + "/log/autocommit.log" }
+func (u *realUpdate) SlotBusy() bool        { return node.SlotLockHeld(u.p.RunDir) }
+func (u *realUpdate) IsTrial() bool         { return u.trial() }
 func (u *realUpdate) P6State() (string, bool) {
 	return p6Mount + "/state", isMountPoint("/proc/mounts", p6Mount)
 }

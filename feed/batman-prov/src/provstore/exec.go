@@ -135,3 +135,9 @@ func ExecSplit(o Opts, name string, args ...string) (rc int, stdout, stderr stri
 	}
 	return 0, so.String(), se.String()
 }
+
+// BulkDir is provd's upload tmpfs (254-p3-impl §3.8.2): mounted by root in batman-provd's init before the jail starts
+// (never stacked, never through a symlink, mode 0700 provd), the jail's only rw mount. It is outside the root-only
+// run dir on purpose — provd (uid 471) writes the upload there; the helper opens it O_NOFOLLOW, checks it is that
+// tmpfs (fstatfs + its own mount point) and takes the file over (unlink, chown, lease) before it reads a byte.
+const BulkDir = "/tmp/run/batman-provd-bulk"

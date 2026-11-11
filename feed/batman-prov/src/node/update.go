@@ -28,6 +28,7 @@ type UpdateSys interface {
 	ActiveSlot() string                                       // "A" | "B"
 	PreSave()                                                 // §3.3 F63: a p5 stale only in P3's new keys is saved once
 	Slot(timeout time.Duration, args ...string) (int, string) // batman-slot (write/arm/disarm/bootinfo/precheck-node in a private mount namespace)
+	RootBytes(slot string) (int64, bool)                      // that slot's root partition size (the payload's rootfs may not exceed it)
 }
 
 const (
@@ -206,10 +207,17 @@ func (u *updater) slotInfoOf(s string, refresh bool) (slotInfo, bool) {
 			u.slotsBad[s] = slotInfoRetry
 		}
 		old, had := u.slots[s]
-		return old, had
+		return old, had && !refresh // a refresh that failed never stands in for the slot (§3.7.4 "看槽")
 	}
 	u.slots[s], u.slotsBad[s] = nsi, 0
 	return nsi, true
+}
+
+// slotBusy14: the last bootinfo of s failed because the slot lock was held (rc 14): the caller answers E_BUSY
+func (u *updater) slotBusy14(s string) bool {
+	u.siMu.Lock()
+	defer u.siMu.Unlock()
+	return u.slotsBad[s] == slotInfoRetry14
 }
 
 // cachedSlot: the cache only (status, BootConfigOK without the lock)
@@ -308,12 +316,14 @@ func (n *Node) updateCheck(a cbor.Map) (cbor.Map, *Error) {
 	u.slotMu.Lock()
 	rc, out := u.sys.Slot(tPrecheck, "precheck-node")
 	var si slotInfo
-	okSI := true
-	if rc == 0 && len(r.BootCfg) > 0 {
-		si, okSI = u.slotInfoOf(other(u.sys.ActiveSlot()), true)
+	okSI, busySI := true, false
+	if rc == 0 {
+		tgt := other(u.sys.ActiveSlot())
+		si, okSI = u.slotInfoOf(tgt, true) // §3.7.4: check re-reads the target slot
+		busySI = !okSI && u.slotBusy14(tgt)
 	}
 	u.slotMu.Unlock()
-	if reason, busy := slotReason(rc); busy {
+	if reason, busy := slotReason(rc); busy || busySI {
 		return nil, fail(EBusy, "batman-slot busy (%s)", lastLineOf(out))
 	} else if reason != 0 {
 		return no(reason, ram, "precheck-node rc "+itoa(rc)+": "+lastLineOf(out))
@@ -330,6 +340,11 @@ func (n *Node) updateCheck(a cbor.Map) (cbor.Map, *Error) {
 		}
 		if !match {
 			return no(release.ReasonBootCfg, ram, "the target slot's boot config "+si.BootCfg+" is not one this release allows")
+		}
+	}
+	if n.bulk != nil {
+		if c, ok := n.bulk.BulkCapacity(); ok && c < r.Size {
+			return no(8, ram, "the upload tmpfs ("+itoa(int(c))+" B) cannot hold the payload")
 		}
 	}
 	// 5. RAM: MemAvailable - 64 MiB >= payload + boot members (§3.7.4)

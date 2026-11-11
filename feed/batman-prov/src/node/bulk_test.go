@@ -4,20 +4,29 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"batman-prov/cbor"
+	"batman-prov/release"
 )
 
 type fakeBulk struct {
-	addr   string
-	httpOK bool
-	apUp   bool
-	tmpErr error
+	addr     string
+	httpOK   bool
+	apUp     bool
+	tmpErr   error
+	capacity uint64
 }
 
 func (b *fakeBulk) HTTPAddr() (string, bool)   { return b.addr, b.httpOK }
 func (b *fakeBulk) AP() (bool, string, string) { return b.apUp, "batman-ap", "ap-pass-1" }
 func (b *fakeBulk) BulkTmpfs() error           { return b.tmpErr }
+func (b *fakeBulk) BulkCapacity() (uint64, bool) {
+	if b.capacity == 0 {
+		return 1 << 30, true
+	}
+	return b.capacity, true
+}
 
 func okBulk() *fakeBulk            { return &fakeBulk{addr: "10.41.80.13", httpOK: true, apUp: true} }
 func bulkBody(sha []byte) cbor.Map { return cbor.M(1, uint64(0), 2, sha) }
@@ -271,5 +280,38 @@ func TestBulkOwnerOpVerbs(t *testing.T) {
 	}
 	if c, _ := r.call("bulk.open", cbor.M(1, r.h, 2, r.envelope("bulk/close", bulkBody(rel.SumsSha), r.owner))); c == OK {
 		t.Fatal("a bulk/close envelope opened a window")
+	}
+}
+
+// §3.7.4 RAM budget: an upload tmpfs smaller than the payload = reason 8 at check (review r1 A-m5 / B-m4)
+func TestUpdateCheckTmpfsTooSmall(t *testing.T) {
+	w := newWorkRig(t, defaultPayload())
+	w.n.SetBulkSource(&fakeBulk{addr: "10.41.80.13", httpOK: true, apUp: true, capacity: 100})
+	ok, reason, _, e := check(t, w.n, w.clk, w.mf, string(ownerID(w.owner)))
+	if e != nil || ok || reason != 8 {
+		t.Fatalf("tmpfs 100 B: ok=%v reason=%d %v (want 8)", ok, reason, e)
+	}
+}
+
+// status key 15 trust (§3.7.4): the image's root key state; "none" without the update verbs (review r1 B-MAJOR-2)
+func TestStatusTrust(t *testing.T) {
+	f := &fakeStatus{js: hs04(t), p5: true, inline: true}
+	r, now := statusRig(t, f)
+	f15 := func() cbor.Map {
+		*now = now.Add(2 * time.Second) // status: 1 / s per connection
+		v, _ := statusCall(t, r, true).Get(15)
+		return v.(cbor.Map)
+	}
+	if v, _ := f15().Get("trust"); v != "none" {
+		t.Fatalf("no update source: trust %v, want none", v)
+	}
+	w := newWorkRig(t, defaultPayload())
+	r.n.SetUpdateSource(w.f, w.fs)
+	if v, _ := f15().Get("trust"); v != w.f.trust.State {
+		t.Fatalf("trust %v, want %q", v, w.f.trust.State)
+	}
+	w.f.trust = release.Trust{State: "bad"}
+	if v, _ := f15().Get("trust"); v != "bad" {
+		t.Fatalf("trust %v, want bad", v)
 	}
 }

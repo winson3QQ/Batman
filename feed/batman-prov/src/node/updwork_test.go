@@ -78,6 +78,7 @@ type payload struct {
 	meta     []byte   // nil: computed
 	extra    []member // appended after root.squashfs
 	trailing []byte   // bytes after the gzip stream
+	inGzTail []byte   // bytes inside the gzip stream, after the tar's end (a decompression bomb when large)
 	first    string   // "" normal; "metadata" swaps the first two members
 }
 
@@ -144,6 +145,7 @@ func (p *payload) build(t *testing.T) (tgz []byte, sums []byte, bootTotal uint64
 		add(m)
 	}
 	tw.Close()
+	gz.Write(p.inGzTail)
 	gz.Close()
 	return append(buf.Bytes(), p.trailing...), sums, bootTotal
 }
@@ -177,6 +179,7 @@ type fakeFS struct {
 	reboots   int
 	rebootErr error
 	cutWrite  chan struct{} // non-nil: the write marks the target BAD, closes this, waits for the cancel, rc 125
+	earlyExit bool          // like the real batman-slot: a refusal (rc != 0) before it reads a byte of stdin
 }
 
 func (f *fakeFS) BulkDir() string         { return f.bulk }
@@ -195,6 +198,21 @@ func (f *fakeFS) SlotWrite(cancel <-chan struct{}, dir string, r io.Reader) (int
 		close(f.cutWrite)
 		<-cancel
 		return 125, "batman-slot: canceled"
+	}
+	if f.earlyExit {
+		f.mu.Lock()
+		rc := 0
+		if len(f.writeRC) > 0 {
+			rc = f.writeRC[0]
+		}
+		f.mu.Unlock()
+		if rc != 0 {
+			f.mu.Lock()
+			f.writeRC = f.writeRC[1:]
+			f.writes = append(f.writes, nil)
+			f.mu.Unlock()
+			return rc, "batman-slot: refused before the write"
+		}
 	}
 	data, _ := io.ReadAll(r)
 	f.mu.Lock()
@@ -370,11 +388,15 @@ func TestUpdateApplyArmFails(t *testing.T) {
 	if ul := w.n.upd.readUL(); ul == nil || ul.ApplyBootID != "" {
 		t.Fatalf("apply_boot_id not cleared after a successful disarm: %+v", ul)
 	}
-	// p6 unwritable at "rebooting": disarm, E_STORAGE, no reboot
+	// p6 unwritable at "rebooting": disarm, E_STORAGE, no reboot (p6 goes away after the arm — not a chmod, which
+	// root, the CI's prov_test run, ignores)
 	w.f.rc["arm"] = 0
 	*w.clk = w.clk.Add(time.Minute)
-	os.Chmod(w.fs.p6, 0o500)
-	defer os.Chmod(w.fs.p6, 0o700)
+	w.f.onSlot = func(verb string) {
+		if verb == "arm" {
+			w.fs.p6ok = false
+		}
+	}
 	if _, e := w.n.updateApply(w.owner, wire(t, cbor.M(1, w.sumSha))); e == nil || e.Code != EStorage {
 		t.Fatalf("p6 read-only: %v", e)
 	}
@@ -875,5 +897,160 @@ func TestUpdateOwnerRemoveVerb(t *testing.T) {
 	}
 	if u.pend != nil || u.window != nil {
 		t.Fatalf("B's pending / window survived its removal: %v %v", u.pend != nil, u.window != nil)
+	}
+}
+
+// review r1 A-MAJOR-1: the real batman-slot write refuses (lock busy, precheck) BEFORE it reads stdin; a rootfs larger
+// than the pipe buffer then fails the scan's write — the rc must still decide (14 = retry, 12 = reason 17)
+func bigRootPayload() *payload {
+	p := defaultPayload()
+	p.members[2].data = append([]byte("hsqs"), bytes.Repeat([]byte{7}, 1<<20)...)
+	return p
+}
+
+func TestUpdateWriteRefusedBeforeReading(t *testing.T) {
+	w := newWorkRig(t, bigRootPayload())
+	w.fs.earlyExit = true
+	w.fs.writeRC = []int{14, 0}
+	w.checkAndUpload(t)
+	w.prepare(t)
+	w.waitWorker(t)
+	if ph, r := phaseOf(t, w.n); ph != 3 || r != 0 || len(w.fs.writes) != 2 {
+		t.Fatalf("rc 14 before reading, then 0: phase %d reason %d, %d writes (want a retry -> 3)", ph, r, len(w.fs.writes))
+	}
+	w2 := newWorkRig(t, bigRootPayload())
+	w2.fs.earlyExit = true
+	w2.fs.writeRC = []int{12}
+	w2.checkAndUpload(t)
+	w2.prepare(t)
+	w2.waitWorker(t)
+	if ph, r := phaseOf(t, w2.n); ph != 0 || r != 17 {
+		t.Fatalf("rc 12 before reading: %d/%d (want 0/17, not 11)", ph, r)
+	}
+}
+
+// review r1 B-MAJOR-1 / §3.7.5-4: the rootfs is bounded by the target root partition, the stream by its total
+func TestUpdateRootLargerThanSlot(t *testing.T) {
+	w := newWorkRig(t, defaultPayload())
+	w.f.rootBytes = 4000 // < the 5004 B rootfs
+	w.checkAndUpload(t)
+	w.prepare(t)
+	w.waitWorker(t)
+	if ph, r := phaseOf(t, w.n); ph != 0 || r != release.ReasonBad || len(w.fs.writes) != 0 {
+		t.Fatalf("a rootfs larger than the slot: %d/%d, %d writes", ph, r, len(w.fs.writes))
+	}
+}
+
+func TestUpdateDecompressionBound(t *testing.T) {
+	p := defaultPayload()
+	p.inGzTail = make([]byte, 4<<20) // compresses to ~4 KiB, inflates past the bound
+	w := newWorkRig(t, p)
+	w.f.rootBytes = 1 << 20 // bound = 256 KiB + 64 KiB + boot + 1 MiB + 1 MiB < 4 MiB
+	w.checkAndUpload(t)
+	w.prepare(t)
+	w.waitWorker(t)
+	if ph, r := phaseOf(t, w.n); ph != 0 || r != release.ReasonBad || len(w.fs.writes) != 0 {
+		t.Fatalf("a stream that inflates past its bound: %d/%d, %d writes", ph, r, len(w.fs.writes))
+	}
+	q := defaultPayload()
+	q.inGzTail = make([]byte, 512<<10) // within the bound: the tar end's padding, accepted as before
+	w2 := newWorkRig(t, q)
+	w2.f.rootBytes = 1 << 20
+	w2.checkAndUpload(t)
+	w2.prepare(t)
+	w2.waitWorker(t)
+	if ph, r := phaseOf(t, w2.n); ph != 3 || r != 0 {
+		t.Fatalf("zeros within the bound refused: %d/%d", ph, r)
+	}
+}
+
+func TestUpdateRootBytesUnknown(t *testing.T) {
+	w := newWorkRig(t, defaultPayload())
+	w.f.rootBytes = -1
+	w.checkAndUpload(t)
+	w.prepare(t)
+	w.waitWorker(t)
+	if ph, r := phaseOf(t, w.n); ph != 0 || r != 21 || len(w.fs.writes) != 0 {
+		t.Fatalf("unknown slot size: %d/%d", ph, r)
+	}
+}
+
+// a cancel during the first pass stops the read (not only between the passes)
+func TestUpdateCancelInsideFirstPass(t *testing.T) {
+	w := newWorkRig(t, defaultPayload())
+	f, err := os.CreateTemp(t.TempDir(), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write(w.tgz)
+	f.Seek(0, 0)
+	c := make(chan struct{})
+	close(c)
+	check(t, w.n, w.clk, w.mf, string(ownerID(w.owner)))
+	var sums []byte
+	if we := w.n.scan(cancelReader{f, c}, w.n.upd.pend.R, t.TempDir(), nil, &sums, 1<<33); we == nil {
+		t.Fatal("a canceled first pass read the payload to its end")
+	}
+}
+
+// review r1 A-m7: a refresh of the target slot that fails is not taken from the cache; rc 14 = E_BUSY at apply
+func TestUpdateApplyTargetBusy(t *testing.T) {
+	w := newWorkRig(t, defaultPayload())
+	w.checkAndUpload(t)
+	w.prepare(t)
+	w.waitWorker(t)
+	w.f.rc["bootinfo"] = 14
+	if _, e := w.n.updateApply(w.owner, wire(t, cbor.M(1, w.sumSha))); e == nil || e.Code != EBusy {
+		t.Fatalf("apply while bootinfo is busy: %v (want E_BUSY)", e)
+	}
+	for _, c := range w.f.calls {
+		if strings.HasPrefix(c, "arm") {
+			t.Fatal("armed without a fresh look at the target slot")
+		}
+	}
+}
+
+// owner/remove as the first pass begins: the pass stops reading (it does not run to its end first)
+func TestUpdateCancelStopsFirstPass(t *testing.T) {
+	w := newWorkRig(t, defaultPayload())
+	done := false
+	firstPassStart = func() { w.n.updOwnerRemoved(ownerID(w.owner)) }
+	firstPassDone = func() { done = true }
+	t.Cleanup(func() { firstPassStart, firstPassDone = func() {}, func() {} })
+	w.checkAndUpload(t)
+	w.prepare(t)
+	w.waitWorker(t)
+	if done {
+		t.Fatal("the first pass read the whole payload after the cancel")
+	}
+	if len(w.fs.writes) != 0 {
+		t.Fatal("a slot write after the cancel")
+	}
+}
+
+// §3.7.4: update.check re-reads the target slot even when the cache has it (review r1 A-m8)
+func TestUpdateCheckRereadsTarget(t *testing.T) {
+	n, f, clk := updRig(t)
+	f.out["bootinfo"] = bootinfoOut(strings.Repeat("c", 64))
+	if ok, _, _, e := check(t, n, clk, relManifest(t, "plain"), "o1"); e != nil || !ok {
+		t.Fatal("check 1")
+	}
+	before := 0
+	for _, c := range f.calls {
+		if c == "bootinfo B" {
+			before++
+		}
+	}
+	if ok, _, _, e := check(t, n, clk, relManifest(t, "plain"), "o1"); e != nil || !ok {
+		t.Fatal("check 2")
+	}
+	after := 0
+	for _, c := range f.calls {
+		if c == "bootinfo B" {
+			after++
+		}
+	}
+	if before != 1 || after != 2 {
+		t.Fatalf("bootinfo B calls: %d then %d (want 1 then 2: every check reads the slot)", before, after)
 	}
 }

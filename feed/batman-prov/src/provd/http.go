@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"batman-prov/cbor"
+	"batman-prov/provstore"
 )
 
 const (
@@ -42,6 +43,10 @@ var (
 	HTTPFieldMax     = 8 * time.Second // the poll's http field is older than two polls -> as if missing
 	httpReadWait     = 15 * time.Second
 	uploadRateWindow = 30 * time.Second
+	// an empty /msg fetches the next block of a reply that is already being sent: it waits this long, then 204 —
+	// never the request timeout (anyone on the AP who knows the session id could otherwise hold and end the owner's
+	// session, review r1 B-m7)
+	httpFetchWait = 2 * time.Second
 )
 
 // httpField: the helper's health.get key 2 (§3.8.2), as of the poll at `at`
@@ -222,6 +227,7 @@ func (t *httpT) push(msg []byte) bool {
 // ---- the controller (every second) -----------------------------------------------------------------------------
 
 func (s *Server) httpLoop() {
+	defer close(s.httpDone)
 	tk := time.NewTicker(time.Second)
 	defer tk.Stop()
 	for {
@@ -393,7 +399,11 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 }
 
 // wait: the session's next reply for this request (or its end)
-func (s *Server) httpReply(w http.ResponseWriter, t *httpT, ss *Session, setID bool) {
+func (s *Server) httpReply(w http.ResponseWriter, t *httpT, ss *Session, setID, fetch bool) {
+	wait := HelperWait + 30*time.Second
+	if fetch {
+		wait = httpFetchWait
+	}
 	select {
 	case m := <-t.out:
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -407,7 +417,11 @@ func (s *Server) httpReply(w http.ResponseWriter, t *httpT, ss *Session, setID b
 		http.Error(w, "message", http.StatusBadRequest)
 	case <-ss.Done():
 		http.Error(w, "session ended", http.StatusGone)
-	case <-time.After(HelperWait + 30*time.Second):
+	case <-time.After(wait):
+		if fetch {
+			w.WriteHeader(http.StatusNoContent) // nothing more queued: the session goes on
+			return
+		}
 		ss.Kill("http: no reply")
 		http.Error(w, "no reply", http.StatusGatewayTimeout)
 	}
@@ -446,7 +460,7 @@ func (s *Server) httpSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session ended", http.StatusGone)
 		return
 	}
-	s.httpReply(w, t, ss, true)
+	s.httpReply(w, t, ss, true, false)
 }
 
 func (s *Server) httpMsg(w http.ResponseWriter, r *http.Request) {
@@ -472,7 +486,7 @@ func (s *Server) httpMsg(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session ended", http.StatusGone)
 		return
 	}
-	s.httpReply(w, t, ss, false)
+	s.httpReply(w, t, ss, false, len(m) == 0)
 }
 
 func (s *Server) sessionOf(t *httpT) *Session {
@@ -526,7 +540,7 @@ func (s *Server) httpPut(w http.ResponseWriter, r *http.Request) {
 	defer func() { s.http.mu.Lock(); s.http.putting = false; s.http.mu.Unlock() }()
 	dir := s.cfg.BulkDir
 	if dir == "" {
-		dir = "/tmp/run/batman-provd-bulk"
+		dir = provstore.BulkDir
 	}
 	fd, err := syscall.Open(filepath.Join(dir, bulkName), syscall.O_WRONLY|syscall.O_CREAT|syscall.O_TRUNC|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {

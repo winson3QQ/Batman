@@ -26,8 +26,8 @@ import (
 
 // UpdateFS is the part of the update's side effects that are files and slot writes (the real one in cmd/).
 type UpdateFS interface {
-	BulkDir() string                                                              // /tmp/run/batman-provd-bulk (provd's tmpfs)
-	WorkDir() string                                                              // /tmp/run/batman/update (root 0700)
+	BulkDir() string                                                              // provstore.BulkDir (provd's tmpfs)
+	WorkDir() string                                                              // RunDir/update (root 0700)
 	ProvdUID() int                                                                // the upload's expected owner (471)
 	P6State() (string, bool)                                                      // /opt/batdata/state when /opt/batdata is a mount point
 	AutocommitLog() string                                                        // /opt/batdata/log/autocommit.log
@@ -47,6 +47,7 @@ const (
 var retryWait = 10 * time.Second  // tests shorten it
 var rebootDelay = 2 * time.Second // the reply first, then batman-slot reboot committed
 var firstPassDone = func() {}     // tests: hold the worker between its two passes
+var firstPassStart = func() {}    // tests: act as the first pass begins
 
 // updateLast: p6 state/update-last (§3.7.4), CBOR, root 0600, tmp + fsync + rename + fsync(dir).
 type updateLast struct {
@@ -137,21 +138,23 @@ func (u *updater) writeUL(ul *updateLast) error {
 		return err
 	}
 	defer d.Close()
-	tmp := filepath.Join(dir, ".update-last.tmp")
-	os.Remove(tmp)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	dfd := int(d.Fd())
+	const tmp = ".update-last.tmp"
+	syscall.Unlinkat(dfd, tmp)
+	fd, err := syscall.Openat(dfd, tmp, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
 		return err
 	}
+	f := os.NewFile(uintptr(fd), tmp)
 	if _, err = f.Write(b); err == nil {
 		err = f.Sync()
 	}
 	f.Close()
 	if err == nil {
-		err = os.Rename(tmp, filepath.Join(dir, "update-last"))
+		err = syscall.Renameat(dfd, tmp, dfd, "update-last")
 	}
 	if err != nil {
-		os.Remove(tmp)
+		syscall.Unlinkat(dfd, tmp)
 		return err
 	}
 	return d.Sync()
@@ -337,9 +340,20 @@ func (n *Node) work(r *release.Release, cancel chan struct{}) (uint64, string) {
 	if err := os.Mkdir(filepath.Join(wd, "boot"), 0o700); err != nil {
 		return 21, "work dir: " + err.Error()
 	}
+	// §3.7.5-4: the rootfs may not exceed the target root partition; the whole stream is bounded by it
+	slotMax, ok := u.sys.RootBytes(other(u.sys.ActiveSlot()))
+	if !ok || slotMax <= 0 {
+		return 21, "the target root partition's size is unknown"
+	}
 	// 2.–5. first pass: verify everything, write the boot members to the work dir, never touch a slot
 	var sums []byte
-	if we := n.scan(f, r, wd, nil, &sums); we != nil {
+	firstPassStart()
+	if we := n.scan(cancelReader{f, cancel}, r, wd, nil, &sums, slotMax); we != nil {
+		select {
+		case <-cancel: // owner/remove during the first pass: no slot was touched (§3.7.5-9)
+			return 15, "canceled before the slot write"
+		default:
+		}
 		return we.reason, we.why
 	}
 	firstPassDone()
@@ -363,7 +377,8 @@ func (n *Node) work(r *release.Release, cancel chan struct{}) (uint64, string) {
 			pr.CloseWithError(io.ErrClosedPipe)
 			res <- [2]any{rc, out}
 		}()
-		we := n.scan(f, r, wd, pw, &sums)
+		ew := &errWriter{w: pw}
+		we := n.scan(f, r, wd, ew, &sums, slotMax)
 		if we != nil {
 			pw.CloseWithError(errors.New(we.why))
 		} else {
@@ -371,8 +386,13 @@ func (n *Node) work(r *release.Release, cancel chan struct{}) (uint64, string) {
 		}
 		out := <-res
 		rc, msg := out[0].(int), out[1].(string)
-		if we != nil {
+		// a scan error that is only the pipe closing = batman-slot write ended before it read the rootfs (lock busy,
+		// precheck refused): its rc says why (review r1 A-MAJOR-1). Any other scan error is the payload's.
+		if we != nil && ew.err == nil {
 			return we.reason, we.why
+		}
+		if we != nil && rc == 0 {
+			return 21, "batman-slot write stopped reading the rootfs yet answered rc 0"
 		}
 		if rc == 14 && try < writeTries { // busy before begin_write: nothing was written (§3.7.5-7)
 			select {
@@ -393,6 +413,37 @@ func (n *Node) work(r *release.Release, cancel chan struct{}) (uint64, string) {
 	}
 }
 
+// errWriter records the first write error (the pipe to batman-slot write closed under us)
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) Write(b []byte) (int, error) {
+	n, err := e.w.Write(b)
+	if err != nil && e.err == nil {
+		e.err = err
+	}
+	return n, err
+}
+
+var errCanceled = errors.New("canceled")
+
+// cancelReader: a read after owner/remove's cancel fails (the first pass stops, §3.7.5-9)
+type cancelReader struct {
+	r      io.Reader
+	cancel <-chan struct{}
+}
+
+func (c cancelReader) Read(b []byte) (int, error) {
+	select {
+	case <-c.cancel:
+		return 0, errCanceled
+	default:
+	}
+	return c.r.Read(b)
+}
+
 func fcntl(fd int, cmd, arg int) (int, error) {
 	r, _, e := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), uintptr(cmd), uintptr(arg))
 	if e != 0 {
@@ -404,15 +455,20 @@ func fcntl(fd int, cmd, arg int) (int, error) {
 // scan reads the tar.gz once (§3.7.5-2..5). root == nil: the first pass (writes SHA256SUMS, metadata and the boot
 // members into wd and hashes root.squashfs); root != nil: the second pass (re-checks, compares the boot members,
 // streams root.squashfs into root). sums is the first pass's SHA256SUMS (the second must be byte-identical).
-func (n *Node) scan(f *os.File, r *release.Release, wd string, root io.Writer, sums *[]byte) *werr {
+func (n *Node) scan(f io.Reader, r *release.Release, wd string, root io.Writer, sums *[]byte, slotMax int64) *werr {
 	u := n.upd
 	bad := func(why string) *werr { return &werr{release.ReasonBad, why} }
 	br := bufio.NewReader(f)
-	gz, err := gzip.NewReader(br) // br is a ByteReader: gzip adds no buffer of its own
+	gz0, err := gzip.NewReader(br) // br is a ByteReader: gzip adds no buffer of its own
 	if err != nil {
 		return bad("not gzip")
 	}
-	gz.Multistream(false)
+	gz0.Multistream(false)
+	// §3.7.5-4: decompressed total <= 256 KiB + 64 KiB + key 9 + the target root partition + 1 MiB (tar headers,
+	// padding and the end blocks fit in the 1 MiB) — an upload cannot make the root worker inflate without end
+	total := int64(maxSums) + int64(maxMeta) + int64(min(r.BootTotal, 1<<40)) + slotMax + 1<<20
+	// at the bound the stream just ends: a cut tar member or the bytes left after it refuse the payload below
+	gz := io.LimitReader(gz0, total)
 	tr := tar.NewReader(gz)
 	readSmall := func(name string, max int64) ([]byte, *werr) {
 		h, err := tr.Next()
@@ -490,6 +546,9 @@ func (n *Node) scan(f *os.File, r *release.Release, wd string, root io.Writer, s
 		if h.Name == "root.squashfs" {
 			if !listed || h.Size != mSize {
 				return bad("root.squashfs not listed / size != metadata size")
+			}
+			if h.Size > slotMax {
+				return bad("root.squashfs is larger than the target root partition")
 			}
 			hs := sha256.New()
 			var dst io.Writer = hs
@@ -633,6 +692,9 @@ func (n *Node) updateApply(signer []byte, body cbor.Map) (cbor.Map, *Error) {
 	boot := u.sys.BootID()
 	tgt := other(u.sys.ActiveSlot())
 	si, ok := u.slotInfoOf(tgt, true)
+	if !ok && u.slotBusy14(tgt) {
+		return nil, fail(EBusy, "the slot lock is held (batman-slot bootinfo rc 14)")
+	}
 	if !ok || si.Bad || si.Verified != hex.EncodeToString(sha)+" "+boot {
 		return nil, failR(EReject, 15, "the target slot is not verified for this sha in this boot")
 	}

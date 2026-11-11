@@ -125,3 +125,33 @@ func TestSlotNamespace(t *testing.T) {
 		t.Fatalf("SlotWrite ran in namespace %q: want a private one", nsOf(out))
 	}
 }
+
+// RootBytes: the slot's root partition from sysfs (512 B sectors): A = mmcblk0p2, B = mmcblk0p4 (batman-slot's layout)
+func TestRootBytes(t *testing.T) {
+	d := t.TempDir()
+	os.MkdirAll(filepath.Join(d, "mmcblk0p2"), 0o755)
+	os.MkdirAll(filepath.Join(d, "mmcblk0p4"), 0o755)
+	write(t, filepath.Join(d, "mmcblk0p2"), "size", "1048576\n", 0o644)
+	write(t, filepath.Join(d, "mmcblk0p4"), "size", "2097152\n", 0o644)
+	if v, ok := rootBytesIn(d, "A"); !ok || v != 512<<20 {
+		t.Fatalf("A: %d %v", v, ok)
+	}
+	if v, ok := rootBytesIn(d, "B"); !ok || v != 1<<30 {
+		t.Fatalf("B: %d %v", v, ok)
+	}
+	for _, s := range []string{"C", ""} {
+		if _, ok := rootBytesIn(d, s); ok {
+			t.Fatalf("slot %q accepted", s)
+		}
+	}
+	for _, bad := range []string{"", "x", "0", "-5", "9999999999999"} {
+		write(t, filepath.Join(d, "mmcblk0p2"), "size", bad, 0o644)
+		if _, ok := rootBytesIn(d, "A"); ok {
+			t.Fatalf("size %q accepted", bad)
+		}
+	}
+	os.RemoveAll(filepath.Join(d, "mmcblk0p4"))
+	if _, ok := rootBytesIn(d, "B"); ok {
+		t.Fatal("a missing partition accepted")
+	}
+}

@@ -154,6 +154,9 @@ func TestBulkTmpfs(t *testing.T) {
 	if err := bulkTmpfsAt(plain); err == nil {
 		t.Fatal("a plain directory accepted")
 	}
+	if _, ok := bulkCapacityAt(plain); ok {
+		t.Fatal("a capacity for a plain directory")
+	}
 	os.Symlink(plain, filepath.Join(d, "link"))
 	if err := bulkTmpfsAt(filepath.Join(d, "link")); err == nil {
 		t.Fatal("a symlink followed")
@@ -170,6 +173,9 @@ func TestBulkTmpfs(t *testing.T) {
 	mnt(plain)
 	if err := bulkTmpfsAt(plain); err != nil {
 		t.Fatalf("its own tmpfs refused: %v", err)
+	}
+	if c, ok := bulkCapacityAt(plain); !ok || c != 1<<20 {
+		t.Fatalf("capacity of a 1 MiB tmpfs: %d %v", c, ok)
 	}
 	if err := bulkTmpfsAt(filepath.Join(d, "link")); err == nil {
 		t.Fatal("a symlink to a real tmpfs mount followed")

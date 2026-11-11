@@ -608,3 +608,39 @@ func TestHTTPHandshakeOwnQuota(t *testing.T) {
 		t.Fatal("an HTTP handshake over HTTP's quota")
 	}
 }
+
+// review r1 B-m7: an empty /msg with nothing queued answers 204 within httpFetchWait and the session goes on (it is
+// not held for the request timeout and then killed)
+func TestHTTPEmptyFetchDoesNotHold(t *testing.T) {
+	h := &hfield{healthy: true}
+	windowField(h)
+	r := newHTTPRig(t, h)
+	r.waitListening(true, "window")
+	p := r.owner()
+	start := time.Now()
+	st, _, _ := r.post("/batman/v1/msg", p.id, nil)
+	if st != http.StatusNoContent || time.Since(start) > httpFetchWait+time.Second {
+		t.Fatalf("empty fetch with nothing queued: HTTP %d after %s (want 204 within %s)", st, time.Since(start), httpFetchWait)
+	}
+	if code, _ := p.do("info", cbor.M()); code != 0 {
+		t.Fatalf("the session did not survive an empty fetch: %d", code)
+	}
+}
+
+// Stop returns only after the HTTP side closed its listener and sessions (K10's 500 ms; review r1 race: the loop
+// logged after the test ended)
+func TestHTTPStopWaits(t *testing.T) {
+	h := &hfield{healthy: true}
+	windowField(h)
+	r := newHTTPRig(t, h)
+	r.waitListening(true, "window")
+	r.s.Stop()
+	select {
+	case <-r.s.httpDone:
+	default:
+		t.Fatal("Stop returned before the HTTP loop ended")
+	}
+	if r.listening() {
+		t.Fatal("still listening after Stop")
+	}
+}

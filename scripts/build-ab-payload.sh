@@ -69,8 +69,9 @@ SQ_BYTES=$(wc -c < "$SQ" | tr -dc '0-9')
 # #254 P3 §3.7.2: release = the rootfs's own BATMAN_VERSION (the app update checks it against the signed version).
 # Without it (no unsquashfs here, or a rootfs without the stamp) the payload still installs by ssh sysupgrade; the
 # app path refuses it (the node's worker wants metadata release = S's version).
-REL=""
-command -v unsquashfs >/dev/null 2>&1 && REL=$(unsquashfs -cat "$SQ" etc/batman-build 2>/dev/null | sed -n 's/^BATMAN_VERSION=//p' | head -1)
+US=${UNSQUASHFS:-unsquashfs}
+command -v "$US" >/dev/null 2>&1 || fail "no unsquashfs ($US): cannot read the rootfs's BATMAN_VERSION for metadata release= (set UNSQUASHFS=)"
+REL=$("$US" -cat "$SQ" etc/batman-build 2>/dev/null | sed -n 's/^BATMAN_VERSION=//p' | head -1)
 case "$REL" in *[!A-Za-z0-9.+_-]*) fail "BATMAN_VERSION '$REL' in the rootfs has characters a version cannot have" ;; esac
 [ -n "$REL" ] || echo "WARN: no BATMAN_VERSION in $SQ — metadata has no release= (installable by ssh sysupgrade only)" >&2
 { printf 'board=%s\nversion=%s\nsize=%s\n' "$BOARD" "$(date +%Y%m%d-%H%M%S)" "$SQ_BYTES"; [ -n "$REL" ] && printf 'release=%s\n' "$REL"; } > "$T/metadata"
