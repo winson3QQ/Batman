@@ -22,7 +22,8 @@ PDIR=/opt/batdata/dv-prov/payload-$RUN
 BFAT=/dev/mmcblk0p3
 # #254 S5 (254-p3-impl §3.7.3): a boot FAT is mounted only under the slot lock (the flock batman-slot write / arm /
 # bootinfo hold), or a concurrent slot write meets EBUSY mid-write: SLOTLK (scripts/lib/slotlock-254.sh, sourced by prov-254.sh;
-# bounded). A lock it cannot get = SLOTLK-BUSY, nothing mounted -> INVALID, not a FAIL of the image.
+# bounded). A lock it cannot get = SLOTLK-BUSY, nothing mounted -> INVALID, not a FAIL of the image; held by an orphan
+# (SLOTLK-BUSY LEAK, slk_leak: a leaked fd 9 blocks every slot verb) -> FAIL (review r3 A-MAJOR-2).
 NONEO="-o BatchMode=yes -o ConnectTimeout=6 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=none,publickey -o IdentitiesOnly=yes -i $LABKEY -o LogLevel=ERROR"
 MACW=$(echo "$MAC" | tr ':' '-')
 FIP=""
@@ -59,6 +60,7 @@ chain0(){
 	PR_WROTE_B=1
 	o=$(q "${SLOTLK}m=\$(mktemp -d /tmp/run/batman-dv/c0.XXXXXX) && mount -t vfat $BFAT \$m && { c0=\$(sha256sum < \$m/cmdline.txt | cut -c1-16); grep -q batman_bypass \$m/cmdline.txt || sed -i '1s/\$/ batman_bypass=1/' \$m/cmdline.txt; sync; echo \"C0=\$c0 C1=\$(sha256sum < \$m/cmdline.txt | cut -c1-16) LINE=\$(cat \$m/cmdline.txt)\"; umount \$m; }; rmdir \$m")
 	say "B cmdline.txt: $o"
+	slk_leak "$o" && { no "B cmdline edit not done, the slot flock is held by an orphan: $(grep '^SLOTLK-BUSY' <<< "$o")"; q "$DISARM; rm -f $HOLDF" >/dev/null; return 1; }
 	slk_busy "$o" && { inv "B cmdline edit not done: $(grep '^SLOTLK-BUSY' <<< "$o")"; q "$DISARM; rm -f $HOLDF" >/dev/null; return 1; }
 	case "$o" in *"batman_bypass=1"*"batman_slot=B"*|*"batman_slot=B"*"batman_bypass=1"*) ok "B's cmdline.txt carries batman_bypass=1 (${o%% LINE=*})" ;; *) no "B cmdline edit: $o"; q "$DISARM; rm -f $HOLDF" >/dev/null; return 1 ;; esac
 	[ "$(qr "grep -c '^$BFAT ' /proc/mounts")" = 0 ] || { no "B's boot FAT still mounted"; return 1; }

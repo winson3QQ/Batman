@@ -4,7 +4,8 @@
 # reboots change the boot_id, rootB's head saved / restored), and answers chosen slot-locked calls (SLOTLK: the n-th
 # call carrying `slk_take || exit 1`) with SLOTLK-BUSY, as the node lib does when the lock stays held. Cases:
 #   inspect-only: clean -> rc 0; B's cmdline read busy -> those checks SKIP, rc 3 + SKIP-REASON, no FAIL; busy + a real
-#     FAIL (batman-slot verify refused) -> rc 1, the FAIL shown, the busy only a note
+#     FAIL (batman-slot verify refused) -> rc 1, the FAIL shown, the busy only a note; busy because an orphan holds
+#     the lock (SLOTLK-BUSY LEAK) -> FAIL "a leaked fd 9", rc 1 (review r3 A-MAJOR-2)
 #   destructive: clean -> rc 0, bootB restored; the restore's mv busy once -> retried, restored, rc 0; the restore busy
 #     for good -> FAIL "NOT restored", rc 1 (never INVALID / SKIP); the staging busy -> the fw-fallback case SKIP, rc 3,
 #     bootB left as it was
@@ -23,6 +24,7 @@ c=${*: -1}
 case "$c" in *'slk_take || exit 1'*)
 	n=$(( $(cat "$ST/lkn" 2>/dev/null || echo 0) + 1 )); echo $n > "$ST/lkn"
 	if grep -qx "$n" "$ST/busy" 2>/dev/null || { [ -f "$ST/busyfrom" ] && [ "$n" -ge "$(cat "$ST/busyfrom")" ]; }; then
+		[ -f "$ST/leak" ] && { echo "SLOTLK-BUSY LEAK the slot flock is held >= 25 s by 812:sleep — no batman-slot among its ancestors, not the harness: a leaked fd 9; every slot verb is rc 14 until it exits or the node reboots"; exit 1; }
 		echo "SLOTLK-BUSY held by another for 25 tries: 812:batman-slot:other"; exit 1; fi
 	p=${c#*'slk_take || exit 1'}
 	p=$(printf '%s' "$p" | sed -e 's#mount -t vfat[^&;]*/mnt/_ab#true#g' -e 's#umount /mnt/_ab#true#g' -e "s#/mnt/_ab#$ST/bootb#g")
@@ -70,6 +72,11 @@ has "inspect, busy + a real FAIL -> the FAIL shown" "$o" "^  FAIL batman-slot ve
 has "inspect, busy + a real FAIL -> rc 1 (not INVALID / SKIP)" "$o" "^rc=1$"
 has "inspect, busy + a real FAIL -> the busy is a note" "$o" "^NOTE: the slot lock was busy 1 time"
 hasnt "inspect, busy + a real FAIL -> no SKIP-REASON" "$o" "^SKIP-REASON"
+# review r3 A-MAJOR-2: the busy lock held by an orphan (SLOTLK-BUSY LEAK) -> FAIL, rc 1 (was SKIP, rc 3)
+reset; echo 1 > "$ST/busy"; : > "$ST/leak"; ab --inspect-only
+has "inspect, lock held by an orphan -> FAIL leaked fd 9" "$o" "^  FAIL the slot flock is held by an orphan .a leaked fd 9.: the slot flock is held >= 25 s by 812:sleep"
+has "inspect, lock held by an orphan -> rc 1" "$o" "^rc=1$"
+hasnt "inspect, lock held by an orphan -> no SKIP-REASON" "$o" "^SKIP-REASON"
 # destructive: slot-locked calls in order: 1 B cmdline read, 2 stage mv, 3 stage ls, 4 restore mv, 5 restore ls
 reset; ab --destructive
 has "destructive clean -> restored bootB" "$o" "ok   restored bootB/\{start4.elf\}"

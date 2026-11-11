@@ -44,6 +44,11 @@ skp() { SKIPB=$((SKIPB+1)); echo "  SKIP $* — the slot lock was busy: not a ca
 # B-m7: a "bootB NOT restored" must never read as "INVALID"); no FAIL but checks skipped on the busy lock = exit 3 with a
 # SKIP-REASON line (daily-validation: SKIP with the reason, never a PASS); else exit 0.
 finish() {
+  # a LEAK line (scripts/lib/slotlock-254.sh slk_leak): the lock is held by an orphan, not by a writer — the node cannot
+  # be updated (every slot verb rc 14) until it exits or the node reboots: a FAIL, never only a skip (review r3 A-MAJOR-2)
+  if grep -q '^SLOTLK-BUSY LEAK' "$BUSYF" 2>/dev/null; then
+    bad "the slot flock is held by an orphan (a leaked fd 9): $(grep -m1 '^SLOTLK-BUSY LEAK' "$BUSYF" | cut -c18-)"
+  fi
   echo "================ $PASS passed, $FAIL failed, $WARN warn, $SKIPB skipped (slot lock busy) ================"
   if [ -s "$BUSYF" ]; then echo "NOTE: the slot lock was busy $(wc -l < "$BUSYF") time(s):"; sed 's/^/  /' "$BUSYF"; fi
   [ "$FAIL" -gt 0 ] && exit 1
@@ -81,7 +86,8 @@ is_slot() { [[ ${1:-} =~ ^[AB]$ ]]; }
 # #254 S5 (254-p3-impl §3.7.3): a boot FAT is mounted only under the slot lock (the flock batman-slot write / arm /
 # bootinfo hold), or a concurrent slot write meets EBUSY mid-write: SLOTLK (scripts/lib/slotlock-254.sh — the one copy;
 # bounded wait, ~25 s). A lock it cannot get prints SLOTLK-BUSY and mounts nothing: recorded in $BUSYF; the checks that
-# needed that read are SKIP (skp), never a card FAIL; a restore step retries (bootb_rw_retry) and FAILs only when it
+# needed that read are SKIP (skp), never a card FAIL — but a "SLOTLK-BUSY LEAK" (an orphan holds the lock) is one FAIL
+# in finish; a restore step retries (bootb_rw_retry) and FAILs only when it
 # still cannot run. 60 s ssh timeout for these: the bounded wait plus the FAT work.
 # shellcheck source=scripts/lib/slotlock-254.sh
 . "$(dirname "$0")/lib/slotlock-254.sh" || exit 2

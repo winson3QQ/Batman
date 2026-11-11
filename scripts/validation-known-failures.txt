@@ -34,12 +34,12 @@ prov-netjoin-254	^FAIL prov-netjoin-254: L71: pre-P2 image \(no batman-provd\) �
 prov-rpa-254	^FAIL prov-rpa-254: no batman-provd on 04 \([0-9][^)]*\): a pre-P2 image$	254	expires=2026-11-30
 chain1-254	^FAIL \[s5\] trial: pre-P2 image \(no batman-provd\) — the provd-side assertions did not run$	254	expires=2026-11-30
 # #254 P3 stub tests (tests/prov-p3, harness first #290): until feat/254-p3 lands, the product in a main checkout predates
-# P3's settings / status / ssid persistence and test-prov-p1-stubs prints one line per missing piece. Expiry = an
-# ESTIMATE of the P3 merge + 14 days (nobody committed to a date); after it these lines are NEW again.
+# P3's settings / status / ssid persistence and test-prov-p1-stubs prints one line per missing piece. Expires
+# 2026-12-15 (user decision 2026-11-12: S5 expected on 02/04 by early December); after it these lines are NEW again.
 prov-p1-stubs	^FAIL prov-p1-stubs: joinwatch in this checkout predates P3 status \(no verdict_code\)	254	expires=2026-12-15
 prov-p1-stubs	^FAIL prov-p1-stubs: halow-setkey in this checkout predates P3 settings \(no --ap-ssid\)	254	expires=2026-12-15
 prov-p1-stubs	^FAIL prov-p1-stubs: batman-config-save in this checkout does not persist the AP ssid	254	expires=2026-12-15
 # #254 P3 S5 (review r2 B-MAJOR-1): prov-fw-boot-254 (daily, every fleet node) stops with ONE line on a node whose image
-# predates S5 (batman-slot without the slot flock). Expiry = a PLACEHOLDER (the same day as the P3 entries above:
-# nobody committed to when the fleet runs S5 — the user sets it); after it a pre-S5 node is a NEW failure again.
+# predates S5 (batman-slot without the slot flock). Expires 2026-12-15 (user decision 2026-11-12: S5 expected on 02/04
+# by early December; the same day as the P3 entries above); after it a pre-S5 node is a NEW failure again.
 prov-fw-boot-254	^FAIL [^ ]+: prov-fw-boot-254: pre-S5 image [^ ]+: batman-slot has no slot flock \(slot_lock\)	254	expires=2026-12-15

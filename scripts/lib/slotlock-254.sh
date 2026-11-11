@@ -4,9 +4,12 @@
 #   SLOTLK   the head of a remote command: scripts/node/slotlock-lib-254.sh + `slk_take || exit 1` — the FAT work after
 #            it runs only with the slot flock held (fd 9, until the remote shell exits). When the lock cannot be had
 #            (held for SLK_TRIES s, run dir unusable, open fails) the output holds a "SLOTLK-BUSY <why>" line and
-#            nothing else ran: the caller judges INVALID (slk_busy), never a product FAIL.
+#            nothing else ran: the caller judges INVALID (slk_busy) — except a LEAK line (slk_leak), which is FAIL.
 #   SLK_LIB  the node lib alone (for slk_free / slk_ticks in a remote command)
-#   slk_busy <output>   rc 0 when <output> carries a SLOTLK-BUSY line
+#   slk_busy <output>   rc 0 when <output> carries a SLOTLK-BUSY line (nothing was done on the node)
+#   slk_leak <output>   rc 0 when that line is "SLOTLK-BUSY LEAK": the lock is held by an orphan with no batman-slot
+#                       among its ancestors (a leaked fd 9: every slot verb is rc 14 until it exits or the node
+#                       reboots) — the caller judges FAIL, not INVALID (review r3 A-MAJOR-2). Check it before slk_busy.
 # A missing node lib is an error here (rc 1 from the `.`), never an empty prefix that would mount without the lock.
 _slk_f=$(dirname "${BASH_SOURCE[0]}")/../node/slotlock-lib-254.sh
 if [ -r "$_slk_f" ]; then
@@ -15,11 +18,13 @@ if [ -r "$_slk_f" ]; then
 slk_take || exit 1
 "
 	slk_busy(){ grep -q '^SLOTLK-BUSY' <<< "$1"; }
+	slk_leak(){ grep -q '^SLOTLK-BUSY LEAK' <<< "$1"; }
 else
 	echo "FAIL scripts/lib/slotlock-254.sh: $_slk_f missing — refusing to mount a boot FAT without the slot lock" >&2
 	SLOTLK='echo "SLOTLK-BUSY the harness lacks scripts/node/slotlock-lib-254.sh"; exit 1
 '
 	SLK_LIB=$SLOTLK
 	slk_busy(){ grep -q '^SLOTLK-BUSY' <<< "$1"; }
+	slk_leak(){ grep -q '^SLOTLK-BUSY LEAK' <<< "$1"; }
 	false
 fi

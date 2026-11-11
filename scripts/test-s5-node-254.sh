@@ -10,9 +10,14 @@
 #     recorded, not judged; FB6: a verb whose child keeps fd 9 -> FAIL (the negative control of the lock-release
 #     check), also when the verb refuses (rc 16); a verb that refuses the node's state AFTER taking the lock (rc 16 /
 #     17) -> still judged, PASS; detect_layout's 17 before the lock -> INVALID without a lock file, PASS with one; a
-#     verb rc 0 that never takes the lock -> FAIL; a verb leaving B's FAT mounted -> FAIL; the lock held from outside
-#     for 5 tries -> INVALID; an earlier run's leftover /mnt/slotboot.<dead pid> -> unmounted (INFO), a live
-#     batman-slot's mount untouched; the verb pids recorded
+#     verb rc 0 that never takes the lock -> FAIL; a verb leaving B's FAT mounted -> FAIL; the lock held for 5 tries
+#     by an orphan (no batman-slot ancestor, not the harness) -> FAIL "a leaked fd 9", by a batman-slot -> INVALID
+#     (review r3 A-MAJOR-2); rc 14 x 5 with the lock free and B's FAT mounted at /mnt/_ab -> FAIL naming it, with
+#     nothing mounted elsewhere -> INVALID (review r3 B-M1); a verb's child started by `env -i` (no token) keeping fd 9
+#     -> FAIL (the step window, review r3 A-m1); an uncommitted trial autocommit gates -> NOT-RUN, no verb run; a trial
+#     nobody gates -> run (review r3 B-m5); an earlier run's leftover /mnt/slotboot.<dead pid> -> unmounted (INFO), a
+#     live batman-slot's mount untouched, an UNRECORDED dead pid's mount untouched; a pid dir of mode 0755 or of
+#     another owner -> not used (review r3 B-m1); the verb pids recorded
 #   chk_fw_boot_254 / s5_sum: PASS -> rc 0; INVALID -> SKIP-REASON rc 3; FAIL or no verdict -> rc 1; no node -> rc 1
 #   release-key-254 (rk_judge, LoadTrust's rule): T + serial + bench stamp -> PASS; T without the stamp / stamp without
 #     T / unknown stamp value / bench without .bench / no stamp / not a point / pub without serial / serial without
@@ -57,6 +62,7 @@ EOF
 # provd: a real process with this run's own name (Ubuntu's busybox ash runs its own pidof applet before PATH; the node's
 # busybox has no SH_STANDALONE, but a real process works for both). Killed by pid, never by name.
 PN=bp${T##*.}; export FB_PROVD=$PN FB_UMOUNT=$B/umount   # bp + mktemp's random suffix: unique per run
+FB_UID=$(id -u); export FB_UID   # the pid directory's owner (root on a node)
 cp "$(command -v sleep)" "$T/$PN"
 # the long sleeps (a verb's leaked child, the outside holder): a copy of sleep named for this run, so another
 # instance's (or an older version's) kill-by-name cannot reach them
@@ -65,14 +71,18 @@ provd_up(){ [ -n "${PP:-}" ] && kill -0 "$PP" 2>/dev/null || { "$T/$PN" 300 & PP
 provd_down(){ [ -n "${PP:-}" ] && kill "$PP" 2>/dev/null; wait "$PP" 2>/dev/null; PP=""; sleep 0.2; }
 # batman-slot: modes (in $ST/slot) good | leak (a child keeps fd 9) | nolock (rc 0, no lock) | die17 (detect_layout's 17,
 # before the lock) | rc16 / rc17 (a refusal after the lock) | leak16 (both) | mountleft (bootinfo B leaves its FAT mounted)
+# | envleak (a child started by `env -i`, without the token, keeps fd 9) | rc14 (tboot_elsewhere: rc 14 after the lock).
+# is-trial: rc 0 when $ST/trial exists, else 1 (it takes no lock); every call is logged in $ST/calls
 cat > "$B/batman-slot" <<'EOF'
 #!/bin/sh
-. "$SLK_RD"; m=$(cat "$ST/slot" 2>/dev/null)
+. "$SLK_RD"; m=$(cat "$ST/slot" 2>/dev/null); echo "$*" >> "$ST/calls"
+[ "$1" = is-trial ] && { [ -f "$ST/trial" ] && exit 0; exit 1; }
 case "$1" in bootinfo | precheck-node) ;; *) exit 2 ;; esac
 [ "$m" = die17 ] && exit 17
 [ "$m" = nolock ] && exit 0
 batman_rundir; exec 9>>"$RUNDIR/batman-slot.flock"; flock -n 9 || exit 14
-case "$m" in leak | leak16) "$SLP" 3 & echo $! >> "$ST/kids" ;; esac
+[ "$m" = rc14 ] && exit 14
+case "$m" in leak | leak16) "$SLP" 3 & echo $! >> "$ST/kids" ;; envleak) env -i "$SLP" 3 & echo $! >> "$ST/kids" ;; esac
 p=$$; [ "$m" = mountleft ] && [ "$1 $2" = "bootinfo B" ] && echo "/dev/mmcblk0p3 /mnt/slotboot.$p vfat ro,relatime 0 0" >> "$FB_ROOT/proc/mounts"
 case "$m" in rc16 | leak16) exit 16 ;; rc17) exit 17 ;; esac
 [ "$1" = precheck-node ] && exit 12
@@ -115,6 +125,10 @@ good(){
 	printf '%s\n' "$HTTP" > "$FR/rom/usr/share/nftables.d/ruleset-post/batman-http.nft"; cp "$FR/rom/usr/share/nftables.d/ruleset-post/batman-http.nft" "$FR/usr/share/nftables.d/ruleset-post/"
 	printf '%s\n' "$INIT" > "$FR/etc/init.d/batman-provd"
 	printf 'proc /proc proc rw 0 0\n%s\n' "$MNT" > "$FR/proc/mounts"
+	# the slot boot FATs as batman-slot's tboot_elsewhere reads them: p1 (A) at /boot only
+	mkdir -p "$FR/proc/self" "$FR/sys/class/block/mmcblk0p1" "$FR/sys/class/block/mmcblk0p3"
+	echo 179:1 > "$FR/sys/class/block/mmcblk0p1/dev"; echo 179:3 > "$FR/sys/class/block/mmcblk0p3/dev"
+	printf '22 1 0:19 / /proc rw,nosuid - proc proc rw\n31 22 179:1 / /boot rw,noatime - vfat /dev/mmcblk0p1 rw\n' > "$FR/proc/self/mountinfo"
 	echo 'table inet fw4 { }' > "$ST/nft.inet.fw4"; printf 'table inet fw4 {\n}\ninclude "/usr/share/nftables.d/ruleset-post/batman-http.nft"\n' > "$ST/fw4.out"
 	printf 'table bridge batman_http {\n\tchain input {\n\t\tiifname != "phy*" meta mark set meta mark & 0xfeffffff comment "batman-http: clear"\n\t\tiifname "phy*" meta mark set meta mark | 0x01000000 comment "batman-http: mark"\n\t}\n}\n' > "$ST/nft.bridge.batman_http"
 	printf 'table inet batman_http_in {\n\tchain input {\n\t\ttcp dport 8095 iifname != "br-ahwlan" counter packets 0 bytes 0 drop comment "batman-http: iif"\n\t\ttcp dport 8095 meta mark & 0x01000000 == 0x00000000 counter packets 0 bytes 0 drop comment "batman-http: mark-drop"\n\t}\n}\n' > "$ST/nft.inet.batman_http_in"
@@ -182,16 +196,61 @@ for s in $SHS; do
 	has "$k a live batman-slot's mount is untouched" "$(grep -c "/mnt/slotboot.$lp " "$FR/proc/mounts")" "^1$"
 	has "$k leftover run -> RESULT PASS" "$o" "^RESULT prov-fw-boot-254 PASS"
 	kill "$lp" 2>/dev/null; wait "$lp" 2>/dev/null
+	# review r3 B-m1: a mount of an UNRECORDED dead pid is not ours -> left alone (only recorded pids are ever unmounted)
+	good; d=$(deadpid); mkdir -m 700 -p "$FR/tmp/run/batman-dv"; : > "$FR/tmp/run/batman-dv/fw-boot-254.pids"
+	printf '/dev/mmcblk0p3 /mnt/slotboot.%s vfat ro 0 0\n' "$d" >> "$FR/proc/mounts"; o=$(run)
+	has "$k an unrecorded /mnt/slotboot.<dead pid> is left mounted" "$(grep -c "/mnt/slotboot.$d " "$FR/proc/mounts")" "^1$"
+	hasnt "$k unrecorded: never passed to umount" "$(cat "$ST/umount.log" 2>/dev/null)" "slotboot.$d\$"
+	hasnt "$k unrecorded: no 'unmounted' line" "$o" "unmounted /mnt/slotboot.$d"
 	good; ln -s "$T" "$FR/tmp/run/batman-dv"; o=$(run)
 	has "$k a symlinked pid dir -> not used (INFO), the run goes on" "$o" "^INFO .*FB6 .* is not a directory of ours"
 	has "$k symlinked pid dir -> RESULT PASS" "$o" "^RESULT prov-fw-boot-254 PASS"
-	# held from outside the whole time: rc 14 x 5 for each verb -> INVALID (a fast sleep for this case only). The holder
-	# IS the sleep (exec), so killing its pid frees the lock; the case starts only once it holds the lock.
+	# review r3 B-m1: mode 0755, or another owner -> not ours: nothing recorded, a recorded dead pid's mount not touched
+	for c in mode owner; do
+		good; d=$(deadpid); mkdir -m 700 -p "$FR/tmp/run/batman-dv"; echo "$d" > "$FR/tmp/run/batman-dv/fw-boot-254.pids"
+		printf '/dev/mmcblk0p3 /mnt/slotboot.%s vfat ro 0 0\n' "$d" >> "$FR/proc/mounts"
+		if [ $c = mode ]; then chmod 755 "$FR/tmp/run/batman-dv"; o=$(run); else o=$(FB_UID=$((FB_UID + 4242)) run); fi
+		has "$k pid dir of another $c -> not used (INFO)" "$o" "^INFO .*FB6 .* is not a directory of ours"
+		has "$k pid dir of another $c -> its recorded mount not touched" "$(grep -c "/mnt/slotboot.$d " "$FR/proc/mounts")" "^1$"
+		has "$k pid dir of another $c -> no verb pid written to it" "$(cat "$FR/tmp/run/batman-dv/fw-boot-254.pids")" "^$d\$"
+	done
+	# review r3 A-m1: a child the verb started with `env -i` (no DV_SLK token) keeps fd 9 -> still the verb's: FAIL
+	good; echo envleak > "$ST/slot"; o=$(run)
+	has "$k an env -i child keeping fd 9 -> FAIL FB6 (the step window)" "$o" "^FAIL .*FB6 batman-slot bootinfo A \(rc 0\) left the slot flock held by its own process"
+	# review r3 B-m5: a trial autocommit gates -> NOT-RUN, no verb run; a trial nobody gates -> the verbs run
+	good; : > "$ST/trial"; mkdir -p "$T/ac" "$T/run/batman/autocommit.run"; cp "$(command -v sleep)" "$T/ac/batman-autocommit"
+	"$T/ac/batman-autocommit" 30 & ap=$!; echo "$ap" >> "$T/pids"; echo "$ap" > "$T/run/batman/autocommit.run/pid"; o=$(run)
+	has "$k a trial autocommit gates -> NOT-RUN line" "$o" "^NOT-RUN prov-fw-boot-254: FB6 this boot is an uncommitted trial .* batman-autocommit \(pid $ap\)"
+	has "$k gated trial -> no lock-holding verb run" "$(grep -cv '^is-trial' "$ST/calls")" "^0$"
+	has "$k gated trial -> RESULT PASS (FB1-FB5 judged)" "$o" "^RESULT prov-fw-boot-254 PASS"
+	kill "$ap" 2>/dev/null; wait "$ap" 2>/dev/null
+	good; : > "$ST/trial"; o=$(run)
+	has "$k a trial nobody gates -> the verbs run, judged" "$(grep -c '^PASS .*FB6 .*free <= 1 s' <<< "$o")" "^3$"
+	has "$k ungated trial -> INFO" "$o" "^INFO .*FB6 an uncommitted trial .* that no batman-autocommit gates"
+	# the lock held through the tries (a fast sleep for these cases only). The holder IS the process (exec), so killing
+	# its pid frees the lock; each case starts only once it holds the lock.
+	# review r3 A-MAJOR-2: by an orphan (no batman-slot among its ancestors, not the harness) -> FAIL, a leaked fd 9
 	good; mkdir -p "$T/run/batman"; chmod 700 "$T/run/batman"; ( flock -x 7; exec "$SLP" 30 ) 7>>"$T/run/batman/batman-slot.flock" & hp=$!; echo "$hp" >> "$T/pids"
 	i=0; while flock -n "$T/run/batman/batman-slot.flock" true && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 	printf '#!/bin/sh\nexec /bin/sleep 0.05\n' > "$B/sleep"; chmod +x "$B/sleep"; o=$(run); rm -f "$B/sleep"; kill $hp 2>/dev/null; wait $hp 2>/dev/null
-	has "$k lock held from outside -> INVALID FB6" "$o" "^INVALID .*FB6 batman-slot bootinfo A: the lock stayed busy"
-	has "$k held from outside -> RESULT INVALID" "$o" "^RESULT prov-fw-boot-254 INVALID"
+	has "$k lock held by an orphan -> FAIL FB6 leaked fd 9" "$o" "^FAIL .*FB6 batman-slot bootinfo A: the slot flock is held through 5 tries by $hp:${SLP##*/} .* a leaked fd 9"
+	has "$k held by an orphan -> RESULT FAIL" "$o" "^RESULT prov-fw-boot-254 FAIL"
+	# by a batman-slot (a legitimate writer, e.g. a 600 s write) -> INVALID
+	good; mkdir -p "$T/run/batman" "$T/live"; chmod 700 "$T/run/batman"; cp "$(command -v sleep)" "$T/live/batman-slot"
+	( flock -x 7; exec "$T/live/batman-slot" 30 ) 7>>"$T/run/batman/batman-slot.flock" & hp=$!; echo "$hp" >> "$T/pids"
+	i=0; while flock -n "$T/run/batman/batman-slot.flock" true && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+	printf '#!/bin/sh\nexec /bin/sleep 0.05\n' > "$B/sleep"; chmod +x "$B/sleep"; o=$(run); rm -f "$B/sleep"; kill $hp 2>/dev/null; wait $hp 2>/dev/null
+	has "$k lock held by a batman-slot -> INVALID FB6 (a legitimate writer)" "$o" "^INVALID .*FB6 batman-slot bootinfo A: the lock stayed busy for 5 tries, held by a legitimate writer .* $hp:batman-slot"
+	has "$k held by a batman-slot -> RESULT INVALID" "$o" "^RESULT prov-fw-boot-254 INVALID"
+	# review r3 B-M1: rc 14 x 5 with the lock free and B's boot FAT mounted at /mnt/_ab (tboot_elsewhere) -> FAIL
+	good; echo rc14 > "$ST/slot"; echo '40 31 179:3 / /mnt/_ab ro,relatime - vfat /dev/mmcblk0p3 ro' >> "$FR/proc/self/mountinfo"
+	printf '#!/bin/sh\nexec /bin/sleep 0.05\n' > "$B/sleep"; chmod +x "$B/sleep"; o=$(run); rm -f "$B/sleep"
+	has "$k rc 14, lock free, B's FAT at /mnt/_ab -> FAIL naming it" "$o" "^FAIL .*FB6 batman-slot bootinfo A: rc 14 x 5 with the slot flock free — mmcblk0p3 \(179:3\) is mounted at /mnt/_ab: every slot verb"
+	has "$k B's FAT elsewhere -> RESULT FAIL" "$o" "^RESULT prov-fw-boot-254 FAIL"
+	good; echo rc14 > "$ST/slot"
+	printf '#!/bin/sh\nexec /bin/sleep 0.05\n' > "$B/sleep"; chmod +x "$B/sleep"; o=$(run); rm -f "$B/sleep"
+	has "$k rc 14, lock free, nothing mounted elsewhere -> INVALID (cannot tell)" "$o" "^INVALID .*FB6 batman-slot bootinfo A: rc 14 x 5 but the slot flock is free and no slot boot FAT is mounted outside /boot"
+	has "$k rc 14, nothing elsewhere -> RESULT INVALID" "$o" "^RESULT prov-fw-boot-254 INVALID"
 done
 # ---- host side: chk_fw_boot_254 aggregation (ssh stub) and rk_judge
 # shellcheck source=scripts/dv/s5-254.sh
@@ -208,6 +267,7 @@ fb(){ printf '%s\n' "$@" > "$ST/ssh.out"; o=$(PATH="$B:$PATH" chk_fw_boot_254 n1
 fb "PASS prov-fw-boot-254: x" "RESULT prov-fw-boot-254 PASS"; has "host: PASS -> rc 0" "$o" "rc=0$"
 fb "INVALID prov-fw-boot-254: busy" "RESULT prov-fw-boot-254 INVALID"; has "host: INVALID -> SKIP-REASON, rc 3" "$(echo $o)" "SKIP-REASON: prov-fw-boot-254: 1 node.* INVALID.* rc=3$"
 fb "FAIL prov-fw-boot-254: x" "RESULT prov-fw-boot-254 FAIL"; has "host: FAIL -> rc 1" "$o" "rc=1$"
+fb "NOT-RUN prov-fw-boot-254: FB6 trial" "RESULT prov-fw-boot-254 PASS"; has "host: a NOT-RUN line carries the node" "$o" "^NOT-RUN n1: prov-fw-boot-254: FB6 trial"
 fb "PASS prov-fw-boot-254: x"; has "host: no RESULT line -> FAIL rc 1" "$(echo $o)" "FAIL prov-fw-boot-254: n1: no verdict.* rc=1$"
 o=$(chk_fw_boot_254 2>&1; echo "rc=$?"); has "host: no node -> FAIL rc 1" "$(echo $o)" "FAIL prov-fw-boot-254: no node checked rc=1"
 # pre-S5 end to end (the node script on the pre-S5 fixture behind the ssh stub) -> the suite log -> kf_classify against

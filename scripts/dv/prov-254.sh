@@ -77,10 +77,13 @@ pr_slot_ticks(){ qr "$SLK_LIB
 slk_ticks"; }
 # pr_slot_free <what ran> <ticks before it>: after a step whose helper ran a lock-holding batman-slot verb reported done,
 # the flock is free within 1 s and no process started during the step still has the lock file open (a child that kept
-# fd 9: the missing `9>&-`). Held only by a process from outside the step = contention: INVALID, not judged. A
+# fd 9: the missing `9>&-`). Held only by a legitimate process from outside the step (a batman-slot or a child of one,
+# a harness holder) = contention: INVALID, not judged; held by an orphan (slk_free rc 4: no batman-slot among its
+# ancestors, in two scans 1 s apart) = a leaked fd 9 from anyone, FAIL (review r3 A-MAJOR-2). A
 # batman-slot started during the step by someone else (no batman-provhelper among its ancestors: autocommit,
-# joinwatch, an operator) is "another writer" (slk_scan: writer) -> INVALID too, not a leak (review r2 B-m3). Limit: a
-# child such a writer left behind (not named batman-slot, often re-parented to init) still counts as the step's.
+# joinwatch, an operator) is "another writer" (slk_scan: writer) -> INVALID too, not a leak (review r2 B-m3), and so is a child of such a
+# LIVE writer (review r3). Limit: a child such a writer left behind after it exited (re-parented to init) still counts as
+# the step's.
 pr_slot_free(){
 	local o
 	case "$2" in "" | *[!0-9]*) inv "lock check after $1: no start time [$2]"; return 1 ;; esac
@@ -90,6 +93,7 @@ slk_free 1 - $2:\$(slk_ticks)"); say "slot lock after $1: $o"
 		"SLKFREE ok"*) ok "the slot flock is free <= 1 s after $1 (${o#SLKFREE })" ;;
 		"SLKFREE leak"*) no "the slot flock is still held after $1 by what the step started: ${o#SLKFREE leak }" ;;
 		"SLKFREE nofile"*) no "no slot lock file after $1 (the verbs it ran take the lock)" ;;
+		"SLKFREE orphan"*) no "the slot flock is held by an orphan after $1 (no batman-slot among its ancestors, not the harness: a leaked fd 9 — every slot verb is rc 14 until it exits or the node reboots): ${o#SLKFREE orphan }" ;;
 		"SLKFREE other"*":writer"*) inv "the slot flock is held by another writer after $1 (a batman-slot the helper did not start — contention, not judged): ${o#SLKFREE other }" ;;
 		"SLKFREE other"*) inv "the slot flock is held by another process after $1 (contention, not judged): ${o#SLKFREE other }" ;;
 		*) inv "the slot-lock check after $1 printed [$o]" ;;

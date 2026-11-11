@@ -7,8 +7,8 @@
 #                   15 -> INVALID (pre-S5 node / old provclient); empty -> INVALID
 #   pr_cddl_nu      the CDDL network/update capability: the helper's "update shape" text -> go on; none -> INVALID
 #                   "pre-CDDL"; no helper / no answer -> INVALID; never a PASS or FAIL line
-#   pr_slot_free    SLKFREE ok -> PASS; leak / nofile -> FAIL; other / another writer / garbage / no start time ->
-#                   INVALID
+#   pr_slot_free    SLKFREE ok -> PASS; leak / nofile / orphan (review r3 A-MAJOR-2) -> FAIL; other / another
+#                   writer / garbage / no start time -> INVALID
 #   pr_precheck_ran UD-L's gate (node/update.go:249-331): ok=true, or a refusal from precheck-node or later (1 2 5 8 12 17
 #                   21) -> judged; 3 4 6 24 (before it), 11 (cannot tell), code != 0, garbage -> not judged, with why
 #   nj              a NOT-JUDGED line, counted in the RESULT line, the UNIT verdict unchanged
@@ -62,6 +62,7 @@ sf "SLKFREE other holders=900:batman-slot:other"; want "contention -> INVALID" "
 sf ""; want "no answer -> INVALID" "$o" "INVALID *printed \[\]*fails=0 invalid=1"
 sf "SLKFREE ok t=0" ""; want "no start time -> INVALID, the node is not asked" "$o" "INVALID *no start time*fails=0 invalid=1"
 sf "SLKFREE other holders=900:batman-slot:writer"; want "another writer in the window -> INVALID (not a leak)" "$o" "INVALID *another writer*fails=0 invalid=1"
+sf "SLKFREE orphan holders=812:sleep (no batman-slot among its ancestors, not the harness: a leaked fd 9)"; want "held by an orphan -> FAIL (review r3 A-MAJOR-2)" "$o" "FAIL *held by an orphan after x*812:sleep*fails=1 invalid=0"
 # ---- pr_precheck_ran (UD-L's gate)
 U="RESULT update.check code=0"
 for x in "ok=true reason=0" "ok=false reason=1" "ok=false reason=2" "ok=false reason=5" "ok=false reason=8" "ok=false reason=12" "ok=false reason=17" "ok=false reason=21"; do

@@ -16,9 +16,11 @@
 #                                  without a leading 0) = trusts that point; anything else (one file only, two lines, a
 #                                  bad value) = "bad": FAIL. The helper's own on-curve test is not repeated here; the
 #                                  status key 15 cross-check (rk_judge's 4th argument, prov-update-254) covers it.
-# Verdicts: any FAIL -> rc 1; else any INVALID (a node that cannot be judged: lock busy, a verb that stopped before the
-# lock) -> SKIP-REASON + rc 3 (daily-validation reports it as SKIP, as loudly as a FAIL, and the run cannot exit 0); all
-# PASS -> rc 0; no node or a node that printed no verdict -> FAIL (never an empty PASS). A pre-S5 node is a FAIL line
+# Verdicts: any FAIL -> rc 1; else any INVALID (a node that cannot be judged: the lock busy with a legitimate writer,
+# a verb that stopped before the lock; a lock held by an orphan or a boot FAT mounted outside /boot is a FAIL, review
+# r3) -> SKIP-REASON + rc 3 (daily-validation reports it as SKIP, as loudly as a FAIL, and the run cannot exit 0); all
+# PASS -> rc 0 (NOT-RUN lines are shown with the node, with no verdict of their own); no node or a node that printed no
+# verdict -> FAIL (never an empty PASS). A pre-S5 node is a FAIL line
 # "pre-S5 image <ver>" with a KNOWN entry that expires (scripts/validation-known-failures.txt; review r2 B-MAJOR-1).
 S5_SSHO=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR -o ConnectTimeout=8)
 s5_ssh(){ local n=$1 t=$2; shift 2; timeout "$t" ssh "${S5_SSHO[@]}" "root@$n" "$@" | tr -d '\r'; }
@@ -34,7 +36,7 @@ chk_fw_boot_254(){
 	for n in "$@"; do
 		c=$((c + 1))
 		o=$(cat "$REPO/scripts/node/slotlock-lib-254.sh" "$REPO/scripts/node/fw-boot-254.sh" | s5_ssh "$n" 300 sh -s 2>&1)
-		echo "$o" | sed -E "s/^(PASS|FAIL|INVALID|INFO|RESULT) /\1 $n: /"
+		echo "$o" | sed -E "s/^(PASS|FAIL|INVALID|INFO|NOT-RUN|RESULT) /\1 $n: /"
 		case "$(grep '^RESULT prov-fw-boot-254 ' <<< "$o" | tail -1)" in
 			"RESULT prov-fw-boot-254 PASS") grep -q '^FAIL' <<< "$o" && nf=$((nf + 1)) ;;
 			"RESULT prov-fw-boot-254 INVALID") grep -q '^FAIL' <<< "$o" && nf=$((nf + 1)) || ni=$((ni + 1)) ;;

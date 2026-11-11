@@ -1112,12 +1112,14 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 
 ### A.12 `prov-fw-boot-254`(R,常規全套每次執行 = 每次開機後;`scripts/dv/s5-254.sh` + `scripts/node/fw-boot-254.sh`,唯讀)
 
-S5 之前的 image(`batman-slot` 沒有 `slot_lock`)→ 一條 FAIL「pre-S5 image <版本>」,什麼都不判;`scripts/validation-known-failures.txt` 有一條 KNOWN 條目,`expires=2026-12-15`(和 P3 那三條同一天,是**佔位日期**,由使用者定),到期後 `kf_classify` 判 NEW(r2 B-MAJOR-1;離線測試 `scripts/test-s5-node-254.sh`:到期當天 KNOWN、隔天 NEW)。INVALID 只留給鎖被別人佔用、或動詞在拿鎖之前就停了。
+S5 之前的 image(`batman-slot` 沒有 `slot_lock`)→ 一條 FAIL「pre-S5 image <版本>」,什麼都不判;`scripts/validation-known-failures.txt` 有一條 KNOWN 條目,`expires=2026-12-15`(和 P3 那三條同一天;使用者 2026-11-12 決定:S5 預計 12 月初上 02 / 04),到期後 `kf_classify` 判 NEW(r2 B-MAJOR-1;離線測試 `scripts/test-s5-node-254.sh`:到期當天 KNOWN、隔天 NEW)。
+
+INVALID 只留給 harness 真的分不出來的情況:鎖被合法的寫入者(`batman-slot` 或它的子程序、harness 自己)佔用,或動詞在拿鎖之前就停了。會讓節點無法更新的產品狀態一律 FAIL(使用者的規則,r3):鎖被孤兒持有(leaked fd 9,A-MAJOR-2),或鎖是空的、但某個槽的 boot FAT 掛在 `/boot` 以外(`tboot_elsewhere` 讓每個 slot 動詞都 rc 14,B-M1)。同一套孤兒判定也用在 `slk_take`(`SLOTLK-BUSY LEAK` → ab-selftest、eh13-pre、prov-chain0 判 FAIL)和 `slk_free`(`SLKFREE orphan` → UD-L 判 FAIL)。節點正在 autocommit 把關的試用開機時,FB6 不跑動詞(一條 NOT-RUN):動詞持鎖會讓 autocommit 的 `batman-slot commit` rc 14、健康計數歸零(r3 B-m5)。
 
 **副作用**(這個單元不是嚴格唯讀;r2 A-m4):
 1. `precheck-node` 會照 sysupgrade stage 1 的方式改寫 p5 判定檔(`$RUNDIR/p5-check.rc`),寫的是當下的真值;
 2. `bootinfo B` 在 **host 的 mount namespace** 把 B 的 boot FAT 以唯讀掛在 `/mnt/slotboot.<它的 pid>`,動詞結束時由它自己的 EXIT trap 卸載(helper 跑動詞時是在私有 namespace,這裡是從 ssh 直接跑);
-3. 遠端 shell 如果在 `bootinfo B` 期間被殺(主機端 ssh 的 timeout 300 s),這個掛載可能留下來,之後每個 slot 動詞都會因 `tboot_elsewhere` 回 rc 14,直到它被卸載或重開機。清理:每個動詞的 pid 記在 `/tmp/run/batman-dv/fw-boot-254.pids`(只在這個目錄是我們自己的、不是 symlink 時才寫),下一次執行先在 slot 鎖底下卸載「記錄過的 pid、該 pid 已不是執行中的 `batman-slot`」的 `/mnt/slotboot.<pid>`,印一條 INFO;卸不掉 = FAIL。只碰自己記錄過的 pid 的掛載,別人的不動。動詞正常回來後掛載還在 = FAIL(它的 EXIT trap 沒卸載),並當場卸載;
+3. 遠端 shell 如果在 `bootinfo B` 期間被殺(主機端 ssh 的 timeout 300 s),這個掛載可能留下來,之後每個 slot 動詞都會因 `tboot_elsewhere` 回 rc 14,直到它被卸載或重開機。清理:每個動詞的 pid 記在 `/tmp/run/batman-dv/fw-boot-254.pids`(只在這個目錄是 root 的、mode 0700、不是 symlink 時才寫;r3 B-m1),下一次執行先在 slot 鎖底下卸載「記錄過的 pid、該 pid 已不是執行中的 `batman-slot`」的 `/mnt/slotboot.<pid>`,印一條 INFO;卸不掉 = FAIL。只碰自己記錄過的 pid 的掛載,沒記錄的 `/mnt/slotboot.<pid>` 不動(r3 B-m1,離線測試)。⚠️「ssh timeout 殺掉遠端 shell 會留下掛載」沒有在節點上驗證過:動詞在背景跑、輸出導到 /dev/null,多半會跑完並由自己的 EXIT trap 卸載(r3 B-m2)。動詞正常回來後掛載還在 = FAIL(它的 EXIT trap 沒卸載),並當場卸載;
 4. 寫上述 pid 檔。
 
 
@@ -1126,7 +1128,7 @@ S5 之前的 image(`batman-slot` 沒有 `slot_lock`)→ 一條 FAIL「pre-S5 ima
 | FB1 | §3.8.1 三道關 (2):include 一錯整份 fw4 失敗(F70) | fw-boot | R(每次開機後) | `inet fw4`、`bridge batman_http`、`inet batman_http_in` 都在 | S(離線 fixture:缺 fw4、缺一張表 → FAIL;`scripts/test-s5-node-254.sh`)+ FB3 |
 | FB4 | F70 reload 不重複規則 | fw-boot | R(每次開機後) | image 的 include(`/rom/usr/share/nftables.d/ruleset-post/batman-http.nft`,不手抄)裡每條帶 comment 的規則在 nft 裡正好一條;fw4 讀的 include = image 的那份 | S(離線 fixture:同一規則兩份、overlay 改過的 include、沒有 comment 的 include → FAIL) |
 | FB5 | §3.8.2 provd 的上傳 tmpfs | fw-boot | R(每次開機後) | provd 在跑 → init 的 `BDIR` 是 tmpfs、只掛一次、不是 symlink,掛載選項 = init 自己的(`nodev,nosuid,noexec,mode=0700,nr_inodes=16,size=<本板>,uid=471,gid=471`;size 以 KiB 顯示、4 KiB 頁進位);provd 沒跑 = 記錄、不判 | S(離線 fixture:少 noexec、size 不同、沒掛、疊掛、未知的板子 → FAIL;ekh-bcm2711 與 ekh-bcm2710 各一個 good) |
-| FB6 | §3.7.3 通用測試:持鎖動詞回來後 1 s 內放鎖 | fw-boot | R(每次開機後) | `batman-slot bootinfo A`、`bootinfo B`、`precheck-node`(帶 `DV_SLK` token)各自回來後 1 s 內 `flock -n` 成功,而且帶 token 的行程(動詞留下的子程序)沒有開著鎖檔。不管動詞回什麼都判鎖(r2 A-MAJOR-2):節點狀態的拒絕(precheck-node 10–12 / 13 / 15–18、`detect_layout` 在動詞之前的 17,例如 Pi 4 plain reboot 開到錯的槽)只記一條 INFO;rc 14 或只被別人持有 → 重試 5 次,仍是 → INVALID;動詞失敗而且沒有鎖檔 → INVALID(在拿鎖之前就停了);rc 0 而沒有鎖檔 → FAIL。副作用見上 | S(子程序不 `9>&-` 的變體 → FAIL,動詞回 16 時也是;拿了鎖再回 16 / 17 → PASS;拿鎖前 17、沒有鎖檔 → INVALID;rc 0 不拿鎖的變體 → FAIL;`bootinfo B` 留下掛載 → FAIL;上一輪留下的掛載 → 卸載;`scripts/test-s5-node-254.sh`、`scripts/test-slotlock-254.sh`) |
+| FB6 | §3.7.3 通用測試:持鎖動詞回來後 1 s 內放鎖 | fw-boot | R(每次開機後) | `batman-slot bootinfo A`、`bootinfo B`、`precheck-node`(帶 `DV_SLK` token)各自回來後 1 s 內 `flock -n` 成功,而且動詞的行程(帶 token,或在動詞開始前一刻到回來之間啟動的,例如 `env -i` 丟了 token 的子程序,r3 A-m1)沒有開著鎖檔。只證明「放鎖」,不證明動詞有拿鎖:鎖檔整個開機期間都留在 run dir(r3 A-m3)。不管動詞回什麼都判鎖(r2 A-MAJOR-2):節點狀態的拒絕(precheck-node 10–12 / 13 / 15–18、`detect_layout` 在動詞之前的 17)只記一條 INFO。rc 14 或鎖被別的行程持有 → 重試 5 次,仍是 → 看原因:鎖被孤兒持有(兩次相隔 1 s 的掃描都開著鎖檔、自己和祖先都沒有 `batman-slot`、不是 harness)→ FAIL「leaked fd 9」(r3 A-MAJOR-2);被 `batman-slot`(或它的子程序)或 harness 持有 → INVALID;鎖是空的但某個槽的 boot FAT(p1 / p3,依 mountinfo 的 major:minor)掛在 `/boot` 以外 → FAIL 並寫出掛載點(r3 B-M1);鎖空、也沒有別處的掛載 → INVALID。動詞失敗而且沒有鎖檔 → INVALID;rc 0 而沒有鎖檔 → FAIL。節點在 autocommit 正在把關的試用開機(`is-trial` rc 0 且 autocommit main 活著)→ 不跑動詞,一條 NOT-RUN(r3 B-m5)。副作用見上 | S(子程序不 `9>&-` 的變體 → FAIL,動詞回 16 時也是;`env -i` 子程序 → FAIL;拿了鎖再回 16 / 17 → PASS;拿鎖前 17、沒有鎖檔 → INVALID;rc 0 不拿鎖的變體 → FAIL;`bootinfo B` 留下掛載 → FAIL;孤兒持鎖 → FAIL、`batman-slot` 持鎖 → INVALID;rc 14 + B 的 FAT 在 `/mnt/_ab` → FAIL;試用中 → NOT-RUN;上一輪留下的掛載 → 卸載,沒記錄的不動;`scripts/test-s5-node-254.sh`、`scripts/test-slotlock-254.sh`) |
 
 ## 附錄 B. v1、v2 的處理
 

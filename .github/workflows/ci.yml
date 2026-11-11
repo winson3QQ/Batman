@@ -166,13 +166,14 @@ jobs:
       # #254 S5 (254-p3-impl §3.7–3.8) lands harness-first (#290): on a product before S5 this step is RED on purpose
       # (KNOWN #254). `!cancelled()` so an earlier red step never hides its result, and each sub-test runs whatever the
       # one before it did (rc is accumulated) so every failure shows, not only the first.
-      - name: "#254 S5 software update, offline (harness lands first, #290: red until feat/254-p3 S5 lands, KNOWN #254) — slot flock + names, lock lints + ramfs flock, payload format, provd tmpfs init, autocommit health, the HTTP firewall include"
+      - name: "#254 S5 software update, offline (harness lands first, #290: red until feat/254-p3 S5 lands, KNOWN #254) — slot flock + names, lock allowlists + ramfs flock, commit releases the lock (busybox sh + dash), payload format, provd tmpfs init, autocommit health, the HTTP firewall include"
         if: ${{ !cancelled() }}
         run: |
           F=feed/batman-provision/files
           rc=0
           bash tests/prov-p1/s5-slot-lock.sh $F || rc=1
           bash tests/prov-p1/s5-lock-lint.sh $F || rc=1
+          bash tests/prov-p1/s5-lock-release.sh $F/usr/sbin/batman-slot || rc=1
           bash tests/prov-p1/s5-payload.sh scripts/build-ab-payload.sh || rc=1
           sudo bash tests/prov-p1/s5-bulk-mount.sh feed/batman-prov/files/batman-provd.init || rc=1
           sudo bash tests/prov-p1/s5-bulk-mount.sh feed/batman-prov/files/batman-provd-test.init || rc=1
