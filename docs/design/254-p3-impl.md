@@ -1,6 +1,6 @@
-# #254 PR-P3:擁有者 / 設定 / 狀態 / 診斷 / 更新 / 上傳 / 轉賣工具(設計 v7.2 — S5 實作前核對,審查中)
+# #254 PR-P3:擁有者 / 設定 / 狀態 / 診斷 / 更新 / 上傳 / 轉賣工具(設計 v7.3 — S5 實作前核對 + 審查修正,審查中)
 
-狀態:v7.2(2026-11-11)= v7.1 + **§12 S5 實作前核對**(事實更正與 8 項設計沒寫到的決定;只動 §3.7 / §3.8 / §3.11 的範圍),送兩位審查。v7.1 原狀態:**凍結**(v7.1,2026-11-02)。v7(bfb6703)兩位審查都 **APPROVE-WITH-CHANGES、0 BLOCKER / 0 MAJOR**(A 11 MINOR、B 12 MINOR),都判定已收斂、建議凍結。v7.1 = v7 + 審查要求「凍結時一起改」的文字修正(A7-m7);其餘 MINOR 是實作 PR 的必做清單(附錄 D,每項附測試)。**凍結條件**:§9-4 的現場探針在 H4 凍結前跑完並附原始輸出(D22)。歷程:v1 96a578d、v2 03963d9、v3 6433520、v4 5d5ebfd、v5 1ac5fbd(整份重寫)、v6 c252b3f、v7 bfb6703。各輪審查在 `docs/design/254-reviews/p3-review-v*-*.md`。
+狀態:v7.3(2026-11-11)= v7.2 + **§12.5 審查修正**(v7.2 審查 A8 / B8 都 APPROVE-WITH-CHANGES、0 BLOCKER、各 2 MAJOR;回應見附錄 E),送兩位整份重審。v7.2 = v7.1 + **§12 S5 實作前核對**(事實更正與 8 項設計沒寫到的決定;只動 §3.7 / §3.8 / §3.11 的範圍),送兩位審查。v7.1 原狀態:**凍結**(v7.1,2026-11-02)。v7(bfb6703)兩位審查都 **APPROVE-WITH-CHANGES、0 BLOCKER / 0 MAJOR**(A 11 MINOR、B 12 MINOR),都判定已收斂、建議凍結。v7.1 = v7 + 審查要求「凍結時一起改」的文字修正(A7-m7);其餘 MINOR 是實作 PR 的必做清單(附錄 D,每項附測試)。**凍結條件**:§9-4 的現場探針在 H4 凍結前跑完並附原始輸出(D22)。歷程:v1 96a578d、v2 03963d9、v3 6433520、v4 5d5ebfd、v5 1ac5fbd(整份重寫)、v6 c252b3f、v7 bfb6703。各輪審查在 `docs/design/254-reviews/p3-review-v*-*.md`。
 上層:`254-stage1-impl.md` §10.6;協定 `219-protocol.md` v0.8 + `219-protocol.cddl`;P2 = `254-p2-impl.md` v8.5(已出貨 `1.5.14-wsl.22`)。
 原則(使用者):**只做必要的修改**、**失敗就回到之前的狀態**。事實附 `file:line` 或 04 實測;沒有證據的標 ⚠️,並寫明實作前要怎麼查。
 
@@ -291,7 +291,7 @@ helper 背景維護兩個快取,**請求路徑上不跑子程序**;計時一律�
 |---|---|---|---|
 | 根鑰匙 R(prod) | ES256 | 離線產生;私鑰只在兩支加密 USB(不同地點);公鑰內建 image `/usr/share/batman/release-root.pub` 與 app | 只簽背書 |
 | 簽章鑰匙 K<sub>i</sub> | ES256 | 使用者的 YubiKey PIV slot 9c(裝置內產生、不可匯出) | 簽每個發行版本 |
-| 測試根鑰匙 T | ES256 | repo `tests/keys/`(公開) | 只有 prov_test image 另外信任;release gate 斷言 release image 不含 T |
+| 測試根鑰匙 T | ES256 | repo `tests/keys/`(公開) | DEV 通道(`BATMAN_CHANNEL=wsl`)與 prov_test image 信任;正式通道 image 不得含 T,release gate 正向釘死 R 的指紋(§12.5.10) |
 
 ES256:所有 YubiKey 5 的 PIV 都支援;節點已有 `cose.VerifySign1` / `VerifyES256`(F22)。YubiKey 回 DER 簽章,`release-sign.sh` 轉成 64 B `r‖s`(low-s)。⚠️ YubiKey 型號與 host 工具鏈待使用者在場時實測(§9)。
 
@@ -325,10 +325,10 @@ ES256:所有 YubiKey 5 的 PIV 都支援;節點已有 `cose.VerifySign1` / `Veri
 | `write <dir>` | 現在 `apply` 的 precheck → begin_write → dd(stdin)→ 複製 boot 檔 → 讀回驗證(`:592-714`),**不 arm**;成功時在目標槽 boot 分割寫 `BATMAN-VERIFIED` = sha256(`SHA256SUMS`) |
 | `arm <sha>` | 先重跑完整 `node_checks`、確認無 `BATMAN-BAD`、cmdline 正確、`BATMAN-VERIFIED` = sha、`bootcfg-sum` 仍在 key 8 清單裡;再 arm + 讀回(`:716-738`) |
 | `disarm` | 清掉 tryboot 旗標(包現在的內部 `disarm_tryboot`,F64) |
-| `bootcfg-sum` | 在 `batman-slot.lock` 內唯讀掛目標槽 boot 分割,印出 `sha256(config.txt ‖ distroconfig.txt)`(key 8 用;不在鎖外掛 FAT,A4-m13) |
+| `bootinfo <A\|B>`(v7.3 取代 `bootcfg-sum`) | 在 `batman-slot.lock` 內唯讀掛該槽 boot 分割,印 `verified=`、`bootcfg=`(key 8 用)與 `distroconfig.txt`;helper 不再自己掛 FAT(§12.5.1) |
 | `apply`(既有) | = `write` + `arm`;sysupgrade 路徑行為不變 |
 
-共同修改:**`begin_write` 一開始先刪目標槽的 `BATMAN-VERIFIED`**(所有寫者都經過它,含 sysupgrade);**複製 boot 檔只複製 `SHA256SUMS` 列出的**(F27;sysupgrade 也受益)。重開用既有的 `batman-slot reboot committed`(tryboot 旗標在時它自己走一般重開,F64)。
+共同修改:**`begin_write` 一開始先刪目標槽的 `BATMAN-VERIFIED`**(所有寫者都經過它,含 sysupgrade);**複製 boot 檔 = `SHA256SUMS` 列出的 ∩ 現行類別白名單,並明確拒絕 `autoboot.txt` / `config.txt` / `distroconfig.txt` / `cmdline.txt` / `bootcode.bin` / `BATMAN-*`**(§12.5.4;sysupgrade 也受益)。結束碼見 §12.5.2。重開用既有的 `batman-slot reboot committed`(tryboot 旗標在時它自己走一般重開,F64)。
 
 #### 3.7.4 節點端動詞與狀態
 
@@ -336,10 +336,10 @@ ES256:所有 YubiKey 5 的 PIV 都支援;節點已有 `cose.VerifySign1` / `Veri
 |---|---|---|
 | `update.check {1: manifest}` | 1. 驗 E(R;prov_test 另加 T)、serial ≥ min、S(K)— **先驗簽,通過前不寫任何東西**;2. 若 p5 stale 只因 P3 新 PRESERVE key → `--save` 一次(§3.3);3. `batman-slot precheck-node`(試用中、p5 新鮮度、`.txn`、fw override);4. board、版本規則、key 7、key 8(`batman-slot bootcfg-sum`,鎖被佔 → `E_BUSY`);5. RAM 預算;6. 通過 → 寫 **pending**(`/tmp/run/batman/update/pending`,helper RunDir root 0700,`{S, boot_id, 到期 = uptime + 30 min}`);內容相同的 pending 已在 → 不重寫。**helper 端額度**:全域 1 / 10 s(provd 的每連線額度之外,A5-m4) | `{1: false, 2: reason, 3: RAM}`:1 試用中、2 p5 未 seed、3 板子、4 中間版本、5 開機設定、6 降級、8 RAM、11 簽章 / 版本解析、12 `.txn`、17 p5 stale;worker 在跑或上傳窗開著 → `E_BUSY` |
 | `update.prepare {1: sha}` | sha = pending 的 key 4(綁擁有者同意的版本);呼叫者 = 上傳窗擁有者;上傳檔存在且大小 = key 3;啟動 worker,立刻回 phase 2;關上傳窗;**pending 到期延到 worker 結束 + 30 分**(B5-m4) | 無 pending / sha 不符 / 上傳不完整 → reason 15 |
-| `update.apply {1: sha}` | worker 已寫完(phase 3)且 sha 相同;p6 已掛載(否則 `E_STORAGE`,不 arm)→ 寫 **update-last**(p6 `/opt/batdata/state/update-last`,root 0600,格式見 §5.3)`armed: false` → `batman-slot arm <sha> <key8 清單檔>`(清單檔在 helper 的 0700 update 目錄)→ rc 0 時改寫 `armed: true` → 回應後 2 s,**緊接在** `batman-slot reboot committed` 之前改寫 `rebooting: true`。**update-last 只有 `update.apply` 寫** | reason 15;arm 失敗 → reason 11 / 12 / 1 / 5 / 17 |
+| `update.apply {1: sha}` | worker 已寫完(phase 3)且 sha 相同;p6 已掛載(否則 `E_STORAGE`,不 arm)→ 寫 **update-last**(p6 `/opt/batdata/state/update-last`,root 0600,格式見 §5.3;v7.3 起 `update.prepare` 先寫嘗試紀錄,§12.5.5)`armed: false` → `batman-slot arm <sha> <key8 清單檔>`(清單檔在 helper 的 0700 update 目錄)→ rc 0 時改寫 `armed: true` → 回應後 2 s,**緊接在** `batman-slot reboot committed` 之前改寫 `rebooting: true`。**update-last 只有 helper 的更新序列寫(prepare / worker 結束 / apply,§12.5.5)** | reason 15;arm 失敗 → reason 11 / 12 / 1 / 5 / 17 |
 | `update.status`(ro) | 見下 | — |
 
-**狀態判讀**(helper 每次啟動只讀 update-last、不刪,F42;以**槽**判讀):
+**狀態判讀**(helper 每次啟動只讀 update-last、不刪,F42;以**槽**判讀)— **v7.3:由 §12.5.5 的有序表取代,下表只留作歷程**:
 
 | 情況 | phase |
 |---|---|
@@ -454,7 +454,7 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | `/tmp/run/batman-provd-bulk`(tmpfs)| `batman-provd` init 掛載;provd 寫上傳檔;**helper 刪** | helper worker 讀 fd |
 | `/tmp/run/batman/update/`(pending、解出的 boot 檔)、`/tmp/run/batman/diag/`、helper 的記憶體快取 | helper | — |
 | `$RUNDIR/provd-stable` | helper | autocommit |
-| p6 `state/update-last` | helper(**只有 `update.apply`**) | helper |
+| p6 `state/update-last` | helper 的更新序列(`update.prepare`、worker 結束、`update.apply`;§12.5.5) | helper |
 | p6 `state/prov-state`(既有) | helper(既有) | `/cgi-bin/bundle`(新讀者) |
 | 目標槽(rootfs、boot、`BATMAN-VERIFIED`、`BATMAN-BAD`)、tryboot 旗標 | `batman-slot`(`write` / `arm` / `disarm` / `apply`),`batman-slot.lock` 互斥(F35):helper worker 與 sysupgrade 不會同時寫 | autocommit、`bootcfg-sum`(鎖內) |
 | `release-root.pub`、`release-min-serial` | build(image 內) | helper |
@@ -522,10 +522,10 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 |---|---|---|---|---|
 | `update-manifest` + `[E, S]` | app → provd → helper | §3.7.1 | 驗不過 → reason 11,fail-closed | 任何擁有者 session;簽章才是權威 |
 | pending | helper → helper | CBOR,root 0700 目錄,綁 boot_id、uptime 30 分 | 缺 / 過期 / 壞 → 當作沒有 | root |
-| update-last(p6) | helper → helper | CBOR `{from_slot, from_version, to_slot, to_version, sha, apply_boot_id, bad_slot_at_apply, armed, rebooting}` | 缺 / 壞 / 版本對不上 → phase 0 | root |
+| update-last(p6) | helper → helper | CBOR `{0: format 1, sha, from_slot, from_version, to_slot, to_version, attempt_boot_id, written, apply_boot_id, bad_slot_at_apply, armed, rebooting}`(§12.5.5) | 缺 / 壞 / 未知 format / 版本對不上 → phase 0 | root |
 | 上傳檔 | provd → helper | 大小 = key 3 | §3.7.5 步驟 1–4 | provd(不受信任) |
 | `BATMAN-VERIFIED` | `batman-slot write` → `arm` | 一行 sha256 hex | 缺 / 不符 → arm 拒絕 | root |
-| `batman-slot write / arm / disarm / bootcfg-sum` | helper → batman-slot | §3.7.3 | rc ≠ 0 → 依 §5.1 | root |
+| `batman-slot write / arm / disarm / bootinfo` | helper → batman-slot | §3.7.3 | rc 依 §12.5.2 對應 | root |
 | poll 的 `http` 欄位 | helper → provd | §2 | 缺 → 不聽(fail-closed) | helper |
 | nft 表 `bridge batman_http`、`inet batman_http_in` | fw4 → kernel;helper 檢查 | §3.8.1 | 任一缺 → helper 不給 `http.2` → 不聽 | root |
 | `$RUNDIR/provd-stable` | helper → autocommit | 一行 boot_id | 缺 / 不是本次開機 → 試用不健康 | root |
@@ -551,6 +551,11 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | helper 重啟時 setkey 子程序還在跑 | — | 子程序(另一個 process group,F72)拿著鎖自己跑完並自己 `--rollback`;helper 啟動後以設定快取的刷新取得結果;那一次請求對 app 是 outcome unknown → 重讀 | `prov-settings-254` |
 | `settings.set` 中斷電 | — | setkey 在 commit 之後、persist 之前斷電 → live(overlay)是新值、p5 是舊值;一般重開時 96 不跑(F71),不會從 p5 覆寫 → 新值留著、p5 stale → 下一次 `--save`(on-join / 下一次 setkey / 同值的 `settings.set` / `update.check`)補上;與 P1 的 setkey 相同的已知界線 | 誠實界線 |
 | 上傳中 helper 重啟 | — | 窗消失、檔被刪 → fail-closed,重開窗重傳 | `prov-upload-254` |
+| 手機斷 Wi-Fi / 上傳中斷 | — | provd 關檔;prepare 大小不符 → reason 15;app 從頭重 PUT(§12.5.7) | `prov-upload-254` |
+| 寫到一半斷電 / helper 重啟 / worker 被中止 | — | 槽 BAD;status 0 + reason 22(§12.5.5) | `prov-update-254` |
+| 已寫入、未啟用(pending 到期) | — | status 0 + reason 23;若 from_slot 開不起來,#133 fallback 進這一槽會被 commit(§12.5.13) | 誠實界線 + Go 表測 |
+| 同時 ssh sysupgrade | — | app `write` 在跑時 stage 1 rc 14 拒絕;`-F` 照舊可強制(§12.5.14) | `prov-update-254` |
+| DEV → PROD 換信任 | — | 只能用 T 簽、內建 R 的過渡版,或 ssh / 重燒(§12.5.10) | #255 |
 | 斷電 | — | prepare 中:槽 BAD、仍跑舊槽;apply 後:tryboot 一次性 | `prov-update-254` 斷電臂 |
 | 換 IP(改名 / openmanetd) | — | helper 給新的 `http.2`,下一次 poll provd 換 bind | ⚠️ 待 U5 |
 | 依賴重啟:bluetoothd / dbus | P2 | 不變;BLE 不健康 5 分鐘 → HTTP 備援開 | `prov-http-254` |
@@ -580,7 +585,10 @@ update-last 保留到下一次 `update.apply` 覆寫。pending 在 tmpfs:重開�
 | 被入侵的 provd | 自己聽 HTTP | 本來就能(無 netns,> 1024 埠);沒有 PSK 解不開 session、拿不到 owner-op;8095 仍只收從手機 AP port 進來的封包(其他埠不在本規則範圍) | 誠實界線 |
 | 本機非 root | 讀 AP 密碼 | `/etc/config/wireless`、hostapd conf 0644(F34,與現況相同) | 誠實界線 |
 | 本機非 root | 從 cmdline 或 log 讀 AP 密碼 | passphrase 走 stdin(`--ap -`);不進 log | `prov-settings-254`(`/proc/*/cmdline`、logread、helper / provd log、診斷包都不含) |
-| 本機行程(lo)、eth0 / docker0 的 VLAN 封裝 frame | 佔掉 HTTP 的 2 槽 | inet input 只收帶「手機 AP port」標記的封包(F75、F76) | `prov-http-254` 的 lo / VLAN 臂 |
+| 本機行程(lo)、eth0 / docker0 的 VLAN 封裝 frame | 佔掉 HTTP 的 2 槽 | inet input 只收 `iifname br-ahwlan` 且帶「手機 AP port」標記的封包(F75、F76;有 CAP_NET_RAW 的行程可設 `SO_MARK`,所以加 iifname,§12.5.11) | `prov-http-254` 的 lo / `SO_MARK` / VLAN 臂 |
+| 本機非特權行程 | 先佔住 8095 | provd bind 失敗經 `status` 回報;只造成 DoS(Noise 擋冒充) | 誠實界線 + `prov-http-254` |
+| 下載來源被換掉(DEV) | 擁有者同意一份 T 簽的惡意 image | T 公開:DEV 的信任根 = app 拿 payload 的來源;DEV 只用於 bench(§12.5.10) | 誠實界線 |
+| 實體奪取 | 換 rootfs 上的 `release-root.pub` | 沒有 secure boot 前擋不住 | 誠實界線 |
 | 本機非 root | 搶建 `/tmp/run/batman-provd-bulk` | `/tmp/run` 只有 root 能建(F33);init 建前檢查 owner / 非 symlink / 是否已掛載 | tmp-trust allowlist + 測試 |
 | 實體奪取(SD 卡) | 從 p5 讀 AP 密碼 → 連 AP → mesh LAN | p5 不加密(既有);AP key 早已在 PRESERVE,P3 加 SSID — **D14 是使用者決定的例外**(「秘密不進 p5」規則下明列);換卡後擁有者換密碼 | 誠實界線 |
 | 供應鏈 / 我們自己的錯 | 簽了壞 image;K 外流 | min-serial;防降級;R 離線兩份;出貨鑰匙鏈 bench 測試 | `prov-update-254` bench 臂 |
@@ -670,9 +678,9 @@ Go:§3.2 邊界、§3.6、§3.7 每個拒絕分支(mutant)、tar 白名單、版
 
 ### 12.2 設計沒寫到、會撞到同一資源的(要先定)
 
-1. **helper 在鎖外掛載 B 槽的開機分割區**:`bootConfigOK`(P1 起,`cmd/batman-provhelper/main.go:713-733`)在已 commit 且 Powered ≥ 600 s 時,**每 15 s 唯讀掛載 `/dev/mmcblk0p3`**(`health/health.go:223,235`),不經 `batman-slot.lock` —— 推翻 A4-m13「鎖外不掛 FAT」的前提。目前槽 = A 時,p3 正是更新的目標槽;與 `tboot_open` 的 rw 掛載(`batman-slot:409-416`)相撞 → EBUSY → `write` 中途 die(fail-closed:槽留 BAD,但 app 只看到 reason 11)。04 唯讀觀察 30 s 沒取樣到掛載(掛載只有毫秒級,1 s 取樣抓不到),**不能當作沒發生**。
+1. **(v7.3 由 §12.5.1 取代)helper 在鎖外掛載 B 槽的開機分割區**:`bootConfigOK`(P1 起,`cmd/batman-provhelper/main.go:713-733`)在已 commit 且 Powered ≥ 600 s 時,**每 15 s 唯讀掛載 `/dev/mmcblk0p3`**(`health/health.go:223,235`),不經 `batman-slot.lock` —— 推翻 A4-m13「鎖外不掛 FAT」的前提。目前槽 = A 時,p3 正是更新的目標槽;與 `tboot_open` 的 rw 掛載(`batman-slot:409-416`)相撞 → EBUSY → `write` 中途 die(fail-closed:槽留 BAD,但 app 只看到 reason 11)。04 唯讀觀察 30 s 沒取樣到掛載(掛載只有毫秒級,1 s 取樣抓不到),**不能當作沒發生**。
    **做法**:(a) helper 在自己的 worker / `update.apply` 進行中**不跑** p3 掛載,沿用上一次 `ConfigOK` 的結果;(b) 其他時候掛載前先看 `$RUNDIR/batman-slot.lock` 存在 → 這一輪跳過(沿用上次結果)。剩下「看了沒鎖 → 掛載」之間的毫秒窗,只在 **sysupgrade**(不經 helper)時可能撞到 → 該次 sysupgrade fail-closed、可重試 → 誠實界線。測試:worker 執行中 helper 的 p3 掛載次數 = 0(負對照:拿掉 (a) → > 0)。
-2. **`batman-slot` 的失敗沒有類別碼**:`die` 一律 `exit 1`(`batman-slot:40-44`),§3.7.5-6「依失敗類別對應 reason」無從判斷。**做法**:新動詞 `write` / `arm` / `bootcfg-sum` 的結束碼:
+2. **(v7.3 由 §12.5.2 取代)`batman-slot` 的失敗沒有類別碼**:`die` 一律 `exit 1`(`batman-slot:40-44`),§3.7.5-6「依失敗類別對應 reason」無從判斷。**做法**:新動詞 `write` / `arm` / `bootcfg-sum` 的結束碼:
 
    | rc | 意思 | helper 對應 |
    |---|---|---|
@@ -695,7 +703,7 @@ Go:§3.2 邊界、§3.6、§3.7 每個拒絕分支(mutant)、tar 白名單、版
    - **界線**:DEV image 信任的是公開的 T,任何人都能簽出 DEV image 能裝的 payload —— DEV 只在 bench / 開發用,與 dev-trust app 同一條界線。
 6. **bcm2710**:使用者已決定量產用 CM4、Pi 3 暫不支援(2026-10-23)。S5 的程式兩板共用、都要編譯,但**只在 bcm2711 真機驗證**;firmware 樹裡的 bcm2710 payload 是舊的(2026-10-27)。bulk tmpfs 的 `size=` 依各板當次 build 的 payload 大小計算(bcm2711 = 2 × 126,309,765 B ≈ 241 MiB)。
 7. **簽章格式以 harness 的 `signrel.py` 為準**(測項只有一套):key 9 = 所有 `boot/` 成員大小總和;key 8 空 = 省略(= 不檢查);manifest key 5 = CBOR 陣列 `[E, S]`(兩個 bstr);key 3 = `.tar.gz` 檔大小。產品若要不同,先改 harness(harness PR 先進)。
-8. **D-14(`batman-slot` 被 TERM 殺掉時 `.busy` 留下)現在必修**:helper 的期限(§3.7.5-6)會對 `write` 送 SIGTERM;仍無 TERM trap(`batman-slot:157`)。`.busy` 殘留會讓 autocommit 延後退回最多 600 s(`batman-autocommit:226`)且 `otaBusy` 擋到下次開機。做法照附錄 D-14。
+8. **(v7.3 由 §12.5.3 取代)D-14(`batman-slot` 被 TERM 殺掉時 `.busy` 留下)現在必修**:helper 的期限(§3.7.5-6)會對 `write` 送 SIGTERM;仍無 TERM trap(`batman-slot:157`)。`.busy` 殘留會讓 autocommit 延後退回最多 600 s(`batman-autocommit:226`)且 `otaBusy` 擋到下次開機。做法照附錄 D-14。
 
 ### 12.3 04 唯讀實測(2026-11-11,wsl.25)
 
@@ -715,6 +723,189 @@ Go:§3.2 邊界、§3.6、§3.7 每個拒絕分支(mutant)、tar 白名單、版
 ### 12.4 CDDL / 協定還沒改的(§10)
 
 reason-code 11–20 已加(`219-protocol.cddl:132-143`);仍要改:`update-manifest` key 5 = `[E, S]`(`:300` 還寫 detached signature)、`bulk-open-resp` key 2 = 現行 AP 密碼(`:323` 還寫 one-time)、`update/prepare|apply` 的 key 1 = sha。
+
+### 12.5 v7.3 審查修正(2026-11-11;A8 = `p3-review-v72-A.md`、B8 = `p3-review-v72-B.md`)
+
+兩位都 APPROVE-WITH-CHANGES、0 BLOCKER;A8 2 MAJOR / 14 MINOR、B8 2 MAJOR / 12 MINOR。下面每項**取代**它所指的段落;沒提到的照舊。逐條回應見附錄 E。
+
+#### 12.5.1 boot 分割只有一個掛載者 = `batman-slot`(取代 §12.2-1;A8-m1)
+
+- 事實更正:`tboot_open` 看到目標分割已被掛著就**重用**那個掛載點(`batman-slot:409-416`),所以撞上 helper 的 ro 掛載時不是 EBUSY,而是寫進 ro 掛載失敗,或在 helper 剛卸載後寫進留下的 tmpfs 空目錄。A8 逐支追過都 fail-closed,但依賴 `arm` 不重用掛載點 —— 不可靠。
+- **做法**:
+  1. `tboot_open` **只重用 `/boot`**(p1 的正常掛載);目標分割在別處被掛著 → rc 14(busy),不重用。
+  2. 新唯讀動詞 **`batman-slot bootinfo <A|B>`**:拿 `batman-slot.lock`(拿不到 → rc 14)、ro 掛該槽的 boot 分割(p1 直接讀 `/boot`)、印 `verified=<hex|->`、`bootcfg=<sha256(config.txt ‖ distroconfig.txt)>`,再印一行 `--` 與 `distroconfig.txt` 全文(≤ 64 KiB);卸載、放鎖。**取代 §3.7.3 的 `bootcfg-sum`**。
+  3. helper **不再自己掛任何 FAT**:`bootConfigOK`(`main.go:713-733`)改用 `bootinfo` 的輸出、同一個 `sectionOK` 規則;§3.7.4 的 `BATMAN-VERIFIED` 快取也來自 `bootinfo`。rc 14 → 這一輪沿用上一次結果,並標「待重讀」,下一個 tick 再試(孤兒 `write` 完成後快取會更新)。
+- 結果:boot 分割的掛載者與寫者都只有 `batman-slot`,全部在鎖內;§12.2-1 的 (a)(b) 與「sysupgrade 毫秒窗」界線一起拿掉。操作員手動掛著目標分割 → rc 14,fail-closed。
+- 測試:接縫 `/tmp/batman-fault.bootinfo-hold`(`bootinfo` 持鎖 5 s)同時 `write` → `write` rc 14、目標槽沒被動到。負對照:接縫 `tboot-reuse-any`(恢復「重用任何掛載點」)+ 先 ro 掛目標分割 → `write` 寫錯地方或 die(FAIL)。
+
+#### 12.5.2 結束碼與 reason(取代 §12.2-2 的表;A8-MAJOR-2、B8-m4)
+
+定義在 `node_checks` 這一層,`precheck-node`、`write`、`arm`、`apply`、`bootinfo`、`disarm` 共用:
+
+| rc | 意思 | helper 對應 |
+|---|---|---|
+| 0 | 成功 | — |
+| 10 | 試用中 | reason 1 |
+| 11 | 有 `.txn` | reason 12 |
+| 12 | p5 不新鮮 | reason 17 |
+| 13 | 內容 / 讀回 / `BATMAN-VERIFIED` 不符;SUMS 列了不允許的名字(§12.5.4) | reason 11 |
+| 14 | 另一個 `batman-slot` 持鎖;`.busy` 持有者還活著(§12.5.3);目標分割在別處被掛著(§12.5.1) | `E_BUSY` |
+| 15 | 開機設定不在 key 8 清單 | reason 5 |
+| 16 | p5 未 seed | reason 2 |
+| 17 | 韌體開錯槽(fw-override,`batman-slot:556-578`) | reason 21 |
+| 18 | 卡片 / layout 不健全(MBR、FAT 數、`[tryboot]` 指向) | reason 21 |
+| 其他、逾時(124)、exec 失敗(127)、被殺(137 / 143) | 內部錯誤 | reason 21 |
+
+- **新 reason 21**(CDDL):「節點端現在無法寫入槽」;log 帶 rc。**reason 11 只留給雜湊 / 簽章 / 版本解析不符**(rc 13 與 helper 自己的檢查)。
+- `is-trial` 的 `DIE_RC=2` 不變(`batman-slot:894`)。既有呼叫者只看 rc ≠ 0,行為不變:`platform-ab.sh:184-186`、`:364-366`、`:375-379`;`daily-validation.sh:2068`(`^rc=[1-9]`,10–18 也符合);`chain1-254.sh:220`。
+- §5.1 `update.apply` 補 rc 14 → `E_BUSY`。
+- 測試:每個 rc 一個誘發案例(故障接縫 `fault()`,`batman-slot:75`);另加「p5 未 seed → `update.check` 回 reason 2」。負對照:wsl.25 的 `batman-slot` 一律 rc 1 → helper 回 11(FAIL)。
+
+#### 12.5.3 `.busy` 帶 pid(取代 §12.2-8 與附錄 D-14 的二選一;A8-m2、B8-M2)
+
+- helper 的期限先送 SIGTERM、10 s 後送 SIGKILL(`provstore/exec.go:37-45`);SIGKILL 不跑任何 trap;busybox 的 trap 也要等前景 `dd` 回來。只加 TERM trap 不夠。
+- **做法**:
+  1. `.busy` 的內容 = 持有者 pid。所有讀者(`otaBusy`,`node/wtxn.go:450-454`;autocommit `:226`;`node_checks`)都用與 `slot_lock` 相同的規則判斷:pid 活著且 `/proc/<pid>/cmdline` 含 `batman-slot` 才算忙;持有者死了 = 不忙(讀者不刪,下一次 `batman-slot` 執行時清掉)。
+  2. EXIT trap 加 `tboot_close`;加 `trap 'exit 143' TERM`(正常 TERM 時清乾淨)。
+  3. 每個寫入動詞開始時,卸載 `/proc/mounts` 裡 pid 已死的 `/mnt/slotboot.<pid>` 並 rmdir。
+- 測試:Go 接縫 `update-deadline-short` + 故障接縫 `write-hang`(`dd` 前 sleep)→ helper TERM → KILL → 之後 `settings.set` 不是 `E_BUSY`,`/proc/mounts` 沒有 `/mnt/slotboot.*`。負對照:只有 TERM trap 的版本 → `E_BUSY` 到重開(FAIL)。
+
+#### 12.5.4 boot 檔的複製集合(B8-M1;改 §3.7.3「共同修改」)
+
+- 原句「複製 boot 檔只複製 `SHA256SUMS` 列出的」改為:**複製的集合 = SUMS 列出的 ∩ 現行類別白名單**(`kernel8.img`、`start*.elf`、`fixup*.dat`、`*.dtb`、`overlays/*`,`batman-slot:677-683`)。「NEVER `bootcode.bin` / `autoboot.txt`」的保證不變。
+- helper(reason 11)與 `batman-slot`(rc 13)**兩邊**都明確拒絕 `autoboot.txt`、`config.txt`、`distroconfig.txt`、`cmdline.txt`、`bootcode.bin`、`BATMAN-*`。出現就拒絕,不默默略過。
+- **SUMS 的每一列**(不只 tar 成員)都要符合 `^(root\.squashfs|boot/[A-Za-z0-9_-][A-Za-z0-9._-]*|boot/overlays/[A-Za-z0-9_-][A-Za-z0-9._-]*)$`。第一個字元不能是 `.`,擋 `boot/..`。
+- 現行兩板 payload 的 SUMS 只有 kernel、start、fixup、dtb 與 overlays(bcm2711 實際 payload 逐列核對:11 個檔 + 350 個 overlay),所以這個拒絕不會擋掉正常 payload;sysupgrade 路徑同樣受益。
+- 測試(`prov-update-254` 惡意 tar 臂 + sysupgrade 臂):一份**有效簽章**、SUMS 列 `boot/autoboot.txt` / `boot/config.txt` / `boot/..x` 的 payload → 拒絕;p1 `autoboot.txt` 的 sha 前後相同。負對照:接縫「只照 SUMS 複製、不交集」→ `autoboot.txt` 被改(FAIL)。
+
+#### 12.5.5 `update.status` 綁定「哪一次嘗試」(A8-MAJOR-1;改 §3.7.4 判讀、§4、§5.3、CDDL)
+
+- **CDDL** `update-progress` 加 `? 4 => sha256`(這個 phase 說的是哪一份 `SHA256SUMS`)與 `? 5 => tstr`(to_version)。app(§3.11-5)只在 sha 等於自己要裝的那份時,才把 3 / 4 / 5 當成功。
+- **update-last 的寫者 = helper 的更新序列**(`update.prepare`、worker 結束、`update.apply`、`reboot committed` 失敗;同一個 goroutine 依序寫,仍是一個寫者)。格式(§5.3):`{0: format = 1, sha, from_slot, from_version, to_slot, to_version, attempt_boot_id, written, apply_boot_id, bad_slot_at_apply, armed, rebooting}`;未知 format / 壞 → 當作沒有。
+  - `update.prepare`:啟動 worker **之前**寫 `{…, written: false, armed: false, rebooting: false}`;寫入失敗(p6 未掛載、滿、唯讀)→ `E_STORAGE`,不啟動 worker。
+  - worker 成功 → `written: true`。
+  - `update.apply` 照舊寫 `apply_boot_id`、`armed`、`rebooting`;寫入失敗 → `E_STORAGE`,不 arm。
+  - `reboot committed` 失敗(D-10)→ disarm 並改回 `rebooting: false`。
+- **判讀順序寫死(取第一個成立的)**:
+
+| # | 情況 | phase |
+|---|---|---|
+| 1 | 上傳窗開著 | 1 |
+| 2 | worker 在跑 | 2 |
+| 3 | helper 記憶體裡本次開機的嘗試失敗 | 0 + reason |
+| 4 | pending 有效且目標槽 `verified` = pending sha | 3 |
+| 5 | update-last 缺 / 壞,或目前槽版本 ∉ {from_version, to_version} | 0 |
+| 6 | boot_id = `apply_boot_id`(apply 之後還沒重開) | disarm,報 3 |
+| 7 | 目前槽 = `to_slot`、版本 = to_version、`is-trial` | 4 |
+| 8 | 目前槽 = `to_slot`、版本 = to_version、已 commit | 5 |
+| 9 | 目前槽 = `from_slot`、`armed`、boot_id ≠ `apply_boot_id`、`bad-slot` 新指向 `to_slot` | 6 |
+| 10 | 目前槽 = `from_slot`、`rebooting`、boot_id ≠ `apply_boot_id`、沒有新的 `bad-slot` | 6 + reason 18 |
+| 11 | 目前槽 = `from_slot`、`written` 為 false(寫到一半斷電、helper 重啟、worker 被中止) | 0 + **reason 22** |
+| 12 | 目前槽 = `from_slot`、`written` 為 true、`armed` 為 false、沒有有效 pending | 0 + **reason 23** |
+| 13 | 其他 | 0 |
+
+  每個 phase 都帶 key 4 / 5(取自 pending 或 update-last)。
+- **新 reason**(CDDL):**22**「上次寫入沒有完成,另一槽(退路)已失效,需要再更新一次」;**23**「新版已寫入但沒有啟用,請重新更新」。
+- **reason 18 的界線改正**(A8-m3):涵蓋的不只毫秒級窗,而是 `rebooting` 寫入之後到試用結束前的任何中斷,包括 procd 關機(安全網 240 s,`batman-slot:885-890`),以及試用中斷電、卡死、看門狗重開。文字改為「新版沒有完成試用(沒開機,或試用中斷電 / 重開)」。
+- MAJOR 情境:上次成功更新到 v2,這次更新 v3,寫到一半斷電。prepare 已把 update-last 改成 to_version = v3、`written: false`;重開後目前槽 = from_slot(v2)→ 第 11 列 → 0 + 22,**不是 5**。同時有 ssh sysupgrade 裝別的版本 → 版本 ∉ {from, to} → 第 5 列 0。
+- 測試:Go 單元表測判讀函式(每列一案);`prov-update-254` 加「v2 成功後 v3 寫入中 kill helper / 斷電 → 0 + 22」。負對照:接縫 `update-no-attempt-record`(prepare 不寫 update-last = v7.2 行為)→ 報 5(FAIL)。
+
+#### 12.5.6 兩位擁有者、移除擁有者(A8-m4、B8-m8)
+
+- pending 記 `owner_key_id`。有效的 pending 屬於別的擁有者時,`update.check` → `E_BUSY`(pending 30 分鐘到期或重開後釋放);同一位擁有者 → 覆寫。
+- `bulk.open` body 加 `2: sha`(由 owner-op 綁定),必須等於 pending 的 sha,否則 reason 15。CDDL `bulk-open-req` 同步。
+- `owner/remove` 移除的若是 pending 的擁有者:清窗、清 pending;**worker 屬於他時中止 worker**(context cancel → `batman-slot write` 收 TERM → 槽保持 BAD,update-last `written: false` → 第 11 列報 0 + 22)。測試:worker 執行中 `owner/remove` → worker 結束、槽 BAD、status 0 + 22。
+
+#### 12.5.7 上傳語意(A8-m5;§3.8.2、§3.11、§6)
+
+- `PUT` 每次都從頭寫:`O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW`,不續傳;同時只能一個 PUT(第二個 → 409)。
+- provd 從 poll 知道窗到期時間。**剩餘時間 < `Content-Length` ÷ 256 KiB/s + 60 s → PUT 回 409**;app 先重送 `bulk/open`(同一擁有者 = 延長)再 PUT。§3.11-1 加這一步。窗是 15 分鐘,126 MB 在最低速率下約 8.2 分鐘,延長後一定夠,不需要新機制。
+- 手機斷 Wi-Fi、上傳中斷:provd 關檔;prepare 會發現大小不符(reason 15);app 重新 PUT(從頭)。§6 加一列。
+
+#### 12.5.8 串流 stdin 與期限(A8-m6)
+
+`provstore.Exec` 的 stdin 是 `[]byte`(`exec.go:19-23`),會把約 111 MiB 的 squashfs 整個放進記憶體。新增 `ExecReader(timeout, env, stdin io.Reader, …)`,pgid、TERM → KILL 規則相同;worker 用它。期限:`write` 600 s、`arm` 60 s、`bootinfo` 30 s、`disarm` 30 s(`run()` 對 batman-slot 預設的 60 s 不適用於 `write`)。
+
+#### 12.5.9 版本規則表(A8-m7;加進 §3.7.1)
+
+- 解析 `X.Y.Z[-CH.N][+meta]`;比較鍵 = `(X, Y, Z, N)`,正式版 N = ∞;**CH 不參與比較**;`+meta` 忽略。
+- 新 > 舊 = 升級;**相等 = 重裝,允許**(不是降級);新 < 舊 = 降級,要在 S key 6 列出目前版本(去掉 `+meta` 的全串)。
+- **界線**:`+meta` 忽略 → 同號的 wbox(帶 Go 接縫)與乾淨版相等,DEV 上可以用 T 簽互裝(與 §12.5.10 同一條界線)。
+- 測試:Go 表測(相等、正式 vs 通道、跨通道同號、`+meta`、解析失敗)。
+
+#### 12.5.10 信任與 release gate(A8-m8、B8-m1、B8-m10;改 §3.7.1 鑰匙表)
+
+- §3.7.1 表的 T 列改為:「DEV 通道(`BATMAN_CHANNEL=wsl`)與 prov_test image 信任;正式通道 image 不得含 T」。`tests/keys/README.md` 的「T is trusted only by `prov_test`」在 harness PR 同步改(#290:測項只有一套,harness 檔先進 main)。
+- **DEV → PROD 的出口**:R 產生之後(#255),DEV 節點要換信任,只能用一份 **T 簽、內建 R(不再含 T)的過渡版**,或用 ssh sysupgrade / 重燒。§6 加列。02 / 04 目前都是 wsl 通道。
+- **release gate 改成正向**:`BATMAN_CHANNEL` ≠ `wsl` 的 image,`release-root.pub` 必須等於釘死在 `scripts/release-root.fpr` 的 R 指紋,而且 `release-min-serial` 存在且 ≥ 1。R 產生前這個檔不存在 → 正式通道 build 的 gate 一律 FAIL(正確:R 之前不出正式版)。負測試:正式通道 + T.pub → FAIL;沒有釘選 → FAIL。
+- **鑰匙檔缺 / 壞 → 拒絕**:`release-root.pub` 不是正好一個 65 B 的點,或 `release-min-serial` 不是正好一行 ≥ 1 的十進位 → `update.check` 回 reason 21,不預設成 0。附 Go 測試。
+- §7 加列:
+  - **DEV 的信任根 = app 從哪裡拿到 payload**。T 公開,任何人都簽得出 DEV 會接受的 payload;擁有者同意的是那份檔的 sha,下載來源(release 頁、雲端、手機存檔)被換掉,擁有者就會同意一份惡意 image。DEV 只用於 bench / 開發;另一個做法(不公開的開發根鑰匙 R_dev)待使用者選。
+  - 信任 T 不擴大擁有者的權限:擁有者本來就能 `ssh_keys/set`(F2)。
+  - 實體奪取者可以換 rootfs 上的 `release-root.pub`:沒有 secure boot 前擋不住,列誠實界線。
+- B8-m9(DEV 上被入侵的 provd 用 T 簽的 manifest 反覆 `update.check` 搶鎖):`update.check` 只在 manifest 的 sha 與上一次不同時才跑 `bootinfo` / `precheck-node`,相同就用快取的結果;加上 helper 的 1 / 10 s 額度。剩下的可用性影響只在 DEV,列 §7。
+
+#### 12.5.11 防火牆、bind 與 bearer(B8-m2、m3、m5)
+
+- **lo 主張改正**:有 CAP_NET_RAW 的行程可以設 `SO_MARK`(kernel 6.6 `net/core/sock.c:1388-1395`),例如 `--network host` 的容器。inet 規則在 mark 檢查**之前**加 `tcp dport 8095 meta iifname != "br-ahwlan" drop`(本機產生的封包 iif = lo)。測試:root 開 `SO_MARK=0x01000000` 的 socket 連 8095 → 被丟。負對照:只有 mark 的規則 → 連得上。
+- **8095 被搶占**:provd bind 失敗(EADDRINUSE)→ 經 poll 回報,`status` key 15 加 `http_bind_failed`,app 顯示。本機非特權行程可以先佔住 8095 → 只造成 DoS(Noise 擋住冒充),列 §7 誠實界線。測試:先用一般使用者佔住 8095,再 `bulk.open` → `status` 回報。
+- **`X-Batman-Session` bearer 的規格**:
+  - provd 在 HTTP session `auth/owner` 成功後,以 `crypto/rand` 產生 128 bit,與 Noise 的金鑰 / 雜湊無關;
+  - constant-time 比對;
+  - 不進 log、錯誤字串、診斷包;
+  - 只對 `PUT /bulk/0` 有效。
+  - `/msg` 的 AEAD 失敗 → **丟掉那個請求(400),不中止 session**。`flynn/noise` v1.1.0 的 `Decrypt` 失敗不推進 nonce(`state.go:76-80`),所以可以這樣做;偽造的 `/msg` 踢不掉擁有者。
+  - §8 `prov-http-254` 加「bearer 不在 log / 診斷包」與「偽造 `/msg` 後 session 仍可用」。
+
+#### 12.5.12 bulk tmpfs 與 tar 解析(B8-m6、m7、A8-m11)
+
+- tmpfs 掛載加 `nr_inodes=16`;**`batman-provd.init` 與 `batman-provd-test.init` 兩個檔都加**(Makefile 依 `BATMAN_PROV_TEST` 二選一安裝)。D-15 照做。
+- helper 刪檔只用 `unlinkat(dirfd, "payload")`;其他名字以 dirfd + `O_NOFOLLOW` 列舉後 `unlinkat`,不用 `RemoveAll`、不跟隨 symlink。
+- tar 解析寫死:
+  - 只收 `Typeflag` = `TypeReg`,以及 `boot/`、`boot/overlays/` 兩個 `TypeDir`;其他型別(含 PAX global、GNU sparse)→ reason 11;
+  - `root.squashfs` 之後 `Next()` 必須是 `io.EOF`;
+  - 成員數 ≤ SUMS 列數 + 4;
+  - gzip 用 `Multistream(false)`,gzip 串流之後不得有尾端資料;
+  - 解壓總量 ≤ 2 × 64 KiB + key 9 + 目標槽大小 + 1 MiB(header 與 padding)。
+  - 每項附一包惡意 tar(§8「四包」擴充成逐項)。
+
+#### 12.5.13 「已寫入、未啟用」與 #133 fallback(A8-m9、B8-m11)
+
+- `write` 成功後,目標槽是真 cmdline、沒有 BAD、未 arm(`batman-slot:704-714`)= 一個可以開機的有效槽;pending 到期後也不清。status:pending 有效時報 3,之後報 0 + 23(§12.5.5 第 12 列)。
+- **界線**:如果之後 `from_slot` 開不起來,韌體 #133 fallback(`p_req` 0)開進這一槽,autocommit 會在健康時 commit 它(`batman-autocommit:352-369`)。它有簽章、讀回過,擁有者在 prepare 時也同意了,所以不是越權,只是擁有者沒按 apply。§6 加列、§3.11-5 加「已寫入、未啟用」的文字。
+
+#### 12.5.14 同時 ssh sysupgrade(A8-m10)
+
+`node_checks` 加:`.busy` 存在且持有者活著、不是自己 → rc 14。結果:app 的 `write` 在跑時,sysupgrade stage 1(`precheck-node`,`platform-ab.sh:~186`)拒絕;操作員照舊可以 `-F` 強制。測試:`write-hang` 中跑 sysupgrade → stage 1 拒絕。
+
+#### 12.5.15 其他契約補漏(A8-m12、m14)
+
+- update-last 的 key 0 = format(見 §12.5.5)。
+- helper 啟動時的 `batman-slot disarm` 要拿鎖;拿不到 → rc 14,下一個 tick 重試(不打斷孤兒 `write`;`begin_write` 本身也會 disarm)。
+- `write <dir>` 的 dir 放 helper 驗過的 `SHA256SUMS`、`metadata` 與 `boot/`(precheck 會讀 `$PAYLOAD/SHA256SUMS` 與 `metadata size=`,`batman-slot:609-627`)。
+- **bcm2710**:`batman-slot` 的 rc、trap、`tboot_open`、`bootinfo` 改動會進入 Pi 3 共用的 sysupgrade 路徑 → CI ab-card(pi3 layout)要跑過,寫進 §8。
+
+#### 12.5.16 §12 決定的負對照(A8-m13、B8-m12)
+
+| 決定 | 測試 | 負對照(拿掉就 FAIL) |
+|---|---|---|
+| 12.5.1 單一掛載者 | `bootinfo-hold` + `write` | `tboot-reuse-any` 接縫 |
+| 12.5.2 結束碼 | 每個 rc 一案 + 未 seed → reason 2 | wsl.25 `batman-slot` |
+| 12.5.3 `.busy` 帶 pid | `write-hang` + 期限 → KILL | 只有 TERM trap |
+| 12.5.4 複製集合 | 有效簽章 + `autoboot.txt` | 「只照 SUMS」接縫 |
+| 12.5.5 嘗試綁定 | v2 → v3 中斷 → 0 + 22 | `update-no-attempt-record` |
+| 12.5.6 移除擁有者 | worker 中 `owner/remove` | 不中止 worker |
+| 12.5.10 gate | 正式通道 + T → FAIL | 只檢查「不含 T」的舊 gate |
+| 12.5.10 鑰匙檔 | 缺 / 壞 → reason 21 | 預設 min-serial 0 |
+| 12.5.11 iifname | `SO_MARK` socket → 丟 | 只有 mark 的規則 |
+| 12.5.12 tar | 每包惡意 tar | 拿掉該項檢查 |
+| 12.2-3 peer pid | `provd-id-pid`(既有) | — |
+| 12.2-4 board 全串 | S key 2 = `bcm2711` → reason 3;`metadata board=` ≠ S → 11 | 用 provd 短字串比 |
+| 12.2-7 格式契約 | `signrel.py` 的正向物件 Go 接受;每個負向旗標(`--bad-sig`、`--wrong-board`、`--unparsable-version`、`--mismatch-size`、`--key other`)Go 都拒絕 | 拿掉 Go 任一檢查 |
+
+#### 12.5.17 CDDL 要改的(加到 §12.4)
+
+`update-progress` 加 key 4 / 5;`bulk-open-req` 加 key 2 = sha;reason-code 加 21 / 22 / 23;18 的文字改為「新版沒有完成試用」。
 
 ## 附錄 A. v4 審查回應(A4 = `p3-review-v4-A.md`、B4 = `p3-review-v4-B.md`)
 
@@ -837,3 +1028,30 @@ v5 的三個「真機上不成立」都是沒實測的外部行為假設;v6 每�
 | D-15 | bulk tmpfs 掛不上時不得退化成一般目錄(沒有 `size=` 上限)→ init 掛載失敗就不啟動上傳(helper 不開窗);路徑用 lstat、拒絕 `.` / `..` | A7-m2 | init + helper |
 | D-16 | autocommit (a) 加「helper 被停用」的例外(只 WARN) | A7-m3 | autocommit |
 | D-17 | autocommit `health_ok` 加「`inet fw4` 在」:否則帶著壞 include 的簽章 image 會在沒有防火牆的情況下被 commit | A7-m10 | autocommit + `fw-badinclude` 測試 |
+
+## 附錄 E. v7.2 審查回應(A8 = `p3-review-v72-A.md`、B8 = `p3-review-v72-B.md`)
+
+| 發現 | 處理 |
+|---|---|
+| A8-MAJOR-1 status 不綁嘗試 | §12.5.5(update-progress key 4/5、prepare 起寫 update-last、判讀順序、reason 22/23) |
+| A8-MAJOR-2 結束碼不涵蓋 precheck-node | §12.5.2(node_checks 層、rc 16–18、reason 21) |
+| B8-M1 照 SUMS 複製會蓋 autoboot.txt | §12.5.4(交集 + 明確拒絕 + 每列驗名) |
+| B8-M2 / A8-m2 SIGKILL 留下 `.busy` 與掛載 | §12.5.3(`.busy` 帶 pid、EXIT 卸載、清死掉的掛載點) |
+| A8-m1 tboot_open 重用掛載 | §12.5.1(單一掛載者 `bootinfo`) |
+| A8-m3 6+18 界線 | §12.5.5(界線改正、`reboot committed` 失敗改回 rebooting) |
+| A8-m4 / B8-m8 兩位擁有者、移除 | §12.5.6 |
+| A8-m5 上傳語意 | §12.5.7 |
+| A8-m6 串流 stdin | §12.5.8 |
+| A8-m7 版本規則 | §12.5.9 |
+| A8-m8 / B8-m1 / B8-m10 信任 T、gate、鑰匙檔 | §12.5.10(R_dev 替代方案待使用者選) |
+| A8-m9 / B8-m11 已寫未啟用 | §12.5.13 |
+| A8-m10 同時 sysupgrade | §12.5.14 |
+| A8-m11 / B8-m6 tmpfs | §12.5.12 |
+| A8-m12 / m14 契約補漏 | §12.5.15 |
+| A8-m13 / B8-m12 負對照 | §12.5.16 |
+| B8-m2 SO_MARK | §12.5.11 |
+| B8-m3 8095 搶占 | §12.5.11 |
+| B8-m4 rc 雜項 → 11 | §12.5.2 |
+| B8-m5 bearer 規格 | §12.5.11 |
+| B8-m7 tar 邊角 | §12.5.12 |
+| B8-m9 DEV 上 check 搶鎖 | §12.5.10 |
