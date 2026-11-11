@@ -1,6 +1,6 @@
-# #254 PR-P3:擁有者 / 設定 / 狀態 / 診斷 / 更新 / 上傳 / 轉賣工具(設計 v7.1 — 凍結)
+# #254 PR-P3:擁有者 / 設定 / 狀態 / 診斷 / 更新 / 上傳 / 轉賣工具(設計 v7.2 — S5 實作前核對,審查中)
 
-狀態:**凍結**(v7.1,2026-11-02)。v7(bfb6703)兩位審查都 **APPROVE-WITH-CHANGES、0 BLOCKER / 0 MAJOR**(A 11 MINOR、B 12 MINOR),都判定已收斂、建議凍結。v7.1 = v7 + 審查要求「凍結時一起改」的文字修正(A7-m7);其餘 MINOR 是實作 PR 的必做清單(附錄 D,每項附測試)。**凍結條件**:§9-4 的現場探針在 H4 凍結前跑完並附原始輸出(D22)。歷程:v1 96a578d、v2 03963d9、v3 6433520、v4 5d5ebfd、v5 1ac5fbd(整份重寫)、v6 c252b3f、v7 bfb6703。各輪審查在 `docs/design/254-reviews/p3-review-v*-*.md`。
+狀態:v7.2(2026-11-11)= v7.1 + **§12 S5 實作前核對**(事實更正與 8 項設計沒寫到的決定;只動 §3.7 / §3.8 / §3.11 的範圍),送兩位審查。v7.1 原狀態:**凍結**(v7.1,2026-11-02)。v7(bfb6703)兩位審查都 **APPROVE-WITH-CHANGES、0 BLOCKER / 0 MAJOR**(A 11 MINOR、B 12 MINOR),都判定已收斂、建議凍結。v7.1 = v7 + 審查要求「凍結時一起改」的文字修正(A7-m7);其餘 MINOR 是實作 PR 的必做清單(附錄 D,每項附測試)。**凍結條件**:§9-4 的現場探針在 H4 凍結前跑完並附原始輸出(D22)。歷程:v1 96a578d、v2 03963d9、v3 6433520、v4 5d5ebfd、v5 1ac5fbd(整份重寫)、v6 c252b3f、v7 bfb6703。各輪審查在 `docs/design/254-reviews/p3-review-v*-*.md`。
 上層:`254-stage1-impl.md` §10.6;協定 `219-protocol.md` v0.8 + `219-protocol.cddl`;P2 = `254-p2-impl.md` v8.5(已出貨 `1.5.14-wsl.22`)。
 原則(使用者):**只做必要的修改**、**失敗就回到之前的狀態**。事實附 `file:line` 或 04 實測;沒有證據的標 ⚠️,並寫明實作前要怎麼查。
 
@@ -653,6 +653,68 @@ Go:§3.2 邊界、§3.6、§3.7 每個拒絕分支(mutant)、tar 白名單、版
 ## 11. 寫進 #254 checklist(不在本 PR)
 
 `status` team(`dac_pub_hash`、最後看到時間);EMCON(手機 AP 平常關 / 功率;刻意關 BLE 時也要關 HTTP 備援);autocommit BLE 無線電擋 commit(#305 後);CM4 eMMC 的轉賣 / 遺失手機重燒路徑(量產前,D18);未簽章更新路徑(ssh / LuCI / openmanetd local upgrade、`PerformFactoryReset`)要不要收;app 端的靜默模式;整個網路一起改國家(D9);3A+ 上 bulk tmpfs 的常駐佔用;P3 之前建的 payload 不能經 app 裝;5 GHz 手機 AP 的國家合規。
+
+## 12. v7.2 實作前核對(2026-11-11;S5 開工前)
+
+設計寫於 main 2ecf1cb / 節點 wsl.22;S5(§3.7、§3.8、§3.11)開工前,依 feat/254-p3 fbc01ae、firmware 02f0913d、節點 04 = `1.5.14-wsl.25+fbc01ae.fw02f0913` 逐條核對(原始報告:#254 留言,`facts-check.md`)。**§3.7 / §3.8 的產品端完全沒有實作**;harness 已先有 `tests/keys/`(T、K_test)、`tests/tools/peer/signrel.py`、`scripts/dv/prov-http-254.sh`。行號移動(`server.go` 約 +17、`mapHelper` → `session.go:567`、`otaBusy` → `node/wtxn.go:450-454`)不影響設計。本節只寫**與設計不同或設計沒寫到**的地方;§3 其餘照舊。原則不變:只做必要的修改、失敗回到之前的狀態。
+
+### 12.1 事實更正
+
+| # | 設計寫的 | 現況(證據) | 影響 |
+|---|---|---|---|
+| C1 | F8:PRESERVE 不含 `default_radio0.ssid` | 已含(`batman-config-save:46`),另有 `SKIP_UNSAFE`(`:58`、`:466`) | §3.3 的「PRESERVE 加 ssid」已做;不再改 |
+| C2 | F37:`otaBusy` 只擋 `net.apply` / `network.leave` | 也擋 `settings.set`(`node/node.go:247`) | 與 §3.1-7 方向一致;`update.*` 照 §3.7.4 自己判斷 busy |
+| C3 | §3.1-8 錯誤碼待做 | 已做:`hEReject`(24)、`hEInput`(25)(`provd/helper.go:26-27`)、`mapHelperR`(`session.go:896-911`);設計寫的 `hERejectR` 即 `hEReject` | 只引用 |
+| C4 | §3.7.2 tar 順序待改 | 仍是 `root.squashfs boot metadata SHA256SUMS`(`build-ab-payload.sh:73`);兩板實際 payload 的成員都在 §3.7.5 白名單內 | 照 §3.7.2 改 |
+| C5 | F59:fw4 會 include `ruleset-post` | 原始碼成立(`fw4.uc:817-822` 前綴比對 → `ruleset-append`,`ruleset.uc:472`;整份 `nft -f` 一次,`sbin/fw4:35-36`);**rootfs 沒有 `/usr/share/nftables.d/ruleset-post/` 目錄** | 我們的套件建這個目錄 |
+
+### 12.2 設計沒寫到、會撞到同一資源的(要先定)
+
+1. **helper 在鎖外掛載 B 槽的開機分割區**:`bootConfigOK`(P1 起,`cmd/batman-provhelper/main.go:713-733`)在已 commit 且 Powered ≥ 600 s 時,**每 15 s 唯讀掛載 `/dev/mmcblk0p3`**(`health/health.go:223,235`),不經 `batman-slot.lock` —— 推翻 A4-m13「鎖外不掛 FAT」的前提。目前槽 = A 時,p3 正是更新的目標槽;與 `tboot_open` 的 rw 掛載(`batman-slot:409-416`)相撞 → EBUSY → `write` 中途 die(fail-closed:槽留 BAD,但 app 只看到 reason 11)。04 唯讀觀察 30 s 沒取樣到掛載(掛載只有毫秒級,1 s 取樣抓不到),**不能當作沒發生**。
+   **做法**:(a) helper 在自己的 worker / `update.apply` 進行中**不跑** p3 掛載,沿用上一次 `ConfigOK` 的結果;(b) 其他時候掛載前先看 `$RUNDIR/batman-slot.lock` 存在 → 這一輪跳過(沿用上次結果)。剩下「看了沒鎖 → 掛載」之間的毫秒窗,只在 **sysupgrade**(不經 helper)時可能撞到 → 該次 sysupgrade fail-closed、可重試 → 誠實界線。測試:worker 執行中 helper 的 p3 掛載次數 = 0(負對照:拿掉 (a) → > 0)。
+2. **`batman-slot` 的失敗沒有類別碼**:`die` 一律 `exit 1`(`batman-slot:40-44`),§3.7.5-6「依失敗類別對應 reason」無從判斷。**做法**:新動詞 `write` / `arm` / `bootcfg-sum` 的結束碼:
+
+   | rc | 意思 | helper 對應 |
+   |---|---|---|
+   | 0 | 成功 | — |
+   | 10 | 試用中 | reason 1 |
+   | 11 | 有 `.txn` | reason 12 |
+   | 12 | p5 不新鮮 | reason 17 |
+   | 13 | 內容 / 讀回不符、`BATMAN-VERIFIED` 不符 | reason 11 |
+   | 14 | 另一個 `batman-slot` 持鎖 | `E_BUSY` |
+   | 15 | 開機設定不在 key 8 清單 | reason 5 |
+   | 其他 | 內部錯誤 | reason 11 |
+
+   既有的 `apply` / sysupgrade 路徑只看 rc ≠ 0,行為不變;`--check` 拿不到鎖(`:506`)也回 14。測試:每個 rc 各一個誘發案例(故障接縫 `fault()` `:75`)。
+3. **provd 行程辨識需要 peer pid**:`sock.peerUID` 只取 uid、丟掉 pid(`sock/sock.go:178-194`),handler 工廠拿不到連線資訊(`main.go:663`)。**做法**:sock 層保留 SO_PEERCRED 的 pid 與 uid,傳給 handler 工廠;§3.7.6(b) 照原設計用 pid 判斷。只改 Go 內部介面,不改協定。04 實測 F11 成立:provd pid 8072、`PPid` 8041 = ujail(procd instance pid)、uid 471、`exe=/usr/bin/batman-provd`。
+4. **board 字串比哪個**:payload `metadata` 是 `board=ekh-bcm2711`(`build-ab-payload.sh:69`),provd 的 `Config.Board` 去掉了 `ekh-`(`cmd/batman-provd/main.go:81`)。**做法**:S key 2 與 `metadata board=` 都和 `/etc/batman-build` 的 `BATMAN_BOARD`(全串,例 `ekh-bcm2711`)比;provd 的短字串只用於顯示。
+5. **信任哪把根鑰匙**(使用者 2026-11-11 決定:先用測試根鑰匙 T):
+   - DEV 通道(`BATMAN_CHANNEL=wsl`)的 image 內建 `release-root.pub` = **T**(`tests/keys/T.pub`),`release-min-serial` = 1;wbox / prov_test image 同樣信任 T(原設計)。
+   - 正式根鑰匙 R 與 YubiKey(§3.7.1、§9-2)在正式版(#255)時產生、實測;**release gate**:`BATMAN_CHANNEL` ≠ `wsl` 的 image 若含 T → 不出貨。
+   - 因此 §8 `prov-update-254` 的「T 簽 → 試用 → commit → phase 5」用一般 DEV image(會 commit);wbox image 永不 commit(`batman-autocommit:489-494`、`batman-slot:800-805`)不能當目標。
+   - **界線**:DEV image 信任的是公開的 T,任何人都能簽出 DEV image 能裝的 payload —— DEV 只在 bench / 開發用,與 dev-trust app 同一條界線。
+6. **bcm2710**:使用者已決定量產用 CM4、Pi 3 暫不支援(2026-10-23)。S5 的程式兩板共用、都要編譯,但**只在 bcm2711 真機驗證**;firmware 樹裡的 bcm2710 payload 是舊的(2026-10-27)。bulk tmpfs 的 `size=` 依各板當次 build 的 payload 大小計算(bcm2711 = 2 × 126,309,765 B ≈ 241 MiB)。
+7. **簽章格式以 harness 的 `signrel.py` 為準**(測項只有一套):key 9 = 所有 `boot/` 成員大小總和;key 8 空 = 省略(= 不檢查);manifest key 5 = CBOR 陣列 `[E, S]`(兩個 bstr);key 3 = `.tar.gz` 檔大小。產品若要不同,先改 harness(harness PR 先進)。
+8. **D-14(`batman-slot` 被 TERM 殺掉時 `.busy` 留下)現在必修**:helper 的期限(§3.7.5-6)會對 `write` 送 SIGTERM;仍無 TERM trap(`batman-slot:157`)。`.busy` 殘留會讓 autocommit 延後退回最多 600 s(`batman-autocommit:226`)且 `otaBusy` 擋到下次開機。做法照附錄 D-14。
+
+### 12.3 04 唯讀實測(2026-11-11,wsl.25)
+
+| 項目 | 結果 |
+|---|---|
+| RAM / tmp(F25) | MemAvailable 7,174,904 kB;`/tmp` tmpfs 3,983,412 kB;無 swap |
+| RunDir(F53) | `/tmp/run/batman` root 0700;`/tmp/run/batman-prov` root:provd 0750 |
+| provd 開檔上限(F43) | soft 1024 |
+| 手機 AP | **關著**:`br-ahwlan` 的 port 只有 `bat0`、`eth0`,沒有 `phy*`(04 的 AP key 是 placeholder,keyguard 擋)→ 真機測上傳前,app 要先以 key 20 配對打開(§3.11-6) |
+| fw4 | 只有 `table inet fw4`;`auto_includes` 未設(預設 1);`/usr/share/nftables.d/` 只有 README |
+| br_netfilter | 已載入;`bridge-nf-call-iptables` = 1 |
+| 埠 8095 | 空著 |
+| 槽 | A committed,`batman-slot verify ok`;tryboot 旗標讀回 0 |
+
+**沒做**:F75 / F76 / §9-4 的 VLAN 臂與「AP client 通過」(要載入臨時 nft 規則、不是唯讀,需使用者同意;§9-4 仍開著)。
+
+### 12.4 CDDL / 協定還沒改的(§10)
+
+reason-code 11–20 已加(`219-protocol.cddl:132-143`);仍要改:`update-manifest` key 5 = `[E, S]`(`:300` 還寫 detached signature)、`bulk-open-resp` key 2 = 現行 AP 密碼(`:323` 還寫 one-time)、`update/prepare|apply` 的 key 1 = sha。
 
 ## 附錄 A. v4 審查回應(A4 = `p3-review-v4-A.md`、B4 = `p3-review-v4-B.md`)
 
