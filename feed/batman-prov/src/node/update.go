@@ -133,8 +133,15 @@ type pending struct {
 
 type updater struct {
 	sys    UpdateSys
+	fs     UpdateFS
 	slotMu sync.Mutex // every batman-slot call of the helper
 	updMu  sync.Mutex // pending, window, worker state, update-last
+	siMu   sync.Mutex // the slot-info cache maps (written under slotMu, read by status under updMu)
+
+	workPct      uint64
+	uploaded     uint64        // bytes provd reported for the open window (slice 3)
+	cancel       chan struct{} // closed by owner/remove of the worker's owner
+	disarmedBoot string        // the tick's disarm succeeded but update-last could not be rewritten (p6 read-only)
 
 	sigCache  map[string]*release.Release // manifest sha256 -> verified release (pure, §3.7.4)
 	lastCheck time.Time
@@ -157,8 +164,8 @@ type window struct {
 }
 
 // SetUpdateSource wires the update verbs; nil (tests that do not care) = E_UNSUPPORTED.
-func (n *Node) SetUpdateSource(s UpdateSys) {
-	n.upd = &updater{sys: s, sigCache: map[string]*release.Release{}, slots: map[string]slotInfo{},
+func (n *Node) SetUpdateSource(s UpdateSys, fs UpdateFS) {
+	n.upd = &updater{sys: s, fs: fs, sigCache: map[string]*release.Release{}, slots: map[string]slotInfo{},
 		slotsAt: map[string]int{}, slotsBad: map[string]int{}}
 }
 
@@ -172,32 +179,59 @@ func other(s string) string {
 // slotInfoOf reads (or returns the cached) bootinfo of slot s. Caller holds slotMu.
 func (u *updater) slotInfoOf(s string, refresh bool) (slotInfo, bool) {
 	now := u.sys.Uptime()
-	if si, ok := u.slots[s]; ok && !refresh && u.slotsBad[s] == 0 {
+	u.siMu.Lock()
+	si, have := u.slots[s]
+	bad, at := u.slotsBad[s], u.slotsAt[s]
+	if have && !refresh && bad == 0 {
+		u.siMu.Unlock()
 		return si, true
 	}
-	if !refresh && u.slotsBad[s] != 0 && now-u.slotsAt[s] < u.slotsBad[s] {
-		si, ok := u.slots[s]
-		return si, ok
+	if !refresh && bad != 0 && now-at < bad {
+		u.siMu.Unlock()
+		return si, have
 	}
 	u.slotsAt[s] = now
+	u.siMu.Unlock()
 	rc, out := u.sys.Slot(tBootinfo, "bootinfo", s)
-	if rc != 0 {
+	nsi, ok := slotInfo{}, false
+	if rc == 0 {
+		nsi, ok = parseBootinfo(out)
+	}
+	u.siMu.Lock()
+	defer u.siMu.Unlock()
+	if !ok {
 		if rc == 14 {
 			u.slotsBad[s] = slotInfoRetry14
 		} else {
 			u.slotsBad[s] = slotInfoRetry
 		}
-		si, ok := u.slots[s]
-		return si, ok
-	}
-	si, ok := parseBootinfo(out)
-	if !ok {
-		u.slotsBad[s] = slotInfoRetry
 		old, had := u.slots[s]
 		return old, had
 	}
-	u.slots[s], u.slotsBad[s] = si, 0
-	return si, true
+	u.slots[s], u.slotsBad[s] = nsi, 0
+	return nsi, true
+}
+
+// cachedSlot: the cache only (status, BootConfigOK without the lock)
+func (u *updater) cachedSlot(s string) (slotInfo, bool) {
+	u.siMu.Lock()
+	defer u.siMu.Unlock()
+	si, ok := u.slots[s]
+	return si, ok
+}
+
+func (u *updater) slotStale(s string) bool {
+	u.siMu.Lock()
+	defer u.siMu.Unlock()
+	_, ok := u.slots[s]
+	return !ok || u.slotsBad[s] != 0
+}
+
+// isWorking: the worker runs (otaBusy counts it, §3.1-5)
+func (u *updater) isWorking() bool {
+	u.updMu.Lock()
+	defer u.updMu.Unlock()
+	return u.working
 }
 
 // updateCheck: update.check {1: manifest, 2: owner key id (provd's session owner; only used to keep two owners'

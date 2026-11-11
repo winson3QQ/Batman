@@ -26,6 +26,7 @@ type fakeUpd struct {
 	out     map[string]string // batman-slot verb -> stdout
 	calls   []string
 	presave int
+	onSlot  func(verb string)
 }
 
 func (f *fakeUpd) Trust() release.Trust         { return f.trust }
@@ -37,6 +38,9 @@ func (f *fakeUpd) ActiveSlot() string           { return f.active }
 func (f *fakeUpd) PreSave()                     { f.presave++ }
 func (f *fakeUpd) Slot(_ time.Duration, args ...string) (int, string) {
 	f.calls = append(f.calls, strings.Join(args, " "))
+	if f.onSlot != nil {
+		f.onSlot(args[0])
+	}
 	return f.rc[args[0]], f.out[args[0]]
 }
 
@@ -67,7 +71,7 @@ func updRig(t *testing.T) (*Node, *fakeUpd, *time.Time) {
 	n.clock = func() time.Time { return clk }
 	f := &fakeUpd{trust: relTrust(t), ver: "1.5.14-wsl.25+fbc01ae.fw02f0913", board: "ekh-bcm2711", mem: 1 << 30, up: 100,
 		boot: "11111111-2222-3333-4444-555555555555", active: "A", rc: map[string]int{}, out: map[string]string{}}
-	n.SetUpdateSource(f)
+	n.SetUpdateSource(f, nil)
 	return n, f, &clk
 }
 

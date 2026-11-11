@@ -294,7 +294,7 @@ func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 	case "claim.replay":
 		return n.claimReplay(rec, a)
 	case "net.apply", "network.leave", "owner.add", "owner.remove", "settings.set", "root_password.reset",
-		"diag.bundle", "ssh_keys.set":
+		"diag.bundle", "ssh_keys.set", "update.prepare", "update.apply":
 		return n.ownerOpVerb(verb, rec, a)
 	}
 	return nil, fail(ESchema, "unknown verb %q", verb) // incl. keystore.ecdh, persist, keystore.sign, any reset: none exist (§4.1)
@@ -764,7 +764,8 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 	}
 	want := map[string]string{"net.apply": "network/join", "network.leave": "network/leave", "owner.add": "owner/add",
 		"owner.remove": "owner/remove", "settings.set": "settings/set", "root_password.reset": "root_password/reset",
-		"diag.bundle": "diag/bundle", "ssh_keys.set": "ssh_keys/set"}[verb]
+		"diag.bundle": "diag/bundle", "ssh_keys.set": "ssh_keys/set", "update.prepare": "update/prepare",
+		"update.apply": "update/apply"}[verb]
 	if verb == "net.apply" && typ == "network/update" {
 		return n.netUpdate(rec, body) // version chain, no owner-op (219 §5.3)
 	}
@@ -818,6 +819,10 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 		return cbor.M(1, b), nil
 	case "ssh_keys.set":
 		return n.sshKeys(rec, body)
+	case "update.prepare":
+		return n.updatePrepare(signer, body)
+	case "update.apply":
+		return n.updateApply(signer, body)
 	}
 	return nil, fail(ESchema, "unreachable")
 }
