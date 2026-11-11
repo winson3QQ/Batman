@@ -161,7 +161,7 @@ mod tests {
         let mp = cose::member_list_payload(&id, 1, None, &[]);
         let members = cose::sign1(cose::CT_MEMBERS, &mp, &raw(&admin, &cose::sign1_tbs(cose::CT_MEMBERS, cose::LABEL_MEMBERS, &mp)));
         let base = NetRecord { net_id: id, mesh_id: "bm-5a5a5a5a5a5a".into(), channel: 40, bw: 4, sae: "S".repeat(24), net_root: [7; 32], netcfg, members, secrets: vec![] };
-        let rec = NetRec { base, state: "applied".into(), list: Some(vec![]), invites: None, versions: None };
+        let rec = NetRec { base, state: "applied".into(), list: Some(vec![]), invites: None, versions: None, departed: None };
         let (mut f, a) = InviteFlow::start(&netrec::encode(&rec), 1, &pub65(&admin));
         let Action::SignAdmin { tbs } = a else { panic!() };
         let s: Signature = admin.sign(&tbs);

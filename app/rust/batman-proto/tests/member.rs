@@ -117,7 +117,7 @@ fn admin_record(v: &J) -> NetRec {
         members: h(&c["member_list"]["sign1"]),
         secrets: h(&c["net_secrets"]["sign1"]),
     };
-    NetRec { base, state: "applied".into(), list: None, invites: None, versions: None }
+    NetRec { base, state: "applied".into(), list: None, invites: None, versions: None, departed: None }
 }
 
 /// The real store with a fake seal: sealed = SHA-256(aad) ‖ plain.

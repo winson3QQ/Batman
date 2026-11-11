@@ -1,6 +1,6 @@
-# #254 app S6 — 移除成員(自動換密碼)(設計 v6.4,FROZEN)
+# #254 app S6 — 移除成員(自動換密碼)(設計 v6.5,FROZEN)
 
-狀態:**FROZEN v6.4**(2026-11-11)。第 9 輪兩位都 0 BLOCKER / 0 MAJOR,MINOR 已改進正文(§18),依規則不再整份重審。
+狀態:**FROZEN v6.5**(2026-11-11)。v6.4 第 9 輪兩位都 0 BLOCKER / 0 MAJOR;實作的程式碼審查第 1 輪兩位獨立找到同一個設計漏洞(§19)→ 使用者決定補一個欄位(網主紀錄 k14),本版只改這一處與它的測試,與程式碼一起過第 2 輪審查。
 - v1 第 1 輪:A REJECT(1 BLOCKER / 5 MAJOR / 18 MINOR)、B REJECT(0 / 9 / 12)→ v2。
 - v2 第 2 輪:A REJECT(0 / 2 / 14)、B APPROVE-WITH-CHANGES(0 / 4 / 13)→ v3。
 - v3 第 3 輪:A REJECT(0 / 5 / 11)、B REJECT(1 / 1 / 10)→ v4。
@@ -94,6 +94,7 @@
   - `forget_joining`(與 bridge owner.rs:127 的重複檢查)、`net_summary` 的建立者標示:只在 pending 時呼叫 `creator()`;applied 時不呼叫(k8 可能是空的 —— 排除最後一台、沒有其他成員 —— `creator()` 會回錯,不能讓它擋住 forget / 畫面)。
   - 新版 members 不另外排序:key 4 照 k11 的順序(k11 本身建立者在前);產 v+1 不呼叫 `creator()`(否則排除最後一台、k8 空的時產不出新版,緊急換密碼被擋)。v6.3 的排序規則依「只做必要的」刪掉(第 9 輪 A-m5 / B-m7)。
 - k9:不再使用,留著。
+- **k14 離開過的項**(v6.5):`[ {1 dac_hash, 2 owner_pub, 3 name} ]`,換密碼 commit 時把本次排除的每一項加進去(同一台只留最新一筆),只增不減。理由:成員名單只在換版時重簽、同意時不重簽,所以「在 v 之後被同意、在 v+1 被移除」的項**不會出現在任何一版的 members**(實作審查 r1 A-F1 / B-MAJOR-1 實驗證實)—— 只靠歷代 members,§3.6 的「之前的擁有者」幾乎永遠是「不明」,而且「被移除的人換一台全新節點申請」(比 owner_pub)**根本不會跳框**。§2.0 入口 2 與 §3.6 的「之前被移出過」判斷與「之前的擁有者」**先查 k14,再查歷代**。降級的舊 app 寫回會丟 k14 → 回到只看歷代 members(誠實界線,§5 降級列)。
 - **成員項 k10 = 這台節點的擁有者確定擁有的版本**:同意他時的版本。**缺 k10 = k13 最舊一版 − 1**(今天所有既有的項都缺;降級再升級也會缺;這樣產包一律從 k13 最舊一版起,不需要特殊條件,A-m6)。複製更新包**不**推進它。**k10 只在 k11 的編碼出現,不寫進 mnet k7**(member_value 拆成兩個編碼)。
 - k12 邀請:換密碼的那次寫入把所有 `used = false` 改成 `true`。
 - 不再有「進行中的換密碼」(v2 的 k14 拿掉,只做必要的):**可能還要包的人** = 成員項 k10 < 目前版本、owner_pub ≠ 自己(這支手機看不到對方是否已匯入,所以第一次換版後這份清單會一直是全部成員);自己的節點還沒換 = §3.5 共用規則。第二次移除不必等第一次「結束」。
@@ -187,7 +188,7 @@
 ### 3.6 其他功能
 - **節點版本規則(k4,R25、R30)**:`k4` 中取第一個 `-wsl\.(\d+)`,**數字超過 9 位 = 不通過**(B-m3:`\d{1,9}` 會只吃前 9 位而通過);N ≥ 25 → 通過;N < 25 → 不通過;**找不到 / 缺 → 不通過**(fail-closed)。前提:wsl.25 起的節點帶 F10 修正(R30);⚠️ 假設 wsl 編號單調遞增(基礎版本號前進時不歸零)—— 沒有證據,但規則是 fail-closed,假設錯只會多擋、不會漏;正式版的版本字串格式定下來時要能被這條規則認出,否則改規則 —— 進 §9 checklist(A-m2)。
 - **邀請**:`open_netcfg_v1` → `open_netcfg_current`:netcfg 由它自己的 admins 之一簽、且該公鑰 = 邀請的 admin_pub;版本不限(R15)。它不提供新鮮度(舊的真邀請照樣打得開 → 由 k12 標 used 處理);將來換 admins 時規則要改(換網主不在本單)。今天只有遠端邀請。
-- **同意**:members / secrets 用目前版本(k8、k5、k6);同意時把該項 k10 設為目前版本。check_joinreq 對作廢的邀請回 InviteUsed → 句子改為通用「這張邀請已用過或已作廢,請重新邀請」(R10)。申請的 DAC 若「之前被移出過」(§2.0 入口 2 的同一判斷)→ 同意前跳**與入口 2 同一個確認框**;**申請者的 owner_pub 若在歷代 members 出現過、而現在不在 k11**(被移除的人換一台全新節點申請)也跳同一個框(第 8 輪 B-m3);k13 修剪到 32 版之後,更早版本的 owner_pub 就比不到了(DAC 的判斷靠只增不減的 removed,不受影響)—— 誠實界線(第 9 輪 B-m2);框裡帶 device_id 後 4 碼與**之前的擁有者**(歷代中最後一版含這台的 members 的名稱與 owner_pub 指紋;防止被移除的人拿網主被抓節點的 DAC 來申請,B-m3;歷代已被修剪、找不到 → 顯示「之前的擁有者:不明」,第 8 輪 B-m4);確認是 `ApproveFlow::start` 的參數,由 Rust 強制(它的第一步就是 SignAdmin;沒有確認 → 0 次 SignAdmin,B-m2);按否 = 不同意;使用者決定可以重新邀請;回應 NU §3「審核時擋 removed」。
+- **同意**:members / secrets 用目前版本(k8、k5、k6);同意時把該項 k10 設為目前版本。check_joinreq 對作廢的邀請回 InviteUsed → 句子改為通用「這張邀請已用過或已作廢,請重新邀請」(R10)。申請的 DAC 若「之前被移出過」(§2.0 入口 2 的同一判斷)→ 同意前跳**與入口 2 同一個確認框**;**申請者的 owner_pub 若在 k14 或歷代 members 出現過、而現在不在 k11**(被移除的人換一台全新節點申請)也跳同一個框(第 8 輪 B-m3;v6.5:先查 k14,否則這條在真實路徑上永遠不成立);k14 不修剪,只有被舊版 app 寫回丟掉 k14 之後才退回「只比 k13 歷代」(k13 修剪到 32 版後更早的 owner_pub 比不到)—— 誠實界線(第 9 輪 B-m2);框裡帶 device_id 後 4 碼與**之前的擁有者**(k14 中這台 / 這個人的最新一筆,否則歷代中最後一版含它的 members 的名稱與 owner_pub 指紋;防止被移除的人拿網主被抓節點的 DAC 來申請,B-m3;歷代已被修剪、找不到 → 顯示「之前的擁有者:不明」,第 8 輪 B-m4);確認是 `ApproveFlow::start` 的參數,由 Rust 強制(它的第一步就是 SignAdmin;沒有確認 → 0 次 SignAdmin,B-m2);按否 = 不同意;使用者決定可以重新邀請;回應 NU §3「審核時擋 removed」。
 - **同意過但還沒入網的成員**(approved,他還沒匯入同意包):他的項會進 v+1 的 members。他之後要先匯入舊的同意包(建立 mnet),再匯入更新包;反過來(先貼更新包)不可能 —— 沒有 mnet → 「請先匯入網主的同意」(A-m10:前者 / 後者寫反更正)。§5 有這一列。
 - **重新加入被移除的人**(使用者決定可以):
   1. 他的節點在舊版:手機的歷代接得上就直接送新密碼,接不上就先「離開網路」再加入(§3.5 同一條規則)。
@@ -242,7 +243,7 @@
 | 同時匯入同意包與更新包 | 兩段 CAS:後寫者失敗 → 請網主再複製一次再貼 | T22 |
 | 剪貼簿被換成舊包 / 別人的包 / 偽造的重新邀請 | 「已經匯入過」或拒絕;mnet 不變 | T12 |
 | Keystore / 封存失敗 | 網主:沒有 commit;成員:mnet 不變 | T2 |
-| 網主 app 降級 | 舊 decode 打得開;k7 / k8 是目前版本;舊 app 的 `confirm()` / forget 會在 applied 紀錄上用 creator()(建立者被排除後會改到別人的項;k8 空的時「確認網路」顯示紀錄壞掉、forget 失敗)—— 誠實界線(第 8 輪 MAJOR);寫回丟 k13 / 成員 k10;舊版加入者 app 打不開 v2 邀請。再升回:k13 只剩目前版本 → §3.3 列出缺 k10 的成員、產只含目前版本一步的包並標「升級前的版本不明」(§2.3);接不上的成員 / 節點要離開再加入 | T10 |
+| 網主 app 降級 | 舊 decode 打得開;k7 / k8 是目前版本;寫回丟 k14(之後「之前被移出過 / 之前的擁有者」只看歷代 members,換新節點來申請的被移除者不會跳框 —— 誠實界線,v6.5);舊 app 的 `confirm()` / forget 會在 applied 紀錄上用 creator()(建立者被排除後會改到別人的項;k8 空的時「確認網路」顯示紀錄壞掉、forget 失敗)—— 誠實界線(第 8 輪 MAJOR);寫回丟 k13 / 成員 k10;舊版加入者 app 打不開 v2 邀請。再升回:k13 只剩目前版本 → §3.3 列出缺 k10 的成員、產只含目前版本一步的包並標「升級前的版本不明」(§2.3);接不上的成員 / 節點要離開再加入 | T10 |
 | 成員 app 降級 | 舊 mrec 寫回丟 k9 / k10;k5 仍是 k7 那台的;舊 app 不認 kind 4 | T10 |
 | 節點降級到 wsl.24 | §3.2 每次送前查 k4 → 不送;已換好的節點降級後,被移除者算不出新版 psk_member(net_root 已換),F10 只威脅還沒換好的節點(同前置 5 的界線,B-m8) | T5 |
 | 網主排除自己最後一台 | 可以;沒有節點可查回滾(誠實寫在對話框);之後 join2 加入新節點(入口 2:全新節點不在 removed,直接過) | T26 |
@@ -294,7 +295,7 @@ Rust 單元(batman-proto)為主:
 - T35 「指名哪一台」「之前被移出過 …〈後 4 碼〉」兩句的 Rust 單元(句子字串由 bridge 回傳)。
 - T36 非 dev-trust build 沒有「排除自己的一台」入口、joining 節點的忘記對話框也不提供它(T25 同一組,A-m2)。
 - T37 一人多台:先貼第二台的同意包(+1)、後貼較早的更新包 → 「已經匯入過」分支補進第一台的 secrets、不要求 k7;負對照:v6 的規則 4 → 整份被拒;狀態頁「手機沒有它的新密碼」那句只在成員手機、條件成立時出現,負對照:條件拿掉 → 被排除的網主節點也看到這句。
-- T38 前置 1(admins ≠ [這支手機] → 不開始)、前置 3(對象是自己這個人 → 沒有按鈕);open_netcfg_current 正反(v2 由 admin_pub 簽 → 收;不是 → 拒);同意確認框按否 → 0 次 SignAdmin(經 ApproveFlow::start 參數);k5 換成新版的負對照(不換 → 隊員模式加入被節點拒);T32 經 bridge 測(owner.rs:127 有一份重複的 creator 檢查);T27 入口 2 的負對照放在第一次 SignAdmin 之後(不是 PersistNet 之後);目標自己謊報 k9 > v → 不擋(檢查不含目標);`confirm()` 在 applied 紀錄上不改 k11(建立者被排除、k8 第一筆換成別人的 approved 項 → 按「確認網路」後 k11 不變);負對照:今天的 confirm() → 別人的項被改成 applied。applied 紀錄 + OtherNetwork 的 info → NoChange、+ 舊版 info → OtherVersion(不是 Already);負對照:Already 放到 join_state 之前 → 斷言失敗(第 9 輪 A-m1 / B-m1)。net_summary 的建立者旗標:pending 紀錄 → 標(Dart 不給「忘記」);applied 紀錄 → 不標、k8 空的也不回錯;負對照:applied 也呼叫 creator() → k8 空時失敗(第 9 輪 A-m2)。被移除的人用同一個 owner_pub、全新 DAC 申請 → 跳確認框,按否 → 0 次 SignAdmin;負對照:只比 DAC → 不跳框(第 9 輪 B-m2)。commit 後 k11 是 Some(含空清單)(第 9 輪 B-m5)。
+- T38 前置 1(admins ≠ [這支手機] → 不開始)、前置 3(對象是自己這個人 → 沒有按鈕);open_netcfg_current 正反(v2 由 admin_pub 簽 → 收;不是 → 拒);同意確認框按否 → 0 次 SignAdmin(經 ApproveFlow::start 參數);k5 換成新版的負對照(不換 → 隊員模式加入被節點拒);T32 經 bridge 測(owner.rs:127 有一份重複的 creator 檢查);T27 入口 2 的負對照放在第一次 SignAdmin 之後(不是 PersistNet 之後);目標自己謊報 k9 > v → 不擋(檢查不含目標);`confirm()` 在 applied 紀錄上不改 k11(建立者被排除、k8 第一筆換成別人的 approved 項 → 按「確認網路」後 k11 不變);負對照:今天的 confirm() → 別人的項被改成 applied。applied 紀錄 + OtherNetwork 的 info → NoChange、+ 舊版 info → OtherVersion(不是 Already);負對照:Already 放到 join_state 之前 → 斷言失敗(第 9 輪 A-m1 / B-m1)。net_summary 的建立者旗標:pending 紀錄 → 標(Dart 不給「忘記」);applied 紀錄 → 不標、k8 空的也不回錯;負對照:applied 也呼叫 creator() → k8 空時失敗(第 9 輪 A-m2)。被移除的人用同一個 owner_pub、全新 DAC 申請 → 跳確認框,按否 → 0 次 SignAdmin;負對照:只比 DAC → 不跳框(第 9 輪 B-m2)。**v6.5:這一臂要走真實路徑「同意 → 移除 → 換新節點申請」**(不是用建立者模擬:建立者在 v1 members 裡,測不到漏洞);k14 每台一筆、被移除兩次只留最新;負對照:k14 被舊版寫回丟掉 → 不跳框。commit 後 k11 是 Some(含空清單)(第 9 輪 B-m5)。
 - T40 收件人契約:產包只從目前 k11 取;第二次移除後按舊畫面上已被移除的人 → 拒絕、0 次 SignAdmin;對象是自己 → 拒;owner_enc_pub 不一致 → 拒;負對照:從畫面快取 / k13 取 → 產出給被移除者的新 member_secrets(B-M1)。
 - T39 「忘記」導向:applied 紀錄裡別人的 approved 項沒有單獨的「忘記」、有「移除這個人」;joining 的自己節點的忘記對話框有「排除這台」;負對照:Rust 仍接受 applied 紀錄裡 approved 項的 forget → 忘記後無法換密碼切掉(在 bridge 層測)。
 - T28 approve::import 與 join2 隊員模式寫 mnet 後 k9 / k10 保留(+1 路帶上 k9、清 k10;TooOld 取代重設);+1 路的 members prev_hash 錯 → 拒絕;負對照:今天的從頭建 → k9 / k10 消失;不驗 members prev_hash → 錯的被寫進 k9。
@@ -514,3 +515,20 @@ Rust 單元(batman-proto)為主:
 | B-m5 k11 不留 None | §3.1 commit 寫明;T38 斷言 |
 
 bare「k9」(指節點 info key 9)在 §2.4 / §3.2 的說法:§2.0 已定義「節點版本」;實作時照 §2.0 用語,不另改正文(只是用語)。
+
+## 19. 實作程式碼審查第 1 輪(v6.4 → v6.5)
+A APPROVE-WITH-CHANGES(0 / 2 / 5)、B APPROVE-WITH-CHANGES(0 / 2 / 8)。
+
+| 項目 | 處理 |
+|---|---|
+| A-F1 / B-MAJOR-1 設計漏洞:被同意後才被移除的項不在任何一版 members →「之前的擁有者」幾乎都是不明、換新節點來申請的被移除者不跳框 | 使用者決定補欄位:§2.1 k14、§3.6、§5 降級列、T38 走真實路徑 + 負對照(rekey.rs t38_removed_before_on_the_real_path、bridge t35) |
+| A-F2 / B-MAJOR-2 §3.4 的多條檢查沒有負對照 | t12_every_chain_check_on_its_own、t12_more_checks_on_their_own;mutation 重跑 |
+| A-F3 T37 核心情境 | t37_the_same_version_does_not_need_the_key_7_node |
+| A-F4 / B-m5 §2.4 不在 k13 的 k9 不擔保;入口 1 比 owner_pub 與登入驗過的 ecdh_pub | t15_a_node_older_than_the_kept_versions_does_not_vouch、t27_rule1_owner_and_ecdh;updflow 比 ecdh_pub |
+| A-F5 T10 / T24 負對照 / own_of / T31 | t10_after_a_downgrade_and_upgrade、t24_a_derived_debug_would_leak、bridge own_nodes_from_node_records_and_info_net_id;T31 aapt2 三個 APK 已驗,負對照隨下次重建 |
+| A-F6 主畫面送新密碼可能選錯紀錄 | 依節點 info k10 選紀錄(bridge info_net_id) |
+| A-F7 同名提示進對話框;非網主不說「資料損壞」 | Dart 對話框;updflow End::NotAdmin |
+| B-m2 歸零 | Rekey Drop、secrets_payload / mupdate 解出的 Value 清掉 |
+| B-m3 未簽的竄改觸發 Fork 告警 | 不一致時先驗簽,驗不過 = Invalid |
+| B-m4 128 KiB 在解碼後才擋 | 先擋貼上文字長度 |
+| B-m6 / B-m8 | 與設計字面一致(fail-closed / 加回後每次都問),記錄,不改 |

@@ -318,6 +318,12 @@ impl Rekey {
                 self.net_root = [0; 32];
                 // key 11 is always written as the list itself (also when empty: never None, review r9 B-m5)
                 rec.list = Some(keep);
+                // key 14: who left (v6.5) — the newest entry per node
+                let d = rec.departed.get_or_insert_with(Vec::new);
+                for m in &plan.excluded {
+                    d.retain(|x| x.dac_hash != m.dac_pub_hash);
+                    d.push(netrec::Departed { dac_hash: m.dac_pub_hash, owner_pub: m.owner_pub, name: m.name.clone() });
+                }
                 for i in rec.invites.iter_mut().flatten() {
                     i.used = true;
                 }
@@ -338,6 +344,19 @@ impl Rekey {
     pub fn persist_failed(&mut self, error: Option<String>) -> Option<Action> {
         let RStep::Persist { .. } = std::mem::replace(&mut self.st, RStep::Over) else { return None };
         Some(Action::Done(End::PersistFailed(error)))
+    }
+}
+
+impl Drop for Rekey {
+    /// the new SAE / net_root of a removal that did not commit (or the copies left after it did) are cleared
+    fn drop(&mut self) {
+        self.net_root = [0; 32];
+        // the SAE bytes overwritten in place
+        let mut b = std::mem::take(&mut self.sae).into_bytes();
+        b.iter_mut().for_each(|x| *x = 0);
+        if let Some(r) = self.rec.as_mut() {
+            r.base.net_root = [0; 32];
+        }
     }
 }
 
@@ -436,11 +455,23 @@ impl std::fmt::Debug for BundleAction {
 
 /// net_secrets payload ({1 SAE, 2 net_root} to `to`, key 3 = `target`) or member_secrets payload ({2 net_root}).
 pub(crate) fn secrets_payload(rec: &NetRec, version: u32, to: &[u8; 65], target: &[u8; 32], member: bool) -> Result<Vec<u8>, String> {
-    let mut m = vec![(Value::Uint(2), Value::Bytes(rec.base.net_root.to_vec()))];
+    let mut m = Value::Map(vec![(Value::Uint(2), Value::Bytes(rec.base.net_root.to_vec()))]);
     if !member {
-        m.push((Value::Uint(1), Value::Text(rec.base.sae.clone())));
+        if let Value::Map(e) = &mut m {
+            e.push((Value::Uint(1), Value::Text(rec.base.sae.clone())));
+        }
     }
-    let mut plain = cbor::encode(&Value::Map(m));
+    let mut plain = cbor::encode(&m);
+    // the Value copies are cleared too (code review r1 B-m2)
+    if let Value::Map(e) = &mut m {
+        for (_, x) in e.iter_mut() {
+            match x {
+                Value::Bytes(b) => b.iter_mut().for_each(|y| *y = 0),
+                Value::Text(t) => *t = String::new(),
+                _ => {}
+            }
+        }
+    }
     let label = if member { cose::LABEL_MSECRETS } else { cose::LABEL_SECRETS };
     let enc = cose::encrypt_to(&plain, label, to, target, &rec.base.net_id, version);
     plain.iter_mut().for_each(|b| *b = 0);

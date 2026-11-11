@@ -64,6 +64,11 @@ List<RecipientView> netRecipients({
 String updateNetId({required String hex}) =>
     RustLib.instance.api.crateApiRekeyUpdateNetId(hex: hex);
 
+/// The network an info body (OwnerStep.info) says the node is in (key 10, lowercase hex; "" = none / unreadable):
+/// which record 「把新密碼送給節點」 sends from (code review r1 A-F6).
+String infoNetId({required List<int> info}) =>
+    RustLib.instance.api.crateApiRekeyInfoNetId(info: info);
+
 /// §3.4 first part: `mnet_plain` / `mnet_gen` = mnet/<id> as read; `node_records` = this phone's opened node records.
 UpdatePrep memberUpdatePrepare({
   required String hex,

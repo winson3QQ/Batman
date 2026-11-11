@@ -12,6 +12,9 @@
 //! (increasing, contiguous, the last 32; absent = one version made from keys 7 / 8); keys 5-8 are the current version.
 //! A key 11 entry's ?10 = the version its owner surely holds (set when this phone approved it; absent = the oldest
 //! version of key 13 − 1). Key 10 is in key 11 only, never in a member's mnet key 7. Key 9 is no longer read.
+//! ?14 = every entry a removal excluded [{1 dac_hash, 2 owner_pub, 3 name}] (only grows; v6.5, code review r1 MAJOR:
+//! an entry approved after version v and removed at v+1 is in no members list, so "removed before" and "the previous
+//! owner" look here first; an older app drops it on write -> back to the members lists, an honest limit).
 //! The record holds SAE / net_root: it leaves Rust only to be sealed by the platform; nothing here formats it.
 
 use sha2::{Digest, Sha256};
@@ -65,6 +68,14 @@ pub struct Member {
     pub known: Option<u32>,
 }
 
+/// An entry a removal excluded (net key 14).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Departed {
+    pub dac_hash: [u8; 32],
+    pub owner_pub: [u8; 65],
+    pub name: String,
+}
+
 /// One version of the network (net key 13 / mnet key 9): the signed netcfg and members.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Version {
@@ -83,6 +94,8 @@ pub struct NetRec {
     pub invites: Option<Vec<InviteRec>>,
     /// key 13 as stored (None = an older record: `history()` derives one version from keys 7 / 8)
     pub versions: Option<Vec<Version>>,
+    /// key 14 as stored (None = no removal yet, or written by an older app)
+    pub departed: Option<Vec<Departed>>,
 }
 
 /// What a signed net_config says (the parts the app checks).
@@ -269,6 +282,16 @@ pub fn encode(r: &NetRec) -> Vec<u8> {
     if let Some(h) = &r.versions {
         m.push((Value::Uint(13), Value::Array(h.iter().map(version_value).collect())));
     }
+    if let Some(d) = &r.departed {
+        let e = d.iter().map(|x| {
+            Value::Map(vec![
+                (Value::Uint(1), Value::Bytes(x.dac_hash.to_vec())),
+                (Value::Uint(2), Value::Bytes(x.owner_pub.to_vec())),
+                (Value::Uint(3), Value::Text(x.name.clone())),
+            ])
+        });
+        m.push((Value::Uint(14), Value::Array(e.collect())));
+    }
     cbor::encode(&Value::Map(m))
 }
 
@@ -314,13 +337,28 @@ pub fn decode(plain: &[u8]) -> Result<NetRec, Error> {
         None => None,
         Some(x) => Some(versions_of(x)?),
     };
-    Ok(NetRec { base, state, list, invites, versions })
+    let departed = match v.get(14) {
+        None => None,
+        Some(Value::Array(a)) => Some(
+            a.iter()
+                .map(|x| {
+                    Ok(Departed {
+                        dac_hash: arr(x.get(1), "departed dac_hash")?,
+                        owner_pub: arr(x.get(2), "departed owner_pub")?,
+                        name: f(x.get(3).and_then(Value::as_text), "departed name")?.to_string(),
+                    })
+                })
+                .collect::<Result<Vec<_>, Error>>()?,
+        ),
+        Some(_) => return Err(Error::Field("departed")),
+    };
+    Ok(NetRec { base, state, list, invites, versions, departed })
 }
 
 impl NetRec {
     /// make-network's record (254-app-s1 §5.4): no key 11 while pending.
     pub fn made(base: NetRecord) -> NetRec {
-        NetRec { base, state: PENDING.into(), list: None, invites: None, versions: None }
+        NetRec { base, state: PENDING.into(), list: None, invites: None, versions: None, departed: None }
     }
 
     pub fn netcfg(&self) -> Result<NetCfg, Error> {
@@ -374,9 +412,10 @@ impl NetRec {
         }
     }
 
-    /// The DAC hashes some kept version or the current members list as removed (key 5): "removed before" (§2.0-2).
+    /// The DAC hashes key 14 or some kept version / the current members list as removed (key 5): "removed before"
+    /// (§2.0-2).
     pub fn removed_ever(&self) -> Result<Vec<[u8; 32]>, Error> {
-        let mut out: Vec<[u8; 32]> = vec![];
+        let mut out: Vec<[u8; 32]> = self.departed.iter().flatten().map(|d| d.dac_hash).collect();
         let mut all = self.history()?.into_iter().map(|x| x.members).collect::<Vec<_>>();
         all.push(self.base.members.clone());
         for m in all {
@@ -389,8 +428,25 @@ impl NetRec {
         Ok(out)
     }
 
-    /// The newest kept version's members entry `pick` matches (§3.6: "the previous owner" — its name / owner_pub).
+    /// "The previous owner" (§3.6): the newest key 14 entry `pick` matches (as a member: name / owner_pub / dac), else
+    /// the newest kept version's members entry.
     pub fn last_listed(&self, pick: impl Fn(&Member) -> bool) -> Result<Option<Member>, Error> {
+        for d in self.departed.iter().flatten().rev() {
+            let m = Member {
+                dac_pub_hash: d.dac_hash,
+                ecdh_pub: [0; 65],
+                name: d.name.clone(),
+                owner_pub: d.owner_pub,
+                owner_enc_pub: [0; 65],
+                device_id: None,
+                state: MemberState::Applied,
+                prev_country: None,
+                known: None,
+            };
+            if pick(&m) {
+                return Ok(Some(m));
+            }
+        }
         for x in self.history()?.iter().rev() {
             if let Some(Value::Array(a)) = sign1_payload(&x.members)?.get(4) {
                 for e in a {

@@ -57,8 +57,11 @@ pub struct Input {
 pub enum End {
     Record,
     NotVerified,
-    /// §2.0 rule 1: not in key 11 with this phone's owner_pub (excluded / forgotten): leave only, or join to add back
+    /// §2.0 rule 1: not in key 11 with this phone's owner_pub (excluded / forgotten), or its entry's ecdh_pub is not
+    /// the one this login verified: leave only, or join to add back
     NotListed,
+    /// the record's admins do not hold this phone's admin key
+    NotAdmin,
     /// §2.0 rule 3: this phone has no current secrets for it: 「請網主重新產生你的更新包」
     NoSecrets,
     /// info unreadable 3 times
@@ -161,8 +164,12 @@ impl SendUpdate {
             let cfg = rec.netcfg().map_err(|_| End::Record)?;
             let list = rec.members().map_err(|_| End::Record)?;
             let entry = list.into_iter().find(|m| m.dac_pub_hash == h && m.owner_pub == inp.owner_pub).ok_or(End::NotListed)?;
+            // the secrets go to the entry's ecdh_pub (§2.0 rule 1): it must be the key this login's node_cert proved
+            if entry.ecdh_pub != node.ecdh_pub {
+                return Err(End::NotListed);
+            }
             if !cfg.admins.contains(&inp.admin_pub) {
-                return Err(End::Record);
+                return Err(End::NotAdmin);
             }
             self.net_id = rec.base.net_id;
             self.version = cfg.version;
