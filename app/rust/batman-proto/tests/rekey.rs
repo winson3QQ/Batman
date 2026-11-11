@@ -1296,3 +1296,16 @@ fn t24_a_derived_debug_would_leak() {
     assert!(t.contains("171, 171"), "{t}");
     assert!(!format!("{:?}", team().base).contains("119, 119"), "the redacted Debug of the record (net_root 0x77)");
 }
+
+/// key 14 keeps "removed before" after the members lists that said so are gone (key 13 pruned past 32 versions):
+/// mutation R37
+#[test]
+fn t38_key_14_outlives_the_pruned_versions() {
+    let v2 = removed(&team(), Target::Person(pk(P)));
+    let mut pruned = v2.clone();
+    pruned.versions = None;
+    pruned.base.members = members_v1(); // what is left lists nobody as removed
+    assert!(pruned.removed_ever().unwrap().contains(&dac(B.dac)));
+    pruned.departed = None;
+    assert!(!pruned.removed_ever().unwrap().contains(&dac(B.dac)), "negative control: without key 14");
+}
