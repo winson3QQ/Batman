@@ -86,6 +86,7 @@ prov-upload-254	UP9	h
 prov-upload-254	UP10	h	
 prov-upload-254	UP11	n	
 prov-update-254	UD-T1	h	
+prov-update-254	UD-L	h	
 prov-update-254	UD1	h	
 prov-update-254	UD2	h	
 prov-update-254	UD3	h	
@@ -125,10 +126,14 @@ prov-autocommit-p3-254	AC7	n
 prov-autocommit-p3-254	AC8	n	
 p3-other-254	TT1	n+m	the loop-file arm; the real card needs a person
 p3-other-254	LR1	n	
-p3-other-254	FB1	n	
+p3-other-254	RK1	n	
 p3-other-254	FB2	n	
 p3-other-254	FB3	n	
 p3-other-254	EE1	n	
 p3-other-254	EE2	n	
 p3-other-254	PR1	m	the §7 probe's positive arm needs the phone on the AP
 p3-other-254	SEC1	n	
+prov-fw-boot-254	FB1	n	
+prov-fw-boot-254	FB4	n	
+prov-fw-boot-254	FB5	n	
+prov-fw-boot-254	FB6	n	

@@ -1,7 +1,4 @@
 #!/bin/sh
-# #254 S5: batman-slot answers 14 while another holds the slot lock (the helper's bootinfo, a write): retried, never read
-# as a refusal; any other rc is the answer
-precheck_rc(){ local i r; for i in 1 2 3 4 5; do batman-slot precheck-node >/dev/null 2>&1; r=$?; [ "$r" = 14 ] || return "$r"; sleep 2; done; return "$r"; }
 # p5-follows-202.sh — run ON a node (ssh root@node sh -s < this): daily-validation suite p5-follows-config-202.
 # #202 close-out D1 (docs/design/202-config-survival-closeout.md §8): a JOINED node's shared config
 # partition p5 must FOLLOW the running per-node config within one joinwatch tick, with no once-per-boot
@@ -19,6 +16,9 @@ state=$(cat "$R/joinwatch.state" 2>/dev/null); case "$state" in JOINED*) ;; *) e
 mc(){ hexdump -s 1076 -n 2 -e '1/2 "%u"' "$DEV"; }
 up(){ cut -d. -f1 /proc/uptime; }
 f=0; pass(){ echo "PASS $*"; }; fail(){ echo "FAIL $*"; f=1; }
+# #254 S5: batman-slot answers 14 while another holds the slot lock (the helper's bootinfo, a write): retried, never read
+# as a refusal; any other rc is the answer
+precheck_rc(){ local i r; for i in 1 2 3 4 5; do batman-slot precheck-node >/dev/null 2>&1; r=$?; [ "$r" = 14 ] || return "$r"; sleep 2; done; return "$r"; }
 M=$H/p5
 p5host(){ # hostname line on p5, read-only (retry: a concurrent rw writer makes a ro mount EBUSY for a moment, T11)
 	i=0; mkdir -p "$M"

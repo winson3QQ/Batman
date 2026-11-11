@@ -114,6 +114,9 @@ stale(){
 	[ "$t" = gone ] && ok "stale-secrets: no .txn" || no "stale-secrets: .txn $t"
 	i=$(pr_info); case " $i " in *" state=member "*) ok "stale-secrets: still member";; *) no "stale-secrets: $i";; esac
 }
+# the CDDL network/update shape (provclient 789a89f) only means something to a helper that reads it (pr_cddl_nu):
+# a pre-CDDL helper (wsl.24 and older) refuses it for another reason -> INVALID, never a FAIL of the image
+pr_cddl_nu || { pr_result; exit 2; }
 pr_begin 3600 || { pr_result; exit 1; }
 arm yield || { pr_abort "arm yield"; pr_result; exit 1; }
 pr_restore || { pr_abort "restore after arm yield"; pr_result; exit 1; }

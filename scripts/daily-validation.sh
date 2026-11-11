@@ -156,6 +156,8 @@ fi
 . "$REPO/scripts/dv/claim-lock-254.sh"
 # shellcheck source=dv/prov-dv-254.sh
 . "$REPO/scripts/dv/prov-dv-254.sh"
+# shellcheck source=dv/s5-254.sh
+. "$REPO/scripts/dv/s5-254.sh"
 # shellcheck source=dv/known-failures.sh
 . "$REPO/scripts/dv/known-failures.sh"
 
@@ -214,6 +216,12 @@ chk_addr_defer_254() {     # tier A, read-only: scripts/node/addr-defer-254.sh o
   done; return $r
 }
 suite harness-negctl-254 "N3 held-trial script vs a simulated node: only guarded rollbacks, flag kept once the OTA is sent (#254 PR-H1)" "self_test test-negctl-old-slot-254.sh"
+# #254 S5 harness self-tests (busybox ash + dash, stub ssh / fixture trees): the slot-flock helpers (bounded take, no shell
+# exit, SLOTLK-BUSY, leak / contention), the host judges (UD-T1 trust, the CDDL capability, the lock-release check), and
+# the node checks prov-fw-boot-254 / release-key-254 with every FAIL / INVALID case
+suite harness-slotlock-254 "#254 S5 slot-flock helpers offline: bounded take, a failed open never ends the remote shell, SLOTLK-BUSY, lock-release leak / contention, one copy" "self_test test-slotlock-254.sh"
+suite harness-s5-dv-254 "#254 S5 host judges offline: T fingerprint, UD-T1 trust -> 24 / 11 / INVALID bench / FAIL bad, pre-CDDL -> INVALID, slot lock free / leak / contention" "self_test test-s5-dv-254.sh"
+suite harness-s5-node-254 "#254 S5 node checks offline: prov-fw-boot-254 (fw4 + both include tables, each rule once, upload tmpfs options, lock released by bootinfo A/B + precheck-node; pre-S5 INVALID) and release-key-254 (T <=> bench stamp), good + bad fixtures" "self_test test-s5-node-254.sh"
 # 2e. No hardware needed: #254 P1 product stubs (the decider / init hook of the address-reservation deferral, autocommit's
 #     prov-state case, 99zz mesh_expect, batman-slot's release). Each takes the product file from THIS checkout, so a
 #     product change that breaks them fails here, not on a node. The loop-device ones (config-save, prov-base) need
@@ -330,6 +338,11 @@ fi
 #     The negative controls (pty-commit flip, the 1.5.13 runs) are NOT run here: by hand. Design §11.4 tests 4 / 4b /
 #     4b' / 4c / 4d / 5 have no on-node script (authoring blocked, #254 checklist): CI stubs only.
 suite prov-lock-rest-254 "batman-prov-lock installed + enabled (S13), rollback gate present, lock-status matches the provisioning state on:$FLEET (#254 claim-lock fix)" "chk_prov_lock_rest_254 $FLEET"
+# 2g2. #254 P3 S5 (scripts/dv/s5-254.sh). Tier A, read-only, every run on every fleet node — so after every boot a run sees
+#     (254-p3-impl §3.8.1 "三道關" (2): an error in the HTTP include fails fw4's whole load = no firewall). A pre-S5 node
+#     is INVALID (reported SKIP with the reason, never a PASS); release-key-254 applies to every image (no key = none).
+suite prov-fw-boot-254 "inet fw4 + bridge batman_http + inet batman_http_in loaded, each include rule once (image's file), provd's upload tmpfs with the init's options, slot flock free <= 1 s after bootinfo A / B / precheck-node on:$FLEET (#254 S5)" "chk_fw_boot_254 $FLEET"
+suite release-key-254 "the image trusts the test root T exactly when its stamp says bench (BATMAN_BENCH_TRUST=T, .bench); no key = trusts none on:$FLEET (#254 S5 §3.7.1)" "chk_release_key_254 $FLEET"
 CL_B="setsid-race-254 prov-claim-254 adr-reconcile-254 chain1-254 pty-commit-254"
 if [ "$FEATURE_MODE" != --destructive ]; then
   for s in $CL_B; do suite "$s" "#254 claim-lock tier B — needs FEATURE_MODE=--destructive" ""; done
@@ -2064,9 +2077,15 @@ _setkey202_body() { local node=$1 old=$2 sub
     o=$(fssh "$NODE" 30 "$RDR"'A=/opt/batdata/state/dv202.ap; [ -s "$A" ] || ( umask 077; uci -q get wireless.default_radio0.key > "$A"; sync ); [ -s "$A" ] || { echo "rc=noap"; exit 0; }; uci set wireless.default_radio0.key="dv202-stale-$(cut -c1-8 /proc/sys/kernel/random/uuid)"; uci commit wireless; batman-config-save --check 2>&1; echo rc=$?' | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
     echo "$o" | grep -q '^rc=noap$' && { echo "FAIL no AP key on $NODE to make stale — step 4 not verified"; exit 1; }
     if echo "$o" | grep -q 'p5 stale: .*default_radio0.key' && echo "$o" | grep -q '^rc=5$'; then echo "PASS step4 --check reports the stale AP key (rc 5)"; else echo "FAIL --check did not report stale AP key"; rc=1; fi
-    o=$(fssh "$NODE" 60 "$RDR"'batman-slot precheck-node 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)' | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
-    if echo "$o" | grep -q 'STALE' && echo "$o" | grep -Eq '^rc=(1|12)$' && echo "$o" | grep -q '^verdict=stale:'; then echo "PASS step4 precheck-node refuses a stale p5 and records the verdict"; else echo "FAIL precheck passed with stale p5"; rc=1; fi
-    o=$(fssh "$NODE" 60 "$RDR"'BATMAN_ALLOW_STALE_P5=1 batman-slot precheck-node >/dev/null 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)' | tr -d '\r')
+    # #254 S5: rc 14 = another batman-slot holds the slot flock (the helper's bootinfo, a write) — not an answer: retried
+    # like setkey-persists-202 / p5-follows-202 precheck_rc (5 x 2 s); the refusal is rc 1 (pre-S5) or 12 (S5's stale class).
+    # pc14 <remote cmd ending in "echo rc=$?; ..."> -> its output once the rc is not 14 (or the 5th 14)
+    pc14() { local i o; for i in 1 2 3 4 5; do o=$(fssh "$NODE" 60 "$RDR$1" | tr -d '\r'); grep -q '^rc=14$' <<< "$o" || break
+      echo "  4: precheck-node rc 14 (slot lock busy), try $i of 5" >&2; sleep 2; done; printf '%s\n' "$o"; }
+    o=$(pc14 'batman-slot precheck-node 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)'); echo "$o" | sed 's/^/  4: /'
+    if echo "$o" | grep -q 'STALE' && echo "$o" | grep -Eq '^rc=(1|12)$' && echo "$o" | grep -q '^verdict=stale:'; then echo "PASS step4 precheck-node refuses a stale p5 and records the verdict"
+    else echo "FAIL precheck passed with stale p5: rc=$(echo "$o" | sed -n 's/^rc=//p' | tail -1) (want 1 or 12 with STALE and verdict=stale:), verdict=[$(echo "$o" | sed -n 's/^verdict=//p')]"; rc=1; fi
+    o=$(pc14 'BATMAN_ALLOW_STALE_P5=1 batman-slot precheck-node >/dev/null 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)')
     if echo "$o" | grep -q '^rc=0$' && echo "$o" | grep -q '^verdict=stale-allowed'; then echo "PASS step4 the stale override is honoured and recorded"; else echo "FAIL stale override not honoured ($(echo "$o" | tr '\n' ' '))"; rc=1; fi
     # 4b. sysupgrade -F with a stale p5: stage 1's refusal is ignored by -F, stage 2 must refuse from the verdict file.
     o=$(fssh "$NODE" 30 "$RDR"'batman-config-save --check 2>&1; /etc/init.d/joinwatch running && echo jw=running || echo jw=stopped; ls -l --full-time "$R"/cfgsave-onjoin.state "$R"/cfgsave-writes "$R"/p5-check.rc 2>/dev/null | sed "s/^.* root root *//"' | tr -d '\r'); echo "$o" | sed 's/^/  4b-pre: /'

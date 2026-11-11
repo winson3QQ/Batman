@@ -70,4 +70,4 @@ client(#254 留言 6697703967,使用者 2026-11-07 決定不寫),所以這些列
 | TT1 | 轉賣工具 | 部分 | the loop-file arm; the real card needs a person | §3.9 |
 | PR1 | D-1 / D-2 | 全部 | the §7 probe's positive arm needs the phone on the AP | §7 |
 
-合計:全部由人執行 16 列,部分 6 列(共 127 列中的 22 列)。
+合計:全部由人執行 16 列,部分 6 列(共 132 列中的 22 列)。

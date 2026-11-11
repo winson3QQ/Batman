@@ -67,6 +67,61 @@ ST='echo "mac=$(cat /sys/class/net/eth0/address 2>/dev/null) slot=$(batman-slot 
 # field <state line> <key>: the value of key=value (values never contain spaces; bracketed values keep the brackets)
 field(){ printf ' %s\n' "$1" | sed -n "s/.* $2=\([^ ]*\).*/\1/p" | head -1; }
 
+# ---- #254 S5 slot flock (254-p3-impl §3.7.3; the node half is scripts/node/slotlock-lib-254.sh) ----------------------
+# shellcheck source=scripts/lib/slotlock-254.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/slotlock-254.sh" || { echo "FAIL $PR_UNIT: no slot-lock helper"; exit 2; }
+pr_slot_ticks(){ qr "$SLK_LIB
+slk_ticks"; }
+# pr_slot_free <what ran> <ticks before it>: after a step whose helper ran a lock-holding batman-slot verb reported done,
+# the flock is free within 1 s and no process started during the step still has the lock file open (a child that kept
+# fd 9: the missing `9>&-`). Held only by a process from outside the step = contention: INVALID, not judged.
+pr_slot_free(){
+	local o
+	case "$2" in "" | *[!0-9]*) inv "lock check after $1: no start time [$2]"; return 1 ;; esac
+	o=$(qr "$SLK_LIB
+slk_free 1 - $2:\$(slk_ticks)"); say "slot lock after $1: $o"
+	case "$o" in
+		"SLKFREE ok"*) ok "the slot flock is free <= 1 s after $1 (${o#SLKFREE })" ;;
+		"SLKFREE leak"*) no "the slot flock is still held after $1 by what the step started: ${o#SLKFREE leak }" ;;
+		"SLKFREE nofile"*) no "no slot lock file after $1 (the verbs it ran take the lock)" ;;
+		"SLKFREE other"*) inv "the slot flock is held by another process after $1 (contention, not judged): ${o#SLKFREE other }" ;;
+		*) inv "the slot-lock check after $1 printed [$o]" ;;
+	esac
+}
+# pr_t_fpr: the test root T's fingerprint as status key 15 shows it (release.Fingerprint: sha256 of the 65-byte point,
+# first 8 bytes in hex); empty when tests/keys/T.pub is not one line of 130 hex
+pr_t_fpr(){ local h; h=$(tr -d '\r\n' < "$REPO/tests/keys/T.pub" 2>/dev/null)
+	[[ $h =~ ^04[0-9a-f]{128}$ ]] || return 1
+	printf "$(sed 's/../\\x&/g' <<< "$h")" | sha256sum | cut -c1-16; }
+# pr_trust_want <status.get RESULT line>: what UD-T1 may assert for the image's root (status key 15 "trust", printed by
+# provclient as trust=): "want 24" (none: no root key), "want 11" (a root that is not T: R), "inv <why>" (T = a bench
+# build; no trust in key 15 = a pre-S5 node or a provclient that does not print it; T unreadable), "fail <why>" (bad)
+pr_trust_want(){ local tr t
+	tr=$(field "$1" trust); t=$(pr_t_fpr) || { echo "inv T's fingerprint unreadable from $REPO/tests/keys/T.pub"; return; }
+	case "$tr" in
+		"") if grep -q ' f15=[^ ]*trust' <<< "$1"; then echo "inv the node reports a trust but this provclient does not print it — rebuild the tools (scripts/dv-provclient-tools.sh)"
+			else echo "inv status key 15 has no trust (a pre-S5 node, or status.get failed): [$1]"; fi ;;
+		"$t") echo "inv bench image (trusts T, $tr): UD-T1 needs an R image" ;;
+		none) echo "want 24" ;;
+		bad | "?") echo "fail the image's release key files are malformed (status trust=$tr)" ;;
+		*) echo "want 11" ;;
+	esac; }
+# pr_cddl_nu: the node's helper reads network/update in the CDDL shape {1: [+ {1: net_config, 2: member_list, ?3:
+# net_secrets}]} (Batman-p3 c15fb54, docs/design/254-net-update-members.md v4.1), the shape provclient sends since
+# 789a89f. A helper before it (wsl.24 and older) refuses the new shape for another reason, so a unit sending it would
+# FAIL on the image's age, not on the product: those units are INVALID there. Capability, not a version: the helper
+# binary carries c15fb54's error text "update shape" (2026-11-12 on the payloads in ~/out: wsl.22 / wsl.23 / wsl.24 = 0
+# hits, wsl.25 = 1; wsl.25's feed fbc01ae contains c15fb54, wsl.24's e5c89a1 does not). A bound test helper is read
+# where it is bound (/usr/bin/batman-provhelper is what runs). rc 0 = CDDL shape; 1 = INVALID printed.
+pr_cddl_nu(){ local o
+	o=$(qr 'h=/usr/bin/batman-provhelper; [ -f $h ] || { echo NOHELPER; exit 0; }; echo "SHAPE=$(grep -c "update shape" $h)"')
+	case "$o" in
+		SHAPE=[1-9]*) return 0 ;;
+		SHAPE=0) inv "pre-CDDL network/update helper on $(field "$(qr "$ST")" ver) (no c15fb54 'update shape' in /usr/bin/batman-provhelper): this unit sends the CDDL shape (provclient 789a89f) — not judged" ;;
+		*) inv "cannot tell the node's network/update shape: [$o]" ;;
+	esac
+	return 1
+}
 # ---- host lock (one dv run against 04 at a time; the same lock as chain1) ---------------------------------------------
 pr_lock(){
 	if mkdir "$LOCKD" 2>/dev/null; then echo "$$ $(date +%s) $PR_UNIT $RUN" > "$LOCKD/owner"; return 0; fi

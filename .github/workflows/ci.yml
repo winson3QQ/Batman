@@ -27,6 +27,14 @@ jobs:
         run: bash scripts/test-dv-bt-uart-305.sh
       - name: busybox for lint-wbox (sh -n in the node's ash)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
+      - name: "#254 S5 on-node judges offline — slot-lock helper (busybox ash + dash), release-key / fw-boot / UD-L judges, node fw-boot script on fixtures"
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          bash scripts/test-slotlock-254.sh || rc=1
+          bash scripts/test-s5-dv-254.sh || rc=1
+          bash scripts/test-s5-node-254.sh || rc=1
+          exit $rc
       - name: "#254 preflight P9 node judge on fixtures ([all] / wbox slots / prov leftovers) under busybox ash"
         run: bash tests/prov-p1/p9-judge.sh scripts/node/prov-p9-254.sh
       - name: "#254 rollback arm / launcher / rbfix offline — every §22.1 precondition, FAIL-RECOVERED (+ openmanetd), FAIL-NEEDS-PERSON, rbfix preconditions, pty drop + plain-& negative control"
@@ -154,19 +162,38 @@ jobs:
           F=feed/batman-provision/files
           grep -q -- '--save \[--promote-lkg\] \[--txn' $F/usr/bin/batman-config-save || { echo "::error::batman-config-save in this checkout has no --save --txn: expected red until feat/254-p1b-seams lands (#254)"; exit 1; }
           sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-txn-save.sh $F/usr/bin/batman-config-save
+      # #254 S5 (254-p3-impl §3.7–3.8) lands harness-first (#290): on a product before S5 this step is RED on purpose
+      # (KNOWN #254). `!cancelled()` so an earlier red step never hides its result, and each sub-test runs whatever the
+      # one before it did (rc is accumulated) so every failure shows, not only the first.
+      - name: "#254 S5 software update, offline (harness lands first, #290: red until feat/254-p3 S5 lands, KNOWN #254) — slot flock + names, lock lints + ramfs flock, payload format, provd tmpfs init, autocommit health, the HTTP firewall include"
+        if: ${{ !cancelled() }}
+        run: |
+          F=feed/batman-provision/files
+          rc=0
+          bash tests/prov-p1/s5-slot-lock.sh $F || rc=1
+          bash tests/prov-p1/s5-lock-lint.sh $F || rc=1
+          bash tests/prov-p1/s5-payload.sh scripts/build-ab-payload.sh || rc=1
+          sudo bash tests/prov-p1/s5-bulk-mount.sh feed/batman-prov/files/batman-provd.init || rc=1
+          sudo bash tests/prov-p1/s5-bulk-mount.sh feed/batman-prov/files/batman-provd-test.init || rc=1
+          sudo bash tests/prov-p1/s5-autocommit.sh $F/usr/bin/batman-autocommit || rc=1
+          command -v nft >/dev/null || sudo apt-get install -y -qq nftables
+          # the runner's kernel must check the bridge table too: the WSL-only escape hatch is never set here
+          [ -z "${S5_NFT_INET_ONLY:-}" ] || { echo "::error::S5_NFT_INET_ONLY is set in CI: the bridge table would go unchecked"; rc=1; }
+          sudo bash tests/prov-p1/s5-nft.sh feed/batman-prov/files/batman-http.nft || rc=1
+          exit $rc
+      # #254 P3 settings / status shell tests (moved from feat/254-p3 to the harness, #290). Red on purpose on a product
+      # before P3 (each test says "predates P3 … expected red until feat/254-p3 lands"); `!cancelled()`, rc accumulated.
+      - name: "#254 P3 settings + status offline (harness lands first, #290: red until feat/254-p3 lands, KNOWN #254) — halow-setkey --country / --ap, joinwatch verdict_code, config-save keeps the AP ssid (loop device)"
+        if: ${{ !cancelled() }}
+        run: |
+          F=feed/batman-provision/files
+          rc=0
+          bash tests/prov-p3/setkey-settings.sh $F/usr/bin/halow-setkey $F/usr/lib/batman/rundir.sh || rc=1
+          bash tests/prov-p3/joinwatch-code.sh $F/usr/bin/joinwatch || rc=1
+          sudo PROV_SRC=$PWD/$F bash tests/prov-p3/cfgsave-ssid.sh $F/usr/bin/batman-config-save || rc=1
+          exit $rc
       # #320 lands harness-first (#290): on a product that still has `cmd < file 2>/dev/null` reads this step is RED on
       # purpose (KNOWN #320). Its own LAST step with !cancelled(), so the expected red never skips the steps above.
-      - name: "#254 S5 software update, offline (harness lands first, #290: red until feat/254-p3 S5 lands, KNOWN #254) — slot flock + names, payload format, provd tmpfs init, autocommit health, the HTTP firewall include"
-        run: |
-          set -e
-          F=feed/batman-provision/files
-          bash tests/prov-p1/s5-slot-lock.sh $F
-          bash tests/prov-p1/s5-payload.sh scripts/build-ab-payload.sh
-          sudo bash tests/prov-p1/s5-bulk-mount.sh feed/batman-prov/files/batman-provd.init
-          sudo bash tests/prov-p1/s5-bulk-mount.sh feed/batman-prov/files/batman-provd-test.init
-          sudo bash tests/prov-p1/s5-autocommit.sh $F/usr/bin/batman-autocommit
-          command -v nft >/dev/null || sudo apt-get install -y -qq nftables
-          sudo bash tests/prov-p1/s5-nft.sh feed/batman-prov/files/batman-http.nft
       - name: "#320 redirect-read stderr quiet — lint feed/*/files (zero exceptions), #202 A3 block under busybox ash, mutant negative control"
         if: ${{ !cancelled() }}
         run: |

@@ -40,6 +40,9 @@ P5GEN='d=$(mktemp -d /tmp/run/batman-dv/pg.XXXXXX); rmdir $d; batman-config-save
 OVGEN='sed -n "s/.*gen=\([0-9]*\).*/\1/p" /etc/batman-prov/prov.meta'
 upper=""
 case "$N$NEG" in 2neg-b) upper=helper-notxn ;; 3neg) upper=helper-norebuild ;; esac
+# the CDDL network/update shape (provclient 789a89f) only means something to a helper that reads it (pr_cddl_nu):
+# a pre-CDDL helper (wsl.24 and older) refuses it for another reason -> INVALID, never a FAIL of the image
+pr_cddl_nu || { pr_result; exit 2; }
 pr_begin 3000 ${upper:+upper=$upper} || { pr_result; exit 1; }
 pr_member || { pr_abort "member"; pr_result; exit 1; }
 old=$(qr "$MESHID"); g0=$(qr "$P5GEN"); k0=$(qr "$KEYH"); say "before: mesh_id=$old p5 gen=$g0 key sha=$k0"

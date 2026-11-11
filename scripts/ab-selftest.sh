@@ -43,7 +43,7 @@ warn(){ WARN=$((WARN+1)); echo "  WARN $*"; }   # known condition, not a product
 # Our own known_hosts, never the operator's. A slot switch legitimately changes the node's
 # dropbear host key, so the pin has to be dropped between reboots; doing that to a personal
 # ~/.ssh/known_hosts would silently weaken trust for every other use of that address.
-KH=$(mktemp); HEADFILE=$(mktemp); trap 'rm -f "$KH" "$HEADFILE"' EXIT
+KH=$(mktemp); HEADFILE=$(mktemp); BUSYF=$(mktemp); trap 'rm -f "$KH" "$HEADFILE" "$BUSYF"' EXIT
 
 SSHOPTS=(-o UserKnownHostsFile="$KH" -o StrictHostKeyChecking=accept-new
          -o ConnectTimeout=8 -o BatchMode=yes -o LogLevel=ERROR)
@@ -68,15 +68,22 @@ is_slot() { [[ ${1:-} =~ ^[AB]$ ]]; }
 # /boot (which is bootA) -> wrong file. Every static invariant then FAILed although the card
 # was fine — caught on manet01 (running slot B) during #173 validation.
 # #254 S5 (254-p3-impl §3.7.3): a boot FAT is mounted only under the slot lock (the flock batman-slot write / arm /
-# bootinfo hold), or a concurrent slot write meets EBUSY mid-write. The node's run dir from its rundir.sh; an image
-# without it (or without flock) predates the lock: nothing to take. The remote shell holds fd 9 until it exits.
-SLOTLK='[ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh && command -v flock >/dev/null 2>&1 && exec 9>>"$RUNDIR/batman-slot.flock" && flock 9; '
+# bootinfo hold), or a concurrent slot write meets EBUSY mid-write: SLOTLK (scripts/lib/slotlock-254.sh — the one copy;
+# bounded wait, ~25 s). A lock it cannot get prints SLOTLK-BUSY and mounts nothing: recorded in $BUSYF, and the run
+# ends INVALID (rc 2), never as a card FAIL. 60 s ssh timeout for these: the bounded wait plus the FAT work.
+# shellcheck source=scripts/lib/slotlock-254.sh
+. "$(dirname "$0")/lib/slotlock-254.sh" || exit 2
+sshl() {                             # sshn under the slot lock; a SLOTLK-BUSY line goes to $BUSYF, not to the caller
+  local o; o=$(timeout 60 ssh "${SSHOPTS[@]}" "root@$NODE" "${SLOTLK}$1" 2>&1)
+  if slk_busy "$o"; then grep '^SLOTLK-BUSY' <<<"$o" >> "$BUSYF"; grep -v '^SLOTLK-BUSY' <<<"$o"; return 1; fi
+  echo "$o"
+}
 boot_cat() {                         # $1 = A|B, $2 = filename
   local want=$1 f=$2
   if [ "$want" = A ]; then sshn "cat /boot/$f"; return; fi
-  sshn "${SLOTLK}mkdir -p /mnt/_ab; mount -t vfat -o ro /dev/mmcblk0p3 /mnt/_ab >/dev/null 2>&1; cat /mnt/_ab/$f; umount /mnt/_ab"
+  sshl "mkdir -p /mnt/_ab; mount -t vfat -o ro /dev/mmcblk0p3 /mnt/_ab >/dev/null 2>&1; cat /mnt/_ab/$f; umount /mnt/_ab"
 }
-bootb_rw() { sshn "${SLOTLK}mkdir -p /mnt/_ab; mount -t vfat /dev/mmcblk0p3 /mnt/_ab && { $1 ; }; sync; umount /mnt/_ab"; }
+bootb_rw() { sshl "mkdir -p /mnt/_ab; mount -t vfat /dev/mmcblk0p3 /mnt/_ab && { $1 ; }; sync; umount /mnt/_ab"; }
 
 reboot_wait() {                      # $1 = tryboot|plain ; $2 = max seconds
   local mode=$1 max=${2:-180} i before after
@@ -366,4 +373,8 @@ fi
 
 echo
 echo "================ $PASS passed, $FAIL failed, $WARN warn ================"
+if [ -s "$BUSYF" ]; then   # a FAT look that never happened: the checks that depended on it say nothing about the card
+  echo "INVALID: the slot lock was busy $(wc -l < "$BUSYF") time(s) — the boot-FAT checks above that depended on it are not card results:"
+  sed 's/^/  /' "$BUSYF"; exit 2
+fi
 [ "$FAIL" -eq 0 ]
