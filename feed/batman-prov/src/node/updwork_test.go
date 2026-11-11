@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"batman-prov/cbor"
+	"batman-prov/proto"
 	"batman-prov/release"
 )
 
@@ -175,6 +176,7 @@ type fakeFS struct {
 	trial     bool
 	reboots   int
 	rebootErr error
+	cutWrite  chan struct{} // non-nil: the write marks the target BAD, closes this, waits for the cancel, rc 125
 }
 
 func (f *fakeFS) BulkDir() string         { return f.bulk }
@@ -185,7 +187,15 @@ func (f *fakeFS) AutocommitLog() string   { return f.aclog }
 func (f *fakeFS) SlotBusy() bool          { return f.busy }
 func (f *fakeFS) IsTrial() bool           { return f.trial }
 func (f *fakeFS) Reboot() error           { f.mu.Lock(); defer f.mu.Unlock(); f.reboots++; return f.rebootErr }
-func (f *fakeFS) SlotWrite(_ <-chan struct{}, dir string, r io.Reader) (int, string) {
+func (f *fakeFS) SlotWrite(cancel <-chan struct{}, dir string, r io.Reader) (int, string) {
+	if f.cutWrite != nil {
+		f.mu.Lock()
+		f.upd.out["bootinfo"] = "verified=-\nbad=1\nbootcfg=" + strings.Repeat("c", 64) + "\n--\n[pi4]\n"
+		f.mu.Unlock()
+		close(f.cutWrite)
+		<-cancel
+		return 125, "batman-slot: canceled"
+	}
 	data, _ := io.ReadAll(r)
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -774,5 +784,96 @@ func TestUpdateLastFutureFormatIgnored(t *testing.T) {
 	b, _ := cbor.Encode(m)
 	if decodeUpdateLast(b) != nil {
 		t.Fatal("a complete update-last of format 2 was read as format 1")
+	}
+}
+
+// owner/remove of the worker's owner (§3.7.5-9): the first pass stops before any slot write -> status 0;
+// a write already begun is cut -> the target stays BAD -> status 0 + 22 (row 9). Never waits for the worker.
+func TestUpdateOwnerRemovedFirstPass(t *testing.T) {
+	w := newWorkRig(t, defaultPayload())
+	hold, held := make(chan struct{}), make(chan struct{})
+	firstPassDone = func() { close(held); <-hold }
+	t.Cleanup(func() { firstPassDone = func() {} })
+	w.checkAndUpload(t)
+	if _, e := w.prepare(t); e != nil {
+		t.Fatal(e)
+	}
+	<-held
+	w.n.updOwnerRemoved(ownerID(w.owner))
+	close(hold)
+	w.waitWorker(t)
+	if len(w.fs.writes) != 0 {
+		t.Fatalf("a slot write after owner/remove in the first pass: %d", len(w.fs.writes))
+	}
+	if ph, r := phaseOf(t, w.n); ph != 0 || r != 0 {
+		t.Fatalf("status after a first-pass cancel: %d/%d (want 0/0)", ph, r)
+	}
+	if w.n.upd.validPending() != nil {
+		t.Fatal("the removed owner's pending survived")
+	}
+}
+
+func TestUpdateOwnerRemovedSecondPass(t *testing.T) {
+	w := newWorkRig(t, defaultPayload())
+	w.fs.cutWrite = make(chan struct{})
+	w.checkAndUpload(t)
+	if _, e := w.prepare(t); e != nil {
+		t.Fatal(e)
+	}
+	<-w.fs.cutWrite
+	done := make(chan struct{})
+	go func() { w.n.updOwnerRemoved(ownerID(w.owner)); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner/remove waited for the worker (lock order, §3.7.4)")
+	}
+	w.waitWorker(t)
+	if ph, r := phaseOf(t, w.n); ph != 0 || r != 22 {
+		t.Fatalf("status after a cut write: %d/%d (want 0/22)", ph, r)
+	}
+}
+
+// another owner's removal leaves the pending and the window alone; after this boot's apply of it nothing is dropped
+func TestUpdateOwnerRemovedOthers(t *testing.T) {
+	w := newWorkRig(t, defaultPayload())
+	w.checkAndUpload(t)
+	u := w.n.upd
+	w.n.updOwnerRemoved(ownerID(vPub(vKey("owner-2"))))
+	if u.validPending() == nil || u.window == nil {
+		t.Fatal("another owner's removal dropped the pending / window")
+	}
+	u.updMu.Lock()
+	u.writeUL(&updateLast{Sha: w.sumSha, FromSlot: "A", FromVersion: w.f.ver, ToSlot: "B", ToVersion: testRel,
+		ApplyBootID: w.f.boot, Rebooting: true})
+	u.updMu.Unlock()
+	w.n.updOwnerRemoved(ownerID(w.owner))
+	if u.validPending() == nil {
+		t.Fatal("owner/remove after the apply dropped the pending (the owner agreed, §3.7.4)")
+	}
+	if u.window != nil {
+		t.Fatal("the removed owner's window survived")
+	}
+}
+
+// the real owner.remove verb drops the removed owner's pending and window (§3.8.2)
+func TestUpdateOwnerRemoveVerb(t *testing.T) {
+	r, _ := memberRig(t)
+	b, be := newKey(), newKey()
+	se, _ := proto.SignES256(b, append([]byte(proto.LabelOwnerEnc), pub(be)...))
+	if c, _ := r.call("owner.add", cbor.M(1, r.h, 2, r.envelope("owner/add", cbor.M(1, pub(b), 2, pub(be), 3, se), r.owner))); c != OK {
+		t.Fatalf("owner adds B: %d", c)
+	}
+	w := newWorkRig(t, defaultPayload())
+	r.n.SetUpdateSource(w.f, w.fs)
+	u := r.n.upd
+	kid := ownerID(pub(b))
+	u.pend = &pending{R: &release.Release{SumsSha: w.sumSha, Version: testRel}, Owner: kid, BootID: w.f.boot, Expiry: w.f.up + 600}
+	u.window = &window{Owner: kid, Expiry: w.f.up + 600}
+	if c, _ := r.call("owner.remove", cbor.M(1, r.h, 2, r.envelope("owner/remove", cbor.M(1, kid), r.owner))); c != OK {
+		t.Fatalf("owner removes B: %d", c)
+	}
+	if u.pend != nil || u.window != nil {
+		t.Fatalf("B's pending / window survived its removal: %v %v", u.pend != nil, u.window != nil)
 	}
 }

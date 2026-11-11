@@ -46,6 +46,7 @@ const (
 
 var retryWait = 10 * time.Second  // tests shorten it
 var rebootDelay = 2 * time.Second // the reply first, then batman-slot reboot committed
+var firstPassDone = func() {}     // tests: hold the worker between its two passes
 
 // updateLast: p6 state/update-last (§3.7.4), CBOR, root 0600, tmp + fsync + rename + fsync(dir).
 type updateLast struct {
@@ -235,6 +236,33 @@ func (n *Node) updatePrepare(signer []byte, body cbor.Map) (cbor.Map, *Error) {
 	return u.progress(2, 0, 0, sha, p.R.Version), nil
 }
 
+// updOwnerRemoved: owner/remove of kid (caller holds n.mu): stop that owner's worker (send only — never wait, §3.7.4
+// lock order) and drop its pending and upload window (§3.8.2). Not after its apply: the owner agreed (§3.7.4).
+func (n *Node) updOwnerRemoved(kid []byte) {
+	u := n.upd
+	if u == nil || u.fs == nil {
+		return
+	}
+	u.updMu.Lock()
+	defer u.updMu.Unlock()
+	if w := u.window; w != nil && subtle.ConstantTimeCompare(w.Owner, kid) == 1 {
+		u.window = nil
+	}
+	p := u.pend
+	if p == nil || subtle.ConstantTimeCompare(p.Owner, kid) != 1 {
+		return
+	}
+	if ul := u.readUL(); ul != nil && ul.ApplyBootID == u.sys.BootID() && bytes.Equal(ul.Sha, p.R.SumsSha) {
+		return
+	}
+	if u.working && u.cancel != nil {
+		close(u.cancel)
+		u.cancel = nil
+	}
+	u.pend = nil
+	n.Log("update: owner removed — its pending update dropped")
+}
+
 // ---- the worker (§3.7.5) -------------------------------------------------------------------------------------
 
 type werr struct {
@@ -247,9 +275,7 @@ func (n *Node) worker(r *release.Release, cancel chan struct{}) {
 	reason, why := n.work(r, cancel)
 	os.RemoveAll(u.fs.WorkDir())
 	u.slotMu.Lock()
-	if reason == 0 {
-		u.slotInfoOf(other(u.sys.ActiveSlot()), true) // VERIFIED of this boot is on the target now
-	}
+	u.slotInfoOf(other(u.sys.ActiveSlot()), true) // VERIFIED of this boot, or BAD after a cut second pass (row 9)
 	u.slotMu.Unlock()
 	u.updMu.Lock()
 	u.working = false
@@ -315,6 +341,12 @@ func (n *Node) work(r *release.Release, cancel chan struct{}) (uint64, string) {
 	var sums []byte
 	if we := n.scan(f, r, wd, nil, &sums); we != nil {
 		return we.reason, we.why
+	}
+	firstPassDone()
+	select {
+	case <-cancel: // owner/remove in the first pass: no slot was touched (§3.7.5-9)
+		return 15, "canceled before the slot write"
+	default:
 	}
 	u.updMu.Lock()
 	u.workPct = 50

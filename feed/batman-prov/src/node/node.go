@@ -934,6 +934,7 @@ func (n *Node) ownerRemove(rec *provstore.Record, body cbor.Map) (cbor.Map, *Err
 	if err := n.commit(&next, "owner.remove"); err != nil {
 		return nil, err
 	}
+	n.updOwnerRemoved(kid)
 	return cbor.M(), nil
 }
 
