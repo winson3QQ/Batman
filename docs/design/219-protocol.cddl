@@ -72,6 +72,9 @@ idem-type = "owner/remove" / "settings/set" / "network/join" / "network/update" 
           / "diag/bundle" / "ssh_keys/set" / "update/prepare" / "update/apply" / "bulk/close"
 ; v0.7 §4.2: the idempotency key `7` is allowed only where an alternative lists `? 7 => bytes16` (owner-op requests
 ; and network/update); never on requests whose response carries secrets (claim/*, root_password/reset, owner/add, bulk/open)
+; Reserved: P3 does not use the idempotency key (`idem-type` and every `? 7 => bytes16` below). provd keeps no
+; idempotency cache and answers any request that carries key 7 with E_UNSUPPORTED {1: "idem"} (E_FORBIDDEN on the
+; secret-carrying types above); a lost response ends the session (254-p3-impl §3.8.1, §5.2).
 whole-request = (
     2 => "info",            3 => info-req
  // 2 => "claim/begin",     3 => claim-begin-req
@@ -215,6 +218,7 @@ settings = {
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 ap-settings    = { ? 1 => tstr, * uint => any }                   ; 1: ssid
+ap-set         = { 1 => tstr, 2 => tstr, * uint => any }          ; 1: ssid, 2: passphrase (settings/set only)
 halow-settings = { ? 1 => uint, ? 2 => uint, * uint => any }      ; 1: channel, 2: bandwidth (MHz)
 ptt-settings   = { ? 1 => uint, * uint => any }                   ; 1: talk group
 gps-settings   = { ? 1 => bool, * uint => any }                   ; 1: enabled
@@ -303,9 +307,31 @@ update-manifest = {
   2 => tstr,                 ; board
   3 => uint,                 ; payload size in bytes
   4 => sha256,               ; SHA-256 of SHA256SUMS
-  5 => bstr,                 ; the CBOR array [E, S] (two bstr, each an encoded COSE_Sign1; 254-p3-impl §3.7.1)
+  5 => bstr,                 ; the CBOR array [E, S] (two bstr, each an encoded COSE_Sign1; 254-p3-impl §3.7.1):
+                             ; E = relkey-sign1, S = release-sign1 (payload `release-payload`, below)
   ? 6 => [* tstr],           ; versions this release may be installed from across channels / downgrades (= S key 6)
   * uint => any,           ; unknown keys ignored (§5.1)
+}
+; Keys 1-4 and 6 of the manifest MUST equal the same keys of S's payload (absent in both = equal); else reason 11.
+; Release signing (254-p3-impl §3.7.1, B18): the offline root key R endorses a signing key K_i (E); K_i signs each
+; release (S). Format contract: the harness signer tests/tools/peer/signrel.py; the node: release/release.go Verify.
+relkey-sign1  = sign1<"batman/relkey",  relkey-payload>     ; label "batman-relkey-v1", signed by the image's root key
+release-sign1 = sign1<"batman/release", release-payload>    ; label "batman-release-v1", signed by the endorsed K_i
+; Unknown keys inside both payloads are REJECTED (reason 11), as for every signed object (§7).
+relkey-payload = {
+  1 => p256-pub,             ; K_i public key (65 B, on the curve)
+  2 => uint .ge 1,           ; serial: refused when < the image's release-min-serial (revocation)
+}
+release-payload = {
+  1 => tstr,                 ; version: BATMAN_VERSION in full, REL[-CH.N][+meta] (docs/VERSIONS.md); unparsable -> 11
+  2 => tstr,                 ; board: BATMAN_BOARD in full, e.g. "ekh-bcm2711"; must equal the node's (else 3)
+  3 => uint,                 ; payload size in bytes (the compressed .tar.gz)
+  4 => sha256,               ; SHA-256 of SHA256SUMS (binds the content)
+  ? 6 => [* tstr],           ; versions (without +meta) this release may be installed from: downgrade / cross-channel
+  ? 7 => tstr,               ; min_from: the running version must be >= it (same rule; no order -> 4, fail-closed)
+  ? 8 => [* sha256],         ; boot configs allowed: sha256(config.txt || distroconfig.txt) of the TARGET slot's boot
+                             ; partition; absent or empty = not checked; no match -> 5
+  9 => uint,                 ; total size of all boot/ members (bytes)
 }
 update-check-resp = { 1 => bool, ? 2 => reason-code, 3 => uint, * uint => any }   ; ok, reason, RAM needed (bytes)
 update-sha-req = { 1 => sha256, 31 => owner-op, * uint => any }   ; sha256(SHA256SUMS) of the pending update
@@ -318,8 +344,8 @@ update-progress = {
   * uint => any,           ; unknown keys ignored (§5.1)
 }
 update-phase = 0 ; idle
-             / 1 ; receiving
-             / 2 ; verifying
+             / 1 ; receiving: the upload window is open (percent = bytes received / key 3)
+             / 2 ; working: the background worker verifies and writes the slot (update/prepare answers 2 at once)
              / 3 ; written, waiting for apply
              / 4 ; trial boot
              / 5 ; committed
@@ -473,6 +499,7 @@ settings-set-req = {
   ? 11 => ptt-settings,
   ? 12 => gps-settings,
   ? 13 => lora-settings,
+  ? 20 => ap-set,            ; the node's phone AP (254-p3-impl §3.3): BLE only (over HTTP = E_UNSUPPORTED reason 19)
   31 => owner-op,
   * uint => any,
 }

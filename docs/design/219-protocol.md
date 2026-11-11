@@ -191,7 +191,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | 8 | `E_CLAIM_WINDOW` | 認領窗口沒開 |
 | 9 | `E_CLAIM_FAILED` | 認領失敗(不說明原因) |
 | 10 | `E_STORAGE` | 寫入 p5 失敗 |
-| 11 | `E_REJECTED` | 更新被拒(附原因) |
+| 11 | `E_REJECTED` | 被拒;有原因時附 `reason`(`update/*`、`settings/set` 的拒絕原因;helper 端的其他拒絕只回碼) |
 | 12 | `E_RATE` | 超過限速 |
 | 13 | `E_LOCK_INCOMPLETE` | **已提交、但上鎖 / 換密碼沒有完成,沒有交出密碼**(claim-lock fix,#254)。`claim/finish`、`claim/replay`:節點已是已認領 → app 以 `psk_replay` session 走 `claim/replay` 重試;`root_password/reset`:密碼沒有換,可重試。提交**之前**的失敗仍是 `E_CLAIM_FAILED` / `E_STORAGE` |
 
@@ -214,7 +214,8 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | `network/leave` | 擁有者 | — | — |
 | `status` | 擁有者、成員 | `scope`(self / team) | #131 的 status + 入網失敗原因 + `p5_saved`;成員只得到狀態摘要 |
 | `peers/challenge` | 成員 | `nonce_app`(32 B) | `nonce_node`(32 B)、`sig = ES256_DAC("batman-peer-v1" ‖ nonce_app ‖ nonce_node ‖ h)` |
-| `diag/summary`、`diag/bundle` | 擁有者 | — | 摘要 / 分塊回應 |
+| `diag/summary` | 擁有者、成員 | — | 摘要 |
+| `diag/bundle` | 擁有者 | — | 分塊回應 |
 | `update/check` | 擁有者 | `manifest` | `ok` 或 `E_REJECTED` + 原因、所需 RAM |
 | `bulk/open` / `bulk/close` | 擁有者 | `purpose`、`sha`(= pending 的 sha256(SHA256SUMS)) | `ssid`、手機 AP 的**現行**密碼、`ip`、`port`、`expires_in`(相對秒數)、上傳 bearer(16 B) |
 | `update/prepare` / `apply` | 擁有者 | `sha`(key 1,由 owner-op 的 `args_hash` 綁定) | 進度(`update-progress`) |

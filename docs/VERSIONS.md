@@ -17,6 +17,30 @@ example: 1.3.0-wsl.1+b93040f.fw1f997e7
 
 Stamped at build time into `/etc/batman-build` (KEY=VALUE); a node self-reports with `batman-version`, and it is appended to the login banner.
 
+### Version comparison (#254 P3)
+
+A node updated through the app compares its running `BATMAN_VERSION` with the signed release's version (S key 1) by
+this rule (`docs/design/254-p3-impl.md` §3.7.1; code `feed/batman-prov/src/release/release.go` `ParseVersion` /
+`Compare` / `Decide`):
+
+- Grammar `REL[-CH.N][+meta]`:
+  `^([0-9]+)\.([0-9]+)\.([0-9]+)(-(wsl|ci|rel)\.([0-9]+))?(\+[0-9A-Za-z.-]+)?$`.
+  - REL = `X.Y.Z`; CH is `wsl` / `ci` / `rel`; N is counted per channel.
+  - `+meta` (including `.dirty`, `.bench`, `.wbox-*`) is ignored.
+  - The shipped form without a suffix is accepted.
+  - A version that does not parse → reason 11.
+
+| running → new | result |
+| --- | --- |
+| REL differs | compare REL numerically: higher = upgrade; lower = downgrade, allowed only when S key 6 lists the running version (without `+meta`) |
+| same REL, same CH | compare N: higher = upgrade; equal = reinstall (allowed); lower = downgrade (as above) |
+| same REL, one side has no suffix | the shipped form is newer than any `-CH.N`; shipped → dev only when key 6 lists the running version |
+| same REL, different CH | no order (N is per channel): allowed only when key 6 lists the running version |
+
+- A refused downgrade or channel change → reason 6.
+- `min_from` (S key 7) is compared by the same rule. When the running version is older than it, or has no order with it, the node refuses with reason 4 (fail-closed).
+- Limit: `+meta` is ignored, so a wbox build equals the clean build of the same number. A wbox build is never committed, so installing one only runs a trial and then reverts.
+
 ### One tree, every board (#209 S5, 2026-10-02)
 
 - Since 1.5.0, every board (`ekh-bcm2711` Pi 4, `ekh-bcm2710` Pi 3A+) is built from the **same firmware-fork commit** (`build-3aplus`). One version number = one pair of source commits, whatever the board.

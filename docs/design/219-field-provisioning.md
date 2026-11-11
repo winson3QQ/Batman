@@ -56,7 +56,7 @@ SoT: #75
 |---|---|
 | API | 有版本(`/v1/*`);新版本只能**新增**訊息類型,不改既有的語意;app 不認得的版本只允許查狀態,並提示更新 app 或用轉賣工具重燒卡(階段 1 沒有恢復出廠,v2.9) |
 | 訊息與傳輸 | 請求 / 回應訊息與傳輸無關(GATT 或 HTTP 都能承載);**安全通道一律在應用層(§3.4)**,走 HTTP 時也在裡面再跑一次,不依賴 TLS |
-| 大量資料 | BLE 只負責控制;大量資料(image、診斷包)由 BLE 指示節點**暫時**開 WiFi 通道傳輸,傳完即關(§6.9) |
+| 大量資料 | BLE 只負責控制;image 由 BLE 請節點開**上傳窗**,經這台節點既有的手機 AP 上傳,傳完即關窗(不開暫時 AP,§6.9);診斷包走 BLE 分段(§6.10) |
 | 簽章 | 所有 DAC / 擁有者 / 網主簽章都對**帶用途標籤的結構**簽(標籤清單以協定 `219-protocol.md` §3.6 為準,例如 `"batman-node-static-v1"`、`"batman-peer-v1"`、`"batman-owner-op-v1"`),**不直接簽對方提供的值** |
 | BLE 廣播 | 有格式版本;欄位只增不改;戰術版以新的格式版本加嚴 |
 | 能力清單 | 開放集合:app 遇到不認得的能力就提示更新,其他功能照常 |
@@ -311,8 +311,8 @@ SoT: #75
 | `POST /v1/network/leave` | 離開網路 | 擁有者 |
 | `GET /v1/status` | 沿用 #131 的 status JSON + 入網失敗原因(#127)+ p5 是否存好;**全隊**狀態經 mesh 查詢 | 擁有者 / 同網成員(唯讀) |
 | `GET /v1/peers/challenge` | 回應成員名單偵測的挑戰(§6.6);節點自己混入 nonce,簽章帶標籤 `"batman-peer-v1"` | 同網成員 |
-| `GET /v1/diag/summary` | 白話診斷摘要(§6.10) | 擁有者(同網成員只看摘要) |
-| `POST /v1/bulk/open` → `/v1/bulk/close` | 請節點**暫時**開 WiFi 大量傳輸通道(一次性金鑰經本通道交付),供 image 用(§6.9) | 擁有者 |
+| `GET /v1/diag/summary` | 白話診斷摘要(§6.10) | 擁有者、同網成員 |
+| `POST /v1/bulk/open` → `/v1/bulk/close` | 請節點開 image 的**上傳窗**:經本通道交付這台節點手機 AP 的**現行**密碼與上傳 bearer;上傳經這台節點的手機 AP(不開暫時 AP,§6.9) | 擁有者 |
 | `GET /v1/diag/bundle` | 完整診斷包(經 BLE 分段) | 擁有者 |
 | `POST /v1/report-lost` | 回報遺失(網主 app 對網路執行) | 網主 |
 | `POST /v1/update/check` / `prepare` / `apply`、`GET /v1/update/status` | 軟體更新(§6.9) | 擁有者 |
@@ -350,7 +350,7 @@ SoT: #75
 現行未 seed 的節點 root 是空密碼、dropbear 開密碼登入、AP 橋接進 ahwlan、firewall 全收 → 連上 AP 就能 SSH 成 root【事實,依 review】。所以:
 - **未認領時不開 WiFi AP**,只開 BLE;認領只能經 §3.4 的安全通道。這也省掉了 v2 的「第一次接觸 AP」與其密碼。
 - image 預設 dropbear `PasswordAuth=off`;開發用工作台入口改走既有 `/etc/batman-dev-open`(`96` L164)——**現在它只寫 DEV-OPEN 標記,要改成主動打開 `PasswordAuth`**【依 review】;**量產 image 不帶**。
-- 已認領後的 WiFi AP(隊伍 AP、大量傳輸通道)金鑰來源:隊伍 AP 由網路設定產生;大量傳輸通道每次由 `bulk/open` 產生一次性金鑰,經 BLE 安全通道交給 app。
+- 已認領後的 WiFi AP 金鑰來源:隊伍 AP 由網路設定產生;image 上傳沒有另外的 AP:`bulk/open` 經 BLE 安全通道交給 app 這台節點手機 AP 的**現行**密碼與一次上傳窗的 bearer(#254 P3)。
 - 未認領時 LuCI 不開;`halow-status` 對未認領狀態的提示文字改寫(目前會說 anyone may get root)。
 
 ### 6.3 狀態在 OTA 後保住【依可行性 review】
@@ -440,14 +440,14 @@ SoT: #75
 - RAK 韌體維持手動(#181);3A+ 沒有 EEPROM。
 
 **簽章**【依 review,MUST】:現行 payload 是 gzip tar(`root.squashfs`、boot、metadata、`SHA256SUMS`),只驗完整性、**沒有簽章**(`platform-ab.sh:7-13`;`build-ab-payload.sh:73`)。新增:
-- 以分離式簽章簽 `SHA256SUMS` + metadata(含 board、version);簽章**先經 BLE 送到節點驗過**,才接收 payload;`batman-slot` 讀回比對 `SHA256SUMS`,綁定內容。
+- 簽章物件 S 簽 sha256(`SHA256SUMS`) 與 board、version 等欄位(下方 B18);`update/check` 先在 BLE 上驗過 S,才開上傳窗接收 payload;worker 與 `batman-slot` 依 `SHA256SUMS` 比對內容,綁定 S。
 - 驗簽不能只放在 `check_image`(`sysupgrade -F` 會略過)。
-- 簽章格式與金鑰保管列為 B18。
+- 簽章格式與金鑰保管列為 B18。**#254 P3 定案為兩層鑰匙**(`254-p3-impl.md` §3.7.1,D4):離線根鑰匙 R(兩份、不同地點)簽**背書** E<sub>i</sub>(`batman/relkey`:簽章鑰匙 K<sub>i</sub> 的公鑰 + serial);K<sub>i</sub>(YubiKey)簽每個版本的**發行物件** S(`batman/release`:version、board、payload 大小、sha256(`SHA256SUMS`)、降級 / 跨通道清單、min_from、開機設定清單、boot 大小);`update-manifest` key 5 帶 `[E_i, S]`。image 只信任一把根鑰匙(`/rom/usr/share/batman/release-root.pub`);換 K、撤銷(serial < `release-min-serial`)免重燒卡,只有根鑰匙出事才要重燒。
 
 **流程**:
 1. `update/check`:版本、板子(bcm2710 / bcm2711 各一份 image)、**拒絕原因**(試用中拒寫 `batman-slot:285`、p5 還沒 seed、板子不符、需要中間版本 / 重燒卡)、**所需空間指 RAM**(3A+ 的 `/tmp` 只有 212 MB,payload 最大約 120 MB,只能落地一份)。
-2. 經 BLE 送簽章 → 節點驗簽。
-3. `bulk/open` → app 連上暫時 WiFi(系統對話框)→ 傳 payload 到 `/tmp` → `bulk/close`。
+2. (已併入第 1 步:`update/check` 的 manifest key 5 帶 `[E_i, S]`,節點先驗簽才記 pending。)
+3. `bulk/open`(開上傳窗)→ app 經**這台節點的手機 AP** 連上節點(手機已連著就不用切;否則系統對話框)→ `PUT` payload 到節點的專屬 tmpfs → `update/prepare` 關窗(或 `bulk/close`)。
 4. `update/prepare`:`batman-slot` **只寫入並驗證**,不 arm。
 5. `update/apply`:arm tryboot → 重開 → autocommit。
 6. `update/status`。
@@ -460,18 +460,17 @@ SoT: #75
 - 新版本由 app 在有網路時**背景自動下載**,使用者不用操作。
 - 之後:手機只傳給一台,再經 mesh 分發給整隊(#116)。
 
-**大量傳輸通道(`bulk/open`)**【依 review】:
-- 暫時 AP 放在**獨立的 network / firewall zone**,只開 `batman-provd` 的埠;**不被 `meshpoint` 橋接進 ahwlan**(`meshpoint-1.8.0:67-70` 會把每個 `mode='ap'` 介面橋接進去,ahwlan zone 全收)、**不被 keyguard 處理**。
-- 有逾時;**開機時一律清除**(否則斷電重開後 AP 會帶著用過的金鑰回來)。
-- 與 HaLow 是不同無線電(MM6108 走 SPI,CYW43455 走 SDIO),理論上可同時運作,要實測(併入 B13)。
-- 與隊伍 AP 共用 CYW43455:brcmfmac 能否同時開兩個 AP 未確認(B2)→ 預設**暫時取代隊伍 AP**(傳輸期間隊伍的手機連線會斷),傳完恢復。
-- 5 GHz 時選非 DFS 頻道,設定國家碼。
+**大量傳輸通道(`bulk/open`)**【依 review;#254 P3 改為**經這台節點的手機 AP**,`254-p3-impl.md` §3.8,D5 / D13 / D15】:
+- **不開暫時 AP**:上傳走這台節點既有的手機 AP(不暫停、不取代);`bulk/open` 經 BLE 安全通道回這台 AP 的 ssid、**現行**密碼(不是一次性)、節點 IP、埠、到期秒數與這次上傳窗的上傳 bearer。手機 AP 關著 → 拒絕(reason 16,不自動開:發射是人的決定)。
+- 只收從手機 AP port 進來的連線(防火牆以 bridge 標記擋 mesh、`eth0`、容器、本機來源,fail-closed);經 mesh 轉來的上傳一律拒絕。
+- 上傳窗有逾時(15 分鐘,或到 `update/prepare` / `bulk/close`);上傳檔在專屬 tmpfs,**重開即消失**,沒有窗、也沒有 worker 時由 helper 刪除。
+- 內容由簽章把關:同一台 AP 上知道密碼的人搶先上傳只造成 DoS(誠實界線)。
 
 ### 6.10 診斷與 log
 
 | 內容 | 傳輸 | 誰能看 |
 |---|---|---|
-| 白話摘要:目前狀態、加入失敗原因(#127)、最近幾次開機原因(boot-reasons)、異常告警、p5 是否存好 | BLE(`diag/summary`) | 擁有者;同網成員只看狀態摘要 |
+| 白話摘要:目前狀態、加入失敗原因(#127)、最近幾次開機原因(boot-reasons)、異常告警、p5 是否存好 | BLE(`diag/summary`) | 擁有者、同網成員(`254-p3-impl.md` D10) |
 | 完整診斷包:#127 既有的 bundle 內容(dmesg、logread、最多 5 份 ramoops、2 份 shutdown log),壓縮後約數十到數百 KB | **BLE**(`diag/bundle`,分段傳輸);大量傳輸通道只留給 image | 擁有者 |
 
 - 診斷包**存在手機**,之後回到有網路的地方再分享給支援人員。
@@ -643,7 +642,7 @@ SHOULD-FIX 已併入:連線被佔住與交握限速、訊息大小上限(§3.1);
 | 可行性 2 | prepare / apply 對不上 `batman-slot`(寫完就 arm);provd 非 root 卻要寫 mmcblk0 | `batman-slot` 拆兩步;root helper(§6.9、§9) |
 | 可行性 3 | 「更新單位 = 系統 image」說過頭:config.txt 等不隨 OTA、p7 凍結、firmware 白名單讀舊 image | §6.9 範圍說明;`update/check` 回報需要中間版本 / 重燒卡 |
 | 可行性 4 | autocommit 健康檢查沒有 BLE | 加入 bluetoothd、provd、廣播(§6.9、§9) |
-| 可行性 5 | 暫時 AP 會被 meshpoint 橋接進 ahwlan、被 keyguard 處理 | 獨立 zone、不被兩者處理、逾時、開機清除;B2 |
+| 可行性 5 | 暫時 AP 會被 meshpoint 橋接進 ahwlan、被 keyguard 處理 | 獨立 zone、不被兩者處理、逾時、開機清除;B2。**#254 P3 起不開暫時 AP**,上傳經這台節點的手機 AP(§6.9) |
 | 可行性 6、使用性 4 | 更新與匯出漏算系統對話框;iOS 背景暫停;不在附近不能更新 | 更新上限改 4;診斷包改走 BLE;「傳完前不要離開」;靠近才能更新;背景下載(§2.2、§6.9、§6.10);B19 |
 | 使用性 1 | 已有網路時加新機沒有流程 | 認領後自動問「加入『家裡網路』?」;狀態「還沒加入網路」 |
 | 使用性 2 | 網路頁不分身分;多網路、多台加入未定義 | §2.4 依身分顯示;一支手機可同時是網主與成員;一台機台一次一個網路;邀請可多台 |
