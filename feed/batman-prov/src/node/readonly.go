@@ -113,15 +113,27 @@ func (n *Node) readOnly(verb string, a cbor.Map, conn, statusConn *bucket) (cbor
 		}
 		return n.updateStatus()
 	}
+	if verb == "health.get" {
+		// provd's poll (§3.8.2): {1: bytes its PUT has received, 2: true = its bind of http.2 failed}; both optional
+		if e := onlyKeys(a, 1, 2); e != nil {
+			return nil, e
+		}
+		if n.Health == nil {
+			return nil, fail(EUnsupported, "no health source")
+		}
+		up, haveUp := getUint(a, 1)
+		bv, _ := a.Get(2)
+		bf, _ := bv.(bool)
+		r := cbor.M(1, n.Health())
+		if h := n.httpField(up, haveUp, bf); h != nil {
+			r = append(r, cbor.Entry{K: uint64(2), V: h})
+		}
+		return r, nil
+	}
 	if e := onlyKeys(a); e != nil {
 		return nil, e
 	}
 	switch verb {
-	case "health.get":
-		if n.Health == nil {
-			return nil, fail(EUnsupported, "no health source")
-		}
-		return cbor.M(1, n.Health()), nil
 	case "info.cert":
 		return cbor.M(1, n.KS.Cert(), 2, n.KS.SN()), nil
 	case "info.ecdh_pub":

@@ -144,9 +144,11 @@ type Node struct {
 	settingsRestoreBad atomic.Bool
 	roGlobal           bucket // read-only verbs, helper-wide (readonly.go)
 	// 254-p3-impl §3.7.4: the update verbs (SetUpdateSource; nil = E_UNSUPPORTED)
-	upd      *updater
-	psksRate bucket // psks.get: 1/s
-	clock    func() time.Time
+	upd            *updater
+	bulk           BulkSys     // §3.8.2 (nil = no bulk verbs, no http field)
+	httpBindFailed atomic.Bool // provd's poll: its bind of http.2 failed (status key 15)
+	psksRate       bucket      // psks.get: 1/s
+	clock          func() time.Time
 }
 
 type nonce struct {
@@ -294,7 +296,7 @@ func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 	case "claim.replay":
 		return n.claimReplay(rec, a)
 	case "net.apply", "network.leave", "owner.add", "owner.remove", "settings.set", "root_password.reset",
-		"diag.bundle", "ssh_keys.set", "update.prepare", "update.apply":
+		"diag.bundle", "ssh_keys.set", "update.prepare", "update.apply", "bulk.open", "bulk.close":
 		return n.ownerOpVerb(verb, rec, a)
 	}
 	return nil, fail(ESchema, "unknown verb %q", verb) // incl. keystore.ecdh, persist, keystore.sign, any reset: none exist (§4.1)
@@ -765,7 +767,7 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 	want := map[string]string{"net.apply": "network/join", "network.leave": "network/leave", "owner.add": "owner/add",
 		"owner.remove": "owner/remove", "settings.set": "settings/set", "root_password.reset": "root_password/reset",
 		"diag.bundle": "diag/bundle", "ssh_keys.set": "ssh_keys/set", "update.prepare": "update/prepare",
-		"update.apply": "update/apply"}[verb]
+		"update.apply": "update/apply", "bulk.open": "bulk/open", "bulk.close": "bulk/close"}[verb]
 	if verb == "net.apply" && typ == "network/update" {
 		return n.netUpdate(rec, body) // version chain, no owner-op (219 §5.3)
 	}
@@ -823,6 +825,10 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 		return n.updatePrepare(signer, body)
 	case "update.apply":
 		return n.updateApply(signer, body)
+	case "bulk.open":
+		return n.bulkOpen(signer, body)
+	case "bulk.close":
+		return n.bulkClose(signer, body)
 	}
 	return nil, fail(ESchema, "unreachable")
 }

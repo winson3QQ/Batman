@@ -9,6 +9,24 @@ STOP=10
 USE_PROCD=1
 PROG=/usr/bin/batman-provd
 
+# 254-p3-impl §3.8.2: provd's upload tmpfs, mounted by root before the jail starts. size = 2 x this board's payload
+# (bcm2711: 2 x 126,309,765 B; bcm2710 the same, not validated). Never stacked; never a symlink or a non-directory.
+# Not mounted -> it is NOT put into the jail (a plain dir on /tmp would let a compromised provd fill /tmp), and the
+# helper refuses bulk.open (reason 21, D-15).
+BDIR=/tmp/run/batman-provd-bulk
+_bulk_mount() {
+	local sz fs
+	case "$(sed -n 's/^BATMAN_BOARD=//p' /etc/batman-build 2>/dev/null)" in
+	ekh-bcm2711 | ekh-bcm2710) sz=252619530 ;;
+	*) return 1 ;;
+	esac
+	[ -L "$BDIR" ] && return 1
+	fs=$(awk -v d="$BDIR" '$2 == d { print $3 }' /proc/mounts)
+	[ -n "$fs" ] && { [ "$fs" = tmpfs ]; return; } # already ours (provd restart), or someone else's: never stacked
+	[ -d "$BDIR" ] || mkdir -m 0700 "$BDIR" || return 1
+	mount -t tmpfs -o nodev,nosuid,noexec,mode=0700,nr_inodes=16,size=$sz,uid=471,gid=471 batman-provd-bulk "$BDIR"
+}
+
 start_service() {
 	procd_open_instance
 	procd_set_param command "$PROG"
@@ -17,6 +35,7 @@ start_service() {
 	procd_set_param group provd
 	procd_add_jail batman-provd log requirejail
 	procd_add_jail_mount "$PROG" /etc/batman-build /tmp/run/dbus /tmp/run/batman-prov
+	_bulk_mount && procd_add_jail_mount_rw "$BDIR"
 	procd_set_param capabilities /etc/capabilities/batman-provd.json
 	procd_set_param no_new_privs 1
 	procd_set_param stdout 1

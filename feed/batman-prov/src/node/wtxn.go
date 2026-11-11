@@ -452,8 +452,8 @@ func (n *Node) finishWantsRadio() bool {
 // A shared, non-blocking try on a fresh fd that is closed again at once (never kept: a held shared lock would make
 // batman-slot's own exclusive lock fail). No lock file = no writer this boot; cannot tell = busy (fail-closed).
 func (n *Node) otaBusy() bool {
-	if n.upd != nil && n.upd.isWorking() { // §3.1-5: the update worker writes the other slot
-		return true
+	if n.upd != nil && (n.upd.isWorking() || n.upd.windowOpen()) { // §3.1-5 / -7: the worker writes the other slot,
+		return true // or a 126 MB upload is under way (a network reload would cut it)
 	}
 	return SlotLockHeld(n.P.RunDir)
 }

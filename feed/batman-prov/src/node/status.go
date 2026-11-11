@@ -43,6 +43,8 @@ type StatusSource struct {
 	SSIDUnsaved func() bool
 	// D-6: the last settings.set's restore did not verify (wired by SetStatusSource from the node)
 	RestoreBad func() bool
+	// §3.8.1: provd could not bind 8095 (wired by SetStatusSource from the node)
+	HTTPBindFailed func() bool
 }
 
 type statusCache struct {
@@ -223,6 +225,9 @@ func (c *statusCache) get(state string, full bool) cbor.Map {
 		if c.src.RestoreBad != nil && c.src.RestoreBad() {
 			f = append(f, cbor.Entry{K: "settings_restore", V: "not verified"})
 		}
+		if c.src.HTTPBindFailed != nil && c.src.HTTPBindFailed() {
+			f = append(f, cbor.Entry{K: "http_bind_failed", V: true})
+		}
 		m = append(m, cbor.Entry{K: uint64(15), V: f})
 	}
 	return m
@@ -235,6 +240,9 @@ func (n *Node) SetStatusSource(src StatusSource) {
 	}
 	if src.SSIDUnsaved == nil {
 		src.SSIDUnsaved = n.ssidUnsavedCached
+	}
+	if src.HTTPBindFailed == nil {
+		src.HTTPBindFailed = n.httpBindFailed.Load
 	}
 	n.status = newStatusCache(src, n.now)
 }

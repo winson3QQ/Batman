@@ -58,6 +58,8 @@ define Package/batman-prov/install
 	$(INSTALL_BIN) ./files/batman-provd$(if $(filter 1,$(BATMAN_PROV_TEST)),-test).init $(1)/etc/init.d/batman-provd
 	$(INSTALL_DIR) $(1)/etc/capabilities
 	$(INSTALL_DATA) ./files/batman-provd.json $(1)/etc/capabilities/batman-provd.json
+	$(INSTALL_DIR) $(1)/usr/share/nftables.d/ruleset-post
+	$(INSTALL_DATA) ./files/batman-http.nft $(1)/usr/share/nftables.d/ruleset-post/batman-http.nft
 endef
 
 $(eval $(call GoBinPackage,batman-prov))

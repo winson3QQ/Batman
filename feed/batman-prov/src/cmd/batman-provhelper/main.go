@@ -613,8 +613,10 @@ func daemon(p provstore.Paths) {
 	trial := newTrialCache(5*time.Second, execIsTrial) // info.state key 5 + Committed() share it (254-p2-impl §1.3)
 	n := node.New(p, ks, realSys{p}, logf)
 	// §3.7 / §3.8: the update verbs (not on a card without A/B slots: E_UNSUPPORTED)
+	rb := &realBulk{netDir: sysClassNet}
 	if ru := newRealUpdate(p, trial.Trial); ru != nil {
 		n.SetUpdateSource(ru, ru)
+		n.SetBulkSource(rb) // §3.8: the upload window and the poll's http field
 	}
 	h := &health.Env{
 		BootID: bootID, Uptime: uptime, ReadInfo: health.ReadInfo, ReadAdv: health.ReadAdvInstances, BTDPid: btdPid,
@@ -650,8 +652,10 @@ func daemon(p provstore.Paths) {
 			}
 		}
 	}()
-	go func() { // §3.7.4 the disarm rule + slot-info retries, §3.8.2 the upload deletion: at start, then every 4 s
-		n.UpdateTick()
+	go func() { // §3.7.4 the disarm rule + slot-info retries, §3.8.2 the upload deletion, §3.8.1 the HTTP firewall
+		// check: at start, then every 4 s
+		tick := func() { rb.check(); n.UpdateTick() }
+		tick()
 		tk := time.NewTicker(4 * time.Second)
 		defer tk.Stop()
 		for {
@@ -659,7 +663,7 @@ func daemon(p provstore.Paths) {
 			case <-stop:
 				return
 			case <-tk.C:
-				n.UpdateTick()
+				tick()
 			}
 		}
 	}()
