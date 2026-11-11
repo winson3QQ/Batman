@@ -143,8 +143,10 @@ type Node struct {
 	// until a later settings.set succeeds
 	settingsRestoreBad atomic.Bool
 	roGlobal           bucket // read-only verbs, helper-wide (readonly.go)
-	psksRate           bucket // psks.get: 1/s
-	clock              func() time.Time
+	// 254-p3-impl §3.7.4: the update verbs (SetUpdateSource; nil = E_UNSUPPORTED)
+	upd      *updater
+	psksRate bucket // psks.get: 1/s
+	clock    func() time.Time
 }
 
 type nonce struct {
@@ -212,6 +214,16 @@ func (n *Node) handleQ(req cbor.Map, conn, statusConn *bucket) cbor.Map {
 		res, err := n.readOnly(verb, args, conn, statusConn)
 		if err != nil {
 			if err.Code != ERate { // a quota refusal is the caller's pacing, not an event
+				n.Log("verb %s refused: code %d (%s)", verb, err.Code, err.Reason)
+			}
+			return cbor.M(1, id, 2, uint64(err.Code), 3, errBody(err))
+		}
+		return cbor.M(1, id, 2, uint64(OK), 3, res)
+	}
+	if verb == "update.check" { // not under n.mu (254-p3-impl D-12): precheck-node takes seconds
+		res, err := n.updateCheck(args)
+		if err != nil {
+			if err.Code != ERate {
 				n.Log("verb %s refused: code %d (%s)", verb, err.Code, err.Reason)
 			}
 			return cbor.M(1, id, 2, uint64(err.Code), 3, errBody(err))
