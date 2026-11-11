@@ -66,8 +66,7 @@ var knownTypes = map[string]bool{"info": true, "claim/begin": true, "claim/finis
 
 // P3 types: E_UNSUPPORTED{capability: <type>} (254-p2-impl §4.3)
 var p3Types = map[string]bool{"owner/add": true, "owner/remove": true,
-	"peers/challenge": true, "diag/summary": true, "diag/bundle": true, "update/check": true,
-	"update/prepare": true, "update/apply": true, "update/status": true, "bulk/open": true, "bulk/close": true}
+	"peers/challenge": true, "diag/summary": true, "diag/bundle": true}
 
 // types whose response carries a secret: an idempotency key is E_FORBIDDEN (219 §4.2)
 var secretTypes = map[string]bool{"claim/finish": true, "claim/replay": true, "root_password/reset": true,
@@ -78,7 +77,8 @@ var allowed = map[Role]map[string]bool{
 	RoleCandidate: {"info": true, "auth/owner": true},
 	RoleOwner: {"info": true, "op/nonce": true, "network/join": true, "network/update": true, "network/leave": true,
 		"ssh_keys/set": true, "root_password/reset": true, "status": true, "settings/get": true,
-		"settings/set": true},
+		"settings/set": true, "update/check": true, "update/prepare": true, "update/apply": true,
+		"update/status": true, "bulk/open": true, "bulk/close": true},
 	RoleMember:    {"info": true, "network/update": true, "status": true},
 	RoleReacquire: {"info": true, "claim/begin": true, "op/nonce": true, "claim/replay": true},
 }
@@ -87,7 +87,9 @@ var allowed = map[Role]map[string]bool{
 var forward = map[string]string{"network/join": "net.apply", "network/update": "net.apply",
 	"network/leave": "network.leave", "ssh_keys/set": "ssh_keys.set", "root_password/reset": "root_password.reset",
 	"settings/set": "settings.set",
-	"claim/replay": "claim.replay"}
+	"claim/replay": "claim.replay",
+	// 254-p3-impl §3.1-3 / §3.8.2
+	"update/prepare": "update.prepare", "update/apply": "update.apply", "bulk/open": "bulk.open", "bulk/close": "bulk.close"}
 
 // MaxChunks / MaxReassembled: stage 1 limits of a chunked request (helper MaxRequest 65536 minus its wrapping).
 const (
@@ -126,6 +128,7 @@ type Session struct {
 	why        string
 	closeAfter string    // disconnect once the current response is sent (3rd claim / auth failure)
 	statusAt   time.Time // the last status request of this session (254-p3-impl §3.1-9: 1/s per connection)
+	checkAt    time.Time // the last update/check of this session (§3.1-9: 1 / 10 s per connection)
 	done       chan struct{}
 	// chunk reassembly
 	chID    uint64
@@ -647,6 +650,10 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 		return ss.status(id, role, body)
 	case "settings/get":
 		return ss.settingsGet(id, body)
+	case "update/check":
+		return ss.updateCheck(id, body)
+	case "update/status":
+		return ss.updateStatus(id, body)
 	}
 	verb := forward[typ]
 	r, e := ss.ops(id, verb, cbor.M(1, h, 2, raw))
@@ -677,8 +684,8 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 	case "network/update":
 		v, _ := r.Body.Get(1)
 		return okEnv(id, cbor.M(1, v))
-	case "root_password/reset":
-		return okEnv(id, r.Body)
+	case "root_password/reset", "update/prepare", "update/apply", "bulk/open":
+		return okEnv(id, r.Body) // update-progress / bulk-open-resp (§3.1-3)
 	}
 	return okEnv(id, nil)
 }
