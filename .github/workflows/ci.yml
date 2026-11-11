@@ -156,6 +156,17 @@ jobs:
           sudo PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-txn-save.sh $F/usr/bin/batman-config-save
       # #320 lands harness-first (#290): on a product that still has `cmd < file 2>/dev/null` reads this step is RED on
       # purpose (KNOWN #320). Its own LAST step with !cancelled(), so the expected red never skips the steps above.
+      - name: "#254 S5 software update, offline (harness lands first, #290: red until feat/254-p3 S5 lands, KNOWN #254) — slot flock + names, payload format, provd tmpfs init, autocommit health, the HTTP firewall include"
+        run: |
+          set -e
+          F=feed/batman-provision/files
+          bash tests/prov-p1/s5-slot-lock.sh $F
+          bash tests/prov-p1/s5-payload.sh scripts/build-ab-payload.sh
+          sudo bash tests/prov-p1/s5-bulk-mount.sh feed/batman-prov/files/batman-provd.init
+          sudo bash tests/prov-p1/s5-bulk-mount.sh feed/batman-prov/files/batman-provd-test.init
+          sudo bash tests/prov-p1/s5-autocommit.sh $F/usr/bin/batman-autocommit
+          command -v nft >/dev/null || sudo apt-get install -y -qq nftables
+          sudo bash tests/prov-p1/s5-nft.sh feed/batman-prov/files/batman-http.nft
       - name: "#320 redirect-read stderr quiet — lint feed/*/files (zero exceptions), #202 A3 block under busybox ash, mutant negative control"
         if: ${{ !cancelled() }}
         run: |
