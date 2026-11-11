@@ -33,6 +33,9 @@ ck "no unsquashfs -> no payload" "$([ -e $T/nous.tar.gz ] && echo made || echo n
 rm $T/root/etc/batman-build; mksquashfs $T/root $T/r2.squashfs -quiet -noappend -all-root >/dev/null
 bash "$B" $T/r2.squashfs $T/boot ekh-bcm2711 $T/ns.tar.gz > $T/log2 2>&1
 ck "no stamp -> no release=" "$(tar -xzOf $T/ns.tar.gz metadata | grep -c '^release=')" 0
-ck "no stamp -> a WARN" "$(grep -c 'no BATMAN_VERSION' $T/log2)" 1
+ck "no stamp -> a WARN" "$(grep -c 'has no etc/batman-build' $T/log2)" 1
+printf 'BATMAN_BOARD=x
+' > $T/root/etc/batman-build; mksquashfs $T/root $T/r3.squashfs -quiet -noappend -all-root >/dev/null
+bash "$B" $T/r3.squashfs $T/boot ekh-bcm2711 $T/nv.tar.gz > $T/log4 2>&1; ck "a stamp without BATMAN_VERSION -> FAIL" "$?" 1
 echo "S5-PAYLOAD checks=$n fail=$fail"
 [ $fail = 0 ] && [ $n -gt 0 ]
