@@ -27,13 +27,14 @@ jobs:
         run: bash scripts/test-dv-bt-uart-305.sh
       - name: busybox for lint-wbox (sh -n in the node's ash)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
-      - name: "#254 S5 on-node judges offline — slot-lock helper (busybox ash + dash), release-key / fw-boot / UD-L judges, node fw-boot script on fixtures"
+      - name: "#254 S5 on-node judges offline — slot-lock helper (busybox ash + dash), release-key / fw-boot / UD-L judges, node fw-boot script on fixtures, ab-selftest SLOTLK-BUSY verdicts"
         if: ${{ !cancelled() }}
         run: |
           rc=0
           bash scripts/test-slotlock-254.sh || rc=1
           bash scripts/test-s5-dv-254.sh || rc=1
           bash scripts/test-s5-node-254.sh || rc=1
+          bash scripts/test-ab-selftest-254.sh || rc=1
           exit $rc
       - name: "#254 preflight P9 node judge on fixtures ([all] / wbox slots / prov leftovers) under busybox ash"
         run: bash tests/prov-p1/p9-judge.sh scripts/node/prov-p9-254.sh
@@ -183,7 +184,7 @@ jobs:
           exit $rc
       # #254 P3 settings / status shell tests (moved from feat/254-p3 to the harness, #290). Red on purpose on a product
       # before P3 (each test says "predates P3 … expected red until feat/254-p3 lands"); `!cancelled()`, rc accumulated.
-      - name: "#254 P3 settings + status offline (harness lands first, #290: red until feat/254-p3 lands, KNOWN #254) — halow-setkey --country / --ap, joinwatch verdict_code, config-save keeps the AP ssid (loop device)"
+      - name: "#254 P3 settings + status offline (harness lands first, #290: red until feat/254-p3 lands, KNOWN #254) — halow-setkey --country / --ap, joinwatch verdict_code, config-save keeps the AP ssid (loop device), the network/update shape text the harness keys on"
         if: ${{ !cancelled() }}
         run: |
           F=feed/batman-provision/files
@@ -191,6 +192,9 @@ jobs:
           bash tests/prov-p3/setkey-settings.sh $F/usr/bin/halow-setkey $F/usr/lib/batman/rundir.sh || rc=1
           bash tests/prov-p3/joinwatch-code.sh $F/usr/bin/joinwatch || rc=1
           sudo PROV_SRC=$PWD/$F bash tests/prov-p3/cfgsave-ssid.sh $F/usr/bin/batman-config-save || rc=1
+          # scripts/dv/prov-254.sh pr_cddl_nu keys on the helper's "update shape" text: a product rename fails here, not silently
+          # as three network/update units INVALID on every image (harness review r2 A m5 / B m8)
+          bash tests/prov-p1/p3-update-shape-string.sh . || rc=1
           exit $rc
       # #320 lands harness-first (#290): on a product that still has `cmd < file 2>/dev/null` reads this step is RED on
       # purpose (KNOWN #320). Its own LAST step with !cancelled(), so the expected red never skips the steps above.

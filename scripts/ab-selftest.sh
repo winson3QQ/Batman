@@ -35,10 +35,21 @@ NODE=${1:?usage: ab-selftest.sh <node-addr> [--inspect-only|--destructive]}
 MODE=${2:-}
 case "$MODE" in ""|--inspect-only|--destructive) ;; *) echo "unknown mode: $MODE"; exit 2 ;; esac
 
-PASS=0; FAIL=0; WARN=0
+PASS=0; FAIL=0; WARN=0; SKIPB=0
 ok()  { PASS=$((PASS+1)); echo "  ok   $*"; }
 bad() { FAIL=$((FAIL+1)); echo "  FAIL $*"; }
 warn(){ WARN=$((WARN+1)); echo "  WARN $*"; }   # known condition, not a product defect; does not fail the run
+skp() { SKIPB=$((SKIPB+1)); echo "  SKIP $* — the slot lock was busy: not a card result"; }
+# The end of every mode. A real FAIL is always exit 1 (a busy lock elsewhere is only a note under it — review r2 A-m7 /
+# B-m7: a "bootB NOT restored" must never read as "INVALID"); no FAIL but checks skipped on the busy lock = exit 3 with a
+# SKIP-REASON line (daily-validation: SKIP with the reason, never a PASS); else exit 0.
+finish() {
+  echo "================ $PASS passed, $FAIL failed, $WARN warn, $SKIPB skipped (slot lock busy) ================"
+  if [ -s "$BUSYF" ]; then echo "NOTE: the slot lock was busy $(wc -l < "$BUSYF") time(s):"; sed 's/^/  /' "$BUSYF"; fi
+  [ "$FAIL" -gt 0 ] && exit 1
+  [ "$SKIPB" -gt 0 ] && { echo "SKIP-REASON: ab-selftest: $SKIPB check(s) not run, the slot lock was busy (see the SKIP lines)"; exit 3; }
+  exit 0
+}
 
 # Our own known_hosts, never the operator's. A slot switch legitimately changes the node's
 # dropbear host key, so the pin has to be dropped between reboots; doing that to a personal
@@ -69,8 +80,9 @@ is_slot() { [[ ${1:-} =~ ^[AB]$ ]]; }
 # was fine — caught on manet01 (running slot B) during #173 validation.
 # #254 S5 (254-p3-impl §3.7.3): a boot FAT is mounted only under the slot lock (the flock batman-slot write / arm /
 # bootinfo hold), or a concurrent slot write meets EBUSY mid-write: SLOTLK (scripts/lib/slotlock-254.sh — the one copy;
-# bounded wait, ~25 s). A lock it cannot get prints SLOTLK-BUSY and mounts nothing: recorded in $BUSYF, and the run
-# ends INVALID (rc 2), never as a card FAIL. 60 s ssh timeout for these: the bounded wait plus the FAT work.
+# bounded wait, ~25 s). A lock it cannot get prints SLOTLK-BUSY and mounts nothing: recorded in $BUSYF; the checks that
+# needed that read are SKIP (skp), never a card FAIL; a restore step retries (bootb_rw_retry) and FAILs only when it
+# still cannot run. 60 s ssh timeout for these: the bounded wait plus the FAT work.
 # shellcheck source=scripts/lib/slotlock-254.sh
 . "$(dirname "$0")/lib/slotlock-254.sh" || exit 2
 sshl() {                             # sshn under the slot lock; a SLOTLK-BUSY line goes to $BUSYF, not to the caller
@@ -84,6 +96,16 @@ boot_cat() {                         # $1 = A|B, $2 = filename
   sshl "mkdir -p /mnt/_ab; mount -t vfat -o ro /dev/mmcblk0p3 /mnt/_ab >/dev/null 2>&1; cat /mnt/_ab/$f; umount /mnt/_ab"
 }
 bootb_rw() { sshl "mkdir -p /mnt/_ab; mount -t vfat /dev/mmcblk0p3 /mnt/_ab && { $1 ; }; sync; umount /mnt/_ab"; }
+bcount() { wc -l < "$BUSYF"; }        # SLOTLK-BUSY lines so far: a change across a call = that call did nothing
+# bootb_rw under a busy lock, retried (3 rounds of the bounded wait, ~90 s): for the restore steps. rc 1 = still busy.
+bootb_rw_retry() {
+  local i b o
+  for i in 1 2 3; do
+    b=$(bcount); o=$(bootb_rw "$1"); [ "$(bcount)" = "$b" ] && { printf '%s\n' "$o"; return 0; }
+    echo "  .. slot lock busy for a bootB restore step, try $i of 3" >&2; sleep 5
+  done
+  printf '%s\n' "$o"; return 1
+}
 
 reboot_wait() {                      # $1 = tryboot|plain ; $2 = max seconds
   local mode=$1 max=${2:-180} i before after
@@ -215,7 +237,8 @@ if [ "$LAYOUT" = pi3 ]; then
 fi
 
 for S in A B; do
-  CL=$(boot_cat "$S" cmdline.txt)
+  b0=$(bcount); CL=$(boot_cat "$S" cmdline.txt)
+  [ "$(bcount)" = "$b0" ] || { skp "slot $S cmdline.txt checks (marker, rootwait, panic)"; continue; }
   if ! grep -q "batman_slot=$S" <<<"$CL"; then
     bad "slot $S cmdline.txt unreadable or missing its batman_slot marker — the checks below would pass vacuously"
     continue
@@ -230,8 +253,7 @@ done
 if [ "$MODE" = --inspect-only ]; then
   echo
   echo "(inspect-only: no reboots performed)"
-  echo "================ $PASS passed, $FAIL failed ================"
-  [ "$FAIL" -eq 0 ]; exit
+  finish
 fi
 
 echo
@@ -264,8 +286,7 @@ fi
 if [ "$MODE" != --destructive ]; then
   echo
   echo "(skipping the failure cases; pass --destructive to run them)"
-  echo "================ $PASS passed, $FAIL failed ================"
-  [ "$FAIL" -eq 0 ]; exit
+  finish
 fi
 
 # The interlock has to test the slot the node is on RIGHT NOW, not the one it booted with.
@@ -310,13 +331,20 @@ if [ "$HANGS" = 1 ] && { [ "${ATTENDED:-0}" != 1 ] || ! [ -r /dev/tty ]; }; then
   bad "fw-fallback case not run: $WHY — the board is expected to HANG and needs someone to pull power; run with ATTENDED=1 from a terminal"; STAGE=0
 fi
 if [ "$STAGE" = 1 ]; then
+  b0=$(bcount)
   for f in $STARTFS; do bootb_rw "mv /mnt/_ab/$f /mnt/_ab/$f.selftest" >/dev/null; done
   L=$(bootb_rw "ls /mnt/_ab" | tr -d '\r')
   for f in $STARTFS; do grep -qx "$f.selftest" <<<"$L" || STAGE=2; done
+  [ "$STAGE" = 2 ] && [ "$(bcount)" != "$b0" ] && STAGE=3   # not staged because the lock was busy, not because B is broken
 fi
-if [ "$STAGE" = 2 ]; then
-  bad "could not stage the fw-fallback case (bootB not writable?) — skipping it rather than reporting a pass"
-  for f in $STARTFS; do bootb_rw "[ -e /mnt/_ab/$f.selftest ] && mv /mnt/_ab/$f.selftest /mnt/_ab/$f" >/dev/null; done
+if [ "$STAGE" = 2 ] || [ "$STAGE" = 3 ]; then
+  if [ "$STAGE" = 3 ]; then skp "fw-fallback case (staging bootB/{$STARTFS})"
+  else bad "could not stage the fw-fallback case (bootB not writable?) — skipping it rather than reporting a pass"; fi
+  # undo whatever part of the staging did happen; the restore must run, so it retries a busy lock and FAILs if it cannot
+  RST=1; for f in $STARTFS; do bootb_rw_retry "[ ! -e /mnt/_ab/$f.selftest ] || mv /mnt/_ab/$f.selftest /mnt/_ab/$f" >/dev/null || RST=0; done
+  L=$(bootb_rw_retry "ls /mnt/_ab" | tr -d '\r') || RST=0
+  for f in $STARTFS; do grep -qx "$f" <<<"$L" || RST=0; done
+  [ "$RST" = 1 ] || bad "bootB start file(s) NOT restored after the unstaged case ($STARTFS; the slot lock may have stayed busy) — slot B may be left unbootable by the firmware, fix it before using this card"
 elif [ "$STAGE" = 1 ]; then
   BID0=$(boot_id)
   if rb tryboot 240; then R=up
@@ -338,13 +366,14 @@ elif [ "$STAGE" = 1 ]; then
              rb plain || bad "plain reboot after the B boot did not come back ($RB_T)" ;;
     *)       bad "node did not come back ($R, slot '${S:0:40}') — the firmware-level fallback did not happen" ;;
   esac
-  for f in $STARTFS; do bootb_rw "mv /mnt/_ab/$f.selftest /mnt/_ab/$f" >/dev/null; done
+  # the restore must run: a busy lock is retried (bootb_rw_retry), and one that stays busy is a FAIL, never a skip
+  RST=1; for f in $STARTFS; do bootb_rw_retry "mv /mnt/_ab/$f.selftest /mnt/_ab/$f" >/dev/null || RST=0; done
   # Inside the staged branch on purpose. When staging failed, the files were never renamed, so this
   # check would print a green "restored" line for a restore that never ran.
-  L=$(bootb_rw "ls /mnt/_ab" | tr -d '\r'); RST=1
+  L=$(bootb_rw_retry "ls /mnt/_ab" | tr -d '\r') || RST=0
   for f in $STARTFS; do grep -qx "$f" <<<"$L" || RST=0; done
   [ "$RST" = 1 ] && ok "restored bootB/{$STARTFS}" \
-                 || bad "bootB start file(s) NOT restored ($STARTFS) — slot B is left unbootable by the firmware, fix it before using this card"
+                 || bad "bootB start file(s) NOT restored ($STARTFS; the slot lock may have stayed busy) — slot B is left unbootable by the firmware, fix it before using this card"
 fi
 
 echo
@@ -372,9 +401,4 @@ else
 fi
 
 echo
-echo "================ $PASS passed, $FAIL failed, $WARN warn ================"
-if [ -s "$BUSYF" ]; then   # a FAT look that never happened: the checks that depended on it say nothing about the card
-  echo "INVALID: the slot lock was busy $(wc -l < "$BUSYF") time(s) — the boot-FAT checks above that depended on it are not card results:"
-  sed 's/^/  /' "$BUSYF"; exit 2
-fi
-[ "$FAIL" -eq 0 ]
+finish

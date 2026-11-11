@@ -6,19 +6,33 @@
 #         the lock file cannot be opened -> SLOTLK-BUSY, the shell goes on; lock held elsewhere -> SLOTLK-BUSY after
 #         SLK_TRIES; free -> held on fd 9 until the shell exits (a second taker is refused meanwhile)
 #   free: ok; nofile; a verb's child that kept fd 9 -> leak (the negative control of every "lock released" check);
-#         a holder from outside -> other; a step-window holder (lo:hi) -> leak
+#         a holder from outside -> other; a step-window holder (lo:hi) -> leak; a step-window holder that is a
+#         batman-slot not started by the helper -> writer (contention: other), one under the helper -> leak (review r2
+#         B-m3); a file whose NAME ends in " -> <lock path>", held open with the token -> not a holder (review r2 B-m2)
 #   host: SLOTLK = the lib + slk_take (no copy of the lib anywhere else in scripts/)
-# Zero cases run = FAIL.
+# Safe to run several at once on one host (review r2 A-m1 / B-m1): every holder is waited for until it holds the lock,
+# and killed by its recorded pid (the holder IS the sleep: `exec`), never by name; the long sleeps are a copy of sleep
+# named for this run ($SL), so another instance's (or an older version's) kill-by-name cannot reach them. Zero cases
+# run = FAIL.
 set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 LIB=$REPO/scripts/node/slotlock-lib-254.sh
 P=0; F=0
 chk(){ if [ "$2" = "$3" ]; then echo "ok   $1"; P=$((P + 1)); else echo "FAIL $1: got [$2] want [$3]"; F=$((F + 1)); fi; }
 has(){ if grep -q -- "$3" <<< "$2"; then echo "ok   $1"; P=$((P + 1)); else echo "FAIL $1: [$2] lacks [$3]"; F=$((F + 1)); fi; }
+hasnt(){ if grep -q -- "$3" <<< "$2"; then echo "FAIL $1: [$2] has [$3]"; F=$((F + 1)); else echo "ok   $1"; P=$((P + 1)); fi; }
 command -v flock >/dev/null || { echo "FAIL no flock on this host"; echo "SLOTLOCK 0 passed, 1 failed"; exit 1; }
 SHS="dash"; command -v busybox >/dev/null && SHS="busybox_ash dash"
-T=$(mktemp -d); trap 'jobs -p | xargs -r kill 2>/dev/null; rm -rf "$T"' EXIT
+T=$(mktemp -d)
+killrec(){ [ -f "$T/pids" ] && xargs -r kill < "$T/pids" 2>/dev/null; : > "$T/pids"; return 0; }
+trap 'killrec; jobs -p | xargs -r kill 2>/dev/null; rm -rf "$T"' EXIT
 mkdir -m 0755 "$T/run"
+SLN=sl${T##*.}; SL=$T/$SLN; cp "$(command -v sleep)" "$SL"   # sl + mktemp's random suffix
+L=$T/run/batman/batman-slot.flock
+# hold <secs>: a process that holds the flock on $L for <secs> (it IS the sleep, so its pid frees it); returns once held
+hold(){ ( flock -x 7; exec "$SL" "$1" ) 7>>"$L" & HP=$!; echo "$HP" >> "$T/pids"
+	local i=0; while flock -n "$L" true && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; }
+unhold(){ kill "$HP" 2>/dev/null; wait "$HP" 2>/dev/null; }
 # a rundir.sh like the node's: RUNDIR under $T; batman_rundir as the product's (mkdir 0700 + owner check), or failing
 cat > "$T/rundir.sh" <<EOF
 RUNDIR=$T/run/batman
@@ -32,6 +46,33 @@ cat > "$T/rundir-noopen.sh" <<EOF
 RUNDIR=$T/nonexistent/batman
 batman_rundir(){ return 0; }
 EOF
+# "verbs" that take the lock; -leak leaves a child holding fd 9 (the missing 9>&- of 254-p3-impl §3.7.3). Children's
+# pids go to $T/pids.
+cat > "$T/verb-leak" <<EOF
+#!/bin/sh
+exec 9>>"$L"; flock -n 9 || exit 14
+"$SL" 6 & echo \$! >> "$T/pids"
+exit 0
+EOF
+cat > "$T/verb-good" <<EOF
+#!/bin/sh
+exec 9>>"$L"; flock -n 9 || exit 14
+"$SL" 6 9>&- & echo \$! >> "$T/pids"
+exit 0
+EOF
+# a long-running batman-slot holding the lock (a writer), and a fake helper that starts one
+mkdir -p "$T/w"
+cat > "$T/w/batman-slot" <<EOF
+#!/bin/sh
+exec 9>>"$L"; flock 9; echo \$\$ > "$T/w/pid.\$1"; "$SL" 6 9>&- & echo \$! >> "$T/pids"; wait
+EOF
+# the "helper": a script whose comm is fh<mktemp suffix> (SLK_HELPER in the case below), the parent of a batman-slot
+cat > "$T/w/fh${T##*.}" <<EOF
+#!/bin/sh
+"$T/w/batman-slot" "\$1" & echo \$! >> "$T/pids"; wait
+EOF
+chmod +x "$T/verb-leak" "$T/verb-good" "$T/w/batman-slot" "$T/w/fh${T##*.}"
+waitf(){ local i=0; while [ ! -s "$1" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; }
 sh_(){ case "$1" in busybox_ash) shift; busybox ash "$@" ;; *) "$@" ;; esac; }
 for SH in $SHS; do
 	n=${SH%%_*}
@@ -45,43 +86,41 @@ for SH in $SHS; do
 	o=$(sh_ "$SH" -c "true && exec 9>>$T/nonexistent/x && echo locked; echo AFTER" 2>/dev/null); chk "$n control: a bare 'exec 9>>missing' ends the shell (what slk_take avoids)" "$o" ""
 	rm -rf "$T/run/batman"; mkdir -m 700 "$T/run/batman"
 	# held by another process for 5 s; 2 tries -> busy
-	( flock -x 7; sleep 5 ) 7>>"$T/run/batman/batman-slot.flock" & hp=$!; sleep 0.3
+	hold 5
 	o=$(SLK_RD=$T/rundir.sh SLK_TRIES=2 sh_ "$SH" -c ". '$LIB'; slk_take || { echo REFUSED; exit 1; }; echo MOUNTED" 2>&1); has "$n take: held elsewhere -> SLOTLK-BUSY" "$o" "^SLOTLK-BUSY held by another for 2 tries"
 	has "$n take: held elsewhere -> no FAT work" "$(echo $o)" "REFUSED"
-	kill $hp 2>/dev/null; wait $hp 2>/dev/null
+	unhold
 	# free: held until the shell ends
-	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_take && echo HELD; flock -n $T/run/batman/batman-slot.flock true && echo OTHER-GOT-IT || echo OTHER-REFUSED" 2>&1); chk "$n take: free -> held, a second taker refused" "$(echo $o)" "HELD OTHER-REFUSED"
-	flock -n "$T/run/batman/batman-slot.flock" true && r=free || r=held; chk "$n take: released when the shell exits" "$r" free
+	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_take && echo HELD; flock -n $L true && echo OTHER-GOT-IT || echo OTHER-REFUSED" 2>&1); chk "$n take: free -> held, a second taker refused" "$(echo $o)" "HELD OTHER-REFUSED"
+	flock -n "$L" true && r=free || r=held; chk "$n take: released when the shell exits" "$r" free
 	# free checks
 	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_free 1 tokA -; echo rc=\$?" 2>&1); chk "$n free: nothing holds it -> ok" "$(echo $o)" "SLKFREE ok t=0 rc=0"
-	rm -f "$T/run/batman/batman-slot.flock"
+	rm -f "$L"
 	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_free 1 tokA -; echo rc=\$?" 2>&1); chk "$n free: no lock file -> nofile" "$(echo $o)" "SLKFREE nofile rc=2"
-	# a "verb" that takes the lock and leaves a child holding fd 9 (the missing 9>&- of 254-p3-impl §3.7.3)
-	cat > "$T/verb-leak" <<EOF
-#!/bin/sh
-exec 9>>"$T/run/batman/batman-slot.flock"; flock -n 9 || exit 14
-sleep 6 &
-exit 0
-EOF
-	cat > "$T/verb-good" <<EOF
-#!/bin/sh
-exec 9>>"$T/run/batman/batman-slot.flock"; flock -n 9 || exit 14
-sleep 6 9>&- &
-exit 0
-EOF
-	chmod +x "$T/verb-leak" "$T/verb-good"
-	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; DV_SLK=tokL $T/verb-leak; slk_free 1 tokL -; echo rc=\$?" 2>&1); has "$n free: a child kept fd 9 -> leak (negative control)" "$(echo $o)" "SLKFREE leak holders=[0-9]*:sleep:ours rc=1"
-	pkill -f "^sleep 6$" 2>/dev/null; sleep 0.2
+	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; DV_SLK=tokL $T/verb-leak; slk_free 1 tokL -; echo rc=\$?" 2>&1); has "$n free: a child kept fd 9 -> leak (negative control)" "$(echo $o)" "SLKFREE leak holders=[0-9]*:$SLN:ours rc=1"
+	killrec
 	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; DV_SLK=tokG $T/verb-good; slk_free 1 tokG -; echo rc=\$?" 2>&1); chk "$n free: the child closed fd 9 -> ok" "$(echo $o)" "SLKFREE ok t=0 rc=0"
-	pkill -f "^sleep 6$" 2>/dev/null; sleep 0.2
+	killrec
 	# one of ours keeps the file open without the lock (the flock is free): still "not released" (item (2): nothing the
 	# verb started may keep the lock file open)
-	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; DV_SLK=tokO /bin/sleep 6 8<$T/run/batman/batman-slot.flock & sleep 0.3; slk_free 1 tokO -; echo rc=\$?" 2>&1); has "$n free: lock free but ours keeps the file open -> leak" "$(echo $o)" "SLKFREE leak holders=[0-9]*:sleep:ours rc=1"
-	pkill -f "^/bin/sleep 6$" 2>/dev/null; sleep 0.2
-	( flock -x 7; sleep 4 ) 7>>"$T/run/batman/batman-slot.flock" & hp=$!; sleep 0.3
+	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; DV_SLK=tokO $SL 6 8<$L & echo \$! >> $T/pids; sleep 0.3; slk_free 1 tokO -; echo rc=\$?" 2>&1); has "$n free: lock free but ours keeps the file open -> leak" "$(echo $o)" "SLKFREE leak holders=[0-9]*:$SLN:ours rc=1"
+	killrec
+	hold 4
 	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_free 1 tokX -; echo rc=\$?" 2>&1); has "$n free: held by another (not ours) -> other" "$(echo $o)" "SLKFREE other holders=.*:other rc=3"
 	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_free 1 - 0:\$(slk_ticks); echo rc=\$?" 2>&1); has "$n free: a holder started inside the step window -> leak" "$(echo $o)" "SLKFREE leak holders=.*:ours rc=1"
-	kill $hp 2>/dev/null; wait $hp 2>/dev/null
+	unhold
+	# review r2 B-m3: inside the window, a batman-slot with no helper among its ancestors = another writer (contention)
+	rm -f "$T/w/pid.x"; ( exec "$T/w/batman-slot" x ) & echo $! >> "$T/pids"; waitf "$T/w/pid.x"
+	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_free 1 - 0:\$(slk_ticks); echo rc=\$?" 2>&1); has "$n free: a batman-slot of another writer in the window -> other (writer), not leak" "$(echo $o)" "SLKFREE other holders=[0-9]*:batman-slot:writer rc=3"
+	killrec
+	rm -f "$T/w/pid.y"; "$T/w/fh${T##*.}" y & echo $! >> "$T/pids"; waitf "$T/w/pid.y"
+	o=$(SLK_RD=$T/rundir.sh SLK_HELPER=fh${T##*.} sh_ "$SH" -c ". '$LIB'; slk_free 1 - 0:\$(slk_ticks); echo rc=\$?" 2>&1); has "$n free: a batman-slot under the helper in the window -> leak" "$(echo $o)" "SLKFREE leak holders=[0-9]*:batman-slot:ours rc=1"
+	killrec
+	# review r2 B-m2: a file whose name ends in " -> <lock path>", held open by a process carrying the token
+	mkdir -p "$T/evil/x -> $T/run/batman"; EV="$T/evil/x -> $L"; : > "$EV"
+	( DV_SLK=fb123.bootinfoA exec "$SL" 7 5<"$EV" ) & echo $! >> "$T/pids"; sleep 0.3
+	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_free 1 fb123.bootinfoA -; echo rc=\$?" 2>&1); chk "$n free: a spoofed ' -> <lock path>' name with the token -> not a holder (ok)" "$(echo $o)" "SLKFREE ok t=0 rc=0"
+	killrec; rm -rf "$T/evil"
 done
 # host side: SLOTLK is the lib plus slk_take, and the lib is the only copy
 SLOTLK=""; . "$REPO/scripts/lib/slotlock-254.sh"

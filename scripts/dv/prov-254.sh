@@ -41,11 +41,14 @@ PB=$REPO/scripts/node/prov-base-254.sh
 HOLDF=/opt/batdata/state/autocommit-hold-commit
 LOCKD=${TEMP:?TEMP unset — the host lock lives in the per-user temp dir}/batman-dv-04.lock
 PR_PAY=/opt/batdata/dv-prov-ota.tar.gz   # node: the payload being installed (one at a time; removed by pr_release)
-fails=0; invalid=0; PR_BEGUN=0; PR_SNAPPED=0; PR_WROTE_B=0; PR_RESTORING=0; PR_DEADLINE=0; PR_WBOX_VER=""
+fails=0; invalid=0; notjudged=0; PR_BEGUN=0; PR_SNAPPED=0; PR_WROTE_B=0; PR_RESTORING=0; PR_DEADLINE=0; PR_WBOX_VER=""
 DNODE_BLOCKED=${DNODE_BLOCKED:-0}
 say(){ echo "[$(date +%H:%M:%S) $PR_UNIT $RUN] $*"; }
 ok(){ echo "PASS $PR_UNIT: $*"; }; no(){ echo "FAIL $PR_UNIT: $*"; fails=$((fails + 1)); }
 inv(){ echo "INVALID $PR_UNIT: $*"; invalid=$((invalid + 1)); }
+# nj <row> <why>: a row this run could not judge for a reason of the image it ran on (not contention, not a fault):
+# a verdict line of its own, counted in the RESULT line; it changes neither the UNIT verdict nor the exit status
+nj(){ echo "NOT-JUDGED $PR_UNIT: $*"; notjudged=$((notjudged + 1)); }
 mono(){ cut -d. -f1 /proc/uptime; }
 # mesh key fingerprints (review 4 A m7 / B m8): salted with a per-run random value that is never printed, so a logged
 # fingerprint cannot be guessed offline; "none" when uci has no key (an empty key must never pass as "a new key")
@@ -74,7 +77,10 @@ pr_slot_ticks(){ qr "$SLK_LIB
 slk_ticks"; }
 # pr_slot_free <what ran> <ticks before it>: after a step whose helper ran a lock-holding batman-slot verb reported done,
 # the flock is free within 1 s and no process started during the step still has the lock file open (a child that kept
-# fd 9: the missing `9>&-`). Held only by a process from outside the step = contention: INVALID, not judged.
+# fd 9: the missing `9>&-`). Held only by a process from outside the step = contention: INVALID, not judged. A
+# batman-slot started during the step by someone else (no batman-provhelper among its ancestors: autocommit,
+# joinwatch, an operator) is "another writer" (slk_scan: writer) -> INVALID too, not a leak (review r2 B-m3). Limit: a
+# child such a writer left behind (not named batman-slot, often re-parented to init) still counts as the step's.
 pr_slot_free(){
 	local o
 	case "$2" in "" | *[!0-9]*) inv "lock check after $1: no start time [$2]"; return 1 ;; esac
@@ -84,6 +90,7 @@ slk_free 1 - $2:\$(slk_ticks)"); say "slot lock after $1: $o"
 		"SLKFREE ok"*) ok "the slot flock is free <= 1 s after $1 (${o#SLKFREE })" ;;
 		"SLKFREE leak"*) no "the slot flock is still held after $1 by what the step started: ${o#SLKFREE leak }" ;;
 		"SLKFREE nofile"*) no "no slot lock file after $1 (the verbs it ran take the lock)" ;;
+		"SLKFREE other"*":writer"*) inv "the slot flock is held by another writer after $1 (a batman-slot the helper did not start — contention, not judged): ${o#SLKFREE other }" ;;
 		"SLKFREE other"*) inv "the slot flock is held by another process after $1 (contention, not judged): ${o#SLKFREE other }" ;;
 		*) inv "the slot-lock check after $1 printed [$o]" ;;
 	esac
@@ -106,6 +113,23 @@ pr_trust_want(){ local tr t
 		bad | "?") echo "fail the image's release key files are malformed (status trust=$tr)" ;;
 		*) echo "want 11" ;;
 	esac; }
+# pr_precheck_ran <update.check RESULT line>: rc 0 when the helper's update.check ran precheck-node (Batman-p3
+# feed/batman-prov/src/node/update.go:249-331): code 0 and ok=true, or ok=false with a reason only precheck-node or a
+# later step gives — 1 / 2 / 12 / 17 / 21 (slotReason :46-66), 5 (precheck rc 15, or the target's boot config
+# :335-345; release.Decide never gives 5), 8 (the upload tmpfs / RAM :347-354). rc 1 + why on stdout otherwise: code
+# != 0 (E_RATE, E_BUSY — rc 14 is contention), a reason given before it (3 board, 4 / 6 Decide, 24 no root key), or 11
+# (release.Verify / Decide before it, or precheck-node rc 13 after it: cannot tell).
+pr_precheck_ran(){ local c k rs
+	c=$(field "$1" code); k=$(field "$1" ok); rs=$(field "$1" reason)
+	[ "$c" = 0 ] || { echo "update.check code [$c] (no answer to judge)"; return 1; }
+	[ "$k" = true ] && return 0
+	[ "$k" = false ] || { echo "update.check ok=[$k]"; return 1; }
+	case "$rs" in
+		1 | 2 | 5 | 8 | 12 | 17 | 21) return 0 ;;
+		3 | 4 | 6 | 24) echo "update.check refused with reason $rs before precheck-node" ;;
+		11) echo "update.check reason 11 (the signature / version check before precheck-node, or its rc 13: cannot tell)" ;;
+		*) echo "update.check reason [$rs] (not one of update.go's)" ;;
+	esac; return 1; }
 # pr_cddl_nu: the node's helper reads network/update in the CDDL shape {1: [+ {1: net_config, 2: member_list, ?3:
 # net_secrets}]} (Batman-p3 c15fb54, docs/design/254-net-update-members.md v4.1), the shape provclient sends since
 # 789a89f. A helper before it (wsl.24 and older) refuses the new shape for another reason, so a unit sending it would
@@ -575,7 +599,7 @@ pr_wait_result(){
 		sleep 5
 	done
 }
-pr_result(){ say "RESULT fails=$fails invalid=$invalid"
+pr_result(){ say "RESULT fails=$fails invalid=$invalid notjudged=$notjudged"
 	if [ "$fails" = 0 ] && [ "$invalid" = 0 ]; then echo "UNIT $PR_UNIT PASS"; return 0; fi
 	[ "$fails" = 0 ] && { echo "UNIT $PR_UNIT INVALID"; return 2; }; echo "UNIT $PR_UNIT FAIL"; return 1; }
 

@@ -221,7 +221,8 @@ suite harness-negctl-254 "N3 held-trial script vs a simulated node: only guarded
 # the node checks prov-fw-boot-254 / release-key-254 with every FAIL / INVALID case
 suite harness-slotlock-254 "#254 S5 slot-flock helpers offline: bounded take, a failed open never ends the remote shell, SLOTLK-BUSY, lock-release leak / contention, one copy" "self_test test-slotlock-254.sh"
 suite harness-s5-dv-254 "#254 S5 host judges offline: T fingerprint, UD-T1 trust -> 24 / 11 / INVALID bench / FAIL bad, pre-CDDL -> INVALID, slot lock free / leak / contention" "self_test test-s5-dv-254.sh"
-suite harness-s5-node-254 "#254 S5 node checks offline: prov-fw-boot-254 (fw4 + both include tables, each rule once, upload tmpfs options, lock released by bootinfo A/B + precheck-node; pre-S5 INVALID) and release-key-254 (T <=> bench stamp), good + bad fixtures" "self_test test-s5-node-254.sh"
+suite harness-s5-node-254 "#254 S5 node checks offline: prov-fw-boot-254 (fw4 + both include tables, fw4 print | nft -c, each rule once, upload tmpfs options on both boards, lock released by bootinfo A/B + precheck-node whatever they answer, leftover FAT mounts of our own; pre-S5 = FAIL KNOWN until its expiry) and release-key-254 (LoadTrust's rule, T <=> bench stamp, status trust cross-check), good + bad fixtures" "self_test test-s5-node-254.sh"
+suite harness-ab-selftest-254 "#254 S5 ab-selftest under a busy slot lock (stub node): busy reads SKIP (rc 3), a real FAIL stays FAIL (rc 1), restore steps retried, a restore that cannot run FAILs" "self_test test-ab-selftest-254.sh"
 # 2e. No hardware needed: #254 P1 product stubs (the decider / init hook of the address-reservation deferral, autocommit's
 #     prov-state case, 99zz mesh_expect, batman-slot's release). Each takes the product file from THIS checkout, so a
 #     product change that breaks them fails here, not on a node. The loop-device ones (config-save, prov-base) need
@@ -340,7 +341,8 @@ fi
 suite prov-lock-rest-254 "batman-prov-lock installed + enabled (S13), rollback gate present, lock-status matches the provisioning state on:$FLEET (#254 claim-lock fix)" "chk_prov_lock_rest_254 $FLEET"
 # 2g2. #254 P3 S5 (scripts/dv/s5-254.sh). Tier A, read-only, every run on every fleet node — so after every boot a run sees
 #     (254-p3-impl §3.8.1 "三道關" (2): an error in the HTTP include fails fw4's whole load = no firewall). A pre-S5 node
-#     is INVALID (reported SKIP with the reason, never a PASS); release-key-254 applies to every image (no key = none).
+#     is one FAIL line, KNOWN until its entry in validation-known-failures.txt expires (NEW after it); a busy lock is
+#     INVALID (SKIP with the reason); release-key-254 applies to every image (no key files = trusts none).
 suite prov-fw-boot-254 "inet fw4 + bridge batman_http + inet batman_http_in loaded, each include rule once (image's file), provd's upload tmpfs with the init's options, slot flock free <= 1 s after bootinfo A / B / precheck-node on:$FLEET (#254 S5)" "chk_fw_boot_254 $FLEET"
 suite release-key-254 "the image trusts the test root T exactly when its stamp says bench (BATMAN_BENCH_TRUST=T, .bench); no key = trusts none on:$FLEET (#254 S5 §3.7.1)" "chk_release_key_254 $FLEET"
 CL_B="setsid-race-254 prov-claim-254 adr-reconcile-254 chain1-254 pty-commit-254"

@@ -7,7 +7,11 @@
 #                   15 -> INVALID (pre-S5 node / old provclient); empty -> INVALID
 #   pr_cddl_nu      the CDDL network/update capability: the helper's "update shape" text -> go on; none -> INVALID
 #                   "pre-CDDL"; no helper / no answer -> INVALID; never a PASS or FAIL line
-#   pr_slot_free    SLKFREE ok -> PASS; leak / nofile -> FAIL; other / garbage / no start time -> INVALID
+#   pr_slot_free    SLKFREE ok -> PASS; leak / nofile -> FAIL; other / another writer / garbage / no start time ->
+#                   INVALID
+#   pr_precheck_ran UD-L's gate (node/update.go:249-331): ok=true, or a refusal from precheck-node or later (1 2 5 8 12 17
+#                   21) -> judged; 3 4 6 24 (before it), 11 (cannot tell), code != 0, garbage -> not judged, with why
+#   nj              a NOT-JUDGED line, counted in the RESULT line, the UNIT verdict unchanged
 # Zero cases = FAIL.
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
@@ -57,5 +61,22 @@ sf "SLKFREE nofile"; want "no lock file -> FAIL" "$o" "FAIL *no slot lock file a
 sf "SLKFREE other holders=900:batman-slot:other"; want "contention -> INVALID" "$o" "INVALID *contention*fails=0 invalid=1"
 sf ""; want "no answer -> INVALID" "$o" "INVALID *printed \[\]*fails=0 invalid=1"
 sf "SLKFREE ok t=0" ""; want "no start time -> INVALID, the node is not asked" "$o" "INVALID *no start time*fails=0 invalid=1"
+sf "SLKFREE other holders=900:batman-slot:writer"; want "another writer in the window -> INVALID (not a leak)" "$o" "INVALID *another writer*fails=0 invalid=1"
+# ---- pr_precheck_ran (UD-L's gate)
+U="RESULT update.check code=0"
+for x in "ok=true reason=0" "ok=false reason=1" "ok=false reason=2" "ok=false reason=5" "ok=false reason=8" "ok=false reason=12" "ok=false reason=17" "ok=false reason=21"; do
+	o=$(pr_precheck_ran "$U $x ram=1"; echo "rc=$?"); want "precheck ran: $x -> judged" "$o" "rc=0"
+done
+for x in "ok=false reason=3" "ok=false reason=4" "ok=false reason=6" "ok=false reason=24"; do
+	o=$(pr_precheck_ran "$U $x ram=1"; echo "rc=$?"); want "before precheck: $x -> not judged" "$o" "*before precheck-node*rc=1"
+done
+o=$(pr_precheck_ran "$U ok=false reason=11 ram=1"; echo "rc=$?"); want "reason 11 -> not judged (cannot tell)" "$o" "*cannot tell*rc=1"
+o=$(pr_precheck_ran "RESULT update.check code=13 ok= reason="; echo "rc=$?"); want "code 13 (E_BUSY) -> not judged" "$o" "*code \[13\]*rc=1"
+o=$(pr_precheck_ran ""; echo "rc=$?"); want "no answer -> not judged" "$o" "*code \[\]*rc=1"
+o=$(pr_precheck_ran "$U ok=false reason=99"; echo "rc=$?"); want "an unknown reason -> not judged" "$o" "*reason \[99\]*rc=1"
+# ---- nj: its own line, counted, the UNIT verdict unchanged
+o=$(fails=0; invalid=0; notjudged=0; nj "UD-L: why"; pr_result; echo "rc=$?"); want "nj: a NOT-JUDGED line" "$o" "NOT-JUDGED prov-s5test-254: UD-L: why*"
+want "nj: counted in the RESULT line" "$o" "*RESULT fails=0 invalid=0 notjudged=1*"
+want "nj: the UNIT verdict unchanged (PASS, rc 0)" "$o" "*UNIT prov-s5test-254 PASS*rc=0"
 echo "S5-DV $((n - f)) passed, $f failed"
 [ "$n" -gt 0 ] && [ "$f" = 0 ]
