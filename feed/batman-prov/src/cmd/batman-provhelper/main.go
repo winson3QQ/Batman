@@ -611,18 +611,23 @@ func daemon(p provstore.Paths) {
 	}
 	stop := make(chan struct{})
 	trial := newTrialCache(5*time.Second, execIsTrial) // info.state key 5 + Committed() share it (254-p2-impl §1.3)
+	n := node.New(p, ks, realSys{p}, logf)
+	// §3.7 / §3.8: the update verbs (not on a card without A/B slots: E_UNSUPPORTED)
+	if ru := newRealUpdate(p, trial.Trial); ru != nil {
+		n.SetUpdateSource(ru, ru)
+	}
 	h := &health.Env{
 		BootID: bootID, Uptime: uptime, ReadInfo: health.ReadInfo, ReadAdv: health.ReadAdvInstances, BTDPid: btdPid,
 		ScFile: "/var/lib/bluetooth/batman-sc", Out: filepath.Join(p.RunDir, "batman-prov.health"),
 		Committed: func() bool { return !trial.Trial() },
-		ConfigOK:  bootConfigOK, BleOK: filepath.Join(p.State, "ble-ok"),
+		// §6.4 ble-ok: both slots' [pi4] section from the bootinfo cache (the helper never mounts a FAT, §3.7.3)
+		ConfigOK: func() bool { return n.BootConfigSectionsOK() && coreFreqMinOK() }, BleOK: filepath.Join(p.State, "ble-ok"),
 	}
 	go h.Run(stop)
 	if err := sock.PrepareDir(sockDir, provdGID); err != nil {
 		logf("%v", err)
 		os.Exit(1)
 	}
-	n := node.New(p, ks, realSys{p}, logf)
 	n.Verdict = res.Verdict
 	n.Health, n.TrialCached = h.Get, trial.Trial
 	// 254-p3-impl §3.4: status.get's caches, refreshed in the background (only while an app asked in the last 10 min)
@@ -642,6 +647,19 @@ func daemon(p provstore.Paths) {
 				return
 			case <-tk.C:
 				n.StatusTick()
+			}
+		}
+	}()
+	go func() { // §3.7.4 the disarm rule + slot-info retries, §3.8.2 the upload deletion: at start, then every 4 s
+		n.UpdateTick()
+		tk := time.NewTicker(4 * time.Second)
+		defer tk.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tk.C:
+				n.UpdateTick()
 			}
 		}
 	}()
@@ -688,48 +706,6 @@ func btdPid() int {
 		}
 	}
 	return 0
-}
-
-// bootConfigOK (§6.4 ble-ok): both boot FATs' [pi4] section have miniuart-bt and core_freq_min=500, and the running
-// firmware reports core_freq_min >= 500.
-func bootConfigOK() bool {
-	sectionOK := func(b []byte) bool {
-		in, mb, cf := false, false, false
-		for _, l := range strings.Split(string(b), "\n") {
-			l = strings.TrimSpace(l)
-			if strings.HasPrefix(l, "[") {
-				in = l == "[pi4]"
-				continue
-			}
-			if in && l == "dtoverlay=miniuart-bt" {
-				mb = true
-			}
-			if in && l == "core_freq_min=500" {
-				cf = true
-			}
-		}
-		return mb && cf
-	}
-	b1, err := os.ReadFile("/boot/distroconfig.txt")
-	if err != nil || !sectionOK(b1) {
-		return false
-	}
-	m, err := os.MkdirTemp("/tmp/run/batman", "p3.")
-	if err != nil {
-		return false
-	}
-	defer os.Remove(m)
-	if rc, _ := run(nil, "mount", "-t", "vfat", "-o", "ro", "/dev/mmcblk0p3", m); rc != 0 {
-		return false
-	}
-	b3, err := os.ReadFile(filepath.Join(m, "distroconfig.txt"))
-	run(nil, "umount", m)
-	if err != nil || !sectionOK(b3) {
-		return false
-	}
-	_, out := run(nil, "vcgencmd", "get_config", "core_freq_min")
-	v, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "core_freq_min=")))
-	return v >= 500
 }
 
 // version prints "batman-provhelper <BATMAN_VERSION>" (from the image stamp) and, in a prov_test build, the marker on

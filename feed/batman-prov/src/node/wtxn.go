@@ -455,7 +455,12 @@ func (n *Node) otaBusy() bool {
 	if n.upd != nil && n.upd.isWorking() { // §3.1-5: the update worker writes the other slot
 		return true
 	}
-	f, err := os.OpenFile(filepath.Join(n.P.RunDir, "batman-slot.flock"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	return SlotLockHeld(n.P.RunDir)
+}
+
+// SlotLockHeld: the flock half of otaBusy (the worker's orphan check uses it without counting itself).
+func SlotLockHeld(runDir string) bool {
+	f, err := os.OpenFile(filepath.Join(runDir, "batman-slot.flock"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return !errors.Is(err, os.ErrNotExist)
 	}
