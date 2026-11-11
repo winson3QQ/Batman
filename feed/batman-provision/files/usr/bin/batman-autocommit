@@ -444,6 +444,8 @@ running(){
 	pgrep -f "$1" >/dev/null 2>&1 || pidof "$1" >/dev/null 2>&1
 }
 # health_ok runs inside $(...) — a subshell — so its latch must be a file, not a variable (code review F4)
+# warn_once <key> <text>: one log line per boot (health_ok runs every poll, in a subshell)
+warn_once(){ [ -f "$RUNDIR/autocommit.warn-$1" ] && return 0; : > "$RUNDIR/autocommit.warn-$1" 2>/dev/null; log "WARN: $2"; }
 CANARY_LATCH=$RUNDIR/autocommit.canary-ok
 # echo a reason + return 1 when unhealthy; silent + return 0 when healthy (services/infra only)
 health_ok(){
@@ -454,6 +456,22 @@ health_ok(){
 	thr=$(vcgencmd get_throttled 2>/dev/null | sed -n 's/.*=0x//p')
 	[ $(( 0x${thr:-0} & 1 )) -eq 0 ] || { echo "undervoltage now"; return 1; }
 	[ -s /etc/batman-build ] || { echo "no /etc/batman-build"; return 1; }
+	# #254 P3 §3.7.6 D-17: a build whose firewall did not load (e.g. a broken ruleset-post include) is not committed
+	nft list table inet fw4 >/dev/null 2>&1 || { echo "no firewall (nft table inet fw4 missing)"; return 1; }
+	# §3.7.6 (a): the provisioning helper runs — unless the operator disabled it (D-16: then WARN only)
+	if /etc/init.d/batman-provhelper enabled 2>/dev/null; then
+		running batman-provhelper || { echo "svc batman-provhelper down"; return 1; }
+	else
+		warn_once provhelper-disabled "batman-provhelper is disabled: not required for the commit"
+	fi
+	# §3.7.6 (b): provd was up >= 60 s at least once this boot (the helper writes the boot_id; B5-m8: a disabled
+	# provd is not required)
+	if /etc/init.d/batman-provd enabled 2>/dev/null; then
+		[ "$(cat "$RUNDIR/provd-stable" 2>/dev/null)" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ] ||
+			{ echo "batman-provd not stable for 60 s yet this boot"; return 1; }
+	else
+		warn_once provd-disabled "batman-provd is disabled: not required for the commit"
+	fi
 	# #209 S5 review K1: with tenants on p6 this rootfs MUST be able to run them. A missing docker, a
 	# cgroup v1 tree (memcg unverifiable) or a canary that cannot run is UNHEALTHY — each used to make
 	# the whole block skip itself and commit (the 1.4.12 lesson: a build that silently lost a package).
