@@ -16,5 +16,7 @@ Format: one line, the 65-byte uncompressed SEC1 point (P-256) as hex.
 can recompute them: `python tests/tools/peer/signrel.py --write-pubs <dir>` regenerates these files, and
 `signrel.py --selftest` asserts the committed files equal the derived keys.
 
-**Trust.** T is trusted only by `prov_test` builds. A release image must never contain or trust T; the release gate
+**Trust.** T is trusted only by a **bench build** (`build-board.sh --bench`: `BATMAN_BENCH_TRUST=T` in the stamp; a
+prov_test image built with `--bench` too) — bench nodes such as 02 / 04, never released. Ordinary `wsl` / `ci` images
+carry no root key at all (the app update answers reason 24); a release image carries R and never T; the release gate
 asserts the image does not carry it (254-p3-impl §3.7.1). Treat anything signed under T as a bench artifact.

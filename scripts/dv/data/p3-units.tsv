@@ -105,7 +105,7 @@ prov-update-254	UD15	YubiKey	bench	R	—	NEEDS-PERSON	N	952dc4f49337
 prov-update-254	UD16	D-9 試用轉 committed	d9	T	commit 後 fresh	G(H4-U8)	G	d82c6775b2fd
 prov-update-254	UD16b	非試用開機時存一次	d9-boot	RB	stale(P)→ restart → 存	S(`p5-autosave-off`)	S	d15ae910f36c
 prov-update-254	UD17	D-10	d10	RB	(a) 6 不帶 18;(b) 旗標不在	S(`d10-no-disarm`)	S	129a48b83381
-prov-update-254	UD18	D-14	—	C	`.busy` 不在	S(沒有 trap 的變體)	S	f52c83361f21
+prov-update-254	UD18	D-14	—	C	寫入被 TERM 後 slot flock 立刻可取得(`flock -n`;#254 S5 起鎖是 flock,`.busy` 已不存在,舊判準會永遠成立)	S(沒有 trap 的變體)	S	3e28622c1430
 prov-update-254	UD19	D-12	d12	RB	≤ 5 s 回應	S(`d12-take-mu`)	S	695afe485768
 prov-update-254	UD20	§7「被入侵的 provd 偷換 pending 版本」:owner-op 簽的不是 pending	swap	RB	資料路徑:provclient `nonce` 取 helper nonce → WSL 的 peer 用 H0 簽 owner-op → provclient 送 `update.prepare`。pending = X、body 的 sha = X;**負向**:owner-op 是對 Y 簽的 → `args_hash` 不符 → `E_FORBIDDEN`、沒有啟動 worker。**正向**(同一份 pending 與 body,只差被簽的 sha):用新的 nonce 對 X 簽 → 成功。兩者只差一個變數,而且拒絕條件只剩 `args_hash` 一個(v8-A m9)	W(E_U)+ 正向是 flip。helper 每次驗 owner-op 都會消耗 nonce,失敗也一樣(`node.go:672-690`、`:310-319`),所以兩臂各用新的 nonce。正向會真的啟動 worker、覆寫 B:**順序固定為 UD20c → UD20b → UD20 負向 → UD20 正向(最後)**,之後 brewrite B(§13);prepare 失敗會刪上傳檔(`:456`),所以每一臂前都重新上傳	W	664da53b4cc4
 prov-update-254	UD20b	同上:owner-op 有效、但 sha ≠ pending	swap-sha	RB	擁有者以新的 nonce 對 Y 簽一個有效的 owner-op,而 pending 是 X → `E_REJECTED{15}`(P3 `:327`)	W(E_U)+ P	W,P	e800813f6eea

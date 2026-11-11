@@ -1,4 +1,7 @@
 #!/bin/sh
+# #254 S5: batman-slot answers 14 while another holds the slot lock (the helper's bootinfo, a write): retried, never read
+# as a refusal; any other rc is the answer
+precheck_rc(){ local i r; for i in 1 2 3 4 5; do batman-slot precheck-node >/dev/null 2>&1; r=$?; [ "$r" = 14 ] || return "$r"; sleep 2; done; return "$r"; }
 # p5-follows-202.sh — run ON a node (ssh root@node sh -s < this): daily-validation suite p5-follows-config-202.
 # #202 close-out D1 (docs/design/202-config-survival-closeout.md §8): a JOINED node's shared config
 # partition p5 must FOLLOW the running per-node config within one joinwatch tick, with no once-per-boot
@@ -118,7 +121,7 @@ if [ $ok = 1 ] && [ ! -f "$R/cfgsave-mount.failed" ]; then pass "step4b every --
 if [ "$HAVE_CHECK" = 1 ]; then
 	# 5. a stale mount-failure marker must not block when --check says fresh, and must be cleared by the next write
 	( umask 077; echo "0 test" > "$R/cfgsave-mount.failed" )
-	if batman-slot precheck-node >/dev/null 2>&1; then pass "step5 precheck-node ignores a stale mount.failed marker when p5 is fresh"; else fail "precheck-node refused with a stale mount.failed marker and a fresh p5"; fi
+	if precheck_rc; then pass "step5 precheck-node ignores a stale mount.failed marker when p5 is fresh"; else fail "precheck-node refused with a stale mount.failed marker and a fresh p5"; fi
 	sethost "$OLD-m"; rm -f "$R/cfgsave-writes"; "$B" --on-join >/dev/null 2>&1
 	[ -f "$R/cfgsave-mount.failed" ] && fail "mount.failed marker not cleared by a successful write" || pass "step5 mount.failed marker cleared by the next write"
 	# 6. restore, verdict, non-root negative

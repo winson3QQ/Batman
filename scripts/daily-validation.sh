@@ -2065,7 +2065,7 @@ _setkey202_body() { local node=$1 old=$2 sub
     echo "$o" | grep -q '^rc=noap$' && { echo "FAIL no AP key on $NODE to make stale — step 4 not verified"; exit 1; }
     if echo "$o" | grep -q 'p5 stale: .*default_radio0.key' && echo "$o" | grep -q '^rc=5$'; then echo "PASS step4 --check reports the stale AP key (rc 5)"; else echo "FAIL --check did not report stale AP key"; rc=1; fi
     o=$(fssh "$NODE" 60 "$RDR"'batman-slot precheck-node 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)' | tr -d '\r'); echo "$o" | sed 's/^/  4: /'
-    if echo "$o" | grep -q 'STALE' && echo "$o" | grep -Eq '^rc=[1-9]' && echo "$o" | grep -q '^verdict=stale:'; then echo "PASS step4 precheck-node refuses a stale p5 and records the verdict"; else echo "FAIL precheck passed with stale p5"; rc=1; fi
+    if echo "$o" | grep -q 'STALE' && echo "$o" | grep -Eq '^rc=(1|12)$' && echo "$o" | grep -q '^verdict=stale:'; then echo "PASS step4 precheck-node refuses a stale p5 and records the verdict"; else echo "FAIL precheck passed with stale p5"; rc=1; fi
     o=$(fssh "$NODE" 60 "$RDR"'BATMAN_ALLOW_STALE_P5=1 batman-slot precheck-node >/dev/null 2>&1; echo rc=$?; echo verdict=$(cat "$R/p5-check.rc" 2>/dev/null)' | tr -d '\r')
     if echo "$o" | grep -q '^rc=0$' && echo "$o" | grep -q '^verdict=stale-allowed'; then echo "PASS step4 the stale override is honoured and recorded"; else echo "FAIL stale override not honoured ($(echo "$o" | tr '\n' ' '))"; rc=1; fi
     # 4b. sysupgrade -F with a stale p5: stage 1's refusal is ignored by -F, stage 2 must refuse from the verdict file.

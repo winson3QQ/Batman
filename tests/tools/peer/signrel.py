@@ -1,7 +1,8 @@
 """signrel — the harness's TEST release signer (docs/design/254-h4-harness.md §8.1; P3 254-p3-impl.md §3.7.1–§3.7.2,
 §3.7.4; 219-protocol.cddl `update-manifest`). It makes what a release build makes, with TEST keys only:
 
-  T       test root        (the product trusts it only in prov_test builds; a release image must never contain it)
+  T       test root        (trusted only by a bench build — build-board.sh --bench, BATMAN_BENCH_TRUST=T; ordinary
+                            wsl / ci images carry no root key, a release image carries R and never T)
   K_test  test signing key (endorsed by T)
   other   a signing key T did NOT endorse (negative objects)
 
