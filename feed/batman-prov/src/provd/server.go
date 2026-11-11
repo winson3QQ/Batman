@@ -54,6 +54,8 @@ type Config struct {
 	FW         string // BATMAN_VERSION
 	Test       TestEnv
 	Rand       func([]byte) // tests; crypto/rand otherwise
+	HTTPPort   int          // tests; 0 = 8095
+	BulkDir    string       // tests; "" = /tmp/run/batman-provd-bulk
 }
 
 // node-state numbers (CDDL node-state)
@@ -104,6 +106,7 @@ type Server struct {
 	changed  chan struct{} // closed + replaced when readiness / health may have changed (BLE side waits on it)
 	stop     chan struct{}
 	logLimit map[string][]time.Time
+	http     httpSide // 254-p3-impl §3.8
 }
 
 // NewServer makes the per-start Noise static key (219 §3.3) and the two helper connections.
@@ -231,6 +234,7 @@ func (s *Server) opsIdem(verb string, args cbor.Map, wait time.Duration) (Reply,
 func (s *Server) Run() {
 	go s.pollLoop()
 	go s.opsLoop()
+	go s.httpLoop()
 	<-s.stop
 }
 
@@ -358,15 +362,20 @@ func (s *Server) pollLoop() {
 }
 
 func (s *Server) pollOnce() {
-	r, err := s.ctlCall("health.get", nil)
+	// §3.8.2: the poll reports the upload's progress and a failed bind; the answer's key 2 is the http field
+	r, err := s.ctlCall("health.get", cbor.M(1, s.http.uploaded.Load(), 2, s.http.bindFail.Load()))
 	now := time.Now()
 	switch {
 	case err == nil && r.Code == hOK:
 		lv, _ := r.Body.Get(1)
 		line, _ := lv.(string)
+		hv, _ := r.Body.Get(2)
 		s.mu.Lock()
 		s.c.health, s.c.healthAt, s.c.erateAt = parseHealth(line), now, time.Time{}
 		s.mu.Unlock()
+		s.http.mu.Lock()
+		s.http.field = parseHTTPField(hv, now)
+		s.http.mu.Unlock()
 	case err == nil && r.Code == hERate: // not a success, not a failure (§4.1); > 120 s in a row = stale
 		s.mu.Lock()
 		if s.c.erateAt.IsZero() {
@@ -761,16 +770,27 @@ func (s *Server) Accept(t Transport) *Session {
 		t.Close()
 		return nil
 	}
+	// two pools (§3.8.1): BLE + sock, and HTTP; a fake path / eviction stays in its own pool
+	isHTTP, slots := t.Kind() == "http", Slots
+	if isHTTP {
+		slots = HTTPSlots
+	}
 	var evict *Session
-	if len(s.sessions) >= Slots {
+	n := 0
+	for _, ss := range s.sessions {
+		if (ss.t.Kind() == "http") == isHTTP {
+			n++
+		}
+	}
+	if n >= slots {
 		for _, ss := range s.sessions {
-			if ss.evictable() && (evict == nil || ss.started.Before(evict.started)) {
+			if (ss.t.Kind() == "http") == isHTTP && ss.evictable() && (evict == nil || ss.started.Before(evict.started)) {
 				evict = ss
 			}
 		}
 		if evict == nil {
 			s.mu.Unlock()
-			s.logLimited("conn", "provd: connection refused (%d slots in use) %s", Slots, t.Kind())
+			s.logLimited("conn", "provd: connection refused (%d slots in use) %s", slots, t.Kind())
 			t.Close()
 			return nil
 		}
@@ -799,11 +819,18 @@ func (s *Server) remove(ss *Session) {
 	s.notify()
 }
 
-// Sessions is the number of open connections (the BLE side withdraws the advertisement while > 0).
+// Sessions is the number of open BLE / sock connections (the BLE side withdraws the advertisement while > 0; an HTTP
+// session does not count, §3.8.1).
 func (s *Server) Sessions() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.sessions)
+	n := 0
+	for _, ss := range s.sessions {
+		if ss.t.Kind() != "http" {
+			n++
+		}
+	}
+	return n
 }
 
 // killOthers: after a successful claim / replay every other session goes (incl. ones on the fake path)

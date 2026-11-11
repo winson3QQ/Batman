@@ -290,6 +290,9 @@ func (ss *Session) expired() bool {
 	idle := IdleAnon
 	if ss.role == RoleOwner || ss.role == RoleMember {
 		idle = IdleAuthed
+		if ss.t.Kind() == "http" {
+			idle = httpIdleAuthed
+		}
 	}
 	return now.Sub(ss.lastActive) >= idle
 }
@@ -315,14 +318,19 @@ func (ss *Session) onMessage(m []byte) error {
 		return ss.onMsg1(m)
 	}
 	ss.mu.Lock()
-	pt, err := ss.recv.Decrypt(nil, nil, m)
+	pt, err := ss.recv.Decrypt(nil, nil, m) // a failed Decrypt does not move the nonce (flynn/noise state.go:76-80)
+	if err != nil {
+		ss.mu.Unlock()
+		if h, ok := ss.t.(*httpT); ok { // §3.8.1: a forged /msg is dropped (400); no count, no lastActive
+			h.reject()
+			return nil
+		}
+		return errors.New("AEAD failure")
+	}
 	ss.msgs++
 	n := ss.msgs
 	ss.lastActive = time.Now()
 	ss.mu.Unlock()
-	if err != nil {
-		return errors.New("AEAD failure")
-	}
 	if n >= 1<<20 {
 		return errors.New("2^20 messages: re-handshake")
 	}
@@ -392,7 +400,11 @@ func (ss *Session) sendEnc(pt []byte) error {
 }
 
 func (ss *Session) onMsg1(m []byte) error {
-	if !ss.srv.handshakeAllowed() {
+	if ss.t.Kind() == "http" {
+		if !ss.srv.httpHandshakeAllowed() {
+			return errors.New("http handshake rate (10/min)")
+		}
+	} else if !ss.srv.handshakeAllowed() {
 		return errors.New("global handshake rate (20/min)")
 	}
 	prologue, psks, cert, ok := ss.srv.handshakeParams()
@@ -420,6 +432,9 @@ func (ss *Session) onMsg1(m []byte) error {
 		if !ss.srv.realPSK(hs.PSK, cred) { // a random pad cannot be hit, but never trust it
 			return errors.New("padding PSK")
 		}
+	}
+	if ss.t.Kind() == "http" && !ss.srv.httpRoleOK(role) {
+		return errors.New("http: this credential is BLE only (or owner only while an upload window is open)")
 	}
 	ss.mu.Lock()
 	ss.role, ss.psk, ss.h, ss.recv, ss.send, ss.lastActive = role, cred, hs.H, hs.Recv, hs.Send, time.Now()
@@ -654,6 +669,9 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 		return ss.updateCheck(id, body)
 	case "update/status":
 		return ss.updateStatus(id, body)
+	}
+	if _, ap := body.Get(20); typ == "settings/set" && ap && ss.t.Kind() == "http" {
+		return errEnv(id, EUnsupported, cbor.M(1, typ, 2, uint64(7))) // changing the AP would cut this very request (§3.1-2)
 	}
 	verb := forward[typ]
 	r, e := ss.ops(id, verb, cbor.M(1, h, 2, raw))
