@@ -35,6 +35,8 @@ SwAction act(SwKind k, {String text = '', List<SwButton> buttons = const [], int
 /// a scripted flow: start -> idle; pick -> U3; start -> the Upload; a PUT that is not 200 -> another Upload of the same
 /// stage; 200 -> done
 class Script implements SwFlow {
+  Script(this.events);
+  final List<String> events;
   final calls = <String>[];
   List<SwFile>? files;
   @override
@@ -67,6 +69,7 @@ class Script implements SwFlow {
   @override
   SwAction uploaded(SwPut r) {
     calls.add('uploaded ${r.name}');
+    events.add('uploaded');
     // not 200: §3.4 (status read, bulk/open) -> the next Upload of the same stage
     return act(SwKind.send, waitMs: 15000, uploading: r == SwPut.other);
   }
@@ -95,7 +98,7 @@ class Rig {
         for (var i = 1; i < puts.length; i++) act(SwKind.upload, uploading: true),
         act(SwKind.done, text: '更新完成:1.5.14-wsl.30'),
       ];
-  final flow = Script();
+  late final flow = Script(events);
   late final hold = SwHold(flow);
   var _put = 0;
   bool _cancelled = false;
@@ -224,6 +227,22 @@ void main() {
     expect(r.logs, isEmpty);
   });
 
+  testWidgets('r1 A-M2: the held network went away — joined again without a second notice', (t) async {
+    final r = await run(
+        t,
+        Rig(direct: false, puts: ['other', 'no_network', 'ok200'], answers: [
+          act(SwKind.show_, text: 'idle', buttons: [SwButton.pick]),
+          act(SwKind.show_, text: 'u3', buttons: [SwButton.start, SwButton.cancel]),
+          act(SwKind.upload, uploading: true),
+          act(SwKind.upload, uploading: true),
+          act(SwKind.done, text: '更新完成:1.5.14-wsl.30'),
+        ]));
+    expect(r.count('upload'), 3);
+    expect(r.count('joinAp'), 2, reason: 'the network went away (no_network on it): one more join');
+    expect(r.events.where((e) => e == 'notice').length, 1, reason: 'the D5 notice was given in this stage already');
+    expect(r.flow.calls, containsAllInOrder(['uploaded other', 'uploaded ok200']));
+  });
+
   testWidgets('r1 A-M3 (U6): keepalives every 10 s during the PUT; its result waits for the keepalive in flight', (t) async {
     final r = await run(t, Rig(direct: true, putTakes: const Duration(seconds: 25)));
     expect(r.events.where((e) => e == 'keepalive-sent').length, greaterThanOrEqualTo(2), reason: '${r.events}');
@@ -233,7 +252,7 @@ void main() {
     final i = r.flow.calls.indexOf('uploaded ok200');
     expect(i, greaterThan(0));
     // the PUT result went to the flow only after that keepalive answer (else prepare finds the session busy)
-    expect(r.events.last, 'keepalive-answered');
+    expect(r.events.indexOf('uploaded') > r.events.lastIndexOf('keepalive-answered'), isTrue, reason: '${r.events}');
     expect(r.flow.calls.where((c) => c == 'keepalive').length, r.events.where((e) => e == 'keepalive-sent').length);
   });
 
