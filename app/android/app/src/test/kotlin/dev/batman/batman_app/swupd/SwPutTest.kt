@@ -295,6 +295,16 @@ class SwPutTest {
 
     // ---- code review r1 (B-m1, B-m2, B-m5 and reviewer B's surviving mutants R2 R3 R4 R6 R9) ----
 
+    // r2 B MINOR 2: the body copy thread must end too (not spin / hang in the background for ever)
+    private fun bodyThreadEnds(ms: Long = 5_000): Boolean {
+        val end = System.currentTimeMillis() + ms
+        while (System.currentTimeMillis() < end) {
+            if (Thread.getAllStackTraces().keys.none { it.name == "swupd-body" && it.isAlive }) return true
+            Thread.sleep(50)
+        }
+        return false
+    }
+
     private fun cl(h: String) = Regex("Content-Length: (\\d+)").find(h)!!.groupValues[1].toLong()
     private fun readN(s: Socket, n: Long): Long {
         val inp = s.getInputStream(); val buf = ByteArray(65536); var got = 0L
@@ -308,20 +318,22 @@ class SwPutTest {
     @Test(timeout = 20_000) fun blockedFileReadEndsByWatchdog() {
         val stuck = CountDownLatch(1)
         FakeNode { s -> readHead(s); readN(s, Long.MAX_VALUE) }.use { node ->
+            // like a provider pipe: a read stuck in it is woken by close() (with an IOException)
             val body = object : InputStream() {
                 var left = 1000
-                override fun read(): Int { if (left-- > 0) return 0x55; stuck.await(); return -1 }
+                override fun read(): Int { if (left-- > 0) return 0x55; stuck.await(); throw java.io.IOException("closed") }
                 override fun read(b: ByteArray, off: Int, len: Int): Int {
-                    if (left <= 0) { stuck.await(); return -1 }
+                    if (left <= 0) { stuck.await(); throw java.io.IOException("closed") }
                     val k = minOf(len, left); left -= k; return k
                 }
+                override fun close() = stuck.countDown()
             }
             val r = AtomicReference<SwPut.Outcome>()
             val t = Thread { r.set(SwPut(SwPut.Timing(stallMs = 2_000)).put(plain, lo, node.port, bearer, 1_000_000) { body }) }.apply { isDaemon = true; start() }
             t.join(10_000)
             assertFalse("put() still running 10 s after a 2 s watchdog", t.isAlive)
             assertEquals(SwPut.Outcome(SwPut.Result.OTHER, "watchdog"), r.get())
-            stuck.countDown()
+            assertTrue("the swupd-body thread is still alive (the stuck read was never woken)", bodyThreadEnds())
         }
     }
 
@@ -337,6 +349,7 @@ class SwPutTest {
             t.join(10_000)
             assertFalse("put() still spinning 10 s after a 2 s watchdog", t.isAlive)
             assertEquals(SwPut.Result.OTHER, r.get().result)
+            assertTrue("the swupd-body thread still spins on zero reads", bodyThreadEnds())
         }
     }
 
