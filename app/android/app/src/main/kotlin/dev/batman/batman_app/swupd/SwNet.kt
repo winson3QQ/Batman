@@ -28,7 +28,10 @@ class SwNet(context: Context, private val onLost: (Network) -> Unit) {
     private val thread = HandlerThread("swupd-net").apply { start() }
     private val handler = Handler(thread.looper)
     private val lock = Any()
-    private var specifier: ConnectivityManager.NetworkCallback? = null
+    // r2 B m-r2-1: the stage's request callback; every join unregisters its own on failure / when a cancel overtook it
+    private val specifier = SwOwned<ConnectivityManager.NetworkCallback> { cb ->
+        try { cm.unregisterNetworkCallback(cb) } catch (_: IllegalArgumentException) {} // not (yet / any more) registered
+    }
     private var joined: Network? = null
     private var joinedSsid: String? = null
     @Volatile private var waiting: CountDownLatch? = null
@@ -77,34 +80,35 @@ class SwNet(context: Context, private val onLost: (Network) -> Unit) {
         val done = CountDownLatch(1)
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(n: Network) {
-                synchronized(lock) { if (specifier === this) { joined = n; joinedSsid = ssid } }
+                synchronized(lock) { if (specifier.isCurrent(this)) { joined = n; joinedSsid = ssid } }
                 if (done.count > 0) { answer = "ok"; got = n; done.countDown() }
             }
             override fun onUnavailable() {
                 done.countDown()
             }
             override fun onLost(n: Network) {
-                val mine = synchronized(lock) { (specifier === this && joined == n).also { if (it) joined = null } }
+                val mine = synchronized(lock) { (specifier.isCurrent(this) && joined == n).also { if (it) joined = null } }
                 if (mine) onLost(n)
             }
         }
-        synchronized(lock) { specifier = cb }
+        specifier.claim(cb)
         waiting = done
         cm.requestNetwork(req, cb, handler, JOIN_TIMEOUT_MS.toInt())
-        if (!done.await(JOIN_TIMEOUT_MS + 5_000, TimeUnit.MILLISECONDS) || answer != "ok") {
-            release()
+        val ok = done.await(JOIN_TIMEOUT_MS + 5_000, TimeUnit.MILLISECONDS) && answer == "ok"
+        waiting = null
+        // a failure, or a cancel meanwhile (even before the requestNetwork above): this join unregisters its own cb
+        if (!specifier.settle(cb, ok)) {
+            synchronized(lock) { if (joined != null && joined == got) { joined = null; joinedSsid = null } }
             return "no_network" to null
         }
-        waiting = null
-        if (synchronized(lock) { specifier !== cb }) return "no_network" to null // released (cancelled) meanwhile
         return answer to got
     }
 
     /** Ends the Specifier request (U8 / cancel / 3 failures; D5). Harmless when there is none. */
     fun release() {
-        val cb = synchronized(lock) { specifier.also { specifier = null; joined = null; joinedSsid = null } }
+        synchronized(lock) { joined = null; joinedSsid = null }
+        specifier.release()
         waiting?.countDown() // a join waiting for the dialog ends now (r1 B-m3), not after 65 s
-        if (cb != null) try { cm.unregisterNetworkCallback(cb) } catch (_: IllegalArgumentException) {} // already gone
     }
 
     fun dispose() {

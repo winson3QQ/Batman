@@ -45,8 +45,8 @@ class SwUpload(private val activity: Activity, messenger: BinaryMessenger) {
                     if (ip == null) result.error("args", null, null)
                     else bg(result, "network") {
                         // r1 A-M2 / B-M1: the Specifier network this stage holds is the one to use again (no new request)
+                        val gen = cancels // first (r2 B m-r2-4): a cancel after this point is seen below
                         val held = net.held()
-                        val gen = cancels
                         val n = held ?: net.findDirect(ip)
                         synchronized(lock) { if (n != null && gen == cancels) network = n }
                         n != null && gen == cancels
