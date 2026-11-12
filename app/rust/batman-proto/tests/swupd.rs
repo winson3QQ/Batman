@@ -7,7 +7,7 @@
 //! commit report).
 
 use batman_proto::cbor::{self, Value as V};
-use batman_proto::swupd::{self as su, Action, Button, Ctx, Flow, Picked, Put, Reply, Verb};
+use batman_proto::swupd::{self as su, Action, Button, Ctx, Flow, Gate, Picked, Put, Reply, Verb};
 use serde_json::Value as J;
 use std::collections::HashMap;
 
@@ -364,13 +364,14 @@ fn t3_every_row_of_section_4() {
         Reply::Ok(b) => su::gate(&b, dev),
         _ => unreachable!(),
     };
-    assert_eq!(gate(status15(None, vec![]), true), Err(su::T_TRUST_NONE.into()));
-    assert_eq!(gate(status15(Some("none"), vec![]), true), Err(su::T_TRUST_NONE.into()));
-    assert_eq!(gate(status15(Some("bad"), vec![]), true), Err(su::T_TRUST_BAD.into()));
-    assert_eq!(gate(status15(Some("0123456789ABCDEF"), vec![]), true), Err(su::T_TRUST_BAD.into()), "not lowercase hex");
-    assert_eq!(gate(status15(Some(TRUST), vec![]), true), Ok(format!("測試信任:{TRUST}")));
-    assert_eq!(gate(status15(Some(TRUST), vec![]), false), Err(su::T_TRUST_FIELD.into()), "D13: a field build before #255");
-    assert_eq!(gate(status15(Some(TRUST), vec![("http_bind_failed", V::Bool(true))]), true), Err(su::T_BIND_FAILED.into()));
+    assert_eq!(gate(status15(None, vec![]), true), Gate::Unread, "no trust key: read again, never ssh / reflash (r1 A-M1)");
+    assert_eq!(gate(status15(None, vec![("stale", V::Bool(true))]), true), Gate::Unread);
+    assert_eq!(gate(status15(Some("none"), vec![]), true), Gate::Closed(su::T_TRUST_NONE.into()));
+    assert_eq!(gate(status15(Some("bad"), vec![]), true), Gate::Closed(su::T_TRUST_BAD.into()));
+    assert_eq!(gate(status15(Some("0123456789ABCDEF"), vec![]), true), Gate::Closed(su::T_TRUST_BAD.into()), "not lowercase hex");
+    assert_eq!(gate(status15(Some(TRUST), vec![]), true), Gate::Open(format!("測試信任:{TRUST}")));
+    assert_eq!(gate(status15(Some(TRUST), vec![]), false), Gate::Closed(su::T_TRUST_FIELD.into()), "D13: a field build before #255");
+    assert_eq!(gate(status15(Some(TRUST), vec![("http_bind_failed", V::Bool(true))]), true), Gate::Closed(su::T_BIND_FAILED.into()));
 }
 
 #[test]
@@ -583,7 +584,8 @@ fn t5_every_put_is_preceded_by_bulk_open_and_waits_31_s_after_a_failure() {
         r.reply(w("status-idle"));
         r.reply(w("bulk-open-ok"));
     }
-    assert_eq!(text(&r.put(Put::Other)), su::T_PUT_FAILED);
+    assert_eq!(verb(&r.put(Put::Other)), Verb::BulkClose, "giving up closes the open window first (r1 A-m3)");
+    assert_eq!(text(&r.reply(w("bulk-close-ok"))), su::T_PUT_FAILED);
     assert_eq!(r.waits.iter().filter(|ms| **ms == 31_000).count(), 2);
     assert!(!r.f.uploading(), "3 failures end the upload phase");
     // a PUT failure, then status 2 (it did land): U8
@@ -604,7 +606,8 @@ fn t5_prepare_15_counts_only_for_our_upload() {
         assert_eq!(verb(&r.reply(w("prepare-15-incomplete"))), Verb::UpdStatus);
         let a = r.reply(w("status-receiving"));
         if i == 2 {
-            assert_eq!(text(&a), su::T_REJECTED_UPLOAD);
+            assert_eq!(verb(&a), Verb::BulkClose, "giving up closes the open window first (r1 A-m3)");
+            assert_eq!(text(&r.reply(w("bulk-close-ok"))), su::T_REJECTED_UPLOAD);
             break;
         }
         assert!(matches!(a, Action::Wait { ms: 31000, .. }));
@@ -703,6 +706,7 @@ fn t5_cancel_closes_the_window_and_a_gone_node_says_so() {
     r.to_upload();
     let a = r.put(Put::NoNetwork);
     assert_eq!((text(&a), buttons(&a)), (su::T_NO_WIFI.to_string(), vec![Button::WifiPanel, Button::Retry, Button::Cancel]));
+    assert!(!r.f.uploading(), "a screen ends the upload stage: the Specifier network is released (D5)");
     assert_eq!(verb(&r.press(Button::Cancel)), Verb::BulkClose);
     let mut r = Run::new(true);
     r.to_upload();
@@ -1016,4 +1020,262 @@ fn t5_a_written_update_resets_the_count() {
     assert_eq!(verb(&r.reply(Reply::Lost)), Verb::UpdStatus);
     let a = r.reply(w("status-0-15"));
     assert_eq!(verb(&a), Verb::BulkOpen, "counted from 0 again after the written update: {a:?}");
+}
+
+// ---- code review r1 (A-M1, A-M3, A-m3, A-m9, B-m6): each test fails on 0056205 ------------------------------------
+
+fn stale() -> Reply {
+    // node status.go:184-188: the status cache was not ready -> {1: state, 15: {stale: true}}, no "trust"
+    status15(None, vec![("stale", V::Bool(true))])
+}
+
+#[test]
+fn r1_a_stale_status_is_read_again_and_never_says_ssh_or_reflash() {
+    let mut r = Run::new(true);
+    r.start();
+    for _ in 0..3 {
+        let a = r.reply(stale());
+        assert!(matches!(a, Action::Wait { ms: 2500, .. }), "read again after 2-3 s: {a:?}");
+        assert_eq!(verb(&r.after(&a)), Verb::Status);
+    }
+    let a = r.reply(stale());
+    assert_eq!((text(&a), buttons(&a)), (su::T_STATUS_UNREAD.to_string(), vec![Button::Refresh]));
+    assert!(!r.texts.iter().any(|t| t.contains("重燒卡")), "{:?}", r.texts);
+    // stale, then the real answer: the update goes on
+    let mut r = Run::new(true);
+    r.start();
+    let a = r.reply(stale());
+    r.after(&a);
+    assert_eq!(verb(&r.reply(status15(Some(TRUST), vec![]))), Verb::Info);
+}
+
+#[test]
+fn r1_keepalives_go_out_every_time_during_one_upload() {
+    let mut r = Run::new(true);
+    r.to_upload();
+    for i in 0..5 {
+        let k = r.f.keepalive().unwrap_or_else(|| panic!("keepalive {i} not sent"));
+        assert!(matches!(k, Action::Send { verb: Verb::UpdStatus, wait_ms: 15000, .. }));
+        assert!(r.f.on_reply(w("status-receiving"), r.now).is_none());
+    }
+    assert_eq!(verb(&r.put(Put::Ok200)), Verb::Prepare);
+}
+
+#[test]
+fn r1_writing_reads_go_on_while_the_link_is_gone_for_5_minutes() {
+    let mut r = Run::new(true);
+    r.to_upload();
+    r.put(Put::Ok200);
+    let mut a = r.reply(w("prepare-ok"));
+    let mut polls = 0;
+    let mut guard = 0;
+    let end = loop {
+        guard += 1;
+        assert!(guard < 500);
+        r.after(&a);
+        a = r.reply(Reply::NoLink);
+        match a {
+            Action::Wait { ms: 5000, .. } => polls += 1,
+            a => break a,
+        }
+    };
+    assert!((59..=61).contains(&polls), "every 5 s for 5 minutes: {polls}");
+    assert_eq!(text(&end), su::T_NOT_BACK);
+    // the link comes back within the 5 minutes: the read goes on as usual
+    let mut r = Run::new(true);
+    r.to_upload();
+    r.put(Put::Ok200);
+    let a = r.reply(w("prepare-ok"));
+    r.after(&a);
+    let a = r.reply(Reply::Lost);
+    r.after(&a);
+    assert_eq!(buttons(&r.reply(w("status-written"))), vec![Button::Apply, Button::Refresh]);
+}
+
+#[test]
+fn r1_prepare_busy_then_our_phase_1_sends_prepare_again_after_10_s() {
+    let mut r = Run::new(true);
+    r.to_upload();
+    r.put(Put::Ok200);
+    r.reply(w("prepare-busy"));
+    let a = r.reply(w("status-receiving"));
+    assert!(matches!(a, Action::Wait { ms: 10000, .. }), "{a:?}");
+    assert_eq!(verb(&r.after(&a)), Verb::Prepare, "the same verb again, not a new upload");
+    assert_eq!(r.verbs.iter().filter(|v| **v == "PUT").count(), 1);
+}
+
+#[test]
+fn r1_prepare_15_of_another_upload_is_not_counted() {
+    let mut r = Run::new(true);
+    r.to_upload();
+    for _ in 0..2 {
+        r.put(Put::Ok200);
+        r.reply(w("prepare-15-not-holder"));
+        r.reply(w("status-idle"));
+        r.reply(w("bulk-open-ok"));
+    }
+    r.put(Put::Ok200);
+    let a = r.reply(w("prepare-ok"));
+    r.after(&a);
+    let a = r.reply(w("status-0-15"));
+    assert_eq!(verb(&a), Verb::BulkOpen, "the first counted refusal, not the third: {a:?}");
+}
+
+#[test]
+fn r1_a_lost_apply_answer_then_5_or_6_is_the_end_of_this_update() {
+    for (x, want) in [("status-committed", "更新完成:1.5.14-wsl.30+abcdef1.fw0123456"), ("status-reverted", su::T_REVERTED), ("status-reverted-18", su::T_REVERTED_18)] {
+        let mut r = Run::new(true);
+        r.enter(w("status-written"));
+        r.press(Button::Apply);
+        r.reply(Reply::Lost);
+        let a = r.reply(w(x));
+        assert!(matches!(a, Action::Done(_)), "{x}: {a:?}");
+        assert_eq!(text(&a), want);
+    }
+}
+
+#[test]
+fn r1_apply_answered_then_3_in_the_same_boot_waits_for_the_reboot() {
+    let (mut r, a) = applied();
+    r.after(&a);
+    let a = r.reply(w("status-written"));
+    assert!(matches!(a, Action::Wait { ms: 10000, .. }), "not the apply button again: {a:?}");
+    assert!(!r.verbs.iter().skip_while(|v| **v != "update/apply").skip(1).any(|v| *v == "update/apply"));
+}
+
+#[test]
+fn r1_the_unsure_2_minutes_count_from_the_first_0() {
+    let mut r = Run::new(true);
+    r.now = 1_000_000_000; // a long-running app: the clock is far from 0
+    let a = r.enter(w("status-working"));
+    r.after(&a);
+    let a = r.reply(w("status-idle"));
+    assert!(matches!(a, Action::Wait { ms: 30000, .. }), "{a:?}");
+    r.after(&a);
+    assert!(matches!(r.reply(w("status-idle")), Action::Wait { .. }), "30 s after the first 0 is not 2 minutes");
+}
+
+#[test]
+fn r1_cancel_while_waiting_for_our_cut_put() {
+    let mut r = Run::new(true);
+    r.to_confirm();
+    r.press(Button::Cancel);
+    let a = r.refresh_to(w("status-receiving"));
+    assert!(matches!(a, Action::Wait { ms: 31000, .. }));
+    assert_eq!(verb(&r.press(Button::Cancel)), Verb::BulkClose);
+}
+
+/// three PUT failures -> the window closed -> 「傳送一直中斷」
+fn put_failed(r: &mut Run) {
+    r.to_upload();
+    for _ in 0..2 {
+        let a = r.put(Put::Other);
+        r.after(&a);
+        r.reply(w("status-receiving"));
+        r.reply(w("bulk-open-ok"));
+    }
+    r.put(Put::Other);
+    assert_eq!(text(&r.reply(w("bulk-close-ok"))), su::T_PUT_FAILED);
+}
+
+#[test]
+fn r1_a_new_pick_or_a_refresh_starts_the_put_count_again() {
+    let mut r = Run::new(true);
+    put_failed(&mut r);
+    r.pick(&files().0);
+    r.reply(w("check-ok"));
+    r.press(Button::Start);
+    r.reply(w("bulk-open-ok"));
+    assert!(matches!(r.put(Put::Other), Action::Wait { ms: 31000, .. }), "a new pick: the first failure of three");
+    let mut r = Run::new(true);
+    put_failed(&mut r);
+    let a = r.refresh_to(w("status-receiving"));
+    r.after(&a);
+    r.reply(w("bulk-open-ok"));
+    assert!(matches!(r.put(Put::Other), Action::Wait { ms: 31000, .. }), "a refresh (A-m9): the first failure of three");
+}
+
+#[test]
+fn r1_the_verb_count_restarts_after_an_answer() {
+    let mut r = Run::new(true);
+    r.to_confirm();
+    r.press(Button::Start);
+    for _ in 0..2 {
+        r.reply(w("bulk-open-busy"));
+        let a = r.reply(w("status-idle"));
+        r.after(&a);
+    }
+    assert!(matches!(r.reply(w("bulk-open-ok")), Action::Upload { .. }));
+    r.put(Put::Ok200);
+    r.reply(w("prepare-busy"));
+    assert!(matches!(r.reply(w("status-receiving")), Action::Wait { ms: 10000, .. }), "prepare: its own three sends");
+}
+
+#[test]
+fn r1_status_e_rate_is_read_again() {
+    let mut r = Run::new(true);
+    r.start();
+    let a = r.reply(Reply::Err { code: 12, detail: V::Map(vec![]) });
+    assert!(matches!(a, Action::Wait { ms: 1500, .. }), "{a:?}");
+    assert_eq!(verb(&r.after(&a)), Verb::Status);
+}
+
+#[test]
+fn r1_a_window_closed_after_a_bad_answer_is_not_closed_again() {
+    let Reply::Ok(V::Map(full)) = w("bulk-open-ok") else { panic!() };
+    let mut r = Run::new(true);
+    r.to_confirm();
+    r.press(Button::Start);
+    r.reply(Reply::Ok(V::Map(full.into_iter().filter(|(k, _)| *k != V::Uint(5)).collect())));
+    r.reply(w("bulk-close-ok"));
+    r.pick(&files().0);
+    r.reply(w("check-ok"));
+    let n = r.verbs.len();
+    assert!(buttons(&r.press(Button::Cancel)).contains(&Button::Pick));
+    assert_eq!(r.verbs.len(), n, "U3 cancel: nothing to close");
+}
+
+#[test]
+fn r1_a_new_pick_allows_one_more_e_rate() {
+    let mut r = Run::new(true);
+    r.enter(w("status-idle"));
+    r.pick(&files().0);
+    let a = r.reply(w("check-rate"));
+    r.after(&a);
+    assert_eq!(text(&r.reply(w("check-rate"))), su::E_RATE_TEXT);
+    r.pick(&files().0);
+    assert!(matches!(r.reply(w("check-rate")), Action::Wait { ms: 10000, .. }));
+}
+
+#[test]
+fn r1_the_ap_wait_ends_with_the_window() {
+    let mut r = Run::new(true);
+    r.to_confirm();
+    r.press(Button::Start);
+    r.reply(w("bulk-open-16"));
+    r.press(Button::ApDone);
+    r.reply(w("bulk-open-ok"));
+    let a = r.put(Put::Other);
+    r.after(&a);
+    r.reply(w("status-receiving"));
+    let a = r.reply(w("bulk-open-16"));
+    assert_eq!(buttons(&a), vec![Button::SetAp, Button::ApDone, Button::Cancel], "a later 16 asks for the AP again: {a:?}");
+}
+
+#[test]
+fn r1_giving_up_closes_the_window_first() {
+    let mut r = Run::new(true);
+    r.to_upload();
+    r.put(Put::Ok200);
+    assert_eq!(verb(&r.reply(w("prepare-storage"))), Verb::BulkClose, "E_STORAGE: the window is closed (A-m3)");
+    assert_eq!(text(&r.reply(w("bulk-close-ok"))), su::E_STORAGE_TEXT);
+}
+
+#[test]
+fn r1_the_debug_text_of_an_upload_hides_the_bearer() {
+    let mut r = Run::new(true);
+    let a = r.to_upload();
+    let Action::Upload { bearer, .. } = &a else { panic!() };
+    let d = format!("{a:?}");
+    assert!(!d.contains(&hex::encode(bearer)) && !d.contains(&format!("{:?}", bearer)) && d.contains("10.41.80.13"), "{d}");
 }
