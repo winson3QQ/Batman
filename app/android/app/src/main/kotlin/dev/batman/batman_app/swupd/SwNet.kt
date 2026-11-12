@@ -9,7 +9,6 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Handler
 import android.os.HandlerThread
-import android.os.SystemClock
 import java.net.InetAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -31,6 +30,14 @@ class SwNet(context: Context, private val onLost: (Network) -> Unit) {
     private val lock = Any()
     private var specifier: ConnectivityManager.NetworkCallback? = null
     private var joined: Network? = null
+    private var joinedSsid: String? = null
+    @Volatile private var waiting: CountDownLatch? = null
+
+    /**
+     * The Specifier network this upload stage holds (code review r1 A-M2 / B-M1): the next PUT of the stage goes out on
+     * it again — no new request (each would cut the phone's Wi-Fi, and TAK, twice). Null when none is held.
+     */
+    fun held(): Network? = synchronized(lock) { joined }
 
     private fun wifi(): NetworkRequest.Builder = NetworkRequest.Builder()
         .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -55,25 +62,25 @@ class SwNet(context: Context, private val onLost: (Network) -> Unit) {
     }
 
     /**
-     * D5 fallback: "ok" + the Network, or "denied" / "no_network" + null. Android reports a refused dialog and the 60 s
-     * timeout the same way (onUnavailable); an answer well before the timeout is taken as the operator's refusal (or
-     * the platform refusing at once, e.g. the app in the background) -> "denied", at the timeout -> "no_network".
+     * D5 fallback: "ok" + the Network, or "no_network" + null. Android reports a refused dialog and the 60 s timeout the
+     * same way (onUnavailable): they are not told apart (code review r1 B-m5; the app shows one text for both).
+     * A network this stage already holds for the same ssid is returned as is (r1 A-M2: never released and requested
+     * again within the stage). A [release] meanwhile (a cancel) ends the wait at once (r1 B-m3).
      */
     fun join(ssid: String, pass: String): Pair<String, Network?> {
+        synchronized(lock) { joined?.let { if (joinedSsid == ssid) return "ok" to it } }
         release()
         val spec = WifiNetworkSpecifier.Builder().setSsid(ssid).setWpa2Passphrase(pass).build()
         val req = wifi().setNetworkSpecifier(spec).build()
         var answer = "no_network"
         var got: Network? = null
         val done = CountDownLatch(1)
-        val started = SystemClock.elapsedRealtime()
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(n: Network) {
-                synchronized(lock) { if (specifier === this) joined = n }
+                synchronized(lock) { if (specifier === this) { joined = n; joinedSsid = ssid } }
                 if (done.count > 0) { answer = "ok"; got = n; done.countDown() }
             }
             override fun onUnavailable() {
-                answer = if (SystemClock.elapsedRealtime() - started < JOIN_TIMEOUT_MS - 5_000) "denied" else "no_network"
                 done.countDown()
             }
             override fun onLost(n: Network) {
@@ -82,17 +89,21 @@ class SwNet(context: Context, private val onLost: (Network) -> Unit) {
             }
         }
         synchronized(lock) { specifier = cb }
+        waiting = done
         cm.requestNetwork(req, cb, handler, JOIN_TIMEOUT_MS.toInt())
         if (!done.await(JOIN_TIMEOUT_MS + 5_000, TimeUnit.MILLISECONDS) || answer != "ok") {
             release()
-            return (if (answer == "ok") "no_network" else answer) to null
+            return "no_network" to null
         }
+        waiting = null
+        if (synchronized(lock) { specifier !== cb }) return "no_network" to null // released (cancelled) meanwhile
         return answer to got
     }
 
     /** Ends the Specifier request (U8 / cancel / 3 failures; D5). Harmless when there is none. */
     fun release() {
-        val cb = synchronized(lock) { specifier.also { specifier = null; joined = null } }
+        val cb = synchronized(lock) { specifier.also { specifier = null; joined = null; joinedSsid = null } }
+        waiting?.countDown() // a join waiting for the dialog ends now (r1 B-m3), not after 65 s
         if (cb != null) try { cm.unregisterNetworkCallback(cb) } catch (_: IllegalArgumentException) {} // already gone
     }
 

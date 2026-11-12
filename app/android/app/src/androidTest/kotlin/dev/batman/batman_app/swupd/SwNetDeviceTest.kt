@@ -32,12 +32,15 @@ import java.net.InetSocketAddress
  *      dialog appears and activeNetwork changes -> the arm FAILs.
  *   b  phone not on the AP: findDirect finds nothing; join() with the dialog accepted -> "ok"; a TCP connect to
  *      nodeIp:8095 over the joined Network reaches the node (connected or refused); release() afterwards.
- *   c  as b, the person refuses the dialog -> "denied".
+ *   c  as b, the person refuses the dialog -> "no_network" (refused and timed out are not told apart, r1 B-m5).
  *   e  as b a second time: either no dialog or a dialog (STA+STA phones); both accepted — the person notes which.
  *   f  phone on the same SSID with the direct route forced off (`-e mutant alwaysSpecifier`): join() -> "ok"; the
  *      person counts the Wi-Fi drops (expected 2: on join and on release, F25).
  *   g  phone on another AP: findDirect finds nothing -> join() as b.
- *   d / h (Wi-Fi off; app killed during the Specifier) are by hand: d expects "no_network"/"denied" + the panel text,
+ *   i  (code review r1 A-M2 / B-M1) as b, then a second join() in the same stage -> the same Network, no new dialog,
+ *      held() is that Network; the person counts the Wi-Fi drops for the whole arm (expected 2, not 4). Negative
+ *      control: `-e mutant rejoin` releases before the second join -> a second dialog / two more drops -> FAIL.
+ *   d / h (Wi-Fi off; app killed during the Specifier) are by hand: d expects "no_network" + the panel text,
  *      h expects the phone back on its previous Wi-Fi ⚠️. After b–g: system settings show no saved network (F25).
  * Every Specifier arm then greps logcat for the passphrase -> 0 hits (D8).
  */
@@ -106,8 +109,31 @@ class SwNetDeviceTest {
         }
     }
 
+    @Test fun i_secondJoinOfTheStageKeepsTheNetwork() {
+        arm("i")
+        val ssid = requireNotNull(args.getString("ssid")) { "-e ssid" }; val pass = requireNotNull(args.getString("pass")) { "-e pass" }
+        val scenario = ActivityScenario.launch(MainActivity::class.java)
+        val net = SwNet(ctx) { }
+        try {
+            val (a1, n1) = net.join(ssid, pass)
+            assertEquals("ok", a1)
+            assertEquals("held() is the joined network", n1, net.held())
+            if (args.getString("mutant") == "rejoin") net.release()
+            val t0 = System.nanoTime()
+            val (a2, n2) = net.join(ssid, pass)
+            report("secondJoinMs", "${(System.nanoTime() - t0) / 1_000_000}")
+            assertEquals("ok", a2)
+            assertEquals("the second join of the stage requested a new network", n1, n2)
+            assertTrue(reaches(n2!!))
+        } finally {
+            net.dispose()
+            scenario.close()
+        }
+        noPassInLogcat(pass)
+    }
+
     @Test fun b_joinAccepted() { arm("b"); joined("ok") }
-    @Test fun c_joinRefused() { arm("c"); joined("denied") }
+    @Test fun c_joinRefused() { arm("c"); joined("no_network") }
     @Test fun e_joinAgain() { arm("e"); joined("ok") }
     @Test fun f_sameSsidNoDirectRoute() { arm("f"); assumeTrue("needs -e mutant alwaysSpecifier", alwaysSpecifier); joined("ok") }
     @Test fun g_otherAp() { arm("g"); joined("ok") }
