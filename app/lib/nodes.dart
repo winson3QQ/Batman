@@ -17,6 +17,8 @@ import 'src/rust/api/claim.dart' show frameLimit, storeRemove;
 import 'src/rust/api/member.dart';
 import 'src/rust/api/owner.dart';
 import 'src/rust/api/rekey.dart';
+import 'src/rust/api/swupdate.dart';
+import 'swupdate.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
 final _rx = Uuid.parse('540aa38c-0086-4d59-a9c0-c7c9d1e1bd42');
@@ -116,6 +118,12 @@ class _NodesPageState extends State<NodesPage> {
   bool _sendAfter = false;
   final _copied = <String>{};
   (String, bool)? _hintRec;
+  // software update (254-app-update v0.4): one update at a time, of the node it was started on; kept while its page
+  // is closed (§3.5). Nothing of it is logged (D8).
+  SwUpdate? _sw;
+  SwHold? _swHold;
+  String? _swNode;
+  final _apRowKey = GlobalKey();
 
   @override
   void initState() {
@@ -273,6 +281,11 @@ class _NodesPageState extends State<NodesPage> {
           case OwnerKind.loggedIn:
             _say('[LOGGED_IN] ${st.detail}');
             if (!done.isCompleted) done.complete(true);
+            st = null;
+          case OwnerKind.answer when st.sw:
+            // a software-update answer: no text, nothing logged; _askSw hands it to the update
+            final a = _answer;
+            if (a != null && !a.isCompleted) a.complete(_swAnswered);
             st = null;
           case OwnerKind.answer:
             if (st.pollLink) _linkFrom = DateTime.now();
@@ -1457,6 +1470,70 @@ class _NodesPageState extends State<NodesPage> {
         wait: _joinWait, retry: false, unclear: _sendUnclear);
   }
 
+  static const _swAnswered = '[SW]';
+  static const _swUnanswered = '[SW_LOST]';
+
+  /// 254-app-update §11: one request of the update on the owner session (logging in again first when the link is
+  /// gone); its answer goes to the update, which says what is next. A timeout or a lost link = `lost`, no session =
+  /// `noLink`. Unlike [_ask] nothing is logged or shown here (D8: the bulk/open answer carries secrets).
+  Future<SwAction> _askSw(SwUpdate sw, SwHold h, int waitMs) async {
+    if (_session == null && _lastNode != null && !_busy) await _login(_lastNode!);
+    final s = _session;
+    if (s == null || _busy) return sw.noLink(nowMs: h.now());
+    setState(() => _busy = true);
+    _waitFor = Duration(milliseconds: waitMs);
+    _waitLine = _swUnanswered;
+    _unclear = _swUnanswered;
+    _track = SendTrack();
+    _quiet = true;
+    try {
+      _answer = Completer<String>();
+      try {
+        await _run!(s.requestSw(sw: sw));
+      } catch (_) {
+        await _drop();
+        return sw.lost(nowMs: h.now());
+      }
+      _kick();
+      final a = await _answer!.future;
+      if (a == _swAnswered && identical(_session, s)) return s.swAnswer(sw: sw, nowMs: h.now());
+      await _drop(); // the request may still be outstanding in that session
+      return sw.lost(nowMs: h.now());
+    } finally {
+      _wait?.cancel();
+      _answer = null;
+      _unclear = null;
+      _quiet = false;
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 「軟體更新」 (254-app-update §3): the update page of the node this session is for
+  Future<void> _softwareUpdate() async {
+    final node = _lastNode;
+    if (node == null || _busy) return;
+    if (_swNode != node || _swHold == null || _swHold!.last?.kind == SwKind.done) {
+      final sw = SwUpdate();
+      _sw = sw;
+      _swHold = SwHold(RustSwFlow(sw));
+      _swNode = node;
+    }
+    final sw = _sw!, h = _swHold!;
+    await Navigator.of(context).push(MaterialPageRoute(
+        builder: (c) => SwUpdatePage(
+            hold: h,
+            ask: (ms) => _askSw(sw, h, ms),
+            specifierText: swSpecifierText(),
+            onSetAp: () {
+              Navigator.of(c).pop();
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                final k = _apRowKey.currentContext;
+                if (k != null) Scrollable.ensureVisible(k);
+              });
+            })));
+    if (_swHold?.last?.kind == SwKind.done) _swHold = null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final logged = _session != null || _lastNode != null; // after a lost link a request logs in again
@@ -1506,7 +1583,7 @@ class _NodesPageState extends State<NodesPage> {
                   child: const Text('設定國家')),
             ]),
           if (logged)
-            Row(children: [
+            Row(key: _apRowKey, children: [
               Expanded(child: TextField(controller: _apSsid, autocorrect: false, decoration: const InputDecoration(labelText: '給手機連的 Wi-Fi 名稱'))),
               const SizedBox(width: 8),
               Expanded(
@@ -1578,6 +1655,7 @@ class _NodesPageState extends State<NodesPage> {
             ]),
           TextButton(onPressed: _busy ? null : _showPending, child: const Text('再顯示申請')),
           if (logged) Align(alignment: Alignment.centerLeft, child: OutlinedButton(onPressed: _busy ? null : _memberJoin, child: const Text('加入隊伍網路'))),
+          if (logged) Align(alignment: Alignment.centerLeft, child: FilledButton(onPressed: _busy ? null : _softwareUpdate, child: const Text('軟體更新'))),
         ]),
       ),
     );
