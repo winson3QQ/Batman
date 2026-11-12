@@ -127,7 +127,7 @@ jobs:
       - name: "#254 P1 Go unit tests as root with -tags prov_test (seams, sock)"
         run: |
           cd feed/batman-prov/src
-          o=$(sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root GOFLAGS=-mod=vendor GOTOOLCHAIN=local go test -count=1 -v -tags prov_test ./... 2>&1); rc=$?
+          o=$(sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root GOFLAGS=-mod=vendor GOTOOLCHAIN=local go test -count=1 -v -tags prov_test ./... 2>&1) && rc=0 || rc=$?   # bash -e: a bare `o=$(...); rc=$?` exits before printing
           echo "$o" | grep -E '^(--- (FAIL|SKIP)|ok|FAIL|panic)'
           [ $rc = 0 ] || { echo "go test rc=$rc; its last lines:"; echo "$o" | tail -40; exit 1; }
           ! echo "$o" | grep -q -- '--- SKIP' || { echo '::error::a Go test skipped under root + prov_test'; exit 1; }
