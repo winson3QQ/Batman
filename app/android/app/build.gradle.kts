@@ -22,7 +22,12 @@ android {
     defaultConfig {
         applicationId = "dev.batman.app"
         minSdk = 31  // Android 12+ (design §1): PURPOSE_AGREE_KEY, KeyInfo.securityLevel
-        targetSdk = flutter.targetSdkVersion
+        // 254-app-update D6: a literal, not flutter.targetSdkVersion — at 37 (Android 17) local network protection needs
+        // ACCESS_LOCAL_NETWORK for the update's raw-socket PUT to the node (F24); raising this line is a decision of its
+        // own (design §12-6), caught in code review, never a side effect of `flutter upgrade`.
+        targetSdk = 36
+        // T9 / T12 (instrumented, on the phone; written, run by hand): src/androidTest
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         ndk { abiFilters += listOf("arm64-v8a") }  // design §2: arm64-v8a only
@@ -74,6 +79,10 @@ kotlin {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // 254-app-update T9 / T12 only (androidTest; not part of any APK)
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
 
 flutter {
