@@ -1,5 +1,7 @@
 # #254 app S5 — 軟體更新(設計 v0.4 FROZEN)
 
+**v0.4.2(2026-11-13):實機勘誤(04 + S20,T11)。手機開著 WireGuard(全 UID、非 lockdown、非 bypassable)時,app 的 socket 即使用節點 AP 的 `network.socketFactory` 也會走進 tun0;節點在 br-ahwlan 上看到 0 個送往 8095 的 SYN,每次 PUT 都失敗(「傳送一直中斷」)。所以在上傳階段開始前(查 AP、Specifier join 之前)先問 Kotlin 有沒有 VPN 套用在這個 app 上;有的話停下並顯示文字(§4、§6、§7、§11.1)。另外，失敗的 PUT 的 Kotlin 代碼(不是秘密)會顯示在「技術資訊」。沒有改任何決定。**
+
 **v0.4.1(2026-11-13):code review r1 的勘誤,沒有改任何決定(§3.1 stale、T4 動詞順序、§7 zeroize 的說法、§5.2 / §11.1 的介面細節、§12-8 的 MINOR 清單)。**
 
 **狀態:v0.4 FROZEN(2026-11-12):第 2 輪 A、B 皆 APPROVE-WITH-CHANGES,0 BLOCKER;唯一的 MAJOR(A N1)以刪除修掉。** 各輪:v0.2 A APPROVE-WITH-CHANGES(1 BLOCKER / 8 MAJOR)、B REJECT(1 / 5);v0.3 A APPROVE-WITH-CHANGES(0 / 1)、B APPROVE-WITH-CHANGES(0 / 0)。
@@ -215,6 +217,7 @@ status 不分擁有者(F18);「我們的」= status key 4 等於我們選的 man
 | E_STORAGE | 節點的儲存區寫不進去,這次沒有開始 — 請重開節點後再試 |
 | E_RATE(第二次) | 太快了,請稍等 10 秒再按 |
 | E_UNSUPPORTED | 這台節點的軟體太舊,不能經 App 更新 |
+| VPN(v0.4.2,不是 reason-code;Kotlin `vpnActive`) | 這支手機開著 VPN(例如 WireGuard),會擋住傳給節點的資料。請暫時關閉 VPN,或在 VPN 設定裡把 Batman 加進排除的 App,再按「再試一次」。(按鈕:「再試一次」= 再送 `bulk/open` 再檢查一次;「取消」= `bulk/close`) |
 | 其他 | 更新沒有成功 — 請再試一次;一直如此請找維修人員 |
 
 ## 5. 擁有權與契約
@@ -269,6 +272,7 @@ status 不分擁有者(F18);「我們的」= status key 4 等於我們選的 man
 | 手機連著別的 AP | 連線逾時 → Specifier | T9 |
 | 8095 被佔 | 顯示文字,不開始 | T3 |
 | app 在背景 | Specifier 請求失敗 → 顯示文字;PUT 可能被系統停掉 → 等待規則 | T9 |
+| 手機開著 VPN,而且套用在這個 app(v0.4.2,04 + S20 實測) | 上傳階段一開始(查 AP、Specifier 之前)就停下並顯示 §4 的 VPN 文字;不送 PUT、不切 Wi-Fi、不計入 3 次失敗;「再試一次」/「取消」(關掉上傳窗) | Rust v042、Dart v0.4.2、Kotlin `aVpnTransport…`;實機 T11 重跑 |
 | 電量低 | **不檢查** | — |
 | app 升級 / 降級 | 沒有落地狀態 | — |
 | 舊節點 / 一般 DEV image | 顯示文字 | T3、T10 |
@@ -284,6 +288,7 @@ status 不分擁有者(F18);「我們的」= status key 4 等於我們選的 man
   - 更新流程不 `debugPrint`。
   - Rust:只有保管密碼和 bearer 的 `Window` 在丟棄時清零。下面這些副本都沒有清零:bulk/open 回應的 CBOR 值、解密後的 frame 緩衝、`SwAction.bearer_hex`、`ap_credentials()` 的 clone。`Action` 的 Debug 輸出不含 bearer。Dart / Kotlin 的字串也沒辦法清零。這是誠實界線(勘誤 v0.4.1,code review r1 B-m6)。
   - Specifier 不會留下密碼(F25)。
+- **VPN(v0.4.2)**:VPN 套用在這個 app 時,PUT 會進 VPN 的 tunnel(04 + S20 實測:節點看不到任何 SYN)。所以上傳前會檢查並停下，請使用者暫時關掉 VPN 或把 Batman 排除;app 不改 VPN 設定。bearer 不會因此外洩:沒有送出任何東西。
 - **明文**:只有那一條 raw socket 是明文,而且不經 proxy;全 app 仍然禁止明文。bearer 會以明文出現在 AP 上:同一個 AP 上知道密碼的人抓得到,但只能拿來 DoS(P3 :488)。payload 本身是公開的。
 - **攻擊面增量**:
   - 使用者選的兩個檔:先限制大小、嚴格 CBOR、檢查 magic,不解 tar;節點給的字串一律經 `display_name` 處理並截到 64 字。
@@ -422,6 +427,8 @@ MethodChannel 名稱:`dev.batman/swupdate`。全部在背景 thread 做事,結�
 | `upload` | `{uri: String, size: int, ip: String, port: int, bearer: String}`(bearer = 32 個小寫 hex) | `String`:`"ok200"` / `"other"` / `"no_network"` | 用 `findNodeNetwork` / `joinAp` 記住的 Network(沒有 → `"no_network"`)。`uri` 只接受這個程序的選檔器給過的。檔案**先開、再連線**(provd 從 accept 起給 header 5 s,r1 B-m2)。D4 PUT。連線逾時或 `NoRouteToHost` 兩次 → `"no_network"`(Dart 接著走 `joinAp` 再 `upload`);被拒 → 每秒重試最多 10 s,仍不行 → `"other"`。body 在自己的 thread 複製:檔案讀取卡住或一直回 0 時,35 s watchdog 照樣結束 PUT(r1 B-m1)。只送 `size` bytes;讀到狀態碼正好是 `200` 才算 `"ok200"`;其他一切(含取消、watchdog、`onLost`、檔案讀錯、檔案比 size 短)→ `"other"`。一次只跑一個 |
 | `cancelUpload` | 無 | `null` | 中止進行中的 socket(`setSoLinger(true, 0)` + close),並 `unregisterNetworkCallback` 放掉 Specifier 網路、忘掉記住的 Network。上傳階段結束(D5:進 U8、取消、3 次用完)時 Dart 一定呼叫一次;沒有東西時無害 |
 | `uploadProgress` | 無 | `int`:目前這次 PUT 已寫出的 body bytes(沒有 → 0) | U6 進度條;Dart 每秒讀 |
+| `vpnActive`(v0.4.2) | 無 | `bool` | 這個 app 的預設網路(`ConnectivityManager.getActiveNetwork()`,是呼叫端 UID 的預設網路;有 VPN 套用在這個 UID 時就是那個 VPN,AOSP ConnectivityService `getActiveNetwork` → `getActiveNetworkForUid` ⚠️ 依記憶，行號未附)的 capabilities 有 `TRANSPORT_VPN` → `true`。沒有 capabilities → `false`(之後 PUT 的代碼會說明)。Dart 在每次上傳開始前先問;`true` → Rust 收到 `vpn`,不查 AP、不 join |
+| `lastUploadCode`(v0.4.2) | 無 | `String`:上一次 PUT 的代碼(`ok` / `refused` / `unreached` / `connect_io` / `file_io` / `short_file` / `watchdog` / `read_timeout` / `status` / `io` / `cancelled` / `network_lost` / `no_network_held`) | 固定的字，不含 bearer。Dart 在 PUT 不是 200 時讀，放在畫面的「技術資訊」(`PUT: <代碼>`) |
 | `keepScreenOn` | `{on: bool}` | `null` | D9:`FLAG_KEEP_SCREEN_ON`,更新頁開著時 `true`,離開時 `false` |
 | `wifiPanel` | 無 | `null` | U5:開 `Settings.Panel.ACTION_WIFI` |
 
