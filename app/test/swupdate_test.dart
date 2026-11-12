@@ -82,8 +82,10 @@ class Script implements SwFlow {
 }
 
 class Rig {
-  Rig({required this.direct, this.puts = const ['ok200'], this.putTakes = Duration.zero, this.findTakes = Duration.zero, this.answers});
+  Rig({required this.direct, this.puts = const ['ok200'], this.putTakes = Duration.zero, this.findTakes = Duration.zero, this.answers, this.vpn = false, this.code = 'watchdog'});
   final bool direct;
+  final bool vpn;
+  final String code;
   final List<String> puts;
   final Duration putTakes, findTakes;
   final List<SwAction>? answers;
@@ -121,6 +123,10 @@ class Rig {
           {'uri': 'content://m', 'size': 300, 'head': Uint8List.fromList([0xa5, 1]), 'data': Uint8List(300)},
           {'uri': 'content://p', 'size': 1000, 'head': Uint8List.fromList([0x1f, 0x8b]), 'data': Uint8List(0)},
         ];
+      case 'vpnActive':
+        return vpn;
+      case 'lastUploadCode':
+        return code;
       case 'findNodeNetwork':
         await Future<void>.delayed(findTakes);
         return direct;
@@ -187,6 +193,38 @@ Future<Rig> run(WidgetTester t, Rig r, {Future<void> Function()? atUpload, bool 
 }
 
 void main() {
+  testWidgets('v0.4.2: a VPN covers the app — stop before the AP lookup / the Specifier, nothing sent', (t) async {
+    final r = await run(
+        t,
+        Rig(direct: false, vpn: true, answers: [
+          act(SwKind.show_, text: 'idle', buttons: [SwButton.pick]),
+          act(SwKind.show_, text: 'u3', buttons: [SwButton.start, SwButton.cancel]),
+          act(SwKind.upload, uploading: true),
+          act(SwKind.done, text: 'x'),
+        ]));
+    expect(r.flow.calls, contains('uploaded vpn'));
+    for (final m in ['findNodeNetwork', 'joinAp', 'upload']) {
+      expect(r.count(m), 0, reason: '$m after a VPN was seen (TAK would be cut for nothing)');
+    }
+    expect(r.events.where((e) => e == 'notice'), isEmpty);
+    expect(r.flow.calls, isNot(contains('apCredentials')));
+  });
+
+  testWidgets('v0.4.2: a PUT that was not 200 shows its Kotlin code under 技術資訊', (t) async {
+    final r = await run(t, Rig(direct: true, puts: ['other'], code: 'watchdog', answers: [
+      act(SwKind.show_, text: 'idle', buttons: [SwButton.pick]),
+      act(SwKind.show_, text: 'u3', buttons: [SwButton.start, SwButton.cancel]),
+      act(SwKind.upload, uploading: true),
+      act(SwKind.show_, text: '傳送一直中斷', buttons: [SwButton.refresh]),
+    ]));
+    expect(r.flow.calls, contains('uploaded other'));
+    await t.tap(find.text('技術資訊'));
+    await pumps(t, 3);
+    expect(find.text('PUT: watchdog'), findsOneWidget);
+    expect(r.hold.putCode, 'watchdog');
+  });
+
+
   testWidgets('D8: the Specifier path — nothing logged, the passphrase only to joinAp, the bearer only to upload', (t) async {
     final r = await run(t, Rig(direct: false));
     expect(r.flow.calls, containsAllInOrder(['start', 'picked', 'press start', 'apCredentials', 'uploaded ok200']));

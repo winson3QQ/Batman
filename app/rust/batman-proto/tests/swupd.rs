@@ -1279,3 +1279,26 @@ fn r1_the_debug_text_of_an_upload_hides_the_bearer() {
     let d = format!("{a:?}");
     assert!(!d.contains(&hex::encode(bearer)) && !d.contains(&format!("{:?}", bearer)) && d.contains("10.41.80.13"), "{d}");
 }
+
+// ---- v0.4.2 (04 + S20): an active VPN takes the PUT into its tunnel ---------------------------------------------
+
+#[test]
+fn v042_a_vpn_stops_before_anything_is_sent_and_offers_retry_or_cancel() {
+    let mut r = Run::new(true);
+    r.to_upload();
+    let a = r.put(Put::Vpn);
+    assert_eq!((text(&a), buttons(&a)), (su::T_VPN.to_string(), vec![Button::Retry, Button::Cancel]));
+    assert!(!r.f.uploading(), "the upload stage ends: no network is held");
+    assert!(!r.waits.contains(&31_000), "not a PUT failure: no 31 s wait, not counted");
+    assert_eq!(verb(&r.press(Button::Retry)), Verb::BulkOpen, "再試一次: bulk/open again, then the check again");
+    assert!(matches!(r.reply(w("bulk-open-ok")), Action::Upload { .. }));
+    // three VPN stops in a row are not "傳送一直中斷"
+    for _ in 0..3 {
+        assert_eq!(text(&r.put(Put::Vpn)), su::T_VPN);
+        r.press(Button::Retry);
+        r.reply(w("bulk-open-ok"));
+    }
+    // 取消 closes the open window
+    assert_eq!(text(&r.put(Put::Vpn)), su::T_VPN);
+    assert_eq!(verb(&r.press(Button::Cancel)), Verb::BulkClose);
+}

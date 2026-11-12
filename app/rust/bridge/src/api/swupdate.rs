@@ -49,6 +49,8 @@ pub enum SwPut {
     Other,
     NoNetwork,
     Denied,
+    /// v0.4.2: Kotlin `vpnActive` said a VPN covers the app (nothing was sent)
+    Vpn,
 }
 
 /// one picked file as Kotlin `pickUpdateFiles` read it (§11.1)
@@ -228,6 +230,7 @@ impl SwUpdate {
             SwPut::Other => Put::Other,
             SwPut::NoNetwork => Put::NoNetwork,
             SwPut::Denied => Put::Denied,
+            SwPut::Vpn => Put::Vpn,
         };
         let a = self.flow.uploaded(r);
         self.act(a)
