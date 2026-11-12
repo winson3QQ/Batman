@@ -29,7 +29,12 @@ T=$(mktemp -d)
 killrec(){ [ -f "$T/pids" ] && xargs -r kill < "$T/pids" 2>/dev/null; : > "$T/pids"; return 0; }
 trap 'killrec; jobs -p | xargs -r kill 2>/dev/null; rm -rf "$T"' EXIT
 mkdir -m 0755 "$T/run"
-SLN=sl${T##*.}; SL=$T/$SLN; cp "$(command -v sleep)" "$SL"   # sl + mktemp's random suffix
+# a sleeper with its own name (comm and argv[0] = the file name): a copy of sleep or, where sleep is a multi-call binary
+# that dispatches on argv[0] (GitHub's ubuntu runner: "coreutils: unknown program"), a 3-line C sleeper built here
+mksleeper(){ cp "$(command -v sleep)" "$1" && "$1" 0 2>/dev/null && return 0
+	printf '#include <stdlib.h>\n#include <unistd.h>\nint main(int c, char **v) { sleep(c > 1 ? atoi(v[1]) : 0); return 0; }\n' \
+		| cc -x c -o "$1" - && "$1" 0; }
+SLN=sl${T##*.}; SL=$T/$SLN; mksleeper "$SL"   # sl + mktemp's random suffix
 L=$T/run/batman/batman-slot.flock
 # hold <secs>: a process that holds the flock on $L for <secs> (it IS the sleep, so its pid frees it); returns once held
 # holdb <secs>: the same, the holder named batman-slot (a legitimate writer, e.g. a long write)
@@ -37,7 +42,7 @@ hold(){ ( flock -x 7; exec "${HB:-$SL}" "$1" ) 7>>"$L" & HP=$!; echo "$HP" >> "$
 	local i=0; while flock -n "$L" true && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; }
 unhold(){ kill "$HP" 2>/dev/null; wait "$HP" 2>/dev/null; }
 holdb(){ HB=$T/b/batman-slot hold "$1"; }
-mkdir -p "$T/b"; cp "$(command -v sleep)" "$T/b/batman-slot"
+mkdir -p "$T/b"; mksleeper "$T/b/batman-slot"
 # a rundir.sh like the node's: RUNDIR under $T; batman_rundir as the product's (mkdir 0700 + owner check), or failing
 cat > "$T/rundir.sh" <<EOF
 RUNDIR=$T/run/batman

@@ -63,10 +63,15 @@ EOF
 # busybox has no SH_STANDALONE, but a real process works for both). Killed by pid, never by name.
 PN=bp${T##*.}; export FB_PROVD=$PN FB_UMOUNT=$B/umount   # bp + mktemp's random suffix: unique per run
 FB_UID=$(id -u); export FB_UID   # the pid directory's owner (root on a node)
-cp "$(command -v sleep)" "$T/$PN"
+# a sleeper with its own name (comm and argv[0] = the file name): a copy of sleep or, where sleep is a multi-call binary
+# that dispatches on argv[0] (GitHub's ubuntu runner: "coreutils: unknown program"), a 3-line C sleeper built here
+mksleeper(){ cp "$(command -v sleep)" "$1" && "$1" 0 2>/dev/null && return 0
+	printf '#include <stdlib.h>\n#include <unistd.h>\nint main(int c, char **v) { sleep(c > 1 ? atoi(v[1]) : 0); return 0; }\n' \
+		| cc -x c -o "$1" - && "$1" 0; }
+mksleeper "$T/$PN"
 # the long sleeps (a verb's leaked child, the outside holder): a copy of sleep named for this run, so another
 # instance's (or an older version's) kill-by-name cannot reach them
-SLP=$T/sl${T##*.}; cp "$(command -v sleep)" "$SLP"; export SLP
+SLP=$T/sl${T##*.}; mksleeper "$SLP"; export SLP
 provd_up(){ [ -n "${PP:-}" ] && kill -0 "$PP" 2>/dev/null || { "$T/$PN" 300 & PP=$!; echo "$PP" >> "$T/pids"; }; sleep 0.2; }
 provd_down(){ [ -n "${PP:-}" ] && kill "$PP" 2>/dev/null; wait "$PP" 2>/dev/null; PP=""; sleep 0.2; }
 # batman-slot: modes (in $ST/slot) good | leak (a child keeps fd 9) | nolock (rc 0, no lock) | die17 (detect_layout's 17,
@@ -188,7 +193,7 @@ for s in $SHS; do
 	good; echo mountleft > "$ST/slot"; o=$(run); has "$k bootinfo B leaving its FAT mounted -> FAIL" "$o" "^FAIL .*FB6 batman-slot bootinfo B \(pid [0-9]+, rc 0\) returned but left /mnt/slotboot.[0-9]+ mounted"
 	has "$k mountleft: unmounted again" "$(grep -c slotboot "$FR/proc/mounts")" "^0$"
 	# an earlier run's leftover (that remote shell killed): a dead recorded pid -> unmounted; a live batman-slot -> untouched
-	good; d=$(deadpid); mkdir -p "$T/live"; cp "$(command -v sleep)" "$T/live/batman-slot"; "$T/live/batman-slot" 30 & lp=$!; echo "$lp" >> "$T/pids"
+	good; d=$(deadpid); mkdir -p "$T/live"; mksleeper "$T/live/batman-slot"; "$T/live/batman-slot" 30 & lp=$!; echo "$lp" >> "$T/pids"
 	mkdir -m 700 -p "$FR/tmp/run/batman-dv"; printf '%s\n%s\nx1\n' "$d" "$lp" > "$FR/tmp/run/batman-dv/fw-boot-254.pids"
 	printf '/dev/mmcblk0p3 /mnt/slotboot.%s vfat ro 0 0\n/dev/mmcblk0p3 /mnt/slotboot.%s vfat ro 0 0\n' "$d" "$lp" >> "$FR/proc/mounts"; o=$(run)
 	has "$k leftover of a dead recorded pid -> unmounted (INFO)" "$o" "^INFO .*FB6 unmounted /mnt/slotboot.$d — left by an earlier run"
@@ -218,7 +223,7 @@ for s in $SHS; do
 	good; echo envleak > "$ST/slot"; o=$(run)
 	has "$k an env -i child keeping fd 9 -> FAIL FB6 (the step window)" "$o" "^FAIL .*FB6 batman-slot bootinfo A \(rc 0\) left the slot flock held by its own process"
 	# review r3 B-m5: a trial autocommit gates -> NOT-RUN, no verb run; a trial nobody gates -> the verbs run
-	good; : > "$ST/trial"; mkdir -p "$T/ac" "$T/run/batman/autocommit.run"; cp "$(command -v sleep)" "$T/ac/batman-autocommit"
+	good; : > "$ST/trial"; mkdir -p "$T/ac" "$T/run/batman/autocommit.run"; mksleeper "$T/ac/batman-autocommit"
 	"$T/ac/batman-autocommit" 30 & ap=$!; echo "$ap" >> "$T/pids"; echo "$ap" > "$T/run/batman/autocommit.run/pid"; o=$(run)
 	has "$k a trial autocommit gates -> NOT-RUN line" "$o" "^NOT-RUN prov-fw-boot-254: FB6 this boot is an uncommitted trial .* batman-autocommit \(pid $ap\)"
 	has "$k gated trial -> no lock-holding verb run" "$(grep -cv '^is-trial' "$ST/calls")" "^0$"
@@ -236,7 +241,7 @@ for s in $SHS; do
 	has "$k lock held by an orphan -> FAIL FB6 leaked fd 9" "$o" "^FAIL .*FB6 batman-slot bootinfo A: the slot flock is held through 5 tries by $hp:${SLP##*/} .* a leaked fd 9"
 	has "$k held by an orphan -> RESULT FAIL" "$o" "^RESULT prov-fw-boot-254 FAIL"
 	# by a batman-slot (a legitimate writer, e.g. a 600 s write) -> INVALID
-	good; mkdir -p "$T/run/batman" "$T/live"; chmod 700 "$T/run/batman"; cp "$(command -v sleep)" "$T/live/batman-slot"
+	good; mkdir -p "$T/run/batman" "$T/live"; chmod 700 "$T/run/batman"; mksleeper "$T/live/batman-slot"
 	( flock -x 7; exec "$T/live/batman-slot" 30 ) 7>>"$T/run/batman/batman-slot.flock" & hp=$!; echo "$hp" >> "$T/pids"
 	i=0; while flock -n "$T/run/batman/batman-slot.flock" true && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 	printf '#!/bin/sh\nexec /bin/sleep 0.05\n' > "$B/sleep"; chmod +x "$B/sleep"; o=$(run); rm -f "$B/sleep"; kill $hp 2>/dev/null; wait $hp 2>/dev/null
