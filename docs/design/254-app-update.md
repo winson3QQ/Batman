@@ -1,5 +1,7 @@
 # #254 app S5 — 軟體更新(設計 v0.4 FROZEN)
 
+**v0.4.1(2026-11-13):code review r1 的勘誤,沒有改任何決定(§3.1 stale、T4 動詞順序、§7 zeroize 的說法、§5.2 / §11.1 的介面細節、§12-8 的 MINOR 清單)。**
+
 **狀態:v0.4 FROZEN(2026-11-12):第 2 輪 A、B 皆 APPROVE-WITH-CHANGES,0 BLOCKER;唯一的 MAJOR(A N1)以刪除修掉。** 各輪:v0.2 A APPROVE-WITH-CHANGES(1 BLOCKER / 8 MAJOR)、B REJECT(1 / 5);v0.3 A APPROVE-WITH-CHANGES(0 / 1)、B APPROVE-WITH-CHANGES(0 / 0)。
 - v0.4(幾乎都是刪除,附錄 C):
   - PUT 中斷後固定等 31 s,刪掉「百分比停住」與「有人正在上傳」偵測。
@@ -121,7 +123,8 @@
 ### 3.1 進頁(只讀)
 1. 讀 `status` 的 key 15(`trust`、`tenants`、`http_bind_failed`),再讀 `update/status`。
 2. 依 `trust` 決定:
-   - `"none"` 或沒有這個欄位 →「這台節點的軟體不能經 App 更新,只能用電腦(ssh)更新或重燒卡」。
+   - `"none"` →「這台節點的軟體不能經 App 更新,只能用電腦(ssh)更新或重燒卡」。
+   - 勘誤 v0.4.1(code review r1 A-M1):**沒有 `trust` 欄位不算 none**。節點的 status 快取還沒好時回 `{1: state, 15: {stale: true}}`(node/status.go:184-188),也沒有 `trust`。這時每 2.5 s 重讀 status,最多 3 次;仍然沒有就顯示「讀不到節點的狀態 — 請重新整理」。只有明確的 `"none"` 才給 ssh / 重燒卡的文字。
    - `"bad"` →「這台節點的更新設定損壞 — 請找維修人員」。
    - field 版而指紋不符(D13)→「這版 App 還不能更新節點」。
    - 以上三種都不顯示選檔按鈕。
@@ -232,7 +235,7 @@ status 不分擁有者(F18);「我們的」= status key 4 等於我們選的 man
 | manifest 檔 | 操作員 → app → 節點 | ≤ 64 KiB 的嚴格 CBOR map;原樣重新編碼(T1) | 不送(fail-closed);能不能信由節點判斷 |
 | payload 檔 | 操作員 → Kotlin → 節點 | gzip 開頭,大小 = key 3;不解 tar | 不送;內容有錯 → 節點回 11 / 15 |
 | `bulk/open` 回應 | 節點 → Rust → Kotlin | 6 個 key,型別正確;bearer 16 B;IPv4;port 1–65535 | 停下、`bulk/close` |
-| `findNodeNetwork` / `joinAp` / `upload` / `cancelUpload` | Dart → Kotlin | D8;一次只跑一個 | 回 `ok200` / `other` / `no_network` / `denied`;不認得的 → `other` |
+| `findNodeNetwork` / `joinAp` / `upload` / `cancelUpload` | Dart → Kotlin | D8;一次只跑一個 | 回 `ok200` / `other` / `no_network`;Dart 在使用者拒絕 D5 說明時給 Rust `denied`;不認得的 → `other` |
 | PUT(raw socket) | Kotlin → provd | D4 | 只分 200 / 其他(D4) |
 | `update/status` | 節點 → app | update-progress;key 3 / 4 / 5 可能不存在 | 「讀不到更新狀態」+ 重新整理 |
 
@@ -279,7 +282,7 @@ status 不分擁有者(F18);「我們的」= status key 4 等於我們選的 man
   - 密碼只在需要走 Specifier 時,才經過 Dart 一次;bearer 只出現在 `upload` 呼叫裡。
   - 兩者都不會進入 `OwnerStep.detail`、log、`result.error`、例外字串、URL、剪貼簿或任何紀錄。
   - 更新流程不 `debugPrint`。
-  - Rust 用完就 zeroize;Dart / Kotlin 的字串沒辦法清零,這是既有的誠實界線。
+  - Rust:只有保管密碼和 bearer 的 `Window` 在丟棄時清零。下面這些副本都沒有清零:bulk/open 回應的 CBOR 值、解密後的 frame 緩衝、`SwAction.bearer_hex`、`ap_credentials()` 的 clone。`Action` 的 Debug 輸出不含 bearer。Dart / Kotlin 的字串也沒辦法清零。這是誠實界線(勘誤 v0.4.1,code review r1 B-m6)。
   - Specifier 不會留下密碼(F25)。
 - **明文**:只有那一條 raw socket 是明文,而且不經 proxy;全 app 仍然禁止明文。bearer 會以明文出現在 AP 上:同一個 AP 上知道密碼的人抓得到,但只能拿來 DoS(P3 :488)。payload 本身是公開的。
 - **攻擊面增量**:
@@ -310,7 +313,7 @@ status 不分擁有者(F18);「我們的」= status key 4 等於我們選的 man
 - **T2(Rust)本機檢查**:大小不符、不是 gzip、兩個都是 manifest、statSize −1 → 不送。負對照:拿掉大小檢查 → 送出 check。
 - **T3(Rust)文字**:§4 逐列比對;6 和 6 + 18 分開;21 前後兩種;`http_bind_failed`;E_UNSUPPORTED;reason 99。負對照:少一列 → FAIL。
 - **T4(Rust)正常路徑**:
-  - 動詞順序:`check → (op/nonce → bulk/open) → [Upload] → (op/nonce → bulk/open) → op/nonce → prepare → status… → op/nonce → apply`。
+  - 動詞順序:`check → (op/nonce → bulk/open) → [Upload] → op/nonce → prepare → status… → op/nonce → apply`(勘誤 v0.4.1,code review r1 A-m1:200 之後不再送 `bulk/open`,和 U7、附錄 C 一致)。
   - 掃描所有步驟文字與 Dart 端的 log 輸出,都不能出現密碼或 bearer(原字串和 hex 都要掃)。
   - check / apply 的等待 ≥ 340 s。
   - `bulk/open` 回應缺 key → 停下 + `bulk/close`。
@@ -414,15 +417,17 @@ MethodChannel 名稱:`dev.batman/swupdate`。全部在背景 thread 做事,結�
 | method | args | result | 錯誤 / 備註 |
 |---|---|---|---|
 | `pickUpdateFiles` | 無 | `List<Map>`,每個 `{uri: String, size: int, head: Uint8List, data: Uint8List}`;使用者取消 → 空 list | SAF `ACTION_OPEN_DOCUMENT`,`EXTRA_ALLOW_MULTIPLE`,`*/*`。`size` = `statSize`(未知 → `-1`)。`head` = 檔案開頭最多 2 bytes。`data` = 整個檔案,**只在** `head != 1f 8b` 且 `0 ≤ size ≤ 65536` 時讀(最多讀 65537 bytes,超過就給空);其他情況空。讀失敗 → `error("pick")` |
-| `findNodeNetwork` | `{ip: String}` | `bool` | D5:`registerNetworkCallback(TRANSPORT_WIFI)` 收集;有網路的路由 `matches(ip) && !isDefaultRoute && !hasGateway` → 記住這個 Network 給 `upload` 用,回 `true`;否則 `false`(不記) |
-| `joinAp` | `{ssid: String, pass: String}` | `String`:`"ok"` / `"denied"` / `"no_network"` | D5 Specifier(`setWpa2Passphrase`,去掉 INTERNET,`requestNetwork(…, 60 s)`)。`onAvailable` → 記住 Network,`"ok"`;`onUnavailable`(拒絕或 60 s)→ 能分辨是使用者拒絕就回 `"denied"`,否則 `"no_network"`。網路保留到 `cancelUpload`。`onLost` → 中止進行中的 socket(linger 0) |
-| `upload` | `{uri: String, size: int, ip: String, port: int, bearer: String}`(bearer = 32 個小寫 hex) | `String`:`"ok200"` / `"other"` / `"no_network"` | 用 `findNodeNetwork` / `joinAp` 記住的 Network(沒有 → `"no_network"`)。D4 PUT。連線逾時 3 s × 2 → `"no_network"`(Dart 接著走 `joinAp` 再 `upload`);被拒 → 每秒重試最多 10 s,仍不行 → `"other"`。讀到狀態列 `200` → `"ok200"`;其他一切(含取消、watchdog、`onLost`、檔案讀錯、送出 bytes ≠ size)→ `"other"`。一次只跑一個 |
+| `findNodeNetwork` | `{ip: String}` | `bool` | D5:這個上傳階段已經用 Specifier 連上並仍持有 → 直接用它,回 `true`(r1 A-M2,不重新請求)。否則以 `registerNetworkCallback(TRANSPORT_WIFI)` 收集(最多等 1 s);有網路的路由 `matches(ip) && !isDefaultRoute && !hasGateway` → 記住這個 Network 給 `upload` 用,回 `true`;否則 `false`(不記)。查詢期間有 `cancelUpload` → 不記、回 `false`(r1 B-m3) |
+| `joinAp` | `{ssid: String, pass: String}` | `String`:`"ok"` / `"no_network"` | D5 Specifier(`setWpa2Passphrase`,去掉 INTERNET,`requestNetwork(…, 60 s)`)。`onAvailable` → 記住 Network,`"ok"`;`onUnavailable`(拒絕或 60 s,Android 不分辨)→ `"no_network"`(r1 B-m5)。同一個 ssid 在這個階段已經持有 → 直接回 `"ok"`,不放掉、不重新請求(r1 A-M2)。網路保留到 `cancelUpload`。`onLost` → 中止進行中的 socket(linger 0)。等待中被 `cancelUpload` → 立刻回 `"no_network"`(r1 B-m3) |
+| `upload` | `{uri: String, size: int, ip: String, port: int, bearer: String}`(bearer = 32 個小寫 hex) | `String`:`"ok200"` / `"other"` / `"no_network"` | 用 `findNodeNetwork` / `joinAp` 記住的 Network(沒有 → `"no_network"`)。`uri` 只接受這個程序的選檔器給過的。檔案**先開、再連線**(provd 從 accept 起給 header 5 s,r1 B-m2)。D4 PUT。連線逾時或 `NoRouteToHost` 兩次 → `"no_network"`(Dart 接著走 `joinAp` 再 `upload`);被拒 → 每秒重試最多 10 s,仍不行 → `"other"`。body 在自己的 thread 複製:檔案讀取卡住或一直回 0 時,35 s watchdog 照樣結束 PUT(r1 B-m1)。只送 `size` bytes;讀到狀態碼正好是 `200` 才算 `"ok200"`;其他一切(含取消、watchdog、`onLost`、檔案讀錯、檔案比 size 短)→ `"other"`。一次只跑一個 |
 | `cancelUpload` | 無 | `null` | 中止進行中的 socket(`setSoLinger(true, 0)` + close),並 `unregisterNetworkCallback` 放掉 Specifier 網路、忘掉記住的 Network。上傳階段結束(D5:進 U8、取消、3 次用完)時 Dart 一定呼叫一次;沒有東西時無害 |
 | `uploadProgress` | 無 | `int`:目前這次 PUT 已寫出的 body bytes(沒有 → 0) | U6 進度條;Dart 每秒讀 |
 | `keepScreenOn` | `{on: bool}` | `null` | D9:`FLAG_KEEP_SCREEN_ON`,更新頁開著時 `true`,離開時 `false` |
 | `wifiPanel` | 無 | `null` | U5:開 `Settings.Panel.ACTION_WIFI` |
 
-Dart 端的順序(U5/U6):`findNodeNetwork(ip)` → `true` 直接 `upload`;`false` → 先顯示 D5 說明 → `joinAp`(密碼從 Rust 取一次)→ `"ok"` 才 `upload`;直連路徑的 `upload` 回 `"no_network"` → 同樣改走 `joinAp` 後再 `upload` 一次。結果原樣交給 Rust(`ok200` / `other` / `no_network` / `denied`)。
+Dart 端的順序(U5/U6):`findNodeNetwork(ip)` → `true` 直接 `upload`;`false` → 先顯示 D5 說明 → `joinAp`(密碼從 Rust 取一次)→ `"ok"` 才 `upload`;直連路徑的 `upload` 回 `"no_network"` → 同樣改走 `joinAp` 後再 `upload` 一次。結果原樣交給 Rust(`ok200` / `other` / `no_network`;說明被拒 → `denied`)。
+- 同一個上傳階段裡,已經用 Specifier 連上之後的 PUT(31 s 後的重試)直接 `upload`:不再查、不再跳說明、不再 `joinAp`。只有它回 `"no_network"` 才重新 `joinAp`,而且不再跳說明(r1 A-M2 / B-M1)。
+- 每一步之前都先檢查有沒有取消(r1 A-m5)。
 
 ## 12. Checklist(不在本設計做;寫進 #254)
 
@@ -433,6 +438,21 @@ Dart 端的順序(U5/U6):`findNodeNetwork(ip)` → `true` 直接 `upload`;`false
 5. foreground service(如果現場常因為切到背景而要重傳)。
 6. 要升到 targetSdk 37 時,處理 `ACCESS_LOCAL_NETWORK`(NEARBY_DEVICES 群組)。
 7. 既有的 `nodes.dart` 對其他流程也會把 detail 和例外 `debugPrint` 出來(F31)→ 全 app 一併處理(本設計只管更新流程)。
+8. **code review r1 的 MINOR(2026-11-13,沒有實作;每項一行)**
+   - A-m2:有明確 reason 的拒絕(prepare E_STORAGE、apply 1/2/5/11/12/17/21、bulk/open 其他 reason、check E_STORAGE / E_UNSUPPORTED)直接照 §4 顯示,不先讀 status。設計要寫明這條例外,或改成先讀 status。
+   - A-m3(剩下的部分):取消時 `on_close` 不看 `bulk/close` 的回應;回應遺失時畫面照樣說「已取消」。
+   - A-m4:U8 / U10 期間按返回鍵沒有反應(`PopScope`),和 U7「可以離開這個畫面」不一致;31 s 等待時 UI 沒有取消按鈕。
+   - A-m6:§6「app 重開後 status 1 → 是我們的,要重新選檔」和 §3.3「沒選檔 → 放棄」不一致;畫面要不要加「選擇更新檔」。
+   - A-m7:Rust 裡的秘密副本沒有清零(bulk/open 回應的 `Value`、`sw_reply`、`ap_credentials` 的 clone、`hex_lower` 字串);§7 已改成誠實的寫法。
+   - A-m8:手機擁有者金鑰簽章失敗 → Lost → 讀 status → 重送 3 次 → 顯示 E_BUSY 的文字(「另一支擁有者手機」),文字誤導。
+   - A-m10:provd-wire.json 的 PUT 擷取沒有被 app 測試讀;也沒有擷取「client 還在寫、500 ms 後被關」那個情況。
+   - A-m11:test-all.sh 沒有檢查 swupd 的測試(Rust `tests/swupd.rs`、bridge `sw_tests`、`swupdate_test.dart`)有跑到。
+   - A-m12 ⚠️:各節點的 br-ahwlan 如果在同一個 L2,手機連在別台節點的 AP 也可能有直連路由 → 403 → 永遠不退到 Specifier(§10-4,T9(g) 要量)。
+   - B-m4:Android 的 `ConnectException` 不只代表「被拒」(ENETUNREACH、EPERM 等也是);要嘛看 errno,要嘛 T9 實測後寫進 §11.1。
+   - B-m7:T8 是 JVM loopback,不是在 S20 上跑;T9 / T12 / logcat 檢查都是寫了沒跑。PR 要照實寫。
+   - B-m8:`swupd-logcat-check.sh` 把任何 32 位 hex 當成 bearer,可能誤判;app 重開時換 pid,舊行就漏看。先在 bench 看一次 BMAPP log。
+   - B-m9:`pickUpdateFiles` 不限檔數;N 個小檔會整個讀進來經 channel 傳。
+   - B-m11:`findDirect` 的 `hit` 跨 thread 讀寫沒有同步(良性);可以改用 `AtomicReference`。
 
 ## 附錄 A. v0.2 審查 A(APPROVE-WITH-CHANGES:1 BLOCKER / 8 MAJOR / 10 MINOR)→ 改在哪
 
