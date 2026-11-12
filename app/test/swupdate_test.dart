@@ -243,6 +243,23 @@ void main() {
     expect(r.flow.calls, containsAllInOrder(['uploaded other', 'uploaded ok200']));
   });
 
+  testWidgets('r2 A m-n1: a new upload stage explains the Specifier again (joined is cleared at its end)', (t) async {
+    // stage 1 ends with a 200 (uploading false -> released); the flow later starts a second stage (U8 read 0 + 15)
+    final r = await run(
+        t,
+        Rig(direct: false, puts: ['ok200', 'ok200'], answers: [
+          act(SwKind.show_, text: 'idle', buttons: [SwButton.pick]),
+          act(SwKind.show_, text: 'u3', buttons: [SwButton.start, SwButton.cancel]),
+          act(SwKind.upload, uploading: true),
+          act(SwKind.upload, uploading: true),
+          act(SwKind.done, text: '更新完成:1.5.14-wsl.30'),
+        ]));
+    expect(r.count('upload'), 2);
+    expect(r.count('cancelUpload'), 2, reason: 'each stage releases its network');
+    expect(r.events.where((e) => e == 'notice').length, 2, reason: 'the second stage leaves the Wi-Fi again: the D5 notice again');
+    expect(r.count('joinAp'), 2);
+  });
+
   testWidgets('r1 A-M3 (U6): keepalives every 10 s during the PUT; its result waits for the keepalive in flight', (t) async {
     final r = await run(t, Rig(direct: true, putTakes: const Duration(seconds: 25)));
     expect(r.events.where((e) => e == 'keepalive-sent').length, greaterThanOrEqualTo(2), reason: '${r.events}');
