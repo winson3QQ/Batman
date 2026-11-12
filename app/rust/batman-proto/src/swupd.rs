@@ -46,8 +46,11 @@ pub const TRIAL_FOR_MS: u64 = 900_000;
 /// §3.3: 0 without a reason after 2 / 3 / 4 was seen: read every 30 s for up to 2 minutes
 pub const UNSURE_POLL_MS: u64 = 30_000;
 pub const UNSURE_FOR_MS: u64 = 120_000;
-/// the entry's status read refused with E_RATE (the status page read it a moment ago): again after 1.5 s, 3 times
+/// the entry's status read refused with E_RATE (the status page read it a moment ago): again after 1.5 s
 pub const STATUS_RATE_MS: u64 = 1_500;
+/// code review r1 A-M1: a status without "trust" (the node's cache was stale: {15: {stale: true}}) is read again after
+/// 2.5 s; the entry reads status at most 1 + TRIES times, then 「讀不到節點的狀態」
+pub const STALE_RETRY_MS: u64 = 2_500;
 /// node strings shown: display_name, then at most this many characters (§7)
 pub const SHOWN_MAX: usize = 64;
 /// D13: the production release root key's fingerprint (16 hex). None until #255: a field build offers no update.
@@ -293,27 +296,39 @@ fn text_key<'a>(m: &'a Value, k: &str) -> Option<&'a Value> {
     }
 }
 
-/// What status key 15 says for the update (§3.1): Ok(the trust line shown on dev builds) or Err(why not).
-pub fn gate(status: &Value, dev_trust: bool) -> Result<String, String> {
+/// What status key 15 says for the update (§3.1, erratum r1 A-M1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Gate {
+    /// updatable: the trust line shown on dev builds ("" on a field build)
+    Open(String),
+    /// not updatable through the app, and why
+    Closed(String),
+    /// no "trust" in this answer (the node's status cache was stale, or an answer without key 15): read it again —
+    /// only an explicit "none" means "ssh / reflash"
+    Unread,
+}
+
+pub fn gate(status: &Value, dev_trust: bool) -> Gate {
     let k15 = status.get(15);
     let trust = k15.and_then(|m| text_key(m, "trust")).and_then(Value::as_text);
     let line = match trust {
-        None | Some("none") => return Err(T_TRUST_NONE.into()),
+        None => return Gate::Unread,
+        Some("none") => return Gate::Closed(T_TRUST_NONE.into()),
         Some(t) if t.len() == 16 && t.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) => {
             if dev_trust {
                 format!("測試信任:{t}")
             } else if PROD_TRUST == Some(t) {
                 String::new()
             } else {
-                return Err(T_TRUST_FIELD.into());
+                return Gate::Closed(T_TRUST_FIELD.into());
             }
         }
-        Some(_) => return Err(T_TRUST_BAD.into()),
+        Some(_) => return Gate::Closed(T_TRUST_BAD.into()),
     };
     if k15.and_then(|m| text_key(m, "http_bind_failed")) == Some(&Value::Bool(true)) {
-        return Err(T_BIND_FAILED.into());
+        return Gate::Closed(T_BIND_FAILED.into());
     }
-    Ok(line)
+    Gate::Open(line)
 }
 
 /// §10-7: the node runs TAK when status key 15 "tenants" lists opentakserver
@@ -448,7 +463,8 @@ pub struct Screen {
     pub buttons: Vec<Button>,
 }
 
-#[derive(Debug, PartialEq)]
+/// (Debug by hand: the Upload bearer never goes into a `{:?}`, code review r1 B-m6)
+#[derive(PartialEq)]
 pub enum Action {
     Send { verb: Verb, body: Value, wait_ms: u64, note: String },
     Wait { ms: u64, note: String, percent: Option<u64> },
@@ -456,6 +472,18 @@ pub enum Action {
     Upload { ip: String, port: u16, bearer: [u8; 16], size: u64, payload: usize },
     Show(Screen),
     Done(Screen),
+}
+
+impl std::fmt::Debug for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::Send { verb, body, wait_ms, note } => write!(f, "Send({verb:?}, {body:?}, {wait_ms} ms, {note:?})"),
+            Action::Wait { ms, note, percent } => write!(f, "Wait({ms} ms, {note:?}, {percent:?})"),
+            Action::Upload { ip, port, size, payload, .. } => write!(f, "Upload({ip}:{port}, {size} B, file {payload}, bearer <hidden>)"),
+            Action::Show(s) => write!(f, "Show({s:?})"),
+            Action::Done(s) => write!(f, "Done({s:?})"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -583,6 +611,8 @@ impl Flow {
     pub fn start(&mut self) -> Action {
         self.status_tries = 0;
         self.seen_busy = false;
+        // a refresh starts the §3.4 PUT count again (code review r1 A-m9)
+        self.put_fails = 0;
         self.send(Verb::Status, None, "正在讀節點的狀態…")
     }
 
@@ -747,6 +777,15 @@ impl Flow {
         })
     }
 
+    /// giving up the update (3 PUTs, 3 refused uploads, E_STORAGE): an open window is closed first, then the text
+    /// (code review r1 A-m3: back to the state before; another owner need not wait the window out)
+    fn give_up(&mut self, text: &'static str, tech: String) -> Action {
+        if self.window_open {
+            return self.close(false, text);
+        }
+        self.text_with_pick(text.into(), tech)
+    }
+
     fn close(&mut self, cancel: bool, after: &'static str) -> Action {
         self.close = Some((cancel, after));
         self.window_open = false;
@@ -790,7 +829,7 @@ impl Flow {
             Put::Other => {
                 self.put_fails += 1;
                 if self.put_fails >= TRIES {
-                    return Some(self.text_with_pick(T_PUT_FAILED.into(), format!("PUT x{}", self.put_fails)));
+                    return Some(self.give_up(T_PUT_FAILED, format!("PUT x{}", self.put_fails)));
                 }
                 self.wait(PUT_FAIL_WAIT_MS, Then::Read(Read::Failed(Fail::Put)), "傳送中斷,等節點放掉上一次的傳送(約 30 秒)…", None)
             }
@@ -833,15 +872,20 @@ impl Flow {
             Reply::Ok(b) => {
                 self.tak = runs_tak(&b);
                 match gate(&b, self.dev_trust) {
-                    Ok(t) => {
+                    Gate::Open(t) => {
                         self.trust = t;
                         self.blocked = None;
                     }
-                    Err(why) => self.blocked = Some(why),
+                    Gate::Closed(why) => self.blocked = Some(why),
+                    Gate::Unread if self.status_tries < TRIES => {
+                        self.status_tries += 1;
+                        return self.wait(STALE_RETRY_MS, Then::Status, "正在讀節點的狀態…", None);
+                    }
+                    Gate::Unread => return self.screen(T_STATUS_UNREAD.into(), String::new(), vec![Button::Refresh]),
                 }
                 self.send(Verb::Info, None, "正在讀節點的版本…")
             }
-            Reply::Err { code: E_RATE, .. } if self.status_tries + 1 < TRIES => {
+            Reply::Err { code: E_RATE, .. } if self.status_tries < TRIES => {
                 self.status_tries += 1;
                 self.wait(STATUS_RATE_MS, Then::Status, "正在讀節點的狀態…", None)
             }
@@ -884,7 +928,7 @@ impl Flow {
                 Some(r @ (15 | 11)) if self.ours(&p) => {
                     self.bad += 1;
                     if self.bad >= TRIES {
-                        return self.text_with_pick(T_REJECTED_UPLOAD.into(), format!("原因 {r}"));
+                        return self.give_up(T_REJECTED_UPLOAD, format!("原因 {r}"));
                     }
                     self.open()
                 }
@@ -973,7 +1017,7 @@ impl Flow {
                 Fail::Prepare15 if p.phase == 1 && ours => {
                     self.bad += 1;
                     if self.bad >= TRIES {
-                        return self.text_with_pick(T_REJECTED_UPLOAD.into(), "原因 15".into());
+                        return self.give_up(T_REJECTED_UPLOAD, "原因 15".into());
                     }
                     self.wait(PUT_FAIL_WAIT_MS, Then::Open, "等節點放掉上一次的傳送(約 30 秒)…", None)
                 }
@@ -1125,6 +1169,7 @@ impl Flow {
             }
             Reply::Err { code: E_REJECTED, ref detail } if detail.get(2).and_then(Value::as_uint) == Some(15) => self.fail(Fail::Prepare15),
             Reply::Err { code: E_BUSY, .. } | Reply::Lost => self.fail(Fail::Prepare),
+            Reply::Err { code: E_STORAGE, .. } => self.give_up(E_STORAGE_TEXT, "代碼 10".into()),
             Reply::Err { code, detail } => {
                 let c = self.ctx(false);
                 self.text_with_pick(error_text(code, &detail, c), tech(code, &detail))
