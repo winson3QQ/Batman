@@ -2,7 +2,9 @@ package dev.batman.batman_app.swupd
 
 import android.app.Activity
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.provider.Settings
 import android.view.WindowManager
@@ -29,6 +31,8 @@ class SwUpload(private val activity: Activity, messenger: BinaryMessenger) {
     private var network: Network? = null // the one `upload` uses (direct, or the Specifier's)
     @Volatile private var put: SwPut? = null
     @Volatile private var running = false
+    /** the last PUT's non-secret code (refused / unreached / connect_io / file_io / watchdog / status / io / ...), v0.4.2 */
+    @Volatile private var lastCode = ""
     /** cancelUpload calls so far: a lookup that started before one does not remember its network (r1 B-m3) */
     @Volatile private var cancels = 0
     private val net = SwNet(activity) { lost ->
@@ -64,6 +68,11 @@ class SwUpload(private val activity: Activity, messenger: BinaryMessenger) {
                 "upload" -> upload(call.argument<String>("uri"), call.argument<Number>("size")?.toLong(),
                     call.argument<String>("ip"), call.argument<Number>("port")?.toInt(), call.argument<String>("bearer"), result)
                 "cancelUpload" -> bg(result, "cancel") { cancelUpload(); null }
+                // v0.4.2 (04 + S20: WireGuard took every PUT into tun0, the node saw no SYN): is this app's default
+                // network a VPN? ConnectivityManager.getActiveNetwork() is the calling app's default network — the
+                // VPN when one applies to our UID (AOSP ConnectivityService.getActiveNetwork -> getActiveNetworkForUid)
+                "vpnActive" -> bg(result, "network") { vpnCovers() }
+                "lastUploadCode" -> result.success(lastCode)
                 "uploadProgress" -> result.success(put?.takeIf { running }?.sent ?: 0L)
                 "keepScreenOn" -> {
                     val on = call.argument<Boolean>("on")
@@ -141,7 +150,7 @@ class SwUpload(private val activity: Activity, messenger: BinaryMessenger) {
         val n = synchronized(lock) {
             if (running) { result.error("busy", null, null); return }
             network?.also { running = true; put = p }
-        } ?: run { result.success(SwPut.Result.NO_NETWORK.wire); return }
+        } ?: run { lastCode = "no_network_held"; result.success(SwPut.Result.NO_NETWORK.wire); return }
         Thread({
             val o = try {
                 p.put(n.socketFactory, addr, port, bearer, size) {
@@ -151,8 +160,15 @@ class SwUpload(private val activity: Activity, messenger: BinaryMessenger) {
                 SwPut.Outcome(SwPut.Result.OTHER, "error")
             }
             running = false
+            lastCode = o.code
             activity.runOnUiThread { result.success(o.result.wire) }
         }, "swupd-put").start()
+    }
+
+    private fun vpnCovers(): Boolean {
+        val cm = activity.getSystemService(ConnectivityManager::class.java)
+        val n = cm.activeNetwork ?: return false
+        return SwPut.vpnCovers(cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN))
     }
 
     // §11.1 cancelUpload: abort the PUT (linger 0), release the Specifier network, forget the chosen Network

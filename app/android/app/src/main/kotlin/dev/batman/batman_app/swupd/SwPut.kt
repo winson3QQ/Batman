@@ -192,6 +192,12 @@ class SwPut(
 
         fun isBearerHex(s: String) = s.length == 32 && s.all { it in '0'..'9' || it in 'a'..'f' }
 
+        /**
+         * v0.4.2: the app's default network has TRANSPORT_VPN (true) / not (false) / unknown (null: no capabilities).
+         * Unknown is not a VPN: the PUT then shows whether the node is reached (its code says how it failed).
+         */
+        fun vpnCovers(hasVpnTransport: Boolean?) = hasVpnTransport == true
+
         /** The request head, byte for byte (T8): request line, Host, X-Batman-Upload, Content-Length, Connection. */
         fun request(ip: InetAddress, port: Int, bearerHex: String, size: Long): ByteArray =
             ("PUT /batman/v1/bulk/0 HTTP/1.1\r\n" +

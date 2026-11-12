@@ -27,10 +27,10 @@
 
 // Section: imports
 
-use crate::api::swupdate::*;
 use crate::api::rekey::*;
 use crate::api::owner::*;
 use crate::api::claim::*;
+use crate::api::swupdate::*;
 use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
@@ -1981,6 +1981,7 @@ return crate::api::swupdate::SwFile{size: var_size, head: var_head, data: var_da
 1 => crate::api::swupdate::SwPut::Other,
 2 => crate::api::swupdate::SwPut::NoNetwork,
 3 => crate::api::swupdate::SwPut::Denied,
+4 => crate::api::swupdate::SwPut::Vpn,
             _ => unreachable!("Invalid variant for SwPut: {}", inner),
         };}
                 }
@@ -2766,6 +2767,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::swupdate::SwKind> for crate::
 Self::Other => 1.into_dart(),
 Self::NoNetwork => 2.into_dart(),
 Self::Denied => 3.into_dart(),
+Self::Vpn => 4.into_dart(),
                     _ => unreachable!(),
                 }
                 }
@@ -3321,6 +3323,7 @@ crate::api::swupdate::SwKind::Nothing => { 5 }
 crate::api::swupdate::SwPut::Other => { 1 }
 crate::api::swupdate::SwPut::NoNetwork => { 2 }
 crate::api::swupdate::SwPut::Denied => { 3 }
+crate::api::swupdate::SwPut::Vpn => { 4 }
  _ => { unimplemented!(""); }}, serializer);}
                 }
                 
@@ -3389,10 +3392,10 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
-use crate::api::swupdate::*;
 use crate::api::rekey::*;
 use crate::api::owner::*;
 use crate::api::claim::*;
+use crate::api::swupdate::*;
 use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
@@ -3476,10 +3479,10 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::swupdate::*;
 use crate::api::rekey::*;
 use crate::api::owner::*;
 use crate::api::claim::*;
+use crate::api::swupdate::*;
 use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;

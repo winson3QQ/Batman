@@ -437,4 +437,24 @@ class SwPutTest {
         p = SwPut()
         assertEquals(SwPut.Outcome(SwPut.Result.OTHER, "cancelled"), p.put(f, lo, 8095, bearer, 10) { Pattern(10) })
     }
+
+    // v0.4.2: the VPN decision (the platform part, getActiveNetwork + TRANSPORT_VPN, is SwUpload's)
+    @Test fun aVpnTransportOnTheDefaultNetworkStopsTheUpload() {
+        assertTrue(SwPut.vpnCovers(true))
+        assertFalse(SwPut.vpnCovers(false))
+        assertFalse("no capabilities: not known to be a VPN", SwPut.vpnCovers(null))
+    }
+
+    // v0.4.2: the code of a failed PUT is a fixed, non-secret word (it goes to the page's 技術資訊)
+    @Test fun failureCodesAreFixedWordsWithoutTheBearer() {
+        val codes = mutableListOf<String>()
+        FakeNode { s -> readHead(s) }.use { node ->
+            codes += SwPut().put(plain, lo, node.port, bearer, 1000) { Pattern(10) }.code // short file
+        }
+        codes += SwPut(SwPut.Timing(refusedRetryMs = 100, refusedForMs = 500)).put(plain, lo, 1, bearer, 10) { Pattern(10) }.code // nothing listens: refused / connect_io
+        for (c in codes) {
+            assertTrue("code $c", c.matches(Regex("[a-z_0-9]{2,16}")))
+            assertFalse(c.contains(bearer))
+        }
+    }
 }

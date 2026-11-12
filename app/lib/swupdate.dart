@@ -54,6 +54,9 @@ class SwHold {
   /// D5 (code review r1 A-M2 / B-M1): this upload stage joined the node AP with the Specifier — the next PUT of the
   /// stage goes out on that network again: no second notice, no second request (each would cut TAK twice)
   bool joined = false;
+
+  /// v0.4.2: the last PUT's non-secret code from Kotlin (refused / unreached / watchdog / ...), for 技術資訊
+  String putCode = '';
   final clock = Stopwatch()..start();
   BigInt now() => BigInt.from(clock.elapsedMilliseconds);
 }
@@ -181,6 +184,12 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
 
   /// U5 / U6 (§11.1 order): the current Wi-Fi first, else the Specifier after the D5 notice; keepalive every 10 s
   Future<SwAction> _upload(SwAction a) async {
+    // v0.4.2 (04 + S20): a VPN covering this app takes the PUT into its tunnel, even on the node AP's network — stop
+    // before the AP lookup and before a Specifier join (no TAK cut for nothing); nothing is held yet
+    if (await _ch.invokeMethod<bool>('vpnActive') ?? false) {
+      _h.putCode = 'vpn';
+      return _f.uploaded(SwPut.vpn);
+    }
     _h.netHeld = true;
     _cancel = false;
     _sent = 0;
@@ -250,13 +259,16 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
 
   Future<String?> _put(SwAction a) async {
     if (_cancel) return 'other';
-    return _ch.invokeMethod<String>('upload', {
+    final r = await _ch.invokeMethod<String>('upload', {
         'uri': _h.uris[a.payload],
         'size': a.size.toInt(),
         'ip': a.ip,
         'port': a.port,
         'bearer': a.bearerHex,
       });
+    // v0.4.2: how a PUT that was not 200 ended (a fixed word, never the bearer), shown under 技術資訊
+    _h.putCode = r == 'ok200' ? '' : (await _ch.invokeMethod<String>('lastUploadCode') ?? '');
+    return r;
   }
 
   Future<bool> _specifierOk() async {
@@ -332,7 +344,10 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
                 for (final b in a.buttons) FilledButton(onPressed: () => _press(b), child: Text(buttonLabel(b))),
                 if (a.kind == SwKind.done) FilledButton(onPressed: () => Navigator.pop(context), child: const Text('關閉')),
               ]),
-            if (a != null && a.tech.isNotEmpty) ExpansionTile(title: const Text('技術資訊'), children: [Text(a.tech)]),
+            if (a != null && (a.tech.isNotEmpty || _h.putCode.isNotEmpty))
+              ExpansionTile(title: const Text('技術資訊'), children: [
+                Text([if (a.tech.isNotEmpty) a.tech, if (_h.putCode.isNotEmpty) 'PUT: ${_h.putCode}'].join(';')),
+              ]),
           ]),
         ),
       ),

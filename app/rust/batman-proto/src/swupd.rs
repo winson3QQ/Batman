@@ -66,6 +66,9 @@ pub const T_CHECKING: &str = "節點正在檢查,最多約 6 分鐘,這段時間
 pub const T_CONFIRM: &str = "開始傳送後請留在這個畫面,不要離開、不要關螢幕。寫入開始後不能取消;寫好後舊版本的退路已失效。";
 pub const T_SPECIFIER: &str = "手機會暫時離開目前的 Wi-Fi(TAK 會中斷),傳完自動回來";
 pub const T_NO_WIFI: &str = "沒有連上節點的 Wi-Fi — 請確認手機 Wi-Fi 已開啟";
+/// v0.4.2 (04 + S20, 2026-11-13): an active VPN covering the app takes the PUT's packets into the tunnel, even on the
+/// node AP's Network — the node never sees them
+pub const T_VPN: &str = "這支手機開著 VPN(例如 WireGuard),會擋住傳給節點的資料。請暫時關閉 VPN,或在 VPN 設定裡把 Batman 加進排除的 App,再按「再試一次」。";
 pub const T_UPLOADING: &str = "正在傳送更新檔,請留在這個畫面";
 pub const T_WRITING: &str = "節點正在驗證並寫入新版,可以離開這個畫面";
 pub const T_TAK: &str = "重開約 2 分鐘,全隊 TAK 中斷";
@@ -427,6 +430,8 @@ pub enum Put {
     NoNetwork,
     /// the operator refused the system dialog
     Denied,
+    /// v0.4.2: a VPN covers the app (checked before the AP lookup / the Specifier join): nothing was sent
+    Vpn,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -834,6 +839,8 @@ impl Flow {
                 self.wait(PUT_FAIL_WAIT_MS, Then::Read(Read::Failed(Fail::Put)), "傳送中斷,等節點放掉上一次的傳送(約 30 秒)…", None)
             }
             Put::NoNetwork | Put::Denied => self.screen(T_NO_WIFI.into(), String::new(), vec![Button::WifiPanel, Button::Retry, Button::Cancel]),
+            // the window stays open: 再試一次 = bulk/open again (extends it), 取消 = bulk/close
+            Put::Vpn => self.screen(T_VPN.into(), "VPN".into(), vec![Button::Retry, Button::Cancel]),
         })
     }
 

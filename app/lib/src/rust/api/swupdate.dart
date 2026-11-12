@@ -188,4 +188,12 @@ enum SwKind {
 }
 
 /// Kotlin `upload` / `joinAp` results (§11.1)
-enum SwPut { ok200, other, noNetwork, denied }
+enum SwPut {
+  ok200,
+  other,
+  noNetwork,
+  denied,
+
+  /// v0.4.2: Kotlin `vpnActive` said a VPN covers the app (nothing was sent)
+  vpn,
+}
