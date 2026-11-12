@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "dev.batman.batman_app"
-    compileSdk = 37  // reactive_ble_mobile 5.6.0 compiles against 37 (its AAR metadata); targetSdk stays flutter's
+    compileSdk = 37  // reactive_ble_mobile 5.6.0 compiles against 37 (its AAR metadata); targetSdk is the literal 36 below (D6)
     ndkVersion = "30.0.16248370"  // the installed NDK, fixed (design §2: NDK version pinned)
 
     compileOptions {

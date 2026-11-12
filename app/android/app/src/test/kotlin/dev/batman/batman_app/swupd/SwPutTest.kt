@@ -7,6 +7,9 @@ import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.InetAddress
+import java.net.NoRouteToHostException
+import java.io.OutputStream
+import java.util.concurrent.CountDownLatch
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketAddress
@@ -288,5 +291,137 @@ class SwPutTest {
         assertEquals("10.41.80.13", SwPut.ipv4("10.41.80.13")!!.hostAddress)
         // the constants the design fixes (D4 / D5)
         assertEquals(35_000L, SwPut.STALL_MS); assertEquals(3_000, SwPut.CONNECT_TIMEOUT_MS); assertEquals(2, SwPut.CONNECT_TRIES)
+    }
+
+    // ---- code review r1 (B-m1, B-m2, B-m5 and reviewer B's surviving mutants R2 R3 R4 R6 R9) ----
+
+    private fun cl(h: String) = Regex("Content-Length: (\\d+)").find(h)!!.groupValues[1].toLong()
+    private fun readN(s: Socket, n: Long): Long {
+        val inp = s.getInputStream(); val buf = ByteArray(65536); var got = 0L
+        while (got < n) { val r = inp.read(buf, 0, minOf(buf.size.toLong(), n - got).toInt()); if (r < 0) break; got += r }
+        return got
+    }
+
+    // B-m1: a body whose read blocks for ever after 1000 bytes (a stalled DocumentsProvider pipe) — the watchdog ends
+    // the PUT anyway (else the upload never answers, the page cannot be left, every later upload is "busy").
+    // Negative control: 0056205 (put() still running 10 s after a 2 s watchdog).
+    @Test(timeout = 20_000) fun blockedFileReadEndsByWatchdog() {
+        val stuck = CountDownLatch(1)
+        FakeNode { s -> readHead(s); readN(s, Long.MAX_VALUE) }.use { node ->
+            val body = object : InputStream() {
+                var left = 1000
+                override fun read(): Int { if (left-- > 0) return 0x55; stuck.await(); return -1 }
+                override fun read(b: ByteArray, off: Int, len: Int): Int {
+                    if (left <= 0) { stuck.await(); return -1 }
+                    val k = minOf(len, left); left -= k; return k
+                }
+            }
+            val r = AtomicReference<SwPut.Outcome>()
+            val t = Thread { r.set(SwPut(SwPut.Timing(stallMs = 2_000)).put(plain, lo, node.port, bearer, 1_000_000) { body }) }.apply { isDaemon = true; start() }
+            t.join(10_000)
+            assertFalse("put() still running 10 s after a 2 s watchdog", t.isAlive)
+            assertEquals(SwPut.Outcome(SwPut.Result.OTHER, "watchdog"), r.get())
+            stuck.countDown()
+        }
+    }
+
+    // B-m1: a body that returns 0 for ever must not spin past the watchdog
+    @Test(timeout = 20_000) fun zeroReadsEndByWatchdog() {
+        FakeNode { s -> readHead(s); readN(s, Long.MAX_VALUE) }.use { node ->
+            val body = object : InputStream() {
+                override fun read(): Int = 0
+                override fun read(b: ByteArray, off: Int, len: Int): Int = 0
+            }
+            val r = AtomicReference<SwPut.Outcome>()
+            val t = Thread { r.set(SwPut(SwPut.Timing(stallMs = 2_000)).put(plain, lo, node.port, bearer, 1_000) { body }) }.apply { isDaemon = true; start() }
+            t.join(10_000)
+            assertFalse("put() still spinning 10 s after a 2 s watchdog", t.isAlive)
+            assertEquals(SwPut.Result.OTHER, r.get().result)
+        }
+    }
+
+    // B-m2: provd ReadHeaderTimeout 5 s from the accept; a 6 s SAF open must happen before the connect.
+    // Negative control: 0056205 (the open after the connect -> the head too late -> other).
+    @Test(timeout = 40_000) fun slowFileOpenStillMeetsTheHeaderDeadline() {
+        FakeNode { s ->
+            s.soTimeout = 5_000
+            val h = try { readHead(s) } catch (e: Exception) { return@FakeNode } // the header deadline: provd closes
+            readN(s, cl(h)); s.getOutputStream().write("HTTP/1.1 200 OK\r\n\r\n".toByteArray())
+        }.use { node ->
+            val o = SwPut().put(plain, lo, node.port, bearer, 1000) { Thread.sleep(6_000); Pattern(1000) }
+            assertEquals(SwPut.Result.OK200, o.result)
+        }
+    }
+
+    // R4: a file longer than size: exactly size bytes go out (the node checks the sha)
+    @Test fun longerFileSendsExactlySize() {
+        val extra = AtomicLong(-1)
+        FakeNode { s ->
+            val h = readHead(s); readN(s, cl(h)); Thread.sleep(300); extra.set(s.getInputStream().available().toLong())
+            s.getOutputStream().write("HTTP/1.1 200 OK\r\n\r\n".toByteArray())
+        }.use { node ->
+            assertEquals(SwPut.Result.OK200, SwPut().put(plain, lo, node.port, bearer, 100_000) { Pattern(300_000) }.result)
+            assertEquals("bytes beyond Content-Length", 0L, extra.get())
+        }
+    }
+
+    // R2: a cancel before the connect: no connection is made, nothing is sent
+    @Test fun abortBeforeConnectConnectsNothing() {
+        FakeNode { s -> readHead(s) }.use { node ->
+            val p = SwPut(); p.abort("cancelled")
+            assertEquals(SwPut.Outcome(SwPut.Result.OTHER, "cancelled"), p.put(plain, lo, node.port, bearer, 10) { Pattern(10) })
+            Thread.sleep(200)
+            assertEquals(0, node.accepted.get())
+        }
+    }
+
+    // R3 / B-m5: no route (ARP failed: a same-subnet foreign AP) counts like a connect timeout -> no_network after two
+    @Test fun twoNoRoutesAreNoNetwork() {
+        val made = AtomicInteger()
+        val f = object : SocketFactory() {
+            override fun createSocket(): Socket { made.incrementAndGet(); return object : Socket() {
+                override fun connect(endpoint: SocketAddress?, timeout: Int) { throw NoRouteToHostException("no route") }
+            } }
+            override fun createSocket(h: String?, p: Int) = throw UnsupportedOperationException()
+            override fun createSocket(h: String?, p: Int, a: InetAddress?, lp: Int) = throw UnsupportedOperationException()
+            override fun createSocket(h: InetAddress?, p: Int) = throw UnsupportedOperationException()
+            override fun createSocket(h: InetAddress?, p: Int, a: InetAddress?, lp: Int) = throw UnsupportedOperationException()
+        }
+        assertEquals(SwPut.Outcome(SwPut.Result.NO_NETWORK, "unreached"), SwPut().put(f, lo, 8095, bearer, 10) { Pattern(10) })
+        assertEquals(2, made.get())
+    }
+
+    // R6: only a status line whose code IS 200 is 200
+    @Test fun onlyTheStatusCode200Is200() {
+        for (line in listOf("HTTP/1.1 2000 OK", "HTTP/1.1 409 Conflict 200", "XTTP/1.1 200 OK", "HTTP/1.1  200 OK")) {
+            FakeNode { s -> val h = readHead(s); readN(s, cl(h)); s.getOutputStream().write("$line\r\n\r\n".toByteArray()) }.use { node ->
+                assertEquals(line, SwPut.Result.OTHER, SwPut().put(plain, lo, node.port, bearer, 100) { Pattern(100) }.result)
+            }
+        }
+    }
+
+    // R9: an abort that comes while the 200 is read (a cancel / onLost at that moment) is not a 200
+    @Test fun anAbortRacingTheStatusLineIsNot200() {
+        lateinit var p: SwPut
+        val f = object : SocketFactory() {
+            override fun createSocket(): Socket = object : Socket() {
+                private var closed = false
+                override fun connect(endpoint: SocketAddress?, timeout: Int) {}
+                override fun setSoTimeout(timeout: Int) {}
+                override fun getOutputStream(): OutputStream = OutputStream.nullOutputStream()
+                override fun getInputStream(): InputStream = object : InputStream() {
+                    val bytes = "HTTP/1.1 200 OK\r\n".toByteArray(); var i = 0
+                    override fun read(): Int { if (i == 0) p.abort("cancelled"); return if (i < bytes.size) bytes[i++].toInt() else -1 }
+                }
+                override fun isClosed() = closed
+                override fun close() { closed = true }
+            }
+            override fun createSocket(h: String?, p: Int) = throw UnsupportedOperationException()
+            override fun createSocket(h: String?, p: Int, a: InetAddress?, lp: Int) = throw UnsupportedOperationException()
+            override fun createSocket(h: InetAddress?, p: Int) = throw UnsupportedOperationException()
+            override fun createSocket(h: InetAddress?, p: Int, a: InetAddress?, lp: Int) = throw UnsupportedOperationException()
+        }
+        p = SwPut()
+        assertEquals(SwPut.Outcome(SwPut.Result.OTHER, "cancelled"), p.put(f, lo, 8095, bearer, 10) { Pattern(10) })
     }
 }

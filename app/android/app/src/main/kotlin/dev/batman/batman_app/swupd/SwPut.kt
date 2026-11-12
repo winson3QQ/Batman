@@ -41,6 +41,7 @@ class SwPut(
     data class Outcome(val result: Result, val code: String)
 
     @Volatile private var socket: Socket? = null
+    @Volatile private var body: InputStream? = null
     @Volatile private var aborted: String? = null
     @Volatile private var lastProgress = 0L
     /** Body bytes written so far by this PUT (§11.1 `uploadProgress`). */
@@ -54,6 +55,8 @@ class SwPut(
     fun abort(code: String) {
         if (aborted == null) aborted = code
         socket?.let { hardClose(it) }
+        // code review r1 B-m1: a read stuck in the file (a stalled DocumentsProvider pipe) is woken where the stream allows
+        body?.let { try { it.close() } catch (_: IOException) {} }
     }
 
     /**
@@ -62,45 +65,68 @@ class SwPut(
      */
     fun put(factory: SocketFactory, ip: InetAddress, port: Int, bearerHex: String, size: Long, open: () -> InputStream): Outcome {
         if (!isBearerHex(bearerHex) || port !in 1..65535 || size <= 0) return Outcome(Result.OTHER, "args")
-        val s = when (val c = connect(factory, ip, port)) {
-            is Conn.Up -> c.socket
-            is Conn.Down -> return c.outcome
-        }
+        aborted?.let { return Outcome(Result.OTHER, it) }
+        // code review r1 B-m2: the file is opened BEFORE the connect — provd gives the request head 5 s from the accept
+        // (http.go ReadHeaderTimeout); a slow provider (a cloud file) must not eat into it
+        val input = try { open() } catch (e: Exception) { return Outcome(Result.OTHER, "file_io") }
+        body = input
         var watchdog: Thread? = null
         try {
+            aborted?.let { return Outcome(Result.OTHER, it) }
+            val s = when (val c = connect(factory, ip, port)) {
+                is Conn.Up -> c.socket
+                is Conn.Down -> return c.outcome
+            }
             aborted?.let { hardClose(s); return Outcome(Result.OTHER, it) }
             s.soTimeout = timing.stallMs.toInt() // the status line read (D4)
             lastProgress = clock()
             watchdog = Thread({ watch(s) }, "swupd-watchdog").apply { isDaemon = true; start() }
-            val body = try { open() } catch (e: Exception) { return fail(s, "file_io") }
-            body.use { input ->
-                val out = s.getOutputStream()
-                out.write(request(ip, port, bearerHex, size))
-                val buf = ByteArray(CHUNK)
-                while (sent < size) {
-                    val want = minOf(buf.size.toLong(), size - sent).toInt()
-                    val n = try { input.read(buf, 0, want) } catch (e: IOException) { return fail(s, "file_io") }
-                    if (n < 0) return fail(s, "short_file")
-                    if (n == 0) continue
-                    out.write(buf, 0, n)
-                    sent += n
-                    lastProgress = clock()
-                }
-                out.flush()
+            // the body is copied on its own thread: a file read that never returns (r1 B-m1) cannot hold the PUT past
+            // the watchdog — its abort ends the wait here, the copy thread dies with the closed socket / stream
+            var copyErr: String? = null
+            val copy = Thread({ copyErr = copy(s, input, ip, port, bearerHex, size) }, "swupd-body").apply { isDaemon = true; start() }
+            while (copy.isAlive) {
+                copy.join(WATCH_TICK_MS)
+                if (copy.isAlive) aborted?.let { return fail(s, it) }
             }
+            copyErr?.let { return fail(s, it) }
             val line = statusLine(s)
             return if (line.startsWith("HTTP/1.") && line.split(' ').getOrNull(1) == "200") {
                 s.close()
                 if (aborted != null) Outcome(Result.OTHER, aborted!!) else Outcome(Result.OK200, "ok")
             } else fail(s, "status")
         } catch (e: SocketTimeoutException) {
-            return fail(s, "read_timeout")
+            return socket?.let { fail(it, "read_timeout") } ?: Outcome(Result.OTHER, aborted ?: "read_timeout")
         } catch (e: IOException) {
-            return fail(s, "io")
+            return socket?.let { fail(it, "io") } ?: Outcome(Result.OTHER, aborted ?: "io")
         } finally {
             watchdog?.interrupt()
             socket = null
+            body = null
+            try { input.close() } catch (_: IOException) {}
         }
+    }
+
+    // the head, then exactly [size] bytes in 64 KiB chunks; null = all sent, else the failure code
+    private fun copy(s: Socket, input: InputStream, ip: InetAddress, port: Int, bearerHex: String, size: Long): String? = try {
+        val out = s.getOutputStream()
+        out.write(request(ip, port, bearerHex, size))
+        val buf = ByteArray(CHUNK)
+        var err: String? = null
+        while (sent < size && err == null) {
+            if (aborted != null) { err = aborted; break } // r1 B-m1: a zero-read spin ends with the watchdog
+            val want = minOf(buf.size.toLong(), size - sent).toInt()
+            val n = try { input.read(buf, 0, want) } catch (e: IOException) { err = "file_io"; break }
+            if (n < 0) { err = "short_file"; break }
+            if (n == 0) continue
+            out.write(buf, 0, n)
+            sent += n
+            lastProgress = clock()
+        }
+        if (err == null) out.flush()
+        err
+    } catch (e: IOException) {
+        "io"
     }
 
     // any failure after the connect: the socket is aborted (RST); an abort that came first decides the code

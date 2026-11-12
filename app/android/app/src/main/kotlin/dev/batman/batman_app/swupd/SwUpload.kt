@@ -29,6 +29,8 @@ class SwUpload(private val activity: Activity, messenger: BinaryMessenger) {
     private var network: Network? = null // the one `upload` uses (direct, or the Specifier's)
     @Volatile private var put: SwPut? = null
     @Volatile private var running = false
+    /** cancelUpload calls so far: a lookup that started before one does not remember its network (r1 B-m3) */
+    @Volatile private var cancels = 0
     private val net = SwNet(activity) { lost ->
         synchronized(lock) { if (network == lost) network = null }
         put?.abort("network_lost") // D4: the Specifier network's onLost aborts the socket (linger 0)
@@ -41,7 +43,14 @@ class SwUpload(private val activity: Activity, messenger: BinaryMessenger) {
                 "findNodeNetwork" -> {
                     val ip = call.argument<String>("ip")?.let(SwPut::ipv4)
                     if (ip == null) result.error("args", null, null)
-                    else bg(result, "network") { net.findDirect(ip)?.also { n -> synchronized(lock) { network = n } } != null }
+                    else bg(result, "network") {
+                        // r1 A-M2 / B-M1: the Specifier network this stage holds is the one to use again (no new request)
+                        val held = net.held()
+                        val gen = cancels
+                        val n = held ?: net.findDirect(ip)
+                        synchronized(lock) { if (n != null && gen == cancels) network = n }
+                        n != null && gen == cancels
+                    }
                 }
                 "joinAp" -> {
                     val ssid = call.argument<String>("ssid"); val pass = call.argument<String>("pass")
@@ -148,6 +157,7 @@ class SwUpload(private val activity: Activity, messenger: BinaryMessenger) {
 
     // §11.1 cancelUpload: abort the PUT (linger 0), release the Specifier network, forget the chosen Network
     private fun cancelUpload() {
+        cancels++
         put?.abort("cancelled")
         net.release()
         synchronized(lock) { network = null }
