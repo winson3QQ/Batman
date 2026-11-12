@@ -1,0 +1,5 @@
+node-helper.json, provd-wire.json: captured from the node's Go code (Batman-p3 feat/254-p3 @ 5edb755,
+feed/batman-prov/src): d=$(mktemp -d); BATMAN_CAPTURE_DIR=$d go test ./node -run TestCaptureApp &&
+BATMAN_CAPTURE_DIR=$d go test ./provd -run TestCaptureApp (254-app-update.md v0.4 §8). Regenerate, do not edit.
+plain.manifest, ok.manifest: Batman-p3 @ 531194c feed/batman-prov/src/release/testdata (made by the harness signer
+tests/tools/peer/signrel.py; TEST keys only).

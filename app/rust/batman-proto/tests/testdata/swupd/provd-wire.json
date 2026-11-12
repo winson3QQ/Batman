@@ -1,0 +1,286 @@
+{
+ "cases": [
+  {
+   "name": "apply-15",
+   "verb": "update/apply",
+   "status": 11,
+   "body": "a1020f"
+  },
+  {
+   "name": "apply-busy",
+   "verb": "update/apply",
+   "status": 7,
+   "body": "a0"
+  },
+  {
+   "name": "apply-ok",
+   "verb": "update/apply",
+   "status": 0,
+   "body": "a401030218640458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "bulk-close-15",
+   "verb": "bulk/close",
+   "status": 11,
+   "body": "a1020f"
+  },
+  {
+   "name": "bulk-close-ok",
+   "verb": "bulk/close",
+   "status": 0,
+   "body": "a0"
+  },
+  {
+   "name": "bulk-open-15",
+   "verb": "bulk/open",
+   "status": 11,
+   "body": "a1020f"
+  },
+  {
+   "name": "bulk-open-16",
+   "verb": "bulk/open",
+   "status": 11,
+   "body": "a10210"
+  },
+  {
+   "name": "bulk-open-21",
+   "verb": "bulk/open",
+   "status": 11,
+   "body": "a10215"
+  },
+  {
+   "name": "bulk-open-busy",
+   "verb": "bulk/open",
+   "status": 7,
+   "body": "a0"
+  },
+  {
+   "name": "bulk-open-ok",
+   "verb": "bulk/open",
+   "status": 0,
+   "body": "a601696261746d616e2d6170026961702d706173732d31036b31302e34312e38302e313304191f9f051903840650de63f334ff58f414a57dacbfec4b9eee"
+  },
+  {
+   "name": "check-busy",
+   "verb": "update/check",
+   "status": 7,
+   "body": "a0"
+  },
+  {
+   "name": "check-busy-other-owner",
+   "verb": "update/check",
+   "status": 7,
+   "body": "a0"
+  },
+  {
+   "name": "check-ok",
+   "verb": "update/check",
+   "status": 0,
+   "body": "a201f50319023a"
+  },
+  {
+   "name": "check-rate",
+   "verb": "update/check",
+   "status": 12,
+   "body": "a0"
+  },
+  {
+   "name": "check-rate-connection",
+   "verb": "update/check",
+   "status": 12,
+   "body": "a0"
+  },
+  {
+   "name": "check-refused-board",
+   "verb": "update/check",
+   "status": 0,
+   "body": "a301f402030319023a"
+  },
+  {
+   "name": "check-refused-downgrade",
+   "verb": "update/check",
+   "status": 0,
+   "body": "a301f402060319023a"
+  },
+  {
+   "name": "check-refused-nokey",
+   "verb": "update/check",
+   "status": 0,
+   "body": "a301f40218180300"
+  },
+  {
+   "name": "prepare-15-incomplete",
+   "verb": "update/prepare",
+   "status": 11,
+   "body": "a1020f"
+  },
+  {
+   "name": "prepare-15-not-holder",
+   "verb": "update/prepare",
+   "status": 11,
+   "body": "a1020f"
+  },
+  {
+   "name": "prepare-busy",
+   "verb": "update/prepare",
+   "status": 7,
+   "body": "a0"
+  },
+  {
+   "name": "prepare-ok",
+   "verb": "update/prepare",
+   "status": 0,
+   "body": "a4010202000458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "prepare-storage",
+   "verb": "update/prepare",
+   "status": 10,
+   "body": "a0"
+  },
+  {
+   "name": "status-0-11",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a501000200030b0458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-0-15",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a501000200030f0458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-0-21",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a50100020003150458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-0-22",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a50100020003160458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-0-23",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a50100020003170458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-committed",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a4010502000458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-idle",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a201000200"
+  },
+  {
+   "name": "status-receiving",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a4010102000458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-reverted",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a4010602000458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-reverted-18",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a50106020003120458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-trial",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a4010402000458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-working",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a401020218320458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-written",
+   "verb": "update/status",
+   "status": 0,
+   "body": "a401030218640458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "update-apply-outcome-unknown",
+   "verb": "update/apply",
+   "status": 7,
+   "body": "a10378206f7574636f6d6520756e6b6e6f776e20e280942072652d7265616420696e666f"
+  },
+  {
+   "name": "update-check-outcome-unknown",
+   "verb": "update/check",
+   "status": 7,
+   "body": "a10378206f7574636f6d6520756e6b6e6f776e20e280942072652d7265616420696e666f"
+  },
+  {
+   "name": "update-prepare-outcome-unknown",
+   "verb": "update/prepare",
+   "status": 7,
+   "body": "a10378206f7574636f6d6520756e6b6e6f776e20e280942072652d7265616420696e666f"
+  }
+ ],
+ "put": [
+  {
+   "name": "put-200",
+   "sent_body": true,
+   "status": "HTTP/1.1 200 OK",
+   "headers": [
+    "Content-Length:0",
+    "Connection:close"
+   ],
+   "closed": true
+  },
+  {
+   "name": "put-403-before-body",
+   "sent_body": false,
+   "status": "HTTP/1.1 403 Forbidden",
+   "headers": [
+    "Content-Type:text/plain; charset=utf-8",
+    "X-Content-Type-Options:nosniff",
+    "Content-Length:18",
+    "Connection:close"
+   ],
+   "closed": true
+  },
+  {
+   "name": "put-400-length",
+   "sent_body": false,
+   "status": "HTTP/1.1 400 Bad Request",
+   "headers": [
+    "Content-Type:text/plain; charset=utf-8",
+    "X-Content-Type-Options:nosniff",
+    "Content-Length:40",
+    "Connection:close"
+   ],
+   "closed": true
+  },
+  {
+   "name": "put-409-before-body",
+   "sent_body": false,
+   "status": "HTTP/1.1 409 Conflict",
+   "headers": [
+    "Content-Type:text/plain; charset=utf-8",
+    "X-Content-Type-Options:nosniff",
+    "Content-Length:28",
+    "Connection:close"
+   ],
+   "closed": true
+  }
+ ]
+}
