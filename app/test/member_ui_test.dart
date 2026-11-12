@@ -234,7 +234,8 @@ void main() {
         left: false,
         waitMs: BigInt.zero,
         sendUpdate: false,
-        info: Uint8List(0));
+        info: Uint8List(0),
+        sw: false);
     const member = StatusFields(
         color: 'green',
         sentence: '已連上隊伍網路',

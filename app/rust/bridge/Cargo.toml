@@ -18,6 +18,9 @@ batman-proto = { path = "../batman-proto" }
 # tests only: a fake node over a real Noise session (same versions / features as batman-proto)
 snow = { version = "=0.10.0", default-features = false, features = ["std", "use-curve25519", "use-chacha20poly1305", "use-sha2", "use-getrandom"] }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "ecdh", "std"] }
+# tests only: the software-update fixtures (batman-proto tests/testdata/swupd), same versions as batman-proto
+serde_json = "=1.0.140"
+hex = "=0.4.3"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
