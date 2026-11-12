@@ -407,6 +407,23 @@ status 不分擁有者(F18);「我們的」= status key 4 等於我們選的 man
 - Manifest:`INTERNET`、`CHANGE_NETWORK_STATE`、`ACCESS_NETWORK_STATE`。**不加** `networkSecurityConfig` / `usesCleartextTraffic`。
 - 不加任何 HTTP 套件。
 
+### 11.1 Kotlin 介面(Dart ↔ Kotlin 契約,2026-11-13 實作時補;D8 的三個呼叫 + U1/U5/U6/D9 需要的四個)
+
+MethodChannel 名稱:`dev.batman/swupdate`。全部在背景 thread 做事,結果回 UI thread。`result.error(code, null, null)`:**message 和 details 一律 null**(D8:錯誤不帶任何參數或秘密)。int 是 Dart `int`(Kotlin `Long`/`Int` 皆可,Dart 端以 `int` 讀)。
+
+| method | args | result | 錯誤 / 備註 |
+|---|---|---|---|
+| `pickUpdateFiles` | 無 | `List<Map>`,每個 `{uri: String, size: int, head: Uint8List, data: Uint8List}`;使用者取消 → 空 list | SAF `ACTION_OPEN_DOCUMENT`,`EXTRA_ALLOW_MULTIPLE`,`*/*`。`size` = `statSize`(未知 → `-1`)。`head` = 檔案開頭最多 2 bytes。`data` = 整個檔案,**只在** `head != 1f 8b` 且 `0 ≤ size ≤ 65536` 時讀(最多讀 65537 bytes,超過就給空);其他情況空。讀失敗 → `error("pick")` |
+| `findNodeNetwork` | `{ip: String}` | `bool` | D5:`registerNetworkCallback(TRANSPORT_WIFI)` 收集;有網路的路由 `matches(ip) && !isDefaultRoute && !hasGateway` → 記住這個 Network 給 `upload` 用,回 `true`;否則 `false`(不記) |
+| `joinAp` | `{ssid: String, pass: String}` | `String`:`"ok"` / `"denied"` / `"no_network"` | D5 Specifier(`setWpa2Passphrase`,去掉 INTERNET,`requestNetwork(…, 60 s)`)。`onAvailable` → 記住 Network,`"ok"`;`onUnavailable`(拒絕或 60 s)→ 能分辨是使用者拒絕就回 `"denied"`,否則 `"no_network"`。網路保留到 `cancelUpload`。`onLost` → 中止進行中的 socket(linger 0) |
+| `upload` | `{uri: String, size: int, ip: String, port: int, bearer: String}`(bearer = 32 個小寫 hex) | `String`:`"ok200"` / `"other"` / `"no_network"` | 用 `findNodeNetwork` / `joinAp` 記住的 Network(沒有 → `"no_network"`)。D4 PUT。連線逾時 3 s × 2 → `"no_network"`(Dart 接著走 `joinAp` 再 `upload`);被拒 → 每秒重試最多 10 s,仍不行 → `"other"`。讀到狀態列 `200` → `"ok200"`;其他一切(含取消、watchdog、`onLost`、檔案讀錯、送出 bytes ≠ size)→ `"other"`。一次只跑一個 |
+| `cancelUpload` | 無 | `null` | 中止進行中的 socket(`setSoLinger(true, 0)` + close),並 `unregisterNetworkCallback` 放掉 Specifier 網路、忘掉記住的 Network。上傳階段結束(D5:進 U8、取消、3 次用完)時 Dart 一定呼叫一次;沒有東西時無害 |
+| `uploadProgress` | 無 | `int`:目前這次 PUT 已寫出的 body bytes(沒有 → 0) | U6 進度條;Dart 每秒讀 |
+| `keepScreenOn` | `{on: bool}` | `null` | D9:`FLAG_KEEP_SCREEN_ON`,更新頁開著時 `true`,離開時 `false` |
+| `wifiPanel` | 無 | `null` | U5:開 `Settings.Panel.ACTION_WIFI` |
+
+Dart 端的順序(U5/U6):`findNodeNetwork(ip)` → `true` 直接 `upload`;`false` → 先顯示 D5 說明 → `joinAp`(密碼從 Rust 取一次)→ `"ok"` 才 `upload`;直連路徑的 `upload` 回 `"no_network"` → 同樣改走 `joinAp` 後再 `upload` 一次。結果原樣交給 Rust(`ok200` / `other` / `no_network` / `denied`)。
+
 ## 12. Checklist(不在本設計做;寫進 #254)
 
 1. (v0.4 移出:向量擷取程式改成本功能的交付物,§8、§11。)
