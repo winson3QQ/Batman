@@ -6,6 +6,14 @@
         tools:targetApi="s" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+    <!-- 254-app-update D4 / D5 / §7: the one raw-socket PUT of the software update to the node's phone AP (INTERNET; it
+         was only in the debug / profile manifests, which hid its absence from release builds), and joining that AP with a
+         WifiNetworkSpecifier / finding it with registerNetworkCallback (CHANGE / ACCESS_NETWORK_STATE). All three are
+         normal permissions; no location. Cleartext stays disallowed app-wide: no networkSecurityConfig, no
+         usesCleartextTraffic (the PUT is a raw socket, which that policy does not cover; T12). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 254-app-remove-member v6.4 §6 (T31): no backup of the sealed records (a restored older net record could sign
          a version number again; adb backup of a debuggable build would include app data) -->
     <application
