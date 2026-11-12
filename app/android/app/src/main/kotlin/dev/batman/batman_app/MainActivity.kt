@@ -4,6 +4,8 @@ import dev.batman.batman_app.keystore.EcdhPeer
 import dev.batman.batman_app.keystore.KeyPolicy
 import dev.batman.batman_app.keystore.KeyRole
 import dev.batman.batman_app.keystore.Keys
+import dev.batman.batman_app.swupd.SwUpload
+import android.content.Intent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -23,8 +25,25 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    // software update (254-app-update §11.1): channel dev.batman/swupdate
+    private var swUpload: SwUpload? = null
+
+    @Deprecated("FlutterActivity is a plain Activity: the SAF picker answers here")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (swUpload?.onActivityResult(requestCode, resultCode, data) == true) return
+        super.onActivityResult(requestCode, resultCode, data)
+    }
+
+    override fun onDestroy() {
+        swUpload?.dispose()
+        swUpload = null
+        super.onDestroy()
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        swUpload?.dispose()
+        swUpload = SwUpload(this, flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.batman/platform").setMethodCallHandler { call, result ->
             when (call.method) {
                 // the flavor's build constant, compared with the Rust library's at startup (design v8.5.1 §4.1)
