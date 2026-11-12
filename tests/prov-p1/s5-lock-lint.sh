@@ -105,7 +105,7 @@ function bsl(s,   k) { k = 0; while (k < length(s) && substr(s, length(s) - k, 1
 function out(t) { gsub(/[ \t]+/, " ", t); sub(/^ /, "", t); sub(/ $/, "", t)
 	if (t != "" && t !~ /^#/ && cand(t)) printf "%s :: %s :: %s\t%d\n", rel, (infn ? fn : "-"), t, ln }
 { l = $0; if (cont != "") l = cont l; else ln = NR; cont = "" }
-bsl(l) % 2 { cont = substr(l, 1, length(l) - 1); next }
+bsl(l) % 2 && !(ln == NR && l ~ /^[ \t]*#/) { cont = substr(l, 1, length(l) - 1); next }
 {
 	st = (!infn && l ~ /^[A-Za-z_][A-Za-z0-9_]*\(\)[ \t]*\{/)
 	if (st) { fn = l; sub(/\(.*/, "", fn); infn = 1; ob = gsub(/[{]/, "{", l) - gsub(/[}]/, "}", l) }
@@ -194,18 +194,20 @@ else
 fi
 
 # ---- (d) negative control: each bypass, inserted into a copy of its file, must be an unlisted line --------------------
-# "<a|b> <text>": b = after the slot_lock call in cmd_commit (batman-slot), a = appended to rundir.sh
+# "<a|b|c> <text>": b = after the slot_lock call in cmd_commit (batman-slot), c = the same after a whole-line comment
+# ending in a backslash (a comment never continues; review r4 A-m1), a = appended to rundir.sh
 nm=0; nmf=0
 while IFS= read -r m; do
 	case "$m" in ''|'#'*) continue ;; esac
 	md=${m%% *}; mt=${m#* }; nm=$((nm + 1))
 	case "$md" in
 		b) src=$SLOT; MUT_T=$mt awk '{ print } !f && /^cmd_commit\(\) \{/ { f = 1 } f == 1 && /slot_lock/ { print "\t" ENVIRON["MUT_T"]; f = 2 }' "$src" > "$T/m" ;;
+		c) src=$SLOT; MUT_T=$mt awk '{ print } !f && /^cmd_commit\(\) \{/ { f = 1 } f == 1 && /slot_lock/ { print "\t# a note \\"; print "\t" ENVIRON["MUT_T"]; f = 2 }' "$src" > "$T/m" ;;
 		a) src=$F/usr/lib/batman/rundir.sh; { cat "$src"; printf '%s\n' "$mt"; } > "$T/m" ;;
 		s) src=$SLOT; sed -E "$mt" "$src" > "$T/m" ;;
 	esac
 	if cmp -s "$src" "$T/m"; then nmf=$((nmf + 1)); bad "(d) mutant not inserted: $mt"; continue; fi
-	lines "${md/s/b}" "$T/m" "${src#"$R"/}" > "$T/fm"
+	lines "$(case $md in s|c) echo b ;; *) echo "$md" ;; esac)" "$T/m" "${src#"$R"/}" > "$T/fm"
 	r=$(judge "$(if [ "$md" = a ]; then echo "$ALLOW_A"; else echo "$ALLOW_B"; fi)" "$T/fm")
 	if [ "$md" = s ]; then echo "$r" | grep -q '^NEW ' && echo "$r" | grep -q '^GONE '; else echo "$r" | grep '^NEW ' | grep -qF -- "$mt"; fi \
 		|| { nmf=$((nmf + 1)); bad "(d) bypass not caught ($md): $mt"; }
@@ -252,6 +254,7 @@ b busybox setsid sleep 100 </dev/null
 b env setsid sleep 100
 b ubus call service add '{}'
 b flock -n 9 sleep 100 &
+c sleep 100 >/dev/null 2>&1 &
 # a listed line changed in place (s = a sed on batman-slot): the openmanetd start without `9>&-`
 s /openmanetd start/s/ 9>&- (&)$/ \1/
 # review r3 A (ma.sh): (a) opens of the lock the r2 parser missed
@@ -263,8 +266,8 @@ a slot_peek() { exec 7<"$RUNDIR/batman-""slot.flock"; flock -s -n 7; }
 a slot_peek() { exec 7<&9; }
 a slot_peek() { cd "$RUNDIR" && exec 7<batman-slot.flock; }
 EOF
-[ "$nm" = 48 ] && [ "$nmf" = 0 ] && ok "(d) $nm bypasses, each inserted into a copy of its file, each an unlisted line" \
-	|| bad "(d) negative control: $nmf of $nm bypass(es) not caught or not inserted (want 48, all caught)"
+[ "$nm" = 49 ] && [ "$nmf" = 0 ] && ok "(d) $nm bypasses, each inserted into a copy of its file, each an unlisted line" \
+	|| bad "(d) negative control: $nmf of $nm bypass(es) not caught or not inserted (want 49, all caught)"
 
 echo "S5-LOCK-LINT checks=$n fail=$fail"
 [ "$n" -gt 0 ] && [ "$fail" = 0 ]
