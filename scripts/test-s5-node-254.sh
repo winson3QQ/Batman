@@ -121,7 +121,7 @@ good(){
 	killrec; rm -rf "$FR" "${ST:?}"/* "$T/run/batman"; mkdir -p "$FR/etc/init.d" "$FR/proc/sys/kernel/random" "$FR/usr/sbin" "$FR/rom/usr/share/nftables.d/ruleset-post" "$FR/usr/share/nftables.d/ruleset-post" "$FR/tmp/run/batman-provd-bulk" "$FR/mnt"
 	printf 'BATMAN_VERSION=1.5.14-wsl.26+abc.fwdef\nBATMAN_BOARD=%s\n' "${1:-ekh-bcm2711}" > "$FR/etc/batman-build"
 	echo "500.10 900.00" > "$FR/proc/uptime"; echo "0123456789ab-x" > "$FR/proc/sys/kernel/random/boot_id"
-	printf '#!/bin/sh\nslot_lock() {\n:\n}\n' > "$FR/usr/sbin/batman-slot"
+	printf '#!/bin/sh\nslot_lock() {\n\texec 9>>"$LOCKF"\n\tflock -n 9\n}\n' > "$FR/usr/sbin/batman-slot"
 	printf '%s\n' "$HTTP" > "$FR/rom/usr/share/nftables.d/ruleset-post/batman-http.nft"; cp "$FR/rom/usr/share/nftables.d/ruleset-post/batman-http.nft" "$FR/usr/share/nftables.d/ruleset-post/"
 	printf '%s\n' "$INIT" > "$FR/etc/init.d/batman-provd"
 	printf 'proc /proc proc rw 0 0\n%s\n' "$MNT" > "$FR/proc/mounts"
@@ -152,7 +152,7 @@ for s in $SHS; do
 	has "$k bcm2710 good node -> RESULT PASS (two-board rule)" "$o" "^RESULT prov-fw-boot-254 PASS"
 	has "$k bcm2710: FB5 the size read for its board" "$o" "^PASS .*FB5 .*size=252619530 B"
 	good ekh-bcm2712; o=$(run); has "$k an unknown board -> FAIL FB5 (no size for it)" "$o" "^FAIL .*FB5 cannot read .* the size for ekh-bcm2712 \[\]"
-	good; printf '#!/bin/sh\nmkdir_lock() { :; }\n' > "$FR/usr/sbin/batman-slot"; o=$(run)
+	good; git -C "$REPO" show 832fbf8:feed/batman-provision/files/usr/sbin/batman-slot > "$FR/usr/sbin/batman-slot" || exit 1; o=$(run)
 	has "$k pre-S5 image -> one FAIL line" "$o" "^FAIL prov-fw-boot-254: pre-S5 image 1.5.14-wsl.26.*: batman-slot has no slot flock \(slot_lock\)"
 	has "$k pre-S5 -> RESULT FAIL rc 1" "$(echo $o)" "RESULT prov-fw-boot-254 FAIL rc=1"
 	has "$k pre-S5: exactly one FAIL, no PASS / INVALID" "$(grep -cE '^(PASS|FAIL|INVALID)' <<< "$o")" "^1$"
@@ -272,7 +272,7 @@ fb "PASS prov-fw-boot-254: x"; has "host: no RESULT line -> FAIL rc 1" "$(echo $
 o=$(chk_fw_boot_254 2>&1; echo "rc=$?"); has "host: no node -> FAIL rc 1" "$(echo $o)" "FAIL prov-fw-boot-254: no node checked rc=1"
 # pre-S5 end to end (the node script on the pre-S5 fixture behind the ssh stub) -> the suite log -> kf_classify against
 # the real list: KNOWN before the entry's expiry, NEW after it (review r2 B-MAJOR-1)
-good; printf '#!/bin/sh\nmkdir_lock() { :; }\n' > "$FR/usr/sbin/batman-slot"; : > "$ST/ssh.exec"
+good; git -C "$REPO" show 832fbf8:feed/batman-provision/files/usr/sbin/batman-slot > "$FR/usr/sbin/batman-slot" || exit 1; : > "$ST/ssh.exec"
 o=$(PATH="$B:$PATH" FB_ROOT=$FR chk_fw_boot_254 10.41.80.13 2>&1; echo "rc=$?"); rm -f "$ST/ssh.exec"; printf '%s\n' "$o" > "$T/fwboot.log"
 has "host: pre-S5 node -> its FAIL line with the node" "$o" "^FAIL 10.41.80.13: prov-fw-boot-254: pre-S5 image 1.5.14-wsl.26"
 has "host: pre-S5 node -> rc 1 (a FAIL, not a SKIP)" "$o" "^rc=1$"

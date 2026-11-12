@@ -71,7 +71,8 @@ V=$(sed -n 's/^BATMAN_VERSION=//p' "$FR/etc/batman-build" 2>/dev/null)
 BOARD=$(sed -n 's/^BATMAN_BOARD=//p' "$FR/etc/batman-build" 2>/dev/null)
 up(){ cut -d. -f1 "$FR/proc/uptime"; }
 echo "INFO $U: version=$V board=$BOARD boot=$(cut -c1-8 "$FR/proc/sys/kernel/random/boot_id" 2>/dev/null) up=$(up)s"
-grep -q '^slot_lock()' "$FR/usr/sbin/batman-slot" 2>/dev/null || { no "pre-S5 image ${V:-?}: batman-slot has no slot flock (slot_lock) — S5's firewall include, upload tmpfs and lock are not in it"; result; }
+# S5 = slot_lock takes the flock (pre-S5 batman-slot has a slot_lock too: the mkdir lock, since 791fd7a)
+awk '/^slot_lock\(\) \{/,/^\}/' "$FR/usr/sbin/batman-slot" 2>/dev/null | grep -q 'flock -n 9' || { no "pre-S5 image ${V:-?}: batman-slot has no slot flock (slot_lock) — S5's firewall include, upload tmpfs and lock are not in it"; result; }
 i=0; while [ "$(up)" -lt 120 ] && [ $i -lt 30 ]; do sleep 5; i=$((i + 1)); done
 
 # ---- FB1 / FB2 / FB4 the firewall and the include
