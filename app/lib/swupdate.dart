@@ -50,6 +50,10 @@ class SwHold {
   SwAction? last;
   List<String> uris = [];
   bool netHeld = false;
+
+  /// D5 (code review r1 A-M2 / B-M1): this upload stage joined the node AP with the Specifier — the next PUT of the
+  /// stage goes out on that network again: no second notice, no second request (each would cut TAK twice)
+  bool joined = false;
   final clock = Stopwatch()..start();
   BigInt now() => BigInt.from(clock.elapsedMilliseconds);
 }
@@ -144,6 +148,7 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
   Future<void> _release(SwAction a) async {
     if (_h.netHeld && !a.uploading) {
       _h.netHeld = false;
+      _h.joined = false;
       await _ch.invokeMethod<void>('cancelUpload');
     }
   }
@@ -202,17 +207,7 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
     final keeping = keep();
     String? r;
     try {
-      final direct = await _ch.invokeMethod<bool>('findNodeNetwork', {'ip': a.ip}) ?? false;
-      if (direct) r = await _put(a);
-      if (!_cancel && (!direct || r == 'no_network')) {
-        if (!await _specifierOk()) {
-          r = 'denied';
-        } else {
-          final c = _f.apCredentials();
-          final j = c.length == 2 ? await _ch.invokeMethod<String>('joinAp', {'ssid': c[0], 'pass': c[1]}) : 'no_network';
-          r = j == 'ok' ? await _put(a) : j;
-        }
-      }
+      r = await _reach(a);
     } on PlatformException {
       r = 'other';
     } finally {
@@ -224,13 +219,45 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
     return _f.uploaded(putOf(r));
   }
 
-  Future<String?> _put(SwAction a) => _ch.invokeMethod<String>('upload', {
+  /// D5: the network the PUT goes out on, then the PUT. Every step checks a cancel first (r1 A-m5 / B-m3).
+  Future<String?> _reach(SwAction a) async {
+    if (_h.joined) {
+      // the Specifier network of this stage is still held: the PUT again on it (no notice, no new request)
+      final r = await _put(a);
+      if (r != 'no_network') return r;
+      _h.joined = false; // it went away: join again (the notice was given in this stage)
+      return _join(a, notice: false);
+    }
+    if (_cancel) return 'other';
+    final direct = await _ch.invokeMethod<bool>('findNodeNetwork', {'ip': a.ip}) ?? false;
+    if (direct) {
+      final r = await _put(a);
+      if (r != 'no_network') return r;
+    }
+    return _join(a, notice: true);
+  }
+
+  Future<String?> _join(SwAction a, {required bool notice}) async {
+    if (_cancel) return 'other';
+    if (notice && !await _specifierOk()) return 'denied';
+    if (_cancel) return 'other';
+    final c = _f.apCredentials();
+    final j = c.length == 2 ? await _ch.invokeMethod<String>('joinAp', {'ssid': c[0], 'pass': c[1]}) : 'no_network';
+    if (j != 'ok') return j;
+    _h.joined = true;
+    return _put(a);
+  }
+
+  Future<String?> _put(SwAction a) async {
+    if (_cancel) return 'other';
+    return _ch.invokeMethod<String>('upload', {
         'uri': _h.uris[a.payload],
         'size': a.size.toInt(),
         'ip': a.ip,
         'port': a.port,
         'bearer': a.bearerHex,
       });
+  }
 
   Future<bool> _specifierOk() async {
     if (!mounted) return false;
@@ -276,6 +303,7 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
   /// U6 cancel: abort the socket first (linger 0, Kotlin), then the flow closes the window when the PUT returns
   Future<void> _cancelUpload() async {
     _cancel = true;
+    _h.joined = false;
     await _ch.invokeMethod<void>('cancelUpload');
   }
 
