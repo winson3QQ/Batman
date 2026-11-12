@@ -1,0 +1,218 @@
+{
+ "cases": [
+  {
+   "name": "status-idle",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a201000200"
+  },
+  {
+   "name": "check-ok",
+   "verb": "update/check",
+   "code": 0,
+   "body": "a201f50319023a"
+  },
+  {
+   "name": "bulk-open-ok",
+   "verb": "bulk/open",
+   "code": 0,
+   "body": "a601696261746d616e2d6170026961702d706173732d31036b31302e34312e38302e313304191f9f051903840650de63f334ff58f414a57dacbfec4b9eee"
+  },
+  {
+   "name": "status-receiving",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a4010102000458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "prepare-ok",
+   "verb": "update/prepare",
+   "code": 0,
+   "body": "a4010202000458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-written",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a401030218640458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "apply-ok",
+   "verb": "update/apply",
+   "code": 0,
+   "body": "a401030218640458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "check-refused-board",
+   "verb": "update/check",
+   "code": 0,
+   "body": "a301f402030319023a"
+  },
+  {
+   "name": "check-refused-nokey",
+   "verb": "update/check",
+   "code": 0,
+   "body": "a301f40218180300"
+  },
+  {
+   "name": "check-refused-downgrade",
+   "verb": "update/check",
+   "code": 0,
+   "body": "a301f402060319023a"
+  },
+  {
+   "name": "check-busy",
+   "verb": "update/check",
+   "code": 7,
+   "body": "a0"
+  },
+  {
+   "name": "check-rate",
+   "verb": "update/check",
+   "code": 12,
+   "body": "a0"
+  },
+  {
+   "name": "check-busy-other-owner",
+   "verb": "update/check",
+   "code": 7,
+   "body": "a0"
+  },
+  {
+   "name": "bulk-open-15",
+   "verb": "bulk/open",
+   "code": 24,
+   "body": "a1010f"
+  },
+  {
+   "name": "bulk-open-16",
+   "verb": "bulk/open",
+   "code": 24,
+   "body": "a10110"
+  },
+  {
+   "name": "bulk-open-21",
+   "verb": "bulk/open",
+   "code": 24,
+   "body": "a10115"
+  },
+  {
+   "name": "bulk-open-busy",
+   "verb": "bulk/open",
+   "code": 7,
+   "body": "a0"
+  },
+  {
+   "name": "bulk-close-15",
+   "verb": "bulk/close",
+   "code": 24,
+   "body": "a1010f"
+  },
+  {
+   "name": "bulk-close-ok",
+   "verb": "bulk/close",
+   "code": 0,
+   "body": "a0"
+  },
+  {
+   "name": "prepare-15-not-holder",
+   "verb": "update/prepare",
+   "code": 24,
+   "body": "a1010f"
+  },
+  {
+   "name": "prepare-15-incomplete",
+   "verb": "update/prepare",
+   "code": 24,
+   "body": "a1010f"
+  },
+  {
+   "name": "prepare-busy",
+   "verb": "update/prepare",
+   "code": 7,
+   "body": "a0"
+  },
+  {
+   "name": "prepare-storage",
+   "verb": "update/prepare",
+   "code": 10,
+   "body": "a0"
+  },
+  {
+   "name": "apply-15",
+   "verb": "update/apply",
+   "code": 24,
+   "body": "a1010f"
+  },
+  {
+   "name": "apply-busy",
+   "verb": "update/apply",
+   "code": 7,
+   "body": "a0"
+  },
+  {
+   "name": "status-working",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a401020218320458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-0-22",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a50100020003160458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-0-15",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a501000200030f0458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-0-11",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a501000200030b0458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-0-21",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a50100020003150458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-trial",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a4010402000458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-committed",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a4010502000458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-reverted",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a4010602000458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-reverted-18",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a50106020003120458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  },
+  {
+   "name": "status-0-23",
+   "verb": "update/status",
+   "code": 0,
+   "body": "a50100020003170458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b05781f312e352e31342d77736c2e33302b616263646566312e667730313233343536"
+  }
+ ],
+ "manifest": "a501781f312e352e31342d77736c2e33302b616263646566312e667730313233343536026b656b682d62636d32373131031901d30458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b0559015b8258a1d28452a20126036d6261746d616e2f72656c6b6579a05847a2015841047c41db499f89ad48ecbf5d0909798864d7c5aaecdd41194228a795d7db0e078c4e11a9e89c99368f487e7a7e4790fa2ab3280e85fdf48307be9da52fe739c0aa020258406671840681a5d23cd11f685ece3148f905146ee26ec842ea42d74b044ca2aabe5c5bc57cb063503966d20bbe5b002026666f6a901da68aef8c5606ca0e273cc358b5d28453a20126036e6261746d616e2f72656c65617365a0585aa501781f312e352e31342d77736c2e33302b616263646566312e667730313233343536026b656b682d62636d32373131031901d30458203171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b0918675840eda95c0ae4a9ba2942564662b4085dca76466decc19b9eece8655bcd54bd4b1133b65e74145ea1ff7a8ae9f42df6b1399fe0a0edc08477f6d302a7d7dea36fa3",
+ "sha": "3171af19a7feaa6aa1b2381aa6035ad4d2742f125cb6125b5b3693f6e558688b",
+ "size": 467,
+ "version": "1.5.14-wsl.30+abcdef1.fw0123456"
+}
