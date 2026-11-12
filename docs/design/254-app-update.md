@@ -453,6 +453,11 @@ Dart 端的順序(U5/U6):`findNodeNetwork(ip)` → `true` 直接 `upload`;`false
    - B-m8:`swupd-logcat-check.sh` 把任何 32 位 hex 當成 bearer,可能誤判;app 重開時換 pid,舊行就漏看。先在 bench 看一次 BMAPP log。
    - B-m9:`pickUpdateFiles` 不限檔數;N 個小檔會整個讀進來經 channel 傳。
    - B-m11:`findDirect` 的 `hit` 跨 thread 讀寫沒有同步(良性);可以改用 `AtomicReference`。
+9. **code review r2 的 MINOR(2026-11-13,沒有實作;每項一行)**
+   - B m-r2-3:`open()` 本身永遠不回時沒有 watchdog(先開檔再連線之後);和 r1 時一樣，現場機率低。
+   - A m-n2:`_join` 開頭和說明框之後的兩個取消檢查沒有測試;最壞是取消後多一次 `joinAp`,接著被放掉。
+   - A m-n3:`STALE_RETRY_MS` 和 `STATUS_RATE_MS` 共用 `status_tries`;先 E_RATE 再 stale 時重讀次數變少，結果只是「讀不到 + 重新整理」。
+   - B N3:`abort` 關 body 的那一行在 JVM 上是等價突變(`put` 的 finally 也會關);留給 T8 instrumented。
 
 ## 附錄 A. v0.2 審查 A(APPROVE-WITH-CHANGES:1 BLOCKER / 8 MAJOR / 10 MINOR)→ 改在哪
 
