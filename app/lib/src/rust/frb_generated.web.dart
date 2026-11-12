@@ -11,6 +11,7 @@ import 'api/member.dart';
 import 'api/owner.dart';
 import 'api/rekey.dart';
 import 'api/simple.dart';
+import 'api/swupdate.dart';
 
 import 'dart:async';
 import 'dart:convert';
@@ -42,6 +43,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   get rust_arc_decrement_strong_count_RemoveOpPtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp;
 
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_SwUpdatePtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate;
+
   @protected
   ClaimSession
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
@@ -63,6 +68,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   RemoveOp
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    dynamic raw,
+  );
+
+  @protected
+  SwUpdate
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     dynamic raw,
   );
 
@@ -91,8 +102,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SwUpdate
+  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+    dynamic raw,
+  );
+
+  @protected
   OwnerSession
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    dynamic raw,
+  );
+
+  @protected
+  SwUpdate
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     dynamic raw,
   );
 
@@ -117,6 +140,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   RemoveOp
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    dynamic raw,
+  );
+
+  @protected
+  SwUpdate
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     dynamic raw,
   );
 
@@ -197,6 +226,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<RecipientView> dco_decode_list_recipient_view(dynamic raw);
+
+  @protected
+  List<SwButton> dco_decode_list_sw_button(dynamic raw);
+
+  @protected
+  List<SwFile> dco_decode_list_sw_file(dynamic raw);
 
   @protected
   MemberView dco_decode_member_view(dynamic raw);
@@ -286,6 +321,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   StepKind dco_decode_step_kind(dynamic raw);
 
   @protected
+  SwAction dco_decode_sw_action(dynamic raw);
+
+  @protected
+  SwButton dco_decode_sw_button(dynamic raw);
+
+  @protected
+  SwFile dco_decode_sw_file(dynamic raw);
+
+  @protected
+  SwKind dco_decode_sw_kind(dynamic raw);
+
+  @protected
+  SwPut dco_decode_sw_put(dynamic raw);
+
+  @protected
+  int dco_decode_u_16(dynamic raw);
+
+  @protected
   int dco_decode_u_32(dynamic raw);
 
   @protected
@@ -334,6 +387,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SwUpdate
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ClaimSession
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     SseDeserializer deserializer,
@@ -358,8 +417,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SwUpdate
+  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   OwnerSession
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SwUpdate
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     SseDeserializer deserializer,
   );
 
@@ -384,6 +455,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   RemoveOp
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SwUpdate
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     SseDeserializer deserializer,
   );
 
@@ -470,6 +547,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<RecipientView> sse_decode_list_recipient_view(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<SwButton> sse_decode_list_sw_button(SseDeserializer deserializer);
+
+  @protected
+  List<SwFile> sse_decode_list_sw_file(SseDeserializer deserializer);
 
   @protected
   MemberView sse_decode_member_view(SseDeserializer deserializer);
@@ -565,6 +648,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   StepKind sse_decode_step_kind(SseDeserializer deserializer);
 
   @protected
+  SwAction sse_decode_sw_action(SseDeserializer deserializer);
+
+  @protected
+  SwButton sse_decode_sw_button(SseDeserializer deserializer);
+
+  @protected
+  SwFile sse_decode_sw_file(SseDeserializer deserializer);
+
+  @protected
+  SwKind sse_decode_sw_kind(SseDeserializer deserializer);
+
+  @protected
+  SwPut sse_decode_sw_put(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_u_16(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_u_32(SseDeserializer deserializer);
 
   @protected
@@ -618,6 +719,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+    SwUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
     ClaimSession self,
     SseSerializer serializer,
@@ -646,8 +754,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+    SwUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
     OwnerSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+    SwUpdate self,
     SseSerializer serializer,
   );
 
@@ -676,6 +798,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
     RemoveOp self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+    SwUpdate self,
     SseSerializer serializer,
   );
 
@@ -791,6 +920,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_sw_button(List<SwButton> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_sw_file(List<SwFile> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_member_view(MemberView self, SseSerializer serializer);
 
   @protected
@@ -897,6 +1032,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_step_kind(StepKind self, SseSerializer serializer);
 
   @protected
+  void sse_encode_sw_action(SwAction self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_sw_button(SwButton self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_sw_file(SwFile self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_sw_kind(SwKind self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_sw_put(SwPut self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_u_16(int self, SseSerializer serializer);
+
+  @protected
   void sse_encode_u_32(int self, SseSerializer serializer);
 
   @protected
@@ -989,6 +1142,22 @@ class RustLibWire implements BaseWire {
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
         ptr,
       );
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+        ptr,
+      );
 }
 
 @JS('wasm_bindgen')
@@ -1034,6 +1203,16 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
   rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     int ptr,
   );
 }

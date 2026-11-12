@@ -21,6 +21,8 @@ use batman_proto::{sig, status, statuspage};
 use batman_proto::store;
 
 use super::rekey::{removed_question, update_hint_of, update_text, UpdateHint};
+use super::swupdate::{SwAction, SwUpdate};
+use batman_proto::swupd::Reply;
 
 /// A sealed record and the AAD Kotlin opens it with.
 pub struct SealedRecord {
@@ -226,6 +228,8 @@ pub struct OwnerStep {
     pub send_update: bool,
     /// an Answer of `request_info`: the info body (CBOR) for the removal's version check (§2.4)
     pub info: Vec<u8>,
+    /// an Answer to `request_sw`: the node answered; `sw_answer` hands it to the update (254-app-update §11). No text.
+    pub sw: bool,
 }
 
 impl OwnerStep {
@@ -249,6 +253,7 @@ impl OwnerStep {
             wait_ms: 0,
             send_update: false,
             info: vec![],
+            sw: false,
         }
     }
     pub(crate) fn text(kind: OwnerKind, d: String) -> OwnerStep {
@@ -266,6 +271,9 @@ enum St {
     Join2 { flow: Join2, mesh_id: String, member: bool },
     /// 「把新密碼送給節點」 (remove-member §3.2)
     Update { flow: SendUpdate, member: bool },
+    /// a software-update request in flight (254-app-update §11): `verb`; an owner-op keeps its `body` until signed
+    /// (`nonce`: op/nonce is outstanding)
+    SwUpdate { conn: Conn, verb: &'static str, body: Option<Value>, nonce: bool },
     Over,
 }
 
@@ -303,6 +311,8 @@ pub struct OwnerSession {
     page_cut_once: bool,
     /// remove-member §2.0 rule 2: the question for a node removed before (asked when join2 refuses RemovedBefore)
     removed_q: String,
+    /// the node's answer to the last software-update request, until `sw_answer` takes it
+    sw_reply: Option<Reply>,
 }
 
 /// A record write step at any record path (PersistNet / PersistPend / PersistMnet): CAS from `expected_gen`, sealed
@@ -634,6 +644,7 @@ impl OwnerSession {
             after_left: false,
             page_cut_once: false,
             removed_q: String::new(),
+            sw_reply: None,
         };
         let step = s.login_step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
         Ok((s, step))
@@ -661,6 +672,9 @@ impl OwnerSession {
         if let St::Update { flow, .. } = &mut self.st {
             let a = flow.signed(&der);
             return self.update_step(a);
+        }
+        if let St::SwUpdate { .. } = &self.st {
+            return Some(self.sw_signed(&der));
         }
         if let St::Conn { conn, asked, op } = &mut self.st {
             // the owner-op signature: the operation goes out with key 31 = {1: verb, 2: sig}
@@ -749,6 +763,9 @@ impl OwnerSession {
         if let St::Update { flow, .. } = &mut self.st {
             let a = flow.on_frame(&frame);
             return self.update_step(a);
+        }
+        if let St::SwUpdate { .. } = &self.st {
+            return self.sw_frame(&frame);
         }
         match &mut self.st {
             St::Login(l) => {
@@ -900,7 +917,7 @@ impl OwnerSession {
                     Some(OwnerStep::text(OwnerKind::Ended, d))
                 }
             },
-            St::Join { .. } | St::Join2 { .. } | St::Update { .. } | St::Over => None,
+            St::Join { .. } | St::Join2 { .. } | St::Update { .. } | St::SwUpdate { .. } | St::Over => None,
         }
     }
 
@@ -1253,6 +1270,7 @@ impl OwnerSession {
             St::Join { join, .. } => self.st = St::Conn { conn: join.into_conn(), asked: "", op: None },
             St::Join2 { flow, .. } => self.st = St::Conn { conn: flow.into_conn(), asked: "", op: None },
             St::Update { flow, .. } => self.st = St::Conn { conn: flow.into_conn(), asked: "", op: None },
+            St::SwUpdate { conn, .. } => self.st = St::Conn { conn, asked: "", op: None },
             other => self.st = other,
         }
     }
@@ -1404,6 +1422,102 @@ impl OwnerSession {
             }
             _ => Err(NOT_LOGGED_IN.into()),
         }
+    }
+
+    /// 254-app-update §11: send the update's pending request (the last Send action of `sw`) on this session; owner-ops
+    /// go op/nonce -> Sign -> the request with key 31. The answer comes back as an Answer step with `sw` set (then
+    /// `sw_answer`), or the session ends (Ended: the caller tells `sw.lost`).
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_sw(&mut self, sw: &mut SwUpdate) -> Result<OwnerStep, String> {
+        if self.joinreq.is_some() {
+            return Err(JOINREQ_BUSY.into());
+        }
+        let (verb, body) = sw.next.take().ok_or("App 內部錯誤（no update request）")?;
+        let mut conn = match std::mem::replace(&mut self.st, St::Over) {
+            St::Conn { conn, op: None, .. } if !conn.busy() => conn,
+            other => {
+                self.st = other;
+                sw.next = Some((verb, body));
+                return Err("還沒連線到節點（或上一個操作還沒結束）".into());
+            }
+        };
+        self.sw_reply = None;
+        let w = verb.wire();
+        let (sent, body, nonce) = if verb.owner_op() {
+            (conn.request("op/nonce", Value::Map(vec![])), Some(body), true)
+        } else {
+            (conn.request(w, body), None, false)
+        };
+        match sent {
+            Ok((_, f)) => {
+                self.st = St::SwUpdate { conn, verb: w, body, nonce };
+                Ok(OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) })
+            }
+            Err(e) => {
+                self.st = St::Conn { conn, asked: "", op: None };
+                Err(format!("{e:?}"))
+            }
+        }
+    }
+
+    /// The node's answer to `request_sw`, to the update; its next action.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn sw_answer(&mut self, sw: &mut SwUpdate, now_ms: u64) -> SwAction {
+        let r = self.sw_reply.take().unwrap_or(Reply::Lost);
+        let a = sw.flow.on_reply(r, now_ms);
+        sw.act(a)
+    }
+
+    fn sw_done(&mut self, r: Reply) -> OwnerStep {
+        self.sw_reply = Some(r);
+        self.back_to_conn();
+        OwnerStep { sw: true, ..OwnerStep::new(OwnerKind::Answer) }
+    }
+
+    fn sw_signed(&mut self, der: &[u8]) -> OwnerStep {
+        let St::SwUpdate { conn, verb, body, nonce: false } = &mut self.st else {
+            return self.sw_done(Reply::Lost);
+        };
+        let Some(b) = body.take() else { return self.sw_done(Reply::Lost) };
+        // a signature that fails = not sent: D15 reads the status first
+        let Ok(raw) = sig::der_to_raw_low_s(der) else { return self.sw_done(Reply::Lost) };
+        let v = *verb;
+        match sig::with_owner_op(&b, v, &raw).map_err(|_| ()).and_then(|x| conn.request(v, x).map_err(|_| ())) {
+            Ok((_, f)) => OwnerStep { frames: f, ..OwnerStep::new(OwnerKind::Write) },
+            Err(()) => self.sw_done(Reply::Lost),
+        }
+    }
+
+    fn sw_frame(&mut self, frame: &[u8]) -> Option<OwnerStep> {
+        let St::SwUpdate { conn, verb, body, nonce } = &mut self.st else { return None };
+        let o = match conn.on_frame(frame) {
+            Ok(None) => return None,
+            Ok(Some(o)) => o,
+            Err(e) => {
+                self.st = St::Over;
+                return Some(OwnerStep::text(OwnerKind::Ended, format!("連線出錯（{e:?}）")));
+            }
+        };
+        if *nonce {
+            // op/nonce: refused = the request was not sent (its code goes to the update as the answer)
+            let helper: Option<[u8; 32]> = match &o {
+                Outcome::Ok(b) => b.get(1).and_then(Value::as_bytes).and_then(|x| x.try_into().ok()),
+                Outcome::Err { .. } => None,
+            };
+            let input = helper.and_then(|h| body.as_ref().and_then(|b| sig::owner_op_input(&conn.h(), &h, verb, b).ok()));
+            return Some(match (input, o) {
+                (Some(input), _) => {
+                    *nonce = false;
+                    OwnerStep { sign_input: input, ..OwnerStep::new(OwnerKind::Sign) }
+                }
+                (None, Outcome::Err { code, detail }) => self.sw_done(Reply::Err { code, detail }),
+                (None, Outcome::Ok(_)) => self.sw_done(Reply::Lost),
+            });
+        }
+        Some(match o {
+            Outcome::Ok(b) => self.sw_done(Reply::Ok(b)),
+            Outcome::Err { code, detail } => self.sw_done(Reply::Err { code, detail }),
+        })
     }
 
     fn login_step(&mut self, a: Option<Action>) -> Option<OwnerStep> {
@@ -1658,6 +1772,26 @@ mod tests {
     }
 
     impl FakeNode {
+        /// the request in `frames`: (id, verb, body)
+        pub(super) fn request_body(&mut self, frames: &[Vec<u8>]) -> (u64, String, Value) {
+            let mut msg = None;
+            for f in frames {
+                msg = self.rx.push(f).unwrap();
+            }
+            let mut buf = vec![0u8; 65535];
+            let n = self.t.read_message(&msg.expect("a whole request"), &mut buf).unwrap();
+            let req = cbor::decode(&buf[..n]).unwrap();
+            let body = req.get(3).cloned().unwrap_or(Value::Null);
+            (req.get(1).and_then(Value::as_uint).unwrap(), req.get(2).and_then(Value::as_text).unwrap().to_string(), body)
+        }
+        /// an answer envelope with any status and body / detail (254-app-update: the captured provd answers)
+        pub(super) fn answer_env(&mut self, id: u64, status: u64, body: Value) -> Vec<Vec<u8>> {
+            let m = |kv: Vec<(u64, Value)>| Value::Map(kv.into_iter().map(|(k, v)| (Value::Uint(k), v)).collect());
+            let env = if status == 0 { m(vec![(1, Value::Uint(id)), (3, body), (4, Value::Uint(0))]) } else { m(vec![(1, Value::Uint(id)), (4, Value::Uint(status)), (5, body)]) };
+            let mut buf = vec![0u8; 65535];
+            let n = self.t.write_message(&cbor::encode(&env), &mut buf).unwrap();
+            frame::split(&buf[..n], FL).unwrap()
+        }
         /// the request in `frames`: (id, verb)
         pub(super) fn request(&mut self, frames: &[Vec<u8>]) -> (u64, String) {
             let mut msg = None;
@@ -1687,7 +1821,7 @@ mod tests {
     fn pub65(b: u8) -> [u8; 65] {
         key(b).verifying_key().to_sec1_point(false).as_bytes().try_into().unwrap()
     }
-    fn der(b: u8, input: &[u8]) -> Vec<u8> {
+    pub(super) fn der(b: u8, input: &[u8]) -> Vec<u8> {
         let s: p256::ecdsa::Signature = key(b).sign(input);
         s.to_der().as_bytes().to_vec()
     }
@@ -1722,6 +1856,7 @@ mod tests {
             after_left: false,
             page_cut_once: false,
             removed_q: String::new(),
+            sw_reply: None,
         };
         (s, FakeNode { t: r.into_transport_mode().unwrap(), rx: frame::Reassembler::new(FL, 8192) })
     }
@@ -2671,5 +2806,216 @@ mod rm_tests {
         assert!(!t.contains(&"S".repeat(24)));
         // the session is an owner session again
         assert!(s.request_status().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod sw_tests {
+    //! 254-app-update §8 T4 through the bridge: the update's requests on a real Noise owner session against a fake node
+    //! that answers with the envelopes the node's Go code produced (batman-proto tests/testdata/swupd/provd-wire.json);
+    //! owner-ops go op/nonce -> owner signature -> key 31. No step text carries the AP passphrase or the bearer.
+    use super::super::swupdate::{SwButton, SwFile, SwKind, SwPut, SwUpdate};
+    use super::tests::{der, logged_in, FakeNode};
+    use super::*;
+    use std::collections::{HashMap, VecDeque};
+
+    fn data(name: &str) -> serde_json::Value {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../batman-proto/tests/testdata/swupd").join(name);
+        serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    }
+
+    fn wire() -> HashMap<String, (u64, Value)> {
+        let d = data("provd-wire.json");
+        d["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                let body = cbor::decode(&hex::decode(c["body"].as_str().unwrap()).unwrap()).unwrap();
+                (c["name"].as_str().unwrap().to_string(), (c["status"].as_u64().unwrap(), body))
+            })
+            .collect()
+    }
+
+    fn files() -> Vec<SwFile> {
+        let d = data("node-helper.json");
+        let mf = hex::decode(d["manifest"].as_str().unwrap()).unwrap();
+        vec![
+            SwFile { size: mf.len() as i64, head: mf[..2].to_vec(), data: mf.clone() },
+            SwFile { size: d["size"].as_i64().unwrap(), head: vec![0x1f, 0x8b], data: vec![] },
+        ]
+    }
+
+    struct Seen {
+        verbs: Vec<String>,
+        texts: Vec<String>,
+        owner_ops: Vec<String>,
+        bearer: String,
+    }
+
+    /// Drives one update: each BLE request answered from `script` (by verb, in order); op/nonce by the fake node; the
+    /// PUT answers 200; the screens pressed in `presses` order; waits pass at once.
+    fn drive(s: &mut OwnerSession, n: &mut FakeNode, sw: &mut SwUpdate, script: &[(&str, &str)], presses: &[SwButton]) -> (Seen, String) {
+        let w = wire();
+        let mut script: VecDeque<(String, (u64, Value))> = script.iter().map(|(v, name)| (v.to_string(), w[*name].clone())).collect();
+        let mut presses: VecDeque<SwButton> = presses.iter().copied().collect();
+        let mut seen = Seen { verbs: vec![], texts: vec![], owner_ops: vec![], bearer: String::new() };
+        let mut now = 1000u64;
+        let mut a = sw.start();
+        let status = || {
+            let k15 = Value::Map(vec![(Value::Text("trust".into()), Value::Text("0123456789abcdef".into()))]);
+            Value::Map(vec![(Value::Uint(1), Value::Uint(2)), (Value::Uint(15), k15)])
+        };
+        loop {
+            seen.texts.extend([a.note.clone(), a.text.clone(), a.tech.clone()]);
+            a = match a.kind {
+                SwKind::Send => {
+                    let mut st = s.request_sw(sw).unwrap();
+                    loop {
+                        seen.texts.push(st.detail.clone());
+                        st = match st.kind {
+                            OwnerKind::Sign => s.signed(der(0x11, &st.sign_input)).unwrap(),
+                            OwnerKind::Write => {
+                                let (id, verb, body) = n.request_body(&st.frames);
+                                seen.verbs.push(verb.clone());
+                                let (status_code, b) = match verb.as_str() {
+                                    "op/nonce" => (0, Value::Map(vec![(Value::Uint(1), Value::Bytes(vec![0x6d; 32]))])),
+                                    "status" => (0, status()),
+                                    "info" => (0, Value::Map(vec![(Value::Uint(4), Value::Text("1.5.14-wsl.25".into()))])),
+                                    v => {
+                                        if body.get(31).is_some() {
+                                            seen.owner_ops.push(v.to_string());
+                                        }
+                                        let (want, r) = script.pop_front().unwrap_or_else(|| panic!("no answer scripted for {v}"));
+                                        assert_eq!(want, v, "the update sent {v}, the script expected {want}");
+                                        r
+                                    }
+                                };
+                                let mut next = None;
+                                for f in n.answer_env(id, status_code, b) {
+                                    next = s.on_frame(f).or(next);
+                                }
+                                next.expect("a step after the answer")
+                            }
+                            OwnerKind::Answer => {
+                                assert!(st.sw, "an update answer is marked");
+                                break;
+                            }
+                            k => panic!("unexpected step {k:?}"),
+                        };
+                    }
+                    now += 1;
+                    s.sw_answer(sw, now)
+                }
+                SwKind::Wait => {
+                    now += a.wait_ms;
+                    sw.resume()
+                }
+                SwKind::Upload => {
+                    assert_eq!((a.ip.as_str(), a.port, a.payload), ("10.41.80.13", 8095, 1));
+                    seen.bearer = a.bearer_hex.clone();
+                    assert_eq!(sw.ap_credentials(), vec!["batman-ap".to_string(), "ap-pass-1".to_string()]);
+                    sw.uploaded(SwPut::Ok200)
+                }
+                SwKind::Show => {
+                    let Some(b) = presses.pop_front() else { return (seen, a.text) };
+                    assert!(a.buttons.contains(&b) || b == SwButton::Pick, "{b:?} not on {:?}", a.buttons);
+                    if b == SwButton::Pick {
+                        sw.picked(files())
+                    } else {
+                        sw.press(b, now)
+                    }
+                }
+                SwKind::Done => return (seen, a.text),
+                SwKind::Nothing => panic!("nothing to do"),
+            };
+        }
+    }
+
+    #[test]
+    fn t4_the_path_through_the_owner_session() {
+        let (mut s, mut n) = logged_in();
+        let mut sw = SwUpdate::with_trust(true);
+        let script = [
+            ("update/status", "status-idle"),
+            ("update/check", "check-ok"),
+            ("bulk/open", "bulk-open-ok"),
+            ("update/prepare", "prepare-ok"),
+            ("update/status", "status-working"),
+            ("update/status", "status-written"),
+            ("update/apply", "apply-ok"),
+            ("update/status", "status-trial"),
+            ("update/status", "status-committed"),
+        ];
+        let (seen, end) = drive(&mut s, &mut n, &mut sw, &script, &[SwButton::Pick, SwButton::Start, SwButton::Apply]);
+        assert_eq!(end, "更新完成:1.5.14-wsl.30+abcdef1.fw0123456");
+        assert_eq!(
+            seen.verbs,
+            [
+                "status", "info", "update/status", "update/check", "op/nonce", "bulk/open", "op/nonce", "update/prepare", "update/status",
+                "update/status", "op/nonce", "update/apply", "update/status", "update/status"
+            ]
+        );
+        assert_eq!(seen.owner_ops, ["bulk/open", "update/prepare", "update/apply"], "the owner-ops carry key 31");
+        assert_eq!(seen.bearer.len(), 32);
+        for t in &seen.texts {
+            assert!(!t.contains("ap-pass-1") && !t.contains(&seen.bearer) && !t.contains(&seen.bearer.to_uppercase()), "a secret in {t:?}");
+        }
+        // the session is an owner session again
+        assert!(s.request_status().is_ok());
+    }
+
+    #[test]
+    fn a_refused_op_nonce_is_the_answer_and_nothing_is_signed() {
+        let (mut s, mut n) = logged_in();
+        let mut sw = SwUpdate::with_trust(true);
+        // to U3 by hand, then Start: op/nonce answered E_BUSY -> the update reads status (D15)
+        let w = wire();
+        let mut a = sw.start();
+        for (verb, r) in [("status", None), ("info", None), ("update/status", Some("status-idle"))] {
+            let st = s.request_sw(&mut sw).unwrap();
+            let (id, v, _) = n.request_body(&st.frames);
+            assert_eq!(v, verb);
+            let (c, b) = match r {
+                Some(x) => w[x].clone(),
+                None => (0, Value::Map(vec![(Value::Uint(1), Value::Uint(2)), (Value::Uint(15), Value::Map(vec![(Value::Text("trust".into()), Value::Text("0123456789abcdef".into()))]))])),
+            };
+            let mut next = None;
+            for f in n.answer_env(id, c, b) {
+                next = s.on_frame(f).or(next);
+            }
+            assert!(next.unwrap().sw);
+            a = s.sw_answer(&mut sw, 1);
+        }
+        assert_eq!(a.kind, SwKind::Show);
+        a = sw.picked(files());
+        assert_eq!(a.kind, SwKind::Send);
+        let st = s.request_sw(&mut sw).unwrap();
+        let (id, _, _) = n.request_body(&st.frames);
+        let (c, b) = w["check-ok"].clone();
+        let mut next = None;
+        for f in n.answer_env(id, c, b) {
+            next = s.on_frame(f).or(next);
+        }
+        assert!(next.unwrap().sw);
+        assert_eq!(s.sw_answer(&mut sw, 2).buttons, vec![SwButton::Start, SwButton::Cancel]);
+        assert_eq!(sw.press(SwButton::Start, 3).kind, SwKind::Send);
+        let st = s.request_sw(&mut sw).unwrap();
+        let (id, v, _) = n.request_body(&st.frames);
+        assert_eq!(v, "op/nonce");
+        let mut next = None;
+        for f in n.answer_env(id, 7, Value::Map(vec![])) {
+            next = s.on_frame(f).or(next);
+        }
+        let st = next.unwrap();
+        assert_eq!((st.kind, st.sw), (OwnerKind::Answer, true), "no Sign step after a refused op/nonce");
+        let a = s.sw_answer(&mut sw, 4);
+        assert_eq!(a.kind, SwKind::Send, "D15: the status is read");
+        // a request while another is in flight is refused, and the update keeps its request
+        let _ = s.request_sw(&mut sw).unwrap();
+        let mut other = SwUpdate::with_trust(true);
+        let _ = other.start();
+        assert!(s.request_sw(&mut other).is_err());
+        assert_eq!(other.start().kind, SwKind::Send);
     }
 }

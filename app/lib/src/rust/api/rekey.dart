@@ -60,7 +60,7 @@ List<RecipientView> netRecipients({
   ownerPub: ownerPub,
 );
 
-/// The net_id an update names (parsed only: it picks mnet/<id> to read).
+/// The net_id an update names (parsed only: it picks `mnet/<id>` to read).
 String updateNetId({required String hex}) =>
     RustLib.instance.api.crateApiRekeyUpdateNetId(hex: hex);
 
@@ -69,7 +69,7 @@ String updateNetId({required String hex}) =>
 String infoNetId({required List<int> info}) =>
     RustLib.instance.api.crateApiRekeyInfoNetId(info: info);
 
-/// §3.4 first part: `mnet_plain` / `mnet_gen` = mnet/<id> as read; `node_records` = this phone's opened node records.
+/// §3.4 first part: `mnet_plain` / `mnet_gen` = `mnet/<id>` as read; `node_records` = this phone's opened node records.
 UpdatePrep memberUpdatePrepare({
   required String hex,
   Uint8List? mnetPlain,

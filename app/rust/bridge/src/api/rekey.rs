@@ -324,7 +324,7 @@ pub fn net_recipients(record_plain: Vec<u8>, owner_pub: Vec<u8>) -> Result<Vec<R
 
 // ---- §3.4 the member's import ----
 
-/// The net_id an update names (parsed only: it picks mnet/<id> to read).
+/// The net_id an update names (parsed only: it picks `mnet/<id>` to read).
 #[flutter_rust_bridge::frb(sync)]
 pub fn update_net_id(hex: String) -> Result<String, String> {
     dev_gate()?;
@@ -386,7 +386,7 @@ pub struct UpdatePrep {
     pub detail: String,
 }
 
-/// §3.4 first part: `mnet_plain` / `mnet_gen` = mnet/<id> as read; `node_records` = this phone's opened node records.
+/// §3.4 first part: `mnet_plain` / `mnet_gen` = `mnet/<id>` as read; `node_records` = this phone's opened node records.
 #[flutter_rust_bridge::frb(sync)]
 pub fn member_update_prepare(hex: String, mnet_plain: Option<Vec<u8>>, mnet_gen: u64, node_records: Vec<Vec<u8>>, owner_enc_pub: Vec<u8>) -> Result<UpdatePrep, String> {
     dev_gate()?;

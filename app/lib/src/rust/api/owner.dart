@@ -8,8 +8,9 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'rekey.dart';
+import 'swupdate.dart';
 
-// These functions are ignored because they are not marked as `pub`: `back_to_conn`, `code_text`, `confirm_text`, `country_question`, `error_text`, `join2_step`, `join2_text`, `join_state_text`, `join_step`, `joinreq_step`, `leave_info`, `link_text`, `list_kind`, `login_end_text`, `login_step`, `member_join_text`, `net_made_text`, `new`, `owner_op`, `parse_record`, `persist_at`, `persist_step`, `reason_text`, `request_tagged`, `request`, `settings_text`, `status_text`, `status_view_of`, `text`, `update_step`, `verb_text`
+// These functions are ignored because they are not marked as `pub`: `back_to_conn`, `code_text`, `confirm_text`, `country_question`, `error_text`, `join2_step`, `join2_text`, `join_state_text`, `join_step`, `joinreq_step`, `leave_info`, `link_text`, `list_kind`, `login_end_text`, `login_step`, `member_join_text`, `net_made_text`, `new`, `owner_op`, `parse_record`, `persist_at`, `persist_step`, `reason_text`, `request_tagged`, `request`, `settings_text`, `status_text`, `status_view_of`, `sw_done`, `sw_frame`, `sw_signed`, `text`, `update_step`, `verb_text`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Rec`, `St`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `eq`, `fmt`
 
@@ -194,6 +195,11 @@ abstract class OwnerSession implements RustOpaqueInterface {
   /// member-join §8: status, then info, then an Answer; `status_view` gives the page.
   OwnerStep requestStatusPage();
 
+  /// 254-app-update §11: send the update's pending request (the last Send action of `sw`) on this session; owner-ops
+  /// go op/nonce -> Sign -> the request with key 31. The answer comes back as an Answer step with `sw` set (then
+  /// `sw_answer`), or the session ends (Ended: the caller tells `sw.lost`).
+  OwnerStep requestSw({required SwUpdate sw});
+
   /// After a Wait step.
   OwnerStep? resumeUpdate();
 
@@ -213,6 +219,9 @@ abstract class OwnerSession implements RustOpaqueInterface {
   /// The last status page read as the page shows it (status page v8.1 §2-§3). `has_net` / `has_mnet`: this phone holds
   /// a net/ (it made a network) / an mnet/ record — the claimed-node sentence names the matching join button.
   StatusView statusView({required bool hasNet, required bool hasMnet});
+
+  /// The node's answer to `request_sw`, to the update; its next action.
+  SwAction swAnswer({required SwUpdate sw, required BigInt nowMs});
 
   /// remove-member §3.5: the status page's line about this node's secrets, from the record of the network info key
   /// 10 names (`record_plain`: net/ when `member` false, mnet/ when true) and the last status-page read. "" = none;
@@ -399,6 +408,9 @@ class OwnerStep {
   /// an Answer of `request_info`: the info body (CBOR) for the removal's version check (§2.4)
   final Uint8List info;
 
+  /// an Answer to `request_sw`: the node answered; `sw_answer` hands it to the update (254-app-update §11). No text.
+  final bool sw;
+
   const OwnerStep({
     required this.kind,
     required this.frames,
@@ -418,6 +430,7 @@ class OwnerStep {
     required this.waitMs,
     required this.sendUpdate,
     required this.info,
+    required this.sw,
   });
 
   @override
@@ -439,7 +452,8 @@ class OwnerStep {
       left.hashCode ^
       waitMs.hashCode ^
       sendUpdate.hashCode ^
-      info.hashCode;
+      info.hashCode ^
+      sw.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -463,7 +477,8 @@ class OwnerStep {
           left == other.left &&
           waitMs == other.waitMs &&
           sendUpdate == other.sendUpdate &&
-          info == other.info;
+          info == other.info &&
+          sw == other.sw;
 }
 
 /// A sealed record and the AAD Kotlin opens it with.
