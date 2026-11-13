@@ -51,7 +51,7 @@ v1 審查(A、B 皆 APPROVE-WITH-CHANGES)的處理見附錄 R1。
 解碼(純函式 `QrDecode.decode(y: ByteArray, rowStride: Int, w: Int, h: Int): String?`,JVM 可測):
 - `PlanarYUVLuminanceSource(y, rowStride, h, 0, 0, w, h, false)` — dataWidth = rowStride 處理對齊填充
   (Y 平面 pixelStride 依 Android `ImageFormat.YUV_420_888` 文件為 1;非 1 → 回 null 不猜)。
-- `QRCodeReader().decode(BinaryBitmap(HybridBinarizer(src)), {TRY_HARDER})`;NotFound → 再以 `InvertedLuminanceSource(src)` 一次
+- `QRCodeReader().decode(BinaryBitmap(HybridBinarizer(src)))`(實作時 U4 拿掉 TRY_HARDER 仍 PASS → 依 U4 規則不設 TRY_HARDER);NotFound → 再以 `InvertedLuminanceSource(src)` 一次
   (終端機 `qrencode -t ansiutf8` 常是深底亮碼)。
 
 Dart(claim.dart):所有 flavor 一個「掃描 QR」按鈕 → `scanQr` → null:不改 `_qr`;error `camera`:「需要相機權限才能掃描
@@ -106,10 +106,10 @@ Manifest:`QrScanActivity` `exported="false"`、`taskAffinity=""`、`launchMode` 
 
 | # | 類型 | 內容 | 負對照(沒有這項修改 → FAIL) |
 |---|---|---|---|
-| U1 | JVM `QrDecodeTest` | ZXing `QRCodeWriter` 產生真的認領 QR(provhelper 格式 112 hex)→ 填成 **rowStride = w + 64**、**最後一列短**(長度 rowStride·(h−1)+w)的 Y buffer → 經與 Activity 共用的 `QrDecode.fromPlane(buffer, rowStride, w, h)` → 回原字串 | dataWidth = w(忽略 stride)→ FAIL;配置 rowStride·h 讀滿 → FAIL |
+| U1 | JVM `QrDecodeTest` | ZXing `QRCodeWriter` 產生真的認領 QR(provhelper 格式 112 hex)→ 填成 **rowStride = w + 64**、**最後一列短**(長度 rowStride·(h−1)+w)的 Y buffer → 經與 Activity 共用的 `QrDecode.fromPlane(buffer, rowStride, pixelStride, w, h)` → 回原字串 | dataWidth = w(忽略 stride)→ FAIL;配置 rowStride·h 讀滿 → FAIL |
 | U2 | JVM | 雜訊 → null;4097 字元的 QR → null;畸形影像(全黑、1×1)→ null 不丟例外 | 拿掉長度上限 → FAIL |
 | U3 | JVM | 反色 QR(亮碼深底)→ 解出 | 拿掉 InvertedLuminanceSource 重試 → FAIL |
-| U4 | JVM | 旋轉 90° 的 QR → 解出(TRY_HARDER) | 拿掉 TRY_HARDER 時若仍 PASS → 刪掉 TRY_HARDER 與此宣稱(不留沒證據的設定) |
+| U4 | JVM | 旋轉 90° 的 QR → 解出 | 實作結果:拿掉 TRY_HARDER 仍 PASS → 已刪掉 TRY_HARDER 與此宣稱(不留沒證據的設定);本測試留作旋轉的行為測試 |
 | U5 | Rust(既有) | `parse_claim_qr` 拒非 hex / 錯欄位 / 錯長度,且接受結尾換行 | 既有 |
 | U6 | JVM `QrScanTest`(只用 `Reply` 假物件,不載 Flutter,A r2-m5) | 第二次放入 → busy;同 gen take 兩次只回覆一次;舊 gen 的 take 不回覆給新呼叫;`dropOwner(舊)` 不清新的槽;start 失敗 → fail 且槽清空 | `take` 不比 gen → 舊結果回給新呼叫 → FAIL;`dropOwner` 改無條件清 → FAIL;CAS 改 `get()` → 重複回覆 → FAIL |
 | G1 | build | 依賴閘門(每個 variant):目前 PASS;加 mlkit → FAIL;加 okhttp(白名單外)→ FAIL;空 classpath → FAIL | 即負對照本身 |
