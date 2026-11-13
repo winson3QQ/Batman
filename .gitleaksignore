@@ -13,3 +13,10 @@ d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generi
 d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generic-api-key:262
 d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generic-api-key:266
 d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generic-api-key:275
+# #325 squash commit on main: the same prov-p3 fixture fake AP keys (Abcdefgh1234 / Oldkey123456789 / $PL / `.*`)
+# as the d4c7bb8 entries above, under the squash commit's own fingerprints; not secrets.
+508dcb6d6b56612a984cd424b5f25a690b869f97:tests/prov-p3/cfgsave-ssid.sh:generic-api-key:38
+508dcb6d6b56612a984cd424b5f25a690b869f97:tests/prov-p3/setkey-settings.sh:generic-api-key:219
+508dcb6d6b56612a984cd424b5f25a690b869f97:tests/prov-p3/setkey-settings.sh:generic-api-key:262
+508dcb6d6b56612a984cd424b5f25a690b869f97:tests/prov-p3/setkey-settings.sh:generic-api-key:266
+508dcb6d6b56612a984cd424b5f25a690b869f97:tests/prov-p3/setkey-settings.sh:generic-api-key:275
