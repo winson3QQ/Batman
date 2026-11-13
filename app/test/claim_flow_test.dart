@@ -43,6 +43,8 @@ class FakeRust implements RustLibApi {
   ClaimTarget target = ClaimTarget.node;
   bool pendingOnDisk = false; // a pending of another K
   bool copyFails = false;
+  String statusState = 'unclaimed'; // what the fake node's status/public says
+  String? statusLast4 = '4f2a';
 
   @override
   Future<ClaimQr> crateApiClaimParseClaimQr({required String text}) async => ClaimQr(deviceId: deviceId, k: Uint8List(32));
@@ -50,7 +52,7 @@ class FakeRust implements RustLibApi {
   Future<ClaimTarget> crateApiClaimClaimTarget({required String dir, required String deviceId}) async => target;
   @override
   StatusInfo crateApiSimpleDecodeStatus({required List<int> bytes}) =>
-      StatusInfo(state: 'unclaimed', trial: false, idLast4: '4f2a', versions: Uint64List(0), transports: const []);
+      StatusInfo(state: statusState, trial: false, idLast4: statusLast4, versions: Uint64List(0), transports: const []);
   @override
   Future<int> crateApiClaimFrameLimit({required List<int> ctrl, required int mtu}) async => 244;
   @override
@@ -119,9 +121,16 @@ class FakeBle implements FlutterReactiveBle {
 void main() {
   final rust = FakeRust();
   setUpAll(() => RustLib.initMock(api: rust));
+  setUp(() => rust
+    ..calls.clear()
+    ..target = ClaimTarget.node
+    ..pendingOnDisk = false
+    ..copyFails = false
+    ..statusState = 'unclaimed'
+    ..statusLast4 = '4f2a');
 
   /// scan, 「認領」, answer the dialog with [confirm], then let the claim run
-  Future<FakeBle> runClaim(WidgetTester t, String confirm) async {
+  Future<FakeBle> runClaim(WidgetTester t, String confirm, {Duration findFor = const Duration(seconds: 60), int realMs = 0}) async {
     final ble = FakeBle();
     t.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('dev.batman/platform'), (c) async {
       switch (c.method) {
@@ -142,15 +151,15 @@ void main() {
       }
       return null;
     });
-    await t.pumpWidget(MaterialApp(home: ClaimPage(ble: ble)));
+    await t.pumpWidget(MaterialApp(home: ClaimPage(ble: ble, findFor: findFor)));
     await t.tap(find.text('掃描 QR'));
     await t.pumpAndSettle();
     await t.tap(find.text('認領'));
     await t.pumpAndSettle();
-    await t.tap(find.text(confirm));
+    if (confirm.isNotEmpty) await t.tap(find.text(confirm)); // '' = no dialog (nothing held)
     for (var i = 0; i < 100; i++) {
       // a cancelled subscription answers with a root-zone future: let the real event loop run it
-      await t.runAsync(() => Future<void>.delayed(Duration.zero));
+      await t.runAsync(() => Future<void>.delayed(Duration(milliseconds: realMs))); // realMs: the search window is wall-clock
       await t.pump(const Duration(milliseconds: 200));
     }
     await t.pumpAndSettle();
@@ -189,5 +198,49 @@ void main() {
     expect(ble.written, [[1]], reason: 'msg1 only: no begin');
     expect(rust.calls, ['read claim-pending/$deviceId', 'read claim-pending/$deviceId', 'copy claim-pending/$deviceId']);
     expect(find.textContaining('認領沒有完成'), findsOneWidget);
+  });
+
+  // 2026-11-13 on the phone (R7-2): a confirmed re-claim of a node that is still claimed found no unclaimed node and only
+  // said 「請確認節點已開機、就在旁邊」 while the node was right there. A claimed node publishes no id tail, so the page
+  // cannot know it is this QR's node: the power / range hint stays, a claimed node nearby is added as a possibility
+  // (no count, no reset advice), and nothing is written. Negative control: the added sentence removed -> FAIL.
+  testWidgets('R7-2: a node record held, a claimed node nearby -> hint kept, "use it from 我的節點", nothing written', (t) async {
+    rust
+      ..statusState = 'claimed'
+      ..statusLast4 = null;
+    final ble = await runClaim(t, '重新認領', findFor: const Duration(milliseconds: 800), realMs: 50);
+    expect(find.textContaining('請確認節點已開機、就在旁邊'), findsOneWidget);
+    expect(find.textContaining('可能就是這台'), findsOneWidget);
+    expect(find.textContaining('不用重新認領'), findsOneWidget);
+    expect(find.textContaining('重燒過卡的話，要掃它新的 QR 碼'), findsOneWidget, reason: 'a re-flashed node has a new identity and a new QR');
+    expect(find.textContaining('恢復出廠'), findsNothing);
+    expect(find.textContaining('台已認領'), findsNothing, reason: 'no count: rotating BLE addresses can count one node twice');
+    expect(ble.written, isEmpty, reason: 'no msg1 to a node that is not ours');
+    expect(rust.calls, isEmpty, reason: 'no record read for writing, none written');
+  });
+
+  // no record for this device id (a first claim): a claimed node nearby may be someone else's -> say it cannot be
+  // claimed, never "use it from 我的節點"
+  testWidgets('R7-2: no record held, a claimed node nearby -> "cannot be claimed", not "use it from 我的節點"', (t) async {
+    rust
+      ..target = ClaimTarget.nothing
+      ..statusState = 'member'
+      ..statusLast4 = null;
+    await runClaim(t, '', findFor: const Duration(milliseconds: 800), realMs: 50);
+    expect(find.textContaining('請確認節點已開機、就在旁邊'), findsOneWidget);
+    expect(find.textContaining('已經被認領的節點不能再認領'), findsOneWidget);
+    expect(find.textContaining('我的節點'), findsNothing);
+    expect(rust.calls, isEmpty);
+  });
+
+  // control: nothing claimed nearby (an unclaimed node of another tail) -> only the plain message
+  testWidgets('R7-2 control: no claimed node seen -> the plain NOT_FOUND only', (t) async {
+    rust.statusLast4 = '9999';
+    final ble = await runClaim(t, '重新認領', findFor: const Duration(milliseconds: 800), realMs: 50);
+    expect(find.textContaining('秒內沒找到編號末四碼'), findsOneWidget);
+    expect(find.textContaining('請確認節點已開機、就在旁邊'), findsOneWidget);
+    expect(find.textContaining('附近有已認領的節點'), findsNothing);
+    expect(ble.written, isEmpty);
+    expect(rust.calls, isEmpty);
   });
 }
