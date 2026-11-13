@@ -6,6 +6,8 @@ import dev.batman.batman_app.keystore.KeyRole
 import dev.batman.batman_app.keystore.Keys
 import dev.batman.batman_app.swupd.SwUpload
 import android.content.Intent
+import android.os.Bundle
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -16,6 +18,12 @@ class MainActivity : FlutterActivity() {
     // BLE (design §2 BLE rules): scan + connect only, never pairing; BLUETOOTH_SCAN is declared neverForLocation
     private val blePerms = arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
     private var blePending: MethodChannel.Result? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        // v0.4.3: a node reboot while connected must not kill the app (BleRx); before the engine starts BLE work
+        BleRx.install { Log.i("BMAPP", it) }
+        super.onCreate(savedInstanceState)
+    }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
