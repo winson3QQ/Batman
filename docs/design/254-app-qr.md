@@ -73,7 +73,7 @@ Manifest:`QrScanActivity` `exported="false"`、`taskAffinity=""`、`launchMode` 
 | MainActivity 被回收、程序還在(「不保留活動」) | 新 MainActivity 不持有舊 Result;舊 MainActivity 的 `dropOwner(this)` 已清槽 → QrScanActivity 解出時 `take(gen)` 拿到 null→ 丟棄、不 log;使用者回到首頁重來;Dart 無任何寫入 | 實機 M5(開發者選項「不保留活動」);單元 U6:清槽後 deliver 不呼叫任何 Result、不丟例外 |
 | 程序被殺 | 結果丟失;掃描前後都沒寫入 | 程式審查 |
 | 解出後還有影格到 | 第一次解出即 `clearAnalyzer()`(A r3-3);仍排入的 `take(gen)` 第二次為 null → 不重複回覆 | 單元 U6 |
-| 相機被佔用 / 綁定失敗 | error `camera` | 實機 M4(⚠️ 若無法重現,標註) |
+| 相機被佔用 / 綁定失敗 | error `camera`(綁定丟例外,或之後的 CameraState 錯誤:`CameraErrors.endsScan`,R2 A-M1) | 單元 `CameraErrorsTest`(對應表);觀察者接線 = 實機 M4(⚠️ 若無法重現,標註) |
 | 惡意 / 畸形 QR 讓 ZXing 丟 runtime 例外 | 該影格捨棄,繼續掃 | 單元 U2 |
 | 升級 / 降版 | 無持久狀態 | n/a |
 | iOS | 不在本版(s1 §1) | n/a |
@@ -95,8 +95,12 @@ Manifest:`QrScanActivity` `exported="false"`、`taskAffinity=""`、`launchMode` 
     出現白名單外的 group 就讓 build 失敗,classpath 為空也失敗。白名單 = 加依賴前實際解析出的 group(PR 附清單)+ androidx.camera
     與 com.google.zxing 帶進的新增 group(實作:camera、camera.featurecombinationquery、zxing、dagger、auto.value、jakarta.inject、javax.inject;共 39 個,與實際解析出的完全相同)。`com.google.android.gms` / `com.google.mlkit` / `com.google.firebase` /
     `com.google.android.datatransport` 永不進白名單。負對照:加 `com.google.mlkit:barcode-scanning` → FAIL;加白名單外的
-    `com.squareup.okhttp3:okhttp` → FAIL。`androidx.activity` 釘在加依賴前 Flutter embedding 已解析出的版本(不拉高;dependencies
-    差異確認其他 androidx 版本沒被拉高,A r2-m4)。**仍不擋**:白名單內 group 的被入侵版本(與 K 同程序、app 有 INTERNET)
+    `com.squareup.okhttp3:okhttp` → FAIL。`androidx.activity` 釘在加依賴前 Flutter embedding 已解析出的版本(不拉高,A r2-m4);
+    **實作更正**:CameraX 仍把 annotation-experimental 1.4.0→1.4.1、exifinterface 1.4.1→1.4.2、tracing 1.2.0→1.3.0、
+    kotlinx-coroutines 1.7.1→1.9.0 拉高(camera-core / camera2 / lifecycle 要求的版本),未強制降回。
+    **R2(B-M1 / B-m1)後的閘門**:白名單改為精確 `group:module`(9 個 variant 實際解析出的 79 個);另解析該 variant 的
+    `android-classes-jar` 產物(要被 dex 的),不是白名單模組也不是 project 的(`:app` 或 plugin project 裡的 `files(...)`)→ FAIL。
+    **閘門範圍**:只管 Gradle 的 JVM / AAR 依賴;Dart pub 套件與 Rust / FFI 的 .so 不經這裡。**仍不擋**:白名單內 group 的被入侵版本(與 K 同程序、app 有 INTERNET)
     → 要靠 Gradle 依賴鎖 + 驗證(s1 §2 早已要求、全 app 都還沒有)→ #254 殘項,不在本項。
   - *實體取得手機*:預覽上就是 K → `FLAG_SECURE`(截圖 / 最近使用縮圖黑);K 不落地。
 - **權限**:新增 CAMERA(執行時、只在按掃描時要)。
@@ -111,7 +115,7 @@ Manifest:`QrScanActivity` `exported="false"`、`taskAffinity=""`、`launchMode` 
 | U3 | JVM | 反色 QR(亮碼深底)→ 解出 | 拿掉 InvertedLuminanceSource 重試 → FAIL |
 | U4 | JVM | 旋轉 90° 的 QR → 解出 | 實作結果:拿掉 TRY_HARDER 仍 PASS → 已刪掉 TRY_HARDER 與此宣稱(不留沒證據的設定);本測試留作旋轉的行為測試 |
 | U5 | Rust(既有) | `parse_claim_qr` 拒非 hex / 錯欄位 / 錯長度,且接受結尾換行 | 既有 |
-| U6 | JVM `QrScanTest`(只用 `Reply` 假物件,不載 Flutter,A r2-m5) | 第二次放入 → busy;同 gen take 兩次只回覆一次;舊 gen 的 take 不回覆給新呼叫;`dropOwner(舊)` 不清新的槽;start 失敗 → fail 且槽清空 | `take` 不比 gen → 舊結果回給新呼叫 → FAIL;`dropOwner` 改無條件清 → FAIL;CAS 改 `get()` → 重複回覆 → FAIL |
+| U6 | JVM `QrScanTest`(只用 `Reply` 假物件,不載 Flutter,A r2-m5) | 第二次放入 → busy;同 gen take 兩次只回覆一次;舊 gen 的 take 不回覆給新呼叫;`dropOwner(舊)` 不清新的槽;start 失敗 → fail 且槽清空(只測 QrScan;MainActivity 的 `catch` 接線 = ⚠️ 程式審查) | `take` 不比 gen → 舊結果回給新呼叫 → FAIL;`dropOwner` 改無條件清 → FAIL;`take` 只 `get()` 不清槽 → 重複回覆 → FAIL。**更正(R2)**:所有槽操作都在主執行緒,CAS 換成 `slot.set(null)` 測不出差異(審查的突變體存活),CAS 不是正確性的依據、不宣稱有負對照 |
 | G1 | build | 依賴閘門(每個 variant):目前 PASS;加 mlkit → FAIL;加 okhttp(白名單外)→ FAIL;空 classpath → FAIL | 即負對照本身 |
 | M0 | 實機(S20) | 回覆在主執行緒:dev 版掃描後 Dart 收到文字(與 M1 同次) | 回覆改在 analyzer 執行緒 → Dart 卡住 / 例外(記錄) |
 | M6 | 實機 | 掃描中 `am kill` → 從最近使用回來 → 不開相機(無預覽、無隱私指示燈) | 拿掉 onCreate gen 檢查 → 相機開 |
@@ -155,3 +159,19 @@ Manifest:`QrScanActivity` `exported="false"`、`taskAffinity=""`、`launchMode` 
 | B-m3 宣告 / 結果回傳 | §2 manifest;`am start` 負測 |
 | B-m4 ZXing 例外 | 逐影格 catch + U2 |
 | B-m5 既有 pending 覆寫 | 既有缺口 → §6 / #254 |
+
+## 附錄 R2 — code review r1(5079b47..6768c35,A、B 皆 APPROVE-WITH-CHANGES)
+
+| 發現 | 處理 | 負對照 |
+|---|---|---|
+| B-M1 閘門看不到 `files(...)` 依賴(`:app` 與 plugin project) | 閘門另解析 variant 的 `android-classes-jar` 產物:不是白名單模組、也不是 project → FAIL;仍 configuration-cache 安全 | init script 加 `files(probe.jar)` 到 `:app`、到 `:reactive_ble_mobile` → 各自 FAIL `not a module or project: probe.jar` |
+| A-M1 相機被佔用 / 停用 / 數量上限是非同步的,`bindToLifecycle` 不丟例外 → 黑畫面 | 觀察 `cameraInfo.cameraState`;`CameraErrors.endsScan`:IN_USE、MAX_CAMERAS_IN_USE、DISABLED、FATAL_ERROR、DO_NOT_DISTURB_MODE_ENABLED、CAMERA_REMOVED → `fail()`;OTHER_RECOVERABLE_ERROR、STREAM_CONFIG 交給 CameraX 重試(會自己恢復) | `CameraErrorsTest`;拿掉 IN_USE → FAIL;觀察者接線 ⚠️ 實機 M4 |
+| B-m1 白名單以 group 為單位,camera-view / camera-video / 完整 guava 可能悄悄回來 | 改為精確 `group:module`(79 個) | 加 `androidx.camera:camera-view` → FAIL;mlkit、okhttp、空 classpath → FAIL |
+| A-m3 QrScanActivity 沒有 configChanges,被重建時舊實例可能回覆 | 解出後的主執行緒 runnable 先檢查 `isDestroyed` | ⚠️ 程式審查(需 Activity 重建,JVM 測不到) |
+| A-m4 掃描中可再按 → busy | Dart `_scanning` 旗標讓按鈕失效;`camera` 訊息涵蓋「相機無法使用」 | D1:拿掉旗標 → FAIL |
+| A-m5 讀到非認領 QR 後仍可認領前一台 | `_read` 失敗 → `_qr = null`;await 後檢查 `mounted` | D1:拿掉 `_qr = null` → FAIL |
+| U6 的「CAS 改 get() → FAIL」宣稱不實 | §5 U6 改寫:槽操作都在主執行緒,`set(null)` 突變體存活;`aFailedStartFailsAndFreesTheSlot` 只測 QrScan,MainActivity 的 catch 為 ⚠️ 程式審查 | — |
+| `setSecure(true)` | 縱深防禦;視窗的 `FLAG_SECURE` 已讓截圖全黑,沒有單獨的負對照 | — |
+| 閘門範圍 | §4:只管 Gradle JVM / AAR 依賴,不含 Dart pub 套件與 FFI .so | — |
+| Viewfinder 長寬比 | 緩衝 = 請求解析度、縮放到 view,可能變形;解碼讀 ImageAnalysis 不受影響 | ⚠️ 實機 M1 |
+| 測試檔 UTF-8 BOM | 已移除 | — |
