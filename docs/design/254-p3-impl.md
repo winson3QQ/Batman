@@ -773,7 +773,7 @@ Go:§3.2 邊界、§3.6、§3.7 每個拒絕分支(mutant)、tar 白名單、版
 - 既有問題:joinwatch 的 3600 s 自動重開不看 slot 寫入(`joinwatch:171-196`);app 的 `write` 中被它重開 → 槽 BAD、status 22(fail-closed,但退路沒了)(A13-m10)。
 - 既有問題:`slot_is_bad` 在目標 boot 分割掛不上時回「不是 BAD」(`batman-slot:364-369`),rollback 會照做(B10-m14)。
 
-`status` team(`dac_pub_hash`、最後看到時間);EMCON(手機 AP 平常關 / 功率;刻意關 BLE 時也要關 HTTP 備援);autocommit BLE 無線電擋 commit(#305 後);CM4 eMMC 的轉賣 / 遺失手機重燒路徑(量產前,D18);未簽章更新路徑(ssh / LuCI / openmanetd local upgrade、`PerformFactoryReset`)要不要收;app 端的靜默模式;整個網路一起改國家(D9);3A+ 上 bulk tmpfs 的常駐佔用;P3 之前建的 payload 不能經 app 裝;5 GHz 手機 AP 的國家合規。
+`status` team(`dac_pub_hash`、最後看到時間)→ 改由 254-app-team-status.md v2.1 處理;EMCON(手機 AP 平常關 / 功率;刻意關 BLE 時也要關 HTTP 備援);autocommit BLE 無線電擋 commit(#305 後);CM4 eMMC 的轉賣 / 遺失手機重燒路徑(量產前,D18);未簽章更新路徑(ssh / LuCI / openmanetd local upgrade、`PerformFactoryReset`)要不要收;app 端的靜默模式;整個網路一起改國家(D9);3A+ 上 bulk tmpfs 的常駐佔用;P3 之前建的 payload 不能經 app 裝;5 GHz 手機 AP 的國家合規。
 
 ## 12. v7.2 實作前核對(2026-11-11;S5 開工前)
 
