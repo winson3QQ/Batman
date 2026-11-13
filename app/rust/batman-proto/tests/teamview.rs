@@ -218,7 +218,7 @@ fn t_a10_version_n_keeps_the_gate_closed() {
     assert!(!tv::team_view(Some(&st), Some(&members(vec![])), None).visible, "N shows no team section");
 }
 
-// T-A8 (the decision): E_RATE -> read again while reads are left (3 at most); E_BUSY / any error / reads used up ->
+// T-A8 (the decision): E_RATE -> read again once (design §4.2); E_BUSY / any error / reads used up ->
 // go on WITHOUT an address (never abort); an answer -> its key 8 (or none)
 #[test]
 fn t_a8_addr_read_decision() {
@@ -226,8 +226,7 @@ fn t_a8_addr_read_decision() {
     assert_eq!(tv::addr_read(Ok(&st), 1), tv::AddrRead::Done(Some(OWN)));
     assert_eq!(tv::addr_read(Ok(&V::Map(vec![(V::Uint(1), V::Uint(2))])), 1), tv::AddrRead::Done(None));
     assert_eq!(tv::addr_read(Err(12), 1), tv::AddrRead::Retry);
-    assert_eq!(tv::addr_read(Err(12), 2), tv::AddrRead::Retry);
-    assert_eq!(tv::addr_read(Err(12), 3), tv::AddrRead::Done(None), "bounded: 3 reads at most");
+    assert_eq!(tv::addr_read(Err(12), 2), tv::AddrRead::Done(None), "bounded: one retry (2 reads) at most");
     assert_eq!(tv::addr_read(Err(7), 1), tv::AddrRead::Done(None), "E_BUSY (7): go on without key 7");
-    assert!(tv::ADDR_RETRY_MS >= 1000 && tv::ADDR_READ_TRIES == 3);
+    assert!(tv::ADDR_RETRY_MS >= 1000 && tv::ADDR_READ_TRIES == 2);
 }
