@@ -37,7 +37,7 @@ class QrScanActivity : ComponentActivity() {
         }
         worker = Executors.newSingleThreadExecutor()
         finder = Viewfinder(this)
-        setContentView(finder.view)
+        setContentView(finder.root)
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) bind()
         else ask.launch(Manifest.permission.CAMERA)
     }
