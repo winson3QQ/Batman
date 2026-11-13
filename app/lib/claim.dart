@@ -1,7 +1,8 @@
 // #254 app S1 — claim one node over BLE (design v8.5.1 §5.1). Rust runs the protocol (ClaimSession, sans-IO); this
 // file moves frames, asks Kotlin for the owner keys / sig_enc / record sealing, and writes records through the Rust
-// store. The QR is pasted as hex (dev flavor only, design §1: today the QR is `batman-provhelper qr`'s stdout); the
-// clipboard is cleared after the paste. Nothing secret (K, records, credentials) is logged or shown.
+// store. The QR comes from the camera (every flavor, 254-app-qr) or is pasted as hex (dev flavor only, design §1: today
+// the QR is `batman-provhelper qr`'s stdout); the clipboard is cleared after the paste. Nothing secret (K, records,
+// credentials) is logged or shown.
 import 'dart:async';
 import 'dart:collection';
 
@@ -30,10 +31,11 @@ class ClaimPage extends StatefulWidget {
 }
 
 class _ClaimPageState extends State<ClaimPage> {
-  final _ble = FlutterReactiveBle();
+  late final _ble = FlutterReactiveBle(); // late: first used by a claim (the D1 widget test builds the page without BLE)
   final _lines = <String>[];
   ClaimQr? _qr;
   bool _busy = false;
+  bool _scanning = false; // a QrScanActivity is open
   final _typed = TextEditingController(); // dev: the QR hex typed in (e.g. over adb), cleared once read
 
   /// [s] may start with log markers ("[CLAIMED] ", ...): logcat keeps them, the screen does not.
@@ -55,16 +57,40 @@ class _ClaimPageState extends State<ClaimPage> {
       await Clipboard.setData(const ClipboardData(text: '')); // nor on the clipboard
       text = d?.text ?? '';
     }
+    await _read(text);
+  }
+
+  /// 254-app-qr §2: the camera (every flavor). Null = left without a code: nothing changes.
+  /// The button is off while a scan is open (code review r1 A-m4), so `busy` does not reach the user.
+  Future<void> _scan() async {
+    setState(() => _scanning = true);
+    final String? text;
+    try {
+      text = await _platform.invokeMethod<String>('scanQr');
+    } on PlatformException catch (e) {
+      _say(e.code == 'camera' ? '無法使用相機：請確認已允許相機權限，且沒有其他 app 正在使用相機' : '現在無法掃描，請再試一次');
+      return;
+    } finally {
+      if (mounted) setState(() => _scanning = false);
+    }
+    if (text != null && mounted) await _read(text);
+  }
+
+  /// The QR text (scanned or pasted) through the one Rust parser; shows the node number's last 4. A text that is not a
+  /// claim QR also forgets the one read before (A-m5: no claim of the previous node after a wrong scan).
+  Future<void> _read(String text) async {
     try {
       final q = await parseClaimQr(text: text);
+      if (!mounted) return;
       setState(() {
         _qr = q;
         _lines
           ..clear()
-          ..add('已讀取節點 …${q.deviceId.substring(14)} 的 QR 碼，可以按「認領」');
+          ..add('已讀取節點（編號末四碼 …${q.deviceId.substring(14)}）的 QR 碼，可以按「認領」');
       });
       _log('已讀取節點 …${q.deviceId.substring(14)} 的 QR 碼');
     } catch (e) {
+      if (mounted) setState(() => _qr = null);
       _say('這不是認領用的 QR 碼：$e');
     }
   }
@@ -221,9 +247,9 @@ class _ClaimPageState extends State<ClaimPage> {
               autocorrect: false,
               enableSuggestions: false,
               decoration: const InputDecoration(labelText: '開發用：QR 碼內容（16 進位）；留空就從剪貼簿讀取')),
-          Row(children: [
+          Wrap(spacing: 8, children: [ // three buttons do not fit one row on a narrow phone
+            FilledButton.tonal(onPressed: (_busy || _scanning) ? null : _scan, child: const Text('掃描 QR')),
             OutlinedButton(onPressed: _busy ? null : _paste, child: const Text('貼上 QR 碼（開發用）')),
-            const SizedBox(width: 8),
             FilledButton(onPressed: (_qr == null || _busy) ? null : _claim, child: const Text('認領')),
           ]),
           const SizedBox(height: 12),

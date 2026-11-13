@@ -14,6 +14,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 254-app-qr §2: the claim QR from the camera (asked at run time, only when 掃描 QR is pressed); a phone without
+         a camera still installs (paste stays for dev builds) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- 254-app-remove-member v6.4 §6 (T31): no backup of the sealed records (a restored older net record could sign
          a version number again; adb backup of a debuggable build would include app data) -->
     <application
@@ -43,6 +47,14 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 254-app-qr §2 / §4: started only by MainActivity's scanQr; no other app can start it or share its task;
+             the result goes back in memory, not through setResult -->
+        <activity
+            android:name=".qr.QrScanActivity"
+            android:exported="false"
+            android:taskAffinity=""
+            android:screenOrientation="portrait"
+            android:theme="@style/NormalTheme" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

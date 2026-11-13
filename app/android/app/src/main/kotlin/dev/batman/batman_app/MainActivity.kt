@@ -4,6 +4,8 @@ import dev.batman.batman_app.keystore.EcdhPeer
 import dev.batman.batman_app.keystore.KeyPolicy
 import dev.batman.batman_app.keystore.KeyRole
 import dev.batman.batman_app.keystore.Keys
+import dev.batman.batman_app.qr.QrScan
+import dev.batman.batman_app.qr.QrScanActivity
 import dev.batman.batman_app.swupd.SwUpload
 import android.content.Intent
 import android.os.Bundle
@@ -45,7 +47,21 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         swUpload?.dispose()
         swUpload = null
+        QrScan.shared.dropOwner(this) // 254-app-qr §2: a scan this engine started is not answered any more
         super.onDestroy()
+    }
+
+    // 254-app-qr §2: one scan at a time (busy otherwise); QrScanActivity answers in memory, never through the Intent
+    private fun scanQr(result: MethodChannel.Result) {
+        val gen = QrScan.shared.put(this, object : QrScan.Reply {
+            override fun done(text: String?) = result.success(text)
+            override fun fail() = result.error("camera", null, null)
+        }) ?: return result.error("busy", null, null)
+        try {
+            startActivity(Intent(this, QrScanActivity::class.java).putExtra(QrScanActivity.EXTRA_GEN, gen))
+        } catch (e: Exception) {
+            QrScan.shared.take(gen)?.fail() // A r2-m1: no slot left stuck
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -122,6 +138,8 @@ class MainActivity : FlutterActivity() {
                     val r = runCatching { Keys().seal(requireNotNull(plain) { "no plain" }, requireNotNull(aad) { "no aad" }) }
                     runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
                 }.start()
+                // the claim QR from the camera (254-app-qr): the text, null when left without one, error `camera` / `busy`
+                "scanQr" -> scanQr(result)
                 // true when both BLE permissions are granted (asks once if not)
                 "blePermissions" -> {
                     if (blePerms.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) result.success(true)
