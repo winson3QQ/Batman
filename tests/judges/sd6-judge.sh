@@ -21,35 +21,42 @@ known(){ local l=$1 e; for e in "${KF[@]}"; do grep -Eq -- "$e" <<< "$l" && retu
 PR_UNIT=prov-status-diag-254
 ok(){ echo "PASS $PR_UNIT: $*"; }; no(){ echo "FAIL $PR_UNIT: $*"; }
 FT='docker-in-image(#159),memcg,whole-team-status(#254),payload-config'; FO='docker-in-image(#159),memcg,payload-config'
+VO=1.5.14-wsl.28+5079b47.fw108f016; VT=1.5.14-wsl.29+141a018.fw7781d66.bench
 ME=a8:dd:9f:4d:c6:10; PEER=a8:dd:9f:4d:c7:60
+SD6_PRE=$REPO/scripts/dv/pre-team-status-versions.txt; grep -qxF "$VO" "$SD6_PRE" || { tbad "$VO not on $SD6_PRE"; exit 1; }
 R(){ echo "RESULT status.get(full true) code=$1 state=3 verdict=0 neighbours=1 p5_saved=true f15=image self=$2 peers=$3 bytes=$4"; }
-# <name> <want: pass | known | new> <result line> <features> [this node's wlh0 MAC as sysfs gives it]
-case_(){ local o fails newn=0 l me=${5:-$ME}
-	o=$(sd6_judge "$3" "$4" "$me" "$PEER"); fails=$(grep -c '^FAIL' <<< "$o")
+# <name> <want: pass | known | new> <result line> <features> <version> [this node's wlh0 MAC as sysfs gives it]
+case_(){ local o fails newn=0 l me=${6:-$ME}
+	o=$(sd6_judge "$3" "$4" "$5" "$me" "$PEER"); fails=$(grep -c '^FAIL' <<< "$o")
 	while IFS= read -r l; do [ -n "$l" ] && ! known "$l" && newn=$((newn + 1)); done < <(grep '^FAIL' <<< "$o")
 	case "$2" in
 		pass)  [ "$fails" = 0 ] && grep -q '^PASS' <<< "$o" && tok "$1: PASS" || tbad "$1: want PASS, got: $(tr '\n' '|' <<< "$o")" ;;
 		known) [ "$fails" -ge 1 ] && [ "$newn" = 0 ] && tok "$1: FAIL, all known" || tbad "$1: want only known FAILs, got fails=$fails new=$newn: $(tr '\n' '|' <<< "$o")" ;;
 		new)   [ "$newn" -ge 1 ] && tok "$1: FAIL, $newn NEW line(s)" || tbad "$1: want a NEW FAIL, got fails=$fails new=$newn: $(tr '\n' '|' <<< "$o")" ;;
 	esac; }
-case_ "team image, live peer"            pass  "$(R 0 $ME "$PEER/2" 120)" "$FT"
-case_ "team image, peer among others"    pass  "$(R 0 $ME "a8:dd:9f:4d:c6:d3/1,$PEER/0" 160)" "$FT"
-case_ "upper-case self from sysfs"       pass  "$(R 0 $ME "$PEER/2" 120)" "$FT" A8:DD:9F:4D:C6:10
-case_ "image without team status"        known "$(R 0 - - 90)" "$FO"
-case_ "no-team image, code 20"           known "RESULT status.get(full true) code=20" "$FO"
-case_ "team image, code 20"              new   "RESULT status.get(full true) code=20" "$FT"
-case_ "team image, key 9 absent"         new   "$(R 0 $ME - 90)" "$FT"
-case_ "team image, keys 8 and 9 absent"  new   "$(R 0 - - 90)" "$FT"
-case_ "team image, key 9 bad"            new   "$(R 0 $ME bad 90)" "$FT"
-case_ "team image, key 9 empty"          new   "$(R 0 $ME none 90)" "$FT"
-case_ "team image, other peers only"     new   "$(R 0 $ME "a8:dd:9f:4d:c6:d3/1" 120)" "$FT"
-case_ "team image, peer stale (31 s)"    new   "$(R 0 $ME "$PEER/31" 120)" "$FT"
-case_ "team image, peer at 30 s"         pass  "$(R 0 $ME "$PEER/30" 120)" "$FT"
-case_ "team image, a suffix of PEER"     new   "$(R 0 $ME "ff:dd:9f:4d:c7:60/0" 120)" "$FT"
-case_ "team image, wrong key 8"          new   "$(R 0 02:11:22:33:44:55 "$PEER/2" 120)" "$FT"
-case_ "team image, answer 8113 B"        new   "$(R 0 $ME "$PEER/2" 8113)" "$FT"
-case_ "team image, answer 8112 B"        pass  "$(R 0 $ME "$PEER/2" 8112)" "$FT"
-case_ "team image, bytes missing"        new   "RESULT status.get(full true) code=0 state=3 self=$ME peers=$PEER/2" "$FT"
-case_ "feature as a substring only"      known "$(R 0 - - 90)" "docker,whole-team-status(#254)x,memcg"
+case_ "team image, live peer"                  pass  "$(R 0 $ME "$PEER/2" 120)" "$FT" "$VT"
+case_ "team image, peer among others"          pass  "$(R 0 $ME "a8:dd:9f:4d:c6:d3/1,$PEER/0" 160)" "$FT" "$VT"
+case_ "upper-case self from sysfs"             pass  "$(R 0 $ME "$PEER/2" 120)" "$FT" "$VT" A8:DD:9F:4D:C6:10
+case_ "listed image without team status"       known "$(R 0 - - 90)" "$FO" "$VO"
+case_ "unlisted version without the marker"    new   "$(R 0 - - 90)" "$FO" "$VT"
+case_ "empty BATMAN_FEATURES (unreadable)"     new   "$(R 0 - - 90)" "" "$VO"
+case_ "marker lost, keys 8 / 9 present"        new   "$(R 0 $ME "$PEER/2" 120)" "$FO" "$VO"
+case_ "marker lost, key 8 only"                new   "$(R 0 $ME - 90)" "$FO" "$VO"
+case_ "listed, no marker, code 20"             new   "RESULT status.get(full true) code=20" "$FO" "$VO"
+case_ "team image, code 20"                    new   "RESULT status.get(full true) code=20" "$FT" "$VT"
+case_ "team image, key 9 absent"               new   "$(R 0 $ME - 90)" "$FT" "$VT"
+case_ "team image, keys 8 and 9 absent"        new   "$(R 0 - - 90)" "$FT" "$VT"
+case_ "team image, key 9 bad"                  new   "$(R 0 $ME bad 90)" "$FT" "$VT"
+case_ "team image, key 9 empty"                new   "$(R 0 $ME none 90)" "$FT" "$VT"
+case_ "team image, other peers only"           new   "$(R 0 $ME "a8:dd:9f:4d:c6:d3/1" 120)" "$FT" "$VT"
+case_ "team image, peer stale (31 s)"          new   "$(R 0 $ME "$PEER/31" 120)" "$FT" "$VT"
+case_ "team image, peer at 30 s"               pass  "$(R 0 $ME "$PEER/30" 120)" "$FT" "$VT"
+case_ "team image, a suffix of PEER"           new   "$(R 0 $ME "ff:dd:9f:4d:c7:60/0" 120)" "$FT" "$VT"
+case_ "team image, wrong key 8"                new   "$(R 0 02:11:22:33:44:55 "$PEER/2" 120)" "$FT" "$VT"
+case_ "team image, answer 8113 B"              new   "$(R 0 $ME "$PEER/2" 8113)" "$FT" "$VT"
+case_ "team image, answer 8112 B"              pass  "$(R 0 $ME "$PEER/2" 8112)" "$FT" "$VT"
+case_ "team image, bytes missing"              new   "RESULT status.get(full true) code=0 state=3 self=$ME peers=$PEER/2" "$FT" "$VT"
+case_ "marker as a substring only, listed"     known "$(R 0 - - 90)" "docker,whole-team-status(#254)x,memcg" "$VO"
+case_ "empty RESULT (provclient not run)"      new   "" "$FT" "$VT"
 [ $((pass + bad)) -gt 0 ] || { echo "FAIL zero cases"; exit 1; }
 echo "sd6-judge: $pass passed, $bad failed"; [ "$bad" = 0 ]

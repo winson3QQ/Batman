@@ -1,0 +1,13 @@
+# scripts/dv/pre-team-status-versions.txt — #254 whole-team status (254-app-team-status v2.1): the P3 image versions
+# known to be BEFORE whole-team status (one BATMAN_VERSION per line). prov-status-diag-254's SD6 says "image without
+# whole-team status" — the only known-failure line — only for a version on this list, whose BATMAN_FEATURES are readable
+# and lack whole-team-status(#254), and whose status answer (code 0) has neither key 8 nor key 9. Anything else that
+# lacks the keys (a team-status rc that lost the marker, a new version nobody added, an unreadable stamp) is a plain
+# FAIL. Add a line with every pin bump until whole-team status ships; the list is frozen after that (same rule as
+# pre-p3-versions.txt, 254-h4 §6.1 / review A #20).
+1.5.14-wsl.23+6261a3a.fw0e1d102
+1.5.14-wsl.24+e5c89a1.fw7ce6e80
+1.5.14-wsl.25+fbc01ae.fw02f0913
+1.5.14-wsl.26+5edb755.fw162a4d5.bench
+1.5.14-wsl.27+5edb755.fwf1eca54.bench
+1.5.14-wsl.28+5079b47.fw108f016

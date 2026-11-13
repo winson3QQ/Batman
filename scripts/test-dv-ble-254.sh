@@ -75,7 +75,7 @@ if [ -n "$NEGLOCK" ]; then [ "$(lockt "$NEGLOCK")" = tries=1 ] && tok "lock nega
 o=$(python3 "$REPO/tests/judges/helper-down-backoff.py" "$REPO/scripts/node/prov-p2-254.sh" 2>&1) && tok "helper-down backoff judge: 7 sequences judged as expected" || tbad "helper-down backoff judge: $(grep FAIL <<< "$o" | head -3 | tr '\n' '|')"
 # the H3 review fixes' negative controls: pr_release / pxok / L71 flip end line / bond_verdict (tests/judges/h3-judges.sh)
 o=$(REPO=$REPO bash "$REPO/tests/judges/h3-judges.sh" 2>&1) && tok "h3 judges: $(tail -1 <<< "$o")" || tbad "h3 judges: $(grep '^FAIL' <<< "$o" | head -3 | tr '\n' '|')"
-# #254 whole-team status: prov-status-diag-254 SD6's judge on 19 canned answers; only "image without whole-team status" may be a
+# #254 whole-team status: prov-status-diag-254 SD6's judge on 24 canned answers; only "image without whole-team status" may be a
 # known failure (tests/judges/sd6-judge.sh, review r1 A-M2 / B-M1..M3)
 o=$(REPO=$REPO bash "$REPO/tests/judges/sd6-judge.sh" 2>&1) && tok "sd6 judge: $(tail -1 <<< "$o")" || tbad "sd6 judge: $(grep '^FAIL' <<< "$o" | head -3 | tr '\n' '|')"
 # the H4 offline judges (254-h4 §16): cap / hs / secrets, each with its bad-log cases (tests/judges/h4/test-judges.py)
