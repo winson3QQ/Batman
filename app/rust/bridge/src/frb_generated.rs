@@ -27,9 +27,9 @@
 
 // Section: imports
 
-use crate::api::rekey::*;
-use crate::api::owner::*;
 use crate::api::claim::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;
 use crate::api::swupdate::*;
 use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
@@ -43,7 +43,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
                     default_rust_auto_opaque = RustAutoOpaqueMoi,
                 );
                 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 200504256;
+                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -553350494;
             
 
 // Section: executor
@@ -992,6 +992,16 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
                 transform_result_sse::<_, ()>((move || {
                      let output_ok = Ok::<_, ()>(crate::api::simple::build_info())?;   std::result::Result::Ok(output_ok)
                 })()) })
+            }fn wire__crate__api__claim__claim_target_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "claim_target", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_dir = <String>::sse_decode(&mut deserializer);
+let api_device_id = <String>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, String>((move ||  {
+                         let output_ok = crate::api::claim::claim_target(api_dir, api_device_id)?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
             }fn wire__crate__api__simple__decode_status_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "decode_status", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
@@ -1233,6 +1243,16 @@ let api_owner_pub = <Vec<u8>>::sse_decode(&mut deserializer);deserializer.end();
                 transform_result_sse::<_, String>((move || {
                      let output_ok = crate::api::member::parse_invite(api_hex)?;   std::result::Result::Ok(output_ok)
                 })()) })
+            }fn wire__crate__api__claim__pending_matches_qr_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "pending_matches_qr", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_record = <Vec<u8>>::sse_decode(&mut deserializer);
+let api_qr = <crate::api::claim::ClaimQr>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, String>((move ||  {
+                         let output_ok = crate::api::claim::pending_matches_qr(api_record, &api_qr)?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
             }fn wire__crate__api__claim__pending_path_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "pending_path", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
@@ -1292,6 +1312,16 @@ let api_name = <Option<String>>::sse_decode(&mut deserializer);deserializer.end(
                 transform_result_sse::<_, ()>((move || {
                      let output_ok = Ok::<_, ()>(crate::api::owner::status_membership_line(api_node_state, api_net_id, api_name))?;   std::result::Result::Ok(output_ok)
                 })()) })
+            }fn wire__crate__api__claim__store_forget_node_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "store_forget_node", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_dir = <String>::sse_decode(&mut deserializer);
+let api_device_id = <String>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, String>((move ||  {
+                         let output_ok = crate::api::claim::store_forget_node(api_dir, api_device_id)?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
             }fn wire__crate__api__simple__store_has_records_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "store_has_records", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
@@ -1507,6 +1537,17 @@ let mut var_record = <Vec<u8>>::sse_decode(deserializer);
 let mut var_pendingPath = <String>::sse_decode(deserializer);
 let mut var_detail = <String>::sse_decode(deserializer);
 return crate::api::claim::ClaimStep{kind: var_kind, frames: var_frames, path: var_path, record: var_record, pending_path: var_pendingPath, detail: var_detail};}
+                }
+                
+                impl SseDecode for crate::api::claim::ClaimTarget {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::claim::ClaimTarget::Nothing,
+1 => crate::api::claim::ClaimTarget::Pending,
+2 => crate::api::claim::ClaimTarget::Node,
+            _ => unreachable!("Invalid variant for ClaimTarget: {}", inner),
+        };}
                 }
                 
                 impl SseDecode for i32 {
@@ -2052,26 +2093,29 @@ return crate::api::rekey::UpdatePrep{state: var_state, eph_pub: var_ephPub, mnet
                     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
                     match func_id {
                         44 => wire__crate__api__swupdate__SwUpdate_default_impl(port, ptr, rust_vec_len, data_len),
-58 => wire__crate__api__claim__der_to_raw_impl(port, ptr, rust_vec_len, data_len),
-59 => wire__crate__api__claim__frame_limit_impl(port, ptr, rust_vec_len, data_len),
-61 => wire__crate__api__simple__init_app_impl(port, ptr, rust_vec_len, data_len),
-63 => wire__crate__api__member__list_mnets_impl(port, ptr, rust_vec_len, data_len),
-64 => wire__crate__api__owner__list_nets_impl(port, ptr, rust_vec_len, data_len),
-65 => wire__crate__api__owner__list_nodes_impl(port, ptr, rust_vec_len, data_len),
-66 => wire__crate__api__member__list_pends_impl(port, ptr, rust_vec_len, data_len),
-78 => wire__crate__api__claim__node_path_impl(port, ptr, rust_vec_len, data_len),
-79 => wire__crate__api__claim__owner_enc_sign_input_impl(port, ptr, rust_vec_len, data_len),
-80 => wire__crate__api__claim__parse_claim_qr_impl(port, ptr, rust_vec_len, data_len),
-82 => wire__crate__api__claim__pending_path_impl(port, ptr, rust_vec_len, data_len),
-88 => wire__crate__api__simple__store_has_records_impl(port, ptr, rust_vec_len, data_len),
-89 => wire__crate__api__simple__store_read_marker_impl(port, ptr, rust_vec_len, data_len),
-90 => wire__crate__api__owner__store_read_sealed_impl(port, ptr, rust_vec_len, data_len),
-91 => wire__crate__api__claim__store_remove_impl(port, ptr, rust_vec_len, data_len),
-92 => wire__crate__api__claim__store_seal_params_impl(port, ptr, rust_vec_len, data_len),
-93 => wire__crate__api__simple__store_sweep_impl(port, ptr, rust_vec_len, data_len),
-94 => wire__crate__api__owner__store_write_cas_impl(port, ptr, rust_vec_len, data_len),
-95 => wire__crate__api__simple__store_write_marker_impl(port, ptr, rust_vec_len, data_len),
-96 => wire__crate__api__claim__store_write_sealed_impl(port, ptr, rust_vec_len, data_len),
+57 => wire__crate__api__claim__claim_target_impl(port, ptr, rust_vec_len, data_len),
+59 => wire__crate__api__claim__der_to_raw_impl(port, ptr, rust_vec_len, data_len),
+60 => wire__crate__api__claim__frame_limit_impl(port, ptr, rust_vec_len, data_len),
+62 => wire__crate__api__simple__init_app_impl(port, ptr, rust_vec_len, data_len),
+64 => wire__crate__api__member__list_mnets_impl(port, ptr, rust_vec_len, data_len),
+65 => wire__crate__api__owner__list_nets_impl(port, ptr, rust_vec_len, data_len),
+66 => wire__crate__api__owner__list_nodes_impl(port, ptr, rust_vec_len, data_len),
+67 => wire__crate__api__member__list_pends_impl(port, ptr, rust_vec_len, data_len),
+79 => wire__crate__api__claim__node_path_impl(port, ptr, rust_vec_len, data_len),
+80 => wire__crate__api__claim__owner_enc_sign_input_impl(port, ptr, rust_vec_len, data_len),
+81 => wire__crate__api__claim__parse_claim_qr_impl(port, ptr, rust_vec_len, data_len),
+83 => wire__crate__api__claim__pending_matches_qr_impl(port, ptr, rust_vec_len, data_len),
+84 => wire__crate__api__claim__pending_path_impl(port, ptr, rust_vec_len, data_len),
+90 => wire__crate__api__claim__store_forget_node_impl(port, ptr, rust_vec_len, data_len),
+91 => wire__crate__api__simple__store_has_records_impl(port, ptr, rust_vec_len, data_len),
+92 => wire__crate__api__simple__store_read_marker_impl(port, ptr, rust_vec_len, data_len),
+93 => wire__crate__api__owner__store_read_sealed_impl(port, ptr, rust_vec_len, data_len),
+94 => wire__crate__api__claim__store_remove_impl(port, ptr, rust_vec_len, data_len),
+95 => wire__crate__api__claim__store_seal_params_impl(port, ptr, rust_vec_len, data_len),
+96 => wire__crate__api__simple__store_sweep_impl(port, ptr, rust_vec_len, data_len),
+97 => wire__crate__api__owner__store_write_cas_impl(port, ptr, rust_vec_len, data_len),
+98 => wire__crate__api__simple__store_write_marker_impl(port, ptr, rust_vec_len, data_len),
+99 => wire__crate__api__claim__store_write_sealed_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
                 }
@@ -2139,28 +2183,28 @@ return crate::api::rekey::UpdatePrep{state: var_state, eph_pub: var_ephPub, mnet
 54 => wire__crate__api__swupdate__SwUpdate_uploading_impl(ptr, rust_vec_len, data_len),
 55 => wire__crate__api__member__approval_net_id_impl(ptr, rust_vec_len, data_len),
 56 => wire__crate__api__simple__build_info_impl(ptr, rust_vec_len, data_len),
-57 => wire__crate__api__simple__decode_status_impl(ptr, rust_vec_len, data_len),
-60 => wire__crate__api__rekey__info_net_id_impl(ptr, rust_vec_len, data_len),
-62 => wire__crate__api__owner__leave_confirm_text_impl(ptr, rust_vec_len, data_len),
-67 => wire__crate__api__member__member_import_approval_impl(ptr, rust_vec_len, data_len),
-68 => wire__crate__api__member__member_import_prepare_impl(ptr, rust_vec_len, data_len),
-69 => wire__crate__api__member__member_pend_view_impl(ptr, rust_vec_len, data_len),
-70 => wire__crate__api__rekey__member_update_import_impl(ptr, rust_vec_len, data_len),
-71 => wire__crate__api__rekey__member_update_prepare_impl(ptr, rust_vec_len, data_len),
-72 => wire__crate__api__member__mnet_summary_impl(ptr, rust_vec_len, data_len),
-73 => wire__crate__api__member__net_check_joinreq_impl(ptr, rust_vec_len, data_len),
-74 => wire__crate__api__owner__net_forget_joining_impl(ptr, rust_vec_len, data_len),
-75 => wire__crate__api__rekey__net_people_impl(ptr, rust_vec_len, data_len),
-76 => wire__crate__api__rekey__net_recipients_impl(ptr, rust_vec_len, data_len),
-77 => wire__crate__api__owner__net_summary_impl(ptr, rust_vec_len, data_len),
-81 => wire__crate__api__member__parse_invite_impl(ptr, rust_vec_len, data_len),
-83 => wire__crate__api__rekey__remove_check_impl(ptr, rust_vec_len, data_len),
-84 => wire__crate__api__rekey__remove_own_nodes_impl(ptr, rust_vec_len, data_len),
-85 => wire__crate__api__rekey__remove_tick_text_impl(ptr, rust_vec_len, data_len),
-86 => wire__crate__api__simple__selftest_impl(ptr, rust_vec_len, data_len),
-87 => wire__crate__api__owner__status_membership_line_impl(ptr, rust_vec_len, data_len),
-97 => wire__crate__api__swupdate__sw_specifier_text_impl(ptr, rust_vec_len, data_len),
-98 => wire__crate__api__rekey__update_net_id_impl(ptr, rust_vec_len, data_len),
+58 => wire__crate__api__simple__decode_status_impl(ptr, rust_vec_len, data_len),
+61 => wire__crate__api__rekey__info_net_id_impl(ptr, rust_vec_len, data_len),
+63 => wire__crate__api__owner__leave_confirm_text_impl(ptr, rust_vec_len, data_len),
+68 => wire__crate__api__member__member_import_approval_impl(ptr, rust_vec_len, data_len),
+69 => wire__crate__api__member__member_import_prepare_impl(ptr, rust_vec_len, data_len),
+70 => wire__crate__api__member__member_pend_view_impl(ptr, rust_vec_len, data_len),
+71 => wire__crate__api__rekey__member_update_import_impl(ptr, rust_vec_len, data_len),
+72 => wire__crate__api__rekey__member_update_prepare_impl(ptr, rust_vec_len, data_len),
+73 => wire__crate__api__member__mnet_summary_impl(ptr, rust_vec_len, data_len),
+74 => wire__crate__api__member__net_check_joinreq_impl(ptr, rust_vec_len, data_len),
+75 => wire__crate__api__owner__net_forget_joining_impl(ptr, rust_vec_len, data_len),
+76 => wire__crate__api__rekey__net_people_impl(ptr, rust_vec_len, data_len),
+77 => wire__crate__api__rekey__net_recipients_impl(ptr, rust_vec_len, data_len),
+78 => wire__crate__api__owner__net_summary_impl(ptr, rust_vec_len, data_len),
+82 => wire__crate__api__member__parse_invite_impl(ptr, rust_vec_len, data_len),
+85 => wire__crate__api__rekey__remove_check_impl(ptr, rust_vec_len, data_len),
+86 => wire__crate__api__rekey__remove_own_nodes_impl(ptr, rust_vec_len, data_len),
+87 => wire__crate__api__rekey__remove_tick_text_impl(ptr, rust_vec_len, data_len),
+88 => wire__crate__api__simple__selftest_impl(ptr, rust_vec_len, data_len),
+89 => wire__crate__api__owner__status_membership_line_impl(ptr, rust_vec_len, data_len),
+100 => wire__crate__api__swupdate__sw_specifier_text_impl(ptr, rust_vec_len, data_len),
+101 => wire__crate__api__rekey__update_net_id_impl(ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
                 }
@@ -2289,6 +2333,23 @@ self.detail.into_into_dart().into_dart()
             impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::claim::ClaimStep {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::claim::ClaimStep> for crate::api::claim::ClaimStep {
             fn into_into_dart(self) -> crate::api::claim::ClaimStep {
+                self
+            }
+        }
+// Codec=Dco (DartCObject based), see doc to use other codecs
+            impl flutter_rust_bridge::IntoDart for crate::api::claim::ClaimTarget {
+                fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+                    match self {
+                    Self::Nothing => 0.into_dart(),
+Self::Pending => 1.into_dart(),
+Self::Node => 2.into_dart(),
+                    _ => unreachable!(),
+                }
+                }
+            }
+            impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::claim::ClaimTarget {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::claim::ClaimTarget> for crate::api::claim::ClaimTarget {
+            fn into_into_dart(self) -> crate::api::claim::ClaimTarget {
                 self
             }
         }
@@ -2920,6 +2981,14 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::rekey::UpdateState> for crate
 <String>::sse_encode(self.detail, serializer);}
                 }
                 
+                impl SseEncode for crate::api::claim::ClaimTarget {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<i32>::sse_encode(match self {crate::api::claim::ClaimTarget::Nothing => { 0 }
+crate::api::claim::ClaimTarget::Pending => { 1 }
+crate::api::claim::ClaimTarget::Node => { 2 }
+ _ => { unimplemented!(""); }}, serializer);}
+                }
+                
                 impl SseEncode for i32 {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {serializer.cursor.write_i32::<NativeEndian>(self).unwrap();}
@@ -3392,9 +3461,9 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
-use crate::api::rekey::*;
-use crate::api::owner::*;
 use crate::api::claim::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;
 use crate::api::swupdate::*;
 use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
@@ -3479,9 +3548,9 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::rekey::*;
-use crate::api::owner::*;
 use crate::api::claim::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;
 use crate::api::swupdate::*;
 use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};

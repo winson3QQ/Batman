@@ -88,6 +88,50 @@ pub fn store_remove(dir: String, rel: String) -> Result<(), String> {
     store::Store::new(dir).remove(&rel).map_err(|e| format!("{e:?}"))
 }
 
+/// What this phone already holds for a device id, checked before a claim sends or writes anything (design §5.1: a
+/// device id seen again is never overwritten without asking). A node record wins over a pending (§5.1: both = the
+/// node record counts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimTarget {
+    /// nothing: a new claim
+    Nothing,
+    /// only `claim-pending/<id>`: an unfinished claim (§5.2)
+    Pending,
+    /// `node/<id>` (a pending beside it is stale)
+    Node,
+}
+
+/// A record that cannot be read (unknown version, not a record) is an error: the claim stops (fail-closed).
+pub fn claim_target(dir: String, device_id: String) -> Result<ClaimTarget, String> {
+    let s = store::Store::new(dir);
+    if s.read(&node_path(&device_id)).map_err(|e| format!("{e:?}"))?.is_some() {
+        return Ok(ClaimTarget::Node);
+    }
+    if s.read(&pending_path(&device_id)).map_err(|e| format!("{e:?}"))?.is_some() {
+        return Ok(ClaimTarget::Pending);
+    }
+    Ok(ClaimTarget::Nothing)
+}
+
+/// Whether an opened pending record is for this QR (same device id and K). Then claiming again is the recovery's
+/// first step (§5.2-1: on NX success the new pending, with the same K, replaces the old one); otherwise the pending
+/// is kept and no claim starts.
+pub fn pending_matches_qr(record: Vec<u8>, qr: &ClaimQr) -> Result<bool, String> {
+    let v = cbor::decode(&record).map_err(|_| "手機裡的認領紀錄看不懂（pending is not CBOR）")?;
+    let id = v.get(1).and_then(Value::as_text).ok_or("手機裡的認領紀錄不完整（pending key 1）")?;
+    let k = v.get(2).and_then(Value::as_bytes).ok_or("手機裡的認領紀錄不完整（pending key 2）")?;
+    Ok(id == qr.device_id && k == &qr.k[..])
+}
+
+/// §5.1 re-claim the user confirmed: the old node record moves to the forgotten area (`forgotten-node/<id>-<n>`,
+/// unchanged, restorable by moving it back). Called when the new pending is about to be written — after NX and the
+/// node certificate passed — so a claim that never reaches the node leaves the old record where it was.
+pub fn store_forget_node(dir: String, device_id: String) -> Result<(), String> {
+    store::Store::new(dir).move_aside(&node_path(&device_id), FORGOTTEN_NODE).map(|_| ()).map_err(|e| format!("{e:?}"))
+}
+
+pub(crate) const FORGOTTEN_NODE: &str = "forgotten-node";
+
 fn pending_record(p: &Pending) -> Vec<u8> {
     cbor::encode(&Value::Map(vec![
         (Value::Uint(1), Value::Text(p.device_id.clone())),
@@ -316,5 +360,60 @@ mod tests {
         assert_eq!(st.detail, "連到的不是這台節點，或 QR 碼不對（Msg2Undecryptable）");
         let st = s.step(Some(Action::Done(End::Broken("lost".into())))).unwrap();
         assert_eq!(st.detail, "連線或資料出錯，這次的紀錄先保留（Broken：lost）");
+    }
+
+    // design §5.1: a device id seen again. nothing -> Nothing; only a pending -> Pending; a node record -> Node, also with a
+    // pending beside it (the node record wins); an unreadable record stops the claim (Err), never "Nothing".
+    #[test]
+    fn claim_target_finds_what_the_phone_holds() {
+        let d = std::env::temp_dir().join(format!("bm-target-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let dir = d.to_string_lossy().to_string();
+        let id = "e61551410cfd538e24".to_string();
+        let s = store::Store::new(&d);
+        assert_eq!(claim_target(dir.clone(), id.clone()).unwrap(), ClaimTarget::Nothing);
+        s.write(&pending_path(&id), 1, b"p").unwrap();
+        assert_eq!(claim_target(dir.clone(), id.clone()).unwrap(), ClaimTarget::Pending);
+        assert_eq!(claim_target(dir.clone(), "e61551410cfd538e25".into()).unwrap(), ClaimTarget::Nothing, "another node");
+        s.write(&node_path(&id), 1, b"n").unwrap();
+        assert_eq!(claim_target(dir.clone(), id.clone()).unwrap(), ClaimTarget::Node, "node record wins over the pending");
+        s.remove(&pending_path(&id)).unwrap();
+        assert_eq!(claim_target(dir.clone(), id.clone()).unwrap(), ClaimTarget::Node);
+        std::fs::write(d.join(node_path(&id)), b"garbage").unwrap();
+        assert!(claim_target(dir.clone(), id.clone()).is_err(), "unreadable -> no claim");
+        assert!(claim_target(dir, "../x".into()).is_err());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    // §5.2-1: the same QR (device id and K) resumes an unfinished claim; another K, or another id, does not.
+    #[test]
+    fn pending_matches_only_the_same_qr() {
+        let q = ClaimQr { device_id: "e61551410cfd538e24".into(), k: vec![7; 32] };
+        let p = |id: &str, k: [u8; 32]| pending_record(&Pending {
+            device_id: id.into(), k, node_cert: vec![9; 10], dac_der: vec![8; 5], ecdh_pub: [4; 65], owner_pub: [4; 65], owner_enc_pub: [4; 65],
+        });
+        assert!(pending_matches_qr(p("e61551410cfd538e24", [7; 32]), &q).unwrap());
+        assert!(!pending_matches_qr(p("e61551410cfd538e24", [6; 32]), &q).unwrap(), "another K");
+        assert!(!pending_matches_qr(p("e61551410cfd538e25", [7; 32]), &q).unwrap(), "another node");
+        assert!(pending_matches_qr(vec![0xff], &q).is_err());
+    }
+
+    // §5.1 re-claim: the node record moves to forgotten-node/ unchanged (it still counts as a record: keys are never
+    // regenerated); no node record -> nothing happens.
+    #[test]
+    fn forget_node_moves_the_record_aside() {
+        let d = std::env::temp_dir().join(format!("bm-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let dir = d.to_string_lossy().to_string();
+        let id = "e61551410cfd538e24".to_string();
+        store_forget_node(dir.clone(), id.clone()).unwrap();
+        assert!(!crate::api::simple::store_has_records(dir.clone()));
+        let s = store::Store::new(&d);
+        s.write(&node_path(&id), 2, b"old").unwrap();
+        store_forget_node(dir.clone(), id.clone()).unwrap();
+        assert_eq!(claim_target(dir.clone(), id.clone()).unwrap(), ClaimTarget::Nothing);
+        assert_eq!(s.read("forgotten-node/e61551410cfd538e24-1").unwrap().unwrap().sealed, b"old");
+        assert!(crate::api::simple::store_has_records(dir));
+        let _ = std::fs::remove_dir_all(d);
     }
 }

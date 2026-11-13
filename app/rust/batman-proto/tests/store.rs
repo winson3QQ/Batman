@@ -78,3 +78,27 @@ fn a_crash_mid_write_leaves_the_old_record_and_a_swept_temp() {
     // the temp name is not a valid record path either
     assert!(matches!(s.read("node/.c1.tmp-deadbeef00000000"), Err(Error::BadPath)));
 }
+
+// design §5.1 (re-claim): the old node record moves aside unchanged, to the first free name; it opens again (same AAD)
+// only once it is back at its path; nothing at the path -> None; a file that is not a record stays where it is.
+#[test]
+fn move_aside_keeps_the_bytes_and_picks_a_free_name() {
+    let root = tmpdir("aside");
+    let s = Store::new(&root);
+    assert_eq!(s.move_aside("node/e61551410cfd538e24", "forgotten-node").unwrap(), None);
+    s.write("node/e61551410cfd538e24", 3, b"old").unwrap();
+    let before = fs::read(root.join("node/e61551410cfd538e24")).unwrap();
+    assert_eq!(s.move_aside("node/e61551410cfd538e24", "forgotten-node").unwrap().as_deref(), Some("forgotten-node/e61551410cfd538e24-1"));
+    assert_eq!(s.read("node/e61551410cfd538e24").unwrap(), None, "gone from node/");
+    assert_eq!(fs::read(root.join("forgotten-node/e61551410cfd538e24-1")).unwrap(), before, "bytes unchanged");
+    s.write("node/e61551410cfd538e24", 1, b"newer").unwrap();
+    assert_eq!(s.move_aside("node/e61551410cfd538e24", "forgotten-node").unwrap().as_deref(), Some("forgotten-node/e61551410cfd538e24-2"));
+    assert_eq!(s.read("forgotten-node/e61551410cfd538e24-1").unwrap().unwrap().sealed, b"old", "the first one is not overwritten");
+    // moved back, it is the same record at the same generation: aad(node/<id>, 3) opens it again
+    fs::rename(root.join("forgotten-node/e61551410cfd538e24-1"), root.join("node/e61551410cfd538e24")).unwrap();
+    assert_eq!(s.read("node/e61551410cfd538e24").unwrap(), Some(Sealed { generation: 3, sealed: b"old".to_vec() }));
+    fs::write(root.join("node/e61551410cfd538e24"), b"garbage").unwrap();
+    assert!(matches!(s.move_aside("node/e61551410cfd538e24", "forgotten-node"), Err(Error::NotARecord)));
+    assert!(root.join("node/e61551410cfd538e24").exists());
+    assert!(matches!(s.move_aside("node/../x", "forgotten-node"), Err(Error::BadPath)));
+}

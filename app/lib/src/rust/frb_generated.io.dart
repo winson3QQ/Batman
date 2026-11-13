@@ -175,6 +175,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ClaimStep dco_decode_claim_step(dynamic raw);
 
   @protected
+  ClaimTarget dco_decode_claim_target(dynamic raw);
+
+  @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
@@ -490,6 +493,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ClaimStep sse_decode_claim_step(SseDeserializer deserializer);
+
+  @protected
+  ClaimTarget sse_decode_claim_target(SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
@@ -841,6 +847,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_claim_step(ClaimStep self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_claim_target(ClaimTarget self, SseSerializer serializer);
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
