@@ -1,3 +1,4 @@
+import com.android.build.api.artifact.SingleArtifact
 import org.gradle.api.artifacts.component.ComponentArtifactIdentifier
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
@@ -182,6 +183,51 @@ abstract class DependencyGate : DefaultTask() {
     }
 }
 
+// 254-app-qr §4 / §5 S2 (code review r2 B r2-M1): the merged manifest of every variant. QrScanActivity must be
+// exported="false" with no intent-filter (no other app can start it), and the permissions must be exactly this set
+// (the field release merged manifest, 2026-11-13; ${applicationId} = the variant's). Anything else fails the build.
+val expectedPermissions = setOf(
+    "uses-permission:android.permission.BLUETOOTH_SCAN", "uses-permission:android.permission.BLUETOOTH_CONNECT",
+    "uses-permission:android.permission.INTERNET", "uses-permission:android.permission.CHANGE_NETWORK_STATE",
+    "uses-permission:android.permission.ACCESS_NETWORK_STATE", "uses-permission:android.permission.CAMERA",
+    "uses-permission:android.permission.BLUETOOTH", "uses-permission:android.permission.BLUETOOTH_ADMIN",
+    "uses-permission:\${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+    "uses-permission-sdk-23:android.permission.ACCESS_COARSE_LOCATION",
+    "uses-permission-sdk-23:android.permission.ACCESS_FINE_LOCATION",
+)
+
+abstract class ManifestGate : DefaultTask() {
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val manifest: RegularFileProperty
+    @get:Input abstract val applicationId: Property<String>
+    @get:Input abstract val expected: SetProperty<String>
+
+    @TaskAction
+    fun check() {
+        val ns = "http://schemas.android.com/apk/res/android"
+        val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+            .newDocumentBuilder().parse(manifest.get().asFile)
+        val bad = mutableListOf<String>()
+        val perms = sortedSetOf<String>()
+        for (tag in listOf("uses-permission", "uses-permission-sdk-23")) {
+            val l = doc.getElementsByTagName(tag)
+            for (i in 0 until l.length) perms.add("$tag:" + (l.item(i) as org.w3c.dom.Element).getAttributeNS(ns, "name"))
+        }
+        val want = expected.get().map { it.replace("\${applicationId}", applicationId.get()) }.toSortedSet()
+        (perms - want).forEach { bad.add("unexpected $it") }
+        (want - perms).forEach { bad.add("missing $it") }
+        val acts = doc.getElementsByTagName("activity")
+        val qr = (0 until acts.length).map { acts.item(it) as org.w3c.dom.Element }
+            .filter { it.getAttributeNS(ns, "name") == "dev.batman.batman_app.qr.QrScanActivity" }
+        if (qr.size != 1) bad.add("QrScanActivity declared ${qr.size} times")
+        for (a in qr) {
+            if (a.getAttributeNS(ns, "exported") != "false") bad.add("QrScanActivity exported=\"${a.getAttributeNS(ns, "exported")}\"")
+            if (a.getElementsByTagName("intent-filter").length != 0) bad.add("QrScanActivity has an intent-filter")
+        }
+        if (bad.isNotEmpty()) throw GradleException("$name: ${bad.joinToString("; ")}")
+        logger.lifecycle("$name: ${perms.size} permissions as expected, QrScanActivity not exported")
+    }
+}
+
 androidComponents {
     onVariants { v ->
         val cap = v.name.replaceFirstChar { it.uppercase() }
@@ -193,5 +239,12 @@ androidComponents {
             }.artifacts.resolvedArtifacts.map { s -> s.map { it.id } })
         }
         tasks.matching { it.name == "pre${cap}Build" }.configureEach { dependsOn(gate) }
+        // the merged manifest exists only after process<Variant>MainManifest, so this one runs before package<Variant>
+        val manifestGate = tasks.register<ManifestGate>("check${cap}ManifestGate") {
+            manifest.set(v.artifacts.get(SingleArtifact.MERGED_MANIFEST))
+            applicationId.set(v.applicationId)
+            expected.set(expectedPermissions)
+        }
+        tasks.matching { it.name == "package${cap}" }.configureEach { dependsOn(manifestGate) }
     }
 }
