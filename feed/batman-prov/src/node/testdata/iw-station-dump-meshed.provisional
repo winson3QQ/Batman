@@ -1,0 +1,10 @@
+Station a8:dd:9f:4d:c6:d3 (on wlh0)
+	inactive time:	120 ms
+	rx bytes:	123456
+	signal:  	-61 dBm
+	signal avg:	-62 dBm
+	mesh plink:	ESTAB
+Station a8:dd:9f:4d:c7:60 (on wlh0)
+	inactive time:	300000 ms
+	signal avg:	-88 dBm
+	mesh plink:	ESTAB
