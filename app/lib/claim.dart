@@ -181,7 +181,7 @@ class _ClaimPageState extends State<ClaimPage> {
             builder: (c) => AlertDialog(
                   title: Text('節點 …$last4 已經認領過'),
                   content: const Text('這台節點已在你的清單裡。若節點已重燒或重置回未認領，可以重新認領：'
-                      '舊紀錄會移到「已忘記」（可恢復）。要重新認領嗎？'),
+                      '舊紀錄會保留在手機上（不會刪除），不再顯示在清單裡。要重新認領嗎？'),
                   actions: [
                     TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
                     TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('重新認領')),
@@ -256,7 +256,7 @@ class _ClaimPageState extends State<ClaimPage> {
                 // §5.1: after NX + the node certificate passed, before the new pending: the old record goes aside
                 await storeForgetNode(dir: dir, deviceId: q.deviceId);
                 forgetNode = false;
-                _say('舊的節點紀錄已移到「已忘記」');
+                _say('舊的節點紀錄已移出清單（保留在手機上，沒有刪除）');
               }
               await seal(st.path, st.record);
               _say('已先在手機記下這次認領（還沒完成）');
