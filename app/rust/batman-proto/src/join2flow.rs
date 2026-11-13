@@ -55,6 +55,8 @@ pub struct Input {
     /// remove-member §2.0 rule 2: the admin answered yes to "this node was removed before (lost / captured)"; without
     /// it such a node stops at the start (Pre::RemovedBefore: nothing written, nothing signed)
     pub removed_confirmed: bool,
+    /// status key 8 of this node as the session last read it (254-app-team-status §4.2); written only from N+1
+    pub mesh_addr: Option<[u8; 6]>,
 }
 
 /// a precondition that failed (§3.3-1)
@@ -361,6 +363,7 @@ impl Join2 {
             state: MemberState::Joining,
             prev_country: None,
             known: None,
+            mesh_addr: crate::teamview::gate(inp.mesh_addr),
         });
         rec.list = Some(list);
         self.rec = Some(Rec::Net(rec));

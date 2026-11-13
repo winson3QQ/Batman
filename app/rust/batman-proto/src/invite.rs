@@ -325,15 +325,20 @@ pub fn invite_payload(net_id: &[u8; 16], invite_id: &[u8; 16], netcfg_item: Valu
 }
 
 /// The join request payload (CDDL join-request; the node_cert embedded as an item).
-pub fn joinreq_payload(invite_hash: &[u8; 32], node_cert: Value, owner_pub: &[u8; 65], owner_enc_pub: &[u8; 65], sig_enc: &[u8; 64], name: &str) -> Vec<u8> {
-    cbor::encode(&Value::Map(vec![
+/// `mesh_addr`: key 7 (254-app-team-status §4.2), passed through `teamview::gate` by the flow (None in version N).
+pub fn joinreq_payload(invite_hash: &[u8; 32], node_cert: Value, owner_pub: &[u8; 65], owner_enc_pub: &[u8; 65], sig_enc: &[u8; 64], name: &str, mesh_addr: Option<[u8; 6]>) -> Vec<u8> {
+    let mut e = vec![
         (Value::Uint(1), Value::Bytes(invite_hash.to_vec())),
         (Value::Uint(2), node_cert),
         (Value::Uint(3), Value::Bytes(owner_pub.to_vec())),
         (Value::Uint(4), Value::Bytes(owner_enc_pub.to_vec())),
         (Value::Uint(5), Value::Bytes(sig_enc.to_vec())),
         (Value::Uint(6), Value::Text(name.into())),
-    ]))
+    ];
+    if let Some(a) = mesh_addr {
+        e.push((Value::Uint(7), Value::Bytes(a.to_vec())));
+    }
+    cbor::encode(&Value::Map(e))
 }
 
 pub struct JoinReqInput {
@@ -347,6 +352,8 @@ pub struct JoinReqInput {
     /// mpend/<net_id> as read: its generation (0 = none) and plain (None = none or does not open)
     pub pend_gen: u64,
     pub pend_plain: Option<Vec<u8>>,
+    /// status key 8 of this node as the session last read it (254-app-team-status §4.2); written only from N+1
+    pub mesh_addr: Option<[u8; 6]>,
 }
 
 enum JStep {
@@ -409,7 +416,7 @@ impl JoinReqFlow {
                     Ok(v) => v,
                     Err(_) => return Some(Action::Done(End::Refused(Error::NoNodeCert))),
                 };
-                let payload = joinreq_payload(&inv.hash, node_cert, &self.inp.owner_pub, &self.inp.owner_enc_pub, &s, &self.inp.name);
+                let payload = joinreq_payload(&inv.hash, node_cert, &self.inp.owner_pub, &self.inp.owner_enc_pub, &s, &self.inp.name, crate::teamview::gate(self.inp.mesh_addr));
                 let input = cose::sign1_tbs(cose::CT_JOINREQ, cose::LABEL_JOINREQ, &payload);
                 self.st = JStep::Joinreq { inv, dac_hash, device_id, payload };
                 Some(Action::SignOwner { input })

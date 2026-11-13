@@ -1064,10 +1064,13 @@ class _NodesPageState extends State<NodesPage> {
     // remove-member §3.5: the line about this node's secrets, from the record of the network info key 10 names
     var hint = const (line: '', button: false);
     _hintRec = null;
+    // 254-app-team-status §6: the team section from this node's network record (hidden in version N)
+    var team = s.teamView(recordPlain: null, member: false);
     if (v.netId.isNotEmpty) {
       for (final (rel, member) in [('net/${v.netId}', false), ('mnet/${v.netId}', true)]) {
         final (_, p) = await _readRecord(rel);
         if (p == null) continue;
+        team = s.teamView(recordPlain: p, member: member);
         final h = s.updateHint(recordPlain: p, member: member);
         hint = (line: h.line, button: h.button);
         if (h.button) _hintRec = (rel, member);
@@ -1095,7 +1098,13 @@ class _NodesPageState extends State<NodesPage> {
         leaveTitle: dialog[0],
         leaveBody: dialog[1],
         updateLine: hint.line,
-        canSendUpdate: hint.button);
+        canSendUpdate: hint.button,
+        teamVisible: team.visible,
+        teamTitle: team.title,
+        teamOnly: team.only,
+        teamCards: team.cards,
+        teamNote: team.note,
+        teamTech: team.tech);
   }
 
   /// net_id hex -> netcfg name, from this phone's net / mnet records; whether it holds any net/ (admin) and any mnet/

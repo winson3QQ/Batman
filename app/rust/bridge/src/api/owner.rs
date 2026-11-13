@@ -17,7 +17,7 @@ use batman_proto::loginflow::{Action, End, Login, NodeRecord};
 use batman_proto::netrec::{self, Confirm, MemberState, NetRec};
 use batman_proto::nodecert::{self, Verified};
 use batman_proto::updflow::{self, SendUpdate};
-use batman_proto::{sig, status, statuspage};
+use batman_proto::{sig, status, statuspage, teamview};
 use batman_proto::store;
 
 use super::rekey::{removed_question, update_hint_of, update_text, UpdateHint};
@@ -320,6 +320,19 @@ pub struct OwnerSession {
 pub(crate) fn persist_at(kind: OwnerKind, rel: String, record: Vec<u8>, expected_gen: u64) -> OwnerStep {
     let generation = expected_gen + 1;
     OwnerStep { record, aad: store::aad(&rel, generation), rel, generation, expected_gen, ..OwnerStep::new(kind) }
+}
+
+/// The status page's team section (254-app-team-status v2.1 §6); `visible` false = not shown (version N, or no read).
+pub struct TeamView {
+    pub visible: bool,
+    pub title: String,
+    /// one sentence instead of the cards, else ""
+    pub only: String,
+    /// one card per entry (a second, small line after a newline)
+    pub cards: Vec<String>,
+    pub note: String,
+    /// address tails for the technical list
+    pub tech: Vec<String>,
 }
 
 /// The status page (docs/design/254-app-status-page.md v8.1 §2): the verdict of the last status read and the lines
@@ -1016,6 +1029,7 @@ impl OwnerSession {
             owner_pub: self.owner_pub,
             owner_enc_pub: enc,
             admin_pub: adm,
+            mesh_addr: self.own_addr_seen(),
         };
         let (join, a) = Join::start(conn, inp);
         self.st = St::Join { join, rec: None, gen: 0, applied: false, resent: false };
@@ -1141,6 +1155,7 @@ impl OwnerSession {
             admin_pub: adm,
             member: false,
             removed_confirmed,
+            mesh_addr: self.own_addr_seen(),
         };
         let (flow, a) = Join2::start(conn, inp);
         self.st = St::Join2 { flow, mesh_id, member: false };
@@ -1173,6 +1188,7 @@ impl OwnerSession {
             admin_pub: [0; 65],
             member: true,
             removed_confirmed: false,
+            mesh_addr: self.own_addr_seen(),
         };
         let (flow, a) = Join2::start(conn, inp);
         self.st = St::Join2 { flow, mesh_id, member: true };
@@ -1203,6 +1219,7 @@ impl OwnerSession {
             owner_enc_pub: enc,
             pend_gen,
             pend_plain,
+            mesh_addr: self.own_addr_seen(),
         };
         let (f, a) = JoinReqFlow::start(inp);
         self.joinreq = Some(f);
@@ -1245,6 +1262,30 @@ impl OwnerSession {
     pub fn status_view(&self, has_net: bool, has_mnet: bool) -> StatusView {
         let join = if self.page_cut_once { statuspage::JoinButton::Leaving } else { statuspage::JoinButton::of(has_net, has_mnet) };
         status_view_of(self.page_status.as_ref(), self.page_info.as_ref(), self.page_fresh, self.page_rate, join)
+    }
+
+    /// The team section of the status page (254-app-team-status v2.1 §6) from the last status-page read and this
+    /// node's network record (`record_plain`: net/ (admin) or mnet/ (`member` = true) plaintext; None = none). Hidden
+    /// in version N (teamview::WRITE_MESH_ADDR = false).
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn team_view(&self, record_plain: Option<Vec<u8>>, member: bool) -> TeamView {
+        let signed = record_plain.as_deref().and_then(|p| {
+            if member {
+                batman_proto::mrec::MNet::decode(p).ok().map(|m| m.members)
+            } else {
+                netrec::decode(p).ok().map(|r| r.base.members)
+            }
+        });
+        let members = signed.and_then(|s| netrec::sign1_payload(&s).ok());
+        let own = self.node.as_ref().map(|n| netrec::dac_hash(&n.dac_pub));
+        let st = self.page_status.as_ref().and_then(|r| r.as_ref().ok());
+        let v = teamview::team_view(st, members.as_ref(), own.as_ref());
+        TeamView { visible: v.visible, title: v.title, only: v.only, cards: v.cards, note: v.note, tech: v.tech }
+    }
+
+    /// status key 8 of the last status-page read: the address a join / request offers (written only from N+1)
+    fn own_addr_seen(&self) -> Option<[u8; 6]> {
+        self.page_status.as_ref().and_then(|r| r.as_ref().ok()).and_then(teamview::own_addr)
     }
 
     /// The user's answer to a ConfirmCountry step.
@@ -1612,7 +1653,7 @@ mod tests {
                     &[0xab; 16],
                     1,
                     None,
-                    &[batman_proto::cose::Member { dac_pub_hash: &[0xa1; 32], ecdh_pub: &[4; 65], name: "node-0001", owner_pub: &[4; 65], owner_enc_pub: &[4; 65] }],
+                    &[batman_proto::cose::Member { dac_pub_hash: &[0xa1; 32], ecdh_pub: &[4; 65], name: "node-0001", owner_pub: &[4; 65], owner_enc_pub: &[4; 65], mesh_addr: None }],
                 ),
                 &[1; 64],
             ),
@@ -1704,6 +1745,7 @@ mod tests {
             state: MemberState::Joining,
             prev_country: Some("JP".into()),
             known: None,
+            mesh_addr: None,
         };
         r.list = Some(vec![joining]);
         let plain = netrec::encode(&r);
@@ -1966,7 +2008,7 @@ mod tests {
             &[0x5a; 16],
             1,
             None,
-            &[cose::Member { dac_pub_hash: &[0xa1; 32], ecdh_pub: &pub65(0x43), name: "node-0001", owner_pub: &pub65(0x11), owner_enc_pub: &pub65(0x22) }],
+            &[cose::Member { dac_pub_hash: &[0xa1; 32], ecdh_pub: &pub65(0x43), name: "node-0001", owner_pub: &pub65(0x11), owner_enc_pub: &pub65(0x22), mesh_addr: None }],
         );
         let mut r = NetRec::made(joinflow::NetRecord {
             net_id: [0x5a; 16],
@@ -2159,13 +2201,13 @@ mod member_tests {
             netcfg: vec![1],
             members: batman_proto::cose::sign1(
                 batman_proto::cose::CT_MEMBERS,
-                &batman_proto::cose::member_list_payload(&[0xab; 16], 1, None, &[batman_proto::cose::Member { dac_pub_hash: &[0xa1; 32], ecdh_pub: &[4; 65], name: "c", owner_pub: &[4; 65], owner_enc_pub: &[4; 65] }]),
+                &batman_proto::cose::member_list_payload(&[0xab; 16], 1, None, &[batman_proto::cose::Member { dac_pub_hash: &[0xa1; 32], ecdh_pub: &[4; 65], name: "c", owner_pub: &[4; 65], owner_enc_pub: &[4; 65], mesh_addr: None }]),
                 &[1; 64],
             ),
             secrets: vec![3],
         });
         r.state = netrec::APPLIED.into();
-        r.list = Some(vec![netrec::Member { known: None, dac_pub_hash: [0xb2; 32], ecdh_pub: [4; 65], name: "隊員".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Approved, prev_country: None }]);
+        r.list = Some(vec![netrec::Member { known: None, mesh_addr: None, dac_pub_hash: [0xb2; 32], ecdh_pub: [4; 65], name: "隊員".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Approved, prev_country: None }]);
         let v = net_summary(netrec::encode(&r)).unwrap();
         assert!(v.members[0].approved && !v.members[0].joining);
         // remove-member §3.6 (T39): another person's approved node is removed with the person, never forgotten
@@ -2630,13 +2672,14 @@ mod rm_tests {
             state,
             prev_country: None,
             known: None,
+            mesh_addr: None,
         }
     }
     /// v1 (the session's node 0x55 / 0x43 the creator, this phone's owner 0x11, admin 0x66) with key 11 = `list`
     fn record(list: Vec<netrec::Member>, state: &str) -> NetRec {
         let id = [0x5a; 16];
         let c = entry(0x55, 0x43, 0x11, MemberState::Applied);
-        let m = cose::Member { dac_pub_hash: &c.dac_pub_hash, ecdh_pub: &c.ecdh_pub, name: &c.name, owner_pub: &c.owner_pub, owner_enc_pub: &c.owner_enc_pub };
+        let m = cose::Member { dac_pub_hash: &c.dac_pub_hash, ecdh_pub: &c.ecdh_pub, name: &c.name, owner_pub: &c.owner_pub, owner_enc_pub: &c.owner_enc_pub, mesh_addr: None };
         let base = joinflow::NetRecord {
             net_id: id,
             mesh_id: "bm-5a5a5a5a5a5a".into(),

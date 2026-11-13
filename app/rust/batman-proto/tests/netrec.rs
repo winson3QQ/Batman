@@ -27,7 +27,7 @@ fn old_record_plain(state: &str) -> Vec<u8> {
     let first = [0xa1; 32];
     let members = cose::sign1(
         cose::CT_MEMBERS,
-        &cose::member_list_payload(&NET_ID, 1, None, &[cose::Member { dac_pub_hash: &first, ecdh_pub: &p(2), name: "node-0001", owner_pub: &p(4), owner_enc_pub: &p(5) }]),
+        &cose::member_list_payload(&NET_ID, 1, None, &[cose::Member { dac_pub_hash: &first, ecdh_pub: &p(2), name: "node-0001", owner_pub: &p(4), owner_enc_pub: &p(5), mesh_addr: None }]),
         &[1; 64],
     );
     cbor::encode(&m(vec![
@@ -75,6 +75,7 @@ fn record_round_trip_with_a_member_list() {
         state: MemberState::Joining,
         prev_country: Some("JP".into()),
         known: None,
+        mesh_addr: None,
     });
     r.list = Some(l);
     let back = netrec::decode(&netrec::encode(&r)).unwrap();
@@ -121,7 +122,7 @@ fn t6_confirm_with_txn_still_present_upgrades_with_a_note() {
 fn t6_confirm_never_adds_or_upgrades_other_members() {
     let mut r = netrec::decode(&old_record_plain("pending")).unwrap();
     let mut l = r.members().unwrap();
-    l.push(Member { dac_pub_hash: [0xb2; 32], ecdh_pub: p(8), name: "x".into(), owner_pub: p(4), owner_enc_pub: p(5), device_id: None, state: MemberState::Joining, prev_country: None, known: None });
+    l.push(Member { dac_pub_hash: [0xb2; 32], ecdh_pub: p(8), name: "x".into(), owner_pub: p(4), owner_enc_pub: p(5), device_id: None, state: MemberState::Joining, prev_country: None, known: None, mesh_addr: None });
     r.list = Some(l);
     for (i, want) in [
         (m(vec![(11, V::Bool(false))]), JoinState::NotApplied),
@@ -168,7 +169,7 @@ fn t10_write_cas_needs_the_generation_it_was_read_at() {
 fn t10_forget_joining_removes_the_entry() {
     let mut r = netrec::decode(&old_record_plain("applied")).unwrap();
     let mut l = r.members().unwrap();
-    l.push(Member { dac_pub_hash: [0xb2; 32], ecdh_pub: p(8), name: "x".into(), owner_pub: p(4), owner_enc_pub: p(5), device_id: None, state: MemberState::Joining, prev_country: Some("JP".into()), known: None });
+    l.push(Member { dac_pub_hash: [0xb2; 32], ecdh_pub: p(8), name: "x".into(), owner_pub: p(4), owner_enc_pub: p(5), device_id: None, state: MemberState::Joining, prev_country: Some("JP".into()), known: None, mesh_addr: None });
     r.list = Some(l);
     let s = store::Store::new(tmp("forget"));
     let rel = "net/5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a";

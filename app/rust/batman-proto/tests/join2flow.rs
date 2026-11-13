@@ -9,6 +9,8 @@ use batman_proto::conn::Conn;
 use batman_proto::join2flow::{Action, End, Fail, Input, Join2, Keep, Pre, Revert};
 use batman_proto::joinflow::NetRecord;
 use batman_proto::mrec::MNet;
+/// 254-app-team-status T-A6(c): the address a session would offer (version N never writes it)
+const TEAM_ADDR: [u8; 6] = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
 use batman_proto::netrec::{self, InviteRec, Member, MemberState, NetRec};
 use batman_proto::nodecert::Verified;
 use batman_proto::{cose, frame, kdf, noise, sig, store};
@@ -69,6 +71,7 @@ fn member(dac: u8, ecdh: u8, name: &str, state: MemberState) -> Member {
         state,
         prev_country: None,
         known: None,
+        mesh_addr: None,
     }
 }
 
@@ -82,7 +85,7 @@ fn record(country: &str, admins: &[[u8; 65]], state: &str, list: Option<Vec<Memb
         &NET_ID,
         1,
         None,
-        &[cose::Member { dac_pub_hash: &first.dac_pub_hash, ecdh_pub: &first.ecdh_pub, name: &first.name, owner_pub: &first.owner_pub, owner_enc_pub: &first.owner_enc_pub }],
+        &[cose::Member { dac_pub_hash: &first.dac_pub_hash, ecdh_pub: &first.ecdh_pub, name: &first.name, owner_pub: &first.owner_pub, owner_enc_pub: &first.owner_enc_pub, mesh_addr: None }],
     );
     let members = cose::sign1(cose::CT_MEMBERS, &mp, &sig::der_to_raw_low_s(&signed(ADMIN, &cose::sign1_tbs(cose::CT_MEMBERS, cose::LABEL_MEMBERS, &mp))).unwrap());
     let base = NetRecord { net_id: NET_ID, mesh_id: mesh, channel: 40, bw: 4, sae: SAE.into(), net_root: [0x77; 32], netcfg, members, secrets: vec![0xd2, 0x84] };
@@ -405,6 +408,8 @@ fn input(disk: &Disk, node: Option<Verified>) -> Input {
         admin_pub: pub_of(&key(ADMIN)),
         member: false,
         removed_confirmed: false,
+        // 254-app-team-status T-A6(c): an address is offered; version N must not write it
+        mesh_addr: Some(TEAM_ADDR),
     }
 }
 
@@ -1058,6 +1063,7 @@ fn member_join(x: &MNet, country: &str, set_up: impl FnOnce(&mut Node)) -> (Run,
         admin_pub: [0; 65],
         member: true,
         removed_confirmed: false,
+        mesh_addr: Some(TEAM_ADDR),
     };
     let (j, a) = Join2::start(c, inp);
     let run = drive(&mut n, &disk, j, a, &YES);
@@ -1127,7 +1133,7 @@ fn m9_member_preconditions() {
     let disk = Disk::new(&applied_record("US"));
     let (c, mut n) = pair("US");
     let (plain, g) = disk.read();
-    let inp = Input { record_plain: plain, record_gen: g, node: Some(joining_node()), node_name: String::new(), owner_pub: [0; 65], owner_enc_pub: [0; 65], admin_pub: [0; 65], member: true, removed_confirmed: false };
+    let inp = Input { record_plain: plain, record_gen: g, node: Some(joining_node()), node_name: String::new(), owner_pub: [0; 65], owner_enc_pub: [0; 65], admin_pub: [0; 65], member: true, removed_confirmed: false, mesh_addr: None };
     let (j, a) = Join2::start(c, inp);
     assert_eq!(drive(&mut n, &disk, j, a, &YES).end, Some(End::Refused(Pre::Record)));
 }
@@ -1232,7 +1238,7 @@ fn rm_t27_rule2_a_node_removed_before_needs_the_admins_yes() {
         &NET_ID,
         1,
         None,
-        &[cose::Member { dac_pub_hash: &first.dac_pub_hash, ecdh_pub: &first.ecdh_pub, name: &first.name, owner_pub: &first.owner_pub, owner_enc_pub: &first.owner_enc_pub }],
+        &[cose::Member { dac_pub_hash: &first.dac_pub_hash, ecdh_pub: &first.ecdh_pub, name: &first.name, owner_pub: &first.owner_pub, owner_enc_pub: &first.owner_enc_pub, mesh_addr: None }],
     ))
     .unwrap();
     if let V::Map(e) = &mut mp {
@@ -1282,4 +1288,19 @@ fn rm_t23_a_member_node_behind_after_reply_5() {
     let (run, j) = drive_keep(&mut node, &disk, j, a, &YES);
     assert!(matches!(run.end, Some(End::Applied { .. })));
     assert!(!j.node_behind(), "reply 0: the node took the record's version");
+}
+
+/// 254-app-team-status T-A6(c): the session offers the node's mesh address (input() sets TEAM_ADDR), version N
+/// stores the joining entry WITHOUT it. Negative control: teamview::WRITE_MESH_ADDR flipped -> FAIL.
+#[test]
+fn t_a6c_version_n_stores_no_mesh_address() {
+    let rec = applied_record("US");
+    let disk = Disk::new(&rec);
+    let (c, mut n) = pair("US");
+    assert_eq!(input(&disk, Some(joining_node())).mesh_addr, Some(TEAM_ADDR));
+    let run = join(&disk, &mut n, c, &YES);
+    assert!(matches!(run.end, Some(End::Applied { .. })), "{:?}", run.end);
+    let (plain, _) = disk.read();
+    let list = netrec::decode(&plain).unwrap().members().unwrap();
+    assert!(list.len() >= 2 && list.iter().all(|m| m.mesh_addr.is_none()), "version N stored key 7: {list:?}");
 }

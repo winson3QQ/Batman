@@ -105,6 +105,8 @@ pub struct Member<'a> {
     pub name: &'a str,
     pub owner_pub: &'a [u8; 65],
     pub owner_enc_pub: &'a [u8; 65],
+    /// key 7 (254-app-team-status §4.2); callers pass `teamview::gate(..)`, so None in version N
+    pub mesh_addr: Option<&'a [u8; 6]>,
 }
 
 /// member-list payload (CDDL member-list): {1: net_id, 2: version, 3: prev (null for v1), 4: [members], 5: [], 6: [],
@@ -113,13 +115,17 @@ pub fn member_list_payload(net_id: &[u8; 16], version: u32, prev_hash: Option<&[
     let ms = members
         .iter()
         .map(|m| {
-            Value::Map(vec![
+            let mut e = vec![
                 (Value::Uint(1), Value::Bytes(m.dac_pub_hash.to_vec())),
                 (Value::Uint(2), Value::Bytes(m.ecdh_pub.to_vec())),
                 (Value::Uint(3), Value::Text(m.name.into())),
                 (Value::Uint(4), Value::Bytes(m.owner_pub.to_vec())),
                 (Value::Uint(5), Value::Bytes(m.owner_enc_pub.to_vec())),
-            ])
+            ];
+            if let Some(a) = m.mesh_addr {
+                e.push((Value::Uint(7), Value::Bytes(a.to_vec())));
+            }
+            Value::Map(e)
         })
         .collect();
     cbor::encode(&Value::Map(vec![

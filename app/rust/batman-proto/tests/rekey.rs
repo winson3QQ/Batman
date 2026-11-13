@@ -90,6 +90,7 @@ fn entry(n: N, state: MemberState, known: Option<u32>) -> Member {
         state,
         prev_country: None,
         known,
+        mesh_addr: None,
     }
 }
 fn verified(n: N) -> Verified {
@@ -100,7 +101,7 @@ fn netcfg_v1() -> Vec<u8> {
 }
 fn members_v1() -> Vec<u8> {
     let e = entry(A, MemberState::Applied, None);
-    let c = cose::Member { dac_pub_hash: &e.dac_pub_hash, ecdh_pub: &e.ecdh_pub, name: &e.name, owner_pub: &e.owner_pub, owner_enc_pub: &e.owner_enc_pub };
+    let c = cose::Member { dac_pub_hash: &e.dac_pub_hash, ecdh_pub: &e.ecdh_pub, name: &e.name, owner_pub: &e.owner_pub, owner_enc_pub: &e.owner_enc_pub, mesh_addr: None };
     sign1(ADMIN, cose::CT_MEMBERS, &cose::member_list_payload(&NET_ID, 1, None, &[c]))
 }
 /// an applied v1 record (keys 7 / 8 = v1, no key 13: a record from before this change) with key 11 = `list`

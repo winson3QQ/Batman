@@ -268,6 +268,8 @@ fn jr_input(v: &J, invite_hex: &str, name: &str, pend: Option<(u64, Vec<u8>)>) -
         owner_enc_pub: owner_enc_pub(),
         pend_gen,
         pend_plain,
+        // 254-app-team-status T-A6(c): an address is offered; version N must not write it
+        mesh_addr: Some([0x02, 0x11, 0x22, 0x33, 0x44, 0x55]),
     }
 }
 
@@ -338,7 +340,7 @@ fn m1_objects_rebuilt_from_the_vector_inputs() {
     assert_eq!(invite::qr_hex(invite::QR_INVITE, &inv), c["qr_invite_object"].as_str().unwrap());
     // join request
     let sig_enc: [u8; 64] = h(&v["owner_enc"]["sig_enc"]).try_into().unwrap();
-    let jp = invite::joinreq_payload(&cose::object_hash(&inv).unwrap(), cbor::decode(&h(&v["node_cert"]["cbor"])).unwrap(), &pub65(&owner()), &owner_enc_pub(), &sig_enc, "客廳");
+    let jp = invite::joinreq_payload(&cose::object_hash(&inv).unwrap(), cbor::decode(&h(&v["node_cert"]["cbor"])).unwrap(), &pub65(&owner()), &owner_enc_pub(), &sig_enc, "客廳", None);
     let jr = sign1(&owner(), cose::CT_JOINREQ, &jp);
     assert_eq!(hex::encode(&jr), c["join_request"].as_str().unwrap());
     // member secrets (fixed ephemeral key and IV)
@@ -454,7 +456,7 @@ fn m2_unknown_keys_are_refused_nested_too() {
     }
     assert!(matches!(nodecert::verify_offline(&cbor::encode(&nc)), Err(nodecert::Error::Malformed(_))));
     let sig_enc = raw(&owner(), &sig::owner_enc_input(&owner_enc_pub()));
-    let jr = sign1(&owner(), cose::CT_JOINREQ, &invite::joinreq_payload(&[1; 32], nc, &pub65(&owner()), &owner_enc_pub(), &sig_enc, "x"));
+    let jr = sign1(&owner(), cose::CT_JOINREQ, &invite::joinreq_payload(&[1; 32], nc, &pub65(&owner()), &owner_enc_pub(), &sig_enc, "x", None));
     assert!(matches!(approve::open_joinreq(&jr), Err(Error::NodeCert(nodecert::Error::Malformed(_)))));
 }
 
@@ -611,6 +613,7 @@ fn m5_check_joinreq_refusals() {
         state,
         prev_country: None,
         known: None,
+        mesh_addr: None,
     };
     for state in [MemberState::Applied, MemberState::Joining, MemberState::Approved] {
         let mut r2 = rec.clone();
@@ -702,6 +705,7 @@ fn m7_admin_preconditions() {
         state: if i % 2 == 0 { MemberState::Approved } else { MemberState::Applied },
         prev_country: None,
         known: None,
+        mesh_addr: None,
     }).collect());
     let (f, a) = InviteFlow::start(&netrec::encode(&full), 1, &pub65(&admin()));
     assert_eq!(refused(&drive(&ad, f, a, false)), Error::Full);
@@ -751,7 +755,7 @@ fn m7_key_12_survives_confirm_and_forget() {
     let mut rec = netrec::decode(&netrec::encode(&rec)).unwrap();
     assert_eq!(rec.invites, inv, "confirm keeps key 12");
     let mut l = rec.members().unwrap();
-    l.push(Member { dac_pub_hash: [7; 32], ecdh_pub: [4; 65], name: "x".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Joining, prev_country: None, known: None });
+    l.push(Member { dac_pub_hash: [7; 32], ecdh_pub: [4; 65], name: "x".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Joining, prev_country: None, known: None, mesh_addr: None });
     rec.list = Some(l);
     netrec::forget_joining(&mut rec, &[7; 32]).unwrap();
     assert_eq!(netrec::decode(&netrec::encode(&rec)).unwrap().invites, inv, "forget keeps key 12");
@@ -1024,6 +1028,7 @@ fn m8_own_entry_carry_rules() {
         state,
         prev_country: prev.map(str::to_string),
         known: None,
+        mesh_addr: None,
     };
     // the same DAC -> state and prev_country carried
     let (_, md, ap, _) = to_approval(&v);
@@ -1226,7 +1231,7 @@ fn r1_approve_checks_the_admin_preconditions() {
     let mut pending = rec.clone();
     pending.state = "pending".into();
     let mut full = rec.clone();
-    full.list = Some((0..16u8).map(|i| Member { dac_pub_hash: [i; 32], ecdh_pub: [4; 65], name: "x".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Approved, prev_country: None, known: None }).collect());
+    full.list = Some((0..16u8).map(|i| Member { dac_pub_hash: [i; 32], ecdh_pub: [4; 65], name: "x".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Approved, prev_country: None, known: None, mesh_addr: None }).collect());
     for (what, r, admin_pub, want) in [
         ("pending", pending, pub65(&admin()), Error::NotApplied),
         ("not an admin", rec.clone(), pub65(&owner()), Error::NotAdmin),
@@ -1249,7 +1254,7 @@ fn r1_check_joinreq_refuses_bad_names() {
     let rec = netrec::decode(&ad.get(REL).unwrap().1).unwrap();
     let sig_enc = raw(&owner(), &sig::owner_enc_input(&owner_enc_pub()));
     for name in ["客\u{202E}廳", "a\u{7}b"] {
-        let p = invite::joinreq_payload(&ih, cbor::decode(&dev_node_cert(&v)).unwrap(), &pub65(&owner()), &owner_enc_pub(), &sig_enc, name);
+        let p = invite::joinreq_payload(&ih, cbor::decode(&dev_node_cert(&v)).unwrap(), &pub65(&owner()), &owner_enc_pub(), &sig_enc, name, None);
         let jr = sign1(&owner(), cose::CT_JOINREQ, &p);
         assert_eq!(approve::check_joinreq(&rec, &jr), Err(Error::Name), "{name:?}");
     }
@@ -1435,6 +1440,7 @@ fn rm_t17_an_own_entry_the_new_members_removed_is_not_carried() {
         state: MemberState::Applied,
         prev_country: Some("JP".into()),
         known: None,
+        mesh_addr: None,
     };
     // the new members list this very node as removed (re-invited after a removal): a fresh joining entry
     let (_, md, ap, _) = to_approval(&v);
@@ -1501,4 +1507,37 @@ fn rm_t38_a_node_or_person_removed_before_needs_the_admins_yes() {
     assert_eq!(p2.owner_pub, Some(owner_pub));
     // negative control: the same person in key 11 now -> no question
     assert_eq!(approve::previous_of(&r, &[0xee; 32], &owner_pub).unwrap(), None);
+}
+
+/// 254-app-team-status T-A6(c) / A2-m3: a version-N request carries no key 7 although the session offered one; an
+/// N+1 joiner's request WITH key 7 is accepted by an N admin, which approves it and drops the address. The N-1 rule
+/// would refuse that request. Negative control: teamview::WRITE_MESH_ADDR flipped -> FAIL.
+#[test]
+fn t_a6c_n_admin_drops_an_n1_joiners_key7() {
+    let v = vectors();
+    let (ad, md) = (Disk::new(), Disk::new());
+    let inv = invite(&v, &ad);
+    let (jr_hex, _, _) = request(&v, &md, &inv, "客廳");
+    let jr = invite::qr_object(&jr_hex, invite::QR_JOINREQ).unwrap();
+    let p = netrec::sign1_payload(&jr).unwrap();
+    assert!(p.get(7).is_none(), "version N wrote key 7 into its request: {p:?}");
+    let addr = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
+    let mut p2 = p.clone();
+    if let V::Map(e) = &mut p2 {
+        e.push((V::Uint(7), V::Bytes(addr.to_vec())));
+    }
+    assert!(cose::exact_keys(&p2, &[1, 2, 3, 4, 5, 6], &[]).is_err(), "the N-1 rule refuses an N+1 request");
+    let jr2 = sign1(&owner(), cose::CT_JOINREQ, &cbor::encode(&p2));
+    let opened = approve::open_joinreq(&jr2).unwrap();
+    assert_eq!(opened.mesh_addr, Some(addr));
+    let mut p5 = p.clone();
+    if let V::Map(e) = &mut p5 {
+        e.push((V::Uint(7), V::Bytes(vec![1; 5])));
+    }
+    assert!(approve::open_joinreq(&sign1(&owner(), cose::CT_JOINREQ, &cbor::encode(&p5))).is_err(), "a 5-byte key 7 is refused");
+    out(&approve(&ad, &invite::qr_hex(invite::QR_JOINREQ, &jr2)));
+    let (_, plain) = ad.get(REL).unwrap();
+    let list = netrec::decode(&plain).unwrap().members().unwrap();
+    let e = list.iter().find(|m| m.dac_pub_hash == netrec::dac_hash(&opened.node.dac_pub)).expect("the approved entry");
+    assert_eq!(e.mesh_addr, None, "an N admin wrote the joiner's key 7");
 }

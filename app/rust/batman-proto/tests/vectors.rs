@@ -643,6 +643,7 @@ fn cose_member_list_vector() {
         name: "客廳",
         owner_pub: &a65(&v["keys"]["owner_sign_pub"]),
         owner_enc_pub: &a65(&v["keys"]["owner_enc_pub"]),
+        mesh_addr: None,
     };
     let p = cose::member_list_payload(&net_id(), 1, None, &[m]);
     assert_eq!(p, h(&c["payload"]));
@@ -967,6 +968,7 @@ fn network_update_stale_secrets_are_never_sent_by_the_app() {
         state: MemberState::Applied,
         prev_country: None,
         known: None,
+        mesh_addr: None,
     };
     let mnet = |secrets: Vec<u8>| MNet {
         net_id: h(&v["keys"]["net_id"]).try_into().unwrap(),

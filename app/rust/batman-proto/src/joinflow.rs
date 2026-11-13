@@ -48,6 +48,8 @@ pub struct Input {
     pub owner_pub: [u8; 65],
     pub owner_enc_pub: [u8; 65],
     pub admin_pub: [u8; 65],
+    /// status key 8 of this node as the session last read it (254-app-team-status §4.2); written only from N+1
+    pub mesh_addr: Option<[u8; 6]>,
 }
 
 /// The net record (design §3): persisted BEFORE network/join is sent. Holds secrets: the caller encrypts it. Its Debug
@@ -200,12 +202,14 @@ impl Join {
                 };
                 d.netcfg = cose::sign1(cose::CT_NETCFG, &payload, &s);
                 let dac_hash: [u8; 32] = Sha256::digest(inp.dac_pub).into();
+                let gated = crate::teamview::gate(inp.mesh_addr);
                 let m = Member {
                     dac_pub_hash: &dac_hash,
                     ecdh_pub: &inp.ecdh_pub,
                     name: &inp.node_name,
                     owner_pub: &inp.owner_pub,
                     owner_enc_pub: &inp.owner_enc_pub,
+                    mesh_addr: gated.as_ref(),
                 };
                 let payload = cose::member_list_payload(&d.net_id, 1, None, &[m]);
                 let tbs = cose::sign1_tbs(cose::CT_MEMBERS, cose::LABEL_MEMBERS, &payload);

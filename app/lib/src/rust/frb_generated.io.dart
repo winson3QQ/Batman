@@ -337,6 +337,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SwPut dco_decode_sw_put(dynamic raw);
 
   @protected
+  TeamView dco_decode_team_view(dynamic raw);
+
+  @protected
   int dco_decode_u_16(dynamic raw);
 
   @protected
@@ -665,6 +668,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SwPut sse_decode_sw_put(SseDeserializer deserializer);
+
+  @protected
+  TeamView sse_decode_team_view(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_16(SseDeserializer deserializer);
@@ -1052,6 +1058,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_sw_put(SwPut self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_team_view(TeamView self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_16(int self, SseSerializer serializer);

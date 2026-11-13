@@ -130,7 +130,9 @@ fn members_ok(p: &Value, net_id: &[u8; 16], ver: u32, prev: &[u8; 32]) -> Result
     cose::exact_keys(p, &[1, 2, 3, 4, 5, 6, 7], &[]).map_err(|_| Refusal::Invalid("members keys"))?;
     let Some(Value::Array(list)) = p.get(4) else { return Err(Refusal::Invalid("members keys")) };
     for m in list {
-        cose::exact_keys(m, &[1, 2, 3, 4, 5], &[6]).map_err(|_| Refusal::Invalid("member entry keys"))?;
+        if !netrec::member_entry_ok(m) {
+            return Err(Refusal::Invalid("member entry keys"));
+        }
     }
     if ![5, 6, 7].iter().all(|k| matches!(p.get(*k), Some(Value::Array(_)))) {
         return Err(Refusal::Invalid("members keys"));
