@@ -212,7 +212,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 | `network/join` | 擁有者 | `net_config`、`member_list`、`net_secrets`(本機那份)、選填 `invite_id` | `joined` / `pending` |
 | `network/update` | 擁有者、成員(轉送) | 版本鏈(§7.5) | 套用後的版本 |
 | `network/leave` | 擁有者 | — | — |
-| `status` | 擁有者、成員 | `scope`(self / team) | #131 的 status + 入網失敗原因 + `p5_saved`;成員只得到狀態摘要 |
+| `status` | 擁有者、成員 | `scope`(self / team) | #131 的 status + 入網失敗原因 + `p5_saved`;成員只得到狀態摘要 |(全隊:scope team 不實作;改由 self 回答的 key 8 / 9 + app 對成員名單,見 254-app-team-status.md v2.1)
 | `peers/challenge` | 成員 | `nonce_app`(32 B) | `nonce_node`(32 B)、`sig = ES256_DAC("batman-peer-v1" ‖ nonce_app ‖ nonce_node ‖ h)` |
 | `diag/summary` | 擁有者、成員 | — | 摘要 |
 | `diag/bundle` | 擁有者 | — | 分塊回應 |

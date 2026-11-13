@@ -15,6 +15,7 @@
 bytes9      = bstr .size 9
 bytes16     = bstr .size 16
 bytes32     = bstr .size 32
+bytes6      = bstr .size 6           ; a MAC address (254-app-team-status)
 sha256      = bstr .size 32
 p256-pub    = bstr .size 65          ; SEC1 uncompressed (0x04 || X || Y)
 x25519-pub  = bstr .size 32
@@ -255,7 +256,10 @@ status-resp = {
   ? 4 => bool,               ; p5_saved (optional: omitted when never computed or older than 300 s)
   ? 5 => join-failure,       ; when not in the mesh (#127)
   ? 6 => uint,               ; battery percent
-  ? 7 => [* team-entry],     ; scope = team
+  ? 7 => [* team-entry],     ; RETIRED (254-app-team-status T1): never sent; the key is not reused
+  ? 8 => bytes6,             ; this node's mesh address: the permanent MAC of its HaLow phy (254-app-team-status §4.1)
+  ? 9 => [* peer-entry],     ; mesh nodes this node has seen since its helper started, at most 32; only while the last
+                             ; peer sample is <= 60 s old (absent = unknown). Owner and member alike.
   ? 15 => {* tstr => any},   ; #131 status fields not yet given integer keys; owner only. 254-p3-impl §3.4 / D-12 / D-6:
                              ; "stale": true (no current read), "age_s", "uci_staged": [* tstr] (packages with staged
                              ; uci changes: why settings/set answers E_BUSY), "ssid_unsaved": true (the phone AP ssid has a
@@ -279,7 +283,15 @@ join-reason = 0 ; not determined
             / 7 ; meshing, no peer heard (nobody on this channel / mesh id in range, or their key differs)
             / 8 ; peers seen, no peer link (key / mesh id mismatch likely)
             / 9 ; 802.11s linked, batman has no neighbour
-team-entry = {
+peer-entry = {               ; 254-app-team-status §4.1
+  1 => bytes6,               ; originator address (batctl -n, never bat-hosts-translated)
+  2 => uint,                 ; seconds since this node last saw it (monotonic clock)
+  ? 3 => uint,               ; BATMAN_V throughput toward it, kbit/s, from the last sample it was in
+  ? 4 => int,                ; signal avg (dBm), only for a direct 802.11s station active in the last sample
+  * uint => any,             ; unknown keys ignored (§5.1)
+}
+
+team-entry = {               ; RETIRED with status key 7 (254-app-team-status T1)
   1 => sha256,               ; dac_pub_hash
   2 => tstr,                 ; name
   3 => verdict,
@@ -407,6 +419,7 @@ member = {
   4 => p256-pub,             ; owner_pub (signing)
   5 => p256-pub,             ; owner_enc_pub
   ? 6 => x25519-pub,         ; lora_pkc_pub (Meshtastic PKC)
+  ? 7 => bytes6,             ; the node's mesh address (254-app-team-status §4.2; written from app version N+1)
 }
 
 net-secrets = {               ; content type "batman/secrets"
@@ -448,6 +461,7 @@ join-request = {              ; signed by the joining OWNER key; content type "b
   4 => p256-pub,             ; owner_enc_pub
   5 => es256-sig,            ; sig_enc
   6 => tstr,                 ; device name
+  ? 7 => bytes6,             ; the joining node's mesh address (254-app-team-status §4.2; written from app N+1)
 }
 
 ; ------------------------------------------------------------------ COSE_Encrypt details (§7.3) — types above
