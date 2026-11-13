@@ -33,10 +33,12 @@ String reclaimText({required bool pending}) => '這台節點已在你的清單�
     '只有在你剛把這台節點重置回未認領時才重新認領：舊紀錄會留在手機上，但 App 之後不會再用它、也不會顯示在清單裡。要重新認領嗎？';
 
 class ClaimPage extends StatefulWidget {
-  const ClaimPage({super.key, this.ble});
+  const ClaimPage({super.key, this.ble, this.findFor = const Duration(seconds: 60)});
 
   /// tests: a fake BLE (null = the platform's)
   final FlutterReactiveBle? ble;
+  /// how long a claim looks for the unclaimed node (tests shorten it)
+  final Duration findFor;
 
   @override
   State<ClaimPage> createState() => _ClaimPageState();
@@ -47,6 +49,8 @@ class _ClaimPageState extends State<ClaimPage> {
   final _lines = <String>[];
   ClaimQr? _qr;
   bool _busy = false;
+  int _claimedNear = 0; // claimed / member nodes seen by the last search (their id tail is not public)
+  bool _heldNode = false; // this phone holds a node record for the QR's device id (R7), set by _held
   bool _scanning = false; // a QrScanActivity is open
   final _typed = TextEditingController(); // dev: the QR hex typed in (e.g. over adb), cleared once read
 
@@ -116,7 +120,8 @@ class _ClaimPageState extends State<ClaimPage> {
     final scan = _ble.scanForDevices(withServices: [provdService], scanMode: ScanMode.lowLatency).listen((d) {
       if (tried.add(d.id)) queue.add(d.id);
     });
-    final end = DateTime.now().add(const Duration(seconds: 60));
+    _claimedNear = 0;
+    final end = DateTime.now().add(widget.findFor);
     try {
       while (DateTime.now().isBefore(end)) {
         if (queue.isEmpty) {
@@ -149,6 +154,7 @@ class _ClaimPageState extends State<ClaimPage> {
         }
         _say('找到節點（$id）：${stateText(state)}，編號末四碼 …${last4 ?? '----'}');
         if (state == 'unclaimed' && last4 == want) return (id, conn);
+        if (state == 'claimed' || state == 'member') _claimedNear++; // its id tail is not public: it may be this QR's node
         await conn.cancel(); // not ours: its advertising comes back
       }
       return null;
@@ -166,6 +172,7 @@ class _ClaimPageState extends State<ClaimPage> {
     final ClaimTarget t;
     try {
       t = await claimTarget(dir: dir, deviceId: q.deviceId);
+      _heldNode = t == ClaimTarget.node || t == ClaimTarget.nodeAndPending;
     } catch (e) {
       _say('$unreadable：$e');
       return false;
@@ -225,7 +232,18 @@ class _ClaimPageState extends State<ClaimPage> {
       _say('正在找節點 …${q.deviceId.substring(14)}…');
       final found = await _find(q);
       if (found == null) {
-        _say('[CLAIM_FAIL] [NOT_FOUND] 60 秒內找不到編號末四碼 …${q.deviceId.substring(14)} 的未認領節點（請確認節點已開機、就在旁邊）');
+        // design note §4-§5 (R7-2, 2026-11-13): the power / range hint always stays (a team's claimed nodes are often
+        // around while the wanted one is off); a claimed node publishes no id tail, so a claimed node nearby is only a
+        // possibility, never a count or a "this one" — and never a reset (there is none in this stage: a re-flash makes a
+        // new identity and this QR stops working)
+        final tail = q.deviceId.substring(14);
+        final near = _claimedNear == 0
+            ? ''
+            : _heldNode
+                ? '附近有已認領的節點（不公開編號），可能就是這台：如果它還在你的「我的節點」裡，不用重新認領，直接從那裡使用；重燒過卡的話，要掃它新的 QR 碼。'
+                : '附近有已認領的節點（不公開編號）；已經被認領的節點不能再認領。';
+        _say('[CLAIM_FAIL] [NOT_FOUND] ${(widget.findFor.inMilliseconds / 1000).ceil()} 秒內沒找到編號末四碼 …$tail 的未認領節點'
+            '（請確認節點已開機、就在旁邊）。$near手機裡的紀錄沒有改動。');
         return;
       }
       final id = found.$1;
