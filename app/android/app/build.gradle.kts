@@ -187,7 +187,8 @@ abstract class DependencyGate : DefaultTask() {
 // - Permissions: every element whose tag starts with `uses-permission` (uses-permission, -sdk-23, -sdk-m, any later
 //   one), as tag:name, must equal this set exactly (the field release merged manifest, 2026-11-13; ${applicationId} =
 //   the variant's).
-// - Exported components: an activity / activity-alias / service / receiver / provider with android:exported="true",
+// - Exported components: an activity / activity-alias / service / receiver / provider whose android:exported is set
+//   to anything but the literal "false" (a resource reference counts, r4),
 //   or with an intent-filter and no android:exported (fail closed; targetSdk 36 refuses that at merge / install, so
 //   it should never be seen), must be one of [exportedComponents].
 // - No activity-alias may target QrScanActivity; QrScanActivity is declared once, exported="false", no intent-filter.
@@ -228,7 +229,8 @@ abstract class ManifestGate : DefaultTask() {
         var exported = 0
         for (c in all.filter { it.tagName in setOf("activity", "activity-alias", "service", "receiver", "provider") }) {
             val filters = c.getElementsByTagName("intent-filter").length
-            if (c.a("exported") == "true" || (c.a("exported").isEmpty() && filters > 0)) {
+            val e = c.a("exported") // r4: anything but a literal "false" (e.g. @bool/x) counts; absent = filter decides
+            if (e != "false" && (e.isNotEmpty() || filters > 0)) {
                 exported++
                 if ("${c.tagName}:${c.a("name")}" !in exportable.get()) bad.add("exported ${c.tagName} ${c.a("name")}")
             }
