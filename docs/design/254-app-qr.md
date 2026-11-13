@@ -187,3 +187,12 @@ Manifest:`QrScanActivity` `exported="false"`、`taskAffinity=""`、`launchMode` 
 | B r2-m2 別的 repository 的同名模組會通過閘門 | 屬 #254 的 Gradle 鎖殘項:要 Gradle dependency verification(`verification-metadata.xml` 檢查碼),不只 locking | — |
 | B r2-m3 APK 來源 | r1 的 APK 已從乾淨的 committed tree 25612b1 重建並記 sha256 → 關閉;之後每次照做 | — |
 | A r2-m2 / m3 觀察者接線、LiveData 最後值重播 | 仍 ⚠️ 實機 M4;M4 加子步驟「佔用 → error → 放開相機 → 再掃描能開」 | 未跑 |
+
+### R2 續 — code review r3(5c7b9fe,A APPROVE 1 MINOR;B APPROVE-WITH-CHANGES 1 MAJOR)
+
+| 發現 | 處理 | 負對照 |
+|---|---|---|
+| B r3 MAJOR:plugin manifest 裡的 `<activity-alias … targetActivity=QrScanActivity exported="true">`(含 intent-filter)與 `<uses-permission-sdk-m RECORD_AUDIO>` 都進了合併 manifest,r2 閘門仍 PASS | 一般化:**權限** = 所有 tag 以 `uses-permission` 開頭的元素(含 -sdk-23、-sdk-m 與日後新增的),以 `tag:name` 與預期集合**完全相等**(多 / 少都 FAIL);**匯出元件** = activity / activity-alias / service / receiver / provider 中 `exported="true"`,或有 intent-filter 卻沒寫 exported 的(fail-closed;targetSdk 36 在合併 / 安裝時就會拒絕這種,理論上看不到),必須在精確名單內;**任何** targetActivity 是 QrScanActivity 的 activity-alias → FAIL;QrScanActivity 本身規則不變 | batman_bridge plugin manifest 加 activity-alias → FAIL(fieldRelease、devDebug) |
+| (同上) | 匯出元件名單(field release 合併 manifest,2026-11-13):`activity:dev.batman.batman_app.MainActivity`、`receiver:androidx.profileinstaller.ProfileInstallReceiver` | plugin 加 `uses-permission-sdk-m` RECORD_AUDIO → FAIL |
+| B r3 m1 plugin 的 exported service 會通過 | 由上面的匯出元件規則涵蓋 | plugin 加 `<service com.evil.Svc exported="true">` → FAIL;既有對照(app 的 `exported="true"`、RECORD_AUDIO)仍 FAIL |
+| A / B r3 m2 AAB(`bundle<Variant>`)不跑 manifest 閘門 | 閘門也掛在 `package<Variant>Bundle` 前(`bundleFieldRelease --dry-run` 列出 `checkFieldReleaseManifestGate` 與 `packageFieldReleaseBundle`) | activity-alias 走 `bundleFieldRelease` → 在 `checkFieldReleaseManifestGate` FAIL |
