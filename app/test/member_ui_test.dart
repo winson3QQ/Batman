@@ -112,6 +112,33 @@ void main() {
       expect(y(t, find.byKey(const Key('verdict'))) - firstY, lessThan(20), reason: 'nothing above the verdict');
     });
 
+    // 254-app-team-status v2.1 §6 / §4.3: hidden unless Rust says visible (version N: never); when shown, below the
+    // refresh button and above the technical list, a card's second line small, the address tails only in the list
+    testWidgets('team section: hidden in version N, else cards between refresh and the technical list', (t) async {
+      await t.pumpWidget(page(joined));
+      expect(find.byKey(const Key('teamTitle')), findsNothing);
+      expect(find.byKey(const Key('teamCard')), findsNothing);
+      await t.pumpWidget(const SizedBox());
+      const team = StatusFields(
+          color: 'green',
+          sentence: '已連上隊伍網路',
+          teamVisible: true,
+          teamTitle: '全隊（僅供參考；由『我的節點』看到）',
+          teamCards: ['🟢 『客廳』 在線 · 連線 好（約 14.9 Mbit/s） · 直接連線', '❔ 不明節點 · 最後看到 6 分鐘前\n可能是剛加入、你的名單還沒更新的隊員'],
+          teamNote: '在線 = 這台節點最近 1 分鐘內收得到。',
+          teamTech: ['不明節點 …c6d3：400 秒前']);
+      await t.pumpWidget(page(team));
+      expect(find.text('全隊（僅供參考；由『我的節點』看到），讀取於 09:05:07'), findsOneWidget);
+      expect(find.byKey(const Key('teamCard')), findsNWidgets(2));
+      expect(find.text('可能是剛加入、你的名單還沒更新的隊員'), findsOneWidget);
+      expect(y(t, find.byKey(const Key('teamTitle'))), greaterThan(y(t, find.byKey(const Key('refresh')))));
+      expect(y(t, find.byKey(const Key('tech'))), greaterThan(y(t, find.byKey(const Key('teamNote')))));
+      expect(find.textContaining('…c6d3'), findsNothing, reason: 'the tail only inside the collapsed list');
+      await t.tap(find.text('技術資訊（給維修人員看）'));
+      await t.pumpAndSettle();
+      expect(find.textContaining('…c6d3'), findsOneWidget);
+    });
+
     testWidgets('rows 3 / 4 carry the lag small print; other rows do not', (t) async {
       await t.pumpWidget(page(joined));
       expect(find.textContaining('最多約 4 分鐘'), findsOneWidget);

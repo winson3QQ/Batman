@@ -20,6 +20,7 @@ use crate::joinflow;
 use crate::netrec::{self, Member, MemberState, NetRec, Version, APPLIED, HISTORY_KEEP};
 use crate::nodecert::hex_lower;
 use crate::sig;
+use crate::teamview;
 
 /// qr-object kind of an update (219-protocol.cddl, §2.3)
 pub const QR_UPDATE: u64 = 4;
@@ -165,16 +166,24 @@ fn next_members(rec: &NetRec, version: u32, keep: &[Member], excluded: &[Member]
         }
     }
     removed.retain(|d| !listed.contains(d));
+    // 254-app-team-status §4.2: key 7 only from N+1 (gate), and an address listed twice for neither entry
+    let mut addrs: Vec<Option<[u8; 6]>> = keep.iter().map(|m| teamview::gate(m.mesh_addr)).collect();
+    teamview::dedup_for_signing(&mut addrs);
     let entries = keep
         .iter()
-        .map(|m| {
-            Value::Map(vec![
+        .zip(addrs)
+        .map(|(m, a)| {
+            let mut e = vec![
                 (Value::Uint(1), Value::Bytes(m.dac_pub_hash.to_vec())),
                 (Value::Uint(2), Value::Bytes(m.ecdh_pub.to_vec())),
                 (Value::Uint(3), Value::Text(m.name.clone())),
                 (Value::Uint(4), Value::Bytes(m.owner_pub.to_vec())),
                 (Value::Uint(5), Value::Bytes(m.owner_enc_pub.to_vec())),
-            ])
+            ];
+            if let Some(a) = a {
+                e.push((Value::Uint(7), Value::Bytes(a.to_vec())));
+            }
+            Value::Map(e)
         })
         .collect();
     let same = |k: u64| p.get(k).cloned().unwrap_or(Value::Array(vec![]));

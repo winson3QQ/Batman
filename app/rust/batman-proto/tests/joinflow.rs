@@ -217,6 +217,8 @@ fn input(v: &J, channel: u64) -> Input {
         owner_pub: pub_of(&key(0x11)),
         owner_enc_pub: pub_of(&key(0x22)),
         admin_pub: pub_of(&key(0x66)),
+        // 254-app-team-status T-A6(c): an address is offered; version N must not write it
+        mesh_addr: Some([0x02, 0x11, 0x22, 0x33, 0x44, 0x55]),
     }
 }
 
@@ -376,4 +378,20 @@ fn sae_is_uniform_over_62_characters() {
     let others: f64 = rest.iter().map(|&c| count[c as usize] as f64).sum::<f64>() / rest.len() as f64;
     assert!((first / others - 1.0).abs() < 0.10, "first-8 mean {first:.0} vs others {others:.0}");
     assert!(rest.iter().all(|&c| count[c as usize] > 0));
+}
+
+/// 254-app-team-status T-A6(c): the session offers this node's mesh address (input key mesh_addr), but version N
+/// signs members v1 WITHOUT key 7 (teamview::WRITE_MESH_ADDR = false). Negative control: the constant flipped -> FAIL.
+#[test]
+fn t_a6c_version_n_writes_no_mesh_address() {
+    let v = vectors();
+    let (c, mut n) = pair(&v);
+    let inp = input(&v, 40);
+    assert!(inp.mesh_addr.is_some(), "the test must offer an address");
+    let (j, a) = Join::start(c, inp);
+    let (e, rec) = drive(&mut n, j, a);
+    assert_eq!(e, End::Replied(JoinReply::Applied));
+    let p = batman_proto::netrec::sign1_payload(&rec.unwrap().members).unwrap();
+    let Some(V::Array(list)) = p.get(4) else { panic!("no members") };
+    assert!(list.iter().all(|m| m.get(7).is_none()), "version N wrote key 7: {list:?}");
 }

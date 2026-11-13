@@ -30,4 +30,5 @@ pub mod replayflow;
 pub mod status;
 pub mod statuspage;
 pub mod swupd;
+pub mod teamview;
 pub mod updflow;

@@ -27,6 +27,7 @@ use crate::mrec::{MNet, Pend};
 use crate::netrec::{self, Member, MemberState, NetCfg, NetRec, Version, HISTORY_KEEP};
 use crate::nodecert::{self, hex_lower, Verified};
 use crate::sig;
+use crate::teamview;
 
 /// A join request that passed `open_joinreq`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +38,9 @@ pub struct JoinReq {
     pub owner_enc_pub: [u8; 65],
     pub name: String,
     pub hash: [u8; 32],
+    /// key 7 (254-app-team-status §4.2): the joining node's mesh address as its owner's app read it; accepted from
+    /// version N on, written into the list only from N+1 (`teamview::gate`)
+    pub mesh_addr: Option<[u8; 6]>,
 }
 
 fn arr<const N: usize>(v: &Value, k: u64, what: &'static str) -> Result<[u8; N], Error> {
@@ -49,7 +53,11 @@ pub fn open_joinreq(sign1: &[u8]) -> Result<JoinReq, Error> {
     let owner_pub: [u8; 65] = arr(&p, 3, "owner_pub")?;
     let s = cose::verify_sign1(sign1, cose::CT_JOINREQ, cose::LABEL_JOINREQ, &[owner_pub])?;
     let p = s.payload;
-    cose::exact_keys(&p, &[1, 2, 3, 4, 5, 6], &[]).map_err(|_| Error::Invalid("join request keys"))?;
+    cose::exact_keys(&p, &[1, 2, 3, 4, 5, 6], &[7]).map_err(|_| Error::Invalid("join request keys"))?;
+    let mesh_addr = match p.get(7) {
+        None => None,
+        Some(v) => Some(v.as_bytes().and_then(|b| <[u8; 6]>::try_from(b).ok()).ok_or(Error::Invalid("join request mesh address"))?),
+    };
     let owner_enc_pub: [u8; 65] = arr(&p, 4, "owner_enc_pub")?;
     let sig_enc: [u8; 64] = arr(&p, 5, "sig_enc")?;
     let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(&owner_pub).map_err(|_| Error::Invalid("owner_pub"))?;
@@ -61,7 +69,7 @@ pub fn open_joinreq(sign1: &[u8]) -> Result<JoinReq, Error> {
     check_name(&name)?;
     let node_cert = p.get(2).ok_or(Error::Invalid("node_cert"))?;
     let node = nodecert::verify_offline(&cbor::encode(node_cert)).map_err(Error::NodeCert)?;
-    Ok(JoinReq { invite_hash: arr(&p, 1, "invite hash")?, node, owner_pub, owner_enc_pub, name, hash: s.hash })
+    Ok(JoinReq { invite_hash: arr(&p, 1, "invite hash")?, node, owner_pub, owner_enc_pub, name, hash: s.hash, mesh_addr })
 }
 
 /// A node / person this network removed before (remove-member §3.6): the admin confirms before approving.
@@ -228,6 +236,8 @@ impl ApproveFlow {
                     prev_country: None,
                     // the approval carries the current version: its owner surely holds it (§2.1)
                     known: Some(current),
+                    // 254-app-team-status §4.3: version N accepts the request's key 7 and drops it
+                    mesh_addr: teamview::gate(jr.mesh_addr),
                 };
                 let mut list = match rec.members() {
                     Ok(l) => l,
@@ -308,7 +318,9 @@ fn same_net(p: &Value, cfg: &NetCfg, members: bool) -> Result<(), Error> {
         // nested: every member entry (CDDL member) and the three lists
         let Some(Value::Array(list)) = p.get(4) else { return Err(Error::Invalid("members keys")) };
         for m in list {
-            cose::exact_keys(m, &[1, 2, 3, 4, 5], &[6]).map_err(|_| Error::Invalid("member entry keys"))?;
+            if !netrec::member_entry_ok(m) {
+                return Err(Error::Invalid("member entry keys"));
+            }
         }
         if ![5, 6, 7].iter().all(|k| matches!(p.get(*k), Some(Value::Array(_)))) {
             return Err(Error::Invalid("members keys"));
@@ -501,6 +513,7 @@ pub fn import(hex: &str, pend: (u64, &[u8]), expected_pend_gen: u64, mnet: Optio
             state: MemberState::Joining,
             prev_country: None,
             known: None,
+            mesh_addr: None,
         },
     };
     // remove-member §2.2: the other writers keep keys 9 / 10
