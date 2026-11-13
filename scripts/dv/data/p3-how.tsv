@@ -85,7 +85,8 @@ prov-upload-254	UP8	m	an upload over HTTP repeated
 prov-upload-254	UP9	h	
 prov-upload-254	UP10	h	
 prov-upload-254	UP11	n	
-prov-update-254	UD-T1	h	
+prov-update-254	UD-T1	h	on the bench fleet (02 / 04 trust T) always INVALID; the R (-> 11) and none (-> 24) arms are evidenced offline until an R image is on a node: Batman-p3 release_test.go TestVerifySignrelNegative, node/update_test.go TestUpdateCheckRefusals, firmware scripts/check-release-key-gate.sh + test-release-key-gate.sh (review r2 B-m9)
+prov-update-254	UD-L	h	judged when update.check ran precheck-node (pr_precheck_ran); a check that stopped before it is a NOT-JUDGED line (review r2 A-m3); the read-only verbs are judged every run by prov-fw-boot-254 FB6
 prov-update-254	UD1	h	
 prov-update-254	UD2	h	
 prov-update-254	UD3	h	
@@ -125,10 +126,14 @@ prov-autocommit-p3-254	AC7	n
 prov-autocommit-p3-254	AC8	n	
 p3-other-254	TT1	n+m	the loop-file arm; the real card needs a person
 p3-other-254	LR1	n	
-p3-other-254	FB1	n	
+p3-other-254	RK1	n	
 p3-other-254	FB2	n	
 p3-other-254	FB3	n	
 p3-other-254	EE1	n	
 p3-other-254	EE2	n	
 p3-other-254	PR1	m	the §7 probe's positive arm needs the phone on the AP
 p3-other-254	SEC1	n	
+prov-fw-boot-254	FB1	n	
+prov-fw-boot-254	FB4	n	
+prov-fw-boot-254	FB5	n	
+prov-fw-boot-254	FB6	n	

@@ -1,7 +1,8 @@
 """signrel — the harness's TEST release signer (docs/design/254-h4-harness.md §8.1; P3 254-p3-impl.md §3.7.1–§3.7.2,
 §3.7.4; 219-protocol.cddl `update-manifest`). It makes what a release build makes, with TEST keys only:
 
-  T       test root        (the product trusts it only in prov_test builds; a release image must never contain it)
+  T       test root        (trusted only by a bench build — build-board.sh --bench, BATMAN_BENCH_TRUST=T; ordinary
+                            wsl / ci images carry no root key, a release image carries R and never T)
   K_test  test signing key (endorsed by T)
   other   a signing key T did NOT endorse (negative objects)
 
@@ -42,9 +43,9 @@ LABEL_RELEASE = b"batman-release-v1"
 CTYPE_RELKEY = "batman/relkey"
 CTYPE_RELEASE = "batman/release"
 KEY_NAMES = {"T": "release-root-T", "K_test": "release-key-K_test", "other": "release-key-other"}
-# ⚠️ design: BATMAN_VERSION grammar is given by example only (`1.5.14-wsl.2+f2f2bf6.fw9d87d02`; "1.5.14-wsl" = no
-# build N = unparsable; "+..." ignored) — this regex is the simplest reading of P3 §3.7.1.
-VERSION_RE = re.compile(r"^\d+\.\d+\.\d+-[A-Za-z0-9]+\.\d+(\+[A-Za-z0-9.]+)?$")
+# the node's grammar (feed/batman-prov/src/release/release.go reVersion, P3 §3.7.1): the shipped form has no
+# "-CH.N"; CH is wsl / ci / rel; "+..." is build metadata (may hold ".bench", ".dirty", ".wbox-NAME")
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-(wsl|ci|rel)\.[0-9]+)?(\+[0-9A-Za-z.-]+)?$")
 KEYS_DIR = pathlib.Path(__file__).resolve().parents[2] / "keys"
 
 
@@ -124,9 +125,36 @@ def manifest(e_raw, s_raw, fields, size_override=None):
     return netobj.cb(m)
 
 
+def image_trusts_t(path):
+    """True when the payload's root.squashfs carries usr/share/batman/release-root.pub = T (a bench image, P3 §3.7.2)."""
+    import shutil
+    import subprocess
+    import tempfile
+    us = shutil.which("unsquashfs")
+    if not us:
+        raise SystemExit("signrel: no unsquashfs: cannot tell whether the image trusts T (or pass --allow-no-key)")
+    with tarfile.open(path, "r:gz") as tf, tempfile.TemporaryDirectory() as d:
+        m = next((x for x in tf.getmembers() if x.name == "root.squashfs" and x.isreg()), None)
+        if m is None:
+            return False
+        sq = os.path.join(d, "root.squashfs")
+        with open(sq, "wb") as f:
+            shutil.copyfileobj(tf.extractfile(m), f)
+        r = subprocess.run([us, "-cat", sq, "usr/share/batman/release-root.pub"], capture_output=True)
+        if r.returncode != 0:
+            return False
+        return r.stdout.decode(errors="replace").strip() == (KEYS_DIR / "T.pub").read_text().strip()
+
+
 def build(args):
     """Returns (E, S, manifest bytes, fields)."""
     sums, meta, boot_total = read_payload(args.payload)
+    # P3 §3.7.2: a payload whose image does not trust T leaves a bench node updatable only over ssh again — signing
+    # one needs --allow-no-key (UD-T1 does it on purpose: a release image must refuse the test keys)
+    if not args.allow_no_key and not image_trusts_t(args.payload):
+        raise SystemExit("signrel: the payload's image does not trust T (no tests/keys/T.pub as "
+                         "usr/share/batman/release-root.pub): a node that installs it cannot be updated through the "
+                         "app again — pass --allow-no-key to sign it anyway")
     board = args.board or meta.get("board")
     if not board:
         raise SystemExit("signrel: no board (--board or metadata board=)")
@@ -236,6 +264,7 @@ def _fake_payload(d, board="rpi-4", release="1.5.14-wsl.2+f2f2bf6.fw9d87d02"):
 
 def _args(payload, **kw):
     a = parse([str(payload)])
+    a.allow_no_key = True  # the fake payloads carry no real squashfs; image_trusts_t is checked on its own below
     for k, v in kw.items():
         setattr(a, k, v)
     return a
@@ -285,6 +314,31 @@ def selftest():
             check("negative: another root -> FAIL", False)
         except Bad as b:
             check("negative: another root -> FAIL (%s)" % b, "batman/relkey: signature does not verify" in str(b))
+        # --allow-no-key: an image without T is refused unless asked for
+        try:
+            build(_args(p, allow_no_key=False))
+            check("negative: an image without T is refused without --allow-no-key", False)
+        except SystemExit as x:
+            check("negative: an image without T is refused without --allow-no-key (%s)" % str(x)[:60], "does not trust T" in str(x) or "no unsquashfs" in str(x))
+        for good in ("1.5.14", "1.5.14-wsl.2+f2f2bf6.fw9d87d02.bench.dirty.wbox-x1", "2.0.0-rel.3"):
+            check("version %s parses (the node's grammar)" % good, VERSION_RE.match(good) is not None)
+        for bad in ("1.5.14-wsl", "1.5.14-beta.1", "1.5", "1.5.14-wsl.2+a_b"):
+            check("version %s is refused (the node's grammar)" % bad, VERSION_RE.match(bad) is None)
+        import shutil
+        import subprocess
+        if shutil.which("mksquashfs") and shutil.which("unsquashfs"):
+            for name, key, want in (("T", (KEYS_DIR / "T.pub").read_text(), True), ("other", "04" + "ab" * 64 + "\n", False)):
+                root = os.path.join(d, "root-" + name)
+                os.makedirs(os.path.join(root, "usr/share/batman"))
+                open(os.path.join(root, "usr/share/batman/release-root.pub"), "w").write(key)
+                sq = os.path.join(d, "sq-" + name)
+                subprocess.run(["mksquashfs", root, sq, "-quiet", "-noappend"], check=True, capture_output=True)
+                pl = os.path.join(d, "p-" + name + ".tar.gz")
+                with tarfile.open(pl, "w:gz") as tf:
+                    tf.add(sq, "root.squashfs")
+                check("image_trusts_t: a real squashfs with %s -> %s" % (name, want), image_trusts_t(pl) is want)
+        else:
+            check("image_trusts_t on a real squashfs (needs mksquashfs / unsquashfs on this host)", False)
         if (KEYS_DIR / "T.pub").exists():
             check("tests/keys/T.pub = derived T", read_pub(KEYS_DIR / "T.pub") == pub("T"))
             check("tests/keys/K_test.pub = derived K_test", read_pub(KEYS_DIR / "K_test.pub") == pub("K_test"))
@@ -309,6 +363,8 @@ def parse(argv):
     ap.add_argument("--mismatch-size", type=int, metavar="N")
     ap.add_argument("--wrong-board", action="store_true")
     ap.add_argument("--unparsable-version", action="store_true")
+    ap.add_argument("--allow-no-key", action="store_true",
+                    help="sign a payload whose image does not trust T (a bench node could not update through the app again)")
     ap.add_argument("--out", metavar="DIR")
     ap.add_argument("--print-hex", action="store_true")
     ap.add_argument("--verify", metavar="MANIFEST.cbor")

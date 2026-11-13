@@ -738,8 +738,8 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 
 ### 8.3 `prov-fw-boot-254` 與 `fw-badinclude`
 
-- **常規**:每次開機後斷言三張表都在,做成單位框架的掛鉤。負對照(W):wsl.22 沒有這些表。
-- **rc 閘門**:bench 上執行 `fw4 print | nft -c -f -`。
+- **常規**(`prov-fw-boot-254`,附錄 A.12;daily-validation tier A,每次執行、每個 fleet 節點,唯讀):三張表都在、include 的每條規則正好一條、provd 的上傳 tmpfs 照 init 的選項掛著、`bootinfo A` / `bootinfo B` / `precheck-node` 回來後 1 s 內放鎖。負對照:離線 fixture 各破一處(S,`scripts/test-s5-node-254.sh`)。S5 之前的 image(例如 wsl.22)= 一條 FAIL「pre-S5 image」,在 `scripts/validation-known-failures.txt` 有一條帶到期日的 KNOWN 條目(和 pre-P1b / pre-P2 同一做法;到期後變回 NEW,r2 B-MAJOR-1):它沒有這些表是因為它早於 S5,但 S5 出貨之後節點退回舊 image 就該變紅,不能靜靜地 SKIP。
+- **rc 閘門**:`fw4 print | nft -c -f -`(兩板)。`prov-fw-boot-254` 的 FB2 每次執行都在每個 fleet 節點跑(唯讀,check 模式不載入;r2 B-m4),所以 bench 上的 rc 也涵蓋。
 - **`fw-badinclude`**(02,W 載具;H4-U9):
   1. 拿 02 central 鎖;
   2. 臂的前後都斷言 02 沒有預設路由(F-H33);
@@ -1046,7 +1046,8 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 
 | # | 來源 | 臂 | 載 | 斷言 | 負 |
 |---|---|---|---|---|---|
-| UD-T1 | release 拒收 T | t-reject | R | `{1: false, 2: 11}` | S(同一份 manifest 在 RB 上會過) |
+| UD-T1 | release 拒收 T | t-reject | R | 先讀 status key 15 `trust`(provclient 印 `trust=`):= T 的指紋(`tests/keys/T.pub` 的 sha256 前 8 bytes)→ INVALID(bench image 信任 T,UD-T1 要 R image);`none` → `{1: false, 2: 24}`;其他指紋(R)→ `{1: false, 2: 11}`;`bad` → FAIL;key 15 沒有 trust → INVALID(S5 之前的節點,或 provclient 沒印)。再用 release-key-254 的 `rk_judge` 比對 `/rom` 的兩個鑰匙檔(照 `release.LoadTrust` 讀)和 key 15 的 trust:不一致 → FAIL(r2 A-m2 / B-m10)。bench fleet(02 / 04 都信任 T)上這列一定是 INVALID;R 與 none 兩臂的證據在離線,直到有 R image 上機(r2 B-m9):Batman-p3 `feed/batman-prov/src/release/release_test.go` `TestVerifySignrelNegative`(「another root」→ 11、「no key in the image」→ 24)、`feed/batman-prov/src/node/update_test.go` `TestUpdateCheckRefusals`(「no key」→ 24)、firmware `scripts/check-release-key-gate.sh` + `scripts/test-release-key-gate.sh`(release image 不含 T) | S(同一份 manifest 在 RB 上會過) |
+| UD-L | §3.7.3 持鎖動詞回來後放鎖 | lock-free | R + RB | 每個由 helper 跑持鎖 `batman-slot` 動詞的步驟(`update.check` 的 precheck-node + bootinfo、prepare 的 write、apply 的 arm、disarm)回報完成後 1 s 內 `flock -n` 成功,而且步驟期間啟動的行程沒有開著鎖檔(`pr_slot_free`,`slk_free`);只被步驟外的行程持有,或被別的寫入者(祖先裡沒有 batman-provhelper 的 `batman-slot`)持有 = INVALID(r2 B-m3)。`update.check` 只要跑過 precheck-node 就判(`pr_precheck_ran`:ok = true,或 reason 是 precheck-node 或其後才會給的 1 / 2 / 5 / 8 / 12 / 17 / 21;Batman-p3 `node/update.go:249-331`;r2 A-m3);停在它之前(R:11、none:24、板子 / 版本:3 / 4 / 6)或分不出來(11 也可能是 precheck-node rc 13)→ 一條 `NOT-JUDGED` 判定列(`nj`,計在 RESULT 行,不改 UNIT 判定),不是只寫 log;prepare / apply / disarm 等 RB 列寫好時同樣斷言 | S(背景子程序不 `9>&-` 的 batman-slot 變體 → FAIL;離線 `scripts/test-slotlock-254.sh`、`scripts/test-s5-dv-254.sh`) |
 | UD1 | T → trial → commit → 5 | main | RB → T | 2 → 3 → 4 → 5 | W |
 | UD2 | 同版本退回 → 6 | same | RB → T | hold → 到期 revert → 6 | W + P |
 | UD3 | arm 前斷電 → 0 | kp-before | RB(`upd-before-arm`) | 0;沒有旗標 | S(`upd-after-arm` → 進試用;副作用見 §13) |
@@ -1071,7 +1072,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | UD16 | D-9 試用轉 committed | d9 | T | commit 後 fresh | G(H4-U8) |
 | UD16b | 非試用開機時存一次 | d9-boot | RB | stale(P)→ restart → 存 | S(`p5-autosave-off`) |
 | UD17 | D-10 | d10 | RB | (a) 6 不帶 18;(b) 旗標不在 | S(`d10-no-disarm`) |
-| UD18 | D-14 | — | C | `.busy` 不在 | S(沒有 trap 的變體) |
+| UD18 | D-14 | — | C | `write` 寫入中送 TERM 之後,在有上限的等待內(ash 等前景的 `dd` / `cat` 回來才跑 TERM trap,所以不是「立刻」;上限 30 s):(1) 目標槽的 boot FAT 不在任何 `/proc/mounts` / `mountinfo` 裡(以 major:minor 比對);(2) 被殺的 `batman-slot` 沒有留下開著鎖檔的子程序(`/proc/*/fd`,以啟動時帶的 `DV_SLK` token 辨認),而且 1 s 內 `flock -n` 成功(`slk_free`);(3) 鎖可再取得(下一個 `bootinfo` rc 0)。只看 flock 不夠:kernel 在持有者結束時一定放鎖,有沒有 trap 都一樣(r1 A-MAJOR-3) | S(沒有 `trap 'exit 143' TERM` 的變體 → EXIT trap 不跑、B 的 boot FAT 留著掛載 → (1) FAIL)+ S(背景子程序不 `9>&-` 的變體 → 子程序持有 fd 9、鎖被持有 → (2) FAIL) |
 | UD19 | D-12 | d12 | RB(`setkey-pause`;provclient 直接打 helper) | ≤ 5 s 回應 | S(`d12-take-mu`) |
 | UD20 | §7「被入侵的 provd 偷換 pending 版本」:owner-op 簽的不是 pending | swap | RB(provclient 直接打 helper,uid 471) | 資料路徑:provclient `nonce` 取 helper nonce → WSL 的 peer 用 H0 簽 owner-op → provclient 送 `update.prepare`。pending = X、body 的 sha = X;**負向**:owner-op 是對 Y 簽的 → `args_hash` 不符 → `E_FORBIDDEN`、沒有啟動 worker。**正向**(同一份 pending 與 body,只差被簽的 sha):用新的 nonce 對 X 簽 → 成功。兩者只差一個變數,而且拒絕條件只剩 `args_hash` 一個(v8-A m9) | W(E_U)+ 正向是 flip。helper 每次驗 owner-op 都會消耗 nonce,失敗也一樣(`node.go:672-690`、`:310-319`),所以兩臂各用新的 nonce。正向會真的啟動 worker、覆寫 B:**順序固定為 UD20c → UD20b → UD20 負向 → UD20 正向(最後)**,之後 brewrite B(§13);prepare 失敗會刪上傳檔(`:456`),所以每一臂前都重新上傳 |
 | UD20b | 同上:owner-op 有效、但 sha ≠ pending | swap-sha | RB | 擁有者以新的 nonce 對 Y 簽一個有效的 owner-op,而 pending 是 X → `E_REJECTED{15}`(P3 `:327`) | W(E_U)+ P |
@@ -1096,8 +1097,8 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 |---|---|---|---|---|---|
 | TT1 | 轉賣工具 | transfer | C + 真卡(NEEDS-PERSON) | §3.9 | S(`--test-skip-wipe`) |
 | LR1 | firstboot 後仍在 | luci-reset | F(最後) | 三者都在 | W(舊字串) |
-| FB1 | 三張表 | fw-boot | R(每次開機後) | | W |
-| FB2 | `nft -c` | fw-boot | bench | rc 0 | S(壞 include → rc ≠ 0) |
+| RK1 | §3.7.1 / r1 B-M6:非 bench image 不信任 T(T 的私鑰任何人都算得出) | release-key | R(每次) | image 信任的 root 照 helper 的 `release.LoadTrust`(Batman-p3 `release.go:84-125`)讀 `/rom/usr/share/batman/` 的 `release-root.pub` 與 `release-min-serial`:兩個都沒有 = trusts none(PASS);兩個都是一行、格式對(04 + 128 hex 的點、1–10 位不以 0 開頭的 serial)= 信任該點;只有一個、多行、值不對 = bad → FAIL(r2 A-m2 / B-m10)。信任的點 = `tests/keys/T.pub` ⇔ `/rom/etc/batman-build` 有 `BATMAN_BENCH_TRUST=T`(且版本含 `.bench`);有 provclient 的 status 時(prov-update-254 UD-T1)key 15 的 trust 必須等於 `/rom` 那個點的指紋(或 none);`scripts/dv/s5-254.sh` `release-key-254` | S(離線 fixture:T 但沒有 bench stamp、bench stamp 但不是 T、未知的值、沒有 stamp、只有 pub、只有 serial、serial 0 / 前導 0、兩行的檔、CRLF、status trust 不一致 → FAIL;`scripts/test-s5-node-254.sh`) |
+| FB2 | `nft -c` | fw-boot | bench | rc 0;`prov-fw-boot-254` 每次執行在每個 fleet 節點跑 `fw4 print \| nft -c -f -`(兩板,唯讀;r2 B-m4) | S(壞 include → rc ≠ 0;離線 fixture:`nft -c` 拒絕、`fw4 print` 失敗 → FAIL,`scripts/test-s5-node-254.sh`) |
 | FB3 | `fw-badinclude` | fw-badinclude | W(02) | §8.3 | P |
 | EE1 | D11 採用 | eeprom | C | §8.2 | W(1.5.12-wsl.2)+ P(沒有 shim) |
 | EE2 | D11 fresh-overlay / READ rc 1 | eeprom | C | rc 1 | W(1.5.12-wsl.2 → rc 0) |
@@ -1108,6 +1109,26 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 - D-1 → HT10、PR1;D-2 → PR1;D-3 → HT19 + lint;D-4 → HT8a / b;D-5 → ST19;D-6 → ST7;
 - D-7 → ST20;D-8 → HT20;D-9 → UD16 / UD16b;D-10 → UD17;D-11 → ST9;D-12 → UD19 + ST13 + ST20;
 - D-13 → HT21;D-14 → UD18;D-15 → UP10;D-16 → AC7;D-17 → AC8。
+
+### A.12 `prov-fw-boot-254`(R,常規全套每次執行 = 每次開機後;`scripts/dv/s5-254.sh` + `scripts/node/fw-boot-254.sh`,唯讀)
+
+S5 之前的 image(`batman-slot` 沒有 `slot_lock`)→ 一條 FAIL「pre-S5 image <版本>」,什麼都不判;`scripts/validation-known-failures.txt` 有一條 KNOWN 條目,`expires=2026-12-15`(和 P3 那三條同一天;使用者 2026-11-12 決定:S5 預計 12 月初上 02 / 04),到期後 `kf_classify` 判 NEW(r2 B-MAJOR-1;離線測試 `scripts/test-s5-node-254.sh`:到期當天 KNOWN、隔天 NEW)。
+
+INVALID 只留給 harness 真的分不出來的情況:鎖被合法的寫入者(`batman-slot` 或它的子程序、harness 自己)佔用,或動詞在拿鎖之前就停了。會讓節點無法更新的產品狀態一律 FAIL(使用者的規則,r3):鎖被孤兒持有(leaked fd 9,A-MAJOR-2),或鎖是空的、但某個槽的 boot FAT 掛在 `/boot` 以外(`tboot_elsewhere` 讓每個 slot 動詞都 rc 14,B-M1)。同一套孤兒判定也用在 `slk_take`(`SLOTLK-BUSY LEAK` → ab-selftest、eh13-pre、prov-chain0 判 FAIL)和 `slk_free`(`SLKFREE orphan` → UD-L 判 FAIL)。節點正在 autocommit 把關的試用開機時,FB6 不跑動詞(一條 NOT-RUN):動詞持鎖會讓 autocommit 的 `batman-slot commit` rc 14、健康計數歸零(r3 B-m5)。
+
+**副作用**(這個單元不是嚴格唯讀;r2 A-m4):
+1. `precheck-node` 會照 sysupgrade stage 1 的方式改寫 p5 判定檔(`$RUNDIR/p5-check.rc`),寫的是當下的真值;
+2. `bootinfo B` 在 **host 的 mount namespace** 把 B 的 boot FAT 以唯讀掛在 `/mnt/slotboot.<它的 pid>`,動詞結束時由它自己的 EXIT trap 卸載(helper 跑動詞時是在私有 namespace,這裡是從 ssh 直接跑);
+3. 遠端 shell 如果在 `bootinfo B` 期間被殺(主機端 ssh 的 timeout 300 s),這個掛載可能留下來,之後每個 slot 動詞都會因 `tboot_elsewhere` 回 rc 14,直到它被卸載或重開機。清理:每個動詞的 pid 記在 `/tmp/run/batman-dv/fw-boot-254.pids`(只在這個目錄是 root 的、mode 0700、不是 symlink 時才寫;r3 B-m1),下一次執行先在 slot 鎖底下卸載「記錄過的 pid、該 pid 已不是執行中的 `batman-slot`」的 `/mnt/slotboot.<pid>`,印一條 INFO;卸不掉 = FAIL。只碰自己記錄過的 pid 的掛載,沒記錄的 `/mnt/slotboot.<pid>` 不動(r3 B-m1,離線測試)。⚠️「ssh timeout 殺掉遠端 shell 會留下掛載」沒有在節點上驗證過:動詞在背景跑、輸出導到 /dev/null,多半會跑完並由自己的 EXIT trap 卸載(r3 B-m2)。動詞正常回來後掛載還在 = FAIL(它的 EXIT trap 沒卸載),並當場卸載;
+4. 寫上述 pid 檔。
+
+
+| # | 來源 | 臂 | 載 | 斷言 | 負 |
+|---|---|---|---|---|---|
+| FB1 | §3.8.1 三道關 (2):include 一錯整份 fw4 失敗(F70) | fw-boot | R(每次開機後) | `inet fw4`、`bridge batman_http`、`inet batman_http_in` 都在 | S(離線 fixture:缺 fw4、缺一張表 → FAIL;`scripts/test-s5-node-254.sh`)+ FB3 |
+| FB4 | F70 reload 不重複規則 | fw-boot | R(每次開機後) | image 的 include(`/rom/usr/share/nftables.d/ruleset-post/batman-http.nft`,不手抄)裡每條帶 comment 的規則在 nft 裡正好一條;fw4 讀的 include = image 的那份 | S(離線 fixture:同一規則兩份、overlay 改過的 include、沒有 comment 的 include → FAIL) |
+| FB5 | §3.8.2 provd 的上傳 tmpfs | fw-boot | R(每次開機後) | provd 在跑 → init 的 `BDIR` 是 tmpfs、只掛一次、不是 symlink,掛載選項 = init 自己的(`nodev,nosuid,noexec,mode=0700,nr_inodes=16,size=<本板>,uid=471,gid=471`;size 以 KiB 顯示、4 KiB 頁進位);provd 沒跑 = 記錄、不判 | S(離線 fixture:少 noexec、size 不同、沒掛、疊掛、未知的板子 → FAIL;ekh-bcm2711 與 ekh-bcm2710 各一個 good) |
+| FB6 | §3.7.3 通用測試:持鎖動詞回來後 1 s 內放鎖 | fw-boot | R(每次開機後) | `batman-slot bootinfo A`、`bootinfo B`、`precheck-node`(帶 `DV_SLK` token)各自回來後 1 s 內 `flock -n` 成功,而且動詞的行程(帶 token,或在動詞開始前一刻到回來之間啟動的,例如 `env -i` 丟了 token 的子程序,r3 A-m1)沒有開著鎖檔。只證明「放鎖」,不證明動詞有拿鎖:鎖檔整個開機期間都留在 run dir(r3 A-m3)。不管動詞回什麼都判鎖(r2 A-MAJOR-2):節點狀態的拒絕(precheck-node 10–12 / 13 / 15–18、`detect_layout` 在動詞之前的 17)只記一條 INFO。rc 14 或鎖被別的行程持有 → 重試 5 次,仍是 → 看原因:鎖被孤兒持有(兩次相隔 1 s 的掃描都開著鎖檔、自己和祖先都沒有 `batman-slot`、不是 harness)→ FAIL「leaked fd 9」(r3 A-MAJOR-2);被 `batman-slot`(或它的子程序)或 harness 持有 → INVALID;鎖是空的但某個槽的 boot FAT(p1 / p3,依 mountinfo 的 major:minor)掛在 `/boot` 以外 → FAIL 並寫出掛載點(r3 B-M1);鎖空、也沒有別處的掛載 → INVALID。動詞失敗而且沒有鎖檔 → INVALID;rc 0 而沒有鎖檔 → FAIL。節點在 autocommit 正在把關的試用開機(`is-trial` rc 0 且 autocommit main 活著)→ 不跑動詞,一條 NOT-RUN(r3 B-m5)。副作用見上 | S(子程序不 `9>&-` 的變體 → FAIL,動詞回 16 時也是;`env -i` 子程序 → FAIL;拿了鎖再回 16 / 17 → PASS;拿鎖前 17、沒有鎖檔 → INVALID;rc 0 不拿鎖的變體 → FAIL;`bootinfo B` 留下掛載 → FAIL;孤兒持鎖 → FAIL、`batman-slot` 持鎖 → INVALID;rc 14 + B 的 FAT 在 `/mnt/_ab` → FAIL;試用中 → NOT-RUN;上一輪留下的掛載 → 卸載,沒記錄的不動;`scripts/test-s5-node-254.sh`、`scripts/test-slotlock-254.sh`) |
 
 ## 附錄 B. v1、v2 的處理
 

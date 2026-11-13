@@ -24,7 +24,8 @@ case "$cmd" in
 	*"batman-slot rollback"*)
 		case "$cmd" in *'$(batman-slot active)" = B'*) g=guarded;; *) g=UNGUARDED;; esac
 		log "ROLLBACK $g on=$(g slot)"
-		if [ "$g" = guarded ] && [ "$(g slot)" = B ]; then p slot A; p ver V9; p trial 1; newboot; out=SENT
+		if [ "$g" = guarded ] && [ "$(g slot)" = B ] && [ -n "${SIM_ROLLBACK_RC:-}" ]; then log "ROLLBACK-REFUSED $SIM_ROLLBACK_RC"; out="ROLLBACK-RC=$SIM_ROLLBACK_RC"
+		elif [ "$g" = guarded ] && [ "$(g slot)" = B ]; then p slot A; p ver V9; p trial 1; newboot; out=SENT
 		elif [ "$g" = UNGUARDED ]; then if [ "$(g slot)" = A ]; then p slot B; p ver V2; p trial 1; else p slot A; p ver V9; p trial 1; fi; newboot; out=SENT
 		else out=NOT-ON-B; fi ;;
 	*"sysupgrade -n"*)
@@ -89,6 +90,10 @@ chk "6 interrupt after the return to A: no second rollback" '[ "$(grep -c ROLLBA
 
 setup B yes OLD; r=$(run)
 chk "7 a pre-existing hold flag: precondition FAIL, that flag is left alone, no OTA" '[ "$r" = 1 ] && ! grep -q RMFLAG "$SIM/log" && ! grep -q OTA "$SIM/log" && [ "$(cat "$SIM/flag")" = OLD ]'
+
+setup B yes; r=$(SIM_ROLLBACK_RC=12 run)
+chk "8 rollback refused on B (rc 12): not silent — FAIL line with the rc, exit != 0" '[ "$r" != 0 ] && grep -q "FAIL batman-slot rollback refused on B (ROLLBACK-RC=12)" "$W/out" && grep -q "ROLLBACK-REFUSED 12" "$SIM/log"'
+chk "8 rollback refused: no reboot was sent (still on B)" '[ "$(cat "$SIM/slot")" = B ]'
 
 cat "$SIM/log" >> "$W/all.log"
 chk "every rollback the script sent, in every case, carried the slot-B guard" '[ -s "$W/all.log" ] && ! grep -q UNGUARDED "$W/all.log"'

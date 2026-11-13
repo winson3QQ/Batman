@@ -182,6 +182,18 @@ func TestFmtProgressStatus(t *testing.T) {
 	if st != " state=2 verdict=0 neighbours=4 p5_saved=true join_failure=3 f15=image,uptime_s" {
 		t.Fatal(st)
 	}
+	for _, c := range []struct {
+		in   any
+		want string
+	}{
+		{"none", " trust=none"}, {"bad", " trust=bad"}, {"0123456789abcdef", " trust=0123456789abcdef"},
+		{"0123456789ABCDEF", " trust=?"}, {"x y", " trust=?"}, {uint64(1), " trust=?"},
+	} {
+		st = fmtStatus(cmap{{uint64(1), uint64(2)}, {uint64(15), cmap{{"trust", c.in}}}})
+		if !strings.HasSuffix(st, " f15=trust"+c.want) {
+			t.Fatalf("trust %v: %q", c.in, st)
+		}
+	}
 	ds := fmtDiagSummary(cmap{{uint64(1), []any{cmap{{uint64(1), "join.no_peers"}, {uint64(2), uint64(1)}}}}})
 	if ds != " n=1 items=join.no_peers:1" {
 		t.Fatal(ds)

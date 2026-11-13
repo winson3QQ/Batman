@@ -46,7 +46,9 @@ rw "$LIB" > "$T/lib/prov-lock.sh"
 rw "$BS" > "$T/batman-slot"; chmod 755 "$T/batman-slot"
 grep -q "^DISK=$LOOP\$" "$T/batman-slot" && grep -q "^BOOTMNT=$T/boot " "$T/batman-slot" || { echo "FAIL path rewrite did not apply (batman-slot layout changed?)"; exit 1; }
 # the streamed payload stage-root expects: boot files + SHA256SUMS (with a root.squashfs entry) + metadata, no rootfs
-P=$T/payload; mkdir -p "$P/boot"; cp "$T/bootsrc/"* "$P/boot/"
+# only what scripts/build-ab-payload.sh packs (kernel8 / start* / fixup* / *.dtb): a SUMS naming config.txt or
+# cmdline.txt is refused since #254 S5 (protected names, 254-p3-impl §3.7.3)
+P=$T/payload; mkdir -p "$P/boot"; for f in start4.elf fixup4.dat kernel8.img bcm2711-rpi-4-b.dtb; do cp "$T/bootsrc/$f" "$P/boot/"; done
 ( cd "$P" && sha256sum boot/* > SHA256SUMS && echo "$(sha256sum < "$T/src/p2-rootfs-squashfs.img" | cut -c1-64)  root.squashfs" >> SHA256SUMS )
 printf 'board=ekh-bcm2711\nversion=test\nsize=%s\n' "$(wc -c < "$T/src/p2-rootfs-squashfs.img")" > "$P/metadata"
 

@@ -12,6 +12,19 @@ scripts/node/p5-onjoin-263.sh	R=/tmp; \[ -r /usr/lib/batman/rundir\.sh \] && R=/
 # --- private dirs under /tmp/run (root 0755, created by procd before any non-root process) ---
 scripts/*	(/tmp/run/batman-dv([^-a-z]|$)|/tmp/run/soakprof|/tmp/run/deep-sample\.sh)	harness/dev scratch under root-only /tmp/run, created 0700 and owner-checked
 scripts/depersonalise.sh	dbFile: /tmp/run/openmanetd\.db	openmanetd (root) SQLite on tmpfs under root-only /tmp/run (golden images)
+# --- #254 P3 S5 §3.8.2: provd's upload tmpfs (uid 471 writes the upload; root only takes it over after checks) ---
+feed/batman-prov/src/provstore/exec.go	^const BulkDir = "/tmp/run/batman-provd-bulk"$	the one literal: a tmpfs root mounts (init) under root-only /tmp/run before the jail; the helper opens it O_NOFOLLOW, requires fstatfs tmpfs + its own mount point, then unlinks / chowns / leases the file before reading it
+feed/batman-prov/files/batman-provd*.init	^BDIR=/tmp/run/batman-provd-bulk$	the init (root) mounts the tmpfs there: never stacked, never through a symlink, mode 0700 provd; only then put rw into provd's jail (not mounted = not in the jail, the helper refuses bulk.open)
+# --- uci's save dir /tmp/.uci: made root 0700 by base-files /etc/init.d/boot (START=10, `mkdir -p /tmp/.uci; chmod 0700`,
+# firmware-2710 package/base-files/files/etc/init.d/boot:31-32) before any non-root daemon starts; 04 read-only probe
+# 2026-11-11: root 0700, mtime = boot time. Both readers check root 0700 + not a symlink first and count anything else
+# as staged (refuse / E_BUSY), so a pre-created or swapped dir is at most a DoS; /tmp is sticky (#254 P3 settings) ---
+*/halow-setkey	^p3_staged\(\)\{ d=/tmp/\.uci;	uci's save dir (base-files boot, root 0700): read only when it is root's 0700 directory and not a symlink (ls -ldn); anything else counts as staged = refuse, never read
+feed/batman-prov/src/cmd/batman-provhelper/status.go	uciStagedIn\("/tmp/\.uci"\)	uci's save dir (base-files boot, root 0700): uciStagedIn lstat-checks a root 0700 directory first; anything else counts as staged (E_BUSY), never read
+# --- #254 S5 offline tests (host only, never sent to a node): a fake run dir inside their own mktemp -d tree ($T), and
+# the node paths only as fixture text ---
+scripts/test-slotlock-254.sh	\$T/run/batman	offline test: the fake run dir lives in this test's own mktemp -d tree; nothing runs on a node
+scripts/test-s5-node-254.sh	(\$T/run/batman|/tmp/run/batman-provd-bulk)	offline test: a fake run dir in its own mktemp -d tree, and the bulk path as fixture text (FB_ROOT tree / expected output); nothing runs on a node
 # --- unpredictable temp names: mktemp O_EXCL, random, 0600/0700, root-owned ---
 *	mktemp( -d)? "?/tmp/[^ ]*XXXXXX	mktemp in /tmp: random name, exclusive create, root-only mode
 feed/batman-provision/files/www/cgi-bin/bundle	^tar -C /tmp -czf - "\$name"$	tars the private mktemp report dir by its basename
