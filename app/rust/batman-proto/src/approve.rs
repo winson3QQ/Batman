@@ -142,7 +142,8 @@ pub fn check_joinreq(rec: &NetRec, sign1: &[u8]) -> Result<Checked, Error> {
 enum AStep {
     Secrets { jr: JoinReq, cfg: NetCfg, payload: Vec<u8> },
     MSecrets { jr: JoinReq, secrets: Vec<u8>, payload: Vec<u8> },
-    Persist { hex: String },
+    // dup: the duplicate-address line (254-app-team-status §4.2; "" = none)
+    Persist { hex: String, dup: String },
     Over,
 }
 
@@ -225,7 +226,7 @@ impl ApproveFlow {
                     Ok(c) => c.version,
                     Err(_) => return refused(Error::Invalid("record netcfg")),
                 };
-                let entry = Member {
+                let mut entry = Member {
                     dac_pub_hash: dac,
                     ecdh_pub: jr.node.ecdh_pub,
                     name: jr.name.clone(),
@@ -243,12 +244,28 @@ impl ApproveFlow {
                     Ok(l) => l,
                     Err(_) => return refused(Error::Invalid("record members")),
                 };
+                // 254-app-team-status §4.2 (B-M2): the same mesh address on another entry -> neither keeps it
+                let mut dup = String::new();
+                if let Some(a) = entry.mesh_addr {
+                    let others: Vec<String> = list
+                        .iter_mut()
+                        .filter(|m| m.dac_pub_hash != dac && m.mesh_addr == Some(a))
+                        .map(|m| {
+                            m.mesh_addr = None;
+                            m.name.clone()
+                        })
+                        .collect();
+                    if !others.is_empty() {
+                        entry.mesh_addr = None;
+                        dup = teamview::dup_hint(&[vec![entry.name.clone()], others].concat());
+                    }
+                }
                 match list.iter().position(|m| m.dac_pub_hash == dac) {
                     Some(i) => list[i] = entry,
                     None => list.push(entry),
                 }
                 rec.list = Some(list);
-                self.st = AStep::Persist { hex: qr_hex(QR_APPROVAL, &bundle) };
+                self.st = AStep::Persist { hex: qr_hex(QR_APPROVAL, &bundle), dup };
                 Some(Action::Persist { rel: format!("net/{}", hex_lower(&rec.base.net_id)), plain: netrec::encode(&rec), expected_gen: self.gen })
             }
             other => {
@@ -259,8 +276,8 @@ impl ApproveFlow {
     }
 
     pub fn persisted(&mut self) -> Option<Action> {
-        let AStep::Persist { hex } = std::mem::replace(&mut self.st, AStep::Over) else { return None };
-        Some(Action::Done(End::Out { hex, sas: String::new(), name: String::new(), renewed: false }))
+        let AStep::Persist { hex, dup } = std::mem::replace(&mut self.st, AStep::Over) else { return None };
+        Some(Action::Done(End::Out { hex, sas: String::new(), name: dup, renewed: false }))
     }
 
     pub fn persist_failed(&mut self, error: Option<String>) -> Option<Action> {

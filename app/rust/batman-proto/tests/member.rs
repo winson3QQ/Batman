@@ -1512,6 +1512,7 @@ fn rm_t38_a_node_or_person_removed_before_needs_the_admins_yes() {
 /// 254-app-team-status T-A6(c) / A2-m3: a version-N request carries no key 7 although the session offered one; an
 /// N+1 joiner's request WITH key 7 is accepted by an N admin, which approves it and drops the address. The N-1 rule
 /// would refuse that request. Negative control: teamview::WRITE_MESH_ADDR flipped -> FAIL.
+#[cfg(not(feature = "team-write"))]
 #[test]
 fn t_a6c_n_admin_drops_an_n1_joiners_key7() {
     let v = vectors();
@@ -1540,4 +1541,32 @@ fn t_a6c_n_admin_drops_an_n1_joiners_key7() {
     let list = netrec::decode(&plain).unwrap().members().unwrap();
     let e = list.iter().find(|m| m.dac_pub_hash == netrec::dac_hash(&opened.node.dac_pub)).expect("the approved entry");
     assert_eq!(e.mesh_addr, None, "an N admin wrote the joiner's key 7");
+}
+
+/// 254-app-team-status §4.2 (B-M2) with the N+1 behaviour (feature `team-write`, tests only): an approved request
+/// whose key 7 another entry already has -> neither entry keeps it, and the approval carries the hint line.
+/// Negative control: the duplicate check removed -> FAIL.
+#[cfg(feature = "team-write")]
+#[test]
+fn t_a2_approve_drops_a_duplicated_address_from_both() {
+    let v = vectors();
+    let (ad, md) = (Disk::new(), Disk::new());
+    let inv = invite(&v, &ad);
+    let addr = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
+    // another member already registered with this address
+    let (g, plain) = ad.get(REL).unwrap();
+    let mut rec = netrec::decode(&plain).unwrap();
+    let mut list = rec.members().unwrap();
+    list.push(Member { dac_pub_hash: [7; 32], ecdh_pub: [4; 65], name: "書房".into(), owner_pub: [4; 65], owner_enc_pub: [4; 65], device_id: None, state: MemberState::Approved, prev_country: None, known: None, mesh_addr: Some(addr) });
+    rec.list = Some(list);
+    ad.cas(REL, g, &netrec::encode(&rec)).unwrap();
+    // the joiner (N+1: its request carries key 7 = the same address)
+    let (jr_hex, _, _) = request(&v, &md, &inv, "客廳");
+    let jr = invite::qr_object(&jr_hex, invite::QR_JOINREQ).unwrap();
+    assert_eq!(netrec::sign1_payload(&jr).unwrap().get(7).and_then(V::as_bytes), Some(&addr[..]), "N+1 writes key 7");
+    let (_, _, note, _) = out(&approve(&ad, &jr_hex));
+    assert_eq!(note, "『客廳』和『書房』的網路位址相同，兩台都沒有登記 — 全隊狀態會顯示「沒有登記網路位址」");
+    let (_, plain) = ad.get(REL).unwrap();
+    let list = netrec::decode(&plain).unwrap().members().unwrap();
+    assert!(list.iter().all(|m| m.mesh_addr.is_none()), "{list:?}");
 }

@@ -27,12 +27,12 @@
 
 // Section: imports
 
-use crate::api::member::*;
-use crate::api::rekey::*;
+use crate::api::claim::*;
 use crate::api::replay::*;
 use crate::api::swupdate::*;
-use crate::api::claim::*;
-use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::member::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -2061,7 +2061,8 @@ let mut var_waitMs = <u64>::sse_decode(deserializer);
 let mut var_sendUpdate = <bool>::sse_decode(deserializer);
 let mut var_info = <Vec<u8>>::sse_decode(deserializer);
 let mut var_sw = <bool>::sse_decode(deserializer);
-return crate::api::owner::OwnerStep{kind: var_kind, frames: var_frames, sign_input: var_signInput, detail: var_detail, record: var_record, rel: var_rel, generation: var_generation, aad: var_aad, expected_gen: var_expectedGen, poll_link: var_pollLink, hex: var_hex, sas: var_sas, renewed: var_renewed, sent: var_sent, left: var_left, wait_ms: var_waitMs, send_update: var_sendUpdate, info: var_info, sw: var_sw};}
+let mut var_note = <String>::sse_decode(deserializer);
+return crate::api::owner::OwnerStep{kind: var_kind, frames: var_frames, sign_input: var_signInput, detail: var_detail, record: var_record, rel: var_rel, generation: var_generation, aad: var_aad, expected_gen: var_expectedGen, poll_link: var_pollLink, hex: var_hex, sas: var_sas, renewed: var_renewed, sent: var_sent, left: var_left, wait_ms: var_waitMs, send_update: var_sendUpdate, info: var_info, sw: var_sw, note: var_note};}
                 }
                 
                 impl SseDecode for crate::api::rekey::PersonNode {
@@ -2888,7 +2889,8 @@ self.left.into_into_dart().into_dart(),
 self.wait_ms.into_into_dart().into_dart(),
 self.send_update.into_into_dart().into_dart(),
 self.info.into_into_dart().into_dart(),
-self.sw.into_into_dart().into_dart()
+self.sw.into_into_dart().into_dart(),
+self.note.into_into_dart().into_dart()
                 ].into_dart()
                 }
             }
@@ -3671,7 +3673,8 @@ crate::api::owner::OwnerKind::ConfirmRemoved => { 11 }
 <u64>::sse_encode(self.wait_ms, serializer);
 <bool>::sse_encode(self.send_update, serializer);
 <Vec<u8>>::sse_encode(self.info, serializer);
-<bool>::sse_encode(self.sw, serializer);}
+<bool>::sse_encode(self.sw, serializer);
+<String>::sse_encode(self.note, serializer);}
                 }
                 
                 impl SseEncode for crate::api::rekey::PersonNode {
@@ -3964,12 +3967,12 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
-use crate::api::member::*;
-use crate::api::rekey::*;
+use crate::api::claim::*;
 use crate::api::replay::*;
 use crate::api::swupdate::*;
-use crate::api::claim::*;
-use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::member::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -4064,12 +4067,12 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::member::*;
-use crate::api::rekey::*;
+use crate::api::claim::*;
 use crate::api::replay::*;
 use crate::api::swupdate::*;
-use crate::api::claim::*;
-use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::member::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;

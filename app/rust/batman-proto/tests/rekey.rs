@@ -1356,3 +1356,27 @@ fn t38_a_malformed_key_14_is_fail_closed() {
     set(&mut e3, 14, V::Array(vec![m(vec![(1, V::Bytes(dac(B.dac).to_vec())), (2, V::Bytes(pk(P).to_vec())), (3, V::Text("n57".into())), (9, V::Uint(1))])]));
     assert_eq!(netrec::decode(&cbor::encode(&V::Map(e3))).unwrap().departed, v2.departed);
 }
+
+/// 254-app-team-status §4.2 (B-M2) with the N+1 behaviour (feature `team-write`, tests only): two kept entries share
+/// a mesh address -> the removal's new list carries it for NEITHER, and the end names both (the hint line). Distinct
+/// addresses are written. Negative control: dedup_for_signing not applied -> FAIL.
+#[cfg(feature = "team-write")]
+#[test]
+fn t_a2_rekey_drops_a_duplicated_address_from_both() {
+    let x = [0x02, 1, 2, 3, 4, 5];
+    let with = |n: N, st: MemberState, a: [u8; 6]| Member { mesh_addr: Some(a), ..entry(n, st, None) };
+    let rec = record(vec![with(A, MemberState::Applied, x), with(B, MemberState::Approved, x), entry(D, MemberState::Approved, None)]);
+    let r = run_rekey(&rec, Target::Person(pk(Q)), &[], None, true);
+    let End::Committed { dup, .. } = &r.end else { panic!("{:?}", r.end) };
+    assert_eq!(dup, &vec![format!("n{:02x}", A.dac), format!("n{:02x}", B.dac)]);
+    let p = netrec::sign1_payload(&r.rec.unwrap().base.members).unwrap();
+    let V::Array(list) = p.get(4).unwrap() else { panic!() };
+    assert!(list.iter().all(|m| m.get(7).is_none()), "a duplicated address was signed: {list:?}");
+    let rec = record(vec![with(A, MemberState::Applied, x), with(B, MemberState::Approved, [0x02, 9, 9, 9, 9, 9]), entry(D, MemberState::Approved, None)]);
+    let r = run_rekey(&rec, Target::Person(pk(Q)), &[], None, true);
+    let End::Committed { dup, .. } = &r.end else { panic!("{:?}", r.end) };
+    assert!(dup.is_empty());
+    let p = netrec::sign1_payload(&r.rec.unwrap().base.members).unwrap();
+    let V::Array(list) = p.get(4).unwrap() else { panic!() };
+    assert_eq!(list.iter().filter(|m| m.get(7).is_some()).count(), 2, "distinct addresses are written (N+1)");
+}

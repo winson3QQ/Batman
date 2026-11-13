@@ -382,6 +382,7 @@ fn sae_is_uniform_over_62_characters() {
 
 /// 254-app-team-status T-A6(c): the session offers this node's mesh address (input key mesh_addr), but version N
 /// signs members v1 WITHOUT key 7 (teamview::WRITE_MESH_ADDR = false). Negative control: the constant flipped -> FAIL.
+#[cfg(not(feature = "team-write"))]
 #[test]
 fn t_a6c_version_n_writes_no_mesh_address() {
     let v = vectors();

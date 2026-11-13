@@ -8,7 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:batman_app/member_ui.dart';
-import 'package:batman_app/src/rust/api/owner.dart' show OwnerStep, OwnerKind;
+import 'package:batman_app/src/rust/api/owner.dart' show OwnerStep, OwnerKind, TeamView;
 
 Widget app(Widget w) => MaterialApp(home: Scaffold(body: w));
 
@@ -262,7 +262,8 @@ void main() {
         waitMs: BigInt.zero,
         sendUpdate: false,
         info: Uint8List(0),
-        sw: false);
+        sw: false,
+        note: "");
     const member = StatusFields(
         color: 'green',
         sentence: '已連上隊伍網路',
@@ -576,6 +577,81 @@ void main() {
       await t.pumpWidget(page(const StatusFields(sentence: 's', updateLine: '這台還在舊密碼，這支手機沒有它的新密碼 — 請網主重新產生你的更新包')));
       expect(find.byKey(const Key('updateLine')), findsOneWidget);
       expect(find.byKey(const Key('sendUpdate')), findsNothing);
+    });
+  });
+
+  // 254-app-team-status T-A9 (Dart side): the team section never reaches the log — the page widget prints nothing about
+  // it and the one log line (teamLogLine) carries counts only. A sentinel address sits in every team string.
+  // Negative control: teamLogLine logging a card (or the tech tails) -> FAIL.
+  group('T-A9 team section and the log', () {
+    const colon = 'de:ad:be:ef:00:01';
+    final forms = [colon, colon.toUpperCase(), colon.replaceAll(':', ''), colon.replaceAll(':', '').toUpperCase()];
+    final team = TeamView(
+        visible: true,
+        title: '全隊（僅供參考；由『$colon』看到）',
+        only: '',
+        cards: ['🟢 『$colon』 在線', '❔ 不明節點 · ${colon.toUpperCase()}\n${colon.replaceAll(':', '')}'],
+        note: 'note $colon',
+        tech: ['不明節點 …0001：3 秒前 ${colon.replaceAll(':', '').toUpperCase()}']);
+    var lines = <String>[];
+    Future<void> capture(Future<void> Function() body) async {
+      lines = [];
+      final old = debugPrint;
+      debugPrint = (String? m, {int? wrapWidth}) => lines.add(m ?? '');
+      try {
+        await body();
+      } finally {
+        debugPrint = old; // restored inside the test body (the binding checks it)
+      }
+    }
+    bool leaks() => lines.any((l) => forms.any(l.contains));
+
+    testWidgets('the page and the log line carry no address', (t) async {
+      await capture(() async {
+      final f = StatusFields(
+          color: 'green',
+          sentence: '已連上隊伍網路',
+          teamVisible: true,
+          teamTitle: team.title,
+          teamCards: team.cards,
+          teamNote: team.note,
+          teamTech: team.tech);
+      await t.pumpWidget(app(StatusPageView(initial: f, initialAt: DateTime(2026, 11, 13, 9), onRefresh: () async => f, clock: () => DateTime(2026, 11, 13, 9))));
+      await t.tap(find.text('技術資訊（給維修人員看）'));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('refresh')));
+      await t.pumpAndSettle();
+      debugPrint(teamLogLine(team)); // what nodes.dart _log()s for the team section
+      expect(lines, isNotEmpty, reason: 'the scan must see the team log line');
+      expect(leaks(), isFalse, reason: lines.join('\n'));
+      expect(lines.last, 'team section visible true cards 2 only false');
+      });
+    });
+
+    test('the scan catches a leaked address (negative control)', () async {
+      await capture(() async => debugPrint('team ${team.cards.first}'));
+      expect(leaks(), isTrue);
+    });
+  });
+
+  // 254-app-team-status §4.2 (B-M2): the duplicate-address line of an approval / removal is shown in a dialog; no
+  // dialog without a line. Negative control: showDupNote returning early -> FAIL.
+  group('duplicate address hint', () {
+    Widget host(String note) => app(Builder(builder: (c) => TextButton(onPressed: () => showDupNote(c, note), child: const Text('go'))));
+    testWidgets('the line from Rust is shown, nothing when there is none', (t) async {
+      const line = '『客廳』和『書房』的網路位址相同，兩台都沒有登記 — 全隊狀態會顯示「沒有登記網路位址」';
+      await t.pumpWidget(host(line));
+      await t.tap(find.text('go'));
+      await t.pumpAndSettle();
+      expect(find.text(dupNoteTitle), findsOneWidget);
+      expect(find.text(line), findsOneWidget);
+      await t.tap(find.text('好'));
+      await t.pumpAndSettle();
+      expect(find.text(dupNoteTitle), findsNothing);
+      await t.pumpWidget(host(''));
+      await t.tap(find.text('go'));
+      await t.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
     });
   });
 }

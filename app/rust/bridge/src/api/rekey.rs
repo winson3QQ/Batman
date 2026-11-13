@@ -10,6 +10,7 @@ use batman_proto::netrec::{self, MemberState, NetRec};
 use batman_proto::nodecert::{self, hex_lower, Verified};
 use batman_proto::rekey::{self, BundleAction, BundleEnd, BundleRefusal, NodeRead, Refusal, Rekey, Target, UpdateBundle};
 use batman_proto::updflow;
+use batman_proto::teamview;
 
 use super::member::dev_gate;
 use super::owner::{persist_at, OwnerKind, OwnerStep, STALE_RECORD};
@@ -199,10 +200,14 @@ fn rekey_step(a: Option<rekey::Action>) -> Option<OwnerStep> {
     Some(match a? {
         A::SignAdmin { tbs } => OwnerStep { sign_input: tbs, ..OwnerStep::new(OwnerKind::SignAdmin) },
         A::Persist { rel, plain, expected_gen } => persist_at(OwnerKind::PersistNet, rel, plain, expected_gen),
-        A::Done(E::Committed { version }) => OwnerStep::text(
-            OwnerKind::Answer,
-            format!("[REKEY] 已換成第 {version} 版的密碼（只在這支手機）。接著為每位隊員產生更新包；包都交出去之後，再把新密碼送給你自己的節點"),
-        ),
+        A::Done(E::Committed { version, dup }) => OwnerStep {
+            // 254-app-team-status §4.2: a duplicated mesh address was dropped from the new list
+            note: if dup.is_empty() { String::new() } else { teamview::dup_hint(&dup) },
+            ..OwnerStep::text(
+                OwnerKind::Answer,
+                format!("[REKEY] 已換成第 {version} 版的密碼（只在這支手機）。接著為每位隊員產生更新包；包都交出去之後，再把新密碼送給你自己的節點"),
+            )
+        },
         A::Done(E::Refused(r)) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 沒有開始：{}", refusal_text(&r))),
         A::Done(E::SignFailed) => OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] 手機的管理者金鑰無法簽章，什麼都沒有改變".into()),
         A::Done(E::PersistFailed(e)) => {
