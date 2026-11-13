@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"batman-prov/cbor"
+	"batman-prov/provstore"
 )
 
 const phy04 = "a8:dd:9f:4d:c6:10"
@@ -77,6 +78,7 @@ type peerRig struct {
 	now  *time.Time
 	run  *fakeRun
 	logs *bytes.Buffer
+	bat  string
 }
 
 func newPeerRig(t *testing.T, isMeshed bool, phys map[string][2]string) *peerRig {
@@ -91,7 +93,8 @@ func newPeerRig(t *testing.T, isMeshed bool, phys map[string][2]string) *peerRig
 	src.BatDir, src.PhyDir, src.Run = bat, phyDir, fr.run
 	r.n.SetPeerSource(src)
 	r.n.peers.runAsync = func(fn func()) { fn() }
-	return &peerRig{rig: r, now: now, run: fr, logs: logs}
+	setNet(t, r, provstore.Member, 1) // key 9 is sent only for a node in a network (design §4.1)
+	return &peerRig{rig: r, now: now, run: fr, logs: logs, bat: bat}
 }
 
 func morse04() map[string][2]string { return map[string][2]string{"phy0": {"morse_spi", phy04}} }
@@ -253,6 +256,7 @@ func TestPeersAnswerSize(t *testing.T) {
 	fr := &fakeRun{bat: []byte(rows.String()), iw: []byte(sta.String())}
 	src := DefaultPeerSource()
 	src.BatDir, src.PhyDir, src.Run = bat, phyDir, fr.run
+	setNet(t, r, provstore.Member, 1)
 	r.n.SetPeerSource(src)
 	r.n.peers.runAsync = func(fn func()) { fn() }
 	*now = now.Add(time.Hour * 24 * 365 * 40) // seen-ago as large as it gets
@@ -270,22 +274,6 @@ func TestPeersAnswerSize(t *testing.T) {
 		t.Fatalf("status answer %d B > 8192 B", len(b))
 	}
 	t.Logf("status answer with 32 maximal peers: %d B", len(b))
-}
-
-// T-N5: not in a mesh -> batctl is not run and key 9 = []; in a mesh with batctl failing -> no key 9.
-func TestPeersNotMeshedVsFailing(t *testing.T) {
-	p := newPeerRig(t, false, morse04())
-	p.tick(0)
-	_, has8, list, has9 := peersOf(t, statusCall(t, p.rig, true))
-	if !has8 || !has9 || len(list) != 0 || len(p.run.argvs) != 0 {
-		t.Fatalf("not meshed: key 8 %v, key 9 %v %+v, runs %v", has8, has9, list, p.run.argvs)
-	}
-	q := newPeerRig(t, true, morse04())
-	q.run.batE = errors.New("exit status 1")
-	q.tick(0)
-	if _, has8, _, has9 := peersOf(t, statusCall(t, q.rig, true)); has9 || !has8 {
-		t.Fatalf("meshed, batctl failing: key 9 %v (want absent), key 8 %v", has9, has8)
-	}
 }
 
 // T-N6: a rebuilt helper (new table) starts empty: no key 9 until it has sampled.
@@ -469,5 +457,150 @@ func TestPeersOwnAddressSelfCheck(t *testing.T) {
 	q.tick(0)
 	if k8, has8, _, _ := peersOf(t, statusCall(t, q.rig, true)); !has8 || k8 != phy04 {
 		t.Fatalf("not meshed, morse phy1 chosen by driver: key 8 %q %v", k8, has8)
+	}
+}
+
+// setNet: the node's record as status.get reads it (key 9 depends on it, design §4.1): state, and for a member the
+// network id (16 x id).
+func setNet(t *testing.T, r *rig, state string, id byte) {
+	t.Helper()
+	rec, err := r.n.loadOverlayRO()
+	if err != nil || rec == nil {
+		t.Fatalf("record: %v", err)
+	}
+	rec.Generation++
+	rec.State, rec.Net = state, nil
+	if state == provstore.Member {
+		rec.Net = &provstore.Net{Config: []byte{0xa0}, Secrets: []byte{0xa0}, Version: 1, NetID: bytes.Repeat([]byte{id}, 16)}
+	}
+	if _, _, err := provstore.WriteOverlay(r.n.P, rec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// T-N5: not in a network -> batctl is not needed and key 9 = []; in a network with batctl failing -> no key 9.
+func TestPeersNotMeshedVsFailing(t *testing.T) {
+	p := newPeerRig(t, false, morse04())
+	setNet(t, p.rig, provstore.Claimed, 0)
+	p.tick(0)
+	_, has8, list, has9 := peersOf(t, statusCall(t, p.rig, true))
+	if !has8 || !has9 || len(list) != 0 || len(p.run.argvs) != 0 {
+		t.Fatalf("not in a network: key 8 %v, key 9 %v %+v, runs %v", has8, has9, list, p.run.argvs)
+	}
+	q := newPeerRig(t, true, morse04())
+	q.run.batE = errors.New("exit status 1")
+	q.tick(0)
+	if _, has8, _, has9 := peersOf(t, statusCall(t, q.rig, true)); has9 || !has8 {
+		t.Fatalf("meshed, batctl failing: key 9 %v (want absent), key 8 %v", has9, has8)
+	}
+}
+
+// T-N5 (code review A-m4), from a table that was NOT empty: another network drops the old network's peers; a wireless
+// reload (still in the network, bat0 without a hard interface) sends no key 9 and keeps the table; leaving the network
+// gives key 9 = [] and empties it. Negative controls: no clearing on leave / on a network change, or a hard-if-less
+// bat0 counted as a good sample -> FAIL.
+func TestPeersLeaveReloadAndNetworkChange(t *testing.T) {
+	full := readFix(t, "batctl-originators-meshed.provisional")
+	onlyD3 := bytes.Join(bytes.Split(full, []byte("\n"))[:3], []byte("\n"))
+	read := func(p *peerRig) ([]peerOut, bool) {
+		*p.now = p.now.Add(time.Second)
+		_, _, l, has9 := peersOf(t, statusCall(t, p.rig, true))
+		return l, has9
+	}
+	p := newPeerRig(t, true, morse04())
+	p.tick(0)
+	if l, _ := read(p); len(l) != 2 {
+		t.Fatalf("setup: %+v", l)
+	}
+	// joined another network (no leave in between): the old network's peers are gone at once
+	setNet(t, p.rig, provstore.Member, 2)
+	if l, has9 := read(p); !has9 || len(l) != 0 {
+		t.Fatalf("another network still shows the old peers: %v %+v", has9, l)
+	}
+	p.tick(15 * time.Second) // refilled from this network
+	// a wireless reload: no key 9 while bat0 has no hard interface; the table is kept
+	os.Remove(filepath.Join(p.bat, "lower_wlh0"))
+	p.tick(15 * time.Second)
+	if l, has9 := read(p); has9 {
+		t.Fatalf("key 9 sent during a wireless reload: %+v", l)
+	}
+	os.WriteFile(filepath.Join(p.bat, "lower_wlh0"), nil, 0o644)
+	p.run.bat = onlyD3
+	p.tick(15 * time.Second)
+	if l, has9 := read(p); !has9 || len(l) != 2 {
+		t.Fatalf("after the reload the table was not kept (c7:60 must still be listed): %v %+v", has9, l)
+	}
+	// left the network: key 9 = [] and the table emptied (a later join starts from nothing)
+	setNet(t, p.rig, provstore.Claimed, 0)
+	os.Remove(filepath.Join(p.bat, "lower_wlh0"))
+	p.tick(15 * time.Second)
+	if l, has9 := read(p); !has9 || len(l) != 0 {
+		t.Fatalf("not in a network: key 9 %v %+v, want []", has9, l)
+	}
+	if len(p.n.peers.m) != 0 {
+		t.Fatalf("the table still holds %d peers after leaving", len(p.n.peers.m))
+	}
+}
+
+// Code review B-m1: key 4 is reset every sample — a peer that was a direct station and is now relayed loses its
+// signal. Negative control: the per-sample reset removed -> FAIL.
+func TestPeersSignalOnlyFromThisSample(t *testing.T) {
+	p := newPeerRig(t, true, morse04())
+	p.tick(0)
+	if _, _, l, _ := peersOf(t, statusCall(t, p.rig, true)); l[0].signal == nil {
+		t.Fatal("setup: the direct peer has no signal")
+	}
+	// c6:d3 now reached through c7:60 (not direct): its station entry is still in the dump
+	p.run.bat = []byte(strings.Replace(string(readFix(t, "batctl-originators-meshed.provisional")),
+		" * a8:dd:9f:4d:c6:d3    0.420s (       14.9)  a8:dd:9f:4d:c6:d3", " * a8:dd:9f:4d:c6:d3    0.420s (       14.9)  a8:dd:9f:4d:c7:60", 1))
+	p.tick(15 * time.Second)
+	_, _, l, _ := peersOf(t, statusCall(t, p.rig, true))
+	for _, e := range l {
+		if e.addr == "a8:dd:9f:4d:c6:d3" && e.signal != nil {
+			t.Fatalf("a relayed peer kept the last sample's signal: %+v", e)
+		}
+	}
+}
+
+// Code review B-m2: our own originator (the MainIF MAC, and the phy MAC) never appears in key 9. Negative control:
+// the self skip removed -> FAIL.
+func TestPeersNeverListsItself(t *testing.T) {
+	p := newPeerRig(t, true, morse04())
+	b := readFix(t, "batctl-originators-meshed.provisional")
+	b = append(b, []byte(" * "+phy04+"    0.010s (       99.9)  "+phy04+" [      wlh0]\n")...)
+	p.run.bat = b
+	p.tick(0)
+	_, _, l, _ := peersOf(t, statusCall(t, p.rig, true))
+	for _, e := range l {
+		if e.addr == phy04 {
+			t.Fatalf("key 9 lists this node itself: %+v", l)
+		}
+	}
+	if len(l) != 2 {
+		t.Fatalf("%+v", l)
+	}
+}
+
+// Code review B-m3: the child gets only PATH and LANG — nothing of the helper's environment. Negative control: the
+// clean environment removed -> FAIL.
+func TestPeersExecCleanEnvironment(t *testing.T) {
+	t.Setenv("BATMAN_SENTINEL_ENV", "leaked")
+	s := stubScript(t, "env\n")
+	b, err := runCapped(5*time.Second, peerOutputMax, []string{s})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := string(b)
+	if strings.Contains(env, "BATMAN_SENTINEL_ENV") || !strings.Contains(env, "PATH=/usr/sbin:/usr/bin:/sbin:/bin") || !strings.Contains(env, "LANG=C") {
+		t.Fatalf("child environment:\n%s", env)
+	}
+}
+
+// Code review B-m5: an interface name starting with '-' (it would become an iw option) fails the header. Negative
+// control: the loose interface pattern back -> FAIL.
+func TestPeersInterfaceNameIsNoOption(t *testing.T) {
+	b := []byte(strings.Replace(string(readFix(t, "batctl-originators-meshed.provisional")), "MainIF/MAC: wlh0/", "MainIF/MAC: -h/", 1))
+	if _, err := parseOriginators(b); err == nil {
+		t.Fatal("a MainIF of '-h' was accepted (it would reach iw's argv)")
 	}
 }
