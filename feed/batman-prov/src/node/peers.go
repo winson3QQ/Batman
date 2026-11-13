@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"batman-prov/cbor"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -69,7 +71,8 @@ var (
 
 // runCapped runs argv (no shell) in its own process group with a clean environment; past the deadline or past max
 // bytes of stdout the whole group is stopped (TERM, then KILL after 1 s) and the run fails. stderr is discarded. The
-// error never carries the output.
+// error never carries the output. The group is signalled only while its leader is NOT reaped yet (code review B-m4:
+// -pgid then still names this group and nothing else), so the leader's exit is awaited with WNOWAIT and reaped last.
 func runCapped(timeout time.Duration, max int, argv []string) ([]byte, error) {
 	if len(argv) == 0 || !filepath.IsAbs(argv[0]) {
 		return nil, errPeerArgv
@@ -85,22 +88,17 @@ func runCapped(timeout time.Duration, max int, argv []string) ([]byte, error) {
 		return nil, err
 	}
 	pgid := c.Process.Pid
-	waited := make(chan error, 1)
-	var once sync.Once
-	reap := func() { once.Do(func() { go func() { waited <- c.Wait() }() }) } // one Wait, whoever needs it first
+	deadline := time.Now().Add(timeout)
 	stop := func() {
 		syscall.Kill(-pgid, syscall.SIGTERM)
-		reap()
+		leaderExited(pgid, time.Second) // the leader stays a zombie: the group id cannot be reused yet
+		syscall.Kill(-pgid, syscall.SIGKILL)
+		reaped := make(chan struct{})
+		go func() { c.Wait(); close(reaped) }()
 		select {
-		case <-waited:
-		case <-time.After(time.Second):
-			syscall.Kill(-pgid, syscall.SIGKILL)
-			select {
-			case <-waited:
-			case <-time.After(2 * time.Second): // unkillable: abandoned (its Wait goroutine stays)
-			}
+		case <-reaped:
+		case <-time.After(2 * time.Second): // unkillable: abandoned (its Wait goroutine stays)
 		}
-		syscall.Kill(-pgid, syscall.SIGKILL) // anything of the group the parent's exit left behind
 	}
 	type res struct {
 		b   []byte
@@ -124,16 +122,32 @@ func runCapped(timeout time.Duration, max int, argv []string) ([]byte, error) {
 		stop()
 		return nil, errPeerTooBig
 	}
-	reap()
-	select {
-	case err := <-waited:
-		if err != nil {
-			return nil, errors.New("exit status " + exitCode(err))
-		}
-		return r.b, nil
-	case <-t.C:
+	if !leaderExited(pgid, time.Until(deadline)) {
 		stop()
 		return nil, errPeerTimeout
+	}
+	if err := c.Wait(); err != nil {
+		return nil, errors.New("exit status " + exitCode(err))
+	}
+	return r.b, nil
+}
+
+// leaderExited: the process exited within d — checked with waitid(WNOWAIT), so it is NOT reaped (still a zombie).
+func leaderExited(pid int, d time.Duration) bool {
+	end := time.Now().Add(d)
+	for {
+		var si unix.Siginfo
+		err := unix.Waitid(unix.P_PID, pid, &si, unix.WEXITED|unix.WNOHANG|unix.WNOWAIT, nil)
+		if err == nil && si.Signo != 0 {
+			return true
+		}
+		if err != nil && err != unix.EINTR {
+			return true // ECHILD: nothing left to wait for
+		}
+		if !time.Now().Before(end) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -151,7 +165,7 @@ const macRE = `[0-9a-f]{2}(?::[0-9a-f]{2}){5}`
 
 var (
 	// [B.A.T.M.A.N. adv 2024.3, MainIF/MAC: wlh0/a8:dd:9f:4d:c6:10 (bat0/be:5e:79:bb:31:38 BATMAN_V)]
-	origHeaderRE = regexp.MustCompile(`^\[B\.A\.T\.M\.A\.N\. adv [^,\]]{1,32}, MainIF/MAC: ([A-Za-z0-9_.-]{1,15})/(` + macRE +
+	origHeaderRE = regexp.MustCompile(`^\[B\.A\.T\.M\.A\.N\. adv [^,\]]{1,32}, MainIF/MAC: ([A-Za-z0-9_][A-Za-z0-9_.-]{0,14})/(` + macRE +
 		`) \([A-Za-z0-9_.-]{1,15}/` + macRE + ` BATMAN_V\)\]$`)
 	//    Originator        last-seen ( throughput)  Nexthop           [outgoingIF]
 	origColsRE = regexp.MustCompile(`^\s*Originator\s+last-seen\s+\(\s*throughput\)\s+Nexthop\s+\[\s*outgoingIF\]\s*$`)
@@ -337,6 +351,8 @@ type peerTable struct {
 	withhold  bool // the primary hard-if's MAC is not the HaLow phy's (design A2-m1)
 	withheldN int
 	failN     int
+	meshedNow bool   // the last sample saw bat0 with a hard interface
+	net       []byte // the network id the table belongs to (a network change empties it)
 	droppedN  int
 	logf      func(string, ...any)
 	now       func() time.Time
@@ -371,12 +387,15 @@ type peerSample struct {
 	sta     map[[6]byte]station
 	dropped int
 	why     string
+	// bat0 has no hard interface: left the mesh, or a wireless reload in progress (keys() tells them apart by the
+	// node's record, design §4.1 key 9)
+	notMeshed bool
 }
 
 func (p *peerTable) take() peerSample {
 	s := peerSample{meshed: meshed(p.src.BatDir)}
 	if !s.meshed {
-		s.ok = true // not in a mesh: nobody seen, and that is known (design §4.1 key 9)
+		s.notMeshed = true // no batctl run; the table is kept (keys() decides what is sent)
 		return s
 	}
 	out, err := p.src.Run(p.src.Batctl)
@@ -406,6 +425,10 @@ func (p *peerTable) sample() {
 	p.busy = false
 	now := p.now()
 	p.phy, p.phyOK = phy, phyOK
+	p.meshedNow = !s.notMeshed
+	if s.notMeshed {
+		return
+	}
 	if !s.ok {
 		p.failN++
 		if p.failN == 1 {
@@ -477,15 +500,26 @@ func (p *peerTable) evict() {
 	}
 }
 
-// keys returns status keys 8 and 9 (either may be absent).
-func (p *peerTable) keys(now time.Time) cbor.Map {
+// keys returns status keys 8 and 9 (either may be absent). inNet: the node's record is in a network (member, or a
+// legacy node); netID: that network's id (nil for legacy). Design §4.1 key 9: not in a network -> [] and the table
+// emptied; another network -> the old network's peers are dropped; in a network but bat0 without a hard interface
+// (a wireless reload) or no good sample in 60 s -> key 9 not sent.
+func (p *peerTable) keys(now time.Time, inNet bool, netID []byte) cbor.Map {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var out cbor.Map
 	if p.phyOK && !p.withhold {
 		out = append(out, cbor.Entry{K: uint64(8), V: append([]byte(nil), p.phy[:]...)})
 	}
-	if p.okAt.IsZero() || now.Sub(p.okAt) > peerFreshFor {
+	if !inNet {
+		p.m, p.net = map[[6]byte]*peerEntry{}, nil
+		return append(out, cbor.Entry{K: uint64(9), V: []any{}})
+	}
+	if p.net != nil && !bytes.Equal(p.net, netID) {
+		p.m = map[[6]byte]*peerEntry{}
+	}
+	p.net = append([]byte{}, netID...)
+	if !p.meshedNow || p.okAt.IsZero() || now.Sub(p.okAt) > peerFreshFor {
 		return out
 	}
 	type kv struct {
