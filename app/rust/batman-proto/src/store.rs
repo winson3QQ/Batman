@@ -158,6 +158,32 @@ impl Store {
         Ok(())
     }
 
+    /// Move `rel` to the first free `<kind>/<name>-<n>` (n = 1, 2, ...; `<name>` = `rel`'s file name), bytes unchanged,
+    /// then sync both directories; returns the new path, or None when there is no record at `rel`. A record that is not
+    /// one (unknown version, garbage) is not moved. The AAD stays bound to `rel`: the moved record opens again only once
+    /// it is moved back there (design §5.1: the old record of a re-claimed node goes to the forgotten area).
+    pub fn move_aside(&self, rel: &str, kind: &str) -> Result<Option<String>, Error> {
+        let from = self.path(rel)?;
+        if self.read(rel)?.is_none() {
+            return Ok(None);
+        }
+        let name = rel.rsplit('/').next().ok_or(Error::BadPath)?;
+        for n in 1u32.. {
+            let to_rel = format!("{kind}/{name}-{n}");
+            let to = self.path(&to_rel)?;
+            if to.exists() {
+                continue;
+            }
+            let dir = to.parent().ok_or(Error::BadPath)?;
+            fs::create_dir_all(dir)?;
+            fs::rename(&from, &to)?;
+            File::open(dir)?.sync_all()?;
+            File::open(from.parent().ok_or(Error::BadPath)?)?.sync_all()?;
+            return Ok(Some(to_rel));
+        }
+        unreachable!("u32 names run out")
+    }
+
     /// Delete temp files left by a crash in the middle of a write (never valid records). Returns how many.
     pub fn sweep_temps(&self) -> Result<usize, Error> {
         let mut n = 0;

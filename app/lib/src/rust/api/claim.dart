@@ -8,7 +8,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `ended`, `hex_decode`, `new`, `pending_record`, `step`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `eq`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`
 
 Future<ClaimQr> parseClaimQr({required String text}) =>
     RustLib.instance.api.crateApiClaimParseClaimQr(text: text);
@@ -53,6 +53,31 @@ Future<void> storeWriteSealed({
 
 Future<void> storeRemove({required String dir, required String rel}) =>
     RustLib.instance.api.crateApiClaimStoreRemove(dir: dir, rel: rel);
+
+/// A record that cannot be read (unknown version, not a record) is an error: the claim stops (fail-closed).
+Future<ClaimTarget> claimTarget({
+  required String dir,
+  required String deviceId,
+}) =>
+    RustLib.instance.api.crateApiClaimClaimTarget(dir: dir, deviceId: deviceId);
+
+/// Whether an opened pending record is for this QR (same device id and K). Then claiming again is the recovery's
+/// first step (§5.2-1: on NX success the new pending, with the same K, replaces the old one); otherwise the pending
+/// is kept and no claim starts.
+Future<bool> pendingMatchesQr({
+  required List<int> record,
+  required ClaimQr qr,
+}) =>
+    RustLib.instance.api.crateApiClaimPendingMatchesQr(record: record, qr: qr);
+
+/// §5.1 re-claim the user confirmed: the old node record moves to the forgotten area (`forgotten-node/<id>-<n>`,
+/// unchanged, restorable by moving it back). Called when the new pending is about to be written — after NX and the
+/// node certificate passed — so a claim that never reaches the node leaves the old record where it was.
+Future<void> storeForgetNode({required String dir, required String deviceId}) =>
+    RustLib.instance.api.crateApiClaimStoreForgetNode(
+      dir: dir,
+      deviceId: deviceId,
+    );
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>>
 abstract class ClaimSession implements RustOpaqueInterface {
@@ -137,6 +162,20 @@ class ClaimStep {
           record == other.record &&
           pendingPath == other.pendingPath &&
           detail == other.detail;
+}
+
+/// What this phone already holds for a device id, checked before a claim sends or writes anything (design §5.1: a
+/// device id seen again is never overwritten without asking). A node record wins over a pending (§5.1: both = the
+/// node record counts).
+enum ClaimTarget {
+  /// nothing: a new claim
+  nothing,
+
+  /// only `claim-pending/<id>`: an unfinished claim (§5.2)
+  pending,
+
+  /// `node/<id>` (a pending beside it is stale)
+  node,
 }
 
 /// The next generation of a record and its AAD (final path + generation, design §3) for Kotlin's seal.
