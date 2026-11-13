@@ -27,11 +27,11 @@
 
 // Section: imports
 
-use crate::api::claim::*;
+use crate::api::member::*;
 use crate::api::owner::*;
-use crate::api::rekey::*;
 use crate::api::swupdate::*;
-use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -43,7 +43,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
                     default_rust_auto_opaque = RustAutoOpaqueMoi,
                 );
                 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -553350494;
+                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 197239998;
             
 
 // Section: executor
@@ -1312,16 +1312,6 @@ let api_name = <Option<String>>::sse_decode(&mut deserializer);deserializer.end(
                 transform_result_sse::<_, ()>((move || {
                      let output_ok = Ok::<_, ()>(crate::api::owner::status_membership_line(api_node_state, api_net_id, api_name))?;   std::result::Result::Ok(output_ok)
                 })()) })
-            }fn wire__crate__api__claim__store_forget_node_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
-                FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "store_forget_node", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
-            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
-            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_dir = <String>::sse_decode(&mut deserializer);
-let api_device_id = <String>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
-                    transform_result_sse::<_, String>((move ||  {
-                         let output_ok = crate::api::claim::store_forget_node(api_dir, api_device_id)?;   std::result::Result::Ok(output_ok)
-                    })())
-                } })
             }fn wire__crate__api__simple__store_has_records_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "store_has_records", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
@@ -1329,6 +1319,16 @@ let api_device_id = <String>::sse_decode(&mut deserializer);deserializer.end(); 
             let api_dir = <String>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
                     transform_result_sse::<_, ()>((move ||  {
                          let output_ok = Ok::<_, ()>(crate::api::simple::store_has_records(api_dir))?;   std::result::Result::Ok(output_ok)
+                    })())
+                } })
+            }fn wire__crate__api__claim__store_keep_copy_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "store_keep_copy", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_dir = <String>::sse_decode(&mut deserializer);
+let api_rel = <String>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, String>((move ||  {
+                         let output_ok = crate::api::claim::store_keep_copy(api_dir, api_rel)?;   std::result::Result::Ok(output_ok)
                     })())
                 } })
             }fn wire__crate__api__simple__store_read_marker_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
@@ -1546,6 +1546,7 @@ return crate::api::claim::ClaimStep{kind: var_kind, frames: var_frames, path: va
             0 => crate::api::claim::ClaimTarget::Nothing,
 1 => crate::api::claim::ClaimTarget::Pending,
 2 => crate::api::claim::ClaimTarget::Node,
+3 => crate::api::claim::ClaimTarget::NodeAndPending,
             _ => unreachable!("Invalid variant for ClaimTarget: {}", inner),
         };}
                 }
@@ -2106,8 +2107,8 @@ return crate::api::rekey::UpdatePrep{state: var_state, eph_pub: var_ephPub, mnet
 81 => wire__crate__api__claim__parse_claim_qr_impl(port, ptr, rust_vec_len, data_len),
 83 => wire__crate__api__claim__pending_matches_qr_impl(port, ptr, rust_vec_len, data_len),
 84 => wire__crate__api__claim__pending_path_impl(port, ptr, rust_vec_len, data_len),
-90 => wire__crate__api__claim__store_forget_node_impl(port, ptr, rust_vec_len, data_len),
-91 => wire__crate__api__simple__store_has_records_impl(port, ptr, rust_vec_len, data_len),
+90 => wire__crate__api__simple__store_has_records_impl(port, ptr, rust_vec_len, data_len),
+91 => wire__crate__api__claim__store_keep_copy_impl(port, ptr, rust_vec_len, data_len),
 92 => wire__crate__api__simple__store_read_marker_impl(port, ptr, rust_vec_len, data_len),
 93 => wire__crate__api__owner__store_read_sealed_impl(port, ptr, rust_vec_len, data_len),
 94 => wire__crate__api__claim__store_remove_impl(port, ptr, rust_vec_len, data_len),
@@ -2343,6 +2344,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::claim::ClaimStep> for crate::
                     Self::Nothing => 0.into_dart(),
 Self::Pending => 1.into_dart(),
 Self::Node => 2.into_dart(),
+Self::NodeAndPending => 3.into_dart(),
                     _ => unreachable!(),
                 }
                 }
@@ -2986,6 +2988,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::rekey::UpdateState> for crate
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<i32>::sse_encode(match self {crate::api::claim::ClaimTarget::Nothing => { 0 }
 crate::api::claim::ClaimTarget::Pending => { 1 }
 crate::api::claim::ClaimTarget::Node => { 2 }
+crate::api::claim::ClaimTarget::NodeAndPending => { 3 }
  _ => { unimplemented!(""); }}, serializer);}
                 }
                 
@@ -3461,11 +3464,11 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
-use crate::api::claim::*;
+use crate::api::member::*;
 use crate::api::owner::*;
-use crate::api::rekey::*;
 use crate::api::swupdate::*;
-use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -3548,11 +3551,11 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::claim::*;
+use crate::api::member::*;
 use crate::api::owner::*;
-use crate::api::rekey::*;
 use crate::api::swupdate::*;
-use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;

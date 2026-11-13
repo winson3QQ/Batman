@@ -97,25 +97,30 @@ pub enum ClaimTarget {
     Nothing,
     /// only `claim-pending/<id>`: an unfinished claim (§5.2)
     Pending,
-    /// `node/<id>` (a pending beside it is stale)
+    /// `node/<id>` only
     Node,
+    /// `node/<id>` and `claim-pending/<id>`: the node record counts (254-app-claim-noover R2); the dialog says there
+    /// also is an unfinished claim
+    NodeAndPending,
 }
 
-/// A record that cannot be read (unknown version, not a record) is an error: the claim stops (fail-closed).
+/// Both paths are read (254-app-claim-noover R5): a record that cannot be read (unknown version, not a record) at
+/// either is an error: the claim stops (fail-closed).
 pub fn claim_target(dir: String, device_id: String) -> Result<ClaimTarget, String> {
     let s = store::Store::new(dir);
-    if s.read(&node_path(&device_id)).map_err(|e| format!("{e:?}"))?.is_some() {
-        return Ok(ClaimTarget::Node);
-    }
-    if s.read(&pending_path(&device_id)).map_err(|e| format!("{e:?}"))?.is_some() {
-        return Ok(ClaimTarget::Pending);
-    }
-    Ok(ClaimTarget::Nothing)
+    let node = s.read(&node_path(&device_id)).map_err(|e| format!("{e:?}"))?.is_some();
+    let pending = s.read(&pending_path(&device_id)).map_err(|e| format!("{e:?}"))?.is_some();
+    Ok(match (node, pending) {
+        (true, true) => ClaimTarget::NodeAndPending,
+        (true, false) => ClaimTarget::Node,
+        (false, true) => ClaimTarget::Pending,
+        (false, false) => ClaimTarget::Nothing,
+    })
 }
 
 /// Whether an opened pending record is for this QR (same device id and K). Then claiming again is the recovery's
-/// first step (§5.2-1: on NX success the new pending, with the same K, replaces the old one); otherwise the pending
-/// is kept and no claim starts.
+/// first step (§5.2-1: on NX success the new pending, with the same K, replaces the old one); otherwise the user is
+/// asked first, and the old pending is copied aside before it is replaced (254-app-claim-noover R4).
 pub fn pending_matches_qr(record: Vec<u8>, qr: &ClaimQr) -> Result<bool, String> {
     let v = cbor::decode(&record).map_err(|_| "手機裡的認領紀錄看不懂（pending is not CBOR）")?;
     let id = v.get(1).and_then(Value::as_text).ok_or("手機裡的認領紀錄不完整（pending key 1）")?;
@@ -123,14 +128,20 @@ pub fn pending_matches_qr(record: Vec<u8>, qr: &ClaimQr) -> Result<bool, String>
     Ok(id == qr.device_id && k == &qr.k[..])
 }
 
-/// §5.1 re-claim the user confirmed: the old node record moves to the forgotten area (`forgotten-node/<id>-<n>`,
-/// unchanged, restorable by moving it back). Called when the new pending is about to be written — after NX and the
-/// node certificate passed — so a claim that never reaches the node leaves the old record where it was.
-pub fn store_forget_node(dir: String, device_id: String) -> Result<(), String> {
-    store::Store::new(dir).move_aside(&node_path(&device_id), FORGOTTEN_NODE).map(|_| ()).map_err(|e| format!("{e:?}"))
+/// Keep a copy of the record at `rel` before it is replaced (254-app-claim-noover R1 / R4 / R8): `node/<id>` ->
+/// `forgotten-node/<id>-<n>`, `claim-pending/<id>` -> `forgotten-pending/<id>-<n>`; the record itself is not changed.
+/// Returns whether there was one to copy. The app keeps the copies only (no restore in this version).
+pub fn store_keep_copy(dir: String, rel: String) -> Result<bool, String> {
+    let kind = match rel.split('/').next() {
+        Some("node") => FORGOTTEN_NODE,
+        Some("claim-pending") => FORGOTTEN_PENDING,
+        _ => return Err("App 內部錯誤（no copy kind for this record）".into()),
+    };
+    store::Store::new(dir).copy_aside(&rel, kind).map(|c| c.is_some()).map_err(|e| format!("{e:?}"))
 }
 
 pub(crate) const FORGOTTEN_NODE: &str = "forgotten-node";
+pub(crate) const FORGOTTEN_PENDING: &str = "forgotten-pending";
 
 fn pending_record(p: &Pending) -> Vec<u8> {
     cbor::encode(&Value::Map(vec![
@@ -237,6 +248,8 @@ impl ClaimSession {
                         (Value::Uint(6), Value::Bytes(c.adv_owner_key.to_vec())),
                         (Value::Uint(7), Value::Text(c.root_password.clone())),
                         (Value::Uint(8), Value::Text("claimed".into())),
+                        // 254-app-claim-noover R2: the pending this record came from (informational)
+                        (Value::Uint(9), Value::Bytes(batman_proto::claimflow::pending_link(&pending_record(p)).to_vec())),
                     ]));
                     ClaimStep {
                         path: node_path(&p.device_id),
@@ -362,10 +375,11 @@ mod tests {
         assert_eq!(st.detail, "連線或資料出錯，這次的紀錄先保留（Broken：lost）");
     }
 
-    // design §5.1: a device id seen again. nothing -> Nothing; only a pending -> Pending; a node record -> Node, also with a
-    // pending beside it (the node record wins); an unreadable record stops the claim (Err), never "Nothing".
+    // 254-app-claim-noover T1 (R5, R2): a device id seen again. nothing -> Nothing; only a pending -> Pending; a node
+    // record -> Node, with a pending beside it -> NodeAndPending (the node record counts); a record that cannot be read
+    // at EITHER path stops the claim (Err), never "Nothing" / "Node".
     #[test]
-    fn claim_target_finds_what_the_phone_holds() {
+    fn t1_claim_target_reads_both_paths() {
         let d = std::env::temp_dir().join(format!("bm-target-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let dir = d.to_string_lossy().to_string();
@@ -376,11 +390,13 @@ mod tests {
         assert_eq!(claim_target(dir.clone(), id.clone()).unwrap(), ClaimTarget::Pending);
         assert_eq!(claim_target(dir.clone(), "e61551410cfd538e25".into()).unwrap(), ClaimTarget::Nothing, "another node");
         s.write(&node_path(&id), 1, b"n").unwrap();
-        assert_eq!(claim_target(dir.clone(), id.clone()).unwrap(), ClaimTarget::Node, "node record wins over the pending");
+        assert_eq!(claim_target(dir.clone(), id.clone()).unwrap(), ClaimTarget::NodeAndPending);
+        std::fs::write(d.join(pending_path(&id)), b"garbage").unwrap();
+        assert!(claim_target(dir.clone(), id.clone()).is_err(), "readable node + unreadable pending -> no claim");
         s.remove(&pending_path(&id)).unwrap();
         assert_eq!(claim_target(dir.clone(), id.clone()).unwrap(), ClaimTarget::Node);
         std::fs::write(d.join(node_path(&id)), b"garbage").unwrap();
-        assert!(claim_target(dir.clone(), id.clone()).is_err(), "unreadable -> no claim");
+        assert!(claim_target(dir.clone(), id.clone()).is_err(), "unreadable node -> no claim");
         assert!(claim_target(dir, "../x".into()).is_err());
         let _ = std::fs::remove_dir_all(d);
     }
@@ -398,22 +414,52 @@ mod tests {
         assert!(pending_matches_qr(vec![0xff], &q).is_err());
     }
 
-    // §5.1 re-claim: the node record moves to forgotten-node/ unchanged (it still counts as a record: keys are never
-    // regenerated); no node record -> nothing happens.
+    // 254-app-claim-noover R8 / T9: keep_copy copies node/ to forgotten-node/ and claim-pending/ to forgotten-pending/,
+    // leaves the record itself, refuses other kinds; a phone holding only copies still has records (keys kept).
     #[test]
-    fn forget_node_moves_the_record_aside() {
-        let d = std::env::temp_dir().join(format!("bm-forget-{}", std::process::id()));
+    fn keep_copy_keeps_the_record_and_its_copy() {
+        let d = std::env::temp_dir().join(format!("bm-keep-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let dir = d.to_string_lossy().to_string();
         let id = "e61551410cfd538e24".to_string();
-        store_forget_node(dir.clone(), id.clone()).unwrap();
-        assert!(!crate::api::simple::store_has_records(dir.clone()));
+        assert!(!store_keep_copy(dir.clone(), node_path(&id)).unwrap(), "nothing to copy");
         let s = store::Store::new(&d);
         s.write(&node_path(&id), 2, b"old").unwrap();
-        store_forget_node(dir.clone(), id.clone()).unwrap();
-        assert_eq!(claim_target(dir.clone(), id.clone()).unwrap(), ClaimTarget::Nothing);
+        s.write(&pending_path(&id), 1, b"pend").unwrap();
+        assert!(store_keep_copy(dir.clone(), node_path(&id)).unwrap());
+        assert!(store_keep_copy(dir.clone(), pending_path(&id)).unwrap());
+        assert_eq!(claim_target(dir.clone(), id.clone()).unwrap(), ClaimTarget::NodeAndPending, "the records stay");
         assert_eq!(s.read("forgotten-node/e61551410cfd538e24-1").unwrap().unwrap().sealed, b"old");
-        assert!(crate::api::simple::store_has_records(dir));
+        assert_eq!(s.read("forgotten-pending/e61551410cfd538e24-1").unwrap().unwrap().sealed, b"pend");
+        assert!(store_keep_copy(dir.clone(), "net/abc".into()).is_err());
+        s.remove(&node_path(&id)).unwrap();
+        s.remove(&pending_path(&id)).unwrap();
+        assert!(crate::api::simple::store_has_records(dir), "copies are records");
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    // 254-app-claim-noover T10 (R2): the node record's key 9 is SHA-256 of the pending persisted in the same attempt;
+    // beside a node record, that very pending is a leftover, a pending of another attempt (here: only K differs) is not,
+    // and a node record without key 9 is unknown.
+    #[test]
+    fn t10_node_key9_links_the_pending_it_came_from() {
+        use batman_proto::claimflow::pending_is_leftover;
+        use batman_proto::flow::Creds;
+        let q = ClaimQr { device_id: "e61551410cfd538e24".into(), k: vec![7; 32] };
+        let (mut s, _) = ClaimSession::start(&q, vec![4; 65], vec![4; 65], vec![1; 64], 244).unwrap();
+        let mk = |k: [u8; 32]| Pending {
+            device_id: q.device_id.clone(), k, node_cert: vec![9; 10], dac_der: vec![8; 5], ecdh_pub: [4; 65], owner_pub: [4; 65],
+            owner_enc_pub: [4; 65],
+        };
+        let persisted = s.step(Some(Action::PersistPending(mk([7; 32])))).unwrap().record;
+        let creds = Creds { owner_tag_key: [5; 32], adv_owner_key: [6; 32], root_password: "pw".into() };
+        let node = s.step(Some(Action::Done(End::Finished(ClaimFinish::Claimed(creds))))).unwrap().record;
+        assert_eq!(pending_is_leftover(&node, &persisted), Some(true), "the same attempt: a leftover");
+        assert_eq!(pending_is_leftover(&node, &pending_record(&mk([6; 32]))), Some(false), "only K differs: another attempt");
+        let mut old = cbor::decode(&node).unwrap();
+        if let Value::Map(m) = &mut old {
+            m.retain(|(k, _)| k != &Value::Uint(9));
+        }
+        assert_eq!(pending_is_leftover(&cbor::encode(&old), &persisted), None, "an older node record: unknown");
     }
 }

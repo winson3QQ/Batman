@@ -74,7 +74,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -553350494;
+  int get rustContentHash => 197239998;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -492,12 +492,12 @@ abstract class RustLibApi extends BaseApi {
     String? name,
   });
 
-  Future<void> crateApiClaimStoreForgetNode({
-    required String dir,
-    required String deviceId,
-  });
-
   Future<bool> crateApiSimpleStoreHasRecords({required String dir});
+
+  Future<bool> crateApiClaimStoreKeepCopy({
+    required String dir,
+    required String rel,
+  });
 
   Future<String?> crateApiSimpleStoreReadMarker({required String dir});
 
@@ -3470,41 +3470,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<void> crateApiClaimStoreForgetNode({
-    required String dir,
-    required String deviceId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(dir, serializer);
-          sse_encode_String(deviceId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 90,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_String,
-        ),
-        constMeta: kCrateApiClaimStoreForgetNodeConstMeta,
-        argValues: [dir, deviceId],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateApiClaimStoreForgetNodeConstMeta =>
-      const TaskConstMeta(
-        debugName: "store_forget_node",
-        argNames: ["dir", "deviceId"],
-      );
-
-  @override
   Future<bool> crateApiSimpleStoreHasRecords({required String dir}) {
     return handler.executeNormal(
       NormalTask(
@@ -3514,7 +3479,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 91,
+            funcId: 90,
             port: port_,
           );
         },
@@ -3531,6 +3496,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiSimpleStoreHasRecordsConstMeta =>
       const TaskConstMeta(debugName: "store_has_records", argNames: ["dir"]);
+
+  @override
+  Future<bool> crateApiClaimStoreKeepCopy({
+    required String dir,
+    required String rel,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(dir, serializer);
+          sse_encode_String(rel, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 91,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiClaimStoreKeepCopyConstMeta,
+        argValues: [dir, rel],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiClaimStoreKeepCopyConstMeta => const TaskConstMeta(
+    debugName: "store_keep_copy",
+    argNames: ["dir", "rel"],
+  );
 
   @override
   Future<String?> crateApiSimpleStoreReadMarker({required String dir}) {

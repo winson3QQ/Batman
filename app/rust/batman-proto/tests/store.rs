@@ -79,26 +79,42 @@ fn a_crash_mid_write_leaves_the_old_record_and_a_swept_temp() {
     assert!(matches!(s.read("node/.c1.tmp-deadbeef00000000"), Err(Error::BadPath)));
 }
 
-// design §5.1 (re-claim): the old node record moves aside unchanged, to the first free name; it opens again (same AAD)
-// only once it is back at its path; nothing at the path -> None; a file that is not a record stays where it is.
+// design 254-app-claim-noover T2 (R8): copy_aside keeps the original where it is, the copy is the whole file (header
+// and generation: it opens again once moved back), names count up and never replace anything — a dangling symlink at
+// -1 counts as taken; an unwritable target directory is an error with nothing changed. Run on ext4 (WSL /tmp).
+#[cfg(unix)]
 #[test]
-fn move_aside_keeps_the_bytes_and_picks_a_free_name() {
+fn t2_copy_aside_keeps_the_original_and_never_replaces_a_name() {
+    use std::os::unix::fs::PermissionsExt;
     let root = tmpdir("aside");
     let s = Store::new(&root);
-    assert_eq!(s.move_aside("node/e61551410cfd538e24", "forgotten-node").unwrap(), None);
-    s.write("node/e61551410cfd538e24", 3, b"old").unwrap();
-    let before = fs::read(root.join("node/e61551410cfd538e24")).unwrap();
-    assert_eq!(s.move_aside("node/e61551410cfd538e24", "forgotten-node").unwrap().as_deref(), Some("forgotten-node/e61551410cfd538e24-1"));
-    assert_eq!(s.read("node/e61551410cfd538e24").unwrap(), None, "gone from node/");
-    assert_eq!(fs::read(root.join("forgotten-node/e61551410cfd538e24-1")).unwrap(), before, "bytes unchanged");
-    s.write("node/e61551410cfd538e24", 1, b"newer").unwrap();
-    assert_eq!(s.move_aside("node/e61551410cfd538e24", "forgotten-node").unwrap().as_deref(), Some("forgotten-node/e61551410cfd538e24-2"));
-    assert_eq!(s.read("forgotten-node/e61551410cfd538e24-1").unwrap().unwrap().sealed, b"old", "the first one is not overwritten");
-    // moved back, it is the same record at the same generation: aad(node/<id>, 3) opens it again
-    fs::rename(root.join("forgotten-node/e61551410cfd538e24-1"), root.join("node/e61551410cfd538e24")).unwrap();
-    assert_eq!(s.read("node/e61551410cfd538e24").unwrap(), Some(Sealed { generation: 3, sealed: b"old".to_vec() }));
-    fs::write(root.join("node/e61551410cfd538e24"), b"garbage").unwrap();
-    assert!(matches!(s.move_aside("node/e61551410cfd538e24", "forgotten-node"), Err(Error::NotARecord)));
-    assert!(root.join("node/e61551410cfd538e24").exists());
-    assert!(matches!(s.move_aside("node/../x", "forgotten-node"), Err(Error::BadPath)));
+    let id = "node/e61551410cfd538e24";
+    assert_eq!(s.copy_aside(id, "forgotten-node").unwrap(), None, "nothing to copy");
+    s.write(id, 3, b"old").unwrap();
+    let before = fs::read(root.join(id)).unwrap();
+    std::os::unix::fs::symlink(root.join("nowhere"), {
+        fs::create_dir_all(root.join("forgotten-node")).unwrap();
+        root.join("forgotten-node/e61551410cfd538e24-1")
+    })
+    .unwrap();
+    assert_eq!(s.copy_aside(id, "forgotten-node").unwrap().as_deref(), Some("forgotten-node/e61551410cfd538e24-2"), "a dangling symlink is taken");
+    assert!(fs::symlink_metadata(root.join("forgotten-node/e61551410cfd538e24-1")).unwrap().file_type().is_symlink(), "the symlink is untouched");
+    assert_eq!(fs::read(root.join(id)).unwrap(), before, "the original is still there, unchanged");
+    assert_eq!(fs::read(root.join("forgotten-node/e61551410cfd538e24-2")).unwrap(), before, "the copy is the whole file");
+    assert_eq!(s.copy_aside(id, "forgotten-node").unwrap().as_deref(), Some("forgotten-node/e61551410cfd538e24-3"));
+    assert_eq!(s.read("forgotten-node/e61551410cfd538e24-2").unwrap().unwrap().sealed, b"old", "-2 not replaced");
+    assert_eq!(s.sweep_temps().unwrap(), 0, "no temp left");
+    // moved back over the original path, the copy is the same record at the same generation
+    fs::rename(root.join("forgotten-node/e61551410cfd538e24-3"), root.join(id)).unwrap();
+    assert_eq!(s.read(id).unwrap(), Some(Sealed { generation: 3, sealed: b"old".to_vec() }));
+    // an unwritable target directory: an error, the original and the copies unchanged
+    fs::set_permissions(root.join("forgotten-node"), fs::Permissions::from_mode(0o000)).unwrap();
+    let r = s.copy_aside(id, "forgotten-node");
+    fs::set_permissions(root.join("forgotten-node"), fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(r.is_err(), "{r:?}");
+    assert_eq!(fs::read(root.join(id)).unwrap(), before);
+    assert_eq!(fs::read_dir(root.join("forgotten-node")).unwrap().count(), 2, "-1 (symlink) and -2 only");
+    fs::write(root.join(id), b"garbage").unwrap();
+    assert!(matches!(s.copy_aside(id, "forgotten-node"), Err(Error::NotARecord)));
+    assert!(matches!(s.copy_aside("node/../x", "forgotten-node"), Err(Error::BadPath)));
 }
