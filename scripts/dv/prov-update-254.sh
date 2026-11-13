@@ -53,7 +53,7 @@ v=$(wsl_ "$PYW" "$REPO_WSL/tests/tools/peer/signrel.py" --verify "$MDIR/manifest
 case "$v" in "VERIFY ok"*) ok "the manifest verifies under T on the host (P: what the node refuses is the root, not the object)";; *) inv "the test manifest does not verify under T: [$v]";; esac
 HEX=$(wsl_ cat "$MDIR/manifest.hex" | tr -d '\r\n'); wsl_ rm -rf "$MDIR" >/dev/null
 # ---- UD-T1: which root does the image trust (status key 15), then the T-signed manifest against it
-s=$(pr_pc h0.pem -- status-get "$H0" 0 | grep '^RESULT status.get'); say "trust: $(cut -c1-240 <<< "$s")"
+s=$(pr_pc h0.pem -- status-get "$H0" full | grep '^RESULT status.get'); say "trust: $(cut -c1-240 <<< "$s")"
 TR=$(f "$s" trust); d=$(pr_trust_want "$s"); WANT=""
 case "$d" in want\ *) WANT=${d#want } ;; inv\ *) inv "UD-T1: ${d#inv }" ;; *) no "UD-T1: ${d#fail }" ;; esac
 if [ -n "$TR" ]; then

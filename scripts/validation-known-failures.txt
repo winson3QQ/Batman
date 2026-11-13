@@ -43,3 +43,8 @@ prov-p1-stubs	^FAIL prov-p1-stubs: batman-config-save in this checkout does not 
 # predates S5 (batman-slot without the slot flock). Expires 2026-12-15 (user decision 2026-11-12: S5 expected on 02/04
 # by early December; the same day as the P3 entries above); after it a pre-S5 node is a NEW failure again.
 prov-fw-boot-254	^FAIL [^ ]+: prov-fw-boot-254: pre-S5 image [^ ]+: batman-slot has no slot flock \(slot_lock\)	254	expires=2026-12-15
+# #254 S4 whole-team status (254-app-team-status v2.1 §10.3): prov-status-diag-254 SD6 judges keys 8 / 9, which no fleet
+# image has until the team-status product lands (the harness row lands first, #290). Only the line for an image whose
+# BATMAN_FEATURES lack whole-team-status(#254) is listed: on an image that has it, every SD6 FAIL (no key 9, a stale or
+# missing peer, a bad key 9, a large answer) is NEW. Expires 2026-12-15 (the same day as the S5 entries above).
+prov-status-diag-254	^FAIL prov-status-diag-254: SD6: image without whole-team status \(BATMAN_FEATURES has no whole-team-status\(#254\)\)$	254	expires=2026-12-15
