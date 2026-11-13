@@ -42,6 +42,7 @@ const COVERAGE: &[(&str, &str)] = &[
     ("chunk_boundary", "tested"),
     ("peers_challenge", "pending: not in S1 (P2 answers E_UNSUPPORTED; design §1)"),
     ("version_chain", "pending: not in S1 (network/update)"),
+    ("network_update", "tested (network_update_body_*: updflow::body rebuilds body_v2 byte for byte from its three objects; the app's cose verifies them as version 2 after cose.net_config; cose::decrypt opens v2's secrets to sae_v2 / net_root_v2; stale_body_v2's version-1 secrets are refused by the app's pre-send filter MNet::secrets_for and do not open as version 2)"),
     ("sas", "tested (tests/member.rs M1)"),
 ];
 
@@ -859,4 +860,126 @@ fn parse_response_vectors_and_negatives() {
     assert_eq!(one(vec![(1, V::Uint(1)), (3, V::Bytes(vec![0xa0])), (4, V::Uint(0)), (6, part)]), Err(E::Chunked));
     // unknown key
     assert_eq!(one(vec![(1, V::Uint(1)), (3, empty), (4, V::Uint(0)), (9, V::Uint(0))]), Err(E::UnknownKey(9)));
+}
+
+// ---- network_update (main 508dcb6, #325): the network/update body the node consumes (TestUpdateProtocolVector) ------
+// The app builds this body in updflow::body (「把新密碼送給節點」, remove-member §3.2) from objects it holds; it never
+// signs anything here. Compared: the whole body byte for byte (the signed objects are the vector's; the app only wraps
+// them), each object's signature / version / prev_hash with the app's cose, and the secrets' plaintext with the app's
+// cose::decrypt (the node's ECDH key is the vector's documented test key). The stale body cannot be byte-compared to
+// anything the app would send: the app's pre-send filter (MNet::secrets_for: the current version's secrets only)
+// keeps it from being built — that filter is what is tested on it.
+
+use batman_proto::mrec::MNet;
+use batman_proto::netrec::{self, Member, MemberState, Version};
+use batman_proto::updflow;
+
+
+fn body_steps(b: &[u8]) -> Vec<cbor::Value> {
+    let v = cbor::decode(b).unwrap();
+    match v.get(1) {
+        Some(cbor::Value::Array(a)) => a.clone(),
+        x => panic!("body key 1 is not an array: {x:?}"),
+    }
+}
+
+fn obj(step: &cbor::Value, k: u64) -> Vec<u8> {
+    cbor::encode(step.get(k).unwrap_or_else(|| panic!("step key {k} missing")))
+}
+
+fn key65(v: &J, k: &str) -> [u8; 65] {
+    h(&v["keys"][k]).try_into().unwrap()
+}
+
+#[test]
+fn network_update_body_v2_is_what_updflow_builds() {
+    let v = vectors();
+    let body = h(&v["network_update"]["body_v2"]);
+    let steps = body_steps(&body);
+    assert_eq!(steps.len(), 1, "one step: version 2");
+    let (netcfg, members, secrets) = (obj(&steps[0], 1), obj(&steps[0], 2), obj(&steps[0], 3));
+    let built = updflow::body(&[Version { version: 2, netcfg, members }], &secrets).unwrap();
+    assert_eq!(hex::encode(cbor::encode(&built)), hex::encode(&body), "the app's network/update body differs from the node's vector");
+}
+
+#[test]
+fn network_update_body_v2_objects_are_version_2_after_the_v1_config() {
+    let v = vectors();
+    let steps = body_steps(&h(&v["network_update"]["body_v2"]));
+    let admins = [key65(&v, "admin_pub"), key65(&v, "owner_sign_pub")];
+    let v1 = h(&v["cose"]["net_config"]["sign1"]);
+    let cfg = cose::verify_sign1(&obj(&steps[0], 1), cose::CT_NETCFG, cose::LABEL_NETCFG, &admins).unwrap();
+    let net_id = h(&v["keys"]["net_id"]);
+    assert_eq!(cfg.payload.get(1).and_then(cbor::Value::as_bytes), Some(&net_id[..]));
+    assert_eq!(cfg.payload.get(2).and_then(cbor::Value::as_uint), Some(2), "net_config version 2");
+    assert_eq!(cfg.payload.get(3).and_then(cbor::Value::as_bytes), Some(&cose::object_hash(&v1).unwrap()[..]), "prev_hash = OBJECT_HASH(v1 net_config)");
+    let mem = cose::verify_sign1(&obj(&steps[0], 2), cose::CT_MEMBERS, cose::LABEL_MEMBERS, &admins).unwrap();
+    assert_eq!(mem.payload.get(2).and_then(cbor::Value::as_uint), Some(2), "member_list version 2");
+    let sec = cose::verify_sign1(&obj(&steps[0], 3), cose::CT_SECRETS, cose::LABEL_SECRETS, &admins).unwrap();
+    assert_eq!(sec.payload.get(2).and_then(cbor::Value::as_uint), Some(2), "net_secrets version 2");
+    assert_eq!(sec.payload.get(3).and_then(cbor::Value::as_bytes), Some(&h(&v["keys"]["dac_pub_hash"])[..]), "for this node");
+}
+
+fn open_secrets(v: &J, secrets: &[u8], version: u32) -> Result<Vec<u8>, cose::Error> {
+    let p = netrec::sign1_payload(secrets).unwrap();
+    let enc = p.get(4).unwrap();
+    let eph = cose::recipient_eph(enc).unwrap();
+    let sk = p256::SecretKey::from_slice(&hex::decode(NODE_ECDH_PRIV).unwrap()).unwrap();
+    let pk: [u8; 65] = p256::ecdsa::SigningKey::from(sk.clone()).verifying_key().to_sec1_point(false).as_bytes().try_into().unwrap();
+    assert_eq!(pk, key65(v, "node_ecdh_pub"), "the documented node-ecdh test key");
+    let z = p256::ecdh::diffie_hellman(sk.to_nonzero_scalar(), p256::PublicKey::from_sec1_bytes(&eph).unwrap().as_affine());
+    let z: [u8; 32] = z.raw_secret_bytes().as_slice().try_into().unwrap();
+    let net_id: [u8; 16] = h(&v["keys"]["net_id"]).try_into().unwrap();
+    let target: [u8; 32] = h(&v["keys"]["dac_pub_hash"]).try_into().unwrap();
+    cose::decrypt(enc, cose::LABEL_SECRETS, &target, &net_id, version, &z)
+}
+
+#[test]
+fn network_update_body_v2_secrets_open_to_the_v2_network_and_the_stale_ones_do_not() {
+    let v = vectors();
+    let nu = &v["network_update"];
+    let good = obj(&body_steps(&h(&nu["body_v2"]))[0], 3);
+    let pt = cbor::decode(&open_secrets(&v, &good, 2).unwrap()).unwrap();
+    assert_eq!(pt.get(1).and_then(cbor::Value::as_text), nu["sae_v2"].as_str(), "sae_v2");
+    assert_eq!(pt.get(2).and_then(cbor::Value::as_bytes), Some(&h(&nu["net_root_v2"])[..]), "net_root_v2");
+    // stale_body_v2: v2's net_config with the version-1 secrets — they do not open as version 2 (what the node checks)
+    let stale = obj(&body_steps(&h(&nu["stale_body_v2"]))[0], 3);
+    assert!(open_secrets(&v, &stale, 2).is_err(), "version-1 secrets opened as version 2");
+    assert_eq!(netrec::sign1_payload(&stale).unwrap().get(2).and_then(cbor::Value::as_uint), Some(1));
+}
+
+#[test]
+fn network_update_stale_secrets_are_never_sent_by_the_app() {
+    // the member path of 「把新密碼送給節點」 sends MNet::secrets_for(node) (updflow: None -> End::NoSecrets, nothing
+    // sent): only the current version's secrets for that node pass. An mnet at version 2 holding v1's secrets (what
+    // stale_body_v2 would carry) has none to send; with v2's it has.
+    let v = vectors();
+    let nu = &v["network_update"];
+    let step = |k: &str| body_steps(&h(&nu[k]))[0].clone();
+    let dac_hash: [u8; 32] = h(&v["keys"]["dac_pub_hash"]).try_into().unwrap();
+    let me = Member {
+        dac_pub_hash: dac_hash,
+        ecdh_pub: key65(&v, "node_ecdh_pub"),
+        name: "n".into(),
+        owner_pub: key65(&v, "owner_sign_pub"),
+        owner_enc_pub: key65(&v, "owner_enc_pub"),
+        device_id: None,
+        state: MemberState::Applied,
+        prev_country: None,
+        known: None,
+    };
+    let mnet = |secrets: Vec<u8>| MNet {
+        net_id: h(&v["keys"]["net_id"]).try_into().unwrap(),
+        version: 2,
+        netcfg: obj(&step("body_v2"), 1),
+        members: obj(&step("body_v2"), 2),
+        secrets,
+        net_root: [0; 32],
+        me: Some(me.clone()),
+        invite_hash: [0; 32],
+        versions: None,
+        node_secrets: vec![],
+    };
+    assert!(mnet(obj(&step("stale_body_v2"), 3)).secrets_for(&dac_hash).is_none(), "the stale (version-1) secrets would be sent");
+    assert_eq!(mnet(obj(&step("body_v2"), 3)).secrets_for(&dac_hash), Some(obj(&step("body_v2"), 3)));
 }
