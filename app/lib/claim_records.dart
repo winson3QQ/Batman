@@ -75,6 +75,8 @@ class ClaimRecords {
   /// CLAIMED (R1): copy the node record there (if any) aside, write the new one, then remove the pending. A failed copy
   /// does not stop the write: the new credentials are only in memory, and CLAIMED shows the old record is dead.
   Future<void> claimed(String nodePath, Uint8List record, String pendingPath) async {
+    // any failure of the copy lands here, not only disk full / EIO (bad path, unknown record version, a platform
+    // error): all of them are logged and none stops the write, for the same reason (R1).
     try {
       await store.keepCopy(nodePath);
     } catch (e) {
