@@ -1,5 +1,7 @@
 # #254 app S5 — 軟體更新(設計 v0.4 FROZEN)
 
+**v0.4.3(2026-11-13):實機勘誤 #2(04 + S20,T11 apply)。apply 之後節點重開,BLE 斷線;RxAndroidBle 把這個斷線送給一個已經取消訂閱的 subscriber,RxJava 預設把 UndeliverableException 交給 thread 的 uncaught handler,app 就當掉(logcat:`UndeliverableException … Caused by: BleDisconnectedException … status 0`)。只要連線中的節點重開都會遇到(apply、離開 / 重加入、還原)。修法是在 MainActivity 安裝 RxJavaPlugins 的 error handler(BleRx,依 RxAndroidBle README「Error handling」的建議):cause 是 BleException / IOException / InterruptedException 的 UndeliverableException 就忽略(記一行固定、不含 MAC 的 log),其他照舊交給 uncaught handler。見 §6。沒有改任何決定。**
+
 **v0.4.2(2026-11-13):實機勘誤(04 + S20,T11)。手機開著 WireGuard(全 UID、非 lockdown、非 bypassable)時,app 的 socket 即使用節點 AP 的 `network.socketFactory` 也會走進 tun0;節點在 br-ahwlan 上看到 0 個送往 8095 的 SYN,每次 PUT 都失敗(「傳送一直中斷」)。所以在上傳階段開始前(查 AP、Specifier join 之前)先問 Kotlin 有沒有 VPN 套用在這個 app 上;有的話停下並顯示文字(§4、§6、§7、§11.1)。另外，失敗的 PUT 的 Kotlin 代碼(不是秘密)會顯示在「技術資訊」。沒有改任何決定。**
 
 **v0.4.1(2026-11-13):code review r1 的勘誤,沒有改任何決定(§3.1 stale、T4 動詞順序、§7 zeroize 的說法、§5.2 / §11.1 的介面細節、§12-8 的 MINOR 清單)。**
@@ -259,6 +261,7 @@ status 不分擁有者(F18);「我們的」= status key 4 等於我們選的 man
 | 使用者在 U6 按取消 | 中止 socket + `bulk/close`;目前版本不變 | T8、T5 |
 | 上傳中 BLE 斷線 | PUT 不受影響;U7 先重新登入再 prepare(窗至少剩 60 s;超過 → 15 → 重傳) | T4、T11 |
 | apply 時 BLE 斷線 | 讀 status:3 → 可以再套用;4 / 5 / 6 → 已經生效 | T7 |
+| 連線中的節點重開(apply 之後、離開 / 重加入、還原;v0.4.3 實測) | 遲到的 BLE 斷線錯誤由 BleRx 吸收,app 不會當掉;U10 照常每 10 s 重新登入讀 status | Kotlin `BleRxTest`(負對照:不裝 handler → 進 crash 路徑);實機 T11 重跑 |
 | 寫好之後超過 30 分鐘才套用 | 同一次開機內:重送 check → 3 → 套用,不必重傳 | T7 |
 | 上傳中節點重開 / 斷電 | `bulk/open` 回 15,或 BLE 連不上 →「節點還沒回來」→ 回 U2 | T5、T11 |
 | 寫入中節點重開 / 斷電 | 0 + 22;目前版本不變 | T6、T11 |
