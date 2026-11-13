@@ -2,7 +2,8 @@
 // file moves frames, asks Kotlin for the owner keys / sig_enc / record sealing, and writes records through the Rust
 // store. The QR comes from the camera (every flavor, 254-app-qr) or is pasted as hex (dev flavor only, design §1: today
 // the QR is `batman-provhelper qr`'s stdout); the clipboard is cleared after the paste. Nothing secret (K, records,
-// credentials) is logged or shown.
+// credentials) is logged or shown. Before anything is sent or written, the record store is asked what this phone already
+// holds for the QR's device id (§5.1: never claimed over without asking).
 import 'dart:async';
 import 'dart:collection';
 
@@ -13,6 +14,7 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'say.dart';
 import 'scan.dart' show provdService, provdStatus;
 import 'src/rust/api/claim.dart';
+import 'src/rust/api/owner.dart' show storeReadSealed;
 import 'src/rust/api/simple.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
@@ -145,6 +147,52 @@ class _ClaimPageState extends State<ClaimPage> {
     }
   }
 
+  /// Design §5.1: what this phone already holds for the QR's device id, before anything is sent or written. Null = no
+  /// claim; true = the user confirmed a re-claim over a node record (it moves aside with the new pending); false = go on
+  /// (nothing held, or an unfinished claim of the same QR: the recovery's first step, §5.2-1, reusing K).
+  Future<bool?> _held(ClaimQr q, String dir) async {
+    final last4 = q.deviceId.substring(14);
+    final ClaimTarget t;
+    try {
+      t = await claimTarget(dir: dir, deviceId: q.deviceId);
+    } catch (e) {
+      _say('[CLAIM_FAIL] 讀不到手機裡這台節點的紀錄，這次不認領：$e');
+      return null;
+    }
+    switch (t) {
+      case ClaimTarget.nothing:
+        return false;
+      case ClaimTarget.pending:
+        final s = await storeReadSealed(dir: dir, rel: 'claim-pending/${q.deviceId}');
+        final record = s == null
+            ? null
+            : await _platform.invokeMethod<Uint8List>('open', {'sealed': s.sealed, 'aad': s.aad});
+        if (record != null && await pendingMatchesQr(record: record, qr: q)) {
+          _say('手機裡有這台節點一次沒完成的認領，這次接著再試（沿用那次的認領紀錄）');
+          return false;
+        }
+        _say('[CLAIM_FAIL] 手機裡有這台節點（…$last4）一次沒完成的認領，但用的是另一張 QR 碼。為了不蓋掉那次的紀錄，這次不認領；'
+            '請用那次的 QR 碼再按「認領」。');
+        return null;
+      case ClaimTarget.node:
+        if (!mounted) return null;
+        final yes = await showDialog<bool>(
+            context: context,
+            builder: (c) => AlertDialog(
+                  title: Text('節點 …$last4 已經認領過'),
+                  content: const Text('這台節點已在你的清單裡。若節點已重燒或重置回未認領，可以重新認領：'
+                      '舊紀錄會移到「已忘記」（可恢復）。要重新認領嗎？'),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+                    TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('重新認領')),
+                  ],
+                ));
+        if (yes == true) return true;
+        _say('沒有重新認領，手機裡的紀錄沒有改動');
+        return null;
+    }
+  }
+
   Future<void> _claim() async {
     final q = _qr;
     if (q == null || _busy) return;
@@ -152,6 +200,10 @@ class _ClaimPageState extends State<ClaimPage> {
     StreamSubscription<ConnectionStateUpdate>? conn;
     StreamSubscription<List<int>>? notify;
     try {
+      final dir = '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
+      final held = await _held(q, dir);
+      if (held == null) return;
+      var forgetNode = held; // the user confirmed a re-claim over the node record (design §5.1)
       if (!(await _platform.invokeMethod<bool>('blePermissions') ?? false)) {
         _say('[CLAIM_FAIL] 沒有藍牙權限（請在手機設定裡允許）');
         return;
@@ -174,7 +226,6 @@ class _ClaimPageState extends State<ClaimPage> {
       final owner = keys['owner'] as Uint8List, ownerEnc = keys['ownerEnc'] as Uint8List;
       final der = (await _platform.invokeMethod<Uint8List>('signOwner', {'input': await ownerEncSignInput(ownerEncPub: ownerEnc)}))!;
       final sigEnc = await derToRaw(der: der);
-      final dir = '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
 
       final (session, first) = ClaimSession.start(qr: q, ownerPub: owner, ownerEncPub: ownerEnc, sigEnc: sigEnc, frameLimit: fl);
       final rx = QualifiedCharacteristic(characteristicId: _rx, serviceId: provdService, deviceId: id);
@@ -201,6 +252,12 @@ class _ClaimPageState extends State<ClaimPage> {
               }
               st = null;
             case StepKind.persistPending:
+              if (forgetNode) {
+                // §5.1: after NX + the node certificate passed, before the new pending: the old record goes aside
+                await storeForgetNode(dir: dir, deviceId: q.deviceId);
+                forgetNode = false;
+                _say('舊的節點紀錄已移到「已忘記」');
+              }
               await seal(st.path, st.record);
               _say('已先在手機記下這次認領（還沒完成）');
               st = session.pendingPersisted();
