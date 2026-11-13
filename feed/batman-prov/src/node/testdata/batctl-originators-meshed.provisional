@@ -1,5 +1,0 @@
-[B.A.T.M.A.N. adv 2024.3, MainIF/MAC: wlh0/a8:dd:9f:4d:c6:10 (bat0/be:5e:79:bb:31:38 BATMAN_V)]
-   Originator        last-seen ( throughput)  Nexthop           [outgoingIF]
- * a8:dd:9f:4d:c6:d3    0.420s (       14.9)  a8:dd:9f:4d:c6:d3 [      wlh0]
- * a8:dd:9f:4d:c7:60    2.130s (        3.2)  a8:dd:9f:4d:c6:d3 [      wlh0]
-   a8:dd:9f:4d:c7:60    2.130s (        0.8)  a8:dd:9f:4d:c7:60 [      wlh0]

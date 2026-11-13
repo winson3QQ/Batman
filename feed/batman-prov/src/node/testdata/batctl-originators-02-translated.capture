@@ -1,0 +1,3 @@
+[B.A.T.M.A.N. adv 2024.3-openwrt-13, MainIF/MAC: wlh0/a8:dd:9f:4d:c7:60 (bat0/6a:95:4d:82:96:a4 BATMAN_V)]
+   Originator        last-seen ( throughput)  Nexthop           [outgoingIF]
+ * BCM2711-6c89_wlh0    2.640s (       14.9) BCM2711-6c89_wlh0 [      wlh0]

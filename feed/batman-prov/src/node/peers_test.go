@@ -1,8 +1,9 @@
 package node
 
-// Whole-team status (docs/design/254-app-team-status.md v2.1 §10.1, T-N1..T-N11). The batctl / iw outputs are
-// testdata/*.provisional: written from batctl's printf formats and the older capture, to be REPLACED by the 04 + 02
-// mesh capture (design §9) before the hardware test.
+// Whole-team status (docs/design/254-app-team-status.md v2.1 §10.1, T-N1..T-N11). testdata/*.capture are the real
+// outputs of 04 and 02 meshed on N0 (2026-11-13, wsl.25, design §9.2 C1 / C2 / C5), unchanged. testdata/*.derived keep the
+// real format line for line (header, spacing, fields) but add rows two nodes cannot produce: a third node, a multi-hop
+// best route, a second route without `*`, a station gone quiet (design §9.2 C5').
 
 import (
 	"bytes"
@@ -82,13 +83,17 @@ type peerRig struct {
 }
 
 func newPeerRig(t *testing.T, isMeshed bool, phys map[string][2]string) *peerRig {
+	return newPeerRigWith(t, isMeshed, phys, "batctl-originators-multihop.derived", "iw-station-dump-multihop.derived")
+}
+
+func newPeerRigWith(t *testing.T, isMeshed bool, phys map[string][2]string, batFix, iwFix string) *peerRig {
 	f := &fakeStatus{js: hs04(t), p5: true, inline: true}
 	r, now := statusRig(t, f)
 	logs := &bytes.Buffer{}
 	var lmu sync.Mutex
 	r.n.Log = func(format string, a ...any) { lmu.Lock(); fmt.Fprintf(logs, format+"\n", a...); lmu.Unlock() }
 	bat, phyDir := peerFS(t, isMeshed, phys)
-	fr := &fakeRun{bat: readFix(t, "batctl-originators-meshed.provisional"), iw: readFix(t, "iw-station-dump-meshed.provisional")}
+	fr := &fakeRun{bat: readFix(t, batFix), iw: readFix(t, iwFix)}
 	src := DefaultPeerSource()
 	src.BatDir, src.PhyDir, src.Run = bat, phyDir, fr.run
 	r.n.SetPeerSource(src)
@@ -148,9 +153,9 @@ func peersOf(t *testing.T, m cbor.Map) (k8 string, has8 bool, list []peerOut, ha
 	return
 }
 
-// T-N1 (+ T-N3): the provisional capture -> keys 8 / 9 for the owner AND a member; an unreadable header later ->
+// T-N1 (+ T-N3): the multi-hop table -> keys 8 / 9 for the owner AND a member; an unreadable header later ->
 // key 9 gone once the last good sample is older than 60 s.
-func TestPeersFromProvisionalCapture(t *testing.T) {
+func TestPeersFromMultihopTable(t *testing.T) {
 	p := newPeerRig(t, true, morse04())
 	p.tick(0)
 	for i, full := range []bool{true, false} {
@@ -185,7 +190,7 @@ func TestPeersFromProvisionalCapture(t *testing.T) {
 		t.Fatal("key 9 still sent 62 s after the last good sample (stale data shown as current)")
 	}
 	// seen-ago keeps growing for a peer no longer in the table's samples once sampling recovers without it
-	p.run.bat = readFix(t, "batctl-originators-meshed.provisional")
+	p.run.bat = readFix(t, "batctl-originators-multihop.derived")
 	p.run.bat = bytes.Join(bytes.Split(p.run.bat, []byte("\n"))[:3], []byte("\n")) // only c6:d3 left
 	p.tick(15 * time.Second)
 	_, _, list, _ := peersOf(t, statusCall(t, p.rig, true))
@@ -305,18 +310,18 @@ func TestPeersUntranslatedInput(t *testing.T) {
 		t.Fatalf("runs %q", got)
 	}
 	// (b) the translated capture parses, and its fake address is exactly the danger -n avoids
-	tr, err := parseOriginators(readFix(t, "batctl-originators-translated.provisional"))
+	tr, err := parseOriginators(readFix(t, "batctl-originators-translated.derived"))
 	if err != nil || len(tr.rows) != 1 || macStr(tr.rows[0].addr[:]) != "a8:dd:9f:00:00:01" || tr.dropped != 1 {
 		t.Fatalf("translated capture: %+v %v", tr, err)
 	}
-	un, _ := parseOriginators(readFix(t, "batctl-originators-meshed.provisional"))
+	un, _ := parseOriginators(readFix(t, "batctl-originators-multihop.derived"))
 	for _, r := range un.rows {
 		if macStr(r.addr[:]) == "a8:dd:9f:00:00:01" {
 			t.Fatal("the untranslated capture yields the bat-hosts name")
 		}
 	}
 	// (c) one bad row among good ones
-	b := readFix(t, "batctl-originators-meshed.provisional")
+	b := readFix(t, "batctl-originators-multihop.derived")
 	b = append(b, []byte(" * A8:DD:9F:4D:C6:FF    0.100s (        1.0)  A8:DD:9F:4D:C6:FF [      wlh0]\n * not a row\n")...)
 	p.run.bat = b
 	p.tick(15 * time.Second)
@@ -396,7 +401,7 @@ func TestPeersExecOutputCap(t *testing.T) {
 func TestPeersNoAddressInLog(t *testing.T) {
 	const sentinel = "de:ad:be:ef:00:01"
 	p := newPeerRig(t, true, morse04())
-	good := readFix(t, "batctl-originators-meshed.provisional")
+	good := readFix(t, "batctl-originators-multihop.derived")
 	good = append(good, []byte(" * "+sentinel+"    0.100s (        1.0)  "+sentinel+" [      wlh0]\n * "+sentinel+" bad row\n")...)
 	p.run.bat = good
 	p.tick(0)
@@ -404,7 +409,7 @@ func TestPeersNoAddressInLog(t *testing.T) {
 	p.run.bat = []byte("[B.A.T.M.A.N. adv 2024.3, MainIF/MAC: wlh0/" + sentinel + " (bat0/" + sentinel + " BATMAN_V)]\nbroken " + sentinel + "\n")
 	p.tick(15 * time.Second)
 	// the primary hard-if differs from the phy -> the withheld log line
-	p.run.bat = []byte(strings.Replace(string(good), "MainIF/MAC: wlh0/"+phy04, "MainIF/MAC: wlh0/"+sentinel, 1))
+	p.run.bat = []byte(mustReplace(t, string(good), "MainIF/MAC: wlh0/"+phy04, "MainIF/MAC: wlh0/"+sentinel))
 	p.tick(15 * time.Second)
 	p.run.batE = errPeerTimeout
 	p.tick(15 * time.Second)
@@ -430,7 +435,7 @@ func TestPeersOwnAddressSelfCheck(t *testing.T) {
 	if k8, has8, _, _ := peersOf(t, statusCall(t, p.rig, true)); !has8 || k8 != phy04 {
 		t.Fatalf("same MAC: key 8 %q %v", k8, has8)
 	}
-	p.run.bat = []byte(strings.Replace(string(readFix(t, "batctl-originators-meshed.provisional")), "wlh0/"+phy04, "wlh0/02:11:22:33:44:55", 1))
+	p.run.bat = []byte(mustReplace(t, string(readFix(t, "batctl-originators-multihop.derived")), "wlh0/"+phy04, "wlh0/02:11:22:33:44:55"))
 	p.tick(15 * time.Second)
 	if _, has8, _, has9 := peersOf(t, statusCall(t, p.rig, true)); has8 || !has9 {
 		t.Fatalf("primary hard-if != phy: key 8 sent=%v (want withheld), key 9 %v", has8, has9)
@@ -500,7 +505,7 @@ func TestPeersNotMeshedVsFailing(t *testing.T) {
 // gives key 9 = [] and empties it. Negative controls: no clearing on leave / on a network change, or a hard-if-less
 // bat0 counted as a good sample -> FAIL.
 func TestPeersLeaveReloadAndNetworkChange(t *testing.T) {
-	full := readFix(t, "batctl-originators-meshed.provisional")
+	full := readFix(t, "batctl-originators-multihop.derived")
 	onlyD3 := bytes.Join(bytes.Split(full, []byte("\n"))[:3], []byte("\n"))
 	read := func(p *peerRig) ([]peerOut, bool) {
 		*p.now = p.now.Add(time.Second)
@@ -551,8 +556,8 @@ func TestPeersSignalOnlyFromThisSample(t *testing.T) {
 		t.Fatal("setup: the direct peer has no signal")
 	}
 	// c6:d3 now reached through c7:60 (not direct): its station entry is still in the dump
-	p.run.bat = []byte(strings.Replace(string(readFix(t, "batctl-originators-meshed.provisional")),
-		" * a8:dd:9f:4d:c6:d3    0.420s (       14.9)  a8:dd:9f:4d:c6:d3", " * a8:dd:9f:4d:c6:d3    0.420s (       14.9)  a8:dd:9f:4d:c7:60", 1))
+	p.run.bat = []byte(mustReplace(t, string(readFix(t, "batctl-originators-multihop.derived")),
+		" * a8:dd:9f:4d:c6:d3    0.420s (       14.9) a8:dd:9f:4d:c6:d3", " * a8:dd:9f:4d:c6:d3    0.420s (       14.9) a8:dd:9f:4d:c7:60"))
 	p.tick(15 * time.Second)
 	_, _, l, _ := peersOf(t, statusCall(t, p.rig, true))
 	for _, e := range l {
@@ -566,7 +571,7 @@ func TestPeersSignalOnlyFromThisSample(t *testing.T) {
 // the self skip removed -> FAIL.
 func TestPeersNeverListsItself(t *testing.T) {
 	p := newPeerRig(t, true, morse04())
-	b := readFix(t, "batctl-originators-meshed.provisional")
+	b := readFix(t, "batctl-originators-multihop.derived")
 	b = append(b, []byte(" * "+phy04+"    0.010s (       99.9)  "+phy04+" [      wlh0]\n")...)
 	p.run.bat = b
 	p.tick(0)
@@ -599,8 +604,106 @@ func TestPeersExecCleanEnvironment(t *testing.T) {
 // Code review B-m5: an interface name starting with '-' (it would become an iw option) fails the header. Negative
 // control: the loose interface pattern back -> FAIL.
 func TestPeersInterfaceNameIsNoOption(t *testing.T) {
-	b := []byte(strings.Replace(string(readFix(t, "batctl-originators-meshed.provisional")), "MainIF/MAC: wlh0/", "MainIF/MAC: -h/", 1))
+	b := []byte(mustReplace(t, string(readFix(t, "batctl-originators-multihop.derived")), "MainIF/MAC: wlh0/", "MainIF/MAC: -h/"))
 	if _, err := parseOriginators(b); err == nil {
 		t.Fatal("a MainIF of '-h' was accepted (it would reach iw's argv)")
+	}
+}
+
+// T-N1 on the real captures (design §9.2 C1 / C2 / C5, 2026-11-13, 04 and 02 meshed on N0, wsl.25): each node's key 8
+// is its own morse phy's MAC (02's is phy2, its brcmfmac is phy1: chosen by driver, not by name) and key 9 holds exactly
+// the other node, at the address the other node reports as its own (C2), with BATMAN_V's 14.9 Mbit/s as 14900 kbit/s
+// and the station's signal avg.
+func TestPeersFromRealCaptures(t *testing.T) {
+	for _, c := range []struct {
+		node, self, peer string
+		phys             map[string][2]string
+		ago              uint64
+	}{
+		{"04", phy04, "a8:dd:9f:4d:c7:60", map[string][2]string{"phy0": {"morse_spi", phy04}, "phy1": {"brcmfmac", "88:a2:9e:b5:6c:8a"}}, 0},
+		{"02", "a8:dd:9f:4d:c7:60", phy04, map[string][2]string{"phy1": {"brcmfmac", "d8:3a:dd:f8:45:d8"}, "phy2": {"morse_spi", "a8:dd:9f:4d:c7:60"}}, 2},
+	} {
+		p := newPeerRigWith(t, true, c.phys, "batctl-originators-"+c.node+".capture", "iw-station-dump-"+c.node+".capture")
+		p.tick(0)
+		k8, has8, list, has9 := peersOf(t, statusCall(t, p.rig, true))
+		if !has8 || k8 != c.self {
+			t.Fatalf("%s: key 8 = %q (%v), want its morse phy %s", c.node, k8, has8, c.self)
+		}
+		if !has9 || len(list) != 1 {
+			t.Fatalf("%s: key 9 = %+v (%v), want exactly the other node", c.node, list, has9)
+		}
+		e := list[0]
+		if e.addr != c.peer || e.ago != c.ago || e.kbps == nil || *e.kbps != 14900 || e.signal == nil || *e.signal != -29 {
+			t.Fatalf("%s: peer = %+v (kbps %v signal %v), want %s ago %d 14900 kbit/s -29 dBm", c.node, e, e.kbps, e.signal, c.peer, c.ago)
+		}
+	}
+	// the real translated capture (bat-hosts names) gives no peer: the name row is dropped, nothing invented
+	tr, err := parseOriginators(readFix(t, "batctl-originators-04-translated.capture"))
+	if err != nil || len(tr.rows) != 0 || tr.dropped != 1 {
+		t.Fatalf("translated capture: %+v %v", tr, err)
+	}
+}
+
+// mustReplace: strings.Replace once, and FAIL when the text is not there — a fixture format change (2026-11-13: the real
+// capture has one space before Nexthop, the provisional file had two) must not turn an edit into a silent no-op.
+func mustReplace(t *testing.T, s, old, new string) string {
+	t.Helper()
+	if !strings.Contains(s, old) {
+		t.Fatalf("fixture edit: %q is not in the fixture", old)
+	}
+	return strings.Replace(s, old, new, 1)
+}
+
+// design §9.2 C5' (code review A-m5 / A-m6): rows two nodes cannot produce, written in the real capture's format.
+// (a) best route only: the route without `*` listed first must not win. Negative control: the `continue` on a
+// non-best row removed -> 0.8 Mbit/s is taken -> FAIL.
+func TestPeersBestRouteOnlyEvenWhenListedSecond(t *testing.T) {
+	p := newPeerRig(t, true, morse04())
+	p.run.bat = []byte(mustReplace(t, string(readFix(t, "batctl-originators-multihop.derived")),
+		" * a8:dd:9f:4d:c7:60    2.130s (        3.2) a8:dd:9f:4d:c6:d3 [      wlh0]\n   a8:dd:9f:4d:c7:60    2.130s (        0.8) a8:dd:9f:4d:c7:60 [      wlh0]\n",
+		"   a8:dd:9f:4d:c7:60    2.130s (        0.8) a8:dd:9f:4d:c7:60 [      wlh0]\n * a8:dd:9f:4d:c7:60    2.130s (        3.2) a8:dd:9f:4d:c6:d3 [      wlh0]\n"))
+	p.tick(0)
+	_, _, l, _ := peersOf(t, statusCall(t, p.rig, true))
+	for _, e := range l {
+		if e.addr == "a8:dd:9f:4d:c7:60" && (e.kbps == nil || *e.kbps != 3200 || e.signal != nil) {
+			t.Fatalf("c7:60 = %+v: want the best route (3200 kbit/s, relayed, no signal)", e)
+		}
+	}
+}
+
+// (b) our own originator in the table (MainIF MAC = our morse phy) is never a peer. Negative control: the self check
+// removed -> our own MAC in key 9 -> FAIL.
+func TestPeersOwnRowExcluded(t *testing.T) {
+	p := newPeerRig(t, true, morse04())
+	p.run.bat = append(readFix(t, "batctl-originators-multihop.derived"),
+		[]byte(" * "+phy04+"    0.010s (       14.9) "+phy04+" [      wlh0]\n")...)
+	p.tick(0)
+	_, _, l, has9 := peersOf(t, statusCall(t, p.rig, true))
+	if !has9 || len(l) != 2 {
+		t.Fatalf("key 9 = %+v (%v), want the 2 other nodes only", l, has9)
+	}
+	for _, e := range l {
+		if e.addr == phy04 {
+			t.Fatalf("ourselves in key 9: %+v", l)
+		}
+	}
+}
+
+// (c) key 4 only for a direct station heard within one sampling period: inactive 15000 ms keeps the signal, 15001 ms
+// does not. Negative control: the inactive threshold removed -> 15001 ms keeps it -> FAIL.
+func TestPeersSignalInactiveThreshold(t *testing.T) {
+	for _, c := range []struct {
+		ms   string
+		want bool
+	}{{"15000", true}, {"15001", false}} {
+		p := newPeerRig(t, true, morse04())
+		p.run.iw = []byte(mustReplace(t, string(readFix(t, "iw-station-dump-multihop.derived")), "inactive time:\t120 ms", "inactive time:\t"+c.ms+" ms"))
+		p.tick(0)
+		_, _, l, _ := peersOf(t, statusCall(t, p.rig, true))
+		for _, e := range l {
+			if e.addr == "a8:dd:9f:4d:c6:d3" && (e.signal != nil) != c.want {
+				t.Fatalf("inactive %s ms: signal present=%v, want %v", c.ms, e.signal != nil, c.want)
+			}
+		}
 	}
 }

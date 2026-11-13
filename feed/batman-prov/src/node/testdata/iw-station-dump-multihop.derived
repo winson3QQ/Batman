@@ -1,0 +1,18 @@
+Station a8:dd:9f:4d:c6:d3 (on wlh0)
+	inactive time:	120 ms
+	rx bytes:	5779481
+	rx packets:	34388
+	tx bytes:	2214174
+	tx packets:	9676
+	tx retries:	498
+	tx failed:	1
+	rx drop misc:	1
+	signal:  	-61 dBm
+	signal avg:	-62 dBm
+	Toffset:	1439615900 us
+	tx bitrate:	325.0 MBit/s VHT-MCS 7 80MHz short GI VHT-NSS 1
+Station a8:dd:9f:4d:c7:60 (on wlh0)
+	inactive time:	300000 ms
+	signal:  	-88 dBm
+	signal avg:	-88 dBm
+	mesh plink:	ESTAB
