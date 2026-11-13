@@ -43,6 +43,7 @@ system.@system[0].hostname
 wireless.default_radio1.mesh_id
 wireless.default_radio1.key
 wireless.default_radio0.key
+wireless.default_radio0.ssid
 wireless.radio1.channel
 wireless.radio1.country
 network.ahwlan.ipaddr
@@ -51,6 +52,10 @@ openmanetd.config.dhcpconfigured
 openmanetd.config.roipconfigured
 "
 UNSAFE='*[`$();|&<>'"'"']*'   # same character set 96-batman-config-migrate's valid_batch rejects
+# #254 P3 (254-p3-impl §3.3, B5-m5): the phone AP's ssid is kept, but an ssid with an UNSAFE character (an operator's
+# "Tom's AP") is NOT persisted and NOT stale — the same rule as an empty value (the image default wins) — or such a node
+# would stay stale, and blocked from OTA, forever
+SKIP_UNSAFE="wireless.default_radio0.ssid"
 
 mode=${1:-}; opt=${2:-}
 USAGE="usage: batman-config-save --seed [--reformat] | --save [--promote-lkg] [--txn TOK] | --if-healthy | --on-join | --check | --prov-only --prov-file F --prov-meta M [--prov-identity D] [--txn TOK] | --prov-get DIR"
@@ -458,7 +463,7 @@ stage_overrides() {   # $1 = staging dir
 		val=$(uget "$t") || continue
 		[ -n "$val" ] || continue        # empty preserved key -> image default wins (documented)
 		# shellcheck disable=SC2254  # $UNSAFE is a glob pattern on purpose
-		case "$val" in $UNSAFE) REJECTED="$REJECTED $t"; continue ;; esac
+		case "$val" in $UNSAFE) case " $SKIP_UNSAFE " in *" $t "*) continue ;; esac; REJECTED="$REJECTED $t"; continue ;; esac
 		printf "set %s='%s'\n" "$t" "$val" >> "$s/overrides.uci"
 	done
 	echo "$SCHEMA" > "$s/schema_version"

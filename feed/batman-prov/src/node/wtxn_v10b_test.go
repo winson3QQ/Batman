@@ -56,8 +56,7 @@ func TestFinishWantsRadioOperatorAfterLeave(t *testing.T) {
 // review 4 A m6 / B m9: no join / update / leave while batman-slot writes the other slot (its .txn gate already ran)
 func TestNoWirelessChangeDuringOTA(t *testing.T) {
 	r := claimedRig(t)
-	busy := r.n.P.RunDir + "/batman-slot.busy"
-	writeFile(t, busy, nil)
+	release := holdSlotLock(t, r.n.P.RunDir)
 	if c := r.applyJoin(r.v1Net()); c != EBusy {
 		t.Fatalf("join during an OTA: %d (want EBusy)", c)
 	}
@@ -67,7 +66,7 @@ func TestNoWirelessChangeDuringOTA(t *testing.T) {
 	if c := r.sshSet(); c != OK { // other verbs are not affected
 		t.Fatalf("ssh_keys.set during an OTA: %d", c)
 	}
-	removeFile(busy)
+	release()
 	if c := r.applyJoin(r.v1Net()); c != OK {
 		t.Fatalf("join after the OTA: %d", c)
 	}

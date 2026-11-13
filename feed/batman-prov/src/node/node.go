@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"batman-prov/cbor"
@@ -47,17 +48,36 @@ const (
 	// handed out. Only returned after a commit (EApply also covers pre-commit stage failures). provd maps it to
 	// protocol 13 E_LOCK_INCOMPLETE -> the app retries with claim/replay (219-protocol §5.2; claim-lock fix §7).
 	ELockIncomplete = 23
+	// 254-p3-impl §3.1-8: a refusal with a reason (provd -> E_REJECTED{2: reason}); EInput = the user's input is not
+	// acceptable (not a CRIT: ESchema stays "provd sent a wrong format")
+	EReject = 24
+	EInput  = 25
 )
 
 // Error is a coded failure; Reason is for the log only.
 type Error struct {
 	Code   int
 	Reason string
+	// Why: an optional reason-code (CDDL) sent in the error reply's body as {1: why}; 0 = none
+	Why uint64
 }
 
 func (e *Error) Error() string { return fmt.Sprintf("code %d: %s", e.Code, e.Reason) }
 func fail(code int, why string, a ...any) *Error {
 	return &Error{Code: code, Reason: fmt.Sprintf(why, a...)}
+}
+
+// failR: a failure with a reason-code for the app (254-p3-impl §3.1-8)
+func failR(code int, reason uint64, why string, a ...any) *Error {
+	return &Error{Code: code, Reason: fmt.Sprintf(why, a...), Why: reason}
+}
+
+// errBody: an error reply's body — {1: reason} when there is one, else empty (P2's form)
+func errBody(e *Error) cbor.Map {
+	if e.Why != 0 {
+		return cbor.M(1, e.Why)
+	}
+	return cbor.M()
 }
 
 // Sys is every side effect outside the helper's own files; the real one lives in cmd/, tests fake it.
@@ -88,6 +108,9 @@ type Sys interface {
 	ClearTxnMarker()
 	DiagBundle() ([]byte, error)
 	RemoveMeshMarkers() error // p6 mesh-expected / mesh-joined (network/leave)
+	// 254-p3-impl §3.3: halow-setkey --rollback (P3 mode); the exit code (0 / 2 / 3 / 4 / 5 / 6, else unknown)
+	SetCountry(cc string) int
+	SetAP(ssid, passphrase string) int // the passphrase over stdin
 	Now() time.Time
 }
 
@@ -112,9 +135,20 @@ type Node struct {
 	// = no health / Sys.IsTrial
 	Health      func() string
 	TrialCached func() bool
-	roGlobal    bucket // read-only verbs, helper-wide (readonly.go)
-	psksRate    bucket // psks.get: 1/s
-	clock       func() time.Time
+	// 254-p3-impl §3.4: status.get's caches (SetStatusSource; nil = status.get answers E_UNSUPPORTED)
+	status *statusCache
+	// 254-p3-impl §3.3: settings.get's cache (SetSettingsSource; nil = E_UNSUPPORTED)
+	settings *settingsCache
+	// design D-6: the last settings.set ended with halow-setkey rc 6 (its restore did not verify); status key 15 says so
+	// until a later settings.set succeeds
+	settingsRestoreBad atomic.Bool
+	roGlobal           bucket // read-only verbs, helper-wide (readonly.go)
+	// 254-p3-impl §3.7.4: the update verbs (SetUpdateSource; nil = E_UNSUPPORTED)
+	upd            *updater
+	bulk           BulkSys     // §3.8.2 (nil = no bulk verbs, no http field)
+	httpBindFailed atomic.Bool // provd's poll: its bind of http.2 failed (status key 15)
+	psksRate       bucket      // psks.get: 1/s
+	clock          func() time.Time
 }
 
 type nonce struct {
@@ -166,7 +200,9 @@ func onlyKeys(m cbor.Map, keys ...uint64) *Error {
 func (n *Node) Handle(req cbor.Map) cbor.Map { return n.handle(req, nil) }
 
 // handle: the verb is decoded before the mutex — read-only verbs never take it (readonly.go, 254-p2-impl F-P44).
-func (n *Node) handle(req cbor.Map, conn *bucket) cbor.Map {
+func (n *Node) handle(req cbor.Map, conn *bucket) cbor.Map { return n.handleQ(req, conn, nil) }
+
+func (n *Node) handleQ(req cbor.Map, conn, statusConn *bucket) cbor.Map {
 	idAny, _ := req.Get(2)
 	id, _ := idAny.(uint64)
 	verbAny, _ := req.Get(1)
@@ -177,12 +213,22 @@ func (n *Node) handle(req cbor.Map, conn *bucket) cbor.Map {
 		return cbor.M(1, id, 2, uint64(ESchema), 3, cbor.M())
 	}
 	if readOnlyVerbs[verb] {
-		res, err := n.readOnly(verb, args, conn)
+		res, err := n.readOnly(verb, args, conn, statusConn)
 		if err != nil {
 			if err.Code != ERate { // a quota refusal is the caller's pacing, not an event
 				n.Log("verb %s refused: code %d (%s)", verb, err.Code, err.Reason)
 			}
-			return cbor.M(1, id, 2, uint64(err.Code), 3, cbor.M())
+			return cbor.M(1, id, 2, uint64(err.Code), 3, errBody(err))
+		}
+		return cbor.M(1, id, 2, uint64(OK), 3, res)
+	}
+	if verb == "update.check" { // not under n.mu (254-p3-impl D-12): precheck-node takes seconds
+		res, err := n.updateCheck(args)
+		if err != nil {
+			if err.Code != ERate {
+				n.Log("verb %s refused: code %d (%s)", verb, err.Code, err.Reason)
+			}
+			return cbor.M(1, id, 2, uint64(err.Code), 3, errBody(err))
 		}
 		return cbor.M(1, id, 2, uint64(OK), 3, res)
 	}
@@ -191,7 +237,7 @@ func (n *Node) handle(req cbor.Map, conn *bucket) cbor.Map {
 	res, err := n.dispatch(verb, args)
 	if err != nil {
 		n.Log("verb %s refused: code %d (%s)", verb, err.Code, err.Reason)
-		return cbor.M(1, id, 2, uint64(err.Code), 3, cbor.M())
+		return cbor.M(1, id, 2, uint64(err.Code), 3, errBody(err))
 	}
 	return cbor.M(1, id, 2, uint64(OK), 3, res)
 }
@@ -212,7 +258,7 @@ func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 	// §18.4 (review 4 A m6 / B m9): no new wireless change while batman-slot writes the other slot — its freshness
 	// gate (`--check`: .txn -> refused) has already run, so a change failing now would leave a .txn the new slot never
 	// sees. The marker is batman-slot's own (root-only run dir; removed on its exit, gone at the next boot).
-	if (verb == "net.apply" || verb == "network.leave") && n.otaBusy() {
+	if (verb == "net.apply" || verb == "network.leave" || verb == "settings.set") && n.otaBusy() {
 		return nil, fail(EBusy, "an OTA is being written (batman-slot) — retry after it")
 	}
 	// docs/design/254-wireless-txn.md §4.1: an unfinished wireless change is finished before a verb that saves or changes
@@ -250,7 +296,7 @@ func (n *Node) dispatch(verb string, a cbor.Map) (cbor.Map, *Error) {
 	case "claim.replay":
 		return n.claimReplay(rec, a)
 	case "net.apply", "network.leave", "owner.add", "owner.remove", "settings.set", "root_password.reset",
-		"diag.bundle", "ssh_keys.set":
+		"diag.bundle", "ssh_keys.set", "update.prepare", "update.apply", "bulk.open", "bulk.close":
 		return n.ownerOpVerb(verb, rec, a)
 	}
 	return nil, fail(ESchema, "unknown verb %q", verb) // incl. keystore.ecdh, persist, keystore.sign, any reset: none exist (§4.1)
@@ -720,7 +766,8 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 	}
 	want := map[string]string{"net.apply": "network/join", "network.leave": "network/leave", "owner.add": "owner/add",
 		"owner.remove": "owner/remove", "settings.set": "settings/set", "root_password.reset": "root_password/reset",
-		"diag.bundle": "diag/bundle", "ssh_keys.set": "ssh_keys/set"}[verb]
+		"diag.bundle": "diag/bundle", "ssh_keys.set": "ssh_keys/set", "update.prepare": "update/prepare",
+		"update.apply": "update/apply", "bulk.open": "bulk/open", "bulk.close": "bulk/close"}[verb]
 	if verb == "net.apply" && typ == "network/update" {
 		return n.netUpdate(rec, body) // version chain, no owner-op (219 §5.3)
 	}
@@ -758,16 +805,7 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 	case "owner.remove":
 		return n.ownerRemove(rec, body)
 	case "settings.set":
-		for _, en := range body {
-			if en.K == uint64(31) {
-				continue
-			}
-			if s, ok := en.K.(string); ok && s == "hostname" || en.K == uint64(1) {
-				return nil, fail(EUnsupported, "rename-pending") // P-U7: no rename in P1
-			}
-			return nil, fail(ESchema, "unknown setting %v", en.K)
-		}
-		return cbor.M(), nil
+		return n.settingsSet(rec, body)
 	case "root_password.reset":
 		pw := genPassword()
 		// lock failure -> ELockIncomplete (password unchanged); --save failure -> EStorage with root restored
@@ -783,6 +821,14 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 		return cbor.M(1, b), nil
 	case "ssh_keys.set":
 		return n.sshKeys(rec, body)
+	case "update.prepare":
+		return n.updatePrepare(signer, body)
+	case "update.apply":
+		return n.updateApply(signer, body)
+	case "bulk.open":
+		return n.bulkOpen(signer, body)
+	case "bulk.close":
+		return n.bulkClose(signer, body)
 	}
 	return nil, fail(ESchema, "unreachable")
 }
@@ -894,6 +940,7 @@ func (n *Node) ownerRemove(rec *provstore.Record, body cbor.Map) (cbor.Map, *Err
 	if err := n.commit(&next, "owner.remove"); err != nil {
 		return nil, err
 	}
+	n.updOwnerRemoved(kid)
 	return cbor.M(), nil
 }
 
@@ -908,13 +955,24 @@ func (n *Node) netRoot(rec *provstore.Record) []byte {
 	return secretField(pt, 2)
 }
 
-func (n *Node) openSecrets(raw []byte, admins [][]byte) cbor.Map {
+// openSecrets verifies this node's net_secrets and opens it only when it belongs to the net_config being applied: its
+// net_id / version (the same payload values decryptSecrets uses as the KDF context) must equal netID / version — else a
+// forwarder could pair a new net_config with an older (or another network's) secrets that a removed member knows
+// (254-net-update-members.md §2.2-5, F10).
+func (n *Node) openSecrets(raw []byte, admins [][]byte, netID []byte, version uint64) cbor.Map {
 	x, err := cbor.Decode(raw)
 	if err != nil {
 		return nil
 	}
 	s, err := cose.VerifySign1(x, cose.CTSecrets, proto.LabelSecrets, admins)
 	if err != nil {
+		return nil
+	}
+	nid, _ := s.Payload.Get(1)
+	ver, _ := s.Payload.Get(2)
+	nidB, ok1 := nid.([]byte)
+	verU, ok2 := ver.(uint64)
+	if !ok1 || !ok2 || verU != version || subtle.ConstantTimeCompare(nidB, netID) != 1 {
 		return nil
 	}
 	return n.decryptSecrets(s)
@@ -981,7 +1039,7 @@ func (n *Node) parseNet(cfgItem, secItem any, signers [][]byte) (*parsedNet, *Er
 	p.channel = fmt.Sprint(chU)
 	p.cfgRaw, _ = cbor.Encode(cfgItem)
 	p.secRaw, _ = cbor.Encode(secItem)
-	pt := n.openSecrets(p.secRaw, signers)
+	pt := n.openSecrets(p.secRaw, signers, p.netID, p.version)
 	if pt == nil {
 		return nil, fail(EBadObject, "net_secrets")
 	}
@@ -1050,12 +1108,15 @@ func (n *Node) netUpdate(rec *provstore.Record, body cbor.Map) (cbor.Map, *Error
 	if rec.Net == nil {
 		return nil, fail(EStaleVersion, "no network yet: first version only via network/join")
 	}
+	// {1: [+ {1: netcfg-sign1, 2: members-sign1, ?3: secrets-sign1}]} (219-protocol.cddl update-step; secrets in the
+	// last step only, and required there). A wrong shape is E_BAD_OBJECT, not ESchema: the body comes from any
+	// forwarding session, and ESchema would reach the app as E_REJECTED{} plus a provd CRIT line
+	// (254-net-update-members.md §2.1)
 	chainAny, _ := body.Get(1)
 	chain, ok := chainAny.([]any)
 	if !ok || len(chain) == 0 {
-		return nil, fail(ESchema, "version chain")
+		return nil, fail(EBadObject, "update shape")
 	}
-	sec, _ := body.Get(2)
 	admins := rec.Admins
 	prevX, _ := cbor.Decode(rec.Net.Config)
 	// the STORED config is not re-verified (254-wireless-txn §2): after an admin handover it is signed by admins that
@@ -1064,10 +1125,24 @@ func (n *Node) netUpdate(rec *provstore.Record, body cbor.Map) (cbor.Map, *Error
 	if err != nil {
 		return nil, fail(EBadObject, "stored net_config")
 	}
+	storedCC, _ := prevS.Payload.Get(5)
+	storedCCS, storedHasCC := storedCC.(string)
 	prevHash, prevVer := prevS.ObjectHash, rec.Net.Version
-	var last any
-	for _, item := range chain {
-		s, err := cose.VerifySign1(item, cose.CTNetcfg, proto.LabelNetcfg, admins) // version v+1 by version v's admins
+	var last, lastSec any
+	var signers [][]byte // the admins the last version (and its secrets) is checked against (§7.1)
+	for i, item := range chain {
+		step, ok := item.(cbor.Map)
+		if !ok {
+			return nil, fail(EBadObject, "update shape")
+		}
+		cfg, hasCfg := step.Get(1)
+		members, hasMembers := step.Get(2)
+		sec, hasSec := step.Get(3)
+		isLast := i == len(chain)-1
+		if !hasCfg || !hasMembers || hasSec != isLast {
+			return nil, fail(EBadObject, "update shape")
+		}
+		s, err := cose.VerifySign1(cfg, cose.CTNetcfg, proto.LabelNetcfg, admins) // version v+1 by version v's admins
 		if err != nil {
 			return nil, fail(EBadObject, "chain link")
 		}
@@ -1078,22 +1153,39 @@ func (n *Node) netUpdate(rec *provstore.Record, body cbor.Map) (cbor.Map, *Error
 		if vU != prevVer+1 || subtle.ConstantTimeCompare(phB, prevHash) != 1 {
 			return nil, fail(EStaleVersion, "chain not contiguous")
 		}
-		admins = n.adminsOf(item)
-		prevHash, prevVer, last = s.ObjectHash, vU, item
+		nid, _ := s.Payload.Get(1)
+		nidB, _ := nid.([]byte)
+		if subtle.ConstantTimeCompare(nidB, rec.Net.NetID) != 1 {
+			return nil, fail(EBadObject, "net_id")
+		}
+		// the country changes only while not in a network (254-p3-impl D9): every step keeps the stored one
+		cc, _ := s.Payload.Get(5)
+		ccS, hasCC := cc.(string)
+		if !hasCC || !storedHasCC || ccS != storedCCS {
+			return nil, failR(EReject, ReasonCountryJoin, "network/update: the country changes only while not in a network")
+		}
+		// member_list of this version: a consistency check with the CDDL (the node neither stores nor reads it, §2.2-3)
+		m, err := cose.VerifySign1(members, cose.CTMembers, proto.LabelMembers, admins)
+		if err != nil {
+			return nil, fail(EBadObject, "member_list")
+		}
+		mnid, _ := m.Payload.Get(1)
+		mver, _ := m.Payload.Get(2)
+		mnidB, _ := mnid.([]byte)
+		mverU, ok := mver.(uint64)
+		if !ok || mverU != vU || subtle.ConstantTimeCompare(mnidB, rec.Net.NetID) != 1 {
+			return nil, fail(EBadObject, "member_list")
+		}
+		signers = admins
+		admins = n.adminsOf(cfg)
+		prevHash, prevVer, last, lastSec = s.ObjectHash, vU, cfg, sec
 	}
 	// the last version's secrets are signed by the admins valid for it (= the previous version's set, §7.1)
-	p, e := n.parseNet(last, sec, n.adminsOfPrev(chain, rec))
+	p, e := n.parseNet(last, lastSec, signers)
 	if e != nil {
 		return nil, e
 	}
 	return n.applyNet(rec, p, "network/update")
-}
-
-func (n *Node) adminsOfPrev(chain []any, rec *provstore.Record) [][]byte {
-	if len(chain) >= 2 {
-		return n.adminsOf(chain[len(chain)-2])
-	}
-	return rec.Admins
 }
 
 // applyNet runs the wireless transaction of a join / update (docs/design/254-wireless-txn.md §3, §4.2): pre-check,

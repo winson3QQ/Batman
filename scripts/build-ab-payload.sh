@@ -66,9 +66,26 @@ for f in "$BOOTDIR"/start*.elf "$BOOTDIR"/fixup*.dat "$BOOTDIR"/*.dtb; do
 done
 [ -d "$BOOTDIR/overlays" ] && cp -r "$BOOTDIR/overlays" "$T/boot/"
 SQ_BYTES=$(wc -c < "$SQ" | tr -dc '0-9')
-printf 'board=%s\nversion=%s\nsize=%s\n' "$BOARD" "$(date +%Y%m%d-%H%M%S)" "$SQ_BYTES" > "$T/metadata"
+# #254 P3 §3.7.2: release = the rootfs's own BATMAN_VERSION (the app update checks it against the signed version).
+# Without it (no unsquashfs here, or a rootfs without the stamp) the payload still installs by ssh sysupgrade; the
+# app path refuses it (the node's worker wants metadata release = S's version).
+US=${UNSQUASHFS:-unsquashfs}
+command -v "$US" >/dev/null 2>&1 || fail "no unsquashfs ($US): cannot read the rootfs's BATMAN_VERSION for metadata release= (set UNSQUASHFS=)"
+lst=$("$US" -l "$SQ" 2>/dev/null) || fail "cannot list $SQ with $US"
+REL=""
+if printf '%s
+' "$lst" | grep -qx 'squashfs-root/etc/batman-build'; then
+	# the rootfs has its stamp: release= is then required (review r2 A-m3 / B-m4) — an unreadable one is an error
+	REL=$("$US" -cat "$SQ" etc/batman-build 2>/dev/null | sed -n 's/^BATMAN_VERSION=//p' | head -1)
+	[ -n "$REL" ] || fail "$SQ has etc/batman-build but no readable BATMAN_VERSION"
+fi
+case "$REL" in *[!A-Za-z0-9.+_-]*) fail "BATMAN_VERSION '$REL' in the rootfs has characters a version cannot have" ;; esac
+[ -n "$REL" ] || echo "WARN: $SQ has no etc/batman-build — metadata has no release= (installable by ssh sysupgrade only)" >&2
+{ printf 'board=%s\nversion=%s\nsize=%s\n' "$BOARD" "$(date +%Y%m%d-%H%M%S)" "$SQ_BYTES"; [ -n "$REL" ] && printf 'release=%s\n' "$REL"; } > "$T/metadata"
 # SHA256SUMS: root.squashfs + every boot/ file, relative paths (batman-slot verifies before AND after writing)
 ( cd "$T" && sha256sum root.squashfs && find boot -type f | sort | while read -r f; do sha256sum "$f"; done ) > "$T/SHA256SUMS"
 
-tar -C "$T" -czf "$OUT" root.squashfs boot metadata SHA256SUMS
+# §3.7.2 / F27: SHA256SUMS and metadata first (the node's worker verifies them before it reads the rest), the rootfs
+# last. The sysupgrade path takes every member by name (F57), so the order changes nothing there.
+tar -C "$T" -czf "$OUT" SHA256SUMS metadata boot root.squashfs
 echo "wrote $OUT ($(wc -c < "$OUT") bytes): board=$BOARD soc=$SOC squashfs=$SQ_BYTES bytes, $(grep -c ' boot/' "$T/SHA256SUMS") boot files"

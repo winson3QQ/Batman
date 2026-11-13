@@ -15,6 +15,7 @@
 #   batman_opf <path>       an operator/test flag that has to stay in /tmp (operators touch it by hand): rc 0
 #                           honoured, rc 1 absent, rc 2 present but rejected (TAMPER, logged unless
 #                           BATMAN_OPF_QUIET=1). The ONE implementation (#280 D1) — never copy it.
+#   slot_busy               is a batman-slot holding the slot lock (a write in progress)? rc 0 busy, 1 not busy
 # No override: production code must not take its trust root from the environment (#280 review 2 #7).
 RUNDIR=/tmp/run/batman
 
@@ -48,4 +49,14 @@ batman_opf(){
 		logger -t batman-opf "TAMPER: $1 is not a root-owned single-link file — ignored" 2>/dev/null
 		echo "batman-opf: TAMPER: $1 is not a root-owned single-link file — ignored" >&2; }
 	return 2
+}
+# #254 S5 (254-p3-impl §3.7.3): the slot lock is a kernel flock on this file (batman-slot slot_lock). A reader takes a
+# SHARED lock and only inside a subshell, so the lock never stays in the caller's shell — a brace group here kept it,
+# and the caller's own `batman-slot commit` then could never lock (review B15-MAJOR-1, reproduced under qemu).
+# No lock file = nobody wrote a slot this boot = not busy; cannot tell (no flock, cannot open) = busy.
+slot_busy(){
+	[ -e "$RUNDIR/batman-slot.flock" ] || return 1
+	command -v flock >/dev/null 2>&1 || return 0
+	( exec 8<"$RUNDIR/batman-slot.flock" && flock -s -n 8 ) 2>/dev/null && return 1
+	return 0
 }

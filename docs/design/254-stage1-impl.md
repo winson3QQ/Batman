@@ -354,7 +354,7 @@ p5/  schema_version=1, .seeded, overrides.uci, lkg/, identity/dropbear/*, shadow
 | L21 | trial 上 app 操作 | — | 改狀態動詞 `E_BUSY(updating)` | `prov-trial-busy-254` |
 | L22 | `network/leave` / `owner.remove` 後 OTA | — | prov 整檔換;helper 刪 `mesh-expected`/`mesh-joined`;新槽 `claimed` | `prov-leave-ota-254` |
 | L23 | 改名 | — | ⚠️ U5;#202 兩次實證「改 hostname → openmanetd 重保留 IP 並重開」 | `prov-rename-254`(⚠️ 探針待使用者) |
-| L24 | 兩支手機同時認領 | — | provd 序列化;第二個 `E_STATE` | `prov-two-phones-254` |
+| L24 | 兩支手機同時認領 | — | provd 序列化;第二個 `E_BUSY`(第一個的 `claim.verify` 還在跑);第一個完成後才到的 → `E_CLAIM_FAILED` | `prov-two-phones-254` |
 | L25 | 交易進行中 `--on-join` tick / OTA | — | `prov-txn` / `.txn` 讓路;`--on-join` 從不寫 prov;`--check` 看 prov.meta → stale 擋 OTA | `prov-netupdate-254`:步驟 2 故意失敗 + 期間 `--on-join` → p5 gen 與 overrides 都不前進;步驟 3–4 間插 sleep + `--on-join` + `reboot -f` → state=claimed |
 | L26 | `network/update` → wifi reload | — | BLE 不受影響;provd 先 ack 再套用 | 同 L25 |
 | L27 | joinwatch / openmanetd / dropbear 重啟 | — | 既有;`meshjoin_reachable` 在 dropbear 重啟時暫時假,JOIN_NEED 取樣涵蓋 | 既有 |

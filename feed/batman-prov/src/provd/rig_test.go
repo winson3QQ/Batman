@@ -184,6 +184,8 @@ func randB(n int) []byte { b := make([]byte, n); rand.Read(b); return b }
 // TestMain shortens the timings once, before any Server runs (changing them later races the loops)
 func TestMain(m *testing.M) {
 	PollEvery, HandshakeMax, IdleAnon, HelperWait = 100*time.Millisecond, 2*time.Second, 3*time.Second, 2*time.Second
+	FallbackAfter, FallbackClear, uploadRateWindow = 1500*time.Millisecond, 300*time.Millisecond, 500*time.Millisecond
+	HTTPFieldMax = time.Second
 	os.Exit(m.Run())
 }
 

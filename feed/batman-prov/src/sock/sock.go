@@ -38,10 +38,13 @@ type Handler func(cbor.Map) cbor.Map
 type Server struct {
 	Path    string
 	PeerUID int // the only uid allowed to talk (provd)
-	GID     int // group of the socket dir / socket (provd)
-	Idle    time.Duration
-	Log     func(string, ...any)
-	ln      *net.UnixListener
+	// OnPeer (optional) is told of every admitted connection: the peer's SO_PEERCRED pid / uid and a channel closed
+	// when the connection ends (254-p3-impl §3.7.6 (b): "provd stable 60 s"). It must not block.
+	OnPeer func(pid, uid int, done <-chan struct{})
+	GID    int // group of the socket dir / socket (provd)
+	Idle   time.Duration
+	Log    func(string, ...any)
+	ln     *net.UnixListener
 
 	mu       sync.Mutex
 	open     int         // connections holding a slot
@@ -175,12 +178,12 @@ func (s *Server) admit() bool {
 	return true
 }
 
-func peerUID(c *net.UnixConn) (int, error) {
+func peerCred(c *net.UnixConn) (pid, uid int, err error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
-		return -1, err
+		return -1, -1, err
 	}
-	uid := -1
+	pid, uid = -1, -1
 	var gerr error
 	raw.Control(func(fd uintptr) {
 		cred, err := syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
@@ -188,14 +191,14 @@ func peerUID(c *net.UnixConn) (int, error) {
 			gerr = err
 			return
 		}
-		uid = int(cred.Uid)
+		pid, uid = int(cred.Pid), int(cred.Uid)
 	})
-	return uid, gerr
+	return pid, uid, gerr
 }
 
 func (s *Server) serveConn(c *net.UnixConn, newConn func() Handler) {
 	defer c.Close()
-	uid, err := peerUID(c)
+	pid, uid, err := peerCred(c)
 	if err != nil || uid != s.PeerUID {
 		s.Log("connection refused: peer uid %d (want %d) %v", uid, s.PeerUID, err)
 		return
@@ -207,6 +210,11 @@ func (s *Server) serveConn(c *net.UnixConn, newConn func() Handler) {
 		return
 	}
 	defer s.releaseSlot()
+	if s.OnPeer != nil {
+		done := make(chan struct{})
+		defer close(done)
+		s.OnPeer(pid, uid, done)
+	}
 	h := newConn()
 	buf := make([]byte, MaxRequest+1)
 	first := true

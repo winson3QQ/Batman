@@ -83,7 +83,8 @@ main_alive(){ pid_is "$(cat "$RUN/pid" 2>/dev/null)" 'batman-autocommit run'; }
 # The one claim (N1) records its owner, so a claim whose owner died can be told from a live one.
 claim(){ mkdir "$DECIDED" 2>/dev/null || return 1; echo $$ > "$DECIDED/pid"; }
 claim_owner_alive(){ pid_is "$(cat "$DECIDED/pid" 2>/dev/null)" batman-autocommit; }
-slot_writer_alive(){ pid_is "$(cat "$RUNDIR/batman-slot.lock/pid" 2>/dev/null)" batman-slot; }
+# a batman-slot holds the slot flock (rundir.sh slot_busy; #254 S5). Without rundir.sh: cannot tell = busy.
+slot_writer_alive(){ type slot_busy >/dev/null 2>&1 || return 0; slot_busy; }
 # A hold cancels the revert (#209 S5 review R2): the operator's /tmp hold (root-owned: /tmp is world-
 # writable), a hold-once on p6 (consumed here, and remembered in $HOLDC so a restarted main and the
 # watchdog both still see it), or one already consumed this boot. Checked by main at start AND by the
@@ -223,7 +224,7 @@ revert_watchdog(){
 	while [ $d -lt $DEFER_MAX ]; do
 		# #274: also while a payload guardian converges its stack (post-OTA a changed config is rebuilt once)
 		# — bounded by DEFER_MAX like the rest, never a hold.
-		if [ -e "$RUNDIR/batman-slot.busy" ] || slot_writer_alive || { ls "$RUNDIR"/batman-firstload-*.latch >/dev/null 2>&1 && pgrep -f "docker load" >/dev/null 2>&1; } \
+		if slot_writer_alive || { ls "$RUNDIR"/batman-firstload-*.latch >/dev/null 2>&1 && pgrep -f "docker load" >/dev/null 2>&1; } \
 			|| { ls "$RUNDIR"/batman-payload-*.converging >/dev/null 2>&1 && pgrep -f "payload-run --worker" >/dev/null 2>&1; }; then
 			[ $d -eq 0 ] && log "revert deferred: slot write, first-load or payload converge in progress (max ${DEFER_MAX}s)"
 			sleep 10; d=$((d + 10))
@@ -443,6 +444,8 @@ running(){
 	pgrep -f "$1" >/dev/null 2>&1 || pidof "$1" >/dev/null 2>&1
 }
 # health_ok runs inside $(...) — a subshell — so its latch must be a file, not a variable (code review F4)
+# warn_once <key> <text>: one log line per boot (health_ok runs every poll, in a subshell)
+warn_once(){ [ -f "$RUNDIR/autocommit.warn-$1" ] && return 0; : > "$RUNDIR/autocommit.warn-$1" 2>/dev/null; log "WARN: $2"; }
 CANARY_LATCH=$RUNDIR/autocommit.canary-ok
 # echo a reason + return 1 when unhealthy; silent + return 0 when healthy (services/infra only)
 health_ok(){
@@ -453,6 +456,24 @@ health_ok(){
 	thr=$(vcgencmd get_throttled 2>/dev/null | sed -n 's/.*=0x//p')
 	[ $(( 0x${thr:-0} & 1 )) -eq 0 ] || { echo "undervoltage now"; return 1; }
 	[ -s /etc/batman-build ] || { echo "no /etc/batman-build"; return 1; }
+	# #254 P3 §3.7.6 D-17: a build whose firewall did not load (e.g. a broken ruleset-post include) is not committed
+	nft list table inet fw4 >/dev/null 2>&1 || { echo "no firewall (nft table inet fw4 missing)"; return 1; }
+	# §3.7.6 (a): the provisioning helper runs — unless the operator disabled it (D-16: then WARN only)
+	helper=0
+	if /etc/init.d/batman-provhelper enabled 2>/dev/null; then
+		running batman-provhelper || { echo "svc batman-provhelper down"; return 1; }
+		helper=1
+	else
+		warn_once provhelper-disabled "batman-provhelper is disabled: not required for the commit"
+	fi
+	# §3.7.6 (b): provd was up >= 60 s at least once this boot (the helper writes the boot_id; B5-m8: a disabled
+	# provd is not required; nor is it with the helper disabled — nothing else writes provd-stable)
+	if [ "$helper" = 1 ] && /etc/init.d/batman-provd enabled 2>/dev/null; then
+		[ "$(cat "$RUNDIR/provd-stable" 2>/dev/null)" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ] ||
+			{ echo "batman-provd not stable for 60 s yet this boot"; return 1; }
+	elif [ "$helper" = 1 ]; then
+		warn_once provd-disabled "batman-provd is disabled: not required for the commit"
+	fi
 	# #209 S5 review K1: with tenants on p6 this rootfs MUST be able to run them. A missing docker, a
 	# cgroup v1 tree (memcg unverifiable) or a canary that cannot run is UNHEALTHY — each used to make
 	# the whole block skip itself and commit (the 1.4.12 lesson: a build that silently lost a package).
@@ -506,8 +527,13 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 	# #254 §6.4 + P-U5: the BLE health gate is WARN-only until the Pi 4 BT UART wedge is fixed — logged, never blocks
 	if [ -f "$ST/ble-ok" ] && [ ! -f "$RUNDIR/autocommit.ble-warned" ]; then
 		bh=$(cat "$RUNDIR/batman-prov.health" 2>/dev/null)
+		hb=$(echo "$bh" | sed -n 's/^boot_id=\([^ ]*\) .*/\1/p'); hts=$(echo "$bh" | sed -n 's/.* ts=\([0-9]*\) .*/\1/p')
+		# §3.7.6: the line must be this boot's and at most 60 s old — a stale "good" line is not good
+		bho=${bh:-no health file}
+		[ "$hb" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ] && [ -n "$hts" ] && [ $(( $(up) - hts )) -le 60 ] ||
+			{ bh=""; bho="stale or another boot's: $bho"; }
 		case "$bh" in *"bluetoothd=1"*"hci0_powered=1"*"adv_registered_once=1"*) ;; *)
-			log "WARN ble: ble-ok present but BLE health is not good (${bh:-no health file}) — not blocking (P-U5)"; : > "$RUNDIR/autocommit.ble-warned" ;; esac
+			log "WARN ble: ble-ok present but BLE health is not good ($bho) — not blocking (P-U5)"; : > "$RUNDIR/autocommit.ble-warned" ;; esac
 	fi
 	if [ "$NEED_MESH" = 1 ]; then
 		if [ "$jn" -lt "$JOIN_NEED" ]; then why="${why:+$why; }mesh not joined/reachable ($jn/$JOIN_NEED samples: plink=${MJ_PLINK:-0} batman(wlh0)=${MJ_BAT:-0})"
@@ -547,7 +573,10 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 		# claim (N1); if a LIVE watchdog won it, it is reverting — stand down. A claim whose owner is
 		# gone (a main killed by `restart` mid-commit, code review F2) is cleared and retried next poll.
 		if ! claim; then
-			if claim_owner_alive || slot_writer_alive; then log "revert (or a slot write) in progress — not committing"; exit 0; fi
+			if claim_owner_alive; then log "revert in progress — not committing"; exit 0; fi
+			# the slot lock is held (a slot write, or only the helper's short read-only bootinfo / precheck-node): the
+			# claim's owner is gone, so this main is the one that decides — wait a poll (review r1 A-m10)
+			if slot_writer_alive; then log "the slot lock is held — not committing yet"; ok=0; sleep "$POLL"; continue; fi
 			log "stale claim from a process that is gone — clearing it"; rm -rf "$DECIDED"; sleep "$POLL"; continue
 		fi
 		if batman-slot commit; then

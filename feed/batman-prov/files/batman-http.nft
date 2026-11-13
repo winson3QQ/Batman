@@ -1,0 +1,27 @@
+# batman-http — provd's HTTP port 8095 only from the phone AP's clients (docs/design/254-p3-impl.md §3.8.1, D15).
+# Loaded by fw4 with the whole ruleset in one nft -f (ruleset-post): an error here fails the firewall as a whole, so
+# keep it minimal. Both tables are deleted and re-created: a reload never duplicates rules (F70).
+# The bridge table marks frames that came in on a phone AP port (phy*: the helper checks every phy* bridge port is
+# that AP, D-13); the inet table drops 8095 unless the packet came in on br-ahwlan carrying that mark (a local
+# process with CAP_NET_RAW can set SO_MARK itself, so lo / local traffic is dropped by the iifname rule first).
+# batman-provhelper looks for every rule by its comment; without them it does not give provd an address (fail-closed).
+
+add table bridge batman_http
+delete table bridge batman_http
+table bridge batman_http {
+	chain input {
+		type filter hook input priority -10; policy accept;
+		iifname != "phy*" meta mark set meta mark & 0xfeffffff comment "batman-http: clear"
+		iifname "phy*" meta mark set meta mark | 0x01000000 comment "batman-http: mark"
+	}
+}
+
+add table inet batman_http_in
+delete table inet batman_http_in
+table inet batman_http_in {
+	chain input {
+		type filter hook input priority -10; policy accept;
+		tcp dport 8095 meta iifname != "br-ahwlan" counter drop comment "batman-http: iif"
+		tcp dport 8095 meta mark & 0x01000000 == 0 counter drop comment "batman-http: mark-drop"
+	}
+}

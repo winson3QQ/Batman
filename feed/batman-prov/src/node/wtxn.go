@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"batman-prov/boot"
@@ -108,8 +109,10 @@ func saeOf(pt cbor.Map) string {
 	return ""
 }
 
-// openStoredSecrets opens the STORED net_secrets: the signature is not re-checked (§2, §9), the DAC-target check and
-// the net_id / version binding of the decryption stay exactly as in openSecrets.
+// openStoredSecrets opens the STORED net_secrets: the signature is not re-checked (§2, §9) and neither is the
+// net_id / version against the stored net_config (that binding is checked once, when the secrets are applied:
+// openSecrets, 254-net-update-members.md §2.2-5); the DAC target and the decryption (net_id / version as the KDF
+// context) are as in decryptSecrets. A record written by wsl.24 with mismatched secrets is replaced by the next update.
 func (n *Node) openStoredSecrets(raw []byte) cbor.Map {
 	x, err := cbor.Decode(raw)
 	if err != nil {
@@ -122,7 +125,8 @@ func (n *Node) openStoredSecrets(raw []byte) cbor.Map {
 	return n.decryptSecrets(s)
 }
 
-// decryptSecrets is openSecrets' part after the signature: the DAC target, the net_id / version binding, the decryption.
+// decryptSecrets is openSecrets' part after the signature: the DAC target and the decryption (net_id / version are the
+// KDF context; openSecrets checks they belong to the net_config being applied, 254-net-update-members.md §2.2-5).
 func (n *Node) decryptSecrets(s *cose.Sign1) cbor.Map {
 	target, _ := s.Payload.Get(3)
 	dacHash := sha256.Sum256(n.KS.DACPub())
@@ -444,8 +448,26 @@ func (n *Node) finishWantsRadio() bool {
 	return err == nil && !dis
 }
 
-// otaBusy: batman-slot is writing the other slot ($RUNDIR/batman-slot.busy, its precheck .. exit).
+// otaBusy: a batman-slot holds the slot lock — a kernel flock on $RUNDIR/batman-slot.flock (254-p3-impl §3.7.3).
+// A shared, non-blocking try on a fresh fd that is closed again at once (never kept: a held shared lock would make
+// batman-slot's own exclusive lock fail). No lock file = no writer this boot; cannot tell = busy (fail-closed).
 func (n *Node) otaBusy() bool {
-	_, err := os.Lstat(filepath.Join(n.P.RunDir, "batman-slot.busy"))
-	return err == nil
+	if n.upd != nil && (n.upd.isWorking() || n.upd.windowOpen()) { // §3.1-5 / -7: the worker writes the other slot,
+		return true // or a 126 MB upload is under way (a network reload would cut it)
+	}
+	return SlotLockHeld(n.P.RunDir)
+}
+
+// SlotLockHeld: the flock half of otaBusy (the worker's orphan check uses it without counting itself).
+func SlotLockHeld(runDir string) bool {
+	f, err := os.OpenFile(filepath.Join(runDir, "batman-slot.flock"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return !errors.Is(err, os.ErrNotExist)
+	}
+	defer f.Close()
+	if syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) != nil {
+		return true
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false
 }

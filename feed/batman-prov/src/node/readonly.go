@@ -17,7 +17,8 @@ import (
 
 // readOnlyVerbs is the closed list; every other verb takes the mutex.
 var readOnlyVerbs = map[string]bool{"health.get": true, "info.boot_id": true, "info.cert": true, "info.ecdh_pub": true,
-	"info.state": true, "info.net": true, "info.owners": true}
+	"info.state": true, "info.net": true, "info.owners": true, "status.get": true,
+	"settings.get": true, "update.status": true}
 
 const (
 	roGlobalRate, roGlobalBurst = 10, 40
@@ -54,7 +55,10 @@ func (b *bucket) take(now time.Time) bool {
 // NewConn returns the handler of one helper-socket connection, with its own read-only quota (sock.ServeConns).
 func (n *Node) NewConn() func(cbor.Map) cbor.Map {
 	b := &bucket{rate: roConnRate, burst: roConnBurst}
-	return func(req cbor.Map) cbor.Map { return n.handle(req, b) }
+	// status.get (254-p3-impl §3.1-9): provd keeps the 1/s per app connection (one BLE session); provd's single ro
+	// connection carries every session, so here a connection gets the helper-wide 2/s (code review m1)
+	sb := &bucket{rate: statusGlobalRate, burst: statusGlobalRate}
+	return func(req cbor.Map) cbor.Map { return n.handleQ(req, b, sb) }
 }
 
 func (n *Node) now() time.Time {
@@ -89,7 +93,7 @@ func (n *Node) loadOverlayRO() (*provstore.Record, error) {
 	return nil, err
 }
 
-func (n *Node) readOnly(verb string, a cbor.Map, conn *bucket) (cbor.Map, *Error) {
+func (n *Node) readOnly(verb string, a cbor.Map, conn, statusConn *bucket) (cbor.Map, *Error) {
 	now := n.now()
 	if conn != nil && !conn.take(now) {
 		return nil, fail(ERate, "read-only verbs: per-connection quota")
@@ -97,15 +101,39 @@ func (n *Node) readOnly(verb string, a cbor.Map, conn *bucket) (cbor.Map, *Error
 	if !n.roGlobal.take(now) {
 		return nil, fail(ERate, "read-only verbs: helper-wide quota")
 	}
+	if verb == "status.get" {
+		return n.statusGet(a, now, statusConn)
+	}
+	if verb == "settings.get" {
+		return n.settingsGet(a)
+	}
+	if verb == "update.status" {
+		if e := onlyKeys(a); e != nil {
+			return nil, e
+		}
+		return n.updateStatus()
+	}
+	if verb == "health.get" {
+		// provd's poll (§3.8.2): {1: bytes its PUT has received, 2: true = its bind of http.2 failed}; both optional
+		if e := onlyKeys(a, 1, 2); e != nil {
+			return nil, e
+		}
+		if n.Health == nil {
+			return nil, fail(EUnsupported, "no health source")
+		}
+		up, haveUp := getUint(a, 1)
+		bv, _ := a.Get(2)
+		bf, _ := bv.(bool)
+		r := cbor.M(1, n.Health())
+		if h := n.httpField(up, haveUp, bf); h != nil {
+			r = append(r, cbor.Entry{K: uint64(2), V: h})
+		}
+		return r, nil
+	}
 	if e := onlyKeys(a); e != nil {
 		return nil, e
 	}
 	switch verb {
-	case "health.get":
-		if n.Health == nil {
-			return nil, fail(EUnsupported, "no health source")
-		}
-		return cbor.M(1, n.Health()), nil
 	case "info.cert":
 		return cbor.M(1, n.KS.Cert(), 2, n.KS.SN()), nil
 	case "info.ecdh_pub":

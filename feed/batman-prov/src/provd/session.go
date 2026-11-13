@@ -65,9 +65,8 @@ var knownTypes = map[string]bool{"info": true, "claim/begin": true, "claim/finis
 	"root_password/reset": true}
 
 // P3 types: E_UNSUPPORTED{capability: <type>} (254-p2-impl §4.3)
-var p3Types = map[string]bool{"owner/add": true, "owner/remove": true, "settings/get": true, "settings/set": true,
-	"status": true, "peers/challenge": true, "diag/summary": true, "diag/bundle": true, "update/check": true,
-	"update/prepare": true, "update/apply": true, "update/status": true, "bulk/open": true, "bulk/close": true}
+var p3Types = map[string]bool{"owner/add": true, "owner/remove": true,
+	"peers/challenge": true, "diag/summary": true, "diag/bundle": true}
 
 // types whose response carries a secret: an idempotency key is E_FORBIDDEN (219 §4.2)
 var secretTypes = map[string]bool{"claim/finish": true, "claim/replay": true, "root_password/reset": true,
@@ -77,15 +76,20 @@ var allowed = map[Role]map[string]bool{
 	RoleAnon:      {"info": true, "claim/begin": true, "claim/finish": true},
 	RoleCandidate: {"info": true, "auth/owner": true},
 	RoleOwner: {"info": true, "op/nonce": true, "network/join": true, "network/update": true, "network/leave": true,
-		"ssh_keys/set": true, "root_password/reset": true},
-	RoleMember:    {"info": true, "network/update": true},
+		"ssh_keys/set": true, "root_password/reset": true, "status": true, "settings/get": true,
+		"settings/set": true, "update/check": true, "update/prepare": true, "update/apply": true,
+		"update/status": true, "bulk/open": true, "bulk/close": true},
+	RoleMember:    {"info": true, "network/update": true, "status": true},
 	RoleReacquire: {"info": true, "claim/begin": true, "op/nonce": true, "claim/replay": true},
 }
 
 // owner-op verbs forwarded as the whole envelope: type -> helper verb
 var forward = map[string]string{"network/join": "net.apply", "network/update": "net.apply",
 	"network/leave": "network.leave", "ssh_keys/set": "ssh_keys.set", "root_password/reset": "root_password.reset",
-	"claim/replay": "claim.replay"}
+	"settings/set": "settings.set",
+	"claim/replay": "claim.replay",
+	// 254-p3-impl §3.1-3 / §3.8.2
+	"update/prepare": "update.prepare", "update/apply": "update.apply", "bulk/open": "bulk.open", "bulk/close": "bulk.close"}
 
 // MaxChunks / MaxReassembled: stage 1 limits of a chunked request (helper MaxRequest 65536 minus its wrapping).
 const (
@@ -122,7 +126,9 @@ type Session struct {
 	lastActive time.Time
 	killed     bool
 	why        string
-	closeAfter string // disconnect once the current response is sent (3rd claim / auth failure)
+	closeAfter string    // disconnect once the current response is sent (3rd claim / auth failure)
+	statusAt   time.Time // the last status request of this session (254-p3-impl §3.1-9: 1/s per connection)
+	checkAt    time.Time // the last update/check of this session (§3.1-9: 1 / 10 s per connection)
 	done       chan struct{}
 	// chunk reassembly
 	chID    uint64
@@ -284,6 +290,9 @@ func (ss *Session) expired() bool {
 	idle := IdleAnon
 	if ss.role == RoleOwner || ss.role == RoleMember {
 		idle = IdleAuthed
+		if ss.t.Kind() == "http" {
+			idle = httpIdleAuthed
+		}
 	}
 	return now.Sub(ss.lastActive) >= idle
 }
@@ -309,14 +318,19 @@ func (ss *Session) onMessage(m []byte) error {
 		return ss.onMsg1(m)
 	}
 	ss.mu.Lock()
-	pt, err := ss.recv.Decrypt(nil, nil, m)
+	pt, err := ss.recv.Decrypt(nil, nil, m) // a failed Decrypt does not move the nonce (flynn/noise state.go:76-80)
+	if err != nil {
+		ss.mu.Unlock()
+		if h, ok := ss.t.(*httpT); ok { // §3.8.1: a forged /msg is dropped (400); no count, no lastActive
+			h.reject()
+			return nil
+		}
+		return errors.New("AEAD failure")
+	}
 	ss.msgs++
 	n := ss.msgs
 	ss.lastActive = time.Now()
 	ss.mu.Unlock()
-	if err != nil {
-		return errors.New("AEAD failure")
-	}
 	if n >= 1<<20 {
 		return errors.New("2^20 messages: re-handshake")
 	}
@@ -386,7 +400,11 @@ func (ss *Session) sendEnc(pt []byte) error {
 }
 
 func (ss *Session) onMsg1(m []byte) error {
-	if !ss.srv.handshakeAllowed() {
+	if ss.t.Kind() == "http" {
+		if !ss.srv.httpHandshakeAllowed() {
+			return errors.New("http handshake rate (10/min)")
+		}
+	} else if !ss.srv.handshakeAllowed() {
 		return errors.New("global handshake rate (20/min)")
 	}
 	prologue, psks, cert, ok := ss.srv.handshakeParams()
@@ -414,6 +432,9 @@ func (ss *Session) onMsg1(m []byte) error {
 		if !ss.srv.realPSK(hs.PSK, cred) { // a random pad cannot be hit, but never trust it
 			return errors.New("padding PSK")
 		}
+	}
+	if ss.t.Kind() == "http" && !ss.srv.httpRoleOK(role) {
+		return errors.New("http: this credential is BLE only (or owner only while an upload window is open)")
 	}
 	ss.mu.Lock()
 	ss.role, ss.psk, ss.h, ss.recv, ss.send, ss.lastActive = role, cred, hs.H, hs.Recv, hs.Send, time.Now()
@@ -640,6 +661,19 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 		return ss.claimFinish(id, h, body)
 	case "auth/owner":
 		return ss.authOwner(id, h, body)
+	case "status":
+		return ss.status(id, role, body)
+	case "settings/get":
+		return ss.settingsGet(id, body)
+	case "update/check":
+		return ss.updateCheck(id, body)
+	case "update/status":
+		return ss.updateStatus(id, body)
+	}
+	if _, ap := body.Get(20); typ == "settings/set" && ap && ss.t.Kind() == "http" {
+		// changing the AP would cut this very request: reason 19 = "this action only over BLE" (§3.3 table, §5.1; 7 is
+		// only for a capability the hardware lacks)
+		return errEnv(id, EUnsupported, cbor.M(1, typ, 2, uint64(19)))
 	}
 	verb := forward[typ]
 	r, e := ss.ops(id, verb, cbor.M(1, h, 2, raw))
@@ -654,9 +688,11 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 		if typ == "claim/replay" && r.Code == hEForbidden && ss.failOnce() {
 			ss.markClose("claim failures")
 		}
-		return ss.mapHelper(id, typ, r.Code)
+		return ss.mapHelperR(id, typ, r)
 	}
 	switch typ {
+	case "settings/set":
+		return okEnv(id, r.Body) // the applied settings (§3.3)
 	case "claim/replay":
 		ss.becomeOwner(nil)
 		if r.Code == hELockIncomplete {
@@ -668,8 +704,8 @@ func (ss *Session) route(id uint64, typ string, body cbor.Map, idem, raw []byte)
 	case "network/update":
 		v, _ := r.Body.Get(1)
 		return okEnv(id, cbor.M(1, v))
-	case "root_password/reset":
-		return okEnv(id, r.Body)
+	case "root_password/reset", "update/prepare", "update/apply", "bulk/open":
+		return okEnv(id, r.Body) // update-progress / bulk-open-resp (§3.1-3)
 	}
 	return okEnv(id, nil)
 }
@@ -811,4 +847,93 @@ func (ss *Session) authOwner(id uint64, h []byte, body cbor.Map) cbor.Map {
 		ss.markClose("auth failures")
 	}
 	return errEnv(id, EForbidden, nil)
+}
+
+// status (254-p3-impl §3.4, CDDL status-req / status-resp): scope 0 = self from the helper's caches (ro connection,
+// no owner-op); the owner gets key 15, a member keys 1-5 only (the helper drops 15 when full = false). scope 1 = team
+// -> E_UNSUPPORTED{1: typ, 2: 7} (D7). The helper's node state (a string) becomes the CDDL node-state number; an
+// unknown state is not guessed at.
+func (ss *Session) status(id uint64, role Role, body cbor.Map) cbor.Map {
+	sv, ok := body.Get(1)
+	scope, isU := sv.(uint64)
+	switch {
+	case !ok || !isU:
+		return errEnv(id, EBadObject, nil)
+	case scope == 1:
+		return errEnv(id, EUnsupported, cbor.M(1, "status", 2, uint64(7)))
+	case scope != 0:
+		return errEnv(id, EBadObject, nil)
+	}
+	ss.mu.Lock()
+	tooSoon := !ss.statusAt.IsZero() && time.Since(ss.statusAt) < time.Second
+	if !tooSoon {
+		ss.statusAt = time.Now()
+	}
+	ss.mu.Unlock()
+	if tooSoon {
+		return errEnv(id, ERate, nil)
+	}
+	r, err := ss.srv.roCall("status.get", cbor.M(1, role == RoleOwner))
+	if err != nil {
+		return errEnv(id, EBusy, nil)
+	}
+	if r.Code != hOK {
+		return ss.mapHelper(id, "status", r.Code)
+	}
+	st, _ := r.Body.Get(1)
+	name, _ := st.(string)
+	n, known := stateNum[name]
+	if !known {
+		ss.logf("provd: status.get gave an unknown node state %q", name)
+		return errEnv(id, ERejected, nil)
+	}
+	out := cbor.M(1, n)
+	for _, e := range r.Body {
+		k, isKey := e.K.(uint64)
+		if !isKey || k == 1 || (k == 15 && role != RoleOwner) {
+			continue // a member never gets key 15, whatever the helper sent
+		}
+		out = append(out, e)
+	}
+	return okEnv(id, out)
+}
+
+// settings/get (254-p3-impl §3.3, CDDL settings-get-req = empty): the owner reads the node's settings from the helper's
+// cache on the ro connection (no owner-op). Only integer keys are passed on.
+func (ss *Session) settingsGet(id uint64, body cbor.Map) cbor.Map {
+	if len(body) != 0 {
+		return errEnv(id, EBadObject, nil)
+	}
+	r, err := ss.srv.roCall("settings.get", cbor.M())
+	if err != nil {
+		return errEnv(id, EBusy, nil)
+	}
+	if r.Code != hOK {
+		return ss.mapHelper(id, "settings/get", r.Code)
+	}
+	out := cbor.M()
+	for _, e := range r.Body {
+		if _, ok := e.K.(uint64); ok {
+			out = append(out, e)
+		}
+	}
+	return okEnv(id, out)
+}
+
+// mapHelperR: mapHelper plus the helper's optional reason (body {1: reason}, 254-p3-impl §3.1-8): EUnsupported with a
+// reason -> E_UNSUPPORTED{1: typ, 2: reason}; the new hEReject / hEInput -> E_REJECTED{2: reason} (hEInput is the
+// user's input: no CRIT, unlike hESchema). Without a reason: exactly mapHelper (P2's mapping).
+func (ss *Session) mapHelperR(id uint64, typ string, r Reply) cbor.Map {
+	rv, _ := r.Body.Get(1)
+	reason, has := rv.(uint64)
+	switch {
+	case r.Code == hEUnsupported && has:
+		return errEnv(id, EUnsupported, cbor.M(1, typ, 2, reason))
+	case r.Code == hEReject || r.Code == hEInput || (r.Code == hEApply && has):
+		if has {
+			return errEnv(id, ERejected, cbor.M(2, reason))
+		}
+		return errEnv(id, ERejected, nil)
+	}
+	return ss.mapHelper(id, typ, r.Code)
 }

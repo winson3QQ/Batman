@@ -70,7 +70,7 @@ func TestTypeAndIdemRules(t *testing.T) {
 		{"no/such", nil, EUnknownType, nil},
 		{"reset", nil, EUnsupported, cbor.M(1, "reset", 2, uint64(9))},
 		{"owner/add", nil, EUnsupported, cbor.M(1, "owner/add")},
-		{"status", nil, EUnsupported, cbor.M(1, "status")},
+		{"status", nil, EForbidden, nil},       // anonymous (P3: owner / member only)
 		{"network/join", nil, EForbidden, nil}, // anonymous
 		{"info", []any{7, idem}, EUnsupported, cbor.M(1, "idem")},
 		{"claim/finish", []any{7, idem}, EForbidden, nil},
@@ -369,10 +369,10 @@ func TestOwnerOpsForwardAndBusy(t *testing.T) {
 	p.do("auth/owner", cbor.M(1, kidOf(pub), 2, authSig(t, k, p.h, kidOf(pub))))
 	m := dial(t, s)
 	m.handshake("", psks[4])
-	env := p.env("network/update", cbor.M(1, []any{}))
+	env := p.env("network/update", cbor.M(1, []any{cbor.M()}))
 	p.sendEnv(env)
 	time.Sleep(200 * time.Millisecond)
-	if code, _ := m.do("network/update", cbor.M(1, []any{})); code != EBusy {
+	if code, _ := m.do("network/update", cbor.M(1, []any{cbor.M()})); code != EBusy {
 		t.Fatalf("second request while ops busy: %d", code)
 	}
 	close(release)

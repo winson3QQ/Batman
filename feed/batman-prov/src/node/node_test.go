@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,10 @@ import (
 )
 
 type fakeSys struct {
+	// 254-p3-impl §3.3: SetCountry / SetAP calls and their exit codes
+	setCountry     []string
+	setAP          []string
+	setRC          int
 	trial, devOpen bool
 	keys           []string
 	persisted      []uint64
@@ -233,7 +238,7 @@ func (f *fakeSys) RemoveMeshMarkers() error           { f.markersRemoved++; retu
 func (f *fakeSys) Now() time.Time                     { return f.now }
 
 type rig struct {
-	t     *testing.T
+	t     testing.TB
 	n     *Node
 	sys   *fakeSys
 	ks    *keystore.Keystore
@@ -241,10 +246,10 @@ type rig struct {
 	owner *ecdsa.PrivateKey
 	enc   *ecdsa.PrivateKey
 	h     []byte
-	id    uint64
+	id    atomic.Uint64 // calls may run concurrently (TestStatusSingleFlight)
 }
 
-func newRig(t *testing.T, state string) *rig {
+func newRig(t testing.TB, state string) *rig {
 	root := t.TempDir()
 	p := provstore.Paths{Dir: filepath.Join(root, "prov"), RunDir: filepath.Join(root, "run")}
 	os.MkdirAll(p.RunDir, 0o700)
@@ -275,9 +280,9 @@ func make32(c byte) []byte {
 func pub(k *ecdsa.PrivateKey) []byte { b, _ := k.PublicKey.Bytes(); return b }
 
 func (r *rig) call(verb string, args cbor.Map) (int, cbor.Map) {
-	r.id++
+	id := r.id.Add(1)
 	// through the wire format, as the socket server does: encode, then strict decode
-	raw, err := cbor.Encode(cbor.M(1, verb, 2, r.id, 3, args))
+	raw, err := cbor.Encode(cbor.M(1, verb, 2, id, 3, args))
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -480,4 +485,10 @@ func TestFrozenRefusesStateChanges(t *testing.T) {
 	if rec, _, _ := provstore.LoadOverlay(r.n.P); rec.State != provstore.Unclaimed || len(r.sys.persisted) != 0 {
 		t.Fatal("a frozen node persisted something")
 	}
+}
+
+func (f *fakeSys) SetCountry(cc string) int { f.setCountry = append(f.setCountry, cc); return f.setRC }
+func (f *fakeSys) SetAP(ssid, pass string) int {
+	f.setAP = append(f.setAP, ssid+"|"+pass)
+	return f.setRC
 }

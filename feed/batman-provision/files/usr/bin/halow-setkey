@@ -6,6 +6,8 @@
 #   halow-setkey --forget-mesh [--no-persist]   (#254 §6: placeholder key + radio blocked, verified down)
 #   halow-setkey --check-only [--mesh <key>|-] [--mesh-id <id>] [--channel <n>]   (#254 §15.1)
 #   halow-setkey --status
+#   halow-setkey --country <CC> --rollback [--lockwait <s>]                            (#254 P3 settings key 2)
+#   halow-setkey --ap - --ap-ssid <ssid> --ap-section default_radio0 --rollback [--lockwait <s>]   (P3 key 20)
 #
 # --check-only runs exactly the validation of the write modes and exits 0 (would be accepted) or 2 (refused, the same
 # message); no lock, no uci write, no wifi, no persist, no root needed beyond reading uci. It takes only --mesh /
@@ -26,7 +28,7 @@
 #             3 applied but NOT verified / NOT persisted (message says why; "persist:" line is the truth).
 #             3 is not a harness skip code — it means "look at this node".
 # Persisted (PRESERVE in batman-config-save): mesh key, mesh_id, channel, country, hostname, AP key,
-# address flags. NOT persisted: mesh encryption (image default sae), AP ssid (= hostname, 99-halow-identity).
+# address flags, AP ssid (#254 P3; one with an UNSAFE character is not kept). NOT persisted: mesh encryption (image default sae).
 # Keys may not contain  ` $ ( ) ; | & < > '  — p5's uci batch cannot carry them (96 rejects the batch).
 # --channel is validated against the morse regdb for the radio's country: an S1G channel number implies
 # its bandwidth (US: ch40 = 4 MHz @ 922.0 MHz, ch42 = 2 MHz @ 923.0 MHz), the same table netifd uses.
@@ -42,17 +44,34 @@ WSETTLE=/usr/lib/batman/wireless-settle.sh
 IEEE80211=/sys/class/ieee80211; NETCLASS=/sys/class/net; PROC=/proc; S1G_EXE=/usr/sbin/wpa_supplicant_s1g; S1G_UID=0
 PROVTXN=/etc/batman-prov/.txn   # the helper's "a network change is unfinished" (#254 wireless-txn §3)
 MESH=""; AP=""; MESHID=""; CHAN=""; STATUS=0; NOPERSIST=0; FORGET=0; CHECK=0
+COUNTRY=""; APSSID=""; APSEC=""; ROLLBACK=0; P3=0   # #254 P3 settings (254-p3-impl §3.3)
 usage() { echo "usage: halow-setkey [--mesh <key>|-] [--ap <key>] [--mesh-id <id>] [--channel <n>] [--no-persist] | --forget-mesh [--no-persist] | --check-only [--mesh <key>|-] [--mesh-id <id>] [--channel <n>] | --status" >&2; exit 2; }
 while [ $# -gt 0 ]; do
+	case "$1" in --mesh|--ap|--mesh-id|--channel|--country|--ap-ssid|--ap-section|--lockwait) [ $# -ge 2 ] || usage ;; esac
 	case "$1" in
 		--mesh) MESH=${2:-}; shift 2;; --ap) AP=${2:-}; shift 2;; --mesh-id) MESHID=${2:-}; shift 2;;
 		--channel) CHAN=${2:-}; shift 2;; --status) STATUS=1; shift;;
 		--no-persist) NOPERSIST=1; shift;;   # #254: batman-provhelper's transaction persists by itself (§4.4 step 2)
 		--forget-mesh) FORGET=1; shift;;     # #254 §6: no key input; mesh id / channel unchanged
 		--check-only) CHECK=1; shift;;       # #254 §15.1: validate only
+		--country) COUNTRY=${2:-}; shift 2;; --ap-ssid) APSSID=${2:-}; shift 2;; --ap-section) APSEC=${2:-}; shift 2;;
+		--rollback) ROLLBACK=1; shift;;
+		--lockwait) case "${2:-}" in ''|*[!0-9]*) usage;; esac; LOCKWAIT=$2; shift 2;;
 		*) usage;;
 	esac
 done
+# #254 P3: --rollback marks the app's settings mode — exactly one of --country / (--ap - --ap-ssid --ap-section), nothing
+# else; the existing modes are untouched (without --rollback, --country / --ap-ssid / --ap-section are refused)
+if [ "$ROLLBACK" = 1 ] || [ -n "$COUNTRY$APSSID$APSEC" ]; then
+	[ "$ROLLBACK" = 1 ] || { echo "--country / --ap-ssid / --ap-section need --rollback" >&2; exit 2; }
+	[ "$STATUS$FORGET$CHECK$NOPERSIST" = 0000 ] && [ -z "$MESH$MESHID$CHAN" ] || { echo "--rollback takes only --country, or --ap - --ap-ssid --ap-section" >&2; exit 2; }
+	if [ -n "$COUNTRY" ]; then [ -z "$AP$APSSID$APSEC" ] || { echo "one setting per call" >&2; exit 2; }
+	else [ "$AP" = - ] && [ -n "$APSSID" ] && [ -n "$APSEC" ] || { echo "--ap - --ap-ssid <ssid> --ap-section <section> (the passphrase on stdin)" >&2; exit 2; }
+		IFS= read -r AP || true; p3cr=$(printf '\r'); AP=${AP%"$p3cr"}
+		# one line only: a second line would be dropped silently and a different key set than sent (P3 security review m1)
+		if IFS= read -r p3extra || [ -n "${p3extra:-}" ]; then echo "passphrase: one line only"; exit 2; fi; fi
+	P3=1
+fi
 # --forget-mesh takes no key, id or channel (and never reads stdin): checked before `--mesh -` could read one
 if [ "$FORGET" = 1 ] && { [ "$STATUS" = 1 ] || [ -n "$MESH$AP$MESHID$CHAN" ]; }; then
 	echo "--forget-mesh takes no key, mesh id, channel or --status (only --no-persist)" >&2; exit 2
@@ -118,7 +137,7 @@ if [ "$CHECK" = 1 ]; then
 fi
 
 [ "$(id -u)" = 0 ] || { echo "halow-setkey: root only" >&2; exit 2; }
-[ "$FORGET" = 1 ] || [ -n "$MESH$AP$MESHID$CHAN" ] || { echo "nothing to set (use --mesh/--ap/--mesh-id/--channel, --forget-mesh or --status)"; exit 2; }
+[ "$FORGET" = 1 ] || [ "$P3" = 1 ] || [ -n "$MESH$AP$MESHID$CHAN" ] || { echo "nothing to set (use --mesh/--ap/--mesh-id/--channel, --forget-mesh or --status)"; exit 2; }
 
 # ---- 0. one writer at a time (#254 §6) ------------------------------------------------------------
 # helper (net.apply / Finish), operator and 99-batman-chanfix all write wireless + `wifi reload`; interleaved, one
@@ -127,17 +146,17 @@ fi
 # shellcheck source=/dev/null
 [ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
 if ! type batman_rundir >/dev/null 2>&1 || ! batman_rundir 2>/dev/null || ! command -v flock >/dev/null 2>&1; then
-	echo "halow-setkey: run dir / flock unusable — refusing (nothing changed)" >&2; exit 2
+	echo "halow-setkey: run dir / flock unusable — refusing (nothing changed)" >&2; [ "$P3" = 1 ] && exit 5; exit 2
 fi
-command exec 9>"$RUNDIR/halow-setkey.lock" || { echo "halow-setkey: cannot open the lock — refusing (nothing changed)" >&2; exit 2; }
+command exec 9>"$RUNDIR/halow-setkey.lock" || { echo "halow-setkey: cannot open the lock — refusing (nothing changed)" >&2; [ "$P3" = 1 ] && exit 5; exit 2; }
 w=0; until flock -n 9; do
-	w=$((w + 1)); [ "$w" -ge "$LOCKWAIT" ] && { echo "halow-setkey: busy — another radio change holds the lock (${w}s); nothing changed" >&2; exit 2; }
+	w=$((w + 1)); [ "$w" -ge "$LOCKWAIT" ] && { echo "halow-setkey: busy — another radio change holds the lock (${w}s); nothing changed" >&2; [ "$P3" = 1 ] && exit 5; exit 2; }
 	sleep 1
 done
 # #254 §15.6: an operator's change while the helper has an unfinished network change would be undone by its Finish.
 # Checked while HOLDING the lock (code review 2 B m8): a helper change that started while we waited is seen here.
 if [ "$NOPERSIST" = 0 ] && { [ -e "$PROVTXN" ] || [ -L "$PROVTXN" ]; }; then
-	echo "halow-setkey: an unfinished network change — let the helper finish it (any app action or a reboot); nothing changed" >&2; exit 2
+	echo "halow-setkey: an unfinished network change — let the helper finish it (any app action or a reboot); nothing changed" >&2; [ "$P3" = 1 ] && exit 5; exit 2
 fi
 
 # ---- 0b. settle gate (#254 §19.2 rule 1) -----------------------------------------------------------
@@ -145,10 +164,10 @@ fi
 # landing inside netifd's setup of the morse radio left a mesh netdev + wpa_supplicant_s1g on the air that netifd no
 # longer knew (04 2026-10-30, §19.1). An unreadable status is not settled. Nothing has been written yet -> rc 2.
 # shellcheck source=/dev/null
-if [ -r "$WSETTLE" ]; then . "$WSETTLE"; else echo "halow-setkey: $WSETTLE missing — refusing (nothing changed)" >&2; exit 2; fi
+if [ -r "$WSETTLE" ]; then . "$WSETTLE"; else echo "halow-setkey: $WSETTLE missing — refusing (nothing changed)" >&2; [ "$P3" = 1 ] && exit 5; exit 2; fi
 GRADIO=$(morse_radio)
 if [ -n "$GRADIO" ] && ! wl_wait_settled "$GRADIO" "$SETTLE_WAIT"; then
-	echo "halow-setkey: netifd is still reconfiguring $GRADIO after ${SETTLE_WAIT}s — nothing changed (a netifd that never settles needs a reboot)" >&2; exit 2
+	echo "halow-setkey: netifd is still reconfiguring $GRADIO after ${SETTLE_WAIT}s — nothing changed (a netifd that never settles needs a reboot)" >&2; [ "$P3" = 1 ] && exit 5; exit 2
 fi
 
 # ---- 4. persist (#202), shared by every write mode -------------------------------------------------
@@ -171,6 +190,141 @@ persist_exit() {
 	exit "$RC"
 }
 RC=0
+
+# ---- P3 settings (#254 254-p3-impl §3.3): --country / --ap - --ap-ssid --ap-section, always with --rollback --------
+# One value per call, from batman-provhelper's settings.set. A failure goes back to the previous state in this same call
+# ("失敗就回到之前的狀態"). Exit codes of this mode (the existing modes keep theirs): 0 set + read back + persisted;
+# 2 value refused, nothing written; 3 applied but not read back -> restored; 4 not persisted -> restored; 5 busy (the
+# lock within --lockwait, another writer's staged wireless changes, an unfinished helper change (.txn), netifd not
+# settled, the run dir unusable), nothing written; 6 the live restore itself did not verify — the node is in an unknown
+# state: the helper logs CRIT and status reports it (design appendix D-5 / D-6). A live restore that verifies but whose
+# save fails again keeps 3 / 4 (p5 not fresh is what status key 4 already says). A real previous AP key / ssid this mode
+# could not write back (a quote, backslash, line break) is refused with 2 before anything changes. A value equal to the
+# current one (AP: on the air with it) is 0 with nothing changed — after p5 is checked fresh or saved (4 if that fails).
+# The AP passphrase comes on stdin (`--ap -`) and goes to uci by `uci batch` on stdin — never in an argv (F78).
+# uci's save dir is root's 0700 directory under the world-writable tmp (uci makes it at boot). A save dir that is not
+# that — another owner, another mode, a symlink, not a directory — is not trusted: counted as staged (refuse), never
+# read (#280 rule: a decision input in a world-writable path is owner-checked)
+p3_staged(){ d=/tmp/.uci; [ -e "$d" ] || [ -L "$d" ] || return 1
+	[ -d "$d" ] && [ ! -L "$d" ] && [ "$(ls -ldn "$d" 2>/dev/null | awk '{print $1, $3}')" = "drwx------ 0" ] || return 0
+	[ -s "$d/wireless" ]; }
+p3_regdb_has(){ [ -r "$REGDB" ] && awk -F, -v cc="$1" '$1==cc {f=1; exit} END {exit !f}' "$REGDB"; }
+# the AP of section $1 on the air with ssid $2: netifd lists the section with that ssid on an ifname and iw shows the
+# ssid on that netdev (the ssid and hostapd.<if> come and go together on 04: the ssid is the check) (04 2026-11-09: a blocked AP leaves a DOWN type-AP netdev without ssid /
+# hostapd object — "type AP" alone is not "on the air")
+p3_ap_ifname(){ printf '%s' "$1" | jsonfilter -e "@.radio0.interfaces[@.section='$2'].ifname" 2>/dev/null 9>&-; }
+p3_ap_up(){
+	pa_st=$(wl_status) || return 1
+	[ "$(wl_field "$pa_st" radio0 pending)" = false ] && [ "$(wl_field "$pa_st" radio0 up)" = true ] || return 1
+	pa_if=$(p3_ap_ifname "$pa_st" "$1"); [ -n "$pa_if" ] || return 1
+	[ "$(printf '%s' "$pa_st" | jsonfilter -e "@.radio0.interfaces[@.section='$1'].config.ssid" 2>/dev/null 9>&-)" = "$2" ] || return 1
+	iw dev "$pa_if" info 2>/dev/null 9>&- | sed 's/^[[:space:]]*//' | grep -qxF "ssid $2"
+}
+p3_ap_off(){   # no ssid on any AP netdev and no per-interface hostapd object
+	iw dev 2>/dev/null 9>&- | grep -q '^[[:space:]]*ssid ' && return 1
+	ubus list 2>/dev/null 9>&- | grep -q '^hostapd\.' && return 1
+	return 0
+}
+p3_persist(){ batman-config-save --save >/dev/null 2>&1 9>&-; }
+# p5 fresh already, or saved now (a value equal to the live one may still be missing in p5: power lost between a
+# commit and its save; A r2 MAJOR-2)
+p3_fresh_or_save(){ batman-config-save --check >/dev/null 2>&1 9>&- || p3_persist; }
+# a previous value written back by `uci batch` inside single quotes: no quote, backslash, CR or newline
+P3NL=$(printf '\nx'); P3NL=${P3NL%x}; P3CR=$(printf '\r')
+p3_quotable(){ case "$1" in *"'"*|*\\*|*"$P3NL"*|*"$P3CR"*) return 1 ;; esac; return 0; }
+if [ "$P3" = 1 ]; then
+	trap '' PIPE   # F77: the helper dying must not stop this run half-way (it keeps the lock and restores by itself)
+	if [ -n "$COUNTRY" ]; then
+		case "$COUNTRY" in [A-Z][A-Z]) ;; *) echo "country must be two capital letters"; exit 2 ;; esac
+		p3_regdb_has "$COUNTRY" || { echo "country $COUNTRY is not in $REGDB"; exit 2; }
+		R=$(morse_radio); [ -n "$R" ] || { echo "no morse (HaLow) radio in uci"; exit 2; }
+		[ "$(uci -q get "wireless.$R.disabled")" = 1 ] || { echo "the country is set only while $R is blocked (not in a network)"; exit 2; }
+		p3_staged && { echo "another writer has staged wireless changes — nothing changed" >&2; exit 5; }
+		old=$(uci -q get "wireless.$R.country")
+		if [ "$old" = "$COUNTRY" ]; then
+			p3_fresh_or_save && { echo "country already $COUNTRY — nothing changed (p5 fresh)"; exit 0; }
+			echo "country already $COUNTRY, but p5 is not fresh and saving failed" >&2; exit 4
+		fi
+		uci -q set "wireless.$R.country=$COUNTRY"; uci commit wireless
+		logger -t halow-setkey "p3: country $old -> $COUNTRY on $R (radio blocked)"
+		if [ "$(uci -q get "wireless.$R.country")" != "$COUNTRY" ]; then rc=3; why="read back"
+		elif p3_persist; then echo "country $COUNTRY set and persisted"; exit 0
+		else rc=4; why="persist"; fi
+		if [ -n "$old" ]; then uci -q set "wireless.$R.country=$old"; else uci -q delete "wireless.$R.country"; fi
+		uci commit wireless
+		if [ "$(uci -q get "wireless.$R.country")" != "$old" ]; then
+			echo "country: $why failed — RESTORE NOT VERIFIED (uci $(uci -q get "wireless.$R.country"), was ${old:-<unset>})" >&2; rc=6
+		elif { [ "$rc" = 3 ] && batman-config-save --check >/dev/null 2>&1 9>&-; } || p3_persist; then echo "country: $why failed — back to ${old:-<unset>}" >&2
+		else echo "country: $why failed — back to ${old:-<unset>} live, saving it failed again (status shows p5 not fresh)" >&2; fi
+		exit "$rc"
+	fi
+	# --ap - --ap-ssid <ssid> --ap-section default_radio0
+	[ "$APSEC" = default_radio0 ] || { echo "--ap-section must be default_radio0 (the section p5 keeps)"; exit 2; }
+	[ "$(uci -q get "wireless.$APSEC.mode")" = ap ] || { echo "wireless.$APSEC is not an AP"; exit 2; }
+	case "$APSSID" in ''|' '*|*' '|*[!A-Za-z0-9._~+=,:@%^*\ -]*) echo "ssid: 1-32 of [A-Za-z0-9 ._~+=,:@%^*-], no blank at either end"; exit 2 ;; esac
+	[ ${#APSSID} -le 32 ] || { echo "ssid longer than 32"; exit 2; }
+	case "$AP" in ''|*[!A-Za-z0-9._~+=,:@%^*-]*) echo "passphrase: 12-63 of [A-Za-z0-9._~+=,:@%^*-]"; exit 2 ;; esac
+	[ ${#AP} -ge 12 ] && [ ${#AP} -le 63 ] || { echo "passphrase: 12-63 characters"; exit 2; }
+	[ "$AP" != "$PLACEHOLDER" ] || { echo "refusing the placeholder as a key"; exit 2; }
+	p3_staged && { echo "another writer has staged wireless changes — nothing changed" >&2; exit 5; }
+	oldkey=$(uci -q get "wireless.$APSEC.key"); oldssid=$(uci -q get "wireless.$APSEC.ssid"); olddis=$(uci -q get "wireless.$APSEC.disabled")
+	oldmark=""; [ -f "$MARK" ] && read -r oldmark < "$MARK"
+	if [ "$oldkey" = "$AP" ] && [ "$oldssid" = "$APSSID" ] && [ "$olddis" != 1 ] && p3_ap_up "$APSEC" "$APSSID"; then
+		p3_fresh_or_save && { echo "AP $APSEC already on the air with this ssid and key — nothing changed (p5 fresh)"; exit 0; }
+		echo "AP already set, but p5 is not fresh and saving failed" >&2; exit 4
+	fi
+	# fail-closed BEFORE anything is written: a real previous key / ssid that `uci batch` cannot take back (a quote,
+	# backslash or line break, set outside the app) could not be restored if this change failed (P3 security r2 m1)
+	if [ -n "$oldkey" ] && [ "$oldkey" != "$PLACEHOLDER" ] && { ! p3_quotable "$oldkey" || ! p3_quotable "$oldssid"; }; then
+		echo "the current AP key / ssid has a quote, backslash or line break (set outside the app): it could not be restored on a failure — nothing changed"; exit 2
+	fi
+	# the passphrase by uci batch on stdin; the allowed set has no ' -> single quotes are safe
+	printf "set wireless.%s.key='%s'\nset wireless.%s.ssid='%s'\ndelete wireless.%s.disabled\n" "$APSEC" "$AP" "$APSEC" "$APSSID" "$APSEC" | uci batch 9>&- >/dev/null 2>&1
+	rest=""; for s in $oldmark; do [ "$s" = "$APSEC" ] || rest="$rest $s"; done
+	if [ -n "$rest" ]; then echo "$rest" > "$MARK.tmp" && mv -f "$MARK.tmp" "$MARK"; else rm -f "$MARK"; fi
+	uci commit wireless
+	if [ "$(uci -q get "wireless.$APSEC.key")" != "$AP" ] || [ "$(uci -q get "wireless.$APSEC.ssid")" != "$APSSID" ] || [ -n "$(uci -q get "wireless.$APSEC.disabled")" ]; then
+		rc=3; why="uci read back (the new key / ssid did not land)"
+	else
+		logger -t halow-setkey "p3: AP $APSEC paired (ssid set, key set), reloading wifi"
+		wifi reload >/dev/null 2>&1 9>&- || wifi 9>&-
+		i=0; up=0; while [ "$i" -lt "$READBACK_WAIT" ]; do p3_ap_up "$APSEC" "$APSSID" && { up=1; break; }; sleep 1; i=$((i + 1)); done
+		if [ "$up" = 1 ]; then
+			if p3_persist; then echo "AP $APSEC on the air with the new ssid after ${i}s; persisted"; exit 0; fi
+			rc=4; why="persist"
+		else rc=3; why="read back (the AP did not come up with the new ssid within ${READBACK_WAIT}s)"; fi
+	fi
+	# back to the previous state: a placeholder key goes back BLOCKED (setkey refuses the placeholder as a value)
+	if [ "$oldkey" = "$PLACEHOLDER" ] || [ -z "$oldkey" ]; then
+		printf "set wireless.%s.key='%s'\nset wireless.%s.disabled='1'\n" "$APSEC" "$PLACEHOLDER" "$APSEC" | uci batch 9>&- >/dev/null 2>&1
+		if [ -n "$oldssid" ]; then uci -q set "wireless.$APSEC.ssid=$oldssid"; else uci -q delete "wireless.$APSEC.ssid"; fi
+		new=$oldmark; case " $new " in *" $APSEC "*) ;; *) new="$new $APSEC" ;; esac
+		echo $new > "$MARK.tmp" && mv -f "$MARK.tmp" "$MARK"
+		uci commit wireless; wifi reload >/dev/null 2>&1 9>&- || wifi 9>&-
+		i=0; off=0; while [ "$i" -lt 30 ]; do p3_ap_off && { off=1; break; }; sleep 1; i=$((i + 1)); done
+		if [ "$off" = 0 ]; then   # D-6: once more with a full reconfigure before calling it unknown
+			wifi 9>&-; i=0; while [ "$i" -lt 30 ]; do p3_ap_off && { off=1; break; }; sleep 1; i=$((i + 1)); done
+		fi
+		if [ "$off" != 1 ]; then echo "AP: $why failed — RESTORE NOT VERIFIED (still on the air)" >&2; rc=6
+		elif { [ "$rc" = 3 ] && batman-config-save --check >/dev/null 2>&1 9>&-; } || p3_persist; then echo "AP: $why failed — back to blocked (placeholder, off the air)" >&2
+		else echo "AP: $why failed — back to blocked live, saving it failed again (status shows p5 not fresh)" >&2; fi
+	else   # (the previous values are quotable: checked before the change)
+		# an empty previous ssid is deleted, not written as '' (B r2 C1)
+		if [ -n "$oldssid" ]; then printf "set wireless.%s.key='%s'\nset wireless.%s.ssid='%s'\n" "$APSEC" "$oldkey" "$APSEC" "$oldssid"
+		else printf "set wireless.%s.key='%s'\ndelete wireless.%s.ssid\n" "$APSEC" "$oldkey" "$APSEC"; fi | uci batch 9>&- >/dev/null 2>&1
+		[ "$olddis" = 1 ] && uci -q set "wireless.$APSEC.disabled=1"
+		[ -n "$oldmark" ] && { echo "$oldmark" > "$MARK.tmp" && mv -f "$MARK.tmp" "$MARK"; }
+		uci commit wireless; wifi reload >/dev/null 2>&1 9>&- || wifi 9>&-
+		i=0; back=0
+		# disabled, or no ssid (an AP without one is not on the air): verified OFF; else back on the air with its ssid
+		if [ "$olddis" = 1 ] || [ -z "$oldssid" ]; then while [ "$i" -lt 30 ]; do p3_ap_off && { back=1; break; }; sleep 1; i=$((i + 1)); done
+		else while [ "$i" -lt "$READBACK_WAIT" ]; do p3_ap_up "$APSEC" "$oldssid" && { back=1; break; }; sleep 1; i=$((i + 1)); done; fi
+		if [ "$back" != 1 ]; then echo "AP: $why failed — RESTORE NOT VERIFIED (the previous AP state did not come back: disabled=${olddis:-0})" >&2; rc=6
+		elif { [ "$rc" = 3 ] && batman-config-save --check >/dev/null 2>&1 9>&-; } || p3_persist; then echo "AP: $why failed — back to the previous ssid / key" >&2
+		else echo "AP: $why failed — back to the previous ssid / key live, saving it failed again (status shows p5 not fresh)" >&2; fi
+	fi
+	exit "$rc"
+fi
 
 # ---- --forget-mesh (#254 §6, `network/leave` and Finish) ------------------------------------------
 # Placeholder key on the morse radio's mesh interface(s) AND the keyguard block of that radio (uci disabled=1 + the
