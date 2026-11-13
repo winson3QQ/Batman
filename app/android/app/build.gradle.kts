@@ -1,4 +1,6 @@
+import org.gradle.api.artifacts.component.ComponentArtifactIdentifier
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 import org.gradle.api.artifacts.result.ResolvedComponentResult
 import org.gradle.api.artifacts.result.ResolvedDependencyResult
 
@@ -105,58 +107,90 @@ flutter {
     source = "../.."
 }
 
-// 254-app-qr §4 (B-M2 / B r2-m1): the dependency groups an APK may carry, exact names (no prefixes). Before each
-// variant's pre<Variant>Build its runtime classpath is resolved; a group outside this list, an unresolved dependency or
-// an empty classpath fails the build. The list = the groups resolved before the QR scanner (2026-11-13, PR dependency
-// diff) + androidx.camera / com.google.zxing. Never here: com.google.android.gms, com.google.mlkit,
-// com.google.firebase, com.google.android.datatransport. A compromised version inside a listed group is not caught
-// (Gradle dependency locking, #254 checklist).
-val allowedGroups = setOf(
-    "androidx.activity", "androidx.annotation", "androidx.arch.core", "androidx.collection", "androidx.concurrent",
-    "androidx.core", "androidx.customview", "androidx.exifinterface", "androidx.fragment", "androidx.interpolator",
-    "androidx.lifecycle", "androidx.loader", "androidx.profileinstaller", "androidx.savedstate", "androidx.startup",
-    "androidx.tracing", "androidx.versionedparcelable", "androidx.viewpager", "androidx.window",
-    "androidx.window.extensions.core", "com.getkeepsafe.relinker", "com.google.guava", "com.google.protobuf",
-    "com.jakewharton.rxrelay2", "com.polidea.rxandroidble2", "io.flutter", "io.reactivex.rxjava2", "org.jetbrains",
-    "org.jetbrains.kotlin", "org.jetbrains.kotlinx", "org.jspecify", "org.reactivestreams",
-    // new with the QR scanner: ZXing core and CameraX core / camera2 / lifecycle 1.6.2 (camera2-pipe -> dagger ->
-    // jakarta / javax.inject; featurecombinationquery -> auto-value annotations)
-    "com.google.zxing", "androidx.camera", "androidx.camera.featurecombinationquery", "com.google.auto.value",
-    "com.google.dagger", "jakarta.inject", "javax.inject",
-)
+// 254-app-qr §4 (B-M2 / B r2-m1, code review r1 B-M1 / B-m1): the modules an APK may carry, exact `group:module`
+// names (no prefixes, no versions). Before each variant's pre<Variant>Build:
+// - its runtime dependency graph: a module outside this list, an unresolved dependency or an empty graph fails;
+// - its classes artifacts (what is dexed): one that is neither a listed module nor a project (a `files(...)` jar in
+//   :app or in a plugin project) fails.
+// The list = exactly what the 9 variants resolve today (2026-11-13; before the QR scanner + CameraX core / camera2 /
+// lifecycle 1.6.2 and ZXing core 3.5.4). Never here: com.google.android.gms, com.google.mlkit, com.google.firebase,
+// com.google.android.datatransport. Not covered: a compromised version of a listed module (Gradle dependency locking,
+// #254 checklist); Dart pub packages and the Rust .so (not Gradle dependencies).
+val allowedModules = setOf<String>(
+    "androidx.activity:activity", "androidx.annotation:annotation", "androidx.annotation:annotation-experimental",
+    "androidx.annotation:annotation-jvm", "androidx.arch.core:core-common", "androidx.arch.core:core-runtime",
+    "androidx.camera.featurecombinationquery:featurecombinationquery", "androidx.camera:camera-camera2",
+    "androidx.camera:camera-camera2-pipe", "androidx.camera:camera-core", "androidx.camera:camera-lifecycle",
+    "androidx.collection:collection", "androidx.concurrent:concurrent-futures",
+    "androidx.concurrent:concurrent-futures-ktx", "androidx.core:core", "androidx.core:core-backported-fixes",
+    "androidx.core:core-ktx", "androidx.customview:customview", "androidx.exifinterface:exifinterface",
+    "androidx.fragment:fragment", "androidx.interpolator:interpolator", "androidx.lifecycle:lifecycle-common",
+    "androidx.lifecycle:lifecycle-common-java8", "androidx.lifecycle:lifecycle-livedata",
+    "androidx.lifecycle:lifecycle-livedata-core", "androidx.lifecycle:lifecycle-livedata-core-ktx",
+    "androidx.lifecycle:lifecycle-process", "androidx.lifecycle:lifecycle-runtime",
+    "androidx.lifecycle:lifecycle-viewmodel", "androidx.lifecycle:lifecycle-viewmodel-savedstate",
+    "androidx.loader:loader", "androidx.profileinstaller:profileinstaller", "androidx.savedstate:savedstate",
+    "androidx.startup:startup-runtime", "androidx.tracing:tracing", "androidx.tracing:tracing-android",
+    "androidx.tracing:tracing-ktx", "androidx.versionedparcelable:versionedparcelable", "androidx.viewpager:viewpager",
+    "androidx.window.extensions.core:core", "androidx.window:window", "androidx.window:window-java",
+    "com.getkeepsafe.relinker:relinker", "com.google.auto.value:auto-value-annotations", "com.google.dagger:dagger",
+    "com.google.guava:listenablefuture", "com.google.protobuf:protobuf-javalite", "com.google.zxing:core",
+    "com.jakewharton.rxrelay2:rxrelay", "com.polidea.rxandroidble2:dagger-library-shadow",
+    "com.polidea.rxandroidble2:rxandroidble", "io.flutter:arm64_v8a_debug", "io.flutter:arm64_v8a_profile",
+    "io.flutter:arm64_v8a_release", "io.flutter:armeabi_v7a_debug", "io.flutter:armeabi_v7a_profile",
+    "io.flutter:armeabi_v7a_release", "io.flutter:flutter_embedding_debug", "io.flutter:flutter_embedding_profile",
+    "io.flutter:flutter_embedding_release", "io.flutter:x86_64_debug", "io.flutter:x86_64_profile",
+    "io.flutter:x86_64_release", "io.reactivex.rxjava2:rxandroid", "io.reactivex.rxjava2:rxjava",
+    "io.reactivex.rxjava2:rxkotlin", "jakarta.inject:jakarta.inject-api", "javax.inject:javax.inject",
+    "org.jetbrains.kotlin:kotlin-stdlib", "org.jetbrains.kotlin:kotlin-stdlib-jdk7", "org.jetbrains.kotlinx:atomicfu",
+    "org.jetbrains.kotlinx:atomicfu-jvm", "org.jetbrains.kotlinx:kotlinx-coroutines-android",
+    "org.jetbrains.kotlinx:kotlinx-coroutines-bom", "org.jetbrains.kotlinx:kotlinx-coroutines-core",
+    "org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm", "org.jetbrains:annotations", "org.jspecify:jspecify",
+    "org.reactivestreams:reactive-streams",)
 
-// configuration-cache safe: the resolution result is a lazy task input, the action touches no Project
-abstract class DependencyGroupGate : DefaultTask() {
+// configuration-cache safe: the resolution results are lazy task inputs, the action touches no Project
+abstract class DependencyGate : DefaultTask() {
     @get:Input abstract val allowed: SetProperty<String>
     @get:Input abstract val root: Property<ResolvedComponentResult>
+    @get:Input abstract val artifacts: ListProperty<ComponentArtifactIdentifier>
 
     @TaskAction
     fun check() {
-        val groups = sortedSetOf<String>()
+        val modules = sortedSetOf<String>()
         val bad = sortedSetOf<String>()
         val seen = HashSet<Any>()
         val todo = ArrayDeque(listOf(root.get()))
         while (todo.isNotEmpty()) {
             val c = todo.removeFirst()
             if (!seen.add(c.id)) continue
-            (c.id as? ModuleComponentIdentifier)?.let { groups.add(it.group) }
+            (c.id as? ModuleComponentIdentifier)?.let { modules.add("${it.group}:${it.module}") }
             for (d in c.dependencies) {
                 if (d is ResolvedDependencyResult) todo.add(d.selected) else bad.add("unresolved ${d.requested.displayName}")
             }
         }
-        if (groups.isEmpty()) bad.add("empty runtime classpath")
-        groups.filterNot { it in allowed.get() }.forEach { bad.add("group not allowed: $it") }
+        if (modules.isEmpty()) bad.add("empty runtime classpath")
+        modules.filterNot { it in allowed.get() }.forEach { bad.add("module not allowed: $it") }
+        for (a in artifacts.get()) {
+            when (val c = a.componentIdentifier) {
+                is ProjectComponentIdentifier -> {}
+                is ModuleComponentIdentifier -> if ("${c.group}:${c.module}" !in allowed.get()) bad.add("module not allowed: ${c.group}:${c.module}")
+                else -> bad.add("not a module or project: ${a.displayName}")
+            }
+        }
         if (bad.isNotEmpty()) throw GradleException("$name: ${bad.joinToString("; ")}")
-        logger.lifecycle("$name: ${groups.size} groups, all allowed")
+        logger.lifecycle("$name: ${modules.size} modules, ${artifacts.get().size} class artifacts, all allowed")
     }
 }
 
 androidComponents {
     onVariants { v ->
         val cap = v.name.replaceFirstChar { it.uppercase() }
-        val gate = tasks.register<DependencyGroupGate>("check${cap}DependencyGroups") {
-            allowed.set(allowedGroups)
+        val gate = tasks.register<DependencyGate>("check${cap}DependencyGroups") {
+            allowed.set(allowedModules)
             root.set(v.runtimeConfiguration.incoming.resolutionResult.rootComponent)
+            artifacts.set(v.runtimeConfiguration.incoming.artifactView {
+                attributes { attribute(Attribute.of("artifactType", String::class.java), "android-classes-jar") }
+            }.artifacts.resolvedArtifacts.map { s -> s.map { it.id } })
         }
         tasks.matching { it.name == "pre${cap}Build" }.configureEach { dependsOn(gate) }
     }
