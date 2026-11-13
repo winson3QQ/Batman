@@ -129,8 +129,7 @@ jobs:
           cd feed/batman-prov/src
           o=$(sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root GOFLAGS=-mod=vendor GOTOOLCHAIN=local go test -count=1 -v -tags prov_test ./... 2>&1) && rc=0 || rc=$?   # bash -e: a bare `o=$(...); rc=$?` exits before printing
           echo "$o" | grep -E '^(--- (FAIL|SKIP)|ok|FAIL|panic)'
-          [ $rc = 0 ] || { echo "go test rc=$rc; the failing tests' own lines:"; echo "$o" | awk '/^=== RUN/ { buf = "" } { buf = buf $0 "
-" } /^--- FAIL/ { printf "%s", buf }'; exit 1; }
+          [ $rc = 0 ] || { echo "go test rc=$rc; the failing tests' own lines:"; echo "$o" | awk '/^=== RUN/ { b = "" } { b = b $0 ORS } /^--- FAIL/ { printf "%s", b }'; exit 1; }
           ! echo "$o" | grep -q -- '--- SKIP' || { echo '::error::a Go test skipped under root + prov_test'; exit 1; }
       - name: "#254 claim-lock fix stub tests (no root): prov_apply_lock, prov_root_hash_ok, S13 batman-prov-lock, rollback lock gate, cross-file lints"
         run: |
