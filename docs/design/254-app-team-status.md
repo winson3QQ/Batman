@@ -138,7 +138,7 @@ peer-entry = {
 | 項目 | 契約 |
 |---|---|
 | 寫入 / 讀取 | helper 寫 → provd 原樣轉送 → app 讀；**兩個角色都拿得到 key 8、9**（自己的位址本來就會出現在別台的 key 9 裡） |
-| key 8 來源 | `/sys/class/ieee80211/<phy>/macaddress`，`<phy>` 依 **driver** 選（`<phy>/device/driver` 的名稱以 `morse_` 開頭；不依 `phy0` 這種名稱）；剛好一個 → 送；零個或多個 → 不送。radio 關著也讀得到（F31）— 網主入網**前**簽名單時要用。**⚠️ 前提：它等於入網後的 originator 位址**（C2）；不成立 → §9 停止條件 S1 與備案。**執行期自我檢查（A2-m1）**：已入網時，取樣讀到的 primary hard-if MAC（originators 表頭的 `MainIF/MAC`）≠ phy MAC → **不送 key 8**，log 一次（只寫「withheld」，不寫位址），之後只計數 |
+| key 8 來源 | `/sys/class/ieee80211/<phy>/macaddress`，`<phy>` 依 **driver** 選（`<phy>/device/driver` 的名稱以 `morse_` 開頭；不依 `phy0` 這種名稱）；剛好一個 → 送；零個或多個 → 不送。radio 關著也讀得到（F31）— 網主入網**前**簽名單時要用。**⚠️ 前提：它等於入網後的 originator 位址**（C2）；不成立 → §9 停止條件 S1 與備案。**執行期自我檢查（A2-m1）**：已入網時，取樣讀到的 primary hard-if MAC（originators 表頭的 `MainIF/MAC`）≠ phy MAC → **不送 key 8**，每次由「送」變成「不送」時 log 一行（只寫 withheld，不寫位址），其餘只計數 |
 | key 9 有效條件 | 最近一次成功取樣 ≤ 60 s；否則整個 key 9 不送（不把舊資料當現在，同 status.go:182-188）。沒入網 = `/sys/class/net/bat0` 不在或沒有 `lower_*`（沒有 hard-if）→ 不跑 batctl，這次取樣成功、`[]`（⚠️ C7：lower_* 是否確實代表 hard-if） |
 | 取樣的輸入（B-M1） | **只用不翻譯的文字輸出**：`/usr/sbin/batctl meshif bat0 originators -n`，固定 meshif `bat0`，絕對路徑執行、不經 shell。選文字不選 JSON：表頭的 `MainIF/MAC` 是自我檢查要的（JSON 沒有表頭）。只認 BATMAN_V 表頭；每一列的位址必須符合 `^[0-9a-f]{2}(:[0-9a-f]{2}){5}$`；**壞列丟掉、其他列照用**；表頭讀不懂 → 整次取樣失敗。只用最佳路徑（`*`）那一列；nexthop == originator → 直接連線。station dump（`/usr/sbin/iw dev <MainIF> station dump`）同樣規則 |
 | 子行程 | 逾時 5 s → 殺整個 process group，這次取樣失敗；輸出只讀 64 KiB，超過 → 這次取樣失敗 |
@@ -183,7 +183,7 @@ join-request = {
 | **N（本設計出貨的版本）** | 節點全部變更（key 8、9）；app：`exact_keys` 收 key 7、讀名單 key 7（含重複規則）、全隊區的程式、寫 key 7 的程式；**寫 key 7 與全隊區都由同一個編譯期常數關著**（`WRITE_MESH_ADDR = false`，A2-m2 選項 1）→ 版本 N 從不寫 key 7、**也不顯示全隊區**（不給使用者一個全是「不明」的半成品）。N 的網主收到 N+1 加入者帶 key 7 的申請 → 核准照常，但**丟掉 key 7**（N 不寫）→ 該成員在 N+1 畫面上是「沒有登記網路位址」（A2-m3，矩陣列、T-A6(c)） |
 | **N+1** | 只把常數改成 true 的一行 PR（同時打開寫入與全隊區），加上刪掉 §10.2 T-A10「N 必須關著」那個測試 — 刪測試會出現在 diff 裡，不能悄悄拿掉（B2-m1） |
 
-**N+1 的閘門（A2-m4、B2-m1）**：app 自己**沒有顯示可分辨版本的資訊** — 啟動檢查只印 `batman_bridge` 的 crate 版本（app/lib/main.dart:57-58；固定 `0.1.0`，bridge/Cargo.toml:3、simple.rs:14），pubspec 是 `1.0.0+1`（app/pubspec.yaml:19）從沒改過；狀態頁的「軟體版本」是**節點**的（member_ui.dart:447）。所以閘門的輸入是**安裝紀錄**：每支手機的 `adb shell pm path <package>` → 取回 `base.apk` 算 sha256，對照 N（或之後）建置的 APK sha256 清單。**誠實界線：閘門是人工的**（使用者逐支確認），app 不會自己擋；N 建置的 APK sha256 與 commit 寫進 PR 的測試結果段。N 的「常數關著」由 T-A10 綁在 N 的 commit 上：發佈前在 N 的 commit 執行 `git show <N commit>:app/rust/batman-proto/src/teamview.rs | grep -c "WRITE_MESH_ADDR: bool = false"` = 1。
+**N+1 的閘門（A2-m4、B2-m1）**：app 自己**沒有顯示可分辨版本的資訊** — 啟動檢查只印 `batman_bridge` 的 crate 版本（app/lib/main.dart:57-58；固定 `0.1.0`，bridge/Cargo.toml:3、simple.rs:14），pubspec 是 `1.0.0+1`（app/pubspec.yaml:19）從沒改過；狀態頁的「軟體版本」是**節點**的（member_ui.dart:447）。所以閘門的輸入是**安裝紀錄**：每支手機的 `adb shell pm path <package>` → 取回 `base.apk` 算 sha256，對照 N（或之後）建置的 APK sha256 清單。**誠實界線：閘門是人工的**（使用者逐支確認），app 不會自己擋；N 建置的 APK sha256 與 commit 寫進 PR 的測試結果段。N 的「常數關著」由兩道關守住（實作 code review A MAJOR-1 / B-M1）：(1) T-A10 在預設建置斷言 `WRITE_MESH_ADDR == false`；(2) 常數的定義是 `cfg!(feature = "team-write")`，`team-write` 只給測試用 — release / profile 建置一開這個 feature 就 `compile_error!`，`test-all.sh` 的 feature-tree 檢查（batman-proto 與 bridge 的 `cargo tree -e features,no-dev`，含 `-i batman-proto` 看 crate 自己的 feature，加上 `cargokit.yaml`）一看到 `team-write` 就 FAIL。**N+1 改的是常數本身**（`WRITE_MESH_ADDR: bool = true`），不是打開 feature；N+1 的 PR 同時刪掉 T-A10 和那個 `compile_error!`。
 
 ### 4.4 不新增的介面
 
@@ -306,6 +306,7 @@ join-request = {
 | C1 | 兩台的 `batctl if`、`originators -n` 原始輸出（含 `*` 最佳路徑、多路徑時的多列）；BATMAN_V 的 throughput 與 last-seen 欄位、單位 | 定 key 3 單位（暫定 kbit/s = 表上 Mbit/s × 1000）、parser |
 | C2 | 對方的 originator 位址 == 對方 phy macaddress == 對方 mesh iface MAC？是不是 primary hard-if；`batctl if` 有沒有兩個 hard-if（例如 eth0）、有的話 originator 是哪個（A-m5）；`uci show wireless | grep macaddr`；HaLow phy 上**每一個** vif 的 MAC（`iw phy <phy> info`、`/sys/class/ieee80211/<phy>/device/net/*`）（A2-m1） | key 8 / key 9 / 名單 key 7 必須同一種位址 |
 | C4b | sysupgrade 後 phy macaddress 不變（需使用者授權的破壞性步驟，先列步驟）；換 HaLow 模組 → 位址會變（誠實界線） | 名單位址的壽命 |
+| C5' | （實作 code review A-m5 / A-m6：這些變化現在的 provisional fixture 沒有，對應的 mutant 抓不到）擷取時要包含：自己的 originator 列（exclude-self）、同一台在相鄰兩次取樣從直接變成轉送（每次取樣重設 signal）、同一 originator 多條路徑但只有一條 `*`（best-route-only）、`inactive time` 在 15 s 門檻上下的站台；以及一次移除成員換密碼時名單裡有重複位址（rekey 的 gate） | 替換 fixture 後補上對應測試的負對照 |
 | C5 | station dump：每台的 MAC、`signal avg`、`inactive time`；離開的站台怎麼變 | key 4 只給活著的直接站台（F10） |
 | C6 | 一台關機後對方 last-seen 怎麼長、多久消失 | 60 s 門檻 |
 | C9 | 1 小時成本，開 / 關取樣對照 | T4 要有數字 |
@@ -415,3 +416,17 @@ App（`app/`）：
 | A2-m6 | S1 備案只對 N+1 | §9.3 S1 |
 | B2-m1 | 閘門是人工的；「N 關著」要綁版本 | §4.3 誠實界線 + T-A10 + 發佈前的 `git show` 檢查 |
 | B2-m2 | 帶成員紀錄出手機的路徑 | §7 列 (1)–(6) 與隱私變化；T-A9 掃 (1)–(4) |
+
+## 附錄 R3. 實作 code review（6c721e4..aa63ed9）處理
+
+| # | 發現 | 處理 |
+|---|---|---|
+| A MAJOR-1 | test-all.sh 不跑 team-write；6 個 bridge 測試在 team-write 下失敗；release 檢查不看 team-write | test-all.sh 加 proto / bridge 的 `team-write,dev-trust` 回合（T-A8、重複位址測試必須跑到）；6 個測試用 `past_addr_read` 兩種常數值都成立；feature-tree 檢查加 team-write、`-i batman-proto`、cargokit.yaml |
+| B-M1 | release 開 team-write 不會失敗 | `compile_error!`（release / profile）；§4.3 改寫：N+1 改常數 |
+| A-m1 | 讀位址期間沒有忙碌保護 | `flow_busy` 涵蓋 `addr_pending`（ADDR_BUSY） |
+| A-m2 | §4.3 發佈檢查文字 | 見上 |
+| A-m3 | 重試次數與設計不同 | `ADDR_READ_TRIES = 2`（重試一次，§4.2） |
+| A-m4 | 離網 / 換網 / wireless reload 的 key 9 | 不在網路 → `[]` 並清表；換網 → 清表；在網路但 bat0 沒有 hard-if → 不送、保留表 |
+| A-m5、A-m6 | fixture 沒有的列 | 記在 §9 C5' |
+| A-m7 | 自我檢查 log 次數 | 文字改成「每次由送變不送 log 一行」（與程式相同） |
+| B-m1..m5 | signal 每次重設、排除自己、clean env、group 只在 leader 未回收前送訊號、介面名不能以 `-` 開頭 | 各加測試與負對照；runCapped 用 waitid(WNOWAIT) 等 leader、最後才回收 |
