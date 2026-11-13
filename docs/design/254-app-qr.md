@@ -21,7 +21,7 @@ v1 審查(A、B 皆 APPROVE-WITH-CHANGES)的處理見附錄 R1。
 | app:AGP 9.1.0 / Kotlin 2.4.0 / compileSdk 37 / minSdk 31 / targetSdk 36;MainActivity = FlutterActivity(無 `registerForActivityResult`);已用 request code 4201(BLE)、4202(SAF picker) | settings.gradle.kts:116-117;build.gradle.kts:9,24,28;MainActivity.kt:39-43,137;SwUpload.kt:192 |
 | 認領開始前**沒有**「同 device_id 已有紀錄 / pending → 不覆寫」的檢查(s1 §5.1 要求)— 既有缺口,貼上路徑相同 | claim.dart:122-147;claim.rs:148-158(B-m5)→ #254 殘項(§6) |
 
-**決定**:CameraX 1.6.2(`camera-core`、`camera-camera2`、`camera-lifecycle`、`camera-view`)+ ZXing `core` 3.5.4,
+**決定**:CameraX 1.6.2(`camera-core`、`camera-camera2`、`camera-lifecycle`;**不用 `camera-view`**:PreviewView 會把 appcompat、camera-video、media3、guava 拉進與 K 同一程序 → 預覽改用自己的 `Preview.SurfaceProvider` + SurfaceView(`setSecure(true)`),實作時決定)+ ZXing `core` 3.5.4,
 並明確宣告 `androidx.activity`(QrScanActivity 是 `ComponentActivity`,需要 LifecycleOwner / `registerForActivityResult`);
 不用 ML Kit / `mobile_scanner` / Play 服務。版本皆發布 ≥ 2 週。
 
@@ -93,7 +93,7 @@ Manifest:`QrScanActivity` `exported="false"`、`taskAffinity=""`、`launchMode` 
     fieldReleaseRuntimeClasspath` 加依賴前後差異;**build 時的閘門(group 白名單,B r2-m1)**:build.gradle.kts 一個檢查任務,
     掛在**每個 variant**(dev / dev2 / field × debug / release)的 `pre<Variant>Build` 前,解析該 variant 的 runtimeClasspath,
     出現白名單外的 group 就讓 build 失敗,classpath 為空也失敗。白名單 = 加依賴前實際解析出的 group(PR 附清單)+ androidx.camera
-    與 com.google.zxing 的新增 group。`com.google.android.gms` / `com.google.mlkit` / `com.google.firebase` /
+    與 com.google.zxing 帶進的新增 group(實作:camera、camera.featurecombinationquery、zxing、dagger、auto.value、jakarta.inject、javax.inject;共 39 個,與實際解析出的完全相同)。`com.google.android.gms` / `com.google.mlkit` / `com.google.firebase` /
     `com.google.android.datatransport` 永不進白名單。負對照:加 `com.google.mlkit:barcode-scanning` → FAIL;加白名單外的
     `com.squareup.okhttp3:okhttp` → FAIL。`androidx.activity` 釘在加依賴前 Flutter embedding 已解析出的版本(不拉高;dependencies
     差異確認其他 androidx 版本沒被拉高,A r2-m4)。**仍不擋**:白名單內 group 的被入侵版本(與 K 同程序、app 有 INTERNET)

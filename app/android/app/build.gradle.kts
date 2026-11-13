@@ -88,11 +88,11 @@ dependencies {
     implementation("io.reactivex.rxjava2:rxjava:2.2.17")
     // 254-app-qr §1: the claim-QR scanner — CameraX + ZXing core (no ML Kit / Play services). androidx.activity is the
     // version the Flutter embedding already resolves (fragment 1.7.1 -> activity 1.8.1), declared for QrScanActivity.
+    // No camera-view: PreviewView pulled appcompat, camera-video, media3 and guava; the preview is qr/Viewfinder.kt.
     implementation("androidx.activity:activity:1.8.1")
     implementation("androidx.camera:camera-core:1.6.2")
     implementation("androidx.camera:camera-camera2:1.6.2")
     implementation("androidx.camera:camera-lifecycle:1.6.2")
-    implementation("androidx.camera:camera-view:1.6.2")
     implementation("com.google.zxing:core:3.5.4")
     testImplementation("junit:junit:4.13.2")
     // 254-app-update T9 / T12 only (androidTest; not part of any APK)
@@ -119,12 +119,10 @@ val allowedGroups = setOf(
     "androidx.window.extensions.core", "com.getkeepsafe.relinker", "com.google.guava", "com.google.protobuf",
     "com.jakewharton.rxrelay2", "com.polidea.rxandroidble2", "io.flutter", "io.reactivex.rxjava2", "org.jetbrains",
     "org.jetbrains.kotlin", "org.jetbrains.kotlinx", "org.jspecify", "org.reactivestreams",
-    // new with the QR scanner: ZXing core, CameraX 1.6.2 and what it brings (camera-view -> appcompat 1.1.0,
-    // camera-video -> media3 muxer, camera2-pipe -> dagger, guava's annotation jars)
-    "com.google.zxing", "androidx.camera", "androidx.camera.featurecombinationquery", "androidx.camera.viewfinder",
-    "androidx.appcompat", "androidx.cursoradapter", "androidx.drawerlayout", "androidx.media3", "androidx.vectordrawable",
-    "com.google.auto.value", "com.google.code.findbugs", "com.google.dagger", "com.google.errorprone", "com.google.j2objc",
-    "jakarta.inject", "javax.inject", "org.checkerframework",
+    // new with the QR scanner: ZXing core and CameraX core / camera2 / lifecycle 1.6.2 (camera2-pipe -> dagger ->
+    // jakarta / javax.inject; featurecombinationquery -> auto-value annotations)
+    "com.google.zxing", "androidx.camera", "androidx.camera.featurecombinationquery", "com.google.auto.value",
+    "com.google.dagger", "jakarta.inject", "javax.inject",
 )
 
 // configuration-cache safe: the resolution result is a lazy task input, the action touches no Project

@@ -11,7 +11,6 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -24,7 +23,7 @@ import java.util.concurrent.Executors
 class QrScanActivity : ComponentActivity() {
     private var gen = 0L
     private var worker: ExecutorService? = null
-    private lateinit var view: PreviewView
+    private lateinit var finder: Viewfinder
     private val ask = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> if (ok) bind() else fail() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,8 +36,8 @@ class QrScanActivity : ComponentActivity() {
             return
         }
         worker = Executors.newSingleThreadExecutor()
-        view = PreviewView(this)
-        setContentView(view)
+        finder = Viewfinder(this)
+        setContentView(finder.view)
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) bind()
         else ask.launch(Manifest.permission.CAMERA)
     }
@@ -54,7 +53,7 @@ class QrScanActivity : ComponentActivity() {
         val f = ProcessCameraProvider.getInstance(this)
         f.addListener({
             try {
-                val preview = Preview.Builder().build().also { it.setSurfaceProvider(view.surfaceProvider) }
+                val preview = Preview.Builder().build().also { it.setSurfaceProvider(mainExecutor, finder) }
                 val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
                 analysis.setAnalyzer(worker!!) { analyze(analysis, it) }
                 val p = f.get()
