@@ -48,7 +48,8 @@ class QrScanActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    // no camera, a camera in use, a failed bind -> error `camera`
+    // no camera, a failed bind -> error `camera`; a camera in use / disabled / broken arrives later as a CameraState
+    // error (bindToLifecycle does not throw for it, code review r1 A-M1) -> error `camera` too ([CameraErrors])
     private fun bind() {
         val f = ProcessCameraProvider.getInstance(this)
         f.addListener({
@@ -58,7 +59,8 @@ class QrScanActivity : ComponentActivity() {
                 analysis.setAnalyzer(worker!!) { analyze(analysis, it) }
                 val p = f.get()
                 p.unbindAll()
-                p.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                val camera = p.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                camera.cameraInfo.cameraState.observe(this) { if (CameraErrors.endsScan(it.error?.code)) fail() }
             } catch (e: Exception) {
                 fail()
             }
@@ -79,6 +81,9 @@ class QrScanActivity : ComponentActivity() {
         if (text == null) return
         analysis.clearAnalyzer() // A r3-3: the first code ends the scan
         runOnUiThread {
+            // A-m3: this instance was recreated meanwhile (no configChanges: dark mode, density, multi-window); the new
+            // one holds the same gen and scans again
+            if (isDestroyed) return@runOnUiThread
             QrScan.shared.take(gen)?.done(text)
             finish() // also when the call was answered or dropped meanwhile (A r2-m6)
         }
