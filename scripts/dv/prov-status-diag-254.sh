@@ -17,7 +17,10 @@
 #        reads status on 04 (sees PEERMAC) and on 02 (sees 04, provclient placed there for that read). The judgment is sd6_judge (offline
 #        cases: tests/judges/sd6-judge.sh).
 # W (pre-P3 image): status.get / diag.summary / diag.read are unknown (20) -> the rows FAIL with the code they got.
-# Type: R. Side effects: none beyond the unit's snapshot and restore (one reboot).
+# Type: R. Side effects: the unit's snapshot and restore of $NODE (one reboot); on $PEER, SD6 places provclient in
+# /tmp/run/batman-dvpc.<run> (+ /tmp/run/batman-dv/pc.<run>.upload while copying) for one read and removes both (checked);
+# /tmp/run/batman-dv itself stays (tmpfs, as pr_pc_place leaves it on $NODE). An interrupted run can leave them on $PEER
+# until its next reboot.
 set -u
 PR_UNIT=prov-status-diag-254
 PR_BASE=member
@@ -88,10 +91,11 @@ if nb02; then
 	sd6_judge "$r" "$SD6_FEAT" "$v" "$me" "$PEERMAC"
 	if [ -n "$me" ]; then
 		SD6_FEAT=$(qp "sed -n 's/^BATMAN_FEATURES=//p' /etc/batman-build"); v=$(qp "sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build")
-		r=$( NODE=$PEER; pr_pc_place >&2 && sd6_read "$me"; q "rm -rf $PCD" >/dev/null )
+		r=$( NODE=$PEER; if pr_pc_place >&2; then sd6_read "$me"; else echo PLACE-FAIL; fi; q "rm -rf $PCD /tmp/run/batman-dv/pc.$RUN.upload" >/dev/null )
+		[ "$r" = PLACE-FAIL ] && { no "SD6: provclient placement on $PEER failed (the reverse direction is not judged)"; r=""; }
 		say "SD6 ($PEER sees $me): $(cut -c1-240 <<< "$r")"
 		sd6_judge "$r" "$SD6_FEAT" "$v" "$PEERMAC" "$me"
-		[ -z "$(qp "ls -d $PCD 2>/dev/null")" ] && ok "SD6: provclient removed from $PEER" || no "SD6: $PCD left on $PEER"
+		[ -z "$(qp "ls -d $PCD /tmp/run/batman-dv/pc.$RUN.upload 2>/dev/null")" ] && ok "SD6: provclient removed from $PEER" || no "SD6: $PCD or the upload left on $PEER"
 	else no "SD6: this node's wlh0 MAC unreadable: the reverse direction cannot be judged"; fi
 else no "SD6: the other node ($PEERMAC) is not a mesh neighbour of $NODE: the team row cannot be judged"; fi
 # ---- SD4 the bundle
