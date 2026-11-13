@@ -183,9 +183,15 @@ abstract class DependencyGate : DefaultTask() {
     }
 }
 
-// 254-app-qr §4 / §5 S2 (code review r2 B r2-M1): the merged manifest of every variant. QrScanActivity must be
-// exported="false" with no intent-filter (no other app can start it), and the permissions must be exactly this set
-// (the field release merged manifest, 2026-11-13; ${applicationId} = the variant's). Anything else fails the build.
+// 254-app-qr §4 / §5 S2 (code review r2 B r2-M1, r3 B MAJOR / m1): the merged manifest of every variant.
+// - Permissions: every element whose tag starts with `uses-permission` (uses-permission, -sdk-23, -sdk-m, any later
+//   one), as tag:name, must equal this set exactly (the field release merged manifest, 2026-11-13; ${applicationId} =
+//   the variant's).
+// - Exported components: an activity / activity-alias / service / receiver / provider with android:exported="true",
+//   or with an intent-filter and no android:exported (fail closed; targetSdk 36 refuses that at merge / install, so
+//   it should never be seen), must be one of [exportedComponents].
+// - No activity-alias may target QrScanActivity; QrScanActivity is declared once, exported="false", no intent-filter.
+// Anything else fails the build.
 val expectedPermissions = setOf(
     "uses-permission:android.permission.BLUETOOTH_SCAN", "uses-permission:android.permission.BLUETOOTH_CONNECT",
     "uses-permission:android.permission.INTERNET", "uses-permission:android.permission.CHANGE_NETWORK_STATE",
@@ -195,36 +201,48 @@ val expectedPermissions = setOf(
     "uses-permission-sdk-23:android.permission.ACCESS_COARSE_LOCATION",
     "uses-permission-sdk-23:android.permission.ACCESS_FINE_LOCATION",
 )
+val exportedComponents = setOf(
+    "activity:dev.batman.batman_app.MainActivity",
+    "receiver:androidx.profileinstaller.ProfileInstallReceiver",
+)
 
 abstract class ManifestGate : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val manifest: RegularFileProperty
     @get:Input abstract val applicationId: Property<String>
     @get:Input abstract val expected: SetProperty<String>
+    @get:Input abstract val exportable: SetProperty<String>
 
     @TaskAction
     fun check() {
         val ns = "http://schemas.android.com/apk/res/android"
         val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
             .newDocumentBuilder().parse(manifest.get().asFile)
+        val all = doc.getElementsByTagName("*").let { l -> (0 until l.length).map { l.item(it) as org.w3c.dom.Element } }
+        fun org.w3c.dom.Element.a(n: String) = getAttributeNS(ns, n)
+        val qrName = "dev.batman.batman_app.qr.QrScanActivity"
         val bad = mutableListOf<String>()
-        val perms = sortedSetOf<String>()
-        for (tag in listOf("uses-permission", "uses-permission-sdk-23")) {
-            val l = doc.getElementsByTagName(tag)
-            for (i in 0 until l.length) perms.add("$tag:" + (l.item(i) as org.w3c.dom.Element).getAttributeNS(ns, "name"))
-        }
+        val perms = all.filter { it.tagName.startsWith("uses-permission") }.map { "${it.tagName}:${it.a("name")}" }.toSortedSet()
         val want = expected.get().map { it.replace("\${applicationId}", applicationId.get()) }.toSortedSet()
         (perms - want).forEach { bad.add("unexpected $it") }
         (want - perms).forEach { bad.add("missing $it") }
-        val acts = doc.getElementsByTagName("activity")
-        val qr = (0 until acts.length).map { acts.item(it) as org.w3c.dom.Element }
-            .filter { it.getAttributeNS(ns, "name") == "dev.batman.batman_app.qr.QrScanActivity" }
+        var exported = 0
+        for (c in all.filter { it.tagName in setOf("activity", "activity-alias", "service", "receiver", "provider") }) {
+            val filters = c.getElementsByTagName("intent-filter").length
+            if (c.a("exported") == "true" || (c.a("exported").isEmpty() && filters > 0)) {
+                exported++
+                if ("${c.tagName}:${c.a("name")}" !in exportable.get()) bad.add("exported ${c.tagName} ${c.a("name")}")
+            }
+            if (c.tagName == "activity-alias" && c.a("targetActivity").substringAfterLast('.') == "QrScanActivity")
+                bad.add("activity-alias ${c.a("name")} targets QrScanActivity")
+        }
+        val qr = all.filter { it.tagName == "activity" && it.a("name") == qrName }
         if (qr.size != 1) bad.add("QrScanActivity declared ${qr.size} times")
-        for (a in qr) {
-            if (a.getAttributeNS(ns, "exported") != "false") bad.add("QrScanActivity exported=\"${a.getAttributeNS(ns, "exported")}\"")
-            if (a.getElementsByTagName("intent-filter").length != 0) bad.add("QrScanActivity has an intent-filter")
+        for (q in qr) {
+            if (q.a("exported") != "false") bad.add("QrScanActivity exported=\"${q.a("exported")}\"")
+            if (q.getElementsByTagName("intent-filter").length != 0) bad.add("QrScanActivity has an intent-filter")
         }
         if (bad.isNotEmpty()) throw GradleException("$name: ${bad.joinToString("; ")}")
-        logger.lifecycle("$name: ${perms.size} permissions as expected, QrScanActivity not exported")
+        logger.lifecycle("$name: ${perms.size} permissions as expected, $exported exported components allowed, QrScanActivity not exported")
     }
 }
 
@@ -240,11 +258,13 @@ androidComponents {
         }
         tasks.matching { it.name == "pre${cap}Build" }.configureEach { dependsOn(gate) }
         // the merged manifest exists only after process<Variant>MainManifest, so this one runs before package<Variant>
+        // (APK) and package<Variant>Bundle (AAB)
         val manifestGate = tasks.register<ManifestGate>("check${cap}ManifestGate") {
             manifest.set(v.artifacts.get(SingleArtifact.MERGED_MANIFEST))
             applicationId.set(v.applicationId)
             expected.set(expectedPermissions)
+            exportable.set(exportedComponents)
         }
-        tasks.matching { it.name == "package${cap}" }.configureEach { dependsOn(manifestGate) }
+        tasks.matching { it.name == "package${cap}" || it.name == "package${cap}Bundle" }.configureEach { dependsOn(manifestGate) }
     }
 }
