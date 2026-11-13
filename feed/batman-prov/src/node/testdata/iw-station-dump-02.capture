@@ -1,0 +1,39 @@
+Station a8:dd:9f:4d:c6:10 (on wlh0)
+	inactive time:	70 ms
+	rx bytes:	5561839
+	rx packets:	32786
+	tx bytes:	2209312
+	tx packets:	9657
+	tx retries:	489
+	tx failed:	0
+	rx drop misc:	10
+	signal:  	-30 dBm
+	signal avg:	-29 dBm
+	Toffset:	18446743857488611690 us
+	tx bitrate:	325.0 MBit/s VHT-MCS 7 80MHz short GI VHT-NSS 1
+	tx duration:	0 us
+	rx bitrate:	325.0 MBit/s VHT-MCS 7 80MHz short GI VHT-NSS 1
+	rx duration:	0 us
+	expected throughput:	14.648Mbps
+	mesh llid:	0
+	mesh plid:	0
+	mesh plink:	ESTAB
+	mesh airtime link metric: 547
+	mesh connected to gate:	no
+	mesh connected to auth server:	no
+	mesh local PS mode:	ACTIVE
+	mesh peer PS mode:	ACTIVE
+	mesh non-peer PS mode:	ACTIVE
+	authorized:	yes
+	authenticated:	yes
+	associated:	yes
+	preamble:	long
+	WMM/WME:	yes
+	MFP:		yes
+	TDLS peer:	no
+	DTIM period:	1
+	beacon interval:1000
+	connected time:	2275 seconds
+	associated at [boottime]:	216251.718s
+	associated at:	1794420122146 ms
+	current time:	1794422396889 ms
