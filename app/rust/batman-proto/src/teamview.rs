@@ -13,6 +13,11 @@ use crate::statuspage::shown;
 /// PR that also deletes the T-A10 test pinning it.
 pub const WRITE_MESH_ADDR: bool = cfg!(feature = "team-write");
 
+// code review B-M1: `team-write` is for tests only — a release (or profile) build with it does not compile. N+1 flips
+// the CONSTANT above to `true`; it never ships the feature.
+#[cfg(all(feature = "team-write", not(debug_assertions)))]
+compile_error!("the team-write feature is tests-only (254-app-team-status §4.3): N+1 sets WRITE_MESH_ADDR = true instead");
+
 /// key 9 holds at most this many entries (§4.1)
 pub const PEERS_MAX: usize = 32;
 /// in line = seen within this many seconds (§6)
@@ -27,9 +32,9 @@ pub fn addr_ok(b: &[u8]) -> Option<[u8; 6]> {
     Some(a)
 }
 
-/// §4.2「多一次 status 讀」: at most this many status reads before a make-network / join / join request; E_RATE between
+/// §4.2「多一次 status 讀」: E_RATE -> one retry (design: 重試一次), so at most this many status reads before a make-network / join / join request; E_RATE between
 /// them waits this long (provd allows 1 status per second per connection)
-pub const ADDR_READ_TRIES: u32 = 3;
+pub const ADDR_READ_TRIES: u32 = 2;
 pub const ADDR_RETRY_MS: u64 = 1100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

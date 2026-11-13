@@ -427,6 +427,8 @@ const NO_NETWORK: &str = "這次連線還沒有建立過網路";
 const NET_DAMAGED: &str = "手機裡的網路資料損壞";
 /// member-join review A-m3: one thing at a time on a session while a join request is being made
 const JOINREQ_BUSY: &str = "申請還在進行中，請等它完成";
+/// 254-app-team-status T-A8 (code review A-m1): a flow waits for its address read (an E_RATE wait included)
+const ADDR_BUSY: &str = "正在讀這台節點的狀態，請稍等再試";
 
 fn net_made_text(r: &joinflow::NetRecord) -> String {
     format!("[NET_MADE] 網路已建立：網路代號 {}，頻道 {}（{} MHz）", r.mesh_id, r.channel, r.bw)
@@ -762,8 +764,8 @@ impl OwnerSession {
 
     /// An owner-op: op/nonce goes out first; its answer becomes a Sign step, `signed` sends the operation with key 31.
     fn owner_op(&mut self, verb: &'static str, body: Value) -> Result<OwnerStep, String> {
-        if self.joinreq.is_some() {
-            return Err(JOINREQ_BUSY.into());
+        if let Some(e) = self.flow_busy() {
+            return Err(e.into());
         }
         match &mut self.st {
             St::Conn { conn, asked, op } => {
@@ -972,8 +974,8 @@ impl OwnerSession {
     /// called on its own: only from the button (or right after a join whose node is behind, §3.5).
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_send_update(&mut self, record_plain: Vec<u8>, member: bool, admin_pub: Vec<u8>) -> Result<OwnerStep, String> {
-        if self.joinreq.is_some() {
-            return Err(JOINREQ_BUSY.into());
+        if let Some(e) = self.flow_busy() {
+            return Err(e.into());
         }
         let adm: [u8; 65] = if member { [0; 65] } else { admin_pub.try_into().map_err(|_| "手機金鑰格式不對（admin_pub is not 65 bytes）")? };
         let conn = match std::mem::replace(&mut self.st, St::Over) {
@@ -1038,8 +1040,8 @@ impl OwnerSession {
     /// node_cert verified at this login, never from the node's word alone.
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_make_network(&mut self, net_name: String, channel: u32, owner_enc_pub: Vec<u8>, admin_pub: Vec<u8>) -> Result<OwnerStep, String> {
-        if self.joinreq.is_some() {
-            return Err(JOINREQ_BUSY.into());
+        if let Some(e) = self.flow_busy() {
+            return Err(e.into());
         }
         let node = self.node.clone().ok_or("這次連線沒有驗證過節點身分，請重新連線")?;
         let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
@@ -1140,8 +1142,8 @@ impl OwnerSession {
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_confirm_network(&mut self, record_plain: Vec<u8>, record_gen: u64) -> Result<OwnerStep, String> {
         let rec = netrec::decode(&record_plain).map_err(|_| NET_DAMAGED.to_string())?;
-        if self.joinreq.is_some() {
-            return Err(JOINREQ_BUSY.into());
+        if let Some(e) = self.flow_busy() {
+            return Err(e.into());
         }
         if !matches!(self.st, St::Conn { .. }) {
             return Err(NOT_LOGGED_IN.into());
@@ -1156,8 +1158,8 @@ impl OwnerSession {
     #[flutter_rust_bridge::frb(sync)]
     /// `removed_confirmed`: the user answered yes to the ConfirmRemoved question (remove-member §2.0 rule 2).
     pub fn request_join_network(&mut self, record_plain: Vec<u8>, record_gen: u64, admin_pub: Vec<u8>, owner_enc_pub: Vec<u8>, removed_confirmed: bool) -> Result<OwnerStep, String> {
-        if self.joinreq.is_some() {
-            return Err(JOINREQ_BUSY.into());
+        if let Some(e) = self.flow_busy() {
+            return Err(e.into());
         }
         let adm: [u8; 65] = admin_pub.try_into().map_err(|_| "手機金鑰格式不對（admin_pub is not 65 bytes）")?;
         let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
@@ -1186,8 +1188,8 @@ impl OwnerSession {
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_member_join(&mut self, mnet_plain: Vec<u8>, mnet_gen: u64) -> Result<OwnerStep, String> {
         super::member::dev_gate()?;
-        if self.joinreq.is_some() {
-            return Err(JOINREQ_BUSY.into());
+        if let Some(e) = self.flow_busy() {
+            return Err(e.into());
         }
         if !matches!(self.st, St::Conn { .. }) {
             return Err("還沒連線到節點（或上一個操作還沒結束）".into());
@@ -1215,8 +1217,8 @@ impl OwnerSession {
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_joinreq(&mut self, invite_hex: String, name: String, pend_gen: u64, pend_plain: Option<Vec<u8>>, owner_enc_pub: Vec<u8>) -> Result<OwnerStep, String> {
         super::member::dev_gate()?;
-        if self.joinreq.is_some() {
-            return Err(JOINREQ_BUSY.into());
+        if let Some(e) = self.flow_busy() {
+            return Err(e.into());
         }
         match &self.st {
             St::Conn { conn, op: None, .. } if !conn.busy() => {}
@@ -1306,6 +1308,17 @@ impl OwnerSession {
             return Ok(st);
         }
         self.start_then(then, None).ok_or_else(|| "App 內部錯誤（no first step）".into())
+    }
+
+    /// a join request being made, or a flow waiting for its address read: nothing else starts meanwhile (A-m1)
+    fn flow_busy(&self) -> Option<&'static str> {
+        if self.addr_pending.is_some() {
+            Some(ADDR_BUSY)
+        } else if self.joinreq.is_some() {
+            Some(JOINREQ_BUSY)
+        } else {
+            None
+        }
     }
 
     /// the answer to the `status-addr` read
@@ -1516,8 +1529,8 @@ impl OwnerSession {
     }
 
     fn request(&mut self, verb: &'static str, body: Value) -> Result<OwnerStep, String> {
-        if self.joinreq.is_some() {
-            return Err(JOINREQ_BUSY.into());
+        if let Some(e) = self.flow_busy() {
+            return Err(e.into());
         }
         match &mut self.st {
             St::Conn { conn, asked, .. } => {
@@ -1534,8 +1547,8 @@ impl OwnerSession {
     /// `sw_answer`), or the session ends (Ended: the caller tells `sw.lost`).
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_sw(&mut self, sw: &mut SwUpdate) -> Result<OwnerStep, String> {
-        if self.joinreq.is_some() {
-            return Err(JOINREQ_BUSY.into());
+        if let Some(e) = self.flow_busy() {
+            return Err(e.into());
         }
         let (verb, body) = sw.next.take().ok_or("App 內部錯誤（no update request）")?;
         let mut conn = match std::mem::replace(&mut self.st, St::Over) {
@@ -1932,6 +1945,23 @@ mod tests {
         s.to_der().as_bytes().to_vec()
     }
 
+    /// 254-app-team-status T-A8 (code review A MAJOR-1): with WRITE_MESH_ADDR on (N+1; feature `team-write` in tests) a
+    /// make-network / join / join request first reads `status`; this answers that read (no key 8) so a test holds for
+    /// both values of the constant. With the constant off it returns `st` untouched.
+    pub(super) fn past_addr_read(s: &mut OwnerSession, n: &mut FakeNode, st: OwnerStep) -> OwnerStep {
+        if !teamview::WRITE_MESH_ADDR {
+            return st;
+        }
+        assert_eq!(st.kind, OwnerKind::Write, "the address read comes first");
+        let (id, verb) = n.request(&st.frames);
+        assert_eq!(verb, "status");
+        let mut next = None;
+        for f in n.answer(id, Ok(Value::Map(vec![(Value::Uint(1), Value::Uint(1))]))) {
+            next = s.on_frame(f).or(next);
+        }
+        next.expect("the flow's first step")
+    }
+
     pub(super) fn logged_in() -> (OwnerSession, FakeNode) {
         let p: snow::params::NoiseParams = "Noise_NX_25519_ChaChaPoly_SHA256".parse().unwrap();
         let kp = snow::Builder::new(p.clone()).generate_keypair().unwrap();
@@ -2010,6 +2040,7 @@ mod tests {
         let (mut s, mut n) = logged_in();
         let (mut verbs, mut persists) = (vec![], vec![]);
         let st = s.request_make_network("home".into(), 40, pub65(0x22).to_vec(), pub65(0x66).to_vec()).unwrap();
+        let st = past_addr_read(&mut s, &mut n, st);
         let t = drive(&mut s, &mut n, st, &mut verbs, &mut persists);
         // pending: a new record (CAS from 0 -> 1); join answers 11 -> confirm network: info -> applied (CAS 1 -> 2)
         assert_eq!(verbs, ["op/nonce", "network/join", "info"]);
@@ -2092,7 +2123,8 @@ mod tests {
             (STALE_RECORD, "[REQ_FAIL] 紀錄已被別處更新，請重新開啟再試"),
         ] {
             let (mut s, mut n) = logged_in();
-            let mut st = s.request_join_network(netrec::encode(&r), 1, pub65(0x66).to_vec(), pub65(0x22).to_vec(), false).unwrap();
+            let st = s.request_join_network(netrec::encode(&r), 1, pub65(0x66).to_vec(), pub65(0x22).to_vec(), false).unwrap();
+            let mut st = past_addr_read(&mut s, &mut n, st);
             let t = loop {
                 st = match st.kind {
                     OwnerKind::SignAdmin => s.signed(der(0x66, &st.sign_input)).unwrap(),
@@ -2319,9 +2351,10 @@ mod member_review_tests {
         let net_id = [0x5a; 16];
         let cfg = sign(cose::CT_NETCFG, &cose::net_config_payload(&net_id, 1, None, "n", "US", "bm-5a", 40, 4, &[admin]));
         let invite = sign(cose::CT_INVITE, &inv::invite_payload(&net_id, &[1; 16], cbor::decode(&cfg).unwrap(), &admin));
-        let (mut sess, _) = super::tests::logged_in();
+        let (mut sess, mut n) = super::tests::logged_in();
         sess.node_cert_raw = Some(vec![0xa0]);
         let st = sess.request_joinreq(inv::qr_hex(inv::QR_INVITE, &invite), "x".into(), 0, None, vec![4; 65]).unwrap();
+        let st = super::tests::past_addr_read(&mut sess, &mut n, st);
         assert_eq!(st.kind, OwnerKind::Sign, "sig_enc asked: the request is in flight");
         let busy = |r: Result<OwnerStep, String>, what: &str| assert_eq!(r.err().as_deref(), Some(JOINREQ_BUSY), "{what}");
         busy(sess.request_status(), "status");
@@ -2353,7 +2386,7 @@ mod member_review2_tests {
 
     /// a logged-in session and a valid invite hex (admin key 0x66, network "n")
     #[cfg(feature = "dev-trust")]
-    fn session_and_invite() -> (OwnerSession, String) {
+    fn session_and_invite() -> (OwnerSession, String, super::tests::FakeNode) {
         use batman_proto::{cose, invite as inv, sig as s};
         let k = p256::ecdsa::SigningKey::from_slice(&[0x66; 32]).unwrap();
         let admin: [u8; 65] = k.verifying_key().to_sec1_point(false).as_bytes().try_into().unwrap();
@@ -2365,16 +2398,17 @@ mod member_review2_tests {
         let net_id = [0x5a; 16];
         let cfg = sign(cose::CT_NETCFG, &cose::net_config_payload(&net_id, 1, None, "n", "US", "bm-5a", 40, 4, &[admin]));
         let invite = sign(cose::CT_INVITE, &inv::invite_payload(&net_id, &[1; 16], cbor::decode(&cfg).unwrap(), &admin));
-        let (mut sess, _) = super::tests::logged_in();
+        let (mut sess, n) = super::tests::logged_in();
         sess.node_cert_raw = Some(vec![0xa0]);
-        (sess, inv::qr_hex(inv::QR_INVITE, &invite))
+        (sess, inv::qr_hex(inv::QR_INVITE, &invite), n)
     }
 
     #[cfg(feature = "dev-trust")]
     #[test]
     fn a_failed_owner_signature_ends_the_request() {
-        let (mut s, hex) = session_and_invite();
-        assert_eq!(s.request_joinreq(hex, "x".into(), 0, None, vec![4; 65]).unwrap().kind, OwnerKind::Sign);
+        let (mut s, hex, mut n) = session_and_invite();
+        let st = s.request_joinreq(hex, "x".into(), 0, None, vec![4; 65]).unwrap();
+        assert_eq!(super::tests::past_addr_read(&mut s, &mut n, st).kind, OwnerKind::Sign);
         // the Keystore failed: Dart passes an empty signature
         let st = s.signed(vec![]).unwrap();
         assert!(st.detail.starts_with("[REQ_FAIL] 申請沒有成功"), "{}", st.detail);
@@ -2384,13 +2418,14 @@ mod member_review2_tests {
     #[cfg(feature = "dev-trust")]
     #[test]
     fn no_join_request_while_an_owner_op_or_confirm_is_open() {
-        let (mut s, hex) = session_and_invite();
+        let (mut s, hex, _) = session_and_invite();
         s.request_set_country("JP".into()).unwrap(); // op/nonce outstanding, owner-op pending
         assert!(s.request_joinreq(hex.clone(), "x".into(), 0, None, vec![4; 65]).is_err());
         assert!(s.joinreq.is_none());
         // and a confirm-network refused during a join request leaves nothing behind
-        let (mut s, hex) = session_and_invite();
-        s.request_joinreq(hex, "x".into(), 0, None, vec![4; 65]).unwrap();
+        let (mut s, hex, mut n) = session_and_invite();
+        let st = s.request_joinreq(hex, "x".into(), 0, None, vec![4; 65]).unwrap();
+        super::tests::past_addr_read(&mut s, &mut n, st);
         let rec = netrec::encode(&NetRec::made(joinflow::NetRecord {
             net_id: [1; 16],
             mesh_id: String::new(),
@@ -2451,6 +2486,7 @@ mod member_review3_tests {
         let st = s.request_set_country("JP".into()).unwrap();
         answer_nonce(&mut s, &mut n, &st, Value::Map(vec![]));
         let r = s.request_joinreq("a1".into(), "x".into(), 0, None, vec![4; 65]).unwrap();
+        let r = super::tests::past_addr_read(&mut s, &mut n, r);
         assert!(r.detail.starts_with("[REQ_FAIL] 申請沒有成功：這不是正確的碼"), "{}", r.detail);
     }
 }
@@ -3184,6 +3220,36 @@ mod team_addr_tests {
         }
     }
 
+    /// code review A-m1: while a flow waits for its address read (here: in its E_RATE wait) nothing else may start —
+    /// a second make-network / join / status read would overwrite the pending one. Negative control: flow_busy not
+    /// counting addr_pending -> FAIL.
+    #[test]
+    fn t_a8_nothing_else_starts_during_the_address_read() {
+        let (mut s, mut n) = logged_in();
+        let st = s.request_make_network("home".into(), 40, pub65(0x22).to_vec(), pub65(0x66).to_vec()).unwrap();
+        let (id, verb) = n.request(&st.frames);
+        assert_eq!(verb, "status");
+        let mut next = None;
+        for f in n.answer(id, Err(flow::E_RATE)) {
+            next = s.on_frame(f).or(next);
+        }
+        assert_eq!(next.unwrap().kind, OwnerKind::Wait);
+        let busy = |r: Result<OwnerStep, String>, what: &str| assert_eq!(r.err().as_deref(), Some(ADDR_BUSY), "{what}");
+        busy(s.request_make_network("x".into(), 40, pub65(0x22).to_vec(), pub65(0x66).to_vec()), "a second make-network");
+        busy(s.request_join_network(vec![0xa0], 1, pub65(0x66).to_vec(), pub65(0x22).to_vec(), false), "a join");
+        busy(s.request_status(), "a status read");
+        busy(s.request_status_page(), "the status page");
+        // the wait ends: the same flow reads again and goes on
+        let st = s.resume_update().unwrap();
+        let (id, verb) = n.request(&st.frames);
+        assert_eq!(verb, "status");
+        let mut next = None;
+        for f in n.answer(id, Ok(st8(NEW))) {
+            next = s.on_frame(f).or(next);
+        }
+        assert_eq!(next.unwrap().kind, OwnerKind::SignAdmin, "the first make-network goes on");
+    }
+
     #[test]
     fn t_a8_fresh_read_beats_the_stale_page() {
         let (reads, waits, tbs) = make(vec![Ok(st8(NEW))]);
@@ -3193,11 +3259,11 @@ mod team_addr_tests {
 
     #[test]
     fn t_a8_e_rate_is_retried_a_bounded_number_of_times() {
-        let (reads, waits, tbs) = make(vec![Err(flow::E_RATE), Err(flow::E_RATE), Ok(st8(NEW))]);
-        assert_eq!((reads, waits.clone()), (3, vec![teamview::ADDR_RETRY_MS; 2]));
+        let (reads, waits, tbs) = make(vec![Err(flow::E_RATE), Ok(st8(NEW))]);
+        assert_eq!((reads, waits.clone()), (2, vec![teamview::ADDR_RETRY_MS]));
         assert!(waits.iter().all(|w| *w >= 1000) && has(&tbs, &NEW));
-        let (reads, waits, tbs) = make(vec![Err(flow::E_RATE); 3]);
-        assert_eq!((reads, waits.len()), (3, 2), "3 reads at most, then on without an address");
+        let (reads, waits, tbs) = make(vec![Err(flow::E_RATE); 2]);
+        assert_eq!((reads, waits.len()), (2, 1), "one retry (design §4.2), then on without an address");
         assert!(!has(&tbs, &NEW) && !has(&tbs, &OLD));
     }
 
