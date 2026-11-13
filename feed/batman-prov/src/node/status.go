@@ -8,7 +8,8 @@ package node
 //     is taken at most once per 2 min, so --on-join is never starved, F28); older than 300 s or never -> key 4 omitted.
 // Ages are measured on Go's monotonic clock (no RTC on the node: wall time is meaningless there).
 //
-// args: {1: full (bool)} — provd sends full = true for the owner role, false for a member (members get keys 1-5 only).
+// args: {1: full (bool)} — provd sends full = true for the owner role, false for a member (members get keys 1-5, and
+// 8 / 9 of the whole-team sampling, peers.go; never key 15).
 
 import (
 	"encoding/json"
@@ -272,6 +273,9 @@ func (n *Node) StatusTick() {
 	if n.settings != nil {
 		n.settings.Tick()
 	}
+	if n.peers != nil {
+		n.peers.Tick()
+	}
 }
 
 func (n *Node) statusGet(a cbor.Map, now time.Time, conn *bucket) (cbor.Map, *Error) {
@@ -299,5 +303,9 @@ func (n *Node) statusGet(a cbor.Map, now time.Time, conn *bucket) (cbor.Map, *Er
 	if full && n.settings != nil {
 		n.settings.touch()
 	}
-	return n.status.get(rec.State, full), nil
+	m := n.status.get(rec.State, full)
+	if n.peers != nil { // 254-app-team-status §4.1: keys 8 / 9 for the owner and a member alike
+		m = append(m, n.peers.keys(n.now())...)
+	}
+	return m, nil
 }

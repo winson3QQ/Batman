@@ -137,6 +137,8 @@ type Node struct {
 	TrialCached func() bool
 	// 254-p3-impl §3.4: status.get's caches (SetStatusSource; nil = status.get answers E_UNSUPPORTED)
 	status *statusCache
+	// 254-app-team-status §4.1: whole-team sampling (SetPeerSource; nil = no status keys 8 / 9)
+	peers *peerTable
 	// 254-p3-impl §3.3: settings.get's cache (SetSettingsSource; nil = E_UNSUPPORTED)
 	settings *settingsCache
 	// design D-6: the last settings.set ended with halow-setkey rc 6 (its restore did not verify); status key 15 says so
