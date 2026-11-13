@@ -1,3 +1,7 @@
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.result.ResolvedComponentResult
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -91,4 +95,57 @@ dependencies {
 
 flutter {
     source = "../.."
+}
+
+// 254-app-qr §4 (B-M2 / B r2-m1): the dependency groups an APK may carry, exact names (no prefixes). Before each
+// variant's pre<Variant>Build its runtime classpath is resolved; a group outside this list, an unresolved dependency or
+// an empty classpath fails the build. The list = the groups resolved before the QR scanner (2026-11-13, PR dependency
+// diff) + androidx.camera / com.google.zxing. Never here: com.google.android.gms, com.google.mlkit,
+// com.google.firebase, com.google.android.datatransport. A compromised version inside a listed group is not caught
+// (Gradle dependency locking, #254 checklist).
+val allowedGroups = setOf(
+    "androidx.activity", "androidx.annotation", "androidx.arch.core", "androidx.collection", "androidx.concurrent",
+    "androidx.core", "androidx.customview", "androidx.exifinterface", "androidx.fragment", "androidx.interpolator",
+    "androidx.lifecycle", "androidx.loader", "androidx.profileinstaller", "androidx.savedstate", "androidx.startup",
+    "androidx.tracing", "androidx.versionedparcelable", "androidx.viewpager", "androidx.window",
+    "androidx.window.extensions.core", "com.getkeepsafe.relinker", "com.google.guava", "com.google.protobuf",
+    "com.jakewharton.rxrelay2", "com.polidea.rxandroidble2", "io.flutter", "io.reactivex.rxjava2", "org.jetbrains",
+    "org.jetbrains.kotlin", "org.jetbrains.kotlinx", "org.jspecify", "org.reactivestreams",
+)
+
+// configuration-cache safe: the resolution result is a lazy task input, the action touches no Project
+abstract class DependencyGroupGate : DefaultTask() {
+    @get:Input abstract val allowed: SetProperty<String>
+    @get:Input abstract val root: Property<ResolvedComponentResult>
+
+    @TaskAction
+    fun check() {
+        val groups = sortedSetOf<String>()
+        val bad = sortedSetOf<String>()
+        val seen = HashSet<Any>()
+        val todo = ArrayDeque(listOf(root.get()))
+        while (todo.isNotEmpty()) {
+            val c = todo.removeFirst()
+            if (!seen.add(c.id)) continue
+            (c.id as? ModuleComponentIdentifier)?.let { groups.add(it.group) }
+            for (d in c.dependencies) {
+                if (d is ResolvedDependencyResult) todo.add(d.selected) else bad.add("unresolved ${d.requested.displayName}")
+            }
+        }
+        if (groups.isEmpty()) bad.add("empty runtime classpath")
+        groups.filterNot { it in allowed.get() }.forEach { bad.add("group not allowed: $it") }
+        if (bad.isNotEmpty()) throw GradleException("$name: ${bad.joinToString("; ")}")
+        logger.lifecycle("$name: ${groups.size} groups, all allowed")
+    }
+}
+
+androidComponents {
+    onVariants { v ->
+        val cap = v.name.replaceFirstChar { it.uppercase() }
+        val gate = tasks.register<DependencyGroupGate>("check${cap}DependencyGroups") {
+            allowed.set(allowedGroups)
+            root.set(v.runtimeConfiguration.incoming.resolutionResult.rootComponent)
+        }
+        tasks.matching { it.name == "pre${cap}Build" }.configureEach { dependsOn(gate) }
+    }
 }
