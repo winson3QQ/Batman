@@ -1,12 +1,10 @@
-// design v8.5.1 §5.1: a device id this phone already holds is never claimed over without asking. Pressing 「認領」 first
-// asks Rust what the phone holds for the QR's device id (claimTarget), before the BLE permission (the first step that
-// leads to BLE) and before anything is written:
+// design 254-app-claim-noover v2.1: pressing 「認領」 first asks Rust what the phone holds for the QR's device id
+// (claimTarget), before the BLE permission (the first step towards BLE); nothing is written here (the records are
+// decided at PersistPending / CLAIMED: claim_records_test).
 // - nothing -> the claim goes on;
-// - an unfinished claim (claim-pending) for the same QR -> the claim goes on: that is the recovery's first step
-//   (§5.2-1, the new pending reuses K); for another QR -> no claim, the pending stays;
-// - a node record (with or without a pending beside it: the node record wins) -> a dialog; cancel = nothing written,
-//   nothing sent; confirm = the claim goes on, the old record moves aside only when the new pending is written;
-// - a record that cannot be read -> no claim.
+// - an unfinished claim of the same QR -> the claim goes on (the recovery's first step, §5.2-1);
+// - an unfinished claim of another QR -> R4 dialog; a node record (also with a pending) -> R7 dialog; cancel = nothing;
+// - a record that cannot be read, or a pending that cannot be opened (T6) -> no claim, 「讀不到…」.
 // The platform channel and the Rust API are fakes; nothing needs BLE.
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -51,9 +49,6 @@ class FakeRust implements RustLibApi {
   }
 
   @override
-  Future<void> crateApiClaimStoreForgetNode({required String dir, required String deviceId}) async => calls.add('forget');
-
-  @override
   dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
 }
 
@@ -62,7 +57,7 @@ void main() {
   setUpAll(() => RustLib.initMock(api: rust));
   final platform = <String>[];
 
-  Future<void> claim(WidgetTester t, Object target, {bool matches = true}) async {
+  Future<void> claim(WidgetTester t, Object target, {bool matches = true, bool openFails = false}) async {
     rust
       ..target = target
       ..pendingMatches = matches
@@ -76,9 +71,10 @@ void main() {
         case 'filesDir':
           return files;
         case 'open':
+          if (openFails) throw PlatformException(code: 'open', message: 'key gone');
           return Uint8List(4);
         case 'blePermissions':
-          return false; // the claim stops here: no BLE in a widget test
+          return false; // the claim stops here: no BLE in this test
       }
       return null;
     });
@@ -89,54 +85,59 @@ void main() {
     await t.pumpAndSettle();
   }
 
-  const noBle = '[CLAIM_FAIL] 沒有藍牙權限（請在手機設定裡允許）';
-  const ask = '這台節點已在你的清單裡。若節點已重燒或重置回未認領，可以重新認領：舊紀錄會保留在手機上（不會刪除），不再顯示在清單裡。要重新認領嗎？';
-  const otherQr = '[CLAIM_FAIL] 手機裡有這台節點（…4f2a）一次沒完成的認領，但用的是另一張 QR 碼。為了不蓋掉那次的紀錄，這次不認領；'
-      '請用那次的 QR 碼再按「認領」。';
+  const noBle = '沒有藍牙權限（請在手機設定裡允許）';
+  // T8: the dialog texts, literally (R4 / R7)
+  const otherQr = '手機裡有這台節點一次沒完成的認領，用的是另一張 QR 碼。只有在你確定這張 QR 碼才是對的（例如之前貼錯）時才改用它：'
+      '舊的認領紀錄會留在手機上，但 App 之後不會再用它。要改用這張 QR 碼嗎？';
+  const reclaim = '這台節點已在你的清單裡。只有在你剛把這台節點重置回未認領時才重新認領：舊紀錄會留在手機上，但 App 之後不會再用它、'
+      '也不會顯示在清單裡。要重新認領嗎？';
+  const reclaimPending = '這台節點已在你的清單裡。手機裡也有這台一次沒完成的認領。只有在你剛把這台節點重置回未認領時才重新認領：'
+      '舊紀錄會留在手機上，但 App 之後不會再用它、也不會顯示在清單裡。要重新認領嗎？';
 
   testWidgets('nothing held: the claim goes on', (t) async {
     await claim(t, ClaimTarget.nothing);
     expect(rust.calls, ['claimTarget $files/records $deviceId']);
     expect(platform, contains('blePermissions'));
-    expect(find.text('沒有藍牙權限（請在手機設定裡允許）'), findsOneWidget);
+    expect(find.text(noBle), findsOneWidget);
   });
 
-  testWidgets('an unfinished claim with the same QR: the claim goes on (recovery §5.2-1)', (t) async {
+  testWidgets('an unfinished claim of the same QR: the claim goes on (recovery §5.2-1), no question', (t) async {
     await claim(t, ClaimTarget.pending);
     expect(rust.calls, ['claimTarget $files/records $deviceId', 'read claim-pending/$deviceId', 'matches']);
     expect(platform, containsAllInOrder(['open', 'blePermissions']));
+    expect(find.byType(AlertDialog), findsNothing);
     expect(find.text('手機裡有這台節點一次沒完成的認領，這次接著再試（沿用那次的認領紀錄）'), findsOneWidget);
-    expect(find.text('沒有藍牙權限（請在手機設定裡允許）'), findsOneWidget);
   });
 
-  testWidgets('an unfinished claim with another QR: no claim, nothing written', (t) async {
-    await claim(t, ClaimTarget.pending, matches: false);
-    expect(platform, isNot(contains('blePermissions')), reason: 'nothing goes towards BLE');
-    expect(rust.calls, ['claimTarget $files/records $deviceId', 'read claim-pending/$deviceId', 'matches']);
-    expect(find.text(otherQr.substring('[CLAIM_FAIL] '.length)), findsOneWidget);
-  });
-
-  for (final confirm in [false, true]) {
-    testWidgets('a node record: the user is asked; ${confirm ? 'confirm goes on' : 'cancel writes and sends nothing'}', (t) async {
-      await claim(t, ClaimTarget.node);
-      expect(find.text(ask), findsOneWidget);
-      expect(platform, isNot(contains('blePermissions')), reason: 'nothing before the answer');
-      await t.tap(find.text(confirm ? '重新認領' : '取消'));
-      await t.pumpAndSettle();
-      expect(rust.calls, ['claimTarget $files/records $deviceId'], reason: 'the old record moves only with the new pending');
-      if (confirm) {
-        expect(platform, contains('blePermissions'));
-        expect(find.text(noBle.substring('[CLAIM_FAIL] '.length)), findsOneWidget);
-      } else {
-        expect(platform, isNot(contains('blePermissions')));
-        expect(find.text('沒有重新認領，手機裡的紀錄沒有改動'), findsOneWidget);
-      }
-    });
+  for (final (name, target, text, yes, no) in [
+    ('an unfinished claim of another QR (R4)', ClaimTarget.pending, otherQr, '改用這張 QR 碼', '沒有改用這張 QR 碼，手機裡的紀錄沒有改動'),
+    ('a node record (R7)', ClaimTarget.node, reclaim, '重新認領', '沒有重新認領，手機裡的紀錄沒有改動'),
+    ('a node record and a pending (R7 + the pending line)', ClaimTarget.nodeAndPending, reclaimPending, '重新認領', '沒有重新認領，手機裡的紀錄沒有改動'),
+  ]) {
+    for (final confirm in [false, true]) {
+      testWidgets('$name: asked; ${confirm ? 'confirm goes on' : 'cancel goes nowhere'}', (t) async {
+        await claim(t, target, matches: false);
+        expect(find.text(text), findsOneWidget);
+        expect(platform, isNot(contains('blePermissions')), reason: 'nothing before the answer');
+        await t.tap(find.text(confirm ? yes : '取消'));
+        await t.pumpAndSettle();
+        expect(platform.contains('blePermissions'), confirm);
+        expect(find.text(confirm ? noBle : no), findsOneWidget);
+      });
+    }
   }
 
   testWidgets('a record that cannot be read: no claim', (t) async {
     await claim(t, 'NotARecord');
     expect(platform, isNot(contains('blePermissions')));
     expect(find.text('讀不到手機裡這台節點的紀錄，這次不認領：NotARecord'), findsOneWidget);
+  });
+
+  testWidgets('T6: a pending that cannot be opened is unreadable, not "another QR"', (t) async {
+    await claim(t, ClaimTarget.pending, openFails: true);
+    expect(platform, isNot(contains('blePermissions')));
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.textContaining('讀不到手機裡這台節點的紀錄，這次不認領'), findsOneWidget);
+    expect(rust.calls, isNot(contains('matches')));
   });
 }
