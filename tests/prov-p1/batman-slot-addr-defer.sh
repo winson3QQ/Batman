@@ -12,8 +12,18 @@ fn=$(awk '/^addr_defer_release\(\) \{/,/^\}/' "$BS")
 rb=$(awk '/^cmd_rollback\(\) \{/,/^\}/' "$BS" | grep 'slot-committed')
 [ -n "$rb" ] && ok "cmd_rollback removes slot-committed: $(echo "$rb" | sed 's/^\s*//' | cut -c1-60)" || no "cmd_rollback does not remove slot-committed"
 grep -q 'addr_defer_release$' <(awk '/^cmd_commit\(\) \{/,/^\}/' "$BS") && ok "cmd_commit calls addr_defer_release last" || no "cmd_commit does not call addr_defer_release"
-# the detached start must be env -i + setsid + the init, stdio detached, backgrounded
-echo "$fn" | grep -q 'env -i PATH=[^ ]* setsid /etc/init.d/openmanetd start </dev/null >/dev/null 2>&1 &' && ok "detached start: env -i, setsid, stdio to /dev/null, &" || no "detached start line not as designed"
+# the detached start must be env -i + setsid + the init, stdio detached, backgrounded. #254 S5 (254-p3-impl §3.7.3): a
+# batman-slot whose slot_lock is a flock holds fd 9 during commit, so the background child must close it (`9>&-`) —
+# otherwise the init inherits the lock and commit "returns" with the slots still locked. Pre-S5 (mkdir lock): no fd 9.
+# Negative control: the S5 batman-slot with `9>&-` removed from that line -> FAIL.
+if awk '/^slot_lock\(\) \{/,/^\}/' "$BS" | grep -q 'flock -n 9'; then
+	echo "$fn" | grep -q 'env -i PATH=[^ ]* setsid /etc/init.d/openmanetd start </dev/null >/dev/null 2>&1 9>&- &' \
+		&& ok "detached start: env -i, setsid, stdio to /dev/null, fd 9 (slot flock) closed, &" \
+		|| no "detached start line not as designed (flock slot_lock: the background start must close fd 9 with 9>&-, or it keeps the slot lock)"
+else
+	echo "$fn" | grep -Eq 'env -i PATH=[^ ]* setsid /etc/init.d/openmanetd start </dev/null >/dev/null 2>&1( 9>&-)? &' \
+		&& ok "detached start: env -i, setsid, stdio to /dev/null, & (pre-S5: no flock on fd 9)" || no "detached start line not as designed"
+fi
 mkdir -p "$T/bin" "$T/run" "$T/libexec"; printf '#!/bin/sh
 exit 1
 ' > "$T/libexec/batman-addr-defer"; chmod +x "$T/libexec/batman-addr-defer"   # a real executable (MSYS judges -x by content)

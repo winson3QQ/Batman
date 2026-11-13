@@ -60,9 +60,12 @@ say "  step3 setkey rc=$rc: $(echo "$out" | grep -E 'persist|applied|keys update
 sleep 3
 k=$(p5key)
 if [ "$k" = "$(md "$TMPKEY")" ]; then pass "step3 p5 holds the key just set (md5 $k)"; else fail "p5 key not persisted by setkey"; say "  p5key=$k live=$(md "$(uci -q get "wireless.$MESHIF.key")")"; fi
+# #254 S5: batman-slot answers 14 while another holds the slot lock (the helper's bootinfo, a write): retried, never read
+# as a refusal; any other rc is the answer
+precheck_rc(){ local i r; for i in 1 2 3 4 5; do batman-slot precheck-node >/dev/null 2>&1; r=$?; [ "$r" = 14 ] || return "$r"; sleep 2; done; return "$r"; }
 if [ "$HAVE_CHECK" = 1 ]; then
 	echo "$out" | grep -q '^persist: saved' && pass "step3 setkey reported persist: saved" || fail "setkey did not report persist: saved"
-	batman-slot precheck-node >/dev/null 2>&1 && pass "step3 precheck-node passes with a fresh p5" || fail "precheck-node refused with a fresh p5: $(batman-slot precheck-node 2>&1 | tail -1)"
+	precheck_rc && pass "step3 precheck-node passes with a fresh p5" || fail "precheck-node refused with a fresh p5: $(batman-slot precheck-node 2>&1 | tail -1)"
 	v=$(cat "$R/p5-check.rc" 2>/dev/null); case "$v" in fresh*) pass "step3 verdict file says fresh" ;; *) fail "verdict file not fresh after precheck ($v)" ;; esac
 fi
 # 5. restore by the same door; rejoin

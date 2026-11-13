@@ -14,6 +14,9 @@
 # line). The update's country comes in on fd 3 (country=, provclient net.go).
 # W (pre-P3 image): P2 does not look at key 5 (254-p3 F29) -> the mismatching update applies -> FAIL CJ2 (and P then runs on the
 # version the AU update left).
+# Since provclient sends the CDDL network/update shape (789a89f), a pre-CDDL helper (wsl.24 and older, wsl.22 included)
+# refuses the update for its shape before it reads key 5: pr_cddl_nu makes such a run INVALID — that W control is gone;
+# the country check's negative control is the Go mutant of c15fb54 (nu_test.go, country incl. the middle step).
 # Type: R. Side effects: claimed + member of a random test mesh in between, 1 reboot (pr_member) + the restore.
 set -u
 PR_UNIT=prov-country-join-254
@@ -27,6 +30,9 @@ reason(){ sed -n 's/.* reason=\([0-9]*\).*/\1/p' <<< "$1" | head -1; }
 fd3(){	# <mesh id> <country>: the network values for net-apply --update (the key drawn on the node)
 	echo "umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\ncountry=%s\n' '$1' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\" '$2'"
 }
+# the CDDL network/update shape (provclient 789a89f) only means something to a helper that reads it (pr_cddl_nu):
+# a pre-CDDL helper (wsl.24 and older) refuses it for another reason -> INVALID, never a FAIL of the image
+pr_cddl_nu || { pr_result; exit 2; }
 pr_begin 2400 || { pr_result; exit 1; }
 pr_member || { pr_abort "member"; pr_result; exit 1; }
 PREV=$PR_NETCFG

@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -276,9 +277,22 @@ func fmtStatus(r cmap) string {
 		}
 		sort.Strings(names)
 		s += " f15=" + strings.Join(names, ",")
+		// key 15 "trust" (#254 S5, 254-p3-impl §3.7.1): the image's root key — "none", "bad" or 16 hex (the
+		// fingerprint's first 8 bytes); its value is printed (prov-update-254 UD-T1 reads it), anything else as "?"
+		for _, e := range m {
+			if k, _ := e.k.(string); k == "trust" {
+				v, _ := e.v.(string)
+				if !reTrust.MatchString(v) {
+					v = "?"
+				}
+				s += " trust=" + v
+			}
+		}
 	}
 	return s
 }
+
+var reTrust = regexp.MustCompile(`^(none|bad|[0-9a-f]{16})$`)
 
 // fmtDiagSummary renders diag-summary-resp {1: [* diag-item]} as "n=<count> items=id:level,…"
 func fmtDiagSummary(r cmap) string {
