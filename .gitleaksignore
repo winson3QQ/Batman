@@ -13,3 +13,10 @@ d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generi
 d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generic-api-key:262
 d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generic-api-key:266
 d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generic-api-key:275
+# #254 P3 tests/prov-p3 as first added on feat/254-p3 (moved to the harness by #325): the same fake uci-dump AP keys
+# (Oldkey123456789 / Abcdefgh1234 / the regex `.*`) in the commits that wrote them; not secrets.
+19ffd6b3b310f80a80e9c421e3b1291026110fe2:tests/prov-p3/setkey-settings.sh:generic-api-key:265
+aeabc981160786f545aa391fe93262c049fa79bc:tests/prov-p3/setkey-settings.sh:generic-api-key:250
+aeabc981160786f545aa391fe93262c049fa79bc:tests/prov-p3/setkey-settings.sh:generic-api-key:254
+f52a67e8a0df2e9dc2e1a5aa8cdb6e65bde64cb7:tests/prov-p3/setkey-settings.sh:generic-api-key:207
+f213f09e62fb8c9d319fa9612cd196eb77d4ca91:tests/prov-p3/cfgsave-ssid.sh:generic-api-key:36
