@@ -31,6 +31,10 @@ if [ -f "$F/etc/init.d/batman-prov-lock" ]; then
 	stub 'fails=0$' claim-lock-lints .
 else echo "FAIL prov-p1-stubs: product in this checkout predates the claim-lock fix (no etc/init.d/batman-prov-lock) — KNOWN until fix/254-claim-lock lands (#254)"; r=1; fi
 stub 'fails=0$' prov-base-names scripts/node/prov-base-254.sh   # no root needed (review A-m10)
+# #320: every `< file 2>/dev/null` read in feed/*/files is braced (busybox prints "can't open" before 2> applies); harness-first,
+# so on a pre-#320 product this prints 3 FAIL lines (2 from the test: lint count + first hit, A3 stderr; plus the stub
+# summary) — KNOWN #320 until fix/320-cfgsave-stderr lands; the full hit list is in CI's direct run
+stub 'fails=0$' cfgsave-stderr-quiet .
 # #254 wireless transactions (docs/design/254-wireless-txn.md §6, §7, §11): the harness lands first (#290), so a product
 # without --forget-mesh fails with one KNOWN line (that IS the negative control)
 if grep -q -- '--forget-mesh' "$F/usr/bin/halow-setkey"; then
@@ -42,12 +46,24 @@ if grep -q -- '--forget-mesh' "$F/usr/bin/halow-setkey"; then
 	if grep -q -- '--check-only' "$F/usr/bin/halow-setkey"; then stub 'fails=0$' setkey-checkonly-txn "$F/usr/bin/halow-setkey" "$F/usr/lib/batman/rundir.sh"
 	else echo "FAIL prov-p1-stubs: halow-setkey in this checkout predates wireless-txn v8 (no --check-only) — KNOWN until feat/254-p1b-seams lands (#254)"; r=1; fi
 else echo "FAIL prov-p1-stubs: product in this checkout predates the wireless transactions (no halow-setkey --forget-mesh) — KNOWN until feat/254-p1b-seams lands (#254)"; r=1; fi
+# #254 P3 (docs/design/254-p3-impl.md §3.3 / §3.4; tests/prov-p3, harness-first #290): a product before P3's settings / status
+# fails with one KNOWN line per missing piece (that IS the negative control)
+P3T=tests/prov-p3
+if [ ! -d "$P3T" ]; then echo "FAIL prov-p1-stubs: no $P3T in this checkout — the harness lost the P3 stub tests"; r=1
+else
+	if grep -q '^verdict_code()' "$F/usr/bin/joinwatch"; then T=$P3T stub ' 0 failed \(' joinwatch-code "$F/usr/bin/joinwatch"
+	else echo "FAIL prov-p1-stubs: joinwatch in this checkout predates P3 status (no verdict_code) — KNOWN until feat/254-p3 lands (#254)"; r=1; fi
+	if grep -q -- '--ap-ssid' "$F/usr/bin/halow-setkey"; then T=$P3T stub 'fails=0$' setkey-settings "$F/usr/bin/halow-setkey" "$F/usr/lib/batman/rundir.sh"
+	else echo "FAIL prov-p1-stubs: halow-setkey in this checkout predates P3 settings (no --ap-ssid) — KNOWN until feat/254-p3 lands (#254)"; r=1; fi
+fi
 if [ "$(id -u)" = 0 ] && command -v losetup >/dev/null 2>&1; then
+	if [ -d "$P3T" ] && grep -q '^wireless\.default_radio0\.ssid$' "$F/usr/bin/batman-config-save"; then PROV_SRC=$REPO/$F T=$P3T stub 'FAIL=0$' cfgsave-ssid "$F/usr/bin/batman-config-save"
+	else echo "FAIL prov-p1-stubs: batman-config-save in this checkout does not persist the AP ssid (P3 §3.3) or $P3T is missing — KNOWN until feat/254-p3 lands (#254)"; r=1; fi
 	if grep -q -- '--save \[--promote-lkg\] \[--txn' "$F/usr/bin/batman-config-save"; then PROV_SRC=$REPO/$F stub 'FAIL=0$' cfgsave-txn-save "$F/usr/bin/batman-config-save"
 	else echo "FAIL prov-p1-stubs: batman-config-save in this checkout has no --save --txn — KNOWN until feat/254-p1b-seams lands (#254)"; r=1; fi
 	for t in cfgsave-identity-freeze cfgsave-frozen-nomount cfgsave-provget-rc10; do PROV_SRC=$REPO/$F stub 'FAIL=0|PASS$' $t "$F/usr/bin/batman-config-save"; done
 	stub 'fails=0$' prov-base-statecmp scripts/node/prov-base-254.sh
 	stub 'fails=0$' prov-base-stateset scripts/node/prov-base-254.sh
 	stub 'fails=0$' batman-slot-stage-root "$F/usr/sbin/batman-slot" "$F/usr/lib/batman/prov-lock.sh"
-else echo "note: loop-device tests (config-save, prov-base compare, stage-root) skipped here — need root + losetup (CI prov-p1 / ab-card run them)"; fi
+else echo "note: loop-device tests (config-save, prov-base compare, stage-root, P3 cfgsave-ssid) skipped here — need root + losetup (CI prov-p1 / ab-card run them)"; fi
 echo "PROV-P1-STUBS stubs=$n fails=$([ $r = 0 ] && echo 0 || echo some)"; [ "$n" -gt 0 ] && [ $r = 0 ]

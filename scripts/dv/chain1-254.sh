@@ -19,7 +19,14 @@
 # person to run restore (overlay-restore + compare) afterwards.
 # Reviews: 2026-10-26 round 1 A (APPROVE-WITH-CHANGES, 5 MAJOR) / B (REJECT); all findings addressed in v2.
 set -u
-NODE=10.41.1.3; PEER=10.41.1.1; HOSTIP=${HOSTIP:-10.41.240.10}; MACW=88-a2-9e-b5-6c-89; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local
+# 04 / 02 from the bench store's membership log (bench-254.sh: the last line of each node), or NODE= / PEER= given;
+# no address -> refused (no guess: the pre-conversion fleet's 10.41.1.3 / .1 are gone)
+# shellcheck source=scripts/dv/bench-254.sh
+. "$(dirname "$0")/bench-254.sh"
+[ -n "${NODE:-}" ] || NODE=$(bench_ip 04); [ -n "${PEER:-}" ] || PEER=$(bench_ip 02)
+[ -n "$NODE" ] && [ -n "$PEER" ] || { echo "chain1: no address for 04 [$NODE] / 02 [$PEER] (bench store nodes.txt, or NODE= / PEER=)"; echo "CHAIN1 RESULT: FAIL (no addresses)"; exit 1; }
+PEERMAC=${PEERMAC:-a8:dd:9f:4d:c7:60}   # 02's mesh interface (wlh0), as prov-254.sh: the neighbour must be 02
+HOSTIP=${HOSTIP:-10.41.240.10}; MACW=88-a2-9e-b5-6c-89; MAC=88:a2:9e:b5:6c:89; MDNS=BCM2711-6c89.local
 V=${V:?version}; PAY=${PAY:-/opt/batdata/ota-1.5.13-wsl.1.tar.gz}; PSHA=${PSHA:?payload sha256}
 OUTS=${OUTS:-//wsl.localhost/Ubuntu-24.04/home/yello/out}
 REPO=${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}; PB=$REPO/scripts/node/prov-base-254.sh
@@ -28,68 +35,10 @@ BREWRITE=${BREWRITE:-$REPO/scripts/dv/brewrite-254.sh}; WSL9_SLOT=${WSL9_SLOT:-$
 LABKEY=${LABKEY:-$HOME/.ssh/id_ed25519}
 RUN=ch1$(date +%m%d%H%M); PCD=/tmp/run/batman-dvpc.$RUN; BASE=/opt/batdata/dv-prov; D=$BASE/$RUN; PDIR=$BASE/payload-ch1; DIRTY=/opt/batdata/state/dv-prov-dirty
 LOCKD=${TEMP:?TEMP unset - the host lock lives in the per-user temp dir, never in a shared tmp}/batman-dv-04.lock; WSLK=/home/yello/.batman-dv/prov-keys/$RUN
-SSHO="-o BatchMode=yes -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o LogLevel=ERROR"
-# any slot of 04 on the lab LAN: host key changes with every fresh slot; `none` until the lab key is in, publickey after
-FRESHO="$SSHO -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=publickey,none -o IdentitiesOnly=yes -i $LABKEY"
-# publickey PROOF (review B-1): OpenSSH always tries `none` first, so a successful login proves nothing on an open node;
-# the verbose client log names the method that authenticated. Own option set (ssh keeps the FIRST LogLevel given).
-PKO="-o BatchMode=yes -o ConnectTimeout=6 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes -o IdentitiesOnly=yes -i $LABKEY -o LogLevel=VERBOSE"
-# On an OPEN node dropbear accepts `none` (blank root password) and the client never gets to publickey (review round 2
-# B2-1; 04 probe 2026-10-26: 'Authenticated to 10.41.1.3 using "none"'). So the key is proven against a temporary
-# publickey-only listener of the same daemon with the same authorized_keys (`dropbear -s -g -p 2222`), whose own
-# negative control is that `none` is denied there; the listener is killed right after (04 probe: pk OK, none denied).
-NONEO="-o BatchMode=yes -o ConnectTimeout=6 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PreferredAuthentications=none -o PubkeyAuthentication=no -o LogLevel=ERROR"
-pk_proof(){ local ip=$1 r=1 o
-	# fw4 input policy is drop with per-zone rules; a fresh slot's zones may not pass 2222 -> one temporary, tagged
-	# rule at the top of the input chain (runtime only: gone with any fw reload / reboot; removed by handle below)
-	timeout 30 ssh $FRESHO root@"$ip" 'mkdir -p -m 0700 /tmp/run/batman-dv; pid=/tmp/run/batman-dv/ch1-db.pid; [ -s $pid ] && kill $(cat $pid) 2>/dev/null; nft -a list chain inet fw4 input 2>/dev/null | grep -q ch1-pk-proof || nft insert rule inet fw4 input tcp dport 2222 accept comment "ch1-pk-proof" 2>/dev/null; dropbear -s -g -p 2222 -P $pid && sleep 1 && [ -s $pid ] && echo LISTEN' 2>/dev/null | tr -d '\r' | grep -q LISTEN || { echo "    pk_proof: listener did not start on $ip"; return 1; }
-	o=$(timeout 30 ssh -p 2222 $PKO root@"$ip" 'echo PKOK' 2>&1 | tr -d '\r')
-	if grep -qE 'Authenticated to .* using "publickey"' <<< "$o" && grep -q PKOK <<< "$o"; then
-		timeout 30 ssh -p 2222 $NONEO root@"$ip" 'echo NONEOK' 2>&1 | tr -d '\r' | grep -q "Permission denied" && r=0 || echo "    pk_proof: 'none' was not denied on the publickey-only listener (probe invalid)"
-	else echo "    pk_proof: no publickey authentication on the listener"; fi
-	o=$(timeout 30 ssh $FRESHO root@"$ip" 'pid=/tmp/run/batman-dv/ch1-db.pid; kill $(cat $pid) 2>/dev/null; rm -f $pid; for h in $(nft -a list chain inet fw4 input 2>/dev/null | sed -n "s/.*ch1-pk-proof.*# handle \([0-9]*\).*/\1/p"); do nft delete rule inet fw4 input handle $h; done; echo "left=$(nft -a list chain inet fw4 input 2>/dev/null | grep -c ch1-pk-proof) listen=$(netstat -ltn 2>/dev/null | grep -c ":2222 ")"' 2>/dev/null | tr -d '\r')
-	[ "$o" = "left=0 listen=0" ] || { echo "    pk_proof: cleanup incomplete on $ip ($o)"; r=1; }
-	return $r; }
-# lock assertion on port 22: `none` must be DENIED (a timeout / dead node is not a refusal; review B2-3)
-none_refused(){ timeout 30 ssh $NONEO root@"$1" 'echo NONEOK' 2>&1 | tr -d '\r' | grep -q "Permission denied"; }
-PH=pre; say(){ echo "[$(date +%H:%M:%S) $PH] $*"; }
-fails=0; ok(){ echo "PASS [$PH] $*"; }; no(){ echo "FAIL [$PH] $*"; fails=$((fails + 1)); }; warn(){ echo "WARN [$PH] $*"; }
-q(){ timeout 120 ssh $SSHO root@$NODE "$@" 2>/dev/null | tr -d '\r'; }
-fq(){ timeout 120 ssh $FRESHO root@"$FIP" "$@" 2>/dev/null | tr -d '\r'; }
-fqlong(){ timeout 900 ssh $FRESHO root@"$FIP" "$@" 2>/dev/null | tr -d '\r'; }
-macips(){ arp -a | tr -d '\r' | awk -v m="$MACW" 'tolower($2)==m {print $1}'; }
-sweep(){ local i; for i in $(seq 2 254); do ping -n 1 -w 200 $1.$i >/dev/null 2>&1 & [ $((i % 40)) = 0 ] && wait; done; wait; }
-# ST carries the eth MAC: 02 runs the same version, so a stale ARP entry must not let a step act on 02 (review A-m2)
-ST='echo "mac=$(cat /sys/class/net/eth0/address 2>/dev/null) slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) hold=[$(cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null)] held=$(. /usr/lib/batman/rundir.sh; ls $RUNDIR/autocommit.ctl/hold-commit 2>/dev/null | wc -l) badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime) boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"'
-PROT='echo "protA=[$(cat /opt/batdata/state/slot-A.protected 2>/dev/null)] protB=[$(cat /opt/batdata/state/slot-B.protected 2>/dev/null)]"'
-DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null); set -- $r; echo "tryboot_flag=${6:-?}"'
-# p5 read-only view, with the SAME predicate the gate uses (prov_meta_status) and the identity check (review B-6)
-P5RO='mkdir -p -m 0700 /tmp/run/batman-dv && m=$(mktemp -d /tmp/run/batman-dv/ch1.XXXXXX) && mount -o ro,noload /dev/mmcblk0p5 $m && { echo "seeded=$([ -f $m/.seeded ] && echo y || echo n) shadowroot=$([ -s $m/identity/shadow-root ] && echo y || echo n) prov_files=$(ls $m/identity/prov 2>/dev/null | wc -l) metastat=[$(. /usr/lib/batman/prov-lock.sh; prov_meta_status $m/prov.meta $m/prov.cbor)] ident=$(. /usr/lib/batman/prov-lock.sh; prov_ident_ok $m/identity/prov && echo ok || echo bad) idsame=$(cmp -s $m/identity/prov/node.cert /etc/batman-prov/identity/node.cert 2>/dev/null && echo y || echo n)"; umount $m; }; rmdir $m'
-# A's boot FAT (p1) content hash: 7.2 / 8.6 rewrite A's boot files; prov-base covers p5 / upper / p6 only (round 2 m1)
-P1LIST='cd /boot && find . -type f | sort | while IFS= read -r f; do sha256sum "$f"; done'   # per file, so a FAIL names the file (round 3 m3)
-NOFORCE='echo "allow_unseeded=$([ -e /tmp/batman-slot.allow-unseeded ] && echo y || echo n) allow_stale=$([ -e /tmp/batman-slot.allow-stale-p5 ] && echo y || echo n) allow_txn=$([ -e /tmp/batman-slot.allow-unfinished-txn ] && echo y || echo n)"'
-# is_on <ip> <pattern>: 04 (by MAC) answers there and its state matches the pattern
-is_on(){ ping -n 1 -w 1000 "$1" >/dev/null 2>&1 || return 1; local s; s=$(timeout 30 ssh $FRESHO root@"$1" "$ST" 2>/dev/null | tr -d '\r'); case "$s" in "mac=$MAC "*$2*) echo "$s"; return 0;; esac; return 1; }
-SEEN=""   # every address 04 was found at in this run: tried first (review B-11: the reserved address is not in a swept /24)
-# find04 <pattern> [exclude-boot]: sets FIP / FOUND_HOW / FOUND_STATE (never call in a subshell)
-find04(){
-	local ip s p ips
-	for p in fixed seen mdns arp 10.41.254 10.41.1; do
-		case "$p" in
-			fixed) ips=$NODE ;;
-			seen) ips=$SEEN ;;
-			mdns) ips=$(ping -n 1 -w 1000 -4 $MDNS 2>/dev/null | tr -d '\r' | sed -n 's/.*\[\([0-9.]*\)\].*/\1/p' | head -1) ;;
-			arp) ips=$(macips) ;;
-			*) sweep $p; ips=$(macips) ;;
-		esac
-		for ip in $ips; do s=$(is_on "$ip" "$1") || continue; case "$s" in *"boot=${2:-none}"*) continue;; esac
-			FIP=$ip; FOUND_HOW=$p; FOUND_STATE=$s; case " $SEEN " in *" $ip "*) ;; *) SEEN="$SEEN $ip";; esac; return 0; done
-	done; return 1
-}
-FIP=""; FOUND_HOW=""; FOUND_STATE=""
-# wait_find <seconds> <pattern> [exclude-boot]  (parent shell only)
-wait_find(){ local t=$SECONDS; FIP=""; while [ $((SECONDS - t)) -lt "$1" ]; do find04 "$2" "${3:-none}" && return 0; sleep 10; done; return 1; }
-bootof(){ echo "$1" | sed -n 's/.*boot=\([0-9a-f]*\).*/\1/p'; }
+# ssh option sets, pk_proof / none_refused, say / ok / no, q / fq, find04 / wait_find, pc, land_quiet: shared with
+# prov-bench-s0-254.sh
+# shellcheck source=scripts/dv/fresh-254.sh
+. "$(dirname "$0")/fresh-254.sh"
 STAGED=0; SNAPPED=0; RESULT=FAIL; RESTORING=0
 mkdir "$LOCKD" 2>/dev/null || { echo "another dv run holds $LOCKD"; exit 1; }
 # an unexpected exit after the snapshot (set -u, a bug) still restores (review A-M1)
@@ -97,96 +46,46 @@ mkdir "$LOCKD" 2>/dev/null || { echo "another dv run holds $LOCKD"; exit 1; }
 # on 02: every process naming the reader dir (the loop and an in-flight read, both setsid group leaders) with its group
 C1RKILL='for p in $(grep -l "@D@/" /proc/[0-9]*/cmdline 2>/dev/null | cut -d/ -f3); do [ "$p" = $$ ] && continue; kill -TERM -- -$p 2>/dev/null; kill -TERM $p 2>/dev/null; done'
 c1r_stop(){ [ -n "${P02_U0:-}" ] && timeout 20 ssh $SSHO root@$PEER "${C1RKILL//@D@/$C1R}; rm -rf $C1R" >/dev/null 2>&1; P02_U0=""; }
-on_exit(){ local rc=$?; c1r_stop; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; restore_all "unexpected exit"; fi
+# 02's identity, labelled (an empty field never shifts another into its place): mac= mid= ps=
+P02ID="echo \"mac=\$(cat /sys/class/net/wlh0/address 2>/dev/null) mid=\$(uci -q get wireless.default_radio1.mesh_id) ps=\$(awk -v b=\$(cat /proc/sys/kernel/random/boot_id) '\$1==b {print \$4}' /opt/batdata/state/prov-state 2>/dev/null)\""
+p02f(){ sed -n "s/.*\\b$2=\\([^ ]*\\).*/\\1/p" <<< " $1"; }
+# chk02_after: after ANY restore that finished (step 9, or an abort's), the live mesh (compare covers config only,
+# review B-M4): 02 a neighbour of 04 again within 180 s, 02's identity as before. P02_DONE: once per run.
+chk02_after(){ local t nbok=n p02_1 m
+	[ "${P02_DONE:-0}" = 1 ] && return 0; P02_DONE=1
+	t=$SECONDS; while [ $((SECONDS - t)) -lt 180 ]; do q "batctl n -n 2>/dev/null | tail -n +3 | grep -qiw -- $PEERMAC && echo NB" | grep -q NB && { nbok=y; break; }; sleep 10; done
+	if [ $nbok = y ]; then ok "9 02 ($PEERMAC) is a mesh neighbour of 04 again"
+	else no "9 02 ($PEERMAC) not a neighbour of 04 within 180 s of the restore"
+		# 02 off the mesh has no remote way back (no cable, 254-h4 lifecycle row "02 離開 mesh") -> a person
+		m="NEEDS-PERSON chain1-254 ($RUN): 02 ($PEERMAC) is not back on the mesh after the restore"; echo "$m"
+		[ -n "${DV_DIR:-}" ] && echo "$m" >> "$DV_DIR/needs-person.txt"
+	fi
+	p02_1=$(timeout 30 ssh $SSHO root@$PEER "$P02ID" 2>/dev/null | tr -d '\r')
+	[ -n "$(p02f "$p02_1" mid)" ] && [ "$p02_1" = "$p02_0" ] && ok "9 02 unchanged: [$p02_1]" || no "9 02 changed or unreadable: [$p02_0] -> [$p02_1]"
+}
+on_exit(){ local rc=$? m; c1r_stop; if [ "$SNAPPED" = 1 ] && [ "$RESTORING" = 0 ]; then no "unexpected exit (rc $rc) — restoring"; restore_all "unexpected exit"; fi
+	if [ "$SNAPPED" = 1 ] && [ "${RESTORE_PERSON:-1}" = 1 ]; then
+		# 04 is left to a person (snapshot / dirty flag kept): the run's later D suites on 04 must not touch it
+		# (daily-validation.sh suite(): dnode_blocked reads $DV_DIR/needs-person.txt; review round 2 B-M2)
+		m="NEEDS-PERSON chain1-254 ($RUN): the restore did not finish — snapshot $D and the dirty flag are kept on 04 ($NODE)"
+		echo "$m"; [ -n "${DV_DIR:-}" ] && echo "$m" >> "$DV_DIR/needs-person.txt"; RESULT="RESTORE FAILED — needs a person"
+	elif [ "$SNAPPED" = 1 ] && [ -n "${p02_0:-}" ]; then chk02_after; fi
 	rmdir "$LOCKD" 2>/dev/null; MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- rm -rf "$WSLK" 2>/dev/null; say "CHAIN1 RESULT: $RESULT (fails=$fails)"; }
 trap on_exit EXIT
 trap 'say "host interrupted"; [ "$SNAPPED" = 1 ] && restore_all "interrupted"; RESTORING=1; exit 1' INT TERM
 
-# provclient on the node at $FIP; SIGN lines answered by the WSL signer (owner key never on the node) — as prov-claim-254
-pc(){
-	local key=$1; shift
-	local f; f=$(mktemp -d)/p; mkfifo "$f"
-	coproc SIGNP { MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- "$TOOLS_WSL/provclient-amd64" sign "$WSLK/$key"; }
-	exec {W}<>"$f"
-	local out="" line sig
-	while IFS= read -r line; do
-		line=$(printf '%s' "$line" | tr -d '\r')
-		case "$line" in
-			SIGN\ *) echo "$line" >&"${SIGNP[1]}"; IFS= read -r -t 30 sig <&"${SIGNP[0]}" || sig=ERR; printf '%s\n' "$sig" | tr -d '\r' >&"$W" ;;
-			*) out="$out$line
-" ;;
-		esac
-	done < <(ssh $FRESHO root@"$FIP" "$PCD/provclient node $*" < "$f" 2>&1)
-	exec {W}>&-; kill "$SIGNP_PID" 2>/dev/null; rm -rf "${f%/p}"   # stop the signer ({SIGNP[1]}>&- is not valid bash, SC1083)
-	printf '%s' "$out"
-}
 
-# land_quiet: first command after every restore landing — stop openmanetd so its address-reservation reboot cannot cut
-# a p5 dd / overlay restore in half; confirm the boot did not change meanwhile (review A-M3). rc 1 = boot changed.
-land_quiet(){ local b0 b1; b0=$(bootof "$FOUND_STATE"); fq '/etc/init.d/openmanetd stop >/dev/null 2>&1; true'; b1=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ -n "$b1" ] && [ "$b1" = "$b0" ]; }
-
-# ---- restore_all: from ANY state after the snapshot back to S0 (same path as step 9). Idempotent steps, each printed.
-restore_all(){
-	[ "$RESTORING" = 1 ] && return 1; RESTORING=1; PH=restore
-	[ "$SNAPPED" = 1 ] || { say "RESTORE: no snapshot was taken — nothing to restore"; return 0; }
-	say "RESTORE (${1:-step 9})"
-	local s b o i cmp
-	for i in 1 2 3; do
-		wait_find 900 "ver=$V " || { say "RESTORE: 04 not found anywhere in 900 s — needs a person (snapshot $D on p6, dead-man staged=$STAGED)"; return 1; }
-		say "04 at $FIP ($FOUND_HOW): $FOUND_STATE"; s=$FOUND_STATE
-		# an uncommitted trial: leave it (reboot -> its committed default slot)
-		case "$s" in *"trial_rc=0 "*) b=$(bootof "$s"); fq "$DISARM; (batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &)" >/dev/null
-			wait_find 900 "trial_rc=1 " "$b" || { say "RESTORE: no committed boot after leaving the trial"; return 1; }; s=$FOUND_STATE; say "committed: $s";; esac
-		land_quiet && break; say "RESTORE: boot changed while quieting openmanetd — finding 04 again ($i/3)"
-		[ "$i" = 3 ] && { say "RESTORE: 04 keeps rebooting under openmanetd — needs a person"; return 1; }
-	done
-	# on B: p5 back, then rollback to A
-	case "$s" in *"slot=B "*)
-		fq "rm -f /opt/batdata/state/autocommit-hold-commit; touch $BASE/ch1.cancel"
-		o=$(fqlong "for m in /tmp/run/batman-dv/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on B): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed — needs a person"; return 1; }
-		b=$(bootof "$s"); fq "batman-slot rollback >/dev/null 2>&1 && (batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &) && echo SENT" | sed 's/^/    rollback: /'
-		wait_find 900 "slot=A ver=$V trial_rc=1 " "$b" || { say "RESTORE: A not found after the rollback"; return 1; }; s=$FOUND_STATE; say "on A: $s"
-		land_quiet || { wait_find 900 "slot=A ver=$V trial_rc=1 " || return 1; s=$FOUND_STATE; land_quiet || { say "RESTORE: A keeps rebooting"; return 1; }; } ;;
-	esac
-	case "$s" in *"slot=A ver=$V trial_rc=1 "*) ;; *) say "RESTORE: not on A committed: $s"; return 1;; esac
-	fq "touch $BASE/ch1.cancel; rm -f /opt/batdata/state/autocommit-hold-commit; b=\$(cat /opt/batdata/state/bad-slot 2>/dev/null); [ -n \"\$b\" ] && { echo \"bad-slot was [\$b] (residue of this run) — removing\"; rm -f /opt/batdata/state/bad-slot; }; true" | sed 's/^/    /'
-	# p5 again ON A, always (2026-10-26 wsl.3 run: A booted with 8.6's claimed overlay and joinwatch running, and its
-	# --on-join saved A's live root line into the p5 restored on B -> S0 compare diffs=3). p5-restore stops joinwatch /
-	# helper / provd and nothing restarts them before the reboot below, so the overlay restore cannot be undone.
-	o=$(fqlong "for m in /tmp/run/batman-dv/ch1.*; do [ -d \$m ] && umount \$m 2>/dev/null; rmdir \$m 2>/dev/null; done; sh $BASE/prov-base-254.sh p5-restore $RUN"); say "p5 (on A): $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { say "RESTORE: p5-restore failed"; return 1; }
-	o=$(fqlong "sh $BASE/prov-base-254.sh overlay-restore $RUN"); echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY" | tail -12 | sed 's/^/    /'
-	grep -q "^OVERLAY-RESTORED $RUN" <<< "$o" || { say "RESTORE: overlay-restore failed"; return 1; }
-	b=$(bootof "$s"); fq "(batman-slot reboot committed ch1-restore </dev/null >/dev/null 2>&1 &)" >/dev/null
-	local t=$SECONDS; FIP=""; while [ $((SECONDS - t)) -lt 900 ]; do s=$(is_on $NODE "slot=A ver=$V trial_rc=1 ") && case "$s" in *"boot=$b"*) ;; *) FIP=$NODE; break;; esac; sleep 15; done
-	[ -n "$FIP" ] || { say "RESTORE: A not back at $NODE"; return 1; }
-	t=$SECONDS; while [ $((SECONDS - t)) -lt 300 ]; do u=$(q 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge 150 ] && break; sleep 10; done
-	say "A at $NODE: $(q "$ST")"
-	# compare S0 (joinwatch stopped meanwhile so p5 is not rw-mounted under the manifest; review A-m4) — result KEPT
-	q "/etc/init.d/joinwatch stop >/dev/null 2>&1; mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
-	cmp=""; for i in 1 2 3; do q "sh $BASE/prov-base-254.sh manifest $RUN after" | tail -1; o=$(q "sh $BASE/prov-base-254.sh compare $RUN after"); grep -q "p5 unreadable" <<< "$o" || break; sleep 10; done
-	q "/etc/init.d/joinwatch start >/dev/null 2>&1"; echo "$o" | tail -15 | sed 's/^/    /'
-	grep -q "diffs=0" <<< "$o" && { cmp=PASS; ok "S0 restored (p5 / overlay / uci / identity / p6 state)"; } || { cmp=FAIL; no "S0 not restored — snapshot kept"; }
-	# B back to V (its overlay carries the dead-man and the claimed slot): brewrite = sysupgrade -n + hold + back_to_a
-	o=$(NODE=$NODE N=1 PAY=$PAY PSHA=$PSHA bash "$BREWRITE" 2>&1); echo "$o" | grep -E "landed|post|RESULT" | cut -c1-220 | sed 's/^/    /'
-	if grep -q "E3 RESULT: PASS" <<< "$o"; then ok "B rewritten with V"; else no "B rewrite"; cmp=FAIL; fi
-	# p1 AFTER the B rewrite (it re-arms / commits through autoboot.txt on p1; round 3 m2); per-file diff names the file
-	p1=$(q "$P1LIST")
-	if [ "$p1" = "$P1_0" ]; then ok "A boot FAT (p1) identical to before ($(echo "$p1" | wc -l) files)"
-	else cmp=FAIL; no "p1 changed:"; diff <(echo "$P1_0") <(echo "$p1") | grep '^[<>]' | sed 's/^/    p1 /'; fi
-	# finish only when BOTH passed (review A-M4)
-	if [ "$cmp" = PASS ]; then o=$(q "sh $BASE/prov-base-254.sh finish $RUN | tail -1; rm -rf $PDIR $BASE/ch1-deadman.sh $BASE/ch1.cancel $BASE/ch1.fired $BASE/prov-base-254.sh; cat $BASE/ch1-deadman.log > /dev/null 2>&1; rm -f $BASE/ch1-deadman.log")
-		grep -q "^FINISHED $RUN" <<< "$o" && ok "snapshot finished ($o)" || no "finish: $o"
-	else say "finish skipped: snapshot $D and dirty flag kept for a person"; fi
-	say "after restore: $(q "$ST") $(q "$PROT") dirty=[$(q "cat $DIRTY 2>/dev/null")] dv-prov=[$(q "ls $BASE | tr '\n' ' '")] joinwatch=$(q 'ps w | grep -c "[/]usr/bin/joinwatch"')"
-	return 0
-}
-abort(){ no "ABORT: $*"; restore_all "abort: $*"; exit 1; }
+# restore_all / abort: in fresh-254.sh
 
 # ======== 0. pre
 s=$(q "$ST"); say "start: $s"
 case "$s" in "mac=$MAC slot=A ver=$V trial_rc=1 dt_try="*" hold=[] held=0 badslot=[]"*) ;; *) say "precondition (04 by MAC, A committed $V, no hold, no bad-slot)"; exit 1;; esac
 a=$(q "awk -v b=\$(cat /proc/sys/kernel/random/boot_id) '\$1==b {print \"ps=\" \$2 \"/\" \$4}' /opt/batdata/state/prov-state; batman-config-save --check >/dev/null 2>&1; echo check_rc=\$?; /usr/libexec/batman-addr-defer status; echo dirty=[\$(cat $DIRTY 2>/dev/null)]")
-say "A: $(echo $a)"; case "$a" in *"ps=helper/legacy"*"check_rc=0"*"want=stock env=absent openmanetd=up"*"dirty=[]"*) ;; *) say "A not healthy / dirty flag present"; exit 1;; esac
+# A = legacy (the pre-conversion fleet) or the bench member (S0-pre, prov-bench-s0-254.sh): the chain runs on B and p5
+# and puts A back from its own snapshot either way
+say "A: $(echo $a)"; A_PS=$(sed -n 's/.*ps=helper\/\([a-z]*\).*/\1/p' <<< "$a")
+case "$A_PS" in legacy|member) ;; *) say "A is neither legacy nor member [$A_PS]"; exit 1;; esac
+case "$a" in *"check_rc=0"*"want=stock env=absent openmanetd=up"*"dirty=[]"*) ;; *) say "A not healthy / dirty flag present"; exit 1;; esac
 [ "$(q "sha256sum < $PAY | cut -c1-64")" = "$PSHA" ] || { say "payload sha"; exit 1; }
 # payload version == V, from the build dir's SHA256SUMS (a version mismatch discards the hold, review A-M2)
 VPAY=""; for sums in "$OUTS"/*/ekh-bcm2711/SHA256SUMS; do grep -q "^$PSHA  .*-ab-payload\.tar\.gz$" "$sums" 2>/dev/null || continue
@@ -199,14 +98,34 @@ pk_proof $NODE || { say "lab key $LABKEY does not authenticate to A by publickey
 w9=$(MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- bash -c "cd /home/yello/Batman && git show f2f2bf6:feed/batman-provision/files/usr/sbin/batman-slot | sha256sum | cut -c1-64" | tr -d '\r')
 [ "$(sha256sum < "$WSL9_SLOT" | cut -c1-64)" = "$w9" ] && ! grep -q '#254 L44' "$WSL9_SLOT" || { say "WSL9_SLOT is not the f2f2bf6 batman-slot (or carries L44)"; exit 1; }
 peer0=$(timeout 30 ssh $SSHO root@$PEER "$ST" 2>/dev/null | tr -d '\r'); say "02 before: [$peer0]"
+# 02 must be the bench peer, reachable, on N0 with 04 as a neighbour BEFORE anything is changed (review B-M4: a wrong
+# PEER would otherwise surface only after the snapshot, as a destructive abort); its identity (P02ID, labelled) recorded
+p02_0=$(timeout 30 ssh $SSHO root@$PEER "$P02ID" 2>/dev/null | tr -d '\r'); say "02: [$p02_0]"
+[ -n "$peer0" ] && [ "$(p02f "$p02_0" mac)" = "$PEERMAC" ] && [ -n "$(p02f "$p02_0" mid)" ] && [ -n "$(p02f "$p02_0" ps)" ] \
+	|| { say "02 at $PEER is not reachable / not the bench peer ($PEERMAC) / has no mesh id or prov state"; p02_0=""; exit 1; }
+q "batctl n -n 2>/dev/null | tail -n +3 | grep -qiw -- $PEERMAC && echo NB" | grep -q NB || { say "02 ($PEERMAC) is not a neighbour of 04 before the run"; exit 1; }
 P1_0=$(q "$P1LIST"); say "A boot FAT (p1, /boot) before: $(echo "$P1_0" | wc -l) files, list sha $(echo "$P1_0" | sha256sum | cut -c1-16)"; [ "$(echo "$P1_0" | wc -l)" -ge 5 ] || { say "cannot hash p1"; exit 1; }
 q "mkdir -p -m 700 $PDIR && cd $PDIR && rm -rf ./* && tar -xzf $PAY && echo extracted" | sed 's/^/    /'
 # ======== 1. snapshot; mesh markers into the snapshot dir (step 8's premise); dead-man staged on p6
 PH=s1
 o=$(timeout 900 ssh $SSHO root@$NODE "KEEP_JOINWATCH_STOPPED=1 sh -s -- snap $RUN" < "$PB" 2>&1 | tr -d '\r'); say "$(echo "$o" | tail -1)"
-grep -q "^SNAP $RUN" <<< "$o" || { say "snap failed"; exit 1; }
+# the SNAP line lost (network, the 900 s timeout) does not mean the snapshot was not taken: the node's dirty flag says
+# (prov-base-254.sh:157 writes "<run> <boot> snap" once the snapshot is complete; joinwatch stays stopped meanwhile,
+# KEEP_JOINWATCH_STOPPED) -> this run's flag = snapshot taken, go on as after a snapshot (an abort restores);
+# unreadable -> hand 04 to a person (review round 3 A-m5 / B-7)
+if ! grep -q "^SNAP $RUN" <<< "$o"; then
+	dfl=$(timeout 60 ssh $SSHO root@$NODE "cat $DIRTY 2>/dev/null; echo rc=\$?" 2>/dev/null | tr -d '\r')
+	case "$dfl" in
+		"$RUN "*" snap"*) say "snap: no SNAP line, but the dirty flag is this run's ($(head -1 <<< "$dfl")): the snapshot was taken"; SNAPPED=1; FIP=$NODE; FOUND_STATE=$s; abort "snap result lost (restoring from the taken snapshot)" ;;
+		*rc=*) say "snap failed (dirty flag [$(head -1 <<< "$dfl")]: not this run's)"; q '/etc/init.d/joinwatch start >/dev/null 2>&1'; exit 1 ;;
+		*) SNAPPED=1; RESTORE_PERSON=1; RESTORING=1; say "snap result lost and 04 unreadable: whether a snapshot exists is unknown"; exit 1 ;;
+	esac
+fi
 SNAPPED=1; FIP=$NODE; FOUND_STATE=$s
 SNAPSHA=$(q "cut -c1-16 $D/p5.img.sha")
+# the p1 list into the snapshot (as prov-bench-s0 fresh does): finishing an aborted run with
+# `prov-bench-s0-254.sh restore 04 <run>` needs it (2026-11-08: that restore refused the chain1 snapshot without it)
+printf '%s\n' "$P1_0" | ssh $SSHO root@$NODE "umask 077; cat > $D/p1.list" || abort "p1 list into the snapshot"
 scp -q $SSHO "$PB" root@$NODE:$BASE/prov-base-254.sh || abort "copy prov-base"
 q "mkdir -p $D/marks; for m in mesh-joined mesh-expected; do [ -e /opt/batdata/state/\$m ] && mv /opt/batdata/state/\$m $D/marks/; done; echo marks=[\$(ls $D/marks | tr '\n' ' ')]" | sed 's/^/    /'
 q "cat > $BASE/ch1-deadman.sh <<'DM'
@@ -217,15 +136,26 @@ q "cat > $BASE/ch1-deadman.sh <<'DM'
 [ -f $BASE/ch1.fired ] && exit 0
 grep -q '^$RUN ' $DIRTY 2>/dev/null || { logger -t ch1-deadman 'dirty flag does not name $RUN: not acting'; exit 0; }
 [ -f $D/p5.img ] || { logger -t ch1-deadman 'snapshot missing: not acting'; exit 0; }
+# acting from here: the marker first, then the cancel check (restore touches ch1.cancel, then refuses its own rollback
+# while ch1.running exists); a run that stopped half-way leaves the marker and the restore to a person
+mkdir $BASE/ch1.running 2>/dev/null || exit 0
+[ -f $BASE/ch1.cancel ] && { rmdir $BASE/ch1.running; exit 0; }
 logger -t ch1-deadman 'restoring p5 and returning to A'
 L=$BASE/ch1-deadman.log
 /etc/init.d/openmanetd stop >> \$L 2>&1
-sh $BASE/prov-base-254.sh p5-restore $RUN >> \$L 2>&1; echo \"p5-restore rc=\$?\" >> \$L
+sh $BASE/prov-base-254.sh p5-restore $RUN >> \$L 2>&1; p=\$?; echo \"p5-restore rc=\$p\" >> \$L
+# a failed p5-restore: no rollback onto a half-written p5; ch1.running stays, a person takes over (round 7 B-MINOR-2)
+[ \$p = 0 ] || { logger -t ch1-deadman 'p5-restore failed: no rollback, ch1.running kept for a person'; sync; exit 1; }
+# an armed tryboot would make the rollback's reboot a plain one INTO the tryboot slot (batman-slot cmd_reboot): disarm,
+# and read the flag with the product's own reader; not 0 -> nothing more, ch1.running kept for a person (round 8 A-m1)
+vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; . /usr/lib/batman/bootfacts.sh; g=\$(bf_get); echo \"tryboot flag after disarm: \$g\" >> \$L
+[ \"\$g\" = 0 ] || { logger -t ch1-deadman \"tryboot flag \$g after disarm: no rollback, ch1.running kept for a person\"; sync; exit 1; }
 batman-slot rollback >> \$L 2>&1; r=\$?; echo \"rollback rc=\$r\" >> \$L
-[ \$r = 0 ] && : > $BASE/ch1.fired; sync
+# done: ch1.fired, then the marker goes (a ch1.running left behind = a run cut short or failed; round 7 B-MINOR-3)
+[ \$r = 0 ] && { : > $BASE/ch1.fired; rmdir $BASE/ch1.running; }; sync
 batman-slot reboot committed ch1-deadman >> \$L 2>&1
 DM
-chmod 700 $BASE/ch1-deadman.sh; rm -f $BASE/ch1.cancel $BASE/ch1.fired $BASE/ch1-deadman.log; sh -n $BASE/ch1-deadman.sh && echo ok" | grep -q '^ok$' || abort "dead-man write"
+chmod 700 $BASE/ch1-deadman.sh; rm -rf $BASE/ch1.cancel $BASE/ch1.fired $BASE/ch1.running $BASE/ch1-deadman.log; sh -n $BASE/ch1-deadman.sh && echo ok" | grep -q '^ok$' || abort "dead-man write"
 STAGED=1; say "dead-man staged (snapshot p5 sha $SNAPSHA)"
 # ======== 2-4. p5 idle -> mkfs -> hold + apply (unseeded) -> controlled reboot
 PH=s2-4
@@ -245,6 +175,12 @@ fi
 o=$(q "grep -c ' /dev/mmcblk0p5 ' /proc/mounts; ps w | grep -c '[b]atman-config-save'"); [ "$(echo $o)" = "0 0" ] && ok "p5 idle" || abort "p5 busy: $(echo $o)"
 o=$(q "mkfs.ext4 -F -q -L batconfig /dev/mmcblk0p5 && echo MKFS-OK; $P5RO"); say "p5 after mkfs: $(echo $o)"
 case "$o" in *MKFS-OK*"seeded=n"*) ok "p5 empty, not seeded";; *) abort "mkfs";; esac
+# a fresh card has an empty p6 too: p6's prov-state is the fail-secure ratchet (batman-prov-lock: "p5 says - but p6
+# says member — locking (any)"), so a member's p6 kept the fresh trial LOCKED -> no `none` login -> find04 never saw it
+# (2026-11-08 chain1 on the member base: trial up at 10.41.254.76, dropbear "Exit before auth", 0 fails). prov-state is
+# one of the snapshot's state files: overlay-restore puts it back, compare checks it
+o=$(q "rm -f /opt/batdata/state/prov-state; sync; [ -e /opt/batdata/state/prov-state ] && echo P6-KEPT || echo P6-CLEARED")
+[ "$o" = P6-CLEARED ] && ok "p6 prov-state cleared (fresh card)" || abort "p6 prov-state not cleared: [$o]"
 q "echo '$V' > /opt/batdata/state/autocommit-hold-commit; sync"
 o=$(timeout 900 ssh $SSHO root@$NODE "BATMAN_ALLOW_UNSEEDED=1 BATMAN_ALLOW_STALE_P5=1 batman-slot apply $PDIR 2>&1 | tail -3" 2>/dev/null | tr -d '\r'); say "apply: $(echo $o)"
 grep -q "armed as one-shot tryboot" <<< "$o" || { q "$DISARM" >/dev/null; abort "apply did not arm"; }
@@ -291,8 +227,10 @@ case "$o" in "rc=1 "*"not seeded"*"same_mtime=y"*) ok "gate negative: wsl.9 batm
 fq "rl=\$(mktemp /tmp/run/ch1-rcl.XXXXXX) && { grep -v '^exit 0' /etc/rc.local; echo '( ping -c 5 $HOSTIP; sleep 1500; sh $BASE/ch1-deadman.sh ) </dev/null >/dev/null 2>&1 & # ch1-deadman'; echo 'exit 0'; } > \$rl && cat \$rl > /etc/rc.local && rm -f \$rl; sync; setsid sh -c 'sleep 1500; sh $BASE/ch1-deadman.sh' </dev/null >/dev/null 2>&1 & echo planted" >/dev/null
 pl=$(fq "echo rclocal=\$(grep -c ch1-deadman /etc/rc.local) script=\$([ -x $BASE/ch1-deadman.sh ] && echo y) timer=\$(ps w | grep -c '[s]leep 1500')")
 say "dead-man on B: $pl"; case "$pl" in "rclocal=1 script=y timer="[1-9]*) ;; *) abort "dead-man not armed on B";; esac
-T5E=$SECONDS; r=$(fq 'batman-autocommit release --wait 2>&1 | tail -1'); say "release: $r"
-s=$(fq "$ST"); case "$s" in *"slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
+T5E=$SECONDS; r=$(fqlong "$(release_guarded "$BT" B)" | tail -1); say "release: ${r:-no answer}"; case "$r" in WRONG-STATE*) abort "release not sent ($r)";; esac   # no answer: the state check below decides
+# a lost answer: the release may still be committing (its own wait ends by the deadline): read for up to 5 min
+for k in 1 2 3 4 5 6 7 8 9 10; do s=$(fq "$ST"); case "$s" in *" slot=B "*"trial_rc=1 "*) break;; esac; [ -n "$r" ] && break; sleep 30; done
+case "$s" in *" slot=B "*"trial_rc=1 "*) ok "B committed (unclaimed)";; *) abort "B not committed after release: $s";; esac
 # the reservation reboot follows on the committed slot (E1c: ~145 s); wait for B's next boot and find it again
 PH=s6r; t=$SECONDS; while [ $((SECONDS - t)) -lt 400 ]; do b=$(fq 'cut -c1-8 /proc/sys/kernel/random/boot_id'); [ "$b" = "$BT" ] || break; sleep 10; done
 wait_find 600 "slot=B ver=$V trial_rc=1 " "$BT" || abort "B not found after the reservation reboot"
@@ -332,7 +270,8 @@ for w in "meta=unclaimed" "ap=0" "seeded=n" "metastat=[ok unclaimed]"; do case "
 grep -E "batman-provhelper.*boot rc=(7|0) " <<< "$ev" | tail -1 | grep -q "verdict=unclaimed" && ok "7.2 helper boot rc 7/0 + unclaimed" || no "7.2 helper boot line"
 grep -q "mesh join required: 0 (prov=unclaimed" <<< "$ev" && ok "7.2 autocommit: mesh join required: 0 (prov=unclaimed" || no "7.2 autocommit decision"
 grep -q "HELD" <<< "$ev" && ok "7.2 HELD" || no "7.2 not HELD"
-PH=s7.3; fq "batman-slot rollback >/dev/null 2>&1; (batman-slot reboot committed ch1-b </dev/null >/dev/null 2>&1 &)" >/dev/null
+# guarded: still the 7.2 trial (boot BA) on A, still a trial (its deadline may have returned it to B meanwhile)
+PH=s7.3; o=$(fq "$(rb_guarded "$BA" A 0 ch1-b)"); say "7.3 back to B: ${o:-no answer}"; [ "$o" = SENT ] || abort "7.3: rollback to B not sent ($o)"
 wait_find 600 "slot=B ver=$V trial_rc=1 " "$BA" || abort "7.3: B not found after back_to_b"
 say "7.3 B: $FIP $FOUND_STATE"; BB=$(bootof "$FOUND_STATE")
 case "$FOUND_STATE" in *"badslot=[]"*) ok "7.3 back on B committed, no bad-slot";; *) no "7.3 bad-slot: $FOUND_STATE";; esac
@@ -382,7 +321,7 @@ elif wait_find 600 "slot=A ver=$V trial_rc=0 dt_try=00000001 " "$BB"; then
 	echo "$o" | sed 's/^/    dry: /'
 	grep -q "claimed with the placeholder mesh key, but p6 says this node has been in a mesh — neighbours required (fail-closed)" <<< "$o" && grep -q "mesh join required: 1 (prov=claimed mesh_expect=0" <<< "$o" \
 		&& ok "8.7 negative: mesh-expected back -> claimed+placeholder needs neighbours, mesh join required: 1 (prov=claimed" || no "8.7 negative control (review B-4 strings)"
-	PH=s8.8; fq "batman-slot rollback >/dev/null 2>&1; (batman-slot reboot committed ch1-b </dev/null >/dev/null 2>&1 &)" >/dev/null
+	PH=s8.8; o=$(fq "$(rb_guarded "$BA" A 0 ch1-b)"); say "8.8 back to B: ${o:-no answer}"; [ "$o" = SENT ] || abort "8.8: rollback to B not sent ($o)"
 	wait_find 600 "slot=B ver=$V trial_rc=1 " "$BA" || abort "8.8: B not found"
 	say "8.8 B: $FIP $FOUND_STATE"
 else
@@ -393,6 +332,7 @@ fi
 # ======== 9. restore
 restore_all "step 9" || { RESULT="RESTORE FAILED — needs a person"; exit 1; }
 p=$(timeout 30 ssh $SSHO root@$PEER "$ST" 2>/dev/null | tr -d '\r'); say "02 after: [$p]"
+chk02_after   # the live mesh after the restore (also after an abort's restore: on_exit)
 if [ "$HASPROVD" = y ] && [ -n "$P02_U0" ]; then
 	sl=$(timeout 30 ssh $SSHO root@$PEER "${C1RKILL//@D@/$C1R}; cat $C1R/status.log; rm -rf $C1R" 2>/dev/null | tr -d '\r')
 	# +90 s: a read that started before the reboot may finish (and be logged) just after it, with the old value

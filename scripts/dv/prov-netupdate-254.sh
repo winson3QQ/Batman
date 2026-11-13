@@ -10,8 +10,16 @@
 #   arm txn-3: member -> killpoint txn-3 (p5 has the new generation, the overlay not) on net-apply --update -> sysrq ->
 #     first thing after the reboot: an --on-join tick (recorded with whether .txn was still there) -> >= 150 s ->
 #     member, "overlay completed from p5", wireless == the update, --check rc 0 or 5 (F39 lag, recorded)
+#   arm stale-secrets (docs/design/254-net-update-members.md §6): member -> net-apply --update-stale-secrets (the new
+#     net_config with net_secrets of the CURRENT version — the pairing a forwarder could send to keep an old SAE a
+#     removed member knows) -> E_BAD_OBJECT (code 4) with the helper's reason "(net_secrets)" (the binding, not an
+#     earlier check), the mesh id unchanged, no .txn, the state still member. provclient cannot read the node's stored
+#     secrets, so it builds FRESH ones with the current version (a new SAE): the same check refuses both. No
+#     on-hardware control before the fix (wsl.24 refuses the new shape for another reason); the fix's negative control
+#     is the Go mutant (node: M11 / M12) and the review probes.
 #   L26's BLE half (provd acks before it applies) is H3.
-# Type: — / A / F. Side effects: 04 ~40 min off the mesh, 1 sysrq reboot + restores, claimed in between.
+# Type: — / A / F. Side effects: 04 ~50 min off the mesh (yield, noyield, stale-secrets, txn-3: 4 pr_member joins,
+# each with its reboot), 1 sysrq reboot + restores after each arm, claimed in between.
 set -u
 PR_UNIT=prov-netupdate-254
 # shellcheck source=scripts/dv/prov-254.sh
@@ -22,9 +30,10 @@ p5f(){	# <tag>: the p5 manifest lines of overrides.uci and prov.meta (prov-base 
 	local o; o=$(nb manifest "$RUN" "$1"); grep -q "^MANIFEST $RUN $1" <<< "$o" || { echo "ERR $o"; return 1; }
 	qr "grep -E ' (overrides\.uci|prov\.meta)\$' /opt/batdata/dv-prov/$RUN/now-$1/p5.manifest"
 }
-newfd3(){
+newfd3(){	# the update's net_config keeps the country pr_member's join stored (= radio1.country, prov-254.sh pr_member):
+	# a P3 helper refuses an update that changes it (E_REJECTED reason 14, 254-net-update-members §2.2-2)
 	NEW="dvu-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-	PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$NEW' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\""
+	PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$NEW' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\"; c=\$(uci -q get wireless.radio1.country); [ -n \"\$c\" ] && printf 'country=%s\n' \"\$c\""
 }
 bindf(){	# <name in W> <target>
 	local h o; h=$(qr "sha256sum < $W/$1 | cut -c1-64"); o=$(pw bind "$1" "$h" "$2"); say "$o"; grep -q "^BOUND $2" <<< "$o"
@@ -87,11 +96,34 @@ txn3(){
 	c=$(qr 'batman-config-save --check >/dev/null 2>&1; echo rc=$?'); say "--check after: $c (5 = the F39 overrides lag, product checklist #254)"
 	pk_proof && ok "the lab key still logs in" || no "the lab key does not log in after txn-3"
 }
+stale(){
+	local r m0 m1 t i l cc
+	pr_member || return 1
+	m0=$(qr "$MESHID"); cc=$(qr 'uci -q get wireless.radio1.country')
+	newfd3
+	# a marker in the log first: the reason below is read only from lines after it (this request's, review r2 B-m4)
+	q "logger -t batman-dv 'dv-stale-marker $RUN'"
+	r=$(pr_pc owner.pem FD3="$PR_FD3" -- net-apply --update-stale-secrets "$OWNER" "$PR_NETCFG"); echo "$r" | grep -v '^NETCFG' | sed 's/^/    /'
+	grep -q 'RESULT net.apply(update-stale-secrets) code=4 ' <<< "$r" && ok "stale-secrets: refused with E_BAD_OBJECT" || no "stale-secrets: $(grep RESULT <<< "$r")"
+	[ -n "$cc" ] && grep -q " country=$cc\$" <<< "$(grep '^RESULT' <<< "$r")" && ok "stale-secrets: sent with the stored country ($cc)" || no "stale-secrets: country [$cc] vs $(grep RESULT <<< "$r")"
+	# refused by the secrets binding, not by an earlier check with the same code (the helper logs the reason)
+	l=$(qr "logread | sed -n '/dv-stale-marker $RUN/,\$p' | grep 'verb net.apply refused: code 4' | tail -1"); say "helper: $l"
+	grep -q '(net_secrets)' <<< "$l" && ok "stale-secrets: the refusal is the net_secrets binding" || no "stale-secrets: refusal reason [$l]"
+	m1=$(qr "$MESHID"); t=$(qr '[ -e /etc/batman-prov/.txn ] && echo present || echo gone')
+	[ -n "$m0" ] && [ "$m1" = "$m0" ] && ok "stale-secrets: mesh id unchanged ($m1)" || no "stale-secrets: mesh id $m0 -> $m1"
+	[ "$t" = gone ] && ok "stale-secrets: no .txn" || no "stale-secrets: .txn $t"
+	i=$(pr_info); case " $i " in *" state=member "*) ok "stale-secrets: still member";; *) no "stale-secrets: $i";; esac
+}
+# the CDDL network/update shape (provclient 789a89f) only means something to a helper that reads it (pr_cddl_nu):
+# a pre-CDDL helper (wsl.24 and older) refuses it for another reason -> INVALID, never a FAIL of the image
+pr_cddl_nu || { pr_result; exit 2; }
 pr_begin 3600 || { pr_result; exit 1; }
 arm yield || { pr_abort "arm yield"; pr_result; exit 1; }
 pr_restore || { pr_abort "restore after arm yield"; pr_result; exit 1; }
 arm noyield || { pr_abort "arm noyield"; pr_result; exit 1; }
 pr_restore || { pr_abort "restore after arm noyield"; pr_result; exit 1; }
+stale || { pr_abort "arm stale-secrets"; pr_result; exit 1; }
+pr_restore || { pr_abort "restore after arm stale-secrets"; pr_result; exit 1; }
 txn3 || { pr_abort "arm txn-3"; pr_result; exit 1; }
 pr_end
 pr_result

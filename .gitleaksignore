@@ -5,3 +5,11 @@
 # (checked: sha256(salt + b"guest") matches); not a new secret. Changing the broker credential is #47.
 f3f7c9d48521ad79df61cfbcc99e67f8f96dd47d:deploy/ots/rabbitmq-definitions.json:generic-api-key:2
 0328e83ba269075e65abe1c77a62cea55a9af03e:feed/batman-prov/src/cose/cose.go:generic-api-key:3
+# #254 P3 tests/prov-p3 (fixtures moved from feat/254-p3, #290): `wireless.default_radio0.key=` in a fake uci dump or a
+# sed rewrite — the values are the literal test strings Abcdefgh1234 / Oldkey123456789, the shell variable $PL and the
+# regex `.*`; no node ever had them. matched generic-api-key; not a secret.
+d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/cfgsave-ssid.sh:generic-api-key:38
+d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generic-api-key:219
+d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generic-api-key:262
+d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generic-api-key:266
+d4c7bb8f632ec0b2a961da5368915ccf2a02171a:tests/prov-p3/setkey-settings.sh:generic-api-key:275

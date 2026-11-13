@@ -3,6 +3,12 @@
 # (docs/design/254-h23-harness.md §4.4 order, §6.2). Each unit is its own script (scripts/dv/prov-<x>-254.sh) that ends
 # with "UNIT <name> PASS|FAIL|INVALID"; the suite passes only on PASS with no FAIL line (cl_judge).
 # 04-specific (MAC / peer 02 hard-coded in scripts/dv/prov-254.sh), like chain1-254.
+# 04's address: the bench store's membership log (bench-254.sh bench_ip: the last line of 04, a keep line), else the
+# pre-conversion fleet address (the units' MAC check refuses a wrong node). Read once per run.
+# shellcheck source=scripts/dv/bench-254.sh
+. "$(dirname "${BASH_SOURCE[0]}")/bench-254.sh"   # not $REPO: tests/dnode-block.sh sources this without it
+node04_ip(){ [ -n "${NODE04_IP:-}" ] || { NODE04_IP=$(bench_ip 04); NODE04_IP=${NODE04_IP:-10.41.1.3}; }; echo "$NODE04_IP"; }
+is_node04(){ [ "$1" = "$(node04_ip)" ]; }
 # A unit that hands 04 to a person (NEEDS-PERSON, $DIR/needs-person.txt) blocks every later prov unit of the run:
 # "FAIL blocked: DNODE …" (never a known failure, NEVER_KNOWN).
 PV_TOOLS=${DV_PROV_TEST:-$HOME/batman-dv-tools/prov-test}
@@ -19,7 +25,7 @@ dnode_blocked() {
 # pv_pre <dnode>: the prov units' common preconditions
 pv_pre() {
 	local v
-	[ "$1" = 10.41.1.3 ] || { echo "FAIL the prov units are 04-specific (MAC / peer 02 hard-coded in scripts/dv/prov-254.sh) and DNODE is $1"; return 1; }
+	is_node04 "$1" || { echo "FAIL the prov units are 04-specific (MAC / peer 02 hard-coded in scripts/dv/prov-254.sh) and DNODE is $1 (04 is at $(node04_ip))"; return 1; }
 	[ -s "$DIR/needs-person.txt" ] && { echo "FAIL blocked: DNODE — NEEDS-PERSON earlier in this run: $(tail -1 "$DIR/needs-person.txt")"; return 1; }
 	v=$(pv_ver "$1"); case "$v" in *.wbox-*) v=${v%%.dirty.wbox-*}; v=${v%%.wbox-*} ;; esac   # a bare .wbox- too (review B-m8)
 	[ -n "$v" ] || { echo "FAIL $1 unreachable (no BATMAN_VERSION)"; return 1; }
@@ -40,7 +46,8 @@ bchk_prov_normalise_254() {
 	NODE=$1 DV_DIR=$DIR bash "$REPO/scripts/dv/prov-normalise-254.sh" "$v" 2>&1 | cl_judge '^UNIT prov-normalise-254 PASS$'
 }
 # the block, in order: name | script | args (§4.4: normalise -> base -> revert type -> hold type -> killpoint type ->
-# chain 0 -> netjoin-fleet -> (7) -> legacy-upgrade)
+# chain 0 -> netjoin-fleet -> (7) -> legacy-upgrade -> the P3 units, #254 H4 appendix A: on a pre-P3 image their W lines
+# FAIL by design, prov-p3-verbs-254 names the image; they need a provclient with the P3 ops in DV_PROV_TOOLS)
 # shellcheck disable=SC2034  # read by scripts/daily-validation.sh (section 2f2)
 PROV_B_UNITS="prov-base-254|prov-base-254|
 prov-ac-radio1off-254|prov-ac-radio1off-254|
@@ -81,4 +88,13 @@ prov-claim-kp-254|prov-claim-kp-254|
 prov-chain0-254|prov-chain0-254|
 prov-netjoin-fleet-254|prov-netjoin-fleet-254|
 prov-ac-fleetchan-254|prov-ac-fleetchan-254|
-prov-legacy-upgrade-254|prov-legacy-upgrade-254|"
+prov-legacy-upgrade-254|prov-legacy-upgrade-254|
+prov-p3-verbs-254|prov-p3-verbs-254|
+prov-settings-254|prov-settings-254|
+prov-status-diag-254|prov-status-diag-254|
+prov-owner-254|prov-owner-254|
+prov-update-254|prov-update-254|
+prov-bundle-gate-254|prov-bundle-gate-254|
+prov-autocommit-p3-254|prov-autocommit-p3-254|
+prov-country-join-254|prov-country-join-254|
+prov-http-254|prov-http-254|"

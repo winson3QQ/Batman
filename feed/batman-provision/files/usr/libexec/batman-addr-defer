@@ -70,7 +70,7 @@ reconcile)
 	# pid file = "<pid> <uptime when started>": a start still alive after START_HANG_S is HUNG (the procd flock in
 	# /var/lock can be held by anyone, §13.8.2); a dead or stale pid frees the singleton
 	if [ -s "$pf" ]; then
-		read -r ppid pt < "$pf" 2>/dev/null; case "$pt" in ''|*[!0-9]*) pt=$now ;; esac
+		{ read -r ppid pt < "$pf"; } 2>/dev/null; case "$pt" in ''|*[!0-9]*) pt=$now ;; esac
 		if kill -0 "$ppid" 2>/dev/null; then
 			if [ $((now - pt)) -ge "$START_HANG_S" ]; then once hung "HUNG: the openmanetd start sent $((now - pt)) s ago is still running (attempt $n/$MAX_STARTS) — check /var/lock and 'ubus call service list' (#254 §13.8.2)"; exit 2; fi
 			exit 0   # still within its time: wait

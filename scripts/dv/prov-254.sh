@@ -21,6 +21,12 @@
 #   pr_needs_person <step>    NEEDS-PERSON line + $DV_DIR/needs-person.txt, DNODE_BLOCKED=1, return 1
 # Every judgement line is "PASS ..." / "FAIL ..." / "INVALID ..." / "NEEDS-PERSON ..."; pr_result prints the verdict.
 set -u
+# the bench nodes' addresses: NODE / PEER, else the bench store's membership log (bench-254.sh bench_ip: the last line
+# of each node, a keep line), else the pre-conversion fleet addresses (pr_begin's MAC check refuses a wrong node)
+# shellcheck source=scripts/dv/bench-254.sh
+. "$(dirname "${BASH_SOURCE[0]}")/bench-254.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/slot-guard-254.sh"   # rb_guarded: every rollback checks boot / slot / trial on the node
+[ -n "${NODE:-}" ] || NODE=$(bench_ip 04); [ -n "${PEER:-}" ] || PEER=$(bench_ip 02)
 NODE=${NODE:-10.41.1.3}; PEER=${PEER:-10.41.1.1}; MAC=${MAC:-88:a2:9e:b5:6c:89}
 PEERMAC=${PEERMAC:-a8:dd:9f:4d:c7:60}   # 02's mesh interface (wlh0): the neighbour must be 02, not any node (review A-m6 / B-m5); pr_begin checks it on 02
 REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
@@ -35,11 +41,14 @@ PB=$REPO/scripts/node/prov-base-254.sh
 HOLDF=/opt/batdata/state/autocommit-hold-commit
 LOCKD=${TEMP:?TEMP unset — the host lock lives in the per-user temp dir}/batman-dv-04.lock
 PR_PAY=/opt/batdata/dv-prov-ota.tar.gz   # node: the payload being installed (one at a time; removed by pr_release)
-fails=0; invalid=0; PR_BEGUN=0; PR_SNAPPED=0; PR_WROTE_B=0; PR_RESTORING=0; PR_DEADLINE=0; PR_WBOX_VER=""
+fails=0; invalid=0; notjudged=0; PR_BEGUN=0; PR_SNAPPED=0; PR_WROTE_B=0; PR_RESTORING=0; PR_DEADLINE=0; PR_WBOX_VER=""
 DNODE_BLOCKED=${DNODE_BLOCKED:-0}
 say(){ echo "[$(date +%H:%M:%S) $PR_UNIT $RUN] $*"; }
 ok(){ echo "PASS $PR_UNIT: $*"; }; no(){ echo "FAIL $PR_UNIT: $*"; fails=$((fails + 1)); }
 inv(){ echo "INVALID $PR_UNIT: $*"; invalid=$((invalid + 1)); }
+# nj <row> <why>: a row this run could not judge for a reason of the image it ran on (not contention, not a fault):
+# a verdict line of its own, counted in the RESULT line; it changes neither the UNIT verdict nor the exit status
+nj(){ echo "NOT-JUDGED $PR_UNIT: $*"; notjudged=$((notjudged + 1)); }
 mono(){ cut -d. -f1 /proc/uptime; }
 # mesh key fingerprints (review 4 A m7 / B m8): salted with a per-run random value that is never printed, so a logged
 # fingerprint cannot be guessed offline; "none" when uci has no key (an empty key must never pass as "a new key")
@@ -58,10 +67,89 @@ pw(){ QT=${QT:-180} q "RUN_ID=$RUN sh $PRD/prov-wbox-254.sh $*"; }
 wsl_(){ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- "$@"; }
 # the node's state line; mac first, so a stale ARP entry can never make a step act on 02 (same version)
 ST='echo "mac=$(cat /sys/class/net/eth0/address 2>/dev/null) slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) hold=[$(cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null)] held=$(. /usr/lib/batman/rundir.sh; ls $RUNDIR/autocommit.ctl/hold-commit 2>/dev/null | wc -l) badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] protA=[$(cat /opt/batdata/state/slot-A.protected 2>/dev/null)] protB=[$(cat /opt/batdata/state/slot-B.protected 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime) boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"'
-DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null); set -- $r; echo "tryboot_flag=${6:-?}"'
 # field <state line> <key>: the value of key=value (values never contain spaces; bracketed values keep the brackets)
 field(){ printf ' %s\n' "$1" | sed -n "s/.* $2=\([^ ]*\).*/\1/p" | head -1; }
 
+# ---- #254 S5 slot flock (254-p3-impl §3.7.3; the node half is scripts/node/slotlock-lib-254.sh) ----------------------
+# shellcheck source=scripts/lib/slotlock-254.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/slotlock-254.sh" || { echo "FAIL $PR_UNIT: no slot-lock helper"; exit 2; }
+pr_slot_ticks(){ qr "$SLK_LIB
+slk_ticks"; }
+# pr_slot_free <what ran> <ticks before it>: after a step whose helper ran a lock-holding batman-slot verb reported done,
+# the flock is free within 1 s and no process started during the step still has the lock file open (a child that kept
+# fd 9: the missing `9>&-`). Held only by a legitimate process from outside the step (a batman-slot or a child of one,
+# a harness holder) = contention: INVALID, not judged; held by an orphan (slk_free rc 4: no batman-slot among its
+# ancestors, in two scans 1 s apart) = a leaked fd 9 from anyone, FAIL (review r3 A-MAJOR-2). A
+# batman-slot started during the step by someone else (no batman-provhelper among its ancestors: autocommit,
+# joinwatch, an operator) is "another writer" (slk_scan: writer) -> INVALID too, not a leak (review r2 B-m3), and so is a child of such a
+# LIVE writer (review r3). Limit: a child such a writer left behind after it exited (re-parented to init) still counts as
+# the step's.
+pr_slot_free(){
+	local o
+	case "$2" in "" | *[!0-9]*) inv "lock check after $1: no start time [$2]"; return 1 ;; esac
+	o=$(qr "$SLK_LIB
+slk_free 1 - $2:\$(slk_ticks)"); say "slot lock after $1: $o"
+	case "$o" in
+		"SLKFREE ok"*) ok "the slot flock is free <= 1 s after $1 (${o#SLKFREE })" ;;
+		"SLKFREE leak"*) no "the slot flock is still held after $1 by what the step started: ${o#SLKFREE leak }" ;;
+		"SLKFREE nofile"*) no "no slot lock file after $1 (the verbs it ran take the lock)" ;;
+		"SLKFREE orphan"*) no "the slot flock is held by an orphan after $1 (no batman-slot among its ancestors, not the harness: a leaked fd 9 — every slot verb is rc 14 until it exits or the node reboots): ${o#SLKFREE orphan }" ;;
+		"SLKFREE other"*":writer"*) inv "the slot flock is held by another writer after $1 (a batman-slot the helper did not start — contention, not judged): ${o#SLKFREE other }" ;;
+		"SLKFREE other"*) inv "the slot flock is held by another process after $1 (contention, not judged): ${o#SLKFREE other }" ;;
+		*) inv "the slot-lock check after $1 printed [$o]" ;;
+	esac
+}
+# pr_t_fpr: the test root T's fingerprint as status key 15 shows it (release.Fingerprint: sha256 of the 65-byte point,
+# first 8 bytes in hex); empty when tests/keys/T.pub is not one line of 130 hex
+pr_t_fpr(){ local h; h=$(tr -d '\r\n' < "$REPO/tests/keys/T.pub" 2>/dev/null)
+	[[ $h =~ ^04[0-9a-f]{128}$ ]] || return 1
+	printf "$(sed 's/../\\x&/g' <<< "$h")" | sha256sum | cut -c1-16; }
+# pr_trust_want <status.get RESULT line>: what UD-T1 may assert for the image's root (status key 15 "trust", printed by
+# provclient as trust=): "want 24" (none: no root key), "want 11" (a root that is not T: R), "inv <why>" (T = a bench
+# build; no trust in key 15 = a pre-S5 node or a provclient that does not print it; T unreadable), "fail <why>" (bad)
+pr_trust_want(){ local tr t
+	tr=$(field "$1" trust); t=$(pr_t_fpr) || { echo "inv T's fingerprint unreadable from $REPO/tests/keys/T.pub"; return; }
+	case "$tr" in
+		"") if grep -q ' f15=[^ ]*trust' <<< "$1"; then echo "inv the node reports a trust but this provclient does not print it — rebuild the tools (scripts/dv-provclient-tools.sh)"
+			else echo "inv status key 15 has no trust (a pre-S5 node, or status.get failed): [$1]"; fi ;;
+		"$t") echo "inv bench image (trusts T, $tr): UD-T1 needs an R image" ;;
+		none) echo "want 24" ;;
+		bad | "?") echo "fail the image's release key files are malformed (status trust=$tr)" ;;
+		*) echo "want 11" ;;
+	esac; }
+# pr_precheck_ran <update.check RESULT line>: rc 0 when the helper's update.check ran precheck-node (Batman-p3
+# feed/batman-prov/src/node/update.go:249-331): code 0 and ok=true, or ok=false with a reason only precheck-node or a
+# later step gives — 1 / 2 / 12 / 17 / 21 (slotReason :46-66), 5 (precheck rc 15, or the target's boot config
+# :335-345; release.Decide never gives 5), 8 (the upload tmpfs / RAM :347-354). rc 1 + why on stdout otherwise: code
+# != 0 (E_RATE, E_BUSY — rc 14 is contention), a reason given before it (3 board, 4 / 6 Decide, 24 no root key), or 11
+# (release.Verify / Decide before it, or precheck-node rc 13 after it: cannot tell).
+pr_precheck_ran(){ local c k rs
+	c=$(field "$1" code); k=$(field "$1" ok); rs=$(field "$1" reason)
+	[ "$c" = 0 ] || { echo "update.check code [$c] (no answer to judge)"; return 1; }
+	[ "$k" = true ] && return 0
+	[ "$k" = false ] || { echo "update.check ok=[$k]"; return 1; }
+	case "$rs" in
+		1 | 2 | 5 | 8 | 12 | 17 | 21) return 0 ;;
+		3 | 4 | 6 | 24) echo "update.check refused with reason $rs before precheck-node" ;;
+		11) echo "update.check reason 11 (the signature / version check before precheck-node, or its rc 13: cannot tell)" ;;
+		*) echo "update.check reason [$rs] (not one of update.go's)" ;;
+	esac; return 1; }
+# pr_cddl_nu: the node's helper reads network/update in the CDDL shape {1: [+ {1: net_config, 2: member_list, ?3:
+# net_secrets}]} (Batman-p3 c15fb54, docs/design/254-net-update-members.md v4.1), the shape provclient sends since
+# 789a89f. A helper before it (wsl.24 and older) refuses the new shape for another reason, so a unit sending it would
+# FAIL on the image's age, not on the product: those units are INVALID there. Capability, not a version: the helper
+# binary carries c15fb54's error text "update shape" (2026-11-12 on the payloads in ~/out: wsl.22 / wsl.23 / wsl.24 = 0
+# hits, wsl.25 = 1; wsl.25's feed fbc01ae contains c15fb54, wsl.24's e5c89a1 does not). A bound test helper is read
+# where it is bound (/usr/bin/batman-provhelper is what runs). rc 0 = CDDL shape; 1 = INVALID printed.
+pr_cddl_nu(){ local o
+	o=$(qr 'h=/usr/bin/batman-provhelper; [ -f $h ] || { echo NOHELPER; exit 0; }; echo "SHAPE=$(grep -c "update shape" $h)"')
+	case "$o" in
+		SHAPE=[1-9]*) return 0 ;;
+		SHAPE=0) inv "pre-CDDL network/update helper on $(field "$(qr "$ST")" ver) (no c15fb54 'update shape' in /usr/bin/batman-provhelper): this unit sends the CDDL shape (provclient 789a89f) — not judged" ;;
+		*) inv "cannot tell the node's network/update shape: [$o]" ;;
+	esac
+	return 1
+}
 # ---- host lock (one dv run against 04 at a time; the same lock as chain1) ---------------------------------------------
 pr_lock(){
 	if mkdir "$LOCKD" 2>/dev/null; then echo "$$ $(date +%s) $PR_UNIT $RUN" > "$LOCKD/owner"; return 0; fi
@@ -258,7 +346,7 @@ pr_ota_b(){	# <payload-version> <target-slot> [nohold]
 		say "sysupgrade -n sent ($hv, hold=$hold)"
 		pr_find 900 "$b0" || { pr_needs_person "no node after the OTA reboot"; return 1; }
 		pr_lease_renew +900 || return 1
-		s=$PR_STATE; say "landed: $s"
+		s=$PR_STATE; say "landed: $s"; PR_LAND_BOOT=$(field "$s" boot)   # the trial a later guarded release is bound to
 		if [ "$(field "$s" slot)" = "$tgt" ] && [ "$(field "$s" ver)" = "$hv" ] && [ "$(field "$s" trial_rc)" = 0 ] && [ "$(field "$s" dt_try)" = 00000001 ]; then
 			[ $hold = 0 ] && { ok "landed in the $tgt trial of $hv (no hold: prov-wbox-nocommit-254)"; pr_trial_guard; return 0; }
 			o=$(qr '. /usr/lib/batman/rundir.sh; echo "disc=$([ -e $RUNDIR/autocommit.hold-discarded ] && echo 1 || echo 0) dlog=$(grep -c "HOLD-COMMIT-DISCARDED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)" /opt/batdata/log/autocommit.log 2>/dev/null)"')
@@ -279,10 +367,11 @@ pr_ota_b(){	# <payload-version> <target-slot> [nohold]
 # back_to_a: from a B trial (or B committed) to A committed
 back_to_a(){
 	local s b0 o; s=$(qr "$ST"); b0=$(field "$s" boot)
-	[ "$(field "$s" slot)" = B ] || { say "back_to_a: already on $(field "$s" slot)"; PR_STATE=$s; PR_AB_MT=""; return 0; }
+	case "$(field "$s" slot)" in B) ;; A) say "back_to_a: already on A"; PR_STATE=$s; PR_AB_MT=""; return 0 ;;
+		*) say "back_to_a: state unreadable [$s]"; return 1 ;; esac   # round 6 A-MINOR-4: no answer is not "on A"
 	pr_trial_guard_end
-	o=$(q 'batman-slot rollback >/dev/null 2>&1 && { (batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &); echo SENT; }')
-	say "back_to_a: ${o:-rollback refused}"; grep -q SENT <<< "$o" || return 1
+	o=$(q "$(rb_guarded "$b0" B any prov-dv-254)")   # guarded on the node: this boot, still on B
+	say "back_to_a: ${o:-no answer}"; [ "$o" = SENT ] || return 1
 	pr_find 900 "$b0" || return 1
 	[ "$(field "$PR_STATE" slot)" = A ] && [ "$(field "$PR_STATE" trial_rc)" = 1 ] || { say "back_to_a: not A committed: $PR_STATE"; return 1; }
 	return 0
@@ -376,7 +465,11 @@ pr_restore(){
 	d=$(grep '^DIFF ' <<< "$PR_CMP"); [ "$PR_WROTE_B" = 1 ] && d=$(grep -vE '^DIFF identity [-+] protB=' <<< "$d")
 	[ -z "$d" ] || { no "S0 not restored — snapshot and dirty flag kept"; return 1; }
 	[ "$PR_WROTE_B" = 1 ] && grep -q '^DIFF identity' <<< "$PR_CMP" && say "only slot-B.protected differs (B is rewritten next)"
-	ok "S0 restored (p5 / overlay / uci / identity / p6 state)"; PR_RESTORING=0; return 0
+	ok "S0 restored (p5 / overlay / uci / identity / p6 state)"; PR_RESTORING=0
+	# a restore in the MIDDLE of a unit (it goes on with a second claim: prov-netjoin's negative control, 2026-11-06
+	# "claim.verify code=3" on the restored member): legacy again; the unit's last restore (pr_end / pr_abort) is not
+	[ "${PR_FINAL:-0}" = 1 ] || [ "${PR_BASE:-legacy}" != legacy ] || pr_make_legacy || return 1
+	return 0
 }
 pr_brewrite(){
 	local s
@@ -394,7 +487,32 @@ pr_needs_person(){
 	echo "$m"; [ -n "${DV_DIR:-}" ] && echo "$m" >> "$DV_DIR/needs-person.txt"
 	DNODE_BLOCKED=1; fails=$((fails + 1)); PR_PERSON=1; return 1
 }
-pr_finish_snap(){ local o; o=$(nb finish "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^FINISHED $RUN" <<< "$o" && PR_SNAPPED=0; }
+# the snapshot is finished only when the prov state is the one pr_begin found: a non-final pr_restore makes the node
+# legacy again, and a unit ending on one left the bench legacy for every later unit (h5-prov 2026-11-07: prov-base,
+# "base state: legacy already" in all 33 units after it)
+pr_meta_state(){ qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta"; }
+pr_s0_ok(){ case "$1" in legacy|unclaimed|claimed|member) return 0 ;; esac; return 1; }
+# A refused finish keeps the snapshot and the dirty flag, and every later unit FAILs P9 on them: so each failure here is
+# a NEEDS-PERSON (DNODE_BLOCKED), never a bare FAIL (review 2026-11-09 A-MAJOR-1 / B-MINOR-4). A wrong end state gets
+# one more final restore first. An unreadable start state cannot be checked: a person (fail-closed).
+pr_finish_snap(){ local o
+	pr_s0_ok "${PR_S0_STATE:-}" || { pr_needs_person "the start prov state [${PR_S0_STATE:-}] was not read: the end state cannot be checked"; return 1; }
+	# read like the start state: an unreadable read (ssh dropped) is not a wrong state and gets no restore (round 5
+	# B-MINOR-7). One count per end state: a FAIL when a second restore sets it right, else one NEEDS-PERSON (a restore
+	# that already handed the node to a person is not counted again).
+	local a o1; for a in 1 2 3; do o=$(pr_meta_state); pr_s0_ok "$o" && break; sleep 5; done
+	pr_s0_ok "$o" || { pr_needs_person "the end prov state is unreadable [$o]: not checked, nothing restored"; return 1; }
+	if [ "$o" != "$PR_S0_STATE" ]; then
+		o1=$o; say "prov state [$o] at the end, S0 was [$PR_S0_STATE] — one more final restore"
+		if ! PR_FINAL=1 pr_restore; then [ "${PR_PERSON:-0}" = 1 ] || pr_needs_person "prov state [$o1] at the end, S0 was [$PR_S0_STATE]; the second restore failed"; return 1; fi
+		o=$(pr_meta_state)
+		[ "$o" = "$PR_S0_STATE" ] || { pr_needs_person "prov state [$o] at the end, S0 was [$PR_S0_STATE], also after a second restore"; return 1; }
+		no "prov state was [$o1] at the end (S0 [$PR_S0_STATE]); a second restore set it right"
+	fi
+	o=$(nb finish "$RUN"); say "$(echo "$o" | tail -1)"
+	grep -q "^FINISHED $RUN" <<< "$o" || { pr_needs_person "finish refused: $(echo "$o" | tail -1)"; return 1; }
+	PR_SNAPPED=0
+}
 pr_release(){
 	local o
 	# a person takes over (NEEDS-PERSON): no radio / provd / helper restore (review B-M3: a second writer on a
@@ -428,7 +546,7 @@ pr_release(){
 pr_abort(){
 	no "ABORT: $*"
 	if [ "$PR_SNAPPED" = 1 ]; then
-		if pr_restore; then
+		if PR_FINAL=1 pr_restore; then
 			# a failed B rewrite keeps the snapshot and the dirty flag for the person (finish only when B is V again)
 			if [ "$PR_WROTE_B" = 1 ] && ! pr_brewrite; then pr_needs_person "abort ($*): B rewrite failed"; pr_release; return 1; fi
 			pr_finish_snap
@@ -444,11 +562,11 @@ pr_end(){	# [revert] [wrote-b]
 		if [ "$b" = "slot=B version=$PR_WBOX_VER" ]; then q 'rm -f /opt/batdata/state/bad-slot; sync'; ok "bad-slot = the reverted wbox trial (removed)"
 		else pr_needs_person "bad-slot [$b] is not slot=B version=$PR_WBOX_VER"; return 1; fi
 	fi
-	pr_restore || { pr_needs_person "pr_end: restore failed"; return 1; }
+	PR_FINAL=1 pr_restore || { pr_needs_person "pr_end: restore failed"; return 1; }
 	s=$(qr "$ST")
 	if [ "$PR_WROTE_B" = 1 ] || [ "$(field "$s" protB)" != "[$PR_V]" ]; then pr_brewrite || { pr_needs_person "pr_end: B rewrite failed"; return 1; }
 	else [ "$(qr "$PROTB_LS")" = "$PR_PROTB_LS" ] && ok "slot-B.protected = V, untouched" || no "slot-B.protected changed"; fi
-	pr_finish_snap || no "finish"
+	pr_finish_snap || :   # it reports every failure itself (NEEDS-PERSON)
 	if [ -n "${OWNER:-}" ]; then pr_keys_drop; [ "$(wsl_ bash -c "[ -e $WSLK ] && echo left" | tr -d '\r')" = left ] && no "run keys still in $WSLK" || ok "run keys removed"; fi
 	pr_release
 	pr_peer_after
@@ -485,7 +603,7 @@ pr_wait_result(){
 		sleep 5
 	done
 }
-pr_result(){ say "RESULT fails=$fails invalid=$invalid"
+pr_result(){ say "RESULT fails=$fails invalid=$invalid notjudged=$notjudged"
 	if [ "$fails" = 0 ] && [ "$invalid" = 0 ]; then echo "UNIT $PR_UNIT PASS"; return 0; fi
 	[ "$fails" = 0 ] && { echo "UNIT $PR_UNIT INVALID"; return 2; }; echo "UNIT $PR_UNIT FAIL"; return 1; }
 
@@ -525,14 +643,37 @@ pr_begin(){
 	o=$(qp "cat /sys/class/net/wlh0/address"); [ "$o" = "$PEERMAC" ] || { PR_BEGUN=0; pr_unlock; no "02 wlh0 is [$o], not PEERMAC $PEERMAC: the neighbour checks would test the wrong node"; return 1; }
 	PR_DEADLINE=$(( $(mono) + secs )); o=$(pr_acquire "$secs") || { echo "$o"; PR_BEGUN=0; pr_unlock; no "lease"; return 1; }; echo "$o"
 	q "mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
+	# the start state, read BEFORE the snapshot until it is one of the four: a failed read must not switch the end check
+	# off (review 2026-11-09 B-MINOR-4 / A-MINOR-3), and it stops the unit before anything on the node changed (round 5
+	# A-MINOR-5: read after the snapshot, it cost a full restore + reboot of an untouched node)
+	PR_S0_STATE=""; for a in 1 2 3; do PR_S0_STATE=$(pr_meta_state); pr_s0_ok "$PR_S0_STATE" && break; sleep 5; done
+	pr_s0_ok "$PR_S0_STATE" || { pr_release; no "start prov state unreadable [$PR_S0_STATE] — no snapshot taken, nothing changed"; return 1; }
 	o=$(nb snap "$RUN"); say "$(echo "$o" | tail -1)"; grep -q "^SNAP $RUN" <<< "$o" || { pr_release; no "snap"; return 1; }
 	PR_SNAPPED=1
+	# The bench base state is a claimed N0 MEMBER now (254-h4 §3.1, prov-bench-s0-254.sh); these units were written for
+	# a LEGACY start (they claim first). L vehicle (254-h4 §2): inside the snapshot the node is made legacy, the restore
+	# brings the member back. PR_BASE=member: the unit wants the base state as it is.
+	if [ "${PR_BASE:-legacy}" = legacy ]; then pr_make_legacy || { pr_abort "make-legacy"; return 1; }; fi
 	for a in "$@"; do case "$a" in
 		upper=*) pr_upper_helper "${a#upper=}" || { pr_abort "upper-helper"; return 1; } ;;
 		helper=*) pr_push_helper "${a#helper=}" || { pr_abort "push-helper"; return 1; } ;;
 		*) pr_abort "pr_begin: bad argument $a"; return 1 ;;
 	esac; done
 	return 0
+}
+# pr_make_legacy (only inside a snapshotted unit): p5's prov record stripped with the helper stopped (prov-base
+# strip-p5-prov; a running helper would write the overlay's record back), the overlay's record removed, the identity
+# kept -> the helper's boot takes boot.go case 9 (seeded, no prov, overlay identity): a legacy record, generation 1.
+pr_make_legacy(){
+	local st o i
+	st=$(qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta")
+	case "$st" in legacy) say "base state: legacy already"; return 0 ;; member|claimed) ;; *) no "make-legacy: base state unreadable / unexpected [$st]"; return 1 ;; esac
+	o=$(PB_ENV=KEEP_HELPER_STOPPED=1 nb strip-p5-prov "$RUN"); grep -q "^STRIPPED $RUN" <<< "$o" || { no "make-legacy: strip-p5-prov: $(tail -1 <<< "$o")"; return 1; }
+	o=$(q "rm -f /etc/batman-prov/prov.cbor /etc/batman-prov/prov.meta; sync; ls /etc/batman-prov/prov.* 2>/dev/null | wc -l; for s in batman-provhelper joinwatch batman-provd; do [ -x /etc/init.d/\$s ] && /etc/init.d/\$s start >/dev/null 2>&1; done; echo started")
+	case "$(echo $o)" in "0 started") ;; *) no "make-legacy: overlay record not removed / services not started: [$(echo $o)]"; return 1 ;; esac
+	st=""; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do st=$(qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta 2>/dev/null"); [ "$st" = legacy ] && break; sleep 5; done
+	[ "$st" = legacy ] || { no "make-legacy: the helper did not come up legacy [$st]: $(qr "logread | grep batman-provhelper | tail -2" | tr '\n' '|')"; return 1; }
+	say "base state: member -> legacy for this unit ($(qr "logread | grep 'batman-provhelper.*boot rc=.*verdict=legacy' | tail -1 | sed 's/.*boot //'" | cut -c1-120)); the restore brings the member back"
 }
 pr_on_exit(){ local rc=$?
 	# review B-M5: an exit DURING a restore leaves a half-restored node — that is a person's job, said so
@@ -584,6 +725,16 @@ pr_keys(){
 		|| { no "owner key generation"; return 1; }
 	OWNER=$(wsl_ cat $WSLK/owner.pub | tr -d '\r'); ENC=$(wsl_ cat $WSLK/enc.pub | tr -d '\r'); ATK=$(wsl_ cat $WSLK/attacker.pub | tr -d '\r')
 	[ ${#OWNER} = 130 ] && [ ${#ENC} = 130 ] && [ ${#ATK} = 130 ] || { no "owner keys"; return 1; }
+}
+# pr_h0: the BENCH owner's key (prov-bench-s0-254.sh, ~/.batman-dv/bench/h0) for a unit that drives the node as its
+# real owner from the member base state: a 0600 COPY of owner.pem in this run's key dir (pr_keys_drop removes the
+# run dir, never the bench store), H0 = its public key. Use `pr_pc h0.pem ...` and "$H0" where a run-key unit uses
+# `pr_pc owner.pem ...` and "$OWNER".
+pr_h0(){
+	wsl_ bash -c "umask 077; mkdir -p $WSLK && cp /home/yello/.batman-dv/bench/h0/owner.pem $WSLK/h0.pem && chmod 600 $WSLK/h0.pem" || { no "bench owner key H0 not copied"; return 1; }
+	H0=$(wsl_ cat /home/yello/.batman-dv/bench/h0/owner.pub | tr -d '
+'); [ ${#H0} = 130 ] || { no "bench owner key H0 unreadable"; return 1; }
+	OWNER=${OWNER:-$H0}   # pr_end's key cleanup looks at OWNER
 }
 # pr_pc_place: provclient-arm64 into $PCD (root 0711, made without -p: a pre-existing dir is refused), sha checked
 # against the tools' SHA256SUMS. tmpfs: again after every reboot.
@@ -665,7 +816,8 @@ pr_keys_drop(){ wsl_ rm -rf "$WSLK"; q "rm -rf $PCD"; }
 pr_member(){
 	local mesh r i s b0
 	mesh="dvm-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-	PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$mesh' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\""
+	# net_config key 5 = radio1.country: P3's join refuses any other (254-p3 D9); unread -> provclient's default
+	PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$mesh' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\"; c=\$(uci -q get wireless.radio1.country); [ -n \"\$c\" ] && printf 'country=%s\n' \"\$c\""
 	pr_keys && pr_pc_place && pr_claim || return 1
 	r=$(pr_pc owner.pem FD3="$PR_FD3" -- net-apply --first "$OWNER"); grep -q "RESULT net.apply code=0 " <<< "$r" || { no "join: $r"; return 1; }
 	i=$(pr_info); case " $i " in *" state=member "*) ;; *) no "not member after the join: $i"; return 1 ;; esac
@@ -713,8 +865,9 @@ pr_normalise(){
 	pr_ota_b "$v" A || { pr_needs_person "normalise: OTA V into A failed (marker dv-prov-normalising kept)"; return 1; }
 	pr_lease_renew +900 || return 1
 	pr_wait_held 480 || { pr_needs_person "normalise: the A trial is not HELD by uptime 480 s"; return 1; }
-	o=$(q 'batman-autocommit release --wait 2>&1 | tail -1'); say "release: $o"
-	s=$(qr "$ST")
+	rb0=$PR_LAND_BOOT; o=$(QT=900 q "$(release_guarded "$rb0" A)" | tail -1); say "release: ${o:-no answer}"
+	# a commit can land after the answer (or the answer is lost): read for up to 5 min (round 8 A-m3)
+	for _ in 1 2 3 4 5 6 7 8 9 10; do s=$(qr "$ST"); [ "$(field "$s" trial_rc)" = 1 ] && break; case "$o" in WRONG-STATE*) break ;; esac; sleep 30; done
 	[ "$(field "$s" slot)" = A ] && [ "$(field "$s" trial_rc)" = 1 ] && [ "$(field "$s" ver)" = "$v" ] \
 		|| { pr_needs_person "normalise: not A committed on V after the release ($s)"; return 1; }
 	q "rm -f $HOLDF; sync"

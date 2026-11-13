@@ -1,0 +1,139 @@
+# scripts/dv/data/p3-how.tsv — how each row of p3-units.tsv is run (#254 comment 6697703967, user decision 2026-11-07):
+#   h = the helper's behaviour, driven by provclient on the helper socket (owner-ops signed on the host)
+#   n = node / network level, or an anonymous session: no owner session needed
+#   g = a Go unit test of the product (H4-U8)
+#   m = by hand with the app / the phone: it needs an owner session THROUGH provd, and the host has no such client
+#   a+b = both: the part before the + is automated, the note says what is left for a person
+# unit	row	how	note
+prov-p3-routes-254	RT1	n+m	anonymous role over an NX session; owner / member roles need an owner session through provd
+prov-p3-routes-254	RT1h	m	owner session over HTTP
+prov-p3-routes-254	RT2	m	owner session over HTTP
+prov-p3-routes-254	RT3	n	
+prov-p3-routes-254	RT4	h	
+prov-p3-routes-254	RT5	h	
+prov-owner-254	OW1	h+m	the add and the owner list by the helper; Hx's auth/owner needs a session through provd
+prov-owner-254	OW2	h	
+prov-owner-254	OW3	m	BLE + HTTP sessions of an owner being cut
+prov-owner-254	OW4	h	
+prov-owner-254	OW5	h	
+prov-owner-254	OW6	m	psk_owner handshake of a removed owner
+prov-settings-254	ST1	h	
+prov-settings-254	ST2	h	
+prov-settings-254	ST3	h	
+prov-settings-254	ST4	h	
+prov-settings-254	ST5	h	
+prov-settings-254	ST7	h	
+prov-settings-254	ST8	h	
+prov-settings-254	ST9	h	
+prov-settings-254	ST10	h	
+prov-settings-254	ST11	h	
+prov-settings-254	ST12	h	
+prov-settings-254	ST13	h	
+prov-settings-254	ST14	h	
+prov-settings-254	ST15	h	
+prov-settings-254	ST16	h	
+prov-settings-254	ST17	h	
+prov-settings-254	ST19	h	
+prov-settings-254	ST20	h	
+prov-settings-254	ST6	h+m	hostapd back on the old credentials by the helper; the phone being authorized needs the phone
+prov-settings-254	ST22	n	a measurement
+prov-country-join-254	CJ1	h	
+prov-country-join-254	CJ2	h	
+prov-country-join-254	CJ3	h	
+prov-status-diag-254	SD1	h	
+prov-status-diag-254	SD2	m	the member role is provd's
+prov-status-diag-254	SD3	m	the ro connection and its rate are provd's
+prov-status-diag-254	SD4	h+m	the bundle's content by the helper; chunked retrieval > 64 KiB is provd's
+prov-status-diag-254	SD5	m	handles across sessions are provd's
+prov-bundle-gate-254	BG1	n	
+prov-bundle-gate-254	BG2	n	
+prov-bundle-gate-254	BG3	n	
+prov-bundle-gate-254	BG4	n	
+prov-http-254	HT3	n	
+prov-http-254	HT4	n	
+prov-http-254	HT5	n	
+prov-http-254	HT8a	n	
+prov-http-254	HT9	n	
+prov-http-254	HT10	n	
+prov-http-254	HT11	n	
+prov-http-254	HT12	n	
+prov-http-254	HT13	n	
+prov-http-254	HT14	n	
+prov-http-254	HT15	n	
+prov-http-254	HT16	n	
+prov-http-254	HT16b	n	
+prov-http-254	HT16c	n	
+prov-http-254	HT18	n	
+prov-http-254	HT19	n	
+prov-http-254	HT20	n	
+prov-http-254	HT21	n	
+prov-http-254	HT22	n	
+prov-http-254	HT23	n	
+prov-http-254	HT1	m	a client on the phone AP completing a handshake
+prov-http-254	HT6	m	owner session over HTTP
+prov-http-254	HT7	m	NX / psk_replay over HTTP from the phone AP
+prov-http-254	HT8b	n+m	the flood is dropped and the poll is not starved; the owner's upload finishing needs an owner session
+prov-http-254	HT17	m	the phone reconnecting
+prov-upload-254	UP1	h	
+prov-upload-254	UP2	m	a second owner's session
+prov-upload-254	UP3	m	an owner session on the phone
+prov-upload-254	UP4	h	
+prov-upload-254	UP5	n	
+prov-upload-254	UP6	n	
+prov-upload-254	UP7	h	
+prov-upload-254	UP8	m	an upload over HTTP repeated
+prov-upload-254	UP9	h	
+prov-upload-254	UP10	h	
+prov-upload-254	UP11	n	
+prov-update-254	UD-T1	h	on the bench fleet (02 / 04 trust T) always INVALID; the R (-> 11) and none (-> 24) arms are evidenced offline until an R image is on a node: Batman-p3 release_test.go TestVerifySignrelNegative, node/update_test.go TestUpdateCheckRefusals, firmware scripts/check-release-key-gate.sh + test-release-key-gate.sh (review r2 B-m9)
+prov-update-254	UD-L	h	judged when update.check ran precheck-node (pr_precheck_ran); a check that stopped before it is a NOT-JUDGED line (review r2 A-m3); the read-only verbs are judged every run by prov-fw-boot-254 FB6
+prov-update-254	UD1	h	
+prov-update-254	UD2	h	
+prov-update-254	UD3	h	
+prov-update-254	UD3b	h	
+prov-update-254	UD4	h	
+prov-update-254	UD5	h	
+prov-update-254	UD6	h	
+prov-update-254	UD7	h	
+prov-update-254	UD8	h	
+prov-update-254	UD8b	h	
+prov-update-254	UD8b-race	h	
+prov-update-254	UD8c	h	
+prov-update-254	UD9	h	
+prov-update-254	UD10	h	
+prov-update-254	UD10b	h	
+prov-update-254	UD11	h	
+prov-update-254	UD12b	h	
+prov-update-254	UD13	h	
+prov-update-254	UD14	h	
+prov-update-254	UD16b	h	
+prov-update-254	UD17	h	
+prov-update-254	UD19	h	
+prov-update-254	UD20	h	
+prov-update-254	UD20b	h	
+prov-update-254	UD20c	h	
+prov-update-254	UD12	g	Go unit test (H4-U8)
+prov-update-254	UD16	g	Go unit test (H4-U8)
+prov-update-254	UD15	m	a person with the YubiKey
+prov-update-254	UD18	n	
+prov-autocommit-p3-254	AC1	n	
+prov-autocommit-p3-254	AC2	n	
+prov-autocommit-p3-254	AC3	n	
+prov-autocommit-p3-254	AC4	n	
+prov-autocommit-p3-254	AC5	n	
+prov-autocommit-p3-254	AC6	n	
+prov-autocommit-p3-254	AC7	n	
+prov-autocommit-p3-254	AC8	n	
+p3-other-254	TT1	n+m	the loop-file arm; the real card needs a person
+p3-other-254	LR1	n	
+p3-other-254	RK1	n	
+p3-other-254	FB2	n	
+p3-other-254	FB3	n	
+p3-other-254	EE1	n	
+p3-other-254	EE2	n	
+p3-other-254	PR1	m	the §7 probe's positive arm needs the phone on the AP
+p3-other-254	SEC1	n	
+prov-fw-boot-254	FB1	n	
+prov-fw-boot-254	FB4	n	
+prov-fw-boot-254	FB5	n	
+prov-fw-boot-254	FB6	n	

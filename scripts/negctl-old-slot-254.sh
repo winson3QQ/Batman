@@ -23,11 +23,18 @@ flag_clear() {	# only ever before the OTA was sent (design v6 B-M1)
 	q '[ ! -e /opt/batdata/state/autocommit-hold-commit ]' && say "hold flag cleared (read back)" || { say "FAIL hold flag still present after rm"; RC=1; }
 }
 state_line() { q 'echo "slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) hold=[$(cat /opt/batdata/state/autocommit-hold-commit 2>/dev/null)] boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"' | tr -d '\r'; }
-# THE ONLY place rollback is called: node-side, in one command, only when the node runs slot B (E34)
+# THE ONLY place rollback is called: node-side, in one command, only when the node runs slot B (E34).
+# #254 S5 (254-p3-impl §10 names :29): the rollback runs the batman-slot of slot B — the OLD build this control boots,
+# normally pre-S5 (mkdir lock, no rc 14). Should B carry an S5 build, rc 14 = another batman-slot holds the slot flock
+# (the helper's bootinfo): retried node-side, 5 x 2 s. A rollback that still fails is NOT silent: ROLLBACK-RC=<rc>,
+# FAIL, RC=1 (the node stays on B, a held trial: a plain reboot returns it to A).
 back_to_a() {
 	local b0; b0=$(bootid)
-	o=$(q "if [ \"\$(batman-slot active)\" = B ]; then v=\$(sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build); [ \"\$v\" = '$V2' ] || echo \"UNEXPECTED VERSION \$v\"; batman-slot rollback && { (batman-slot reboot committed negctl-254 </dev/null >/dev/null 2>&1 &); echo SENT; }; else echo NOT-ON-B; fi" | tr -d '\r')
+	o=$(q "if [ \"\$(batman-slot active)\" = B ]; then v=\$(sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build); [ \"\$v\" = '$V2' ] || echo \"UNEXPECTED VERSION \$v\"; i=0; while :; do batman-slot rollback; r=\$?; [ \$r = 14 ] && [ \$i -lt 5 ] || break; i=\$((i + 1)); sleep 2; done; if [ \$r = 0 ]; then (batman-slot reboot committed negctl-254 </dev/null >/dev/null 2>&1 &); echo SENT; else echo ROLLBACK-RC=\$r; fi; else echo NOT-ON-B; fi" | tr -d '\r')
 	say "back_to_a: $(echo "$o" | tr '\n' ' ')"
+	if grep -q '^ROLLBACK-RC=' <<< "$o"; then
+		say "FAIL batman-slot rollback refused on B ($(grep -o 'ROLLBACK-RC=[0-9]*' <<< "$o")) — the node is still on B; a plain reboot returns it to A (held trial)"; RC=1; return 1
+	fi
 	grep -q SENT <<< "$o" || return 0
 	waitboot "$b0" 600 || { say "FAIL node did not reboot after back_to_a"; RC=1; return 1; }
 	settle 300 || { say "FAIL node not stably reachable after back_to_a"; RC=1; return 1; }

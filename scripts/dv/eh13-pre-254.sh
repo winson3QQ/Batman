@@ -16,6 +16,10 @@
 # ~260 MB of payload during the run (removed). Git Bash.
 PR_UNIT=prov-eh13pre-254
 . "$(dirname "$0")/prov-254.sh"
+# #254 S5 (254-p3-impl §3.7.3): a boot FAT is mounted only under the slot lock (the flock batman-slot write / arm /
+# bootinfo hold), or a concurrent slot write meets EBUSY mid-write: SLOTLK (scripts/lib/slotlock-254.sh, sourced by prov-254.sh;
+# bounded). A lock it cannot get = SLOTLK-BUSY, nothing mounted -> INVALID, not a FAIL of the image; held by an orphan
+# (SLOTLK-BUSY LEAK, slk_leak: a leaked fd 9 blocks every slot verb) -> FAIL (review r3 A-MAJOR-2).
 E=/opt/batdata/dv-h4e13
 VCGET='vcmailbox 0x00030064 4 4 0 2>/dev/null | awk "{print \$6}"'
 
@@ -52,13 +56,17 @@ f=$(qr "$VCGET"); [ "$((f))" = 1 ] && ok "tryboot flag reads 1 after apply" || n
 o=$(QT=600 q "batman-slot stage-root $E/nosq 2>/dev/null; echo rc=\$?"); say "stage-root: $(echo $o)"
 grep -q '^rc=0$' <<< "$o" && grep -qE '^/dev/mmcblk0p4$' <<< "$o" && ok "stage-root prints B's root device only" || no "stage-root: $(echo $o)"
 f=$(qr "$VCGET"); [ "$((f))" = 0 ] && ok "tryboot flag 0 after stage-root (disarmed)" || no "tryboot flag after stage-root: [$f]"
-o=$(qr 'm=$(mktemp -d); mount -o ro /dev/mmcblk0p3 $m && { ls $m | grep -c "^BATMAN-BAD$"; umount $m; }; rmdir $m')
-[ "$o" = 1 ] && ok "B's boot FAT carries BATMAN-BAD" || no "BATMAN-BAD on B: [$o]"
+o=$(qr "$SLOTLK"'m=$(mktemp -d); mount -o ro /dev/mmcblk0p3 $m && { ls $m | grep -c "^BATMAN-BAD$"; umount $m; }; rmdir $m')
+if slk_leak "$o"; then no "BATMAN-BAD on B not read, the slot flock is held by an orphan: $(grep '^SLOTLK-BUSY' <<< "$o")"
+elif slk_busy "$o"; then inv "BATMAN-BAD on B not read: $(grep '^SLOTLK-BUSY' <<< "$o")"
+else [ "$o" = 1 ] && ok "B's boot FAT carries BATMAN-BAD" || no "BATMAN-BAD on B: [$o]"; fi
 o=$(QT=200 pl undo); grep -qx 'UNDO undo_run host end rc=0' <<< "$o" && ok "undo: shutdown.reason removed" || no "undo: $(echo $o)"
 q "rm -rf $E"
 
 # 5. back to S0: restore cycle, B = V again, finish
 pr_end wrote-b
-o=$(qr 'm=$(mktemp -d); mount -o ro /dev/mmcblk0p3 $m && { ls $m | grep -c "^BATMAN-BAD$"; umount $m; }; rmdir $m')
-[ "$o" = 0 ] && ok "B's boot FAT has no BATMAN-BAD after the rewrite" || no "BATMAN-BAD on B after the rewrite: [$o]"
+o=$(qr "$SLOTLK"'m=$(mktemp -d); mount -o ro /dev/mmcblk0p3 $m && { ls $m | grep -c "^BATMAN-BAD$"; umount $m; }; rmdir $m')
+if slk_leak "$o"; then no "BATMAN-BAD on B after the rewrite not read, the slot flock is held by an orphan: $(grep '^SLOTLK-BUSY' <<< "$o")"
+elif slk_busy "$o"; then inv "BATMAN-BAD on B after the rewrite not read: $(grep '^SLOTLK-BUSY' <<< "$o")"
+else [ "$o" = 0 ] && ok "B's boot FAT has no BATMAN-BAD after the rewrite" || no "BATMAN-BAD on B after the rewrite: [$o]"; fi
 pr_result
