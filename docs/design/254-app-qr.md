@@ -121,7 +121,7 @@ Manifest:`QrScanActivity` `exported="false"`、`taskAffinity=""`、`launchMode` 
 | M6 | 實機 | 掃描中 `am kill` → 從最近使用回來 → 不開相機(無預覽、無隱私指示燈) | 拿掉 onCreate gen 檢查 → 相機開 |
 | D1 | Dart widget test | 所有 flavor 都有「掃描 QR」;scan 回 null → `_qr` 不變;error `camera` → 權限訊息 | 隱藏 field 按鈕 → FAIL |
 | M1 | 實機(S20,**需要人**) | 04 `batman-provhelper qr` → 主機 `qrencode -t ansiutf8`(反色)與 PNG(正色)各一 → 掃描 → **dev flavor** 認領成功 | — |
-| M2–M5 | 實機(**需要人**) | 權限拒絕兩次;背景;相機佔用;「不保留活動」 | — |
+| M2–M5 | 實機(**需要人**) | 權限拒絕兩次;背景;相機佔用(M4:另一 app 佔用 → error `camera` 提示 → 放開相機 → 再按掃描能開預覽,驗觀察者接線與 LiveData 最後值重播,R2 A r2-m2/m3);「不保留活動」 | — |
 | S1 | 實機秘密 | logcat 全程 grep:QR 全文、K hex(大小寫)、K base64 = 0;擷取為空或 QR 文字未取得 → FAIL | 暫加一行 `Log.d(text)` → FAIL |
 | S2 | 實機 | 掃描畫面 `adb exec-out screencap` 為黑;`am start -n …/.QrScanActivity` 被拒(not exported) | 拿掉 FLAG_SECURE → 截圖看得到預覽;暫改 `exported="true"` → `am start` 成功 → FAIL(B r2-m6) |
 
@@ -165,13 +165,25 @@ Manifest:`QrScanActivity` `exported="false"`、`taskAffinity=""`、`launchMode` 
 | 發現 | 處理 | 負對照 |
 |---|---|---|
 | B-M1 閘門看不到 `files(...)` 依賴(`:app` 與 plugin project) | 閘門另解析 variant 的 `android-classes-jar` 產物:不是白名單模組、也不是 project → FAIL;仍 configuration-cache 安全 | init script 加 `files(probe.jar)` 到 `:app`、到 `:reactive_ble_mobile` → 各自 FAIL `not a module or project: probe.jar` |
-| A-M1 相機被佔用 / 停用 / 數量上限是非同步的,`bindToLifecycle` 不丟例外 → 黑畫面 | 觀察 `cameraInfo.cameraState`;`CameraErrors.endsScan`:IN_USE、MAX_CAMERAS_IN_USE、DISABLED、FATAL_ERROR、DO_NOT_DISTURB_MODE_ENABLED、CAMERA_REMOVED → `fail()`;OTHER_RECOVERABLE_ERROR、STREAM_CONFIG 交給 CameraX 重試(會自己恢復) | `CameraErrorsTest`;拿掉 IN_USE → FAIL;觀察者接線 ⚠️ 實機 M4 |
+| A-M1 相機被佔用 / 停用 / 數量上限是非同步的,`bindToLifecycle` 不丟例外 → 黑畫面 | 觀察 `cameraInfo.cameraState`;`CameraErrors.endsScan` → `fail()`(r2 起的規則見下一列 A r2-m1) | `CameraErrorsTest`;觀察者接線 ⚠️ 實機 M4 |
 | B-m1 白名單以 group 為單位,camera-view / camera-video / 完整 guava 可能悄悄回來 | 改為精確 `group:module`(79 個) | 加 `androidx.camera:camera-view` → FAIL;mlkit、okhttp、空 classpath → FAIL |
 | A-m3 QrScanActivity 沒有 configChanges,被重建時舊實例可能回覆 | 解出後的主執行緒 runnable 先檢查 `isDestroyed` | ⚠️ 程式審查(需 Activity 重建,JVM 測不到) |
 | A-m4 掃描中可再按 → busy | Dart `_scanning` 旗標讓按鈕失效;`camera` 訊息涵蓋「相機無法使用」 | D1:拿掉旗標 → FAIL |
 | A-m5 讀到非認領 QR 後仍可認領前一台 | `_read` 失敗 → `_qr = null`;await 後檢查 `mounted` | D1:拿掉 `_qr = null` → FAIL |
 | U6 的「CAS 改 get() → FAIL」宣稱不實 | §5 U6 改寫:槽操作都在主執行緒,`set(null)` 突變體存活;`aFailedStartFailsAndFreesTheSlot` 只測 QrScan,MainActivity 的 catch 為 ⚠️ 程式審查 | — |
 | `setSecure(true)` | 縱深防禦;視窗的 `FLAG_SECURE` 已讓截圖全黑,沒有單獨的負對照 | — |
-| 閘門範圍 | §4:只管 Gradle JVM / AAR 依賴,不含 Dart pub 套件與 FFI .so | — |
+| 閘門範圍 | §4:只管 Gradle JVM / AAR 依賴,不含 Dart pub 套件與 FFI .so;也不含 pub plugin 自己的 `android/src` 原始碼(那是 project,`ProjectComponentIdentifier` 一律放行,B r2-m1) | — |
 | Viewfinder 長寬比 | 緩衝 = 請求解析度、縮放到 view,可能變形;解碼讀 ImageAnalysis 不受影響 | ⚠️ 實機 M1 |
 | 測試檔 UTF-8 BOM | 已移除 | — |
+
+### R2 續 — code review r2(25612b1,A APPROVE-WITH-CHANGES 0 MAJOR;B APPROVE-WITH-CHANGES 1 MAJOR)
+
+| 發現 | 處理 | 負對照 |
+|---|---|---|
+| A r2-m1 STREAM_CONFIG 在 camera-core 1.6.2 是 CRITICAL,r1 卻留給 CameraX | `endsScan` = 有錯誤且不是 ERROR_OTHER_RECOVERABLE_ERROR。證據(`javap -c CameraState$StateError`,getType):`if_icmpeq` 比 2、1,`if_icmpne` 比 3 → `RECOVERABLE`,其餘 → `CRITICAL`。IN_USE / MAX_CAMERAS_IN_USE 對 CameraX 雖可恢復,仍結束掃描(使用者要知道原因) | STREAM_CONFIG 不結束 → FAIL;OTHER_RECOVERABLE 結束 → FAIL |
+| B r2-M1 manifest 保證只靠實機 | `check<Variant>ManifestGate`(每個 variant,`package<Variant>` 前;合併 manifest 在 pre<Variant>Build 時還不存在):QrScanActivity 必須 `exported="false"` 且沒有 intent-filter;權限集合必須**完全等於**下列 11 項(field release 合併 manifest,`${applicationId}` 換成該 variant 的):`uses-permission`:BLUETOOTH_SCAN、BLUETOOTH_CONNECT、INTERNET、CHANGE_NETWORK_STATE、ACCESS_NETWORK_STATE、CAMERA、BLUETOOTH、BLUETOOTH_ADMIN、`${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`;`uses-permission-sdk-23`:ACCESS_COARSE_LOCATION、ACCESS_FINE_LOCATION | 暫改 `exported="true"` → FAIL;多一個 RECORD_AUDIO → FAIL |
+| S1 / S2 | S2 的 `am start`(及 `exported="true"` 對照)要把 APK 裝到 S20,等擁有者同意;S1 logcat 與 S2 截圖需要人在手機旁 → PR 標 ⚠️ | 未跑 |
+| B r2-m1 閘門範圍 | 見上表「閘門範圍」:pub plugin 的 `android/src` 原始碼不在閘門內 | — |
+| B r2-m2 別的 repository 的同名模組會通過閘門 | 屬 #254 的 Gradle 鎖殘項:要 Gradle dependency verification(`verification-metadata.xml` 檢查碼),不只 locking | — |
+| B r2-m3 APK 來源 | r1 的 APK 已從乾淨的 committed tree 25612b1 重建並記 sha256 → 關閉;之後每次照做 | — |
+| A r2-m2 / m3 觀察者接線、LiveData 最後值重播 | 仍 ⚠️ 實機 M4;M4 加子步驟「佔用 → error → 放開相機 → 再掃描能開」 | 未跑 |
