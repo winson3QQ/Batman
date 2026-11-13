@@ -78,6 +78,10 @@ kotlin {
 }
 
 dependencies {
+    // v0.4.3 BleRx: RxJavaPlugins + BleException — the versions reactive_ble_mobile 5.6.0 already brings (its
+    // build.gradle: rxandroidble 1.16.0 -> rxjava 2.2.17); declared here because the plugin's are `implementation`
+    implementation("com.polidea.rxandroidble2:rxandroidble:1.16.0")
+    implementation("io.reactivex.rxjava2:rxjava:2.2.17")
     testImplementation("junit:junit:4.13.2")
     // 254-app-update T9 / T12 only (androidTest; not part of any APK)
     androidTestImplementation("androidx.test:runner:1.6.2")
