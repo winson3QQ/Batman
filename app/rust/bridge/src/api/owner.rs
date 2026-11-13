@@ -230,6 +230,8 @@ pub struct OwnerStep {
     pub info: Vec<u8>,
     /// an Answer to `request_sw`: the node answered; `sw_answer` hands it to the update (254-app-update §11). No text.
     pub sw: bool,
+    /// 254-app-team-status §4.2: the duplicate-address line of an approval / removal ("" = none), shown in a dialog
+    pub note: String,
 }
 
 impl OwnerStep {
@@ -254,6 +256,7 @@ impl OwnerStep {
             send_update: false,
             info: vec![],
             sw: false,
+            note: String::new(),
         }
     }
     pub(crate) fn text(kind: OwnerKind, d: String) -> OwnerStep {
@@ -313,6 +316,15 @@ pub struct OwnerSession {
     removed_q: String,
     /// the node's answer to the last software-update request, until `sw_answer` takes it
     sw_reply: Option<Reply>,
+    /// 254-app-team-status T-A8: the flow waiting for its fresh status read, and how many reads were made
+    addr_pending: Option<(AddrThen, u32)>,
+}
+
+/// What waits for the address read (254-app-team-status §4.2).
+enum AddrThen {
+    MakeNet(joinflow::Input),
+    Join2 { inp: join2flow::Input, mesh_id: String, member: bool },
+    JoinReq(JoinReqInput),
 }
 
 /// A record write step at any record path (PersistNet / PersistPend / PersistMnet): CAS from `expected_gen`, sealed
@@ -657,6 +669,7 @@ impl OwnerSession {
             after_left: false,
             page_cut_once: false,
             removed_q: String::new(),
+            addr_pending: None,
             sw_reply: None,
         };
         let step = s.login_step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
@@ -894,6 +907,14 @@ impl OwnerSession {
                     };
                     Some(OwnerStep { info, ..OwnerStep::text(OwnerKind::Answer, "[INFO] 已讀取".into()) })
                 }
+                Ok(Some(o)) if *asked == "status-addr" => {
+                    *asked = "";
+                    let r = match o {
+                        Outcome::Ok(b) => Ok(b),
+                        Outcome::Err { code, .. } => Err(code),
+                    };
+                    self.addr_answer(r)
+                }
                 Ok(Some(o)) if *asked == "status-link" => {
                     *asked = "";
                     let s = match &o {
@@ -971,6 +992,16 @@ impl OwnerSession {
     /// After a Wait step.
     #[flutter_rust_bridge::frb(sync)]
     pub fn resume_update(&mut self) -> Option<OwnerStep> {
+        if let Some((then, reads)) = self.addr_pending.take() {
+            // T-A8: the Wait after an E_RATE of the address read is over: read again
+            return match self.request_tagged("status", "status-addr", Value::Map(vec![(Value::Uint(1), Value::Uint(0))])) {
+                Ok(st) => {
+                    self.addr_pending = Some((then, reads + 1));
+                    Some(st)
+                }
+                Err(_) => self.start_then(then, None),
+            };
+        }
         let a = match &mut self.st {
             St::Update { flow, .. } => flow.resume(),
             _ => None,
@@ -1013,13 +1044,9 @@ impl OwnerSession {
         let node = self.node.clone().ok_or("這次連線沒有驗證過節點身分，請重新連線")?;
         let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
         let adm: [u8; 65] = admin_pub.try_into().map_err(|_| "手機金鑰格式不對（admin_pub is not 65 bytes）")?;
-        let conn = match std::mem::replace(&mut self.st, St::Over) {
-            St::Conn { conn, .. } => conn,
-            other => {
-                self.st = other;
-                return Err("還沒連線到節點（或上一個操作還沒結束）".into());
-            }
-        };
+        if !matches!(self.st, St::Conn { .. }) {
+            return Err("還沒連線到節點（或上一個操作還沒結束）".into());
+        }
         let inp = joinflow::Input {
             net_name,
             channel: channel as u64,
@@ -1029,11 +1056,9 @@ impl OwnerSession {
             owner_pub: self.owner_pub,
             owner_enc_pub: enc,
             admin_pub: adm,
-            mesh_addr: self.own_addr_seen(),
+            mesh_addr: None, // filled by start_then from the fresh read (254-app-team-status §4.2)
         };
-        let (join, a) = Join::start(conn, inp);
-        self.st = St::Join { join, rec: None, gen: 0, applied: false, resent: false };
-        self.join_step(Some(a)).ok_or_else(|| "App 內部錯誤（no first step）".into())
+        self.fresh_addr_then(AddrThen::MakeNet(inp))
     }
 
     /// The net record was sealed and written (fsynced): network/join goes out (op/nonce first), or — after "applied" —
@@ -1136,13 +1161,9 @@ impl OwnerSession {
         }
         let adm: [u8; 65] = admin_pub.try_into().map_err(|_| "手機金鑰格式不對（admin_pub is not 65 bytes）")?;
         let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
-        let conn = match std::mem::replace(&mut self.st, St::Over) {
-            St::Conn { conn, .. } => conn,
-            other => {
-                self.st = other;
-                return Err("還沒連線到節點（或上一個操作還沒結束）".into());
-            }
-        };
+        if !matches!(self.st, St::Conn { .. }) {
+            return Err("還沒連線到節點（或上一個操作還沒結束）".into());
+        }
         let mesh_id = netrec::decode(&record_plain).map(|r| r.base.mesh_id).unwrap_or_default();
         self.removed_q = removed_question(&record_plain, self.node.as_ref(), &self.last4);
         let inp = join2flow::Input {
@@ -1155,11 +1176,9 @@ impl OwnerSession {
             admin_pub: adm,
             member: false,
             removed_confirmed,
-            mesh_addr: self.own_addr_seen(),
+            mesh_addr: None, // filled by start_then from the fresh read (254-app-team-status §4.2)
         };
-        let (flow, a) = Join2::start(conn, inp);
-        self.st = St::Join2 { flow, mesh_id, member: false };
-        self.join2_step(Some(a)).ok_or_else(|| "App 內部錯誤（no first step）".into())
+        self.fresh_addr_then(AddrThen::Join2 { inp, mesh_id, member: false })
     }
 
     /// member-join §4 step 8: this (own, verified) node joins the network of an imported mnet record (read at
@@ -1170,13 +1189,9 @@ impl OwnerSession {
         if self.joinreq.is_some() {
             return Err(JOINREQ_BUSY.into());
         }
-        let conn = match std::mem::replace(&mut self.st, St::Over) {
-            St::Conn { conn, .. } => conn,
-            other => {
-                self.st = other;
-                return Err("還沒連線到節點（或上一個操作還沒結束）".into());
-            }
-        };
+        if !matches!(self.st, St::Conn { .. }) {
+            return Err("還沒連線到節點（或上一個操作還沒結束）".into());
+        }
         let mesh_id = batman_proto::mrec::MNet::decode(&mnet_plain).ok().and_then(|m| m.netcfg().ok()).map(|c| invite::display_name(&c.name)).unwrap_or_default();
         let inp = join2flow::Input {
             record_plain: mnet_plain,
@@ -1188,11 +1203,9 @@ impl OwnerSession {
             admin_pub: [0; 65],
             member: true,
             removed_confirmed: false,
-            mesh_addr: self.own_addr_seen(),
+            mesh_addr: None, // filled by start_then from the fresh read (254-app-team-status §4.2)
         };
-        let (flow, a) = Join2::start(conn, inp);
-        self.st = St::Join2 { flow, mesh_id, member: true };
-        self.join2_step(Some(a)).ok_or_else(|| "App 內部錯誤（no first step）".into())
+        self.fresh_addr_then(AddrThen::Join2 { inp, mesh_id, member: true })
     }
 
     /// member-join §4 step 4: a join request for a pasted invite (`invite_hex`), from this login's verified node.
@@ -1219,11 +1232,9 @@ impl OwnerSession {
             owner_enc_pub: enc,
             pend_gen,
             pend_plain,
-            mesh_addr: self.own_addr_seen(),
+            mesh_addr: None, // filled by start_then from the fresh read (254-app-team-status §4.2)
         };
-        let (f, a) = JoinReqFlow::start(inp);
-        self.joinreq = Some(f);
-        self.joinreq_step(Some(a)).ok_or_else(|| "App 內部錯誤（no first step）".into())
+        self.fresh_addr_then(AddrThen::JoinReq(inp))
     }
 
     fn joinreq_step(&mut self, a: Option<invite::Action>) -> Option<OwnerStep> {
@@ -1283,9 +1294,62 @@ impl OwnerSession {
         TeamView { visible: v.visible, title: v.title, only: v.only, cards: v.cards, note: v.note, tech: v.tech }
     }
 
-    /// status key 8 of the last status-page read: the address a join / request offers (written only from N+1)
-    fn own_addr_seen(&self) -> Option<[u8; 6]> {
-        self.page_status.as_ref().and_then(|r| r.as_ref().ok()).and_then(teamview::own_addr)
+    /// 254-app-team-status §4.2 (one more status read) / T-A8: right before S1 make-network, join2 (and member join)
+    /// or a join request builds and signs its object, ONE fresh `status` read gives this node's key 8 (never the status
+    /// page's older read). E_RATE -> Wait ADDR_RETRY_MS and read again (ADDR_READ_TRIES reads at most); E_BUSY, any
+    /// other failure or no key 8 -> go on without an address (the join is never aborted for it). Only while
+    /// teamview::WRITE_MESH_ADDR (N+1): version N starts the flow at once, exactly as before.
+    fn fresh_addr_then(&mut self, then: AddrThen) -> Result<OwnerStep, String> {
+        if teamview::WRITE_MESH_ADDR {
+            let st = self.request_tagged("status", "status-addr", Value::Map(vec![(Value::Uint(1), Value::Uint(0))]))?;
+            self.addr_pending = Some((then, 1));
+            return Ok(st);
+        }
+        self.start_then(then, None).ok_or_else(|| "App 內部錯誤（no first step）".into())
+    }
+
+    /// the answer to the `status-addr` read
+    fn addr_answer(&mut self, r: Result<Value, u64>) -> Option<OwnerStep> {
+        let (then, reads) = self.addr_pending.take()?;
+        match teamview::addr_read(r.as_ref().map_err(|c| *c), reads) {
+            teamview::AddrRead::Retry => {
+                self.addr_pending = Some((then, reads));
+                Some(OwnerStep { wait_ms: teamview::ADDR_RETRY_MS, ..OwnerStep::new(OwnerKind::Wait) })
+            }
+            teamview::AddrRead::Done(a) => self.start_then(then, a),
+        }
+    }
+
+    /// the flow the read was for, with the address it gave
+    fn start_then(&mut self, then: AddrThen, addr: Option<[u8; 6]>) -> Option<OwnerStep> {
+        if let AddrThen::JoinReq(mut inp) = then {
+            inp.mesh_addr = addr;
+            let (f, a) = JoinReqFlow::start(inp);
+            self.joinreq = Some(f);
+            return self.joinreq_step(Some(a));
+        }
+        let conn = match std::mem::replace(&mut self.st, St::Over) {
+            St::Conn { conn, .. } => conn,
+            other => {
+                self.st = other;
+                return Some(OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] 還沒連線到節點（或上一個操作還沒結束）".into()));
+            }
+        };
+        match then {
+            AddrThen::MakeNet(mut inp) => {
+                inp.mesh_addr = addr;
+                let (join, a) = Join::start(conn, inp);
+                self.st = St::Join { join, rec: None, gen: 0, applied: false, resent: false };
+                self.join_step(Some(a))
+            }
+            AddrThen::Join2 { mut inp, mesh_id, member } => {
+                inp.mesh_addr = addr;
+                let (flow, a) = Join2::start(conn, inp);
+                self.st = St::Join2 { flow, mesh_id, member };
+                self.join2_step(Some(a))
+            }
+            AddrThen::JoinReq(_) => None,
+        }
     }
 
     /// The user's answer to a ConfirmCountry step.
@@ -1898,6 +1962,7 @@ mod tests {
             after_left: false,
             page_cut_once: false,
             removed_q: String::new(),
+            addr_pending: None,
             sw_reply: None,
         };
         (s, FakeNode { t: r.into_transport_mode().unwrap(), rx: frame::Reassembler::new(FL, 8192) })
@@ -3060,5 +3125,170 @@ mod sw_tests {
         let _ = other.start();
         assert!(s.request_sw(&mut other).is_err());
         assert_eq!(other.start().kind, SwKind::Send);
+    }
+}
+
+/// 254-app-team-status T-A8 (design §4.2, one more status read): with the constant forced on (feature `team-write`,
+/// tests only), S1 make-network, join2 and the join request read `status` once right before building / signing, retry
+/// E_RATE a bounded number of times, and go on without an address on any other failure. Negative control: the stale
+/// status-page key 8 used instead of the fresh read -> t_a8_fresh_read_beats_the_stale_page FAILS.
+#[cfg(all(test, feature = "team-write"))]
+mod team_addr_tests {
+    use super::tests::{der, logged_in};
+    use super::*;
+
+    const OLD: [u8; 6] = [0x02, 0, 0, 0, 0, 0x01];
+    const NEW: [u8; 6] = [0x02, 0, 0, 0, 0, 0x02];
+    fn pub65(b: u8) -> [u8; 65] {
+        p256::ecdsa::SigningKey::from_slice(&[b; 32]).unwrap().verifying_key().to_sec1_point(false).as_bytes().try_into().unwrap()
+    }
+    fn st8(a: [u8; 6]) -> Value {
+        Value::Map(vec![(Value::Uint(1), Value::Uint(1)), (Value::Uint(8), Value::Bytes(a.to_vec()))])
+    }
+    fn has(h: &[u8], a: &[u8; 6]) -> bool {
+        h.windows(6).any(|w| w == a)
+    }
+
+    /// a make-network until its members SignAdmin; `status` answers in order; (status reads, waits, members tbs)
+    fn make(answers: Vec<Result<Value, u64>>) -> (usize, Vec<u64>, Vec<u8>) {
+        let (mut s, mut n) = logged_in();
+        s.page_status = Some(Ok(st8(OLD))); // the status page read earlier: stale
+        let mut answers = answers.into_iter();
+        let (mut reads, mut waits, mut signs) = (0, vec![], 0);
+        let mut st = s.request_make_network("home".into(), 40, pub65(0x22).to_vec(), pub65(0x66).to_vec()).unwrap();
+        loop {
+            st = match st.kind {
+                OwnerKind::Write => {
+                    let (id, verb) = n.request(&st.frames);
+                    assert_eq!(verb, "status", "only status reads before the first signature");
+                    reads += 1;
+                    let mut next = None;
+                    for f in n.answer(id, answers.next().expect("an answer for each read")) {
+                        next = s.on_frame(f).or(next);
+                    }
+                    next.unwrap()
+                }
+                OwnerKind::Wait => {
+                    waits.push(st.wait_ms);
+                    s.resume_update().unwrap()
+                }
+                OwnerKind::SignAdmin => {
+                    signs += 1;
+                    if signs == 2 {
+                        return (reads, waits, st.sign_input);
+                    }
+                    s.signed(der(0x66, &st.sign_input)).unwrap()
+                }
+                k => panic!("unexpected step {k:?}"),
+            };
+        }
+    }
+
+    #[test]
+    fn t_a8_fresh_read_beats_the_stale_page() {
+        let (reads, waits, tbs) = make(vec![Ok(st8(NEW))]);
+        assert_eq!((reads, waits.len()), (1, 0));
+        assert!(has(&tbs, &NEW) && !has(&tbs, &OLD), "members v1 must carry the FRESH key 8");
+    }
+
+    #[test]
+    fn t_a8_e_rate_is_retried_a_bounded_number_of_times() {
+        let (reads, waits, tbs) = make(vec![Err(flow::E_RATE), Err(flow::E_RATE), Ok(st8(NEW))]);
+        assert_eq!((reads, waits.clone()), (3, vec![teamview::ADDR_RETRY_MS; 2]));
+        assert!(waits.iter().all(|w| *w >= 1000) && has(&tbs, &NEW));
+        let (reads, waits, tbs) = make(vec![Err(flow::E_RATE); 3]);
+        assert_eq!((reads, waits.len()), (3, 2), "3 reads at most, then on without an address");
+        assert!(!has(&tbs, &NEW) && !has(&tbs, &OLD));
+    }
+
+    #[test]
+    fn t_a8_busy_or_failure_goes_on_without_key7() {
+        for code in [7, 6, 4] {
+            let (reads, waits, tbs) = make(vec![Err(code)]);
+            assert_eq!((reads, waits.len()), (1, 0), "code {code}");
+            assert!(!has(&tbs, &NEW) && !has(&tbs, &OLD), "code {code}: no address, and the flow went on to sign");
+        }
+        let (_, _, tbs) = make(vec![Ok(Value::Map(vec![(Value::Uint(1), Value::Uint(1))]))]);
+        assert!(!has(&tbs, &OLD), "no key 8 in the fresh answer: none, never the stale one");
+    }
+
+    #[test]
+    fn t_a8_join2_stores_the_fresh_address() {
+        use batman_proto::cose;
+        let payload = cose::net_config_payload(&[0x5a; 16], 1, None, "home", "US", "bm-5a5a5a5a5a5a", 40, 4, &[pub65(0x66)]);
+        let members = cose::member_list_payload(
+            &[0x5a; 16],
+            1,
+            None,
+            &[cose::Member { dac_pub_hash: &[0xa1; 32], ecdh_pub: &pub65(0x43), name: "node-0001", owner_pub: &pub65(0x11), owner_enc_pub: &pub65(0x22), mesh_addr: None }],
+        );
+        let mut r = NetRec::made(joinflow::NetRecord {
+            net_id: [0x5a; 16],
+            mesh_id: "bm-5a5a5a5a5a5a".into(),
+            channel: 40,
+            bw: 4,
+            sae: "A".repeat(24),
+            net_root: [7; 32],
+            netcfg: cose::sign1(cose::CT_NETCFG, &payload, &[1; 64]),
+            members: cose::sign1(cose::CT_MEMBERS, &members, &[1; 64]),
+            secrets: vec![3],
+        });
+        r.state = netrec::APPLIED.into();
+        let (mut s, mut n) = logged_in();
+        s.page_status = Some(Ok(st8(OLD)));
+        let mut st = s.request_join_network(netrec::encode(&r), 1, pub65(0x66).to_vec(), pub65(0x22).to_vec(), false).unwrap();
+        let mut first = true;
+        loop {
+            st = match st.kind {
+                OwnerKind::SignAdmin => s.signed(der(0x66, &st.sign_input)).unwrap(),
+                OwnerKind::Write => {
+                    let (id, verb) = n.request(&st.frames);
+                    assert_eq!(verb == "status", first, "the status read comes first, and only once");
+                    first = false;
+                    let a = if verb == "status" { Ok(st8(NEW)) } else { Ok(Value::Map(vec![(Value::Uint(2), Value::Text("US".into()))])) };
+                    let mut next = None;
+                    for f in n.answer(id, a) {
+                        next = s.on_frame(f).or(next);
+                    }
+                    next.unwrap()
+                }
+                OwnerKind::PersistNet => {
+                    let list = netrec::decode(&st.record).unwrap().members().unwrap();
+                    let me = list.iter().find(|m| m.dac_pub_hash == netrec::dac_hash(&pub65(0x55))).expect("the joining entry");
+                    assert_eq!(me.mesh_addr, Some(NEW));
+                    return;
+                }
+                k => panic!("unexpected step {k:?}"),
+            };
+        }
+    }
+
+    #[cfg(feature = "dev-trust")]
+    #[test]
+    fn t_a8_join_request_is_built_with_the_fresh_address() {
+        use batman_proto::{cose, invite as inv, sig as sg};
+        let k = p256::ecdsa::SigningKey::from_slice(&[0x66; 32]).unwrap();
+        let admin: [u8; 65] = k.verifying_key().to_sec1_point(false).as_bytes().try_into().unwrap();
+        let sign = |ct: &str, p: &[u8]| {
+            use p256::ecdsa::signature::Signer;
+            let x: p256::ecdsa::Signature = k.sign(&cose::sign1_tbs(ct, cose::label_of(ct).unwrap(), p));
+            cose::sign1(ct, p, &sg::der_to_raw_low_s(x.to_der().as_bytes()).unwrap())
+        };
+        let net_id = [0x5a; 16];
+        let cfg = sign(cose::CT_NETCFG, &cose::net_config_payload(&net_id, 1, None, "n", "US", "bm-5a", 40, 4, &[admin]));
+        let invite = sign(cose::CT_INVITE, &inv::invite_payload(&net_id, &[1; 16], cbor::decode(&cfg).unwrap(), &admin));
+        let (mut s, mut n) = logged_in();
+        s.node_cert_raw = Some(vec![0xa0]);
+        s.page_status = Some(Ok(st8(OLD)));
+        let st = s.request_joinreq(inv::qr_hex(inv::QR_INVITE, &invite), "x".into(), 0, None, vec![4; 65]).unwrap();
+        assert_eq!(st.kind, OwnerKind::Write);
+        let (id, verb) = n.request(&st.frames);
+        assert_eq!(verb, "status");
+        let mut next = None;
+        for f in n.answer(id, Ok(st8(NEW))) {
+            next = s.on_frame(f).or(next);
+        }
+        assert_eq!(next.unwrap().kind, OwnerKind::Sign, "then the request is built (sig_enc first)");
+        assert_eq!(s.joinreq.as_ref().unwrap().offered_addr(), Some(NEW));
     }
 }

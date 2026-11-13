@@ -17,6 +17,9 @@ test-vectors = []
 # flavor only) a self-signed `dev:` DAC is accepted on first contact (TOFU); without it (field flavor) it is refused.
 # Never a default; the field release must not enable it (checked with `cargo tree -e features,no-dev`).
 dev-trust = []
+# 254-app-team-status §4.3: turns teamview::WRITE_MESH_ADDR on for the N+1 behaviour TESTS only (T-A8); never enabled by
+# the app (bridge/Cargo.toml passes it through only as an explicit test feature). Version N+1 makes the constant true.
+team-write = []
 
 [dependencies]
 # versions pinned exactly, each >= 2 weeks old at selection (2026-11-07), MIT OR Apache-2.0

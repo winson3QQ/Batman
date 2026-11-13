@@ -9,8 +9,9 @@
 use crate::cbor::Value;
 use crate::statuspage::shown;
 
-/// §4.3: false in version N. N+1 flips it in a one-line PR that also deletes the T-A10 test pinning it.
-pub const WRITE_MESH_ADDR: bool = false;
+/// §4.3: false in version N (the `team-write` feature turns it on for tests only). N+1 makes it `true` in a one-line
+/// PR that also deletes the T-A10 test pinning it.
+pub const WRITE_MESH_ADDR: bool = cfg!(feature = "team-write");
 
 /// key 9 holds at most this many entries (§4.1)
 pub const PEERS_MAX: usize = 32;
@@ -24,6 +25,28 @@ pub fn addr_ok(b: &[u8]) -> Option<[u8; 6]> {
         return None;
     }
     Some(a)
+}
+
+/// §4.2「多一次 status 讀」: at most this many status reads before a make-network / join / join request; E_RATE between
+/// them waits this long (provd allows 1 status per second per connection)
+pub const ADDR_READ_TRIES: u32 = 3;
+pub const ADDR_RETRY_MS: u64 = 1100;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddrRead {
+    /// E_RATE and reads left: wait ADDR_RETRY_MS, read again
+    Retry,
+    /// go on with this address (None: E_BUSY, any other failure, no / bad key 8, or the reads used up — never abort)
+    Done(Option<[u8; 6]>),
+}
+
+/// The answer to the `reads`-th status read (1 = the first) right before the object is built.
+pub fn addr_read(answer: Result<&Value, u64>, reads: u32) -> AddrRead {
+    match answer {
+        Ok(v) => AddrRead::Done(own_addr(v)),
+        Err(crate::flow::E_RATE) if reads < ADDR_READ_TRIES => AddrRead::Retry,
+        Err(_) => AddrRead::Done(None),
+    }
 }
 
 /// What a flow writes as key 7: nothing in version N (§4.3).
@@ -128,6 +151,13 @@ pub fn dedup_for_signing(addrs: &mut [Option<[u8; 6]>]) -> Vec<usize> {
         }
     }
     lost
+}
+
+/// §4.2 (B-M2): the line shown where a signing dropped a duplicated address from every entry that had it.
+pub fn dup_hint(names: &[String]) -> String {
+    let who: Vec<String> = names.iter().map(|n| format!("『{}』", shown(n))).collect();
+    let count = if names.len() == 2 { "兩台" } else { "這幾台" };
+    format!("{}的網路位址相同，{count}都沒有登記 — 全隊狀態會顯示「沒有登記網路位址」", who.join("和"))
 }
 
 /// 「最後看到 …」 for a seen-ago (§6): under 60 minutes in minutes, else in hours.

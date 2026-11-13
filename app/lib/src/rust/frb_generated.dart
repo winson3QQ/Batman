@@ -4422,8 +4422,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   OwnerStep dco_decode_owner_step(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 19)
-      throw Exception('unexpected arr length: expect 19 but see ${arr.length}');
+    if (arr.length != 20)
+      throw Exception('unexpected arr length: expect 20 but see ${arr.length}');
     return OwnerStep(
       kind: dco_decode_owner_kind(arr[0]),
       frames: dco_decode_list_list_prim_u_8_strict(arr[1]),
@@ -4444,6 +4444,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       sendUpdate: dco_decode_bool(arr[16]),
       info: dco_decode_list_prim_u_8_strict(arr[17]),
       sw: dco_decode_bool(arr[18]),
+      note: dco_decode_String(arr[19]),
     );
   }
 
@@ -5448,6 +5449,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_sendUpdate = sse_decode_bool(deserializer);
     var var_info = sse_decode_list_prim_u_8_strict(deserializer);
     var var_sw = sse_decode_bool(deserializer);
+    var var_note = sse_decode_String(deserializer);
     return OwnerStep(
       kind: var_kind,
       frames: var_frames,
@@ -5468,6 +5470,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       sendUpdate: var_sendUpdate,
       info: var_info,
       sw: var_sw,
+      note: var_note,
     );
   }
 
@@ -6441,6 +6444,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.sendUpdate, serializer);
     sse_encode_list_prim_u_8_strict(self.info, serializer);
     sse_encode_bool(self.sw, serializer);
+    sse_encode_String(self.note, serializer);
   }
 
   @protected

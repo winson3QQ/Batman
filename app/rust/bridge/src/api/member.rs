@@ -135,12 +135,14 @@ fn op_step(a: Option<Action>, what: &str) -> Option<OwnerStep> {
         Action::SignAdmin { tbs } => OwnerStep { sign_input: tbs, ..OwnerStep::new(OwnerKind::SignAdmin) },
         Action::SignOwner { input } => OwnerStep { sign_input: input, ..OwnerStep::new(OwnerKind::Sign) },
         Action::Persist { rel, plain, expected_gen } => persist_at(OwnerKind::PersistNet, rel, plain, expected_gen),
-        Action::Done(End::Out { hex, .. }) => {
+        Action::Done(End::Out { hex, name, .. }) => {
+            // an approval names its duplicate-address line in `name` (254-app-team-status §4.2)
+            let note = if what == "invite" { String::new() } else { name };
             let t = match what {
                 "invite" => "[INVITE] 邀請已建立，已複製到剪貼簿，請傳給隊員",
                 _ => "[APPROVED] 已同意，同意碼已複製到剪貼簿，請傳回給隊員",
             };
-            OwnerStep { hex, ..OwnerStep::text(OwnerKind::Answer, t.into()) }
+            OwnerStep { hex, note, ..OwnerStep::text(OwnerKind::Answer, t.into()) }
         }
         Action::Done(End::Refused(e)) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：{}", if what == "invite" { "邀請" } else { "同意" }, invite_err(&e))),
         Action::Done(End::PersistFailed(e)) => {

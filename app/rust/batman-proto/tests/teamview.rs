@@ -209,10 +209,25 @@ fn t_a9_no_full_address_shown() {
 }
 
 // T-A10: version N ships with writing and the team section off (§4.3). N+1 deletes this test in its diff.
+#[cfg(not(feature = "team-write"))]
 #[test]
 fn t_a10_version_n_keeps_the_gate_closed() {
     assert!(!tv::WRITE_MESH_ADDR, "WRITE_MESH_ADDR must be false in version N (254-app-team-status §4.3)");
     assert_eq!(tv::gate(Some(A)), None);
     let st = status(Some(vec![peer(A, 3, None, None)]));
     assert!(!tv::team_view(Some(&st), Some(&members(vec![])), None).visible, "N shows no team section");
+}
+
+// T-A8 (the decision): E_RATE -> read again while reads are left (3 at most); E_BUSY / any error / reads used up ->
+// go on WITHOUT an address (never abort); an answer -> its key 8 (or none)
+#[test]
+fn t_a8_addr_read_decision() {
+    let st = status(None);
+    assert_eq!(tv::addr_read(Ok(&st), 1), tv::AddrRead::Done(Some(OWN)));
+    assert_eq!(tv::addr_read(Ok(&V::Map(vec![(V::Uint(1), V::Uint(2))])), 1), tv::AddrRead::Done(None));
+    assert_eq!(tv::addr_read(Err(12), 1), tv::AddrRead::Retry);
+    assert_eq!(tv::addr_read(Err(12), 2), tv::AddrRead::Retry);
+    assert_eq!(tv::addr_read(Err(12), 3), tv::AddrRead::Done(None), "bounded: 3 reads at most");
+    assert_eq!(tv::addr_read(Err(7), 1), tv::AddrRead::Done(None), "E_BUSY (7): go on without key 7");
+    assert!(tv::ADDR_RETRY_MS >= 1000 && tv::ADDR_READ_TRIES == 3);
 }

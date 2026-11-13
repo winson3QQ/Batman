@@ -223,7 +223,8 @@ impl std::fmt::Debug for Action {
 #[derive(Debug, PartialEq)]
 pub enum End {
     /// the qr-object hex to hand over; `sas` / `name` for a join request; `renewed` = an existing request of this
-    /// network was replaced (verify the SAS again)
+    /// network was replaced (verify the SAS again). For an APPROVAL `name` is the duplicate-address line
+    /// (254-app-team-status §4.2, teamview::dup_hint; "" = none)
     Out { hex: String, sas: String, name: String, renewed: bool },
     Refused(Error),
     /// the record write failed: None = written elsewhere since it was read, else why; nothing is handed out
@@ -354,6 +355,13 @@ pub struct JoinReqInput {
     pub pend_plain: Option<Vec<u8>>,
     /// status key 8 of this node as the session last read it (254-app-team-status §4.2); written only from N+1
     pub mesh_addr: Option<[u8; 6]>,
+}
+
+impl JoinReqFlow {
+    /// the mesh address this request was started with (254-app-team-status §4.2; key 7 only through `teamview::gate`)
+    pub fn offered_addr(&self) -> Option<[u8; 6]> {
+        self.inp.mesh_addr
+    }
 }
 
 enum JStep {

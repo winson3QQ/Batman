@@ -11,7 +11,25 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'say.dart' show screenText;
-import 'src/rust/api/owner.dart' show OwnerStep;
+import 'src/rust/api/owner.dart' show OwnerStep, TeamView;
+
+/// 254-app-team-status §4.2 (B-M2): an approval / removal dropped a duplicated mesh address from every entry that had
+/// it; Rust's line (`OwnerStep.note`, names only, never an address) is shown in a dialog. "" = nothing shown.
+const dupNoteTitle = '網路位址重複';
+Future<void> showDupNote(BuildContext context, String note) async {
+  if (note.isEmpty || !context.mounted) return;
+  await showDialog<void>(
+      context: context,
+      builder: (c) => AlertDialog(
+            title: const Text(dupNoteTitle),
+            content: Text(screenText(note), key: const Key('dupNote')),
+            actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('好'))],
+          ));
+}
+
+/// 254-app-team-status §7 / T-A9: the ONE log line about a status page's team section — counts only, never a name,
+/// an address or a card's text.
+String teamLogLine(TeamView t) => 'team section visible ${t.visible} cards ${t.cards.length} only ${t.only.isNotEmpty}';
 
 /// 219 §5.5 / R22: the SAS is compared over another channel.
 const sasRule = '請用電話或當面核對，不要在傳圖片的同一個聊天裡核對';

@@ -1292,6 +1292,7 @@ fn rm_t23_a_member_node_behind_after_reply_5() {
 
 /// 254-app-team-status T-A6(c): the session offers the node's mesh address (input() sets TEAM_ADDR), version N
 /// stores the joining entry WITHOUT it. Negative control: teamview::WRITE_MESH_ADDR flipped -> FAIL.
+#[cfg(not(feature = "team-write"))]
 #[test]
 fn t_a6c_version_n_stores_no_mesh_address() {
     let rec = applied_record("US");

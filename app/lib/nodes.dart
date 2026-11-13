@@ -725,6 +725,7 @@ class _NodesPageState extends State<NodesPage> {
         default:
           if (st.hex.isNotEmpty) await Clipboard.setData(ClipboardData(text: st.hex));
           _say(st.detail);
+          if (st.note.isNotEmpty && mounted) await showDupNote(context, st.note); // 254-app-team-status §4.2
           st = null;
       }
     }
@@ -1081,6 +1082,7 @@ class _NodesPageState extends State<NodesPage> {
         last4: s.last4(), netId: v.netId, adminApplied: appliedNets.contains(v.netId), memberEntry: entryMnets.contains(v.netId));
     _readClock.stamp(fresh: v.fresh, now: DateTime.now());
     _log('status page row ${v.row} fresh ${v.fresh}');
+    _log(teamLogLine(team)); // 254-app-team-status T-A9: counts only
     final membership = statusMembershipLine(nodeState: v.nodeState, netId: v.netId, name: networkName(v.netId, names));
     return StatusFields(
         color: v.color,
@@ -1340,6 +1342,7 @@ class _NodesPageState extends State<NodesPage> {
         default:
           if (st.hex.isNotEmpty) await Clipboard.setData(ClipboardData(text: st.hex));
           _say(st.detail);
+          if (st.note.isNotEmpty && mounted) await showDupNote(context, st.note); // 254-app-team-status §4.2
           return st.detail.startsWith('[REKEY]') || st.hex.isNotEmpty;
       }
     }

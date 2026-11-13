@@ -154,7 +154,8 @@ fn next_netcfg(cur: &[u8]) -> Result<Vec<u8>, Refusal> {
 }
 
 /// The members payload of v+1 (§2.4).
-fn next_members(rec: &NetRec, version: u32, keep: &[Member], excluded: &[Member]) -> Result<Vec<u8>, Refusal> {
+/// The members payload of v+1 and the names whose duplicated key 7 was dropped (254-app-team-status §4.2).
+fn next_members(rec: &NetRec, version: u32, keep: &[Member], excluded: &[Member]) -> Result<(Vec<u8>, Vec<String>), Refusal> {
     let cur = &rec.base.members;
     let p = netrec::sign1_payload(cur).map_err(|_| Refusal::Record)?;
     let prev = cose::object_hash(cur).map_err(|_| Refusal::Record)?;
@@ -168,7 +169,7 @@ fn next_members(rec: &NetRec, version: u32, keep: &[Member], excluded: &[Member]
     removed.retain(|d| !listed.contains(d));
     // 254-app-team-status §4.2: key 7 only from N+1 (gate), and an address listed twice for neither entry
     let mut addrs: Vec<Option<[u8; 6]>> = keep.iter().map(|m| teamview::gate(m.mesh_addr)).collect();
-    teamview::dedup_for_signing(&mut addrs);
+    let lost: Vec<String> = teamview::dedup_for_signing(&mut addrs).into_iter().filter(|i| teamview::gate(keep[*i].mesh_addr).is_some()).map(|i| keep[i].name.clone()).collect();
     let entries = keep
         .iter()
         .zip(addrs)
@@ -187,7 +188,7 @@ fn next_members(rec: &NetRec, version: u32, keep: &[Member], excluded: &[Member]
         })
         .collect();
     let same = |k: u64| p.get(k).cloned().unwrap_or(Value::Array(vec![]));
-    Ok(cbor::encode(&Value::Map(vec![
+    Ok((cbor::encode(&Value::Map(vec![
         (Value::Uint(1), Value::Bytes(rec.base.net_id.to_vec())),
         (Value::Uint(2), Value::Uint(version as u64)),
         (Value::Uint(3), Value::Bytes(prev.to_vec())),
@@ -195,7 +196,7 @@ fn next_members(rec: &NetRec, version: u32, keep: &[Member], excluded: &[Member]
         (Value::Uint(5), Value::Array(removed.into_iter().map(|d| Value::Bytes(d.to_vec())).collect())),
         (Value::Uint(6), same(6)),
         (Value::Uint(7), same(7)),
-    ])))
+    ])), lost))
 }
 
 /// What a removal asks for next.
@@ -221,7 +222,7 @@ impl std::fmt::Debug for Action {
 #[derive(Debug, PartialEq, Eq)]
 pub enum End {
     /// the record now holds v+1 (= `version`); nothing was sent to any node
-    Committed { version: u32 },
+    Committed { version: u32, dup: Vec<String> },
     Refused(Refusal),
     /// the admin key did not sign: nothing written
     SignFailed,
@@ -245,6 +246,8 @@ pub struct Rekey {
     sae: String,
     net_root: [u8; 32],
     st: RStep,
+    /// names whose duplicated key 7 the next list dropped (254-app-team-status §4.2)
+    dup: Vec<String>,
 }
 
 fn random32() -> Result<[u8; 32], String> {
@@ -256,7 +259,7 @@ fn random32() -> Result<[u8; 32], String> {
 impl Rekey {
     /// `reads`: the own nodes' info answers (`own_nodes`); the checks run again here on the record read now.
     pub fn start(record_plain: &[u8], record_gen: u64, admin_pub: &[u8; 65], owner_pub: &[u8; 65], target: &Target, reads: &[NodeRead]) -> (Rekey, Action) {
-        let mut r = Rekey { rec: None, plan: None, gen: record_gen, sae: String::new(), net_root: [0; 32], st: RStep::Over };
+        let mut r = Rekey { rec: None, plan: None, gen: record_gen, sae: String::new(), net_root: [0; 32], st: RStep::Over, dup: vec![] };
         let a = match r.begin(record_plain, admin_pub, owner_pub, target, reads) {
             Ok(a) => a,
             Err(e) => Action::Done(e),
@@ -299,7 +302,10 @@ impl Rekey {
                 };
                 let members = keep.iter().filter(|m| m.state != MemberState::Joining).cloned().collect::<Vec<_>>();
                 let payload = match next_members(rec, plan.version, &members, &plan.excluded) {
-                    Ok(p) => p,
+                    Ok((p, lost)) => {
+                        self.dup = lost;
+                        p
+                    }
                     Err(e) => return self.end(End::Refused(e)),
                 };
                 let tbs = cose::sign1_tbs(cose::CT_MEMBERS, cose::LABEL_MEMBERS, &payload);
@@ -348,7 +354,7 @@ impl Rekey {
 
     pub fn persisted(&mut self) -> Option<Action> {
         let RStep::Persist { version } = std::mem::replace(&mut self.st, RStep::Over) else { return None };
-        Some(Action::Done(End::Committed { version }))
+        Some(Action::Done(End::Committed { version, dup: std::mem::take(&mut self.dup) }))
     }
 
     pub fn persist_failed(&mut self, error: Option<String>) -> Option<Action> {
