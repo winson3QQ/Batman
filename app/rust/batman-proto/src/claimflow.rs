@@ -194,3 +194,19 @@ impl Claim {
         }
     }
 }
+
+/// Node record key 9 (254-app-claim-noover R2): SHA-256 of the pending plaintext the node record was made from. A
+/// clock-free link between the two records; informational only, never a reason to delete anything.
+pub fn pending_link(pending_plain: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(pending_plain).into()
+}
+
+/// A pending beside a node record (R2): Some(true) = a leftover (the node record came from this very pending),
+/// Some(false) = another attempt (an in-flight re-claim), None = unknown (no key 9: an older node record, or a node
+/// record that does not parse).
+pub fn pending_is_leftover(node_plain: &[u8], pending_plain: &[u8]) -> Option<bool> {
+    let v = crate::cbor::decode(node_plain).ok()?;
+    let link = v.get(9).and_then(Value::as_bytes)?;
+    Some(link == pending_link(pending_plain))
+}

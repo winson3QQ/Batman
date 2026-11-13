@@ -158,30 +158,51 @@ impl Store {
         Ok(())
     }
 
-    /// Move `rel` to the first free `<kind>/<name>-<n>` (n = 1, 2, ...; `<name>` = `rel`'s file name), bytes unchanged,
-    /// then sync both directories; returns the new path, or None when there is no record at `rel`. A record that is not
-    /// one (unknown version, garbage) is not moved. The AAD stays bound to `rel`: the moved record opens again only once
-    /// it is moved back there (design §5.1: the old record of a re-claimed node goes to the forgotten area).
-    pub fn move_aside(&self, rel: &str, kind: &str) -> Result<Option<String>, Error> {
+    /// Keep a copy of `rel` (design 254-app-claim-noover R8): its whole file (header, generation, sealed bytes) goes
+    /// to a temp file in `<kind>/`, synced, then renamed to the first free `<kind>/<name>-<n>` (n = 1, 2, ...; free =
+    /// `symlink_metadata` says NotFound, so a dangling symlink is taken; any other error stops), then the directory is
+    /// synced. `rel` is never changed. The copy opens only once moved back to `rel` (the AAD is bound to it). Returns
+    /// the copy's path, or None when there is no record at `rel`; a file that is not a record is not copied. Runs under
+    /// the CAS lock: bridge calls come from a thread pool, and two copies must never pick the same name.
+    pub fn copy_aside(&self, rel: &str, kind: &str) -> Result<Option<String>, Error> {
+        let _g = CAS.lock().unwrap_or_else(|p| p.into_inner());
         let from = self.path(rel)?;
         if self.read(rel)?.is_none() {
             return Ok(None);
         }
+        let bytes = fs::read(&from)?;
         let name = rel.rsplit('/').next().ok_or(Error::BadPath)?;
-        for n in 1u32.. {
-            let to_rel = format!("{kind}/{name}-{n}");
-            let to = self.path(&to_rel)?;
-            if to.exists() {
-                continue;
-            }
-            let dir = to.parent().ok_or(Error::BadPath)?;
-            fs::create_dir_all(dir)?;
-            fs::rename(&from, &to)?;
-            File::open(dir)?.sync_all()?;
-            File::open(from.parent().ok_or(Error::BadPath)?)?.sync_all()?;
-            return Ok(Some(to_rel));
+        let dir = self.path(&format!("{kind}/{name}-1"))?.parent().ok_or(Error::BadPath)?.to_path_buf();
+        fs::create_dir_all(&dir)?;
+        let mut rnd = [0u8; 8];
+        getrandom::fill(&mut rnd).map_err(|_| Error::Random)?;
+        let tmp = dir.join(format!(".{name}{TEMP_MARK}{}", crate::nodecert::hex_lower(&rnd)));
+        {
+            let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+            f.write_all(&bytes)?;
+            f.sync_all()?;
         }
-        unreachable!("u32 names run out")
+        let r = (|| {
+            for n in 1u32.. {
+                let to_rel = format!("{kind}/{name}-{n}");
+                let to = self.path(&to_rel)?;
+                match fs::symlink_metadata(&to) {
+                    Ok(_) => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+                #[cfg(test)]
+                test_gap();
+                fs::rename(&tmp, &to)?;
+                File::open(&dir)?.sync_all()?;
+                return Ok(Some(to_rel));
+            }
+            unreachable!("u32 names run out")
+        })();
+        if r.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        r
     }
 
     /// Delete temp files left by a crash in the middle of a write (never valid records). Returns how many.
@@ -205,5 +226,45 @@ impl Store {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+}
+
+/// Tests only: a pause between copy_aside's free-name check and its rename, to widen the window T13 races in.
+#[cfg(test)]
+static GAP_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+fn test_gap() {
+    let ms = GAP_MS.load(std::sync::atomic::Ordering::SeqCst);
+    if ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // design 254-app-claim-noover T13: two threads keep a copy of the same record at once -> two distinct copies (the
+    // CAS lock serialises the free-name check and the rename; without it both take -1 and one copy is lost).
+    #[test]
+    fn t13_concurrent_copies_never_share_a_name() {
+        let root = std::env::temp_dir().join(format!("bp-store-t13-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        Store::new(&root).write("node/e61551410cfd538e24", 4, b"rec").unwrap();
+        GAP_MS.store(300, std::sync::atomic::Ordering::SeqCst);
+        let hs: Vec<_> = (0..2)
+            .map(|_| {
+                let r = root.clone();
+                std::thread::spawn(move || Store::new(r).copy_aside("node/e61551410cfd538e24", "forgotten-node").unwrap())
+            })
+            .collect();
+        let mut got: Vec<String> = hs.into_iter().map(|h| h.join().unwrap().unwrap()).collect();
+        GAP_MS.store(0, std::sync::atomic::Ordering::SeqCst);
+        got.sort();
+        assert_eq!(got, ["forgotten-node/e61551410cfd538e24-1", "forgotten-node/e61551410cfd538e24-2"]);
+        let names: Vec<_> = fs::read_dir(root.join("forgotten-node")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names.len(), 2, "both copies on disk, no temp left: {names:?}");
+        let _ = fs::remove_dir_all(root);
     }
 }

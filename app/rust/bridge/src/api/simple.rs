@@ -28,7 +28,8 @@ pub fn selftest() -> String {
 // levels, no secrets), display-only. Written once, after all four keys passed; before any record exists.
 const MARKER: &str = "meta/install-v1";
 // member-join §3 (R20): a member phone's mpend / mnet are records too: they keep the keys from being regenerated
-const RECORD_KINDS: [&str; 6] = ["node", "claim-pending", "net", "mnet", "mpend", crate::api::claim::FORGOTTEN_NODE];
+const RECORD_KINDS: [&str; 7] =
+    ["node", "claim-pending", "net", "mnet", "mpend", crate::api::claim::FORGOTTEN_NODE, crate::api::claim::FORGOTTEN_PENDING];
 
 /// The marker's content, or None when there is none.
 pub fn store_read_marker(dir: String) -> Result<Option<String>, String> {
@@ -94,7 +95,8 @@ mod tests {
     /// keys are never regenerated.
     #[test]
     fn m15_member_records_count_as_records() {
-        for kind in ["mnet", "mpend", "forgotten-node"] { // forgotten-node: a re-claimed node's old record (claim.rs)
+        // forgotten-*: copies kept by a re-claim (254-app-claim-noover R8)
+        for kind in ["mnet", "mpend", "forgotten-node", "forgotten-pending"] {
             let d = std::env::temp_dir().join(format!("bm-kinds-{kind}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&d);
             let dir = d.to_string_lossy().to_string();

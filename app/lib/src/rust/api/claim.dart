@@ -54,7 +54,8 @@ Future<void> storeWriteSealed({
 Future<void> storeRemove({required String dir, required String rel}) =>
     RustLib.instance.api.crateApiClaimStoreRemove(dir: dir, rel: rel);
 
-/// A record that cannot be read (unknown version, not a record) is an error: the claim stops (fail-closed).
+/// Both paths are read (254-app-claim-noover R5): a record that cannot be read (unknown version, not a record) at
+/// either is an error: the claim stops (fail-closed).
 Future<ClaimTarget> claimTarget({
   required String dir,
   required String deviceId,
@@ -62,22 +63,19 @@ Future<ClaimTarget> claimTarget({
     RustLib.instance.api.crateApiClaimClaimTarget(dir: dir, deviceId: deviceId);
 
 /// Whether an opened pending record is for this QR (same device id and K). Then claiming again is the recovery's
-/// first step (§5.2-1: on NX success the new pending, with the same K, replaces the old one); otherwise the pending
-/// is kept and no claim starts.
+/// first step (§5.2-1: on NX success the new pending, with the same K, replaces the old one); otherwise the user is
+/// asked first, and the old pending is copied aside before it is replaced (254-app-claim-noover R4).
 Future<bool> pendingMatchesQr({
   required List<int> record,
   required ClaimQr qr,
 }) =>
     RustLib.instance.api.crateApiClaimPendingMatchesQr(record: record, qr: qr);
 
-/// §5.1 re-claim the user confirmed: the old node record moves to the forgotten area (`forgotten-node/<id>-<n>`,
-/// unchanged, restorable by moving it back). Called when the new pending is about to be written — after NX and the
-/// node certificate passed — so a claim that never reaches the node leaves the old record where it was.
-Future<void> storeForgetNode({required String dir, required String deviceId}) =>
-    RustLib.instance.api.crateApiClaimStoreForgetNode(
-      dir: dir,
-      deviceId: deviceId,
-    );
+/// Keep a copy of the record at `rel` before it is replaced (254-app-claim-noover R1 / R4 / R8): `node/<id>` ->
+/// `forgotten-node/<id>-<n>`, `claim-pending/<id>` -> `forgotten-pending/<id>-<n>`; the record itself is not changed.
+/// Returns whether there was one to copy. The app keeps the copies only (no restore in this version).
+Future<bool> storeKeepCopy({required String dir, required String rel}) =>
+    RustLib.instance.api.crateApiClaimStoreKeepCopy(dir: dir, rel: rel);
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>>
 abstract class ClaimSession implements RustOpaqueInterface {
@@ -174,8 +172,12 @@ enum ClaimTarget {
   /// only `claim-pending/<id>`: an unfinished claim (§5.2)
   pending,
 
-  /// `node/<id>` (a pending beside it is stale)
+  /// `node/<id>` only
   node,
+
+  /// `node/<id>` and `claim-pending/<id>`: the node record counts (254-app-claim-noover R2); the dialog says there
+  /// also is an unfinished claim
+  nodeAndPending,
 }
 
 /// The next generation of a record and its AAD (final path + generation, design §3) for Kotlin's seal.
