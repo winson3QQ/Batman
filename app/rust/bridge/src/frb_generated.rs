@@ -27,11 +27,11 @@
 
 // Section: imports
 
-use crate::api::member::*;
-use crate::api::owner::*;
-use crate::api::swupdate::*;
+use crate::api::rekey::*;
 use crate::api::claim::*;
-use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::swupdate::*;
+use crate::api::owner::*;
+use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -95,9 +95,10 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
 let api_owner_pub = <Vec<u8>>::sse_decode(&mut deserializer);
 let api_owner_enc_pub = <Vec<u8>>::sse_decode(&mut deserializer);
 let api_sig_enc = <Vec<u8>>::sse_decode(&mut deserializer);
-let api_frame_limit = <u32>::sse_decode(&mut deserializer);deserializer.end();
+let api_frame_limit = <u32>::sse_decode(&mut deserializer);
+let api_dev_soft_enc = <bool>::sse_decode(&mut deserializer);deserializer.end();
                 transform_result_sse::<_, String>((move || {
-                     let output_ok = crate::api::claim::ClaimSession::start(&api_qr, api_owner_pub, api_owner_enc_pub, api_sig_enc, api_frame_limit)?;   std::result::Result::Ok(output_ok)
+                     let output_ok = crate::api::claim::ClaimSession::start(&api_qr, api_owner_pub, api_owner_enc_pub, api_sig_enc, api_frame_limit, api_dev_soft_enc)?;   std::result::Result::Ok(output_ok)
                 })()) })
             }fn wire__crate__api__member__NetOp_approve_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "NetOp_approve", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
@@ -3464,11 +3465,11 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
-use crate::api::member::*;
-use crate::api::owner::*;
-use crate::api::swupdate::*;
+use crate::api::rekey::*;
 use crate::api::claim::*;
-use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::swupdate::*;
+use crate::api::owner::*;
+use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -3551,11 +3552,11 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::member::*;
-use crate::api::owner::*;
-use crate::api::swupdate::*;
+use crate::api::rekey::*;
 use crate::api::claim::*;
-use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::swupdate::*;
+use crate::api::owner::*;
+use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;

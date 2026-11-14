@@ -33,6 +33,11 @@ const otherQrText = '手機裡有這台節點一次沒完成的認領，用的�
 String reclaimText({required bool pending}) => '這台節點已在你的清單裡。${pending ? '手機裡也有這台一次沒完成的認領。' : ''}'
     '只有在你剛把這台節點重置回未認領時才重新認領：舊紀錄會留在手機上，但 App 之後不會再用它、也不會顯示在清單裡。要重新認領嗎？';
 
+/// Design §4.1: shown before a claim on a dev build whose owner_enc key is SOFTWARE; the claim goes on only when confirmed.
+const devSoftEncTitle = '這支手機只能用於開發';
+const devSoftEncText = '這支手機的復原／成員金鑰是軟體保護，只能用於開發，不可用於實際部署。\n\n'
+    '之後換手機、或改用 field 版／硬體 owner_enc，這支手機認領的每個節點都要重燒卡回收。';
+
 class ClaimPage extends StatefulWidget {
   const ClaimPage({super.key, this.ble, this.findFor = const Duration(seconds: 60)});
 
@@ -215,6 +220,12 @@ class _ClaimPageState extends State<ClaimPage> {
     return ok == true;
   }
 
+  /// Kotlin's own key gate refused (MainActivity.gate): the same [KEY_LEVEL] line as the gate above.
+  String? _keyRefused(Object e) {
+    final k = KeyAbilities.refusedBy(e);
+    return k == null ? null : '[KEY_LEVEL] $k';
+  }
+
   Future<void> _claim() async {
     final q = _qr;
     if (q == null || _busy) return;
@@ -228,6 +239,10 @@ class _ClaimPageState extends State<ClaimPage> {
       final no = able.refusal(KeyUse.claim) ?? able.refusal(KeyUse.recover);
       if (no != null) {
         _say('[CLAIM_FAIL] [KEY_LEVEL] $no。手機裡的紀錄沒有改動。');
+        return;
+      }
+      // design §4.1 (dev build + SOFTWARE owner_enc): said and confirmed before anything is read or sent
+      if (able.softOwnerEnc && !await _ask(devSoftEncTitle, devSoftEncText, '我了解，繼續認領', '[CLAIM_FAIL] 沒有確認，沒有認領。手機裡的紀錄沒有改動。')) {
         return;
       }
       final dir = '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
@@ -268,7 +283,8 @@ class _ClaimPageState extends State<ClaimPage> {
       final der = (await _platform.invokeMethod<Uint8List>('signOwner', {'input': await ownerEncSignInput(ownerEncPub: ownerEnc)}))!;
       final sigEnc = await derToRaw(der: der);
 
-      final (session, first) = ClaimSession.start(qr: q, ownerPub: owner, ownerEncPub: ownerEnc, sigEnc: sigEnc, frameLimit: fl);
+      final (session, first) = ClaimSession.start(
+          qr: q, ownerPub: owner, ownerEncPub: ownerEnc, sigEnc: sigEnc, frameLimit: fl, devSoftEnc: able.softOwnerEnc);
       final rx = QualifiedCharacteristic(characteristicId: _rx, serviceId: provdService, deviceId: id);
       final done = Completer<String>();
       var claimed = false; // set when the node record is written (StepKind.claimed)
@@ -305,14 +321,19 @@ class _ClaimPageState extends State<ClaimPage> {
       await run(first);
       _say('已送出認領要求，等待節點回應…');
       final pump = inbox.stream.asyncMap((f) => run(session.onFrame(frame: f))).listen((_) {},
-          onError: (Object e) => done.isCompleted ? null : done.complete('處理出錯：$e'));
+          onError: (Object e) => done.isCompleted ? null : done.complete(_keyRefused(e) ?? '處理出錯：$e'));
       final r = await done.future.timeout(const Duration(seconds: 90), onTimeout: () => '90 秒內節點沒有回應（這次的紀錄先保留，可以稍後再試）');
       await pump.cancel();
       await inbox.close();
-      _say(claimed ? '[CLAIMED] $r' : '[CLAIM_FAIL] 認領沒有完成：$r');
+      _say(claimed
+          ? '[CLAIMED] $r'
+          : r.startsWith('[KEY_LEVEL] ')
+              ? '[CLAIM_FAIL] $r'
+              : '[CLAIM_FAIL] 認領沒有完成：$r');
       if (claimed && mounted) setState(() => _qr = null); // R6: claiming again needs a new scan
     } catch (e) {
-      _say('[CLAIM_FAIL] 認領中斷：$e');
+      final k = _keyRefused(e);
+      _say(k != null ? '[CLAIM_FAIL] $k' : '[CLAIM_FAIL] 認領中斷：$e');
     } finally {
       await notify?.cancel();
       await conn?.cancel();

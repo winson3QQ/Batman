@@ -57,7 +57,10 @@ void main() {
   setUpAll(() => RustLib.initMock(api: rust));
   final platform = <String>[];
 
-  Future<void> claim(WidgetTester t, Object target, {bool matches = true, bool openFails = false, bool keysOk = true}) async {
+  /// [keysOk]: owner_enc fits (claim and recover allowed); [recoverOk]: `recover` of the answer; [soft]: a dev build
+  /// whose owner_enc key is SOFTWARE (allowed, with the confirmation)
+  Future<void> claim(WidgetTester t, Object target,
+      {bool matches = true, bool openFails = false, bool keysOk = true, bool recoverOk = true, bool soft = false}) async {
     rust
       ..target = target
       ..pendingMatches = matches
@@ -71,7 +74,19 @@ void main() {
         case 'filesDir':
           return files;
         case 'keyLevels': // design v8.5.1 §4.1: read before every claim / recovery
-          return {'appUsable': true, 'claim': keysOk, 'login': true, 'recover': keysOk, 'makeNetwork': true, 'softOwnerEnc': false};
+          // MainActivity's full shape: the four levels by role name, then what KeyPolicy allows
+          return {
+            'RECORD_AES': 1,
+            'OWNER_SIGN': 1,
+            'ADMIN_SIGN': 1,
+            'OWNER_ENC': keysOk && !soft ? 1 : 0,
+            'appUsable': true,
+            'claim': keysOk,
+            'login': true,
+            'recover': keysOk && recoverOk,
+            'makeNetwork': true,
+            'softOwnerEnc': soft,
+          };
         case 'open':
           if (openFails) throw PlatformException(code: 'open', message: 'key gone');
           return Uint8List(4);
@@ -105,7 +120,43 @@ void main() {
     expect(platform, isNot(contains('blePermissions')));
   });
 
+  // a claim may turn out to be the recovery of an unfinished one: both must be allowed (KeyPolicy answers them alike;
+  // an answer that allows only the claim is still refused). Negative control: the `?? refusal(recover)` removed -> FAIL
+  testWidgets('claim allowed but recovery not: no claim, nothing read', (t) async {
+    await claim(t, ClaimTarget.nothing, recoverOk: false);
+    expect(find.textContaining('復原／成員金鑰不是硬體保護，不能接續沒完成的認領'), findsOneWidget);
+    expect(rust.calls, isEmpty);
+    expect(platform, isNot(contains('filesDir')));
+    expect(platform, isNot(contains('blePermissions')));
+  });
+
+  // design v8.5.1 §4.1 (dev build + SOFTWARE owner_enc): the notice is confirmed before the claim; until then nothing
+  // is read (no files dir, no record, no BLE permission). Negative control: the confirmation removed -> both FAIL
+  for (final confirm in [false, true]) {
+    testWidgets('dev + SOFTWARE owner_enc: asked first; ${confirm ? 'confirmed -> the claim goes on' : 'declined -> no claim, nothing read'}',
+        (t) async {
+      await claim(t, ClaimTarget.nothing, soft: true);
+      expect(find.text(devSoftEncTitle), findsOneWidget);
+      expect(find.text(devSoftEncText), findsOneWidget);
+      expect(devSoftEncText, contains('這支手機的復原／成員金鑰是軟體保護，只能用於開發，不可用於實際部署'));
+      expect(devSoftEncText, contains('這支手機認領的每個節點都要重燒卡回收'));
+      expect(platform, ['scanQr', 'keyLevels'], reason: 'nothing before the answer');
+      expect(rust.calls, isEmpty);
+      await t.tap(find.text(confirm ? '我了解，繼續認領' : '取消'));
+      await t.pumpAndSettle();
+      if (confirm) {
+        expect(rust.calls, ['claimTarget $files/records $deviceId']);
+        expect(platform, containsAllInOrder(['filesDir', 'blePermissions']));
+      } else {
+        expect(find.text('沒有確認，沒有認領。手機裡的紀錄沒有改動。'), findsOneWidget);
+        expect(platform, ['scanQr', 'keyLevels'], reason: 'declined: nothing read');
+        expect(rust.calls, isEmpty);
+      }
+    });
+  }
+
   testWidgets('nothing held: the claim goes on', (t) async {
+    expect(find.byType(AlertDialog), findsNothing);
     await claim(t, ClaimTarget.nothing);
     expect(rust.calls, ['claimTarget $files/records $deviceId']);
     expect(platform, contains('blePermissions'));

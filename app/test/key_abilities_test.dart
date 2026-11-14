@@ -21,12 +21,19 @@ const platform = MethodChannel('dev.batman/platform');
 
 /// The `keyLevels` answer (MainActivity): the four levels by role name, then what KeyPolicy allows.
 Map<String, Object?> answer(
-        {bool appUsable = true, bool claim = true, bool login = true, bool recover = true, bool makeNetwork = true, bool soft = false}) =>
+        {bool appUsable = true,
+        bool claim = true,
+        bool login = true,
+        bool recover = true,
+        bool makeNetwork = true,
+        bool soft = false,
+        Set<String> gone = const {}}) =>
     {
-      'RECORD_AES': appUsable ? 1 : 0,
-      'OWNER_SIGN': 1,
-      'ADMIN_SIGN': 1,
-      'OWNER_ENC': soft ? 0 : 1,
+      // a lost key has no level (null)
+      'RECORD_AES': gone.contains('RECORD_AES') ? null : (appUsable ? 1 : 0),
+      'OWNER_SIGN': gone.contains('OWNER_SIGN') ? null : 1,
+      'ADMIN_SIGN': gone.contains('ADMIN_SIGN') ? null : 1,
+      'OWNER_ENC': gone.contains('OWNER_ENC') ? null : (soft ? 0 : 1),
       'appUsable': appUsable,
       'claim': claim,
       'login': login,
@@ -45,8 +52,13 @@ class FakeRust implements RustLibApi {
   @override
   Future<int> crateApiSimpleStoreSweep({required String dir}) async => 0;
 
+  String? marker = 'marker';
+
   @override
-  Future<String?> crateApiSimpleStoreReadMarker({required String dir}) async => 'marker';
+  Future<String?> crateApiSimpleStoreReadMarker({required String dir}) async => marker;
+
+  @override
+  Future<bool> crateApiSimpleStoreHasRecords({required String dir}) async => false;
 
   @override
   Future<List<String>> crateApiOwnerListNodes({required String dir}) async => ['0000000000000c4f2a'];
@@ -62,7 +74,9 @@ class NoBle implements FlutterReactiveBle {
 }
 
 void main() {
-  setUpAll(() => RustLib.initMock(api: FakeRust()));
+  final rust = FakeRust();
+  setUpAll(() => RustLib.initMock(api: rust));
+  setUp(() => rust.marker = 'marker');
   final calls = <String>[];
 
   /// [keys]: the `keyLevels` answer; a PlatformException is thrown
@@ -78,6 +92,8 @@ void main() {
         case 'keyLevels':
           if (keys is PlatformException) throw keys;
           return keys;
+        case 'firstRun':
+          throw PlatformException(code: 'firstRun', message: 'no StrongBox, no TEE');
       }
       return null;
     });
@@ -145,6 +161,67 @@ void main() {
       all(a, true);
     });
 
+    // design §4.1 「單一金鑰遺失」: a key with no Keystore entry (level null)
+    test('a lost key: its uses are off whatever the six say, and the words say it is lost', () {
+      // the booleans left on: the level decides (fail closed)
+      var a = KeyAbilities.from(answer(gone: {'OWNER_SIGN'}));
+      expect(a.appUsable, true);
+      all(a, false);
+      for (final u in KeyUse.values) {
+        expect(a.refusal(u), KeyAbilities.ownerGone);
+      }
+      expect(KeyAbilities.ownerGone, allOf(contains('不能登入、認領或接續認領'), contains('紀錄還讀得到'), contains('節點需要重燒卡回收')));
+
+      a = KeyAbilities.from(answer(gone: {'ADMIN_SIGN'}));
+      expect(a.claim && a.login && a.recover, true);
+      expect(a.makeNetwork, false);
+      expect(a.refusal(KeyUse.makeNetwork), '這支手機的網路管理金鑰不見了，不能建立或更改網路');
+
+      a = KeyAbilities.from(answer(gone: {'OWNER_ENC'}));
+      expect(a.login && a.makeNetwork, true);
+      expect(a.claim || a.recover, false);
+      expect(a.refusal(KeyUse.recover), allOf(contains('復原／成員金鑰不見了，不能接續沒完成的認領'), contains('需要重燒卡')));
+      expect(a.refusal(KeyUse.claim), contains('復原／成員金鑰不見了，不能認領節點'));
+
+      a = KeyAbilities.from(answer(gone: {'RECORD_AES'}));
+      expect(a.appUsable, false);
+      expect(a.unread, false);
+      all(a, false);
+      expect(a.offReason, KeyAbilities.aesGone);
+      expect(KeyAbilities.aesGone, contains('紀錄沒有刪除'));
+
+      a = KeyAbilities.from(answer(gone: {'RECORD_AES', 'OWNER_SIGN', 'ADMIN_SIGN', 'OWNER_ENC'}));
+      all(a, false);
+      expect(a.offReason, KeyAbilities.allGone);
+      expect(KeyAbilities.allGone, allOf(contains('清除 App 資料或重新安裝'), contains('節點需要重燒卡回收')));
+    });
+
+    test('the three reasons the app is off are told apart', () {
+      expect(KeyAbilities.none.offReason, KeyAbilities.unreadOff);
+      expect(KeyAbilities.from(null).unread, true);
+      expect(KeyAbilities.from(answer(gone: {'RECORD_AES'})).offReason, KeyAbilities.aesGone);
+      final soft = KeyAbilities.from(answer(appUsable: false));
+      expect(soft.unread, false);
+      expect(soft.offReason, KeyAbilities.appOff);
+      expect({KeyAbilities.unreadOff, KeyAbilities.aesGone, KeyAbilities.appOff, KeyAbilities.allGone}.length, 4);
+    });
+
+    // Kotlin's own gate (MainActivity.gate -> KeyPolicy.refused): code keyLevel, message = role, details = level / null
+    test('a Kotlin key refusal is turned into the same words; anything else is not one', () {
+      String? by(String role, Object? level) => KeyAbilities.refusedBy(PlatformException(code: 'keyLevel', message: role, details: level));
+      expect(by('RECORD_AES', 0), KeyAbilities.appOff);
+      expect(by('RECORD_AES', null), KeyAbilities.aesGone);
+      expect(by('OWNER_SIGN', 0), contains('擁有者金鑰不是硬體保護'));
+      expect(by('OWNER_SIGN', null), KeyAbilities.ownerGone);
+      expect(by('ADMIN_SIGN', -1), contains('網路管理金鑰不是硬體保護'));
+      expect(by('ADMIN_SIGN', null), KeyAbilities.adminGone);
+      expect(by('OWNER_ENC', 0), contains('復原／成員金鑰不是硬體保護'));
+      expect(by('OWNER_ENC', null), KeyAbilities.encGone);
+      expect(by('SOMETHING_NEW', 1), isNotNull, reason: 'an unknown role is still a refusal');
+      expect(KeyAbilities.refusedBy(PlatformException(code: 'keystore', message: 'OWNER_SIGN')), isNull);
+      expect(KeyAbilities.refusedBy('keyLevel'), isNull);
+    });
+
     test('unreadable answers allow nothing', () {
       final bad = <Map<Object?, Object?>?>[
         null,
@@ -155,10 +232,15 @@ void main() {
         answer()..['appUsable'] = 1,
         answer()..['claim'] = 'true',
         answer()..['login'] = null,
+        answer()..remove('RECORD_AES'), // a level that is not there at all (not the same as null = lost)
+        answer()..remove('OWNER_ENC'),
+        answer()..['ADMIN_SIGN'] = 'TEE',
+        answer()..['OWNER_SIGN'] = true,
         {'APPUSABLE': true, 'Claim': true, 'login': true, 'recover': true, 'makeNetwork': true, 'softOwnerEnc': false},
       ];
       for (final m in bad) {
         final a = KeyAbilities.from(m);
+        expect(a.unread, true, reason: '$m');
         expect(a.appUsable, false, reason: '$m');
         expect(a.softOwnerEnc, false, reason: '$m');
         all(a, false);
@@ -218,6 +300,57 @@ void main() {
       expect(find.text('我的節點'), findsNothing);
       expect(find.text('認領節點'), findsNothing);
       expect(find.bySubtype<ButtonStyleButton>(), findsNothing);
+      // design §4: the plaintext index stays on screen (file names only: nothing is opened, nothing deleted — any
+      // other store call of the fake throws)
+      expect(find.text('這些節點需要重燒卡回收：'), findsOneWidget);
+      expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
+    });
+
+    // design §4 / §4.1 「單一金鑰遺失」: record AES lost. Negative control: the index not built -> FAIL
+    testWidgets('record AES lost: said so (not "not hardware"), the node index shown, no button', (t) async {
+      await start(t, answer(appUsable: false, claim: false, login: false, recover: false, makeNetwork: false, gone: {'RECORD_AES'}));
+      expect(find.textContaining('啟動檢查：${KeyAbilities.aesGone}'), findsOneWidget);
+      expect(find.textContaining(KeyAbilities.appOff), findsNothing);
+      expect(find.text('這些節點需要重燒卡回收：'), findsOneWidget);
+      expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
+      expect(find.bySubtype<ButtonStyleButton>(), findsNothing);
+      expect(calls, isNot(contains('open')));
+    });
+
+    testWidgets('all four keys lost (marker there): the only way out is said, the node index shown', (t) async {
+      await start(
+          t,
+          answer(
+              appUsable: false,
+              claim: false,
+              login: false,
+              recover: false,
+              makeNetwork: false,
+              gone: {'RECORD_AES', 'OWNER_SIGN', 'ADMIN_SIGN', 'OWNER_ENC'}));
+      expect(find.textContaining('啟動檢查：${KeyAbilities.allGone}'), findsOneWidget);
+      expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
+      expect(find.bySubtype<ButtonStyleButton>(), findsNothing);
+      expect(calls, isNot(contains('firstRun')), reason: 'with a marker the keys are never made again');
+    });
+
+    // the first run was cut short (no marker, no record; Kotlin deleted what it made): not "clear the app data"
+    testWidgets('first run failed: said so, with a retry; not the "all keys lost" way out', (t) async {
+      rust.marker = null;
+      await start(
+          t,
+          answer(
+              appUsable: false,
+              claim: false,
+              login: false,
+              recover: false,
+              makeNetwork: false,
+              gone: {'RECORD_AES', 'OWNER_SIGN', 'ADMIN_SIGN', 'OWNER_ENC'}));
+      expect(calls, contains('firstRun'));
+      expect(find.textContaining('啟動檢查：金鑰沒有建立成功，App 暫時不能使用'), findsOneWidget);
+      expect(find.textContaining('清除 App 資料'), findsNothing);
+      expect(find.text('這些節點需要重燒卡回收：'), findsNothing);
+      expect(find.widgetWithText(FilledButton, '再試一次'), findsOneWidget);
+      expect(find.bySubtype<ButtonStyleButton>(), findsOneWidget);
     });
 
     for (final (name, keys) in <(String, Object?)>[
@@ -225,10 +358,25 @@ void main() {
       ('no answer', null),
       ('an entry that is not a bool', answer()..['appUsable'] = 'true'),
     ]) {
-      testWidgets('the key levels cannot be read ($name): the app is off', (t) async {
+      // may be transient: its own words and a retry, never "not hardware" / "lost", and no "re-flash these nodes".
+      // Negative control: the unreadable case told like "not hardware" again -> FAIL
+      testWidgets('the key levels cannot be read ($name): the app is off, said as unreadable, with a retry', (t) async {
         await start(t, keys);
-        expect(find.textContaining(KeyAbilities.appOff), findsOneWidget);
-        expect(find.bySubtype<ButtonStyleButton>(), findsNothing);
+        expect(find.textContaining('啟動檢查：${KeyAbilities.unreadOff}'), findsOneWidget);
+        expect(find.textContaining(KeyAbilities.appOff), findsNothing);
+        expect(find.textContaining('不見了'), findsNothing);
+        expect(find.textContaining('重燒卡'), findsNothing);
+        expect(find.text('我的節點'), findsNothing);
+        expect(find.widgetWithText(FilledButton, '再試一次'), findsOneWidget);
+        expect(find.bySubtype<ButtonStyleButton>(), findsOneWidget, reason: 'the retry is the only button');
+        // the retry reads again: this time the keys answer
+        mock(t, answer());
+        await t.tap(find.text('再試一次'));
+        await t.pumpAndSettle();
+        expect(calls, contains('keyLevels'));
+        expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
+        expect(find.text('再試一次'), findsNothing);
+        expect(live(t).length, 3);
       });
     }
 

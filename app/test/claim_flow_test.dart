@@ -45,6 +45,7 @@ class FakeRust implements RustLibApi {
   bool copyFails = false;
   String statusState = 'unclaimed'; // what the fake node's status/public says
   String? statusLast4 = '4f2a';
+  bool? devSoftEnc; // what the page passed to ClaimSession.start (design §4.1: the record mark)
 
   @override
   Future<ClaimQr> crateApiClaimParseClaimQr({required String text}) async => ClaimQr(deviceId: deviceId, k: Uint8List(32));
@@ -61,8 +62,10 @@ class FakeRust implements RustLibApi {
   Future<Uint8List> crateApiClaimDerToRaw({required List<int> der}) async => Uint8List(64);
   @override
   (ClaimSession, ClaimStep) crateApiClaimClaimSessionStart(
-          {required ClaimQr qr, required List<int> ownerPub, required List<int> ownerEncPub, required List<int> sigEnc, required int frameLimit}) =>
-      (FakeSession(), step(StepKind.write, frames: [Uint8List.fromList([1])]));
+          {required ClaimQr qr, required List<int> ownerPub, required List<int> ownerEncPub, required List<int> sigEnc, required int frameLimit, required bool devSoftEnc}) {
+    this.devSoftEnc = devSoftEnc;
+    return (FakeSession(), step(StepKind.write, frames: [Uint8List.fromList([1])]));
+  }
   @override
   Future<SealParams> crateApiClaimStoreSealParams({required String dir, required String rel}) async =>
       SealParams(generation: BigInt.two, aad: Uint8List(1));
@@ -126,11 +129,14 @@ void main() {
     ..target = ClaimTarget.node
     ..pendingOnDisk = false
     ..copyFails = false
+    ..devSoftEnc = null
     ..statusState = 'unclaimed'
     ..statusLast4 = '4f2a');
 
   /// scan, 「認領」, answer the dialog with [confirm], then let the claim run
-  Future<FakeBle> runClaim(WidgetTester t, String confirm, {Duration findFor = const Duration(seconds: 60), int realMs = 0}) async {
+  /// [soft]: a dev build whose owner_enc key is SOFTWARE; [signOwner]: what Kotlin answers (a PlatformException is thrown)
+  Future<FakeBle> runClaim(WidgetTester t, String confirm,
+      {Duration findFor = const Duration(seconds: 60), int realMs = 0, bool soft = false, Object? signOwner}) async {
     final ble = FakeBle();
     t.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('dev.batman/platform'), (c) async {
       switch (c.method) {
@@ -141,10 +147,23 @@ void main() {
         case 'blePermissions':
           return true;
         case 'keyLevels': // design §4.1: read before every claim
-          return {'appUsable': true, 'claim': true, 'login': true, 'recover': true, 'makeNetwork': true, 'softOwnerEnc': false};
+          // MainActivity's full shape: the four levels by role name, then what KeyPolicy allows
+          return {
+            'RECORD_AES': 1,
+            'OWNER_SIGN': 1,
+            'ADMIN_SIGN': 1,
+            'OWNER_ENC': soft ? 0 : 1,
+            'appUsable': true,
+            'claim': true,
+            'login': true,
+            'recover': true,
+            'makeNetwork': true,
+            'softOwnerEnc': soft,
+          };
         case 'publicKeys':
-          return {'owner': Uint8List(65), 'ownerEnc': Uint8List(65)};
+          return {'owner': Uint8List(65), 'ownerEnc': Uint8List(65), 'admin': Uint8List(65)};
         case 'signOwner':
+          if (signOwner is PlatformException) throw signOwner;
           return Uint8List(70);
         case 'seal':
           return Uint8List(3);
@@ -176,6 +195,7 @@ void main() {
       ..copyFails = false;
     final ble = await runClaim(t, '重新認領');
     expect(find.text('認領成功'), findsOneWidget);
+    expect(rust.devSoftEnc, false, reason: 'a hardware owner_enc: the record is not marked');
     expect(ble.written, [[1], [3]], reason: 'msg1, then begin after the pending');
     expect(rust.calls, [
       'read claim-pending/$deviceId', // PersistPending: from disk (no pending there)
@@ -186,6 +206,26 @@ void main() {
     ]);
     final claim = t.widget<FilledButton>(find.widgetWithText(FilledButton, '認領'));
     expect(claim.onPressed, isNull, reason: 'R6: the QR is forgotten after [CLAIMED]');
+  });
+
+  // design §4.1 (dev build + SOFTWARE owner_enc): confirmed -> the claim goes through and the session is told to mark
+  // the node record `dev-soft-enc`. Negative control: devSoftEnc not passed on (false) -> FAIL
+  testWidgets('dev + SOFTWARE owner_enc: confirmed -> claimed, the record mark asked for', (t) async {
+    rust.target = ClaimTarget.nothing;
+    await runClaim(t, '我了解，繼續認領', soft: true);
+    expect(find.text('認領成功'), findsOneWidget);
+    expect(rust.devSoftEnc, true);
+  });
+
+  // Kotlin's own gate (MainActivity.gate) refuses the owner signature: said as [KEY_LEVEL], nothing sent or written
+  testWidgets('Kotlin refuses signOwner (keyLevel): the [KEY_LEVEL] words, no msg1, no record', (t) async {
+    rust.target = ClaimTarget.nothing;
+    final ble = await runClaim(t, '', signOwner: PlatformException(code: 'keyLevel', message: 'OWNER_SIGN', details: 0));
+    expect(find.text('這支手機的擁有者金鑰不是硬體保護'), findsOneWidget);
+    expect(find.textContaining('認領中斷'), findsNothing);
+    expect(ble.written, isEmpty);
+    expect(rust.calls, isEmpty);
+    expect(rust.devSoftEnc, isNull, reason: 'no session was started');
   });
 
   // T12 at page level (code review A-m1): a pending of another K is on disk, the user chose this QR (R4), and the copy

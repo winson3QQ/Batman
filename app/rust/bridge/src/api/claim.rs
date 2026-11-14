@@ -195,12 +195,18 @@ const BROKEN: &str = "連線或資料出錯，這次的紀錄先保留";
 pub struct ClaimSession {
     claim: Claim,
     pending: Option<Pending>,
+    dev_soft_enc: bool,
 }
 
+/// design 254-app-s1 §4.1: the mark of a node claimed by a dev build whose owner_enc key is SOFTWARE (node record key
+/// 10; absent otherwise — records written before the mark existed have no key 10 and read the same as ever).
+pub const DEV_SOFT_ENC: &str = "dev-soft-enc";
+
 impl ClaimSession {
-    /// Starts an attempt: the first step is the msg1 frames.
+    /// Starts an attempt: the first step is the msg1 frames. `dev_soft_enc`: this phone's owner_enc key is SOFTWARE
+    /// (dev builds only, §4.1; the caller read it live) — the node record of this claim carries the mark.
     #[flutter_rust_bridge::frb(sync)]
-    pub fn start(qr: &ClaimQr, owner_pub: Vec<u8>, owner_enc_pub: Vec<u8>, sig_enc: Vec<u8>, frame_limit: u32) -> Result<(ClaimSession, ClaimStep), String> {
+    pub fn start(qr: &ClaimQr, owner_pub: Vec<u8>, owner_enc_pub: Vec<u8>, sig_enc: Vec<u8>, frame_limit: u32, dev_soft_enc: bool) -> Result<(ClaimSession, ClaimStep), String> {
         let input = Input {
             device_id: qr.device_id.clone(),
             k: qr.k.clone().try_into().map_err(|_| "QR 碼裡的認領金鑰長度不對")?,
@@ -210,7 +216,7 @@ impl ClaimSession {
             frame_limit: frame_limit as usize,
         };
         let (claim, a) = Claim::start(input);
-        let mut s = ClaimSession { claim, pending: None };
+        let mut s = ClaimSession { claim, pending: None, dev_soft_enc };
         let step = s.step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
         Ok((s, step))
     }
@@ -239,7 +245,7 @@ impl ClaimSession {
             }
             Action::Done(End::Finished(ClaimFinish::Claimed(c))) => match &self.pending {
                 Some(p) => {
-                    let rec = cbor::encode(&Value::Map(vec![
+                    let mut rec = vec![
                         (Value::Uint(1), Value::Text(p.device_id.clone())),
                         (Value::Uint(2), Value::Bytes(p.k.to_vec())),
                         (Value::Uint(3), Value::Bytes(p.node_cert.clone())),
@@ -250,7 +256,11 @@ impl ClaimSession {
                         (Value::Uint(8), Value::Text("claimed".into())),
                         // 254-app-claim-noover R2: the pending this record came from (informational)
                         (Value::Uint(9), Value::Bytes(batman_proto::claimflow::pending_link(&pending_record(p)).to_vec())),
-                    ]));
+                    ];
+                    if self.dev_soft_enc {
+                        rec.push((Value::Uint(10), Value::Text(DEV_SOFT_ENC.into())));
+                    }
+                    let rec = cbor::encode(&Value::Map(rec));
                     ClaimStep {
                         path: node_path(&p.device_id),
                         record: rec,
@@ -342,7 +352,7 @@ mod tests {
     fn claimed_builds_the_node_record_from_the_pending() {
         use batman_proto::flow::Creds;
         let q = ClaimQr { device_id: "e61551410cfd538e24".into(), k: vec![7; 32] };
-        let (mut s, first) = ClaimSession::start(&q, vec![4; 65], vec![4; 65], vec![1; 64], 244).unwrap();
+        let (mut s, first) = ClaimSession::start(&q, vec![4; 65], vec![4; 65], vec![1; 64], 244, false).unwrap();
         assert_eq!(first.kind, StepKind::Write);
         let creds = || Creds { owner_tag_key: [5; 32], adv_owner_key: [6; 32], root_password: "pw".into() };
         let st = s.step(Some(Action::Done(End::Finished(ClaimFinish::Claimed(creds()))))).unwrap();
@@ -446,7 +456,7 @@ mod tests {
         use batman_proto::claimflow::pending_is_leftover;
         use batman_proto::flow::Creds;
         let q = ClaimQr { device_id: "e61551410cfd538e24".into(), k: vec![7; 32] };
-        let (mut s, _) = ClaimSession::start(&q, vec![4; 65], vec![4; 65], vec![1; 64], 244).unwrap();
+        let (mut s, _) = ClaimSession::start(&q, vec![4; 65], vec![4; 65], vec![1; 64], 244, false).unwrap();
         let mk = |k: [u8; 32]| Pending {
             device_id: q.device_id.clone(), k, node_cert: vec![9; 10], dac_der: vec![8; 5], ecdh_pub: [4; 65], owner_pub: [4; 65],
             owner_enc_pub: [4; 65],
@@ -461,5 +471,62 @@ mod tests {
             m.retain(|(k, _)| k != &Value::Uint(9));
         }
         assert_eq!(pending_is_leftover(&cbor::encode(&old), &persisted), None, "an older node record: unknown");
+    }
+
+    // design 254-app-s1 §4.1 (M4): a claim by a dev build with a SOFTWARE owner_enc marks its node record (key 10).
+    // Without it the record is byte for byte what it was before the mark existed (keys 1..9) — the records already on
+    // a phone; with or without the mark every reader takes it: login (owner::parse_record), the own-node list
+    // (rekey::own_of), the leftover check (claimflow::pending_is_leftover).
+    #[test]
+    fn dev_soft_enc_mark_is_key_10_and_old_records_still_load() {
+        use batman_proto::claimflow::pending_is_leftover;
+        use batman_proto::flow::Creds;
+        let q = ClaimQr { device_id: "e61551410cfd538e24".into(), k: vec![7; 32] };
+        // a real DAC (the 219 vectors' dev DAC): own_of needs its public key
+        let vp = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../tests/vectors/219-protocol/vectors.json");
+        let vj = std::fs::read_to_string(vp).unwrap();
+        let key = "\"dev_cert_der\": \"";
+        let i = vj.find(key).unwrap() + key.len();
+        let dac_der = batman_proto::invite::from_hex(&vj[i..i + vj[i..].find('"').unwrap()]).unwrap();
+        let mk = || Pending {
+            device_id: q.device_id.clone(), k: [7; 32], node_cert: vec![9; 10], dac_der: dac_der.clone(), ecdh_pub: [4; 65],
+            owner_pub: [4; 65], owner_enc_pub: [4; 65],
+        };
+        let claim = |soft: bool| {
+            let (mut s, _) = ClaimSession::start(&q, vec![4; 65], vec![4; 65], vec![1; 64], 244, soft).unwrap();
+            let persisted = s.step(Some(Action::PersistPending(mk()))).unwrap().record;
+            let creds = Creds { owner_tag_key: [5; 32], adv_owner_key: [6; 32], root_password: "pw".into() };
+            (s.step(Some(Action::Done(End::Finished(ClaimFinish::Claimed(creds))))).unwrap().record, persisted)
+        };
+        let (plain, persisted) = claim(false);
+        let (marked, _) = claim(true);
+        // the record format before the mark, written out by hand
+        let old = cbor::encode(&Value::Map(vec![
+            (Value::Uint(1), Value::Text(q.device_id.clone())),
+            (Value::Uint(2), Value::Bytes(vec![7; 32])),
+            (Value::Uint(3), Value::Bytes(vec![9; 10])),
+            (Value::Uint(4), Value::Bytes(dac_der.clone())),
+            (Value::Uint(5), Value::Bytes(vec![5; 32])),
+            (Value::Uint(6), Value::Bytes(vec![6; 32])),
+            (Value::Uint(7), Value::Text("pw".into())),
+            (Value::Uint(8), Value::Text("claimed".into())),
+            (Value::Uint(9), Value::Bytes(batman_proto::claimflow::pending_link(&persisted).to_vec())),
+        ]));
+        assert_eq!(plain, old, "no mark: the record is the old format, unchanged");
+        assert_eq!(cbor::decode(&plain).unwrap().get(10), None);
+        let v = cbor::decode(&marked).unwrap();
+        assert_eq!(v.get(10).and_then(Value::as_text), Some("dev-soft-enc"));
+        let mut unmarked = v.clone();
+        if let Value::Map(m) = &mut unmarked {
+            m.retain(|(k, _)| k != &Value::Uint(10));
+        }
+        assert_eq!(cbor::encode(&unmarked), old, "the mark is the only difference");
+        for (name, rec) in [("old", &old), ("marked", &marked)] {
+            assert!(crate::api::owner::OwnerSession::start(rec.clone(), vec![4; 65], 244).is_ok(), "{name}: login reads it");
+            let own = crate::api::rekey::own_of(&[rec.clone()]);
+            assert_eq!(own.len(), 1, "{name}: the own-node list reads it");
+            assert_eq!(own[0].device_id, q.device_id);
+            assert_eq!(pending_is_leftover(rec, &persisted), Some(true), "{name}: the leftover check reads it");
+        }
     }
 }

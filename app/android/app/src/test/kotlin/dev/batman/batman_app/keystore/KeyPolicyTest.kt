@@ -67,6 +67,47 @@ class KeyPolicyTest {
         assertFalse(noAes.appUsable); assertFalse(noAes.login)
     }
 
+    // M3: the gate of the handlers that use a key (MainActivity.gate): operation x key x level x flavor.
+    private val tee = KeyRole.values().associateWith<KeyRole, Int?> { TRUSTED_ENVIRONMENT }
+    private val every = listOf<Int?>(STRONGBOX, TRUSTED_ENVIRONMENT, UNKNOWN_SECURE, SOFTWARE, UNKNOWN, null, 3, 99, -3)
+    private val needs = mapOf(
+        KeyOp.SIGN_OWNER to setOf(KeyRole.RECORD_AES, KeyRole.OWNER_SIGN),
+        KeyOp.SIGN_ADMIN to setOf(KeyRole.RECORD_AES, KeyRole.ADMIN_SIGN),
+        KeyOp.ECDH to setOf(KeyRole.RECORD_AES, KeyRole.OWNER_ENC),
+        KeyOp.SEAL to setOf(KeyRole.RECORD_AES),
+    )
+
+    @Test fun gateTableOperationKeyLevelFlavor() {
+        assertEquals(KeyOp.values().toSet(), needs.keys)
+        var rows = 0
+        for (op in KeyOp.values()) for (role in KeyRole.values()) for (l in every) for (dev in listOf(true, false)) {
+            val r = KeyPolicy.refused(op, tee + (role to l), dev)
+            // the other three keys are TEE, so only [role] at [l] can refuse — and only when [op] uses that key
+            val ok = role !in needs.getValue(op) || l in hw || (role == KeyRole.OWNER_ENC && l == SOFTWARE && dev)
+            val what = "$op $role level=$l dev=$dev"
+            if (ok) assertEquals(what, null, r) else {
+                assertEquals(what, role, r?.role)
+                assertEquals(what, l, r?.level)
+            }
+            rows++
+        }
+        assertEquals(4 * 4 * 9 * 2, rows)
+    }
+
+    @Test fun gateRefusesAKeyWithNoEntry() {
+        for (op in KeyOp.values()) for (dev in listOf(true, false)) {
+            assertEquals("$op", KeyRole.RECORD_AES, KeyPolicy.refused(op, emptyMap(), dev)?.role)
+            for (role in needs.getValue(op)) assertEquals("$op without $role", role, KeyPolicy.refused(op, tee - role, dev)?.role)
+        }
+    }
+
+    @Test fun gateOnTheS20() {
+        // dev: everything; field: the SOFTWARE owner_enc refuses ECDH only
+        for (op in KeyOp.values()) assertEquals("$op", null, KeyPolicy.refused(op, s20, devTrust = true))
+        for (op in KeyOp.values().filter { it != KeyOp.ECDH }) assertEquals("$op", null, KeyPolicy.refused(op, s20, devTrust = false))
+        assertEquals(KeyRole.OWNER_ENC, KeyPolicy.refused(KeyOp.ECDH, s20, devTrust = false)?.role)
+    }
+
     @Test fun levelImprovingNeverDisables() {
         // the live level decides; TEE -> STRONGBOX or TEE -> UNKNOWN_SECURE after an upgrade stays usable
         for (l in hw) assertTrue(KeyPolicy.abilities(s20 + (KeyRole.OWNER_SIGN to l), devTrust = false).login)
