@@ -40,7 +40,7 @@ abstract class ReplaySession implements RustOpaqueInterface {
   /// A frame received on TX; None = keep reading.
   ReplayStep? onFrame({required List<int> frame});
 
-  /// §3-1 / §5: the opened pending of `device_id` (read from claim-pending/<device_id>) -> the session and the
+  /// §3-1 / §5: the opened pending of `device_id` (read from `claim-pending/{device_id}`) -> the session and the
   /// peer for Kotlin's ECDH (the pending's sig_ecdh-verified ecdh_pub). `dev_soft_enc`: the live key level (the
   /// node record gets the same mark a claim gives it, s1 §4.1).
   static (ReplaySession, Uint8List) prepare({
