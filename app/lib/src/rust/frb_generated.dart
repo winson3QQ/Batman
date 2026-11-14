@@ -101,6 +101,7 @@ abstract class RustLibApi extends BaseApi {
     required List<int> ownerEncPub,
     required List<int> sigEnc,
     required int frameLimit,
+    required bool devSoftEnc,
   });
 
   (NetOp, OwnerStep) crateApiMemberNetOpApprove({
@@ -659,6 +660,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required List<int> ownerEncPub,
     required List<int> sigEnc,
     required int frameLimit,
+    required bool devSoftEnc,
   }) {
     return handler.executeSync(
       SyncTask(
@@ -669,6 +671,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_list_prim_u_8_loose(ownerEncPub, serializer);
           sse_encode_list_prim_u_8_loose(sigEnc, serializer);
           sse_encode_u_32(frameLimit, serializer);
+          sse_encode_bool(devSoftEnc, serializer);
           return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 3)!;
         },
         codec: SseCodec(
@@ -677,7 +680,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_String,
         ),
         constMeta: kCrateApiClaimClaimSessionStartConstMeta,
-        argValues: [qr, ownerPub, ownerEncPub, sigEnc, frameLimit],
+        argValues: [qr, ownerPub, ownerEncPub, sigEnc, frameLimit, devSoftEnc],
         apiImpl: this,
       ),
     );
@@ -686,7 +689,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiClaimClaimSessionStartConstMeta =>
       const TaskConstMeta(
         debugName: "ClaimSession_start",
-        argNames: ["qr", "ownerPub", "ownerEncPub", "sigEnc", "frameLimit"],
+        argNames: [
+          "qr",
+          "ownerPub",
+          "ownerEncPub",
+          "sigEnc",
+          "frameLimit",
+          "devSoftEnc",
+        ],
       );
 
   @override

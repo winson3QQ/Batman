@@ -148,6 +148,13 @@ class _NodesPageState extends State<NodesPage> {
     if (mounted) setState(() => _lines.add(screenText(s)));
   }
 
+  /// A key use failed. Kotlin's own level gate (code keyLevel, MainActivity.gate) is said on screen like the Dart
+  /// gates; anything else is only logged. The caller ends the flow either way (an empty signature).
+  void _keyFail(PlatformException e, String what) {
+    final k = KeyAbilities.refusedBy(e);
+    k != null ? _say('[REQ_FAIL] [KEY_LEVEL] $k') : _log('[REQ_FAIL] $what（${e.code}）');
+  }
+
   Future<String> _dir() async => '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
 
   Future<void> _load() async {
@@ -217,7 +224,7 @@ class _NodesPageState extends State<NodesPage> {
               der = (await _platform.invokeMethod<Uint8List>('signOwner', {'input': st.signInput}))!;
             } on PlatformException catch (e) {
               // the owner key could not sign: an empty signature ends whatever asked (login, owner-op, join, request)
-              _log('[REQ_FAIL] 手機的擁有者金鑰無法簽章（${e.code}）');
+              _keyFail(e, '手機的擁有者金鑰無法簽章');
               der = Uint8List(0);
             }
             st = s.signed(der: der);
@@ -228,7 +235,7 @@ class _NodesPageState extends State<NodesPage> {
             } on PlatformException catch (e) {
               // the admin key could not sign (lost / invalidated): an empty signature stops the flow before any
               // record write or country change (join2 §6, T8)
-              _log('[REQ_FAIL] 手機的管理者金鑰無法簽章（${e.code}）');
+              _keyFail(e, '手機的管理者金鑰無法簽章');
               der = Uint8List(0);
             }
             st = s.signed(der: der);
@@ -246,7 +253,7 @@ class _NodesPageState extends State<NodesPage> {
             } catch (e) {
               // storeWriteCas throws its reason as a String (exactly the "changed elsewhere" line for a generation
               // mismatch); anything else (sealing, storage) is passed on as what failed
-              final why = e is String ? e : (e is PlatformException ? 'seal ${e.code}' : '${e.runtimeType}');
+              final why = e is String ? e : (e is PlatformException ? (KeyAbilities.refusedBy(e) ?? 'seal ${e.code}') : '${e.runtimeType}');
               _log('[REQ_FAIL] 網路資料沒有存成功（${p.rel.substring(0, 8)}…）：$why');
               st = s.persistFailed(error: why);
             }
@@ -718,7 +725,7 @@ class _NodesPageState extends State<NodesPage> {
       await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
       return null;
     } catch (e) {
-      return e is String ? e : (e is PlatformException ? 'seal ${e.code}' : '${e.runtimeType}');
+      return e is String ? e : (e is PlatformException ? (KeyAbilities.refusedBy(e) ?? 'seal ${e.code}') : '${e.runtimeType}');
     }
   }
 
@@ -731,7 +738,7 @@ class _NodesPageState extends State<NodesPage> {
           try {
             der = (await _platform.invokeMethod<Uint8List>('signAdmin', {'input': st.signInput}))!;
           } on PlatformException catch (e) {
-            _log('[REQ_FAIL] 手機的管理者金鑰無法簽章（${e.code}）');
+            _keyFail(e, '手機的管理者金鑰無法簽章');
             der = Uint8List(0);
           }
           st = op.signed(der: der);
@@ -979,7 +986,8 @@ class _NodesPageState extends State<NodesPage> {
       } catch (_) {}
       _say(st.detail);
     } on PlatformException catch (e) {
-      _say('[REQ_FAIL] 沒有匯入：手機金鑰出錯（${e.code}）');
+      final k = KeyAbilities.refusedBy(e);
+      _say(k != null ? '[REQ_FAIL] [KEY_LEVEL] 沒有匯入：$k' : '[REQ_FAIL] 沒有匯入：手機金鑰出錯（${e.code}）');
     } catch (e) {
       _say('[REQ_FAIL] 沒有匯入：$e');
     } finally {
@@ -1198,7 +1206,7 @@ class _NodesPageState extends State<NodesPage> {
       await storeWriteCas(dir: await _dir(), rel: st.rel, expectedGen: st.expectedGen, sealed: sealed);
       _say(st.detail);
     } catch (e) {
-      _say('[REQ_FAIL] 忘記沒有成功：$e');
+      _say('[REQ_FAIL] 忘記沒有成功：${KeyAbilities.refusedBy(e) ?? e}');
     }
   }
 
@@ -1337,7 +1345,7 @@ class _NodesPageState extends State<NodesPage> {
           try {
             der = (await _platform.invokeMethod<Uint8List>('signAdmin', {'input': st.signInput}))!;
           } on PlatformException catch (e) {
-            _log('[REQ_FAIL] 手機的管理者金鑰無法簽章（${e.code}）');
+            _keyFail(e, '手機的管理者金鑰無法簽章');
             der = Uint8List(0);
           }
           st = op.signed(der: der);
@@ -1438,7 +1446,8 @@ class _NodesPageState extends State<NodesPage> {
       final err = await _writeRecord(st);
       _say(err == null ? st.detail : '[REQ_FAIL] 沒有匯入：${err == staleRecordLine ? '請網主再複製一次你的包，再貼上' : err}');
     } on PlatformException catch (e) {
-      _say('[REQ_FAIL] 沒有匯入：手機金鑰出錯（${e.code}）');
+      final k = KeyAbilities.refusedBy(e);
+      _say(k != null ? '[REQ_FAIL] [KEY_LEVEL] 沒有匯入：$k' : '[REQ_FAIL] 沒有匯入：手機金鑰出錯（${e.code}）');
     } catch (e) {
       _say('[REQ_FAIL] 沒有匯入：$e');
     } finally {

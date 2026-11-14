@@ -85,19 +85,22 @@ abstract class ClaimSession implements RustOpaqueInterface {
   /// The pending record is on disk: claim/begin goes out.
   ClaimStep? pendingPersisted();
 
-  /// Starts an attempt: the first step is the msg1 frames.
+  /// Starts an attempt: the first step is the msg1 frames. `dev_soft_enc`: this phone's owner_enc key is SOFTWARE
+  /// (dev builds only, §4.1; the caller read it live) — the node record of this claim carries the mark.
   static (ClaimSession, ClaimStep) start({
     required ClaimQr qr,
     required List<int> ownerPub,
     required List<int> ownerEncPub,
     required List<int> sigEnc,
     required int frameLimit,
+    required bool devSoftEnc,
   }) => RustLib.instance.api.crateApiClaimClaimSessionStart(
     qr: qr,
     ownerPub: ownerPub,
     ownerEncPub: ownerEncPub,
     sigEnc: sigEnc,
     frameLimit: frameLimit,
+    devSoftEnc: devSoftEnc,
   );
 }
 

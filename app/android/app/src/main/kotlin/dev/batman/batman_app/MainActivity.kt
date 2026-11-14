@@ -1,6 +1,7 @@
 package dev.batman.batman_app
 
 import dev.batman.batman_app.keystore.EcdhPeer
+import dev.batman.batman_app.keystore.KeyOp
 import dev.batman.batman_app.keystore.KeyPolicy
 import dev.batman.batman_app.keystore.KeyRole
 import dev.batman.batman_app.keystore.Keys
@@ -65,6 +66,17 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    // design 254-app-s1 §4.1: the one place a key is used for the app — the four live levels are read (worker thread)
+    // and KeyPolicy decides, whatever the Dart side checked or skipped. Keys.firstRun's self-test is not a use for the
+    // app and does not pass here.
+    private fun gate(op: KeyOp) {
+        KeyPolicy.refused(op, Keys().levels(), BuildConfig.DEV_TRUST)?.let { throw it }
+    }
+
+    /** A refused use is error `keyLevel` (message = the key's role, details = its level, null = no key); Dart says why. */
+    private fun keyError(result: MethodChannel.Result, code: String, e: Throwable, message: String) =
+        if (e is KeyPolicy.Refused) result.error("keyLevel", e.role.name, e.level) else result.error(code, message, null)
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         swUpload?.dispose()
@@ -74,7 +86,7 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SecureScreen.CHANNEL).setMethodCallHandler { call, result ->
             val on = SecureScreen.wanted(call.method, call.arguments) ?: return@setMethodCallHandler result.error("arg", null, null)
             if (on) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-            result.success(on)
+            result.success(window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0)
         }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.batman/platform").setMethodCallHandler { call, result ->
             when (call.method) {
@@ -94,34 +106,35 @@ class MainActivity : FlutterActivity() {
                     }
                 }.start()
                 // the live level of each key (null = no key yet) and what that allows; no key is generated here
-                "keyLevels" -> try {
-                    val levels = Keys().levels()
-                    val a = KeyPolicy.abilities(levels, BuildConfig.DEV_TRUST)
-                    result.success(
+                // (off the UI thread, like every Keystore read)
+                "keyLevels" -> Thread {
+                    val r = runCatching {
+                        val levels = Keys().levels()
+                        val a = KeyPolicy.abilities(levels, BuildConfig.DEV_TRUST)
                         KeyRole.values().associate { it.name to levels[it] } + mapOf(
                             "appUsable" to a.appUsable, "claim" to a.claim, "login" to a.login,
                             "recover" to a.recover, "makeNetwork" to a.makeNetwork, "softOwnerEnc" to a.softOwnerEnc,
                         )
-                    )
-                } catch (e: Exception) {
-                    result.error("keystore", e.javaClass.simpleName, null)
-                }
+                    }
+                    runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", it.javaClass.simpleName, null) }) }
+                }.start()
                 // the claim path (design §5.1): public keys, sig_enc (owner key, allow-listed input only), record sealing.
-                // Keystore work off the UI thread; failures come back as errors, never as a guessed value.
+                // Keystore work off the UI thread; failures come back as errors, never as a guessed value. Every use
+                // of a key (signOwner / signAdmin / ecdh / seal) passes gate() first.
                 "publicKeys" -> Thread {
                     val r = runCatching { mapOf("owner" to Keys().publicKey65(KeyRole.OWNER_SIGN), "ownerEnc" to Keys().publicKey65(KeyRole.OWNER_ENC), "admin" to Keys().publicKey65(KeyRole.ADMIN_SIGN)) }
                     runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
                 }.start()
                 "signOwner" -> Thread {
                     val input = call.argument<ByteArray>("input")
-                    val r = runCatching { Keys().sign(KeyRole.OWNER_SIGN, requireNotNull(input) { "no input" }) }
-                    runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
+                    val r = runCatching { gate(KeyOp.SIGN_OWNER); Keys().sign(KeyRole.OWNER_SIGN, requireNotNull(input) { "no input" }) }
+                    runOnUiThread { r.fold({ result.success(it) }, { keyError(result, "keystore", it, "${it.javaClass.simpleName}: ${it.message}") }) }
                 }.start()
                 // make-network (design §5.4): the admin key signs only COSE Sig_structures (SignAllowList.adminMaySign)
                 "signAdmin" -> Thread {
                     val input = call.argument<ByteArray>("input")
-                    val r = runCatching { Keys().sign(KeyRole.ADMIN_SIGN, requireNotNull(input) { "no input" }) }
-                    runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
+                    val r = runCatching { gate(KeyOp.SIGN_ADMIN); Keys().sign(KeyRole.ADMIN_SIGN, requireNotNull(input) { "no input" }) }
+                    runOnUiThread { r.fold({ result.success(it) }, { keyError(result, "keystore", it, "${it.javaClass.simpleName}: ${it.message}") }) }
                 }.start()
                 // remote invites (254-app-member-join §2): ECDH of the owner_enc key with an approval's ephemeral key.
                 // Dev builds only; the peer must be a P-256 point (checked here, not by the provider); z is zeroed
@@ -130,9 +143,9 @@ class MainActivity : FlutterActivity() {
                     val pk = EcdhPeer.accept(BuildConfig.DEV_TRUST, call.argument<ByteArray>("peer"))
                     if (pk == null) result.error("ecdh", if (BuildConfig.DEV_TRUST) "not a P-256 point" else "dev builds only", null)
                     else Thread {
-                        val r = runCatching { Keys().ecdh(pk).also { check(it.size == 32) { "z is not 32 bytes" } } }
+                        val r = runCatching { gate(KeyOp.ECDH); Keys().ecdh(pk).also { check(it.size == 32) { "z is not 32 bytes" } } }
                         runOnUiThread {
-                            r.fold({ z -> result.success(z); z.fill(0) }, { result.error("ecdh", it.javaClass.simpleName, null) })
+                            r.fold({ z -> result.success(z); z.fill(0) }, { keyError(result, "ecdh", it, it.javaClass.simpleName) })
                         }
                     }.start()
                 }
@@ -143,8 +156,8 @@ class MainActivity : FlutterActivity() {
                 }.start()
                 "seal" -> Thread {
                     val plain = call.argument<ByteArray>("plain"); val aad = call.argument<ByteArray>("aad")
-                    val r = runCatching { Keys().seal(requireNotNull(plain) { "no plain" }, requireNotNull(aad) { "no aad" }) }
-                    runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
+                    val r = runCatching { gate(KeyOp.SEAL); Keys().seal(requireNotNull(plain) { "no plain" }, requireNotNull(aad) { "no aad" }) }
+                    runOnUiThread { r.fold({ result.success(it) }, { keyError(result, "keystore", it, "${it.javaClass.simpleName}: ${it.message}") }) }
                 }.start()
                 // the claim QR from the camera (254-app-qr): the text, null when left without one, error `camera` / `busy`
                 "scanQr" -> scanQr(result)

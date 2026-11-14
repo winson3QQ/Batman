@@ -7,6 +7,7 @@ import 'claim.dart';
 import 'key_abilities.dart';
 import 'nodes.dart';
 import 'scan.dart';
+import 'src/rust/api/owner.dart' show listNodes;
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
 
@@ -44,6 +45,9 @@ class _StartupCheckState extends State<StartupCheck> {
   String _tech = '';
   bool _ok = false;
   KeyAbilities _keys = KeyAbilities.none;
+  bool _retry = false; // the key state could not be read / the first run did not finish: offer to try again
+  List<String> _index = []; // record AES unusable: the plaintext node index (design §4); nothing is opened or deleted
+  bool _firstRunFailed = false;
 
   @override
   void initState() {
@@ -59,6 +63,9 @@ class _StartupCheckState extends State<StartupCheck> {
     final lines = <String>[agree ? '啟動檢查：正常' : '啟動檢查：App 內部版本不一致，已停用（請重新安裝 App）'];
     final tech = <String>['核心 dev_trust=${info.devTrust}（batman_bridge ${info.crateVersion}），安裝版 DEV_TRUST=$flavorDevTrust'];
     var keys = KeyAbilities.none;
+    var retry = false;
+    var index = <String>[];
+    _firstRunFailed = false;
     if (agree) {
       tech.add('自我測試：${selftest()}');
       final inst = await _install();
@@ -68,7 +75,10 @@ class _StartupCheckState extends State<StartupCheck> {
       // design v8.5.1 §4.1 table: the live key levels decide what is on (record AES not hardware = the whole app off)
       keys = await KeyAbilities.read(_platform, detail: (d) => tech.add('金鑰保護等級：$d'));
       if (!keys.appUsable) {
-        lines[0] = '啟動檢查：${KeyAbilities.appOff}';
+        // three causes, three messages (design §4 / §4.1): unreadable (may be transient -> retry), lost, not hardware
+        retry = keys.unread || _firstRunFailed;
+        lines[0] = '啟動檢查：${_firstRunFailed && !keys.unread ? '金鑰沒有建立成功，App 暫時不能使用' : keys.offReason}';
+        if (!retry) index = await listNodes(dir: '${(await _platform.invokeMethod<String>('filesDir'))!}/records');
       } else {
         // one line per reason (claim and recovery share theirs when the owner key is the cause)
         lines.addAll({for (final u in KeyUse.values) keys.refusal(u)}.whereType<String>());
@@ -79,6 +89,8 @@ class _StartupCheckState extends State<StartupCheck> {
     setState(() {
       _ok = agree && keys.appUsable;
       _keys = keys;
+      _retry = retry;
+      _index = index;
       _report = lines.join('\n');
       _tech = tech.join('\n');
     });
@@ -106,6 +118,7 @@ class _StartupCheckState extends State<StartupCheck> {
       await storeWriteMarker(dir: '$dir/records', content: content);
       out.add('第一次啟動：已建立並測試四把金鑰，安裝紀錄：$content');
     } on PlatformException catch (e) {
+      _firstRunFailed = true;
       out.add('第一次啟動失敗（金鑰已全部刪除，下次開 App 會重試）：${e.message}');
     }
     return out;
@@ -122,6 +135,15 @@ class _StartupCheckState extends State<StartupCheck> {
             : ListView(children: [
                 Text(_report!, style: TextStyle(fontSize: 16, color: _ok ? null : Colors.red)),
                 const SizedBox(height: 16),
+                if (_index.isNotEmpty) const Text('這些節點需要重燒卡回收：', style: TextStyle(fontSize: 16)),
+                for (final n in _index) SelectableText('節點 $n', style: const TextStyle(fontFamily: 'monospace')),
+                if (_retry)
+                  FilledButton(
+                      onPressed: () {
+                        setState(() => _report = null);
+                        _run();
+                      },
+                      child: const Text('再試一次')),
                 // only an app that passed the startup check talks to nodes; the everyday actions first
                 if (_ok)
                   FilledButton(

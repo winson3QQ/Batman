@@ -29,7 +29,33 @@ object Level {
     }
 }
 
+/**
+ * The key operations the platform channel offers, and the keys each needs at an allowed level (the record AES key in
+ * all of them: without it the app is off, §4).
+ */
+enum class KeyOp(val needs: List<KeyRole>) {
+    SIGN_OWNER(listOf(KeyRole.RECORD_AES, KeyRole.OWNER_SIGN)),
+    SIGN_ADMIN(listOf(KeyRole.RECORD_AES, KeyRole.ADMIN_SIGN)),
+    ECDH(listOf(KeyRole.RECORD_AES, KeyRole.OWNER_ENC)),
+    SEAL(listOf(KeyRole.RECORD_AES)),
+}
+
 object KeyPolicy {
+    /** [op] was refused: [role]'s key is missing ([level] null) or its level is not allowed in this build. */
+    class Refused(val role: KeyRole, val level: Int?) : Exception("$role level $level")
+
+    /**
+     * The one gate of the handlers that use a key (signOwner / signAdmin / ecdh / seal): null = go on; else the first
+     * key of [op] that is missing from [levels] or not [allowed]. Fail closed: no entry, a null level, an unknown level.
+     */
+    fun refused(op: KeyOp, levels: Map<KeyRole, Int?>, devTrust: Boolean): Refused? {
+        for (r in op.needs) {
+            val l = levels[r]
+            if (l == null || !allowed(r, l, devTrust)) return Refused(r, l)
+        }
+        return null
+    }
+
     /** Is [level] allowed for [role] in a build with [devTrust]? Only owner_enc in the dev build may be SOFTWARE. */
     fun allowed(role: KeyRole, level: Int, devTrust: Boolean): Boolean = when (role) {
         KeyRole.OWNER_ENC -> Level.isHardware(level) || (devTrust && level == Level.SOFTWARE)
