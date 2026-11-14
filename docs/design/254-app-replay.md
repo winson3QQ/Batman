@@ -554,7 +554,7 @@ store.rs:118 暫存名 = `.<name>.tmp-…`)。清單是按下當時的快照,選
 | 0c | 19:14:02 | `install -r` cc68549 成功;`firstInstallTime=2026-11-08 11:44:41` 沒變(沒有解除安裝) |
 | 2 | 19:14 | 認領頁出現「從認領暫存恢復」,清單 `節點 …514040` |
 | 3(第一次) | 19:15:56 | **失敗,沒有任何連線**:`恢復前的檢查出錯…：Unsupported operation: Cannot modify an unmodifiable list`,接著 `恢復中斷：…`。原因:平台 channel 回來的 byte list(`ecdh` 的 z、Kotlin `open` 的 pending 明文)在 S20 上是**唯讀 view**(ReadBuffer.getUint8List 回傳訊息 buffer 的 view,flutter foundation/serialization.dart:228-231),`fillRange` 丟例外;測試的假平台回可寫的 list 所以沒抓到。修正:`_prepare` 只清零自己複製的 list、所有出口都 dispose session;假平台改成一律回唯讀(負對照:舊程式 + 新假物件 30 個測項 FAIL,38 次同一句) |
-| 0c(第二次) | 19:47:25 | `install -r` 9daa11f(rebase 後 = 58c99cf 的同一內容)成功,`firstInstallTime` 仍是 11-08 |
+| 0c(第二次) | 19:47:25 | `install -r` 9daa11f(rebase 前的分支;rebase 後的 58c99cf 是同一批改動放在新的 main 上,**新的 head 沒有裝機跑過**)成功,`firstInstallTime` 仍是 11-08 |
 | 3(第二次) | 19:48:11 → 19:48:20 | **恢復成功**:`19:48:11.200 [RECOVERING]` → `19:48:17.203 恢復中：第 1/3 輪，第 1/2 台`(6 s 掃描後,2 台候選,第一台就是 04)→ `19:48:20.854 [CLAIMED] [RECOVERED]`。從開始連線到寫完紀錄約 **3.7 s**(§3-2 的寫出後 90 s 預算遠遠足夠;那 3.7 s 含連線、握手、begin / nonce、簽章與 claim/replay);pending 刪除,「我的節點」出現 …4040 |
 | 登入 | 19:49:06–19:51:35 | 兩次 `[LOGIN_FAIL] [NOT_FOUND]`:04 回的 msg2 解不開(「不是這台節點（或節點剛認領完還沒準備好）」) |
 | 翻轉測試 | 19:53:18 斷電 / 19:53:59 上電 | 只改「04 重開」,同一支手機、同一份 node 紀錄 → `19:57:22.713 [LOGGED_IN] 已連線到節點 …4040（擁有者）`。node 紀錄(tag key)是對的;重開前 provd 的 PSK 集合卡住 |
