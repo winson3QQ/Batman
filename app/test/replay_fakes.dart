@@ -335,7 +335,7 @@ class FakeStore implements ClaimStore {
   }
 
   @override
-  Future<Uint8List> open(SealedRecord s) async => Uint8List.fromList(s.sealed);
+  Future<Uint8List> open(SealedRecord s) async => Uint8List.fromList(s.sealed).asUnmodifiableView(); // as Kotlin's, S20
   @override
   Future<bool> matches(Uint8List pendingPlain, ClaimQr qr) async {
     matchesCalls++;
@@ -428,3 +428,19 @@ Future<T> drive<T>(WidgetTester t, Future<T> f, {Duration step = const Duration(
 /// the password and for the record's bytes)
 String pwOf(int gen) => 'rootpw-Zq$gen-secret';
 List<int> rec(int gen) => [0x52, gen, ...pwOf(gen).codeUnits];
+
+/// The platform channel as the S20 delivers it (2026-11-14, cc68549 on the phone): byte lists in a reply are
+/// READ-ONLY views on the engine's message buffer (ReadBuffer.getUint8List returns a view, flutter
+/// foundation/serialization.dart:228-231); the plain mock handler gives writable ones, which hid a fillRange on
+/// them. Every reply here is made unmodifiable, so the decoded lists are too.
+void mockPlatformReadOnly(WidgetTester t, Future<Object?> Function(MethodCall c) handle) {
+  const codec = StandardMethodCodec();
+  t.binding.defaultBinaryMessenger.setMockMessageHandler('dev.batman/platform', (ByteData? msg) async {
+    final call = codec.decodeMethodCall(msg);
+    try {
+      return codec.encodeSuccessEnvelope(await handle(call)).asUnmodifiableView();
+    } on PlatformException catch (e) {
+      return codec.encodeErrorEnvelope(code: e.code, message: e.message, details: e.details).asUnmodifiableView();
+    }
+  });
+}

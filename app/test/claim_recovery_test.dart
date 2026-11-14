@@ -48,7 +48,7 @@ class H {
     final t0 = t.binding.clock.now();
     now = () => t.binding.clock.now().difference(t0);
     store.files[pendPath] = Uint8List.fromList(pendingBytes);
-    t.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('dev.batman/platform'), plat.handle);
+    mockPlatformReadOnly(t, plat.handle); // read-only replies, as on the S20
   }
   final WidgetTester t;
   final FakeRust rust;
@@ -379,7 +379,8 @@ void main() {
       ..add(a)
       ..add(Dev('B', -30));
     final f = h.start();
-    while (a.msg1s == 0) {
+    for (var spin = 0; a.msg1s == 0; spin++) {
+      if (spin > 4000) fail('never happened: a.msg1s'); // a test fails, it never hangs
       await t.pump(const Duration(milliseconds: 250));
     }
     await t.pump(const Duration(seconds: 2));
@@ -400,7 +401,8 @@ void main() {
       ..add(m)
       ..add(Dev('Z', -90));
     final f = h.start();
-    while (m.replays == 0) {
+    for (var spin = 0; m.replays == 0; spin++) {
+      if (spin > 4000) fail('never happened: m.replays'); // a test fails, it never hangs
       await t.pump(const Duration(milliseconds: 250));
     }
     h.rec!.cancel();
@@ -415,7 +417,8 @@ void main() {
     final m = Dev('M', -40, ours: true)..replies.add(const Reply(0, after: Duration(seconds: 30)));
     h.field.add(m);
     final f = h.start();
-    while (m.replays == 0) {
+    for (var spin = 0; m.replays == 0; spin++) {
+      if (spin > 4000) fail('never happened: m.replays'); // a test fails, it never hangs
       await t.pump(const Duration(milliseconds: 250));
     }
     final at = now();
@@ -644,7 +647,8 @@ void main() {
     final m = Dev('M', -40, ours: true)..writeDelay = const Duration(seconds: 5);
     h.field.add(m);
     final f = h.start();
-    while (h.plat.signCalls == 0) {
+    for (var spin = 0; h.plat.signCalls == 0; spin++) {
+      if (spin > 4000) fail('never happened: h.plat.signCalls'); // a test fails, it never hangs
       await t.pump(const Duration(milliseconds: 250));
     }
     await t.pump(const Duration(seconds: 1)); // inside the 5 s write
@@ -662,7 +666,8 @@ void main() {
     final m = Dev('M', -40, ours: true)..replies.add(const Reply(0, never: true, after: Duration(seconds: 200)));
     h.field.add(m);
     final f = h.start();
-    while (m.replays == 0) {
+    for (var spin = 0; m.replays == 0; spin++) {
+      if (spin > 4000) fail('never happened: m.replays'); // a test fails, it never hangs
       await t.pump(const Duration(milliseconds: 250));
     }
     h.rec!.cancel();
@@ -691,7 +696,8 @@ void main() {
       final m = Dev('M', -40, ours: true)..msg2Silent = true;
       h.field.add(m);
       final f = h.start();
-      while (m.msg1s == 0) {
+      for (var spin = 0; m.msg1s == 0; spin++) {
+        if (spin > 4000) fail('never happened: m.msg1s'); // a test fails, it never hangs
         await t.pump(const Duration(milliseconds: 250));
       }
       switch (c) {

@@ -203,7 +203,7 @@ void main() {
   Future<void> runPage(WidgetTester t, {List<String> confirm = const [], int iters = 400, bool Function()? until, bool t4 = false}) async {
     final t0 = t.binding.clock.now();
     now = () => t.binding.clock.now().difference(t0);
-    t.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('dev.batman/platform'), (c) async {
+    mockPlatformReadOnly(t, (c) async { // read-only replies, as on the S20
       switch (c.method) {
         case 'scanQr':
           return qrText;
@@ -386,7 +386,7 @@ void main() {
   // ---- v6 T4: 「從認領暫存恢復」 ----
 
   Future<void> openPage(WidgetTester t) async {
-    t.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('dev.batman/platform'), (c) async {
+    mockPlatformReadOnly(t, (c) async {
       switch (c.method) {
         case 'devTrust':
           return devTrust;
