@@ -216,7 +216,12 @@ abstract class DependencyGate : DefaultTask() {
 // - What aapt really linked (review round 3 A-MINOR-3; covers resValue(...) and res dirs outside src/): in every
 //   .ap_ that process<Variant>Resources wrote, `aapt2 dump resources` must show xml/data_extraction_rules as exactly
 //   one value, the file res/xml/data_extraction_rules.xml (an alias to another resource, or a qualified copy, fails),
-//   and `aapt2 dump xmltree` of that file must pass the same rule check as the source files. No aapt2, no .ap_ = FAIL.
+//   and `aapt2 dump xmltree` of that file must pass the same rule check as the source files; the AndroidManifest.xml
+//   in the .ap_ must pass the whole manifest rule set above too (aapt2 link options such as --debug-mode or --manifest
+//   change it after the merge; review round 4). The .ap_ files are the process<Variant>Resources task's declared
+//   outputs, not a fixed path. No aapt2, no .ap_ = FAIL.
+// - Rules documents (source and linked): every <exclude> has only domain + path and no child element (a nested
+//   <include> would be backed up); no attribute on the root or a section (review round 4).
 // Anything else fails the build.
 val expectedPermissions = setOf(
     "uses-permission:android.permission.BLUETOOTH_SCAN", "uses-permission:android.permission.BLUETOOTH_CONNECT",
@@ -248,8 +253,17 @@ abstract class ManifestGate : DefaultTask() {
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val linked: ConfigurableFileCollection
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val aapt2: RegularFileProperty
 
-    /** A parsed XML element, from the DOM (source files) or from `aapt2 dump xmltree` (what was linked). */
-    class X(val tag: String, val attrs: Map<String, String>, val kids: List<X>)
+    /**
+     * A parsed XML element, from the DOM (source files, the merged manifest) or from `aapt2 dump xmltree` (what was
+     * linked). Attributes in the android namespace are keyed "android:<name>", others by their plain name.
+     */
+    class X(val tag: String, val attrs: Map<String, String>, val kids: List<X>) {
+        fun all(): List<X> = listOf(this) + kids.flatMap { it.all() }
+        fun a(n: String) = attrs["android:$n"] ?: ""
+        fun has(n: String) = "android:$n" in attrs
+    }
+
+    private val ns = "http://schemas.android.com/apk/res/android"
 
     private fun aapt2(vararg args: String): String {
         val p = ProcessBuilder(listOf(aapt2.get().asFile.path) + args).redirectErrorStream(true).start()
@@ -258,7 +272,18 @@ abstract class ManifestGate : DefaultTask() {
         return out
     }
 
-    /** `aapt2 dump xmltree` lines -> the root element: "E: tag (line=N)", "A: name="value" (Raw: ...)", nested by indent. */
+    private fun dom(e: org.w3c.dom.Element): X = X(e.localName ?: e.tagName,
+        (0 until e.attributes.length).map { e.attributes.item(it) }.filter { it.nodeName != "xmlns" && !it.nodeName.startsWith("xmlns:") }
+            .associate { a -> (if (a.namespaceURI == ns) "android:${a.localName}" else a.nodeName) to a.nodeValue },
+        e.childNodes.let { l -> (0 until l.length).map { l.item(it) } }.filterIsInstance<org.w3c.dom.Element>().map(::dom))
+
+    private fun parse(f: java.io.File): X = dom(javax.xml.parsers.DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+        .newDocumentBuilder().parse(f).documentElement)
+
+    /**
+     * `aapt2 dump xmltree` lines -> the root element: "E: tag (line=N)", "A: [<ns>:]name[(0x…)]=value [(Raw: …)]"
+     * (a quoted value is unquoted), nested by indent; namespace (N:) and text (T:) lines are skipped.
+     */
     private fun xmltree(out: String): X? {
         class B(val tag: String, val indent: Int) { val attrs = mutableMapOf<String, String>(); val kids = mutableListOf<B>() }
         fun B.x(): X = X(tag, attrs, kids.map { it.x() })
@@ -271,18 +296,33 @@ abstract class ManifestGate : DefaultTask() {
                 if (stack.isEmpty()) { if (root != null) return null; root = b } else stack.last().kids.add(b)
                 stack.addLast(b)
             }
-            Regex("""^A: ([^=\s]+)="([^"]*)"""").find(t)?.let { m -> stack.lastOrNull()?.attrs?.put(m.groupValues[1], m.groupValues[2]) }
+            Regex("""^A: (?:(\S+?):)?([A-Za-z_][\w.-]*)(?:\(0x[0-9a-f]+\))?=("(?:[^"\\]|\\.)*"|\S*)(?: \(Raw: .*\))?$""").find(t)?.let { m ->
+                val key = if (m.groupValues[1] == ns) "android:${m.groupValues[2]}" else if (m.groupValues[1].isEmpty()) m.groupValues[2] else "${m.groupValues[1]}:${m.groupValues[2]}"
+                val v = m.groupValues[3].let { if (it.length >= 2 && it.startsWith("\"") && it.endsWith("\"")) it.substring(1, it.length - 1) else it }
+                (stack.lastOrNull() ?: return null).attrs[key] = v
+            }
         }
         return root?.x()
     }
 
-    /** The rule check of a data-extraction-rules document, the same for a source file and for the linked one. */
+    /**
+     * The rule check of a data-extraction-rules document, the same for a source file and for the linked one: the root
+     * has no attributes and exactly the two sections; a section has no attributes and only <exclude domain=… path=".">
+     * with no other attribute and no child element (a nested <include> is backed up: SDK FullBackup.java:822-834,
+     * BackupAgent.java:701-725 / 929-979), one per domain of [domains].
+     */
     private fun rulesProblems(where: String, r: X, domains: Set<String>): List<String> {
         val bad = mutableListOf<String>()
         if (r.tag != "data-extraction-rules") bad.add("$where: root <${r.tag}>")
+        if (r.attrs.isNotEmpty()) bad.add("$where: <${r.tag}> has attributes ${r.attrs.keys}")
         if (r.kids.map { it.tag }.sorted() != listOf("cloud-backup", "device-transfer")) bad.add("$where: sections ${r.kids.map { it.tag }}")
         for (s in r.kids) {
-            s.kids.filter { it.tag != "exclude" || it.attrs["path"] != "." }.forEach { bad.add("$where: ${s.tag} has <${it.tag} domain=\"${it.attrs["domain"]}\" path=\"${it.attrs["path"]}\">") }
+            if (s.attrs.isNotEmpty()) bad.add("$where: <${s.tag}> has attributes ${s.attrs.keys}")
+            for (e in s.kids) {
+                if (e.tag != "exclude" || e.attrs["path"] != ".") bad.add("$where: ${s.tag} has <${e.tag} domain=\"${e.attrs["domain"]}\" path=\"${e.attrs["path"]}\">")
+                if (e.attrs.keys != setOf("domain", "path")) bad.add("$where: ${s.tag} <${e.tag}> attributes ${e.attrs.keys}")
+                e.kids.forEach { bad.add("$where: ${s.tag} <${e.tag} domain=\"${e.attrs["domain"]}\"> has a child <${it.tag} domain=\"${it.attrs["domain"]}\" path=\"${it.attrs["path"]}\">") }
+            }
             val got = s.kids.filter { it.tag == "exclude" && it.attrs["path"] == "." }.map { it.attrs["domain"] ?: "" }
             (domains - got.toSet()).sorted().forEach { bad.add("$where: ${s.tag} does not exclude $it") }
             if (got.size != got.toSet().size || !domains.containsAll(got)) bad.add("$where: ${s.tag} excludes $got")
@@ -290,61 +330,68 @@ abstract class ManifestGate : DefaultTask() {
         return bad
     }
 
-    @TaskAction
-    fun check() {
-        val ns = "http://schemas.android.com/apk/res/android"
-        val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
-            .newDocumentBuilder().parse(manifest.get().asFile)
-        val all = doc.getElementsByTagName("*").let { l -> (0 until l.length).map { l.item(it) as org.w3c.dom.Element } }
-        fun org.w3c.dom.Element.a(n: String) = getAttributeNS(ns, n)
+    /** What a manifest problem list counts besides the problems (for the summary line). */
+    class Seen(val perms: Int, val exported: Int)
+
+    /**
+     * The whole manifest rule set, the same for the merged manifest and for the manifest aapt linked into the .ap_
+     * ([rulesRef] = how that manifest may name the rules resource: "@xml/data_extraction_rules" merged; linked, its id "@0x…"
+     * (binary format) or the same name (proto format)).
+     */
+    private fun manifestProblems(where: String, root: X, rulesRef: Set<String>, bad: MutableList<String>): Seen {
+        val all = root.all()
         val qrName = "dev.batman.batman_app.qr.QrScanActivity"
-        val bad = mutableListOf<String>()
-        val perms = all.filter { it.tagName.startsWith("uses-permission") }.map { "${it.tagName}:${it.a("name")}" }.toSortedSet()
+        fun add(s: String) = bad.add("$where: $s")
+        val perms = all.filter { it.tag.startsWith("uses-permission") }.map { "${it.tag}:${it.a("name")}" }.toSortedSet()
         val want = expected.get().map { it.replace("\${applicationId}", applicationId.get()) }.toSortedSet()
-        (perms - want).forEach { bad.add("unexpected $it") }
-        (want - perms).forEach { bad.add("missing $it") }
+        (perms - want).forEach { add("unexpected $it") }
+        (want - perms).forEach { add("missing $it") }
         var exported = 0
-        for (c in all.filter { it.tagName in setOf("activity", "activity-alias", "service", "receiver", "provider") }) {
-            val filters = c.getElementsByTagName("intent-filter").length
+        for (c in all.filter { it.tag in setOf("activity", "activity-alias", "service", "receiver", "provider") }) {
+            val filters = c.all().count { it.tag == "intent-filter" }
             val e = c.a("exported") // r4: anything but a literal "false" (e.g. @bool/x) counts; absent = filter decides
             if (e != "false" && (e.isNotEmpty() || filters > 0)) {
                 exported++
-                if ("${c.tagName}:${c.a("name")}" !in exportable.get()) bad.add("exported ${c.tagName} ${c.a("name")}")
+                if ("${c.tag}:${c.a("name")}" !in exportable.get()) add("exported ${c.tag} ${c.a("name")}")
             }
-            if (c.tagName == "activity-alias" && c.a("targetActivity").substringAfterLast('.') == "QrScanActivity")
-                bad.add("activity-alias ${c.a("name")} targets QrScanActivity")
+            if (c.tag == "activity-alias" && c.a("targetActivity").substringAfterLast('.') == "QrScanActivity")
+                add("activity-alias ${c.a("name")} targets QrScanActivity")
         }
-        val qr = all.filter { it.tagName == "activity" && it.a("name") == qrName }
-        if (qr.size != 1) bad.add("QrScanActivity declared ${qr.size} times")
+        val qr = all.filter { it.tag == "activity" && it.a("name") == qrName }
+        if (qr.size != 1) add("QrScanActivity declared ${qr.size} times")
         for (q in qr) {
-            if (q.a("exported") != "false") bad.add("QrScanActivity exported=\"${q.a("exported")}\"")
-            if (q.getElementsByTagName("intent-filter").length != 0) bad.add("QrScanActivity has an intent-filter")
+            if (q.a("exported") != "false") add("QrScanActivity exported=\"${q.a("exported")}\"")
+            if (q.all().any { it.tag == "intent-filter" }) add("QrScanActivity has an intent-filter")
         }
-        val app = all.filter { it.tagName == "application" }
-        if (app.size != 1) bad.add("application declared ${app.size} times")
+        val app = all.filter { it.tag == "application" }
+        if (app.size != 1) add("application declared ${app.size} times")
         for (x in app) {
-            if (x.a("allowBackup") != "false") bad.add("allowBackup=\"${x.a("allowBackup")}\"")
-            if (x.a("dataExtractionRules") != "@xml/data_extraction_rules") bad.add("dataExtractionRules=\"${x.a("dataExtractionRules")}\"")
-            if (buildType.get() !in setOf("debug", "profile") && x.hasAttributeNS(ns, "debuggable") && x.a("debuggable") != "false")
-                bad.add("build type ${buildType.get()} is debuggable (\"${x.a("debuggable")}\")")
-            if (x.hasAttributeNS(ns, "backupAgent")) bad.add("backupAgent=\"${x.a("backupAgent")}\"")
-            if (x.hasAttributeNS(ns, "fullBackupContent") && x.a("fullBackupContent") != "false") bad.add("fullBackupContent=\"${x.a("fullBackupContent")}\"")
+            if (x.a("allowBackup") != "false") add("allowBackup=\"${x.a("allowBackup")}\"")
+            if (x.a("dataExtractionRules") !in rulesRef) add("dataExtractionRules=\"${x.a("dataExtractionRules")}\"")
+            if (buildType.get() !in setOf("debug", "profile") && x.has("debuggable") && x.a("debuggable") != "false")
+                add("build type ${buildType.get()} is debuggable (\"${x.a("debuggable")}\")")
+            if (x.has("backupAgent")) add("backupAgent=\"${x.a("backupAgent")}\"")
+            if (x.has("fullBackupContent") && x.a("fullBackupContent") != "false") add("fullBackupContent=\"${x.a("fullBackupContent")}\"")
         }
+        return Seen(perms.size, exported)
+    }
+
+    @TaskAction
+    fun check() {
+        val bad = mutableListOf<String>()
+        val seen = manifestProblems("merged", parse(manifest.get().asFile), setOf("@xml/data_extraction_rules"), bad)
         val rules = backupRules.files.sortedBy { it.path }
         if (rules.none { it.parentFile.parentFile.parentFile.name == "main" && it.parentFile.name == "xml" }) bad.add("no main data_extraction_rules.xml")
-        for (f in rules) {
-            val where = "${f.parentFile.parentFile.parentFile.name}/${f.parentFile.name}/data_extraction_rules.xml"
-            fun dom(e: org.w3c.dom.Element): X = X(e.tagName,
-                (0 until e.attributes.length).associate { e.attributes.item(it).let { a -> a.nodeName to a.nodeValue } },
-                e.childNodes.let { l -> (0 until l.length).map { l.item(it) } }.filterIsInstance<org.w3c.dom.Element>().map(::dom))
-            bad.addAll(rulesProblems(where, dom(javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(f).documentElement), domains.get()))
-        }
+        for (f in rules)
+            bad.addAll(rulesProblems("${f.parentFile.parentFile.parentFile.name}/${f.parentFile.name}/data_extraction_rules.xml", parse(f), domains.get()))
+        // what aapt linked: the outputs of process<Variant>Resources (an .ap_ elsewhere is not one of them)
         val aps = linked.asFileTree.matching { include("**/*.ap_") }.files.sortedBy { it.path }
-        if (aps.isEmpty()) bad.add("no linked resources (.ap_) to check")
+        if (aps.isEmpty()) bad.add("no linked resources (.ap_) among the process<Variant>Resources outputs")
         for (ap in aps) {
             val lines = aapt2("dump", "resources", ap.path).lines()
             val i = lines.indexOfFirst { Regex("""^\s*resource 0x[0-9a-f]+ xml/data_extraction_rules$""").matches(it) }
             if (i < 0) { bad.add("${ap.name}: no xml/data_extraction_rules"); continue }
+            val id = Regex("""resource (0x[0-9a-f]+) """).find(lines[i])!!.groupValues[1]
             val ind = lines[i].length - lines[i].trimStart().length
             val values = lines.drop(i + 1).takeWhile { it.isNotBlank() && it.length - it.trimStart().length > ind }.map { it.trim() }
             if (values.size != 1 || !values[0].startsWith("() (file) res/xml/data_extraction_rules.xml type="))
@@ -352,6 +399,10 @@ abstract class ManifestGate : DefaultTask() {
             else bad.addAll(xmltree(aapt2("dump", "xmltree", "--file", "res/xml/data_extraction_rules.xml", ap.path))
                 ?.let { rulesProblems("${ap.name}:res/xml/data_extraction_rules.xml", it, domains.get()) }
                 ?: listOf("${ap.name}: res/xml/data_extraction_rules.xml unreadable"))
+            // the manifest aapt really linked (aapt2 link options can change it after the merge)
+            xmltree(aapt2("dump", "xmltree", "--file", "AndroidManifest.xml", ap.path))
+                ?.let { manifestProblems("${ap.name}:AndroidManifest.xml", it, setOf("@$id", "@xml/data_extraction_rules"), bad) }
+                ?: bad.add("${ap.name}: AndroidManifest.xml unreadable")
         }
         for (f in valueFiles.files.sortedBy { it.path }) {
             val v = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(f).getElementsByTagName("*")
@@ -359,7 +410,7 @@ abstract class ManifestGate : DefaultTask() {
                 bad.add("${f.parentFile.parentFile.parentFile.name}/${f.parentFile.name}/${f.name}: <${e.tagName} type=\"${e.getAttribute("type")}\" name=\"data_extraction_rules\">")
         }
         if (bad.isNotEmpty()) throw GradleException("$name: ${bad.joinToString("; ")}")
-        logger.lifecycle("$name: ${perms.size} permissions as expected, $exported exported components allowed, QrScanActivity not exported, no backup (${rules.size} rule file, ${aps.size} linked)")
+        logger.lifecycle("$name: ${seen.perms} permissions as expected, ${seen.exported} exported components allowed, QrScanActivity not exported, no backup (${rules.size} rule file, ${aps.size} linked, merged + linked manifest)")
     }
 }
 
@@ -385,9 +436,9 @@ androidComponents {
             valueFiles.from(fileTree("src") { include("*/res/values*/*.xml") })
             domains.set(backupDomains)
             buildType.set(v.buildType ?: "")
-            // what process<Variant>Resources linked (binary format for an APK, proto for a shrunk / bundle build)
-            linked.from(layout.buildDirectory.dir("intermediates/linked_resources_binary_format/${v.name}"),
-                layout.buildDirectory.dir("intermediates/linked_resources_proto_format/${v.name}"))
+            // what process<Variant>Resources linked: that task's declared outputs (binary format for an APK, proto for a
+            // shrunk / bundle build), not a fixed intermediates path that could hold a stale .ap_
+            linked.from(project.provider { project.tasks.getByName("process${cap}Resources").outputs.files })
             dependsOn("process${cap}Resources")
             aapt2.set(androidComponents.sdkComponents.sdkDirectory.map {
                 it.file("build-tools/${android.buildToolsVersion}/aapt2" + if (System.getProperty("os.name").startsWith("Windows")) ".exe" else "")
