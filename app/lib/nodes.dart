@@ -753,6 +753,7 @@ class _NodesPageState extends State<NodesPage> {
         default:
           if (st.hex.isNotEmpty) await Clipboard.setData(ClipboardData(text: st.hex));
           _say(st.detail);
+          if (st.note.isNotEmpty && mounted) await showDupNote(context, st.note); // 254-app-team-status §4.2
           st = null;
       }
     }
@@ -1093,10 +1094,13 @@ class _NodesPageState extends State<NodesPage> {
     // remove-member §3.5: the line about this node's secrets, from the record of the network info key 10 names
     var hint = const (line: '', button: false);
     _hintRec = null;
+    // 254-app-team-status §6: the team section from this node's network record (hidden in version N)
+    var team = s.teamView(recordPlain: null, member: false);
     if (v.netId.isNotEmpty) {
       for (final (rel, member) in [('net/${v.netId}', false), ('mnet/${v.netId}', true)]) {
         final (_, p) = await _readRecord(rel);
         if (p == null) continue;
+        team = s.teamView(recordPlain: p, member: member);
         final h = s.updateHint(recordPlain: p, member: member);
         hint = (line: h.line, button: h.button);
         if (h.button) _hintRec = (rel, member);
@@ -1107,6 +1111,7 @@ class _NodesPageState extends State<NodesPage> {
         last4: s.last4(), netId: v.netId, adminApplied: appliedNets.contains(v.netId), memberEntry: entryMnets.contains(v.netId));
     _readClock.stamp(fresh: v.fresh, now: DateTime.now());
     _log('status page row ${v.row} fresh ${v.fresh}');
+    _log(teamLogLine(team)); // 254-app-team-status T-A9: counts only
     final membership = statusMembershipLine(nodeState: v.nodeState, netId: v.netId, name: networkName(v.netId, names));
     return StatusFields(
         color: v.color,
@@ -1124,7 +1129,13 @@ class _NodesPageState extends State<NodesPage> {
         leaveTitle: dialog[0],
         leaveBody: dialog[1],
         updateLine: hint.line,
-        canSendUpdate: hint.button);
+        canSendUpdate: hint.button,
+        teamVisible: team.visible,
+        teamTitle: team.title,
+        teamOnly: team.only,
+        teamCards: team.cards,
+        teamNote: team.note,
+        teamTech: team.tech);
   }
 
   /// net_id hex -> netcfg name, from this phone's net / mnet records; whether it holds any net/ (admin) and any mnet/
@@ -1360,6 +1371,7 @@ class _NodesPageState extends State<NodesPage> {
         default:
           if (st.hex.isNotEmpty) await Clipboard.setData(ClipboardData(text: st.hex));
           _say(st.detail);
+          if (st.note.isNotEmpty && mounted) await showDupNote(context, st.note); // 254-app-team-status §4.2
           return st.detail.startsWith('[REKEY]') || st.hex.isNotEmpty;
       }
     }

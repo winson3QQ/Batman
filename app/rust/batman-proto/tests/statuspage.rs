@@ -506,3 +506,28 @@ fn tech_lines_say_unread_for_empty_node_strings() {
     let tech = sp::tech_lines(Answer::Body(&St::joined().v()));
     assert!(tech.iter().any(|l| l == "SNR：31 dB") && tech.iter().any(|l| l == "頻道：40"), "{tech:?}");
 }
+
+// ---- 254-app-team-status T-A3 / T-A4 --------------------------------------------------------------------------------
+
+/// T-A4 (old app + new node) and T-A3 (a bad key 9 never touches the page): status keys 8 / 9 — well formed or not —
+/// leave the verdict and the technical list exactly as without them. Negative control: a strict unknown-key check in
+/// the page's parsing -> FAIL.
+#[test]
+fn t_a3_a4_team_keys_leave_the_page_alone() {
+    let peers_ok = V::Array(vec![V::Map(vec![(V::Uint(1), V::Bytes(vec![0xa8, 0xdd, 0x9f, 0x4d, 0xc6, 0xd3])), (V::Uint(2), V::Uint(3)), (V::Uint(3), V::Uint(14900))])]);
+    let peers_bad = V::Array(vec![V::Uint(1); 40]);
+    let cases = [St::joined(), St::code(7), St::code(1), St::code(9), St::joined().k1(1), St::joined().plinks(0), St::joined().up(30)];
+    for x in cases {
+        let base = x.v();
+        for (k8, k9) in [(V::Bytes(vec![0xa8, 0xdd, 0x9f, 0x4d, 0xc6, 0x10]), peers_ok.clone()), (V::Text("bad".into()), peers_bad.clone())] {
+            let mut with = base.clone();
+            if let V::Map(e) = &mut with {
+                e.push((V::Uint(8), k8.clone()));
+                e.push((V::Uint(9), k9.clone()));
+            }
+            assert_eq!(sp::link_verdict(Answer::Body(&with)), sp::link_verdict(Answer::Body(&base)), "verdict changed: {with:?}");
+            assert_eq!(sp::tech_lines(Answer::Body(&with)), sp::tech_lines(Answer::Body(&base)), "tech lines changed");
+        }
+    }
+    let _ = cbor::encode(&V::Null);
+}

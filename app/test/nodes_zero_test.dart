@@ -36,7 +36,8 @@ OwnerStep persist(String rel, String detail) => OwnerStep(
     waitMs: BigInt.zero,
     sendUpdate: false,
     info: Uint8List(0),
-    sw: false);
+    sw: false,
+    note: ''); // 254-app-team-status: OwnerStep.note (the duplicate-address line)
 
 class FakeRust implements RustLibApi {
   final calls = <String>[];

@@ -277,6 +277,9 @@ func (n *Node) resolve() (*provstore.Record, *Error) {
 		} else {
 			n.Log("resolve: overlay rebuilt from p5 (gen %d)", p5.Generation)
 		}
+		// a change committed to p5 but not to the overlay (an ambiguous commit finished later): if it moved the node into
+		// or out of a network, the peer table belongs to the old one (254-app-team-status T-N12, code review A-m3 / B-m1)
+		n.peersRecordWritten(ov, p5)
 		return p5, nil
 	case ov != nil:
 		return ov, nil

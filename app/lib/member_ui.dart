@@ -11,7 +11,25 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'say.dart' show screenText;
-import 'src/rust/api/owner.dart' show OwnerStep;
+import 'src/rust/api/owner.dart' show OwnerStep, TeamView;
+
+/// 254-app-team-status §4.2 (B-M2): an approval / removal dropped a duplicated mesh address from every entry that had
+/// it; Rust's line (`OwnerStep.note`, names only, never an address) is shown in a dialog. "" = nothing shown.
+const dupNoteTitle = '網路位址重複';
+Future<void> showDupNote(BuildContext context, String note) async {
+  if (note.isEmpty || !context.mounted) return;
+  await showDialog<void>(
+      context: context,
+      builder: (c) => AlertDialog(
+            title: const Text(dupNoteTitle),
+            content: Text(screenText(note), key: const Key('dupNote')),
+            actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('好'))],
+          ));
+}
+
+/// 254-app-team-status §7 / T-A9: the ONE log line about a status page's team section — counts only, never a name,
+/// an address or a card's text.
+String teamLogLine(TeamView t) => 'team section visible ${t.visible} cards ${t.cards.length} only ${t.only.isNotEmpty}';
 
 /// 219 §5.5 / R22: the SAS is compared over another channel.
 const sasRule = '請用電話或當面核對，不要在傳圖片的同一個聊天裡核對';
@@ -178,7 +196,13 @@ class StatusFields {
       this.leaveTitle = '',
       this.leaveBody = '',
       this.updateLine = '',
-      this.canSendUpdate = false});
+      this.canSendUpdate = false,
+      this.teamVisible = false,
+      this.teamTitle = '',
+      this.teamOnly = '',
+      this.teamCards = const [],
+      this.teamNote = '',
+      this.teamTech = const []});
   final String color, sentence, lagNote, warning, membership, version, rateNote;
   final List<String> tech;
   final bool fresh;
@@ -195,6 +219,11 @@ class StatusFields {
   /// 254-app-remove-member §3.5: the line about this node's secrets ("" = none) and whether 「把新密碼送給節點」 shows
   final String updateLine;
   final bool canSendUpdate;
+
+  /// 254-app-team-status v2.1 §6: the team section (hidden in version N: Rust's teamview::WRITE_MESH_ADDR = false)
+  final bool teamVisible;
+  final String teamTitle, teamOnly, teamNote;
+  final List<String> teamCards, teamTech;
 }
 
 /// 254-app-leave v4.1 §3: a leave waits longer than provd's 330 s helper wait, is never re-sent, and a lost link after it
@@ -454,11 +483,24 @@ class _StatusPageViewState extends State<StatusPageView> {
         else if (f.rateNote.isNotEmpty)
           Expanded(child: Text(f.rateNote, key: const Key('rateNote'))),
       ]),
+      if (f.teamVisible) ...[
+        const SizedBox(height: 16),
+        Text('${f.teamTitle}，讀取於 ${hms(_at)}', key: const Key('teamTitle'), style: const TextStyle(fontWeight: FontWeight.bold)),
+        if (f.teamOnly.isNotEmpty) Text(f.teamOnly, key: const Key('teamOnly')),
+        for (final c in f.teamCards)
+          Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(c.split('\n').first, key: const Key('teamCard')),
+                for (final l in c.split('\n').skip(1)) Text(l, style: small),
+              ])),
+        Text(f.teamNote, key: const Key('teamNote'), style: small),
+      ],
       ExpansionTile(
           key: const Key('tech'),
           title: const Text('技術資訊（給維修人員看）'),
           expandedCrossAxisAlignment: CrossAxisAlignment.start,
-          children: [for (final l in f.tech) Text(l, style: small)]),
+          children: [for (final l in [...f.tech, ...f.teamTech]) Text(l, style: small)]),
       if (f.canLeave && widget.onLeave != null) ...[
         const SizedBox(height: 16),
         Align(

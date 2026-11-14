@@ -9,6 +9,8 @@ crate-type = ["cdylib", "staticlib"]
 [features]
 # design v8.5.1 §4.1: the dev flavor builds with `dev-trust`, the field flavor without; never a default
 dev-trust = ["batman-proto/dev-trust"]
+# tests only (254-app-team-status T-A8): never enabled by the app build
+team-write = ["batman-proto/team-write"]
 
 [dependencies]
 flutter_rust_bridge = "=2.13.0"

@@ -66,6 +66,8 @@ pub struct Member {
     pub prev_country: Option<String>,
     /// key 10 (net records only): the version this node's owner surely holds (remove-member §2.1)
     pub known: Option<u32>,
+    /// key 7 (254-app-team-status §4.2): the node's mesh address (a members entry key; written from version N+1)
+    pub mesh_addr: Option<[u8; 6]>,
 }
 
 /// An entry a removal excluded (net key 14).
@@ -187,7 +189,16 @@ pub fn member_value(m: &Member) -> Value {
     if let Some(c) = &m.prev_country {
         e.push((Value::Uint(9), Value::Text(c.clone())));
     }
+    if let Some(a) = &m.mesh_addr {
+        e.push((Value::Uint(7), Value::Bytes(a.to_vec())));
+    }
     Value::Map(e)
+}
+
+/// A signed members-list entry's shape (CDDL member): keys 1-5, optional 6 and — from version N on, 254-app-team-status
+/// §4.2 — optional 7, which must then be 6 bytes. Used where a received list is checked (approve, mupdate).
+pub fn member_entry_ok(m: &Value) -> bool {
+    crate::cose::exact_keys(m, &[1, 2, 3, 4, 5], &[6, 7]).is_ok() && m.get(7).map_or(true, |a| a.as_bytes().is_some_and(|b| b.len() == 6))
 }
 
 /// keys 1-5 of a member (a members v1 entry or a key 11 entry)
@@ -202,6 +213,10 @@ fn member_base(v: &Value, state: MemberState) -> Result<Member, Error> {
         state,
         prev_country: None,
         known: None,
+        mesh_addr: match v.get(7) {
+            None => None,
+            Some(a) => Some(a.as_bytes().and_then(|b| b.try_into().ok()).ok_or(Error::Field("member mesh address"))?),
+        },
     })
 }
 
@@ -442,6 +457,7 @@ impl NetRec {
                 state: MemberState::Applied,
                 prev_country: None,
                 known: None,
+                mesh_addr: None,
             };
             if pick(&m) {
                 return Ok(Some(m));

@@ -58,7 +58,8 @@ OwnerStep step(OwnerKind kind, {int? frame, String detail = '', String rel = '',
     waitMs: BigInt.zero,
     sendUpdate: false,
     info: info ?? Uint8List(0),
-    sw: false);
+    sw: false,
+    note: ''); // 254-app-team-status: OwnerStep.note (the duplicate-address line)
 
 class FakeSession implements OwnerSession {
   FakeSession(this.rust);
@@ -97,6 +98,10 @@ class FakeSession implements OwnerSession {
       canLeave: false);
   @override
   UpdateHint updateHint({required List<int> recordPlain, required bool member}) => const UpdateHint(line: 'hint', button: true);
+  // 254-app-team-status §6: the status page also asks for the team section (hidden, as in version N)
+  @override
+  TeamView teamView({Uint8List? recordPlain, required bool member}) =>
+      const TeamView(visible: false, title: '', only: '', cards: [], note: '', tech: []);
 
   @override
   OwnerStep requestSendUpdate({required List<int> recordPlain, required bool member, required List<int> adminPub}) {
