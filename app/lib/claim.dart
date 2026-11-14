@@ -128,6 +128,11 @@ class _ClaimPageState extends State<ClaimPage> {
       final dir = '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
       final store = RustClaimStore(dir);
       final t3 = (await listNodes(dir: dir)).contains(id); // a node record too -> T3 asks again (§19.2-4)
+      if (!mounted) {
+        // T4 review A-m1: the page left during the checks above -> no recovery without its stop button; pending kept
+        _log('頁面已離開：這次不恢復（認領暫存保留）');
+        return;
+      }
       await _recover(id, null, store, ClaimRecords(store, null, _say), t3: t3, intro: '[RECOVERING] 從認領暫存恢復節點 $label');
     } catch (e) {
       final k = _keyRefused(e);

@@ -416,6 +416,25 @@ mod tests {
         }
     }
 
+
+    // T4 review B-N2 (v6 §19.2-2): the entry lists claim-pending/ only — never forgotten-pending/ (copies a QR change
+    // set aside, old K), never node/, never a store temp file. Kept here so owner.rs stays byte for byte ffbb8dc's.
+    // Negative control: list_kind("forgotten-pending") -> FAIL.
+    #[test]
+    fn t4_lists_only_claim_pending() {
+        use crate::api::owner::list_pending;
+        use batman_proto::store::Store;
+        let d = std::env::temp_dir().join(format!("bm-t4list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let dir = d.to_string_lossy().to_string();
+        let s = Store::new(&d);
+        s.write("claim-pending/0000000000000c4f2a", 1, &[1]).unwrap();
+        s.write("forgotten-pending/e61551410cfd538e24-1", 1, &[2]).unwrap();
+        s.write("node/e61551410cfd538e25", 1, &[3]).unwrap();
+        std::fs::write(d.join("claim-pending/.0000000000000c4f2b.tmp-1"), b"x").unwrap();
+        assert_eq!(list_pending(dir), vec!["0000000000000c4f2a".to_string()]);
+        let _ = std::fs::remove_dir_all(d);
+    }
     // R3 (§5): only keys 1-7, each of its type and length, and the id of the path; the claim's own pending record
     // decodes back to the same fields (round trip; app up- / downgrade keeps the format). Negative control: the id
     // check removed -> another node's pending is accepted.

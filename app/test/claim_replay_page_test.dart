@@ -106,6 +106,7 @@ class FakeRust implements RustLibApi {
   Future<void> crateApiClaimStoreRemove({required String dir, required String rel}) async {
     calls.add('remove $rel');
     disk.remove(rel);
+    pendingIds.remove(rel.replaceFirst('claim-pending/', '')); // the list follows the disk
   }
 
   @override
@@ -176,6 +177,7 @@ void main() {
   var devTrust = false; // what the platform says (T4 is dev only)
   var blePerm = true;
   var blePermAsked = 0;
+  var blePermDelay = Duration.zero;
   final rust = FakeRust();
   setUpAll(() => RustLib.initMock(api: rust));
   setUp(() {
@@ -211,6 +213,7 @@ void main() {
           return files;
         case 'blePermissions':
           blePermAsked++;
+          if (blePermDelay > Duration.zero) await Future<void>.delayed(blePermDelay);
           return blePerm;
         case 'publicKeys':
           return {'owner': Uint8List(65), 'ownerEnc': Uint8List(65), 'admin': Uint8List(65)};
@@ -249,6 +252,7 @@ void main() {
     devTrust = false;
     blePerm = true;
     blePermAsked = 0;
+    blePermDelay = Duration.zero;
   });
 
   // D3 = §0's symptom: the node is claimed, the phone holds only the pending -> 「認領」 with the same QR finds no
@@ -509,5 +513,37 @@ void main() {
       await t.pump(const Duration(milliseconds: 250));
     }
     expect(field.connects, 0);
+  });
+
+  // T4 review A-m1 (the reviewer's probe): the page is left while the BLE permission is being asked (after the
+  // confirmation) -> no recovery runs without its page / stop button: no connection, nothing written, pending kept.
+  // Negative control: the `mounted` check before _recover removed -> connects, node written, pending removed.
+  testWidgets('T4: page left after the confirmation -> no recovery in the background', (t) async {
+    devTrust = true;
+    blePermDelay = const Duration(seconds: 5);
+    rust.pendingIds.add(deviceId);
+    field.add(Dev('BB', -50, ours: true));
+    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '恢復'], iters: 40, until: () => blePermAsked == 1);
+    expect(blePermAsked, 1);
+    await t.pumpWidget(const MaterialApp(home: Text('elsewhere')));
+    for (var i = 0; i < 400; i++) {
+      await t.pump(const Duration(milliseconds: 250));
+    }
+    expect(field.connects, 0);
+    expect(rust.calls, isEmpty);
+    expect(rust.disk[pendPath], pendingBytes);
+  });
+
+  // T4 review A-m2: after a successful T4 the list is read again: that pending is gone, so is the entry.
+  // Negative control: no list refresh after the run -> the entry stays.
+  testWidgets('T4: after a recovery the entry is gone with its pending', (t) async {
+    devTrust = true;
+    rust.pendingIds.add(deviceId);
+    field.add(Dev('BB', -50, ours: true));
+    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '恢復'], until: () => rust.calls.contains('remove $pendPath'));
+    await t.pump(const Duration(minutes: 5));
+    await t.pumpAndSettle();
+    expect(rust.pendingIds, isEmpty);
+    expect(find.text('從認領暫存恢復'), findsNothing);
   });
 }

@@ -549,20 +549,25 @@ void main() {
   // into a line -> FAIL.
   testWidgets('S3: no secret in any line', (t) async {
     final all = <String>[];
-    for (final setup in <void Function(H)>[
-      (h) => h.field.add(Dev('M', -40, ours: true)),
-      (h) => h.field.add(Dev('M', -40, ours: true)..replies.add(const Reply(3))),
-      (h) => h.plat.ecdhError = PlatformException(code: 'ecdh', message: 'x'),
-      (h) => h.field.add(Dev('X', -40)),
+    // T4 review B-N1: T4 (no QR) runs through the same scan: a success, and a refused claim/replay (its warning line)
+    for (final (setup, t4) in <(void Function(H), bool)>[
+      ((h) => h.field.add(Dev('M', -40, ours: true)), false),
+      ((h) => h.field.add(Dev('M', -40, ours: true)..replies.add(const Reply(3))), false),
+      ((h) => h.plat.ecdhError = PlatformException(code: 'ecdh', message: 'x'), false),
+      ((h) => h.field.add(Dev('X', -40)), false),
+      ((h) => h.field.add(Dev('M', -40, ours: true)), true),
+      ((h) => h.field.add(Dev('M', -40, ours: true)..replies.add(const Reply(3))), true),
     ]) {
       final h = H(t, rust);
       setup(h);
-      await h.run();
+      await h.run(t4: t4);
       all.addAll(h.lines);
     }
+    expect(all.any((l) => l.contains('這筆暫存可能不是這台節點最後一次認領用的')), isTrue, reason: 'the T4 lines were scanned');
     expect(all.any((l) => l.contains('RECOVERED')), isTrue);
     final secrets = [hex(zBytes), hex(pendingBytes), hex(List.filled(32, 0x4b)), String.fromCharCodes(zBytes), String.fromCharCodes(List.filled(32, 0x4b)), '$zBytes',
-      pwOf(1), hex(rec(1)), '${rec(1)}', '${Uint8List.fromList(rec(1))}', '${rec(1).sublist(2)}']; // review B-m3: the record and its password too
+      pwOf(1), hex(rec(1)), '${rec(1)}', '${Uint8List.fromList(rec(1))}', '${rec(1).sublist(2)}', // review B-m3: the record and its password too
+      List.filled(32, 0x4b).join(', ')]; // K as Dart prints a list (inside the pending's bytes too)
     for (final l in all) {
       for (final s in secrets) {
         expect(l.contains(s), isFalse, reason: 'a secret in "$l"');
