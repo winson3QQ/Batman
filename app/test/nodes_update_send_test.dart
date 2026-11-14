@@ -360,6 +360,20 @@ void main() {
           return Uint8List(4);
         case 'ecdh':
           return Uint8List(32);
+        case 'keyLevels': // s1 §4.1: read live before every login / make-network; MainActivity's full shape, every use
+          // allowed (all four keys hardware-backed, level 1), so the login and the removal below can run
+          return {
+            'RECORD_AES': 1,
+            'OWNER_SIGN': 1,
+            'ADMIN_SIGN': 1,
+            'OWNER_ENC': 1,
+            'appUsable': true,
+            'claim': true,
+            'login': true,
+            'recover': true,
+            'makeNetwork': true,
+            'softOwnerEnc': false,
+          };
       }
       return null;
     });
