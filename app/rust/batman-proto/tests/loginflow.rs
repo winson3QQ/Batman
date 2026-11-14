@@ -270,3 +270,58 @@ fn another_owner_key_is_refused() {
     let (e, _) = run(&mut n, TAG, h(&v["identity_file"]["dev_cert_der"]), other, false);
     assert!(matches!(e, End::AuthRefused(Outcome::Err { code: 3, .. })));
 }
+
+/// s1 §8 item 6 (man in the middle, "h swapped -> the node refuses"): the phone signs auth/owner over the h of ITS
+/// handshake. A relay that ends that handshake itself and opens its own with the node sits between two sessions with
+/// two different h; the node checks the signature against the h of the session it is in, so the relayed signature is
+/// refused (code 3) and the phone ends without an owner session. The refusal itself is the node's (provd
+/// session.go authOwner; Go test provd TestAuthOwnerSignedOverAnotherSessionsH) — `Node` here checks as provd does.
+#[test]
+fn mitm_a_signature_over_another_sessions_h_is_refused() {
+    let v = vectors();
+    let d = did(&v);
+    let op = owner_pub_of(&owner());
+    let pinned = h(&v["identity_file"]["dev_cert_der"]);
+    let rec = NodeRecord { device_id: &d, owner_tag_key: &TAG, pinned_dac_der: &pinned, owner_pub: &op };
+
+    // the relay's own session with the node: another handshake, another h
+    let mut relay_side = Node::new(v.clone());
+    let (mut l2, a2) = Login::start(&rec, FL);
+    let Action::Write(f) = a2 else { panic!("msg1") };
+    for x in relay_side.on(&f) {
+        l2.on_frame(&x);
+    }
+    let other_h = relay_side.hh;
+
+    let mut n = Node::new(v.clone());
+    let (mut l, mut a) = Login::start(&rec, FL);
+    let mut signed_over = None;
+    let end = loop {
+        a = match a {
+            Action::Sign { input } => {
+                // the phone's signature is bound to this handshake: label ‖ h ‖ owner_key_id
+                assert_eq!(&input[20..52], &n.hh[..], "auth/owner is signed over this session's h");
+                assert_ne!(n.hh, other_h, "two handshakes, two h");
+                signed_over = Some(input.clone());
+                // from here the node is the one of the relay's session
+                n.hh = other_h;
+                let s: p256::ecdsa::Signature = owner().sign(&input);
+                l.signed(s.to_der().as_bytes()).unwrap()
+            }
+            Action::Write(frames) => {
+                let back = n.on(&frames);
+                let mut next = None;
+                for f in &back {
+                    next = l.on_frame(f).or(next);
+                }
+                next.expect("an action after the node's reply")
+            }
+            Action::Done(e) => break e,
+        };
+    };
+    assert!(signed_over.is_some());
+    assert!(matches!(end, End::AuthRefused(Outcome::Err { code: 3, .. })), "{end:?}");
+    assert_eq!(n.got, ["msg1", "auth/owner"]);
+    assert!(!n.owner, "the node did not make this an owner session");
+    assert!(l.into_conn().is_none(), "no owner session on the phone either");
+}

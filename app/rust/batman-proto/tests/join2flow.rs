@@ -1260,6 +1260,46 @@ fn rm_t27_rule2_a_node_removed_before_needs_the_admins_yes() {
     // negative control: a node that was never removed needs no yes (t1 joins with removed_confirmed false)
 }
 
+/// T17b (§3.6 / §2.0 rule 3): a removed person re-invited within the same version — the node is still in this
+/// version's removed list (members are signed once per version) — joins in member mode: the member-side rule reads
+/// mnet key 7 and the secrets' target, never the removed list. Negative control (mutant, not committed): begin_member
+/// refusing a DAC in `removed_of(members)` -> this test fails at the first assert.
+#[test]
+fn rm_t17b_a_removed_node_reinvited_in_the_same_version_joins_in_member_mode() {
+    let me = netrec::dac_hash(&joining_node().dac_pub);
+    let first = member(0x55, 0x43, "node-0001", MemberState::Applied);
+    let mut mp = cbor::decode(&cose::member_list_payload(
+        &NET_ID,
+        1,
+        None,
+        &[cose::Member { dac_pub_hash: &first.dac_pub_hash, ecdh_pub: &first.ecdh_pub, name: &first.name, owner_pub: &first.owner_pub, owner_enc_pub: &first.owner_enc_pub }],
+    ))
+    .unwrap();
+    if let V::Map(e) = &mut mp {
+        e.retain(|(k, _)| *k != V::Uint(5));
+        e.push((V::Uint(5), V::Array(vec![V::Bytes(me.to_vec())])));
+    }
+    let members = signed_by_admin(cose::CT_MEMBERS, &cbor::encode(&mp));
+    assert_eq!(netrec::removed_of(&netrec::sign1_payload(&members).unwrap()).unwrap(), vec![me], "this version lists the node as removed");
+    // the member phone after importing the new approval: a fresh joining entry (member.rs rm_t17), the same version
+    let mut x = mnet(Some(my_entry(MemberState::Joining)));
+    x.members = members.clone();
+    let (run, n, disk) = member_join(&x, "US", |_| {});
+    assert_eq!(run.end, Some(End::Applied { country_unverified: false, save_pending: false }));
+    assert_eq!(n.got, ["settings/get", "op/nonce", "network/join"]);
+    assert_eq!(n.bodies[0], (x.netcfg.clone(), members.clone()), "the node took the members that list it as removed");
+    assert_eq!(n.secrets, [(SAE.to_string(), vec![0x77; 32])]);
+    assert_eq!(run.admin_signs, 0);
+    assert_eq!(disk.mine().unwrap().state, MemberState::Applied);
+    // the same members in the admin's record: rule 2 does read this list (the test data is a real "removed before")
+    let mut rec = applied_record("US");
+    rec.base.members = members;
+    let adisk = Disk::new(&rec);
+    let (conn, _) = pair("US");
+    let (_, a) = Join2::start(conn, input(&adisk, Some(joining_node())));
+    assert_eq!(a, Action::Done(End::Refused(Pre::RemovedBefore)));
+}
+
 /// T23: the node answered 5 (already a member) and info says an older version -> node_behind (the bridge sends the
 /// new secrets right away); a join the node applied (0) is never behind
 #[test]
