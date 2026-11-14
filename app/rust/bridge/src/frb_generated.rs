@@ -27,12 +27,12 @@
 
 // Section: imports
 
-use crate::api::claim::*;
-use crate::api::member::*;
 use crate::api::rekey::*;
+use crate::api::swupdate::*;
+use crate::api::member::*;
+use crate::api::claim::*;
 use crate::api::replay::*;
-use crate::api::owner::*;
-use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -3967,12 +3967,12 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
-use crate::api::claim::*;
-use crate::api::member::*;
 use crate::api::rekey::*;
+use crate::api::swupdate::*;
+use crate::api::member::*;
+use crate::api::claim::*;
 use crate::api::replay::*;
-use crate::api::owner::*;
-use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -4067,12 +4067,12 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::claim::*;
-use crate::api::member::*;
 use crate::api::rekey::*;
+use crate::api::swupdate::*;
+use crate::api::member::*;
+use crate::api::claim::*;
 use crate::api::replay::*;
-use crate::api::owner::*;
-use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;

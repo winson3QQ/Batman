@@ -7828,9 +7828,9 @@ class OwnerSessionImpl extends RustOpaque implements OwnerSession {
       .api
       .crateApiOwnerOwnerSessionSwAnswer(that: this, sw: sw, nowMs: nowMs);
 
-  /// The team section of the status page (254-app-team-status v2.1 §6) from the last status-page read and this
-  /// node's network record (`record_plain`: net/ (admin) or mnet/ (`member` = true) plaintext; None = none). Hidden
-  /// in version N (teamview::WRITE_MESH_ADDR = false).
+  /// The team section of the status page (254-app-team-status v2.4 §6, `team_names`) from the last status-page
+  /// read and this node's network record (`record_plain`: net/ (admin) or mnet/ (`member` = true) plaintext; None =
+  /// none). Hidden in version N (teamview::WRITE_MESH_ADDR = false).
   TeamView teamView({Uint8List? recordPlain, required bool member}) =>
       RustLib.instance.api.crateApiOwnerOwnerSessionTeamView(
         that: this,

@@ -340,11 +340,11 @@ pub(crate) fn persist_at(kind: OwnerKind, rel: String, record: Vec<u8>, expected
     OwnerStep { record, aad: store::aad(&rel, generation), rel, generation, expected_gen, ..OwnerStep::new(kind) }
 }
 
-/// The status page's team section (254-app-team-status v2.1 §6); `visible` false = not shown (version N, or no read).
+/// The status page's team section (254-app-team-status v2.4 §6); `visible` false = not shown (version N, or no read).
 pub struct TeamView {
     pub visible: bool,
     pub title: String,
-    /// one sentence instead of the cards, else ""
+    /// the line above the cards (the one sentence when there are none), else ""
     pub only: String,
     /// one card per entry (a second, small line after a newline)
     pub cards: Vec<String>,
@@ -1283,22 +1283,15 @@ impl OwnerSession {
         status_view_of(self.page_status.as_ref(), self.page_info.as_ref(), self.page_fresh, self.page_rate, join)
     }
 
-    /// The team section of the status page (254-app-team-status v2.1 §6) from the last status-page read and this
-    /// node's network record (`record_plain`: net/ (admin) or mnet/ (`member` = true) plaintext; None = none). Hidden
-    /// in version N (teamview::WRITE_MESH_ADDR = false).
+    /// The team section of the status page (254-app-team-status v2.4 §6, `team_names`) from the last status-page
+    /// read and this node's network record (`record_plain`: net/ (admin) or mnet/ (`member` = true) plaintext; None =
+    /// none). Hidden in version N (teamview::WRITE_MESH_ADDR = false).
     #[flutter_rust_bridge::frb(sync)]
     pub fn team_view(&self, record_plain: Option<Vec<u8>>, member: bool) -> TeamView {
-        let signed = record_plain.as_deref().and_then(|p| {
-            if member {
-                batman_proto::mrec::MNet::decode(p).ok().map(|m| m.members)
-            } else {
-                netrec::decode(p).ok().map(|r| r.base.members)
-            }
-        });
-        let members = signed.and_then(|s| netrec::sign1_payload(&s).ok());
         let own = self.node.as_ref().map(|n| netrec::dac_hash(&n.dac_pub));
         let st = self.page_status.as_ref().and_then(|r| r.as_ref().ok());
-        let v = teamview::team_view(st, members.as_ref(), own.as_ref());
+        let (names, own_name) = team_names(self.page_info.as_ref(), own.as_ref(), record_plain.as_deref(), member);
+        let v = teamview::team_view(st, &names, own.as_ref(), own_name.as_deref());
         TeamView { visible: v.visible, title: v.title, only: v.only, cards: v.cards, note: v.note, tech: v.tech }
     }
 
@@ -2198,6 +2191,182 @@ pub(crate) fn status_view_of(st: Option<&Result<Value, u64>>, info: Option<&Valu
         tech: statuspage::tech_lines(a),
         fresh,
         rate_note: if rate { RATE_NOTE.into() } else { String::new() },
+    }
+}
+
+/// The team section's name source (254-app-team-status v2.4 §6, §11-6) for the node `own_dac` with info `info` and this
+/// phone's record of the node's network (`record_plain`: `net/` (admin) or `mnet/` (`member` = true) plaintext; None =
+/// none): info's network id empty -> NoNet; no record, or one that does not decode -> NoList (fail-closed); an admin ->
+/// the signed list ∪ key 11's applied / approved entries (`teamview::admin_names`); a member -> the signed list. Also
+/// the title's own name when the record has a better source than the name source: a member's `mnet/` key 7, when
+/// it is this node (else the title takes this node's entry in the name source).
+pub(crate) fn team_names(info: Option<&Value>, own_dac: Option<&[u8; 32]>, record_plain: Option<&[u8]>, member: bool) -> (teamview::Names, Option<String>) {
+    let in_net = info.and_then(|i| i.get(10)).and_then(Value::as_bytes).is_some_and(|b| b.len() == 16);
+    let mut own_name = None;
+    let names = match (in_net, record_plain) {
+        (false, _) => teamview::Names::NoNet,
+        (true, None) => teamview::Names::NoList,
+        (true, Some(p)) if member => match batman_proto::mrec::MNet::decode(p) {
+            Ok(m) => match netrec::sign1_payload(&m.members) {
+                Ok(signed) => {
+                    own_name = m.me.filter(|me| Some(&me.dac_pub_hash) == own_dac).map(|me| me.name);
+                    teamview::Names::List(teamview::listed(&signed))
+                }
+                Err(_) => teamview::Names::NoList,
+            },
+            Err(_) => teamview::Names::NoList,
+        },
+        (true, Some(p)) => match netrec::decode(p).ok().and_then(|r| Some((netrec::sign1_payload(&r.base.members).ok()?, r.members().ok()?))) {
+            Some((signed, rec)) => teamview::Names::List(teamview::admin_names(&signed, &rec)),
+            None => teamview::Names::NoList,
+        },
+    };
+    (names, own_name)
+}
+
+#[cfg(test)]
+mod team_tests {
+    //! 254-app-team-status v2.4 T-A11, the record side (`team_names`): which entries of this phone's record name the
+    //! team section, and the title's own name. The rendering is batman-proto tests/teamview.rs.
+    use super::*;
+    use batman_proto::cose;
+
+    const OWN: [u8; 6] = [0xa8, 0xdd, 0x9f, 0x4d, 0xc6, 0x10];
+    const A: [u8; 6] = [0xa8, 0xdd, 0x9f, 0x4d, 0xc6, 0xd3];
+    const B: [u8; 6] = [0xa8, 0xdd, 0x9f, 0x4d, 0xc7, 0x60];
+    const C: [u8; 6] = [0xa8, 0xdd, 0x9f, 0x4d, 0xc8, 0x01];
+    const D: [u8; 6] = [0xa8, 0xdd, 0x9f, 0x4d, 0xc9, 0x02];
+
+    fn member(dac: u8, name: &str, addr: Option<[u8; 6]>, state: MemberState) -> netrec::Member {
+        netrec::Member {
+            dac_pub_hash: [dac; 32],
+            ecdh_pub: [4; 65],
+            name: name.into(),
+            owner_pub: [4; 65],
+            owner_enc_pub: [4; 65],
+            device_id: None,
+            state,
+            prev_country: None,
+            known: None,
+            mesh_addr: addr,
+        }
+    }
+
+    /// a members Sign1 (the signature is not checked on the phone's own record)
+    fn signed(entries: &[(u8, &str, Option<[u8; 6]>)]) -> Vec<u8> {
+        let dacs: Vec<[u8; 32]> = entries.iter().map(|e| [e.0; 32]).collect();
+        let ms: Vec<cose::Member> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| cose::Member { dac_pub_hash: &dacs[i], ecdh_pub: &[4; 65], name: e.1, owner_pub: &[4; 65], owner_enc_pub: &[4; 65], mesh_addr: e.2.as_ref() })
+            .collect();
+        cose::sign1(cose::CT_MEMBERS, &cose::member_list_payload(&[0xab; 16], 1, None, &ms), &[1; 64])
+    }
+
+    fn net(signed: Vec<u8>, applied: bool, list: Option<Vec<netrec::Member>>, departed: Option<Vec<netrec::Departed>>) -> NetRec {
+        let mut r = NetRec::made(joinflow::NetRecord {
+            net_id: [0xab; 16],
+            mesh_id: "bm-abababababab".into(),
+            channel: 40,
+            bw: 4,
+            sae: "Sae0123456789abcdefghijk".into(),
+            net_root: [7; 32],
+            netcfg: cose::sign1(cose::CT_NETCFG, &cose::net_config_payload(&[0xab; 16], 1, None, "t", "US", "bm-abababababab", 40, 4, &[[4; 65]]), &[1; 64]),
+            members: signed,
+            secrets: vec![3],
+        });
+        if applied {
+            r.state = netrec::APPLIED.into();
+        }
+        r.list = list;
+        r.departed = departed;
+        r
+    }
+
+    fn info() -> Value {
+        Value::Map(vec![(Value::Uint(10), Value::Bytes(vec![0xab; 16]))])
+    }
+
+    /// (name, only in key 11) of a name source; "NoNet" / "NoList" otherwise
+    fn shown(n: &teamview::Names) -> Vec<(String, bool)> {
+        match n {
+            teamview::Names::List(l) => l.iter().map(|x| (x.name.clone(), x.next)).collect(),
+            teamview::Names::NoNet => vec![("NoNet".into(), false)],
+            teamview::Names::NoList => vec![("NoList".into(), false)],
+        }
+    }
+
+    fn s(v: &[(&str, bool)]) -> Vec<(String, bool)> {
+        v.iter().map(|(a, b)| (a.to_string(), *b)).collect()
+    }
+
+    // T-A11 (admin, net/): the signed list ∪ key 11's applied (join2) and approved (remote) entries, joining never; a
+    // node removed earlier and approved again (in key 14) is named — no removed-list check (v2.3 R5-1b). Old records:
+    // no key 11 -> members() from key 8 (applied: its entries; pending: joining -> the signed list only). Key 11 that
+    // does not decode -> no list (fail-closed). Negative controls: a removed-list check added -> 「遠端」 missing;
+    // applied dropped / joining kept / the union dropped -> FAIL.
+    #[test]
+    fn t_a11_admin_name_source() {
+        use MemberState::*;
+        let list = vec![
+            member(0xa1, "node-0001", Some(OWN), Applied),
+            member(0xa2, "第二台", Some(B), Applied),
+            member(0xa3, "遠端", Some(C), Approved),
+            member(0xa4, "加入中", Some(D), Joining),
+        ];
+        let gone = vec![netrec::Departed { dac_hash: [0xa3; 32], owner_pub: [4; 65], name: "遠端".into() }];
+        let r = net(signed(&[(0xa1, "node-0001", Some(OWN))]), true, Some(list), Some(gone));
+        assert!(r.removed_ever().unwrap().contains(&[0xa3; 32]), "setup: 「遠端」 was removed before");
+        let (n, own) = team_names(Some(&info()), Some(&[0xa1; 32]), Some(&netrec::encode(&r)), false);
+        assert_eq!(shown(&n), s(&[("node-0001", false), ("第二台", true), ("遠端", true)]));
+        assert_eq!(own, None, "an admin's title comes from the name source");
+        let v = teamview::team_view_with(true, Some(&Value::Map(vec![(Value::Uint(9), Value::Array(vec![]))])), &n, Some(&[0xa1; 32]), None);
+        assert_eq!(v.title, "全隊（僅供參考；由『node-0001』看到）");
+
+        // an old record without key 11
+        let old = net(signed(&[(0xa1, "node-0001", Some(OWN)), (0xa2, "客廳", Some(A))]), true, None, None);
+        assert_eq!(shown(&team_names(Some(&info()), None, Some(&netrec::encode(&old)), false).0), s(&[("node-0001", false), ("客廳", false)]));
+        let pending = net(signed(&[(0xa1, "node-0001", Some(OWN))]), false, None, None);
+        assert_eq!(shown(&team_names(Some(&info()), None, Some(&netrec::encode(&pending)), false).0), s(&[("node-0001", false)]));
+
+        // key 11 that does not decode: the whole record fails -> no list
+        let Value::Map(mut m) = cbor::decode(&netrec::encode(&r)).unwrap() else { panic!() };
+        for e in m.iter_mut().filter(|e| e.0 == Value::Uint(11)) {
+            e.1 = Value::Uint(1);
+        }
+        let bad = cbor::encode(&Value::Map(m));
+        assert_eq!(shown(&team_names(Some(&info()), None, Some(&bad), false).0), s(&[("NoList", false)]));
+        // no record of this network on the phone; the node in no network (info key 10 absent)
+        assert_eq!(shown(&team_names(Some(&info()), None, None, false).0), s(&[("NoList", false)]));
+        assert_eq!(shown(&team_names(Some(&Value::Map(vec![])), None, Some(&netrec::encode(&r)), false).0), s(&[("NoNet", false)]));
+        assert_eq!(shown(&team_names(None, None, None, true).0), s(&[("NoNet", false)]));
+    }
+
+    // T-A11 (member, mnet/): the signed list only (a node joined later is not named), and the title's own name from
+    // mnet/ key 7 when that is this node — the H5 case 「由『02 的名稱』看到」 for a node not yet in the signed list.
+    // Negative control: the title from the signed list only -> 「這台節點」 -> FAIL.
+    #[test]
+    fn t_a11_member_name_source_and_title() {
+        let mnet = batman_proto::mrec::MNet {
+            net_id: [0xab; 16],
+            version: 1,
+            netcfg: vec![1],
+            members: signed(&[(0xa2, "客廳", Some(A))]),
+            secrets: vec![3],
+            net_root: [7; 32],
+            me: Some(member(0xa5, "02 的名稱", Some(B), MemberState::Applied)),
+            invite_hash: [1; 32],
+            versions: None,
+            node_secrets: vec![],
+        }
+        .encode();
+        let (n, own) = team_names(Some(&info()), Some(&[0xa5; 32]), Some(&mnet), true);
+        assert_eq!(shown(&n), s(&[("客廳", false)]));
+        assert_eq!(own.as_deref(), Some("02 的名稱"));
+        let v = teamview::team_view_with(true, Some(&Value::Map(vec![(Value::Uint(9), Value::Array(vec![]))])), &n, Some(&[0xa5; 32]), own.as_deref());
+        assert_eq!(v.title, "全隊（僅供參考；由『02 的名稱』看到）");
+        // key 7 names another node of this phone: not this one's title
+        assert_eq!(team_names(Some(&info()), Some(&[0xa6; 32]), Some(&mnet), true).1, None);
     }
 }
 

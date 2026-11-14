@@ -124,19 +124,37 @@ void main() {
           sentence: '已連上隊伍網路',
           teamVisible: true,
           teamTitle: '全隊（僅供參考；由『我的節點』看到）',
-          teamCards: ['🟢 『客廳』 在線 · 連線 好（約 14.9 Mbit/s） · 直接連線', '❔ 不明節點 · 最後看到 6 分鐘前\n可能是剛加入、你的名單還沒更新的隊員'],
+          teamCards: ['🟢 『客廳』 在線 · 連線 好（約 14.9 Mbit/s） · 直接連線', '❔ 不明節點 · 最後看到 6 分鐘前\n不在你手機的名單裡（可能是新加入、網主還沒發新名單的隊員）'],
           teamNote: '在線 = 這台節點最近 1 分鐘內收得到。',
           teamTech: ['不明節點 …c6d3：400 秒前']);
       await t.pumpWidget(page(team));
       expect(find.text('全隊（僅供參考；由『我的節點』看到），讀取於 09:05:07'), findsOneWidget);
       expect(find.byKey(const Key('teamCard')), findsNWidgets(2));
-      expect(find.text('可能是剛加入、你的名單還沒更新的隊員'), findsOneWidget);
+      expect(find.text('不在你手機的名單裡（可能是新加入、網主還沒發新名單的隊員）'), findsOneWidget);
       expect(y(t, find.byKey(const Key('teamTitle'))), greaterThan(y(t, find.byKey(const Key('refresh')))));
       expect(y(t, find.byKey(const Key('tech'))), greaterThan(y(t, find.byKey(const Key('teamNote')))));
       expect(find.textContaining('…c6d3'), findsNothing, reason: 'the tail only inside the collapsed list');
       await t.tap(find.text('技術資訊（給維修人員看）'));
       await t.pumpAndSettle();
       expect(find.textContaining('…c6d3'), findsOneWidget);
+    });
+
+    // 254-app-team-status v2.4 §6 (b): with key 5 and nobody online, Rust's `only` is the line ABOVE the cards
+    // (「這台目前沒連上網路，下面是最後看到的狀態」) — both show, the line first. Negative control: the line rendered
+    // after the cards -> FAIL.
+    testWidgets('team section: the not-joined line above the cards', (t) async {
+      const team = StatusFields(
+          color: 'red',
+          sentence: '這台還沒連上網路',
+          teamVisible: true,
+          teamTitle: '全隊（僅供參考；由『我的節點』看到）',
+          teamOnly: '這台目前沒連上網路，下面是最後看到的狀態',
+          teamCards: ['⚪ 『客廳』 離線 · 最後看到 4 分鐘前'],
+          teamNote: '在線 = 這台節點最近 1 分鐘內收得到。');
+      await t.pumpWidget(page(team));
+      expect(find.byKey(const Key('teamOnly')), findsOneWidget);
+      expect(find.byKey(const Key('teamCard')), findsOneWidget);
+      expect(y(t, find.byKey(const Key('teamOnly'))), lessThan(y(t, find.byKey(const Key('teamCard')))));
     });
 
     testWidgets('rows 3 / 4 carry the lag small print; other rows do not', (t) async {
