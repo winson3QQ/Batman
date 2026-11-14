@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"batman-prov/cbor"
+	"batman-prov/provstore"
 
 	"golang.org/x/sys/unix"
 )
@@ -353,6 +354,7 @@ type peerTable struct {
 	failN     int
 	meshedNow bool   // the last sample saw bat0 with a hard interface
 	net       []byte // the network id the table belongs to (a network change empties it)
+	epoch     uint64 // bumped by reset: a sample that started before it is dropped (it saw the old network)
 	droppedN  int
 	logf      func(string, ...any)
 	now       func() time.Time
@@ -418,11 +420,17 @@ func (p *peerTable) take() peerSample {
 }
 
 func (p *peerTable) sample() {
+	p.mu.Lock()
+	epoch := p.epoch
+	p.mu.Unlock()
 	phy, phyOK := morsePhyMAC(p.src.PhyDir)
 	s := p.take()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.busy = false
+	if p.epoch != epoch {
+		return // the record changed network while this sample ran: its rows belong to the old one (T-N12)
+	}
 	now := p.now()
 	p.phy, p.phyOK = phy, phyOK
 	p.meshedNow = !s.notMeshed
@@ -552,6 +560,42 @@ func (p *peerTable) keys(now time.Time, inNet bool, netID []byte) cbor.Map {
 		list = append(list, m)
 	}
 	return append(out, cbor.Entry{K: uint64(9), V: list})
+}
+
+// reset empties the table and forgets which network it belonged to; a sample in flight is dropped (epoch).
+func (p *peerTable) reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.m, p.net = map[[6]byte]*peerEntry{}, nil
+	p.epoch++
+}
+
+// recNet: whether a record is in a network (a member, or a legacy node) and which (nil for legacy) — what key 9
+// depends on (design §4.1).
+func recNet(rec *provstore.Record) (bool, []byte) {
+	if rec == nil {
+		return false, nil
+	}
+	var id []byte
+	if rec.Net != nil {
+		id = rec.Net.NetID
+	}
+	return rec.State == provstore.Member || rec.State == provstore.Legacy, id
+}
+
+// peersRecordWritten: the helper committed next over prev. When that changes whether the node is in a network or
+// which one (network/join to member, network/leave, a legacy claim), the table belonged to the old network and is
+// emptied now — by the writer of the change, not inferred later by status.get, so it holds even when no status.get
+// came while the node was out of a network (design v2.4 R5-5 / R6-4, T-N12). Never at helper start.
+func (n *Node) peersRecordWritten(prev, next *provstore.Record) {
+	if n.peers == nil {
+		return
+	}
+	pIn, pID := recNet(prev)
+	nIn, nID := recNet(next)
+	if pIn != nIn || !bytes.Equal(pID, nID) {
+		n.peers.reset()
+	}
 }
 
 // SetPeerSource starts the whole-team sampling (ticked by StatusTick).

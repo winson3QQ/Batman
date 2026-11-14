@@ -707,3 +707,107 @@ func TestPeersSignalInactiveThreshold(t *testing.T) {
 		}
 	}
 }
+
+// attachPeers wires the whole-team sampling into any rig (fake clock, the multi-hop fixture, bat0 meshed, one morse
+// phy), sampling inline.
+func attachPeers(t *testing.T, r *rig) *peerRig {
+	t.Helper()
+	now := time.Unix(1000, 0)
+	r.n.clock = func() time.Time { return now }
+	f := &fakeStatus{js: hs04(t), p5: true, inline: true}
+	r.n.SetStatusSource(f.src())
+	r.n.status.runAsync = func(fn func()) { fn() }
+	logs := &bytes.Buffer{}
+	bat, phyDir := peerFS(t, true, morse04())
+	fr := &fakeRun{bat: readFix(t, "batctl-originators-multihop.derived"), iw: readFix(t, "iw-station-dump-multihop.derived")}
+	src := DefaultPeerSource()
+	src.BatDir, src.PhyDir, src.Run = bat, phyDir, fr.run
+	r.n.SetPeerSource(src)
+	r.n.peers.runAsync = func(fn func()) { fn() }
+	return &peerRig{rig: r, now: &now, run: fr, logs: logs, bat: bat}
+}
+
+// headerOnly: the multi-hop capture's header and column line, no originator (a mesh where nobody else is heard yet)
+func headerOnly(t *testing.T) []byte {
+	return bytes.Join(bytes.Split(readFix(t, "batctl-originators-multihop.derived"), []byte("\n"))[:2], []byte("\n"))
+}
+
+// T-N12 (design v2.4 R5-5 / R6-4): the helper empties the table when IT writes a record that changes whether the node
+// is in a network or which one — network/join to member, network/leave, a legacy claim — even when no status.get came
+// while the node was out of a network; a helper that starts already in a network keeps what it samples (the first
+// status.get has data). Negative controls: the clear on the transition removed -> the old network's peers show up in
+// the new one (or stay in the table) -> FAIL; a clear at start (keys() clearing when it has not seen a network yet)
+// -> the first read is empty -> FAIL.
+func TestPeersClearedWhenTheRecordChangesNetwork(t *testing.T) {
+	// started in a network: the first status.get lists what was sampled
+	s := newPeerRig(t, true, morse04())
+	s.tick(0)
+	if _, _, l, has9 := peersOf(t, statusCall(t, s.rig, true)); !has9 || len(l) != 2 {
+		t.Fatalf("helper started in a network: first key 9 = %v %+v, want the 2 sampled peers", has9, l)
+	}
+
+	// claimed (not in a network) but bat0 still meshed to some other mesh: samples fill the table, nobody asks
+	p := attachPeers(t, claimedRig(t))
+	p.tick(0)
+	if len(p.n.peers.m) != 2 {
+		t.Fatalf("setup: %d peers sampled while claimed", len(p.n.peers.m))
+	}
+	if c := p.applyJoin(p.v1Net()); c != OK {
+		t.Fatalf("network/join: code %d", c)
+	}
+	if len(p.n.peers.m) != 0 {
+		t.Fatalf("network/join kept %d peers sampled before the node was in this network", len(p.n.peers.m))
+	}
+	p.run.bat = headerOnly(t) // the new network: nobody heard yet
+	p.tick(15 * time.Second)
+	if _, _, l, has9 := peersOf(t, statusCall(t, p.rig, true)); !has9 || len(l) != 0 {
+		t.Fatalf("the new network lists %v %+v: peers sampled before the join", has9, l)
+	}
+
+	// in the network, sampled, nobody asks; network/leave empties the table at once
+	p.run.bat = readFix(t, "batctl-originators-multihop.derived")
+	p.tick(15 * time.Second)
+	if len(p.n.peers.m) != 2 {
+		t.Fatalf("setup: %d peers sampled while a member", len(p.n.peers.m))
+	}
+	if c := p.leave(); c != OK {
+		t.Fatalf("network/leave: code %d", c)
+	}
+	if len(p.n.peers.m) != 0 {
+		t.Fatalf("network/leave kept %d peers", len(p.n.peers.m))
+	}
+
+	// a legacy node (in a network, no id) is claimed: out of its network -> emptied at the claim
+	q := newRig(t, provstore.Legacy)
+	q.sys.devOpen = true
+	l := attachPeers(t, q)
+	l.tick(0)
+	if len(l.n.peers.m) != 2 {
+		t.Fatalf("setup: %d peers sampled while legacy", len(l.n.peers.m))
+	}
+	if c, _ := l.claim(); c != OK {
+		t.Fatalf("legacy claim: code %d", c)
+	}
+	if len(l.n.peers.m) != 0 {
+		t.Fatalf("the legacy claim kept %d peers", len(l.n.peers.m))
+	}
+}
+
+// T-N12: a sample that was running when the record changed network saw the old network; it is dropped, not merged
+// into the emptied table. Negative control: the epoch check in sample() removed -> FAIL.
+func TestPeersSampleAcrossANetworkChangeDropped(t *testing.T) {
+	p := newPeerRig(t, true, morse04())
+	inner := p.run.run
+	src := p.n.peers.src
+	src.Run = func(argv []string) ([]byte, error) {
+		if strings.HasSuffix(argv[0], "batctl") {
+			p.n.peers.reset() // the join commits while batctl runs
+		}
+		return inner(argv)
+	}
+	p.n.peers.src = src
+	p.tick(0)
+	if len(p.n.peers.m) != 0 {
+		t.Fatalf("a sample begun before the network change added %d peers", len(p.n.peers.m))
+	}
+}

@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"batman-prov/cbor"
-	"batman-prov/provstore"
 )
 
 const (
@@ -306,11 +305,7 @@ func (n *Node) statusGet(a cbor.Map, now time.Time, conn *bucket) (cbor.Map, *Er
 	}
 	m := n.status.get(rec.State, full)
 	if n.peers != nil { // 254-app-team-status §4.1: keys 8 / 9 for the owner and a member alike
-		inNet := rec.State == provstore.Member || rec.State == provstore.Legacy
-		var netID []byte
-		if rec.Net != nil {
-			netID = rec.Net.NetID
-		}
+		inNet, netID := recNet(rec)
 		m = append(m, n.peers.keys(n.now(), inNet, netID)...)
 	}
 	return m, nil

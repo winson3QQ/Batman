@@ -591,6 +591,7 @@ func (n *Node) claimVerify(rec *provstore.Record, a cbor.Map) (cbor.Map, *Error)
 	if err := n.commitTxn(&next, "", seam.ClaimAfterPersist); err != nil { // = commit + its killpoint
 		return nil, err
 	}
+	n.peersRecordWritten(rec, &next) // a legacy node leaves its network (254-app-team-status T-N12)
 	// committed: p6 last_known_state follows at once, so batman-prov-lock locks on any slot even if p5 is unreadable
 	if err := n.Sys.SetLastKnown(string(provstore.Claimed)); err != nil {
 		n.Log("claim: p6 last_known_state not updated: %v", err)
@@ -1251,6 +1252,7 @@ func (n *Node) applyNet(rec *provstore.Record, p *parsedNet, verb string) (cbor.
 		n.finish("after a failed commit of " + verb)
 		return nil, err
 	}
+	n.peersRecordWritten(rec, &next) // join: into a network / another one (254-app-team-status T-N12)
 	seam.At(seam.Txn4, n.Log) // committed; .txn and the marker still there, the save not done
 	// step 4: save under this transaction's token BEFORE .txn goes (a power loss in between = Finish again)
 	if rc, out := n.Sys.SaveTxn(token); rc != 0 && rc != 6 {
@@ -1292,6 +1294,7 @@ func (n *Node) leave(rec *provstore.Record) (cbor.Map, *Error) {
 		n.finish("after a failed commit of network/leave")
 		return nil, err
 	}
+	n.peersRecordWritten(rec, &next) // out of the network (254-app-team-status T-N12)
 	err = n.Sys.ForgetMesh()
 	n.noteApply(err)
 	if err != nil {
