@@ -263,7 +263,10 @@ class ClaimRecovery {
   /// §2 / §3-1: the pending of this QR (re-read, the same K), the live key levels, the strict decode, T3, the ECDH —
   /// all before any connection. Null = no recovery (said why, when there is something to say; the pending untouched).
   Future<ReplaySession?> _prepare(Future<bool> Function() askT3) async {
-    final Uint8List plain;
+    // S20 (2026-11-14): byte lists from the platform channel are READ-ONLY views on the engine's message buffer, so
+    // fillRange on them throws. Only lists this code allocated are zeroed: a copy is made, used, and zeroed; the
+    // channel's own buffer is left to the GC (it cannot be written).
+    Uint8List? plain; // our copy of the opened pending (it holds K)
     try {
       final s = await store.readSealed('claim-pending/$deviceId');
       if (s == null) {
@@ -271,11 +274,13 @@ class ClaimRecovery {
         if (qr == null) say('[CLAIM_FAIL] 這筆認領暫存已經不在，手機裡的紀錄沒有改動');
         return null;
       }
-      plain = await store.open(s);
+      plain = Uint8List.fromList(await store.open(s));
     } catch (e) {
       say('[CLAIM_FAIL] 讀不到手機裡這台節點的認領紀錄，這次不恢復：$e');
       return null;
     }
+    ReplaySession? session;
+    var handedOver = false; // the session goes to the caller; on every other way out it is disposed here
     try {
       // another K (noover R4): never replayed with this QR. T4 (no QR, v6 §19.2-5) uses the pending's own K
       final q = qr;
@@ -286,37 +291,37 @@ class ClaimRecovery {
         say('[CLAIM_FAIL] [KEY_LEVEL] $no。手機裡的紀錄沒有改動。');
         return null;
       }
-      final ReplaySession session;
       final Uint8List peer;
       try {
-        (session, peer) = ReplaySession.prepare(pendingPlain: plain, deviceId: deviceId, devSoftEnc: able.softOwnerEnc);
+        final (s, p) = ReplaySession.prepare(pendingPlain: plain, deviceId: deviceId, devSoftEnc: able.softOwnerEnc);
+        session = s;
+        peer = p;
       } catch (e) {
         say('[CLAIM_FAIL] $e');
         return null;
       }
-      if (_t3 && !await askT3()) {
-        session.dispose();
-        return null;
-      }
-      Uint8List? z;
+      if (_t3 && !await askT3()) return null;
+      Uint8List? z; // our copy of z
       try {
-        z = await platform.invokeMethod<Uint8List>('ecdh', {'peer': peer});
-        if (z == null) throw recoverNotYet;
+        final got = await platform.invokeMethod<Uint8List>('ecdh', {'peer': peer});
+        if (got == null) throw recoverNotYet;
+        z = Uint8List.fromList(got);
         session.setZ(z: z);
       } catch (e) {
-        session.dispose();
         final k = KeyAbilities.refusedBy(e);
         say(k != null ? '[CLAIM_FAIL] [KEY_LEVEL] $k' : '[CLAIM_FAIL] $recoverNotYet');
         return null;
       } finally {
-        z?.fillRange(0, z.length, 0); // §3-1: Dart's copy of z goes at once
+        z?.fillRange(0, z.length, 0); // §3-1: Dart's copy of z goes at once (our own list: this cannot throw)
       }
+      handedOver = true;
       return session;
     } catch (e) {
       say('[CLAIM_FAIL] 恢復前的檢查出錯，這次不恢復（手機裡的紀錄沒有改動）：$e'); // review A-m4: K compare, key levels, T3
       return null;
     } finally {
-      plain.fillRange(0, plain.length, 0);
+      plain.fillRange(0, plain.length, 0); // our own copy: cannot throw
+      if (!handedOver) session?.dispose(); // never leak a session that already holds z / K
     }
   }
 
