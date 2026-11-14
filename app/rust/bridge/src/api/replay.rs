@@ -65,11 +65,13 @@ pub struct ReplayStep {
     pub path: String,
     pub record: Vec<u8>,
     pub pending_path: String,
+    /// Ended: claim/replay itself was refused (3, or 4) — T4 adds its "maybe not this node's last claim" warning (v6.1)
+    pub replay_refused: bool,
 }
 
 impl ReplayStep {
     fn new(kind: ReplayKind) -> ReplayStep {
-        ReplayStep { kind, frames: vec![], sign_input: vec![], next: ReplayNext::Stop, detail: String::new(), path: String::new(), record: vec![], pending_path: String::new() }
+        ReplayStep { kind, frames: vec![], sign_input: vec![], next: ReplayNext::Stop, detail: String::new(), path: String::new(), record: vec![], pending_path: String::new(), replay_refused: false }
     }
     fn ended(next: ReplayNext, detail: String) -> ReplayStep {
         ReplayStep { next, detail, ..ReplayStep::new(ReplayKind::Ended) }
@@ -342,6 +344,7 @@ impl ReplaySession {
                             ..ReplayStep::new(ReplayKind::Recovered)
                         }
                     }
+                    End::Replayed(ClaimReplay::Refused) => ReplayStep { replay_refused: true, ..ReplayStep::ended(next, detail) },
                     _ => ReplayStep::ended(next, detail),
                 }
             }
@@ -639,6 +642,43 @@ mod tests {
         assert_eq!(n.log, ["c0 msg1"], "nothing after msg1");
     }
 
+
+    // v6.1 §19.2-6: a refused claim/replay (3: here the owner signature is not the stored owner's) is marked
+    // `replay_refused` (T4 adds its warning); any other end is not. Negative control: the flag never set -> FAIL.
+    #[cfg(feature = "dev-trust")]
+    #[test]
+    fn a_refused_replay_is_marked() {
+        use p256::ecdsa::signature::Signer;
+        let v = vectors();
+        let mut n = FakeNode::claimed(v.clone());
+        let mut s = session(&v);
+        let c = n.connect().unwrap();
+        let mut st = s.begin(FL as u32).unwrap();
+        let end = loop {
+            match st.kind {
+                ReplayKind::Write => {
+                    let Reply::Frames(back) = n.send(c, &st.frames) else { panic!("no answer") };
+                    let mut out = None;
+                    for f in &back {
+                        out = s.on_frame(f.clone()).or(out);
+                    }
+                    st = out.unwrap();
+                }
+                ReplayKind::Sign => {
+                    let other = p256::ecdsa::SigningKey::from_slice(&[0x44; 32]).unwrap();
+                    let sg: p256::ecdsa::Signature = other.sign(&st.sign_input);
+                    st = s.signed(sg.to_der().as_bytes().to_vec()).unwrap();
+                }
+                _ => break st,
+            }
+        };
+        assert_eq!((end.next, end.replay_refused), (ReplayNext::Stop, true));
+        assert_eq!(n.counted_failures(), 1);
+        let mut busy = FakeNode::claimed(v.clone());
+        busy.ops_busy = true;
+        let (other_end, _) = attempt(&mut busy, &mut session(&v), &mut vec![]);
+        assert!(!other_end.replay_refused, "a 7 is not a refusal");
+    }
     // §3-2 / §4: `written` is set exactly when the claim/replay frames are handed over, and `lost()` after it is
     // "next round" with the write known to the caller (the 「請等幾分鐘」 words); before it, also next round.
     #[cfg(feature = "dev-trust")]

@@ -140,7 +140,9 @@ void main() {
       expect(find.text(devSoftEncText), findsOneWidget);
       expect(devSoftEncText, contains('這支手機的復原／成員金鑰是軟體保護，只能用於開發，不可用於實際部署'));
       expect(devSoftEncText, contains('這支手機認領的每個節點都要重燒卡回收'));
-      expect(platform, ['scanQr', 'keyLevels'], reason: 'nothing before the answer');
+      // 254-app-replay T4: the page asks devTrust once when it opens (the entry's build check; no record is read)
+      expect(platform.where((m) => m != 'devTrust'), ['scanQr', 'keyLevels'], reason: 'nothing before the answer');
+      expect(platform.where((m) => m == 'devTrust'), hasLength(1));
       expect(rust.calls, isEmpty);
       await t.tap(find.text(confirm ? '我了解，繼續認領' : '取消'));
       await t.pumpAndSettle();
@@ -149,7 +151,8 @@ void main() {
         expect(platform, containsAllInOrder(['filesDir', 'blePermissions']));
       } else {
         expect(find.text('沒有確認，沒有認領。手機裡的紀錄沒有改動。'), findsOneWidget);
-        expect(platform, ['scanQr', 'keyLevels'], reason: 'declined: nothing read');
+        // the page re-reads devTrust after the press (the T4 entry's check); no record, no files dir, no BLE permission
+        expect(platform.where((m) => m != 'devTrust'), ['scanQr', 'keyLevels'], reason: 'declined: nothing read');
         expect(rust.calls, isEmpty);
       }
     });

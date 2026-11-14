@@ -122,6 +122,9 @@ class ReplayStep {
   final Uint8List record;
   final String pendingPath;
 
+  /// Ended: claim/replay itself was refused (3, or 4) — T4 adds its "maybe not this node's last claim" warning (v6.1)
+  final bool replayRefused;
+
   const ReplayStep({
     required this.kind,
     required this.frames,
@@ -131,6 +134,7 @@ class ReplayStep {
     required this.path,
     required this.record,
     required this.pendingPath,
+    required this.replayRefused,
   });
 
   @override
@@ -142,7 +146,8 @@ class ReplayStep {
       detail.hashCode ^
       path.hashCode ^
       record.hashCode ^
-      pendingPath.hashCode;
+      pendingPath.hashCode ^
+      replayRefused.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -156,5 +161,6 @@ class ReplayStep {
           detail == other.detail &&
           path == other.path &&
           record == other.record &&
-          pendingPath == other.pendingPath;
+          pendingPath == other.pendingPath &&
+          replayRefused == other.replayRefused;
 }

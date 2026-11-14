@@ -18,11 +18,23 @@ import 'key_abilities.dart';
 import 'say.dart';
 import 'scan.dart' show provdService, provdStatus;
 import 'src/rust/api/claim.dart';
+import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
 
 void _log(String s) => debugPrint('BMAPP claim $s');
+
+/// 254-app-replay v6.1 §19.2-7: how the T4 list and confirmation name each pending — the last 6 characters of the
+/// device id, or the whole id where two ids share them.
+Map<String, String> pendingLabels(List<String> ids) {
+  String tail(String s) => s.length > 6 ? s.substring(s.length - 6) : s;
+  final count = <String, int>{};
+  for (final id in ids) {
+    count[tail(id)] = (count[tail(id)] ?? 0) + 1;
+  }
+  return {for (final id in ids) id: count[tail(id)]! > 1 ? id : '…${tail(id)}'};
+}
 
 /// R4 / R7 (254-app-claim-noover v2.1)
 const otherQrText = '手機裡有這台節點一次沒完成的認領，用的是另一張 QR 碼。只有在你確定這張 QR 碼才是對的（例如之前貼錯）時才改用它：'
@@ -60,6 +72,13 @@ class _ClaimPageState extends State<ClaimPage> {
   bool _scanning = false; // a QrScanActivity is open
   final _typed = TextEditingController(); // dev: the QR hex typed in (e.g. over adb), cleared once read
   ClaimRecovery? _recovery; // 254-app-replay: the recovery of this press, while it runs
+  List<String> _pending = const []; // 254-app-replay T4: claim-pending/ file names (dev builds only)
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPending();
+  }
 
   /// 254-app-replay §3-7: leaving the page stops a recovery (a claim/finish in flight is not interrupted; its T1 then
   /// does not start, §2)
@@ -67,6 +86,56 @@ class _ClaimPageState extends State<ClaimPage> {
   void dispose() {
     _recovery?.cancel();
     super.dispose();
+  }
+
+  /// 254-app-replay v6 §19.2-1: a dev build lists claim-pending/ (file names only, nothing opened) for the T4 entry;
+  /// a field build, or a list that cannot be read, has no entry.
+  Future<void> _loadPending() async {
+    var ids = const <String>[];
+    try {
+      if (await _platform.invokeMethod<bool>('devTrust') ?? false) {
+        ids = await listPending(dir: '${(await _platform.invokeMethod<String>('filesDir'))!}/records');
+      }
+    } catch (e) {
+      _log('認領暫存的清單讀不到：$e');
+    }
+    if (mounted) setState(() => _pending = ids);
+  }
+
+  /// 254-app-replay T4 (v6 §19.2, v6.1): choose a claim-pending, confirm, recover it with its own K (no QR). Holds
+  /// `_busy` for the whole run; asks for the BLE permissions before any connection.
+  Future<void> _fromPending() async {
+    if (_busy || _pending.isEmpty) return;
+    setState(() => _busy = true);
+    try {
+      final labels = pendingLabels(_pending);
+      final id = await showDialog<String>(
+          context: context,
+          builder: (c) => SimpleDialog(title: const Text('從認領暫存恢復'), children: [
+                for (final p in _pending)
+                  SimpleDialogOption(onPressed: () => Navigator.pop(c, p), child: Text('節點 ${labels[p]}')),
+              ]));
+      if (id == null || !mounted) return;
+      final label = labels[id]!;
+      if (!await _ask('要恢復節點 $label 嗎？', '恢復會更換這台節點的 root 密碼，並中斷它目前所有的連線（包含隊友手機的）。', '恢復',
+          '沒有恢復，手機裡的紀錄沒有改動')) {
+        return;
+      }
+      if (!(await _platform.invokeMethod<bool>('blePermissions') ?? false)) {
+        _say('[CLAIM_FAIL] 沒有藍牙權限（請在手機設定裡允許）');
+        return;
+      }
+      final dir = '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
+      final store = RustClaimStore(dir);
+      final t3 = (await listNodes(dir: dir)).contains(id); // a node record too -> T3 asks again (§19.2-4)
+      await _recover(id, null, store, ClaimRecords(store, null, _say), t3: t3, intro: '[RECOVERING] 從認領暫存恢復節點 $label');
+    } catch (e) {
+      final k = _keyRefused(e);
+      _say(k != null ? '[CLAIM_FAIL] $k' : '[CLAIM_FAIL] 恢復中斷：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+      await _loadPending();
+    }
   }
 
   /// [s] may start with log markers ("[CLAIMED] ", ...): logcat keeps them, the screen does not.
@@ -269,7 +338,7 @@ class _ClaimPageState extends State<ClaimPage> {
         // 254-app-replay §2 T2: an unfinished claim of this QR (K compared again by the recovery) and no unclaimed node
         // -> recover it; T3 (a node record too) asks first. Not started (another K, keys, field build, T3 declined)
         // -> the NOT_FOUND words below, as before.
-        final out = await _recover(q, store, records,
+        final out = await _recover(q.deviceId, q, store, records,
             t3: _heldNode, intro: '[RECOVERING] 沒找到未認領的這台，改試恢復先前的認領');
         if (out != RecoveryOutcome.notStarted) return;
       }
@@ -374,7 +443,7 @@ class _ClaimPageState extends State<ClaimPage> {
             _log('頁面已離開：這次不恢復（認領紀錄保留，下次按「認領」會接著恢復）');
             return;
           }
-          await _recover(q, store, records, t1Id: id, after9: after9, intro: '[RECOVERING] 改試恢復這次的認領（先等節點收尾 15 秒）');
+          await _recover(q.deviceId, q, store, records, t1Id: id, after9: after9, intro: '[RECOVERING] 改試恢復這次的認領（先等節點收尾 15 秒）');
         }
       }
     } catch (e) {
@@ -384,24 +453,26 @@ class _ClaimPageState extends State<ClaimPage> {
       await notify?.cancel();
       await conn?.cancel();
       if (mounted) setState(() => _busy = false);
+      await _loadPending(); // a claim may have written or removed a pending (the T4 entry)
     }
   }
 
   /// 254-app-replay §3: one recovery for this press; 「認領」 becomes 「停止恢復」 while it runs. The records it writes do
   /// not need the page (§3-7).
-  Future<RecoveryOutcome> _recover(ClaimQr q, ClaimStore store, ClaimRecords records,
+  Future<RecoveryOutcome> _recover(String deviceId, ClaimQr? q, ClaimStore store, ClaimRecords records,
       {String? t1Id, bool after9 = false, bool t3 = false, required String intro}) async {
     final rec = ClaimRecovery(
-        ble: widget.recoveryBle ?? ReactiveRecoveryBle(_ble), platform: _platform, store: store, records: records, qr: q, say: _say);
+        ble: widget.recoveryBle ?? ReactiveRecoveryBle(_ble), platform: _platform, store: store, records: records, deviceId: deviceId, qr: q, say: _say);
     if (mounted) setState(() => _recovery = rec);
     try {
       final out = await rec.run(
           t1Id: t1Id,
           after9: after9,
           t3: t3,
-          askT3: () => _ask('要恢復這台節點嗎？', t3Text, '恢復', '沒有恢復，手機裡的紀錄沒有改動'),
+          // v6.1 §19.2-6: T4 (no QR) asks without "沒找到未認領的這台"
+          askT3: () => _ask('要恢復這台節點嗎？', q == null ? t3Body : t3Text, '恢復', '沒有恢復，手機裡的紀錄沒有改動'),
           intro: intro);
-      if (out == RecoveryOutcome.recovered && mounted) setState(() => _qr = null); // R6: a new scan for another claim
+      if (out == RecoveryOutcome.recovered && q != null && mounted) setState(() => _qr = null); // R6: a new scan for another claim
       return out;
     } finally {
       _recovery = null;
@@ -429,6 +500,8 @@ class _ClaimPageState extends State<ClaimPage> {
               FilledButton(onPressed: () => _recovery?.cancel(), child: const Text('停止恢復'))
             else
               FilledButton(onPressed: (_qr == null || _busy) ? null : _claim, child: const Text('認領')),
+            if (_pending.isNotEmpty) // 254-app-replay T4 (§19.2-1): dev builds with a claim-pending only
+              OutlinedButton(onPressed: (_busy || _scanning) ? null : _fromPending, child: const Text('從認領暫存恢復')),
           ]),
           const SizedBox(height: 12),
           Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),

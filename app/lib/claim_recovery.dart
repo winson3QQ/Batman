@@ -25,7 +25,10 @@ final provdCtrl = Uuid.parse('540aa38c-0086-4d5b-a9c0-c7c9d1e1bd42');
 const recoverNotYet = '這個版本的 app 還不能恢復中斷的認領（紀錄先保留）';
 
 /// §2 T3, word for word
-const t3Text = '沒找到未認領的這台。手機裡有它一次沒完成的認領，可以試著恢復：恢復會更換這台節點的 root 密碼，並中斷它目前所有的連線'
+const t3Text = '沒找到未認領的這台。$t3Body';
+
+/// v6.1 §19.2-6: T4's T3 question (the user chose the pending: there was no search)
+const t3Body = '手機裡有它一次沒完成的認領，可以試著恢復：恢復會更換這台節點的 root 密碼，並中斷它目前所有的連線'
     '（包含隊友手機的）。如果它在「我的節點」還能用，不需要恢復。要恢復嗎？';
 
 /// One BLE connection as the recovery uses it.
@@ -151,7 +154,8 @@ ReplayStep _stopStep(String detail) => ReplayStep(
     detail: detail,
     path: '',
     record: Uint8List(0),
-    pendingPath: '');
+    pendingPath: '',
+    replayRefused: false);
 
 /// One recovery = one 「認領」 (§3: at most one per press). [say] gets the lines (log markers first).
 class ClaimRecovery {
@@ -160,7 +164,8 @@ class ClaimRecovery {
     required this.platform,
     required this.store,
     required this.records,
-    required this.qr,
+    required this.deviceId,
+    this.qr,
     required this.say,
   });
 
@@ -168,7 +173,13 @@ class ClaimRecovery {
   final MethodChannel platform;
   final ClaimStore store;
   final ClaimRecords records;
-  final ClaimQr qr;
+  /// the node to recover (`claim-pending/{deviceId}`)
+  final String deviceId;
+
+  /// the QR of this press (T1 / T2: its K must be the pending's); null = T4, the pending's own K (v6 §19.2)
+  final ClaimQr? qr;
+
+  bool get _t4 => qr == null;
   final void Function(String) say;
 
   // §3-2 / §3-3 / §3-4 / §3-5 / §4
@@ -254,15 +265,21 @@ class ClaimRecovery {
   Future<ReplaySession?> _prepare(Future<bool> Function() askT3) async {
     final Uint8List plain;
     try {
-      final s = await store.readSealed('claim-pending/${qr.deviceId}');
-      if (s == null) return null;
+      final s = await store.readSealed('claim-pending/$deviceId');
+      if (s == null) {
+        // v6.1 §19.2-6: the pending chosen in T4's list is gone (another claim / recovery finished meanwhile)
+        if (qr == null) say('[CLAIM_FAIL] 這筆認領暫存已經不在，手機裡的紀錄沒有改動');
+        return null;
+      }
       plain = await store.open(s);
     } catch (e) {
       say('[CLAIM_FAIL] 讀不到手機裡這台節點的認領紀錄，這次不恢復：$e');
       return null;
     }
     try {
-      if (!await store.matches(plain, qr)) return null; // another K (noover R4): never replayed with this QR
+      // another K (noover R4): never replayed with this QR. T4 (no QR, v6 §19.2-5) uses the pending's own K
+      final q = qr;
+      if (q != null && !await store.matches(plain, q)) return null;
       final able = await KeyAbilities.read(platform); // s1 §4.1: live, before every recovery
       final no = able.refusal(KeyUse.recover);
       if (no != null) {
@@ -272,7 +289,7 @@ class ClaimRecovery {
       final ReplaySession session;
       final Uint8List peer;
       try {
-        (session, peer) = ReplaySession.prepare(pendingPlain: plain, deviceId: qr.deviceId, devSoftEnc: able.softOwnerEnc);
+        (session, peer) = ReplaySession.prepare(pendingPlain: plain, deviceId: deviceId, devSoftEnc: able.softOwnerEnc);
       } catch (e) {
         say('[CLAIM_FAIL] $e');
         return null;
@@ -425,13 +442,16 @@ class ClaimRecovery {
           say('[PENDING_KEPT] $e');
           return RecoveryOutcome.recovered;
         } catch (e) {
-          say('[CLAIM_FAIL] 節點已恢復，但手機的紀錄沒有寫成功（$e）；認領紀錄仍保留，請再按一次「認領」');
+          say('[CLAIM_FAIL] 節點已恢復，但手機的紀錄沒有寫成功（$e）；認領紀錄仍保留，'
+              '${_t4 ? '請再從「從認領暫存恢復」試一次' : '請再按一次「認領」'}'); // v6.1 §19.2-6
           return RecoveryOutcome.stopped;
         }
         say('[CLAIMED] [RECOVERED] ${t.step.detail}');
         return RecoveryOutcome.recovered;
       case ReplayNext.stop:
-        say('[CLAIM_FAIL] [NOT_RECOVERED] ${t.step.detail}');
+        // v6.1 §19.2-6: in T4 a refused claim/replay may mean this pending is not the node's last claim
+        final warn = _t4 && t.step.replayRefused ? '。這筆暫存可能不是這台節點最後一次認領用的，請不要一直重試' : '';
+        say('[CLAIM_FAIL] [NOT_RECOVERED] ${t.step.detail}$warn');
         return RecoveryOutcome.stopped;
       default:
         if (_cancel) return _cancelled();

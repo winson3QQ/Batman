@@ -27,12 +27,12 @@
 
 // Section: imports
 
-use crate::api::claim::*;
-use crate::api::owner::*;
-use crate::api::rekey::*;
-use crate::api::swupdate::*;
 use crate::api::member::*;
-use crate::api::replay::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::replay::*;
+use crate::api::swupdate::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -2165,7 +2165,8 @@ let mut var_detail = <String>::sse_decode(deserializer);
 let mut var_path = <String>::sse_decode(deserializer);
 let mut var_record = <Vec<u8>>::sse_decode(deserializer);
 let mut var_pendingPath = <String>::sse_decode(deserializer);
-return crate::api::replay::ReplayStep{kind: var_kind, frames: var_frames, sign_input: var_signInput, next: var_next, detail: var_detail, path: var_path, record: var_record, pending_path: var_pendingPath};}
+let mut var_replayRefused = <bool>::sse_decode(deserializer);
+return crate::api::replay::ReplayStep{kind: var_kind, frames: var_frames, sign_input: var_signInput, next: var_next, detail: var_detail, path: var_path, record: var_record, pending_path: var_pendingPath, replay_refused: var_replayRefused};}
                 }
                 
                 impl SseDecode for crate::api::claim::SealParams {
@@ -3002,7 +3003,8 @@ self.next.into_into_dart().into_dart(),
 self.detail.into_into_dart().into_dart(),
 self.path.into_into_dart().into_dart(),
 self.record.into_into_dart().into_dart(),
-self.pending_path.into_into_dart().into_dart()
+self.pending_path.into_into_dart().into_dart(),
+self.replay_refused.into_into_dart().into_dart()
                 ].into_dart()
                 }
             }
@@ -3723,7 +3725,8 @@ crate::api::replay::ReplayNext::Recovered => { 5 }
 <String>::sse_encode(self.detail, serializer);
 <String>::sse_encode(self.path, serializer);
 <Vec<u8>>::sse_encode(self.record, serializer);
-<String>::sse_encode(self.pending_path, serializer);}
+<String>::sse_encode(self.pending_path, serializer);
+<bool>::sse_encode(self.replay_refused, serializer);}
                 }
                 
                 impl SseEncode for crate::api::claim::SealParams {
@@ -3901,12 +3904,12 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
-use crate::api::claim::*;
-use crate::api::owner::*;
-use crate::api::rekey::*;
-use crate::api::swupdate::*;
 use crate::api::member::*;
-use crate::api::replay::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::replay::*;
+use crate::api::swupdate::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -4001,12 +4004,12 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::claim::*;
-use crate::api::owner::*;
-use crate::api::rekey::*;
-use crate::api::swupdate::*;
 use crate::api::member::*;
-use crate::api::replay::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::claim::*;
+use crate::api::replay::*;
+use crate::api::swupdate::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;

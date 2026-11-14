@@ -60,13 +60,14 @@ class H {
   bool t3Answer = true;
   int t3Asked = 0;
 
-  Future<RecoveryOutcome> start({String? t1, bool after9 = false, bool t3 = false}) {
+  Future<RecoveryOutcome> start({String? t1, bool after9 = false, bool t3 = false, bool t4 = false}) {
     rec = ClaimRecovery(
         ble: field,
         platform: const MethodChannel('dev.batman/platform'),
         store: store,
-        records: ClaimRecords(store, qr, lines.add),
-        qr: qr,
+        records: ClaimRecords(store, t4 ? null : qr, lines.add),
+        deviceId: deviceId,
+        qr: t4 ? null : qr, // T4: no QR (v6 §19.2)
         say: lines.add);
     return rec!.run(t1Id: t1, after9: after9, t3: t3, askT3: () async {
       t3Asked++;
@@ -74,8 +75,8 @@ class H {
     }, intro: 'INTRO');
   }
 
-  Future<RecoveryOutcome> run({String? t1, bool after9 = false, bool t3 = false}) =>
-      drive(t, start(t1: t1, after9: after9, t3: t3));
+  Future<RecoveryOutcome> run({String? t1, bool after9 = false, bool t3 = false, bool t4 = false}) =>
+      drive(t, start(t1: t1, after9: after9, t3: t3, t4: t4));
 
   /// the pending is exactly what it was, and nothing wrote or removed it
   void pendingUntouched() {
@@ -742,5 +743,76 @@ void main() {
     }
     expect(rust.endTexts, ['END exhausted after9=false unanswered=true old=false']);
     h.pendingUntouched();
+  });
+
+  // ---- v6 T4: from a claim-pending, without a QR ----
+
+  // D20: T4 has no QR: no K comparison (the store's `matches` is never asked; a QR of another K would not matter), the
+  // pending's own K reaches the node -> recovered. Negative control: T4 compared with some QR -> not started, no
+  // connection.
+  testWidgets('D20: T4 recovers without a QR, no K comparison', (t) async {
+    final h = H(t, rust);
+    h.store.kMatches = false; // what a comparison with any other K would answer
+    h.field.add(Dev('M', -40, ours: true));
+    expect(await h.run(t4: true), RecoveryOutcome.recovered);
+    expect(h.store.matchesCalls, 0);
+    expect(h.store.files[nodeRecPath], rec(1));
+    expect(rust.prepared, [deviceId]);
+  });
+
+  // D20b: the QR path still compares: another K -> not started, no connection. Negative control: the comparison
+  // skipped on the QR path too -> a connection with the wrong K.
+  testWidgets('D20b: with a QR the K comparison still stops another K', (t) async {
+    final h = H(t, rust);
+    h.store.kMatches = false;
+    h.field.add(Dev('M', -40, ours: true));
+    expect(await h.run(), RecoveryOutcome.notStarted);
+    expect(h.store.matchesCalls, 1);
+    expect(h.field.connects, 0);
+    h.pendingUntouched();
+  });
+
+  // D19: the chosen pending is gone when the recovery starts (another claim / recovery finished meanwhile) -> its own
+  // words, no connection. Negative control: the words dropped -> FAIL.
+  testWidgets('D19: T4 with the chosen pending gone -> said, no connection', (t) async {
+    final h = H(t, rust);
+    h.store.files.remove(pendPath);
+    h.field.add(Dev('M', -40, ours: true));
+    expect(await h.run(t4: true), RecoveryOutcome.notStarted);
+    expect(h.lines, ['[CLAIM_FAIL] 這筆認領暫存已經不在，手機裡的紀錄沒有改動']);
+    expect(h.field.connects, 0);
+    expect(rust.prepared, isEmpty);
+  });
+
+  // v6.1 §19.2-6: the node record write fails -> T4 says to retry from 「從認領暫存恢復」, T2 from 「認領」.
+  // Negative control: the T2 words in T4 too -> FAIL.
+  for (final t4 in [true, false]) {
+    testWidgets('v6.1: record write fails -> retry words (${t4 ? 'T4' : 'T2'})', (t) async {
+      final h = H(t, rust);
+      h.store.writeFails = true;
+      h.field.add(Dev('M', -40, ours: true));
+      expect(await h.run(t4: t4), RecoveryOutcome.stopped);
+      expect(h.lines.last, endsWith(t4 ? '請再從「從認領暫存恢復」試一次' : '請再按一次「認領」'));
+    });
+  }
+
+  // v6.1 §19.2-6: a refused claim/replay (3) in T4 adds 「這筆暫存可能不是…最後一次認領用的」; T2's 3 and T4's 12 do not.
+  // Negative controls: the T4 check dropped / the refused flag ignored -> FAIL.
+  for (final c in ['T4 3', 'T2 3', 'T4 12']) {
+    testWidgets('v6.1: $c -> the "maybe not the last claim" warning only for T4 3', (t) async {
+      final h = H(t, rust);
+      h.field.add(Dev('M', -40, ours: true)..replies.add(Reply(c.endsWith('12') ? 12 : 3)));
+      expect(await h.run(t4: c.startsWith('T4')), RecoveryOutcome.stopped);
+      expect(h.lines.last.contains('這筆暫存可能不是這台節點最後一次認領用的，請不要一直重試'), c == 'T4 3', reason: h.lines.last);
+      h.pendingUntouched();
+    });
+  }
+
+  // v6 §19.2: a recovery without a QR never persists a pending (ClaimRecords.persistPending throws, nothing written).
+  // Negative control: the guard removed -> no StateError.
+  testWidgets('v6: ClaimRecords without a QR refuses persistPending', (t) async {
+    final store = FakeStore();
+    await expectLater(ClaimRecords(store, null, (_) {}).persistPending(pendPath, Uint8List(3)), throwsStateError);
+    expect(store.calls, isEmpty);
   });
 }

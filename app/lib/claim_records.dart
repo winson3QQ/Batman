@@ -59,14 +59,17 @@ const oldNotKept = '[OLD_NOT_KEPT] 舊紀錄沒有保留下來';
 class ClaimRecords {
   ClaimRecords(this.store, this.qr, this.log);
   final ClaimStore store;
-  final ClaimQr qr;
+  /// null = a recovery from a pending without a QR (254-app-replay T4): it never persists a pending
+  final ClaimQr? qr;
   final void Function(String) log;
 
   /// PersistPending (R4): decided from disk, whatever was asked before. A pending already there for another K is
   /// copied aside first; if it cannot be opened or copied this throws and the new pending is not written (no begin).
   Future<void> persistPending(String path, Uint8List record) async {
+    final q = qr;
+    if (q == null) throw StateError('no QR: a recovery without a QR never writes a pending');
     final old = await store.readSealed(path);
-    if (old != null && !await store.matches(await store.open(old), qr)) {
+    if (old != null && !await store.matches(await store.open(old), q)) {
       await store.keepCopy(path);
     }
     await store.sealWrite(path, record);

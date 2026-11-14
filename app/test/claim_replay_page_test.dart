@@ -65,6 +65,13 @@ class FakeRust implements RustLibApi {
   bool due = true;
   bool dueThrows = false;
   bool replayOff = false; // negative control D3: the page never recovers
+  final pendingIds = <String>[]; // claim-pending/ file names (T4)
+  final nodeIds = <String>[];
+
+  @override
+  Future<List<String>> crateApiOwnerListPending({required String dir}) async => [...pendingIds];
+  @override
+  Future<List<String>> crateApiOwnerListNodes({required String dir}) async => [...nodeIds];
   final endTexts = <String>[];
 
   @override
@@ -166,6 +173,9 @@ class FakeBle implements FlutterReactiveBle {
 }
 
 void main() {
+  var devTrust = false; // what the platform says (T4 is dev only)
+  var blePerm = true;
+  var blePermAsked = 0;
   final rust = FakeRust();
   setUpAll(() => RustLib.initMock(api: rust));
   setUp(() {
@@ -179,6 +189,8 @@ void main() {
       ..due = true
       ..dueThrows = false
       ..replayOff = false
+      ..pendingIds.clear()
+      ..nodeIds.clear()
       ..endTexts.clear();
   });
 
@@ -186,17 +198,20 @@ void main() {
   late FakeBle ble;
 
   /// scan, 「認領」, answer dialogs in [confirm] order as they appear, run (wall-clock search, fake-clock recovery)
-  Future<void> runPage(WidgetTester t, {List<String> confirm = const [], int iters = 400, bool Function()? until}) async {
+  Future<void> runPage(WidgetTester t, {List<String> confirm = const [], int iters = 400, bool Function()? until, bool t4 = false}) async {
     final t0 = t.binding.clock.now();
     now = () => t.binding.clock.now().difference(t0);
     t.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('dev.batman/platform'), (c) async {
       switch (c.method) {
         case 'scanQr':
           return qrText;
+        case 'devTrust':
+          return devTrust;
         case 'filesDir':
           return files;
         case 'blePermissions':
-          return true;
+          blePermAsked++;
+          return blePerm;
         case 'publicKeys':
           return {'owner': Uint8List(65), 'ownerEnc': Uint8List(65), 'admin': Uint8List(65)};
         case 'open':
@@ -207,9 +222,14 @@ void main() {
       return FakePlatform().handle(c);
     });
     await t.pumpWidget(MaterialApp(home: ClaimPage(ble: ble, recoveryBle: field, findFor: const Duration(milliseconds: 800))));
-    await t.tap(find.text('掃描 QR'));
-    await t.pumpAndSettle();
-    await t.tap(find.text('認領'));
+    if (t4) {
+      await t.pumpAndSettle(); // the pending list is read at start
+      await t.tap(find.text('從認領暫存恢復'));
+    } else {
+      await t.tap(find.text('掃描 QR'));
+      await t.pumpAndSettle();
+      await t.tap(find.text('認領'));
+    }
     final left = [...confirm];
     for (var i = 0; i < iters; i++) {
       await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 5))); // the search window is wall-clock
@@ -226,6 +246,9 @@ void main() {
   setUp(() {
     field = FakeField();
     ble = FakeBle();
+    devTrust = false;
+    blePerm = true;
+    blePermAsked = 0;
   });
 
   // D3 = §0's symptom: the node is claimed, the phone holds only the pending -> 「認領」 with the same QR finds no
@@ -354,5 +377,137 @@ void main() {
     expect(field.connects, n, reason: 'nothing connects after the page left');
     expect(field.devs.values.expand((d) => d.links).every((l) => l.closed), isTrue);
     expect(rust.disk[pendPath], pendingBytes);
+  });
+
+  // ---- v6 T4: 「從認領暫存恢復」 ----
+
+  Future<void> openPage(WidgetTester t) async {
+    t.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('dev.batman/platform'), (c) async {
+      switch (c.method) {
+        case 'devTrust':
+          return devTrust;
+        case 'filesDir':
+          return files;
+      }
+      return null;
+    });
+    await t.pumpWidget(MaterialApp(home: ClaimPage(ble: ble, recoveryBle: field)));
+    await t.pumpAndSettle();
+  }
+
+  // D17: a dev build shows the entry only when a claim-pending exists. Negative control: the non-empty check -> the
+  // entry with no pending.
+  testWidgets('D17: the entry only with a claim-pending', (t) async {
+    devTrust = true;
+    await openPage(t);
+    expect(find.text('從認領暫存恢復'), findsNothing, reason: 'no pending');
+    rust.pendingIds.add(deviceId);
+    await openPage(t);
+    await t.pumpWidget(const SizedBox());
+    await t.pumpWidget(MaterialApp(home: ClaimPage(ble: ble, recoveryBle: field)));
+    await t.pumpAndSettle();
+    expect(find.text('從認領暫存恢復'), findsOneWidget);
+  });
+
+  // D21: the field build (devTrust false) has no entry, whatever is on disk. Negative control: the devTrust check
+  // dropped -> the entry in the field build.
+  testWidgets('D21: no entry in the field build', (t) async {
+    rust.pendingIds.add(deviceId);
+    await openPage(t);
+    expect(find.text('從認領暫存恢復'), findsNothing);
+  });
+
+  // D18 (Dart): the list names each pending by the last 6 characters, or by the whole id where two share them.
+  // Negative control: always the last 6 -> two identical labels.
+  test('D18: pendingLabels — 6 characters, the full id where they collide', () {
+    expect(pendingLabels(['0000000000000c4f2a', 'e61551410cfd538e24']), {
+      '0000000000000c4f2a': '…0c4f2a',
+      'e61551410cfd538e24': '…538e24',
+    });
+    expect(pendingLabels(['aaaaaaaaaaaa0c4f2a', 'bbbbbbbbbbbb0c4f2a', 'e61551410cfd538e24']), {
+      'aaaaaaaaaaaa0c4f2a': 'aaaaaaaaaaaa0c4f2a',
+      'bbbbbbbbbbbb0c4f2a': 'bbbbbbbbbbbb0c4f2a',
+      'e61551410cfd538e24': '…538e24',
+    });
+  });
+
+  // D22: cancelled at the confirmation -> no connection, nothing written, the pending kept. Negative control: the
+  // confirmation's answer ignored -> a connection.
+  testWidgets('D22: T4 cancelled at the confirmation -> nothing connects', (t) async {
+    devTrust = true;
+    rust.pendingIds.add(deviceId);
+    field.add(Dev('BB', -50, ours: true));
+    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '取消'], iters: 80);
+    expect(pageSays('沒有恢復，手機裡的紀錄沒有改動'), isTrue);
+    expect(field.connects, 0);
+    expect(rust.calls, isEmpty);
+    expect(rust.disk[pendPath], pendingBytes);
+  });
+
+  // T4 end to end at the page: chosen and confirmed -> its own intro (not T2's), recovered, node record written,
+  // pending removed; `_busy` holds the other buttons off while it runs; the BLE permissions were asked first.
+  // Negative controls: `_busy` not taken -> 掃描 QR enabled during the run; T2's intro -> FAIL.
+  testWidgets('T4: chosen + confirmed -> recovered, own intro, _busy held, permissions asked', (t) async {
+    devTrust = true;
+    rust.pendingIds.add(deviceId);
+    field.add(Dev('BB', -50, ours: true));
+    var checks = 0;
+    var freeDuringRun = false;
+    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '恢復'], until: () {
+      if (field.connects > 0 && !rust.calls.contains('remove $pendPath')) {
+        final scan = t.widget<FilledButton>(find.widgetWithText(FilledButton, '掃描 QR'));
+        final paste = t.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '貼上 QR 碼（開發用）'));
+        checks++;
+        if (scan.onPressed != null || paste.onPressed != null) freeDuringRun = true;
+      }
+      return rust.calls.contains('remove $pendPath');
+    });
+    await t.pump(const Duration(minutes: 5));
+    expect(checks, greaterThan(0));
+    expect(freeDuringRun, isFalse, reason: 'the other buttons are off during T4');
+    expect(blePermAsked, 1);
+    expect(pageSays('從認領暫存恢復節點 …0c4f2a'), isTrue);
+    expect(pageSays('沒找到未認領的這台'), isFalse, reason: 'T4 has its own intro');
+    expect(rust.calls, ['copy $nodeRecPath', 'write $nodeRecPath', 'remove $pendPath']);
+    expect(rust.disk[nodeRecPath], rec(1));
+  });
+
+  // v6.1 §19.2-8: no BLE permission -> said, nothing connects. Negative control: the permission check dropped.
+  testWidgets('T4: no BLE permission -> no connection', (t) async {
+    devTrust = true;
+    blePerm = false;
+    rust.pendingIds.add(deviceId);
+    field.add(Dev('BB', -50, ours: true));
+    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '恢復'], iters: 80);
+    expect(pageSays('沒有藍牙權限'), isTrue);
+    expect(field.connects, 0);
+    expect(rust.disk[pendPath], pendingBytes);
+  });
+
+  // §19.2-4 / v6.1 §19.2-6: a node record too -> T3 is asked, without T2's 「沒找到未認領的這台」. Negative control: T2's
+  // T3 text in T4 -> FAIL.
+  testWidgets('T4 + a node record -> T3 asked without the "not found" sentence', (t) async {
+    devTrust = true;
+    rust
+      ..pendingIds.add(deviceId)
+      ..nodeIds.add(deviceId)
+      ..disk[nodeRecPath] = Uint8List.fromList([0x6f]);
+    field.add(Dev('BB', -50, ours: true));
+    var sawT3 = false;
+    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '恢復'], iters: 60, until: () {
+      if (find.text('要恢復這台節點嗎？').evaluate().isNotEmpty) {
+        sawT3 = true;
+        return true;
+      }
+      return false;
+    });
+    expect(sawT3, isTrue);
+    expect(find.textContaining('手機裡有它一次沒完成的認領'), findsOneWidget);
+    expect(find.textContaining('沒找到未認領的這台'), findsNothing);
+    await t.tap(find.text('取消'));
+    for (var i = 0; i < 20; i++) {
+      await t.pump(const Duration(milliseconds: 250));
+    }
+    expect(field.connects, 0);
   });
 }

@@ -5083,8 +5083,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ReplayStep dco_decode_replay_step(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return ReplayStep(
       kind: dco_decode_replay_kind(arr[0]),
       frames: dco_decode_list_list_prim_u_8_strict(arr[1]),
@@ -5094,6 +5094,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       path: dco_decode_String(arr[5]),
       record: dco_decode_list_prim_u_8_strict(arr[6]),
       pendingPath: dco_decode_String(arr[7]),
+      replayRefused: dco_decode_bool(arr[8]),
     );
   }
 
@@ -6216,6 +6217,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_path = sse_decode_String(deserializer);
     var var_record = sse_decode_list_prim_u_8_strict(deserializer);
     var var_pendingPath = sse_decode_String(deserializer);
+    var var_replayRefused = sse_decode_bool(deserializer);
     return ReplayStep(
       kind: var_kind,
       frames: var_frames,
@@ -6225,6 +6227,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       path: var_path,
       record: var_record,
       pendingPath: var_pendingPath,
+      replayRefused: var_replayRefused,
     );
   }
 
@@ -7292,6 +7295,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.path, serializer);
     sse_encode_list_prim_u_8_strict(self.record, serializer);
     sse_encode_String(self.pendingPath, serializer);
+    sse_encode_bool(self.replayRefused, serializer);
   }
 
   @protected

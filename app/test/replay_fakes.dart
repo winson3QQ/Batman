@@ -208,7 +208,7 @@ class FakeField implements RecoveryBle {
 }
 
 ReplayStep rstep(ReplayKind kind,
-        {List<List<int>> frames = const [], ReplayNext next = ReplayNext.stop, String detail = '', List<int> record = const []}) =>
+        {List<List<int>> frames = const [], ReplayNext next = ReplayNext.stop, String detail = '', List<int> record = const [], bool refused = false}) =>
     ReplayStep(
         kind: kind,
         frames: [for (final f in frames) Uint8List.fromList(f)],
@@ -217,7 +217,8 @@ ReplayStep rstep(ReplayKind kind,
         detail: detail,
         path: kind == ReplayKind.recovered ? nodeRecPath : '',
         record: Uint8List.fromList(record),
-        pendingPath: kind == ReplayKind.recovered ? pendPath : '');
+        pendingPath: kind == ReplayKind.recovered ? pendPath : '',
+        replayRefused: refused);
 
 /// §4's table over the token frames, the way the Rust ReplaySession maps them (its mapping: bridge r2)
 class FakeReplay implements ReplaySession {
@@ -226,9 +227,9 @@ class FakeReplay implements ReplaySession {
   Uint8List? z;
   bool disposed = false;
 
-  ReplayStep _ended(ReplayNext n, [String d = '']) {
+  ReplayStep _ended(ReplayNext n, [String d = '', bool refused = false]) {
     stage = 'over';
-    return rstep(ReplayKind.ended, next: n, detail: d);
+    return rstep(ReplayKind.ended, next: n, detail: d, refused: refused);
   }
 
   @override
@@ -274,6 +275,7 @@ class FakeReplay implements ReplaySession {
           13 => _ended(ReplayNext.reconnect),
           12 => _ended(ReplayNext.stop, 'RATE'),
           7 || 10 => _ended(ReplayNext.again),
+          3 || 4 => _ended(ReplayNext.stop, 'REFUSED $c', true), // as Rust: replay_refused
           _ => _ended(ReplayNext.stop, 'REFUSED $c'),
         };
       case 0x3f:
@@ -336,11 +338,13 @@ class FakeStore implements ClaimStore {
   Future<Uint8List> open(SealedRecord s) async => Uint8List.fromList(s.sealed);
   @override
   Future<bool> matches(Uint8List pendingPlain, ClaimQr qr) async {
+    matchesCalls++;
     if (matchesThrows) throw '手機裡的認領紀錄看不懂（pending is not CBOR）';
     return kMatches;
   }
 
   bool matchesThrows = false;
+  int matchesCalls = 0;
   @override
   Future<bool> keepCopy(String rel) async {
     calls.add('copy $rel');
