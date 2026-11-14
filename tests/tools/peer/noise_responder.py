@@ -6,6 +6,9 @@ both sides. It is not a node and not an owner client: one handshake, one message
 
   noise_responder.py <nx|nxpsk0> <prologue hex> <psk hex | -> <static priv hex> <msg2 payload hex>
 
+The key material goes in argv (any local process can read it): only public test values belong there — the node static
+key published in tests/vectors/219-protocol/vectors.json and a PSK made from a constant of the test. Never a real key.
+
 stdin / stdout, one hex line each:
   in  msg1                     out msg2          (or "ERR <what>" and exit 1: msg1 did not read)
                                out handshake hash
