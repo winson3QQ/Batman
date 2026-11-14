@@ -272,7 +272,9 @@ void main() {
   testWidgets('D3 negative control: no recovery -> NOT_FOUND, no node record', (t) async {
     rust.replayOff = true;
     field.add(Dev('BB', -50, ours: true));
-    await runPage(t, iters: 120);
+    // #335 CI: the search window is wall-clock (800 ms); wait for its outcome, not a fixed number of iterations (a
+    // 5 ms real delay is ~15 ms on Windows, ~5 ms on Linux: 120 iterations were enough only on Windows)
+    await runPage(t, iters: 2000, until: () => pageSays('秒內沒找到編號末四碼'));
     expect(pageSays('秒內沒找到編號末四碼'), isTrue);
     expect(rust.disk.containsKey(nodeRecPath), isFalse);
     expect(rust.disk[pendPath], pendingBytes);
@@ -284,7 +286,7 @@ void main() {
     rust.target = ClaimTarget.nodeAndPending;
     rust.disk[nodeRecPath] = Uint8List.fromList([0x6f]);
     field.add(Dev('BB', -50, ours: true));
-    await runPage(t, confirm: ['重新認領', '取消'], iters: 160);
+    await runPage(t, confirm: ['重新認領', '取消'], iters: 2000, until: () => pageSays('秒內沒找到編號末四碼')); // wall-clock search, as D3-
     expect(field.connects, 0);
     expect(rust.calls, isEmpty);
     expect(pageSays('秒內沒找到編號末四碼'), isTrue);
