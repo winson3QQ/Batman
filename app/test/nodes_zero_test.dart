@@ -9,6 +9,7 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:batman_app/nodes.dart';
+import 'package:batman_app/member_ui.dart' show SasConfirmView;
 import 'package:batman_app/src/rust/api/member.dart';
 import 'package:batman_app/src/rust/api/owner.dart';
 import 'package:batman_app/src/rust/api/rekey.dart';
@@ -171,6 +172,7 @@ void main() {
     expect(t.takeException(), isNull);
     expect(rust.calls, ['approval z=true', 'write mnet/n1', 'remove mpend/n1']);
     expect(find.textContaining('IMPORTED-APPROVAL'), findsOneWidget);
+    expect(find.byType(SasConfirmView), findsNothing, reason: 'the SAS page was popped after the import (on main it stayed up: the throw came before pop)');
     expect(rust.zSeen, everyElement(0), reason: 'the page zeroes its own copy of z');
   });
 
