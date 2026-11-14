@@ -51,13 +51,26 @@ type logCap struct {
 	mu    sync.Mutex
 	lines []string
 	t     *testing.T
+	done  bool
+}
+
+// newLogCap: the provd log of a test, also echoed to t.Logf until the test's cleanups reach it. provd's Stop does not
+// join the helper ctl goroutine, which keeps logging its reconnects to the helper socket the test removes ("Log in
+// goroutine after TestRealHelperNetworkUpdate has completed: helper ctl: connect failed", go test -count=40 -cpu 1,2,4
+// -run RealHelper ./provd); after that point lines are kept but not passed to t.Logf.
+func newLogCap(t *testing.T) *logCap {
+	l := &logCap{t: t}
+	t.Cleanup(func() { l.mu.Lock(); l.done = true; l.mu.Unlock() })
+	return l
 }
 
 func (l *logCap) logf(f string, a ...any) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.lines = append(l.lines, fmt.Sprintf(f, a...))
-	l.mu.Unlock()
-	l.t.Logf(f, a...)
+	if !l.done {
+		l.t.Logf(f, a...)
+	}
 }
 
 func (l *logCap) has(sub string) bool {
@@ -192,7 +205,7 @@ func TestRealHelperNetworkUpdate(t *testing.T) {
 	path, K, ks := realHelperSys(t, func(root string) node.Sys {
 		return &wlSys{stubSys: stubSys{p5: filepath.Join(root, "p5")}, wl: [3]string{"op-key-12345", "m0", "28"}}
 	})
-	lc := &logCap{t: t}
+	lc := newLogCap(t)
 	s, err := NewServer(Config{HelperPath: path, Log: lc.logf, Board: "bcm2711", FW: "test"})
 	if err != nil {
 		t.Fatal(err)

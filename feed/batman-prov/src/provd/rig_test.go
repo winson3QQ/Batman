@@ -190,7 +190,7 @@ func TestMain(m *testing.M) {
 }
 
 func startServer(t *testing.T, f *fakeHelper, te TestEnv) *Server {
-	s, err := NewServer(Config{HelperPath: f.path, Log: t.Logf, Board: "bcm2711", FW: "1.5.14-test", Test: te})
+	s, err := NewServer(Config{HelperPath: f.path, Log: newLogCap(t).logf, Board: "bcm2711", FW: "1.5.14-test", Test: te})
 	if err != nil {
 		t.Fatal(err)
 	}

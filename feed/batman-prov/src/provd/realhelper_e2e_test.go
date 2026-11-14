@@ -12,7 +12,7 @@ import (
 )
 
 func startOn(t *testing.T, path string) *Server {
-	s, err := NewServer(Config{HelperPath: path, Log: t.Logf, Board: "bcm2711", FW: "test"})
+	s, err := NewServer(Config{HelperPath: path, Log: newLogCap(t).logf, Board: "bcm2711", FW: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
