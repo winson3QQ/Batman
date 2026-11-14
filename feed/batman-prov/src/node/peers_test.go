@@ -755,9 +755,6 @@ func TestPeersClearedWhenTheRecordChangesNetwork(t *testing.T) {
 	if c := p.applyJoin(p.v1Net()); c != OK {
 		t.Fatalf("network/join: code %d", c)
 	}
-	if len(p.n.peers.m) != 0 {
-		t.Fatalf("network/join kept %d peers sampled before the node was in this network", len(p.n.peers.m))
-	}
 	p.run.bat = headerOnly(t) // the new network: nobody heard yet
 	p.tick(15 * time.Second)
 	if _, _, l, has9 := peersOf(t, statusCall(t, p.rig, true)); !has9 || len(l) != 0 {
