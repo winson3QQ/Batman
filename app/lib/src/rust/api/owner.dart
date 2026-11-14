@@ -23,6 +23,11 @@ Future<SealedRecord?> storeReadSealed({
 Future<List<String>> listNodes({required String dir}) =>
     RustLib.instance.api.crateApiOwnerListNodes(dir: dir);
 
+/// The device ids of unfinished claims (file names under claim-pending/; no record is opened): the start page lists
+/// them, labelled as not confirmed, when the records cannot be opened (design s1 §4).
+Future<List<String>> listPending({required String dir}) =>
+    RustLib.instance.api.crateApiOwnerListPending(dir: dir);
+
 /// The net ids (hex) this phone holds a net record for (file names under net/; no record is opened).
 Future<List<String>> listNets({required String dir}) =>
     RustLib.instance.api.crateApiOwnerListNets(dir: dir);

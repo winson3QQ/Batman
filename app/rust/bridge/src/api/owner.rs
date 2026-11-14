@@ -51,6 +51,12 @@ pub fn list_nodes(dir: String) -> Vec<String> {
     list_kind(&dir, "node")
 }
 
+/// The device ids of unfinished claims (file names under claim-pending/; no record is opened): the start page lists
+/// them, labelled as not confirmed, when the records cannot be opened (design s1 §4).
+pub fn list_pending(dir: String) -> Vec<String> {
+    list_kind(&dir, "claim-pending")
+}
+
 /// The net ids (hex) this phone holds a net record for (file names under net/; no record is opened).
 pub fn list_nets(dir: String) -> Vec<String> {
     list_kind(&dir, "net")
@@ -1752,6 +1758,10 @@ mod tests {
         let s = store::Store::new(&d);
         s.write("node/e61551410cfd538e24", 1, &[1, 2, 3]).unwrap();
         assert_eq!(list_nodes(dir.clone()), vec!["e61551410cfd538e24".to_string()]);
+        assert!(list_pending(dir.clone()).is_empty(), "a node record is not a pending claim");
+        s.write("claim-pending/0000000000000c4f2a", 1, &[4]).unwrap();
+        assert_eq!(list_pending(dir.clone()), vec!["0000000000000c4f2a".to_string()]);
+        assert_eq!(list_nodes(dir.clone()), vec!["e61551410cfd538e24".to_string()], "a pending claim is not a node");
         let r = store_read_sealed(dir.clone(), "node/e61551410cfd538e24".into()).unwrap().unwrap();
         assert_eq!(r.aad, store::aad("node/e61551410cfd538e24", r.generation));
         assert_eq!(r.sealed, vec![1, 2, 3]);
