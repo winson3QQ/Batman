@@ -10,6 +10,7 @@ import 'api/claim.dart';
 import 'api/member.dart';
 import 'api/owner.dart';
 import 'api/rekey.dart';
+import 'api/replay.dart';
 import 'api/simple.dart';
 import 'api/swupdate.dart';
 
@@ -44,6 +45,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp;
 
   CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_ReplaySessionPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession;
+
+  CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_SwUpdatePtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate;
 
@@ -68,6 +73,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   RemoveOp
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    dynamic raw,
+  );
+
+  @protected
+  ReplaySession
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
     dynamic raw,
   );
 
@@ -102,14 +113,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ReplaySession
+  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    dynamic raw,
+  );
+
+  @protected
   SwUpdate
   dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     dynamic raw,
   );
 
   @protected
+  ClaimSession
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    dynamic raw,
+  );
+
+  @protected
   OwnerSession
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    dynamic raw,
+  );
+
+  @protected
+  ReplaySession
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
     dynamic raw,
   );
 
@@ -144,6 +173,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ReplaySession
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    dynamic raw,
+  );
+
+  @protected
   SwUpdate
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     dynamic raw,
@@ -163,6 +198,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   OwnerStep dco_decode_box_autoadd_owner_step(dynamic raw);
+
+  @protected
+  ReplayStep dco_decode_box_autoadd_replay_step(dynamic raw);
 
   @protected
   SealedRecord dco_decode_box_autoadd_sealed_record(dynamic raw);
@@ -258,6 +296,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   OwnerStep? dco_decode_opt_box_autoadd_owner_step(dynamic raw);
 
   @protected
+  ReplayStep? dco_decode_opt_box_autoadd_replay_step(dynamic raw);
+
+  @protected
   SealedRecord? dco_decode_opt_box_autoadd_sealed_record(dynamic raw);
 
   @protected
@@ -306,7 +347,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  (ReplaySession, Uint8List)
+  dco_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_replay_session_list_prim_u_8_strict(
+    dynamic raw,
+  );
+
+  @protected
+  RecoveryEnd dco_decode_recovery_end(dynamic raw);
+
+  @protected
   RemovePlanView dco_decode_remove_plan_view(dynamic raw);
+
+  @protected
+  ReplayKind dco_decode_replay_kind(dynamic raw);
+
+  @protected
+  ReplayNext dco_decode_replay_next(dynamic raw);
+
+  @protected
+  ReplayStep dco_decode_replay_step(dynamic raw);
 
   @protected
   SealParams dco_decode_seal_params(dynamic raw);
@@ -390,6 +449,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ReplaySession
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SwUpdate
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     SseDeserializer deserializer,
@@ -420,14 +485,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ReplaySession
+  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SwUpdate
   sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     SseDeserializer deserializer,
   );
 
   @protected
+  ClaimSession
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   OwnerSession
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ReplaySession
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
     SseDeserializer deserializer,
   );
 
@@ -462,6 +545,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ReplaySession
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SwUpdate
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     SseDeserializer deserializer,
@@ -481,6 +570,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   OwnerStep sse_decode_box_autoadd_owner_step(SseDeserializer deserializer);
+
+  @protected
+  ReplayStep sse_decode_box_autoadd_replay_step(SseDeserializer deserializer);
 
   @protected
   SealedRecord sse_decode_box_autoadd_sealed_record(
@@ -586,6 +678,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  ReplayStep? sse_decode_opt_box_autoadd_replay_step(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SealedRecord? sse_decode_opt_box_autoadd_sealed_record(
     SseDeserializer deserializer,
   );
@@ -636,7 +733,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  (ReplaySession, Uint8List)
+  sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_replay_session_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RecoveryEnd sse_decode_recovery_end(SseDeserializer deserializer);
+
+  @protected
   RemovePlanView sse_decode_remove_plan_view(SseDeserializer deserializer);
+
+  @protected
+  ReplayKind sse_decode_replay_kind(SseDeserializer deserializer);
+
+  @protected
+  ReplayNext sse_decode_replay_next(SseDeserializer deserializer);
+
+  @protected
+  ReplayStep sse_decode_replay_step(SseDeserializer deserializer);
 
   @protected
   SealParams sse_decode_seal_params(SseDeserializer deserializer);
@@ -725,6 +840,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    ReplaySession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     SwUpdate self,
     SseSerializer serializer,
@@ -760,6 +882,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    ReplaySession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     SwUpdate self,
     SseSerializer serializer,
@@ -767,8 +896,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(
+    ClaimSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOwnerSession(
     OwnerSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    ReplaySession self,
     SseSerializer serializer,
   );
 
@@ -809,6 +952,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    ReplaySession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     SwUpdate self,
     SseSerializer serializer,
@@ -832,6 +982,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_owner_step(
     OwnerStep self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_replay_step(
+    ReplayStep self,
     SseSerializer serializer,
   );
 
@@ -962,6 +1118,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_replay_step(
+    ReplayStep? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_sealed_record(
     SealedRecord? self,
     SseSerializer serializer,
@@ -1020,10 +1182,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void
+  sse_encode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_replay_session_list_prim_u_8_strict(
+    (ReplaySession, Uint8List) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_recovery_end(RecoveryEnd self, SseSerializer serializer);
+
+  @protected
   void sse_encode_remove_plan_view(
     RemovePlanView self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_replay_kind(ReplayKind self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_replay_next(ReplayNext self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_replay_step(ReplayStep self, SseSerializer serializer);
 
   @protected
   void sse_encode_seal_params(SealParams self, SseSerializer serializer);
@@ -1153,6 +1334,22 @@ class RustLibWire implements BaseWire {
       );
 
   void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+        ptr,
+      );
+
+  void
   rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerSwUpdate(
     int ptr,
   ) => wasmModule
@@ -1212,6 +1409,16 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
   rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRemoveOp(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerReplaySession(
     int ptr,
   );
 

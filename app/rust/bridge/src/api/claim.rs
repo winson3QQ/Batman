@@ -143,7 +143,7 @@ pub fn store_keep_copy(dir: String, rel: String) -> Result<bool, String> {
 pub(crate) const FORGOTTEN_NODE: &str = "forgotten-node";
 pub(crate) const FORGOTTEN_PENDING: &str = "forgotten-pending";
 
-fn pending_record(p: &Pending) -> Vec<u8> {
+pub(crate) fn pending_record(p: &Pending) -> Vec<u8> {
     cbor::encode(&Value::Map(vec![
         (Value::Uint(1), Value::Text(p.device_id.clone())),
         (Value::Uint(2), Value::Bytes(p.k.to_vec())),
@@ -196,7 +196,47 @@ pub struct ClaimSession {
     claim: Claim,
     pending: Option<Pending>,
     dev_soft_enc: bool,
+    /// Write steps handed out since PersistPending: the 1st is claim/begin, the 2nd claim/finish (claimflow's order)
+    writes_after_persist: u32,
+    end: Option<FinishEnd>,
 }
+
+/// What the attempt ended with, for `replay_due` (254-app-replay §2)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinishEnd {
+    /// claim/finish answered 9
+    TryReplay,
+    /// 13, or OK without usable credentials
+    Committed,
+    /// a frame / transport failure: no verdict (the same as no end at all)
+    Broken,
+    /// anything else (claimed, 3 / 4 / 6 / 7 / 10 / 11 / 12 / other codes, msg2 / cert / begin refused)
+    Other,
+}
+
+/// The node record of a claimed or recovered node (design §5.1 / 254-app-replay §5: keys 1-9, + 10 on a dev build
+/// whose owner_enc key is SOFTWARE). `link`: SHA-256 of the pending plaintext it came from (key 9).
+pub(crate) fn node_record(p: &Pending, c: &batman_proto::flow::Creds, link: [u8; 32], dev_soft_enc: bool) -> Vec<u8> {
+    let mut rec = vec![
+        (Value::Uint(1), Value::Text(p.device_id.clone())),
+        (Value::Uint(2), Value::Bytes(p.k.to_vec())),
+        (Value::Uint(3), Value::Bytes(p.node_cert.clone())),
+        (Value::Uint(4), Value::Bytes(p.dac_der.clone())),
+        (Value::Uint(5), Value::Bytes(c.owner_tag_key.to_vec())),
+        (Value::Uint(6), Value::Bytes(c.adv_owner_key.to_vec())),
+        (Value::Uint(7), Value::Text(c.root_password.clone())),
+        (Value::Uint(8), Value::Text("claimed".into())),
+        // 254-app-claim-noover R2: the pending this record came from (informational)
+        (Value::Uint(9), Value::Bytes(link.to_vec())),
+    ];
+    if dev_soft_enc {
+        rec.push((Value::Uint(10), Value::Text(DEV_SOFT_ENC.into())));
+    }
+    cbor::encode(&Value::Map(rec))
+}
+
+/// s1 §5.1: the neutral words for a 9 (K wrong, someone else first, or our own commit not visible yet)
+pub(crate) const TRY_REPLAY_TEXT: &str = "QR 不符，或認領仍在收尾 — 請確認 QR 後稍後再試";
 
 /// design 254-app-s1 §4.1: the mark of a node claimed by a dev build whose owner_enc key is SOFTWARE (node record key
 /// 10; absent otherwise — records written before the mark existed have no key 10 and read the same as ever).
@@ -216,9 +256,23 @@ impl ClaimSession {
             frame_limit: frame_limit as usize,
         };
         let (claim, a) = Claim::start(input);
-        let mut s = ClaimSession { claim, pending: None, dev_soft_enc };
+        let mut s = ClaimSession { claim, pending: None, dev_soft_enc, writes_after_persist: 0, end: None };
         let step = s.step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
         Ok((s, step))
+    }
+
+    /// 254-app-replay §2 T1: replay this very node now? True when the claim/finish frames were handed to Dart AND the
+    /// attempt has no end yet (90 s time-out, a notification / write error), ended Broken, or ended 9 / 13 / OK without
+    /// usable credentials. Anything that ended before the finish went out, and every other finish answer, is false.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn replay_due(&self) -> bool {
+        self.writes_after_persist >= 2 && matches!(self.end, None | Some(FinishEnd::TryReplay | FinishEnd::Committed | FinishEnd::Broken))
+    }
+
+    /// The claim/finish answer was 9 (the exhausted recovery then says s1 §5.1's words).
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn finished_with_9(&self) -> bool {
+        self.end == Some(FinishEnd::TryReplay)
     }
 
     /// A frame received on TX; None = keep reading.
@@ -236,31 +290,32 @@ impl ClaimSession {
     }
 
     fn step(&mut self, a: Option<Action>) -> Option<ClaimStep> {
-        Some(match a? {
-            Action::Write(frames) => ClaimStep { frames, ..ClaimStep::new(StepKind::Write) },
+        let a = a?;
+        if let Action::Done(e) = &a {
+            self.end = Some(match e {
+                End::Finished(ClaimFinish::TryReplay) => FinishEnd::TryReplay,
+                End::Finished(ClaimFinish::Committed) => FinishEnd::Committed,
+                End::Broken(_) => FinishEnd::Broken,
+                _ => FinishEnd::Other,
+            });
+        }
+        Some(match a {
+            Action::Write(frames) => {
+                if self.pending.is_some() {
+                    self.writes_after_persist += 1;
+                }
+                ClaimStep { frames, ..ClaimStep::new(StepKind::Write) }
+            }
             Action::PersistPending(p) => {
                 let s = ClaimStep { path: pending_path(&p.device_id), record: pending_record(&p), ..ClaimStep::new(StepKind::PersistPending) };
                 self.pending = Some(p);
+                self.writes_after_persist = 0;
                 s
             }
             Action::Done(End::Finished(ClaimFinish::Claimed(c))) => match &self.pending {
                 Some(p) => {
-                    let mut rec = vec![
-                        (Value::Uint(1), Value::Text(p.device_id.clone())),
-                        (Value::Uint(2), Value::Bytes(p.k.to_vec())),
-                        (Value::Uint(3), Value::Bytes(p.node_cert.clone())),
-                        (Value::Uint(4), Value::Bytes(p.dac_der.clone())),
-                        (Value::Uint(5), Value::Bytes(c.owner_tag_key.to_vec())),
-                        (Value::Uint(6), Value::Bytes(c.adv_owner_key.to_vec())),
-                        (Value::Uint(7), Value::Text(c.root_password.clone())),
-                        (Value::Uint(8), Value::Text("claimed".into())),
-                        // 254-app-claim-noover R2: the pending this record came from (informational)
-                        (Value::Uint(9), Value::Bytes(batman_proto::claimflow::pending_link(&pending_record(p)).to_vec())),
-                    ];
-                    if self.dev_soft_enc {
-                        rec.push((Value::Uint(10), Value::Text(DEV_SOFT_ENC.into())));
-                    }
-                    let rec = cbor::encode(&Value::Map(rec));
+                    let link = batman_proto::claimflow::pending_link(&pending_record(p));
+                    let rec = node_record(p, &c, link, self.dev_soft_enc);
                     ClaimStep {
                         path: node_path(&p.device_id),
                         record: rec,
@@ -278,8 +333,10 @@ impl ClaimSession {
                     ClaimFinish::LegacyNoSshKey => "這是舊版節點，還沒設定 SSH 金鑰，無法用 App 認領",
                     ClaimFinish::BeginAgain => "認領逾時，請再按一次「認領」",
                     ClaimFinish::AppBug => "認領要求的格式不對（App 的問題，請回報）",
-                    ClaimFinish::TryReplay => "認領被拒絕：QR 碼不符、節點已被別人認領，或之前的認領其實已經成功",
-                    ClaimFinish::Unknown => "沒有收到明確的結果；這次的紀錄先保留，請稍後再試",
+                    // 254-app-replay §4: neutral (s1 §5.1), never "claimed by someone else"
+                    ClaimFinish::TryReplay => TRY_REPLAY_TEXT,
+                    // 254-app-replay §2: a 7 may have committed (N5) -> the next 「認領」 finds it claimed and recovers
+                    ClaimFinish::Unknown => "節點忙碌或結果不明，請再按一次「認領」（這次的紀錄先保留）",
                 };
                 let code = match &f {
                     ClaimFinish::Claimed(_) => "Claimed".to_string(),
@@ -378,11 +435,107 @@ mod tests {
         assert_eq!(v.get(7).and_then(Value::as_text), Some("pw"));
         let st = s.step(Some(Action::Done(End::Finished(ClaimFinish::TryReplay)))).unwrap();
         assert!(st.kind == StepKind::Ended, "{}", st.detail);
-        assert_eq!(st.detail, "認領被拒絕：QR 碼不符、節點已被別人認領，或之前的認領其實已經成功（TryReplay）");
+        assert_eq!(st.detail, "QR 不符，或認領仍在收尾 — 請確認 QR 後稍後再試（TryReplay）", "254-app-replay §4: neutral, never \"someone else\"");
         let st = s.step(Some(Action::Done(End::Msg2Undecryptable))).unwrap();
         assert_eq!(st.detail, "連到的不是這台節點，或 QR 碼不對（Msg2Undecryptable）");
         let st = s.step(Some(Action::Done(End::Broken("lost".into())))).unwrap();
         assert_eq!(st.detail, "連線或資料出錯，這次的紀錄先保留（Broken：lost）");
+    }
+
+    // 254-app-replay R1 / D16: replay_due over the whole table — the claim/finish frames handed over or not, times every
+    // end (none, Broken, each finish answer by code). Due only when finish went out AND the end is none / Broken / 9 /
+    // 13 / OK without credentials. Negative controls: the "handed over" check removed -> a Broken before finish
+    // triggers; 7 not excluded -> 7 triggers.
+    #[test]
+    fn r1_replay_due_whole_table() {
+        use batman_proto::envelope::Outcome;
+        use batman_proto::flow::{claim_finish, Creds};
+        let q = ClaimQr { device_id: "e61551410cfd538e24".into(), k: vec![7; 32] };
+        let p = Pending {
+            device_id: q.device_id.clone(), k: [7; 32], node_cert: vec![9; 10], dac_der: vec![8; 5], ecdh_pub: [4; 65],
+            owner_pub: [4; 65], owner_enc_pub: [4; 65],
+        };
+        // how far the attempt got: 0 = msg1 only, 1 = pending persisted + claim/begin written, 2 = claim/finish written
+        let run = |at: u32, end: Option<End>| {
+            let (mut s, _) = ClaimSession::start(&q, vec![4; 65], vec![4; 65], vec![1; 64], 244, false).unwrap();
+            if at >= 1 {
+                s.step(Some(Action::PersistPending(p.clone())));
+                s.step(Some(Action::Write(vec![vec![1]])));
+            }
+            if at >= 2 {
+                s.step(Some(Action::Write(vec![vec![2]])));
+            }
+            if let Some(e) = end {
+                s.step(Some(Action::Done(e)));
+            }
+            (s.replay_due(), s.finished_with_9())
+        };
+        let err = |code: u64| Outcome::Err { code, detail: Value::Map(vec![]) };
+        // before the finish went out: never
+        for at in [0, 1] {
+            assert_eq!(run(at, None), (false, false), "at {at}, no end");
+            assert_eq!(run(at, Some(End::Broken("x".into()))), (false, false), "at {at}, Broken");
+            assert_eq!(run(at, Some(End::Msg2Undecryptable)), (false, false));
+            assert_eq!(run(at, Some(End::BeginRefused(err(7)))), (false, false));
+            assert_eq!(run(at, Some(End::CertRejected(batman_proto::nodecert::Error::NotPinned))), (false, false));
+        }
+        // after: no end (90 s, a notification error) / Broken -> due
+        assert_eq!(run(2, None), (true, false));
+        assert_eq!(run(2, Some(End::Broken("x".into()))), (true, false));
+        let creds = || Creds { owner_tag_key: [5; 32], adv_owner_key: [6; 32], root_password: "pw".into() };
+        assert_eq!(run(2, Some(End::Finished(ClaimFinish::Claimed(creds())))), (false, false), "claimed");
+        assert_eq!(run(2, Some(End::Finished(ClaimFinish::Committed))), (true, false), "OK without credentials");
+        for c in 1..=20u64 {
+            let want = matches!(c, 9 | 13);
+            assert_eq!(run(2, Some(End::Finished(claim_finish(&err(c))))), (want, c == 9), "finish answered {c}");
+        }
+        let legacy = Outcome::Err { code: 6, detail: Value::Map(vec![(Value::Uint(1), Value::Text("claim".into())), (Value::Uint(2), Value::Uint(10))]) };
+        assert_eq!(run(2, Some(End::Finished(claim_finish(&legacy)))), (false, false), "legacy node");
+    }
+
+    // D16 (Rust): finish answered 7 -> no T1, and the words ask for another 「認領」 (it may have committed, N5)
+    #[test]
+    fn d16_finish_7_asks_to_press_again() {
+        let q = ClaimQr { device_id: "e61551410cfd538e24".into(), k: vec![7; 32] };
+        let (mut s, _) = ClaimSession::start(&q, vec![4; 65], vec![4; 65], vec![1; 64], 244, false).unwrap();
+        let o = batman_proto::envelope::Outcome::Err { code: 7, detail: Value::Map(vec![]) };
+        let st = s.step(Some(Action::Done(End::Finished(batman_proto::flow::claim_finish(&o))))).unwrap();
+        assert_eq!(st.detail, "節點忙碌或結果不明，請再按一次「認領」（這次的紀錄先保留）（Unknown）");
+    }
+
+    // R1 through a fake node (N3 / N5): inside provd's cache window NX opens and claim/finish answers 9 -> due, and
+    // the 9 is known; a real first claim -> not due.
+    #[cfg(feature = "dev-trust")]
+    #[test]
+    fn r1_the_cache_window_9_is_due_and_a_first_claim_is_not() {
+        use crate::replay_node::*;
+        let v = vectors();
+        let q = ClaimQr { device_id: device_id(&v), k: h(&v["keys"]["claim_secret"]) };
+        let drive = |n: &mut FakeNode| {
+            let c = n.connect().unwrap();
+            let (mut s, mut st) = ClaimSession::start(&q, owner_sign_pub().to_vec(), owner_enc_pub().to_vec(), vec![1; 64], FL as u32, false).unwrap();
+            loop {
+                match st.kind {
+                    StepKind::Write => {
+                        let Reply::Frames(back) = n.send(c, &st.frames) else { panic!("no answer") };
+                        let mut out = None;
+                        for f in &back {
+                            out = s.on_frame(f.clone()).or(out);
+                        }
+                        st = out.unwrap();
+                    }
+                    StepKind::PersistPending => st = s.pending_persisted().unwrap(),
+                    _ => return (st, s.replay_due(), s.finished_with_9()),
+                }
+            }
+        };
+        let mut n = FakeNode::claimed(v.clone());
+        n.cached_unclaimed = true;
+        let (st, due, nine) = drive(&mut n);
+        assert_eq!((st.kind, due, nine), (StepKind::Ended, true, true), "{}", st.detail);
+        let mut n = FakeNode::unclaimed(v.clone());
+        let (st, due, _) = drive(&mut n);
+        assert_eq!((st.kind, due), (StepKind::Claimed, false));
     }
 
     // 254-app-claim-noover T1 (R5, R2): a device id seen again. nothing -> Nothing; only a pending -> Pending; a node
