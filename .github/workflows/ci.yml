@@ -4,7 +4,11 @@ permissions:
   contents: read
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    # Pinned to ubuntu-24.04: on ubuntu-latest (26.04) the two SLOTLOCK "free: a holder started inside the step
+    # window -> leak" cases FAIL ([SLKFREE ok ...] instead of [SLKFREE leak ...]). Flip test: the same tree with only
+    # this runs-on changed is green (run 43556403233: SLOTLOCK 54 passed, 0 failed) while main f0138bd on 26.04 fails
+    # (run 43544781217). The 26.04 cause is NOT found yet (suspect: different process tools; unverified).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,7 +92,11 @@ jobs:
         run: python tests/judges/h4/test-judges.py
 
   prov-p1:
-    runs-on: ubuntu-latest
+    # Pinned to ubuntu-24.04: on ubuntu-latest (26.04) provstore TestExecAbandonsDState FAILs with
+    # "dd: IO error: Invalid input". Flip test: only this runs-on changed -> provstore ok (run 43556403233), main
+    # f0138bd on 26.04 fails (run 43544781217). The 26.04 cause is NOT found yet (suspect: a different coreutils
+    # dd; unverified).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: busybox for the ash runs, squashfs-tools for card-wbox

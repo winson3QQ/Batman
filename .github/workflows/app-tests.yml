@@ -4,6 +4,8 @@ name: app-tests
 #     build, X3 (field feature tree + field .so strings, app/tools/check-field-build.sh), flutter analyze, flutter test
 #   - app/tools/kotlin-unit-tests.sh: the Kotlin JVM unit tests of every variant, judged from the JUnit XML
 #   - app/tools/check-allow-backup.sh: T31, android:allowBackup="false" in every variant's merged manifest
+#   - tests/tools/sigverify (go test) and tests/noise_live.rs against tests/tools/peer/noise_responder.py, each judged
+#     by app/tools/judge-test-output.sh
 # Each stage FAILs when it finds nothing to run, and each new check has its negative control as a step here.
 # Not here (needs a phone / an APK): the instrumented tests (src/androidTest), aapt2 on a built APK, the .so inside
 # an APK (cargokit builds every flavor with dev-trust until #255).
@@ -133,3 +135,62 @@ jobs:
           [ "$rc" != 0 ]
           [ "$(grep -c '^FAIL allowBackup [a-z0-9A-Z]*: android:allowBackup is absent (default true)$' <<< "$out")" = 9 ]
           ! grep -q '^PASS' <<< "$out"
+
+      # --- the host tools the app tests lean on: tests/tools/sigverify (Go) and the live Noise handshake of
+      # app/rust/batman-proto/tests/noise_live.rs against tests/tools/peer/noise_responder.py (dissononce) ---
+      - name: judge-test-output.sh selftest — 0 tests, one test short, a failure, an ignored test each FAIL
+        if: ${{ !cancelled() }}
+        run: bash app/tools/judge-test-output.sh --selftest
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff   # v5
+        if: ${{ !cancelled() }}
+        with:
+          go-version-file: tests/tools/sigverify/go.mod
+          cache: false
+      - name: sigverify — go test, exactly 8 top-level tests passed, 0 failed
+        if: ${{ !cancelled() }}
+        run: |
+          cd tests/tools/sigverify
+          go version
+          go test -count=1 -v ./... > "$RUNNER_TEMP/sigverify.log" 2>&1 && rc=0 || rc=$?
+          grep -E '^(--- |ok|FAIL|PASS|\?)' "$RUNNER_TEMP/sigverify.log"
+          echo "go test rc=$rc"; [ "$rc" = 0 ]
+          bash "$GITHUB_WORKSPACE/app/tools/judge-test-output.sh" go "$RUNNER_TEMP/sigverify.log" 8
+      - name: sigverify negative control — the real log with one top-level PASS removed, and a run that matches no test, FAIL
+        if: ${{ !cancelled() }}
+        run: |
+          j="$GITHUB_WORKSPACE/app/tools/judge-test-output.sh"
+          sed '0,/^--- PASS: /{/^--- PASS: /d}' "$RUNNER_TEMP/sigverify.log" > "$RUNNER_TEMP/sv7.log"
+          out=$(bash "$j" go "$RUNNER_TEMP/sv7.log" 8) && rc=0 || rc=$?; echo "one removed: rc=$rc $out"
+          [ "$rc" = 1 ] && grep -q 'passed=7 (want 8)' <<< "$out"
+          (cd tests/tools/sigverify && go test -count=1 -v -run 'NoSuchTest' ./... > "$RUNNER_TEMP/sv0.log" 2>&1; echo "go test -run NoSuchTest rc=$?")
+          out=$(bash "$j" go "$RUNNER_TEMP/sv0.log" 8) && rc=0 || rc=$?; echo "0 tests: rc=$rc $out"
+          [ "$rc" = 1 ] && grep -q 'passed=0 (want 8)' <<< "$out"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405   # v6.2.0
+        if: ${{ !cancelled() }}
+        with:
+          python-version: '3.12'
+      - name: the hash-pinned closure of tests/vectors/219-protocol in a venv (PEER_PY)
+        if: ${{ !cancelled() }}
+        run: |
+          python -m venv "$RUNNER_TEMP/venv-219"
+          "$RUNNER_TEMP/venv-219/bin/python" -m pip install -q --require-hashes --no-deps -r tests/vectors/219-protocol/requirements.txt
+          "$RUNNER_TEMP/venv-219/bin/python" -c 'import dissononce; print("dissononce ok")'
+      - name: noise_live — the Rust core handshakes with the dissononce peer, 3 passed; 0 failed; 0 ignored
+        if: ${{ !cancelled() }}
+        working-directory: app/rust/batman-proto
+        run: |
+          PEER_PY="$RUNNER_TEMP/venv-219/bin/python" cargo test --test noise_live -- --ignored > "$RUNNER_TEMP/noise.log" 2>&1 && rc=0 || rc=$?
+          grep -E '^(test |running )' "$RUNNER_TEMP/noise.log"
+          echo "cargo test rc=$rc"; [ "$rc" = 0 ]
+          bash ../../tools/judge-test-output.sh cargo "$RUNNER_TEMP/noise.log" 3
+      - name: noise_live negative controls — without --ignored (0 ran) the judge FAILs; without a working PEER_PY the tests FAIL
+        if: ${{ !cancelled() }}
+        working-directory: app/rust/batman-proto
+        run: |
+          cargo test --test noise_live > "$RUNNER_TEMP/noise0.log" 2>&1; echo "cargo test (no --ignored) rc=$?"
+          out=$(bash ../../tools/judge-test-output.sh cargo "$RUNNER_TEMP/noise0.log" 3) && rc=0 || rc=$?; echo "0 ran: rc=$rc $out"
+          [ "$rc" = 1 ] && grep -q '0 passed; 0 failed; 3 ignored' <<< "$out"
+          PEER_PY=/bin/false cargo test --test noise_live -- --ignored > "$RUNNER_TEMP/noiseX.log" 2>&1 && crc=0 || crc=$?
+          grep -E '^test result' "$RUNNER_TEMP/noiseX.log"; echo "cargo test (PEER_PY=/bin/false) rc=$crc"
+          out=$(bash ../../tools/judge-test-output.sh cargo "$RUNNER_TEMP/noiseX.log" 3) && rc=0 || rc=$?; echo "no peer: rc=$rc $out"
+          [ "$crc" != 0 ] && [ "$rc" = 1 ]
