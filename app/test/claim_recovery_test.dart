@@ -452,6 +452,7 @@ void main() {
       expect(h.field.connects, 0);
       expect(h.field.scanAt, isEmpty);
       if (c == 'ecdh error') expect(h.lines.last, '[CLAIM_FAIL] $recoverNotYet');
+      if (c == 'ecdh error') expect(rust.last!.disposed, isTrue, reason: 'S20 fix: no session leak');
       if (c.startsWith('recover') || c.startsWith('keyLevels')) expect(h.plat.ecdhCalls, 0, reason: 'keys first');
       h.pendingUntouched();
     });
@@ -585,6 +586,7 @@ void main() {
     h.field.add(Dev('M', -40, ours: true));
     expect(await h.run(t3: true), RecoveryOutcome.notStarted);
     expect(h.t3Asked, 1);
+    expect(rust.last!.disposed, isTrue, reason: 'S20 fix: a session that will not be used is dropped');
     expect(h.field.connects, 0);
     h.pendingUntouched();
   });
