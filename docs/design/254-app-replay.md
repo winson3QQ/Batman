@@ -1,4 +1,4 @@
-# 254-app-replay — 把 claim REPLAY 接進 app(v5,待審)
+# 254-app-replay — 把 claim REPLAY 接進 app(v5.1:v5 兩位審查皆 APPROVE;v5.1 = 最終審查的 4 項實作時修正,§16)
 
 對應:#254;凍結設計 `254-app-s1.md` §5.1 / §5.2 / §5.3、`254-app-claim-noover.md` v2.1。v2 被兩位審查者 REJECT → v3 整份重寫;
 v3 兩位皆 APPROVE-WITH-CHANGES(0 BLOCKER;A 2 MAJOR、B 4 MAJOR)→ v4;v4 兩位皆 APPROVE-WITH-CHANGES(A 1 MAJOR + 5 MINOR、
@@ -108,8 +108,8 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
    (依 RSSI)**— 試過的仍要能重試(N3 的快取空窗)。每輪重新掃描(N10:有人連著的節點不廣播 → 下一輪才看得到)。一旦某台解得開且
    DAC 相符,它就是對象:之後的輪次只試它。最多 3 輪,輪與輪相隔 ≥ 15 s。3 輪後還有沒試過的 → 提示把手機貼近節點。
    T2 每輪掃描一次、輪距 ≥ 15 s → 每 30 s 最多 2 次,在 s1 §5.3(l.186)的 ≤ 4 次 / 30 s 之內。
-   **時間預算**:最壞情況每台 ≈ 15 s(連線逾時)+ 12 s(msg2)= 27 s → 6 台一輪 ≈ 162 s + 輪距 15 s → 300 s 的總時限可能在第 2 輪中途
-   用完、第 3 輪不會跑。這是接受的:附近 6 台都連不上 / 不回 msg2 時,再等也沒用;使用者可再按一次。
+   **時間預算**:最壞情況每台 ≈ 15 s(連線逾時)+ 12 s(msg2)= 27 s → 每輪掃描 6 s + 6 台 ≈ 162 s + 輪距 15 s → 300 s 的總時限
+   可能在第 2 輪中途用完、第 3 輪不會跑(第 2 輪第一台約在 6 + 162 + 15 + 6 = 189 s 開始;T1 三輪都連不上再接 T2 時約在 279 s,§10 D9)。這是接受的:附近 6 台都連不上 / 不回 msg2 時,再等也沒用;使用者可再按一次。
 5. **總時限 300 s**(從 T1 或 T2 開始算):過了就不再開始新的一台、不再重試 13;進行中的做完,所以最長 300 + 45 + 90 = 435 s。
 6. **進度**:每台一行「恢復中:第 r/3 輪,第 i/n 台」;恢復期間「認領」鈕換成「停止恢復」。
 7. **取消**(按「停止恢復」、離開頁面 = 新增的 `dispose()`):設旗標。還沒寫出 claim/replay → 立即斷線結束;已寫出 → 等這一台的回覆
@@ -242,7 +242,7 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
 | D6 | 總時限、進度行、停止 / dispose / 藍牙被關:寫出前立即斷,寫出後等回覆並寫紀錄;T1 判斷點頁面已離開 → 不開始 | Dart 假時鐘 | (旗標)→ 繼續連下一台 |
 | D7 | `keyLevels['recover']` 為 false / 讀取出錯、或 `ecdh` 出錯(field 版):零連線 | Dart | (檢查)→ 有連線 |
 | D8 | 假節點在 T1 途中換 id:T1 三輪連不上 → 同一次動作接 T2 → Recovered;有一輪連得上(只是解不開)→ 不接 | Dart | (接續)→ 以中性文字結束、沒有 node 紀錄 |
-| D9 | T2 輪序:8 台假裝置,目標的 RSSI 排第 7 → 第 2 輪試到它。跑兩種:每台很快回假 msg2;以及每台接近最壞時間(15 s 連線 + 12 s msg2)→ 證明第 2 輪在 300 s 內排得到目標(6 × 27 + 15 + 27 ≈ 204 s),並記下第 3 輪跑不到 | Dart 假時鐘 | (「試過」集合)→ 3 輪都沒試到 |
+| D9 | T2 輪序:8 台假裝置,目標的 RSSI 排第 7 → 第 2 輪試到它。跑兩種:每台很快回假 msg2;以及每台接近最壞時間(15 s 連線 + 12 s msg2)→ 證明第 2 輪在 300 s 內排得到目標(含每輪 6 s 掃描:6 + 6 × 27 + 15 + 6 = 189 s 開始試目標,最壞做完 ≈ 216 s),並記下第 3 輪跑不到;再跑「T1 接 T2」:T1 三輪都連不上(15 + 3 × 15 + 2 × 15 = 90 s)後接 T2,第 2 輪第一台約在 90 + 6 + 162 + 15 + 6 = 279 s < 300 s 開始 | Dart 假時鐘 | (「試過」集合)→ 3 輪都沒試到 |
 | D10 | 寫出 claim/replay 後假節點 60 s 才回 OK → 寫了 node 紀錄、只送過 1 次 replay | Dart 假時鐘 | (寫出後 90 s;改成 45 s)→ 沒有紀錄、送出第 2 次 replay |
 | D11 | 時限:msg2 12 s 沒來 → 斷線換下一台;寫出前每台 45 s;相鄰兩次握手的開始相隔 ≥ 10 s;ops 忙 → claim/begin 立即 7 → 下一輪 | Dart 假時鐘 | (各時限 / 節拍)各一:連線留著 / 兩次握手相隔 < 10 s |
 | D12 | pending 的 K ≠ QR(T1 與 T2 各一)→ 零連線、pending 不動 | Dart | (K 比對)→ 有連線 |
@@ -255,7 +255,10 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
 | S3 | 所有結束文字與 log 掃不到 K / z / psk / 密碼的 hex 與原文 | Rust + Dart | 故意把密碼放進文字 → FAIL |
 
 **真機:❌ 全部未做**(需要使用者授權動手機與 04)。計畫:
-0. **安裝規則(步驟 0 與 2 都適用)**:只用 `adb -s <serial> install -r <apk>`。**這支手機上禁止 `flutter install` 與 `flutter run`**:
+0. **先看裝的是哪個 flavor**:`adb -s <serial> shell pm list packages dev.batman` → `dev.batman.app.dev` = dev、`dev.batman.app.dev2` =
+   dev2、`dev.batman.app` = field(`applicationIdSuffix`,build.gradle.kts:60 / 68,本分支行號)。之後的步驟一律用**同一個 flavor** 的
+   APK(換 flavor = 另一個 app,看不到那支手機上的 pending)。
+   **安裝規則(步驟 0 與 2 都適用)**:只用 `adb -s <serial> install -r <apk>`。**這支手機上禁止 `flutter install` 與 `flutter run`**:
    `flutter install` 一律先解除安裝(本機 SDK `C:\src\flutter` @ c197ca5199e,flutter_tools `commands/install.dart:104-113`,`bool uninstall = true`),`flutter run` 安裝失敗時
    會解除安裝再裝(`android/android_device.dart:415-423`)。也禁止清除 app 資料、禁止改 applicationId(dev / field 是不同的 app,
    `build.gradle.kts:30, 50, 58`,pending 與 Keystore 不共用)。裝之前比簽署憑證:與已安裝的不同 → **停,絕不解除安裝**(pending 與
@@ -296,6 +299,10 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
   `replayflow.rs` 開頭註解(「3 次」→ §3-4)、`tests/replayflow.rs`、`tests/flow.rs`(`claim_replay_rows` l.54-56 的迴圈把
   7 / 10 斷言成 `ClaimReplay::Unknown` → 移到 `Busy`;這就是 R2 的負對照)、`EcdhPeer.kt` 註解。`batman-proto` 其餘流程碼、節點、
   Kotlin 邏輯不動。
+- 實作時的檔案配置(行為同上,只是放的位置):`ClaimRecovery` 放在新檔 `lib/claim_recovery.dart`(連同 BLE 介面 `RecoveryBle`,
+  測試才換得掉藍牙),`claim.dart` 只接 T1 / T2、停止鈕與 `dispose()`;bridge 新檔 `api/replay.rs`;假節點放在
+  `batman-proto/tests/support/replay_node.rs`,bridge 的測試以 `#[path]` 共用(宣告在 bridge `lib.rs`,不在 `crate::api` 底下,codegen
+  看不到);Dart 測試 `test/claim_recovery_test.dart`、`test/claim_replay_page_test.dart`、共用假物件 `test/replay_fakes.dart`。
 
 ## 13. v2 → v3
 
@@ -365,3 +372,21 @@ v2 有、v3 刪掉的:T1 的候選清單、「同 session 再 replay 得 13」�
 | A-m5 兩個 ⚠️ 結案(`statusStream`;PSK 集合不會變回 nil) | §0、N3、§3-7、§10 開頭 |
 | B-6 假節點補行為 | §10 開頭 |
 | B-7 N13 行號、掃描頻率 | N13、§3-4 |
+
+## 16. v5 → v5.1(最終審查的 4 項,實作時一起改)與實作時的解讀
+
+| 意見 | 處理 |
+|---|---|
+| 1. N16 / §4 計數欄:信封 body 裡的 response 缺 / 長度不對也是計數的 11 | N16、§4 末列(node.go:642 `bytesArg(body, 1, 32)`,在 l.625 的計數檢查之後);假節點 `n16_6_and_11_uncounted_but_a_bad_response_is_11_counted` |
+| 2. 真機步驟 0 先看 flavor | §10 真機 0(`pm list packages dev.batman`,用同一個 flavor 的 APK) |
+| 3. §12 列出 `tests/flow.rs` | §12 |
+| 4. D9 的算式含每輪 6 s 掃描,加「T1 接 T2」 | §3-4、§10 D9 |
+
+實作時的解讀(設計沒寫死、照最保守且最少機制的讀法定案;都有測項):
+- T1 三輪都連不上 → T2 **緊接**(不再等輪距 15 s;§2「接著做」),D9 的 279 s 依此算。
+- 13 的重試碰到總時限 → 以「節點上鎖尚未完成」結束(不是「找不到」)。
+- 「OK 但沒有可用憑證」與「3 以外的其他碼(6、11、未知碼)」都只拿到 `ClaimReplay::Unknown`(batman-proto 不改),文字一律「節點回覆
+  無法辨識,紀錄先保留」(中性);3 / 4 =「節點拒絕了這次恢復,已停止、不再重試」。
+- 恢復寫出的 node 紀錄與認領同一個產生器(key 1–9,+ dev 版軟體 owner_enc 的 key 10 標記,s1 §4.1),key 9 = 磁碟上那份 pending 明文的
+  SHA-256。
+- 寫出前 45 s 從開始連線算(含連線),是比「從 claim/begin 起算」更嚴的讀法。

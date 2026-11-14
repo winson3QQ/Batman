@@ -147,7 +147,7 @@ void main() {
   // Negative controls: no sort / no limit / one scan only -> FAIL.
   testWidgets('D2: T2 order by RSSI, ≤ 6 per round, a new scan each round; none decrypts -> neutral words', (t) async {
     final h = H(t, rust);
-    for (var i = 1; i <= 8; i++) {
+    for (final i in [5, 2, 8, 1, 7, 3, 6, 4]) { // not in RSSI order: the scan's order must not matter
       h.field.add(Dev('D$i', -10 * i));
     }
     expect(await h.run(), RecoveryOutcome.exhausted);
@@ -165,13 +165,13 @@ void main() {
   // answered 7 = ops busy, N13 -> next round)
   testWidgets('D2: after a decrypted msg2 only that device is tried', (t) async {
     final h = H(t, rust);
-    final mine = Dev('M', -40, ours: true)..beginCodes.add(7);
+    final mine = Dev('M', -40, ours: true)..beginCodes.addAll([7, 7]); // busy twice: rounds 2 and 3 must try it alone
     h.field
       ..add(Dev('X', -20))
       ..add(mine)
       ..add(Dev('Y', -60));
     expect(await h.run(), RecoveryOutcome.recovered);
-    expect(h.field.connectLog, ['X', 'M', 'M']);
+    expect(h.field.connectLog, ['X', 'M', 'M', 'M']);
     expect(mine.replays, 1);
   });
 
@@ -464,8 +464,9 @@ void main() {
     });
   }
 
-  // §3-1: Dart's copy of z is zeroed once handed to Rust; the peer is the pending's
-  testWidgets('§3-1: z handed over once and zeroed in Dart', (t) async {
+  // §3-1: one ECDH (peer = the pending's ecdh_pub, from prepare), its z handed to Rust, the session dropped at the end.
+  // (Dart's own copy is zeroed with fillRange; the channel copies it, so this test cannot see that buffer: ⚠️ by reading)
+  testWidgets('§3-1: one ECDH before any connection, z reaches Rust, the session is dropped at the end', (t) async {
     final h = H(t, rust);
     h.field.add(Dev('M', -40, ours: true));
     await h.run();
