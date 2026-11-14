@@ -697,6 +697,11 @@ class _NodesPageState extends State<NodesPage> {
 
   Future<bool> _devTrust() async => await _platform.invokeMethod<bool>('devTrust') ?? false;
 
+  /// #254 (254-app-replay §22): a byte list returned by a platform-channel call may be a READ-ONLY view on the engine's
+  /// reply buffer (the S20: ReadBuffer.getUint8List returns a view); a secret is copied into a list this page owns,
+  /// used, and that copy is zeroed (fillRange on it cannot throw). The channel's own buffer cannot be written.
+  static Uint8List? _ownCopy(Uint8List? fromPlatform) => fromPlatform == null ? null : Uint8List.fromList(fromPlatform);
+
   /// The clipboard's text, then the clipboard cleared (R12: as the claim QR).
   Future<String?> _takeClipboard() async {
     final d = await Clipboard.getData(Clipboard.kTextPlain);
@@ -958,9 +963,9 @@ class _NodesPageState extends State<NodesPage> {
   }
 
   Future<void> _importApproval(String hex, String id, ImportPrep prep, String confirmedSas, bool replace) async {
-    Uint8List? z;
+    Uint8List? z; // the page's own copy (zeroed in finally)
     try {
-      z = await _platform.invokeMethod<Uint8List>('ecdh', {'peer': prep.ephPub});
+      z = _ownCopy(await _platform.invokeMethod<Uint8List>('ecdh', {'peer': prep.ephPub}));
       // read again: 7c checks the same generation 7a saw
       final (pendGen, pend) = await _readRecord('mpend/$id');
       final (mnetGen, mnet) = await _readRecord('mnet/$id');
@@ -1438,7 +1443,7 @@ class _NodesPageState extends State<NodesPage> {
         _say(prep.detail);
         return;
       }
-      if (prep.state == UpdateState.advance) z = await _platform.invokeMethod<Uint8List>('ecdh', {'peer': prep.ephPub});
+      if (prep.state == UpdateState.advance) z = _ownCopy(await _platform.invokeMethod<Uint8List>('ecdh', {'peer': prep.ephPub}));
       // read again: the second part checks the generation the first saw (CAS)
       final (gen2, mnet2) = await _readRecord('mnet/$id');
       final st = memberUpdateImport(
