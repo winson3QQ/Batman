@@ -1,7 +1,8 @@
 #!/bin/bash
 # app/tools/check-field-build.sh [tree|so|all] [<lib.so> ...] — X3 (docs/design/254-app-s1.md §4.1 / §6): a field
 # build of the BRIDGE crate (the library the app loads) carries no dev-trust.
-#   tree  `cargo tree` of batman-proto and of the bridge with the field feature set (no features): no package may have
+#   tree  `cargo tree --target all` (the deps of every target platform: an android-only dep counts too) of batman-proto
+#         and of the bridge with the field feature set (no features): no package may have
 #         `dev-trust` or `test-vectors` enabled. Format `{p}|{f}` (each package's enabled features): the earlier
 #         `cargo tree -e features,no-dev | grep dev-trust` prints 0 lines even with `--features dev-trust` (a feature
 #         that enables no dependency is not an edge; measured 2026-11-14, cargo 1.99.1) — it could never fail.
@@ -27,7 +28,7 @@ what=${1:-all}; [ $# -gt 0 ] && shift
 
 feat(){ # <crate dir> [cargo args] -> the `package|features` lines with dev-trust / test-vectors enabled; rc 2 = cargo failed
 	local d=$1 out; shift
-	out=$(cd "$d" && $CARGO tree -e no-dev -f '{p}|{f}' --prefix none "$@" 2>/dev/null) || return 2
+	out=$(cd "$d" && $CARGO tree --target all -e no-dev -f '{p}|{f}' --prefix none "$@" 2>/dev/null) || return 2
 	[ -n "$out" ] || return 2
 	awk -F'|' '$NF ~ /(^|,)(dev-trust|test-vectors)(,|$)/' <<< "$out" | sort -u
 }

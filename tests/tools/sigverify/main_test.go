@@ -99,6 +99,18 @@ func TestHighSFails(t *testing.T) {
 	wantFail(t, "high-s", l, 1000, "line 1: signature rejected")
 }
 
+// a good signature under another key: record 10 carries key B's public key with key A's signature over its message
+func TestWrongKeyFails(t *testing.T) {
+	l := records(t, 1000)                     // key A
+	b := strings.Split(records(t, 1)[0], " ") // a fresh key B
+	f := strings.Split(l[9], " ")
+	if b[0] == f[0] {
+		t.Fatal("the two keys are the same")
+	}
+	l[9] = b[0] + " " + f[1] + " " + f[2]
+	wantFail(t, "key B with key A's signature", l, 1000, "line 10: signature rejected")
+}
+
 func TestEmptyOrShortFileFails(t *testing.T) {
 	wantFail(t, "an empty file", nil, 1000, "0 records, want at least 1000")
 	wantFail(t, "only comments", []string{"# nothing", ""}, 1000, "0 records, want at least 1000")

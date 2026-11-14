@@ -10,9 +10,13 @@ The key material goes in argv (any local process can read it): only public test 
 key published in tests/vectors/219-protocol/vectors.json and a PSK made from a constant of the test. Never a real key.
 
 stdin / stdout, one hex line each:
-  in  msg1                     out msg2          (or "ERR <what>" and exit 1: msg1 did not read)
+  in  msg1                     out msg2          (or "ERR msg1 auth-failed" and exit 1: msg1's tag did not verify)
                                out handshake hash
-  in  transport message        out its plaintext (or "ERR <what>" and exit 1)
+  in  transport message        out its plaintext (or "ERR transport auth-failed" and exit 1)
+Only an authentication failure is a refusal: dissononce 0.34.3 raises DecryptFailedException (reason
+REASON_INVALID_TAG) for a bad ChaChaPoly tag (dissononce/cipher/chachapoly.py: `except InvalidTag: raise
+DecryptFailedException(reason=REASON_INVALID_TAG)`). Any other exception is a crash of this peer: "CRASH <where>
+<type>" and exit 3, which no test may read as a refusal.
                                out a transport message of our own: b"pong:" + that plaintext
 """
 import sys
@@ -20,6 +24,7 @@ import sys
 from dissononce.cipher.chachapoly import ChaChaPolyCipher
 from dissononce.dh.x25519.private import PrivateKey as X25519Priv
 from dissononce.dh.x25519.x25519 import X25519DH
+from dissononce.exceptions.decrypt import DecryptFailedException
 from dissononce.hash.sha256 import SHA256Hash
 from dissononce.processing.handshakepatterns.interactive.NX import NXHandshakePattern
 from dissononce.processing.impl.cipherstate import CipherState
@@ -59,18 +64,24 @@ def main(argv):
                   psks=[psk] if psk else None)
     try:
         st.read_message(line(), bytearray())
-    except Exception as e:   # noqa: BLE001 — a msg1 made with another PSK / prologue is a refusal, not a crash
-        out(f"ERR msg1 {type(e).__name__}")
-        return 1
+    except DecryptFailedException as e:   # a msg1 made with another PSK: its tag does not verify — the refusal
+        out("ERR msg1 auth-failed" if e.reason == DecryptFailedException.REASON_INVALID_TAG else f"CRASH msg1 reason={e.reason}")
+        return 1 if e.reason == DecryptFailedException.REASON_INVALID_TAG else 3
+    except Exception as e:   # noqa: BLE001 — anything else is this peer failing, never a refusal
+        out(f"CRASH msg1 {type(e).__name__}")
+        return 3
     buf = bytearray()
     recv, send = st.write_message(payload, buf)   # responder: (initiator -> responder, responder -> initiator)
     out(bytes(buf).hex())
     out(st.symmetricstate.get_handshake_hash().hex())
     try:
         pt = recv.decrypt_with_ad(b"", line())
+    except DecryptFailedException as e:
+        out("ERR transport auth-failed" if e.reason == DecryptFailedException.REASON_INVALID_TAG else f"CRASH transport reason={e.reason}")
+        return 1 if e.reason == DecryptFailedException.REASON_INVALID_TAG else 3
     except Exception as e:   # noqa: BLE001
-        out(f"ERR transport {type(e).__name__}")
-        return 1
+        out(f"CRASH transport {type(e).__name__}")
+        return 3
     out(bytes(pt).hex())
     out(bytes(send.encrypt_with_ad(b"", b"pong:" + bytes(pt))).hex())
     return 0

@@ -26,7 +26,12 @@ hasnt(){ if grep -q -- "$3" <<< "$2"; then echo "FAIL $1: [$2] has [$3]"; F=$((F
 command -v flock >/dev/null || { echo "FAIL no flock on this host"; echo "SLOTLOCK 0 passed, 1 failed"; exit 1; }
 SHS="dash"; command -v busybox >/dev/null && SHS="busybox_ash dash"
 T=$(mktemp -d)
-killrec(){ [ -f "$T/pids" ] && xargs -r kill < "$T/pids" 2>/dev/null; : > "$T/pids"; return 0; }
+# killrec: kill every recorded pid and return only once they are gone (kill is asynchronous: a sleeper still holding
+# fd 9 a moment after its kill made the next case see a held lock, "got t=1 want t=0" in a WSL run)
+killrec(){ local p i; [ -f "$T/pids" ] || return 0
+	for p in $(cat "$T/pids"); do kill "$p" 2>/dev/null; done
+	for p in $(cat "$T/pids"); do i=0; while kill -0 "$p" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; done
+	: > "$T/pids"; return 0; }
 trap 'killrec; jobs -p | xargs -r kill 2>/dev/null; rm -rf "$T"' EXIT
 mkdir -m 0755 "$T/run"
 # a sleeper with its own name (comm and argv[0] = the file name): a copy of sleep or, where sleep is a multi-call binary
@@ -40,7 +45,13 @@ L=$T/run/batman/batman-slot.flock
 # holdb <secs>: the same, the holder named batman-slot (a legitimate writer, e.g. a long write)
 hold(){ ( flock -x 7; exec "${HB:-$SL}" "$1" ) 7>>"$L" & HP=$!; echo "$HP" >> "$T/pids"
 	local i=0; while flock -n "$L" true && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; }
-unhold(){ kill "$HP" 2>/dev/null; wait "$HP" 2>/dev/null; }
+unhold(){ local i=0; kill "$HP" 2>/dev/null; wait "$HP" 2>/dev/null; while kill -0 "$HP" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; }
+# still <case>: the holder of the case before it was alive and held $L when that case ended (else the case judged a
+# free lock and proves nothing: on ubuntu 26.04 a 4 s holder had exited 4.8 s in, review 1 MAJOR-2). Holders run
+# HOLD s, far longer than any case; unhold kills them by pid.
+still(){ if kill -0 "$HP" 2>/dev/null && ! flock -n "$L" true; then echo "ok   $1: the holder still held the lock"; P=$((P + 1))
+	else echo "FAIL $1: the holder (pid $HP) was gone or the lock free when the case ended — the case judged nothing"; F=$((F + 1)); fi; }
+HOLD=${SLK_TEST_HOLD:-60}   # SLK_TEST_HOLD=1: the negative control of still (a holder gone before its case ends)
 holdb(){ HB=$T/b/batman-slot hold "$1"; }
 mkdir -p "$T/b"; mksleeper "$T/b/batman-slot"
 # a rundir.sh like the node's: RUNDIR under $T; batman_rundir as the product's (mkdir 0700 + owner check), or failing
@@ -96,19 +107,22 @@ for SH in $SHS; do
 	o=$(sh_ "$SH" -c "true && exec 9>>$T/nonexistent/x && echo locked; echo AFTER" 2>/dev/null); chk "$n control: a bare 'exec 9>>missing' ends the shell (what slk_take avoids)" "$o" ""
 	rm -rf "$T/run/batman"; mkdir -m 700 "$T/run/batman"
 	# review r3 A-MAJOR-2: held for 2 tries by an orphan (no batman-slot ancestor, not the harness) -> SLOTLK-BUSY LEAK
-	hold 5
+	hold $HOLD
 	o=$(SLK_RD=$T/rundir.sh SLK_TRIES=2 sh_ "$SH" -c ". '$LIB'; slk_take || { echo REFUSED; exit 1; }; echo MOUNTED" 2>&1); has "$n take: held elsewhere -> SLOTLK-BUSY" "$o" "^SLOTLK-BUSY LEAK the slot flock is held >= 2 s by [0-9]*:$SLN .*a leaked fd 9"
 	has "$n take: held elsewhere -> no FAT work" "$(echo $o)" "REFUSED"
+	still "$n take: held elsewhere -> no FAT work"
 	unhold
 	# held by a batman-slot (a legitimate writer) -> plain SLOTLK-BUSY (INVALID), not LEAK
-	holdb 5
+	holdb $HOLD
 	o=$(SLK_RD=$T/rundir.sh SLK_TRIES=2 sh_ "$SH" -c ". '$LIB'; slk_take || { echo REFUSED; exit 1; }; echo MOUNTED" 2>&1); has "$n take: held by a batman-slot -> SLOTLK-BUSY (not LEAK)" "$o" "^SLOTLK-BUSY held by another for 2 tries"
 	hasnt "$n take: held by a batman-slot -> no LEAK" "$o" "LEAK"
+	still "$n take: held by a batman-slot -> no LEAK"
 	unhold
 	# held by another harness SLOTLK shell (its command line runs slk_take) and its child (DV_SLK_HOLD) -> plain
 	# SLOTLK-BUSY, not LEAK
-	SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_take && { $SL 5 & echo \Inappropriate ioctl for device >> $T/pids; wait; }" & HP=$!; echo "$HP" >> "$T/pids"; i=0; while flock -n "$L" true && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+	SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_take && { $SL $HOLD & echo \$! >> $T/pids; wait; }" & HP=$!; echo "$HP" >> "$T/pids"; i=0; while flock -n "$L" true && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 	o=$(SLK_RD=$T/rundir.sh SLK_TRIES=2 sh_ "$SH" -c ". '$LIB'; slk_take || { echo REFUSED; exit 1; }; echo MOUNTED" 2>&1); has "$n take: held by another harness holder -> SLOTLK-BUSY (not LEAK)" "$o" "^SLOTLK-BUSY held by another for 2 tries"
+	still "$n take: held by another harness holder -> SLOTLK-BUSY (not LEAK)"
 	unhold
 	killrec
 	# free: held until the shell ends
@@ -126,12 +140,14 @@ for SH in $SHS; do
 	# verb started may keep the lock file open)
 	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; DV_SLK=tokO $SL 6 8<$L & echo \$! >> $T/pids; sleep 0.3; slk_free 1 tokO -; echo rc=\$?" 2>&1); has "$n free: lock free but ours keeps the file open -> leak" "$(echo $o)" "SLKFREE leak holders=[0-9]*:$SLN:ours rc=1"
 	killrec
-	hold 4
+	hold $HOLD
 	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_free 1 tokX -; echo rc=\$?" 2>&1); has "$n free: held by another (not ours) -> an orphan (no batman-slot ancestor) -> orphan, FAIL (review r3 A-MAJOR-2)" "$(echo $o)" "SLKFREE orphan holders=[0-9]*:$SLN .* rc=4"
 	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_free 1 - 0:\$(slk_ticks); echo rc=\$?" 2>&1); has "$n free: a holder started inside the step window -> leak" "$(echo $o)" "SLKFREE leak holders=.*:ours rc=1"
+	still "$n free: a holder started inside the step window -> leak"
 	unhold
-	holdb 4
+	holdb $HOLD
 	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_free 1 tokX -; echo rc=\$?" 2>&1); has "$n free: held by a batman-slot from outside the step -> other (contention)" "$(echo $o)" "SLKFREE other holders=[0-9]*:batman-slot:other rc=3"
+	still "$n free: held by a batman-slot from outside the step -> other (contention)"
 	unhold
 	# review r2 B-m3: inside the window, a batman-slot with no helper among its ancestors = another writer (contention)
 	rm -f "$T/w/pid.x"; ( exec "$T/w/batman-slot" x ) & echo $! >> "$T/pids"; waitf "$T/w/pid.x"
@@ -142,7 +158,7 @@ for SH in $SHS; do
 	killrec
 	# review r2 B-m2: a file whose name ends in " -> <lock path>", held open by a process carrying the token
 	mkdir -p "$T/evil/x -> $T/run/batman"; EV="$T/evil/x -> $L"; : > "$EV"
-	( DV_SLK=fb123.bootinfoA exec "$SL" 7 5<"$EV" ) & echo $! >> "$T/pids"; sleep 0.3
+	( DV_SLK=fb123.bootinfoA exec "$SL" $HOLD 5<"$EV" ) & echo $! >> "$T/pids"; sleep 0.3
 	o=$(SLK_RD=$T/rundir.sh sh_ "$SH" -c ". '$LIB'; slk_free 1 fb123.bootinfoA -; echo rc=\$?" 2>&1); chk "$n free: a spoofed ' -> <lock path>' name with the token -> not a holder (ok)" "$(echo $o)" "SLKFREE ok t=0 rc=0"
 	killrec; rm -rf "$T/evil"
 done

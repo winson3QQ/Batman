@@ -117,7 +117,9 @@ fn live_handshake_with_another_psk_or_prologue_fails() {
     let mut p = Peer::start("nxpsk0", b"batman-prov/1\0ble\0", Some(&kdf::psk_owner(&[0x5d; 32], &d)), &sk);
     let mut ini = noise::Initiator::new(noise::Mode::NxPsk0, None, Some(&psk)).unwrap();
     p.send(&ini.msg1().unwrap());
-    assert!(p.line().starts_with("ERR msg1"), "the peer accepted a msg1 made with another PSK");
+    // exactly the authentication failure (noise_responder.py: dissononce's DecryptFailedException, invalid tag); a
+    // crash of the peer prints "CRASH ..." and must not count as a refusal
+    assert_eq!(p.line(), "ERR msg1 auth-failed", "the peer did not refuse msg1 (made with another PSK) by its tag");
     // NX: msg1 is only an ephemeral; the prologue difference shows when msg2 does not decrypt
     let mut p = Peer::start("nx", b"batman-prov/1\0ble\0some-other-device", None, &sk);
     let mut ini = noise::Initiator::new(noise::Mode::Nx, Some(&d), None).unwrap();

@@ -23,6 +23,8 @@ env:
   FLUTTER_VERSION: "3.47.9"
   RUST_TOOLCHAIN: "1.99.1"
   JAVA_VERSION: "21"
+  # tests/tools/sigverify: the top-level tests that must pass, and nothing else (judge-test-output.sh go)
+  SIGVERIFY_TESTS: TestAThousandGoodSignaturesPass,TestOneCorruptedSignatureFails,TestHighSFails,TestWrongKeyFails,TestEmptyOrShortFileFails,TestMalformedOrRepeatedRecordFails,TestKeysMinimum,TestPinnedKeys,TestMainExits
 jobs:
   app:
     runs-on: ubuntu-latest
@@ -49,7 +51,8 @@ jobs:
           git clone --quiet --depth 1 --branch "$FLUTTER_VERSION" https://github.com/flutter/flutter.git "$HOME/flutter"
           got=$(git -C "$HOME/flutter" rev-parse HEAD)
           echo "app/.metadata revision: $want, tag $FLUTTER_VERSION: $got"
-          [ -n "$want" ] && [ "$want" = "$got" ]
+          [ -n "$want" ] || { echo "::error::no revision in app/.metadata"; exit 1; }
+          [ "$want" = "$got" ] || { echo "::error::flutter $FLUTTER_VERSION is $got, app/.metadata wants $want"; exit 1; }
           echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
           "$HOME/flutter/bin/flutter" --version
       - name: pub get (pubspec.lock enforced)
@@ -63,7 +66,8 @@ jobs:
         id: gradle
         run: |
           v=$(sed -nE 's#^distributionUrl=.*/gradle-([0-9.]+)-(all|bin)\.zip$#\1#p' app/android/gradle/wrapper/gradle-wrapper.properties)
-          [ -n "$v" ] && echo "version=$v" >> "$GITHUB_OUTPUT" && echo "gradle $v"
+          [ -n "$v" ] || { echo "::error::no Gradle version in gradle-wrapper.properties"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"; echo "gradle $v"
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a   # v4
         with:
           gradle-version: ${{ steps.gradle.outputs.version }}
@@ -81,11 +85,11 @@ jobs:
         run: |
           out=$(FIELD_CARGO_ARGS="--features dev-trust" bash app/tools/check-field-build.sh all) && rc=0 || rc=$?
           echo "$out"; echo "rc=$rc"
-          [ "$rc" != 0 ]
-          grep -q '^FAIL field feature tree (batman-proto): ' <<< "$out"
-          grep -q '^FAIL field feature tree (bridge): 2 package(s)' <<< "$out"
-          grep -q '^FAIL field .so strings (host release build, --features dev-trust): dev-only strings' <<< "$out"
-          ! grep -q '^PASS' <<< "$out"
+          [ "$rc" != 0 ] || exit 1
+          grep -q '^FAIL field feature tree (batman-proto): ' <<< "$out" || exit 1
+          grep -q '^FAIL field feature tree (bridge): 2 package(s)' <<< "$out" || exit 1
+          grep -q '^FAIL field .so strings (host release build, --features dev-trust): dev-only strings' <<< "$out" || exit 1
+          if grep -q '^PASS' <<< "$out"; then echo "::error::a PASS line in the negative control"; exit 1; fi
 
       - name: Kotlin JVM unit tests — every variant that has a unit-test task, judged from the JUnit XML
         if: ${{ !cancelled() }}
@@ -100,16 +104,17 @@ jobs:
             local out rc
             out=$(bash app/tools/kotlin-unit-tests.sh --judge "$2" fieldDebug) && rc=0 || rc=$?
             echo "$1: rc=$rc $out"
-            [ "$rc" != 0 ] && grep -qE "$3" <<< "$out"
+            [ "$rc" != 0 ] || return 1
+            grep -qE "$3" <<< "$out" || return 1
           }
           # 0: the copy itself passes (so each FAIL below comes from the one change made to it)
           cp -r "$src" "$t/a/"; bash app/tools/kotlin-unit-tests.sh --judge "$t/a" fieldDebug
           cp -r "$src" "$t/b/"; rm "$t"/b/testFieldDebugUnitTest/TEST-*SwPutTest.xml
-          expect "class missing" "$t/b" '^FAIL kotlin fieldDebug: did not run: SwPutTest$'
+          expect "class missing" "$t/b" '^FAIL kotlin fieldDebug: did not run: SwPutTest$' || exit 1
           cp -r "$src" "$t/c/"; sed -i -E '0,/failures="0"/s//failures="1"/' "$t"/c/testFieldDebugUnitTest/TEST-*KeyPolicyTest.xml
-          expect "a failure" "$t/c" '^FAIL kotlin fieldDebug: KeyPolicyTest: failures=1$'
+          expect "a failure" "$t/c" '^FAIL kotlin fieldDebug: KeyPolicyTest: failures=1$' || exit 1
           mkdir "$t/d/testFieldDebugUnitTest"
-          expect "no result" "$t/d" '^FAIL kotlin fieldDebug: no test ran '
+          expect "no result" "$t/d" '^FAIL kotlin fieldDebug: no test ran ' || exit 1
       - name: JUnit XML
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4
@@ -127,18 +132,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           m=app/android/app/src/main/AndroidManifest.xml
+          trap 'git checkout -- "$m"' EXIT
           sed -i 's/ *android:allowBackup="false"//' "$m"
-          [ "$(grep -c allowBackup= "$m")" = 0 ]
+          [ "$(grep -c allowBackup= "$m")" = 0 ] || exit 1
           out=$(GRADLE=gradle bash app/tools/check-allow-backup.sh) && rc=0 || rc=$?
           git checkout -- "$m"
           echo "$out"; echo "rc=$rc"
-          [ "$rc" != 0 ]
-          [ "$(grep -c '^FAIL allowBackup [a-z0-9A-Z]*: android:allowBackup is absent (default true)$' <<< "$out")" = 9 ]
-          ! grep -q '^PASS' <<< "$out"
+          [ "$rc" != 0 ] || exit 1
+          [ "$(grep -c '^FAIL allowBackup [a-z0-9A-Z]*: android:allowBackup is absent (default true)$' <<< "$out")" = 9 ] || exit 1
+          if grep -q '^PASS' <<< "$out"; then echo "::error::a PASS line in the negative control"; exit 1; fi
 
       # --- the host tools the app tests lean on: tests/tools/sigverify (Go) and the live Noise handshake of
       # app/rust/batman-proto/tests/noise_live.rs against tests/tools/peer/noise_responder.py (dissononce) ---
-      - name: judge-test-output.sh selftest — 0 tests, one test short, a failure, an ignored test each FAIL
+      - name: judge-test-output.sh selftest — 0 tests, one test short, a renamed / swapped / extra test, a failure, an ignored test each FAIL
         if: ${{ !cancelled() }}
         run: bash app/tools/judge-test-output.sh --selftest
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff   # v5
@@ -146,25 +152,31 @@ jobs:
         with:
           go-version-file: tests/tools/sigverify/go.mod
           cache: false
-      - name: sigverify — go test, exactly 8 top-level tests passed, 0 failed
+      - name: sigverify — go test, the 9 named top-level tests passed and no other, 0 failed
         if: ${{ !cancelled() }}
         run: |
           cd tests/tools/sigverify
           go version
           go test -count=1 -v ./... > "$RUNNER_TEMP/sigverify.log" 2>&1 && rc=0 || rc=$?
           grep -E '^(--- |ok|FAIL|PASS|\?)' "$RUNNER_TEMP/sigverify.log"
-          echo "go test rc=$rc"; [ "$rc" = 0 ]
-          bash "$GITHUB_WORKSPACE/app/tools/judge-test-output.sh" go "$RUNNER_TEMP/sigverify.log" 8
-      - name: sigverify negative control — the real log with one top-level PASS removed, and a run that matches no test, FAIL
+          echo "go test rc=$rc"; [ "$rc" = 0 ] || exit 1
+          bash "$GITHUB_WORKSPACE/app/tools/judge-test-output.sh" go "$RUNNER_TEMP/sigverify.log" "$SIGVERIFY_TESTS"
+      - name: sigverify negative control — the real log with one top-level PASS removed, one test renamed, and a run that matches no test, FAIL
         if: ${{ !cancelled() }}
         run: |
           j="$GITHUB_WORKSPACE/app/tools/judge-test-output.sh"
           sed '0,/^--- PASS: /{/^--- PASS: /d}' "$RUNNER_TEMP/sigverify.log" > "$RUNNER_TEMP/sv7.log"
-          out=$(bash "$j" go "$RUNNER_TEMP/sv7.log" 8) && rc=0 || rc=$?; echo "one removed: rc=$rc $out"
-          [ "$rc" = 1 ] && grep -q 'passed=7 (want 8)' <<< "$out"
+          out=$(bash "$j" go "$RUNNER_TEMP/sv7.log" "$SIGVERIFY_TESTS") && rc=0 || rc=$?; echo "one removed: rc=$rc $out"
+          [ "$rc" = 1 ] || exit 1
+          grep -q 'passed=8 (want 9) not passed: TestAThousandGoodSignaturesPass ' <<< "$out" || exit 1
+          sed 's/^--- PASS: TestWrongKeyFails (/--- PASS: TestWrongKeyFailsRenamed (/' "$RUNNER_TEMP/sigverify.log" > "$RUNNER_TEMP/svr.log"
+          out=$(bash "$j" go "$RUNNER_TEMP/svr.log" "$SIGVERIFY_TESTS") && rc=0 || rc=$?; echo "one renamed: rc=$rc $out"
+          [ "$rc" = 1 ] || exit 1
+          grep -q 'passed=9 (want 9) not passed: TestWrongKeyFails ' <<< "$out" || exit 1
           (cd tests/tools/sigverify && go test -count=1 -v -run 'NoSuchTest' ./... > "$RUNNER_TEMP/sv0.log" 2>&1; echo "go test -run NoSuchTest rc=$?")
-          out=$(bash "$j" go "$RUNNER_TEMP/sv0.log" 8) && rc=0 || rc=$?; echo "0 tests: rc=$rc $out"
-          [ "$rc" = 1 ] && grep -q 'passed=0 (want 8)' <<< "$out"
+          out=$(bash "$j" go "$RUNNER_TEMP/sv0.log" "$SIGVERIFY_TESTS") && rc=0 || rc=$?; echo "0 tests: rc=$rc $out"
+          [ "$rc" = 1 ] || exit 1
+          grep -q 'passed=0 (want 9)' <<< "$out" || exit 1
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405   # v6.2.0
         if: ${{ !cancelled() }}
         with:
@@ -181,7 +193,7 @@ jobs:
         run: |
           PEER_PY="$RUNNER_TEMP/venv-219/bin/python" cargo test --test noise_live -- --ignored > "$RUNNER_TEMP/noise.log" 2>&1 && rc=0 || rc=$?
           grep -E '^(test |running )' "$RUNNER_TEMP/noise.log"
-          echo "cargo test rc=$rc"; [ "$rc" = 0 ]
+          echo "cargo test rc=$rc"; [ "$rc" = 0 ] || exit 1
           bash ../../tools/judge-test-output.sh cargo "$RUNNER_TEMP/noise.log" 3
       - name: noise_live negative controls — without --ignored (0 ran) the judge FAILs; without a working PEER_PY the tests FAIL
         if: ${{ !cancelled() }}
@@ -189,8 +201,10 @@ jobs:
         run: |
           cargo test --test noise_live > "$RUNNER_TEMP/noise0.log" 2>&1; echo "cargo test (no --ignored) rc=$?"
           out=$(bash ../../tools/judge-test-output.sh cargo "$RUNNER_TEMP/noise0.log" 3) && rc=0 || rc=$?; echo "0 ran: rc=$rc $out"
-          [ "$rc" = 1 ] && grep -q '0 passed; 0 failed; 3 ignored' <<< "$out"
+          [ "$rc" = 1 ] || exit 1
+          grep -q '0 passed; 0 failed; 3 ignored' <<< "$out" || exit 1
           PEER_PY=/bin/false cargo test --test noise_live -- --ignored > "$RUNNER_TEMP/noiseX.log" 2>&1 && crc=0 || crc=$?
           grep -E '^test result' "$RUNNER_TEMP/noiseX.log"; echo "cargo test (PEER_PY=/bin/false) rc=$crc"
           out=$(bash ../../tools/judge-test-output.sh cargo "$RUNNER_TEMP/noiseX.log" 3) && rc=0 || rc=$?; echo "no peer: rc=$rc $out"
-          [ "$crc" != 0 ] && [ "$rc" = 1 ]
+          [ "$crc" != 0 ] || exit 1
+          [ "$rc" = 1 ] || exit 1
