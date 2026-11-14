@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
+import 'key_abilities.dart';
 import 'member_ui.dart';
 import 'say.dart';
 import 'scan.dart' show provdService;
@@ -55,14 +56,17 @@ const _sendUnclear = '[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁
 const staleRecordLine = '紀錄已被別處更新，請重新開啟再試';
 
 class NodesPage extends StatefulWidget {
-  const NodesPage({super.key});
+  const NodesPage({super.key, this.ble});
+
+  /// tests: a fake BLE (null = the platform's)
+  final FlutterReactiveBle? ble;
 
   @override
   State<NodesPage> createState() => _NodesPageState();
 }
 
 class _NodesPageState extends State<NodesPage> {
-  final _ble = FlutterReactiveBle();
+  late final _ble = widget.ble ?? FlutterReactiveBle(); // late: first used by a login
   final _lines = <String>[];
   List<String> _nodes = [];
   bool _busy = false;
@@ -343,6 +347,12 @@ class _NodesPageState extends State<NodesPage> {
     setState(() => _busy = true);
     try {
       await _drop();
+      // design §4.1: the key levels are read live before every login
+      final no = (await KeyAbilities.read(_platform)).refusal(KeyUse.login);
+      if (no != null) {
+        _say('[LOGIN_FAIL] [KEY_LEVEL] $no');
+        return;
+      }
       if (!(await _platform.invokeMethod<bool>('blePermissions') ?? false)) {
         _say('[LOGIN_FAIL] 沒有藍牙權限（請在手機設定裡允許）');
         return;
@@ -438,6 +448,12 @@ class _NodesPageState extends State<NodesPage> {
 
   /// design §5.4: make a network on this (claimed, not joined) node; country US (S1), bandwidth from the channel
   Future<void> _makeNetwork() async {
+    // design §4.1: the key levels are read live before every network creation
+    final no = (await KeyAbilities.read(_platform)).refusal(KeyUse.makeNetwork);
+    if (no != null) {
+      _say('[REQ_FAIL] [KEY_LEVEL] $no');
+      return;
+    }
     final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
     final name = _netName.text.trim().isEmpty ? 'Batman' : _netName.text.trim();
     _say('正在建立網路「$name」（頻道 $_channel，美國頻段），最多可能要等 3 分鐘…');

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'claim.dart';
+import 'key_abilities.dart';
 import 'nodes.dart';
 import 'scan.dart';
 import 'src/rust/api/simple.dart';
@@ -42,6 +43,7 @@ class _StartupCheckState extends State<StartupCheck> {
   String? _report;
   String _tech = '';
   bool _ok = false;
+  KeyAbilities _keys = KeyAbilities.none;
 
   @override
   void initState() {
@@ -56,25 +58,27 @@ class _StartupCheckState extends State<StartupCheck> {
     final agree = flavorDevTrust == info.devTrust;
     final lines = <String>[agree ? '啟動檢查：正常' : '啟動檢查：App 內部版本不一致，已停用（請重新安裝 App）'];
     final tech = <String>['核心 dev_trust=${info.devTrust}（batman_bridge ${info.crateVersion}），安裝版 DEV_TRUST=$flavorDevTrust'];
+    var keys = KeyAbilities.none;
     if (agree) {
       tech.add('自我測試：${selftest()}');
       final inst = await _install();
       for (final l in inst) {
         (l.startsWith('安裝紀錄：') ? tech : lines).add(l); // the marker itself is technical; what happened is not
       }
-      try {
-        final levels = await _platform.invokeMapMethod<String, dynamic>('keyLevels');
-        tech.add('金鑰保護等級：$levels');
-        if (levels?['softOwnerEnc'] == true) {
-          lines.add('注意：這支手機的復原／成員金鑰只有軟體保護，只適合開發使用');
-        }
-      } on PlatformException catch (e) {
-        lines.add('讀取金鑰失敗（${e.code}）：${e.message}');
+      // design v8.5.1 §4.1 table: the live key levels decide what is on (record AES not hardware = the whole app off)
+      keys = await KeyAbilities.read(_platform, detail: (d) => tech.add('金鑰保護等級：$d'));
+      if (!keys.appUsable) {
+        lines[0] = '啟動檢查：${KeyAbilities.appOff}';
+      } else {
+        // one line per reason (claim and recovery share theirs when the owner key is the cause)
+        lines.addAll({for (final u in KeyUse.values) keys.refusal(u)}.whereType<String>());
+        if (keys.softOwnerEnc) lines.add('注意：這支手機的復原／成員金鑰只有軟體保護，只適合開發使用');
       }
     }
     debugPrint('BMAPP ${[...lines, ...tech].join(' | ')}');
     setState(() {
-      _ok = agree;
+      _ok = agree && keys.appUsable;
+      _keys = keys;
       _report = lines.join('\n');
       _tech = tech.join('\n');
     });
@@ -125,7 +129,9 @@ class _StartupCheckState extends State<StartupCheck> {
                       child: const Text('我的節點')),
                 if (_ok)
                   OutlinedButton(
-                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ClaimPage())),
+                      onPressed: _keys.claim // off: the reason is in the report above
+                          ? () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ClaimPage()))
+                          : null,
                       child: const Text('認領節點')),
                 if (_ok)
                   TextButton(

@@ -140,6 +140,8 @@ void main() {
           return files;
         case 'blePermissions':
           return true;
+        case 'keyLevels': // design §4.1: read before every claim
+          return {'appUsable': true, 'claim': true, 'login': true, 'recover': true, 'makeNetwork': true, 'softOwnerEnc': false};
         case 'publicKeys':
           return {'owner': Uint8List(65), 'ownerEnc': Uint8List(65)};
         case 'signOwner':
