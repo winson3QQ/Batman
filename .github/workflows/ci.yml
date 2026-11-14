@@ -4,12 +4,7 @@ permissions:
   contents: read
 jobs:
   lint:
-    # TEMPORARY (review round 1 evidence, reverted before the report): the job on both images
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,12 +88,7 @@ jobs:
         run: python tests/judges/h4/test-judges.py
 
   prov-p1:
-    # TEMPORARY (review round 1 evidence, reverted before the report): the job on both images
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: busybox for the ash runs, squashfs-tools for card-wbox
@@ -276,40 +266,3 @@ jobs:
         with:
           format: cyclonedx-json
           artifact-name: batman-sbom.cdx.json
-
-  # TEMPORARY (review round 1 evidence, reverted before the report): on ubuntu-latest (26.04) the slotlock test 3x,
-  # its still-check negative control, and the D-state precondition negative control with 26.04's uutils dd
-  tmp-2604-controls:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
-      - name: image and tools
-        run: |
-          grep PRETTY /etc/os-release
-          dd --version | head -1; readlink -f "$(command -v dd)"
-          command -v gnudd && gnudd --version | head -1
-      - name: slotlock 3 times
-        run: |
-          rc=0
-          for i in 1 2 3; do s=$(date +%s); bash scripts/test-slotlock-254.sh > /tmp/sl.$i 2>&1 || rc=1; echo "run $i: $(tail -1 /tmp/sl.$i) ($(( $(date +%s) - s )) s)"; grep '^FAIL' /tmp/sl.$i || true; done
-          grep -h 'step window' /tmp/sl.1
-          exit $rc
-      - name: slotlock negative control — SLK_TEST_HOLD=1 (holders gone before their cases end) must FAIL the still-checks
-        run: |
-          SLK_TEST_HOLD=1 bash scripts/test-slotlock-254.sh > /tmp/slneg 2>&1 && rc=0 || rc=$?
-          grep -E 'the case judged nothing|^SLOTLOCK' /tmp/slneg; echo "rc=$rc"
-          [ "$rc" != 0 ] || exit 1
-          [ "$(grep -c 'the case judged nothing' /tmp/slneg)" -ge 10 ] || exit 1
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-      - name: D-state test with gnudd (the default here) and the precondition negative control with uutils dd
-        run: |
-          cd feed/batman-prov/src
-          g(){ sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root GOFLAGS=-mod=vendor GOTOOLCHAIN=local "$@" go test -count=1 -v -tags prov_test -run TestExecAbandonsDState ./provstore/ 2>&1; }
-          o=$(g) && rc=0 || rc=$?; echo "$o" | grep -E '^(=== RUN|--- |ok|FAIL)|exec_dstate'; echo "default rc=$rc"
-          [ "$rc" = 0 ] || exit 1
-          o=$(g PROVTEST_DD=dd) && rc=0 || rc=$?; echo "$o" | grep -E '^(=== RUN|--- |ok|FAIL)|exec_dstate'; echo "PROVTEST_DD=dd rc=$rc"
-          [ "$rc" != 0 ] || exit 1
-          grep -q 'precondition: dd never blocked in D state' <<< "$o" || exit 1
