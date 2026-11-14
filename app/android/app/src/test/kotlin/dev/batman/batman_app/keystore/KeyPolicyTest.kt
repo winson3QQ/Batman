@@ -5,6 +5,7 @@ import dev.batman.batman_app.keystore.Level.STRONGBOX
 import dev.batman.batman_app.keystore.Level.TRUSTED_ENVIRONMENT
 import dev.batman.batman_app.keystore.Level.UNKNOWN
 import dev.batman.batman_app.keystore.Level.UNKNOWN_SECURE
+import android.security.keystore.KeyProperties
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -17,6 +18,21 @@ class KeyPolicyTest {
     @Test fun everyKeyAcceptsHardwareInBothBuilds() {
         for (role in KeyRole.values()) for (l in hw) for (dev in listOf(true, false))
             assertTrue("$role $l dev=$dev", KeyPolicy.allowed(role, l, dev))
+    }
+
+    // review round 3 B-MINOR-1 (a bug on main since e8d6510: the two were swapped, so "no assumptions" counted as
+    // hardware). Pinned to the SDK constants (compile-time constants of the stub android.jar) and to the literals.
+    @Test fun levelConstantsAreTheSdkOnes() {
+        assertEquals(KeyProperties.SECURITY_LEVEL_UNKNOWN, UNKNOWN)
+        assertEquals(KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE, UNKNOWN_SECURE)
+        assertEquals(KeyProperties.SECURITY_LEVEL_SOFTWARE, SOFTWARE)
+        assertEquals(KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT, TRUSTED_ENVIRONMENT)
+        assertEquals(KeyProperties.SECURITY_LEVEL_STRONGBOX, STRONGBOX)
+        assertEquals(-2, UNKNOWN); assertEquals(-1, UNKNOWN_SECURE)
+        for (role in KeyRole.values()) for (dev in listOf(true, false)) {
+            assertFalse("$role -2 dev=$dev", KeyPolicy.allowed(role, -2, dev))
+            assertTrue("$role -1 dev=$dev", KeyPolicy.allowed(role, -1, dev))
+        }
     }
 
     @Test fun unknownIsRefusedForEveryKey() {

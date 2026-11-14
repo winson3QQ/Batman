@@ -8,10 +8,10 @@ package dev.batman.batman_app.keystore
 /** The four keys (design §3 / §4). */
 enum class KeyRole { RECORD_AES, OWNER_SIGN, ADMIN_SIGN, OWNER_ENC }
 
-/** android.security.keystore.KeyProperties.SECURITY_LEVEL_* values (API 31). */
+/** android.security.keystore.KeyProperties.SECURITY_LEVEL_* values (API 31; SDK android-37 KeyProperties.java:904-910). */
 object Level {
-    const val UNKNOWN_SECURE = -2
-    const val UNKNOWN = -1
+    const val UNKNOWN_SECURE = -1  // "at least equivalent to TRUSTED_ENVIRONMENT" (KeyProperties.java:910)
+    const val UNKNOWN = -2         // "no assumptions can be made" (KeyProperties.java:904)
     const val SOFTWARE = 0
     const val TRUSTED_ENVIRONMENT = 1
     const val STRONGBOX = 2
