@@ -62,7 +62,7 @@ class Keys(private val prefix: String = "batman") {
     fun generate(role: KeyRole): Int {
         delete(role)
         val first = try { make(role, strongBox = true); level(role) } catch (e: StrongBoxUnavailableException) { null }
-        if (first != null && first != Level.SOFTWARE && first != Level.UNKNOWN) return first
+        if (first != null && Level.isHardware(first)) return first // anything else (SOFTWARE, UNKNOWN, a value not known here) tries the TEE
         delete(role)
         val second = try { make(role, strongBox = false); level(role) } catch (e: Exception) { null }
         if (first != null && (second == null || Level.rank(first) > Level.rank(second))) {
