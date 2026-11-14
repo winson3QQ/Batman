@@ -368,6 +368,14 @@ fn t_a12_key5_and_no_card_sentences() {
     // only an online UNKNOWN node besides an offline member: online all the same -> no line
     let v = view(&status_nj(Some(vec![peer(A, 268, None, None), peer(C, 5, None, None)])), &m);
     assert_eq!((v.only.as_str(), v.cards.len()), ("", 2));
+    // only an OFFLINE unknown node, the member not seen since boot: the unknown card is a seen card -> the line + both
+    // cards (code review A-m1)
+    let v = view(&status_nj(Some(vec![peer(C, 268, None, None)])), &m);
+    assert_eq!(v.only, tv::LEAD_NOT_JOINED);
+    assert_eq!(v.cards, vec![
+        "⚪ 『客廳』 這台節點開機後還沒看到".to_string(),
+        format!("❔ 不明節點 · 最後看到 4 分鐘前\n{}", tv::NEW_MEMBER_HINT),
+    ]);
     // key 5 + key 9 absent / malformed -> the not-joined sentence, never 「看不到全隊狀態…找維修人員」
     for st in [status_nj(None), status_nj(Some(vec![V::Uint(1)]))] {
         let v = view(&st, &m);
@@ -385,4 +393,9 @@ fn t_a12_key5_and_no_card_sentences() {
     assert_eq!(no_card(tv::Names::NoNet).only, "這台不在你建立或加入的網路裡，看不到隊員");
     assert_eq!(no_card(tv::Names::List(tv::listed(&members(vec![entry(1, "我的節點", Some(OWN))])))).only, "還沒看到其他隊員");
     assert!(no_card(tv::Names::NoList).cards.is_empty());
+    // the info read failed (code review A-m2): a neutral line, never 「not in your network」; the same for an unknown
+    // node's hint
+    assert_eq!(no_card(tv::Names::NoInfo).only, "讀不到這台的網路資訊，請按『重新整理』");
+    let v = tv::team_view_with(true, Some(&status(Some(vec![peer(C, 5, None, None)]))), &tv::Names::NoInfo, Some(&[1; 32]), None);
+    assert_eq!(v.cards, vec!["❔ 不明節點 · 在線 · 經隊員轉送\n讀不到這台的網路資訊，請按『重新整理』".to_string()]);
 }

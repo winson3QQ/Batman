@@ -2196,12 +2196,14 @@ pub(crate) fn status_view_of(st: Option<&Result<Value, u64>>, info: Option<&Valu
 
 /// The team section's name source (254-app-team-status v2.4 §6, §11-6) for the node `own_dac` with info `info` and this
 /// phone's record of the node's network (`record_plain`: `net/` (admin) or `mnet/` (`member` = true) plaintext; None =
-/// none): info's network id empty -> NoNet; no record, or one that does not decode -> NoList (fail-closed); an admin ->
+/// none): the info read failed (`info` None) -> NoInfo (code review A-m2: unknown, never "not in your network");
+/// info's network id empty -> NoNet; no record, or one that does not decode -> NoList (fail-closed); an admin ->
 /// the signed list ∪ key 11's applied / approved entries (`teamview::admin_names`); a member -> the signed list. Also
 /// the title's own name when the record has a better source than the name source: a member's `mnet/` key 7, when
 /// it is this node (else the title takes this node's entry in the name source).
 pub(crate) fn team_names(info: Option<&Value>, own_dac: Option<&[u8; 32]>, record_plain: Option<&[u8]>, member: bool) -> (teamview::Names, Option<String>) {
-    let in_net = info.and_then(|i| i.get(10)).and_then(Value::as_bytes).is_some_and(|b| b.len() == 16);
+    let Some(info) = info else { return (teamview::Names::NoInfo, None) };
+    let in_net = info.get(10).and_then(Value::as_bytes).is_some_and(|b| b.len() == 16);
     let mut own_name = None;
     let names = match (in_net, record_plain) {
         (false, _) => teamview::Names::NoNet,
@@ -2287,12 +2289,13 @@ mod team_tests {
         Value::Map(vec![(Value::Uint(10), Value::Bytes(vec![0xab; 16]))])
     }
 
-    /// (name, only in key 11) of a name source; "NoNet" / "NoList" otherwise
+    /// (name, only in key 11) of a name source; "NoNet" / "NoList" / "NoInfo" otherwise
     fn shown(n: &teamview::Names) -> Vec<(String, bool)> {
         match n {
             teamview::Names::List(l) => l.iter().map(|x| (x.name.clone(), x.next)).collect(),
             teamview::Names::NoNet => vec![("NoNet".into(), false)],
             teamview::Names::NoList => vec![("NoList".into(), false)],
+            teamview::Names::NoInfo => vec![("NoInfo".into(), false)],
         }
     }
 
@@ -2339,7 +2342,9 @@ mod team_tests {
         // no record of this network on the phone; the node in no network (info key 10 absent)
         assert_eq!(shown(&team_names(Some(&info()), None, None, false).0), s(&[("NoList", false)]));
         assert_eq!(shown(&team_names(Some(&Value::Map(vec![])), None, Some(&netrec::encode(&r)), false).0), s(&[("NoNet", false)]));
-        assert_eq!(shown(&team_names(None, None, None, true).0), s(&[("NoNet", false)]));
+        // the info read failed: unknown, never 「not in your network」 (code review A-m2)
+        assert_eq!(shown(&team_names(None, Some(&[0xa1; 32]), Some(&netrec::encode(&r)), false).0), s(&[("NoInfo", false)]));
+        assert_eq!(shown(&team_names(None, None, None, true).0), s(&[("NoInfo", false)]));
     }
 
     // T-A11 (member, mnet/): the signed list only (a node joined later is not named), and the title's own name from

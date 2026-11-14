@@ -252,6 +252,9 @@ pub enum Names {
     NoNet,
     /// a network id, but this phone holds no record of it (or one that does not decode: fail-closed, no names)
     NoList,
+    /// the info read failed (status read fine): which network is unknown, so no names and a neutral line (code review
+    /// A-m2: never 「not in your network」)
+    NoInfo,
     /// the name source: an admin's [`admin_names`], a member's [`listed`]
     List(Vec<Listed>),
 }
@@ -269,6 +272,8 @@ pub const NOTE: &str = "在線 = 這台節點最近 1 分鐘內收得到。離�
 pub const NEW_MEMBER_HINT: &str = "不在你手機的名單裡（可能是新加入、網主還沒發新名單的隊員）";
 pub const HINT_NO_NET: &str = "這台不在你建立或加入的網路裡";
 pub const HINT_NO_LIST: &str = "這支手機沒有這個網路的名單";
+/// the info read failed (code review A-m2): the no-card sentence and the unknown-node hint alike
+pub const NO_INFO: &str = "讀不到這台的網路資訊，請按『重新整理』";
 /// after the name of an admin-phone entry that only key 11 holds (v2.4 §6)
 pub const NEXT_MARK: &str = "（名單下一版才正式列入）";
 
@@ -284,7 +289,7 @@ pub fn team_view_with(enabled: bool, status: Option<&Value>, names: &Names, own_
     let Some(st) = status.filter(|_| enabled) else { return TeamView::default() };
     let list: &[Listed] = match names {
         Names::List(l) => l,
-        Names::NoNet | Names::NoList => &[],
+        Names::NoNet | Names::NoList | Names::NoInfo => &[],
     };
     let title_name = match own_name {
         Some(n) => shown(n),
@@ -305,6 +310,7 @@ pub fn team_view_with(enabled: bool, status: Option<&Value>, names: &Names, own_
     let hint = match names {
         Names::NoNet => HINT_NO_NET,
         Names::NoList => HINT_NO_LIST,
+        Names::NoInfo => NO_INFO,
         Names::List(_) => NEW_MEMBER_HINT,
     };
     // (order class, sort key, text); class 0 online, 1 offline, 2 not seen since boot, 3 no address, 4 unknown
@@ -351,6 +357,7 @@ pub fn team_view_with(enabled: bool, status: Option<&Value>, names: &Names, own_
         v.only = match names {
             Names::NoNet => ONLY_NO_NET,
             Names::NoList => ONLY_NO_LIST,
+            Names::NoInfo => NO_INFO,
             Names::List(_) => ONLY_NOBODY,
         }
         .into();
