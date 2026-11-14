@@ -36,6 +36,14 @@ jobs:
           bash scripts/test-s5-node-254.sh || rc=1
           bash scripts/test-ab-selftest-254.sh || rc=1
           exit $rc
+      - name: "#254 slot-lock test negative control — SLK_TEST_HOLD=1 (every holder gone before its case ends) must FAIL its still-checks"
+        if: ${{ !cancelled() }}
+        run: |
+          SLK_TEST_HOLD=1 bash scripts/test-slotlock-254.sh > "$RUNNER_TEMP/slneg.log" 2>&1 && rc=0 || rc=$?
+          grep -E 'the case judged nothing|^SLOTLOCK' "$RUNNER_TEMP/slneg.log"; echo "rc=$rc"
+          [ "$rc" != 0 ] || { echo "::error::SLK_TEST_HOLD=1 passed: the holder checks are blind"; exit 1; }
+          n=$(grep -c 'the case judged nothing' "$RUNNER_TEMP/slneg.log")
+          [ "$n" -ge 10 ] || { echo "::error::$n 'the case judged nothing' lines, want >= 10 (5 hold cases x 2 shells)"; exit 1; }
       - name: "#254 preflight P9 node judge on fixtures ([all] / wbox slots / prov leftovers) under busybox ash"
         run: bash tests/prov-p1/p9-judge.sh scripts/node/prov-p9-254.sh
       - name: "#254 rollback arm / launcher / rbfix offline — every §22.1 precondition, FAIL-RECOVERED (+ openmanetd), FAIL-NEEDS-PERSON, rbfix preconditions, pty drop + plain-& negative control"
@@ -131,6 +139,17 @@ jobs:
           echo "$o" | grep -E '^(--- (FAIL|SKIP)|ok|FAIL|panic)'
           [ $rc = 0 ] || { echo "go test rc=$rc; the failing tests' own lines:"; echo "$o" | awk '/^=== RUN/ { b = "" } { b = b $0 ORS } /^--- FAIL/ { printf "%s", b }'; exit 1; }
           ! echo "$o" | grep -q -- '--- SKIP' || { echo '::error::a Go test skipped under root + prov_test'; exit 1; }
+      - name: "#254 D-state test negative control — a dd that never blocks must FAIL the precondition, not judge Exec"
+        run: |
+          # uutils dd (ubuntu 26.04's dd) fails an O_DIRECT read of a block device at once: the real case. On a runner
+          # whose dd is GNU (it blocks), /bin/false stands in for "a dd that never blocks", and the step says so.
+          if dd --version 2>&1 | head -1 | grep -q uutils; then ctl=dd; echo "dd here: $(dd --version 2>&1 | head -1) -> PROVTEST_DD=dd"
+          else ctl=false; echo "::warning::dd here is not uutils ($(dd --version 2>&1 | head -1)): the uutils control does not apply; PROVTEST_DD=false (never blocks) instead"; fi
+          cd feed/batman-prov/src
+          o=$(sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root GOFLAGS=-mod=vendor GOTOOLCHAIN=local PROVTEST_DD=$ctl go test -count=1 -v -tags prov_test -run 'TestExecAbandonsDState$' ./provstore/ 2>&1) && rc=0 || rc=$?
+          echo "$o" | grep -E '^(=== RUN|--- |ok|FAIL)|exec_dstate'; echo "PROVTEST_DD=$ctl rc=$rc"
+          [ "$rc" != 0 ] || { echo "::error::the D-state test passed with a dd that never blocks"; exit 1; }
+          grep -q "precondition: $ctl never blocked in D state" <<< "$o" || { echo "::error::no precondition FAIL line"; exit 1; }
       - name: "#254 claim-lock fix stub tests (no root): prov_apply_lock, prov_root_hash_ok, S13 batman-prov-lock, rollback lock gate, cross-file lints"
         run: |
           F=feed/batman-provision/files

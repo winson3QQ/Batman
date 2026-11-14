@@ -75,10 +75,14 @@ exec 9>>"$L"; flock -n 9 || exit 14
 "$SL" 6 & echo \$! >> "$T/pids"
 exit 0
 EOF
+# verb-good returns once its child has applied 9>&- (that redirection runs in the child after the fork: a verb exiting
+# first left the lock held for a moment, "free: the child closed fd 9 -> ok: got t=1"; under CPU load 56/150 dash and
+# 52/150 busybox runs of the case alone, 0/150 with this wait — review round 2 A-2)
 cat > "$T/verb-good" <<EOF
 #!/bin/sh
 exec 9>>"$L"; flock -n 9 || exit 14
-"$SL" 6 9>&- & echo \$! >> "$T/pids"
+"$SL" 6 9>&- & c=\$!; echo \$c >> "$T/pids"
+i=0; while [ -e /proc/\$c/fd/9 ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i + 1)); done
 exit 0
 EOF
 # a long-running batman-slot holding the lock (a writer), and a fake helper that starts one

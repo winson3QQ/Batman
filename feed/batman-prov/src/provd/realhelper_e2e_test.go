@@ -30,10 +30,12 @@ func checkResp(k, nonce, h []byte, cert cbor.Map, ownerPub []byte) []byte {
 	return s[:]
 }
 
+// stateIs: provd has reached st and fetched what a session in it needs: the PSKs and the owner list (round 2 review
+// B-2: between pollOnce setting "claimed" and info.owners returning, auth/owner can be refused with 3)
 func (s *Server) stateIs(st string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.c.state == st && !s.c.needPSK && s.c.psks != nil
+	return s.c.state == st && !s.c.needPSK && s.c.psks != nil && !s.c.needOwners && s.c.owners != nil
 }
 
 // 254-p2-impl §4.3 against node.go: claim with the real CheckMac (a wrong response first -> E_CLAIM_FAILED), the
