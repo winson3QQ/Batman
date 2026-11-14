@@ -69,7 +69,7 @@ for v in ${VARIANTS:-$ALL}; do
 	rm -rf "$RES/test${cap}UnitTest"   # only what this run writes is judged
 	log=$(mktemp)
 	"$GRADLE" --console=plain "test${cap}UnitTest" > "$log" 2>&1; rc=$?
-	[ "$rc" = 0 ] || grep -E 'FAILED|^e: |What went wrong|^> |rror:' "$log" | head -20
+	[ "$rc" = 0 ] || { grep -E 'FAILED|^e: |rror:' "$log" | head -20; sed -n '/What went wrong/,/^* Try/p' "$log" | head -20; }
 	rm -f "$log"
 	judge "$RES" "$v" "$rc"
 done
