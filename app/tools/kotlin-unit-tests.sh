@@ -7,14 +7,18 @@
 # run; a deleted file still fails by its name here until this list is edited on purpose).
 #   GRADLE     the Gradle to run (default: app/android/gradlew if present, else gradle on PATH) — the version in
 #              app/android/gradle/wrapper/gradle-wrapper.properties
-#   VARIANTS   space-separated variants (default: all nine: dev / dev2 / field x debug / profile / release)
+#   VARIANTS   space-separated variants (default: devDebug dev2Debug fieldDebug — the only test<Variant>UnitTest
+#              tasks this build has: AGP creates unit-test tasks for the test build type (debug) only, so
+#              test<Flavor>{Profile,Release}UnitTest do not exist ("Task ... not found", CI run 43549272945).
+#              With the default list the script also FAILS if Gradle's own list of test*UnitTest tasks differs
+#              from it, so a variant that gains a unit-test task cannot go untested unnoticed.
 #   --judge <results dir> <variant>   judge an existing build/app/test-results tree only (negative controls)
 # Needs: the Android SDK (ANDROID_HOME or android/local.properties sdk.dir), flutter.sdk in android/local.properties
 # and `flutter pub get` done (the Flutter Gradle plugin loader reads .flutter-plugins-dependencies), python3.
 set -u
 cd "$(dirname "$0")/../android" || exit 2
 MUST="SwPutTest SwPickTest SwOwnedTest BleRxTest SignAllowListTest EcdhPeerTest KeyPolicyTest QrDecodeTest QrScanTest CameraErrorsTest ViewfinderFitTest"
-ALL="devDebug devProfile devRelease dev2Debug dev2Profile dev2Release fieldDebug fieldProfile fieldRelease"
+ALL="devDebug dev2Debug fieldDebug"
 fail=0
 
 judge(){ # <results dir> <variant> [gradle rc]
@@ -64,6 +68,12 @@ fi
 GRADLE=${GRADLE:-$([ -x ./gradlew ] && echo ./gradlew || command -v gradle)}
 [ -n "$GRADLE" ] || { echo "FAIL kotlin: no gradle (GRADLE, ./gradlew or PATH)"; echo "SUITE FAIL"; exit 1; }
 RES=../build/app/test-results
+if [ -z "${VARIANTS:-}" ]; then   # the task list Gradle offers must be exactly the default list
+	want=$(for v in $ALL; do echo "test$(tr "[:lower:]" "[:upper:]" <<< "${v:0:1}")${v:1}UnitTest"; done | sort)
+	have=$("$GRADLE" --console=plain :app:tasks --all 2>&1 | grep -oE "^test[A-Za-z0-9]+UnitTest" | sort -u)
+	if [ "$want" = "$have" ]; then echo "PASS kotlin task list: $(echo $have)"
+	else echo "FAIL kotlin task list: Gradle offers [$(echo $have)], this script runs [$(echo $want)]"; fail=1; fi
+fi
 for v in ${VARIANTS:-$ALL}; do
 	cap="$(tr '[:lower:]' '[:upper:]' <<< "${v:0:1}")${v:1}"
 	rm -rf "$RES/test${cap}UnitTest"   # only what this run writes is judged

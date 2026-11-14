@@ -85,29 +85,29 @@ jobs:
           grep -q '^FAIL field .so strings (host release build, --features dev-trust): dev-only strings' <<< "$out"
           ! grep -q '^PASS' <<< "$out"
 
-      - name: Kotlin JVM unit tests — every variant, judged from the JUnit XML
+      - name: Kotlin JVM unit tests — every variant that has a unit-test task, judged from the JUnit XML
         if: ${{ !cancelled() }}
         run: GRADLE=gradle bash app/tools/kotlin-unit-tests.sh
       - name: Kotlin negative controls — a missing class, a failed test and an empty result each FAIL the judge
         if: ${{ !cancelled() }}
         run: |
-          src=app/build/app/test-results/testFieldReleaseUnitTest
+          src=app/build/app/test-results/testFieldDebugUnitTest
           ls "$src"/TEST-*.xml > /dev/null
           t=$(mktemp -d); mkdir "$t/a" "$t/b" "$t/c" "$t/d"
           expect(){ # <name> <dir> <ERE the FAIL line must match>
             local out rc
-            out=$(bash app/tools/kotlin-unit-tests.sh --judge "$2" fieldRelease) && rc=0 || rc=$?
+            out=$(bash app/tools/kotlin-unit-tests.sh --judge "$2" fieldDebug) && rc=0 || rc=$?
             echo "$1: rc=$rc $out"
             [ "$rc" != 0 ] && grep -qE "$3" <<< "$out"
           }
           # 0: the copy itself passes (so each FAIL below comes from the one change made to it)
-          cp -r "$src" "$t/a/"; bash app/tools/kotlin-unit-tests.sh --judge "$t/a" fieldRelease
-          cp -r "$src" "$t/b/"; rm "$t"/b/testFieldReleaseUnitTest/TEST-*SwPutTest.xml
-          expect "class missing" "$t/b" '^FAIL kotlin fieldRelease: did not run: SwPutTest$'
-          cp -r "$src" "$t/c/"; sed -i -E '0,/failures="0"/s//failures="1"/' "$t"/c/testFieldReleaseUnitTest/TEST-*KeyPolicyTest.xml
-          expect "a failure" "$t/c" '^FAIL kotlin fieldRelease: KeyPolicyTest: failures=1$'
-          mkdir "$t/d/testFieldReleaseUnitTest"
-          expect "no result" "$t/d" '^FAIL kotlin fieldRelease: no test ran '
+          cp -r "$src" "$t/a/"; bash app/tools/kotlin-unit-tests.sh --judge "$t/a" fieldDebug
+          cp -r "$src" "$t/b/"; rm "$t"/b/testFieldDebugUnitTest/TEST-*SwPutTest.xml
+          expect "class missing" "$t/b" '^FAIL kotlin fieldDebug: did not run: SwPutTest$'
+          cp -r "$src" "$t/c/"; sed -i -E '0,/failures="0"/s//failures="1"/' "$t"/c/testFieldDebugUnitTest/TEST-*KeyPolicyTest.xml
+          expect "a failure" "$t/c" '^FAIL kotlin fieldDebug: KeyPolicyTest: failures=1$'
+          mkdir "$t/d/testFieldDebugUnitTest"
+          expect "no result" "$t/d" '^FAIL kotlin fieldDebug: no test ran '
       - name: JUnit XML
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4
