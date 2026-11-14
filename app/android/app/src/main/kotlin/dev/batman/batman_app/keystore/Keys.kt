@@ -25,19 +25,33 @@ class Keys(private val prefix: String = "batman") {
     private val ks: KeyStore = KeyStore.getInstance(ANDROID_KS).apply { load(null) }
 
     fun alias(role: KeyRole) = "$prefix-${role.name.lowercase()}-v1"
-    fun exists(role: KeyRole) = ks.containsAlias(alias(role))
 
-    /** The live level of [role]'s key, or null when the alias is missing. */
-    fun level(role: KeyRole): Int? {
-        if (!exists(role)) return null
-        return when (val k = ks.getKey(alias(role), null)) {
-            is PrivateKey -> KeyFactory.getInstance(k.algorithm, ANDROID_KS).getKeySpec(k, KeyInfo::class.java).securityLevel
-            is SecretKey -> (SecretKeyFactory.getInstance(k.algorithm, ANDROID_KS).getKeySpec(k, KeyInfo::class.java) as KeyInfo).securityLevel
-            else -> null
-        }
+    /**
+     * The live level of [role]'s key, or null when Keystore has no such key. Not containsAlias: it answers false on ANY
+     * Keystore error (AndroidKeyStoreSpi.getKeyMetadata returns null for every KeyStoreException), which would turn a
+     * transient failure into "the key is gone". getKey answers null only for KEY_NOT_FOUND and throws otherwise
+     * (AndroidKeyStoreProvider.loadAndroidKeyStoreKeyFromKeystore; SDK sources android-37), so an error stays an error.
+     */
+    fun level(role: KeyRole): Int? = when (val k = ks.getKey(alias(role), null)) {
+        null -> null
+        is PrivateKey -> KeyFactory.getInstance(k.algorithm, ANDROID_KS).getKeySpec(k, KeyInfo::class.java).securityLevel
+        is SecretKey -> (SecretKeyFactory.getInstance(k.algorithm, ANDROID_KS).getKeySpec(k, KeyInfo::class.java) as KeyInfo).securityLevel
+        else -> error("$role: not a Keystore key (${k.javaClass.simpleName})")
     }
 
+    /** Every key's live level; throws when one cannot be read (KeyHandlers answers error `keystore`, Dart: unreadable). */
     fun levels(): Map<KeyRole, Int?> = KeyRole.values().associateWith { level(it) }
+
+    /**
+     * The platform channel's key handlers over these keys: the only way to a private-key use from outside this class
+     * (sign / ecdh / seal are private), so every use passes KeyHandlers' level gate.
+     */
+    fun handlers(devTrust: Boolean) = KeyHandlers(object : KeyUses {
+        override fun levels() = this@Keys.levels()
+        override fun sign(role: KeyRole, input: ByteArray) = this@Keys.sign(role, input)
+        override fun ecdh(peer: PublicKey) = this@Keys.ecdh(peer)
+        override fun seal(plain: ByteArray, aad: ByteArray) = this@Keys.seal(plain, aad)
+    }, devTrust)
 
     /**
      * Generate [role]'s key: StrongBox first; if StrongBox is unavailable, or the key READ BACK is SOFTWARE (keystore2
@@ -56,7 +70,8 @@ class Keys(private val prefix: String = "batman") {
         return second ?: Level.UNKNOWN
     }
 
-    fun delete(role: KeyRole) { if (exists(role)) ks.deleteEntry(alias(role)) }
+    /** Keystore ignores KEY_NOT_FOUND here and throws any other error (AndroidKeyStoreSpi.engineDeleteEntry). */
+    fun delete(role: KeyRole) = ks.deleteEntry(alias(role))
 
     private fun make(role: KeyRole, strongBox: Boolean) {
         val a = alias(role)
@@ -88,7 +103,7 @@ class Keys(private val prefix: String = "batman") {
     }
 
     /** ECDSA-SHA256 DER signature; refused unless the bytes are allow-listed for that key (design §2). Rust normalises low-s. */
-    fun sign(role: KeyRole, input: ByteArray): ByteArray {
+    private fun sign(role: KeyRole, input: ByteArray): ByteArray {
         val allowed = when (role) {
             KeyRole.OWNER_SIGN -> SignAllowList.ownerMaySign(input)
             KeyRole.ADMIN_SIGN -> SignAllowList.adminMaySign(input)
@@ -100,13 +115,13 @@ class Keys(private val prefix: String = "batman") {
     }
 
     /** ECDH x coordinate with owner_enc and [peer] (the caller zeroes it after use). */
-    fun ecdh(peer: PublicKey): ByteArray {
+    private fun ecdh(peer: PublicKey): ByteArray {
         val k = ks.getKey(alias(KeyRole.OWNER_ENC), null) as PrivateKey
         return KeyAgreement.getInstance("ECDH", ANDROID_KS).run { init(k); doPhase(peer, true); generateSecret() }
     }
 
     /** AES-256-GCM with a Keystore-generated IV (design §3); returns iv ‖ ciphertext. [aad] = final path + generation. */
-    fun seal(plain: ByteArray, aad: ByteArray): ByteArray {
+    private fun seal(plain: ByteArray, aad: ByteArray): ByteArray {
         val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, ks.getKey(alias(KeyRole.RECORD_AES), null)); updateAAD(aad) }
         val ct = c.doFinal(plain)
         return c.iv + ct

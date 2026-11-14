@@ -35,6 +35,8 @@ object Level {
  */
 enum class KeyOp(val needs: List<KeyRole>) {
     SIGN_OWNER(listOf(KeyRole.RECORD_AES, KeyRole.OWNER_SIGN)),
+    /** the owner key signing "batman-owner-enc-v1" ‖ owner_enc_pub (sig_enc): it vouches for owner_enc, so owner_enc must fit too */
+    BIND_OWNER_ENC(listOf(KeyRole.RECORD_AES, KeyRole.OWNER_SIGN, KeyRole.OWNER_ENC)),
     SIGN_ADMIN(listOf(KeyRole.RECORD_AES, KeyRole.ADMIN_SIGN)),
     ECDH(listOf(KeyRole.RECORD_AES, KeyRole.OWNER_ENC)),
     SEAL(listOf(KeyRole.RECORD_AES)),
@@ -45,7 +47,7 @@ object KeyPolicy {
     class Refused(val role: KeyRole, val level: Int?) : Exception("$role level $level")
 
     /**
-     * The one gate of the handlers that use a key (signOwner / signAdmin / ecdh / seal): null = go on; else the first
+     * The one gate of the handlers that use a key (KeyHandlers: signOwner / signAdmin / ecdh / seal): null = go on; else the first
      * key of [op] that is missing from [levels] or not [allowed]. Fail closed: no entry, a null level, an unknown level.
      */
     fun refused(op: KeyOp, levels: Map<KeyRole, Int?>, devTrust: Boolean): Refused? {
