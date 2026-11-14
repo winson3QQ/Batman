@@ -206,8 +206,12 @@ abstract class DependencyGate : DefaultTask() {
 //   android:dataExtractionRules="@xml/data_extraction_rules"; every src/*/res/xml*/data_extraction_rules.xml (main's
 //   must exist; a flavor's, a build type's or a qualified one — xml-v31, … — would replace it) has exactly <cloud-backup> and <device-transfer>, each
 //   with nothing but one <exclude domain=… path="."> per domain of [backupDomains] — an <include>, a missing domain or
-//   a narrower path fails.
-// - A release build type whose merged manifest says android:debuggable="true" fails (254-app-s1 §4).
+//   a narrower path fails. No values file under src/*/res/values*/ may define a resource named data_extraction_rules
+//   (an <item type="xml" name="data_extraction_rules">@xml/other</item> in a flavor's values replaces the rules file
+//   that aapt compiles, while the file checked here stays untouched; review round 2 B-MINOR-3). <application> has no
+//   android:backupAgent, and android:fullBackupContent only absent or "false" (B-MINOR-4).
+// - Every build type but `debug` whose merged manifest says android:debuggable="true" fails (254-app-s1 §4; a type
+//   made with initWith(debug) is debuggable, Flutter's own `profile` included: FlutterPlugin.kt creates it so).
 // Anything else fails the build.
 val expectedPermissions = setOf(
     "uses-permission:android.permission.BLUETOOTH_SCAN", "uses-permission:android.permission.BLUETOOTH_CONNECT",
@@ -233,6 +237,7 @@ abstract class ManifestGate : DefaultTask() {
     @get:Input abstract val expected: SetProperty<String>
     @get:Input abstract val exportable: SetProperty<String>
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val backupRules: ConfigurableFileCollection
+    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val valueFiles: ConfigurableFileCollection
     @get:Input abstract val domains: SetProperty<String>
     @get:Input abstract val buildType: Property<String>
 
@@ -271,7 +276,9 @@ abstract class ManifestGate : DefaultTask() {
         for (x in app) {
             if (x.a("allowBackup") != "false") bad.add("allowBackup=\"${x.a("allowBackup")}\"")
             if (x.a("dataExtractionRules") != "@xml/data_extraction_rules") bad.add("dataExtractionRules=\"${x.a("dataExtractionRules")}\"")
-            if (buildType.get() == "release" && x.a("debuggable") == "true") bad.add("release build is debuggable")
+            if (buildType.get() != "debug" && x.a("debuggable") == "true") bad.add("build type ${buildType.get()} is debuggable")
+            if (x.hasAttributeNS(ns, "backupAgent")) bad.add("backupAgent=\"${x.a("backupAgent")}\"")
+            if (x.hasAttributeNS(ns, "fullBackupContent") && x.a("fullBackupContent") != "false") bad.add("fullBackupContent=\"${x.a("fullBackupContent")}\"")
         }
         val rules = backupRules.files.sortedBy { it.path }
         if (rules.none { it.parentFile.parentFile.parentFile.name == "main" && it.parentFile.name == "xml" }) bad.add("no main data_extraction_rules.xml")
@@ -289,6 +296,11 @@ abstract class ManifestGate : DefaultTask() {
                 (domains.get() - got.toSet()).sorted().forEach { bad.add("$where: ${s.tagName} does not exclude $it") }
                 if (got.size != got.toSet().size || !domains.get().containsAll(got)) bad.add("$where: ${s.tagName} excludes $got")
             }
+        }
+        for (f in valueFiles.files.sortedBy { it.path }) {
+            val v = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(f).getElementsByTagName("*")
+            for (e in (0 until v.length).map { v.item(it) as org.w3c.dom.Element }.filter { it.getAttribute("name") == "data_extraction_rules" })
+                bad.add("${f.parentFile.parentFile.parentFile.name}/${f.parentFile.name}/${f.name}: <${e.tagName} type=\"${e.getAttribute("type")}\" name=\"data_extraction_rules\">")
         }
         if (bad.isNotEmpty()) throw GradleException("$name: ${bad.joinToString("; ")}")
         logger.lifecycle("$name: ${perms.size} permissions as expected, $exported exported components allowed, QrScanActivity not exported, no backup (${rules.size} rule file)")
@@ -314,6 +326,7 @@ androidComponents {
             expected.set(expectedPermissions)
             exportable.set(exportedComponents)
             backupRules.from(fileTree("src") { include("*/res/xml*/data_extraction_rules.xml") })
+            valueFiles.from(fileTree("src") { include("*/res/values*/*.xml") })
             domains.set(backupDomains)
             buildType.set(v.buildType ?: "")
         }
