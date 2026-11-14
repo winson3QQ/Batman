@@ -1252,7 +1252,8 @@ func (n *Node) applyNet(rec *provstore.Record, p *parsedNet, verb string) (cbor.
 		n.finish("after a failed commit of " + verb)
 		return nil, err
 	}
-	n.peersRecordWritten(rec, &next) // join: into a network / another one (254-app-team-status T-N12)
+	// join: into a network / another one (254-app-team-status T-N12)
+	n.peersRecordWritten(rec, &next)
 	seam.At(seam.Txn4, n.Log) // committed; .txn and the marker still there, the save not done
 	// step 4: save under this transaction's token BEFORE .txn goes (a power loss in between = Finish again)
 	if rc, out := n.Sys.SaveTxn(token); rc != 0 && rc != 6 {
