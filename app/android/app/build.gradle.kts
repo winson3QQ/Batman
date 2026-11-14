@@ -37,7 +37,9 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        ndk { abiFilters += listOf("arm64-v8a") }  // design §2: arm64-v8a only
+        // design §2: arm64-v8a only. clear(): the Flutter plugin has already put its three default ABIs here, so `+=` alone
+        // changed nothing. An emulator build asks for x86_64 itself: -Pemulator-abi (flutter build apk -P emulator-abi=1).
+        ndk { abiFilters.clear(); abiFilters += listOf("arm64-v8a") + if (project.hasProperty("emulator-abi")) listOf("x86_64") else listOf() }
     }
 
     // design v8.5.1 §4.1: dev / field are build constants. Each flavor has its own applicationId (own Keystore aliases,

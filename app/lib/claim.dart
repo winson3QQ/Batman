@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import 'claim_records.dart';
+import 'key_abilities.dart';
 import 'say.dart';
 import 'scan.dart' show provdService, provdStatus;
 import 'src/rust/api/claim.dart';
@@ -221,6 +222,14 @@ class _ClaimPageState extends State<ClaimPage> {
     StreamSubscription<ConnectionStateUpdate>? conn;
     StreamSubscription<List<int>>? notify;
     try {
+      // design §4.1: the key levels are read live before every claim / recovery (a claim may turn out to be the
+      // recovery of an unfinished one, so both must be allowed)
+      final able = await KeyAbilities.read(_platform);
+      final no = able.refusal(KeyUse.claim) ?? able.refusal(KeyUse.recover);
+      if (no != null) {
+        _say('[CLAIM_FAIL] [KEY_LEVEL] $no。手機裡的紀錄沒有改動。');
+        return;
+      }
       final dir = '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
       final store = RustClaimStore(dir);
       if (!await _held(q, store, dir)) return;

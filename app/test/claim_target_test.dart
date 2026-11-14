@@ -57,7 +57,7 @@ void main() {
   setUpAll(() => RustLib.initMock(api: rust));
   final platform = <String>[];
 
-  Future<void> claim(WidgetTester t, Object target, {bool matches = true, bool openFails = false}) async {
+  Future<void> claim(WidgetTester t, Object target, {bool matches = true, bool openFails = false, bool keysOk = true}) async {
     rust
       ..target = target
       ..pendingMatches = matches
@@ -70,6 +70,8 @@ void main() {
           return qrText;
         case 'filesDir':
           return files;
+        case 'keyLevels': // design v8.5.1 §4.1: read before every claim / recovery
+          return {'appUsable': true, 'claim': keysOk, 'login': true, 'recover': keysOk, 'makeNetwork': true, 'softOwnerEnc': false};
         case 'open':
           if (openFails) throw PlatformException(code: 'open', message: 'key gone');
           return Uint8List(4);
@@ -93,6 +95,15 @@ void main() {
       '也不會顯示在清單裡。要重新認領嗎？';
   const reclaimPending = '這台節點已在你的清單裡。手機裡也有這台一次沒完成的認領。只有在你剛把這台節點重置回未認領時才重新認領：'
       '舊紀錄會留在手機上，但 App 之後不會再用它、也不會顯示在清單裡。要重新認領嗎？';
+
+  // design v8.5.1 §4.1 (owner_enc row): the key levels do not allow a claim -> said so, nothing asked of the store or BLE
+  testWidgets('the keys do not allow a claim: no claim, nothing read', (t) async {
+    await claim(t, ClaimTarget.nothing, keysOk: false);
+    expect(find.textContaining('復原／成員金鑰不是硬體保護，不能認領節點'), findsOneWidget);
+    expect(rust.calls, isEmpty);
+    expect(platform, isNot(contains('filesDir')));
+    expect(platform, isNot(contains('blePermissions')));
+  });
 
   testWidgets('nothing held: the claim goes on', (t) async {
     await claim(t, ClaimTarget.nothing);
