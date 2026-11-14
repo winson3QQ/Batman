@@ -1,0 +1,48 @@
+# Attribution only, not for merge (#254): why lint SLOTLOCK and prov-p1 TestExecAbandonsDState fail on ubuntu-26.04
+name: diag-2604
+on:
+  push:
+    branches: [harness/ci-diag-2604]
+permissions:
+  contents: read
+jobs:
+  diag:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: tools
+        run: |
+          for c in dd ls cut sed awk sleep flock readlink tr head grep cat; do p=$(command -v $c); echo "$c -> $p -> $(readlink -f $p)"; done
+          dd --version 2>&1 | head -1; ls --version 2>&1 | head -1; cut --version 2>&1 | head -1
+          ls -1 /usr/bin/gnu* 2>/dev/null | head -20 || true
+          ls -d /usr/lib/cargo/bin 2>/dev/null && ls /usr/lib/cargo/bin | head -5 || true
+      - name: dd iflag=direct
+        run: |
+          set +e
+          head -c 1048576 /dev/zero > $RUNNER_TEMP/f
+          dd if=$RUNNER_TEMP/f of=/dev/null bs=4096 count=1 iflag=direct; echo "dd rc=$?"
+          for g in /usr/bin/gnudd /usr/lib/gnu/dd; do [ -x $g ] && { $g if=$RUNNER_TEMP/f of=/dev/null bs=4096 count=1 iflag=direct; echo "$g rc=$?"; }; done
+          img=$RUNNER_TEMP/dm.img; head -c 8388608 /dev/zero > $img; loop=$(sudo losetup -f --show $img)
+          sudo dd if=$loop of=/dev/null bs=4096 count=1 iflag=direct; echo "dd loop rc=$?"
+          sudo losetup -d $loop
+      - name: step-window pieces
+        run: |
+          set +e
+          L=$RUNNER_TEMP/L; : > $L
+          ( flock -x 7; exec sleep 5 ) 7>>$L & HP=$!; sleep 0.5
+          echo "holder pid=$HP comm=$(cat /proc/$HP/comm) cmdline=$(tr '\0' ' ' < /proc/$HP/cmdline)"
+          echo "uptime=$(cat /proc/uptime) ticks=$(awk '{ printf "%d\n", $1 * 100 }' /proc/uptime)"
+          echo "stat=$(cat /proc/$HP/stat)"
+          echo "start(f20)=$(sed 's/.*) //' /proc/$HP/stat | cut -d' ' -f20)"
+          echo "ls -l fd:"; ls -l /proc/$HP/fd; echo "ls rc=$?"
+          for f in /proc/$HP/fd/*; do echo "$f => $(readlink $f)"; done
+          getconf CLK_TCK
+          wait $HP
+      - name: slotlock test (as in ci lint)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq busybox
+          set +e; bash scripts/test-slotlock-254.sh 2>&1 | grep -E 'FAIL|passed' ; true
