@@ -10,7 +10,8 @@
 // their labels, two constants below). The status page's own send button has a key (sendUpdate).
 // Negative controls (mutants, never committed): `_takeUpdate` sending after a successful import -> T30 fails;
 // `_remove` sending after the commit -> T19 fails; `_sendFromPage` without its `_sendUpdateFor` -> the status page
-// arm of T30 fails (its button would only read the page again).
+// arm of T30 fails (its button would only read the page again). The same sends put off by a timer (30 s or 5 min after
+// the import / the commit / the status page opening) -> the 10-minute wait ([longWait]) after the 20 s catches them.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -321,6 +322,13 @@ void main() {
     }
   }
 
+  /// a long stretch of the app's clock (10 minutes) after the 20 s of [settle]: a send put off by a timer (30 s,
+  /// 5 min, ...) would show up here
+  Future<void> longWait(WidgetTester t) async {
+    await t.pump(const Duration(minutes: 10));
+    await settle(t, 5);
+  }
+
   Future<void> press(WidgetTester t, Finder f) async {
     await t.ensureVisible(f);
     await t.pump();
@@ -368,6 +376,7 @@ void main() {
     await press(t, find.byKey(const Key('paste:貼上更新包')));
     expect(rust.calls, ['cas mnet/$netId'], reason: 'the update was imported (mnet written)');
     await settle(t, 100); // 20 s of the app's clock: nothing is sent later either
+    await longWait(t);
     expect(rust.sends, isEmpty, reason: 'T30: 0 network/update after the import');
     expect(node.written, [fLogin], reason: 'T30: no frame at all after the import');
 
@@ -385,6 +394,7 @@ void main() {
     await press(t, find.widgetWithText(TextButton, statusLabel));
     expect(find.byKey(const Key('sendUpdate')), findsOneWidget, reason: 'the status page is open, with its send button');
     await settle(t, 100);
+    await longWait(t);
     expect(rust.sends, isEmpty, reason: 'T30: opening and showing the status page sends no network/update');
     expect(node.written, [fLogin, fStatus], reason: 'only the read of the page');
 
@@ -406,8 +416,12 @@ void main() {
     await settle(t, 100);
     expect(rust.sends, isEmpty, reason: 'T19: 0 network/update after the commit');
     expect(node.written, [fLogin, fInfo], reason: 'T19: no frame at all after the commit');
+    await longWait(t);
+    expect(rust.sends, isEmpty, reason: 'T19: 0 network/update 10 minutes after the commit (the list still open)');
+    expect(node.written, [fLogin, fInfo]);
     await press(t, find.byType(SimpleDialogOption).last); // close the list
     await settle(t, 100);
+    await longWait(t);
     expect(rust.sends, isEmpty);
     expect(node.written, [fLogin, fInfo]);
 
