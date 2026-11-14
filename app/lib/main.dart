@@ -7,7 +7,7 @@ import 'claim.dart';
 import 'key_abilities.dart';
 import 'nodes.dart';
 import 'scan.dart';
-import 'src/rust/api/owner.dart' show listNodes;
+import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
 
@@ -46,7 +46,7 @@ class _StartupCheckState extends State<StartupCheck> {
   bool _ok = false;
   KeyAbilities _keys = KeyAbilities.none;
   bool _retry = false; // the key state could not be read / the first run did not finish: offer to try again
-  List<String> _index = []; // record AES unusable: the plaintext node index (design §4); nothing is opened or deleted
+  List<String> _index = []; // app off: the plaintext node index (design §4), one line per node; nothing opened or deleted
   bool _firstRunFailed = false;
 
   @override
@@ -56,34 +56,57 @@ class _StartupCheckState extends State<StartupCheck> {
   }
 
   Future<void> _run() async {
-    final info = buildInfo();
-    final flavorDevTrust = await _platform.invokeMethod<bool>('devTrust');
-    // design v8.5.1 §4.1: the Rust library and the flavor must agree, else the app is disabled
-    final agree = flavorDevTrust == info.devTrust;
-    final lines = <String>[agree ? '啟動檢查：正常' : '啟動檢查：App 內部版本不一致，已停用（請重新安裝 App）'];
-    final tech = <String>['核心 dev_trust=${info.devTrust}（batman_bridge ${info.crateVersion}），安裝版 DEV_TRUST=$flavorDevTrust'];
+    var agree = false;
+    final lines = <String>[];
+    final tech = <String>[];
     var keys = KeyAbilities.none;
     var retry = false;
     var index = <String>[];
     _firstRunFailed = false;
-    if (agree) {
-      tech.add('自我測試：${selftest()}');
-      final inst = await _install();
-      for (final l in inst) {
-        (l.startsWith('安裝紀錄：') ? tech : lines).add(l); // the marker itself is technical; what happened is not
+    try {
+      final info = buildInfo();
+      final flavorDevTrust = await _platform.invokeMethod<bool>('devTrust');
+      // design v8.5.1 §4.1: the Rust library and the flavor must agree, else the app is disabled
+      agree = flavorDevTrust == info.devTrust;
+      lines.add(agree ? '啟動檢查：正常' : '啟動檢查：App 內部版本不一致，已停用（請重新安裝 App）');
+      tech.add('核心 dev_trust=${info.devTrust}（batman_bridge ${info.crateVersion}），安裝版 DEV_TRUST=$flavorDevTrust');
+      if (agree) {
+        tech.add('自我測試：${selftest()}');
+        final inst = await _install();
+        for (final l in inst) {
+          (l.startsWith('安裝紀錄：') ? tech : lines).add(l); // the marker itself is technical; what happened is not
+        }
+        // design v8.5.1 §4.1 table: the live key levels decide what is on (record AES not hardware = the whole app off)
+        keys = await KeyAbilities.read(_platform, detail: (d) => tech.add('金鑰保護等級：$d'));
+        if (!keys.appUsable) {
+          // three causes, three messages (design §4 / §4.1): unreadable (may be transient -> retry), lost, not hardware
+          retry = keys.unread || _firstRunFailed;
+          lines[0] = '啟動檢查：${_firstRunFailed && !keys.unread ? '金鑰沒有建立成功，App 暫時不能使用' : keys.offReason}';
+          // design §4: the plaintext index (file names only: nothing is opened or deleted), also while the levels
+          // cannot be read; an unfinished claim is listed as such. A first run happens only with no record at all.
+          if (!_firstRunFailed) {
+            final dir = '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
+            index = [
+              for (final n in await listNodes(dir: dir)) '節點 $n',
+              for (final n in await listPending(dir: dir)) '節點 $n（認領沒有確認）',
+            ];
+          }
+        } else {
+          // one line per reason (claim and recovery share theirs when the owner key is the cause)
+          lines.addAll({for (final u in KeyUse.values) keys.refusal(u)}.whereType<String>());
+          if (keys.softOwnerEnc) lines.add('注意：這支手機的復原／成員金鑰只有軟體保護，只適合開發使用');
+        }
       }
-      // design v8.5.1 §4.1 table: the live key levels decide what is on (record AES not hardware = the whole app off)
-      keys = await KeyAbilities.read(_platform, detail: (d) => tech.add('金鑰保護等級：$d'));
-      if (!keys.appUsable) {
-        // three causes, three messages (design §4 / §4.1): unreadable (may be transient -> retry), lost, not hardware
-        retry = keys.unread || _firstRunFailed;
-        lines[0] = '啟動檢查：${_firstRunFailed && !keys.unread ? '金鑰沒有建立成功，App 暫時不能使用' : keys.offReason}';
-        if (!retry) index = await listNodes(dir: '${(await _platform.invokeMethod<String>('filesDir'))!}/records');
-      } else {
-        // one line per reason (claim and recovery share theirs when the owner key is the cause)
-        lines.addAll({for (final u in KeyUse.values) keys.refusal(u)}.whereType<String>());
-        if (keys.softOwnerEnc) lines.add('注意：這支手機的復原／成員金鑰只有軟體保護，只適合開發使用');
-      }
+    } catch (e) {
+      // a step that failed (the platform, the record store's sweep / marker / listing): its reason and a retry, never
+      // a spinner that does not end
+      agree = false;
+      keys = KeyAbilities.none;
+      retry = true;
+      index = [];
+      lines
+        ..clear()
+        ..add('啟動檢查失敗：$e');
     }
     debugPrint('BMAPP ${[...lines, ...tech].join(' | ')}');
     setState(() {
@@ -135,8 +158,11 @@ class _StartupCheckState extends State<StartupCheck> {
             : ListView(children: [
                 Text(_report!, style: TextStyle(fontSize: 16, color: _ok ? null : Colors.red)),
                 const SizedBox(height: 16),
-                if (_index.isNotEmpty) const Text('這些節點需要重燒卡回收：', style: TextStyle(fontSize: 16)),
-                for (final n in _index) SelectableText('節點 $n', style: const TextStyle(fontFamily: 'monospace')),
+                // while the levels cannot be read nothing is lost yet: no re-flash advice, only what the phone holds
+                if (_index.isNotEmpty)
+                  Text(_retry ? '手機裡有這些節點的紀錄（沒有打開，也沒有刪除）：' : '這些節點需要重燒卡回收：',
+                      style: const TextStyle(fontSize: 16)),
+                for (final n in _index) SelectableText(n, style: const TextStyle(fontFamily: 'monospace')),
                 if (_retry)
                   FilledButton(
                       onPressed: () {

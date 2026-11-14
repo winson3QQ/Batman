@@ -49,19 +49,26 @@ class FakeRust implements RustLibApi {
   @override
   String crateApiSimpleSelftest() => 'ok';
 
+  /// thrown by that store call when set (the Rust store's errors reach Dart as plain exceptions, not PlatformException)
+  Object? sweepError, markerError;
+
   @override
-  Future<int> crateApiSimpleStoreSweep({required String dir}) async => 0;
+  Future<int> crateApiSimpleStoreSweep({required String dir}) async => sweepError == null ? 0 : throw sweepError!;
 
   String? marker = 'marker';
 
   @override
-  Future<String?> crateApiSimpleStoreReadMarker({required String dir}) async => marker;
+  Future<String?> crateApiSimpleStoreReadMarker({required String dir}) async =>
+      markerError == null ? marker : throw markerError!;
 
   @override
   Future<bool> crateApiSimpleStoreHasRecords({required String dir}) async => false;
 
   @override
   Future<List<String>> crateApiOwnerListNodes({required String dir}) async => ['0000000000000c4f2a'];
+
+  @override
+  Future<List<String>> crateApiOwnerListPending({required String dir}) async => ['00000000000000beef'];
 
   @override
   dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
@@ -76,7 +83,11 @@ class NoBle implements FlutterReactiveBle {
 void main() {
   final rust = FakeRust();
   setUpAll(() => RustLib.initMock(api: rust));
-  setUp(() => rust.marker = 'marker');
+  setUp(() {
+    rust.marker = 'marker';
+    rust.sweepError = null;
+    rust.markerError = null;
+  });
   final calls = <String>[];
 
   /// [keys]: the `keyLevels` answer; a PlatformException is thrown
@@ -313,6 +324,9 @@ void main() {
       expect(find.textContaining(KeyAbilities.appOff), findsNothing);
       expect(find.text('這些節點需要重燒卡回收：'), findsOneWidget);
       expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
+      // review round 2 MINOR 3: an unfinished claim is listed too, said as not confirmed (full device_id).
+      // Negative control: claim-pending not listed -> FAIL
+      expect(find.text('節點 00000000000000beef（認領沒有確認）'), findsOneWidget);
       expect(find.bySubtype<ButtonStyleButton>(), findsNothing);
       expect(calls, isNot(contains('open')));
     });
@@ -367,6 +381,11 @@ void main() {
         expect(find.textContaining('不見了'), findsNothing);
         expect(find.textContaining('重燒卡'), findsNothing);
         expect(find.text('我的節點'), findsNothing);
+        // review round 2 MINOR 4: the plaintext index is there while the levels cannot be read (listing needs no key),
+        // without any re-flash advice. Negative control: the index only when not unreadable -> FAIL
+        expect(find.text('手機裡有這些節點的紀錄（沒有打開，也沒有刪除）：'), findsOneWidget);
+        expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
+        expect(find.text('節點 00000000000000beef（認領沒有確認）'), findsOneWidget);
         expect(find.widgetWithText(FilledButton, '再試一次'), findsOneWidget);
         expect(find.bySubtype<ButtonStyleButton>(), findsOneWidget, reason: 'the retry is the only button');
         // the retry reads again: this time the keys answer
@@ -376,6 +395,32 @@ void main() {
         expect(calls, contains('keyLevels'));
         expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
         expect(find.text('再試一次'), findsNothing);
+        expect(live(t).length, 3);
+      });
+    }
+
+    // review round 2 MINOR 5: a start step that throws something other than a PlatformException (the Rust store) ends
+    // the check with its reason and a retry. Negative control: the catch in _run removed -> FAIL (endless spinner)
+    for (final (name, fail) in <(String, void Function(Object))>[
+      ('the sweep', (e) => rust.sweepError = e),
+      ('the install marker read', (e) => rust.markerError = e),
+    ]) {
+      testWidgets('start: $name fails -> 「啟動檢查失敗」 with the reason and a retry; the retry starts again', (t) async {
+        fail('store: disk I/O error');
+        mock(t, answer());
+        await t.pumpWidget(const BatmanApp());
+        await t.pumpAndSettle();
+        expect(find.byType(CircularProgressIndicator), findsNothing, reason: 'the check ended');
+        expect(find.textContaining('啟動檢查失敗：store: disk I/O error'), findsOneWidget);
+        expect(find.textContaining('啟動檢查：正常'), findsNothing);
+        expect(find.text('我的節點'), findsNothing);
+        expect(find.widgetWithText(FilledButton, '再試一次'), findsOneWidget);
+        expect(find.bySubtype<ButtonStyleButton>(), findsOneWidget, reason: 'the retry is the only button');
+        rust.sweepError = null;
+        rust.markerError = null;
+        await t.tap(find.text('再試一次'));
+        await t.pumpAndSettle();
+        expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
         expect(live(t).length, 3);
       });
     }
