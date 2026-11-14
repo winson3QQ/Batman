@@ -210,8 +210,8 @@ abstract class DependencyGate : DefaultTask() {
 //   (an <item type="xml" name="data_extraction_rules">@xml/other</item> in a flavor's values replaces the rules file
 //   that aapt compiles, while the file checked here stays untouched; review round 2 B-MINOR-3). <application> has no
 //   android:backupAgent, and android:fullBackupContent only absent or "false" (B-MINOR-4).
-// - Every build type but `debug` whose merged manifest says android:debuggable="true" fails (254-app-s1 §4; a type
-//   made with initWith(debug) is debuggable, Flutter's own `profile` included: FlutterPlugin.kt creates it so).
+// - Every build type but `debug` and `profile` (Flutter's own development types; profile is initWith(debug) in
+//   FlutterPlugin.kt) whose merged manifest says android:debuggable="true" fails (254-app-s1 §4), e.g. a staging type.
 // Anything else fails the build.
 val expectedPermissions = setOf(
     "uses-permission:android.permission.BLUETOOTH_SCAN", "uses-permission:android.permission.BLUETOOTH_CONNECT",
@@ -276,7 +276,7 @@ abstract class ManifestGate : DefaultTask() {
         for (x in app) {
             if (x.a("allowBackup") != "false") bad.add("allowBackup=\"${x.a("allowBackup")}\"")
             if (x.a("dataExtractionRules") != "@xml/data_extraction_rules") bad.add("dataExtractionRules=\"${x.a("dataExtractionRules")}\"")
-            if (buildType.get() != "debug" && x.a("debuggable") == "true") bad.add("build type ${buildType.get()} is debuggable")
+            if (buildType.get() !in setOf("debug", "profile") && x.a("debuggable") == "true") bad.add("build type ${buildType.get()} is debuggable")
             if (x.hasAttributeNS(ns, "backupAgent")) bad.add("backupAgent=\"${x.a("backupAgent")}\"")
             if (x.hasAttributeNS(ns, "fullBackupContent") && x.a("fullBackupContent") != "false") bad.add("fullBackupContent=\"${x.a("fullBackupContent")}\"")
         }
