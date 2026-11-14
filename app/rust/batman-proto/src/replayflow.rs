@@ -5,8 +5,8 @@
 //!   op/nonce -> nonce_helper -> CheckMac response over THIS session's nonce and h ->
 //!   Sign{owner-op input "batman-owner-op-v1" ‖ h ‖ nonce_helper ‖ "claim/replay" ‖ args_hash({1: response})} ->
 //!   claim/replay {1: response, 31: {1: "claim/replay", 2: sig}} -> flow::claim_replay.
-//! A msg2 that does not decrypt is the normal answer while provd's cached state is stale (§5.1: the caller waits
-//! ≥ 15 s and retries, 3 times) — never a verdict.
+//! A msg2 that does not decrypt is the normal answer while provd's cached state is stale — never a verdict: the caller
+//! (254-app-replay §3-4) disconnects at once and tries again in a later round (rounds ≥ 15 s apart, at most 3).
 
 use crate::cbor::Value;
 use crate::claimflow::Pending;

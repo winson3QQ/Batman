@@ -7,8 +7,9 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `ended`, `hex_decode`, `new`, `pending_record`, `step`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`
+// These functions are ignored because they are not marked as `pub`: `ended`, `hex_decode`, `new`, `node_record`, `pending_record`, `step`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `FinishEnd`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`
 
 Future<ClaimQr> parseClaimQr({required String text}) =>
     RustLib.instance.api.crateApiClaimParseClaimQr(text: text);
@@ -79,11 +80,19 @@ Future<bool> storeKeepCopy({required String dir, required String rel}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>>
 abstract class ClaimSession implements RustOpaqueInterface {
+  /// The claim/finish answer was 9 (the exhausted recovery then says s1 §5.1's words).
+  bool finishedWith9();
+
   /// A frame received on TX; None = keep reading.
   ClaimStep? onFrame({required List<int> frame});
 
   /// The pending record is on disk: claim/begin goes out.
   ClaimStep? pendingPersisted();
+
+  /// 254-app-replay §2 T1: replay this very node now? True when the claim/finish frames were handed to Dart AND the
+  /// attempt has no end yet (90 s time-out, a notification / write error), ended Broken, or ended 9 / 13 / OK without
+  /// usable credentials. Anything that ended before the finish went out, and every other finish answer, is false.
+  bool replayDue();
 
   /// Starts an attempt: the first step is the msg1 frames. `dev_soft_enc`: this phone's owner_enc key is SOFTWARE
   /// (dev builds only, §4.1; the caller read it live) — the node record of this claim carries the mark.

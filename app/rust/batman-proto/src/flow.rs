@@ -9,7 +9,11 @@ use crate::envelope::Outcome;
 pub const E_FORBIDDEN: u64 = 3;
 pub const E_BAD_OBJECT: u64 = 4;
 pub const E_UNSUPPORTED: u64 = 6;
+/// ops channel busy (session.go:45, 627), a helper time-out, or claim.replay refused on an A/B trial slot (node.go:251-253)
+pub const E_BUSY: u64 = 7;
 pub const E_CLAIM_FAILED: u64 = 9;
+/// storage (session.go:47; passed through by mapHelper)
+pub const E_STORAGE: u64 = 10;
 pub const E_REJECTED: u64 = 11;
 pub const E_RATE: u64 = 12;
 pub const E_LOCK_INCOMPLETE: u64 = 13;
@@ -17,11 +21,27 @@ pub const E_LOCK_INCOMPLETE: u64 = 13;
 pub const REASON_LEGACY_NO_KEY: u64 = 10;
 
 /// claim/finish and claim/replay success body {1: owner_tag_key, 2: adv_owner_key, 3: root_password} (cddl:178-183).
-#[derive(Debug, PartialEq, Eq)]
+/// Secret: Debug shows no key or password (254-app-replay review B-m4); zeroed on drop.
+#[derive(PartialEq, Eq)]
 pub struct Creds {
     pub owner_tag_key: [u8; 32],
     pub adv_owner_key: [u8; 32],
     pub root_password: String,
+}
+
+impl std::fmt::Debug for Creds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Creds { .. }")
+    }
+}
+
+impl Drop for Creds {
+    fn drop(&mut self) {
+        self.owner_tag_key.fill(0);
+        self.adv_owner_key.fill(0);
+        // SAFETY: zero bytes are valid UTF-8; the length does not change
+        unsafe { self.root_password.as_bytes_mut() }.fill(0);
+    }
 }
 
 fn creds(body: &Value) -> Option<Creds> {
@@ -45,7 +65,7 @@ pub enum ClaimFinish {
     /// 4: malformed request = an app bug -> stop, keep the pending
     AppBug,
     /// 9: K wrong, someone else first, or OUR earlier finish committed and provd's cached state is stale ->
-    /// try psk_replay first (3 x 15 s), never a verdict
+    /// try psk_replay first (254-app-replay §2 T1: wait 15 s, then up to 3 rounds 15 s apart), never a verdict
     TryReplay,
     /// 7, any other code, or no reply -> keep the pending -> §5.2
     Unknown,
@@ -73,14 +93,18 @@ pub enum ClaimReplay {
     /// write the node record, overwriting root_password (every replay rotates it), then delete the pending
     Recovered(Creds),
     /// 13: this session already became owner and an owner may not replay -> disconnect, new connection, replay again;
-    /// not counted against the node's failures nor the app's 3 / hour (the app's own cap: 5 in a row)
+    /// not counted against the node's failures (node.go:661-665; the password may or may not have changed); the app's
+    /// own cap: 5 in a row (254-app-replay §4)
     Reconnect,
     /// 12: the node's hourly failure cap
     RateLimited,
-    /// 3 (the helper's refusal passed through, session.go:653-657; 3 on one connection closes it) or 4: refused,
-    /// counts toward the app's 3 per device_id per hour
+    /// 3 (the helper's refusal passed through, session.go:586-600; the third on one connection closes it) or 4:
+    /// refused -> stop at the first one (254-app-replay §4: at most one counted failure per 「認領」, no app counter)
     Refused,
-    /// a success without usable credentials, any other code, or no reply: keep the pending, try later
+    /// 7 (ops busy, a helper time-out = maybe committed, an A/B trial slot) or 10: try this node again next round
+    /// (254-app-replay §4)
+    Busy,
+    /// a success without usable credentials, any other code (6, 11, ...): keep the pending, stop
     Unknown,
 }
 
@@ -89,6 +113,7 @@ pub fn claim_replay(o: &Outcome) -> ClaimReplay {
         Outcome::Ok(b) => creds(b).map_or(ClaimReplay::Unknown, ClaimReplay::Recovered),
         Outcome::Err { code: E_LOCK_INCOMPLETE, .. } => ClaimReplay::Reconnect,
         Outcome::Err { code: E_RATE, .. } => ClaimReplay::RateLimited,
+        Outcome::Err { code: E_BUSY | E_STORAGE, .. } => ClaimReplay::Busy,
         Outcome::Err { code: E_FORBIDDEN | E_BAD_OBJECT, .. } => ClaimReplay::Refused,
         Outcome::Err { .. } => ClaimReplay::Unknown,
     }

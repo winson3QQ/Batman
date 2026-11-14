@@ -73,7 +73,12 @@ class FakeRust implements RustLibApi {
   Future<void> crateApiClaimStoreWriteSealed({required String dir, required String rel, required BigInt generation, required List<int> sealed}) async =>
       calls.add('write $rel');
   @override
-  Future<void> crateApiClaimStoreRemove({required String dir, required String rel}) async => calls.add('remove $rel');
+  Future<void> crateApiClaimStoreRemove({required String dir, required String rel}) async {
+    calls.add('remove $rel');
+    if (removeFails) throw 'Io(EIO)';
+  }
+
+  bool removeFails = false;
   @override
   Future<bool> crateApiClaimStoreKeepCopy({required String dir, required String rel}) async {
     calls.add('copy $rel');
@@ -131,7 +136,8 @@ void main() {
     ..copyFails = false
     ..devSoftEnc = null
     ..statusState = 'unclaimed'
-    ..statusLast4 = '4f2a');
+    ..statusLast4 = '4f2a'
+    ..removeFails = false);
 
   /// scan, 「認領」, answer the dialog with [confirm], then let the claim run
   /// [soft]: a dev build whose owner_enc key is SOFTWARE; [signOwner]: what Kotlin answers (a PlatformException is thrown)
@@ -284,5 +290,19 @@ void main() {
     expect(find.textContaining('附近有已認領的節點'), findsNothing);
     expect(ble.written, isEmpty);
     expect(rust.calls, isEmpty);
+  });
+
+  // 254-app-replay review r2 A-B: the node record is written but the pending cannot be removed -> still CLAIMED (the
+  // node record counts, noover R2), the leftover said, the QR forgotten (R6); never 「認領沒有完成」.
+  // Negative control: no `on PendingNotRemoved` -> 「認領沒有完成：處理出錯」 and 認領 stays on.
+  testWidgets('review r2: pending not removed after CLAIMED -> still claimed, leftover said', (t) async {
+    rust.removeFails = true;
+    await runClaim(t, '重新認領');
+    expect(find.text('認領成功'), findsOneWidget);
+    expect(find.textContaining('沒能刪掉這次的認領暫存紀錄'), findsOneWidget);
+    expect(find.textContaining('認領沒有完成'), findsNothing);
+    expect(rust.calls, contains('write node/$deviceId'));
+    final claim = t.widget<FilledButton>(find.widgetWithText(FilledButton, '認領'));
+    expect(claim.onPressed, isNull, reason: 'R6: the QR is forgotten');
   });
 }

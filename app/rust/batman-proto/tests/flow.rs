@@ -51,7 +51,10 @@ fn claim_replay_rows() {
     assert_eq!(claim_replay(&err(12)), ClaimReplay::RateLimited);
     assert_eq!(claim_replay(&err(3)), ClaimReplay::Refused);
     assert_eq!(claim_replay(&err(4)), ClaimReplay::Refused);
-    for c in [1, 2, 5, 6, 7, 9, 10, 11, 99] {
+    // 254-app-replay §4 / R2: 7 and 10 are "next round", every other code stops (6 / 11 / unknown codes)
+    assert_eq!(claim_replay(&err(7)), ClaimReplay::Busy);
+    assert_eq!(claim_replay(&err(10)), ClaimReplay::Busy);
+    for c in [1, 2, 5, 6, 8, 9, 11, 14, 99] {
         assert_eq!(claim_replay(&err(c)), ClaimReplay::Unknown, "code {c}");
     }
 }

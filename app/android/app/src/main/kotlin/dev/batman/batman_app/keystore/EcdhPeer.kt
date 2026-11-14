@@ -11,8 +11,10 @@ import java.security.spec.ECPublicKeySpec
 
 // 254-app-member-join §2: the `ecdh` channel's peer. Kotlin checks only the format: exactly 65 bytes, 0x04, x / y < p,
 // and y² ≡ x³ − 3x + b (mod p) computed here with BigInteger (no reliance on the provider's own check); only then
-// a PublicKey. The channel is for dev builds only. Which point it is (an approval's ephemeral key, from Rust's
-// recipient_eph) is the Dart convention, not checked here (the same in-process honest boundary as SignAllowList).
+// a PublicKey. The channel is for dev builds only. Which point it is is the Dart convention, not checked here (the
+// same in-process honest boundary as SignAllowList); two uses: an approval's ephemeral key (Rust's recipient_eph), and
+// 254-app-replay §3-1: the claim recovery's peer = the pending's sig_ecdh-verified node ecdh_pub (z -> psk_replay).
+// The field build therefore cannot recover an unfinished claim yet (#254 checklist).
 object EcdhPeer {
     private val P = BigInteger("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff", 16)
     private val B = BigInteger("5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b", 16)

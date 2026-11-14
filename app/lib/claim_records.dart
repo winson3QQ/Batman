@@ -59,14 +59,17 @@ const oldNotKept = '[OLD_NOT_KEPT] 舊紀錄沒有保留下來';
 class ClaimRecords {
   ClaimRecords(this.store, this.qr, this.log);
   final ClaimStore store;
-  final ClaimQr qr;
+  /// null = a recovery from a pending without a QR (254-app-replay T4): it never persists a pending
+  final ClaimQr? qr;
   final void Function(String) log;
 
   /// PersistPending (R4): decided from disk, whatever was asked before. A pending already there for another K is
   /// copied aside first; if it cannot be opened or copied this throws and the new pending is not written (no begin).
   Future<void> persistPending(String path, Uint8List record) async {
+    final q = qr;
+    if (q == null) throw StateError('no QR: a recovery without a QR never writes a pending');
     final old = await store.readSealed(path);
-    if (old != null && !await store.matches(await store.open(old), qr)) {
+    if (old != null && !await store.matches(await store.open(old), q)) {
       await store.keepCopy(path);
     }
     await store.sealWrite(path, record);
@@ -83,6 +86,19 @@ class ClaimRecords {
       log('$oldNotKept（$e）');
     }
     await store.sealWrite(nodePath, record);
-    await store.remove(pendingPath);
+    try {
+      await store.remove(pendingPath);
+    } catch (e) {
+      throw PendingNotRemoved(e); // the node record IS written (254-app-replay review A-m2)
+    }
   }
+}
+
+/// [ClaimRecords.claimed] wrote the node record, but the pending could not be removed. The node record counts (a
+/// node record beside a pending = node record, noover R2); the leftover pending is harmless.
+class PendingNotRemoved implements Exception {
+  PendingNotRemoved(this.cause);
+  final Object cause;
+  @override
+  String toString() => '節點紀錄已寫好，但沒能刪掉這次的認領暫存紀錄（$cause）';
 }
