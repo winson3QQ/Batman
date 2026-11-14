@@ -107,7 +107,7 @@ func newHTTPRigPort(t *testing.T, h *hfield, port int) *httpRig {
 			return 0, nil, false
 		}
 	})
-	s, err := NewServer(Config{HelperPath: f.path, Log: t.Logf, Board: "bcm2711", FW: "1.5.14-test", HTTPPort: r.port, BulkDir: r.bulk})
+	s, err := NewServer(Config{HelperPath: f.path, Log: newLogCap(t).logf, Board: "bcm2711", FW: "1.5.14-test", HTTPPort: r.port, BulkDir: r.bulk})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -106,14 +107,46 @@ func realHelperSys(t *testing.T, mk func(root string) node.Sys) (path string, cl
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	// every connection goroutine is tracked and waited for in Cleanup: one still running after the test ends calls
+	// t.Logf (node.New's logger) and panics "Log in goroutine after Test... has completed" (go test -count=40 -cpu 1,2,4
+	// -run RealHelper ./provd, review round 1). Cleanups run last-in first-out: this one runs after those the caller
+	// registers later (its provd stops first) and before t.TempDir's removal (registered above).
+	var (
+		mu     sync.Mutex
+		wg     sync.WaitGroup
+		conns  = map[*net.UnixConn]bool{}
+		closed bool
+	)
+	t.Cleanup(func() {
+		mu.Lock()
+		closed = true
+		ln.Close()
+		for c := range conns {
+			c.Close()
+		}
+		mu.Unlock()
+		wg.Wait()
+	})
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			c, err := ln.AcceptUnix()
 			if err != nil {
 				return
 			}
+			mu.Lock()
+			if closed {
+				mu.Unlock()
+				c.Close()
+				return
+			}
+			conns[c] = true
+			wg.Add(1)
+			mu.Unlock()
 			go func(c *net.UnixConn) {
+				defer wg.Done()
+				defer func() { mu.Lock(); delete(conns, c); mu.Unlock() }()
 				defer c.Close()
 				h := n.NewConn()
 				buf := make([]byte, 70000)
