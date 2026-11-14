@@ -192,6 +192,11 @@ abstract class DependencyGate : DefaultTask() {
 //   or with an intent-filter and no android:exported (fail closed; targetSdk 36 refuses that at merge / install, so
 //   it should never be seen), must be one of [exportedComponents].
 // - No activity-alias may target QrScanActivity; QrScanActivity is declared once, exported="false", no intent-filter.
+// - Backup (254-app-s1 §4): <application> has android:allowBackup="false" and
+//   android:dataExtractionRules="@xml/data_extraction_rules"; every src/*/res/xml/data_extraction_rules.xml (main's
+//   must exist; a flavor's or build type's would replace it) has exactly <cloud-backup> and <device-transfer>, each
+//   with nothing but one <exclude domain=… path="."> per domain of [backupDomains] — an <include>, a missing domain or
+//   a narrower path fails.
 // Anything else fails the build.
 val expectedPermissions = setOf(
     "uses-permission:android.permission.BLUETOOTH_SCAN", "uses-permission:android.permission.BLUETOOTH_CONNECT",
@@ -206,12 +211,18 @@ val exportedComponents = setOf(
     "activity:dev.batman.batman_app.MainActivity",
     "receiver:androidx.profileinstaller.ProfileInstallReceiver",
 )
+val backupDomains = setOf(
+    "root", "file", "database", "sharedpref", "external", "device_root", "device_file", "device_database",
+    "device_sharedpref",
+)
 
 abstract class ManifestGate : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val manifest: RegularFileProperty
     @get:Input abstract val applicationId: Property<String>
     @get:Input abstract val expected: SetProperty<String>
     @get:Input abstract val exportable: SetProperty<String>
+    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val backupRules: ConfigurableFileCollection
+    @get:Input abstract val domains: SetProperty<String>
 
     @TaskAction
     fun check() {
@@ -243,8 +254,31 @@ abstract class ManifestGate : DefaultTask() {
             if (q.a("exported") != "false") bad.add("QrScanActivity exported=\"${q.a("exported")}\"")
             if (q.getElementsByTagName("intent-filter").length != 0) bad.add("QrScanActivity has an intent-filter")
         }
+        val app = all.filter { it.tagName == "application" }
+        if (app.size != 1) bad.add("application declared ${app.size} times")
+        for (x in app) {
+            if (x.a("allowBackup") != "false") bad.add("allowBackup=\"${x.a("allowBackup")}\"")
+            if (x.a("dataExtractionRules") != "@xml/data_extraction_rules") bad.add("dataExtractionRules=\"${x.a("dataExtractionRules")}\"")
+        }
+        val rules = backupRules.files.sortedBy { it.path }
+        if (rules.none { it.parentFile.parentFile.parentFile.name == "main" }) bad.add("no main data_extraction_rules.xml")
+        for (f in rules) {
+            val where = "${f.parentFile.parentFile.parentFile.name}/data_extraction_rules.xml"
+            val r = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(f).documentElement
+            fun kids(e: org.w3c.dom.Element) = e.childNodes.let { l -> (0 until l.length).map { l.item(it) } }.filterIsInstance<org.w3c.dom.Element>()
+            if (r.tagName != "data-extraction-rules") bad.add("$where: root <${r.tagName}>")
+            val sections = kids(r)
+            if (sections.map { it.tagName }.sorted() != listOf("cloud-backup", "device-transfer")) bad.add("$where: sections ${sections.map { it.tagName }}")
+            for (s in sections) {
+                val ex = kids(s)
+                ex.filter { it.tagName != "exclude" || it.getAttribute("path") != "." }.forEach { bad.add("$where: ${s.tagName} has <${it.tagName} domain=\"${it.getAttribute("domain")}\" path=\"${it.getAttribute("path")}\">") }
+                val got = ex.filter { it.tagName == "exclude" && it.getAttribute("path") == "." }.map { it.getAttribute("domain") }
+                (domains.get() - got.toSet()).sorted().forEach { bad.add("$where: ${s.tagName} does not exclude $it") }
+                if (got.size != got.toSet().size || !domains.get().containsAll(got)) bad.add("$where: ${s.tagName} excludes $got")
+            }
+        }
         if (bad.isNotEmpty()) throw GradleException("$name: ${bad.joinToString("; ")}")
-        logger.lifecycle("$name: ${perms.size} permissions as expected, $exported exported components allowed, QrScanActivity not exported")
+        logger.lifecycle("$name: ${perms.size} permissions as expected, $exported exported components allowed, QrScanActivity not exported, no backup (${rules.size} rule file)")
     }
 }
 
@@ -266,6 +300,8 @@ androidComponents {
             applicationId.set(v.applicationId)
             expected.set(expectedPermissions)
             exportable.set(exportedComponents)
+            backupRules.from(fileTree("src") { include("*/res/xml/data_extraction_rules.xml") })
+            domains.set(backupDomains)
         }
         tasks.matching { it.name == "package${cap}" || it.name == "package${cap}Bundle" }.configureEach { dependsOn(manifestGate) }
     }

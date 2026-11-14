@@ -10,6 +10,7 @@ import dev.batman.batman_app.swupd.SwUpload
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -68,6 +69,13 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         swUpload?.dispose()
         swUpload = SwUpload(this, flutterEngine.dartExecutor.binaryMessenger)
+        // design 254-app-s1 §4: FLAG_SECURE while a page that shows a secret is up (lib/secure_screen.dart); the answer
+        // is the state the window now has. A new Activity's window starts without the flag.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SecureScreen.CHANNEL).setMethodCallHandler { call, result ->
+            val on = SecureScreen.wanted(call.method, call.arguments) ?: return@setMethodCallHandler result.error("arg", null, null)
+            if (on) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            result.success(on)
+        }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.batman/platform").setMethodCallHandler { call, result ->
             when (call.method) {
                 // the flavor's build constant, compared with the Rust library's at startup (design v8.5.1 §4.1)
