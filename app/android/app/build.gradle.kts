@@ -394,11 +394,12 @@ androidComponents {
             })
         }
         tasks.matching { it.name == "package${cap}" || it.name == "package${cap}Bundle" }.configureEach { dependsOn(manifestGate) }
-        // a field build never carries the emulator's ABI (design §2: arm64-v8a only)
+        // a field build never carries the emulator's ABI (design §2: arm64-v8a only). Checked before packaging, not at
+        // pre<Variant>Build: the shared configureCMakeDebug task pulls preFieldDebugBuild into a dev build too.
         val fieldWithEmulatorAbi = emulatorAbi && v.flavorName == "field"
         val abiGate = tasks.register("check${cap}EmulatorAbi") {
             doLast { if (fieldWithEmulatorAbi) throw GradleException("$name: -Pemulator-abi=true is not allowed in a field build") }
         }
-        tasks.matching { it.name == "pre${cap}Build" }.configureEach { dependsOn(abiGate) }
+        tasks.matching { it.name == "package${cap}" || it.name == "package${cap}Bundle" }.configureEach { dependsOn(abiGate) }
     }
 }
