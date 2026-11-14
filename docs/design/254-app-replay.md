@@ -403,3 +403,11 @@ v2 有、v3 刪掉的:T1 的候選清單、「同 session 再 replay 得 13」�
 | B-m3:Dart S3 沒涵蓋 node 紀錄 / 密碼;Dart 的 z 清零沒有負對照 | 假紀錄帶可辨識的 root 密碼,S3 掃密碼與紀錄 bytes;斷言交給 `setZ` 的那個 list 事後全為 0 |
 | A-m4:狀態流沒有 onError、非 poweredOff 的狀態說成「藍牙已關閉」、檢查出錯的文字 | `RecoveryBleState`(ready / off / unavailable;unknown 忽略);錯誤 = unavailable;各自的中性文字;「恢復前的檢查出錯」 |
 | A-m5:最長時間 | §3-5 改為 445 s(多了握手節拍 10 s) |
+
+## 18. 程式碼審查 r2(兩位 APPROVE,收尾 3 項)
+
+| 意見 | 處理 |
+|---|---|
+| A-A:寫出後的連線層例外標成 unanswered 沒有回歸測項 | 測項:claim/replay 的寫入三輪都失敗 → 結束文字帶 unanswered 的兩句 |
+| A-B:認領頁的 `PendingNotRemoved` 被當成「認領沒有完成」 | 認領頁也算 CLAIMED,加同一行 `[PENDING_KEPT]`,R6 照常忘記 QR |
+| A-3:`written` 提前後,寫不完的 claim/replay frame 不受 45 s 限 | 寫出後的整段(frame 寫入 + 等回覆)共用 90 s;到時 = 沒有回覆(unanswered,下一輪)。最長時間不變(445 s) |
