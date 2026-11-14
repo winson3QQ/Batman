@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import 'claim_records.dart';
+import 'claim_recovery.dart';
 import 'key_abilities.dart';
 import 'say.dart';
 import 'scan.dart' show provdService, provdStatus;
@@ -20,10 +21,6 @@ import 'src/rust/api/claim.dart';
 import 'src/rust/api/simple.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
-// feed/batman-prov/src/cmd/batman-provd/bluez.go:31-34
-final _rx = Uuid.parse('540aa38c-0086-4d59-a9c0-c7c9d1e1bd42');
-final _tx = Uuid.parse('540aa38c-0086-4d5a-a9c0-c7c9d1e1bd42');
-final _ctrl = Uuid.parse('540aa38c-0086-4d5b-a9c0-c7c9d1e1bd42');
 
 void _log(String s) => debugPrint('BMAPP claim $s');
 
@@ -39,12 +36,14 @@ const devSoftEncText = '這支手機的復原／成員金鑰是軟體保護，�
     '之後換手機、或改用 field 版／硬體 owner_enc，這支手機認領的每個節點都要重燒卡回收。';
 
 class ClaimPage extends StatefulWidget {
-  const ClaimPage({super.key, this.ble, this.findFor = const Duration(seconds: 60)});
+  const ClaimPage({super.key, this.ble, this.findFor = const Duration(seconds: 60), this.recoveryBle});
 
   /// tests: a fake BLE (null = the platform's)
   final FlutterReactiveBle? ble;
   /// how long a claim looks for the unclaimed node (tests shorten it)
   final Duration findFor;
+  /// tests: the recovery's BLE (null = [ble] through ReactiveRecoveryBle)
+  final RecoveryBle? recoveryBle;
 
   @override
   State<ClaimPage> createState() => _ClaimPageState();
@@ -57,8 +56,18 @@ class _ClaimPageState extends State<ClaimPage> {
   bool _busy = false;
   int _claimedNear = 0; // claimed / member nodes seen by the last search (their id tail is not public)
   bool _heldNode = false; // this phone holds a node record for the QR's device id (R7), set by _held
+  bool _heldPending = false; // ... and a pending (254-app-replay T2), set by _held
   bool _scanning = false; // a QrScanActivity is open
   final _typed = TextEditingController(); // dev: the QR hex typed in (e.g. over adb), cleared once read
+  ClaimRecovery? _recovery; // 254-app-replay: the recovery of this press, while it runs
+
+  /// 254-app-replay §3-7: leaving the page stops a recovery (a claim/finish in flight is not interrupted; its T1 then
+  /// does not start, §2)
+  @override
+  void dispose() {
+    _recovery?.cancel();
+    super.dispose();
+  }
 
   /// [s] may start with log markers ("[CLAIMED] ", ...): logcat keeps them, the screen does not.
   void _say(String s) {
@@ -179,6 +188,7 @@ class _ClaimPageState extends State<ClaimPage> {
     try {
       t = await claimTarget(dir: dir, deviceId: q.deviceId);
       _heldNode = t == ClaimTarget.node || t == ClaimTarget.nodeAndPending;
+      _heldPending = t == ClaimTarget.pending || t == ClaimTarget.nodeAndPending;
     } catch (e) {
       _say('$unreadable：$e');
       return false;
@@ -255,6 +265,14 @@ class _ClaimPageState extends State<ClaimPage> {
       }
       _say('正在找節點 …${q.deviceId.substring(14)}…');
       final found = await _find(q);
+      if (found == null && _heldPending && mounted) {
+        // 254-app-replay §2 T2: an unfinished claim of this QR (K compared again by the recovery) and no unclaimed node
+        // -> recover it; T3 (a node record too) asks first. Not started (another K, keys, field build, T3 declined)
+        // -> the NOT_FOUND words below, as before.
+        final out = await _recover(q, store, records,
+            t3: _heldNode, intro: '[RECOVERING] 沒找到未認領的這台，改試恢復先前的認領');
+        if (out != RecoveryOutcome.notStarted) return;
+      }
       if (found == null) {
         // design note §4-§5 (R7-2, 2026-11-13): the power / range hint always stays (a team's claimed nodes are often
         // around while the wanted one is off); a claimed node publishes no id tail, so a claimed node nearby is only a
@@ -274,7 +292,7 @@ class _ClaimPageState extends State<ClaimPage> {
       conn = found.$2;
       final mtu = await _ble.requestMtu(deviceId: id, mtu: 517); // before the TX notifications (design §2)
       final ctrl = await _ble.readCharacteristic(
-          QualifiedCharacteristic(characteristicId: _ctrl, serviceId: provdService, deviceId: id));
+          QualifiedCharacteristic(characteristicId: provdCtrl, serviceId: provdService, deviceId: id));
       final fl = await frameLimit(ctrl: ctrl, mtu: mtu);
       _say('已連上節點（技術資訊：MTU $mtu，每段 $fl 位元組）');
 
@@ -285,12 +303,12 @@ class _ClaimPageState extends State<ClaimPage> {
 
       final (session, first) = ClaimSession.start(
           qr: q, ownerPub: owner, ownerEncPub: ownerEnc, sigEnc: sigEnc, frameLimit: fl, devSoftEnc: able.softOwnerEnc);
-      final rx = QualifiedCharacteristic(characteristicId: _rx, serviceId: provdService, deviceId: id);
+      final rx = QualifiedCharacteristic(characteristicId: provdRx, serviceId: provdService, deviceId: id);
       final done = Completer<String>();
       var claimed = false; // set when the node record is written (StepKind.claimed)
       final inbox = StreamController<List<int>>();
       notify = _ble
-          .subscribeToCharacteristic(QualifiedCharacteristic(characteristicId: _tx, serviceId: provdService, deviceId: id))
+          .subscribeToCharacteristic(QualifiedCharacteristic(characteristicId: provdTx, serviceId: provdService, deviceId: id))
           .listen(inbox.add, onError: (Object e) => done.isCompleted ? null : done.complete('接收資料出錯：$e'));
 
       // one step at a time: a step's writes / record finish before the next frame is fed in
@@ -331,6 +349,28 @@ class _ClaimPageState extends State<ClaimPage> {
               ? '[CLAIM_FAIL] $r'
               : '[CLAIM_FAIL] 認領沒有完成：$r');
       if (claimed && mounted) setState(() => _qr = null); // R6: claiming again needs a new scan
+      // 254-app-replay §2 T1: the finish went out and its end is unknown / 9 / 13 / OK without credentials -> replay
+      // this very device. replay_due() failing = false (§7: no replay; the next 「認領」 finds it claimed -> T2).
+      if (!claimed) {
+        bool due, after9;
+        try {
+          due = session.replayDue();
+          after9 = due && session.finishedWith9();
+        } catch (e) {
+          _log('replay_due 出錯：$e');
+          due = after9 = false;
+        }
+        if (due) {
+          await notify.cancel(); // disconnect first (§2 T1)
+          await conn.cancel();
+          if (!mounted) {
+            // §2: the page is gone at the decision point -> no recovery now; the pending stays (next 「認領」 -> T2)
+            _log('頁面已離開：這次不恢復（認領紀錄保留，下次按「認領」會接著恢復）');
+            return;
+          }
+          await _recover(q, store, records, t1Id: id, after9: after9, intro: '[RECOVERING] 改試恢復這次的認領（先等節點收尾 15 秒）');
+        }
+      }
     } catch (e) {
       final k = _keyRefused(e);
       _say(k != null ? '[CLAIM_FAIL] $k' : '[CLAIM_FAIL] 認領中斷：$e');
@@ -338,6 +378,28 @@ class _ClaimPageState extends State<ClaimPage> {
       await notify?.cancel();
       await conn?.cancel();
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 254-app-replay §3: one recovery for this press; 「認領」 becomes 「停止恢復」 while it runs. The records it writes do
+  /// not need the page (§3-7).
+  Future<RecoveryOutcome> _recover(ClaimQr q, ClaimStore store, ClaimRecords records,
+      {String? t1Id, bool after9 = false, bool t3 = false, required String intro}) async {
+    final rec = ClaimRecovery(
+        ble: widget.recoveryBle ?? ReactiveRecoveryBle(_ble), platform: _platform, store: store, records: records, qr: q, say: _say);
+    if (mounted) setState(() => _recovery = rec);
+    try {
+      final out = await rec.run(
+          t1Id: t1Id,
+          after9: after9,
+          t3: t3,
+          askT3: () => _ask('要恢復這台節點嗎？', t3Text, '恢復', '沒有恢復，手機裡的紀錄沒有改動'),
+          intro: intro);
+      if (out == RecoveryOutcome.recovered && mounted) setState(() => _qr = null); // R6: a new scan for another claim
+      return out;
+    } finally {
+      _recovery = null;
+      if (mounted) setState(() {});
     }
   }
 
@@ -357,7 +419,10 @@ class _ClaimPageState extends State<ClaimPage> {
           Wrap(spacing: 8, children: [ // three buttons do not fit one row on a narrow phone
             FilledButton.tonal(onPressed: (_busy || _scanning) ? null : _scan, child: const Text('掃描 QR')),
             OutlinedButton(onPressed: _busy ? null : _paste, child: const Text('貼上 QR 碼（開發用）')),
-            FilledButton(onPressed: (_qr == null || _busy) ? null : _claim, child: const Text('認領')),
+            if (_recovery != null) // 254-app-replay §3-6
+              FilledButton(onPressed: () => _recovery?.cancel(), child: const Text('停止恢復'))
+            else
+              FilledButton(onPressed: (_qr == null || _busy) ? null : _claim, child: const Text('認領')),
           ]),
           const SizedBox(height: 12),
           Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
