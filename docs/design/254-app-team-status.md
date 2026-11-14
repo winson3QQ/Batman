@@ -1,4 +1,4 @@
-# #254 app S4 — 全隊狀態（設計 v2.4，FROZEN；v2.1 FROZEN 的修訂，見附錄 R4、R5、R6）
+# #254 app S4 — 全隊狀態（設計 v2.4，FROZEN；v2.1 FROZEN 的修訂，見附錄 R4、R5、R6；實作勘誤見附錄 R7）
 
 **凍結 v2.1（2026-11-13）。** 審查 2 輪，每輪兩位：v1 A 3 MAJOR / 6 MINOR、B 3 MAJOR / 5 MINOR（附錄 R1）；v2 A APPROVE-WITH-CHANGES 0 MAJOR / 6 MINOR、B APPROVE 0 MAJOR / 2 MINOR（附錄 R2，v2.1 已處理）。
 範圍：S4「看狀態」的**全隊**那一半（219-field-provisioning.md:128、:165）。節點與 app 都要改；本文件不含程式碼。
@@ -502,3 +502,23 @@ App（`app/`）：
 | R6-7 | A-m5：有名單、沒有 key 5、零張卡片 → 只有標題 | 「還沒看到其他隊員」 |
 
 **凍結 v2.4（2026-11-14）。** 下一步：照 §11 實作（app teamview / bridge / Dart + 節點 peers.go 清表）→ code review 兩位 + /security-review → 上機 H1b、H2b、H5、H7（N+1 scratch APK、04 + 02；04 目前被認領鎖住，等 replay 救回）→ 全隊狀態 PR。
+
+## 附錄 R7. 實作時的勘誤（v2.4 實作 code review，e2c4320；A：APPROVE-WITH-CHANGES 0 MAJOR / 6 MINOR，B：APPROVE-WITH-CHANGES 0 MAJOR / 2 MINOR）
+
+文件勘誤（只改文字，行為不變）：
+
+| # | 原文 | 更正 |
+|---|---|---|
+| R7-1（A-m5） | §8「手機沒有這個網路的名單（legacy 節點、重裝後沒有紀錄）」把 legacy 節點列在這一列 | legacy 節點的 info 沒有 netId（readonly.go:156-159：`rec.Net` 為 nil → key 10 空），所以落在「這台不在你建立或加入的網路裡」那一句 — 這句對 legacy 是實話。該列只適用「有 netId、手機沒有紀錄（例如重裝後）」 |
+| R7-2（A-m6） | §6 標題寫成「全隊（僅供參考；由『…』看到，讀取於 HH:MM:SS）」 | 實作是「全隊（僅供參考；由『…』看到），讀取於 HH:MM:SS」（Rust 給括號內的標題，Dart 在後面接讀取時間，member_ui.dart 的 teamTitle）；以實作為準 |
+| R7-3 | §6 標題的成員來源寫「`mnet/` key 7（自己節點的項目）」 | 補一句：`mnet/` key 7 只在它的 dac_pub_hash 等於目前連線的節點時才用；不是這台 → 查名稱來源裡這台的項目 → 都沒有「這台節點」 |
+
+實作時補上的（設計沒寫到的路徑，依 code review 修正）：
+
+| # | 情況 | 處理 |
+|---|---|---|
+| R7-4（A-m2） | 狀態頁的 info 讀取失敗（status 讀到了）：v2.4 實作把它當成 netId 空 →「這台不在你建立或加入的網路裡」— 不是實話 | 名稱來源 `NoInfo`：沒有名單；沒有卡片時那一句、不明節點的小字都是「讀不到這台的網路資訊，請按『重新整理』」（T-A12 加格） |
+| R7-5（A-m3 = B-m1） | join 的 commit 結果不明（txn.go:40-43：rc ≠ 0 且讀回失敗 → 回錯誤、沒清表），之後 Finish / resolve 從 p5 重建 overlay（wtxn.go:274-280）把它往前完成 | resolve 那一支也呼叫同一個「紀錄改變網路 → 清表」（T-N12 加 `TestPeersClearedWhenAnAmbiguousJoinIsFinished`） |
+| R7-6（A-m4） | 清表時沒有清「最近一次成功取樣」→ 入網後最多 15 s 送出新鮮的空清單 | 清表同時清掉，key 9 等新網路的第一次取樣（T-N12） |
+| R7-7（B-m2） | T-N10 的 log 掃描沒涵蓋 T-N12 的路徑 | T-N12 的 log 接上掃描，且要求有 log 內容（空的掃描算失敗） |
+| R7-8（A-m1） | T-A12 少一格：key 5 + 只有一張離線的不明節點、成員都是「開機後還沒看到」 | 補上：上方那一行 + 兩張卡片 |
