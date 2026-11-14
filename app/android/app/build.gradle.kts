@@ -213,6 +213,10 @@ abstract class DependencyGate : DefaultTask() {
 // - Every build type but `debug` and `profile` (Flutter's own development types; profile is initWith(debug) in
 //   FlutterPlugin.kt) whose merged manifest has android:debuggable at all, unless the literal "false", fails
 //   (254-app-s1 §4), e.g. a staging type, or a reference such as "@bool/dbg" (review round 3 A-MINOR-2).
+// - What aapt really linked (review round 3 A-MINOR-3; covers resValue(...) and res dirs outside src/): in every
+//   .ap_ that process<Variant>Resources wrote, `aapt2 dump resources` must show xml/data_extraction_rules as exactly
+//   one value, the file res/xml/data_extraction_rules.xml (an alias to another resource, or a qualified copy, fails),
+//   and `aapt2 dump xmltree` of that file must pass the same rule check as the source files. No aapt2, no .ap_ = FAIL.
 // Anything else fails the build.
 val expectedPermissions = setOf(
     "uses-permission:android.permission.BLUETOOTH_SCAN", "uses-permission:android.permission.BLUETOOTH_CONNECT",
@@ -241,6 +245,50 @@ abstract class ManifestGate : DefaultTask() {
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val valueFiles: ConfigurableFileCollection
     @get:Input abstract val domains: SetProperty<String>
     @get:Input abstract val buildType: Property<String>
+    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val linked: ConfigurableFileCollection
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val aapt2: RegularFileProperty
+
+    /** A parsed XML element, from the DOM (source files) or from `aapt2 dump xmltree` (what was linked). */
+    class X(val tag: String, val attrs: Map<String, String>, val kids: List<X>)
+
+    private fun aapt2(vararg args: String): String {
+        val p = ProcessBuilder(listOf(aapt2.get().asFile.path) + args).redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().readText()
+        if (p.waitFor() != 0) throw GradleException("$name: aapt2 ${args.joinToString(" ")} failed: $out")
+        return out
+    }
+
+    /** `aapt2 dump xmltree` lines -> the root element: "E: tag (line=N)", "A: name="value" (Raw: ...)", nested by indent. */
+    private fun xmltree(out: String): X? {
+        class B(val tag: String, val indent: Int) { val attrs = mutableMapOf<String, String>(); val kids = mutableListOf<B>() }
+        fun B.x(): X = X(tag, attrs, kids.map { it.x() })
+        val stack = ArrayDeque<B>(); var root: B? = null
+        for (line in out.lines()) {
+            val t = line.trimStart(); val ind = line.length - t.length
+            Regex("""^E: (\S+) \(line=\d+\)$""").find(t)?.let { m ->
+                while (stack.isNotEmpty() && stack.last().indent >= ind) stack.removeLast()
+                val b = B(m.groupValues[1], ind)
+                if (stack.isEmpty()) { if (root != null) return null; root = b } else stack.last().kids.add(b)
+                stack.addLast(b)
+            }
+            Regex("""^A: ([^=\s]+)="([^"]*)"""").find(t)?.let { m -> stack.lastOrNull()?.attrs?.put(m.groupValues[1], m.groupValues[2]) }
+        }
+        return root?.x()
+    }
+
+    /** The rule check of a data-extraction-rules document, the same for a source file and for the linked one. */
+    private fun rulesProblems(where: String, r: X, domains: Set<String>): List<String> {
+        val bad = mutableListOf<String>()
+        if (r.tag != "data-extraction-rules") bad.add("$where: root <${r.tag}>")
+        if (r.kids.map { it.tag }.sorted() != listOf("cloud-backup", "device-transfer")) bad.add("$where: sections ${r.kids.map { it.tag }}")
+        for (s in r.kids) {
+            s.kids.filter { it.tag != "exclude" || it.attrs["path"] != "." }.forEach { bad.add("$where: ${s.tag} has <${it.tag} domain=\"${it.attrs["domain"]}\" path=\"${it.attrs["path"]}\">") }
+            val got = s.kids.filter { it.tag == "exclude" && it.attrs["path"] == "." }.map { it.attrs["domain"] ?: "" }
+            (domains - got.toSet()).sorted().forEach { bad.add("$where: ${s.tag} does not exclude $it") }
+            if (got.size != got.toSet().size || !domains.containsAll(got)) bad.add("$where: ${s.tag} excludes $got")
+        }
+        return bad
+    }
 
     @TaskAction
     fun check() {
@@ -286,18 +334,24 @@ abstract class ManifestGate : DefaultTask() {
         if (rules.none { it.parentFile.parentFile.parentFile.name == "main" && it.parentFile.name == "xml" }) bad.add("no main data_extraction_rules.xml")
         for (f in rules) {
             val where = "${f.parentFile.parentFile.parentFile.name}/${f.parentFile.name}/data_extraction_rules.xml"
-            val r = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(f).documentElement
-            fun kids(e: org.w3c.dom.Element) = e.childNodes.let { l -> (0 until l.length).map { l.item(it) } }.filterIsInstance<org.w3c.dom.Element>()
-            if (r.tagName != "data-extraction-rules") bad.add("$where: root <${r.tagName}>")
-            val sections = kids(r)
-            if (sections.map { it.tagName }.sorted() != listOf("cloud-backup", "device-transfer")) bad.add("$where: sections ${sections.map { it.tagName }}")
-            for (s in sections) {
-                val ex = kids(s)
-                ex.filter { it.tagName != "exclude" || it.getAttribute("path") != "." }.forEach { bad.add("$where: ${s.tagName} has <${it.tagName} domain=\"${it.getAttribute("domain")}\" path=\"${it.getAttribute("path")}\">") }
-                val got = ex.filter { it.tagName == "exclude" && it.getAttribute("path") == "." }.map { it.getAttribute("domain") }
-                (domains.get() - got.toSet()).sorted().forEach { bad.add("$where: ${s.tagName} does not exclude $it") }
-                if (got.size != got.toSet().size || !domains.get().containsAll(got)) bad.add("$where: ${s.tagName} excludes $got")
-            }
+            fun dom(e: org.w3c.dom.Element): X = X(e.tagName,
+                (0 until e.attributes.length).associate { e.attributes.item(it).let { a -> a.nodeName to a.nodeValue } },
+                e.childNodes.let { l -> (0 until l.length).map { l.item(it) } }.filterIsInstance<org.w3c.dom.Element>().map(::dom))
+            bad.addAll(rulesProblems(where, dom(javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(f).documentElement), domains.get()))
+        }
+        val aps = linked.asFileTree.matching { include("**/*.ap_") }.files.sortedBy { it.path }
+        if (aps.isEmpty()) bad.add("no linked resources (.ap_) to check")
+        for (ap in aps) {
+            val lines = aapt2("dump", "resources", ap.path).lines()
+            val i = lines.indexOfFirst { Regex("""^\s*resource 0x[0-9a-f]+ xml/data_extraction_rules$""").matches(it) }
+            if (i < 0) { bad.add("${ap.name}: no xml/data_extraction_rules"); continue }
+            val ind = lines[i].length - lines[i].trimStart().length
+            val values = lines.drop(i + 1).takeWhile { it.isNotBlank() && it.length - it.trimStart().length > ind }.map { it.trim() }
+            if (values.size != 1 || !values[0].startsWith("() (file) res/xml/data_extraction_rules.xml type="))
+                bad.add("${ap.name}: xml/data_extraction_rules is $values")
+            else bad.addAll(xmltree(aapt2("dump", "xmltree", "--file", "res/xml/data_extraction_rules.xml", ap.path))
+                ?.let { rulesProblems("${ap.name}:res/xml/data_extraction_rules.xml", it, domains.get()) }
+                ?: listOf("${ap.name}: res/xml/data_extraction_rules.xml unreadable"))
         }
         for (f in valueFiles.files.sortedBy { it.path }) {
             val v = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(f).getElementsByTagName("*")
@@ -305,7 +359,7 @@ abstract class ManifestGate : DefaultTask() {
                 bad.add("${f.parentFile.parentFile.parentFile.name}/${f.parentFile.name}/${f.name}: <${e.tagName} type=\"${e.getAttribute("type")}\" name=\"data_extraction_rules\">")
         }
         if (bad.isNotEmpty()) throw GradleException("$name: ${bad.joinToString("; ")}")
-        logger.lifecycle("$name: ${perms.size} permissions as expected, $exported exported components allowed, QrScanActivity not exported, no backup (${rules.size} rule file)")
+        logger.lifecycle("$name: ${perms.size} permissions as expected, $exported exported components allowed, QrScanActivity not exported, no backup (${rules.size} rule file, ${aps.size} linked)")
     }
 }
 
@@ -331,6 +385,13 @@ androidComponents {
             valueFiles.from(fileTree("src") { include("*/res/values*/*.xml") })
             domains.set(backupDomains)
             buildType.set(v.buildType ?: "")
+            // what process<Variant>Resources linked (binary format for an APK, proto for a shrunk / bundle build)
+            linked.from(layout.buildDirectory.dir("intermediates/linked_resources_binary_format/${v.name}"),
+                layout.buildDirectory.dir("intermediates/linked_resources_proto_format/${v.name}"))
+            dependsOn("process${cap}Resources")
+            aapt2.set(androidComponents.sdkComponents.sdkDirectory.map {
+                it.file("build-tools/${android.buildToolsVersion}/aapt2" + if (System.getProperty("os.name").startsWith("Windows")) ".exe" else "")
+            })
         }
         tasks.matching { it.name == "package${cap}" || it.name == "package${cap}Bundle" }.configureEach { dependsOn(manifestGate) }
         // a field build never carries the emulator's ABI (design §2: arm64-v8a only)
