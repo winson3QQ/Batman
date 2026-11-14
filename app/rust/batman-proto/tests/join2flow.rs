@@ -1285,7 +1285,7 @@ fn rm_t17b_a_removed_node_reinvited_in_the_same_version_joins_in_member_mode() {
         &NET_ID,
         2,
         Some(&prev_members),
-        &[cose::Member { dac_pub_hash: &first.dac_pub_hash, ecdh_pub: &first.ecdh_pub, name: &first.name, owner_pub: &first.owner_pub, owner_enc_pub: &first.owner_enc_pub }],
+        &[cose::Member { dac_pub_hash: &first.dac_pub_hash, ecdh_pub: &first.ecdh_pub, name: &first.name, owner_pub: &first.owner_pub, owner_enc_pub: &first.owner_enc_pub, mesh_addr: None }],
     ))
     .unwrap();
     if let V::Map(e) = &mut mp {
