@@ -541,3 +541,30 @@ store.rs:118 暫存名 = `.<name>.tmp-…`)。清單是按下當時的快照,選
 | 合併方式:`list_pending` 逐字照 ffbb8dc;合併後重產 FRB,不手動合併 | §19.2 |
 | §10 04 步驟順序(0a → 0a' → 0b 含 versionCode → 1 安裝前的證據 → 0c → 2 → 3);舊 T1 / 13 / 12 / 快取空窗移到「之後另做」;行號更正(main `claim.dart:328-330` 三個鈕;build.gradle.kts 兩邊的行號) | §10 |
 | §19.7:恢復後登入回 3 可能是 provd torn-read 疑點 | §19.7 |
+
+## 22. 真機結果(2026-11-14,04 + S20 `RFCN30HMRAR`,使用者授權)
+
+證據檔(host,scratchpad `dev04/`):step0a / step0c / step1-* / step2-* / step3* / step4* / step5*(文字 + 截圖)。
+
+| 步驟 | 時間 | 結果 |
+|---|---|---|
+| 0a | 19:11:25 | `dev.batman.app.dev` 在(另有 `.dev2`、`batman_probe`) |
+| 0a' | 19:11 | `run-as: package not debuggable` → 照計畫略過 |
+| 1 | 19:11–19:12 | 舊 app 認領頁只有「掃描 QR / 貼上 QR 碼 / 認領」,「我的節點」沒有 …4040(截圖) |
+| 0c | 19:14:02 | `install -r` cc68549 成功;`firstInstallTime=2026-11-08 11:44:41` 沒變(沒有解除安裝) |
+| 2 | 19:14 | 認領頁出現「從認領暫存恢復」,清單 `節點 …514040` |
+| 3(第一次) | 19:15:56 | **失敗,沒有任何連線**:`恢復前的檢查出錯…：Unsupported operation: Cannot modify an unmodifiable list`,接著 `恢復中斷：…`。原因:平台 channel 回來的 byte list(`ecdh` 的 z、Kotlin `open` 的 pending 明文)在 S20 上是**唯讀 view**(ReadBuffer.getUint8List 回傳訊息 buffer 的 view,flutter foundation/serialization.dart:228-231),`fillRange` 丟例外;測試的假平台回可寫的 list 所以沒抓到。修正:`_prepare` 只清零自己複製的 list、所有出口都 dispose session;假平台改成一律回唯讀(負對照:舊程式 + 新假物件 30 個測項 FAIL,38 次同一句) |
+| 0c(第二次) | 19:47:25 | `install -r` 9daa11f(rebase 後 = 58c99cf 的同一內容)成功,`firstInstallTime` 仍是 11-08 |
+| 3(第二次) | 19:48:11 → 19:48:20 | **恢復成功**:`19:48:11.200 [RECOVERING]` → `19:48:17.203 恢復中：第 1/3 輪，第 1/2 台`(6 s 掃描後,2 台候選,第一台就是 04)→ `19:48:20.854 [CLAIMED] [RECOVERED]`。從開始連線到寫完紀錄約 **3.7 s**(§3-2 的寫出後 90 s 預算遠遠足夠;那 3.7 s 含連線、握手、begin / nonce、簽章與 claim/replay);pending 刪除,「我的節點」出現 …4040 |
+| 登入 | 19:49:06–19:51:35 | 兩次 `[LOGIN_FAIL] [NOT_FOUND]`:04 回的 msg2 解不開(「不是這台節點（或節點剛認領完還沒準備好）」) |
+| 翻轉測試 | 19:53:18 斷電 / 19:53:59 上電 | 只改「04 重開」,同一支手機、同一份 node 紀錄 → `19:57:22.713 [LOGGED_IN] 已連線到節點 …4040（擁有者）`。node 紀錄(tag key)是對的;重開前 provd 的 PSK 集合卡住 |
+| 5 | 20:05:55 | 經 app 放回 lab key `[SSH_DONE]`;ssh `PK_OK`、`state=claimed` |
+
+⚠️ **登入失敗的歸因不在本分支範圍**:懷疑 provd 在 replay 之後讀 `info.owners` 時讀到不完整的檔(torn read)→ `psks.get` 回 EUnsupported → server.go:477-482 把 PSK 集合設成空集合且 `needPSK=false` → 之後不再重拉,直到 provd 重啟。只有一次觀察、未重現、未讀到 provd 的 log;記在 #254(留言 6876929657)。app 端的文字(「剛認領完的話，等幾秒再試一次」)在這種情況下會誤導,同樣記為 checklist。
+
+**寫回 #254 checklist(不開新單)**:
+- [ ] provd:replay / 認領之後 PSK 集合卡在空集合(疑 `info.owners` torn read → `psks.get` EUnsupported → server.go:477-482 `needPSK=false`);先重現 + 收 provd log,再修。
+- [ ] app:登入連續解不開時的文字不要只說「等幾秒」(重開節點是目前唯一的出路)— 等 provd 那項定案再改。
+- [ ] main 上同一類潛在 bug:`nodes.dart` 成員核准匯入 / 成員更新匯入的 `finally` 對 `ecdh` 回傳的 z 做 `fillRange`(main f0138bd nodes.dart:970 / :1429;本分支 :994 / :1454)— 在手機上會在匯入完成後丟未處理例外。
+- [ ] 真機:T1(finish 送出後關藍牙)、13 / 12 / 快取空窗 — 需要重燒卡、另外授權(§10「之後另做」)。
+- [ ] `ReactiveRecoveryBle` 只在真機跑過這一次(T4、一輪、第一台成功);掃描排序、多輪、斷線路徑只在假 BLE 上驗過。
