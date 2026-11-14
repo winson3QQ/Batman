@@ -61,6 +61,15 @@ class SignAllowListTest {
         assertFalse("truncated", SignAllowList.adminMaySign(t.copyOfRange(0, t.size - 1)))
         assertFalse("empty", SignAllowList.adminMaySign(ByteArray(0)))
     }
+
+    // review round 2 B-MAJOR-1: which owner input vouches for owner_enc (KeyOp.BIND_OWNER_ENC); every other owner input does not
+    @Test fun onlySigEncBindsOwnerEnc() {
+        val h = ByteArray(65) { 4 }
+        assertTrue(SignAllowList.bindsOwnerEnc(a("batman-owner-enc-v1") + h))
+        for (l in listOf("batman-owner-auth-v1", "batman-owner-op-v1", "batman-owner-enc-v2", "batman-owner-enc-v")) assertFalse(l, SignAllowList.bindsOwnerEnc(a(l) + h))
+        assertFalse("join request", SignAllowList.bindsOwnerEnc(tbs("batman-joinreq-v1")))
+        assertFalse("bare label", SignAllowList.bindsOwnerEnc(a("batman-owner-enc-v1")))
+    }
 }
 
 // The real Sig_structures from tests/vectors/219-protocol/vectors.json (what batman-proto's cose.rs builds,

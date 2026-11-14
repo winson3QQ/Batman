@@ -11,6 +11,7 @@ object SignAllowList {
     private val ADMIN_LABELS = listOf("batman-netcfg-v1", "batman-members-v1", "batman-secrets-v1", "batman-invite-v1", "batman-msecrets-v1")
         .map { it.toByteArray(Charsets.US_ASCII) }
     private val OWNER_SIG_LABEL = "batman-joinreq-v1".toByteArray(Charsets.US_ASCII)
+    private val OWNER_ENC_LABEL = "batman-owner-enc-v1".toByteArray(Charsets.US_ASCII)
 
     private fun startsWith(b: ByteArray, p: ByteArray) = b.size > p.size && b.copyOfRange(0, p.size).contentEquals(p)
 
@@ -20,6 +21,14 @@ object SignAllowList {
      */
     fun ownerMaySign(input: ByteArray): Boolean =
         OWNER_PREFIXES.any { startsWith(input, it) } || sigStructureAad(input)?.contentEquals(OWNER_SIG_LABEL) == true
+
+    /**
+     * Is [input] sig_enc's input ("batman-owner-enc-v1" ‖ owner_enc_pub)? The owner key then vouches for owner_enc, so the
+     * gate needs owner_enc at an allowed level too (KeyOp.BIND_OWNER_ENC). The other owner inputs need no other key:
+     * owner-auth = login, owner-op = a verb of a logged-in session (an admin signature it needs is gated on its own),
+     * joinreq = a join request, whose sig_enc is signed separately through this same prefix (invite.rs).
+     */
+    fun bindsOwnerEnc(input: ByteArray): Boolean = startsWith(input, OWNER_ENC_LABEL)
 
     /** The admin key signs only a COSE Sig_structure whose external_aad is exactly one of its labels. */
     fun adminMaySign(tbs: ByteArray): Boolean = sigStructureAad(tbs)?.let { aad -> ADMIN_LABELS.any { it.contentEquals(aad) } } ?: false

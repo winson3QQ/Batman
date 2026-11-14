@@ -72,6 +72,7 @@ class KeyPolicyTest {
     private val every = listOf<Int?>(STRONGBOX, TRUSTED_ENVIRONMENT, UNKNOWN_SECURE, SOFTWARE, UNKNOWN, null, 3, 99, -3)
     private val needs = mapOf(
         KeyOp.SIGN_OWNER to setOf(KeyRole.RECORD_AES, KeyRole.OWNER_SIGN),
+        KeyOp.BIND_OWNER_ENC to setOf(KeyRole.RECORD_AES, KeyRole.OWNER_SIGN, KeyRole.OWNER_ENC),
         KeyOp.SIGN_ADMIN to setOf(KeyRole.RECORD_AES, KeyRole.ADMIN_SIGN),
         KeyOp.ECDH to setOf(KeyRole.RECORD_AES, KeyRole.OWNER_ENC),
         KeyOp.SEAL to setOf(KeyRole.RECORD_AES),
@@ -91,7 +92,7 @@ class KeyPolicyTest {
             }
             rows++
         }
-        assertEquals(4 * 4 * 9 * 2, rows)
+        assertEquals(5 * 4 * 9 * 2, rows)
     }
 
     @Test fun gateRefusesAKeyWithNoEntry() {
@@ -102,10 +103,11 @@ class KeyPolicyTest {
     }
 
     @Test fun gateOnTheS20() {
-        // dev: everything; field: the SOFTWARE owner_enc refuses ECDH only
+        // dev: everything; field: the SOFTWARE owner_enc refuses ECDH and sig_enc (the claim: B-MAJOR-1), nothing else
         for (op in KeyOp.values()) assertEquals("$op", null, KeyPolicy.refused(op, s20, devTrust = true))
-        for (op in KeyOp.values().filter { it != KeyOp.ECDH }) assertEquals("$op", null, KeyPolicy.refused(op, s20, devTrust = false))
-        assertEquals(KeyRole.OWNER_ENC, KeyPolicy.refused(KeyOp.ECDH, s20, devTrust = false)?.role)
+        val enc = setOf(KeyOp.ECDH, KeyOp.BIND_OWNER_ENC)
+        for (op in KeyOp.values().filter { it !in enc }) assertEquals("$op", null, KeyPolicy.refused(op, s20, devTrust = false))
+        for (op in enc) assertEquals("$op", KeyRole.OWNER_ENC, KeyPolicy.refused(op, s20, devTrust = false)?.role)
     }
 
     @Test fun levelImprovingNeverDisables() {
