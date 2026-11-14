@@ -25,6 +25,8 @@ class KeyHandlersTest {
         override fun sign(role: KeyRole, input: ByteArray): ByteArray { calls += "sign $role"; return byteArrayOf(0x30, 1) }
         override fun ecdh(peer: PublicKey): ByteArray { calls += "ecdh"; return ByteArray(32) { 7 } }
         override fun seal(plain: ByteArray, aad: ByteArray): ByteArray { calls += "seal"; return byteArrayOf(9) }
+        /** this phone's owner_enc public key (bindInput binds exactly this one) */
+        override fun ownerEncPub(): ByteArray = ByteArray(65) { 4 }
         val used get() = calls.filter { it != "levels" }
     }
 
@@ -86,6 +88,24 @@ class KeyHandlersTest {
         assertTrue(h.signOwner(authInput) is KeyAnswer.Ok)
         assertTrue(h.signOwner(opInput) is KeyAnswer.Ok)
         assertEquals(listOf("sign OWNER_SIGN", "sign OWNER_SIGN"), k.used)
+    }
+
+    // review round 3 B-MINOR-2: sig_enc must bind THIS phone's owner_enc; another key (or a cut one) is refused before
+    // the owner key is touched. Negative control: the comparison dropped -> FAIL
+    @Test fun sigEncBindingAnotherKey_refused_noKeyUsed() {
+        val label = "batman-owner-enc-v1".toByteArray()
+        for ((what, input) in listOf(
+            "another public key" to label + ByteArray(65) { 5 },
+            "64 bytes" to label + ByteArray(64) { 4 },
+            "66 bytes" to label + ByteArray(66) { 4 },
+        )) for (dev in listOf(true, false)) {
+            val k = FakeKeys(tee)
+            assertEquals("$what dev=$dev", KeyAnswer.Err("keystore", "IllegalArgumentException: refused: sig_enc binds a key that is not this phone's owner_enc", null), KeyHandlers(k, dev).signOwner(input))
+            assertEquals("$what dev=$dev", emptyList<String>(), k.used)
+        }
+        val k = FakeKeys(tee)
+        assertTrue(KeyHandlers(k, false).signOwner(bindInput) is KeyAnswer.Ok)
+        assertEquals(listOf("sign OWNER_SIGN"), k.used)
     }
 
     @Test fun s20Dev_sigEncSigned() {

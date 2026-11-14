@@ -51,6 +51,7 @@ class Keys(private val prefix: String = "batman") {
         override fun sign(role: KeyRole, input: ByteArray) = this@Keys.sign(role, input)
         override fun ecdh(peer: PublicKey) = this@Keys.ecdh(peer)
         override fun seal(plain: ByteArray, aad: ByteArray) = this@Keys.seal(plain, aad)
+        override fun ownerEncPub() = publicKey65(KeyRole.OWNER_ENC)
     }, devTrust)
 
     /**
