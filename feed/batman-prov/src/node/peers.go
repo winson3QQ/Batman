@@ -562,11 +562,13 @@ func (p *peerTable) keys(now time.Time, inNet bool, netID []byte) cbor.Map {
 	return append(out, cbor.Entry{K: uint64(9), V: list})
 }
 
-// reset empties the table and forgets which network it belonged to; a sample in flight is dropped (epoch).
+// reset empties the table, forgets which network it belonged to and its last good sample (no key 9 until the next
+// one); a sample in flight is dropped (epoch).
 func (p *peerTable) reset() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.m, p.net = map[[6]byte]*peerEntry{}, nil
+	p.okAt = time.Time{} // key 9 waits for the first sample of the new network (code review A-m4)
 	p.epoch++
 }
 

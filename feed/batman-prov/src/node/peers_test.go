@@ -718,6 +718,9 @@ func attachPeers(t *testing.T, r *rig) *peerRig {
 	r.n.SetStatusSource(f.src())
 	r.n.status.runAsync = func(fn func()) { fn() }
 	logs := &bytes.Buffer{}
+	var lmu sync.Mutex
+	// T-N10 scans it (code review B-m2): set before SetPeerSource, which hands n.Log to the table
+	r.n.Log = func(format string, a ...any) { lmu.Lock(); fmt.Fprintf(logs, format+"\n", a...); lmu.Unlock() }
 	bat, phyDir := peerFS(t, true, morse04())
 	fr := &fakeRun{bat: readFix(t, "batctl-originators-multihop.derived"), iw: readFix(t, "iw-station-dump-multihop.derived")}
 	src := DefaultPeerSource()
@@ -730,6 +733,12 @@ func attachPeers(t *testing.T, r *rig) *peerRig {
 // headerOnly: the multi-hop capture's header and column line, no originator (a mesh where nobody else is heard yet)
 func headerOnly(t *testing.T) []byte {
 	return bytes.Join(bytes.Split(readFix(t, "batctl-originators-multihop.derived"), []byte("\n"))[:2], []byte("\n"))
+}
+
+// newNetSample: a new network where nobody is heard yet, plus one unreadable row carrying an address — the sample logs
+// "dropped 1 unreadable rows", so the T-N10 scan of these tests has a line to look at (code review B-m2)
+func newNetSample(t *testing.T) []byte {
+	return append(headerOnly(t), []byte("\n * a8:dd:9f:4d:c7:60 unreadable\n")...)
 }
 
 // T-N12 (design v2.4 R5-5 / R6-4): the helper empties the table when IT writes a record that changes whether the node
@@ -755,7 +764,12 @@ func TestPeersClearedWhenTheRecordChangesNetwork(t *testing.T) {
 	if c := p.applyJoin(p.v1Net()); c != OK {
 		t.Fatalf("network/join: code %d", c)
 	}
-	p.run.bat = headerOnly(t) // the new network: nobody heard yet
+	// code review A-m4: until the first sample of the new network key 9 is withheld, not an empty list shown as fresh
+	*p.now = p.now.Add(time.Second)
+	if _, _, l, has9 := peersOf(t, statusCall(t, p.rig, true)); has9 {
+		t.Fatalf("key 9 sent right after the join, before any sample of the new network: %+v", l)
+	}
+	p.run.bat = newNetSample(t) // the new network: nobody heard yet (one unreadable row: something to log)
 	p.tick(15 * time.Second)
 	if _, _, l, has9 := peersOf(t, statusCall(t, p.rig, true)); !has9 || len(l) != 0 {
 		t.Fatalf("the new network lists %v %+v: peers sampled before the join", has9, l)
@@ -788,6 +802,23 @@ func TestPeersClearedWhenTheRecordChangesNetwork(t *testing.T) {
 	if len(l.n.peers.m) != 0 {
 		t.Fatalf("the legacy claim kept %d peers", len(l.n.peers.m))
 	}
+	noAddressLogged(t, p.logs.String()+l.logs.String()) // T-N10 over the new path (code review B-m2)
+}
+
+// noAddressLogged: T-N10 for a test's log — something was logged (a scan of nothing proves nothing) and none of the
+// fixture addresses, in any spelling.
+func noAddressLogged(t *testing.T, log string) {
+	t.Helper()
+	if log == "" {
+		t.Fatal("nothing logged: the address scan would prove nothing")
+	}
+	for _, a := range []string{phy04, "a8:dd:9f:4d:c6:d3", "a8:dd:9f:4d:c7:60", "4a:58:46:ee:36:60"} {
+		for _, form := range []string{a, strings.ToUpper(a), strings.ReplaceAll(a, ":", ""), strings.ToUpper(strings.ReplaceAll(a, ":", ""))} {
+			if strings.Contains(log, form) {
+				t.Fatalf("log carries an address (%s):\n%s", form, log)
+			}
+		}
+	}
 }
 
 // T-N12: a sample that was running when the record changed network saw the old network; it is dropped, not merged
@@ -807,4 +838,37 @@ func TestPeersSampleAcrossANetworkChangeDropped(t *testing.T) {
 	if len(p.n.peers.m) != 0 {
 		t.Fatalf("a sample begun before the network change added %d peers", len(p.n.peers.m))
 	}
+}
+
+// T-N12 (code review A-m3 / B-m1, after reviewer B's reproduction): a join whose commit was ambiguous — p5 written,
+// --prov-only rc != 0 and the read-back failing, so applyNet returns an error without clearing — is rolled forward
+// later by Finish / resolve, which rebuilds the overlay from p5; that rewrite changes the node's network too, and the
+// peers sampled before it must not show up in the new network. Negative control: no peersRecordWritten in resolve's
+// p5 branch -> FAIL.
+func TestPeersClearedWhenAnAmbiguousJoinIsFinished(t *testing.T) {
+	p := attachPeers(t, claimedRig(t))
+	p.tick(0)
+	if len(p.n.peers.m) != 2 {
+		t.Fatalf("setup: %d peers sampled while claimed", len(p.n.peers.m))
+	}
+	p.sys.persistLateRC, p.sys.p5rc = 5, 5 // p5 gets the member record, the rc and the read-back fail
+	if c := p.applyJoin(p.v1Net()); c == OK {
+		t.Fatal("setup: the join was not ambiguous")
+	}
+	if len(p.n.peers.m) != 2 {
+		t.Fatalf("setup: the failed join already cleared the table (%d peers)", len(p.n.peers.m))
+	}
+	p.sys.persistLateRC, p.sys.p5rc = 0, 0
+	p.n.mu.Lock()
+	p.n.finish("the next trigger")
+	p.n.mu.Unlock()
+	if rec, e := p.n.resolve(); e != nil || rec.State != provstore.Member {
+		t.Fatalf("setup: the join was not rolled forward (%v, %+v)", e, rec)
+	}
+	p.run.bat = newNetSample(t) // the new network: nobody heard yet (one unreadable row: something to log)
+	p.tick(15 * time.Second)
+	if _, _, l, has9 := peersOf(t, statusCall(t, p.rig, true)); !has9 || len(l) != 0 {
+		t.Fatalf("the new network lists %v %+v: peers sampled before the join", has9, l)
+	}
+	noAddressLogged(t, p.logs.String())
 }
