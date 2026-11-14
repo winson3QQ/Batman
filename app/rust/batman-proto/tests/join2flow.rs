@@ -1261,17 +1261,24 @@ fn rm_t27_rule2_a_node_removed_before_needs_the_admins_yes() {
 }
 
 /// T17b (§3.6 / §2.0 rule 3): a removed person re-invited within the same version — the node is still in this
-/// version's removed list (members are signed once per version) — joins in member mode: the member-side rule reads
-/// mnet key 7 and the secrets' target, never the removed list. Negative control (mutant, not committed): begin_member
-/// refusing a DAC in `removed_of(members)` -> this test fails at the first assert.
+/// version's removed list (members are signed once per version; a removal makes v2, so the record here is v2 with
+/// its hashes of v1) — joins in member mode: the member-side rule reads mnet key 7 and the secrets' target, never the
+/// removed list. Negative control (mutant, not committed): begin_member refusing a DAC in `removed_of(members)` ->
+/// this test fails at the first assert.
 #[test]
 fn rm_t17b_a_removed_node_reinvited_in_the_same_version_joins_in_member_mode() {
-    let me = netrec::dac_hash(&joining_node().dac_pub);
+    let node = joining_node();
+    let me = netrec::dac_hash(&node.dac_pub);
+    let v1 = applied_record("US");
+    let mesh = format!("bm-{}", hex::encode(&NET_ID[..6]));
+    let prev_cfg = cose::object_hash(&v1.base.netcfg).unwrap();
+    let netcfg = signed_by_admin(cose::CT_NETCFG, &cose::net_config_payload(&NET_ID, 2, Some(&prev_cfg), "home", "US", &mesh, 40, 4, &[pub_of(&key(ADMIN))]));
     let first = member(0x55, 0x43, "node-0001", MemberState::Applied);
+    let prev_members = cose::object_hash(&v1.base.members).unwrap();
     let mut mp = cbor::decode(&cose::member_list_payload(
         &NET_ID,
-        1,
-        None,
+        2,
+        Some(&prev_members),
         &[cose::Member { dac_pub_hash: &first.dac_pub_hash, ecdh_pub: &first.ecdh_pub, name: &first.name, owner_pub: &first.owner_pub, owner_enc_pub: &first.owner_enc_pub }],
     ))
     .unwrap();
@@ -1280,19 +1287,23 @@ fn rm_t17b_a_removed_node_reinvited_in_the_same_version_joins_in_member_mode() {
         e.push((V::Uint(5), V::Array(vec![V::Bytes(me.to_vec())])));
     }
     let members = signed_by_admin(cose::CT_MEMBERS, &cbor::encode(&mp));
-    assert_eq!(netrec::removed_of(&netrec::sign1_payload(&members).unwrap()).unwrap(), vec![me], "this version lists the node as removed");
-    // the member phone after importing the new approval: a fresh joining entry (member.rs rm_t17), the same version
-    let mut x = mnet(Some(my_entry(MemberState::Joining)));
-    x.members = members.clone();
+    assert_eq!(netrec::removed_of(&netrec::sign1_payload(&members).unwrap()).unwrap(), vec![me], "v2 lists the node as removed");
+    // the member phone after importing the new approval: a fresh joining entry (member.rs rm_t17), still v2, with
+    // v2's secrets for this node
+    let plain = cbor::encode(&m(vec![(1, V::Text(SAE.into())), (2, V::Bytes(vec![0x77; 32]))]));
+    let enc = cose::encrypt_to(&plain, cose::LABEL_SECRETS, &node.ecdh_pub, &me, &NET_ID, 2).unwrap();
+    let secrets = signed_by_admin(cose::CT_SECRETS, &cose::net_secrets_payload(&NET_ID, 2, &me, &enc.object));
+    let x = MNet { version: 2, netcfg: netcfg.clone(), members: members.clone(), secrets, ..mnet(Some(my_entry(MemberState::Joining))) };
     let (run, n, disk) = member_join(&x, "US", |_| {});
     assert_eq!(run.end, Some(End::Applied { country_unverified: false, save_pending: false }));
     assert_eq!(n.got, ["settings/get", "op/nonce", "network/join"]);
-    assert_eq!(n.bodies[0], (x.netcfg.clone(), members.clone()), "the node took the members that list it as removed");
+    assert_eq!(n.bodies[0], (netcfg.clone(), members.clone()), "the node took the v2 members that list it as removed");
     assert_eq!(n.secrets, [(SAE.to_string(), vec![0x77; 32])]);
     assert_eq!(run.admin_signs, 0);
     assert_eq!(disk.mine().unwrap().state, MemberState::Applied);
-    // the same members in the admin's record: rule 2 does read this list (the test data is a real "removed before")
+    // the same v2 in the admin's record: rule 2 does read this list (the test data is a real "removed before")
     let mut rec = applied_record("US");
+    rec.base.netcfg = netcfg;
     rec.base.members = members;
     let adisk = Disk::new(&rec);
     let (conn, _) = pair("US");
