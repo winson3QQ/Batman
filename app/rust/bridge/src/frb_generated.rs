@@ -27,11 +27,11 @@
 
 // Section: imports
 
+use crate::api::claim::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;
 use crate::api::swupdate::*;
 use crate::api::member::*;
-use crate::api::rekey::*;
-use crate::api::owner::*;
-use crate::api::claim::*;
 use crate::api::replay::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
@@ -2115,6 +2115,7 @@ return (var_field0, var_field1);}
         return match inner {
             0 => crate::api::replay::RecoveryEnd::Exhausted,
 1 => crate::api::replay::RecoveryEnd::LockIncomplete,
+2 => crate::api::replay::RecoveryEnd::Stopped,
             _ => unreachable!("Invalid variant for RecoveryEnd: {}", inner),
         };}
                 }
@@ -2924,6 +2925,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::rekey::RecipientView> for cra
                     match self {
                     Self::Exhausted => 0.into_dart(),
 Self::LockIncomplete => 1.into_dart(),
+Self::Stopped => 2.into_dart(),
                     _ => unreachable!(),
                 }
                 }
@@ -3680,6 +3682,7 @@ crate::api::owner::OwnerKind::ConfirmRemoved => { 11 }
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<i32>::sse_encode(match self {crate::api::replay::RecoveryEnd::Exhausted => { 0 }
 crate::api::replay::RecoveryEnd::LockIncomplete => { 1 }
+crate::api::replay::RecoveryEnd::Stopped => { 2 }
  _ => { unimplemented!(""); }}, serializer);}
                 }
                 
@@ -3898,11 +3901,11 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
+use crate::api::claim::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;
 use crate::api::swupdate::*;
 use crate::api::member::*;
-use crate::api::rekey::*;
-use crate::api::owner::*;
-use crate::api::claim::*;
 use crate::api::replay::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
@@ -3998,11 +4001,11 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
+use crate::api::claim::*;
+use crate::api::owner::*;
+use crate::api::rekey::*;
 use crate::api::swupdate::*;
 use crate::api::member::*;
-use crate::api::rekey::*;
-use crate::api::owner::*;
-use crate::api::claim::*;
 use crate::api::replay::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;

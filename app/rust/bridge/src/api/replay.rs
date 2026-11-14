@@ -161,6 +161,8 @@ pub enum RecoveryEnd {
     Exhausted,
     /// 13 five times in a row
     LockIncomplete,
+    /// stopped (the button, the page left, Bluetooth): only the added sentences (the caller says why it stopped)
+    Stopped,
 }
 
 /// The closing words. `after_9`: T1 after claim/finish answered 9; `unanswered`: a claim/replay was written and no
@@ -168,18 +170,19 @@ pub enum RecoveryEnd {
 /// password (`unanswered`, or a 13).
 #[flutter_rust_bridge::frb(sync)]
 pub fn recovery_end_text(end: RecoveryEnd, after_9: bool, unanswered: bool, old_record: bool) -> String {
-    let mut s = match end {
-        RecoveryEnd::Exhausted if after_9 => TRY_REPLAY_TEXT.to_string(),
-        RecoveryEnd::Exhausted => NOT_FOUND.to_string(),
-        RecoveryEnd::LockIncomplete => LOCK.to_string(),
+    let mut parts: Vec<&str> = match end {
+        RecoveryEnd::Exhausted if after_9 => vec![TRY_REPLAY_TEXT],
+        RecoveryEnd::Exhausted => vec![NOT_FOUND],
+        RecoveryEnd::LockIncomplete => vec![LOCK],
+        RecoveryEnd::Stopped => vec![],
     };
-    if unanswered && end == RecoveryEnd::Exhausted {
-        s = format!("{s}。{STILL_FINISHING}");
+    if unanswered && end != RecoveryEnd::LockIncomplete {
+        parts.push(STILL_FINISHING);
     }
     if old_record && (unanswered || end == RecoveryEnd::LockIncomplete) {
-        s = format!("{s}。{OLD_RECORD_PW}");
+        parts.push(OLD_RECORD_PW);
     }
-    s
+    parts.join("。")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,11 +226,14 @@ impl ReplaySession {
     /// node record gets the same mark a claim gives it, s1 §4.1).
     #[flutter_rust_bridge::frb(sync)]
     pub fn prepare(pending_plain: Vec<u8>, device_id: String, dev_soft_enc: bool) -> Result<(ReplaySession, Vec<u8>), String> {
-        dev_gate()?;
-        let pending = decode_pending(&pending_plain, &device_id)?;
-        let peer = pending.ecdh_pub.to_vec();
-        let link = batman_proto::claimflow::pending_link(&pending_plain);
-        Ok((ReplaySession { pending, link, z: None, flow: None, stage: Stage::Idle, decrypted: false, dev_soft_enc }, peer))
+        let mut pending_plain = pending_plain;
+        let r = dev_gate().and_then(|_| decode_pending(&pending_plain, &device_id)).map(|pending| {
+            let peer = pending.ecdh_pub.to_vec();
+            let link = batman_proto::claimflow::pending_link(&pending_plain);
+            (ReplaySession { pending, link, z: None, flow: None, stage: Stage::Idle, decrypted: false, dev_soft_enc }, peer)
+        });
+        pending_plain.fill(0); // the plaintext carries K (review B-m4)
+        r
     }
 
     /// Kotlin's ECDH result (32 bytes), once, before any connection; Dart zeroes its copy right after.
@@ -688,6 +694,10 @@ mod tests {
         assert_eq!(recovery_end_text(RecoveryEnd::Exhausted, false, false, true), NOT_FOUND, "nothing sent: the old password is fine");
         assert_eq!(recovery_end_text(RecoveryEnd::LockIncomplete, false, false, true), format!("{LOCK}。{OLD_RECORD_PW}"));
         assert_eq!(recovery_end_text(RecoveryEnd::LockIncomplete, false, false, false), LOCK);
+        // review A-m1: a stop after an unanswered replay adds the same sentences (the caller says why it stopped)
+        assert_eq!(recovery_end_text(RecoveryEnd::Stopped, false, false, true), "");
+        assert_eq!(recovery_end_text(RecoveryEnd::Stopped, false, true, false), STILL_FINISHING);
+        assert_eq!(recovery_end_text(RecoveryEnd::Stopped, false, true, true), format!("{STILL_FINISHING}。{OLD_RECORD_PW}"));
     }
 
     // S3: no text of a recovery (every step's detail, every end text, prepare's errors) carries K, z, psk_replay or a
@@ -720,7 +730,7 @@ mod tests {
             }
             pws.push(n.password.clone());
         }
-        for e in [RecoveryEnd::Exhausted, RecoveryEnd::LockIncomplete] {
+        for e in [RecoveryEnd::Exhausted, RecoveryEnd::LockIncomplete, RecoveryEnd::Stopped] {
             for (a, b, c) in [(false, false, false), (true, true, true), (false, true, true)] {
                 texts.push(recovery_end_text(e, a, b, c));
             }

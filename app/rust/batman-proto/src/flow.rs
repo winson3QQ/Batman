@@ -21,11 +21,27 @@ pub const E_LOCK_INCOMPLETE: u64 = 13;
 pub const REASON_LEGACY_NO_KEY: u64 = 10;
 
 /// claim/finish and claim/replay success body {1: owner_tag_key, 2: adv_owner_key, 3: root_password} (cddl:178-183).
-#[derive(Debug, PartialEq, Eq)]
+/// Secret: Debug shows no key or password (254-app-replay review B-m4); zeroed on drop.
+#[derive(PartialEq, Eq)]
 pub struct Creds {
     pub owner_tag_key: [u8; 32],
     pub adv_owner_key: [u8; 32],
     pub root_password: String,
+}
+
+impl std::fmt::Debug for Creds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Creds { .. }")
+    }
+}
+
+impl Drop for Creds {
+    fn drop(&mut self) {
+        self.owner_tag_key.fill(0);
+        self.adv_owner_key.fill(0);
+        // SAFETY: zero bytes are valid UTF-8; the length does not change
+        unsafe { self.root_password.as_bytes_mut() }.fill(0);
+    }
 }
 
 fn creds(body: &Value) -> Option<Creds> {

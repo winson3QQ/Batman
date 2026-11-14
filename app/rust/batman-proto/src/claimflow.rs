@@ -26,7 +26,8 @@ pub struct Input {
 }
 
 /// The claim-pending record (design §3): written and synced BEFORE claim/finish can be sent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Holds K: Debug shows no K (254-app-replay review B-m4); K is zeroed on drop (every clone too).
+#[derive(Clone, PartialEq, Eq)]
 pub struct Pending {
     pub device_id: String,
     pub k: [u8; 32],
@@ -35,6 +36,18 @@ pub struct Pending {
     pub ecdh_pub: [u8; 65],
     pub owner_pub: [u8; 65],
     pub owner_enc_pub: [u8; 65],
+}
+
+impl std::fmt::Debug for Pending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pending").field("device_id", &self.device_id).finish_non_exhaustive()
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.k.fill(0);
+    }
 }
 
 #[derive(Debug, PartialEq)]

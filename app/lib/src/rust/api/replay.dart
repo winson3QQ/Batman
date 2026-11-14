@@ -70,6 +70,9 @@ enum RecoveryEnd {
 
   /// 13 five times in a row
   lockIncomplete,
+
+  /// stopped (the button, the page left, Bluetooth): only the added sentences (the caller says why it stopped)
+  stopped,
 }
 
 enum ReplayKind {

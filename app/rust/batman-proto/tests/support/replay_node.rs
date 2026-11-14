@@ -74,9 +74,13 @@ pub fn device_id(v: &J) -> String {
 
 /// node_cert as a P2 bench node sends it (file keystore, self-signed dev: DAC)
 pub fn dev_node_cert(v: &J) -> Vec<u8> {
+    node_cert_with_static(v, h(&v["keys"]["s_node_pub"]))
+}
+
+/// a node_cert whose s_node (key 2, signed by sig_static) is [s_node]: another static than the handshake's = review B-m4 case
+pub fn node_cert_with_static(v: &J, s_node: Vec<u8>) -> Vec<u8> {
     use p256::ecdsa::signature::Signer;
     let sk = p256::ecdsa::SigningKey::from_slice(&hex::decode(DEV_NODE_PRIV).unwrap()).unwrap();
-    let s_node = h(&v["keys"]["s_node_pub"]);
     let boot_id = vec![7u8; 16];
     let ecdh_pub = h(&v["keys"]["node_ecdh_pub"]);
     let mut msg = nodecert::LABEL_STATIC.to_vec();
@@ -172,6 +176,8 @@ pub struct FakeNode {
     pub verdict_unknown: bool,
     pub set_password: SetPassword,
     pub defer_helper: bool,
+    /// the node_cert names another static key than the one in the handshake (sig_static valid over it)
+    pub cert_wrong_static: bool,
     /// seconds, driven by the test
     pub now: u64,
     pub password: String,
@@ -199,6 +205,7 @@ impl FakeNode {
             verdict_unknown: false,
             set_password: SetPassword::Ok,
             defer_helper: false,
+            cert_wrong_static: false,
             now: 0,
             password: "pw-0".into(),
             generation: 0,
@@ -338,7 +345,7 @@ impl FakeNode {
             return Reply::Closed;
         }
         self.hs_times.push(now);
-        let cert = dev_node_cert(&self.v);
+        let cert = if self.cert_wrong_static { node_cert_with_static(&self.v, vec![9; 32]) } else { dev_node_cert(&self.v) };
         let mut buf = vec![0u8; 65535];
         let (hs, role) = if self.presents_unclaimed() {
             if msg1.len() != 32 {

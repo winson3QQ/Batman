@@ -149,7 +149,7 @@ fn recovered(o: Out) -> String {
     match o {
         Out::End(End::Replayed(ClaimReplay::Recovered(c))) => {
             assert_eq!(c.owner_tag_key, TAG_KEY);
-            c.root_password
+            c.root_password.clone()
         }
         o => panic!("not recovered: {o:?}"),
     }
@@ -486,4 +486,32 @@ fn rate_limited_through_the_flow() {
     }
     n.now = 61;
     assert_eq!(attempt(&mut n, pending(&v), &mut platform()), Out::End(End::Replayed(ClaimReplay::RateLimited)));
+}
+
+// review B-m4 (S2): a msg2 that decrypts with psk_replay but whose node_cert names another static key than the
+// handshake's (sig_static valid over that other key) -> CertRejected(StaticMismatch), nothing after msg1.
+// Negative control: verify_pinned not given the handshake's static -> accepted.
+#[test]
+fn a_node_cert_for_another_static_is_refused() {
+    let v = vectors();
+    let mut n = FakeNode::claimed(v.clone());
+    n.cert_wrong_static = true;
+    assert_eq!(attempt(&mut n, pending(&v), &mut platform()), Out::End(End::CertRejected(nodecert::Error::StaticMismatch)));
+    assert_eq!(n.log, ["c0 msg1"], "nothing sent after msg1");
+}
+
+// review B-m4: Debug of a pending, of credentials and of the ends that carry them shows no K, no key, no password.
+// Negative control: `#[derive(Debug)]` back on Pending / Creds -> FAIL.
+#[test]
+fn debug_shows_no_k_key_or_password() {
+    use batman_proto::flow::Creds;
+    let v = vectors();
+    let p = pending(&v);
+    let k = p.k;
+    let c = Creds { owner_tag_key: TAG_KEY, adv_owner_key: [0x3c; 32], root_password: "pw-secret-77".into() };
+    let text = format!("{p:?} {:?} {:?}", End::Replayed(ClaimReplay::Recovered(c)), Some(p.clone()));
+    assert!(text.contains(&device_id(&v)), "the id is shown: {text}");
+    for s in [format!("{:?}", k), format!("{:?}", &k[..8]), hex::encode(k), format!("{:?}", TAG_KEY), format!("{:?}", [0x3c_u8; 32]), "pw-secret-77".into()] {
+        assert!(!text.contains(&s), "a secret in Debug: {s}");
+    }
 }
