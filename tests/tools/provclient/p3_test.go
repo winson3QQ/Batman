@@ -179,7 +179,7 @@ func TestFmtProgressStatus(t *testing.T) {
 	}
 	st := fmtStatus(cmap{{uint64(1), uint64(2)}, {uint64(2), uint64(0)}, {uint64(3), uint64(4)}, {uint64(4), true},
 		{uint64(5), cmap{{uint64(1), uint64(3)}, {uint64(2), "no peers"}}}, {uint64(15), cmap{{"uptime_s", uint64(1)}, {"image", "x"}}}})
-	if st != " state=2 verdict=0 neighbours=4 p5_saved=true join_failure=3 f15=image,uptime_s" {
+	if st != " state=2 verdict=0 neighbours=4 p5_saved=true join_failure=3 f15=image,uptime_s self=- peers=- bytes=43" {
 		t.Fatal(st)
 	}
 	for _, c := range []struct {
@@ -190,7 +190,7 @@ func TestFmtProgressStatus(t *testing.T) {
 		{"0123456789ABCDEF", " trust=?"}, {"x y", " trust=?"}, {uint64(1), " trust=?"},
 	} {
 		st = fmtStatus(cmap{{uint64(1), uint64(2)}, {uint64(15), cmap{{"trust", c.in}}}})
-		if !strings.HasSuffix(st, " f15=trust"+c.want) {
+		if !strings.Contains(st, " f15=trust"+c.want+" ") { // the team fields follow it (key 8 / 9 / bytes)
 			t.Fatalf("trust %v: %q", c.in, st)
 		}
 	}
@@ -200,5 +200,52 @@ func TestFmtProgressStatus(t *testing.T) {
 	}
 	if handleHex([]byte{0xab, 0xcd}) != "abcd" || handleHex("ab") != "6162" || handleHex(uint64(255)) != "ff" {
 		t.Fatal("handleHex")
+	}
+}
+
+// status.get's key 1 is a bool (node/status.go:291-293): the uint 0 sent before 2026-11-13 was ESchema on every node
+func TestStatusGetBodyIsBool(t *testing.T) {
+	for opt, want := range map[string]bool{"": true, "full": true, "member": false} {
+		b, err := statusGetBody(opt)
+		if err != nil || len(b) != 1 {
+			t.Fatalf("%q: %v %v", opt, b, err)
+		}
+		if v, ok := b.get(1).(bool); !ok || v != want {
+			t.Fatalf("%q: key 1 = %#v, want the bool %v", opt, b.get(1), want)
+		}
+	}
+	if _, err := statusGetBody("0"); err == nil {
+		t.Fatal("the old scope argument 0 accepted")
+	}
+}
+
+// whole-team status keys (254-app-team-status §4.1): key 8 -> self, key 9 -> addr/ago (sorted); empty -> none; a key 9
+// the app would drop (§4.1 "missing / broken") -> bad
+func TestFmtStatusTeam(t *testing.T) {
+	a, b := []byte{0xa8, 0xdd, 0x9f, 0x4d, 0xc7, 0x60}, []byte{0xa8, 0xdd, 0x9f, 0x4d, 0xc6, 0xd3}
+	st := fmtStatus(cmap{{uint64(1), uint64(3)}, {uint64(8), []byte{0xa8, 0xdd, 0x9f, 0x4d, 0xc6, 0x10}},
+		{uint64(9), []any{cmap{{uint64(1), a}, {uint64(2), uint64(0)}}, cmap{{uint64(1), b}, {uint64(2), uint64(2)}}}}})
+	// 1 map hdr + 2 (k1) + 8 (k8 bstr6) + 2 (k9, array hdr) + 2 x 11 (map hdr, k1 bstr6, k2 uint) = 35
+	if !strings.HasSuffix(st, " self=a8:dd:9f:4d:c6:10 peers=a8:dd:9f:4d:c6:d3/2,a8:dd:9f:4d:c7:60/0 bytes=35") {
+		t.Fatal(st)
+	}
+	if st := fmtStatus(cmap{{uint64(9), []any{}}}); !strings.Contains(st, " peers=none ") {
+		t.Fatal(st)
+	}
+	if st := fmtStatus(cmap{{uint64(8), []byte{1, 2}}}); !strings.Contains(st, " self=- peers=- ") {
+		t.Fatal("a 2-byte key 8 printed as an address: " + st)
+	}
+	many := make([]any, 33)
+	for i := range many {
+		many[i] = cmap{{uint64(1), a}, {uint64(2), uint64(0)}}
+	}
+	for name, k9 := range map[string]any{
+		"not a list": "x", "33 entries": many, "entry not a map": []any{uint64(1)},
+		"short addr":  []any{cmap{{uint64(1), []byte{1}}, {uint64(2), uint64(0)}}},
+		"ago missing": []any{cmap{{uint64(1), a}}}, "ago negative": []any{cmap{{uint64(1), a}, {uint64(2), int64(-1)}}},
+	} {
+		if st := fmtStatus(cmap{{uint64(9), k9}}); !strings.Contains(st, " peers=bad ") {
+			t.Fatalf("%s: %s", name, st)
+		}
 	}
 }

@@ -8,7 +8,7 @@ package main
 //	op (provclient node …)                helper verb      owner-op  body / args
 //	settings-get <owner_pub>              settings.get     no        {}                       (ro)
 //	settings-set <owner_pub> <key> <v…>   settings.set     yes       {key: value}             one key per call (§3.3)
-//	status-get <owner_pub> [scope]        status.get       no        {1: scope}               (ro; scope default 0 = self)
+//	status-get <owner_pub> [full|member] status.get       no        {1: full bool}           (ro; default full)
 //	diag-summary <owner_pub>              diag.summary     no        {}                       (ro)
 //	diag-bundle <owner_pub>               diag.bundle      yes       {1: session_id}          -> {1: handle} (P3 shape, §3.5)
 //	diag-read <owner_pub> <handle-hex>    diag.read        no        {1: handle, 2: offset}   (ro; looped until total)
@@ -289,6 +289,10 @@ func fmtStatus(r cmap) string {
 			}
 		}
 	}
+	// whole-team status (254-app-team-status §4.1): key 8 = this node's mesh address, key 9 = the peers it sees; bytes =
+	// the answer's CBOR size (§4.2: one provd reply is 8192 B). Absent keys print "-". Last on the line: older readers keep
+	// their fields where they were.
+	s += fmt.Sprintf(" self=%s peers=%s bytes=%d", macOrDash(r.get(8)), peerList(r.get(9)), len(cEnc(r)))
 	return s
 }
 
@@ -329,18 +333,18 @@ func p3Op(cl *client, op string, args []string, fd3 map[string]string, hexArg fu
 		env := cl.ownerOp("settings/set", body)
 		code, r := cl.call("settings.set", cmap{{uint64(1), cl.h}, {uint64(2), env}})
 		fmt.Println(resultLine("settings.set(key "+args[2]+")", code, r, ifOK(code, fmtSettings(r))))
-	case "status-get": // ⚠️ design: status.get's args are not written down; {1: scope} mirrors status-req
+	case "status-get":
 		hexArg(1)
-		scope := uint64(0)
+		opt := ""
 		if len(args) > 2 {
-			v, err := strconv.ParseUint(args[2], 10, 8)
-			if err != nil {
-				die("status-get: scope %q", args[2])
-			}
-			scope = v
+			opt = args[2]
 		}
-		code, r := cl.call("status.get", cmap{{uint64(1), scope}})
-		fmt.Println(resultLine(fmt.Sprintf("status.get(scope %d)", scope), code, r, ifOK(code, fmtStatus(r))))
+		body, err := statusGetBody(opt)
+		if err != nil {
+			die("%v", err)
+		}
+		code, r := cl.call("status.get", body)
+		fmt.Println(resultLine(fmt.Sprintf("status.get(full %v)", body.get(1)), code, r, ifOK(code, fmtStatus(r))))
 	case "diag-summary":
 		hexArg(1)
 		code, r := cl.call("diag.summary", cmap{})
@@ -441,4 +445,57 @@ func handleHex(v any) string {
 		return fmt.Sprintf("%x", x)
 	}
 	return ""
+}
+
+// macOrDash: a 6-byte bstr as aa:bb:..., anything else "-"
+func macOrDash(v any) string {
+	b, ok := v.([]byte)
+	if !ok || len(b) != 6 {
+		return "-"
+	}
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5])
+}
+
+// peerList: key 9 [* {1: addr (6 B), 2: seen-ago s (uint), ...}] as "addr/ago,..." (sorted); "-" when key 9 is absent,
+// "none" when empty, "bad" when it breaks 254-app-team-status §4.1 (not a list, > 32 entries, an entry that is not a map,
+// an address that is not 6 bytes, a seen-ago that is not a uint) — the app drops the whole key 9 then
+func peerList(v any) string {
+	if v == nil {
+		return "-"
+	}
+	l, ok := v.([]any)
+	if !ok || len(l) > 32 {
+		return "bad"
+	}
+	var out []string
+	for _, e := range l {
+		m, ok := e.(cmap)
+		if !ok {
+			return "bad"
+		}
+		a := macOrDash(m.get(1))
+		ago, ok := m.get(2).(uint64)
+		if a == "-" || !ok {
+			return "bad"
+		}
+		out = append(out, fmt.Sprintf("%s/%d", a, ago))
+	}
+	if len(out) == 0 {
+		return "none"
+	}
+	sort.Strings(out)
+	return strings.Join(out, ",")
+}
+
+// statusGetBody: status.get's request {1: full} — a bool (node/status.go: a non-bool key 1 is ESchema 20; until
+// 2026-11-13 this sent the uint 0 and every status-get FAILed with code 20 on every P3 node). "" / "full" -> true,
+// "member" -> false, anything else is refused.
+func statusGetBody(opt string) (cmap, error) {
+	switch opt {
+	case "", "full":
+		return cmap{{uint64(1), true}}, nil
+	case "member":
+		return cmap{{uint64(1), false}}, nil
+	}
+	return nil, fmt.Errorf("status-get: [full|member], not %q", opt)
 }
