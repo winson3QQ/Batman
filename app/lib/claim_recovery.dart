@@ -493,6 +493,8 @@ class ClaimRecovery {
       preExpired.complete();
       push('lost');
     });
+    Timer? postWrite; // the 90 s after the claim/replay frames start going out
+    final postExpired = Completer<void>();
     final connecting = ble.connect(id, connectFor);
     final link = await _race(connecting, connectFor + const Duration(seconds: 1));
     if (link == null) {
@@ -530,14 +532,28 @@ class ClaimRecovery {
       while (true) {
         switch (st.kind) {
           case ReplayKind.write:
-            if (session.written()) {
+            if (session.written() && !_writtenNow) {
               // review A-m1: from the first claim/replay frame on, a stop or the 45 s waits for the answer
               wrote = true;
               _writtenNow = true;
               beforeWrite = false;
+              // review r2 A-3: the whole after-write phase (the frames' write AND the answer) is bounded by 90 s, so a
+              // write that never returns ends as "no answer" (unanswered) too
+              postWrite = Timer(afterWriteFor, () {
+                if (!postExpired.isCompleted) postExpired.complete();
+                push('lost');
+              });
             }
             for (final f in st.frames) {
-              await link.write(f);
+              if (_writtenNow) {
+                final ok = await _race<bool>(link.write(f).then((_) => true), afterWriteFor, or: postExpired.future);
+                if (ok == null) {
+                  _unanswered = true;
+                  return _Try(session.lost(), wrote: true, unanswered: true, decrypted: decrypted);
+                }
+              } else {
+                await link.write(f);
+              }
             }
             if (first) _startPace(); // msg1 went out: the handshake started
             first = false;
@@ -577,6 +593,7 @@ class ClaimRecovery {
       return _Try(session.lost(), wrote: w, unanswered: w, decrypted: decrypted);
     } finally {
       preWrite.cancel();
+      postWrite?.cancel();
       unawaited(rx?.cancel()); // not awaited: nothing depends on it (and a fake-async test would wait forever)
       await link.close(); // every end disconnects (§4: an undecryptable msg2 at once)
       _writtenNow = false;

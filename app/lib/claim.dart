@@ -306,6 +306,7 @@ class _ClaimPageState extends State<ClaimPage> {
       final rx = QualifiedCharacteristic(characteristicId: provdRx, serviceId: provdService, deviceId: id);
       final done = Completer<String>();
       var claimed = false; // set when the node record is written (StepKind.claimed)
+      PendingNotRemoved? pendingKept; // ... and its pending could not be removed (harmless: the node record counts)
       final inbox = StreamController<List<int>>();
       notify = _ble
           .subscribeToCharacteristic(QualifiedCharacteristic(characteristicId: provdTx, serviceId: provdService, deviceId: id))
@@ -325,7 +326,11 @@ class _ClaimPageState extends State<ClaimPage> {
               _say('已先在手機記下這次認領（還沒完成）');
               st = session.pendingPersisted();
             case StepKind.claimed:
-              await records.claimed(st.path, st.record, st.pendingPath); // R1: copy aside, node record, then the pending
+              try {
+                await records.claimed(st.path, st.record, st.pendingPath); // R1: copy aside, node record, then the pending
+              } on PendingNotRemoved catch (e) {
+                pendingKept = e; // 254-app-replay review r2 A-B: the node record IS written -> still CLAIMED
+              }
               claimed = true;
               done.complete(st.detail);
               st = null;
@@ -348,6 +353,7 @@ class _ClaimPageState extends State<ClaimPage> {
           : r.startsWith('[KEY_LEVEL] ')
               ? '[CLAIM_FAIL] $r'
               : '[CLAIM_FAIL] 認領沒有完成：$r');
+      if (claimed && pendingKept != null) _say('[PENDING_KEPT] $pendingKept');
       if (claimed && mounted) setState(() => _qr = null); // R6: claiming again needs a new scan
       // 254-app-replay §2 T1: the finish went out and its end is unknown / 9 / 13 / OK without credentials -> replay
       // this very device. replay_due() failing = false (§7: no replay; the next 「認領」 finds it claimed -> T2).

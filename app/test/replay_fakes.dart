@@ -77,6 +77,8 @@ class Dev {
   final writeFailsOn = <int>[]; // the next write of a frame starting with each byte fails (GATT 133)
   bool writeFailReaches = false; // ... after the node got it
   Duration writeDelay = Duration.zero; // the claim/replay frame takes this long to write
+  bool writeHangs = false; // the claim/replay frame's write never returns (review r2 A-3)
+  final replayWriteAt = <Duration>[];
 
   // what happened
   int connects = 0, msg1s = 0, replays = 0, password = 0;
@@ -144,6 +146,8 @@ class FakeLink implements RecoveryLink {
   @override
   Future<void> write(List<int> frame) async {
     if (closed) throw StateError('disconnected');
+    if (frame[0] == 0x30) dev.replayWriteAt.add(now());
+    if (dev.writeHangs && frame[0] == 0x30) return Completer<void>().future; // no timer: it just never returns
     if (dev.writeDelay > Duration.zero && frame[0] == 0x30) await Future<void>.delayed(dev.writeDelay);
     final i = dev.writeFailsOn.indexOf(frame[0]);
     if (i >= 0) {

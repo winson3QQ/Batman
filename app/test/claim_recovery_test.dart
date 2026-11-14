@@ -713,4 +713,34 @@ void main() {
     expect(h.lines.single, startsWith('[CLAIM_FAIL] 恢復前的檢查出錯，這次不恢復（手機裡的紀錄沒有改動）'));
     expect(h.field.connects, 0);
   });
+
+  // ---- code review r2 ----
+
+  // A-A: the claim/replay frame's write fails (transport exception) in every round -> no answer ever came -> the
+  // closing words carry the unanswered sentences. Negative control: the catch not marking unanswered -> FAIL.
+  testWidgets('review r2: the claim/replay write fails in all rounds -> the unanswered words', (t) async {
+    final h = H(t, rust);
+    final m = Dev('M', -40, ours: true)..writeFailsOn.addAll([0x30, 0x30, 0x30]);
+    h.field.add(m);
+    expect(await h.run(t1: 'M'), RecoveryOutcome.exhausted);
+    expect(m.replayWriteAt, hasLength(3));
+    expect(rust.endTexts, ['END exhausted after9=false unanswered=true old=false']);
+    h.pendingUntouched();
+  });
+
+  // A-3: a claim/replay write that never returns is bounded by the 90 s after-write limit -> ends as "no answer"
+  // (unanswered), next round. Negative control: the write not raced against the 90 s -> the recovery never ends.
+  testWidgets('review r2: a hung claim/replay write ends after 90 s as unanswered', (t) async {
+    final h = H(t, rust);
+    final m = Dev('M', -40, ours: true)..writeHangs = true;
+    h.field.add(m);
+    expect(await drive(t, h.start(t1: 'M'), max: const Duration(minutes: 8)), RecoveryOutcome.exhausted);
+    expect(m.replayWriteAt, hasLength(3), reason: 'three rounds still fit in 300 s');
+    for (var i = 0; i < 3; i++) {
+      final held = m.closedAt[i] - m.replayWriteAt[i];
+      expect(held.inMilliseconds, inInclusiveRange(89500, 91000), reason: 'round ${i + 1}: 90 s ($held)');
+    }
+    expect(rust.endTexts, ['END exhausted after9=false unanswered=true old=false']);
+    h.pendingUntouched();
+  });
 }
