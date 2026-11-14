@@ -11,6 +11,14 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// design §2: an emulator build asks for the x86_64 ABI itself: -Pemulator-abi=true (flutter build apk -P emulator-abi=true).
+// Only the exact value "true" turns it on; any other value but "false" stops the build (a typo must not quietly make
+// an APK without the emulator's ABI); a field build with it fails (check<Variant>EmulatorAbi below).
+val emulatorAbi = (findProperty("emulator-abi") as String?).let {
+    if (it != null && it != "true" && it != "false") throw GradleException("emulator-abi=\"$it\": only true or false")
+    it == "true"
+}
+
 android {
     namespace = "dev.batman.batman_app"
     compileSdk = 37  // reactive_ble_mobile 5.6.0 compiles against 37 (its AAR metadata); targetSdk is the literal 36 below (D6)
@@ -38,8 +46,8 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         // design §2: arm64-v8a only. clear(): the Flutter plugin has already put its three default ABIs here, so `+=` alone
-        // changed nothing. An emulator build asks for x86_64 itself: -Pemulator-abi (flutter build apk -P emulator-abi=1).
-        ndk { abiFilters.clear(); abiFilters += listOf("arm64-v8a") + if (project.hasProperty("emulator-abi")) listOf("x86_64") else listOf() }
+        // changed nothing. An emulator build asks for x86_64 itself: -Pemulator-abi=true (see emulatorAbi above).
+        ndk { abiFilters.clear(); abiFilters += listOf("arm64-v8a") + if (emulatorAbi) listOf("x86_64") else listOf() }
     }
 
     // design v8.5.1 §4.1: dev / field are build constants. Each flavor has its own applicationId (own Keystore aliases,
@@ -195,10 +203,11 @@ abstract class DependencyGate : DefaultTask() {
 //   it should never be seen), must be one of [exportedComponents].
 // - No activity-alias may target QrScanActivity; QrScanActivity is declared once, exported="false", no intent-filter.
 // - Backup (254-app-s1 §4): <application> has android:allowBackup="false" and
-//   android:dataExtractionRules="@xml/data_extraction_rules"; every src/*/res/xml/data_extraction_rules.xml (main's
-//   must exist; a flavor's or build type's would replace it) has exactly <cloud-backup> and <device-transfer>, each
+//   android:dataExtractionRules="@xml/data_extraction_rules"; every src/*/res/xml*/data_extraction_rules.xml (main's
+//   must exist; a flavor's, a build type's or a qualified one — xml-v31, … — would replace it) has exactly <cloud-backup> and <device-transfer>, each
 //   with nothing but one <exclude domain=… path="."> per domain of [backupDomains] — an <include>, a missing domain or
 //   a narrower path fails.
+// - A release build type whose merged manifest says android:debuggable="true" fails (254-app-s1 §4).
 // Anything else fails the build.
 val expectedPermissions = setOf(
     "uses-permission:android.permission.BLUETOOTH_SCAN", "uses-permission:android.permission.BLUETOOTH_CONNECT",
@@ -225,6 +234,7 @@ abstract class ManifestGate : DefaultTask() {
     @get:Input abstract val exportable: SetProperty<String>
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val backupRules: ConfigurableFileCollection
     @get:Input abstract val domains: SetProperty<String>
+    @get:Input abstract val buildType: Property<String>
 
     @TaskAction
     fun check() {
@@ -261,11 +271,12 @@ abstract class ManifestGate : DefaultTask() {
         for (x in app) {
             if (x.a("allowBackup") != "false") bad.add("allowBackup=\"${x.a("allowBackup")}\"")
             if (x.a("dataExtractionRules") != "@xml/data_extraction_rules") bad.add("dataExtractionRules=\"${x.a("dataExtractionRules")}\"")
+            if (buildType.get() == "release" && x.a("debuggable") == "true") bad.add("release build is debuggable")
         }
         val rules = backupRules.files.sortedBy { it.path }
-        if (rules.none { it.parentFile.parentFile.parentFile.name == "main" }) bad.add("no main data_extraction_rules.xml")
+        if (rules.none { it.parentFile.parentFile.parentFile.name == "main" && it.parentFile.name == "xml" }) bad.add("no main data_extraction_rules.xml")
         for (f in rules) {
-            val where = "${f.parentFile.parentFile.parentFile.name}/data_extraction_rules.xml"
+            val where = "${f.parentFile.parentFile.parentFile.name}/${f.parentFile.name}/data_extraction_rules.xml"
             val r = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(f).documentElement
             fun kids(e: org.w3c.dom.Element) = e.childNodes.let { l -> (0 until l.length).map { l.item(it) } }.filterIsInstance<org.w3c.dom.Element>()
             if (r.tagName != "data-extraction-rules") bad.add("$where: root <${r.tagName}>")
@@ -302,9 +313,16 @@ androidComponents {
             applicationId.set(v.applicationId)
             expected.set(expectedPermissions)
             exportable.set(exportedComponents)
-            backupRules.from(fileTree("src") { include("*/res/xml/data_extraction_rules.xml") })
+            backupRules.from(fileTree("src") { include("*/res/xml*/data_extraction_rules.xml") })
             domains.set(backupDomains)
+            buildType.set(v.buildType ?: "")
         }
         tasks.matching { it.name == "package${cap}" || it.name == "package${cap}Bundle" }.configureEach { dependsOn(manifestGate) }
+        // a field build never carries the emulator's ABI (design §2: arm64-v8a only)
+        val fieldWithEmulatorAbi = emulatorAbi && v.flavorName == "field"
+        val abiGate = tasks.register("check${cap}EmulatorAbi") {
+            doLast { if (fieldWithEmulatorAbi) throw GradleException("$name: -Pemulator-abi=true is not allowed in a field build") }
+        }
+        tasks.matching { it.name == "pre${cap}Build" }.configureEach { dependsOn(abiGate) }
     }
 }
