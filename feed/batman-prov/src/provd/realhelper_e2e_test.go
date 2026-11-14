@@ -4,10 +4,14 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
+	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"batman-prov/cbor"
+	"batman-prov/node"
 	"batman-prov/proto"
 )
 
@@ -120,4 +124,110 @@ func TestRealHelperClaimAuthReplay(t *testing.T) {
 		t.Fatal("not owner after the replay")
 	}
 	_ = time.Second
+}
+
+// keysSys: stubSys that keeps what ssh_keys.set wrote
+type keysSys struct {
+	*stubSys
+	mu   sync.Mutex
+	keys []string
+}
+
+func (s *keysSys) AuthorizedKeys() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.keys...), nil
+}
+func (s *keysSys) SetAuthorizedKeys(l []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keys = append([]string(nil), l...)
+	return nil
+}
+
+// docs/design/254-app-s1.md §8 item 6 (man in the middle) through provd AND node.go: the owner is logged in on two
+// sessions (two h). An owner-op made for session A — signed over A's h, with a nonce A asked for — is refused when it
+// is relayed on session B; so is one signed over B's h with A's nonce, and one signed over A's h with B's nonce. The
+// same op made for B is accepted on B. Negative controls (mutants of node.go): see node/mitm_test.go.
+func TestRealHelperOwnerOpRelayedToAnotherSession(t *testing.T) {
+	sys := &keysSys{}
+	path, K, _ := realHelperSys(t, func(root string) node.Sys {
+		sys.stubSys = &stubSys{p5: filepath.Join(root, "p5")}
+		return sys
+	})
+	s := startOn(t, path)
+	s.mu.Lock()
+	did := s.c.deviceID
+	s.mu.Unlock()
+	sk, pub := ownerKey(t)
+	enc, _ := ecdh.P256().GenerateKey(rand.Reader)
+	encPub := enc.PublicKey().Bytes()
+	sigEnc, _ := proto.SignES256(sk, append([]byte(proto.LabelOwnerEnc), encPub...))
+	p := dial(t, s)
+	if !p.handshake(did, nil) {
+		t.Fatal("NX handshake")
+	}
+	_, b := p.do("claim/begin", cbor.M(1, pub))
+	nv, _ := b.Get(1)
+	code, b := p.do("claim/finish", cbor.M(1, checkResp(K, nv.([]byte), p.h, p.cert, pub), 2, encPub, 3, sigEnc))
+	if code != 0 {
+		t.Fatalf("claim/finish %d %v", code, b)
+	}
+	tv, _ := b.Get(1)
+	p.c.Close()
+	waitFor(t, "claimed state + PSKs", func() bool { return s.stateIs("claimed") && s.Sessions() == 0 })
+
+	owner := func() *phone {
+		q := dial(t, s)
+		if !q.handshake("", proto.PskOwner(tv.([]byte), did)) {
+			t.Fatal("psk_owner handshake")
+		}
+		if code, _ := q.do("auth/owner", cbor.M(1, kidOf(pub), 2, authSig(t, sk, q.h, kidOf(pub)))); code != 0 || q.s.Role() != RoleOwner {
+			t.Fatalf("auth/owner %d", code)
+		}
+		return q
+	}
+	a, bb := owner(), owner()
+	if string(a.h) == string(bb.h) {
+		t.Fatal("two sessions must have two h")
+	}
+	nonce := func(q *phone) []byte {
+		code, r := q.do("op/nonce", cbor.M())
+		if code != 0 {
+			t.Fatalf("op/nonce %d", code)
+		}
+		v, _ := r.Get(1)
+		return v.([]byte)
+	}
+	line := "ssh-ed25519 AAAAC3Nz owner"
+	op := func(hSig, nh []byte) cbor.Map {
+		body := cbor.M(1, []any{line})
+		ah, _ := proto.ArgsHash(body)
+		in, _ := proto.OwnerOpInput(hSig, nh, "ssh_keys/set", ah)
+		sig, _ := proto.SignES256(sk, in)
+		return append(body, cbor.Entry{K: uint64(31), V: cbor.M(1, "ssh_keys/set", 2, sig)})
+	}
+	before, _ := sys.AuthorizedKeys()
+	for _, c := range []struct {
+		what       string
+		hSig, from *phone
+	}{
+		{"made for session A (its h, its nonce)", a, a},
+		{"signed over B's h with A's nonce", bb, a},
+		{"signed over A's h with B's nonce", a, bb},
+	} {
+		// the nonce is asked for just before: a verification attempt uses up the nonces of its h
+		if code, _ := bb.do("ssh_keys/set", op(c.hSig.h, nonce(c.from))); code != EForbidden {
+			t.Errorf("%s, sent on session B: code %d, want E_FORBIDDEN", c.what, code)
+		}
+		if now, _ := sys.AuthorizedKeys(); !slices.Equal(now, before) {
+			t.Fatalf("%s: a refused owner-op changed the keys: %v -> %v", c.what, before, now)
+		}
+	}
+	if code, r := bb.do("ssh_keys/set", op(bb.h, nonce(bb))); code != 0 {
+		t.Fatalf("the op made for session B, on B: code %d %v", code, r)
+	}
+	if now, _ := sys.AuthorizedKeys(); !slices.Equal(now, []string{line}) {
+		t.Fatalf("the accepted owner-op did not set the keys: %v", now)
+	}
 }

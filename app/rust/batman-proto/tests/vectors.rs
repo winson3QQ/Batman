@@ -339,6 +339,24 @@ fn node_cert_pinned_and_mutations() {
     );
 }
 
+/// first contact (claim path): a node_cert whose s_node is not the handshake's remote static is refused with
+/// StaticMismatch in both builds, for the production vector DAC and for a dev DAC — the static check comes before the
+/// device_id and trust checks. Negative control (mutant, never committed): verify_first_contact calling
+/// `common(node_cert, None)` -> Untrusted (field build) / Ok (dev build) instead.
+#[test]
+fn node_cert_first_contact_other_static_is_refused() {
+    let v = vectors();
+    let mut other_rs = rs(&v);
+    other_rs[0] ^= 1;
+    let cert = h(&v["node_cert"]["cbor"]);
+    assert_eq!(nodecert::verify_first_contact(&cert, &other_rs, DEVICE_ID).err(), Some(nodecert::Error::StaticMismatch));
+    let id = v["identity_file"]["device_id"].as_str().unwrap();
+    assert_eq!(
+        nodecert::verify_first_contact(&dev_node_cert(&v), &other_rs, id).err(),
+        Some(nodecert::Error::StaticMismatch)
+    );
+}
+
 #[test]
 fn node_cert_first_contact_production_dac_is_untrusted_today() {
     // the vector DAC is root-signed (not dev:): no production root exists in the app yet -> both policies refuse it

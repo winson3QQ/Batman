@@ -1055,7 +1055,7 @@ fn t30_the_member_sends_after_import_and_both_nodes_take_it() {
     assert_eq!(send(&mut node, conn, old.encode(), true, Some(verified(B))).end, updflow::End::NoSecrets, "secrets of another version count as none");
 }
 
-// ---- T16 / T18 / T17b / T38: the other flows after a removal ----------------------------------------------------------
+// ---- T16 / T18 / T38: the other flows after a removal (T17b: tests/join2flow.rs rm_t17b_*; T17: tests/member.rs) ----------
 
 #[test]
 fn t16_invites_from_before_are_used() {

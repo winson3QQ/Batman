@@ -72,11 +72,17 @@ struct Node {
 
 impl Node {
     fn new(v: J, device_id: &str) -> Node {
+        let s = h(&v["keys"]["s_node_priv"]);
+        Node::with_static(v, device_id, &s)
+    }
+
+    /// a node whose Noise static key is `s_priv` (the node_cert it sends still names the vector s_node)
+    fn with_static(v: J, device_id: &str, s_priv: &[u8]) -> Node {
         let pro = noise::prologue(noise::Mode::Nx, Some(device_id));
         let hs = snow::Builder::new("Noise_NX_25519_ChaChaPoly_SHA256".parse().unwrap())
             .prologue(&pro)
             .unwrap()
-            .local_private_key(&h(&v["keys"]["s_node_priv"]))
+            .local_private_key(s_priv)
             .unwrap()
             .build_responder()
             .unwrap();
@@ -263,4 +269,21 @@ fn begin_refused_and_finish_codes() {
         let (e, _, _) = run(&mut n, input(&v, &did(&v), k(&v)), true);
         assert_eq!(e, End::Finished(want), "finish code {code}");
     }
+}
+
+/// a relay in the middle: the genuine node's node_cert (its s_node, its dev-DAC signatures) replayed by a responder
+/// whose own Noise static key is another one. s_node != rs -> refused before anything is written or sent, in both
+/// builds (the static check comes before the trust policy). Negative control (mutant, never committed):
+/// verify_first_contact without the s_node == rs check -> the dev build persists and sends claim/begin; the field
+/// build ends with Untrusted instead of StaticMismatch.
+#[test]
+fn a_node_with_another_static_key_is_refused_before_anything_is_sent() {
+    let v = vectors();
+    let other = [0x33u8; 32];
+    assert_ne!(other.to_vec(), h(&v["keys"]["s_node_priv"]));
+    let mut n = Node::with_static(v.clone(), &did(&v), &other);
+    let (e, persisted, got) = run(&mut n, input(&v, &did(&v), k(&v)), true);
+    assert_eq!(e, End::CertRejected(nodecert::Error::StaticMismatch));
+    assert!(!persisted, "nothing persisted for a node whose static key the node_cert does not name");
+    assert_eq!(got, ["msg1"], "nothing sent after msg1");
 }

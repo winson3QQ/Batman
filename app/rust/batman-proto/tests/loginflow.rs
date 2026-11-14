@@ -1,5 +1,10 @@
 //! loginflow: owner login against a fake claimed dev node: NXpsk0 with psk_owner, the pinned DAC, and auth/owner
 //! checked as provd does (owner_key_id match + ES256 over "batman-owner-auth-v1" ‖ h ‖ kid; failure -> 3).
+//!
+//! Man in the middle (s1 §8 item 6): what the phone does is sign over the h of its own handshake, asserted in `run`.
+//! That a node refuses a signature made over another session's h is proven on the node's own code, by the Go tests
+//! provd TestAuthOwnerSignedOverAnotherSessionsH, node TestOwnerOpSignedOverAnotherSessionsH and provd
+//! TestRealHelperOwnerOpRelayedToAnotherSession — not here, where `Node` is a fake.
 
 use batman_proto::cbor::{self, Value as V};
 use batman_proto::envelope::Outcome;
@@ -184,6 +189,8 @@ fn run(node: &mut Node, tag: [u8; 32], pinned: Vec<u8>, sign: p256::ecdsa::Signi
         a = match a {
             Action::Sign { input } => {
                 assert!(input.starts_with(b"batman-owner-auth-v1"));
+                // signed over the h of THIS handshake (s1 §8 item 6): a relay with its own handshake has another h
+                assert_eq!(&input[20..52], &node.hh[..], "auth/owner is signed over this session's h");
                 let s: p256::ecdsa::Signature = sign.sign(&input);
                 let der = if high_s { high_s_der(&s) } else { s.to_der().as_bytes().to_vec() };
                 l.signed(&der).unwrap()
