@@ -28,7 +28,7 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
 | N11 | 握手還沒完成的連線 10 s 到期;握手後、非 owner / member 的 session(含 RoleReacquire)**閒置 30 s 到期**(每收一個訊息、每次 ops 回來都重算;ops 進行中不算閒置),而且第 3 條連線進來時可被擠掉 | provd/session.go:280-298, 155-168, 332, 394, 611-615;provd/server.go:29-30, 798 |
 | N12 | 握手配額全節點共用 20 次/分;第 21 次 → `onMsg1` 回錯誤,**沒有 msg2**(app 看到的是斷線或沒有回覆) | provd/server.go:36, 681-697;provd/session.go:404-410 |
 | N13 | claim/begin 也走 ops(取 nonce):ops 通道被別的工作佔住時 `HelperConn.Call` **立即**回 ErrBusy → `ss.ops` 轉成 **7**(不等);節點在 A/B 試用槽時 claim.replay 被 dispatch 擋 → 7 | provd/session.go:731-752, 609-628;provd/helper.go:19, 187-197;node/node.go:251-253 |
-| N16 | claim.replay 還會回:**11**(本次開機 verdict 空 / unknown;前一次無線變更收不了尾;信封 schema 錯)與 **6**(沒有可用的紀錄)。只有**信封解碼**的 11 計數;verdict / 收尾 / 參數格式(onlyKeys、bytesArg,在計數檢查之前)都不計 | node/node.go:251-275, 605-614, 636-638, 671-691;provd/session.go:586-600 |
+| N16 | claim.replay 還會回:**11**(本次開機 verdict 空 / unknown;前一次無線變更收不了尾;信封 schema 錯)與 **6**(沒有可用的紀錄)。計數的 11 = **信封解碼錯,或信封 body 裡的 response 缺 / 長度不對**(`bytesArg(body, 1, 32)`,node.go:642,在 l.625 的計數檢查之後);verdict / 收尾 / 參數格式(onlyKeys、bytesArg(a, …),在計數檢查之前)都不計 | node/node.go:172-182, 251-275, 605-614, 625, 636-645, 671-691;provd/session.go:586-600 |
 | N14 | 回 12 時 session 不關(只有 helper 的 3 才計 `failOnce`) | provd/session.go:687-691 |
 | N15 | 節點的 BLE 位址(RPA)900 s 才換;900 s 內連線前後、撤回 / 重新註冊廣播都是同一個位址 | `254-p2-impl.md` F-P17(l.40);cmd/batman-provd/bluez.go:37, 772-781 |
 
@@ -134,7 +134,7 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
 | claim/replay | 13 | 斷線 → 15 s → 新連線再 replay;**不算輪數**,連續 ≤ 5 次且受總時限限制,之後停:「節點上鎖尚未完成,請稍後再試」。每一次 13 也會砍掉節點上其他所有連線(N7、N8) | 否(N9) |
 | claim/replay | 12 | 停止:「恢復被擋 — 可能有人在附近干擾,請換地點或稍後再試」(s1:247 原文) | — |
 | claim/replay | 7、10 | 下一輪再試這台(7 可能是「結果不明」,同「沒有回覆」;也可能是節點在 A/B 試用槽,N13) | 否 / 不明 |
-| claim/replay | 3、其他(4、6、11、1、2、未知碼) | **停止,不重試**(中性文字) | 3 會;11 只有信封解碼錯才會(N16);6 不會 |
+| claim/replay | 3、其他(4、6、11、1、2、未知碼) | **停止,不重試**(中性文字) | 3 會;11 只有信封解碼錯、或信封 body 裡的 response 缺 / 長度不對(node.go:642,在 l.625 的計數檢查之後)才會(N16);6 不會 |
 
 - 一次「認領」最多造成 1 次確定被計的失敗(第一次被拒就停)+ 至多 2 次「沒有回覆」的不明結果;N7 的同一連線第 3 次拒絕斷線因此碰不到。
 - 「寫出後」由 `ReplaySession` 的 `written` 旗標判定(claim/replay 的 frame 一交給 Dart 就設,§7)。
@@ -293,7 +293,9 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
 - [ ] 真機量到 claim/replay 耗時後,重看寫出後的 90 s(§3-2)。
 - 實作會動:bridge `claim.rs`(`replay_due`、文字)、新的 bridge replay API、`claim.dart`(`ClaimRecovery`、`dispose`、停止鈕)、
   `batman-proto` `flow.rs`(`ClaimReplay` 加 `Busy` 變體 + `claim_replay` 對應 7 / 10;註解:`ClaimReplay`、`ClaimFinish::TryReplay`)、
-  `replayflow.rs` 開頭註解(「3 次」→ §3-4)、`tests/replayflow.rs`、`EcdhPeer.kt` 註解。`batman-proto` 其餘流程碼、節點、Kotlin 邏輯不動。
+  `replayflow.rs` 開頭註解(「3 次」→ §3-4)、`tests/replayflow.rs`、`tests/flow.rs`(`claim_replay_rows` l.54-56 的迴圈把
+  7 / 10 斷言成 `ClaimReplay::Unknown` → 移到 `Busy`;這就是 R2 的負對照)、`EcdhPeer.kt` 註解。`batman-proto` 其餘流程碼、節點、
+  Kotlin 邏輯不動。
 
 ## 13. v2 → v3
 
