@@ -1,4 +1,7 @@
-# 254-app-replay — 把 claim REPLAY 接進 app(v5.1:v5 兩位審查皆 APPROVE;v5.1 = 最終審查的 4 項實作時修正,§16)
+# 254-app-replay — 把 claim REPLAY 接進 app(v6,待審:v5.1 已實作 + 新增「從認領暫存恢復」入口 T4,§19)
+
+> **v6(2026-11-14)**:v5 的真機步驟假設「用同一張 QR」,但 04 已認領,QR 已經拿不到(§19.1)— 這是設計者的錯,審查也沒抓到。
+> 使用者決定補上原本延後的「沒有 QR 的恢復入口」。v6 只加 §19 與下列各節中標「v6」的修改;其他內容與 v5.1 相同。
 
 對應:#254;凍結設計 `254-app-s1.md` §5.1 / §5.2 / §5.3、`254-app-claim-noover.md` v2.1。v2 被兩位審查者 REJECT → v3 整份重寫;
 v3 兩位皆 APPROVE-WITH-CHANGES(0 BLOCKER;A 2 MAJOR、B 4 MAJOR)→ v4;v4 兩位皆 APPROVE-WITH-CHANGES(A 1 MAJOR + 5 MINOR、
@@ -55,8 +58,8 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
 
 ## 1. 範圍
 
-做:使用者按「認領」之後,同一次動作內接上 replay(T1 / T2)。不做、寫回 #254 checklist(§12):沒有 QR 的「需恢復」入口、
-`forgotten-pending/` 當候選、field 版的 replay、`_login` 的節拍與取消、真機測試。
+做:使用者按「認領」之後,同一次動作內接上 replay(T1 / T2);**v6:dev 版認領頁的「從認領暫存恢復」入口(T4,§19)**。
+不做、寫回 #254 checklist(§12):`forgotten-pending/` 當候選、field 版的 replay、`_login` 的節拍與取消、真機測試。
 
 ## 2. 觸發(只在使用者按了「認領」之後)
 
@@ -65,6 +68,7 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
 | T1 | 這次認領 `replay_due() == true`(下方) | **只有這次認領用的那個 BLE 裝置 id**(`_find` 回的 `id`) | 斷線 → 等 15 s(N3)→ 對它 replay,最多 3 輪 |
 | T2 | 手機有 pending、**K 與這張 QR 相同**,且 `_find`(維持 60 s,不改)沒找到未認領的對象 | 重新掃描到的廣播者,RSSI 強的先(§3) | 顯示「沒找到未認領的這台,改試恢復先前的認領」→ replay |
 | T3 | 只在 T2、而且手機已有這台的 node 紀錄(`ClaimTarget.nodeAndPending`) | — | replay 前先問(下方);取消 → 不 replay,照現在的 NOT_FOUND 文字(claim.dart:239-246)結束 |
+| T4(v6) | dev 版、使用者在「從認領暫存恢復」選了一筆 `claim-pending/<id>` 並確認(§19) | 同 T2(掃描、RSSI),目標 = 那筆 pending 的 device_id | 同 T2(含 T3);**只有這裡**不比 QR 的 K(沒有 QR) |
 
 - **`replay_due()`**(bridge `ClaimSession`,Rust 裡算,Dart 不比對文字):`finish 的 frame 已交給 Dart` **且** 結局 ∈ {還沒有結局、
   TryReplay(9)、Committed(13、OK 無憑證)}。所以 90 s 逾時、通知 / 寫入出錯、Broken 都算「還沒有結局」;finish 交出**之前**的任何
@@ -159,6 +163,7 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
 | `claim-pending/<id>`、`node/<id>`、`forgotten-*` | `ClaimRecords`(認領與恢復共用) | `ClaimRecovery` 只讀 pending;nodes 頁唯讀,**例外:dev 版 `_forget` 直接刪 `node/<id>`(nodes.dart:431)= 第二個寫入者(只刪、只在 dev、使用者確認後)**,本版不改,後果見 §2 |
 | 認領頁的 BLE 連線與掃描 | `_ClaimPageState`(`_busy` 期間;`_find` 與認領的連線結束後,才由它建立的 `ClaimRecovery` 接手) | nodes 頁是另一個 route(main.dart:124-128),⚠️ 推論:不會同時握手 |
 | 候選清單(id、RSSI)、「試過沒解開」的 id 集合、輪數、節拍、時限、取消旗標 | `ClaimRecovery`(記憶體,一次動作) | 頁面只設取消旗標、讀進度 |
+| v6:`claim-pending/` 的檔名清單(T4 入口) | 沒有新寫入者(`ClaimRecords` 照舊) | 認領頁經 `list_pending` **唯讀**列出檔名、不開封;選定後 `ClaimRecovery` 照舊重讀那一筆(§19.3) |
 | z、psk_replay、K 的明文 | bridge `ReplaySession`(Rust 記憶體,drop 時清零) | Dart 只經手 z 一次 |
 | root 密碼、失敗計數、session、PSK 集合 | 節點 | app 只從回應碼得知 |
 
@@ -172,6 +177,7 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
 | `keyLevels['recover']` | Kotlin / ClaimRecovery | 每次恢復開始時即時讀 | 不是 true / 出錯 → 不恢復、不連線(fail-closed) | 同程序 |
 | `ecdh` channel | Kotlin / Dart → Rust | dev 版 | 錯誤 → 不恢復、不連線 | 同程序;peer 來自 pending 裡驗過 sig_ecdh 的 ecdh_pub(tests/replayflow.rs:237) |
 | BLE 掃描結果、msg2、回應碼 | 任何附近裝置 / ClaimRecovery | — | Noise + DAC pin;§4 全表 | **不可信** |
+| v6:`list_pending(dir) → [device_id]`(bridge,`claim-pending/` 下非 `.` 開頭的檔名,排序) | 檔案系統 / 認領頁 | 按入口時 | 讀不到目錄 → 空清單 → 入口不顯示;檔名不是合法 id → `readSealed` 的路徑檢查擋下 → 不恢復 | 只有 app 自己(私有目錄) |
 
 ## 8. 生命週期
 
@@ -195,6 +201,8 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
 | 寫出 claim/replay 後 90 s 沒回覆,節點還在存檔(N9) | — | 下一輪多半「連不上」/ 7;結束文字加「請等幾分鐘再按」;helper 回來時砍掉新 session(N8),無破壞 | 假節點 + D10 |
 | dev 版「忘記節點」後仍有 pending | — | T2 不問 T3 就 replay(§2 例外) | D4 |
 | app 升版 / 降版 | — | pending 與 node 紀錄格式都不變;降回沒有 replay 的版本 = 現在的行為 | R3(round-trip) |
+| v6:已認領、QR 拿不到、手機只有 pending(04 的現況) | 沒有出路(要 QR) | T4(§19) | D17–D22;真機 §10 |
+| v6:T4 的生命週期(app 被殺、多筆 pending、pending 已被別處清掉、field 版) | — | §19.5 | D17–D22 |
 | field 版 | NOT_FOUND | 沒有恢復:「還不能恢復」,不連線 = 與現在相同(節點要重燒才救得回,§12) | D7 |
 | 節點升級 / 回滾、iOS | — | 不適用:節點不改;iOS 不在 S1 | — |
 
@@ -213,6 +221,7 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
   (claim_records.dart:67-73);若碰上快取空窗,finish 回 9 → T1 用 K2 replay → psk_replay 與 K 無關所以握得開,但 CheckMac 失敗 →
   節點計 1 次(node.go:655-656),而原本那張 QR 已對不上 pending。每按一次最多計 1 次;不另加機制。
 - **新增的輸入**:掃描結果(id、RSSI,只用來排序)、msg2 與回應(§4 全表)、磁碟上的 pending(§5 嚴格解碼)。沒有新權限、新連接埠。
+  v6:`claim-pending/` 的檔名清單(T4);各 actor 的分析在 §19.4。
 - **權限**:app 自己的沙箱;沒有提權的程式碼。
 - **祕密**:K、z、psk、root 密碼、tag key 不進 log、例外字串、畫面、argv;新密碼只進封存的 node 紀錄。z 在 Kotlin 回傳後清零
   (MainActivity.kt:127)、Dart 交出後清零、Rust drop 時清零。
@@ -263,11 +272,20 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
    會解除安裝再裝(`android/android_device.dart:415-423`)。也禁止清除 app 資料、禁止改 applicationId(dev / field 是不同的 app,
    `build.gradle.kts:30, 50, 58`,pending 與 Keystore 不共用)。裝之前比簽署憑證:與已安裝的不同 → **停,絕不解除安裝**(pending 與
    Keystore 金鑰會消失,04 就再也救不回,只能重燒)。裝完先確認 pending 紀錄還在,才往下做。
-1. 負對照(先做):04 與 S20 維持 §0 的狀態,用 main f0138bd 的 dev APK、同一張 QR 按「認領」→ 預期 60 s NOT_FOUND、沒有 node 紀錄。
-   ⚠️ 這一步目前只由讀碼推得(claim.dart:156);§0 的留言沒有寫到實際再按過一次。
-2. 驗收:依步驟 0 換成本功能的 dev APK(⚠️ `install -r` 保住 pending 未驗 → 裝完先查)→ 同一張 QR → T2 →「已恢復」→「我的節點」
-   登入成功 → 經 app 放回 lab key。同時量 Pi 上 claim/replay 從寫出到回覆的時間(§3-2 的 90 s 是否足夠)。
-   **節點連續 2 次拒絕 replay → 停下來查原因**,不要繼續往 10 次(N9 的 12)推。
+**v6:04 的實際步驟(取代 v5 的 1–2;v5 的「同一張 QR」不可能,§19.1)**。手機 = S20 `RFCN30HMRAR`。
+- 0a(唯讀)`adb -s RFCN30HMRAR shell pm list packages dev.batman` → 預期 pending 在 `dev.batman.app.dev`(⚠️ 未在手機上確認)。
+- 0b(唯讀)簽章:`adb -s RFCN30HMRAR shell pm path dev.batman.app.dev` → `adb -s RFCN30HMRAR pull <base.apk 路徑> installed.apk`;
+  `apksigner verify --print-certs installed.apk` 與 `apksigner verify --print-certs <新 APK>` 的 SHA-256 相同才往下;不同 → **停,
+  絕不解除安裝**。新 APK 必須是 dev flavor。
+- 0c 只用 `adb -s RFCN30HMRAR install -r <新 APK>`(禁止 `flutter install` / `flutter run` / 清資料,見上)。
+- 1(取代舊的負對照)**鎖死現況的證據**,先收再動:`ssh root@<04>` → `Permission denied (publickey)`;app 的「我的節點」沒有 04;
+  手上沒有 04 的 QR(helper 已認領時拒印,§19.1);舊版 APK 的認領頁沒有 T4 入口(main 的 `claim.dart:329-330` 只有「貼上 QR 碼」與「認領」)。
+  這就是「沒有本功能就救不回」的負對照。
+- 2 裝完、**先不按任何會連線的東西**:打開認領頁 →「從認領暫存恢復」列出 04 的末四碼(⚠️ 預期 …4040,依 #254 留言)。沒列出 → 停,
+  查 pending 是否還在(不清資料、不解除安裝)。
+- 3 選 04 → 確認 → T4 恢復。成功的證據:畫面「已恢復」(logcat 標記 `[RECOVERED]`,claim_recovery.dart:424)、「我的節點」出現 04(node 紀錄存在)、
+  nodes 頁登入 04 並讀到狀態。之後(另外取得授權)經 app 放回 lab key。同時從 logcat 時間戳量 claim/replay 寫出到回覆的時間
+  (§3-2 的 90 s 是否足夠)。**節點連續 2 次拒絕 → 停下來查**,不往 10 次(N9 的 12)推。
 3. **T1(在範圍內;s1 §8-7 卡 1 ②、卡 2 ③ 負對照)**:finish 一送出就關掉手機藍牙,約 60 s 後再開 → 預期 T1(或接 T2)→「已恢復」。
    觸發要在**手機上的單一 `adb shell` 迴圈**裡做(主機端輪詢約 4 s,太慢);需要重燒卡 → 每次先問。⚠️ 關藍牙後 app 端 finish 的
    收尾與 `replay_due` 的實際時序未驗。
@@ -290,7 +308,7 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
 
 - [ ] field 版不能 replay(`ecdh` 只有 dev 版)→ 設計 field 的 ecdh 開放條件;`EcdhPeer.kt:12-15` 的註解補上第二個用途(replay 的 peer)。
 - [ ] `nodes.dart` `_login`:握手節拍、離開頁面時取消;`claim.dart` `_find` 同樣沒有取消。
-- [ ] replay 從 `forgotten-pending/` 取候選(noover §9,已在單上);沒有 QR 的「需恢復」入口。
+- [ ] replay 從 `forgotten-pending/` 取候選(noover §9,已在單上)。(沒有 QR 的入口:v6 做了,§19。)
 - [ ] 真機:§10 的 0–4(含 T1 與 claim/replay 耗時的量測);**手機上只用 `adb -s <serial> install -r`,禁止 `flutter install` /
   `flutter run`、清資料、改 applicationId**;連續 2 次被拒就停。
 - [ ] 真機量到 claim/replay 耗時後,重看寫出後的 90 s(§3-2)。
@@ -411,3 +429,83 @@ v2 有、v3 刪掉的:T1 的候選清單、「同 session 再 replay 得 13」�
 | A-A:寫出後的連線層例外標成 unanswered 沒有回歸測項 | 測項:claim/replay 的寫入三輪都失敗 → 結束文字帶 unanswered 的兩句 |
 | A-B:認領頁的 `PendingNotRemoved` 被當成「認領沒有完成」 | 認領頁也算 CLAIMED,加同一行 `[PENDING_KEPT]`,R6 照常忘記 QR |
 | A-3:`written` 提前後,寫不完的 claim/replay frame 不受 45 s 限 | 寫出後的整段(frame 寫入 + 等回覆)共用 90 s;到時 = 沒有回覆(unanswered,下一輪)。最長時間不變(445 s) |
+
+## 19. v6:從認領暫存恢復(T4,沒有 QR 的入口)
+
+### 19.1 為什麼需要(✅ 讀碼)
+- 節點的 QR = `hex(cbor{1: device_id, 2: identity/claim.secret})`,只由 `batman-provhelper qr` 現場印出;節點一旦 Claimed / Member 就拒印
+  (「qr: node is claimed」,cmd/batman-provhelper/main.go:570-594)。bench 上 QR 一直是現場讀的,host 上沒有存。
+- 所以 04 認領之後,QR 的內容只剩手機上的 pending(key 1 = device_id、key 2 = K,claim.rs:146-156;格式自 main f0138bd 起沒變,
+  `git diff f0138bd HEAD` 只把 `pending_record` 改成 `pub(crate)`)。v5 的 T2 要求「這張 QR 與 pending 的 K 相同」(claim_recovery.dart:265)
+  → 沒有 QR 就永遠走不到 replay。
+
+### 19.2 行為(只在 dev 版)
+1. 認領頁在 `devTrust == true` 且 `list_pending(dir)` 非空時,多一個鈕「從認領暫存恢復」;`_busy` / `_scanning` / 恢復中時停用(與「認領」同一套)。
+   field 版不顯示(field 版本來就沒有 replay:`ecdh` 只開給 dev,§3-1)。
+2. 按下 → 對話框列出每筆 pending 的末四碼(只用檔名,**不開封、不顯示任何祕密**);`forgotten-pending/` 不列(不同目錄)。
+3. 選一筆 → 確認框:「要恢復節點 …XXXX 嗎?恢復會更換這台節點的 root 密碼,並中斷它目前所有的連線(包含隊友手機的)。」取消 → 零連線。
+4. 確認 → `ClaimRecovery`(T2 路徑,`t1Id = null`),目標 device_id = 那筆的檔名;`t3 = list_nodes(dir)` 含這個 id(有 node 紀錄 → 照 T3
+   再問一次,ClaimRecovery 內原有的流程)。其餘全部不變:即時讀 `keyLevels['recover']`、pending 重讀 + 嚴格解碼(device_id 必須 = 路徑 id,§5)、
+   所有時限、停止鈕、§4 的結果表、非成功時 pending 保留。
+5. **唯一的差別**:`_prepare` 在 T4 不做 `store.matches(plain, qr)`(claim_recovery.dart:265)。T1 / T2(有 QR)照舊比對。
+
+實作(最少改動):`ClaimRecovery` 的 `qr` 改成 `deviceId`(必填)+ `ClaimQr? qr`(null = T4,只在 T4 傳 null);`ClaimRecords` 的 `qr`
+改成可空,`persistPending` 在 qr 為 null 時丟 `StateError`(T4 不會呼叫它,claimed() 不用 qr,claim_records.dart:76-95)。bridge 加
+`list_pending`,**與 `feat/254-app-s1-gaps` 的 ffbb8dc(owner.rs:54-58)同名同內容**(`list_kind(&dir, "claim-pending")`),合併時只留一份;
+本分支目前沒有它(`list_kind` 在 owner.rs:41-48 是私有的,`list_nodes` 在 l.50-52)。
+
+### 19.3 擁有權 / 契約
+沒有新的狀態、沒有新的寫入者。新介面只有 `list_pending`(§7 新列):唯讀、只回檔名;`.` 開頭的暫存檔被濾掉(owner.rs:41-48;
+store.rs:118 暫存名 = `.<name>.tmp-…`)。清單是按下當時的快照,選定之後 `ClaimRecovery._prepare` 照舊重讀那一筆(不見了 → 不恢復)。
+
+### 19.4 安全(逐 actor)
+- **拿著解鎖手機的人**:他本來就能在認領頁用任何 QR 按「認領」。T4 多給他的只有「對這支手機自己開始過的認領送 replay」:replay 仍要
+  owner_enc 私鑰(Keystore,這支手機)算出 psk_replay、要節點的 DAC 對上 pending 裡 pin 的那份,而且用的 K 是 pending 自己的 —
+  也就是當初真的 QR 的 K → 對真的節點不會計錯(K 不對才會被 CheckMac 計數,§9)。結果與「拿著同一張 QR 按認領」相同,沒有擴大權限。
+  ⚠️ 例外:R4 換 QR 後 pending 裡是 K2(§9 已知限制)→ 對節點計 1 次;與 T2 相同,每按一次最多 1 次。
+- **手機上的其他 app**:讀不到 app 私有目錄、拿不到 Keystore;入口在 app 自己的頁面。與 v5 相同。
+- **附近的攻擊者**:與 T2 完全相同(§9:只能拖延,不能讓節點計數)。T4 不改掃描、時限與結果表。
+- **我們自己的錯**:有多筆 pending 時選錯 → 目標由 device_id(psk_replay = HKDF(z, device_id))與 DAC pin 決定,別台節點解不開 msg2
+  → 沒有副作用、中性文字;確認框寫出末四碼。被 R4 取代的舊 pending 在 `forgotten-pending/`,不列(避免用到舊的 K)。
+  T4 也會換 root 密碼、砍連線 → 確認框明寫;有 node 紀錄時再經 T3。
+- **權限 / 祕密 / 失敗方向**:沒有新權限;清單只有檔名(device_id 本來就在 STATUS 末四碼與 node 紀錄檔名裡,不是祕密);fail-closed 不變。
+
+### 19.5 生命週期
+| 路徑 | 之後 | 測 |
+|---|---|---|
+| 沒有 pending / field 版 | 不顯示入口 | D17、D21 |
+| 多筆 pending | 全列(末四碼),一次只恢復一筆 | D18 |
+| 列出後 pending 被別處清掉(另一次認領 / 恢復成功,或已變 node 紀錄) | `_prepare` 讀不到 → 不恢復、不連線 | D19 |
+| 確認框取消 | 零連線、紀錄不變 | D22 |
+| T4 進行中 app 被殺 / 離開頁面 / 按停止 | 同 §3-7;pending 留著,下次再從入口選 | D6(沿用) |
+| 有 node 紀錄 + pending | 確認框 → T3 | D4(沿用,加 T4 一例) |
+| 升版 / 降版 | 不碰紀錄格式;降回沒有 T4 的版本 = 入口消失 | — |
+
+### 19.6 測項(每項附負對照)
+| # | 測項 | 層 | 負對照 |
+|---|---|---|---|
+| D17 | 沒有 pending → 沒有入口;有一筆 → 有入口 | Dart widget | (非空判斷)→ 沒有 pending 也顯示 |
+| D18 | 只列 `claim-pending/` 的末四碼;`forgotten-pending/`、`node/`、`.tmp-` 暫存檔都不列;Rust `list_pending` 單元測試同 ffbb8dc | Rust + Dart | (目錄名)改成列 `forgotten-pending` → FAIL |
+| D19 | 選定後那筆被刪掉 → 零連線、不恢復 | Dart | (重讀)→ 用快照連線 |
+| D20 | T4 用 pending 自己的 K:假節點只接受 pending 的 K → Recovered,而且過程沒有任何 QR | Dart 假 BLE | (T4 跳過比對)→ 恢復被擋、零連線 |
+| D20b | 回歸:有 QR 的 T2,pending 的 K ≠ QR → 零連線(D12 在 T4 加入後照跑) | Dart | (T2 照舊比對)→ 用錯的 K 連線 |
+| D21 | field 版(`devTrust` false)沒有入口 | Dart widget | (devTrust 判斷)→ field 也顯示 |
+| D22 | 確認框取消 → 零連線、pending 不動 | Dart | (確認框)→ 直接連線 |
+
+### 19.7 ⚠️ 未驗證
+- 手機上 pending 在 `dev.batman.app.dev`、末四碼 4040(只依 #254 留言)。
+- 新 APK 與已安裝的簽署憑證是否相同(要在步驟 0b 比)。
+- 本分支新增的 Keystore `gate()`(MainActivity.kt,自 f0138bd 起的變更)在 S20 上是否放行開封 / ecdh(依 s1 facts §9 預期放行,未在本版裝機確認)。
+- `install -r` 後 pending 與 Keystore 金鑰仍在(Android 規格如此,未在這支手機確認;步驟 2 先查)。
+
+## 20. v5.1 → v6
+
+| 項目 | 處理 |
+|---|---|
+| **錯誤更正**:v5 §10 的真機步驟要「同一張 QR」,但 04 已認領、helper 拒印 QR、host 沒存 → 不可能。設計者的錯,兩輪審查也沒抓到 | §19.1、§10 真機改寫 |
+| 使用者決定(2026-11-14):補上沒有 QR 的恢復入口 | §19、§1、§2 T4、§12 |
+| 新介面 `list_pending`(唯讀)與擁有權 | §6、§7、§19.2-3 |
+| 逐 actor 的安全分析 | §19.4、§9 |
+| 生命週期 | §8、§19.5 |
+| 測項 D17–D22(含 K 比對在 QR 路徑上的回歸) | §19.6 |
+| 真機步驟:簽章用 `apksigner` 比 pull 下來的 base.apk、只用 `install -r`、先確認入口列出 04、成功證據、2 次被拒就停;舊的「main + 同一張 QR」負對照改成鎖死現況的證據 | §10 |
