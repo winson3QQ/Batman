@@ -125,6 +125,7 @@ class FakeRust implements RustLibApi {
 
   @override
   String crateApiReplayRecoveryEndText({required RecoveryEnd end, required bool after9, required bool unanswered, required bool oldRecord}) {
+    if (end == RecoveryEnd.stopped && !unanswered) return '';
     final s = 'END ${end.name} after9=$after9';
     endTexts.add(s);
     return s;
@@ -236,7 +237,7 @@ void main() {
     await t.pump(const Duration(minutes: 5));
     expect(pageSays('沒找到未認領的這台，改試恢復先前的認領'), isTrue);
     expect(rust.calls, ['copy $nodeRecPath', 'write $nodeRecPath', 'remove $pendPath']);
-    expect(rust.disk[nodeRecPath], [0x52, 1]);
+    expect(rust.disk[nodeRecPath], rec(1));
     final claim = t.widget<FilledButton>(find.widgetWithText(FilledButton, '認領'));
     expect(claim.onPressed, isNull, reason: 'R6: after a recovery the QR is forgotten');
   });
@@ -279,7 +280,7 @@ void main() {
     await runPage(t, until: () => rust.calls.contains('remove $pendPath'));
     await t.pump(const Duration(minutes: 5));
     expect(find.text('要恢復這台節點嗎？'), findsNothing);
-    expect(rust.disk[nodeRecPath], [0x52, 1]);
+    expect(rust.disk[nodeRecPath], rec(1));
   });
 
   // T1 at the page (D1): the claim's finish answered 9 (replay_due) -> after 15 s the SAME device ('AA', the one the
@@ -300,7 +301,7 @@ void main() {
     ], reason: 'msg1, begin, finish');
     expect(field.connectLog, ['AA', 'AA']);
     expect(pageSays('改試恢復這次的認領'), isTrue);
-    expect(rust.disk[nodeRecPath], [0x52, 1]);
+    expect(rust.disk[nodeRecPath], rec(1));
   });
 
   // D13: replay_due() throws -> false: no recovery, the pending kept, nothing surfaces as an error

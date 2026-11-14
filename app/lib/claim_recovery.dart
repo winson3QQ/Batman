@@ -39,10 +39,21 @@ abstract class RecoveryLink {
   Future<void> close();
 }
 
+/// The adapter as the recovery cares about it (§3-7; review A-m4)
+enum RecoveryBleState {
+  ready,
+
+  /// Bluetooth turned off
+  off,
+
+  /// no permission, location services off, unsupported, or the status itself cannot be read
+  unavailable,
+}
+
 /// BLE as the recovery uses it (the claim page: [ReactiveRecoveryBle]; tests: a fake).
 abstract class RecoveryBle {
-  /// false = the adapter is not ready (Bluetooth off, §3-7)
-  Stream<bool> get ready;
+  /// the adapter's state changes (anything but ready stops the recovery at once; an error = unavailable)
+  Stream<RecoveryBleState> get ready;
 
   /// provd advertisers seen within [d]: id -> the strongest RSSI (nothing is connected or read)
   Future<Map<String, int>> scan(Duration d);
@@ -56,7 +67,11 @@ class ReactiveRecoveryBle implements RecoveryBle {
   final FlutterReactiveBle ble;
 
   @override
-  Stream<bool> get ready => ble.statusStream.map((s) => s == BleStatus.ready);
+  Stream<RecoveryBleState> get ready => ble.statusStream.where((s) => s != BleStatus.unknown).map((s) => switch (s) {
+        BleStatus.ready => RecoveryBleState.ready,
+        BleStatus.poweredOff => RecoveryBleState.off,
+        _ => RecoveryBleState.unavailable, // unauthorized, locationServicesDisabled, unsupported
+      });
 
   @override
   Future<Map<String, int>> scan(Duration d) async {
@@ -174,7 +189,8 @@ class ClaimRecovery {
   static const lockMax = 5;
 
   bool _cancel = false; // stop asked (button, page left, Bluetooth off)
-  bool _btOff = false;
+  bool _btOff = false; // the adapter is not ready (any reason): stop at once, even after the write
+  RecoveryBleState _bt = RecoveryBleState.ready;
   bool _writtenNow = false; // claim/replay written on the connection now open
   bool _expired = false;
   bool _unanswered = false; // a claim/replay went out and no answer came
@@ -280,7 +296,7 @@ class ClaimRecovery {
       }
       return session;
     } catch (e) {
-      say('[CLAIM_FAIL] 讀不到手機裡這台節點的認領紀錄，這次不恢復：$e');
+      say('[CLAIM_FAIL] 恢復前的檢查出錯，這次不恢復（手機裡的紀錄沒有改動）：$e'); // review A-m4: K compare, key levels, T3
       return null;
     } finally {
       plain.fillRange(0, plain.length, 0);
@@ -296,13 +312,17 @@ class ClaimRecovery {
     final session = await _prepare(askT3 ?? () async => false);
     if (session == null) return RecoveryOutcome.notStarted;
     final deadline = Timer(total, () => _expired = true);
-    final bt = ble.ready.listen((r) {
-      if (!r) {
-        _btOff = true;
-        _cancel = true;
-        _fire();
-      }
-    });
+    void notReady(RecoveryBleState s) {
+      if (_btOff) return;
+      _bt = s;
+      _btOff = true;
+      _cancel = true;
+      _fire();
+    }
+
+    final bt = ble.ready.listen((s) {
+      if (s != RecoveryBleState.ready) notReady(s);
+    }, onError: (Object _) => notReady(RecoveryBleState.unavailable)); // review A-m4: ObserveBleStatusFailure
     try {
       say(intro);
       if (t1Id != null) {
@@ -399,6 +419,11 @@ class ClaimRecovery {
       case ReplayNext.recovered:
         try {
           await records.claimed(t.step.path, t.step.record, t.step.pendingPath); // copy aside -> node record -> pending
+        } on PendingNotRemoved catch (e) {
+          // review A-m2: the node record is written: recovered; only the leftover pending is said
+          say('[CLAIMED] [RECOVERED] ${t.step.detail}');
+          say('[PENDING_KEPT] $e');
+          return RecoveryOutcome.recovered;
         } catch (e) {
           say('[CLAIM_FAIL] 節點已恢復，但手機的紀錄沒有寫成功（$e）；認領紀錄仍保留，請再按一次「認領」');
           return RecoveryOutcome.stopped;
@@ -415,7 +440,14 @@ class ClaimRecovery {
   }
 
   RecoveryOutcome _cancelled() {
-    say(_btOff ? '[CLAIM_FAIL] 藍牙已關閉，恢復已停止（紀錄先保留）' : '[CLAIM_FAIL] 已停止恢復（紀錄先保留）');
+    final why = !_btOff
+        ? '已停止恢復（紀錄先保留）'
+        : _bt == RecoveryBleState.off
+            ? '藍牙已關閉，恢復已停止（紀錄先保留）'
+            : '藍牙目前無法使用（權限、定位服務或藍牙狀態讀不到），恢復已停止（紀錄先保留）';
+    // review A-m1: a replay that went out unanswered -> the same added sentences as at the end of the rounds
+    final more = recoveryEndText(end: RecoveryEnd.stopped, after9: false, unanswered: _unanswered, oldRecord: _t3);
+    say('[CLAIM_FAIL] $why${more.isEmpty ? '' : '。$more'}');
     return RecoveryOutcome.cancelled;
   }
 
@@ -498,16 +530,17 @@ class ClaimRecovery {
       while (true) {
         switch (st.kind) {
           case ReplayKind.write:
+            if (session.written()) {
+              // review A-m1: from the first claim/replay frame on, a stop or the 45 s waits for the answer
+              wrote = true;
+              _writtenNow = true;
+              beforeWrite = false;
+            }
             for (final f in st.frames) {
               await link.write(f);
             }
             if (first) _startPace(); // msg1 went out: the handshake started
             first = false;
-            if (session.written()) {
-              wrote = true;
-              _writtenNow = true;
-              beforeWrite = false;
-            }
             final e = await next(_writtenNow ? afterWriteFor : (session.decrypted() ? answerFor : msg2For));
             if (e is! ReplayStep) {
               final w = session.written();
@@ -535,8 +568,13 @@ class ClaimRecovery {
             return _Try(st, wrote: wrote, decrypted: decrypted);
         }
       }
-    } catch (e) {
-      return _Try(_stopStep('恢復中斷：$e'), wrote: wrote, decrypted: decrypted);
+    } catch (_) {
+      // review A-M1 / B-M1: a transport failure (MTU / CTRL read, a CTRL frame limit < 20, a GATT write error, a
+      // dropped link) ends this connection only; Rust decides by the stage (§4: before the write -> next device / next
+      // round; after it -> no answer = next round, unanswered). Its text is never shown.
+      final w = session.written();
+      if (w) _unanswered = true;
+      return _Try(session.lost(), wrote: w, unanswered: w, decrypted: decrypted);
     } finally {
       preWrite.cancel();
       unawaited(rx?.cancel()); // not awaited: nothing depends on it (and a fake-async test would wait forever)

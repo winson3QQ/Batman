@@ -71,6 +71,13 @@ class Dev {
   final nonceCodes = <int>[];
   final replies = <Reply>[];
 
+  // transport failures (review A-M1 / B-M1)
+  int ctrlFails = 0; // the next N MTU / CTRL reads fail
+  int ctrlTooSmall = 0; // the next N CTRL key 3 < 20
+  final writeFailsOn = <int>[]; // the next write of a frame starting with each byte fails (GATT 133)
+  bool writeFailReaches = false; // ... after the node got it
+  Duration writeDelay = Duration.zero; // the claim/replay frame takes this long to write
+
   // what happened
   int connects = 0, msg1s = 0, replays = 0, password = 0;
   final msg1At = <Duration>[];
@@ -120,11 +127,31 @@ class FakeLink implements RecoveryLink {
   }
 
   @override
-  Future<int> frameLimit() async => 244;
+  Future<int> frameLimit() async {
+    if (dev.ctrlFails > 0) {
+      dev.ctrlFails--;
+      throw PlatformException(code: 'ReadCharacteristicFailure', message: 'GATT 133'); // no CTRL / MTU failed
+    }
+    if (dev.ctrlTooSmall > 0) {
+      dev.ctrlTooSmall--;
+      throw '藍牙連線的封包太小，無法傳輸（12：CTRL 12，MTU 517）'; // bridge frame_limit's Err (CTRL key 3 < 20)
+    }
+    return 244;
+  }
+
   @override
   Stream<List<int>> get rx => _rx.stream;
   @override
   Future<void> write(List<int> frame) async {
+    if (closed) throw StateError('disconnected');
+    if (dev.writeDelay > Duration.zero && frame[0] == 0x30) await Future<void>.delayed(dev.writeDelay);
+    final i = dev.writeFailsOn.indexOf(frame[0]);
+    if (i >= 0) {
+      dev.writeFailsOn.removeAt(i);
+      // GATT 133: the frame may or may not have reached the node (here: it did when [writeFailReaches])
+      if (dev.writeFailReaches && !closed) dev.onWrite(frame, this);
+      throw PlatformException(code: 'WriteCharacteristicFailure', message: 'GATT 133');
+    }
     if (!closed) dev.onWrite(frame, this);
   }
 
@@ -138,14 +165,14 @@ class FakeLink implements RecoveryLink {
 
 class FakeField implements RecoveryBle {
   final devs = <String, Dev>{};
-  final readyCtl = StreamController<bool>.broadcast();
+  final readyCtl = StreamController<RecoveryBleState>.broadcast();
   final scanAt = <Duration>[];
   final connectLog = <String>[];
 
   void add(Dev d) => devs[d.id] = d;
 
   @override
-  Stream<bool> get ready => readyCtl.stream;
+  Stream<RecoveryBleState> get ready => readyCtl.stream;
 
   @override
   Future<Map<String, int>> scan(Duration d) async {
@@ -239,7 +266,7 @@ class FakeReplay implements ReplaySession {
       case 0x31:
         stage = 'over';
         return switch (c) {
-          0 => rstep(ReplayKind.recovered, next: ReplayNext.recovered, detail: 'RECOVERED', record: [0x52, frame[2]]),
+          0 => rstep(ReplayKind.recovered, next: ReplayNext.recovered, detail: 'RECOVERED', record: rec(frame[2])),
           13 => _ended(ReplayNext.reconnect),
           12 => _ended(ReplayNext.stop, 'RATE'),
           7 || 10 => _ended(ReplayNext.again),
@@ -274,7 +301,12 @@ class FakeReplay implements ReplaySession {
   @override
   bool decrypted() => dec;
   @override
-  void setZ({required List<int> z}) => this.z = Uint8List.fromList(z);
+  void setZ({required List<int> z}) {
+    this.z = Uint8List.fromList(z);
+    zRef = z; // the very list Dart handed over (Dart must zero it afterwards, §3-1)
+  }
+
+  List<int>? zRef;
   @override
   void dispose() => disposed = true;
   @override
@@ -288,6 +320,7 @@ class FakeStore implements ClaimStore {
   bool kMatches = true;
   bool copyFails = false;
   bool writeFails = false;
+  bool removeFails = false;
 
   @override
   Future<SealedRecord?> readSealed(String rel) async {
@@ -298,7 +331,12 @@ class FakeStore implements ClaimStore {
   @override
   Future<Uint8List> open(SealedRecord s) async => Uint8List.fromList(s.sealed);
   @override
-  Future<bool> matches(Uint8List pendingPlain, ClaimQr qr) async => kMatches;
+  Future<bool> matches(Uint8List pendingPlain, ClaimQr qr) async {
+    if (matchesThrows) throw '手機裡的認領紀錄看不懂（pending is not CBOR）';
+    return kMatches;
+  }
+
+  bool matchesThrows = false;
   @override
   Future<bool> keepCopy(String rel) async {
     calls.add('copy $rel');
@@ -319,6 +357,7 @@ class FakeStore implements ClaimStore {
   @override
   Future<void> remove(String rel) async {
     calls.add('remove $rel');
+    if (removeFails) throw 'Io(EIO)';
     files.remove(rel);
   }
 }
@@ -376,3 +415,8 @@ Future<T> drive<T>(WidgetTester t, Future<T> f, {Duration step = const Duration(
   await t.pump(const Duration(minutes: 5)); // the fake nodes' own timers (a helper still working) run out
   return r as T;
 }
+
+/// The node record a recovery brings: a marker, the password generation, and the root password as text (S3 looks for
+/// the password and for the record's bytes)
+String pwOf(int gen) => 'rootpw-Zq$gen-secret';
+List<int> rec(int gen) => [0x52, gen, ...pwOf(gen).codeUnits];

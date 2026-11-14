@@ -83,6 +83,19 @@ class ClaimRecords {
       log('$oldNotKept（$e）');
     }
     await store.sealWrite(nodePath, record);
-    await store.remove(pendingPath);
+    try {
+      await store.remove(pendingPath);
+    } catch (e) {
+      throw PendingNotRemoved(e); // the node record IS written (254-app-replay review A-m2)
+    }
   }
+}
+
+/// [ClaimRecords.claimed] wrote the node record, but the pending could not be removed. The node record counts (a
+/// node record beside a pending = node record, noover R2); the leftover pending is harmless.
+class PendingNotRemoved implements Exception {
+  PendingNotRemoved(this.cause);
+  final Object cause;
+  @override
+  String toString() => '節點紀錄已寫好，但沒能刪掉這次的認領暫存紀錄（$cause）';
 }

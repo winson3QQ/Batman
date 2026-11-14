@@ -31,6 +31,7 @@ class FakeRust implements RustLibApi {
   /// the closing words are Rust's (bridge closing_words); here: which case Dart asked for
   @override
   String crateApiReplayRecoveryEndText({required RecoveryEnd end, required bool after9, required bool unanswered, required bool oldRecord}) {
+    if (end == RecoveryEnd.stopped && !unanswered) return ''; // as Rust: nothing to add
     final s = 'END ${end.name} after9=$after9 unanswered=$unanswered old=$oldRecord';
     endTexts.add(s);
     return s;
@@ -250,7 +251,7 @@ void main() {
     for (var i = 1; i < 5; i++) {
       expect(m.connectAt[i] - m.closedAt[i - 1], greaterThanOrEqualTo(const Duration(seconds: 15)));
     }
-    expect(h.store.files[nodeRecPath], [0x52, 1], reason: 'the password of the one success');
+    expect(h.store.files[nodeRecPath], rec(1), reason: 'the password of the one success');
   });
 
   testWidgets('D5: five 13s in a row stop with the lock words', (t) async {
@@ -271,7 +272,7 @@ void main() {
     h.field.add(m);
     expect(await h.run(), RecoveryOutcome.recovered);
     expect(m.replays, 1);
-    expect(h.store.files[nodeRecPath], [0x52, 1]);
+    expect(h.store.files[nodeRecPath], rec(1));
   });
 
   // D10 / §4: written, no answer within 90 s -> next round; the node rotated meanwhile; the next success brings the
@@ -283,7 +284,7 @@ void main() {
     expect(await h.run(), RecoveryOutcome.recovered);
     expect(m.replays, 2);
     expect(m.password, 2);
-    expect(h.store.files[nodeRecPath], [0x52, 2], reason: 'the latest password, not the lost one');
+    expect(h.store.files[nodeRecPath], rec(2), reason: 'the latest password, not the lost one');
   });
 
   testWidgets('§4: written and never answered -> the "請等幾分鐘" case is asked for', (t) async {
@@ -403,7 +404,7 @@ void main() {
     }
     h.rec!.cancel();
     expect(await drive(t, f), RecoveryOutcome.recovered);
-    expect(h.store.files[nodeRecPath], [0x52, 1]);
+    expect(h.store.files[nodeRecPath], rec(1));
     expect(h.store.files.containsKey(pendPath), isFalse);
   });
 
@@ -417,10 +418,11 @@ void main() {
       await t.pump(const Duration(milliseconds: 250));
     }
     final at = now();
-    h.field.readyCtl.add(false);
+    h.field.readyCtl.add(RecoveryBleState.off);
     expect(await drive(t, f), RecoveryOutcome.cancelled);
     expect(m.closedAt.single - at, lessThan(const Duration(milliseconds: 500)));
-    expect(h.lines.last, '[CLAIM_FAIL] 藍牙已關閉，恢復已停止（紀錄先保留）');
+    expect(h.lines.last, '[CLAIM_FAIL] 藍牙已關閉，恢復已停止（紀錄先保留）。END stopped after9=false unanswered=true old=false',
+        reason: 'stopped after the write: the added sentences (review m1)');
     h.pendingUntouched();
   });
 
@@ -465,13 +467,14 @@ void main() {
   }
 
   // §3-1: one ECDH (peer = the pending's ecdh_pub, from prepare), its z handed to Rust, the session dropped at the end.
-  // (Dart's own copy is zeroed with fillRange; the channel copies it, so this test cannot see that buffer: ⚠️ by reading)
+  // Dart's own z (the list handed to setZ) is all zero afterwards.
   testWidgets('§3-1: one ECDH before any connection, z reaches Rust, the session is dropped at the end', (t) async {
     final h = H(t, rust);
     h.field.add(Dev('M', -40, ours: true));
     await h.run();
     expect(h.plat.ecdhCalls, 1);
     expect(rust.last!.z, zBytes, reason: 'Rust got z');
+    expect(rust.last!.zRef, everyElement(0), reason: 'review B-m3: Dart zeroed the very list it handed over');
     expect(rust.last!.disposed, isTrue, reason: 'the session (z, K) is dropped at the end');
   });
 
@@ -484,7 +487,7 @@ void main() {
     h.field.add(Dev('M', -40, ours: true));
     expect(await h.run(), RecoveryOutcome.recovered);
     expect(h.store.calls, ['copy $nodeRecPath', 'write $nodeRecPath', 'remove $pendPath']);
-    expect(h.store.files[nodeRecPath], [0x52, 1]);
+    expect(h.store.files[nodeRecPath], rec(1));
     expect(h.lines.any((l) => l.startsWith('[OLD_NOT_KEPT]')), isTrue);
   });
 
@@ -557,7 +560,8 @@ void main() {
       all.addAll(h.lines);
     }
     expect(all.any((l) => l.contains('RECOVERED')), isTrue);
-    final secrets = [hex(zBytes), hex(pendingBytes), hex(List.filled(32, 0x4b)), String.fromCharCodes(zBytes), String.fromCharCodes(List.filled(32, 0x4b)), '$zBytes'];
+    final secrets = [hex(zBytes), hex(pendingBytes), hex(List.filled(32, 0x4b)), String.fromCharCodes(zBytes), String.fromCharCodes(List.filled(32, 0x4b)), '$zBytes',
+      pwOf(1), hex(rec(1)), '${rec(1)}', '${Uint8List.fromList(rec(1))}', '${rec(1).sublist(2)}']; // review B-m3: the record and its password too
     for (final l in all) {
       for (final s in secrets) {
         expect(l.contains(s), isFalse, reason: 'a secret in "$l"');
@@ -574,5 +578,139 @@ void main() {
     expect(h.t3Asked, 1);
     expect(h.field.connects, 0);
     h.pendingUntouched();
+  });
+
+  // ---- code review r1 ----
+
+  // A-M1 / B-M1: transport failures end one connection, never the recovery (§4: before the write -> next device /
+  // next round; after it -> no answer -> next round). Negative control: the old `catch -> stop` -> each FAILs.
+  testWidgets('review M1: a strong device whose CTRL cannot be read does not stop T2', (t) async {
+    final h = H(t, rust);
+    h.field
+      ..add(Dev('X', -20)..ctrlFails = 99)
+      ..add(Dev('M', -40, ours: true));
+    expect(await h.run(), RecoveryOutcome.recovered);
+    expect(h.field.connectLog, ['X', 'M']);
+    expect(h.lines.where((l) => l.contains('GATT')), isEmpty, reason: 'the transport error text is not shown');
+  });
+
+  for (final c in ['CTRL read fails', 'CTRL key 3 < 20', 'msg1 write fails', 'begin write fails']) {
+    testWidgets('review M1 (T1): $c once -> next round recovers', (t) async {
+      final h = H(t, rust);
+      final m = Dev('M', -40, ours: true);
+      switch (c) {
+        case 'CTRL read fails':
+          m.ctrlFails = 1;
+        case 'CTRL key 3 < 20':
+          m.ctrlTooSmall = 1;
+        case 'msg1 write fails':
+          m.writeFailsOn.add(0x01);
+        case 'begin write fails':
+          m.writeFailsOn.add(0x10);
+      }
+      h.field.add(m);
+      expect(await h.run(t1: 'M'), RecoveryOutcome.recovered);
+      expect(m.connects, 2);
+      expect(m.replays, 1);
+      expect(h.store.files[nodeRecPath], rec(1));
+    });
+  }
+
+  // A-M1: the claim/replay frame's write fails after the node got it -> unanswered -> next round -> the record holds
+  // the LATEST password (the node rotated twice); and when it did not reach the node -> the first password
+  for (final reaches in [true, false]) {
+    testWidgets('review M1: the claim/replay write fails (reached the node: $reaches) -> next round recovers', (t) async {
+      final h = H(t, rust);
+      final m = Dev('M', -40, ours: true)
+        ..writeFailsOn.add(0x30)
+        ..writeFailReaches = reaches;
+      h.field.add(m);
+      expect(await h.run(t1: 'M'), RecoveryOutcome.recovered);
+      expect(m.replays, reaches ? 2 : 1);
+      expect(h.store.files[nodeRecPath], rec(reaches ? 2 : 1));
+    });
+  }
+
+  // A-m1: a stop while the claim/replay frame is being written -> the answer is still waited for and written.
+  // Negative control: the written mark set after the write loop -> disconnected, no record (the node rotated anyway).
+  testWidgets('review m1: stop during the claim/replay write -> the answer is still taken', (t) async {
+    final h = H(t, rust);
+    final m = Dev('M', -40, ours: true)..writeDelay = const Duration(seconds: 5);
+    h.field.add(m);
+    final f = h.start();
+    while (h.plat.signCalls == 0) {
+      await t.pump(const Duration(milliseconds: 250));
+    }
+    await t.pump(const Duration(seconds: 1)); // inside the 5 s write
+    expect(m.replays, 0, reason: 'still writing');
+    h.rec!.cancel();
+    expect(await drive(t, f), RecoveryOutcome.recovered);
+    expect(m.replays, 1);
+    expect(h.store.files[nodeRecPath], rec(1));
+  });
+
+  // A-m1: a stop after an unanswered replay says the same added sentences (Rust's Stopped words). Negative control:
+  // the added sentences dropped -> FAIL.
+  testWidgets('review m1: stopped after an unanswered replay -> 「請等幾分鐘」 added', (t) async {
+    final h = H(t, rust);
+    final m = Dev('M', -40, ours: true)..replies.add(const Reply(0, never: true, after: Duration(seconds: 200)));
+    h.field.add(m);
+    final f = h.start();
+    while (m.replays == 0) {
+      await t.pump(const Duration(milliseconds: 250));
+    }
+    h.rec!.cancel();
+    expect(await drive(t, f), RecoveryOutcome.cancelled);
+    expect(h.lines.last, '[CLAIM_FAIL] 已停止恢復（紀錄先保留）。END stopped after9=false unanswered=true old=false');
+    h.pendingUntouched();
+  });
+
+  // A-m2: the node record is written but the pending cannot be removed -> recovered (the node record counts), the
+  // leftover said; never 「紀錄沒有寫成功」. Negative control: no PendingNotRemoved case -> stopped.
+  testWidgets('review m2: pending not removed after the node record -> still recovered', (t) async {
+    final h = H(t, rust);
+    h.store.removeFails = true;
+    h.field.add(Dev('M', -40, ours: true));
+    expect(await h.run(), RecoveryOutcome.recovered);
+    expect(h.store.files[nodeRecPath], rec(1));
+    expect(h.lines.any((l) => l.startsWith('[PENDING_KEPT]')), isTrue);
+    expect(h.lines.any((l) => l.contains('沒有寫成功')), isFalse);
+  });
+
+  // A-m4: every adapter state but ready stops at once, each with its own neutral words; an error of the status stream
+  // = unavailable. Negative controls: no onError -> FAIL; every state said as 「藍牙已關閉」 -> FAIL.
+  for (final c in ['off', 'unavailable', 'stream error']) {
+    testWidgets('review m4: adapter $c -> stopped at once with its words', (t) async {
+      final h = H(t, rust);
+      final m = Dev('M', -40, ours: true)..msg2Silent = true;
+      h.field.add(m);
+      final f = h.start();
+      while (m.msg1s == 0) {
+        await t.pump(const Duration(milliseconds: 250));
+      }
+      switch (c) {
+        case 'off':
+          h.field.readyCtl.add(RecoveryBleState.off);
+        case 'unavailable':
+          h.field.readyCtl.add(RecoveryBleState.unavailable);
+        case 'stream error':
+          h.field.readyCtl.addError(Exception('ObserveBleStatusFailure'));
+      }
+      expect(await drive(t, f), RecoveryOutcome.cancelled);
+      expect(h.lines.last,
+          c == 'off' ? '[CLAIM_FAIL] 藍牙已關閉，恢復已停止（紀錄先保留）' : '[CLAIM_FAIL] 藍牙目前無法使用（權限、定位服務或藍牙狀態讀不到），恢復已停止（紀錄先保留）');
+      expect(m.connects, 1);
+      h.pendingUntouched();
+    });
+  }
+
+  // A-m4: an error in the checks before any connection is not called "cannot read the pending"
+  testWidgets('review m4: a failing check before any connection has its own words', (t) async {
+    final h = H(t, rust);
+    h.store.matchesThrows = true;
+    h.field.add(Dev('M', -40, ours: true));
+    expect(await h.run(), RecoveryOutcome.notStarted);
+    expect(h.lines.single, startsWith('[CLAIM_FAIL] 恢復前的檢查出錯，這次不恢復（手機裡的紀錄沒有改動）'));
+    expect(h.field.connects, 0);
   });
 }
