@@ -1,4 +1,4 @@
-# 254-app-replay — 把 claim REPLAY 接進 app(v6,待審:v5.1 已實作 + 新增「從認領暫存恢復」入口 T4,§19)
+# 254-app-replay — 把 claim REPLAY 接進 app(v6.1:v6 兩位審查 APPROVE-WITH-CHANGES、0 MAJOR,小項併入 §21;v5.1 已實作 + 「從認領暫存恢復」入口 T4,§19)
 
 > **v6(2026-11-14)**:v5 的真機步驟假設「用同一張 QR」,但 04 已認領,QR 已經拿不到(§19.1)— 這是設計者的錯,審查也沒抓到。
 > 使用者決定補上原本延後的「沒有 QR 的恢復入口」。v6 只加 §19 與下列各節中標「v6」的修改;其他內容與 v5.1 相同。
@@ -270,26 +270,35 @@ app 路徑省略 `app/`。標記:✅ = 本版作者讀過該行;⚠️ = 推論�
    **安裝規則(步驟 0 與 2 都適用)**:只用 `adb -s <serial> install -r <apk>`。**這支手機上禁止 `flutter install` 與 `flutter run`**:
    `flutter install` 一律先解除安裝(本機 SDK `C:\src\flutter` @ c197ca5199e,flutter_tools `commands/install.dart:104-113`,`bool uninstall = true`),`flutter run` 安裝失敗時
    會解除安裝再裝(`android/android_device.dart:415-423`)。也禁止清除 app 資料、禁止改 applicationId(dev / field 是不同的 app,
-   `build.gradle.kts:30, 50, 58`,pending 與 Keystore 不共用)。裝之前比簽署憑證:與已安裝的不同 → **停,絕不解除安裝**(pending 與
+   `build.gradle.kts` 本分支 l.38 / 60 / 68 = main f0138bd l.30 / 50 / 58,pending 與 Keystore 不共用)。裝之前比簽署憑證:與已安裝的不同 → **停,絕不解除安裝**(pending 與
    Keystore 金鑰會消失,04 就再也救不回,只能重燒)。裝完先確認 pending 紀錄還在,才往下做。
-**v6:04 的實際步驟(取代 v5 的 1–2;v5 的「同一張 QR」不可能,§19.1)**。手機 = S20 `RFCN30HMRAR`。
+**v6.1:04 的實際步驟(取代 v5 的 1–2;v5 的「同一張 QR」不可能,§19.1)**。手機 = S20 `RFCN30HMRAR`。順序固定,前一步沒過不做下一步。
 - 0a(唯讀)`adb -s RFCN30HMRAR shell pm list packages dev.batman` → 預期 pending 在 `dev.batman.app.dev`(⚠️ 未在手機上確認)。
-- 0b(唯讀)簽章:`adb -s RFCN30HMRAR shell pm path dev.batman.app.dev` → `adb -s RFCN30HMRAR pull <base.apk 路徑> installed.apk`;
+- 0a'(唯讀,可略過)`adb -s RFCN30HMRAR shell run-as dev.batman.app.dev ls files/records/claim-pending/` → 看得到 04 的檔名就記下;
+  run-as 被拒(非 debuggable 或廠商限制)→ 略過,不做別的嘗試。
+- 0b(唯讀)簽章與版本:`adb -s RFCN30HMRAR shell pm path dev.batman.app.dev` → `adb -s RFCN30HMRAR pull <base.apk 路徑> installed.apk`;
   `apksigner verify --print-certs installed.apk` 與 `apksigner verify --print-certs <新 APK>` 的 SHA-256 相同才往下;不同 → **停,
-  絕不解除安裝**。新 APK 必須是 dev flavor。
-- 0c 只用 `adb -s RFCN30HMRAR install -r <新 APK>`(禁止 `flutter install` / `flutter run` / 清資料,見上)。
-- 1(取代舊的負對照)**鎖死現況的證據**,先收再動:`ssh root@<04>` → `Permission denied (publickey)`;app 的「我的節點」沒有 04;
-  手上沒有 04 的 QR(helper 已認領時拒印,§19.1);舊版 APK 的認領頁沒有 T4 入口(main 的 `claim.dart:329-330` 只有「貼上 QR 碼」與「認領」)。
+  絕不解除安裝**。新 APK 必須是 dev flavor;新 APK 的 versionCode 不得低於已安裝的(`dumpsys package dev.batman.app.dev | grep versionCode`
+  對 `aapt2 dump badging`),低了 → 停(`install -r` 會拒絕降版,不准用 `-d`)。
+- 1 **鎖死現況的證據**,在安裝之前收:
+  - 舊 app 的認領頁沒有「從認領暫存恢復」:截圖(main f0138bd 的 `claim.dart:328-330` 只有三個鈕:「掃描 QR」「貼上 QR 碼(開發用)」「認領」)。
+  - 舊 app 的「我的節點」沒有 04:截圖。
+  - 「helper 已認領時拒印 QR」= 讀碼證據(cmd/batman-provhelper/main.go:570-594),**不在 04 上量**。
+  - ssh 被拒 = 引用 #254「2026-11-14 真機重現」留言;**再試一次 ssh 只在使用者同意後**。
   這就是「沒有本功能就救不回」的負對照。
-- 2 裝完、**先不按任何會連線的東西**:打開認領頁 →「從認領暫存恢復」列出 04 的末四碼(⚠️ 預期 …4040,依 #254 留言)。沒列出 → 停,
-  查 pending 是否還在(不清資料、不解除安裝)。
-- 3 選 04 → 確認 → T4 恢復。成功的證據:畫面「已恢復」(logcat 標記 `[RECOVERED]`,claim_recovery.dart:424)、「我的節點」出現 04(node 紀錄存在)、
-  nodes 頁登入 04 並讀到狀態。之後(另外取得授權)經 app 放回 lab key。同時從 logcat 時間戳量 claim/replay 寫出到回覆的時間
-  (§3-2 的 90 s 是否足夠)。**節點連續 2 次拒絕 → 停下來查**,不往 10 次(N9 的 12)推。
-3. **T1(在範圍內;s1 §8-7 卡 1 ②、卡 2 ③ 負對照)**:finish 一送出就關掉手機藍牙,約 60 s 後再開 → 預期 T1(或接 T2)→「已恢復」。
-   觸發要在**手機上的單一 `adb shell` 迴圈**裡做(主機端輪詢約 4 s,太慢);需要重燒卡 → 每次先問。⚠️ 關藍牙後 app 端 finish 的
-   收尾與 `replay_due` 的實際時序未驗。
-4. 13、12、快取空窗的真機做法還沒有 → 留在 #254 checklist,PR 內標 ⚠️ 模擬。
+- 0c 只用 `adb -s RFCN30HMRAR install -r <新 APK>`(禁止 `flutter install` / `flutter run` / 清資料,見上)。
+- 2 裝完、**先不按任何會連線的東西**:打開認領頁 →「從認領暫存恢復」列出 04(顯示 device id 的後 6 碼,§19.2;⚠️ 預期結尾 …4040,
+  依 #254 留言)。沒列出 → 停,查 pending 是否還在(不清資料、不解除安裝)。
+- 3 選 04 → 確認 → T4 恢復。成功的證據:畫面「已恢復」(logcat 標記 `[RECOVERED]`)、「我的節點」出現 04(node 紀錄存在)、
+  nodes 頁登入 04 並讀到狀態(登入回 3 → 見 §19.7 的 torn-read 疑點,收 logcat 與時間,不要急著歸因)。之後(另外取得授權)經 app
+  放回 lab key。同時從 logcat 時間戳量 claim/replay 寫出到回覆的時間(§3-2 的 90 s 是否足夠)。**節點連續 2 次拒絕 → 停下來查**,
+  不往 10 次(N9 的 12)推。
+
+**之後另做(需要重燒過的卡、另外取得授權;不在 04 的恢復步驟內)**:
+- T1(s1 §8-7 卡 1 ②、卡 2 ③ 負對照):finish 一送出就關掉手機藍牙,約 60 s 後再開 → 預期 T1(或接 T2)→「已恢復」。
+  觸發要在**手機上的單一 `adb shell` 迴圈**裡做(主機端輪詢約 4 s,太慢);需要重燒卡 → 每次先問。⚠️ 關藍牙後 app 端 finish 的
+  收尾與 `replay_due` 的實際時序未驗。
+- 13、12、快取空窗的真機做法還沒有 → 留在 #254 checklist,PR 內標 ⚠️ 模擬。
 
 ## 11. 與凍結設計(254-app-s1)的偏離
 
@@ -442,8 +451,8 @@ v2 有、v3 刪掉的:T1 的候選清單、「同 session 再 replay 得 13」�
 ### 19.2 行為(只在 dev 版)
 1. 認領頁在 `devTrust == true` 且 `list_pending(dir)` 非空時,多一個鈕「從認領暫存恢復」;`_busy` / `_scanning` / 恢復中時停用(與「認領」同一套)。
    field 版不顯示(field 版本來就沒有 replay:`ecdh` 只開給 dev,§3-1)。
-2. 按下 → 對話框列出每筆 pending 的末四碼(只用檔名,**不開封、不顯示任何祕密**);`forgotten-pending/` 不列(不同目錄)。
-3. 選一筆 → 確認框:「要恢復節點 …XXXX 嗎?恢復會更換這台節點的 root 密碼,並中斷它目前所有的連線(包含隊友手機的)。」取消 → 零連線。
+2. 按下 → 對話框列出每筆 pending 的 device_id 後 6 碼(v6.1,第 7 點)(只用檔名,**不開封、不顯示任何祕密**);`forgotten-pending/` 不列(不同目錄)。
+3. 選一筆 → 確認框:「要恢復節點 …XXXXXX 嗎?恢復會更換這台節點的 root 密碼,並中斷它目前所有的連線(包含隊友手機的)。」取消 → 零連線。
 4. 確認 → `ClaimRecovery`(T2 路徑,`t1Id = null`),目標 device_id = 那筆的檔名;`t3 = list_nodes(dir)` 含這個 id(有 node 紀錄 → 照 T3
    再問一次,ClaimRecovery 內原有的流程)。其餘全部不變:即時讀 `keyLevels['recover']`、pending 重讀 + 嚴格解碼(device_id 必須 = 路徑 id,§5)、
    所有時限、停止鈕、§4 的結果表、非成功時 pending 保留。
@@ -453,6 +462,17 @@ v2 有、v3 刪掉的:T1 的候選清單、「同 session 再 replay 得 13」�
 改成可空,`persistPending` 在 qr 為 null 時丟 `StateError`(T4 不會呼叫它,claimed() 不用 qr,claim_records.dart:76-95)。bridge 加
 `list_pending`,**與 `feat/254-app-s1-gaps` 的 ffbb8dc(owner.rs:54-58)同名同內容**(`list_kind(&dir, "claim-pending")`),合併時只留一份;
 本分支目前沒有它(`list_kind` 在 owner.rs:41-48 是私有的,`list_nodes` 在 l.50-52)。
+**合併方式(v6.1)**:`list_pending` 照 ffbb8dc **逐字**加在 owner.rs 同一位置(`list_nodes` 之後、`list_nets` 之前,同一段註解);
+與 s1-gaps 合併後 **重新產生** FRB(WSL、離線),**絕不手動合併** `frb_generated.*`。
+
+**v6.1 的細節**:
+6. **文字**:T4 有自己的開頭「[RECOVERING] 從認領暫存恢復節點 …XXXXXX」(不是 T2 的「沒找到未認領的這台」);T4 的 T3 問題不帶「沒找到
+   未認領的這台。」這句開頭;選定的那筆讀不到(`_prepare` 的 readSealed 回 null)→「這筆認領暫存已經不在，手機裡的紀錄沒有改動」;
+   「節點已恢復，但手機的紀錄沒有寫成功…」在 T4 的結尾是「請再從『從認領暫存恢復』試一次」(T1 / T2 照舊「請再按一次『認領』」);
+   T4 的 claim/replay 回 3(被拒)時加一句「這筆暫存可能不是這台節點最後一次認領用的，請不要一直重試」。
+7. **顯示的 id**:清單與確認框顯示 device_id 的**後 6 碼**(4 碼在多筆時可能撞);兩筆的後 6 碼相同時,那兩筆顯示完整 id。
+8. **`_busy`**:T4 從按下入口到恢復結束都持有 `_busy`(掃描 / 貼上 / 認領鈕停用,入口自己也停用);連線之前經現有的 `blePermissions`
+   路徑要藍牙權限,沒有就說明、不連線。
 
 ### 19.3 擁有權 / 契約
 沒有新的狀態、沒有新的寫入者。新介面只有 `list_pending`(§7 新列):唯讀、只回檔名;`.` 開頭的暫存檔被濾掉(owner.rs:41-48;
@@ -497,6 +517,7 @@ store.rs:118 暫存名 = `.<name>.tmp-…`)。清單是按下當時的快照,選
 - 新 APK 與已安裝的簽署憑證是否相同(要在步驟 0b 比)。
 - 本分支新增的 Keystore `gate()`(MainActivity.kt,自 f0138bd 起的變更)在 S20 上是否放行開封 / ecdh(依 s1 facts §9 預期放行,未在本版裝機確認)。
 - `install -r` 後 pending 與 Keystore 金鑰仍在(Android 規格如此,未在這支手機確認;步驟 2 先查)。
+- (v6.1)恢復之後登入若回 3,可能是 #254 已記錄、尚未證實的 provd `info.owners` torn-read 疑點:收 logcat 與時間點,**不要直接歸因**為恢復的問題(也不要反過來把恢復的問題歸給它)。
 
 ## 20. v5.1 → v6
 
@@ -509,3 +530,14 @@ store.rs:118 暫存名 = `.<name>.tmp-…`)。清單是按下當時的快照,選
 | 生命週期 | §8、§19.5 |
 | 測項 D17–D22(含 K 比對在 QR 路徑上的回歸) | §19.6 |
 | 真機步驟:簽章用 `apksigner` 比 pull 下來的 base.apk、只用 `install -r`、先確認入口列出 04、成功證據、2 次被拒就停;舊的「main + 同一張 QR」負對照改成鎖死現況的證據 | §10 |
+
+## 21. v6 → v6.1(兩位審查的小項,不再送審)
+
+| 意見 | 處理 |
+|---|---|
+| T4 的文字:自己的開頭;T3 問題不帶「沒找到未認領的這台」;pending 已不在;寫紀錄失敗的結尾;T4 被拒(3)的提醒 | §19.2 第 6 點 |
+| 末四碼可能撞 | §19.2 第 7 點(後 6 碼;撞了顯示完整 id);§10 步驟 2 |
+| T4 期間 `_busy`、連線前要藍牙權限 | §19.2 第 8 點 |
+| 合併方式:`list_pending` 逐字照 ffbb8dc;合併後重產 FRB,不手動合併 | §19.2 |
+| §10 04 步驟順序(0a → 0a' → 0b 含 versionCode → 1 安裝前的證據 → 0c → 2 → 3);舊 T1 / 13 / 12 / 快取空窗移到「之後另做」;行號更正(main `claim.dart:328-330` 三個鈕;build.gradle.kts 兩邊的行號) | §10 |
+| §19.7:恢復後登入回 3 可能是 provd torn-read 疑點 | §19.7 |
