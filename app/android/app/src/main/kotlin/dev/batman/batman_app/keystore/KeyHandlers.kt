@@ -16,6 +16,8 @@ interface KeyUses {
     fun sign(role: KeyRole, input: ByteArray): ByteArray
     fun ecdh(peer: PublicKey): ByteArray
     fun seal(plain: ByteArray, aad: ByteArray): ByteArray
+    /** owner_enc's public key, uncompressed SEC1 (65 B): what a sig_enc may bind */
+    fun ownerEncPub(): ByteArray
 }
 
 /** A handler's answer: a value for result.success, or the error triple for result.error. */
@@ -37,11 +39,17 @@ class KeyHandlers(private val keys: KeyUses, private val devTrust: Boolean) {
         KeyAnswer.Err("keystore", e.javaClass.simpleName, null)
     }
 
-    /** The owner key; binding owner_enc (sig_enc, at claim and in a join request) also needs owner_enc at its level. */
-    fun signOwner(input: ByteArray?): KeyAnswer =
-        use(if (input != null && SignAllowList.bindsOwnerEnc(input)) KeyOp.BIND_OWNER_ENC else KeyOp.SIGN_OWNER, "keystore", ::detail) {
+    /**
+     * The owner key; binding owner_enc (sig_enc, at claim and in a join request) also needs owner_enc at its level, and
+     * the bound key must BE this phone's owner_enc (exactly label ‖ ownerEncPub), else refused before the key is used.
+     */
+    fun signOwner(input: ByteArray?): KeyAnswer {
+        val bind = input != null && SignAllowList.bindsOwnerEnc(input)
+        return use(if (bind) KeyOp.BIND_OWNER_ENC else KeyOp.SIGN_OWNER, "keystore", ::detail) {
+            if (bind) require(SignAllowList.boundKey(input!!).contentEquals(keys.ownerEncPub())) { "refused: sig_enc binds a key that is not this phone's owner_enc" }
             keys.sign(KeyRole.OWNER_SIGN, requireNotNull(input) { "no input" })
         }
+    }
 
     fun signAdmin(input: ByteArray?): KeyAnswer =
         use(KeyOp.SIGN_ADMIN, "keystore", ::detail) { keys.sign(KeyRole.ADMIN_SIGN, requireNotNull(input) { "no input" }) }

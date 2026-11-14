@@ -30,6 +30,9 @@ object SignAllowList {
      */
     fun bindsOwnerEnc(input: ByteArray): Boolean = startsWith(input, OWNER_ENC_LABEL)
 
+    /** What a sig_enc input binds: the bytes after the label (owner_enc_pub, 65 B, when well formed). */
+    fun boundKey(input: ByteArray): ByteArray = input.copyOfRange(OWNER_ENC_LABEL.size, input.size)
+
     /** The admin key signs only a COSE Sig_structure whose external_aad is exactly one of its labels. */
     fun adminMaySign(tbs: ByteArray): Boolean = sigStructureAad(tbs)?.let { aad -> ADMIN_LABELS.any { it.contentEquals(aad) } } ?: false
 
