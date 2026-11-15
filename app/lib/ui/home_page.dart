@@ -9,7 +9,6 @@ import '../claim.dart';
 import '../nodes.dart';
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl;
-import '../src/nodelink/lease.dart';
 import '../src/nodelink/raw_use.dart';
 import '../src/rust/api/owner.dart' show StatusView, listPending;
 import 'home_logic.dart';
@@ -50,21 +49,14 @@ Future<void> openUnderLease(BuildContext context, AppLink a, String name, Widget
     shown = true;
     m.showSnackBar(const SnackBar(content: Text('正在結束上一個讀取…')));
   });
-  final lease = await a.link.acquire(name, LeaseKind.raw);
+  // PR 1's openRawPage: the lease is given up at the page's dispose; the page's busy work holds it past a pop
+  final busy = await openRawPage(Navigator.of(context), a.link, a.gate, name, (u) {
+    slow.cancel();
+    if (shown) m.hideCurrentSnackBar();
+    return page(u);
+  });
   slow.cancel();
-  if (shown) m.hideCurrentSnackBar();
-  if (!context.mounted) {
-    await lease?.release(); // never keep a lease no page will use (review pr1 A-m4)
-    return;
-  }
-  if (lease == null) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('另一個操作還在進行：${a.reg.current?.name ?? ''}')));
-    return;
-  }
-  final use = RawUse(lease, a.gate);
-  await Navigator.of(context).push(MaterialPageRoute(builder: (_) => page(use)));
-  lease.pageGone();
+  if (busy != null) m.showSnackBar(SnackBar(content: Text('另一個操作還在進行：$busy')));
 }
 
 class HomePage extends StatefulWidget {
