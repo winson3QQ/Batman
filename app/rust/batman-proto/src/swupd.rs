@@ -888,7 +888,7 @@ impl Flow {
                         self.status_tries += 1;
                         return self.wait(STALE_RETRY_MS, Then::Status, "正在讀節點的狀態…", None);
                     }
-                    Gate::Unread => return self.screen(T_STATUS_UNREAD.into(), String::new(), vec![Button::Refresh]),
+                    Gate::Unread => return self.screen(T_STATUS_UNREAD.into(), "status: no trust (stale)".into(), vec![Button::Refresh]),
                 }
                 self.send(Verb::Info, None, "正在讀節點的版本…")
             }
@@ -897,7 +897,9 @@ impl Flow {
                 self.wait(STATUS_RATE_MS, Then::Status, "正在讀節點的狀態…", None)
             }
             Reply::NoLink => self.screen(T_NOT_BACK.into(), String::new(), vec![Button::Refresh]),
-            _ => self.screen(T_STATUS_UNREAD.into(), String::new(), vec![Button::Refresh]),
+            // #329 A13: why, on the technical line — the reply kind and the error code only, never a body (D8)
+            Reply::Err { code, .. } => self.screen(T_STATUS_UNREAD.into(), format!("status: code {code}"), vec![Button::Refresh]),
+            _ => self.screen(T_STATUS_UNREAD.into(), "status: no answer".into(), vec![Button::Refresh]),
         }
     }
 

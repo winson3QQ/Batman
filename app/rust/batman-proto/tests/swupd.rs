@@ -1302,3 +1302,36 @@ fn v042_a_vpn_stops_before_anything_is_sent_and_offers_retry_or_cancel() {
     assert_eq!(text(&r.put(Put::Vpn)), su::T_VPN);
     assert_eq!(verb(&r.press(Button::Cancel)), Verb::BulkClose);
 }
+
+// ---- #329 A13 (2026-11-16): 「讀不到節點的狀態」 says why on the technical line — the kind and the code only ----------
+
+fn tech(a: &Action) -> String {
+    match a {
+        Action::Show(s) | Action::Done(s) => s.tech.clone(),
+        _ => panic!("not a screen: {a:?}"),
+    }
+}
+
+#[test]
+fn a13_status_unread_names_its_cause_and_nothing_else() {
+    // stale every time -> 「no trust (stale)」
+    let mut r = Run::new(true);
+    r.start();
+    for _ in 0..3 {
+        let a = r.reply(stale());
+        r.after(&a);
+    }
+    let a = r.reply(stale());
+    assert_eq!((text(&a), tech(&a)), (su::T_STATUS_UNREAD.to_string(), "status: no trust (stale)".to_string()));
+    // an error answer -> its code, never its detail
+    let mut r = Run::new(true);
+    r.start();
+    let a = r.reply(Reply::Err { code: 9, detail: V::Text("SECRET-DETAIL".into()) });
+    assert_eq!((text(&a), tech(&a)), (su::T_STATUS_UNREAD.to_string(), "status: code 9".to_string()));
+    assert!(!format!("{a:?}").contains("SECRET-DETAIL"));
+    // no answer
+    let mut r = Run::new(true);
+    r.start();
+    let a = r.reply(Reply::Lost);
+    assert_eq!((text(&a), tech(&a)), (su::T_STATUS_UNREAD.to_string(), "status: no answer".to_string()));
+}
