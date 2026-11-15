@@ -94,6 +94,17 @@ void main() {
         reason: 'a phone without any network starts one; joining a team is the second way');
   });
 
+  test('r2 D-m9: records that could not be read -> the neutral 加入網路, never 建立網路', () {
+    final h = decideHome(HomeInputs(
+        nodes: [node('u1', v: sv(nodeState: 1))], blocked: null, firstRounds: false, todos: 0, records: NetRecords.unknown));
+    expect((h.action, h.second), (HomeAction.joinNetwork, HomeAction.none));
+  });
+
+  test('r2 D-m6: an older read of a node not in a network says so, not 「有問題」', () {
+    final w = nodeRowWords(node('o1', v: sv(nodeState: 1, color: 'red'), fresh: false), firstRounds: false);
+    expect(w.$2, endsWith('，當時還沒加入隊伍網路'));
+  });
+
   test('review A-M5: adjacent rows 10/11, 11/12, 12/13 — the upper one wins', () {
     final stale = node('s1', v: sv(), fresh: false);
     final yellow = node('y1', v: sv(color: 'yellow'));

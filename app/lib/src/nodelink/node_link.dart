@@ -305,8 +305,9 @@ class NodeLink implements LeaseListener {
     if (!identical(_attempt, a)) return; // aborted: the core no longer waits for it
     _attempt = null;
     _cancel = null;
-    if (o.res == Res.body) readWall[a.id] = wall();
     core.result(now(), a, o);
+    // the wall time of a read; a 2' is a read too (its own time, not the last body's: PR 2 review r2 D-m6)
+    if (o.res == Res.body || (o.res == Res.errorCode && core.states[a.id]?.view == "2'")) readWall[a.id] = wall();
     _pump();
   }
 

@@ -162,6 +162,9 @@ void main() {
     ('a read time beyond 2100', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{4: 9000000000000}}})),
     ('a nickname with a direction mark', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{1: 'a${String.fromCharCode(0x202e)}b'}}})),
     ('a nickname with a control character', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{1: 'a${String.fromCharCode(7)}b'}}})),
+    ('a nickname with a line separator', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{1: 'a${String.fromCharCode(0x2028)}b'}}})),
+    ('a nickname with a zero-width space', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{1: 'a${String.fromCharCode(0x200b)}b'}}})),
+    ('a nickname with a C1 control', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{1: 'a${String.fromCharCode(0x85)}b'}}})),
   ]) {
     test('B-m1: $what is not taken (absent)', () async {
       final s = MemStore()

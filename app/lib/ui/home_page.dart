@@ -134,7 +134,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       } else if ((await listPends(dir: a.records)).isNotEmpty) {
         recs = NetRecords.mpend;
       }
-    } catch (_) {}
+    } catch (_) {
+      recs = NetRecords.unknown; // could not tell: the neutral 加入網路 into the console, never 建立網路 (review r2 D-m9)
+    }
     _records = recs;
     var n = 0;
     if (widget.devTrust) {
@@ -167,10 +169,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       case HomeAction.refresh:
         a.link.refresh();
       case HomeAction.openBluetooth:
-        _platform.invokeMethod<bool>('bluetoothSettings'); // §5.1 row 1: the system page; the status stream follows
+        _settings('bluetoothSettings', '請到手機的設定打開藍牙'); // §5.1 row 1: the system page; the status stream follows
       case HomeAction.showList || HomeAction.none:
         break;
     }
+  }
+
+  /// Opens a system settings page; when the phone has none, says where to go instead (review r2 D-m8).
+  Future<void> _settings(String method, String otherwise) async {
+    final ok = await _platform.invokeMethod<bool>(method).catchError((Object _) => false);
+    if (ok != true && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(otherwise)));
   }
 
   /// Board 2.2 first, when the app has no Bluetooth permission (F28: asked only when the user presses a button).

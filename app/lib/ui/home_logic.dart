@@ -32,7 +32,7 @@ class NodeInfo {
 }
 
 /// Which network records this phone holds (file names only; §4.3.8): net wins over mnet over mpend.
-enum NetRecords { net, mnet, mpend, none }
+enum NetRecords { net, mnet, mpend, none, unknown }
 
 class HomeInputs {
   const HomeInputs({
@@ -90,7 +90,7 @@ HomeHero decideHome(HomeInputs i) {
   if (notIn.isNotEmpty) {
     // §5.1 row 6: the button follows the phone's network records (PR 2 review B-M1)
     final (act, second) = switch (i.records) {
-      NetRecords.net || NetRecords.mnet => (HomeAction.joinNetwork, HomeAction.none),
+      NetRecords.net || NetRecords.mnet || NetRecords.unknown => (HomeAction.joinNetwork, HomeAction.none),
       NetRecords.mpend => (HomeAction.seeRequest, HomeAction.none),
       NetRecords.none => (HomeAction.makeNetwork, HomeAction.joinTeam),
     };
@@ -175,7 +175,9 @@ String hhmmss(DateTime t) => '${hhmm(t)}:${t.second.toString().padLeft(2, '0')}'
     return (look, v.sentence, meta);
   }
   if (n.state.kind == Kind.read && when != null) {
-    final was = switch (n.state.view) { 'green' => '，當時正常', 'yellow' => '，當時要注意', 'red' => '，當時有問題', _ => '' };
+    final was = n.notInNetwork
+        ? '，當時還沒加入隊伍網路' // the same words as the fresh row, not 「有問題」 (review r2 D-m6)
+        : switch (n.state.view) { 'green' => '，當時正常', 'yellow' => '，當時要注意', 'red' => '，當時有問題', _ => '' };
     return (Look.unk, '上次讀取 ${hhmm(when)}$was', tail);
   }
   if (n.state.responded) return (Look.unk, '有回應，還沒拿到狀態', meta);

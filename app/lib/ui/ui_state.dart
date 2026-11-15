@@ -11,7 +11,7 @@ import 'cbor_mini.dart';
 const uiRel = 'ui/state-v1';
 const nickMax = 24;
 const lookKinds = {'ok', 'warn', 'bad', 'unk'};
-final _unsafe = RegExp('[${_c(0)}-${_c(0x1f)}${_c(0x7f)}${_c(0x202a)}-${_c(0x202e)}${_c(0x2066)}-${_c(0x2069)}${_c(0x200e)}${_c(0x200f)}]');
+final _unsafe = RegExp('[${_c(0)}-${_c(0x1f)}${_c(0x7f)}-${_c(0x9f)}${_c(0xad)}${_c(0x61c)}${_c(0x180e)}${_c(0x200b)}-${_c(0x200f)}${_c(0x2028)}-${_c(0x202e)}${_c(0x2060)}-${_c(0x206f)}${_c(0xfeff)}${_c(0xfff9)}-${_c(0xfffb)}]'); // Cc, Cf, Zl, Zp (review r2 D-m1)
 String _c(int code) => String.fromCharCode(code); // control and text-direction characters, by code point
 
 /// One node's display memory.

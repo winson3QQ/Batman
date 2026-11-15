@@ -8,6 +8,7 @@ import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/home_logic.dart';
 import 'package:batman_app/ui/home_page.dart';
 import 'package:batman_app/ui/node_page.dart';
+import 'package:batman_app/ui/settings_page.dart';
 import 'package:batman_app/ui/theme.dart';
 import 'package:batman_app/ui/ui_state.dart';
 import 'package:flutter/material.dart' hide Page;
@@ -239,6 +240,17 @@ void main() {
     expect(store.plain, isNotNull, reason: 'something was written');
     expect(String.fromCharCodes(store.plain!).contains(marker), isFalse);
     a.link.dispose();
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
+
+  testWidgets('r2 D-m4: 開發者選項 only in a dev build', (t) async {
+    for (final dev in [false, true]) {
+      await t.pumpWidget(host(SettingsPage(app: app(), devTrust: dev)));
+      await t.pump();
+      expect(find.text('開發者選項'), dev ? findsOneWidget : findsNothing);
+      expect(find.text('舊版控制台'), dev ? findsOneWidget : findsNothing);
+    }
     await t.pumpWidget(const SizedBox());
     AppLink.forgetForTest();
   });
