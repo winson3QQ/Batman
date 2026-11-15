@@ -45,12 +45,15 @@ class _NodePageState extends State<NodePage> {
       builder: (c) => AlertDialog(
         backgroundColor: t.surf,
         title: Text('要從這支手機移除$name嗎？', style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
-        content: Text(
-            '這支手機會忘記$name（後四碼 ${last4(widget.id)}），之後不能再用這支手機管理它。節點本身不會改變。之後要再新增它，只能請維修人員重新燒錄（會換新的 QR）。',
+        content: Text('這支手機會忘記它，之後不能再管理它。要再新增，只能請維修人員重新燒錄。',
             style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+        // §3.2: the main button, and 取消 as a text button under it (review r2 C-m10)
         actions: [
-          BatButton(Btn.remove, kind: BtnKind.danger, onPressed: () => Navigator.pop(c, true)),
-          BatButton(Btn.cancel, kind: BtnKind.text, onPressed: () => Navigator.pop(c, false)),
+          Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            BatButton(Btn.remove, kind: BtnKind.danger, onPressed: () => Navigator.pop(c, true)),
+            const SizedBox(height: 6),
+            BatButton(Btn.cancel, kind: BtnKind.text, onPressed: () => Navigator.pop(c, false)),
+          ]),
         ],
       ),
     );

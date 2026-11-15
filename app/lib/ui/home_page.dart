@@ -182,6 +182,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   Future<void> _addNode() async {
+    if (!widget.keys.claim) {
+      // KeyGate (review r2 C-m6): every way to 新增節點 says the keys' own reason, none opens the claim page
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(widget.keys.refusal(KeyUse.claim) ?? '')));
+      return;
+    }
     if (a.link.core.blocked == nl.Why.noPermission && !await _permission()) return;
     if (!mounted) return;
     await _back(openUnderLease(context, a, '新增節點', (u) => ClaimPage(ble: a.ble, use: u)));
@@ -202,6 +207,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final h = decideHome(
         HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: _records));
     final freshest = infos.map((n) => n.readWall).whereType<DateTime>().fold<DateTime?>(null, (x, y) => x == null || y.isAfter(x) ? y : x);
+    // a row about one node shows that node's read time, and only a fresh one (review r2 C-m8)
+    final about = h.node == null ? null : infos.where((n) => n.id == h.node).firstOrNull;
+    final shownTime = about != null ? (about.fresh ? about.readWall : null) : freshest;
     final actionText = switch (h.action) {
       HomeAction.allowBluetooth => Btn.allowBluetooth,
       HomeAction.addNode => Btn.addNode,
@@ -230,7 +238,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           look: h.look,
           text: h.text,
           next: h.next,
-          time: freshest == null || h.look == Look.busy ? null : '讀取於 ${hhmmss(freshest)}',
+          time: shownTime == null || h.look == Look.busy ? null : '讀取於 ${hhmmss(shownTime)}',
           onRefresh: h.look == Look.busy ? null : a.link.refresh,
           extra: actionText == null
               ? null

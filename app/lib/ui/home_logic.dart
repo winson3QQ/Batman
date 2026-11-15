@@ -117,7 +117,7 @@ HomeHero decideHome(HomeInputs i) {
         ? '正在找${stale.first.name}…'
         : unknownNear.isNotEmpty
             ? '附近有還沒認出來的裝置，還在找${unknownNear.first.name}'
-            : _many(stale, '還沒讀到 X 的狀態', '還沒讀到 N 台節點的狀態');
+            : _many(stale, '還沒讀到X 的狀態', '還沒讀到 N 台節點的狀態');
     return HomeHero(10, Look.unk, text, action: HomeAction.refresh);
   }
   if (i.todos > 0) return HomeHero(11, Look.warn, '有 ${i.todos} 件事要你處理');

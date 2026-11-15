@@ -53,6 +53,20 @@ void main() {
     expect(home([ok], blocked: Why.noPermission).action, HomeAction.allowBluetooth);
     expect(home([ok], blocked: Why.keys).row, 2);
   });
+  test('r2 C-m1: rows 2 / 3 — no permission and no node yet: the permission first', () {
+    expect(home([], blocked: Why.noPermission).row, 2);
+  });
+
+  test('r2 C-m2: row 5 — 還沒輪到 is not a conclusion in the first rounds', () {
+    expect(home([node('q1', last: Concl.notYet)], first: true).row, 5);
+  });
+
+  test('r2 C-m2: row 10 sentences per the design', () {
+    expect(home([node('s1', v: sv(), fresh: false)], first: true).text, '正在找節點 S1…');
+    expect(home([node('s2', last: Concl.notYet)]).text, '附近有還沒認出來的裝置，還在找節點 S2');
+    expect(home([node('s3', v: sv(), fresh: false)]).text, '還沒讀到節點 S3 的狀態');
+  });
+
   test('row 3: no node yet -> add a node', () {
     final h = home([]);
     expect((h.row, h.action), (3, HomeAction.addNode));
