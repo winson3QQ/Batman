@@ -573,6 +573,37 @@ void main() {
     expect(e.first, isNot(matches(RegExp(r'[0-9a-fA-F]{8,}'))));
   });
 
+  test('r5 J-m1: a NodeLink scan waiting for a slot does not block the lease holder''s scan', () async {
+    final radio = Radio();
+    final (nl, clock, _, gate) = make(radio, FakeProber({}), () async => const [Rec('n1', 1)]);
+    for (var i = 0; i < 4; i++) {
+      gate.noteScanStart(); // an older page used the 4 slots
+    }
+    await nl.start(Page.home);
+    await clock.run(200);
+    expect((gate.scans, radio.scans), (1, 0), reason: 'NodeLink''s scan waits inside the gate');
+    final l = (await nl.acquire('flow', LeaseKind.session))!;
+    final f = gate.scan(l.token, (_) {}); // the holder scans right away (it waits for the slot like anyone)
+    await clock.run(31000);
+    final s = await f;
+    expect(s.open, isTrue);
+    expect(gate.refused.where((r) => r.contains('already running')), isEmpty);
+  });
+
+  test('r5 J-m2: a link or scan whose cancel throws is still gone from the gate', () async {
+    final clock = Clock();
+    final reg = LeaseRegistry(after: clock.after);
+    final radio = _ThrowingCancel();
+    final gate = BleGate(radio, reg, now: () => clock.t, after: clock.after);
+    final link = gate.connect(reg.nodeLinkToken, 'a1');
+    await Future<void>.delayed(Duration.zero);
+    await link.close();
+    expect(gate.links, 0);
+    final s = await gate.scan(reg.nodeLinkToken, (_) {});
+    await s.stop();
+    expect(gate.scans, 0);
+  });
+
   group('A-M1 / B-M1: an older page\x27s busy work holds the raw lease past the pop', () {
     test('popped while busy: the lease stays until the work ends; no NodeLink scan meanwhile', () async {
       final radio = Radio();
@@ -670,4 +701,17 @@ class _Throws implements Prober {
   @override
   Future<Outcome> probe(GateLink link, String id, {required Future<void> due, required Future<void> cancelled}) async =>
       throw StateError('bad record 0123456789abcdef0123456789abcdef');
+}
+
+/// A radio whose subscriptions throw when cancelled (a platform error on disconnect / stopping the scan).
+class _ThrowingCancel extends Radio {
+  @override
+  Stream<bool> connect(String address, Duration timeout) {
+    final c = StreamController<bool>(onCancel: () => throw StateError('disconnect failed'));
+    scheduleMicrotask(() => c.add(true));
+    return c.stream;
+  }
+
+  @override
+  Stream<String> scan() => StreamController<String>(onCancel: () => throw StateError('stop failed')).stream;
 }

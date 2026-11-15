@@ -47,8 +47,10 @@ class GateScan {
   Future<void> stop() async {
     if (!_open) return;
     _open = false;
-    await _sub?.cancel();
-    gate._scans.remove(this);
+    gate._scans.remove(this); // gone from the gate at once: the next scan is not refused meanwhile (r5 J-m1)
+    try {
+      await _sub?.cancel();
+    } catch (_) {} // a cancel that throws never leaves the gate thinking a scan runs (r5 J-m2)
   }
 }
 
@@ -108,17 +110,22 @@ class GateLink {
     if (!_open) return;
     _open = false;
     if (!_down) _gone = Completer<void>();
-    await _sub?.cancel(); // cancelling the connect subscription disconnects (flutter_reactive_ble)
-    final g = _gone;
-    if (g != null) {
-      // ignore: unawaited_futures
-      gate._timer(BleGate.closeMax, () {
-        if (!g.isCompleted) g.complete();
-      });
-      await g.future;
+    try {
+      await _sub?.cancel(); // cancelling the connect subscription disconnects (flutter_reactive_ble)
+      final g = _gone;
+      if (g != null) {
+        // ignore: unawaited_futures
+        gate._timer(BleGate.closeMax, () {
+          if (!g.isCompleted) g.complete();
+        });
+        await g.future;
+      }
+    } catch (_) {
+      // a cancel that throws: the link is given up all the same (r5 J-m2)
+    } finally {
+      gate._links.remove(this);
+      await _state.close();
     }
-    gate._links.remove(this);
-    await _state.close();
   }
 }
 

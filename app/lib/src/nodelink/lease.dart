@@ -2,6 +2,8 @@
 // owner of "who may use BleGate now" (§4.1): NodeLink itself when no lease is held, the lease holder otherwise.
 // Time is injected (now / after) so the 420 s / 900 s caps are testable without timers.
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 /// A credential for BleGate and RecordWriter. Only the registry's current token is valid.
 class Token {
   Token._(this.id, this.owner);
@@ -108,6 +110,9 @@ class LeaseRegistry {
   final List<String> unsavedTodos = [];
 
   Lease? get current => _lease;
+  /// Tests only: during a lease this is the holder's credential (review pr1 r5 J-m5); the app uses [nodeLinkToken] and
+  /// each lease's own token.
+  @visibleForTesting
   Token get token => _current;
 
   /// NodeLink's own credential: the current token only while no lease is held (§4.1; review pr1 A-M5 / B-M2). A

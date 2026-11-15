@@ -154,7 +154,11 @@ class NodeLink implements LeaseListener {
     if (reg.current != null) return null;
     core.acquireLease(now());
     await _dropAll();
+    final mine = reg.nodeLinkToken; // NodeLink's own token (no lease is held here), until the lease replaces it
     final l = reg.acquire(name, kind);
+    // anything NodeLink's token still has in the gate goes too: a scan that was waiting for a slot would block the
+    // holder's own scan for up to 30 s (review pr1 r5 J-m1)
+    if (l != null && mine != null) gate.revoked(mine);
     _pump();
     return l;
   }
