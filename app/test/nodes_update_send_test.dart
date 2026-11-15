@@ -59,7 +59,9 @@ OwnerStep step(OwnerKind kind, {int? frame, String detail = '', String rel = '',
     sendUpdate: false,
     info: info ?? Uint8List(0),
     sw: false,
-    note: ''); // 254-app-team-status: OwnerStep.note (the duplicate-address line)
+    note: '', // 254-app-team-status: OwnerStep.note (the duplicate-address line)
+    loginEnd: 0, // #329 T8: not a login end
+    loginCode: BigInt.zero);
 
 class FakeSession implements OwnerSession {
   FakeSession(this.rust);

@@ -281,7 +281,9 @@ void main() {
         sendUpdate: false,
         info: Uint8List(0),
         sw: false,
-        note: "");
+        note: "",
+        loginEnd: 0,
+        loginCode: BigInt.zero);
     const member = StatusFields(
         color: 'green',
         sentence: '已連上隊伍網路',
