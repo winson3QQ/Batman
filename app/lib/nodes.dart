@@ -1061,22 +1061,12 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
     await _watchLink();
   }
 
-  /// #329 §3.4 S3: one 「加入網路」. This node is joining in one of this phone's network records -> go on with it;
-  /// else the phone holds an imported team network (mnet) -> a member's join; else -> pick one of this phone's networks.
+  /// #329 §3.4 S3 / T-N2: one 「加入網路」 (joinChoice).
   Future<void> _join() async {
     final dir = await _dir();
-    final id = _deviceId;
-    final tail = id == null ? '' : id.substring(id.length - 4).toLowerCase();
-    var joiningHere = false;
-    for (final n in await listNets(dir: dir)) {
-      try {
-        final s = await storeReadSealed(dir: dir, rel: 'net/$n');
-        if (s == null) continue;
-        final plain = (await _platform.invokeMethod<Uint8List>('open', {'sealed': s.sealed, 'aad': s.aad}))!;
-        if (netSummary(recordPlain: plain).members.any((m) => m.joining && m.last4.toLowerCase() == tail)) joiningHere = true;
-      } catch (_) {}
-    }
-    return switch (joinChoice(joiningHere: joiningHere, hasMnet: (await listMnets(dir: dir)).isNotEmpty)) {
+    final nets = (await listNets(dir: dir)).isNotEmpty;
+    final mnets = (await listMnets(dir: dir)).isNotEmpty;
+    return switch (joinChoice(hasNet: nets, hasMnet: mnets)) {
       JoinChoice.member => _memberJoin(),
       JoinChoice.own => _joinNetwork(),
     };
@@ -1764,7 +1754,8 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
 
 enum JoinChoice { own, member }
 
-/// #329 §3.4 S3: what the one 「加入網路」 does. A join already going on in this phone's network record goes on (own);
-/// else a phone with an imported team network does a member's join; else it picks one of its own networks.
-JoinChoice joinChoice({required bool joiningHere, required bool hasMnet}) =>
-    !joiningHere && hasMnet ? JoinChoice.member : JoinChoice.own;
+/// #329 §3.4 S3 / T-N2: what the one 「加入網路」 does, the same order as the status sentence's JoinButton
+/// (statuspage.rs JoinButton::of: net/ wins): a phone that made a network joins its own; a phone with only an
+/// imported team network does a member's join; with neither the own path says there is no network.
+JoinChoice joinChoice({required bool hasNet, required bool hasMnet}) =>
+    !hasNet && hasMnet ? JoinChoice.member : JoinChoice.own;

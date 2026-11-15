@@ -363,4 +363,18 @@ abstract final class Btn {
   static const more = '更多';
   static const devOptions = '開發者選項';
   static const about = '關於';
+  // named by Rust / older-page sentences (S7: kept, the later PRs' screens carry them)
+  static const leaveNetwork = '離開網路';
+  static const requestJoin = '申請加入';
+  static const showRequestAgain = '再顯示申請';
+  static const sendNewKey = '把新密碼送給節點';
+  static const excludeThis = '排除這台';
+  static const goOn = '繼續';
+  static const claim = '認領'; // the older claim page (PR 3 replaces it)
+
+  static const all = {
+    refresh, addNode, makeNetwork, joinNetwork, checkNetwork, seeNode, allowBluetooth, openBluetooth, tryAgain, gotIt,
+    remove, cancel, save, more, devOptions, about, leaveNetwork, requestJoin, showRequestAgain, sendNewKey,
+    excludeThis, goOn, claim,
+  };
 }
