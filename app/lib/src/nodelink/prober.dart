@@ -92,6 +92,7 @@ class SessionProber implements Prober {
             done(v.row == "2'" ? const Outcome(Res.errorCode) : Outcome(Res.body, v.color));
             st = null;
           case OwnerKind.ended:
+            log?.call('probe $id: login ended ${st.loginEnd} code ${st.loginCode} (logged in: $loggedIn)');
             done(switch (st.loginEnd) {
               2 => const Outcome(Res.undecryptable),
               3 => const Outcome(Res.certRejected),
@@ -136,13 +137,19 @@ class SessionProber implements Prober {
           answer = Timer(answerMax, () => done(failed())); // after msg2: the existing 20 s (F3)
         }
         if (result.isCompleted) return;
-        run(session.onFrame(frame: f)).catchError((Object _) => done(failed()));
+        run(session.onFrame(frame: f)).catchError((Object e) {
+          log?.call('probe $id: ${e.runtimeType} $e after a frame (logged in: $loggedIn)');
+          done(failed());
+        });
       }, onError: (Object _) => done(failed()));
       await run(first);
     }
 
     // the steps before msg2 race the deadline: a step that never returns cannot hold the attempt (review pr1 A-M4)
-    unawaited(work().catchError((Object _) => done(failed())));
+    unawaited(work().catchError((Object e) {
+      log?.call('probe $id: ${e.runtimeType} $e (logged in: $loggedIn)'); // a type and a message, never bytes
+      done(failed());
+    }));
     try {
       return await result.future;
     } finally {

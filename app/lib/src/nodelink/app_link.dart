@@ -51,6 +51,7 @@ class AppLink {
       },
       ownerPub: () async => ((await platform.invokeMapMethod<String, dynamic>('publicKeys'))!['owner']) as Uint8List,
       signOwner: (input) async => (await platform.invokeMethod<Uint8List>('signOwner', {'input': input}))!,
+      log: (l) => debugPrint('BMAPP nl ${NodeLink.mask(l)}'),
       // X26: the key gate refused a key use -> 2.4 until the app is opened again (review pr1 B-M5)
       keyError: (e) {
         if (KeyAbilities.refusedBy(e) != null) _one?.link.radio(keyOk: false);
