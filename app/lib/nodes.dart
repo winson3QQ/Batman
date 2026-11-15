@@ -144,6 +144,10 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
 
   @override
   void dispose() {
+    // the link goes with the page: a request still waiting for the node ends now as 「結果不明」 (the same as its
+    // timeout), so the lease is not held for the rest of that wait (review pr1 r5 I-m1)
+    final a = _answer;
+    if (a != null && !a.isCompleted) a.complete(_unclear != null ? _unclearNow() : _waitLine);
     _drop();
     super.dispose();
   }
@@ -509,6 +513,9 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
       String? unclear,
       bool held = false}) async {
     _askEnd = null;
+    // a page that is gone starts no new request (nor a login for one): it would go out without the lease (review
+    // pr1 r5 I-m3)
+    if (!mounted && !held) return null;
     if (_busy && !held) return null;
     if (_session == null && _lastNode != null && !held) await _login(_lastNode!);
     var s = _session;

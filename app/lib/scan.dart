@@ -83,7 +83,7 @@ class _ScanPageState extends State<ScanPage> with RawBusy<ScanPage> {
     try {
       await _readOnce(d);
     } finally {
-      rawIdle(); // also when the read throws: the lease never waits for the 420 s
+      rawIdle(); // also when the read throws: the lease never waits for the 900 s
     }
   }
 

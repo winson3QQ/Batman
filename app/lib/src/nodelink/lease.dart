@@ -1,6 +1,6 @@
 // #329 design §4.4: one operation at a time may use Bluetooth and write key records. The registry is the single
 // owner of "who may use BleGate now" (§4.1): NodeLink itself when no lease is held, the lease holder otherwise.
-// Time is injected (now / after) so the 420 s rule is testable without timers.
+// Time is injected (now / after) so the 420 s / 900 s caps are testable without timers.
 
 /// A credential for BleGate and RecordWriter. Only the registry's current token is valid.
 class Token {
@@ -54,7 +54,7 @@ class Lease {
 
   /// An older page's work (§4.4 原始佔用的頁面, review pr1 A-M1 / B-M1): the lease is 「進行中」 from now until the returned
   /// function is called (once; later calls do nothing), so a page that is popped while its claim or login still runs
-  /// keeps the lease until that work ends, at most 420 s after the pop. Throws when the lease is no longer valid.
+  /// keeps the lease until that work ends, at most [LeaseRegistry.rawGoneMax] (900 s) after the pop. Throws when the lease is no longer valid.
   Cancel hold() {
     if (!valid) throw StateError('lease $name is no longer valid');
     _busy++;
@@ -67,7 +67,7 @@ class Lease {
     };
   }
 
-  /// The page's dispose: idle -> release at once; busy -> release when the work ends, at most 420 s from now.
+  /// The page's dispose: idle -> release at once; busy -> release when the work ends, at most 420 s from now (a raw lease: 900 s).
   void pageGone() {
     if (_ended || _gone) return;
     _gone = true;

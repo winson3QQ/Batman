@@ -1,6 +1,6 @@
 // #329 §4.4 原始佔用的頁面 (review pr1 A-M1 / B-M1): an older page keeps its own BLE code under a raw lease. While the
 // page is busy (a claim, a recovery, a login, a read) the lease is held, so popping the page does not hand Bluetooth
-// back to NodeLink until that work ends (at most 420 s after the pop; then the registry takes the lease back and a
+// back to NodeLink until that work ends (at most 900 s after the pop; then the registry takes the lease back and a
 // to-do is recorded, but the page itself is not stopped: it does not use the gate); the page's scan starts count against the gate's 4 in 30 s (A10, A-m7).
 import 'package:flutter/material.dart' show MaterialPageRoute;
 import 'package:flutter/widgets.dart';
@@ -27,7 +27,7 @@ mixin RawBusy<T extends StatefulWidget> on State<T> {
     if (v == _rawBusy) return;
     _rawBusy = v;
     if (v) {
-      // fail-closed (review pr1 r2 C-m2 / D-3): a lease that is gone (taken back at 420 s) throws here, so the work
+      // fail-closed (review pr1 r2 C-m2 / D-3): a lease that is gone (taken back at 900 s) throws here, so the work
       // that wanted it does not start
       _rawHold = rawUse?.lease.hold();
     } else {
@@ -37,7 +37,7 @@ mixin RawBusy<T extends StatefulWidget> on State<T> {
     }
   }
 
-  /// The busy work ended: also after the page is gone (the lease must not wait for the 420 s).
+  /// The busy work ended: also after the page is gone (the lease must not wait for the 900 s).
   void rawIdle() {
     rawBusy = false;
     if (mounted) setState(() {});
