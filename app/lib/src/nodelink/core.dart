@@ -17,8 +17,13 @@ class Params {
     this.n9 = 30000,
     this.earlyMax = 3,
     this.afterLease = 6000,
+    this.n9Login = 10000,
   });
   final int window, cap, gap, perAddr, early, interval, fresh, unseen, n9, earlyMax, afterLease;
+
+  /// loginFor: an address answering 解不開 this soon after the record was written may be the node just claimed (it
+  /// polls every 4 s, N9): it is retried first; later 解不開 are memoed as usual (code-2 B-M1, fix (a)).
+  final int n9Login;
 }
 
 /// One record of this phone: a node it owns. `mtime` = the record file's last write (§4.3.3-6, A23).
@@ -29,6 +34,10 @@ class Rec {
 }
 
 /// The end of one attempt (§4.3.3-4). `body` carries the status view (Rust's row; E_UNSUPPORTED is a body, row 1).
+/// Driver contract (trust boundary): `broken` and `refusedOther` only AFTER the node's certificate was verified and
+/// the login answered (the address is then known to be that node); anything that ends before that, including a
+/// malformed msg2 (`End::Broken` before signing), is `noResponse`. Otherwise a nearby device could plant a wrong
+/// 「是 Y」 by sending a broken msg2 (code-1 A-m7 / B-m9).
 enum Res { body, errorCode, undecryptable, certRejected, refusedForbidden, refusedOther, noResponse, broken }
 
 class Outcome {
@@ -117,9 +126,16 @@ class NodeLinkCore {
   int scanStarts = 0;
   int _nextId = 0;
   _Round? _round;
+  LoginFor? _login;
   bool get roundActive => _round != null;
   Set<String> _noRespLast = {};
   final List<String> log = [];
+  static const logMax = 500; // §4.1: a ring of 500 lines in memory
+
+  void _log(String l) {
+    log.add(l);
+    if (log.length > logMax) log.removeRange(0, log.length - logMax);
+  }
 
   // ---- queries -------------------------------------------------------------------------------------------------
 
@@ -128,6 +144,7 @@ class NodeLinkCore {
 
   /// 「新鮮」 (§4.3.1): the only predicate that may give a colour.
   bool fresh(String id, int now) {
+    if (blocked != null) return false; // Bluetooth off etc.: no colour at all (code-2 A-m1)
     final s = states[id]!;
     return s.kind == Kind.read && !s.stale && s.readAt != null && now - s.readAt! < p.fresh;
   }
@@ -259,6 +276,11 @@ class NodeLinkCore {
     final ok = bt && perm && keys;
     if (!ok) {
       _cancel(now);
+      final l = _login;
+      if (l != null && !l.done) {
+        l.running = null;
+        l.end = LoginEnd.precondition; // the flow shows 2.3 / 2.2 / 2.4 at once, not after 60 s (code-2 A-m4)
+      }
     } else if (!was && _eligible) {
       _begin(now, early: false);
     }
@@ -292,6 +314,7 @@ class NodeLinkCore {
       lastSeen.remove(a);
     }
     final targets = only ?? _pageTargets;
+    if (targets.isEmpty) return; // e.g. the node page of a record just removed (code-2 B)
     final r = _Round(_nextId++, targets, early, now, _noRespLast);
     for (final id in targets) {
       r.t[id] = _T();
@@ -306,13 +329,13 @@ class NodeLinkCore {
       leaseDue = null;
       earlyDue = null;
     }
-    log.add('${_s(now)} round ${r.id} ${early ? 'early' : 'full'} ${targets.toList()..sort()}');
+    _log('${_s(now)} round ${r.id} ${early ? 'early' : 'full'} ${targets.toList()..sort()}');
   }
 
   void _cancel(int now) {
     final r = _round;
     if (r == null) return;
-    log.add('${_s(now)} round ${r.id} cancelled');
+    _log('${_s(now)} round ${r.id} cancelled');
     _round = null;
   }
 
@@ -391,13 +414,13 @@ class NodeLinkCore {
 
   void result(int now, Attempt a, Outcome o) {
     final r = _round;
-    if (r == null || r.running == null || r.running!.addr != a.addr || r.running!.id != a.id) return;
+    if (r == null || !identical(r.running, a)) return; // a late result of a cancelled attempt is dropped (code-2 A-m3)
     r.running = null;
     r.freeAt[a.addr] = now + p.gap;
     final t = r.t[a.id]!;
     final s = states[a.id]!;
     final key = '${a.addr}|${a.id}';
-    log.add('${_s(now)}   $a -> ${o.res.name}${o.view.isEmpty ? '' : ' ${o.view}'}');
+    _log('${_s(now)}   $a -> ${o.res.name}${o.view.isEmpty ? '' : ' ${o.view}'}');
     switch (o.res) {
       case Res.body:
         isY[a.addr] = a.id;
@@ -476,7 +499,7 @@ class NodeLinkCore {
         final cut = r.running;
         if (cut != null) {
           // the attempt cut at the cap counts as not tried (§4.3.4; code-1 A-M1)
-          log.add('${_s(now)}   $cut cut at the cap');
+          _log('${_s(now)}   $cut cut at the cap');
           r.tried.remove('${cut.addr}|${cut.id}');
           r.count[cut.addr] = (r.count[cut.addr] ?? 1) - 1;
           r.t[cut.id]!.n--;
@@ -507,6 +530,7 @@ class NodeLinkCore {
         case Concl.read:
           break;
         case Concl.reason:
+          s.miss = 0; // 沒找到 / 登入被拒 / 沒找到 is not two consecutive 沒找到 (code-2 B F-b2)
           s.same = 0; // any conclusion but 不變 / 還沒輪到 / 排隊中 resets it (§4.3.4; code-1 A-m3)
         case Concl.unchanged:
           s.miss = 0;
@@ -537,7 +561,7 @@ class NodeLinkCore {
           break;
       }
     }
-    log.add('${_s(now)} round ${r.id} end ${{for (final id in r.targets) id: states[id]!.last!.name}}');
+    _log('${_s(now)} round ${r.id} end ${{for (final id in r.targets) id: states[id]!.last!.name}}');
     if (!r.early) {
       _fullEnds.add((now, r.targets));
       if (_fullEnds.length > 8) _fullEnds.removeAt(0);
@@ -594,8 +618,9 @@ class NodeLinkCore {
       }
     }
     final l = LoginFor._(this, id, now);
+    _login = l;
     if (blocked != null) l.end = LoginEnd.precondition;
-    log.add('${_s(now)} loginFor $id${l.end == null ? '' : ' -> ${l.end!.name}'}');
+    _log('${_s(now)} loginFor $id${l.end == null ? '' : ' -> ${l.end!.name}'}');
     return l;
   }
 }
@@ -626,8 +651,7 @@ class LoginFor {
   bool _ok(String a) => !tried.contains(a) || retry.contains(a);
 
   /// Its known address first; with a 「是 Y」 memo it waits for that address during the first 30 s; then unknown
-  /// addresses in scan order (never one with any 「是」 memo or a 「不是 Y」 memo), addresses not tried yet before retries
-  /// (so a node just claimed among many others is reached in the first minute; code-1 B-M4).
+  /// addresses in scan order (never one with any 「是」 memo or a 「不是 Y」 memo).
   Attempt? next(int now) {
     if (done || running != null) return null;
     String? pick;
@@ -639,7 +663,9 @@ class LoginFor {
         for (final a in seen)
           if (c.isY[a] == null && !c.isNot(a, id) && _ok(a) && (freeAt[a] ?? 0) <= now) a
       ];
-      pick = open.where((a) => !tried.contains(a)).firstOrNull ?? open.firstOrNull;
+      // scan order. Right after a claim the 10 s N9 window (Params.n9Login) is what lets a crowded room work: inside
+      // it every 解不開 is retried, after it they are memoed and only the new node is left (code-2 B-M1)
+      pick = open.firstOrNull;
     }
     if (pick == null) return null;
     retry.remove(pick);
@@ -649,10 +675,10 @@ class LoginFor {
   }
 
   void result(int now, Attempt a, Outcome o) {
-    if (running == null || running!.addr != a.addr || !c.lease) return; // a lease taken back: drop it (code-1 A-m5)
+    if (!identical(running, a) || !c.lease) return; // a lease taken back, or a late result: drop it (code-1 A-m5)
     running = null;
     freeAt[a.addr] = now + c.p.gap;
-    c.log.add('${NodeLinkCore._s(now)}   loginFor $a -> ${o.res.name}');
+    c._log('${NodeLinkCore._s(now)}   loginFor $a -> ${o.res.name}');
     final s = c.states[id] ?? NodeState(); // a record removed meanwhile: memos only
     switch (o.res) {
       case Res.body:
@@ -661,7 +687,7 @@ class LoginFor {
         end = LoginEnd.ok;
       case Res.undecryptable:
         final w = c.writtenAt[id];
-        if (w != null && now - w < c.p.n9) {
+        if (w != null && now - w < c.p.n9Login) {
           retry.add(a.addr);
         } else if (c.isY[a.addr] == id) {
           c.isY.remove(a.addr);
