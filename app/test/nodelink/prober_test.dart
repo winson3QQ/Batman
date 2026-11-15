@@ -54,7 +54,10 @@ StatusView view(String row, String color) => StatusView(
 class FakeSession implements OwnerSession {
   bool disposed = false;
   @override
-  void dispose() => disposed = true;
+  void dispose() {
+    disposed = true;
+    if (throwOnDispose) throw StateError('disposed twice');
+  }
   FakeSession(this.script, {this.statusRow = '3', this.color = 'green'});
   final List<OwnerStep> script;
   final String statusRow, color;
@@ -69,6 +72,7 @@ class FakeSession implements OwnerSession {
   }
 
   bool throwOnStatus = false;
+  bool throwOnDispose = false;
   @override
   OwnerStep requestStatusPage() => throwOnStatus ? throw StateError('bridge') : step(OwnerKind.write);
   @override
@@ -80,12 +84,15 @@ class FakeSession implements OwnerSession {
 class FakeRust implements RustLibApi {
   FakeSession session = FakeSession([]);
   bool throwOnStatus = false;
+  bool throwOnDispose = false;
   @override
   Future<int> crateApiClaimFrameLimit({required List<int> ctrl, required int mtu}) async => 244;
   @override
   (OwnerSession, OwnerStep) crateApiOwnerOwnerSessionStart(
           {required List<int> recordPlain, required List<int> ownerPub, required int frameLimit}) =>
-      (session..throwOnStatus = throwOnStatus, step(OwnerKind.write));
+      (session
+        ..throwOnStatus = throwOnStatus
+        ..throwOnDispose = throwOnDispose, step(OwnerKind.write));
   @override
   dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
 }
@@ -211,14 +218,25 @@ void main() {
     expect((o.res, o.view), (Res.noResponse, ''));
   });
 
-  test('B-m2: the session is disposed and the opened record zeroed when the attempt ends', () async {
-    final rec = Uint8List.fromList(List.filled(8, 7));
-    final p = SessionProber(
-        openRecord: (id) async => rec, ownerPub: () async => Uint8List(65), signOwner: (i) async => Uint8List(70));
-    final o = await probe([step(OwnerKind.loggedIn, loginEnd: 1), step(OwnerKind.answer)], prober: p);
+  test('B-m2: the session is disposed when the attempt ends', () async {
+    final o = await probe([step(OwnerKind.loggedIn, loginEnd: 1), step(OwnerKind.answer)]);
     expect(o.res, Res.body);
     expect(rust.session.disposed, isTrue);
-    expect(rec, everyElement(0));
+  });
+
+  test('S20: a read-only record buffer (platform channel) and a dispose that throws never change the outcome', () async {
+    final p = SessionProber(
+        openRecord: (id) async => Uint8List.fromList(List.filled(8, 7)).asUnmodifiableView(),
+        ownerPub: () async => Uint8List(65),
+        signOwner: (i) async => Uint8List(70));
+    rust.throwOnDispose = true;
+    try {
+      final o = await probe([step(OwnerKind.loggedIn, loginEnd: 1), step(OwnerKind.answer)], prober: p);
+      expect(o.res, Res.body);
+      expect((await probe([step(OwnerKind.ended, loginEnd: 2)], prober: p)).res, Res.undecryptable);
+    } finally {
+      rust.throwOnDispose = false;
+    }
   });
 
   test('A-m10: an exception after the login is broken, before it no answer', () async {

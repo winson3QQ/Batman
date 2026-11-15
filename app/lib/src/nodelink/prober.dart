@@ -1,6 +1,7 @@
 // #329 §4.3.3-3/-4: one attempt's login + status read with the Rust OwnerSession, mapped to the core's outcome.
-// The record is opened (Keystore) for this attempt only; the session is disposed and the plain bytes zeroed when the
-// attempt ends (review pr1 B-m2). Nothing here writes a record (an automatic read only reads, §4.3.3-9). Platform
+// The record is opened (Keystore) for this attempt only; the Rust session is disposed when the attempt ends (review
+// pr1 B-m2). The plain bytes from the platform channel cannot be zeroed from Dart (a read-only buffer, seen on the
+// S20); they go with the GC like every other opened record in the app. Nothing here writes a record (an automatic read only reads, §4.3.3-9). Platform
 // calls are injected so tests can fake them.
 import 'dart:async';
 import 'dart:typed_data';
@@ -58,7 +59,6 @@ class SessionProber implements Prober {
     unawaited(cancelled.then((_) => done(const Outcome(Res.noResponse))));
 
     OwnerSession? s;
-    Uint8List? record;
     StreamSubscription<List<int>>? sub;
     Timer? answer;
 
@@ -120,7 +120,6 @@ class SessionProber implements Prober {
         rethrow;
       }
       if (r == null) return done(const Outcome(Res.noResponse));
-      record = r;
       if (result.isCompleted) return;
       final mtu = await link.requestMtu(517);
       if (result.isCompleted) return;
@@ -164,12 +163,6 @@ class SessionProber implements Prober {
         s?.dispose();
       } catch (e) {
         log?.call('probe $id cleanup: dispose ${e.runtimeType} $e');
-      }
-      final r = record;
-      try {
-        if (r != null) r.fillRange(0, r.length, 0);
-      } catch (e) {
-        log?.call('probe $id cleanup: zero ${e.runtimeType} $e');
       }
     }
   }
