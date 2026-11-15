@@ -126,7 +126,7 @@ class StatusHero extends StatelessWidget {
             if (onRefresh != null)
               TextButton.icon(
                 onPressed: onRefresh,
-                style: TextButton.styleFrom(foregroundColor: ink, minimumSize: const Size(48, 48)),
+                style: TextButton.styleFrom(foregroundColor: ink, minimumSize: const Size(48, 48), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
                 icon: const Icon(Icons.refresh, size: 18),
                 label: const Text(Btn.refresh, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
               ),
@@ -272,7 +272,7 @@ class BatBanner extends StatelessWidget {
             if (action != null)
               TextButton(
                 onPressed: onAction,
-                style: TextButton.styleFrom(foregroundColor: ink, padding: EdgeInsets.zero, minimumSize: const Size(48, 44)),
+                style: TextButton.styleFrom(foregroundColor: ink, padding: EdgeInsets.zero, minimumSize: const Size(48, 48), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
                 child: Text(action!,
                     style: const TextStyle(
                         fontSize: Fs.body, fontWeight: FontWeight.w700, decoration: TextDecoration.underline)),
@@ -324,22 +324,22 @@ class BatButton extends StatelessWidget {
       BtnKind.primary => FilledButton(
           onPressed: onPressed,
           style: FilledButton.styleFrom(
-              backgroundColor: t.acc, foregroundColor: t.accInk, minimumSize: tall, shape: shape,
+              backgroundColor: t.acc, foregroundColor: t.accInk, minimumSize: tall, tapTargetSize: MaterialTapTargetSize.shrinkWrap, shape: shape,
               disabledBackgroundColor: t.line, disabledForegroundColor: t.sub),
           child: child),
       BtnKind.secondary => OutlinedButton(
           onPressed: onPressed,
           style: OutlinedButton.styleFrom(
-              foregroundColor: t.accText, minimumSize: tall, shape: shape, side: BorderSide(color: t.acc, width: 2)),
+              foregroundColor: t.accText, minimumSize: tall, tapTargetSize: MaterialTapTargetSize.shrinkWrap, shape: shape, side: BorderSide(color: t.acc, width: 2)),
           child: child),
       BtnKind.text => TextButton(
           onPressed: onPressed,
-          style: TextButton.styleFrom(foregroundColor: t.accText, minimumSize: const Size.fromHeight(48), shape: shape),
+          style: TextButton.styleFrom(foregroundColor: t.accText, minimumSize: const Size.fromHeight(48), tapTargetSize: MaterialTapTargetSize.shrinkWrap, shape: shape),
           child: child),
       BtnKind.danger => FilledButton(
           onPressed: onPressed,
           style: FilledButton.styleFrom(
-              backgroundColor: t.danger, foregroundColor: t.dangerInk, minimumSize: tall, shape: shape),
+              backgroundColor: t.danger, foregroundColor: t.dangerInk, minimumSize: tall, tapTargetSize: MaterialTapTargetSize.shrinkWrap, shape: shape),
           child: child),
     };
   }

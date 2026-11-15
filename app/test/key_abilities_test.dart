@@ -18,7 +18,7 @@ import 'package:batman_app/main.dart';
 import 'package:batman_app/claim.dart';
 import 'package:batman_app/nodes.dart';
 import 'package:batman_app/scan.dart';
-import 'package:batman_app/src/nodelink/node_list.dart';
+import 'package:batman_app/ui/home_page.dart';
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart' show Why;
 import 'package:batman_app/src/rust/api/simple.dart';
@@ -305,10 +305,11 @@ void main() {
     // #329 PR 1 review r3 E-M1 (E6 / E8): the start page opens an older page under a raw lease and hands it to the
     // page (its busy work holds it); the lease goes when the page is gone. Negative controls: _open without the lease
     // (page(a, null)) or without openRawPage -> FAIL.
-    for (final (button, lease, Type type) in [
-      ('我的節點', '我的節點', NodesPage),
-      ('認領節點', '新增節點', ClaimPage),
-      ('附近的節點（開發用：藍牙測試）', '附近的節點', ScanPage),
+    // PR 2: 新增節點 is on the home page; the older console and the BLE test page are in 設定 -> 開發者選項
+    for (final (button, lease, Type type, viaSettings) in [
+      ('新增節點', '新增節點', ClaimPage, false),
+      ('舊版控制台', '舊版控制台', NodesPage, true),
+      ('附近的節點（藍牙測試）', '附近的節點', ScanPage, true),
     ]) {
       testWidgets('r3 E-M1 / r4 G-M1: $button opens its page under a raw lease handed to the page; back releases it',
           (t) async {
@@ -322,9 +323,13 @@ void main() {
           a.link.dispose();
           AppLink.forgetForTest();
         });
-        expect(find.byType(NodeStatusList), findsOneWidget, reason: 'the status list is on the start page');
+        expect(find.byType(HomePage), findsOneWidget, reason: 'the start page hands over to the home page');
         expect(a.reg.current, isNull);
-        await t.tap(find.text(button));
+        if (viaSettings) {
+          await t.tap(find.byTooltip('設定'));
+          await t.pumpAndSettle();
+        }
+        await t.tap(find.text(button).last);
         await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
         await t.pumpAndSettle();
         expect(find.byType(type), findsOneWidget);
