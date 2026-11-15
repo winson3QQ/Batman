@@ -3,7 +3,6 @@
 // 360 s later); a page that is gone sends no new request. Negative controls: dispose without ending the wait, or _ask
 // without the `!mounted` stop -> FAIL.
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -119,6 +118,7 @@ void main() {
     await t.tap(find.byKey(const Key('sendUpdate')));
     await settle(t, 5);
     expect(node.log, ['${u.fSend}:我的節點'], reason: 'the send went out under the lease');
+    expect(reg.current, same(lease), reason: 'held while the send waits');
     // the user goes back twice while the send waits for the node
     t.state<NavigatorState>(find.byType(Navigator)).pop();
     await settle(t, 5);
