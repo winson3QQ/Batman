@@ -7,6 +7,10 @@ import 'claim.dart';
 import 'key_abilities.dart';
 import 'nodes.dart';
 import 'scan.dart';
+import 'src/nodelink/app_link.dart';
+import 'src/nodelink/core.dart' as nlcore show Page;
+import 'src/nodelink/lease.dart';
+import 'src/nodelink/node_list.dart';
 import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
@@ -16,30 +20,37 @@ const _platform = MethodChannel('dev.batman/platform');
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await RustLib.init();
-  runApp(const BatmanApp());
+  runApp(BatmanApp(makeLink: (dir) => AppLink.create(platform: _platform, filesDir: dir)));
 }
 
 class BatmanApp extends StatelessWidget {
-  const BatmanApp({super.key});
+  const BatmanApp({super.key, this.makeLink});
+
+  /// #329 PR 1: the app's NodeLink (main passes it; a test of the pages alone does not)
+  final AppLink Function(String filesDir)? makeLink;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Batman',
       theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
-      home: const StartupCheck(),
+      home: StartupCheck(makeLink: makeLink),
     );
   }
 }
 
 class StartupCheck extends StatefulWidget {
-  const StartupCheck({super.key});
+  const StartupCheck({super.key, this.makeLink});
+
+  /// #329 PR 1: builds the app's NodeLink once the startup check passed (null in tests of the page alone).
+  final AppLink Function(String filesDir)? makeLink;
 
   @override
   State<StartupCheck> createState() => _StartupCheckState();
 }
 
-class _StartupCheckState extends State<StartupCheck> {
+class _StartupCheckState extends State<StartupCheck> with WidgetsBindingObserver {
+  AppLink? _app; // #329 PR 1: built once the startup check passed
   // what everyone sees (the result, warnings, first-run outcome) / the technical detail, folded away
   String? _report;
   String _tech = '';
@@ -52,7 +63,44 @@ class _StartupCheckState extends State<StartupCheck> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _run();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// §4.3.2 (T20): background = paused / hidden / detached; resumed and inactive are the foreground.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    final l = _app?.link;
+    if (l == null) return;
+    debugPrint('BMAPP nodelink lifecycle ${s.name}');
+    if (s == AppLifecycleState.resumed) l.foreground();
+    if (s == AppLifecycleState.paused || s == AppLifecycleState.hidden || s == AppLifecycleState.detached) l.background();
+  }
+
+  /// §4.4: an older page that uses Bluetooth or writes records holds a raw lease while it is open.
+  Future<void> _open(String name, Widget Function(AppLink? a) page) async {
+    final a = _app;
+    if (a == null) {
+      // no NodeLink (a test of this page alone): the page as before
+      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => page(null)));
+      return;
+    }
+    final lease = await a.link.acquire(name, LeaseKind.raw);
+    if (!mounted) return;
+    if (lease == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('另一個操作還在進行：${a.reg.current?.name ?? ''}')));
+      return;
+    }
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => page(a)));
+    lease.pageGone();
+    if (mounted) setState(() {});
   }
 
   Future<void> _run() async {
@@ -109,6 +157,12 @@ class _StartupCheckState extends State<StartupCheck> {
         ..add('啟動檢查失敗：$e');
     }
     debugPrint('BMAPP ${[...lines, ...tech].join(' | ')}');
+    final make = widget.makeLink;
+    if (agree && keys.appUsable && _app == null && make != null) {
+      final a = make((await _platform.invokeMethod<String>('filesDir'))!);
+      await a.link.start(nlcore.Page.home);
+      _app = a;
+    }
     setState(() {
       _ok = agree && keys.appUsable;
       _keys = keys;
@@ -170,20 +224,21 @@ class _StartupCheckState extends State<StartupCheck> {
                         _run();
                       },
                       child: const Text('再試一次')),
+                if (_ok && _app != null) NodeStatusList(link: _app!.link),
                 // only an app that passed the startup check talks to nodes; the everyday actions first
                 if (_ok)
                   FilledButton(
-                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NodesPage())),
+                      onPressed: () => _open('我的節點', (a) => NodesPage(ble: a?.ble)),
                       child: const Text('我的節點')),
                 if (_ok)
                   OutlinedButton(
                       onPressed: _keys.claim // off: the reason is in the report above
-                          ? () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ClaimPage()))
+                          ? () => _open('新增節點', (a) => ClaimPage(ble: a?.ble))
                           : null,
                       child: const Text('認領節點')),
                 if (_ok)
                   TextButton(
-                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ScanPage())),
+                      onPressed: () => _open('附近的節點', (a) => ScanPage(ble: a?.ble)),
                       child: const Text('附近的節點（開發用：藍牙測試）')),
                 const SizedBox(height: 8),
                 ExpansionTile(

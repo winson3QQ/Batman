@@ -19,14 +19,15 @@ final provdStatus = Uuid.parse('540aa38c-0086-4d5c-a9c0-c7c9d1e1bd42');
 void _log(String s) => debugPrint('BMAPP ble $s');
 
 class ScanPage extends StatefulWidget {
-  const ScanPage({super.key});
+  const ScanPage({super.key, this.ble});
+  final FlutterReactiveBle? ble; // #329 §4.2: the app's one instance
 
   @override
   State<ScanPage> createState() => _ScanPageState();
 }
 
 class _ScanPageState extends State<ScanPage> {
-  final _ble = FlutterReactiveBle();
+  late final _ble = widget.ble ?? FlutterReactiveBle();
   final _found = <String, DiscoveredDevice>{};
   final _status = <String, String>{};
   StreamSubscription<DiscoveredDevice>? _scan;
