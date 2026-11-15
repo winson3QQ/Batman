@@ -62,10 +62,13 @@ Future<void> openUnderLease(BuildContext context, AppLink a, String name, Widget
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.app, required this.ui, required this.devTrust, required this.keys});
+  const HomePage({super.key, required this.app, required this.ui, required this.devTrust, required this.keys, this.notes = const []});
   final AppLink app;
   final UiState ui;
   final bool devTrust;
+  /// What the startup check said besides 「正常」 (a cleared interrupted save, keys only software-protected): kept on
+  /// the settings page, not lost at the hand-over (review r3 F-m4)
+  final List<String> notes;
   /// KeyGate (§4.1, F42): the startup key check; an entry a key cannot serve is grey with the reason
   final KeyAbilities keys;
 
@@ -77,7 +80,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   StreamSubscription<void>? _sub;
   Timer? _tick;
   int _pending = 0;
-  NetRecords _records = NetRecords.none;
+  NetRecords _records = NetRecords.unknown; // until the records were looked at: the neutral button (review r3 E-m3)
 
   AppLink get a => widget.app;
 
@@ -237,7 +240,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           icon: Icon(Icons.settings_outlined, color: t.ink),
           onPressed: () {
             a.link.setPage(nl.Page.other); // §4.3.2: no reads while the settings are on screen (T-L8; review A-m3)
-            _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, devTrust: widget.devTrust))));
+            _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, devTrust: widget.devTrust, notes: widget.notes))));
           },
         ),
       ],

@@ -194,6 +194,11 @@ class FakeRust implements RustLibApi {
           if (r.startsWith('mnet/')) r.substring(5)
       ];
   @override
+  Future<List<String>> crateApiMemberListPends({required String dir}) async => [
+        for (final r in records)
+          if (r.startsWith('mpend/')) r.substring(6)
+      ];
+  @override
   MnetView crateApiMemberMnetSummary({required List<int> mnetPlain}) =>
       const MnetView(netId: netId, netName: 'n', entryState: 'applied', deviceLast4: '4f2a');
   @override
@@ -424,6 +429,27 @@ void main() {
     expect(find.textContaining('這支手機還沒有隊伍網路'), findsOneWidget);
     expect(find.textContaining('重裝'), findsNothing);
     await longWait(t); // the login's own wait timer runs out, as in the other tests here
+  });
+
+  testWidgets('r3 F-m9: no network record but a join request waiting -> says it waits for the leader', (t) async {
+    await open(t, records: {'node/$deviceId', 'mpend/$netId'});
+    await press(t, find.byType(ListTile));
+    await press(t, find.widgetWithText(FilledButton, '加入網路'));
+    expect(rust.sends, isEmpty);
+    expect(find.textContaining('還在等隊長同意'), findsOneWidget);
+    await longWait(t);
+  });
+
+  testWidgets('r3 E-m9: only net -> this phone''s own join (its words, not the member''s)', (t) async {
+    await open(t, records: {'node/$deviceId', 'net/$netId'});
+    await press(t, find.byType(ListTile));
+    await press(t, find.widgetWithText(FilledButton, '加入網路'));
+    // the owner's own join (net/ record, the 「加入網路 <mesh>」 words), not the member's 「加入隊伍網路」 nor the no-network words
+    expect(find.textContaining('正在把這台節點加入網路 '), findsOneWidget);
+    expect(find.textContaining('加入隊伍網路'), findsNothing);
+    expect(find.textContaining('這支手機還沒有隊伍網路'), findsNothing);
+    expect(rust.sends, isEmpty);
+    await longWait(t);
   });
 
   testWidgets('S3 / T-N2: both net and mnet -> the user picks; the team network -> the member''s join', (t) async {

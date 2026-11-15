@@ -120,7 +120,11 @@ class _PermissionsPageState extends State<PermissionsPage> {
 
   Future<void> _go() async {
     setState(() => _asking = true);
-    final ok = await widget.ask();
+    // a platform error is a refusal, never a button that stays grey (review r3 E-m6)
+    var ok = false;
+    try {
+      ok = await widget.ask();
+    } catch (_) {}
     if (!mounted) return;
     if (ok) {
       Navigator.of(context).pop(true);

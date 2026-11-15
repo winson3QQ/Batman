@@ -165,6 +165,7 @@ void main() {
     ('a nickname with a line separator', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{1: 'a${String.fromCharCode(0x2028)}b'}}})),
     ('a nickname with a zero-width space', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{1: 'a${String.fromCharCode(0x200b)}b'}}})),
     ('a nickname with a C1 control', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{1: 'a${String.fromCharCode(0x85)}b'}}})),
+    ('a blank nickname', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{1: '   '}}})),
   ]) {
     test('B-m1: $what is not taken (absent)', () async {
       final s = MemStore()

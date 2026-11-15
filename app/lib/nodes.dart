@@ -1072,7 +1072,14 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
       case JoinChoice.own:
         return _joinNetwork();
       case JoinChoice.none:
-        _say('[REQ_FAIL] 這支手機還沒有隊伍網路：請按「建立網路」，或向隊長要邀請');
+        // a phone whose join request is waiting says so (review r3 F-m9)
+        var pending = false;
+        try {
+          pending = (await listPends(dir: dir)).isNotEmpty;
+        } catch (_) {} // unreadable: the general words
+        _say(pending
+            ? '[REQ_FAIL] 你的加入申請還在等隊長同意：隊長同意後，貼上同意碼再加入'
+            : '[REQ_FAIL] 這支手機還沒有隊伍網路：請按「建立網路」，或向隊長要邀請');
       case JoinChoice.ask:
         if (!mounted) return;
         final team = await showDialog<bool>(

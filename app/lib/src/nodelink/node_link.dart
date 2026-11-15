@@ -209,6 +209,7 @@ class NodeLink implements LeaseListener {
     if (_disposed) return;
     final t = now();
     core.tick(t);
+    _noteTwoPrime();
     // the core cancelled or cut the attempt in progress: drop its link now (a round only reads, §4.3.3-8)
     final a = _attempt;
     if (a != null && !identical(core.running, a)) _abort();
@@ -229,6 +230,19 @@ class NodeLink implements LeaseListener {
     _timer?.call();
     final w = core.wakeAt(t);
     if (w != null) _timer = after(Duration(milliseconds: w - t), _pump);
+  }
+
+  final Map<String, int?> _twoPrimeAt = {};
+
+  /// A 2' is a read too: its wall time is the moment the core made it 2' (at a round's end, in tick), not the last
+  /// body's (PR 2 review r2 D-m6, r3 E-m2).
+  void _noteTwoPrime() {
+    core.states.forEach((id, s) {
+      if (s.view == "2'" && s.readAt != _twoPrimeAt[id]) {
+        _twoPrimeAt[id] = s.readAt;
+        readWall[id] = wall();
+      }
+    });
   }
 
   void _retryScan(Duration d) {
@@ -307,7 +321,7 @@ class NodeLink implements LeaseListener {
     _cancel = null;
     core.result(now(), a, o);
     // the wall time of a read; a 2' is a read too (its own time, not the last body's: PR 2 review r2 D-m6)
-    if (o.res == Res.body || (o.res == Res.errorCode && core.states[a.id]?.view == "2'")) readWall[a.id] = wall();
+    if (o.res == Res.body) readWall[a.id] = wall();
     _pump();
   }
 

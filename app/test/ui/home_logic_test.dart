@@ -169,4 +169,16 @@ void main() {
     expect(nodeRowWords(node('p3'), firstRounds: true).$1, Look.busy);
     expect(nodeRowWords(node('p4', v: sv(nodeState: 1)), firstRounds: false).$2, '還沒加入隊伍網路');
   });
+
+  test('r3 F-m6: the row time says 讀取於 only for a fresh read, 上次讀取 for an older one', () {
+    expect(nodeRowWords(node('t1', v: sv()), firstRounds: false).$3, startsWith('讀取於 22:48'));
+    // unreachable now, read earlier in this run: the reason, and the older read as 上次讀取
+    final s = NodeState()
+      ..kind = Kind.unreachable
+      ..why = Why.notFound
+      ..last = Concl.notFound;
+    final gone = NodeInfo(
+        id: 't2', name: '節點 T2', state: s, fresh: false, shownWhy: Why.notFound, view: sv(), readWall: DateTime(2026, 11, 15, 22, 48));
+    expect(nodeRowWords(gone, firstRounds: false).$3, startsWith('上次讀取 22:48'));
+  });
 }

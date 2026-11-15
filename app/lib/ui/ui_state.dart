@@ -11,8 +11,8 @@ import 'cbor_mini.dart';
 const uiRel = 'ui/state-v1';
 const nickMax = 24;
 const lookKinds = {'ok', 'warn', 'bad', 'unk'};
-final _unsafe = RegExp('[${_c(0)}-${_c(0x1f)}${_c(0x7f)}-${_c(0x9f)}${_c(0xad)}${_c(0x61c)}${_c(0x180e)}${_c(0x200b)}-${_c(0x200f)}${_c(0x2028)}-${_c(0x202e)}${_c(0x2060)}-${_c(0x206f)}${_c(0xfeff)}${_c(0xfff9)}-${_c(0xfffb)}]'); // Cc, Cf, Zl, Zp (review r2 D-m1)
-String _c(int code) => String.fromCharCode(code); // control and text-direction characters, by code point
+/// Every control, format, line and paragraph separator character, by Unicode category (review r2 D-m1, r3 E-m4).
+final _unsafe = RegExp(r'[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]', unicode: true);
 
 /// One node's display memory.
 class UiNode {
@@ -93,7 +93,7 @@ class UiState {
         if (id is! String || n is! Map<Object, Object>) throw const FormatException('node table');
         if (n.keys.any((k) => k != 1 && k != 2 && k != 4)) throw const FormatException('node field outside the list');
         final nick = n[1], look = n[2], at = n[4];
-        if (nick != null && (nick is! String || nick.runes.length > nickMax || _unsafe.hasMatch(nick))) {
+        if (nick != null && (nick is! String || nick.runes.length > nickMax || nick.trim().isEmpty || _unsafe.hasMatch(nick))) {
           throw const FormatException('nickname'); // control or direction characters never reach the screen (B-m1)
         }
         if (look != null && (look is! String || !lookKinds.contains(look))) throw const FormatException('kind');

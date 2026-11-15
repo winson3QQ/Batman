@@ -172,7 +172,8 @@ class _StartupCheckState extends State<StartupCheck> {
       final ui = UiState(RecordUiStore(a.records, _platform), log: (l) => debugPrint('BMAPP $l'));
       await ui.load();
       if (!mounted) return;
-      Widget home() => HomePage(app: a, ui: ui, devTrust: _devTrust, keys: keys);
+      final notes = lines.skip(1).toList(); // lines[0] is 「啟動檢查：正常」
+      Widget home() => HomePage(app: a, ui: ui, devTrust: _devTrust, keys: keys, notes: notes);
       final nav = Navigator.of(context);
       if (!ui.welcomed && a.link.core.states.isEmpty) {
         nav.pushReplacement(MaterialPageRoute(

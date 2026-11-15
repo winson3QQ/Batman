@@ -1,5 +1,7 @@
 // #329 §9.1 for the new pages: T-N1 (「從這支手機移除這台節點」), T-H4 (an entry a key cannot serve is grey with its
 // reason), T-U5 (a stored read time in the future says only 「之前讀過」).
+import 'dart:async';
+
 import 'package:batman_app/key_abilities.dart';
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart';
@@ -7,9 +9,11 @@ import 'package:batman_app/src/rust/api/owner.dart' show StatusView;
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/home_logic.dart';
 import 'package:batman_app/ui/home_page.dart';
+import 'package:batman_app/ui/intro_pages.dart';
 import 'package:batman_app/ui/node_page.dart';
 import 'package:batman_app/ui/settings_page.dart';
 import 'package:batman_app/ui/theme.dart';
+import 'package:batman_app/ui/widgets.dart' show Btn;
 import 'package:batman_app/ui/ui_state.dart';
 import 'package:flutter/material.dart' hide Page;
 import 'package:flutter/services.dart';
@@ -34,8 +38,12 @@ class FakeRust implements RustLibApi {
   @override
   Future<List<String>> crateApiOwnerListNodes({required String dir}) async => const [];
   List<String> nets = [], mnets = [], pends = [];
+  Future<void>? netsGate; // not done = the records are still being looked at
   @override
-  Future<List<String>> crateApiOwnerListNets({required String dir}) async => nets;
+  Future<List<String>> crateApiOwnerListNets({required String dir}) async {
+    await netsGate;
+    return nets;
+  }
   @override
   Future<List<String>> crateApiMemberListMnets({required String dir}) async => mnets;
   @override
@@ -321,5 +329,132 @@ void main() {
     expect(nodeRowWords(n(now - 60), firstRounds: false).$2, startsWith('上次讀取 '));
     expect(nodeRowWords(n(now - 60), firstRounds: false).$2, endsWith('，當時正常'));
     expect(nodeRowWords(n(now - 60), firstRounds: false).$1.name, 'unk', reason: 'T2: old data only in the unk style');
+  });
+
+  // ---- PR 2 review r3: the wiring of the pages (E-m9 / F-m4) ---------------------------------------------------------
+
+  testWidgets('r3 E-m9: row 2 「允許藍牙權限」 asks Android; allowed -> the permission precondition holds', (t) async {
+    t.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('dev.batman/platform'), (c) async => c.method == 'blePermissions' ? true : null);
+    final a = app();
+    a.link.radio(permission: false);
+    final ui = UiState(MemStore()..ids = [id]);
+    await t.pumpWidget(host(HomePage(app: a, ui: ui, devTrust: false, keys: keys())));
+    await t.pump();
+    expect(a.link.core.blocked, Why.noPermission);
+    await t.tap(find.widgetWithText(FilledButton, Btn.allowBluetooth));
+    await t.pumpAndSettle();
+    await t.tap(find.widgetWithText(FilledButton, Btn.goOn));
+    await t.pumpAndSettle();
+    expect(a.link.core.blocked, isNot(Why.noPermission));
+    expect(find.byType(PermissionsPage), findsNothing, reason: 'allowed: back on the home page');
+    a.link.dispose();
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
+
+  testWidgets('r3 E-m6: a permission request that fails is a refusal, the button works again', (t) async {
+    await t.pumpWidget(host(PermissionsPage(ask: () async => throw PlatformException(code: 'x'))));
+    await t.tap(find.widgetWithText(FilledButton, Btn.goOn));
+    await t.pumpAndSettle();
+    expect(find.text('藍牙權限沒有開'), findsOneWidget);
+    expect(t.widget<FilledButton>(find.widgetWithText(FilledButton, Btn.goOn)).onPressed, isNotNull);
+  });
+
+  testWidgets('r3 E-m9: the intro pages — 跳過說明 and 開始 both end them; back goes one page back', (t) async {
+    var done = 0;
+    await t.pumpWidget(host(IntroPages(onDone: () => done++)));
+    await t.tap(find.text(Btn.skipIntro));
+    expect(done, 1);
+    await t.tap(find.text(Btn.next));
+    await t.pumpAndSettle();
+    await t.tap(find.text(Btn.next));
+    await t.pumpAndSettle();
+    expect(find.text(Btn.skipIntro), findsNothing, reason: 'the last page has only 開始');
+    await t.tap(find.text(Btn.start));
+    expect(done, 2);
+  });
+
+  testWidgets('r3 E-m9: a node row opens the node page (Page.node); back -> Page.home', (t) async {
+    final a = app();
+    a.link.core.states[id]!
+      ..kind = Kind.read
+      ..view = 'green'
+      ..readAt = a.link.now()
+      ..extra = sv('green')
+      ..last = Concl.read;
+    a.link.readWall[id] = DateTime.utc(2026, 11, 16);
+    final ui = UiState(MemStore()..ids = [id]);
+    await t.pumpWidget(host(HomePage(app: a, ui: ui, devTrust: false, keys: keys())));
+    await t.pump();
+    await t.tap(find.text('節點 7D2C').last);
+    await t.pumpAndSettle();
+    expect((a.link.core.page, find.byType(NodePage).evaluate().length), (Page.node, 1));
+    await t.pageBack();
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await t.pumpAndSettle();
+    expect(a.link.core.page, Page.home);
+    a.link.dispose();
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
+
+  testWidgets('r3 E-m9: going to the background writes a newer read time once', (t) async {
+    final store = MemStore()..ids = [id];
+    final ui = UiState(store);
+    await t.runAsync(ui.load);
+    await t.runAsync(() => ui.noteReads({id: ('ok', DateTime.utc(2026, 1, 1))}));
+    await t.runAsync(() => ui.noteReads({id: ('ok', DateTime.utc(2026, 1, 2))})); // same kind: kept in memory only
+    final a = app();
+    await t.pumpWidget(host(HomePage(app: a, ui: ui, devTrust: false, keys: keys())));
+    expect(store.writes, 1);
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    expect(store.writes, 2);
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    expect(store.writes, 2, reason: 'nothing newer since');
+    t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    a.link.dispose();
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
+
+  testWidgets('r3 F-m4: what the startup check said is on the settings page', (t) async {
+    final a = app();
+    await t.pumpWidget(host(SettingsPage(app: a, devTrust: false, notes: const ['注意：只有軟體保護'])));
+    expect(find.text('啟動時的提醒'), findsOneWidget);
+    expect(find.text('注意：只有軟體保護'), findsOneWidget);
+    await t.pumpWidget(host(SettingsPage(app: a, devTrust: false)));
+    expect(find.text('啟動時的提醒'), findsNothing);
+    a.link.dispose();
+    AppLink.forgetForTest();
+  });
+
+  testWidgets('r3 E-m3: before the network records were looked at, row 6 offers the neutral 加入網路, never 建立網路',
+      (t) async {
+    final gate = Completer<void>();
+    rust.netsGate = gate.future;
+    final a = app();
+    a.link.core.states[id]!
+      ..kind = Kind.read
+      ..view = 'red'
+      ..readAt = a.link.now()
+      ..extra = sv('red', nodeState: 1)
+      ..last = Concl.read;
+    a.link.readWall[id] = DateTime.utc(2026, 11, 16);
+    await t.pumpWidget(host(HomePage(app: a, ui: UiState(MemStore()..ids = [id]), devTrust: false, keys: keys())));
+    await t.pump();
+    expect(find.widgetWithText(FilledButton, Btn.joinNetwork), findsOneWidget);
+    expect(find.text(Btn.makeNetwork), findsNothing);
+    gate.complete();
+    rust.netsGate = null;
+    await t.pump();
+    await t.pump();
+    expect(find.text(Btn.makeNetwork), findsOneWidget, reason: 'looked at: no record -> 建立網路');
+    a.link.dispose();
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
   });
 }

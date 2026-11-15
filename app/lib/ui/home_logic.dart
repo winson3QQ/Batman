@@ -156,7 +156,9 @@ String hhmmss(DateTime t) => '${hhmm(t)}:${t.second.toString().padLeft(2, '0')}'
     final was = switch (p.look) { 'ok' => '，當時正常', 'warn' => '，當時要注意', 'bad' => '，當時有問題', _ => '' };
     before = at.isAfter(DateTime.now()) ? '之前讀過' : '上次讀取 ${hhmm(at)}$was';
   }
-  final meta = when != null ? '讀取於 ${hhmm(when)}　$tail' : (before != null ? '$before　$tail' : tail);
+  // 「讀取於」 only for a fresh read; an older one is 「上次讀取」 (review r3 F-m6)
+  final meta = when != null
+      ? '${n.fresh ? '讀取於' : '上次讀取'} ${hhmm(when)}　$tail' : (before != null ? '$before　$tail' : tail);
   final why = n.shownWhy;
   if (why != null) {
     return switch (why) {

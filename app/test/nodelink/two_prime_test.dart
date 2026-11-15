@@ -26,6 +26,8 @@ void main() {
     radio.scanCtl.add('a1');
     await clock.run(3000);
     expect(nl.core.states['Y1']!.extra, 'BODY', reason: 'r2 D-M1: a read keeps its screen data');
+    final bodyTime = DateTime.utc(2000);
+    nl.readWall['Y1'] = bodyTime; // the body's read time, marked: a 2-prime must give its own
     for (var i = 0; i < 70; i++) {
       radio.scanCtl.add('a1'); // a node advertises all the time
       await clock.run(5000);
@@ -33,5 +35,6 @@ void main() {
     final s = nl.core.states['Y1']!;
     expect(s.view, "2'", reason: nl.core.log.join('\n'));
     expect(s.extra, 'ERRVIEW');
+    expect(nl.readWall['Y1'], isNot(bodyTime), reason: 'r3 E-m2: a 2-prime has its own read time, not the last body');
   });
 }

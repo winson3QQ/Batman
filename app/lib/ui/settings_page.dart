@@ -14,9 +14,10 @@ import 'widgets.dart';
 const _platform = MethodChannel('dev.batman/platform');
 
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key, required this.app, required this.devTrust});
+  const SettingsPage({super.key, required this.app, required this.devTrust, this.notes = const []});
   final AppLink app;
   final bool devTrust;
+  final List<String> notes;
 
   @override
   Widget build(BuildContext context) {
@@ -29,6 +30,10 @@ class SettingsPage extends StatelessWidget {
           onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AboutPage())),
         ),
       ]),
+      if (notes.isNotEmpty) ...[
+        const BatLabel('啟動時的提醒'),
+        BatCard(children: [for (final n in notes) BatRow(icon: Icons.warning_amber_outlined, title: n)]),
+      ],
       if (devTrust) ...[
         const BatLabel(Btn.devOptions),
         BatCard(children: [
