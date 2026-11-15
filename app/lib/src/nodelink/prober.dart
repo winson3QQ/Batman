@@ -153,11 +153,24 @@ class SessionProber implements Prober {
     try {
       return await result.future;
     } finally {
+      // the cleanup never changes the outcome: each step on its own, a failure only logged
       answer?.cancel();
-      await sub?.cancel();
-      s?.dispose();
+      try {
+        await sub?.cancel();
+      } catch (e) {
+        log?.call('probe $id cleanup: subscription ${e.runtimeType} $e');
+      }
+      try {
+        s?.dispose();
+      } catch (e) {
+        log?.call('probe $id cleanup: dispose ${e.runtimeType} $e');
+      }
       final r = record;
-      if (r != null) r.fillRange(0, r.length, 0);
+      try {
+        if (r != null) r.fillRange(0, r.length, 0);
+      } catch (e) {
+        log?.call('probe $id cleanup: zero ${e.runtimeType} $e');
+      }
     }
   }
 }

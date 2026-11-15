@@ -278,8 +278,9 @@ class NodeLink implements LeaseListener {
       }
     } on Refused {
       o = const Outcome(Res.noResponse);
-    } catch (_) {
+    } catch (e) {
       o = const Outcome(Res.noResponse); // one attempt's exception ends that attempt only (§4.3.3-4, F50)
+      trace?.call(mask('attempt $a: ${e.runtimeType} $e'));
     }
     stopDue();
     trace?.call(mask('attempt $a connected=${tUp}ms result=${o.res.name} after ${now() - t0}ms'));
