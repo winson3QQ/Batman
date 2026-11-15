@@ -13,27 +13,30 @@ import '../src/nodelink/lease.dart';
 import '../src/nodelink/raw_use.dart';
 import '../src/rust/api/owner.dart' show StatusView, listPending;
 import 'home_logic.dart';
+import 'intro_pages.dart';
 import 'node_page.dart';
 import 'settings_page.dart';
 import 'theme.dart';
+import 'ui_state.dart';
 import 'widgets.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
 
 /// The phone's view of its nodes, built from NodeLink (used by the home page and the node page).
-NodeInfo nodeInfo(AppLink a, String id) {
+NodeInfo nodeInfo(AppLink a, String id, [UiState? ui]) {
   final c = a.link.core;
   final s = c.states[id]!;
   final now = a.link.now();
   final when = a.link.readWall[id]; // wall time (the core's clock stops in deep sleep; review pr1 A-m8)
   return NodeInfo(
     id: id,
-    name: '節點 ${last4(id)}',
+    name: ui?.nodes[id]?.nick ?? '節點 ${last4(id)}',
     state: s,
     fresh: c.fresh(id, now),
     shownWhy: c.shownWhy(id),
     view: s.extra is StatusView ? s.extra as StatusView : null,
     readWall: when,
+    prev: ui?.nodes[id],
   );
 }
 
@@ -65,8 +68,9 @@ Future<void> openUnderLease(BuildContext context, AppLink a, String name, Widget
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.app, required this.devTrust, required this.canClaim});
+  const HomePage({super.key, required this.app, required this.ui, required this.devTrust, required this.canClaim});
   final AppLink app;
+  final UiState ui;
   final bool devTrust;
   final bool canClaim;
 
@@ -74,7 +78,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   StreamSubscription<void>? _sub;
   Timer? _tick;
   int _pending = 0;
@@ -84,16 +88,38 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _sub = a.link.changed.listen((_) => mounted ? setState(() {}) : null);
+    WidgetsBinding.instance.addObserver(this);
+    _sub = a.link.changed.listen((_) {
+      _remember();
+      if (mounted) setState(() {});
+    });
     _tick = Timer.periodic(const Duration(seconds: 15), (_) => mounted ? setState(() {}) : null);
     _todos();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _sub?.cancel();
     _tick?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s == AppLifecycleState.paused || s == AppLifecycleState.hidden) widget.ui.background(); // §4.6
+  }
+
+  /// §4.6: each fresh read's kind and time go to UiState (written only when a kind changed)
+  void _remember() {
+    final c = a.link.core, now = a.link.now();
+    final reads = <String, (String, DateTime)>{};
+    for (final id in c.states.keys) {
+      final w = a.link.readWall[id];
+      if (w == null || !c.fresh(id, now)) continue;
+      reads[id] = (switch (c.states[id]!.view) { 'green' => 'ok', 'yellow' => 'warn', 'red' => 'bad', _ => 'unk' }, w);
+    }
+    if (reads.isNotEmpty) widget.ui.noteReads(reads);
   }
 
   /// §5.1 todos this version knows: an unfinished claim (devTrust only, F48) and a lease taken back (§4.4).
@@ -118,7 +144,7 @@ class _HomePageState extends State<HomePage> {
   void _act(HomeHero h) {
     switch (h.action) {
       case HomeAction.allowBluetooth:
-        _platform.invokeMethod<bool>('blePermissions').then((ok) => a.link.radio(permission: ok ?? false));
+        _permission();
       case HomeAction.addNode:
         _addNode();
       case HomeAction.seeNode:
@@ -132,18 +158,30 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _addNode() => _back(openUnderLease(context, a, '新增節點', (u) => ClaimPage(ble: a.ble, use: u)));
+  /// Board 2.2 first, when the app has no Bluetooth permission (F28: asked only when the user presses a button).
+  Future<bool> _permission() async {
+    final ok = await Navigator.of(context).push<bool>(MaterialPageRoute(
+        builder: (_) => PermissionsPage(ask: () async => await _platform.invokeMethod<bool>('blePermissions') ?? false)));
+    if (ok == true) a.link.radio(permission: true);
+    return ok == true;
+  }
+
+  Future<void> _addNode() async {
+    if (a.link.core.blocked == nl.Why.noPermission && !await _permission()) return;
+    if (!mounted) return;
+    await _back(openUnderLease(context, a, '新增節點', (u) => ClaimPage(ble: a.ble, use: u)));
+  }
 
   void _open(String id) {
     a.link.setPage(nl.Page.node, node: id);
-    _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => NodePage(app: a, id: id))));
+    _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => NodePage(app: a, id: id, ui: widget.ui))));
   }
 
   @override
   Widget build(BuildContext context) {
     final t = BatTheme.of(context);
     final ids = a.link.core.states.keys.toList()..sort();
-    final infos = [for (final id in ids) nodeInfo(a, id)];
+    final infos = [for (final id in ids) nodeInfo(a, id, widget.ui)];
     final todos = _pending + a.reg.unsavedTodos.length;
     final firstRounds = a.link.core.roundsRun < 3;
     final h = decideHome(HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos));
@@ -175,6 +213,7 @@ class _HomePageState extends State<HomePage> {
           onRefresh: h.look == Look.busy ? null : a.link.refresh,
           extra: actionText == null ? null : [BatButton(actionText, onPressed: () => _act(h))],
         ),
+        if (h.row == 14 && !widget.ui.homeTip) HomeTipCard(onDone: () => widget.ui.setHomeTip().then((_) => mounted ? setState(() {}) : null)),
         for (final m in a.reg.unsavedTodos)
           BatBanner(look: Look.warn, title: m, text: '這個操作沒有在時間內結束，app 已經停止它。請到那台節點的頁面看目前的狀態，需要的話再做一次。',
               action: Btn.gotIt, onAction: () => setState(() => a.reg.unsavedTodos.remove(m))),

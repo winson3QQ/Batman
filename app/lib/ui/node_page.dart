@@ -9,11 +9,13 @@ import '../src/nodelink/lease.dart';
 import 'home_logic.dart';
 import 'home_page.dart' show nodeInfo;
 import 'theme.dart';
+import 'ui_state.dart';
 import 'widgets.dart';
 
 class NodePage extends StatefulWidget {
-  const NodePage({super.key, required this.app, required this.id});
+  const NodePage({super.key, required this.app, required this.id, required this.ui});
   final AppLink app;
+  final UiState ui;
   final String id;
 
   @override
@@ -74,6 +76,7 @@ class _NodePageState extends State<NodePage> {
       err = '沒有移除成功，紀錄維持原樣（$e）';
     }
     await lease.release();
+    if (err == null) await widget.ui.forget(widget.id); // §5.5: its nickname and status go too
     if (!mounted) return;
     if (err != null) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
@@ -89,7 +92,7 @@ class _NodePageState extends State<NodePage> {
       return const BatPage(title: '節點', body: [Text('這台節點已經不在這支手機上。')]);
     }
     final t = BatTheme.of(context);
-    final n = nodeInfo(a, widget.id);
+    final n = nodeInfo(a, widget.id, widget.ui);
     final (look, line, meta) = nodeRowWords(n, firstRounds: a.link.core.roundsRun < 3);
     final v = n.view;
     final next = [

@@ -2,6 +2,7 @@
 // what each node row says. Pure: inputs in, words out, so the table order is tested directly (T-H1).
 import '../src/nodelink/core.dart';
 import '../src/rust/api/owner.dart' show StatusView;
+import 'ui_state.dart' show UiNode;
 import 'widgets.dart';
 
 String last4(String id) => (id.length > 4 ? id.substring(id.length - 4) : id).toUpperCase();
@@ -16,6 +17,7 @@ class NodeInfo {
     required this.shownWhy,
     this.view,
     this.readWall,
+    this.prev,
   });
   final String id;
   final String name; // the nickname (UiState) or 「節點 XXXX」
@@ -24,6 +26,7 @@ class NodeInfo {
   final Why? shownWhy; // overlay first (Bluetooth / permission / keys), then the node's own reason
   final StatusView? view; // the last read's status page
   final DateTime? readWall; // the last read, wall clock
+  final UiNode? prev; // UiState: the kind and time of a read from an earlier run (§4.6), display only
 
   bool get notInNetwork => view != null && view!.nodeState.toInt() == 1; // §5.1 row 6 (F46)
 }
@@ -85,7 +88,7 @@ HomeHero decideHome(HomeInputs i) {
   }
   final unreach = ns.where((n) => n.shownWhy != null && n.shownWhy != Why.identity).toList();
   if (unreach.isNotEmpty) {
-    return HomeHero(8, Look.warn, _many(unreach, '手機連不到 X', '手機連不到 N 台節點'),
+    return HomeHero(8, Look.warn, _many(unreach, '手機連不到X', '手機連不到 N 台節點'),
         next: '可能沒開機、還在開機、離太遠，或另一支手機正在連它。',
         action: unreach.length == 1 ? HomeAction.seeNode : HomeAction.showList, node: unreach.first.id);
   }
@@ -116,8 +119,17 @@ String hhmm(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toSt
 
 /// One node row: (look, sentence, meta).
 (Look, String, String) nodeRowWords(NodeInfo n, {required bool firstRounds}) {
+  final tail = '後四碼 ${last4(n.id)}';
   final when = n.readWall;
-  final meta = when == null ? '後四碼 ${last4(n.id)}' : '讀取於 ${hhmm(when)}　後四碼 ${last4(n.id)}';
+  // §4.6: without a read in this run, an earlier run's read (UiState), unk style only; a future time is 「之前讀過」
+  String? before;
+  final p = n.prev;
+  if (when == null && p != null && p.readAt != null) {
+    final at = DateTime.fromMillisecondsSinceEpoch(p.readAt! * 1000);
+    final was = switch (p.look) { 'ok' => '，當時正常', 'warn' => '，當時要注意', 'bad' => '，當時有問題', _ => '' };
+    before = at.isAfter(DateTime.now()) ? '之前讀過' : '上次讀取 ${hhmm(at)}$was';
+  }
+  final meta = when != null ? '讀取於 ${hhmm(when)}　$tail' : (before != null ? '$before　$tail' : tail);
   final why = n.shownWhy;
   if (why != null) {
     return switch (why) {
@@ -137,9 +149,10 @@ String hhmm(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toSt
   }
   if (n.state.kind == Kind.read && when != null) {
     final was = switch (n.state.view) { 'green' => '，當時正常', 'yellow' => '，當時要注意', 'red' => '，當時有問題', _ => '' };
-    return (Look.unk, '上次讀取 ${hhmm(when)}$was', '後四碼 ${last4(n.id)}');
+    return (Look.unk, '上次讀取 ${hhmm(when)}$was', tail);
   }
   if (n.state.responded) return (Look.unk, '有回應，還沒拿到狀態', meta);
   if (n.state.last == Concl.notYet && !firstRounds) return (Look.unk, '附近有還沒認出來的裝置，還在找', meta);
+  if (before != null && !firstRounds) return (Look.unk, before, tail);
   return (Look.busy, '正在找節點…', meta);
 }

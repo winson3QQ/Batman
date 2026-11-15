@@ -15,7 +15,9 @@ import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
 import 'ui/home_page.dart';
+import 'ui/intro_pages.dart';
 import 'ui/theme.dart';
+import 'ui/ui_state.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
 
@@ -165,8 +167,21 @@ class _StartupCheckState extends State<StartupCheck> {
     // #329 PR 2: a passed startup check goes straight to the new home page (§5.1)
     final a = _app;
     if (_ok && a != null && mounted) {
-      Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => HomePage(app: a, devTrust: _devTrust, canClaim: keys.claim)));
+      // §4.6 / §5.2: the display memory, then the welcome pages only when never seen and the phone has no node
+      final ui = UiState(RecordUiStore(a.records, _platform), log: (l) => debugPrint('BMAPP $l'));
+      await ui.load();
+      if (!mounted) return;
+      Widget home() => HomePage(app: a, ui: ui, devTrust: _devTrust, canClaim: keys.claim);
+      final nav = Navigator.of(context);
+      if (!ui.welcomed && a.link.core.states.isEmpty) {
+        nav.pushReplacement(MaterialPageRoute(
+            builder: (_) => IntroPages(onDone: () {
+                  ui.setWelcomed(); // a write that fails is remembered for this run only (§5.2)
+                  nav.pushReplacement(MaterialPageRoute(builder: (_) => home()));
+                })));
+      } else {
+        nav.pushReplacement(MaterialPageRoute(builder: (_) => home()));
+      }
     }
   }
 

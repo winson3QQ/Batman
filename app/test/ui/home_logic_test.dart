@@ -1,0 +1,112 @@
+// #329 design §5.1 T-H1: the home status area is the first row of the table that holds, top to bottom. Every row is
+// reached, and when two rows hold the upper one wins.
+import 'package:batman_app/src/nodelink/core.dart';
+import 'package:batman_app/src/rust/api/owner.dart' show StatusView;
+import 'package:batman_app/ui/home_logic.dart';
+import 'package:batman_app/ui/widgets.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+StatusView sv({String color = 'green', int nodeState = 2, String warning = '', String sentence = '可以使用'}) => StatusView(
+    color: color,
+    row: '3',
+    sentence: sentence,
+    lagNote: '',
+    warning: warning,
+    nodeState: nodeState,
+    netId: '',
+    version: '',
+    tech: const [],
+    fresh: true,
+    rateNote: '',
+    unfinished: '',
+    unfinishedUnderVerdict: false,
+    canLeave: false);
+
+/// A node: read and fresh with [v], or unreachable for [why], or not read yet.
+NodeInfo node(String id, {StatusView? v, Why? why, bool fresh = true, Concl? last}) {
+  final s = NodeState()
+    ..kind = v != null ? Kind.read : (why != null ? Kind.unreachable : Kind.unread)
+    ..why = why
+    ..view = v?.color ?? ''
+    ..last = last ?? (v != null ? Concl.read : null);
+  return NodeInfo(
+      id: id,
+      name: '節點 ${last4(id)}',
+      state: s,
+      fresh: v != null && fresh,
+      shownWhy: why,
+      view: v,
+      readWall: v != null ? DateTime(2026, 11, 15, 22, 48) : null);
+}
+
+HomeHero home(List<NodeInfo> ns, {Why? blocked, bool first = false, int todos = 0}) =>
+    decideHome(HomeInputs(nodes: ns, blocked: blocked, firstRounds: first, todos: todos));
+
+void main() {
+  final ok = node('aaaa0001', v: sv());
+  test('row 1: Bluetooth off, above everything', () {
+    final h = home([node('x1', why: Why.identity)], blocked: Why.bluetoothOff, todos: 3);
+    expect((h.row, h.look, h.action), (1, Look.bad, HomeAction.openBluetooth));
+  });
+  test('row 2: no permission / keys', () {
+    expect(home([ok], blocked: Why.noPermission).row, 2);
+    expect(home([ok], blocked: Why.noPermission).action, HomeAction.allowBluetooth);
+    expect(home([ok], blocked: Why.keys).row, 2);
+  });
+  test('row 3: no node yet -> add a node', () {
+    final h = home([]);
+    expect((h.row, h.action), (3, HomeAction.addNode));
+  });
+  test('row 4: 身分不符 wins over everything below it', () {
+    final h = home([node('bbbb0002', why: Why.identity), node('cccc0003', v: sv(nodeState: 1))], todos: 2);
+    expect((h.row, h.look, h.node), (4, Look.bad, 'bbbb0002'));
+  });
+  test('row 5: the first rounds, nothing concluded yet -> 正在找 (busy, no button)', () {
+    final h = home([node('dddd0004')], first: true);
+    expect((h.row, h.look, h.action), (5, Look.busy, HomeAction.none));
+    // once a target has a conclusion the first rounds no longer hide it
+    expect(home([node('dddd0004', why: Why.notFound, last: Concl.notFound)], first: true).row, 8);
+  });
+  test('row 6: not in a network -> join (one and many)', () {
+    expect(home([node('eeee0005', v: sv(nodeState: 1, color: 'red'))]).text, '節點 0005 還沒加入隊伍網路');
+    final h = home([node('e1', v: sv(nodeState: 1)), node('e2', v: sv(nodeState: 1)), node('f1', v: sv(color: 'red'))]);
+    expect((h.row, h.text, h.action), (6, '有 2 台節點還沒加入隊伍網路', HomeAction.joinNetwork));
+  });
+  test('row 7: a red node, above unreachable', () {
+    final h = home([node('gggg0007', v: sv(color: 'red', sentence: '沒有連上網路')), node('h1', why: Why.notFound)]);
+    expect((h.row, h.text), (7, '節點 0007：沒有連上網路'));
+    expect(home([node('r1', v: sv(color: 'red')), node('r2', v: sv(color: 'red'))]).action, HomeAction.showList);
+  });
+  test('row 8: unreachable', () {
+    final h = home([node('iiii0008', why: Why.notFound), ok]);
+    expect((h.row, h.look, h.text), (8, Look.warn, '手機連不到節點 0008'));
+  });
+  test('row 10: stale or not read yet (after the first rounds)', () {
+    final h = home([node('jjjj0010', v: sv(), fresh: false)]);
+    expect((h.row, h.look, h.action), (10, Look.unk, HomeAction.refresh));
+  });
+  test('row 11: todos, below every node problem', () {
+    expect(home([ok], todos: 2).text, '有 2 件事要你處理');
+    expect(home([node('k1', why: Why.notFound)], todos: 2).row, 8);
+  });
+  test('row 12: a yellow node or a warning', () {
+    expect(home([node('llll0012', v: sv(color: 'yellow', sentence: '訊號弱'))]).row, 12);
+    expect(home([node('l2', v: sv(warning: '時間不準'))]).text, '節點 L2：時間不準');
+  });
+  test('row 13: gray', () {
+    expect(home([node('mmmm0013', v: sv(color: 'gray'))]).row, 13);
+  });
+  test('row 14: all green', () {
+    expect((home([ok]).row, home([ok]).look), (14, Look.ok));
+    expect(home([ok, node('n2', v: sv())]).next, contains('2 台節點'));
+  });
+
+  test('node rows: the reason first, then the fresh read, then the old read, then searching', () {
+    expect(nodeRowWords(node('p1', why: Why.notFound), firstRounds: false).$2, '手機連不到這台節點');
+    expect(nodeRowWords(ok, firstRounds: false).$1, Look.ok);
+    final old = nodeRowWords(node('p2', v: sv(color: 'red'), fresh: false), firstRounds: false);
+    expect((old.$1, old.$2), (Look.unk, '上次讀取 22:48，當時有問題'));
+    expect(nodeRowWords(node('p3'), firstRounds: true).$1, Look.busy);
+    expect(nodeRowWords(node('p4', v: sv(nodeState: 1)), firstRounds: false).$2, '還沒加入隊伍網路');
+  });
+}
