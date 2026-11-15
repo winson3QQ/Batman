@@ -238,6 +238,11 @@ pub struct OwnerStep {
     pub sw: bool,
     /// 254-app-team-status §4.2: the duplicate-address line of an approval / removal ("" = none), shown in a dialog
     pub note: String,
+    /// #329 T8: how the login phase ended, the loginflow `End` passed through unchanged (no decision here):
+    /// 0 = not a login end, 1 = LoggedIn, 2 = Msg2Undecryptable, 3 = CertRejected, 4 = AuthRefused, 5 = Broken
+    pub login_end: u8,
+    /// login_end 4: the node's error code (EForbidden = owner key not accepted; others are not a verdict)
+    pub login_code: u64,
 }
 
 impl OwnerStep {
@@ -263,6 +268,8 @@ impl OwnerStep {
             info: vec![],
             sw: false,
             note: String::new(),
+            login_end: 0,
+            login_code: 0,
         }
     }
     pub(crate) fn text(kind: OwnerKind, d: String) -> OwnerStep {
@@ -441,6 +448,18 @@ fn net_made_text(r: &joinflow::NetRecord) -> String {
 }
 
 /// Why a login attempt ended (logged; a msg2 that does not decrypt just means "try the next nearby node").
+/// #329 T8: the loginflow end as (kind, code) for NodeLink; see OwnerStep::login_end.
+fn login_end_kind(e: &End) -> (u8, u64) {
+    match e {
+        End::LoggedIn => (1, 0),
+        End::Msg2Undecryptable => (2, 0),
+        End::CertRejected(_) => (3, 0),
+        End::AuthRefused(Outcome::Err { code, .. }) => (4, *code),
+        End::AuthRefused(Outcome::Ok(_)) => (4, 0),
+        End::Broken(_) => (5, 0),
+    }
+}
+
 fn login_end_text(e: &End) -> String {
     match e {
         End::LoggedIn => "已登入".into(),
@@ -1654,14 +1673,15 @@ impl OwnerSession {
                 match login.into_conn() {
                     Some(conn) => {
                         self.st = St::Conn { conn, asked: "", op: None };
-                        OwnerStep::text(OwnerKind::LoggedIn, format!("已連線到節點 …{}（擁有者）", self.last4))
+                        OwnerStep { login_end: 1, ..OwnerStep::text(OwnerKind::LoggedIn, format!("已連線到節點 …{}（擁有者）", self.last4)) }
                     }
                     None => OwnerStep::text(OwnerKind::Ended, "登入後沒有連線（no connection after login）".into()),
                 }
             }
             Action::Done(e) => {
                 self.st = St::Over;
-                OwnerStep::text(OwnerKind::Ended, login_end_text(&e))
+                let (login_end, login_code) = login_end_kind(&e);
+                OwnerStep { login_end, login_code, ..OwnerStep::text(OwnerKind::Ended, login_end_text(&e)) }
             }
         })
     }
@@ -1860,6 +1880,11 @@ mod tests {
         assert_eq!(s.check_network().err().as_deref(), Some("這次連線還沒有建立過網路"));
         assert_eq!(s.request_status().err().as_deref(), Some("還沒連線到節點"));
         assert_eq!(login_end_text(&End::Msg2Undecryptable), "不是這台節點（或節點剛認領完還沒準備好）");
+        // #329 T8: the end kinds NodeLink reads, passed through unchanged
+        assert_eq!(login_end_kind(&End::LoggedIn), (1, 0));
+        assert_eq!(login_end_kind(&End::Msg2Undecryptable), (2, 0));
+        assert_eq!(login_end_kind(&End::AuthRefused(Outcome::Err { code: 13, detail: Value::Null })), (4, 13));
+        assert_eq!(login_end_kind(&End::Broken("x".into())), (5, 0));
     }
 
     #[test]
