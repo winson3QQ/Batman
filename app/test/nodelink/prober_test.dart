@@ -267,6 +267,35 @@ void main() {
     expect((await probe([step(OwnerKind.persistNet)])).res, Res.noResponse);
     expect((await probe([step(OwnerKind.ended)])).res, Res.noResponse);
   });
+  test('r2 D-2: fragments that never make a msg2 end at the msg2 budget, not at the 20 s answer limit', () async {
+    final sw = Stopwatch()..start();
+    final o = await probe([], frames: 99, msg2: const Duration(milliseconds: 50)); // every frame: no step yet
+    expect(o.res, Res.noResponse);
+    expect(sw.elapsedMilliseconds, lessThan(1000));
+  });
+
+  test('r2 D21: after msg2, silence ends the attempt at answerMax', () async {
+    final p = SessionProber(
+        openRecord: (id) async => Uint8List(8),
+        ownerPub: () async => Uint8List(65),
+        signOwner: (i) async => Uint8List(70),
+        answerMax: const Duration(milliseconds: 100));
+    final sw = Stopwatch()..start();
+    final o = await probe([step(OwnerKind.sign)], frames: 1, prober: p); // msg2 -> sign, then nothing
+    expect(o.res, Res.noResponse);
+    expect(sw.elapsedMilliseconds, inInclusiveRange(90, 1500));
+  });
+
+  test('r2 X13: a key error while opening the record is reported', () async {
+    final errors = <Object>[];
+    final p = SessionProber(
+        openRecord: (id) async => throw StateError('keyLevel'),
+        ownerPub: () async => Uint8List(65),
+        signOwner: (i) async => Uint8List(70),
+        keyError: errors.add);
+    expect((await probe([], frames: 0, prober: p)).res, Res.noResponse);
+    expect(errors, hasLength(1));
+  });
 }
 
 class StallRadio extends Radio {

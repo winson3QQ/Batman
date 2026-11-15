@@ -234,6 +234,7 @@ class NodeLink implements LeaseListener {
     GateScan? s;
     try {
       s = await gate.scan(reg.nodeLinkToken, (address) {
+        if (_disposed) return;
         if (core.onScan(now(), address) && _attempt == null) _pump();
       }, ended: (_) {
         // the radio ended the scan (Bluetooth off, no permission): the round goes on without one; the status
@@ -248,6 +249,10 @@ class NodeLink implements LeaseListener {
       return;
     } finally {
       _scanStarting = false;
+    }
+    if (_disposed) {
+      await s.stop(); // disposed while the scan waited for a slot (r2 C-m6)
+      return;
     }
     if (s.open) _scan = s;
     _pump();
@@ -321,6 +326,7 @@ class NodeLink implements LeaseListener {
 
   Future<void> dispose() async {
     _disposed = true;
+    reg.listeners.remove(this);
     _timer?.call();
     await _dropAll();
     await _changed.close();

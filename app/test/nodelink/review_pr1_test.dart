@@ -2,12 +2,13 @@
 // the reviewers' negative controls (they failed on 75683ab); the rest guard rules whose mutations survived.
 import 'dart:async';
 
-import 'package:batman_app/src/nodelink/app_link.dart' show bleStatusToRadio;
+import 'package:batman_app/src/nodelink/app_link.dart' show bleStatusToRadio, wireRadio, keyErrorToRadio;
 import 'package:batman_app/src/nodelink/ble_gate.dart';
 import 'package:batman_app/src/nodelink/core.dart';
 import 'package:batman_app/src/nodelink/lease.dart';
 import 'package:batman_app/src/nodelink/node_link.dart';
-import 'package:flutter/widgets.dart' hide Page;
+import 'package:flutter/material.dart' hide Page, Radio;
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:batman_app/src/nodelink/raw_use.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart' show BleStatus;
 import 'package:flutter_test/flutter_test.dart';
@@ -396,6 +397,127 @@ void main() {
     }
   });
 
+  test('r2 X12 / X9: records written under a lease released while the next was taken are applied at the next release, once', () async {
+    var recs = [const Rec('Y1', 1)];
+    Completer<void>? slow;
+    final radio = Radio();
+    final p = MapProber()..out = {'a1|Y1': const Outcome(Res.certRejected)};
+    final (nl, clock, _, _) = make(radio, p, () async {
+      final s = slow;
+      if (s != null) await s.future;
+      return recs;
+    }, recs: recs);
+    await nl.start(Page.home);
+    await clock.run(500);
+    radio.scanCtl.add('a1');
+    await clock.run(2000);
+    expect(nl.core.states['Y1']!.why, Why.identity);
+    final l1 = (await nl.acquire('新增節點', LeaseKind.raw))!;
+    recs = [const Rec('Y1', 2)]; // re-claimed under l1
+    final read = slow = Completer<void>();
+    await l1.release();
+    final l2 = (await nl.acquire('我的節點', LeaseKind.raw))!; // taken while l1's read is slow
+    slow = null;
+    read.complete();
+    await clock.run(100);
+    expect(nl.core.states['Y1']!.why, Why.identity, reason: 'l2 is held: nothing applied yet');
+    await l2.release();
+    await clock.run(100);
+    expect(nl.core.states['Y1']!.why, isNull, reason: 'l1''s write applied at l2''s release');
+    await clock.run(7000);
+    radio.scanCtl.add('a1');
+    await clock.run(2000);
+    expect(nl.core.states['Y1']!.why, Why.identity, reason: 'still the wrong node: identity again');
+    final l3 = (await nl.acquire('x', LeaseKind.raw))!;
+    await l3.release(); // nothing written this time
+    await clock.run(100);
+    expect(nl.core.states['Y1']!.why, Why.identity, reason: 'the waiting ids were applied once, not again');
+  });
+
+  test('r2 D11: a hold ends once; a second call never ends another hold', () async {
+    final (nl, clock, reg, _) = make(Radio(), FakeProber({}), () async => const [Rec('Y1', 1)]);
+    await nl.start(Page.home);
+    final l = (await nl.acquire('x', LeaseKind.raw))!;
+    final a = l.hold();
+    l.hold(); // a second piece of work
+    l.pageGone();
+    a();
+    a();
+    await clock.run(100);
+    expect(reg.current, same(l), reason: 'the second hold is still running');
+  });
+
+  test('r2 D14 / D17: GATT on a link the stack reported down is refused; a scan the radio ends is closed', () async {
+    final clock = Clock();
+    final reg = LeaseRegistry(after: clock.after);
+    final radio = _EndingRadio();
+    final gate = BleGate(radio, reg, now: () => clock.t, after: clock.after);
+    final link = gate.connect(reg.nodeLinkToken, 'a1');
+    await Future<void>.delayed(Duration.zero);
+    radio.goDown('a1');
+    expect(() => link.read(Char.ctrl), throwsA(isA<Refused>()));
+    await link.close();
+    Object? ended = 0;
+    await gate.scan(reg.nodeLinkToken, (_) {}, ended: (e) => ended = e);
+    expect(gate.scans, 1);
+    radio.endScan();
+    await Future<void>.delayed(Duration.zero);
+    expect((gate.scans, ended), (0, null));
+  });
+
+  test('r2 C-M1: the status stream and key refusals reach NodeLink', () async {
+    final (nl, clock, _, _) = make(Radio(), FakeProber({}), () async => const [Rec('Y1', 1)]);
+    await nl.start(Page.home);
+    final status = StreamController<BleStatus>();
+    wireRadio(status.stream, nl);
+    status.add(BleStatus.poweredOff);
+    await Future<void>.delayed(Duration.zero);
+    expect(nl.core.shownWhy('Y1'), Why.bluetoothOff);
+    status.add(BleStatus.ready);
+    await Future<void>.delayed(Duration.zero);
+    expect(nl.core.blocked, isNull);
+    keyErrorToRadio(StateError('disk'), nl);
+    expect(nl.core.blocked, isNull, reason: 'not a key refusal');
+    keyErrorToRadio(PlatformException(code: 'keyLevel', message: 'OWNER_SIGN', details: 0), nl);
+    expect(nl.core.blocked, Why.keys);
+    await status.close();
+  });
+
+  testWidgets('r2 C-m2 / D-10: the lease is given up at the page''s dispose, after its exit animation', (t) async {
+    final radio = Radio();
+    final (nl, _, reg, gate) = make(radio, FakeProber({}), () async => const [Rec('Y1', 1)]);
+    await t.runAsync(() => nl.start(Page.home));
+    late BuildContext home;
+    await t.pumpWidget(MaterialApp(home: Builder(builder: (c) {
+      home = c;
+      return const SizedBox();
+    })));
+    unawaited(openRawPage(Navigator.of(home), nl, gate, '我的節點', (u) => _Busy(u)));
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await t.pumpAndSettle();
+    final l = reg.current!;
+    final st = t.state<BusyState>(find.byType(_Busy));
+    Navigator.of(home).pop();
+    await t.pump(const Duration(milliseconds: 50)); // the exit animation runs: still mounted
+    expect(st.mounted, isTrue);
+    st.rawBusy = true; // work the page starts now (e.g. the next dialog)
+    expect(reg.current, same(l), reason: 'not given up yet');
+    await t.pumpAndSettle(); // disposed
+    expect(reg.current, same(l), reason: 'busy: still held after the dispose');
+    st.rawIdle();
+    expect(reg.current, isNull);
+  });
+
+  testWidgets('r2 D-3: a page whose lease is gone cannot start busy work (fail-closed)', (t) async {
+    final (nl, _, _, gate) = make(Radio(), FakeProber({}), () async => const [Rec('Y1', 1)]);
+    await t.runAsync(() => nl.start(Page.home));
+    final l = (await t.runAsync(() => nl.acquire('x', LeaseKind.raw)))!;
+    await t.pumpWidget(_Busy(RawUse(l, gate)));
+    final st = t.state<BusyState>(find.byType(_Busy));
+    await t.runAsync(l.release); // taken back
+    expect(() => st.rawBusy = true, throwsStateError);
+  });
+
   group('A-M1 / B-M1: an older page\x27s busy work holds the raw lease past the pop', () {
     test('popped while busy: the lease stays until the work ends; no NodeLink scan meanwhile', () async {
       final radio = Radio();
@@ -473,4 +595,15 @@ class BusyState extends State<_Busy> with RawBusy<_Busy> {
   RawUse? get rawUse => widget.use;
   @override
   Widget build(BuildContext context) => const SizedBox();
+}
+
+class _EndingRadio extends Radio {
+  final _scan = StreamController<String>();
+  final _st2 = StreamController<(String, bool)>.broadcast(sync: true);
+  void goDown(String a) => _st2.add((a, false));
+  void endScan() => _scan.close();
+  @override
+  Stream<(String, bool)> get linkStates => _st2.stream;
+  @override
+  Stream<String> scan() => _scan.stream;
 }

@@ -40,7 +40,7 @@ class SessionProber implements Prober {
   @override
   Future<Outcome> probe(GateLink link, String id, {required Future<void> due, required Future<void> cancelled}) async {
     final result = Completer<Outcome>();
-    var gotFrame = false;
+    var gotMsg2 = false; // a whole msg2: the session answered with a step (a fragment alone is not msg2, r2 D-2)
     var loggedIn = false;
     void done(Outcome o) {
       if (!result.isCompleted) result.complete(o);
@@ -54,7 +54,7 @@ class SessionProber implements Prober {
     // §4.3.3-3: from the start of the connect to msg2 at most 8 s, one budget for the connect and everything before
     // msg2 (Keystore, MTU, ctrl read, first write); [due] is that deadline (review pr1 A-M4 / B-M3)
     unawaited(due.then((_) {
-      if (!gotFrame) done(const Outcome(Res.noResponse));
+      if (!gotMsg2) done(const Outcome(Res.noResponse));
     }));
     unawaited(cancelled.then((_) => done(const Outcome(Res.noResponse))));
 
@@ -131,12 +131,20 @@ class SessionProber implements Prober {
       final (session, first) = OwnerSession.start(recordPlain: r, ownerPub: pub, frameLimit: fl);
       s = session;
       sub = link.subscribe(Char.tx).listen((f) {
-        if (!gotFrame) {
-          gotFrame = true;
+        if (result.isCompleted) return;
+        final OwnerStep? st;
+        try {
+          st = session.onFrame(frame: f);
+        } catch (e) {
+          log?.call('probe $id: ${e.runtimeType} $e on a frame (logged in: $loggedIn)');
+          done(failed());
+          return;
+        }
+        if (st != null && !gotMsg2) {
+          gotMsg2 = true;
           answer = Timer(answerMax, () => done(failed())); // after msg2: the existing 20 s (F3)
         }
-        if (result.isCompleted) return;
-        run(session.onFrame(frame: f)).catchError((Object e) {
+        run(st).catchError((Object e) {
           log?.call('probe $id: ${e.runtimeType} $e after a frame (logged in: $loggedIn)');
           done(failed());
         });

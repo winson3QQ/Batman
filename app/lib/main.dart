@@ -9,7 +9,6 @@ import 'nodes.dart';
 import 'scan.dart';
 import 'src/nodelink/app_link.dart';
 import 'src/nodelink/core.dart' as nlcore show Page;
-import 'src/nodelink/lease.dart';
 import 'src/nodelink/node_list.dart';
 import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/owner.dart' show listNodes, listPending;
@@ -75,18 +74,9 @@ class _StartupCheckState extends State<StartupCheck> {
       await Navigator.of(context).push(MaterialPageRoute(builder: (_) => page(null, null)));
       return;
     }
-    final lease = await a.link.acquire(name, LeaseKind.raw);
-    if (!mounted) {
-      await lease?.release(); // review pr1 A-m4: never keep a lease no page will use
-      return;
-    }
-    if (lease == null) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('另一個操作還在進行：${a.reg.current?.name ?? ''}')));
-      return;
-    }
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => page(a, RawUse(lease, a.gate))));
-    lease.pageGone();
+    final m = ScaffoldMessenger.of(context);
+    final busy = await openRawPage(Navigator.of(context), a.link, a.gate, name, (u) => page(a, u));
+    if (busy != null) m.showSnackBar(SnackBar(content: Text('另一個操作還在進行：$busy')));
     if (mounted) setState(() {});
   }
 

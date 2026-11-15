@@ -11,10 +11,17 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart' show
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:batman_app/claim.dart';
+import 'package:batman_app/src/nodelink/ble_gate.dart';
+import 'package:batman_app/src/nodelink/core.dart' show NodeLinkCore;
+import 'package:batman_app/src/nodelink/lease.dart';
+import 'package:batman_app/src/nodelink/node_link.dart';
+import 'package:batman_app/src/nodelink/raw_use.dart';
 import 'package:batman_app/src/rust/api/claim.dart';
 import 'package:batman_app/src/rust/api/owner.dart' show SealedRecord;
 import 'package:batman_app/src/rust/api/simple.dart' show StatusInfo;
 import 'package:batman_app/src/rust/frb_generated.dart';
+
+import 'nodelink/node_link_test.dart' as nlt show Clock, Radio, FakeProber;
 
 const qrText = 'a201726261746d616e2d746573742d71722d303102582000112233445566778899aabbccddeeff0011';
 const deviceId = '0000000000000c4f2a';
@@ -141,9 +148,8 @@ void main() {
 
   /// scan, 「認領」, answer the dialog with [confirm], then let the claim run
   /// [soft]: a dev build whose owner_enc key is SOFTWARE; [signOwner]: what Kotlin answers (a PlatformException is thrown)
-  Future<FakeBle> runClaim(WidgetTester t, String confirm,
-      {Duration findFor = const Duration(seconds: 60), int realMs = 0, bool soft = false, Object? signOwner}) async {
-    final ble = FakeBle();
+  /// the platform channel of a dev build (keys all hardware unless [soft]); [signOwner]: what Kotlin answers
+  void mockPlatform(WidgetTester t, {bool soft = false, Object? signOwner}) {
     t.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('dev.batman/platform'), (c) async {
       switch (c.method) {
         case 'scanQr':
@@ -178,6 +184,12 @@ void main() {
       }
       return null;
     });
+  }
+
+  Future<FakeBle> runClaim(WidgetTester t, String confirm,
+      {Duration findFor = const Duration(seconds: 60), int realMs = 0, bool soft = false, Object? signOwner}) async {
+    final ble = FakeBle();
+    mockPlatform(t, soft: soft, signOwner: signOwner);
     await t.pumpWidget(MaterialApp(home: ClaimPage(ble: ble, findFor: findFor)));
     await t.tap(find.text('掃描 QR'));
     await t.pumpAndSettle();
@@ -305,4 +317,70 @@ void main() {
     final claim = t.widget<FilledButton>(find.widgetWithText(FilledButton, '認領'));
     expect(claim.onPressed, isNull, reason: 'R6: the QR is forgotten');
   });
+
+  // #329 review pr1 r2 C-M1 (A-M1 / B-M1 with the real page): ClaimPage opened by openRawPage, popped while its claim
+  // waits for the node -> the raw lease is still held and NodeLink does not scan; the claim then ends -> released.
+  // Its scan start is counted by the gate (A-m7). Negative controls: ClaimPage's rawUse => null, or pageGone at the
+  // route's return instead of the page's dispose (old _open), or no rawScanStarted -> FAIL.
+  testWidgets('A-M1 real page: popped mid-claim, the raw lease is held until the claim ends', (t) async {
+    rust.target = ClaimTarget.nothing;
+    mockPlatform(t);
+    final ble = HoldBle();
+    final clock = nlt.Clock();
+    final reg = LeaseRegistry(after: clock.after);
+    final radio = nlt.Radio();
+    final gate = BleGate(radio, reg, now: () => clock.t, after: clock.after);
+    final nl = NodeLink(
+        core: NodeLinkCore(const []),
+        gate: gate,
+        reg: reg,
+        prober: nlt.FakeProber({}),
+        readRecords: () async => const [],
+        now: () => clock.t,
+        after: clock.after);
+    await t.pumpWidget(MaterialApp(
+        home: Builder(
+            builder: (c) => TextButton(
+                onPressed: () => openRawPage(Navigator.of(c), nl, gate, '新增節點', (u) => ClaimPage(ble: ble, use: u)),
+                child: const Text('open')))));
+    await t.tap(find.text('open'));
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await t.pumpAndSettle();
+    final lease = reg.current!;
+    await t.tap(find.text('掃描 QR'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('認領'));
+    for (var i = 0; i < 20 && ble.written.isEmpty; i++) {
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await t.pump(const Duration(milliseconds: 100));
+    }
+    expect(ble.written, isNotEmpty, reason: 'msg1 went out; the claim waits for the node');
+    expect(gate.recentScanStarts, greaterThan(0), reason: 'the page\x27s scan is counted by the gate');
+    t.state<NavigatorState>(find.byType(Navigator)).pop(); // the user presses back mid-claim
+    await t.pumpAndSettle();
+    expect(find.byType(ClaimPage), findsNothing);
+    expect(reg.current, same(lease), reason: 'busy: the lease outlives the page');
+    ble.hold.complete(); // the node answers; the claim goes on to CLAIMED
+    for (var i = 0; i < 50 && reg.current != null; i++) {
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await t.pump(const Duration(milliseconds: 200));
+    }
+    expect(reg.current, isNull, reason: 'the claim ended: released');
+    expect(rust.calls, contains('write node/$deviceId'));
+  });
+}
+
+/// The node's first answer (msg2) waits for [hold].
+class HoldBle extends FakeBle {
+  final hold = Completer<void>();
+  @override
+  Future<void> writeCharacteristicWithoutResponse(QualifiedCharacteristic c, {required List<int> value}) async {
+    written.add(value);
+    final answer = value[0] == 1 ? 2 : 4;
+    if (answer == 2) {
+      hold.future.then((_) => tx.add([answer]));
+    } else {
+      Timer.run(() => tx.add([answer]));
+    }
+  }
 }

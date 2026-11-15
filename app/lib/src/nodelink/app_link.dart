@@ -53,9 +53,7 @@ class AppLink {
       signOwner: (input) async => (await platform.invokeMethod<Uint8List>('signOwner', {'input': input}))!,
       log: (l) => debugPrint('BMAPP nl ${NodeLink.mask(l)}'),
       // X26: the key gate refused a key use -> 2.4 until the app is opened again (review pr1 B-M5)
-      keyError: (e) {
-        if (KeyAbilities.refusedBy(e) != null) _one?.link.radio(keyOk: false);
-      },
+      keyError: (e) => keyErrorToRadio(e, _one?.link),
     );
     Future<List<Rec>> readRecords() async {
       final ids = await listNodes(dir: records);
@@ -85,10 +83,7 @@ class AppLink {
     // §4.3.2 (T20): the app lifecycle, app-wide (it outlives any page)
     WidgetsBinding.instance.addObserver(_Life(link));
     // §4.3.3-1: Bluetooth off / no permission are the overlay 2.3 / 2.2, at once (review pr1 A-M3 / B-M5)
-    ble.statusStream.listen((s) {
-      final (bt, perm) = bleStatusToRadio(s);
-      if (bt != null || perm != null) link.radio(bluetooth: bt, permission: perm);
-    }, onError: (Object _) {});
+    wireRadio(ble.statusStream, link);
     return _one = AppLink._(ble, reg, gate, link);
   }
 }
@@ -111,4 +106,16 @@ class _Life with WidgetsBindingObserver {
     debugPrint('BMAPP nodelink lifecycle ${s.name}');
     link.lifecycle(s);
   }
+}
+
+/// §4.3.3-1: the BLE status stream drives NodeLink's Bluetooth / permission preconditions (2.3 / 2.2 at once).
+StreamSubscription<BleStatus> wireRadio(Stream<BleStatus> status, NodeLink link) => status.listen((s) {
+      final (bt, perm) = bleStatusToRadio(s);
+      if (bt != null || perm != null) link.radio(bluetooth: bt, permission: perm);
+    }, onError: (Object _) {});
+
+/// X26: a key use the phone's key gate refused -> NodeLink's key precondition (2.4 until the app is opened again).
+/// Any other error is the attempt's own (no answer).
+void keyErrorToRadio(Object e, NodeLink? link) {
+  if (KeyAbilities.refusedBy(e) != null) link?.radio(keyOk: false);
 }

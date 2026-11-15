@@ -152,6 +152,12 @@ class BleGate implements LeaseListener {
   int get scans => _scans.length;
   int get links => _links.length;
 
+  /// Scan starts within the last 30 s (NodeLink's and the older pages').
+  int get recentScanStarts {
+    final t = now();
+    return _scanStarts.where((x) => t - x < scanWindow.inMilliseconds).length;
+  }
+
   void _timer(Duration d, void Function() f) => after(d, f);
 
   void _refuse(String line) {
