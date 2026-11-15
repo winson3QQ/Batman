@@ -17,6 +17,8 @@ import 'package:batman_app/key_abilities.dart';
 import 'package:batman_app/main.dart';
 import 'package:batman_app/claim.dart';
 import 'package:batman_app/nodes.dart';
+import 'package:batman_app/scan.dart';
+import 'package:batman_app/src/nodelink/node_list.dart';
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart' show Why;
 import 'package:batman_app/src/rust/api/simple.dart';
@@ -303,25 +305,67 @@ void main() {
     // #329 PR 1 review r3 E-M1 (E6 / E8): the start page opens an older page under a raw lease and hands it to the
     // page (its busy work holds it); the lease goes when the page is gone. Negative controls: _open without the lease
     // (page(a, null)) or without openRawPage -> FAIL.
-    testWidgets('r3 E-M1: 認領節點 opens ClaimPage under a raw lease handed to the page; back releases it', (t) async {
+    for (final (button, lease, Type type) in [
+      ('我的節點', '我的節點', NodesPage),
+      ('認領節點', '新增節點', ClaimPage),
+      ('附近的節點（開發用：藍牙測試）', '附近的節點', ScanPage),
+    ]) {
+      testWidgets('r3 E-M1 / r4 G-M1: $button opens its page under a raw lease handed to the page; back releases it',
+          (t) async {
+        mock(t, answer());
+        AppLink.forgetForTest();
+        final ble = _ScanBle();
+        await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: ble)));
+        await t.pumpAndSettle();
+        final a = AppLink.instance!;
+        addTearDown(() {
+          a.link.dispose();
+          AppLink.forgetForTest();
+        });
+        expect(find.byType(NodeStatusList), findsOneWidget, reason: 'the status list is on the start page');
+        expect(a.reg.current, isNull);
+        await t.tap(find.text(button));
+        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await t.pumpAndSettle();
+        expect(find.byType(type), findsOneWidget);
+        expect(a.reg.current?.name, lease);
+        final use = switch (t.widget(find.byType(type))) {
+          final NodesPage p => p.use,
+          final ClaimPage p => p.use,
+          final ScanPage p => p.use,
+          _ => null,
+        };
+        expect(use?.lease, same(a.reg.current), reason: 'the page holds the lease it runs under');
+        t.state<NavigatorState>(find.byType(Navigator)).pop();
+        await t.pumpAndSettle();
+        expect(a.reg.current, isNull, reason: 'idle page gone: released');
+        await t.runAsync(a.link.dispose);
+      });
+    }
+
+    // r4 G1: the start page passes the app's lifecycle state: started in the background -> no reading until back
+    testWidgets('r4: the start page started while the app is in the background does not read', (t) async {
       mock(t, answer());
       AppLink.forgetForTest();
-      final ble = _ScanBle();
-      await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: ble)));
-      await t.pumpAndSettle();
+      // the user leaves while the startup check runs, just before AppLink and its observer exist
+      await t.pumpWidget(BatmanApp(makeLink: (dir) {
+        t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        return AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle());
+      }));
+      addTearDown(() => t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed));
+      for (var i = 0; i < 20 && AppLink.instance == null; i++) {
+        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+        await t.pump(const Duration(milliseconds: 100));
+      }
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
       final a = AppLink.instance!;
-      expect(a.reg.current, isNull);
-      await t.tap(find.text('認領節點'));
-      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
-      await t.pumpAndSettle();
-      final page = t.widget<ClaimPage>(find.byType(ClaimPage));
-      expect(a.reg.current?.name, '新增節點');
-      expect(page.use?.lease, same(a.reg.current), reason: 'the page holds the lease it runs under');
-      t.state<NavigatorState>(find.byType(Navigator)).pop();
-      await t.pumpAndSettle();
-      expect(a.reg.current, isNull, reason: 'idle page gone: released');
+      addTearDown(() {
+        a.link.dispose();
+        AppLink.forgetForTest();
+      });
+      expect(a.link.core.fg, isFalse);
+      expect(a.link.core.roundActive, isFalse);
       await t.runAsync(a.link.dispose);
-      AppLink.forgetForTest();
     });
 
     // r3 F-M1: the startup key check is NodeLink's key precondition (login not allowed -> 2.4 overlay, no reading)

@@ -436,6 +436,7 @@ void main() {
       hold.complete(); // the node answers: the login succeeds with the page gone
       await settle(t, 25);
       expect(node.written, [fLogin], reason: 'the login did go through');
+      expect(gate.recentScanStarts, greaterThan(0), reason: 'r4 G-M1: the login''s scan is counted by the gate');
       expect(node.disconnects, isNotEmpty, reason: 'the link of a login that ended after the pop is dropped');
       expect(reg.current, isNull, reason: 'and the lease goes at once');
     } finally {

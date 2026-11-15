@@ -519,6 +519,26 @@ void main() {
     expect(radio.scans, 1);
   });
 
+  test('r4 G-m1: back in the foreground while start() reads the records -> NodeLink reads', () async {
+    final radio = Radio();
+    final read = Completer<List<Rec>>();
+    var first = true;
+    final (nl, clock, _, _) = make(radio, FakeProber({}), () {
+      if (first) {
+        first = false;
+        return read.future;
+      }
+      return Future.value(const [Rec('Y1', 1)]);
+    });
+    final f = nl.start(Page.home, life: AppLifecycleState.paused);
+    nl.lifecycle(AppLifecycleState.resumed); // the user is back while the records are read
+    read.complete(const [Rec('Y1', 1)]);
+    await f;
+    await clock.run(2000);
+    expect(nl.core.fg, isTrue);
+    expect(radio.scans, 1);
+  });
+
   testWidgets('r2 D-3: a page whose lease is gone cannot start busy work (fail-closed)', (t) async {
     final (nl, _, _, gate) = make(Radio(), FakeProber({}), () async => const [Rec('Y1', 1)]);
     await t.runAsync(() => nl.start(Page.home));
@@ -572,13 +592,16 @@ void main() {
       expect(radio.scans, scans + 1);
     });
 
-    test('a busy page that never ends: the lease is taken back 420 s after the pop', () async {
+    test('a busy older page that never ends: the raw lease is taken back 900 s after the pop (r4 H-M1), not at 420 s',
+        () async {
       final (nl, clock, reg, _) = make(Radio(), FakeProber({}), () async => const [Rec('Y1', 1)]);
       await nl.start(Page.home);
       final l = (await nl.acquire('我的節點', LeaseKind.raw))!;
       l.hold();
       l.pageGone();
-      await clock.run(419000);
+      await clock.run(600000); // a slow claim with its recovery: still held, NodeLink stays out
+      expect(reg.current, l);
+      await clock.run(299000);
       expect(reg.current, l);
       await clock.run(2000);
       expect(reg.current, isNull);

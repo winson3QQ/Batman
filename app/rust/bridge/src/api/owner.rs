@@ -1886,6 +1886,7 @@ mod tests {
         // #329 r3 F-m3: the identity alarm (身分不符) must stay its own kind, never folded into 連不到
         assert_eq!(login_end_kind(&End::CertRejected(batman_proto::nodecert::Error::NotPinned)), (3, 0));
         assert_eq!(login_end_kind(&End::AuthRefused(Outcome::Err { code: 13, detail: Value::Null })), (4, 13));
+        assert_eq!(login_end_kind(&End::AuthRefused(Outcome::Ok(Value::Null))), (4, 0)); // r4 H-m4
         assert_eq!(login_end_kind(&End::Broken("x".into())), (5, 0));
     }
 

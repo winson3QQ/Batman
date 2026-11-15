@@ -191,9 +191,11 @@ void main() {
     expect(sw.elapsedMilliseconds, lessThan(1000), reason: 'review pr1 B-M6b: the msg2 budget itself ends it');
   });
 
-  test('a step that would write a record in a read -> the node is given up, nothing written', () async {
+  test('a step that would write a record in a read -> the node is given up at once, nothing written', () async {
+    final sw = Stopwatch()..start();
     final o = await probe([step(OwnerKind.loggedIn, loginEnd: 1), step(OwnerKind.persistNet)]);
     expect(o.res, Res.broken);
+    expect(sw.elapsedMilliseconds, lessThan(5000), reason: 'r4 H-m2: given up at once, not at the 20 s answer limit');
   });
 
   // ---- review pr1 (A-M4 / B-M3, B-m2, A-m10, B-M5, B-m6, A-m2 M9) ----------------------------------------------

@@ -75,7 +75,7 @@ class Lease {
       release();
       return;
     }
-    _deadline = reg.after(LeaseRegistry.goneMax, () {
+    _deadline = reg.after(kind == LeaseKind.raw ? LeaseRegistry.rawGoneMax : LeaseRegistry.goneMax, () {
       if (!_ended) reg._revoke(this);
     });
   }
@@ -92,6 +92,12 @@ class LeaseRegistry {
   LeaseRegistry({required this.after});
   final After after;
   static const goneMax = Duration(seconds: 420);
+
+  /// An older page (raw lease) does not use the gate, so taking its lease back cannot stop its work; it only lets
+  /// NodeLink in while the page may still scan and connect (r4 H-M1). Its cap is longer than its longest busy work
+  /// (a claim with a recovery: about 485 s by its own timeouts; 我的節點's join wait 360 s) and only guards a page
+  /// whose platform call never returns.
+  static const rawGoneMax = Duration(seconds: 900);
 
   int _ids = 0;
   late Token _current = Token._(_ids++, 'NodeLink');
