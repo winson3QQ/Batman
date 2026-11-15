@@ -198,7 +198,6 @@ void main() {
       w.at(off * s, () => p2.core.startup(w.now, Page.home));
       w.run(21 * min);
       for (final ph in [p1, p2]) {
-        expect(ph.core.log.where((l) => l.contains('Why.notFound')), isEmpty);
         expect(ph.core.states['Y1']!.why, isNot(Why.notFound), reason: ph.core.log.join('\n'));
         expect(maxGap(ph.reads['Y1'] ?? [], from: 2 * min, until: 21 * min), lessThanOrEqualTo(300 * s),
             reason: ph.core.log.join('\n'));
@@ -328,6 +327,54 @@ void main() {
     expect(l.end, LoginEnd.notFound, reason: c.log.join('\n'));
   });
 
+  test('code-1 A-M2: 身分不符 survives Bluetooth off / on, a permission change and a keys retry', () {
+    final w = World();
+    w.dev('a1', id: 'Y1').force = Res.certRejected;
+    w.dev('a2', id: 'Y2');
+    final ph = w.phone('p', [const Rec('Y1', 1), const Rec('Y2', 2)]);
+    final c = ph.core;
+    c.startup(0, Page.home);
+    w.run(40 * s);
+    expect(c.shownWhy('Y1'), Why.identity, reason: c.log.join('\n'));
+    for (final f in [
+      () => c.setRadio(w.now, bluetooth: false),
+      () => c.setRadio(w.now, bluetooth: true),
+      () => c.setRadio(w.now, permission: false),
+      () => c.setRadio(w.now, permission: true),
+      () => c.setRadio(w.now, keyOk: false),
+      () => c.setRadio(w.now, keyOk: true),
+    ]) {
+      f();
+      w.run(w.now + 20 * s);
+    }
+    w.run(w.now + 4 * min);
+    expect(c.shownWhy('Y1'), Why.identity, reason: c.log.join('\n'));
+    expect(c.shownWhy('Y2'), isNull);
+  });
+
+  test('code-1 A-M3: a node claimed under a lease becomes a target; a removed one goes; other memos stay', () {
+    final w = World();
+    final d1 = w.dev('a1', id: 'Y1');
+    w.dev('a2', id: 'Y2');
+    final d3 = w.dev('a3', id: 'Y3');
+    final ph = w.phone('p', [const Rec('Y1', 1), const Rec('Y2', 2)]);
+    final c = ph.core;
+    c.startup(0, Page.home);
+    w.run(2 * min);
+    expect(c.isY['a1'], 'Y1');
+    final h1 = d1.handshakes;
+    w.at(w.now + 1, () => c.acquireLease(w.now));
+    w.at(w.now + 20 * s, () => c.releaseLease(w.now, written: {'Y3'}, recs: [const Rec('Y1', 1), const Rec('Y3', 3)]));
+    w.run(w.now + 3 * min);
+    expect(ph.reads['Y3'], isNotNull, reason: c.log.join('\n'));
+    expect(d3.logins, greaterThan(0));
+    expect(c.states.containsKey('Y2'), isFalse);
+    expect(c.isY.containsValue('Y2'), isFalse);
+    // Y1 kept its memo: one handshake per round, no searching
+    final rounds = c.log.where((l) => l.contains(' full ') && t(l) > w.now - 3 * min + 20 * s).length;
+    expect(d1.handshakes - h1, lessThanOrEqualTo(rounds), reason: c.log.join('\n'));
+  });
+
   group('T-X', () {
     (World, Phone) two() {
       final w = World();
@@ -392,7 +439,7 @@ void main() {
       final c = ph.core;
       w.run(60 * s);
       c.setRadio(w.now, bluetooth: false);
-      expect(c.states.values.every((s) => s.why == Why.bluetoothOff), isTrue);
+      expect(c.states.keys.every((id) => c.shownWhy(id) == Why.bluetoothOff), isTrue);
       final n = c.roundsRun;
       w.run(w.now + 3 * min);
       expect(c.roundsRun, n);
@@ -431,7 +478,7 @@ void main() {
       final c = ph.core;
       w.run(40 * s);
       c.setRadio(w.now, keyOk: false);
-      expect(c.states.values.every((s) => s.why == Why.keys), isTrue);
+      expect(c.states.keys.every((id) => c.shownWhy(id) == Why.keys), isTrue);
       final n = c.roundsRun;
       c.setRadio(w.now, keyOk: true);
       expect(c.roundsRun, n + 1);

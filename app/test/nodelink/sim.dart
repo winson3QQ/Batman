@@ -71,8 +71,21 @@ class World {
     return null;
   }
 
-  (Outcome, int) _attempt(Dev? d, String id, String who) {
-    if (d == null || !d.on || now < d.busyUntil) return (const Outcome(Res.noResponse), silent);
+  /// One attempt: (outcome, duration, did it connect). A central can only connect to an advertising node, so a node
+  /// that is connected elsewhere or re-advertising is waited for inside the 8 s msg2 budget (code-1 B, SIM_REAL).
+  (Outcome, int, bool) _attempt(Dev? d, String id, String who) {
+    if (d == null || !d.on) return (const Outcome(Res.noResponse), silent, false);
+    final avail = d.busyUntil > d.quietUntil ? d.busyUntil : d.quietUntil;
+    var wait = 0;
+    if (avail > now) {
+      if (avail - now + 1000 > silent) return (const Outcome(Res.noResponse), silent, false);
+      wait = avail - now;
+    }
+    final (o, dur) = _connected(d, id, who, now + wait);
+    return (o, dur + wait, true);
+  }
+
+  (Outcome, int) _connected(Dev d, String id, String who, int now) {
     d.handshakes++;
     d.byPhone[who] = (d.byPhone[who] ?? 0) + 1;
     d.handshakeTimes.add(now);
@@ -162,12 +175,12 @@ class World {
 
   void _start(Phone ph, Attempt a) {
     final d = _byAddr(a.addr);
-    final (o, dur) = _attempt(d, a.id, ph.name);
+    final (o, dur, connected) = _attempt(d, a.id, ph.name);
     ph.running = a;
     ph.outcome = o;
     ph.endsAt = now + dur;
-    ph.dev = d;
-    if (d != null && d.on) {
+    ph.dev = connected ? d : null;
+    if (d != null && connected) {
       d.busyUntil = now + dur;
       d.quietUntil = now + dur + d.readvertise;
     }

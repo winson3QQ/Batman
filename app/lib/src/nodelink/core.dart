@@ -63,13 +63,13 @@ class NodeState {
   bool responded = false; // logged in this run but only error codes so far
   int miss = 0; // consecutive 沒找到
   int same = 0; // consecutive 不變 (full rounds only)
-  int identityRound = -1;
+  int notYetRun = 0; // consecutive 還沒輪到 (§4.3.5 「連續兩輪以上」)
   Concl? last;
 }
 
 class _T {
   int n = 0; // attempts started this round
-  bool body = false, err = false, logged = false;
+  bool body = false, err = false;
   Why? why;
 }
 
@@ -123,7 +123,8 @@ class NodeLinkCore {
 
   // ---- queries -------------------------------------------------------------------------------------------------
 
-  bool isNot(String a, String id) => (notY[a]?.contains(id) ?? false) || (isY[a] != null && isY[a] != id);
+  /// 「不是 Y」 for this address (callers have already skipped addresses with any 「是」 memo, §4.3.3-5).
+  bool isNot(String a, String id) => notY[a]?.contains(id) ?? false;
 
   /// 「新鮮」 (§4.3.1): the only predicate that may give a colour.
   bool fresh(String id, int now) {
@@ -136,7 +137,7 @@ class NodeLinkCore {
 
   Set<String> get _pageTargets => switch (page) {
         Page.home => _recs.keys.toSet(),
-        Page.node => {pageNode!},
+        Page.node => _recs.containsKey(pageNode) ? {pageNode!} : <String>{},
         Page.other => <String>{},
       };
 
@@ -188,6 +189,7 @@ class NodeLinkCore {
   }
 
   void foreground(int now) {
+    if (fg) return; // already in the foreground: not a return from the background (code-1 B-m3)
     fg = true;
     if (_eligible) _begin(now, early: false);
   }
@@ -199,9 +201,31 @@ class NodeLinkCore {
     fullDue = null;
   }
 
-  /// Release; `written` = node records written or deleted under it (§4.4 RecordWriter).
-  void releaseLease(int now, {Set<String> written = const {}}) {
+  /// The phone's node records changed (a claim added one, a removal deleted one): called with the new list and file
+  /// times after every lease release (§4.3.3-6). Memos and states of the records that stay are kept (T19).
+  void setRecords(List<Rec> recs) {
+    final ids = {for (final r in recs) r.id};
+    for (final id in _recs.keys.toList()) {
+      if (ids.contains(id)) continue;
+      _recs.remove(id);
+      states.remove(id);
+      isY.removeWhere((_, v) => v == id);
+      for (final s in notY.values) {
+        s.remove(id);
+      }
+      _earlyTargets.remove(id);
+    }
+    for (final r in recs) {
+      _recs[r.id] = r;
+      states.putIfAbsent(r.id, NodeState.new);
+    }
+  }
+
+  /// Release; `written` = node records written or deleted under it (§4.4 RecordWriter); `recs` = the record list
+  /// read again after it.
+  void releaseLease(int now, {Set<String> written = const {}, List<Rec>? recs}) {
     lease = false;
+    if (recs != null) setRecords(recs);
     for (final id in written) {
       writtenAt[id] = now;
       isY.removeWhere((_, v) => v == id);
@@ -235,7 +259,6 @@ class NodeLinkCore {
     final ok = bt && perm && keys;
     if (!ok) {
       _cancel(now);
-      _precondition();
     } else if (!was && _eligible) {
       _begin(now, early: false);
     }
@@ -251,23 +274,16 @@ class NodeLinkCore {
 
   // ---- rounds --------------------------------------------------------------------------------------------------
 
-  void _precondition() {
-    final why = !bt ? Why.bluetoothOff : (!perm ? Why.noPermission : Why.keys);
-    for (final s in states.values) {
-      s.kind = Kind.unreachable;
-      s.why = why;
-    }
-  }
+  /// §4.3.3-1: Bluetooth off, no permission or keys unusable make every target unreachable for that reason. It is an
+  /// overlay: the node states underneath (身分不符 above all) are kept and shown again when it clears (code-1 A-M2).
+  Why? get blocked => !bt ? Why.bluetoothOff : (!perm ? Why.noPermission : (!keys ? Why.keys : null));
+
+  /// What the screen shows as the reason, if any: the overlay first, then the node's own state.
+  Why? shownWhy(String id) => blocked ?? (states[id]!.kind == Kind.unreachable ? states[id]!.why : null);
 
   void _begin(int now, {required bool early, Set<String>? only}) {
     if (!_eligible) return;
-    if (!(bt && perm && keys)) return _precondition();
-    for (final s in states.values) {
-      if (s.why == Why.bluetoothOff || s.why == Why.noPermission || s.why == Why.keys) {
-        s.kind = s.lastRead != null ? Kind.read : Kind.unread;
-        s.why = null;
-      }
-    }
+    if (blocked != null) return;
     // memos of addresses not seen for 20 minutes go (§4.3.3-5)
     final old = lastSeen.entries.where((e) => now - e.value >= p.unseen).map((e) => e.key).toList();
     for (final a in old) {
@@ -337,7 +353,6 @@ class NodeLinkCore {
     if (t.body || t.why != null) return const [];
     final k = _knownAddr(r, id);
     if (k != null) return _canTry(r, k, id) ? [k] : const [];
-    if (t.logged) return const []; // logged in elsewhere this round: never try its record on another address
     if (!lookOk && isY.containsValue(id)) return const [];
     final order = [...r.seen.where((a) => !r.noRespLast.contains(a)), ...r.seen.where(r.noRespLast.contains)];
     return [
@@ -388,11 +403,9 @@ class NodeLinkCore {
         isY[a.addr] = a.id;
         notY[a.addr]?.remove(a.id);
         t.body = true;
-        t.logged = true;
-        _read(s, now, o.view, r.id);
+        _read(s, now, o.view);
       case Res.errorCode:
         isY[a.addr] = a.id;
-        t.logged = true;
         t.err = true;
         r.retry.add(key);
       case Res.undecryptable:
@@ -410,7 +423,6 @@ class NodeLinkCore {
         t.why = Why.identity;
         s.kind = Kind.unreachable;
         s.why = Why.identity;
-        s.identityRound = r.id;
       case Res.refusedForbidden:
         isY[a.addr] = a.id;
         t.why = Why.refused;
@@ -421,10 +433,13 @@ class NodeLinkCore {
       case Res.refusedOther:
       case Res.broken:
         isY[a.addr] = a.id;
-        t.logged = true;
         r.retry.add(key);
       case Res.noResponse:
-        if (isY[a.addr] == a.id) {
+        if (isY[a.addr] == a.id && (r.count[a.addr] ?? 0) >= p.perAddr) {
+          // its known address did not answer twice in a round: drop 「是 Y」 so the next round looks for it (a device
+          // replaying an old address must not hide the node for good; code-1 B-m1)
+          isY.remove(a.addr);
+        } else if (isY[a.addr] == a.id) {
           r.retry.add(key);
         } else {
           r.exhausted.add(a.addr);
@@ -433,7 +448,7 @@ class NodeLinkCore {
     }
   }
 
-  void _read(NodeState s, int now, String view, int roundId) {
+  void _read(NodeState s, int now, String view) {
     s.view = view;
     s.readAt = now;
     s.lastRead = now;
@@ -441,7 +456,6 @@ class NodeLinkCore {
     s.responded = false;
     s.miss = 0;
     s.same = 0;
-    if (s.why == Why.identity && s.identityRound == roundId) return; // ends only in a later round
     s.kind = Kind.read;
     s.why = null;
   }
@@ -459,7 +473,15 @@ class NodeLinkCore {
       final pending = r.targets.any((id) => _candidates(r, id, lookOk: true).any((a) => (r.count[a] ?? 0) < p.perAddr));
       final atCap = now - r.start >= p.cap;
       if (atCap || allDone || (now - r.start >= p.window && r.running == null && !pending)) {
-        if (r.running != null) log.add('${_s(now)}   ${r.running} cut at the cap');
+        final cut = r.running;
+        if (cut != null) {
+          // the attempt cut at the cap counts as not tried (§4.3.4; code-1 A-M1)
+          log.add('${_s(now)}   $cut cut at the cap');
+          r.tried.remove('${cut.addr}|${cut.id}');
+          r.count[cut.addr] = (r.count[cut.addr] ?? 1) - 1;
+          r.t[cut.id]!.n--;
+          r.running = null;
+        }
         _end(now, r);
       }
       return;
@@ -480,10 +502,12 @@ class NodeLinkCore {
       final c = _conclude(r, id);
       final s = states[id]!;
       s.last = c;
+      s.notYetRun = c == Concl.notYet ? s.notYetRun + 1 : (c == Concl.queued ? s.notYetRun : 0);
       switch (c) {
         case Concl.read:
-        case Concl.reason:
           break;
+        case Concl.reason:
+          s.same = 0; // any conclusion but 不變 / 還沒輪到 / 排隊中 resets it (§4.3.4; code-1 A-m3)
         case Concl.unchanged:
           s.miss = 0;
           if (s.kind == Kind.unreachable && (s.why == Why.notFound || s.why == Why.refused)) {
@@ -570,7 +594,7 @@ class NodeLinkCore {
       }
     }
     final l = LoginFor._(this, id, now);
-    if (!(bt && perm && keys)) l.end = LoginEnd.precondition;
+    if (blocked != null) l.end = LoginEnd.precondition;
     log.add('${_s(now)} loginFor $id${l.end == null ? '' : ' -> ${l.end!.name}'}');
     return l;
   }
@@ -587,6 +611,7 @@ class LoginFor {
   final List<String> seen = [];
   final Map<String, int> freeAt = {};
   final Set<String> tried = {}, retry = {};
+  final Map<String, int> silent = {};
   Attempt? running;
   LoginEnd? end;
   int handshakes = 0;
@@ -601,7 +626,8 @@ class LoginFor {
   bool _ok(String a) => !tried.contains(a) || retry.contains(a);
 
   /// Its known address first; with a 「是 Y」 memo it waits for that address during the first 30 s; then unknown
-  /// addresses in scan order (never one with any 「是」 memo or a 「不是 Y」 memo).
+  /// addresses in scan order (never one with any 「是」 memo or a 「不是 Y」 memo), addresses not tried yet before retries
+  /// (so a node just claimed among many others is reached in the first minute; code-1 B-M4).
   Attempt? next(int now) {
     if (done || running != null) return null;
     String? pick;
@@ -609,11 +635,11 @@ class LoginFor {
     if (known.isNotEmpty) {
       if (_ok(known.first) && (freeAt[known.first] ?? 0) <= now) pick = known.first;
     } else if (!c.isY.containsValue(id) || now - start >= c.p.window) {
-      for (final a in seen) {
-        if (c.isY[a] != null || c.isNot(a, id) || !_ok(a) || (freeAt[a] ?? 0) > now) continue;
-        pick = a;
-        break;
-      }
+      final open = [
+        for (final a in seen)
+          if (c.isY[a] == null && !c.isNot(a, id) && _ok(a) && (freeAt[a] ?? 0) <= now) a
+      ];
+      pick = open.where((a) => !tried.contains(a)).firstOrNull ?? open.firstOrNull;
     }
     if (pick == null) return null;
     retry.remove(pick);
@@ -623,11 +649,11 @@ class LoginFor {
   }
 
   void result(int now, Attempt a, Outcome o) {
-    if (running == null || running!.addr != a.addr) return;
+    if (running == null || running!.addr != a.addr || !c.lease) return; // a lease taken back: drop it (code-1 A-m5)
     running = null;
     freeAt[a.addr] = now + c.p.gap;
     c.log.add('${NodeLinkCore._s(now)}   loginFor $a -> ${o.res.name}');
-    final s = c.states[id]!;
+    final s = c.states[id] ?? NodeState(); // a record removed meanwhile: memos only
     switch (o.res) {
       case Res.body:
       case Res.errorCode:
@@ -660,13 +686,19 @@ class LoginFor {
         c.isY[a.addr] = id;
         retry.add(a.addr);
       case Res.noResponse:
+        silent[a.addr] = (silent[a.addr] ?? 0) + 1;
+        if (c.isY[a.addr] == id && silent[a.addr]! >= c.p.perAddr) {
+          c.isY.remove(a.addr); // as in a round: two silences on the known address drop it, then it looks
+        }
         retry.add(a.addr);
     }
   }
 
   void tick(int now) {
-    if (!done && running == null && now - start >= budget) end = LoginEnd.notFound;
-    if (!done && now - start >= budget + 30000) end = LoginEnd.notFound; // an attempt never reported back
+    if (!done && now - start >= budget) {
+      running = null; // §4.3.9: 60 s, the running attempt is cut (code-1 A-m6)
+      end = LoginEnd.notFound;
+    }
   }
 
   int? wakeAt(int now) {

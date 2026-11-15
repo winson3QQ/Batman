@@ -243,7 +243,7 @@ void main() {
     expect(c.fresh('Y1', w.now) && c.fresh('Y2', w.now), isTrue, reason: c.log.join('\n'));
   });
 
-  for (final n in [7, 12]) {
+  for (final n in [7, 8, 12]) {
     test('T-L21: $n own nodes + 1 foreign address -> no early re-read, each read at most 300 s apart', () {
       final w = World();
       for (var i = 0; i < n; i++) {
@@ -269,6 +269,9 @@ void main() {
         expect(c.states['Y$i']!.kind, isNot(Kind.unreachable));
       }
       expect(c.log.where((l) => l.contains(' early ')).length, earlyBefore, reason: c.log.join('\n'));
+      // not vacuous: no round after settling concludes 沒找到 or 還沒輪到 for anyone (an early re-read would be due)
+      final ends = c.log.where((l) => l.contains(' end ') && double.parse(l.trim().split(' ').first) * 1000 > from);
+      expect(ends.where((l) => l.contains('notFound') || l.contains('notYet')), isEmpty, reason: c.log.join('\n'));
     });
   }
 
