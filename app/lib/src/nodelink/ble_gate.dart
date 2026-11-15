@@ -235,7 +235,8 @@ class BleGate implements LeaseListener {
     return l;
   }
 
-  /// The registry took a token back: close what it opened (§4.2, §4.4 420 s).
+  /// Close what a token opened: the registry took it back (§4.4 cap), a lease was released (its leftovers), or NodeLink
+  /// is handing the radio to a new lease (its own token, r5 J-m1).
   @override
   void revoked(Token t) {
     for (final s in [..._scans.where((s) => identical(s.token, t))]) {

@@ -256,8 +256,10 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
             final OwnerStep p = st;
             _track.persisted();
             try {
-              final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
-              await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
+              await _underLease(() async {
+                final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
+                await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
+              });
               _saved = true;
               _log('已在手機存下網路資料（${p.rel.substring(0, 8)}…，第 ${p.generation} 版）');
               st = s.netPersisted();
@@ -462,7 +464,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
       _lastNode = null;
     }
     try {
-      await storeRemove(dir: await _dir(), rel: 'node/$deviceId');
+      await _underLease(() async => storeRemove(dir: await _dir(), rel: 'node/$deviceId'));
       _say('[FORGOT] 已忘記節點 …$last4');
     } catch (e) {
       _say('忘記失敗：$e');
@@ -743,11 +745,24 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
     }
   }
 
+  /// #329 §4.4: a record is sealed and written while this page's lease is held, also when the page goes meanwhile
+  /// (PR 1 review r6 K-m1 / K-m2). A lease that is already gone throws here: nothing is written (fail-closed).
+  Future<T> _underLease<T>(Future<T> Function() write) async {
+    final hold = rawUse?.lease.hold();
+    try {
+      return await write();
+    } finally {
+      hold?.call();
+    }
+  }
+
   /// Seal a record step's plain bytes and write them by CAS; the error text is store_write_cas's (or the sealing's).
   Future<String?> _writeRecord(OwnerStep p) async {
     try {
-      final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
-      await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
+      await _underLease(() async {
+        final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
+        await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
+      });
       return null;
     } catch (e) {
       return e is String ? e : (e is PlatformException ? (KeyAbilities.refusedBy(e) ?? 'seal ${e.code}') : '${e.runtimeType}');
@@ -1008,7 +1023,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
       }
       // accepted fail-closed (§3): a request written meanwhile is removed too; a failed removal is harmless
       try {
-        await storeRemove(dir: await _dir(), rel: 'mpend/$id');
+        await _underLease(() async => storeRemove(dir: await _dir(), rel: 'mpend/$id'));
       } catch (_) {}
       _say(st.detail);
     } on PlatformException catch (e) {
@@ -1238,8 +1253,10 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
     if (pick != 'forget') return;
     try {
       final st = netForgetJoining(recordPlain: net.plain, recordGen: net.gen, dacHash: m.dacHash);
-      final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': st.record, 'aad': st.aad}))!;
-      await storeWriteCas(dir: await _dir(), rel: st.rel, expectedGen: st.expectedGen, sealed: sealed);
+      await _underLease(() async {
+        final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': st.record, 'aad': st.aad}))!;
+        await storeWriteCas(dir: await _dir(), rel: st.rel, expectedGen: st.expectedGen, sealed: sealed);
+      });
       _say(st.detail);
     } catch (e) {
       _say('[REQ_FAIL] 忘記沒有成功：${KeyAbilities.refusedBy(e) ?? e}');
