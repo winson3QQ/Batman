@@ -60,6 +60,8 @@ void main() {
   test('row 4: 身分不符 wins over everything below it', () {
     final h = home([node('bbbb0002', why: Why.identity), node('cccc0003', v: sv(nodeState: 1))], todos: 2);
     expect((h.row, h.look, h.node), (4, Look.bad, 'bbbb0002'));
+    expect(home([node('bbbb0002', why: Why.identity, last: Concl.reason)], first: true).row, 4,
+        reason: 'an identity alarm is shown at once, also in the first rounds');
   });
   test('row 5: the first rounds, nothing concluded yet -> 正在找 (busy, no button)', () {
     final h = home([node('dddd0004')], first: true);

@@ -71,8 +71,9 @@ class FakeRust implements RustLibApi {
   @override
   Future<bool> crateApiSimpleStoreHasRecords({required String dir}) async => false;
 
+  List<String> nodes = ['0000000000000c4f2a'];
   @override
-  Future<List<String>> crateApiOwnerListNodes({required String dir}) async => ['0000000000000c4f2a'];
+  Future<List<String>> crateApiOwnerListNodes({required String dir}) async => nodes;
 
   @override
   Future<List<String>> crateApiOwnerListPending({required String dir}) async => ['00000000000000beef'];
@@ -384,6 +385,23 @@ void main() {
       await t.runAsync(a.link.dispose);
       AppLink.forgetForTest();
     });
+
+    // #329 §5.2 T-U3: the welcome pages only when never seen AND the phone holds no node record (an upgrading user
+    // never sees them). Negative control: drop the record check -> the upgrading user sees the welcome -> FAIL.
+    for (final (records, welcome) in [(true, false), (false, true)]) {
+      testWidgets('T-U3: records $records -> welcome $welcome', (t) async {
+        mock(t, answer());
+        rust.nodes = records ? ['0000000000000c4f2a'] : [];
+        AppLink.forgetForTest();
+        await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle())));
+        await t.pumpAndSettle();
+        expect(find.text('歡迎'), welcome ? findsOneWidget : findsNothing);
+        expect(find.text('可以做的事'), welcome ? findsNothing : findsOneWidget);
+        await t.runAsync(AppLink.instance!.link.dispose);
+        rust.nodes = ['0000000000000c4f2a'];
+        AppLink.forgetForTest();
+      });
+    }
 
     testWidgets('every key fits: the three entries are there and on', (t) async {
       await start(t, answer());
