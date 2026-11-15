@@ -397,6 +397,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
           scan.pause();
           final ok = await _tryLogin(id, record, ownerPub);
           if (ok && !mounted) {
+            _wait?.cancel(); // no request will be sent from a page that is gone (r3: its wait timer stays otherwise)
             await _drop(); // #329 review pr1 B-M1: a login that ends after the page is gone keeps no link
             return;
           }

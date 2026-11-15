@@ -3,7 +3,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
@@ -18,16 +18,21 @@ import 'node_link.dart';
 import 'prober.dart';
 
 class AppLink {
-  AppLink._(this.ble, this.reg, this.gate, this.link);
+  AppLink._(this.ble, this.reg, this.gate, this.link, this.prober);
 
   /// The only FlutterReactiveBle of the app (§4.2): the older pages get this one too.
   final FlutterReactiveBle ble;
   final LeaseRegistry reg;
   final BleGate gate;
   final NodeLink link;
+  final SessionProber prober;
 
   static AppLink? _one;
   static AppLink? get instance => _one;
+
+  /// Tests only: the next [create] builds a new one.
+  @visibleForTesting
+  static void forgetForTest() => _one = null;
 
   static final _clock = Stopwatch()..start();
   static int _now() => _clock.elapsedMilliseconds;
@@ -36,12 +41,13 @@ class AppLink {
     return t.cancel;
   }
 
-  static AppLink create({required MethodChannel platform, required String filesDir}) {
+  /// [ble]: tests pass a fake; the app uses the platform's.
+  static AppLink create({required MethodChannel platform, required String filesDir, FlutterReactiveBle? ble}) {
     final existing = _one;
     if (existing != null) return existing;
-    final ble = FlutterReactiveBle();
+    final radio = ble ?? FlutterReactiveBle();
     final reg = LeaseRegistry(after: _after);
-    final gate = BleGate(ReactiveBackend(ble), reg, now: _now, after: _after);
+    final gate = BleGate(ReactiveBackend(radio), reg, now: _now, after: _after);
     final records = '$filesDir/records';
     final prober = SessionProber(
       openRecord: (id) async {
@@ -83,8 +89,8 @@ class AppLink {
     // §4.3.2 (T20): the app lifecycle, app-wide (it outlives any page)
     WidgetsBinding.instance.addObserver(_Life(link));
     // §4.3.3-1: Bluetooth off / no permission are the overlay 2.3 / 2.2, at once (review pr1 A-M3 / B-M5)
-    wireRadio(ble.statusStream, link);
-    return _one = AppLink._(ble, reg, gate, link);
+    wireRadio(radio.statusStream, link);
+    return _one = AppLink._(radio, reg, gate, link, prober);
   }
 }
 

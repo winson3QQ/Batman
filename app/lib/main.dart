@@ -140,7 +140,7 @@ class _StartupCheckState extends State<StartupCheck> {
       try {
         final a = make((await _platform.invokeMethod<String>('filesDir'))!);
         a.link.radio(keyOk: keys.login); // X26: the startup key check is the key precondition
-        await a.link.start(nlcore.Page.home);
+        await a.link.start(nlcore.Page.home, life: WidgetsBinding.instance.lifecycleState);
         _app = a;
       } catch (e) {
         lines.add('節點自動讀取沒有啟動：$e');

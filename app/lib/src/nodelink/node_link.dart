@@ -97,9 +97,14 @@ class NodeLink implements LeaseListener {
 
   // ---- events from the app ----------------------------------------------------------------------------------
 
-  Future<void> start(Page page, {String? node}) async {
+  /// [life]: the app's lifecycle state now; the user may have left during the startup check, before the app-wide
+  /// observer existed (r3 E-m1): then no round starts until the app comes back.
+  Future<void> start(Page page, {String? node, AppLifecycleState? life}) async {
     _recs = await readRecords();
     core.setRecords(_recs);
+    if (life == AppLifecycleState.paused || life == AppLifecycleState.hidden || life == AppLifecycleState.detached) {
+      core.background(now());
+    }
     core.startup(now(), page, node: node);
     _pump();
   }

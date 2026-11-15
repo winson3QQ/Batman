@@ -72,18 +72,24 @@ class _ScanPageState extends State<ScanPage> with RawBusy<ScanPage> {
   Future<void> _stop() async {
     await _scan?.cancel();
     _scan = null;
-    setState(() => _note = '已停止搜尋（找到 ${_found.length} 台）');
+    if (mounted) setState(() => _note = '已停止搜尋（找到 ${_found.length} 台）');
   }
 
   /// Connect, ask for MTU 517 (design §2), read STATUS once, disconnect. Connecting withdraws the node's
   /// advertising until the link drops (bluez.go:325,666-669).
   Future<void> _read(DiscoveredDevice d) async {
     if (_busy) return;
+    _busy = true; // before any await: a second tap meanwhile does nothing (r3 E-m6)
+    try {
+      await _readOnce(d);
+    } finally {
+      rawIdle(); // also when the read throws: the lease never waits for the 420 s
+    }
+  }
+
+  Future<void> _readOnce(DiscoveredDevice d) async {
     await _stop();
-    setState(() {
-      _busy = true;
-      _status[d.id] = '連線中…';
-    });
+    if (mounted) setState(() => _status[d.id] = '連線中…');
     StreamSubscription<ConnectionStateUpdate>? conn;
     final done = Completer<String>();
     conn = _ble.connectToDevice(id: d.id, connectionTimeout: const Duration(seconds: 15)).listen((u) async {
@@ -120,7 +126,6 @@ class _ScanPageState extends State<ScanPage> with RawBusy<ScanPage> {
     await conn.cancel(); // drops the link: the node advertises again
     _log('disconnected id=${d.id}');
     _status[d.id] = r;
-    rawIdle();
   }
 
   @override

@@ -508,6 +508,17 @@ void main() {
     expect(reg.current, isNull);
   });
 
+  test('r3 E-m1: started while the app is already in the background, NodeLink reads only once it comes back', () async {
+    final radio = Radio();
+    final (nl, clock, _, _) = make(radio, FakeProber({}), () async => const [Rec('Y1', 1)]);
+    await nl.start(Page.home, life: AppLifecycleState.paused);
+    await clock.run(1000);
+    expect(radio.scans, 0, reason: 'background: no scan');
+    nl.lifecycle(AppLifecycleState.resumed);
+    await clock.run(500);
+    expect(radio.scans, 1);
+  });
+
   testWidgets('r2 D-3: a page whose lease is gone cannot start busy work (fail-closed)', (t) async {
     final (nl, _, _, gate) = make(Radio(), FakeProber({}), () async => const [Rec('Y1', 1)]);
     await t.runAsync(() => nl.start(Page.home));
@@ -516,6 +527,30 @@ void main() {
     final st = t.state<BusyState>(find.byType(_Busy));
     await t.runAsync(l.release); // taken back
     expect(() => st.rawBusy = true, throwsStateError);
+  });
+
+  test('r3 F-m2: an attempt''s exception reaches the trace masked', () async {
+    final lines = <String>[];
+    final clock = Clock();
+    final reg = LeaseRegistry(after: clock.after);
+    final radio = Radio();
+    final gate = BleGate(radio, reg, now: () => clock.t, after: clock.after);
+    final nl = NodeLink(
+        core: NodeLinkCore(const [Rec('Y1', 1)]),
+        gate: gate,
+        reg: reg,
+        prober: _Throws(),
+        readRecords: () async => const [Rec('Y1', 1)],
+        now: () => clock.t,
+        after: clock.after,
+        trace: lines.add);
+    await nl.start(Page.home);
+    await clock.run(500);
+    radio.scanCtl.add('AA:BB:CC:DD:EE:F1');
+    await clock.run(2000);
+    final e = lines.where((l) => l.contains('StateError')).toList();
+    expect(e, isNotEmpty, reason: lines.join(' | '));
+    expect(e.first, isNot(matches(RegExp(r'[0-9a-fA-F]{8,}'))));
   });
 
   group('A-M1 / B-M1: an older page\x27s busy work holds the raw lease past the pop', () {
@@ -606,4 +641,10 @@ class _EndingRadio extends Radio {
   Stream<(String, bool)> get linkStates => _st2.stream;
   @override
   Stream<String> scan() => _scan.stream;
+}
+
+class _Throws implements Prober {
+  @override
+  Future<Outcome> probe(GateLink link, String id, {required Future<void> due, required Future<void> cancelled}) async =>
+      throw StateError('bad record 0123456789abcdef0123456789abcdef');
 }

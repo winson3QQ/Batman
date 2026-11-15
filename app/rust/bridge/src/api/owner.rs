@@ -1883,6 +1883,8 @@ mod tests {
         // #329 T8: the end kinds NodeLink reads, passed through unchanged
         assert_eq!(login_end_kind(&End::LoggedIn), (1, 0));
         assert_eq!(login_end_kind(&End::Msg2Undecryptable), (2, 0));
+        // #329 r3 F-m3: the identity alarm (身分不符) must stay its own kind, never folded into 連不到
+        assert_eq!(login_end_kind(&End::CertRejected(batman_proto::nodecert::Error::NotPinned)), (3, 0));
         assert_eq!(login_end_kind(&End::AuthRefused(Outcome::Err { code: 13, detail: Value::Null })), (4, 13));
         assert_eq!(login_end_kind(&End::Broken("x".into())), (5, 0));
     }

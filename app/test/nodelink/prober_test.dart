@@ -296,6 +296,26 @@ void main() {
     expect((await probe([], frames: 0, prober: p)).res, Res.noResponse);
     expect(errors, hasLength(1));
   });
+  test('r3 F-m1: once msg2 arrived, the 8 s deadline no longer ends the attempt', () async {
+    rust.session = FakeSession([step(OwnerKind.sign), step(OwnerKind.loggedIn, loginEnd: 1), step(OwnerKind.answer)]);
+    final reg = LeaseRegistry(after: (d, f) => () {});
+    final radio = Radio();
+    final gate = BleGate(radio, reg, now: () => 0, after: (d, f) => () {});
+    final link = gate.connect(reg.token, 'a1');
+    await Future<void>.delayed(Duration.zero);
+    final p = SessionProber(
+        openRecord: (id) async => Uint8List(8), ownerPub: () async => Uint8List(65), signOwner: (i) async => Uint8List(70));
+    final due = Completer<void>();
+    final f = p.probe(link, 'Y1', due: due.future, cancelled: Completer<void>().future);
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    radio.tx.add([1]); // msg2
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    due.complete(); // the 8 s are over, after msg2
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    radio.tx.add([1]); // logged in
+    radio.tx.add([1]); // the answer
+    expect((await f).res, Res.body);
+  });
 }
 
 class StallRadio extends Radio {
