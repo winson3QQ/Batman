@@ -13,7 +13,7 @@ import 'package:batman_app/ui/intro_pages.dart';
 import 'package:batman_app/ui/node_page.dart';
 import 'package:batman_app/ui/settings_page.dart';
 import 'package:batman_app/ui/theme.dart';
-import 'package:batman_app/ui/widgets.dart' show Btn;
+import 'package:batman_app/ui/widgets.dart' show Btn, StatusHero;
 import 'package:batman_app/ui/ui_state.dart';
 import 'package:flutter/material.dart' hide Page;
 import 'package:flutter/services.dart';
@@ -457,4 +457,99 @@ void main() {
     await t.pumpWidget(const SizedBox());
     AppLink.forgetForTest();
   });
+
+  // ---- PR 2 review r3 E-MINOR-1 / -3 / -6, F-MINOR-2: more wiring --------------------------------------------------
+
+  void readNode(AppLink a, String n, {required bool fresh, String color = 'green', int nodeState = 2}) {
+    a.link.core.states[n]!
+      ..kind = Kind.read
+      ..view = color
+      ..readAt = fresh ? a.link.now() : a.link.now() - 400000
+      ..extra = sv(color, nodeState: nodeState)
+      ..last = Concl.read;
+    a.link.readWall[n] = DateTime.utc(2026, 11, 16, 1, 2, 3);
+  }
+
+  Finder heroTime() => find.descendant(of: find.byType(StatusHero), matching: find.textContaining('讀取於'));
+
+  testWidgets('r3 E-m3 / C-m8: the status area time is a fresh read\'s only', (t) async {
+    const other = '00000000000000aaaa';
+    final a = app();
+    a.link.core.setRecords(const [Rec(id, 1), Rec(other, 1)]);
+    final ui = UiState(MemStore()..ids = [id, other]);
+    readNode(a, id, fresh: true);
+    readNode(a, other, fresh: true);
+    await t.pumpWidget(host(HomePage(app: a, ui: ui, devTrust: false, keys: keys())));
+    await t.pump();
+    expect(heroTime(), findsOneWidget, reason: 'all fresh and green: 讀取於 (the control)');
+    readNode(a, id, fresh: false);
+    readNode(a, other, fresh: false);
+    a.link.refresh();
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await t.pump();
+    expect(heroTime(), findsNothing, reason: 'row 10, every read old: no 讀取於');
+    a.link.core.states[other]!
+      ..kind = Kind.unreachable
+      ..why = Why.notFound
+      ..last = Concl.notFound;
+    readNode(a, id, fresh: true);
+    a.link.refresh();
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await t.pump();
+    expect(heroTime(), findsNothing, reason: 'row 8 is about the unreachable node: not the other one\'s fresh time');
+    a.link.dispose();
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
+
+  testWidgets('r3 E-MINOR-1 (F / V15): the first-use tip shows once at all-fine; 知道了 writes it', (t) async {
+    final store = MemStore()..ids = [id];
+    final ui = UiState(store);
+    final a = app();
+    readNode(a, id, fresh: true);
+    await t.pumpWidget(host(HomePage(app: a, ui: ui, devTrust: false, keys: keys())));
+    await t.pump();
+    expect(find.text('第一次使用的提示'), findsOneWidget);
+    await t.tap(find.text(Btn.gotIt));
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await t.pump();
+    expect((ui.homeTip, find.text('第一次使用的提示').evaluate().length), (true, 0));
+    final again = UiState(store);
+    await t.runAsync(again.load);
+    expect(again.homeTip, isTrue);
+    a.link.dispose();
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
+
+  testWidgets('r3 E-MINOR-3 (B): 開啟藍牙設定 that cannot open says where to go', (t) async {
+    t.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('dev.batman/platform'), (c) async => false);
+    final a = app();
+    a.link.radio(bluetooth: false);
+    await t.pumpWidget(host(HomePage(app: a, ui: UiState(MemStore()..ids = [id]), devTrust: false, keys: keys())));
+    await t.pump();
+    await t.tap(find.widgetWithText(FilledButton, Btn.openBluetooth));
+    await t.pump();
+    expect(find.text('請到手機的設定打開藍牙'), findsOneWidget);
+    a.link.dispose();
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
+
+  for (final (answer, hint) in [(true, false), (false, true)]) {
+    testWidgets('r3 E-MINOR-6 (L): refused, 開啟 app 設定 -> appSettings; cannot open ($answer) -> a hint $hint', (t) async {
+      final calls = <String>[];
+      t.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('dev.batman/platform'), (c) async {
+        calls.add(c.method);
+        return answer;
+      });
+      await t.pumpWidget(host(PermissionsPage(ask: () async => false)));
+      await t.tap(find.widgetWithText(FilledButton, Btn.goOn));
+      await t.pumpAndSettle();
+      await t.tap(find.text(Btn.openAppSettings));
+      await t.pump();
+      expect(calls, ['appSettings']);
+      expect(find.textContaining('打不開設定頁'), hint ? findsOneWidget : findsNothing);
+    });
+  }
 }

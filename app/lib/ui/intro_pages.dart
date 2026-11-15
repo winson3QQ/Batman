@@ -136,6 +136,17 @@ class _PermissionsPageState extends State<PermissionsPage> {
     });
   }
 
+  /// The app's own settings page; when the phone has none, says so (review r3 E-m6, as the home page's Bluetooth one).
+  Future<void> _appSettings() async {
+    var ok = false;
+    try {
+      ok = await const MethodChannel('dev.batman/platform').invokeMethod<bool>('appSettings') == true;
+    } catch (_) {}
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('打不開設定頁：請自己到手機的「設定 → 應用程式 → Batman」')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = BatTheme.of(context);
@@ -159,7 +170,7 @@ class _PermissionsPageState extends State<PermissionsPage> {
         BatButton(Btn.goOn, onPressed: _asking ? null : _go),
         if (_refused)
           BatButton(Btn.openAppSettings,
-              kind: BtnKind.text, onPressed: () => const MethodChannel('dev.batman/platform').invokeMethod<bool>('appSettings')),
+              kind: BtnKind.text, onPressed: _appSettings),
       ],
     );
   }

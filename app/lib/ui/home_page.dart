@@ -217,7 +217,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final firstRounds = a.link.core.roundsRun < 3;
     final h = decideHome(
         HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: _records));
-    final freshest = infos.map((n) => n.readWall).whereType<DateTime>().fold<DateTime?>(null, (x, y) => x == null || y.isAfter(x) ? y : x);
+    // the status area's time is only ever a fresh read's: an older one is not 「讀取於」 (review r3 E-m8 / C-m8)
+    final freshest = infos.where((n) => n.fresh).map((n) => n.readWall).whereType<DateTime>().fold<DateTime?>(null, (x, y) => x == null || y.isAfter(x) ? y : x);
     // a row about one node shows that node's read time, and only a fresh one (review r2 C-m8)
     final about = h.node == null ? null : infos.where((n) => n.id == h.node).firstOrNull;
     final shownTime = about != null ? (about.fresh ? about.readWall : null) : freshest;

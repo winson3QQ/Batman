@@ -452,6 +452,16 @@ void main() {
     await longWait(t);
   });
 
+  testWidgets('r3 E-MINOR-1 (V5): both net and mnet, the user picks this phone''s network -> the owner''s join', (t) async {
+    await open(t, records: {'node/$deviceId', 'mnet/$netId', 'net/$netId'});
+    await press(t, find.byType(ListTile));
+    await press(t, find.widgetWithText(FilledButton, '加入網路'));
+    await press(t, find.text('這支手機建立的網路'));
+    expect(find.textContaining('正在把這台節點加入網路 '), findsOneWidget);
+    expect(rust.sends, isNot(contains('memberJoin')));
+    await longWait(t);
+  });
+
   testWidgets('S3 / T-N2: both net and mnet -> the user picks; the team network -> the member''s join', (t) async {
     await open(t, records: {'node/$deviceId', 'mnet/$netId', 'net/$netId'});
     await press(t, find.byType(ListTile));

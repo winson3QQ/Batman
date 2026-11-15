@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:batman_app/key_abilities.dart';
 import 'package:batman_app/main.dart';
+import 'package:batman_app/src/rust/api/claim.dart' show SealParams;
 import 'package:batman_app/src/rust/api/owner.dart' show SealedRecord;
 import 'package:batman_app/ui/cbor_mini.dart';
 import 'package:batman_app/claim.dart';
@@ -52,8 +53,9 @@ Map<String, Object?> answer(
     };
 
 class FakeRust implements RustLibApi {
+  bool dev = true; // the build: dev (devTrust) or field; the platform's devTrust answers the same
   @override
-  BuildInfo crateApiSimpleBuildInfo() => const BuildInfo(devTrust: true, crateVersion: 'test');
+  BuildInfo crateApiSimpleBuildInfo() => BuildInfo(devTrust: dev, crateVersion: 'test');
 
   @override
   String crateApiSimpleSelftest() => 'ok';
@@ -83,6 +85,17 @@ class FakeRust implements RustLibApi {
           : null;
   @override
   Future<List<String>> crateApiOwnerListNodes({required String dir}) async => nodes;
+
+  final uiWrites = <String>[]; // ui/state-v1 writes (CAS)
+  @override
+  Future<SealParams> crateApiClaimStoreSealParams({required String dir, required String rel}) async =>
+      SealParams(generation: BigInt.from(uiWelcomed ? 2 : 1), aad: Uint8List(0));
+  @override
+  Future<BigInt> crateApiOwnerStoreWriteCas(
+      {required String dir, required String rel, required BigInt expectedGen, required List<int> sealed}) async {
+    uiWrites.add(rel);
+    return expectedGen + BigInt.one;
+  }
 
   @override
   Future<List<String>> crateApiOwnerListPending({required String dir}) async => ['00000000000000beef'];
@@ -114,7 +127,9 @@ void main() {
       calls.add(c.method);
       switch (c.method) {
         case 'devTrust':
-          return true;
+          return rust.dev;
+        case 'seal':
+          return Uint8List.fromList([7]);
         case 'filesDir':
           return '/data/user/0/app/files';
         case 'keyLevels':
@@ -417,6 +432,58 @@ void main() {
       });
     }
 
+
+    // PR 2 review r3 E-MINOR-1 (E, V16) / F-MINOR-2 (Md, Mq): 跳過說明 and 開始 both end the welcome, open the home
+    // page and write 「看過歡迎頁」 to ui/state-v1. Negative controls: no setWelcomed / no page change -> FAIL.
+    for (final skip in [true, false]) {
+      testWidgets('r3: the welcome ended by ${skip ? '跳過說明' : '開始'} -> the home page, the flag written', (t) async {
+        mock(t, answer());
+        rust
+          ..nodes = []
+          ..uiWelcomed = false
+          ..uiWrites.clear();
+        addTearDown(() => rust.nodes = ['0000000000000c4f2a']);
+        AppLink.forgetForTest();
+        await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle())));
+        await t.pumpAndSettle();
+        if (skip) {
+          await t.tap(find.text('跳過說明'));
+        } else {
+          for (var i = 0; i < 2; i++) {
+            await t.tap(find.text('下一步'));
+            await t.pumpAndSettle();
+          }
+          await t.tap(find.text('開始'));
+        }
+        await t.pumpAndSettle();
+        expect(find.text('可以做的事'), findsOneWidget);
+        expect(rust.uiWrites, ['ui/state-v1']);
+        await t.runAsync(AppLink.instance!.link.dispose);
+        AppLink.forgetForTest();
+      });
+    }
+
+    // r3 E-MINOR-1 (O / O2, Y): the build's devTrust reaches the settings page (開發者選項) and the F48 todo (an
+    // unfinished claim) through main -> HomePage. Negative controls: devTrust not passed on -> FAIL.
+    for (final dev in [true, false]) {
+      testWidgets('r3: a ${dev ? 'dev' : 'field'} build -> 開發者選項 and 上次新增節點沒有做完 ${dev ? 'shown' : 'not shown'}',
+          (t) async {
+        rust.dev = dev;
+        addTearDown(() => rust.dev = true);
+        mock(t, answer());
+        rust.uiWelcomed = true;
+        addTearDown(() => rust.uiWelcomed = false);
+        AppLink.forgetForTest();
+        await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle())));
+        await t.pumpAndSettle();
+        expect(find.text('上次新增節點沒有做完'), dev ? findsOneWidget : findsNothing);
+        await t.tap(find.byTooltip('設定'));
+        await t.pumpAndSettle();
+        expect(find.text('開發者選項'), dev ? findsOneWidget : findsNothing);
+        await t.runAsync(AppLink.instance!.link.dispose);
+        AppLink.forgetForTest();
+      });
+    }
     testWidgets('every key fits: the three entries are there and on', (t) async {
       await start(t, answer());
       expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
