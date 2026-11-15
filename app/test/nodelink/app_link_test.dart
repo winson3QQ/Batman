@@ -26,6 +26,10 @@ void main() {
     AppLink.forgetForTest();
     final ble = StatusBle();
     final a = AppLink.create(platform: const MethodChannel('dev.batman/platform'), filesDir: '/x', ble: ble);
+    addTearDown(() {
+      a.link.dispose();
+      AppLink.forgetForTest();
+    });
     final core = a.link.core;
     expect(core.fg, isTrue);
     t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
@@ -44,6 +48,10 @@ void main() {
   testWidgets('r3 F-m2: the prober''s log lines reach logcat masked (no long id)', (t) async {
     AppLink.forgetForTest();
     final a = AppLink.create(platform: const MethodChannel('dev.batman/platform'), filesDir: '/x', ble: StatusBle());
+    addTearDown(() {
+      a.link.dispose();
+      AppLink.forgetForTest();
+    });
     final lines = <String>[];
     final keep = debugPrint;
     debugPrint = (String? m, {int? wrapWidth}) => lines.add(m ?? '');
