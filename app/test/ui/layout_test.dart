@@ -80,6 +80,38 @@ void main() {
       return HomePage(app: a, ui: ui, devTrust: true, keys: keys());
     },
     'node page': (ui) => NodePage(app: app(sv('red')), id: id, ui: ui),
+    'home, Bluetooth off': (ui) {
+      final a = app(sv('green'));
+      a.link.radio(bluetooth: false);
+      return HomePage(app: a, ui: ui, devTrust: true, keys: keys());
+    },
+    'home, identity mismatch': (ui) {
+      final a = app(null);
+      a.link.core.states[id]!
+        ..kind = Kind.unreachable
+        ..why = Why.identity;
+      return HomePage(app: a, ui: ui, devTrust: true, keys: keys());
+    },
+    'home, unreachable': (ui) {
+      final a = app(null);
+      a.link.core.states[id]!
+        ..kind = Kind.unreachable
+        ..why = Why.notFound
+        ..last = Concl.notFound;
+      return HomePage(app: a, ui: ui, devTrust: true, keys: keys());
+    },
+    'home, no node': (ui) {
+      final a = app(null);
+      a.link.core.setRecords(const []);
+      return HomePage(app: a, ui: ui, devTrust: true, keys: keys());
+    },
+    'node page, identity': (ui) {
+      final a = app(null);
+      a.link.core.states[id]!
+        ..kind = Kind.unreachable
+        ..why = Why.identity;
+      return NodePage(app: a, id: id, ui: ui);
+    },
     'settings (dev)': (ui) => SettingsPage(app: app(null), devTrust: true),
     'about': (ui) => const AboutPage(),
     'intro': (ui) => IntroPages(onDone: () {}),
