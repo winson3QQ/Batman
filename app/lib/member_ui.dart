@@ -32,7 +32,7 @@ Future<void> showDupNote(BuildContext context, String note) async {
 String teamLogLine(TeamView t) => 'team section visible ${t.visible} cards ${t.cards.length} only ${t.only.isNotEmpty}';
 
 /// 219 §5.5 / R22: the SAS is compared over another channel.
-const sasRule = '請用電話或當面核對，不要在傳圖片的同一個聊天裡核對';
+const sasRule = '請用電話或當面核對，不要在傳這些碼的同一個聊天裡核對';
 
 /// The admin's approve screen and the member's import screen (§4 steps 5 / 7a): the SAS, the rule, one button.
 class SasConfirmView extends StatefulWidget {
@@ -516,7 +516,7 @@ class _StatusPageViewState extends State<StatusPageView> {
 }
 
 /// The "My nodes" layout (f139951): the controls scroll on their own above the log — on a phone they are taller than
-/// the screen (found on the S20: 「加入隊伍網路」 was laid out off-screen and could not be reached).
+/// the screen (found on the S20: 「加入網路」 was laid out off-screen and could not be reached).
 class ControlsAndLog extends StatelessWidget {
   const ControlsAndLog({super.key, required this.controls, required this.log});
   final List<Widget> controls;

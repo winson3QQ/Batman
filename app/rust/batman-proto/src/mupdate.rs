@@ -21,7 +21,7 @@ use crate::rekey::{MAX_BUNDLE, MAX_STEPS, QR_UPDATE};
 pub enum Refusal {
     /// 1: not an update / its shape / its size
     Format(&'static str),
-    /// 1: no mnet for its net_id: 「請先匯入網主的同意」
+    /// 1: no mnet for its net_id: 「請先匯入隊長的同意」
     NoNetwork,
     /// 2: a version this phone holds differs byte for byte: another history (warn)
     Fork,
@@ -39,7 +39,7 @@ pub enum Refusal {
     NotForThisPhone,
     /// 6: an own node with secrets in the update is removed in that version (its last 4)
     Removed(String),
-    /// the record changed since `prepare`: 「請網主再複製一次你的包,再貼上」
+    /// the record changed since `prepare`: 「請隊長再複製一次你的包,再貼上」
     Stale,
     Aead,
 }

@@ -48,7 +48,7 @@ void main() {
         final calls = <String>[];
         await t.pumpWidget(MaterialApp(
             home: SasConfirmView(
-                title: '核對管理者的同意',
+                title: '核對隊長的同意',
                 sas: '260515',
                 notice: notice,
                 confirmLabel: '確認碼相同，匯入',
@@ -90,7 +90,7 @@ void main() {
         sentence: '已連上隊伍網路',
         lagNote: '隊員剛離開或關機時，這裡最多約 4 分鐘後才會改變',
         warning: '節點回報異常（可能是手機 Wi-Fi 還沒設定）— 設好仍然如此請找維修人員',
-        membership: '網路：家裡網路（已是成員）',
+        membership: '網路：家裡網路（已是隊員）',
         version: '1.5.14-wsl.24',
         tech: ['未入網代碼（key 5）：7 NOT_JOINED SEARCHING', '上游映像（image）：OpenMANET 1.8.0', '手機 Wi-Fi 名稱尚未存檔（ssid_unsaved）']);
     final at = DateTime(2026, 11, 10, 9, 5, 7);
@@ -124,13 +124,13 @@ void main() {
           sentence: '已連上隊伍網路',
           teamVisible: true,
           teamTitle: '全隊（僅供參考；由『我的節點』看到）',
-          teamCards: ['🟢 『客廳』 在線 · 連線 好（約 14.9 Mbit/s） · 直接連線', '❔ 不明節點 · 最後看到 6 分鐘前\n不在你手機的名單裡（可能是新加入、網主還沒發新名單的隊員）'],
+          teamCards: ['🟢 『客廳』 在線 · 連線 好（約 14.9 Mbit/s） · 直接連線', '❔ 不明節點 · 最後看到 6 分鐘前\n不在你手機的名單裡（可能是新加入、隊長還沒發新名單的隊員）'],
           teamNote: '在線 = 這台節點最近 1 分鐘內收得到。',
           teamTech: ['不明節點 …c6d3：400 秒前']);
       await t.pumpWidget(page(team));
       expect(find.text('全隊（僅供參考；由『我的節點』看到），讀取於 09:05:07'), findsOneWidget);
       expect(find.byKey(const Key('teamCard')), findsNWidgets(2));
-      expect(find.text('不在你手機的名單裡（可能是新加入、網主還沒發新名單的隊員）'), findsOneWidget);
+      expect(find.text('不在你手機的名單裡（可能是新加入、隊長還沒發新名單的隊員）'), findsOneWidget);
       expect(y(t, find.byKey(const Key('teamTitle'))), greaterThan(y(t, find.byKey(const Key('refresh')))));
       expect(y(t, find.byKey(const Key('tech'))), greaterThan(y(t, find.byKey(const Key('teamNote')))));
       expect(find.textContaining('…c6d3'), findsNothing, reason: 'the tail only inside the collapsed list');
@@ -288,10 +288,10 @@ void main() {
         color: 'green',
         sentence: '已連上隊伍網路',
         warning: '節點回報異常（可能是手機 Wi-Fi 還沒設定）— 設好仍然如此請找維修人員',
-        membership: '網路：家裡網路（已是成員）',
+        membership: '網路：家裡網路（已是隊員）',
         canLeave: true,
         leaveTitle: '要讓節點 …2233 離開隊伍網路嗎？',
-        leaveBody: '離開後這台的 HaLow 無線電會關閉… 之後可以按「加入網路／繼續加入」再加入。');
+        leaveBody: '離開後這台的 HaLow 無線電會關閉… 之後可以按「加入網路」再加入。');
     final at = DateTime(2026, 11, 10, 9, 5, 7);
     Widget page(StatusFields f, {Future<LeaveResult> Function()? leave}) => app(StatusPageView(
         initial: f, initialAt: at, onRefresh: () async => null, onLeave: leave, clock: () => DateTime(2026, 11, 10, 9, 6, 0)));
@@ -300,7 +300,7 @@ void main() {
       await t.pumpWidget(page(member, leave: () async => const LeaveResult(null, null)));
       expect(find.byKey(const Key('leave')), findsOneWidget);
       await t.pumpWidget(const SizedBox());
-      await t.pumpWidget(page(const StatusFields(sentence: '這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」'), leave: () async => const LeaveResult(null, null)));
+      await t.pumpWidget(page(const StatusFields(sentence: '這台還沒加入隊伍網路 — 請按「加入網路」'), leave: () async => const LeaveResult(null, null)));
       expect(find.byKey(const Key('leave')), findsNothing);
       // the k10-absent / k11-true case: Rust says canLeave (bridge view_unfinished_and_leave_button)
       await t.pumpWidget(const SizedBox());
@@ -319,7 +319,7 @@ void main() {
       await t.tap(find.byKey(const Key('leave')));
       await t.pumpAndSettle();
       expect(find.text('要讓節點 …2233 離開隊伍網路嗎？'), findsOneWidget);
-      expect(find.textContaining('之後可以按「加入網路／繼續加入」再加入。'), findsOneWidget);
+      expect(find.textContaining('之後可以按「加入網路」再加入。'), findsOneWidget);
       await t.tap(find.byKey(const Key('leaveCancel')));
       await t.pumpAndSettle();
       expect(calls, 0, reason: 'cancel sends nothing');
@@ -496,7 +496,7 @@ void main() {
     });
   });
 
-  // §5 T9 (f139951): on a 360 x 640 phone the last control (「加入隊伍網路」) can be scrolled to and pressed.
+  // §5 T9 (f139951): on a 360 x 640 phone the last control (「加入網路」) can be scrolled to and pressed.
   group('T9 My nodes layout', () {
     testWidgets('360 x 640: 加入隊伍網路 scrolls into view and is pressed', (t) async {
       t.view.physicalSize = const Size(360, 640);
@@ -594,7 +594,7 @@ void main() {
       expect(find.byKey(const Key('sendUpdate')), findsNothing, reason: 'the re-read page has no button');
       // a line without the button (the member phone lacks this node's secrets / an excluded node)
       await t.pumpWidget(const SizedBox());
-      await t.pumpWidget(page(const StatusFields(sentence: 's', updateLine: '這台還在舊密碼，這支手機沒有它的新密碼 — 請網主重新產生你的更新包')));
+      await t.pumpWidget(page(const StatusFields(sentence: 's', updateLine: '這台還在舊密碼，這支手機沒有它的新密碼 — 請隊長重新產生你的更新包')));
       expect(find.byKey(const Key('updateLine')), findsOneWidget);
       expect(find.byKey(const Key('sendUpdate')), findsNothing);
     });

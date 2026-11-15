@@ -46,8 +46,8 @@ const _linkEvery = Duration(seconds: 10);
 /// A join waits longer than provd's helper wait (HelperWait 330 s, S/provd/server.go:22) per node request; the
 /// country question to the user does not count.
 const _joinWait = joinWait;
-const _joinUnclear = '[JOIN_STATE] 結果不明，稍後在這台按「繼續加入」';
-const _makeUnclear = '[NET_STATE] 結果不明，稍後在這台按「確認網路」';
+const _joinUnclear = '[JOIN_STATE] 結果不明，稍後在這台按「加入網路」';
+const _makeUnclear = '[NET_STATE] 結果不明，稍後在這台按「檢查網路」';
 /// a join / make-network that lost the link before any record write: nothing was written or sent
 const _notSent = notSentLine;
 const _linkUnknown = '[JOINED] 已套用，連線狀態未知';
@@ -482,7 +482,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
     }
     final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
     final name = _netName.text.trim().isEmpty ? 'Batman' : _netName.text.trim();
-    _say('正在建立網路「$name」（頻道 $_channel，美國頻段），最多可能要等 3 分鐘…');
+    _say('正在建立網路「$name」（頻道 $_channel，美國頻段），這一步最多 6 分鐘…');
     await _ask(
         (s) => s.requestMakeNetwork(
             netName: name, channel: _channel, ownerEncPub: keys['ownerEnc'] as Uint8List, adminPub: keys['admin'] as Uint8List),
@@ -635,7 +635,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
     if (net == null || !mounted) return;
     final n = net; // non-null from here (the request closure below cannot promote `net`)
     final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
-    _say('正在把這台節點加入網路 ${net.view.meshId}，最多可能要等幾分鐘…');
+    _say('正在把這台節點加入網路 ${net.view.meshId}，這一步最多 6 分鐘…');
     Future<void> go(Uint8List plain, BigInt gen, bool confirmed) => _ask(
         (s) => s.requestJoinNetwork(
             recordPlain: plain,
@@ -903,8 +903,8 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
     await showDialog<void>(
         context: context,
         builder: (c) => AlertDialog(
-              title: const Text('申請已複製到剪貼簿，請傳給管理者'),
-              content: SasShowView(sas: sas, notice: renewed ? '申請已換新，要重新核對 SAS' : null),
+              title: const Text('申請已複製到剪貼簿，請傳給隊長'),
+              content: SasShowView(sas: sas, notice: renewed ? '申請已換新，要重新核對確認碼' : null),
               actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('好'))],
             ));
   }
@@ -988,7 +988,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
     if (!mounted) return;
     await Navigator.of(context).push(MaterialPageRoute(
         builder: (c) => SasConfirmView(
-              title: '核對管理者的同意',
+              title: '核對隊長的同意',
               sas: prep.sas,
               confirmLabel: '確認碼相同，匯入',
               onConfirm: (sas) async {
@@ -1049,7 +1049,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
     if (pick == null || !mounted) return;
     final (gen, plain) = await _readRecord('mnet/${pick.$1}');
     if (plain == null) return;
-    _say('正在把這台節點加入隊伍網路「${pick.$2.netName}」，最多可能要等幾分鐘…');
+    _say('正在把這台節點加入隊伍網路「${pick.$2.netName}」，這一步最多 6 分鐘…');
     _linkFrom = null;
     _sendAfter = false;
     await _ask((s) => s.requestMemberJoin(mnetPlain: plain, mnetGen: gen), wait: _joinWait, retry: false, unclear: _joinUnclear);
@@ -1059,6 +1059,27 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
       await _sendUpdateFor('mnet/${pick.$1}', member: true, confirm: false);
     }
     await _watchLink();
+  }
+
+  /// #329 §3.4 S3: one 「加入網路」. This node is joining in one of this phone's network records -> go on with it;
+  /// else the phone holds an imported team network (mnet) -> a member's join; else -> pick one of this phone's networks.
+  Future<void> _join() async {
+    final dir = await _dir();
+    final id = _deviceId;
+    final tail = id == null ? '' : id.substring(id.length - 4).toLowerCase();
+    var joiningHere = false;
+    for (final n in await listNets(dir: dir)) {
+      try {
+        final s = await storeReadSealed(dir: dir, rel: 'net/$n');
+        if (s == null) continue;
+        final plain = (await _platform.invokeMethod<Uint8List>('open', {'sealed': s.sealed, 'aad': s.aad}))!;
+        if (netSummary(recordPlain: plain).members.any((m) => m.joining && m.last4.toLowerCase() == tail)) joiningHere = true;
+      } catch (_) {}
+    }
+    return switch (joinChoice(joiningHere: joiningHere, hasMnet: (await listMnets(dir: dir)).isNotEmpty)) {
+      JoinChoice.member => _memberJoin(),
+      JoinChoice.own => _joinNetwork(),
+    };
   }
 
   Future<(String, MnetView)?> _pickMnet() async {
@@ -1278,7 +1299,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
   /// §3.1: the member list by person -> 「移除這個人」 / 「排除這台」
   Future<void> _members() async {
     if (_busy) return;
-    final net = await _pickNet('哪個網路的成員？', only: (v) => v.applied);
+    final net = await _pickNet('哪個網路的隊員？', only: (v) => v.applied);
     if (net == null || !mounted) return;
     final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
     final List<PersonView> people;
@@ -1296,7 +1317,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
     }
     final choice = await showDialog<(String, String)>(
         context: context,
-        builder: (c) => SimpleDialog(title: const Text('成員（以人分組）'), children: [
+        builder: (c) => SimpleDialog(title: const Text('隊員（以人分組）'), children: [
               for (final p in people) ...[
                 ListTile(
                     title: Text('${p.name}（${p.fpr}）${p.isSelf ? '：你自己' : ''}'),
@@ -1498,7 +1519,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
       final st = memberUpdateImport(
           hex: hex, mnetPlain: mnet2, mnetGen: gen2, expectedGen: prep.mnetGen, nodeRecords: nodes, ownerEncPub: enc, z: z ?? Uint8List(0));
       final err = await _writeRecord(st);
-      _say(err == null ? st.detail : '[REQ_FAIL] 沒有匯入：${err == staleRecordLine ? '請網主再複製一次你的包，再貼上' : err}');
+      _say(err == null ? st.detail : '[REQ_FAIL] 沒有匯入：${err == staleRecordLine ? '請隊長再複製一次你的包，再貼上' : err}');
     } on PlatformException catch (e) {
       final k = KeyAbilities.refusedBy(e);
       _say(k != null ? '[REQ_FAIL] [KEY_LEVEL] 沒有匯入：$k' : '[REQ_FAIL] 沒有匯入：手機金鑰出錯（${e.code}）');
@@ -1544,7 +1565,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
       return;
     }
     final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
-    _say('正在把新密碼送給節點，最多可能要等幾分鐘…');
+    _say('正在把新密碼送給節點，這一步最多 6 分鐘…');
     await _ask((s) => s.requestSendUpdate(recordPlain: plain, member: member, adminPub: keys['admin'] as Uint8List),
         wait: _joinWait, retry: false, unclear: _sendUnclear);
   }
@@ -1700,9 +1721,9 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
             ]),
           if (logged)
             Row(children: [
-              FilledButton(onPressed: _busy ? null : _joinNetwork, child: const Text('加入網路／繼續加入')),
+              FilledButton(onPressed: _busy ? null : _join, child: const Text('加入網路')),
               const SizedBox(width: 8),
-              OutlinedButton(onPressed: _busy ? null : _confirmNetwork, child: const Text('確認網路')),
+              OutlinedButton(onPressed: _busy ? null : _confirmNetwork, child: const Text('檢查網路')),
             ]),
           Align(
               alignment: Alignment.centerLeft,
@@ -1713,9 +1734,9 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
               TextButton(onPressed: _busy ? null : _sendUpdate, child: const Text('把新密碼送給節點')),
             ]),
           // remove a member (dev / dev2 only; every entry refuses in a field build)
-          const Text('移除成員（開發版）', style: TextStyle(fontWeight: FontWeight.bold)),
+          const Text('移除隊員（開發版）', style: TextStyle(fontWeight: FontWeight.bold)),
           Wrap(spacing: 8, children: [
-            DevOnlyButton(label: '成員名單／移除', enabled: !_busy, devTrust: _devTrust, onPressed: _members, onRefused: (w) => _say('[REQ_FAIL] $w')),
+            DevOnlyButton(label: '隊員名單／移除', enabled: !_busy, devTrust: _devTrust, onPressed: _members, onRefused: (w) => _say('[REQ_FAIL] $w')),
             DevOnlyButton(label: '產生更新包', enabled: !_busy, devTrust: _devTrust, onPressed: _makeUpdates, onRefused: (w) => _say('[REQ_FAIL] $w')),
             _paste('貼上更新包', (t) => _takeUpdate(t)),
           ]),
@@ -1730,14 +1751,20 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
           if (_invite != null) Text('邀請：網路「${_invite!.netName}」'),
           if (logged && _invite != null)
             Row(children: [
-              Expanded(child: TextField(controller: _memberName, maxLength: 32, decoration: const InputDecoration(labelText: '這台節點的名稱（給管理者看）', counterText: ''))),
+              Expanded(child: TextField(controller: _memberName, maxLength: 32, decoration: const InputDecoration(labelText: '這台節點的名稱（給隊長看）', counterText: ''))),
               OutlinedButton(onPressed: _busy ? null : _requestJoin, child: const Text('申請加入')),
             ]),
           TextButton(onPressed: _busy ? null : _showPending, child: const Text('再顯示申請')),
-          if (logged) Align(alignment: Alignment.centerLeft, child: OutlinedButton(onPressed: _busy ? null : _memberJoin, child: const Text('加入隊伍網路'))),
           if (logged) Align(alignment: Alignment.centerLeft, child: FilledButton(onPressed: _busy ? null : _softwareUpdate, child: const Text('軟體更新'))),
         ]),
       ),
     );
   }
 }
+
+enum JoinChoice { own, member }
+
+/// #329 §3.4 S3: what the one 「加入網路」 does. A join already going on in this phone's network record goes on (own);
+/// else a phone with an imported team network does a member's join; else it picks one of its own networks.
+JoinChoice joinChoice({required bool joiningHere, required bool hasMnet}) =>
+    !joiningHere && hasMnet ? JoinChoice.member : JoinChoice.own;

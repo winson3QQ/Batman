@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../claim.dart';
+import '../key_abilities.dart';
 import '../nodes.dart';
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl;
@@ -60,11 +61,12 @@ Future<void> openUnderLease(BuildContext context, AppLink a, String name, Widget
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.app, required this.ui, required this.devTrust, required this.canClaim});
+  const HomePage({super.key, required this.app, required this.ui, required this.devTrust, required this.keys});
   final AppLink app;
   final UiState ui;
   final bool devTrust;
-  final bool canClaim;
+  /// KeyGate (§4.1, F42): the startup key check; an entry a key cannot serve is grey with the reason
+  final KeyAbilities keys;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -226,8 +228,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           BatRow(
             icon: Icons.add,
             title: Btn.addNode,
-            sub: widget.canClaim ? '把另一台節點加入這支手機' : '這支手機的金鑰現在不能新增節點',
-            enabled: widget.canClaim,
+            sub: widget.keys.refusal(KeyUse.claim) ?? '把另一台節點加入這支手機',
+            enabled: widget.keys.claim,
             onTap: _addNode,
           ),
         ]),

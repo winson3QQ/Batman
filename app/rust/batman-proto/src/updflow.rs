@@ -62,7 +62,7 @@ pub enum End {
     NotListed,
     /// the record's admins do not hold this phone's admin key
     NotAdmin,
-    /// §2.0 rule 3: this phone has no current secrets for it: 「請網主重新產生你的更新包」
+    /// §2.0 rule 3: this phone has no current secrets for it: 「請隊長重新產生你的更新包」
     NoSecrets,
     /// info unreadable 3 times
     Unknown,

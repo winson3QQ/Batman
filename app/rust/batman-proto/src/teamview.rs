@@ -269,7 +269,7 @@ pub const ONLY_NO_LIST: &str = "這支手機沒有這個網路的名單，看不
 pub const ONLY_NOBODY: &str = "還沒看到其他隊員";
 pub const NOTE: &str = "在線 = 這台節點最近 1 分鐘內收得到。離線不一定是關機，也可能是太遠或被擋住。節點重開後「最後看到」會歸零。名稱僅供參考：有網路密碼的人可以假冒別台。";
 /// the unknown node's small line (v2.3 R5-3: the list is re-signed only at make-network and at a removal)
-pub const NEW_MEMBER_HINT: &str = "不在你手機的名單裡（可能是新加入、網主還沒發新名單的隊員）";
+pub const NEW_MEMBER_HINT: &str = "不在你手機的名單裡（可能是新加入、隊長還沒發新名單的隊員）";
 pub const HINT_NO_NET: &str = "這台不在你建立或加入的網路裡";
 pub const HINT_NO_LIST: &str = "這支手機沒有這個網路的名單";
 /// the info read failed (code review A-m2): the no-card sentence and the unknown-node hint alike

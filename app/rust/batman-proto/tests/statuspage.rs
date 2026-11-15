@@ -193,7 +193,7 @@ fn t1_sentences() {
     assert!(!v7_8.contains(COND_REBOOT));
     // a claimed node's row 8 never gets the member clause
     let v = verdict(&St::code(1).plinks(1).k1(1));
-    assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入隊伍網路」");
+    assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入網路」");
     // code 9 + plinks 1 (unguarded): red, no reboot (joinwatch decides at 1 h)
     let v = verdict(&St::code(9).plinks(1));
     assert!(v.color == Color::Red && !v.sentence.contains(REBOOT), "{}", v.sentence);
@@ -218,8 +218,8 @@ fn t1_sentences() {
     let v = verdict(&St::code(8));
     assert!(!v.sentence.contains("加入隊伍網路") && v.sentence.contains("下面「網路：」"), "{}", v.sentence);
     // k1 = 1 wording
-    assert_eq!(verdict(&St::code(1).k1(1)).sentence, "這台還沒加入隊伍網路 — 請按「加入隊伍網路」");
-    assert_eq!(verdict(&St::joined().k1(1)).sentence, "已連上附近的節點，但這台還沒加入隊伍網路 — 要跟隊伍通訊請按「加入隊伍網路」");
+    assert_eq!(verdict(&St::code(1).k1(1)).sentence, "這台還沒加入隊伍網路 — 請按「加入網路」");
+    assert_eq!(verdict(&St::joined().k1(1)).sentence, "已連上附近的節點，但這台還沒加入隊伍網路 — 要跟隊伍通訊請按「加入網路」");
     assert_eq!(verdict(&St::code(4).k1(1)).sentence, verdict(&St::code(4)).sentence, "5' keeps its own sentence");
     assert_eq!(verdict(&St::code(7).k1(1).up(30)).sentence, "剛開機，正在尋找其他節點 — 請等一分鐘再按「重新整理」；還沒加入隊伍網路");
     // U: a code the app does not know
@@ -325,7 +325,7 @@ fn t4_version_and_warning_line() {
 
 #[test]
 fn t4_membership_line() {
-    assert_eq!(sp::membership_line(Some(2), true, Some("家裡網路")), "網路：家裡網路（已是成員）");
+    assert_eq!(sp::membership_line(Some(2), true, Some("家裡網路")), "網路：家裡網路（已是隊員）");
     assert_eq!(sp::membership_line(Some(2), true, None), "網路：別支手機建立的網路");
     assert_eq!(sp::membership_line(Some(2), false, None), "網路：（讀不到名稱）");
     assert_eq!(sp::membership_line(Some(1), false, None), "已認領，還沒加入網路");
@@ -444,12 +444,12 @@ fn claimed_wording_names_this_phones_button() {
     let s = |x: &St, j| sp::link_verdict_for(Answer::Body(&x.v()), j).sentence;
     let claimed = St::code(1).k1(1);
     let joined = St::joined().k1(1);
-    assert_eq!(s(&claimed, J::Admin), "這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」", "the admin phone");
-    assert_eq!(s(&joined, J::Admin), "已連上附近的節點，但這台還沒加入隊伍網路 — 要跟隊伍通訊請按「加入網路／繼續加入」");
-    assert_eq!(s(&claimed, J::Member), "這台還沒加入隊伍網路 — 請按「加入隊伍網路」", "the member phone");
-    assert_eq!(s(&joined, J::Member), "已連上附近的節點，但這台還沒加入隊伍網路 — 要跟隊伍通訊請按「加入隊伍網路」");
-    assert_eq!(s(&claimed, J::NoRecord), "這台還沒加入隊伍網路 — 這支手機還沒有隊伍網路：可按「建立網路」，或向管理者要邀請");
-    assert!(!s(&claimed, J::Admin).contains("「加入隊伍網路」"), "never the member's button on the admin phone");
+    assert_eq!(s(&claimed, J::Admin), "這台還沒加入隊伍網路 — 請按「加入網路」", "the admin phone");
+    assert_eq!(s(&joined, J::Admin), "已連上附近的節點，但這台還沒加入隊伍網路 — 要跟隊伍通訊請按「加入網路」");
+    assert_eq!(s(&claimed, J::Member), "這台還沒加入隊伍網路 — 請按「加入網路」", "the member phone");
+    assert_eq!(s(&joined, J::Member), "已連上附近的節點，但這台還沒加入隊伍網路 — 要跟隊伍通訊請按「加入網路」");
+    assert_eq!(s(&claimed, J::NoRecord), "這台還沒加入隊伍網路 — 這支手機還沒有隊伍網路：可按「建立網路」，或向隊長要邀請");
+    // #329 §3.4 S3: one 「加入網路」 for both phones (the app decides what it does), so no two-button check here
     // net/ wins: a phone that made a network shows the admin button
     assert_eq!(J::of(true, true), J::Admin);
     assert_eq!(J::of(false, true), J::Member);

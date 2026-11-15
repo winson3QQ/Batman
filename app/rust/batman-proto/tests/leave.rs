@@ -130,12 +130,12 @@ fn t1_reboot_advice_only_where_designed() {
 fn t3_confirm_text() {
     let (title, body) = flow::leave_confirm("2233", true, true, false);
     assert_eq!(title, "要讓節點 …2233 離開隊伍網路嗎？");
-    for want in ["HaLow 無線電會關閉", "可能會斷線", "不會把這台從管理者的成員名單移除", "也不會撤銷任何東西", "#255", "手機裡的網路紀錄不會改變"] {
+    for want in ["HaLow 無線電會關閉", "可能會斷線", "不會把這台從隊長的隊員名單移除", "也不會撤銷任何東西", "#255", "手機裡的網路紀錄不會改變"] {
         assert!(body.contains(want), "{want}");
     }
-    assert!(body.ends_with("之後可以按「加入網路／繼續加入」再加入。"));
-    assert!(flow::leave_confirm("2233", true, false, true).1.ends_with("之後可以按「加入隊伍網路」再加入。"));
-    assert!(flow::leave_confirm("2233", true, false, false).1.ends_with("需要向管理者要新的邀請。"));
+    assert!(body.ends_with("之後可以按「加入網路」再加入。"));
+    assert!(flow::leave_confirm("2233", true, false, true).1.ends_with("之後可以按「加入網路」再加入。"));
+    assert!(flow::leave_confirm("2233", true, false, false).1.ends_with("需要向隊長要新的邀請。"));
     // key 10 unknown: neutral, never a promise
     let b = flow::leave_confirm("2233", false, true, true).1;
     assert!(b.ends_with("讀不到這台目前的網路，無法確認這支手機能不能再加入。") && !b.contains("再加入。之後"), "{b}");

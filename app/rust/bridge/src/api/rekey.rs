@@ -130,7 +130,7 @@ fn refusal_text(e: &Refusal) -> String {
     match e {
         Refusal::Record => NET_DAMAGED.into(),
         Refusal::NotApplied => "這個網路還沒確認建立完成".into(),
-        Refusal::NotSoleAdmin => "這個網路的管理者不只這支手機（或不是這支手機），不能移除成員".into(),
+        Refusal::NotSoleAdmin => "這個網路的隊長不只這支手機（或不是這支手機），不能移除隊員".into(),
         Refusal::Joining(l) => format!("節點 …{l} 還在「加入中」：先讓它加入完成，或先忘記它"),
         Refusal::SelfPerson => "不能移除自己；要排除自己的某一台節點，請在那台按「排除這台」".into(),
         Refusal::NoTarget => "名單裡已經沒有這個對象".into(),
@@ -221,7 +221,7 @@ fn bundle_refusal_text(r: &BundleRefusal) -> String {
     match r {
         BundleRefusal::Record => NET_DAMAGED.into(),
         BundleRefusal::NotApplied => "這個網路還沒確認建立完成".into(),
-        BundleRefusal::NotAdmin => "這支手機不是這個網路的管理者".into(),
+        BundleRefusal::NotAdmin => "這支手機不是這個網路的隊長".into(),
         BundleRefusal::NotRecipient => "這個人已不在名單裡（或是你自己），不產生更新包".into(),
         BundleRefusal::Inconsistent => "這位隊員的資料不一致 —— 請先移除這個人，再重新邀請".into(),
         BundleRefusal::Current => "這個人已經有目前的版本，不需要更新包".into(),
@@ -340,16 +340,16 @@ fn mupdate_text(e: &mupdate::Refusal) -> String {
     use mupdate::Refusal as R;
     match e {
         R::Format(w) => format!("這不是正確的更新包（{w}）"),
-        R::NoNetwork => "請先匯入網主的同意".into(),
-        R::Fork => "⚠️ 這份更新包和你手機裡的網路紀錄不一致（另一份歷史），沒有匯入；請向網主確認".into(),
-        R::TooOld => "你的資料太舊，請網主讓你的節點離開網路、再重新邀請你".into(),
+        R::NoNetwork => "請先匯入隊長的同意".into(),
+        R::Fork => "⚠️ 這份更新包和你手機裡的網路紀錄不一致（另一份歷史），沒有匯入；請向隊長確認".into(),
+        R::TooOld => "你的資料太舊，請隊長讓你的節點離開網路、再重新邀請你".into(),
         R::Older => "這份更新包比你的紀錄舊，已忽略".into(),
         R::Invalid(w) => format!("內容驗證沒有通過（{w}）"),
         R::NotForMe => "這份更新包裡沒有你任何一台節點的新密碼".into(),
-        R::MissingOwn(l) => format!("這份更新包沒有你節點 …{l} 的新密碼，請網主重新產生你的更新包"),
+        R::MissingOwn(l) => format!("這份更新包沒有你節點 …{l} 的新密碼，請隊長重新產生你的更新包"),
         R::NotForThisPhone => "這份更新包不是給這支手機的".into(),
-        R::Removed(l) => format!("你這台節點（…{l}）已不在這個網路，請向網主確認"),
-        R::Stale => "請網主再複製一次你的包，再貼上".into(),
+        R::Removed(l) => format!("你這台節點（…{l}）已不在這個網路，請向隊長確認"),
+        R::Stale => "請隊長再複製一次你的包，再貼上".into(),
         R::Aead => "解不開（不是給這支手機的）".into(),
     }
 }
@@ -418,14 +418,14 @@ pub fn member_update_import(hex: String, mnet_plain: Option<Vec<u8>>, mnet_gen: 
     }
     let (plain, net_id, g) = r.map_err(|e| mupdate_text(&e))?;
     let mut st = persist_at(OwnerKind::PersistMnet, mrec::mnet_path(&net_id), plain, g);
-    st.detail = "[UPDATE] 已收到新密碼。等網主說大家都拿到更新包了，再到狀態頁按「把新密碼送給節點」。請把你節點的手機 Wi-Fi 密碼改掉（換密碼不會換手機 Wi-Fi）。如果你的節點在這次換密碼期間還是舊軟體（wsl.24 以前），更新軟體後請讓它離開網路再重新加入。".into();
+    st.detail = "[UPDATE] 已收到新密碼。等隊長說大家都拿到更新包了，再到狀態頁按「把新密碼送給節點」。請把你節點的手機 Wi-Fi 密碼改掉（換密碼不會換手機 Wi-Fi）。如果你的節點在這次換密碼期間還是舊軟體（wsl.24 以前），更新軟體後請讓它離開網路再重新加入。".into();
     Ok(st)
 }
 
 // ---- §3.2 / §3.5 texts (all builds) ----
 
-pub(crate) const NOT_LISTED: &str = "這台不在隊伍網路的成員名單裡（被排除或被忘記），只能「離開網路」；要加回請用「加入網路」";
-const NO_SECRETS: &str = "這台的新密碼不在這支手機，請網主重新產生你的更新包";
+pub(crate) const NOT_LISTED: &str = "這台不在隊伍網路的隊員名單裡（被排除或被忘記），只能「離開網路」；要加回請用「加入網路」";
+const NO_SECRETS: &str = "這台的新密碼不在這支手機，請隊長重新產生你的更新包";
 
 pub(crate) fn update_text(e: &updflow::End, member: bool, last4: &str) -> String {
     use updflow::End as E;
@@ -434,20 +434,20 @@ pub(crate) fn update_text(e: &updflow::End, member: bool, last4: &str) -> String
         E::Record => format!("{fail}{NET_DAMAGED}"),
         E::NotVerified => format!("{fail}這次連線沒有驗證過節點身分，請重新連線"),
         E::NotListed => format!("{fail}{NOT_LISTED}"),
-        E::NotAdmin => format!("{fail}這支手機不是這個網路的管理者"),
+        E::NotAdmin => format!("{fail}這支手機不是這個網路的隊長"),
         E::NoSecrets => format!("{fail}{NO_SECRETS}"),
         E::Unknown => format!("{fail}讀不到節點的網路狀態，稍後再試"),
         E::InProgress => format!("{fail}節點正在加入，稍後再按"),
         E::OtherNetwork => format!("{fail}這台在別的隊伍網路"),
-        E::NotApplied { rejoin: true } if member => format!("{fail}這台不在網路裡，請按「加入隊伍網路」（用手機目前的版本加入）"),
+        E::NotApplied { rejoin: true } if member => format!("{fail}這台不在網路裡，請按「加入網路」（用手機目前的版本加入）"),
         E::NotApplied { rejoin: true } => format!("{fail}這台不在網路裡，請按「加入網路」（用手機目前的版本加入）"),
-        E::NotApplied { rejoin: false } => format!("{fail}這台要請網主重新邀請"),
+        E::NotApplied { rejoin: false } => format!("{fail}這台要請隊長重新邀請"),
         E::Unfinished => format!("{fail}節點還有沒完成的變更，等一下再按；超過 10 分鐘仍如此，重新開機一次"),
         E::NeedsSoftware => format!("{fail}這台要先更新軟體"),
         E::AlreadyCurrent => format!("[UPDATED] 節點 …{last4} 已是新密碼"),
         E::NodeNewer => format!("{fail}⚠️ 節點比這支手機新（這支手機的紀錄可能被還原過）"),
         E::TooFar { rejoin: true } => format!("{fail}這台落後太多版，請讓它離開網路再重新加入"),
-        E::TooFar { rejoin: false } => format!("{fail}這台落後太多版，請網主重新邀請這台"),
+        E::TooFar { rejoin: false } => format!("{fail}這台落後太多版，請隊長重新邀請這台"),
         E::Updated => format!("[UPDATED] 節點 …{last4} 已換成新密碼"),
         E::Applying => format!("[UPDATED] 節點 …{last4} 正在套用新密碼，稍後再看狀態頁"),
         E::AppBug => "[REQ_FAIL] ⚠️ 節點沒有接受（代碼 11，原因 14：App 的問題，請回報）".into(),
@@ -480,7 +480,7 @@ pub(crate) fn update_hint_of(info: Option<&Value>, node: Option<&Verified>, owne
         if mine {
             old
         } else {
-            UpdateHint { line: "這台還在舊密碼，這支手機沒有它的新密碼 — 請網主重新產生你的更新包".into(), button: false }
+            UpdateHint { line: "這台還在舊密碼，這支手機沒有它的新密碼 — 請隊長重新產生你的更新包".into(), button: false }
         }
     } else {
         let Ok(r) = netrec::decode(record_plain) else { return none() };

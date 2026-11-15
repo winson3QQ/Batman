@@ -198,7 +198,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
         _qr = q;
         _lines
           ..clear()
-          ..add('已讀取節點（編號末四碼 …${q.deviceId.substring(14)}）的 QR 碼，可以按「認領」');
+          ..add('已讀取節點（編號後四碼 …${q.deviceId.substring(14)}）的 QR 碼，可以按「認領」');
       });
       _log('已讀取節點 …${q.deviceId.substring(14)} 的 QR 碼');
     } catch (e) {
@@ -249,7 +249,8 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
         } catch (e) {
           _log('讀不到 $id 的狀態：$e');
         }
-        _say('找到節點（$id）：${stateText(state)}，編號末四碼 …${last4 ?? '----'}');
+        _log('found $id'); // #329 S10: the BLE address only in the technical log
+        _say('找到節點，後四碼 ${(last4 ?? '----').toUpperCase()}：${stateText(state)}');
         if (state == 'unclaimed' && last4 == want) return (id, conn);
         if (state == 'claimed' || state == 'member') _claimedNear++; // its id tail is not public: it may be this QR's node
         await conn.cancel(); // not ours: its advertising comes back
@@ -366,7 +367,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
             : _heldNode
                 ? '附近有已認領的節點（不公開編號），可能就是這台：如果它還在你的「我的節點」裡，不用重新認領，直接從那裡使用；重燒過卡的話，要掃它新的 QR 碼。'
                 : '附近有已認領的節點（不公開編號）；已經被認領的節點不能再認領。';
-        _say('[CLAIM_FAIL] [NOT_FOUND] ${(widget.findFor.inMilliseconds / 1000).ceil()} 秒內沒找到編號末四碼 …$tail 的未認領節點'
+        _say('[CLAIM_FAIL] [NOT_FOUND] ${(widget.findFor.inMilliseconds / 1000).ceil()} 秒內沒找到編號後四碼 …$tail 的未認領節點'
             '（請確認節點已開機、就在旁邊）。$near手機裡的紀錄沒有改動。');
         return;
       }

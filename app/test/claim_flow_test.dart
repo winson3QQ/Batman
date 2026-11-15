@@ -297,7 +297,7 @@ void main() {
   testWidgets('R7-2 control: no claimed node seen -> the plain NOT_FOUND only', (t) async {
     rust.statusLast4 = '9999';
     final ble = await runClaim(t, '重新認領', findFor: const Duration(milliseconds: 800), realMs: 50);
-    expect(find.textContaining('秒內沒找到編號末四碼'), findsOneWidget);
+    expect(find.textContaining('秒內沒找到編號後四碼'), findsOneWidget);
     expect(find.textContaining('請確認節點已開機、就在旁邊'), findsOneWidget);
     expect(find.textContaining('附近有已認領的節點'), findsNothing);
     expect(ble.written, isEmpty);

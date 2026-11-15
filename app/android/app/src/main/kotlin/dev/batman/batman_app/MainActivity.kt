@@ -99,6 +99,8 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 // the flavor's build constant, compared with the Rust library's at startup (design v8.5.1 §4.1)
                 "devTrust" -> result.success(BuildConfig.DEV_TRUST)
+                // #329 §5.8 10.6 (A5): the version the build carries (pubspec version)
+                "appVersion" -> result.success(BuildConfig.VERSION_NAME)
                 // the app-private directory the Rust record store lives in
                 "filesDir" -> result.success(filesDir.absolutePath)
                 // first install only (Dart checked: no marker, no record): four keys, all or nothing

@@ -495,7 +495,7 @@ fn country_question(have: &str, want: &str) -> String {
     format!("[COUNTRY] 這台的國家是 {have}，要改成 {want} 才能加入。要改嗎？")
 }
 
-const LATER: &str = "稍後在這台按「繼續加入」";
+const LATER: &str = "稍後在這台按「加入網路」";
 
 /// How a join of this node (join2 §3.3) ended, in words. Never a secret: the inputs are codes, countries and names.
 fn join2_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
@@ -503,9 +503,9 @@ fn join2_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
     let fail = "[REQ_FAIL] 加入網路沒有成功：";
     match e {
         E::Refused(Pre::Record) => format!("{fail}{NET_DAMAGED}"),
-        E::Refused(Pre::NotApplied) => format!("{fail}這個網路還沒確認建立完成，請先在建立網路的節點按「確認網路」"),
+        E::Refused(Pre::NotApplied) => format!("{fail}這個網路還沒確認建立完成，請先在建立網路的節點按「檢查網路」"),
         E::Refused(Pre::NotVerified) => format!("{fail}這次連線沒有驗證過節點身分，請重新連線"),
-        E::Refused(Pre::NotAdmin) => format!("{fail}這個網路不是這支手機建立的（手機不是它的管理者）"),
+        E::Refused(Pre::NotAdmin) => format!("{fail}這個網路不是這支手機建立的（手機不是它的隊長）"),
         E::Refused(Pre::Full) => format!("{fail}這個網路已經有 {} 台節點（App 目前的上限）", netrec::MAX_MEMBERS),
         E::Refused(Pre::NoEntry) => format!("{fail}需要新的邀請"),
         E::Refused(Pre::NotThisNode) => format!("{fail}這份網路資料是給另一台節點的"),
@@ -556,11 +556,11 @@ fn join2_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
         ),
         E::PersistFailed { applied: false, error: None } => format!("[REQ_FAIL] {STALE_RECORD}"),
         E::PersistFailed { applied: true, error: None } => {
-            format!("[REQ_FAIL] {STALE_RECORD}（節點已套用；重新開啟後在這台按「繼續加入」就會補上紀錄）")
+            format!("[REQ_FAIL] {STALE_RECORD}（節點已套用；重新開啟後在這台按「加入網路」就會補上紀錄）")
         }
         E::PersistFailed { applied: false, error: Some(why) } => format!("[REQ_FAIL] 手機儲存失敗（{why}）"),
         E::PersistFailed { applied: true, error: Some(why) } => {
-            format!("[REQ_FAIL] 節點已套用，手機紀錄沒存好（手機儲存失敗：{why}），請在這台按「繼續加入」補上紀錄")
+            format!("[REQ_FAIL] 節點已套用，手機紀錄沒存好（手機儲存失敗：{why}），請在這台按「加入網路」補上紀錄")
         }
         E::Broken(e) => format!("[REQ_FAIL] 加入網路中斷（{e}）"),
     }
@@ -586,7 +586,7 @@ fn member_join_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
 fn link_text(s: &flow::LinkState) -> String {
     match s {
         flow::LinkState::Connected { .. } => "[CONNECTED] 已連上隊伍網路".into(),
-        flow::LinkState::NotYet => "[JOINED] 已套用，還沒看到其他成員（請確認其他節點已開機、在範圍內）".into(),
+        flow::LinkState::NotYet => "[JOINED] 已套用，還沒看到其他隊員（請確認其他節點已開機、在範圍內）".into(),
         flow::LinkState::Unknown => "[JOINED] 已套用，連線狀態未知".into(),
     }
 }
@@ -606,7 +606,7 @@ fn verb_text(verb: &str) -> String {
         "settings/set" => "更改設定".into(),
         "ssh_keys/set" => "加入 SSH 金鑰".into(),
         "info" | "info-net" => "檢查網路".into(),
-        "info-confirm" => "確認網路".into(),
+        "info-confirm" => "檢查網路".into(),
         "status-page" | "info-page" => "查看狀態".into(),
         "status-link" => "查看連線狀態".into(),
         "network/leave" => "離開網路".into(),
@@ -1144,7 +1144,7 @@ impl OwnerSession {
         if let St::Join { applied, .. } = &self.st {
             let t = if *applied {
                 // the node applied; only the phone's "applied" copy is missing (the record stays pending on disk)
-                format!("[REQ_FAIL] 節點已套用，手機紀錄沒存好（{why}），請按「確認網路」")
+                format!("[REQ_FAIL] 節點已套用，手機紀錄沒存好（{why}），請按「檢查網路」")
             } else {
                 format!("[REQ_FAIL] 建立網路沒有成功：{why}")
             };
@@ -1818,9 +1818,9 @@ mod tests {
         assert_eq!(join2_text(&E::Applied { country_unverified: false, save_pending: false }, "bm-ab", "2233"), "[JOINED] 已套用：節點 …2233 已加入網路 bm-ab");
         assert_eq!(
             join2_text(&E::Failed(Fail::NotApplied(11), Revert::NotReverted { now: "US".into(), was: "JP".into() }), "", ""),
-            "[JOIN_STATE] 節點沒有套用這個網路（回覆碼 11）。常見原因：國家或頻道不合、無線電被關、手動改過網路設定、節點剛更新完還沒穩定；國家可能仍是 US，原本是 JP，未能改回；稍後在這台按「繼續加入」或手動改回"
+            "[JOIN_STATE] 節點沒有套用這個網路（回覆碼 11）。常見原因：國家或頻道不合、無線電被關、手動改過網路設定、節點剛更新完還沒穩定；國家可能仍是 US，原本是 JP，未能改回；稍後在這台按「加入網路」或手動改回"
         );
-        assert_eq!(join2_text(&E::Joining(Keep::Unclear7), "", ""), "[JOIN_STATE] 結果不明（節點可能正在更新或連線中斷），稍後在這台按「繼續加入」");
+        assert_eq!(join2_text(&E::Joining(Keep::Unclear7), "", ""), "[JOIN_STATE] 結果不明（節點可能正在更新或連線中斷），稍後在這台按「加入網路」");
         assert_eq!(join2_text(&E::PersistFailed { applied: false, error: None }, "", ""), "[REQ_FAIL] 紀錄已被別處更新，請重新開啟再試");
         assert_eq!(join2_text(&E::PersistFailed { applied: false, error: Some("seal x".into()) }, "", ""), "[REQ_FAIL] 手機儲存失敗（seal x）");
         assert_eq!(country_question("JP", "US"), "[COUNTRY] 這台的國家是 JP，要改成 US 才能加入。要改嗎？");
@@ -2121,10 +2121,10 @@ mod tests {
                 k => panic!("unexpected step {k:?}"),
             };
         };
-        assert_eq!(t, "[REQ_FAIL] 節點已套用，手機紀錄沒存好（手機儲存失敗（Io(StorageFull)）），請按「確認網路」");
+        assert_eq!(t, "[REQ_FAIL] 節點已套用，手機紀錄沒存好（手機儲存失敗（Io(StorageFull)）），請按「檢查網路」");
         assert_eq!(s.made.as_ref().unwrap().1, 1, "the pending record (generation 1) is what is on disk");
         assert!(matches!(s.st, St::Conn { .. }), "an owner session again");
-        assert_eq!(verb_text("info-confirm"), "確認網路");
+        assert_eq!(verb_text("info-confirm"), "檢查網路");
     }
 
     #[test]
@@ -2421,10 +2421,10 @@ mod member_tests {
         let info = Value::Map(vec![(Value::Uint(4), t("fw")), (Value::Uint(10), Value::Bytes(vec![0xab; 16]))]);
         let v = status_view_of(Some(&Ok(st.clone())), Some(&info), true, false, statuspage::JoinButton::Member);
         assert_eq!((v.color.as_str(), v.row.as_str(), v.node_state, v.version.as_str()), ("red", "7", 1, "fw"));
-        assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入隊伍網路」");
+        assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入網路」");
         // S20 fix 1: the admin phone's button
         let v = status_view_of(Some(&Ok(st.clone())), Some(&info), true, false, statuspage::JoinButton::of(true, false));
-        assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」");
+        assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入網路」");
         assert_eq!((v.lag_note.as_str(), v.warning.as_str(), v.rate_note.as_str()), ("", "", ""));
         assert!(!v.sentence.contains("SEARCHING") && !v.sentence.contains("OpenMANET"), "the main screen has no node English");
         assert!(v.tech.iter().any(|l| l.contains("SEARCHING")) && v.tech.iter().any(|l| l.contains("OpenMANET 1.8.0")));
@@ -2439,7 +2439,7 @@ mod member_tests {
         let v = status_view_of(Some(&Err(12)), None, true, true, statuspage::JoinButton::Member);
         assert_eq!((v.row.as_str(), v.rate_note.as_str()), ("2'", "太快了，請稍等一秒"));
         // the membership line
-        assert_eq!(status_membership_line(2, "ab".repeat(16), Some("家裡網路".into())), "網路：家裡網路（已是成員）");
+        assert_eq!(status_membership_line(2, "ab".repeat(16), Some("家裡網路".into())), "網路：家裡網路（已是隊員）");
         assert_eq!(status_membership_line(2, "ab".repeat(16), None), "網路：別支手機建立的網路");
         assert_eq!(status_membership_line(2, String::new(), None), "網路：（讀不到名稱）");
         assert_eq!(status_membership_line(1, String::new(), None), "已認領，還沒加入網路");
@@ -2853,7 +2853,7 @@ mod leave_tests {
             }
         };
         assert_eq!(page(&mut s), "這台還沒加入隊伍網路", "the read right after leaving: no invitation to join");
-        assert_eq!(page(&mut s), "這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」", "the next read: normal again");
+        assert_eq!(page(&mut s), "這台還沒加入隊伍網路 — 請按「加入網路」", "the next read: normal again");
     }
 
     /// a transport error while the leave (or its info read) is outstanding (code review A-m2)
@@ -2944,7 +2944,7 @@ mod leave_tests {
         // nothing unfinished, not a member: no line, the full sentence, no button
         let v = status_view_of(Some(&Ok(claimed)), Some(&info(false, Some(false))), true, false, statuspage::JoinButton::Admin);
         assert_eq!((v.unfinished.as_str(), v.can_leave), ("", false));
-        assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入網路／繼續加入」");
+        assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入網路」");
         // the dialog
         let d = leave_confirm_text("2233".into(), String::new(), true, true);
         assert!(d[0].contains("…2233") && d[1].ends_with("讀不到這台目前的網路，無法確認這支手機能不能再加入。"));
@@ -3086,9 +3086,9 @@ mod rm_tests {
             node_secrets: vec![],
         };
         let h = update_hint_of(Some(&info(1, [0x5a; 16])), Some(&node()), &pub65(0x31), &m.encode(), true);
-        assert!(!h.button && h.line.contains("請網主重新產生你的更新包"), "{}", h.line);
+        assert!(!h.button && h.line.contains("請隊長重新產生你的更新包"), "{}", h.line);
         // negative control: the admin phone never shows the member line for an excluded node
-        assert!(!update_hint_of(Some(&info(2, [0x5a; 16])), Some(&node()), &pub65(0x11), &netrec::encode(&v3), false).line.contains("請網主"));
+        assert!(!update_hint_of(Some(&info(2, [0x5a; 16])), Some(&node()), &pub65(0x11), &netrec::encode(&v3), false).line.contains("請隊長"));
     }
 
     #[test]

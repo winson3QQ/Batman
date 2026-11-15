@@ -103,7 +103,7 @@ class _ScanPageState extends State<ScanPage> with RawBusy<ScanPage> {
           String what;
           try {
             final s = decodeStatus(bytes: raw);
-            what = '${stateText(s.state)}，試用中：${s.trial ? '是' : '否'}，編號末四碼：${s.idLast4 ?? '（不公開）'}'
+            what = '${stateText(s.state)}，試用中：${s.trial ? '是' : '否'}，編號後四碼：${s.idLast4 ?? '（不公開）'}'
                 '（技術資訊：state=${s.state} versions=${s.versions} transports=${s.transports}）';
           } catch (e) {
             what = '看不懂節點的狀態資料：$e';

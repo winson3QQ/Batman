@@ -17,6 +17,7 @@ import 'src/rust/frb_generated.dart';
 import 'ui/home_page.dart';
 import 'ui/intro_pages.dart';
 import 'ui/theme.dart';
+import 'ui/widgets.dart';
 import 'ui/ui_state.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
@@ -171,7 +172,7 @@ class _StartupCheckState extends State<StartupCheck> {
       final ui = UiState(RecordUiStore(a.records, _platform), log: (l) => debugPrint('BMAPP $l'));
       await ui.load();
       if (!mounted) return;
-      Widget home() => HomePage(app: a, ui: ui, devTrust: _devTrust, canClaim: keys.claim);
+      Widget home() => HomePage(app: a, ui: ui, devTrust: _devTrust, keys: keys);
       final nav = Navigator.of(context);
       if (!ui.welcomed && a.link.core.states.isEmpty) {
         nav.pushReplacement(MaterialPageRoute(
@@ -215,6 +216,71 @@ class _StartupCheckState extends State<StartupCheck> {
 
   @override
   Widget build(BuildContext context) {
+    final t = BatTheme.of(context);
+    if (_report == null) {
+      // §5.2 board 1.1: the splash while the phone is checked
+      return Scaffold(
+        backgroundColor: t.bg,
+        body: SafeArea(
+          child: Column(children: [
+            Expanded(
+              child: Center(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Semantics(
+                      label: '台灣曙豐防災自訓團臂章',
+                      child: Image.asset('assets/brand/badge.webp', width: 160, fit: BoxFit.contain)),
+                  const SizedBox(height: 18),
+                  Text('Batman', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: t.ink)),
+                  const SizedBox(height: 6),
+                  Text('台灣曙豐防災自訓團', style: TextStyle(fontSize: Fs.note, color: t.sub)),
+                ]),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 28),
+              child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: t.sub)),
+                const SizedBox(width: 8),
+                Text('正在檢查這支手機…', style: TextStyle(fontSize: Fs.note, color: t.sub)),
+              ]),
+            ),
+          ]),
+        ),
+      );
+    }
+    if (!_ok) {
+      // §5.2 board 2.4: the key check did not pass; the reason, what the phone holds (names only), a retry when it
+      // may help, the technical detail folded away. No gate is relaxed (KeyGate is the existing check).
+      final lines = _report!.split('\n');
+      return BatPage(
+        title: '',
+        body: [
+          StatusHero(look: Look.bad, text: lines.first, next: lines.length > 1 ? lines.skip(1).join('\n') : null),
+          if (_index.isNotEmpty) ...[
+            BatLabel(_retry ? '手機裡有這些節點的紀錄（沒有打開，也沒有刪除）：' : '這些節點需要重燒卡回收：'),
+            BatCard(children: [for (final n in _index) BatRow(icon: Icons.router_outlined, title: n)]),
+          ],
+          BatCard(children: [
+            ExpansionTile(
+                title: Text('技術資訊（給維修人員看）', style: TextStyle(fontSize: Fs.body, color: t.ink)),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: SelectableText(_tech, style: TextStyle(fontFamily: 'monospace', fontSize: Fs.meta, color: t.ink)),
+                  ),
+                ]),
+          ]),
+        ],
+        foot: _retry
+            ? [
+                BatButton(Btn.tryAgain, onPressed: () {
+                  setState(() => _report = null);
+                  _run();
+                }),
+              ]
+            : null,
+      );
+    }
     return Scaffold(
       appBar: AppBar(title: const Text('Batman 節點管理')),
       body: Padding(

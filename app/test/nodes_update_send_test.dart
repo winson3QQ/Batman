@@ -481,7 +481,7 @@ void main() {
 
   testWidgets('T19: after the removal committed nothing is sent to the node until the button is pressed', (t) async {
     await open(t, records: {'node/$deviceId', 'net/$netId'});
-    await press(t, find.byKey(const Key('dev:成員名單／移除')));
+    await press(t, find.byKey(const Key('dev:隊員名單／移除')));
     await press(t, find.byType(SimpleDialogOption)); // the one other person: remove
     // §2.4: the own node's info was read (a login and one info request) before the question
     expect(node.written, [fLogin, fInfo]);
