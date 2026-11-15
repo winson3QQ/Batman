@@ -218,13 +218,7 @@ class NodeLinkCore {
   }
 
   void refresh(int now) {
-    notY.clear();
-    for (final s in states.values) {
-      if (s.why == Why.identity) {
-        s.kind = Kind.unread;
-        s.why = null;
-      }
-    }
+    notY.clear(); // identity is not ended here: the retry this allows ends it by a read, or sets it again
     final r = _round;
     if (r != null) {
       if (!r.early) return; // X2: no second round
@@ -567,4 +561,117 @@ class NodeLinkCore {
   }
 
   static String _s(int ms) => (ms / 1000).toStringAsFixed(1);
+
+  /// §4.3.9: a flow's login under its lease. Same attempt rules as a round, for one record, up to 60 s.
+  LoginFor loginFor(int now, String id, {bool clearNotY = false}) {
+    if (clearNotY) {
+      for (final s in notY.values) {
+        s.remove(id);
+      }
+    }
+    final l = LoginFor._(this, id, now);
+    if (!(bt && perm && keys)) l.end = LoginEnd.precondition;
+    log.add('${_s(now)} loginFor $id${l.end == null ? '' : ' -> ${l.end!.name}'}');
+    return l;
+  }
+}
+
+enum LoginEnd { ok, identity, refused, notFound, precondition }
+
+class LoginFor {
+  LoginFor._(this.c, this.id, this.start);
+  final NodeLinkCore c;
+  final String id;
+  final int start;
+  static const budget = 60000;
+  final List<String> seen = [];
+  final Map<String, int> freeAt = {};
+  final Set<String> tried = {}, retry = {};
+  Attempt? running;
+  LoginEnd? end;
+  int handshakes = 0;
+
+  bool get done => end != null;
+
+  void onScan(int now, String a) {
+    c.lastSeen[a] = now;
+    if (!seen.contains(a)) seen.add(a);
+  }
+
+  bool _ok(String a) => !tried.contains(a) || retry.contains(a);
+
+  /// Its known address first; with a 「是 Y」 memo it waits for that address during the first 30 s; then unknown
+  /// addresses in scan order (never one with any 「是」 memo or a 「不是 Y」 memo).
+  Attempt? next(int now) {
+    if (done || running != null) return null;
+    String? pick;
+    final known = seen.where((a) => c.isY[a] == id).toList();
+    if (known.isNotEmpty) {
+      if (_ok(known.first) && (freeAt[known.first] ?? 0) <= now) pick = known.first;
+    } else if (!c.isY.containsValue(id) || now - start >= c.p.window) {
+      for (final a in seen) {
+        if (c.isY[a] != null || c.isNot(a, id) || !_ok(a) || (freeAt[a] ?? 0) > now) continue;
+        pick = a;
+        break;
+      }
+    }
+    if (pick == null) return null;
+    retry.remove(pick);
+    tried.add(pick);
+    handshakes++;
+    return running = Attempt(pick, id);
+  }
+
+  void result(int now, Attempt a, Outcome o) {
+    if (running == null || running!.addr != a.addr) return;
+    running = null;
+    freeAt[a.addr] = now + c.p.gap;
+    c.log.add('${NodeLinkCore._s(now)}   loginFor $a -> ${o.res.name}');
+    final s = c.states[id]!;
+    switch (o.res) {
+      case Res.body:
+      case Res.errorCode:
+        c.isY[a.addr] = id;
+        end = LoginEnd.ok;
+      case Res.undecryptable:
+        final w = c.writtenAt[id];
+        if (w != null && now - w < c.p.n9) {
+          retry.add(a.addr);
+        } else if (c.isY[a.addr] == id) {
+          c.isY.remove(a.addr);
+        } else {
+          (c.notY[a.addr] ??= {}).add(id);
+        }
+      case Res.certRejected:
+        (c.notY[a.addr] ??= {}).add(id);
+        if (c.isY[a.addr] == id) c.isY.remove(a.addr);
+        s.kind = Kind.unreachable;
+        s.why = Why.identity;
+        end = LoginEnd.identity;
+      case Res.refusedForbidden:
+        c.isY[a.addr] = id;
+        if (s.why != Why.identity) {
+          s.kind = Kind.unreachable;
+          s.why = Why.refused;
+        }
+        end = LoginEnd.refused;
+      case Res.refusedOther:
+      case Res.broken:
+        c.isY[a.addr] = id;
+        retry.add(a.addr);
+      case Res.noResponse:
+        retry.add(a.addr);
+    }
+  }
+
+  void tick(int now) {
+    if (!done && running == null && now - start >= budget) end = LoginEnd.notFound;
+    if (!done && now - start >= budget + 30000) end = LoginEnd.notFound; // an attempt never reported back
+  }
+
+  int? wakeAt(int now) {
+    if (done) return null;
+    final c0 = <int>[start + budget, start + c.p.window, ...freeAt.values]..removeWhere((v) => v <= now);
+    return c0.isEmpty ? null : c0.reduce((a, b) => a < b ? a : b);
+  }
 }

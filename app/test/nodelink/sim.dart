@@ -20,6 +20,8 @@ class Dev {
   int logins = 0;
   int handshakes = 0;
   final List<int> handshakeTimes = [];
+  final Map<String, int> byPhone = {};
+  int readvertise = 5000; // N8: ~5 s after a disconnect (M-1 R)
 
   bool advertising(int now) => on && now >= busyUntil && now >= quietUntil;
 }
@@ -36,6 +38,8 @@ class Phone {
   int? scanRound;
   final Map<String, List<int>> reads = {}; // id -> read times
   final List<int> roundStarts = [];
+  LoginFor? login; // a flow's login under its lease (§4.3.9)
+  final Map<String, int> loginSeen = {};
 }
 
 class World {
@@ -67,9 +71,10 @@ class World {
     return null;
   }
 
-  (Outcome, int) _attempt(Dev? d, String id) {
+  (Outcome, int) _attempt(Dev? d, String id, String who) {
     if (d == null || !d.on || now < d.busyUntil) return (const Outcome(Res.noResponse), silent);
     d.handshakes++;
+    d.byPhone[who] = (d.byPhone[who] ?? 0) + 1;
     d.handshakeTimes.add(now);
     if (d.mode == Mode.foreignSilent) return (const Outcome(Res.noResponse), silent);
     if (d.mode == Mode.foreignUndecryptable || d.id != id) return (const Outcome(Res.undecryptable), wrong);
@@ -84,7 +89,7 @@ class World {
     final d = ph.dev;
     if (d != null) {
       d.busyUntil = now;
-      d.quietUntil = now + 5000;
+      d.quietUntil = now + d.readvertise;
     }
     ph.running = null;
     ph.endsAt = null;
@@ -114,12 +119,14 @@ class World {
   }
 
   int? _nextScanTime(Phone ph) {
-    if (!ph.core.roundActive) return null;
+    final scanning = ph.core.roundActive || (ph.login != null && !ph.login!.done);
+    if (!scanning) return null;
+    final seen = ph.core.roundActive ? ph.seenAt : ph.loginSeen;
     int? best;
     for (final d in devs) {
       final cands = <int>[
         if (d.on) (d.busyUntil > d.quietUntil ? d.busyUntil : d.quietUntil),
-        if (ph.seenAt.containsKey(d.addr)) ph.seenAt[d.addr]! + see,
+        if (seen.containsKey(d.addr)) seen[d.addr]! + see,
       ].where((t) => t > now);
       for (final t in cands) {
         if (best == null || t < best) best = t;
@@ -128,7 +135,47 @@ class World {
     return best;
   }
 
+  void _stepLogin(Phone ph, LoginFor l) {
+    if (ph.running != null && ph.endsAt! <= now) {
+      final a = ph.running!, o = ph.outcome!;
+      _release(ph);
+      l.result(now, a, o);
+    }
+    l.tick(now);
+    if (l.done) {
+      if (ph.running != null) _release(ph);
+      return;
+    }
+    for (final d in devs) {
+      if (!d.advertising(now)) {
+        ph.loginSeen.remove(d.addr);
+        continue;
+      }
+      final since = ph.loginSeen.putIfAbsent(d.addr, () => now);
+      if (now >= since + see) l.onScan(now, d.addr);
+    }
+    if (ph.running == null) {
+      final a = l.next(now);
+      if (a != null) _start(ph, a);
+    }
+  }
+
+  void _start(Phone ph, Attempt a) {
+    final d = _byAddr(a.addr);
+    final (o, dur) = _attempt(d, a.id, ph.name);
+    ph.running = a;
+    ph.outcome = o;
+    ph.endsAt = now + dur;
+    ph.dev = d;
+    if (d != null && d.on) {
+      d.busyUntil = now + dur;
+      d.quietUntil = now + dur + d.readvertise;
+    }
+  }
+
   void step(Phone ph) {
+    final l = ph.login;
+    if (l != null && !l.done) return _stepLogin(ph, l);
     final c = ph.core;
     // an attempt the core no longer runs (cut at the cap, cancelled): the phone drops the link now
     if (ph.running != null && c.running?.toString() != ph.running.toString()) _release(ph);
@@ -143,18 +190,7 @@ class World {
     _scans(ph);
     if (ph.running == null && c.roundActive) {
       final a = c.next(now);
-      if (a != null) {
-        final d = _byAddr(a.addr);
-        final (o, dur) = _attempt(d, a.id);
-        ph.running = a;
-        ph.outcome = o;
-        ph.endsAt = now + dur;
-        ph.dev = d;
-        if (d != null && d.on) {
-          d.busyUntil = now + dur;
-          d.quietUntil = now + dur + 5000;
-        }
-      }
+      if (a != null) _start(ph, a);
     }
   }
 
@@ -175,6 +211,7 @@ class World {
         for (final ph in phones) ...[
           if (ph.endsAt != null) ph.endsAt!,
           if (ph.core.wakeAt(now) != null) ph.core.wakeAt(now)!,
+          if (ph.login != null && ph.login!.wakeAt(now) != null) ph.login!.wakeAt(now)!,
           if (_nextScanTime(ph) != null) _nextScanTime(ph)!,
         ],
       ]..removeWhere((t) => t <= now);
