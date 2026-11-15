@@ -152,11 +152,13 @@ void main() {
   test('LoggedIn then a status body -> read, with Rust\x27s colour', () async {
     final o = await probe([step(OwnerKind.loggedIn, loginEnd: 1), step(OwnerKind.answer)], color: 'yellow');
     expect((o.res, o.view), (Res.body, 'yellow'));
+    expect(o.extra, isA<StatusView>(), reason: 'PR 2 review r2 D-M1: the screen data travels with the read');
   });
 
   test("a status answer that is an error code (row 2') -> errorCode, not a read", () async {
     final o = await probe([step(OwnerKind.loggedIn, loginEnd: 1), step(OwnerKind.answer)], row: "2'");
     expect(o.res, Res.errorCode);
+    expect((o.extra as StatusView?)?.row, "2'", reason: 'r2 D-M1: the error answer carries its own screen data (row 2-prime)');
   });
 
   test('E_UNSUPPORTED (row 1) is a definite answer -> read', () async {

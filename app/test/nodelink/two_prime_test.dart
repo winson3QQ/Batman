@@ -23,6 +23,9 @@ void main() {
     final p = Script([const Outcome(Res.body, 'green', 'BODY'), const Outcome(Res.errorCode, '', 'ERRVIEW')]);
     final (nl, clock, _, _) = make(radio, p, () async => const [Rec('Y1', 1)]);
     await nl.start(Page.home);
+    radio.scanCtl.add('a1');
+    await clock.run(3000);
+    expect(nl.core.states['Y1']!.extra, 'BODY', reason: 'r2 D-M1: a read keeps its screen data');
     for (var i = 0; i < 70; i++) {
       radio.scanCtl.add('a1'); // a node advertises all the time
       await clock.run(5000);
