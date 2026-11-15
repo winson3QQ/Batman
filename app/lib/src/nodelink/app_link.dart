@@ -9,16 +9,18 @@ import 'package:flutter/widgets.dart' show WidgetsBinding, WidgetsBindingObserve
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import '../../key_abilities.dart' show KeyAbilities;
-import '../rust/api/owner.dart' show listNodes, storeReadSealed;
+import '../rust/api/claim.dart' show storeKeepCopy, storeRemove, storeWriteSealed;
+import '../rust/api/owner.dart' show listNodes, storeReadSealed, storeWriteCas;
 import 'ble_backend.dart';
 import 'ble_gate.dart';
 import 'core.dart';
 import 'lease.dart';
 import 'node_link.dart';
 import 'prober.dart';
+import 'record_writer.dart';
 
 class AppLink {
-  AppLink._(this.ble, this.reg, this.gate, this.link, this.prober);
+  AppLink._(this.ble, this.reg, this.gate, this.link, this.prober, this.writer, this.records);
 
   /// The only FlutterReactiveBle of the app (§4.2): the older pages get this one too.
   final FlutterReactiveBle ble;
@@ -26,6 +28,12 @@ class AppLink {
   final BleGate gate;
   final NodeLink link;
   final SessionProber prober;
+
+  /// §4.4: the only way to write or delete a key record (new screens).
+  final RecordWriter writer;
+
+  /// The record store directory.
+  final String records;
 
   static AppLink? _one;
   static AppLink? get instance => _one;
@@ -86,11 +94,20 @@ class AppLink {
       after: _after,
       trace: (l) => debugPrint('BMAPP nl $l'),
     );
+    final writer = RecordWriter(
+      reg,
+      RecordStore(
+        writeCas: (rel, g, s) => storeWriteCas(dir: records, rel: rel, expectedGen: g, sealed: s),
+        writeSealed: (rel, g, s) => storeWriteSealed(dir: records, rel: rel, generation: g, sealed: s),
+        remove: (rel) => storeRemove(dir: records, rel: rel),
+        keepCopy: (rel) => storeKeepCopy(dir: records, rel: rel),
+      ),
+    );
     // §4.3.2 (T20): the app lifecycle, app-wide (it outlives any page)
     WidgetsBinding.instance.addObserver(_Life(link));
     // §4.3.3-1: Bluetooth off / no permission are the overlay 2.3 / 2.2, at once (review pr1 A-M3 / B-M5)
     wireRadio(radio.statusStream, link);
-    return _one = AppLink._(radio, reg, gate, link, prober);
+    return _one = AppLink._(radio, reg, gate, link, prober, writer, records);
   }
 }
 

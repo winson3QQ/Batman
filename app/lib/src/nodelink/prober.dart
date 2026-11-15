@@ -89,7 +89,7 @@ class SessionProber implements Prober {
             final v = session.statusView(hasNet: false, hasMnet: false);
             // a status answer that is an error code (Rust row 2') is 不變, not a read (§4.3.3-4, round-5 B-M1);
             // E_UNSUPPORTED is row 1, a definite answer
-            done(v.row == "2'" ? const Outcome(Res.errorCode) : Outcome(Res.body, v.color));
+            done(v.row == "2'" ? const Outcome(Res.errorCode) : Outcome(Res.body, v.color, v));
             st = null;
           case OwnerKind.ended:
             log?.call('probe $id: login ended ${st.loginEnd} code ${st.loginCode} (logged in: $loggedIn)');

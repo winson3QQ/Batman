@@ -14,11 +14,14 @@ import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
+import 'ui/home_page.dart';
+import 'ui/theme.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]); // T13: portrait only
   await RustLib.init();
   runApp(BatmanApp(makeLink: (dir) => AppLink.create(platform: _platform, filesDir: dir)));
 }
@@ -33,7 +36,9 @@ class BatmanApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Batman',
-      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
+      theme: batThemeData(Brightness.light),
+      darkTheme: batThemeData(Brightness.dark),
+      themeMode: ThemeMode.system,
       home: StartupCheck(makeLink: makeLink),
     );
   }
@@ -51,6 +56,7 @@ class StartupCheck extends StatefulWidget {
 
 class _StartupCheckState extends State<StartupCheck> {
   AppLink? _app; // #329 PR 1: built once the startup check passed
+  bool _devTrust = false;
   // what everyone sees (the result, warnings, first-run outcome) / the technical detail, folded away
   String? _report;
   String _tech = '';
@@ -91,6 +97,7 @@ class _StartupCheckState extends State<StartupCheck> {
     try {
       final info = buildInfo();
       final flavorDevTrust = await _platform.invokeMethod<bool>('devTrust');
+      _devTrust = flavorDevTrust == true;
       // design v8.5.1 §4.1: the Rust library and the flavor must agree, else the app is disabled
       agree = flavorDevTrust == info.devTrust;
       lines.add(agree ? '啟動檢查：正常' : '啟動檢查：App 內部版本不一致，已停用（請重新安裝 App）');
@@ -155,6 +162,12 @@ class _StartupCheckState extends State<StartupCheck> {
       _report = lines.join('\n');
       _tech = tech.join('\n');
     });
+    // #329 PR 2: a passed startup check goes straight to the new home page (§5.1)
+    final a = _app;
+    if (_ok && a != null && mounted) {
+      Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => HomePage(app: a, devTrust: _devTrust, canClaim: keys.claim)));
+    }
   }
 
   /// Design v8.5.1 §4.1: the install marker; the four keys are generated only when there is no marker AND no record.
