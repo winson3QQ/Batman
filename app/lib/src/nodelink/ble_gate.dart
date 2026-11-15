@@ -15,10 +15,19 @@ abstract class BleBackend {
   /// subscription disconnects; after that this stream says nothing more.
   Stream<bool> connect(String address, Duration timeout);
 
+  /// GATT on an open link (the provd service's three characteristics).
+  Future<int> requestMtu(String address, int mtu);
+  Future<List<int>> read(String address, Char c);
+  Stream<List<int>> subscribe(String address, Char c);
+  Future<void> write(String address, Char c, List<int> value);
+
   /// Every link's state, whoever opened it: (address, connected). flutter_reactive_ble: connectedDeviceStream. This
   /// is where "disconnected" after a cancel is seen (§4.2).
   Stream<(String, bool)> get linkStates;
 }
+
+/// The provd service's characteristics (the node's BLE contract; ids in ble_backend.dart).
+enum Char { rx, tx, ctrl }
 
 class Refused implements Exception {
   Refused(this.why);
@@ -68,6 +77,30 @@ class GateLink {
     final g = _gone;
     _gone = null;
     if (g != null && !g.isCompleted) g.complete();
+  }
+
+  void _usable(String what) {
+    if (!_open || _down || !gate.reg.valid(token)) throw Refused('$what on a closed link or a revoked token');
+  }
+
+  Future<int> requestMtu(int mtu) async {
+    _usable('mtu');
+    return gate.backend.requestMtu(address, mtu);
+  }
+
+  Future<List<int>> read(Char c) async {
+    _usable('read');
+    return gate.backend.read(address, c);
+  }
+
+  Stream<List<int>> subscribe(Char c) {
+    _usable('subscribe');
+    return gate.backend.subscribe(address, c);
+  }
+
+  Future<void> write(Char c, List<int> value) async {
+    _usable('write');
+    return gate.backend.write(address, c, value);
   }
 
   /// Drop the link and wait until the stack reports it gone, or 5 s (§4.2).

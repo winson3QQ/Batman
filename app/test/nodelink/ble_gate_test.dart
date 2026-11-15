@@ -32,6 +32,28 @@ class FakeRadio implements BleBackend {
   Stream<(String, bool)> get linkStates => _states.stream;
   final List<StreamController<bool>> links = [];
   bool reportDisconnect = true;
+  final List<String> gatt = [];
+
+  @override
+  Future<int> requestMtu(String address, int mtu) async {
+    gatt.add('mtu $address');
+    return 247;
+  }
+
+  @override
+  Future<List<int>> read(String address, Char c) async {
+    gatt.add('read $address ${c.name}');
+    return [1];
+  }
+
+  @override
+  Stream<List<int>> subscribe(String address, Char c) {
+    gatt.add('sub $address ${c.name}');
+    return const Stream.empty();
+  }
+
+  @override
+  Future<void> write(String address, Char c, List<int> value) async => gatt.add('write $address ${c.name}');
 
   @override
   Stream<String> scan() {
@@ -128,6 +150,23 @@ void main() {
     clock.advance(1);
     await f;
     expect((started, radio.scanStarts), (true, 5));
+  });
+
+  test('GATT goes through only on an open link with the current token', () async {
+    final (reg, gate, radio, clock) = setup();
+    final l = reg.acquire('x', LeaseKind.session)!;
+    final link = gate.connect(l.token, 'a1');
+    await Future<void>.delayed(Duration.zero);
+    expect(await link.requestMtu(517), 247);
+    await link.write(Char.rx, [1]);
+    expect(radio.gatt, ['mtu a1', 'write a1 rx']);
+    final work = l.run(() => Completer<void>().future);
+    l.pageGone();
+    clock.advance(420 * 1000); // revoked: the gate closes the link
+    await Future<void>.delayed(Duration.zero);
+    await expectLater(link.read(Char.ctrl), throwsA(isA<Refused>()));
+    expect(radio.gatt.length, 2);
+    work.ignore();
   });
 
   test('close() waits for the disconnected report, or 5 s when it never comes', () async {
