@@ -69,10 +69,43 @@ void main() {
     // once a target has a conclusion the first rounds no longer hide it
     expect(home([node('dddd0004', why: Why.notFound, last: Concl.notFound)], first: true).row, 8);
   });
-  test('row 6: not in a network -> join (one and many)', () {
+  test('row 6: not in a network (one and many); the button follows the phone''s network records (review B-M1)', () {
     expect(home([node('eeee0005', v: sv(nodeState: 1, color: 'red'))]).text, '節點 0005 還沒加入隊伍網路');
-    final h = home([node('e1', v: sv(nodeState: 1)), node('e2', v: sv(nodeState: 1)), node('f1', v: sv(color: 'red'))]);
-    expect((h.row, h.text, h.action), (6, '有 2 台節點還沒加入隊伍網路', HomeAction.joinNetwork));
+    final ns = [node('e1', v: sv(nodeState: 1)), node('e2', v: sv(nodeState: 1)), node('f1', v: sv(color: 'red'))];
+    HomeHero h6(NetRecords r) => decideHome(HomeInputs(nodes: ns, blocked: null, firstRounds: false, todos: 0, records: r));
+    expect((h6(NetRecords.net).row, h6(NetRecords.net).text), (6, '有 2 台節點還沒加入隊伍網路'));
+    expect((h6(NetRecords.net).action, h6(NetRecords.mnet).action), (HomeAction.joinNetwork, HomeAction.joinNetwork));
+    expect(h6(NetRecords.mpend).action, HomeAction.seeRequest);
+    expect((h6(NetRecords.none).action, h6(NetRecords.none).second), (HomeAction.makeNetwork, HomeAction.joinTeam),
+        reason: 'a phone without any network starts one; joining a team is the second way');
+  });
+
+  test('review A-M5: adjacent rows 10/11, 11/12, 12/13 — the upper one wins', () {
+    final stale = node('s1', v: sv(), fresh: false);
+    final yellow = node('y1', v: sv(color: 'yellow'));
+    final gray = node('g1', v: sv(color: 'gray'));
+    expect(home([stale], todos: 1).row, 10);
+    expect(home([yellow], todos: 1).row, 11);
+    expect(home([yellow, gray]).row, 12);
+    expect(home([node('g2', v: sv(color: 'gray', warning: '時間不準'))]).row, 12, reason: 'a warning wins over gray');
+  });
+
+  test('review A-M5: rows 6 and 7 only from fresh reads', () {
+    expect(home([node('n1', v: sv(nodeState: 1), fresh: false)]).row, 10);
+    expect(home([node('r1', v: sv(color: 'red'), fresh: false)]).row, 10);
+  });
+
+  test('review A-M2: a fresh read without screen data (or a 2'') is never 一切正常', () {
+    final s = NodeState()
+      ..kind = Kind.read
+      ..view = "2'"
+      ..last = Concl.read;
+    final blank = NodeInfo(id: 'b1', name: '節點 00B1', state: s, fresh: true, shownWhy: null);
+    final h = home([blank]);
+    expect((h.row, h.look), (13, Look.unk));
+    final twoP = NodeInfo(
+        id: 'b2', name: '節點 00B2', state: s, fresh: true, shownWhy: null, view: sv(color: 'gray', sentence: '狀態未知 — 請按「重新整理」；一直如此請找維修人員'));
+    expect(home([twoP]).text, '節點 00B2：狀態未知 — 請按「重新整理」；一直如此請找維修人員');
   });
   test('row 7: a red node, above unreachable', () {
     final h = home([node('gggg0007', v: sv(color: 'red', sentence: '沒有連上網路')), node('h1', why: Why.notFound)]);

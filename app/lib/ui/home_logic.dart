@@ -31,28 +31,35 @@ class NodeInfo {
   bool get notInNetwork => view != null && view!.nodeState.toInt() == 1; // §5.1 row 6 (F46)
 }
 
+/// Which network records this phone holds (file names only; §4.3.8): net wins over mnet over mpend.
+enum NetRecords { net, mnet, mpend, none }
+
 class HomeInputs {
   const HomeInputs({
     required this.nodes,
     required this.blocked,
     required this.firstRounds,
     required this.todos,
+    this.records = NetRecords.none,
   });
   final List<NodeInfo> nodes;
   final Why? blocked; // Bluetooth off / no permission / keys
   final bool firstRounds; // this run's first two rounds are not over
   final int todos;
+  final NetRecords records; // row 6's button
 }
 
-enum HomeAction { none, openBluetooth, allowBluetooth, addNode, seeNode, joinNetwork, refresh, showList }
+enum HomeAction { none, openBluetooth, allowBluetooth, addNode, seeNode, joinNetwork, makeNetwork, seeRequest, joinTeam, refresh, showList }
 
 class HomeHero {
-  const HomeHero(this.row, this.look, this.text, {this.next, this.action = HomeAction.none, this.node});
+  const HomeHero(this.row, this.look, this.text,
+      {this.next, this.action = HomeAction.none, this.second = HomeAction.none, this.node});
   final int row; // the §5.1 table row that decided it
   final Look look;
   final String text;
   final String? next;
   final HomeAction action;
+  final HomeAction second; // a secondary (text) button, row 6 only
   final String? node; // the node the action is about
 }
 
@@ -66,7 +73,11 @@ HomeHero decideHome(HomeInputs i) {
     return const HomeHero(2, Look.bad, 'app 還沒有藍牙權限', action: HomeAction.allowBluetooth);
   }
   if (i.blocked == Why.keys) return const HomeHero(2, Look.bad, '這支手機的金鑰現在不能用', next: '請重新開啟 app；一直如此請找維修人員');
-  if (ns.isEmpty) return const HomeHero(3, Look.unk, '還沒有節點', action: HomeAction.addNode);
+  if (ns.isEmpty) {
+    // §5.2 board 2.1's words
+    return const HomeHero(3, Look.unk, '還沒有節點',
+        next: '掃描節點機身上的 QR code，把它加入這支手機。之後就能建立網路、看連線狀態。', action: HomeAction.addNode);
+  }
   final identity = ns.where((n) => n.shownWhy == Why.identity).toList();
   if (identity.isNotEmpty) {
     return HomeHero(4, Look.bad, '${identity.first.name} 的身分和這支手機記錄的不同',
@@ -77,8 +88,14 @@ HomeHero decideHome(HomeInputs i) {
   final fresh = ns.where((n) => n.fresh && n.view != null).toList();
   final notIn = fresh.where((n) => n.notInNetwork).toList();
   if (notIn.isNotEmpty) {
+    // §5.1 row 6: the button follows the phone's network records (PR 2 review B-M1)
+    final (act, second) = switch (i.records) {
+      NetRecords.net || NetRecords.mnet => (HomeAction.joinNetwork, HomeAction.none),
+      NetRecords.mpend => (HomeAction.seeRequest, HomeAction.none),
+      NetRecords.none => (HomeAction.makeNetwork, HomeAction.joinTeam),
+    };
     return HomeHero(6, Look.warn, _many(notIn, 'X 還沒加入隊伍網路', '有 N 台節點還沒加入隊伍網路'),
-        action: HomeAction.joinNetwork, node: notIn.first.id);
+        action: act, second: second, node: notIn.first.id);
   }
   final red = fresh.where((n) => n.state.view == 'red').toList();
   if (red.isNotEmpty) {
@@ -94,10 +111,14 @@ HomeHero decideHome(HomeInputs i) {
   }
   final stale = ns.where((n) => !n.fresh).toList();
   if (stale.isNotEmpty) {
-    final searching = i.firstRounds || stale.any((n) => n.state.kind == Kind.unread && n.state.last != Concl.notYet);
-    return HomeHero(10, Look.unk,
-        searching ? '正在找${stale.first.name}…' : _many(stale, '還沒讀到 X 的狀態', '還沒讀到 N 台節點的狀態'),
-        action: HomeAction.refresh);
+    // §5.1 row 10 (review A-m5): the first rounds -> 正在找; devices not recognised yet -> say so; else not read yet
+    final unknownNear = stale.where((n) => n.state.last == Concl.notYet).toList();
+    final text = i.firstRounds
+        ? '正在找${stale.first.name}…'
+        : unknownNear.isNotEmpty
+            ? '附近有還沒認出來的裝置，還在找${unknownNear.first.name}'
+            : _many(stale, '還沒讀到 X 的狀態', '還沒讀到 N 台節點的狀態');
+    return HomeHero(10, Look.unk, text, action: HomeAction.refresh);
   }
   if (i.todos > 0) return HomeHero(11, Look.warn, '有 ${i.todos} 件事要你處理');
   final yellow = fresh.where((n) => n.state.view == 'yellow' || (n.view?.warning.isNotEmpty ?? false)).toList();
@@ -111,11 +132,17 @@ HomeHero decideHome(HomeInputs i) {
     return HomeHero(13, Look.unk, '${gray.first.name}：${gray.first.view!.sentence}',
         action: HomeAction.seeNode, node: gray.first.id);
   }
+  // a fresh read without screen data never reads as 「一切正常」 (PR 2 review A-M2)
+  final blank = ns.where((n) => n.fresh && n.view == null).toList();
+  if (blank.isNotEmpty) {
+    return HomeHero(13, Look.unk, '${blank.first.name}：有回應，還沒拿到狀態', action: HomeAction.seeNode, node: blank.first.id);
+  }
   return HomeHero(14, Look.ok, '一切正常，可以使用',
       next: ns.length == 1 ? '你的節點連上了隊伍網路。現在沒有需要你處理的事。' : '你的 ${ns.length} 台節點都連上了隊伍網路。現在沒有需要你處理的事。');
 }
 
 String hhmm(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+String hhmmss(DateTime t) => '${hhmm(t)}:${t.second.toString().padLeft(2, '0')}';
 
 /// One node row: (look, sentence, meta).
 (Look, String, String) nodeRowWords(NodeInfo n, {required bool firstRounds}) {
@@ -156,3 +183,14 @@ String hhmm(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toSt
   if (before != null && !firstRounds) return (Look.unk, before, tail);
   return (Look.busy, '正在找節點…', meta);
 }
+
+/// The next step for each reason a node is not read (node page; PR 2 review A-M3): an identity mismatch is a
+/// security warning, never "it will retry".
+String whyNext(Why w) => switch (w) {
+      Why.notFound => '節點可能沒開機、還在開機，或離手機太遠。app 會持續自動重試，連上後這裡會自己更新。',
+      Why.identity => '這台的身分證明和手機記錄的不同：可能是被重燒過，也可能是別的裝置冒充。不要在它上面做任何設定，請找維修人員確認。',
+      Why.refused => '這台節點不接受這支手機的登入（可能已被重設或交給別人）。請找維修人員。',
+      Why.bluetoothOff => '請打開手機的藍牙。打開後 app 會自動重新讀取。',
+      Why.noPermission => '請回首頁按「允許藍牙權限」。',
+      Why.keys => '這支手機的金鑰現在不能用。請重新開啟 app；一直如此請找維修人員。',
+    };

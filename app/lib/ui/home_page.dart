@@ -11,7 +11,8 @@ import '../nodes.dart';
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl;
 import '../src/nodelink/raw_use.dart';
-import '../src/rust/api/owner.dart' show StatusView, listPending;
+import '../src/rust/api/owner.dart' show StatusView, listPending, listNets;
+import '../src/rust/api/member.dart' show listMnets, listPends;
 import 'home_logic.dart';
 import 'intro_pages.dart';
 import 'node_page.dart';
@@ -76,6 +77,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   StreamSubscription<void>? _sub;
   Timer? _tick;
   int _pending = 0;
+  NetRecords _records = NetRecords.none;
 
   AppLink get a => widget.app;
 
@@ -111,13 +113,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     for (final id in c.states.keys) {
       final w = a.link.readWall[id];
       if (w == null || !c.fresh(id, now)) continue;
-      reads[id] = (switch (c.states[id]!.view) { 'green' => 'ok', 'yellow' => 'warn', 'red' => 'bad', _ => 'unk' }, w);
+      final s = c.states[id]!;
+      final v = s.extra;
+      // not in a network is 「要注意」 on screen (row 6), so it is remembered as warn, not bad (PR 2 review A-m1)
+      final notIn = v is StatusView && v.nodeState.toInt() == 1;
+      reads[id] = (notIn ? 'warn' : switch (s.view) { 'green' => 'ok', 'yellow' => 'warn', 'red' => 'bad', _ => 'unk' }, w);
     }
     if (reads.isNotEmpty) widget.ui.noteReads(reads);
   }
 
   /// §5.1 todos this version knows: an unfinished claim (devTrust only, F48) and a lease taken back (§4.4).
   Future<void> _todos() async {
+    // §5.1 row 6: which network records the phone holds (names only, nothing opened)
+    var recs = NetRecords.none;
+    try {
+      if ((await listNets(dir: a.records)).isNotEmpty) {
+        recs = NetRecords.net;
+      } else if ((await listMnets(dir: a.records)).isNotEmpty) {
+        recs = NetRecords.mnet;
+      } else if ((await listPends(dir: a.records)).isNotEmpty) {
+        recs = NetRecords.mpend;
+      }
+    } catch (_) {}
+    _records = recs;
     var n = 0;
     if (widget.devTrust) {
       try {
@@ -143,11 +161,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _addNode();
       case HomeAction.seeNode:
         if (h.node != null) _open(h.node!);
-      case HomeAction.joinNetwork:
-        _back(openUnderLease(context, a, '加入網路', (u) => NodesPage(ble: a.ble, use: u)));
+      // the network flows come in PR 3: until then these open the older console, where the same button is
+      case HomeAction.joinNetwork || HomeAction.makeNetwork || HomeAction.seeRequest || HomeAction.joinTeam:
+        _back(openUnderLease(context, a, '我的節點', (u) => NodesPage(ble: a.ble, use: u)));
       case HomeAction.refresh:
         a.link.refresh();
-      case HomeAction.openBluetooth || HomeAction.showList || HomeAction.none:
+      case HomeAction.openBluetooth:
+        _platform.invokeMethod<bool>('bluetoothSettings'); // §5.1 row 1: the system page; the status stream follows
+      case HomeAction.showList || HomeAction.none:
         break;
     }
   }
@@ -178,13 +199,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final infos = [for (final id in ids) nodeInfo(a, id, widget.ui)];
     final todos = _pending + a.reg.unsavedTodos.length;
     final firstRounds = a.link.core.roundsRun < 3;
-    final h = decideHome(HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos));
+    final h = decideHome(
+        HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: _records));
     final freshest = infos.map((n) => n.readWall).whereType<DateTime>().fold<DateTime?>(null, (x, y) => x == null || y.isAfter(x) ? y : x);
     final actionText = switch (h.action) {
       HomeAction.allowBluetooth => Btn.allowBluetooth,
       HomeAction.addNode => Btn.addNode,
       HomeAction.seeNode => Btn.seeNode,
+      HomeAction.openBluetooth => Btn.openBluetooth,
       HomeAction.joinNetwork => Btn.joinNetwork,
+      HomeAction.makeNetwork => Btn.makeNetwork,
+      HomeAction.seeRequest => Btn.seeRequest,
       _ => null,
     };
     return BatPage(
@@ -194,8 +219,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         IconButton(
           tooltip: '設定',
           icon: Icon(Icons.settings_outlined, color: t.ink),
-          onPressed: () => _back(Navigator.of(context)
-              .push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, devTrust: widget.devTrust)))),
+          onPressed: () {
+            a.link.setPage(nl.Page.other); // §4.3.2: no reads while the settings are on screen (T-L8; review A-m3)
+            _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, devTrust: widget.devTrust))));
+          },
         ),
       ],
       body: [
@@ -203,16 +230,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           look: h.look,
           text: h.text,
           next: h.next,
-          time: freshest == null || h.look == Look.busy ? null : '讀取於 ${hhmm(freshest)}',
+          time: freshest == null || h.look == Look.busy ? null : '讀取於 ${hhmmss(freshest)}',
           onRefresh: h.look == Look.busy ? null : a.link.refresh,
-          extra: actionText == null ? null : [BatButton(actionText, onPressed: () => _act(h))],
+          extra: actionText == null
+              ? null
+              : [
+                  BatButton(actionText, onPressed: () => _act(h)),
+                  if (h.second == HomeAction.joinTeam)
+                    BatButton(Btn.joinTeam, kind: BtnKind.text, onPressed: () => _act(HomeHero(h.row, h.look, h.text, action: h.second))),
+                ],
         ),
         if (h.row == 14 && !widget.ui.homeTip) HomeTipCard(onDone: () => widget.ui.setHomeTip().then((_) => mounted ? setState(() {}) : null)),
         for (final m in a.reg.unsavedTodos)
           BatBanner(look: Look.warn, title: m, text: '這個操作沒有在時間內結束，app 已經停止它。請到那台節點的頁面看目前的狀態，需要的話再做一次。',
               action: Btn.gotIt, onAction: () => setState(() => a.reg.unsavedTodos.remove(m))),
         if (_pending > 0)
-          BatBanner(look: Look.warn, title: '上次新增節點沒有做完', action: '繼續完成', onAction: _addNode),
+          BatBanner(look: Look.warn, title: '上次新增節點沒有做完', action: Btn.finishIt, onAction: _addNode),
         if (infos.isNotEmpty) ...[
           const BatLabel('我的節點'),
           BatCard(children: [

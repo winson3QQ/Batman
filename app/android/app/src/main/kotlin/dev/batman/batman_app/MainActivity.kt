@@ -101,6 +101,10 @@ class MainActivity : FlutterActivity() {
                 "devTrust" -> result.success(BuildConfig.DEV_TRUST)
                 // #329 §5.8 10.6 (A5): the version the build carries (pubspec version)
                 "appVersion" -> result.success(BuildConfig.VERSION_NAME)
+                // #329 §5.1 rows 1 / 2: open the system's own settings page (nothing is changed by the app)
+                "bluetoothSettings" -> result.success(openSettings(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)))
+                "appSettings" -> result.success(openSettings(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.fromParts("package", packageName, null))))
                 // the app-private directory the Rust record store lives in
                 "filesDir" -> result.success(filesDir.absolutePath)
                 // first install only (Dart checked: no marker, no record): four keys, all or nothing
@@ -146,6 +150,14 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    /// #329: start a system settings page; false when the phone has none for it
+    private fun openSettings(i: Intent): Boolean = try {
+        startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        true
+    } catch (e: android.content.ActivityNotFoundException) {
+        false
     }
 }
 

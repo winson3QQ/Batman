@@ -73,7 +73,8 @@ class _NodePageState extends State<NodePage> {
         await lease.run(() => a.writer.remove(lease, 'node/${widget.id}'));
       }
     } catch (e) {
-      err = '沒有移除成功，紀錄維持原樣（$e）';
+      debugPrint('BMAPP remove node failed: ${e.runtimeType}'); // the detail stays out of the main screen
+      err = '沒有移除成功，紀錄維持原樣。請再試一次；一直如此請找維修人員。';
     }
     await lease.release();
     if (err == null) await widget.ui.forget(widget.id); // §5.5: its nickname and status go too
@@ -98,7 +99,7 @@ class _NodePageState extends State<NodePage> {
     final next = [
       if (n.fresh && v != null && v.warning.isNotEmpty) v.warning,
       if (n.fresh && v != null && v.lagNote.isNotEmpty) v.lagNote,
-      if (n.shownWhy != null) '節點可能沒開機、還在開機，或離手機太遠。app 會持續自動重試，連上後這裡會自己更新。',
+      if (n.shownWhy != null) whyNext(n.shownWhy!),
     ];
     return BatPage(
       title: n.name,
@@ -107,7 +108,7 @@ class _NodePageState extends State<NodePage> {
           look: look,
           text: line,
           next: next.isEmpty ? null : next.join('\n'),
-          time: n.readWall == null ? null : (n.fresh ? '讀取於 ${hhmm(n.readWall!)}' : meta),
+          time: n.readWall == null ? null : (n.fresh ? '讀取於 ${hhmmss(n.readWall!)}' : meta),
           onRefresh: a.link.refresh,
         ),
         BatCard(children: [

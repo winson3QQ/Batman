@@ -67,7 +67,7 @@ AppLink app(StatusView? view) {
   return a;
 }
 
-final retired = RegExp(r'網主|末四碼|管理者(?!金鑰)|(?<!／)成員(?!金鑰)|StrongBox|ownerEnc|#\d');
+final retired = RegExp(r'網主|末四碼|管理者(?!金鑰)|成員|(?<![A-Za-z_])SAS(?![A-Za-z_])|StrongBox|ownerEnc|#\d');
 
 void main() {
   final pages = <String, Widget Function(UiState ui)>{

@@ -27,8 +27,8 @@ void main() {
   });
 
   test('T-C4a (source): retired words are gone from the user-facing strings', () {
-    // 管理者 only in 管理者金鑰, 成員 only in 成員金鑰 (key names); comments are skipped
-    final bad = RegExp(r'網主|末四碼|管理者(?!金鑰)|(?<!／)成員(?!金鑰)');
+    // 管理者 only in 管理者金鑰 (a key name); 成員 and SAS not at all (S1 / S8; review B-m3); comments are skipped
+    final bad = RegExp(r'網主|末四碼|管理者(?!金鑰)|成員|(?<![A-Za-z_])SAS(?![A-Za-z_])');
     final hits = <String>[];
     for (final f in sources()) {
       final lines = f.readAsLinesSync();

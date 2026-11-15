@@ -2,6 +2,7 @@
 // welcome was not seen and the phone has no node record (an upgrading user never sees them); 「開始」 and 「跳過說明」
 // both count as seen. The Bluetooth permission is asked only when the user presses a button (F28).
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'theme.dart';
 import 'widgets.dart';
@@ -73,7 +74,7 @@ class _IntroPagesState extends State<IntroPages> {
           ]),
         ],
       _ => [
-          _top('三個步驟就能使用', '大約 10 分鐘。中途離開也沒關係，回來會接著做。'),
+          _top('三個步驟就能使用', '大約 10 分鐘。'),
           const BatCard(children: [
             BatRow(icon: Icons.looks_one_outlined, title: '把節點加入這支手機', sub: '掃 QR code'),
             BatRow(icon: Icons.looks_two_outlined, title: '建立網路，或加入隊長的網路', sub: '節點之間互相連上'),
@@ -92,9 +93,9 @@ class _IntroPagesState extends State<IntroPages> {
         body: body,
         foot: [
           _dots(),
-          if (_page < 2) BatButton('下一步', onPressed: () => setState(() => _page++)),
-          if (_page < 2) BatButton('跳過說明', kind: BtnKind.text, onPressed: widget.onDone),
-          if (_page == 2) BatButton('開始', onPressed: widget.onDone),
+          if (_page < 2) BatButton(Btn.next, onPressed: () => setState(() => _page++)),
+          if (_page < 2) BatButton(Btn.skipIntro, kind: BtnKind.text, onPressed: widget.onDone),
+          if (_page == 2) BatButton(Btn.start, onPressed: widget.onDone),
         ],
       ),
     );
@@ -150,7 +151,12 @@ class _PermissionsPageState extends State<PermissionsPage> {
         else
           Text('接下來手機會跳出詢問，請選「允許」。', style: TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub)),
       ],
-      foot: [BatButton('繼續', onPressed: _asking ? null : _go)],
+      foot: [
+        BatButton(Btn.goOn, onPressed: _asking ? null : _go),
+        if (_refused)
+          BatButton(Btn.openAppSettings,
+              kind: BtnKind.text, onPressed: () => const MethodChannel('dev.batman/platform').invokeMethod<bool>('appSettings')),
+      ],
     );
   }
 }

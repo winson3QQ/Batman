@@ -1066,10 +1066,24 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
     final dir = await _dir();
     final nets = (await listNets(dir: dir)).isNotEmpty;
     final mnets = (await listMnets(dir: dir)).isNotEmpty;
-    return switch (joinChoice(hasNet: nets, hasMnet: mnets)) {
-      JoinChoice.member => _memberJoin(),
-      JoinChoice.own => _joinNetwork(),
-    };
+    switch (joinChoice(hasNet: nets, hasMnet: mnets)) {
+      case JoinChoice.member:
+        return _memberJoin();
+      case JoinChoice.own:
+        return _joinNetwork();
+      case JoinChoice.none:
+        _say('[REQ_FAIL] 這支手機還沒有隊伍網路：請按「建立網路」，或向隊長要邀請');
+      case JoinChoice.ask:
+        if (!mounted) return;
+        final team = await showDialog<bool>(
+            context: context,
+            builder: (c) => SimpleDialog(title: const Text('要加入哪一個網路？'), children: [
+                  SimpleDialogOption(onPressed: () => Navigator.pop(c, false), child: const Text('這支手機建立的網路')),
+                  SimpleDialogOption(onPressed: () => Navigator.pop(c, true), child: const Text('隊長的網路（我是隊員）')),
+                ]));
+        if (team == null || !mounted) return;
+        return team ? _memberJoin() : _joinNetwork();
+    }
   }
 
   Future<(String, MnetView)?> _pickMnet() async {
@@ -1752,10 +1766,14 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
   }
 }
 
-enum JoinChoice { own, member }
+enum JoinChoice { own, member, ask, none }
 
-/// #329 §3.4 S3 / T-N2: what the one 「加入網路」 does, the same order as the status sentence's JoinButton
-/// (statuspage.rs JoinButton::of: net/ wins): a phone that made a network joins its own; a phone with only an
-/// imported team network does a member's join; with neither the own path says there is no network.
-JoinChoice joinChoice({required bool hasNet, required bool hasMnet}) =>
-    !hasNet && hasMnet ? JoinChoice.member : JoinChoice.own;
+/// #329 §3.4 S3 / T-N2: what the one 「加入網路」 does. Only a network this phone made -> join it; only an imported
+/// team network -> the member's join; both -> the user picks (PR 2 review B-M2: neither path may vanish); neither ->
+/// nothing to join: say how to start (B-M1), never the 「App 重裝過」 line meant for a lost record key.
+JoinChoice joinChoice({required bool hasNet, required bool hasMnet}) => switch ((hasNet, hasMnet)) {
+      (true, false) => JoinChoice.own,
+      (false, true) => JoinChoice.member,
+      (true, true) => JoinChoice.ask,
+      (false, false) => JoinChoice.none,
+    };

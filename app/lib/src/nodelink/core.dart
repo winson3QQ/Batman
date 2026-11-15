@@ -80,6 +80,9 @@ class NodeState {
 
   /// The last read's screen data (Outcome.extra), kept with `view`.
   Object? extra;
+
+  /// The last error-code answer's screen data; becomes [extra] when the state turns 2'.
+  Object? errExtra;
 }
 
 class _T {
@@ -439,6 +442,7 @@ class NodeLinkCore {
       case Res.errorCode:
         isY[a.addr] = a.id;
         t.err = true;
+        s.errExtra = o.extra; // the error answer's own screen data (Rust row 2'), shown once it becomes 2'
         r.retry.add(key);
       case Res.undecryptable:
         final w = writtenAt[a.id];
@@ -552,6 +556,7 @@ class NodeLinkCore {
           if (s.same >= 2 && s.why != Why.identity) {
             s.kind = Kind.read;
             s.view = "2'";
+            s.extra = s.errExtra; // PR 2 review A-M2: never the last body's data under a 2'
             s.readAt = now;
             s.stale = false;
           }

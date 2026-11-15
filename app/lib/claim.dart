@@ -45,7 +45,7 @@ String reclaimText({required bool pending}) => '這台節點已在你的清單�
 
 /// Design §4.1: shown before a claim on a dev build whose owner_enc key is SOFTWARE; the claim goes on only when confirmed.
 const devSoftEncTitle = '這支手機只能用於開發';
-const devSoftEncText = '這支手機的復原／成員金鑰是軟體保護，只能用於開發，不可用於實際部署。\n\n'
+const devSoftEncText = '這支手機的復原／隊員金鑰是軟體保護，只能用於開發，不可用於實際部署。\n\n'
     '之後換手機、或改用 field 版／硬體 owner_enc，這支手機認領的每個節點都要重燒卡回收。';
 
 class ClaimPage extends StatefulWidget {

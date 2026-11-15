@@ -77,9 +77,9 @@ class KeyAbilities {
   static const allGone = '這支手機的四把金鑰都不見了，App 已停用。唯一的出路：清除 App 資料或重新安裝；節點需要重燒卡回收';
   static const ownerGone = '這支手機的擁有者金鑰不見了，不能登入、認領或接續認領；紀錄還讀得到，節點需要重燒卡回收';
   static const adminGone = '這支手機的網路管理金鑰不見了，不能建立或更改網路';
-  static const encGone = '這支手機的復原／成員金鑰不見了，不能接續沒完成的認領（還沒認領完的節點需要重燒卡）';
+  static const encGone = '這支手機的復原／隊員金鑰不見了，不能接續沒完成的認領（還沒認領完的節點需要重燒卡）';
   static const _ownerOff = '這支手機的擁有者金鑰不是硬體保護';
-  static const _encOff = '這支手機的復原／成員金鑰不是硬體保護';
+  static const _encOff = '這支手機的復原／隊員金鑰不是硬體保護';
   static const _adminOff = '這支手機的網路管理金鑰不是硬體保護';
 
   /// Why the whole app is off (only meaningful while [appUsable] is false): unread, lost, or not hardware.
@@ -122,7 +122,7 @@ class KeyAbilities {
     return switch (use) {
       KeyUse.makeNetwork => missing.contains('ADMIN_SIGN') ? adminGone : '$_adminOff，不能建立網路',
       KeyUse.recover => encLost ? encGone : '$_encOff，不能接續沒完成的認領',
-      _ => encLost ? '這支手機的復原／成員金鑰不見了，不能認領節點' : '$_encOff，不能認領節點',
+      _ => encLost ? '這支手機的復原／隊員金鑰不見了，不能認領節點' : '$_encOff，不能認領節點',
     };
   }
 }

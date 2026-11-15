@@ -3,6 +3,7 @@
 import 'package:batman_app/key_abilities.dart';
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart';
+import 'package:batman_app/src/rust/api/owner.dart' show StatusView;
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/home_logic.dart';
 import 'package:batman_app/ui/home_page.dart';
@@ -34,6 +35,22 @@ class FakeRust implements RustLibApi {
   @override
   dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
 }
+
+StatusView sv(String color, {int nodeState = 2}) => StatusView(
+    color: color,
+    row: '3',
+    sentence: 'x',
+    lagNote: '',
+    warning: '',
+    nodeState: nodeState,
+    netId: '',
+    version: '',
+    tech: const [],
+    fresh: true,
+    rateNote: '',
+    unfinished: '',
+    unfinishedUnderVerdict: false,
+    canLeave: false);
 
 KeyAbilities keys({bool claim = true}) => KeyAbilities.from({
       'RECORD_AES': 1,
@@ -128,6 +145,41 @@ void main() {
     await t.pumpWidget(host(HomePage(app: app(), ui: ui, devTrust: false, keys: keys())));
     await t.pump();
     expect(find.text('把另一台節點加入這支手機'), findsOneWidget, reason: 'allowed: the plain line');
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
+
+  testWidgets('review A-M3: the node page gives each reason its own next step', (t) async {
+    final a = app();
+    final s = a.link.core.states[id]!
+      ..kind = Kind.unreachable
+      ..why = Why.identity;
+    expect(s.why, Why.identity);
+    await t.pumpWidget(host(NodePage(app: a, id: id, ui: UiState(MemStore()))));
+    await t.pump();
+    expect(find.textContaining('不要在它上面做任何設定'), findsOneWidget);
+    expect(find.textContaining('會持續自動重試'), findsNothing);
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
+
+  testWidgets('review A-m1: a node not in a network is remembered as warn (not 「當時有問題」)', (t) async {
+    final a = app();
+    final c = a.link.core;
+    c.states[id]!
+      ..kind = Kind.read
+      ..view = 'red'
+      ..readAt = a.link.now()
+      ..extra = sv('red', nodeState: 1)
+      ..last = Concl.read;
+    a.link.readWall[id] = DateTime.utc(2026, 11, 16);
+    final ui = UiState(MemStore()..ids = [id]);
+    await t.pumpWidget(host(HomePage(app: a, ui: ui, devTrust: false, keys: keys())));
+    a.link.refresh(); // a change: the home page remembers the fresh reads
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await t.pump();
+    expect(ui.nodes[id]?.look, 'warn');
+    a.link.dispose();
     await t.pumpWidget(const SizedBox());
     AppLink.forgetForTest();
   });

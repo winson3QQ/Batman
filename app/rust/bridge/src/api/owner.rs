@@ -1272,7 +1272,7 @@ impl OwnerSession {
             A::Persist { rel, plain, expected_gen } => return Some(persist_at(OwnerKind::PersistPend, rel, plain, expected_gen)),
             A::Done(E::Out { hex, sas, name, renewed }) => {
                 let t = if renewed {
-                    "[JOINREQ] 申請已換新，要重新核對 SAS".to_string()
+                    "[JOINREQ] 申請已換新，要重新核對確認碼".to_string()
                 } else {
                     format!("[JOINREQ] 申請（名稱「{name}」）")
                 };

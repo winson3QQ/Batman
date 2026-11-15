@@ -155,4 +155,37 @@ void main() {
     await u.noteReads({'n1': ('not-a-kind', DateTime.utc(2027))});
     expect(u.nodes['n1']!.look, 'warn', reason: 'only the four kinds are kept');
   });
+
+  // ---- PR 2 review B-m1 / B-m9 ----------------------------------------------------------------------------------
+
+  for (final (what, body) in [
+    ('a read time beyond 2100', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{4: 9000000000000}}})),
+    ('a nickname with a direction mark', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{1: 'a${String.fromCharCode(0x202e)}b'}}})),
+    ('a nickname with a control character', cborEncode(<Object, Object>{1: 1, 4: <Object, Object>{'n1': <Object, Object>{1: 'a${String.fromCharCode(7)}b'}}})),
+  ]) {
+    test('B-m1: $what is not taken (absent)', () async {
+      final s = MemStore()
+        ..gen = 1
+        ..plain = body
+        ..ids = ['n1'];
+      expect((await loaded(s)).nodes, isEmpty);
+    });
+  }
+
+  test('B-m9: writes asked together run one after the other and the record ends with all of them', () async {
+    final s = MemStore()..ids = ['n1'];
+    final u = await loaded(s);
+    await Future.wait([u.setWelcomed(), u.setHomeTip(), u.noteReads({'n1': ('ok', DateTime.utc(2026))})]);
+    final v = await loaded(s);
+    expect((v.welcomed, v.homeTip, v.nodes['n1']?.look), (true, true, 'ok'));
+    expect(s.writes, 3, reason: 'no write lost to a CAS clash');
+  });
+
+  test('cbor: nesting deeper than 4 is refused', () {
+    Object deep = 1;
+    for (var i = 0; i < 6; i++) {
+      deep = <Object, Object>{1: deep};
+    }
+    expect(() => cborDecode(cborEncode(deep)), throwsFormatException);
+  });
 }

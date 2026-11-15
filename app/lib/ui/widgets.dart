@@ -371,10 +371,17 @@ abstract final class Btn {
   static const excludeThis = '排除這台';
   static const goOn = '繼續';
   static const claim = '認領'; // the older claim page (PR 3 replaces it)
+  static const seeRequest = '看我的申請';
+  static const openAppSettings = '開啟 app 設定';
+  static const next = '下一步';
+  static const skipIntro = '跳過說明';
+  static const start = '開始';
+  static const finishIt = '繼續完成';
+  static const joinTeam = '加入隊長的網路';
 
   static const all = {
     refresh, addNode, makeNetwork, joinNetwork, checkNetwork, seeNode, allowBluetooth, openBluetooth, tryAgain, gotIt,
     remove, cancel, save, more, devOptions, about, leaveNetwork, requestJoin, showRequestAgain, sendNewKey,
-    excludeThis, goOn, claim,
+    excludeThis, goOn, claim, seeRequest, joinTeam, openAppSettings, next, skipIntro, start, finishIt,
   };
 }

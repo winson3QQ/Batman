@@ -112,6 +112,13 @@ class FakeSession implements OwnerSession {
   TeamView teamView({Uint8List? recordPlain, required bool member}) =>
       const TeamView(visible: false, title: '', only: '', cards: [], note: '', tech: []);
 
+  // #329 PR 2 review B-M3: which join the one 「加入網路」 starts
+  @override
+  OwnerStep requestMemberJoin({required List<int> mnetPlain, required BigInt mnetGen}) {
+    rust.sends.add('memberJoin');
+    return step(OwnerKind.write, frame: fSend);
+  }
+
   @override
   OwnerStep requestSendUpdate({required List<int> recordPlain, required bool member, required List<int> adminPub}) {
     rust.sends.add(member ? 'member' : 'admin');
@@ -398,6 +405,35 @@ void main() {
     await t.pumpWidget(MaterialApp(home: home ?? const NodesPage()));
     await settle(t, 5);
   }
+
+  // #329 PR 2 review B-M3 / T-N2: the console's one 「加入網路」, wired: only an imported team network -> the member's
+  // join; no network at all -> how to start (never the 「App 重裝過」 line); both -> the user picks. Negative control:
+  // `_join` sending the member case to the own path, or no question when both -> FAIL.
+  testWidgets('S3 / T-N2: only mnet -> the member''s join', (t) async {
+    await open(t, records: {'node/$deviceId', 'mnet/$netId'});
+    await press(t, find.byType(ListTile));
+    await press(t, find.widgetWithText(FilledButton, '加入網路'));
+    expect(rust.sends, ['memberJoin']);
+  });
+
+  testWidgets('S3 / T-N2: no network record -> says how to start, nothing sent', (t) async {
+    await open(t, records: {'node/$deviceId'});
+    await press(t, find.byType(ListTile));
+    await press(t, find.widgetWithText(FilledButton, '加入網路'));
+    expect(rust.sends, isEmpty);
+    expect(find.textContaining('這支手機還沒有隊伍網路'), findsOneWidget);
+    expect(find.textContaining('重裝'), findsNothing);
+    await longWait(t); // the login's own wait timer runs out, as in the other tests here
+  });
+
+  testWidgets('S3 / T-N2: both net and mnet -> the user picks; the team network -> the member''s join', (t) async {
+    await open(t, records: {'node/$deviceId', 'mnet/$netId', 'net/$netId'});
+    await press(t, find.byType(ListTile));
+    await press(t, find.widgetWithText(FilledButton, '加入網路'));
+    expect(find.text('要加入哪一個網路？'), findsOneWidget);
+    await press(t, find.text('隊長的網路（我是隊員）'));
+    expect(rust.sends, ['memberJoin']);
+  });
 
   // #329 PR 1 review r3 E-M1 (B-M1 / A-M1 with the real 我的節點): opened by openRawPage, popped while its login waits
   // for the connection; the login then succeeds after the page is gone -> its link is dropped (not left open, which

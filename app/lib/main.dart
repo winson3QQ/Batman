@@ -129,7 +129,7 @@ class _StartupCheckState extends State<StartupCheck> {
         } else {
           // one line per reason (claim and recovery share theirs when the owner key is the cause)
           lines.addAll({for (final u in KeyUse.values) keys.refusal(u)}.whereType<String>());
-          if (keys.softOwnerEnc) lines.add('注意：這支手機的復原／成員金鑰只有軟體保護，只適合開發使用');
+          if (keys.softOwnerEnc) lines.add('注意：這支手機的復原／隊員金鑰只有軟體保護，只適合開發使用');
         }
       }
     } catch (e) {
@@ -217,8 +217,9 @@ class _StartupCheckState extends State<StartupCheck> {
   @override
   Widget build(BuildContext context) {
     final t = BatTheme.of(context);
-    if (_report == null) {
-      // §5.2 board 1.1: the splash while the phone is checked
+    // §5.2 board 1.1: the splash while the phone is checked, and on until the home page replaces it (the older start
+    // page never flashes in between; PR 2 review A-m4)
+    if (_report == null || (_ok && _app != null)) {
       return Scaffold(
         backgroundColor: t.bg,
         body: SafeArea(

@@ -11,6 +11,8 @@ import 'cbor_mini.dart';
 const uiRel = 'ui/state-v1';
 const nickMax = 24;
 const lookKinds = {'ok', 'warn', 'bad', 'unk'};
+final _unsafe = RegExp('[${_c(0)}-${_c(0x1f)}${_c(0x7f)}${_c(0x202a)}-${_c(0x202e)}${_c(0x2066)}-${_c(0x2069)}${_c(0x200e)}${_c(0x200f)}]');
+String _c(int code) => String.fromCharCode(code); // control and text-direction characters, by code point
 
 /// One node's display memory.
 class UiNode {
@@ -91,9 +93,12 @@ class UiState {
         if (id is! String || n is! Map<Object, Object>) throw const FormatException('node table');
         if (n.keys.any((k) => k != 1 && k != 2 && k != 4)) throw const FormatException('node field outside the list');
         final nick = n[1], look = n[2], at = n[4];
-        if (nick != null && (nick is! String || nick.runes.length > nickMax)) throw const FormatException('nickname');
+        if (nick != null && (nick is! String || nick.runes.length > nickMax || _unsafe.hasMatch(nick))) {
+          throw const FormatException('nickname'); // control or direction characters never reach the screen (B-m1)
+        }
         if (look != null && (look is! String || !lookKinds.contains(look))) throw const FormatException('kind');
-        if (at != null && at is! int) throw const FormatException('time');
+        // a time the screen can show (1970 .. 2100) — a value out of range would throw where it is drawn (review B-m1)
+        if (at != null && (at is! int || at < 0 || at > 4102444800)) throw const FormatException('time');
         parsed[id] = UiNode(nick: nick as String?, look: look as String?, readAt: at as int?);
       });
       welcomed = w;
@@ -120,7 +125,19 @@ class UiState {
         },
       });
 
-  Future<void> _save() async {
+  Future<void>? _saving;
+
+  /// One write at a time (review B-m9): a write asked while one runs waits for it, then writes the latest state.
+  Future<void> _save() {
+    final prev = _saving;
+    final next = (prev ?? Future<void>.value()).then((_) => _saveNow());
+    _saving = next;
+    return next.whenComplete(() {
+      if (identical(_saving, next)) _saving = null;
+    });
+  }
+
+  Future<void> _saveNow() async {
     try {
       if (_headerBad) {
         await store.remove();
