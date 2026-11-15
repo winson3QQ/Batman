@@ -79,6 +79,7 @@ class AppLink {
       readRecords: readRecords,
       now: _now,
       after: _after,
+      trace: (l) => debugPrint('BMAPP nl $l'),
     );
     // §4.3.2 (T20): the app lifecycle, app-wide (it outlives any page)
     WidgetsBinding.instance.addObserver(_Life(link));

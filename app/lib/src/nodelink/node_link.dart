@@ -31,6 +31,7 @@ class NodeLink implements LeaseListener {
     required this.now,
     required this.after,
     DateTime Function()? wall,
+    this.trace,
   }) : wall = wall ?? DateTime.now {
     reg.listeners.add(this);
   }
@@ -46,6 +47,29 @@ class NodeLink implements LeaseListener {
   /// Wall-clock time, for 「讀取於 HH:MM」 only (the core's clock is monotonic and stops in deep sleep; review pr1
   /// A-m8).
   final DateTime Function() wall;
+
+  /// A line per attempt (timings, outcome) and the core's log lines, for logcat. Ids and addresses are cut to their
+  /// last 4 characters (T-S4: no long hex run in a log).
+  final void Function(String line)? trace;
+  String? _traced;
+
+  static String mask(String s) => s
+      .replaceAllMapped(RegExp(r'[0-9a-fA-F]{8,}'), (m) => '…${m[0]!.substring(m[0]!.length - 4)}')
+      .replaceAllMapped(RegExp(r'(?:[0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})'), (m) => '…${m[1]}');
+
+  void _forwardLog() {
+    final t = trace;
+    if (t == null) return;
+    final log = core.log;
+    var i = log.length;
+    while (i > 0 && !identical(log[i - 1], _traced)) {
+      i--;
+    }
+    for (final l in log.sublist(i)) { // not found (first call, or trimmed out of the ring): all of it
+      t(mask(l));
+    }
+    if (log.isNotEmpty) _traced = log.last;
+  }
 
   /// §4.3.3-3: from the start of the connect to msg2, one budget.
   static const msg2 = Duration(seconds: 8);
@@ -190,6 +214,7 @@ class NodeLink implements LeaseListener {
       _scan = null;
       s.stop();
     }
+    _forwardLog();
     _changed.add(null);
     _timer?.call();
     final w = core.wakeAt(t);
@@ -234,6 +259,8 @@ class NodeLink implements LeaseListener {
     // §4.3.3-3: one 8 s budget from the start of the connect to msg2, on the injected clock
     final due = Completer<void>();
     final stopDue = after(msg2, () => due.isCompleted ? null : due.complete());
+    final t0 = now();
+    var tUp = -1;
     GateLink? mine;
     Outcome o;
     try {
@@ -243,6 +270,7 @@ class NodeLink implements LeaseListener {
         due.future.then((_) => false),
         cancel.future.then((_) => false),
       ]);
+      tUp = up ? now() - t0 : -1;
       if (!up || cancel.isCompleted) {
         o = const Outcome(Res.noResponse);
       } else {
@@ -254,6 +282,7 @@ class NodeLink implements LeaseListener {
       o = const Outcome(Res.noResponse); // one attempt's exception ends that attempt only (§4.3.3-4, F50)
     }
     stopDue();
+    trace?.call(mask('attempt $a connected=${tUp}ms result=${o.res.name} after ${now() - t0}ms'));
     // close this attempt's own link only: a late end never closes the next attempt's (review pr1 A-m1 / B-m1)
     await mine?.close();
     if (identical(_link, mine)) _link = null;

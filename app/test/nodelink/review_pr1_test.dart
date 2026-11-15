@@ -368,6 +368,34 @@ void main() {
     expect(reg.current, isNull);
   });
 
+  test('T-S4: the trace never carries a full id or address', () async {
+    final lines = <String>[];
+    const id = '0123456789abcdef0123456789abcdef';
+    final clock = Clock();
+    final reg = LeaseRegistry(after: clock.after);
+    final radio = Radio();
+    final gate = BleGate(radio, reg, now: () => clock.t, after: clock.after);
+    final nl = NodeLink(
+        core: NodeLinkCore(const [Rec(id, 1)]),
+        gate: gate,
+        reg: reg,
+        prober: FakeProber({'AA:BB:CC:DD:EE:F1': id}),
+        readRecords: () async => const [Rec(id, 1)],
+        now: () => clock.t,
+        after: clock.after,
+        trace: lines.add);
+    await nl.start(Page.home);
+    await clock.run(500);
+    radio.scanCtl.add('AA:BB:CC:DD:EE:F1');
+    await clock.run(3000);
+    expect(lines.where((l) => l.contains('attempt')), isNotEmpty, reason: lines.join(' | '));
+    expect(lines.any((l) => l.contains('round 0')), isTrue, reason: 'the core log is forwarded');
+    for (final l in lines) {
+      expect(l, isNot(matches(RegExp(r'[0-9a-fA-F]{8,}'))), reason: l);
+      expect(l, isNot(contains('AA:BB')), reason: l);
+    }
+  });
+
   group('A-M1 / B-M1: an older page\x27s busy work holds the raw lease past the pop', () {
     test('popped while busy: the lease stays until the work ends; no NodeLink scan meanwhile', () async {
       final radio = Radio();
